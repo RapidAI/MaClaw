@@ -1534,6 +1534,22 @@ func (s *BrowserAgentSession) TargetGone() <-chan struct{} {
 	return s.targetGoneCh
 }
 
+// PruneDuplicatePages closes extra tabs that show the same URL as the page
+// this session is driving. A cloud desktop otherwise piles up copies, and the
+// next click lands on the wrong one.
+func (s *BrowserAgentSession) PruneDuplicatePages() int {
+	if s == nil {
+		return 0
+	}
+	s.mu.RLock()
+	session := s.session
+	s.mu.RUnlock()
+	if session == nil {
+		return 0
+	}
+	return session.PruneDuplicatePages()
+}
+
 // DesktopConnected reports whether this session can still drive the browser.
 // IsTargetAlive only remembers that the tab was not closed. After the desktop
 // container stops and starts again, that tab is gone and the login lives in
@@ -1595,6 +1611,7 @@ func (s *BrowserAgentSession) addSnapshot(snapshot BrowserSnapshot) {
 	cp := snapshot
 	s.snapshots[snapshot.SnapshotID] = &cp
 	s.lastSnapshotID = snapshot.SnapshotID
+	s.probeFlagsStale = false
 	if len(s.snapshots) > browserAgentSnapshotLimit {
 		oldestID := ""
 		oldestAt := int64(0)

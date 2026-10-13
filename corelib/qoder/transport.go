@@ -16,12 +16,16 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"sort"
 	"strings"
 	"time"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
@@ -469,13 +473,16 @@ func unwrapSSE(ctx context.Context, upstream io.Reader, sink io.Writer, model st
 	buf := make([]byte, 16*1024)
 	for {
 		n, readErr := reader.Read(buf)
-		if n > 0 {
-			if !writer.ingest(string(buf[:n])) {
-				break
-			}
+		if n > 0 && !writer.ingestBytes(buf[:n]) {
+			return nil
 		}
 		if readErr != nil {
-			break
+			// A final data line may arrive without its trailing newline.
+			writer.flushPartial()
+			if errors.Is(readErr, io.EOF) {
+				return nil
+			}
+			return readErr
 		}
 		select {
 		case <-ctx.Done():
@@ -483,31 +490,78 @@ func unwrapSSE(ctx context.Context, upstream io.Reader, sink io.Writer, model st
 		default:
 		}
 	}
-	return nil
 }
 
 // envelopeWriter buffers partial lines and forwards translated frames.
+// completionID is the one provider response id for this HTTP completion.
+// Qoder's envelope is one generation, but inner chunks switch from a
+// gateway chatcmpl-* id to the upstream completion UUID. OpenAI's parser
+// freezes the first id and rejects a later one, which aborts a turn the
+// user has already seen. The adapter therefore publishes the first id for
+// the whole completion; it does not ask the parser to merge two responses.
 type envelopeWriter struct {
-	w    io.Writer
-	head strings.Builder
+	w                  io.Writer
+	head               strings.Builder
+	frame              []byte
+	scratch            []byte
+	tailBuf            []byte
+	tailCode           int
+	tailText           string
+	hasBody            bool
+	completionID       string
+	completionIDQuoted string
+	idRewritten        bool
+	idSpliceFailed     bool
 }
 
 // ingest consumes one upstream chunk; false stops the pump (terminal event).
+// One read often holds many SSE lines. Walk that buffer once and keep only
+// the unfinished tail, instead of copying the tail after every line.
 func (e *envelopeWriter) ingest(chunk string) bool {
 	e.head.WriteString(chunk)
+	return e.finishIngest()
+}
+
+func (e *envelopeWriter) ingestBytes(chunk []byte) bool {
+	// One allocation for this read. A tool-argument line is much larger than
+	// the tokens before it, and Builder would otherwise double its way there.
+	e.head.Grow(len(chunk))
+	e.head.Write(chunk)
+	return e.finishIngest()
+}
+
+func (e *envelopeWriter) finishIngest() bool {
+	text := e.head.String()
+	off := 0
 	for {
-		text := e.head.String()
-		idx := strings.IndexByte(text, '\n')
-		if idx < 0 {
-			return true
+		rel := strings.IndexByte(text[off:], '\n')
+		if rel < 0 {
+			break
 		}
-		line := strings.TrimRight(text[:idx], "\r")
-		e.head.Reset()
-		e.head.WriteString(text[idx+1:])
+		line := strings.TrimRight(text[off:off+rel], "\r")
+		off += rel + 1
 		if !e.line(line) {
+			e.keepTail(text, off)
 			return false
 		}
 	}
+	e.keepTail(text, off)
+	return true
+}
+
+// keepTail retains the unparsed suffix. text aliases the builder buffer and
+// is invalid after the next builder mutation, so the suffix is copied first.
+func (e *envelopeWriter) keepTail(text string, off int) {
+	if off == 0 {
+		return
+	}
+	if off >= len(text) {
+		e.head.Reset()
+		return
+	}
+	rest := strings.Clone(text[off:])
+	e.head.Reset()
+	e.head.WriteString(rest)
 }
 
 func (e *envelopeWriter) line(line string) bool {
@@ -524,33 +578,976 @@ func (e *envelopeWriter) line(line string) bool {
 		_, err := io.WriteString(e.w, "data: [DONE]\n\n")
 		return err == nil
 	}
-	var envelope chatEnvelope
-	if err := json.Unmarshal([]byte(payload), &envelope); err != nil {
-		// A plain-JSON tail ({"success":false,…}) is an upstream failure.
-		var failure struct {
-			Message string `json:"message"`
-			MsgInfo int    `json:"msgCode"`
+	// msgCode is captured while the envelope keys are scanned. A normal token
+	// does not get a second walk or a second copy of its delta.
+	if !e.scanEnvelope(payload) {
+		var envelope struct {
+			Body string `json:"body"`
 		}
-		if json.Unmarshal([]byte(payload), &failure) == nil && failure.MsgInfo != 0 {
-			return e.writeErrorFrame(fmt.Sprintf("Qoder 上游错误 (HTTP %d): %s", failure.MsgInfo, failure.Message))
+		if json.Unmarshal([]byte(payload), &envelope) != nil {
+			return true
 		}
+		if message, bad := upstreamTailError(payload); bad {
+			return e.writeErrorFrame(message)
+		}
+		if envelope.Body == "" {
+			return true
+		}
+		return e.publishChunkBytes([]byte(envelope.Body))
+	}
+	if e.tailCode != 0 {
+		return e.writeErrorFrame(fmt.Sprintf("Qoder 上游错误 (HTTP %d): %s", e.tailCode, e.tailText))
+	}
+	if !e.hasBody || len(e.scratch) == 0 {
 		return true
 	}
-	if envelope.Body == "" {
-		// Telemetry tail (firstTokenDuration…) carries no chunk.
+	if id, ok := leadingCompletionID(e.scratch); ok {
+		return e.writePlainCompletion(e.scratch, id)
+	}
+	return e.publishChunkBytes(e.scratch)
+}
+
+// publishChunkBytes forwards a chunk that is not the plain leading-id shape.
+// When the parsed id is already the one this response publishes, the body is
+// written from the scan buffer. Copying it to a string first duplicated every
+// tool-argument delta.
+func (e *envelopeWriter) publishChunkBytes(body []byte) bool {
+	// A choices-only delta has no completion id and no error code. Escapes are
+	// absent too, so a raw scan sees every key; encoding/json would only copy it.
+	if bytes.IndexByte(body, '\\') < 0 && !tailHasIDOrCodeKey(body) {
+		return e.writeDataBytes(body)
+	}
+	var head struct {
+		ID      json.RawMessage `json:"id"`
+		Code    string          `json:"code"`
+		Message string          `json:"message"`
+	}
+	if err := json.Unmarshal(body, &head); err != nil {
 		return true
 	}
-	var chunk chatChunk
-	if err := json.Unmarshal([]byte(envelope.Body), &chunk); err != nil {
+	if head.Code != "" {
+		return e.writeErrorFrame(fmt.Sprintf("Qoder 上游错误 (%s): %s", head.Code, head.Message))
+	}
+	rawID := bytes.TrimSpace(head.ID)
+	if len(rawID) == 0 || rawID[0] == '"' {
+		id := completionIDText(head.ID)
+		// encoding/json keeps the last top-level id, so a match here is the id
+		// the OpenAI parser will see. An earlier different key is ignored.
+		if id == "" || e.completionID == "" || id == e.completionID {
+			if e.completionID == "" && id != "" {
+				e.completionID = strings.Clone(id)
+			}
+			return e.writeDataBytes(body)
+		}
+		if handled, ok := e.writeSplicedTopLevelID(body, e.quotedCompletionID()); handled {
+			if ok {
+				e.noteIDRewritten(id)
+			}
+			return ok
+		}
+	}
+	return e.writeData(e.stableCompletionBody(string(body), head.ID))
+}
+
+// writeSplicedTopLevelID replaces every top-level id in body and writes one
+// SSE frame. handled is false when the byte scan cannot see the id; the
+// caller then falls back to the structural rewrite. body is not retained.
+func (e *envelopeWriter) writeSplicedTopLevelID(body []byte, quoted string) (handled, ok bool) {
+	spans := topLevelJSONStringSpans(body, "id")
+	if len(spans) == 0 || quoted == "" {
+		return false, false
+	}
+	extra := 0
+	for _, sp := range spans {
+		extra += len(quoted) - (sp[1] - sp[0])
+	}
+	const prefix = "data: "
+	buf := e.frameBuf(len(prefix) + len(body) + extra + 2)
+	buf = append(buf, prefix...)
+	prev := 0
+	for _, sp := range spans {
+		if sp[0] < prev || sp[1] < sp[0] || sp[1] > len(body) {
+			return false, false
+		}
+		buf = append(buf, body[prev:sp[0]]...)
+		buf = append(buf, quoted...)
+		prev = sp[1]
+	}
+	buf = append(buf, body[prev:]...)
+	return true, e.writeFrame(buf)
+}
+
+func (e *envelopeWriter) flushPartial() bool {
+	if e.head.Len() == 0 {
 		return true
 	}
-	if chunk.Code != "" {
-		return e.writeErrorFrame(fmt.Sprintf("Qoder 上游错误 (%s): %s", chunk.Code, chunk.Message))
+	// String aliases the builder buffer; copy before Reset.
+	line := strings.Clone(strings.TrimRight(e.head.String(), "\r\n"))
+	e.head.Reset()
+	line = strings.TrimSpace(line)
+	if line == "" {
+		return true
 	}
-	if _, err := fmt.Fprintf(e.w, "data: %s\n\n", envelope.Body); err != nil {
+	return e.line(line)
+}
+
+func upstreamTailError(payload string) (string, bool) {
+	var failure struct {
+		Message string `json:"message"`
+		MsgInfo int    `json:"msgCode"`
+	}
+	if json.Unmarshal([]byte(payload), &failure) != nil || failure.MsgInfo == 0 {
+		return "", false
+	}
+	return fmt.Sprintf("Qoder 上游错误 (HTTP %d): %s", failure.MsgInfo, failure.Message), true
+}
+
+// envelopeBody unescapes the top-level "body" string without encoding/json.
+// A false result falls back to Unmarshal; the token path is this scanner.
+func (e *envelopeWriter) envelopeBody(payload string) (string, bool) {
+	if !e.scanEnvelope(payload) || !e.hasBody {
+		return "", false
+	}
+	return string(e.scratch), true
+}
+
+// scanEnvelope fills scratch with the raw body and records a top-level
+// msgCode. Trailing junk is rejected so the result matches encoding/json.
+func (e *envelopeWriter) scanEnvelope(payload string) bool {
+	e.tailCode = 0
+	e.tailText = ""
+	e.hasBody = false
+	e.scratch = e.scratch[:0]
+	s := skipJSONSpaceStr(payload)
+	if len(s) == 0 || s[0] != '{' {
 		return false
 	}
+	s = skipJSONSpaceStr(s[1:])
+	if len(s) > 0 && s[0] == '}' {
+		return skipJSONSpaceStr(s[1:]) == ""
+	}
+	for {
+		if len(s) == 0 || s[0] != '"' {
+			return false
+		}
+		key, rest, ok := rawJSONString(s)
+		if !ok || strings.IndexByte(key, '\\') >= 0 {
+			return false
+		}
+		s = skipJSONSpaceStr(rest)
+		if len(s) == 0 || s[0] != ':' {
+			return false
+		}
+		s = skipJSONSpaceStr(s[1:])
+		switch key {
+		case "body":
+			e.scratch = e.scratch[:0]
+			e.scratch, s, ok = appendJSONString(e.scratch, s)
+			if !ok {
+				return false
+			}
+			e.hasBody = true
+		case "message":
+			e.tailBuf = e.tailBuf[:0]
+			e.tailBuf, s, ok = appendJSONString(e.tailBuf, s)
+			if !ok {
+				return false
+			}
+			e.tailText = string(e.tailBuf)
+		case "msgCode":
+			var n int
+			n, s, ok = takeJSONInt(s)
+			if !ok {
+				return false
+			}
+			e.tailCode = n
+		default:
+			s, ok = skipJSONValue(s)
+			if !ok {
+				return false
+			}
+		}
+		s = skipJSONSpaceStr(s)
+		if len(s) == 0 {
+			return false
+		}
+		switch s[0] {
+		case ',':
+			s = skipJSONSpaceStr(s[1:])
+		case '}':
+			return skipJSONSpaceStr(s[1:]) == ""
+		default:
+			return false
+		}
+	}
+}
+
+func takeJSONInt(s string) (int, string, bool) {
+	rest, ok := skipJSONNumber(s)
+	if !ok {
+		return 0, "", false
+	}
+	num := s[:len(s)-len(rest)]
+	if num == "" || num[0] == '-' {
+		return 0, "", false
+	}
+	n := 0
+	for i := 0; i < len(num); i++ {
+		if num[i] < '0' || num[i] > '9' {
+			return 0, "", false
+		}
+		n = n*10 + int(num[i]-'0')
+		if n < 0 {
+			return 0, "", false
+		}
+	}
+	return n, rest, true
+}
+
+func skipJSONSpaceStr(s string) string {
+	i := 0
+	for i < len(s) && isJSONSpace(s[i]) {
+		i++
+	}
+	return s[i:]
+}
+
+func rawJSONString(s string) (content, rest string, ok bool) {
+	if len(s) == 0 || s[0] != '"' {
+		return "", s, false
+	}
+	i := 1
+	for i < len(s) {
+		if s[i] == '\\' {
+			if i+1 >= len(s) {
+				return "", s, false
+			}
+			i += 2
+			continue
+		}
+		if s[i] == '"' {
+			return s[1:i], s[i+1:], true
+		}
+		i++
+	}
+	return "", s, false
+}
+
+func appendJSONString(dst []byte, s string) ([]byte, string, bool) {
+	if len(s) == 0 || s[0] != '"' {
+		return dst, s, false
+	}
+	// Escapes only shrink, so the raw content length is enough for one alloc.
+	// Small deltas already fit in scratch and skip this scan.
+	if len(s) > 1 && cap(dst)-len(dst) < len(s)-1 {
+		if content, _, ok := rawJSONString(s); ok && len(content) > cap(dst)-len(dst) {
+			grown := make([]byte, len(dst), len(dst)+len(content))
+			copy(grown, dst)
+			dst = grown
+		}
+	}
+	i := 1
+	for i < len(s) {
+		c := s[i]
+		if c == '"' {
+			return dst, s[i+1:], true
+		}
+		if c == '\\' {
+			if i+1 >= len(s) {
+				return dst, s, false
+			}
+			switch s[i+1] {
+			case '"', '\\', '/':
+				dst = append(dst, s[i+1])
+				i += 2
+			case 'b':
+				dst = append(dst, '\b')
+				i += 2
+			case 'f':
+				dst = append(dst, '\f')
+				i += 2
+			case 'n':
+				dst = append(dst, '\n')
+				i += 2
+			case 'r':
+				dst = append(dst, '\r')
+				i += 2
+			case 't':
+				dst = append(dst, '\t')
+				i += 2
+			case 'u':
+				r, n, ok := decodeJSONU(s[i:])
+				if !ok {
+					return dst, s, false
+				}
+				dst = utf8.AppendRune(dst, r)
+				i += n
+			default:
+				return dst, s, false
+			}
+			continue
+		}
+		if c < 0x20 {
+			return dst, s, false
+		}
+		// Ordinary text, including the unescaped delta, is copied in one run.
+		j := i + 1
+		for j < len(s) {
+			c := s[j]
+			if c == '"' || c == '\\' || c < 0x20 {
+				break
+			}
+			j++
+		}
+		dst = append(dst, s[i:j]...)
+		i = j
+	}
+	return dst, s, false
+}
+
+func decodeJSONU(s string) (rune, int, bool) {
+	if len(s) < 6 || s[0] != '\\' || s[1] != 'u' {
+		return 0, 0, false
+	}
+	r, ok := hex4(s[2:6])
+	if !ok {
+		return 0, 0, false
+	}
+	if utf16.IsSurrogate(rune(r)) {
+		// encoding/json consumes a pair only when it decodes to one rune.
+		// Two high surrogates stay two replacement characters.
+		if len(s) >= 12 && s[6] == '\\' && s[7] == 'u' {
+			if r2, ok2 := hex4(s[8:12]); ok2 {
+				if dec := utf16.DecodeRune(rune(r), rune(r2)); dec != utf8.RuneError {
+					return dec, 12, true
+				}
+			}
+		}
+		return utf8.RuneError, 6, true
+	}
+	return rune(r), 6, true
+}
+
+func hex4(s string) (uint16, bool) {
+	var v uint16
+	for i := 0; i < 4; i++ {
+		c := s[i]
+		var d byte
+		switch {
+		case c >= '0' && c <= '9':
+			d = c - '0'
+		case c >= 'a' && c <= 'f':
+			d = c - 'a' + 10
+		case c >= 'A' && c <= 'F':
+			d = c - 'A' + 10
+		default:
+			return 0, false
+		}
+		v = v<<4 | uint16(d)
+	}
+	return v, true
+}
+
+func skipJSONValue(s string) (string, bool) {
+	if len(s) == 0 {
+		return "", false
+	}
+	switch s[0] {
+	case '"':
+		_, rest, ok := rawJSONString(s)
+		return rest, ok
+	case '{', '[':
+		return skipJSONContainer(s)
+	case 't':
+		if strings.HasPrefix(s, "true") {
+			return s[4:], true
+		}
+	case 'f':
+		if strings.HasPrefix(s, "false") {
+			return s[5:], true
+		}
+	case 'n':
+		if strings.HasPrefix(s, "null") {
+			return s[4:], true
+		}
+	default:
+		if s[0] == '-' || (s[0] >= '0' && s[0] <= '9') {
+			return skipJSONNumber(s)
+		}
+	}
+	return "", false
+}
+
+func skipJSONContainer(s string) (string, bool) {
+	if len(s) == 0 || (s[0] != '{' && s[0] != '[') {
+		return "", false
+	}
+	closeCh := byte('}')
+	if s[0] == '[' {
+		closeCh = ']'
+	}
+	open := s[0]
+	s = skipJSONSpaceStr(s[1:])
+	if len(s) > 0 && s[0] == closeCh {
+		return s[1:], true
+	}
+	for {
+		if open == '{' {
+			if len(s) == 0 || s[0] != '"' {
+				return "", false
+			}
+			_, rest, ok := rawJSONString(s)
+			if !ok {
+				return "", false
+			}
+			s = skipJSONSpaceStr(rest)
+			if len(s) == 0 || s[0] != ':' {
+				return "", false
+			}
+			s = skipJSONSpaceStr(s[1:])
+		}
+		var ok bool
+		s, ok = skipJSONValue(s)
+		if !ok {
+			return "", false
+		}
+		s = skipJSONSpaceStr(s)
+		if len(s) == 0 {
+			return "", false
+		}
+		switch s[0] {
+		case ',':
+			s = skipJSONSpaceStr(s[1:])
+		case closeCh:
+			return s[1:], true
+		default:
+			return "", false
+		}
+	}
+}
+
+func skipJSONNumber(s string) (string, bool) {
+	i := 0
+	if i < len(s) && s[i] == '-' {
+		i++
+	}
+	if i >= len(s) || s[i] < '0' || s[i] > '9' {
+		return "", false
+	}
+	if s[i] == '0' {
+		i++
+	} else {
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+	}
+	if i < len(s) && s[i] == '.' {
+		i++
+		start := i
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+		if i == start {
+			return "", false
+		}
+	}
+	if i < len(s) && (s[i] == 'e' || s[i] == 'E') {
+		i++
+		if i < len(s) && (s[i] == '+' || s[i] == '-') {
+			i++
+		}
+		start := i
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+		if i == start {
+			return "", false
+		}
+	}
+	return s[i:], true
+}
+
+func (e *envelopeWriter) writeData(body string) bool {
+	return e.writeDataBytes([]byte(body))
+}
+
+func (e *envelopeWriter) writeDataBytes(body []byte) bool {
+	const prefix = "data: "
+	buf := e.frameBuf(len(prefix) + len(body) + 2)
+	buf = append(buf, prefix...)
+	buf = append(buf, body...)
+	return e.writeFrame(buf)
+}
+
+// writeSplicedPlainID publishes {"id":quoted} plus the already-checked tail
+// without building a second copy of the token delta.
+func (e *envelopeWriter) writeSplicedPlainID(quoted string, tail []byte) bool {
+	const lead = `data: {"id":`
+	buf := e.frameBuf(len(lead) + len(quoted) + len(tail) + 2)
+	buf = append(buf, lead...)
+	buf = append(buf, quoted...)
+	buf = append(buf, tail...)
+	return e.writeFrame(buf)
+}
+
+func (e *envelopeWriter) frameBuf(n int) []byte {
+	buf := e.frame[:0]
+	if cap(buf) < n {
+		buf = make([]byte, 0, n)
+	}
+	return buf
+}
+
+func (e *envelopeWriter) writeFrame(buf []byte) bool {
+	// One frame, one Write. The pipe otherwise wakes the reader three times
+	// per token. The buffer is reused; Writer must not retain the slice.
+	buf = append(buf, '\n', '\n')
+	e.frame = buf
+	_, err := e.w.Write(buf)
+	return err == nil
+}
+
+// plainLeadingCompletionID reports the id of a chunk whose only id key is a
+// plain leading string. Any other shape, including a nested "id" inside tool
+// arguments, returns false so the structural path can see every top-level copy.
+func plainLeadingCompletionID(body string) (string, bool) {
+	id, ok := leadingCompletionID([]byte(body))
+	if !ok {
+		return "", false
+	}
+	return string(id), true
+}
+
+var jsonIDPrefix = []byte(`{"id":"`)
+
+func leadingCompletionID(body []byte) ([]byte, bool) {
+	if !bytes.HasPrefix(body, jsonIDPrefix) {
+		return nil, false
+	}
+	rest := body[len(jsonIDPrefix):]
+	end := bytes.IndexByte(rest, '"')
+	if end <= 0 || bytes.IndexByte(rest[:end], '\\') >= 0 {
+		return nil, false
+	}
+	tail := rest[end+1:]
+	if !tailContinuesObject(tail) || tailHasIDOrCodeKey(tail) {
+		return nil, false
+	}
+	return rest[:end], true
+}
+
+// tailContinuesObject accepts a plain leading id inside one JSON object.
+// object, created, and model sit between id and choices on a normal chunk;
+// the prefix splice still rewrites only that leading id. A second id or a
+// code key is rejected by the caller. Trailing junk after the object is not
+// part of this shape.
+func tailContinuesObject(tail []byte) bool {
+	if len(tail) == 0 || (tail[0] != ',' && tail[0] != '}') {
+		return false
+	}
+	end := len(tail)
+	for end > 0 && isJSONSpace(tail[end-1]) {
+		end--
+	}
+	return end > 0 && tail[end-1] == '}'
+}
+
+// tailHasIDOrCodeKey reports a second id or an upstream error key. One pass:
+// a nested tool-call id sits before the argument text, and quotes inside
+// string values are escaped, so this does not match prose.
+func tailHasIDOrCodeKey(tail []byte) bool {
+	for {
+		i := bytes.IndexByte(tail, '"')
+		if i < 0 {
+			return false
+		}
+		tail = tail[i+1:]
+		// encoding/json matches object keys without case, so "ID" is a second id.
+		if quotedKeyIs(tail, "id") || quotedKeyIs(tail, "code") {
+			return true
+		}
+	}
+}
+
+func quotedKeyIs(s []byte, key string) bool {
+	if len(s) <= len(key) || s[len(key)] != '"' {
+		return false
+	}
+	for i := 0; i < len(key); i++ {
+		c := s[i]
+		if c >= 'A' && c <= 'Z' {
+			c += 'a' - 'A'
+		}
+		if c != key[i] {
+			return false
+		}
+	}
 	return true
+}
+
+func bytesEqualString(b []byte, s string) bool {
+	if len(b) != len(s) {
+		return false
+	}
+	for i := range b {
+		if b[i] != s[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// writePlainCompletion publishes a leading plain id. The replacement is
+// copied straight into the frame. If it cannot be quoted, the foreign id is
+// dropped so the parser keeps the delta instead of aborting the generation.
+func (e *envelopeWriter) writePlainCompletion(body, id []byte) bool {
+	if e.completionID == "" {
+		// id aliases the chunk; copy so the next delta can reuse scratch.
+		e.completionID = string(id)
+		return e.writeDataBytes(body)
+	}
+	if bytesEqualString(id, e.completionID) {
+		return e.writeDataBytes(body)
+	}
+	quoted := e.quotedCompletionID()
+	tail := body[len(jsonIDPrefix)+len(id)+1:]
+	if !e.idRewritten {
+		e.noteIDRewritten(string(id))
+	}
+	if quoted == "" {
+		if len(tail) > 0 && tail[0] == ',' {
+			tail = tail[1:]
+		}
+		buf := make([]byte, 0, 1+len(tail))
+		buf = append(buf, '{')
+		buf = append(buf, tail...)
+		return e.writeDataBytes(buf)
+	}
+	return e.writeSplicedPlainID(quoted, tail)
+}
+
+// completionIDText reads a completion id. null, numbers, and empty values are
+// not ids; they must not fail the chunk, or its delta would be dropped.
+func completionIDText(raw json.RawMessage) string {
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return ""
+	}
+	var id string
+	if json.Unmarshal(raw, &id) != nil || strings.TrimSpace(id) == "" {
+		return ""
+	}
+	// Keep the bytes the first chunk already published. Trimming here would
+	// make the next chunk a different id and abort the generation.
+	return id
+}
+
+// stableCompletionBody publishes one completion id for this HTTP response.
+// The first non-empty string id is kept. A later chunk that carries a
+// different id is the same generation under the gateway's other label: only
+// that top-level field is spliced, so tool arguments, nested ids, and numeric
+// usage stay byte-for-byte. A null or numeric id is not a second completion;
+// it is published as the id already chosen, or omitted when none exists yet.
+// Chunks with no id pass through; this does not invent an id.
+func (e *envelopeWriter) stableCompletionBody(body string, raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) > 0 && raw[0] != '"' {
+		if rewritten, ok := e.publishNonStringID(body); ok {
+			return rewritten
+		}
+		return body
+	}
+	id := completionIDText(raw)
+	if id == "" {
+		return body
+	}
+	if e.completionID == "" {
+		e.completionID = strings.Clone(id)
+		return body
+	}
+	if id == e.completionID {
+		return body
+	}
+	if rewritten, ok := spliceTopLevelJSONString(body, "id", e.quotedCompletionID()); ok {
+		e.noteIDRewritten(id)
+		return rewritten
+	}
+	// The byte splice keeps tool arguments and usage integers intact. If the
+	// chunk is still one JSON object but that scan cannot see the id, replace
+	// the field structurally. Publishing the original body would hand the
+	// OpenAI parser a second completion id and abort the generation.
+	if rewritten, ok := rewriteTopLevelIDField(body, e.completionID); ok {
+		e.noteIDRewritten(id)
+		return rewritten
+	}
+	// A parseable object still carries the delta. Dropping the foreign id
+	// keeps that delta; publishing it would abort the generation.
+	if rewritten, ok := omitTopLevelID(body); ok {
+		e.noteIDRewritten(id)
+		return rewritten
+	}
+	if !e.idSpliceFailed {
+		log.Printf("[qoder-transport] completion id %q could not be applied over upstream chunk id %q", e.completionID, id)
+		e.idSpliceFailed = true
+	}
+	return body
+}
+
+// omitTopLevelID removes the top-level id and leaves every other value raw.
+func omitTopLevelID(body string) (string, bool) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &obj); err != nil {
+		return "", false
+	}
+	key, _, ok := topLevelIDField(obj)
+	if !ok {
+		return "", false
+	}
+	delete(obj, key)
+	out, err := marshalAgentChatJSON(obj)
+	if err != nil {
+		return "", false
+	}
+	return string(out), true
+}
+
+// rewriteTopLevelIDField replaces the top-level id and leaves every other
+// value as raw JSON, so nested tool-call ids and non-float integers survive.
+func rewriteTopLevelIDField(body, id string) (string, bool) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &obj); err != nil {
+		return "", false
+	}
+	key, raw, ok := topLevelIDField(obj)
+	if !ok {
+		return "", false
+	}
+	var current string
+	if err := json.Unmarshal(raw, &current); err != nil || current == "" {
+		return "", false
+	}
+	quoted := quoteJSONString(id)
+	if quoted == "" {
+		return "", false
+	}
+	if key != "id" {
+		delete(obj, key)
+	}
+	obj["id"] = json.RawMessage(quoted)
+	out, err := marshalAgentChatJSON(obj)
+	if err != nil {
+		return "", false
+	}
+	return string(out), true
+}
+
+// publishNonStringID keeps a chunk whose id is null or a number. The OpenAI
+// parser rejects that value and drops the whole chunk, including its delta.
+func (e *envelopeWriter) publishNonStringID(body string) (string, bool) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &obj); err != nil {
+		return "", false
+	}
+	key, _, ok := topLevelIDField(obj)
+	if !ok {
+		return body, true
+	}
+	if e.completionID == "" {
+		delete(obj, key)
+	} else {
+		quoted := e.quotedCompletionID()
+		if key != "id" || quoted == "" {
+			delete(obj, key)
+		}
+		if quoted != "" {
+			obj["id"] = json.RawMessage(quoted)
+		}
+		if !e.idRewritten {
+			log.Printf("[qoder-transport] completion id kept as %q; upstream chunk id is not a string", e.completionID)
+			e.idRewritten = true
+		}
+	}
+	out, err := marshalAgentChatJSON(obj)
+	if err != nil {
+		return "", false
+	}
+	return string(out), true
+}
+
+func topLevelIDField(obj map[string]json.RawMessage) (string, json.RawMessage, bool) {
+	if raw, ok := obj["id"]; ok {
+		return "id", raw, true
+	}
+	for key, raw := range obj {
+		if strings.EqualFold(key, "id") {
+			return key, raw, true
+		}
+	}
+	return "", nil, false
+}
+
+func (e *envelopeWriter) noteIDRewritten(upstreamID string) {
+	if e.idRewritten {
+		return
+	}
+	log.Printf("[qoder-transport] completion id kept as %q; upstream chunk id %q belongs to the same response", e.completionID, upstreamID)
+	e.idRewritten = true
+}
+
+func (e *envelopeWriter) quotedCompletionID() string {
+	if e.completionIDQuoted == "" {
+		e.completionIDQuoted = quoteJSONString(e.completionID)
+	}
+	return e.completionIDQuoted
+}
+
+func quoteJSONString(value string) string {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(value); err != nil {
+		fallback, _ := json.Marshal(value)
+		return string(fallback)
+	}
+	return strings.TrimRight(buf.String(), "\n")
+}
+
+// replaceTopLevelJSONString splices every top-level string value of key.
+// Nested keys are left untouched. The replacement is encoded as a JSON string.
+func replaceTopLevelJSONString(body, key, value string) (string, bool) {
+	return spliceTopLevelJSONString(body, key, quoteJSONString(value))
+}
+
+func spliceTopLevelJSONString(body, key, quoted string) (string, bool) {
+	out, ok := spliceTopLevelJSONBytes([]byte(body), key, quoted)
+	if !ok {
+		return "", false
+	}
+	return string(out), true
+}
+
+func spliceTopLevelJSONBytes(body []byte, key, quoted string) ([]byte, bool) {
+	spans := topLevelJSONStringSpans(body, key)
+	if len(spans) == 0 || quoted == "" {
+		return nil, false
+	}
+	extra := 0
+	for _, sp := range spans {
+		extra += len(quoted) - (sp[1] - sp[0])
+	}
+	out := make([]byte, 0, len(body)+extra)
+	prev := 0
+	for _, sp := range spans {
+		if sp[0] < prev || sp[1] < sp[0] || sp[1] > len(body) {
+			return nil, false
+		}
+		out = append(out, body[prev:sp[0]]...)
+		out = append(out, quoted...)
+		prev = sp[1]
+	}
+	out = append(out, body[prev:]...)
+	return out, true
+}
+
+// topLevelJSONStringSpans returns [start, end) offsets of each top-level
+// string value for key, including the surrounding quotes.
+func topLevelJSONStringSpans(body []byte, key string) [][2]int {
+	i := 0
+	n := len(body)
+	for i < n && isJSONSpace(body[i]) {
+		i++
+	}
+	if i >= n || body[i] != '{' {
+		return nil
+	}
+	i++
+	depth := 1
+	var spans [][2]int
+	for i < n && depth > 0 {
+		switch body[i] {
+		case '"':
+			end, ok := scanJSONStringEnd(body, i)
+			if !ok {
+				return nil
+			}
+			if depth == 1 && jsonStringTokenIs(body[i:end], key) {
+				j := end
+				for j < n && isJSONSpace(body[j]) {
+					j++
+				}
+				if j < n && body[j] == ':' {
+					j++
+					for j < n && isJSONSpace(body[j]) {
+						j++
+					}
+					if j < n && body[j] == '"' {
+						valEnd, ok := scanJSONStringEnd(body, j)
+						if !ok {
+							return nil
+						}
+						spans = append(spans, [2]int{j, valEnd})
+						i = valEnd
+						continue
+					}
+				}
+			}
+			i = end
+		case '{', '[':
+			depth++
+			i++
+		case '}', ']':
+			depth--
+			i++
+		default:
+			i++
+		}
+	}
+	return spans
+}
+
+func scanJSONStringEnd(body []byte, i int) (int, bool) {
+	if i >= len(body) || body[i] != '"' {
+		return 0, false
+	}
+	i++
+	for i < len(body) {
+		switch body[i] {
+		case '\\':
+			if i+1 >= len(body) {
+				return 0, false
+			}
+			i += 2
+		case '"':
+			return i + 1, true
+		default:
+			i++
+		}
+	}
+	return 0, false
+}
+
+func jsonStringTokenIs(token []byte, want string) bool {
+	if len(token) >= 2 && token[0] == '"' && token[len(token)-1] == '"' && bytesEqualString(token[1:len(token)-1], want) {
+		return true
+	}
+	decoded, ok := decodeJSONStringToken(token)
+	if !ok {
+		return false
+	}
+	// Object keys are case-insensitive to encoding/json. A second "ID"
+	// would otherwise survive the splice and abort the generation.
+	return decoded == want || (want == "id" && strings.EqualFold(decoded, want))
+}
+
+func decodeJSONStringToken(token []byte) (string, bool) {
+	var s string
+	if err := json.Unmarshal(token, &s); err != nil {
+		return "", false
+	}
+	return s, true
+}
+
+func isJSONSpace(b byte) bool {
+	return b == ' ' || b == '\n' || b == '\r' || b == '\t'
 }
 
 func (e *envelopeWriter) writeErrorFrame(message string) bool {
@@ -566,23 +1563,42 @@ func (e *envelopeWriter) writeErrorFrame(message string) bool {
 // chat.completion for non-stream callers.
 func aggregateEnvelopeStream(r io.Reader, model string) ([]byte, error) {
 	content := &strings.Builder{}
-	sink := &aggregateSink{content: content, model: model}
+	sink := &aggregateSink{content: content}
 	reader := bufio.NewReaderSize(r, 32*1024)
 	buf := make([]byte, 16*1024)
 	for {
 		n, err := reader.Read(buf)
-		if n > 0 {
-			sink.ingest(string(buf[:n]))
+		if n > 0 && !sink.ingestBytes(buf[:n]) {
+			// The error frame is terminal, same as the streaming pump.
+			// Flushing the tail would fold the next completion in after it.
+			break
 		}
 		if err != nil {
+			if err == io.EOF {
+				sink.flushPartial()
+			}
 			break
 		}
 	}
 	sink.close()
-	if sink.errMessage != "" && content.Len() == 0 {
+	// A tool-only generation has no text. Treating that as "no output" used to
+	// discard the call and surface an upstream tail instead of the completion.
+	if sink.errMessage != "" && content.Len() == 0 && sink.reasoning.Len() == 0 && len(sink.toolCalls) == 0 {
 		return nil, fmt.Errorf("%s", sink.errMessage)
 	}
 	message := map[string]any{"role": "assistant", "content": content.String()}
+	if sink.reasoning.Len() > 0 {
+		message["reasoning_content"] = sink.reasoning.String()
+	}
+	if calls := sink.assembledToolCalls(); len(calls) > 0 {
+		message["tool_calls"] = calls
+		// A tool-call generation often finishes on the same chunk that carries
+		// the call. Content-only folding used to keep finish_reason=tool_calls
+		// and drop the call, so the agent treated the preamble as the answer.
+		if sink.finishReason == "" || sink.finishReason == "stop" {
+			sink.finishReason = "tool_calls"
+		}
+	}
 	resp := map[string]any{
 		"id":      "chatcmpl-qoder-" + newUUID(),
 		"object":  "chat.completion",
@@ -597,61 +1613,191 @@ func aggregateEnvelopeStream(r io.Reader, model string) ([]byte, error) {
 	if sink.usage != nil {
 		resp["usage"] = sink.usage
 	}
-	return json.Marshal(resp)
+	// Same encoder as the signed request: default Marshal rewrites '<' inside
+	// tool arguments, which inflates a diagram-sized write and is unnecessary
+	// on a response we do not sign.
+	return marshalAgentChatJSON(resp)
 }
 
 // aggregateSink reuses the envelope line parser with an accumulating writer.
 type aggregateSink struct {
 	content      *strings.Builder
-	model        string
+	reasoning    strings.Builder
 	finishReason string
-	usage        any
+	usage        json.RawMessage
 	errMessage   string
 	writer       envelopeWriter
+	toolCalls    map[int]*aggToolCall
 }
 
-func (a *aggregateSink) ingest(chunk string) {
-	// Route through the same line parser; the writer callbacks fold chunks.
+// aggToolCall accumulates one streamed tool call. Arguments arrive in
+// fragments; the call id and name usually arrive once.
+type aggToolCall struct {
+	id   string
+	typ  string
+	name string
+	args strings.Builder
+}
+
+func (a *aggregateSink) ingest(chunk string) bool {
 	a.writer.w = a
-	_ = a.writer.ingest(chunk)
+	return a.writer.ingest(chunk)
+}
+
+func (a *aggregateSink) ingestBytes(chunk []byte) bool {
+	a.writer.w = a
+	return a.writer.ingestBytes(chunk)
+}
+
+func (a *aggregateSink) flushPartial() {
+	a.writer.w = a
+	_ = a.writer.flushPartial()
 }
 
 func (a *aggregateSink) Write(p []byte) (int, error) {
-	text := string(p)
-	if strings.HasPrefix(text, "data: ") {
-		text = strings.TrimPrefix(text, "data: ")
+	text := strings.TrimSpace(string(p))
+	if strings.HasPrefix(text, "data:") {
+		text = strings.TrimSpace(strings.TrimPrefix(text, "data:"))
 	}
-	if strings.TrimSpace(text) == "data: [DONE]" || strings.TrimSpace(text) == "[DONE]" {
+	if text == "" || text == "[DONE]" {
 		return len(p), nil
 	}
-	var chunk chatChunk
-	var inner map[string]any
-	if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(text, "data:"))), &inner) != nil {
-		return len(p), nil
+	var chunk struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+		Error   struct {
+			Message string `json:"message"`
+		} `json:"error"`
+		Choices []struct {
+			Delta struct {
+				Content   string         `json:"content"`
+				Reasoning string         `json:"reasoning_content"`
+				Reason    string         `json:"reasoning"`
+				Thinking  string         `json:"thinking"`
+				ToolCalls []aggToolDelta `json:"tool_calls"`
+			} `json:"delta"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+		Usage json.RawMessage `json:"usage"`
 	}
-	if raw, err := json.Marshal(inner); err == nil {
-		_ = json.Unmarshal(raw, &chunk)
+	if json.Unmarshal([]byte(text), &chunk) != nil {
+		return len(p), nil
 	}
 	if chunk.Code != "" {
 		a.errMessage = fmt.Sprintf("Qoder 上游错误 (%s): %s", chunk.Code, chunk.Message)
 		return len(p), nil
 	}
-	// Extract delta content and finish/usage via generic parsing.
-	if choices, ok := inner["choices"].([]any); ok && len(choices) > 0 {
-		choice, _ := choices[0].(map[string]any)
-		if delta, ok := choice["delta"].(map[string]any); ok {
-			if v, ok := delta["content"].(string); ok {
-				a.content.WriteString(v)
-			}
+	if chunk.Error.Message != "" && len(chunk.Choices) == 0 {
+		a.errMessage = chunk.Error.Message
+		return len(p), nil
+	}
+	if len(chunk.Choices) > 0 {
+		delta := chunk.Choices[0].Delta
+		a.content.WriteString(delta.Content)
+		switch {
+		case delta.Reasoning != "":
+			a.reasoning.WriteString(delta.Reasoning)
+		case delta.Reason != "":
+			a.reasoning.WriteString(delta.Reason)
+		case delta.Thinking != "":
+			a.reasoning.WriteString(delta.Thinking)
 		}
-		if finish, ok := choice["finish_reason"].(string); ok && finish != "" {
-			a.finishReason = finish
+		a.accumulateToolCalls(delta.ToolCalls)
+		if chunk.Choices[0].FinishReason != "" {
+			a.finishReason = chunk.Choices[0].FinishReason
 		}
 	}
-	if usage, ok := inner["usage"]; ok && usage != nil {
-		a.usage = usage
+	if usage := bytes.TrimSpace(chunk.Usage); len(usage) > 0 && !bytes.Equal(usage, []byte("null")) {
+		a.usage = append(json.RawMessage(nil), usage...)
 	}
 	return len(p), nil
+}
+
+type aggToolDelta struct {
+	Index    int    `json:"index"`
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+	} `json:"function"`
+}
+
+func (a *aggregateSink) accumulateToolCalls(calls []aggToolDelta) {
+	for _, call := range calls {
+		if call.Index < 0 {
+			continue
+		}
+		acc := a.toolCalls[call.Index]
+		if acc == nil {
+			acc = &aggToolCall{}
+			if a.toolCalls == nil {
+				a.toolCalls = map[int]*aggToolCall{}
+			}
+			a.toolCalls[call.Index] = acc
+		}
+		if call.ID != "" {
+			acc.id = call.ID
+		}
+		if call.Type != "" {
+			acc.typ = call.Type
+		}
+		if call.Function.Name != "" {
+			acc.name = call.Function.Name
+		}
+		appendToolArguments(&acc.args, call.Function.Arguments)
+	}
+}
+
+func appendToolArguments(dst *strings.Builder, raw json.RawMessage) {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return
+	}
+	if raw[0] == '"' {
+		var text string
+		if json.Unmarshal(raw, &text) == nil {
+			dst.WriteString(text)
+		}
+		return
+	}
+	if dst.Len() == 0 {
+		dst.Write(raw)
+	}
+}
+
+func (a *aggregateSink) assembledToolCalls() []any {
+	if len(a.toolCalls) == 0 {
+		return nil
+	}
+	idxs := make([]int, 0, len(a.toolCalls))
+	for idx := range a.toolCalls {
+		if idx < 0 {
+			continue
+		}
+		idxs = append(idxs, idx)
+	}
+	sort.Ints(idxs)
+	out := make([]any, 0, len(idxs))
+	for _, i := range idxs {
+		acc := a.toolCalls[i]
+		if acc == nil || (acc.name == "" && acc.args.Len() == 0) {
+			continue
+		}
+		typ := acc.typ
+		if typ == "" {
+			typ = "function"
+		}
+		out = append(out, map[string]any{
+			"id":   acc.id,
+			"type": typ,
+			"function": map[string]any{
+				"name":      acc.name,
+				"arguments": acc.args.String(),
+			},
+		})
+	}
+	return out
 }
 
 func (a *aggregateSink) close() {

@@ -58,6 +58,12 @@ func TestFillPasswordFieldRefusesTheWrongControl(t *testing.T) {
 			t.Fatalf("focused=%v kind=%s err=%v", tc.focused, tc.kind, err)
 		}
 	}
+	if err := FillPasswordField(true, "tel", secret, func(string, map[string]any) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if err := FillPasswordField(true, "phone", secret, func(string, map[string]any) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
 	err := FillPasswordField(true, "password", secret, func(string, map[string]any) error {
 		return errFill("boom " + secret)
 	})

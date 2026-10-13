@@ -514,7 +514,7 @@ func TestBotFeatureIsOffUntilGranted(t *testing.T) {
 	if !strings.Contains(instanceBody, `"hub_user_id":"carol"`) || !strings.Contains(instanceBody, `"hub_tenant_id":"tenant-a"`) || strings.Contains(instanceBody, "maclaw-tenant") {
 		t.Fatalf("instance=%s", instanceBody)
 	}
-	if !strings.Contains(desktopBind, `"hub_user_id":"alice"`) || !strings.Contains(desktopBind, `"hub_tenant_id":"tenant-a"`) || !strings.Contains(desktopBind, `"llm_service_group_id":"system-free"`) || strings.Contains(desktopBind, "someone-else") || strings.Contains(desktopBind, "group-1") {
+	if !strings.Contains(desktopBind, `"hub_user_id":"alice"`) || !strings.Contains(desktopBind, `"hub_tenant_id":"tenant-a"`) || !strings.Contains(desktopBind, `"llm_service_group_id":"maclaw_official_group"`) || strings.Contains(desktopBind, "someone-else") || strings.Contains(desktopBind, "group-1") {
 		t.Fatalf("desktop bind=%s", desktopBind)
 	}
 	if desk.open != 1 || desk.stop != 0 {

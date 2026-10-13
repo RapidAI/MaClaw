@@ -383,6 +383,16 @@ export function CreateRemoteVirtualRepositoryRoot(arg1:string):Promise<void>;
 
 export function CreateScheduledTask(arg1:string,arg2:string,arg3:number,arg4:number,arg5:number,arg6:number,arg7:number,arg8:string,arg9:string,arg10:string):Promise<string>;
 
+export function CreateRunWindowTask(arg1:Record<string, any>):Promise<string>;
+
+export function ClaimRunWindowTask(arg1:string):Promise<Record<string, any>>;
+
+export function ReleaseRunWindowTask(arg1:string, arg2:string):Promise<void>;
+
+export function MarkRunWindowTaskStarted(arg1:string,arg2:string):Promise<void>;
+
+export function MarkRunWindowTaskFailed(arg1:string,arg2:string):Promise<void>;
+
 export function CreateSurvey(arg1:string):Promise<string>;
 
 export function CreateTask(arg1:string,arg2:string):Promise<main.ProjectSearchResult>;
@@ -422,6 +432,28 @@ export function DatabaseProfileTest(arg1:string):Promise<Record<string, any>>;
 
 export function DatabaseProfilesList():Promise<Array<Record<string, any>>>;
 
+export function MailboxAccountsList():Promise<Array<Record<string, any>>>;
+
+export function MailboxAccountSave(arg1:Record<string, any>):Promise<string>;
+
+export function MailboxAccountSetSecret(arg1:string,arg2:string,arg3:string):Promise<void>;
+
+export function MailboxAccountSetEnabled(arg1:string,arg2:boolean):Promise<void>;
+
+export function MailboxAccountSetDefault(arg1:string):Promise<void>;
+
+export function MailboxAccountDelete(arg1:string):Promise<void>;
+
+export function MailboxAccountTest(arg1:string,arg2:string):Promise<string>;
+
+export function MailboxSignaturesList():Promise<Array<Record<string, any>>>;
+
+export function MailboxSignatureSave(arg1:Record<string, any>):Promise<string>;
+
+export function MailboxSignatureDelete(arg1:string):Promise<void>;
+
+export function MailboxSignatureSetDefault(arg1:string):Promise<void>;
+
 export function DecideMaclawAppApprovalInstance(arg1:main.MaclawAppApprovalDecisionInput):Promise<Record<string, any>>;
 
 export function DeleteCloudWorkspace(arg1:string):Promise<main.CloudWorkspaceDeletedWorkspace>;
@@ -460,6 +492,8 @@ export function DeletePassthroughCommand(arg1:string):Promise<void>;
 export function DeleteRepositoryCredential(arg1:string):Promise<string>;
 
 export function DeleteScheduledTask(arg1:string):Promise<void>;
+
+export function DeleteRunWindowTask(arg1:string):Promise<void>;
 
 export function DeleteSession(arg1:string):Promise<void>;
 
@@ -1663,6 +1697,8 @@ export function ListSSHBackgroundTasks():Promise<Array<main.SSHBackgroundTaskVie
 
 export function ListScheduledTasks():Promise<Array<scheduler.ScheduledTask>>;
 
+export function ListRunWindowTasks():Promise<Array<Record<string, any>>>;
+
 export function ListSessionHistory(arg1:number):Promise<Array<session.SessionSummary>>;
 
 export function ListSkillAppManifests():Promise<Array<main.SkillAppManifestEntry>>;
@@ -2141,6 +2177,8 @@ export function SaveCurrentChatAsTask(arg1:string):Promise<main.ProjectSearchRes
 
 export function SaveDigitalEmployeeSensitiveQueryPolicy(arg1:string):Promise<void>;
 
+export function SaveDiagramPNG(arg1:string):Promise<string>;
+
 export function SaveExpert(arg1:string):Promise<string>;
 
 export function SaveLansengerBot(arg1:corelib.LansengerBotProfile):Promise<main.LansengerBotProfileView>;
@@ -2261,7 +2299,13 @@ export function GetDesktopBotSupplements(arg1:string,arg2:string):Promise<Array<
 
 export function GetActiveDesktopRuns(arg1:string):Promise<Array<{bot_id:string,run_id:string,request_id:string,session_key:string,task_text:string,phase:string,started_at:string,waiting_for_user:boolean}>>;
 
+export function GetDesktopBotBusy(arg1:string):Promise<{seq:number,marks:Array<{owner_id:string,bot_id:string,count:number}>,runs?:Array<string>}>;
+
 export function PersistDesktopBotPreference(arg1:string,arg2:string):Promise<void>;
+
+export function QueryDesktopBotTaskStatus(arg1:string,arg2:string,arg3:string):Promise<string>;
+
+export function PullDesktopBotDeliveries():Promise<void>;
 
 export function ArmDesktopBotSchedule(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number,arg6:number,arg7:number,arg8:number):Promise<string>;
 
@@ -2278,6 +2322,8 @@ export function CreateDesktopBot(arg1:string,arg2:string):Promise<{id:string,tit
 export function RenameDesktopBot(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function DeleteDesktopBot(arg1:string):Promise<void>;
+
+export function GetDesktopBotCredits():Promise<{ applies: boolean; unlimited: boolean; limit: number; used: number; remaining: number }>;
 
 export function GetDesktopBotLLM():Promise<{ mode: string; name?: string; url?: string; model?: string; key_set: boolean; warning?: string }>;
 
@@ -2373,6 +2419,8 @@ export function SetMaclawAgentMaxIterations(arg1:number):Promise<void>;
 export function SetMaclawLLMCurrentModel(arg1:string):Promise<void>;
 
 export function SetMaclawLLMThinkingMode(arg1:string):Promise<void>;
+
+export function SetMainWindowScreenPosition(arg1:number,arg2:number):Promise<void>;
 
 export function SetMemoryMaxBackups(arg1:number):Promise<void>;
 
@@ -2632,6 +2680,8 @@ export function UpdateNLSkill(arg1:corelib.NLSkillEntry):Promise<void>;
 export function UpdateRemoteCodingTaskMeta(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number):Promise<void>;
 
 export function UpdateScheduledTask(arg1:string,arg2:Record<string, any>):Promise<void>;
+
+export function UpdateRunWindowTaskTimes(arg1:string,arg2:string,arg3:string):Promise<void>;
 
 export function UpdateVirtualRepositoryMapping(arg1:string):Promise<string>;
 

@@ -770,6 +770,14 @@ func TestAdminPageComputeMarketArchivedDeleteContract(t *testing.T) {
 		"Math.ceil(total / CM_ORDERS_PAGE_SIZE) - 1",
 		"window.changeComputeOrdersPage = changeComputeOrdersPage",
 	})
+	for _, banned := range []string{
+		"/api/admin/cardstore/orders?limit=200",
+		"/api/admin/cardstore/orders?limit=50",
+	} {
+		if strings.Contains(js, banned) {
+			t.Fatalf("compute market must not scrape the order queue with %s", banned)
+		}
+	}
 	assertContainsAll(t, css, "compute market compact order grid", []string{
 		"#cmOrdersList.list{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px",
 		".cm-order-metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px",

@@ -5,6 +5,7 @@ import type { FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
 import { BotRailIcon, SystemIcon, AboutIcon, SkillsIcon, MCPIcon, GossipIcon, RankingIcon, MobileDocsIcon, KnowledgeIcon, LatexTemplateIcon, ExpertRailIcon, WorkflowIcon, InviteGiftIcon, CheckinRailIcon } from './SidebarNavIcons';
 import { SidebarBrandHeader, SidebarPrimaryNav, useNavMenuToggles } from './SidebarNavRailPieces';
 import { openSettingsTab } from '../../utils/settingsNavigation';
+import { connectSoloActive } from '../../utils/settingsSolo';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
 import { buildUserRankingURL, systemRankingLabel, useSidebarHubRanking } from './sidebarHubRanking';
 import { useSidebarHubAccess } from './useSidebarHubAccess';
@@ -15,6 +16,18 @@ import type { SidebarHubCheckin } from '../../types/appShell';
 import { expertsNavLabel, expertsPageTitle, toolsNavLabel, toolsPageTitle, utilitiesNavLabel, utilitiesPageTitle } from '../../i18n/utilitiesLabels';
 import { HubInvitationDialog } from '../HubInvitationDialog';
 import { LATEX_TEMPLATES_NAV_TAB } from '../../utils/latexTemplates';
+
+const ConnectMenuIMIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M5 6.5h14v9H8l-3 2.5z" />
+    </svg>
+);
+
+const ConnectMenuMailIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="3.5" y="5.5" width="17" height="13" rx="1.5" /><path d="m4 7 8 6 8-6" />
+    </svg>
+);
 
 type SidebarNavRailProps = {
     navTab: string;
@@ -40,6 +53,8 @@ type SidebarNavRailProps = {
     utilitiesLabel?: string;
     /** Current settings tab, used to highlight the library entry for the Knowledge page. */
     settingsTab?: string;
+    /** Tab that asked to hide the settings category rail. Solo IM or email highlights 接入. */
+    settingsNavSoloTab?: string;
     /** Live background-task count. The rail adds in-progress bot tasks itself. */
     runningTaskCount?: number;
     /** Opens System > Monitor with the background-task view selected. */
@@ -79,6 +94,7 @@ export const SidebarNavRail = ({
     showToolsEntry = false,
     utilitiesLabel,
     settingsTab,
+    settingsNavSoloTab,
     runningTaskCount = 0,
     onOpenBackgroundTasks,
     hubCheckin,
@@ -96,6 +112,9 @@ export const SidebarNavRail = ({
     const [proMenuOpen, setProMenuOpen] = useState(false);
     const [proMenuTop, setProMenuTop] = useState(0);
     const proMenuOpenerRef = useRef<HTMLElement | null>(null);
+    const [connectMenuOpen, setConnectMenuOpen] = useState(false);
+    const [connectMenuTop, setConnectMenuTop] = useState(0);
+    const connectMenuOpenerRef = useRef<HTMLElement | null>(null);
     const rankingURL = buildUserRankingURL(config?.remote_hub_url || '', config?.remote_tenant_id);
     const showRanking = config?.show_hub_ranking !== false && !!rankingURL;
     const ranking = useSidebarHubRanking(showRanking, !!remoteActivationStatus?.activated);
@@ -127,12 +146,20 @@ export const SidebarNavRail = ({
     // Check-in copy: highlighted (amber) until today's reward is claimed, then gray.
     const checkinLabel = lang === 'zh-Hans' ? '签到' : lang === 'zh-Hant' ? '簽到' : 'Check-in';
     const checkinCredits = Math.round((Number(hubCheckin?.credits) || 0) * 100) / 100;
+    const checkinDays = Math.max(0, Math.trunc(Number(hubCheckin?.durationDays) || 0));
     const checkinTitle = hubCheckin?.checkedInToday
         ? (lang === 'zh-Hans' ? '今日已签到' : lang === 'zh-Hant' ? '今日已簽到' : 'Checked in today')
-        : (lang === 'zh-Hans' ? `签到领 ${checkinCredits} 积分` : lang === 'zh-Hant' ? `簽到領 ${checkinCredits} 積分` : `Check in for ${checkinCredits} credits`);
+        : checkinDays > 0
+            ? (lang === 'zh-Hans' ? `签到领 ${checkinCredits} 积分，${checkinDays} 天内有效` : lang === 'zh-Hant' ? `簽到領 ${checkinCredits} 積分，${checkinDays} 天內有效` : `Check in for ${checkinCredits} credits, valid for ${checkinDays} days`)
+            : (lang === 'zh-Hans' ? `签到领 ${checkinCredits} 积分` : lang === 'zh-Hant' ? `簽到領 ${checkinCredits} 積分` : `Check in for ${checkinCredits} credits`);
     const inviteLabel = lang === 'zh-Hans' ? '推荐' : lang === 'zh-Hant' ? '推薦' : 'Referral';
     const inviteTitle = lang === 'zh-Hans' ? '推荐好友注册' : lang === 'zh-Hant' ? '推薦好友註冊' : 'Refer friends';
+    const botTitle = lang === 'zh-Hans' ? 'Bot为24小时驻守远程电脑上的数字助理。' : lang === 'zh-Hant' ? 'Bot為24小時駐守遠端電腦上的數位助理。' : 'A bot is a digital assistant stationed on the remote computer around the clock.';
     const connectorsLabel = lang === 'zh-Hans' ? '连接器' : lang === 'zh-Hant' ? '連接器' : 'Connectors';
+    const connectLabel = lang === 'en' ? 'Connect' : '接入';
+    const connectTitle = lang === 'en' ? 'Connect chat and email' : lang === 'zh-Hant' ? '接入即時通訊和郵箱' : '接入即时通讯和邮箱';
+    const connectEmailLabel = lang === 'en' ? 'Email' : lang === 'zh-Hant' ? '郵箱' : '邮箱';
+    const connectSolo = connectSoloActive(navTab, settingsNavSoloTab || '');
     const libraryLabel = lang === 'zh-Hans' ? '资料库' : lang === 'zh-Hant' ? '資料庫' : 'Library';
     const mobileDocsLabel = lang === 'zh-Hans' ? '云盘' : lang === 'zh-Hant' ? '雲端硬碟' : 'Cloud drive';
     const knowledgeLabel = lang === 'zh-Hans' ? '知识库' : lang === 'zh-Hant' ? '知識庫' : 'Knowledge base';
@@ -170,11 +197,11 @@ export const SidebarNavRail = ({
         { id: 'utilities', icon: <ExpertRailIcon marked={false} />, label: expertsMenuLabel, visible: showUtilitiesEntry },
         { id: 'workflows', icon: <WorkflowIcon />, label: workflowLabel, visible: showWorkflowEntry },
     ];
-    const { closeSiblingMenus, toggleSystemMenu, toggleExtensionsMenu, toggleLibraryMenu, toggleProMenu } = useNavMenuToggles({
-        systemMenuOpen, extensionsMenuOpen, libraryMenuOpen, proMenuOpen,
-        systemMenuOpenerRef, extensionsMenuOpenerRef, libraryMenuOpenerRef, proMenuOpenerRef,
-        setSystemMenuOpen, setExtensionsMenuOpen, setLibraryMenuOpen, setProMenuOpen,
-        setExtensionsMenuTop, setLibraryMenuTop, setProMenuTop,
+    const { closeSiblingMenus, toggleSystemMenu, toggleExtensionsMenu, toggleLibraryMenu, toggleProMenu, toggleConnectMenu } = useNavMenuToggles({
+        systemMenuOpen, extensionsMenuOpen, libraryMenuOpen, proMenuOpen, connectMenuOpen,
+        systemMenuOpenerRef, extensionsMenuOpenerRef, libraryMenuOpenerRef, proMenuOpenerRef, connectMenuOpenerRef,
+        setSystemMenuOpen, setExtensionsMenuOpen, setLibraryMenuOpen, setProMenuOpen, setConnectMenuOpen,
+        setExtensionsMenuTop, setLibraryMenuTop, setProMenuTop, setConnectMenuTop,
     });
     const proMenuChoices = (showUtilitiesEntry ? 1 : 0) + (showWorkflowEntry ? 1 : 0);
     useEffect(() => {
@@ -197,6 +224,14 @@ export const SidebarNavRail = ({
         }
         switchTool('files');
     };
+    const connectMenuItems: SystemMenuItem[] = [
+        { id: 'im', icon: <ConnectMenuIMIcon />, label: 'IM', visible: true },
+        { id: 'email', icon: <ConnectMenuMailIcon />, label: connectEmailLabel, visible: true },
+    ];
+    const selectConnectMenuItem = (id: string) => {
+        openSettingsTab(id === 'email' ? 'email' : 'im', { hideSettingsNav: true });
+    };
+    const connectActiveId = navTab === 'settings' && (settingsTab === 'im' || settingsTab === 'email') ? settingsTab : undefined;
     return (
         <div className="mc-nav-rail" style={{
             width: `${SIDEBAR_NAV_RAIL_WIDTH}px`,
@@ -216,7 +251,7 @@ export const SidebarNavRail = ({
                 the system trigger + popup menus below stay outside so they are
                 never clipped by the scroll container. */}
             <div className="mc-nav-rail__scroll" onScroll={handleRailScroll}>
-                <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showUtilitiesEntry={showUtilitiesEntry} showToolsEntry={showToolsEntry} switchTool={switchTool} extensionsLabel={extensionsLabel} extensionsMenuOpen={extensionsMenuOpen} onToggleExtensionsMenu={toggleExtensionsMenu} libraryMenuOpen={libraryMenuOpen} onToggleLibraryMenu={toggleLibraryMenu} knowledgeActive={knowledgeActive} latexTemplatesActive={latexTemplatesActive} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} toolsLabel={resolvedToolsLabel} toolsTitle={resolvedToolsTitle} runningTaskCount={runningTaskTotal} onOpenBackgroundTasks={onOpenBackgroundTasks} proMenuOpen={proMenuOpen} onToggleProMenu={toggleProMenu} proFeaturesLabel={proFeaturesLabel} showWorkflowEntry={showWorkflowEntry} />
+                <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showUtilitiesEntry={showUtilitiesEntry} showToolsEntry={showToolsEntry} switchTool={switchTool} extensionsLabel={extensionsLabel} extensionsMenuOpen={extensionsMenuOpen} onToggleExtensionsMenu={toggleExtensionsMenu} libraryMenuOpen={libraryMenuOpen} onToggleLibraryMenu={toggleLibraryMenu} knowledgeActive={knowledgeActive} latexTemplatesActive={latexTemplatesActive} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} toolsLabel={resolvedToolsLabel} toolsTitle={resolvedToolsTitle} runningTaskCount={runningTaskTotal} onOpenBackgroundTasks={onOpenBackgroundTasks} proMenuOpen={proMenuOpen} onToggleProMenu={toggleProMenu} proFeaturesLabel={proFeaturesLabel} showWorkflowEntry={showWorkflowEntry} connectLabel={connectLabel} connectTitle={connectTitle} connectMenuOpen={connectMenuOpen} onToggleConnectMenu={toggleConnectMenu} connectSoloActive={connectSolo} />
                 <div className="snr-spacer" />
                 {hubCheckin?.enabled && (
                     <button
@@ -239,7 +274,7 @@ export const SidebarNavRail = ({
                         data-testid="sidebar-bot-nav"
                         aria-label="Bot"
                         aria-current={navTab === 'bots' ? 'page' : undefined}
-                        title={lang === 'en' ? 'Bot. Each bot is an instance of this MaClawSrv user. They share this user\'s cloud desktop.' : 'Bot。每个 Bot 是当前用户在 MaClawSrv 上的一个实例，共用云端桌面。'}
+                        title={botTitle}
                         onClick={openBots}
                     >
                         <span className="sidebar-icon"><span className="bot-nav-icon-badge"><BotRailIcon /></span></span>
@@ -313,6 +348,20 @@ export const SidebarNavRail = ({
                     menuId="library-popup-menu"
                     testIdPrefix="library-menu"
                     activeId={libraryActiveId}
+                />
+            )}
+            {connectMenuOpen && (
+                <SystemPopupMenu
+                    items={connectMenuItems}
+                    onSelect={selectConnectMenuItem}
+                    onClose={() => setConnectMenuOpen(false)}
+                    returnFocus={() => connectMenuOpenerRef.current}
+                    ariaLabel={connectTitle}
+                    anchorTop={connectMenuTop}
+                    excludeTriggerSelector='[data-testid="sidebar-connect-nav"]'
+                    menuId="connect-popup-menu"
+                    testIdPrefix="connect-menu"
+                    activeId={connectActiveId}
                 />
             )}
             {proMenuOpen && (

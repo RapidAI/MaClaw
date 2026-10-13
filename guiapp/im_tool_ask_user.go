@@ -200,13 +200,14 @@ func (h *IMMessageHandler) commitPendingAskUser(userID string, askReq *AskUserRe
 		return
 	}
 	h.pendingAskUser.Store(userID, &pendingAskUserState{
-		Question:     askReq.Question,
-		Options:      askReq.Options,
-		InputType:    askReq.InputType,
-		Context:      askReq.Context,
-		History:      cloneConversationEntries(history),
-		Timestamp:    time.Now(),
-		WorkingState: agent.CloneWorkingState(workingState),
+		Question:       askReq.Question,
+		Options:        askReq.Options,
+		InputType:      askReq.InputType,
+		Context:        askReq.Context,
+		History:        cloneConversationEntries(history),
+		Timestamp:      time.Now(),
+		WorkingState:   agent.CloneWorkingState(workingState),
+		MailboxDraftID: h.takeMailboxDraftNote(userID),
 	})
 }
 

@@ -83,14 +83,30 @@ func (a *App) llmHTTPClient(timeout time.Duration) *http.Client {
 		return llmHTTPClientForTest(timeout)
 	}
 	if timeout <= 0 {
-		timeout = 30 * time.Second
+		timeout = corelib.LLMProbeTotalTimeout
+	}
+	headerTimeout := timeout
+	if headerTimeout > corelib.LLMProbeHeaderTimeout {
+		headerTimeout = corelib.LLMProbeHeaderTimeout
+	}
+	dialTimeout := corelib.LLMProbeDialTimeout
+	if timeout < dialTimeout {
+		dialTimeout = timeout
 	}
 	return &http.Client{
 		Timeout: timeout,
 		Transport: &http.Transport{
-			Proxy:                 llmOrEnvProxy,
+			Proxy: llmOrEnvProxy,
+			DialContext: (&net.Dialer{
+				Timeout:   dialTimeout,
+				KeepAlive: 30 * time.Second,
+			}).DialContext,
+			ForceAttemptHTTP2:     true,
 			TLSHandshakeTimeout:   10 * time.Second,
-			ResponseHeaderTimeout: timeout,
+			ResponseHeaderTimeout: headerTimeout,
+			// One probe, then the client is discarded. Leaving the connection
+			// idle would keep it until the transport is garbage-collected.
+			DisableKeepAlives: true,
 		},
 	}
 }

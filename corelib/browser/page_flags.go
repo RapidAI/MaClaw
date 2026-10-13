@@ -20,10 +20,15 @@ const browserPageFlagsCollectJS = `
   const classCaptcha = anySelector('[class*="captcha"], [id*="captcha"]');
   const genericCaptchaIframe = anyIframeSrc('captcha');
   const captchaWidget = widgetIframe || slider || (classCaptcha && genericCaptchaIframe);
+  const qrLogin = /扫码登录|扫描二维码|扫一扫登录|请用.{0,8}扫码|scan (the )?qr code|qr code to (log in|sign in)/i.test(fullText);
+  const signedInChrome = /退出登录|已登录/.test(fullText);
+  const phoneEntry = anySelector('input[type=tel], input[autocomplete="tel"], input[name*="phone" i], input[name*="mobile" i], input[id*="phone" i], input[id*="mobile" i]');
+  const typeableLogin = (anySelector('input[type=password]') && /login|sign in|登录|密码/.test(lower)) || (phoneEntry && /登录|login|sign in|手机/.test(lower));
   const pageFlags = {
     captcha_widget: captchaWidget,
     captcha: /captcha|verify you are human|unusual traffic|安全验证|人机验证/.test(lower) || genericCaptchaIframe || classCaptcha,
-    login_wall: anySelector('input[type=password]') && /login|sign in|登录|密码/.test(lower),
+    login_wall: !signedInChrome && typeableLogin,
+    login_qr: !signedInChrome && qrLogin && !typeableLogin,
     mfa: /verification code|2fa|one-time|otp|authenticator|验证码/.test(lower),
     canvas: anySelector('canvas'),
     payment_confirm: anySelector('input[autocomplete="cc-number"], input[name*="cardnumber" i], input[id*="cardnumber" i], input[autocomplete="cc-exp"]') || anyIframeSrc('checkout') || anyIframeSrc('js.stripe.com') || anyIframeSrc('paypal.com'),
@@ -117,7 +122,7 @@ const browserPageFlagsScript = `(function () {
 
 func isCaptchaMutatingAction(action string) bool {
 	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "click", "type", "press", "select", "set_files", "dialog":
+	case "click", "type", "press", "select", "set_files", "dialog", "script":
 		return true
 	default:
 		return false

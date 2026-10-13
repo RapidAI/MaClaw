@@ -59,8 +59,18 @@ func Run(parent context.Context, workspace, runDir, task string) (string, error)
 		return "", ErrUnsupported
 	}
 	// Direct execution. There is no shell and no model-supplied argument.
+	// The program name still comes from the reviewed table. A desktop
+	// process keeps the PATH from launch, so a toolchain installed into
+	// the logon PATH afterwards is invisible to LookPath. Only that miss
+	// substitutes an absolute path, and the child PATH gains that
+	// directory so a sibling (node next to npm.cmd) stays reachable.
+	bin, prepend := resolveReviewedProgram(argv[0])
+	argv[0] = bin
 	cmd := tool.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Dir = runDir
+	if prepend != "" {
+		cmd.Env = prependPathDir(prepend)
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	runErr := cmd.Run()

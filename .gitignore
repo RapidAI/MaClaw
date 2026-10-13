@@ -383,3 +383,7 @@ mobile/maclaw_mobile/.tmp_*.log
 mobile/maclaw_mobile/android/*.iml
 mobile/maclaw_mobile/*.iml
 mobile/maclaw_mobile/.idea/
+
+# 部署/积分任务构建产物（带时间戳的临时目录）
+/build/deploy-*/
+/build/usercredits-*/

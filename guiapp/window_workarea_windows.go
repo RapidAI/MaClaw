@@ -30,6 +30,7 @@ var (
 	procGetWindowPlacementWA       = workAreaUser32.NewProc("GetWindowPlacement")
 	procSetWindowPlacementWA       = workAreaUser32.NewProc("SetWindowPlacement")
 	procMonitorFromWindowWA        = workAreaUser32.NewProc("MonitorFromWindow")
+	procMonitorFromRectWA          = workAreaUser32.NewProc("MonitorFromRect")
 	procGetMonitorInfoWWA          = workAreaUser32.NewProc("GetMonitorInfoW")
 	procEnumWindowsWA              = workAreaUser32.NewProc("EnumWindows")
 	procGetWindowTextWWA           = workAreaUser32.NewProc("GetWindowTextW")
@@ -40,6 +41,7 @@ var (
 
 const (
 	monitorDefaultToNearest = 2
+	swpNoSize               = 0x0001
 	swpNoZOrder             = 0x0004
 	swpNoActivate           = 0x0010
 	gwOwner                 = 4 // GW_OWNER — skip owned popups/tool windows
@@ -304,8 +306,12 @@ func shouldPreserveClampedNormalPlacement(savedNormal, work workAreaRect) bool {
 	if ww <= 0 || hh <= 0 {
 		return false
 	}
-	// Keep a restore rect that is smaller on either axis. Requiring both axes
-	// dropped nearly-maximized-width windows (e.g. 1900x700).
+	// Keep a restore rect that is smaller on either axis and still on this
+	// monitor. An off-screen rect is already corrupted; writing it back is what
+	// makes unmaximize slide the window off a display left of the primary.
+	if !rectIntersects(savedNormal, work) {
+		return false
+	}
 	return w < ww-16 || h < hh-16
 }
 
@@ -332,6 +338,109 @@ func windowRectOverflowsWorkArea(cur, work workAreaRect) bool {
 	// Overflow under taskbar / off-screen edges.
 	return cur.Left < work.Left-1 || cur.Top < work.Top-1 ||
 		cur.Right > work.Right+1 || cur.Bottom > work.Bottom+1
+}
+
+// SetMainWindowScreenPosition moves the main window to a screen point from
+// WindowGetPosition / GetWindowRect.
+//
+// Wails WindowSetPosition on Windows adds the current monitor work-area origin.
+// WindowGetPosition is already an absolute screen point, so on a second display
+// that origin is applied twice and the restored window leaves the virtual desktop.
+// A display left of the primary has a negative origin, which is the slide off
+// the left edge.
+func (a *App) SetMainWindowScreenPosition(x, y int) {
+	if a == nil {
+		return
+	}
+	setMainWindowScreenPosition(x, y)
+}
+
+func setMainWindowScreenPosition(x, y int) bool {
+	hwnd := findMainWindowHWND()
+	if hwnd == 0 {
+		log.Printf("[window] screen position %d,%d skipped: main window not found", x, y)
+		return false
+	}
+	tx, ty := x, y
+	var cur workAreaRect
+	if ok, _, _ := procGetWindowRectWA.Call(hwnd, uintptr(unsafe.Pointer(&cur))); ok != 0 {
+		w := int(cur.Right - cur.Left)
+		h := int(cur.Bottom - cur.Top)
+		if info, found := monitorInfoForRect(rectFromOrigin(x, y, w, h)); found {
+			tx, ty = placeOriginInWorkArea(x, y, w, h, info.RcMonitor, info.RcWork)
+		}
+		if abs32(cur.Left-int32(tx)) <= 1 && abs32(cur.Top-int32(ty)) <= 1 {
+			return true
+		}
+		if tx != x || ty != y {
+			log.Printf("[window] restore position %d,%d misses every display; using %d,%d", x, y, tx, ty)
+		}
+	}
+	if setWindowScreenPos(hwnd, tx, ty) {
+		return true
+	}
+	log.Printf("[window] screen position %d,%d failed", tx, ty)
+	return false
+}
+
+func setWindowScreenPos(hwnd uintptr, x, y int) bool {
+	px, py := screenPositionParams(x, y)
+	flags := uintptr(swpNoSize | swpNoZOrder | swpNoActivate)
+	ret, _, _ := procSetWindowPosWA.Call(hwnd, 0, px, py, 0, 0, flags)
+	return ret != 0
+}
+
+func monitorInfoForRect(r workAreaRect) (workAreaMonitorInfo, bool) {
+	hmon, _, _ := procMonitorFromRectWA.Call(uintptr(unsafe.Pointer(&r)), monitorDefaultToNearest)
+	if hmon == 0 {
+		return workAreaMonitorInfo{}, false
+	}
+	var mi workAreaMonitorInfo
+	mi.CbSize = uint32(unsafe.Sizeof(mi))
+	if ok, _, _ := procGetMonitorInfoWWA.Call(hmon, uintptr(unsafe.Pointer(&mi))); ok == 0 {
+		return workAreaMonitorInfo{}, false
+	}
+	return mi, true
+}
+
+func rectFromOrigin(x, y, width, height int) workAreaRect {
+	return workAreaRect{
+		Left: int32(x), Top: int32(y),
+		Right: int32(x + width), Bottom: int32(y + height),
+	}
+}
+
+func rectIntersects(a, b workAreaRect) bool {
+	return a.Left < b.Right && a.Right > b.Left && a.Top < b.Bottom && a.Bottom > b.Top
+}
+
+// placeOriginInWorkArea keeps a restore point that already intersects the
+// target monitor. A point that misses it is shifted into the work area.
+func placeOriginInWorkArea(x, y, width, height int, monitor, work workAreaRect) (int, int) {
+	if width <= 0 || height <= 0 || rectIntersects(rectFromOrigin(x, y, width, height), monitor) {
+		return x, y
+	}
+	workLeft, workTop := int(work.Left), int(work.Top)
+	workRight, workBottom := int(work.Right), int(work.Bottom)
+	if x+width > workRight {
+		x -= (x + width) - workRight
+	}
+	if x < workLeft {
+		x = workLeft
+	}
+	if y+height > workBottom {
+		y -= (y + height) - workBottom
+	}
+	if y < workTop {
+		y = workTop
+	}
+	return x, y
+}
+
+// screenPositionParams keeps a negative screen origin sign-extended for
+// SetWindowPos. A second display left of the primary has a negative X.
+func screenPositionParams(x, y int) (uintptr, uintptr) {
+	return uintptr(int32(x)), uintptr(int32(y))
 }
 
 func setWindowRect(hwnd uintptr, work workAreaRect) bool {

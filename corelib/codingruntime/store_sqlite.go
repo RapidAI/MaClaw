@@ -22,6 +22,11 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, err
 	}
+	// SQLite here is one writer. A second pooled connection can still hold an
+	// earlier transaction, so the semantic-anchor insert misses the attempt
+	// row this process just committed and the implementation turn loses its
+	// writable surface. One connection keeps that insert behind the commit.
+	db.SetMaxOpenConns(1)
 	s := &SQLiteStore{db: db}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
@@ -243,20 +248,32 @@ func (s *SQLiteStore) ListChildTasks(parentTaskID string) ([]*Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []*Task
+	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
+			rows.Close()
 			return nil, err
 		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// The ledger keeps one connection. Loading each task while this cursor is
+	// open waits for that connection and never returns.
+	out := make([]*Task, 0, len(ids))
+	for _, id := range ids {
 		task, err := s.getTask(s.db, id)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, task)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *SQLiteStore) getTask(q rowQuerier, taskID string) (*Task, error) {
@@ -298,20 +315,30 @@ func (s *SQLiteStore) ListAttempts(taskID string) ([]*Attempt, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []*Attempt
+	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
+			rows.Close()
 			return nil, err
 		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]*Attempt, 0, len(ids))
+	for _, id := range ids {
 		attempt, err := s.getAttempt(s.db, id)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, attempt)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *SQLiteStore) MarkTaskWaitingApproval(taskID string, now time.Time) (*Task, error) {
@@ -385,36 +412,53 @@ func (s *SQLiteStore) StartAttempt(taskID, leaseOwner string, leaseFor time.Dura
 	if _, err = tx.Exec(`UPDATE coding_runtime_writer_admission_guard SET revision=revision+1 WHERE guard_id=1`); err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(`SELECT a.attempt_id,a.policy_json,a.task_id FROM coding_runtime_attempts a WHERE a.status=? AND a.lease_until>?`, TaskRunning, unixNanos(now))
+	rows, err := tx.Query(`SELECT a.attempt_id,a.policy_json,a.task_id,a.lease_until FROM coding_runtime_attempts a WHERE a.status=?`, TaskRunning)
 	if err != nil {
 		return nil, err
 	}
+	type runningAttempt struct {
+		attemptID  string
+		policyJSON string
+		taskID     string
+		leaseUntil int64
+	}
+	var running []runningAttempt
 	for rows.Next() {
-		var attemptID, policyJSON, otherTaskID string
-		if err = rows.Scan(&attemptID, &policyJSON, &otherTaskID); err != nil {
+		var row runningAttempt
+		if err = rows.Scan(&row.attemptID, &row.policyJSON, &row.taskID, &row.leaseUntil); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		if otherTaskID == taskID {
-			continue
-		}
-		var otherPolicy PolicySnapshot
-		if err = json.Unmarshal([]byte(policyJSON), &otherPolicy); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		otherTask, getErr := s.getTask(tx, otherTaskID)
-		if getErr != nil {
-			rows.Close()
-			return nil, getErr
-		}
-		if conflict := WriterAdmissionConflict(*task, policy, *otherTask, otherPolicy); conflict.Conflicts {
-			rows.Close()
-			return nil, WriterAdmissionError{Conflict: conflict}
-		}
+		running = append(running, row)
 	}
 	if err = rows.Close(); err != nil {
 		return nil, err
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	// One ledger connection. The task lookup has to wait until this cursor is
+	// closed, or admission blocks and a second writer never sees the conflict.
+	for _, row := range running {
+		if row.taskID == taskID {
+			continue
+		}
+		// Same rule as MemoryStore: an expired lease does not block another
+		// task unless this process is still executing that attempt.
+		if row.leaseUntil <= unixNanos(now) && !localWriterLive(row.attemptID) {
+			continue
+		}
+		var otherPolicy PolicySnapshot
+		if err = json.Unmarshal([]byte(row.policyJSON), &otherPolicy); err != nil {
+			return nil, err
+		}
+		otherTask, getErr := s.getTask(tx, row.taskID)
+		if getErr != nil {
+			return nil, getErr
+		}
+		if conflict := WriterAdmissionConflict(*task, policy, *otherTask, otherPolicy); conflict.Conflicts {
+			return nil, WriterAdmissionError{Conflict: conflict}
+		}
 	}
 	var no int
 	if err := tx.QueryRow(`SELECT COALESCE(MAX(attempt_no),0)+1 FROM coding_runtime_attempts WHERE task_id=?`, taskID).Scan(&no); err != nil {
@@ -436,6 +480,34 @@ func (s *SQLiteStore) StartAttempt(taskID, leaseOwner string, leaseFor time.Dura
 		return nil, err
 	}
 	return cloneAttempt(attempt), nil
+}
+
+func (s *SQLiteStore) RenewAttemptLease(attemptID, leaseOwner string, leaseFor time.Duration, now time.Time) error {
+	if leaseOwner == "" || leaseFor <= 0 {
+		return fmt.Errorf("%w: renew attempt lease", ErrInvalidTransition)
+	}
+	res, err := s.db.Exec(`UPDATE coding_runtime_attempts SET lease_until=? WHERE attempt_id=? AND lease_owner=? AND status=?`, unixNanos(now.Add(leaseFor)), attemptID, leaseOwner, TaskRunning)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 1 {
+		return nil
+	}
+	attempt, getErr := s.GetAttempt(attemptID)
+	if getErr != nil {
+		return getErr
+	}
+	if attempt.LeaseOwner != leaseOwner {
+		return ErrLeaseOwnerMismatch
+	}
+	if attempt.Status != TaskRunning {
+		return ErrAttemptNotRunning
+	}
+	return ErrNotFound
 }
 
 func (s *SQLiteStore) ConsumeParentContinuation(taskID, parentAttemptID, reviewAttemptID string, now time.Time) error {
@@ -820,6 +892,9 @@ func (s *SQLiteStore) CancelTask(taskID string, now time.Time) ([]*Attempt, erro
 	if err = rows.Close(); err != nil {
 		return nil, err
 	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
 	sort.Strings(ids)
 	var cancelled []*Attempt
 	for _, id := range ids {
@@ -837,6 +912,9 @@ func (s *SQLiteStore) CancelTask(taskID string, now time.Time) ([]*Attempt, erro
 			attemptIDs = append(attemptIDs, id)
 		}
 		if queryErr = attemptRows.Close(); queryErr != nil {
+			return nil, queryErr
+		}
+		if queryErr = attemptRows.Err(); queryErr != nil {
 			return nil, queryErr
 		}
 		for _, attemptID := range attemptIDs {
@@ -887,6 +965,9 @@ func (s *SQLiteStore) ExpireLeases(now time.Time) ([]*Attempt, error) {
 		ids = append(ids, id)
 	}
 	if err = rows.Close(); err != nil {
+		return nil, err
+	}
+	if err = rows.Err(); err != nil {
 		return nil, err
 	}
 	var out []*Attempt
@@ -949,6 +1030,9 @@ func (s *SQLiteStore) InterruptUnstartedChildren(now time.Time) ([]*Attempt, err
 		children = append(children, childRef{childID: childID, parentID: parentID})
 	}
 	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
 		return nil, err
 	}
 	parents := map[string]bool{}
@@ -1021,20 +1105,30 @@ func (s *SQLiteStore) ListRecoveryCandidates() ([]*Attempt, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []*Attempt
+	var ids []string
 	for rows.Next() {
 		var id string
 		if err = rows.Scan(&id); err != nil {
+			rows.Close()
 			return nil, err
 		}
+		ids = append(ids, id)
+	}
+	if err = rows.Close(); err != nil {
+		return nil, err
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]*Attempt, 0, len(ids))
+	for _, id := range ids {
 		a, err := s.getAttempt(s.db, id)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, a)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *SQLiteStore) RegisterSemanticTaskAnchor(anchor SemanticTaskAnchor) (*SemanticTaskAnchor, error) {

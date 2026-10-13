@@ -69,6 +69,161 @@ func newLLMHTTPError(statusCode int, message string) error {
 	return &llmHTTPError{statusCode: statusCode, message: message}
 }
 
+// A recoverable model failure keeps the same task open. A period quota
+// waits until the window Hub named, then the turn continues. A short
+// outage uses the fast backoff and, if it is still down, a slower run of
+// the same backoff. A denial that will not recover, and a wait the caller
+// already cancelled, ends the turn.
+const (
+	maxPeriodLimitWaits       = 8
+	maxTransientContinuations = 40
+	minPeriodLimitWait        = 5 * time.Second
+	maxPeriodLimitWait        = 6 * time.Hour
+	periodLimitWaitSlack      = 2 * time.Second
+)
+
+// periodLimitWaitOverride shortens a real Hub wait in tests. Zero keeps
+// the duration Hub asked for.
+var periodLimitWaitOverride time.Duration
+
+type llmContinueKind int
+
+const (
+	llmContinueStop llmContinueKind = iota
+	llmContinueFast
+	llmContinuePeriod
+	llmContinueKeepGoing
+)
+
+// llmContinuationBudget counts how many times this turn has already stayed
+// open for one model failure. Fast retries are the short outage budget.
+// Period waits follow Hub's clock. Keep-going covers an outage that is
+// still not a permanent denial after the fast budget is spent.
+// fastOnly skips that flat tail. A compatibility host resends the whole
+// prompt, so continuing every 32s would repeat a large request long after
+// the exponential retries have already shown the gateway is still down.
+type llmContinuationBudget struct {
+	fast     int
+	period   int
+	extra    int
+	fastOnly bool
+}
+
+func (b *llmContinuationBudget) next(err error, now time.Time) (time.Duration, llmContinueKind) {
+	if b == nil || err == nil {
+		return 0, llmContinueStop
+	}
+	if wait, ok := hubPeriodLimitWait(err, now); ok {
+		if b.period >= maxPeriodLimitWaits {
+			return 0, llmContinueStop
+		}
+		b.period++
+		return wait, llmContinuePeriod
+	}
+	if !shouldRetrySimpleLLMError(err) {
+		return 0, llmContinueStop
+	}
+	if b.fast < maxLLMRetries {
+		b.fast++
+		return llmRetryBackoff(b.fast), llmContinueFast
+	}
+	if b.fastOnly || b.extra >= maxTransientContinuations {
+		return 0, llmContinueStop
+	}
+	b.extra++
+	return maxLLMRetryBackoff, llmContinueKeepGoing
+}
+
+func formatContinuationWait(wait time.Duration) string {
+	if wait <= 0 {
+		return "片刻"
+	}
+	if wait < time.Minute {
+		seconds := int((wait + time.Second - 1) / time.Second)
+		return fmt.Sprintf("%d 秒", seconds)
+	}
+	if wait < time.Hour {
+		minutes := int((wait + time.Minute - 1) / time.Minute)
+		return fmt.Sprintf("%d 分钟", minutes)
+	}
+	hours := int((wait + time.Hour - 1) / time.Hour)
+	return fmt.Sprintf("%d 小时", hours)
+}
+
+// hubPeriodLimitWait is the pause before the same task calls the model again.
+// Hub has to name a recovery time. A period denial with no clock is not
+// waited out here, so a missing field cannot spin the turn.
+func hubPeriodLimitWait(err error, now time.Time) (time.Duration, bool) {
+	if !hubPeriodLimitError(err) {
+		return 0, false
+	}
+	wait := hubRetryAfter(err, now)
+	if wait <= 0 {
+		return 0, false
+	}
+	if periodLimitWaitOverride > 0 {
+		return periodLimitWaitOverride, true
+	}
+	if wait < minPeriodLimitWait {
+		wait = minPeriodLimitWait
+	}
+	if wait > maxPeriodLimitWait {
+		wait = maxPeriodLimitWait
+	}
+	return wait + periodLimitWaitSlack, true
+}
+
+func hubPeriodLimitError(err error) bool {
+	if err == nil || hubRateLimitWaitCanceled(err) {
+		return false
+	}
+	return hubPeriodLimitText(hubDenialBody(err))
+}
+
+func hubPeriodLimitText(text string) bool {
+	text = strings.ToLower(text)
+	return strings.Contains(text, "llm_service_period_limited") ||
+		strings.Contains(text, "current period credit limit") ||
+		strings.Contains(text, "周期限流") ||
+		strings.Contains(text, "周期额度")
+}
+
+func hubRateLimitWaitCanceled(err error) bool {
+	text := strings.ToLower(hubDenialBody(err))
+	return strings.Contains(text, "llm_endpoint_user_rate_limit_wait_canceled") ||
+		strings.Contains(text, "canceled while waiting in hub user rate-limit queue") ||
+		strings.Contains(text, "限流排队等待时被取消")
+}
+
+func hubDenialBody(err error) string {
+	if err == nil {
+		return ""
+	}
+	var statusErr *llm.HTTPStatusError
+	if errors.As(err, &statusErr) && statusErr != nil && len(statusErr.Body) > 0 {
+		return string(statusErr.Body)
+	}
+	var httpErr *llmHTTPError
+	if errors.As(err, &httpErr) && httpErr != nil && httpErr.message != "" {
+		return httpErr.message
+	}
+	return err.Error()
+}
+
+func hubRetryAfter(err error, now time.Time) time.Duration {
+	var statusErr *llm.HTTPStatusError
+	if errors.As(err, &statusErr) && statusErr != nil && len(statusErr.Body) > 0 {
+		return llm.HubRetryWait(statusErr.Body, now)
+	}
+	var httpErr *llmHTTPError
+	if errors.As(err, &httpErr) && httpErr != nil && httpErr.message != "" {
+		if wait := llm.HubRetryWait([]byte(httpErr.message), now); wait > 0 {
+			return wait
+		}
+	}
+	return llm.HubRetryWait([]byte(err.Error()), now)
+}
+
 // hubDenialForbidsRetry reports a Hub answer that will not change on a
 // short retry. A period quota is exhausted until the next period, and a
 // canceled rate-limit wait means the caller already left the queue.
@@ -107,6 +262,17 @@ func hubDenialTextForbidsRetry(text string) bool {
 // keeps the status that the outer retry already understands.
 func incompleteHTTPBody(statusCode int, body []byte, readErr error) bool {
 	return readErr != nil && (len(body) == 0 || statusCode == http.StatusOK)
+}
+
+// cleanRetryableLLMFailure is a completed gateway or transport rejection with
+// no model payload. The same task can wait and send again. A partial response
+// stays with the caller: retrying it would repeat visible output, and a
+// period-quota or canceled rate-limit wait is not a short outage.
+func cleanRetryableLLMFailure(resp *llm.Response, err error) bool {
+	if err == nil || resp != nil || hubDenialForbidsRetry(err) {
+		return false
+	}
+	return shouldRetrySimpleLLMError(err)
 }
 
 func shouldRetrySimpleLLMError(err error) bool {

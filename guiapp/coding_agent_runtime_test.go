@@ -300,6 +300,145 @@ func TestCodingAgentDisplayPathRelativizesAbsAndRemote(t *testing.T) {
 	}
 }
 
+func TestCodingToolEventTargetShowsSearchAndExplore(t *testing.T) {
+	root := `D:\workprj\demo`
+	if got := codingToolEventTarget("Glob", `{"glob_pattern":"**/*.go"}`, root); got != "**/*.go" {
+		t.Fatalf("glob target = %q", got)
+	}
+	if got := codingToolEventTarget("ripgrep", `{"pattern":"func main","path":"D:\\workprj\\demo\\src\\main.go"}`, root); got != "src/main.go · func main" {
+		t.Fatalf("ripgrep target = %q", got)
+	}
+	if got := codingToolEventTarget("ripgrep", `{"pattern":"func main","path":"D:\\workprj\\demo"}`, root); got != "func main" {
+		t.Fatalf("project-root search target = %q", got)
+	}
+	if got := codingToolEventTarget("ripgrep", `{"pattern":"func main","path":"src"}`, root); got != "func main · src" {
+		t.Fatalf("directory search target = %q", got)
+	}
+	if got := codingToolEventTarget("code_navigation", `{"operation":"explore","query":"buildTask","file":"guiapp/coding_subagent.go"}`, root); got != "guiapp/coding_subagent.go · buildTask" {
+		t.Fatalf("explore target = %q", got)
+	}
+	if got := codingToolEventTarget("list_directory", `{"directory":"src"}`, root); got != "src" {
+		t.Fatalf("list target = %q", got)
+	}
+	if got := codingToolEventTarget("list_directory", `{"path":"."}`, root); got != "" {
+		t.Fatalf("root list target = %q", got)
+	}
+	if got := codingToolEventTarget("read_file", `{"path":"a.go"}`, root); got != "" {
+		t.Fatalf("read target = %q, want empty", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"codegraph explore \"buildTask\""}`, root); got != "buildTask" {
+		t.Fatalf("codegraph explore target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"codegraph explore --json \"handler.ServeHTTP\""}`, root); got != "handler.ServeHTTP" {
+		t.Fatalf("codegraph symbol target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"codegraph explore \"handler.ServeHTTP\" --limit 20"}`, root); got != "handler.ServeHTTP" {
+		t.Fatalf("codegraph limit target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"codegraph explore --limit 20 \"handler.ServeHTTP\""}`, root); got != "handler.ServeHTTP" {
+		t.Fatalf("codegraph limit-first target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"echo codegraph explore buildTask"}`, root); got != "" {
+		t.Fatalf("echo codegraph target = %q, want empty", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"bash -lc \"codegraph explore buildTask\""}`, root); got != "buildTask" {
+		t.Fatalf("wrapped codegraph target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"gopls definition -json src/main.go:10:2"}`, root); got != "src/main.go" {
+		t.Fatalf("gopls flag target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"./tools/codegraph.cmd node D:\\workprj\\demo\\guiapp\\coding_subagent.go"}`, root); got != "guiapp/coding_subagent.go" {
+		t.Fatalf("codegraph node target = %q", got)
+	}
+	if got := codingToolEventTarget("ssh_bash", `{"command":"gopls definition src/main.go:10:2"}`, root); got != "src/main.go" {
+		t.Fatalf("gopls target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"lsp-cli definition --file src/main.go --query buildTask"}`, root); got != "src/main.go · buildTask" {
+		t.Fatalf("lsp-cli target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"go test ./..."}`, root); got != "" {
+		t.Fatalf("plain bash target = %q, want empty", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"findstr /n /i \"bmp frame\" F:\\test-prog\\snake.cpp"}`, `F:\test-prog`); got != "snake.cpp · bmp frame" {
+		t.Fatalf("findstr target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"findstr /n /i \"bmp frame_ window_live BITMAPFILEHEADER WriteFile\" F:\\test-prog\\snake.cpp"}`, `F:\test-prog`); got != "snake.cpp · bmp frame_ window_live BITMAPFILEHEADER WriteFile" {
+		t.Fatalf("findstr log target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"findstr /c:playTone snake.cpp"}`, root); got != "snake.cpp · playTone" {
+		t.Fatalf("findstr /c target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"Select-String -Path snake.cpp -Pattern playTone"}`, root); got != "snake.cpp · playTone" {
+		t.Fatalf("select-string target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"cd F:\\test-prog; Select-String -Path snake.cpp -Pattern 'playTone|tonecheck|ToneCheck|TONE_|g_sound|Beep' | ForEach-Object { $_.Line }"}`, `F:\test-prog`); got != "snake.cpp · playTone|tonecheck|ToneCheck|TONE_|g_sound|Beep" {
+		t.Fatalf("select-string pipeline target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"sls -Path snake.cpp -Pattern playTone"}`, root); got != "snake.cpp · playTone" {
+		t.Fatalf("sls target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"rg -e playTone snake.cpp"}`, root); got != "snake.cpp · playTone" {
+		t.Fatalf("rg -e target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"rg.exe playTone snake.cpp"}`, root); got != "snake.cpp · playTone" {
+		t.Fatalf("rg.exe target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"git grep playTone"}`, root); got != "" {
+		t.Fatalf("git grep target = %q, want empty", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"echo findstr playTone snake.cpp"}`, root); got != "" {
+		t.Fatalf("echo findstr target = %q, want empty", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"findstr /n /i \"bmp frame\" snake.cpp 2>&1"}`, root); got != "snake.cpp · bmp frame" {
+		t.Fatalf("findstr redirect target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"rg playTone snake.cpp > out.txt"}`, root); got != "snake.cpp · playTone" {
+		t.Fatalf("rg redirect target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"cd F:\\test-prog; Select-String -Path build\\CMakeCache.txt -Pattern \"CMAKE_CXX_COMPILER:|CMAKE_LINKER\" | ForEach-Object { $_.Line }"}`, `F:\test-prog`); got != "build/CMakeCache.txt · CMAKE_CXX_COMPILER:|CMAKE_LINKER" {
+		t.Fatalf("select-string cache target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"cmake --build build 2>&1 | Select-Object -Last 25"}`, root); got != "" {
+		t.Fatalf("cmake pipeline target = %q, want empty", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"cd F:\\test-prog; cmd /c \"findstr /i /c:\\\"tone\\\" /c:\\\"sound\\\" /c:\\\"silent\\\" /c:\\\"gui\\\" build\\\\selftest_before.txt\""}`, `F:\test-prog`); got != "build/selftest_before.txt · tone | sound | silent | gui" {
+		t.Fatalf("findstr /c list target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"cd F:\\test-prog; Get-Content build\\selftest_before.txt | Select-String -Pattern \"FAIL|passed|gui \""}`, `F:\test-prog`); got != "build/selftest_before.txt · FAIL|passed|gui" {
+		t.Fatalf("get-content select-string target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"cd F:\\test-prog; .\\build\\Release\\snake.exe --selftest 2>&1 | Select-String -Pattern \"FAIL|passed|logic|gui \""}`, `F:\test-prog`); got != "FAIL|passed|logic|gui" {
+		t.Fatalf("exe select-string target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"grep -n \"selftest\\|tonecheck\\|main(\\|WinMain\\|runSelfTest\\|wWinMain\\|__argc\\|GetCommandLine\" F:\\test-prog\\snake.cpp"}`, `F:\test-prog`); got != `snake.cpp · selftest\|tonecheck\|main(\|WinMain\|runSelfTest\|wWinMain\|__argc\|GetCommandLine` {
+		t.Fatalf("grep paren target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"Select-String -Path F:\\test-prog\\build\\CMakeCache.txt -Pattern \"CMAKE_GENERATOR:|CMAKE_BUILD_TYPE|CMAKE_CXX_COMPILER:\""}`, `F:\test-prog`); got != "build/CMakeCache.txt · CMAKE_GENERATOR:|CMAKE_BUILD_TYPE|CMAKE_CXX_COMPILER:" {
+		t.Fatalf("absolute select-string target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"Get-Content build\\selftest_before.txt | Select-String -Pattern snake.cpp"}`, `F:\test-prog`); got != "build/selftest_before.txt · snake.cpp" {
+		t.Fatalf("dotted pattern target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"Get-Content -Tail 20 build\\selftest_before.txt | Select-String -Pattern FAIL"}`, `F:\test-prog`); got != "build/selftest_before.txt · FAIL" {
+		t.Fatalf("get-content tail target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"Get-Content build\\selftest_before.txt -Tail 20 | Select-String -Pattern FAIL"}`, `F:\test-prog`); got != "build/selftest_before.txt · FAIL" {
+		t.Fatalf("get-content tail-after target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"Get-Content build\\selftest_before.txt 2>&1 | Select-String -Pattern FAIL"}`, `F:\test-prog`); got != "build/selftest_before.txt · FAIL" {
+		t.Fatalf("get-content redirect target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"Get-Content build\\selftest_before.txt & Select-String -Pattern FAIL"}`, `F:\test-prog`); got != "FAIL" {
+		t.Fatalf("background select-string target = %q", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"public-c findstr snake.cpp"}`, root); got != "" {
+		t.Fatalf("public-c findstr target = %q, want empty", got)
+	}
+	if got := codingToolEventTarget("bash", `{"command":"git status --short"}`, root); got != "" {
+		t.Fatalf("git status target = %q, want empty", got)
+	}
+}
+
 func TestSuppressCodingWorkbenchStatusProgress(t *testing.T) {
 	var got []string
 	passthrough := suppressCodingWorkbenchStatusProgress(func(s string) { got = append(got, s) }, false)

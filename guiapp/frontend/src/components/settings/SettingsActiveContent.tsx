@@ -44,6 +44,7 @@ import { PPTStylesSettingsPanel } from './PPTStylesSettingsPanel';
 import { GeneralAdvancedSettingsPanel } from './GeneralAdvancedSettingsPanel';
 import { GeneralSettingsPanel } from './GeneralSettingsPanel';
 import { IMSettingsPanel } from './IMSettingsPanel';
+import { EmailSettingsPanel } from './EmailSettingsPanel';
 import { ThirdPartyAccessSettings } from './ThirdPartyAccessSettings';
 import type { IMSubTab } from './IMSubTabs';
 import { SettingsPanelErrorBoundary } from './SettingsPanelErrorBoundary';
@@ -505,6 +506,9 @@ export function SettingsActiveContent(props: SettingsActiveContentProps) {
                     setQQBotQRError={setQQBotQRError}
                 />
             );
+            break;
+        case 'email':
+            body = <EmailSettingsPanel lang={lang} />;
             break;
         case 'tokenBank':
             body = (

@@ -750,6 +750,26 @@ export function CreateScheduledTask(arg1, arg2, arg3, arg4, arg5, arg6, arg7, ar
   return window['go']['main']['App']['CreateScheduledTask'](arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9, arg10);
 }
 
+export function CreateRunWindowTask(arg1) {
+  return window['go']['main']['App']['CreateRunWindowTask'](arg1);
+}
+
+export function ClaimRunWindowTask(arg1) {
+  return window['go']['main']['App']['ClaimRunWindowTask'](arg1);
+}
+
+export function ReleaseRunWindowTask(arg1, arg2) {
+  return window['go']['main']['App']['ReleaseRunWindowTask'](arg1, arg2);
+}
+
+export function MarkRunWindowTaskStarted(arg1, arg2) {
+  return window['go']['main']['App']['MarkRunWindowTaskStarted'](arg1, arg2);
+}
+
+export function MarkRunWindowTaskFailed(arg1, arg2) {
+  return window['go']['main']['App']['MarkRunWindowTaskFailed'](arg1, arg2);
+}
+
 export function CreateSurvey(arg1) {
   return window['go']['main']['App']['CreateSurvey'](arg1);
 }
@@ -825,6 +845,50 @@ export function DatabaseProfileTest(arg1) {
 
 export function DatabaseProfilesList() {
   return window['go']['main']['App']['DatabaseProfilesList']();
+}
+
+export function MailboxAccountsList() {
+  return window['go']['main']['App']['MailboxAccountsList']();
+}
+
+export function MailboxAccountSave(arg1) {
+  return window['go']['main']['App']['MailboxAccountSave'](arg1);
+}
+
+export function MailboxAccountSetSecret(arg1, arg2, arg3) {
+  return window['go']['main']['App']['MailboxAccountSetSecret'](arg1, arg2, arg3);
+}
+
+export function MailboxAccountSetEnabled(arg1, arg2) {
+  return window['go']['main']['App']['MailboxAccountSetEnabled'](arg1, arg2);
+}
+
+export function MailboxAccountSetDefault(arg1) {
+  return window['go']['main']['App']['MailboxAccountSetDefault'](arg1);
+}
+
+export function MailboxSignatureDelete(arg1) {
+  return window['go']['main']['App']['MailboxSignatureDelete'](arg1);
+}
+
+export function MailboxSignatureSave(arg1) {
+  return window['go']['main']['App']['MailboxSignatureSave'](arg1);
+}
+
+export function MailboxSignatureSetDefault(arg1) {
+  return window['go']['main']['App']['MailboxSignatureSetDefault'](arg1);
+}
+
+export function MailboxSignaturesList() {
+  return window['go']['main']['App']['MailboxSignaturesList']();
+}
+
+export function MailboxAccountDelete(arg1) {
+  return window['go']['main']['App']['MailboxAccountDelete'](arg1);
+}
+
+export function MailboxAccountTest(arg1, arg2) {
+  return window['go']['main']['App']['MailboxAccountTest'](arg1, arg2);
 }
 
 export function DecideMaclawAppApprovalInstance(arg1) {
@@ -905,6 +969,10 @@ export function DeleteRepositoryCredential(arg1) {
 
 export function DeleteScheduledTask(arg1) {
   return window['go']['main']['App']['DeleteScheduledTask'](arg1);
+}
+
+export function DeleteRunWindowTask(arg1) {
+  return window['go']['main']['App']['DeleteRunWindowTask'](arg1);
 }
 
 export function DeleteSession(arg1) {
@@ -3319,6 +3387,10 @@ export function ListScheduledTasks() {
   return window['go']['main']['App']['ListScheduledTasks']();
 }
 
+export function ListRunWindowTasks() {
+  return window['go']['main']['App']['ListRunWindowTasks']();
+}
+
 export function ListSessionHistory(arg1) {
   return window['go']['main']['App']['ListSessionHistory'](arg1);
 }
@@ -4278,6 +4350,10 @@ export function SaveDigitalEmployeeSensitiveQueryPolicy(arg1) {
   return window['go']['main']['App']['SaveDigitalEmployeeSensitiveQueryPolicy'](arg1);
 }
 
+export function SaveDiagramPNG(arg1) {
+  return window['go']['main']['App']['SaveDiagramPNG'](arg1);
+}
+
 export function SaveExpert(arg1) {
   return window['go']['main']['App']['SaveExpert'](arg1);
 }
@@ -4518,8 +4594,20 @@ export function GetActiveDesktopRuns(arg1) {
   return window['go']['main']['App']['GetActiveDesktopRuns'](arg1);
 }
 
+export function GetDesktopBotBusy(arg1) {
+  return window['go']['main']['App']['GetDesktopBotBusy'](arg1);
+}
+
 export function PersistDesktopBotPreference(arg1, arg2) {
   return window['go']['main']['App']['PersistDesktopBotPreference'](arg1, arg2);
+}
+
+export function QueryDesktopBotTaskStatus(arg1, arg2, arg3) {
+  return window['go']['main']['App']['QueryDesktopBotTaskStatus'](arg1, arg2, arg3);
+}
+
+export function PullDesktopBotDeliveries() {
+  return window['go']['main']['App']['PullDesktopBotDeliveries']();
 }
 
 export function ArmDesktopBotSchedule(arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8) {
@@ -4552,6 +4640,10 @@ export function RenameDesktopBot(arg1, arg2, arg3) {
 
 export function DeleteDesktopBot(arg1) {
   return window['go']['main']['App']['DeleteDesktopBot'](arg1);
+}
+
+export function GetDesktopBotCredits() {
+  return window['go']['main']['App']['GetDesktopBotCredits']();
 }
 
 export function GetDesktopBotLLM() {
@@ -4744,6 +4836,10 @@ export function SetMaclawLLMCurrentModel(arg1) {
 
 export function SetMaclawLLMThinkingMode(arg1) {
   return window['go']['main']['App']['SetMaclawLLMThinkingMode'](arg1);
+}
+
+export function SetMainWindowScreenPosition(arg1, arg2) {
+  return window['go']['main']['App']['SetMainWindowScreenPosition'](arg1, arg2);
 }
 
 export function SetMemoryMaxBackups(arg1) {
@@ -5268,6 +5364,10 @@ export function UpdateRemoteCodingTaskMeta(arg1, arg2, arg3, arg4, arg5) {
 
 export function UpdateScheduledTask(arg1, arg2) {
   return window['go']['main']['App']['UpdateScheduledTask'](arg1, arg2);
+}
+
+export function UpdateRunWindowTaskTimes(arg1, arg2, arg3) {
+  return window['go']['main']['App']['UpdateRunWindowTaskTimes'](arg1, arg2, arg3);
 }
 
 export function UpdateVirtualRepositoryMapping(arg1) {

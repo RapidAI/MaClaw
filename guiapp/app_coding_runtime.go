@@ -69,6 +69,24 @@ func (a *App) closeCodingRuntimeStore() {
 // the condition instead of exposing internal surface terminology.
 const desktopCodingVerifiedSurfaceUnavailableDiagnostic = "未获得本机编程执行授权：本次派发没有携带有效的桌面执行凭证，实现/运行类步骤无法启动。请回到编程工作台重新发送任务，或重新批准执行计划后重试。"
 
+// desktopCodingWritableSurfaceBindFailedDiagnostic is returned when a desktop
+// implementation turn did receive a relation handle, but that handle did not
+// become a correlated writable surface (semantic anchor or workspace binding
+// incomplete). The model must not be started on the read-only compatibility
+// surface for a task that can only finish by writing files or running commands.
+const desktopCodingWritableSurfaceBindFailedDiagnostic = "编程执行凭证没有绑定到可写执行面（语义锚点或工作区句柄不完整），实现步骤已停止，没有进入只读检索循环。请重新发送这一次任务。"
+
+// desktopCodingRequestLease is the lifetime of every in-process desktop
+// Coding credential held by a live request: the initial ingress token, each
+// continuation, and the workspace handle. It matches the lease
+// CreateCodingTask and VerifyCodingContinuation grant the semantic relation.
+// A continuation is minted when a step binds and consumed when the next step
+// starts, so a shorter fuse measured from bind — or restarted when the step
+// returns — expires during the step or the following verify gap. Request
+// teardown revokes these credentials immediately; this lease is only the
+// backstop for a handler that never reaches it.
+const desktopCodingRequestLease = 24 * time.Hour
+
 // isDesktopCodingOwner reports whether ownerID is a desktop-host session
 // owner. Only such owners may hold Coding ingress capabilities; IM user IDs,
 // request IDs, project paths and remote session IDs never qualify.
@@ -182,26 +200,47 @@ func (i *desktopCodingCapabilityIssuer) beginIngressWithWorkspace(ownerID, works
 		i.ingress = make(map[string]desktopCodingIngress)
 	}
 	workspace := i.issueStaticWorkspaceLocked(ownerID, workspaceDir, time.Now().UTC())
-	token := i.mintLocked(ownerID, workspace)
+	token := i.mintLocked(ownerID, workspace, desktopCodingRequestLease)
 	i.mu.Unlock()
 	return token
 }
 
 // mintLocked records a fresh single-use ingress token for ownerID under the
-// current generation. Callers must hold i.mu.
-func (i *desktopCodingCapabilityIssuer) mintLocked(ownerID string, workspace codingStaticWorkspaceBinding) string {
+// current generation. Callers must hold i.mu. ttl is the request lease;
+// a non-positive ttl falls back to that lease rather than a shorter fuse.
+func (i *desktopCodingCapabilityIssuer) mintLocked(ownerID string, workspace codingStaticWorkspaceBinding, ttl time.Duration) string {
+	if ttl <= 0 {
+		ttl = desktopCodingRequestLease
+	}
 	if i.generations == nil {
 		i.generations = make(map[string]uint64)
 	}
 	now := time.Now().UTC()
+	var expired []string
 	for id, ingress := range i.ingress {
 		if !now.Before(ingress.expiresAt) {
 			delete(i.ingress, id)
+			expired = append(expired, id)
+		}
+	}
+	if len(expired) > 0 && i.continuationTokens != nil {
+		// The slot must not keep pointing at an ingress entry this sweep
+		// just removed. A later step would pop a dead id and fail with no
+		// expiry trace.
+		gone := make(map[string]struct{}, len(expired))
+		for _, id := range expired {
+			gone[id] = struct{}{}
+		}
+		for owner, token := range i.continuationTokens {
+			if _, ok := gone[token]; ok {
+				delete(i.continuationTokens, owner)
+				log.Printf("[coding-ingress] dropped expired continuation user=%s", owner)
+			}
 		}
 	}
 	token := "coding-ingress-" + uuid.NewString()
 	i.ingress[token] = desktopCodingIngress{
-		ownerID: ownerID, generation: i.generations[ownerID], expiresAt: now.Add(30 * time.Minute),
+		ownerID: ownerID, generation: i.generations[ownerID], expiresAt: now.Add(ttl),
 		workspace: workspace,
 	}
 	return token
@@ -257,7 +296,33 @@ func (i *desktopCodingCapabilityIssuer) endIngressForOwner(ownerID string) {
 	delete(i.continuationTokens, ownerID)
 	delete(i.chainConsumed, ownerID)
 	delete(i.continuationBudget, ownerID)
+	// The workspace handle is request-scoped authority too. endIngress is the
+	// teardown that makes a request-lease TTL safe: without this delete, a
+	// handle would stay resolvable until the lease backstop.
+	for handle, workspace := range i.staticWorkspaces {
+		if workspace.ownerID == ownerID {
+			delete(i.staticWorkspaces, handle)
+		}
+	}
 	i.mu.Unlock()
+}
+
+func (i *desktopCodingCapabilityIssuer) ingressOverdue(token string) (time.Duration, bool) {
+	if i == nil {
+		return 0, false
+	}
+	token = strings.TrimSpace(token)
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	ingress, ok := i.ingress[token]
+	if !ok {
+		return 0, false
+	}
+	now := time.Now().UTC()
+	if now.Before(ingress.expiresAt) {
+		return 0, false
+	}
+	return now.Sub(ingress.expiresAt), true
 }
 
 // nextRootStepRelation resolves the verified relation for one root coding
@@ -282,10 +347,16 @@ func (i *desktopCodingCapabilityIssuer) nextRootStepRelation(dataDir, token, own
 		service, subject, handle, workspace, ok = i.nextRelationWithWorkspace(dataDir, continuation, ownerID)
 		if !ok {
 			// The bind failed after the slot was popped (for example a fence
-			// landed in between, or the relation service errored). Return the
-			// token to the slot so a later step may retry the same link; the
-			// proof requirement in takeContinuationToken still keeps the slot
-			// closed to anyone who never held this chain.
+			// landed in between, the continuation's request lease elapsed, or
+			// the relation service errored). Return the token to the slot so a
+			// later step may retry the same link; the proof requirement in
+			// takeContinuationToken still keeps the slot closed to anyone who
+			// never held this chain. An expired continuation is not retried
+			// into a new lease here: extending it after the deadline would
+			// hide a request that actually ended.
+			if overdue, expired := i.ingressOverdue(continuation); expired {
+				log.Printf("[coding-ingress] continuation expired %s before the next root step consumed it user=%s", overdue.Round(time.Second), ownerID)
+			}
 			i.restoreContinuationToken(ownerID, continuation)
 			return nil, verifiedCodingSubject{}, verifiedCodingTaskHandle{}, codingStaticWorkspaceBinding{}, false
 		}
@@ -324,9 +395,13 @@ func (i *desktopCodingCapabilityIssuer) restoreContinuationToken(ownerID, token 
 // verified request after a successful bind and records the just-consumed
 // token as chain proof for the next step. The workspace binding is carried
 // over from the just-consumed ingress; it is never reconstructed from
-// project paths, runtime tasks, or task text. When the plan runner armed a
-// continuation budget for this owner, minting stops once the budget is
-// exhausted so a dispatch bug cannot mint unbounded turns from one request.
+// project paths, runtime tasks, or task text. The workspace lease slides on
+// this bind even when the continuation budget refuses another turn: the step
+// that just bound still has to resolve its directory. The new token, when
+// minted, keeps the request lease until the next step consumes it or the
+// request ends. When the plan runner armed a continuation budget for this
+// owner, minting stops once the budget is exhausted so a dispatch bug cannot
+// mint unbounded turns from one request.
 func (i *desktopCodingCapabilityIssuer) rearmContinuationToken(ownerID, consumedToken string, workspace codingStaticWorkspaceBinding) {
 	ownerID = strings.TrimSpace(ownerID)
 	consumedToken = strings.TrimSpace(consumedToken)
@@ -335,6 +410,11 @@ func (i *desktopCodingCapabilityIssuer) rearmContinuationToken(ownerID, consumed
 	}
 	i.mu.Lock()
 	defer i.mu.Unlock()
+	// This bind already extended the semantic relation. Refresh the directory
+	// handle before the budget gate: a step that is allowed to run still needs
+	// the workspace when the chain is not allowed to mint another turn.
+	now := time.Now().UTC()
+	i.slideStaticWorkspaceLeaseLocked(ownerID, workspace, now)
 	if i.ingress == nil {
 		return
 	}
@@ -348,16 +428,37 @@ func (i *desktopCodingCapabilityIssuer) rearmContinuationToken(ownerID, consumed
 	if i.continuationBudget != nil {
 		if remaining, armed := i.continuationBudget[ownerID]; armed {
 			if remaining <= 0 {
+				log.Printf("[coding-ingress] continuation budget exhausted; next root step will not be armed user=%s", ownerID)
 				return
 			}
 			i.continuationBudget[ownerID] = remaining - 1
 		}
 	}
-	token := i.mintLocked(ownerID, workspace)
+	token := i.mintLocked(ownerID, workspace, desktopCodingRequestLease)
 	if i.continuationTokens == nil {
 		i.continuationTokens = make(map[string]string)
 	}
 	i.continuationTokens[ownerID] = token
+}
+
+// slideStaticWorkspaceLeaseLocked extends a host-issued workspace handle to
+// the request lease. Callers must hold i.mu. A missing or foreign handle is
+// left untouched: this never recreates a directory binding from a path.
+func (i *desktopCodingCapabilityIssuer) slideStaticWorkspaceLeaseLocked(ownerID string, binding codingStaticWorkspaceBinding, now time.Time) {
+	handle := strings.TrimSpace(binding.WorkspaceHandle)
+	ownerID = strings.TrimSpace(ownerID)
+	if i == nil || handle == "" || ownerID == "" || i.staticWorkspaces == nil {
+		return
+	}
+	workspace, ok := i.staticWorkspaces[handle]
+	if !ok || workspace.ownerID != ownerID {
+		return
+	}
+	deadline := now.Add(desktopCodingRequestLease)
+	if workspace.expiresAt.Before(deadline) {
+		workspace.expiresAt = deadline
+		i.staticWorkspaces[handle] = workspace
+	}
 }
 
 // takeContinuationToken atomically pops the pending continuation token of
@@ -466,13 +567,13 @@ func (i *desktopCodingCapabilityIssuer) nextRelationWithWorkspace(dataDir, token
 		if subjectErr != nil {
 			return nil, verifiedCodingSubject{}, verifiedCodingTaskHandle{}, codingStaticWorkspaceBinding{}, false
 		}
-		handle, createErr := service.CreateCodingTask(subject, now, 24*time.Hour)
+		handle, createErr := service.CreateCodingTask(subject, now, desktopCodingRequestLease)
 		if createErr != nil {
 			return nil, verifiedCodingSubject{}, verifiedCodingTaskHandle{}, codingStaticWorkspaceBinding{}, false
 		}
 		current = desktopCodingTaskSession{subject: subject, handle: handle}
 	} else {
-		next, continuationErr := service.VerifyCodingContinuation(current.subject, current.handle, now, 24*time.Hour)
+		next, continuationErr := service.VerifyCodingContinuation(current.subject, current.handle, now, desktopCodingRequestLease)
 		if continuationErr != nil {
 			// A cancelled/expired/replayed handle starts no dynamic-capable
 			// task. Callers retain a static Coding surface instead of
@@ -503,13 +604,36 @@ func (i *desktopCodingCapabilityIssuer) issueStaticWorkspaceLocked(ownerID, work
 		i.staticWorkspaces = make(map[string]desktopCodingStaticWorkspace)
 	}
 	for handle, workspace := range i.staticWorkspaces {
-		if !now.Before(workspace.expiresAt) {
-			delete(i.staticWorkspaces, handle)
+		if now.Before(workspace.expiresAt) {
+			continue
 		}
+		// A live ingress still names this handle. Deleting it would let the
+		// next bind succeed and then fail directory resolution; that bind
+		// slides the lease instead.
+		if i.workspaceReferencedByLiveIngressLocked(handle, now) {
+			continue
+		}
+		delete(i.staticWorkspaces, handle)
 	}
 	handle := "coding-workspace-" + uuid.NewString()
-	i.staticWorkspaces[handle] = desktopCodingStaticWorkspace{ownerID: ownerID, directory: abs, expiresAt: now.Add(30 * time.Minute)}
+	i.staticWorkspaces[handle] = desktopCodingStaticWorkspace{ownerID: ownerID, directory: abs, expiresAt: now.Add(desktopCodingRequestLease)}
 	return codingStaticWorkspaceBinding{WorkspaceHandle: handle, HostKind: "local"}
+}
+
+func (i *desktopCodingCapabilityIssuer) workspaceReferencedByLiveIngressLocked(handle string, now time.Time) bool {
+	handle = strings.TrimSpace(handle)
+	if handle == "" {
+		return false
+	}
+	for _, ingress := range i.ingress {
+		if !now.Before(ingress.expiresAt) {
+			continue
+		}
+		if strings.TrimSpace(ingress.workspace.WorkspaceHandle) == handle {
+			return true
+		}
+	}
+	return false
 }
 
 // resolveStaticWorkspace is intentionally unused by S1-A. It is the future

@@ -5,8 +5,10 @@ package guiapp
 // the QQ unread-count badge). A count of zero clears the badge. Other
 // platforms ignore the call.
 //
-// The frontend pushes unread bot replies. When that count is zero the
-// overlay is cleared. The left-rail 任务 badge keeps the running-task count.
+// The frontend pushes how many tasks are still in progress: task-list rows
+// in the 进行中 bucket, in-progress bot tasks, running background loops, and
+// live AI sessions. A session already covered by one of those rows, and a
+// loop whose remote session is already in the count, are not added again.
 func (a *App) SetTaskbarBadgeCount(count int) {
 	notifyTaskbarBadgeCount(count)
 }

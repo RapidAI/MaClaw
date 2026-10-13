@@ -11,32 +11,36 @@ import type { Dispatch, MutableRefObject, ReactNode, SetStateAction } from 'reac
  * rather than four near-identical closures in the rail component, which is
  * under a hard line-count budget.
  */
-export type NavMenuKey = 'system' | 'extensions' | 'library' | 'pro';
+export type NavMenuKey = 'system' | 'extensions' | 'library' | 'pro' | 'connect';
 
 export type NavMenuToggleState = {
     systemMenuOpen: boolean;
     extensionsMenuOpen: boolean;
     libraryMenuOpen: boolean;
     proMenuOpen: boolean;
+    connectMenuOpen: boolean;
     systemMenuOpenerRef: MutableRefObject<HTMLElement | null>;
     extensionsMenuOpenerRef: MutableRefObject<HTMLElement | null>;
     libraryMenuOpenerRef: MutableRefObject<HTMLElement | null>;
     proMenuOpenerRef: MutableRefObject<HTMLElement | null>;
+    connectMenuOpenerRef: MutableRefObject<HTMLElement | null>;
     setSystemMenuOpen: Dispatch<SetStateAction<boolean>>;
     setExtensionsMenuOpen: Dispatch<SetStateAction<boolean>>;
     setLibraryMenuOpen: Dispatch<SetStateAction<boolean>>;
     setProMenuOpen: Dispatch<SetStateAction<boolean>>;
+    setConnectMenuOpen: Dispatch<SetStateAction<boolean>>;
     setExtensionsMenuTop: Dispatch<SetStateAction<number>>;
     setLibraryMenuTop: Dispatch<SetStateAction<number>>;
     setProMenuTop: Dispatch<SetStateAction<number>>;
+    setConnectMenuTop: Dispatch<SetStateAction<number>>;
 };
 
 export function useNavMenuToggles(state: NavMenuToggleState) {
     const {
-        systemMenuOpen, extensionsMenuOpen, libraryMenuOpen, proMenuOpen,
-        systemMenuOpenerRef, extensionsMenuOpenerRef, libraryMenuOpenerRef, proMenuOpenerRef,
-        setSystemMenuOpen, setExtensionsMenuOpen, setLibraryMenuOpen, setProMenuOpen,
-        setExtensionsMenuTop, setLibraryMenuTop, setProMenuTop,
+        systemMenuOpen, extensionsMenuOpen, libraryMenuOpen, proMenuOpen, connectMenuOpen,
+        systemMenuOpenerRef, extensionsMenuOpenerRef, libraryMenuOpenerRef, proMenuOpenerRef, connectMenuOpenerRef,
+        setSystemMenuOpen, setExtensionsMenuOpen, setLibraryMenuOpen, setProMenuOpen, setConnectMenuOpen,
+        setExtensionsMenuTop, setLibraryMenuTop, setProMenuTop, setConnectMenuTop,
     } = state;
 
     // keep omitted closes every menu — used by scroll-to-dismiss.
@@ -45,6 +49,7 @@ export function useNavMenuToggles(state: NavMenuToggleState) {
         if (keep !== 'extensions') setExtensionsMenuOpen(false);
         if (keep !== 'library') setLibraryMenuOpen(false);
         if (keep !== 'pro') setProMenuOpen(false);
+        if (keep !== 'connect') setConnectMenuOpen(false);
     };
 
     // Each toggle only re-anchors when the menu is opening; toggling closed must
@@ -87,8 +92,17 @@ export function useNavMenuToggles(state: NavMenuToggleState) {
         }
         setProMenuOpen(prev => !prev);
     };
+    const toggleConnectMenu = (target: HTMLElement) => {
+        if (!connectMenuOpen) {
+            connectMenuOpenerRef.current = target;
+            const rect = target.getBoundingClientRect();
+            setConnectMenuTop(rect.top + rect.height / 2);
+            closeSiblingMenus('connect');
+        }
+        setConnectMenuOpen(prev => !prev);
+    };
 
-    return { closeSiblingMenus, toggleSystemMenu, toggleExtensionsMenu, toggleLibraryMenu, toggleProMenu };
+    return { closeSiblingMenus, toggleSystemMenu, toggleExtensionsMenu, toggleLibraryMenu, toggleProMenu, toggleConnectMenu };
 }
 
 type SidebarBrandHeaderProps = {
@@ -131,6 +145,14 @@ type SidebarPrimaryNavProps = {
     proFeaturesLabel?: string;
     /** Workflow catalog stays reachable from the professional-features menu. */
     showWorkflowEntry?: boolean;
+    connectLabel?: string;
+    connectTitle?: string;
+    connectMenuOpen?: boolean;
+    onToggleConnectMenu?: (target: HTMLElement) => void;
+    /** Solo IM or solo mailbox, opened from 接入. */
+    connectSoloActive?: boolean;
+    /** Current settings tab, used to mark IM or 邮箱 inside the connect menu. */
+    settingsTab?: string;
 };
 
 const railItemLabelStyle = { fontSize: '0.72rem', lineHeight: 1.15, fontWeight: 700, textAlign: 'center', width: '100%' } as const;
@@ -178,6 +200,12 @@ const ExtensionsRailIcon = () => (
 const FolderRailIcon = () => (
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <path d="M3 6.5a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v8.5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />
+    </svg>
+);
+
+const ConnectRailIcon = () => (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M8 12h8" /><path d="M9 8.5 5.5 12 9 15.5" /><path d="M15 8.5 18.5 12 15 15.5" /><circle cx="12" cy="12" r="9" />
     </svg>
 );
 
@@ -233,7 +261,7 @@ const SemanticNavItem = ({ id, label, legacyLabel, icon, active, current, onClic
     );
 };
 
-export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showAppEntry, showUtilitiesEntry = true, showToolsEntry = false, switchTool, extensionsLabel, extensionsMenuOpen, onToggleExtensionsMenu, libraryMenuOpen = false, onToggleLibraryMenu, knowledgeActive = false, latexTemplatesActive = false, workflowLabel, utilitiesLabel, utilitiesTitle, toolsLabel, toolsTitle, runningTaskCount = 0, onOpenBackgroundTasks, proMenuOpen = false, onToggleProMenu, proFeaturesLabel: proFeaturesLabelProp, showWorkflowEntry = true }: SidebarPrimaryNavProps) => {
+export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showAppEntry, showUtilitiesEntry = true, showToolsEntry = false, switchTool, extensionsLabel, extensionsMenuOpen, onToggleExtensionsMenu, libraryMenuOpen = false, onToggleLibraryMenu, knowledgeActive = false, latexTemplatesActive = false, workflowLabel, utilitiesLabel, utilitiesTitle, toolsLabel, toolsTitle, runningTaskCount = 0, onOpenBackgroundTasks, proMenuOpen = false, onToggleProMenu, proFeaturesLabel: proFeaturesLabelProp, showWorkflowEntry = true, connectLabel, connectTitle, connectMenuOpen = false, onToggleConnectMenu, connectSoloActive = false }: SidebarPrimaryNavProps) => {
     // The rail is also used by the English and Traditional-Chinese builds. The
     // existing localized labels are the only language signal available here,
     // so infer the display language without changing the parent component API.
@@ -308,7 +336,8 @@ export const SidebarPrimaryNav = ({ navTab, aiAssistantLabel, appsLabel, showApp
             <SemanticNavItem id="employees" label={labels.employees} icon={<GossipIcon />} active={employeesActive} onClick={() => { switchTool('ai'); requestRailMiddleFocus('employees'); }} title={labels.employees} testId="sidebar-digital-employees-nav" />
             <SemanticNavItem id="extensions" label={extensionsLabel} icon={<ExtensionsRailIcon />} active={extensionsMenuOpen || navTab === 'skills' || navTab === 'mcp'} current={navTab === 'skills' || navTab === 'mcp'} onClick={event => { if (onToggleExtensionsMenu) onToggleExtensionsMenu(event.currentTarget); }} title={extensionsLabel} testId="sidebar-extensions-nav" menuTrigger={{ expanded: extensionsMenuOpen, controls: 'extensions-popup-menu' }} />
             <SemanticNavItem id="files" label={labels.files} icon={<FolderRailIcon />} active={libraryMenuOpen || navTab === 'files' || knowledgeActive || latexTemplatesActive} current={navTab === 'files' || knowledgeActive || latexTemplatesActive} onClick={event => { if (onToggleLibraryMenu) onToggleLibraryMenu(event.currentTarget); }} title={labels.files} testId="sidebar-files-nav" menuTrigger={{ expanded: libraryMenuOpen, controls: 'library-popup-menu' }} />
-            <SemanticNavItem id="settings" label={labels.settings} icon={<SettingsIcon />} active={navTab === 'settings' && !knowledgeActive} onClick={() => switchTool('settings')} title={labels.settings} testId="sidebar-settings-nav" />
+            <SemanticNavItem id="connect" label={connectLabel || (isEnglish ? 'Connect' : '接入')} icon={<ConnectRailIcon />} active={connectMenuOpen || connectSoloActive} current={connectSoloActive} onClick={event => { if (onToggleConnectMenu) onToggleConnectMenu(event.currentTarget); }} title={connectTitle || connectLabel || (isEnglish ? 'Connect' : '接入')} testId="sidebar-connect-nav" menuTrigger={{ expanded: connectMenuOpen, controls: 'connect-popup-menu' }} />
+            <SemanticNavItem id="settings" label={labels.settings} icon={<SettingsIcon />} active={navTab === 'settings' && !knowledgeActive && !connectSoloActive} onClick={() => switchTool('settings')} title={labels.settings} testId="sidebar-settings-nav" />
         </>
     );
 };

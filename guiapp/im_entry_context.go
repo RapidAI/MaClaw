@@ -199,6 +199,7 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	lastPhaseAt = time.Now()
 
 	var resumeWS *agent.WorkingState
+	h.prepareMailboxTurn(msg.UserID, trimmed)
 	result.AskUserContext, resumeWS, result.HasPendingAskUser = h.consumePendingAskUserAnswer(msg.UserID, trimmed, result.EntriesBeforeClear)
 	result.ResumeWorkingState = resumeWS
 

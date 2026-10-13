@@ -113,6 +113,47 @@ func TestApplyPreservedNormalPlacementKeepsMaximized(t *testing.T) {
 	}
 }
 
+func TestPlaceOriginKeepsPortraitDisplayLeftOfPrimary(t *testing.T) {
+	// Reproduced layout: 1440x2560 portrait display whose origin is negative,
+	// sitting left of a 2560x1440 primary.
+	monitor := workAreaRect{Left: -1440, Top: -573, Right: 0, Bottom: 1987}
+	work := workAreaRect{Left: -1440, Top: -573, Right: 0, Bottom: 1939}
+	x, y := placeOriginInWorkArea(-1200, -200, 1100, 800, monitor, work)
+	if x != -1200 || y != -200 {
+		t.Fatalf("visible second-display window moved to %d,%d", x, y)
+	}
+}
+
+func TestPlaceOriginPullsDoubledWorkAreaOffsetBack(t *testing.T) {
+	monitor := workAreaRect{Left: -1440, Top: -573, Right: 0, Bottom: 1987}
+	work := workAreaRect{Left: -1440, Top: -573, Right: 0, Bottom: 1939}
+	// WindowGetPosition (-1200,-200) passed through Wails WindowSetPosition
+	// becomes work origin + that point, which misses both displays.
+	x, y := placeOriginInWorkArea(-1440-1200, -573-200, 1100, 800, monitor, work)
+	if x != -1440 || y != -573 {
+		t.Fatalf("off-screen restore landed at %d,%d", x, y)
+	}
+}
+
+func TestPlaceOriginKeepsPrimaryDisplay(t *testing.T) {
+	monitor := workAreaRect{Left: 0, Top: 0, Right: 2560, Bottom: 1440}
+	work := workAreaRect{Left: 0, Top: 0, Right: 2560, Bottom: 1392}
+	x, y := placeOriginInWorkArea(480, 196, 1600, 1000, monitor, work)
+	if x != 480 || y != 196 {
+		t.Fatalf("primary window moved to %d,%d", x, y)
+	}
+}
+
+func TestScreenPositionParamsKeepNegativeOrigin(t *testing.T) {
+	// A display left of the primary reports a negative screen X. The uintptr
+	// passed to SetWindowPos must stay negative; truncating it would jump the
+	// window onto the primary or further off the virtual desktop.
+	x, y := screenPositionParams(-1700, -40)
+	if int32(x) != -1700 || int32(y) != -40 {
+		t.Fatalf("screenPositionParams(-1700,-40)=%d,%d", int32(x), int32(y))
+	}
+}
+
 func TestShouldPreserveClampedNormalPlacement(t *testing.T) {
 	work := workAreaRect{Left: 0, Top: 0, Right: 1920, Bottom: 1040}
 	normal := workAreaRect{Left: 80, Top: 60, Right: 1180, Bottom: 780}
@@ -128,5 +169,14 @@ func TestShouldPreserveClampedNormalPlacement(t *testing.T) {
 	}
 	if shouldPreserveClampedNormalPlacement(workAreaRect{0, 0, 80, 80}, work) {
 		t.Fatal("tiny rect is not a restore size")
+	}
+	leftWork := workAreaRect{Left: -1440, Top: -573, Right: 0, Bottom: 1939}
+	onLeft := workAreaRect{Left: -1200, Top: -200, Right: -100, Bottom: 600}
+	if !shouldPreserveClampedNormalPlacement(onLeft, leftWork) {
+		t.Fatal("restore rect on the left-hand display must be preserved")
+	}
+	offLeft := workAreaRect{Left: -2640, Top: -773, Right: -1540, Bottom: 27}
+	if shouldPreserveClampedNormalPlacement(offLeft, leftWork) {
+		t.Fatal("off-screen restore rect must not be preserved")
 	}
 }

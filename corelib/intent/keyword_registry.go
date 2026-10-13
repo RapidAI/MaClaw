@@ -87,6 +87,8 @@ func newKeywordRegistryFromEntries(keywords []KeywordEntry) *KeywordRegistry {
 		// Work-record labels rank after task_track so "任务列表" stays a todo.
 		LabelWorklogRead:   40,
 		LabelWorklogUpdate: 41,
+		LabelMailboxRead:   42,
+		LabelMailboxSend:   43,
 	}
 
 	type entryKey struct {
@@ -347,4 +349,16 @@ var defaultKeywords = []KeywordEntry{
 	{Keyword: "修改工作日志", Label: LabelWorklogUpdate, Strength: Strong},
 	{Keyword: "补工时", Label: LabelWorklogUpdate, Strength: Strong},
 	{Keyword: "update the work log", Label: LabelWorklogUpdate, Strength: Weak},
+	{Keyword: "收件箱", Label: LabelMailboxRead, Strength: Strong},
+	{Keyword: "未读邮件", Label: LabelMailboxRead, Strength: Strong},
+	{Keyword: "查邮件", Label: LabelMailboxRead, Strength: Strong},
+	{Keyword: "搜邮件", Label: LabelMailboxRead, Strength: Strong},
+	{Keyword: "mailbox", Label: LabelMailboxRead, Strength: Weak},
+	{Keyword: "inbox", Label: LabelMailboxRead, Strength: Weak},
+	{Keyword: "发邮件", Label: LabelMailboxSend, Strength: Strong},
+	{Keyword: "回复这封", Label: LabelMailboxSend, Strength: Strong},
+	{Keyword: "转发邮件", Label: LabelMailboxSend, Strength: Strong},
+	{Keyword: "配置邮箱", Label: LabelMailboxSend, Strength: Strong},
+	{Keyword: "添加邮箱", Label: LabelMailboxSend, Strength: Strong},
+	{Keyword: "send an email", Label: LabelMailboxSend, Strength: Weak},
 }

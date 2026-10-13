@@ -79,6 +79,8 @@ type RemoteCodingSubAgent struct {
 	// nestDepth is 0 for the pure-coding root turn. Nested spawn_coding_agent
 	// children increment this; spawn is disabled at codingSubAgentMaxNestDepth.
 	nestDepth int
+	// exposeGoalTool adds the host goal tool on /goal continuation turns only.
+	exposeGoalTool bool
 	// permissionOwnerID is the coding-task tab owner used to re-read 以后允许.
 	// Nested children do not copy LoopContext, so the owner is stored here.
 	permissionOwnerID string
@@ -708,6 +710,7 @@ func (r *RemoteCodingSubAgent) executeTask(taskDescription, taskContext string) 
 		r.workspaceWasEmptyAtStart = remoteCodingWorkspaceWasEmptyFromBootstrap(bootstrapResult)
 		log.Printf("[remote-source-preview] project bootstrap ready session=%q project=%q preview=%v", r.sessionID, r.projectDir, r.sourcePreviewEnabled)
 	}
+	r.exposeGoalTool = strings.Contains(taskDescription, "[系统续接]") || strings.Contains(taskContext, "[系统续接]")
 	gateOn := codingQualityGateEnabled(r.handler)
 	cb := &remoteCodingCallbacks{
 		agent:                    r,
@@ -2128,6 +2131,9 @@ type remoteCodingCallbacks struct {
 	// See codingSubAgentCallbacks.dynamicLifecycleRelay. It stays nil until a
 	// separately reviewed remote callback composition is actually qualified.
 	dynamicLifecycleRelay *codingBoundDynamicRequestLifecycleRelay
+	// llmLeaseSlot tracks the foreground scheduler lease for this round.
+	// See codingSubAgentCallbacks.llmLeaseSlot.
+	llmLeaseSlot *codingLLMLeaseSlot
 	// See codingSubAgentCallbacks.llmReplanRevision. Local and remote Coding
 	// share this host-owned watermark so steering retires predecessor surfaces.
 	llmReplanRevision atomic.Int64
@@ -2390,7 +2396,7 @@ This request is running on the temporary uncorrelated Coding compatibility surfa
 
 ## Available posture
 - Gather remote repository evidence with read-only definitions that are present (for example ssh_read_file, ssh_list_dir, ssh_check_task, code_navigation, and approved knowledge/research lookups).
-- If the project has .codegraph/, prefer code_navigation / CodeGraph before broad searching.
+- If the project has .codegraph/, use code_navigation for structure, symbols, and call edges. A text search that already returned lines is evidence; use those lines and do not repeat that search.
 - Do not claim that a remote file was changed, a remote command was run, a child was delegated, or structured localization was submitted: those operations are not available on this request surface.
 - For an implementation or operational request, inspect the code, explain the temporary safe-mode blocker, and produce a concrete next-step plan for a correlation-bound execution workflow. Do not repeatedly try unavailable operations.
 `)
@@ -2461,16 +2467,17 @@ func (c *remoteCodingCallbacks) BuildTools(userText string) []map[string]interfa
 		tools = append(tools, knowledgeSearchToolDef(), knowledgeImageSearchToolDef())
 	}
 	if c.agent != nil && c.agent.readOnlyInquiry {
-		return cloneCodingSubAgentToolDefinitions(filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostRemote, filterRemoteCodingInquiryTools(tools)))
+		filtered := filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostRemote, filterRemoteCodingInquiryTools(tools))
+		return cloneCodingSubAgentToolDefinitions(c.appendExposedGoalTool(filtered))
 	}
 	if c.agent != nil && c.agent.operationalRequest {
-		return cloneCodingSubAgentToolDefinitions(filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostRemote, filterRemoteCodingOperationalTools(tools)))
+		filtered := filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostRemote, filterRemoteCodingOperationalTools(tools))
+		return cloneCodingSubAgentToolDefinitions(c.appendExposedGoalTool(filtered))
 	}
 	// Full workbench extras (local research helpers) available during remote coding too.
 	tools = append(tools, buildRemoteCodingFullEnvExtraToolDefinitions()...)
-	// Goal lifecycle is host/orchestrator-owned until a durable expected-version
-	// CAS contract exists. It is intentionally absent from the remote legacy
-	// model surface as well.
+	// Goal lifecycle stays off the ordinary remote belt. /goal continuation turns
+	// opt in through exposeGoalTool and append the tool after this surface is built.
 
 	role := codingRoleWorker
 	if c != nil && c.agent != nil && c.agent.role != "" {
@@ -2491,7 +2498,16 @@ func (c *remoteCodingCallbacks) BuildTools(userText string) []map[string]interfa
 	if c != nil && c.agent != nil {
 		tools = filterRemoteCodingToolsForRole(tools, c.agent)
 	}
-	return cloneCodingSubAgentToolDefinitions(filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostRemote, tools))
+	tools = filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostRemote, tools)
+	tools = c.appendExposedGoalTool(tools)
+	return cloneCodingSubAgentToolDefinitions(tools)
+}
+
+func (c *remoteCodingCallbacks) appendExposedGoalTool(tools []map[string]interface{}) []map[string]interface{} {
+	if c == nil || c.agent == nil || !c.agent.exposeGoalTool {
+		return tools
+	}
+	return append(tools, buildCodingGoalToolDefinition())
 }
 
 func (c *remoteCodingCallbacks) setStaticCompatibilitySurface(definitions []map[string]interface{}) uint64 {
@@ -3032,6 +3048,7 @@ func (c *remoteCodingCallbacks) emitRemoteToolStartedEvent(name, argsJSON string
 		Detail:  strings.TrimSpace(name),
 		Title:   c.userFacingActivityTitle(),
 		Command: remoteCodingToolEventCommand(strings.ToLower(strings.TrimSpace(name)), argsJSON),
+		Target:  codingToolEventTarget(name, argsJSON, remoteCodingDisplayRoot(c)),
 		Files:   codingToolEventFiles(name, argsJSON, remoteCodingDisplayRoot(c)),
 	}
 	emitCodingAgentEvent(c.agent.onProgress, event)
@@ -3083,7 +3100,29 @@ func (c *remoteCodingCallbacks) LLMRequestContext(iteration int) (context.Contex
 	if err != nil {
 		return nil, nil, err
 	}
-	return ctx, finish, nil
+	if c != nil {
+		c.llmLeaseSlot = codingLLMLeaseSlotFrom(ctx)
+	}
+	return ctx, func(err error) {
+		if c != nil {
+			c.llmLeaseSlot = nil
+		}
+		finish(err)
+	}, nil
+}
+
+func (c *remoteCodingCallbacks) ParkLLMRetry() {
+	if c == nil {
+		return
+	}
+	c.llmLeaseSlot.drop()
+}
+
+func (c *remoteCodingCallbacks) ResumeLLMRetry(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
+	return c.llmLeaseSlot.resume(ctx)
 }
 
 func (c *remoteCodingCallbacks) LLMReplanRequested() bool {
@@ -3117,6 +3156,7 @@ func (c *remoteCodingCallbacks) executeRemoteTool(name, argsJSON string) string 
 				Detail:     strings.TrimSpace(name),
 				Title:      c.userFacingActivityTitle(),
 				Command:    remoteCodingToolEventCommand(canonicalName, normalizedArgsJSON),
+				Target:     codingToolEventTarget(canonicalName, firstNonEmptySubAgentString(normalizedArgsJSON, argsJSON), remoteCodingDisplayRoot(c)),
 				Files:      codingToolEventFiles(canonicalName, firstNonEmptySubAgentString(normalizedArgsJSON, argsJSON), remoteCodingDisplayRoot(c)),
 				Outcome:    outcome,
 				DurationMS: duration.Milliseconds(),
@@ -4935,21 +4975,124 @@ func remoteEditFilePythonCommand(path, oldStr, newStr string) string {
 	pathB64 := base64EncodeString(path)
 	oldB64 := base64EncodeString(oldStr)
 	newB64 := base64EncodeString(newStr)
+	// newline='' keeps the remote file's own CR/LF/CRLF bytes. Python's
+	// default text mode would translate them on the way in and write the
+	// whole file back as os.linesep. The match itself follows
+	// tool.ReplaceTextPassage: a line break is one logical character, and
+	// only the inserted span adopts the matched span's convention.
 	script := fmt.Sprintf(strings.Join([]string{
 		"import pathlib, base64, sys",
 		"p = pathlib.Path(base64.b64decode('%s').decode('utf-8'))",
 		"if not p.exists():",
 		"    print('ERROR: file not found: ' + str(p))",
 		"    sys.exit(0)",
-		"text = p.read_text(encoding='utf-8')",
+		"with p.open(encoding='utf-8', newline='') as f:",
+		"    text = f.read()",
 		"old = base64.b64decode('%s').decode('utf-8')",
 		"new = base64.b64decode('%s').decode('utf-8')",
-		"if old not in text:",
-		"    print('ERROR: old_str not found in file')",
-		"elif text.count(old) > 1:",
-		"    print('ERROR: old_str matches ' + str(text.count(old)) + ' locations (must be unique)')",
+		"def norm(s):",
+		"    return s.replace('\\r\\n', '\\n').replace('\\r', '\\n')",
+		"def uniform_ending(body):",
+		"    kind = ''",
+		"    i = 0",
+		"    n = len(body)",
+		"    while i < n:",
+		"        if body.startswith('\\r\\n', i):",
+		"            br = '\\r\\n'",
+		"            i += 2",
+		"        elif body[i] in '\\r\\n':",
+		"            br = body[i]",
+		"            i += 1",
+		"        else:",
+		"            i += 1",
+		"            continue",
+		"        if not kind:",
+		"            kind = br",
+		"        elif br != kind:",
+		"            return None",
+		"    return kind",
+		"def origin_of(s):",
+		"    origin = []",
+		"    i = 0",
+		"    n = len(s)",
+		"    while i < n:",
+		"        origin.append(i)",
+		"        if s.startswith('\\r\\n', i):",
+		"            i += 2",
+		"        elif s[i] in '\\r\\n':",
+		"            i += 1",
+		"        else:",
+		"            i += 1",
+		"    origin.append(n)",
+		"    return origin",
+		"def ending_of(span):",
+		"    i = 0",
+		"    while i < len(span):",
+		"        if span.startswith('\\r\\n', i):",
+		"            return '\\r\\n'",
+		"        if span[i] in '\\r\\n':",
+		"            return span[i]",
+		"        i += 1",
+		"    return ''",
+		"def file_ending(body):",
+		"    crlf = body.count('\\r\\n')",
+		"    lf = body.count('\\n') - crlf",
+		"    cr = body.count('\\r') - crlf",
+		"    if crlf >= lf and crlf >= cr and crlf:",
+		"        return '\\r\\n'",
+		"    if lf >= cr and lf:",
+		"        return '\\n'",
+		"    if cr:",
+		"        return '\\r'",
+		"    return '\\n'",
+		"def locate(hay, needle):",
+		"    count = 0",
+		"    first = -1",
+		"    start = 0",
+		"    while needle and start < len(hay):",
+		"        found = hay.find(needle, start)",
+		"        if found < 0:",
+		"            break",
+		"        if count == 0:",
+		"            first = found",
+		"        count += 1",
+		"        start = found + len(needle)",
+		"    return count, first",
+		"ending = uniform_ending(text)",
+		"if ending is None:",
+		"    logical_text = norm(text)",
+		"    logical_old = norm(old)",
+		"    count, at = locate(logical_text, logical_old)",
+		"    insert = ''",
+		"elif not ending:",
+		"    if '\\r' in old or '\\n' in old:",
+		"        count, at = 0, -1",
+		"        insert = ''",
+		"    else:",
+		"        count, at = locate(text, old)",
+		"        enc_old = old",
+		"        ending = '\\n'",
+		"        insert = norm(new) if ('\\r' in new or '\\n' in new) else new",
 		"else:",
-		"    p.write_text(text.replace(old, new, 1), encoding='utf-8')",
+		"    enc_old = norm(old).replace('\\n', ending)",
+		"    count, at = locate(text, enc_old)",
+		"    insert = norm(new).replace('\\n', ending)",
+		"if count == 0:",
+		"    print('ERROR: old_str not found in file')",
+		"elif count > 1:",
+		"    print('ERROR: old_str matches ' + str(count) + ' locations (must be unique)')",
+		"else:",
+		"    if ending:",
+		"        a = at",
+		"        b = at + len(enc_old)",
+		"    else:",
+		"        origin = origin_of(text)",
+		"        a = origin[at]",
+		"        b = origin[at + len(logical_old)]",
+		"        insert = norm(new).replace('\\n', ending_of(text[a:b]) or file_ending(text))",
+		"    updated = text[:a] + insert + text[b:]",
+		"    with p.open('w', encoding='utf-8', newline='') as f:",
+		"        f.write(updated)",
 		"    print('OK: replaced 1 occurrence')",
 	}, "\n"), pathB64, oldB64, newB64)
 	return remotePythonCommand(script)
@@ -4993,7 +5136,7 @@ func (c *remoteCodingCallbacks) sshBash(args map[string]interface{}) string {
 		return result
 	}
 
-	result := c.execSSH(remoteBashCommandWithExitMarker(workDir, command), 60)
+	result := c.execSSH(remoteBashCommandWithExitMarker(workDir, command), remoteSSHWaitSeconds(command))
 	c.trackRemoteCommand(command, workDir, result, remoteCodingToolOutcome(result) == "success")
 	return result
 }
@@ -5333,12 +5476,12 @@ func buildRemoteInspectionRoleSystemPrompt(projectDir, workDir string, role codi
 	}
 	sb.WriteString(`
 ## 工作规范
-1. 先找到相关路径与符号，再深入阅读关键文件
+1. 结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node），再按命中阅读关键文件。已经返回行的正文搜索也算数，不要把同一次查找再做一遍
 1a. 仅当任务是修复已有代码的 bug 时：优先 code_navigation，形成症状、候选、根因、因果路径、复现与反证，并调用 report_localization。探索项目、补齐功能、核对 CLI 不要提交定位报告。
 1b. 遇到陌生概念/精确报错、第三方依赖/API/协议、版本或兼容性事实，必须 web_search 搜索精确错误与组件版本，优先核对官方文档并记录来源；若只是“无结果”，换一条保留组件/版本/错误码的查询再试一次，provider/网络/配置明确失败则不要重复空转；纯仓内 bug 才需要说明为何无需联网
 `)
 	if role == codingRoleReviewer {
-		sb.WriteString("2. 用 ssh_bash 做只读探查（find/rg/ls/git status/diff/test 等）\n")
+		sb.WriteString("2. 正文搜索已经返回的行算数，不要把同一次查找再做一遍；git status/diff 和测试仍用 ssh_bash\n")
 	}
 	sb.WriteString(`3. git status/diff/log 自检不要加 2>/dev/null 或 >/dev/null；若目录不是 Git 仓库，直接在结论中说明即可，不要用重定向掩盖 fatal 信息
 4. 完成后给出结构化发现：关键路径、结论、风险/建议
@@ -5419,7 +5562,7 @@ func remoteCodingMutatingFileContract() string {
 func remoteCodingSpawnRolePromptHint(role codingSubAgentRole) string {
 	switch role {
 	case codingRoleExplorer:
-		return "你是远程只读探索子代理（explorer）：只用 ssh_read_file、ssh_list_dir 和 code_navigation 阅读代码，禁止写文件或调用本地 read_file、ripgrep、git_diff。遇到陌生概念、精确报错、第三方依赖或版本兼容性问题时，必须用 web_search 核对官方来源。完成后给出关键路径、符号、外部来源和风险点。"
+		return "你是远程只读探索子代理（explorer）：结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node）。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。禁止写文件或调用本地 read_file、ripgrep、git_diff。遇到陌生概念、精确报错、第三方依赖或版本兼容性问题时，必须用 web_search 核对官方来源。完成后给出关键路径、符号、外部来源和风险点。"
 	case codingRoleReviewer:
 		return "你是远程审查子代理（reviewer）：可读代码，并用 ssh_bash 做只读检查（find、rg、git status、git diff、测试）。禁止 ssh_write_file、ssh_edit_file，也不要调用名为 git_diff 的本地工具。涉及陌生或版本敏感的第三方事实时，必须用 web_search 核对。完成后给出问题清单、外部来源、验证结果与建议。"
 	default:
@@ -5430,7 +5573,7 @@ func remoteCodingSpawnRolePromptHint(role codingSubAgentRole) string {
 func buildRemoteFullCodingEnvironmentPromptPreamble() string {
 	return `## 全功能远程编程环境
 你在远程服务器上改代码。只使用本轮列出的 SSH 工具，不要调用 read_file、write_file、edit_file、list_directory、Glob、ripgrep、git_diff 这些本地工具名。
-- 读文件用 ssh_read_file，列目录用 ssh_list_dir。搜索和查看改动用 ssh_bash（rg、find、git diff、git status）。
+- 读文件用 ssh_read_file，列目录用 ssh_list_dir。结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node）。没有 .codegraph/ 时，可修改的任务里该工具会安装 codegraph 并 codegraph init。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。查看改动仍用 ssh_bash（git diff、git status）。
 - ` + remoteCodingMutatingFileContract() + `
 - 不得猜测 Skill/MCP 的旧通用入口；只有本轮实际列出的受限别名才可调用。
 - 默认自主探索与实现。已有多步规划时按步骤推进；没有规划时先短计划再动手。
@@ -5443,7 +5586,7 @@ func buildRemoteFullCodingEnvironmentPromptPreamble() string {
 func buildRemoteNestedFullCodingEnvironmentPromptPreamble() string {
 	return `## 嵌套远程实现子代理
 你是远程编程工作台派发的实现子代理。只使用本轮列出的 SSH 工具，不要调用 read_file、write_file、edit_file、list_directory、Glob、ripgrep、git_diff。
-- 读文件用 ssh_read_file，列目录用 ssh_list_dir，搜索和 git diff 用 ssh_bash。
+- 读文件用 ssh_read_file，列目录用 ssh_list_dir。结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node）。没有 .codegraph/ 时，可修改的任务里该工具会安装并 codegraph init。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。查看改动用 ssh_bash 的 git diff。
 - ` + remoteCodingMutatingFileContract() + `
 - 禁止再派生子代理。最小必要改动。
 
@@ -5459,7 +5602,7 @@ func buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext string) stri
 
 - ssh_read_file(path, offset?, limit?): 读取远程文件内容；默认读取前 200 行，大文件用 offset/limit 分片读取；也接受 start/start_line/startLine 和 lines/num_lines/line_count
 - ssh_write_file(path, content): 创建远程新文件（自动创建父目录）
-- ssh_edit_file(path, old_str, new_str): 修改已有文件的默认方式，精确替换唯一匹配的文本（old_str 必须唯一匹配）
+- ssh_edit_file(path, old_str, new_str): 修改已有文件的默认方式，精确替换唯一匹配的文本（old_str 必须唯一匹配）。缩进必须一致；CR、LF、CRLF 视为同一处换行，文件原有换行约定会保持。
 - ssh_bash(command, working_dir?): 在远程服务器执行命令（长时间命令自动转后台任务，返回 task_id）
 - ssh_check_task(task_id, tail_lines?): 查询后台任务状态、exit_code 和日志尾部
 - ssh_list_dir(path?): 列出远程目录内容
@@ -5471,6 +5614,8 @@ func buildRemoteCodingSystemPrompt(projectDir, workDir, taskContext string) stri
 0. For a toolchain inventory, never put an optional tool in an "&&" chain with required tools: one missing optional tool (such as clang++) short-circuits the entire check. Check required tools first, then probe optional tools separately with a non-blocking command (for example, "command -v clang++ || true") and report the result.
 
 0a. Do not use "tree" as a verification dependency: it is often absent on minimal servers. For a portable project-structure display use "find . -maxdepth 3 -print | sort"; run build/syntax checks as separate commands so a display-tool absence cannot block them.
+
+0b. 结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node）。机器上没有 codegraph 时，该工具会尝试 npm install -g @colbymchenry/codegraph，没有 .codegraph/ 时再 codegraph init。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。.codegraph/ 是本地索引，不是任务改动；不要删除或提交。
 
 1. 修改文件前先 ssh_read_file 确认当前内容
 1a. 修复 bug 时先 code_navigation 定位根因。陌生、版本敏感或第三方事实必须 web_search 核对官方来源；若只是“无结果”，换一条保留组件/版本/错误码的查询再试一次，provider/网络/配置明确失败则不要重复空转。然后调用 report_localization；被接受后才改根因文件，不要把同一份完整报告再交一遍。根因文件与证据不匹配时禁止修改。
@@ -5516,7 +5661,7 @@ Answer the user's repository/code question using read-only evidence from the rem
 
 ## Rules
 1. Use only ssh_list_dir, ssh_read_file, code_navigation, available knowledge search, or ssh_bash for targeted read-only inspection.
-2. If the project contains .codegraph/, prefer code_navigation / CodeGraph before broad shell searching.
+2. If the project contains .codegraph/, use code_navigation for structure, symbols, and call edges. A text search that already returned lines is evidence; use those lines and do not repeat that search.
 3. Do not modify files, create files, run builds/tests, create a plan, or present TDD/task-number progress.
 4. Lead with a concise answer. Then list the most relevant inspected paths as evidence. State clearly that no files were changed.
 `, projectDir, workDir)
@@ -5581,7 +5726,7 @@ func remoteCodingToolDefinitions() []map[string]interface{} {
 				"path":    map[string]interface{}{"type": "string", "description": "文件路径（也接受 file/file_path/filename/target_path）"},
 				"content": map[string]interface{}{"type": "string", "description": "新文件的完整内容。覆盖已有文件时这是替换后的全文，且仅当一次 ssh_edit_file 放不下该改动时使用。"},
 			}, []string{"path", "content"}),
-		buildRemoteToolDef("ssh_edit_file", "修改已有文件的默认方式。"+remoteCodingMutatingFileContract()+"精确替换远程文件中的文本（old_str 必须在文件中唯一匹配；也接受 old_string/old_content/find/search 和 new_string/new_content/replace/replacement）",
+		buildRemoteToolDef("ssh_edit_file", "修改已有文件的默认方式。"+remoteCodingMutatingFileContract()+"精确替换远程文件中的文本（old_str 必须在文件中唯一匹配；也接受 old_string/old_content/find/search 和 new_string/new_content/replace/replacement）。缩进必须一致；CR、LF、CRLF 视为同一处换行，文件原有换行约定会保持。",
 			map[string]interface{}{
 				"path":    map[string]interface{}{"type": "string", "description": "文件路径（也接受 file/file_path/filename/target_path）"},
 				"old_str": map[string]interface{}{"type": "string", "description": "要被替换的原始文本（也接受 old_string/old_content/find/search）"},
@@ -5707,6 +5852,16 @@ func remoteShellQuote(s string) string {
 
 func base64EncodeString(s string) string {
 	return base64.StdEncoding.EncodeToString([]byte(s))
+}
+
+func remoteSSHWaitSeconds(command string) int {
+	if strings.Contains(command, "npm install -g "+codegraphNPMPackage) || strings.Contains(command, `"$_cg_bin" init .`) {
+		return 300
+	}
+	if strings.Contains(command, `"$_cg_bin" node`) && (strings.Contains(command, `"$_cg_bin" callers`) || strings.Contains(command, `"$_cg_bin" callees`)) {
+		return 120
+	}
+	return 60
 }
 
 func isLongRemoteCommand(command string) bool {

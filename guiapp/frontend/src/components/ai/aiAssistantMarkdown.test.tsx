@@ -274,6 +274,33 @@ describe("renderContentWithCodeBlocks", () => {
         expect(screen.getByTestId("assistant-mermaid-loading")).toBeTruthy();
     });
 
+    it("does not pin a Mermaid reply with an inline width", () => {
+        const { rerender } = render(<div>{renderMessage({
+            id: "prose-bubble",
+            role: "assistant",
+            content: "Just a sentence.",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "en", false)}</div>);
+
+        // Shrink-wrap for prose is the execution stylesheet (fit-content, and
+        // only when the bubble has no diagram). An inline width would beat that.
+        expect((screen.getByTestId("assistant-chat-ai-bubble-prose-bubble") as HTMLElement).style.width).toBe("");
+
+        rerender(<div>{renderMessage({
+            id: "diagram-bubble",
+            role: "assistant",
+            content: "Architecture:\n\n```mermaid\nflowchart TD\n  A --> B\n```\n",
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "en", false)}</div>);
+
+        const bubble = screen.getByTestId("assistant-chat-ai-bubble-diagram-bubble") as HTMLElement;
+        // The column width is `.bubble:has(.amd-figure) { width: 100% }`.
+        // Inline fit-content is an indefinite width, and the diagram viewport
+        // is a percentage of the bubble, so that inline value would collapse it.
+        expect(bubble.style.width).toBe("");
+        expect(bubble.querySelector(".amd-figure")).toBeTruthy();
+    });
+
     it("does not close a four-backtick Mermaid block at a triple backtick inside its source", () => {
         const { container } = render(
             <div>{renderContentWithCodeBlocks("````mermaid\ngraph TD\n```\nA --> B", lightTheme)}</div>,

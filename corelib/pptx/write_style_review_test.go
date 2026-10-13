@@ -35,8 +35,8 @@ func TestRadarSeriesCarriesBrandStroke(t *testing.T) {
 	if !strings.Contains(radar, "<a:ln") {
 		t.Fatal("radar series carries no <a:ln> stroke: the web keeps Office default blue")
 	}
-	if !strings.Contains(radar, `val="061F32"`) {
-		t.Fatal("radar series stroke is not the deck navy 061F32")
+	if !strings.Contains(radar, `val="243447"`) {
+		t.Fatal("radar series stroke is not the deck ink 243447")
 	}
 }
 
@@ -62,8 +62,8 @@ func TestLineSeriesCarriesBrandStroke(t *testing.T) {
 	if line == "" {
 		t.Fatal("missing line chart part")
 	}
-	if !strings.Contains(line, "<a:ln") || !strings.Contains(line, `val="061F32"`) {
-		t.Fatal("line series stroke is missing or not the deck navy 061F32")
+	if !strings.Contains(line, "<a:ln") || !strings.Contains(line, `val="243447"`) {
+		t.Fatal("line series stroke is missing or not the deck ink 243447")
 	}
 }
 

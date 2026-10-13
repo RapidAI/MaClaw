@@ -13,11 +13,11 @@ func TestSaveLLMSettingsKeepsKeyOutOfTheView(t *testing.T) {
 	view, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", []LLMProviderInput{{
 		ID: "lp_abcdef0123456789", Name: "Claude", Protocol: "Anthropic",
 		URL: "https://api.anthropic.com/", Key: "sk-ant-secret", Model: "claude-sonnet-4-5",
-	}})
+	}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if view.LLM.DefaultServiceGroup != "system-free" || view.LLM.Current != "system-free" || len(view.LLM.Providers) != 1 {
+	if view.LLM.DefaultServiceGroup != "maclaw_official_group" || view.LLM.Current != "maclaw_official_group" || len(view.LLM.Providers) != 1 {
 		t.Fatalf("view = %#v", view.LLM)
 	}
 	got := view.LLM.Providers[0]
@@ -35,7 +35,7 @@ func TestSaveLLMSettingsKeepsKeyOutOfTheView(t *testing.T) {
 	again, err := svc.SaveLLMSettings(ctx, "tenant-a", got.ID, []LLMProviderInput{{
 		ID: got.ID, Name: "Claude", Protocol: "anthropic",
 		URL: "https://api.anthropic.com", Model: "claude-sonnet-4-5",
-	}})
+	}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,20 +63,20 @@ func TestSaveLLMSettingsRejectsProtocolNameAndMissingKey(t *testing.T) {
 		{ID: "not-an-id", Name: "Other", Protocol: "openai", URL: "https://llm.example/v1", Model: "m"},
 	}
 	for _, in := range cases {
-		if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", []LLMProviderInput{in}); err == nil {
+		if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", []LLMProviderInput{in}, nil); err == nil {
 			t.Fatalf("accepted %#v", in)
 		}
 	}
 	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "missing", []LLMProviderInput{{
 		ID: "lp_abcdef0123456789", Name: "Other", Protocol: "openai",
 		URL: "https://llm.example/v1", Key: "sk-1", Model: "m",
-	}}); err == nil {
+	}}, nil); err == nil {
 		t.Fatal("accepted an unknown current provider")
 	}
 	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", []LLMProviderInput{
 		{Name: "智谱编程", Protocol: "anthropic", URL: "https://open.bigmodel.cn/api/anthropic", Key: "sk-1", Model: "glm"},
 		{Name: "Zhipu GLM Coding", Protocol: "anthropic", URL: "https://open.bigmodel.cn/api/anthropic", Key: "sk-2", Model: "glm"},
-	}); err == nil || !strings.Contains(err.Error(), "llm provider name is duplicated") {
+	}, nil); err == nil || !strings.Contains(err.Error(), "llm provider name is duplicated") {
 		t.Fatalf("aliased names: %v", err)
 	}
 }
@@ -90,7 +90,7 @@ func TestSaveLLMSettingsKeepsTheConnection(t *testing.T) {
 	view, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", []LLMProviderInput{{
 		ID: "lp_abcdef0123456789", Name: "Claude", Protocol: "anthropic",
 		URL: "https://api.anthropic.com", Key: "sk-ant-secret", Model: "claude-sonnet-4-5",
-	}})
+	}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -1060,11 +1060,11 @@
     padding: 5px 12px;
     border: 1px solid var(--theme-border);
     border-radius: 9px;
-    background: var(--theme-surface-muted);
-    color: var(--theme-text-secondary);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
     cursor: pointer;
-    font-size: 0.74rem;
-    font-weight: 800;
+    font-size: 0.8rem;
+    font-weight: 600;
 }
 
 .im-settings-button:hover,
@@ -1080,13 +1080,16 @@
     opacity: 0.55;
 }
 
-.im-settings-button--primary {
+/* "accent", not "primary": button[class*='primary'] forces a solid fill and hides the label. */
+.im-settings-button--accent,
+.settings-content.settings-panel button.im-settings-button.im-settings-button--accent {
     border-color: color-mix(in srgb, var(--theme-primary) 40%, var(--theme-border));
     background: var(--theme-info-bg);
     color: var(--theme-primary-strong);
 }
 
-.im-settings-button--danger {
+.im-settings-button--danger,
+.settings-content.settings-panel button.im-settings-button.im-settings-button--danger {
     border-color: color-mix(in srgb, var(--theme-danger) 45%, var(--theme-border));
     background: var(--theme-danger-bg);
     color: var(--theme-danger);
@@ -1907,16 +1910,19 @@
     border: 0;
     border-radius: 999px;
     background: transparent;
-    color: var(--theme-text-secondary);
+    color: var(--theme-text-primary);
     cursor: pointer;
-    font-size: 0.75rem;
-    font-weight: 900;
+    font-size: 0.78rem;
+    font-weight: 600;
 }
 
-.im-settings-segmented button[data-active="true"] {
-    background: var(--theme-primary);
-    color: var(--theme-on-primary);
-    box-shadow: var(--shadow-sm);
+.im-settings-segmented button[data-active="true"],
+.settings-content.settings-panel .im-settings-segmented button[data-active="true"] {
+    border: 0;
+    background: color-mix(in srgb, var(--theme-primary) 16%, var(--theme-surface));
+    color: var(--theme-text-primary);
+    font-weight: 700;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 40%, var(--theme-border));
 }
 
 .im-settings-grid {
@@ -2001,4 +2007,528 @@
     flex-wrap: wrap;
     gap: 8px;
     min-width: 0;
+}
+
+.email-settings-panel {
+    display: grid;
+    align-content: start;
+    gap: 14px;
+    container-type: inline-size;
+    container-name: email-settings;
+}
+
+.email-settings-lead,
+.email-settings-empty,
+.email-settings-notice {
+    margin: 0;
+}
+
+.email-settings-lead {
+    max-width: 78ch;
+    color: var(--theme-text-secondary);
+    font-size: 0.74rem;
+    line-height: 1.55;
+}
+
+.email-settings-empty {
+    padding: 18px 12px;
+    border: 1px dashed var(--theme-border);
+    border-radius: 10px;
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-muted);
+    font-size: 0.78rem;
+    text-align: center;
+}
+
+.email-settings-notice {
+    padding: 8px 12px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border));
+    border-radius: 10px;
+    background: var(--theme-info-bg);
+    font-size: 0.8rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.email-settings-notice--err {
+    border-color: color-mix(in srgb, var(--theme-danger) 35%, var(--theme-border));
+    background: var(--theme-danger-bg);
+}
+
+.email-settings-section {
+    min-width: 0;
+}
+
+.email-settings-section__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px 16px;
+}
+
+.email-settings-section__title {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+}
+
+.email-settings-section__desc {
+    margin: 0;
+    color: var(--theme-text-muted);
+    font-size: 0.73rem;
+    line-height: 1.5;
+}
+
+.email-settings-list {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.email-settings-row {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 12px 14px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: 10px;
+    background: var(--theme-surface-muted);
+    transition: border-color 120ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .email-settings-row {
+        transition: none;
+    }
+}
+
+.email-settings-row:hover {
+    border-color: color-mix(in srgb, var(--theme-primary) 22%, var(--theme-border-subtle));
+}
+
+.email-settings-row--editing {
+    border-color: color-mix(in srgb, var(--theme-primary) 55%, var(--theme-border));
+    box-shadow: 0 0 0 2px var(--theme-primary-soft);
+}
+
+.email-settings-editing {
+    margin: 0;
+    color: var(--theme-primary-strong);
+    font-size: 0.8rem;
+    font-weight: 750;
+}
+
+.email-settings-editing--new {
+    color: var(--theme-text-muted);
+    font-weight: 650;
+}
+
+.email-settings-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--theme-primary) 10%, var(--theme-surface));
+    color: var(--theme-primary-strong);
+}
+
+.email-settings-row__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px 16px;
+    min-width: 0;
+}
+
+.email-settings-row__main {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+}
+
+.email-settings-row__title {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.email-settings-row__title strong {
+    color: var(--theme-text-primary);
+    font-size: 0.88rem;
+}
+
+.email-settings-address {
+    color: var(--theme-text-secondary);
+    font-size: 0.8rem;
+    overflow-wrap: anywhere;
+}
+
+.email-settings-badge {
+    display: inline-flex;
+    align-items: center;
+    min-height: 22px;
+    padding: 0 8px;
+    border-radius: 999px;
+    background: var(--theme-info-bg);
+    color: var(--theme-primary-strong);
+    font-size: 0.7rem;
+    font-weight: 750;
+}
+
+.email-settings-badge--muted {
+    border: 1px solid var(--theme-border-subtle);
+    background: var(--theme-surface);
+    color: var(--theme-text-secondary);
+}
+
+.email-settings-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px 14px;
+    margin: 0;
+    color: var(--theme-text-muted);
+    font-size: 0.73rem;
+}
+
+.email-settings-meta__item::before {
+    content: '';
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    margin-right: 6px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--theme-text-muted) 55%, var(--theme-surface));
+    vertical-align: 1px;
+}
+
+.email-settings-meta__item--ok::before {
+    background: var(--theme-success);
+}
+
+.email-settings-signature {
+    margin: 0;
+    max-height: 7.5rem;
+    overflow: auto;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-secondary);
+    font-family: inherit;
+    font-size: 0.78rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+}
+
+.email-settings-row__actions {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-left: auto;
+}
+
+.email-settings-tests {
+    display: grid;
+    gap: 4px;
+}
+
+.email-settings-tests p,
+.email-settings-test {
+    margin: 0;
+    font-size: 0.78rem;
+}
+
+.email-settings-test--ok,
+.email-settings-test--err {
+    padding: 6px 8px;
+    border-radius: 8px;
+}
+
+.email-settings-test--ok {
+    background: var(--theme-success-bg);
+    color: var(--theme-success);
+}
+
+.email-settings-test--err {
+    background: var(--theme-danger-bg);
+    color: var(--theme-danger);
+}
+
+.email-settings-test--ok::before {
+    content: '✓ ';
+    font-weight: 800;
+}
+
+.email-settings-test--err::before {
+    content: '✕ ';
+    font-weight: 800;
+}
+
+.email-settings-editor {
+    display: grid;
+    gap: 12px;
+    min-width: 0;
+    padding: 14px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: 12px;
+    background: var(--theme-surface);
+    box-shadow: var(--shadow-sm);
+}
+
+.email-settings-grid,
+.email-settings-endpoint__grid {
+    display: grid;
+    gap: 12px;
+    min-width: 0;
+}
+
+.email-settings-grid--signature {
+    grid-template-columns: minmax(180px, 280px) minmax(0, 1fr);
+    align-items: start;
+}
+
+.email-settings-grid--account {
+    grid-template-columns: minmax(150px, 0.8fr) minmax(200px, 1.1fr) minmax(200px, 1fr);
+}
+
+.email-settings-field {
+    display: grid;
+    gap: 7px;
+    min-width: 0;
+    margin: 0;
+    color: var(--theme-text-secondary);
+    font-size: 0.76rem;
+    font-weight: 600;
+}
+
+.email-settings-field input,
+.email-settings-field select,
+.email-settings-field textarea {
+    width: 100%;
+    min-height: 40px;
+    margin: 0;
+    border-radius: 10px;
+    font-size: 0.84rem;
+}
+
+.email-settings-field textarea {
+    min-height: 96px;
+    resize: vertical;
+    line-height: 1.45;
+}
+
+.email-settings-editor__footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-start;
+    gap: 10px;
+    padding-top: 12px;
+    border-top: 1px solid var(--theme-border-subtle);
+}
+
+.email-settings-editor__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-left: auto;
+}
+
+.email-settings-hint {
+    color: var(--theme-text-muted);
+    font-size: 0.72rem;
+    font-weight: 500;
+    line-height: 1.4;
+}
+
+#App .email-settings-panel .email-settings-field input::placeholder {
+    color: transparent;
+}
+
+.email-settings-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 40px;
+    margin: 0;
+    padding: 0 12px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: 10px;
+    background: var(--theme-surface-muted);
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.email-settings-check input {
+    margin: 0;
+    flex: 0 0 auto;
+}
+
+.email-settings-endpoint {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+    min-inline-size: 0;
+    margin: 0;
+    padding: 12px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: 10px;
+    background: var(--theme-surface-muted);
+}
+
+.email-settings-endpoint legend {
+    padding: 0 6px;
+    color: var(--theme-primary-strong);
+    font-size: 0.82rem;
+    font-weight: 700;
+}
+
+.email-settings-endpoint__grid {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 34px;
+    padding: 5px 12px;
+    border: 1px solid var(--theme-border);
+    border-radius: 9px;
+    background: var(--theme-surface);
+    color: var(--theme-text-secondary);
+    cursor: pointer;
+    font-size: 0.74rem;
+    font-weight: 800;
+    line-height: 1.2;
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button:hover:not(:disabled),
+.settings-content.settings-panel.email-settings-panel button.email-settings-button:focus-visible {
+    border-color: var(--theme-primary-soft);
+    color: var(--theme-primary-strong);
+    outline: none;
+    box-shadow: 0 0 0 2px var(--theme-primary-soft);
+}
+
+/* Secondary row actions: borderless until hovered, so a six-button row stops reading as a wall of boxes.
+   Base variant state is unconditional: a busy-disabled button must keep its variant look
+   instead of flashing back to the outlined default before the opacity dim applies. */
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--ghost {
+    border-color: transparent;
+    background: transparent;
+    color: var(--theme-text-secondary);
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--ghost:hover:not(:disabled) {
+    border-color: transparent;
+    /* surface-muted would vanish on the row's own surface; the primary tint reads on both row and card backgrounds. */
+    background: var(--theme-primary-soft);
+    color: var(--theme-primary-strong);
+    outline: none;
+    box-shadow: none;
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--danger {
+    border-color: transparent;
+    background: transparent;
+    color: var(--theme-danger);
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--danger:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--theme-danger) 40%, transparent);
+    background: var(--theme-danger-bg);
+    color: var(--theme-danger);
+    outline: none;
+    box-shadow: none;
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--add {
+    border-color: transparent;
+    background: var(--theme-primary-soft);
+    color: var(--theme-primary-strong);
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--add:hover:not(:disabled) {
+    border-color: transparent;
+    background: color-mix(in srgb, var(--theme-primary) 20%, transparent);
+    color: var(--theme-primary-strong);
+    outline: none;
+    box-shadow: none;
+}
+
+/* Keyboard focus keeps the soft ring the hover states drop; declared after the
+   hover rules so the ring wins over their box-shadow: none at equal specificity. */
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--ghost:focus-visible,
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--danger:focus-visible,
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--add:focus-visible {
+    color: var(--theme-primary-strong);
+    outline: none;
+    box-shadow: 0 0 0 2px var(--theme-primary-soft);
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--danger:focus-visible {
+    color: var(--theme-danger);
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--save {
+    border-color: transparent;
+    background: var(--theme-primary);
+    color: var(--theme-on-primary, #ffffff);
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--save:hover:not(:disabled),
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--save:focus-visible:not(:disabled) {
+    border-color: transparent;
+    background: var(--theme-primary-strong);
+    color: var(--theme-on-primary, #ffffff);
+}
+
+@container email-settings (max-width: 920px) {
+    .email-settings-grid--account,
+    .email-settings-endpoint__grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@container email-settings (max-width: 640px) {
+    .email-settings-grid--signature,
+    .email-settings-grid--account,
+    .email-settings-endpoint__grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .email-settings-section__head {
+        flex-wrap: wrap;
+    }
+
+    .email-settings-row__head {
+        flex-wrap: wrap;
+    }
+
+    /* After the wrap above, space-between would push the info block to the far
+       edge; let it keep the room next to the avatar instead. */
+    .email-settings-row__main {
+        flex: 1 1 auto;
+    }
+
+    .email-settings-row__actions {
+        justify-content: flex-start;
+        margin-left: 0;
+    }
 }

@@ -1601,6 +1601,23 @@ function replaceLateCodingToolStart(
     return null;
 }
 
+/** True when the last reasoning line is a status bullet. Does not copy the line. */
+function lastReasoningLineIsStatusBullet(existing: string): boolean {
+    if (!existing) return false;
+    const nl = existing.lastIndexOf("\n");
+    let i = nl < 0 ? 0 : nl + 1;
+    const n = existing.length;
+    while (i < n) {
+        const code = existing.charCodeAt(i);
+        if (code === 32 || code === 9 || code === 13 || code === 11 || code === 12 || code === 160) {
+            i++;
+            continue;
+        }
+        break;
+    }
+    return i + 1 < n && existing.charCodeAt(i) === 0x2022 && existing.charCodeAt(i + 1) === 32;
+}
+
 function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence?: number): ChatMessage {
     if (isRejectedRoundContentToken(delta)) {
         return rejectStreamedAssistantContent(message);
@@ -1614,8 +1631,7 @@ function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence
         // Status milestones are rendered as bullet lines in the same reasoning
         // panel. When the model begins streaming after one, keep the two sources
         // on separate lines instead of merging the first token into the status.
-        const lastReasoningLine = existingReasoning.split(/\r?\n/).at(-1)?.trim() || '';
-        const needsStatusBoundary = lastReasoningLine.startsWith('• ') && !reasoningDelta.startsWith('\n');
+        const needsStatusBoundary = lastReasoningLineIsStatusBullet(existingReasoning) && !reasoningDelta.startsWith('\n');
         const rawNextReasoning = existingReasoning
             ? `${existingReasoning}${needsStatusBoundary ? '\n' : ''}${reasoningDelta}`
             : reasoningDelta;

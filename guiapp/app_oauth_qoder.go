@@ -246,9 +246,9 @@ func (a *App) fetchQoderCatalogModels() ([]ProviderModelItem, error) {
 }
 
 // testQoderLLM probes a Qoder provider through the /algo signed chat wire.
-// The edition comes from the provider name when it carries one; otherwise the
-// stored credential decides (the probe tries 国内 then 国际, same as the
-// model catalog path).
+// The provider name selects the edition: 国内 uses gateway.qoder.com.cn and
+// 国际 uses api3.qoder.sh. Both wait on the shared generation budget, not
+// the 15s OAuth client.
 func (a *App) testQoderLLM(cfg corelib.MaclawLLMConfig) (string, error) {
 	model := strings.TrimSpace(cfg.Model)
 	if model == "" {

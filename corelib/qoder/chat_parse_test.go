@@ -34,6 +34,16 @@ func TestParseChatSSEFailureFrames(t *testing.T) {
 			stream: "data:{\"body\":\"{\\\"choices\\\":[{\\\"delta\\\":{\\\"content\\\":\\\"ok\\\"}}]}\"}\n\ndata:[DONE]\n\n",
 			want:   "ok",
 		},
+		{
+			name:   "reasoning delta counts and stops before a later tail",
+			stream: "data:{\"body\":\"{\\\"choices\\\":[{\\\"delta\\\":{\\\"reasoning_content\\\":\\\"思考\\\"}}]}\"}\n\ndata:{\"body\":\"{\\\"choices\\\":[{\\\"delta\\\":{\\\"content\\\":\\\"should-not-read\\\"}}]}\"}\n\n",
+			want:   "思考",
+		},
+		{
+			name:   "long reply is clipped for the save dialog",
+			stream: "data:{\"body\":\"{\\\"choices\\\":[{\\\"delta\\\":{\\\"content\\\":\\\"" + strings.Repeat("测", 200) + "\\\"}}]}\"}\n\n",
+			want:   strings.Repeat("测", 120),
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

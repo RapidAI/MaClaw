@@ -5,6 +5,7 @@ package llm
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -22,6 +23,101 @@ import (
 // binary-halving downgrade. Keyed by model name (lowercase).
 // Prevents repeating the downgrade probe on subsequent requests for the same model.
 var maxOutputTokensCache sync.Map
+
+// UpstreamModelError is a model or gateway rejection carried inside an HTTP 200
+// body (an SSE error frame, or a JSON error object with no choices). It is not
+// a transport failure: callers should show Message instead of treating the
+// turn as an empty completion.
+type UpstreamModelError struct {
+	Message string
+}
+
+func (e *UpstreamModelError) Error() string {
+	if e == nil || strings.TrimSpace(e.Message) == "" {
+		return "upstream model error"
+	}
+	return e.Message
+}
+
+// upstreamModelErrorFromPayload reports a provider error object embedded in
+// one SSE event or a non-stream JSON body. A normal completion chunk has no
+// error field and returns nil.
+func upstreamModelErrorFromPayload(payload []byte) error {
+	msg := openAIUpstreamErrorText(payload)
+	if msg == "" {
+		return nil
+	}
+	msg = truncateUpstreamError(msg)
+	log.Printf("[LLM-stream] upstream model error: %s", msg)
+	return &UpstreamModelError{Message: msg}
+}
+
+func openAIUpstreamErrorText(payload []byte) string {
+	var probe struct {
+		Code    string          `json:"code"`
+		Message string          `json:"message"`
+		Choices json.RawMessage `json:"choices"`
+		Error   json.RawMessage `json:"error"`
+	}
+	if len(bytes.TrimSpace(payload)) == 0 || json.Unmarshal(payload, &probe) != nil {
+		return ""
+	}
+	if msg := openAIErrorFieldText(probe.Error); msg != "" {
+		if code := strings.TrimSpace(probe.Code); code != "" && !strings.Contains(msg, code) {
+			return msg + " (" + code + ")"
+		}
+		return msg
+	}
+	// Qoder rejections that never became an error frame: {"code","message"}
+	// with no choices. A completion chunk does not use that shape.
+	if strings.TrimSpace(probe.Code) != "" && strings.TrimSpace(probe.Message) != "" && len(bytes.TrimSpace(probe.Choices)) == 0 {
+		return strings.TrimSpace(probe.Message) + " (" + strings.TrimSpace(probe.Code) + ")"
+	}
+	return ""
+}
+
+func openAIErrorFieldText(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	if raw[0] == '"' {
+		var text string
+		if json.Unmarshal(raw, &text) != nil {
+			return ""
+		}
+		return strings.TrimSpace(text)
+	}
+	var probe struct {
+		Message string `json:"message"`
+		Msg     string `json:"msg"`
+		Code    string `json:"code"`
+	}
+	if json.Unmarshal(raw, &probe) != nil {
+		return ""
+	}
+	msg := strings.TrimSpace(probe.Message)
+	if msg == "" {
+		msg = strings.TrimSpace(probe.Msg)
+	}
+	if msg == "" {
+		return ""
+	}
+	if code := strings.TrimSpace(probe.Code); code != "" && !strings.Contains(msg, code) {
+		msg += " (" + code + ")"
+	}
+	return msg
+}
+
+func truncateUpstreamError(msg string) string {
+	msg = strings.TrimSpace(msg)
+	const maxRunes = 500
+	runes := []rune(msg)
+	if len(runes) <= maxRunes {
+		return msg
+	}
+	return string(runes[:maxRunes]) + "..."
+}
 
 func streamHTTPStatusError(statusCode int, body []byte) error {
 	return newHTTPStatusError(statusCode, body)
@@ -433,6 +529,7 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
+	var lastPayload string
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -442,6 +539,10 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payload == "" || payload == "[DONE]" {
 			continue
+		}
+		lastPayload = payload
+		if upstreamErr := upstreamModelErrorFromPayload([]byte(payload)); upstreamErr != nil {
+			return nil, upstreamErr
 		}
 
 		var chunk sseChunk
@@ -592,6 +693,9 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 		ResponseID: responseID,
 		Choices:    []Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
 		Usage:      usage,
+	}
+	if strings.TrimSpace(msg.Content) == "" && strings.TrimSpace(msg.ReasoningContent) == "" && len(msg.ToolCalls) == 0 && !legacyFunctionCallSeen {
+		log.Printf("[LLM-stream] upstream empty completion finish=%q payload=%s", finishReason, truncateUpstreamError(lastPayload))
 	}
 	if streamErr != nil {
 		// Preserve a partial response after any visible delta. Retrying it in

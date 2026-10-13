@@ -27,6 +27,17 @@ func semanticAnchor(task *Task, attempt *Attempt, tenant, principal, session, ro
 	}
 }
 
+func TestSQLiteStoreKeepsOneConnection(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	if got := store.db.Stats().MaxOpenConnections; got != 1 {
+		t.Fatalf("max open connections = %d, want 1", got)
+	}
+}
+
 func TestMemorySemanticTaskAnchorRejectsMissingAndConflictingLineage(t *testing.T) {
 	store := NewMemoryStore()
 	task, attempt := startSemanticAnchorAttempt(t, store)

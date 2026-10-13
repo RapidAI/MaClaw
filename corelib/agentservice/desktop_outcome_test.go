@@ -346,3 +346,35 @@ func TestDesktopOutcomeDoesNotTreatACommandLineAsSSH(t *testing.T) {
 		t.Fatalf("checker treated the command line as ssh: %s", judgeBody)
 	}
 }
+
+func TestDesktopOutcomeKeepsScreenVisionWhenTheTranscriptIsClipped(t *testing.T) {
+	reading := "screen_vision:\n  e0 [button] \"开始游戏\" center=40,20"
+	body := strings.Repeat("前\n", 8000) + reading + "\n" + strings.Repeat("后\n", 80000)
+	got := formatDesktopOutcomeEvidence("desktop", body)
+	if !strings.Contains(got, "开始游戏") || !strings.Contains(got, "screen_vision:") {
+		t.Fatalf("clipped evidence dropped the screen reading: %s", got[len(got)-400:])
+	}
+	stale := "screen_vision:\n  e0 [button] \"旧画面\" center=1,1\n" + strings.Repeat("中\n", 8000) +
+		"screen_vision:\n  e0 [button] \"新画面\" center=9,9\n" + strings.Repeat("后\n", 80000)
+	kept := formatDesktopOutcomeEvidence("desktop", stale)
+	if !strings.Contains(kept, "新画面") {
+		tail := kept
+		if len(tail) > 500 {
+			tail = tail[len(tail)-500:]
+		}
+		t.Fatalf("latest screen reading was dropped: %s", tail)
+	}
+	shared := "screen_vision:\n  e0 [button] \"确定\" center=10,20 bbox=0,0,80,40\n  e1 [text] \"同一行标题占满开头\" center=10,40\n"
+	sameHead := shared + "  e2 [button] \"旧画面\" center=1,1\napp_run click uses these pixel coordinates.\n" +
+		strings.Repeat("中\n", 8000) +
+		shared + "  e2 [button] \"新画面\" center=9,9\napp_run click uses these pixel coordinates.\n" +
+		strings.Repeat("后\n", 80000)
+	again := formatDesktopOutcomeEvidence("desktop", sameHead)
+	if !strings.Contains(again, "新画面") {
+		tail := again
+		if len(tail) > 500 {
+			tail = tail[len(tail)-500:]
+		}
+		t.Fatalf("an older reading with the same opening hid the latest screen: %s", tail)
+	}
+}

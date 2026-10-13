@@ -14,6 +14,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -41,12 +42,21 @@ const (
 	SendFileMaxSize   = 200 << 20  // 200 MB
 	MaxSearchFileSize = 2 << 20    // 2 MB per file for search tools
 
-	// maxSearchWalkTime caps the directory walk for search tools.
-	// Prevents blocking when projectPath accidentally points to a huge tree
-	// (e.g. user home directory).
-	maxSearchWalkTime                = 30 * time.Second
 	maxSearchGlobPatternCacheEntries = 256
 )
+
+// maxSearchWalkTime caps the directory walk for search tools.
+// Prevents blocking when projectPath accidentally points to a huge tree
+// (e.g. user home directory). A var so a test can force the stop.
+var maxSearchWalkTime = 30 * time.Second
+
+// errSearchWalkDeadline is not filepath.SkipAll. SkipAll is also how a search
+// stops at max_results, and that stop is a finished page. A deadline means
+// the tree was not finished; reporting it as SkipAll made the partial page
+// look complete.
+var errSearchWalkDeadline = errors.New("search walk deadline")
+
+const searchWalkStoppedFooter = "... search stopped before the tree was finished"
 
 // --- Bash ---
 
@@ -399,6 +409,11 @@ func ToolRipgrepDetailedCtx(ctx context.Context, args map[string]interface{}) Se
 		offset = 0
 	}
 	outputLimit := maxResults + offset
+	// One line past the page. Stopping at exactly max_results cannot tell a
+	// finished tree from a truncated one, and the page hint then sends the
+	// model to offset a search that already ended.
+	scanLimit := outputLimit + 1
+	capped := false
 	beforeContext, afterContext := resolveSearchContextArgs(args)
 	includeStats := boolArg(args, "stats", false)
 	fileType := StringArg(args, "type")
@@ -420,24 +435,26 @@ func ToolRipgrepDetailedCtx(ctx context.Context, args map[string]interface{}) Se
 		return SearchToolResult{Text: appendStats(fmt.Sprintf("no matches found (searched %d files)", filesSearched)), Outcome: SearchToolOutcomeNoMatch}
 	}
 	visit := func(path string, d fs.DirEntry) error {
-		if searchOutputLimitReached(outputMode, outputLimit, matches, matchedFiles, fileCounts) {
+		if searchOutputLimitReached(outputMode, scanLimit, matches, matchedFiles, fileCounts) {
+			capped = true
 			return filepath.SkipAll
 		}
 		info, err := d.Info()
 		if err != nil || info.Size() > MaxSearchFileSize {
 			return nil
 		}
-		scanned, err := searchFileLinesWithModeCtx(ctx, path, re, outputLimit, outputMode, beforeContext, afterContext, &matches, matchedFiles, fileCounts)
+		scanned, lineErr := searchFileLinesWithModeCtx(ctx, path, re, scanLimit, outputMode, beforeContext, afterContext, &matches, matchedFiles, fileCounts)
 		if scanned {
 			filesSearched++
 		}
-		if err != nil {
-			return err
-		}
-		if searchOutputLimitReached(outputMode, outputLimit, matches, matchedFiles, fileCounts) {
+		if dropSearchLookahead(outputMode, outputLimit, &matches, matchedFiles, fileCounts, path) {
+			capped = true
+			if lineErr != nil && lineErr != filepath.SkipAll {
+				return lineErr
+			}
 			return filepath.SkipAll
 		}
-		return nil
+		return lineErr
 	}
 	candidateStart := time.Now()
 	candidates, ok, stats := indexedSearchCandidatesCtx(ctx, base, pattern, globPattern, excludePattern, fileType, fixedString, includeHidden)
@@ -451,14 +468,14 @@ func ToolRipgrepDetailedCtx(ctx context.Context, args map[string]interface{}) Se
 				err = ctx.Err()
 				break
 			}
-			info, err := os.Stat(path)
-			if err != nil {
+			info, statErr := os.Stat(path)
+			if statErr != nil {
 				continue
 			}
+			// os.Stat must not use := here. That declares a new err inside the
+			// loop, so a cap stop or a read failure never reaches the result
+			// and a partial page is reported as a finished search.
 			visitErr := visit(path, fileInfoDirEntry{info: info})
-			if visitErr == filepath.SkipAll {
-				break
-			}
 			if visitErr != nil {
 				err = visitErr
 				break
@@ -475,8 +492,15 @@ func ToolRipgrepDetailedCtx(ctx context.Context, args map[string]interface{}) Se
 	if err != nil && (err == context.Canceled || err == context.DeadlineExceeded) {
 		return SearchToolResult{Text: "search cancelled", Outcome: SearchToolOutcomeError}
 	}
-	if err != nil && err != filepath.SkipAll {
+	walkStopped := errors.Is(err, errSearchWalkDeadline)
+	if err != nil && err != filepath.SkipAll && !walkStopped {
 		return SearchToolResult{Text: fmt.Sprintf("search failed: %s", err.Error()), Outcome: SearchToolOutcomeError}
+	}
+	finishEmpty := func() SearchToolResult {
+		if walkStopped {
+			return SearchToolResult{Text: appendStats(searchWalkStoppedFooter), Outcome: SearchToolOutcomeNoMatch}
+		}
+		return noMatchResult()
 	}
 
 	switch outputMode {
@@ -491,11 +515,13 @@ func ToolRipgrepDetailedCtx(ctx context.Context, args map[string]interface{}) Se
 			files = files[:maxResults]
 		}
 		if len(files) == 0 {
-			return noMatchResult()
+			return finishEmpty()
 		}
 		result := strings.Join(files, "\n")
-		if len(matchedFiles) >= maxResults+offset {
+		if capped {
 			result += fmt.Sprintf("\n... reached max_results=%d", maxResults)
+		} else if walkStopped {
+			result += "\n" + searchWalkStoppedFooter
 		}
 		return matchedResult(result)
 	case "count":
@@ -506,7 +532,7 @@ func ToolRipgrepDetailedCtx(ctx context.Context, args map[string]interface{}) Se
 		sort.Strings(files)
 		files = applyStringOffset(files, offset)
 		if len(files) == 0 {
-			return noMatchResult()
+			return finishEmpty()
 		}
 		if len(files) > maxResults {
 			files = files[:maxResults]
@@ -514,20 +540,56 @@ func ToolRipgrepDetailedCtx(ctx context.Context, args map[string]interface{}) Se
 		for _, file := range files {
 			matches = append(matches, fmt.Sprintf("%s:%d", file, fileCounts[file]))
 		}
+		result := strings.Join(matches, "\n")
+		if capped {
+			result += fmt.Sprintf("\n... reached max_results=%d", maxResults)
+		} else if walkStopped {
+			result += "\n" + searchWalkStoppedFooter
+		}
+		return matchedResult(result)
 	}
 
 	if len(matches) == 0 {
-		return noMatchResult()
+		return finishEmpty()
 	}
 	matches = applyStringOffset(matches, offset)
 	if len(matches) == 0 {
-		return noMatchResult()
+		return finishEmpty()
+	}
+	if len(matches) > maxResults {
+		matches = matches[:maxResults]
 	}
 	result := strings.Join(matches, "\n")
-	if len(matches) >= maxResults {
+	if capped {
 		result += fmt.Sprintf("\n... reached max_results=%d", maxResults)
+	} else if walkStopped {
+		result += "\n" + searchWalkStoppedFooter
 	}
 	return matchedResult(result)
+}
+
+// dropSearchLookahead removes the one result past the page. That result is
+// only proof that another page exists; leaving it in the output makes a
+// finished page and a truncated page look the same.
+func dropSearchLookahead(outputMode string, outputLimit int, matches *[]string, matchedFiles map[string]bool, fileCounts map[string]int, path string) bool {
+	switch outputMode {
+	case "files_with_matches":
+		if len(matchedFiles) > outputLimit {
+			delete(matchedFiles, path)
+			return true
+		}
+	case "count":
+		if len(fileCounts) > outputLimit {
+			delete(fileCounts, path)
+			return true
+		}
+	default:
+		if matches != nil && len(*matches) > outputLimit {
+			*matches = (*matches)[:outputLimit]
+			return true
+		}
+	}
+	return false
 }
 
 // ToolGlob finds files by glob pattern, including recursive ** patterns.
@@ -573,12 +635,15 @@ func ToolGlobDetailedCtx(ctx context.Context, args map[string]interface{}) Searc
 	excludePattern := resolveSearchExcludePattern(args, base)
 
 	var results []string
+	capped := false
 	err = walkSearchFilesFilteredCtx(ctx, base, pattern, excludePattern, fileType, includeDirs, includeHidden, func(path string, d fs.DirEntry) error {
 		if d.IsDir() && !includeDirs {
 			return nil
 		}
 		results = append(results, path)
-		if len(results) >= maxResults {
+		if len(results) > maxResults {
+			capped = true
+			results = results[:maxResults]
 			return filepath.SkipAll
 		}
 		return nil
@@ -589,16 +654,22 @@ func ToolGlobDetailedCtx(ctx context.Context, args map[string]interface{}) Searc
 	if err != nil && (err == context.Canceled || err == context.DeadlineExceeded) {
 		return SearchToolResult{Text: "Glob cancelled", Outcome: SearchToolOutcomeError}
 	}
-	if err != nil && err != filepath.SkipAll {
+	walkStopped := errors.Is(err, errSearchWalkDeadline)
+	if err != nil && err != filepath.SkipAll && !walkStopped {
 		return SearchToolResult{Text: fmt.Sprintf("Glob failed: %s", err.Error()), Outcome: SearchToolOutcomeError}
 	}
 	sort.Strings(results)
 	if len(results) == 0 {
+		if walkStopped {
+			return SearchToolResult{Text: searchWalkStoppedFooter, Outcome: SearchToolOutcomeNoMatch}
+		}
 		return SearchToolResult{Text: "no matches found", Outcome: SearchToolOutcomeNoMatch}
 	}
 	result := strings.Join(results, "\n")
-	if len(results) >= maxResults {
+	if capped {
 		result += fmt.Sprintf("\n... reached max_results=%d", maxResults)
+	} else if walkStopped {
+		result += "\n" + searchWalkStoppedFooter
 	}
 	return SearchToolResult{Text: result, Outcome: SearchToolOutcomeMatched}
 }
@@ -1241,7 +1312,7 @@ func walkSearchFilesFilteredCtx(ctx context.Context, base, pattern, excludePatte
 				return err
 			}
 			if time.Now().After(deadline) {
-				return filepath.SkipAll
+				return errSearchWalkDeadline
 			}
 		}
 		if path != base && isSearchSymlink(d) {

@@ -2212,3 +2212,91 @@ func TestShouldRebuildSearchIndexForDirtyRatioOrCount(t *testing.T) {
 		t.Fatal("dirty count above absolute threshold should rebuild")
 	}
 }
+
+func TestToolRipgrepWalkDeadlineIsNotAFinishedSearch(t *testing.T) {
+	dir := t.TempDir()
+	for i := 0; i < 700; i++ {
+		name := filepath.Join(dir, fmt.Sprintf("%04d.txt", i))
+		body := ""
+		if i == 1 {
+			body = "EARLY_MARKER\n"
+		}
+		if i == 699 {
+			body = "LATE_MARKER\n"
+		}
+		if err := os.WriteFile(name, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	previous := maxSearchWalkTime
+	maxSearchWalkTime = -time.Nanosecond
+	defer func() { maxSearchWalkTime = previous }()
+
+	// A literal pattern is answered from the search index, which never
+	// consults the walk deadline. A pattern with no literal term takes the walk.
+	got := ToolRipgrepDetailed(map[string]interface{}{
+		"path":    dir,
+		"pattern": ".",
+	})
+	if got.Outcome != SearchToolOutcomeMatched {
+		t.Fatalf("partial walk outcome=%v text=%q", got.Outcome, got.Text)
+	}
+	if !strings.Contains(got.Text, "EARLY_MARKER") || strings.Contains(got.Text, "LATE_MARKER") || !strings.Contains(got.Text, searchWalkStoppedFooter) {
+		t.Fatalf("deadline must keep the early hit and say the tree was not finished:\n%s", got.Text)
+	}
+	if strings.Contains(got.Text, "reached max_results=") {
+		t.Fatalf("a time stop is not a full page:\n%s", got.Text)
+	}
+}
+
+func TestToolRipgrepExactPageDoesNotClaimAnotherPage(t *testing.T) {
+	dir := t.TempDir()
+	var body strings.Builder
+	for i := 0; i < 4; i++ {
+		fmt.Fprintf(&body, "HIT%d\n", i)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "a.txt"), []byte(body.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exact := ToolRipgrepDetailed(map[string]interface{}{
+		"path":        dir,
+		"pattern":     "HIT",
+		"max_results": float64(4),
+	})
+	if strings.Contains(exact.Text, "reached max_results=") || !strings.Contains(exact.Text, "HIT3") {
+		t.Fatalf("a page that ends on the last hit must not invite offset:\n%s", exact.Text)
+	}
+	more := ToolRipgrepDetailed(map[string]interface{}{
+		"path":        dir,
+		"pattern":     "HIT",
+		"max_results": float64(3),
+	})
+	if !strings.Contains(more.Text, "reached max_results=3") || !strings.Contains(more.Text, "HIT2") || strings.Contains(more.Text, "HIT3") {
+		t.Fatalf("one hit past the page must stay pageable and stay off this page:\n%s", more.Text)
+	}
+}
+
+func TestToolRipgrepCountOffsetSkipsOnce(t *testing.T) {
+	dir := t.TempDir()
+	var paths []string
+	for _, name := range []string{"a.txt", "b.txt", "c.txt"} {
+		path := filepath.Join(dir, name)
+		if err := os.WriteFile(path, []byte("hit\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		paths = append(paths, path)
+	}
+	got := ToolRipgrepDetailed(map[string]interface{}{
+		"path":        dir,
+		"pattern":     "hit",
+		"output_mode": "count",
+		"max_results": float64(2),
+		"offset":      float64(1),
+	})
+	if strings.Contains(got.Text, paths[0]) || !strings.Contains(got.Text, paths[1]) || !strings.Contains(got.Text, paths[2]) {
+		t.Fatalf("count offset should skip one file, not two:\n%s", got.Text)
+	}
+	if strings.Contains(got.Text, "reached max_results=") {
+		t.Fatalf("the last count page must not invite another offset:\n%s", got.Text)
+	}
+}

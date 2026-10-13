@@ -87,10 +87,16 @@ const (
 	// task.track.local is the local todo list. business.data.mis is the MIS
 	// form integration. Neither outcome is this record, and the product or
 	// server brand must not appear in the ID.
-	CapabilityRecordReadWorklog    CapabilityID = "record.read.worklog"
-	CapabilityRecordUpdateWorklog  CapabilityID = "record.update.worklog"
-	CapabilityInteractionAskUser   CapabilityID = "interaction.ask.user"
-	CapabilityGovernanceInspectExp CapabilityID = "governance.inspect.experience"
+	CapabilityRecordReadWorklog   CapabilityID = "record.read.worklog"
+	CapabilityRecordUpdateWorklog CapabilityID = "record.update.worklog"
+	// CapabilityMessageReadMailbox and CapabilityMessageSendMailbox are the
+	// configured IMAP/SMTP mailbox. A lookup must not be granted the send,
+	// and a send cannot be satisfied by reading mail.
+	CapabilityMessageReadMailbox      CapabilityID = "message.read.mailbox"
+	CapabilityMessageSendMailbox      CapabilityID = "message.send.mailbox"
+	CapabilityMessageConfigureMailbox CapabilityID = "message.configure.mailbox"
+	CapabilityInteractionAskUser      CapabilityID = "interaction.ask.user"
+	CapabilityGovernanceInspectExp    CapabilityID = "governance.inspect.experience"
 )
 
 // builtinCapabilityOntologyOwner is the reviewed owner of every builtin
@@ -348,6 +354,21 @@ func BuiltinCapabilityOntology() []CapabilityDescriptor {
 			ID: CapabilityRecordUpdateWorklog, Version: "v1", Owner: builtinCapabilityOntologyOwner,
 			Summary: "Append or update one external time-block work record. This is not the local todo list.",
 			Effects: []EffectClass{EffectExternalEffect},
+		},
+		{
+			ID: CapabilityMessageReadMailbox, Version: "v1", Owner: builtinCapabilityOntologyOwner,
+			Summary: "Read messages from a configured mailbox.",
+			Effects: []EffectClass{EffectReadOnly},
+		},
+		{
+			ID: CapabilityMessageSendMailbox, Version: "v1", Owner: builtinCapabilityOntologyOwner,
+			Summary: "Send, reply, or forward through a configured mailbox.",
+			Effects: []EffectClass{EffectExternalEffect},
+		},
+		{
+			ID: CapabilityMessageConfigureMailbox, Version: "v1", Owner: builtinCapabilityOntologyOwner,
+			Summary: "Save a mailbox from the server, protocol, port, username, and password the user told the agent.",
+			Effects: []EffectClass{EffectSensitive},
 		},
 		{
 			ID: CapabilityInteractionAskUser, Version: "v1", Owner: builtinCapabilityOntologyOwner,

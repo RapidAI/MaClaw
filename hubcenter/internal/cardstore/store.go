@@ -637,6 +637,9 @@ func (s *Service) ConfirmOrder(ctx context.Context, orderNo, reviewer string) er
 	return nil
 }
 
+// activeCardsScanLimit bounds the in-memory usable-card scan.
+const activeCardsScanLimit = 2000
+
 // ListOrders returns orders matching the filter.
 func (s *Service) ListOrders(ctx context.Context, filter OrderFilter) ([]*PurchaseOrder, int, error) {
 	return s.ListOrdersWithAlipayConfig(ctx, filter, s.alipayConfigForContext(ctx))
@@ -648,12 +651,10 @@ func (s *Service) ListOrdersWithAlipayConfig(ctx context.Context, filter OrderFi
 	pageOffset, pageLimit := filter.Offset, filter.Limit
 	listFilter := filter
 	if filter.ActiveCardsOnly {
+		// Usable cards are chosen in memory after the query, then paged.
+		// The HTTP page size must not shrink this scan or older live cards disappear.
 		listFilter.Offset = 0
-		// Cap full scan to avoid OOM on large tenants; 2000 is well above UI page size (20)
-		// but bounds memory when tenant has many historical activated orders.
-		if listFilter.Limit == 0 || listFilter.Limit > 2000 {
-			listFilter.Limit = 2000
-		}
+		listFilter.Limit = activeCardsScanLimit
 		listFilter.ArchivedOnly = false
 		listFilter.IncludeArchived = true
 		if listFilter.Status == "" && len(listFilter.Statuses) == 0 {

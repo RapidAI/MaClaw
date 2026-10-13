@@ -471,3 +471,67 @@ func TestDoSimpleLLMRequest_RetriesOAuthTokenValidation403(t *testing.T) {
 		t.Fatalf("attempts = %d, want 3", got)
 	}
 }
+
+func TestLLMContinuationKeepsRecoverableFailures(t *testing.T) {
+	now := time.Date(2026, 10, 13, 5, 45, 0, 0, time.UTC)
+	period := &llm.HTTPStatusError{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       []byte(`{"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted","retry_after_seconds":90}`),
+	}
+	var budget llmContinuationBudget
+	wait, kind := budget.next(period, now)
+	if kind != llmContinuePeriod || wait != 90*time.Second+periodLimitWaitSlack {
+		t.Fatalf("period wait=%s kind=%d", wait, kind)
+	}
+	noClock := &llm.HTTPStatusError{
+		StatusCode: http.StatusTooManyRequests,
+		Body:       []byte(`{"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted"}`),
+	}
+	if _, kind := budget.next(noClock, now); kind != llmContinueStop {
+		t.Fatalf("period limit without a clock kind=%d, want stop", kind)
+	}
+	canceled := &llm.HTTPStatusError{
+		StatusCode: http.StatusRequestTimeout,
+		Body:       []byte(`{"code":"LLM_ENDPOINT_USER_RATE_LIMIT_WAIT_CANCELED","message":"request canceled while waiting in Hub user rate-limit queue"}`),
+	}
+	if _, kind := budget.next(canceled, now); kind != llmContinueStop {
+		t.Fatalf("canceled wait kind=%d, want stop", kind)
+	}
+	exhausted := &llm.HTTPStatusError{
+		StatusCode: http.StatusPaymentRequired,
+		Body:       []byte(`{"code":"LLM_SERVICE_CREDITS_EXHAUSTED","message":"selected model grant credits are exhausted"}`),
+	}
+	if _, kind := budget.next(exhausted, now); kind != llmContinueStop {
+		t.Fatalf("spent credits kind=%d, want stop", kind)
+	}
+	busy := &llm.HTTPStatusError{StatusCode: http.StatusBadGateway, Body: []byte("unavailable")}
+	for i := 0; i < maxLLMRetries; i++ {
+		_, kind := budget.next(busy, now)
+		if kind != llmContinueFast {
+			t.Fatalf("fast retry %d kind=%d", i+1, kind)
+		}
+	}
+	if _, kind := budget.next(busy, now); kind != llmContinueKeepGoing {
+		t.Fatalf("outage after the fast budget kind=%d, want keep going", kind)
+	}
+}
+
+func TestLLMContinuationFastOnlyStopsAfterExponentialBudget(t *testing.T) {
+	now := time.Date(2026, 10, 13, 5, 45, 0, 0, time.UTC)
+	busy := &llm.HTTPStatusError{StatusCode: http.StatusBadGateway, Body: []byte("unavailable")}
+	budget := llmContinuationBudget{fastOnly: true}
+	var lastWait time.Duration
+	for i := 0; i < maxLLMRetries; i++ {
+		wait, kind := budget.next(busy, now)
+		if kind != llmContinueFast {
+			t.Fatalf("fast retry %d kind=%d", i+1, kind)
+		}
+		if wait < lastWait {
+			t.Fatalf("backoff %s shrank after %s", wait, lastWait)
+		}
+		lastWait = wait
+	}
+	if _, kind := budget.next(busy, now); kind != llmContinueStop {
+		t.Fatalf("outage after the exponential budget kind=%d, want stop", kind)
+	}
+}

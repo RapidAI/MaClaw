@@ -74,6 +74,12 @@ type record struct {
 	Grants         []Grant               `json:"grants,omitempty"`
 	Desktop        *desktopStateRecord   `json:"desktop,omitempty"`
 	LLM            llmSettings           `json:"llm,omitempty"`
+	// SystemFreeCreditsUsed is the credits each bot owner has spent on
+	// system-free, keyed by hub user id. It is independent of new-user benefits.
+	SystemFreeCreditsUsed map[string]float64 `json:"system_free_credits_used,omitempty"`
+	// SystemFreeCreditDebits remembers request ids already added to
+	// SystemFreeCreditsUsed so a billing retry does not charge twice.
+	SystemFreeCreditDebits []systemFreeCreditDebit `json:"system_free_credit_debits,omitempty"`
 	// OwnerLLMOverrides is the provider each bot owner picked for their own
 	// bots, keyed by hub user id. It lives on the record rather than on the
 	// principal so the choice survives a principal that has not been

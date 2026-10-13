@@ -154,6 +154,28 @@ describe('dark-mode button/card text contrast', () => {
         expect(anyBody(css, ':root', (b) => hasColorScheme(b, 'light'))).toBe(true);
     });
 
+    it('bot model button stays readable on a dark surface', () => {
+        const css = readCss('components/bots/DesktopBotWorkspace.css');
+        const settings = ruleBodies(css, '.desktop-bot-workspace__settings').join('\n');
+        expect(settings).toMatch(/color\s*:\s*var\(\s*--theme-text-primary\b/);
+        expect(settings).toMatch(/background\s*:\s*var\(\s*--theme-surface\b/);
+        expect(settings).not.toMatch(/var\(\s*--theme-text\s*[,)]/);
+        const dark = ruleBodies(css, "[data-ai-theme='dark'] .desktop-bot-workspace__settings").join('\n');
+        expect(dark).toMatch(/background\s*:\s*var\(\s*--theme-control-well\b/);
+        expect(dark).toMatch(/border-color\s*:\s*color-mix\(/);
+        for (const sel of [
+            '.desktop-bot-workspace__create',
+            '.desktop-bot-workspace__lede-topup',
+            '.desktop-bot-chat__send',
+            '.desktop-bot-chat__action',
+            '.desktop-bot-chat__takeover.is-active',
+        ]) {
+            expect(anyBody(css, sel, (body) =>
+                /color\s*:\s*var\(\s*--theme-on-primary\b/.test(body),
+            ), sel).toBe(true);
+        }
+    });
+
     it('workbench rail selected state is tokenized (not a light-only fill)', () => {
         const css = readCss('App.css');
         const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '');

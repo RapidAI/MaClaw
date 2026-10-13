@@ -26,17 +26,24 @@ const (
 	tokenBankAutoSettingsKey = "token_bank_auto_withdraw"
 	tokenBankAutoSeqKey      = "token_bank_auto_seq"
 	// TokenBankDefaultAutoThresholdMicro stays in stored settings so an older
-	// document still loads. Auto pull does not top up to this balance. It runs
-	// only when the user has no spendable credits left.
+	// document still loads. The heartbeat does not top up to that stored
+	// number. It withdraws one share when spendable credits are under
+	// TokenBankAutoTopUpCredits.
 	TokenBankDefaultAutoThresholdMicro int64 = 1_000_000
+	// TokenBankAutoTopUpCredits is the spendable balance under which the
+	// heartbeat withdraws one token-bank share. One hundred credits still
+	// waits. An unlimited grant is already covered. A free route does not
+	// cover a finite balance under this floor.
+	TokenBankAutoTopUpCredits float64 = 100
 )
 
 // tokenBankGrantExpiresAt is the far-future sentinel other permanent grants
 // use, so code that only reads ExpiresAt still treats the grant as live.
 var tokenBankGrantExpiresAt = time.Date(9999, time.December, 31, 23, 59, 59, 0, time.UTC)
 
-// PermanentGrantExpiresAt exposes the far-future expiry sentinel to transport
-// handlers that mint their own never-expiring wallet grants (check-in rewards).
+// PermanentGrantExpiresAt exposes the far-future expiry sentinel used by
+// permanent wallet grants. Expiring grants, including daily check-in rewards,
+// set their own ExpiresAt instead.
 func PermanentGrantExpiresAt() time.Time {
 	return tokenBankGrantExpiresAt
 }
@@ -414,39 +421,76 @@ func ResolveTokenBankServiceGroup(ctx context.Context, system SystemSettingsRepo
 // permissions, so it is not a route. A queued unlimited grant counts when
 // billing would start it now. In-flight holds are not spent credits.
 func UserHasAvailableCredits(ctx context.Context, reg *Registry, userID, email string, now time.Time) bool {
-	if reg == nil {
+	spendable, _, freeRoute, unlimited, readable := userCreditCoverage(ctx, reg, userID, email, now)
+	if !readable {
+		// Do not move credits when the route set cannot be read.
+		return true
+	}
+	if freeRoute || unlimited {
+		return true
+	}
+	return roundCredits(spendable) > 0
+}
+
+// UserNeedsTokenBankAutoTopUp reports whether the heartbeat should withdraw
+// one token-bank share. The floor is the wallet a desktop bot spends, not
+// the new-user period window. A finite wallet under TokenBankAutoTopUpCredits
+// withdraws even when that window or a free route remains. An empty wallet
+// still waits while either one can serve. An unlimited grant is already
+// covered. An unreadable route set must not move credits.
+func UserNeedsTokenBankAutoTopUp(ctx context.Context, reg *Registry, userID, email string, now time.Time) bool {
+	spendable, wallet, freeRoute, unlimited, readable := userCreditCoverage(ctx, reg, userID, email, now)
+	if !readable || unlimited {
 		return false
+	}
+	roundedWallet := roundCredits(wallet)
+	if roundedWallet >= TokenBankAutoTopUpCredits {
+		return false
+	}
+	if roundedWallet > 0 {
+		return true
+	}
+	if freeRoute || roundCredits(spendable) > 0 {
+		return false
+	}
+	return true
+}
+
+// userCreditCoverage is the full spendable balance, the wallet without the
+// new-user period window, whether a free route or an unlimited grant can
+// still serve this user, and whether that route set could be read. readable
+// is false only when the route lookup fails.
+func userCreditCoverage(ctx context.Context, reg *Registry, userID, email string, now time.Time) (spendable float64, wallet float64, freeRoute bool, unlimited bool, readable bool) {
+	if reg == nil {
+		return 0, 0, false, false, true
 	}
 	owner := newUserAccountRef(userID, email)
 	if owner.empty() {
-		return false
+		return 0, 0, false, false, true
 	}
 	// nil resolver: user bindings, grants, and defaults are in the registry.
 	// A group-chain lookup is not available on the auto-pull loop. Missing
 	// those bindings can only miss a free route, and the grant path still runs.
 	ids, _, err := effectiveServiceGroupIDsForOwner(ctx, reg, nil, owner, now)
 	if err != nil {
-		// Do not move credits when the route set cannot be read.
-		return true
+		return 0, 0, false, false, false
 	}
 	// Each real group is judged on its own. A combined set lets a period limit
 	// on one group early-start a future grant on another, and it also counts
 	// a balance on the builtin fallback, which cannot authorize a model.
 	routable := serviceGroupIDsWithoutBuiltinFallback(ids)
 	if len(routable) == 0 {
-		return false
+		return 0, 0, false, false, true
 	}
 	total := 0.0
+	walletTotal := 0.0
 	for _, id := range routable {
 		serviceGroupSet := map[string]struct{}{strings.ToLower(strings.TrimSpace(id)): {}}
-		total += spendableGrantCredits(reg, owner, serviceGroupSet, now)
+		groupSpendable, groupWallet := spendableBalances(reg, owner, serviceGroupSet, now)
+		total += groupSpendable
+		walletTotal += groupWallet
 	}
-	if roundCredits(total) > 0 {
-		return true
-	}
-	if hasUnrestrictedFreeServiceGroup(reg, owner, routable, now) {
-		return true
-	}
+	freeRoute = hasUnrestrictedFreeServiceGroup(reg, owner, routable, now)
 	for _, id := range routable {
 		if hasPeriodLimitedNewUserLimitCardForServiceGroup(reg, owner, id, now) {
 			continue
@@ -457,10 +501,11 @@ func UserHasAvailableCredits(ctx context.Context, reg *Registry, userID, email s
 		// it immediately once the current point card on this group is exhausted.
 		if hasUnmeteredUnlimitedActiveGrantForServiceGroups(reg, owner, one, now) ||
 			hasEarlyStartableUnmeteredUnlimitedGrant(reg, owner, one, now) {
-			return true
+			unlimited = true
+			break
 		}
 	}
-	return false
+	return total, walletTotal, freeRoute, unlimited, true
 }
 
 // serviceGroupIDsWithoutBuiltinFallback drops the empty builtin group.

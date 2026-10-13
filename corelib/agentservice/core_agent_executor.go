@@ -29,6 +29,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
+	"github.com/RapidAI/CodeClaw/corelib/mailbox"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/permission"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
@@ -114,6 +115,18 @@ type CoreAgentExecutor struct {
 	// persistence and may attach tenant/principal context without storing SQL
 	// text or secret values.
 	DatabaseAuditSink func(context.Context, Principal, database.AuditEvent)
+	// MailboxSecretResolver resolves keyring://maclaw/mailbox/<id>/<side>.
+	// Nil reads MailboxSecretDir/tenant/user/<id>/<side> instead.
+	MailboxSecretResolver mailbox.SecretResolver
+	MailboxSecretDir      string
+	// MailboxToolReader and MailboxToolSender replace the network dialer.
+	// Tests inject them so a mailbox tool never dials the public internet.
+	MailboxToolReader mailbox.MailReader
+	MailboxToolSender mailbox.MailSender
+	mailboxDrafts     *mailbox.DraftStore
+	// mailboxReviews records an uncertain external send so a later turn cannot
+	// replay it. The key is principal + session. It is not a Hub record.
+	mailboxReviews map[string]mailboxExternalReview
 
 	mu                       sync.Mutex
 	userMemory               map[string]*memory.Store
@@ -497,6 +510,7 @@ type coreAgentCallbacks struct {
 	trustedBrowser              func(context.Context, Principal, string, string) (string, error)
 	trustedComputerUse          func(context.Context, Principal, string) (string, error)
 	executor                    *CoreAgentExecutor
+	mailboxHost                 *mailbox.Host
 	// dispatcherOnce builds the Phase 2 pilot ToolDispatcher at most once per
 	// callback; dispatcher stays nil unless MACLAW_TOOL_DISPATCHER=on.
 	dispatcherOnce sync.Once
@@ -638,6 +652,9 @@ func (e *CoreAgentExecutor) executeDirect(ctx context.Context, req ExecuteReques
 // explicit local coding-runtime adapter supplies that binding; normal REST
 // chat cannot expose or dispatch coding child tasks.
 func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context, req ExecuteRequest, runtimeStore codingruntime.Store, runtimeAttempt *codingruntime.Attempt, remoteBinding *remoteCodingRuntimeBinding) (*ExecuteResult, error) {
+	if text, handled := e.consumeMailboxConfirmation(ctx, req); handled {
+		return &ExecuteResult{Content: text, OutputType: "text/plain"}, nil
+	}
 	llmCfg, err := ResolveLLMConfig(req.Config)
 	if err != nil {
 		return nil, err
@@ -1416,9 +1433,9 @@ func convertHistoryToEntries(history []Message, currentID string) []agent.Conver
 	return entries
 }
 
-// hubBotLLMServiceGroupID is Hub's reserved free group. Bot turns pin it so
-// usage stays on the owner's viewer token instead of another bound group.
-const hubBotLLMServiceGroupID = "system-free"
+// hubBotLLMMarker records a hub-bot turn in context. It is not a service
+// group id and must not be copied onto the request.
+const hubBotLLMMarker = "hub-bot"
 
 func applyHubBotLLMServiceGroup(cfg corelib.MaclawLLMConfig, metadata map[string]string) corelib.MaclawLLMConfig {
 	if strings.TrimSpace(metadata["hub_bot"]) != "1" {
@@ -1427,22 +1444,27 @@ func applyHubBotLLMServiceGroup(cfg corelib.MaclawLLMConfig, metadata map[string
 	return PinHubBotLLMServiceGroup(cfg)
 }
 
-// PinHubBotLLMServiceGroup marks one request for Hub's system-free group.
-// Callers still send the header only when the endpoint is first-party Hub.
+// PinHubBotLLMServiceGroup drops any service-group pin. Hub already stored
+// the official group on the instance and the owner's viewer token in the
+// model config. The header is a pin: naming maclaw_official_group would
+// spend only that group and skip the other cards a GUI viewer call spends.
+// An empty header is the GUI path, so Hub resolves this token's entitlements
+// and applies the same grant order.
 func PinHubBotLLMServiceGroup(cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
-	cfg.ServiceGroupID = hubBotLLMServiceGroupID
+	cfg.ServiceGroupID = ""
 	return cfg
 }
 
 type hubBotLLMGroupKey struct{}
 
 // WithHubBotLLMGroup records that this turn's side calls, including the
-// semantic intent tree, belong to a hub bot and must use system-free.
+// semantic intent tree, belong to a hub bot. Those calls also leave the
+// service group unset.
 func WithHubBotLLMGroup(ctx context.Context) context.Context {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	return context.WithValue(ctx, hubBotLLMGroupKey{}, hubBotLLMServiceGroupID)
+	return context.WithValue(ctx, hubBotLLMGroupKey{}, hubBotLLMMarker)
 }
 
 // HubBotLLMGroup reports whether ctx was marked by WithHubBotLLMGroup.
@@ -1451,7 +1473,7 @@ func HubBotLLMGroup(ctx context.Context) bool {
 		return false
 	}
 	group, _ := ctx.Value(hubBotLLMGroupKey{}).(string)
-	return strings.TrimSpace(group) == hubBotLLMServiceGroupID
+	return strings.TrimSpace(group) == hubBotLLMMarker
 }
 
 func contextWithHubBotLLMGroup(ctx context.Context, metadata map[string]string) context.Context {
@@ -2953,7 +2975,13 @@ func (c *coreAgentCallbacks) OnToken(delta string) {
 		c.onToken(delta)
 	}
 }
-func (c *coreAgentCallbacks) OnProgress(string) {}
+func (c *coreAgentCallbacks) OnProgress(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" || c == nil || c.botID == "" {
+		return
+	}
+	botlog.Write(c.botID, "srv.progress", nil, "text", text)
+}
 func (c *coreAgentCallbacks) OnToolCall(name string) {
 	log.Printf("[tool-call] start name=%q loop=%s owner=%s", name, c.loopID, c.principal.UserID)
 	if c != nil && c.botID != "" {

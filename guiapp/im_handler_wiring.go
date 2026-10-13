@@ -47,6 +47,8 @@ type IMMessageHandler struct {
 	client                *http.Client // chat-priority HTTP client (optimised transport)
 	taskClient            *http.Client // background-task HTTP client (separate pool)
 	databaseManager       *database.Manager
+	mailboxBudgets        sync.Map
+	mailboxDraftNotes     sync.Map
 
 	// --- Extracted App dependencies (agent-unification Phase 1) ---
 	// These fields are wired from App at construction time (GUI) or from

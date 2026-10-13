@@ -30,6 +30,7 @@ type LoopContext struct {
 	iteration              int // current iteration count
 	status                 LoopState
 	userCancelled          bool  // set only for an explicit user stop, before CancelC is closed
+	pauseAfterCurrent      bool  // finish the in-flight request or subtask, then stop before the next one
 	replanRevision         int64 // increments when live user guidance should interrupt/re-plan
 	replansSealed          bool  // final response won the accept/commit race; reject later steering
 	currentOperationCancel context.CancelFunc
@@ -593,6 +594,42 @@ func (c *LoopContext) UserCancelled() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.userCancelled
+}
+
+// RequestPauseAfterCurrent asks the loop to finish the request or subtask
+// already in progress, then stop before the next one. It does not cancel the
+// in-flight model call or a small task that has already started.
+func (c *LoopContext) RequestPauseAfterCurrent() {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	c.pauseAfterCurrent = true
+	c.mu.Unlock()
+}
+
+// PauseAfterCurrentRequested reports a pending pause without consuming it.
+func (c *LoopContext) PauseAfterCurrentRequested() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.pauseAfterCurrent
+}
+
+// ConsumePauseAfterCurrent reports and clears a pending pause.
+func (c *LoopContext) ConsumePauseAfterCurrent() bool {
+	if c == nil {
+		return false
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if !c.pauseAfterCurrent {
+		return false
+	}
+	c.pauseAfterCurrent = false
+	return true
 }
 
 // Cancel signals the loop to stop.

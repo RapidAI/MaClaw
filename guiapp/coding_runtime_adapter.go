@@ -49,6 +49,9 @@ type guiCodingRuntimeOptions struct {
 	// when they cannot create an isolated worktree.
 	RequireFinalWorkspaceGate bool
 	FinalizeWriter            func(*CodingSubAgentResult) (bool, error)
+	// AdmissionWait is called once when this turn cannot start because another
+	// live writer holds the same directory. The turn waits; it is not a failure.
+	AdmissionWait func(reason string)
 }
 
 type codingRuntimeApprovalGate func() string
@@ -233,6 +236,10 @@ func codingRuntimeErrorCode(result *CodingSubAgentResult) string {
 	return "executor_failed"
 }
 
+func logCodingWriterAdmissionWait(conflict codingruntime.WriteSetConflict) {
+	log.Printf("[coding-runtime] another task is still writing this directory; waiting for it to finish (%s)", conflict.Reason)
+}
+
 func runGUICodingTaskWithLedger(ctx context.Context, store codingruntime.Store, ownerID, workflowID, phaseID, projectPath, requestedWork string, approvalGate codingruntime.ApprovalGate, run func() *CodingSubAgentResult) (*CodingSubAgentResult, *codingruntime.Attempt, error) {
 	return runGUICodingTaskWithLedgerWithStart(ctx, store, ownerID, workflowID, phaseID, projectPath, requestedWork, approvalGate, nil, run)
 }
@@ -248,9 +255,18 @@ func runGUICodingTaskWithLedgerWithOptions(ctx context.Context, store codingrunt
 	if strings.TrimSpace(ownerID) == "" {
 		ownerID = "gui:local"
 	}
+	waitHook := logCodingWriterAdmissionWait
+	if options != nil && options.AdmissionWait != nil {
+		notify := options.AdmissionWait
+		waitHook = func(conflict codingruntime.WriteSetConflict) {
+			logCodingWriterAdmissionWait(conflict)
+			notify(conflict.Reason)
+		}
+	}
 	runner := codingruntime.Runner{
 		Store: store, LeaseOwner: ownerID, LeaseDuration: 15 * time.Minute,
 		ApprovalGate: approvalGate, WorkspaceProber: newGUILocalWorkspaceProber(projectPath),
+		OnAdmissionWait: waitHook,
 	}
 	adapter := &guiCodingRuntimeAdapter{run: run, onStart: onStart}
 	// GUI's existing quality and isolated-worktree gates support non-Git local
@@ -323,6 +339,13 @@ func runGUICodingTaskWithLedgerWithOptions(ctx context.Context, store codingrunt
 	if errors.Is(err, codingruntime.ErrStaleAttempt) && task != nil && task.Status == codingruntime.TaskCancelled {
 		return &CodingSubAgentResult{Status: TaskExecInterrupted, Summary: "Execution cancelled by user; no further tool work will be accepted.", Error: "task_cancelled", RuntimeTaskID: task.TaskID}, attempt, nil
 	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		runtimeTaskID := ""
+		if task != nil {
+			runtimeTaskID = task.TaskID
+		}
+		return &CodingSubAgentResult{Status: TaskExecInterrupted, Summary: "Execution cancelled by user; no further tool work will be accepted.", Error: "task_cancelled", RuntimeTaskID: runtimeTaskID}, attempt, nil
+	}
 	if err != nil {
 		return nil, attempt, err
 	}
@@ -391,7 +414,7 @@ func runGUIRemoteCodingTaskWithStartAndContinuation(ctx context.Context, store c
 	}
 	adapter := &guiRemoteCodingRuntimeAdapter{run: run, onStart: onStart}
 	remoteTarget = strings.TrimSpace(remoteTarget)
-	runner := codingruntime.Runner{Store: store, LeaseOwner: ownerID, LeaseDuration: 15 * time.Minute, WorkspaceProber: workspaceProber}
+	runner := codingruntime.Runner{Store: store, LeaseOwner: ownerID, LeaseDuration: 15 * time.Minute, WorkspaceProber: workspaceProber, OnAdmissionWait: logCodingWriterAdmissionWait}
 	// Inquiry matches the local workbench: it is read-only and does not need a
 	// Git baseline. A new remote directory can have no files and no HEAD yet;
 	// that must not block a status check. Writers keep the baseline gate.
@@ -419,6 +442,13 @@ func runGUIRemoteCodingTaskWithStartAndContinuation(ctx context.Context, store c
 	}
 	if errors.Is(err, codingruntime.ErrStaleAttempt) && task != nil && task.Status == codingruntime.TaskCancelled {
 		return &RemoteCodingSubAgentResult{Status: "cancelled", Summary: "Execution cancelled by user; no further remote tool work will be accepted.", Error: "task_cancelled", RuntimeTaskID: task.TaskID}, attempt, nil
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		runtimeTaskID := ""
+		if task != nil {
+			runtimeTaskID = task.TaskID
+		}
+		return &RemoteCodingSubAgentResult{Status: "cancelled", Summary: "Execution cancelled by user; no further remote tool work will be accepted.", Error: "task_cancelled", RuntimeTaskID: runtimeTaskID}, attempt, nil
 	}
 	if err != nil {
 		return nil, attempt, err

@@ -118,7 +118,7 @@ func (r *llmOrderRepo) List(ctx context.Context, filter hcCardstore.OrderFilter)
 		}
 		orders = append(orders, o)
 	}
-	return orders, total, nil
+	return orders, total, rows.Err()
 }
 
 func alternateDefaultTenantID(tenantID string) string {

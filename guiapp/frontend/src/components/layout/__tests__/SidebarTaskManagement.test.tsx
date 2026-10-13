@@ -2,9 +2,9 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { __resetWorkspaceDirectoryCacheForTests } from '../../ai/CodePreviewWorkspace';
-import { cloudWorkspaceNameMapFromEntitlement, countRunningTaskRows, isActiveTaskRow, isProjectTabOpen, localWorkspaceFolderName, SidebarTaskManagement, sortTaskManagementItems, TASK_LIST_ORDER_STORAGE_KEY, taskCreationLabel, taskListStatusKind, taskSecondaryLabelFor, taskStatusBucketFor, workflowStatusForTask, workflowStatusForTaskRow } from '../SidebarTaskManagement';
+import { cloudWorkspaceNameMapFromEntitlement, countRunningTaskRows, groupTasksIntoFolders, isActiveTaskRow, isProjectTabOpen, localWorkspaceFolderName, normalizeTaskFolderOrder, reorderTaskListFolders, SidebarTaskManagement, sortTaskManagementItems, TASK_FOLDER_COLLAPSE_STORAGE_KEY, TASK_FOLDER_ORDER_STORAGE_KEY, TASK_LIST_ORDER_STORAGE_KEY, taskCreationLabel, taskListFolderKind, taskListStatusKind, taskSecondaryLabelFor, taskStatusBucketFor, workflowStatusForTask, workflowStatusForTaskRow } from '../SidebarTaskManagement';
 import type { ComponentProps, ReactElement } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder, OpenProjectDirectory, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
@@ -246,6 +246,8 @@ afterEach(async () => {
     __resetCloudWorkspaceDisplayNamesForTests();
     __resetCloudWorkspaceLeaseEnsureForTests();
     __resetCloudWorkspaceTaskRestoreForTests();
+    localStorage.removeItem(TASK_FOLDER_COLLAPSE_STORAGE_KEY);
+    localStorage.removeItem(TASK_FOLDER_ORDER_STORAGE_KEY);
     document.getElementById('App')?.remove();
 });
 
@@ -5817,5 +5819,141 @@ describe('task workspace transfer', () => {
         expect(screen.getByTestId('task-transfer-dialog')).toBeTruthy();
         expect(screen.getByTestId('task-transfer-local-dir').textContent).toContain('D:/work/target');
         expect(screen.queryByTestId('task-list-notice')).toBeNull();
+    });
+});
+
+describe('task list folders', () => {
+    const chat = { ...baseProject, id: 'chat-1', name: 'Design a site', project_path: 'D:/work/tasks/chat', tags: [] as string[] };
+    const coding = { ...baseProject, id: 'code-1', name: 'Coding feature', project_path: 'D:/work/tasks/code', tags: ['coding_dev'] };
+    const remote = { ...baseProject, id: 'remote-1', name: 'Remote fix', project_path: 'D:/work/tasks/remote', tags: ['remote_coding_dev'] };
+
+    const folderOrder = () => [...screen.getByTestId('sidebar-task-list').querySelectorAll('.stsm-task-folder')]
+        .map(el => el.getAttribute('data-testid'));
+
+    it('puts chats in Sessions and coding environments in Coding', () => {
+        expect(taskListFolderKind(chat)).toBe('session');
+        expect(taskListFolderKind(coding)).toBe('coding');
+        expect(groupTasksIntoFolders([coding, chat, remote]).map(folder => folder.kind)).toEqual(['session', 'coding']);
+        expect(normalizeTaskFolderOrder(['coding', 'nope', 'coding'])).toEqual(['coding', 'session']);
+        expect(reorderTaskListFolders(['session', 'coding'], 'coding', 'session')).toEqual(['coding', 'session']);
+
+        renderTaskManagement({ lang: 'zh', tasks: [chat, coding, remote] });
+
+        const session = screen.getByTestId('task-folder-session');
+        const codingFolder = screen.getByTestId('task-folder-coding');
+        expect(within(session).getByText('会话')).toBeTruthy();
+        expect(within(codingFolder).getByText('编程')).toBeTruthy();
+        expect(within(session).getByText('Design a site')).toBeTruthy();
+        expect(within(session).queryByText('Coding feature')).toBeNull();
+        expect(within(codingFolder).getByText('Coding feature')).toBeTruthy();
+        expect(within(codingFolder).getByText('Remote fix')).toBeTruthy();
+        expect(session.querySelector('.stsm-task-folder__icon')).toBeTruthy();
+        expect(session.querySelector('.stsm-task-folder__grip-icon')).toBeTruthy();
+        expect(folderOrder()).toEqual(['task-folder-session', 'task-folder-coding']);
+    });
+
+    it('collapses a folder without hiding the other', () => {
+        renderTaskManagement({ tasks: [chat, coding] });
+        fireEvent.click(screen.getByTestId('task-folder-toggle-session'));
+        expect(screen.getByTestId('task-folder-session').getAttribute('data-expanded')).toBe('false');
+        expect(screen.queryByText('Design a site')).toBeNull();
+        expect(screen.getByText('Coding feature')).toBeTruthy();
+        expect(JSON.parse(localStorage.getItem(TASK_FOLDER_COLLAPSE_STORAGE_KEY) || '[]')).toEqual(['session']);
+
+        fireEvent.click(screen.getByTestId('task-folder-toggle-session'));
+        expect(screen.getByText('Design a site')).toBeTruthy();
+    });
+
+    it('reorders folders by dragging and keeps that order', () => {
+        renderTaskManagement({ tasks: [chat, coding] });
+        expect(folderOrder()).toEqual(['task-folder-session', 'task-folder-coding']);
+
+        fireEvent.dragStart(screen.getByTestId('task-folder-drag-coding'));
+        fireEvent.dragOver(screen.getByTestId('task-folder-session'));
+        expect(screen.getByTestId('task-folder-session').getAttribute('data-folder-drop-target')).toBe('before');
+        fireEvent.drop(screen.getByTestId('task-folder-session'));
+
+        expect(folderOrder()).toEqual(['task-folder-coding', 'task-folder-session']);
+        expect(screen.getByTestId('task-folder-coding').getAttribute('data-expanded')).toBe('true');
+        expect(JSON.parse(localStorage.getItem(TASK_FOLDER_ORDER_STORAGE_KEY) || '[]')).toEqual(['coding', 'session']);
+
+        fireEvent.click(screen.getByTestId('task-folder-toggle-coding'));
+        expect(screen.getByTestId('task-folder-coding').getAttribute('data-expanded')).toBe('true');
+
+        cleanup();
+        renderTaskManagement({ tasks: [chat, coding] });
+        expect(folderOrder()).toEqual(['task-folder-coding', 'task-folder-session']);
+    });
+
+    it('hides the drag grip when only one folder is present', () => {
+        renderTaskManagement({ tasks: [chat] });
+        expect(screen.queryByTestId('task-folder-coding')).toBeNull();
+        expect(screen.getByTestId('task-folder-drag-session').getAttribute('draggable')).toBe('false');
+        expect(screen.getByTestId('task-folder-drag-session').querySelector('.stsm-task-folder__grip')).toBeNull();
+        fireEvent.keyDown(screen.getByTestId('task-folder-toggle-session'), { key: 'Enter' });
+        expect(screen.getByTestId('task-folder-session').getAttribute('data-expanded')).toBe('false');
+    });
+
+    it('keeps a collapsed folder closed when the same task identity is refreshed', () => {
+        const view = renderTaskManagement({
+            tasks: [chat, coding],
+            activeAssistantTask: { projectPath: coding.project_path },
+        });
+        fireEvent.click(screen.getByTestId('task-folder-toggle-coding'));
+        expect(screen.getByTestId('task-folder-coding').getAttribute('data-expanded')).toBe('false');
+
+        view.rerenderWith({ activeAssistantTask: { projectPath: coding.project_path } });
+        expect(screen.getByTestId('task-folder-coding').getAttribute('data-expanded')).toBe('false');
+        expect(screen.queryByText('Coding feature')).toBeNull();
+    });
+
+    it('opens a collapsed folder when the active task moves into it', () => {
+        localStorage.setItem(TASK_FOLDER_COLLAPSE_STORAGE_KEY, JSON.stringify(['coding']));
+        const view = renderTaskManagement({
+            tasks: [chat, coding],
+            activeAssistantTask: { projectPath: chat.project_path },
+        });
+        expect(screen.getByTestId('task-folder-coding').getAttribute('data-expanded')).toBe('false');
+
+        view.rerenderWith({ activeAssistantTask: { projectPath: coding.project_path } });
+        expect(screen.getByTestId('task-folder-coding').getAttribute('data-expanded')).toBe('true');
+        expect(screen.getByText('Coding feature')).toBeTruthy();
+    });
+
+    it('does not scroll when collapsing a folder that does not hold the active task', () => {
+        const original = HTMLElement.prototype.scrollIntoView;
+        const scrollIntoView = vi.fn();
+        HTMLElement.prototype.scrollIntoView = scrollIntoView;
+        try {
+            renderTaskManagement({
+                tasks: [chat, coding],
+                activeAssistantTask: { projectPath: chat.project_path },
+            });
+            scrollIntoView.mockClear();
+            fireEvent.click(screen.getByTestId('task-folder-toggle-coding'));
+            expect(screen.getByTestId('task-folder-coding').getAttribute('data-expanded')).toBe('false');
+            expect(scrollIntoView).not.toHaveBeenCalled();
+        } finally {
+            HTMLElement.prototype.scrollIntoView = original;
+        }
+    });
+
+    it('does not highlight a task drop across folders', () => {
+        renderTaskManagement({ tasks: [chat, coding] });
+        const rowOf = (name: string) => screen.getAllByTestId('sidebar-task-row').find(item => (item.textContent || '').includes(name)) as HTMLElement;
+        const surfaceOf = (name: string) => rowOf(name).querySelector('.sidebar-task-row') as HTMLElement;
+        fireEvent.dragStart(surfaceOf('Coding feature'));
+        fireEvent.dragOver(surfaceOf('Design a site'));
+        expect(surfaceOf('Design a site').hasAttribute('data-task-drop-target')).toBe(false);
+        fireEvent.drop(surfaceOf('Design a site'));
+        expect(within(screen.getByTestId('task-folder-session')).getByText('Design a site')).toBeTruthy();
+        expect(within(screen.getByTestId('task-folder-coding')).getByText('Coding feature')).toBeTruthy();
+    });
+
+    it('marks a downward folder drop on the far side of the target', () => {
+        renderTaskManagement({ tasks: [chat, coding] });
+        fireEvent.dragStart(screen.getByTestId('task-folder-drag-session'));
+        fireEvent.dragOver(screen.getByTestId('task-folder-coding'));
+        expect(screen.getByTestId('task-folder-coding').getAttribute('data-folder-drop-target')).toBe('after');
     });
 });

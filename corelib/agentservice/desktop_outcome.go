@@ -120,7 +120,11 @@ func desktopOutcomeEvidence(history []agent.ConversationEntry) (used, ask, remot
 func formatDesktopOutcomeEvidence(name, body string) string {
 	body = strings.ReplaceAll(body, "\r\n", "\n")
 	body = strings.ReplaceAll(body, "\r", "\n")
+	vision := lastScreenVisionBlock(body)
 	body = clipDesktopOutcomeEvidence(body, desktopOutcomeEvidenceRunes)
+	if vision != "" && !screenVisionBlockKept(body, vision) {
+		body = strings.TrimSpace(body) + "\n" + vision
+	}
 	if body == "" {
 		return name + ": "
 	}
@@ -130,6 +134,62 @@ func formatDesktopOutcomeEvidence(name, body string) string {
 		lines[i] = "  " + lines[i]
 	}
 	return strings.Join(lines, "\n")
+}
+
+func screenVisionBlockKept(body, block string) bool {
+	head, tail := screenVisionKeepParts(block)
+	if head == "" || !strings.Contains(body, head) {
+		return false
+	}
+	return tail == "" || strings.Contains(body, tail)
+}
+
+// screenVisionKeepParts splits the latest reading into an opening and a
+// closing slice. The next screenshot often repeats the first control, and
+// the click instruction is identical every time, so either slice alone can
+// match an older screen that the clip still holds.
+func screenVisionKeepParts(block string) (head, tail string) {
+	cut := block
+	for _, footer := range []string{
+		"\napp_run click uses these pixel coordinates.",
+		"\nThese pixels describe the page.",
+	} {
+		if i := strings.Index(cut, footer); i >= 0 {
+			cut = cut[:i]
+		}
+	}
+	runes := []rune(strings.TrimSpace(cut))
+	if len(runes) <= 96 {
+		return string(runes), ""
+	}
+	return string(runes[:48]), string(runes[len(runes)-48:])
+}
+
+func lastScreenVisionBlock(body string) string {
+	idx := strings.LastIndex(body, "screen_vision:")
+	if idx < 0 {
+		return ""
+	}
+	lines := strings.Split(body[idx:], "\n")
+	end := 1
+	for ; end < len(lines); end++ {
+		line := lines[end]
+		if line == "" {
+			break
+		}
+		if strings.HasPrefix(line, "  ") || strings.HasPrefix(line, "ocr: ") ||
+			strings.HasPrefix(line, "app_run click uses these pixel coordinates.") ||
+			strings.HasPrefix(line, "These pixels describe the page.") {
+			continue
+		}
+		break
+	}
+	block := strings.TrimSpace(strings.Join(lines[:end], "\n"))
+	runes := []rune(block)
+	if len(runes) > 2500 {
+		block = string(runes[:2500])
+	}
+	return block
 }
 
 // clipDesktopOutcomeEvidence keeps a command whole up to limit. Past that it

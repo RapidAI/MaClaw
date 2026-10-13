@@ -31,10 +31,15 @@ export function isAILaunchedSession(session: unknown): boolean {
     return String(record?.launch_source ?? record?.launchSource ?? '').trim().toLowerCase() === 'ai';
 }
 
+/** One remote session that the background monitor still treats as live AI work. */
+export function isLiveAISession(session: unknown): boolean {
+    return !!session && isAILaunchedSession(session) && isLiveSession(session);
+}
+
 /** Live AI-launched sessions shown on the background monitor tab. */
 export function countLiveAISessions(sessions: unknown): number {
     if (!Array.isArray(sessions)) return 0;
-    return sessions.filter((session) => session && isAILaunchedSession(session) && isLiveSession(session)).length;
+    return sessions.filter((session) => isLiveAISession(session)).length;
 }
 
 /** Non-expired scheduled tasks, matching the scheduled-task list. */

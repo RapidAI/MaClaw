@@ -75,6 +75,8 @@ export interface CodingAgentProgress {
     title: string;
     detail?: string;
     command?: string;
+    /** Search pattern, symbol, or path shown beside Search/Explore. */
+    target?: string;
     outcome?: string;
     severity?: string;
     summary?: string;
@@ -194,6 +196,7 @@ export function normalizeCodingAgentProgress(progress: CodingAgentProgress): Cod
         title: normalizeCodingAgentTitle(progress.title),
         detail: normalizeCodingAgentOptionalText(progress.detail),
         command: normalizeCodingAgentOptionalText(progress.command),
+        target: normalizeCodingAgentOptionalText(progress.target),
         outcome: normalizeCodingAgentOptionalText(progress.outcome),
         severity: normalizeCodingAgentOptionalText(progress.severity),
         summary: normalizeCodingAgentOptionalText(progress.summary),
@@ -306,7 +309,23 @@ export function codingAgentPreviewTargetPaths(progress: CodingAgentProgress): st
         seen.add(path);
         paths.push(path);
     }
+    const shellFile = codingAgentShellPreviewPath(progress);
+    if (shellFile && !seen.has(shellFile)) paths.push(shellFile);
     return paths;
+}
+
+/** codegraph node / gopls / search file targets can focus the preview. Symbols cannot. */
+function codingAgentShellPreviewPath(progress: CodingAgentProgress): string | undefined {
+    const search = codingAgentShellSearchTarget(progress);
+    const target = (search || codingAgentShellExplorationTarget(progress) || "").trim();
+    if (!target) return undefined;
+    const file = (target.includes(" · ") ? target.slice(0, target.indexOf(" · ")) : target).trim();
+    if (!file || /[\s*?]/.test(file)) return undefined;
+    const base = file.replace(/\\/g, "/").split("/").filter(Boolean).pop() || "";
+    const ext = base.match(/\.([A-Za-z0-9]{1,5})$/)?.[1] || "";
+    // PascalCase suffixes (http.Server) are symbols. File extensions are lowercase.
+    if (!ext || ext !== ext.toLowerCase()) return undefined;
+    return file;
 }
 
 export function isCodingAgentActivePhase(phase: string): boolean {
@@ -595,6 +614,7 @@ export function codingAgentToolDisplayName(name: string): string {
     ) {
         return "Search";
     }
+    if (bare === "code_navigation") return "Explore";
     if (bare === "git_diff") return "Diff";
     if (lower.startsWith("ssh_")) return codingAgentToolDisplayName(raw.slice(4));
     return raw;
@@ -624,6 +644,7 @@ export function parseCodingAgentEventProgress(content: string): CodingAgentProgr
             title: typeof raw.title === "string" ? raw.title : "",
             detail: typeof raw.detail === "string" ? raw.detail : "",
             command: typeof raw.command === "string" ? raw.command : "",
+            target: typeof raw.target === "string" ? raw.target : "",
             outcome: typeof raw.outcome === "string" ? raw.outcome : "",
             severity: typeof raw.severity === "string" ? raw.severity : "",
             summary: typeof raw.summary === "string" ? raw.summary : "",
@@ -787,6 +808,8 @@ export function codingAgentOutcomeMark(progress: CodingAgentProgress, isDark?: b
 export function codingAgentToolNameText(progress: CodingAgentProgress): string {
     const event = (progress.event || "").trim().toLowerCase();
     if (event === "tool_finished" || event === "tool_started") {
+        if (codingAgentShellSearchTarget(progress)) return "Search";
+        if (codingAgentShellExplorationTarget(progress)) return "Explore";
         return codingAgentToolDisplayName(progress.detail || "tool");
     }
     if (event === "assistant_note") return "note";
@@ -801,6 +824,12 @@ export function codingAgentToolNameText(progress: CodingAgentProgress): string {
     if (event === "diff_summary") return "diff";
     if (event === "task_status" || !event) return progress.taskID || "task";
     return event.replace(/_summary$/, "").replace(/_/g, " ") || "task";
+}
+
+/** True when a trail path looks like a file, so a search directory is not opened as one. */
+export function codingTrailPathLooksLikeFile(path: string): boolean {
+    const base = (path || "").replace(/\\/g, "/").split("/").filter(Boolean).pop() || "";
+    return base !== "." && base !== ".." && base.includes(".");
 }
 
 /** Codex-style trail path: repo-relative, never a drive-letter dump. */
@@ -844,12 +873,469 @@ function codingAgentToolLooksLikeFileEdit(progress: CodingAgentProgress): boolea
     return label === "Edit" || label === "Write";
 }
 
-/** Secondary detail: command, path hint, or short summary — not label soup. */
-export function codingAgentToolDetailText(progress: CodingAgentProgress, lang: string, maxRunes = 88): string | undefined {
+const SHELL_SEARCH_NAMES = new Set(["findstr", "select-string", "sls", "rg", "ripgrep", "grep"]);
+const SHELL_EXPLORE_NAMES = new Set(["codegraph", "gopls", "lsp-cli"]);
+const SHELL_RG_VALUE_FLAGS = new Set(["-e", "--regexp", "-g", "--glob", "-m", "--max-count", "-A", "-B", "-C"]);
+const SHELL_PS_VALUE_FLAGS = new Set(["-path", "-literalpath", "-pattern", "-include", "-exclude", "-context", "-encoding"]);
+
+function shellCommandWords(command: string): string[] {
+    return expandCmdWrapper(tokenizeShellWords(command));
+}
+
+function tokenizeShellWords(command: string): string[] {
+    const words: string[] = [];
+    let current = "";
+    let quote = "";
+    const flush = () => {
+        if (!current) return;
+        words.push(current);
+        current = "";
+    };
+    for (let i = 0; i < command.length; i++) {
+        const ch = command[i];
+        if (quote) {
+            if (quote === '"' && ch === "\\" && command[i + 1] === '"') {
+                current += '\\"';
+                i += 1;
+                continue;
+            }
+            current += ch;
+            if (ch === quote) quote = "";
+            continue;
+        }
+        if (ch === "'" || ch === '"') {
+            flush();
+            quote = ch;
+            current = ch;
+            continue;
+        }
+        if (ch === " " || ch === "\t" || ch === "\n" || ch === "\r") {
+            flush();
+            continue;
+        }
+        if (ch === ";" || ch === "(" || ch === ")" || ch === "|" || ch === "&") {
+            flush();
+            const next = command[i + 1];
+            if ((ch === "|" || ch === "&") && next === ch) {
+                words.push(ch + ch);
+                i += 1;
+            } else {
+                words.push(ch);
+            }
+            continue;
+        }
+        current += ch;
+    }
+    flush();
+    return words;
+}
+
+function expandCmdWrapper(words: string[]): string[] {
+    const out: string[] = [];
+    let atCommand = true;
+    for (let i = 0; i < words.length; i++) {
+        const word = words[i];
+        if (isShellCommandBoundaryWord(word)) {
+            out.push(word);
+            atCommand = true;
+            continue;
+        }
+        if (!atCommand || shellCommandBaseName(word) !== "cmd") {
+            if (atCommand) atCommand = false;
+            out.push(word);
+            continue;
+        }
+        atCommand = false;
+        let j = i + 1;
+        const seg: string[] = [];
+        for (; j < words.length && !isShellCommandBoundaryWord(words[j]); j++) seg.push(words[j]);
+        const cAt = seg.findIndex((item) => {
+            const flag = item.toLowerCase();
+            return flag === "/c" || flag === "-c";
+        });
+        if (cAt >= 0 && seg[cAt + 1]) {
+            const raw = seg[cAt + 1];
+            const nested = stripShellWordQuotes(raw).replace(/\\"/g, '"');
+            if (raw !== nested || /\s/.test(nested)) out.push(...tokenizeShellWords(nested));
+            else out.push(...seg.slice(cAt + 1));
+        }
+        i = j - 1;
+    }
+    return out;
+}
+
+function stripShellWordQuotes(word: string): string {
+    const text = (word || "").trim();
+    if (text.length >= 2 && ((text.startsWith("'") && text.endsWith("'")) || (text.startsWith('"') && text.endsWith('"')))) {
+        return text.slice(1, -1);
+    }
+    return text;
+}
+
+function shellCommandBaseName(token: string): string {
+    const bare = stripShellWordQuotes(token).replace(/\\/g, "/");
+    const base = bare.split("/").filter(Boolean).pop() || bare;
+    return base.replace(/\.(exe|cmd|bat|ps1)$/i, "").toLowerCase();
+}
+
+function isShellCommandBoundaryWord(word: string): boolean {
+    return word === "|" || word === "|&" || word === ";" || word === "&&" || word === "||" || word === "&" || word === "(" || word === ")";
+}
+
+/** Command-position program names. Quoted text and arguments do not count. */
+function shellCommandPositionNames(command: string): Set<string> {
+    const names = new Set<string>();
+    let atCommand = true;
+    for (const word of shellCommandWords(command)) {
+        if (isShellCommandBoundaryWord(word)) {
+            atCommand = true;
+            continue;
+        }
+        if (!atCommand) continue;
+        atCommand = false;
+        const name = shellCommandBaseName(word);
+        if (name) names.add(name);
+    }
+    return names;
+}
+
+function isShellContentSearchCommand(command: string): boolean {
+    const names = shellCommandPositionNames(command);
+    for (const name of names) {
+        if (SHELL_EXPLORE_NAMES.has(name)) return false;
+    }
+    for (const name of names) {
+        if (SHELL_SEARCH_NAMES.has(name)) return true;
+    }
+    return false;
+}
+
+function shellSearchDisplayFile(file: string): string {
+    let normalized = (file || "").trim().replace(/\\/g, "/");
+    if (!normalized || normalized === "." || normalized === "./") return "";
+    normalized = normalized.replace(/\/{2,}/g, "/");
+    if (/^[A-Za-z]:\//.test(normalized) || normalized.startsWith("/")) {
+        return normalized.split("/").filter(Boolean).pop() || "";
+    }
+    return normalized;
+}
+
+function formatShellSearchTarget(file: string, pattern: string): string | undefined {
+    const shownFile = shellSearchDisplayFile(file);
+    const shownPattern = (pattern || "").replace(/\s+/g, " ").trim();
+    if (shownFile && shownPattern && shownPattern !== shownFile) return `${shownFile} · ${shownPattern}`;
+    return shownFile || shownPattern || undefined;
+}
+
+function shellFlagValue(args: string[], flag: string): string {
+    const want = flag.toLowerCase();
+    for (let i = 0; i < args.length; i++) {
+        const bare = stripShellWordQuotes(args[i]);
+        const lower = bare.toLowerCase();
+        if (lower === want && i + 1 < args.length) {
+            const value = stripShellWordQuotes(args[i + 1]);
+            if (!value || value.startsWith("-")) return "";
+            return value;
+        }
+        if (lower.startsWith(`${want}:`) || lower.startsWith(`${want}=`)) {
+            return stripShellWordQuotes(bare.slice(want.length + 1));
+        }
+    }
+    return "";
+}
+
+function shellWordIsRedirectNoise(word: string): boolean {
+    const token = stripShellWordQuotes(word);
+    return token === "1" || token === "2" || token === "&1" || shellRedirection(token).redir;
+}
+
+function shellRedirection(token: string): { redir: boolean; attached: boolean } {
+    const text = stripShellWordQuotes(token).trim();
+    const idx = text.indexOf(">");
+    if (idx < 0) return { redir: false, attached: false };
+    const prefix = text.slice(0, idx);
+    if (prefix !== "" && prefix !== "&" && !/^[0-9]$/.test(prefix)) return { redir: false, attached: false };
+    const rest = text.slice(idx).startsWith(">>") ? text.slice(idx + 2) : text.slice(idx + 1);
+    return { redir: true, attached: rest.length > 0 };
+}
+
+function findstrSearchTarget(args: string[]): string | undefined {
+    const positionals: string[] = [];
+    const cPatterns: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        const token = stripShellWordQuotes(args[i]);
+        if (!token) continue;
+        if (token.toLowerCase() === "/c:" && args[i + 1]) {
+            const value = stripShellWordQuotes(args[i + 1]);
+            if (value && !value.startsWith("/")) {
+                cPatterns.push(value);
+                i += 1;
+            }
+            continue;
+        }
+        if (token.toLowerCase().startsWith("/c:")) {
+            const value = stripShellWordQuotes(token.slice(3));
+            if (value) cPatterns.push(value);
+            continue;
+        }
+        if (token.startsWith("/")) continue;
+        const redir = shellRedirection(token);
+        if (redir.redir) {
+            if (!redir.attached) i += 1;
+            continue;
+        }
+        positionals.push(token);
+    }
+    if (cPatterns.length > 0) return formatShellSearchTarget(positionals[positionals.length - 1] || "", cPatterns.join(" | "));
+    if (positionals.length === 0) return undefined;
+    if (positionals.length === 1) return formatShellSearchTarget("", positionals[0]);
+    return formatShellSearchTarget(positionals[positionals.length - 1], positionals.slice(0, -1).join(" "));
+}
+
+function selectStringSearchTarget(args: string[]): string | undefined {
+    const file = shellFlagValue(args, "-path") || shellFlagValue(args, "-literalpath");
+    const pattern = shellFlagValue(args, "-pattern");
+    if (file || pattern) return formatShellSearchTarget(file, pattern);
+    const positionals: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        const token = stripShellWordQuotes(args[i]);
+        if (!token || token === "--") continue;
+        if (token.startsWith("-")) {
+            if (SHELL_PS_VALUE_FLAGS.has(token.toLowerCase())) i += 1;
+            continue;
+        }
+        const redir = shellRedirection(token);
+        if (redir.redir) {
+            if (!redir.attached) i += 1;
+            continue;
+        }
+        positionals.push(token);
+    }
+    if (positionals.length === 0) return undefined;
+    if (positionals.length === 1) return formatShellSearchTarget("", positionals[0]);
+    return formatShellSearchTarget(positionals[positionals.length - 1], positionals.slice(0, -1).join(" "));
+}
+
+function ripgrepSearchTarget(args: string[]): string | undefined {
+    const flagged = shellFlagValue(args, "-e") || shellFlagValue(args, "--regexp");
+    const positionals: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        const token = stripShellWordQuotes(args[i]);
+        if (!token || token === "--") continue;
+        if (token.startsWith("-")) {
+            if (!args[i].includes("=") && SHELL_RG_VALUE_FLAGS.has(token)) i += 1;
+            continue;
+        }
+        const redir = shellRedirection(token);
+        if (redir.redir) {
+            if (!redir.attached) i += 1;
+            continue;
+        }
+        positionals.push(token);
+    }
+    if (flagged) return formatShellSearchTarget(positionals[positionals.length - 1] || "", flagged);
+    if (positionals.length === 0) return undefined;
+    if (positionals.length === 1) return formatShellSearchTarget("", positionals[0]);
+    return formatShellSearchTarget(positionals[positionals.length - 1], positionals.slice(0, -1).join(" "));
+}
+
+const SHELL_READER_NAMES = new Set(["get-content", "gc", "type", "cat"]);
+
+const SHELL_READER_VALUE_FLAGS = new Set(["-tail", "-totalcount", "-first", "-last", "-head", "-encoding"]);
+
+function shellReaderFile(args: string[]): string {
+    const flagged = shellFlagValue(args, "-path") || shellFlagValue(args, "-literalpath");
+    if (flagged) return flagged;
+    const positionals: string[] = [];
+    for (let i = 0; i < args.length; i++) {
+        const token = stripShellWordQuotes(args[i]);
+        if (!token || token === "--") continue;
+        if (token.startsWith("-")) {
+            if (SHELL_READER_VALUE_FLAGS.has(token.toLowerCase())) i += 1;
+            continue;
+        }
+        const redir = shellRedirection(token);
+        if (redir.redir) {
+            if (!redir.attached) i += 1;
+            continue;
+        }
+        positionals.push(token);
+    }
+    for (let i = positionals.length - 1; i >= 0; i--) {
+        if (/[/\\.]/.test(positionals[i])) return positionals[i];
+    }
+    return positionals[positionals.length - 1] || "";
+}
+
+/** File or pattern parsed from the shell text when the event has no target yet. */
+function shellSearchTargetFromCommand(command: string): string | undefined {
+    const words = shellCommandWords(command);
+    let atCommand = true;
+    let piped = false;
+    let readerFile = "";
+    for (let i = 0; i < words.length; i++) {
+        if (words[i] === "&") {
+            atCommand = true;
+            continue;
+        }
+        if (words[i] === "|") {
+            piped = true;
+            atCommand = true;
+            continue;
+        }
+        if (isShellCommandBoundaryWord(words[i])) {
+            piped = false;
+            readerFile = "";
+            atCommand = true;
+            continue;
+        }
+        if (!atCommand) continue;
+        if (shellWordIsRedirectNoise(words[i])) continue;
+        atCommand = false;
+        const name = shellCommandBaseName(words[i]);
+        const args: string[] = [];
+        for (let j = i + 1; j < words.length; j++) {
+            if (isShellCommandBoundaryWord(words[j])) break;
+            args.push(words[j]);
+        }
+        if (SHELL_READER_NAMES.has(name)) {
+            readerFile = shellReaderFile(args);
+            continue;
+        }
+        if (!SHELL_SEARCH_NAMES.has(name)) {
+            readerFile = "";
+            continue;
+        }
+        const shown = name === "findstr"
+            ? findstrSearchTarget(args)
+            : (name === "select-string" || name === "sls")
+                ? selectStringSearchTarget(args)
+                : ripgrepSearchTarget(args);
+        if (!shown) continue;
+        if (piped && readerFile && !shown.includes(" · ") && !/[\\/]/.test(shown)) {
+            return formatShellSearchTarget(readerFile, shown);
+        }
+        return shown;
+    }
+    return undefined;
+}
+
+/** File or pattern for findstr / Select-String / rg invoked through the shell. */
+export function codingAgentShellSearchTarget(progress: CodingAgentProgress | null | undefined): string | undefined {
+    if (!isBashToolEvent(progress) || !isShellContentSearchCommand(progress?.command || "")) return undefined;
+    const target = (progress?.target || "").trim();
+    if (target) return target;
+    return shellSearchTargetFromCommand(progress?.command || "");
+}
+
+function isBashToolEvent(progress: CodingAgentProgress | null | undefined): boolean {
+    if (!progress) return false;
     const event = (progress.event || "").trim().toLowerCase();
+    if (event !== "tool_started" && event !== "tool_finished") return false;
+    return (progress.detail || "").trim().toLowerCase().replace(/^ssh_/, "") === "bash";
+}
+
+/** Symbol or file for codegraph / gopls / lsp-cli invoked through the shell. */
+export function codingAgentShellExplorationTarget(progress: CodingAgentProgress | null | undefined): string | undefined {
+    if (!isBashToolEvent(progress) || isShellContentSearchCommand(progress?.command || "")) return undefined;
+    const target = (progress?.target || "").trim();
+    if (target) return target;
+    return shellExplorationTargetFromCommand(progress?.command || "");
+}
+
+const SHELL_COMMAND_BOUNDARY = "(?:^|&&|\\|\\||[;&|(])\\s*(?:[^\\s;&|]*[/\\\\])?";
+const CODEGRAPH_SHELL_COMMAND = new RegExp(`${SHELL_COMMAND_BOUNDARY}codegraph(?:\\.(?:cmd|exe))?\\s+(explore|node)\\b([^;&|()]*)`, "i");
+const GOPLS_SHELL_COMMAND = new RegExp(`${SHELL_COMMAND_BOUNDARY}gopls(?:\\.exe)?\\s+(?:definition|references|implementation)\\b([^;&|()]*)`, "i");
+const LSP_SHELL_COMMAND = new RegExp(`${SHELL_COMMAND_BOUNDARY}lsp-cli\\b[^;&|()]*?--file(?:=|\\s+)("[^"]+"|'[^']+'|\\S+)`, "i");
+
+const SHELL_VALUE_FLAGS = new Set(["--limit", "--line", "--column", "--offset", "--max"]);
+
+function firstShellQuery(rest: string): string | undefined {
+    const words = rest.match(/"[^"]*"|'[^']*'|\S+/g) || [];
+    for (let i = 0; i < words.length; i++) {
+        const word = words[i].replace(/^['"]|['"]$/g, "");
+        if (!word || word === "--") continue;
+        if (word.startsWith("-")) {
+            if (!words[i].includes("=") && SHELL_VALUE_FLAGS.has(word.toLowerCase())) i += 1;
+            continue;
+        }
+        return word;
+    }
+    return undefined;
+}
+
+function shellLocationFile(token: string): string {
+    const drive = /^[A-Za-z]:[\\/]/.test(token) ? token.slice(0, 2) : "";
+    const rest = drive ? token.slice(2) : token;
+    const cut = rest.search(/:\d/);
+    return cut >= 0 ? drive + rest.slice(0, cut) : token;
+}
+
+function shellExplorationTargetFromCommand(command: string): string | undefined {
+    const text = (command || "").replace(/\s+/g, " ").trim();
+    if (!text || !/codegraph|gopls|lsp-cli/i.test(text)) return undefined;
+    const codegraph = text.match(CODEGRAPH_SHELL_COMMAND);
+    if (codegraph) {
+        const value = firstShellQuery(codegraph[2] || "");
+        if (!value) return codegraph[1].toLowerCase();
+        return codegraph[1].toLowerCase() === "node" ? shellLocationFile(value) : value;
+    }
+    const gopls = text.match(GOPLS_SHELL_COMMAND);
+    if (gopls) {
+        const value = firstShellQuery(gopls[1] || "");
+        return value ? shellLocationFile(value) : undefined;
+    }
+    const lsp = text.match(LSP_SHELL_COMMAND);
+    if (lsp) {
+        const value = (lsp[1] || "").replace(/^['"]|['"]$/g, "");
+        if (value && !value.startsWith("-")) return shellLocationFile(value);
+    }
+    return undefined;
+}
+
+/** File, glob, or symbol for Search/Explore rows. */
+export function codingAgentInquiryTargetText(progress: CodingAgentProgress | null | undefined): string | undefined {
+    const shellTarget = codingAgentShellSearchTarget(progress) || codingAgentShellExplorationTarget(progress);
+    if (shellTarget) return shellTarget;
+    if (!progress || !codingAgentToolPinsInquiryTarget(progress)) return undefined;
+    const target = (progress.target || "").trim();
+    if (target) return target;
+    const files = (progress.files || []).map(compactCodingTrailPath).filter(Boolean);
+    return files.length > 0 ? files.join(", ") : undefined;
+}
+
+/** Search and source exploration keep their target visible, like Read/Edit. */
+export function codingAgentToolPinsInquiryTarget(progress: CodingAgentProgress): boolean {
+    const event = (progress.event || "").trim().toLowerCase();
+    if (event !== "tool_finished" && event !== "tool_started") return false;
+    if (codingAgentShellSearchTarget(progress) || codingAgentShellExplorationTarget(progress)) return true;
+    const label = codingAgentToolDisplayName(progress.detail || "");
+    return label === "Search" || label === "Explore";
+}
+
+/**
+ * Operand of a tool event: command, search target, or file path.
+ * The event title is the task name (for example "需求理解"), so it is not an operand.
+ */
+export function codingAgentToolOperandText(progress: CodingAgentProgress | null | undefined, lang: string, maxRunes = 88): string | undefined {
+    if (!progress) return undefined;
+    const event = (progress.event || "").trim().toLowerCase();
+    const shellTarget = codingAgentShellSearchTarget(progress) || codingAgentShellExplorationTarget(progress);
+    if (shellTarget && (event === "tool_finished" || event === "tool_started")) {
+        if (event === "tool_finished" && codingAgentToolFailureLooksDiagnostic(progress)) {
+            return codingAgentToolDiagnosticStatusText(progress, lang);
+        }
+        return truncateCodingAgentInlineText(shellTarget, maxRunes);
+    }
     if ((event === "tool_finished" || event === "tool_started") && progress.command) {
         return truncateCodingAgentInlineText(progress.command, maxRunes);
     }
+    // A missing search path should say so. Edits still lead with the filename.
+    if (event === "tool_finished" && codingAgentToolPinsInquiryTarget(progress) && codingAgentToolFailureLooksDiagnostic(progress)) {
+        return codingAgentToolDiagnosticStatusText(progress, lang);
+    }
+    const inquiryTarget = codingAgentInquiryTargetText(progress);
+    if (inquiryTarget) return truncateCodingAgentInlineText(inquiryTarget, maxRunes);
     if (codingAgentToolLooksLikeFileEdit(progress)) {
         const edited = codingAgentEditedFileDetailText(progress, maxRunes);
         if (edited) return edited;
@@ -857,6 +1343,14 @@ export function codingAgentToolDetailText(progress: CodingAgentProgress, lang: s
     if ((event === "tool_finished" || event === "tool_started" || event === "diff_updated") && progress.files?.length) {
         return truncateCodingAgentInlineText(progress.files.map(compactCodingTrailPath).filter(Boolean).join(", "), maxRunes);
     }
+    return undefined;
+}
+
+/** Secondary detail: command, path hint, or short summary — not label soup. */
+export function codingAgentToolDetailText(progress: CodingAgentProgress, lang: string, maxRunes = 88): string | undefined {
+    const operand = codingAgentToolOperandText(progress, lang, maxRunes);
+    if (operand) return operand;
+    const event = (progress.event || "").trim().toLowerCase();
     if (event === "assistant_note" || event === "diff_updated") {
         if (progress.detail) return truncateCodingAgentInlineText(progress.detail, maxRunes);
         if (progress.summary) return truncateCodingAgentInlineText(progress.summary, maxRunes);
@@ -1262,10 +1756,14 @@ function CodingAgentToolLine({
     const toolName = codingAgentToolNameText(progress);
     let detail = codingAgentToolDetailText(progress, lang);
     const previewPaths = codingAgentPreviewTargetPaths(progress);
-    const previewPath = previewPaths[0];
+    const previewCandidate = previewPaths[0];
+    const previewPath = previewCandidate
+        && (!codingAgentToolPinsInquiryTarget(progress) || codingTrailPathLooksLikeFile(previewCandidate))
+        ? previewCandidate
+        : undefined;
     const canOpenPreview = !!(onOpenPreviewFile && previewPath);
     // Avoid repeating the feed header title on every tool row.
-    if (detail && hideDetailIfEquals && detail === hideDetailIfEquals) {
+    if (detail && hideDetailIfEquals && detail === hideDetailIfEquals && !codingAgentToolPinsInquiryTarget(progress)) {
         detail = undefined;
     }
     const duration = formatCodingAgentDuration(progress.durationMs);
@@ -1274,7 +1772,9 @@ function CodingAgentToolLine({
     const running = codingAgentLineIsRunning(progress);
     const [expanded, setExpanded] = React.useState(false);
     const colorFileDelta = codingAgentToolLooksLikeFileEdit(progress) && !command && !!detail;
-    if (colorFileDelta && detail) {
+    const shellInquiry = !!(codingAgentShellSearchTarget(progress) || codingAgentShellExplorationTarget(progress));
+    const pinInquiryTarget = codingAgentToolPinsInquiryTarget(progress) && !!detail && (!command || shellInquiry);
+    if ((colorFileDelta || pinInquiryTarget) && detail) {
         return (
             <div
                 data-testid="coding-agent-tool-line"
@@ -1752,6 +2252,28 @@ function findLatestCodingAgentEvent(events: CodingAgentProgress[], eventName: st
 
 function findLatestCodingAgentEventDetail(events: CodingAgentProgress[], eventName: string): string | undefined {
     return findLatestCodingAgentEvent(events, eventName)?.detail;
+}
+
+/** The tool_started row still running, including its target and command. */
+export function openCodingAgentToolProgress(messages: Array<{ content?: string }> | undefined, toolName: string): CodingAgentProgress | undefined {
+    const name = (toolName || "").trim();
+    if (!name || !messages?.length) return undefined;
+    let turnID: string | undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+        const progress = parseCodingAgentProgress(messages[i]?.content || "");
+        if (!progress) continue;
+        if (progress.turnID) {
+            if (turnID === undefined) turnID = progress.turnID;
+            else if (progress.turnID !== turnID) break;
+        } else if (turnID) {
+            continue;
+        }
+        if ((progress.detail || "") !== name) continue;
+        const event = (progress.event || "").trim().toLowerCase();
+        if (event === "tool_finished") return undefined;
+        if (event === "tool_started") return progress;
+    }
+    return undefined;
 }
 
 /** Short brand label shared by chat feed, sidebar, and status bar. */

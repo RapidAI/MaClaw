@@ -11,11 +11,13 @@ import (
 	ppt "github.com/Vantagics/GoPPT"
 )
 
-// deckTheme is one shipped visual system: cover, paper, accent, and type colors.
-// coverDark is false only for styles whose cover stays on the paper canvas.
+// deckTheme is one shipped visual system. motif selects the layout (cover,
+// content chrome, cards, section pages). Colors never change that layout:
+// two styles can share a motif only when they should look the same.
 type deckTheme struct {
 	id                      string
 	coverDark               bool
+	motif                   motif
 	paper, ink, navy, navy2 ppt.Color
 	accent, gold, white     ppt.Color
 	mute, slate, card       ppt.Color
@@ -31,6 +33,7 @@ type styleSpec struct {
 	summaryEn, summaryHant string
 	aliases, keywords      []string
 	coverDark              bool
+	motif                  motif
 	paper, ink             string
 	navy, navy2            string
 	accent, gold           string
@@ -41,7 +44,7 @@ type styleSpec struct {
 
 func (s styleSpec) theme() deckTheme {
 	return deckTheme{
-		id: s.id, coverDark: s.coverDark,
+		id: s.id, coverDark: s.coverDark, motif: s.motif,
 		paper: themeColor(s.paper), ink: themeColor(s.ink),
 		navy: themeColor(s.navy), navy2: themeColor(s.navy2),
 		accent: themeColor(s.accent), gold: themeColor(s.gold),
@@ -71,121 +74,129 @@ func blend(a, b ppt.Color, t float64) ppt.Color {
 
 // styleCatalog is the built-in order shown to the user. The first entry is
 // also the fallback when a deck names no style and its purpose matches nothing.
+// Each entry carries a motif: the layout system, not just a palette. Older
+// theme ids stay as aliases so an existing outline still resolves.
 // Custom styles saved from Settings are appended after this list.
 var styleCatalog = []styleSpec{
 	{
-		id: "business", label: "商务汇报", summary: "瑞士网格。白底、左侧色条、结论式标题。适合经营汇报。",
-		labelEn: "Business Briefing", labelHant: "商務匯報",
-		summaryEn: "Swiss grid. White field, left rule, action titles.", summaryHant: "瑞士網格。白底、左側色條、結論式標題。",
-		aliases: []string{"business", "商务", "商务汇报", "汇报", "business briefing"}, coverDark: true,
-		keywords: []string{"季度", "经营分析", "客户提案", "商务", "董事会", "复盘", "工作汇报", "季度汇报", "quarterly review", "board meeting", "client proposal", "business review"},
-		paper:    "F7F8FA", ink: "142033", navy: "0E2A47", navy2: "1B3A5C",
-		accent: "0E2A47", gold: "8AA0B8", white: "FFFFFF", mute: "5C6B7A",
-		slate: "3E4C5A", card: "FFFFFF", onDark: "F7F8FA", onDarkMute: "C5D0DC",
+		id: "clean", label: "清爽专业", summary: "白底蓝条，结论式标题和证据卡片。适合工作汇报。",
+		labelEn: "Clean Professional", labelHant: "清爽專業",
+		summaryEn: "White field, blue rule, evidence cards.", summaryHant: "白底藍條，結論式標題和證據卡片。",
+		aliases: []string{"clean", "business", "商务", "商务汇报", "汇报", "business briefing", "清爽专业"}, motif: motifReport,
+		keywords: []string{"经营汇报", "工作总结", "项目复盘", "晋升述职", "季度汇报", "客户提案", "工作复盘", "quarterly review", "business review", "client proposal"},
+		paper:    "FFFFFF", ink: "0F172A", navy: "1E3A8A", navy2: "0F766E",
+		accent: "2563EB", gold: "F59E0B", white: "FFFFFF", mute: "64748B",
+		slate: "334155", card: "F8FAFC", onDark: "F8FAFC", onDarkMute: "CBD5E1",
 	},
 	{
-		id: "consulting", label: "咨询顾问风", summary: "麦肯锡式。藏青主导、结论式标题、细分隔线。适合战略与商业分析。",
-		labelEn: "Consulting Deck", labelHant: "諮詢顧問風",
-		summaryEn: "Consulting grade. Deep navy, action titles, hairline rules.", summaryHant: "麥肯錫式。藏青主導、結論式標題、細分隔線。",
-		aliases: []string{"consulting", "咨询", "咨询顾问", "顾问", "麦肯锡", "consulting deck", "mckinsey"}, coverDark: true,
-		keywords: []string{"战略", "咨询", "顾问", "行业分析", "商业分析", "尽调", "竞对分析", "strategy", "consulting", "industry analysis", "due diligence"},
-		paper:    "FFFFFF", ink: "1A1A1A", navy: "061F32", navy2: "0E3352",
-		accent: "061F32", gold: "08A6F6", white: "FFFFFF", mute: "6B7680",
-		slate: "33404D", card: "F4F6F8", onDark: "FFFFFF", onDarkMute: "B9C6D2",
+		id: "magazine", label: "创意杂志", summary: "黑白对半，一根洋红色条。适合发布和创意提案。",
+		labelEn: "Editorial Magazine", labelHant: "創意雜誌",
+		summaryEn: "Black and white split, one magenta bar.", summaryHant: "黑白對半，一根洋紅色條。",
+		aliases: []string{"magazine", "launch", "发布", "发布路演", "路演", "modern", "现代", "现代品牌", "品牌", "product launch"}, motif: motifSplit,
+		keywords: []string{"品牌发布", "创意提案", "设计作品集", "时尚发布", "产品发布", "产品介绍", "product launch", "pitch deck", "fundraising", "brand deck"},
+		paper:    "FFFFFF", ink: "111111", navy: "111111", navy2: "2A2A2A",
+		accent: "FF006E", gold: "FFED00", white: "FFFFFF", mute: "6B7280",
+		slate: "374151", card: "FFFFFF", onDark: "FFFFFF", onDarkMute: "E5E7EB",
 	},
 	{
-		id: "executive", label: "高管汇报", summary: "午夜蓝。沉稳大字、冰蓝点缀、克制留白。适合董事会与高管层。",
-		labelEn: "Executive Brief", labelHant: "高管匯報",
-		summaryEn: "Midnight navy, ice-blue accents, executive restraint.", summaryHant: "午夜藍。沉穩大字、冰藍點綴。",
-		aliases: []string{"executive", "高管", "高管汇报", "董事会汇报", "executive brief", "board deck"}, coverDark: true,
-		keywords: []string{"董事会", "高管", "决策", "年度报告", "战略汇报", "经营决策", "executive", "board deck", "annual report"},
-		paper:    "FFFFFF", ink: "1C2430", navy: "1E2761", navy2: "2A3575",
-		accent: "1E2761", gold: "CADCFC", white: "FFFFFF", mute: "5F6B7A",
-		slate: "39414E", card: "F5F7FB", onDark: "FFFFFF", onDarkMute: "C9D6F2",
+		id: "eink", label: "电子墨水", summary: "米纸大标题，页脚一句论点。适合主题演讲。",
+		labelEn: "E-ink Magazine", labelHant: "電子墨水",
+		summaryEn: "Warm paper, oversized type, one thesis line.", summaryHant: "米紙大標題，頁腳一句論點。",
+		aliases: []string{"eink", "minimal", "极简", "ceremony", "年会", "典礼", "e-ink"}, motif: motifInk,
+		keywords: []string{"主题演讲", "观点分享", "个人介绍", "年会致辞", "颁奖典礼", "demo day", "personal introduction"},
+		paper:    "F7F4EA", ink: "111111", navy: "1E2A78", navy2: "163B2F",
+		accent: "C2410C", gold: "D9C29E", white: "FFFCF5", mute: "6B6560",
+		slate: "3F3A36", card: "FBF8F1", onDark: "F7F4EA", onDarkMute: "D6D0C4",
 	},
 	{
-		id: "academic", label: "学术答辩", summary: "深色学院风。褐底金框，内页羊皮纸。适合答辩。",
-		labelEn: "Academic Defense", labelHant: "學術答辯",
-		summaryEn: "Dark academia. Brown and gold cover, parchment pages.", summaryHant: "深色學院風。褐底金框，內頁羊皮紙。",
-		aliases: []string{"academic", "学术", "学术答辩", "scholar", "academic defense"}, coverDark: true,
-		keywords: []string{"论文", "答辩", "课题", "开题", "文献", "学术", "综述", "thesis", "dissertation", "research paper", "literature review"},
-		paper:    "F6F0E6", ink: "2A2118", navy: "1A1208", navy2: "2C2114",
-		accent: "C9A84C", gold: "8A7340", white: "FFFCF7", mute: "7A6A58",
-		slate: "4A3C2E", card: "FFFCF7", onDark: "F3E6C8", onDarkMute: "C4B08A",
+		id: "dashboard", label: "数据仪表盘", summary: "浅底指标卡和细状态条。适合看板和 KPI。",
+		labelEn: "Data Dashboard", labelHant: "數據儀表盤",
+		summaryEn: "Mist field, metric cards, thin status bars.", summaryHant: "淺底指標卡和細狀態條。",
+		aliases: []string{"dashboard", "数据仪表盘", "看板"}, motif: motifDashboard,
+		keywords: []string{"数据看板", "运营分析", "业绩展示", "商业智能", "KPI汇报", "看板", "analytics dashboard"},
+		paper:    "F5F8FC", ink: "0F172A", navy: "1D4ED8", navy2: "0891B2",
+		accent: "2563EB", gold: "10B981", white: "FFFFFF", mute: "64748B",
+		slate: "334155", card: "FFFFFF", onDark: "F8FAFC", onDarkMute: "C7D2FE",
 	},
 	{
-		id: "warm", label: "温馨纪念", summary: "北欧留白。米色大字、细线。适合纪念与家庭。",
-		labelEn: "Warm Keepsake", labelHant: "溫馨紀念",
-		summaryEn: "Nordic whitespace. Cream field, large type, one thin rule.", summaryHant: "北歐留白。米色大字、細線。",
-		aliases: []string{"warm", "温馨", "温馨纪念", "warmth", "soft", "warm keepsake"}, coverDark: true,
-		keywords: []string{"生日", "纪念", "婚礼", "满月", "寿辰", "温馨", "宠物", "致谢", "birthday", "wedding", "memorial", "family gathering"},
-		paper:    "F4F1EC", ink: "3D3530", navy: "3D3530", navy2: "5C5148",
-		accent: "8A7A6A", gold: "C4B5A5", white: "FFFCF8", mute: "8A7A6A",
-		slate: "5C5148", card: "FFFCF8", onDark: "F4F1EC", onDarkMute: "8A7A6A",
+		id: "retro", label: "复古扁平", summary: "奶油纸、色块横条、描边卡片。适合品牌故事。",
+		labelEn: "Retro Flat", labelHant: "復古扁平",
+		summaryEn: "Cream paper, flat color band, outlined cards.", summaryHant: "奶油紙、色塊橫條、描邊卡片。",
+		aliases: []string{"retro", "复古", "扁平插画"}, motif: motifPoster,
+		keywords: []string{"品牌故事", "生活方式", "旅游介绍", "文化创意", "复古插画", "brand story"},
+		paper:    "F5F3E8", ink: "34495E", navy: "2C3E50", navy2: "6C7A89",
+		accent: "FF6B6B", gold: "F9CA24", white: "FFFFFF", mute: "6C7A89",
+		slate: "34495E", card: "FFFDF6", onDark: "2C3E50", onDarkMute: "95A5A6",
 	},
 	{
-		id: "launch", label: "发布路演", summary: "对半撞色。左朱红、右近黑，适合发布和路演。",
-		labelEn: "Launch Pitch", labelHant: "發布路演",
-		summaryEn: "Duotone split. Vermilion left, near-black right.", summaryHant: "對半撞色。左朱紅、右近黑。",
-		aliases: []string{"launch", "发布", "发布路演", "路演", "launch pitch"}, coverDark: true,
-		keywords: []string{"发布会", "路演", "融资", "产品发布", "品牌发布", "product launch", "pitch deck", "fundraising"},
-		paper:    "F6F5F3", ink: "1A1A1A", navy: "141414", navy2: "2A2A2A",
-		accent: "E24A2A", gold: "F0C14A", white: "FFFFFF", mute: "6A6A6A",
-		slate: "3A3A3A", card: "FFFFFF", onDark: "F7F4F1", onDarkMute: "E7C7BE",
+		id: "sketch", label: "手绘技术", summary: "近白纸、石墨角标、淡彩标记。适合技术解释。",
+		labelEn: "Sketch Explainer", labelHant: "手繪技術",
+		summaryEn: "Near-white paper, graphite corners, pastel marks.", summaryHant: "近白紙、石墨角標、淡彩標記。",
+		aliases: []string{"sketch", "tech", "技术", "技术分享", "手绘技术"}, motif: motifSketch,
+		keywords: []string{"技术分享", "系统架构", "技术架构", "概念解释", "开源项目", "技术方案", "engineering talk", "system architecture"},
+		paper:    "FCFBF7", ink: "2F3437", navy: "2F3437", navy2: "7A8490",
+		accent: "BFD7F1", gold: "F4C7B8", white: "FFFFFF", mute: "8A9096",
+		slate: "4A5158", card: "FFFFFF", onDark: "2F3437", onDarkMute: "8A9096",
 	},
 	{
-		id: "tech", label: "技术分享", summary: "蓝图。深蓝网格与角标，适合架构和技术分享。",
-		labelEn: "Tech Talk", labelHant: "技術分享",
-		summaryEn: "Blueprint. Navy grid, corner marks, cyan type.", summaryHant: "藍圖。深藍網格與角標。",
-		aliases: []string{"tech", "技术", "技术分享", "tech talk"}, coverDark: true,
-		keywords: []string{"技术分享", "架构", "研发", "开源", "系统设计", "技术方案", "open source", "engineering talk", "system architecture"},
-		paper:    "F4F7FB", ink: "0D2240", navy: "0D2240", navy2: "16365F",
-		accent: "3D8FD4", gold: "8FB8DC", white: "FFFFFF", mute: "5C6E82",
-		slate: "2C455F", card: "FFFFFF", onDark: "E7F3FC", onDarkMute: "9FC4E0",
+		id: "whiteboard", label: "手绘白板", summary: "白板底、马克笔下划线、彩色便签。适合研讨。",
+		labelEn: "Whiteboard", labelHant: "手繪白板",
+		summaryEn: "Whiteboard, marker underline, sticky notes.", summaryHant: "白板底、麥克筆下劃線、彩色便簽。",
+		aliases: []string{"whiteboard", "白板", "手绘白板"}, motif: motifBoard,
+		keywords: []string{"头脑风暴", "内部研讨", "白板讲解", "概念梳理", "brainstorm"},
+		paper:    "FAFAF5", ink: "1A1A1A", navy: "1A1A1A", navy2: "3498DB",
+		accent: "E74C3C", gold: "F39C12", white: "FFFFFF", mute: "6B7280",
+		slate: "374151", card: "FFF9C4", onDark: "FFFFFF", onDarkMute: "D1D5DB",
 	},
 	{
-		id: "education", label: "教学课件", summary: "课程页眉。顶部色带下课次标题，适合课件和培训。",
+		id: "handmade", label: "温暖手工", summary: "暖纸和便签卡。适合纪念、亲子和公益。",
+		labelEn: "Handmade", labelHant: "溫暖手工",
+		summaryEn: "Warm paper and note cards. For keepsakes.", summaryHant: "暖紙和便簽卡。適合紀念、親子和公益。",
+		aliases: []string{"handmade", "warm", "温馨", "温馨纪念", "温暖手工"}, motif: motifCraft,
+		keywords: []string{"生日纪念", "生日", "温馨纪念", "儿童教育", "亲子活动", "社区公益", "birthday", "wedding", "family gathering"},
+		paper:    "F5F1E8", ink: "5C4033", navy: "5C4033", navy2: "A67C52",
+		accent: "F5C4B8", gold: "B8D4A8", white: "FFFCF8", mute: "8A7568",
+		slate: "6B5344", card: "FFFCF7", onDark: "5C4033", onDarkMute: "A67C52",
+	},
+	{
+		id: "research", label: "科研答辩", summary: "白底学术蓝，红色只用来标结论。适合答辩。",
+		labelEn: "Research Defense", labelHant: "科研答辯",
+		summaryEn: "White field, academic blue, red for conclusions.", summaryHant: "白底學術藍，紅色只用來標結論。",
+		aliases: []string{"research", "academic", "学术", "学术答辩", "科研答辩"}, motif: motifDefense,
+		keywords: []string{"论文答辩", "开题答辩", "毕业答辩", "课题申报", "基金申请", "文献综述", "答辩", "thesis defense", "dissertation"},
+		paper:    "FFFFFF", ink: "111111", navy: "003F8F", navy2: "0B5CAD",
+		accent: "B5121B", gold: "F3DFA2", white: "FFFFFF", mute: "4B5563",
+		slate: "333333", card: "F3F6FA", onDark: "FFFFFF", onDarkMute: "D6E4F0",
+	},
+	{
+		id: "mckinsey", label: "麦肯锡", summary: "浅灰细线、大字留白，没有大色块。适合战略咨询。",
+		labelEn: "McKinsey", labelHant: "麥肯錫",
+		summaryEn: "Pale field, hairlines, large type, no navy blocks.", summaryHant: "淺灰細線、大字留白，沒有大色塊。",
+		aliases: []string{"mckinsey", "consulting", "咨询", "咨询顾问", "麦肯锡", "executive", "高管", "高管汇报"}, motif: motifConsulting,
+		keywords: []string{"战略咨询", "商业分析", "行业分析", "尽职调查", "竞对分析", "增长战略", "战略汇报", "董事会汇报", "due diligence", "strategy consulting"},
+		paper:    "F6F8FA", ink: "243447", navy: "243447", navy2: "5B7C99",
+		accent: "5B7C99", gold: "8AA0B5", white: "FFFFFF", mute: "6B7280",
+		slate: "475569", card: "FFFFFF", onDark: "243447", onDarkMute: "6B7280",
+	},
+	{
+		id: "official", label: "党政红", summary: "象牙底、中国红与哑光金。适合正式工作汇报。",
+		labelEn: "Official Red", labelHant: "黨政紅",
+		summaryEn: "Ivory field, Chinese red, matte gold.", summaryHant: "象牙底、中國紅與啞光金。",
+		aliases: []string{"official", "党政", "党政红"}, motif: motifOfficial,
+		keywords: []string{"党建学习", "政策宣讲", "工作部署", "党政汇报", "国企汇报"},
+		paper:    "FFF9F2", ink: "262626", navy: "9E1530", navy2: "C41E3A",
+		accent: "C41E3A", gold: "D6A84B", white: "FFFFFF", mute: "6B6560",
+		slate: "4A4A4A", card: "FFFCF8", onDark: "FFF9F2", onDarkMute: "F3E6C8",
+	},
+	{
+		id: "course", label: "教学课件", summary: "顶部课头色带，下面是课次标题。适合课件。",
 		labelEn: "Lesson Deck", labelHant: "教學課件",
-		summaryEn: "Course masthead. A color band, then the lesson title.", summaryHant: "課程頁眉。頂部色帶下課次標題。",
-		aliases: []string{"education", "教学", "课件", "教学课件", "lesson deck"}, coverDark: true,
-		keywords: []string{"课件", "培训", "课堂", "教学", "课程", "教案", "lecture", "training course", "classroom", "lesson plan"},
-		paper:    "FFF8EF", ink: "2A241C", navy: "1E3A5F", navy2: "2C4C73",
-		accent: "E39B2B", gold: "F3D48A", white: "FFFFFF", mute: "6E6256",
-		slate: "4A4036", card: "FFFCF7", onDark: "FFF6E8", onDarkMute: "F0D7B0",
-	},
-	{
-		id: "ceremony", label: "典礼年会", summary: "装饰艺术。黑金双框、标题居中，适合典礼和年会。",
-		labelEn: "Ceremony", labelHant: "典禮年會",
-		summaryEn: "Art deco. Black and gold double frame, centered type.", summaryHant: "裝飾藝術。黑金雙框、標題居中。",
-		aliases: []string{"ceremony", "典礼", "年会", "典礼年会", "awards ceremony"}, coverDark: true,
-		keywords: []string{"年会", "典礼", "颁奖", "致辞", "开幕", "闭幕", "纪念典礼", "awards ceremony", "annual gala", "opening remarks"},
-		paper:    "F8F1E3", ink: "2A2114", navy: "0E0A05", navy2: "2A2114",
-		accent: "D4AA2A", gold: "B8960C", white: "FFFCF5", mute: "8A7848",
-		slate: "5C4A28", card: "FFFCF5", onDark: "F6E7C1", onDarkMute: "C4B07A",
-	},
-	{
-		id: "minimal", label: "极简", summary: "纯字排。一根通栏黑线，没有色块。适合个人介绍。",
-		labelEn: "Minimal", labelHant: "極簡",
-		summaryEn: "Type only. One black rule, no color blocks.", summaryHant: "純字排。一根通欄黑線，沒有色塊。",
-		aliases: []string{"minimal", "极简", "personal introduction"}, coverDark: false,
-		keywords: []string{"极简", "作品集", "简历", "个人介绍", "portfolio", "resume", "personal introduction"},
-		paper:    "F7F6F3", ink: "1C1C1C", navy: "1C1C1C", navy2: "3A3A3A",
-		accent: "1C1C1C", gold: "B08948", white: "FFFFFF", mute: "6E6A64",
-		slate: "3F3F3C", card: "FFFFFF", onDark: "1C1C1C", onDarkMute: "5C5852",
-	},
-	{
-		id: "modern", label: "现代品牌", summary: "浅底细网格。藏青主色、暖橙点睛、圆环徽记，适合产品介绍与品牌叙事。",
-		labelEn: "Modern Brand", labelHant: "現代品牌",
-		summaryEn: "Light hairline grid. Deep navy, warm orange, ring mark.", summaryHant: "淺底細網格。藏青主色、暖橙點睛、圓環徽記。",
-		aliases: []string{"modern", "现代", "现代品牌", "品牌", "品牌蓝", "brand", "modern brand"}, coverDark: false,
-		// Brand-only vocabulary. Deliberately avoids 解决方案 / 客户案例 /
-		// 数据看板 / 产品手册: those are common in business decks, and a
-		// 4-char brand keyword would outrank the 2-char 季度 or 商务 that
-		// actually decides those decks.
-		keywords: []string{"产品介绍", "品牌故事", "白皮书", "用户增长", "品牌手册", "品牌宣传", "brand deck", "saas"},
-		paper:    "FFFFFF", ink: "16202B", navy: "0B2E4F", navy2: "123D66",
-		accent: "1E88E5", gold: "FF7A45", white: "FFFFFF", mute: "5F5E5A",
-		slate: "4B5563", card: "F4F7FB", onDark: "FFFFFF", onDarkMute: "A1C7EE",
+		summaryEn: "Course masthead, then the lesson title.", summaryHant: "頂部課頭色帶，下面是課次標題。",
+		aliases: []string{"course", "education", "教学", "课件", "教学课件", "lesson deck"}, motif: motifLesson,
+		keywords: []string{"教学课件", "培训课程", "培训课件", "课堂教案", "新员工培训", "课件", "教案", "lesson plan", "classroom"},
+		paper:    "FFFBF5", ink: "1F2937", navy: "1E3A5F", navy2: "0F766E",
+		accent: "F59E0B", gold: "FDE68A", white: "FFFFFF", mute: "6B7280",
+		slate: "374151", card: "FFFCF7", onDark: "FFFBF5", onDarkMute: "E5E7EB",
 	},
 }
 
@@ -211,12 +222,16 @@ type StyleColors struct {
 }
 
 // CustomStyle is a user-authored palette stored outside the built-in catalog.
+// Motif names a built-in layout (report, split, ink, dashboard, poster, sketch,
+// board, craft, defense, consulting, official, lesson). Empty picks report,
+// or ink when the cover is dark.
 type CustomStyle struct {
 	ID        string      `json:"id"`
 	Label     string      `json:"label"`
 	Summary   string      `json:"summary"`
 	Keywords  []string    `json:"keywords"`
 	CoverDark bool        `json:"cover_dark"`
+	Motif     string      `json:"motif,omitempty"`
 	Colors    StyleColors `json:"colors"`
 }
 
@@ -276,8 +291,12 @@ func (s CustomStyle) spec() (styleSpec, error) {
 	paper := hexColor(colors.Paper)
 	card := hexColor(colors.Card)
 	navy := hexColor(colors.Navy)
+	layout, err := normalizeMotif(s.Motif, s.CoverDark)
+	if err != nil {
+		return styleSpec{}, err
+	}
 	return styleSpec{
-		id: id, label: label, summary: summary, keywords: keywords, coverDark: s.CoverDark,
+		id: id, label: label, summary: summary, keywords: keywords, coverDark: s.CoverDark, motif: layout,
 		aliases:    []string{id, label},
 		paper:      paper,
 		ink:        contrastingHex(colors.Ink, paper),
@@ -468,7 +487,7 @@ func isAutoTheme(name string) bool {
 }
 
 // matchStyle scores keywords in hint. A longer keyword beats several short
-// ones, so "纪念典礼" stays ceremony and "生日纪念" stays warm. Equal scores
+// ones, so "生日纪念" stays handmade and "年会致辞" stays eink. Equal scores
 // keep the earlier catalog entry.
 func matchStyle(hint string) (styleSpec, bool) {
 	hint = strings.ToLower(hint)
@@ -878,33 +897,6 @@ func paintPageMark(slide *ppt.Slide, page, total int, color ppt.Color) {
 		fmt.Sprintf("%02d  /  %02d", page, total), 12, false, color, ppt.HorizontalRight)
 }
 
-func paintDarkCanvas(slide *ppt.Slide, theme deckTheme) {
-	// One calm dark field. Rails, bands, and edge stripes read as template
-	// filler, so the cover relies on type scale instead of decoration.
-	paintSolidBackground(slide, theme.navy)
-}
-
-// paintFeatureCanvas is the cover, section, and closing canvas. Dark styles
-// use the navy field; a light style such as minimal stays on paper.
-func paintFeatureCanvas(slide *ppt.Slide, theme deckTheme) {
-	if theme.coverDark {
-		paintDarkCanvas(slide, theme)
-		return
-	}
-	paintLightCanvas(slide, theme)
-}
-
-func featureColors(theme deckTheme) (title, sub, rule, kicker ppt.Color) {
-	if theme.coverDark {
-		return theme.onDark, theme.onDarkMute, theme.gold, theme.accent
-	}
-	return theme.navy, theme.slate, theme.gold, theme.ink
-}
-
-func paintLightCanvas(slide *ppt.Slide, theme deckTheme) {
-	paintSolidBackground(slide, theme.paper)
-}
-
 type contentBox struct {
 	x, y, w, h int64
 }
@@ -926,118 +918,7 @@ func lightContentBox(hasKicker bool) contentBox {
 }
 
 func paintLightChrome(slide *ppt.Slide, theme deckTheme, kicker, title, footer string, page, total int) contentBox {
-	switch theme.id {
-	case "consulting":
-		return paintConsultingContent(slide, theme, kicker, title, footer, page, total)
-	case "academic":
-		return paintRuledContent(slide, theme, kicker, title, footer, page, total, false)
-	case "warm":
-		return paintWarmContent(slide, theme, kicker, title, footer, page, total)
-	case "launch":
-		return paintBandContent(slide, theme, kicker, title, footer, page, total, theme.navy, theme.accent)
-	case "tech":
-		return paintFramedContent(slide, theme, kicker, title, footer, page, total)
-	case "education":
-		return paintBandContent(slide, theme, kicker, title, footer, page, total, theme.accent, theme.navy)
-	case "ceremony":
-		return paintRuledContent(slide, theme, kicker, title, footer, page, total, true)
-	case "minimal":
-		return paintMinimalContent(slide, theme, kicker, title, footer, page, total)
-	case "modern":
-		return paintModernContent(slide, theme, kicker, title, footer, page, total)
-	default:
-		return paintBusinessContent(slide, theme, kicker, title, footer, page, total)
-	}
-}
-
-func paintBusinessContent(slide *ppt.Slide, theme deckTheme, kicker, title, footer string, page, total int) contentBox {
-	paintLightCanvas(slide, theme)
-	return paintContentTitle(slide, theme, kicker, title, footer, page, total, 0.48, theme.accent, true)
-}
-
-func paintRuledContent(slide *ppt.Slide, theme deckTheme, kicker, title, footer string, page, total int, centerRule bool) contentBox {
-	paintSolidBackground(slide, theme.paper)
-	rule := theme.accent
-	if centerRule {
-		rule = theme.gold
-	}
-	// Keep the pair above the title. A rule at 0.28 sits inside the title box.
-	rect(slide, emuIn(0.7), emuIn(0.1), deckSlideWidth-emuIn(1.4), emuIn(0.016), rule)
-	rect(slide, emuIn(0.7), emuIn(0.15), deckSlideWidth-emuIn(1.4), emuIn(0.01), rule)
-	box := paintContentTitle(slide, theme, kicker, title, footer, page, total, 0.7, rule, false)
-	rect(slide, emuIn(0.7), emuIn(6.95), deckSlideWidth-emuIn(1.4), emuIn(0.012), rule)
-	return box
-}
-
-func paintWarmContent(slide *ppt.Slide, theme deckTheme, kicker, title, footer string, page, total int) contentBox {
-	// Paper stays visible so the white agenda and metric cards do not disappear.
-	paintSolidBackground(slide, theme.paper)
-	rect(slide, 0, 0, deckSlideWidth, emuIn(0.08), theme.accent)
-	return paintContentTitle(slide, theme, kicker, title, footer, page, total, 0.72, theme.accent, false)
-}
-
-func paintBandContent(slide *ppt.Slide, theme deckTheme, kicker, title, footer string, page, total int, band, stripe ppt.Color) contentBox {
-	paintSolidBackground(slide, theme.paper)
-	rect(slide, 0, 0, deckSlideWidth, emuIn(0.16), band)
-	rect(slide, 0, emuIn(0.16), deckSlideWidth, emuIn(0.045), stripe)
-	return paintContentTitle(slide, theme, kicker, title, footer, page, total, 0.55, stripe, false)
-}
-
-func paintFramedContent(slide *ppt.Slide, theme deckTheme, kicker, title, footer string, page, total int) contentBox {
-	paintSolidBackground(slide, theme.paper)
-	strokeFrame(slide, emuIn(0.22), emuIn(0.18), deckSlideWidth-emuIn(0.44), deckSlideHeight-emuIn(0.36), emuIn(0.018), theme.accent)
-	return paintContentTitle(slide, theme, kicker, title, footer, page, total, 0.55, theme.accent, false)
-}
-
-func paintMinimalContent(slide *ppt.Slide, theme deckTheme, kicker, title, footer string, page, total int) contentBox {
-	paintSolidBackground(slide, theme.paper)
-	return paintContentTitle(slide, theme, kicker, title, footer, page, total, 0.7, theme.navy, false)
-}
-
-// paintModernContent is the hairline-grid chrome: a white field under one
-// faint full-bleed rule, with the kicker set in a pill badge. Hierarchy comes
-// from type scale and whitespace, as in the other light styles.
-func paintModernContent(slide *ppt.Slide, theme deckTheme, kicker, title, footer string, page, total int) contentBox {
-	paintSolidBackground(slide, theme.paper)
-	rule := blend(theme.paper, theme.mute, 0.35)
-	const left = 0.7
-	// One hairline above the header. It stops short of the page mark so the
-	// rule never crosses the number.
-	rect(slide, 0, emuIn(0.34), deckSlideWidth, emuIn(0.01), rule)
-	kicker = sanitizeXMLText(strings.TrimSpace(kicker))
-	titleY, titleSize := 0.62, 30
-	titleBoxH := 0.55
-	if label, below := paintKickerBadge(slide, theme, kicker, left, 0.52, 11, 10.2); label != "" {
-		kicker = label
-		titleY, titleSize = below, 28
-	}
-	title = sanitizeXMLText(strings.TrimSpace(title))
-	if title != "" {
-		deckText(slide, emuIn(left), emuIn(titleY), emuIn(11.9), emuIn(titleBoxH), title, titleSize, true, theme.navy, ppt.HorizontalLeft)
-		// No accent bar under the title: a short emphasis bar is the classic
-		// generated-deck tell, and the pill badge already carries the accent.
-	}
-	if footer != "" {
-		deckText(slide, emuIn(left), emuIn(7.08), emuIn(9.0), emuIn(0.28), footer, 11, false, textOn(theme.mute, theme.paper, theme), ppt.HorizontalLeft)
-	}
-	paintPageMark(slide, page, total, textOn(theme.mute, theme.paper, theme))
-	// The pill badge makes this header taller than the shared chrome assumes,
-	// so the body starts below the title rather than colliding with it. The
-	// offset is derived from the same titleY the badge returned, so the two
-	// cannot drift apart if the badge geometry changes.
-	box := lightContentBox(kicker != "")
-	if kicker != "" {
-		box.y = emuIn(titleY + titleBoxH + 0.12)
-		box.h = deckSlideHeight - box.y - emuIn(0.6)
-	}
-	return box
-}
-
-// paintRingMark draws the concentric ring-and-core mark: an outer ring with a
-// smaller core disc, echoing the badge geometry of the reference board.
-func paintRingMark(slide *ppt.Slide, theme deckTheme, x, y, d float64) {
-	oval(slide, emuIn(x), emuIn(y), emuIn(d), emuIn(d), blend(theme.navy, theme.paper, 0.86))
-	oval(slide, emuIn(x+d*0.2), emuIn(y+d*0.2), emuIn(d*0.6), emuIn(d*0.6), theme.gold)
+	return paintMotifChrome(slide, theme, kicker, title, footer, page, total)
 }
 
 func oval(slide *ppt.Slide, x, y, w, h int64, fill ppt.Color) {
@@ -1079,41 +960,6 @@ func paintContentTitle(slide *ppt.Slide, theme deckTheme, kicker, title, footer 
 	return lightContentBox(kicker != "")
 }
 
-// paintConsultingContent is the consulting-grade chrome: white field, cyan
-// kicker, action title in navy, one full-width hairline as the structural
-// divider between the title block and the body. The hairline is layout
-// grammar, not decoration, so it spans the text column and hugs the title.
-func paintConsultingContent(slide *ppt.Slide, theme deckTheme, kicker, title, footer string, page, total int) contentBox {
-	paintLightCanvas(slide, theme)
-	const left = 0.55
-	kicker = sanitizeXMLText(strings.TrimSpace(kicker))
-	titleY := 0.34
-	if kicker != "" {
-		deckText(slide, emuIn(left), emuIn(0.24), emuIn(12.0), emuIn(0.24), kicker, 11, true, textOn(theme.gold, theme.paper, theme), ppt.HorizontalLeft)
-		titleY = 0.52
-	}
-	title = sanitizeXMLText(strings.TrimSpace(title))
-	if title != "" {
-		deckText(slide, emuIn(left), emuIn(titleY), emuIn(12.0), emuIn(0.55), title, 28, true, theme.navy, ppt.HorizontalLeft)
-	}
-	hairY := titleY + 0.58
-	rect(slide, emuIn(left), emuIn(hairY), deckSlideWidth-emuIn(left+0.45), emuIn(0.012), blend(theme.slate, theme.paper, 0.72))
-	if footer != "" {
-		deckText(slide, emuIn(left), emuIn(7.08), emuIn(9.0), emuIn(0.28), footer, 10, false, textOn(theme.mute, theme.paper, theme), ppt.HorizontalLeft)
-	}
-	paintPageMark(slide, page, total, textOn(theme.mute, theme.paper, theme))
-	top := 1.34
-	if kicker != "" {
-		top = 1.44
-	}
-	return contentBox{
-		x: emuIn(left),
-		y: emuIn(top),
-		w: deckSlideWidth - emuIn(left) - emuIn(0.45),
-		h: emuIn(6.90 - top),
-	}
-}
-
 func buildTitleSlide(slide *ppt.Slide, outline Outline, theme deckTheme, total int) {
 	if slide == nil {
 		return
@@ -1153,237 +999,14 @@ func buildClosingSlide(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, pag
 // paintSectionField draws the dark divider canvas. sectionNo >= 1 marks a real
 // section divider (consulting shows its giant index); 0 is a closing page.
 func paintSectionField(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total, sectionNo int) {
-	paintSolidBackground(slide, theme.navy)
-	titleX := 0.7
-	if sectionNo > 0 && theme.id == "consulting" {
-		// Consulting divider: a giant tone-on-tone section index anchors the
-		// left, the section title sits to its right. Tone-on-tone, not decoration.
-		deckText(slide, emuIn(0.62), emuIn(1.85), emuIn(3.1), emuIn(2.2), fmt.Sprintf("%02d", sectionNo), 130, true, theme.navy2, ppt.HorizontalLeft)
-		titleX = 3.55
-		if kicker != "" {
-			deckText(slide, emuIn(titleX), emuIn(2.35), emuIn(9), emuIn(0.3), kicker, 14, true, textOn(theme.gold, theme.navy, theme), ppt.HorizontalLeft)
-		}
-		deckText(slide, emuIn(titleX), emuIn(2.75), emuIn(8.9), emuIn(1.5), title, coverTitlePointSize(title, 40, 8.9, 1.5), true, textOn(theme.onDark, theme.navy, theme), ppt.HorizontalLeft)
-		deckText(slide, emuIn(titleX), emuIn(4.35), emuIn(8.9), emuIn(0.8), subtitle, 18, false, textOn(theme.onDarkMute, theme.navy, theme), ppt.HorizontalLeft)
-		paintPageMark(slide, page, total, textOn(theme.onDarkMute, theme.navy, theme))
-		return
-	}
-	if kicker != "" {
-		deckText(slide, emuIn(titleX), emuIn(2.15), emuIn(11.5), emuIn(0.3), kicker, 14, true, textOn(theme.gold, theme.navy, theme), ppt.HorizontalLeft)
-	}
-	deckText(slide, emuIn(titleX), emuIn(2.55), emuIn(11.6), emuIn(1.5), title, coverTitlePointSize(title, 44, 11.6, 1.5), true, textOn(theme.onDark, theme.navy, theme), ppt.HorizontalLeft)
-	deckText(slide, emuIn(titleX), emuIn(4.4), emuIn(11), emuIn(0.8), subtitle, 18, false, textOn(theme.onDarkMute, theme.navy, theme), ppt.HorizontalLeft)
-	paintPageMark(slide, page, total, textOn(theme.onDarkMute, theme.navy, theme))
+	paintMotifSection(slide, theme, title, subtitle, kicker, page, total, sectionNo)
 }
 
 func paintStyleCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
 	title = sanitizeXMLText(strings.TrimSpace(title))
 	subtitle = sanitizeXMLText(strings.TrimSpace(subtitle))
 	kicker = sanitizeXMLText(strings.TrimSpace(kicker))
-	switch theme.id {
-	case "consulting":
-		paintConsultingCover(slide, theme, title, subtitle, kicker, page, total)
-	case "executive":
-		paintExecutiveCover(slide, theme, title, subtitle, kicker, page, total)
-	case "academic":
-		paintAcademicCover(slide, theme, title, subtitle, kicker, page, total)
-	case "warm":
-		paintWarmCover(slide, theme, title, subtitle, kicker, page, total)
-	case "launch":
-		paintLaunchCover(slide, theme, title, subtitle, kicker, page, total)
-	case "tech":
-		paintTechCover(slide, theme, title, subtitle, kicker, page, total)
-	case "education":
-		paintEducationCover(slide, theme, title, subtitle, kicker, page, total)
-	case "ceremony":
-		paintCeremonyCover(slide, theme, title, subtitle, kicker, page, total)
-	case "minimal":
-		paintMinimalCover(slide, theme, title, subtitle, kicker, page, total)
-	case "modern":
-		paintModernCover(slide, theme, title, subtitle, kicker, page, total)
-	default:
-		paintBusinessCover(slide, theme, title, subtitle, kicker, page, total)
-	}
-}
-
-func paintBusinessCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
-	// Swiss consulting cover: white field, one left rule, action title.
-	paintSolidBackground(slide, theme.paper)
-	rect(slide, 0, 0, emuIn(0.22), deckSlideHeight, theme.navy)
-	titleY, titleH := 1.85, 1.90
-	if kicker != "" {
-		deckText(slide, emuIn(0.7), emuIn(1.4), emuIn(11.2), emuIn(0.28), kicker, 13, true, textOn(theme.navy, theme.paper, theme), ppt.HorizontalLeft)
-		titleY, titleH = 1.8, 1.7
-	}
-	titleSize := coverTitlePointSize(title, 44, 11.5, titleH)
-	deckText(slide, emuIn(0.7), emuIn(titleY), emuIn(11.5), emuIn(titleH), title, titleSize, true, textOn(theme.ink, theme.paper, theme), ppt.HorizontalLeft)
-	subY := titleY + float64(coverTitleLines(title, titleSize, 11.5))*float64(titleSize)/72*1.35 + 0.12
-	deckText(slide, emuIn(0.7), emuIn(subY), emuIn(11), emuIn(0.9), subtitle, 18, false, textOn(theme.slate, theme.paper, theme), ppt.HorizontalLeft)
-	paintPageMark(slide, page, total, textOn(theme.mute, theme.paper, theme))
-}
-
-func paintConsultingCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
-	// Consulting cover: one full navy field, left-aligned action title, a
-	// cyan kicker, and generous quiet space. No frames, no stripes.
-	paintSolidBackground(slide, theme.navy)
-	titleY, titleH := 2.15, 1.90
-	if kicker != "" {
-		deckText(slide, emuIn(0.7), emuIn(1.62), emuIn(11.2), emuIn(0.3), kicker, 14, true, textOn(theme.gold, theme.navy, theme), ppt.HorizontalLeft)
-		titleY, titleH = 2.05, 1.75
-	}
-	titleSize := coverTitlePointSize(title, 46, 11.5, titleH)
-	deckText(slide, emuIn(0.7), emuIn(titleY), emuIn(11.5), emuIn(titleH), title, titleSize, true, textOn(theme.onDark, theme.navy, theme), ppt.HorizontalLeft)
-	subY := titleY + float64(coverTitleLines(title, titleSize, 11.5))*float64(titleSize)/72*1.35 + 0.12
-	deckText(slide, emuIn(0.7), emuIn(subY), emuIn(11), emuIn(0.9), subtitle, 18, false, textOn(theme.onDarkMute, theme.navy, theme), ppt.HorizontalLeft)
-	paintPageMark(slide, page, total, textOn(theme.onDarkMute, theme.navy, theme))
-}
-
-func paintExecutiveCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
-	// Executive cover: full midnight field, ice-blue kicker, generous quiet
-	// space. Restraint is the identity — no frames, no rails, no stripes.
-	paintSolidBackground(slide, theme.navy)
-	titleY, titleH := 2.30, 1.90
-	if kicker != "" {
-		deckText(slide, emuIn(0.75), emuIn(1.72), emuIn(11.2), emuIn(0.3), kicker, 14, true, textOn(theme.gold, theme.navy, theme), ppt.HorizontalLeft)
-		titleY, titleH = 2.20, 1.75
-	}
-	titleSize := coverTitlePointSize(title, 46, 11.4, titleH)
-	deckText(slide, emuIn(0.75), emuIn(titleY), emuIn(11.4), emuIn(titleH), title, titleSize, true, textOn(theme.onDark, theme.navy, theme), ppt.HorizontalLeft)
-	subY := titleY + float64(coverTitleLines(title, titleSize, 11.4))*float64(titleSize)/72*1.35 + 0.12
-	deckText(slide, emuIn(0.75), emuIn(subY), emuIn(11), emuIn(0.9), subtitle, 18, false, textOn(theme.onDarkMute, theme.navy, theme), ppt.HorizontalLeft)
-	paintPageMark(slide, page, total, textOn(theme.onDarkMute, theme.navy, theme))
-}
-
-func paintAcademicCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
-	// Dark academia: brown field, double gold frame, centered serif-like title.
-	paintSolidBackground(slide, theme.navy)
-	strokeFrame(slide, emuIn(0.38), emuIn(0.32), deckSlideWidth-emuIn(0.76), deckSlideHeight-emuIn(0.64), emuIn(0.02), theme.accent)
-	strokeFrame(slide, emuIn(0.5), emuIn(0.44), deckSlideWidth-emuIn(1.0), deckSlideHeight-emuIn(0.88), emuIn(0.01), theme.gold)
-	titleY, titleH := 2.05, 1.6
-	if kicker != "" {
-		deckText(slide, emuIn(1.2), emuIn(1.6), emuIn(10.9), emuIn(0.28), kicker, 13, true, textOn(theme.accent, theme.navy, theme), ppt.HorizontalCenter)
-		titleY, titleH = 2.0, 1.5
-	}
-	deckText(slide, emuIn(1.3), emuIn(titleY), emuIn(10.7), emuIn(titleH), title, coverTitlePointSize(title, 42, 10.7, titleH), true, textOn(theme.onDark, theme.navy, theme), ppt.HorizontalCenter)
-	rect(slide, emuIn(5.7), emuIn(titleY+titleH+0.08), emuIn(1.9), emuIn(0.025), theme.accent)
-	deckText(slide, emuIn(1.8), emuIn(titleY+titleH+0.24), emuIn(9.7), emuIn(0.9), subtitle, 16, false, textOn(theme.onDarkMute, theme.navy, theme), ppt.HorizontalCenter)
-	deckText(slide, emuIn(5.3), emuIn(6.45), emuIn(2.7), emuIn(0.28), pageMark(page, total), 12, false, textOn(theme.gold, theme.navy, theme), ppt.HorizontalCenter)
-}
-
-func paintWarmCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
-	// Nordic: cream field, three dots, large quiet type, one rule near the foot.
-	paintSolidBackground(slide, theme.paper)
-	for i, tone := range []ppt.Color{theme.ink, theme.accent, theme.gold} {
-		rect(slide, emuIn(0.85+float64(i)*0.28), emuIn(1.55), emuIn(0.12), emuIn(0.12), tone)
-	}
-	titleY := 2.05
-	if kicker != "" {
-		deckText(slide, emuIn(0.85), emuIn(1.85), emuIn(11), emuIn(0.28), kicker, 13, true, textOn(theme.accent, theme.paper, theme), ppt.HorizontalLeft)
-		titleY = 2.25
-	}
-	deckText(slide, emuIn(0.85), emuIn(titleY), emuIn(11.4), emuIn(1.8), title, coverTitlePointSize(title, 46, 11.4, 1.8), true, theme.ink, ppt.HorizontalLeft)
-	rect(slide, emuIn(0.85), emuIn(6.35), deckSlideWidth-emuIn(1.7), emuIn(0.015), theme.accent)
-	deckText(slide, emuIn(0.85), emuIn(6.5), emuIn(10), emuIn(0.45), subtitle, 16, false, textOn(theme.slate, theme.paper, theme), ppt.HorizontalLeft)
-	paintPageMark(slide, page, total, textOn(theme.mute, theme.paper, theme))
-}
-
-func paintLaunchCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
-	// Duotone: exact half split, white divider, color echoed across the join.
-	half := int64(deckSlideWidth) / 2
-	rect(slide, 0, 0, half, deckSlideHeight, theme.accent)
-	rect(slide, half, 0, int64(deckSlideWidth)-half, deckSlideHeight, theme.navy)
-	rect(slide, half-emuIn(0.03), 0, emuIn(0.06), deckSlideHeight, theme.white)
-	if kicker != "" {
-		deckText(slide, emuIn(0.55), emuIn(1.7), emuIn(5.6), emuIn(0.3), kicker, 14, true, theme.white, ppt.HorizontalLeft)
-	}
-	deckText(slide, emuIn(0.55), emuIn(2.15), emuIn(5.7), emuIn(2.4), title, coverTitlePointSize(title, 44, 5.7, 2.4), true, theme.white, ppt.HorizontalLeft)
-	deckText(slide, half+emuIn(0.45), emuIn(2.5), emuIn(5.5), emuIn(1.6), subtitle, 20, false, textOn(theme.accent, theme.navy, theme), ppt.HorizontalLeft)
-	deckText(slide, half+emuIn(0.45), emuIn(6.7), emuIn(4), emuIn(0.3), pageMark(page, total), 12, false, textOn(theme.white, theme.navy, theme), ppt.HorizontalLeft)
-}
-
-func paintTechCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
-	// Blueprint: navy field, coarse grid, corner brackets.
-	paintSolidBackground(slide, theme.navy)
-	for i := 1; i <= 6; i++ {
-		rect(slide, emuIn(float64(i)*1.9), emuIn(0.35), emuIn(0.012), deckSlideHeight-emuIn(0.7), theme.navy2)
-	}
-	for i := 1; i <= 3; i++ {
-		rect(slide, emuIn(0.35), emuIn(float64(i)*1.8), deckSlideWidth-emuIn(0.7), emuIn(0.012), theme.navy2)
-	}
-	strokeFrame(slide, emuIn(0.28), emuIn(0.24), deckSlideWidth-emuIn(0.56), deckSlideHeight-emuIn(0.48), emuIn(0.02), theme.accent)
-	titleY, titleH := 2.1, 1.6
-	if kicker != "" {
-		deckText(slide, emuIn(0.7), emuIn(1.55), emuIn(11), emuIn(0.28), kicker, 13, true, textOn(theme.accent, theme.navy, theme), ppt.HorizontalLeft)
-		titleY, titleH = 1.95, 1.5
-	}
-	deckText(slide, emuIn(0.7), emuIn(titleY), emuIn(11.4), emuIn(titleH), title, coverTitlePointSize(title, 40, 11.4, titleH), true, textOn(theme.onDark, theme.navy, theme), ppt.HorizontalLeft)
-	deckText(slide, emuIn(0.7), emuIn(titleY+titleH+0.12), emuIn(11), emuIn(0.8), subtitle, 16, false, textOn(theme.onDarkMute, theme.navy, theme), ppt.HorizontalLeft)
-	deckText(slide, emuIn(9.8), emuIn(6.55), emuIn(2.6), emuIn(0.28), pageMark(page, total), 12, false, textOn(theme.accent, theme.navy, theme), ppt.HorizontalRight)
-}
-
-func paintEducationCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
-	// Course masthead: a full-width band, then the lesson title on paper.
-	paintSolidBackground(slide, theme.paper)
-	rect(slide, 0, 0, deckSlideWidth, emuIn(2.35), theme.navy)
-	rect(slide, 0, emuIn(2.35), deckSlideWidth, emuIn(0.07), theme.accent)
-	label := kicker
-	if label == "" {
-		label = "LESSON"
-	}
-	deckText(slide, emuIn(0.7), emuIn(0.7), emuIn(11), emuIn(0.35), label, 14, true, textOn(theme.gold, theme.navy, theme), ppt.HorizontalLeft)
-	deckText(slide, emuIn(0.7), emuIn(1.15), emuIn(11.5), emuIn(1.0), title, coverTitlePointSize(title, 36, 11.5, 1.0), true, textOn(theme.onDark, theme.navy, theme), ppt.HorizontalLeft)
-	deckText(slide, emuIn(0.7), emuIn(2.85), emuIn(11), emuIn(1.2), subtitle, 20, false, textOn(theme.ink, theme.paper, theme), ppt.HorizontalLeft)
-	paintPageMark(slide, page, total, textOn(theme.mute, theme.paper, theme))
-}
-
-func paintCeremonyCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
-	paintSolidBackground(slide, theme.navy)
-	strokeFrame(slide, emuIn(0.42), emuIn(0.36), deckSlideWidth-emuIn(0.84), deckSlideHeight-emuIn(0.72), emuIn(0.02), theme.gold)
-	strokeFrame(slide, emuIn(0.55), emuIn(0.48), deckSlideWidth-emuIn(1.1), deckSlideHeight-emuIn(0.96), emuIn(0.01), theme.accent)
-	titleY, titleH := 2.00, 1.70
-	if kicker != "" {
-		deckText(slide, emuIn(1.4), emuIn(1.55), emuIn(10.5), emuIn(0.28), kicker, 14, true, textOn(theme.gold, theme.navy, theme), ppt.HorizontalCenter)
-		titleY, titleH = 1.95, 1.55
-	}
-	deckText(slide, emuIn(1.3), emuIn(titleY), emuIn(10.7), emuIn(titleH), title, coverTitlePointSize(title, 46, 10.7, titleH), true, textOn(theme.onDark, theme.navy, theme), ppt.HorizontalCenter)
-	rect(slide, emuIn(5.9), emuIn(3.85), emuIn(1.5), emuIn(0.03), theme.gold)
-	deckText(slide, emuIn(1.8), emuIn(4.15), emuIn(9.7), emuIn(1.15), subtitle, 18, false, textOn(theme.onDarkMute, theme.navy, theme), ppt.HorizontalCenter)
-	deckText(slide, emuIn(5.2), emuIn(6.55), emuIn(2.9), emuIn(0.28), pageMark(page, total), 12, false, textOn(theme.gold, theme.navy, theme), ppt.HorizontalCenter)
-}
-
-func paintMinimalCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
-	paintSolidBackground(slide, theme.paper)
-	if kicker != "" {
-		deckText(slide, emuIn(0.75), emuIn(1.35), emuIn(11), emuIn(0.28), kicker, 12, true, textOn(theme.mute, theme.paper, theme), ppt.HorizontalLeft)
-	}
-	deckText(slide, emuIn(0.75), emuIn(1.7), emuIn(11.5), emuIn(1.55), title, coverTitlePointSize(title, 36, 11.5, 1.55), true, textOn(theme.navy, theme.paper, theme), ppt.HorizontalLeft)
-	rect(slide, 0, emuIn(3.45), deckSlideWidth, emuIn(0.055), theme.navy)
-	deckText(slide, emuIn(0.75), emuIn(3.7), emuIn(11), emuIn(1.15), subtitle, 18, false, textOn(theme.slate, theme.paper, theme), ppt.HorizontalLeft)
-	deckText(slide, emuIn(10.6), emuIn(6.9), emuIn(2.1), emuIn(0.28), pageMark(page, total), 12, false, textOn(theme.mute, theme.paper, theme), ppt.HorizontalRight)
-}
-
-// paintModernCover is the brand cover: white field, a navy panel on the right
-// holding the concentric ring mark, and a warm full-bleed bar that ties the
-// two fields. Left-aligned type on paper carries the title.
-func paintModernCover(slide *ppt.Slide, theme deckTheme, title, subtitle, kicker string, page, total int) {
-	paintSolidBackground(slide, theme.paper)
-	panelX := 8.05
-	rect(slide, emuIn(panelX), 0, deckSlideWidth-emuIn(panelX), deckSlideHeight, theme.navy)
-	// Full-bleed warm bar across the page: the one saturated mark on the cover.
-	rect(slide, 0, emuIn(5.62), deckSlideWidth, emuIn(0.05), theme.gold)
-	paintRingMark(slide, theme, panelX+1.05, 2.05, 3.2)
-	const left = 0.7
-	kicker = sanitizeXMLText(strings.TrimSpace(kicker))
-	titleY, titleH := 1.95, 2.10
-	if label, below := paintKickerBadge(slide, theme, kicker, left, 1.42, 11, panelX-left-0.4); label != "" {
-		kicker = label
-		titleY, titleH = below, 1.95
-	}
-	titleSize := coverTitlePointSize(title, 42, 6.9, titleH)
-	deckText(slide, emuIn(left), emuIn(titleY), emuIn(6.9), emuIn(titleH), title, titleSize, true, theme.navy, ppt.HorizontalLeft)
-	subY := titleY + float64(coverTitleLines(title, titleSize, 6.9))*float64(titleSize)/72*1.35 + 0.12
-	deckText(slide, emuIn(left), emuIn(subY), emuIn(6.6), emuIn(0.9), subtitle, 16, false, theme.slate, ppt.HorizontalLeft)
-	paintPageMark(slide, page, total, textOn(theme.mute, theme.paper, theme))
+	paintMotifCover(slide, theme, title, subtitle, kicker, page, total)
 }
 
 func strokeFrame(slide *ppt.Slide, x, y, w, h, t int64, color ppt.Color) {
@@ -1584,7 +1207,10 @@ func colorLuminance(c ppt.Color) float64 {
 }
 
 func styleUsesOpenPoints(id string) bool {
-	return id == "warm" || id == "minimal"
+	if spec, ok := lookupStyle(id); ok {
+		return motifBody(spec.motif) == bodyOpen
+	}
+	return false
 }
 
 func buildCards(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, box contentBox) {
@@ -1592,50 +1218,17 @@ func buildCards(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, box conten
 	if len(texts) == 0 {
 		return
 	}
-	if styleUsesOpenPoints(theme.id) {
+	switch motifBody(theme.motif) {
+	case bodyOpen:
 		buildOpenPoints(slide, theme, box, texts)
-		return
-	}
-	cols, rows := gridSpec(len(texts), 3)
-	if len(texts) == 4 {
-		cols, rows = 2, 2
-	}
-	gap := emuIn(0.16)
-	cardW := (box.w - gap*int64(cols-1)) / int64(cols)
-	// Short points in a tall card read as an empty frame, so the card height
-	// is capped — and the whole grid is then centered in the content box so
-	// the page does not read as "content squeezed into the top half".
-	maxH := emuIn(2.60)
-	if rows > 1 {
-		maxH = emuIn(1.90)
-	}
-	cardH := (box.h - gap*int64(rows-1)) / int64(rows)
-	if cardH > maxH {
-		cardH = maxH
-	}
-	y0 := box.y + (box.h-cardH*int64(rows)-gap*int64(rows-1))/2
-	titleSize, bodySize := 18, 16
-	if rows > 1 {
-		titleSize, bodySize = 16, 15
-	}
-	for i, text := range texts {
-		col := i % cols
-		row := i / cols
-		x := box.x + int64(col)*(cardW+gap)
-		y := y0 + int64(row)*(cardH+gap)
-		// A subtle tinted field separates the card; edge strips read as
-		// generated filler, so emphasis comes from the index and the title.
-		rect(slide, x, y, cardW, cardH, theme.card)
-		head, body := splitCardLine(text)
-		num := fmt.Sprintf("%02d", i+1)
-		deckText(slide, x+emuIn(0.24), y+emuIn(0.18), cardW-emuIn(0.44), emuIn(0.3), num, 12, true, readableAccent(theme, theme.card), ppt.HorizontalLeft)
-		textY := y + emuIn(0.5)
-		if head != "" {
-			deckText(slide, x+emuIn(0.22), textY, cardW-emuIn(0.4), emuIn(0.55), head, titleSize, true, textOn(theme.navy, theme.card, theme), ppt.HorizontalLeft)
-			deckText(slide, x+emuIn(0.22), textY+emuIn(0.5), cardW-emuIn(0.4), cardH-emuIn(1.15), body, bodySize, false, textOn(theme.slate, theme.card, theme), ppt.HorizontalLeft)
-			continue
-		}
-		deckText(slide, x+emuIn(0.22), textY, cardW-emuIn(0.4), cardH-emuIn(0.7), text, bodySize+1, false, textOn(theme.ink, theme.card, theme), ppt.HorizontalLeft)
+	case bodyOutline:
+		buildOutlineCards(slide, theme, box, texts)
+	case bodyNotes:
+		buildNoteCards(slide, theme, box, texts)
+	case bodyRail:
+		buildRailCards(slide, theme, box, texts)
+	default:
+		buildFilledCards(slide, theme, box, texts)
 	}
 }
 
@@ -1653,26 +1246,25 @@ func chartSeriesColors(theme deckTheme, i int) ppt.Color {
 
 func buildOpenPoints(slide *ppt.Slide, theme deckTheme, box contentBox, texts []string) {
 	n := len(texts)
-	gap := emuIn(0.1)
-	rowH := (box.h - gap*int64(n-1)) / int64(n)
-	if rowH > emuIn(1.05) {
-		rowH = emuIn(1.05)
+	rowH, gap := fitSpan(box.h, int64(n), emuIn(0.1), emuIn(1.05))
+	numH := emuIn(0.36)
+	if numH > rowH {
+		numH = rowH
 	}
 	for i, text := range texts {
 		y := box.y + int64(i)*(rowH+gap)
-		deckText(slide, box.x, y, emuIn(0.7), emuIn(0.36), fmt.Sprintf("%02d", i+1), 16, true, readableAccent(theme, theme.paper), ppt.HorizontalLeft)
+		deckText(slide, box.x, y, emuIn(0.7), numH, fmt.Sprintf("%02d", i+1), 16, true, readableAccent(theme, theme.paper), ppt.HorizontalLeft)
 		head, body := splitCardLine(text)
 		if head != "" {
-			deckText(slide, box.x+emuIn(0.85), y, box.w-emuIn(0.9), emuIn(0.36), head, 18, true, textOn(theme.navy, theme.paper, theme), ppt.HorizontalLeft)
-			deckText(slide, box.x+emuIn(0.85), y+emuIn(0.38), box.w-emuIn(0.9), rowH-emuIn(0.48), body, 15, false, textOn(theme.slate, theme.paper, theme), ppt.HorizontalLeft)
+			deckText(slide, box.x+emuIn(0.85), y, box.w-emuIn(0.9), numH, head, 18, true, textOn(theme.navy, theme.paper, theme), ppt.HorizontalLeft)
+			bodyTop := y + emuIn(0.38)
+			deckText(slide, box.x+emuIn(0.85), bodyTop, box.w-emuIn(0.9), remain(bodyTop, y, rowH, emuIn(0.06)), body, 15, false, textOn(theme.slate, theme.paper, theme), ppt.HorizontalLeft)
 		} else {
-			deckText(slide, box.x+emuIn(0.85), y, box.w-emuIn(0.9), rowH-emuIn(0.16), text, 18, false, textOn(theme.ink, theme.paper, theme), ppt.HorizontalLeft)
+			deckText(slide, box.x+emuIn(0.85), y, box.w-emuIn(0.9), remain(y, y, rowH, emuIn(0.08)), text, 18, false, textOn(theme.ink, theme.paper, theme), ppt.HorizontalLeft)
 		}
-		rule := theme.accent
-		if theme.id == "minimal" {
-			rule = theme.navy
+		if rowH > emuIn(0.04) {
+			rect(slide, box.x, y+rowH-emuIn(0.015), box.w, emuIn(0.015), openPointRule(theme))
 		}
-		rect(slide, box.x, y+rowH-emuIn(0.015), box.w, emuIn(0.015), rule)
 	}
 }
 
@@ -1686,19 +1278,23 @@ func buildAgenda(slide *ppt.Slide, spec OutlineSlide, theme deckTheme, box conte
 		buildOpenPoints(slide, theme, box, texts)
 		return
 	}
-	gap := emuIn(0.12)
-	rowH := (box.h - gap*int64(n-1)) / int64(n)
-	if rowH > emuIn(0.92) {
-		rowH = emuIn(0.92)
+	rowH, gap := fitSpan(box.h, int64(n), emuIn(0.12), emuIn(0.92))
+	stack := rowH*int64(n) + gap*int64(n-1)
+	y0 := box.y
+	if stack < box.h {
+		y0 = box.y + (box.h-stack)/2
 	}
-	y0 := box.y + (box.h-rowH*int64(n)-gap*int64(n-1))/2
+	chipH := emuIn(0.42)
+	if chipH > rowH {
+		chipH = rowH
+	}
 	for i, text := range texts {
 		y := y0 + int64(i)*(rowH+gap)
 		rect(slide, box.x, y, box.w, rowH, theme.card)
-		numY := y + (rowH-emuIn(0.42))/2
-		rect(slide, box.x+emuIn(0.16), numY, emuIn(0.72), emuIn(0.42), theme.accent)
-		deckText(slide, box.x+emuIn(0.16), numY, emuIn(0.72), emuIn(0.42), fmt.Sprintf("%02d", i+1), 14, true, agendaNumberColor(theme), ppt.HorizontalCenter)
-		deckText(slide, box.x+emuIn(1.08), numY, box.w-emuIn(1.3), emuIn(0.42), text, 16, false, textOn(theme.ink, theme.card, theme), ppt.HorizontalLeft)
+		numY := y + (rowH-chipH)/2
+		rect(slide, box.x+emuIn(0.16), numY, emuIn(0.72), chipH, theme.accent)
+		deckText(slide, box.x+emuIn(0.16), numY, emuIn(0.72), chipH, fmt.Sprintf("%02d", i+1), 14, true, agendaNumberColor(theme), ppt.HorizontalCenter)
+		deckText(slide, box.x+emuIn(1.08), numY, box.w-emuIn(1.3), chipH, text, 16, false, textOn(theme.ink, theme.card, theme), ppt.HorizontalLeft)
 	}
 }
 

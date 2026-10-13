@@ -347,6 +347,8 @@ type App struct {
 	compressorMu                      sync.Mutex // guards lazy creation of memoryCompressor
 	scheduledTaskManagerMu            sync.Mutex // guards lazy scheduler creation across concurrent IM gateways
 	scheduledTaskManager              *scheduler.Manager
+	runWindowManagerMu                sync.Mutex
+	runWindowManager                  *runWindowManager
 	// scheduleTargetCatalogs maps delivery channel → target list (groups/users).
 	// Agent tools use channel as a parameter; new IM platforms only register here.
 	scheduleTargetCatalogs            *scheduler.TargetCatalogRegistry
@@ -1429,6 +1431,7 @@ func (a *App) isCurrentMemoryPipelineSchedule(seq uint64) bool {
 }
 
 func (a *App) ensureScheduledTaskManager() {
+	a.ensureRunWindowManager()
 	a.scheduledTaskManagerMu.Lock()
 	defer a.scheduledTaskManagerMu.Unlock()
 	if a.scheduledTaskManager != nil {

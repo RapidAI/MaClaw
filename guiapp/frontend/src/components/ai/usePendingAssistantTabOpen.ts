@@ -719,16 +719,25 @@ export function usePendingAssistantTabOpen({
     useEffect(() => {
         if (!pendingExpertOpen) return;
         const expert = pendingExpertOpen.expert;
-        onExpertHandledRef.current?.();
+        // Release the slot only after this open finishes. Releasing at the
+        // start lets the next queued expert bump the request id and cancel
+        // the task registration that is still in flight.
+        const releaseExpertOpen = () => onExpertHandledRef.current?.();
         const expertId = String(expert?.id || "").trim();
-        if (!expertId) return;
+        if (!expertId) {
+            releaseExpertOpen();
+            return;
+        }
         const initialMessage = String(pendingExpertOpen.initialMessage || "").trim();
         const requestID = ++expertOpenRequestRef.current;
 
         const openExpertTab = (prepared?: EnsuredExpertTask | void) => {
             if (requestID !== expertOpenRequestRef.current) return;
             const create = createExpertTabRef.current;
-            if (!create) return;
+            if (!create) {
+                releaseExpertOpen();
+                return;
+            }
 
             // Wizard handoff: the backend expert branch relies on this first
             // user message to trigger its flow, so it is sent even when the tab
@@ -755,7 +764,10 @@ export function usePendingAssistantTabOpen({
             // (and tests) treat create(expert) and create(expert, undefined)
             // as the same invocation, so the arity must stay honest.
             const tab = expertTask ? create(expert, expertTask) : create(expert);
-            if (!tab) return;
+            if (!tab) {
+                releaseExpertOpen();
+                return;
+            }
             if (isLatexExpertId(expertId) && initialMessage) {
                 markExpertSessionFloorRef.current?.(expertId);
             }
@@ -764,6 +776,7 @@ export function usePendingAssistantTabOpen({
             }
             if (existedBefore) {
                 sendInitialMessage();
+                releaseExpertOpen();
                 return;
             }
 
@@ -772,6 +785,7 @@ export function usePendingAssistantTabOpen({
                 && existing.history.some((m) => isConversationMessage(m) && (m.role === "user" || m.role === "assistant"));
             if (hasConversation) {
                 sendInitialMessage();
+                releaseExpertOpen();
                 return;
             }
 
@@ -789,6 +803,7 @@ export function usePendingAssistantTabOpen({
                 lastActiveAt: Date.now(),
             });
             sendInitialMessage();
+            releaseExpertOpen();
         };
         const ensureTask = ensureExpertTaskRef.current;
         const startFreshLatex = isLatexExpertId(expertId) && !!initialMessage;
@@ -823,6 +838,7 @@ export function usePendingAssistantTabOpen({
             // Task management is the durable entry point for experts. Do not
             // open a tab that cannot be reached again from the sidebar.
             console.error("[task_management] create expert task failed:", error);
+            releaseExpertOpen();
             if (!freshLatexPath) return;
             void AbandonUnopenedFreshLatexTask(freshLatexPath).catch((abandonError) => {
                 console.warn("[task_management] abandon unopened latex paper failed:", abandonError);

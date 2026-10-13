@@ -395,13 +395,15 @@ const TENANT_CHECKIN_SETTINGS_I18N = {
     enabledHintOn: 'Enabled - users see the check-in button in the MaClaw sidebar.',
     enabledHintOff: 'Disabled - the check-in button stays hidden.',
     creditsLabel: 'Credits per check-in',
-    hint: 'Each user can check in once per local day and receives the credits once. Range: 1 to 1000000.',
+    durationLabel: 'Credit validity (days)',
+    hint: 'Each user can check in once per local day. Awarded credits expire after the validity period. Default is 30 days (1 month). Credits: 1 to 1000000. Validity: 1 to 3650 days.',
     save: 'Save',
     saving: 'Saving...',
     saved: 'Check-in settings saved.',
     loadFailed: 'Load check-in settings failed: {error}',
     saveFailed: 'Save check-in settings failed: {error}',
     invalid: 'Credits must be an integer from 1 to 1000000.',
+    invalidDuration: 'Validity must be an integer from 1 to 3650 days.',
     viewBtn: 'View check-ins',
     recordsTitle: 'Check-in records',
     periodDay: 'Day',
@@ -423,13 +425,15 @@ const TENANT_CHECKIN_SETTINGS_I18N = {
     enabledHintOn: '\u5df2\u542f\u7528 \u2014 \u7528\u6237\u53ef\u5728 MaClaw \u4fa7\u8fb9\u680f\u770b\u5230\u7b7e\u5230\u6309\u94ae\u3002',
     enabledHintOff: '\u5df2\u5173\u95ed \u2014 \u4fa7\u8fb9\u680f\u4e0d\u663e\u793a\u7b7e\u5230\u6309\u94ae\u3002',
     creditsLabel: '\u6bcf\u6b21\u7b7e\u5230\u5956\u52b1\u79ef\u5206',
-    hint: '\u6bcf\u4e2a\u7528\u6237\u6bcf\u4e2a\u81ea\u7136\u65e5\u53ef\u7b7e\u5230\u4e00\u6b21\uff0c\u5956\u52b1 1 \u5230 1000000 \u79ef\u5206\u3002',
+    durationLabel: '\u79ef\u5206\u6709\u6548\u671f\uff08\u5929\uff09',
+    hint: '\u6bcf\u4e2a\u7528\u6237\u6bcf\u4e2a\u81ea\u7136\u65e5\u53ef\u7b7e\u5230\u4e00\u6b21\u3002\u7b7e\u5230\u79ef\u5206\u6309\u6709\u6548\u671f\u5931\u6548\uff0c\u9ed8\u8ba4 30 \u5929\uff081 \u4e2a\u6708\uff09\u3002\u79ef\u5206 1 \u5230 1000000\uff0c\u6709\u6548\u671f 1 \u5230 3650 \u5929\u3002',
     save: '\u4fdd\u5b58',
     saving: '\u4fdd\u5b58\u4e2d...',
     saved: '\u7b7e\u5230\u8bbe\u7f6e\u5df2\u4fdd\u5b58\u3002',
     loadFailed: '\u52a0\u8f7d\u7b7e\u5230\u8bbe\u7f6e\u5931\u8d25\uff1a{error}',
     saveFailed: '\u4fdd\u5b58\u7b7e\u5230\u8bbe\u7f6e\u5931\u8d25\uff1a{error}',
     invalid: '\u79ef\u5206\u6570\u91cf\u5fc5\u987b\u662f 1 \u5230 1000000 \u4e4b\u95f4\u7684\u6574\u6570\u3002',
+    invalidDuration: '\u6709\u6548\u671f\u5fc5\u987b\u662f 1 \u5230 3650 \u5929\u4e4b\u95f4\u7684\u6574\u6570\u3002',
     viewBtn: '\u67e5\u770b\u7b7e\u5230',
     recordsTitle: '\u7b7e\u5230\u8bb0\u5f55',
     periodDay: '\u65e5',
@@ -610,6 +614,7 @@ function applyTenantCheckinSettingsI18n() {
   _s('tenantCheckinSettingsReloadBtn', 'textContent', tcix('reload'));
   _s('tenantCheckinEnabledLabel', 'textContent', tcix('enabledLabel'));
   _s('tenantCheckinCreditsLabel', 'textContent', tcix('creditsLabel'));
+  _s('tenantCheckinDurationDaysLabel', 'textContent', tcix('durationLabel'));
   _s('tenantCheckinSettingsHint', 'textContent', tcix('hint'));
   _s('tenantCheckinSettingsSaveBtn', 'textContent', tcix('save'));
   updateTenantCheckinEnabledHint();
@@ -625,11 +630,16 @@ async function loadTenantCheckinSettings() {
     const data = await api('/api/admin/settings/checkin');
     const enabledToggle = document.getElementById('tenantCheckinEnabledToggle');
     const creditsInput = document.getElementById('tenantCheckinCredits');
+    const durationInput = document.getElementById('tenantCheckinDurationDays');
     if (enabledToggle) enabledToggle.checked = !!(data && data.enabled);
     if (creditsInput) {
       // Render the stored value verbatim: a falsy 0 must not fall back to 10.
       const credits = Number(data && data.credits);
       creditsInput.value = String(Number.isFinite(credits) ? credits : 10);
+    }
+    if (durationInput) {
+      const days = Number(data && data.duration_days);
+      durationInput.value = String(Number.isFinite(days) && days > 0 ? Math.trunc(days) : 30);
     }
     updateTenantCheckinEnabledHint();
     return data || {};
@@ -643,8 +653,16 @@ async function saveTenantCheckinSettings() {
   if (!canManageTenantCheckin()) return null;
   const enabled = !!(document.getElementById('tenantCheckinEnabledToggle') && document.getElementById('tenantCheckinEnabledToggle').checked);
   const credits = Math.trunc(Number((document.getElementById('tenantCheckinCredits') && document.getElementById('tenantCheckinCredits').value || '0').trim()));
+  const durationText = String((document.getElementById('tenantCheckinDurationDays') && document.getElementById('tenantCheckinDurationDays').value) || '').trim();
+  const durationDays = /^\d+$/.test(durationText) ? Number(durationText) : NaN;
   if (!Number.isFinite(credits) || credits < 1 || credits > 1000000) {
     const msg = tcix('invalid');
+    setOutput(msg);
+    showToast(msg, 'error');
+    return;
+  }
+  if (!Number.isInteger(durationDays) || durationDays < 1 || durationDays > 3650) {
+    const msg = tcix('invalidDuration');
     setOutput(msg);
     showToast(msg, 'error');
     return;
@@ -653,7 +671,11 @@ async function saveTenantCheckinSettings() {
   const previousLabel = btn ? btn.textContent : '';
   if (btn) { btn.disabled = true; btn.textContent = tcix('saving'); }
   try {
-    const data = await api('/api/admin/settings/checkin', { method: 'PUT', body: JSON.stringify({ enabled: enabled, credits: credits }) });
+    const data = await api('/api/admin/settings/checkin', { method: 'PUT', body: JSON.stringify({ enabled: enabled, credits: credits, duration_days: durationDays }) });
+    const durationInput = document.getElementById('tenantCheckinDurationDays');
+    if (durationInput && data && Number.isFinite(Number(data.duration_days)) && Number(data.duration_days) > 0) {
+      durationInput.value = String(Math.trunc(Number(data.duration_days)));
+    }
     updateTenantCheckinEnabledHint();
     const msg = tcix('saved');
     setOutput(msg);

@@ -27,9 +27,8 @@ func WorkloadHintHeaderValues(cfg corelib.MaclawLLMConfig) map[string]string {
 	setHint(llmpool.WorkflowTypeHeader, cfg.WorkflowTypeHint)
 	setHint(llmpool.PhaseKindHeader, cfg.PhaseKindHint)
 	setHint(llmpool.TaskTypeHeader, cfg.TaskTypeHint)
-	// Service group rides with the other hints. The Anthropic client sends
-	// this map alone; leaving the group out billed a hub bot on whatever
-	// groups the viewer already had.
+	// Service group is optional. Empty leaves Hub on the viewer's entitlements,
+	// which is how the GUI bills. A set value is a pin to that one group.
 	setHint(llmpool.ServiceGroupIDHeader, cfg.ServiceGroupID)
 	if len(out) == 0 {
 		return nil

@@ -1528,6 +1528,9 @@ func TestListOrdersActiveCardsOnlyPaginates(t *testing.T) {
 	if total != 3 || len(page2) != 1 {
 		t.Fatalf("page2 = %d/%d, want 1/3", len(page2), total)
 	}
+	if orderRepo.lastFilter.Limit != activeCardsScanLimit || orderRepo.lastFilter.Offset != 0 {
+		t.Fatalf("scan filter = limit %d offset %d, want limit %d offset 0", orderRepo.lastFilter.Limit, orderRepo.lastFilter.Offset, activeCardsScanLimit)
+	}
 }
 
 func TestRebindOrderServiceGroupRejectsFreeGroup(t *testing.T) {

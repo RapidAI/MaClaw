@@ -151,14 +151,19 @@ textarea {
     box-shadow: 0 0 0 3px var(--theme-primary-soft, rgba(47, 111, 188, 0.10)) !important;
 }
 
-/* Respect reduced-motion globally: collapse all transitions/animations. */
+/* Reduced motion turns transitions off. A short duration on its own leaves
+   transition-property at the initial value of all, so width and height animate.
+   Mermaid sizes an HTML label by creating a large foreignObject and then
+   shrinking it; the same-frame transition keeps that scratch size in getBBox,
+   and the diagram viewBox becomes the scratch square (a thumbnail in the
+   corner, blank everywhere else). */
 @media (prefers-reduced-motion: reduce) {
     *,
     *::before,
     *::after {
         animation-duration: 0.01ms !important;
         animation-iteration-count: 1 !important;
-        transition-duration: 0.01ms !important;
+        transition: none !important;
     }
 }
 
@@ -1390,9 +1395,10 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   outline-offset: 2px;
 }
 
-/* Reference motion preference */
+/* Reference motion preference. More specific than the global rule, so this
+   has to turn transitions off itself rather than only shorten a duration. */
 @media (prefers-reduced-motion: reduce) {
-  .mc-welcome *, .mc-task-pane *, .mc-task-execution *, .mc-nav-rail * { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+  .mc-welcome *, .mc-task-pane *, .mc-task-execution *, .mc-nav-rail * { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition: none !important; scroll-behavior: auto !important; }
 }
 
 /* Live progress sits in the assistant column, not as a detached centered card. */

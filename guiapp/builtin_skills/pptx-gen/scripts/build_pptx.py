@@ -3,7 +3,7 @@
 The deck uses a real visual system (cover, accent rail, cards, page footer),
 matching the native office write_pptx renderer. Input JSON:
 
-    {"title": "...", "subtitle": "...", "theme": "business|academic|warm",
+    {"title": "...", "subtitle": "...", "theme": "clean|magazine|eink|dashboard|retro|sketch|whiteboard|handmade|research|mckinsey|official|course",
      "slides": [{"title": "...", "kicker": "...",
                  "layout": "auto|bullets|cards|section|agenda|kpi|quote|closing",
                  "bullets": ["..."], "notes": "...",
@@ -30,41 +30,44 @@ _ILLEGAL_XML_CHARS_RE = re.compile(
 
 _DEFAULT_FONT = "Microsoft YaHei"
 
-# Keep ids, aliases, and keywords aligned with corelib/pptx/write_style.go.
+# Keep ids, aliases, keywords, colors, and motif aligned with corelib/pptx/write_style.go.
 _STYLES = [
-    {"id": "business", "aliases": ["business", "商务", "商务汇报", "汇报"], "cover_dark": True,
-     "keywords": ["季度", "经营分析", "客户提案", "商务", "董事会", "复盘", "工作汇报", "季度汇报", "quarterly review", "board meeting", "client proposal", "business review"],
-     "colors": {"paper": "F3F6F8", "ink": "1C2B3A", "navy": "0B1F33", "navy2": "14324C", "accent": "0E7C73", "gold": "C4A35A", "white": "FFFFFF", "mute": "5E6B78", "slate": "3E4C5A", "card": "FFFFFF", "on_dark": "F7FBFC", "on_dark_mute": "C3D2DE"}},
-    {"id": "consulting", "aliases": ["consulting", "咨询", "咨询顾问", "顾问", "麦肯锡", "consulting deck", "mckinsey"], "cover_dark": True,
-     "keywords": ["战略", "咨询", "顾问", "行业分析", "商业分析", "尽调", "竞对分析", "strategy", "consulting", "industry analysis", "due diligence"],
-     "colors": {"paper": "FFFFFF", "ink": "1A1A1A", "navy": "061F32", "navy2": "0E3352", "accent": "061F32", "gold": "08A6F6", "white": "FFFFFF", "mute": "6B7680", "slate": "33404D", "card": "F4F6F8", "on_dark": "FFFFFF", "on_dark_mute": "B9C6D2"}},
-    {"id": "executive", "aliases": ["executive", "高管", "高管汇报", "董事会汇报", "executive brief", "board deck"], "cover_dark": True,
-     "keywords": ["董事会", "高管", "决策", "年度报告", "战略汇报", "经营决策", "executive", "board deck", "annual report"],
-     "colors": {"paper": "FFFFFF", "ink": "1C2430", "navy": "1E2761", "navy2": "2A3575", "accent": "1E2761", "gold": "CADCFC", "white": "FFFFFF", "mute": "5F6B7A", "slate": "39414E", "card": "F5F7FB", "on_dark": "FFFFFF", "on_dark_mute": "C9D6F2"}},
-    {"id": "academic", "aliases": ["academic", "学术", "学术答辩", "scholar"], "cover_dark": True,
-     "keywords": ["论文", "答辩", "课题", "开题", "文献", "学术", "综述", "thesis", "dissertation", "research paper", "literature review"],
-     "colors": {"paper": "F7F4EE", "ink": "241C18", "navy": "1C2430", "navy2": "2A3544", "accent": "7C2F3B", "gold": "A6843D", "white": "FFFFFF", "mute": "6E655C", "slate": "3E4652", "card": "FFFCF8", "on_dark": "F8F4EE", "on_dark_mute": "D9D0C4"}},
-    {"id": "warm", "aliases": ["warm", "温馨", "温馨纪念", "warmth", "soft"], "cover_dark": True,
-     "keywords": ["生日", "纪念", "婚礼", "满月", "寿辰", "温馨", "宠物", "致谢", "birthday", "wedding", "memorial", "family gathering"],
-     "colors": {"paper": "FBF6F1", "ink": "3A2A24", "navy": "3D2B26", "navy2": "5A3E36", "accent": "C4785A", "gold": "E0B15A", "white": "FFFFFF", "mute": "7A6A60", "slate": "5C463E", "card": "FFFCF8", "on_dark": "FFF8F3", "on_dark_mute": "E6D2C6"}},
-    {"id": "launch", "aliases": ["launch", "发布", "发布路演", "路演"], "cover_dark": True,
-     "keywords": ["发布会", "路演", "融资", "产品发布", "品牌发布", "product launch", "pitch deck", "fundraising"],
-     "colors": {"paper": "F6F5F3", "ink": "1A1A1A", "navy": "141414", "navy2": "2A2A2A", "accent": "E24A2A", "gold": "F0C14A", "white": "FFFFFF", "mute": "6A6A6A", "slate": "3A3A3A", "card": "FFFFFF", "on_dark": "F7F4F1", "on_dark_mute": "E7C7BE"}},
-    {"id": "tech", "aliases": ["tech", "技术", "技术分享"], "cover_dark": True,
-     "keywords": ["技术分享", "架构", "研发", "开源", "系统设计", "技术方案", "open source", "engineering talk", "system architecture"],
-     "colors": {"paper": "F3F6FA", "ink": "102033", "navy": "071422", "navy2": "10243A", "accent": "19B5C7", "gold": "8EB4FF", "white": "FFFFFF", "mute": "5C6B7A", "slate": "314255", "card": "FFFFFF", "on_dark": "E7F6F8", "on_dark_mute": "B7D4DC"}},
-    {"id": "education", "aliases": ["education", "教学", "课件", "教学课件"], "cover_dark": True,
-     "keywords": ["课件", "培训", "课堂", "教学", "课程", "教案", "lecture", "training course", "classroom", "lesson plan"],
-     "colors": {"paper": "FFF8EF", "ink": "2A241C", "navy": "1E3A5F", "navy2": "2C4C73", "accent": "E39B2B", "gold": "F3D48A", "white": "FFFFFF", "mute": "6E6256", "slate": "4A4036", "card": "FFFCF7", "on_dark": "FFF6E8", "on_dark_mute": "F0D7B0"}},
-    {"id": "ceremony", "aliases": ["ceremony", "典礼", "年会", "典礼年会"], "cover_dark": True,
-     "keywords": ["年会", "典礼", "颁奖", "致辞", "开幕", "闭幕", "纪念典礼", "awards ceremony", "annual gala", "opening remarks"],
-     "colors": {"paper": "F8F3EE", "ink": "2C1A1E", "navy": "3A1520", "navy2": "4E2030", "accent": "D4AF67", "gold": "F0D78C", "white": "FFFFFF", "mute": "7A655C", "slate": "4E3A3A", "card": "FFFCF8", "on_dark": "FBF4EA", "on_dark_mute": "E6D3C4"}},
-    {"id": "minimal", "aliases": ["minimal", "极简"], "cover_dark": False,
-     "keywords": ["极简", "作品集", "简历", "个人介绍", "portfolio", "resume", "personal introduction"],
-     "colors": {"paper": "F7F6F3", "ink": "1C1C1C", "navy": "1C1C1C", "navy2": "3A3A3A", "accent": "1C1C1C", "gold": "B08948", "white": "FFFFFF", "mute": "6E6A64", "slate": "3F3F3C", "card": "FFFFFF", "on_dark": "1C1C1C", "on_dark_mute": "5C5852"}},
-    {"id": "modern", "aliases": ["modern", "现代", "现代品牌", "品牌", "品牌蓝", "brand", "modern brand"], "cover_dark": False,
-     "keywords": ["产品介绍", "品牌故事", "白皮书", "用户增长", "品牌手册", "品牌宣传", "brand deck", "saas"],
-     "colors": {"paper": "FFFFFF", "ink": "16202B", "navy": "0B2E4F", "navy2": "123D66", "accent": "1E88E5", "gold": "FF7A45", "white": "FFFFFF", "mute": "5F5E5A", "slate": "4B5563", "card": "F4F7FB", "on_dark": "FFFFFF", "on_dark_mute": "A1C7EE"}},
+    {"id": "clean", "motif": "report", "aliases": ["clean", "business", "商务", "商务汇报", "汇报", "清爽专业"],
+     "keywords": ["经营汇报", "工作总结", "项目复盘", "晋升述职", "季度汇报", "客户提案", "工作复盘", "quarterly review", "business review", "client proposal"],
+     "colors": {"paper": "FFFFFF", "ink": "0F172A", "navy": "1E3A8A", "navy2": "0F766E", "accent": "2563EB", "gold": "F59E0B", "white": "FFFFFF", "mute": "64748B", "slate": "334155", "card": "F8FAFC", "on_dark": "F8FAFC", "on_dark_mute": "CBD5E1"}},
+    {"id": "magazine", "motif": "split", "aliases": ["magazine", "launch", "发布", "发布路演", "路演", "modern", "现代", "现代品牌", "品牌"],
+     "keywords": ["品牌发布", "创意提案", "设计作品集", "时尚发布", "产品发布", "产品介绍", "product launch", "pitch deck", "fundraising", "brand deck"],
+     "colors": {"paper": "FFFFFF", "ink": "111111", "navy": "111111", "navy2": "2A2A2A", "accent": "FF006E", "gold": "FFED00", "white": "FFFFFF", "mute": "6B7280", "slate": "374151", "card": "FFFFFF", "on_dark": "FFFFFF", "on_dark_mute": "E5E7EB"}},
+    {"id": "eink", "motif": "ink", "aliases": ["eink", "minimal", "极简", "ceremony", "年会", "典礼"],
+     "keywords": ["主题演讲", "观点分享", "个人介绍", "年会致辞", "颁奖典礼", "demo day", "personal introduction"],
+     "colors": {"paper": "F7F4EA", "ink": "111111", "navy": "1E2A78", "navy2": "163B2F", "accent": "C2410C", "gold": "D9C29E", "white": "FFFCF5", "mute": "6B6560", "slate": "3F3A36", "card": "FBF8F1", "on_dark": "F7F4EA", "on_dark_mute": "D6D0C4"}},
+    {"id": "dashboard", "motif": "dashboard", "aliases": ["dashboard", "数据仪表盘", "看板"],
+     "keywords": ["数据看板", "运营分析", "业绩展示", "商业智能", "KPI汇报", "看板", "analytics dashboard"],
+     "colors": {"paper": "F5F8FC", "ink": "0F172A", "navy": "1D4ED8", "navy2": "0891B2", "accent": "2563EB", "gold": "10B981", "white": "FFFFFF", "mute": "64748B", "slate": "334155", "card": "FFFFFF", "on_dark": "F8FAFC", "on_dark_mute": "C7D2FE"}},
+    {"id": "retro", "motif": "poster", "aliases": ["retro", "复古", "扁平插画"],
+     "keywords": ["品牌故事", "生活方式", "旅游介绍", "文化创意", "复古插画", "brand story"],
+     "colors": {"paper": "F5F3E8", "ink": "34495E", "navy": "2C3E50", "navy2": "6C7A89", "accent": "FF6B6B", "gold": "F9CA24", "white": "FFFFFF", "mute": "6C7A89", "slate": "34495E", "card": "FFFDF6", "on_dark": "2C3E50", "on_dark_mute": "95A5A6"}},
+    {"id": "sketch", "motif": "sketch", "aliases": ["sketch", "tech", "技术", "技术分享", "手绘技术"],
+     "keywords": ["技术分享", "系统架构", "技术架构", "概念解释", "开源项目", "技术方案", "engineering talk", "system architecture"],
+     "colors": {"paper": "FCFBF7", "ink": "2F3437", "navy": "2F3437", "navy2": "7A8490", "accent": "BFD7F1", "gold": "F4C7B8", "white": "FFFFFF", "mute": "8A9096", "slate": "4A5158", "card": "FFFFFF", "on_dark": "2F3437", "on_dark_mute": "8A9096"}},
+    {"id": "whiteboard", "motif": "board", "aliases": ["whiteboard", "白板", "手绘白板"],
+     "keywords": ["头脑风暴", "内部研讨", "白板讲解", "概念梳理", "brainstorm"],
+     "colors": {"paper": "FAFAF5", "ink": "1A1A1A", "navy": "1A1A1A", "navy2": "3498DB", "accent": "E74C3C", "gold": "F39C12", "white": "FFFFFF", "mute": "6B7280", "slate": "374151", "card": "FFF9C4", "on_dark": "FFFFFF", "on_dark_mute": "D1D5DB"}},
+    {"id": "handmade", "motif": "craft", "aliases": ["handmade", "warm", "温馨", "温馨纪念", "温暖手工"],
+     "keywords": ["生日纪念", "生日", "温馨纪念", "儿童教育", "亲子活动", "社区公益", "birthday", "wedding", "family gathering"],
+     "colors": {"paper": "F5F1E8", "ink": "5C4033", "navy": "5C4033", "navy2": "A67C52", "accent": "F5C4B8", "gold": "B8D4A8", "white": "FFFCF8", "mute": "8A7568", "slate": "6B5344", "card": "FFFCF7", "on_dark": "5C4033", "on_dark_mute": "A67C52"}},
+    {"id": "research", "motif": "defense", "aliases": ["research", "academic", "学术", "学术答辩", "科研答辩"],
+     "keywords": ["论文答辩", "开题答辩", "毕业答辩", "课题申报", "基金申请", "文献综述", "答辩", "thesis defense", "dissertation"],
+     "colors": {"paper": "FFFFFF", "ink": "111111", "navy": "003F8F", "navy2": "0B5CAD", "accent": "B5121B", "gold": "F3DFA2", "white": "FFFFFF", "mute": "4B5563", "slate": "333333", "card": "F3F6FA", "on_dark": "FFFFFF", "on_dark_mute": "D6E4F0"}},
+    {"id": "mckinsey", "motif": "consulting", "aliases": ["mckinsey", "consulting", "咨询", "咨询顾问", "麦肯锡", "executive", "高管", "高管汇报"],
+     "keywords": ["战略咨询", "商业分析", "行业分析", "尽职调查", "竞对分析", "增长战略", "战略汇报", "董事会汇报", "due diligence", "strategy consulting"],
+     "colors": {"paper": "F6F8FA", "ink": "243447", "navy": "243447", "navy2": "5B7C99", "accent": "5B7C99", "gold": "8AA0B5", "white": "FFFFFF", "mute": "6B7280", "slate": "475569", "card": "FFFFFF", "on_dark": "243447", "on_dark_mute": "6B7280"}},
+    {"id": "official", "motif": "official", "aliases": ["official", "党政", "党政红"],
+     "keywords": ["党建学习", "政策宣讲", "工作部署", "党政汇报", "国企汇报"],
+     "colors": {"paper": "FFF9F2", "ink": "262626", "navy": "9E1530", "navy2": "C41E3A", "accent": "C41E3A", "gold": "D6A84B", "white": "FFFFFF", "mute": "6B6560", "slate": "4A4A4A", "card": "FFFCF8", "on_dark": "FFF9F2", "on_dark_mute": "F3E6C8"}},
+    {"id": "course", "motif": "lesson", "aliases": ["course", "education", "教学", "课件", "教学课件"],
+     "keywords": ["教学课件", "培训课程", "培训课件", "课堂教案", "新员工培训", "课件", "教案", "lesson plan", "classroom"],
+     "colors": {"paper": "FFFBF5", "ink": "1F2937", "navy": "1E3A5F", "navy2": "0F766E", "accent": "F59E0B", "gold": "FDE68A", "white": "FFFFFF", "mute": "6B7280", "slate": "374151", "card": "FFFCF7", "on_dark": "FFFBF5", "on_dark_mute": "E5E7EB"}},
 ]
 
 
@@ -290,47 +293,111 @@ def _page_mark(slide, inches, pt, page, total, color):
     _tb(slide, inches, pt, 11.05, 7.08, 1.8, 0.28, f"{page:02d}  /  {total:02d}", 12, color, align="right")
 
 
-def _dark_canvas(slide, inches, theme):
-    _rect(slide, inches, 0, 0, 13.333, 7.5, theme["navy"])
-    _rect(slide, inches, 0, 6.52, 13.333, 0.98, theme["navy2"])
-    _rect(slide, inches, 0, 0, 0.16, 7.5, theme["accent"])
-
-
-def _feature_canvas(slide, inches, theme, cover_dark):
-    if cover_dark:
-        _dark_canvas(slide, inches, theme)
-        return
-    _light_canvas(slide, inches, theme)
-    _rect(slide, inches, 0, 7.42, 13.333, 0.08, theme["accent"])
-
-
-def _feature_colors(theme, cover_dark):
-    if cover_dark:
-        return theme["on_dark"], theme["on_dark_mute"], theme["gold"], theme["accent"]
-    return theme["navy"], theme["slate"], theme["gold"], theme["ink"]
-
-
-def _light_canvas(slide, inches, theme):
+def _light_chrome(slide, inches, pt, theme, kicker, title, footer, page, total, motif="report"):
     _rect(slide, inches, 0, 0, 13.333, 7.5, theme["paper"])
-    _rect(slide, inches, 0, 0, 0.12, 7.5, theme["accent"])
-    _rect(slide, inches, 0, 0, 13.333, 0.045, theme["navy"])
-
-
-def _light_chrome(slide, inches, pt, theme, kicker, title, footer, page, total):
-    _light_canvas(slide, inches, theme)
-    title_y = 0.26
+    if motif == "official":
+        _rect(slide, inches, 0, 0, 13.333, 0.12, theme["accent"])
+        _rect(slide, inches, 0, 0.12, 13.333, 0.03, theme["gold"])
+    elif motif == "lesson":
+        _rect(slide, inches, 0, 0, 13.333, 0.16, theme["navy"])
+        _rect(slide, inches, 0, 0.16, 13.333, 0.04, theme["accent"])
+    elif motif == "split":
+        _rect(slide, inches, 0, 0, 0.12, 7.5, theme["accent"])
+    elif motif == "consulting":
+        _rect(slide, inches, 0.55, 1.02, 12.3, 0.012, theme["accent"])
+    elif motif == "defense":
+        _rect(slide, inches, 0.55, 1.02, 1.7, 0.04, theme["navy"])
+        _rect(slide, inches, 2.35, 1.02, 0.4, 0.04, theme["accent"])
+    elif motif not in ("ink", "sketch", "dashboard", "board"):
+        _rect(slide, inches, 0, 0, 0.14, 7.5, theme["accent"])
+    title_y = 0.32
     title_size = 28
     if kicker:
-        _tb(slide, inches, pt, 0.48, 0.14, 12.2, 0.26, kicker, 12, theme["accent"], bold=True)
-        title_y = 0.40
+        _tb(slide, inches, pt, 0.55, 0.18, 12.0, 0.26, kicker, 12, theme["accent"], bold=True)
+        title_y = 0.46
         title_size = 26
     if title:
-        _tb(slide, inches, pt, 0.48, title_y, 12.2, 0.52, title, title_size, theme["navy"], bold=True)
-        _rect(slide, inches, 0.48, title_y + 0.56, 1.45, 0.042, theme["accent"])
+        _tb(slide, inches, pt, 0.55, title_y, 12.0, 0.52, title, title_size, theme["ink"], bold=True)
     if footer:
-        _tb(slide, inches, pt, 0.48, 7.08, 9.3, 0.28, footer, 11, theme["mute"])
+        _tb(slide, inches, pt, 0.55, 7.08, 9.3, 0.28, footer, 11, theme["mute"])
     _page_mark(slide, inches, pt, page, total, theme["mute"])
-    return 1.36 if kicker else 1.16
+    return 1.42 if kicker else 1.2
+
+
+def _paint_cover(slide, inches, pt, motif, theme, title, subtitle, total):
+    if motif == "split":
+        _rect(slide, inches, 0, 0, 5.55, 7.5, theme["navy"])
+        _rect(slide, inches, 5.55, 0, 7.783, 7.5, theme["paper"])
+        _rect(slide, inches, 5.55, 0, 0.12, 7.5, theme["accent"])
+        _tb(slide, inches, pt, 0.45, 2.05, 4.7, 2.2, title, 36, theme["white"], bold=True)
+        if subtitle:
+            _tb(slide, inches, pt, 6.15, 2.3, 6.5, 1.6, subtitle, 18, theme["ink"])
+        return
+    if motif == "official":
+        _rect(slide, inches, 0, 0, 13.333, 7.5, theme["paper"])
+        _rect(slide, inches, 0, 0, 5.15, 7.5, theme["accent"])
+        _rect(slide, inches, 5.15, 0, 0.045, 7.5, theme["gold"])
+        _tb(slide, inches, pt, 0.45, 2.15, 4.3, 2.2, title, 32, theme["white"], bold=True)
+        if subtitle:
+            _tb(slide, inches, pt, 5.7, 2.4, 7.0, 1.6, subtitle, 18, theme["ink"])
+        return
+    if motif == "lesson":
+        _rect(slide, inches, 0, 0, 13.333, 7.5, theme["paper"])
+        _rect(slide, inches, 0, 0, 13.333, 2.45, theme["navy"])
+        _rect(slide, inches, 0, 2.45, 13.333, 0.08, theme["accent"])
+        _tb(slide, inches, pt, 0.7, 0.85, 11.6, 1.15, title, 32, theme["white"], bold=True)
+        if subtitle:
+            _tb(slide, inches, pt, 0.7, 2.9, 11.4, 1.2, subtitle, 18, theme["ink"])
+        return
+    if motif == "poster":
+        _rect(slide, inches, 0, 0, 13.333, 7.5, theme["paper"])
+        for index, key in enumerate(("accent", "gold", "navy2", "navy")):
+            _rect(slide, inches, index * 3.333, 0, 3.333, 1.15, theme[key])
+        _tb(slide, inches, pt, 0.7, 2.0, 11.6, 1.6, title, 36, theme["ink"], bold=True)
+        if subtitle:
+            _tb(slide, inches, pt, 0.7, 3.8, 11.4, 1.1, subtitle, 18, theme["slate"])
+        return
+    _rect(slide, inches, 0, 0, 13.333, 7.5, theme["paper"])
+    if motif == "dashboard":
+        _rect(slide, inches, 0, 0, 13.333, 2.05, theme["white"])
+        _tb(slide, inches, pt, 0.55, 0.7, 11.5, 0.9, title, 32, theme["ink"], bold=True)
+    elif motif in ("consulting", "ink", "sketch"):
+        _tb(slide, inches, pt, 0.7, 1.9, 11.6, 1.8, title, 40, theme["ink"], bold=True)
+        _rect(slide, inches, 0.7, 4.0, 2.2, 0.03, theme["accent"])
+    else:
+        _rect(slide, inches, 0, 0, 0.2, 7.5, theme["accent"])
+        _tb(slide, inches, pt, 0.7, 1.9, 11.6, 1.8, title, 40, theme["ink"], bold=True)
+    if subtitle and motif != "dashboard":
+        _tb(slide, inches, pt, 0.7, 4.3, 11.4, 1.1, subtitle, 18, theme["slate"])
+    elif subtitle:
+        _tb(slide, inches, pt, 0.55, 2.4, 12.0, 0.8, subtitle, 16, theme["slate"])
+    _page_mark(slide, inches, pt, 1, total, theme["mute"])
+
+
+def _paint_section(slide, inches, pt, motif, theme, kicker, title, bullets, page, total):
+    if motif == "official":
+        _rect(slide, inches, 0, 0, 13.333, 7.5, theme["accent"])
+        title_color, sub_color = theme["white"], theme["white"]
+    elif motif in ("defense", "lesson"):
+        _rect(slide, inches, 0, 0, 13.333, 7.5, theme["navy"])
+        title_color, sub_color = theme["white"], theme["white"]
+    elif motif == "split":
+        _rect(slide, inches, 0, 0, 7.4, 7.5, theme["navy"])
+        _rect(slide, inches, 7.4, 0, 5.933, 7.5, theme["paper"])
+        _rect(slide, inches, 7.4, 0, 0.1, 7.5, theme["accent"])
+        _tb(slide, inches, pt, 0.55, 2.5, 6.4, 1.6, title, 32, theme["white"], bold=True)
+        _page_mark(slide, inches, pt, page, total, theme["mute"])
+        return
+    else:
+        _rect(slide, inches, 0, 0, 13.333, 7.5, theme["paper"])
+        _rect(slide, inches, 0.75, 4.2, 1.6, 0.035, theme["accent"])
+        title_color, sub_color = theme["navy"], theme["slate"]
+    if kicker:
+        kick = theme["white"] if motif in ("official", "defense", "lesson") else theme["accent"]
+        _tb(slide, inches, pt, 0.75, 2.05, 11.5, 0.32, kicker, 14, kick, bold=True)
+    _tb(slide, inches, pt, 0.75, 2.45, 11.6, 1.35, title, 36, title_color, bold=True)
+    _lines(slide, inches, pt, 0.75, 4.4, 11.2, 1.6, bullets, 18, sub_color)
+    _page_mark(slide, inches, pt, page, total, sub_color)
 
 
 def _split_card(text):
@@ -520,7 +587,7 @@ def build_pptx(outline, output_path):
         sys.exit(1)
 
     style = _resolve_theme(outline.get("theme"), _style_hint(outline))
-    cover_dark = bool(style["cover_dark"])
+    motif = style.get("motif") or "report"
     theme = {key: _rgb(value) for key, value in style["colors"].items()}
     title = _clean_xml_text(outline.get("title") or "演示文稿")
     subtitle = _clean_xml_text(outline.get("subtitle") or "")
@@ -535,13 +602,7 @@ def build_pptx(outline, output_path):
     blank = _blank_layout(prs)
 
     cover = prs.slides.add_slide(blank)
-    title_color, sub_color, rule, _kicker = _feature_colors(theme, cover_dark)
-    _feature_canvas(cover, Inches, theme, cover_dark)
-    _tb(cover, Inches, Pt, 0.72, 1.85, 11.7, 1.55, title, 40, title_color, bold=True)
-    _rect(cover, Inches, 0.72, 3.62, 2.15, 0.05, rule)
-    if subtitle:
-        _tb(cover, Inches, Pt, 0.72, 3.82, 11.4, 1.15, subtitle, 20, sub_color)
-    _page_mark(cover, Inches, Pt, 1, total, sub_color)
+    _paint_cover(cover, Inches, Pt, motif, theme, title, subtitle, total)
 
     for index, item in enumerate(slides, start=2):
         slide = prs.slides.add_slide(blank)
@@ -550,23 +611,16 @@ def build_pptx(outline, output_path):
         kicker = _clean_xml_text(item.get("kicker") or "")
         bullets = item.get("bullets")
         if kind in ("section", "closing"):
-            title_color, sub_color, rule, kicker_color = _feature_colors(theme, cover_dark)
-            _feature_canvas(slide, Inches, theme, cover_dark)
-            if kicker:
-                _tb(slide, Inches, Pt, 0.72, 2.05, 11.5, 0.32, kicker, 14, rule if kind == "closing" else kicker_color, bold=True)
-            _tb(slide, Inches, Pt, 0.72, 2.45, 11.6, 1.35, slide_title, 36, title_color, bold=True)
-            _rect(slide, Inches, 0.72, 4.00, 2.15, 0.05, rule)
-            _lines(slide, Inches, Pt, 0.72, 4.25, 11.2, 1.8, bullets, 18, title_color if kind == "closing" else sub_color)
-            _page_mark(slide, Inches, Pt, index, total, sub_color)
+            _paint_section(slide, Inches, Pt, motif, theme, kicker, slide_title, bullets, index, total)
         elif kind == "quote":
             texts = _texts(bullets)
             label = kicker or (slide_title if texts else "")
             quote = texts or [slide_title]
-            top = _light_chrome(slide, Inches, Pt, theme, label, "", footer, index, total)
+            top = _light_chrome(slide, Inches, Pt, theme, label, "", footer, index, total, motif)
             _tb(slide, Inches, Pt, 0.48, top, 1.4, 0.8, "“", 60, theme["accent"], bold=True)
             _lines(slide, Inches, Pt, 0.48, top + 0.85, 12.2, 4.6, quote, 26, theme["navy"], space=10)
         else:
-            top = _light_chrome(slide, Inches, Pt, theme, kicker, slide_title, footer, index, total)
+            top = _light_chrome(slide, Inches, Pt, theme, kicker, slide_title, footer, index, total, motif)
             if kind == "cards":
                 _cards(slide, Inches, Pt, theme, bullets, top)
             elif kind == "agenda":

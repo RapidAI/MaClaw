@@ -90,12 +90,13 @@ func TestRunTokenBankAutoOncePullsBelowThreshold(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := llmservice.SaveRegistry(context.Background(), settings, &llmservice.Registry{
-		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "paid", Name: "Paid"}},
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "paid", Name: "Paid", AccessPolicy: llmservice.AccessPolicyGrantRequired}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// A stored threshold used to top up until that balance. One available
-	// credit must now keep the next tick idle.
+	// Under 100 credits the next tick withdraws another share. One hundred
+	// credits is the floor that keeps a later tick idle. An empty access
+	// policy is a free route, and a free route does not withdraw.
 	if err := settings.Set(context.Background(), "token_bank_auto_withdraw", `{"enabled":true,"threshold_micro":5000000,"service_group_id":"paid"}`); err != nil {
 		t.Fatal(err)
 	}
@@ -117,18 +118,18 @@ func TestRunTokenBankAutoOncePullsBelowThreshold(t *testing.T) {
 	if err := svc.RunTokenBankAutoOnce(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if withdraws != 1 {
-		t.Fatalf("second tick withdraws = %d, want 1 while a credit remains", withdraws)
+	if withdraws != 2 {
+		t.Fatalf("second tick withdraws = %d, want 2 while only one credit remains", withdraws)
 	}
 	reg, err = llmservice.LoadRegistry(context.Background(), settings)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(reg.Grants) != 1 {
-		t.Fatalf("grant count after second tick = %d, want 1", len(reg.Grants))
+	if len(reg.Grants) != 2 {
+		t.Fatalf("grant count after second tick = %d, want 2", len(reg.Grants))
 	}
-	if llmservice.SumTokenBankGrantMicro(reg.Grants, "owner@example.com") != 1_000_000 {
-		t.Fatalf("grant micro = %d, want 1000000", llmservice.SumTokenBankGrantMicro(reg.Grants, "owner@example.com"))
+	if llmservice.SumTokenBankGrantMicro(reg.Grants, "owner@example.com") != 2_000_000 {
+		t.Fatalf("grant micro = %d, want 2000000", llmservice.SumTokenBankGrantMicro(reg.Grants, "owner@example.com"))
 	}
 }
 
@@ -295,7 +296,7 @@ func TestPullTokenBankForAdmissionShortfallPullsWhileBalanceRemains(t *testing.T
 		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "paid", Name: "Paid"}},
 		Grants: []llmservice.Grant{{
 			ID: "card", UserID: "user-1", Email: "owner@example.com", ServiceGroupID: "paid",
-			CreditsTotal: 5.34, Permanent: true, StartsAt: now, ExpiresAt: now.AddDate(1, 0, 0),
+			CreditsTotal: 100, Permanent: true, StartsAt: now, ExpiresAt: now.AddDate(1, 0, 0),
 		}},
 	}); err != nil {
 		t.Fatal(err)
@@ -309,7 +310,7 @@ func TestPullTokenBankForAdmissionShortfallPullsWhileBalanceRemains(t *testing.T
 		t.Fatal(err)
 	}
 	if withdraws != 0 {
-		t.Fatalf("heartbeat withdraws = %d, want 0 while the point card still has credits", withdraws)
+		t.Fatalf("heartbeat withdraws = %d, want 0 while the point card still has 100 credits", withdraws)
 	}
 	pulled, err := svc.PullTokenBankForAdmissionShortfall(context.Background(), "user-1", "owner@example.com", []string{"paid"}, currentTokenBankSpend(t, settings, "user-1", "owner@example.com", []string{"paid"}))
 	if err != nil {
@@ -377,7 +378,7 @@ func TestRunTokenBankAutoOnceConfirmsAWrittenGrantWhileCreditsRemain(t *testing.
 			{
 				ID: "grant-rest", UserID: "user-1", Email: "owner@example.com", ServiceGroupID: "paid",
 				Source: llmservice.TokenBankGrantSource, CardID: "tbk:later",
-				CreditsTotal: 58.4965, Permanent: true,
+				CreditsTotal: 100, Permanent: true,
 				StartsAt: now, ExpiresAt: now.AddDate(10, 0, 0), CreatedAt: now,
 			},
 		},
@@ -413,7 +414,7 @@ func TestRunTokenBankAutoOnceConfirmsAWrittenGrantWhileCreditsRemain(t *testing.
 		t.Fatal(err)
 	}
 	if withdraws != 0 || finishes != 1 {
-		t.Fatalf("second tick withdraws=%d finishes=%d, want no further pull while credits remain", withdraws, finishes)
+		t.Fatalf("second tick withdraws=%d finishes=%d, want no further pull while 100 credits remain", withdraws, finishes)
 	}
 }
 
@@ -465,7 +466,7 @@ func TestStartHeartbeatConfirmsSpentAutoGrantBeforeTheTicker(t *testing.T) {
 			{
 				ID: "grant-rest", UserID: "user-1", Email: "owner@example.com", ServiceGroupID: "paid",
 				Source: llmservice.TokenBankGrantSource, CardID: "tbk:later",
-				CreditsTotal: 0.4095, Permanent: true,
+				CreditsTotal: 100, Permanent: true,
 				StartsAt: now, ExpiresAt: now.AddDate(10, 0, 0), CreatedAt: now,
 			},
 		},
@@ -499,7 +500,7 @@ func TestStartHeartbeatConfirmsSpentAutoGrantBeforeTheTicker(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	if withdraws.Load() != 0 {
-		t.Fatalf("withdraws=%d, want 0 while a remainder is still spendable", withdraws.Load())
+		t.Fatalf("withdraws=%d, want 0 while 100 credits remain", withdraws.Load())
 	}
 	reg, err := llmservice.LoadRegistry(context.Background(), settings)
 	if err != nil {
@@ -527,6 +528,8 @@ func TestRunTokenBankAutoOnceDoesNotDebitAShareWrittenDuringConfirm(t *testing.T
 		case r.URL.Path == "/api/hubs/hub-auto/token-bank/grants":
 			// An admission pull lands and moves the head while this confirm is
 			// still on the wire. The tick must see that share before it debits.
+			// One hundred credits is enough that the floor does not ask for
+			// another share.
 			reg, err := llmservice.LoadRegistry(r.Context(), settings)
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -536,7 +539,7 @@ func TestRunTokenBankAutoOnceDoesNotDebitAShareWrittenDuringConfirm(t *testing.T
 			reg.Grants = append(reg.Grants, llmservice.Grant{
 				ID: "grant-landed", UserID: "user-1", Email: "owner@example.com", ServiceGroupID: "paid",
 				Source: llmservice.TokenBankGrantSource, CardID: llmservice.TokenBankGrantCardID(landedID),
-				CreditsTotal: 20, Permanent: true,
+				CreditsTotal: 100, Permanent: true,
 				StartsAt: now, ExpiresAt: now.AddDate(10, 0, 0), CreatedAt: now,
 			})
 			if err := llmservice.SaveRegistry(r.Context(), settings, reg); err != nil {
@@ -794,7 +797,7 @@ func TestPullTokenBankForAdmissionShortfallDebitsWhenConfirmFails(t *testing.T) 
 			withdrew = body.RequestID
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"status": "ok", "created": true, "request_id": body.RequestID,
-				"amount_micro": 20_000_000, "state": "issued", "hub_id": "hub-auto",
+				"amount_micro": 100_000_000, "state": "issued", "hub_id": "hub-auto",
 			})
 		case r.URL.Path == "/api/hubs/hub-auto/token-bank/grants":
 			grantCalls++

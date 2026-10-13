@@ -15,20 +15,20 @@ import (
 )
 
 func TestAgendaNumberColorTracksAccent(t *testing.T) {
-	edu := resolveDeckTheme("education")
+	edu := resolveDeckTheme("course")
 	if contrastRatio(agendaNumberColor(edu), edu.accent) < contrastRatio(edu.white, edu.accent) {
 		t.Fatal("amber agenda numbers should beat white")
 	}
-	biz := resolveDeckTheme("business")
+	biz := resolveDeckTheme("clean")
 	if agendaNumberColor(biz) != biz.white {
-		t.Fatal("navy agenda numbers should be white")
+		t.Fatal("blue agenda numbers should be white")
 	}
-	academic := resolveDeckTheme("academic")
-	if readableAccent(academic, academic.card) == academic.accent {
-		t.Fatal("gold card numbers should leave the accent color")
+	handmade := resolveDeckTheme("handmade")
+	if readableAccent(handmade, handmade.card) == handmade.accent {
+		t.Fatal("pale handmade marks should leave the accent color")
 	}
 	if readableAccent(biz, biz.card) != biz.accent {
-		t.Fatal("navy card numbers should stay in the accent color")
+		t.Fatal("blue card numbers should stay in the accent color")
 	}
 	pale := deckTheme{
 		accent: ppt.NewColor("F4E7C5"),
@@ -67,9 +67,9 @@ func TestCustomStyleInkIsRaisedWhenItMatchesThePaper(t *testing.T) {
 	if got.onDark == "222222" || contrastRatio(ppt.NewColor(got.onDark), ppt.NewColor(got.navy)) < 4.5 {
 		t.Fatalf("on-dark contrast too low: %s on %s", got.onDark, got.navy)
 	}
-	biz := resolveDeckTheme("business")
+	biz := resolveDeckTheme("clean")
 	if textOn(biz.navy, biz.paper, biz) != biz.navy {
-		t.Fatal("business titles should keep navy")
+		t.Fatal("clean titles should keep navy")
 	}
 	pale := deckTheme{
 		paper:  ppt.NewColor("FFFCF7"),
@@ -89,9 +89,9 @@ func TestCustomStyleInkIsRaisedWhenItMatchesThePaper(t *testing.T) {
 	if contrastRatio(textOn(pale.accent, pale.paper, pale), pale.paper) < 4.5 {
 		t.Fatal("quote mark contrast")
 	}
-	launch := resolveDeckTheme("launch")
-	if contrastRatio(launch.white, launch.accent) < 3 {
-		t.Fatal("launch cover title would be unreadable even as large type")
+	launch := resolveDeckTheme("magazine")
+	if contrastRatio(launch.white, launch.navy) < 3 {
+		t.Fatal("magazine cover title would be unreadable even as large type")
 	}
 }
 
@@ -114,15 +114,15 @@ func TestNormalizeStyleLangMatchesUI(t *testing.T) {
 	if NormalizeStyleLang("en-AU") != "en" || NormalizeStyleLang("zh-Hant") != "zh-Hant" || NormalizeStyleLang("zh-CN") != "zh-Hans" {
 		t.Fatalf("lang map en-AU=%s hant=%s cn=%s", NormalizeStyleLang("en-AU"), NormalizeStyleLang("zh-Hant"), NormalizeStyleLang("zh-CN"))
 	}
-	label, summary := businessThemeText("en")
-	if label != "Business Briefing" || !strings.Contains(summary, "Swiss") {
+	label, summary := catalogText("clean", "en")
+	if label != "Clean Professional" || !strings.Contains(summary, "blue") {
 		t.Fatalf("english copy = %q / %q", label, summary)
 	}
 }
 
-func businessThemeText(lang string) (string, string) {
+func catalogText(id, lang string) (string, string) {
 	for _, spec := range styleCatalog {
-		if spec.id == "business" {
+		if spec.id == id {
 			return spec.textFor(lang)
 		}
 	}
@@ -148,7 +148,7 @@ func TestEffectiveLayoutChoosesDesignedPages(t *testing.T) {
 			t.Errorf("layout(%q) = %q, want %q", tc.spec.Title, got, tc.want)
 		}
 	}
-	if resolveDeckTheme("温馨").id != "warm" || resolveDeckTheme("学术").id != "academic" || resolveDeckTheme("nope").id != "business" {
+	if resolveDeckTheme("温馨").id != "handmade" || resolveDeckTheme("学术").id != "research" || resolveDeckTheme("nope").id != "clean" {
 		t.Fatal("theme aliases did not resolve")
 	}
 }
@@ -158,20 +158,25 @@ func TestChooseDeckStyleByPurposeOrExplicitName(t *testing.T) {
 		theme, hint, want string
 		explicit          bool
 	}{
-		{"warm", "季度汇报", "warm", true},
-		{"商务", "", "business", true},
-		{"auto", "小布 5 岁生日纪念", "warm", false},
-		{"", "开题答辩", "academic", false},
-		{"auto", "birthday party", "warm", false},
-		{"", "thesis defense", "academic", false},
-		{"auto", "product launch", "launch", false},
-		{"auto", "产品发布会路演", "launch", false},
-		{"", "系统架构技术分享", "tech", false},
-		{"auto", "新员工培训课件", "education", false},
-		{"", "年会致辞", "ceremony", false},
-		{"auto", "个人介绍", "minimal", false},
-		{"", "随便做一页", "business", false},
-		{"business", "生日纪念", "business", true},
+		{"handmade", "季度汇报", "handmade", true},
+		{"商务", "", "clean", true},
+		{"auto", "小布 5 岁生日纪念", "handmade", false},
+		{"", "开题答辩", "research", false},
+		{"auto", "birthday party", "handmade", false},
+		{"", "thesis defense", "research", false},
+		{"auto", "product launch", "magazine", false},
+		{"auto", "产品发布会路演", "magazine", false},
+		{"", "系统架构技术分享", "sketch", false},
+		{"auto", "新员工培训课件", "course", false},
+		{"", "年会致辞", "eink", false},
+		{"auto", "个人介绍", "eink", false},
+		{"", "随便做一页", "clean", false},
+		{"business", "生日纪念", "clean", true},
+		{"", "答辩", "research", false},
+		{"auto", "培训课件", "course", false},
+		{"", "课件", "course", false},
+		{"auto", "看板", "dashboard", false},
+		{"", "战略汇报", "mckinsey", false},
 	}
 	for _, tc := range cases {
 		id, explicit := ChooseDeckStyle(tc.theme, tc.hint)
@@ -180,10 +185,49 @@ func TestChooseDeckStyleByPurposeOrExplicitName(t *testing.T) {
 		}
 	}
 	catalog := FormatDeckStyleCatalog()
-	for _, id := range []string{"business", "academic", "warm", "launch", "tech", "education", "ceremony", "minimal"} {
+	for _, id := range []string{"clean", "magazine", "eink", "dashboard", "retro", "sketch", "whiteboard", "handmade", "research", "mckinsey", "official", "course"} {
 		if !strings.Contains(catalog, "`"+id+"`") {
 			t.Fatalf("catalog missing %s:\n%s", id, catalog)
 		}
+	}
+}
+
+func TestCoversDoNotInventLabels(t *testing.T) {
+	dir := t.TempDir()
+	banned := []string{"CHAPTER", "OVERVIEW", "STRATEGY", "LESSON", ">NOTES<", ">NOTE<", "研究汇报"}
+	for _, info := range ListStyleInfo() {
+		if !info.Builtin {
+			continue
+		}
+		path := filepath.Join(dir, info.ID+".pptx")
+		if err := WriteFile(path, Outline{
+			Title: "封面", Theme: info.ID,
+			Slides: []OutlineSlide{{Title: "要点", Bullets: []string{"一项"}}},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		cover := zipSlideXML(t, path)["ppt/slides/slide1.xml"]
+		for _, word := range banned {
+			if strings.Contains(cover, word) {
+				t.Errorf("%s cover contains invented label %q", info.ID, word)
+			}
+		}
+	}
+}
+
+func TestCardGridStaysInsideShortBox(t *testing.T) {
+	box := contentBox{x: emuIn(0.5), y: emuIn(5), w: emuIn(12), h: emuIn(1.2)}
+	cols, rows, cardW, cardH, y0, gap := cardGrid(box, 9)
+	vStack := cardH*int64(rows) + gap*int64(rows-1)
+	hStack := cardW*int64(cols) + gap*int64(cols-1)
+	if rows != 3 || cols != 3 || cardH <= 0 || cardW <= 0 {
+		t.Fatalf("grid = %d x %d card %d x %d", cols, rows, cardW, cardH)
+	}
+	if y0 < box.y || y0+vStack > box.y+box.h {
+		t.Fatalf("cards escape vertically: y0=%d stack=%d box=%d", y0, vStack, box.h)
+	}
+	if hStack > box.w {
+		t.Fatalf("cards escape horizontally: stack=%d box=%d", hStack, box.w)
 	}
 }
 
@@ -193,24 +237,24 @@ func TestWriteFileAutoThemeFollowsPurpose(t *testing.T) {
 	if err := WriteFile(birthday, Outline{Title: "小布的生日", Theme: "auto", Slides: []OutlineSlide{{Title: "寄语", Bullets: []string{"健康"}}}}); err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(zipSlideXML(t, birthday)["ppt/slides/slide1.xml"], "3D3530") {
-		t.Fatal("birthday deck did not use the warm palette")
+	if !strings.Contains(zipSlideXML(t, birthday)["ppt/slides/slide1.xml"], "5C4033") {
+		t.Fatal("birthday deck did not use the handmade palette")
 	}
 	explicit := filepath.Join(dir, "explicit.pptx")
 	if err := WriteFile(explicit, Outline{Title: "生日汇报", Theme: "business", Slides: []OutlineSlide{{Title: "要点", Bullets: []string{"一项"}}}, Purpose: "生日"}); err != nil {
 		t.Fatal(err)
 	}
 	cover := zipSlideXML(t, explicit)["ppt/slides/slide1.xml"]
-	if !strings.Contains(cover, "0E2A47") || strings.Contains(cover, "3D3530") {
-		t.Fatal("explicit business theme was overridden by the birthday title")
+	if !strings.Contains(cover, "2563EB") || strings.Contains(cover, "5C4033") {
+		t.Fatal("explicit clean theme was overridden by the birthday title")
 	}
 	intro := filepath.Join(dir, "intro.pptx")
 	if err := WriteFile(intro, Outline{Title: "个人介绍", Theme: "auto", Slides: []OutlineSlide{{Title: "经历", Bullets: []string{"一项"}}}}); err != nil {
 		t.Fatal(err)
 	}
 	light := zipSlideXML(t, intro)["ppt/slides/slide1.xml"]
-	if !strings.Contains(light, "F7F6F3") {
-		t.Fatal("personal-intro deck did not use the minimal paper cover")
+	if !strings.Contains(light, "F7F4EA") {
+		t.Fatal("personal-intro deck did not use the e-ink paper cover")
 	}
 }
 
@@ -272,18 +316,18 @@ func TestWriteFilePaintsProfessionalChrome(t *testing.T) {
 	}
 	files := zipSlideXML(t, path)
 	cover := files["ppt/slides/slide1.xml"]
-	for _, want := range []string{"0E2A47", "F7F8FA", "小布五岁"} {
+	for _, want := range []string{"2563EB", "小布五岁"} {
 		if !strings.Contains(cover, want) {
 			t.Fatalf("cover missing %q", want)
 		}
 	}
 	content := files["ppt/slides/slide2.xml"]
-	if !strings.Contains(content, "F7F8FA") || !strings.Contains(content, "成长") {
-		t.Fatalf("content slide lost paper canvas or agenda text")
+	if !strings.Contains(content, "F8FAFC") || !strings.Contains(content, "成长") {
+		t.Fatalf("content slide lost the card field or agenda text")
 	}
 	section := files["ppt/slides/slide4.xml"]
-	if !strings.Contains(section, "0E2A47") || !strings.Contains(section, "成长") {
-		t.Fatalf("section slide is not a dark divider")
+	if !strings.Contains(section, "2563EB") || !strings.Contains(section, "成长") {
+		t.Fatalf("section slide lost the clean accent or the section title")
 	}
 
 	preview, err := RenderPreview(path, PreviewOptions{OutputDir: filepath.Join(dir, "preview"), Width: 320, Draft: true})
@@ -306,7 +350,7 @@ func TestWriteFilePaintsProfessionalChrome(t *testing.T) {
 		t.Fatalf("content rail is not navy: rgb=%v", rail)
 	}
 	paper := samplePNG(t, preview.Images[1], 8, 30)
-	if paper[0] < 220 || paper[0] > 250 {
+	if paper[0] < 245 {
 		t.Fatalf("content canvas is not the paper tone: rgb=%v", paper)
 	}
 }
@@ -358,23 +402,22 @@ func TestModernStyleSelectionAndPalette(t *testing.T) {
 	for _, tc := range []struct {
 		theme, hint, want string
 	}{
-		{"modern", "", "modern"},
-		{"现代品牌", "", "modern"},
-		{"auto", "产品介绍白皮书", "modern"},
-		{"", "brand deck for a saas launch", "modern"},
+		{"modern", "", "magazine"},
+		{"现代品牌", "", "magazine"},
+		{"auto", "产品介绍白皮书", "magazine"},
+		{"", "brand deck for a saas launch", "magazine"},
 	} {
 		if id, _ := ChooseDeckStyle(tc.theme, tc.hint); id != tc.want {
 			t.Errorf("ChooseDeckStyle(%q, %q) = %q, want %q", tc.theme, tc.hint, id, tc.want)
 		}
 	}
-	if !strings.Contains(FormatDeckStyleCatalog(), "`modern`") {
-		t.Fatal("catalog missing modern")
+	if !strings.Contains(FormatDeckStyleCatalog(), "`magazine`") {
+		t.Fatal("catalog missing magazine")
 	}
-	// Purpose keywords for the older styles must still win over the brand ones.
 	for _, tc := range []struct{ hint, want string }{
-		{"季度经营分析汇报", "business"},
-		{"技术架构分享", "tech"},
-		{"新员工培训课件", "education"},
+		{"季度经营分析汇报", "clean"},
+		{"技术架构分享", "sketch"},
+		{"新员工培训课件", "course"},
 	} {
 		if id, _ := ChooseDeckStyle("auto", tc.hint); id != tc.want {
 			t.Errorf("auto(%q) = %q, want %q", tc.hint, id, tc.want)
@@ -387,7 +430,7 @@ func TestModernStyleSelectionAndPalette(t *testing.T) {
 func TestModernCoverUsesSplitPanelAndWarmBar(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "modern.pptx")
 	outline := Outline{
-		Title: "MaClaw 智能工作台", Subtitle: "本地优先的日常生产力", Theme: "modern",
+		Title: "MaClaw 智能工作台", Subtitle: "本地优先的日常生产力", Theme: "magazine",
 		Slides: []OutlineSlide{{Title: "产品定位", Kicker: "OVERVIEW", Layout: "cards",
 			Bullets: []string{"本地优先：数据不出端", "开箱即用：一键部署"}}},
 	}
@@ -395,9 +438,9 @@ func TestModernCoverUsesSplitPanelAndWarmBar(t *testing.T) {
 		t.Fatal(err)
 	}
 	cover := zipSlideXML(t, path)["ppt/slides/slide1.xml"]
-	for _, want := range []string{"0B2E4F", "FF7A45"} {
+	for _, want := range []string{"111111", "FF006E"} {
 		if !strings.Contains(cover, want) {
-			t.Fatalf("cover is missing the brand color %s", want)
+			t.Fatalf("cover is missing the magazine color %s", want)
 		}
 	}
 	slides := zipNamedContents(t, path)
@@ -410,12 +453,8 @@ func TestModernCoverUsesSplitPanelAndWarmBar(t *testing.T) {
 	if body == "" {
 		t.Fatal("missing modern content slide")
 	}
-	if color := runColorAfterText(t, body, "产品定位"); !strings.EqualFold(color, "0B2E4F") {
-		t.Fatalf("content title color = %s, want the deck navy 0B2E4F", color)
-	}
-	// Body copy sits on white; the light accent must not be used for it.
-	if strings.Contains(body, "1E88E5") {
-		t.Fatal("light accent 1E88E5 is below body-text contrast on white")
+	if color := runColorAfterText(t, body, "产品定位"); !strings.EqualFold(color, "111111") {
+		t.Fatalf("content title color = %s, want ink 111111", color)
 	}
 }
 
@@ -424,7 +463,7 @@ func TestModernCoverUsesSplitPanelAndWarmBar(t *testing.T) {
 func TestModernHeaderClearsBodyContent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "modern.pptx")
 	if err := WriteFile(path, Outline{
-		Title: "品牌", Theme: "modern",
+		Title: "品牌", Theme: "dashboard",
 		Slides: []OutlineSlide{{Title: "产品定位", Kicker: "OVERVIEW", Layout: "cards",
 			Bullets: []string{"甲：说明", "乙：说明"}}},
 	}); err != nil {
@@ -461,21 +500,21 @@ func TestModernHeaderClearsBodyContent(t *testing.T) {
 func TestModernContentPageCarriesNoWarmAccent(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "modern.pptx")
 	if err := WriteFile(path, Outline{
-		Title: "品牌", Theme: "modern",
+		Title: "品牌", Theme: "mckinsey",
 		Slides: []OutlineSlide{{Title: "内容页标题", Bullets: []string{"要点一"}}},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	cover := zipSlideXML(t, path)["ppt/slides/slide1.xml"]
-	if !strings.Contains(cover, "FF7A45") {
-		t.Fatal("cover should keep the warm accent bar")
+	if !strings.Contains(cover, "F6F8FA") {
+		t.Fatal("cover should stay on the pale consulting field")
 	}
 	for name, body := range zipNamedContents(t, path) {
 		if !strings.HasPrefix(name, "ppt/slides/slide") || !strings.Contains(body, "内容页标题") {
 			continue
 		}
-		if strings.Contains(body, "FF7A45") {
-			t.Fatal("warm accent leaked onto a content page")
+		if strings.Contains(body, "061F32") {
+			t.Fatal("content page still uses the old navy block")
 		}
 		return
 	}
@@ -513,7 +552,7 @@ func TestModernKickerBadgeStaysBounded(t *testing.T) {
 func TestModernRenderedBadgeStaysOnSlide(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "modern.pptx")
 	if err := WriteFile(path, Outline{
-		Title: "标题", Theme: "modern",
+		Title: "标题", Theme: "dashboard",
 		Slides: []OutlineSlide{{Title: "内容页", Kicker: strings.Repeat("长标签", 60),
 			Bullets: []string{"要点"}}},
 	}); err != nil {
@@ -553,22 +592,21 @@ func TestModernRenderedBadgeStaysOnSlide(t *testing.T) {
 // would outrank the 2-char 季度 or 商务 that decide those decks.
 func TestModernKeywordsDoNotStealBusinessDecks(t *testing.T) {
 	for _, tc := range []struct{ hint, want string }{
-		{"季度数据看板", "business"},
-		{"客户案例分析", "business"},
-		{"解决方案汇报", "business"},
-		{"产品手册", "business"},
-		{"数据看板周报", "business"},
-		{"季度经营分析", "business"},
-		{"客户提案", "business"},
+		{"季度数据看板", "dashboard"},
+		{"客户案例分析", "clean"},
+		{"解决方案汇报", "clean"},
+		{"产品手册", "clean"},
+		{"数据看板周报", "dashboard"},
+		{"季度经营分析", "clean"},
+		{"客户提案", "clean"},
 	} {
 		if id, _ := ChooseDeckStyle("auto", tc.hint); id != tc.want {
 			t.Errorf("auto(%q) = %q, want %q", tc.hint, id, tc.want)
 		}
 	}
-	// The brand vocabulary must still reach the brand style.
-	for _, hint := range []string{"产品介绍", "品牌故事", "白皮书", "用户增长", "品牌手册", "品牌宣传", "brand deck", "saas"} {
-		if id, _ := ChooseDeckStyle("auto", hint); id != "modern" {
-			t.Errorf("auto(%q) = %q, want modern", hint, id)
+	for _, hint := range []string{"产品介绍", "创意提案", "brand deck"} {
+		if id, _ := ChooseDeckStyle("auto", hint); id != "magazine" {
+			t.Errorf("auto(%q) = %q, want magazine", hint, id)
 		}
 	}
 }
@@ -579,7 +617,7 @@ func TestModernKeywordsDoNotStealBusinessDecks(t *testing.T) {
 func TestModernBodyBoxTracksBadgeGeometry(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "modern.pptx")
 	if err := WriteFile(path, Outline{
-		Title: "品牌", Theme: "modern",
+		Title: "品牌", Theme: "dashboard",
 		Slides: []OutlineSlide{{Title: "内容页", Kicker: "OVERVIEW", Bullets: []string{"要点"}}},
 	}); err != nil {
 		t.Fatal(err)

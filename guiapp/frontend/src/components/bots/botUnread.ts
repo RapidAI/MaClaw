@@ -1,7 +1,8 @@
-// Unread bot replies for the Windows taskbar badge. A reply counts once it
+// Which bot replies this person has already seen. A reply counts once it
 // has landed in the transcript. The person is looking when this bot's
 // conversation is on screen and the window is in front; those replies are
 // already seen. Opening that conversation later subtracts only its replies.
+// The Windows taskbar badge is the in-progress task count, not this total.
 import {
     BOT_TRANSCRIPT_EVENT,
     desktopUserKey,

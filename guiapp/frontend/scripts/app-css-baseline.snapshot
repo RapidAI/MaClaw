@@ -113,9 +113,14 @@
 }
 [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body [data-testid^='assistant-chat-ai-bubble-'] {
   flex: 0 1 auto !important;
-  width: fit-content !important;
   max-width: min(92%, 980px) !important;
   margin-right: 0 !important;
+}
+/* Shrink-wrap is for prose. A diagram bubble takes the column from the
+   :has(.amd-figure) rule instead. Applying shrink-wrap there leaves the
+   diagram's percentage width with no definite containing block. */
+[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body [data-testid^='assistant-chat-ai-bubble-']:not(:has(.amd-figure)) {
+  width: fit-content !important;
 }
 @media (max-width: 720px) {
   [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution {
@@ -1094,8 +1099,8 @@
     .problem-report-dialog *,
     .problem-report-dialog *::before,
     .problem-report-dialog *::after {
-        transition-duration: 0.01ms !important;
         animation-duration: 0.01ms !important;
+        transition: none !important;
     }
 }
 
@@ -9491,7 +9496,7 @@ button.knowledge-chip:disabled {
     .proxy-settings-switch span,
     .proxy-settings-switch span::after {
         animation: none !important;
-        transition-duration: 0.01ms !important;
+        transition: none !important;
     }
 }
 
@@ -12550,6 +12555,11 @@ button.knowledge-chip:disabled {
     padding: 9px 16px;
     border: 1px solid var(--theme-border);
     border-radius: var(--radius-sm);
+    /* The OS button face stays dark on a light page while the label inherits dark ink. */
+    appearance: none;
+    -webkit-appearance: none;
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
     cursor: pointer;
     font-size: 0.8rem;
     font-weight: 600;
@@ -12599,6 +12609,63 @@ button.knowledge-chip:disabled {
     border-color: color-mix(in srgb, var(--theme-primary) 52%, transparent);
     background: color-mix(in srgb, var(--theme-primary) 14%, var(--theme-surface));
     box-shadow: none;
+}
+
+.hub-service-redeem__voucher-heading .hub-service-redeem__label {
+    margin-top: 0;
+}
+
+.hub-service-redeem__voucher-heading p {
+    max-width: 66ch;
+    margin: 0 0 8px;
+    color: var(--theme-text-secondary);
+    font-size: 0.72rem;
+    line-height: 1.45;
+}
+
+.hub-service-redeem__voucher-list {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 8px;
+}
+
+.hub-service-redeem__button--voucher {
+    justify-content: flex-start;
+    white-space: normal;
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-primary);
+}
+
+.hub-service-redeem__button--voucher:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--theme-primary) 8%, var(--theme-surface-muted));
+}
+
+.hub-service-redeem__voucher-copy {
+    display: inline-flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 8px;
+    min-width: 0;
+}
+
+.hub-service-redeem__voucher-action,
+.hub-service-redeem__voucher-icon {
+    color: var(--theme-primary-strong);
+}
+
+.hub-service-redeem__voucher-action {
+    font-weight: 700;
+}
+
+.hub-service-redeem__voucher-expiry {
+    color: var(--theme-text-primary);
+    font-weight: 600;
+    font-variant-numeric: tabular-nums;
+}
+
+.hub-service-redeem__voucher-icon {
+    flex: 0 0 auto;
 }
 
 .hub-service-redeem__buy-icon {
@@ -14392,13 +14459,23 @@ button.tbk-pill {
     background: var(--theme-surface);
 }
 
+.hub-service-redeem__header-aside {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    flex-wrap: wrap;
+    gap: 10px 12px;
+    min-width: 0;
+    flex: 1 1 320px;
+}
+
 .hub-service-redeem__model-summary {
     display: grid;
     justify-items: end;
     gap: 2px;
     min-width: 0;
-    flex: 1 1 260px;
-    max-width: min(460px, 50%);
+    flex: 1 1 220px;
+    max-width: min(460px, 100%);
     padding: 8px 10px;
     border: 1px solid var(--theme-border);
     border-radius: var(--radius-sm);
@@ -14411,6 +14488,136 @@ button.tbk-pill {
 
 .hub-service-redeem__model-summary .hub-service-redeem__value {
     text-align: right;
+}
+
+.hub-service-redeem__history-toggle {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+    margin: 0;
+    color: var(--theme-text-primary);
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1.3;
+    white-space: nowrap;
+    min-height: 32px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.settings-panel .hub-service-redeem__history-toggle input:focus {
+    border: 0;
+    outline: none;
+    box-shadow: none;
+}
+
+.hub-service-redeem__history-toggle:has(input:disabled) {
+    color: var(--theme-text-secondary);
+    cursor: default;
+}
+
+.hub-service-redeem__history-toggle:has(input:disabled) .hub-service-redeem__history-track {
+    opacity: 0.55;
+}
+
+.hub-service-redeem__history-toggle input {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: 0;
+    opacity: 0;
+    pointer-events: none;
+}
+
+.hub-service-redeem__history-track {
+    position: relative;
+    flex: 0 0 auto;
+    width: 36px;
+    height: 20px;
+    border-radius: 999px;
+    background: var(--theme-switch-track-off);
+    border: 1px solid var(--theme-border);
+    box-sizing: border-box;
+    transition: background var(--transition-fast), border-color var(--transition-fast);
+}
+
+.hub-service-redeem__history-track span {
+    position: absolute;
+    top: 1px;
+    left: 1px;
+    width: 16px;
+    height: 16px;
+    border-radius: 999px;
+    background: var(--theme-switch-thumb);
+    box-shadow: var(--theme-switch-thumb-shadow);
+    transition: transform var(--transition-fast);
+}
+
+.hub-service-redeem__history-toggle[data-on="true"] .hub-service-redeem__history-track {
+    background: var(--theme-primary);
+    border-color: var(--theme-primary);
+}
+
+.hub-service-redeem__history-toggle[data-on="true"] .hub-service-redeem__history-track span {
+    transform: translateX(16px);
+}
+
+.hub-service-redeem__history-toggle:has(input:focus-visible) {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+    border-radius: 8px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .hub-service-redeem__history-track,
+    .hub-service-redeem__history-track span {
+        transition: none;
+    }
+}
+
+.hub-service-redeem__pagination {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 12px;
+    margin-top: 12px;
+    color: var(--theme-text-secondary);
+    font-size: 0.75rem;
+}
+
+.hub-service-redeem__pagination span {
+    font-variant-numeric: tabular-nums;
+}
+
+.hub-service-redeem__pagination button {
+    appearance: none;
+    min-height: 32px;
+    padding: 4px 12px;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-sm);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font: inherit;
+    font-size: 0.75rem;
+    cursor: pointer;
+}
+
+.hub-service-redeem__pagination button:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border));
+    background: var(--theme-primary-soft);
+    color: var(--theme-primary-strong);
+}
+
+.hub-service-redeem__pagination button:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+}
+
+.hub-service-redeem__pagination button:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
 }
 
 .hub-service-redeem__models-table {
@@ -14482,10 +14689,19 @@ button.tbk-pill {
         grid-template-columns: 1fr;
     }
 
+    .hub-service-redeem__header-aside {
+        justify-content: flex-start;
+        flex-wrap: wrap;
+    }
+
     .hub-service-redeem__model-summary {
         justify-items: start;
         min-width: 0;
         max-width: none;
+    }
+
+    .hub-service-redeem__pagination {
+        justify-content: space-between;
     }
 
     .hub-service-redeem__actions {
@@ -15533,6 +15749,29 @@ button.tbk-pill {
     border-color: var(--theme-primary);
     background: var(--theme-primary);
     color: var(--theme-on-primary);
+}
+
+/* Settings floors every button at 36px and paints --office-ink (0,3,1), so the
+   selected label sat on the primary fill at about 3.4:1. Dark themes use
+   primary-strong with on-primary. Light themes darken that fill: fluent
+   primary is 4.6:1 under white, and primary-strong only reaches 5.3:1. */
+.settings-content.settings-panel button.token-usage-trend__grain {
+    min-height: 26px;
+    padding: 2px 9px;
+    font-size: 0.8125rem;
+    line-height: 1.2;
+}
+
+.settings-content.settings-panel button.token-usage-trend__grain.is-active {
+    border-color: var(--theme-primary-strong);
+    background: var(--theme-primary-strong);
+    color: var(--theme-on-primary);
+    font-weight: 700;
+}
+
+#App:not([data-ai-theme='dark']) .settings-content.settings-panel button.token-usage-trend__grain.is-active {
+    border-color: color-mix(in srgb, var(--theme-primary) 75%, #000);
+    background: color-mix(in srgb, var(--theme-primary) 75%, #000);
 }
 
 .token-usage-trend__sum,
@@ -17560,11 +17799,11 @@ button.tbk-pill {
     padding: 5px 12px;
     border: 1px solid var(--theme-border);
     border-radius: 9px;
-    background: var(--theme-surface-muted);
-    color: var(--theme-text-secondary);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
     cursor: pointer;
-    font-size: 0.74rem;
-    font-weight: 800;
+    font-size: 0.8rem;
+    font-weight: 600;
 }
 
 .im-settings-button:hover,
@@ -17580,13 +17819,16 @@ button.tbk-pill {
     opacity: 0.55;
 }
 
-.im-settings-button--primary {
+/* "accent", not "primary": button[class*='primary'] forces a solid fill and hides the label. */
+.im-settings-button--accent,
+.settings-content.settings-panel button.im-settings-button.im-settings-button--accent {
     border-color: color-mix(in srgb, var(--theme-primary) 40%, var(--theme-border));
     background: var(--theme-info-bg);
     color: var(--theme-primary-strong);
 }
 
-.im-settings-button--danger {
+.im-settings-button--danger,
+.settings-content.settings-panel button.im-settings-button.im-settings-button--danger {
     border-color: color-mix(in srgb, var(--theme-danger) 45%, var(--theme-border));
     background: var(--theme-danger-bg);
     color: var(--theme-danger);
@@ -18407,16 +18649,19 @@ button.tbk-pill {
     border: 0;
     border-radius: 999px;
     background: transparent;
-    color: var(--theme-text-secondary);
+    color: var(--theme-text-primary);
     cursor: pointer;
-    font-size: 0.75rem;
-    font-weight: 900;
+    font-size: 0.78rem;
+    font-weight: 600;
 }
 
-.im-settings-segmented button[data-active="true"] {
-    background: var(--theme-primary);
-    color: var(--theme-on-primary);
-    box-shadow: var(--shadow-sm);
+.im-settings-segmented button[data-active="true"],
+.settings-content.settings-panel .im-settings-segmented button[data-active="true"] {
+    border: 0;
+    background: color-mix(in srgb, var(--theme-primary) 16%, var(--theme-surface));
+    color: var(--theme-text-primary);
+    font-weight: 700;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 40%, var(--theme-border));
 }
 
 .im-settings-grid {
@@ -18501,6 +18746,386 @@ button.tbk-pill {
     flex-wrap: wrap;
     gap: 8px;
     min-width: 0;
+}
+
+.email-settings-panel {
+    display: grid;
+    align-content: start;
+    gap: 14px;
+    container-type: inline-size;
+    container-name: email-settings;
+}
+
+.email-settings-lead,
+.email-settings-empty,
+.email-settings-notice {
+    margin: 0;
+}
+
+.email-settings-lead {
+    max-width: 78ch;
+    color: var(--theme-text-secondary);
+    font-size: 0.74rem;
+    line-height: 1.55;
+}
+
+.email-settings-empty {
+    font-size: 0.78rem;
+}
+
+.email-settings-notice {
+    padding: 8px 12px;
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border));
+    border-radius: 10px;
+    background: var(--theme-info-bg);
+    font-size: 0.8rem;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+}
+
+.email-settings-notice--err {
+    border-color: color-mix(in srgb, var(--theme-danger) 35%, var(--theme-border));
+    background: var(--theme-danger-bg);
+}
+
+.email-settings-section {
+    min-width: 0;
+}
+
+.email-settings-list {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+}
+
+.email-settings-row {
+    display: grid;
+    gap: 8px;
+    margin: 0;
+    padding: 12px 14px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: 10px;
+    background: var(--theme-surface-muted);
+}
+
+.email-settings-row--editing {
+    border-color: color-mix(in srgb, var(--theme-primary) 55%, var(--theme-border));
+    box-shadow: 0 0 0 2px var(--theme-primary-soft);
+}
+
+.email-settings-editing {
+    margin: 0;
+    color: var(--theme-primary-strong);
+    font-size: 0.78rem;
+    font-weight: 750;
+}
+
+.email-settings-row__head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px 16px;
+    min-width: 0;
+}
+
+.email-settings-row__main {
+    min-width: 0;
+}
+
+.email-settings-row__title {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+}
+
+.email-settings-row__title strong {
+    color: var(--theme-text-primary);
+    font-size: 0.88rem;
+}
+
+.email-settings-address {
+    color: var(--theme-text-secondary);
+    font-size: 0.8rem;
+    overflow-wrap: anywhere;
+}
+
+.email-settings-badge {
+    display: inline-flex;
+    align-items: center;
+    min-height: 22px;
+    padding: 0 8px;
+    border-radius: 999px;
+    background: var(--theme-info-bg);
+    color: var(--theme-primary-strong);
+    font-size: 0.7rem;
+    font-weight: 750;
+}
+
+.email-settings-badge--muted {
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-secondary);
+}
+
+.email-settings-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 14px;
+    margin: 0;
+    color: var(--theme-text-muted);
+    font-size: 0.74rem;
+}
+
+.email-settings-signature {
+    margin: 0;
+    max-height: 7.5rem;
+    overflow: auto;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-secondary);
+    font-family: inherit;
+    font-size: 0.78rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+}
+
+.email-settings-row__actions {
+    display: flex;
+    flex: 0 0 auto;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-left: auto;
+}
+
+.email-settings-tests {
+    display: grid;
+    gap: 4px;
+}
+
+.email-settings-tests p,
+.email-settings-test {
+    margin: 0;
+    font-size: 0.78rem;
+}
+
+.email-settings-test--ok,
+.email-settings-test--err {
+    padding: 6px 8px;
+    border-radius: 8px;
+}
+
+.email-settings-test--ok {
+    background: var(--theme-success-bg);
+}
+
+.email-settings-test--err {
+    background: var(--theme-danger-bg);
+}
+
+.email-settings-editor {
+    display: grid;
+    gap: 14px;
+    min-width: 0;
+}
+
+.email-settings-grid,
+.email-settings-endpoint__grid {
+    display: grid;
+    gap: 12px;
+    min-width: 0;
+}
+
+.email-settings-grid--signature {
+    grid-template-columns: minmax(180px, 280px) minmax(0, 1fr);
+    align-items: start;
+}
+
+.email-settings-grid--account {
+    grid-template-columns: minmax(150px, 0.8fr) minmax(200px, 1.1fr) minmax(200px, 1fr);
+}
+
+.email-settings-field {
+    display: grid;
+    gap: 7px;
+    min-width: 0;
+    margin: 0;
+    color: var(--theme-text-secondary);
+    font-size: 0.76rem;
+    font-weight: 600;
+}
+
+.email-settings-field input,
+.email-settings-field select,
+.email-settings-field textarea {
+    width: 100%;
+    min-height: 40px;
+    margin: 0;
+    border-radius: 10px;
+    font-size: 0.84rem;
+}
+
+.email-settings-field textarea {
+    min-height: 96px;
+    resize: vertical;
+    line-height: 1.45;
+}
+
+.email-settings-checks,
+.email-settings-editor__footer {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 10px;
+}
+
+.email-settings-editor__footer {
+    justify-content: flex-start;
+}
+
+.email-settings-editor__actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-left: auto;
+}
+
+.email-settings-hint {
+    color: var(--theme-text-muted);
+    font-size: 0.72rem;
+    font-weight: 500;
+    line-height: 1.4;
+}
+
+#App .email-settings-panel .email-settings-field input::placeholder {
+    color: transparent;
+}
+
+.email-settings-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 40px;
+    margin: 0;
+    padding: 0 12px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: 10px;
+    background: var(--theme-surface-muted);
+    font-size: 0.82rem;
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.email-settings-check input {
+    margin: 0;
+    flex: 0 0 auto;
+}
+
+.email-settings-endpoint {
+    display: grid;
+    gap: 10px;
+    min-width: 0;
+    min-inline-size: 0;
+    margin: 0;
+    padding: 12px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: 10px;
+    background: var(--theme-surface);
+}
+
+.email-settings-endpoint legend {
+    padding: 0 6px;
+    color: var(--theme-primary-strong);
+    font-size: 0.82rem;
+    font-weight: 700;
+}
+
+.email-settings-endpoint__grid {
+    grid-template-columns: minmax(150px, 1.45fr) 92px 112px minmax(120px, 1fr) minmax(120px, 1fr) minmax(170px, 1.25fr);
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 34px;
+    padding: 5px 12px;
+    border: 1px solid var(--theme-border);
+    border-radius: 9px;
+    background: var(--theme-surface);
+    color: var(--theme-text-secondary);
+    cursor: pointer;
+    font-size: 0.74rem;
+    font-weight: 800;
+    line-height: 1.2;
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button:disabled {
+    cursor: not-allowed;
+    opacity: 0.6;
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button:hover:not(:disabled),
+.settings-content.settings-panel.email-settings-panel button.email-settings-button:focus-visible {
+    border-color: var(--theme-primary-soft);
+    color: var(--theme-primary-strong);
+    outline: none;
+    box-shadow: 0 0 0 2px var(--theme-primary-soft);
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--save:not(:disabled) {
+    border-color: transparent;
+    background: var(--theme-primary);
+    color: var(--theme-on-primary, #ffffff);
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--save:hover:not(:disabled),
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--save:focus-visible:not(:disabled) {
+    border-color: transparent;
+    background: var(--theme-primary-strong);
+    color: var(--theme-on-primary, #ffffff);
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--danger:not(:disabled) {
+    border-color: color-mix(in srgb, var(--theme-danger) 42%, var(--theme-border));
+    background: var(--theme-surface);
+    color: var(--theme-danger);
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--danger:hover:not(:disabled),
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--danger:focus-visible:not(:disabled) {
+    border-color: var(--theme-danger);
+    background: var(--theme-danger-bg);
+    color: var(--theme-danger);
+}
+
+@container email-settings (max-width: 920px) {
+    .email-settings-grid--account,
+    .email-settings-endpoint__grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+}
+
+@container email-settings (max-width: 640px) {
+    .email-settings-grid--signature,
+    .email-settings-grid--account,
+    .email-settings-endpoint__grid {
+        grid-template-columns: minmax(0, 1fr);
+    }
+
+    .email-settings-row__head {
+        flex-wrap: wrap;
+    }
+
+    .email-settings-row__actions {
+        justify-content: flex-start;
+        margin-left: 0;
+    }
 }
 
 .im-settings-token-row input {
@@ -18853,32 +19478,10 @@ button.tbk-pill {
     gap: 10px;
 }
 
-.weixin-qr-login-panel__primary,
-.weixin-qr-login-panel__cancel {
+/* Scan and cancel stay on .im-settings-button. A class containing "primary"
+   is forced solid by button[class*='primary'] and the label disappears. */
+.weixin-qr-login-panel .im-settings-button {
     width: fit-content;
-    min-height: 38px;
-    padding: 6px 14px;
-    border: 1px solid var(--theme-border);
-    border-radius: 10px;
-    background: var(--theme-surface-muted);
-    color: var(--theme-text-secondary);
-    cursor: pointer;
-    font-size: 0.76rem;
-    font-weight: 900;
-}
-
-.weixin-qr-login-panel__primary {
-    border-color: color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border));
-    background: var(--theme-info-bg);
-    color: var(--theme-primary-strong);
-}
-
-.weixin-qr-login-panel__primary:hover,
-.weixin-qr-login-panel__primary:focus-visible,
-.weixin-qr-login-panel__cancel:hover,
-.weixin-qr-login-panel__cancel:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--theme-primary-soft);
 }
 
 .weixin-qr-login-panel__loading,
@@ -19159,8 +19762,7 @@ button.tbk-pill {
     .mis-data-settings-toggle,
     .mis-data-settings-actions button,
     .weixin-qr-login-panel__actions,
-    .weixin-qr-login-panel__primary,
-    .weixin-qr-login-panel__cancel {
+    .weixin-qr-login-panel .im-settings-button {
         width: 100%;
     }
 }
@@ -21973,8 +22575,71 @@ button.tbk-pill {
 /* AssistantInputComposer.tsx */
 .aic-toolbar-addon { display: flex; align-items: center; min-width: 0; }
 
-/* AssistantMermaidDiagram.tsx */
-.amd-measure-host { position: fixed; inset: 0; width: 0; height: 0; overflow: hidden; pointer-events: none; }
+/* AssistantMermaidDiagram.tsx
+   The figure is the reading slot. The measure host takes that width so
+   Mermaid's percentage max-width resolves against the column, and its height
+   stays 0 so the scratch SVG does not extend the chat's scroll height.
+   visibility:hidden still lays out, which is what label measurement needs.
+   A diagram message takes the reading column; the bubble's max-width still
+   caps it. */
+.amd-figure { position: relative; width: 100%; }
+.amd-figure-body { margin: 8px 0; }
+.amd-toolbar { position: relative; z-index: 1; display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin: 0 0 6px; }
+.amd-actions { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--amd-menu-border); border-radius: 8px; background: var(--amd-menu-bg); }
+.amd-action { appearance: none; border: 0; background: transparent; color: var(--amd-menu-text); font: inherit; font-size: 12px; line-height: 1.2; padding: 5px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+.amd-action:hover { background: var(--amd-menu-hover); }
+.amd-action:focus-visible { outline: 2px solid var(--amd-menu-text); outline-offset: -2px; }
+.amd-more { position: relative; }
+.amd-more-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 2; display: flex; flex-direction: column; min-width: 148px; padding: 6px; border: 1px solid var(--amd-menu-border); border-radius: 10px; background: var(--amd-menu-bg); box-shadow: var(--amd-menu-shadow); }
+.amd-more-menu-up { top: auto; bottom: calc(100% + 6px); }
+.amd-more-menu .amd-action { width: 100%; text-align: left; font-size: 14px; font-weight: 400; line-height: 1.4; padding: 8px 12px; border-radius: 6px; }
+/* A status takes its own row, so the zoom group stays on one line. */
+.amd-note { flex: 1 0 100%; margin: 0; text-align: right; font-size: 12px; line-height: 1.2; color: var(--amd-menu-text); }
+.amd-source { margin: 8px 0 0; max-height: 240px; overflow: auto; }
+.amd-measure-host { position: absolute; left: 0; top: 0; width: 100%; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
+.amd-diagram { max-width: 100%; overflow: auto; contain: content; }
+.mc-conversation-body .amd-diagram > svg,
+.amd-diagram > svg { display: block; max-width: none; height: auto; }
+.mc-conversation-body [data-testid^='assistant-chat-ai-bubble-']:has(.amd-figure),
+[data-testid='file-companion-message-assistant']:has(.amd-figure) { width: 100%; }
+/* Mermaid nests its stylesheet under the svg id. A matching copy is written
+   into the svg after render; that id is what keeps these from losing. */
+.amd-diagram .statediagram .edgeLabel { color: var(--amd-ink); }
+.amd-diagram .stateGroup .alt-composit { fill: var(--amd-paper); }
+/* Mindmap connectors are stroked with the node fill. On a dark bubble that
+   fill is too close to the page, so the line disappears. */
+.amd-diagram [class*="section-edge-"] { stroke: var(--amd-line); }
+/* The plate behind an HTML label is the span, and its parent is a 50% fade.
+   SVG plates are a rect at half opacity. A later stylesheet ties the rect
+   rule, so this selector stays one class deeper. */
+.amd-diagram .edgeLabel .label rect,
+.amd-diagram .edgeLabel .labelBkg,
+.amd-diagram .labelBkg > .edgeLabel {
+  opacity: 1;
+  background-color: var(--amd-chip);
+  fill: var(--amd-chip);
+  color: var(--amd-ink);
+}
+/* Flowchart arrowheads are marker paths with no fill of their own, so they
+   paint black. A marker that already names a fill keeps that color. */
+.amd-diagram .arrowMarkerPath:not([fill]) { fill: var(--amd-line); }
+.amd-diagram .arrowMarkerPath:not([stroke]) { stroke: var(--amd-line); }
+/* Plain labels are a paragraph. The browser's default margin is measured
+   into the box, so the scratch host has to clear it too. */
+.amd-diagram .label p,
+.amd-diagram .edgeLabel p,
+.amd-diagram .cluster-label p,
+.amd-measure-host .label p,
+.amd-measure-host .edgeLabel p,
+.amd-measure-host .cluster-label p { margin: 0; }
+/* Edge text sits on the line, with no node padding around it. A few pixels
+   keep the stroke from showing through the last glyph. */
+.amd-diagram .edgeLabel p,
+.amd-measure-host .edgeLabel p { padding: 0 4px; }
+/* Journey section titles carry the bar class, so Mermaid fills the title
+   with the bar color. Task labels are a fixed white. Both sit on the bar. */
+.amd-diagram text.journey-section,
+.amd-diagram [class*="task-type-"] ~ text.task { fill: var(--amd-ink); }
 
 /* AssistantPinnedNewsCards.tsx */
 .apnc-title-row { display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
@@ -22598,14 +23263,19 @@ textarea {
     box-shadow: 0 0 0 3px var(--theme-primary-soft, rgba(47, 111, 188, 0.10)) !important;
 }
 
-/* Respect reduced-motion globally: collapse all transitions/animations. */
+/* Reduced motion turns transitions off. A short duration on its own leaves
+   transition-property at the initial value of all, so width and height animate.
+   Mermaid sizes an HTML label by creating a large foreignObject and then
+   shrinking it; the same-frame transition keeps that scratch size in getBBox,
+   and the diagram viewBox becomes the scratch square (a thumbnail in the
+   corner, blank everywhere else). */
 @media (prefers-reduced-motion: reduce) {
     *,
     *::before,
     *::after {
         animation-duration: 0.01ms !important;
         animation-iteration-count: 1 !important;
-        transition-duration: 0.01ms !important;
+        transition: none !important;
     }
 }
 
@@ -23837,9 +24507,10 @@ textarea[placeholder*='办公任务'], textarea[placeholder*='完成什么'], in
   outline-offset: 2px;
 }
 
-/* Reference motion preference */
+/* Reference motion preference. More specific than the global rule, so this
+   has to turn transitions off itself rather than only shorten a duration. */
 @media (prefers-reduced-motion: reduce) {
-  .mc-welcome *, .mc-task-pane *, .mc-task-execution *, .mc-nav-rail * { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+  .mc-welcome *, .mc-task-pane *, .mc-task-execution *, .mc-nav-rail * { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition: none !important; scroll-behavior: auto !important; }
 }
 
 /* Live progress sits in the assistant column, not as a detached centered card. */
@@ -26732,6 +27403,119 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   overflow-x: hidden;
   overflow-y: auto;
 }
+.stsm-task-folder + .stsm-task-folder {
+  margin-top: 4px;
+}
+.stsm-task-folder__head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  border-radius: 8px;
+  user-select: none;
+}
+.stsm-task-folder__head.is-draggable,
+.stsm-task-folder__head.is-draggable .stsm-task-folder__toggle {
+  cursor: grab;
+}
+.stsm-task-folder__head.is-draggable:active,
+.stsm-task-folder__head.is-draggable:active .stsm-task-folder__toggle {
+  cursor: grabbing;
+}
+.stsm-task-folder[data-folder-drop-target='before'] > .stsm-task-folder__head {
+  box-shadow: inset 0 2px 0 var(--theme-primary);
+}
+.stsm-task-folder[data-folder-drop-target='after'] > .stsm-task-folder__head {
+  box-shadow: inset 0 -2px 0 var(--theme-primary);
+}
+.stsm-task-folder__grip {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  color: var(--theme-text-muted);
+  opacity: 0.55;
+}
+.stsm-task-folder__head:hover .stsm-task-folder__grip,
+.stsm-task-folder[data-folder-drop-target] .stsm-task-folder__grip {
+  opacity: 1;
+}
+.stsm-task-folder__grip-icon {
+  display: block;
+}
+.stsm-task-folder__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+  margin: 0;
+  padding: 5px 8px 5px 2px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--theme-text-primary);
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 650;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+}
+.stsm-task-folder__toggle:hover {
+  background: color-mix(in srgb, var(--theme-text-primary) 5%, transparent);
+}
+.stsm-task-folder__toggle:focus-visible {
+  outline: 2px solid var(--theme-primary);
+  outline-offset: -2px;
+}
+.stsm-task-folder__head:not(.is-draggable) .stsm-task-folder__toggle {
+  padding-left: 8px;
+}
+.stsm-task-folder__chevron {
+  display: block;
+  flex-shrink: 0;
+  color: var(--theme-text-muted);
+  transition: transform 0.15s ease;
+}
+.stsm-task-folder__toggle[aria-expanded="false"] .stsm-task-folder__chevron {
+  transform: none;
+}
+.stsm-task-folder__toggle[aria-expanded="true"] .stsm-task-folder__chevron {
+  transform: rotate(90deg);
+}
+.stsm-task-folder__icon {
+  display: block;
+  flex-shrink: 0;
+  color: var(--theme-text-muted);
+}
+.stsm-task-folder__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stsm-task-folder__count {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--theme-text-muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.stsm-task-folder__items {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding-left: 8px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .stsm-task-folder__chevron {
+    transition: none;
+  }
+}
 .stsm-list-notice {
   margin: 0 8px 8px;
   padding: 7px 10px;
@@ -27771,6 +28555,10 @@ input.cwshare-url {
      opens it: anchored to a button, the panel sat off-centre and a narrow
      window clipped it against the window edge. */
   position: relative;
+  /* Above the document pane. The PDF preview is an iframe, and without a
+     stacking context here the open menu — which hangs below the bar — is
+     painted underneath that frame, so the panel looks like it never opened. */
+  z-index: 40;
 }
 /* The bar clips its own row, which would also clip the 打开 menu. Names stay
    clipped by .file-companion-titlebar-files while the menu is open. */
@@ -27809,6 +28597,17 @@ input.cwshare-url {
 .file-companion-titlebar-gap {
   flex: 1 1 auto;
   min-width: 0;
+}
+/* Everything clickable opts out of the window drag region. --wails-draggable
+   inherits, and Wails starts the drag on the first mousemove after mousedown,
+   so a click with a pixel of shake on a tab or a tool button moved the window
+   instead of pressing the control. The brand and the flexible gap stay
+   draggable, so the bar is still a drag handle. */
+.file-companion-titlebar-files,
+.file-companion-titlebar-tabs,
+.file-companion-titlebar-actions,
+.file-companion-titlebar .file-companion-tool--close {
+  --wails-draggable: no-drag;
 }
 .file-companion-titlebar-actions {
   display: flex;
@@ -27921,6 +28720,12 @@ input.cwshare-url {
 .file-companion-open {
   display: inline-flex;
   flex: 0 0 auto;
+  /* The titlebar is a window-drag region and --wails-draggable inherits, so
+     without this the trigger and the whole 打开 panel would be draggable too.
+     Wails defers the drag to the first mousemove, which means a slightly shaky
+     click on the arXiv box moves the window instead of focusing the input.
+     This covers the panel as well: it is a child of this element. */
+  --wails-draggable: no-drag;
 }
 .file-companion-open-caret {
   display: inline-flex;
@@ -27931,6 +28736,16 @@ input.cwshare-url {
   display: block;
   width: 9px;
   height: 6px;
+}
+/* Covers the document under the bar, including the PDF iframe, without
+   covering the bar's own buttons. A click there closes the panel. */
+.file-companion-open-scrim {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 100vh;
+  z-index: 20;
 }
 .file-companion-open-menu {
   position: absolute;
@@ -29382,7 +30197,7 @@ input.cwshare-url {
   color: var(--theme-text-primary) !important;
   box-shadow: var(--shadow-sm) !important;
 }
-#App[data-nav-tab='settings'] :where(.settings-panel p, .settings-panel small, .settings-panel label, .settings-panel-desc, .prog-tools__field-label) {
+#App[data-nav-tab='settings'] :where(.settings-panel p, .settings-panel small, .settings-panel label:not(.hub-service-redeem__history-toggle), .settings-panel-desc, .prog-tools__field-label) {
   color: var(--theme-text-secondary) !important;
 }
 #App[data-nav-tab='settings'] :where(.settings-top-tabs, .settings-top-tabs__group) {
@@ -30599,6 +31414,41 @@ input.cwshare-url {
 .mc-taskcfg-name-input::placeholder {
     color: color-mix(in srgb, currentColor 42%, transparent);
     font-weight: 400;
+}
+/* The run-window popover is portaled to document.body, outside the surfaces
+   that force color-scheme. WebView2 then paints the native datetime indicator
+   with the OS scheme, so a light glyph disappears on the light field. */
+.mc-taskcfg-datetime-wrap {
+    position: relative;
+    display: block;
+}
+.mc-taskcfg-datetime::-webkit-calendar-picker-indicator {
+    display: none;
+}
+.mc-taskcfg-datetime-btn {
+    position: absolute;
+    z-index: 1;
+    top: 1px;
+    right: 1px;
+    bottom: 1px;
+    width: 32px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0 7px 7px 0;
+    background: transparent;
+    color: inherit;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+.mc-taskcfg-datetime-btn:hover {
+    background: color-mix(in srgb, currentColor 10%, transparent);
+}
+.mc-taskcfg-datetime-btn:focus-visible {
+    outline: 2px solid var(--theme-primary, #2f6fbc);
+    outline-offset: -2px;
 }
 @media (prefers-reduced-motion: reduce) {
     .mc-taskcfg-pop,

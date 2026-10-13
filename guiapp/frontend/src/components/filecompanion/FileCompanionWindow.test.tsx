@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import FileCompanionWindow, {
@@ -30,6 +33,7 @@ const saveResult = vi.fn();
 const figureDataURL = vi.fn();
 const exportPdf = vi.fn();
 const exportChatPdf = vi.fn();
+const getBrandInfo = vi.fn();
 const clipboardWrite = vi.fn();
 
 vi.mock("../../../wailsjs/go/main/App", () => ({
@@ -49,6 +53,7 @@ vi.mock("../../../wailsjs/go/main/App", () => ({
     FileCompanionFigureDataURL: (...args: unknown[]) => figureDataURL(...args),
     FileCompanionExportPDF: (...args: unknown[]) => exportPdf(...args),
     FileCompanionExportChatPDF: (...args: unknown[]) => exportChatPdf(...args),
+    GetBrandInfo: (...args: unknown[]) => getBrandInfo(...args),
 }));
 
 vi.mock("../../../wailsjs/runtime", () => ({
@@ -85,6 +90,20 @@ vi.mock("../ai/DocxPreviewPanel", () => ({
 vi.mock("../ai/PdfPreviewPanel", () => ({
     PdfPreviewPanel: ({ absPath }: { absPath: string }) => <div data-testid="pdf-preview-panel">{absPath}</div>,
 }));
+
+// Only the drawing is stubbed. jsdom has no canvas, so the real renderer would
+// always fail here and the interesting behaviour — what the export does with a
+// drawn diagram, and with one that will not draw — would never be exercised.
+// isMermaidCodeFence stays real, so the fence detection under test is the same
+// code the app runs.
+const renderMermaidFenceToPNGDataURL = vi.fn();
+vi.mock("../ai/AssistantMermaidDiagram", async (importOriginal) => {
+    const actual = await importOriginal<typeof import("../ai/AssistantMermaidDiagram")>();
+    return {
+        ...actual,
+        renderMermaidFenceToPNGDataURL: (...args: unknown[]) => renderMermaidFenceToPNGDataURL(...args),
+    };
+});
 
 type DropCb = (x: number, y: number, paths: string[]) => void;
 type EventCb = (payload: unknown) => void;
@@ -127,6 +146,8 @@ beforeEach(() => {
     openResult.mockReset();
     saveResult.mockReset();
     figureDataURL.mockReset();
+    getBrandInfo.mockReset();
+    getBrandInfo.mockResolvedValue({ displayName: "MaClaw" });
     exportPdf.mockReset();
     exportPdf.mockResolvedValue("");
     exportChatPdf.mockReset();
@@ -146,6 +167,10 @@ beforeEach(() => {
     openResult.mockResolvedValue(undefined);
     saveResult.mockResolvedValue("D:/out/paper.pdf");
     figureDataURL.mockImplementation(async (path: string) => `data:image/png;base64,${path}`);
+    // Default: a diagram that will not draw, so a test only sees a picture when
+    // it asks for one.
+    renderMermaidFenceToPNGDataURL.mockReset();
+    renderMermaidFenceToPNGDataURL.mockResolvedValue(null);
 });
 
 describe("revealCompanionTab", () => {
@@ -394,9 +419,18 @@ describe("FileCompanionWindow", () => {
         expect((screen.getByTestId("file-companion-arxiv-go") as HTMLButtonElement).disabled).toBe(true);
         // The bar clips its row; the menu has to un-clip it or it is cut off.
         expect(screen.getByTestId("file-companion-titlebar").className).toContain("file-companion-titlebar--menu-open");
+        // The cluster sits in the window-drag region. On Windows the drag
+        // handler ignores --wails-draggable and only honors this attribute, so
+        // a shaky click on the arXiv hint would move the window.
+        expect(screen.getByTestId("file-companion-open").hasAttribute("data-window-no-drag")).toBe(true);
         fireEvent.click(screen.getByTestId("file-companion-choose"));
         expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
         expect(screen.getByTestId("file-companion-titlebar").className).not.toContain("file-companion-titlebar--menu-open");
+        fireEvent.click(screen.getByTestId("file-companion-choose"));
+        // A click on the PDF never reaches document, because the preview is an
+        // iframe. The scrim is what receives that click.
+        fireEvent.mouseDown(screen.getByTestId("file-companion-open-scrim"));
+        expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
     });
 
     it("本地文件 opens the system dialog and closes the menu", async () => {
@@ -754,6 +788,29 @@ describe("FileCompanionWindow", () => {
         expect(brand.compareDocumentPosition(tab) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     });
 
+    // The window ships under every OEM brand, so the title must follow the
+    // backend's brand instead of a literal.
+    it("titles the window with the build's brand", async () => {
+        getBrandInfo.mockResolvedValue({ displayName: "TigerClaw" });
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        installRuntime();
+        renderWindow();
+        const brand = await screen.findByTestId("file-companion-brand");
+        await waitFor(() => expect(brand.textContent).toBe("TigerClaw伴读"));
+        expect(brand.getAttribute("aria-label")).toBe("TigerClaw伴读");
+    });
+
+    it("keeps the default title when the brand call fails", async () => {
+        getBrandInfo.mockRejectedValue(new Error("backend unavailable"));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path));
+        installRuntime();
+        renderWindow();
+        const brand = await screen.findByTestId("file-companion-brand");
+        expect(brand.textContent).toBe("MaClaw伴读");
+    });
+
     it("moves the filename row from the end buttons when the names overflow", async () => {
         boot.mockResolvedValue({ paths: ["C:/notes/a.md", "C:/notes/b.md", "C:/notes/c.md"] });
         open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false }));
@@ -865,9 +922,12 @@ describe("FileCompanionWindow", () => {
         expect(screen.getByTestId("file-companion-import").className).toContain("file-companion-tool");
         expect(screen.getByTestId("file-companion-upload").className).toContain("file-companion-tool");
         expect(screen.getByTestId("file-companion-paper").textContent).toContain("论文解读");
+        // 导出 PDF sits immediately to the right of 论文解读, then 导入知识库.
+        expect(screen.getByTestId("file-companion-paper").nextElementSibling).toBe(screen.getByTestId("file-companion-export-chat"));
+        expect(screen.getByTestId("file-companion-export-chat").nextElementSibling).toBe(screen.getByTestId("file-companion-import"));
         expect(screen.getByTestId("file-companion-import").textContent).toContain("导入知识库");
         expect(screen.getByTestId("file-companion-upload").textContent).toContain("上传到云盘");
-        for (const id of ["file-companion-paper", "file-companion-import", "file-companion-upload"]) {
+        for (const id of ["file-companion-paper", "file-companion-export-chat", "file-companion-import", "file-companion-upload"]) {
             expect(screen.getByTestId(id).querySelector("svg.file-companion-tool-icon")?.getAttribute("aria-hidden")).toBe("true");
         }
         fireEvent.click(screen.getByTestId("file-companion-import"));
@@ -2285,6 +2345,75 @@ describe("FileCompanionWindow", () => {
         expect(pdf.getAttribute("data-state")).toBe("ok");
     });
 
+    // The single-answer export reads the same Markdown as the transcript one,
+    // so a diagram in it has to be drawn here too — otherwise this control
+    // quietly produces a page of Mermaid source.
+    it("exports one answer's diagram as the diagram it draws", async () => {
+        exportPdf.mockResolvedValue("C:/out/a-回答.pdf");
+        renderMermaidFenceToPNGDataURL.mockResolvedValue("data:image/png;base64,DIAGRAM");
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                { role: "user", text: "画个图" },
+                { role: "assistant", text: "如下：\n\n```mermaid\nflowchart LR\n  A --> B\n```\n" },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText(/如下/);
+
+        fireEvent.click(screen.getByTestId("file-companion-export-pdf-restored:1"));
+        await waitFor(() => expect(exportPdf).toHaveBeenCalledWith("C:/notes/a.md", "如下：\n\n![](data:image/png;base64,DIAGRAM)"));
+    });
+
+    // The window shows a reply's figures beneath it, so exporting that reply
+    // has to carry them. Text alone would be a different document from the one
+    // on screen.
+    it("exports one answer with the figures shown beneath it", async () => {
+        exportPdf.mockResolvedValue("C:/out/a-回答.pdf");
+        figureDataURL.mockResolvedValue("data:image/png;base64,FIG");
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                {
+                    role: "assistant",
+                    text: "见下图。",
+                    figures: [{ label: "图 1", caption: "结果", path: "C:/papers/fig.png" }],
+                },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("见下图。");
+
+        fireEvent.click(screen.getByTestId("file-companion-export-pdf-restored:0"));
+        await waitFor(() => expect(exportPdf).toHaveBeenCalledWith("C:/notes/a.md", "见下图。\n\n![图 1 结果](data:image/png;base64,FIG)"));
+    });
+
+    // And when a figure cannot be read, the reader is told rather than handed a
+    // document that looks complete.
+    it("tells the reader when one answer's figure could not be included", async () => {
+        exportPdf.mockResolvedValue("C:/out/a-回答.pdf");
+        figureDataURL.mockRejectedValue(new Error("that image is not part of the open file"));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                {
+                    role: "assistant",
+                    text: "见下图。",
+                    figures: [{ label: "图 1", caption: "结果", path: "C:/papers/fig.png" }],
+                },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("见下图。");
+
+        fireEvent.click(screen.getByTestId("file-companion-export-pdf-restored:0"));
+        await waitFor(() => expect(exportPdf).toHaveBeenCalledWith("C:/notes/a.md", "见下图。"));
+        await screen.findByText("已导出 PDF，但 1 张配图未能读取，未包含在内");
+    });
+
     it("reports a failed export instead of claiming success", async () => {
         exportPdf.mockRejectedValue(new Error("没有可用的中文字体，无法生成 PDF"));
         boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
@@ -2322,7 +2451,10 @@ describe("FileCompanionWindow", () => {
     // The bytes travel with the text. A path alone would point at a file the
     // reading side cannot open, which is exactly what "export the picture"
     // must not become.
-    it("carries a reply's figures into the transcript as images", async () => {
+    // The bytes travel with the text, and so does the label. A picture with no
+    // caption leaves the reader matching "图 8.1" in the answer to a drawing by
+    // guesswork.
+    it("carries a reply's figures into the transcript with their captions", async () => {
         exportChatPdf.mockResolvedValue("C:/out/a-伴读对话.pdf");
         figureDataURL.mockResolvedValue("data:image/png;base64,AAAA");
         boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
@@ -2343,9 +2475,290 @@ describe("FileCompanionWindow", () => {
         fireEvent.click(screen.getByTestId("file-companion-export-chat"));
         await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
             { role: "user", content: "展示图 8.1" },
-            { role: "assistant", content: "图中给出结果。\n\n![](data:image/png;base64,AAAA)" },
+            { role: "assistant", content: "图中给出结果。\n\n![图 8.1 结果](data:image/png;base64,AAAA)" },
         ]));
         expect(figureDataURL).toHaveBeenCalledWith("C:/papers/fig.png");
+    });
+
+    // A caption is not allowed to end the alt text early: Markdown stops it at
+    // the first bracket or parenthesis, which would silently truncate the label.
+    it("keeps a caption whose text contains markdown punctuation", async () => {
+        exportChatPdf.mockResolvedValue("C:/out/a-伴读对话.pdf");
+        figureDataURL.mockResolvedValue("data:image/png;base64,AAAA");
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                {
+                    role: "assistant",
+                    text: "见下图。",
+                    figures: [{ label: "图 2", caption: "损失曲线 (baseline)", path: "C:/papers/fig.png" }],
+                },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("见下图。");
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
+            { role: "assistant", content: "见下图。\n\n![图 2 损失曲线 baseline](data:image/png;base64,AAAA)" },
+        ]));
+    });
+
+    // A figure that cannot be read must be reported. Dropping it silently
+    // produces a document that looks complete and is not.
+    it("tells the reader when a figure could not be included", async () => {
+        exportChatPdf.mockResolvedValue("C:/out/a-伴读对话.pdf");
+        figureDataURL.mockRejectedValue(new Error("that image is not part of the open file"));
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                {
+                    role: "assistant",
+                    text: "图中给出结果。",
+                    figures: [{ label: "图 8.1", caption: "结果", path: "C:/papers/fig.png" }],
+                },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("图中给出结果。");
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        // The text still exports; the missing picture is named.
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
+            { role: "assistant", content: "图中给出结果。" },
+        ]));
+        await screen.findByText("已导出 PDF，但 1 张配图未能读取，未包含在内");
+    });
+
+    // The window draws Mermaid diagrams; the document layer cannot, having no
+    // JavaScript. A fence that reached the PDF as source is the difference
+    // between a diagram and a page of arrows.
+    it("exports a mermaid fence as the diagram it draws", async () => {
+        exportChatPdf.mockResolvedValue("C:/out/a-伴读对话.pdf");
+        renderMermaidFenceToPNGDataURL.mockResolvedValue("data:image/png;base64,DIAGRAM");
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                { role: "user", text: "画个流程图" },
+                {
+                    role: "assistant",
+                    text: "三大抓手：\n\n```mermaid\nflowchart LR\n  A[压缩] --> B[架构层]\n```\n\n如上。",
+                },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText(/三大抓手/);
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
+            { role: "user", content: "画个流程图" },
+            { role: "assistant", content: "三大抓手：\n\n![](data:image/png;base64,DIAGRAM)\n\n如上。" },
+        ]));
+        // The fence body is what gets drawn, without the fence markers.
+        expect(renderMermaidFenceToPNGDataURL).toHaveBeenCalledWith("flowchart LR\n  A[压缩] --> B[架构层]", expect.anything());
+    });
+
+    // A diagram that will not draw keeps its source: the reader still gets what
+    // the screen would have shown, and is told the picture is missing.
+    it("keeps the source when a diagram will not draw, and says so", async () => {
+        exportChatPdf.mockResolvedValue("C:/out/a-伴读对话.pdf");
+        renderMermaidFenceToPNGDataURL.mockResolvedValue(null);
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                {
+                    role: "assistant",
+                    text: "```mermaid\nflowchart LR\n  A --> B\n```\n",
+                },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText(/flowchart LR/);
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
+            { role: "assistant", content: "```mermaid\nflowchart LR\n  A --> B\n```" },
+        ]));
+        await screen.findByText("已导出 PDF，但 1 张流程图未能读取，未包含在内");
+    });
+
+    // Only Mermaid fences are drawn. A code block the reader meant as code has
+    // to survive verbatim.
+    it("leaves other code fences alone", async () => {
+        exportChatPdf.mockResolvedValue("C:/out/a-伴读对话.pdf");
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                {
+                    role: "assistant",
+                    text: "示例：\n\n```python\nprint(1)\n```\n",
+                },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText(/print\(1\)/);
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
+            { role: "assistant", content: "示例：\n\n```python\nprint(1)\n```" },
+        ]));
+        expect(renderMermaidFenceToPNGDataURL).not.toHaveBeenCalled();
+    });
+
+    // Figures are fetched together, so their order in the document has to come
+    // from the list, not from whichever request finished first. A scrambled
+    // order would put 图 1's caption under 图 2.
+    it("keeps figure order when several are fetched at once", async () => {
+        exportChatPdf.mockResolvedValue("C:/out/a-伴读对话.pdf");
+        // The first request is the slowest, so completion order is the reverse
+        // of document order.
+        figureDataURL.mockImplementation(async (path: string) => {
+            if (path.endsWith("one.png")) {
+                await new Promise((resolve) => setTimeout(resolve, 40));
+            }
+            return `data:image/png;base64,${path}`;
+        });
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                {
+                    role: "assistant",
+                    text: "两张图。",
+                    figures: [
+                        { label: "图 1", caption: "甲", path: "C:/papers/one.png" },
+                        { label: "图 2", caption: "乙", path: "C:/papers/two.png" },
+                        { label: "图 3", caption: "丙", path: "C:/papers/three.png" },
+                    ],
+                },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText("两张图。");
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
+            {
+                role: "assistant",
+                content: [
+                    "两张图。",
+                    "",
+                    "![图 1 甲](data:image/png;base64,C:/papers/one.png)",
+                    "",
+                    "![图 2 乙](data:image/png;base64,C:/papers/two.png)",
+                    "",
+                    "![图 3 丙](data:image/png;base64,C:/papers/three.png)",
+                ].join("\n"),
+            },
+        ]));
+    });
+
+    // Fences come in more shapes than ```mermaid. Each of these is a form the
+    // renderer accepts, so the export has to accept it too or the reader gets
+    // source for a diagram that was drawn on screen.
+    it("draws diagrams written with tilde fences or indentation", async () => {
+        exportChatPdf.mockResolvedValue("C:/out/a-伴读对话.pdf");
+        renderMermaidFenceToPNGDataURL.mockResolvedValue("data:image/png;base64,DIAGRAM");
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [
+                { role: "assistant", text: "~~~mermaid\nflowchart LR\n  A --> B\n~~~\n" },
+                { role: "assistant", text: "  ```mermaid\nflowchart LR\n  C --> D\n  ```\n" },
+            ],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText(/flowchart LR/);
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
+            { role: "assistant", content: "![](data:image/png;base64,DIAGRAM)" },
+            { role: "assistant", content: "![](data:image/png;base64,DIAGRAM)" },
+        ]));
+    });
+
+    // A fence still being written is not a diagram yet. Leaving the source in
+    // place keeps the text the reader can see; counting it as missing would
+    // warn about a picture that was never promised.
+    it("leaves an unclosed mermaid fence as source, without warning", async () => {
+        exportChatPdf.mockResolvedValue("C:/out/a-伴读对话.pdf");
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "assistant", text: "开始画：\n\n```mermaid\nflowchart LR\n  A --> B\n" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText(/开始画/);
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
+            { role: "assistant", content: "开始画：\n\n```mermaid\nflowchart LR\n  A --> B" },
+        ]));
+        expect(renderMermaidFenceToPNGDataURL).not.toHaveBeenCalled();
+        expect(screen.queryByText(/未能读取/)).toBeNull();
+    });
+
+    // A longer fence may carry extra text after the language, and the diagram
+    // is everything between the markers.
+    it("reads a fence whose language line carries extra text", async () => {
+        exportChatPdf.mockResolvedValue("C:/out/a-伴读对话.pdf");
+        renderMermaidFenceToPNGDataURL.mockResolvedValue("data:image/png;base64,DIAGRAM");
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "assistant", text: "````mermaid title=x\nflowchart LR\n  A --> B\n````\n" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText(/flowchart LR/);
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        await waitFor(() => expect(renderMermaidFenceToPNGDataURL).toHaveBeenCalledTimes(1));
+        const [code] = renderMermaidFenceToPNGDataURL.mock.calls[0] as [string];
+        expect(code).toBe("flowchart LR\n  A --> B");
+    });
+
+    // A closing run shorter than the opening one does not close the fence —
+    // the same rule the on-screen renderer applies, so a diagram that keeps
+    // rendering as code on screen is not silently drawn in the PDF.
+    it("keeps a fence open when the closing run is shorter", async () => {
+        exportChatPdf.mockResolvedValue("C:/out/a-伴读对话.pdf");
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "assistant", text: "````mermaid\nflowchart LR\n  A --> B\n```\n还在围栏里\n" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText(/还在围栏里/);
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledTimes(1));
+        expect(renderMermaidFenceToPNGDataURL).not.toHaveBeenCalled();
+        const [, turns] = exportChatPdf.mock.calls[0] as [string, { content: string }[]];
+        expect(turns[0].content).toContain("````mermaid");
+    });
+
+    // A fence that is not Mermaid must survive verbatim, including when it
+    // contains a line that looks like another fence.
+    it("leaves a non-mermaid fence untouched even when it holds fence-like lines", async () => {
+        exportChatPdf.mockResolvedValue("C:/out/a-伴读对话.pdf");
+        boot.mockResolvedValue({ paths: ["C:/notes/a.md"] });
+        open.mockImplementation(async (path: string) => doc(path, {
+            messages: [{ role: "assistant", text: "说明：\n\n```text\n示例 ```mermaid 只是文字\n```\n" }],
+        }));
+        installRuntime();
+        renderWindow();
+        await screen.findByText(/说明/);
+
+        fireEvent.click(screen.getByTestId("file-companion-export-chat"));
+        await waitFor(() => expect(exportChatPdf).toHaveBeenCalledWith("C:/notes/a.md", [
+            { role: "assistant", content: "说明：\n\n```text\n示例 ```mermaid 只是文字\n```" },
+        ]));
+        expect(renderMermaidFenceToPNGDataURL).not.toHaveBeenCalled();
     });
 
     // A long session must export whole. This pins the turn list against any
@@ -2578,7 +2991,7 @@ describe("FileCompanionWindow", () => {
         await screen.findByText("磁盘已满");
         expect(screen.queryByText("已导出 PDF")).toBeNull();
         // The button must become usable again, or one full disk ends exporting.
-        await waitFor(() => expect(screen.getByTestId("file-companion-export-chat").textContent).toBe("导出"));
+        await waitFor(() => expect(screen.getByTestId("file-companion-export-chat").textContent).toBe("导出 PDF"));
     });
 
     it("stays quiet when the conversation export dialog is cancelled", async () => {
@@ -2652,3 +3065,53 @@ describe("FileCompanionWindow", () => {
     });
 });
 
+
+// jsdom has no Wails runtime, so nothing here can reproduce this: the titlebar
+// is a window-drag region and --wails-draggable inherits, which made the 打开
+// panel draggable as well. Wails defers the drag to the first mousemove, so a
+// slightly shaky click on the arXiv box moved the window instead of focusing
+// the input. Only a source assertion can pin that down.
+describe("companion titlebar keeps its controls out of the window drag region", () => {
+    const css = () => readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), "../../App.css"), "utf8");
+
+    // A selector can appear in several rules (layout first, opt-out later), so
+    // every match has to be considered — checking only the first would read the
+    // layout rule and report a false negative.
+    const declaresNoDrag = (source: string, selector: string) => {
+        const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const rule = new RegExp(`([^{}]*${escaped}[^{}]*)\\{([^}]*)\\}`, "g");
+        for (const match of source.matchAll(rule)) {
+            if (/--wails-draggable:\s*no-drag/.test(match[2])) return true;
+        }
+        return false;
+    };
+
+    it("declares no-drag on the trigger wrapper, which the panel inherits", () => {
+        expect(css()).toMatch(/\.file-companion-open\s*\{[^}]*--wails-draggable:\s*no-drag/);
+    });
+
+    // The open panel hangs over the document. The PDF preview is an iframe in
+    // that document, and an iframe paints above an overflowing sibling that
+    // has no stacking context — the panel opened and then vanished under it.
+    // The document pane itself must stay out of a stacking context: a z-index
+    // there would pin the figure lightbox under the title bar.
+    it("stacks the title bar above the document so the open panel stays visible", () => {
+        const source = css();
+        expect(source).toMatch(/\.file-companion-titlebar\s*\{[^}]*z-index:\s*40/);
+        const split = source.match(/\.file-companion-split\s*\{[^}]*\}/);
+        expect(split, "document pane rule").toBeTruthy();
+        expect(split![0]).not.toMatch(/z-index/);
+    });
+
+    it("declares no-drag on every clickable region of the bar", () => {
+        const source = css();
+        for (const selector of [
+            ".file-companion-titlebar-files",
+            ".file-companion-titlebar-tabs",
+            ".file-companion-titlebar-actions",
+            ".file-companion-tool--close",
+        ]) {
+            expect(declaresNoDrag(source, selector), `${selector} must opt out of the drag region`).toBe(true);
+        }
+    });
+});

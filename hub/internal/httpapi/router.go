@@ -428,7 +428,9 @@ func NewRouter(
 	mux.HandleFunc("POST /api/v1/desktop-services/http", PostDesktopHTTPHandler(desktopPool))
 	mux.HandleFunc("POST /api/v1/desktop-services/screenshot", PostDesktopScreenshotHandler(desktopPool))
 	mux.HandleFunc("GET /api/v1/bots/access", GetBotAccessHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/bots/credits", GetBotCreditsHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots", ListBotsHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/bots/pending", GetBotPendingHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots", PostBotUserHandler(botSvc, identity))
 	mux.HandleFunc("PATCH /api/v1/bots/{id}", PatchBotUserHandler(botSvc, identity))
 	mux.HandleFunc("DELETE /api/v1/bots/{id}", DeleteBotUserHandler(botSvc, identity))
@@ -439,6 +441,8 @@ func NewRouter(
 	mux.HandleFunc("POST /api/v1/bots/{id}/preference", PostBotPreferenceHandler(botSvc, identity))
 	mux.HandleFunc("DELETE /api/v1/bots/{id}/preference", DeleteBotPreferenceHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/{id}/runs/{runID}", GetBotRunHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/bots/{id}/tasks", GetBotTasksHandler(botSvc, identity))
+	mux.HandleFunc("POST /api/v1/bots/{id}/runs/{runID}/ack", PostBotRunAckHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/secret-fill", PostBotSecretFillHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/{id}/desktop", GetBotDesktopHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/desktop", PostBotDesktopWatchHandler(botSvc, identity))
@@ -701,7 +705,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/mobile/llm/desktop-qr-authorizations", MobileLLMDesktopQRAuthorizationHandler(identity))
 	mux.HandleFunc("DELETE /api/mobile/llm/desktop-qr-authorizations", MobileLLMDesktopQRAuthorizationRevokeHandler(identity))
 	mux.HandleFunc("POST /api/mobile/auth/desktop-qr-sessions", MobileDesktopAuthQRSessionHandler(identity))
-	mux.HandleFunc("POST /api/mobile/search", MobileSearchHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache, centerSvc)))
+	mux.HandleFunc("POST /api/mobile/search", MobileSearchHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache, centerSvc, botSvc)))
 	mux.HandleFunc("GET /api/mobile/jobs", MobileJobsHandler(identity))
 	// Hub SSH credential vault (hub_exec path).
 	mux.HandleFunc("GET /api/mobile/ssh/vault", MobileSSHVaultListHandler(identity))
@@ -712,9 +716,9 @@ func NewRouter(
 	// Zero-management path: host + username + password → AI assistant ssh ready.
 	mux.HandleFunc("POST /api/mobile/ssh/quick-connect", MobileSSHQuickConnectHandler(identity))
 	// Long-running official assistant jobs (async upgrade path).
-	mux.HandleFunc("GET /api/mobile/agent/jobs", MobileAgentJobsHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache, centerSvc)))
-	mux.HandleFunc("POST /api/mobile/agent/jobs", MobileAgentJobsHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache, centerSvc)))
-	mux.HandleFunc("GET /api/mobile/agent/jobs/{jobId}", MobileAgentJobsHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache, centerSvc)))
+	mux.HandleFunc("GET /api/mobile/agent/jobs", MobileAgentJobsHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache, centerSvc, botSvc)))
+	mux.HandleFunc("POST /api/mobile/agent/jobs", MobileAgentJobsHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache, centerSvc, botSvc)))
+	mux.HandleFunc("GET /api/mobile/agent/jobs/{jobId}", MobileAgentJobsHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache, centerSvc, botSvc)))
 	// Meeting recordings use a resumable audio protocol, separate from the
 	// 25 MiB document-import path.
 	mux.HandleFunc("POST /api/mobile/meeting-recordings", MobileMeetingRecordingsHandler(identity))
@@ -828,8 +832,8 @@ func NewRouter(
 	mux.HandleFunc("POST /api/llm/service/reset-voucher/redeem", RedeemResetVoucherHandler(identity, system, adminAudit))
 	mux.HandleFunc("GET /api/llm/v1/models", LLMV1ModelsHandler(identity, system, securitySvc))
 	mux.HandleFunc("GET /api/llm/v1/models/{model...}", LLMV1ModelHandler(identity, system, securitySvc))
-	mux.HandleFunc("POST /api/llm/v1/chat/completions", LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache, centerSvc))
-	mux.HandleFunc("POST /api/llm/v1/responses", LLMV1ResponsesHandler(identity, system, securitySvc, llmPromptCache, centerSvc))
+	mux.HandleFunc("POST /api/llm/v1/chat/completions", LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache, centerSvc, botSvc))
+	mux.HandleFunc("POST /api/llm/v1/responses", LLMV1ResponsesHandler(identity, system, securitySvc, llmPromptCache, centerSvc, botSvc))
 	mux.HandleFunc("GET /api/card-store/products", GetCardStoreProductsHandler(system, tenantRepo))
 	mux.HandleFunc("GET /api/card-store/payment-qr/{tenantID}/{filename}", CardStorePaymentQRImageHandler(cardStoreQRDir))
 	mux.HandleFunc("GET /api/card-store/me", GetCardStoreMeHandler(identity))

@@ -1148,6 +1148,46 @@ func DefaultDefinitions() []IntentDefinition {
 			ToolNames: []string{},
 		},
 		{
+			Label:  LabelMailboxRead,
+			Domain: "邮箱 (Mailbox)",
+			TreeText: "用户要查看、搜索或读取已经配置的邮箱里的邮件，不发送。" +
+				"语义判据：用户目标是收件箱、未读邮件、某封邮件正文或附件。" +
+				"边界：「发微信、QQ 或 IM 消息」→ 既有 IM 发送；「用浏览器打开网页邮箱」→ browser；" +
+				"「把文件发到邮箱」→ document_delivery；「发邮件、回复或转发」→ mailbox_send。",
+			EmbedTexts: []string{
+				"看看我的邮件",
+				"打开收件箱看看未读",
+				"搜一下这周的邮件",
+				"读一下这封邮件",
+				"search my inbox",
+				"show unread email",
+				"read the latest message in my mailbox",
+				"find mail from yesterday",
+			},
+			ToolNames: []string{"mailbox_query"},
+		},
+		{
+			Label:  LabelMailboxSend,
+			Domain: "邮箱 (Mailbox)",
+			TreeText: "用户要通过已配置的邮箱发信、回复或转发，或让代理保存一个邮箱帐号。发送前必须由用户确认。" +
+				"语义判据：用户目标是把一封邮件送到对方邮箱，或提供服务器、端口、协议和密码来配置邮箱。" +
+				"边界：「发到微信或 QQ」→ 既有 IM 发送；「只查看收件箱」→ mailbox_read；" +
+				"「用浏览器打开网页邮箱」→ browser；「把文件发到邮箱」→ document_delivery。",
+			EmbedTexts: []string{
+				"给对方发一封邮件",
+				"回复这封邮件",
+				"把这封邮件转发出去",
+				"用工作邮箱发这封信",
+				"帮我配置邮箱",
+				"添加一个邮箱帐号",
+				"send an email to them",
+				"reply to this email",
+				"forward this message by email",
+				"send it from the default mailbox",
+			},
+			ToolNames: []string{"mailbox_send", "mailbox_configure"},
+		},
+		{
 			Label:      LabelAmbiguous,
 			Domain:     "特殊 (Special)",
 			TreeText:   "消息不明确，可能属于多个类别，没有主导信号。",

@@ -440,6 +440,12 @@ func TestAdminWebAIModelsUsesVoicePickerAndClearDownloadStates(t *testing.T) {
 		`<select id="aiTTSVoice">${renderTTSVoiceOptions(cfg.tts_voice_id||"zf_xiaoyi")}</select>`,
 		`ttsVoiceHint`,
 		`localAICapabilitiesHint`,
+		`const names=["embedding","asr","tts","ocr","omniparser"]`,
+		`id="aiOCREnabled"`,
+		`id="aiOmniParserEnabled"`,
+		`ocrLabel`,
+		`omniparserLabel`,
+		`cfg.ocr_enabled=true;`,
 		`sectionHead(t("localAICapabilities"), t("localAICapabilitiesHint")`,
 		`downloadNow`,
 		`backgroundDownloading`,
@@ -490,6 +496,9 @@ func TestAdminWebAIModelsUsesVoicePickerAndClearDownloadStates(t *testing.T) {
 		`id="aiAdvancedJSON"`,
 		`id="aiKnowledgeIncludeImages"`,
 		`<p class="helper-text">${esc(t("downloadPendingHint"))}</p>`,
+		`OminiParser is not available here`,
+		`OminiParser / screen parsing is intentionally excluded`,
+		`此处不提供 OminiParser`,
 		`cfg.knowledge_include_images=$("aiKnowledgeIncludeImages").checked;`,
 	} {
 		if strings.Contains(body, stale) {

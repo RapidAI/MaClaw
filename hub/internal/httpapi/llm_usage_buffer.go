@@ -40,6 +40,9 @@ type pendingCreditCharge struct {
 	serviceGroupMultiplier float64
 	pricing                *llmpool.ResolvedTokenPricing
 	meta                   llmservice.OfficialForwardMeta
+	// botSystemFree skips the system-free new-user card. A positive limit
+	// also adds the price to that owner's bot credits budget.
+	botSystemFree botSystemFreeSettle
 	// deductedApplied is set only after flushCreditChargesDetailed has replaced
 	// credits with the durable grant debit.
 	deductedApplied bool
@@ -72,13 +75,13 @@ func enqueueLLMUsageForUserID(system store.SystemSettingsRepository, providerID 
 }
 
 func enqueueLLMUsageRecord(system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, userID string, email string, serviceGroupIDs []string, userGroupIDs []string, credits float64, meta llmservice.OfficialForwardMeta) {
-	_, _ = enqueueLLMUsageRecordWithBilling(system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, credits, meta, "", 0, 0, 0, nil, nil)
+	_, _ = enqueueLLMUsageRecordWithBilling(system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, credits, meta, "", 0, 0, 0, nil, nil, botSystemFreeSettle{})
 }
 
 // enqueueLLMUsageRecordWithBilling applies the charge immediately and returns
 // the credits the flush actually deducted. settled is false when the debit was
 // not durable; callers must not display the requested quote in that case.
-func enqueueLLMUsageRecordWithBilling(system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, userID string, email string, serviceGroupIDs []string, userGroupIDs []string, credits float64, meta llmservice.OfficialForwardMeta, requestID string, multiplier, providerMultiplier, serviceGroupMultiplier float64, pricing *llmpool.ResolvedTokenPricing, reportServiceGroupIDs []string, billingProviderIDs ...string) (deducted float64, settled bool) {
+func enqueueLLMUsageRecordWithBilling(system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, userID string, email string, serviceGroupIDs []string, userGroupIDs []string, credits float64, meta llmservice.OfficialForwardMeta, requestID string, multiplier, providerMultiplier, serviceGroupMultiplier float64, pricing *llmpool.ResolvedTokenPricing, reportServiceGroupIDs []string, bot botSystemFreeSettle, billingProviderIDs ...string) (deducted float64, settled bool) {
 	if system == nil {
 		return 0, false
 	}
@@ -152,6 +155,7 @@ func enqueueLLMUsageRecordWithBilling(system store.SystemSettingsRepository, pro
 		copyPricing := *pricing
 		charge.pricing = &copyPricing
 	}
+	charge.botSystemFree = bot
 	// Apply the charge immediately so a successful response cannot leave a
 	// short-lived window in which concurrent requests all pass the same limit.
 	// Keep the full route identity as the key: requeueing different routes under
@@ -641,7 +645,16 @@ func flushCreditChargesDetailed(ctx context.Context, system store.SystemSettings
 		if strings.TrimSpace(charge.requestID) != "" {
 			llmservice.ReleaseBillingReservation(reg, charge.requestID, now)
 		}
-		applied := llmservice.ApplyCreditUsageToRegistryForUserID(reg, charge.userID, charge.email, charge.serviceGroupIDs, charge.credits, now)
+		if charge.botSystemFree.skipGrant && charge.botSystemFree.limit > 0 && charge.botSystemFree.add != nil && charge.credits > 0 {
+			if err := charge.botSystemFree.add(ctx, charge.botSystemFree.tenantID, charge.botSystemFree.ownerID, charge.requestID, charge.credits); err != nil {
+				return map[string]bool{}, err
+			}
+		}
+		billingReg := reg
+		if charge.botSystemFree.skipGrant {
+			billingReg = llmservice.RegistryIgnoringSystemFreeNewUserLimit(reg, charge.userID, charge.email)
+		}
+		applied := llmservice.ApplyCreditUsageToRegistryForUserID(billingReg, charge.userID, charge.email, charge.serviceGroupIDs, charge.credits, now)
 		if strings.TrimSpace(charge.requestID) != "" {
 			entry := llmservice.BillingLedgerEntry{
 				RequestID:              charge.requestID,

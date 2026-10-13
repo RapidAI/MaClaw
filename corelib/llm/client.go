@@ -2715,6 +2715,9 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 		if payload == "" || payload == "[DONE]" {
 			continue
 		}
+		if upstreamErr := upstreamModelErrorFromPayload([]byte(payload)); upstreamErr != nil {
+			return nil, upstreamErr
+		}
 
 		var chunk sseChunk
 		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {

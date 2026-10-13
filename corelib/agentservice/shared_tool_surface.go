@@ -12,6 +12,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/database"
+	"github.com/RapidAI/CodeClaw/corelib/mailbox"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
@@ -44,6 +45,24 @@ func (c *coreAgentCallbacks) sharedHostToolSpecs() []coreToolSpec {
 			Description: database.ToolDescriptionReadOnly(),
 			Enabled:     true,
 			Parameters:  database.ToolParameters(),
+		},
+		{
+			Name:        "mailbox_query",
+			Description: mailbox.ToolDescriptionQuery(),
+			Enabled:     true,
+			Parameters:  mailbox.QueryInvocationSchema(),
+		},
+		{
+			Name:        "mailbox_send",
+			Description: mailbox.ToolDescriptionSend(),
+			Enabled:     true,
+			Parameters:  mailbox.SendInvocationSchema(),
+		},
+		{
+			Name:        "mailbox_configure",
+			Description: mailbox.ToolDescriptionConfigure(),
+			Enabled:     true,
+			Parameters:  mailbox.ConfigureInvocationSchema(),
 		},
 		specFromCoreTool("manage_skill", "", c.skillProvider != nil, func() string {
 			if c.skillProvider == nil {
@@ -148,6 +167,15 @@ func (c *coreAgentCallbacks) executeSharedHostTool(name string, args map[string]
 			execCtx = database.WithRequestScope(execCtx, scope)
 		}
 		return toolTextResult(database.HandleTool(execCtx, c.databaseManager, args)), true
+	case "mailbox_query":
+		return toolTextResult(c.mailboxRuntime().Query(mailboxToolContext(c), args)), true
+	case "mailbox_send":
+		if c.mailboxReviewLatched() {
+			return toolTextResult(mailbox.MsgExternalReview), true
+		}
+		return toolTextResult(c.mailboxRuntime().Send(mailboxToolContext(c), args)), true
+	case "mailbox_configure":
+		return toolTextResult(c.configureMailbox(args)), true
 	case "goal":
 		out := agent.ToolGoal(c.goals, args)
 		return toolTextResult(out), true

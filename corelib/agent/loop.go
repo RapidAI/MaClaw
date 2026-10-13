@@ -407,6 +407,11 @@ const (
 	ToolSurfaceNotSent           ToolSurfaceDeliveryState = "not_sent"
 	ToolSurfaceResponseConsumed  ToolSurfaceDeliveryState = "response_consumed"
 	ToolSurfaceAmbiguousDelivery ToolSurfaceDeliveryState = "ambiguous_delivery"
+	// ToolSurfaceTransportRejected means the provider returned a definitive
+	// gateway or transport error and no model payload. Request bytes did leave
+	// the host, so this is not NotSent, but nothing was generated, so the
+	// executable surface stays usable for the exponential-backoff retry.
+	ToolSurfaceTransportRejected ToolSurfaceDeliveryState = "transport_rejected"
 )
 
 // ToolSurfaceAttemptObserver observes host-side request attempts. Its input is
@@ -421,8 +426,10 @@ type ToolSurfaceAttemptObserver interface {
 // ToolSurfaceAmbiguousDeliveryContainment opts a compatibility host into the
 // conservative S0.5 rule: after an already-started request becomes ambiguous,
 // RunLoop must not automatically issue a fallback or retry with a successor
-// executable tool surface. This is not a substitute for a correlation-bound
-// adapter, grant, or journal.
+// executable tool surface. A definitive gateway or transport rejection with
+// no model payload is not ambiguous and still uses the exponential-backoff
+// retry. This is not a substitute for a correlation-bound adapter, grant, or
+// journal.
 type ToolSurfaceAmbiguousDeliveryContainment interface {
 	ContainToolSurfaceAmbiguousDelivery() bool
 }
@@ -535,6 +542,16 @@ type petitionSystemPromptSource interface {
 // depend on GUI/runtime packages.
 type LLMRequestContextProvider interface {
 	LLMRequestContext(iteration int) (context.Context, func(error), error)
+}
+
+// LLMRetryParking drops a host scheduler slot while this loop waits out a
+// transient provider error. The request context stays open, so cancellation
+// and steering still wake the wait. Resume runs only when another send is
+// about to start; a stop or steer leaves the slot parked and the iteration
+// finish releases whatever is still held.
+type LLMRetryParking interface {
+	ParkLLMRetry()
+	ResumeLLMRetry(ctx context.Context) error
 }
 
 // LLMReplanAware is implemented by hosts that can cancel only the current LLM
@@ -1781,7 +1798,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			})
 		}
 		if err != nil {
-			finishAttempt(ToolSurfaceAmbiguousDelivery)
+			finishAttempt(failedLLMAttemptDelivery(containAmbiguousDelivery, resp, err))
 		}
 		// A host may cancel just this request because new live user steering
 		// arrived. Finish the operation before continuing; the next iteration's
@@ -1804,17 +1821,28 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		hostCanceledBeforeFinish := false
 		if err != nil {
 			disposeSurface(ToolSurfaceTransportFailure)
-			// Retry with exponential backoff for transient errors (503, timeout,
-			// network, OAuth token-validation 401/403). SubAgent tasks should be
-			// resilient to brief API outages and short-lived auth glitches.
+			// Retry with exponential backoff for transient errors (502/503/504,
+			// 429, timeout, network, OAuth token-validation 401/403). SubAgent
+			// tasks should be resilient to brief API outages and short-lived
+			// auth glitches.
 			// A partial streamed response has already been rendered. Retrying it
 			// would duplicate that visible output in the same assistant message.
+			// Containment still blocks that case, and any other failure whose
+			// delivery is ambiguous. A definitive gateway rejection has no model
+			// payload, so the same task waits and sends again.
 			// A dead requestCtx is the route deadline, not host cancellation.
 			// The loop below installs a fresh deadline for that attempt. Host
 			// cancellation stays on requestBaseCtx and must not start another send.
-			canRetry := requestChannel == nil && !containAmbiguousDelivery && resp == nil && requestBaseCtx.Err() == nil
+			canRetry := requestChannel == nil && resp == nil && requestBaseCtx.Err() == nil &&
+				(!containAmbiguousDelivery || cleanRetryableLLMFailure(resp, err))
 			didAuthRefresh := false
-			for retryAttempt := 1; retryAttempt <= maxLLMRetries && canRetry && shouldRetrySimpleLLMError(err); retryAttempt++ {
+			// A fatal denial ends the turn. A period quota with a clock, a 5xx,
+			// or a dropped connection keeps an ordinary turn open and calls
+			// the model again. Coding compatibility retries resend the full
+			// prompt, so those stay on the exponential schedule and stop
+			// once that budget is spent.
+			continuation := llmContinuationBudget{fastOnly: containAmbiguousDelivery}
+			for canRetry && err != nil {
 				// A stop or steer during the previous send must not flash another
 				// countdown. The context can already be done while canRetry, which
 				// was captured before this loop, is still true.
@@ -1824,6 +1852,16 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				if requestBaseCtx.Err() != nil || cb.ShouldStop() {
 					finishRequest(err)
 					return finish(LoopResult{Error: "cancelled during LLM retry", Err: err, Iterations: iteration, ToolCalls: totalToolCalls})
+				}
+				// canRetry is the gate for the first failure. A later attempt can
+				// come back with a partial payload or a denial that backoff will
+				// not fix. Stop there instead of resending the prompt.
+				if containAmbiguousDelivery && !cleanRetryableLLMFailure(resp, err) {
+					break
+				}
+				backoff, kind := continuation.next(err, time.Now())
+				if kind == llmContinueStop {
+					break
 				}
 				rotated := false
 				if !didAuthRefresh && llm.IsTransientTokenValidationError(err) {
@@ -1837,22 +1875,37 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 						}
 					}
 				}
-				backoff := llmRetryBackoff(retryAttempt)
 				if rotated {
 					backoff = 0
 				}
 				if backoff > 0 {
-					log.Printf("[agent-loop] LLM error (attempt %d/%d), retrying in %s: %v", retryAttempt, maxLLMRetries, backoff, err)
-					retryMsg := "API 暂时不可用，%d 秒后重试 (%d/%d)..."
-					if llm.IsTransientTokenValidationError(err) {
-						retryMsg = "模型认证暂时失败，%d 秒后重试 (%d/%d)..."
+					switch kind {
+					case llmContinuePeriod:
+						log.Printf("[agent-loop] period quota exhausted, continuing this task in %s: %v", backoff, err)
+						cb.OnProgress(fmt.Sprintf("官方额度约 %s 后恢复，到时继续当前任务。", formatContinuationWait(backoff)))
+					case llmContinueKeepGoing:
+						log.Printf("[agent-loop] transient LLM error, continuing this task in %s: %v", backoff, err)
+						cb.OnProgress(fmt.Sprintf("服务仍暂时不可用，%d 秒后继续当前任务。", int(backoff.Seconds())))
+					default:
+						log.Printf("[agent-loop] LLM error (attempt %d/%d), retrying in %s: %v", continuation.fast, maxLLMRetries, backoff, err)
+						retryMsg := "API 暂时不可用，%d 秒后重试 (%d/%d)..."
+						if llm.IsTransientTokenValidationError(err) {
+							retryMsg = "模型认证暂时失败，%d 秒后重试 (%d/%d)..."
+						}
+						cb.OnProgress(fmt.Sprintf(retryMsg, int(backoff.Seconds()), continuation.fast, maxLLMRetries))
 					}
-					cb.OnProgress(fmt.Sprintf(retryMsg, int(backoff.Seconds()), retryAttempt, maxLLMRetries))
 				} else {
-					log.Printf("[agent-loop] LLM token-validation error, retrying immediately after credential refresh (attempt %d/%d): %v", retryAttempt, maxLLMRetries, err)
+					log.Printf("[agent-loop] LLM token-validation error, retrying immediately after credential refresh (attempt %d/%d): %v", continuation.fast, maxLLMRetries, err)
 				}
 				interruptedForReplan := false
+				// The HTTP call has already finished. Holding a foreground
+				// scheduler slot through the sleep blocks every background
+				// model request, because those run only while no foreground
+				// slot is taken. Park for the wait and take the slot back
+				// immediately before the next send.
+				parkedRetryLease := false
 				if backoff > 0 {
+					parkedRetryLease = parkLLMRetryLease(cb)
 					// A live steer can arrive while the loop is backing off from a
 					// transient provider error. Poll the replan revision so the user does
 					// not wait out the backoff and then watch stale context retry first.
@@ -1899,7 +1952,32 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 				if requestBaseCtx.Err() != nil || cb.ShouldStop() {
 					// The previous request was already retired. Disposing here would
 					// settle that request twice. No successor manifest or transport
-					// handoff exists yet.
+					// handoff exists yet. A parked scheduler slot stays parked;
+					// finishRequest releases it.
+					finishRequest(err)
+					return finish(LoopResult{Error: "cancelled during LLM retry", Err: err, Iterations: iteration, ToolCalls: totalToolCalls})
+				}
+				if parkedRetryLease {
+					if resumeErr := resumeLLMRetryLease(cb, requestBaseCtx); resumeErr != nil {
+						// Taking the slot back waits on the scheduler. A steer
+						// during that wait cancels this operation and raises the
+						// replan flag together. Honor the steer before treating
+						// the wake as a user stop.
+						if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
+							break
+						}
+						if requestBaseCtx.Err() != nil || cb.ShouldStop() {
+							finishRequest(err)
+							return finish(LoopResult{Error: "cancelled during LLM retry", Err: err, Iterations: iteration, ToolCalls: totalToolCalls})
+						}
+						err = resumeErr
+						break
+					}
+				}
+				if replanner, ok := cb.(LLMReplanAware); ok && replanner.LLMReplanRequested() {
+					break
+				}
+				if requestBaseCtx.Err() != nil || cb.ShouldStop() {
 					finishRequest(err)
 					return finish(LoopResult{Error: "cancelled during LLM retry", Err: err, Iterations: iteration, ToolCalls: totalToolCalls})
 				}
@@ -1965,7 +2043,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 					resp, err = doLLMRequestWithTools(requestCtx, aggCFG, reqConversation, tools, invocationPolicy, receiptClient)
 				}
 				if err != nil {
-					finishAttempt(ToolSurfaceAmbiguousDelivery)
+					finishAttempt(failedLLMAttemptDelivery(containAmbiguousDelivery, resp, err))
 					// This send owns a manifest. Retire it before the next attempt
 					// clears the projection. The post-loop dispose only runs when
 					// the whole retry sequence fails, so a later success would
@@ -3525,13 +3603,13 @@ func sideEffectStateForToolBatch(calls []llm.ToolCall) string {
 		// read_document opens a file for text extraction and does not modify it.
 		case "read_file", "read_files", "read_document", "list_directory", "list_dir",
 			"ripgrep", "grep", "glob", "search_files", "session_search",
-			"tools_search":
+			"tools_search", "mailbox_query":
 			continue
 		// These built-in tools change local state. A recovery may resume the
 		// conversation, but must first tell the user to inspect the workspace.
 		case "write_file", "edit_file", "apply_patch", "str_replace",
 			"create_file", "delete_file", "remove_file", "bash",
-			"run_terminal", "shell", "powershell":
+			"run_terminal", "shell", "powershell", "mailbox_configure":
 			state = "local_committed"
 		default:
 			// Unknown names include dynamically declared client and MCP tools.
@@ -4677,6 +4755,40 @@ func reasoningSentinelCallback(rawOnToken llm.TokenCallback) llm.TokenCallback {
 	}
 }
 
+func parkLLMRetryLease(cb LoopCallbacks) bool {
+	if cb == nil {
+		return false
+	}
+	parker, ok := cb.(LLMRetryParking)
+	if !ok || parker == nil {
+		return false
+	}
+	parker.ParkLLMRetry()
+	return true
+}
+
+func resumeLLMRetryLease(cb LoopCallbacks, ctx context.Context) error {
+	if cb == nil {
+		return nil
+	}
+	parker, ok := cb.(LLMRetryParking)
+	if !ok || parker == nil {
+		return nil
+	}
+	return parker.ResumeLLMRetry(ctx)
+}
+
+// failedLLMAttemptDelivery keeps a clean gateway rejection off the ambiguous
+// path. Coding compatibility hosts quarantine the executable surface only for
+// ambiguous delivery; marking a 502 that way would drop the tools before the
+// backoff retry can send again.
+func failedLLMAttemptDelivery(containAmbiguous bool, resp *llm.Response, err error) ToolSurfaceDeliveryState {
+	if containAmbiguous && cleanRetryableLLMFailure(resp, err) {
+		return ToolSurfaceTransportRejected
+	}
+	return ToolSurfaceAmbiguousDelivery
+}
+
 // streamFailureBelongsToOuterRetry reports that a failed stream stays with
 // the outer loop instead of sending an immediate non-stream request. The
 // outer loop re-sends a retryable empty failure, including a route deadline,
@@ -4687,6 +4799,12 @@ func reasoningSentinelCallback(rawOnToken llm.TokenCallback) llm.TokenCallback {
 func streamFailureBelongsToOuterRetry(ctx context.Context, resp *llm.Response, err error) bool {
 	if err == nil {
 		return false
+	}
+	// An upstream model rejection already names the failure. A non-stream
+	// retry would hide that text behind an empty completion.
+	var upstream *llm.UpstreamModelError
+	if errors.As(err, &upstream) {
+		return true
 	}
 	if ctx.Err() != nil || resp != nil || hubDenialForbidsRetry(err) {
 		return true

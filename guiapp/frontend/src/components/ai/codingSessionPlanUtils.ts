@@ -21,6 +21,26 @@ export function normalizeSessionPlanCandidate(text: string): string {
     return s;
 }
 
+export function formatGoalSessionPlan(input: {
+    objective?: string;
+    understanding?: string;
+    steps?: Array<{ index?: number; title?: string } | null> | null;
+}): string {
+    const understanding = String(input?.understanding || "").trim();
+    const steps = Array.isArray(input?.steps) ? input.steps : [];
+    const lines: string[] = [];
+    if (understanding) lines.push(understanding);
+    steps.forEach((step, i) => {
+        const title = String(step?.title || "").trim();
+        if (!title) return;
+        const index = Number(step?.index) > 0 ? Number(step?.index) : i + 1;
+        lines.push(`${index}. ${title}`);
+    });
+    const formatted = lines.join("\n").trim();
+    if (formatted) return formatted;
+    return String(input?.objective || "").trim();
+}
+
 export function truncateSessionPlan(text: string, maxLen = 800): string {
     const s = normalizeSessionPlanCandidate(text);
     if (s.length <= maxLen) return s;

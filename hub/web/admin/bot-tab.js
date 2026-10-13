@@ -75,8 +75,9 @@
       remove: '\u5220\u9664',
       failed: '\u64cd\u4f5c\u5931\u8d25',
       llmTitle: 'LLM \u8bbe\u7f6e',
-      llmHint: '\u9ed8\u8ba4\u4f7f\u7528 system-free \u670d\u52a1\u7ec4\u3002\u53ef\u4ee5\u6dfb\u52a0 OpenAI \u6216 Anthropic \u534f\u8bae\u7684\u670d\u52a1\u5546\uff0cMaClawSrv \u7528\u5f53\u524d\u9009\u4e2d\u7684\u670d\u52a1\u5546\u6267\u884c\u64cd\u4f5c\u3002\u4fdd\u5b58\u540e\uff0c\u4e0b\u4e00\u6b21 Bot \u64cd\u4f5c\u4f1a\u5199\u5165 MaClawSrv\u3002',
-      llmDefaultHint: 'Hub \u9ed8\u8ba4\u514d\u8d39\u670d\u52a1\u7ec4',
+      llmHint: '\u9ed8\u8ba4\u4f7f\u7528 MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4\uff0c\u6309\u5173\u8054\u7528\u6237\u5728\u670d\u52a1\u5151\u6362\u4e2d\u7684\u989d\u5ea6\u6263\u8d39\u3002\u53ef\u4ee5\u6dfb\u52a0 OpenAI \u6216 Anthropic \u534f\u8bae\u7684\u670d\u52a1\u5546\uff0cMaClawSrv \u7528\u5f53\u524d\u9009\u4e2d\u7684\u670d\u52a1\u5546\u6267\u884c\u64cd\u4f5c\u3002\u4fdd\u5b58\u540e\uff0c\u4e0b\u4e00\u6b21 Bot \u64cd\u4f5c\u4f1a\u5199\u5165 MaClawSrv\u3002',
+      llmDefaultHint: '\u6309\u5173\u8054\u7528\u6237\u7684\u5b98\u65b9\u989d\u5ea6\u6263\u8d39',
+      llmOfficialName: 'MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4',
       llmUse: '\u4f7f\u7528',
       llmAdd: '\u6dfb\u52a0\u670d\u52a1\u5546',
       llmName: '\u540d\u79f0',
@@ -85,7 +86,7 @@
       llmKey: 'API Key',
       llmModel: '\u6a21\u578b',
       llmSave: '\u4fdd\u5b58 LLM \u8bbe\u7f6e',
-      llmEmpty: '\u8fd8\u6ca1\u6709\u5176\u5b83\u670d\u52a1\u5546\u3002\u5f53\u524d\u4f7f\u7528 system-free\u3002',
+      llmEmpty: '\u8fd8\u6ca1\u6709\u5176\u5b83\u670d\u52a1\u5546\u3002\u5f53\u524d\u4f7f\u7528 MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4\u3002',
       llmRemove: '\u79fb\u9664',
       llmSaved: '\u5df2\u4fdd\u5b58 LLM \u8bbe\u7f6e',
       llmSavedStale: '\u5df2\u4fdd\u5b58\u3002\u4e4b\u540e\u7684\u4fee\u6539\u5c1a\u672a\u5199\u5165\uff0c\u8bf7\u518d\u4fdd\u5b58\u4e00\u6b21\u3002',
@@ -99,7 +100,7 @@
       llmBadKey: 'API Key \u65e0\u6548',
       llmReservedName: '\u8fd9\u4e2a\u540d\u79f0\u5df2\u4fdd\u7559',
       llmKeyKeep: '\u7559\u7a7a\u5219\u4e0d\u4fee\u6539\u5df2\u4fdd\u5b58\u7684\u5bc6\u94a5',
-      llmBadCurrent: '\u8bf7\u9009\u62e9 system-free \u6216\u4e00\u4e2a\u5df2\u6dfb\u52a0\u7684\u670d\u52a1\u5546',
+      llmBadCurrent: '\u8bf7\u9009\u62e9 MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4\u6216\u4e00\u4e2a\u5df2\u6dfb\u52a0\u7684\u670d\u52a1\u5546',
       llmKeySet: '\u5bc6\u94a5\u5df2\u4fdd\u5b58'
     },
     en: {
@@ -175,8 +176,9 @@
       remove: 'Delete',
       failed: 'Request failed',
       llmTitle: 'LLM settings',
-      llmHint: 'MaClawSrv uses the system-free service group by default. Add an OpenAI or Anthropic provider, and MaClawSrv calls the selected one. The next bot action writes the saved settings.',
-      llmDefaultHint: 'Hub default free service group',
+      llmHint: 'MaClawSrv uses the MaClaw official service group by default and deducts the associated user redeemed allowance. Add an OpenAI or Anthropic provider, and MaClawSrv calls the selected one. The next bot action writes the saved settings.',
+      llmDefaultHint: 'Deducted from the associated user official allowance',
+      llmOfficialName: 'MaClaw official service group',
       llmUse: 'Use',
       llmAdd: 'Add provider',
       llmName: 'Name',
@@ -185,7 +187,7 @@
       llmKey: 'API key',
       llmModel: 'Model',
       llmSave: 'Save LLM settings',
-      llmEmpty: 'No other providers. system-free is in use.',
+      llmEmpty: 'No other providers. The MaClaw official service group is in use.',
       llmRemove: 'Remove',
       llmSaved: 'LLM settings saved',
       llmSavedStale: 'Saved. Later edits are not stored yet. Save again.',
@@ -199,7 +201,7 @@
       llmBadKey: 'The API key is invalid',
       llmReservedName: 'This name is reserved',
       llmKeyKeep: 'Leave blank to keep the saved key',
-      llmBadCurrent: 'Choose system-free or a provider you added',
+      llmBadCurrent: 'Choose the MaClaw official service group or a provider you added',
       llmKeySet: 'Key saved'
     }
   };
@@ -1324,17 +1326,25 @@
     return match ? match[1] + ' ' + match[2] : raw;
   }
 
+  var botOfficialGroup = 'maclaw_official_group';
+
+  function isBotDefaultGroup(id) {
+    var value = String(id || '').trim().toLowerCase();
+    return !value || value === 'system-free' || value === botOfficialGroup;
+  }
+
   function llmDraft() {
     var panel = byID('tab-bots');
-    if (!panel._llmDraft) panel._llmDraft = { current: 'system-free', providers: [] };
+    if (!panel._llmDraft) panel._llmDraft = { current: botOfficialGroup, providers: [] };
     return panel._llmDraft;
   }
 
   function draftFromLLM(view) {
     var llm = view && view.llm || {};
     var providers = Array.isArray(llm.providers) ? llm.providers : [];
+    var current = String(llm.current || '');
     return {
-      current: llm.current || 'system-free',
+      current: isBotDefaultGroup(current) ? botOfficialGroup : current,
       providers: providers.map(function (item) {
         return {
           id: String(item.id || ''),
@@ -1357,9 +1367,9 @@
   }
 
   function llmCurrentLabel(draft) {
-    if (!draft || !draft.current || draft.current === 'system-free') return 'system-free';
+    if (!draft || isBotDefaultGroup(draft.current)) return text().llmOfficialName;
     var match = (draft.providers || []).filter(function (item) { return item.id === draft.current; })[0];
-    if (!match) return 'system-free';
+    if (!match) return text().llmOfficialName;
     return String(match.name || '').trim() || text().llmName;
   }
 
@@ -1367,8 +1377,8 @@
     var badge = byID('botLLMBadge');
     if (!badge) return;
     var draft = llmDraft();
-    var selected = draft.current && (draft.providers || []).some(function (item) { return item.id === draft.current; }) ? draft.current : 'system-free';
-    badge.className = 'badge ' + (selected === 'system-free' ? 'info' : 'ok');
+    var selected = draft.current && (draft.providers || []).some(function (item) { return item.id === draft.current; }) ? draft.current : botOfficialGroup;
+    badge.className = 'badge ' + (selected === botOfficialGroup ? 'info' : 'ok');
     badge.textContent = llmCurrentLabel(draft);
   }
 
@@ -1387,7 +1397,7 @@
     if (!list) return;
     var t = text();
     var draft = llmDraft();
-    var current = draft.current && (draft.providers || []).some(function (item) { return item.id === draft.current; }) ? draft.current : 'system-free';
+    var current = draft.current && (draft.providers || []).some(function (item) { return item.id === draft.current; }) ? draft.current : botOfficialGroup;
     draft.current = current;
     var rows = (draft.providers || []).map(function (item) {
       var id = escapeHtml(item.id);
@@ -1408,8 +1418,8 @@
         + '</div></div>';
     }).join('');
     var empty = (draft.providers || []).length ? '' : '<p class="bot-empty">' + escapeHtml(t.llmEmpty) + '</p>';
-    list.innerHTML = '<label class="bot-llm-choice"><input id="botLLMCurrent_system-free" type="radio" name="botLLMCurrent" value="system-free"' + (current === 'system-free' ? ' checked' : '') + '>'
-      + '<span><strong>system-free</strong><small>' + escapeHtml(t.llmDefaultHint) + '</small></span></label>'
+    list.innerHTML = '<label class="bot-llm-choice"><input id="botLLMCurrent_maclaw_official_group" type="radio" name="botLLMCurrent" value="' + botOfficialGroup + '"' + (current === botOfficialGroup ? ' checked' : '') + '>'
+      + '<span><strong>' + escapeHtml(t.llmOfficialName) + '</strong><small>' + escapeHtml(t.llmDefaultHint) + '</small></span></label>'
       + empty + rows;
     syncLLMBadge();
   }
@@ -1423,7 +1433,7 @@
     if (!target || !target.id) return;
     var panel = byID('tab-bots');
     if (target.id.indexOf('botLLMCurrent_') === 0) {
-      llmDraft().current = target.value || 'system-free';
+      llmDraft().current = isBotDefaultGroup(target.value) ? botOfficialGroup : target.value;
       if (panel) panel._llmDirty = true;
       // Rebuilding the list here drops the focused field and the key the
       // administrator just typed. The radio group already shows the choice.
@@ -1450,7 +1460,7 @@
     var id = target.id.slice('botLLMRemove_'.length);
     var draft = llmDraft();
     draft.providers = draft.providers.filter(function (item) { return item.id !== id; });
-    if (draft.current === id) draft.current = 'system-free';
+    if (draft.current === id) draft.current = botOfficialGroup;
     var panel = byID('tab-bots');
     if (panel) panel._llmDirty = true;
     paintLLM();
@@ -1494,7 +1504,7 @@
       var protocol = String(item.protocol || '').toLowerCase();
       var keyName = name.toLowerCase();
       if (!name) return t.llmNeedName;
-      if (keyName === 'hub-llm' || keyName === 'system-free') return t.llmReservedName;
+      if (keyName === 'hub-llm' || keyName === 'system-free' || keyName === botOfficialGroup) return t.llmReservedName;
       if (seenNames.some(function (seen) { return llmNamesConflict(seen, keyName); })) return t.llmDuplicateName;
       seenNames.push(keyName);
       if (protocol !== 'openai' && protocol !== 'anthropic') return t.llmBadProtocol;
@@ -1502,13 +1512,13 @@
       if (!String(item.model || '').trim()) return t.llmNeedModel;
       if (!String(item.key || '').trim() && !item.key_set) return t.llmNeedKey;
     }
-    if (draft.current !== 'system-free' && !providers.some(function (item) { return item.id === draft.current; })) return t.llmBadCurrent;
+    if (!isBotDefaultGroup(draft.current) && !providers.some(function (item) { return item.id === draft.current; })) return t.llmBadCurrent;
     return '';
   }
 
   function llmRequestBody(draft) {
     return {
-      current: draft.current || 'system-free',
+      current: isBotDefaultGroup(draft.current) ? botOfficialGroup : draft.current,
       providers: (draft.providers || []).map(function (item) {
         var out = {
           id: item.id,

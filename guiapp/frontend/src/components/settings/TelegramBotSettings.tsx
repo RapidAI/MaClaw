@@ -45,7 +45,7 @@ export const TelegramBotSettings = ({
                 />
                 <span>{textForLang(lang, 'Enable Telegram Bot', '\u542f\u7528 Telegram Bot', '\u555f\u7528 Telegram Bot')}</span>
             </label>
-            <button type="button" className="im-settings-button im-settings-button--primary" onClick={() => BrowserOpenURL('https://open-claw.bot/docs/channels/telegram/')}>
+            <button type="button" className="im-settings-button im-settings-button--accent" onClick={() => BrowserOpenURL('https://open-claw.bot/docs/channels/telegram/')}>
                 {textForLang(lang, 'Tutorial', '\u6559\u7a0b', '\u6559\u7a0b')}
             </button>
             {(config as any)?.telegram_bot_enabled && (

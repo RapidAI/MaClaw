@@ -21,14 +21,24 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/asr"
 	"github.com/RapidAI/CodeClaw/corelib/audioconv"
+	"github.com/RapidAI/CodeClaw/corelib/browser"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/guiautomation"
+	"github.com/RapidAI/CodeClaw/corelib/ocr"
 	"github.com/RapidAI/CodeClaw/corelib/tts"
 )
 
 const (
-	srvAIModelEmbedding = "embedding"
-	srvAIModelASR       = "asr"
-	srvAIModelTTS       = "tts"
+	srvAIModelEmbedding  = "embedding"
+	srvAIModelASR        = "asr"
+	srvAIModelTTS        = "tts"
+	srvAIModelOCR        = "ocr"
+	srvAIModelOmniParser = "omniparser"
+
+	// srvOmniParserFilename is the OmniParser V2 weight the desktop app stores
+	// as omniparser-v2.yolow. The server downloads the same release asset.
+	srvOmniParserFilename   = "omniparser-v2.yolow"
+	srvOmniParserDefaultURL = "https://github.com/RapidAI/MaClaw/releases/download/Model_Release/omniparser-v2.yolow"
 
 	srvASRModelFilename   = asr.DefaultModelFilename
 	srvASRModelDefaultURL = asr.DefaultModelDownloadURL
@@ -73,12 +83,16 @@ type srvAIModelManager struct {
 	embeddingRunMu         sync.Mutex
 	asrRunMu               sync.Mutex
 	ttsRunMu               sync.Mutex
+	ocrRunMu               sync.Mutex
+	yoloRunMu              sync.Mutex
 	tasks                  map[string]*srvAIModelTask
 	embeddingMgr           embedding.Embedder
 	embeddingPath          string
 	asrMgr                 srvASRTranscriber
 	ttsMgr                 srvTTSSynthesizer
 	ttsVoice               string
+	ocrMgr                 *browser.NativeOCRProvider
+	yoloParser             *guiautomation.YOLOScreenParser
 	embeddingReadyHook     func()
 }
 
@@ -374,21 +388,27 @@ func (s *HTTPServer) ensureConfiguredAIModelsAsync(cfg corelib.AppConfig) {
 	_ = s.aiModels.startDownload(srvAIModelEmbedding, cfg, false)
 	_ = s.aiModels.startDownload(srvAIModelASR, cfg, false)
 	_ = s.aiModels.startDownload(srvAIModelTTS, cfg, false)
+	_ = s.aiModels.startDownload(srvAIModelOCR, cfg, false)
+	_ = s.aiModels.startDownload(srvAIModelOmniParser, cfg, false)
 }
 
 func (m *srvAIModelManager) status(cfg corelib.AppConfig) map[string]srvAIModelStatus {
 	return map[string]srvAIModelStatus{
-		srvAIModelEmbedding: m.statusOne(srvAIModelEmbedding, cfg),
-		srvAIModelASR:       m.statusOne(srvAIModelASR, cfg),
-		srvAIModelTTS:       m.statusOne(srvAIModelTTS, cfg),
+		srvAIModelEmbedding:  m.statusOne(srvAIModelEmbedding, cfg),
+		srvAIModelASR:        m.statusOne(srvAIModelASR, cfg),
+		srvAIModelTTS:        m.statusOne(srvAIModelTTS, cfg),
+		srvAIModelOCR:        m.statusOne(srvAIModelOCR, cfg),
+		srvAIModelOmniParser: m.statusOne(srvAIModelOmniParser, cfg),
 	}
 }
 
 func (m *srvAIModelManager) statusWithPaths(cfg corelib.AppConfig) map[string]srvAIModelStatus {
 	return map[string]srvAIModelStatus{
-		srvAIModelEmbedding: m.statusOneWithPath(srvAIModelEmbedding, cfg),
-		srvAIModelASR:       m.statusOneWithPath(srvAIModelASR, cfg),
-		srvAIModelTTS:       m.statusOneWithPath(srvAIModelTTS, cfg),
+		srvAIModelEmbedding:  m.statusOneWithPath(srvAIModelEmbedding, cfg),
+		srvAIModelASR:        m.statusOneWithPath(srvAIModelASR, cfg),
+		srvAIModelTTS:        m.statusOneWithPath(srvAIModelTTS, cfg),
+		srvAIModelOCR:        m.statusOneWithPath(srvAIModelOCR, cfg),
+		srvAIModelOmniParser: m.statusOneWithPath(srvAIModelOmniParser, cfg),
 	}
 }
 
@@ -427,6 +447,14 @@ func (m *srvAIModelManager) statusOne(model string, cfg corelib.AppConfig) srvAI
 		modelExists, modelSize := modelFileReady(m.modelPath(tts.TTSModelFilename))
 		status.SizeBytes = modelSize
 		status.Exists = modelExists && m.ttsVoicesReady()
+	case srvAIModelOCR:
+		status.Enabled = true
+		status.Filename = ocr.DetModelFilename(corelib.DefaultOCRModelTier)
+		status.Exists, status.SizeBytes = m.ocrModelsReady()
+	case srvAIModelOmniParser:
+		status.Enabled = true
+		status.Filename = srvOmniParserFilename
+		status.Exists, status.SizeBytes = yolowFileReady(m.modelPath(srvOmniParserFilename))
 	default:
 		status.Name = model
 	}
@@ -453,7 +481,7 @@ func (m *srvAIModelManager) statusOne(model string, cfg corelib.AppConfig) srvAI
 
 func (m *srvAIModelManager) startDownload(model string, cfg corelib.AppConfig, force bool) error {
 	switch model {
-	case srvAIModelEmbedding, srvAIModelASR, srvAIModelTTS:
+	case srvAIModelEmbedding, srvAIModelASR, srvAIModelTTS, srvAIModelOCR, srvAIModelOmniParser:
 	default:
 		return errSrvAIModelUnknown
 	}
@@ -555,6 +583,10 @@ func (m *srvAIModelManager) download(model string, cfg corelib.AppConfig, done <
 			return err
 		}
 		return m.unzipTTSVoices()
+	case srvAIModelOCR:
+		return m.downloadOCRModels(cfg, done)
+	case srvAIModelOmniParser:
+		return m.downloadOmniParser(cfg, done)
 	default:
 		return errSrvAIModelUnknown
 	}
@@ -615,6 +647,8 @@ func (m *srvAIModelManager) Close() {
 	m.resetRuntime(srvAIModelEmbedding)
 	m.resetRuntime(srvAIModelASR)
 	m.resetRuntime(srvAIModelTTS)
+	m.resetRuntime(srvAIModelOCR)
+	m.resetRuntime(srvAIModelOmniParser)
 }
 
 func (m *srvAIModelManager) resetRuntime(model string) {
@@ -646,6 +680,26 @@ func (m *srvAIModelManager) resetRuntime(model string) {
 		m.mu.Unlock()
 		if mgr != nil {
 			mgr.Unload()
+		}
+	case srvAIModelOCR:
+		m.ocrRunMu.Lock()
+		defer m.ocrRunMu.Unlock()
+		m.mu.Lock()
+		mgr := m.ocrMgr
+		m.ocrMgr = nil
+		m.mu.Unlock()
+		if mgr != nil {
+			mgr.Close()
+		}
+	case srvAIModelOmniParser:
+		m.yoloRunMu.Lock()
+		defer m.yoloRunMu.Unlock()
+		m.mu.Lock()
+		parser := m.yoloParser
+		m.yoloParser = nil
+		m.mu.Unlock()
+		if parser != nil {
+			parser.Unload()
 		}
 	}
 }
@@ -957,6 +1011,201 @@ func (m *srvAIModelManager) unzipTTSVoices() error {
 		}
 	}
 	return nil
+}
+
+func (m *srvAIModelManager) downloadOmniParser(cfg corelib.AppConfig, done <-chan struct{}) error {
+	path := m.modelPath(srvOmniParserFilename)
+	if ready, _ := yolowFileReady(path); ready {
+		return nil
+	}
+	// A partial or non-yolow file would otherwise sit forever: the shared
+	// downloader treats any non-empty file as already installed.
+	if exists, _ := modelFileReady(path); exists {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+	}
+	return m.downloadWithFallback(srvOmniParserFilename, srvOmniParserDefaultURL, cfg, done)
+}
+
+func (m *srvAIModelManager) ocrTierReady() bool {
+	if m == nil {
+		return false
+	}
+	tier := corelib.DefaultOCRModelTier
+	_, detOK := ocr.ModelFileStatus(m.modelPath(ocr.DetModelFilename(tier)))
+	_, recOK := ocr.ModelFileStatus(m.modelPath(ocr.RecModelFilename(tier)))
+	return detOK && recOK
+}
+
+func (m *srvAIModelManager) ocrModelsReady() (bool, int64) {
+	var total int64
+	for _, name := range srvOCRModelFilenames() {
+		size, ok := ocr.ModelFileStatus(m.modelPath(name))
+		if !ok {
+			return false, 0
+		}
+		total += size
+	}
+	return true, total
+}
+
+func (m *srvAIModelManager) downloadOCRModels(cfg corelib.AppConfig, done <-chan struct{}) error {
+	if ready, _ := m.ocrModelsReady(); ready {
+		return nil
+	}
+	zipPath := m.modelPath(ocr.ModelsZipFilename)
+	if err := m.downloadWithFallback(ocr.ModelsZipFilename, ocr.DefaultModelsZipURL, cfg, done); err != nil {
+		return err
+	}
+	extractErr := extractSrvOCRModelsZip(zipPath, filepath.Dir(zipPath))
+	_ = os.Remove(zipPath)
+	return extractErr
+}
+
+func srvOCRModelFilenames() []string {
+	out := make([]string, 0, 6)
+	for _, tier := range []string{"tiny", "small", "medium"} {
+		out = append(out, ocr.DetModelFilename(tier), ocr.RecModelFilename(tier))
+	}
+	return out
+}
+
+// extractSrvOCRModelsZip installs the PP-OCRv6 det/rec ONNX files from the
+// release zip. Non-ONNX entries are skipped. A path that escapes the models
+// directory is rejected, and a failed extract removes the files it wrote.
+func extractSrvOCRModelsZip(zipPath, dir string) error {
+	reader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return fmt.Errorf("open OCR models zip: %w", err)
+	}
+	defer reader.Close()
+
+	extracted := make([]string, 0, len(reader.File))
+	fail := func(err error) error {
+		for _, path := range extracted {
+			_ = os.Remove(path)
+		}
+		return err
+	}
+	for _, f := range reader.File {
+		cleaned := filepath.Clean(f.Name)
+		if filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+			return fail(fmt.Errorf("OCR models zip contains unsafe path %q", f.Name))
+		}
+		name := filepath.Base(cleaned)
+		if !strings.HasSuffix(strings.ToLower(name), ".onnx") {
+			continue
+		}
+		dst := filepath.Join(dir, name)
+		if err := extractSrvZipEntry(f, dst); err != nil {
+			return fail(err)
+		}
+		extracted = append(extracted, dst)
+	}
+	for _, name := range srvOCRModelFilenames() {
+		if _, ok := ocr.ModelFileStatus(filepath.Join(dir, name)); !ok {
+			return fail(fmt.Errorf("extracted OCR model %s failed validation", name))
+		}
+	}
+	return nil
+}
+
+func extractSrvZipEntry(f *zip.File, dst string) error {
+	src, err := f.Open()
+	if err != nil {
+		return fmt.Errorf("open zip entry %s: %w", f.Name, err)
+	}
+	defer src.Close()
+	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
+		return err
+	}
+	tmp := dst + ".tmp"
+	out, err := os.Create(tmp)
+	if err != nil {
+		return fmt.Errorf("create temp file for %s: %w", f.Name, err)
+	}
+	_, copyErr := io.Copy(out, src)
+	closeErr := out.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("extract %s: %w", f.Name, copyErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("extract %s: %w", f.Name, closeErr)
+	}
+	if err := replaceInstalledFile(tmp, dst); err != nil {
+		return fmt.Errorf("install %s: %w", f.Name, err)
+	}
+	return nil
+}
+
+// replaceInstalledFile renames tmp onto dst. Windows will not rename over a
+// file that is already there, so a partial ONNX from a failed extract would
+// otherwise stay in place and the next install would fail the same way.
+func replaceInstalledFile(tmp, dst string) error {
+	if err := os.Rename(tmp, dst); err == nil {
+		return nil
+	}
+	if err := os.Remove(dst); err != nil && !os.IsNotExist(err) {
+		_ = os.Remove(tmp)
+		return err
+	}
+	if err := os.Rename(tmp, dst); err != nil {
+		_ = os.Remove(tmp)
+		return err
+	}
+	return nil
+}
+
+func yolowFileReady(path string) (bool, int64) {
+	f, err := os.Open(path)
+	if err != nil {
+		return false, 0
+	}
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil || info.IsDir() || info.Size() < 32 {
+		return false, 0
+	}
+	var magic [4]byte
+	if _, err := io.ReadFull(f, magic[:]); err != nil {
+		return false, 0
+	}
+	if string(magic[:]) != "YOLW" {
+		return false, 0
+	}
+	return true, info.Size()
+}
+
+func (m *srvAIModelManager) ocrProvider() *browser.NativeOCRProvider {
+	if m == nil {
+		return nil
+	}
+	tier := corelib.DefaultOCRModelTier
+	detPath := m.modelPath(ocr.DetModelFilename(tier))
+	recPath := m.modelPath(ocr.RecModelFilename(tier))
+	m.ocrRunMu.Lock()
+	defer m.ocrRunMu.Unlock()
+	if m.ocrMgr == nil {
+		m.ocrMgr = browser.NewNativeOCRProvider(detPath, recPath, func(message string) {
+			log.Printf("[desktop-vision] %s", message)
+		})
+	}
+	return m.ocrMgr
+}
+
+func (m *srvAIModelManager) omniParser() *guiautomation.YOLOScreenParser {
+	if m == nil {
+		return nil
+	}
+	m.yoloRunMu.Lock()
+	defer m.yoloRunMu.Unlock()
+	if m.yoloParser == nil {
+		m.yoloParser = guiautomation.NewYOLOScreenParser(m.modelPath(srvOmniParserFilename), 0.3, 0.5)
+	}
+	return m.yoloParser
 }
 
 func fileStatus(path string) (bool, int64) {

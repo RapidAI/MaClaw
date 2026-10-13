@@ -942,8 +942,8 @@
     .problem-report-dialog *,
     .problem-report-dialog *::before,
     .problem-report-dialog *::after {
-        transition-duration: 0.01ms !important;
         animation-duration: 0.01ms !important;
+        transition: none !important;
     }
 }
 

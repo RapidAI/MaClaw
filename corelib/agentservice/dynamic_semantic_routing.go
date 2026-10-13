@@ -1423,10 +1423,9 @@ func (c *coreAgentCallbacks) ensureDynamicSemanticInitialized() bool {
 		WorkflowPolicy: string(c.toolPolicy), MutationScope: string(c.mutationScope),
 		DestinationID: strings.TrimSpace(c.trustedDestinationID),
 	}
-	// The intent tree loads this user's model config on its own and would
-	// otherwise bill whichever group the viewer is entitled to. A hub bot
-	// has to stay on system-free for that call too, including a late retry
-	// that no longer has this context.
+	// The intent tree loads this user's model config on its own. A hub bot
+	// leaves the service group unset on that call too, including a late
+	// retry that no longer has this context.
 	resolveCtx := contextWithHubBotLLMGroup(c.ctx, c.instance.Metadata)
 	resolution, err := routing.Resolver.ResolveDynamicCapabilityNeeds(resolveCtx, request)
 	if err != nil {

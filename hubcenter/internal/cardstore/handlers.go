@@ -102,7 +102,7 @@ func ListOrdersHandler(svc *Service) http.HandlerFunc {
 	return listOrdersHandler(svc, false)
 }
 
-func listOrdersHandler(svc *Service, allowActiveCards bool) http.HandlerFunc {
+func listOrdersHandler(svc *Service, admin bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		limit, _ := strconv.Atoi(q.Get("limit"))
@@ -116,13 +116,16 @@ func listOrdersHandler(svc *Service, allowActiveCards bool) http.HandlerFunc {
 			limit = maxOrderListLimit
 		}
 		offset, _ := strconv.Atoi(q.Get("offset"))
+		if offset < 0 {
+			offset = 0
+		}
 
 		filter := OrderFilter{
-			HubID:          q.Get("hub_id"),
-			TenantID:       q.Get("tenant_id"),
-			Email:          q.Get("email"),
-			ServiceGroupID: q.Get("service_group_id"),
-			Status:         q.Get("status"),
+			HubID:          strings.TrimSpace(q.Get("hub_id")),
+			TenantID:       strings.TrimSpace(q.Get("tenant_id")),
+			Email:          strings.TrimSpace(q.Get("email")),
+			ServiceGroupID: strings.TrimSpace(q.Get("service_group_id")),
+			Status:         strings.TrimSpace(q.Get("status")),
 			Statuses:       parseStatusList(q),
 			ArchivedOnly:   q.Get("archived") == "1" || strings.EqualFold(q.Get("archived"), "true"),
 			IncludeArchived: strings.EqualFold(q.Get("include_archived"), "1") ||
@@ -130,7 +133,7 @@ func listOrdersHandler(svc *Service, allowActiveCards bool) http.HandlerFunc {
 			Limit:  limit,
 			Offset: offset,
 		}
-		if allowActiveCards {
+		if admin {
 			filter.ActiveCardsOnly = q.Get("active_cards") == "1" || strings.EqualFold(q.Get("active_cards"), "true") ||
 				q.Get("valid_cards") == "1" || strings.EqualFold(q.Get("valid_cards"), "true")
 		}
@@ -138,11 +141,10 @@ func listOrdersHandler(svc *Service, allowActiveCards bool) http.HandlerFunc {
 		// with every predicate optional, so an anonymous request with no query
 		// parameters paged through every tenant's orders — admin emails, hub
 		// and tenant ids, amounts and payment URLs (llm_order_repo.go:43).
-		// Callers must scope the query.
-		if strings.TrimSpace(q.Get("hub_id")) == "" &&
-			strings.TrimSpace(q.Get("tenant_id")) == "" &&
-			strings.TrimSpace(q.Get("email")) == "" &&
-			strings.TrimSpace(q.Get("service_group_id")) == "" {
+		// The public route must stay scoped. The admin route is already behind
+		// RequireAdmin; the compute-store console lists the full queue with
+		// only limit/offset/statuses.
+		if !admin && filter.HubID == "" && filter.TenantID == "" && filter.Email == "" && filter.ServiceGroupID == "" {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "hub_id, tenant_id, email or service_group_id query parameter is required"})
 			return
 		}

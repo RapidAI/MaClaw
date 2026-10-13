@@ -15,11 +15,22 @@ import (
 // desktopAdmitState is one accepted desktop command whose reply is not the
 // admitting HTTP call. The watcher fills it when the run finishes.
 type desktopAdmitState struct {
-	mu       sync.Mutex
-	done     bool
-	reply    Reply
-	err      error
-	finished time.Time
+	mu           sync.Mutex
+	done         bool
+	delivered    bool
+	reply        Reply
+	err          error
+	finished     time.Time
+	task         string
+	status       string
+	userID       string
+	botID        string
+	runID        string
+	instanceID   string
+	phase        string
+	started      time.Time
+	mediaFetched bool
+	mediaNext    time.Time
 }
 
 // botPreferenceWithdrawRounds bounds how many list-and-delete passes one
@@ -39,6 +50,7 @@ type admittedDesktopFollow struct {
 	Novnc      string
 	RunID      string
 	Phase      string
+	Task       string
 	Opened     bool
 	Started    time.Time
 }
@@ -144,22 +156,23 @@ func (s *Service) followAdmittedDesktopRun(job admittedDesktopFollow) {
 	if s == nil || strings.TrimSpace(job.RunID) == "" {
 		return
 	}
-	state := &desktopAdmitState{}
+	state := newRunningDesktopTask(job)
 	key := desktopAdmitKey(job.TenantID, job.UserID, job.BotID, job.RunID)
 	s.mu.Lock()
+	s.ensureDesktopHydrated(job.TenantID)
 	if s.desktopAdmits == nil {
 		s.desktopAdmits = map[string]*desktopAdmitState{}
 	}
-	cutoff := time.Now().Add(-6 * time.Hour)
+	now := s.now()
 	for id, item := range s.desktopAdmits {
 		if item == nil {
 			delete(s.desktopAdmits, id)
 			continue
 		}
 		item.mu.Lock()
-		finished := item.done && !item.finished.IsZero() && item.finished.Before(cutoff)
+		drop := desktopTaskExpired(item.done, item.delivered, item.finished, now)
 		item.mu.Unlock()
-		if finished {
+		if drop {
 			delete(s.desktopAdmits, id)
 		}
 	}
@@ -173,6 +186,7 @@ func (s *Service) followAdmittedDesktopRun(job admittedDesktopFollow) {
 	if _, exists := s.desktopAdmits[key]; !exists {
 		s.desktopAdmits[key] = state
 		claimed = true
+		s.persistDesktopState(job.TenantID)
 	}
 	s.mu.Unlock()
 	if !claimed {
@@ -210,7 +224,11 @@ func (s *Service) settleAdmittedDesktopRun(tenantID, userID, botID, runID string
 		}
 		return existing.reply, true, existing.err
 	}
-	state := &desktopAdmitState{}
+	state := &desktopAdmitState{
+		userID: strings.TrimSpace(userID),
+		botID:  strings.TrimSpace(botID),
+		runID:  strings.TrimSpace(runID),
+	}
 	s.desktopAdmits[key] = state
 	s.mu.Unlock()
 
@@ -220,6 +238,7 @@ func (s *Service) settleAdmittedDesktopRun(tenantID, userID, botID, runID string
 	state.err = err
 	state.done = true
 	state.finished = time.Now()
+	state.mediaFetched = true
 	state.mu.Unlock()
 	if err != nil {
 		// Keeping the claim after a failed settle would answer every later
@@ -342,7 +361,13 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 		state.err = settleErr
 		state.done = true
 		state.finished = time.Now()
+		state.mediaFetched = true
+		state.status = strings.TrimSpace(view.Status)
+		if state.status == "" {
+			state.status = "succeeded"
+		}
 		state.mu.Unlock()
+		s.persistDesktopTasks(job.TenantID)
 		traceBot(job.BotID, "post_end", settleErr,
 			"instance", job.InstanceID,
 			"run", job.RunID,
@@ -751,6 +776,9 @@ func (s *Service) readmitDesktopRun(ctx context.Context, tenantID, userID, botID
 	reply, settled, settleErr := s.settleAdmittedDesktopRun(tenantID, userID, botID, runID, func() (Reply, error) {
 		return s.settleDesktopCommand(tenantID, userID, botID, instanceID, novnc, false, body)
 	})
+	if settled {
+		s.noteDesktopTaskStatus(tenantID, userID, botID, instanceID, runID, view.Status)
+	}
 	traceBot(botID, "run_readmit", settleErr,
 		"instance", instanceID,
 		"run", runID,

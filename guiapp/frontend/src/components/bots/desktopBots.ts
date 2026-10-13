@@ -48,6 +48,105 @@ export function userRequestBefore(messages: DesktopBotMessage[], index: number):
     return '';
 }
 
+// The chat controls. The bot workspace sends these, and UnderstandDesktopBotTask
+// treats them as protocol. The monitor must not present them as the task.
+export const BOT_CONFIRM_TASK = '安排已确认。请按你上一条安排执行。做完、失败或需要我时，在对话里告诉我。';
+
+// The arrangement often still says the work waits, or that this round will not
+// do it. This lead says the approval already happened. A side mention of some
+// other waiting plan is not part of this job.
+const CONFIRMED_ORDER_LEAD = '现在就执行下面这项安排。同意已经给出：文中的「下一轮」「确认后」「等你点头」以及「不实际」「先不要」都是确认前的说法，现在按其中的动作做完，不要再陈述，也不要再征求确认。顺带提到的其他还在等待确认的事不要做。';
+
+// A clear repeat is armed without this button. The button only sees a time
+// when a large change was also timed, and that approval must set the timer
+// rather than do the change on this turn. This is a gate, not the reading.
+const LATER_TIME = /每(?:分钟|分鐘|小时|小時|天|周|週|月|年|个工作日|個工作日|隔)|定时|定時|凌晨|午夜|点半|點半|\d{1,2}\s*[:：]\s*\d{2}|\d{1,2}\s*[点點]|every\s+(?:day|hour|minute|week)|daily|weekly|hourly/i;
+
+export function namesLaterTime(text: string): boolean {
+    return LATER_TIME.test(text || '');
+}
+
+// confirmedWorkOrder is the desktop order for the confirm button. The
+// arrangement on screen is already the task. A second reading of the
+// confirmation sentence can come back empty, and that used to send nothing.
+export function confirmedWorkOrder(arrangement: string): string {
+    const plan = arrangement.trim();
+    if (!plan) return '';
+    return `${CONFIRMED_ORDER_LEAD}\n${plan}`;
+}
+export const BOT_RETURN_TASK = '登录或验证已在当前桌面浏览器完成，请沿用这个登录状态继续。';
+export const BOT_SAVED_TASK = /^已在本机保存 ([A-Z][A-Z0-9_]{0,63})。$/;
+const BOT_FILLED_TASK = /^[A-Z][A-Z0-9_]{0,63} 已在本地填入当前密码框。/;
+
+function protocolControl(text: string): 'confirm' | 'resume' | '' {
+    const trimmed = text.trim();
+    if (trimmed === BOT_CONFIRM_TASK) return 'confirm';
+    if (trimmed === BOT_RETURN_TASK || BOT_SAVED_TASK.test(trimmed) || BOT_FILLED_TASK.test(trimmed)) return 'resume';
+    return '';
+}
+
+// A chat, a phaseless failure, or a phaseless question is answered beside the
+// task. end is the turn being described, so a later turn cannot reclassify it.
+function asideUser(messages: DesktopBotMessage[], userIndex: number, end: number): boolean {
+    let sawAside = false;
+    const stop = Math.min(end, messages.length);
+    for (let j = userIndex + 1; j < stop; j++) {
+        const next = messages[j];
+        if (next.role === 'user') return sawAside;
+        if (next.pending || next.ack || next.understood) return false;
+        if (next.role === 'assistant' && !sideNote(next)) return false;
+        if (next.chat || next.failed || next.askUser) sawAside = true;
+    }
+    return sawAside;
+}
+
+function taskAnchor(text: string): string {
+    const content = text.trim();
+    if (!content || protocolControl(content)) return '';
+    return content;
+}
+
+// botTaskText is the task column. Confirm approves the plan reply that sits
+// in front of it. A finished report, an execute result, and an older plan are
+// not that approval. A login return or a saved secret resumes the request.
+// Several requests with no later plan stay together.
+export function botTaskText(messages: DesktopBotMessage[], index: number): string {
+    const current = messages[index];
+    let confirmed = false;
+    if (current?.role === 'user') {
+        const content = taskAnchor(current.content || '');
+        if (content) return content;
+        confirmed = protocolControl(current.content || '') === 'confirm';
+    }
+    const lines: string[] = [];
+    let passedReply = false;
+    for (let i = index - 1; i >= 0; i--) {
+        const item = messages[i];
+        if (item.role === 'assistant') {
+            if (item.pending || item.failed || sideNote(item) || personHasBotTurn(item)) continue;
+            if (item.askUser && !item.askResolved) continue;
+            const arrangement = (item.content || '').trim();
+            if (!arrangement || protocolControl(arrangement)) continue;
+            if (lines.length > 0) break;
+            if (!passedReply && confirmed && item.phase === 'plan' && !FINISHED_REPORT.test(arrangement)) return arrangement;
+            passedReply = true;
+            continue;
+        }
+        if (item.role !== 'user' || item.queued) continue;
+        const kind = protocolControl(item.content || '');
+        if (kind === 'confirm') {
+            confirmed = true;
+            continue;
+        }
+        if (kind === 'resume') continue;
+        const content = (item.content || '').trim();
+        if (!content || asideUser(messages, i, index)) continue;
+        if (!confirmed) return content;
+        lines.push(content);
+    }
+    return lines.reverse().join('；');
+}
+
 // A pending bubble whose process no longer holds the turn must not keep the
 // chat locked. This clock only covers a reload: the Go turn is gone, and the
 // stored bubble is all that is left. A turn the bots page admitted stays busy
@@ -106,8 +205,8 @@ function botTurnIsLive(userId: string, botId: string, messageId: string): boolea
 
 // Successful transcript writes. The monitor compares this instead of copying
 // the stored JSON on every poll. A failed setItem leaves storage unchanged
-// and does not advance the counter. The event lets the taskbar unread count
-// see the same write, including one that lands while this page is closed.
+// and does not advance the counter. The event lets bot-task and seen-reply
+// listeners see the same write, including one that lands while this page is closed.
 export const BOT_TRANSCRIPT_EVENT = 'maclaw-bot-transcript';
 
 let transcriptGeneration = 0;
@@ -153,10 +252,115 @@ function personHasBotTurn(message: DesktopBotMessage): boolean {
     return message.userControl === true || (message.attentionReason || '').trim() !== '';
 }
 
+const COMPUTER_TAKEOVER_REASON = /^(login_wall|captcha_widget|mfa|payment_confirm|consent_dialog|computer_takeover)$/;
+
+// Warn only once fewer than 100 credits are left. A larger remainder still
+// finishes ordinary tasks. The hub heartbeat withdraws a token-bank share
+// while this balance is under the same floor and the bank can pay.
+const DESKTOP_CREDIT_LOW_REMAINING = 100;
+
+export type DesktopCreditWindow = { limit: number; used: number; held?: number; group?: string };
+
+// Desktop bots spend the reserved system-free route. A limit on another
+// service group does not stop that route, so it must not raise this warning.
+const DESKTOP_CREDIT_GROUP = 'system-free';
+
+function desktopRouteWindows(windows: DesktopCreditWindow[]): DesktopCreditWindow[] {
+    const named = windows.filter(window => (window.group || '').trim());
+    if (named.length === 0) return windows;
+    return named.filter(window => (window.group || '').trim().toLowerCase() === DESKTOP_CREDIT_GROUP);
+}
+
+export type DesktopCreditInput = {
+    mode?: string;
+    unlimited?: boolean;
+    authorized?: boolean;
+    total?: number;
+    remaining?: number;
+    available?: number;
+    showPeriodAvailable?: boolean;
+    status?: string;
+    windows?: DesktopCreditWindow[];
+};
+
+export type DesktopCreditReadout = {
+    total: number;
+    remaining: number;
+    notice: '' | 'low' | 'empty';
+    unlimited?: boolean;
+};
+
+// desktopCreditReadout is the pair the detail sheet shows, plus whether the
+// chat should speak up. A custom model does not spend this account. An
+// unlimited route has nothing to run out of. Among several windows, the
+// tightest fraction is the one that will stop the task. The chat speaks up
+// only when that remainder is under 100 credits.
+export function desktopCreditReadout(input: DesktopCreditInput | null | undefined): DesktopCreditReadout | null {
+    if (!input || input.mode === 'custom' || input.authorized === false) return null;
+    const windows = desktopRouteWindows((input.windows || []).filter(window => window.limit > 0));
+    let total = Number(input.total) || 0;
+    let remaining = input.showPeriodAvailable
+        ? Number(input.available) || 0
+        : Number(input.remaining ?? input.available) || 0;
+    if (windows.length > 0) {
+        let tightRemaining = Number.POSITIVE_INFINITY;
+        let tightLimit = 0;
+        for (const window of windows) {
+            const left = Math.max(0, window.limit - window.used - (window.held || 0));
+            const fraction = left / window.limit;
+            const tightFraction = tightLimit > 0 ? tightRemaining / tightLimit : Number.POSITIVE_INFINITY;
+            if (fraction < tightFraction) {
+                tightRemaining = left;
+                tightLimit = window.limit;
+            }
+        }
+        remaining = tightRemaining;
+        total = tightLimit;
+    }
+    // A balance with no wallet total looks unlimited. Windows passed in by
+    // the caller are a separate cap and are what that caller should show.
+    if (windows.length === 0 && input.unlimited) return null;
+    if (!(total > 0) && !(remaining > 0) && input.status !== 'period_limited') return null;
+    let notice: DesktopCreditReadout['notice'] = '';
+    if (!(remaining > 0) || input.status === 'period_limited') {
+        notice = 'empty';
+        // The server is already refusing this route. A leftover window total
+        // would show credits that cannot be spent.
+        if (input.status === 'period_limited') remaining = 0;
+    } else if (remaining < DESKTOP_CREDIT_LOW_REMAINING) notice = 'low';
+    if (!Number.isFinite(remaining)) remaining = 0;
+    return { total: Math.max(0, total), remaining: Math.max(0, remaining), notice };
+}
+
+export function formatDesktopCredit(value: number): string {
+    if (!Number.isFinite(value)) return '0';
+    const rounded = Math.round(value * 100) / 100;
+    return String(rounded);
+}
+
+// messageNeedsComputerTakeover is a step only the person can finish on the
+// shared computer: a QR login, a captcha, a payment, or an explicit handoff.
+// A report that the account is already signed in is not one of those steps.
+export function messageNeedsComputerTakeover(message: Pick<DesktopBotMessage, 'content' | 'failed' | 'userControl' | 'attentionReason'>): boolean {
+    if (message.failed) return false;
+    if (message.userControl) return true;
+    const reason = (message.attentionReason || '').trim();
+    if (COMPUTER_TAKEOVER_REASON.test(reason)) return true;
+    const text = message.content || '';
+    if (!text.trim()) return false;
+    if (/接管电脑|请接管|需要你接管/.test(text)) return true;
+    const succeeded = /已登录|登录成功|扫码成功|已通过扫码登录/.test(text) && !/尚未登录|未登录/.test(text);
+    const asks = /缺少|需要你|请你|请在|尚未登录|未登录/.test(text);
+    if (succeeded && !asks) return false;
+    if (/扫描二维码|扫码登录|二维码登录/.test(text) && asks && !succeeded) return true;
+    return asks && !succeeded && /登录|验证码|人机验证/.test(text);
+}
+
 // inProgressBotTasks is the task monitor's Bot tab. One read of the transcript
 // covers every bot. Finished replies and a pending bubble left behind by a
 // reload are omitted. A handoff whose HTTP turn already settled stays, because
-// the person still has the desktop.
+// the person still has the desktop. The task column is the arrangement or the
+// request, never the confirm, return, or secret control that started the turn.
 export function inProgressBotTasks(userId: string, now = Date.now()): InProgressBotTask[] {
     const stored = readMessages()[desktopUserKey(userId)];
     if (!stored) return [];
@@ -175,7 +379,7 @@ export function inProgressBotTasks(userId: string, now = Date.now()): InProgress
                 tasks.push({
                     id: message.id,
                     botId,
-                    text: userRequestBefore(messages, index).trim(),
+                    text: botTaskText(messages, index),
                     phase: message.phase,
                     status: personHasBotTurn(message) ? 'waiting' : 'running',
                     startedAt: botMessageStartedAt(message.id),
@@ -187,7 +391,7 @@ export function inProgressBotTasks(userId: string, now = Date.now()): InProgress
                 tasks.push({
                     id: message.id,
                     botId,
-                    text: message.content.trim(),
+                    text: botTaskText(messages, index),
                     phase: message.phase,
                     status: 'queued',
                     startedAt: botMessageStartedAt(message.id),
@@ -199,7 +403,7 @@ export function inProgressBotTasks(userId: string, now = Date.now()): InProgress
                 handoff = {
                     id: message.id,
                     botId,
-                    text: userRequestBefore(messages, index).trim(),
+                    text: botTaskText(messages, index),
                     phase: message.phase,
                     status: 'waiting',
                     startedAt: botMessageStartedAt(message.id),
@@ -235,7 +439,10 @@ export function currentInProgressBotTasks(userId: string, now = Date.now()): InP
 }
 
 export function desktopBotAccountId(config: { remote_user_id?: unknown; remote_email?: unknown } | null | undefined): string {
-    return String(config?.remote_user_id || config?.remote_email || 'local');
+    const id = String(config?.remote_user_id || '').trim();
+    if (id) return id;
+    const email = String(config?.remote_email || '').trim();
+    return email || 'local';
 }
 
 // desktopTaskStep decides the next step from the request and this reply.

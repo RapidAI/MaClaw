@@ -1084,6 +1084,9 @@ func (h *IMMessageHandler) beginAgentLoopRuntime(ctx *LoopContext, userID, userT
 		}
 		h.globalLoopMu.Unlock()
 		ctx.Done()
+		if isCurrentLoop && h.app != nil {
+			h.app.noteRunWindowSessionSettled(userID)
+		}
 	}
 }
 

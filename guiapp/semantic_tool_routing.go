@@ -4858,6 +4858,7 @@ var semanticPetitionableCapabilities = map[string]tool.CapabilityID{
 	"mis_data":            tool.CapabilityBusinessDataMIS,
 	"database":            tool.CapabilityBusinessDataMIS,
 	"database_query":      tool.CapabilityBusinessDataRead,
+	"mailbox_query":       tool.CapabilityMessageReadMailbox,
 }
 
 // semanticReadOnlyGovernedLabels are the rule labels whose templates carry no
@@ -4881,6 +4882,7 @@ var semanticReadOnlyGovernedLabels = map[intent.IntentLabel]bool{
 	intent.LabelDocumentRead:    true,
 	intent.LabelAudioTranscribe: true,
 	intent.LabelWorklogRead:     true,
+	intent.LabelMailboxRead:     true,
 }
 
 // semanticPetitionLookupLabels is the GUI alias of the shared petition

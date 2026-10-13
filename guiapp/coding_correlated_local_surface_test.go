@@ -218,3 +218,39 @@ func TestRemoteCodingPreDispatchGateDiagnostic(t *testing.T) {
 		t.Fatalf("retained verified relation must pass the gate, got %q", diag)
 	}
 }
+
+func TestRefuseUnboundWritableSurfaceAfterHandleWithoutAnchor(t *testing.T) {
+	loopCtx := NewLoopContext("coding-plan-approve", 1, nil)
+	loopCtx.UserID = projectSessionOwnerID("C:/workspace/a")
+	handle := &verifiedCodingTaskHandle{handleID: "h"}
+	impl := &TaskItem{RequestKind: codingRequestImplementation}
+	inquiry := &TaskItem{RequestKind: codingRequestInquiry}
+	unbound := &CodingSubAgent{loopCtx: loopCtx, verifiedTaskHandle: handle}
+	if got := unbound.refuseUnboundWritableSurface(impl); got != desktopCodingWritableSurfaceBindFailedDiagnostic {
+		t.Fatalf("implementation with an unbound handle must refuse the read-only loop, got %q", got)
+	}
+	if got := unbound.refuseUnboundWritableSurface(inquiry); got != "" {
+		t.Fatalf("inquiry stays on the read-only surface, got %q", got)
+	}
+	unbound.correlatedLocalExecution = true
+	if got := unbound.refuseUnboundWritableSurface(impl); got != "" {
+		t.Fatalf("correlated surface must run, got %q", got)
+	}
+	if got := (&CodingSubAgent{loopCtx: loopCtx}).refuseUnboundWritableSurface(impl); got != "" {
+		t.Fatalf("a missing handle belongs to the pre-dispatch gate, got %q", got)
+	}
+}
+
+func TestExecuteTaskStopsBeforeModelWhenWritableSurfaceUnbound(t *testing.T) {
+	loopCtx := NewLoopContext("coding-plan-approve", 1, nil)
+	loopCtx.UserID = projectSessionOwnerID("C:/workspace/a")
+	sa := &CodingSubAgent{
+		projectPath:           t.TempDir(),
+		loopCtx:               loopCtx,
+		writableSurfaceDenied: desktopCodingWritableSurfaceBindFailedDiagnostic,
+	}
+	result := sa.ExecuteTask(&TaskItem{Index: 1, Title: "音效更逼真一些", RequestKind: codingRequestImplementation}, "", "", nil)
+	if result == nil || result.Status != TaskExecFailed || !strings.Contains(result.Error, "可写执行面") {
+		t.Fatalf("unbound writable surface must fail before the model loop, got %+v", result)
+	}
+}

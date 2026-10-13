@@ -73,8 +73,14 @@ func TestDesktopBotUnderstandingUsesTheModelWords(t *testing.T) {
 	if strings.Contains(system, "你要当前桌面的截屏") || strings.Contains(system, "本轮只做安排") || strings.Contains(system, "C++ Hello World") {
 		t.Fatal("system prompt still carries a stock sentence")
 	}
-	if !strings.Contains(system, "pace is direct, confirm, ask, reply, or schedule") || !strings.Contains(system, "A clear request is direct") || !strings.Contains(system, "There is no second confirmation") || !strings.Contains(system, "Small talk") || !strings.Contains(system, "even when an earlier job is unfinished") || !strings.Contains(system, "interval_minutes") {
+	if strings.Contains(system, "the execute reading is schedule") || !strings.Contains(system, "After they approve, the execute reading is direct") {
+		t.Fatal("approving an arrangement was still read as a schedule")
+	}
+	if !strings.Contains(system, "pace is direct, confirm, ask, reply, schedule, or status") || !strings.Contains(system, "A clear request is direct") || !strings.Contains(system, "There is no second confirmation") || !strings.Contains(system, "Small talk") || !strings.Contains(system, "even when an earlier job is unfinished") || !strings.Contains(system, "interval_minutes") || !strings.Contains(system, "Do not invent a status") {
 		t.Fatal("system prompt lost the direct, confirm, ask, and reply split")
+	}
+	if !strings.Contains(system, "they do not interrupt each other") || !strings.Contains(system, "do not tell them to wait until it finishes") {
+		t.Fatal("system prompt still waits out the running job instead of starting a different one beside it")
 	}
 	if strings.Contains(system, "When the request still needs a change") {
 		t.Fatal("system prompt still holds every change for confirmation")
@@ -145,6 +151,19 @@ func TestDesktopBotPaceKeepsAnExplicitChoice(t *testing.T) {
 	if desktopBotPace("reply", "execute") != "direct" {
 		t.Fatal("a confirmed turn was turned into chat")
 	}
+	if desktopBotPace("status", "execute") != "status" {
+		t.Fatal("a status question was sent to the desktop")
+	}
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
+		return `{"told":"","instruction":"","pace":"status"}`, nil
+	}
+	got, err = (&App{}).UnderstandDesktopBotTask("任务现在怎么样了", "plan", "zh-Hans", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Pace != "status" || got.Instruction != "" {
+		t.Fatalf("status question was treated as work: %#v", got)
+	}
 
 	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		return `{"told":"我是你在这台云桌面上的同事。","instruction":"","pace":"reply"}`, nil
@@ -160,14 +179,14 @@ func TestDesktopBotPaceKeepsAnExplicitChoice(t *testing.T) {
 	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
 		return `{"told":"按前面的安排做。","instruction":"","persona":"这个 Bot 叫 Bot 2。","pace":"reply"}`, nil
 	}
-	// An execute turn is not turned into chat even when the reading also keeps
-	// an identity: a confirmed job with no order has nothing to say.
+	// An execute turn is not turned into chat. A confirmed job whose reading
+	// forgot the order still carries the request they already approved.
 	got, err = (&App{}).UnderstandDesktopBotTask(desktopBotConfirmTask, "execute", "zh-Hans", []string{"查询 北京天所，生成pdf"}, "")
 	if err != nil {
 		t.Fatalf("a confirmed turn with an empty order took the turn down with it: %v", err)
 	}
-	if got.Reading != desktopBotReadingUnread || got.Instruction != "" {
-		t.Fatalf("a confirmed turn with an empty order became chat: %#v", got)
+	if got.Reading != "" || got.Pace != "direct" || !strings.Contains(got.Instruction, "查询 北京天所，生成pdf") || got.Persona != "" {
+		t.Fatalf("a confirmed turn with an empty order dropped the approved task: %#v", got)
 	}
 }
 
@@ -273,8 +292,25 @@ func TestDesktopBotEmptyOrderIsNotAReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a missing order took the turn down with it: %v", err)
 	}
-	if got.Reading != desktopBotReadingUnread {
-		t.Fatalf("a confirmed turn with no order was not reported unread: %#v", got)
+	if got.Reading != "" || got.Pace != "direct" || !strings.Contains(got.Instruction, "打开百度") {
+		t.Fatalf("a confirmed turn with no order dropped the approved task: %#v", got)
+	}
+	got, err = (&App{}).UnderstandDesktopBotTask(desktopBotConfirmTask, "execute", "zh-Hans", nil, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Reading != desktopBotReadingUnread || got.Instruction != "" {
+		t.Fatalf("a confirmation with nothing earlier invented an order: %#v", got)
+	}
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
+		return `{"told":"我现在去做。","instruction":"","pace":"direct"}`, nil
+	}
+	got, err = (&App{}).UnderstandDesktopBotTask(desktopBotConfirmTask, "execute", "zh-Hans", []string{"每天凌晨删掉下载目录"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Reading != desktopBotReadingUnread || got.Instruction != "" || got.Pace != "" {
+		t.Fatalf("a timed confirmation with an empty order ran immediately: %#v", got)
 	}
 
 	// An identity without desktop work is still a reading: it becomes a reply,
@@ -553,6 +589,17 @@ func TestDesktopBotScheduleReadingRejectsAMissingTime(t *testing.T) {
 	if got.Schedule != nil || got.Instruction != "" {
 		t.Fatalf("an untimed schedule armed something: %#v", got)
 	}
+
+	desktopBotUnderstandLLM = func(context.Context, *App, desktopBotUnderstandRequest) (string, error) {
+		return `{"told":"我来定时。","instruction":"删掉下载目录。","pace":"schedule","schedule":{"name":"清理"}}`, nil
+	}
+	got, err = (&App{}).UnderstandDesktopBotTask(desktopBotConfirmTask, "execute", "zh-Hans", []string{"每天凌晨删掉下载目录"}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Reading != desktopBotReadingUnscheduled || got.Instruction != "" || got.Pace != "" || got.Schedule != nil {
+		t.Fatalf("a confirmed timer without a time ran immediately: %#v", got)
+	}
 }
 
 func TestDesktopBotScheduleCancelNeedsNoOrder(t *testing.T) {
@@ -566,6 +613,17 @@ func TestDesktopBotScheduleCancelNeedsNoOrder(t *testing.T) {
 	}
 	if got.Pace != "schedule" || got.Instruction != "" || got.Schedule == nil || got.Schedule.Mode != "cancel" || got.Schedule.Name != "每分钟问好" {
 		t.Fatalf("cancel was not kept: %#v", got)
+	}
+}
+
+func TestHeuristicDesktopTaskSupplementLeavesADifferentJobAlone(t *testing.T) {
+	different := heuristicDesktopTaskSupplement("换上新工具头", "还需要在 mac mini 上优化 arm64，同时截一张图")
+	if different.IsSupplement {
+		t.Fatalf("a different job was folded into the running one: %+v", different)
+	}
+	constraint := heuristicDesktopTaskSupplement("打开订单页面", "只要前5条")
+	if !constraint.IsSupplement || constraint.Instruction != "只要前5条" {
+		t.Fatalf("a constraint on the running job was not a supplement: %+v", constraint)
 	}
 }
 

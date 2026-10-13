@@ -96,14 +96,14 @@ const (
 	desktopBotUnderstandLineMax    = 500
 
 	// desktopBotReadBudget is everything one reading may spend — first attempt,
-	// second attempt, parse and all. Measured readings of this prompt take
-	// about 12-26s: this is a reasoning model and it answers with 1-3k output
-	// tokens, and local time-to-first-byte is under a second, so the cost is
-	// generation, not the route. Two unrelated deadlines used to guard this
-	// call, a 30s client and a 35s context, which left a whole message dead at
-	// whichever fired first and no room for a second try. One number now
-	// covers the reading, and every attempt is cut from it.
-	desktopBotReadBudget = 45 * time.Second
+	// second attempt, parse and all. This prompt is answered by a reasoning
+	// model, and the body arrives when generation finishes, not at the first
+	// byte. A completed reading of the same sentence took 43s. A 45s cap sat
+	// inside that cost: the context then cancelled the stream with an empty
+	// body, and the turn was reported as if no answer had come. One number
+	// still covers the reading. It has to be long enough for that generation
+	// to finish. A fast failure in the first half still gets the second try.
+	desktopBotReadBudget = 90 * time.Second
 	// desktopBotReadAttempts is how many calls one reading gets. A second try
 	// is spent only on a failure that passing time is likely to clear.
 	desktopBotReadAttempts = 2
@@ -135,12 +135,13 @@ told is the sentence this person sees at once. Write it in the language named be
 
 instruction is the work order for the worker that drives this person's cloud desktop. The worker follows this order and does not see the kept persona except through this order. State the outcome, the steps that matter, and what the chat reply must contain. Write it in the same language as told. Keep a desktop action name in English when you name one. Leave it an empty string when there is no desktop work. For schedule, instruction is the order for one later run, including what that run's reply must contain. A repeated greeting is still an order: the reply is that greeting.
 
-pace is direct, confirm, ask, reply, or schedule.
+pace is direct, confirm, ask, reply, schedule, or status.
 - direct: the request is clear and this turn can finish it. A lookup, a screenshot, opening or reading a named page, writing or revising a file they already described, a small change they spelled out. told says you are doing it now. instruction is the concrete work. A document they asked for uses desktop action=deliver. A file already on the desktop, including a pdf, uses path so the chat receives that file. Text to send uses name and content. Do not leave a confirmation. A request that names a later time or a repeat is schedule, not direct.
-- confirm: the change is large or hard to undo, and they have not already approved it. Installing or removing software, deleting, paying, sending on their behalf, wiping, or a long procedure. told is the one arrangement. instruction tells the worker to state that one arrangement and not to make the change on this turn. There is no second confirmation. A large or hard-to-undo change that also names a time stays confirm, and schedule is omitted. After they approve, the execute reading is schedule.
+- confirm: the change is large or hard to undo, and they have not already approved it. Installing or removing software, deleting, paying, sending on their behalf, wiping, or a long procedure. told is the one arrangement. instruction tells the worker to state that one arrangement and not to make the change on this turn. There is no second confirmation. A large or hard-to-undo change that also names a time stays confirm, and schedule is omitted. After they approve, the execute reading is direct and instruction is that concrete work. It is schedule only when the confirmed work itself names a later time or a repeat.
 - ask: a fact only this person knows is missing, or they must finish a login, captcha, payment, or consent. told is that one question. instruction repeats the question. Do not offer a menu of methods. A missing clock time or a missing repeat is ask only when you cannot tell when the work should run.
 - reply: Small talk and other short answers that need no desktop, no file, and no lookup. A greeting, thanks, a question about who this bot is, or an identity with no desktop work. told is the whole answer this person sees. When a persona is already kept, the answer uses it. Leave instruction empty. Do not change persona unless this message tells you a new identity. There is no desktop job and no confirmation. A lookup, a file, a screenshot, or any desktop action is not reply. A greeting, thanks, or other short answer that names a later time or a repeat is schedule, not reply. If the same message also asks for desktop work, this is not reply: pace is direct, confirm, or schedule from that work, and instruction is only that work.
 - schedule: they want work at a later time or on a repeat, or they want that timed work stopped. A clear one is armed on this turn. told says it is set or stopped. instruction is the order for one later run. Do not ask them to confirm a clear schedule. Do not do the work in told.
+- status: they are asking how some task is going, or what a task already produced. This includes a question about one named task and a question that only asks for the recent tasks. instruction is a short hint naming which task, copied from their words, or an empty string when they did not name one. Leave told empty. Do not invent a status, a result, or a percent. Do not start, change, or stop work. A request to do the work is direct, confirm, or schedule, not status.
 
 schedule is an object, only when pace is schedule. mode is create or cancel. name is a short stable name. For create, either interval_minutes is a positive integer of minutes, or hour and minute name a clock time and interval_minutes is 0 or omitted. One minute is 1, one hour is 60, one day is 1440. hour is 0 through 23 and minute is 0 through 59. day_of_week is 0 for Sunday through 6 for Saturday. Omit day_of_week to run every day. For cancel, instruction is an empty string. name is the schedule to stop. An empty name stops every timed job of this bot. told says what stopped.
 
@@ -155,14 +156,14 @@ When a persona is already kept and this message is desktop work:
 - Proactively adapt instruction to the kept user preferences: if the person prefers multiple pictures/screenshots, explicitly require the worker to take multiple screenshots at key milestones and attach them in the final presentation; if the person prefers tables or structured summaries, require the worker to structure the final answer accordingly. Make the bot smarter and more adaptive across tasks without requiring the person to repeat their preferences every turn.
 
 The phase is a fact about this turn:
-- plan: choose pace from the latest message. A clear request is direct, even when it opens a page or delivers a file. A clear timed or repeating request is schedule. confirm is only for a large or hard-to-undo change. ask is only when you cannot proceed without this person. reply is small talk, a question about who this bot is, or an identity with no desktop work. reply does not call the worker.
-When earlier messages contain a task being planned or arranged, and the latest message provides supplementary information, additional requirements, constraints, filters, or modifications (e.g. adding filtering criteria, changing output format, adding steps), do not treat it as an isolated request. Seamlessly fuse and synthesize the earlier task and the supplementary requirements into a complete, updated work order in instruction, and present the updated arrangement in told. If the task was awaiting confirmation or is a multi-step arrangement, keep pace as confirm (or direct if clear and safe) so the person can review the updated plan. Otherwise classify the latest message on its own. Earlier user messages explain a pronoun or a question you already asked. They are not a reason to repeat an earlier desktop job. If the latest message is small talk, pace is reply even when an earlier job is unfinished.
+- plan: choose pace from the latest message. A clear request is direct, even when it opens a page or delivers a file. A clear timed or repeating request is schedule. confirm is only for a large or hard-to-undo change. ask is only when you cannot proceed without this person. reply is small talk, a question about who this bot is, or an identity with no desktop work. reply does not call the worker. status is a question about work already started or finished. status does not call the worker and does not invent the answer.
+When earlier messages contain a task being planned or arranged, and the latest message provides supplementary information, additional requirements, constraints, filters, or modifications (e.g. adding filtering criteria, changing output format, adding steps), do not treat it as an isolated request. Seamlessly fuse and synthesize the earlier task and the supplementary requirements into a complete, updated work order in instruction, and present the updated arrangement in told. If the task was awaiting confirmation or is a multi-step arrangement, keep pace as confirm (or direct if clear and safe) so the person can review the updated plan. When an earlier job is already underway and the latest message is a different job, do not fold it into that job, do not stop that job, and do not tell them to wait until it finishes. instruction is only the new job. told says this job has started and the earlier one keeps going; they do not interrupt each other. A constraint, filter, or correction of the job already underway is still fused into that job. Otherwise classify the latest message on its own. Earlier user messages explain a pronoun or a question you already asked. They are not a reason to repeat an earlier desktop job. If the latest message is small talk, pace is reply even when an earlier job is unfinished.
 - execute: they already confirmed, or this is the direct work. pace is direct, unless the confirmed work is itself timed or repeating: then pace is schedule and schedule carries that time. instruction is the concrete work taken from the earlier messages and this message. Do the work now. Do not ask them to confirm again. Use ask only when a fact still blocks the work.
 
 The confirmation control is exactly: 安排已确认。请按你上一条安排执行。做完、失败或需要我时，在对话里告诉我。
-When the latest message is that sentence, the task is the earlier user messages. That sentence is not the task. pace is direct and the order does the work now.
+When the latest message is that sentence, the task is the earlier user messages. That sentence is not the task. pace is direct and the order does the work now, unless that earlier work itself names a later time or a repeat: then pace is schedule and schedule carries that time.
 
-Do not ask this person to choose a method. Do not reuse a stock sentence. Do not match the message against a list of phrases. Do not add keys other than schedule, markdown, or text outside the JSON object. instruction and persona may be empty strings. told may not.`
+Do not ask this person to choose a method. Do not reuse a stock sentence. Do not match the message against a list of phrases. Do not add keys other than schedule, markdown, or text outside the JSON object. instruction and persona may be empty strings. told may be empty only when pace is status. Otherwise told may not.`
 
 func callDesktopBotUnderstandLLM(ctx context.Context, app *App, req desktopBotUnderstandRequest) (string, error) {
 	if app == nil {
@@ -258,19 +259,19 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 			if attempt < desktopBotReadAttempts && desktopBotReadFaultClears(err) && time.Until(deadline)*2 > desktopBotReadBudget {
 				continue
 			}
-			return desktopBotReadingLost(desktopBotReadingUnreachable, "no answer", text, phase, len(earlier)), nil
+			return desktopBotConfirmOrLost(desktopBotReadingUnreachable, "no answer", text, phase, earlier), nil
 		}
 		understood, parseErr := parseDesktopBotUnderstanding(raw)
 		if parseErr != nil {
 			log.Printf("[desktop-bot-understand] phase=%s attempt=%d elapsed=%s earlier=%d text_len=%d result_len=%d parse_err=%v",
 				phase, attempt, time.Since(started).Round(time.Millisecond), len(earlier), utf8.RuneCountInString(text), utf8.RuneCountInString(raw), parseErr)
-			return desktopBotReadingLost(desktopBotReadingUnread, "answer was not a reading", text, phase, len(earlier)), nil
+			return desktopBotConfirmOrLost(desktopBotReadingUnread, "answer was not a reading", text, phase, earlier), nil
 		}
 		understood.Pace = desktopBotPace(understood.Pace, phase)
 		if err := normalizeDesktopBotSchedule(understood); err != nil {
 			log.Printf("[desktop-bot-understand] phase=%s pace=%s attempt=%d elapsed=%s earlier=%d text_len=%d schedule_err=%v",
 				phase, understood.Pace, attempt, time.Since(started).Round(time.Millisecond), len(earlier), utf8.RuneCountInString(text), err)
-			return desktopBotReadingLost(desktopBotReadingUnscheduled, "timed work without a time", text, phase, len(earlier)), nil
+			return desktopBotConfirmOrLost(desktopBotReadingUnscheduled, "timed work without a time", text, phase, earlier), nil
 		}
 		// An empty order stays a reply only when the model said so, or when this
 		// message only keeps or withdraws an identity. A direct or confirm reading
@@ -278,14 +279,58 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 		if err := desktopBotEmptyOrder(understood, phase); err != nil {
 			log.Printf("[desktop-bot-understand] phase=%s pace=%s attempt=%d elapsed=%s earlier=%d text_len=%d empty_order=%v",
 				phase, understood.Pace, attempt, time.Since(started).Round(time.Millisecond), len(earlier), utf8.RuneCountInString(text), err)
-			return desktopBotReadingLost(desktopBotReadingUnread, "order was empty", text, phase, len(earlier)), nil
+			return desktopBotConfirmOrLost(desktopBotReadingUnread, "order was empty", text, phase, earlier), nil
 		}
 		log.Printf("[desktop-bot-understand] phase=%s pace=%s lang=%s attempt=%d elapsed=%s earlier=%d text_len=%d told_len=%d instruction_len=%d persona_len=%d",
 			phase, understood.Pace, lang, attempt, time.Since(started).Round(time.Millisecond), len(earlier),
 			utf8.RuneCountInString(text), utf8.RuneCountInString(understood.Told), utf8.RuneCountInString(understood.Instruction), utf8.RuneCountInString(understood.Persona))
 		return understood, nil
 	}
-	return desktopBotReadingLost(desktopBotReadingUnreachable, "budget spent", text, phase, len(earlier)), nil
+	return desktopBotConfirmOrLost(desktopBotReadingUnreachable, "budget spent", text, phase, earlier), nil
+}
+
+// desktopBotConfirmedOrderLead is the worker order for an approval whose
+// reading produced no usable instruction. The arrangement often still says
+// the work waits, or that this round will not do it.
+const desktopBotConfirmedOrderLead = "现在就执行下面这项安排。同意已经给出：文中的「下一轮」「确认后」「等你点头」以及「不实际」「先不要」都是确认前的说法，现在按其中的动作做完，不要再陈述，也不要再征求确认。顺带提到的其他还在等待确认的事不要做。"
+
+// desktopBotLaterTime is the same gate as the confirm button. A large change
+// that also names a time must not run on this turn when its reading failed.
+var desktopBotLaterTime = regexp.MustCompile(`(?i)每(?:分钟|分鐘|小时|小時|天|周|週|月|年|个工作日|個工作日|隔)|定时|定時|凌晨|午夜|点半|點半|\d{1,2}\s*[:：]\s*\d{2}|\d{1,2}\s*[点點]|every\s+(?:day|hour|minute|week)|daily|weekly|hourly`)
+
+// desktopBotConfirmOrLost keeps a confirmed job when the second reading fails.
+// The person already approved an arrangement. An empty reading or no answer
+// must not drop that job. A schedule that names no time stays unscheduled:
+// running that job immediately would do a timed change on this turn.
+func desktopBotConfirmOrLost(class, outcome, text, phase string, earlier []string) *DesktopBotUnderstanding {
+	if class != desktopBotReadingUnscheduled && text == desktopBotConfirmTask && phase == "execute" {
+		if order := desktopBotApprovedTask(earlier); order != "" && !desktopBotLaterTime.MatchString(order) {
+			log.Printf("[desktop-bot-understand] confirm kept earlier task phase=%s class=%s order_len=%d", phase, class, utf8.RuneCountInString(order))
+			return &DesktopBotUnderstanding{
+				Instruction: desktopBotConfirmedOrderLead + "\n" + order,
+				Pace:        "direct",
+			}
+		}
+	}
+	return desktopBotReadingLost(class, outcome, text, phase, len(earlier))
+}
+
+// desktopBotApprovedTask is the request the confirmation approves. Protocol
+// lines are not tasks. The latest remaining line is the one just arranged;
+// older lines are other jobs and are not started again from this approval.
+func desktopBotApprovedTask(earlier []string) string {
+	last := ""
+	for _, line := range earlier {
+		line = strings.TrimSpace(line)
+		if line == "" || line == desktopBotConfirmTask || line == desktopBotReturnTask {
+			continue
+		}
+		if desktopBotSavedTask.MatchString(line) || desktopBotFilledTask.MatchString(line) {
+			continue
+		}
+		last = line
+	}
+	return last
 }
 
 // desktopBotReadingLost reports a reading that was not made. No order, no
@@ -336,7 +381,7 @@ func desktopBotPace(pace, phase string) string {
 			return "direct"
 		}
 		return "reply"
-	case "direct", "confirm", "ask", "schedule":
+	case "direct", "confirm", "ask", "schedule", "status":
 		return strings.ToLower(strings.TrimSpace(pace))
 	}
 	if phase == "execute" {
@@ -350,7 +395,7 @@ func desktopBotPace(pace, phase string) string {
 // including a single hyphen that withdraws one, keeps a plan turn a reply.
 // An execute turn is not turned into chat: a confirmed job with no order fails.
 func desktopBotEmptyOrder(understood *DesktopBotUnderstanding, phase string) error {
-	if understood == nil || understood.Instruction != "" || understood.Pace == "ask" || understood.Pace == "reply" {
+	if understood == nil || understood.Instruction != "" || understood.Pace == "ask" || understood.Pace == "reply" || understood.Pace == "status" {
 		return nil
 	}
 	if understood.Pace == "schedule" && understood.Schedule != nil && understood.Schedule.Mode == "cancel" {
@@ -538,9 +583,11 @@ func lastDesktopBotUnderstanding(raw string) (*DesktopBotUnderstanding, bool) {
 		if parsed.SupplementOf != "" && parsed.Instruction == "" {
 			continue
 		}
-		// told is required. An empty instruction stays in the reading; pace
-		// decides whether it is a reply or a missing order. A placeholder is not a reading.
-		if parsed.Told == "" {
+		// told is required, except a status question: the sentence the person
+		// sees is the query result, and a made-up told would be a status nobody
+		// checked. An empty instruction stays in the reading; pace decides
+		// whether it is a reply, a status question, or a missing order.
+		if parsed.Told == "" && !strings.EqualFold(strings.TrimSpace(parsed.Pace), "status") {
 			continue
 		}
 		if parsed.Told == "..." && parsed.Instruction == "..." {
@@ -646,12 +693,12 @@ func desktopSupplementDisabled() bool {
 
 const desktopTaskSupplementSystem = `You are an evaluator for a cloud desktop AI assistant. An active task is currently executing in the background on the cloud desktop. The user has just sent a new message.
 Determine whether the new message is:
-1. A supplement, refinement, additional constraint, filter, format requirement, or modification to the currently running active task (e.g. "只要前5条", "按日期倒序", "也带上截图", "保存为markdown", "格式改成表格", "顺便也把作者名字记下来", "还要...", "另外...").
-2. A completely new, independent task (e.g. "打开另一个网站", "查询天气", an unrelated request).
+1. A supplement, refinement, additional constraint, filter, format requirement, or modification to the currently running active task (e.g. "只要前5条", "按日期倒序", "也带上截图", "保存为markdown", "格式改成表格", "顺便也把作者名字记下来").
+2. A completely new, independent task (e.g. "打开另一个网站", "查询天气", "还需要在另一台机器上做另一件事", an unrelated request). A different job is a new task even when the active one is still running. Words like 还, 另外, 同时, or also do not make it a supplement unless they change the active task itself.
 3. Small talk or a general query (e.g. "你好", "你是谁").
 
 Return JSON with:
-- "is_supplement": true if it is a supplement to the active task; false if it is a new task or small talk.
+- "is_supplement": true only if it changes the active task; false if it is a new task or small talk. A new task must not be injected into the active one.
 - "reason": brief explanation.
 - "instruction": if is_supplement is true, a concise directive summarizing the supplemental requirement to inject into the ongoing execution; otherwise empty string.`
 
@@ -716,12 +763,15 @@ func heuristicDesktopTaskSupplement(activeTask, newMessage string) *DesktopTaskS
 	if lower == "你好" || lower == "您好" || lower == "hello" || lower == "hi" || lower == "谢谢" || lower == "多谢" || lower == "thanks" || lower == "thank you" || lower == "你是谁" || lower == "你是谁呀" || lower == "你是谁？" {
 		return &DesktopTaskSupplementEval{IsSupplement: false, Reason: "small talk"}
 	}
+	// Short words such as 也, 还, 另外, 同时, 按, and 截图 show up in a
+	// different job just as often as in a correction. Matching them here
+	// would inject that job into the run that is already going. The model
+	// still makes that distinction; this list is only the fallback, and a
+	// miss starts a separate job instead of rewriting the live one.
 	supplementKeywords := []string{
-		"补充", "还有", "另外", "顺便", "再加", "记得", "并且", "同时", "也",
-		"改成", "只要", "不要", "加上", "格式改成", "带上", "还要", "额外",
-		"过滤", "仅限", "按", "导出为", "保存为", "截图", "多图",
-		"also", "supplement", "additionally", "in addition", "furthermore",
-		"filter by", "save as", "export as", "remember to", "only", "include screenshot", "change to",
+		"补充", "再加", "记得", "改成", "只要", "不要", "加上", "格式改成", "额外",
+		"过滤", "仅限", "导出为", "保存为",
+		"filter by", "save as", "export as", "remember to", "change to",
 	}
 	for _, kw := range supplementKeywords {
 		if strings.Contains(lower, strings.ToLower(kw)) {

@@ -532,7 +532,7 @@ func TestFastBatchCaptchaStillAsks(t *testing.T) {
 
 func TestPlaybookPrefersProbeThenBatch(t *testing.T) {
 	p := Playbook()
-	for _, marker := range []string{`action="probe"`, `action="task_run"`, "snapshot_id", "one observation"} {
+	for _, marker := range []string{`action="probe"`, `action="script"`, `action="task_run"`, "snapshot_id", "one observation", "skill_run"} {
 		if !strings.Contains(p, marker) {
 			t.Fatalf("playbook missing %q", marker)
 		}

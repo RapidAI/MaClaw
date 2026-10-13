@@ -10,7 +10,7 @@ import (
 
 // toolGoal handles the goal management tool using the handler's lastUserID
 // (set by the agent loop for the active session).
-// Model-facing actions: create, complete, get, fail
+// Model-facing actions: create, plan, step, complete, get, fail
 // System-only transitions: pause, resume (also used by /goal slash commands).
 func (h *IMMessageHandler) toolGoal(args map[string]interface{}) string {
 	return h.toolGoalForUser(h.lastUserID, args)
@@ -26,6 +26,10 @@ func (h *IMMessageHandler) toolGoalForUser(userID string, args map[string]interf
 	switch action {
 	case "create":
 		return h.goalCreateForUser(userID, args)
+	case "plan":
+		return h.goalPlanForUser(userID, args)
+	case "step":
+		return h.goalStepForUser(userID, args)
 	case "complete":
 		return h.goalCompleteForUser(userID, args)
 	case "fail":
@@ -39,7 +43,7 @@ func (h *IMMessageHandler) toolGoalForUser(userID string, args map[string]interf
 	case "cancel", "clear":
 		return h.goalClearForUser(userID)
 	default:
-		return fmt.Sprintf("未知 goal action: %s（模型可用: create/complete/fail/get）", action)
+		return fmt.Sprintf("未知 goal action: %s（模型可用: create/plan/step/complete/fail/get）", action)
 	}
 }
 
@@ -141,11 +145,13 @@ func (h *IMMessageHandler) goalCompleteForUser(userID string, args map[string]in
 	}
 
 	summary, _ := args["summary"].(string)
-	if summary == "" {
-		summary = "目标已完成"
+	summary = strings.TrimSpace(summary)
+	if refusal := goal.CompletionRefusal(g, summary); refusal != "" {
+		return refusal
 	}
 
 	store.UpdateStatus(userID, g.GoalID, goal.StatusComplete, summary)
+	h.cancelGoalContinuation(userID)
 
 	// Notify frontend of terminal state
 	if h.app != nil && h.app.goalContinuation != nil {
@@ -155,15 +161,89 @@ func (h *IMMessageHandler) goalCompleteForUser(userID string, args map[string]in
 		}
 	}
 
-	var b strings.Builder
-	b.WriteString("目标已完成\n")
-	b.WriteString(fmt.Sprintf("目标: %s\n", g.Objective))
-	b.WriteString(fmt.Sprintf("总结: %s\n", summary))
-	if g.TokenBudget > 0 {
-		b.WriteString(fmt.Sprintf("Token 使用: %d / %d\n", g.TokensUsed, g.TokenBudget))
+	updated := store.Get(userID)
+	if updated == nil {
+		updated = g
 	}
-	b.WriteString(fmt.Sprintf("总轮次: %d | 耗时: %ds", g.TurnsUsed, g.TimeUsedSeconds))
-	return b.String()
+	report := goal.FormatCompletionReport(updated, summary)
+	if updated.TokenBudget > 0 {
+		report += fmt.Sprintf("\nToken 使用: %d / %d", updated.TokensUsed, updated.TokenBudget)
+	}
+	report += fmt.Sprintf("\n总轮次: %d | 耗时: %ds", updated.TurnsUsed, updated.TimeUsedSeconds)
+	return report
+}
+
+func (h *IMMessageHandler) goalPlanForUser(userID string, args map[string]interface{}) string {
+	userID = h.resolveGoalUserID(userID)
+	store := h.getGoalStore()
+	g := store.Get(userID)
+	if g == nil {
+		return "错误: 当前没有活跃目标"
+	}
+	if g.IsTerminal() {
+		return fmt.Sprintf("错误: 目标已处于终态（%s）", g.Status)
+	}
+	understanding, _ := args["understanding"].(string)
+	steps, err := goal.ParseSteps(args["steps"])
+	if err != nil {
+		return "错误: " + err.Error()
+	}
+	criteria := getStringSliceArg(args, "acceptance_criteria")
+	if len(criteria) == 0 {
+		criteria = goal.ParseStringList(args["acceptance_criteria"])
+	}
+	if err := store.SavePlan(userID, g.GoalID, understanding, steps, criteria); err != nil {
+		return "错误: " + err.Error()
+	}
+	updated := store.Get(userID)
+	h.syncCodingWorkbenchSessionPlanFromGoal(userID, g.Objective)
+	if h.app != nil && h.app.goalContinuation != nil && updated != nil {
+		h.app.goalContinuation.emitGoalStateChanged(userID, updated)
+	}
+	return formatGoalPlanSavedText(updated)
+}
+
+func (h *IMMessageHandler) goalStepForUser(userID string, args map[string]interface{}) string {
+	userID = h.resolveGoalUserID(userID)
+	store := h.getGoalStore()
+	g := store.Get(userID)
+	if g == nil {
+		return "错误: 当前没有活跃目标"
+	}
+	if g.IsTerminal() {
+		return fmt.Sprintf("错误: 目标已处于终态（%s）", g.Status)
+	}
+	if g.EffectivePhase() != goal.PhaseExecute {
+		return "错误: 目标仍在规划阶段，请先调用 goal(action=\"plan\")"
+	}
+	index, ok := getIntArg(args, "index")
+	if !ok || index <= 0 {
+		return "错误: 缺少 index 参数"
+	}
+	statusRaw, _ := args["status"].(string)
+	result, _ := args["result"].(string)
+	if strings.TrimSpace(result) == "" {
+		result, _ = args["reason"].(string)
+	}
+	if err := store.UpdateStep(userID, g.GoalID, index, goal.StepStatus(statusRaw), result); err != nil {
+		return "错误: " + err.Error()
+	}
+	updated := store.Get(userID)
+	if updated == nil {
+		return "错误: 步骤更新后目标丢失"
+	}
+	for _, step := range updated.Steps {
+		if step.Index != index || step.Status != goal.StepFailed {
+			continue
+		}
+		reason := fmt.Sprintf("步骤 %d 失败：%s", index, step.Result)
+		h.goalFailForUser(userID, map[string]interface{}{"reason": reason})
+		return "错误: " + reason
+	}
+	if h.app != nil && h.app.goalContinuation != nil {
+		h.app.goalContinuation.emitGoalStateChanged(userID, updated)
+	}
+	return fmt.Sprintf("步骤 %d 已完成: %s", index, result)
 }
 
 func (h *IMMessageHandler) goalFail(args map[string]interface{}) string {
@@ -187,6 +267,7 @@ func (h *IMMessageHandler) goalFailForUser(userID string, args map[string]interf
 	}
 
 	store.UpdateStatus(userID, g.GoalID, goal.StatusFailed, reason)
+	h.cancelGoalContinuation(userID)
 
 	// Notify frontend of terminal state
 	if h.app != nil && h.app.goalContinuation != nil {
@@ -235,6 +316,20 @@ func (h *IMMessageHandler) goalGetForUser(userID string) string {
 	}
 	b.WriteString(fmt.Sprintf("轮次: %d / %d\n", g.TurnsUsed, g.MaxTurns))
 	b.WriteString(fmt.Sprintf("耗时: %ds\n", g.TimeUsedSeconds))
+	if g.Understanding != "" {
+		b.WriteString(fmt.Sprintf("理解: %s\n", g.Understanding))
+	}
+	b.WriteString(fmt.Sprintf("阶段: %s\n", g.EffectivePhase()))
+	if len(g.Steps) > 0 {
+		b.WriteString("步骤:\n")
+		for _, step := range g.Steps {
+			b.WriteString(fmt.Sprintf("  %d. [%s] %s", step.Index, step.Status, step.Title))
+			if step.Result != "" {
+				b.WriteString(" — " + step.Result)
+			}
+			b.WriteString("\n")
+		}
+	}
 	if len(g.AcceptanceCriteria) > 0 {
 		b.WriteString("验收标准:\n")
 		for _, c := range g.AcceptanceCriteria {
@@ -348,6 +443,32 @@ func (h *IMMessageHandler) getGoalStore() *goal.Store {
 }
 
 // --- Helpers ---
+
+func (h *IMMessageHandler) cancelGoalContinuation(userID string) {
+	if h == nil || h.app == nil || h.app.goalContinuation == nil {
+		return
+	}
+	h.app.goalContinuation.CancelPending(userID)
+}
+
+func formatGoalPlanSavedText(g *goal.Goal) string {
+	if g == nil {
+		return "计划已保存"
+	}
+	var b strings.Builder
+	b.WriteString("计划已保存\n")
+	b.WriteString("理解: " + g.Understanding + "\n")
+	b.WriteString("步骤:\n")
+	for _, step := range g.Steps {
+		b.WriteString(fmt.Sprintf("  %d. %s\n", step.Index, step.Title))
+	}
+	b.WriteString("验收标准:\n")
+	for _, criterion := range g.AcceptanceCriteria {
+		b.WriteString("  • " + criterion + "\n")
+	}
+	b.WriteString("下一轮只执行第 1 步。")
+	return b.String()
+}
 
 func getIntArg(args map[string]interface{}, key string) (int, bool) {
 	raw, ok := args[key]

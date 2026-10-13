@@ -258,13 +258,51 @@ describe('TaskConfigBar', () => {
         expect(collapsed.getAttribute('title')).toContain('No workflow');
     });
 
-    it('expands into four chips after clicking the collapsed chip', () => {
+    it('expands into the task chips, including the run window, after clicking the collapsed chip', () => {
         renderBar(defaultTaskDraft(), vi.fn());
         fireEvent.click(screen.getByTestId('task-config-collapsed'));
         expect(screen.getByTestId('task-config-chip-type')).toBeTruthy();
         expect(screen.getByTestId('task-config-chip-expert')).toBeTruthy();
         expect(screen.getByTestId('task-config-chip-workflow')).toBeTruthy();
         expect(screen.getByTestId('task-config-chip-workspace')).toBeTruthy();
+        expect(screen.getByTestId('task-config-chip-window').textContent).toContain('运行时段');
+        expect(screen.getByTestId('task-config-chip-window').textContent).toContain('立即');
+    });
+
+    it('lets a new task stay immediate or pick a start and optional end', () => {
+        renderStatefulBar(defaultTaskDraft(), { defaultExpanded: true });
+        fireEvent.click(screen.getByTestId('task-config-chip-window'));
+        fireEvent.click(screen.getByTestId('run-window-scheduled'));
+        expect(screen.getByTestId('run-window-start')).toBeTruthy();
+        expect(screen.getByTestId('run-window-end')).toBeTruthy();
+        const start = screen.getByTestId('run-window-start') as HTMLInputElement;
+        expect(start.style.colorScheme).toBe('light');
+        expect(start.labels?.[0]?.textContent).toContain('开始');
+        expect(screen.getByTestId('run-window-start-picker').closest('label')).toBeNull();
+        const showPicker = vi.fn();
+        start.showPicker = showPicker;
+        const startPicker = screen.getByTestId('run-window-start-picker');
+        expect(fireEvent.mouseDown(startPicker)).toBe(false);
+        fireEvent.click(startPicker);
+        expect(showPicker).toHaveBeenCalledTimes(1);
+        expect(startPicker.querySelector('[data-icon="calendar"]')).toBeTruthy();
+        const end = screen.getByTestId('run-window-end') as HTMLInputElement;
+        const showEndPicker = vi.fn();
+        end.showPicker = showEndPicker;
+        fireEvent.click(screen.getByTestId('run-window-end-picker'));
+        expect(showEndPicker).toHaveBeenCalledTimes(1);
+        fireEvent.change(screen.getByTestId('run-window-start'), { target: { value: '2099-03-01T02:00' } });
+        fireEvent.change(screen.getByTestId('run-window-end'), { target: { value: '2099-03-01T06:00' } });
+        expect(screen.getByTestId('task-config-chip-window').textContent).toContain('03-01 02:00–06:00');
+        fireEvent.click(screen.getByTestId('run-window-immediate'));
+        expect(screen.getByTestId('task-config-chip-window').textContent).toContain('立即');
+    });
+
+    it('uses a dark native picker when the task bar is dark', () => {
+        renderStatefulBar(defaultTaskDraft(), { defaultExpanded: true, theme: { ...theme, isDark: true } });
+        fireEvent.click(screen.getByTestId('task-config-chip-window'));
+        fireEvent.click(screen.getByTestId('run-window-scheduled'));
+        expect((screen.getByTestId('run-window-start') as HTMLInputElement).style.colorScheme).toBe('dark');
     });
 
     it('auto-expands when any non-default value is set', () => {
@@ -955,6 +993,7 @@ describe('TaskConfigBar lead icons', () => {
     it('puts a representative svg before each default dimension, including the default directory', () => {
         renderBar(defaultTaskDraft(), vi.fn(), { defaultExpanded: true });
         expect(screen.getByTestId('task-config-chip-type-label').querySelector('[data-icon="chat"]')).toBeTruthy();
+        expect(screen.getByTestId('task-config-chip-window-label').querySelector('[data-icon="clock"]')).toBeTruthy();
         expect(screen.getByTestId('task-config-chip-expert-label').querySelector('[data-icon="robot"]')).toBeTruthy();
         expect(screen.getByTestId('task-config-chip-workflow-label').querySelector('[data-icon="ban"]')).toBeTruthy();
         expect(screen.getByTestId('task-config-chip-workspace-label').querySelector('[data-icon="monitor"]')).toBeTruthy();
@@ -995,7 +1034,7 @@ describe('TaskConfigBar variant', () => {
 
     it('bare variant renders borderless transparent chips for the below-card strip', () => {
         renderBar(defaultTaskDraft(), vi.fn(), { defaultExpanded: true, variant: 'bare' });
-        for (const testId of ['task-config-chip-type', 'task-config-chip-expert', 'task-config-chip-workflow', 'task-config-chip-workspace']) {
+        for (const testId of ['task-config-chip-type', 'task-config-chip-expert', 'task-config-chip-workflow', 'task-config-chip-workspace', 'task-config-chip-window']) {
             const chip = screen.getByTestId(testId);
             expect(chip.style.borderStyle).toBe('none');
             expect(chip.style.background).toBe('transparent');

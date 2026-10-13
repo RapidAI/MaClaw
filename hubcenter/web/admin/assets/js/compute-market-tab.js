@@ -11,8 +11,8 @@ if (typeof I18N_EN !== 'undefined') {
   Object.assign(I18N_ZH, {computeMarketStatsIdentity:'\u7edf\u8ba1\u5bf9\u8c61',computeMarketStatsHubLabel:'Hub',computeMarketStatsTenantLabel:'\u79df\u6237',computeMarketStatsLegacyIdentity:'\u5386\u53f2\u672a\u8bb0\u5f55\u8eab\u4efd',computeMarketStatsLegacyHint:'\u8be5\u7528\u91cf\u8bb0\u5f55\u672a\u91c7\u96c6 Hub \u548c\u79df\u6237\u4fe1\u606f\u3002',computeMarketStatsRows:'\u884c\u6570'});
   Object.assign(I18N_EN, {computeMarketOrderCredits:'Credits',computeMarketOrderValidity:'Validity',computeMarketOrderUsed:'Used',computeMarketOrderRemaining:'Remaining',computeMarketOrderPendingActivation:'Starts after activation',computeMarketOrderUnknown:'-'});
   Object.assign(I18N_ZH, {computeMarketOrderCredits:'\u70b9\u6570',computeMarketOrderValidity:'\u6709\u6548\u671f',computeMarketOrderUsed:'\u5df2\u6d88\u8017',computeMarketOrderRemaining:'\u5269\u4f59',computeMarketOrderPendingActivation:'\u786e\u8ba4\u540e\u5f00\u59cb\u8ba1\u65f6',computeMarketOrderUnknown:'-'});
-  Object.assign(I18N_EN, {computeMarketActiveCardsFilter:'Active cards',computeMarketActiveCardsOn:'Showing active cards',computeMarketRebindGroup:'Change group',computeMarketRebindGroupTitle:'Change bound group',computeMarketRebindGroupHint:'Remaining credits will follow the new group immediately.',computeMarketDefaultGroup:'Default compute group',computeMarketGroupRebound:'Group updated.',computeMarketOrderHub:'Hub server',computeMarketOrderTenant:'Tenant',computeMarketDefaultTenant:'Default tenant'});
-  Object.assign(I18N_ZH, {computeMarketActiveCardsFilter:'\u6709\u6548\u7b97\u529b\u5361',computeMarketActiveCardsOn:'\u6b63\u5728\u67e5\u770b\u6709\u6548\u7b97\u529b\u5361',computeMarketRebindGroup:'\u6539\u7ed1\u7ec4',computeMarketRebindGroupTitle:'\u4fee\u6539\u6240\u7ed1\u670d\u52a1\u7ec4',computeMarketRebindGroupHint:'\u5269\u4f59\u989d\u5ea6\u4f1a\u7acb\u5373\u6309\u65b0\u7ec4\u9274\u6743\u548c\u6263\u8d39\u3002',computeMarketDefaultGroup:'\u7f3a\u7701\u7b97\u529b\u7ec4',computeMarketGroupRebound:'\u6240\u7ed1\u7ec4\u5df2\u66f4\u65b0\u3002',computeMarketOrderHub:'Hub\u670d\u52a1\u5668',computeMarketOrderTenant:'\u79df\u6237',computeMarketDefaultTenant:'\u9ed8\u8ba4\u79df\u6237'});
+  Object.assign(I18N_EN, {computeMarketActiveCardsFilter:'Active cards',computeMarketActiveCardsOn:'Showing active cards',computeMarketRebindGroup:'Change group',computeMarketRebindGroupTitle:'Change bound group',computeMarketRebindGroupHint:'Remaining credits will follow the new group immediately.',computeMarketDefaultGroup:'Default compute group',computeMarketGroupRebound:'Group updated.',computeMarketOrderHub:'Hub server',computeMarketOrderTenant:'Tenant',computeMarketDefaultTenant:'Default tenant',computeMarketOrdersLoadFailed:'Could not load orders.'});
+  Object.assign(I18N_ZH, {computeMarketActiveCardsFilter:'\u6709\u6548\u7b97\u529b\u5361',computeMarketActiveCardsOn:'\u6b63\u5728\u67e5\u770b\u6709\u6548\u7b97\u529b\u5361',computeMarketRebindGroup:'\u6539\u7ed1\u7ec4',computeMarketRebindGroupTitle:'\u4fee\u6539\u6240\u7ed1\u670d\u52a1\u7ec4',computeMarketRebindGroupHint:'\u5269\u4f59\u989d\u5ea6\u4f1a\u7acb\u5373\u6309\u65b0\u7ec4\u9274\u6743\u548c\u6263\u8d39\u3002',computeMarketDefaultGroup:'\u7f3a\u7701\u7b97\u529b\u7ec4',computeMarketGroupRebound:'\u6240\u7ed1\u7ec4\u5df2\u66f4\u65b0\u3002',computeMarketOrderHub:'Hub\u670d\u52a1\u5668',computeMarketOrderTenant:'\u79df\u6237',computeMarketDefaultTenant:'\u9ed8\u8ba4\u79df\u6237',computeMarketOrdersLoadFailed:'\u8ba2\u5355\u5217\u8868\u52a0\u8f7d\u5931\u8d25\u3002'});
 }
 
 (function () {
@@ -26,6 +26,7 @@ if (typeof I18N_EN !== 'undefined') {
   let cmActiveCardsOnly = false;
   let cmLastOrders = [];
   let cmOrdersPage = 0;
+  let cmStatsTenants = [];
   const CM_ORDERS_PAGE_SIZE = 20;
   let cmRestoringOrders = {};
   let cmRebindBusy = false;
@@ -60,7 +61,7 @@ if (typeof I18N_EN !== 'undefined') {
   // Sub-tab switching
   // ---------------------------------------------------------------------------
 
-  function switchComputeMarketSubTab(tab, preloadedOrders) {
+  function switchComputeMarketSubTab(tab) {
     cmCurrentSubTab = tab;
     ['cards', 'orders', 'stats', 'payment'].forEach(function (t) {
       var view = document.getElementById('cmSubView' + t.charAt(0).toUpperCase() + t.slice(1));
@@ -68,15 +69,7 @@ if (typeof I18N_EN !== 'undefined') {
       if (view) view.classList.toggle('hidden-view', t !== tab);
       if (btn) { btn.className = t === tab ? 'btn-secondary' : 'btn-ghost'; btn.setAttribute('aria-pressed', t === tab ? 'true' : 'false'); }
     });
-    if (tab === 'orders') {
-      if (preloadedOrders) {
-        var preloadedPending = preloadedOrders.filter(function (o) {
-          return CONFIRMABLE_STATUSES.indexOf(String(o.status || '').toLowerCase()) >= 0;
-        }).length;
-        renderComputeOrders(preloadedOrders.slice(0, CM_ORDERS_PAGE_SIZE), preloadedOrders.length, preloadedPending);
-      }
-      else { loadComputeOrders(); }
-    }
+    if (tab === 'orders') loadComputeOrders();
     if (tab === 'payment' && window.loadCMPaymentConfig) loadCMPaymentConfig();
   }
 
@@ -297,7 +290,16 @@ if (typeof I18N_EN !== 'undefined') {
       const data = results[0] || {};
       const pendingData = results[1] || {};
       renderComputeOrders(data.orders || [], data.total || 0, pendingData.total);
-    } catch (e) { renderComputeOrders([]); }
+    } catch (e) { renderComputeOrdersError(e && e.message); }
+  }
+
+  function renderComputeOrdersError(message) {
+    var container = document.getElementById('cmOrdersList');
+    if (!container) return;
+    updateComputeOrdersArchiveUI();
+    renderComputeOrdersPager(0);
+    cmLastOrders = [];
+    container.innerHTML = '<div class="hint">' + esc(message || tr('computeMarketOrdersLoadFailed')) + '</div>';
   }
 
   function updateComputeOrdersArchiveUI() {
@@ -327,6 +329,8 @@ if (typeof I18N_EN !== 'undefined') {
         return CONFIRMABLE_STATUSES.indexOf(String(o.status || '').toLowerCase()) >= 0;
       }).length;
       updatePendingBadge(pendingCount);
+      var pendingEl = document.getElementById('cmPendingOrderCount');
+      if (pendingEl && Number.isFinite(Number(pendingTotal))) pendingEl.textContent = String(pendingCount);
     }
     if (!orders.length && cmOrdersPage > 0) {
       cmOrdersPage = Math.max(0, Math.ceil(total / CM_ORDERS_PAGE_SIZE) - 1);
@@ -630,40 +634,76 @@ if (typeof I18N_EN !== 'undefined') {
   // Usage Stats
   // ---------------------------------------------------------------------------
 
+  function cmStatsTenantKey(hubID, tenantID) {
+    return encodeURIComponent(hubID) + '/' + encodeURIComponent(tenantID);
+  }
+
+  function cmParseStatsTenantKey(value) {
+    var raw = String(value || '');
+    var slash = raw.indexOf('/');
+    if (slash < 0) return { hub_id: '', tenant_id: raw };
+    try {
+      return { hub_id: decodeURIComponent(raw.slice(0, slash)), tenant_id: decodeURIComponent(raw.slice(slash + 1)) };
+    } catch (e) {
+      return { hub_id: '', tenant_id: '' };
+    }
+  }
+
+  function cmStatsTenantLabel(item) {
+    var id = String(item && item.tenant_id || '');
+    var lower = id.toLowerCase();
+    var name = lower === 'tenant_default' || lower === 'default' ? tr('computeMarketDefaultTenant') : String(item && item.label || id);
+    return String(item && item.hub_id || '') + ' / ' + name;
+  }
+
+  function renderComputeStatsTenants() {
+    var hubSelect = document.getElementById('cmStatsHub');
+    var tenantSelect = document.getElementById('cmStatsTenant');
+    if (!tenantSelect) return;
+    var hubID = hubSelect ? String(hubSelect.value || '') : '';
+    var previous = cmParseStatsTenantKey(tenantSelect.value);
+    var html = '<option value="">' + esc(tr('computeMarketStatsAllTenants')) + '</option>';
+    var matched = '';
+    cmStatsTenants.forEach(function (t) {
+      if (hubID && t.hub_id !== hubID) return;
+      var value = cmStatsTenantKey(t.hub_id, t.tenant_id);
+      if (!matched && previous.tenant_id === t.tenant_id && (!previous.hub_id || previous.hub_id === t.hub_id)) matched = value;
+      html += '<option value="' + esc(value) + '">' + esc(cmStatsTenantLabel(t)) + '</option>';
+    });
+    tenantSelect.innerHTML = html;
+    if (matched) tenantSelect.value = matched;
+  }
+
   async function loadStatsFilters() {
-    // Populate Hub dropdown from registered hubs
+    // Hub list already carries each node's tenants. Do not scrape the order queue.
     try {
       var data = await api('/api/admin/hubs');
       var hubs = data.hubs || data || [];
+      if (!Array.isArray(hubs)) hubs = [];
       var hubSelect = document.getElementById('cmStatsHub');
-      if (hubSelect && Array.isArray(hubs)) {
-        hubSelect.innerHTML = '<option value="">' + tr('computeMarketStatsAllHubs') + '</option>' + hubs.map(function(h) {
-          return '<option value="' + esc(h.id || h.hub_id || '') + '">' + esc(h.name || h.id || h.hub_id || '') + '</option>';
+      if (hubSelect) {
+        var selectedHub = hubSelect.value || '';
+        hubSelect.innerHTML = '<option value="">' + esc(tr('computeMarketStatsAllHubs')) + '</option>' + hubs.map(function(h) {
+          var id = String((h && (h.id || h.hub_id)) || '');
+          return '<option value="' + esc(id) + '">' + esc((h && (h.name || h.id || h.hub_id)) || '') + '</option>';
         }).join('');
+        if (selectedHub) hubSelect.value = selectedHub;
+        hubSelect.onchange = renderComputeStatsTenants;
       }
-    } catch (e) { /* best-effort */ }
-
-    // Populate Tenant dropdown from compute orders. Compute authorization is
-    // managed from Hub node configuration, not from this LLM access page.
-    try {
-      var data = await api('/api/admin/cardstore/orders?limit=200');
-      var orders = data.orders || [];
       var seen = {};
-      var tenants = [];
-      orders.forEach(function(o) {
-        if (!o || !o.tenant_id) return;
-        var key = (o.hub_id || '') + '/' + (o.tenant_id || '');
-        if (!seen[key]) {
-          seen[key] = true;
-          tenants.push({ hub_id: o.hub_id, tenant_id: o.tenant_id });
-        }
+      cmStatsTenants = [];
+      hubs.forEach(function(h) {
+        var hubID = String((h && (h.id || h.hub_id)) || '');
+        var items = Array.isArray(h && h.tenants) ? h.tenants : [];
+        items.forEach(function(t) {
+          var tenantID = String((t && t.tenant_id) || '').trim();
+          if (!hubID || !tenantID || seen[hubID + '/' + tenantID]) return;
+          seen[hubID + '/' + tenantID] = true;
+          var name = String((t && t.tenant_name) || '').trim();
+          cmStatsTenants.push({ hub_id: hubID, tenant_id: tenantID, label: name && name !== tenantID ? name : tenantID });
+        });
       });
-      var tenantSelect = document.getElementById('cmStatsTenant');
-      if (tenantSelect) {
-        tenantSelect.innerHTML = '<option value="">' + tr('computeMarketStatsAllTenants') + '</option>' + tenants.map(function(t) {
-          return '<option value="' + esc(t.tenant_id) + '">' + esc(t.hub_id + ' / ' + t.tenant_id) + '</option>';
-        }).join('');
-      }
+      renderComputeStatsTenants();
     } catch (e) { /* best-effort */ }
   }
 
@@ -758,8 +798,10 @@ if (typeof I18N_EN !== 'undefined') {
   }
 
   async function queryComputeStats() {
-    const hub = (document.getElementById('cmStatsHub') || {}).value || '';
-    const tenant = (document.getElementById('cmStatsTenant') || {}).value || '';
+    var hub = (document.getElementById('cmStatsHub') || {}).value || '';
+    var tenantPick = cmParseStatsTenantKey((document.getElementById('cmStatsTenant') || {}).value || '');
+    if (!hub && tenantPick.hub_id) hub = tenantPick.hub_id;
+    var tenant = tenantPick.tenant_id || '';
     const period = (document.getElementById('cmStatsPeriod') || {}).value || 'daily';
     const start = (document.getElementById('cmStatsStart') || {}).value || '';
     const end = (document.getElementById('cmStatsEnd') || {}).value || '';
@@ -831,21 +873,12 @@ if (typeof I18N_EN !== 'undefined') {
       const pd = await api('/api/admin/llm/providers').catch(function () { return { providers: [] }; });
       const gd = await api('/api/admin/llm/service-groups').catch(function () { return { service_groups: [] }; });
       const odSummary = await api('/api/admin/cardstore/orders?limit=1&statuses=' + CONFIRMABLE_STATUS_QUERY).catch(function () { return { total: 0 }; });
+      var pendingTotal = Number(odSummary.total || 0);
       var el1 = document.getElementById('cmProviderCount'); if (el1) el1.textContent = String((pd.providers || []).length);
       var el2 = document.getElementById('cmGroupCount'); if (el2) el2.textContent = String((gd.service_groups || []).length);
-      var el3 = document.getElementById('cmPendingOrderCount'); if (el3) el3.textContent = String(odSummary.total || 0);
-    } catch (e) { /* best-effort */ }
-    // Pre-check for pending orders and auto-switch to Orders tab if any exist
-    try {
-      const od = await api('/api/admin/cardstore/orders?limit=50');
-      var allOrders = od.orders || [];
-      var pendingCount = allOrders.filter(function (o) {
-        return CONFIRMABLE_STATUSES.indexOf(String(o.status || '').toLowerCase()) >= 0;
-      }).length;
-      updatePendingBadge(pendingCount);
-      if (pendingCount > 0) {
-        switchComputeMarketSubTab('orders', allOrders);
-      }
+      var el3 = document.getElementById('cmPendingOrderCount'); if (el3) el3.textContent = String(pendingTotal);
+      updatePendingBadge(pendingTotal);
+      if (pendingTotal > 0) switchComputeMarketSubTab('orders');
     } catch (e) { /* best-effort */ }
     })();
     try { return await cmInitInFlight; }

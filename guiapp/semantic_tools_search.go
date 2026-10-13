@@ -95,6 +95,9 @@ var semanticToolsSearchInventory = []semanticToolsSearchEntry{
 	{"mis_data", "Query or administer business data.", "business.mis"},
 	{"database", "Connect and query a configured database.", "database.connect"},
 	{"database_query", "Read-only SQL against a configured database profile.", "database.query"},
+	{"mailbox_query", "Read a configured mailbox. Does not send.", tool.CapabilityMessageReadMailbox},
+	{"mailbox_send", "Send, reply, or forward through a configured mailbox after confirmation.", tool.CapabilityMessageSendMailbox},
+	{"mailbox_configure", "Save a mailbox from the connection details the user provided. Does not send.", tool.CapabilityMessageConfigureMailbox},
 }
 
 // semanticToolsSearchPlanCapabilities maps display names onto the capability
@@ -115,9 +118,11 @@ var semanticToolsSearchPlanCapabilities = map[string]tool.CapabilityID{
 	"search_files":   tool.CapabilityFSReadLocal,
 	"edit_file":      tool.CapabilityFSWriteLocal,
 	// Capability-backed but never rule-routed on a managed chat surface.
-	"memory_recall": tool.CapabilityMemoryRecallAgent,
-	"build_verify":  tool.CapabilityBuildVerifyLocal,
-	"send_im_text":  tool.CapabilityMessageSendIM,
+	"memory_recall":     tool.CapabilityMemoryRecallAgent,
+	"build_verify":      tool.CapabilityBuildVerifyLocal,
+	"send_im_text":      tool.CapabilityMessageSendIM,
+	"mailbox_send":      tool.CapabilityMessageSendMailbox,
+	"mailbox_configure": tool.CapabilityMessageConfigureMailbox,
 }
 
 // semanticToolsSearchNameCapability resolves the capability a managed surface

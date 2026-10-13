@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
@@ -28,7 +29,7 @@ func semanticTrustedFileWriteDefinition() map[string]interface{} {
 		"type": "function",
 		"function": map[string]interface{}{
 			"name":        semanticTrustedFileWriteAdapter,
-			"description": "Change a workspace file. Give content to write the whole file, with optional mode overwrite or append. Give old_string and new_string instead to replace one exact passage in an existing file; old_string must match exactly once.",
+			"description": "Change a workspace file. Give content to write the whole file, with optional mode overwrite or append. Give old_string and new_string instead to replace one exact passage in an existing file; old_string must match exactly once. Indentation is significant. Newline convention belongs to the file: CR, LF, and CRLF match as the same line break and the file's convention is written back. Do not send mode or content together with a passage edit.",
 			"parameters":  semanticTrustedFileWriteInvocationSchema(),
 		},
 	}
@@ -44,7 +45,7 @@ func semanticTrustedFileWriteInvocationSchema() map[string]interface{} {
 			// canonicalizer does not read enum, so the check via
 			// NormalizeWriteModeKind stays the boundary and this is
 			// documentation for the model.
-			"mode":    map[string]interface{}{"type": "string", "enum": tool.WriteModeOptions()},
+			"mode": map[string]interface{}{"type": "string", "enum": tool.WriteModeOptions()},
 			// Replacing one exact passage is an outcome whole-file content
 			// cannot express. Which pair is present decides the outcome, so the
 			// schema needs no action or operation field, and it carries none of
@@ -159,7 +160,7 @@ func semanticTrustedFileWriteArgsAllowed(args map[string]interface{}) (trustedFi
 		// a request carrying both says two different things about the file, and
 		// picking one silently discards the other.
 		if hasContent || hasMode {
-			return trustedFileWriteRequest{}, fmt.Errorf("trusted_file_edit_conflicting_fields")
+			return trustedFileWriteRequest{}, fmt.Errorf("trusted_file_edit_conflicting_fields (passage edit takes only path, old_string, and new_string; resend without mode or content)")
 		}
 		if req.oldString == "" {
 			return trustedFileWriteRequest{}, fmt.Errorf("trusted_file_edit_old_string_required")
@@ -279,14 +280,17 @@ func (h *IMMessageHandler) editTrustedFile(principalID, path, oldString, newStri
 		return "", err
 	}
 	original := string(data)
-	switch strings.Count(original, oldString) {
-	case 0:
-		return "", fmt.Errorf("trusted_file_edit_no_match")
-	case 1:
-	default:
+	replaced, err := tool.ReplaceTextPassage(original, oldString, newString, false)
+	if err != nil {
+		if errors.Is(err, tool.ErrTextPassageNotFound) {
+			return "", fmt.Errorf("trusted_file_edit_no_match")
+		}
+		return "", err
+	}
+	if replaced.Matches != 1 {
 		return "", fmt.Errorf("trusted_file_edit_ambiguous_match")
 	}
-	updated := strings.Replace(original, oldString, newString, 1)
+	updated := replaced.Text
 	if len(updated) > writeFileMaxSize {
 		return "", fmt.Errorf("trusted_file_write_content_too_large")
 	}

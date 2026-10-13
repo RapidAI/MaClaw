@@ -1,6 +1,6 @@
-import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, SetTaskbarBadgeCount, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
-import { BrowserOpenURL, EventsEmit, EventsOff, EventsOn, Quit, WindowGetPosition, WindowGetSize, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowSetPosition, WindowSetSize, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
-import { DesktopBotAccess } from '../wailsjs/go/main/App';
+import { BugReportScreenshotPreviewDataURL, CancelDownload, CheckEnvironment, CheckinHubLLMService, ClampMaximizedWindowToWorkArea, SetMainWindowScreenPosition, ConsumeCreditGiftHandoff, ConsumeReferralHandoff, CreateExpertTask, CreateRemoteCodingTask, CreateRemoteOpsDiagnosisTask, CreateTask, CreateTaskWithCloudWorkspace, CreateTaskWithMode, DeleteSkillDetailed, DeleteTask, DownloadUpdate, DownloadUpdateWithSHA256, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, FetchMaclawLLMProfileModels, FetchProviderModels, GetAdaptiveWindowSize, GetAllLLMProfileTokenUsage, GetAllLLMTokenUsage, GetBrandInfo, GetChatFontSize, GetDigitalEmployeeFeatureStatus, GetEnvCheckInterval, GetFramelessTopInset, GetHubLLMServiceStatus, GetLansengerLocalMode, GetLansengerStatus, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMoASessionState, GetQQBotLocalMode, GetQQBotStatus, GetSystemInfo, GetTelegramLocalMode, GetTelegramStatus, GetThirdPartyGatewayLocalMode, GetThirdPartyGatewayStatus, GetUIZoomFactor, GetUserHomeDir, GetWeixinLocalMode, GetWeixinStatus, GroupDiscussionAcceptInvite, GroupDiscussionProcessPendingInvites, GroupDiscussionPublishProfile, GroupDiscussionRejectInvite, GroupDiscussionStatus, HasPendingBugReportUpload, HideTask, IsGossipAllowed, IsNativeRoundedCorners, IsWindowsTerminalAvailable, LaunchInstallerAndExit, ListBackgroundLoops, ListMyBugReports, ListPassthroughCommands, ListPythonEnvironments, ListRemoteHubs, ListScheduledTasks, ListSkills, ListSkillsWithInstallStatus, ListTasks, LoadConfigForUI, OpenSystemUrl, PackLog, PatchConfigFields, PinTask, PingMaclawLLM, PrepareLocalCodingEnvironment, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, QuickSaveMaclawLLMProfile, ReadBBS, ReadThanks, ReadTutorial, RefreshMaclawLLMProfileHealth, RenameTask, ResizeWindow, RespondDigitalEmployeeSensitiveRequest, ResumeCloudWorkspaceTask, ResumeTask, RetryBugReportUpload, SaveConfig, SelectBugReportScreenshots, SelectProjectDir, SetBugReportEnabled, SetDefaultLaunchMode, SetLanguage, SetMaclawLLMCurrentModel, SetMoASticky, SetMoAStickyPreset, SetTaskbarBadgeCount, ShouldCheckEnvironment, ShowItemInFolder, SubmitBugReport, UpdateLastEnvCheckTime } from '../wailsjs/go/main/App';
+import { BrowserOpenURL, EventsEmit, EventsOff, EventsOn, Quit, WindowGetPosition, WindowGetSize, WindowHide, WindowIsFullscreen, WindowIsMaximised, WindowSetSize, WindowToggleMaximise, WindowUnmaximise } from '../wailsjs/runtime';
+import { DesktopBotAccess, PullDesktopBotDeliveries } from '../wailsjs/go/main/App';
 import { beginBotAccessRead, botOpenDecision, isCurrentBotAccessRead, navigationEpoch, publishBotAccess } from './components/bots/botOpenGate';
 import { appVersion, buildNumber } from './version';
 // Keep the in-app navigation and About artwork aligned with the packaged
@@ -34,7 +34,7 @@ const windowMaximizeRestore = createWindowMaximizeRestoreSession({
     getSize: WindowGetSize,
     getPosition: WindowGetPosition,
     setSize: WindowSetSize,
-    setPosition: WindowSetPosition,
+    setPosition: (x, y) => { void SetMainWindowScreenPosition(x, y).catch(() => undefined); },
 });
 
 /** Toggle maximise, then clamp to work area (Win10 frameless taskbar overflow). */
@@ -154,6 +154,7 @@ import { PROJECT_PAGE_SIZE, knownProviderEndpoints, recommendedModels, subscript
 import { TOOL_NAMES, getToolLabel, isToolTab, normalizeToolTab } from './config/toolCatalog';
 import { getSettingsTabOptions, resolveSettingsTabId, type SettingsTabId } from './config/settingsTabs';
 import { OPEN_SETTINGS_EVENT } from './utils/settingsNavigation';
+import { grantSolo, settingsNavIsSolo, type SoloSettingsTab } from './utils/settingsSolo';
 import { OPEN_FILE_LIBRARY_EVENT } from './utils/fileLibraryNavigation';
 import { OPEN_EXPERT_CONVERSATION_EVENT } from './utils/expertConversationNavigation';
 import { SettingsPage } from './components/settings/SettingsPage';
@@ -162,6 +163,8 @@ import { isProjectTabOpen } from './components/layout/SidebarTaskManagement';
 import { coerceActiveAssistantTask, expertIDFromTaskTags, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, type ActiveAssistantTaskIdentity } from './components/ai/aiAssistantPanelSessionUtils';
 import { FavoriteEmployeeReplacePicker } from './components/layout/FavoriteEmployeeReplacePicker';
 import { countActiveBackgroundLoops, countLiveAISessions, countPassthroughCommands, countVisibleScheduledTasks } from './components/layout/backgroundTaskCount';
+import { taskbarInProgressCount } from './components/layout/taskbarInProgressCount';
+import { useBotAccessEnabled, useInProgressBotTaskCount } from './components/layout/useInProgressBotTaskCount';
 import { MAX_USER_FAVORITES, normalizeFavoriteEmployeeIds } from './components/settings/favoriteEmployees';
 import { MainTopHeader } from './components/layout/MainTopHeader';
 import { AppStatusMessageBar } from './components/layout/AppStatusMessageBar';
@@ -194,9 +197,8 @@ import { DataMigrationOverlay } from './components/DataMigrationOverlay';
 import { EnvCheckSplash } from './components/startup/EnvCheckSplash';
 import type { RemoteCenterHubOption, SidebarCurrentProviderTokenUsage, SidebarHubCredits, SidebarLLMProviderSummary, SidebarTokenUsageStat } from './types/appShell';
 import { AIAssistantPanel, TutorialPage, ApiStorePage, ProjectManagerPage, RemoteSessionsPage, AppsPage, SkillsPage, MCPPage, GossipPage, WorkflowsPage, UtilitiesPage, MobileDocumentsPanel, LatexTemplateLibraryPage } from './appLazyComponents';
-import { DesktopBotWorkspace } from './components/bots/DesktopBotWorkspace';
+import { DesktopBotWorkspace, bindDesktopBotResultStore } from './components/bots/DesktopBotWorkspace';
 import { desktopBotAccountId } from './components/bots/desktopBots';
-import { subscribeBotUnread, unreadBotReplyCount } from './components/bots/botUnread';
 import { meetingRecordCommand, meetingRecordFailMessage, meetingRecordTaskTitle } from './components/pages/utilitiesMeetingRecord';
 import { parseExpertListJSON, type ExpertDefinition } from './components/ai/expertTypes';
 import {
@@ -314,6 +316,12 @@ function App() {
     useEffect(() => {
         logStartupTrace('app-render-begin');
     }, []);
+    // Bind before the pull. A result that finished while this GUI was offline
+    // is written into the bot transcript even if the Bots page is not the one
+    // on screen, and the same pull when the page opens is a no-op once acked.
+    useEffect(() => {
+        bindDesktopBotResultStore();
+    }, []);
     const { showAlert, showConfirm } = useDialog();
     const [config, setConfig] = useState<corelib.AppConfig | null>(null);
     const reportedBillingTimezoneForAccountRef = useRef("");
@@ -322,6 +330,18 @@ function App() {
         reportBillingTimezoneOnAuthenticatedLaunch(config, reportedBillingTimezoneForAccountRef);
     }, [config]);
     const [navTab, setNavTab] = useState<string>("ai");
+    const desktopDeliveryPullAt = useRef(0);
+    useEffect(() => {
+        if (!config?.remote_hub_url) return;
+        const now = Date.now();
+        const first = desktopDeliveryPullAt.current === 0;
+        if (!first && navTab !== 'bots') return;
+        if (!first && now - desktopDeliveryPullAt.current < 20000) return;
+        desktopDeliveryPullAt.current = now;
+        void PullDesktopBotDeliveries().catch(() => {
+            if (desktopDeliveryPullAt.current === now) desktopDeliveryPullAt.current = now - 20000;
+        });
+    }, [config?.remote_hub_url, navTab]);
     // A notification request can originate from a page whose notification panel
     // is not mounted yet. Keep it pending until the AI surface has rendered.
     const [pendingSystemNotifications, setPendingSystemNotifications] = useState(false);
@@ -544,52 +564,6 @@ function App() {
     // can outlast the grace window, and pruning against a not-yet-loaded
     // empty list would discard legitimate tabs.
     const [taskListLoaded, setTaskListLoaded] = useState(false);
-    // Windows taskbar overlay: unread bot replies for this account. The
-    // account id comes from config, which is null until LoadConfigForUI
-    // returns, so the first push waits. An earlier push would count the
-    // signed-out "local" transcript and clear a real badge. Zero clears the
-    // overlay. The left-rail 任务 badge keeps the running count. Pushes are
-    // cosmetic and never block on failure — a missing bridge just defers them.
-    const botUnreadUserId = config === null ? '' : desktopBotAccountId(config);
-    const [unreadBotReplies, setUnreadBotReplies] = useState<number | null>(null);
-    useEffect(() => {
-        if (!botUnreadUserId) return;
-        const pull = () => setUnreadBotReplies(unreadBotReplyCount(botUnreadUserId));
-        pull();
-        return subscribeBotUnread(pull);
-    }, [botUnreadUserId]);
-    useEffect(() => {
-        if (unreadBotReplies === null) return;
-        // The Wails bridge can land after first paint (index.html polls up to
-        // 4s for window.go), so a missing binding defers the push instead of
-        // dropping it: a count that never changes again would otherwise never
-        // reach the backend.
-        const push = () => {
-            try {
-                const pushed = SetTaskbarBadgeCount(unreadBotReplies);
-                if (pushed && typeof pushed.catch === 'function') pushed.catch(() => {});
-            } catch {
-                // Binding absent in embedded or test shells.
-            }
-        };
-        const app = (globalThis as any).window?.go?.main?.App;
-        if (app && typeof app.SetTaskbarBadgeCount === 'function') {
-            push();
-            return;
-        }
-        let tries = 0;
-        let timer = 0;
-        const pushWhenReady = () => {
-            const ready = (globalThis as any).window?.go?.main?.App;
-            if (!ready || typeof ready.SetTaskbarBadgeCount !== 'function') {
-                if (++tries < 10) timer = window.setTimeout(pushWhenReady, 500);
-                return;
-            }
-            push();
-        };
-        timer = window.setTimeout(pushWhenReady, 500);
-        return () => window.clearTimeout(timer);
-    }, [unreadBotReplies]);
     // Persist the authoritative list for instant startup render. The snapshot
     // initializer reads it before the first ListTasks; only save once a real
     // list has arrived so an empty cold start never clobbers it.
@@ -616,8 +590,8 @@ function App() {
     const [activeTab, setActiveTab] = useState(0);
     const [tabStartIndex, setTabStartIndex] = useState(0);
     const [settingsTab, setSettingsTab] = useState<SettingsTabId>('general');
-    // The home knowledge button opens the panel without the settings category rail.
-    const [settingsNavHidden, setSettingsNavHidden] = useState(false);
+    // Solo settings hide the category rail only for the tab that asked: knowledge, IM, or email.
+    const [settingsNavSoloTab, setSettingsNavSoloTab] = useState<SoloSettingsTab | ''>('');
     const [memoryTraceFocus, setMemoryTraceFocus] = useState<{ value: string; seq: number }>({ value: "", seq: 0 });
     const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin' | 'lansenger' | 'thirdparty'>('qq');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
@@ -671,6 +645,17 @@ function App() {
     // producers so a skill run cannot be overwritten by an unrelated task event.
     const [projectTabOpenQueue, setProjectTabOpenQueue] = useState<CodingTaskLaunch[]>([]);
     const [pendingExpertOpen, setPendingExpertOpen] = useState<PendingExpertOpen | null>(null);
+    // Expert opens are a one-slot handoff. Queue them so two scheduled expert
+    // tasks due in the same minute cannot drop the first prompt.
+    const [expertOpenQueue, setExpertOpenQueue] = useState<PendingExpertOpen[]>([]);
+    const enqueueExpertOpen = useCallback((next: PendingExpertOpen) => {
+        setExpertOpenQueue(queue => [...queue, next]);
+    }, []);
+    useEffect(() => {
+        if (pendingExpertOpen || expertOpenQueue.length === 0) return;
+        setPendingExpertOpen(expertOpenQueue[0]);
+        setExpertOpenQueue(([, ...rest]) => rest);
+    }, [pendingExpertOpen, expertOpenQueue]);
     const [skillRunQueue, setSkillRunQueue] = useState<string[]>([]);
     const [skillRunLaunchInFlight, setSkillRunLaunchInFlight] = useState(false);
     const skillRunPendingRef = useRef<{ launchId: string; skillName: string; projectPath: string } | null>(null);
@@ -870,6 +855,7 @@ function App() {
             // otherwise never reaches the claim form.
             setCreditGiftLaunch((current) => ({ code, seq: current.seq + 1 }));
             setNavTabNow('settings');
+            setSettingsNavSoloTab('');
             setSettingsTab('tokenBank');
         };
         const unsubscribe = safeEventsOn(EVENT_TOKEN_BANK_CREDIT, applyGift);
@@ -880,6 +866,7 @@ function App() {
     useEffect(() => {
         if (navTab !== 'tokenbank') return;
         setNavTabNow('settings');
+        setSettingsNavSoloTab('');
         setSettingsTab('tokenBank');
     }, [navTab, setNavTabNow]);
 
@@ -1110,6 +1097,7 @@ function App() {
     const veSettingsAuthorized = digitalEmployeeAuthorizationUsable;
     // Sync setState only — startTransition deferred paint and caused intermittent blank settings.
     const selectSettingsTab = useCallback((tab: SettingsTabId) => {
+        setSettingsNavSoloTab('');
         setSettingsTab(resolveSettingsTabId(tab, { hideVirtualEmployee: !veNavigationAvailable }));
     }, [veNavigationAvailable]);
     const patchConfigFieldsForSettings = useCallback(
@@ -1126,15 +1114,15 @@ function App() {
             const tab = resolveSettingsTabId(detail?.tab, { hideVirtualEmployee: !veNavigationAvailable });
             setNavTabNow('settings');
             selectSettingsTab(tab);
-            setSettingsNavHidden(tab === 'knowledge' && detail?.hideSettingsNav === true);
+            setSettingsNavSoloTab(grantSolo(tab, detail?.hideSettingsNav === true));
         };
         window.addEventListener(OPEN_SETTINGS_EVENT, openSettings);
         return () => window.removeEventListener(OPEN_SETTINGS_EVENT, openSettings);
     }, [setNavTabNow, selectSettingsTab, veNavigationAvailable]);
     useEffect(() => {
-        if (navTab === 'settings' && settingsTab === 'knowledge') return;
-        setSettingsNavHidden(false);
-    }, [navTab, settingsTab]);
+        if (navTab === 'settings' && settingsNavSoloTab === settingsTab) return;
+        if (settingsNavSoloTab !== '') setSettingsNavSoloTab('');
+    }, [navTab, settingsTab, settingsNavSoloTab]);
     const openMISDataSettings = useCallback(() => {
         setNavTabNow('settings');
         selectSettingsTab('misData');
@@ -2670,7 +2658,7 @@ function App() {
         setNavTabNow(tool);
         setToolDropdownOpen(false);
         // The gear and other rail entries open the full settings page, rail included.
-        if (tool === 'settings') setSettingsNavHidden(false);
+        if (tool === 'settings') setSettingsNavSoloTab('');
         if (tool === 'message') {
             switchTool('ai');
             return;
@@ -2771,7 +2759,7 @@ function App() {
             const initialMessage = String(detail?.initialMessage || '').trim();
             const relativePath = String(detail?.latexDocument?.relativePath || '').trim();
             const projectPath = String(detail?.projectPath || '').trim();
-            setPendingExpertOpen({
+            enqueueExpertOpen({
                 expert,
                 ...(initialMessage ? { initialMessage } : {}),
                 ...(relativePath ? { latexDocument: { relativePath } } : {}),
@@ -2781,7 +2769,7 @@ function App() {
         };
         window.addEventListener(OPEN_EXPERT_CONVERSATION_EVENT, openExpertFromSearch);
         return () => window.removeEventListener(OPEN_EXPERT_CONVERSATION_EVENT, openExpertFromSearch);
-    }, [setNavTabNow]);
+    }, [enqueueExpertOpen, setNavTabNow]);
 
     useEffect(() => {
         if (navTab !== 'ai' || pendingTaskSearch === null) return;
@@ -3440,7 +3428,7 @@ function App() {
                             : 'This AI expert is no longer available. Choose another expert from AI Experts or remove this task.');
                     return false;
                 }
-                setPendingExpertOpen({ expert });
+                enqueueExpertOpen({ expert });
                 switchTool('ai');
                 refreshTasks();
                 return true;
@@ -3983,7 +3971,12 @@ function App() {
                 showToastMessage(localizeText('Already checked in today', '\u4eca\u65e5\u5df2\u7b7e\u5230', '\u4eca\u65e5\u5df2\u7c3d\u5230'), 3000);
             } else {
                 const credits = Math.round((Number(result?.credits_awarded) || 0) * 100) / 100;
-                showToastMessage(localizeText(
+                const days = Math.max(0, Math.trunc(Number(result?.checkin?.duration_days) || 0));
+                showToastMessage(days > 0 ? localizeText(
+                    `Checked in! ${credits} credits awarded, valid for ${days} days`,
+                    `\u7b7e\u5230\u6210\u529f\uff0c\u5df2\u5956\u52b1 ${credits} \u79ef\u5206\uff0c${days} \u5929\u5185\u6709\u6548`,
+                    `\u7c3d\u5230\u6210\u529f\uff0c\u5df2\u734e\u52f5 ${credits} \u7a4d\u5206\uff0c${days} \u5929\u5167\u6709\u6548`,
+                ) : localizeText(
                     `Checked in! ${credits} credits awarded`,
                     `\u7b7e\u5230\u6210\u529f\uff0c\u5df2\u5956\u52b1 ${credits} \u79ef\u5206`,
                     `\u7c3d\u5230\u6210\u529f\uff0c\u5df2\u734e\u52f5 ${credits} \u7a4d\u5206`,
@@ -4712,6 +4705,58 @@ function App() {
         }),
         [backgroundTaskCount, scheduledTaskCount, passthroughTaskCount],
     );
+
+    // Windows taskbar overlay: how many tasks are still in progress. Zero
+    // clears the badge. Bot tasks wait for config so a signed-out "local"
+    // transcript is not counted. The push runs again once the main window is
+    // ready, so a count that arrived before the taskbar button existed is
+    // not dropped. Pushes are cosmetic and never block on failure.
+    const taskbarBotAccess = useBotAccessEnabled();
+    const taskbarBotTasks = useInProgressBotTaskCount(
+        config === null ? '' : desktopBotAccountId(config),
+        config !== null && taskbarBotAccess,
+    );
+    const taskbarInProgress = useMemo(
+        () => taskbarInProgressCount({
+            tasks: taskItems,
+            signals: { busyTaskRuns, activeAssistantTaskRunning, activeAssistantTask },
+            botTasks: taskbarBotTasks,
+            backgroundLoops: sidebarBgLoops,
+            remoteSessions,
+        }),
+        [taskItems, busyTaskRuns, activeAssistantTaskRunning, activeAssistantTask, taskbarBotTasks, sidebarBgLoops, remoteSessions],
+    );
+    useEffect(() => {
+        // The Wails bridge can land after first paint (index.html polls up to
+        // 4s for window.go), so a missing binding defers the push instead of
+        // dropping it: a count that never changes again would otherwise never
+        // reach the backend.
+        const push = () => {
+            try {
+                const pushed = SetTaskbarBadgeCount(taskbarInProgress);
+                if (pushed && typeof pushed.catch === 'function') pushed.catch(() => {});
+            } catch {
+                // Binding absent in embedded or test shells.
+            }
+        };
+        const app = (globalThis as any).window?.go?.main?.App;
+        if (app && typeof app.SetTaskbarBadgeCount === 'function') {
+            push();
+            return;
+        }
+        let tries = 0;
+        let timer = 0;
+        const pushWhenReady = () => {
+            const ready = (globalThis as any).window?.go?.main?.App;
+            if (!ready || typeof ready.SetTaskbarBadgeCount !== 'function') {
+                if (++tries < 10) timer = window.setTimeout(pushWhenReady, 500);
+                return;
+            }
+            push();
+        };
+        timer = window.setTimeout(pushWhenReady, 500);
+        return () => window.clearTimeout(timer);
+    }, [taskbarInProgress, mainWindowReadyForOverlays]);
 
     // Show onboarding only after the environment-check completion path has
     // resized and painted the main workbench. The wizard is portaled to
@@ -5466,6 +5511,7 @@ ${instruction}`;
             <AppSidebarShell
                 navTab={navTab}
                 settingsTab={resolvedSettingsTab}
+                settingsNavSoloTab={settingsNavSoloTab}
                 taskManagementPaneWidth={taskManagementPaneWidth}
                 aiThemeMode={aiThemeMode}
                 aiDarkSchemeId={aiDarkSchemeId}
@@ -5701,7 +5747,7 @@ ${instruction}`;
                             tabs={settingsTabOptions}
                             activeTab={resolvedSettingsTab}
                             onChangeTab={selectSettingsTab}
-                            hideNav={settingsNavHidden && resolvedSettingsTab === 'knowledge'}
+                            hideNav={settingsNavIsSolo(settingsNavSoloTab, resolvedSettingsTab)}
                             lang={lang}
                             t={t}
                             localizeText={localizeText}

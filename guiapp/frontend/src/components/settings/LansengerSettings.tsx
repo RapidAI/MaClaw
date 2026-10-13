@@ -793,7 +793,7 @@ export const LansengerSettings = ({
                             <label className="im-settings-toggle"><input type="checkbox" checked={botDraft.auto_mention_reply !== false} onChange={(e) => setBotDraft({ ...botDraft, auto_mention_reply: e.target.checked })} /><span>{textForLang(lang, 'Default @ the asker', '默认 @ 提问者', '預設 @ 提問者')}</span></label>
                         </div>
                         <div className="lansenger-bots__actions">
-                            <button type="button" className="im-settings-button im-settings-button--primary" onClick={() => void saveBot()} disabled={botSaving || !!newDraftBotIDError}>{textForLang(lang, 'Save bot', '保存机器人', '儲存機器人')}</button>
+                            <button type="button" className="im-settings-button im-settings-button--accent" onClick={() => void saveBot()} disabled={botSaving || !!newDraftBotIDError}>{textForLang(lang, 'Save bot', '保存机器人', '儲存機器人')}</button>
                             <span className="lansenger-bots__status" role={selectedBotStatus === 'degraded' ? 'alert' : undefined}>{textForLang(lang, 'Status', '状态', '狀態')}: {selectedBotStatus}{selectedBotStatusReason ? ` — ${selectedBotStatusReason}` : ''}</span>
                             {selectedBotStatus === 'connected' && (
                                 <button
@@ -1181,7 +1181,7 @@ export const LansengerSettings = ({
                                                             <td className="im-groups-table__action">
                                                                 <button
                                                                     type="button"
-                                                                    className={muted ? 'im-settings-button im-settings-button--primary' : 'im-settings-button'}
+                                                                    className={muted ? 'im-settings-button im-settings-button--accent' : 'im-settings-button'}
                                                                     disabled={!id || busy || groupsLoading}
                                                                     onClick={() => toggleGroupResponse(id, !muted)}
                                                                     title={muted
@@ -1217,7 +1217,7 @@ export const LansengerSettings = ({
                             >
                                 {textForLang(lang, 'Refresh', '\u5237\u65b0', '\u5237\u65b0')}
                             </button>
-                            <button type="button" className="im-settings-button im-settings-button--primary" onClick={closeGroupInfo}>
+                            <button type="button" className="im-settings-button im-settings-button--accent" onClick={closeGroupInfo}>
                                 {textForLang(lang, 'Close', '\u5173\u95ed', '\u95dc\u9589')}
                             </button>
                         </div>

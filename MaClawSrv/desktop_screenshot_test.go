@@ -581,7 +581,7 @@ func TestProbeWithoutRefsAttachesDesktopImage(t *testing.T) {
 		Snapshot: browser.BrowserSnapshot{Refs: []browser.BrowserElementRef{{Ref: "e1", Role: "button", Name: "Save"}}},
 	}, nil)
 	plain, images = agentruntime.ExtractModelImages(text)
-	if err != nil || shots != 1 || len(images) != 0 || strings.Contains(plain, "No element ref") || plain != "a button" {
+	if err != nil || shots != 1 || len(images) != 0 || strings.Contains(plain, "No element ref") || !strings.Contains(plain, "a button") || !strings.Contains(plain, "e1 button Save") || !strings.Contains(plain, "Do not probe again between those steps.") {
 		t.Fatalf("ref plain=%q images=%d shots=%d err=%v", plain, len(images), shots, err)
 	}
 

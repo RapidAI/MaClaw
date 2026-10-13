@@ -11,26 +11,29 @@ import (
 	"syscall"
 	"time"
 	"unsafe"
+
+	"github.com/energye/systray"
 )
 
 // Windows taskbar badge: render the given count into a small red disc and
 // set it as the ITaskbarList3 overlay icon of the main window's taskbar
 // button — the same mechanism behind the QQ unread-count badge. The frontend
-// pushes unread bot replies through App.SetTaskbarBadgeCount whenever that
-// count changes; this file owns rendering and the win32 plumbing.
+// pushes the in-progress task count through App.SetTaskbarBadgeCount whenever
+// that count changes; this file owns rendering and the win32 plumbing.
 //
 // All COM calls run on one dedicated locked OS thread (the worker goroutine)
 // because ITaskbarList3 requires an initialized COM apartment.
 //
-// Known limitation: an explorer.exe restart drops per-window overlays. The
-// badge self-heals on the next count change, since the frontend re-pushes
-// when the unread count changes.
+// An explorer.exe restart drops per-window overlays. The tray window hears
+// TaskbarCreated and asks this worker to paint the last count again.
 
 const (
 	taskbarBadgeCoInitApartmentThreaded = 0x2
 	taskbarBadgeClsCtxInProcServer      = 0x1
 
-	taskbarBadgeSmCxIcon = 11
+	// SM_CXSMICON. SetOverlayIcon draws a small overlay; SM_CXICON (11) is the
+	// 32px icon and the shell drops or clips it.
+	taskbarBadgeSmCxIcon = 49
 
 	// Vtable layout: 3 IUnknown methods, then ITaskbarList (HrInit, AddTab,
 	// DeleteTab, ActivateTab, SetActiveAlt), then ITaskbarList2
@@ -47,10 +50,11 @@ const (
 	taskbarBadgeDtVcenter    = 0x4
 	taskbarBadgeDtSingleLine = 0x20
 
-	// Bounded retry while the main HWND is still missing (the Wails window
-	// can lag the first pushes right after launch).
+	// Fast retries while the main HWND is still missing, then a slow poll so
+	// a count that arrived before the window is not dropped.
 	taskbarBadgeHWNDTries     = 20
 	taskbarBadgeHWNDRetryWait = 500 * time.Millisecond
+	taskbarBadgeHWNDSlowWait  = 2 * time.Second
 
 	// taskbarBadgeColorRef is the disc fill, COLORREF 0x00BBGGRR for
 	// RGB(230, 68, 68) — the QQ-style notification red.
@@ -107,7 +111,16 @@ var (
 
 	taskbarBadgeHWNDCacheMu sync.Mutex
 	taskbarBadgeHWNDCache   uintptr
+
+	// Last count the frontend asked for. Explorer drops overlays on restart;
+	// TaskbarCreated replays this value.
+	taskbarBadgeLast    int
+	taskbarBadgeLastSet bool
 )
+
+func init() {
+	systray.OnTaskbarCreated = replayTaskbarBadge
+}
 
 // notifyTaskbarBadgeCount wakes the worker with the desired count.
 // Requests are coalesced so a burst of count changes costs one overlay set.
@@ -117,6 +130,8 @@ func notifyTaskbarBadgeCount(count int) {
 		go taskbarBadgeWorker(taskbarBadgeRequests)
 	})
 	taskbarBadgeMu.Lock()
+	taskbarBadgeLast = count
+	taskbarBadgeLastSet = true
 	defer taskbarBadgeMu.Unlock()
 	select {
 	case taskbarBadgeRequests <- count:
@@ -131,6 +146,27 @@ func notifyTaskbarBadgeCount(count int) {
 	select {
 	case taskbarBadgeRequests <- count:
 	default:
+	}
+}
+
+// replayTaskbarBadge paints the last requested count again. Called on the
+// tray window thread when explorer broadcasts TaskbarCreated.
+func replayTaskbarBadge() {
+	taskbarBadgeMu.Lock()
+	count, ok := taskbarBadgeLast, taskbarBadgeLastSet
+	taskbarBadgeMu.Unlock()
+	if !ok {
+		return
+	}
+	notifyTaskbarBadgeCount(count)
+}
+
+func taskbarBadgeDrainTimer(timer *time.Timer) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
 	}
 }
 
@@ -154,49 +190,90 @@ func taskbarBadgeWorker(requests <-chan int) {
 	defer taskbarBadgeVtableCall(taskbar, taskbarBadgeVtableRelease)
 
 	var liveIcon uintptr
-	for count := range requests {
-		liveIcon = taskbarBadgeServeCount(taskbar, count, liveIcon)
+	var pending int
+	waiting := false
+	misses := 0
+	// A stopped timer that never fires. Reset arms it only while the window
+	// handle is still missing.
+	retry := time.NewTimer(time.Hour)
+	taskbarBadgeDrainTimer(retry)
+
+	for {
+		var wake <-chan time.Time
+		if waiting {
+			wake = retry.C
+		}
+		select {
+		case count, ok := <-requests:
+			if !ok {
+				return
+			}
+			pending = count
+			taskbarBadgeDrainTimer(retry)
+			var applied bool
+			liveIcon, applied = taskbarBadgeServeCount(taskbar, count, liveIcon)
+			if applied {
+				waiting = false
+				misses = 0
+				continue
+			}
+			waiting = true
+			misses = 1
+			retry.Reset(taskbarBadgeHWNDRetryWait)
+		case <-wake:
+			if !waiting {
+				continue
+			}
+			var applied bool
+			liveIcon, applied = taskbarBadgeServeCount(taskbar, pending, liveIcon)
+			if applied {
+				waiting = false
+				misses = 0
+				continue
+			}
+			misses++
+			wait := taskbarBadgeHWNDRetryWait
+			if misses > taskbarBadgeHWNDTries {
+				wait = taskbarBadgeHWNDSlowWait
+			}
+			retry.Reset(wait)
+		}
 	}
 }
 
-// taskbarBadgeServeCount renders and applies a single badge request on the
-// worker thread and returns the icon that must stay alive afterwards. The
-// badge is purely decorative: any failure here is logged and dropped, never
-// allowed to take the whole app down.
-func taskbarBadgeServeCount(taskbar unsafe.Pointer, count int, liveIcon uintptr) (nextLive uintptr) {
+// taskbarBadgeServeCount renders and applies one badge on the worker thread.
+// applied is false only when the main window does not exist yet; the worker
+// keeps the count and tries again. The badge is purely decorative: any
+// failure here is logged and dropped, never allowed to take the app down.
+func taskbarBadgeServeCount(taskbar unsafe.Pointer, count int, liveIcon uintptr) (nextLive uintptr, applied bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[taskbar-badge] panic suppressed: %v", r)
 			nextLive = liveIcon
+			applied = true
 		}
 	}()
 	hwnd := taskbarBadgeHWND()
-	for attempt := 1; hwnd == 0 && attempt < taskbarBadgeHWNDTries; attempt++ {
-		time.Sleep(taskbarBadgeHWNDRetryWait)
-		hwnd = taskbarBadgeHWND()
-	}
 	if hwnd == 0 {
-		// No window yet after the bounded retry; the next count change
-		// starts a fresh attempt.
-		return liveIcon
+		return liveIcon, false
 	}
 	icon := taskbarBadgeRenderIcon(count)
 	if icon == 0 && count > 0 {
 		// Render failed; keep the overlay that is already in place
 		// rather than silently clearing a live count.
-		return liveIcon
+		return liveIcon, true
 	}
 	if hr := taskbarBadgeVtableCall(taskbar, taskbarBadgeVtableSetOverlayIcon, hwnd, icon, 0); hr != 0 {
 		log.Printf("[taskbar-badge] SetOverlayIcon failed: hr=0x%08x", uint32(hr))
 		if icon != 0 {
 			procBadgeDestroyIcon.Call(icon)
 		}
-		return liveIcon
+		return liveIcon, true
 	}
 	if liveIcon != 0 {
 		procBadgeDestroyIcon.Call(liveIcon)
 	}
-	return icon
+	return icon, true
 }
 
 // taskbarBadgeCreateTaskbarList3 creates and initializes the shell taskbar

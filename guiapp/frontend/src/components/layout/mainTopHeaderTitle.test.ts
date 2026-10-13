@@ -17,6 +17,18 @@ describe('getHeaderTitle', () => {
         expect(getHeaderTitle('settings', 'en', t, false, 'knowledge')).toBe('Knowledge base');
     });
 
+    it('names mailbox configuration when the settings email tab is active', () => {
+        expect(getHeaderTitle('settings', 'zh-Hans', t, false, 'email')).toBe('邮箱配置');
+        expect(getHeaderTitle('settings', 'zh-Hant', t, false, 'email')).toBe('郵箱配置');
+        expect(getHeaderTitle('settings', 'en', t, false, 'email')).toBe('Mailbox configuration');
+    });
+
+    it('names messaging when the settings IM tab is active', () => {
+        expect(getHeaderTitle('settings', 'zh-Hans', t, false, 'im')).toBe('即时通讯');
+        expect(getHeaderTitle('settings', 'zh-Hant', t, false, 'im')).toBe('即時通訊');
+        expect(getHeaderTitle('settings', 'en', t, false, 'im')).toBe('Messaging');
+    });
+
     it('names the LaTeX template library instead of falling through to About', () => {
         expect(getHeaderTitle('latex-templates', 'zh-Hans', t)).toBe('LaTeX 模板');
         expect(getHeaderTitle('latex-templates', 'zh-Hant', t)).toBe('LaTeX 模板');

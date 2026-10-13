@@ -441,7 +441,7 @@ func TestEnqueueLLMUsageRecordFinalizesZeroUsageRequestReservation(t *testing.T)
 	if err := llmservice.SaveRegistry(t.Context(), system, reg); err != nil {
 		t.Fatal(err)
 	}
-	enqueueLLMUsageRecordWithBilling(system, "p", corelib.TokenUsageStat{Requests: 1}, "u", "u@example.com", []string{"paid"}, nil, 0, llmservice.OfficialForwardMeta{}, "req-enqueue-zero", 2, 2, 1, nil, nil)
+	enqueueLLMUsageRecordWithBilling(system, "p", corelib.TokenUsageStat{Requests: 1}, "u", "u@example.com", []string{"paid"}, nil, 0, llmservice.OfficialForwardMeta{}, "req-enqueue-zero", 2, 2, 1, nil, nil, botSystemFreeSettle{})
 	got, err := llmservice.LoadRegistry(t.Context(), system)
 	if err != nil {
 		t.Fatal(err)

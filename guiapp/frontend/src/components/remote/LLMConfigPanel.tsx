@@ -21,7 +21,8 @@ import { LLMConfigDialogFooter } from "./LLMConfigDialogFooter";
 import { LLMMaxIterationsCard, LLMSubAgentConcurrencyCard, LLMThinkingModeCard } from "./LLMPanelTuningCards";
 import { LLMConfigApiKeyFields } from "./LLMConfigApiKeyFields";
 import { LLMConfigOAuthFields } from "./LLMConfigOAuthFields";
-import { capabilityModelMenuLabel, hubCapabilityModelOptions } from "../../utils/capabilityModelLabel";
+import { LLMConfigHubOfficialCard } from "./LLMConfigHubOfficialCard";
+import { hubCapabilityModelOptions } from "../../utils/capabilityModelLabel";
 import { isProviderShareExcluded, LLMConfigProviderShareHeading, TokenBankShareChipButton } from "./TokenBankShareChipButton";
 
 interface Props {
@@ -957,33 +958,58 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
         setDlgSaving(false);
     };
 
+    const summaryState = !providerListReady
+        ? (providerListLoading ? "busy" : "unavailable")
+        : isNone
+            ? (hasHubEntitlement ? "hub" : "missing")
+            : "configured";
+
     return (
         <div className="llm-config-panel">
             <LLMConfigToast toast={dlgToast} />
-            <div className="llm-config-panel__intro">
-                <p>
-                    {t(
-                        "Select LLM provider (OpenAI / Anthropic supported)",
-                        "选择大模型服务商（支持 OpenAI / Anthropic 协议）"
-                    )}
-                </p>
-                <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
-                    <button className="llm-config-qr-action" onClick={() => setQrDialogOpen(true)} disabled={!canConfigureProviders} style={{
-                        fontSize: "0.76rem", padding: "6px 14px", cursor: canConfigureProviders ? "pointer" : "default",
-                        background: colors.surface, color: colors.primaryDark, border: `1px solid ${colors.primary}`, borderRadius: 4,
-                        opacity: canConfigureProviders ? 1 : 0.65,
-                    }}>
+            <header className="llm-config-header">
+                <div className="llm-config-header__copy">
+                    <p className="llm-config-header__desc">
+                        {t(
+                            "Select LLM provider (OpenAI / Anthropic supported)",
+                            "选择大模型服务商（支持 OpenAI / Anthropic 协议）"
+                        )}
+                    </p>
+                    <p
+                        className={"llm-config-header__status" + (
+                            summaryState === "busy" ? " is-busy"
+                                : summaryState === "hub" ? " is-hub"
+                                : summaryState === "missing" || summaryState === "unavailable" ? " is-missing"
+                                : ""
+                        )}
+                        aria-busy={providerListLoading || undefined}
+                        data-testid="llm-current-provider"
+                    >
+                        <span className="llm-config-header__status-label">
+                            {t("Assistant provider", "助手服务商")}
+                        </span>
+                        <span className="llm-config-header__status-value">
+                            {!providerListReady
+                                ? (providerListLoading
+                                    ? (providerLoadSlow
+                                        ? t("Still reading saved providers…", "仍在读取已保存的服务商…")
+                                        : t("Reading saved providers…", "正在读取已保存的服务商…"))
+                                    : t("Provider list unavailable", "服务商列表不可用"))
+                                : isNone
+                                ? (hasHubEntitlement ? t("MaClaw Official", "MaClaw 官方") : t("None", "未配置"))
+                                : currentName}
+                        </span>
+                    </p>
+                </div>
+                <div className="llm-config-header__actions">
+                    <button className="llm-config-qr-action" onClick={() => setQrDialogOpen(true)} disabled={!canConfigureProviders}>
                         {t("Mobile QR", "移动端二维码")}
                     </button>
-                    <button className="llm-config-primary-action" onClick={openDialog} disabled={!canConfigureProviders} style={{
-                        fontSize: "0.76rem", padding: "6px 18px", cursor: canConfigureProviders ? "pointer" : "default",
-                        background: colors.primaryLight, color: colors.primaryDark, border: `1px solid ${colors.primary}`, borderRadius: 4,
-                        opacity: canConfigureProviders ? 1 : 0.65,
-                    }}>
-                    {t("Manage providers", "服务商管理")}
+                    <button className="llm-config-primary-action" onClick={openDialog} disabled={!canConfigureProviders}>
+                        {t("Manage providers", "服务商管理")}
                     </button>
                 </div>
-            </div>
+            </header>
 
             <LLMProfileAssignments
                 lang={lang}
@@ -996,13 +1022,6 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                         onClick={() => { void handleImportExternalAgents(); }}
                         disabled={!canConfigureProviders || importingAgents}
                         aria-busy={importingAgents || undefined}
-                        style={{
-                            fontSize: "0.72rem", padding: "4px 10px", minHeight: 28, lineHeight: 1.2,
-                            cursor: canConfigureProviders && !importingAgents ? "pointer" : "default",
-                            background: colors.surface, color: colors.primaryDark,
-                            border: `1px solid ${colors.primary}`, borderRadius: 4,
-                            opacity: canConfigureProviders && !importingAgents ? 1 : 0.65,
-                        }}
                     >
                         {importingAgents
                             ? t("Scanning agents...", "正在扫描...")
@@ -1011,126 +1030,85 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                 }
             />
 
-            {/* Legacy compatibility summary. The profile assignment above is
-                the source of truth; this remains useful provider-management
-                context until all related tools are migrated. */}
-            <div className="llm-config-summary" aria-busy={providerListLoading} style={{
-                marginBottom: 16, padding: "10px 16px", borderRadius: 6,
-                border: `1px solid ${colors.border}`, background: colors.surface,
-                display: "flex", justifyContent: "space-between", alignItems: "center",
-            }}>
-                <span className="llm-config-summary__label" style={{ fontSize: "0.76rem", color: colors.textSecondary }}>
-                    {t("Assistant provider", "助手服务商")}
-                </span>
-                <span className="llm-config-summary__value" style={{ fontSize: "0.76rem", fontWeight: 600, color: isNone ? (hasHubEntitlement ? colors.primaryDark : colors.danger) : colors.text }}>
-                    {!providerListReady
-                        ? (providerListLoading
-                            ? (providerLoadSlow
-                                ? t("Still reading saved providers…", "仍在读取已保存的服务商…")
-                                : t("Reading saved providers…", "正在读取已保存的服务商…"))
-                            : t("Provider list unavailable", "服务商列表不可用"))
-                        : isNone
-                        ? (hasHubEntitlement ? t("MaClaw Official", "MaClaw 官方") : t("None", "未配置"))
-                        : currentName}
-                </span>
-            </div>
-
             {providerListError && (
-                <div role="alert" style={{
-                    marginBottom: 16, padding: "8px 12px", borderRadius: 4, fontSize: "0.74rem", lineHeight: 1.5,
-                    background: colors.dangerBg, border: `1px solid color-mix(in srgb, ${colors.danger} 30%, transparent)`, color: colors.danger,
-                    display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12,
-                }}>
+                <div role="alert" className="llm-config-alert llm-config-alert--danger llm-config-retry-row">
                     <span>{providerListError}</span>
-                    <button type="button" onClick={() => { void loadProviders(); }} style={{
-                        fontSize: "0.72rem", padding: "4px 10px", cursor: "pointer", flexShrink: 0,
-                        background: colors.surface, color: colors.danger, border: `1px solid ${colors.danger}`, borderRadius: 4,
-                    }}>
+                    <button type="button" className="llm-config-retry-row__btn" onClick={() => { void loadProviders(); }}>
                         {t("Retry", "重试")}
                     </button>
                 </div>
             )}
 
             {canQueryOpenAIOrganizationCosts(providers.find(p => p.name === currentName)) && (
-                <div style={{ marginBottom: 16 }}>
-                    <UsageDisplay lang={lang || ""} />
-                </div>
+                <UsageDisplay lang={lang || ""} />
             )}
 
             {/* Token usage statistics */}
             {!isNone && (
-                <div style={{ marginBottom: 16 }}>
-                    <TokenUsagePanel lang={lang || ""} />
-                </div>
+                <TokenUsagePanel lang={lang || ""} />
             )}
 
-            {/* Max iterations — inline editable */}
-            <LLMMaxIterationsCard maxIter={maxIter} setMaxIter={v => { setMaxIter(v); SetMaclawAgentMaxIterations(v).catch(() => {}); }} t={t} />
+            {/* Runtime & reasoning tuning: three rows, one card for rhythm. */}
+            <section className="llm-config-card llm-tuning-stack">
+                <h3 className="llm-tuning-stack__title">{t("Agent runtime tuning", "Agent 运行调优")}</h3>
+                {/* Max iterations — inline editable */}
+                <LLMMaxIterationsCard maxIter={maxIter} setMaxIter={v => { setMaxIter(v); SetMaclawAgentMaxIterations(v).catch(() => {}); }} t={t} />
 
-            {/* SubAgent concurrency — controls parallel coding tasks */}
-            <LLMSubAgentConcurrencyCard subAgentConc={subAgentConc} setSubAgentConc={v => { setSubAgentConc(v); SetSubAgentConcurrency(v).catch(() => {}); }} t={t} />
+                {/* SubAgent concurrency — controls parallel coding tasks */}
+                <LLMSubAgentConcurrencyCard subAgentConc={subAgentConc} setSubAgentConc={v => { setSubAgentConc(v); SetSubAgentConcurrency(v).catch(() => {}); }} t={t} />
 
-            {/* Thinking (reasoning) mode — global, provider-native request controls */}
-            <LLMThinkingModeCard thinkingMode={thinkingMode} thinkingModeSaving={thinkingModeSaving} thinkingModeError={thinkingModeError} saveThinkingMode={saveThinkingMode} t={t} />
+                {/* Thinking (reasoning) mode — global, provider-native request controls */}
+                <LLMThinkingModeCard thinkingMode={thinkingMode} thinkingModeSaving={thinkingModeSaving} thinkingModeError={thinkingModeError} saveThinkingMode={saveThinkingMode} t={t} />
+            </section>
 
             {/* Multi-model council (MoA) presets — aggregator + reference models */}
             <MoAConfigSection lang={lang} providers={providers} />
 
             {isNone && !hasHubEntitlement && (
-                <div className="llm-config-alert llm-config-alert--danger" style={{
-                    padding: "8px 12px", borderRadius: 4, fontSize: "0.74rem", lineHeight: 1.5,
-                    background: colors.dangerBg, border: `1px solid color-mix(in srgb, ${colors.danger} 30%, transparent)`, color: colors.danger,
-                }}>
+                <div className="llm-config-alert llm-config-alert--danger">
                     提示 {t("Without a provider, MaClaw remote will be disabled.", "未配置服务商时，MaClaw 远程能力将不可用。")}
                 </div>
             )}
 
             {/* ── Config Dialog ── */}
             {dlgOpen && (
-                <div className="llm-config-dialog-overlay" style={{
-                    position: "fixed", top: 0, left: 0, right: 0, bottom: 0,
-                    background: "rgba(0,0,0,0.4)", display: "flex",
-                    alignItems: "center", justifyContent: "center", zIndex: 9999,
-                }}
-                    {...configDialogBackdropProps}
-                >
-                    <div className="llm-config-dialog" style={{
-                        background: colors.surface, borderRadius: 12, padding: "24px 28px",
-                        maxWidth: 520, width: "92%", maxHeight: "85vh", overflowY: "auto",
-                        boxShadow: "0 16px 48px rgba(0,0,0,0.22)",
-                    }}
-                        {...configDialogProps}
-                    >
+                <div className="llm-config-dialog-overlay" {...configDialogBackdropProps}>
+                    <div className="llm-config-dialog" role="dialog" aria-modal="true"
+                        aria-label={t("MaClaw LLM Configuration", "MaClaw 大模型配置")}
+                        {...configDialogProps}>
 
                         {/* Header */}
-                        <div className="llm-config-dialog__header" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
-                            <span className="llm-config-dialog__title" style={{ fontSize: "0.92rem", fontWeight: 700, color: colors.text }}>
-                                {t("MaClaw LLM Configuration", "MaClaw 大模型配置")}
-                            </span>
-                            <button className="llm-config-dialog__close" onClick={closeDialog} aria-label={t("Close", "关闭")} style={{
-                                border: "none", background: "transparent", cursor: "pointer",
-                                fontSize: "0.68rem", fontWeight: 700, color: colors.textSecondary, padding: "2px 6px",
-                            }}>CLOSE</button>
+                        <div className="llm-config-dialog__header">
+                            <div className="llm-config-dialog__heading">
+                                <span className="llm-config-dialog__title">
+                                    {t("MaClaw LLM Configuration", "MaClaw 大模型配置")}
+                                </span>
+                                <span className="llm-config-dialog__subtitle">
+                                    {t("Pick a provider, verify the connection, and keep credentials current.", "选择服务商，检测连通性并维护连接凭据。")}
+                                </span>
+                            </div>
+                            <button className="llm-config-dialog__close" onClick={closeDialog} aria-label={t("Close", "关闭")}>
+                                <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+                                    <path d="M5 5l10 10M15 5L5 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" />
+                                </svg>
+                            </button>
                         </div>
 
+                        {/* Scrollable body: selection, alerts, and config fields. */}
+                        <div className="llm-config-dialog__body">
+
                         {/* Provider selection */}
-                        <div className="llm-config-provider-section" style={{ marginBottom: 16 }}>
+                        <div className="llm-config-provider-section">
                             <label style={labelStyle}>{t("Select Provider", "选择服务商")}</label>
-                            <div className="llm-config-provider-grid" style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+                            <div className="llm-config-provider-grid">
                                 {hasHubEntitlement && !hasHubProviderInDialog && (
-                                    <button className="llm-config-provider-chip" onClick={dlgSelectHubService} style={{
-                                        fontSize: "0.76rem", padding: "5px 14px", cursor: "pointer",
-                                        background: dlgHubSelected ? colors.primaryLight : colors.surface,
-                                        color: dlgHubSelected ? colors.primaryDark : colors.text,
-                                        border: `1px solid ${dlgHubSelected ? colors.primary : colors.success}`,
-                                        borderRadius: 4, transition: "all 0.15s",
-                                        display: "inline-flex", alignItems: "center", gap: 5,
-                                    }}>
-                                        {t("MaClaw Official", "MaClaw \u5b98\u65b9")}
+                                    <button
+                                        className={"llm-config-provider-chip is-hub" + (dlgHubSelected ? " is-active" : "")}
+                                        onClick={dlgSelectHubService}
+                                    >
+                                        {t("MaClaw Official", "MaClaw 官方")}
                                         {hubOfficial.kind !== "active" && (
-                                            <span style={{ fontSize: "0.6rem", lineHeight: 1, padding: "2px 5px", borderRadius: 6, background: colors.infoBg, color: colors.primaryDark, border: `1px solid ${colors.primary}` }}>
-                                                {hubOfficial.label}
-                                            </span>
+                                            <span className="llm-config-provider-chip__tag">{hubOfficial.label}</span>
                                         )}
                                     </button>
                                 )}
@@ -1141,25 +1119,14 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                     const tag = isHubProvider && hubOfficial.kind !== "active" ? hubOfficial.label : badge[p.name];
                                     return (
                                         <span key={i} className="llm-config-provider-chip-slot">
-                                        <button className="llm-config-provider-chip" aria-label={tag ? `${p.name} ${tag}` : p.name} onClick={() => isHubProvider ? dlgSelectHubService() : dlgSelectProvider(i)} style={{
-                                            fontSize: "0.76rem", padding: "5px 14px", cursor: "pointer",
-                                            background: active ? colors.primaryLight : colors.surface,
-                                            color: active ? colors.primaryDark : colors.text,
-                                            border: `1px solid ${active ? colors.primary : isHubProvider ? colors.success : colors.border}`,
-                                            borderRadius: 4, transition: "all 0.15s",
-                                            position: "relative" as const,
-                                            display: "inline-flex", alignItems: "center", gap: 5,
-                                        }}>
+                                        <button
+                                            className={"llm-config-provider-chip" + (active ? " is-active" : "") + (isHubProvider ? " is-hub" : "")}
+                                            aria-label={tag ? `${p.name} ${tag}` : p.name}
+                                            onClick={() => isHubProvider ? dlgSelectHubService() : dlgSelectProvider(i)}
+                                        >
+                                            {p.connection_test_passed === true && <span className="llm-config-provider-chip__dot" aria-hidden="true" />}
                                             {PROVIDER_LOGOS[p.name] ?? null}{p.name}
-                                            {tag && (
-                                                <span style={{
-                                                    position: "absolute", top: -8, right: -10,
-                                                    fontSize: "0.56rem", lineHeight: 1, padding: "2px 5px",
-                                                    borderRadius: 6, whiteSpace: "nowrap",
-                                                    background: isHubProvider ? colors.infoBg : active ? colors.infoBg : colors.primaryLight,
-                                                    color: colors.primaryDark, border: `1px solid ${colors.primary}`, fontWeight: 600, pointerEvents: "none",
-                                                }}>{tag}</span>
-                                            )}
+                                            {tag && <span className="llm-config-provider-chip__tag">{tag}</span>}
                                         </button>
                                         {/* §7.1: only a provider that passed its own connection test and is not
                                             the platform's own service can be shared. Sharing an untested provider
@@ -1183,13 +1150,10 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                 })}
                                 {/* Never offer a destructive-looking empty state while the saved list is unresolved. */}
                                 {providerListReady && (
-                                    <button className="llm-config-provider-chip" onClick={() => dlgSelectProvider(null)} style={{
-                                        fontSize: "0.76rem", padding: "5px 14px", cursor: "pointer",
-                                        background: dlgIsNone ? colors.primaryLight : colors.surface,
-                                        color: dlgIsNone ? colors.primaryDark : colors.text,
-                                        border: `1px solid ${dlgIsNone ? colors.primary : colors.border}`,
-                                        borderRadius: 4, transition: "all 0.15s",
-                                    }}>
+                                    <button
+                                        className={"llm-config-provider-chip" + (dlgIsNone ? " is-active" : "")}
+                                        onClick={() => dlgSelectProvider(null)}
+                                    >
                                         {t("None", "暂不配置")}
                                     </button>
                                 )}
@@ -1198,105 +1162,25 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
 
                         {/* None warning */}
                         {dlgIsNone && (
-                            <div className="llm-config-alert llm-config-alert--danger" style={{
-                                padding: "8px 12px", borderRadius: 4, fontSize: "0.74rem", lineHeight: 1.5,
-                                background: colors.dangerBg, border: `1px solid color-mix(in srgb, ${colors.danger} 30%, transparent)`, color: colors.danger,
-                                marginBottom: 16,
-                            }}>
+                            <div className="llm-config-alert llm-config-alert--danger">
                                 {t("Without a provider, MaClaw remote will be disabled.", "不配置服务商，MaClaw 远程将失效。")}
                             </div>
                         )}
 
                         {/* Hub-managed MaClaw Official details */}
                         {dlgHubSelected && hasHubEntitlement && (
-                            <div style={{
-                                marginBottom: 16,
-                                padding: "18px 20px",
-                                borderRadius: 8,
-                                border: "1px solid color-mix(in srgb, var(--theme-success) 28%, var(--theme-border))",
-                                background: "var(--theme-surface-muted)",
-                                boxShadow: "none",
-                                position: "relative",
-                                overflow: "hidden",
-                            }}>
-                                <div style={{ position: "absolute", inset: 0, pointerEvents: "none", background: "transparent" }} />
-                                <div style={{ position: "relative", display: "grid", gap: 14 }}>
-                                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 12 }}>
-                                        <div>
-                                            <div style={{ fontSize: "0.92rem", fontWeight: 800, color: "var(--theme-text-primary)", marginBottom: 6 }}>
-                                                {t("MaClaw Official", "MaClaw \u5b98\u65b9")}
-                                            </div>
-                                            <div style={{ fontSize: "0.76rem", color: colors.textSecondary, lineHeight: 1.7, maxWidth: 620 }}>
-                                                {t("Your account is authorized for MaClaw official LLM service. Requests are routed through the managed Hub service without exposing external API details.", "\u5f53\u524d\u8d26\u53f7\u5df2\u5f00\u901a MaClaw \u5b98\u65b9\u6a21\u578b\u670d\u52a1\u3002\u8bf7\u6c42\u5c06\u901a\u8fc7 Hub \u6258\u7ba1\u670d\u52a1\u5b89\u5168\u8f6c\u53d1\uff0c\u65e0\u9700\u5c55\u793a\u5bf9\u5916\u63a5\u53e3\u4fe1\u606f\u3002")}
-                                            </div>
-                                        </div>
-                                        <span style={{
-                                            flex: "0 0 auto",
-                                            padding: "4px 10px",
-                                            borderRadius: 999,
-                                            border: "1px solid color-mix(in srgb, var(--theme-success) 34%, var(--theme-border))",
-                                            background: "var(--theme-success-bg)",
-                                            color: "var(--theme-success)",
-                                            fontSize: "0.68rem",
-                                            fontWeight: 800,
-                                        }}>
-                                            {hubOfficial.label}
-                                        </span>
-                                    </div>
-
-                                    <div style={{ display: "grid", gridTemplateColumns: "minmax(120px, 0.7fr) minmax(220px, 1.6fr) minmax(120px, 0.7fr)", gap: 10 }}>
-                                        <div style={{ padding: "10px 12px", borderRadius: 8, background: "var(--theme-surface)", border: "1px solid var(--theme-border-subtle)" }}>
-                                            <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginBottom: 5, fontWeight: 700 }}>{t("Service Status", "\u670d\u52a1\u72b6\u6001")}</div>
-                                            <div style={{ fontSize: "0.82rem", color: colors.text, fontWeight: 800 }}>{hubOfficial.label}</div>
-                                        </div>
-                                        <div style={{ padding: "10px 12px", borderRadius: 8, background: "var(--theme-surface)", border: "1px solid var(--theme-border-subtle)" }}>
-                                            <div id="hub-official-model-label" style={{ fontSize: "0.68rem", color: colors.textMuted, marginBottom: 6, fontWeight: 700 }}>{t("Model", "\u6a21\u578b")}</div>
-                                            <div role="radiogroup" aria-labelledby="hub-official-model-label" style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                                                {hubModelOptions.map(modelId => {
-                                                    const active = modelId.toLowerCase() === selectedHubModel.toLowerCase();
-                                                    return (
-                                                        <button
-                                                            key={modelId}
-                                                            type="button"
-                                                            role="radio"
-                                                            aria-checked={active}
-                                                            onClick={() => setDlgHubModel(modelId)}
-                                                            style={{
-                                                                fontSize: "0.76rem",
-                                                                fontWeight: 700,
-                                                                padding: "4px 10px",
-                                                                cursor: "pointer",
-                                                                borderRadius: 999,
-                                                                border: `1px solid ${active ? colors.primary : colors.border}`,
-                                                                background: active ? colors.primaryLight : colors.surface,
-                                                                color: active ? colors.primaryDark : colors.text,
-                                                            }}
-                                                        >
-                                                            {capabilityModelMenuLabel(modelId)}
-                                                        </button>
-                                                    );
-                                                })}
-                                            </div>
-                                        </div>
-                                        <div style={{ padding: "10px 12px", borderRadius: 8, background: "var(--theme-surface)", border: "1px solid var(--theme-border-subtle)" }}>
-                                            <div style={{ fontSize: "0.68rem", color: colors.textMuted, marginBottom: 5, fontWeight: 700 }}>{t("Configuration", "\u914d\u7f6e\u65b9\u5f0f")}</div>
-                                            <div style={{ fontSize: "0.82rem", color: colors.text, fontWeight: 800 }}>{t("No setup needed", "\u65e0\u9700\u914d\u7f6e")}</div>
-                                        </div>
-                                    </div>
-
-                                    <div style={{ fontSize: "0.72rem", color: colors.textMuted, lineHeight: 1.6 }}>
-                                        {hubOfficial.detail || t("Use this managed service directly, or select another provider above if you need to override it.", "可直接使用此托管服务；如需改用其他服务商，可在上方切换。")}
-                                    </div>
-                                </div>
-                            </div>
+                            <LLMConfigHubOfficialCard
+                                t={t}
+                                hubOfficial={hubOfficial}
+                                hubModelOptions={hubModelOptions}
+                                selectedHubModel={selectedHubModel}
+                                onSelectModel={setDlgHubModel}
+                            />
                         )}
 
                         {/* Provider config fields */}
                         {!dlgIsNone && dlgProvider && (
-                            <div className="llm-config-form-card" style={{
-                                marginBottom: 16, padding: "14px", borderRadius: 6,
-                                border: `1px solid ${colors.border}`, background: colors.bg,
-                            }}>
+                            <div className="llm-config-form-card">
                                 <LLMConfigProviderShareHeading
                                     lang={lang ?? "zh-Hans"}
                                     provider={dlgProvider}
@@ -1313,8 +1197,12 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                     </p>
                                 )}
 
+                                {!dlgProvider.import_source && (
+                                <div className="llm-config-form-section">
+                                    <div className="llm-config-form-section__title">{t("Connection", "连接配置")}</div>
+
                                 {/* Custom: quick-fill from known endpoints */}
-                                {!dlgProvider.import_source && dlgProvider.is_custom && (
+                                {dlgProvider.is_custom && (
                                     <div style={{ marginBottom: 12 }}>
                                         <label style={labelStyle}>{t("Quick-fill from known provider", "从已知服务商快速填充")}</label>
                                         <select
@@ -1338,13 +1226,8 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                             {(["openai", "anthropic"] as const).map(proto => {
                                                 const active = (dlgProvider.protocol || "openai") === proto;
                                                 return (
-                                                    <button key={proto} onClick={() => dlgUpdateField("protocol", proto)} style={{
-                                                        fontSize: "0.76rem", padding: "5px 16px", cursor: "pointer",
-                                                        background: active ? colors.primaryLight : colors.surface,
-                                                        color: active ? colors.primaryDark : colors.text,
-                                                        border: `1px solid ${active ? colors.primary : colors.border}`,
-                                                        borderRadius: 4, transition: "all 0.15s",
-                                                    }}>
+                                                    <button key={proto} onClick={() => dlgUpdateField("protocol", proto)}
+                                                        className={"llm-config-option-btn" + (active ? " is-active" : "")}>
                                                         {proto === "openai" ? "OpenAI" : "Anthropic"}
                                                     </button>
                                                 );
@@ -1370,25 +1253,14 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                         return (<>
                                             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
                                                 {KNOWN_USER_AGENTS.map(ua => (
-                                                    <button key={ua} onClick={() => dlgUpdateField("agent_type", ua)} style={{
-                                                        fontSize: "0.76rem", padding: "5px 16px", cursor: "pointer",
-                                                        background: currentAgent === ua ? colors.primaryLight : colors.surface,
-                                                        color: currentAgent === ua ? colors.primaryDark : colors.text,
-                                                        border: `1px solid ${currentAgent === ua ? colors.primary : colors.border}`,
-                                                        borderRadius: 4, transition: "all 0.15s", flexShrink: 0,
-                                                    }}>
+                                                    <button key={ua} onClick={() => dlgUpdateField("agent_type", ua)}
+                                                        className={"llm-config-option-btn" + (currentAgent === ua ? " is-active" : "")}>
                                                         {ua}
                                                     </button>
                                                 ))}
                                                 <button
                                                     onClick={() => dlgUpdateField("agent_type", isCustom ? currentAgent : customAgentSeedForProvider(dlgProvider))}
-                                                    style={{
-                                                        fontSize: "0.76rem", padding: "5px 16px", cursor: "pointer",
-                                                        background: isCustom ? colors.primaryLight : colors.surface,
-                                                        color: isCustom ? colors.primaryDark : colors.text,
-                                                        border: `1px solid ${isCustom ? colors.primary : colors.border}`,
-                                                        borderRadius: 4, transition: "all 0.15s", flexShrink: 0,
-                                                    }}>
+                                                    className={"llm-config-option-btn" + (isCustom ? " is-active" : "")}>
                                                     {t("Custom", "\u81ea\u5b9a\u4e49", "\u81ea\u8a02")}
                                                 </button>
                                                 {isCustom && (
@@ -1406,7 +1278,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                                     : currentAgent === "Kilo Code"
                                                         ? t("For providers requiring Kilo Code client identity.", "\u9002\u7528\u4e8e\u9700\u8981 Kilo Code \u5ba2\u6237\u7aef\u8eab\u4efd\u7684\u670d\u52a1\u5546\u3002", "\u9069\u7528\u65bc\u9700\u8981 Kilo Code \u5ba2\u6236\u7aef\u8eab\u5206\u7684\u670d\u52d9\u5546\u3002")
                                                     : isCustom
-                                                        ? t("Uses the custom client identity you enter.", "\u4f7f\u7528\u4f60\u8f93\u5165\u7684\u81ea\u5b9a\u4e49\u5ba2\u6237\u7aef\u8eab\u4efd\u3002", "\u4f7f\u7528\u4f60\u8f38\u5165\u7684\u81ea\u8a02\u5ba2\u6236\u7aef\u8eab\u5206\u3002")
+                                                        ? t("Uses the custom client identity you enter.", "\u4f7f\u7528\u4f60\u8f93\u5165\u7684\u81ea\u5b9a\u4e49\u5ba2\u6237\u7aef\u8eab\u4efd\u3002", "\u4f7f\u7528\u4f60\u8f38\u5165\u7684\u81ea\u5b9a\u4e49\u5ba2\u6237\u7aef\u8eab\u5206\u3002")
                                                         : t("Most providers use OpenClaw identity (e.g. Zhipu Lobster)", "\u5927\u591a\u6570\u670d\u52a1\u5546\u4f7f\u7528 OpenClaw \u8eab\u4efd\uff08\u5982\u667a\u8c31\u9f99\u867e\uff09")}
                                             </p>
                                         </>);
@@ -1441,6 +1313,11 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                         <input style={readonlyStyle} value={dlgProvider.url} readOnly tabIndex={-1} />
                                     )}
                                 </div>}
+                                </div>
+                                )}
+
+                                <div className="llm-config-form-section">
+                                    <div className="llm-config-form-section__title">{t("Model & Authentication", "模型与认证")}</div>
 
                                 <div style={{ marginBottom: 12 }}>
                                     <label style={labelStyle}>
@@ -1559,21 +1436,31 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                         zhipuLoginBusy={oauthBusy}
                                     />
                                 ))}
+                                </div>
 
-                                <LLMConfigProviderLimitsFields
-                                    provider={dlgProvider}
-                                    t={t}
-                                    onUpdateField={dlgUpdateField}
-                                    onVisionChange={(supportsVision) => {
-                                        if (dlgSelectedIdx === null) return;
-                                        setDlgProviders(prev => prev.map((p, i) => i === dlgSelectedIdx ? withVisionResultForCurrentModel(p, supportsVision) : p));
-                                        setDlgDirty(true);
-                                        setDlgTestResult(null);
-                                    }}
-                                />
+                                {!dlgProvider.import_source && (
+                                <div className="llm-config-form-section">
+                                    <div className="llm-config-form-section__title">{t("Advanced", "高级参数")}</div>
+                                    <LLMConfigProviderLimitsFields
+                                        provider={dlgProvider}
+                                        t={t}
+                                        onUpdateField={dlgUpdateField}
+                                        onVisionChange={(supportsVision) => {
+                                            if (dlgSelectedIdx === null) return;
+                                            setDlgProviders(prev => prev.map((p, i) => i === dlgSelectedIdx ? withVisionResultForCurrentModel(p, supportsVision) : p));
+                                            setDlgDirty(true);
+                                            setDlgTestResult(null);
+                                        }}
+                                    />
+                                </div>
+                                )}
                             </div>
                         )}
-                        <LLMConfigDialogFooter
+                        </div>
+
+                        {/* Pinned action bar */}
+                        <div className="llm-config-dialog__footer">
+                            <LLMConfigDialogFooter
                             dirty={dlgDirty}
                             error={dlgFailureReason}
                             errorTitle={dlgFailureTitle}
@@ -1589,6 +1476,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                             onSave={dlgHandleSave}
                             onSaveHub={dlgHandleSaveHubService}
                         />
+                        </div>
                     </div>
                 </div>
             )}

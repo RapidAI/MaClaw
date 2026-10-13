@@ -234,6 +234,27 @@ type DesktopBotLLMInput struct {
 	WireAPI  string `json:"wire_api"`
 }
 
+// DesktopBotCredits is the system-free allowance configured for this owner's
+// bots. Limit 0 with Unlimited means that allowance is not capped. Applies is
+// false when these bots are not currently on the system-free route.
+type DesktopBotCredits struct {
+	Applies   bool    `json:"applies"`
+	Unlimited bool    `json:"unlimited"`
+	Limit     float64 `json:"limit"`
+	Used      float64 `json:"used"`
+	Remaining float64 `json:"remaining"`
+}
+
+// GetDesktopBotCredits reads that allowance. The new-user period window is a
+// separate balance and is not included here.
+func (a *App) GetDesktopBotCredits() (*DesktopBotCredits, error) {
+	var out DesktopBotCredits
+	if err := a.desktopBotCall(context.Background(), http.MethodGet, "/api/v1/bots/credits", nil, &out, 20*time.Second); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // GetDesktopBotLLM reads the model setting this user's bots run on.
 func (a *App) GetDesktopBotLLM() (*DesktopBotLLM, error) {
 	var out DesktopBotLLM
@@ -291,6 +312,11 @@ const desktopRunSeparator = "\x00"
 var (
 	activeDesktopRunsMu sync.Mutex
 	activeDesktopRuns   = make(map[string]*ActiveDesktopRun)
+	// shownDesktopRuns is a run this process has already put on screen. The
+	// next pull must not append it again. It is not an ack: a crash before
+	// the ack still leaves the result for the next time this GUI starts.
+	shownDesktopRuns = map[string]struct{}{}
+	ackedDesktopRuns = map[string]struct{}{}
 )
 
 func desktopRunKey(botID, runID string) string {
@@ -511,16 +537,17 @@ func (a *App) markDesktopRunWaitingForUser(botID, requestID string) {
 		return
 	}
 	activeDesktopRunsMu.Lock()
-	defer activeDesktopRunsMu.Unlock()
 	for key, run := range activeDesktopRuns {
 		if run == nil {
 			continue
 		}
 		if strings.HasPrefix(key, botID+desktopRunSeparator) && run.RequestID == requestID {
 			run.WaitingForUser = true
-			return
+			break
 		}
 	}
+	activeDesktopRunsMu.Unlock()
+	a.publishDesktopRunDriving(botID)
 }
 
 // postDesktopBotSupplement forwards one supplement to Hub for the named run.
@@ -601,12 +628,16 @@ func (a *App) reportDesktopSupplementState(botID, sessionKey, runID string) {
 
 func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase string) {
 	run := a.registerActiveDesktopRun(botID, requestID, sessionKey, text, phase)
+	a.publishDesktopRunDriving(botID)
 	// The run id has to be read inside the closure. A bare defer would freeze
 	// the value it had when armed, which is the empty placeholder, because Hub
 	// only names the run later; the entry would then be re-keyed under the real
 	// id and never removed, and every finished run would go on being offered as
 	// a supplement target.
-	defer func() { unregisterActiveDesktopRun(botID, requestID, run.RunID) }()
+	defer func() {
+		unregisterActiveDesktopRun(botID, requestID, run.RunID)
+		a.publishDesktopRunDriving(botID)
+	}()
 	started := time.Now()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -665,7 +696,19 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 	if desktopBotResultSink != nil {
 		desktopBotResultSink(resp)
 	}
+	// Show the reply, then ack. Acking first drops the result if this process
+	// dies between the two: the next start would see it as already delivered
+	// and never push it. The run stays in the active map until this function
+	// returns, so a pull already in flight skips it; noting it shown covers
+	// the pull that starts after this returns and before the ack lands. A
+	// transport failure is not acked.
 	a.emitAIAssistantResponse(requestID, resp)
+	if err == nil && strings.TrimSpace(run.RunID) != "" {
+		noteDesktopRunShown(botID, run.RunID)
+		if a.ackDesktopBotDelivery(botID, run.RunID) {
+			noteDesktopRunAcked(botID, run.RunID)
+		}
+	}
 	// The run is terminal now, so the server has already reaped its supplements
 	// and their states are final. A turn that ended to ask a question is not:
 	// its answer travels as the next ordinary turn, and the queued items may
@@ -1494,7 +1537,7 @@ func (a *App) watchDesktopBot(ctx context.Context, botID string) (string, bool, 
 // read cuts the JSON in half and the bubble loses both.
 func desktopBotResponseLimit(path string) int64 {
 	// An admitted run is read from /runs and can carry the same screenshot.
-	if strings.Contains(path, "/messages") || strings.Contains(path, "/runs/") {
+	if strings.Contains(path, "/messages") || strings.Contains(path, "/runs/") || strings.Contains(path, "/pending") {
 		return 1<<20 + 1_200_000
 	}
 	return 1 << 20

@@ -252,6 +252,38 @@ describe("resolveVisibleAssistantReply", () => {
         expect(shouldPromoteReasoningToBody(shortFollowUp, `${longReview}\nI am analyzing the architecture.`)).toBe(true);
     });
 
+    it("keeps a figure-planning monologue out of a short companion answer", () => {
+        const plan = [
+            "The user wants only Figure 3 — the embedded bitmap, not the whole page. I should try pdf_extract_images on page 6.",
+            "",
+            "Let me call pdf_extract_images with page=6. If extraction fails, render the page.",
+            "",
+            "Figure 3 is a vector graphic — can't extract as bitmap. Only option: render page 6. Let me render at 220 dpi.",
+        ].join("\n").padEnd(REASONING_BODY_MIN_CHARS + 40, " ");
+        const answer = "Figure 3 是矢量绘制的，无法单独抠成图片文件。下图就是 Figure 3：\n\n图2";
+        expect(answer.length).toBeLessThan(REASONING_FOLLOWUP_MAX_CHARS);
+        expect(looksLikeInternalMonologue(plan)).toBe(true);
+        expect(shouldPromoteReasoningToBody(answer, plan)).toBe(false);
+        const visible = resolveVisibleAssistantReply(answer, plan);
+        expect(visible.content).toBe(answer);
+        expect(visible.reasoning).toContain("The user wants only Figure 3");
+        expect(visible.reasoning).toContain("Let me render at 220 dpi");
+    });
+
+    it("peels a short figure answer that starts with Figure off the plan", () => {
+        const plan = [
+            "The user wants only Figure 3 — the embedded bitmap, not the whole page.",
+            "",
+            "Let me render page 6. The tool can only produce a full page.",
+        ].join("\n").padEnd(REASONING_BODY_MIN_CHARS + 40, " ");
+        const answer = "Figure 3 是矢量绘制的，无法单独抠成图片文件。下图右栏就是 Figure 3：\n\n图2";
+        expect(answer.length).toBeLessThan(REASONING_FOLLOWUP_MAX_CHARS);
+        const visible = resolveVisibleAssistantReply(`${plan}\n\n${answer}`, "");
+        expect(visible.content).toBe(answer);
+        expect(visible.reasoning).toContain("The user wants only Figure 3");
+        expect(visible.content).not.toContain("Let me render page 6");
+    });
+
     it("does not cut at Chinese notes inside English CoT", () => {
         const trail = [
             "The user is asking about Luzhou vs Chengdu cuisine.",

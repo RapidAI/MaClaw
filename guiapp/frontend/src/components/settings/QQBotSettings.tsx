@@ -96,7 +96,7 @@ export const QQBotSettings = ({
             trailingAction={
                 <button
                     type="button"
-                    className="weixin-qr-login-panel__primary"
+                    className="im-settings-button"
                     aria-label={manualToggleLabel}
                     onClick={() => setShowManual((v) => !v)}
                 >

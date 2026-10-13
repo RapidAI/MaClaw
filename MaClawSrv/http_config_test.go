@@ -239,7 +239,10 @@ func TestUserAIModelsStatusAndDownloadEndpoints(t *testing.T) {
 		t.Fatalf("download existing embedding = %d body = %s", w.Code, w.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/ai-models/omniparser/download", nil)
+	if !strings.Contains(body, `"ocr"`) || !strings.Contains(body, `"omniparser"`) {
+		t.Fatalf("ai model status should include ocr and omniparser: %s", body)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/ai-models/not-a-model/download", nil)
 	req.Header.Set("Authorization", "Bearer "+token)
 	w = httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
@@ -271,7 +274,10 @@ func TestUserAIModelsStatusAndDownloadEndpoints(t *testing.T) {
 		t.Fatalf("admin download existing embedding = %d body = %s", w.Code, w.Body.String())
 	}
 
-	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/ai-models/omniparser/download", nil)
+	if !strings.Contains(adminBody, `"ocr"`) || !strings.Contains(adminBody, `"omniparser"`) || !strings.Contains(adminBody, "omniparser-v2.yolow") {
+		t.Fatalf("admin ai model status should include ocr and omniparser paths: %s", adminBody)
+	}
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/admin/ai-models/not-a-model/download", nil)
 	req.Header.Set("X-MaClaw-Admin-Secret", "root-admin-secret")
 	w = httptest.NewRecorder()
 	server.Handler().ServeHTTP(w, req)
@@ -349,7 +355,7 @@ func TestHTTPServerStartsConfiguredAIModelDownloadsOnStartup(t *testing.T) {
 	server := NewHTTPServer(svc, "root-admin-secret", nil)
 	server.aiModels.mu.Lock()
 	defer server.aiModels.mu.Unlock()
-	for _, model := range []string{srvAIModelEmbedding, srvAIModelASR, srvAIModelTTS} {
+	for _, model := range []string{srvAIModelEmbedding, srvAIModelASR, srvAIModelTTS, srvAIModelOCR, srvAIModelOmniParser} {
 		if server.aiModels.tasks[model] == nil {
 			t.Fatalf("startup did not queue %s model download", model)
 		}

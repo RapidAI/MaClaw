@@ -140,6 +140,10 @@ const (
 	// update of that record; "add it to the todo list" stays task_track.
 	LabelWorklogRead   IntentLabel = "worklog_read"
 	LabelWorklogUpdate IntentLabel = "worklog_update"
+	// LabelMailboxRead and LabelMailboxSend use a configured IMAP/SMTP mailbox.
+	// They are not IM channel sends and not a browser session on a webmail site.
+	LabelMailboxRead IntentLabel = "mailbox_read"
+	LabelMailboxSend IntentLabel = "mailbox_send"
 
 	LabelAmbiguous IntentLabel = "ambiguous"
 	LabelUnknown   IntentLabel = "unknown"
@@ -198,6 +202,8 @@ func AllLabels() []IntentLabel {
 		LabelKnowledgeAdmin,
 		LabelWorklogRead,
 		LabelWorklogUpdate,
+		LabelMailboxRead,
+		LabelMailboxSend,
 		LabelAmbiguous,
 		LabelUnknown,
 	}

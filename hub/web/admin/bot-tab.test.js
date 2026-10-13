@@ -161,8 +161,8 @@ function createHarness(options) {
       const body = JSON.parse(request.body);
       const previous = settings.llm && Array.isArray(settings.llm.providers) ? settings.llm.providers : [];
       settings.llm = {
-        default_service_group: 'system-free',
-        current: body.current || 'system-free',
+        default_service_group: 'maclaw_official_group',
+        current: body.current || 'maclaw_official_group',
         providers: (body.providers || []).map(function (item) {
           const prior = previous.filter(function (saved) { return saved.id === item.id; })[0];
           return {
@@ -825,21 +825,22 @@ async function testBotOwnerUsesDirectoryName() {
 }
 
 async function testLLMSettingsKeepTheDefaultAndSaveAProvider() {
-  console.log('  Test: LLM settings default to system-free and save an OpenAI or Anthropic provider');
+  console.log('  Test: LLM settings default to the MaClaw official group and save an OpenAI or Anthropic provider');
   const harness = createHarness();
   harness.settings.llm = {
-    default_service_group: 'system-free',
+    default_service_group: 'maclaw_official_group',
     current: 'system-free',
     providers: [{ id: 'lp_abcdef0123456789', name: 'Claude', protocol: 'anthropic', url: 'https://api.anthropic.com', model: 'claude-sonnet-4-5', key_set: true }]
   };
   await harness.open();
   await flush();
   const list = harness.elements.botLLMList._html;
-  assertIncludes(list, 'system-free', 'shows the default service group');
+  assertIncludes(list, 'maclaw_official_group', 'shows the official service group');
+  assertIncludes(list, 'MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4', 'shows the official service group name');
   assertIncludes(list, 'value="anthropic" selected', 'shows the saved Anthropic protocol');
   assertIncludes(list, 'Claude', 'shows the saved provider name');
   assertNotIncludes(list, 'sk-', 'does not render a provider key');
-  assertIncludes(harness.elements.botLLMBadge.textContent, 'system-free', 'keeps system-free selected');
+  assertIncludes(harness.elements.botLLMBadge.textContent, 'MaClaw \u5b98\u65b9\u670d\u52a1\u7ec4', 'keeps the official group selected');
 
   const before = attrValues(harness.elements.botLLMList._html, 'id').filter(function (value) {
     return value.indexOf('botLLMName_') === 0;

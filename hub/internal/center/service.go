@@ -1612,8 +1612,8 @@ func (s *Service) startHeartbeatLoop() {
 		// startup pass and the ticker from drifting apart.
 		runPass := func() {
 			_ = s.sendHeartbeat(ctx)
-			// Confirm an automatic grant that is already local, and top up
-			// only when this hub has nothing left to spend. Waiting for the
+			// Confirm an automatic grant that is already local, and withdraw
+			// one share when spendable credits are under 100. Waiting for the
 			// first tick would leave that confirm outstanding for a full interval.
 			if err := s.RunTokenBankAutoOnce(ctx); err != nil {
 				log.Printf("[center] token bank auto withdraw: %v", err)

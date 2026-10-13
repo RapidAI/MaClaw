@@ -80,7 +80,7 @@ func (h *IMMessageHandler) handleGoalCreate(msg IMUserMessage, objective string)
 	existing := store.Get(userID)
 	if existing != nil && !existing.IsTerminal() {
 		return &IMAgentResponse{
-			Text: fmt.Sprintf("已有活跃目标：%s\n状态：%s\n\n如需创建新目标，请先取消当前目标：/goal cancel",
+			Error: fmt.Sprintf("已有活跃目标：%s\n状态：%s\n如需创建新目标，请先取消当前目标：/goal cancel",
 				existing.Objective, existing.Status),
 		}
 	}
@@ -97,43 +97,38 @@ func (h *IMMessageHandler) handleGoalCreate(msg IMUserMessage, objective string)
 	// does not fall through to the general agent loop after restart/history open.
 	h.ensurePureCodingArmedForGoalContinuation(userID)
 
-	// Remote pure coding with dead SSH: do not auto-start continuation into the
-	// general agent loop. User must reconnect first, then /goal resume.
-	deferSchedule := false
+	// Remote pure coding with dead SSH cannot run the plan/execute loop.
 	if h.isPureCodingWorkbenchSession(userID) && !h.hasPendingTemplateSubAgentExecution(userID) {
 		mem := h.getStickyCodingWorkbenchMemory(userID)
 		if strings.TrimSpace(mem.Kind) == "remote" {
-			deferSchedule = true
+			reason := "目标失败：远程 SSH 未连接。请先重连远程编程环境，再重新发送 /goal。"
+			store.UpdateStatus(userID, g.GoalID, goal.StatusFailed, reason)
+			if h.app != nil && h.app.goalContinuation != nil {
+				h.app.goalContinuation.CancelPending(userID)
+				if updated := store.Get(userID); updated != nil {
+					h.app.goalContinuation.emitGoalStateChanged(userID, updated)
+				}
+			}
+			return &IMAgentResponse{Error: reason}
 		}
 	}
 
 	// Schedule the first continuation (after the response is sent to user).
+	// The first turn only decomposes the task. Later turns execute one step.
 	// Continuation re-enters the pure-coding sticky path when armed, so long-running
 	// goals execute in CodingSubAgent / RemoteCodingSubAgent rather than general chat.
 	if h.app != nil && h.app.goalContinuation != nil {
 		h.app.goalContinuation.emitGoalStateChanged(userID, g)
-		if !deferSchedule {
-			h.app.goalContinuation.scheduleDelayed(userID, g.GoalID)
-		}
+		h.app.goalContinuation.scheduleDelayed(userID, g.GoalID)
 	}
 
 	var b strings.Builder
-	b.WriteString("目标已创建")
-	if deferSchedule {
-		b.WriteString("（已暂停自动推进）")
-	} else {
-		b.WriteString("，系统将自动开始推进")
-	}
+	b.WriteString("目标已创建，系统将先分解任务，再按步骤自动执行")
 	b.WriteString("\n\n")
 	b.WriteString(fmt.Sprintf("目标: %s\n", g.Objective))
 	b.WriteString(fmt.Sprintf("最大轮次: %d\n", g.MaxTurns))
 	if h.isPureCodingWorkbenchSession(userID) {
-		b.WriteString("\n本目标已绑定到当前编程工作台")
-		if deferSchedule {
-			b.WriteString("。\n远程 SSH 未连接：请先重连远程编程环境，然后使用 /goal resume 继续推进。\n")
-		} else {
-			b.WriteString("，续接轮次将在编程环境中执行。\n")
-		}
+		b.WriteString("\n本目标已绑定到当前编程工作台，续接轮次将在编程环境中执行。\n")
 		b.WriteString("会话目标（Session plan）已同步更新。\n")
 	}
 	b.WriteString("\n命令:\n")
@@ -157,7 +152,7 @@ func goalCommandHelp() string {
   /goal 实现用户登录注册功能，包含JWT认证和邮箱验证
   /goal 搜集AI Agent最新论文并整理成综述报告
 
-创建目标后，系统将自动持续推进直到目标达成或预算耗尽。
+创建目标后，系统先分解任务，再按步骤自动执行，直到完成并给出结果，或因条件不足失败并返回错误。
 在编程专用任务中同样支持：续接轮次走 CodingSubAgent / 远程编程工作台。
 每轮之间有2秒冷却期，你可以随时发消息插入操作。`
 }

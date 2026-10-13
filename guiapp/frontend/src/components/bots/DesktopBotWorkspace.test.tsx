@@ -33,6 +33,11 @@ const readShot = vi.hoisted(() => vi.fn(async (_path?: string) => ({ mime: 'imag
 type BotLLMView = { mode: string; name?: string; url?: string; model?: string; key_set: boolean; warning?: string };
 type BotLLMIn = { mode?: string; name?: string; url?: string; key?: string; model?: string; protocol?: string; wire_api?: string };
 const getBotLLM = vi.hoisted(() => vi.fn(async (): Promise<BotLLMView> => ({ mode: 'default', key_set: false })));
+type HubCreditsMock = { active: boolean; credits_total?: number; credits_used?: number; credits_remaining?: number };
+const getHubCredits = vi.hoisted(() => vi.fn(async (): Promise<HubCreditsMock> => ({ active: false })));
+const refreshHubCredits = vi.hoisted(() => vi.fn(async (): Promise<HubCreditsMock> => ({ active: false })));
+const getBotCredits = vi.hoisted(() => vi.fn(async () => ({ applies: true, unlimited: true, limit: 0, used: 0, remaining: 0 })));
+const loadConfig = vi.hoisted(() => vi.fn(async () => ({ remote_hub_url: 'https://hub.example' })));
 const saveBotLLM = vi.hoisted(() => vi.fn(async (input?: BotLLMIn): Promise<BotLLMView> => ({
     mode: input?.mode ?? 'default',
     name: input?.name,
@@ -42,9 +47,12 @@ const saveBotLLM = vi.hoisted(() => vi.fn(async (input?: BotLLMIn): Promise<BotL
 const listProviders = vi.hoisted(() => vi.fn(async (): Promise<{ providers: Array<Record<string, unknown>>; current: string }> => ({ providers: [], current: '' })));
 const fetchProviderModels = vi.hoisted(() => vi.fn(async (..._args: unknown[]): Promise<Array<{ id?: string; name?: string }>> => []));
 const persistPreference = vi.hoisted(() => vi.fn(async (_botId?: string, _persona?: string) => undefined));
+const queryTaskStatus = vi.hoisted(() => vi.fn(async (_botId?: string, _hint?: string, _lang?: string) => '「下载报表」还在进行。'));
 const listActiveRuns = vi.hoisted(() => vi.fn(async (_botId?: string): Promise<Array<Record<string, unknown>>> => []));
+type DesktopBusyMock = { seq: number; marks: Array<{ owner_id?: string; bot_id: string; count: number }>; runs?: string[] };
+const getDesktopBusy = vi.hoisted(() => vi.fn(async (_owner?: string): Promise<DesktopBusyMock> => ({ seq: 0, marks: [] })));
 const evaluateSupplement = vi.hoisted(() => vi.fn(async (_taskText?: string, _content?: string, _lang?: string): Promise<{ is_supplement?: boolean; instruction?: string } | null> => null));
-const appendSupplement = vi.hoisted(() => vi.fn(async (_botId?: string, _runId?: string, _instruction?: string): Promise<{ accepted?: boolean; stage?: string; message?: string } | null> => null));
+const appendSupplement = vi.hoisted(() => vi.fn(async (_botId?: string, _runId?: string, _instruction?: string): Promise<{ accepted?: boolean; stage?: string; message?: string; supplement_id?: string } | null> => null));
 const getSupplements = vi.hoisted(() => vi.fn(async (_botId?: string, _runId?: string): Promise<Array<{ id: string; state: string; content?: string }>> => []));
 const responseListeners = vi.hoisted(() => ({
     list: [] as Array<(payload: unknown) => void>,
@@ -71,17 +79,26 @@ vi.mock('../../../wailsjs/go/main/App', () => ({
     PreviewTaskResultFile: (path: string) => previewFile(path),
     ReadDesktopBotShot: (path: string) => readShot(path),
     GetDesktopBotLLM: () => getBotLLM(),
+    GetDesktopBotCredits: () => getBotCredits(),
+    GetHubLLMServiceStatus: () => getHubCredits(),
+    RefreshHubLLMServiceStatus: () => refreshHubCredits(),
+    LoadConfig: () => loadConfig(),
     SaveDesktopBotLLM: (input: BotLLMIn) => saveBotLLM(input),
     GetMaclawLLMProviders: () => listProviders(),
     FetchProviderModels: (...args: unknown[]) => fetchProviderModels(...(args as [string, string, string, string])),
     PersistDesktopBotPreference: (botId: string, persona: string) => persistPreference(botId, persona),
+    QueryDesktopBotTaskStatus: (botId: string, hint: string, lang: string) => queryTaskStatus(botId, hint, lang),
     GetActiveDesktopRuns: (botId: string) => listActiveRuns(botId),
+    GetDesktopBotBusy: (owner: string) => getDesktopBusy(owner),
     EvaluateDesktopTaskSupplement: (taskText: string, content: string, lang: string) => evaluateSupplement(taskText, content, lang),
     AppendDesktopBotSupplement: (botId: string, runId: string, instruction: string) => appendSupplement(botId, runId, instruction),
     GetDesktopBotSupplements: (botId: string, runId: string) => getSupplements(botId, runId),
 }));
 
+const browserOpenURL = vi.hoisted(() => vi.fn());
+
 vi.mock('../../../wailsjs/runtime', () => ({
+    BrowserOpenURL: (url: string) => browserOpenURL(url),
     EventsOn: (event: string, handler: (payload: unknown) => void) => {
         responseListeners.list.push(handler);
         responseListeners.byEvent[event] = handler;
@@ -94,7 +111,7 @@ vi.mock('../../../wailsjs/runtime', () => ({
 
 import { DesktopBotWorkspace, formatCreated, handleDesktopBotReport, handleDesktopBotResult, handleDesktopBotSupplementState, handleDesktopBotView } from './DesktopBotWorkspace';
 import type { BotPhase } from './desktopBots';
-import { appendDesktopBotReport, applySupplementOutcomes, messagesForBot, saveBotMessages } from './desktopBots';
+import { appendDesktopBotReport, applySupplementOutcomes, confirmedWorkOrder, messagesForBot, saveBotMessages } from './desktopBots';
 import { adoptExistingBotReplies, setBotWindowForeground, unreadBotReplyCount } from './botUnread';
 
 const RETURN_TASK = '登录或验证已在当前桌面浏览器完成，请沿用这个登录状态继续。';
@@ -155,6 +172,14 @@ beforeEach(() => {
     fillSecret.mockResolvedValue({ filled: 'SITE_PASSWORD' });
     listBots.mockReset();
     listBots.mockResolvedValue([]);
+    getDesktopBusy.mockReset();
+    getDesktopBusy.mockResolvedValue({ seq: 0, marks: [] });
+    listActiveRuns.mockReset();
+    listActiveRuns.mockResolvedValue([]);
+    evaluateSupplement.mockReset();
+    evaluateSupplement.mockResolvedValue(null);
+    appendSupplement.mockReset();
+    appendSupplement.mockResolvedValue(null);
     createBot.mockReset();
     createBot.mockImplementation(async (name: string, description: string) => ({ id: 'bot_1', title: name, description, instance_id: '' }));
     renameBot.mockReset();
@@ -169,6 +194,15 @@ beforeEach(() => {
     previewFile.mockResolvedValue({ preview_url: '' });
     getBotLLM.mockReset();
     getBotLLM.mockResolvedValue({ mode: 'default', key_set: false });
+    getHubCredits.mockReset();
+    getHubCredits.mockResolvedValue({ active: false });
+    refreshHubCredits.mockReset();
+    refreshHubCredits.mockResolvedValue({ active: false });
+    getBotCredits.mockReset();
+    getBotCredits.mockResolvedValue({ applies: true, unlimited: true, limit: 0, used: 0, remaining: 0 });
+    loadConfig.mockReset();
+    loadConfig.mockResolvedValue({ remote_hub_url: 'https://hub.example' });
+    browserOpenURL.mockReset();
     saveBotLLM.mockReset();
     saveBotLLM.mockImplementation(async (input?: BotLLMIn) => ({
         mode: input?.mode ?? 'default',
@@ -219,7 +253,7 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
     });
 
-    it('queues the next command while a live turn is older than the stale clock', async () => {
+    it('starts the next command while a live turn is older than the stale clock', async () => {
         let release: (value: unknown) => void = () => {};
         sendTask.mockImplementation(() => new Promise(resolve => { release = resolve; }));
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
@@ -234,8 +268,9 @@ describe('DesktopBotWorkspace', () => {
             fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '再做那个' } });
             fireEvent.click(screen.getByTestId('desktop-bot-send'));
             expect(await screen.findByText('再做那个')).toBeTruthy();
-            expect(screen.getByText('收到，「再做那个」记下了。等手头这件做完我就来处理这个。')).toBeTruthy();
-            expect(sendTask).toHaveBeenCalledTimes(1);
+            expect(await screen.findByText('表述:再做那个')).toBeTruthy();
+            expect(screen.queryByText(/等手头这件做完/)).toBeNull();
+            await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
             expect(document.querySelector('.desktop-bot-chat__bubble.is-typing')).toBeTruthy();
             expect(screen.getByTestId('desktop-bot-status').textContent).toContain('安排中');
         } finally {
@@ -288,7 +323,15 @@ describe('DesktopBotWorkspace', () => {
     it('lists a bot with its description and opens the chat on the right', async () => {
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
 
-        expect(screen.getByText('每个 Bot 都是你在 MaClawSrv 上的一个实例，共用你的云端桌面。')).toBeTruthy();
+        const lede = screen.getByText('Bot为24小时驻守远程电脑上的数字助理。').closest('.desktop-bot-workspace__lede');
+        expect(lede).toBeTruthy();
+        expect(lede?.closest('.desktop-bot-workspace__bar-head')).toBeNull();
+        const topUp = lede?.querySelector('[data-testid="desktop-bot-list-topup"]');
+        expect(topUp?.getAttribute('aria-label')).toBe('去充值');
+        expect(topUp?.getAttribute('title')).toBe('去充值');
+        expect(topUp?.textContent).toBe('');
+        expect(topUp?.querySelector('svg')).toBeTruthy();
+        expect(topUp?.parentElement?.classList.contains('desktop-bot-workspace__lede-credits')).toBe(true);
         const titleIcon = screen.getByTestId('desktop-bot-title-icon');
         const heading = titleIcon.closest('h1');
         expect(titleIcon.tagName).toBe('svg');
@@ -301,7 +344,7 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(screen.getByTestId('desktop-bot-create'));
         expect((await screen.findAllByText('Bot 1')).length).toBeGreaterThan(0);
         const list = screen.getByLabelText('Bot');
-        expect(list.textContent).toContain('当前用户在 MaClawSrv 上的一个实例，共用云端桌面。');
+        expect(list.textContent).toContain('远程电脑上的7x24小时数字助理。');
         expect(screen.getByTestId('desktop-bot-command')).toBeTruthy();
 
         fireEvent.click(screen.getByTestId('desktop-bot-edit-bot_1'));
@@ -614,6 +657,105 @@ describe('DesktopBotWorkspace', () => {
         expect(watchBot).not.toHaveBeenCalled();
     });
 
+    it('shows 接管电脑 in the chat when the bot needs a person and enters takeover', async () => {
+        localStorage.setItem('maclaw.desktopBotMessages.v1', JSON.stringify({
+            alice: {
+                bot_1: [{
+                    id: 'm-qr',
+                    role: 'assistant',
+                    content: '缺少用户扫描二维码登录小红书，笔记尚未发布。',
+                }],
+            },
+        }));
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+        watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        const button = await screen.findByTestId('desktop-bot-take-computer');
+        expect(button.textContent).toBe('接管电脑');
+        fireEvent.click(button);
+        const stage = await screen.findByTestId('desktop-bot-stage');
+        expect(stage.className).toContain('is-fullscreen');
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('live');
+        expect(screen.queryByTestId('desktop-bot-take-computer')).toBeNull();
+    });
+
+    it('warns in the chat when the account credits are too low to finish a task', async () => {
+        getHubCredits.mockResolvedValue({ active: true, credits_total: 100, credits_used: 80, credits_remaining: 20 });
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        const notice = await screen.findByTestId('desktop-bot-credit-notice');
+        expect(notice.textContent).toContain('你的 Credits 快用完了');
+        expect(refreshHubCredits).not.toHaveBeenCalled();
+        const listCredits = await screen.findByTestId('desktop-bot-list-credits');
+        expect(listCredits.textContent).toContain('剩余 Credits 20 / 100');
+        expect(listCredits.nextElementSibling).toBe(screen.getByTestId('desktop-bot-list-topup'));
+        const opened: unknown[] = [];
+        const onOpen = (event: Event) => opened.push((event as CustomEvent).detail);
+        window.addEventListener('maclaw:open-settings', onOpen);
+        fireEvent.click(screen.getByTestId('desktop-bot-list-topup'));
+        fireEvent.click(screen.getByTestId('desktop-bot-credit-topup'));
+        window.removeEventListener('maclaw:open-settings', onOpen);
+        expect(opened).toEqual([{ tab: 'redeem' }, { tab: 'redeem' }]);
+        expect(browserOpenURL).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        fireEvent.click(screen.getByTestId('desktop-bot-tab-details'));
+        expect((await screen.findByTestId('desktop-bot-credits-total')).textContent).toBe('100');
+        expect(screen.getByTestId('desktop-bot-credits-left').textContent).toBe('20');
+        fireEvent.click(screen.getByTestId('desktop-bot-credit-settings'));
+        expect(await screen.findByText('Bot 用的模型')).toBeTruthy();
+    });
+
+    it('keeps an unlimited account balance quiet', async () => {
+        getHubCredits.mockResolvedValue({ active: true });
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        expect((await screen.findByTestId('desktop-bot-list-credits')).textContent).toContain('不限制');
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        fireEvent.click(screen.getByTestId('desktop-bot-tab-details'));
+        expect((await screen.findByTestId('desktop-bot-credits-total')).textContent).toBe('不限制');
+        expect(screen.getByTestId('desktop-bot-credits-left').textContent).toBe('不限制');
+        expect(screen.queryByTestId('desktop-bot-credit-notice')).toBeNull();
+    });
+
+    it('keeps the account balance in the list when the bot uses its own model', async () => {
+        getBotLLM.mockResolvedValue({ mode: 'custom', name: 'own', model: 'm', key_set: true });
+        getHubCredits.mockResolvedValue({ active: true, credits_total: 100, credits_used: 80, credits_remaining: 20 });
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '晚上', instance_id: 'inst_1' }]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        expect((await screen.findByTestId('desktop-bot-list-credits')).textContent).toContain('剩余 Credits 20 / 100');
+        expect(screen.getByTestId('desktop-bot-list-credits').getAttribute('data-notice')).toBe('low');
+        expect(screen.queryByTestId('desktop-bot-credit-notice')).toBeNull();
+        const mark = await screen.findByTestId('desktop-bot-custom-model');
+        expect(mark.querySelector('svg')).toBeTruthy();
+        expect(mark.getAttribute('role')).toBe('img');
+        expect(mark.getAttribute('aria-label')).toBe('正在使用自定义模型：own · m');
+        const create = screen.getByTestId('desktop-bot-create');
+        expect(create.compareDocumentPosition(mark) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    });
+
+    it('paints the custom-model mark from the model dialog when the first read failed', async () => {
+        getBotLLM.mockRejectedValueOnce(new Error('llm down'));
+        getHubCredits.mockResolvedValue({ active: true, credits_total: 100, credits_used: 0, credits_remaining: 100 });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        expect((await screen.findByTestId('desktop-bot-list-credits')).textContent).toContain('剩余 Credits 100 / 100');
+        expect(screen.queryByTestId('desktop-bot-custom-model')).toBeNull();
+        getBotLLM.mockResolvedValue({ mode: 'custom', name: 'Qwen', model: 'qwen-max', key_set: true });
+        fireEvent.click(screen.getByTestId('desktop-bot-llm'));
+        expect((await screen.findByTestId('desktop-bot-custom-model')).getAttribute('aria-label')).toBe('正在使用自定义模型：Qwen · qwen-max');
+        expect(await screen.findByTestId('bot-llm-dialog')).toBeTruthy();
+    });
+
+    it('shows the custom-model mark when the wallet cannot be read', async () => {
+        getBotLLM.mockResolvedValue({ mode: 'custom', name: 'Qwen', model: 'qwen-max', key_set: true });
+        getHubCredits.mockRejectedValue(new Error('hub down'));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        expect((await screen.findByTestId('desktop-bot-custom-model')).getAttribute('aria-label')).toBe('正在使用自定义模型：Qwen · qwen-max');
+        expect(screen.queryByTestId('desktop-bot-list-credits')).toBeNull();
+    });
+
     it('grays out takeover while the bot is driving and fullscreens when idle', async () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
         // While the human watches, the hub hold keeps the desktop alive, so the
@@ -686,6 +828,288 @@ describe('DesktopBotWorkspace', () => {
         expect((released.getAttribute('src') || '').split('view_only=').length - 1).toBe(1);
         expect(screen.getByTestId('desktop-bot-screen-shield')).toBeTruthy();
         expect(sendTask.mock.calls.length).toBe(sentBeforeExit);
+    });
+
+    it('refuses takeover on an idle bot while another bot is driving the shared desktop', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' },
+            { id: 'bot_2', title: '日报', description: '共用桌面', instance_id: 'inst_2' },
+        ]);
+        const liveDesktop = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+        watchBot.mockResolvedValue({ novnc_url: liveDesktop, user_control: false });
+        sendTask.mockImplementation(async (botId: string) => ({
+            request_id: `desktop-bot-operating-${botId}`,
+            deferred: true,
+            session_key: `alice:${botId}`,
+        }));
+        const openRow = (botId: string) => {
+            const row = screen.getByTestId(`desktop-bot-${botId}`);
+            const button = row.querySelector('button.desktop-bot-workspace__open');
+            if (!button) throw new Error(`missing row button for ${botId}`);
+            fireEvent.click(button);
+        };
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        await screen.findByTestId('desktop-bot-bot_1');
+        openRow('bot_1');
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalled());
+        responseListeners.byEvent['desktop-bot-view']?.({
+            request_id: 'desktop-bot-operating-bot_1',
+            session_key: 'alice:bot_1',
+            novnc_url: liveDesktop,
+        });
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        expect((await screen.findByTestId('desktop-bot-takeover') as HTMLButtonElement).disabled).toBe(true);
+
+        openRow('bot_2');
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        const blocked = await screen.findByTestId('desktop-bot-takeover');
+        expect((blocked as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('有 Bot 正在操作桌面');
+        fireEvent.click(blocked);
+        expect(screen.getByTestId('desktop-bot-stage').className).not.toContain('is-fullscreen');
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1');
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('watch');
+
+        responseListeners.byEvent['ai-assistant-response']?.({
+            request_id: 'desktop-bot-operating-bot_1',
+            session_key: 'alice:bot_1',
+            text: '已打开 example.org',
+        });
+        const idle = await screen.findByTestId('desktop-bot-takeover');
+        await waitFor(() => expect((idle as HTMLButtonElement).disabled).toBe(false));
+        fireEvent.click(idle);
+        expect(screen.getByTestId('desktop-bot-stage').className).toContain('is-fullscreen');
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=0');
+    });
+
+    it('drops a takeover already held when another bot starts driving the shared desktop', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' },
+            { id: 'bot_2', title: '日报', description: '共用桌面', instance_id: 'inst_2' },
+        ]);
+        const liveDesktop = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+        watchBot.mockResolvedValue({ novnc_url: liveDesktop, user_control: false });
+        sendTask.mockImplementation(async (botId: string) => ({
+            request_id: `desktop-bot-operating-${botId}`,
+            deferred: true,
+            session_key: `alice:${botId}`,
+        }));
+        const openRow = (botId: string) => {
+            const row = screen.getByTestId(`desktop-bot-${botId}`);
+            const button = row.querySelector('button.desktop-bot-workspace__open');
+            if (!button) throw new Error(`missing row button for ${botId}`);
+            fireEvent.click(button);
+        };
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        await screen.findByTestId('desktop-bot-bot_2');
+        openRow('bot_2');
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        fireEvent.click(await screen.findByTestId('desktop-bot-takeover'));
+        expect(screen.getByTestId('desktop-bot-stage').className).toContain('is-fullscreen');
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('live');
+
+        openRow('bot_1');
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalled());
+
+        openRow('bot_2');
+        const blocked = await screen.findByTestId('desktop-bot-takeover');
+        expect((blocked as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByTestId('desktop-bot-stage').className).not.toContain('is-fullscreen');
+        expect(screen.queryByTestId('desktop-bot-exit-takeover')).toBeNull();
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1');
+    });
+
+    it('locks takeover on an idle bot while a schedule is using the shared desktop', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' },
+            { id: 'bot_2', title: '日报', description: '共用桌面', instance_id: 'inst_2' },
+        ]);
+        watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        const openRow = (botId: string) => {
+            const row = screen.getByTestId(`desktop-bot-${botId}`);
+            const button = row.querySelector('button.desktop-bot-workspace__open');
+            if (!button) throw new Error(`missing row button for ${botId}`);
+            fireEvent.click(button);
+        };
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        await screen.findByTestId('desktop-bot-bot_2');
+        openRow('bot_2');
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        const takeover = await screen.findByTestId('desktop-bot-takeover');
+        expect((takeover as HTMLButtonElement).disabled).toBe(false);
+
+        await act(async () => {
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', busy: true });
+        });
+        expect((screen.getByTestId('desktop-bot-takeover') as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1');
+        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('有 Bot 正在操作桌面');
+
+        await act(async () => {
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', busy: false });
+        });
+        expect((screen.getByTestId('desktop-bot-takeover') as HTMLButtonElement).disabled).toBe(false);
+    });
+
+    it('keeps the shared desktop locked until every overlapping schedule finishes', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' },
+        ]);
+        watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        const takeover = () => screen.getByTestId('desktop-bot-takeover') as HTMLButtonElement;
+        expect((await screen.findByTestId('desktop-bot-takeover') as HTMLButtonElement).disabled).toBe(false);
+
+        await act(async () => {
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'bob', busy: true });
+        });
+        expect(takeover().disabled).toBe(false);
+
+        await act(async () => {
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', busy: true });
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_2', owner_id: 'alice', busy: true });
+        });
+        expect(takeover().disabled).toBe(true);
+
+        await act(async () => {
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'bob', busy: false });
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', busy: false });
+        });
+        expect(takeover().disabled).toBe(true);
+
+        await act(async () => {
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_2', owner_id: 'alice', busy: false });
+        });
+        expect(takeover().disabled).toBe(false);
+    });
+
+    it('locks takeover when the page opens onto a schedule that is already driving', async () => {
+        getDesktopBusy.mockResolvedValue({ seq: 4, marks: [{ owner_id: 'alice', bot_id: 'bot_1', count: 1 }] });
+        listBots.mockResolvedValue([
+            { id: 'bot_2', title: '日报', description: '共用桌面', instance_id: 'inst_2' },
+        ]);
+        watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('日报'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        const takeover = () => screen.getByTestId('desktop-bot-takeover') as HTMLButtonElement;
+        await screen.findByTestId('desktop-bot-takeover');
+        await waitFor(() => expect(takeover().disabled).toBe(true));
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1');
+
+        await act(async () => {
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', busy: false, count: 0, seq: 3 });
+        });
+        expect(takeover().disabled).toBe(true);
+
+        await act(async () => {
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', busy: false, count: 0, seq: 5 });
+        });
+        expect(takeover().disabled).toBe(false);
+    });
+
+    it('keeps takeover locked when a live run has outlasted its chat bubble', async () => {
+        const stale = Date.now() - 31 * 60 * 1000 - 5000;
+        localStorage.setItem('maclaw.desktopBotMessages.v1', JSON.stringify({
+            alice: {
+                bot_1: [{ id: `m-${stale.toString(36)}-stale`, role: 'assistant', content: '', pending: true, phase: 'execute' }],
+            },
+        }));
+        getDesktopBusy.mockResolvedValue({ seq: 2, marks: [], runs: ['bot_1'] });
+        listBots.mockResolvedValue([
+            { id: 'bot_2', title: '日报', description: '共用桌面', instance_id: 'inst_2' },
+        ]);
+        watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('日报'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        const takeover = () => screen.getByTestId('desktop-bot-takeover') as HTMLButtonElement;
+        await screen.findByTestId('desktop-bot-takeover');
+        await waitFor(() => expect(takeover().disabled).toBe(true));
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1');
+
+        await act(async () => {
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', run_driving: false });
+        });
+        expect(takeover().disabled).toBe(false);
+    });
+
+    it('does not treat an older login handoff as the keyboard while that bot is driving', async () => {
+        const now = Date.now();
+        localStorage.setItem('maclaw.desktopBotMessages.v1', JSON.stringify({
+            alice: {
+                bot_1: [
+                    { id: `m-${now.toString(36)}-old`, role: 'assistant', content: '请在这个浏览器里登录。', userControl: true, attentionReason: 'login', handoffUrl: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1' },
+                    { id: `m-${now.toString(36)}-run`, role: 'assistant', content: '', pending: true, phase: 'execute' },
+                ],
+            },
+        }));
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        const takeover = await screen.findByTestId('desktop-bot-takeover');
+        expect((takeover as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('watch');
+        expect(screen.queryByTestId('desktop-bot-return-control')).toBeNull();
+    });
+
+    it('withholds a login handoff on the open bot while another bot is driving', async () => {
+        const now = Date.now();
+        const liveDesktop = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+        localStorage.setItem('maclaw.desktopBotMessages.v1', JSON.stringify({
+            alice: {
+                bot_2: [{
+                    id: `m-${now.toString(36)}-hand`,
+                    role: 'assistant',
+                    content: '请在这个浏览器里登录。',
+                    userControl: true,
+                    attentionReason: 'login',
+                    handoffUrl: liveDesktop,
+                }],
+            },
+        }));
+        listBots.mockResolvedValue([
+            { id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' },
+            { id: 'bot_2', title: '日报', description: '共用桌面', instance_id: 'inst_2' },
+        ]);
+        watchBot.mockResolvedValue({ novnc_url: liveDesktop, user_control: false });
+        sendTask.mockImplementation(async (botId: string) => ({
+            request_id: `desktop-bot-operating-${botId}`,
+            deferred: true,
+            session_key: `alice:${botId}`,
+        }));
+        const openRow = (botId: string) => {
+            const row = screen.getByTestId(`desktop-bot-${botId}`);
+            const button = row.querySelector('button.desktop-bot-workspace__open');
+            if (!button) throw new Error(`missing row button for ${botId}`);
+            fireEvent.click(button);
+        };
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        await screen.findByTestId('desktop-bot-bot_2');
+        openRow('bot_2');
+        expect(await screen.findByTestId('desktop-bot-return-control')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        expect((await screen.findByTestId('desktop-bot-takeover') as HTMLButtonElement).disabled).toBe(false);
+
+        openRow('bot_1');
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalled());
+
+        openRow('bot_2');
+        expect(screen.queryByTestId('desktop-bot-return-control')).toBeNull();
+        const blocked = await screen.findByTestId('desktop-bot-takeover');
+        expect((blocked as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('有 Bot 正在操作桌面');
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1');
     });
 
     it('fullscreens the computer preview from the corner control and restores it without taking the keyboard', async () => {
@@ -786,7 +1210,7 @@ describe('DesktopBotWorkspace', () => {
         expect(watchBot.mock.calls.length).toBe(callsAfterClose);
     });
 
-    it('queues further messages while one task runs and dispatches them in order', async () => {
+    it('starts a later job while an earlier one is still running', async () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
         let counter = 0;
         sendTask.mockImplementation(async (botId: string) => {
@@ -800,12 +1224,14 @@ describe('DesktopBotWorkspace', () => {
         expect(await screen.findByText(told('打开示例网站'))).toBeTruthy();
         expect(screen.getByTestId('desktop-bot-status').textContent).toContain('安排中');
 
-        // The bot is still busy: this one is accepted immediately, but the
-        // dispatch waits so one bot never runs two turns at once.
+        // The first job is still running. This one starts beside it. The
+        // running job is not cancelled, and the chat is not held until it ends.
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '顺便截一张桌面' } });
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
-        expect(await screen.findByText('收到，「顺便截一张桌面」记下了。等手头这件做完我就来处理这个。')).toBeTruthy();
-        expect(sendTask).toHaveBeenCalledTimes(1);
+        expect(await screen.findByText('表述:顺便截一张桌面')).toBeTruthy();
+        expect(screen.queryByText(/等手头这件做完/)).toBeNull();
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
+        expect(sendTask).toHaveBeenLastCalledWith('bot_1', childOrder('顺便截一张桌面', 'plan', ['打开示例网站']), 'plan');
 
         responseListeners.byEvent['ai-assistant-response']?.({
             request_id: 'desktop-bot-q1',
@@ -813,8 +1239,7 @@ describe('DesktopBotWorkspace', () => {
             text: '已打开 example.org',
         });
         expect(await screen.findByText('已打开 example.org')).toBeTruthy();
-        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
-        expect(sendTask).toHaveBeenLastCalledWith('bot_1', childOrder('顺便截一张桌面', 'plan', ['打开示例网站']), 'plan');
+        expect(sendTask).toHaveBeenCalledTimes(2);
         responseListeners.byEvent['ai-assistant-response']?.({
             request_id: 'desktop-bot-q2',
             session_key: 'alice:bot_1',
@@ -822,6 +1247,104 @@ describe('DesktopBotWorkspace', () => {
         });
         expect(await screen.findByText('已截图')).toBeTruthy();
         expect(screen.getByTestId('desktop-bot-status').textContent).toContain('待命');
+    });
+
+    it('folds a follow-up into the one live run it changes, even when that run is not the first', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        sendTask.mockImplementation(async (botId: string) => ({ request_id: 'desktop-bot-live', deferred: true, session_key: `alice:${botId}` }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(1));
+        listActiveRuns.mockResolvedValue([
+            { run_id: 'run-arm', task_text: '优化 arm64' },
+            { run_id: 'run-head', task_text: '换工具头' },
+        ]);
+        evaluateSupplement.mockImplementation(async (taskText?: string) => (
+            taskText === '换工具头' ? { is_supplement: true, instruction: '只要前5条' } : { is_supplement: false }
+        ));
+        appendSupplement.mockResolvedValue({ accepted: true, stage: 'queued', message: '已收到，会在换工具头的下一步生效。', supplement_id: 'sup-head' });
+
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '只要前5条' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByText('已收到，会在换工具头的下一步生效。')).toBeTruthy();
+        await waitFor(() => expect(appendSupplement).toHaveBeenCalledWith('bot_1', 'run-head', '只要前5条'));
+        expect(evaluateSupplement.mock.calls.map(call => call[0])).toEqual(['优化 arm64', '换工具头']);
+        expect(sendTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('starts a different job when none of the live runs claim it', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        let counter = 0;
+        sendTask.mockImplementation(async (botId: string) => {
+            counter += 1;
+            return { request_id: `desktop-bot-side${counter}`, deferred: true, session_key: `alice:${botId}` };
+        });
+        listActiveRuns.mockResolvedValue([
+            { run_id: 'run-arm', task_text: '优化 arm64' },
+            { run_id: 'run-head', task_text: '换工具头' },
+        ]);
+        evaluateSupplement.mockResolvedValue({ is_supplement: false });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(1));
+
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '在 mac mini 上优化推理' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByText(told('在 mac mini 上优化推理'))).toBeTruthy();
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
+        expect(appendSupplement).not.toHaveBeenCalled();
+        expect(sendTask).toHaveBeenLastCalledWith('bot_1', childOrder('在 mac mini 上优化推理', 'plan', ['打开示例网站']), 'plan');
+    });
+
+    it('asks which job a follow-up belongs to when more than one run matches', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        sendTask.mockImplementation(async (botId: string) => ({ request_id: 'desktop-bot-live', deferred: true, session_key: `alice:${botId}` }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(1));
+        listActiveRuns.mockResolvedValue([
+            { run_id: 'run-arm', task_text: '优化 arm64' },
+            { run_id: 'run-head', task_text: '换工具头' },
+        ]);
+        evaluateSupplement.mockResolvedValue({ is_supplement: true, instruction: '只要前5条' });
+        appendSupplement.mockResolvedValue({ accepted: false, stage: 'ambiguous', message: '你有多个任务正在执行，请说明这条是补充给哪一个。' });
+
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '只要前5条' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByText('你有多个任务正在执行，请说明这条是补充给哪一个。')).toBeTruthy();
+        expect(await screen.findByTestId('desktop-bot-reading-verbatim')).toBeTruthy();
+        expect(appendSupplement).toHaveBeenCalledWith('bot_1', '', '只要前5条');
+        expect(sendTask).toHaveBeenCalledTimes(1);
+    });
+
+    it('sends a follow-up on its own when the run it matched has already ended', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        let counter = 0;
+        sendTask.mockImplementation(async (botId: string) => {
+            counter += 1;
+            return { request_id: `desktop-bot-ended${counter}`, deferred: true, session_key: `alice:${botId}` };
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(1));
+        listActiveRuns.mockResolvedValue([{ run_id: 'run-head', task_text: '换工具头' }]);
+        evaluateSupplement.mockResolvedValue({ is_supplement: true, instruction: '只要前5条' });
+        appendSupplement.mockResolvedValue({ accepted: false, stage: 'no_active_run', message: '那个任务已经结束了，这条会作为新任务发送。' });
+
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '只要前5条' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
+        expect(screen.queryByText('那个任务已经结束了，这条会作为新任务发送。')).toBeNull();
+        expect(screen.queryByTestId('desktop-bot-no-reading')).toBeNull();
+        expect(sendTask).toHaveBeenLastCalledWith('bot_1', childOrder('只要前5条', 'plan', ['打开示例网站']), 'plan');
     });
 
     it('runs queued desktop commands in send order when a later reading finishes first', async () => {
@@ -855,31 +1378,16 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
 
         expect(await screen.findByText(answer)).toBeTruthy();
-        expect(await screen.findByText('收到，「再截一张桌面」记下了。等手头这件做完我就来处理这个。')).toBeTruthy();
-        expect(screen.queryByText('收到，「先打开百度」记下了。等手头这件做完我就来处理这个。')).toBeNull();
+        expect(await screen.findByText('收到，「再截一张桌面」记下了。先排在前面那条后面。')).toBeTruthy();
+        expect(screen.queryByText(/等手头这件做完/)).toBeNull();
         expect(screen.queryByText(/记下了。等你把键盘/)).toBeNull();
         expect(sendTask).toHaveBeenCalledTimes(1);
 
         releaseFirst();
-        expect(await screen.findByText('收到，「先打开百度」记下了。等手头这件做完我就来处理这个。')).toBeTruthy();
-        expect(sendTask).toHaveBeenCalledTimes(1);
-
-        responseListeners.byEvent['ai-assistant-response']?.({
-            request_id: 'desktop-bot-order1',
-            session_key: 'alice:bot_1',
-            text: '已打开 example.org',
-        });
-        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
-        expect(sendTask).toHaveBeenLastCalledWith('bot_1', childOrder('先打开百度', 'plan', ['打开示例网站', '你是谁呀?']), 'plan');
-        expect(sendTask.mock.calls.some(call => String(call[1]).includes('再截一张桌面'))).toBe(false);
-
-        responseListeners.byEvent['ai-assistant-response']?.({
-            request_id: 'desktop-bot-order2',
-            session_key: 'alice:bot_1',
-            text: '百度已打开',
-        });
         await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(3));
-        expect(sendTask).toHaveBeenLastCalledWith('bot_1', childOrder('再截一张桌面', 'plan', ['打开示例网站', '先打开百度', '你是谁呀?']), 'plan');
+        expect(sendTask.mock.calls[1][1]).toBe(childOrder('先打开百度', 'plan', ['打开示例网站']));
+        expect(sendTask.mock.calls[2][1]).toBe(childOrder('再截一张桌面', 'plan', ['打开示例网站', '先打开百度', '你是谁呀?']));
+        expect(understandTask.mock.calls.filter(call => call[0] === '再截一张桌面')).toHaveLength(1);
     });
 
     it('does not start a new command ahead of a follow-up that is still being read', async () => {
@@ -911,7 +1419,7 @@ describe('DesktopBotWorkspace', () => {
             text: '已打开 example.org',
         });
         expect(await screen.findByText('已打开 example.org')).toBeTruthy();
-        expect(screen.getByTestId('desktop-bot-status').textContent).toContain('待命');
+        expect(screen.getByTestId('desktop-bot-status').textContent).toContain('安排中');
         expect(sendTask).toHaveBeenCalledTimes(1);
 
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '再截一张桌面' } });
@@ -921,17 +1429,9 @@ describe('DesktopBotWorkspace', () => {
         expect(sendTask).toHaveBeenCalledTimes(1);
 
         releaseFirst();
-        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
-        expect(sendTask).toHaveBeenLastCalledWith('bot_1', childOrder('先打开百度', 'plan', ['打开示例网站']), 'plan');
-        expect(sendTask.mock.calls.some(call => String(call[1]).includes('再截一张桌面'))).toBe(false);
-
-        responseListeners.byEvent['ai-assistant-response']?.({
-            request_id: 'desktop-bot-gap2',
-            session_key: 'alice:bot_1',
-            text: '百度已打开',
-        });
         await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(3));
-        expect(sendTask).toHaveBeenLastCalledWith('bot_1', childOrder('再截一张桌面', 'plan', ['打开示例网站', '先打开百度']), 'plan');
+        expect(sendTask.mock.calls[1][1]).toBe(childOrder('先打开百度', 'plan', ['打开示例网站']));
+        expect(sendTask.mock.calls[2][1]).toBe(childOrder('再截一张桌面', 'plan', ['打开示例网站', '先打开百度']));
     });
 
     it('holds an ordinary queued message while a login handoff still has the keyboard', async () => {
@@ -948,11 +1448,19 @@ describe('DesktopBotWorkspace', () => {
         expect(await screen.findByText(told('打开示例网站'))).toBeTruthy();
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '顺便截一张桌面' } });
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
-        expect(await screen.findByText('收到，「顺便截一张桌面」记下了。等手头这件做完我就来处理这个。')).toBeTruthy();
-        expect(sendTask).toHaveBeenCalledTimes(1);
+        expect(await screen.findByText('表述:顺便截一张桌面')).toBeTruthy();
+        expect(screen.queryByText(/等手头这件做完/)).toBeNull();
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
+        expect(sendTask).toHaveBeenLastCalledWith('bot_1', childOrder('顺便截一张桌面', 'plan', ['打开示例网站']), 'plan');
 
-        // The reply handed the keyboard over. The queued follow-up must not
-        // start: that command would open the desktop and take the keyboard back.
+        // The screenshot job finishes on its own. The login reply then hands
+        // the keyboard over. The screenshot is not sent again.
+        responseListeners.byEvent['ai-assistant-response']?.({
+            request_id: 'desktop-bot-holdq2',
+            session_key: 'alice:bot_1',
+            text: '已截图',
+        });
+        expect(await screen.findByText('已截图')).toBeTruthy();
         responseListeners.byEvent['ai-assistant-response']?.({
             request_id: 'desktop-bot-holdq1',
             session_key: 'alice:bot_1',
@@ -961,20 +1469,220 @@ describe('DesktopBotWorkspace', () => {
             desktop_user_control: true,
         });
         expect(await screen.findByTestId('desktop-bot-return-control')).toBeTruthy();
-        expect(sendTask).toHaveBeenCalledTimes(1);
+        expect(sendTask).toHaveBeenCalledTimes(2);
 
         fireEvent.click(screen.getByTestId('desktop-bot-return-control'));
-        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(3));
         expect(sendTask).toHaveBeenLastCalledWith('bot_1', '登录或验证已在当前桌面浏览器完成，请沿用这个登录状态继续。', 'execute');
-        expect(sendTask.mock.calls.some(call => call[1] === '顺便截一张桌面')).toBe(false);
+        expect(sendTask.mock.calls.filter(call => String(call[1]).includes('顺便截一张桌面'))).toHaveLength(1);
 
         responseListeners.byEvent['ai-assistant-response']?.({
-            request_id: 'desktop-bot-holdq2',
+            request_id: 'desktop-bot-holdq3',
             session_key: 'alice:bot_1',
             text: '登录后的页面到了。',
         });
+        expect(await screen.findByText('登录后的页面到了。')).toBeTruthy();
+        expect(sendTask).toHaveBeenCalledTimes(3);
+    });
+
+    it('keeps the login handoff usable while another job is still running', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        let counter = 0;
+        sendTask.mockImplementation(async (botId: string) => {
+            counter += 1;
+            return { request_id: `desktop-bot-beside${counter}`, deferred: true, session_key: `alice:${botId}` };
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(1));
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '顺便截一张桌面' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
+
+        await act(async () => {
+            responseListeners.byEvent['ai-assistant-response']?.({
+                request_id: 'desktop-bot-beside1',
+                session_key: 'alice:bot_1',
+                text: '需要你登录',
+                desktop_handoff_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1',
+                desktop_user_control: true,
+            });
+            // The screenshot job is still a live run. That signal used to
+            // take the login keyboard back and hide this button.
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', run_driving: true });
+        });
+        expect(await screen.findByTestId('desktop-bot-return-control')).toBeTruthy();
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('live');
+        expect(sendTask).toHaveBeenCalledTimes(2);
+
+        fireEvent.click(screen.getByTestId('desktop-bot-return-control'));
         await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(3));
-        expect(sendTask).toHaveBeenLastCalledWith('bot_1', childOrder('顺便截一张桌面', 'plan', ['打开示例网站', RETURN_TASK]), 'plan');
+        expect(sendTask).toHaveBeenLastCalledWith('bot_1', '登录或验证已在当前桌面浏览器完成，请沿用这个登录状态继续。', 'execute');
+        expect(sendTask.mock.calls.filter(call => String(call[1]).includes('顺便截一张桌面'))).toHaveLength(1);
+    });
+
+    it('does not let another job quiet view end a login handoff', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        let counter = 0;
+        sendTask.mockImplementation(async (botId: string) => {
+            counter += 1;
+            return { request_id: `desktop-bot-quiet${counter}`, deferred: true, session_key: `alice:${botId}` };
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(messagesForBot('alice', 'bot_1').some(item => item.requestId === 'desktop-bot-quiet1')).toBe(true));
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '顺便截一张桌面' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(messagesForBot('alice', 'bot_1').some(item => item.requestId === 'desktop-bot-quiet2')).toBe(true));
+        responseListeners.byEvent['desktop-bot-view']?.({
+            request_id: 'desktop-bot-quiet1',
+            session_key: 'alice:bot_1',
+            novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1',
+            user_control: true,
+        });
+        expect(await screen.findByTestId('desktop-bot-return-control')).toBeTruthy();
+        responseListeners.byEvent['desktop-bot-view']?.({
+            request_id: 'desktop-bot-quiet2',
+            session_key: 'alice:bot_1',
+            novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1',
+            user_control: false,
+        });
+        expect(screen.getByTestId('desktop-bot-return-control')).toBeTruthy();
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('live');
+    });
+
+    it('keeps the login picture when a later job fails to send', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        let counter = 0;
+        let failSecond: (() => void) | undefined;
+        sendTask.mockImplementation((botId: string) => {
+            counter += 1;
+            if (counter === 2) {
+                return new Promise((_resolve, reject) => {
+                    failSecond = () => reject(new Error('bot service is unavailable, contact the administrator'));
+                });
+            }
+            return Promise.resolve({ request_id: `desktop-bot-keep${counter}`, deferred: true, session_key: `alice:${botId}` });
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(messagesForBot('alice', 'bot_1').some(item => item.requestId === 'desktop-bot-keep1')).toBe(true));
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '顺便截一张桌面' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
+        responseListeners.byEvent['desktop-bot-view']?.({
+            request_id: 'desktop-bot-keep1',
+            session_key: 'alice:bot_1',
+            novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1',
+            user_control: true,
+        });
+        expect(await screen.findByTestId('desktop-bot-return-control')).toBeTruthy();
+        if (!failSecond) throw new Error('second send did not start');
+        failSecond();
+        expect(await screen.findByText('这条没送到——我这边暂时连不上我的服务器。麻烦稍后再发一次。')).toBeTruthy();
+        expect(screen.getByTestId('desktop-bot-return-control')).toBeTruthy();
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('live');
+        expect(screen.getByTestId('desktop-bot-stage').className).toContain('is-user');
+    });
+
+    it('keeps the desktop picture when another job reports cleared', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        const liveDesktop = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+        watchBot.mockResolvedValue({ novnc_url: liveDesktop, user_control: false });
+        let counter = 0;
+        sendTask.mockImplementation(async (botId: string) => {
+            counter += 1;
+            return { request_id: `desktop-bot-clear${counter}`, deferred: true, session_key: `alice:${botId}` };
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(messagesForBot('alice', 'bot_1').some(item => item.requestId === 'desktop-bot-clear1')).toBe(true));
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '顺便截一张桌面' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(messagesForBot('alice', 'bot_1').some(item => item.requestId === 'desktop-bot-clear2')).toBe(true));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        expect(await screen.findByTestId('desktop-bot-stage')).toBeTruthy();
+        responseListeners.byEvent['desktop-bot-view']?.({
+            request_id: 'desktop-bot-clear2',
+            session_key: 'alice:bot_1',
+            cleared: true,
+        });
+        expect(screen.getByTestId('desktop-bot-stage')).toBeTruthy();
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('vnc.html');
+    });
+
+    it('keeps a login keyboard when a watch poll returns after a later job started', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        const liveDesktop = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+        let releaseWatch: ((view: { novnc_url: string; user_control: boolean }) => void) | undefined;
+        watchBot.mockImplementation(() => new Promise(resolve => { releaseWatch = resolve; }));
+        let counter = 0;
+        sendTask.mockImplementation(async (botId: string) => {
+            counter += 1;
+            return { request_id: `desktop-bot-poll${counter}`, deferred: true, session_key: `alice:${botId}` };
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(messagesForBot('alice', 'bot_1').some(item => item.requestId === 'desktop-bot-poll1')).toBe(true));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        await waitFor(() => expect(watchBot).toHaveBeenCalled());
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '顺便截一张桌面' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(messagesForBot('alice', 'bot_1').some(item => item.requestId === 'desktop-bot-poll2')).toBe(true));
+        if (!releaseWatch) throw new Error('desktop watch did not start');
+        releaseWatch({ novnc_url: liveDesktop, user_control: true });
+        expect(await screen.findByTestId('desktop-bot-return-control')).toBeTruthy();
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('live');
+        const login = messagesForBot('alice', 'bot_1').find(item => item.requestId === 'desktop-bot-poll1');
+        const beside = messagesForBot('alice', 'bot_1').find(item => item.requestId === 'desktop-bot-poll2');
+        expect(login?.userControl).toBe(true);
+        expect(beside?.userControl).not.toBe(true);
+    });
+
+    it('refreshes the credit balance once for each finished job', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        let counter = 0;
+        sendTask.mockImplementation(async (botId: string) => {
+            counter += 1;
+            return { request_id: `desktop-bot-credit${counter}`, deferred: true, session_key: `alice:${botId}` };
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(messagesForBot('alice', 'bot_1').some(item => item.requestId === 'desktop-bot-credit1')).toBe(true));
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '顺便截一张桌面' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(messagesForBot('alice', 'bot_1').some(item => item.requestId === 'desktop-bot-credit2')).toBe(true));
+        responseListeners.byEvent['ai-assistant-response']?.({
+            request_id: 'desktop-bot-credit1',
+            session_key: 'alice:bot_1',
+            text: '第一件做完了',
+        });
+        await waitFor(() => expect(refreshHubCredits).toHaveBeenCalledTimes(1));
+        responseListeners.byEvent['ai-assistant-response']?.({
+            request_id: 'desktop-bot-credit2',
+            session_key: 'alice:bot_1',
+            text: '第二件做完了',
+        });
+        await waitFor(() => expect(refreshHubCredits).toHaveBeenCalledTimes(2));
+        responseListeners.byEvent['ai-assistant-response']?.({
+            request_id: 'desktop-bot-credit1',
+            session_key: 'alice:bot_1',
+            text: '第一件做完了',
+        });
+        await waitFor(() => expect(screen.getByText('第二件做完了')).toBeTruthy());
+        expect(refreshHubCredits).toHaveBeenCalledTimes(2);
     });
 
     it('answers small talk during a login handoff and holds a new desktop command', async () => {
@@ -1021,17 +1729,18 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.getByTestId('desktop-bot-return-control')).toBeTruthy();
 
         fireEvent.click(screen.getByTestId('desktop-bot-return-control'));
-        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
-        expect(sendTask).toHaveBeenLastCalledWith('bot_1', RETURN_TASK, 'execute');
-        expect(sendTask.mock.calls.some(call => String(call[1]).includes('顺便截一张桌面'))).toBe(false);
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(3));
+        expect(sendTask.mock.calls[1][1]).toBe(RETURN_TASK);
+        expect(sendTask.mock.calls[1][2]).toBe('execute');
+        expect(sendTask.mock.calls[2][1]).toBe(childOrder('顺便截一张桌面', 'plan', ['打开示例网站', '你是谁呀?', RETURN_TASK]));
 
         responseListeners.byEvent['ai-assistant-response']?.({
             request_id: 'desktop-bot-handoff-chat-2',
             session_key: 'alice:bot_1',
             text: '登录后的页面到了。',
         });
-        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(3));
-        expect(sendTask).toHaveBeenLastCalledWith('bot_1', childOrder('顺便截一张桌面', 'plan', ['打开示例网站', '你是谁呀?', RETURN_TASK]), 'plan');
+        expect(await screen.findByText('登录后的页面到了。')).toBeTruthy();
+        expect(sendTask).toHaveBeenCalledTimes(3);
     });
 
     it('sends a queued login continuation before an ordinary message when the reply is still a handoff', async () => {
@@ -1048,7 +1757,16 @@ describe('DesktopBotWorkspace', () => {
         await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(1));
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '顺便截一张桌面' } });
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
-        expect(await screen.findByText('收到，「顺便截一张桌面」记下了。等手头这件做完我就来处理这个。')).toBeTruthy();
+        expect(await screen.findByText('表述:顺便截一张桌面')).toBeTruthy();
+        expect(screen.queryByText(/等手头这件做完/)).toBeNull();
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
+        expect(sendTask.mock.calls[1][1]).toBe(childOrder('顺便截一张桌面', 'plan', ['打开示例网站']));
+        responseListeners.byEvent['ai-assistant-response']?.({
+            request_id: 'desktop-bot-resumeq2',
+            session_key: 'alice:bot_1',
+            text: '已截图',
+        });
+        expect(await screen.findByText('已截图')).toBeTruthy();
         responseListeners.byEvent['desktop-bot-view']?.({
             request_id: 'desktop-bot-resumeq1',
             session_key: 'alice:bot_1',
@@ -1056,7 +1774,9 @@ describe('DesktopBotWorkspace', () => {
             user_control: true,
         });
         fireEvent.click(await screen.findByTestId('desktop-bot-return-control'));
-        expect(sendTask).toHaveBeenCalledTimes(1);
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(3));
+        expect(sendTask).toHaveBeenLastCalledWith('bot_1', '登录或验证已在当前桌面浏览器完成，请沿用这个登录状态继续。', 'execute');
+        expect(sendTask.mock.calls.filter(call => String(call[1]).includes('顺便截一张桌面'))).toHaveLength(1);
 
         responseListeners.byEvent['ai-assistant-response']?.({
             request_id: 'desktop-bot-resumeq1',
@@ -1065,18 +1785,8 @@ describe('DesktopBotWorkspace', () => {
             desktop_handoff_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1',
             desktop_user_control: true,
         });
-        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
-        expect(sendTask).toHaveBeenLastCalledWith('bot_1', '登录或验证已在当前桌面浏览器完成，请沿用这个登录状态继续。', 'execute');
-        expect(sendTask.mock.calls.some(call => call[1] === '顺便截一张桌面')).toBe(false);
-        expect(screen.queryByTestId('desktop-bot-return-control')).toBeNull();
-
-        responseListeners.byEvent['ai-assistant-response']?.({
-            request_id: 'desktop-bot-resumeq2',
-            session_key: 'alice:bot_1',
-            text: '登录后的页面到了。',
-        });
-        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(3));
-        expect(sendTask).toHaveBeenLastCalledWith('bot_1', childOrder('顺便截一张桌面', 'plan', ['打开示例网站', RETURN_TASK]), 'plan');
+        expect(await screen.findByText('需要你登录')).toBeTruthy();
+        expect(sendTask).toHaveBeenCalledTimes(3);
     });
 
     it('keeps a collapsed desktop panel closed until a keyboard handoff', async () => {
@@ -1739,6 +2449,27 @@ describe('DesktopBotWorkspace', () => {
         expect(watchBot).not.toHaveBeenCalled();
     });
 
+    it('says the bot credit allowance is used up instead of the server sentence', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: 'Bot 1', description: '共用桌面', instance_id: 'inst_1' }]);
+        sendTask.mockImplementation(async (botId: string) => ({
+            request_id: 'desktop-bot-credits',
+            deferred: true,
+            session_key: `alice:${botId}`,
+        }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('Bot 1'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByText('打开示例网站')).toBeTruthy();
+        responseListeners.byEvent['ai-assistant-response']?.({
+            request_id: 'desktop-bot-credits',
+            session_key: 'alice:bot_1',
+            error: 'selected model grant credits are exhausted',
+        });
+        expect(await screen.findByText('你的 Credits 已经用完。请充值，或把这个 Bot 改成自己的模型。')).toBeTruthy();
+        expect(screen.queryByText('selected model grant credits are exhausted')).toBeNull();
+    });
+
     it('confirms only the latest finished plan and that button is the execute path', async () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
         let counter = 0;
@@ -1773,8 +2504,8 @@ describe('DesktopBotWorkspace', () => {
         expect(confirmButtons[0].closest('.desktop-bot-chat__entry')?.textContent || '').toContain('只看首页，然后停。');
         fireEvent.click(confirmButtons[0]);
         const sentence = '安排已确认。请按你上一条安排执行。做完、失败或需要我时，在对话里告诉我。';
-        await waitFor(() => expect(understandTask).toHaveBeenLastCalledWith(sentence, 'execute', 'zh-Hans', ['开始吧', '改成只看首页'], ''));
-        await waitFor(() => expect(sendTask).toHaveBeenLastCalledWith('bot_1', childOrder(sentence, 'execute', ['开始吧', '改成只看首页']), 'execute'));
+        await waitFor(() => expect(sendTask).toHaveBeenLastCalledWith('bot_1', confirmedWorkOrder('只看首页，然后停。'), 'execute'));
+        expect(understandTask.mock.calls.some(call => call[0] === sentence && call[1] === 'execute')).toBe(false);
         expect(screen.getByText(sentence)).toBeTruthy();
         expect(screen.getByTestId('desktop-bot-status').textContent).toContain('工作中');
         expect((screen.getByTestId('desktop-bot-confirm') as HTMLButtonElement).disabled).toBe(true);
@@ -1786,6 +2517,34 @@ describe('DesktopBotWorkspace', () => {
         expect(await screen.findByText('首页已打开。')).toBeTruthy();
         expect(screen.queryByTestId('desktop-bot-confirm')).toBeNull();
         expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
+    });
+
+    it('confirms a finished plan while an earlier job is still running', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        let counter = 0;
+        sendTask.mockImplementation(async (botId: string) => {
+            counter += 1;
+            return { request_id: `desktop-bot-planlive-${counter}`, deferred: true, session_key: `alice:${botId}` };
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(1));
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '开始吧' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
+        responseListeners.byEvent['ai-assistant-response']?.({
+            request_id: 'desktop-bot-planlive-2',
+            session_key: 'alice:bot_1',
+            text: '先打开网站，再告诉你结果。',
+        });
+        const confirm = await screen.findByTestId('desktop-bot-confirm');
+        expect((confirm as HTMLButtonElement).disabled).toBe(false);
+        fireEvent.click(confirm);
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(3));
+        const sentence = '安排已确认。请按你上一条安排执行。做完、失败或需要我时，在对话里告诉我。';
+        expect(sendTask).toHaveBeenLastCalledWith('bot_1', confirmedWorkOrder('先打开网站，再告诉你结果。'), 'execute');
     });
 
     it('does not offer to execute a screenshot that is already in the reply', async () => {
@@ -1978,6 +2737,39 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.queryByTestId('desktop-bot-confirm')).toBeNull();
         expect(screen.queryByText(/记下了/)).toBeNull();
         expect(screen.getByTestId('desktop-bot-status').textContent).toContain('待命');
+    });
+
+    it('answers a status question from the task query and does not start work', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: 'Bot 2', description: '共用桌面', instance_id: 'inst_1' }]);
+        understandTask.mockImplementation(async () => ({
+            told: '',
+            instruction: '下载报表',
+            pace: 'status',
+        }));
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('Bot 2'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '那个下载报表怎么样了' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByText('「下载报表」还在进行。')).toBeTruthy();
+        expect(queryTaskStatus).toHaveBeenCalledWith('bot_1', '下载报表', 'zh-Hans');
+        expect(sendTask).not.toHaveBeenCalled();
+        expect(screen.queryByTestId('desktop-bot-confirm')).toBeNull();
+    });
+
+    it('shows a result that finished while this GUI was offline', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: 'Bot 2', description: '共用桌面', instance_id: 'inst_1' }]);
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('Bot 2'));
+        const report = {
+            request_id: 'desktop-bot-deliver-run_done',
+            session_key: 'alice:bot_1',
+            delivery_report: true,
+            text: '报表已下载',
+        };
+        responseListeners.byEvent['desktop-bot-report']?.(report);
+        responseListeners.byEvent['desktop-bot-report']?.(report);
+        expect(await screen.findByText('报表已下载')).toBeTruthy();
+        expect(screen.getAllByText('报表已下载')).toHaveLength(1);
     });
 
     it('arms a repeating request and reports the result in this chat', async () => {
@@ -2195,10 +2987,9 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.getByText('这句没整理成可执行的安排，没有发出。')).toBeTruthy();
     });
 
-    // A parked sentence is still the person's order even while the desktop is
-    // busy: choosing their own words queues the turn behind the running one
-    // instead of racing it on the shared desktop.
-    it('queues the verbatim resend until the running task settles', async () => {
+    // A parked sentence is still the person's order. While another job is
+    // running, choosing their own words starts that order beside it.
+    it('sends the verbatim resend while another task is still running', async () => {
         listBots.mockResolvedValue([{ id: 'bot_1', title: 'Bot 2', description: '共用桌面', instance_id: 'inst_1' }]);
         understandTask.mockImplementation(async (content: string) => {
             if (String(content) === '打开百度') return { reading: 'unreachable' };
@@ -2219,21 +3010,19 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
         expect(await screen.findByTestId('desktop-bot-no-reading')).toBeTruthy();
 
-        // The desktop is still busy: the choice queues, it does not race.
+        // The other job is still running. These words start beside it.
         fireEvent.click(screen.getByTestId('desktop-bot-reading-verbatim'));
         await waitFor(() => expect(screen.queryByTestId('desktop-bot-no-reading')).toBeNull());
-        await act(async () => {
-            await new Promise(resolve => setTimeout(resolve, 30));
-        });
-        expect(sendTask).toHaveBeenCalledTimes(1);
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
+        expect(sendTask).toHaveBeenLastCalledWith('bot_1', '打开百度', 'plan');
 
         responseListeners.byEvent['ai-assistant-response']?.({
             request_id: 'desktop-bot-busy-verbatim',
             session_key: 'alice:bot_1',
             text: 'PDF 已附在这条对话里。',
         });
-        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
-        expect(sendTask).toHaveBeenLastCalledWith('bot_1', '打开百度', 'plan');
+        expect(await screen.findByText('PDF 已附在这条对话里。')).toBeTruthy();
+        expect(sendTask).toHaveBeenCalledTimes(2);
     });
 
     it('does not turn a confirmed job into chat when the order is empty', async () => {
@@ -2265,11 +3054,9 @@ describe('DesktopBotWorkspace', () => {
             text: '确认后我会卸掉旧办公软件并清掉数据，做完告诉你。',
         });
         fireEvent.click(await screen.findByTestId('desktop-bot-confirm'));
-        expect(await screen.findByText('这句没整理成可执行的安排，没有发出。')).toBeTruthy();
+        await waitFor(() => expect(sendTask).toHaveBeenLastCalledWith('bot_1', confirmedWorkOrder('确认后我会卸掉旧办公软件并清掉数据，做完告诉你。'), 'execute'));
         expect(screen.queryByText('按前面的安排做。')).toBeNull();
-        expect(screen.getAllByTestId('desktop-bot-confirm')).toHaveLength(1);
-        expect((screen.getByTestId('desktop-bot-confirm') as HTMLButtonElement).disabled).toBe(false);
-        expect(sendTask).toHaveBeenCalledTimes(1);
+        expect(screen.queryByText('这句没整理成可执行的安排，没有发出。')).toBeNull();
     });
 
     it('keeps the arrangement button when a later message is answered here', async () => {
@@ -2382,7 +3169,7 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.queryByText(/记下了/)).toBeNull();
 
         fireEvent.click(screen.getByTestId('desktop-bot-confirm'));
-        await waitFor(() => expect(sendTask).toHaveBeenLastCalledWith('bot_1', childOrder(CONFIRM_TASK, 'execute', [ask, '打开百度', '收件人是谁']), 'execute'));
+        await waitFor(() => expect(sendTask).toHaveBeenLastCalledWith('bot_1', confirmedWorkOrder('确认后我会卸掉旧办公软件并清掉数据，做完告诉你。'), 'execute'));
     });
 
     it('confirms a large change once and that button starts the work', async () => {
@@ -2419,7 +3206,8 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.getAllByTestId('desktop-bot-confirm')).toHaveLength(1);
         fireEvent.click(screen.getByTestId('desktop-bot-confirm'));
         const sentence = '安排已确认。请按你上一条安排执行。做完、失败或需要我时，在对话里告诉我。';
-        await waitFor(() => expect(sendTask).toHaveBeenLastCalledWith('bot_1', childOrder(sentence, 'execute', [ask]), 'execute'));
+        await waitFor(() => expect(sendTask).toHaveBeenLastCalledWith('bot_1', confirmedWorkOrder('确认后我会卸掉旧办公软件并清掉数据，做完告诉你。'), 'execute'));
+        expect(screen.getByText(sentence)).toBeTruthy();
         responseListeners.byEvent['ai-assistant-response']?.({
             request_id: 'desktop-bot-large',
             session_key: 'alice:bot_1',
@@ -2439,6 +3227,35 @@ describe('DesktopBotWorkspace', () => {
         expect(await screen.findByText('LLM not configured')).toBeTruthy();
         expect(sendTask).not.toHaveBeenCalled();
         expect(screen.queryByText('你要当前桌面的截屏。我现在截，截到就发在这里。')).toBeNull();
+    });
+
+    it('keeps an early result on the job that is still waiting for its id', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        let counter = 0;
+        sendTask.mockImplementation(async (botId: string) => {
+            counter += 1;
+            const requestId = `desktop-bot-cross${counter}`;
+            if (counter === 2) {
+                responseListeners.byEvent['ai-assistant-response']?.({
+                    request_id: requestId,
+                    session_key: `alice:${botId}`,
+                    text: '第二件做完了',
+                });
+            }
+            return { request_id: requestId, deferred: true, session_key: `alice:${botId}` };
+        });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '打开示例网站' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        await waitFor(() => expect(messagesForBot('alice', 'bot_1').some(item => item.requestId === 'desktop-bot-cross1')).toBe(true));
+        fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '顺便截一张桌面' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByText('第二件做完了')).toBeTruthy();
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
+        const stored = messagesForBot('alice', 'bot_1');
+        expect(stored.some(item => item.pending && item.requestId === 'desktop-bot-cross1')).toBe(true);
+        expect(stored.some(item => item.content === '第二件做完了' && item.requestId === 'desktop-bot-cross2' && !item.pending)).toBe(true);
     });
 
     it('does not attach a late result to a turn that has not been sent', async () => {
@@ -2500,6 +3317,25 @@ describe('DesktopBotWorkspace', () => {
         expect(alice.some(item => item.failed && item.content === '这条没有发出。发出前账号已经切换。')).toBe(true);
         expect(alice.some(item => String(item.content || '').includes('表述:'))).toBe(false);
         expect(stored.bob?.bot_1 || []).toHaveLength(0);
+    });
+
+    it('still sends when the bots page leaves and comes back during the reading', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        let release: (value: { told: string; instruction: string }) => void = () => {};
+        understandTask.mockImplementation(() => new Promise(resolve => { release = resolve; }));
+        sendTask.mockResolvedValue({ request_id: 'desktop-bot-back', deferred: true, session_key: 'alice:bot_1' });
+        const view = renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.change(await screen.findByTestId('desktop-bot-command'), { target: { value: '安装一个pdf阅读器' } });
+        fireEvent.click(screen.getByTestId('desktop-bot-send'));
+        expect(await screen.findByText('安装一个pdf阅读器')).toBeTruthy();
+        view.unmount();
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        await act(async () => { release({ told: told('安装一个pdf阅读器'), instruction: childOrder('安装一个pdf阅读器') }); });
+        await waitFor(() => expect(sendTask).toHaveBeenCalledWith('bot_1', childOrder('安装一个pdf阅读器'), 'plan'));
+        const stored = JSON.parse(localStorage.getItem('maclaw.desktopBotMessages.v1') || '{}') as Record<string, Record<string, Array<{ content?: string }>>>;
+        const alice = stored.alice?.bot_1 || [];
+        expect(alice.some(item => String(item.content || '').includes('账号已经切换'))).toBe(false);
     });
 
     it('keeps a composer copy of the confirm, resume, and fill sentences on the plan phase', async () => {
@@ -2665,7 +3501,7 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.getByTestId('desktop-bot-open-desktop').getAttribute('aria-pressed')).toBe('true');
         expect(panel.querySelector('.desktop-bot-panel__avatar')?.textContent).toBe('值');
         expect(panel.querySelector('.desktop-bot-panel__avatar')?.className).toContain('desktop-bot-panel__avatar');
-        expect(panel.textContent).toContain('当前用户在 MaClawSrv 上的一个实例，共用云端桌面。');
+        expect(panel.textContent).toContain('远程电脑上的7x24小时数字助理。');
         expect(screen.getAllByRole('tab')).toHaveLength(3);
         expect(screen.getByRole('tab', { name: '定时任务' })).toBeTruthy();
         expect(screen.queryByRole('tab', { name: '资料库' })).toBeNull();
@@ -2686,14 +3522,14 @@ describe('DesktopBotWorkspace', () => {
         expect(details.textContent).toContain('状态');
         expect(details.textContent).toContain('安排中');
         expect(details.textContent).toContain('描述');
-        expect(details.textContent).toContain('当前用户在 MaClawSrv 上的一个实例，共用云端桌面。');
+        expect(details.textContent).toContain('远程电脑上的7x24小时数字助理。');
         expect(details.textContent).toContain('创建时间');
         expect(details.textContent).toContain(formatCreated(Date.parse(listedAt)));
         expect(details.textContent).not.toContain(formatCreated(Date.now()));
-        expect(details.textContent).toContain('每个 Bot 都是你在 MaClawSrv 上的一个实例，共用你的云端桌面。');
+        expect(details.textContent).toContain('Bot为24小时驻守远程电脑上的数字助理。');
         expect(details.querySelector('.desktop-bot-panel__sheet')).toBeTruthy();
         expect(details.querySelector('.desktop-bot-panel__badge')?.textContent).toContain('安排中');
-        expect(details.querySelector('.desktop-bot-panel__note')?.textContent).toContain('每个 Bot 都是你在 MaClawSrv 上的一个实例，共用你的云端桌面。');
+        expect(details.querySelector('.desktop-bot-panel__note')?.textContent).toContain('Bot为24小时驻守远程电脑上的数字助理。');
         expect(screen.queryByTestId('desktop-bot-computer')).toBeNull();
         expect(screen.queryByTestId('desktop-bot-stage')).toBeNull();
 
@@ -2745,7 +3581,7 @@ describe('DesktopBotWorkspace', () => {
         expect(details.textContent).toContain('Description');
         expect(details.textContent).toContain('Shared desk');
         expect(details.textContent).toContain('Created');
-        expect(details.textContent).toContain('Each bot is another instance of your MaClawSrv user. They share your cloud desktop.');
+        expect(details.textContent).toContain('A bot is a digital assistant stationed on the remote computer around the clock.');
         english.unmount();
 
         listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
@@ -3041,17 +3877,20 @@ describe('DesktopBotWorkspace', () => {
         expect(await screen.findByText(told('打开示例网站'))).toBeTruthy();
         fireEvent.change(screen.getByTestId('desktop-bot-command'), { target: { value: '顺便截一张桌面' } });
         fireEvent.click(screen.getByTestId('desktop-bot-send'));
-        expect(await screen.findByText('收到，「顺便截一张桌面」记下了。等手头这件做完我就来处理这个。')).toBeTruthy();
-        expect(sendTask).toHaveBeenCalledTimes(1);
+        expect(await screen.findByText('表述:顺便截一张桌面')).toBeTruthy();
+        expect(screen.queryByText(/等手头这件做完/)).toBeNull();
+        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
+        expect(sendTask).toHaveBeenLastCalledWith('bot_new', childOrder('顺便截一张桌面', 'plan', ['打开示例网站']), 'plan');
         await act(async () => { resolveList([]); });
+        expect(sendTask).toHaveBeenCalledTimes(2);
         await act(async () => { resolveFirst({ request_id: 'desktop-bot-q1', deferred: true, session_key: 'alice:bot_new' }); });
         responseListeners.byEvent['ai-assistant-response']?.({
             request_id: 'desktop-bot-q1',
             session_key: 'alice:bot_new',
             text: '已打开 example.org',
         });
-        await waitFor(() => expect(sendTask).toHaveBeenCalledTimes(2));
-        expect(sendTask).toHaveBeenLastCalledWith('bot_new', childOrder('顺便截一张桌面', 'plan', ['打开示例网站']), 'plan');
+        expect(await screen.findByText('已打开 example.org')).toBeTruthy();
+        expect(sendTask).toHaveBeenCalledTimes(2);
         responseListeners.byEvent['ai-assistant-response']?.({
             request_id: 'desktop-bot-q2',
             session_key: 'alice:bot_new',
@@ -3131,7 +3970,7 @@ describe('DesktopBotWorkspace', () => {
         expect(css).toMatch(/\.desktop-bot-chat__bubble--user\s*\{[^}]*theme-primary/);
         expect(css).toMatch(/\.desktop-bot-chat__bubble--assistant\s*\{[^}]*var\(--theme-surface/);
         expect(css).toMatch(/\.desktop-bot-chat__action\s*\{[^}]*appearance:\s*none/);
-        expect(css).toMatch(/\.desktop-bot-chat__bubble \+ \.desktop-bot-chat__action\s*,\s*\.desktop-bot-chat__bubble \+ \.desktop-bot-chat__secret\s*\{[^}]*margin-top:\s*14px/);
+        expect(css).toMatch(/\.desktop-bot-chat__bubble \+ \.desktop-bot-chat__action\s*,\s*\.desktop-bot-chat__bubble \+ \.desktop-bot-chat__secret\s*,\s*\.desktop-bot-chat__bubble \[data-testid="desktop-bot-take-computer"\]\s*\{[^}]*margin-top:\s*14px/);
         expect(css).toMatch(/\.desktop-bot-chat__shot-open\s*\{[^}]*appearance:\s*none/);
         expect(css).toMatch(/\.desktop-bot-chat__shot-open\s*\{[^}]*cursor:\s*zoom-in/);
         expect(css).toMatch(/\.desktop-bot-chat__shot\s*\{[^}]*max-width:\s*100%/);
@@ -3566,6 +4405,7 @@ describe('DesktopBotWorkspace', () => {
         const create = await screen.findByTestId('desktop-bot-create');
         const model = screen.getByTestId('desktop-bot-llm');
         expect(model.compareDocumentPosition(create) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+        expect(screen.queryByTestId('desktop-bot-custom-model')).toBeNull();
     });
 
     it('sends the whole provider route when a bot owner picks one', async () => {
@@ -3757,6 +4597,7 @@ describe('DesktopBotWorkspace', () => {
         fireEvent.click(within(dialog).getByTestId('bot-llm-save'));
         expect(await within(dialog).findByText('这台云服务器暂时连不上，下次打开 bot 时会带上。')).toBeTruthy();
         expect(screen.queryByTestId('bot-llm-dialog')).not.toBeNull();
+        expect(screen.getByTestId('desktop-bot-custom-model').getAttribute('aria-label')).toBe('正在使用自定义模型：Qwen · qwen-max');
     });
     it('upgrades a queued supplement receipt when the run reports the outcome', () => {
         saveBotMessages('alice', 'bot_1', [

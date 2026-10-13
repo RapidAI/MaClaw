@@ -382,6 +382,36 @@ const TaskStatusMark = ({ kind, label }: { kind: TaskListStatusKind; label: stri
     </span>
 );
 
+const TaskFolderGrip = () => (
+    <svg className="stsm-task-folder__grip-icon" width="10" height="14" viewBox="0 0 10 14" aria-hidden="true" focusable="false">
+        <circle cx="3" cy="2.5" r="1" fill="currentColor" />
+        <circle cx="7" cy="2.5" r="1" fill="currentColor" />
+        <circle cx="3" cy="7" r="1" fill="currentColor" />
+        <circle cx="7" cy="7" r="1" fill="currentColor" />
+        <circle cx="3" cy="11.5" r="1" fill="currentColor" />
+        <circle cx="7" cy="11.5" r="1" fill="currentColor" />
+    </svg>
+);
+
+const TaskFolderChevron = () => (
+    <svg className="stsm-task-folder__chevron" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="m9 6 6 6-6 6" />
+    </svg>
+);
+
+const TaskFolderIcon = ({ open }: { open: boolean }) => (
+    <svg className="stsm-task-folder__icon" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        {open ? (
+            <>
+                <path {...TASK_ICON_PROPS} d="M3 8.2V6.8A1.8 1.8 0 0 1 4.8 5h3.9l1.5 1.5H19.2A1.8 1.8 0 0 1 21 8.3V9" />
+                <path {...TASK_ICON_PROPS} d="M3 9.2h18l-1.55 8.15a1.8 1.8 0 0 1-1.77 1.45H6.32a1.8 1.8 0 0 1-1.77-1.45L3 9.2z" />
+            </>
+        ) : (
+            <path {...TASK_ICON_PROPS} d="M4 7.2A1.8 1.8 0 0 1 5.8 5.4h3.7l1.5 1.6h7.2A1.8 1.8 0 0 1 20 8.8v8.4a1.8 1.8 0 0 1-1.8 1.8H5.8A1.8 1.8 0 0 1 4 17.2V7.2z" />
+        )}
+    </svg>
+);
+
 const TaskTypeIcon = ({ kind, lang, maintenance = false }: { kind: TaskIconKind; lang: string; maintenance?: boolean }) => {
     const label = taskIconLabel(kind, lang, maintenance);
     const iconColor = kind === 'cloud_workspace'
@@ -898,13 +928,115 @@ export function isLiveRunningTaskRow(task: TaskManagementItem, ctx: LiveRunningR
 /** Number of task rows that count as in progress: live-running rows plus
  * rows whose durable workflow snapshot still buckets as running. Counted
  * over the same visible rows the task list renders. The Windows taskbar
- * overlay is unread bot replies and does not use this count. */
+ * overlay includes this count. */
 export function countRunningTaskRows(tasks: TaskManagementItem[], signals?: LiveRunningRowSignals | null): number {
     const ctx = liveRunningRowContext(signals);
     return visibleTaskRows(tasks).filter(task => isLiveRunningTaskRow(task, ctx) || taskStatusBucketFor(task) === 'running').length;
 }
 
 const textForLang = localizeText;
+
+/** Task-list folders: ordinary chats stay in 会话, pure-coding environments in 编程. */
+export type TaskListFolderKind = 'session' | 'coding';
+
+export const TASK_FOLDER_COLLAPSE_STORAGE_KEY = 'maclaw.sidebar-task-folders.v1';
+export const TASK_FOLDER_ORDER_STORAGE_KEY = 'maclaw.sidebar-task-folder-order.v1';
+
+const TASK_LIST_FOLDER_KINDS: readonly TaskListFolderKind[] = ['session', 'coding'];
+
+const isTaskListFolderKind = (kind: unknown): kind is TaskListFolderKind =>
+    kind === 'session' || kind === 'coding';
+
+/** Saved order first, then any folder the save omitted, without duplicates. */
+export function normalizeTaskFolderOrder(order: readonly unknown[]): TaskListFolderKind[] {
+    const next: TaskListFolderKind[] = [];
+    const seen = new Set<TaskListFolderKind>();
+    for (const kind of order) {
+        if (!isTaskListFolderKind(kind) || seen.has(kind)) continue;
+        seen.add(kind);
+        next.push(kind);
+    }
+    for (const kind of TASK_LIST_FOLDER_KINDS) {
+        if (!seen.has(kind)) next.push(kind);
+    }
+    return next;
+}
+
+/** Move one folder onto another. Hidden folders keep their saved slot. */
+export function reorderTaskListFolders(
+    order: readonly TaskListFolderKind[],
+    from: TaskListFolderKind,
+    to: TaskListFolderKind,
+): TaskListFolderKind[] {
+    const base = normalizeTaskFolderOrder(order);
+    const fromIndex = base.indexOf(from);
+    const toIndex = base.indexOf(to);
+    if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return base;
+    const next = base.slice();
+    next.splice(fromIndex, 1);
+    next.splice(toIndex, 0, from);
+    return next;
+}
+
+export function readTaskFolderOrder(): TaskListFolderKind[] {
+    if (typeof localStorage === 'undefined') return [...TASK_LIST_FOLDER_KINDS];
+    try {
+        const parsed = JSON.parse(localStorage.getItem(TASK_FOLDER_ORDER_STORAGE_KEY) || '[]');
+        return normalizeTaskFolderOrder(Array.isArray(parsed) ? parsed : []);
+    } catch {
+        return [...TASK_LIST_FOLDER_KINDS];
+    }
+}
+
+export function writeTaskFolderOrder(order: readonly TaskListFolderKind[]) {
+    try {
+        localStorage.setItem(TASK_FOLDER_ORDER_STORAGE_KEY, JSON.stringify(normalizeTaskFolderOrder(order)));
+    } catch {
+        // Private mode or a full quota should not block the in-memory order.
+    }
+}
+
+export function taskListFolderKind(task: Pick<TaskManagementItem, 'tags'>): TaskListFolderKind {
+    return isPureCodingTaskTags(task.tags) ? 'coding' : 'session';
+}
+
+export type TaskListFolderGroup<T> = { kind: TaskListFolderKind; tasks: T[] };
+
+/** Preserve task order inside each folder. Empty folders are omitted. */
+export function groupTasksIntoFolders<T extends Pick<TaskManagementItem, 'tags'>>(
+    tasks: T[],
+    order: readonly TaskListFolderKind[] = TASK_LIST_FOLDER_KINDS,
+): TaskListFolderGroup<T>[] {
+    const buckets: Record<TaskListFolderKind, T[]> = { session: [], coding: [] };
+    for (const task of tasks) buckets[taskListFolderKind(task)].push(task);
+    return normalizeTaskFolderOrder(order)
+        .filter(kind => buckets[kind].length > 0)
+        .map(kind => ({ kind, tasks: buckets[kind] }));
+}
+
+export function taskListFolderLabel(kind: TaskListFolderKind, lang: string): string {
+    if (kind === 'coding') return textForLang(lang, 'Coding', '编程', '程式');
+    return textForLang(lang, 'Sessions', '会话', '工作階段');
+}
+
+export function readCollapsedTaskFolders(): Set<TaskListFolderKind> {
+    if (typeof localStorage === 'undefined') return new Set();
+    try {
+        const parsed = JSON.parse(localStorage.getItem(TASK_FOLDER_COLLAPSE_STORAGE_KEY) || '[]');
+        if (!Array.isArray(parsed)) return new Set();
+        return new Set(parsed.filter(isTaskListFolderKind));
+    } catch {
+        return new Set();
+    }
+}
+
+export function writeCollapsedTaskFolders(kinds: ReadonlySet<TaskListFolderKind>) {
+    try {
+        localStorage.setItem(TASK_FOLDER_COLLAPSE_STORAGE_KEY, JSON.stringify([...kinds]));
+    } catch {
+        // Private mode or a full quota should not block the in-memory collapse.
+    }
+}
 
 const newCloudWorkspaceActionLabel = (lang: string, creating: boolean) => (
     creating
@@ -2099,6 +2231,17 @@ export const SidebarTaskManagement = ({
     // marker and task identity must stay visible even when project-management
     // actions are disabled for this surface.
     const [taskListOrder, setTaskListOrder] = useState<string[]>(readTaskListOrder);
+    const [collapsedTaskFolders, setCollapsedTaskFolders] = useState<ReadonlySet<TaskListFolderKind>>(readCollapsedTaskFolders);
+    const [taskFolderOrder, setTaskFolderOrder] = useState<TaskListFolderKind[]>(readTaskFolderOrder);
+    const toggleTaskFolder = (kind: TaskListFolderKind) => {
+        setCollapsedTaskFolders(prev => {
+            const next = new Set(prev);
+            if (next.has(kind)) next.delete(kind);
+            else next.add(kind);
+            writeCollapsedTaskFolders(next);
+            return next;
+        });
+    };
     const visibleTasks = useMemo(
         // The backend list is recency-ordered. Opening a task rewrites
         // last_activity and would otherwise move that row. Default order is
@@ -2217,14 +2360,65 @@ export const SidebarTaskManagement = ({
         }
         return base.filter(task => !isLiveRunningRow(task) && taskStatusBucketFor(task) === taskFilter);
     }, [visibleTasks, taskFilter, workspaceFilter, isLiveRunningRow]);
+    const taskFolders = useMemo(
+        () => groupTasksIntoFolders(filteredTasks, taskFolderOrder),
+        [filteredTasks, taskFolderOrder],
+    );
     const taskDragKeyRef = useRef<string | null>(null);
+    const taskDragFolderRef = useRef<TaskListFolderKind | null>(null);
+    const taskDragPinnedRef = useRef<boolean | null>(null);
+    const taskDropTargetRef = useRef<HTMLElement | null>(null);
+    const folderDragKindRef = useRef<TaskListFolderKind | null>(null);
+    const folderDidDragRef = useRef(false);
     // Set once a row drag starts, so the click that follows a drop does not open a task.
     const taskRowDidDragRef = useRef(false);
     const taskDragFromControlRef = useRef(false);
     const clearTaskDropMarks = () => {
-        if (typeof document === 'undefined') return;
-        document.querySelectorAll('.sidebar-task-row[data-task-drop-target="true"]').forEach(el => {
-            el.removeAttribute('data-task-drop-target');
+        taskDropTargetRef.current?.removeAttribute('data-task-drop-target');
+        taskDropTargetRef.current = null;
+    };
+    const markTaskDropTarget = (row: HTMLElement) => {
+        if (taskDropTargetRef.current === row && row.hasAttribute('data-task-drop-target')) return;
+        taskDropTargetRef.current?.removeAttribute('data-task-drop-target');
+        row.setAttribute('data-task-drop-target', 'true');
+        taskDropTargetRef.current = row;
+    };
+    const rememberTaskDrag = (proj: TaskManagementItem) => {
+        taskDragKeyRef.current = taskOrderKey(proj);
+        taskDragFolderRef.current = taskListFolderKind(proj);
+        taskDragPinnedRef.current = !!proj.pinned;
+    };
+    const forgetTaskDrag = () => {
+        taskDragKeyRef.current = null;
+        taskDragFolderRef.current = null;
+        taskDragPinnedRef.current = null;
+    };
+    // A highlighted row must be a drop that commitTaskDrag will keep.
+    // Cross-folder and pin-boundary drops are rejected there, so they must
+    // not advertise a target while the pointer is still moving.
+    const canDropTaskOn = (target: TaskManagementItem) => {
+        if (!taskDragKeyRef.current || taskDragKeyRef.current === taskOrderKey(target)) return false;
+        if (taskDragFolderRef.current !== taskListFolderKind(target)) return false;
+        if (taskDragPinnedRef.current !== !!target.pinned) return false;
+        return true;
+    };
+    const folderDropTargetRef = useRef<HTMLElement | null>(null);
+    const clearFolderDropMarks = () => {
+        folderDropTargetRef.current?.removeAttribute('data-folder-drop-target');
+        folderDropTargetRef.current = null;
+    };
+    const markFolderDropTarget = (section: HTMLElement, edge: 'before' | 'after') => {
+        if (folderDropTargetRef.current === section && section.getAttribute('data-folder-drop-target') === edge) return;
+        folderDropTargetRef.current?.removeAttribute('data-folder-drop-target');
+        section.setAttribute('data-folder-drop-target', edge);
+        folderDropTargetRef.current = section;
+    };
+    const commitFolderDrag = (from: TaskListFolderKind, to: TaskListFolderKind) => {
+        if (from === to) return;
+        setTaskFolderOrder(prev => {
+            const next = reorderTaskListFolders(prev, from, to);
+            writeTaskFolderOrder(next);
+            return next;
         });
     };
     const commitTaskDrag = (fromKey: string, toKey: string) => {
@@ -2234,6 +2428,9 @@ export const SidebarTaskManagement = ({
         // Pinned rows stay above the rest, so a drop across that boundary
         // would snap back. Ignore it instead of saving an order that cannot stick.
         if (!fromTask || !toTask || !!fromTask.pinned !== !!toTask.pinned) return;
+        // A drop cannot change a task's folder. Session and coding rows stay
+        // in the folder their tags decide, so a cross-folder drop is ignored.
+        if (taskListFolderKind(fromTask) !== taskListFolderKind(toTask)) return;
         const visibleKeys = filteredTasks.map(taskOrderKey);
         // Start from the list the user is looking at. A task created after the
         // last drag is shown at the top but is not in the saved keys yet;
@@ -2309,12 +2506,38 @@ export const SidebarTaskManagement = ({
             : false,
         [visibleTasks, activeRowContext],
     );
+    const activeFolderKind = useMemo(() => {
+        if (!activeRowContext) return null;
+        const task = visibleTasks.find(proj => matchesActiveTaskRowContext(proj, activeRowContext));
+        return task ? taskListFolderKind(task) : null;
+    }, [visibleTasks, activeRowContext]);
+    // Identity of the task whose folder we already revealed. A fresh object for
+    // the same task must not pop a folder the user just collapsed back open.
+    const activeFolderExpandKey = activeFolderKind && activeRowContext
+        ? `${activeFolderKind}\0${activeRowContext.expertId}\0${activeRowContext.activePath}\0${activeRowContext.activeWorkspaceId}`
+        : '';
+    const revealedFolderTaskKeyRef = useRef('');
     useEffect(() => {
-        if (!taskListVisible || !activeRowPresent) return;
+        if (!activeFolderExpandKey || !activeFolderKind) return;
+        if (revealedFolderTaskKeyRef.current === activeFolderExpandKey) return;
+        revealedFolderTaskKeyRef.current = activeFolderExpandKey;
+        setCollapsedTaskFolders(prev => {
+            if (!prev.has(activeFolderKind)) return prev;
+            const next = new Set(prev);
+            next.delete(activeFolderKind);
+            writeCollapsedTaskFolders(next);
+            return next;
+        });
+    }, [activeFolderExpandKey, activeFolderKind]);
+    // Only the active folder's own expand state. Collapsing the other folder
+    // must not scroll the list back to the current task.
+    const activeFolderExpanded = !activeFolderKind || !collapsedTaskFolders.has(activeFolderKind);
+    useEffect(() => {
+        if (!taskListVisible || !activeRowPresent || !activeFolderExpanded) return;
         const el = taskListRef.current?.querySelector('[data-active="true"]') as HTMLElement | null;
         if (!el || typeof el.scrollIntoView !== 'function') return;
         el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    }, [taskListVisible, activeRowPresent, activeAssistantTask]);
+    }, [taskListVisible, activeRowPresent, activeAssistantTask, activeFolderExpanded]);
     useEffect(() => {
         const ids = pendingRestoreWorkspaceIdsRef.current;
         if (!ids || ids.size === 0) return;
@@ -4153,7 +4376,90 @@ export const SidebarTaskManagement = ({
                     ? textForLang(lang, 'No tasks', '\u6682\u65e0\u4efb\u52a1', '\u66ab\u7121\u4efb\u52d9')
                     : textForLang(lang, 'No tasks in this group', '\u8be5\u5206\u7ec4\u6682\u65e0\u4efb\u52a1', '\u8a72\u5206\u7d44\u66ab\u7121\u4efb\u52d9')}
             </div>
-        ) : filteredTasks.map(proj => {
+        ) : taskFolders.map(folder => {
+            const folderExpanded = !collapsedTaskFolders.has(folder.kind);
+            const folderLabel = taskListFolderLabel(folder.kind, lang);
+            const folderToggleLabel = folderExpanded
+                ? textForLang(lang, `Collapse ${folderLabel}`, `折叠${folderLabel}`, `摺疊${folderLabel}`)
+                : textForLang(lang, `Expand ${folderLabel}`, `展开${folderLabel}`, `展開${folderLabel}`);
+            const foldersDraggable = taskFolders.length > 1;
+            const folderDragLabel = textForLang(lang, 'Drag to reorder folders', '拖动调整文件夹顺序', '拖動調整資料夾順序');
+            const folderTitle = foldersDraggable ? `${folderDragLabel} · ${folderToggleLabel}` : folderToggleLabel;
+            return (
+            <section
+                key={folder.kind}
+                className="stsm-task-folder"
+                data-testid={`task-folder-${folder.kind}`}
+                data-expanded={folderExpanded ? 'true' : 'false'}
+                aria-label={folderLabel}
+                onDragOver={e => {
+                    const from = folderDragKindRef.current;
+                    if (!from || from === folder.kind) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+                    const edge = taskFolderOrder.indexOf(from) < taskFolderOrder.indexOf(folder.kind) ? 'after' : 'before';
+                    markFolderDropTarget(e.currentTarget, edge);
+                }}
+                onDragLeave={e => {
+                    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+                    if (folderDropTargetRef.current === e.currentTarget) clearFolderDropMarks();
+                }}
+                onDrop={e => {
+                    const from = folderDragKindRef.current;
+                    if (!from) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    folderDragKindRef.current = null;
+                    clearFolderDropMarks();
+                    commitFolderDrag(from, folder.kind);
+                }}
+            >
+            <div
+                className={`stsm-task-folder__head${foldersDraggable ? ' is-draggable' : ''}`}
+                data-testid={`task-folder-drag-${folder.kind}`}
+                draggable={foldersDraggable}
+                onDragStart={e => {
+                    if (!foldersDraggable || taskDragKeyRef.current) { e.preventDefault(); return; }
+                    folderDidDragRef.current = true;
+                    folderDragKindRef.current = folder.kind;
+                    if (e.dataTransfer) {
+                        e.dataTransfer.effectAllowed = 'move';
+                        try { e.dataTransfer.setData('text/plain', `folder:${folder.kind}`); } catch { /* Some hosts reject custom payloads. */ }
+                    }
+                }}
+                onDragEnd={() => {
+                    folderDragKindRef.current = null;
+                    clearFolderDropMarks();
+                    window.setTimeout(() => { folderDidDragRef.current = false; }, 0);
+                }}
+                onClick={() => { if (folderDidDragRef.current) return; toggleTaskFolder(folder.kind); }}
+            >
+            {foldersDraggable ? <span className="stsm-task-folder__grip" aria-hidden="true"><TaskFolderGrip /></span> : null}
+            <div
+                role="button"
+                tabIndex={0}
+                className="stsm-task-folder__toggle"
+                data-testid={`task-folder-toggle-${folder.kind}`}
+                aria-expanded={folderExpanded}
+                aria-controls={`task-folder-items-${folder.kind}`}
+                title={folderTitle}
+                onKeyDown={e => {
+                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                    e.preventDefault();
+                    if (folderDidDragRef.current) return;
+                    toggleTaskFolder(folder.kind);
+                }}
+            >
+                <TaskFolderChevron />
+                <TaskFolderIcon open={folderExpanded} />
+                <span className="stsm-task-folder__label">{folderLabel}</span>
+                <span className="stsm-task-folder__count">{folder.tasks.length}</span>
+            </div>
+            </div>
+            {folderExpanded ? (
+            <div id={`task-folder-items-${folder.kind}`} className="stsm-task-folder__items">
+            {folder.tasks.map(proj => {
             const taskIconKind = taskIconKindForProject(proj);
             const remoteMaintenance = isRemoteMaintenanceTask(proj);
             const cloudWorkspace = isCloudWorkspaceTask(proj);
@@ -4256,9 +4562,9 @@ export const SidebarTaskManagement = ({
                 } : {}),
             };
             return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'} data-status={durableKind === 'idle' ? undefined : durableKind} data-testid="sidebar-task-row" data-active={isActive ? 'true' : 'false'} data-open={isOpen ? 'true' : 'false'} data-task-path={proj.project_path}>
-                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} draggable={!isBusy} onMouseDown={e => { taskDragFromControlRef.current = !!(e.target as HTMLElement | null)?.closest('button, a, input, textarea'); }} onDragStart={e => { if (isBusy || taskDragFromControlRef.current) { e.preventDefault(); return; } taskRowDidDragRef.current = true; const key = taskOrderKey(proj); taskDragKeyRef.current = key; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { taskDragKeyRef.current = null; taskDragFromControlRef.current = false; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }} onDragOver={e => { if (!taskDragKeyRef.current) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; const row = e.currentTarget; document.querySelectorAll('.sidebar-task-row[data-task-drop-target="true"]').forEach(el => { if (el !== row) el.removeAttribute('data-task-drop-target'); }); row.setAttribute('data-task-drop-target', 'true'); }} onDrop={e => { e.preventDefault(); e.currentTarget.removeAttribute('data-task-drop-target'); const fromKey = taskDragKeyRef.current; taskDragKeyRef.current = null; if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; e.preventDefault(); if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, statusHover, codingBadge, createdAtLabel, identitySubtitle, textForLang(lang, 'Click to open. Drag to reorder.', '单击打开，拖动排序', '單擊開啟，拖動排序'))} aria-current={isActive ? 'true' : undefined}>
+                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} draggable={!isBusy} onMouseDown={e => { taskDragFromControlRef.current = !!(e.target as HTMLElement | null)?.closest('button, a, input, textarea'); }} onDragStart={e => { if (isBusy || taskDragFromControlRef.current) { e.preventDefault(); return; } taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); taskDragFromControlRef.current = false; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }} onDragOver={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; markTaskDropTarget(e.currentTarget); }} onDrop={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); const fromKey = taskDragKeyRef.current; forgetTaskDrag(); clearTaskDropMarks(); if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; if (taskDropTargetRef.current === e.currentTarget) taskDropTargetRef.current = null; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; e.preventDefault(); if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, statusHover, codingBadge, createdAtLabel, identitySubtitle, textForLang(lang, 'Click to open. Drag to reorder.', '单击打开，拖动排序', '單擊開啟，拖動排序'))} aria-current={isActive ? 'true' : undefined}>
                     <TaskStatusMark kind={statusKind} label={statusMarkLabel} />
-                    <span className="stsm-drag-handle-wrap"><span role="button" className="stsm-drag-handle" data-testid="task-drag-handle" aria-label={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} title={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()} onMouseDown={e => { taskDragFromControlRef.current = false; e.stopPropagation(); }} onDragStart={e => { e.stopPropagation(); taskRowDidDragRef.current = true; const key = taskOrderKey(proj); taskDragKeyRef.current = key; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { taskDragKeyRef.current = null; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }}>⋮⋮</span></span>
+                    <span className="stsm-drag-handle-wrap"><span role="button" className="stsm-drag-handle" data-testid="task-drag-handle" aria-label={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} title={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()} onMouseDown={e => { taskDragFromControlRef.current = false; e.stopPropagation(); }} onDragStart={e => { e.stopPropagation(); taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }}>⋮⋮</span></span>
                     <span className="stsm-row-body">
                         {(workflowStatus || codingBadge || proj.pinned || shareFromLabel) && (
                             <span className="stsm-badge-row">
@@ -4341,6 +4647,11 @@ export const SidebarTaskManagement = ({
                 </div>
                 {sceneDetailPath === proj.project_path && <SidebarTaskEvidencePanel detail={sceneDetail} loading={sceneDetailLoading} lang={lang} onContinueWorkflow={continueWorkflowProject} error={sceneDetailError} onRetry={() => { void openSceneDetail(proj.project_path, proj.name, true); }} />}
             </div>
+            })}
+            </div>
+            ) : null}
+            </section>
+            );
         })}
         </div>
 

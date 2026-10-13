@@ -175,6 +175,43 @@ func TestNormalizeFontDataRejectsTCFFSubFont(t *testing.T) {
 	}
 }
 
+func TestWindowsFontCandidatesPreferSongti(t *testing.T) {
+	candidates := fontCandidatesFor("windows")
+	if len(candidates) == 0 {
+		t.Fatal("windows font list is empty")
+	}
+	if !strings.HasSuffix(strings.ToLower(candidates[0].regular), `\simsun.ttc`) {
+		t.Fatalf("body face should be 宋体 simsun.ttc, got %s", candidates[0].regular)
+	}
+	if !strings.HasSuffix(strings.ToLower(candidates[0].bold), `\simhei.ttf`) {
+		t.Fatalf("emphasis face should be 黑体 simhei.ttf, got %s", candidates[0].bold)
+	}
+}
+
+func TestSimSunEmbedsAndCoversCJK(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("宋体 ships with Windows")
+	}
+	const path = `C:\Windows\Fonts\simsun.ttc`
+	if _, err := os.Stat(path); err != nil {
+		t.Skip("simsun.ttc not available")
+	}
+	data, err := loadFontFile(path)
+	if err != nil {
+		t.Fatalf("loadFontFile(simsun.ttc): %v", err)
+	}
+	if err := fontCoversCJK(data); err != nil {
+		t.Fatal(err)
+	}
+	bold, err := loadFontFile(`C:\Windows\Fonts\simhei.ttf`)
+	if err != nil {
+		t.Fatalf("loadFontFile(simhei.ttf): %v", err)
+	}
+	if bytes.Equal(data, bold) {
+		t.Fatal("黑体 bold face is identical to 宋体, so emphasis cannot show")
+	}
+}
+
 func TestNormalizeFontDataAcceptsPlainTTF(t *testing.T) {
 	const path = `C:\Windows\Fonts\Deng.ttf`
 	if _, err := os.Stat(path); err != nil {

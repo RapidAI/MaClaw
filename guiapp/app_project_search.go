@@ -342,6 +342,10 @@ func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
 		v2WorkflowStates = a.v2WorkflowStatesByOwner()
 	}
 	codingActiveByRef := a.activeCodingRuntimeStatusesByRef()
+	sharedRefs := codingRuntimeRefShareCounts(records, func(rec memory.ProjectRecord) bool {
+		return !omittedFromTaskSidebar(rec)
+	})
+	ledgerOwners := codingLedgerOwnersForSharedRefs(sharedRefs)
 
 	results := make([]ProjectSearchResult, 0, len(records))
 	for _, rec := range records {
@@ -352,12 +356,7 @@ func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
 		if scene, ok := a.sceneRecordForProjectPath(rec.ProjectPath, scenesByPath); ok {
 			enrichProjectSearchResultWithScene(&result, scene)
 		}
-		result.ActiveWorkflow = a.activeWorkflowForProjectFromCache(projectWorkflowProjectPathForRecord(rec), v2WorkflowStates)
-		if !projectWorkflowSnapshotActive(result.ActiveWorkflow) {
-			if runtimeState := activeCodingRuntimeWorkflowForTags(result.Tags, codingActiveByRef); runtimeState != nil {
-				result.ActiveWorkflow = runtimeState
-			}
-		}
+		a.applyTaskListWorkflow(&result, projectWorkflowProjectPathForRecord(rec), v2WorkflowStates, codingActiveByRef, sharedRefs, ledgerOwners)
 		results = append(results, result)
 		if len(results) == limit {
 			break
@@ -451,6 +450,7 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 	}
 	searchLimit := taskSearchLimit(limit)
 	var records []memory.ProjectRecord
+	var shareRecords []memory.ProjectRecord
 	if strings.TrimSpace(query) == "" {
 		// Filter before limiting so recent automatic memory entries cannot crowd
 		// explicit tasks out of the sidebar while keeping the list work bounded.
@@ -464,14 +464,30 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 		// Merging those into the sidebar lets collapse pick a hidden leftover
 		// over the visible row, then the hidden filter drops the winner.
 		// When the recency window was not full, every visible task-management
-		// row is already present; skip the extra index scan.
+		// row is already present; skip the extra index scan. When it is full,
+		// the same scan also sees an older sibling that shares a working
+		// directory with a row still inside the window.
 		if len(records) >= searchLimit {
-			records = mergeProjectRecordsByPath(records, visibleProjectRecords(pi, pi.ListAllMatching(func(rec memory.ProjectRecord) bool {
-				return isTaskManagementRecord(rec) && localCloudWorkspaceID(rec) != ""
-			})))
+			shareRecords = pi.ListAllMatching(isTaskManagementRecord)
+			cloud := make([]memory.ProjectRecord, 0)
+			for _, rec := range shareRecords {
+				if localCloudWorkspaceID(rec) != "" {
+					cloud = append(cloud, rec)
+				}
+			}
+			records = mergeProjectRecordsByPath(records, visibleProjectRecords(pi, cloud))
 		}
 	} else {
 		records = pi.SearchMatching(query, searchLimit, isTaskManagementRecord)
+		// Hits are a subset. A sibling that does not match the query still
+		// shares the directory, so a coding hit has to be counted against
+		// every task, not just this page. Non-coding searches skip the scan.
+		if len(records) >= searchLimit || recordsContainCodingRuntimeRef(records) {
+			shareRecords = pi.ListAllMatching(isTaskManagementRecord)
+		}
+	}
+	if shareRecords == nil {
+		shareRecords = records
 	}
 	// ProjectIndex stores user renames separately from the extracted record
 	// name. Copy that display name into the temporary records before cloud
@@ -490,6 +506,15 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 	scenesByPath := projectSceneMap(a.sceneIndexForTaskList(searchLimit * 2))
 	v2WorkflowStates := a.v2WorkflowStatesByOwner()
 	codingActiveByRef := a.activeCodingRuntimeStatusesByRef()
+	sharedRefs := codingRuntimeRefShareCounts(shareRecords, func(rec memory.ProjectRecord) bool {
+		if !isTaskManagementRecord(rec) || pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) || omittedFromTaskSidebar(rec) {
+			return false
+		}
+		// Cloud rows drop coding tags before the ledger match, so they must
+		// not make a local task look like it shares a directory.
+		return localCloudWorkspaceID(rec) == ""
+	})
+	ledgerOwners := codingLedgerOwnersForSharedRefs(sharedRefs)
 	results := make([]ProjectSearchResult, 0, len(records))
 	for _, rec := range records {
 		if !isTaskManagementRecord(rec) {
@@ -508,12 +533,7 @@ func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
 		if scene, ok := a.sceneRecordForProjectPath(rec.ProjectPath, scenesByPath); ok {
 			enrichProjectSearchResultWithScene(&result, scene)
 		}
-		result.ActiveWorkflow = a.activeWorkflowForProjectFromCache(projectWorkflowProjectPathForRecord(rec), v2WorkflowStates)
-		if !projectWorkflowSnapshotActive(result.ActiveWorkflow) {
-			if runtimeState := activeCodingRuntimeWorkflowForTags(result.Tags, codingActiveByRef); runtimeState != nil {
-				result.ActiveWorkflow = runtimeState
-			}
-		}
+		a.applyTaskListWorkflow(&result, projectWorkflowProjectPathForRecord(rec), v2WorkflowStates, codingActiveByRef, sharedRefs, ledgerOwners)
 		results = append(results, result)
 	}
 	if strings.TrimSpace(query) == "" {
@@ -4713,52 +4733,91 @@ func (a *App) activeWorkflowForProjectFromCache(projectPath string, v2Cache map[
 	if a == nil || projectPath == "" {
 		return nil
 	}
-	lookup := func(path string) *ProjectWorkflowState {
-		path = normalizeProjectSessionPath(path)
-		if path == "" {
-			return nil
-		}
-		ownerID := projectSessionOwnerID(path)
-		var terminalV2 *ProjectWorkflowState
-		var v2State *v2.WorkflowState
-		if v2Cache != nil {
-			v2State = v2Cache[ownerID]
-		} else if a.workflowV2 != nil && a.workflowV2.store != nil {
-			// The task list is a recent-work snapshot, so terminal V2 workflows
-			// belong here too. GetActive intentionally hides them from runtime
-			// routing, whereas the store keeps the latest state for this task.
-			if state, err := a.workflowV2.store.Load(ownerID); err == nil {
-				v2State = state
-			}
-		}
-		if v2State != nil {
-			snapshot := projectWorkflowStateFromV2(v2State)
-			if v2State.Status == v2.StatusActive {
-				return snapshot
-			}
-			terminalV2 = snapshot
-		}
-		if a.workflowEngine != nil {
-			if state := a.workflowEngine.GetActiveWorkflow(ownerID); state != nil {
-				return &ProjectWorkflowState{
-					ID:            state.ID,
-					Type:          string(state.Type),
-					Phase:         state.CurrentPhase,
-					Status:        string(state.Status),
-					ProjectPath:   strings.TrimSpace(state.ProjectPath),
-					PendingReview: strings.TrimSpace(state.PendingReviewPhaseID) != "",
-				}
-			}
-		}
-		return terminalV2
-	}
-	if state := lookup(projectPath); state != nil {
+	if state := a.workflowSnapshotForPath(projectPath, v2Cache); state != nil {
 		return state
 	}
 	if executionProjectPath := a.recentTaskExecutionProjectPath(projectPath); executionProjectPath != "" && executionProjectPath != projectPath {
-		return lookup(executionProjectPath)
+		return a.workflowSnapshotForExecutionPath(executionProjectPath, v2Cache)
 	}
 	return nil
+}
+
+// workflowSnapshotForPath loads the workflow stored for this path's own session.
+func (a *App) workflowSnapshotForPath(projectPath string, v2Cache map[string]*v2.WorkflowState) *ProjectWorkflowState {
+	if a == nil {
+		return nil
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return nil
+	}
+	ownerID := projectSessionOwnerID(projectPath)
+	var terminalV2 *ProjectWorkflowState
+	var v2State *v2.WorkflowState
+	if v2Cache != nil {
+		v2State = v2Cache[ownerID]
+	} else if a.workflowV2 != nil && a.workflowV2.store != nil {
+		// The task list is a recent-work snapshot, so terminal V2 workflows
+		// belong here too. GetActive intentionally hides them from runtime
+		// routing, whereas the store keeps the latest state for this task.
+		if state, err := a.workflowV2.store.Load(ownerID); err == nil {
+			v2State = state
+		}
+	}
+	if v2State != nil {
+		snapshot := projectWorkflowStateFromV2(v2State)
+		if v2State.Status == v2.StatusActive {
+			return snapshot
+		}
+		terminalV2 = snapshot
+	}
+	if a.workflowEngine != nil {
+		if state := a.workflowEngine.GetActiveWorkflow(ownerID); state != nil {
+			return &ProjectWorkflowState{
+				ID:            state.ID,
+				Type:          string(state.Type),
+				Phase:         state.CurrentPhase,
+				Status:        string(state.Status),
+				ProjectPath:   strings.TrimSpace(state.ProjectPath),
+				PendingReview: strings.TrimSpace(state.PendingReviewPhaseID) != "",
+			}
+		}
+	}
+	return terminalV2
+}
+
+// workflowSnapshotForExecutionPath loads a workflow stored on a working
+// directory. An empty project path is filled with that directory so callers
+// can see where the snapshot came from.
+func (a *App) workflowSnapshotForExecutionPath(executionProjectPath string, v2Cache map[string]*v2.WorkflowState) *ProjectWorkflowState {
+	state := a.workflowSnapshotForPath(executionProjectPath, v2Cache)
+	if state != nil && strings.TrimSpace(state.ProjectPath) == "" {
+		state.ProjectPath = executionProjectPath
+	}
+	return state
+}
+
+// applyTaskListWorkflow attaches one task's status. The task's own snapshot
+// stays with it even when its project path is the shared working directory.
+// A snapshot or ledger row found only on that directory is kept for the tasks
+// whose sessions are executing there.
+func (a *App) applyTaskListWorkflow(result *ProjectSearchResult, workflowPath string, v2Cache map[string]*v2.WorkflowState, activeByRef map[string]string, shared map[string]struct{}, owners map[string]struct{}) {
+	if a == nil || result == nil {
+		return
+	}
+	state := a.workflowSnapshotForPath(workflowPath, v2Cache)
+	if state == nil {
+		if executionProjectPath := a.recentTaskExecutionProjectPath(workflowPath); executionProjectPath != "" && executionProjectPath != normalizeProjectSessionPath(workflowPath) && taskMayUseSharedDirectoryStatus(result.ProjectPath, executionProjectPath, shared, owners) {
+			state = a.workflowSnapshotForExecutionPath(executionProjectPath, v2Cache)
+		}
+	}
+	result.ActiveWorkflow = state
+	if projectWorkflowSnapshotActive(result.ActiveWorkflow) {
+		return
+	}
+	if runtimeState := codingLedgerStatusForTask(result.ProjectPath, result.Tags, activeByRef, shared, owners); runtimeState != nil {
+		result.ActiveWorkflow = runtimeState
+	}
 }
 
 // projectWorkflowSnapshotActive reports a workflow the task list should keep
@@ -4855,6 +4914,108 @@ func (a *App) activeCodingRuntimeStatusesByRef() map[string]string {
 		out[normalizeCodingRuntimeRef(ref)] = status
 	}
 	return out
+}
+
+// recordsContainCodingRuntimeRef reports that a search page includes a coding
+// task. Those rows need the full task index to see a sibling outside the page.
+func recordsContainCodingRuntimeRef(records []memory.ProjectRecord) bool {
+	for i := range records {
+		if codingRuntimeRefForTaskTags(records[i].Tags) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// codingRuntimeRefShareCounts returns working directories used by at least
+// two visible coding rows. Unique directories are omitted so later checks
+// stay a map lookup.
+func codingRuntimeRefShareCounts(records []memory.ProjectRecord, include func(memory.ProjectRecord) bool) map[string]struct{} {
+	seen := make(map[string]struct{})
+	shared := make(map[string]struct{})
+	for i := range records {
+		if include != nil && !include(records[i]) {
+			continue
+		}
+		ref := normalizeCodingRuntimeRef(codingRuntimeRefForTaskTags(records[i].Tags))
+		if ref == "" {
+			continue
+		}
+		if _, ok := seen[ref]; ok {
+			shared[ref] = struct{}{}
+			continue
+		}
+		seen[ref] = struct{}{}
+	}
+	return shared
+}
+
+// codingLedgerOwnersForSharedRefs reads the live task sessions only when at
+// least one directory is shared. A unique directory does not need them.
+func codingLedgerOwnersForSharedRefs(shared map[string]struct{}) map[string]struct{} {
+	if len(shared) == 0 {
+		return nil
+	}
+	return activeForegroundTaskPathKeys()
+}
+
+// activeForegroundTaskPathKeys lists task directories that currently have a
+// foreground agent loop.
+func activeForegroundTaskPathKeys() map[string]struct{} {
+	foregroundAgentOwners.mu.Lock()
+	defer foregroundAgentOwners.mu.Unlock()
+	out := make(map[string]struct{}, len(foregroundAgentOwners.counts))
+	for owner, count := range foregroundAgentOwners.counts {
+		if count <= 0 {
+			continue
+		}
+		key := normalizeRecentTaskPathKey(projectPathFromSessionOwnerID(owner))
+		if key == "" {
+			continue
+		}
+		out[key] = struct{}{}
+	}
+	return out
+}
+
+// taskOwnsSharedDirectory reports that this task's session is executing.
+// An empty owner set means no session is executing in the shared directory.
+func taskOwnsSharedDirectory(projectPath string, owners map[string]struct{}) bool {
+	if len(owners) == 0 {
+		return false
+	}
+	_, ok := owners[normalizeRecentTaskPathKey(projectPath)]
+	return ok
+}
+
+// taskMayUseSharedDirectoryStatus reports whether a directory-level snapshot
+// or ledger row may be copied onto this task. A directory used by one task
+// keeps the previous behavior. A shared directory contributes only to the
+// tasks that are executing.
+func taskMayUseSharedDirectoryStatus(projectPath, directory string, shared map[string]struct{}, owners map[string]struct{}) bool {
+	ref := normalizeCodingRuntimeRef(directory)
+	if ref == "" {
+		return false
+	}
+	if _, ok := shared[ref]; !ok {
+		return true
+	}
+	return taskOwnsSharedDirectory(projectPath, owners)
+}
+
+// codingLedgerStatusForTask returns the directory ledger status for one task.
+// Several tasks may share a directory and edit different parts, so that
+// status is applied only to the tasks whose own session is executing. Every
+// other task keeps the workflow snapshot it already has.
+func codingLedgerStatusForTask(projectPath string, tags []string, activeByRef map[string]string, shared map[string]struct{}, owners map[string]struct{}) *ProjectWorkflowState {
+	ref := normalizeCodingRuntimeRef(codingRuntimeRefForTaskTags(tags))
+	if ref == "" || len(activeByRef) == 0 {
+		return nil
+	}
+	if _, ok := shared[ref]; ok && !taskOwnsSharedDirectory(projectPath, owners) {
+		return nil
+	}
+	return activeCodingRuntimeWorkflowForTags(tags, activeByRef)
 }
 
 // activeCodingRuntimeWorkflowForTags merges the durable coding runtime ledger

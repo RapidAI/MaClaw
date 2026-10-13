@@ -17,7 +17,7 @@ export function LLMConfigProviderLimitsFields({
     if (provider.import_source) return null;
     return (
         <>
-            <div style={{ marginTop: 12 }}>
+            <div style={{ marginBottom: 12 }}>
                 <label style={labelStyle}>{t("Context Length (tokens)", "\u4e0a\u4e0b\u6587\u957f\u5ea6 (tokens)")}</label>
                 <input style={inputStyle} type="number" min={0} step={1000}
                     autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off"
@@ -31,7 +31,7 @@ export function LLMConfigProviderLimitsFields({
                     )}
                 </p>
             </div>
-            <div style={{ marginTop: 12 }}>
+            <div style={{ marginBottom: 12 }}>
                 <label style={labelStyle}>{t("Max Output Tokens", "\u6700\u5927\u8f93\u51fa\u957f\u5ea6 (tokens)")}</label>
                 <input style={inputStyle} type="number" min={1024} step={1024}
                     autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off"
@@ -45,10 +45,7 @@ export function LLMConfigProviderLimitsFields({
                     )}
                 </p>
             </div>
-            <div style={{
-                marginTop: 12, display: "flex", alignItems: "center",
-                justifyContent: "space-between", gap: 10,
-            }}>
+            <div style={{ marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
                 <div style={{ flex: 1 }}>
                     <label style={{ ...labelStyle, marginBottom: 2 }}>
                         {t("Vision Support", "\u89c6\u89c9\u652f\u6301")}

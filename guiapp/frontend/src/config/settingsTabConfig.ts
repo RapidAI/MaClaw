@@ -34,6 +34,7 @@ export const SETTINGS_TABS_SELF_LOADING = [
     'migration',
     'assetManagement',
     'tokenBank',
+    'email',
 ] as const satisfies readonly SettingsTabId[];
 
 const needsConfigSet: ReadonlySet<string> = new Set(SETTINGS_TABS_NEEDING_CONFIG);

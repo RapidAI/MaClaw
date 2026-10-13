@@ -1,12 +1,16 @@
 package guiapp
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -206,9 +210,165 @@ func TestHorizonCLIEditSkipsLocalizationGate(t *testing.T) {
 	}
 }
 
+func TestCodegraphIndexReadyRequiresDatabase(t *testing.T) {
+	t.Setenv("CODEGRAPH_DIR", "")
+	dir := t.TempDir()
+	if codegraphIndexReady(dir) || codegraphIndexReady("") || codegraphIndexReady(" ") {
+		t.Fatal("missing or blank project must not count as indexed")
+	}
+	if err := os.Mkdir(filepath.Join(dir, ".codegraph"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".codegraph", ".gitignore"), []byte("*\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if codegraphIndexReady(dir) {
+		t.Fatal("gitignore-only .codegraph must not skip init")
+	}
+	db := filepath.Join(dir, ".codegraph", "codegraph.db")
+	if err := os.WriteFile(db, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if codegraphIndexReady(dir) {
+		t.Fatal("empty codegraph.db must not count as an index")
+	}
+	if err := os.WriteFile(db, []byte("sqlite"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !codegraphIndexReady(dir) {
+		t.Fatal("non-empty codegraph.db should count as an index")
+	}
+}
+
+func TestCodegraphContinueHintStaysOnAfterAHit(t *testing.T) {
+	t.Setenv("CODEGRAPH_DIR", "")
+	hint := codegraphContinueHint("codegraph")
+	if !strings.Contains(hint, "call code_navigation") || !strings.Contains(hint, "evidence") || !strings.Contains(hint, "Do not repeat") || strings.Contains(hint, "again") || strings.Contains(hint, "only") {
+		t.Fatalf("hit hint = %q", hint)
+	}
+	if strings.Contains(hint, "stale") || strings.Contains(hint, "before ripgrep") {
+		t.Fatalf("hit hint retracts the lookup: %q", hint)
+	}
+	fallback := codegraphContinueHint("rg")
+	if strings.Contains(fallback, "index is ready") || strings.Contains(fallback, "before ripgrep") || strings.Contains(fallback, "stale") {
+		t.Fatalf("a text fallback must not withdraw the lookup: %q", fallback)
+	}
+	if codingCommandLooksLikeTextSearch("Get-ChildItem F:\\test-prog") || codingCommandLooksLikeTextSearch("git -C F:\\test-prog log --oneline -10") {
+		t.Fatal("listing and git log are not text searches")
+	}
+	if !codingCommandLooksLikeTextSearch("Select-String -Path F:\\test-prog\\snake.cpp -Pattern Cue") || !codingCommandLooksLikeTextSearch("rg -n playTone .") {
+		t.Fatal("Select-String and rg should remind the model to stay on codegraph")
+	}
+	dir := t.TempDir()
+	cb := &codingSubAgentCallbacks{subagent: &CodingSubAgent{projectPath: dir}}
+	if got := cb.appendCodegraphSearchHint("match.go:1:playTone"); got != "match.go:1:playTone" {
+		t.Fatalf("no index hint = %q", got)
+	}
+	if err := os.Mkdir(filepath.Join(dir, ".codegraph"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".codegraph", "codegraph.db"), []byte("sqlite"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := cb.appendCodegraphSearchHint("match.go:1:playTone")
+	if !strings.Contains(got, "match.go:1:playTone") || !strings.Contains(got, "already ran and counts") || !strings.Contains(got, "Do not repeat") || strings.Contains(got, "call code_navigation") || strings.Contains(got, "read_file only") || strings.Contains(got, "stale") || strings.Contains(got, "before ripgrep") || strings.Contains(got, "again") {
+		t.Fatalf("indexed search hint = %q", got)
+	}
+	fn, _ := buildCodeNavigationToolDefinition()["function"].(map[string]interface{})
+	desc, _ := fn["description"].(string)
+	if strings.Contains(desc, "stale") || strings.Contains(desc, "only when that fails") || strings.Contains(desc, "again") {
+		t.Fatalf("tool description retracts a finished lookup: %q", desc)
+	}
+	if strings.Contains(buildFullCodingEnvironmentPromptPreamble(), "更早一次没有索引") || strings.Contains(buildUncorrelatedLocalCodingCompatibilityPrompt(nil), "returns nothing") {
+		t.Fatal("prompts still tell the model a finished text search does not count")
+	}
+	if got := cb.appendCodegraphSearchHint("no matches found (searched 12 files)"); strings.Contains(got, "Do not repeat") || strings.Contains(got, "already ran") {
+		t.Fatalf("a miss must stay searchable: %q", got)
+	}
+	emptyShell := cb.appendCodegraphSearchHint("command exited with code 1 (no stdout/stderr captured). This typically happens when pipeline filters consume all output.")
+	if strings.Contains(emptyShell, "Do not repeat") || strings.Contains(emptyShell, "already ran") {
+		t.Fatalf("an empty search command must stay searchable: %q", emptyShell)
+	}
+	quietHit := cb.appendCodegraphSearchHint(codingQuietSearchHitText + "\ncommand exited with code 0")
+	if strings.Contains(quietHit, "Do not repeat") || strings.Contains(quietHit, "already ran") || !strings.Contains(quietHit, "quiet mode") {
+		t.Fatalf("a quiet hit must stay open so the lines can be shown: %q", quietHit)
+	}
+	noOutput := cb.appendCodegraphSearchHint("(command completed with no output)\ncommand exited with code 0")
+	if strings.Contains(noOutput, "Do not repeat") || strings.Contains(noOutput, "already ran") {
+		t.Fatalf("a search that printed nothing must stay searchable: %q", noOutput)
+	}
+	withStatus := cb.appendCodegraphSearchHint("a.go:1:playTone\ncommand exited with code 0")
+	if !strings.Contains(withStatus, "a.go:1:playTone") || !strings.Contains(withStatus, "Do not repeat") {
+		t.Fatalf("a hit followed by the exit status still counts: %q", withStatus)
+	}
+	paged := cb.appendCodegraphSearchHint("match.go:1:playTone\n... reached max_results=100")
+	if !strings.Contains(paged, "match.go:1:playTone") || !strings.Contains(paged, "already ran and counts") || !strings.Contains(paged, "offset") || strings.Contains(paged, "Do not repeat") {
+		t.Fatalf("a capped search must stay pageable: %q", paged)
+	}
+	stopped := cb.appendCodegraphSearchHint("early.go:1:tone\n... search stopped before the tree was finished")
+	if !strings.Contains(stopped, "early.go:1:tone") || !strings.Contains(stopped, "narrower path") || strings.Contains(stopped, "Do not repeat") {
+		t.Fatalf("a walk that stopped early must stay open: %q", stopped)
+	}
+	onlyStop := cb.appendCodegraphSearchHint("... search stopped before the tree was finished")
+	if strings.Contains(onlyStop, "already ran") || strings.Contains(onlyStop, "Do not repeat") {
+		t.Fatalf("a stop with no match lines must stay unmarked: %q", onlyStop)
+	}
+	quoted := cb.appendCodegraphSearchHint("note.go:3:log says reached max_results=100")
+	if strings.Contains(quoted, "offset") || !strings.Contains(quoted, "Do not repeat") || !strings.Contains(quoted, "note.go:3:") {
+		t.Fatalf("a source mention of the cap is a normal hit: %q", quoted)
+	}
+	if strings.Join(navigationSearchTokens("sound audio cue beep snake game", 3), ",") != "cue,snake,sound" {
+		t.Fatalf("generic words crowded out the project name: %v", navigationSearchTokens("sound audio cue beep snake game", 3))
+	}
+	cleaned, hit := takeRemoteCodegraphHitMarker("symbol Cue\n" + remoteCodegraphHitMarker + "\n")
+	if !hit || strings.Contains(cleaned, remoteCodegraphHitMarker) || !strings.Contains(cleaned, "symbol Cue") {
+		t.Fatalf("marker cleaned=%q hit=%v", cleaned, hit)
+	}
+	mention := "snake.cpp:10:const marker = \"" + remoteCodegraphHitMarker + "\""
+	cleaned, hit = takeRemoteCodegraphHitMarker(mention + "\n")
+	if hit || cleaned != mention+"\n" {
+		t.Fatalf("source mention cleaned=%q hit=%v", cleaned, hit)
+	}
+}
+
+func TestCodegraphNearestIndexUsesParent(t *testing.T) {
+	t.Setenv("CODEGRAPH_DIR", "")
+	parent := t.TempDir()
+	child := filepath.Join(parent, "child")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if codegraphNearestIndexRoot("") != "" || codegraphNearestIndexRoot("child") != "" {
+		t.Fatal("blank and relative projects must not climb into another index")
+	}
+	if err := os.Mkdir(filepath.Join(parent, ".codegraph"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, ".codegraph", "codegraph.db"), []byte("sqlite"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := codegraphNearestIndexRoot(child); got != filepath.Clean(parent) {
+		t.Fatalf("parent index = %q, want %q", got, filepath.Clean(parent))
+	}
+	if err := os.Mkdir(filepath.Join(child, ".codegraph"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(child, ".codegraph", "codegraph.db"), []byte("sqlite"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := codegraphNearestIndexRoot(child); got != filepath.Clean(child) {
+		t.Fatalf("child index = %q, want %q", got, filepath.Clean(child))
+	}
+	codegraphMarkIndexBuilding(child, true)
+	t.Cleanup(func() { codegraphMarkIndexBuilding(child, false) })
+	if codegraphNearestIndexRoot(child) != "" {
+		t.Fatal("an index still being written must not be queried or replaced by the parent")
+	}
+}
+
 func TestCodeNavigationFallbackFindsDefinition(t *testing.T) {
-	if _, err := os.Stat(filepath.Join("..", ".codegraph")); err != nil {
-		t.Skip("workspace CodeGraph state unavailable")
+	if !codegraphIndexReady(filepath.Join("..")) {
+		t.Skip("workspace CodeGraph database unavailable")
 	}
 	backend, output, err := runLocalCodeNavigation("..", "definition", "summarizeSubAgentExploration", 2)
 	if err != nil {
@@ -216,6 +376,716 @@ func TestCodeNavigationFallbackFindsDefinition(t *testing.T) {
 	}
 	if backend == "" || !strings.Contains(output, "summarizeSubAgentExploration") {
 		t.Fatalf("backend=%q output=%q", backend, output)
+	}
+}
+
+func TestRemoteCodeNavigationShellPrefersCodeGraphThenFallsBack(t *testing.T) {
+	explore := remoteCodeNavigationShell("explore", "how auth works", "how auth works", "", 0, 0, true)
+	for _, want := range []string{
+		`_cg_dir=.codegraph`,
+		`[ -s "$_cg_dir/codegraph.db" ]`,
+		"CODEGRAPH_DIR",
+		"command -v codegraph",
+		"codegraph.cmd",
+		`"$_cg_bin" query`,
+		"--limit",
+		"-ge 2000",
+		"[[:alpha:]]",
+		"printf '\\033'",
+		"npm install -g '@colbymchenry/codegraph'",
+		"npm prefix -g",
+		"$_cg_prefix/bin/codegraph",
+		`"$_cg_bin" init .`,
+		`"$_cg_bin" status`,
+		"kill -0",
+		"-lt 20",
+		"_cg_kill_tree",
+		"ppid",
+		"/proc/",
+		"PPid",
+		"_cg_running",
+		"_cg_has_db",
+		"dirname",
+		"MACLAW_CODEGRAPH_HIT",
+		`_cg_rc=$?`,
+		`[ "$_cg_rc" -eq 0 ]`,
+		`"$_cg_bin" unlock .`,
+		`rm -f "$_cg_dir/codegraph.db"`,
+		"_cg_hit",
+		`if [ "$_cg_hit" -eq 0 ]`,
+		"rg -n",
+		"grep -RIn",
+	} {
+		if !strings.Contains(explore, want) {
+			t.Fatalf("explore shell missing %q: %s", want, explore)
+		}
+	}
+	plain := remoteCodeNavigationShell("explore", "how auth works", "how auth works", "", 0, 0, false)
+	if strings.Contains(plain, "npm install") || strings.Contains(plain, "init .") || strings.Contains(plain, ">/dev/null") || strings.Contains(plain, "rm -f") || strings.Contains(plain, "unlock .") {
+		t.Fatalf("read-only shell must not install, init, delete the index, or redirect to a file: %s", plain)
+	}
+	if !strings.Contains(plain, "npm prefix -g") || !strings.Contains(plain, "$_cg_prefix/bin/codegraph") || !strings.Contains(plain, "_cg_has_db") {
+		t.Fatalf("plain shell should still resolve an off-PATH install and an existing parent index: %s", plain)
+	}
+	if msg := rejectDisallowedCodingBashCommand(explore); msg != "" {
+		t.Fatalf("bootstrap navigation was rejected as a shell write: %s\n%s", msg, explore)
+	}
+	if msg := rejectDisallowedCodingBashCommand(plain); msg != "" {
+		t.Fatalf("plain navigation was rejected as a shell write: %s\n%s", msg, plain)
+	}
+	if remoteSSHWaitSeconds(explore) != 300 {
+		t.Fatalf("bootstrap navigation should wait for install/init, wait=%d", remoteSSHWaitSeconds(explore))
+	}
+	if remoteSSHWaitSeconds(plain) != 60 {
+		t.Fatalf("plain navigation wait=%d", remoteSSHWaitSeconds(plain))
+	}
+	node := remoteCodeNavigationShell("node", "guiapp/coding_subagent.go", "ignored", "", 0, 0, false)
+	if !strings.Contains(node, `"$_cg_bin" node`) || !strings.Contains(node, "--symbols-only") || strings.Contains(node, `"$_cg_bin" explore`) {
+		t.Fatalf("node shell = %s", node)
+	}
+	def := remoteCodeNavigationShell("definition", "Foo", "Find the definition of Foo", "pkg/foo.go", 10, 2, false)
+	if !strings.Contains(def, `"$_cg_bin" node`) || strings.Contains(def, "--symbols-only") || strings.Contains(def, `"$_cg_bin" explore`) || !strings.Contains(def, "gopls definition") || !strings.Contains(def, "lsp-cli") || !strings.Contains(def, "## Foo ") || !strings.Contains(def, `definitions named "Foo"`) {
+		t.Fatalf("definition shell = %s", def)
+	}
+	qualified := codegraphRemoteAcceptNamedNode("Audio::playTone")
+	if !strings.Contains(qualified, "## playTone ") || strings.Contains(qualified, "## playTon ") {
+		t.Fatalf("qualified node shell = %s", qualified)
+	}
+	assertRemoteNavigationShellSyntax(t, qualified)
+	callers := remoteCodeNavigationShell("callers", "Foo", "Find callers of Foo", "", 0, 0, false)
+	if !strings.Contains(callers, `"$_cg_bin" callers`) || !strings.Contains(callers, `"$_cg_bin" node`) || !strings.Contains(callers, "## Foo ") || !strings.Contains(callers, "_cg_named") {
+		t.Fatalf("callers shell = %s", callers)
+	}
+	if remoteSSHWaitSeconds(callers) != 120 || remoteSSHWaitSeconds(def) != 60 {
+		t.Fatalf("callers wait=%d definition wait=%d", remoteSSHWaitSeconds(callers), remoteSSHWaitSeconds(def))
+	}
+	parent, parentCancel := context.WithTimeout(context.Background(), time.Millisecond)
+	parentCancel()
+	step, stepCancel := codegraphStepContext()
+	defer stepCancel()
+	if parent.Err() == nil || step.Err() != nil {
+		t.Fatal("an expired navigation clock must not cancel the callers query")
+	}
+	if deadline, ok := step.Deadline(); !ok || time.Until(deadline) < 20*time.Second {
+		t.Fatalf("callers budget = %v ok=%v", deadline, ok)
+	}
+	symbol := remoteCodeNavigationShell("explore", "AuthService", "AuthService", "", 0, 0, false)
+	if !strings.Contains(symbol, `"$_cg_bin" node`) || strings.Contains(symbol, `"$_cg_bin" explore`) || strings.Contains(symbol, "--symbols-only") {
+		t.Fatalf("symbol explore should use node: %s", symbol)
+	}
+	fileSym := remoteCodeNavigationShell("file_symbols", "snake.cpp", "snake.cpp", "", 0, 0, false)
+	if !strings.Contains(fileSym, "[ -f 'snake.cpp' ]") || !strings.Contains(fileSym, "head -n 40") || !strings.Contains(fileSym, "find . -maxdepth 5") || !strings.Contains(fileSym, "tail -n 40") {
+		t.Fatalf("file symbol shell = %s", fileSym)
+	}
+	outside := remoteCodeNavigationShell("file_symbols", "../secret.cpp", "../secret.cpp", "", 0, 0, false)
+	if strings.Contains(outside, "[ -f '../secret.cpp' ]") || strings.Contains(outside, "head -n 40 '../secret.cpp'") || strings.Contains(outside, "grep -nE "+remoteShellQuote(navigationRemoteFileSymbolPattern)+" '../secret.cpp'") {
+		t.Fatalf("outline must not open a path outside the project: %s", outside)
+	}
+	if !strings.Contains(outside, "-iname 'secret.cpp'") {
+		t.Fatalf("outside path should search by basename: %s", outside)
+	}
+	abs := remoteCodeNavigationShell("file_symbols", "/etc/passwd", "/etc/passwd", "", 0, 0, false)
+	if strings.Contains(abs, "[ -f '/etc/passwd' ]") || strings.Contains(abs, "head -n 40 '/etc/passwd'") || !strings.Contains(abs, "-iname 'passwd'") {
+		t.Fatalf("absolute path shell = %s", abs)
+	}
+	if !navigationQueryEscapesRoot(`..\secret.cpp`) || navigationQueryEscapesRoot("src/snake.cpp") {
+		t.Fatal("path escape check mismatch")
+	}
+	multi := remoteCodeNavigationShell("explore", "visual polish frame screenshot bmp capture checks", "visual polish frame screenshot bmp capture checks", "", 0, 0, false)
+	if !strings.Contains(multi, "for _cg_term in") || !strings.Contains(multi, "'bmp'") || !strings.Contains(multi, "'screenshot'") || !strings.Contains(multi, "'capture'") || !strings.Contains(multi, "_cg_miss") {
+		t.Fatalf("multi-token shell = %s", multi)
+	}
+	for _, script := range []string{explore, plain, node, def, callers, symbol, fileSym, outside, abs, multi} {
+		assertRemoteNavigationShellSyntax(t, script)
+		if msg := rejectDisallowedCodingBashCommand(script); msg != "" {
+			t.Fatalf("navigation shell was rejected: %s\n%s", msg, script)
+		}
+	}
+}
+
+func TestCodegraphRemoteEdgeSkipsNeighbor(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is not installed")
+	}
+	run := func(symbol, callersText string) string {
+		t.Helper()
+		script := `cg() { if [ "$1" = node ]; then printf '%s\n' '## playTone (function)'; return 0; fi; printf '%s\n' ` + remoteShellQuote(callersText) + `; }
+_cg_bin=cg
+_cg_hit=0
+` + codegraphRemoteEdgeAfterExactNode("callers", symbol, "") + `
+printf '%s\n' "HIT:$_cg_hit"
+`
+		out, err := exec.Command(bash, "-c", script).CombinedOutput()
+		if err != nil {
+			t.Fatalf("%s: %v\n%s", symbol, err, out)
+		}
+		return string(out)
+	}
+	if miss := run("playTon", "CALLERS-RAN"); strings.Contains(miss, "CALLERS-RAN") || strings.Contains(miss, "HIT:1") {
+		t.Fatalf("neighbor callers ran: %s", miss)
+	}
+	if hit := run("playTone", "CALLERS-RAN"); !strings.Contains(hit, "CALLERS-RAN") || !strings.Contains(hit, "HIT:1") {
+		t.Fatalf("exact callers did not run: %s", hit)
+	}
+	if qual := run("Audio::playTone", "CALLERS-RAN"); strings.Contains(qual, "CALLERS-RAN") || strings.Contains(qual, "HIT:1") {
+		t.Fatalf("qualified name must not run callers: %s", qual)
+	}
+	if empty := run("playTone", `No callers found for "playTone"`); strings.Contains(empty, "HIT:1") {
+		t.Fatalf("empty caller list counted as a hit: %s", empty)
+	}
+	trailScript := `cg() { printf '%s\n' '## playTone (function)' '**Location:** snake.cpp:792' '**Called by ←** main (snake.cpp:10)' '**Calls →** beep (snake.cpp:40)' '**Calls the mixer' '## audioShutdown (function)' '**Location:** snake.cpp:800' '**Called by ←** other (snake.cpp:1)'; }
+_cg_bin=cg
+_cg_hit=0
+` + codegraphRemoteEdgeAfterExactNode("callers", "Audio::playTone", "") + `
+printf '%s\n' "HIT:$_cg_hit"
+`
+	trailOut, err := exec.Command(bash, "-c", trailScript).CombinedOutput()
+	if err != nil {
+		t.Fatalf("qualified trail: %v\n%s", err, trailOut)
+	}
+	trail := string(trailOut)
+	if !strings.Contains(trail, "## playTone") || !strings.Contains(trail, "snake.cpp:792") || !strings.Contains(trail, "main (snake.cpp:10)") || !strings.Contains(trail, "HIT:1") || strings.Contains(trail, "beep (snake.cpp:40)") || strings.Contains(trail, "audioShutdown") || strings.Contains(trail, "other (snake.cpp:1)") || strings.Contains(trail, "Calls the mixer") {
+		t.Fatalf("qualified callers = %s", trail)
+	}
+	full := remoteCodeNavigationShell("callers", "Audio::playTone", "Find callers of Audio::playTone", "", 0, 0, false)
+	if strings.Contains(full, `"$_cg_bin" callers`) || !strings.Contains(full, "Called by") {
+		t.Fatalf("qualified callers shell = %s", full)
+	}
+	if msg := rejectDisallowedCodingBashCommand(full); msg != "" {
+		t.Fatalf("qualified callers shell rejected: %s", msg)
+	}
+	assertRemoteNavigationShellSyntax(t, full)
+	if remoteSSHWaitSeconds(full) != 60 {
+		t.Fatalf("qualified callers is one node lookup, wait=%d", remoteSSHWaitSeconds(full))
+	}
+	if !codegraphSymbolIsQualified("Audio::playTone") || !codegraphSymbolIsQualified("Session.request") || codegraphSymbolIsQualified("playTone") {
+		t.Fatal("qualifier detection")
+	}
+	probe := "## audioShutdown (function)\n**Location:** snake.cpp:800\n**Called by ←** other (snake.cpp:1)\n## playTone (function)\n**Location:** snake.cpp:792\n792\tvoid playTone() {}\n**Called by ←** main (snake.cpp:10)\n**Calls →** beep (snake.cpp:40)\n**Calls the mixer\n"
+	callers := codegraphQualifiedEdges(probe, "Audio::playTone", "callers")
+	callees := codegraphQualifiedEdges(probe, "Audio::playTone", "callees")
+	if callers != "## playTone (function)\n**Location:** snake.cpp:792\n**Called by ←** main (snake.cpp:10)" || callees != "## playTone (function)\n**Location:** snake.cpp:792\n**Calls →** beep (snake.cpp:40)" {
+		t.Fatalf("trail callers=%q callees=%q", callers, callees)
+	}
+	pinned := codegraphCommandList("callers", "playTone", "callers", "snake.cpp")
+	if len(pinned) != 1 || strings.Join(pinned[0], " ") != "callers playTone --file snake.cpp" {
+		t.Fatalf("pinned callers = %v", pinned)
+	}
+	pinnedDef := codegraphCommandList("definition", "playTone", "def", "snake.cpp")
+	if len(pinnedDef) != 1 || strings.Join(pinnedDef[0], " ") != "node --file snake.cpp playTone" {
+		t.Fatalf("pinned definition = %v", pinnedDef)
+	}
+	if outside := codegraphCommandList("callers", "playTone", "callers", "../snake.cpp"); len(outside) != 1 || len(outside[0]) != 2 {
+		t.Fatalf("outside file must not pin: %v", outside)
+	}
+	pinnedShell := remoteCodeNavigationShell("callers", "playTone", "Find callers of playTone", "snake.cpp", 0, 0, false)
+	if !strings.Contains(pinnedShell, "--file") || !strings.Contains(pinnedShell, "snake.cpp") || strings.Contains(pinnedShell, `"$_cg_bin" callers`) {
+		t.Fatalf("pinned callers shell = %s", pinnedShell)
+	}
+	if msg := rejectDisallowedCodingBashCommand(pinnedShell); msg != "" {
+		t.Fatalf("pinned callers shell rejected: %s", msg)
+	}
+	assertRemoteNavigationShellSyntax(t, pinnedShell)
+	if strings.Contains(remoteCodeNavigationShell("callers", "playTone", "Find callers of playTone", "../snake.cpp", 0, 0, false), "--file") {
+		t.Fatal("callers must not pin a path outside the project")
+	}
+}
+
+func TestCodegraphOutputUsefulIgnoresMissBanner(t *testing.T) {
+	if codegraphOutputUseful("") || codegraphOutputUseful(" \n\t") {
+		t.Fatal("blank output should fall back")
+	}
+	if codegraphOutputUseful("No callers found for \"playTone\"") || codegraphOutputUseful("No callees found for \"playTone\"") {
+		t.Fatal("an empty edge list should fall back to text search")
+	}
+	if !codegraphOutputUseful("## playTone (function)\nNo callers found in a comment\n") {
+		t.Fatal("source that mentions an empty edge list should stay")
+	}
+	if codegraphOutputUseful("\x1b[34m[i]\x1b[0m No results found for \"missing\"") {
+		t.Fatal("query miss should fall back")
+	}
+	if codegraphOutputUseful("\x1b[34m[i]\x1b[0m Symbol \"missing\" not found") {
+		t.Fatal("callers miss should fall back")
+	}
+	if codegraphOutputUseful("No indexed file matches \"missing.go\". Read it directly.") {
+		t.Fatal("missing file should fall back")
+	}
+	if !codegraphOutputUseful("## AuthService (function)\n\nfunc AuthService() {}") {
+		t.Fatal("a real symbol result should be kept")
+	}
+	if !codegraphNodeNamesSymbol("## playTone (function)\n\n**Location:** snake.cpp:792\n", "playTone") || !codegraphNodeNamesSymbol("## playTone (function)\n", "Audio::playTone") || !codegraphNodeNamesSymbol("## request (function)\n", "Session.request") {
+		t.Fatal("exact and qualified node headings should be kept")
+	}
+	if codegraphNodeNamesSymbol("## playTone (function)\nplayTon is not this symbol\n", "playTon") || codegraphNodeNamesSymbol("## audioShutdown (function)\n", "Audio::playTone") || codegraphNodeNamesSymbol("## playTone (function)\n## playTon (function)\n", "playTon") {
+		t.Fatal("the nearest symbol must not count as the name that was asked")
+	}
+	if !codegraphNodeNamesSymbol("**2 definitions named \"playTone\"**\n", "playTone") {
+		t.Fatal("an overload heading should be kept")
+	}
+	if !codegraphCommandAccepted([]string{"node", "playTone"}, "## playTone (function)\n") || codegraphCommandAccepted([]string{"node", "playTon"}, "## playTone (function)\n") {
+		t.Fatal("node acceptance must require the requested name")
+	}
+	if !codegraphNodeNamesSymbol("## playTone (function)\n", "playTone") || codegraphNodeNamesSymbol("## playTone (function)\n", "playTon") {
+		t.Fatal("edge lookups need the same heading check as node")
+	}
+	if codegraphOutputUseful("Search Results for \"bmp\"\nconstant MNS_CHECKORBMP (1380%)\n  constants.go:3299") {
+		t.Fatal("a weak fuzzy score should fall back")
+	}
+	if !codegraphOutputUseful("## Auth\n\nconst sample = (1380%)\n") {
+		t.Fatal("a percentage inside source is not a query ranking")
+	}
+	if !codegraphOutputUseful("func Example() {\n\tlog(\"Search Results\")\n\tconst sample = (1380%)\n}\n") {
+		t.Fatal("source that mentions a query header should stay")
+	}
+	if codegraphOutputUseful("\x1b[1m\nSearch Results for \"bmp\":\nconstant MNS_CHECKORBMP (1380%)\n") {
+		t.Fatal("a weak score after a color-only line should fall back")
+	}
+	if !codegraphOutputUseful("Search Results for \"screenshot\"\nmethod screenshot (9090%)\n  file.go:1") {
+		t.Fatal("a strong query score should be kept")
+	}
+	if got := strings.Join(codegraphArgs("definition", "Foo", "Find the definition of Foo"), " "); got != "node Foo" {
+		t.Fatalf("definition args = %s", got)
+	}
+	if got := strings.Join(codegraphArgs("explore", "AuthService", "AuthService"), " "); got != "node AuthService" {
+		t.Fatalf("symbol explore args = %s", got)
+	}
+	if got := strings.Join(codegraphArgs("explore", "how auth works", "how auth works"), " "); got != "query --limit 4 auth" {
+		t.Fatalf("area explore args = %s", got)
+	}
+	tokens := navigationSearchTokens("visual polish frame screenshot bmp capture checks", 3)
+	if strings.Join(tokens, ",") != "bmp,screenshot,capture" {
+		t.Fatalf("search tokens = %v", tokens)
+	}
+	ranked := navigationSearchTokens("game screenshot capture", 3)
+	if strings.Join(ranked, ",") != "screenshot,capture,game" {
+		t.Fatalf("short words should not outrank longer ones: %v", ranked)
+	}
+	noisy := navigationSearchTokens("fix int overflow in screenshot bmp", 3)
+	if strings.Join(noisy, ",") != "bmp,screenshot,overflow" {
+		t.Fatalf("generic words should not take a query slot: %v", noisy)
+	}
+	cmds := codegraphCommandList("explore", "visual polish frame screenshot bmp capture checks", "visual polish frame screenshot bmp capture checks", "")
+	if len(cmds) != 3 || strings.Join(cmds[0], " ") != "query --limit 4 bmp" {
+		t.Fatalf("commands = %v", cmds)
+	}
+	if got := strings.Join(codegraphArgs("explore", "认证是怎么做的", "认证是怎么做的"), " "); got != "query --limit 4 认证是怎么做的" {
+		t.Fatalf("prose explore args = %s", got)
+	}
+	if got := strings.Join(codegraphArgs("file_symbols", "snake.cpp", "snake.cpp"), " "); got != "node --symbols-only snake.cpp" {
+		t.Fatalf("file symbol args = %s", got)
+	}
+	phrase := navigationFallbackPattern("explore", "visual polish frame screenshot bmp capture checks")
+	if strings.Contains(phrase, "visual polish") || !strings.Contains(phrase, "screenshot") || !strings.Contains(phrase, "bmp") {
+		t.Fatalf("explore fallback pattern = %s", phrase)
+	}
+}
+
+func TestNavigationFileSymbolOutlineWithoutIndex(t *testing.T) {
+	dir := t.TempDir()
+	body := "#include <stdio.h>\n#define CELL_SIZE 20\nstruct Point { int x; int y; };\nPAINTSTRUCT ps;\n// pure function of the state\n\nstatic void playTone(int hz) {\n  if (hz < 1) {\n    return;\n  }\n}\n\nint main(void) {\n  playTone(440);\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "snake.cpp"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	backend, output, err := runLocalNavigationTextFallback(ctx, dir, "file_symbols", "snake.cpp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backend != "file" || !strings.Contains(output, "playTone") || !strings.Contains(output, "main(") || !strings.Contains(output, "CELL_SIZE") || !strings.Contains(output, "struct Point") {
+		t.Fatalf("backend=%s output=%s", backend, output)
+	}
+	if strings.Contains(output, "if (hz") || strings.Contains(output, "playTone(440)") || strings.Contains(output, "PAINTSTRUCT") || strings.Contains(output, "pure function") {
+		t.Fatalf("calls, comments, or substrings leaked into the outline: %s", output)
+	}
+	outside := filepath.Join(filepath.Dir(dir), "nav-outside.cpp")
+	if err := os.WriteFile(outside, []byte("void secret() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Remove(outside) })
+	if _, ok := navigationFileSymbolOutline(dir, outside); ok {
+		t.Fatal("outline must stay inside the project")
+	}
+	deep := filepath.Join(dir, "a", "deep")
+	shallow := filepath.Join(dir, "shallow")
+	if err := os.MkdirAll(deep, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(shallow, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(deep, "widget.cpp"), []byte("void deepFn() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(shallow, "widget.cpp"), []byte("void shallowFn() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	gotFile := navigationResolveFile(dir, "missing/widget.cpp")
+	if !strings.HasSuffix(filepath.ToSlash(gotFile), "shallow/widget.cpp") {
+		t.Fatalf("basename search returned %s", gotFile)
+	}
+	var many strings.Builder
+	for i := 0; i < 100; i++ {
+		fmt.Fprintf(&many, "void fn%03d() {\n}\n", i)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "many.cpp"), []byte(many.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, manyOut, err := runLocalNavigationTextFallback(ctx, dir, "file_symbols", "many.cpp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(manyOut, "fn000") || !strings.Contains(manyOut, "fn099") {
+		t.Fatalf("outline dropped one end of the file: %s", manyOut)
+	}
+	def := regexp.MustCompile(navigationFallbackPattern("definition", "playTone"))
+	if !def.MatchString("static void playTone(int freq, int durationMs) {") || def.MatchString("playTone(440);") {
+		t.Fatalf("definition pattern = %s", def.String())
+	}
+	classDef := regexp.MustCompile(navigationFallbackPattern("definition", "Game"))
+	if !classDef.MatchString("class Game {") || !classDef.MatchString("Game() { reset(); }") {
+		t.Fatal("class and constructor should match")
+	}
+}
+
+func TestCodegraphIndexFailureKeyAndBootstrapRetry(t *testing.T) {
+	dir := t.TempDir()
+	codegraphRememberIndexFailure(dir + string(filepath.Separator))
+	failed := codegraphIndexAttemptFailed(dir)
+	codegraphIndexMu.Lock()
+	delete(codegraphIndexFailed, codegraphIndexFailureKey(dir))
+	codegraphIndexMu.Unlock()
+	if !failed {
+		t.Fatal("trailing separator should share the cleaned failure key")
+	}
+	c := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{projectDir: dir}}
+	claimed, release := c.claimRemoteCodegraphBootstrap()
+	if !claimed {
+		t.Fatal("first claim")
+	}
+	if remoteCodegraphQueryAllowed(dir, false) {
+		t.Fatal("index init in progress must not be queried")
+	}
+	if !remoteCodegraphQueryAllowed(dir, true) {
+		t.Fatal("the call that is initializing may query after init")
+	}
+	if again, _ := c.claimRemoteCodegraphBootstrap(); again {
+		t.Fatal("claim must be exclusive")
+	}
+	release(false)
+	claimed, release = c.claimRemoteCodegraphBootstrap()
+	if !claimed {
+		t.Fatal("a command that never ran should be retried")
+	}
+	release(true)
+	if again, _ := c.claimRemoteCodegraphBootstrap(); again {
+		t.Fatal("a completed bootstrap must not retry")
+	}
+	if !remoteCodegraphQueryAllowed(dir, false) {
+		t.Fatal("a finished init should be queried")
+	}
+	held := remoteCodeNavigationCommand("explore", "auth", "auth", "", 0, 0, false, false)
+	if strings.Contains(held, `"$_cg_bin"`) || strings.Contains(held, "init .") {
+		t.Fatal("a call during init must not read or rebuild the partial index")
+	}
+	unlockA := codegraphLockProject(dir)
+	other := t.TempDir()
+	done := make(chan struct{})
+	go func() {
+		unlockB := codegraphLockProject(other)
+		unlockB()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("one project's init must not block another")
+	}
+	unlockA()
+	inquiry := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{projectDir: dir + "-inquiry", readOnlyInquiry: true}}
+	if claimed, _ := inquiry.claimRemoteCodegraphBootstrap(); claimed {
+		t.Fatal("inquiry must not install codegraph")
+	}
+	explorer := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{projectDir: dir + "-explorer", nestDepth: 1, role: codingRoleExplorer}}
+	if claimed, _ := explorer.claimRemoteCodegraphBootstrap(); claimed {
+		t.Fatal("explorer must not install codegraph")
+	}
+	operational := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{projectDir: dir + "-op", operationalRequest: true}}
+	if claimed, _ := operational.claimRemoteCodegraphBootstrap(); claimed {
+		t.Fatal("operational turn must not install codegraph")
+	}
+	worker := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{projectDir: dir + "-worker", nestDepth: 1, role: codingRoleWorker}}
+	if claimed, release := worker.claimRemoteCodegraphBootstrap(); !claimed {
+		t.Fatal("worker should install codegraph when the index is missing")
+	} else {
+		release(false)
+	}
+	localInquiry := &codingSubAgentCallbacks{task: &TaskItem{RequestKind: codingRequestInquiry}}
+	if localInquiry.codegraphBootstrapAllowed() {
+		t.Fatal("local inquiry must not init codegraph")
+	}
+	localImpl := &codingSubAgentCallbacks{task: &TaskItem{RequestKind: codingRequestImplementation}, subagent: &CodingSubAgent{correlatedLocalExecution: true}}
+	if !localImpl.codegraphBootstrapAllowed() {
+		t.Fatal("implementation turn should init a missing codegraph index")
+	}
+	localExplorer := &codingSubAgentCallbacks{task: &TaskItem{RequestKind: codingRequestImplementation}, subagent: &CodingSubAgent{correlatedLocalExecution: true, nestDepth: 1, role: codingRoleExplorer}}
+	if localExplorer.codegraphBootstrapAllowed() {
+		t.Fatal("local explorer must not init codegraph")
+	}
+}
+
+func TestCodegraphRemovePartialIndexDropsInterruptedDatabase(t *testing.T) {
+	t.Setenv("CODEGRAPH_DIR", "")
+	dir := t.TempDir()
+	base := filepath.Join(dir, ".codegraph")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "codegraph.db"), []byte("partial"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(base, "daemon.pid"), []byte("1"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !codegraphIndexReady(dir) {
+		t.Fatal("partial db should look ready before cleanup")
+	}
+	if !codegraphIndexUsable(dir) {
+		t.Fatal("a database nobody is writing should be usable")
+	}
+	codegraphMarkIndexBuilding(dir, true)
+	if codegraphIndexUsable(dir) {
+		t.Fatal("a database init is still writing must not be queried")
+	}
+	codegraphMarkIndexBuilding(dir, false)
+	codegraphRemovePartialIndex(dir)
+	if codegraphIndexReady(dir) {
+		t.Fatal("partial db should be removed")
+	}
+	if _, err := os.Stat(filepath.Join(base, "daemon.pid")); !os.IsNotExist(err) {
+		t.Fatal("stale daemon pid should be removed")
+	}
+	if codegraphInitResultUsable(nil, true, false) != true {
+		t.Fatal("a clean init that left a database should be kept")
+	}
+	if codegraphInitResultUsable(context.DeadlineExceeded, true, true) != true {
+		t.Fatal("a timed-out wait should keep a database status accepts")
+	}
+	if codegraphInitResultUsable(context.DeadlineExceeded, true, false) {
+		t.Fatal("a timed-out wait should drop a database status rejects")
+	}
+	if codegraphInitResultUsable(nil, false, true) {
+		t.Fatal("a missing database is not usable")
+	}
+	if !codegraphInstallFailureIsFinal(nil) {
+		t.Fatal("a finished npm error should not be retried")
+	}
+	if codegraphInstallFailureIsFinal(context.DeadlineExceeded) {
+		t.Fatal("an interrupted npm install should be retried")
+	}
+	if !codegraphIndexStatusKeepsDatabase(nil, nil) {
+		t.Fatal("status success should keep the database")
+	}
+	if !codegraphIndexStatusKeepsDatabase(context.DeadlineExceeded, context.DeadlineExceeded) {
+		t.Fatal("a status timeout should keep a large database")
+	}
+	if codegraphIndexStatusKeepsDatabase(fmt.Errorf("database disk image is malformed"), nil) {
+		t.Fatal("an explicit status failure should drop the fragment")
+	}
+	longName := strings.Repeat("n", 80)
+	if !codegraphDataDirNameSafe(".codegraph-win") || !codegraphDataDirNameSafe(".codegraph win") || !codegraphDataDirNameSafe(longName) {
+		t.Fatal("CODEGRAPH_DIR should accept the directory names codegraph accepts")
+	}
+	if codegraphDataDirNameSafe(".") || codegraphDataDirNameSafe("..") || codegraphDataDirNameSafe(`a/b`) || codegraphDataDirNameSafe(`..\x`) || codegraphDataDirNameSafe("a\"b") {
+		t.Fatal("CODEGRAPH_DIR must stay inside the project as one directory name")
+	}
+	t.Setenv("CODEGRAPH_DIR", "  .codegraph win  ")
+	if codegraphDataDirName() != ".codegraph win" {
+		t.Fatalf("directory name = %q", codegraphDataDirName())
+	}
+	spaced := filepath.Join(dir, ".codegraph win")
+	if err := os.MkdirAll(spaced, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(spaced, "codegraph.db"), []byte("sqlite"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !codegraphIndexReady(dir) {
+		t.Fatal("ready check should trim CODEGRAPH_DIR and allow a space")
+	}
+	codegraphRemovePartialIndex(dir)
+	if codegraphIndexReady(dir) {
+		t.Fatal("cleanup should remove the spaced directory database")
+	}
+	t.Setenv("CODEGRAPH_DIR", ".codegraph-win")
+	override := filepath.Join(dir, ".codegraph-win")
+	if err := os.MkdirAll(override, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(override, "codegraph.db"), []byte("sqlite"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	kept := filepath.Join(dir, ".codegraph", "codegraph.db")
+	if err := os.WriteFile(kept, []byte("default-index"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !codegraphIndexReady(dir) {
+		t.Fatal("ready check should follow CODEGRAPH_DIR")
+	}
+	codegraphRemovePartialIndex(dir)
+	if codegraphIndexReady(dir) {
+		t.Fatal("cleanup should remove the CODEGRAPH_DIR database")
+	}
+	keptData, err := os.ReadFile(kept)
+	if err != nil || string(keptData) != "default-index" {
+		t.Fatal("cleanup of the override directory should leave the default database alone")
+	}
+}
+
+func assertRemoteNavigationShellSyntax(t *testing.T, script string) {
+	t.Helper()
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is not installed")
+	}
+	cmd := exec.Command(bash, "-n", "-c", script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("navigation shell syntax: %v\n%s\n%s", err, out, script)
+	}
+}
+
+func TestRemoteCodegraphDirAssignmentTrimsAndKeepsSpaces(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is not installed")
+	}
+	run := func(value string) string {
+		t.Helper()
+		cmd := exec.Command(bash, "-c", remoteCodegraphDirAssignment()+`printf '%s' "$_cg_dir"`)
+		cmd.Env = []string{"CODEGRAPH_DIR=" + value, "PATH=" + os.Getenv("PATH")}
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("CODEGRAPH_DIR=%q: %v\n%s", value, err, out)
+		}
+		return string(out)
+	}
+	if got := run("  .codegraph-win  "); got != ".codegraph-win" {
+		t.Fatalf("trimmed = %q", got)
+	}
+	if got := run(".codegraph win"); got != ".codegraph win" {
+		t.Fatalf("spaced = %q", got)
+	}
+	if got := run("../secret"); got != ".codegraph" {
+		t.Fatalf("unsafe = %q", got)
+	}
+	if got := run("a\"b"); got != ".codegraph" {
+		t.Fatalf("quote = %q", got)
+	}
+	if got := run(`a\b`); got != ".codegraph" {
+		t.Fatalf("separator = %q", got)
+	}
+}
+
+func TestRemoteCodegraphStatusKeepsFailedExitAndParentIndex(t *testing.T) {
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is not installed")
+	}
+	// A status command that exits immediately must not be treated as still
+	// running. That mistake keeps a broken database and also spends the
+	// whole 20s budget.
+	script := remoteCodegraphProcessHelpers() + `
+_cg_bin=false
+start=$SECONDS
+if _cg_db_ok; then echo KEPT; else echo DROPPED; fi
+echo ELAPSED:$SECONDS
+`
+	cmd := exec.Command(bash, "-c", script)
+	cmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("status wait: %v\n%s", err, out)
+	}
+	text := string(out)
+	if !strings.Contains(text, "DROPPED") || strings.Contains(text, "KEPT") {
+		t.Fatalf("failed status should drop the database: %s", text)
+	}
+	elapsed := -1
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "ELAPSED:") {
+			fmt.Sscanf(line, "ELAPSED:%d", &elapsed)
+		}
+	}
+	if elapsed < 0 || elapsed > 4 {
+		t.Fatalf("failed status should return as soon as the process exits, output: %s", text)
+	}
+
+	parent := t.TempDir()
+	child := filepath.Join(parent, "pkg")
+	if err := os.Mkdir(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	walk := remoteCodegraphDirAssignment() + remoteCodegraphHasDBFunc() + `if _cg_has_db; then echo YES; else echo NO; fi`
+	runWalk := func(dir string) string {
+		t.Helper()
+		cmd := exec.Command(bash, "-c", walk)
+		cmd.Dir = dir
+		cmd.Env = []string{"PATH=" + os.Getenv("PATH"), "CODEGRAPH_DIR="}
+		got, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("has db in %s: %v\n%s", dir, err, got)
+		}
+		return strings.TrimSpace(string(got))
+	}
+	if got := runWalk(child); got != "NO" {
+		t.Fatalf("missing index = %q", got)
+	}
+	if err := os.Mkdir(filepath.Join(parent, ".codegraph"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parent, ".codegraph", "codegraph.db"), []byte("sqlite"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := runWalk(child); got != "YES" {
+		t.Fatalf("parent index = %q", got)
+	}
+
+	killScript := remoteCodegraphProcessHelpers() + `
+_cg_status=$(sleep 30) &
+pid=$!
+sleep 0.3
+child=
+for ent in /proc/[0-9]*; do
+  ppid=$(sed -n 's/^PPid:[[:space:]]*//p' "$ent/status" 2>/dev/null || true)
+  if [ "$ppid" = "$pid" ]; then child=${ent#/proc/}; fi
+done
+_cg_kill_tree "$pid"
+sleep 0.3
+if [ -n "$child" ] && [ -r "/proc/$child/status" ]; then echo SURVIVED; kill "$child" 2>/dev/null || true; else echo STOPPED; fi
+`
+	killCmd := exec.Command(bash, "-c", killScript)
+	killCmd.Env = []string{"PATH=" + os.Getenv("PATH")}
+	killOut, err := killCmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("kill tree: %v\n%s", err, killOut)
+	}
+	if !strings.Contains(string(killOut), "STOPPED") {
+		t.Fatalf("status child still running: %s", killOut)
+	}
+}
+
+func TestCapCodeNavigationOutputKeepsRuneBoundary(t *testing.T) {
+	short, truncated := capCodeNavigationOutput("abc")
+	if truncated || short != "abc" {
+		t.Fatalf("short = %q truncated=%v", short, truncated)
+	}
+	body := strings.Repeat("a", 23999) + "你"
+	got, truncated := capCodeNavigationOutput(body)
+	if !truncated || !utf8.ValidString(got) || len(got) > 24000 || strings.Contains(got, "你") {
+		t.Fatalf("truncated=%v len=%d valid=%v gotSuffix=%q", truncated, len(got), utf8.ValidString(got), got[len(got)-8:])
 	}
 }
 

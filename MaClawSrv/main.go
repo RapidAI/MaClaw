@@ -186,6 +186,7 @@ func runServer(ctx context.Context) error {
 	// Wire the admin database profile configuration API to the runtime executor
 	// so profile CRUD/rotation hot-refreshes cached per-user managers.
 	server.SetDatabaseProfileRuntime(executor, executor.DatabaseSecretResolver)
+	server.SetMailboxSecretDir(filepath.Join(dataRoot, "mailbox-secrets"), executor)
 	// Route database tool audit events into the central tenant audit chain
 	// (replaces the per-user JSONL fallback inside the executor).
 	wireDatabaseAuditSink(svc, executor)

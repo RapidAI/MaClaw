@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	gopdf "github.com/VantageDataChat/GoPDF2"
 )
@@ -142,7 +143,11 @@ func fontCandidatesFor(goos string) []fontCandidate {
 	switch goos {
 	case "windows":
 		winFonts := os.Getenv("WINDIR") + `\Fonts`
+		// Body text is 宋体. Windows does not ship a bold cut of SimSun, so
+		// emphasis uses 黑体 — the same pairing as a printed Chinese page.
+		// Later candidates are only reached when 宋体 cannot be embedded.
 		return []fontCandidate{
+			{filepath.Join(winFonts, "simsun.ttc"), filepath.Join(winFonts, "simhei.ttf")},
 			{filepath.Join(winFonts, "Deng.ttf"), filepath.Join(winFonts, "Dengb.ttf")},
 			{filepath.Join(winFonts, "simhei.ttf"), filepath.Join(winFonts, "simhei.ttf")},
 			{filepath.Join(winFonts, "NotoSansSC-VF.ttf"), filepath.Join(winFonts, "NotoSansSC-VF.ttf")},
@@ -483,11 +488,22 @@ func (g *Generator) addFonts(pdf *gopdf.GoPdf) error {
 	if err := pdf.AddTTFFontData("regular", g.fontRegularData); err != nil {
 		return fmt.Errorf("加载常规字体失败: %w", err)
 	}
-	if err := pdf.AddTTFFontDataWithOption("bold", g.fontBoldData, gopdf.TtfOption{Style: gopdf.Bold}); err != nil {
+	// There is no CJK italic cut. Register the body face under the italic
+	// style so a lookup still finds a font. A missing style makes GoPDF drop
+	// the word back to regular, and bold inside that word disappears with it.
+	if err := pdf.AddTTFFontDataWithOption("regular", g.fontRegularData, gopdf.TtfOption{Style: gopdf.Italic}); err != nil {
+		return fmt.Errorf("加载常规字体失败: %w", err)
+	}
+	boldData := g.fontBoldData
+	if err := pdf.AddTTFFontDataWithOption("bold", boldData, gopdf.TtfOption{Style: gopdf.Bold}); err != nil {
 		log.Printf("[DocGen] 粗体字体加载失败，使用常规体: %v", err)
-		if err := pdf.AddTTFFontData("bold", g.fontRegularData); err != nil {
+		boldData = g.fontRegularData
+		if err := pdf.AddTTFFontDataWithOption("bold", boldData, gopdf.TtfOption{Style: gopdf.Bold}); err != nil {
 			return fmt.Errorf("加载常规字体失败: %w", err)
 		}
+	}
+	if err := pdf.AddTTFFontDataWithOption("bold", boldData, gopdf.TtfOption{Style: gopdf.Bold | gopdf.Italic}); err != nil {
+		return fmt.Errorf("加载粗体字体失败: %w", err)
 	}
 	return nil
 }
@@ -602,7 +618,7 @@ func (m *measurer) fitBlockPartPrefix(layout pdfPageLayout, currentY float64, ba
 	for low <= high {
 		mid := (low + high) / 2
 		candidateParts := append([]string{}, baseBlocks...)
-		candidateParts = append(candidateParts, strings.Join(parts[:mid], "\n"))
+		candidateParts = append(candidateParts, joinFillingParts(parts[:mid]))
 		candidate := strings.Join(candidateParts, "\n\n")
 		fits, err := m.markdownFits(layout, currentY, candidate, remainH, colorful)
 		if err != nil {
@@ -648,8 +664,8 @@ func (g *Generator) renderPagedMarkdown(pdf *gopdf.GoPdf, layout pdfPageLayout, 
 					return err
 				}
 				if extraCount > 0 {
-					pageBlocks = append(pageBlocks, strings.Join(nextParts[:extraCount], "\n"))
-					remaining := strings.TrimSpace(strings.Join(nextParts[extraCount:], "\n"))
+					pageBlocks = append(pageBlocks, joinFillingParts(nextParts[:extraCount]))
+					remaining := strings.TrimSpace(joinFillingParts(nextParts[extraCount:]))
 					remainingBlocks = remainingBlocks[1:]
 					if remaining != "" {
 						remainingBlocks = append([]string{remaining}, remainingBlocks...)
@@ -678,8 +694,8 @@ func (g *Generator) renderPagedMarkdown(pdf *gopdf.GoPdf, layout pdfPageLayout, 
 			if fitCount == 0 {
 				return fmt.Errorf("正文块过大，无法放入当前页")
 			}
-			pageBlocks = []string{strings.Join(subBlocks[:fitCount], "\n")}
-			remaining := strings.TrimSpace(strings.Join(subBlocks[fitCount:], "\n"))
+			pageBlocks = []string{joinFillingParts(subBlocks[:fitCount])}
+			remaining := strings.TrimSpace(joinFillingParts(subBlocks[fitCount:]))
 			remainingBlocks = blocks[1:]
 			if remaining != "" {
 				remainingBlocks = append([]string{remaining}, remainingBlocks...)
@@ -704,7 +720,7 @@ func splitOversizedMarkdownBlock(block string) []string {
 	// If this is a fenced code block, split by lines but preserve fence markers
 	// so each chunk is a valid self-contained code fence
 	trimmed := strings.TrimSpace(block)
-	if strings.HasPrefix(trimmed, "```") {
+	if marker, ok := markdownFenceMarker(trimmed); ok && strings.HasPrefix(trimmed, marker) {
 		return splitOversizedCodeBlock(block)
 	}
 	parts := splitLongMarkdownBlock(block, 240)
@@ -723,12 +739,16 @@ func splitOversizedCodeBlock(block string) []string {
 	}
 	// Extract opening fence line (e.g. "```python") and closing fence
 	openFence := lines[0]
-	closeFence := "```"
+	marker, _ := markdownFenceMarker(openFence)
+	if marker == "" {
+		marker = "```"
+	}
+	closeFence := marker
 	// Find the actual code lines (between open and close fence)
 	codeStart := 1
 	codeEnd := len(lines)
 	for i := len(lines) - 1; i >= 1; i-- {
-		if strings.TrimSpace(lines[i]) == "```" {
+		if isClosingFence(lines[i], marker) {
 			codeEnd = i
 			break
 		}
@@ -757,25 +777,219 @@ func splitMarkdownBlockForFilling(block string) []string {
 		return nil
 	}
 	if isMarkdownTableBlock(block) {
-		return []string{block}
+		return markdownTablePieces(block)
 	}
-	// Fenced code blocks must not be split — keep as single unit
-	if strings.HasPrefix(strings.TrimSpace(block), "```") {
-		return []string{block}
+	lines := strings.Split(block, "\n")
+	// A fence that fills the block stays in one piece, including an unclosed
+	// fence. A fence with a table after it does not: the table still has to
+	// be able to break across pages.
+	if _, ok := markdownFenceMarker(lines[0]); ok {
+		if _, next, closed := markdownFenceSpan(lines, 0); !closed || next == len(lines) {
+			return []string{block}
+		}
 	}
 	if strings.Contains(block, "\n") {
-		lines := strings.Split(block, "\n")
-		parts := make([]string, 0, len(lines))
-		for _, line := range lines {
-			line = strings.TrimSpace(line)
-			if line == "" {
-				continue
-			}
-			parts = append(parts, splitParagraphForFilling(line)...)
-		}
-		return parts
+		return splitMarkdownLinesForFilling(lines)
 	}
 	return splitParagraphForFilling(block)
+}
+
+// splitMarkdownLinesForFilling breaks a block into pieces that still fit a
+// page, without tearing a table apart.
+//
+// A heading sitting on the line above a table is one block (there is no blank
+// line between them). Splitting that block line by line, then again on ".",
+// turns "Qwen2.5-3B | 0.382" into separate fragments, and the table is no
+// longer a table when it is drawn.
+func splitMarkdownLinesForFilling(lines []string) []string {
+	parts := make([]string, 0, len(lines))
+	for i := 0; i < len(lines); {
+		if strings.TrimSpace(lines[i]) == "" {
+			i++
+			continue
+		}
+		if fence, next, ok := markdownFenceSpan(lines, i); ok {
+			parts = append(parts, fence)
+			i = next
+			continue
+		}
+		if table, next := markdownTableSpan(lines, i); next > i {
+			parts = append(parts, markdownTablePieces(table)...)
+			i = next
+			continue
+		}
+		parts = append(parts, splitParagraphForFilling(strings.TrimSpace(lines[i]))...)
+		i++
+	}
+	return parts
+}
+
+// markdownTableSpan returns the table that begins at start, and the index of
+// the first line after it. A table is a header row, a separator, and at least
+// one data row. Anything else returns start unchanged.
+func markdownTableSpan(lines []string, start int) (string, int) {
+	if start+1 >= len(lines) {
+		return "", start
+	}
+	header := strings.TrimSpace(lines[start])
+	separator := strings.TrimSpace(lines[start+1])
+	if !looksLikeMarkdownTableRow(header) || !isMarkdownTableSeparator(separator) {
+		return "", start
+	}
+	end := start + 2
+	for end < len(lines) {
+		row := strings.TrimSpace(lines[end])
+		if row == "" || !looksLikeMarkdownTableRow(row) {
+			break
+		}
+		end++
+	}
+	if end == start+2 {
+		return "", start
+	}
+	return strings.Join(lines[start:end], "\n"), end
+}
+
+// markdownFenceSpan returns a closed fence that begins at start.
+//
+// A heading sitting on the line above a fence is one block. Walking those
+// lines one by one cuts "1.5" inside the code at the period, and the fence
+// no longer shows the source the reader wrote.
+func markdownFenceSpan(lines []string, start int) (string, int, bool) {
+	marker, ok := markdownFenceMarker(lines[start])
+	if !ok {
+		return "", start, false
+	}
+	for j := start + 1; j < len(lines); j++ {
+		closeMarker, cok := markdownFenceMarker(lines[j])
+		if !cok || closeMarker[0] != marker[0] || len(closeMarker) < len(marker) {
+			continue
+		}
+		rest := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(lines[j]), closeMarker))
+		if rest != "" {
+			continue
+		}
+		return strings.Join(lines[start:j+1], "\n"), j + 1, true
+	}
+	return "", start, false
+}
+
+func isClosingFence(line, marker string) bool {
+	if marker == "" {
+		return false
+	}
+	trimmed := strings.TrimSpace(line)
+	closeMarker, ok := markdownFenceMarker(trimmed)
+	if !ok || closeMarker[0] != marker[0] || len(closeMarker) < len(marker) {
+		return false
+	}
+	return strings.TrimSpace(strings.TrimPrefix(trimmed, closeMarker)) == ""
+}
+
+// markdownFenceMarker reports the backtick or tilde run that opens or closes
+// a fence. The info string after an opening run is not part of the marker.
+func markdownFenceMarker(line string) (string, bool) {
+	trimmed := strings.TrimSpace(line)
+	if len(trimmed) < 3 {
+		return "", false
+	}
+	ch := trimmed[0]
+	if ch != '`' && ch != '~' {
+		return "", false
+	}
+	n := 0
+	for n < len(trimmed) && trimmed[n] == ch {
+		n++
+	}
+	if n < 3 {
+		return "", false
+	}
+	return trimmed[:n], true
+}
+
+// markdownTablePieces turns one table into one piece per data row. Each piece
+// still carries the header, so a row that lands on the next page is a table
+// on its own. Rows that stay on the same page are folded back together by
+// joinFillingParts.
+func markdownTablePieces(table string) []string {
+	lines := strings.Split(strings.TrimSpace(table), "\n")
+	if len(lines) < 3 {
+		return []string{strings.TrimSpace(table)}
+	}
+	header := strings.TrimSpace(lines[0]) + "\n" + strings.TrimSpace(lines[1])
+	pieces := make([]string, 0, len(lines)-2)
+	for _, row := range lines[2:] {
+		row = strings.TrimSpace(row)
+		if row == "" || !looksLikeMarkdownTableRow(row) {
+			break
+		}
+		pieces = append(pieces, header+"\n"+row)
+	}
+	if len(pieces) == 0 {
+		return []string{strings.TrimSpace(table)}
+	}
+	return pieces
+}
+
+// joinFillingParts puts filling pieces back into markdown.
+//
+// Consecutive pieces of the same table become one table again. A piece that
+// starts the next page keeps its own header, so the table does not turn into
+// a paragraph of pipes.
+func joinFillingParts(parts []string) string {
+	var b strings.Builder
+	var header string
+	var rows []string
+	flush := func() {
+		if header == "" {
+			return
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(header)
+		for _, row := range rows {
+			b.WriteByte('\n')
+			b.WriteString(row)
+		}
+		header = ""
+		rows = nil
+	}
+	for _, part := range parts {
+		tableHeader, dataRows, ok := splitCompleteTable(part)
+		if !ok {
+			flush()
+			if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(part)
+			continue
+		}
+		if header != "" && header == tableHeader {
+			rows = append(rows, dataRows...)
+			continue
+		}
+		flush()
+		header = tableHeader
+		rows = append(rows, dataRows...)
+	}
+	flush()
+	return b.String()
+}
+
+// splitCompleteTable reports the header (header row plus separator) and the
+// data rows of a piece that is itself a complete markdown table.
+func splitCompleteTable(part string) (header string, rows []string, ok bool) {
+	lines := strings.Split(strings.TrimSpace(part), "\n")
+	if len(lines) < 3 || !looksLikeMarkdownTableRow(lines[0]) || !isMarkdownTableSeparator(lines[1]) {
+		return "", nil, false
+	}
+	for _, row := range lines[2:] {
+		if strings.TrimSpace(row) == "" || !looksLikeMarkdownTableRow(row) {
+			return "", nil, false
+		}
+	}
+	return lines[0] + "\n" + lines[1], lines[2:], true
 }
 
 func splitParagraphForFilling(text string) []string {
@@ -783,7 +997,7 @@ func splitParagraphForFilling(text string) []string {
 	if text == "" {
 		return nil
 	}
-	if isMarkdownListItem(text) || isMarkdownImageLine(text) {
+	if _, isHeading := markdownHeadingPrefix(text); isHeading || strings.HasPrefix(text, ">") || isMarkdownListItem(text) || isMarkdownImageLine(text) || looksLikeMarkdownTableRow(text) || isMarkdownTableSeparator(text) {
 		return []string{text}
 	}
 	parts := splitTextByPunctuation(text)
@@ -812,6 +1026,33 @@ func isMarkdownListItem(text string) bool {
 }
 
 func splitTextByPunctuation(text string) []string {
+	return splitOutsideMarkup(text, func(r rune) bool {
+		switch r {
+		case '。', '！', '？', '；', ';', '.', '!', '?':
+			return true
+		default:
+			return false
+		}
+	})
+}
+
+func splitTextByComma(text string) []string {
+	return splitOutsideMarkup(text, func(r rune) bool {
+		switch r {
+		case '，', '、', ',', ':', '：':
+			return true
+		default:
+			return false
+		}
+	})
+}
+
+// splitOutsideMarkup cuts text on isBreak, except inside a closed bold, italic,
+// code, or math span. An unclosed marker is left unprotected so a stray "*"
+// cannot freeze the rest of the paragraph into one unsplittable piece.
+func splitOutsideMarkup(text string, isBreak func(rune) bool) []string {
+	runes := []rune(text)
+	protected := markupProtected(runes)
 	var parts []string
 	var current strings.Builder
 	flush := func() {
@@ -821,36 +1062,137 @@ func splitTextByPunctuation(text string) []string {
 			current.Reset()
 		}
 	}
-	for _, r := range text {
+	for i, r := range runes {
 		current.WriteRune(r)
-		switch r {
-		case '。', '！', '？', '；', ';', '.', '!', '?':
-			flush()
+		if protected[i] || !isBreak(r) || keepsInlineDot(runes, i) || keepsRepeatedPunct(runes, i) || keepsTightColon(runes, i) {
+			continue
 		}
+		flush()
 	}
 	flush()
 	return parts
 }
 
-func splitTextByComma(text string) []string {
-	var parts []string
-	var current strings.Builder
-	flush := func() {
-		piece := strings.TrimSpace(current.String())
-		if piece != "" {
-			parts = append(parts, piece)
-			current.Reset()
+// keepsNumberDot reports a dot inside a number, such as 0.382 or Qwen2.5.
+// That dot is not the end of a sentence.
+func keepsNumberDot(runes []rune, i int) bool {
+	if i <= 0 || i+1 >= len(runes) || runes[i] != '.' {
+		return false
+	}
+	return runes[i-1] >= '0' && runes[i-1] <= '9' && runes[i+1] >= '0' && runes[i+1] <= '9'
+}
+
+// keepsInlineDot reports a dot inside a token, such as github.com or file.txt.
+// A sentence period is followed by a space or the end of the line, not another letter.
+func keepsInlineDot(runes []rune, i int) bool {
+	if keepsNumberDot(runes, i) {
+		return true
+	}
+	if i <= 0 || i+1 >= len(runes) || runes[i] != '.' {
+		return false
+	}
+	return isDotTokenRune(runes[i-1]) && isDotTokenRune(runes[i+1])
+}
+
+func isDotTokenRune(r rune) bool {
+	return (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '-'
+}
+
+// keepsRepeatedPunct reports a mark inside an ellipsis or a run such as
+// "..." or "?!". Splitting between those marks leaves a lone "." on the page.
+func keepsRepeatedPunct(runes []rune, i int) bool {
+	if i < 0 || i >= len(runes) || !isSentenceMark(runes[i]) {
+		return false
+	}
+	if i > 0 && isSentenceMark(runes[i-1]) {
+		return true
+	}
+	return i+1 < len(runes) && isSentenceMark(runes[i+1])
+}
+
+func isSentenceMark(r rune) bool {
+	return r == '.' || r == '!' || r == '?'
+}
+
+// keepsTightColon reports a colon that belongs to a URL or an id, such as
+// https:// or arXiv:2510. A fullwidth colon still ends a clause.
+func keepsTightColon(runes []rune, i int) bool {
+	if i < 0 || i+1 >= len(runes) || runes[i] != ':' {
+		return false
+	}
+	next := runes[i+1]
+	return next == '/' || next == '\\' || (next >= '0' && next <= '9')
+}
+
+// markupProtected marks runes that belong to a closed inline span.
+func markupProtected(runes []rune) []bool {
+	prot := make([]bool, len(runes))
+	for i := 0; i < len(runes); {
+		switch runes[i] {
+		case '*':
+			if i+1 < len(runes) && runes[i+1] == '*' {
+				if j := indexRunePair(runes, i+2, '*'); j >= 0 {
+					markProtected(prot, i, j+2)
+					i = j + 2
+					continue
+				}
+			} else if j := indexRune(runes, i+1, '*'); j >= 0 && !runePairAt(runes, j, '*') {
+				markProtected(prot, i, j+1)
+				i = j + 1
+				continue
+			}
+		case '_':
+			if i+1 < len(runes) && runes[i+1] == '_' {
+				if j := indexRunePair(runes, i+2, '_'); j >= 0 {
+					markProtected(prot, i, j+2)
+					i = j + 2
+					continue
+				}
+			}
+		case '`':
+			if j := indexRune(runes, i+1, '`'); j >= 0 {
+				markProtected(prot, i, j+1)
+				i = j + 1
+				continue
+			}
+		case '$':
+			if j := indexRune(runes, i+1, '$'); j >= 0 {
+				markProtected(prot, i, j+1)
+				i = j + 1
+				continue
+			}
+		}
+		i++
+	}
+	return prot
+}
+
+func markProtected(prot []bool, from, to int) {
+	for k := from; k < to && k < len(prot); k++ {
+		prot[k] = true
+	}
+}
+
+func indexRune(runes []rune, from int, ch rune) int {
+	for j := from; j < len(runes); j++ {
+		if runes[j] == ch {
+			return j
 		}
 	}
-	for _, r := range text {
-		current.WriteRune(r)
-		switch r {
-		case '，', '、', ',', ':', '：':
-			flush()
+	return -1
+}
+
+func indexRunePair(runes []rune, from int, ch rune) int {
+	for j := from; j+1 < len(runes); j++ {
+		if runes[j] == ch && runes[j+1] == ch {
+			return j
 		}
 	}
-	flush()
-	return parts
+	return -1
+}
+
+func runePairAt(runes []rune, i int, ch rune) bool {
+	return i+1 < len(runes) && runes[i] == ch && runes[i+1] == ch
 }
 
 func splitMarkdownBlocks(md string) []string {
@@ -872,8 +1214,9 @@ func splitMarkdownBlocks(md string) []string {
 	for i := 0; i < len(lines); i++ {
 		trimmed := strings.TrimSpace(lines[i])
 
-		// Track fence state
-		if strings.HasPrefix(trimmed, "```") {
+		// Track fence state. Tilde fences count too, so a blank line inside
+		// ~~~ does not become a block boundary.
+		if _, ok := markdownFenceMarker(trimmed); ok {
 			inFence = !inFence
 		}
 
@@ -912,9 +1255,54 @@ func splitLongMarkdownBlock(block string, maxChars int) []string {
 			current.Reset()
 		}
 	}
-	for _, line := range lines {
-		line = strings.TrimRight(line, " \t")
+	for i := 0; i < len(lines); {
+		line := strings.TrimRight(lines[i], " \t")
 		if line == "" {
+			i++
+			continue
+		}
+		if fence, next, ok := markdownFenceSpan(lines, i); ok {
+			if len(fence) > maxChars {
+				flush()
+				chunks = append(chunks, splitOversizedCodeBlock(fence)...)
+			} else if current.Len() > 0 && current.Len()+1+len(fence) > maxChars {
+				flush()
+				current.WriteString(fence)
+			} else {
+				if current.Len() > 0 {
+					current.WriteString("\n")
+				}
+				current.WriteString(fence)
+			}
+			i = next
+			continue
+		}
+		if table, next := markdownTableSpan(lines, i); next > i {
+			if len(table) > maxChars {
+				flush()
+				chunks = append(chunks, markdownTablePieces(table)...)
+			} else {
+				if current.Len() > 0 && current.Len()+1+len(table) > maxChars {
+					flush()
+				}
+				if current.Len() > 0 {
+					current.WriteString("\n")
+				}
+				current.WriteString(table)
+			}
+			i = next
+			continue
+		}
+		if isMarkdownImageLine(line) {
+			flush()
+			chunks = append(chunks, line)
+			i++
+			continue
+		}
+		if len(line) > maxChars && !looksLikeMarkdownTableRow(line) {
+			flush()
+			chunks = append(chunks, splitPlainTextByLength(line, maxChars)...)
+			i++
 			continue
 		}
 		candidate := line
@@ -924,23 +1312,69 @@ func splitLongMarkdownBlock(block string, maxChars int) []string {
 		if current.Len() > 0 && len(candidate) > maxChars {
 			flush()
 		}
-		if isMarkdownImageLine(line) {
-			flush()
-			chunks = append(chunks, line)
-			continue
-		}
-		if len(line) > maxChars {
-			flush()
-			chunks = append(chunks, splitPlainTextByLength(line, maxChars)...)
-			continue
-		}
 		if current.Len() > 0 {
 			current.WriteString("\n")
 		}
 		current.WriteString(line)
+		i++
 	}
 	flush()
 	return chunks
+}
+
+// avoidMarkupCut moves a byte cut out of a closed bold, italic, code, or math
+// span. Cutting there would leave the markers on opposite pieces, and the
+// PDF would draw the words without the emphasis.
+func avoidMarkupCut(text string, splitAt int) int {
+	if splitAt <= 0 || splitAt >= len(text) {
+		return splitAt
+	}
+	runes := []rune(text)
+	protected := markupProtected(runes)
+	bytePos := 0
+	runeIdx := 0
+	for runeIdx < len(runes) && bytePos < splitAt {
+		bytePos += utf8.RuneLen(runes[runeIdx])
+		runeIdx++
+	}
+	if runeIdx >= len(protected) || !protected[runeIdx] {
+		return splitAt
+	}
+	start := runeIdx
+	for start > 0 && protected[start-1] {
+		start--
+	}
+	end := runeIdx
+	for end < len(protected) && protected[end] {
+		end++
+	}
+	startByte := runeByteOffset(runes, start)
+	if startByte > 0 {
+		return startByte
+	}
+	endByte := runeByteOffset(runes, end)
+	if endByte > splitAt {
+		return endByte
+	}
+	return splitAt
+}
+
+func snapToRuneBoundary(text string, i int) int {
+	if i <= 0 || i >= len(text) {
+		return i
+	}
+	for i > 0 && !utf8.RuneStart(text[i]) {
+		i--
+	}
+	return i
+}
+
+func runeByteOffset(runes []rune, index int) int {
+	n := 0
+	for i := 0; i < index && i < len(runes); i++ {
+		n += utf8.RuneLen(runes[i])
+	}
+	return n
 }
 
 func splitPlainTextByLength(text string, maxChars int) []string {
@@ -952,6 +1386,13 @@ func splitPlainTextByLength(text string, maxChars int) []string {
 		splitAt := strings.LastIndex(text[:maxChars], " ")
 		if splitAt < maxChars/2 {
 			splitAt = maxChars
+		}
+		// maxChars counts bytes. Landing inside a Chinese character would
+		// write a broken rune into the PDF.
+		splitAt = snapToRuneBoundary(text, splitAt)
+		splitAt = avoidMarkupCut(text, splitAt)
+		if splitAt <= 0 || splitAt >= len(text) {
+			break
 		}
 		chunks = append(chunks, strings.TrimSpace(text[:splitAt]))
 		text = strings.TrimSpace(text[splitAt:])

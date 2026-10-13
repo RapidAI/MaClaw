@@ -4,6 +4,8 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"strings"
 	"sync"
@@ -113,19 +115,121 @@ func do(req *http.Request, followRedirects bool) (*http.Response, error) {
 	return resp, nil
 }
 
+// DoNoFollowWithin is DoNoFollow with caller-chosen budgets. headerTimeout
+// bounds the wait for response headers; totalTimeout bounds the whole
+// exchange, including the body. Token calls stay on the shared 15s client.
+// Generation probes must use this: some chat gateways withhold headers until
+// the first token, and the shared client aborts that wait with
+// "Client.Timeout exceeded while awaiting headers".
+func DoNoFollowWithin(req *http.Request, headerTimeout, totalTimeout time.Duration) (*http.Response, error) {
+	if req == nil {
+		return nil, fmt.Errorf("oauth request is nil")
+	}
+	if headerTimeout <= 0 {
+		headerTimeout = oauthHTTPTimeout
+	}
+	if totalTimeout < headerTimeout {
+		totalTimeout = headerTimeout
+	}
+	transport := newProbeTransport(currentProxyConfig(), headerTimeout)
+	client := &http.Client{
+		Timeout:   totalTimeout,
+		Transport: transport,
+		CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		transport.CloseIdleConnections()
+		return nil, annotateOAuthNetworkError("连接服务失败", err)
+	}
+	resp.Body = &closeIdleBody{ReadCloser: resp.Body, transport: transport}
+	return resp, nil
+}
+
+// closeIdleBody drops the one-shot transport's idle pool once the caller
+// finishes the body, so a probe does not keep a connection until process exit.
+type closeIdleBody struct {
+	io.ReadCloser
+	transport *http.Transport
+}
+
+func (b *closeIdleBody) Close() error {
+	err := b.ReadCloser.Close()
+	if b.transport != nil {
+		b.transport.CloseIdleConnections()
+	}
+	return err
+}
+
 func newOAuthHTTPClient(cfg proxyutil.Config) *http.Client {
+	return &http.Client{Timeout: oauthHTTPTimeout, Transport: newOAuthTransport(cfg, oauthHTTPTimeout)}
+}
+
+// newProbeTransport is the one-shot client for generation probes. The dial
+// budget stays short so a black-holed host or proxy fails in seconds instead
+// of consuming the whole generation wait. HTTP/2 stays on so the probe uses
+// the same protocol as a live chat. SOCKS5 installs Dial; replacing it with
+// DialContext would skip the proxy, so the existing dial is wrapped instead.
+func newProbeTransport(cfg proxyutil.Config, headerTimeout time.Duration) *http.Transport {
+	t := newOAuthTransport(cfg, headerTimeout)
+	if t.Dial != nil {
+		t.Dial = dialWithTimeout(t.Dial, probeDialTimeout)
+		return t
+	}
+	t.DialContext = (&net.Dialer{Timeout: probeDialTimeout, KeepAlive: 30 * time.Second}).DialContext
+	return t
+}
+
+const probeDialTimeout = corelib.LLMProbeDialTimeout
+
+// dialWithTimeout bounds a blocking dial. A connection that arrives after the
+// deadline is closed so the dial goroutine cannot leak it.
+func dialWithTimeout(dial func(string, string) (net.Conn, error), timeout time.Duration) func(string, string) (net.Conn, error) {
+	return func(network, addr string) (net.Conn, error) {
+		type result struct {
+			c   net.Conn
+			err error
+		}
+		ch := make(chan result, 1)
+		go func() {
+			c, err := dial(network, addr)
+			ch <- result{c, err}
+		}()
+		timer := time.NewTimer(timeout)
+		defer timer.Stop()
+		select {
+		case r := <-ch:
+			return r.c, r.err
+		case <-timer.C:
+			go func() {
+				r := <-ch
+				if r.c != nil {
+					_ = r.c.Close()
+				}
+			}()
+			return nil, fmt.Errorf("dial %s timed out", addr)
+		}
+	}
+}
+
+func newOAuthTransport(cfg proxyutil.Config, headerTimeout time.Duration) *http.Transport {
+	if headerTimeout <= 0 {
+		headerTimeout = oauthHTTPTimeout
+	}
 	t := &http.Transport{
 		Proxy:                 http.ProxyFromEnvironment,
 		ForceAttemptHTTP2:     true,
 		TLSHandshakeTimeout:   10 * time.Second,
 		IdleConnTimeout:       90 * time.Second,
-		ResponseHeaderTimeout: oauthHTTPTimeout,
+		ResponseHeaderTimeout: headerTimeout,
 		ExpectContinueTimeout: 1 * time.Second,
 	}
 	if cfg.Enabled {
 		proxyutil.WrapTransport(t, cfg)
 	}
-	return &http.Client{Timeout: oauthHTTPTimeout, Transport: t}
+	return t
 }
 
 func annotateOAuthNetworkError(op string, err error) error {

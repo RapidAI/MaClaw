@@ -1,4 +1,4 @@
-import { type CSSProperties, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { GetMoAConfig, GetMoASessionState, GetMoAStats, SaveMoAConfig, SetMoASticky } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
@@ -401,18 +401,10 @@ export function MoAConfigSection({ lang, providers }: Props) {
         }
     };
 
-    const card: CSSProperties = {
-        marginBottom: 16,
-        padding: "12px 16px",
-        borderRadius: 6,
-        border: `1px solid ${colors.border}`,
-        background: colors.surface,
-    };
-
     if (loading) {
         return (
-            <div className="llm-config-card" style={card}>
-                <span style={{ fontSize: "0.8rem", color: colors.textMuted }}>
+            <div className="llm-config-card moa-config-section">
+                <span className="moa-config-section__status">
                     {t("Loading MoA…", "加载多模型会诊配置…")}
                 </span>
             </div>
@@ -420,13 +412,13 @@ export function MoAConfigSection({ lang, providers }: Props) {
     }
 
     return (
-        <div className="llm-config-card moa-config-section" style={card} data-testid="moa-config-section">
-            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12, marginBottom: 8 }}>
+        <div className="llm-config-card moa-config-section" data-testid="moa-config-section">
+            <div className="moa-config-section__head">
                 <div style={{ minWidth: 0 }}>
-                    <label style={{ ...labelStyle, marginBottom: 2, display: "block", color: "var(--theme-text-primary, inherit)" }}>
+                    <label className="llm-tuning-row__title" style={{ ...labelStyle, marginBottom: 2, display: "block", color: "var(--theme-text-primary, inherit)" }}>
                         {t("Ask multiple models first", "先问多个模型再回答")}
                     </label>
-                    <div style={{ fontSize: "0.68rem", color: colors.textMuted, lineHeight: 1.45 }}>
+                    <div className="llm-tuning-row__hint" style={{ lineHeight: 1.45 }}>
                         {t(
                             "For hard questions, other models give opinions first; your current main model writes the final answer. Chat: + → multi-model. Kill switch: MACLAW_MOA=off.",
                             "遇到难题时，可先让其他模型各说一遍看法，再由你现在用的主模型综合并写最终答案。聊天点 + →「多模型会诊」。紧急关闭：环境变量 MACLAW_MOA=off。",

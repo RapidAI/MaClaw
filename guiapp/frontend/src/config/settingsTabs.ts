@@ -1,6 +1,6 @@
 import { localizeText } from '../i18n';
 
-export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'pet' | 'programmingTools' | 'latex' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'pptStyles' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'virtualEmployee' | 'im' | 'tokenBank' | 'security' | 'migration' | 'system' | 'hardware' | 'assetManagement';
+export type SettingsTabId = 'general' | 'proxy' | 'ui' | 'pet' | 'programmingTools' | 'latex' | 'searchEngine' | 'redeem' | 'skills' | 'mcp' | 'llm' | 'llmCache' | 'pptStyles' | 'embedding' | 'memory' | 'knowledge' | 'misData' | 'virtualEmployee' | 'im' | 'email' | 'tokenBank' | 'security' | 'migration' | 'system' | 'hardware' | 'assetManagement';
 
 /**
  * Tabs that actually render a settings body panel (rail + SettingsActiveContent).
@@ -15,15 +15,16 @@ export const SETTINGS_CONTENT_TAB_IDS = [
     'latex',
     'pptStyles',
     'searchEngine',
-    'redeem',
     'llm',
     'llmCache',
     'memory',
     'knowledge',
     'misData',
     'embedding',
+    'redeem',
     'virtualEmployee',
     'im',
+    'email',
     'tokenBank',
     'security',
     'migration',
@@ -50,7 +51,7 @@ export function resolveSettingsTabId(
 }
 
 /** Nav grouping for the settings rail. Tabs sharing a group render under one localized header. */
-export type SettingsTabGroupId = 'essentials' | 'ai' | 'services' | 'data' | 'system';
+export type SettingsTabGroupId = 'essentials' | 'ai' | 'data' | 'system' | 'integration';
 
 export interface SettingsTabOption {
     id: SettingsTabId;
@@ -64,9 +65,9 @@ export interface SettingsTabOption {
 const settingsTabGroupMeta: Record<SettingsTabGroupId, { en: string; zhHans: string; zhHant: string }> = {
     essentials: { en: 'Essentials', zhHans: '基础设置', zhHant: '基礎設定' },
     ai: { en: 'AI & Models', zhHans: 'AI 与模型', zhHant: 'AI 與模型' },
-    services: { en: 'Services & Integrations', zhHans: '服务与集成', zhHant: '服務與整合' },
     data: { en: 'Data & Memory', zhHans: '数据与记忆', zhHant: '資料與記憶' },
     system: { en: 'System', zhHans: '系统', zhHant: '系統' },
+    integration: { en: 'Integrations', zhHans: '集成与接入', zhHant: '整合與接入' },
 };
 
 /** Group assignment per tab id (skills/mcp are legacy ids and stay ungrouped). */
@@ -86,14 +87,15 @@ const settingsTabGroupById: Partial<Record<SettingsTabId, SettingsTabGroupId>> =
     knowledge: 'data',
     misData: 'data',
     migration: 'data',
-    redeem: 'services',
-    virtualEmployee: 'services',
-    im: 'services',
-    tokenBank: 'services',
+    redeem: 'system',
+    tokenBank: 'system',
     security: 'system',
     system: 'system',
-    hardware: 'system',
     assetManagement: 'system',
+    virtualEmployee: 'integration',
+    im: 'integration',
+    email: 'integration',
+    hardware: 'integration',
 };
 
 const attachSettingsTabGroup = (lang: string, tab: SettingsTabOption): SettingsTabOption => {
@@ -127,6 +129,7 @@ const settingsTabIcons: Record<SettingsTabId, string> = {
     misData: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="5" height="5" rx="1"/><rect x="9" y="2" width="5" height="5" rx="1"/><rect x="2" y="9" width="5" height="5" rx="1"/><rect x="9" y="9" width="5" height="5" rx="1"/></svg>',
     virtualEmployee: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="5" r="3"/><path d="M3 14c0-2.8 2.2-5 5-5s5 2.2 5 5"/></svg>',
     im: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2 3h12v8H9l-2 2v-2H2z" /><path d="M5 6.5h6M5 8.5h4"/></svg>',
+    email: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="3.5" width="12" height="9" rx="1.2"/><path d="m3 5 5 4 5-4"/></svg>',
     tokenBank: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6.2 8 3.5l5.5 2.7L8 8.9z"/><path d="M2.5 9.1 8 11.8l5.5-2.7"/><path d="M2.5 12 8 14.5 13.5 12"/></svg>',
     security: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M8 1.5L3 3.5v4c0 3.5 2.5 5.5 5 7 2.5-1.5 5-3.5 5-7v-4z"/></svg>',
     migration: '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6l-2.5 2 2.5 2"/><path d="M12 6l2.5 2-2.5 2"/><path d="M1.5 8h5M9.5 8h5"/></svg>',
@@ -188,12 +191,6 @@ export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmploy
             icon: settingsTabIcons.searchEngine,
         },
         {
-            id: 'redeem' as const,
-            label: textForLang(lang, 'Service Redeem', '服务兑换', '服務兌換'),
-            desc: textForLang(lang, 'View credits and redeem service codes', '查看 Credits 和兑换服务码', '查看 Credits 和兌換服務碼'),
-            icon: settingsTabIcons.redeem,
-        },
-        {
             id: 'llm' as const,
             label: textForLang(lang, 'LLM Config', '大模型配置', '大模型配置'),
             desc: textForLang(lang, 'Configure LLM for MaClaw agent', '配置 MaClaw 代理使用的大模型', '配置 MaClaw 代理使用的大模型'),
@@ -230,17 +227,28 @@ export const getSettingsTabOptions = (lang: string, options: { hideVirtualEmploy
             icon: settingsTabIcons.embedding,
         },
         {
+            id: 'redeem' as const,
+            label: textForLang(lang, 'Service Redeem', '服务兑换', '服務兌換'),
+            desc: textForLang(lang, 'View credits and redeem service codes', '查看 Credits 和兑换服务码', '查看 Credits 和兌換服務碼'),
+            icon: settingsTabIcons.redeem,
+        },
+        {
             id: 'virtualEmployee' as const,
             label: textForLang(lang, 'Employees', '数字员工', '數字員工'),
             desc: textForLang(lang, 'Manage favorite digital employees', '常用数字员工管理', '常用數字員工管理'),
             icon: settingsTabIcons.virtualEmployee,
         },
-
         {
             id: 'im' as const,
             label: 'IM',
             desc: textForLang(lang, 'Configure QQ Bot, Telegram Bot, WeChat and other IM integrations', '配置 QQ 机器人、Telegram Bot、微信等即时通讯接入', '配置 QQ 機器人、Telegram Bot、微信等即時通訊接入'),
             icon: settingsTabIcons.im,
+        },
+        {
+            id: 'email' as const,
+            label: textForLang(lang, 'Email', '邮箱', '郵箱'),
+            desc: textForLang(lang, 'Configure receive and send accounts', '配置收件与发件帐号', '設定收件與發件帳號'),
+            icon: settingsTabIcons.email,
         },
         {
             id: 'tokenBank' as const,

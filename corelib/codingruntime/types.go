@@ -316,6 +316,11 @@ type Store interface {
 	MarkTaskWaitingApproval(taskID string, now time.Time) (*Task, error)
 	MarkTaskReadyForRecovery(taskID string, now time.Time) (*Task, error)
 	StartAttempt(taskID, leaseOwner string, leaseFor time.Duration, policy PolicySnapshot, now time.Time) (*Attempt, error)
+	// RenewAttemptLease extends a live attempt's admission lease. A step can
+	// outlast the original lease; without a renewal the attempt drops out of
+	// the conflict set while its executor is still writing, and another task
+	// on the same directory is admitted beside it.
+	RenewAttemptLease(attemptID, leaseOwner string, leaseFor time.Duration, now time.Time) error
 	RecordWorkspaceBefore(attemptID, leaseOwner string, probe *WorkspaceProbe, now time.Time) (*Attempt, error)
 	AdmitReadOnlyChildren(parentAttemptID, leaseOwner string, specs []ChildTaskSpec, policy PolicySnapshot, now time.Time) ([]ChildTaskHandle, error)
 	CompleteChildTask(childTaskID string, result ChildTaskResult, now time.Time) (*Task, error)

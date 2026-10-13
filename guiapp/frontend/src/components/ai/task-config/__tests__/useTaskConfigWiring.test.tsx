@@ -1,8 +1,8 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { CloudWorkspaceEntitlement, CreateCloudWorkspace, CreateLatexDocument, CreateTaskUnified, ListLatexTemplates, RenameCloudWorkspace, SetTabWorkingDir } from '../../../../../wailsjs/go/main/App';
+import { CloudWorkspaceEntitlement, CreateCloudWorkspace, CreateLatexDocument, CreateRunWindowTask, CreateTaskUnified, ListLatexTemplates, RenameCloudWorkspace, SetTabWorkingDir } from '../../../../../wailsjs/go/main/App';
 import { useTaskConfigWiring, type TaskConfigWiringOptions } from '../useTaskConfigWiring';
-import { defaultTaskDraft, withCloudWorkspace, withExpert, withLocalWorkspace } from '../taskDraft';
+import { defaultTaskDraft, withCloudWorkspace, withExpert, withLocalWorkspace, withRunWindow } from '../taskDraft';
 import { LATEX_EXPERT_ID } from '../../../../utils/latexTemplates';
 import { EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH } from '../../../../constants/events';
 
@@ -16,6 +16,12 @@ vi.mock('../../../../../wailsjs/go/main/App', () => ({
     CreateCloudWorkspace: vi.fn(),
     RenameCloudWorkspace: vi.fn(),
     CreateTaskUnified: vi.fn(),
+    CreateRunWindowTask: vi.fn(),
+    ListRunWindowTasks: vi.fn().mockResolvedValue([]),
+    ClaimRunWindowTask: vi.fn(),
+    ReleaseRunWindowTask: vi.fn(),
+    MarkRunWindowTaskStarted: vi.fn(),
+    MarkRunWindowTaskFailed: vi.fn(),
     CreateLatexDocument: vi.fn(),
     SetTabWorkingDir: vi.fn(),
     EnsureCodingWorkbenchArmed: vi.fn().mockResolvedValue(undefined),
@@ -472,6 +478,85 @@ describe('useTaskConfigWiring new-task wizard opening', () => {
         expect(replacePendingAttachments).toHaveBeenCalledWith([attachment]);
         expect(replaceSelectedFilePaths).toHaveBeenCalledWith(['D:/picked/spec.md']);
         create.mockReset();
+    });
+
+    it('puts a scheduled new task on the plan list instead of starting it', async () => {
+        const create = CreateTaskUnified as unknown as ReturnType<typeof vi.fn>;
+        const schedule = CreateRunWindowTask as unknown as ReturnType<typeof vi.fn>;
+        create.mockClear();
+        schedule.mockReset();
+        schedule.mockResolvedValue('rw-1');
+        const showAlert = vi.fn();
+        const { result } = renderHook(() => useTaskConfigWiring(makeOptions({
+            localGuideVisible: true,
+            inputValue: '夜间整理笔记',
+            showAlert,
+        })));
+        act(() => {
+            result.current.taskConfig.onDraftChange(withRunWindow(defaultTaskDraft(), {
+                mode: 'scheduled',
+                startAt: '2099-01-02T01:00',
+                endAt: '2099-01-02T06:30',
+            }));
+        });
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        await waitFor(() => expect(schedule).toHaveBeenCalled());
+        expect(create).not.toHaveBeenCalled();
+        expect(schedule.mock.calls[0]?.[0]).toEqual(expect.objectContaining({
+            prompt: '夜间整理笔记',
+            startAt: '2099-01-02T01:00',
+            endAt: '2099-01-02T06:30',
+        }));
+        expect(showAlert).toHaveBeenCalledWith(
+            '定时任务「夜间整理笔记」已经创建，将于 2099-01-02 01:00 启动。\n2099-01-02 06:30 如果任务未完成，将暂停。',
+            '定时任务已创建',
+        );
+    });
+
+    it('does not create another scheduled task while the confirmation is open', async () => {
+        const schedule = CreateRunWindowTask as unknown as ReturnType<typeof vi.fn>;
+        const handleSend = vi.fn();
+        schedule.mockReset();
+        let resolveAlert: () => void = () => {};
+        schedule.mockResolvedValue('rw-1');
+        const showAlert = vi.fn(() => new Promise<void>((resolve) => {
+            resolveAlert = resolve;
+        }));
+        const clearComposerDraft = vi.fn();
+        const { result } = renderHook(() => useTaskConfigWiring(makeOptions({
+            localGuideVisible: true,
+            inputValue: '夜间整理笔记',
+            showAlert,
+            handleSend,
+            clearComposerDraft,
+        })));
+        act(() => {
+            result.current.taskConfig.onDraftChange(withRunWindow(defaultTaskDraft(), {
+                mode: 'scheduled',
+                startAt: '2099-01-02T01:00',
+                endAt: '',
+            }));
+        });
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        await waitFor(() => expect(showAlert).toHaveBeenCalledTimes(1));
+        expect(schedule).toHaveBeenCalledTimes(1);
+        expect(clearComposerDraft).not.toHaveBeenCalled();
+
+        act(() => {
+            result.current.handleSendWithTaskConfig();
+        });
+        expect(schedule).toHaveBeenCalledTimes(1);
+        expect(handleSend).not.toHaveBeenCalled();
+
+        await act(async () => {
+            resolveAlert();
+        });
+        await waitFor(() => expect(clearComposerDraft).toHaveBeenCalled());
+        expect(result.current.taskConfig.draft.runWindow?.mode).toBe('immediate');
     });
 
     it('creates a task when the guide send is in compose mode', async () => {

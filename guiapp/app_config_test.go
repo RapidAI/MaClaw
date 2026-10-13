@@ -1247,6 +1247,13 @@ func TestFilterSettingsTabConfigNilSafe(t *testing.T) {
 	if empty != nil {
 		t.Fatalf("self-loading tab want nil map, got %#v", empty)
 	}
+	email, err := filterSettingsTabConfig(&corelib.AppConfig{}, "email")
+	if err != nil {
+		t.Fatalf("email: %v", err)
+	}
+	if email != nil {
+		t.Fatalf("email tab want nil map, got %#v", email)
+	}
 }
 
 func TestFilterSettingsTabConfigGeneralIncludesOfficeReadPolicy(t *testing.T) {

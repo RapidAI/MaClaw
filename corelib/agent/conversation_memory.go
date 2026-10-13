@@ -1753,7 +1753,7 @@ func (cm *ConversationMemory) convertExpiredInFlightLocked(userID string, s *con
 // still uncertain. Callers use it to keep that evidence, not to replay the tool.
 func ExternalSendCheckpointEvidence(toolName, sideEffect string) bool {
 	switch strings.ToLower(strings.TrimSpace(toolName)) {
-	case "im_message", "send_file", "send_to_im":
+	case "im_message", "send_file", "send_to_im", "mailbox_send":
 	default:
 		return false
 	}

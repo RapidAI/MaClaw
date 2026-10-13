@@ -71,7 +71,7 @@ export function PPTStyleChooser({
                     ? t('This send uses the style you picked. Choose again or follow the purpose.', '这次将使用你选的风格，仍可改选，或改回跟随用途。', '這次將使用你選的風格，仍可改選，或改回跟隨用途。')
                     : matched
                         ? t('Recommended from your request. Pick another style if you want.', '已按用途推荐一套，也可以改选其它风格。', '已按用途推薦一套，也可以改選其它風格。')
-                        : t('No purpose matched yet. Business is selected until you pick another.', '还没对上用途，先用商务汇报，也可以直接改选。', '還沒對上用途，先用商務匯報，也可以直接改選。')}</span>
+                        : t('No purpose matched yet. Clean Professional is selected until you pick another.', '还没对上用途，先用清爽专业，也可以直接改选。', '還沒對上用途，先用清爽專業，也可以直接改選。')}</span>
                 {manualId ? (
                     <button type="button" className="ppt-style-chooser-follow" onClick={() => setManualId(null)}>
                         {t('Follow purpose', '跟随用途', '跟隨用途')}

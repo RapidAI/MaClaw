@@ -128,6 +128,8 @@ interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
     utilitiesLabel?: string;
     /** Current settings tab, forwarded to the nav rail for the library menu highlight. */
     settingsTab?: string;
+    /** Solo settings tab. IM or email here highlights 接入 instead of 设置. */
+    settingsNavSoloTab?: string;
     availableProviders?: Array<{ name: string; url: string; isHubService: boolean; model?: string; models?: string[] }>;
     onSwitchProvider?: (providerID: string) => void;
     currentModel?: string;
@@ -247,6 +249,7 @@ export const AppSidebarShell = ({
 	showToolsEntry = false,
     utilitiesLabel,
     settingsTab,
+    settingsNavSoloTab,
     availableProviders = [],
     onSwitchProvider,
     currentModel = '',
@@ -306,6 +309,7 @@ export const AppSidebarShell = ({
 					showToolsEntry={showToolsEntry}
                     utilitiesLabel={utilitiesLabel}
                     settingsTab={settingsTab}
+                    settingsNavSoloTab={settingsNavSoloTab}
                     // Background runs only. The rail adds in-progress bot tasks.
                     runningTaskCount={workbenchTaskCounts?.background ?? backgroundTaskCount}
                     onOpenBackgroundTasks={onOpenBackgroundTasks}

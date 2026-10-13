@@ -1,9 +1,12 @@
 import { useState, useEffect, useCallback, useRef, type CSSProperties } from "react";
 import {
     ListScheduledTasks,
+    ListRunWindowTasks,
     CreateScheduledTask,
     UpdateScheduledTask,
+    UpdateRunWindowTaskTimes,
     DeleteScheduledTask,
+    DeleteRunWindowTask,
     PauseScheduledTask,
     ResumeScheduledTask,
     TriggerScheduledTask,
@@ -12,6 +15,8 @@ import {
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors, radius, remoteActionButtonStyle, remoteDangerActionButtonStyle, remotePrimaryActionButtonStyle } from "./styles";
 import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
+import { formatRunWindowInstant, runWindowStatusLabel, toDatetimeLocalValue, type RunWindowTaskRecord } from "../ai/task-config/runWindow";
+import { AssistantInputIcon } from "../ai/aiAssistantPanelTheme";
 
 interface DeliveryTarget {
     kind: "group" | "user";
@@ -345,6 +350,61 @@ const taskActionBtnBase: CSSProperties = {
     borderRadius: radius.sm,
 };
 
+const taskIconBtnBase: CSSProperties = {
+    width: 28,
+    height: 28,
+    padding: 0,
+    boxSizing: "border-box",
+    display: "inline-flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+    background: "none",
+    border: `1px solid ${colors.border}`,
+    borderRadius: radius.sm,
+    flexShrink: 0,
+    lineHeight: 1,
+};
+
+function taskIconLabel(action: string, name: string): string {
+    const trimmed = name.replace(/[\r\n]+/g, " ").trim();
+    if (!trimmed) return action;
+    const sep = /[\u3400-\u9fff]/.test(action) ? "：" : ": ";
+    return `${action}${sep}${trimmed}`;
+}
+
+function TaskIconAction({ label, icon, danger, onClick }: {
+    label: string;
+    icon: "edit" | "trash";
+    danger?: boolean;
+    onClick: () => void;
+}) {
+    const [hot, setHot] = useState(false);
+    const [focused, setFocused] = useState(false);
+    const wash = danger ? colors.dangerBg : colors.surfaceMuted;
+    return (
+        <button
+            type="button"
+            onClick={onClick}
+            title={label}
+            aria-label={label}
+            onMouseEnter={() => setHot(true)}
+            onMouseLeave={() => setHot(false)}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setFocused(false)}
+            style={{
+                ...taskIconBtnBase,
+                color: danger ? colors.danger : colors.textSecondary,
+                background: hot || focused ? wash : "none",
+                borderColor: hot || focused ? (danger ? colors.danger : colors.border) : colors.border,
+                boxShadow: focused ? `0 0 0 2px ${wash}` : undefined,
+            }}
+        >
+            <AssistantInputIcon name={icon} size={14} />
+        </button>
+    );
+}
+
 /** Exported for unit tests — keeps list meta rows stable and left-aligned. */
 export function buildTaskMetaRows(
     task: ScheduledTask,
@@ -368,6 +428,11 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
         lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
 
     const [tasks, setTasks] = useState<ScheduledTask[]>([]);
+    const [runWindows, setRunWindows] = useState<RunWindowTaskRecord[]>([]);
+    const [windowEdit, setWindowEdit] = useState<RunWindowTaskRecord | null>(null);
+    const [windowStart, setWindowStart] = useState("");
+    const [windowEnd, setWindowEnd] = useState("");
+    const [windowDelete, setWindowDelete] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState("");
     const [dlgOpen, setDlgOpen] = useState(false);
@@ -405,6 +470,8 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
     const triggerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const { backdropProps: deleteBackdropProps, dialogProps: deleteDialogProps } = useSafeBackdropDismiss(() => setDeleteTarget(null));
     const { backdropProps: formBackdropProps, dialogProps: formDialogProps } = useSafeBackdropDismiss(() => setDlgOpen(false));
+    const { backdropProps: windowEditBackdropProps, dialogProps: windowEditDialogProps } = useSafeBackdropDismiss(() => setWindowEdit(null));
+    const { backdropProps: windowDeleteBackdropProps, dialogProps: windowDeleteDialogProps } = useSafeBackdropDismiss(() => setWindowDelete(null));
 
     useEffect(() => () => {
         mountedRef.current = false;
@@ -419,13 +486,16 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
         setLoading(true); setError("");
         try {
             const list = await ListScheduledTasks();
+            const windowList = typeof ListRunWindowTasks === "function" ? await ListRunWindowTasks() : [];
             // Go emits interval_minutes/start_date/end_date/... with omitempty;
             // the local interface treats them as always present.
             const all = (Array.isArray(list) ? list : []) as unknown as ScheduledTask[];
+            const windows = (Array.isArray(windowList) ? windowList : []) as RunWindowTaskRecord[];
             // Filter out expired tasks — they are auto-deleted on the backend,
             // but hide them immediately on the frontend as well.
             if (mountedRef.current && requestSeq === loadRequestSeq.current) {
                 setTasks(all.filter((t: ScheduledTask) => t.status !== "expired"));
+                setRunWindows(windows);
             }
         } catch (e) {
             if (mountedRef.current && requestSeq === loadRequestSeq.current) setError(String(e));
@@ -624,6 +694,50 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
         }
     };
 
+    const openWindowEdit = (task: RunWindowTaskRecord) => {
+        setWindowEdit(task);
+        setWindowStart(toDatetimeLocalValue(new Date(task.startAt)));
+        setWindowEnd(task.endAt ? toDatetimeLocalValue(new Date(task.endAt)) : "");
+        setError("");
+    };
+
+    const handleWindowSave = async () => {
+        if (!windowEdit) return;
+        if (!windowStart) {
+            setError(t("Set a start time", "请设置开始时间"));
+            return;
+        }
+        setSaving(true);
+        setError("");
+        try {
+            await UpdateRunWindowTaskTimes(windowEdit.id, windowStart, windowEnd);
+            if (!mountedRef.current) return;
+            setWindowEdit(null);
+            await loadTasks();
+        } catch (e) {
+            if (!mountedRef.current) return;
+            setError(String(e));
+        } finally {
+            if (mountedRef.current) setSaving(false);
+        }
+    };
+
+    const handleWindowDelete = async (id: string) => {
+        setError("");
+        try {
+            await DeleteRunWindowTask(id);
+            if (!mountedRef.current) return;
+            setWindowDelete(null);
+            await loadTasks();
+        } catch (e) {
+            if (!mountedRef.current) return;
+            setError(String(e));
+        }
+    };
+
+    const windowEditable = (status: string) => status === "pending" || status === "running" || status === "missed" || status === "failed";
+    const isZhWindow = lang.startsWith("zh");
+
     return (
         <div style={{ padding: 0, textAlign: "left" }}>
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
@@ -649,6 +763,47 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
 
             {error && <div role="alert" style={{ color: colors.danger, fontSize: "0.76rem", marginBottom: 8 }}>{error}</div>}
             {loading && <div style={{ fontSize: "0.76rem", color: colors.textMuted }}>{t("Loading…", "加载中…")}</div>}
+
+            <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: "0.76rem", fontWeight: 600, color: colors.text, marginBottom: 8 }}>
+                    {t("Run windows", "运行时段")}
+                </div>
+                {runWindows.length === 0 && !loading && (
+                    <div style={{ fontSize: "0.76rem", color: colors.textMuted, padding: "4px 0 8px" }}>
+                        {t("Tasks set to Scheduled on New task appear here.", "在新建任务里选「定时」后，会出现在这里。")}
+                    </div>
+                )}
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                    {runWindows.map((task) => {
+                        const endText = task.endAt ? formatRunWindowInstant(task.endAt) : t("Until the work finishes", "任务完成即结束");
+                        return (
+                            <div key={task.id} style={{ border: `1px solid ${colors.border}`, borderRadius: radius.md, padding: "10px 12px", background: colors.surface }}>
+                                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 10 }}>
+                                    <div style={{ flex: 1, minWidth: 0 }}>
+                                        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 6, marginBottom: 6 }}>
+                                            <span style={{ fontSize: "0.66rem", fontWeight: 600, padding: "1px 6px", borderRadius: radius.sm, color: "#fff", background: task.status === "completed" ? colors.success : colors.primary }}>
+                                                {runWindowStatusLabel(task.status, isZhWindow)}
+                                            </span>
+                                            <span style={{ fontSize: "0.8rem", fontWeight: 600, color: colors.text }}>{task.name}</span>
+                                        </div>
+                                        <div style={{ fontSize: "0.72rem", color: colors.textSecondary, lineHeight: 1.5 }}>
+                                            <div>{t("Start", "开始")} {formatRunWindowInstant(task.startAt)}</div>
+                                            <div>{t("End", "结束")} {endText}</div>
+                                            {task.lastError ? <div style={{ color: colors.danger }}>{task.lastError}</div> : null}
+                                        </div>
+                                    </div>
+                                    <div style={{ display: "flex", gap: 4, flexShrink: 0, alignItems: "center" }}>
+                                        {windowEditable(task.status) && (
+                                            <TaskIconAction icon="edit" label={taskIconLabel(t("Edit start and end", "编辑开始和结束时间", "編輯開始和結束時間"), task.name)} onClick={() => openWindowEdit(task)} />
+                                        )}
+                                        <TaskIconAction icon="trash" danger label={taskIconLabel(t("Delete", "删除", "刪除"), task.name)} onClick={() => setWindowDelete(task.id)} />
+                                    </div>
+                                </div>
+                            </div>
+                        );
+                    })}
+                </div>
+            </div>
 
             {/* Task list */}
             <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: "400px", overflowY: "auto" }}>
@@ -747,7 +902,7 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
                                     ) : null}
                                 </div>
                             </div>
-                            <div style={{ display: "flex", gap: 4, flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end" }}>
+                            <div style={{ display: "flex", gap: 4, flexShrink: 0, flexWrap: "wrap", justifyContent: "flex-end", alignItems: "center" }}>
                                 {task.status === "active" && (
                                     <button type="button" onClick={() => void handleTrigger(task.id)}
                                         disabled={triggering === task.id}
@@ -764,14 +919,8 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
                                         {task.status === "active" ? "PAUSE" : "RESUME"}
                                     </button>
                                 )}
-                                <button type="button" onClick={() => openEdit(task)} title={t("Edit", "编辑")}
-                                    style={{ ...taskActionBtnBase, color: colors.textSecondary }}>
-                                    EDIT
-                                </button>
-                                <button type="button" onClick={() => setDeleteTarget(task.id)} title={t("Delete", "删除")}
-                                    style={{ ...taskActionBtnBase, color: colors.danger }}>
-                                    DEL
-                                </button>
+                                <TaskIconAction icon="edit" label={taskIconLabel(t("Edit", "编辑", "編輯"), task.name)} onClick={() => openEdit(task)} />
+                                <TaskIconAction icon="trash" danger label={taskIconLabel(t("Delete", "删除", "刪除"), task.name)} onClick={() => setDeleteTarget(task.id)} />
                             </div>
                         </div>
                     </div>
@@ -795,6 +944,66 @@ export function ScheduledTasksPanel({ lang, refreshKey }: Props) {
                         <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
                             <button type="button" onClick={() => setDeleteTarget(null)} style={{ ...remoteActionButtonStyle, padding: "5px 14px", fontSize: "0.76rem" }}>{t("Cancel", "取消")}</button>
                             <button type="button" onClick={() => void handleDelete(deleteTarget)} style={{ ...remoteDangerActionButtonStyle, padding: "5px 14px", fontSize: "0.76rem" }}>{t("Delete", "删除")}</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {windowDelete && (
+                <div
+                    style={{ position: "fixed", inset: 0, background: colors.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
+                    {...windowDeleteBackdropProps}
+                >
+                    <div
+                        role="dialog"
+                        aria-modal="true"
+                        style={{ background: colors.surface, borderRadius: radius.lg, padding: "20px 24px", minWidth: 280, boxShadow: "0 8px 30px rgba(0,0,0,0.12)", textAlign: "left", WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
+                        {...windowDeleteDialogProps}
+                    >
+                        <p style={{ fontSize: "0.82rem", marginBottom: 16 }}>{t("Delete this scheduled task? A running one will stop.", "确定删除这个计划任务？正在执行的会停止。")}</p>
+                        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                            <button type="button" onClick={() => setWindowDelete(null)} style={{ ...remoteActionButtonStyle, padding: "5px 14px", fontSize: "0.76rem" }}>{t("Cancel", "取消")}</button>
+                            <button type="button" onClick={() => void handleWindowDelete(windowDelete)} style={{ ...remoteDangerActionButtonStyle, padding: "5px 14px", fontSize: "0.76rem" }}>{t("Delete", "删除")}</button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {windowEdit && (
+                <div
+                    style={{ position: "fixed", inset: 0, background: colors.overlay, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 9999, WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
+                    {...windowEditBackdropProps}
+                >
+                    <div
+                        role="dialog"
+                        aria-modal="true"
+                        aria-label={t("Edit run window", "编辑运行时段")}
+                        style={{ background: colors.surface, borderRadius: radius.lg, padding: "20px 24px", minWidth: 320, boxShadow: "0 8px 30px rgba(0,0,0,0.12)", textAlign: "left", WebkitAppRegion: "no-drag", "--wails-draggable": "no-drag" } as WailsNoDragStyle}
+                        {...windowEditDialogProps}
+                    >
+                        <p style={{ fontSize: "0.86rem", fontWeight: 600, marginBottom: 12 }}>{t("Edit run window", "编辑运行时段")}</p>
+                        <label style={{ display: "block", fontSize: "0.74rem", color: colors.textSecondary, marginBottom: 10 }}>
+                            {t("Start", "开始")}
+                            <input
+                                type="datetime-local"
+                                value={windowStart}
+                                disabled={windowEdit.status === "running"}
+                                onChange={(event) => setWindowStart(event.target.value)}
+                                style={{ display: "block", width: "100%", marginTop: 4, boxSizing: "border-box" }}
+                            />
+                        </label>
+                        <label style={{ display: "block", fontSize: "0.74rem", color: colors.textSecondary, marginBottom: 14 }}>
+                            {t("End (optional)", "结束（可选，不填则任务完成即结束）")}
+                            <input
+                                type="datetime-local"
+                                value={windowEnd}
+                                onChange={(event) => setWindowEnd(event.target.value)}
+                                style={{ display: "block", width: "100%", marginTop: 4, boxSizing: "border-box" }}
+                            />
+                        </label>
+                        <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                            <button type="button" onClick={() => setWindowEdit(null)} style={{ ...remoteActionButtonStyle, padding: "5px 14px", fontSize: "0.76rem" }}>{t("Cancel", "取消")}</button>
+                            <button type="button" onClick={() => void handleWindowSave()} disabled={saving} style={{ ...remotePrimaryActionButtonStyle, padding: "5px 14px", fontSize: "0.76rem" }}>{t("Save", "保存")}</button>
                         </div>
                     </div>
                 </div>

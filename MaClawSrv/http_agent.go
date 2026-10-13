@@ -590,6 +590,9 @@ func desktopAsyncHooks(tenantID, userID, instanceID, botID string, owns *bool) (
 		} else if msg != nil {
 			msg.Content = correctDesktopPathClaim(msg.Content, desktopSavedPath(shot))
 		}
+		if err == nil && msg != nil {
+			noteDesktopReplyHandoff(tenantID, userID, instanceID, msg.Content)
+		}
 		handoff, attention := takeDesktopTurn(tenantID, userID, instanceID)
 		storeDesktopTurnResult(run, msg, handoff, attention)
 		runID := ""

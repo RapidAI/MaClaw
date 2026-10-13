@@ -628,6 +628,202 @@ func TestDesktopCodingRootStepRelationContinuationBudgetCapsChain(t *testing.T) 
 	}
 }
 
+func TestDesktopCodingContinuationLeaseMatchesRelation(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.closeCodingTaskRelationService()
+	})
+	owner := projectSessionOwnerID("C:/workspace/a")
+	workspaceDir := t.TempDir()
+	requestToken := app.beginDesktopCodingTaskIngressWithWorkspace(owner, workspaceDir)
+	now := time.Now().UTC()
+	app.codingCaps.mu.Lock()
+	requestExpiry := app.codingCaps.ingress[requestToken].expiresAt
+	app.codingCaps.mu.Unlock()
+	// Planning runs before the first bind, inside the same request. The
+	// request token has to survive that work; teardown, not a short fuse,
+	// is what drops it.
+	if requestExpiry.Before(now.Add(desktopCodingRequestLease - time.Minute)) {
+		t.Fatalf("request token expiry = %s, want the request lease", requestExpiry)
+	}
+	_, _, first, binding, ok := app.nextDesktopCodingRootStepRelation(requestToken, owner)
+	if !ok || !first.complete() || !binding.complete() {
+		t.Fatalf("first bind handle=%#v workspace=%#v ok=%v", first, binding, ok)
+	}
+	app.codingCaps.mu.Lock()
+	armed := app.codingCaps.continuationTokens[owner]
+	continuationExpiry := app.codingCaps.ingress[armed].expiresAt
+	workspaceExpiry := app.codingCaps.staticWorkspaces[binding.WorkspaceHandle].expiresAt
+	app.codingCaps.mu.Unlock()
+	if armed == "" || armed == requestToken {
+		t.Fatalf("in-flight continuation was not armed: %q", armed)
+	}
+	// Minted at bind, consumed at the next step. A fuse shorter than the
+	// relation lease expires during the step (T3 ran 34 minutes and T4–T6
+	// never started).
+	if continuationExpiry.Before(now.Add(desktopCodingRequestLease-time.Minute)) || workspaceExpiry.Before(now.Add(desktopCodingRequestLease-time.Minute)) {
+		t.Fatalf("continuation %s workspace %s, want the request lease", continuationExpiry, workspaceExpiry)
+	}
+
+	app.codingCaps.mu.Lock()
+	staleWorkspace := app.codingCaps.staticWorkspaces[binding.WorkspaceHandle]
+	staleWorkspace.expiresAt = now.Add(-time.Minute)
+	app.codingCaps.staticWorkspaces[binding.WorkspaceHandle] = staleWorkspace
+	app.codingCaps.mu.Unlock()
+	if _, ok := app.resolveDesktopCodingStaticWorkspace(owner, binding); ok {
+		t.Fatal("expired workspace handle still resolved")
+	}
+	_, _, second, secondBinding, ok := app.nextDesktopCodingRootStepRelation(requestToken, owner)
+	if !ok || second.rootTaskID != first.rootTaskID || second.turnID == first.turnID || secondBinding != binding {
+		t.Fatalf("next step first=%#v second=%#v workspace=%#v ok=%v", first, second, secondBinding, ok)
+	}
+	if resolved, ok := app.resolveDesktopCodingStaticWorkspace(owner, binding); !ok || resolved != workspaceDir {
+		t.Fatalf("bind did not slide the workspace lease: resolved=%q ok=%v", resolved, ok)
+	}
+
+	app.codingCaps.mu.Lock()
+	nextArmed := app.codingCaps.continuationTokens[owner]
+	expired := app.codingCaps.ingress[nextArmed]
+	expired.expiresAt = time.Now().UTC().Add(-time.Minute)
+	app.codingCaps.ingress[nextArmed] = expired
+	app.codingCaps.mu.Unlock()
+	if _, _, _, _, ok := app.nextDesktopCodingRootStepRelation(requestToken, owner); ok {
+		t.Fatal("expired continuation bound")
+	}
+	if resolved, ok := app.resolveDesktopCodingStaticWorkspace(owner, binding); !ok || resolved != workspaceDir {
+		t.Fatalf("workspace resolved=%q ok=%v before request end", resolved, ok)
+	}
+	app.endDesktopCodingTaskIngressForOwner(owner)
+	if _, ok := app.resolveDesktopCodingStaticWorkspace(owner, binding); ok {
+		t.Fatal("workspace handle survived the end of its request")
+	}
+}
+
+func TestDesktopCodingWorkspaceLeaseSlidesWhenContinuationBudgetIsExhausted(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.closeCodingTaskRelationService()
+	})
+	owner := projectSessionOwnerID("C:/workspace/a")
+	workspaceDir := t.TempDir()
+	app.armDesktopCodingContinuationBudget(owner, 1)
+	app.codingCaps.mu.Lock()
+	app.codingCaps.continuationBudget[owner] = 0
+	app.codingCaps.mu.Unlock()
+	requestToken := app.beginDesktopCodingTaskIngressWithWorkspace(owner, workspaceDir)
+	app.codingCaps.mu.Lock()
+	var binding codingStaticWorkspaceBinding
+	for handle, workspace := range app.codingCaps.staticWorkspaces {
+		if workspace.ownerID != owner {
+			continue
+		}
+		workspace.expiresAt = time.Now().UTC().Add(-time.Minute)
+		app.codingCaps.staticWorkspaces[handle] = workspace
+		binding = codingStaticWorkspaceBinding{WorkspaceHandle: handle, HostKind: "local"}
+	}
+	app.codingCaps.mu.Unlock()
+	if !binding.complete() {
+		t.Fatal("request did not issue a workspace handle")
+	}
+	if _, ok := app.resolveDesktopCodingStaticWorkspace(owner, binding); ok {
+		t.Fatal("stale workspace resolved before the bind")
+	}
+	if _, _, _, got, ok := app.nextDesktopCodingRootStepRelation(requestToken, owner); !ok || got != binding {
+		t.Fatalf("bind with exhausted budget binding=%#v ok=%v", got, ok)
+	}
+	app.codingCaps.mu.Lock()
+	if armed := app.codingCaps.continuationTokens[owner]; armed != "" {
+		t.Fatalf("exhausted budget minted continuation %q", armed)
+	}
+	app.codingCaps.mu.Unlock()
+	if resolved, ok := app.resolveDesktopCodingStaticWorkspace(owner, binding); !ok || resolved != workspaceDir {
+		t.Fatalf("bind did not slide the workspace lease: resolved=%q ok=%v", resolved, ok)
+	}
+}
+
+func TestDesktopCodingExpiredContinuationSlotIsClearedOnMint(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.closeCodingTaskRelationService()
+	})
+	owner := projectSessionOwnerID("C:/workspace/a")
+	other := projectSessionOwnerID("C:/workspace/b")
+	requestToken := app.beginDesktopCodingTaskIngress(owner)
+	if _, _, _, _, ok := app.nextDesktopCodingRootStepRelation(requestToken, owner); !ok {
+		t.Fatal("first root step did not bind")
+	}
+	app.codingCaps.mu.Lock()
+	armed := app.codingCaps.continuationTokens[owner]
+	expired := app.codingCaps.ingress[armed]
+	expired.expiresAt = time.Now().UTC().Add(-time.Minute)
+	app.codingCaps.ingress[armed] = expired
+	app.codingCaps.mu.Unlock()
+	if armed == "" {
+		t.Fatal("continuation was not armed")
+	}
+	// Another request's mint sweeps expired ingress. The armed slot has to
+	// drop with it; leaving the id in place hands the next step a dead token.
+	if otherToken := app.beginDesktopCodingTaskIngress(other); otherToken == "" {
+		t.Fatal("other owner ingress was not issued")
+	}
+	app.codingCaps.mu.Lock()
+	_, ingressLeft := app.codingCaps.ingress[armed]
+	slot := app.codingCaps.continuationTokens[owner]
+	app.codingCaps.mu.Unlock()
+	if ingressLeft {
+		t.Fatal("expired continuation ingress survived a later mint")
+	}
+	if slot != "" {
+		t.Fatalf("continuation slot still points at swept token %q", slot)
+	}
+	if _, _, _, _, ok := app.nextDesktopCodingRootStepRelation(requestToken, owner); ok {
+		t.Fatal("swept continuation still bound")
+	}
+}
+
+func TestDesktopCodingLiveIngressKeepsExpiredWorkspaceForNextSlide(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(func() {
+		app.closeCodingTaskRelationService()
+	})
+	owner := projectSessionOwnerID("C:/workspace/a")
+	other := projectSessionOwnerID("C:/workspace/b")
+	workspaceDir := t.TempDir()
+	requestToken := app.beginDesktopCodingTaskIngressWithWorkspace(owner, workspaceDir)
+	app.codingCaps.mu.Lock()
+	var binding codingStaticWorkspaceBinding
+	for handle, workspace := range app.codingCaps.staticWorkspaces {
+		if workspace.ownerID != owner {
+			continue
+		}
+		workspace.expiresAt = time.Now().UTC().Add(-time.Minute)
+		app.codingCaps.staticWorkspaces[handle] = workspace
+		binding = codingStaticWorkspaceBinding{WorkspaceHandle: handle, HostKind: "local"}
+	}
+	app.codingCaps.mu.Unlock()
+	if !binding.complete() {
+		t.Fatal("request did not issue a workspace handle")
+	}
+	// Another request's mint sweeps expired workspaces. This handle is still
+	// named by a live ingress, so the sweep must leave it for the next bind
+	// to slide.
+	if otherToken := app.beginDesktopCodingTaskIngressWithWorkspace(other, t.TempDir()); otherToken == "" {
+		t.Fatal("other owner ingress was not issued")
+	}
+	app.codingCaps.mu.Lock()
+	_, kept := app.codingCaps.staticWorkspaces[binding.WorkspaceHandle]
+	app.codingCaps.mu.Unlock()
+	if !kept {
+		t.Fatal("live ingress lost its workspace handle to another request's sweep")
+	}
+	if _, _, _, got, ok := app.nextDesktopCodingRootStepRelation(requestToken, owner); !ok || got != binding {
+		t.Fatalf("bind after sweep binding=%#v ok=%v", got, ok)
+	}
+	if resolved, ok := app.resolveDesktopCodingStaticWorkspace(owner, binding); !ok || resolved != workspaceDir {
+		t.Fatalf("bind did not slide the kept workspace: resolved=%q ok=%v", resolved, ok)
+	}
+}
+
 func TestDesktopCodingRootStepRelationRestoresPoppedContinuationAfterFailedBind(t *testing.T) {
 	app := &App{testHomeDir: t.TempDir()}
 	t.Cleanup(func() {

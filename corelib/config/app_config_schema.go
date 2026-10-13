@@ -314,7 +314,7 @@ var userWebComplexConfigKeys = map[string]struct{}{
 	"maclaw_llm_protocol": {}, "maclaw_llm_context_length": {}, "maclaw_llm_timeout_sec": {},
 	"skill_runner_timeout_sec": {}, "maclaw_llm_current_provider": {}, "maclaw_llm_providers": {},
 	"llm_prompt_cache": {}, "auxiliary_llm": {}, "model_routes": {},
-	"database_profiles": {},
+	"database_profiles": {}, "mailbox_accounts": {}, "mailbox_signatures": {},
 }
 
 var userWebHiddenConfigKeys = map[string]struct{}{

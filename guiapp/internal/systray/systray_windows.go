@@ -244,6 +244,11 @@ type winTray struct {
 	onRClick func(menu IMenu)
 }
 
+// OnTaskbarCreated is invoked on the tray window thread when explorer
+// broadcasts TaskbarCreated, after the tray icon has been re-added.
+// Optional. The window proc calls it without holding the tray lock.
+var OnTaskbarCreated func()
+
 // isReady checks if the tray as already been initialized. It is not goroutine safe with in regard to the initialization function, but prevents a panic when functions are called too early.
 func (t *winTray) isReady() bool {
 	return t.initialized.IsSet()
@@ -375,6 +380,11 @@ func (t *winTray) wndProc(hWnd windows.Handle, message uint32, wParam, lParam ui
 			log.Printf("systray: Shell_NotifyIcon(NIM_ADD) on TaskbarCreated failed: %s\n", err)
 		}
 		t.muNID.Unlock()
+		// Explorer also drops per-window taskbar overlays. The badge registers
+		// this hook so it can paint the last count again.
+		if OnTaskbarCreated != nil {
+			OnTaskbarCreated()
+		}
 	default:
 		// Calls the default window procedure to provide default processing for any window messages that an application does not process.
 		// https://msdn.microsoft.com/en-us/library/windows/desktop/ms633572(v=vs.85).aspx

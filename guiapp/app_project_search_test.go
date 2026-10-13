@@ -4099,6 +4099,185 @@ func TestSearchProjectsMergesRemoteCodingRuntimeRunningStatus(t *testing.T) {
 	}
 }
 
+func TestSharedWorkingDirectoryCodingRunDoesNotMarkIdleSibling(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.workflowEngine = nil
+
+	store, err := codingruntime.NewSQLiteStore(filepath.Join(t.TempDir(), "coding_runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	app.codingRuntimeStore = store
+
+	workingDir := filepath.Join(t.TempDir(), "shared-prog")
+	runningTask := app.CreateTaskWithMode("Running shared task", workingDir, "coding_dev")
+	idleTask := app.CreateTaskWithMode("zxq-quiet-only", workingDir, "coding_dev")
+	if runningTask.ProjectPath == "" || idleTask.ProjectPath == "" || runningTask.ProjectPath == idleTask.ProjectPath {
+		t.Fatalf("task paths running=%q idle=%q", runningTask.ProjectPath, idleTask.ProjectPath)
+	}
+	// The idle task already finished its own work. Its snapshot records the
+	// shared directory as the project path, which is also where the other
+	// task is running. That path must stay this task's completed status.
+	app.workflowV2 = buildWorkflowV2State(workflow.NewMemoryStore())
+	idleOwner := projectSessionOwnerID(idleTask.ProjectPath)
+	if err := app.workflowV2.store.Save(&workflow.WorkflowState{
+		ID:          workflow.GenerateID(idleOwner),
+		UserID:      idleOwner,
+		Type:        string(workflow.WorkflowCoding),
+		ProjectPath: filepath.Clean(workingDir),
+		Status:      workflow.StatusCompleted,
+		Phases: []workflow.Phase{{
+			ID:     workflow.PhaseCodingRequirements,
+			Status: workflow.PhaseCompleted,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	runtimeTask, err := store.CreateTask(codingruntime.Task{TaskID: "rt-shared", ProjectRef: filepath.Clean(workingDir), Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.StartAttempt(runtimeTask.TaskID, "worker", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: filepath.Clean(workingDir), Mode: "local"}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	statusOf := func(path string) string {
+		t.Helper()
+		for _, item := range app.ListTasks(50) {
+			if item.ProjectPath != path {
+				continue
+			}
+			if item.ActiveWorkflow == nil {
+				return ""
+			}
+			return item.ActiveWorkflow.Status
+		}
+		t.Fatalf("ListTasks missing %s", path)
+		return ""
+	}
+	// The ledger only knows the directory. Until a task session owns the run,
+	// neither sibling should display that directory status as its own.
+	if got := statusOf(runningTask.ProjectPath); got != "" {
+		t.Fatalf("unattributed running task status = %q, want empty", got)
+	}
+	if got := statusOf(idleTask.ProjectPath); got != string(workflow.StatusCompleted) {
+		t.Fatalf("idle task status = %q, want its own completed snapshot", got)
+	}
+
+	owner := projectSessionOwnerID(runningTask.ProjectPath)
+	beginForegroundAgentOwner(owner)
+	defer endForegroundAgentOwner(owner)
+
+	if got := statusOf(runningTask.ProjectPath); got != string(codingruntime.TaskRunning) {
+		t.Fatalf("executing task status = %q, want running", got)
+	}
+	if got := statusOf(idleTask.ProjectPath); got != string(workflow.StatusCompleted) {
+		t.Fatalf("idle sibling status = %q, want its own completed snapshot", got)
+	}
+	// A search that hits only the idle task must not treat its directory as
+	// unique and inherit the other task's run.
+	searched := app.SearchTasks("zxq-quiet-only", 10)
+	if len(searched) != 1 || searched[0].ProjectPath != idleTask.ProjectPath {
+		t.Fatalf("SearchTasks = %+v, want only the idle task", searched)
+	}
+	if searched[0].ActiveWorkflow == nil || searched[0].ActiveWorkflow.Status != string(workflow.StatusCompleted) {
+		t.Fatalf("searched idle status = %#v, want completed", searched[0].ActiveWorkflow)
+	}
+
+	// Two sessions can edit different parts of the same directory at once.
+	beginForegroundAgentOwner(idleOwner)
+	defer endForegroundAgentOwner(idleOwner)
+	if got := statusOf(runningTask.ProjectPath); got != string(codingruntime.TaskRunning) {
+		t.Fatalf("first executing task status = %q, want running", got)
+	}
+	if got := statusOf(idleTask.ProjectPath); got != string(codingruntime.TaskRunning) {
+		t.Fatalf("second executing task status = %q, want running", got)
+	}
+}
+
+func TestSharedWorkingDirectoryWorkflowDoesNotMarkIdleSibling(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.workflowEngine = nil
+	app.workflowV2 = buildWorkflowV2State(workflow.NewMemoryStore())
+
+	workingDir := filepath.Join(t.TempDir(), "shared-workflow")
+	runningTask := app.CreateTaskWithMode("Running workflow task", workingDir, "coding_dev")
+	idleTask := app.CreateTaskWithMode("Idle workflow task", workingDir, "coding_dev")
+	if runningTask.ProjectPath == "" || idleTask.ProjectPath == "" {
+		t.Fatal("CreateTaskWithMode returned an empty project path")
+	}
+	dir := runningTask.WorkingDir
+	if dir == "" {
+		t.Fatal("shared working directory was not stored")
+	}
+	ownerID := projectSessionOwnerID(dir)
+	if err := app.workflowV2.store.Save(&workflow.WorkflowState{
+		ID:          workflow.GenerateID(ownerID),
+		UserID:      ownerID,
+		Type:        string(workflow.WorkflowCoding),
+		ProjectPath: dir,
+		Status:      workflow.StatusActive,
+		Phases: []workflow.Phase{{
+			ID:     workflow.PhaseCodingRequirements,
+			Status: workflow.PhaseRunning,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	statusOf := func(path string) string {
+		t.Helper()
+		for _, item := range app.ListTasks(50) {
+			if item.ProjectPath != path {
+				continue
+			}
+			if item.ActiveWorkflow == nil {
+				return ""
+			}
+			return item.ActiveWorkflow.Status
+		}
+		t.Fatalf("ListTasks missing %s", path)
+		return ""
+	}
+	if got := statusOf(idleTask.ProjectPath); got != "" {
+		t.Fatalf("idle sibling status = %q, want empty", got)
+	}
+	if got := statusOf(runningTask.ProjectPath); got != "" {
+		t.Fatalf("unattributed task status = %q, want empty", got)
+	}
+
+	owner := projectSessionOwnerID(runningTask.ProjectPath)
+	beginForegroundAgentOwner(owner)
+	defer endForegroundAgentOwner(owner)
+	if got := statusOf(runningTask.ProjectPath); got != string(workflow.StatusActive) {
+		t.Fatalf("executing task status = %q, want active", got)
+	}
+	if got := statusOf(idleTask.ProjectPath); got != "" {
+		t.Fatalf("idle sibling status = %q, want empty while the other task runs", got)
+	}
+
+	if err := app.workflowV2.store.Save(&workflow.WorkflowState{
+		ID:     workflow.GenerateID(ownerID),
+		UserID: ownerID,
+		Type:   string(workflow.WorkflowCoding),
+		Status: workflow.StatusActive,
+		Phases: []workflow.Phase{{
+			ID:     workflow.PhaseCodingRequirements,
+			Status: workflow.PhaseRunning,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := statusOf(runningTask.ProjectPath); got != string(workflow.StatusActive) {
+		t.Fatalf("executing task status with pathless directory workflow = %q, want active", got)
+	}
+	if got := statusOf(idleTask.ProjectPath); got != "" {
+		t.Fatalf("idle sibling status with pathless directory workflow = %q, want empty", got)
+	}
+}
+
 func TestSearchProjectsMergesLocalCodingRuntimeBlockedStatus(t *testing.T) {
 	app := newProjectSearchTestApp(t)
 	app.workflowEngine = nil

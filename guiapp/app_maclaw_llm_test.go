@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -2870,14 +2871,17 @@ func TestProbeVisionResponsesAPI_AcceptsCompatibleResponseText(t *testing.T) {
 
 func TestTestMaclawLLMResponsesProbeRetainsProviderAuth(t *testing.T) {
 	var requests atomic.Int32
+	var sawVision atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
 		if got := r.Header.Get("X-XAI-Token-Auth"); got != "xai-grok-cli" {
 			t.Fatalf("X-XAI-Token-Auth = %q, want xai-grok-cli", got)
 		}
-		if requests.Load() == 2 {
+		raw, _ := io.ReadAll(r.Body)
+		if bytes.Contains(raw, []byte("input_image")) {
+			sawVision.Store(true)
 			var body map[string]interface{}
-			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			if err := json.Unmarshal(raw, &body); err != nil {
 				t.Fatalf("decode vision request: %v", err)
 			}
 			input := body["input"].([]interface{})
@@ -2901,6 +2905,9 @@ func TestTestMaclawLLMResponsesProbeRetainsProviderAuth(t *testing.T) {
 	}
 	if got := requests.Load(); got != 2 {
 		t.Fatalf("requests = %d, want 2 (text test plus vision probe)", got)
+	}
+	if !sawVision.Load() {
+		t.Fatal("vision probe did not send an image")
 	}
 	if !got.SupportsVision {
 		t.Fatal("TestMaclawLLM supports_vision = false, want true")
@@ -3222,19 +3229,13 @@ func TestMaclawLLMProfileProbesUntestedAssignedModelVision(t *testing.T) {
 			_, _ = w.Write([]byte(`{"data":[{"id":"gpt-5"},{"id":"gpt-5-mini"}]}`))
 			return
 		}
-		n := posts.Add(1)
+		posts.Add(1)
 		body, _ := io.ReadAll(r.Body)
-		if n == 1 {
-			if bytes.Contains(body, []byte("image_url")) {
-				t.Fatalf("text test sent an image: %s", body)
-			}
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
+		if bytes.Contains(body, []byte("image_url")) {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"red"}}]}`))
 			return
 		}
-		if !bytes.Contains(body, []byte("image_url")) {
-			t.Fatalf("vision probe missing image: %s", body)
-		}
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"red"}}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"ok"}}]}`))
 	}))
 	defer srv.Close()
 
@@ -3578,17 +3579,16 @@ func TestTestMaclawLLM_ReturnsSupportsVisionTrue(t *testing.T) {
 }
 
 func TestTestMaclawLLM_ReturnsSupportsVisionFalseWhenProbeFails(t *testing.T) {
-	hits := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
+		body, _ := io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		if hits == 1 {
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`))
+		if bytes.Contains(body, []byte("image_url")) {
+			// Simulate a model that does NOT see the image — replies with "I don't see any image".
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"I don't see any image in your message."},"finish_reason":"stop"}]}`))
 			return
 		}
-		// Simulate a model that does NOT see the image — replies with "I don't see any image".
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"I don't see any image in your message."},"finish_reason":"stop"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`))
 	}))
 	defer srv.Close()
 
@@ -3661,16 +3661,15 @@ func TestClassifyVisionProbeResponseRecognizesTextOnlyModel(t *testing.T) {
 func TestTestMaclawLLM_DoesNotTreatWrongColourAsVisionConfirmation(t *testing.T) {
 	// Some models misidentify the tiny red PNG as "yellow" — the probe should
 	// still detect vision support because the model named a colour.
-	hits := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		hits++
+		body, _ := io.ReadAll(r.Body)
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		if hits == 1 {
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`))
+		if bytes.Contains(body, []byte("image_url")) {
+			_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"Yellow"},"finish_reason":"stop"}]}`))
 			return
 		}
-		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"Yellow"},"finish_reason":"stop"}]}`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`))
 	}))
 	defer srv.Close()
 
@@ -7408,15 +7407,22 @@ func TestMaclawLLMThinkingMode_GlobalSetting(t *testing.T) {
 func TestTestMaclawLLMHonorsGlobalThinkingMode(t *testing.T) {
 	tmpHome := t.TempDir()
 	app := &App{testHomeDir: tmpHome}
-	if err := app.SetMaclawLLMThinkingMode("disabled"); err != nil {
+	// The desktop default is reasoning on. The probe must still ask for a
+	// short answer, or Grok confirmation waits out a reasoning summary.
+	if err := app.SetMaclawLLMThinkingMode("enabled"); err != nil {
 		t.Fatalf("SetMaclawLLMThinkingMode: %v", err)
 	}
 
+	var mu sync.Mutex
 	var got map[string]interface{}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
+		mu.Lock()
+		got = body
+		mu.Unlock()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"hello"},"finish_reason":"stop"}]}`))
 	}))
@@ -7428,8 +7434,67 @@ func TestTestMaclawLLMHonorsGlobalThinkingMode(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TestMaclawLLM: %v", err)
 	}
+	mu.Lock()
 	thinking, _ := got["thinking"].(map[string]interface{})
+	mu.Unlock()
 	if thinking["type"] != "disabled" {
 		t.Fatalf("thinking = %#v, want disabled", got["thinking"])
+	}
+}
+
+func TestTestMaclawLLMOverlapsTextAndVision(t *testing.T) {
+	var inFlight atomic.Int32
+	release := make(chan struct{})
+	var once sync.Once
+	var timedOut atomic.Bool
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if inFlight.Add(1) >= 2 {
+			once.Do(func() { close(release) })
+		}
+		select {
+		case <-release:
+		case <-time.After(2 * time.Second):
+			timedOut.Store(true)
+		}
+		inFlight.Add(-1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"red"},"finish_reason":"stop"}]}`))
+	}))
+	defer srv.Close()
+
+	app := &App{}
+	if _, err := app.TestMaclawLLM(corelib.MaclawLLMConfig{URL: srv.URL, Model: "test-model", Protocol: "openai"}); err != nil {
+		t.Fatalf("TestMaclawLLM: %v", err)
+	}
+	if timedOut.Load() {
+		t.Fatal("text and vision probes ran one after another")
+	}
+}
+
+func TestQuietConnectionProbeSkipsXAIReasoningSummary(t *testing.T) {
+	cfg := quietConnectionProbe(corelib.MaclawLLMConfig{
+		URL:             "https://api.x.ai/v1",
+		Model:           "grok-4.7",
+		WireAPI:         "responses",
+		ThinkingMode:    "enabled",
+		ReasoningEffort: "high",
+	})
+	body := map[string]interface{}{}
+	corelib.ApplyReasoningControls(cfg, body, corelib.ReasoningAPIResponses)
+	reasoning, _ := body["reasoning"].(map[string]interface{})
+	if reasoning["effort"] != "minimal" {
+		t.Fatalf("reasoning = %#v, want minimal effort", reasoning)
+	}
+	if _, ok := reasoning["summary"]; ok {
+		t.Fatalf("probe requested a reasoning summary: %#v", reasoning)
+	}
+
+	alwaysOn := quietConnectionProbe(corelib.MaclawLLMConfig{
+		URL:          "https://open.bigmodel.cn/api/paas/v4",
+		Model:        corelib.ZhipuCodingDefaultModel,
+		ThinkingMode: "enabled",
+	})
+	if alwaysOn.ThinkingMode != "enabled" {
+		t.Fatalf("always-on model thinking = %q, want enabled", alwaysOn.ThinkingMode)
 	}
 }

@@ -90,6 +90,10 @@ type CodingSubAgent struct {
 	// Used by create-task pure coding mode (coding_dev / remote_coding_dev).
 	fullEnvironment bool
 
+	// exposeGoalTool adds the host goal tool on /goal continuation turns only.
+	// Ordinary coding turns keep the tool off the legacy compatibility belt.
+	exposeGoalTool bool
+
 	// nestDepth is 0 for the pure-coding root turn. Nested spawn_coding_agent
 	// children increment this; spawn is disabled at codingSubAgentMaxNestDepth.
 	nestDepth int
@@ -160,6 +164,12 @@ type CodingSubAgent struct {
 	// surface epoch, and effectful families additionally require the provider
 	// ResponseID attached by RunLoop at the response boundary.
 	correlatedLocalExecution bool
+	// writableSurfaceDenied stops ExecuteTask before the model loop. It is set
+	// only when a desktop implementation turn already holds a verified relation
+	// but the correlated writable surface did not bind. Running that turn on
+	// the read-only compatibility surface burns a full investigation and then
+	// fails it for producing no files.
+	writableSurfaceDenied string
 
 	// horizonPosture freezes a LongHorizon CLI episode: no knowledge recall,
 	// no MCP/skills/spawn, and ExecuteTool is limited to horizonToolSurface.
@@ -604,6 +614,24 @@ func failedCodingSubAgentStartResult(errMsg string) *CodingSubAgentResult {
 	return result
 }
 
+// refuseUnboundWritableSurface is the post-bind half of the pre-dispatch
+// gate. A verified handle is not a writable surface: the attempt still needs
+// a complete semantic anchor and a host workspace binding. Inquiry turns are
+// read-only on purpose. A missing handle is left to the earlier gate, which
+// already stops desktop implementation before the ledger starts.
+func (s *CodingSubAgent) refuseUnboundWritableSurface(task *TaskItem) string {
+	if s == nil || s.horizonPosture || s.correlatedLocalExecution || s.verifiedTaskHandle == nil {
+		return ""
+	}
+	if s.loopCtx == nil || !isDesktopCodingOwner(s.loopCtx.UserID) {
+		return ""
+	}
+	if codingTaskLooksInquiry(task) {
+		return ""
+	}
+	return desktopCodingWritableSurfaceBindFailedDiagnostic
+}
+
 // ExecuteTask runs a single task in a clean coding context.
 // The conversation is independent — no IM rules, no memory, no 40+ tools.
 func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, prevOutputs []string) *CodingSubAgentResult {
@@ -614,6 +642,10 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	if task == nil {
 		log.Printf("[coding-subagent] task start failed: task is nil (project=%s)", s.projectPath)
 		return failedCodingSubAgentStartResult("coding subagent task is nil")
+	}
+	if denied := strings.TrimSpace(s.writableSurfaceDenied); denied != "" {
+		log.Printf("[coding-subagent] task T%d not started: %s (project=%s)", taskDisplayNumber(task), denied, s.projectPath)
+		return failedCodingSubAgentStartResult(denied)
 	}
 
 	taskTitle := compactSubAgentTaskTitle(task.Title)
@@ -1124,6 +1156,10 @@ type codingSubAgentCallbacks struct {
 	// callback; dispatcher stays nil unless MACLAW_TOOL_DISPATCHER=on.
 	dispatcherOnce sync.Once
 	dispatcher     *agent.NameDispatcher
+	// llmLeaseSlot is the foreground scheduler lease for the current model
+	// round. RunLoop parks it during backoff so a sleeping retry does not
+	// keep background model work blocked, then resumes it before the next send.
+	llmLeaseSlot *codingLLMLeaseSlot
 	// llmReplanRevision is the host-owned revision of the newest steering that
 	// TransformConversation has already incorporated. RunLoop uses it to cancel
 	// a stale request and emit the unique steered disposition for its surface.
@@ -1294,7 +1330,97 @@ func (c *codingSubAgentCallbacks) LLMRequestContext(iteration int) (context.Cont
 	if err != nil {
 		return nil, nil, err
 	}
-	return ctx, finish, nil
+	if c != nil {
+		c.llmLeaseSlot = codingLLMLeaseSlotFrom(ctx)
+	}
+	return ctx, func(err error) {
+		if c != nil {
+			c.llmLeaseSlot = nil
+		}
+		finish(err)
+	}, nil
+}
+
+// ParkLLMRetry releases the foreground scheduler slot while RunLoop sleeps
+// through a gateway backoff. The request context stays open.
+func (c *codingSubAgentCallbacks) ParkLLMRetry() {
+	if c == nil {
+		return
+	}
+	c.llmLeaseSlot.drop()
+}
+
+// ResumeLLMRetry takes the foreground slot back before the next model send.
+func (c *codingSubAgentCallbacks) ResumeLLMRetry(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
+	return c.llmLeaseSlot.resume(ctx)
+}
+
+type codingLLMLeaseSlotKey struct{}
+
+// codingLLMLeaseSlot is the one foreground scheduler lease owned by a coding
+// model round. drop releases it without cancelling the request context, so
+// RunLoop can give the slot up for the duration of a backoff sleep.
+type codingLLMLeaseSlot struct {
+	mu     sync.Mutex
+	lease  *llmSchedulerLease
+	trace  llm.RequestTrace
+	cancel context.CancelFunc
+}
+
+func codingLLMLeaseSlotFrom(ctx context.Context) *codingLLMLeaseSlot {
+	if ctx == nil {
+		return nil
+	}
+	slot, _ := ctx.Value(codingLLMLeaseSlotKey{}).(*codingLLMLeaseSlot)
+	return slot
+}
+
+func (s *codingLLMLeaseSlot) drop() {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	lease := s.lease
+	s.lease = nil
+	s.mu.Unlock()
+	if lease != nil {
+		lease.Release()
+	}
+}
+
+func (s *codingLLMLeaseSlot) resume(ctx context.Context) error {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	if s.lease != nil {
+		s.mu.Unlock()
+		return nil
+	}
+	cancel := s.cancel
+	s.mu.Unlock()
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	lease, _, err := acquireLLMSchedulerLease(ctx)
+	if err != nil {
+		return err
+	}
+	if cancel != nil {
+		lease.SetCancel(cancel)
+	}
+	s.mu.Lock()
+	if s.lease != nil {
+		s.mu.Unlock()
+		lease.Release()
+		return nil
+	}
+	s.lease = lease
+	s.mu.Unlock()
+	return nil
 }
 
 // codingLoopLLMRequestContext builds a per-round LLM context with cancel linkage,
@@ -1346,11 +1472,13 @@ func codingLoopLLMRequestContext(executionCtx context.Context, loopCtx *LoopCont
 		return nil, nil, err
 	}
 	scheduledCtx, scheduledCancel := context.WithCancel(ctx)
+	slot := &codingLLMLeaseSlot{lease: lease, trace: scheduledTrace, cancel: scheduledCancel}
 	lease.SetCancel(scheduledCancel)
+	scheduledCtx = context.WithValue(scheduledCtx, codingLLMLeaseSlotKey{}, slot)
 	return scheduledCtx, func(err error) {
-		globalLLMScheduler.ObserveResult(scheduledTrace, err)
+		globalLLMScheduler.ObserveResult(slot.trace, err)
 		scheduledCancel()
-		lease.Release()
+		slot.drop()
 		endReplannableOperation()
 		baseCancel()
 	}, nil
@@ -1592,7 +1720,7 @@ This request is running on the temporary uncorrelated Coding compatibility surfa
 
 ## Available posture
 - Gather repository evidence with the read-only definitions that are present (for example Glob, ripgrep, list_directory, read_file, git_diff, code_navigation, and approved knowledge/research lookups).
-- If the project has .codegraph/, prefer code_navigation / CodeGraph before broad searching.
+- If the project has .codegraph/, use code_navigation for structure, symbols, and call edges. A text search that already returned lines is evidence; use those lines and do not repeat that search.
 - Do not claim that a file was changed, a command was run, a child was delegated, or structured localization was submitted: those operations are not available on this request surface.
 - For an implementation or operational request, inspect the code, explain the blocker imposed by this temporary safe mode, and produce a concrete next-step plan for a correlation-bound execution workflow. Do not repeatedly try unavailable operations.
 `)
@@ -1757,7 +1885,7 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 			tools = omitCodingToolDefinition(tools, reportLocalizationToolName)
 		}
 		c.logCacheEvent("tools", "build-horizon", "tool_count", len(tools))
-		return cloneCodingSubAgentToolDefinitions(tools)
+		return cloneCodingSubAgentToolDefinitions(c.appendExposedGoalTool(tools))
 	}
 	tools := buildCodingToolDefinitionsFromRegistry(c.subagent.handler)
 	tools = append(tools, buildCodeNavigationToolDefinition())
@@ -1768,13 +1896,13 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 		tools = filterCodingInquiryTools(tools)
 		tools = filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostLocal, tools)
 		c.logCacheEvent("tools", "build-read-only", "tool_count", len(tools))
-		return cloneCodingSubAgentToolDefinitions(tools)
+		return cloneCodingSubAgentToolDefinitions(c.appendExposedGoalTool(tools))
 	}
 	if c.task != nil && codingTaskLooksOperational(c.task) {
 		tools = filterCodingOperationalTools(tools)
 		tools = filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostLocal, tools)
 		c.logCacheEvent("tools", "build-operational", "tool_count", len(tools))
-		return cloneCodingSubAgentToolDefinitions(tools)
+		return cloneCodingSubAgentToolDefinitions(c.appendExposedGoalTool(tools))
 	}
 
 	// Full workbench extras (web research / clock) — always on for full env.
@@ -1797,10 +1925,8 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 
 	inspectionRole := c.subagent != nil && c.subagent.nestDepth > 0 &&
 		(c.subagent.role == codingRoleExplorer || c.subagent.role == codingRoleReviewer)
-	// Goal lifecycle remains host/orchestrator-owned until it has a durable
-	// expected-version CAS contract. Do not render a model-writable goal tool
-	// from the legacy Coding compatibility belt; direct host workflows retain
-	// their existing goal APIs outside this callback surface.
+	// Goal lifecycle stays off the ordinary coding belt. /goal continuation turns
+	// set exposeGoalTool and append the tool after this surface is filtered.
 	// Skills/MCP are rendered as request-local opaque aliases by
 	// BuildToolsForModelRequest. Do not append generic gateway definitions
 	// to the static cross-iteration surface.
@@ -1828,8 +1954,19 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 		tools = filterCodingToolsForRole(tools, c.subagent)
 	}
 	tools = filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostLocal, tools)
+	tools = c.appendExposedGoalTool(tools)
 	c.logCacheEvent("tools", "build-replacement", "tool_count", len(tools))
 	return cloneCodingSubAgentToolDefinitions(tools)
+}
+
+// appendExposedGoalTool adds plan/step/complete only for /goal continuation
+// turns. Ordinary BuildTools callers leave exposeGoalTool false, so the
+// legacy compatibility belt stays unchanged.
+func (c *codingSubAgentCallbacks) appendExposedGoalTool(tools []map[string]interface{}) []map[string]interface{} {
+	if c == nil || c.subagent == nil || !c.subagent.exposeGoalTool {
+		return tools
+	}
+	return append(tools, buildCodingGoalToolDefinition())
 }
 
 func (c *codingSubAgentCallbacks) setStaticCompatibilitySurface(definitions []map[string]interface{}) uint64 {
@@ -2430,9 +2567,17 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		}
 		ctx, cancel := c.toolContext()
 		defer cancel()
+		// This call asked for content matches. codegraph node returns one
+		// definition and does not list the other occurrences, so it cannot
+		// stand in for the search. Substituting it and then saying not to
+		// repeat the search drops the call sites.
 		result := agent.ToolRipgrepDetailedCtx(ctx, searchArgs)
 		c.trackSearchResult("ripgrep", searchArgs, result.Text, searchOutcomeCountsAsExploration(result.Outcome))
-		return codingToolExecutionResult{Text: result.Text, Outcome: codingOutcomeFromSearchOutcome(result.Outcome)}
+		out := codingToolExecutionResult{Text: result.Text, Outcome: codingOutcomeFromSearchOutcome(result.Outcome)}
+		if out.Outcome == codingToolOutcomeSuccess {
+			out.Text = c.appendCodegraphSearchHint(result.Text)
+		}
+		return out
 	case "read_file":
 		if h == nil {
 			return codingToolExecutionResult{Text: c.rejectToolCall("read_file", args, "coding subagent host tool handler is unavailable"), Outcome: codingToolOutcomeBlocked}
@@ -2560,7 +2705,11 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		commandResult := executeCodingBashWithContext(ctx, bashArgs, nil)
 		command, _ := bashArgs["command"].(string)
 		c.trackCommandResult(bashArgs, commandResult.Text, commandResult.succeededForCommand(command))
-		return commandResult.toolResultForCommand(command)
+		toolResult := commandResult.toolResultForCommand(command)
+		if commandResult.succeededForCommand(command) && codingCommandLooksLikeTextSearch(command) {
+			toolResult.Text = c.appendCodegraphSearchHint(toolResult.Text)
+		}
+		return toolResult
 	case "list_directory":
 		listArgs := c.withProjectRelativePath(args, true)
 		if p, _ := listArgs["path"].(string); p != "" {
@@ -14408,6 +14557,7 @@ func (c *codingSubAgentCallbacks) emitToolStartedEvent(name, argsJSON string) {
 	event.Event = codingAgentEventKindToolStarted.String()
 	event.Detail = strings.TrimSpace(name)
 	event.Command = codingToolEventCommand(name, argsJSON)
+	event.Target = codingToolEventTarget(name, argsJSON, c.projectPath())
 	event.Files = codingToolEventFiles(name, argsJSON, c.projectPath())
 	emitCodingAgentEvent(c.subagent.onProgress, event)
 }
@@ -14487,6 +14637,7 @@ func (c *codingSubAgentCallbacks) emitToolFinishedEvent(name, argsJSON, result s
 	event.Event = codingAgentEventKindToolFinished.String()
 	event.Detail = strings.TrimSpace(name)
 	event.Command = codingToolEventCommand(name, argsJSON)
+	event.Target = codingToolEventTarget(name, argsJSON, c.projectPath())
 	event.Files = codingToolEventFiles(name, argsJSON, c.projectPath())
 	attachCodingToolFileChanges(&event, name, argsJSON, c.getDiffStat())
 	c.rememberToolFileLineDeltas(name, event.FileChanges)
@@ -14534,6 +14685,753 @@ func codingToolEventFiles(name, argsJSON, projectRoot string) []string {
 		return nil
 	}
 	return []string{codingAgentDisplayPath(path, projectRoot)}
+}
+
+// codingToolEventTarget is the file, glob, or symbol shown beside Search/Explore.
+// Read and edit already surface their path through Files; this covers source
+// search and code navigation, whose useful argument is often a pattern or query.
+func codingToolEventTarget(name, argsJSON, projectRoot string) string {
+	canonical := canonicalCodingSubAgentToolName(name)
+	bare := strings.TrimPrefix(strings.ToLower(strings.TrimSpace(canonical)), "ssh_")
+	switch bare {
+	case "bash", "glob", "ripgrep", "grep", "search_files", "grep_search", "list_directory", "list_dir", "code_navigation":
+	default:
+		return ""
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil || len(args) == 0 {
+		return ""
+	}
+	if bare == "bash" {
+		return codingShellInquiryTarget(codingToolEventArgString(args, "command"), projectRoot)
+	}
+	pattern := strings.Join(strings.Fields(redactCodingSubAgentFreeformLogText(firstNonEmptySubAgentString(
+		codingToolEventArgString(args, "pattern"),
+		codingToolEventArgString(args, "query"),
+		codingToolEventArgString(args, "glob"),
+		codingToolEventArgString(args, "glob_pattern"),
+		codingToolEventArgString(args, "regex"),
+		codingToolEventArgString(args, "file_pattern"),
+	))), " ")
+	rawPath := firstNonEmptySubAgentString(
+		codingToolEventArgString(args, "path"),
+		codingToolEventArgString(args, "file"),
+		codingToolEventArgString(args, "file_path"),
+		codingToolEventArgString(args, "filename"),
+		codingToolEventArgString(args, "target_path"),
+		codingToolEventArgString(args, "directory"),
+		codingToolEventArgString(args, "dir"),
+	)
+	path := ""
+	// Searching the project root is not a filename. Keep the pattern instead of
+	// the repo folder name, which codingAgentDisplayPath would otherwise show.
+	if !codingToolEventPathIsProjectRoot(rawPath, projectRoot) {
+		path = codingAgentDisplayPath(rawPath, projectRoot)
+		if path == "." {
+			path = ""
+		}
+	}
+	if bare == "list_directory" || bare == "list_dir" {
+		pattern = ""
+	}
+	switch {
+	case pattern != "" && path != "" && pattern != path && codingToolEventPathLooksLikeFile(path):
+		// File first so a short trail keeps the filename when the pattern is long.
+		return truncateRunesForSubAgent(path+" · "+pattern, 120)
+	case pattern != "" && path != "" && pattern != path:
+		return truncateRunesForSubAgent(pattern+" · "+path, 120)
+	case path != "":
+		return truncateRunesForSubAgent(path, 120)
+	default:
+		return truncateRunesForSubAgent(pattern, 120)
+	}
+}
+
+func codingToolEventPathIsProjectRoot(path, projectRoot string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" || path == "." || path == "./" || path == `.\` {
+		return true
+	}
+	display := codingAgentNormalizeSlashPath(path)
+	if display == "" || display == "." || display == "/" {
+		return true
+	}
+	root := codingAgentNormalizeSlashPath(projectRoot)
+	if root == "" {
+		return false
+	}
+	if codingAgentHasDriveLetter(display) || codingAgentHasDriveLetter(root) {
+		return strings.EqualFold(display, root)
+	}
+	return display == root
+}
+
+func codingToolEventPathLooksLikeFile(path string) bool {
+	base := path
+	if i := strings.LastIndex(path, "/"); i >= 0 {
+		base = path[i+1:]
+	}
+	return base != "" && base != "." && base != ".." && strings.Contains(base, ".")
+}
+
+// codingShellInquiryTarget is the file or symbol for source search and
+// codegraph-style exploration. Other shell commands stay unlabeled.
+func codingShellInquiryTarget(command, projectRoot string) string {
+	if target := codingShellExplorationTarget(command, projectRoot); target != "" {
+		return target
+	}
+	return codingShellContentSearchTarget(command, projectRoot)
+}
+
+// codingShellContentSearchTarget covers findstr / Select-String / rg. The
+// coding agent uses these from bash while reading a project, and they were
+// collapsing into a generic shell line.
+func codingShellContentSearchTarget(command, projectRoot string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return ""
+	}
+	shown := ""
+	for _, segment := range shellCommandSegments(command) {
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) == 0 {
+			continue
+		}
+		name := strings.ToLower(commandNameBase(segment[0]))
+		switch name {
+		case "findstr":
+			shown = codingFindstrTarget(segment[1:], projectRoot)
+		case "select-string", "sls":
+			shown = codingSelectStringTarget(segment[1:], projectRoot)
+		case "rg", "ripgrep", "grep":
+			shown = codingRipgrepShellTarget(segment[1:], projectRoot)
+		}
+		if shown != "" {
+			break
+		}
+	}
+	if shown == "" && strings.Contains(strings.ToLower(command), "findstr") {
+		shown = codingLooseFindstrTarget(command, projectRoot)
+	}
+	if codingShownIsPatternOnly(shown) && strings.Contains(command, "|") {
+		if file := codingPipelineReaderFile(command); file != "" {
+			shown = codingFormatSearchTarget(shown, file, projectRoot)
+		}
+	}
+	return shown
+}
+
+// codingShownIsPatternOnly is a search string that does not already name a file.
+func codingShownIsPatternOnly(shown string) bool {
+	shown = strings.TrimSpace(shown)
+	return shown != "" && !strings.Contains(shown, " · ") && !strings.ContainsAny(shown, `/\`)
+}
+
+// codingLooseFindstrTarget reads findstr out of a cmd /c script. Those quotes
+// are escaped as \", which the shell splitter does not keep as one command.
+func codingLooseFindstrTarget(command, projectRoot string) string {
+	clause := codingFindstrCommandClause(command)
+	if clause == "" {
+		return ""
+	}
+	patterns := codingFindstrCPatterns(clause)
+	file := codingFindstrClauseFile(clause, patterns)
+	if len(patterns) == 0 && file == "" {
+		return ""
+	}
+	return codingFormatSearchTarget(strings.Join(patterns, " | "), file, projectRoot)
+}
+
+func codingFindstrCommandClause(command string) string {
+	lower := strings.ToLower(command)
+	for i := 0; i+len("findstr") <= len(lower); i++ {
+		end := i + len("findstr")
+		if lower[i:end] != "findstr" || !codingFindstrAtCommand(command, i) {
+			continue
+		}
+		if end < len(command) {
+			next := command[end]
+			if (next >= 'A' && next <= 'Z') || (next >= 'a' && next <= 'z') || next == '_' {
+				continue
+			}
+		}
+		rest := command[i+len("findstr"):]
+		return strings.Trim(codingUnquotedClause(rest), `"'`)
+	}
+	return ""
+}
+
+func codingPrefixEndsWithCommandFlag(prefix string, flags ...string) bool {
+	lower := strings.ToLower(prefix)
+	for _, flag := range flags {
+		if !strings.HasSuffix(lower, flag) {
+			continue
+		}
+		before := len(lower) - len(flag)
+		if before == 0 {
+			return true
+		}
+		switch lower[before-1] {
+		case ' ', '\t', ';', '|', '&', '(', '\n':
+			return true
+		}
+	}
+	return false
+}
+
+func codingFindstrAtCommand(command string, i int) bool {
+	if i == 0 {
+		return true
+	}
+	prefix := strings.TrimRight(command[:i], " \t\"")
+	if codingPrefixEndsWithCommandFlag(prefix, "/c", "-c", "-command") {
+		return true
+	}
+	j := i - 1
+	for j >= 0 && (command[j] == ' ' || command[j] == '\t' || command[j] == '"') {
+		j--
+	}
+	if j < 0 {
+		return true
+	}
+	switch command[j] {
+	case ';', '|', '&', '(', '\n':
+		return true
+	default:
+		return false
+	}
+}
+
+func codingUnquotedClause(rest string) string {
+	var b strings.Builder
+	quote := byte(0)
+	for i := 0; i < len(rest); i++ {
+		ch := rest[i]
+		if quote == '"' && ch == '\\' && i+1 < len(rest) && rest[i+1] == '"' {
+			b.WriteString(`\"`)
+			i++
+			continue
+		}
+		if quote != 0 {
+			if ch == quote {
+				quote = 0
+			}
+			b.WriteByte(ch)
+			continue
+		}
+		if ch == '"' || ch == '\'' {
+			quote = ch
+			b.WriteByte(ch)
+			continue
+		}
+		if ch == ';' || ch == '|' || ch == '&' || ch == '\n' {
+			break
+		}
+		b.WriteByte(ch)
+	}
+	return strings.TrimSpace(b.String())
+}
+
+func codingFindstrCPatterns(clause string) []string {
+	var patterns []string
+	for i := 0; i < len(clause); i++ {
+		if i+3 > len(clause) || !strings.EqualFold(clause[i:i+3], "/c:") {
+			continue
+		}
+		value, next := codingFindstrCValue(clause[i+3:])
+		if value != "" {
+			patterns = append(patterns, value)
+		}
+		i += 2 + next
+	}
+	return patterns
+}
+
+func codingFindstrCValue(rest string) (string, int) {
+	if strings.HasPrefix(rest, `\"`) {
+		end := strings.Index(rest[2:], `\"`)
+		if end >= 0 {
+			return rest[2 : 2+end], 2 + end + 2
+		}
+	}
+	if strings.HasPrefix(rest, `"`) {
+		end := strings.Index(rest[1:], `"`)
+		if end >= 0 {
+			return rest[1 : 1+end], 1 + end + 1
+		}
+	}
+	end := len(rest)
+	if i := strings.IndexAny(rest, " \t"); i >= 0 {
+		end = i
+	}
+	return strings.Trim(rest[:end], `"'`), end
+}
+
+func codingFindstrClauseFile(clause string, patterns []string) string {
+	cleaned := clause
+	for _, pattern := range patterns {
+		cleaned = strings.ReplaceAll(cleaned, `/c:\"`+pattern+`\"`, " ")
+		cleaned = strings.ReplaceAll(cleaned, `/c:"`+pattern+`"`, " ")
+		cleaned = strings.ReplaceAll(cleaned, `/c:`+pattern, " ")
+	}
+	file := ""
+	for _, token := range strings.Fields(cleaned) {
+		token = strings.Trim(token, `"'`)
+		if token == "" || strings.HasPrefix(token, "/") {
+			continue
+		}
+		if strings.ContainsAny(token, `/\`) || strings.Contains(token, ".") {
+			file = token
+		}
+	}
+	file = strings.Trim(file, `"'`)
+	for strings.Contains(file, `\\`) {
+		file = strings.ReplaceAll(file, `\\`, `\`)
+	}
+	return file
+}
+
+// codingPipelineReaderFile is the path a pipe feeds into Select-String or findstr,
+// such as Get-Content build\selftest_before.txt | Select-String.
+func codingPipelineReaderFile(command string) string {
+	fields := shellCommandFields(command)
+	var segment []string
+	reader := ""
+	piped := false
+	finish := func() string {
+		seg := stripVerificationCommandPrefixes(segment)
+		segment = nil
+		// 2>&1 is split into "2>" and "1". Neither is a new program.
+		if codingSegmentIsRedirectNoise(seg) {
+			return ""
+		}
+		name := strings.ToLower(commandNameBase(seg[0]))
+		if piped && codingShellNameIsContentSearch(name) && reader != "" {
+			return reader
+		}
+		if file := codingReaderCommandFile(name, seg[1:]); file != "" {
+			reader = file
+		} else {
+			reader = ""
+		}
+		return ""
+	}
+	for _, field := range fields {
+		token := normalizeShellCommandToken(field)
+		if token == "|" || token == "&" {
+			finish()
+			// "&" only keeps 2>&1 in the same command. A file is attached
+			// when a later "|" actually pipes that command into the search.
+			if token == "|" {
+				piped = true
+			}
+			continue
+		}
+		if isShellCommandBoundary(token) {
+			if file := finish(); file != "" {
+				return file
+			}
+			piped = false
+			reader = ""
+			continue
+		}
+		segment = append(segment, token)
+	}
+	return finish()
+}
+
+func codingSegmentIsRedirectNoise(seg []string) bool {
+	if len(seg) == 0 {
+		return true
+	}
+	if len(seg) != 1 {
+		return false
+	}
+	token := seg[0]
+	if token == "1" || token == "2" || token == "&1" {
+		return true
+	}
+	redir, _ := codingShellRedirection(token)
+	return redir
+}
+
+// codingCommandLooksLikeTextSearch reports Select-String, findstr, rg, or grep.
+// A directory listing or a build command is not a search.
+func codingCommandLooksLikeTextSearch(command string) bool {
+	lower := strings.ToLower(command)
+	for _, name := range []string{"select-string", "findstr", "ripgrep"} {
+		if strings.Contains(lower, name) {
+			return true
+		}
+	}
+	flattened := strings.NewReplacer("|", " ", ";", " ", "&", " ", "\n", " ").Replace(lower)
+	for _, field := range strings.Fields(flattened) {
+		field = strings.Trim(field, `"'`)
+		if i := strings.LastIndexAny(field, `/\`); i >= 0 {
+			field = field[i+1:]
+		}
+		switch field {
+		case "rg", "grep", "egrep", "fgrep", "sls":
+			return true
+		}
+	}
+	return false
+}
+
+func codingShellNameIsContentSearch(name string) bool {
+	switch name {
+	case "findstr", "select-string", "sls", "rg", "ripgrep", "grep":
+		return true
+	default:
+		return false
+	}
+}
+
+func codingReaderCommandFile(name string, args []string) string {
+	switch name {
+	case "get-content", "gc", "type", "cat":
+	default:
+		return ""
+	}
+	if file := firstNonEmptySubAgentString(codingShellFlagValue(args, "-path"), codingShellFlagValue(args, "-literalpath")); file != "" {
+		return file
+	}
+	positionals := codingReaderPositionals(args)
+	for i := len(positionals) - 1; i >= 0; i-- {
+		if strings.ContainsAny(positionals[i], `/\`) || strings.Contains(positionals[i], ".") {
+			return positionals[i]
+		}
+	}
+	if len(positionals) == 0 {
+		return ""
+	}
+	return positionals[len(positionals)-1]
+}
+
+func codingReaderPositionals(args []string) []string {
+	kept := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		token := strings.TrimSpace(args[i])
+		if token == "" || token == "--" {
+			continue
+		}
+		if strings.HasPrefix(token, "-") {
+			if codingReaderFlagTakesValue(token) && i+1 < len(args) {
+				i++
+			}
+			continue
+		}
+		if codingShellSkipRedirection(args, &i) {
+			continue
+		}
+		kept = append(kept, strings.Trim(token, `"'`))
+	}
+	return kept
+}
+
+func codingReaderFlagTakesValue(flag string) bool {
+	switch strings.ToLower(strings.TrimSpace(flag)) {
+	case "-tail", "-totalcount", "-first", "-last", "-head", "-encoding":
+		return true
+	default:
+		return false
+	}
+}
+
+func codingFindstrTarget(args []string, projectRoot string) string {
+	positionals := make([]string, 0, len(args))
+	var cPatterns []string
+	for i := 0; i < len(args); i++ {
+		token := strings.TrimSpace(args[i])
+		if token == "" {
+			continue
+		}
+		// /c:text is one search string. A bare /c: takes the next argument.
+		if strings.EqualFold(token, "/c:") && i+1 < len(args) {
+			if value := strings.Trim(strings.TrimSpace(args[i+1]), `"'`); value != "" && !strings.HasPrefix(value, "/") {
+				cPatterns = append(cPatterns, value)
+				i++
+			}
+			continue
+		}
+		if strings.HasPrefix(strings.ToLower(token), "/c:") {
+			if value := strings.Trim(token[3:], `"'`); value != "" {
+				cPatterns = append(cPatterns, value)
+			}
+			continue
+		}
+		if strings.HasPrefix(token, "/") {
+			continue
+		}
+		if codingShellSkipRedirection(args, &i) {
+			continue
+		}
+		positionals = append(positionals, strings.Trim(token, `"'`))
+	}
+	if len(cPatterns) > 0 {
+		file := ""
+		if len(positionals) > 0 {
+			file = positionals[len(positionals)-1]
+		}
+		return codingFormatSearchTarget(strings.Join(cPatterns, " | "), file, projectRoot)
+	}
+	return codingSearchPatternAndFile(positionals, projectRoot)
+}
+
+func codingSelectStringTarget(args []string, projectRoot string) string {
+	file := firstNonEmptySubAgentString(
+		codingShellFlagValue(args, "-path"),
+		codingShellFlagValue(args, "-literalpath"),
+	)
+	pattern := codingShellFlagValue(args, "-pattern")
+	if file == "" && pattern == "" {
+		return codingSearchPatternAndFile(codingShellPositionals(args), projectRoot)
+	}
+	return codingFormatSearchTarget(pattern, file, projectRoot)
+}
+
+func codingRipgrepShellTarget(args []string, projectRoot string) string {
+	pattern := firstNonEmptySubAgentString(
+		codingShellFlagValue(args, "-e"),
+		codingShellFlagValue(args, "--regexp"),
+	)
+	positionals := codingShellPositionals(args)
+	if pattern != "" {
+		file := ""
+		if len(positionals) > 0 {
+			file = positionals[len(positionals)-1]
+		}
+		return codingFormatSearchTarget(pattern, file, projectRoot)
+	}
+	if len(positionals) == 0 {
+		return ""
+	}
+	if len(positionals) == 1 {
+		return truncateRunesForSubAgent(strings.Join(strings.Fields(redactCodingSubAgentFreeformLogText(positionals[0])), " "), 120)
+	}
+	joined := strings.Join(positionals[:len(positionals)-1], " ")
+	return codingFormatSearchTarget(joined, positionals[len(positionals)-1], projectRoot)
+}
+
+func codingShellPositionals(args []string) []string {
+	kept := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		token := strings.TrimSpace(args[i])
+		if token == "" || token == "--" {
+			continue
+		}
+		if strings.HasPrefix(token, "-") {
+			if !strings.Contains(token, "=") && codingShellFlagTakesValue(token) && i+1 < len(args) {
+				i++
+			}
+			continue
+		}
+		if codingShellSkipRedirection(args, &i) {
+			continue
+		}
+		kept = append(kept, strings.Trim(token, `"'`))
+	}
+	return kept
+}
+
+func codingSearchPatternAndFile(positionals []string, projectRoot string) string {
+	if len(positionals) == 0 {
+		return ""
+	}
+	if len(positionals) == 1 {
+		return codingFormatSearchTarget(positionals[0], "", projectRoot)
+	}
+	return codingFormatSearchTarget(strings.Join(positionals[:len(positionals)-1], " "), positionals[len(positionals)-1], projectRoot)
+}
+
+func codingFormatSearchTarget(pattern, file, projectRoot string) string {
+	pattern = strings.Join(strings.Fields(redactCodingSubAgentFreeformLogText(pattern)), " ")
+	shownFile := ""
+	if strings.TrimSpace(file) != "" && !codingToolEventPathIsProjectRoot(file, projectRoot) {
+		shownFile = codingAgentDisplayPath(file, projectRoot)
+		if shownFile == "." {
+			shownFile = ""
+		}
+	}
+	switch {
+	case shownFile != "" && pattern != "" && pattern != shownFile:
+		return truncateRunesForSubAgent(shownFile+" · "+pattern, 120)
+	case shownFile != "":
+		return truncateRunesForSubAgent(shownFile, 120)
+	default:
+		return truncateRunesForSubAgent(pattern, 120)
+	}
+}
+
+// codingShellExplorationTarget is the symbol or file for codegraph, gopls, and
+// lsp-cli. Those run through bash, so the raw command would otherwise collapse
+// into a generic shell line.
+func codingShellExplorationTarget(command, projectRoot string) string {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return ""
+	}
+	// Ordinary builds and tests never need a shell split.
+	lowered := strings.ToLower(command)
+	if !strings.Contains(lowered, "codegraph") && !strings.Contains(lowered, "gopls") && !strings.Contains(lowered, "lsp-cli") {
+		return ""
+	}
+	for _, segment := range shellCommandSegments(command) {
+		segment = stripVerificationCommandPrefixes(segment)
+		if len(segment) < 2 {
+			continue
+		}
+		name := strings.ToLower(commandNameBase(segment[0]))
+		verb := strings.ToLower(strings.TrimSpace(segment[1]))
+		switch name {
+		case "codegraph":
+			if verb != "explore" && verb != "node" {
+				continue
+			}
+			arg := codingShellPositionalText(segment[2:])
+			// explore queries are symbols (handler.ServeHTTP). Only node is a file.
+			if verb == "node" {
+				if shown := codingShellExplorationFile(arg, projectRoot); shown != "" {
+					return shown
+				}
+			}
+			shown := strings.Join(strings.Fields(redactCodingSubAgentFreeformLogText(arg)), " ")
+			if shown == "" {
+				return verb
+			}
+			return truncateRunesForSubAgent(shown, 120)
+		case "gopls":
+			if verb != "definition" && verb != "references" && verb != "implementation" {
+				continue
+			}
+			if shown := codingShellExplorationFile(codingShellPositionalText(segment[2:]), projectRoot); shown != "" {
+				return shown
+			}
+			return verb
+		case "lsp-cli":
+			file := codingShellFlagValue(segment, "--file")
+			query := strings.Join(strings.Fields(redactCodingSubAgentFreeformLogText(codingShellFlagValue(segment, "--query"))), " ")
+			shown := codingShellExplorationFile(file, projectRoot)
+			switch {
+			case shown != "" && query != "" && query != shown:
+				return truncateRunesForSubAgent(shown+" · "+query, 120)
+			case shown != "":
+				return shown
+			case query != "":
+				return truncateRunesForSubAgent(query, 120)
+			}
+		}
+	}
+	return ""
+}
+
+func codingShellPositionalText(args []string) string {
+	return strings.Join(codingShellPositionals(args), " ")
+}
+
+// codingShellSkipRedirection drops > / 2> / 2>&1 so the redirect target is not
+// shown as the file being searched. The index points at the redirect token.
+func codingShellSkipRedirection(args []string, i *int) bool {
+	token := strings.TrimSpace(args[*i])
+	redir, attached := codingShellRedirection(token)
+	if !redir {
+		return false
+	}
+	if !attached && *i+1 < len(args) {
+		next := strings.TrimSpace(args[*i+1])
+		if next != "" && !strings.HasPrefix(next, "-") && !strings.HasPrefix(next, "/") {
+			if _, nextRedir := codingShellRedirection(next); !nextRedir && !isShellCommandBoundary(next) {
+				*i++
+			}
+		}
+	}
+	return true
+}
+
+func codingShellRedirection(token string) (redir bool, targetAttached bool) {
+	token = strings.Trim(strings.TrimSpace(token), `"'`)
+	idx := strings.Index(token, ">")
+	if idx < 0 {
+		return false, false
+	}
+	prefix := token[:idx]
+	if prefix != "" && prefix != "&" && (len(prefix) != 1 || prefix[0] < '0' || prefix[0] > '9') {
+		return false, false
+	}
+	rest := token[idx:]
+	if strings.HasPrefix(rest, ">>") {
+		rest = rest[2:]
+	} else {
+		rest = rest[1:]
+	}
+	return true, rest != ""
+}
+
+func codingShellFlagTakesValue(flag string) bool {
+	flag = strings.TrimSpace(flag)
+	// -A/-B/-C take a number. Their lowercase twins (-a/-b/-c) are booleans on rg.
+	switch flag {
+	case "-A", "-B", "-C":
+		return true
+	}
+	switch strings.ToLower(flag) {
+	case "--limit", "--line", "--column", "--offset", "--max",
+		"-g", "--glob", "-e", "--regexp", "-m", "--max-count":
+		return true
+	default:
+		return false
+	}
+}
+
+func codingShellFlagValue(args []string, flag string) string {
+	flag = strings.ToLower(strings.TrimSpace(flag))
+	for i := 0; i < len(args); i++ {
+		token := strings.TrimSpace(args[i])
+		lower := strings.ToLower(token)
+		if lower == flag && i+1 < len(args) {
+			value := strings.Trim(strings.TrimSpace(args[i+1]), `"'`)
+			if value == "" || strings.HasPrefix(value, "-") {
+				return ""
+			}
+			return value
+		}
+		if strings.HasPrefix(lower, flag+"=") {
+			return strings.Trim(strings.TrimSpace(token[len(flag)+1:]), `"'`)
+		}
+	}
+	return ""
+}
+
+func codingShellExplorationFile(token, projectRoot string) string {
+	file := codingShellFilePath(token)
+	if file == "" || codingToolEventPathIsProjectRoot(file, projectRoot) {
+		return ""
+	}
+	display := codingAgentDisplayPath(file, projectRoot)
+	if display == "" || display == "." {
+		display = strings.ReplaceAll(file, "\\", "/")
+	}
+	return truncateRunesForSubAgent(display, 120)
+}
+
+func codingShellFilePath(token string) string {
+	token = strings.TrimSpace(strings.Trim(token, `"'`))
+	if token == "" {
+		return ""
+	}
+	if i := strings.IndexAny(token, " \t"); i > 0 {
+		token = token[:i]
+	}
+	prefix := ""
+	rest := token
+	if len(rest) >= 3 && rest[1] == ':' && (rest[2] == '/' || rest[2] == '\\') {
+		prefix = rest[:2]
+		rest = rest[2:]
+	}
+	if i := strings.Index(rest, ":"); i >= 0 {
+		rest = rest[:i]
+	}
+	return prefix + rest
 }
 
 // codingAgentDisplayPath is the trail/preview path: repo-relative slashes when
@@ -15101,7 +15999,7 @@ func (c *codingSubAgentCallbacks) buildTaskUserMessage() string {
 	if codingTaskLooksInquiry(c.task) {
 		b.WriteString(fmt.Sprintf("请回答下面的仓库/代码问题。先做必要的只读检索，再给出简洁、可核查的结论；不要修改文件、不要写测试、不要创建实现任务。\\n\\n## 问题\\n%s\\n\\n", compactSubAgentTaskDescription(c.task.Description)))
 		b.WriteString("**只读工作要求**：\\n")
-		b.WriteString("1. 项目根目录存在 .codegraph/ 时，优先使用 codegraph explore / codegraph node；否则使用 list_directory、glob、read_file 或搜索。\\n")
+		b.WriteString("1. 有 .codegraph/ 时，结构、符号和调用关系优先 code_navigation。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。\\n")
 		b.WriteString("2. 最终先回答用户问题，再简要列出查看过的关键目录或文件；不要输出 TDD、任务编号或完整工具流水。\\n")
 		b.WriteString("3. 未明确要求修改时，绝不写入文件、运行构建或测试。\\n")
 		return compactCodingSubAgentTaskUserMessage(b.String())
@@ -15165,7 +16063,7 @@ func appendCodingSubAgentCompatibilityChecklist(b *strings.Builder) {
 		return
 	}
 	b.WriteString("**当前安全兼容模式**：\n")
-	b.WriteString("1. 先做只读检索并给出可核查的路径、符号和结论；存在 .codegraph/ 时优先 code_navigation / CodeGraph。\n")
+	b.WriteString("1. 先做只读检索并给出可核查的路径、符号和结论。有 .codegraph/ 时，结构、符号和调用关系优先 code_navigation。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。\n")
 	b.WriteString("2. 本轮不能直接执行实现、运行验证、派生子任务或提交结构化定位结果；不要尝试猜测未列出的工具。\n")
 	b.WriteString("3. 若任务需要这些操作，说明已收集的证据，并给出可由后续相关执行工作流完成的最小步骤。\n")
 	b.WriteString("4. 若本轮列出了 todo_write，只能携带定义中的 expected_revision 和 expected_version 更新清单；过期结果必须重新读取状态。\n\n")
@@ -15181,7 +16079,7 @@ func appendCodingSubAgentPreflightChecklist(b *strings.Builder, qualityGateEnabl
 		return
 	}
 	b.WriteString("**Before editing**:\n")
-	b.WriteString("1. If project root has .codegraph/, locate relevant code with `codegraph explore` / `codegraph node`; otherwise use Glob/ripgrep/read_file.\n")
+	b.WriteString("1. Use code_navigation for structure, symbols, and call edges. A missing .codegraph/ directory is not a reason to skip the tool; on a modify turn it installs codegraph and runs codegraph init. A text search that already returned lines is evidence; use those lines and do not repeat that search.\n")
 	b.WriteString("2. State likely files and risk/impact.\n")
 	b.WriteString("3. Choose the minimal edit approach.\n")
 	b.WriteString("4. If this is a retry, use retry context and avoid repeating the failed approach.\n")
@@ -16194,9 +17092,9 @@ func buildLocalInspectionRoleSystemPrompt(projectPath string, role codingSubAgen
 		b.WriteString(fmt.Sprintf("## 项目路径\n%s\n\n", projectPath))
 	}
 	b.WriteString(`## 可用工具
-- code_navigation：优先用于符号、定义、引用、调用链与候选定位
+- code_navigation：有 .codegraph/ 时优先，内部运行 codegraph explore / codegraph node，用于结构、符号、定义、引用和调用链
 - report_localization：仅 bug 修复时提交根因证据；探索/新功能不要调用
-- Glob / ripgrep / list_directory / read_file：文本定位与阅读
+- Glob / ripgrep / list_directory / read_file：正文搜索。已经返回的行算数，不要把同一次查找再做一遍
 - git_diff：只读 diff/status（如可用）
 `)
 	if role == codingRoleReviewer {
@@ -16204,7 +17102,7 @@ func buildLocalInspectionRoleSystemPrompt(projectPath string, role codingSubAgen
 	}
 	b.WriteString(`
 ## 工作规范
-	1. 先搜索再阅读关键文件
+	1. 结构、符号和调用关系优先 code_navigation，再按命中阅读关键文件。已经返回行的正文搜索也算数，不要把同一次查找再做一遍
 	2. 仅当任务是修复已有代码的 bug 时，才调用 report_localization 提交根因证据。探索项目、补齐功能、核对 CLI 不要提交定位报告。
 	3. 遇到陌生概念/精确报错、第三方依赖/API/协议、版本或兼容性事实，必须 web_search 搜索精确错误和官方文档；纯仓内 bug 才在 report_localization 说明为何无需联网
 	4. 完成后给出结构化发现：关键路径、结论、外部来源、风险/建议
@@ -16225,11 +17123,11 @@ func buildLocalInspectionRoleSystemPrompt(projectPath string, role codingSubAgen
 func buildFullCodingEnvironmentPromptPreamble() string {
 	return `## 全功能编程环境（Full Coding Workbench）
 你运行在与 Claude Code / Codex 同级目标的完整编程工作台中（同一模型下追求同等工程能力）：
-- 可使用文件读写、搜索、shell、git_diff、web_search/web_fetch、current_datetime、goal（长时目标 complete/fail/get），以及本轮工具列表中实际出现的受管扩展函数。
+- 可使用文件读写、搜索、shell、git_diff、web_search/web_fetch、current_datetime、goal（长时目标 plan/step/complete/fail/get），以及本轮工具列表中实际出现的受管扩展函数。
 - 不得猜测或调用 Skill/MCP 的旧通用入口；只有本轮实际列出的受限别名才可调用。若未出现扩展函数，继续使用静态工具或说明需要重新规划。
 - 工作区根目录已绑定；下方「工作区概览」是宿主 os.ReadDir 的权威顶层清单，请先消化再深入探索。
 - 禁止仅用 python/python3/os.listdir/ls/dir 复核顶层是否为空；失败的列目录命令不能当成「目录为空」。深入文件用 list_directory / read_file / glob。
-- 默认自主探索与实现：不要等待用户再发「去了解项目」；需要时主动 list_directory/Glob/ripgrep/read。
+- 默认自主探索与实现：不要等待用户再发「去了解项目」。结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node）。顶层没有 .codegraph/ 时，可修改的任务里该工具会安装 codegraph 并 codegraph init。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。
 - 本会话支持多轮续写：用户后续消息仍在同一编程工作台中执行，可继续改码、验证、补测。
 - 复杂任务：系统可能已给出多步「自动规划」；若有规划，严格按步骤推进并在每步验证。若无规划，先短计划（explore → implement → verify）再动手。
 - 多步任务自行拆解、实现、验证；工具失败时换策略，不要空转重试。
@@ -16251,6 +17149,7 @@ func buildNestedFullCodingEnvironmentPromptPreamble() string {
 	return `## 嵌套实现子代理（Nested Worker）
 你是全功能编程工作台派发的实现子代理（干净上下文）：
 - 可使用文件读写、搜索、shell、git_diff、web_search/web_fetch、current_datetime，以及本轮工具列表中实际出现的受管扩展函数；不得猜测旧 Skill/MCP 入口。
+- 结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node）。没有 .codegraph/ 时，可修改的任务里该工具会安装并 codegraph init。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。
 - 禁止再派生子代理；请在本上下文中直接完成指派任务并验证。
 - 最小必要改动；工具失败时换策略；完成后用工程师短文说明改了什么以及实际跑过的验证，不要写审计标题。
 
@@ -16276,6 +17175,7 @@ func probeCodingWorkspace(projectPath string) string {
 
 	const maxEntries = 48
 	var dirs, files []string
+	hasCodeGraph := false
 	stackHints := make([]string, 0, 8)
 	stackFiles := map[string]string{
 		"go.mod": "Go", "package.json": "Node/JS", "pnpm-lock.yaml": "pnpm",
@@ -16296,6 +17196,7 @@ func probeCodingWorkspace(projectPath string) string {
 				dirs = append(dirs, name+"/")
 			}
 			if name == ".codegraph" {
+				hasCodeGraph = true
 				stackHints = append(stackHints, "CodeGraph index")
 			}
 			continue
@@ -16304,6 +17205,9 @@ func probeCodingWorkspace(projectPath string) string {
 			files = append(files, name)
 		}
 		if hint, ok := stackFiles[name]; ok {
+			if name == ".codegraph" {
+				hasCodeGraph = true
+			}
 			stackHints = append(stackHints, hint)
 		}
 	}
@@ -16338,7 +17242,12 @@ func probeCodingWorkspace(projectPath string) string {
 	if len(dirs)+len(files) >= maxEntries {
 		b.WriteString("- （条目已截断；需要时用 list_directory / Glob 继续探查）\n")
 	}
-	b.WriteString("- 顶层清单以本概览为准；深入用 list_directory / read_file / glob，不要用 python3/os.listdir 复核。失败的列目录不能当成目录为空。\n")
+	b.WriteString("- 顶层清单以本概览为准；不要用 python3/os.listdir 复核。失败的列目录不能当成目录为空。\n")
+	if hasCodeGraph {
+		b.WriteString("- 存在 .codegraph/：结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node）。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。\n")
+	} else {
+		b.WriteString("- 顶层没有 .codegraph/。结构、符号和调用关系仍可调用 code_navigation；可修改的任务里该工具会安装 codegraph 并 codegraph init。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。只读询问不要安装或初始化。\n")
+	}
 	return strings.TrimSpace(b.String())
 }
 
@@ -16408,7 +17317,8 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 	b.WriteString(codingAgentTodoControlPlanePromptSection)
 	b.WriteString(`
 ## 工作流
-- 如果项目根目录存在 .codegraph/，先用 bash 运行 codegraph explore / codegraph node 定位相关符号、调用链和文件；如果没有索引，再用 Glob / ripgrep 定位相关代码，并用 read_file 阅读当前内容。所有读取、搜索、列目录都必须限定在项目路径内；不要读取项目外文件。
+- 结构、符号和调用关系优先 code_navigation（运行 codegraph explore / codegraph node）。顶层没有 .codegraph/ 时，可修改的任务里该工具会尝试 npm install -g @colbymchenry/codegraph，没有索引时再 codegraph init。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。所有读取、搜索、列目录都必须限定在项目路径内；不要读取项目外文件。
+- .codegraph/ 是 code_navigation 的本地索引，不是任务改动。不要删除它，不要提交它，也不要因为它出现在 git status 里就回滚。
 - 修复 bug 时，优先复现或确认错误，再沿调用链追踪输入、状态变化和影响范围。不要基于猜测修改。
 - 修改已有文件时优先使用 edit_file 或 edit_lines；禁止用 write_file 重写已有文件来做小修改。edit_file 失败时先 read_file 确认当前内容，再改用 edit_lines。
 - write_file 只用于创建新文件，或在用户/仓库流程明确要求时追加 TEST_REPORT.md。
@@ -16787,18 +17697,24 @@ func buildCodingGoalToolDefinition() map[string]interface{} {
 		"function": map[string]interface{}{
 			"name": "goal",
 			"description": "Manage the persistent long-running goal for this coding workbench " +
-				"(action: create/complete/fail/get). Use complete when acceptance criteria are met; " +
-				"use fail when the goal cannot continue. Prefer get before create.",
+				"(action: create/plan/step/complete/fail/get). The first continuation calls plan; " +
+				"each later turn calls step for the current index. Use complete only when every step " +
+				"is done and the summary covers the acceptance criteria. Use fail when a step cannot continue.",
 			"parameters": map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
-					"action":              map[string]interface{}{"type": "string", "description": "create | complete | fail | get"},
+					"action":              map[string]interface{}{"type": "string", "description": "create | plan | step | complete | fail | get"},
 					"objective":           map[string]interface{}{"type": "string", "description": "Goal description (create)"},
-					"summary":             map[string]interface{}{"type": "string", "description": "Completion summary (complete)"},
+					"understanding":       map[string]interface{}{"type": "string", "description": "Task restatement (plan)"},
+					"steps":               map[string]interface{}{"type": "array", "description": "Ordered steps (plan)", "items": map[string]interface{}{"type": "object"}},
+					"acceptance_criteria": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Verifiable completion conditions (plan)"},
+					"index":               map[string]interface{}{"type": "integer", "description": "1-based step index (step)"},
+					"status":              map[string]interface{}{"type": "string", "description": "done or failed (step)"},
+					"result":              map[string]interface{}{"type": "string", "description": "Step result (step)"},
+					"summary":             map[string]interface{}{"type": "string", "description": "Completion summary that quotes each acceptance criterion (complete)"},
 					"reason":              map[string]interface{}{"type": "string", "description": "Failure reason (fail)"},
 					"token_budget":        map[string]interface{}{"type": "integer", "description": "Optional token budget (create)"},
 					"max_turns":           map[string]interface{}{"type": "integer", "description": "Optional max continuation turns (create)"},
-					"acceptance_criteria": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional acceptance criteria (create)"},
 					"project_path":        map[string]interface{}{"type": "string", "description": "Optional project path metadata (create)"},
 				},
 				"required": []string{"action"},
@@ -16934,7 +17850,7 @@ func applyCodingSubAgentToolHints(fn map[string]interface{}) {
 		// Do NOT set maxLength for write_file — it causes models to avoid calling the tool for long content.
 		setCodingSubAgentToolPropDescription(props, "mode", "Write mode: overwrite for first chunk, append for later chunks.")
 	case "edit_file":
-		setCodingSubAgentToolPropDescription(props, "old_string", fmt.Sprintf("Exact text to replace. Keep under %d characters; use edit_lines for large edits.", codingSubAgentInlineContentLimit))
+		setCodingSubAgentToolPropDescription(props, "old_string", fmt.Sprintf("Exact passage to replace, including indentation. CR, LF, and CRLF match as the same line break; the file's newline convention is preserved. Keep under %d characters; use edit_lines for large edits.", codingSubAgentInlineContentLimit))
 		setCodingSubAgentToolPropMaxLength(props, "old_string", codingSubAgentInlineContentLimit)
 		setCodingSubAgentToolPropDescription(props, "new_string", fmt.Sprintf("Replacement text. Keep under %d characters; split large edits into multiple small calls.", codingSubAgentInlineContentLimit))
 		setCodingSubAgentToolPropMaxLength(props, "new_string", codingSubAgentInlineContentLimit)
@@ -17137,6 +18053,9 @@ func runTaskWithSubAgentRuntimeOptions(
 		cfg = handler.applyCodingRoutePreference(userID, cfg, hasImages)
 	}
 	sa := NewCodingSubAgent(handler, cfg, httpClient, projectPath, loopCtx)
+	if taskCarriesGoalContinuation(task, reqCtx) {
+		sa.exposeGoalTool = true
+	}
 	// Production desktop R1 ingress: only the Wails host can mint the opaque
 	// request token. The agent receives a verified relation handle, never an
 	// identity assembled from LoopContext/UserID/project path. Root-step
@@ -17230,9 +18149,15 @@ func runTaskWithSubAgentRuntimeOptions(
 		phaseID = loopCtx.WorkflowPhaseID
 	}
 	approvalGate := codingRuntimeApprovalGate(func() string { return sa.prepareTaskScopeApproval(task) })
+	if onProgress != nil {
+		runtimeOptions.AdmissionWait = func(string) {
+			onProgress("同一目录上另一个任务还在写入，本任务等它结束后再开始")
+		}
+	}
 	var unregisterRuntimeCancellation func()
 	result, _, ledgerErr := runGUICodingTaskWithLedgerWithOptions(ctx, store, ownerID, workflowID, phaseID, projectPath, task.Title+"\n"+task.Description, approvalGate, func(request codingruntime.ExecutionRequest) {
 		sa.runtimeStore = store
+		sa.writableSurfaceDenied = ""
 		attempt := request.Attempt
 		sa.runtimeAttempt = &attempt
 		// Runtime task/attempt IDs are only resolver keys. Register only the
@@ -17251,6 +18176,24 @@ func runTaskWithSubAgentRuntimeOptions(
 		// ever reconstructed from projectPath, task text, or runtime fields.
 		sa.correlatedLocalExecution = sa.dynamicInvocationIdentity != nil &&
 			sa.dynamicInvocationIdentity.complete() && sa.staticWorkspaceBinding.complete()
+		// verifiedBound only means a relation handle was issued. The writable
+		// surface exists only after that handle is anchored to this attempt
+		// and the workspace binding is complete. An implementation turn that
+		// misses either one used to enter the read-only compatibility loop,
+		// investigate for the whole turn, and then fail for writing nothing.
+		if diag := sa.refuseUnboundWritableSurface(task); diag != "" {
+			sa.writableSurfaceDenied = diag
+			userID := ""
+			if loopCtx != nil {
+				userID = loopCtx.UserID
+			}
+			taskTitle := ""
+			if task != nil {
+				taskTitle = task.Title
+			}
+			log.Printf("[coding-subagent] refusing read-only compatibility loop user=%s project=%s identity=%v workspace=%v task=%q",
+				userID, projectPath, sa.dynamicInvocationIdentity != nil && sa.dynamicInvocationIdentity.complete(), sa.staticWorkspaceBinding.complete(), truncateRunesV2(taskTitle, 80))
+		}
 		// S1-A only: prepare a project-bound, read-only shadow plan whenever the
 		// durable semantic identity exists, including when the host workspace
 		// binding is absent. The incomplete envelope must become a plan with
@@ -17259,7 +18202,7 @@ func runTaskWithSubAgentRuntimeOptions(
 		// It does not render aliases, issue grants, or affect the legacy static
 		// belt, and it never reconstructs a binding from projectPath/runtime/task
 		// text.
-		if sa.dynamicInvocationIdentity != nil {
+		if sa.writableSurfaceDenied == "" && sa.dynamicInvocationIdentity != nil {
 			prepared, planErr := prepareCodingStaticShadowPlanForSubagent(sa, codingTaskRequestKind(task), time.Now().UTC())
 			if planErr != nil {
 				log.Printf("[coding-static-shadow] plan unavailable reason=catalog_incomplete")

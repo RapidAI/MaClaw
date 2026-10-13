@@ -149,7 +149,7 @@ func TestBotMessageUsesOwnerViewerTokenOnSystemFree(t *testing.T) {
 		t.Fatalf("patches=%d configs=%d", len(patches), len(configs))
 	}
 	for _, patch := range patches {
-		if !strings.Contains(patch, `"llm_service_group_id":"system-free"`) || strings.Contains(patch, "group-1") {
+		if !strings.Contains(patch, `"llm_service_group_id":"maclaw_official_group"`) || strings.Contains(patch, "group-1") {
 			t.Fatalf("patch = %s", patch)
 		}
 	}
@@ -193,7 +193,7 @@ func TestBotMessageUsesOwnerViewerTokenOnSystemFree(t *testing.T) {
 		t.Fatal(err)
 	}
 	text := string(logged)
-	if !strings.Contains(text, "stage=hub.owner_llm") || !strings.Contains(text, "group=system-free") {
+	if !strings.Contains(text, "stage=hub.owner_llm") || !strings.Contains(text, "group=maclaw_official_group") {
 		t.Fatalf("bot log missing owner llm\n%s", text)
 	}
 	if strings.Contains(text, "viewer-token-") || strings.Contains(text, "admin-secret") || strings.Contains(text, "key-alice") || strings.Contains(text, "secret-token") {
@@ -343,7 +343,7 @@ func TestRepeatedMessageSkipsUnchangedInstanceMetadata(t *testing.T) {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/auth/token":
 			_, _ = w.Write([]byte(`{"access_token":"bearer-alice","principal":{"user_id":"user_alice"}}`))
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/instances/"):
-			_, _ = w.Write([]byte(`{"id":"inst_alice","metadata":{"hub_bot":"1","hub_user_id":"alice","hub_tenant_id":"tenant-a","llm_service_group_id":"system-free","keep":"yes"}}`))
+			_, _ = w.Write([]byte(`{"id":"inst_alice","metadata":{"hub_bot":"1","hub_user_id":"alice","hub_tenant_id":"tenant-a","llm_service_group_id":"maclaw_official_group","keep":"yes"}}`))
 		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/instances/"):
 			mu.Lock()
 			patches++
@@ -611,7 +611,7 @@ func TestWipedOwnerLLMConfigIsPushedAgain(t *testing.T) {
 		case r.Method == http.MethodPost && r.URL.Path == "/api/v1/auth/token":
 			_, _ = w.Write([]byte(`{"access_token":"bearer-alice","expires_at":"` + now.Add(time.Hour).Format(time.RFC3339) + `","principal":{"user_id":"user_alice"}}`))
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/instances/") && !strings.HasSuffix(r.URL.Path, "/messages"):
-			_, _ = w.Write([]byte(`{"id":"inst_alice","metadata":{"hub_bot":"1","hub_user_id":"alice","hub_tenant_id":"tenant-a","llm_service_group_id":"system-free"}}`))
+			_, _ = w.Write([]byte(`{"id":"inst_alice","metadata":{"hub_bot":"1","hub_user_id":"alice","hub_tenant_id":"tenant-a","llm_service_group_id":"maclaw_official_group"}}`))
 		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/instances/"):
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/config"):
@@ -835,7 +835,7 @@ func TestBotMessagePushesSelectedAnthropicProvider(t *testing.T) {
 	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "system-free", []LLMProviderInput{{
 		ID: "lp_claude0000000001", Name: "Claude", Protocol: "anthropic",
 		URL: "https://api.anthropic.com", Model: "claude-sonnet-4-5",
-	}}); err != nil {
+	}}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.PostMessage(ctx, "tenant-a", "alice", "bot_alice", "back"); err != nil {
@@ -858,7 +858,7 @@ func TestBotMessagePushesSelectedAnthropicProvider(t *testing.T) {
 		t.Fatalf("patches = %d", len(patches))
 	}
 	for _, patch := range patches {
-		if !strings.Contains(patch, `"llm_service_group_id":"system-free"`) {
+		if !strings.Contains(patch, `"llm_service_group_id":"maclaw_official_group"`) {
 			t.Fatalf("patch = %s", patch)
 		}
 	}

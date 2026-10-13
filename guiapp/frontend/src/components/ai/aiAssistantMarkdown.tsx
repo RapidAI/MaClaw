@@ -770,6 +770,7 @@ export function renderContentWithCodeBlocks(
     content: string,
     t: Theme,
     options?: ChatMarkdownRenderOptions,
+    lang?: string,
 ): React.ReactNode[] {
     const omitBlankSpacers = options?.omitBlankSpacers === true;
     const reasoningSurface = options?.reasoningSurface === true;
@@ -832,6 +833,7 @@ export function renderContentWithCodeBlocks(
                         key={`mermaid-${elements.length}`}
                         code={codeBlockLines.join("\n")}
                         theme={t}
+                        lang={lang}
                     />,
                 );
                 codeBlockLines = [];
@@ -840,19 +842,19 @@ export function renderContentWithCodeBlocks(
             }
             const source = codeBlockLines.length > 0 ? renderCodeBlockText(codeBlockLines.join("\n"), t) : "\u00A0";
             const { fence, lang: langStyle } = ensureFenceStyles();
-            const lang = codeBlockLang ? <div style={langStyle}>{codeBlockLang}</div> : null;
+            const langBadge = codeBlockLang ? <div style={langStyle}>{codeBlockLang}</div> : null;
             elements.push(reasoningSurface ? (
                 <pre
                     key={`code-${elements.length}`}
                     data-reasoning-code=""
                     style={fence}
                 >
-                    {lang}
+                    {langBadge}
                     <code style={codeFenceInnerStyle}>{source}</code>
                 </pre>
             ) : (
                 <div key={`code-${elements.length}`} data-assistant-code="" style={fence}>
-                    {lang}
+                    {langBadge}
                     <pre style={codeBlockLang ? codeFenceScrollUnderLangStyle : codeFenceScrollStyle}>
                         <code style={codeFenceInnerStyle}>{source}</code>
                     </pre>
@@ -1636,7 +1638,11 @@ export function renderMessage(
                             />
                         ) : undefined}
                         style={{
-                            width: (taskSettled || savedPaths.length > 0) ? "100%" : "fit-content",
+                            // Settled replies and saved files already take the column.
+                            // A diagram does too, but that width lives in the stylesheet:
+                            // an inline width here would beat it, and fit-content is an
+                            // indefinite width the diagram's percentage cannot resolve.
+                            ...(taskSettled || savedPaths.length > 0 ? { width: "100%" } : {}),
                             maxWidth: "84%",
                             minWidth: 0,
                             // Extra right padding so the compact top-right copy control
@@ -1838,7 +1844,7 @@ export function renderMessage(
                     <div key={msg.id} role="status" data-testid={`assistant-task-context-${msg.id}`} className="aamd-msg-row">
                         <div style={{ maxWidth: "84%", boxSizing: "border-box", padding: "9px 12px", borderRadius: "8px", background: `color-mix(in srgb, ${t.sendBtnBg} 8%, ${t.fieldBg})`, border: `1px solid color-mix(in srgb, ${t.sendBtnBorder} 44%, ${t.fieldBorder})`, color: t.text, fontSize: "12px", lineHeight: "1.6", overflowWrap: "break-word" }}>
                             <div style={{ marginBottom: 3, color: t.textMuted, fontSize: 11, fontWeight: 700 }}>{lang === "en" ? "CURRENT TASK" : lang === "zh-Hant" ? "目前任務資訊" : "当前任务信息"}</div>
-                            {renderContentWithCodeBlocks(msg.content, t)}
+                            {renderContentWithCodeBlocks(msg.content, t, undefined, lang)}
                         </div>
                     </div>
                 );
@@ -1848,7 +1854,7 @@ export function renderMessage(
                 <div key={msg.id} role="status" data-testid={`assistant-chat-system-${msg.id}`} className="aamd-msg-row">
                     <div style={{ maxWidth: "84%", boxSizing: "border-box", padding: "8px 12px", borderRadius: "8px", background: t.fieldBg, border: `1px solid ${t.fieldBorder}`, color: t.text, fontSize: "12px", lineHeight: "1.6", overflowWrap: "break-word" }}>
                         {traceFields.length > 0 && renderFields(traceFields, t)}
-                        {renderContentWithCodeBlocks(msg.content, t)}
+                        {renderContentWithCodeBlocks(msg.content, t, undefined, lang)}
                     </div>
                 </div>
             );

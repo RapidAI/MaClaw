@@ -39,7 +39,7 @@ const DesktopOutcomeEvidenceOmission = "…[核对时略去中间]"
 
 const desktopOutcomeJudgeSystem = "你只判断这一步的结果是否已经满足用户要求。只回复一个 JSON 对象 {\"ok\":true或false,\"gap\":\"...\"}。\n" +
 	"ok 为 true 只在给出的工具结果或附上的桌面截图本身显示要求已经达成。\n" +
-	"工具报错或画面与要求不符时 ok 为 false。只有要求出现在这台桌面的画面上时，才以截图为准：桌面截图与桌面工具文字不一致时采用截图，没有当前截图则 ok 为 false。命令打印出来的正文就是该命令的输出，桌面截图不能把这段正文说成缺失或被截断。工具结果里的「" + DesktopOutcomeEvidenceOmission + "」是核对篇幅删掉的，不是命令漏打了这一段，不要据此说输出不完整。ssh 的输出单独判断远程命令：输出写明已经达成时，没有桌面截图也可以 ok 为 true，桌面截图也不能把它判成未达成。\n" +
+	"工具报错或画面与要求不符时 ok 为 false。只有要求出现在这台桌面的画面上时，才以截图为准：桌面截图与桌面工具文字不一致时采用截图。没有可看的截图，并且用户消息也没有把最后一条桌面结果里的 screen_vision 标成这次截到的画面时，ok 为 false。看不到图片时，用户消息写明这次判断带着当前截图，或写明最后一条桌面工具结果里的 screen_vision 是这次截到的画面，那段读数才是这一屏：它列出本地 OCR 和 OmniParser 读到的文字和控件。用它确认这是不是用户要的那一屏。更早一条桌面结果里的 screen_vision 不是现在的画面。用户消息写明没有当前截图、且没有把最后一条读数标成这次截到的画面时，那些读数是更早的画面。没有这段读数、也没有可看的截图时，不能把画面算成已经达成。命令打印出来的正文就是该命令的输出，桌面截图不能把这段正文说成缺失或被截断。工具结果里的「" + DesktopOutcomeEvidenceOmission + "」是核对篇幅删掉的，不是命令漏打了这一段，不要据此说输出不完整。ssh 的输出单独判断远程命令：输出写明已经达成时，没有桌面截图也可以 ok 为 true，桌面截图也不能把它判成未达成。\n" +
 	"gap 用一句中文说明还缺什么。不要写步骤，不要声称已经完成。"
 
 // gateDesktopReply is the last rewrite before a reply leaves the loop.
@@ -117,11 +117,29 @@ func desktopOutcomeUserContent(cfg corelib.MaclawLLMConfig, userText, evidence s
 		text += "\n\nssh 的输出判断远程命令。桌面截图不是那台机器的画面，不能用来否定 ssh 的输出。"
 	}
 	if image == nil || strings.TrimSpace(image.Base64) == "" {
+		// A shot that could not be attached still leaves its caption and
+		// reading on the latest desktop result. A command that only prints
+		// the word screen_vision is not that capture.
+		if desktopOutcomeUnattachedShot(evidence) {
+			text += "\n\n图片没有附上。最后一条桌面工具结果里的 screen_vision 是这次截到的画面的读数，用它确认画面是不是用户要的那一屏。更早的读数不算。没有写在这段里的画面不能算已经达成。"
+			return text
+		}
 		text += "\n\n没有当前桌面截图。更早的截图不能当作现在的画面。"
+		if desktopOutcomeEvidenceHasScreenVision(evidence) {
+			text += "工具结果里的 screen_vision 也是更早的画面，不能用来确认现在已经达成。"
+		}
 		return text
 	}
 	if !cfg.SupportsVision {
-		text += "\n\n桌面截图已采集，但这次判断看不到图片，只能根据工具结果判断。工具结果没有写明的画面不能算已经达成。"
+		if desktopOutcomeCurrentScreenVision(evidence) {
+			text += "\n\n这次判断看不到图片。最后一条桌面工具结果里的 screen_vision 是当前截图的读数，用它确认画面是不是用户要的那一屏。更早的读数不算。没有写在这段里的画面不能算已经达成。"
+			return text
+		}
+		if desktopOutcomeEvidenceHasScreenVision(evidence) {
+			text += "\n\n这次判断看不到图片。工具结果里的 screen_vision 不是当前截图，不能用来确认现在的画面。没有写明在当前截图里的画面不能算已经达成。"
+			return text
+		}
+		text += "\n\n桌面截图已采集，但这次判断看不到图片，也没有 screen_vision。只能根据工具结果判断。工具结果没有写明的画面不能算已经达成。"
 		return text
 	}
 	mime := strings.TrimSpace(image.MIME)
@@ -139,6 +157,37 @@ func desktopOutcomeUserContent(cfg corelib.MaclawLLMConfig, userText, evidence s
 // indented, so a command that prints "ssh:" is not a second record.
 func desktopOutcomeEvidenceHasSSH(evidence string) bool {
 	return desktopOutcomeEvidenceHasRecord(evidence, "ssh: ")
+}
+
+func desktopOutcomeEvidenceHasScreenVision(evidence string) bool {
+	return strings.Contains(evidence, "screen_vision:")
+}
+
+// desktopOutcomeCurrentScreenVision reports a reading on the latest desktop
+// tool result. A later desktop action replaces the screen, so a reading left
+// on an earlier result is not the picture this check is holding.
+func desktopOutcomeCurrentScreenVision(evidence string) bool {
+	record := lastDesktopOutcomeRecord(evidence)
+	return strings.Contains(record, "screen_vision:")
+}
+
+func desktopOutcomeUnattachedShot(evidence string) bool {
+	record := lastDesktopOutcomeRecord(evidence)
+	return strings.Contains(record, "Desktop screenshot of display ") && strings.Contains(record, "screen_vision:")
+}
+
+func lastDesktopOutcomeRecord(evidence string) string {
+	const mark = "\ndesktop: "
+	rest := evidence
+	if idx := strings.LastIndex(evidence, mark); idx >= 0 {
+		rest = evidence[idx+1:]
+	} else if !strings.HasPrefix(evidence, "desktop: ") {
+		return ""
+	}
+	if idx := strings.Index(rest, "\nssh: "); idx >= 0 {
+		rest = rest[:idx]
+	}
+	return rest
 }
 
 // desktopOutcomeEvidenceHasRecord reports a tool line. Continuation lines are

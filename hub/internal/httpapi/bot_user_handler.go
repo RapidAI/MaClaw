@@ -271,6 +271,71 @@ func wantsAsyncBotReply(r *http.Request) bool {
 	return false
 }
 
+// GetBotTasksHandler GET /api/v1/bots/{id}/tasks?q=&lang=
+// Answers a status question about this bot's recent desktop runs.
+func GetBotTasksHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		text, items, err := svc.DesktopTaskQuery(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), r.URL.Query().Get("q"), r.URL.Query().Get("lang"))
+		if err != nil {
+			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		if items == nil {
+			items = []botmgmt.DesktopTaskStatus{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"text": text, "items": items})
+	}
+}
+
+// GetBotPendingHandler GET /api/v1/bots/pending
+// Finished runs whose result has not been shown on a GUI yet.
+func GetBotPendingHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		items, err := svc.PendingDesktopDeliveries(r.Context(), principal.TenantID, principal.UserID)
+		if err != nil {
+			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		if items == nil {
+			items = []botmgmt.DesktopTaskDelivery{}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	}
+}
+
+// PostBotRunAckHandler POST /api/v1/bots/{id}/runs/{runID}/ack
+// The GUI has shown this run's result. Later pulls skip it.
+func PostBotRunAckHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		if err := svc.AckDesktopTask(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), r.PathValue("runID")); err != nil {
+			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]string{"status": "acked"})
+	}
+}
+
 // GetBotRunHandler GET /api/v1/bots/{id}/runs/{runID}
 // A running command answers 202. The finished reply is the same object as a
 // synchronous message. One poll does not cancel the run.

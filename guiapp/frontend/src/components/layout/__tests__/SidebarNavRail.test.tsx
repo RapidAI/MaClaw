@@ -1059,6 +1059,81 @@ describe('SidebarNavRail library menu', () => {
     });
 });
 
+describe('SidebarNavRail connect menu', () => {
+    it('opens only IM and 邮箱 under 接入 and requests a solo settings page', () => {
+        const props = renderRail({ lang: 'zh-Hans' });
+        const connect = screen.getByTestId('sidebar-connect-nav');
+        const files = screen.getByTestId('sidebar-files-nav');
+        const settings = screen.getByTestId('sidebar-settings-nav');
+        expect(files.compareDocumentPosition(connect) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(connect.compareDocumentPosition(settings) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+        fireEvent.click(connect);
+        expect(screen.getByTestId('connect-popup-menu')).toBeTruthy();
+        expect(screen.getByTestId('connect-menu-im').textContent).toContain('IM');
+        expect(screen.getByTestId('connect-menu-email').textContent).toContain('邮箱');
+        expect(screen.getAllByRole('menuitem').filter(item => item.getAttribute('data-testid')?.startsWith('connect-menu'))).toHaveLength(2);
+
+        const events: Array<Record<string, unknown>> = [];
+        const listener = (event: Event) => {
+            events.push((event as CustomEvent<Record<string, unknown>>).detail);
+        };
+        window.addEventListener(OPEN_SETTINGS_EVENT, listener);
+        try {
+            fireEvent.click(screen.getByTestId('connect-menu-im'));
+            fireEvent.click(screen.getByTestId('sidebar-connect-nav'));
+            fireEvent.click(screen.getByTestId('connect-menu-email'));
+            expect(events).toEqual([
+                { tab: 'im', hideSettingsNav: true },
+                { tab: 'email', hideSettingsNav: true },
+            ]);
+            expect(props.switchTool).not.toHaveBeenCalled();
+        } finally {
+            window.removeEventListener(OPEN_SETTINGS_EVENT, listener);
+        }
+    });
+
+    it('highlights 接入 for solo IM or email and 设置 when the same tabs are opened inside full settings', () => {
+        const solo = renderRail({ lang: 'zh-Hans', navTab: 'settings', settingsTab: 'im', settingsNavSoloTab: 'im' });
+        expect(screen.getByTestId('sidebar-connect-nav').classList.contains('active')).toBe(true);
+        expect(screen.getByTestId('sidebar-settings-nav').classList.contains('active')).toBe(false);
+        solo.unmount();
+
+        const full = renderRail({ lang: 'zh-Hans', navTab: 'settings', settingsTab: 'email' });
+        expect(screen.getByTestId('sidebar-connect-nav').classList.contains('active')).toBe(false);
+        expect(screen.getByTestId('sidebar-settings-nav').classList.contains('active')).toBe(true);
+        fireEvent.click(screen.getByTestId('sidebar-connect-nav'));
+        expect(screen.getByTestId('connect-menu-email').getAttribute('aria-current')).toBe('page');
+        full.unmount();
+
+        renderRail({ lang: 'en', navTab: 'settings', settingsTab: 'knowledge' });
+        expect(screen.getByTestId('sidebar-connect-nav').textContent).toContain('Connect');
+        expect(screen.getByTestId('sidebar-files-nav').classList.contains('active')).toBe(true);
+        expect(screen.getByTestId('sidebar-settings-nav').classList.contains('active')).toBe(false);
+    });
+
+    it('uses traditional labels and keeps the library knowledge event unchanged', () => {
+        renderRail({ lang: 'zh-Hant' });
+        expect(screen.getByTestId('sidebar-connect-nav').textContent).toContain('接入');
+        fireEvent.click(screen.getByTestId('sidebar-connect-nav'));
+        expect(screen.getByTestId('connect-menu-email').textContent).toContain('郵箱');
+        expect(screen.getByTestId('sidebar-connect-nav').getAttribute('title')).toBe('接入即時通訊和郵箱');
+
+        const events: Array<Record<string, unknown>> = [];
+        const listener = (event: Event) => {
+            events.push((event as CustomEvent<Record<string, unknown>>).detail);
+        };
+        window.addEventListener(OPEN_SETTINGS_EVENT, listener);
+        try {
+            fireEvent.click(screen.getByTestId('sidebar-files-nav'));
+            fireEvent.click(screen.getByTestId('library-menu-knowledge'));
+            expect(events).toEqual([{ tab: 'knowledge' }]);
+        } finally {
+            window.removeEventListener(OPEN_SETTINGS_EVENT, listener);
+        }
+    });
+});
+
 describe('SidebarNavRail flyout highlight', () => {
     it('marks the open destination in the system, extensions and library menus', () => {
         const about = renderRail({ lang: 'zh-Hans', navTab: 'about' });

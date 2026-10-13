@@ -12,6 +12,7 @@ import {
     FileCompanionSaveText,
     FileCompanionUIReady,
     FileCompanionUploadCloud,
+    GetBrandInfo,
     GetFileCompanionBoot,
     SendFileCompanionMessage,
 } from "../../../wailsjs/go/main/App";
@@ -23,6 +24,8 @@ import { MarkdownPreview } from "../ai/CodePreviewMarkdown";
 import { MessageContentRenderer } from "../ai/MessageContentRenderer";
 import { reasoningTrailMarkdownOptions, renderContentWithCodeBlocks } from "../ai/aiAssistantMarkdown";
 import { lightTheme } from "../ai/aiAssistantPanelTheme";
+import type { Theme as AssistantTheme } from "../ai/aiAssistantPanelTheme";
+import { isMermaidCodeFence, renderMermaidFenceToPNGDataURL } from "../ai/AssistantMermaidDiagram";
 import { isHistoryResetCommandText } from "../ai/composeAction";
 import { cleanReasoningTrailForBody, resolveVisibleAssistantReply } from "../ai/assistantReasoningBody";
 import { stripAssistantToolCallMarkers } from "../ai/assistantToolCall";
@@ -236,9 +239,9 @@ type ChatMessage = { id: string; role: "user" | "assistant"; text: string; reaso
 // Stable identity keeps the scroll-follow effect from re-planning on every
 // render while no file is open.
 const NO_COMPANION_MESSAGES: ChatMessage[] = [];
-// One stable empty array for the transcript builder, so an idle window does
-// not hand a new array to every effect that depends on it.
-const NO_COMPANION_TURNS: CompanionChatTurn[] = [];
+// One stable empty result for an idle window, so an export that has nothing to
+// build does not hand a new object to every effect that depends on it.
+const EMPTY_CHAT_EXPORT: CompanionChatExport = { turns: [], missingFigures: 0, missingDiagrams: 0 };
 
 // Figures come from Go with lower-case JSON tags and from tests and restored
 // history as plain objects, so both spellings of each field are read.
@@ -883,6 +886,13 @@ function companionMessageExportText(message: ChatMessage, streaming: boolean): s
     return visible.content;
 }
 
+/** What a transcript export managed to include, and what it could not. */
+type CompanionChatExport = {
+    turns: CompanionChatTurn[];
+    missingFigures: number;
+    missingDiagrams: number;
+};
+
 /**
  * Every turn that belongs in an exported transcript.
  *
@@ -894,10 +904,20 @@ function companionMessageExportText(message: ChatMessage, streaming: boolean): s
  * Figures are fetched as bytes and appended to their answer. The bytes have to
  * travel with the text because a path cannot be resolved on the reader's side
  * of a save dialog — the bubbles already hold these images for that reason.
+ *
+ * Failures are counted rather than swallowed. A figure that cannot be read
+ * leaves a gap in the document, and a gap the reader was never told about is
+ * indistinguishable from the export having lost it.
  */
-async function companionChatExportTurns(messages: ChatMessage[], tabBusy: boolean): Promise<CompanionChatTurn[]> {
+async function companionChatExportTurns(
+    messages: ChatMessage[],
+    tabBusy: boolean,
+    theme: AssistantTheme,
+): Promise<CompanionChatExport> {
     const lastIndex = messages.length - 1;
     const turns: CompanionChatTurn[] = [];
+    let missingFigures = 0;
+    let missingDiagrams = 0;
     for (const [index, message] of messages.entries()) {
         const mine = message.role === "user";
         const streaming = Boolean(!mine && tabBusy && index === lastIndex);
@@ -908,24 +928,121 @@ async function companionChatExportTurns(messages: ChatMessage[], tabBusy: boolea
         if (message.resultPath) continue;
         let content = mine ? message.text : companionMessageExportText(message, streaming);
         if (!content.trim()) continue;
-        if (!mine && message.figures?.length) {
-            const lines: string[] = [];
-            for (const figure of message.figures) {
-        const dataURL = await loadCompanionFigureDataURL(figure.path);
-        // A figure whose bytes never arrive is named rather than dropped, so
-        // the exported answer still mentions what the reader was shown.
-        if (dataURL) lines.push(`![](${dataURL})`);
-            }
-            const appended = lines.filter(Boolean).join("\n\n");
-            if (appended) content = `${content.trim()}\n\n${appended}`;
+        if (!mine) {
+            const inlined = await inlineCompanionDiagrams(content, theme);
+            content = inlined.text;
+            missingDiagrams += inlined.missing;
+        }
+        if (!mine) {
+            const withFigures = await appendCompanionFigures(content, message.figures);
+            content = withFigures.text;
+            missingFigures += withFigures.missing;
         }
         turns.push({ role: mine ? "user" : "assistant", content });
     }
-    return turns;
+    return { turns, missingFigures, missingDiagrams };
+}
+
+/**
+ * An answer's text with the drawings the window shows beneath it.
+ *
+ * Shared by both exports, because both are the answer as the reader saw it: a
+ * single answer is exported with its own figures, a transcript with each
+ * answer's. Figures are fetched together rather than one after another — each
+ * is its own round trip to the host and the reader is waiting on all of them
+ * either way — while order is kept by indexing, not by awaiting in turn.
+ */
+async function appendCompanionFigures(
+    content: string,
+    figures: CompanionFigure[] | undefined,
+): Promise<{ text: string; missing: number }> {
+    if (!figures?.length) return { text: content, missing: 0 };
+    const loaded = await Promise.all(figures.map((figure) => loadCompanionFigureDataURL(figure.path)));
+    const blocks: string[] = [];
+    let missing = 0;
+    figures.forEach((figure, index) => {
+        const dataURL = loaded[index];
+        if (!dataURL) {
+            missing += 1;
+            return;
+        }
+        blocks.push(companionFigureMarkdown(figure, dataURL));
+    });
+    if (blocks.length === 0) return { text: content, missing };
+    return { text: `${content.trim()}\n\n${blocks.join("\n\n")}`, missing };
+}
+
+/**
+ * One figure as Markdown, carrying the caption the window shows beneath it.
+ *
+ * The answer says "图 8.1"; a picture with no label leaves the reader matching
+ * numbers to drawings themselves. Markdown ends an image's alt text at the
+ * first bracket or parenthesis, so those become spaces instead of truncating
+ * the caption.
+ */
+function companionFigureMarkdown(figure: CompanionFigure, dataURL: string): string {
+    const label = [figure.label, figure.caption].filter(Boolean).join(" ").trim();
+    const alt = label.replace(/[[\]()]/g, " ").replace(/\s+/g, " ").trim();
+    return `![${alt}](${dataURL})`;
+}
+
+// The renderer's own fence rule: three or more backticks or tildes.
+const COMPANION_FENCE_RE = /^(\s*)(`{3,}|~{3,})(.*)$/;
+
+/**
+ * Replace each Mermaid fence with the diagram it draws.
+ *
+ * The window draws these diagrams; the document layer cannot, having no
+ * JavaScript. Handing it the picture is what keeps a diagram a diagram rather
+ * than a page of Mermaid source. A fence that will not draw keeps its source,
+ * which is what the reader would have seen anyway.
+ */
+async function inlineCompanionDiagrams(markdown: string, theme: AssistantTheme): Promise<{ text: string; missing: number }> {
+    if (!markdown.includes("```") && !markdown.includes("~~~")) {
+        return { text: markdown, missing: 0 };
+    }
+    const lines = markdown.split("\n");
+    const out: string[] = [];
+    let missing = 0;
+    for (let i = 0; i < lines.length; i += 1) {
+        const open = lines[i].match(COMPANION_FENCE_RE);
+        if (!open) {
+            out.push(lines[i]);
+            continue;
+        }
+        const marker = open[2];
+        let close = -1;
+        for (let j = i + 1; j < lines.length; j += 1) {
+            const candidate = lines[j].match(COMPANION_FENCE_RE);
+            if (candidate && candidate[2][0] === marker[0] && candidate[2].length >= marker.length && candidate[3].trim() === "") {
+                close = j;
+                break;
+            }
+        }
+        // An unclosed fence is still being written, or is not a fence at all.
+        if (close < 0) {
+            out.push(lines[i]);
+            continue;
+        }
+        if (!isMermaidCodeFence(open[3])) {
+            out.push(...lines.slice(i, close + 1));
+            i = close;
+            continue;
+        }
+        const png = await renderMermaidFenceToPNGDataURL(lines.slice(i + 1, close).join("\n"), theme);
+        if (png) {
+            out.push(`![](${png})`);
+        } else {
+            missing += 1;
+            out.push(...lines.slice(i, close + 1));
+        }
+        i = close;
+    }
+    return { text: out.join("\n"), missing };
 }
 
 // One figure's bytes, already kept by the display layer. A failure yields an
-// empty string so the rest of the transcript still exports.
+// empty string; the caller counts it so the reader is told.
 async function loadCompanionFigureDataURL(path: string): Promise<string> {
     try {
         return (await FileCompanionFigureDataURL(path)) || "";
@@ -935,10 +1052,29 @@ async function loadCompanionFigureDataURL(path: string): Promise<string> {
 }
 
 /**
+ * What to tell the reader once the document is written.
+ *
+ * The export succeeds either way; what differs is whether the reader learns
+ * that part of it is missing. A figure dropped in silence reads exactly like a
+ * complete export until somebody opens it.
+ */
+function companionExportNotice(missingFigures: number, missingDiagrams: number): string {
+    const missing: string[] = [];
+    if (missingFigures > 0) missing.push(`${missingFigures} 张配图`);
+    if (missingDiagrams > 0) missing.push(`${missingDiagrams} 张流程图`);
+    if (missing.length === 0) return "已导出 PDF";
+    return `已导出 PDF，但 ${missing.join("、")}未能读取，未包含在内`;
+}
+
+function companionExportNoticeKind(missingFigures: number, missingDiagrams: number): "success" | "warning" {
+    return missingFigures > 0 || missingDiagrams > 0 ? "warning" : "success";
+}
+
+/**
  * Top-right controls on one companion answer: copy the Markdown source, and
  * render it into a PDF the reader names.
  */
-function CompanionMessageActions({ path, markdown, messageId }: { path: string; markdown: string; messageId: string }) {
+function CompanionMessageActions({ path, markdown, messageId, figures }: { path: string; markdown: string; messageId: string; figures?: CompanionFigure[] }) {
     const [copyState, settleCopy] = useCompanionActionState();
     const [exportState, settleExport] = useCompanionActionState();
     const { showToast } = useToast();
@@ -949,9 +1085,24 @@ function CompanionMessageActions({ path, markdown, messageId }: { path: string; 
     const runExport = async () => {
         settleExport("busy");
         try {
-            const dest = await FileCompanionExportPDF(path, markdown);
+            // The same two substitutions the transcript export makes. This path
+            // hands the document layer one answer's Markdown, and without them
+            // a diagram would reach the page as Mermaid source and the drawings
+            // the reader saw under the answer would be missing.
+            const withDiagrams = await inlineCompanionDiagrams(markdown, lightTheme);
+            const withFigures = await appendCompanionFigures(withDiagrams.text, figures);
+            const dest = await FileCompanionExportPDF(path, withFigures.text);
             // An empty path is the reader cancelling the save dialog.
-            if (dest) showToast("已导出 PDF", "success", 6000);
+            if (dest) {
+                // The two counts stay apart: a missing picture and a missing
+                // diagram are different things to the reader, and adding them
+                // up would report one as the other.
+                showToast(
+                    companionExportNotice(withFigures.missing, withDiagrams.missing),
+                    companionExportNoticeKind(withFigures.missing, withDiagrams.missing),
+                    6000,
+                );
+            }
             settleExport(dest ? "ok" : "idle");
         } catch (err) {
             showToast(exportErrorText(err), "error", 6000);
@@ -989,6 +1140,10 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     const [dropMessage, setDropMessage] = useState("");
     // The 打开 menu: one button, two ways in. A local file goes straight to the
     // system dialog; an arXiv reference is fetched and opened as a tab.
+    // The same window is shipped under every OEM brand, so the product name in
+    // the title has to come from the backend instead of a literal. MaClaw is
+    // the default so a failed call leaves the label exactly as it was.
+    const [brandName, setBrandName] = useState("MaClaw");
     const [openMenu, setOpenMenu] = useState(false);
     const [arxivInput, setArxivInput] = useState("");
     const [arxivBusy, setArxivBusy] = useState(false);
@@ -1116,6 +1271,21 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             opensInFlight.current -= 1;
         }
     };
+
+    // Kept out of the boot effect on purpose: the title label is cosmetic and
+    // must not take part in the boot-settled bookkeeping that decides whether
+    // an empty window opens the file dialog.
+    useEffect(() => {
+        let cancelled = false;
+        void Promise.resolve(GetBrandInfo())
+            .then((info) => {
+                if (cancelled) return;
+                const name = typeof info?.displayName === "string" ? info.displayName.trim() : "";
+                if (name) setBrandName(name);
+            })
+            .catch(() => undefined);
+        return () => { cancelled = true; };
+    }, []);
 
     useEffect(() => {
         let cancelled = false;
@@ -1504,11 +1674,12 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     // depends on sendingPath, which is declared further down. Reading it later
     // than the buttons would let a reply that finished streaming into the
     // transcript be judged still-writing, or the reverse.
-    const buildChatTurns = useCallback(async (): Promise<CompanionChatTurn[]> => {
-        if (!activeTab) return NO_COMPANION_TURNS;
+    const buildChatTurns = useCallback(async (): Promise<CompanionChatExport> => {
+        if (!activeTab) return EMPTY_CHAT_EXPORT;
         return companionChatExportTurns(
             activeTab.messages,
             Boolean(activeTab.status) || sendingPath === activeTab.path,
+            lightTheme,
         );
     }, [activeTab, sendingPath]);
     const hasChatHistory = Boolean(activeTab && activeTab.messages.some((message) => message.text.trim() !== ""));
@@ -1578,17 +1749,17 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
         if (!activeTab || chatExportBusy) return;
         // Built at click time so the export sees the transcript as it stands,
         // including the answer that just finished arriving.
-        const turns = await buildChatTurns();
-        if (turns.length === 0) return;
+        const prepared = await buildChatTurns();
+        if (prepared.turns.length === 0) return;
         const path = activeTab.path;
         const flight = `chat:${path}`;
         if (exportFlight.current.has(flight)) return;
         exportFlight.current.add(flight);
         setChatExportBusyPath(path);
         try {
-            const dest = await FileCompanionExportChatPDF(path, turns);
+            const dest = await FileCompanionExportChatPDF(path, prepared.turns);
             // An empty path is the reader cancelling the dialog, not a failure.
-            if (dest) showToast("已导出 PDF", "success", 6000);
+            if (dest) showToast(companionExportNotice(prepared.missingFigures, prepared.missingDiagrams), companionExportNoticeKind(prepared.missingFigures, prepared.missingDiagrams), 6000);
         } catch (err) {
             showToast(exportErrorText(err), "error", 6000);
         } finally {
@@ -1896,13 +2067,13 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     return (
         <div data-testid="file-companion-window" className="file-companion-window" style={{ display: "flex", flexDirection: "column", height: "100vh", background: "#f3f5f7", color: "#1e293b" }}>
             <div className={openMenu ? "file-companion-titlebar file-companion-titlebar--menu-open" : "file-companion-titlebar"} data-testid="file-companion-titlebar" {...windowDragHandleProps(true, { display: "flex", gap: 8, padding: 8, alignItems: "center", flexWrap: "nowrap", borderBottom: "1px solid #d9e1ec", background: "#ffffff" })}>
-                <span className="mc-header-brand" data-testid="file-companion-brand" aria-label="MaClaw伴读">
+                <span className="mc-header-brand" data-testid="file-companion-brand" aria-label={`${brandName}伴读`}>
                     <span className="mc-header-brand-mark" aria-hidden="true">
                         <svg viewBox="0 0 80 80" focusable="false">
                             <path d="M14 58V22l26 25 26-25v36" fill="none" stroke="currentColor" strokeWidth="10.5" strokeLinecap="round" strokeLinejoin="round" />
                         </svg>
                     </span>
-                    <span>MaClaw伴读</span>
+                    <span>{brandName}伴读</span>
                 </span>
                 <div className="file-companion-titlebar-files" data-testid="file-companion-titlebar-files">
                 {tabEnds.overflow ? (
@@ -1969,7 +2140,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                     </button>
                 ) : null}
                 </div>
-                <div className="file-companion-open" data-testid="file-companion-open" ref={openWrapRef}>
+                <div className="file-companion-open" data-testid="file-companion-open" data-window-no-drag="" ref={openWrapRef}>
                     <button
                         type="button"
                         ref={chooseButtonRef}
@@ -1993,6 +2164,19 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                         </span>
                     </button>
                     {openMenu ? (
+                        <>
+                        {/* The PDF preview is an iframe, so a click on the page never
+                            reaches the document listener that closes this panel. The
+                            scrim sits in the title bar's stacking context, over that
+                            frame, and takes the click instead. */}
+                        <div
+                            className="file-companion-open-scrim"
+                            data-testid="file-companion-open-scrim"
+                            onMouseDown={() => {
+                                if (arxivBusyRef.current) return;
+                                closeOpenMenu(false);
+                            }}
+                        />
                         <div className="file-companion-open-menu" id="file-companion-open-menu" data-testid="file-companion-open-menu" role="group" aria-label="打开方式">
                             <button
                                 type="button"
@@ -2048,23 +2232,12 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                 {arxivMessage || "如 2510.16079 或 arxiv.org/abs/2510.16079"}
                             </p>
                         </div>
+                        </>
                     ) : null}
                 </div>
                 <div className="file-companion-titlebar-gap" data-testid="file-companion-titlebar-gap" />
                 {activeTab ? (
                     <div className="file-companion-titlebar-actions" data-testid="file-companion-export">
-                        <button
-                            type="button"
-                            className="file-companion-tool"
-                            data-testid="file-companion-export-chat"
-                            disabled={!canExportChat}
-                            aria-busy={chatExportBusy}
-                            title={canExportChat || chatExportBusy ? "把这段对话导出为 PDF" : "对话为空，没有可导出的内容"}
-                            onClick={() => { void exportChat(); }}
-                        >
-                            <CompanionActionIcon name="pdf" />
-                            {chatExportBusy ? "正在导出…" : "导出"}
-                        </button>
                         <button
                             type="button"
                             className="file-companion-tool"
@@ -2075,6 +2248,18 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                         >
                             <CompanionActionIcon name="paper" />
                             {paperBusy ? "正在解读…" : "论文解读"}
+                        </button>
+                        <button
+                            type="button"
+                            className="file-companion-tool"
+                            data-testid="file-companion-export-chat"
+                            disabled={!canExportChat}
+                            aria-busy={chatExportBusy}
+                            title={canExportChat || chatExportBusy ? "按聊天区原来的格式，把全部对话导出为 PDF" : "对话为空，没有可导出的内容"}
+                            onClick={() => { void exportChat(); }}
+                        >
+                            <CompanionActionIcon name="pdf" />
+                            {chatExportBusy ? "正在导出…" : "导出 PDF"}
                         </button>
                         <button
                             type="button"
@@ -2258,7 +2443,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                                                 overflowWrap: "anywhere",
                                             }}
                                             >
-                                                {shareable ? <CompanionMessageActions path={activeTab.path} markdown={answerText} messageId={message.id} /> : null}
+                                                {shareable ? <CompanionMessageActions path={activeTab.path} markdown={answerText} messageId={message.id} figures={message.figures} /> : null}
                                                 {displayReasoning ? (
                                                     <AssistantReasoningPanel
                                                         defaultOpen={streaming}

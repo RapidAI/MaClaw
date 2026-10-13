@@ -12,7 +12,9 @@ import (
 )
 
 const (
-	botLLMServiceGroupID = llmservice.SystemFreeServiceGroupID
+	// Bots use the grant-required official group, so usage is deducted through
+	// the owner's redeemed MaClaw service instead of the free system-free route.
+	botLLMServiceGroupID = llmservice.MaClawOfficialServiceGroupID
 	botLLMProviderName   = "hub-llm"
 	botLLMModel          = "auto"
 	// botLLMViewerReuse is how long a stored viewer token is reused. Hub
@@ -28,8 +30,8 @@ type OwnerLLMIssuer interface {
 }
 
 // ensureBotOwnerLLM writes the owner's Hub viewer token into that MaClawSrv
-// user's model config. The agent then calls Hub as that user, on system-free,
-// unless an administrator selected another OpenAI or Anthropic provider.
+// user's model config. The agent then calls Hub as that user on the MaClaw
+// official service group, unless an administrator selected another provider.
 // A nil issuer leaves the call unchanged so tests without Hub identity still
 // exercise the desktop path.
 func (s *Service) ensureBotOwnerLLM(ctx context.Context, tenantID string, rec record, hubUserID string) error {

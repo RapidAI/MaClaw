@@ -138,7 +138,7 @@ export const WeixinQRLoginPanel = ({
     return (
         <div className="weixin-qr-login-panel">
             {!weixinQRCode && !weixinQRLoading && !weixinQRWaiting && (
-                <button type="button" className="weixin-qr-login-panel__primary" aria-label="Scan QR code to login WeChat" onClick={startQRLogin}>
+                <button type="button" className="im-settings-button" aria-label="Scan QR code to login WeChat" onClick={startQRLogin}>
                     {textForLang(lang, 'Scan QR to Login', '\u626b\u7801\u767b\u5f55\u5fae\u4fe1', '\u6383\u78bc\u767b\u9304\u5fae\u4fe1')}
                 </button>
             )}
@@ -158,7 +158,7 @@ export const WeixinQRLoginPanel = ({
                             {textForLang(lang, 'Waiting for confirmation...', '\u7b49\u5f85\u626b\u7801\u786e\u8ba4\u4e2d...', '\u7b49\u5f85\u6383\u78bc\u78ba\u8a8d\u4e2d...')}
                         </p>
                     )}
-                    <button type="button" className="weixin-qr-login-panel__cancel" onClick={cancelQRLogin}>
+                    <button type="button" className="im-settings-button" onClick={cancelQRLogin}>
                         {textForLang(lang, 'Cancel', '\u53d6\u6d88', '\u53d6\u6d88')}
                     </button>
                 </div>

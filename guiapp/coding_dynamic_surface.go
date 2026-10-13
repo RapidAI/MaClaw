@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"strings"
 	"sync"
 	"time"
@@ -88,7 +89,11 @@ func registerTrustedCodingInvocationIdentity(store codingruntime.Store, request 
 		TenantID: identity.TenantID, PrincipalID: identity.PrincipalID, SessionID: identity.SessionID,
 		RootTaskID: identity.RootTaskID, TurnID: identity.TurnID,
 	})
-	return err == nil
+	if err != nil {
+		log.Printf("[coding-runtime] semantic anchor register failed task=%s attempt=%s err=%v", request.Task.TaskID, request.Attempt.AttemptID, err)
+		return false
+	}
+	return true
 }
 
 // bindVerifiedCodingTaskHandle is the R1b runtime-start boundary. It accepts
@@ -101,6 +106,7 @@ func bindVerifiedCodingTaskHandle(service *codingTaskRelationService, subject ve
 	}
 	identity, err := service.BindCodingAttempt(subject, *handle, store, request, time.Now().UTC())
 	if err != nil {
+		log.Printf("[coding-runtime] bind verified coding handle failed task=%s attempt=%s err=%v", request.Task.TaskID, request.Attempt.AttemptID, err)
 		return nil, false
 	}
 	return identity, identity != nil && identity.complete()

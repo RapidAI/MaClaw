@@ -288,6 +288,7 @@ type HubLLMPeriodUsage struct {
 type HubLLMCheckinInfo struct {
 	Enabled        bool    `json:"enabled"`
 	Credits        float64 `json:"credits"`
+	DurationDays   int     `json:"duration_days,omitempty"`
 	CheckedInToday bool    `json:"checked_in_today"`
 }
 

@@ -3381,11 +3381,11 @@ func (a *App) ensureOAuthToken() error {
 // using the OpenAI-compatible or Anthropic Messages API and returns the response.
 // After a successful text test, it also probes vision support synchronously.
 func (a *App) TestMaclawLLM(llm corelib.MaclawLLMConfig) (corelib.MaclawLLMTestResult, error) {
-	// The configuration panel passes an ad-hoc provider config here rather than
-	// the materialized runtime config. Apply the global preference before the
-	// probe so this diagnostic path exercises the same wire behavior the agent
-	// will use (notably for DeepSeek-compatible providers).
-	llm = a.withGlobalThinkingMode(llm)
+	// A connectivity check only needs a few tokens. Copying the global thinking
+	// setting onto it makes a non-streaming Grok call wait for a medium
+	// reasoning summary before the settings dialog can close. Chat requests
+	// still use that setting. Always-on models keep thinking: they reject off.
+	llm = quietConnectionProbe(llm)
 	log.Printf("[LLM] TestMaclawLLM: agent_type=%q user_agent=%q", llm.AgentType, llm.UserAgent())
 	url := strings.TrimRight(strings.TrimSpace(llm.URL), "/")
 	if url == "" {
@@ -3405,6 +3405,18 @@ func (a *App) TestMaclawLLM(llm corelib.MaclawLLMConfig) (corelib.MaclawLLMTestR
 	llm.Key = key
 	llm.Model = model
 	llm.Protocol = protocol
+	// The settings dialog waits on both checks. Run the image probe beside
+	// the text probe, and drop it if the text probe fails.
+	visionCtx, stopVision := context.WithCancel(context.Background())
+	defer stopVision()
+	visionDone := make(chan visionProbeResult, 1)
+	go func() {
+		if llm.IsResponsesAPI() {
+			visionDone <- probeVisionResponsesAPIContext(visionCtx, llm)
+			return
+		}
+		visionDone <- probeVisionSupportContext(visionCtx, llm)
+	}()
 	var textResult string
 	var err error
 	if qoder.IsChatBaseURL(url) {
@@ -3419,16 +3431,12 @@ func (a *App) TestMaclawLLM(llm corelib.MaclawLLMConfig) (corelib.MaclawLLMTestR
 		textResult, err = a.testOpenAILLM(llm)
 	}
 	if err != nil {
+		stopVision()
 		return corelib.MaclawLLMTestResult{}, formatMaclawLLMTestError(err, llm)
 	}
 
 	log.Printf("[LLM] TestMaclawLLM text_test_ok model=%s protocol=%s", model, protocol)
-	visionStatus := visionProbeInconclusive
-	if llm.IsResponsesAPI() {
-		visionStatus = probeVisionResponsesAPIResult(llm)
-	} else {
-		visionStatus = probeVisionSupportResult(llm)
-	}
+	visionStatus := <-visionDone
 	vision := visionStatus == visionProbeSupported
 	log.Printf("[LLM] vision probe for %s: status=%s supports_vision=%v", model, visionStatus, vision)
 
@@ -3460,13 +3468,33 @@ func formatMaclawLLMTestError(err error, cfg corelib.MaclawLLMConfig) error {
 	return fmt.Errorf("%s", msg)
 }
 
+// quietConnectionProbe turns reasoning off for a connectivity or vision check.
+// Always-on models are put back to enabled; an explicit disable makes them
+// reject the request.
+func quietConnectionProbe(cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	cfg.ThinkingMode = "disabled"
+	cfg.ReasoningEffort = ""
+	return corelib.CoerceAlwaysOnThinkingMode(cfg)
+}
+
+// capConnectionProbeOutput shortens the text connection probe. The vision
+// probe keeps the provider cap: it classifies a short colour answer, and
+// cutting that reply at the text-probe limit marks a working model inconclusive.
+func capConnectionProbeOutput(cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	if cfg.MaxOutputTokens <= 0 || cfg.MaxOutputTokens > corelib.LLMProbeMaxOutputTokens {
+		cfg.MaxOutputTokens = corelib.LLMProbeMaxOutputTokens
+	}
+	return cfg
+}
+
 // testOpenAILLM tests an OpenAI-compatible endpoint.
 func (a *App) testOpenAILLM(cfg corelib.MaclawLLMConfig) (string, error) {
+	cfg = capConnectionProbeOutput(cfg)
 	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}
-	client := a.llmHTTPClient(30 * time.Second)
+	client := a.llmHTTPClient(corelib.LLMProbeTotalTimeout)
 
 	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "provider-test"})
-	resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
+	resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, corelib.LLMProbeTotalTimeout)
 	if err != nil {
 		return "", err
 	}
@@ -3478,12 +3506,13 @@ func (a *App) testOpenAILLM(cfg corelib.MaclawLLMConfig) (string, error) {
 
 // testAnthropicLLM tests an Anthropic Messages API endpoint.
 func (a *App) testAnthropicLLM(cfg corelib.MaclawLLMConfig) (string, error) {
+	cfg = capConnectionProbeOutput(cfg)
 	cfg.Protocol = "anthropic"
 	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}
-	client := a.llmHTTPClient(30 * time.Second)
+	client := a.llmHTTPClient(corelib.LLMProbeTotalTimeout)
 
 	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "provider-test"})
-	resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
+	resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, corelib.LLMProbeTotalTimeout)
 	if err != nil {
 		return "", err
 	}
@@ -3495,14 +3524,15 @@ func (a *App) testAnthropicLLM(cfg corelib.MaclawLLMConfig) (string, error) {
 
 // testResponsesAPILLM tests an OpenAI Responses API endpoint.
 func (a *App) testResponsesAPILLM(cfg corelib.MaclawLLMConfig) (string, error) {
+	cfg = capConnectionProbeOutput(cfg)
 	cfg.URL = strings.TrimRight(strings.TrimSpace(cfg.URL), "/")
 	cfg.Key = strings.TrimSpace(cfg.Key)
 	cfg.Model = strings.TrimSpace(cfg.Model)
 	cfg.WireAPI = "responses"
 	messages := []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}
-	client := a.llmHTTPClient(30 * time.Second)
+	client := a.llmHTTPClient(corelib.LLMProbeTotalTimeout)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), corelib.LLMProbeTotalTimeout)
 	defer cancel()
 	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "provider-test"})
 	lease, trace, acquireErr := acquireLLMSchedulerLease(ctx)
@@ -3563,10 +3593,14 @@ const (
 // identity and authentication mode intact. Transport failures remain inconclusive
 // so a transient error cannot erase a previously confirmed capability.
 func probeVisionSupportResult(probeCfg corelib.MaclawLLMConfig) visionProbeResult {
+	return probeVisionSupportContext(context.Background(), probeCfg)
+}
+
+func probeVisionSupportContext(ctx context.Context, probeCfg corelib.MaclawLLMConfig) visionProbeResult {
 	if probeCfg.Protocol == "anthropic" {
-		return probeVisionAnthropicResult(probeCfg, visionProbeRedPNG)
+		return probeVisionAnthropicContext(ctx, probeCfg, visionProbeRedPNG)
 	}
-	return probeVisionOpenAIResult(probeCfg, visionProbeRedPNG)
+	return probeVisionOpenAIContext(ctx, probeCfg, visionProbeRedPNG)
 }
 
 func probeVisionSupport(probeCfg corelib.MaclawLLMConfig) bool {
@@ -3597,6 +3631,10 @@ func probeVisionOpenAI(cfg corelib.MaclawLLMConfig, imgB64 string) bool {
 }
 
 func probeVisionOpenAIResult(cfg corelib.MaclawLLMConfig, imgB64 string) visionProbeResult {
+	return probeVisionOpenAIContext(context.Background(), cfg, imgB64)
+}
+
+func probeVisionOpenAIContext(ctx context.Context, cfg corelib.MaclawLLMConfig, imgB64 string) visionProbeResult {
 	messages := []interface{}{
 		map[string]interface{}{
 			"role": "user",
@@ -3612,7 +3650,10 @@ func probeVisionOpenAIResult(cfg corelib.MaclawLLMConfig, imgB64 string) visionP
 		},
 	}
 	client := &http.Client{Timeout: 35 * time.Second}
-	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "vision-probe"})
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "vision-probe"})
 	resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
 	if err != nil {
 		log.Printf("[LLM] vision probe OpenAI error: %v", err)
@@ -3738,6 +3779,10 @@ func probeVisionAnthropic(cfg corelib.MaclawLLMConfig, imgB64 string) bool {
 }
 
 func probeVisionAnthropicResult(cfg corelib.MaclawLLMConfig, imgB64 string) visionProbeResult {
+	return probeVisionAnthropicContext(context.Background(), cfg, imgB64)
+}
+
+func probeVisionAnthropicContext(ctx context.Context, cfg corelib.MaclawLLMConfig, imgB64 string) visionProbeResult {
 	cfg.Protocol = "anthropic"
 	messages := []interface{}{
 		map[string]interface{}{
@@ -3756,7 +3801,10 @@ func probeVisionAnthropicResult(cfg corelib.MaclawLLMConfig, imgB64 string) visi
 		},
 	}
 	client := &http.Client{Timeout: 35 * time.Second}
-	ctx := llm.WithRequestTrace(context.Background(), llm.RequestTrace{Caller: "vision-probe"})
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "vision-probe"})
 	resp, err := doSimpleLLMRequest(ctx, cfg, messages, client, 30*time.Second)
 	if err != nil {
 		log.Printf("[LLM] vision probe Anthropic error: %v", err)
@@ -3785,8 +3833,15 @@ func probeVisionResponsesAPIWithConfig(probeCfg corelib.MaclawLLMConfig) bool {
 }
 
 func probeVisionResponsesAPIResult(probeCfg corelib.MaclawLLMConfig) visionProbeResult {
+	return probeVisionResponsesAPIContext(context.Background(), probeCfg)
+}
+
+func probeVisionResponsesAPIContext(ctx context.Context, probeCfg corelib.MaclawLLMConfig) visionProbeResult {
 	client := &http.Client{Timeout: 35 * time.Second}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	ctx = llm.WithRequestTrace(ctx, llm.RequestTrace{Caller: "vision-probe"})
 	lease, trace, acquireErr := acquireLLMSchedulerLease(ctx)

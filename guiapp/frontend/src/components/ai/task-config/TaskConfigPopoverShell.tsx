@@ -135,6 +135,7 @@ export function TaskConfigPopoverShell({
         overflow: "hidden",
         outline: "none",
         textAlign: "left",
+        colorScheme: t.isDark ? "dark" : "light",
     };
 
     const panel = (

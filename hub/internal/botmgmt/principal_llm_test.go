@@ -249,7 +249,7 @@ func TestOwnerLLMOverrideRestoresAfterAdministratorChangesDefault(t *testing.T) 
 	if _, err := svc.SaveLLMSettings(ctx, "tenant-a", "lp_newcom000000001", []LLMProviderInput{
 		{ID: "lp_admin0000000001", Name: "Admin Pick", Protocol: "anthropic", URL: "https://api.anthropic.com", Model: "claude-sonnet-4-5"},
 		{ID: "lp_newcom000000001", Name: "Newcomer", Protocol: "openai", URL: "https://api.new.example/v1", Key: "sk-new", Model: "new-1"},
-	}); err != nil {
+	}, nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := svc.SavePrincipalLLM(ctx, "tenant-a", "alice", PrincipalLLMInput{Mode: "default"}); err != nil {
@@ -289,7 +289,8 @@ func TestOwnerLLMOverrideRejectsReservedAndConflictingNames(t *testing.T) {
 		input PrincipalLLMInput
 	}{
 		{name: "hub reserved", input: PrincipalLLMInput{Mode: "custom", Name: botLLMProviderName, URL: "https://x.example/v1", Key: "k", Model: "m"}},
-		{name: "system-free reserved", input: PrincipalLLMInput{Mode: "custom", Name: llmCurrentSystemFree, URL: "https://x.example/v1", Key: "k", Model: "m"}},
+		{name: "official group reserved", input: PrincipalLLMInput{Mode: "custom", Name: llmDefaultServiceGroup, URL: "https://x.example/v1", Key: "k", Model: "m"}},
+		{name: "system-free reserved", input: PrincipalLLMInput{Mode: "custom", Name: legacyBotServiceGroupID, URL: "https://x.example/v1", Key: "k", Model: "m"}},
 		{name: "tenant provider name", input: PrincipalLLMInput{Mode: "custom", Name: "Admin Pick", URL: "https://x.example/v1", Key: "k", Model: "m"}},
 		{name: "missing key", input: PrincipalLLMInput{Mode: "custom", Name: "MyProv", URL: "https://x.example/v1", Model: "m"}},
 		{name: "bad url", input: PrincipalLLMInput{Mode: "custom", Name: "MyProv", URL: "not-a-url", Key: "k", Model: "m"}},

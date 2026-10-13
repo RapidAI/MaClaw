@@ -24,6 +24,7 @@ type CodingAgentEvent struct {
 	Ts          string                  `json:"ts,omitempty"`
 	Detail      string                  `json:"detail,omitempty"`
 	Command     string                  `json:"command,omitempty"`
+	Target      string                  `json:"target,omitempty"`
 	Outcome     string                  `json:"outcome,omitempty"`
 	Severity    string                  `json:"severity,omitempty"`
 	Summary     string                  `json:"summary,omitempty"`
@@ -109,6 +110,7 @@ type codingAgentEventPayload struct {
 	Ts          string                  `json:"ts,omitempty"`
 	Detail      string                  `json:"detail,omitempty"`
 	Command     string                  `json:"command,omitempty"`
+	Target      string                  `json:"target,omitempty"`
 	Outcome     string                  `json:"outcome,omitempty"`
 	Severity    string                  `json:"severity,omitempty"`
 	Summary     string                  `json:"summary,omitempty"`
@@ -133,6 +135,7 @@ func codingAgentEventWire(event CodingAgentEvent) codingAgentEventPayload {
 		Ts:          event.Ts,
 		Detail:      event.Detail,
 		Command:     event.Command,
+		Target:      event.Target,
 		Outcome:     event.Outcome,
 		Severity:    event.Severity,
 		Summary:     event.Summary,

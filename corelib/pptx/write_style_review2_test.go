@@ -54,8 +54,8 @@ func TestConsultingFooterKeepsMuteContrast(t *testing.T) {
 	if color == "" {
 		t.Fatal("footer run color not found")
 	}
-	if !strings.EqualFold(color, "6B7680") {
-		t.Fatalf("footer color %s lightened below 4.5:1 contrast floor, want 6B7680", color)
+	if !strings.EqualFold(color, "6B7280") {
+		t.Fatalf("footer color %s lightened below 4.5:1 contrast floor, want 6B7280", color)
 	}
 }
 

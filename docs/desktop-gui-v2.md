@@ -403,6 +403,63 @@ GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go build -ldflags "-s -w" -o desktopd ./de
 
 发布前 19:00 那条 `hm.baidu.com:443` 的 CONNECT `i/o timeout` 是瞬时抖动，不是这次替换引入的：重启前后各出现过一次，按现在的延时复测都是通过。
 
+#### 三件套核对与 12344（2026-10-12 22:06 CST）
+
+HEAD 从 `beeb2e8e` 进到 `11160b75`，`build_number` 是 `12344`，所以按 `deploy_maclawsrv.cmd` 的取参方式（`VERSION` 读 `build_number`、`COMMIT` 短哈希、`BUILT_AT` 当前时间，`-dirty` 手工补）重编三件套，先比哈希再决定动哪个：
+
+| 二进制 | 本机编译（工作区 `11160b75-dirty`） | 替换前的线上 | 处理 |
+| --- | --- | --- | --- |
+| maclawsrv | `80b25b612fb0a1629a1e0af10ba3162b2c01db4aa2b527b6b9b6b5936a097e52`（`-X main.serviceVersion=12344`） | `/version` 报 `12342`（21:53 那份） | 替换并重启 `maclawsrv.service` |
+| maclaw-hub | `93f2fcf162cae2d382ee3495648c8c57def8201b30bdf319ed6b9291717d8ec2` | `93f2fcf162cae2d382ee3495648c8c57def8201b30bdf319ed6b9291717d8ec2` | 一致，没有替换、没有重启 |
+| desktopd | `fdee68940fe9d6e5ea99d5fa822b102ee693e8d9503f62e8ae24c47c57f50c44` | 两台都是 `3fae509c…`（上一节那份） | 两台都替换并重启 `maclaw-desktopd.service` |
+
+比哈希要先对齐编译配方，否则 strip 与否就会造成假差异：hub 按 `deploy_all_maclinux.sh` 的 `run_go_build` 编译（不注入 ldflags、不 strip）才和线上的 92 MB 一致，stripped 版只有 66 MB。
+
+| 项 | 值 |
+| --- | --- |
+| maclawsrv | `/version` 返回 `{"built_at":"2026-10-12T14:03:30Z","commit":"11160b75-dirty","version":"12344"}`，MainPID 604 |
+| desktopd（mypapers） | MainPID 568，`/v1/health` 带 token 200 |
+| desktopd（maclaw.top） | MainPID 3898868，`/v1/health` 带 token 200 |
+| hub / hubcenter | pid 仍是 29891 / 29837，没有重启 |
+| 桌面容器 | mypapers 四个、maclaw.top 两个，ID 与状态前后一致（都是 Exited） |
+| `/api/mobile/bootstrap` | 仍是 401 |
+| 备份 | 两台 `desktopd.bak-12344-20261012`、`/data/soft/maclaw_srv/bin/maclawsrv.bak-12344-20261012` |
+
+maclawsrv 这次大约 10 秒后才开始监听，比本节前面记的 3 秒慢：重启后马上 `curl /version` 会 connection refused，先等十几秒再判定。
+
+回滚是把这三份备份拷回原名、`chmod 755`，再 `systemctl restart maclawsrv.service`（仅 mypapers）和 `maclaw-desktopd.service`（两台）。
+
+#### 两台对齐到 12351（2026-10-13 09:00 CST）
+
+`build_number` 从 `12344` 走到 `12351`；`maclawsrv.maclaw.top` 上有人先刷到了 `12350`，两边不一致。按同一配方重编后先比哈希再动手：desktopd 重编出来仍是 `fdee6894…`，跟两台线上的一致，这次没有替换。
+
+| 二进制 | 新哈希（12351） | 处理 |
+| --- | --- | --- |
+| maclawsrv | `b3ee772492ed609bdb7d280c03d185720dbcdc03ecabab7e755feff642dc6e6f` | 两台都替换并重启 |
+| maclaw-hub | `db661da5752190db73a72e34cf158bc5c668d0173c0c5ae6ed8f2785f0cf7b8d` | 两台都用各自的 `start.sh` 重启，不覆盖 `configs/config.yaml`，不停 hubcenter |
+| desktopd | `fdee68940fe9d6e5ea99d5fa822b102ee693e8d9503f62e8ae24c47c57f50c44` | 与线上一致，没有替换 |
+
+- mypapers：`/version` 报 `{"built_at":"2026-10-13T00:59:06Z","commit":"11160b75-dirty","version":"12351"}`，maclawsrv 仍用 `systemctl restart maclawsrv.service`。
+- maclaw.top：那份 `maclawsrv.service` 是标准单元（`EnvironmentFile=/data/soft/maclaw_srv/.env`、`ExecStart=/data/soft/maclaw_srv/bin/maclawsrv`），直接 `systemctl restart` 即可。目录里的 `start.sh` 是 `pkill` + `nohup` 那套，会和 systemd 抢管理权，**不要用它**启停 maclawsrv（hub 的 `start.sh` 是另一回事，正常用）。
+- 备份：两台 `maclawsrv.bak-12351-20261013`、`maclaw-hub.bak-12351-20261013`。
+- 这次部署赶上并行的发布活动：中间 mypapers 的 hub 与 hubcenter 被别的进程重启过（PID 从 29891/29837 变到几千号段），本机重建的 hub 备份也是对方 07:49 那份。两边同时发布会互相覆盖，核对结果前先重新取 PID。
+
+#### 12352（2026-10-13 15:35 CST）
+
+`build_number` 从 `12351` 走到 `12352`，HEAD 仍是 `11160b75`（工作区改动从 222 涨到 354 个文件）。三个二进制重编后哈希全变了——hub 和 desktopd 没有注入版本变量，哈希变就说明代码真的动了，不是 `built_at` 造成的假差异。
+
+| 二进制 | 新哈希（12352） | 处理 |
+| --- | --- | --- |
+| maclawsrv | `def33dc772f56821137dcb42e223dcab8ef8189b9ad2601eb55f62495788a893` | 两台替换重启，`/version` 报 `{"built_at":"2026-10-13T07:34:20Z","commit":"11160b75-dirty","version":"12352"}` |
+| maclaw-hub | `f74d6a8cd1d09b4f6f9b6e9d9c53fdc06bffd32b85ee6ce9b402fb48666f4cdd` | 两台用各自的 `start.sh` 重启 |
+| desktopd | `2bed659da9f6e9400972a743ff1302709a8d5a3f5eb7fbfc0bb7ae7142522771` | 两台 `systemctl restart maclaw-desktopd.service` |
+
+验证：两台 `/v1/health` 带 token 都是 200、`/api/mobile/bootstrap` 401、桌面容器 ID 与状态前后一致（mypapers 四个、maclaw.top 两个，都是 Exited）。重启后 PID：mypapers hub 31435、maclawsrv 31295、desktopd 31254；maclaw.top hub 4079481、maclawsrv 4079320、desktopd 4079304。
+
+备份（两台各一份）：`maclawsrv.bak-12352-20261013`、`maclaw-hub.bak-12352-20261013`、`desktopd.bak-12352-20261013`。回滚是把三份拷回原名、`chmod 755` 后重启对应服务。
+
+这次又撞上并行发布：maclaw.top 上抓到 `cp -f /tmp/aicoder_deploy/src/bin/maclaw-hubcenter /data/soft/hubcenter/maclaw-hubcenter`，另一个发布流程同时在刷 hubcenter。本节的流程不碰 hubcenter，但两边同时重启会互相干扰，验证前先重新取 PID。
+
 ## 5. Hub 配置
 
 Hub 把 Docker 桌面服务存在 `system_settings` 表的 `desktop_service` 键(多租户为

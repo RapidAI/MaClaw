@@ -169,14 +169,15 @@ func PutBotLLMSettingsAdminHandler(svc *botmgmt.Service, audit store.AdminAuditR
 			return
 		}
 		var in struct {
-			Current   string                     `json:"current"`
-			Providers []botmgmt.LLMProviderInput `json:"providers"`
+			Current                string                     `json:"current"`
+			Providers              []botmgmt.LLMProviderInput `json:"providers"`
+			SystemFreeCreditsLimit *float64                   `json:"system_free_credits_limit"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
 			return
 		}
-		view, err := svc.SaveLLMSettings(r.Context(), botTenantID(r), in.Current, in.Providers)
+		view, err := svc.SaveLLMSettings(r.Context(), botTenantID(r), in.Current, in.Providers, in.SystemFreeCreditsLimit)
 		if err != nil {
 			writeBotError(w, err)
 			return
@@ -193,8 +194,9 @@ func PutBotLLMSettingsAdminHandler(svc *botmgmt.Service, audit store.AdminAuditR
 			})
 		}
 		writeAdminAuditLog(r.Context(), audit, adminAuditUserID(r), "bot.llm.update", map[string]any{
-			"current":   view.LLM.Current,
-			"providers": providers,
+			"current":                   view.LLM.Current,
+			"providers":                 providers,
+			"system_free_credits_limit": view.LLM.SystemFreeCreditsLimit,
 		})
 		writeJSON(w, http.StatusOK, view)
 	}

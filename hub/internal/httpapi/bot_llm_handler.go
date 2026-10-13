@@ -9,6 +9,28 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
 )
 
+// GetBotCreditsHandler GET /api/v1/bots/credits
+//
+// Reports the system-free credits allowance for the calling owner's bots.
+// A limit of zero is unlimited. The new-user benefit allowance is not included.
+func GetBotCreditsHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		view, err := svc.SystemFreeCreditsForOwner(r.Context(), principal.TenantID, principal.UserID)
+		if err != nil {
+			writeBotLLMError(w, r, principal, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, view)
+	}
+}
+
 // GetBotLLMHandler GET /api/v1/bots/llm
 //
 // Reports the model settings that apply to every bot of the calling owner:

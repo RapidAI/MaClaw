@@ -422,10 +422,37 @@ func TestMergedBrowserSupportedActionsHideDisabledPaths(t *testing.T) {
 	if _, ok := mergedBrowserInputSchema["full_page"]; ok {
 		t.Fatal("merged browser schema should not expose full_page after screenshot was disabled")
 	}
-	for _, want := range []string{"hover", "press", "dialog", "probe"} {
+	for _, want := range []string{"hover", "press", "dialog", "probe", "script", "skill_list", "skill_run"} {
 		if !strings.Contains(supported, want) {
 			t.Fatalf("supported browser actions missing %q: %s", want, supported)
 		}
+	}
+}
+
+func TestMergedBrowserScriptDispatches(t *testing.T) {
+	registry := NewToolRegistry()
+	var got map[string]interface{}
+	_ = registry.Register(RegisteredTool{
+		Name: "browser_script",
+		Handler: func(args map[string]interface{}) string {
+			got = args
+			return "ran-script"
+		},
+	})
+	out := dispatchMergedBrowser(registry, map[string]interface{}{
+		"action":     "script",
+		"session_id": "browser-session-test",
+		"script":     `await click("保存")`,
+		"name":       "save-draft",
+	})
+	if out != "ran-script" {
+		t.Fatalf("dispatch=%q", out)
+	}
+	if got["script"] != `await click("保存")` || got["name"] != "save-draft" {
+		t.Fatalf("args=%v", got)
+	}
+	if !strings.Contains(mergedBrowserToolDescription, `action=script`) || !strings.Contains(mergedBrowserToolDescription, "skill_run") {
+		t.Fatal("merged browser description does not teach the page-script batch")
 	}
 }
 

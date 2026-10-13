@@ -1,10 +1,15 @@
 package guiapp
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
+	"io/fs"
 	"log"
 	"math"
 	"net/url"
@@ -12,6 +17,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,12 +27,20 @@ import (
 	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 const (
 	codeNavigationToolName     = "code_navigation"
 	reportLocalizationToolName = "report_localization"
+	codegraphNPMPackage        = "@colbymchenry/codegraph"
 )
+
+// navigationRemoteFileSymbolPattern keeps definitions. A bare call ends in ';'.
+const navigationRemoteFileSymbolPattern = `^[[:space:]]*(#define|typedef|struct|class|enum)[[:space:]]|^[[:space:]]*(static[[:space:]]+|const[[:space:]]+|inline[[:space:]]+|virtual[[:space:]]+)*([A-Za-z_][[:alnum:]_:]*[[:space:]]+)+[~A-Za-z_][[:alnum:]_:]*[[:space:]]*\([^;]*\)[[:space:]]*(const[[:space:]]*)?\{[[:space:]]*$`
+
+var codegraphScorePattern = regexp.MustCompile(`\((\d+)%\)`)
+var codegraphANSIPattern = regexp.MustCompile("\x1b\\[[0-9;]*[A-Za-z]")
 
 // CodingSubAgentBugSignal is the normalized, machine-auditable form of a bug report.
 type CodingSubAgentBugSignal struct {
@@ -1750,7 +1764,7 @@ func localizationPathIsWindowsAbs(path string) bool {
 
 func buildCodeNavigationToolDefinition() map[string]interface{} {
 	return buildRemoteToolDef(codeNavigationToolName,
-		"Structured code navigation. Prefer this over text search for symbols, definitions, references, callers, callees, implementations, and file symbols. Uses CodeGraph first and falls back to indexed text search.",
+		"Explore source structure with codegraph. Use node for one symbol or file, callers or callees for call edges, and explore only for an area overview. A returned hit is evidence; do not repeat that lookup. A text search that already returned lines also counts. If the codegraph command is missing, tries npm install -g @colbymchenry/codegraph once; if the project has no .codegraph/ index, tries codegraph init.",
 		map[string]interface{}{
 			"operation": map[string]interface{}{"type": "string", "enum": []string{"explore", "node", "workspace_symbol", "definition", "references", "implementation", "callers", "callees", "file_symbols"}},
 			"query":     map[string]interface{}{"type": "string", "description": "Symbol, file, or code question"},
@@ -1957,11 +1971,133 @@ func (c *remoteCodingCallbacks) requireRemoteLocalizationBeforeBugEdit(args map[
 }
 
 type codeNavigationOutput struct {
-	Backend   string `json:"backend"`
-	Operation string `json:"operation"`
-	Query     string `json:"query"`
-	Output    string `json:"output"`
-	Truncated bool   `json:"truncated,omitempty"`
+	Backend      string `json:"backend"`
+	Operation    string `json:"operation"`
+	Query        string `json:"query"`
+	Output       string `json:"output"`
+	Truncated    bool   `json:"truncated,omitempty"`
+	ContinueWith string `json:"continue_with,omitempty"`
+}
+
+// codegraphKeepUsingHint is attached to a real codegraph hit. The hit is
+// evidence. Naming the next lookup must not retract this one: "an earlier
+// miss is stale" was read as "the search that just returned did not happen."
+const codegraphKeepUsingHint = "This codegraph lookup succeeded; the lines above are evidence. Do not repeat this search. The next symbol, file, caller, or callee lookup should call code_navigation (node, file_symbols, callers, or callees). read_file may use a span named in this result."
+
+// codegraphSearchAgainHint is attached after a text search that already ran.
+// It must not say the search is stale, or that code_navigation had to run
+// before ripgrep. That wording discards the result the tool just returned.
+const codegraphSearchAgainHint = "This text search already ran and counts. Use these lines. Do not repeat this search."
+
+// codegraphSearchPageHint is the same evidence rule for a result that stopped
+// at the match cap. "Do not repeat" there hides every later page.
+const codegraphSearchPageHint = "This text search already ran and counts. Use these lines. The result stopped at max_results, so a later page of this same pattern may pass offset."
+
+// codegraphSearchWalkHint is for a walk that hit the time limit before the
+// tree was finished. "Do not repeat" there hides every file the walk never opened.
+const codegraphSearchWalkHint = "This text search already ran and counts. Use these lines. The walk stopped before the tree was finished, so a narrower path may follow."
+
+const remoteCodegraphHitMarker = "MACLAW_CODEGRAPH_HIT"
+
+// takeRemoteCodegraphHitMarker reports whether codegraph itself produced a hit.
+// Only a line that is exactly the marker counts, so a source file that contains
+// the same word stays in the output and does not flip the hint.
+func takeRemoteCodegraphHitMarker(result string) (string, bool) {
+	if !strings.Contains(result, remoteCodegraphHitMarker) {
+		return result, false
+	}
+	lines := strings.Split(result, "\n")
+	hit := false
+	kept := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == remoteCodegraphHitMarker {
+			hit = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n"), hit
+}
+
+func codegraphContinueHint(backend string) string {
+	if backend == "codegraph" {
+		return codegraphKeepUsingHint
+	}
+	// "before ripgrep" told the model the lookup it just made does not count.
+	return "This lookup did not return a codegraph hit. The output above still counts. A literal or regular-expression search may follow it."
+}
+
+// appendCodegraphSearchHint is added only after a text search that returned
+// match lines, and only when this project or a parent already has an index.
+// A miss stays unmarked: "do not repeat" on "no matches" tells the model the
+// empty result is final and the next pattern must not run.
+func (c *codingSubAgentCallbacks) appendCodegraphSearchHint(text string) string {
+	if c == nil || !codegraphSearchResultHasLines(text) || codegraphSearchHintAlreadyPresent(text) {
+		return text
+	}
+	if codegraphNearestIndexRoot(c.projectPath()) == "" {
+		return text
+	}
+	hint := codegraphSearchAgainHint
+	if codegraphSearchStoppedAtCap(text) {
+		hint = codegraphSearchPageHint
+	} else if codegraphSearchWalkStopped(text) {
+		hint = codegraphSearchWalkHint
+	}
+	return strings.TrimSpace(text) + "\n" + hint
+}
+
+// codegraphSearchStoppedAtCap is true only for the tool footer. A source
+// line that mentions max_results is a match, not a sign that paging remains.
+func codegraphSearchStoppedAtCap(text string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "... reached max_results=") {
+			return true
+		}
+	}
+	return false
+}
+
+func codegraphSearchWalkStopped(text string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		if strings.TrimSpace(line) == "... search stopped before the tree was finished" {
+			return true
+		}
+	}
+	return false
+}
+
+func codegraphSearchHintAlreadyPresent(text string) bool {
+	lines := strings.Split(text, "\n")
+	last := strings.TrimSpace(lines[len(lines)-1])
+	return last == codegraphSearchAgainHint || last == codegraphSearchPageHint || last == codegraphSearchWalkHint
+}
+
+func codegraphSearchResultHasLines(text string) bool {
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "... reached max_results=") || line == "... search stopped before the tree was finished" || codegraphSearchCommandStatusLine(line) {
+			continue
+		}
+		lower := strings.ToLower(line)
+		if strings.HasPrefix(lower, "no matches") || strings.HasPrefix(lower, "no match") {
+			return false
+		}
+		return true
+	}
+	return false
+}
+
+// codegraphSearchCommandStatusLine is the shell wrapper around a search, not
+// a hit. Sealing "command exited with code 1" told the model an empty rg or
+// Select-String had already been searched.
+func codegraphSearchCommandStatusLine(line string) bool {
+	lower := strings.ToLower(strings.TrimSpace(line))
+	return strings.HasPrefix(lower, "command exited with code ") ||
+		strings.HasPrefix(lower, "(command completed with no output)") ||
+		strings.HasPrefix(lower, "command timed out") ||
+		strings.HasPrefix(lower, "command cancelled") ||
+		strings.HasPrefix(lower, "a match was found; quiet mode printed nothing")
 }
 
 func normalizeCodeNavigationArgs(args map[string]interface{}) (operation, query string, depth int, err error) {
@@ -2006,6 +2142,461 @@ func navigationQuestion(operation, query string, depth int) string {
 	}
 }
 
+// codegraphCommandList picks narrow CodeGraph commands. A prose question
+// becomes a few location queries, including short tokens such as bmp, instead
+// of one fuzzy explore that prints source.
+func codegraphCommandList(operation, query, question, file string) [][]string {
+	file = codegraphPinFile(file)
+	switch operation {
+	case "file_symbols":
+		return [][]string{codegraphNodeArgs(query, true)}
+	case "node", "definition":
+		if file != "" && !codegraphTargetIsFile(query) {
+			return [][]string{{"node", "--file", file, query}}
+		}
+		return [][]string{codegraphNodeArgs(query, codegraphTargetIsFile(query))}
+	case "workspace_symbol", "implementation":
+		return [][]string{{"query", query}}
+	case "references", "callers":
+		if file != "" {
+			return [][]string{{"callers", query, "--file", file}}
+		}
+		return [][]string{{"callers", query}}
+	case "callees":
+		if file != "" {
+			return [][]string{{"callees", query, "--file", file}}
+		}
+		return [][]string{{"callees", query}}
+	default:
+		target := strings.TrimSpace(question)
+		if target == "" {
+			target = strings.TrimSpace(query)
+		}
+		if codegraphTargetIsFile(target) {
+			return [][]string{codegraphNodeArgs(target, true)}
+		}
+		if codegraphTargetIsSymbol(target) {
+			return [][]string{{"node", target}}
+		}
+		if tokens := navigationSearchTokens(target, 3); len(tokens) > 0 {
+			cmds := make([][]string, len(tokens))
+			for i, token := range tokens {
+				cmds[i] = []string{"query", "--limit", "4", token}
+			}
+			return cmds
+		}
+		return [][]string{{"explore", "--max-files", "8", target}}
+	}
+}
+
+// codegraphPinFile is a project-relative file the CLI may use to pick one
+// overload. callers itself cannot take a file, and a path outside the project
+// must not be passed through.
+func codegraphPinFile(file string) string {
+	file = strings.TrimSpace(file)
+	if file == "" || file == "<nil>" || navigationQueryEscapesRoot(file) || strings.ContainsAny(file, "\r\n'\"") {
+		return ""
+	}
+	return strings.ReplaceAll(file, `\`, "/")
+}
+
+// codegraphNodeSymbolArg is the symbol of a node lookup. File mode and
+// --symbols-only are not symbol names.
+func codegraphNodeSymbolArg(args []string) string {
+	if len(args) < 2 || args[0] != "node" {
+		return ""
+	}
+	for _, arg := range args {
+		if arg == "--symbols-only" {
+			return ""
+		}
+	}
+	symbol := args[len(args)-1]
+	if codegraphTargetIsFile(symbol) {
+		return ""
+	}
+	return symbol
+}
+
+func codegraphArgs(operation, query, question string) []string {
+	cmds := codegraphCommandList(operation, query, question, "")
+	if len(cmds) == 0 {
+		return []string{"explore", question}
+	}
+	return cmds[0]
+}
+
+// codegraphNodeArgs reads one symbol in full. A file path uses the symbol map
+// only; the numbered full-file view is the same cost as read_file.
+func codegraphNodeArgs(target string, symbolsOnly bool) []string {
+	if symbolsOnly {
+		return []string{"node", "--symbols-only", target}
+	}
+	return []string{"node", target}
+}
+
+func codegraphTargetIsFile(target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" || strings.ContainsAny(target, " \t\n") {
+		return false
+	}
+	if strings.ContainsAny(target, `/\`) {
+		return true
+	}
+	switch strings.ToLower(filepath.Ext(target)) {
+	case ".go", ".ts", ".tsx", ".js", ".jsx", ".py", ".rs", ".java", ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".rb", ".php", ".vue", ".svelte", ".kt", ".swift":
+		return true
+	default:
+		return false
+	}
+}
+
+func codegraphTargetIsSymbol(target string) bool {
+	if target == "" || strings.ContainsAny(target, " \t\n\"'`，。！？、；：（）") {
+		return false
+	}
+	for _, r := range target {
+		if unicode.Is(unicode.Han, r) || unicode.Is(unicode.Hiragana, r) || unicode.Is(unicode.Katakana, r) || unicode.Is(unicode.Hangul, r) {
+			return false
+		}
+	}
+	return true
+}
+
+func formatCodegraphRemoteArgs(args []string) string {
+	var b strings.Builder
+	for i, arg := range args {
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		if i == 0 {
+			b.WriteString(arg)
+			continue
+		}
+		b.WriteString(remoteShellQuote(arg))
+	}
+	return b.String()
+}
+
+// formatCodegraphRemoteInvocation runs one command, or several location
+// queries when a question has more than one distinctive word.
+func formatCodegraphRemoteInvocation(cmds [][]string) string {
+	if len(cmds) == 0 {
+		return ":"
+	}
+	if len(cmds) == 1 && len(cmds[0]) >= 2 && (cmds[0][0] == "callers" || cmds[0][0] == "callees") && (len(cmds[0]) == 2 || (len(cmds[0]) == 4 && cmds[0][2] == "--file")) {
+		file := ""
+		if len(cmds[0]) == 4 {
+			file = cmds[0][3]
+		}
+		return codegraphRemoteEdgeAfterExactNode(cmds[0][0], cmds[0][1], file)
+	}
+	if len(cmds) == 1 {
+		accept := codegraphRemoteAcceptHit
+		if symbol := codegraphNodeSymbolArg(cmds[0]); symbol != "" {
+			accept = codegraphRemoteAcceptNamedNode(symbol)
+		}
+		return "if _cg_out=$(\"$_cg_bin\" " + formatCodegraphRemoteArgs(cmds[0]) + " 2>&1); then " + accept + "; fi"
+	}
+	var b strings.Builder
+	b.WriteString("for _cg_term in")
+	for _, cmd := range cmds {
+		b.WriteByte(' ')
+		b.WriteString(remoteShellQuote(cmd[len(cmd)-1]))
+	}
+	b.WriteString("; do _cg_term_hit=0; if _cg_out=$(\"$_cg_bin\" query --limit 4 \"$_cg_term\" 2>&1); then " + codegraphRemoteAcceptHit + "; fi; if [ \"$_cg_term_hit\" -eq 0 ]; then _cg_miss=\"${_cg_miss} ${_cg_term}\"; fi; done; if [ \"$_cg_hit\" -eq 1 ] && [ -n \"$_cg_miss\" ]; then for _cg_term in $_cg_miss; do if _cg_found=$(command -v rg 2>&1); then rg -n --no-heading --color never -m 20 -- \"$_cg_term\" .; else grep -RIn -m 20 -- \"$_cg_term\" .; fi; done; fi")
+	return b.String()
+}
+
+// codegraphRemoteAcceptHit keeps a codegraph result. A one-line miss, or a
+// query score below 2000, falls through to text search.
+const codegraphRemoteAcceptHit = "_cg_esc=$(printf '\\033'); _cg_plain=$(printf '%s\\n' \"$_cg_out\" | sed \"s/${_cg_esc}\\\\[[0-9;]*[A-Za-z]//g\"); _cg_first=$(printf '%s\\n' \"$_cg_plain\" | sed -n '/[[:alpha:]]/p' | head -n 1); _cg_score=$(printf '%s\\n' \"$_cg_plain\" | sed -n 's/.*(\\([0-9][0-9]*\\)%).*/\\1/p' | head -n 1); case \"$_cg_first\" in *'Symbol \"'*' not found'*) ;; *'No results found'*) ;; *'No indexed file matches'*) ;; *'No callers found'*) ;; *'No callees found'*) ;; *'Search Results'*) if [ -z \"$_cg_score\" ] || [ \"$_cg_score\" -ge 2000 ]; then printf '%s\\n' \"$_cg_out\"; _cg_hit=1; _cg_term_hit=1; fi ;; *[![:space:]]*) printf '%s\\n' \"$_cg_out\"; _cg_hit=1; _cg_term_hit=1 ;; esac"
+
+// codegraphRemoteAcceptNamedNode is the node accept path. A misspelled name
+// still prints the nearest symbol and exits 0; that body is not the symbol
+// the caller asked for, so the text search has to run.
+func codegraphRemoteAcceptNamedNode(symbol string) string {
+	if !codegraphRemoteNodeSymbol(symbol) {
+		return codegraphRemoteAcceptHit
+	}
+	const printed = "printf '%s\\n' \"$_cg_out\"; _cg_hit=1; _cg_term_hit=1"
+	var heads []string
+	for _, name := range codegraphNodeHeadingNames(symbol) {
+		heads = append(heads, "'## "+name+" '*|'## "+name+"'|'## '*'::"+name+" '*|'## '*'."+name+" '*")
+	}
+	head := strings.Join(heads, "|")
+	named := "*'definitions named \"" + symbol + "\"'*"
+	replacement := "_cg_head=$(printf '%s\\n' \"$_cg_plain\" | sed -n '/^## /p' | head -n 1); case \"$_cg_head\" in " + head + ") " + printed + " ;; *) case \"$_cg_plain\" in " + named + ") " + printed + " ;; esac ;; esac ;; esac"
+	needle := "*[![:space:]]*) " + printed + " ;; esac"
+	if !strings.Contains(codegraphRemoteAcceptHit, needle) {
+		return codegraphRemoteAcceptHit
+	}
+	return strings.Replace(codegraphRemoteAcceptHit, needle, "*[![:space:]]*) "+replacement, 1)
+}
+
+// codegraphRemoteEdgeAfterExactNode runs callers or callees only after node
+// names that symbol. Those commands otherwise return the nearest symbol's
+// edges and label them with the name that was asked.
+func codegraphRemoteEdgeAfterExactNode(verb, symbol, file string) string {
+	if verb != "callers" && verb != "callees" {
+		return ":"
+	}
+	if codegraphRemoteNodeSymbol(symbol) && (file != "" || codegraphSymbolIsQualified(symbol)) {
+		// callers compares the whole string with node.name and ignores --file.
+		// A qualified name misses, and a file pin would still mix in every
+		// other file's edges. The node trail is already scoped.
+		return codegraphRemoteQualifiedTrail(verb, symbol, file)
+	}
+	edge := "if _cg_out=$(\"$_cg_bin\" " + formatCodegraphRemoteArgs([]string{verb, symbol}) + " 2>&1); then " + codegraphRemoteAcceptHit + "; fi"
+	if !codegraphRemoteNodeSymbol(symbol) {
+		return edge
+	}
+	return "_cg_named=0; if _cg_out=$(\"$_cg_bin\" " + formatCodegraphRemoteArgs([]string{"node", symbol}) + " 2>&1); then " + codegraphRemoteNodeNameGate(symbol) + "; fi; if [ \"$_cg_named\" -eq 1 ]; then " + edge + "; fi"
+}
+
+// codegraphQualifiedAwk prints the heading, location, and one trail line for
+// each section whose heading names the symbol. The program is single-quoted
+// into a command substitution, so it must not contain a single quote.
+const codegraphQualifiedAwk = `function ends(s, suf) { return length(s) >= length(suf) && substr(s, length(s) - length(suf) + 1) == suf } function want(h) { if (h == a || (b != "" && h == b)) return 1; if (a != "" && (ends(h, "." a) || ends(h, "::" a))) return 1; if (b != "" && (ends(h, "." b) || ends(h, "::" b))) return 1; return 0 } function flush() { if (keep && trail != "") { print head; if (loc != "") print loc; print trail } } { sub(/\r$/, ""); sub(/^[ \t]+/, "") } /^## / { flush(); head = $0; loc = ""; trail = ""; h = $0; sub(/^## /, "", h); sub(/ \(.*/, "", h); keep = want(h); next } keep && /^\*\*Location:/ && loc == "" { loc = $0; next } keep && index($0, label) == 1 { trail = $0; next } END { flush() }`
+
+// codegraphRemoteQualifiedTrail keeps the resolved symbol's location and
+// trail. callers compares the whole qualified string with node.name, misses,
+// and then attaches the top neighbor's edges.
+func codegraphRemoteQualifiedTrail(verb, symbol, file string) string {
+	label := "**Called by \u2190"
+	if verb == "callees" {
+		label = "**Calls \u2192"
+	}
+	names := codegraphNodeHeadingNames(symbol)
+	a, b := "", ""
+	if len(names) > 0 {
+		a = names[0]
+	}
+	if len(names) > 1 {
+		b = names[1]
+	}
+	nodeArgs := []string{"node", symbol}
+	if file != "" {
+		nodeArgs = []string{"node", "--file", file, symbol}
+	}
+	return "_cg_named=0; if _cg_out=$(\"$_cg_bin\" " + formatCodegraphRemoteArgs(nodeArgs) + " 2>&1); then " + codegraphRemoteNodeNameGate(symbol) + "; fi; if [ \"$_cg_named\" -eq 1 ]; then _cg_edges=$(printf '%s\\n' \"$_cg_plain\" | awk -v a=" + remoteShellQuote(a) + " -v b=" + remoteShellQuote(b) + " -v label=" + remoteShellQuote(label) + " " + remoteShellQuote(codegraphQualifiedAwk) + "); if [ -n \"$_cg_edges\" ]; then printf '%s\\n' \"$_cg_edges\"; _cg_hit=1; _cg_term_hit=1; fi; fi"
+}
+
+// codegraphRemoteNodeNameGate sets _cg_named when the node heading is the
+// requested symbol. It does not print the definition.
+func codegraphRemoteNodeNameGate(symbol string) string {
+	var heads []string
+	for _, name := range codegraphNodeHeadingNames(symbol) {
+		heads = append(heads, "'## "+name+" '*|'## "+name+"'|'## '*'::"+name+" '*|'## '*'."+name+" '*")
+	}
+	named := "*'definitions named \"" + symbol + "\"'*"
+	return "_cg_esc=$(printf '\\033'); _cg_plain=$(printf '%s\\n' \"$_cg_out\" | sed \"s/${_cg_esc}\\\\[[0-9;]*[A-Za-z]//g\"); _cg_head=$(printf '%s\\n' \"$_cg_plain\" | sed -n '/^## /p' | head -n 1); case \"$_cg_head\" in " + strings.Join(heads, "|") + ") _cg_named=1 ;; *) case \"$_cg_plain\" in " + named + ") _cg_named=1 ;; esac ;; esac"
+}
+
+func codegraphRemoteNodeSymbol(symbol string) bool {
+	if symbol == "" || len(symbol) > 200 {
+		return false
+	}
+	for _, r := range symbol {
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '_' && r != ':' && r != '.' {
+			return false
+		}
+	}
+	return true
+}
+
+// codegraphOutputUseful reports whether CodeGraph returned a real hit.
+// A miss still exits 0 and prints a one-line "not found" message; treating
+// that as success would skip the text-search fallback.
+func codegraphOutputUseful(output string) bool {
+	text := strings.TrimSpace(output)
+	if text == "" {
+		return false
+	}
+	// Query output starts with a color-only line. The ranking header is the
+	// next line that contains a letter. Source that merely mentions that
+	// header later is still a hit.
+	first := codegraphFirstLetterLine(text)
+	if strings.Contains(first, "No results found") || strings.Contains(first, "No indexed file matches") || strings.Contains(first, "No callers found") || strings.Contains(first, "No callees found") {
+		return false
+	}
+	if strings.Contains(first, "Symbol \"") && strings.Contains(first, " not found") {
+		return false
+	}
+	if strings.Contains(first, "Search Results") {
+		if score, ok := codegraphBestScore(text); ok && score < 2000 {
+			return false
+		}
+	}
+	return true
+}
+
+// codegraphFirstLetterLine skips the color-only line codegraph prints before
+// a query header.
+func codegraphFirstLetterLine(output string) string {
+	output = codegraphANSIPattern.ReplaceAllString(output, "")
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		for _, r := range line {
+			if unicode.IsLetter(r) {
+				return line
+			}
+		}
+	}
+	return ""
+}
+
+// codegraphBestScore reads the first "(NNN%)" relevance codegraph query prints.
+// A weak score is a fuzzy name, not a symbol the caller asked for.
+func codegraphBestScore(output string) (int, bool) {
+	match := codegraphScorePattern.FindStringSubmatch(output)
+	if match == nil {
+		return 0, false
+	}
+	score, err := strconv.Atoi(match[1])
+	if err != nil {
+		return 0, false
+	}
+	return score, true
+}
+
+// codegraphCommandAccepted reports a usable codegraph result. node prints the
+// nearest symbol when the exact name is missing, and that source must not
+// count as a hit for the name that was asked.
+func codegraphCommandAccepted(args []string, data string) bool {
+	if symbol := codegraphNodeSymbolArg(args); symbol != "" {
+		return codegraphNodeNamesSymbol(data, symbol)
+	}
+	return codegraphOutputUseful(data)
+}
+
+// codegraphNodeNamesSymbol is true when the node heading is the requested
+// symbol. A heading for a different symbol is a fuzzy neighbor.
+func codegraphNodeNamesSymbol(output, symbol string) bool {
+	symbol = strings.TrimSpace(symbol)
+	if symbol == "" || !codegraphOutputUseful(output) {
+		return false
+	}
+	plain := codegraphANSIPattern.ReplaceAllString(output, "")
+	if strings.Contains(plain, "definitions named \""+symbol+"\"") {
+		return true
+	}
+	for _, line := range strings.Split(plain, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "## ") {
+			continue
+		}
+		// The first heading is the symbol. A later ## line is source or a
+		// following section, and must not make a neighbor count as a hit.
+		name := strings.TrimSpace(strings.TrimPrefix(line, "## "))
+		if i := strings.Index(name, " ("); i >= 0 {
+			name = strings.TrimSpace(name[:i])
+		}
+		return codegraphHeadingNameMatches(name, symbol)
+	}
+	return false
+}
+
+// codegraphSymbolIsQualified reports a lookup whose CLI heading is the short
+// name. callers and callees do not resolve that qualifier.
+func codegraphSymbolIsQualified(symbol string) bool {
+	symbol = strings.TrimSpace(symbol)
+	if strings.Contains(symbol, "::") {
+		return true
+	}
+	dot := strings.LastIndex(symbol, ".")
+	return dot > 0 && dot < len(symbol)-1
+}
+
+// codegraphQualifiedEdges keeps the heading and location of each section that
+// names the symbol, plus that section's trail. A later heading is a different
+// symbol, and a prose line that merely starts with "Calls" is not an edge.
+func codegraphQualifiedEdges(output, symbol, verb string) string {
+	label := "**Called by \u2190"
+	if verb == "callees" {
+		label = "**Calls \u2192"
+	}
+	plain := codegraphANSIPattern.ReplaceAllString(output, "")
+	var b strings.Builder
+	var heading, location, trail string
+	match := false
+	flush := func() {
+		if !match || trail == "" {
+			return
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(heading)
+		if location != "" {
+			b.WriteByte('\n')
+			b.WriteString(location)
+		}
+		b.WriteByte('\n')
+		b.WriteString(trail)
+	}
+	for _, line := range strings.Split(plain, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "## ") {
+			flush()
+			heading = line
+			location = ""
+			trail = ""
+			name := strings.TrimSpace(strings.TrimPrefix(line, "## "))
+			if i := strings.Index(name, " ("); i >= 0 {
+				name = strings.TrimSpace(name[:i])
+			}
+			match = codegraphHeadingNameMatches(name, symbol)
+			continue
+		}
+		if !match {
+			continue
+		}
+		if location == "" && strings.HasPrefix(line, "**Location:") {
+			location = line
+			continue
+		}
+		if trail == "" && strings.HasPrefix(line, label) {
+			trail = line
+		}
+	}
+	flush()
+	return b.String()
+}
+
+// codegraphNodeHeadingNames includes the short name of a qualified lookup.
+// node prints ## playTone for Audio::playTone; a bare misspelling has no
+// shorter form, so playTon still does not match playTone.
+func codegraphNodeHeadingNames(symbol string) []string {
+	symbol = strings.TrimSpace(symbol)
+	if symbol == "" {
+		return nil
+	}
+	names := []string{symbol}
+	tail := ""
+	if i := strings.LastIndex(symbol, "::"); i >= 0 {
+		tail = symbol[i+2:]
+	} else if i := strings.LastIndex(symbol, "."); i > 0 && i < len(symbol)-1 {
+		tail = symbol[i+1:]
+	}
+	if tail != "" && tail != symbol {
+		names = append(names, tail)
+	}
+	return names
+}
+
+func codegraphHeadingNameMatches(name, symbol string) bool {
+	for _, candidate := range codegraphNodeHeadingNames(symbol) {
+		if name == candidate || strings.HasSuffix(name, "."+candidate) || strings.HasSuffix(name, "::"+candidate) {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *codingSubAgentCallbacks) executeLocalCodeNavigation(args map[string]interface{}) codingToolExecutionResult {
 	operation, query, depth, err := normalizeCodeNavigationArgs(args)
 	if err != nil {
@@ -2021,16 +2612,13 @@ func (c *codingSubAgentCallbacks) executeLocalCodeNavigation(args map[string]int
 	}
 	line, _ := codingSubAgentArgumentIntegerValue(args["line"])
 	column, _ := codingSubAgentArgumentIntegerValue(args["column"])
-	backend, output, runErr := runLocalCodeNavigationWithPosition(root, operation, query, file, int(line), int(column), depth)
+	bootstrap := c.codegraphBootstrapAllowed()
+	backend, output, runErr := runLocalCodeNavigationWithPosition(root, operation, query, file, int(line), int(column), depth, bootstrap)
 	if runErr != nil {
 		return codingToolExecutionResult{Text: runErr.Error(), Outcome: codingToolOutcomeFailed}
 	}
-	truncated := false
-	if len(output) > 24000 {
-		output = output[:24000]
-		truncated = true
-	}
-	payload, _ := json.Marshal(codeNavigationOutput{Backend: backend, Operation: operation, Query: query, Output: output, Truncated: truncated})
+	output, truncated := capCodeNavigationOutput(output)
+	payload, _ := json.Marshal(codeNavigationOutput{Backend: backend, Operation: operation, Query: query, Output: output, Truncated: truncated, ContinueWith: codegraphContinueHint(backend)})
 	// Candidate ranking is included in the structured output so the model can
 	// compare suspects without rereading every raw match.
 	candidates := localizationCandidatesFromOutput(output)
@@ -2043,36 +2631,137 @@ func (c *codingSubAgentCallbacks) executeLocalCodeNavigation(args map[string]int
 	return codingToolExecutionResult{Text: string(payload), Outcome: codingToolOutcomeSuccess}
 }
 
-func runLocalCodeNavigation(root, operation, query string, depth int) (string, string, error) {
-	return runLocalCodeNavigationWithPosition(root, operation, query, "", 0, 0, depth)
+// codegraphBootstrapAllowed is the write gate for install and codegraph init.
+// A missing index is not a reason to skip the tool, but creating that index
+// is a project write. Inquiry, launch/host commands, read-only nested roles,
+// and the compatibility surface must not do it.
+func (c *codingSubAgentCallbacks) codegraphBootstrapAllowed() bool {
+	if c == nil || codingTaskLooksInquiry(c.task) || codingTaskLooksOperational(c.task) {
+		return false
+	}
+	if c.usesUncorrelatedStaticCompatibilityModelSurface() {
+		return false
+	}
+	if c.subagent != nil && c.subagent.nestDepth > 0 &&
+		(c.subagent.role == codingRoleExplorer || c.subagent.role == codingRoleReviewer) {
+		return false
+	}
+	return true
 }
 
-func runLocalCodeNavigationWithPosition(root, operation, query, file string, line, column, depth int) (string, string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if info, err := os.Stat(filepath.Join(root, ".codegraph")); err == nil && info.IsDir() {
-		bin := "codegraph"
-		if _, err := exec.LookPath("codegraph.cmd"); err == nil {
-			bin = "codegraph.cmd"
-		}
-		verb := "explore"
-		arg := navigationQuestion(operation, query, depth)
-		if operation == "node" || operation == "file_symbols" {
-			verb = "node"
-			arg = query
-		}
-		cmd := exec.CommandContext(ctx, bin, verb, arg)
-		cmd.Dir = root
-		hideCommandWindow(cmd)
-		data, err := cmd.CombinedOutput()
-		if err == nil && len(strings.TrimSpace(string(data))) > 0 {
-			return "codegraph", string(data), nil
+func runLocalCodeNavigation(root, operation, query string, depth int) (string, string, error) {
+	return runLocalCodeNavigationWithPosition(root, operation, query, "", 0, 0, depth, true)
+}
+
+func runLocalCodeNavigationWithPosition(root, operation, query, file string, line, column, depth int, bootstrap bool) (string, string, error) {
+	// Install and index use their own budgets. The 30s query clock starts
+	// afterward, so a slow bootstrap cannot cancel the codegraph call or the
+	// ripgrep fallback that follows it.
+	bin := lookCodegraphBinary()
+	if bin == "" && bootstrap {
+		bin = ensureLocalCodegraphBinary()
+	}
+	// A parent project can already own the index. CodeGraph queries walk up to
+	// it, so a subdirectory must not build a second database beside that one.
+	haveIndex := bin != "" && (codegraphNearestIndexRoot(root) != "" || (bootstrap && ensureLocalCodegraphIndex(root, bin)))
+	if haveIndex {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		argsList := codegraphCommandList(operation, query, navigationQuestion(operation, query, depth), file)
+		output, missed := runCodegraphCommands(ctx, bin, root, argsList)
+		cancel()
+		if strings.TrimSpace(output) != "" {
+			if len(missed) > 0 {
+				extraCtx, extraCancel := context.WithTimeout(context.Background(), 30*time.Second)
+				extra, _, extraErr := runLocalNavigationTextFallback(extraCtx, root, "explore", strings.Join(missed, " "))
+				extraCancel()
+				if extraErr == nil && strings.TrimSpace(extra) != "" {
+					output = strings.TrimSpace(output) + "\n" + extra
+				}
+			}
+			return "codegraph", output, nil
 		}
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
 	if backend, output, ok := runLocalLSPNavigation(ctx, root, operation, query, file, line, column); ok {
 		return backend, output, nil
 	}
 	return runLocalNavigationTextFallback(ctx, root, operation, query)
+}
+
+func runCodegraphCommands(ctx context.Context, bin, root string, cmds [][]string) (string, []string) {
+	if len(cmds) == 0 {
+		return "", nil
+	}
+	outs := make([]string, len(cmds))
+	var wg sync.WaitGroup
+	for i, args := range cmds {
+		wg.Add(1)
+		go func(i int, args []string) {
+			defer wg.Done()
+			if len(args) >= 2 && (args[0] == "callers" || args[0] == "callees") && (len(args) == 2 || (len(args) == 4 && args[2] == "--file")) {
+				symbol := args[1]
+				pin := ""
+				if len(args) == 4 {
+					pin = args[3]
+				}
+				// The name check and the edge list each get a full query
+				// budget. One shared clock let a slow node cancel the callers
+				// command, and the text search then ran for a symbol that exists.
+				probeCtx, probeCancel := codegraphStepContext()
+				nodeArgs := []string{"node", symbol}
+				if pin != "" {
+					nodeArgs = []string{"node", "--file", pin, symbol}
+				}
+				probe, _ := runCodegraphCommand(probeCtx, bin, root, nodeArgs...)
+				probeCancel()
+				if !codegraphNodeNamesSymbol(probe, symbol) {
+					return
+				}
+				if pin != "" || codegraphSymbolIsQualified(symbol) {
+					if edges := codegraphQualifiedEdges(probe, symbol, args[0]); edges != "" {
+						outs[i] = edges
+					}
+					return
+				}
+				edgeCtx, edgeCancel := codegraphStepContext()
+				data, err := runCodegraphCommand(edgeCtx, bin, root, args...)
+				edgeCancel()
+				if err == nil && codegraphOutputUseful(data) {
+					outs[i] = data
+				}
+				return
+			}
+			data, err := runCodegraphCommand(ctx, bin, root, args...)
+			if err == nil && codegraphCommandAccepted(args, data) {
+				outs[i] = data
+			}
+		}(i, args)
+	}
+	wg.Wait()
+	var b strings.Builder
+	var missed []string
+	for i, out := range outs {
+		out = strings.TrimSpace(out)
+		if out == "" {
+			if len(cmds) > 1 && len(cmds[i]) > 0 && (cmds[i][0] == "query" || cmds[i][0] == "node") {
+				missed = append(missed, cmds[i][len(cmds[i])-1])
+			}
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteByte('\n')
+		}
+		b.WriteString(out)
+	}
+	return b.String(), missed
+}
+
+// codegraphStepContext is one query budget. The navigation clock that
+// started the name check must not become the callers deadline: once that
+// clock is done, callers would be skipped for a symbol that was found.
+func codegraphStepContext() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), 30*time.Second)
 }
 
 func runLocalLSPNavigation(ctx context.Context, root, operation, query, file string, line, column int) (string, string, bool) {
@@ -2121,14 +2810,18 @@ func runLocalLSPNavigation(ctx context.Context, root, operation, query, file str
 }
 
 func runLocalNavigationTextFallback(ctx context.Context, root, operation, query string) (string, string, error) {
+	// A filename is not text inside the file. Searching the tree for
+	// "snake.cpp" misses the file the caller asked to outline.
+	if navigationShouldOutlineFile(operation, query) {
+		if outline, ok := navigationFileSymbolOutline(root, query); ok {
+			return "file", outline, nil
+		}
+	}
 	rg := "rg"
 	if _, err := exec.LookPath(rg); err != nil {
-		return "", "", fmt.Errorf("code navigation unavailable: no CodeGraph index and rg is not installed")
+		return "", "", fmt.Errorf("code navigation unavailable: codegraph produced no result and rg is not installed")
 	}
-	pattern := regexp.QuoteMeta(query)
-	if operation == "definition" || operation == "workspace_symbol" || operation == "file_symbols" {
-		pattern = `(?i)(func|function|class|type|interface|struct|def|const|var|let)\s+.*` + pattern
-	}
+	pattern := navigationFallbackPattern(operation, query)
 	cmd := exec.CommandContext(ctx, rg, "-n", "--no-heading", "--color", "never", "-m", "80", pattern, ".")
 	cmd.Dir = root
 	hideCommandWindow(cmd)
@@ -2137,6 +2830,283 @@ func runLocalNavigationTextFallback(ctx context.Context, root, operation, query 
 		return "ripgrep", "", fmt.Errorf("no navigation matches for %q", query)
 	}
 	return "ripgrep", string(data), nil
+}
+
+func navigationFallbackPattern(operation, query string) string {
+	quoted := regexp.QuoteMeta(strings.TrimSpace(query))
+	switch operation {
+	case "definition":
+		// C and C++ definitions look like `void playTone(...) {` or `class Game`.
+		// A call such as `playTone(440);` has a semicolon before any brace.
+		return `(?i)((^|[^[:alnum:]_])` + quoted + `[[:space:]]*\([^;\n]*\{|(^|[^[:alnum:]_])(class|struct|enum|interface|func|function|def|type|typedef)\s+` + quoted + `([^[:alnum:]_]|$))`
+	case "workspace_symbol":
+		return `(?i)(^|[^[:alnum:]_])` + quoted + `([^[:alnum:]_]|$)`
+	}
+	fields := strings.Fields(query)
+	if len(fields) < 2 {
+		return quoted
+	}
+	var parts []string
+	for _, field := range fields {
+		field = strings.Trim(field, ".,;:!?\"'`()[]{}")
+		if len([]rune(field)) < 3 || navigationFallbackStopWord(field) {
+			continue
+		}
+		parts = append(parts, regexp.QuoteMeta(field))
+		if len(parts) >= 6 {
+			break
+		}
+	}
+	if len(parts) == 0 {
+		return quoted
+	}
+	return "(?i)(" + strings.Join(parts, "|") + ")"
+}
+
+func navigationFallbackStopWord(word string) bool {
+	switch strings.ToLower(word) {
+	case "the", "and", "for", "with", "from", "that", "this", "how", "what", "when", "where", "which", "into", "over", "code", "file", "data", "test", "tests", "check", "checks", "works", "using", "based",
+		"int", "str", "err", "ctx", "buf", "tmp", "val", "ptr", "nil", "new", "var", "let", "get", "set", "len", "cap", "idx", "obj", "arg", "ret", "fmt", "raw", "out", "end", "max", "min", "pos", "num",
+		"fix", "run", "use", "try", "put", "can", "may", "not", "but", "all", "one", "two", "its", "our", "you", "are", "was", "has", "had", "did", "own", "per", "via", "too", "now":
+		return true
+	default:
+		return false
+	}
+}
+
+// navigationSearchTokens picks a few search words from a prose question.
+// A 3-letter token such as bmp is kept, but a 4-letter word does not outrank
+// a longer specific word.
+func navigationSearchTokens(query string, limit int) []string {
+	if limit < 1 {
+		return nil
+	}
+	type scoredToken struct {
+		token string
+		score int
+		index int
+	}
+	var acronyms []string
+	var rest []scoredToken
+	for i, field := range strings.Fields(query) {
+		field = strings.Trim(field, ".,;:!?\"'`()[]{}")
+		if len([]rune(field)) < 3 || navigationFallbackStopWord(field) {
+			continue
+		}
+		if len([]rune(field)) == 3 && navigationTokenIsAcronym(field) && len(acronyms) < 2 {
+			acronyms = append(acronyms, field)
+			continue
+		}
+		rest = append(rest, scoredToken{token: field, score: len([]rune(field)), index: i})
+	}
+	sort.SliceStable(rest, func(i, j int) bool {
+		// Vague words such as sound/audio must not crowd out the project name.
+		gi, gj := navigationTokenIsGeneric(rest[i].token), navigationTokenIsGeneric(rest[j].token)
+		if gi != gj {
+			return !gi
+		}
+		if rest[i].score != rest[j].score {
+			return rest[i].score > rest[j].score
+		}
+		return rest[i].index < rest[j].index
+	})
+	out := make([]string, 0, limit)
+	out = append(out, acronyms...)
+	for _, item := range rest {
+		if len(out) >= limit {
+			break
+		}
+		out = append(out, item.token)
+	}
+	if len(out) > limit {
+		out = out[:limit]
+	}
+	return out
+}
+
+func navigationTokenIsGeneric(token string) bool {
+	switch strings.ToLower(token) {
+	case "sound", "audio", "beep", "game", "tone", "noise", "music":
+		return true
+	default:
+		return false
+	}
+}
+
+func navigationTokenIsAcronym(token string) bool {
+	if token == "" {
+		return false
+	}
+	for _, r := range token {
+		if !unicode.IsLetter(r) {
+			return false
+		}
+	}
+	return true
+}
+
+func navigationResolveFile(root, query string) string {
+	query = strings.TrimSpace(query)
+	if query == "" || !codegraphTargetIsFile(query) {
+		return ""
+	}
+	candidate := query
+	if !filepath.IsAbs(candidate) {
+		candidate = filepath.Join(root, filepath.FromSlash(query))
+	}
+	if info, err := os.Stat(candidate); err == nil && info.Mode().IsRegular() && navigationWithinRoot(root, candidate) {
+		return candidate
+	}
+	base := filepath.Base(query)
+	bestDepth := -1
+	var found string
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		name := d.Name()
+		if d.IsDir() {
+			if path != root && (name == ".git" || name == "build" || name == "node_modules" || codegraphIsDataDir(name)) {
+				return fs.SkipDir
+			}
+			rel, relErr := filepath.Rel(root, path)
+			if relErr == nil && rel != "." && strings.Count(rel, string(filepath.Separator)) > 3 {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !strings.EqualFold(name, base) || !navigationWithinRoot(root, path) {
+			return nil
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+		depth := strings.Count(rel, string(filepath.Separator))
+		if found == "" || depth < bestDepth {
+			found = path
+			bestDepth = depth
+		}
+		if bestDepth == 0 {
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return found
+}
+
+func navigationWithinRoot(root, path string) bool {
+	root = filepath.Clean(strings.TrimSpace(root))
+	path = filepath.Clean(strings.TrimSpace(path))
+	if root == "" || path == "" {
+		return false
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func navigationFileSymbolOutline(root, query string) (string, bool) {
+	path := navigationResolveFile(root, query)
+	if path == "" {
+		return "", false
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return "", false
+	}
+	defer f.Close()
+	data, err := io.ReadAll(io.LimitReader(f, 512<<10))
+	if err != nil && len(data) == 0 {
+		return "", false
+	}
+	rel := path
+	if r, err := filepath.Rel(root, path); err == nil {
+		rel = r
+	}
+	var preview strings.Builder
+	var symbolLines []string
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	lineNo := 0
+	previewCount := 0
+	for sc.Scan() {
+		lineNo++
+		raw := strings.TrimRight(sc.Text(), "\r")
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			continue
+		}
+		if previewCount < 40 {
+			fmt.Fprintf(&preview, "%d: %s\n", lineNo, navigationTrimLine(trimmed, 180))
+			previewCount++
+		}
+		if navigationLineLooksLikeSymbol(trimmed) {
+			symbolLines = append(symbolLines, fmt.Sprintf("%d: %s", lineNo, navigationTrimLine(trimmed, 180)))
+		}
+	}
+	if len(symbolLines) > 0 {
+		shown := symbolLines
+		if len(shown) > 80 {
+			head := append([]string{}, shown[:40]...)
+			head = append(head, "...")
+			shown = append(head, shown[len(shown)-40:]...)
+		}
+		return filepath.ToSlash(rel) + "\n" + strings.Join(shown, "\n") + "\n", true
+	}
+	if previewCount == 0 {
+		return "", false
+	}
+	return filepath.ToSlash(rel) + "\n" + preview.String(), true
+}
+
+func navigationTrimLine(line string, max int) string {
+	if len([]rune(line)) <= max {
+		return line
+	}
+	return string([]rune(line)[:max])
+}
+
+func navigationShouldOutlineFile(operation, query string) bool {
+	switch operation {
+	case "file_symbols", "node", "explore", "definition":
+		return codegraphTargetIsFile(query)
+	default:
+		return false
+	}
+}
+
+func navigationLineLooksLikeSymbol(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	lower := strings.ToLower(trimmed)
+	if trimmed == "" || strings.HasPrefix(lower, "//") || strings.HasPrefix(lower, "/*") || strings.HasPrefix(lower, "*") || strings.HasPrefix(lower, "#include") {
+		return false
+	}
+	for _, prefix := range []string{"if ", "if(", "for ", "for(", "while ", "while(", "switch ", "switch(", "return ", "else "} {
+		if strings.HasPrefix(lower, prefix) {
+			return false
+		}
+	}
+	if fields := strings.Fields(lower); len(fields) > 0 {
+		switch fields[0] {
+		case "func", "function", "class", "struct", "enum", "interface", "typedef", "#define", "def", "fn", "type":
+			return true
+		}
+	}
+	// Calls such as playTone(440); share parentheses with definitions.
+	// A definition has a return type before the name and is not a statement.
+	if strings.HasSuffix(lower, ";") || !strings.Contains(trimmed, "(") || !strings.Contains(trimmed, ")") {
+		return false
+	}
+	open := strings.Index(trimmed, "(")
+	head := strings.TrimSpace(trimmed[:open])
+	if head == "" || strings.Contains(head, ".") || len(strings.Fields(head)) < 2 {
+		return false
+	}
+	r, _ := utf8.DecodeRuneInString(trimmed)
+	return unicode.IsLetter(r) || r == '_' || r == '~'
 }
 
 func (c *remoteCodingCallbacks) executeRemoteCodeNavigation(args map[string]interface{}) string {
@@ -2154,23 +3124,580 @@ func (c *remoteCodingCallbacks) executeRemoteCodeNavigation(args map[string]inte
 	}
 	line, _ := codingSubAgentArgumentIntegerValue(args["line"])
 	column, _ := codingSubAgentArgumentIntegerValue(args["column"])
-	command := "if [ -d .codegraph ] && command -v codegraph >/dev/null 2>&1; then "
-	if operation == "node" || operation == "file_symbols" {
-		command += "codegraph node " + remoteShellQuote(query)
-	} else {
-		command += "codegraph explore " + remoteShellQuote(question)
-	}
-	if file != "" && (operation == "definition" || operation == "references" || operation == "implementation") {
-		command += "; elif command -v gopls >/dev/null 2>&1 && [ " + remoteShellQuote(strings.ToLower(filepath.Ext(file))) + " = .go ]; then gopls " + operation + " " + remoteShellQuote(fmt.Sprintf("%s:%d:%d", file, maxLocalizationInt(int(line), 1), maxLocalizationInt(int(column), 1)))
-		command += "; elif command -v lsp-cli >/dev/null 2>&1; then lsp-cli " + remoteShellQuote(operation) + " --file " + remoteShellQuote(file) + " --line " + strconv.Itoa(maxLocalizationInt(int(line), 1)) + " --column " + strconv.Itoa(maxLocalizationInt(int(column), 1)) + " --query " + remoteShellQuote(query)
-	}
-	command += "; elif command -v rg >/dev/null 2>&1; then rg -n --no-heading --color never -m 80 -- " + remoteShellQuote(query) + " .; else grep -RIn -m 80 -- " + remoteShellQuote(query) + " .; fi"
+	// Claim the one-shot install before SSH. If the command never ran, release
+	// the claim so a dropped connection can try again.
+	bootstrap, releaseBootstrap := c.claimRemoteCodegraphBootstrap()
+	// The call that is still running init owns a partial database. Another
+	// call must not query that file until init has finished.
+	command := remoteCodeNavigationCommand(operation, query, question, file, int(line), int(column), bootstrap, remoteCodegraphQueryAllowed(c.agent.projectDir, bootstrap))
 	result := c.sshBash(map[string]interface{}{"command": command, "working_dir": c.agent.projectDir})
-	if remoteCodingToolOutcome(result) == "success" {
+	_, ran := remoteCodingParseAuthoritativeExitMarker(result)
+	releaseBootstrap(ran)
+	succeeded := remoteCodingToolOutcome(result) == "success"
+	// The marker is its own line, checked before the output cap. A long result
+	// must not lose it, and a source line that merely mentions the word must
+	// not count as a hit. The status test after the marker keeps a failed
+	// text search from being reported as success.
+	result, codegraphHit := takeRemoteCodegraphHitMarker(result)
+	result, truncated := capCodeNavigationOutput(result)
+	if succeeded {
 		c.trackRemoteSearch(codeNavigationToolName, question, c.agent.projectDir, result, true)
 	}
-	payload, _ := json.Marshal(map[string]interface{}{"backend": "remote:auto", "operation": operation, "query": query, "output": result, "candidates": localizationCandidatesFromOutput(result)})
+	hintBackend := "remote:auto"
+	if codegraphHit {
+		hintBackend = "codegraph"
+	}
+	payload, _ := json.Marshal(map[string]interface{}{"backend": "remote:auto", "operation": operation, "query": query, "output": result, "truncated": truncated, "continue_with": codegraphContinueHint(hintBackend), "candidates": localizationCandidatesFromOutput(result)})
 	return string(payload)
+}
+
+// navigationQueryEscapesRoot reports a path code_navigation must not open.
+// The remote shell's working directory is the project, so ".." and absolute
+// paths would read outside it.
+func navigationQueryEscapesRoot(query string) bool {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return true
+	}
+	if strings.HasPrefix(query, "/") || strings.HasPrefix(query, `\`) || filepath.IsAbs(query) {
+		return true
+	}
+	slash := strings.ReplaceAll(query, `\`, "/")
+	for _, part := range strings.Split(slash, "/") {
+		if part == ".." {
+			return true
+		}
+	}
+	return false
+}
+
+// remoteNavigationFileOutline locates a source file inside the project and
+// prints its definitions. More than 80 symbols keep the first and last 40.
+func remoteNavigationFileOutline(query string) string {
+	base := remoteShellQuote(filepath.Base(filepath.FromSlash(strings.ReplaceAll(strings.TrimSpace(query), `\`, "/"))))
+	locate := remoteShallowFileAssignment(base)
+	if !navigationQueryEscapesRoot(query) {
+		quoted := remoteShellQuote(query)
+		locate = "if [ -f " + quoted + " ]; then _cg_file=" + quoted + "; else " + remoteShallowFileAssignment(base) + "; fi"
+	}
+	pattern := remoteShellQuote(navigationRemoteFileSymbolPattern)
+	return locate + "; if [ -n \"$_cg_file\" ] && [ -f \"$_cg_file\" ]; then _cg_syms=$(grep -nE " + pattern + " \"$_cg_file\"); _cg_n=$(printf '%s\\n' \"$_cg_syms\" | grep -c '[^[:space:]]' || true); if [ \"$_cg_n\" -gt 80 ]; then _cg_head=$(printf '%s\\n' \"$_cg_syms\" | head -n 40); _cg_tail=$(printf '%s\\n' \"$_cg_syms\" | tail -n 40); printf '%s\\n...\\n%s\\n' \"$_cg_head\" \"$_cg_tail\"; elif [ -n \"$_cg_syms\" ]; then printf '%s\\n' \"$_cg_syms\"; else head -n 40 \"$_cg_file\"; fi; else "
+}
+
+func remoteShallowFileAssignment(quotedBase string) string {
+	return "_cg_file=$(find . -maxdepth 5 -type f -iname " + quotedBase + " ! -path '*/.git/*' ! -path '*/node_modules/*' ! -path '*/build/*' ! -path '*/.codegraph/*' ! -path '*/.codegraph-*/*' ! -path \"*/${_cg_dir}/*\" | awk 'BEGIN{bestn=999}{n=split($0,a,\"/\"); if(n>0 && n<bestn){bestn=n; best=$0}} END{if(best!=\"\") print best}')"
+}
+
+// remoteCodeNavigationShell prefers codegraph explore/node. When
+// allowBootstrap is set and the command is missing, it tries the global npm
+// package once, then codegraph init if the project has no index. A missing
+// binary, a failed command, or empty output falls through to gopls/lsp/rg/grep.
+func remoteCodeNavigationShell(operation, query, question, file string, line, column int, allowBootstrap bool) string {
+	return remoteCodeNavigationCommand(operation, query, question, file, line, column, allowBootstrap, true)
+}
+
+func remoteCodeNavigationCommand(operation, query, question, file string, line, column int, allowBootstrap, allowQuery bool) string {
+	invocation := formatCodegraphRemoteInvocation(codegraphCommandList(operation, query, question, file))
+	var b strings.Builder
+	// Keep stdout in variables. File redirections such as >/dev/null are
+	// rejected as shell writes before this command can run. npm's global bin
+	// is often absent from a login PATH, so an existing install is also
+	// resolved from `npm prefix -g` before any install is attempted.
+	b.WriteString(remoteCodegraphDirAssignment())
+	b.WriteString("_cg_hit=0; ")
+	if allowQuery {
+		b.WriteString("_cg_miss=; _cg_bin=; if _cg_found=$(command -v codegraph 2>&1); then _cg_bin=codegraph; elif _cg_found=$(command -v codegraph.cmd 2>&1); then _cg_bin=codegraph.cmd; elif _cg_found=$(command -v npm 2>&1); then _cg_prefix=$(npm prefix -g); if [ -x \"$_cg_prefix/bin/codegraph\" ]; then _cg_bin=\"$_cg_prefix/bin/codegraph\"; elif [ -f \"$_cg_prefix/codegraph.cmd\" ]; then _cg_bin=\"$_cg_prefix/codegraph.cmd\"; fi; ")
+		if allowBootstrap {
+			b.WriteString("if [ -z \"$_cg_bin\" ]; then _cg_install=$(npm install -g " + remoteShellQuote(codegraphNPMPackage) + " 2>&1) || true; if _cg_found=$(command -v codegraph 2>&1); then _cg_bin=codegraph; elif _cg_found=$(command -v codegraph.cmd 2>&1); then _cg_bin=codegraph.cmd; else _cg_prefix=$(npm prefix -g); if [ -x \"$_cg_prefix/bin/codegraph\" ]; then _cg_bin=\"$_cg_prefix/bin/codegraph\"; elif [ -f \"$_cg_prefix/codegraph.cmd\" ]; then _cg_bin=\"$_cg_prefix/codegraph.cmd\"; fi; fi; fi; ")
+		}
+		b.WriteString("fi; if [ -n \"$_cg_bin\" ]; then ")
+		b.WriteString(remoteCodegraphHasDBFunc())
+		if allowBootstrap {
+			// A killed init leaves a non-empty database. status rejects that
+			// fragment. A status check still running after 20s is not a
+			// rejection: a large database can outlive the short check. The
+			// background pid is a shell, and its node child holds the database,
+			// so the whole process tree is stopped and the lock is cleared
+			// before the index is queried. A parent index already covers this
+			// directory; init runs only when nothing above it is indexed.
+			b.WriteString(remoteCodegraphProcessHelpers())
+			b.WriteString("if [ -s \"$_cg_dir/codegraph.db\" ]; then if _cg_db_ok; then :; else _cg_unlock=$(\"$_cg_bin\" unlock . 2>&1) || true; if _cg_db_ok; then :; else rm -f \"$_cg_dir/codegraph.db\" \"$_cg_dir/codegraph.db-wal\" \"$_cg_dir/codegraph.db-shm\" \"$_cg_dir/daemon.pid\"; fi; fi; fi; ")
+			b.WriteString("if ! _cg_has_db; then _cg_init=$(\"$_cg_bin\" init . 2>&1) || true; fi; ")
+		}
+		b.WriteString("if _cg_has_db; then " + invocation + "; fi; fi; ")
+	}
+	b.WriteString("if [ \"$_cg_hit\" -eq 0 ]; then ")
+	if codegraphTargetIsFile(query) && navigationShouldOutlineFile(operation, query) {
+		// An exact relative path is outlined in place. A missing file is found
+		// by basename inside the project. Absolute paths and ".." are not opened.
+		b.WriteString(remoteNavigationFileOutline(query))
+	}
+	if file != "" && (operation == "definition" || operation == "references" || operation == "implementation") {
+		b.WriteString("if _cg_found=$(command -v gopls 2>&1) && [ " + remoteShellQuote(strings.ToLower(filepath.Ext(file))) + " = .go ]; then gopls " + operation + " " + remoteShellQuote(fmt.Sprintf("%s:%d:%d", file, maxLocalizationInt(line, 1), maxLocalizationInt(column, 1))))
+		b.WriteString("; elif _cg_found=$(command -v lsp-cli 2>&1); then lsp-cli " + remoteShellQuote(operation) + " --file " + remoteShellQuote(file) + " --line " + strconv.Itoa(maxLocalizationInt(line, 1)) + " --column " + strconv.Itoa(maxLocalizationInt(column, 1)) + " --query " + remoteShellQuote(query))
+		b.WriteString("; elif ")
+	} else {
+		b.WriteString("if ")
+	}
+	rgPattern := query
+	if !codegraphTargetIsFile(query) {
+		rgPattern = navigationFallbackPattern(operation, query)
+	}
+	b.WriteString("_cg_found=$(command -v rg 2>&1); then rg -n --no-heading --color never -m 80 -- " + remoteShellQuote(rgPattern) + " .; else grep -RIn -m 80 -- " + remoteShellQuote(query) + " .; fi")
+	if codegraphTargetIsFile(query) && navigationShouldOutlineFile(operation, query) {
+		b.WriteString("; fi")
+	}
+	b.WriteString("; fi; _cg_rc=$?; if [ \"$_cg_hit\" -eq 1 ]; then printf '%s\\n' " + remoteCodegraphHitMarker + "; fi; [ \"$_cg_rc\" -eq 0 ]")
+	return b.String()
+}
+
+var (
+	codegraphBootstrapMu        sync.Mutex
+	codegraphInstallFailed      bool
+	codegraphIndexMu            sync.Mutex
+	codegraphIndexLocks         = map[string]*sync.Mutex{}
+	codegraphIndexBuilding      = map[string]bool{}
+	codegraphIndexFailed        = map[string]bool{}
+	remoteCodegraphBootstrapTry sync.Map
+)
+
+const remoteCodegraphBootstrapRunning = "running"
+
+// claimRemoteCodegraphBootstrap lets the first writable call install and
+// init. release(false) drops the claim when the remote command never ran.
+func (c *remoteCodingCallbacks) claimRemoteCodegraphBootstrap() (bool, func(bool)) {
+	noop := func(bool) {}
+	if c == nil || c.agent == nil || !c.agent.codegraphBootstrapAllowed() {
+		return false, noop
+	}
+	key := c.agent.projectDir
+	if _, loaded := remoteCodegraphBootstrapTry.LoadOrStore(key, remoteCodegraphBootstrapRunning); loaded {
+		return false, noop
+	}
+	return true, func(ran bool) {
+		if !ran {
+			remoteCodegraphBootstrapTry.Delete(key)
+			return
+		}
+		remoteCodegraphBootstrapTry.Store(key, "done")
+	}
+}
+
+// remoteCodegraphQueryAllowed reports whether this call may read the index.
+// The call that claimed bootstrap runs init and then queries. Every other
+// call waits until that init is no longer in progress, because the database
+// file appears before it is complete.
+func remoteCodegraphQueryAllowed(projectDir string, bootstrapClaimed bool) bool {
+	if bootstrapClaimed {
+		return true
+	}
+	state, ok := remoteCodegraphBootstrapTry.Load(projectDir)
+	return !ok || state != remoteCodegraphBootstrapRunning
+}
+
+// codegraphBootstrapAllowed reports whether this remote turn may install
+// codegraph or create .codegraph/. Read-only and command-only turns may query
+// an index that already exists.
+func (a *RemoteCodingSubAgent) codegraphBootstrapAllowed() bool {
+	if a == nil || a.readOnlyInquiry || a.operationalRequest {
+		return false
+	}
+	return a.nestDepth == 0 || (a.role != codingRoleExplorer && a.role != codingRoleReviewer)
+}
+
+func lookCodegraphBinary() string {
+	if runtime.GOOS == "windows" {
+		if bin := lookExecutable("codegraph.cmd", "codegraph.exe"); bin != "" {
+			return bin
+		}
+	}
+	return lookExecutable("codegraph", "codegraph.cmd", "codegraph.exe")
+}
+
+func lookExecutable(names ...string) string {
+	for _, name := range names {
+		if path, err := exec.LookPath(name); err == nil && path != "" {
+			return path
+		}
+	}
+	return ""
+}
+
+// ensureLocalCodegraphBinary installs @colbymchenry/codegraph when the command
+// is missing and npm is available. A hard failure is not repeated. A timeout
+// stops the npm process tree and can be retried; npm.cmd's node child would
+// otherwise keep the install lock.
+func ensureLocalCodegraphBinary() string {
+	if bin := lookCodegraphBinary(); bin != "" {
+		return bin
+	}
+	codegraphBootstrapMu.Lock()
+	defer codegraphBootstrapMu.Unlock()
+	if bin := lookCodegraphBinary(); bin != "" {
+		return bin
+	}
+	npmBin := lookExecutable("npm", "npm.cmd")
+	if npmBin != "" {
+		if bin := codegraphBinaryBesideNPM(npmBin); bin != "" {
+			return bin
+		}
+	}
+	if codegraphInstallFailed {
+		return ""
+	}
+	if npmBin == "" {
+		codegraphInstallFailed = true
+		log.Printf("[codegraph] install skipped: npm is not installed")
+		return ""
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+	out, err := runCodegraphCommand(ctx, npmBin, "", "install", "-g", codegraphNPMPackage)
+	if bin := lookCodegraphBinary(); bin != "" {
+		return bin
+	}
+	if bin := codegraphBinaryBesideNPM(npmBin); bin != "" {
+		return bin
+	}
+	if codegraphInstallFailureIsFinal(ctx.Err()) {
+		codegraphInstallFailed = true
+		log.Printf("[codegraph] npm install -g %s failed: %v %s", codegraphNPMPackage, err, compactCodingSubAgentLogText(out, 400))
+	} else {
+		log.Printf("[codegraph] npm install -g %s timed out; process tree stopped so the next call can retry: %s", codegraphNPMPackage, compactCodingSubAgentLogText(out, 200))
+	}
+	return ""
+}
+
+// codegraphInstallFailureIsFinal reports a finished npm error. A deadline
+// means the install was interrupted and the next navigation call may try again.
+func codegraphInstallFailureIsFinal(ctxErr error) bool {
+	return !errors.Is(ctxErr, context.DeadlineExceeded)
+}
+
+func codegraphBinaryBesideNPM(npmPath string) string {
+	dir := filepath.Dir(npmPath)
+	names := []string{"codegraph", "codegraph.cmd", "codegraph.exe"}
+	if runtime.GOOS == "windows" {
+		names = []string{"codegraph.cmd", "codegraph.exe", "codegraph"}
+	}
+	for _, name := range names {
+		candidate := filepath.Join(dir, name)
+		info, err := os.Stat(candidate)
+		if err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// codegraphDataDirName is the index directory CodeGraph will use. CODEGRAPH_DIR
+// may rename that single path segment (for example .codegraph-win). An unsafe
+// value is ignored, matching the command's own rule.
+func codegraphDataDirName() string {
+	name := strings.TrimSpace(os.Getenv("CODEGRAPH_DIR"))
+	if codegraphDataDirNameSafe(name) {
+		return name
+	}
+	return ".codegraph"
+}
+
+func codegraphDataDirNameSafe(name string) bool {
+	// Match codegraph's own rule: one path segment inside the project.
+	// A quote is also rejected so the remote shell can quote the name.
+	if name == "" || name == "." || strings.Contains(name, "..") || strings.ContainsAny(name, "/\\'\"\n\r") || filepath.IsAbs(name) {
+		return false
+	}
+	return true
+}
+
+// codegraphIsDataDir reports an index directory. CodeGraph skips .codegraph,
+// .codegraph-* siblings, and the active CODEGRAPH_DIR override.
+func codegraphIsDataDir(name string) bool {
+	if name == ".codegraph" || strings.HasPrefix(name, ".codegraph-") {
+		return true
+	}
+	override := codegraphDataDirName()
+	return override != ".codegraph" && name == override
+}
+
+// remoteCodegraphDirAssignment resolves the same directory name inside the
+// remote shell. The value is a single safe path segment, never a path.
+func remoteCodegraphDirAssignment() string {
+	// Trim like the codegraph command, then keep one path segment. Spaces and
+	// long names are valid. Quotes and separators are rejected through printf
+	// so this script does not contain a raw quote the shell-write check would
+	// treat as a redirection.
+	return `_cg_dir=.codegraph; _cg_raw=${CODEGRAPH_DIR-}; while :; do case "$_cg_raw" in [[:space:]]*) _cg_raw=${_cg_raw#?} ;; *[[:space:]]) _cg_raw=${_cg_raw%?} ;; *) break ;; esac; done; case "$_cg_raw" in ''|.|..) ;; *..*) ;; *) if printf '%s' "$_cg_raw" | grep -q "$(printf '[\042\047/\134]')"; then :; else _cg_dir=$_cg_raw; fi ;; esac; `
+}
+
+// remoteCodegraphHasDBFunc is true when this directory or a parent already
+// has a database. CodeGraph queries walk up to that parent, so a missing
+// local file is not a reason to init a second index.
+func remoteCodegraphHasDBFunc() string {
+	return `_cg_has_db() { _cg_at=$(pwd); while :; do if [ -s "$_cg_at/$_cg_dir/codegraph.db" ]; then return 0; fi; _cg_up=$(dirname "$_cg_at"); if [ "$_cg_up" = "$_cg_at" ]; then return 1; fi; _cg_at=$_cg_up; done; }; `
+}
+
+// remoteCodegraphProcessHelpers stops a status check that outlives its budget.
+// /proc sees the node child and a finished zombie; ps -o is only the fallback
+// where /proc does not exist. kill -0 on a zombie stays true in some shells,
+// which would ignore a failed status and keep a broken database.
+func remoteCodegraphProcessHelpers() string {
+	return `_cg_kill_tree() { if [ -d /proc ]; then for _cg_ent in /proc/[0-9]*; do _cg_ppid=$(sed -n 's/^PPid:[[:space:]]*//p' "$_cg_ent/status" 2>&1) || _cg_ppid=; if [ "$_cg_ppid" = "$1" ]; then _cg_kill_tree "${_cg_ent#/proc/}"; fi; done; else _cg_ps=$(ps -o pid=,ppid= 2>&1) || _cg_ps=; _cg_kids=$(printf '%s\n' "$_cg_ps" | awk -v p="$1" '$1 ~ /^[0-9]+$/ && $2 == p { print $1 }'); for _cg_kid in $_cg_kids; do _cg_kill_tree "$_cg_kid"; done; fi; _cg_sig=$(kill "$1" 2>&1) || true; }; ` +
+		`_cg_running() { if [ -r "/proc/$1/status" ]; then _cg_state=$(sed -n 's/^State:[[:space:]]*\(.\).*/\1/p' "/proc/$1/status" 2>&1) || return 1; case "$_cg_state" in Z|z|"") return 1 ;; esac; return 0; fi; _cg_ping=$(kill -0 "$1" 2>&1); }; ` +
+		`_cg_db_ok() { _cg_status=$("$_cg_bin" status 2>&1) & _cg_pid=$!; _cg_n=0; while [ "$_cg_n" -lt 20 ]; do if ! _cg_running "$_cg_pid"; then break; fi; sleep 1; _cg_n=$((_cg_n + 1)); done; if _cg_running "$_cg_pid"; then _cg_kill_tree "$_cg_pid"; _cg_wait=$(wait "$_cg_pid" 2>&1) || true; _cg_unlock=$("$_cg_bin" unlock . 2>&1) || true; return 0; fi; wait "$_cg_pid"; }; `
+}
+
+// codegraphIndexUsable reports a database that no init is currently writing.
+func codegraphIndexUsable(root string) bool {
+	if !codegraphIndexReady(root) {
+		return false
+	}
+	key := codegraphIndexFailureKey(root)
+	codegraphIndexMu.Lock()
+	building := key != "" && codegraphIndexBuilding[key]
+	codegraphIndexMu.Unlock()
+	return !building
+}
+
+func codegraphMarkIndexBuilding(root string, building bool) {
+	key := codegraphIndexFailureKey(root)
+	if key == "" {
+		return
+	}
+	codegraphIndexMu.Lock()
+	if building {
+		codegraphIndexBuilding[key] = true
+	} else {
+		delete(codegraphIndexBuilding, key)
+	}
+	codegraphIndexMu.Unlock()
+}
+
+// codegraphLockProject serializes init for one project. A different project
+// can init at the same time.
+func codegraphLockProject(root string) func() {
+	key := codegraphIndexFailureKey(root)
+	if key == "" {
+		return func() {}
+	}
+	codegraphIndexMu.Lock()
+	mu := codegraphIndexLocks[key]
+	if mu == nil {
+		mu = &sync.Mutex{}
+		codegraphIndexLocks[key] = mu
+	}
+	codegraphIndexMu.Unlock()
+	mu.Lock()
+	return mu.Unlock
+}
+
+func codegraphIndexReady(root string) bool {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return false
+	}
+	// A cloned tree can contain .codegraph/.gitignore with no database.
+	// CodeGraph itself treats the project as initialized only when codegraph.db exists.
+	info, err := os.Stat(filepath.Join(root, codegraphDataDirName(), "codegraph.db"))
+	return err == nil && info.Mode().IsRegular() && info.Size() > 0
+}
+
+// codegraphNearestIndexRoot is the directory CodeGraph will query. The project
+// itself wins. While this process is writing that database, there is no usable
+// index yet. Otherwise the nearest parent database is the one queries walk up to.
+func codegraphNearestIndexRoot(root string) string {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return ""
+	}
+	root = filepath.Clean(root)
+	if codegraphIndexUsable(root) {
+		return root
+	}
+	if !filepath.IsAbs(root) || codegraphIndexIsBuilding(root) {
+		return ""
+	}
+	current := root
+	for {
+		parent := filepath.Dir(current)
+		if parent == current {
+			return ""
+		}
+		if codegraphIndexReady(parent) {
+			return parent
+		}
+		current = parent
+	}
+}
+
+func codegraphIndexIsBuilding(root string) bool {
+	key := codegraphIndexFailureKey(root)
+	if key == "" {
+		return false
+	}
+	codegraphIndexMu.Lock()
+	building := codegraphIndexBuilding[key]
+	codegraphIndexMu.Unlock()
+	return building
+}
+
+// ensureLocalCodegraphIndex builds .codegraph/ once per project when the
+// command is already installed. A failed init is not repeated for that root.
+func ensureLocalCodegraphIndex(root, bin string) bool {
+	root = strings.TrimSpace(root)
+	if root == "" || strings.TrimSpace(bin) == "" {
+		return false
+	}
+	if codegraphIndexUsable(root) {
+		return true
+	}
+	unlockProject := codegraphLockProject(root)
+	defer unlockProject()
+	if codegraphIndexUsable(root) {
+		return true
+	}
+	if codegraphIndexAttemptFailed(root) {
+		return false
+	}
+	// Publish the build before init creates the file. A non-empty database
+	// appears while node is still writing it; other calls must not query or
+	// delete that file until this build releases it.
+	codegraphMarkIndexBuilding(root, true)
+	defer codegraphMarkIndexBuilding(root, false)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	out, err := runCodegraphCommand(ctx, bin, root, "init", ".")
+	// A timeout can be reported after init has already committed the database.
+	// Keep that index. Only a database status rejects is a fragment to delete.
+	ready := codegraphIndexReady(root)
+	statusOK := false
+	if ready && err != nil {
+		// A killed init leaves daemon.pid. status cannot accept a finished
+		// database until that lock is gone, and a lock error must not delete it.
+		codegraphUnlockPartialIndex(root, bin)
+		statusOK = codegraphIndexAcceptsQueries(root, bin)
+	}
+	if codegraphInitResultUsable(err, ready, statusOK) {
+		return true
+	}
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		// The process tree, including node started by codegraph.cmd, is already
+		// stopped. Drop the fragment it was writing so the next call can init.
+		codegraphRemovePartialIndex(root)
+		log.Printf("[codegraph] init timed out for %s; partial index removed so the next call can retry: %s", root, compactCodingSubAgentLogText(out, 200))
+		return false
+	}
+	codegraphRemovePartialIndex(root)
+	codegraphRememberIndexFailure(root)
+	log.Printf("[codegraph] init failed for %s: %v %s", root, err, compactCodingSubAgentLogText(out, 400))
+	return false
+}
+
+// codegraphInitResultUsable reports whether the database left by init can be
+// queried. A clean exit is enough. A cancelled exit still counts when status
+// accepts the file, because the wait can lose the race with process exit.
+func codegraphInitResultUsable(commandErr error, ready, statusOK bool) bool {
+	if !ready {
+		return false
+	}
+	return commandErr == nil || statusOK
+}
+
+// codegraphIndexAcceptsQueries asks codegraph status whether the database is
+// readable. A non-empty fragment of a killed init still looks like a database
+// file, and status is what rejects it.
+func codegraphIndexAcceptsQueries(root, bin string) bool {
+	if strings.TrimSpace(root) == "" || strings.TrimSpace(bin) == "" || !codegraphIndexReady(root) {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	_, err := runCodegraphCommand(ctx, bin, root, "status")
+	return codegraphIndexStatusKeepsDatabase(err, ctx.Err())
+}
+
+// codegraphIndexStatusKeepsDatabase keeps the file when status accepts it.
+// A status check that only runs out of time is not a rejection: a large
+// database can outlive the short check, and deleting it would force another init.
+func codegraphIndexStatusKeepsDatabase(statusErr, statusCtxErr error) bool {
+	if statusErr == nil && statusCtxErr == nil {
+		return true
+	}
+	return errors.Is(statusCtxErr, context.DeadlineExceeded)
+}
+
+// runCodegraphCommand runs one codegraph invocation and stops its process tree
+// when ctx ends. codegraph.cmd starts node; killing only the batch host leaves
+// that child holding the index lock.
+func runCodegraphCommand(ctx context.Context, bin, root string, args ...string) (string, error) {
+	cmd := exec.Command(bin, args...)
+	cmd.Dir = root
+	hideCommandWindow(cmd)
+	tool.PrepareCommandForTreeKill(cmd)
+	var output bytes.Buffer
+	cmd.Stdout = &output
+	cmd.Stderr = &output
+	if err := cmd.Start(); err != nil {
+		return "", err
+	}
+	err := tool.WaitCommandWithContext(ctx, cmd)
+	return output.String(), err
+}
+
+func codegraphUnlockPartialIndex(root, bin string) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	_, _ = runCodegraphCommand(ctx, bin, root, "unlock", ".")
+}
+
+func codegraphRemovePartialIndex(root string) {
+	base := filepath.Join(root, codegraphDataDirName())
+	for _, name := range []string{"codegraph.db", "codegraph.db-wal", "codegraph.db-shm", "daemon.pid"} {
+		_ = os.Remove(filepath.Join(base, name))
+	}
+}
+
+func codegraphIndexFailureKey(root string) string {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return ""
+	}
+	return filepath.Clean(root)
+}
+
+func codegraphIndexAttemptFailed(root string) bool {
+	key := codegraphIndexFailureKey(root)
+	if key == "" {
+		return false
+	}
+	codegraphIndexMu.Lock()
+	defer codegraphIndexMu.Unlock()
+	return codegraphIndexFailed[key]
+}
+
+func codegraphRememberIndexFailure(root string) {
+	key := codegraphIndexFailureKey(root)
+	if key == "" {
+		return
+	}
+	codegraphIndexMu.Lock()
+	codegraphIndexFailed[key] = true
+	codegraphIndexMu.Unlock()
+}
+
+func capCodeNavigationOutput(output string) (string, bool) {
+	const maxBytes = 24000
+	if len(output) <= maxBytes {
+		return output, false
+	}
+	cut := maxBytes
+	for cut > 0 && cut < len(output) && !utf8.RuneStart(output[cut]) {
+		cut--
+	}
+	if cut <= 0 {
+		cut = maxBytes
+	}
+	return output[:cut], true
 }
 
 func maxLocalizationInt(a, b int) int {

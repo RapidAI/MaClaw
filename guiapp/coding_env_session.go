@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/goal"
 )
 
 // stickyCodingUserMu serializes read-modify-write of per-user sticky coding memory
@@ -1191,7 +1192,36 @@ func (h *IMMessageHandler) syncCodingWorkbenchSessionPlanFromGoal(userID, object
 	if !h.isPureCodingWorkbenchSession(userID) {
 		return
 	}
-	h.setStickyCodingSessionPlan(userID, objective)
+	plan := objective
+	if g := h.getGoalStore().Get(userID); g != nil {
+		if formatted := formatGoalSessionPlan(g); formatted != "" {
+			plan = formatted
+		}
+	}
+	h.setStickyCodingSessionPlan(userID, plan)
+}
+
+func formatGoalSessionPlan(g *goal.Goal) string {
+	if g == nil {
+		return ""
+	}
+	var b strings.Builder
+	if understanding := strings.TrimSpace(g.Understanding); understanding != "" {
+		b.WriteString(understanding)
+		b.WriteString("\n")
+	}
+	for _, step := range g.Steps {
+		title := strings.TrimSpace(step.Title)
+		if title == "" {
+			continue
+		}
+		index := step.Index
+		if index <= 0 {
+			index = 1
+		}
+		fmt.Fprintf(&b, "%d. %s\n", index, title)
+	}
+	return strings.TrimSpace(b.String())
 }
 
 // ensurePureCodingArmedForIncomingMessage re-arms CodingSubAgent routing before

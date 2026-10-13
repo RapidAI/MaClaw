@@ -66,6 +66,26 @@ func TestDesktopOutcomeUserContentNamesAMissingAndAnUnseenShot(t *testing.T) {
 	if !ok || !strings.Contains(unseen, "看不到图片") || !strings.Contains(unseen, "没有写明的画面不能算已经达成") || strings.Contains(unseen, "aaaa") {
 		t.Fatalf("unseen=%v", unseen)
 	}
+	read, ok := desktopOutcomeUserContent(corelib.MaclawLLMConfig{SupportsVision: false}, "打开贪吃蛇", "desktop: screen_vision:\n  e0 [button] \"开始\" center=10,20", &ToolModelImage{MIME: "image/png", Base64: "aaaa"}).(string)
+	if !ok || !strings.Contains(read, "screen_vision") || !strings.Contains(read, "是不是用户要的那一屏") || strings.Contains(read, "aaaa") {
+		t.Fatalf("screen reading=%v", read)
+	}
+	unattached, ok := desktopOutcomeUserContent(corelib.MaclawLLMConfig{SupportsVision: false}, "打开贪吃蛇", "desktop: Desktop screenshot of display :1: 1920x1080 pixels.\nscreen_vision:\n  e0 [button] \"开始\" center=10,20", nil).(string)
+	if !ok || !strings.Contains(unattached, "图片没有附上") || !strings.Contains(unattached, "这次截到的画面") || !strings.Contains(unattached, "是不是用户要的那一屏") || strings.Contains(unattached, "也是更早的画面") {
+		t.Fatalf("unattached current reading=%v", unattached)
+	}
+	echoed, ok := desktopOutcomeUserContent(corelib.MaclawLLMConfig{SupportsVision: false}, "打开贪吃蛇", "desktop: echo screen_vision:\n  not a shot", nil).(string)
+	if !ok || !strings.Contains(echoed, "没有当前桌面截图") || !strings.Contains(echoed, "也是更早的画面") || strings.Contains(echoed, "是不是用户要的那一屏") {
+		t.Fatalf("printed marker treated as a shot=%v", echoed)
+	}
+	staleShot, ok := desktopOutcomeUserContent(corelib.MaclawLLMConfig{SupportsVision: false}, "打开贪吃蛇", "desktop: screen_vision:\n  e0 [button] \"旧画面\" center=1,1\ndesktop: bash finished", nil).(string)
+	if !ok || !strings.Contains(staleShot, "没有当前桌面截图") || !strings.Contains(staleShot, "screen_vision 也是更早的画面") || strings.Contains(staleShot, "是不是用户要的那一屏") {
+		t.Fatalf("stale reading without a shot=%v", staleShot)
+	}
+	replaced, ok := desktopOutcomeUserContent(corelib.MaclawLLMConfig{SupportsVision: false}, "打开贪吃蛇", "desktop: screen_vision:\n  e0 [button] \"旧画面\" center=1,1\ndesktop: Desktop screenshot of display :1", &ToolModelImage{MIME: "image/png", Base64: "bbbb"}).(string)
+	if !ok || !strings.Contains(replaced, "不是当前截图") || strings.Contains(replaced, "是不是用户要的那一屏") || strings.Contains(replaced, "bbbb") {
+		t.Fatalf("older reading treated as the new shot=%v", replaced)
+	}
 	if strings.Contains(missing, "不能用来否定") || strings.Contains(unseen, "不能用来否定") {
 		t.Fatal("a desktop-only transcript picked up the ssh note")
 	}

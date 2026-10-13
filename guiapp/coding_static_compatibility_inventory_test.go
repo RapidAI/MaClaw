@@ -412,6 +412,20 @@ func TestCodingStaticCompatibilityQuarantinesAmbiguousLocalDelivery(t *testing.T
 	}
 }
 
+func TestCodingStaticCompatibilityKeepsSurfaceAfterTransportRejection(t *testing.T) {
+	cb := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: t.TempDir()},
+		task:     &TaskItem{Title: "inspect", Description: "read repository", RequestKind: codingRequestInquiry},
+	}
+	if rendered := cb.BuildToolsForModelRequest("inspect", 0); len(rendered) == 0 {
+		t.Fatal("initial local compatibility surface is empty")
+	}
+	cb.OnToolSurfaceAttemptFinished(agent.ToolCallExecutionContext{}, agent.ToolSurfaceTransportRejected)
+	if rendered := cb.BuildToolsForModelRequest("retry", 1); len(rendered) == 0 {
+		t.Fatal("a gateway rejection quarantined the tool surface needed for backoff retry")
+	}
+}
+
 func TestRemoteCodingStaticCompatibilityRequestSurfaceRejectsStaleAndInventedTools(t *testing.T) {
 	cb := &remoteCodingCallbacks{agent: &RemoteCodingSubAgent{}}
 	_ = cb.BuildToolsForModelRequest("implement", 0)

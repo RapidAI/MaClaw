@@ -11,11 +11,6 @@
     max-width: 100%;
 }
 
-.llm-config-provider-grid {
-    align-items: center;
-    padding-top: 8px;
-}
-
 .llm-config-provider-grid .llm-config-tokenbank-btn {
     position: absolute;
     top: -4px;

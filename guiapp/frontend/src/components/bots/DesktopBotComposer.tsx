@@ -24,7 +24,7 @@ interface DesktopBotComposerProps {
 const historyTheme = {
     ...lightTheme,
     bg: 'var(--theme-surface, #fff)',
-    text: 'var(--theme-text, #1d2939)',
+    text: 'var(--theme-text-primary, #1d2939)',
     textMuted: 'var(--theme-text-muted, #98a2b3)',
     inputBarBg: 'var(--theme-surface, #fff)',
     inputBarBorder: 'var(--theme-border, #e6e6e8)',

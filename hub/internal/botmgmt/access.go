@@ -566,6 +566,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 			Novnc:      novnc,
 			RunID:      payload.Run.ID,
 			Phase:      phase,
+			Task:       content,
 			Opened:     opened,
 			Started:    pipelineStarted,
 		})
@@ -715,8 +716,8 @@ func (s *Service) desktopIdentityMetadata(ctx context.Context, rec *record, toke
 	metadata["hub_bot"] = "1"
 	metadata["hub_user_id"] = userID
 	metadata["hub_tenant_id"] = tenantID
-	// Bot turns always bill the reserved free group. A group copied from an
-	// older instance would send this user's other entitlements instead.
+	// Bot turns bill the MaClaw official group. A group copied from an older
+	// instance, including system-free, would skip that deduction channel.
 	metadata["llm_service_group_id"] = botLLMServiceGroupID
 	return metadata, !metadataEqual(existing.Metadata, metadata), nil
 }

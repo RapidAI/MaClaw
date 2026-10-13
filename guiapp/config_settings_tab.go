@@ -105,6 +105,7 @@ var settingsTabFieldKeys = map[string][]string{
 	"llmCache":         {"llm_prompt_cache"},
 	"pptStyles":        {},
 	"tokenBank":        {},
+	"email":            {},
 	"virtualEmployee":  {"remote_machine_id", "favorite_employees", "favorite_employee_names"},
 	"im": {
 		"qqbot_enabled",

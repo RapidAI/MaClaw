@@ -481,3 +481,110 @@ func TestRunnerDiscardsLateExecutorResultAfterExplicitCancellation(t *testing.T)
 		t.Fatalf("events=%+v err=%v", events, err)
 	}
 }
+
+func TestRunnerSecondTaskWaitsForSameDirectoryWriter(t *testing.T) {
+	store := NewMemoryStore()
+	root := `D:\shared`
+	hold := make(chan struct{})
+	started := make(chan struct{})
+	holderDone := make(chan error, 1)
+	go func() {
+		_, _, err := (Runner{Store: store, LeaseOwner: "holder", LeaseDuration: time.Minute}).Run(context.Background(), Task{ProjectRef: root, Mode: "local"}, PolicySnapshot{ProjectRoot: root, Mode: "local"}, executorFunc(func(context.Context, ExecutionRequest) ExecutionResult {
+			close(started)
+			<-hold
+			return ExecutionResult{Status: TaskCompleted}
+		}))
+		holderDone <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("holder did not start")
+	}
+	waited := make(chan struct{})
+	waiterDone := make(chan error, 1)
+	go func() {
+		_, _, err := (Runner{
+			Store: store, LeaseOwner: "waiter", LeaseDuration: time.Minute,
+			OnAdmissionWait: func(WriteSetConflict) { close(waited) },
+		}).Run(context.Background(), Task{ProjectRef: root, Mode: "local"}, PolicySnapshot{ProjectRoot: root, Mode: "local"}, executorFunc(func(context.Context, ExecutionRequest) ExecutionResult {
+			return ExecutionResult{Status: TaskCompleted}
+		}))
+		waiterDone <- err
+	}()
+	select {
+	case <-waited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiter did not queue behind the live writer")
+	}
+	select {
+	case err := <-waiterDone:
+		t.Fatalf("waiter finished while the directory was still held: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(hold)
+	select {
+	case err := <-waiterDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiter did not run after the directory writer finished")
+	}
+	if err := <-holderDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRenewedLeaseKeepsDirectoryClaimPastOriginalDeadline(t *testing.T) {
+	store := NewMemoryStore()
+	now := time.Date(2026, 10, 13, 5, 38, 0, 0, time.UTC)
+	root := `D:\shared`
+	first, err := store.CreateTask(Task{ProjectRef: root, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.CreateTask(Task{ProjectRef: root, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := PolicySnapshot{ProjectRoot: root, Mode: "local"}
+	attempt, err := store.StartAttempt(first.TaskID, "holder", time.Minute, policy, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RenewAttemptLease(attempt.AttemptID, "holder", time.Minute, now.Add(50*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.StartAttempt(second.TaskID, "waiter", time.Minute, policy, now.Add(90*time.Second))
+	if !errors.Is(err, ErrWriterConflict) {
+		t.Fatalf("renewed writer was no longer a conflict: %v", err)
+	}
+}
+
+func TestExpiredRunningWriterDoesNotBlockWithoutLocalExecutor(t *testing.T) {
+	store := NewMemoryStore()
+	now := time.Date(2026, 10, 13, 5, 38, 0, 0, time.UTC)
+	root := `D:\shared`
+	first, err := store.CreateTask(Task{ProjectRef: root, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.CreateTask(Task{ProjectRef: root, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := PolicySnapshot{ProjectRoot: root, Mode: "local"}
+	attempt, err := store.StartAttempt(first.TaskID, "holder", time.Minute, policy, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	markLocalLiveWriter(attempt.AttemptID)
+	if _, err := store.StartAttempt(second.TaskID, "waiter", time.Minute, policy, now.Add(2*time.Minute)); !errors.Is(err, ErrWriterConflict) {
+		t.Fatalf("local executor was admitted beside an expired lease: %v", err)
+	}
+	unmarkLocalLiveWriter(attempt.AttemptID)
+	if _, err := store.StartAttempt(second.TaskID, "waiter", time.Minute, policy, now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("dead expired writer still locked the directory: %v", err)
+	}
+}

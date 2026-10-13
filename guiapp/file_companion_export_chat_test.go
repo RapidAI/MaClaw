@@ -225,10 +225,10 @@ func TestFileCompanionChatFileNameKeepsADocumentName(t *testing.T) {
 
 // Blank turns would otherwise render as a heading with nothing under it.
 func TestFileCompanionChatMarkdownSkipsBlankTurns(t *testing.T) {
-	if got := fileCompanionChatMarkdown([]CompanionChatTurn{{Role: "user", Content: "  "}, {Role: "assistant", Content: ""}}); got != "" {
-		t.Fatalf("blank turns produced %q", got)
+	if got, count := fileCompanionChatDocument([]CompanionChatTurn{{Role: "user", Content: "  "}, {Role: "assistant", Content: ""}}); got != "" || count != 0 {
+		t.Fatalf("blank turns produced %q (count %d)", got, count)
 	}
-	got := fileCompanionChatMarkdown([]CompanionChatTurn{
+	got, count := fileCompanionChatDocument([]CompanionChatTurn{
 		{Role: "user", Content: "提问"},
 		{Role: "assistant", Content: "   "},
 		{Role: "assistant", Content: "回答"},
@@ -236,8 +236,38 @@ func TestFileCompanionChatMarkdownSkipsBlankTurns(t *testing.T) {
 	if strings.Count(got, "## ") != 2 {
 		t.Fatalf("expected two headings in %q", got)
 	}
-	if !strings.Contains(got, "## 第 1 个问题") || !strings.Contains(got, "## 第 2 个回答") {
+	if count != 2 {
+		t.Fatalf("counted %d turns, want the two that carry text", count)
+	}
+	// The answer is the first one, so it is 第 1 个回答. A single running
+	// number over both roles would call it 第 2 个回答 and leave the reader
+	// pairing 第 1 个问题 with nothing.
+	if !strings.Contains(got, "## 第 1 个问题") || !strings.Contains(got, "## 第 1 个回答") {
 		t.Fatalf("turn labels lost their place numbering: %q", got)
+	}
+}
+
+// A transcript pairs each question with its own answer, so the two sides are
+// numbered apart and a long session stays readable.
+func TestFileCompanionChatDocumentNumbersEachSideApart(t *testing.T) {
+	got, count := fileCompanionChatDocument([]CompanionChatTurn{
+		{Role: "user", Content: "问题一"},
+		{Role: "assistant", Content: "回答一"},
+		{Role: "user", Content: "问题二"},
+		{Role: "assistant", Content: "回答二"},
+	})
+	if count != 4 {
+		t.Fatalf("count = %d, want 4", count)
+	}
+	for _, want := range []string{"## 第 1 个问题", "## 第 1 个回答", "## 第 2 个问题", "## 第 2 个回答"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in %q", want, got)
+		}
+	}
+	// Each label appears exactly once: a shared counter would produce a
+	// duplicate instead of a pair.
+	if strings.Count(got, "## 第 2 个回答") != 1 {
+		t.Fatalf("answer numbering is not per side: %q", got)
 	}
 }
 
@@ -258,4 +288,61 @@ func testFigureDataURL(t *testing.T) string {
 		t.Fatal(err)
 	}
 	return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
+}
+
+// An answer's own headings have to sit inside the turn, not beside it. Both
+// render at the same size otherwise, and the reader cannot tell where the
+// answer starts.
+func TestFileCompanionChatDocumentNestsTheAnswersOwnHeadings(t *testing.T) {
+	got, _ := fileCompanionChatDocument([]CompanionChatTurn{
+		{Role: "user", Content: "讲讲这个方法"},
+		{Role: "assistant", Content: "## 方法原理\n\n正文。\n\n### 细节\n\n更多。\n"},
+	})
+	if !strings.Contains(got, "## 第 1 个回答") {
+		t.Fatalf("turn heading lost its level: %q", got)
+	}
+	if !strings.Contains(got, "### 方法原理") {
+		t.Fatalf("the answer's own heading was not nested: %q", got)
+	}
+	if !strings.Contains(got, "#### 细节") {
+		t.Fatalf("the answer's deeper heading was not nested: %q", got)
+	}
+	// The original levels must not survive, or the collision is still there.
+	if strings.Contains(got, "\n## 方法原理") {
+		t.Fatalf("the answer kept a heading at the turn's level: %q", got)
+	}
+}
+
+// A "#" inside a code fence is content, and a "#" that does not begin a heading
+// must not be touched either.
+func TestFileCompanionChatDocumentLeavesNonHeadingsAlone(t *testing.T) {
+	got, _ := fileCompanionChatDocument([]CompanionChatTurn{
+		{Role: "assistant", Content: "```shell\n# 这是注释\n## 也是注释\n```\n\n#标签 不是标题\n\n##### 已经很深\n"},
+	})
+	if !strings.Contains(got, "# 这是注释") || !strings.Contains(got, "## 也是注释") {
+		t.Fatalf("a comment inside a fence was rewritten: %q", got)
+	}
+	if !strings.Contains(got, "#标签 不是标题") {
+		t.Fatalf("a hash without a space was treated as a heading: %q", got)
+	}
+	// Level five is as deep as the renderer goes, so it stays put rather than
+	// becoming an unrecognised six.
+	if !strings.Contains(got, "##### 已经很深") || strings.Contains(got, "######") {
+		t.Fatalf("a deep heading was pushed past the renderer's range: %q", got)
+	}
+}
+
+// A level-one heading is already larger than the turn heading, so it stays.
+// Demoting it would put the answer's own top level beside the turn's, which is
+// the collision this whole step exists to avoid.
+func TestFileCompanionChatDocumentLeavesATopLevelHeadingAlone(t *testing.T) {
+	got, _ := fileCompanionChatDocument([]CompanionChatTurn{
+		{Role: "assistant", Content: "# 我的分析\n\n正文。\n"},
+	})
+	if !strings.Contains(got, "# 我的分析") {
+		t.Fatalf("a level-one heading was demoted: %q", got)
+	}
+	if strings.Contains(got, "## 我的分析") {
+		t.Fatalf("a level-one heading landed on the turn heading's level: %q", got)
+	}
 }

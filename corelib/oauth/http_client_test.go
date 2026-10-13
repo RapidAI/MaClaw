@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/proxyutil"
@@ -161,6 +162,130 @@ func TestSetProxySkipsUnchangedConfig(t *testing.T) {
 	SetProxy(proxyutil.Config{Enabled: true, Protocol: "socks5h", Host: " 127.0.0.1 ", Port: "1080"})
 	if httpClient() != socks {
 		t.Fatal("equivalent SOCKS5 configs should keep the same HTTP client")
+	}
+}
+
+func TestDoNoFollowWithinHonorsCallerBudget(t *testing.T) {
+	started := time.Now()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+
+	short, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = DoNoFollowWithin(short, 40*time.Millisecond, time.Second); err == nil || !strings.Contains(err.Error(), "连接服务失败") {
+		t.Fatalf("short budget error = %v, want an annotated timeout", err)
+	}
+	if time.Since(started) > 2*time.Second {
+		t.Fatalf("short budget waited %s, want a fast header timeout", time.Since(started))
+	}
+
+	long, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := DoNoFollowWithin(long, time.Second, 2*time.Second)
+	if err != nil {
+		t.Fatalf("budget that covers the delayed headers: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	shared := httpClient()
+	if shared.Timeout != oauthHTTPTimeout {
+		t.Fatalf("shared client timeout = %s, want %s", shared.Timeout, oauthHTTPTimeout)
+	}
+}
+
+func TestDoNoFollowWithinUsesConfiguredProxy(t *testing.T) {
+	t.Cleanup(func() { SetProxy(proxyutil.Config{Enabled: false}) })
+	SetProxy(proxyutil.Config{Enabled: true, Protocol: "http", Host: "127.0.0.1", Port: "7890"})
+	transport := newProbeTransport(currentProxyConfig(), time.Minute)
+	if transport.Proxy == nil {
+		t.Fatal("generation transport dropped the configured HTTP proxy")
+	}
+	if transport.ResponseHeaderTimeout != time.Minute {
+		t.Fatalf("header timeout = %s", transport.ResponseHeaderTimeout)
+	}
+	if !transport.ForceAttemptHTTP2 {
+		t.Fatal("probe transport should keep HTTP/2, matching live chat")
+	}
+	if transport.DialContext == nil {
+		t.Fatal("probe transport has no dial timeout; a black-holed host would wait for the whole generation budget")
+	}
+}
+
+func TestDoNoFollowWithinStopsAtRedirect(t *testing.T) {
+	followed := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/next" {
+			followed = true
+			http.Error(w, "followed", http.StatusInternalServerError)
+			return
+		}
+		http.Redirect(w, r, "/next", http.StatusTemporaryRedirect)
+	}))
+	defer server.Close()
+
+	req, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := DoNoFollowWithin(req, time.Second, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if followed {
+		t.Fatal("probe client followed a redirect")
+	}
+	if resp.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("status = %d, want 307", resp.StatusCode)
+	}
+}
+
+func TestDialWithTimeoutClosesLateConn(t *testing.T) {
+	released := make(chan struct{})
+	closed := make(chan struct{})
+	dial := func(string, string) (net.Conn, error) {
+		<-released
+		client, server := net.Pipe()
+		go func() {
+			buf := make([]byte, 1)
+			if _, err := server.Read(buf); err != nil {
+				close(closed)
+			}
+			_ = server.Close()
+		}()
+		return client, nil
+	}
+	_, err := dialWithTimeout(dial, 30*time.Millisecond)("tcp", "10.0.0.1:1")
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("err = %v, want a dial timeout", err)
+	}
+	close(released)
+	select {
+	case <-closed:
+	case <-time.After(time.Second):
+		t.Fatal("connection that arrived after the dial deadline was left open")
+	}
+}
+
+func TestProbeTransportKeepsSOCKSDial(t *testing.T) {
+	t.Cleanup(func() { SetProxy(proxyutil.Config{Enabled: false}) })
+	SetProxy(proxyutil.Config{Enabled: true, Protocol: "socks5", Host: "127.0.0.1", Port: "1080"})
+	transport := newProbeTransport(currentProxyConfig(), time.Minute)
+	if transport.Dial == nil {
+		t.Fatal("SOCKS probe transport dropped Dial")
+	}
+	if transport.DialContext != nil {
+		t.Fatal("DialContext would bypass the SOCKS proxy")
 	}
 }
 

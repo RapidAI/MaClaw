@@ -4,6 +4,7 @@ import {
     AbandonUnopenedFreshLatexTask,
     CloudWorkspaceEntitlement,
     CreateCloudWorkspace,
+    CreateRunWindowTask,
     CreateTaskUnified,
     RenameCloudWorkspace,
     EnsureCodingWorkbenchArmed,
@@ -29,6 +30,8 @@ import { extractErrorMessage } from "../participantAddError";
 import { applyComposeActionToText, isBtwCommandText, isHistoryResetCommandText, normalizeInstallCommandText, type ComposeAction } from "../composeAction";
 import { buildOutgoingMessageMulti } from "../useAIAssistant";
 import { defaultTaskDraft, draftFromWizardSeed, isDraftDefault, withCloudWorkspace, type NewTaskWizardSeed, type TaskDraft } from "./taskDraft";
+import { isRunWindowScheduled, runWindowCreatedNotice, runWindowCreateRequest, validateRunWindow } from "./runWindow";
+import { dispatchDueRunWindows, launchRunWindowTask } from "./runWindowDispatch";
 import {
     createLatexDocumentForTask,
     isLatexExpertId,
@@ -115,6 +118,8 @@ export interface TaskConfigWiringOptions {
     setQueueInteractionStarted: (value: boolean) => void;
     setQueueEditDraftActive: (value: boolean) => void;
     setEditingEntryId: (value: string | null) => void;
+    /** App dialog. A scheduled create confirms the start time here. */
+    showAlert?: (message: string, title?: string) => Promise<void> | void;
 }
 
 /** The object AssistantWelcomeView consumes through its `taskConfig` prop. */
@@ -158,6 +163,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         handleSend, handleWelcomePromptSend, clearComposerDraft,
         getTabs, getTabState, saveTabState, activateTab,
         setQueueInteractionStarted, setQueueEditDraftActive, setEditingEntryId,
+        showAlert,
     } = options;
 
     // --- New-task wizard (TaskConfigBar) wiring ---
@@ -396,6 +402,23 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         }
     }, [getTabState, getTabs, saveTabState]);
 
+    const handoffComposer = useCallback((options?: { focus?: boolean }) => {
+        const next = defaultTaskDraft();
+        // Publish before the next render. A repeated Enter in this turn must
+        // not still see the scheduled draft and create another copy.
+        taskConfigDraftRef.current = next;
+        clearComposerDraft({ clearAttachments: true, focus: options?.focus !== false });
+        setTaskConfigDraft(next);
+        const coveredTurn = wizardOverlayRef.current;
+        setWizardOverlay(false);
+        if (coveredTurn) retireLocalWizardFlag();
+        const covered = composerStashRef.current;
+        composerStashRef.current = null;
+        if (covered?.text) showComposerText?.(covered.text);
+        if (covered?.attachments?.length) replacePendingAttachments?.(covered.attachments);
+        if (covered?.selectedPaths?.length) replaceSelectedFilePaths?.(covered.selectedPaths);
+    }, [clearComposerDraft, replacePendingAttachments, replaceSelectedFilePaths, retireLocalWizardFlag, showComposerText]);
+
     const runConfiguredTaskSend = useCallback(async (rawText: string, sendOptions?: { force?: boolean; initialMessage?: string }): Promise<boolean> => {
         const draft = taskConfigDraftRef.current;
         const force = sendOptions?.force === true;
@@ -477,21 +500,10 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             // Success: the launch/expert handoff owns the first message. Reset
             // the composer and the wizard draft. The local guide stays the
             // new-task page — there is no default task to fall back to.
-            clearComposerDraft({ clearAttachments: true });
-            setTaskConfigDraft(defaultTaskDraft());
-            const coveredTurn = wizardOverlayRef.current;
-            setWizardOverlay(false);
             // The empty guide stays a new-task page, so the next send creates
             // another task. A cover over a live conversation does not: that
             // chat's later sends must stay in the conversation.
-            if (coveredTurn) retireLocalWizardFlag();
-            const covered = composerStashRef.current;
-            composerStashRef.current = null;
-            // Put the covered conversation's unsent draft back. This still runs
-            // on the local session; the new task tab then shows its own composer.
-            if (covered?.text) showComposerText?.(covered.text);
-            if (covered?.attachments?.length) replacePendingAttachments?.(covered.attachments);
-            if (covered?.selectedPaths?.length) replaceSelectedFilePaths?.(covered.selectedPaths);
+            handoffComposer();
             return true;
         } catch (err) {
             setTaskConfigError(extractErrorMessage(err) || (!lang?.startsWith("en") ? "创建任务失败" : "Failed to create task"));
@@ -500,7 +512,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             taskConfigSendingRef.current = false;
             setTaskConfigSending(false);
         }
-    }, [clearComposerDraft, lang, replacePendingAttachments, replaceSelectedFilePaths, retireLocalWizardFlag, showComposerText]);
+    }, [handoffComposer, lang]);
 
     // The local assistant guide is the new-task page. There is no default
     // task: a send from that page creates a task even when every chip stays
@@ -522,6 +534,60 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         return paths.map((path) => path.trim()).filter((path, index, all) => path.length > 0 && all.indexOf(path) === index);
     }, [pendingAttachments, selectedFilePaths]);
 
+    const scheduleConfiguredTask = useCallback(async (named: string, initialMessage: string): Promise<boolean> => {
+        const draft = taskConfigDraftRef.current;
+        const isZh = !lang?.startsWith("en");
+        const check = validateRunWindow(draft.runWindow, new Date(), isZh);
+        if (!check.ok) {
+            setTaskConfigError(check.error);
+            return false;
+        }
+        if (typeof CreateRunWindowTask !== "function") {
+            setTaskConfigError(isZh ? "运行时段不可用" : "Run windows are unavailable");
+            return false;
+        }
+        if (taskConfigSendingRef.current) return false;
+        taskConfigSendingRef.current = true;
+        setTaskConfigSending(true);
+        setTaskConfigError("");
+        const startAt = draft.runWindow?.startAt || "";
+        const endAt = draft.runWindow?.endAt;
+        let created = false;
+        try {
+            await CreateRunWindowTask(runWindowCreateRequest(named, named, initialMessage, draft) as unknown as Parameters<typeof CreateRunWindowTask>[0]);
+            created = true;
+        } catch (err) {
+            setTaskConfigError(extractErrorMessage(err) || (isZh ? "加入计划任务失败" : "Could not schedule the task"));
+            return false;
+        } finally {
+            // Hold the send lock through the confirmation. Releasing it here
+            // lets a repeated Enter create a second task before the dialog opens.
+            if (!created) {
+                taskConfigSendingRef.current = false;
+                setTaskConfigSending(false);
+            }
+        }
+        const notice = runWindowCreatedNotice(named, startAt, endAt, isZh);
+        try {
+            await Promise.resolve(showAlert?.(notice.message, notice.title));
+        } catch (err) {
+            console.warn("[run-window] created notice failed", err);
+        } finally {
+            try {
+                handoffComposer();
+            } finally {
+                taskConfigSendingRef.current = false;
+                setTaskConfigSending(false);
+            }
+        }
+        // A start time that has already arrived should open now, not on the
+        // next 15s poll. Future windows are left pending by the claim check.
+        void dispatchDueRunWindows((task) => launchRunWindowTask(task, lang || "zh-Hans")).catch((err) => {
+            console.warn("[run-window] dispatch after create failed", err);
+        });
+        return true;
+    }, [handoffComposer, lang, showAlert]);
+
     // Name stays the typed text. A file with no text uses the filename so the
     // guide still creates a task instead of falling into a nameless session.
     const startGuideTask = useCallback((text: string, wizardActive: boolean, taskName?: string) => {
@@ -530,17 +596,21 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         const named = (taskName || text || fileName).trim();
         if (!named) return Promise.resolve(false);
         const initialMessage = filePaths.length > 0 ? buildOutgoingMessageMulti(text, filePaths) : text || named;
+        if (isRunWindowScheduled(taskConfigDraftRef.current)) {
+            return scheduleConfiguredTask(named, initialMessage);
+        }
         return runConfiguredTaskSend(named, { force: wizardActive, initialMessage });
-    }, [collectGuideFilePaths, runConfiguredTaskSend]);
+    }, [collectGuideFilePaths, runConfiguredTaskSend, scheduleConfiguredTask]);
 
     // Composer Enter on the local guide always creates a task. A default
     // draft on any other surface keeps the legacy send path.
     const handleSendWithTaskConfig = useCallback(() => {
+        if (taskConfigSendingRef.current) return;
         const draft = taskConfigDraftRef.current;
         const wizardActive = isNewTaskWizardTabActive();
         // Compose mode on any other page keeps its dedicated send path.
         // On the guide it is still a new task; the prefix rides on the first message.
-        if (!wizardActive && (isDraftDefault(draft) || composeAction)) {
+        if (!wizardActive && !isRunWindowScheduled(draft) && (isDraftDefault(draft) || composeAction)) {
             handleSend();
             return;
         }
@@ -569,6 +639,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
     // Welcome card "send now" path uses the same task create, including files
     // already sitting on the composer.
     const handleWelcomePromptSendWithTaskConfig = useCallback(async (text: string, meta?: WelcomePromptSubmitMeta) => {
+        if (taskConfigSendingRef.current) return;
         const draft = taskConfigDraftRef.current;
         const wizardActive = isNewTaskWizardTabActive();
         const trimmed = (text || "").trim();
@@ -580,7 +651,7 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
             return handleWelcomePromptSend(typedSlash ? commandText : composed, meta);
         }
         const hasFiles = collectGuideFilePaths().length > 0;
-        if ((!isDraftDefault(draft) || wizardActive) && (composed || (wizardActive && hasFiles))) {
+        if ((!isDraftDefault(draft) || wizardActive || isRunWindowScheduled(draft)) && (composed || (wizardActive && hasFiles))) {
             await startGuideTask(composed, wizardActive, composeAction ? commandText : undefined);
             return;
         }
@@ -718,6 +789,30 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         window.addEventListener(EVENT_OPEN_NEW_TASK_WIZARD, handler);
         return () => window.removeEventListener(EVENT_OPEN_NEW_TASK_WIZARD, handler);
     }, [openNewTaskWizard]);
+    useEffect(() => {
+        let stopped = false;
+        let ticking = false;
+        const tick = async () => {
+            if (stopped || ticking) return;
+            ticking = true;
+            try {
+                await dispatchDueRunWindows((task) => launchRunWindowTask(task, lang || "zh-Hans"));
+            } catch (err) {
+                console.warn("[run-window] dispatch failed", err);
+            } finally {
+                ticking = false;
+            }
+        };
+        void tick();
+        const timer = window.setInterval(() => { void tick(); }, 15000);
+        const onFocus = () => { void tick(); };
+        window.addEventListener("focus", onFocus);
+        return () => {
+            stopped = true;
+            window.clearInterval(timer);
+            window.removeEventListener("focus", onFocus);
+        };
+    }, [lang]);
     // The startup guide is the new-task page even before the sidebar button.
     // A live conversation is not: leaving the guide drops the marker so the
     // next message stays in that chat.

@@ -340,7 +340,11 @@ func prepareOfficialLLMRequestPricingQuote(ctx context.Context, serviceReg *llms
 		inputEstimate := estimateLLMQuoteInputTokens(forwardBody)
 		outputLimit := llmQuoteOutputTokenLimit(forwardBody)
 		if strings.TrimSpace(userID) != "" || strings.TrimSpace(email) != "" {
-			allowed, _, _, _, available, _, _ := llmservice.BillingEligibilityForServiceGroupsForUserID(serviceReg, userID, email, groups, time.Now().UTC())
+			balanceReg := registryForSystemFreeBot(ctx, serviceReg, userID, email, groups)
+			allowed, _, _, _, available, _, _ := llmservice.BillingEligibilityForServiceGroupsForUserID(balanceReg, userID, email, groups, time.Now().UTC())
+			if budget, ok := systemFreeBotBudgetForGroups(ctx, groups); ok && budget.limit > 0 && allowed {
+				available = systemFreeBotRemaining(budget)
+			}
 			if allowed && available > 0 {
 				quote, inputEstimate, outputLimit = fitOfficialForwardToBalance(ctx, serviceReg, groups, forwardGroupIDs, available, quote, payload, inputEstimate, outputLimit, forwardBody, nil, body, forwardBody)
 			}
@@ -736,6 +740,7 @@ func pricingQuotesForProviderLocked(quotes map[string]llmpool.PricingQuoteSnapsh
 // finite wallet value to compare here.
 func prepareLLMPricingQuote(ctx context.Context, reg *llmservice.Registry, providerReg *im.LLMProviderRegistry, userID, email string, model *llmservice.AuthorizedModel, providerID string, body map[string]any, now time.Time) (llmBillingDenial, error) {
 	groups := llmservice.ChargedServiceGroupIDs(model, providerID)
+	reg = registryForSystemFreeBot(ctx, reg, userID, email, groups)
 	allowed, _, code, message, available, _, _ := llmservice.BillingEligibilityForServiceGroupsForUserID(reg, userID, email, groups, now)
 	if !allowed {
 		denial := llmBillingDenial{Code: code, Message: message}
@@ -748,6 +753,14 @@ func prepareLLMPricingQuote(ctx context.Context, reg *llmservice.Registry, provi
 			}
 		}
 		return denial, fmt.Errorf("%s", message)
+	}
+	if budget, ok := systemFreeBotBudgetForGroups(ctx, groups); ok && budget.limit > 0 {
+		remaining := systemFreeBotRemaining(budget)
+		if remaining <= 0 {
+			denial := systemFreeBotCreditsExhausted()
+			return denial, fmt.Errorf("%s", denial.Message)
+		}
+		available = remaining
 	}
 	if llmservice.IsFreeBillingProviderRoute(model, providerID, billingUpstreamModel(model, providerID)) {
 		return llmBillingDenial{}, nil
@@ -1077,6 +1090,11 @@ func quoteShortfallNeedsPull(ctx context.Context, reg *llmservice.Registry, user
 	if reg == nil || len(groups) == 0 {
 		return false
 	}
+	// Bot system-free usage has its own credits cap. Do not refill it from
+	// the owner's token bank or new-user allowance.
+	if _, ok := systemFreeBotBudgetForGroups(ctx, groups); ok {
+		return false
+	}
 	switch strings.ToUpper(strings.TrimSpace(code)) {
 	case "LLM_SERVICE_GRANT_QUEUED", "LLM_SERVICE_GRANT_EXPIRED":
 		return false
@@ -1359,6 +1377,19 @@ func reserveLLMRequestPricing(ctx context.Context, system store.SystemSettingsRe
 		return llmBillingDenial{Code: "LLM_BILLING_RESERVATION_FAILED", Message: "unable to reserve credits for this request"}, err
 	}
 	now := time.Now().UTC()
+	if _, botOK := systemFreeBotBudgetForGroups(ctx, chosen.ServiceGroupIDs); botOK {
+		// The new-user card stays on the stored registry. This view only
+		// decides whether system-free itself would allow the call.
+		view := llmservice.RegistryIgnoringSystemFreeNewUserLimit(reg, userID, email)
+		if _, heldOK := llmservice.ReserveBillingCreditsForUserID(view, userID, email, chosen.ServiceGroupIDs, requestID, llmpool.MicrocreditsToCredits(chosen.ReservedMicrocredits), chosen.ExpiresAt, now); !heldOK {
+			available := llmservice.AvailableCreditsForServiceGroupsForUserID(view, userID, email, chosen.ServiceGroupIDs, now)
+			return llmBillingDenial{
+				Code:    "LLM_SERVICE_CREDITS_EXHAUSTED",
+				Message: insufficientCreditsMessage(llmpool.MicrocreditsToCredits(chosen.ReservedMicrocredits), available, 0),
+			}, fmt.Errorf("bot system-free credits are not available")
+		}
+		return llmBillingDenial{}, nil
+	}
 	reserved, ok := llmservice.ReserveBillingCreditsForUserID(reg, userID, email, chosen.ServiceGroupIDs, requestID, llmpool.MicrocreditsToCredits(chosen.ReservedMicrocredits), chosen.ExpiresAt, now)
 	if !ok {
 		available := llmservice.AvailableCreditsForServiceGroupsForUserID(reg, userID, email, chosen.ServiceGroupIDs, now)
@@ -2275,7 +2306,7 @@ func notePublishedDeductedCredits(ctx context.Context, deducted float64, settled
 }
 
 func publishLoggedLLMUsage(ctx context.Context, system store.SystemSettingsRepository, providerID string, usage corelib.TokenUsageStat, userID, email string, serviceGroupIDs, userGroupIDs []string, credits float64, meta llmservice.OfficialForwardMeta, requestID string, multiplier, providerMultiplier, serviceGroupMultiplier float64, pricing *llmpool.ResolvedTokenPricing) (float64, bool) {
-	deducted, settled := enqueueLLMUsageRecordWithBilling(system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, credits, meta, requestID, multiplier, providerMultiplier, serviceGroupMultiplier, pricing, officialUsageReportServiceGroupIDs(ctx, providerID, serviceGroupIDs), usageReportBillingProviderID(ctx, providerID))
+	deducted, settled := enqueueLLMUsageRecordWithBilling(system, providerID, usage, userID, email, serviceGroupIDs, userGroupIDs, credits, meta, requestID, multiplier, providerMultiplier, serviceGroupMultiplier, pricing, officialUsageReportServiceGroupIDs(ctx, providerID, serviceGroupIDs), botSystemFreeSettleFrom(ctx, serviceGroupIDs), usageReportBillingProviderID(ctx, providerID))
 	recordLLMClassTraffic(system, serviceGroupIDs, meta, usage, meta.Preview)
 	recordLLMClassHeadSample(system, serviceGroupIDs, meta)
 	return deducted, settled

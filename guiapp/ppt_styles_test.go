@@ -32,6 +32,10 @@ func TestParseGeneratedPPTStyleKeepsPaletteAndRewritesBuiltinID(t *testing.T) {
 	if _, err := parseGeneratedPPTStyle(`{"id":"ok-style","label":"x"}`); err == nil {
 		t.Fatal("incomplete palette must fail")
 	}
+	badMotif := strings.Replace(raw, `"cover_dark":true`, `"motif":"mckinsey","cover_dark":true`, 1)
+	if _, err := parseGeneratedPPTStyle(badMotif); err == nil || !strings.Contains(err.Error(), "版式名称无效") {
+		t.Fatalf("unknown motif err = %v", err)
+	}
 	short := style
 	short.ID = "shortkw"
 	short.Keywords = []string{"的"}

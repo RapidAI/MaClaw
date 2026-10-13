@@ -17,6 +17,14 @@ describe('normalizeSidebarHubCredits', () => {
         expect(credits?.newUserLimitCards?.map(card => card.serviceGroupID)).toEqual(['LLM']);
     });
 
+    it('keeps the advertised check-in validity with the sidebar button', () => {
+        const credits = normalizeSidebarHubCredits({
+            active: true,
+            checkin: { enabled: true, credits: 10, duration_days: 30, checked_in_today: false },
+        });
+        expect(credits?.checkin).toEqual({ enabled: true, credits: 10, durationDays: 30, checkedInToday: false });
+    });
+
     it('returns unauthorized when Hub has no active state and no grant history', () => {
         expect(normalizeSidebarHubCredits({ active: false })).toEqual({
             authorized: false,

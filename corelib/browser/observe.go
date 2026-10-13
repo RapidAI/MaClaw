@@ -514,6 +514,9 @@ func formatObserveDisplay(snapshot BrowserSnapshot) string {
 	if snapshot.PageFlags.Captcha {
 		flags = append(flags, "captcha")
 	}
+	if snapshot.PageFlags.LoginQR {
+		flags = append(flags, "login_qr")
+	}
 	if snapshot.PageFlags.LoginWall {
 		flags = append(flags, "login_wall")
 	}

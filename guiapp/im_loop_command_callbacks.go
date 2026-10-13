@@ -270,7 +270,7 @@ func (c *loopCycleCallbacks) ExecuteTool(name, argsJSON string) string {
 	ctx, cancel := c.toolContext()
 	defer cancel()
 	toolProgress := filteredToolProgressCallback(lang, name, c.parent.onProgress, false)
-	return c.parent.handler.executeToolDetailedWithRuntimeContextAndContextTokens(withTrustedAuditPrincipal(ctx, c.parent.userID), policyUserID, strings.TrimSpace(policyUserID) != "", "", c.parent.llmCfg.EffectiveContextTokens(), name, argsJSON, "", toolProgress).Text
+	return c.parent.handler.executeToolDetailedWithRuntimeContextAndContextTokens(withMailboxOwner(withTrustedAuditPrincipal(ctx, c.parent.userID), c.parent.userID), policyUserID, strings.TrimSpace(policyUserID) != "", "", c.parent.llmCfg.EffectiveContextTokens(), name, argsJSON, "", toolProgress).Text
 }
 
 func (c *loopCycleCallbacks) toolContext() (context.Context, context.CancelFunc) {

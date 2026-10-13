@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+    formatGoalSessionPlan,
     normalizeSessionPlanCandidate,
     suggestSessionPlanFromMessages,
     truncateSessionPlan,
@@ -18,6 +19,15 @@ describe("codingSessionPlanUtils", () => {
             { role: "user", content: "also add refresh tokens" },
         ]);
         expect(plan).toContain("Implement JWT auth");
+    });
+
+    it("formats a goal understanding and numbered steps for the session plan", () => {
+        const plan = formatGoalSessionPlan({
+            objective: "实现登录",
+            understanding: "交付可登录的接口",
+            steps: [{ index: 1, title: "编写接口" }, { title: "补充测试" }],
+        });
+        expect(plan).toBe("交付可登录的接口\n1. 编写接口\n2. 补充测试");
     });
 
     it("truncates long plans", () => {

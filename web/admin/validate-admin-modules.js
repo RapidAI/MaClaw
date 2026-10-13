@@ -314,12 +314,12 @@ function assertTenantAdminUIHooks() {
       fail('system-tab.js must guard ' + name + ' to tenant admins.');
     }
   });
-  ['id="tenantCheckinSettingsCard"', 'tenantCheckinEnabledToggle', 'tenantCheckinCredits', 'id="checkinRecordsModalOverlay"', 'checkinRecordsGrid', 'openCheckinRecordsModal'].forEach(function(marker) {
+  ['id="tenantCheckinSettingsCard"', 'tenantCheckinEnabledToggle', 'tenantCheckinCredits', 'tenantCheckinDurationDays', 'id="checkinRecordsModalOverlay"', 'checkinRecordsGrid', 'openCheckinRecordsModal'].forEach(function(marker) {
     if (!html.includes(marker)) {
       fail('index.html is missing tenant check-in settings marker: ' + marker);
     }
   });
-  ['loadTenantCheckinSettings', 'saveTenantCheckinSettings', 'updateTenantCheckinEnabledHint', '/api/admin/settings/checkin', 'TENANT_CHECKIN_SETTINGS_I18N', '/api/admin/checkin/records', 'CHECKIN_RECORDS_PAGE_SIZE', 'loadCheckinRecords'].forEach(function(marker) {
+  ['loadTenantCheckinSettings', 'saveTenantCheckinSettings', 'updateTenantCheckinEnabledHint', '/api/admin/settings/checkin', 'TENANT_CHECKIN_SETTINGS_I18N', 'tenantCheckinDurationDays', 'duration_days', '/api/admin/checkin/records', 'CHECKIN_RECORDS_PAGE_SIZE', 'loadCheckinRecords'].forEach(function(marker) {
     if (!system.includes(marker)) {
       fail('system-tab.js is missing tenant check-in settings marker: ' + marker);
     }

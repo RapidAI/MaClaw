@@ -185,6 +185,7 @@ func NewHTTPServerWithError(svc *agentservice.Service, adminSecret string, knowl
 	s.weixinRuntime = newSrvWeixinGatewayManager(svc, s.aiModels)
 	s.imRuntime = newSrvIMGatewayManager(svc, s.aiModels)
 	s.thirdPartyIM = newSrvThirdPartyGatewayManager(svc, s.aiModels, s.hardwareBindings)
+	installDesktopScreenVision(s.aiModels)
 	s.startConfiguredAIModelDownloads(context.Background())
 	s.startConfiguredWeixinRuntimes(context.Background())
 	s.startConfiguredIMRuntimes(context.Background())

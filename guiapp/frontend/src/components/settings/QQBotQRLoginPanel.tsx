@@ -200,7 +200,7 @@ export const QQBotQRLoginPanel = ({
             {(showScanButton || trailingAction) && (
                 <div className="weixin-qr-login-panel__actions">
                     {showScanButton && (
-                        <button type="button" className="weixin-qr-login-panel__primary" aria-label={idleLabel} onClick={() => void startQRLogin()}>
+                        <button type="button" className="im-settings-button" aria-label={idleLabel} onClick={() => void startQRLogin()}>
                             {idleLabel}
                         </button>
                     )}
@@ -212,7 +212,7 @@ export const QQBotQRLoginPanel = ({
                     <p className="weixin-qr-login-panel__loading">
                         {textForLang(lang, 'Loading QR code...', '\u6b63\u5728\u83b7\u53d6\u4e8c\u7ef4\u7801...', '\u6b63\u5728\u53d6\u5f97\u4e8c\u7dad\u78bc...')}
                     </p>
-                    <button type="button" className="weixin-qr-login-panel__cancel" onClick={cancelQRLogin}>
+                    <button type="button" className="im-settings-button" onClick={cancelQRLogin}>
                         {textForLang(lang, 'Cancel', '\u53d6\u6d88', '\u53d6\u6d88')}
                     </button>
                 </div>
@@ -230,7 +230,7 @@ export const QQBotQRLoginPanel = ({
                                 : textForLang(lang, 'Waiting for confirmation...', '\u7b49\u5f85\u626b\u7801\u786e\u8ba4\u4e2d...', '\u7b49\u5f85\u6383\u78bc\u78ba\u8a8d\u4e2d...')}
                         </p>
                     )}
-                    <button type="button" className="weixin-qr-login-panel__cancel" onClick={cancelQRLogin}>
+                    <button type="button" className="im-settings-button" onClick={cancelQRLogin}>
                         {textForLang(lang, 'Cancel', '\u53d6\u6d88', '\u53d6\u6d88')}
                     </button>
                 </div>

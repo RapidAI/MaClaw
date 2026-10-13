@@ -30,6 +30,7 @@ import { ASSISTANT_OUTPUT_NEAR_BOTTOM_PX, useAssistantOutputScroll } from "./use
 import { useResizableAssistantInput } from "./useResizableAssistantInput";
 import { useAssistantInputHistory } from "./useAssistantInputHistory";
 import { usePastedImageAttachments } from "./usePastedImageAttachments";
+import { useCiteMermaidDiagramDraft } from "./useCiteMermaidDiagramDraft";
 import { useContinueEditTaskResultDraft } from "./useContinueEditTaskResultDraft";
 import { useAssistantPreviewResize } from "./useAssistantPreviewResize";
 import { getAssistantInitLabel } from "./aiAssistantStatusLabels";
@@ -63,10 +64,10 @@ import {
 } from "./welcomeTaskMemory";
 import { AssistantWorkflowMaximizeSuggestion } from "./AssistantWorkflowMaximizeSuggestion";
 import { useAssistantThemeMode } from "./useAssistantThemeMode";
-import { activeCodingAgentProgress, codingAgentComposerStatusText, codingAgentMessagesHavePlainTrail, isCodingAgentProgressContent, latestCodingAgentTurnSnapshot, renderCodingAgentWorkingTrail } from "./CodingAgentProgressStatus";
+import { activeCodingAgentProgress, codingAgentComposerStatusText, codingAgentMessagesHavePlainTrail, codingAgentToolOperandText, isCodingAgentProgressContent, latestCodingAgentTurnSnapshot, openCodingAgentToolProgress, renderCodingAgentWorkingTrail } from "./CodingAgentProgressStatus";
 import { isToolProgressMessage } from "./aiAssistantProgressUtils";
 import { isTranscriptToolCallText, transcriptAlreadyShowsToolCall } from "./assistantToolCall";
-import { assistantLiveActivityLabel, assistantLiveActivityObject, assistantLiveReasoningSource, assistantMessageOwnsLiveActivityAt, codingBubbleHostsLiveTitle, codingShownLiveLabel, codingTimelineLastThoughtIndex, codingTimelineLiveThoughtIndex, extractInFlightToolName, reasoningHasModelThought, resolveAssistantLiveActivity, resolveLiveModelTarget, resolveStandaloneLiveActivityLabel } from "./assistantLiveActivity";
+import { assistantLiveActivityLabel, assistantLiveActivityObject, assistantMessageOwnsLiveActivityAt, codingBubbleHostsLiveTitle, codingLiveAnswerStarted, codingLiveReasoningCue, codingShownLiveLabel, codingTimelineLastThoughtIndex, codingTimelineLiveThoughtIndex, codingTimelineThoughtIsCurrent, extractInFlightToolName, resolveAssistantLiveActivity, resolveLiveModelTarget, resolveStandaloneLiveActivityLabel } from "./assistantLiveActivity";
 import { IconBranch, IconRocket } from "./WorkbenchIcons";
 import { AITabBar } from "./AITabBar";
 import { localAssistantTabTitle } from "./aiAssistantI18n";
@@ -100,7 +101,7 @@ import { withConfirmedPPTStyle, type PPTStyleChoice } from "./pptStyleChoice";
 import { ExpertOptimizeEditorDialog } from "./ExpertOptimizeEditorDialog";
 import { useExpertOptimize } from "./useExpertOptimize";
 import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, CreateTaskUnified, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, ListWorkflowTemplateSummaries, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, RenameTask, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, ResumeCloudWorkspaceTask, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SelectProjectDir, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
-import { suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
+import { formatGoalSessionPlan, suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { CodingAgentPlanChecklist } from "./CodingAgentPlanChecklist";
 import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepStatusColor, codingStepStatusLabel, CodingWorkbenchControlPanel, CodingControlSection } from "./CodingWorkbenchControlPanel";
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
@@ -140,6 +141,7 @@ import { RemoteReconnectForm, RemoteReconnectSuccessToast } from "./RemoteReconn
 import { ScopeApprovalDialog, type ScopeApprovalDecision } from "./ScopeApprovalDialog";
 import { SaveTaskDialog } from "./SaveTaskDialog";
 const AssistantPreviewPane = lazy(() => import("./AssistantPreviewPane").then((module) => ({ default: module.AssistantPreviewPane })));
+const EMPTY_PROGRESS_MESSAGES: ChatMessage[] = [];
 export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const { onClose, lang, startOnWorkbenchHome = false, activeAssistantTask: activeAssistantTaskProp = null, chatFontSize = 14, themeMode: controlledThemeMode, darkSchemeId, lightSchemeId = DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, onThemeModeChange, audioInputDeviceId, audioOutputDeviceId, petVoiceStartSeq = 0, petFocusInputSeq = 0, pendingVEOpen, onPendingVEOpenHandled, pendingHistoryDiscussionOpen, onPendingHistoryDiscussionOpenHandled, appUpdateAvailable, onOpenAppReleaseNotes, onOpenAppUpdate, onDismissAppUpdate, availableProviders, currentModel, contactProviderName, contactModelId, contactIsHubService, modelOptions, modelMultipliers, modelsLoading, onSwitchProvider, onSwitchModel, onOpenModelMenu, onDismissModelMenu, activeExecutionProfile, codingInheritsAssistant, providerSelectionPending, profileSavePending, onOpenLLMSettings, onLanguageChange, onActiveExecutionProfileChange, statusSlot, tasks: taskListProp, tasksLoaded: tasksLoadedProp, onOpenTask: onOpenTaskProp, brandId, brandDisplayNameCN } = props;
     const state = props.state || props;
@@ -778,13 +780,18 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             // Only apply goals belonging to the active pure-coding tab.
             if (activeSession && goalUser && goalUser !== activeSession) return;
             const objective = String(payload?.objective || "").trim();
-            if (!objective) return;
+            const planText = formatGoalSessionPlan({
+                objective,
+                understanding: payload?.understanding,
+                steps: payload?.steps,
+            });
+            if (!planText) return;
             const status = String(payload?.status || "").toLowerCase();
             // Active (or newly created) goals refresh the session plan; terminal states leave the plan.
             if (status && status !== "active" && status !== "paused") return;
-            setCodingSessionPlan(objective);
-            setCodingSessionPlanDraft(objective);
-            setRemoteReconnect(prev => ({ ...prev, sessionPlan: objective }));
+            setCodingSessionPlan(planText);
+            setCodingSessionPlanDraft(planText);
+            setRemoteReconnect(prev => ({ ...prev, sessionPlan: planText }));
         });
         return () => { if (typeof off === "function") off(); };
     }, []);
@@ -4360,7 +4367,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         closeTab: closeTabWithProjectCleanup,
     };
     const activeSessionHasWork = isBusy || activeSessionIsStreaming;
-    const displayProgressMessages = activeSessionHasWork ? progressMessages : [];
+    const displayProgressMessages = activeSessionHasWork ? progressMessages : EMPTY_PROGRESS_MESSAGES;
     useEffect(() => {
         if (!(sending || streaming) || isBusy || activeSessionIsStreaming) return;
         console.info("[AIAssistantPanel] active session idle while another session is busy", {
@@ -4458,10 +4465,22 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const liveCodingProgress = useMemo(() => {
         const snapshot = codingAgentTurnSnapshot;
         if (snapshot?.tool && !snapshot.toolOutcome) {
-            return { event: "tool_started", detail: snapshot.tool };
+            const current = codingAgentProgress;
+            const sameTool = (current?.detail || "") === snapshot.tool
+                && (current?.event || "").trim().toLowerCase() === "tool_started";
+            if (sameTool && current) return current;
+            const opened = openCodingAgentToolProgress(displayProgressMessages, snapshot.tool);
+            if (opened) return opened;
+            // A different progress row does not belong to this in-flight tool.
+            return {
+                phase: "running" as const,
+                title: "",
+                event: "tool_started",
+                detail: snapshot.tool,
+            };
         }
         return codingAgentProgress;
-    }, [codingAgentProgress, codingAgentTurnSnapshot]);
+    }, [codingAgentProgress, codingAgentTurnSnapshot, displayProgressMessages]);
     const codingHasPlainTrail = useMemo(
         () => isPureCodingEnvironment && codingAgentMessagesHavePlainTrail(displayProgressMessages),
         [displayProgressMessages, isPureCodingEnvironment],
@@ -4471,41 +4490,106 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         if (displayProgressMessages.some((message: ChatMessage) => message.role === "progress")) return null;
         return renderCodingAgentWorkingTrail(t, lang);
     }, [codingHasPlainTrail, displayProgressMessages, isBusy, isPureCodingEnvironment, lang, showThinkingState, t]);
-    const lastAssistantReasoningText = useMemo(() => {
+    const liveAssistantCueRef = useRef({
+        messageId: "",
+        reasoningText: "",
+        hasReasoning: false,
+        answerStarted: false,
+        hasAnswerProse: false,
+        thoughtIsCurrent: undefined as boolean | undefined,
+        embeddedToolCall: null as { name?: string; action?: string } | null,
+    });
+    const liveAssistantCue = useMemo(() => {
+        const embedded = isBusy || activeSessionIsStreaming;
+        let next = {
+            messageId: "",
+            reasoningText: "",
+            hasReasoning: false,
+            answerStarted: false,
+            hasAnswerProse: false,
+            thoughtIsCurrent: undefined as boolean | undefined,
+            embeddedToolCall: null as { name?: string; action?: string } | null,
+        };
         for (let i = displayMessages.length - 1; i >= 0; i--) {
-            const msg = displayMessages[i];
-            if (msg?.role !== "assistant") continue;
-            return assistantLiveReasoningSource(msg);
+            const message = displayMessages[i];
+            if (message?.role !== "assistant") continue;
+            const call = embedded ? message.toolCalls?.[message.toolCalls.length - 1] : undefined;
+            const messageId = message.id || "";
+            const thoughtIsCurrent = isPureCodingEnvironment ? codingTimelineThoughtIsCurrent(message.codingTimeline) : undefined;
+            const prevCue = liveAssistantCueRef.current;
+            // Answer prose only grows. A tool-call marker is not prose, so the
+            // latch waits for real answer text, then skips rescanning it.
+            const proseKnown = prevCue.messageId === messageId
+                && prevCue.hasAnswerProse
+                && message.reasoningLive !== true;
+            // While reasoning is live, later thought tokens do not change the
+            // status prefix the header reads.
+            const thoughtKnown = !proseKnown
+                && prevCue.messageId === messageId
+                && prevCue.hasReasoning
+                && message.reasoningLive === true;
+            const reasoning = proseKnown
+                ? { reasoningText: "", hasReasoning: false, answerProse: true }
+                : thoughtKnown
+                    ? { reasoningText: prevCue.reasoningText, hasReasoning: true, answerProse: false }
+                    : codingLiveReasoningCue(message);
+            const hasAnswerProse = proseKnown || (!thoughtKnown && message.reasoningLive !== true && reasoning.answerProse);
+            const answerStarted = proseKnown || hasAnswerProse
+                ? true
+                : thoughtKnown
+                    ? false
+                    : codingLiveAnswerStarted(message);
+            next = {
+                messageId,
+                reasoningText: reasoning.reasoningText,
+                hasReasoning: reasoning.hasReasoning,
+                answerStarted,
+                hasAnswerProse,
+                thoughtIsCurrent,
+                embeddedToolCall: call || null,
+            };
+            break;
         }
-        return "";
-    }, [displayMessages]);
-    const liveEmbeddedToolCall = useMemo(() => {
-        if (!isBusy && !activeSessionIsStreaming) return null;
-        for (let i = displayMessages.length - 1; i >= 0; i--) {
-            const msg = displayMessages[i];
-            if (msg?.role !== "assistant") continue;
-            const call = msg.toolCalls?.[msg.toolCalls.length - 1];
-            return call || null;
+        const prev = liveAssistantCueRef.current;
+        const prevCall = prev.embeddedToolCall;
+        const nextCall = next.embeddedToolCall;
+        const sameCall = prevCall === nextCall || (!!prevCall && !!nextCall && prevCall.name === nextCall.name && prevCall.action === nextCall.action);
+        if (
+            prev.messageId === next.messageId
+            && prev.reasoningText === next.reasoningText
+            && prev.hasReasoning === next.hasReasoning
+            && prev.answerStarted === next.answerStarted
+            && prev.hasAnswerProse === next.hasAnswerProse
+            && prev.thoughtIsCurrent === next.thoughtIsCurrent
+            && sameCall
+        ) {
+            return prev;
         }
-        return null;
-    }, [activeSessionIsStreaming, displayMessages, isBusy]);
+        liveAssistantCueRef.current = next;
+        return next;
+    }, [activeSessionIsStreaming, displayMessages, isBusy, isPureCodingEnvironment]);
     const liveReasoningKind = useMemo(() => resolveAssistantLiveActivity({
         streaming: activeSessionIsStreaming,
         busy: isBusy,
-        hasReasoning: reasoningHasModelThought(lastAssistantReasoningText),
-        reasoningText: lastAssistantReasoningText,
+        hasReasoning: liveAssistantCue.hasReasoning,
+        reasoningText: liveAssistantCue.reasoningText,
         progressMessages: displayProgressMessages,
         codingProgress: liveCodingProgress,
-        latestToolCall: liveEmbeddedToolCall,
-    }), [activeSessionIsStreaming, displayProgressMessages, isBusy, lastAssistantReasoningText, liveCodingProgress, liveEmbeddedToolCall]);
+        latestToolCall: liveAssistantCue.embeddedToolCall,
+        answerStarted: liveAssistantCue.answerStarted,
+        thoughtIsCurrent: liveAssistantCue.thoughtIsCurrent,
+    }), [activeSessionIsStreaming, displayProgressMessages, isBusy, liveAssistantCue, liveCodingProgress]);
     const liveHeader = useMemo(() => {
         if (!liveReasoningKind) return undefined;
         const providers = (availableProviders || []) as SidebarLLMProviderSummary[];
         const liveModel = resolveLiveModelTarget({ contactProviderName, contactModelId, contactIsHubService, currentModel, providers });
-        const toolName = extractInFlightToolName({ codingProgress: liveCodingProgress, progressMessages: displayProgressMessages, reasoningText: lastAssistantReasoningText, latestToolCall: liveEmbeddedToolCall });
-        const object = assistantLiveActivityObject(liveReasoningKind, lang, { providerName: liveModel.providerName, modelId: liveModel.modelId, isHubService: liveModel.isHubService, toolName });
+        const toolName = extractInFlightToolName({ codingProgress: liveCodingProgress, progressMessages: displayProgressMessages, reasoningText: liveAssistantCue.reasoningText, latestToolCall: liveAssistantCue.embeddedToolCall });
+        const workTarget = (liveCodingProgress?.event || "").trim().toLowerCase() === "tool_started"
+            ? codingAgentToolOperandText(liveCodingProgress, lang, 72)
+            : undefined;
+        const object = assistantLiveActivityObject(liveReasoningKind, lang, { providerName: liveModel.providerName, modelId: liveModel.modelId, isHubService: liveModel.isHubService, toolName, target: workTarget });
         return { label: assistantLiveActivityLabel(liveReasoningKind, lang, toolName), object: object || undefined };
-    }, [availableProviders, contactIsHubService, contactModelId, contactProviderName, currentModel, displayProgressMessages, lang, lastAssistantReasoningText, liveCodingProgress, liveEmbeddedToolCall, liveReasoningKind]);
+    }, [availableProviders, contactIsHubService, contactModelId, contactProviderName, currentModel, displayProgressMessages, lang, liveAssistantCue, liveCodingProgress, liveReasoningKind]);
     const liveReasoningLabel = liveHeader?.label;
     const liveReasoningObject = liveHeader?.object;
     const projectSearch = useProjectSearch(lang);
@@ -4852,6 +4936,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     }, [scrollToBottom]);
     const { inputAreaHeight, resizeInput, startInputResize } = useResizableAssistantInput(inputRef, inputValue, handleInputResizeEnd);
     useContinueEditTaskResultDraft({ lang, inputRef, updateInputValue, resizeInput });
+    useCiteMermaidDiagramDraft({ lang, inputRef, updateInputValue, resizeInput });
     useEffect(() => {
         if (activeTab.type === "project" || activeTab.type === "expert") return;
         setLocalDraftInputValue(draftInputValue);
@@ -5285,6 +5370,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         handleSend, handleWelcomePromptSend,
         clearComposerDraft, getTabs, getTabState, saveTabState,
         activateTab, setQueueInteractionStarted, setQueueEditDraftActive, setEditingEntryId,
+        showAlert,
     });
     // A running turn keeps the normal welcome gates closed. The wizard cover
     // forces the welcome page on the local tab without clearing that turn.

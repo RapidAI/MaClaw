@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/RapidAI/CodeClaw/corelib/proxyutil"
 )
@@ -282,5 +283,44 @@ func TestMaclawLLMProxyUsedByChatTransport(t *testing.T) {
 	}
 	if u != nil && u.Host == "127.0.0.1:10808" {
 		t.Fatal("MaClaw proxy still applied after scope off")
+	}
+}
+
+func TestProviderProbeClientWaitsForSlowHeaders(t *testing.T) {
+	client := (&App{}).llmHTTPClient(corelib.LLMProbeTotalTimeout)
+	if client.Timeout != corelib.LLMProbeTotalTimeout {
+		t.Fatalf("client timeout = %s, want %s", client.Timeout, corelib.LLMProbeTotalTimeout)
+	}
+	transport, ok := client.Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("transport = %T", client.Transport)
+	}
+	if transport.ResponseHeaderTimeout != corelib.LLMProbeHeaderTimeout {
+		t.Fatalf("header timeout = %s, want %s", transport.ResponseHeaderTimeout, corelib.LLMProbeHeaderTimeout)
+	}
+	if transport.DialContext == nil {
+		t.Fatal("provider probe has no dial timeout")
+	}
+	if !transport.ForceAttemptHTTP2 {
+		t.Fatal("dial timeout disabled HTTP/2; live chats still use it")
+	}
+	if !transport.DisableKeepAlives {
+		t.Fatal("one-shot probe client should not keep the connection idle")
+	}
+}
+
+func TestConnectionProbeOutputCapLeavesVisionBudget(t *testing.T) {
+	short := capConnectionProbeOutput(corelib.MaclawLLMConfig{MaxOutputTokens: 16})
+	if short.MaxOutputTokens != 16 {
+		t.Fatalf("explicit short cap = %d", short.MaxOutputTokens)
+	}
+	capped := capConnectionProbeOutput(corelib.MaclawLLMConfig{})
+	if capped.MaxOutputTokens != corelib.LLMProbeMaxOutputTokens {
+		t.Fatalf("default probe cap = %d", capped.MaxOutputTokens)
+	}
+	original := corelib.MaclawLLMConfig{MaxOutputTokens: 65536}
+	_ = capConnectionProbeOutput(original)
+	if original.MaxOutputTokens != 65536 {
+		t.Fatal("capping the probe must not rewrite the caller's config")
 	}
 }

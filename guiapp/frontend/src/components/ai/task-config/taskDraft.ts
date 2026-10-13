@@ -38,6 +38,19 @@ export interface WorkspaceTarget {
 
 export type TaskType = 'chat' | 'coding';
 
+/** 新建任务的运行时段。立即为默认；定时才写入计划任务。 */
+export interface RunWindow {
+    mode: 'immediate' | 'scheduled';
+    /** 本地时间，`YYYY-MM-DDTHH:mm`。立即模式下为空。 */
+    startAt: string;
+    /** 本地时间。空表示不设结束，任务完成即结束。 */
+    endAt: string;
+}
+
+export function immediateRunWindow(): RunWindow {
+    return { mode: 'immediate', startAt: '', endAt: '' };
+}
+
 export interface TaskDraft {
     name: string;
     taskType: TaskType;
@@ -51,6 +64,8 @@ export interface TaskDraft {
     /** LaTeX 论文模板。仅在专家为内置 LaTeX 专家时有效；blank / 空 = 空白模板。 */
     latexTemplateId: string | null;
     latexTemplateName: string | null;
+    /** 缺省视为立即执行。 */
+    runWindow?: RunWindow;
 }
 
 /** 从模板库、工作流页或专家卡片带入新建任务页的预填。 */
@@ -73,7 +88,12 @@ export function defaultTaskDraft(): TaskDraft {
         workflowParams: {},
         latexTemplateId: null,
         latexTemplateName: null,
+        runWindow: immediateRunWindow(),
     };
+}
+
+export function withRunWindow(draft: TaskDraft, runWindow: RunWindow): TaskDraft {
+    return { ...draft, runWindow };
 }
 
 export function isExpertSpecified(draft: TaskDraft): boolean {

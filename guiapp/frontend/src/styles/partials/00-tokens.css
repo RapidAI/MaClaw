@@ -107,9 +107,14 @@
 }
 [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body [data-testid^='assistant-chat-ai-bubble-'] {
   flex: 0 1 auto !important;
-  width: fit-content !important;
   max-width: min(92%, 980px) !important;
   margin-right: 0 !important;
+}
+/* Shrink-wrap is for prose. A diagram bubble takes the column from the
+   :has(.amd-figure) rule instead. Applying shrink-wrap there leaves the
+   diagram's percentage width with no definite containing block. */
+[data-testid='ai-panel-root'][data-ai-view='execution'] .mc-conversation-body [data-testid^='assistant-chat-ai-bubble-']:not(:has(.amd-figure)) {
+  width: fit-content !important;
 }
 @media (max-width: 720px) {
   [data-testid='ai-panel-root'][data-ai-view='execution'] .mc-task-execution {

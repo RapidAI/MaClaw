@@ -494,6 +494,72 @@ func TestUserHasAvailableCreditsIgnoresDeletedGroupsAndKeepsFreeRoutes(t *testin
 	if !UserHasAvailableCredits(context.Background(), unlimited, "user-1", "owner@example.com", now) {
 		t.Fatal("an unlimited grant must count as still usable")
 	}
+	if UserNeedsTokenBankAutoTopUp(context.Background(), free, "user-1", "owner@example.com", now) {
+		t.Fatal("an unrestricted free route must not withdraw from the token bank")
+	}
+	if UserNeedsTokenBankAutoTopUp(context.Background(), unlimited, "user-1", "owner@example.com", now) {
+		t.Fatal("an unlimited grant must not withdraw from the token bank")
+	}
+}
+
+func TestUserNeedsTokenBankAutoTopUpBelowOneHundred(t *testing.T) {
+	now := time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC)
+	started := now.Add(-time.Hour)
+	reg := &Registry{
+		ModelServiceGroups: []ModelServiceGroup{{ID: "paid", Name: "Paid", AccessPolicy: AccessPolicyGrantRequired}},
+		UserBindings: []UserBinding{{
+			UserID: "user-1", Email: "owner@example.com", ServiceGroupIDs: []string{"paid"},
+		}},
+		Grants: []Grant{{
+			ID: "card", UserID: "user-1", Email: "owner@example.com",
+			ServiceGroupID: "paid", Source: TokenBankGrantSource,
+			StartsAt: started, ExpiresAt: tokenBankGrantExpiresAt, Permanent: true,
+			CreditsTotal: 100,
+		}},
+	}
+	if UserNeedsTokenBankAutoTopUp(context.Background(), reg, "user-1", "owner@example.com", now) {
+		t.Fatal("100 credits must not withdraw")
+	}
+	reg.Grants[0].CreditsTotal = 99.999
+	if !UserNeedsTokenBankAutoTopUp(context.Background(), reg, "user-1", "owner@example.com", now) {
+		t.Fatal("under 100 credits must withdraw when the token bank can pay")
+	}
+	reg.Grants[0].CreditsUsed = 99.999
+	if !UserNeedsTokenBankAutoTopUp(context.Background(), reg, "user-1", "owner@example.com", now) {
+		t.Fatal("an empty card must withdraw")
+	}
+
+	// A free route beside a low point card must not hide that card. An
+	// unlimited grant on the same card still means there is nothing to buy.
+	reg.Grants[0].CreditsUsed = 0
+	reg.Grants[0].CreditsTotal = 40
+	reg.ModelServiceGroups = append(reg.ModelServiceGroups, ModelServiceGroup{
+		ID: "system-free", Name: "System Free", AccessPolicy: AccessPolicyFree,
+	})
+	reg.UserBindings[0].ServiceGroupIDs = append(reg.UserBindings[0].ServiceGroupIDs, "system-free")
+	if !UserNeedsTokenBankAutoTopUp(context.Background(), reg, "user-1", "owner@example.com", now) {
+		t.Fatal("a free route must not hide a point balance under 100")
+	}
+	reg.DefaultNewUserLimitCard = NewUserLimitCard{
+		ServiceGroupIDs: []string{"system-free"},
+		PeriodLimits:    CreditPeriodLimits{FiveHour: 1000, Daily: 2000},
+	}
+	reg.Grants = append(reg.Grants, Grant{
+		ID: "welcome", UserID: "user-1", Email: "owner@example.com",
+		ServiceGroupID: "system-free", Source: "new_user_limit_card",
+		StartsAt: started, CreatedAt: started,
+	})
+	if !UserNeedsTokenBankAutoTopUp(context.Background(), reg, "user-1", "owner@example.com", now) {
+		t.Fatal("a new-user window must not hide a point balance under 100")
+	}
+	reg.Grants = append(reg.Grants, Grant{
+		ID: "gift", UserID: "user-1", Email: "owner@example.com",
+		ServiceGroupID: "paid", Source: "gift",
+		StartsAt: started, ExpiresAt: started.Add(24 * time.Hour),
+	})
+	if UserNeedsTokenBankAutoTopUp(context.Background(), reg, "user-1", "owner@example.com", now) {
+		t.Fatal("an unlimited grant must not withdraw even when a point card is under 100")
+	}
 }
 
 func TestUserHasAvailableCreditsIgnoresBuiltinFallbackGroup(t *testing.T) {

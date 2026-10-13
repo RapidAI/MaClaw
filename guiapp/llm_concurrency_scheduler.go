@@ -15,8 +15,9 @@ import (
 type llmRequestPriority string
 
 const (
-	llmPriorityForeground llmRequestPriority = "foreground"
-	llmPriorityBackground llmRequestPriority = "background"
+	llmPriorityForeground  llmRequestPriority = "foreground"
+	llmPriorityBackground  llmRequestPriority = "background"
+	llmPriorityInteractive llmRequestPriority = "interactive"
 )
 
 const (
@@ -31,22 +32,29 @@ const (
 	defaultBackgroundLLMConcurrency  = 2
 	degradedForegroundLLMConcurrency = 2
 	degradedBackgroundLLMConcurrency = 0
-	llmSchedulerDegradedCooldown     = 45 * time.Second
-	llmSchedulerWaitLogInterval      = 5 * time.Second
+	// interactiveLLMConcurrency is the lane for settings actions the user is
+	// waiting on (provider login confirmation, Test & Save, vision check).
+	// Two covers a text probe overlapping a vision probe. This limit stays
+	// up when foreground is degraded or background is paused: the click is
+	// the request, and it must not sit behind a coding turn.
+	interactiveLLMConcurrency    = 2
+	llmSchedulerDegradedCooldown = 45 * time.Second
+	llmSchedulerWaitLogInterval  = 5 * time.Second
 )
 
 type llmConcurrencyScheduler struct {
-	mu             sync.Mutex
-	activeFG       int
-	activeBG       int
-	degradedUntil  time.Time
-	bgPausedUntil  time.Time
-	recoveryTimer  *time.Timer
-	waitSeq        int64
-	queue          []*llmSchedulerWaiter
-	activeBGLease  map[*llmSchedulerLease]struct{}
-	foregroundWork func() int64
-	now            func() time.Time
+	mu                sync.Mutex
+	activeFG          int
+	activeBG          int
+	activeInteractive int
+	degradedUntil     time.Time
+	bgPausedUntil     time.Time
+	recoveryTimer     *time.Timer
+	waitSeq           int64
+	queue             []*llmSchedulerWaiter
+	activeBGLease     map[*llmSchedulerLease]struct{}
+	foregroundWork    func() int64
+	now               func() time.Time
 }
 
 type llmSchedulerWaiter struct {
@@ -207,11 +215,16 @@ func (l *llmSchedulerLease) Release() {
 	l.mu.Unlock()
 	s := l.scheduler
 	s.mu.Lock()
-	if l.priority == llmPriorityForeground {
+	switch l.priority {
+	case llmPriorityForeground:
 		if s.activeFG > 0 {
 			s.activeFG--
 		}
-	} else {
+	case llmPriorityInteractive:
+		if s.activeInteractive > 0 {
+			s.activeInteractive--
+		}
+	default:
 		delete(s.activeBGLease, l)
 		if s.activeBG > 0 {
 			s.activeBG--
@@ -246,6 +259,13 @@ func (s *llmConcurrencyScheduler) ObserveResult(trace llm.RequestTrace, err erro
 	now := s.now()
 	until := now.Add(llmSchedulerDegradedCooldown)
 	priority := classifyLLMRequestPriority(trace)
+	if priority == llmPriorityInteractive {
+		// A probe talks to whichever provider the user is testing. Its 429
+		// is not evidence that the assistant's provider is saturated, so it
+		// must not degrade chat or pause unrelated background work.
+		log.Printf("[llm-scheduler] pressure_ignored priority=%s caller=%q owner=%q request_id=%q loop=%q iteration=%d err=%v", priority, trace.Caller, trace.OwnerID, trace.RequestID, trace.LoopID, trace.Iteration, err)
+		return
+	}
 	throttleForeground := isForegroundLLMThrottleError(err)
 	s.mu.Lock()
 	changed := false
@@ -277,9 +297,12 @@ func (s *llmConcurrencyScheduler) dispatchLocked() {
 		waiter := s.queue[idx]
 		s.queue = append(s.queue[:idx], s.queue[idx+1:]...)
 		waiter.granted = true
-		if waiter.priority == llmPriorityForeground {
+		switch waiter.priority {
+		case llmPriorityForeground:
 			s.activeFG++
-		} else {
+		case llmPriorityInteractive:
+			s.activeInteractive++
+		default:
 			s.activeBG++
 		}
 		lease := &llmSchedulerLease{scheduler: s, priority: waiter.priority, trace: waiter.trace}
@@ -318,6 +341,16 @@ func (s *llmConcurrencyScheduler) nextDispatchIndexLocked() int {
 	if s.activeFG < fgLimit {
 		for i, waiter := range s.queue {
 			if waiter.priority == llmPriorityForeground {
+				return i
+			}
+		}
+	}
+	// Interactive probes run beside an in-flight coding request. They do not
+	// take a foreground slot, so the next coding turn neither waits on them
+	// nor cancels them.
+	if s.activeInteractive < interactiveLLMConcurrency {
+		for i, waiter := range s.queue {
+			if waiter.priority == llmPriorityInteractive {
 				return i
 			}
 		}
@@ -592,7 +625,15 @@ func classifyLLMRequestPriority(trace llm.RequestTrace) llmRequestPriority {
 	if caller == "unified-intent-classifier-late" {
 		return llmPriorityBackground
 	}
-	if strings.Contains(caller, "background") || strings.Contains(caller, "memory") || strings.Contains(caller, "session-start") || strings.Contains(caller, "post-conversation") || strings.Contains(caller, "pending-reply") || strings.Contains(caller, "experience") || strings.Contains(caller, "probe") || strings.Contains(caller, "provider-test") || caller == "knowledge-card" || caller == "gossip-auto" {
+	// Login confirmation and Test & Save block the settings UI. The
+	// background lane stays closed while a coding request is in flight and
+	// is cancelled when the next one starts. The foreground lane would
+	// abort unrelated background work and, on a 429 from the provider
+	// under test, slow every chat. Keep these on the interactive lane.
+	if caller == "provider-test" || caller == "vision-probe" {
+		return llmPriorityInteractive
+	}
+	if strings.Contains(caller, "background") || strings.Contains(caller, "memory") || strings.Contains(caller, "session-start") || strings.Contains(caller, "post-conversation") || strings.Contains(caller, "pending-reply") || strings.Contains(caller, "experience") || caller == "knowledge-card" || caller == "gossip-auto" {
 		return llmPriorityBackground
 	}
 	return llmPriorityForeground

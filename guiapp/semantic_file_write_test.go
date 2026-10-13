@@ -656,6 +656,20 @@ func TestIMSemanticFileEditReplacesOnlyAnUnambiguousPassage(t *testing.T) {
 		t.Fatalf("escape path err=%v", err)
 	}
 
+	// A Windows checkout stores CRLF. The model quotes the passage with LF.
+	// The match is the logical passage; bytes outside it keep their endings.
+	crlfPath := filepath.Join(workspace, "win.go")
+	if err := os.WriteFile(crlfPath, []byte("func run() {\r\n\tpm.Run()\r\n}\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.editTrustedFile(principal, "win.go", "func run() {\n\tpm.Run()\n}", "func run() {\n\tpr, err := pm.Run()\n}"); err != nil {
+		t.Fatalf("CRLF passage edit err=%v", err)
+	}
+	winData, err := os.ReadFile(crlfPath)
+	if err != nil || string(winData) != "func run() {\r\n\tpr, err := pm.Run()\r\n}\r\n" {
+		t.Fatalf("CRLF file=%q err=%v", winData, err)
+	}
+
 	// Deleting a passage is a replacement with empty text, not a separate mode.
 	if _, err := h.editTrustedFile(principal, "main.go", "\nfunc Beta() int { return 1 }", ""); err != nil {
 		t.Fatalf("delete via empty new_string err=%v", err)

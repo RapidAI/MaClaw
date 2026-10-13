@@ -9,6 +9,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/brand"
 )
 
 func TestArxivIDFromInput(t *testing.T) {
@@ -122,6 +124,49 @@ func TestArxivHostAllowed(t *testing.T) {
 		if arxivHostAllowed(host) {
 			t.Fatalf("expected rejected: %s", host)
 		}
+	}
+}
+
+// The folder carries the build's brand, so a TigerClaw or MetaStaff build does
+// not file papers under another product's name. Composing it from a parameter
+// keeps the empty-brand fallback testable in every build.
+func TestArxivPaperFolderNameUsesBrand(t *testing.T) {
+	if got := arxivPaperFolderNameFor("TigerClaw"); got != "TigerClaw 伴读" {
+		t.Fatalf("got %q", got)
+	}
+	if got := arxivPaperFolderNameFor(""); got != "MaClaw 伴读" {
+		t.Fatalf("empty brand must fall back to MaClaw, got %q", got)
+	}
+	if got := arxivPaperFolderNameFor("   "); got != "MaClaw 伴读" {
+		t.Fatalf("blank brand must fall back to MaClaw, got %q", got)
+	}
+	// The shipped default build must keep the folder where earlier downloads
+	// already are, and any build must agree with its own brand name.
+	if brand.Current().ID == "maclaw" {
+		if got := arxivPaperFolderName(); got != "MaClaw 伴读" {
+			t.Fatalf("default build folder moved to %q", got)
+		}
+	}
+	if got := arxivPaperFolderName(); !strings.HasPrefix(got, brand.Current().DisplayName) {
+		t.Fatalf("folder %q does not carry the brand %q", got, brand.Current().DisplayName)
+	}
+
+	// The call site matters, not just the helper: the download folder must
+	// actually be filed under the brand name. Reverting the call site to a
+	// literal used to slip past this test, which only checked the helper.
+	base := t.TempDir()
+	dir, err := arxivPaperDirUnder(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Dir(dir) != base {
+		t.Fatalf("dir %q is not directly under %q", dir, base)
+	}
+	if filepath.Base(dir) != arxivPaperFolderName() {
+		t.Fatalf("dir %q does not use the brand folder name %q", dir, arxivPaperFolderName())
+	}
+	if info, statErr := os.Stat(dir); statErr != nil || !info.IsDir() {
+		t.Fatalf("the folder was not created: %v", statErr)
 	}
 }
 

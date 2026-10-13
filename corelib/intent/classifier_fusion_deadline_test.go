@@ -1468,7 +1468,7 @@ func TestBudgetFiredTreeTimeoutSkipsOtherScopesOnly(t *testing.T) {
 
 	// A different ambiguous scope while the failure is still fresh must not
 	// pay another tree call: it lands straight in the L2 fallback.
-	other := uic.ClassifyContext(context.Background(), MessageContext{Text: "发邮件给团队更新项目进度"})
+	other := uic.ClassifyContext(context.Background(), MessageContext{Text: "请同事看看这份项目进度说明"})
 	if !other.Degraded {
 		t.Fatalf("other = %+v, want degraded L2 fallback without a tree call", other)
 	}
@@ -1538,7 +1538,7 @@ func TestTree5xxFailureSkipsOtherScopesOnly(t *testing.T) {
 	}
 	before := calls.Load()
 
-	other := uic.ClassifyContext(context.Background(), MessageContext{Text: "发邮件给团队更新项目进度"})
+	other := uic.ClassifyContext(context.Background(), MessageContext{Text: "请同事看看这份项目进度说明"})
 	if !other.Degraded {
 		t.Fatalf("other = %+v, want degraded L2 fallback without a tree call", other)
 	}

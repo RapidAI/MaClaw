@@ -288,7 +288,7 @@ func (h *IMMessageHandler) executeAgentLoopToolCall(opts agentLoopToolExecutionO
 		if contextTokens <= 0 {
 			contextTokens = h.getMaclawLLMConfig().EffectiveContextTokens()
 		}
-		result = h.executeToolDetailedWithRuntimeContextAndContextTokensAndTaskAnchor(withTrustedAuditPrincipal(execCtx, opts.UserID), policyUserID, loopContextHasExplicitRuntimeOwner(opts.Context), runtimePlatformFromLoopContext(opts.Context), contextTokens, opts.TaskAnchor, tc.Function.Name, tc.Function.Arguments, opts.UserText, filteredToolProgressCallback(progressLang, tc.Function.Name, opts.OnProgress, opts.Debug))
+		result = h.executeToolDetailedWithRuntimeContextAndContextTokensAndTaskAnchor(withMailboxOwner(withTrustedAuditPrincipal(execCtx, opts.UserID), opts.UserID), policyUserID, loopContextHasExplicitRuntimeOwner(opts.Context), runtimePlatformFromLoopContext(opts.Context), contextTokens, opts.TaskAnchor, tc.Function.Name, tc.Function.Arguments, opts.UserText, filteredToolProgressCallback(progressLang, tc.Function.Name, opts.OnProgress, opts.Debug))
 	}
 	h.recordAdaptiveRetryToolFailure(opts.AdaptiveRetry, tc.Function.Name, result, opts.Iteration)
 
@@ -377,6 +377,19 @@ func (h *IMMessageHandler) executeCodingWorkflowDelegateArgs(args map[string]int
 	agentName, _ := args["agent"].(string)
 	if strings.TrimSpace(strings.ToLower(agentName)) != "coding_workflow" {
 		return toolExecutionResult{}, false
+	}
+	if opts.Context != nil && opts.Context.PauseAfterCurrentRequested() {
+		text := "[system] 运行时段已结束。当前请求会收尾，不再开始新的小任务，随后暂停。"
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(opts.Context.Lang)), "en") {
+			text = "[system] The run window ended. This request will finish, and no new subtask will start."
+		}
+		return toolExecutionResult{
+			Text:        text,
+			ToolName:    "delegate_task",
+			ToolKind:    classifyAgentToolKind("delegate_task"),
+			Outcome:     toolOutcomeFailed,
+			FailureKind: toolFailurePolicyRejected,
+		}, true
 	}
 	policyUserID := h.workflowPolicyOwnerID(opts.UserID, opts.Context)
 	if allowed, reason := h.workflowAllowsSubAgentExecutionForOwner(policyUserID); !allowed {

@@ -669,6 +669,67 @@ func TestPublicListOrdersHandlerIgnoresActiveCardsFilter(t *testing.T) {
 	}
 }
 
+func TestPublicListOrdersHandlerRequiresScope(t *testing.T) {
+	svc := NewService(nil, &orderTestRepo{byNo: map[string]*PurchaseOrder{}}, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/cardstore/orders?limit=20&offset=0", nil)
+	rr := httptest.NewRecorder()
+
+	ListOrdersHandler(svc).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d body=%s, want 400", rr.Code, rr.Body.String())
+	}
+}
+
+func TestAdminListOrdersHandlerClampsNegativeOffset(t *testing.T) {
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{}}
+	svc := NewService(nil, orderRepo, nil)
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/cardstore/orders?limit=20&offset=-5", nil)
+	rr := httptest.NewRecorder()
+
+	AdminListOrdersHandler(svc).ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s, want 200", rr.Code, rr.Body.String())
+	}
+	if orderRepo.lastFilter.Offset != 0 || orderRepo.lastFilter.Limit != 20 {
+		t.Fatalf("filter = %+v, want offset 0 limit 20", orderRepo.lastFilter)
+	}
+}
+
+func TestAdminListOrdersHandlerAllowsUnscopedQueue(t *testing.T) {
+	now := time.Now().UTC()
+	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{
+		"HC-PENDING": usableSoldOrder("HC-PENDING", "g1", now),
+	}}
+	svc := NewService(nil, orderRepo, nil)
+	cases := []string{
+		"/api/admin/cardstore/orders?limit=20&offset=0",
+		"/api/admin/cardstore/orders?limit=1&statuses=pending,personal_created,personal_opened",
+	}
+	for _, rawURL := range cases {
+		req := httptest.NewRequest(http.MethodGet, rawURL, nil)
+		rr := httptest.NewRecorder()
+		AdminListOrdersHandler(svc).ServeHTTP(rr, req)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("%s status = %d body=%s, want 200", rawURL, rr.Code, rr.Body.String())
+		}
+		var body struct {
+			Orders []*PurchaseOrder `json:"orders"`
+			Total  int              `json:"total"`
+		}
+		if err := json.NewDecoder(rr.Body).Decode(&body); err != nil {
+			t.Fatalf("%s decode: %v", rawURL, err)
+		}
+		if body.Total != 1 || len(body.Orders) != 1 {
+			t.Fatalf("%s orders = %d total=%d, want 1", rawURL, len(body.Orders), body.Total)
+		}
+	}
+	if got := orderRepo.lastFilter.Statuses; len(got) != 3 || got[0] != "pending" || got[1] != "personal_created" || got[2] != "personal_opened" {
+		t.Fatalf("statuses = %#v", got)
+	}
+}
+
 func TestAdminListOrdersHandlerHonorsActiveCardsFilter(t *testing.T) {
 	now := time.Now().UTC()
 	orderRepo := &orderTestRepo{byNo: map[string]*PurchaseOrder{"HC-ACTIVE": usableSoldOrder("HC-ACTIVE", "g1", now)}}

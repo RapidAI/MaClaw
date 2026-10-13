@@ -1180,6 +1180,18 @@ func pageHTMLJS() string {
 
 // Eval executes arbitrary JavaScript and returns the result.
 func (s *Session) Eval(expression string) (string, error) {
+	return s.eval(expression, false, DefaultCmdTimeout)
+}
+
+// EvalAwait runs JavaScript that returns a promise and waits for it.
+func (s *Session) EvalAwait(expression string, timeout time.Duration) (string, error) {
+	if timeout <= 0 {
+		timeout = 20 * time.Second
+	}
+	return s.eval(expression, true, timeout)
+}
+
+func (s *Session) eval(expression string, awaitPromise bool, timeout time.Duration) (string, error) {
 	if s == nil {
 		return "", fmt.Errorf("browser session not connected")
 	}
@@ -1190,10 +1202,14 @@ func (s *Session) Eval(expression string) (string, error) {
 		return "", fmt.Errorf("browser session not connected")
 	}
 
-	result, err := client.Send("Runtime.evaluate", map[string]interface{}{
+	params := map[string]interface{}{
 		"expression":    expression,
 		"returnByValue": true,
-	}, DefaultCmdTimeout)
+	}
+	if awaitPromise {
+		params["awaitPromise"] = true
+	}
+	result, err := client.Send("Runtime.evaluate", params, timeout)
 	if err != nil {
 		return "", err
 	}

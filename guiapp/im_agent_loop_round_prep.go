@@ -102,6 +102,15 @@ func (h *IMMessageHandler) prepareAgentLoopRound(opts agentLoopRoundPrepOptions)
 		return result
 	}
 
+	if note, resp, paused := runWindowPauseResponse(ctx, opts.Conversation); paused {
+		if opts.SendProgress != nil && note != "" {
+			opts.SendProgress(note)
+		}
+		result.Response = resp
+		result.Conversation = opts.Conversation
+		return result
+	}
+
 	conversation, cancelled, injectedText := h.prepareAgentLoopIteration(
 		ctx,
 		opts.UserID,

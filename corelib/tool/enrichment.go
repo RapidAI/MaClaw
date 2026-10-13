@@ -300,10 +300,10 @@ Typical usage: Capture screen state, verify UI changes, document visual output`,
 Typical usage: Invoke external tools via MCP protocol`,
 
 	"browser": `Parameters:
-- action (string, required): session_start/connect/observe/navigate/click/type/wait/extract/scroll/select/list_pages/switch_page/close/set_files/info/task_run/task_status/task_verify/list_flows
+- action (string, required): session_start/connect/observe/probe/navigate/click/type/wait/extract/scroll/select/list_pages/switch_page/close/set_files/info/script/skill_list/skill_run/task_run/task_status/task_verify/list_flows
 - session_id (string, required for page actions): Browser agent session ID returned by session_start/connect
-- start_url/url/ref/selector/text/value/task_id/steps (optional): Action-specific arguments
-Typical usage: Use one stable BrowserAgentSession workflow. First call action=session_start or connect to get browser-session-*, then use observe refs for page actions. For rich editors, click the editable field then action=type may omit ref/selector to type into the focused element; set content_format=markdown when Markdown should render as rich content. No screenshot fallback, eval, raw HTTP, coordinate clicks, or broad browser process kills`,
+- start_url/url/ref/selector/text/value/task_id/steps/script/name (optional): Action-specific arguments
+Typical usage: Use one stable BrowserAgentSession workflow. First call action=session_start or connect to get browser-session-*, then probe once and action=script to click, type, select, press, scroll, and wait in one call. Optional name stores that script; skill_run repeats it on the same site. task_run remains for a short ref sequence. For rich editors, click the editable field then action=type may omit ref/selector to type into the focused element; set content_format=markdown when Markdown should render as rich content. No screenshot fallback, eval, raw HTTP, coordinate clicks, or broad browser process kills`,
 
 	"list_skills": `Parameters:
 - filter (string, optional): Filter skills by name or tag

@@ -20,6 +20,7 @@ export type TaskConfigIconName =
     | "home"
     | "monitor"
     | "clock"
+    | "calendar"
     | "lock"
     | "ban"
     | "file";
@@ -42,6 +43,7 @@ const PATHS: Record<TaskConfigIconName, ReactNode> = {
     home: (<><path {...s} d="m4 11 8-7 8 7" /><path {...s} d="M6 9.5V20h12V9.5" /></>),
     monitor: (<><rect {...s} x="3" y="4" width="18" height="13" rx="2" /><path {...s} d="M8 21h8M12 17v4" /></>),
     clock: (<><circle {...s} cx="12" cy="12" r="8.5" /><path {...s} d="M12 7v5l3.5 2" /></>),
+    calendar: (<><rect {...s} x="3.5" y="5" width="17" height="15.5" rx="2" /><path {...s} d="M3.5 9.5h17" /><path {...s} d="M8 3.5v3M16 3.5v3" /></>),
     lock: (<><rect {...s} x="5.5" y="10.5" width="13" height="9" rx="2" /><path {...s} d="M8.5 10.5V8a3.5 3.5 0 0 1 7 0v2.5" /></>),
     ban: (<><circle {...s} cx="12" cy="12" r="8.5" /><path {...s} d="m6 6 12 12" /></>),
     file: (<><path {...s} d="M7 3.5h7l5 5V20a1.5 1.5 0 0 1-1.5 1.5h-10.5A1.5 1.5 0 0 1 5.5 20V5A1.5 1.5 0 0 1 7 3.5Z" /><path {...s} d="M14 3.5V9h5.5" /></>),

@@ -159,13 +159,15 @@ export interface SidebarHubServiceStatus {
     hub_llm_base_url?: string;
     HubLLMBaseURL?: string;
     /** Raw Hub check-in payload (snake_case JSON from the backend). */
-    checkin?: { enabled?: boolean; credits?: number; checked_in_today?: boolean };
+    checkin?: { enabled?: boolean; credits?: number; duration_days?: number; checked_in_today?: boolean };
 }
 
 /** Tenant daily check-in policy advertised by the Hub. */
 export interface SidebarHubCheckin {
     enabled: boolean;
     credits: number;
+    /** Reward lifetime in days. Missing or zero means the Hub did not advertise a validity. */
+    durationDays?: number;
     checkedInToday: boolean;
 }
 

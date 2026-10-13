@@ -348,32 +348,10 @@
     gap: 10px;
 }
 
-.weixin-qr-login-panel__primary,
-.weixin-qr-login-panel__cancel {
+/* Scan and cancel stay on .im-settings-button. A class containing "primary"
+   is forced solid by button[class*='primary'] and the label disappears. */
+.weixin-qr-login-panel .im-settings-button {
     width: fit-content;
-    min-height: 38px;
-    padding: 6px 14px;
-    border: 1px solid var(--theme-border);
-    border-radius: 10px;
-    background: var(--theme-surface-muted);
-    color: var(--theme-text-secondary);
-    cursor: pointer;
-    font-size: 0.76rem;
-    font-weight: 900;
-}
-
-.weixin-qr-login-panel__primary {
-    border-color: color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border));
-    background: var(--theme-info-bg);
-    color: var(--theme-primary-strong);
-}
-
-.weixin-qr-login-panel__primary:hover,
-.weixin-qr-login-panel__primary:focus-visible,
-.weixin-qr-login-panel__cancel:hover,
-.weixin-qr-login-panel__cancel:focus-visible {
-    outline: none;
-    box-shadow: 0 0 0 2px var(--theme-primary-soft);
 }
 
 .weixin-qr-login-panel__loading,
@@ -654,8 +632,7 @@
     .mis-data-settings-toggle,
     .mis-data-settings-actions button,
     .weixin-qr-login-panel__actions,
-    .weixin-qr-login-panel__primary,
-    .weixin-qr-login-panel__cancel {
+    .weixin-qr-login-panel .im-settings-button {
         width: 100%;
     }
 }
@@ -1572,11 +1549,11 @@
         margin-left: 0 !important;
     }
 
-    .llm-config-provider-section,
-    .llm-config-form-card,
-    .llm-config-alert {
-        margin-left: 16px !important;
-        margin-right: 16px !important;
+    /* Sections sit inside .llm-config-dialog__body, which owns the inset. */
+    .llm-config-dialog__body,
+    .llm-config-dialog__footer {
+        padding-left: 16px;
+        padding-right: 16px;
     }
 
     .llm-config-dialog__header {
@@ -3468,8 +3445,71 @@
 /* AssistantInputComposer.tsx */
 .aic-toolbar-addon { display: flex; align-items: center; min-width: 0; }
 
-/* AssistantMermaidDiagram.tsx */
-.amd-measure-host { position: fixed; inset: 0; width: 0; height: 0; overflow: hidden; pointer-events: none; }
+/* AssistantMermaidDiagram.tsx
+   The figure is the reading slot. The measure host takes that width so
+   Mermaid's percentage max-width resolves against the column, and its height
+   stays 0 so the scratch SVG does not extend the chat's scroll height.
+   visibility:hidden still lays out, which is what label measurement needs.
+   A diagram message takes the reading column; the bubble's max-width still
+   caps it. */
+.amd-figure { position: relative; width: 100%; }
+.amd-figure-body { margin: 8px 0; }
+.amd-toolbar { position: relative; z-index: 1; display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; margin: 0 0 6px; }
+.amd-actions { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--amd-menu-border); border-radius: 8px; background: var(--amd-menu-bg); }
+.amd-action { appearance: none; border: 0; background: transparent; color: var(--amd-menu-text); font: inherit; font-size: 12px; line-height: 1.2; padding: 5px 8px; border-radius: 6px; cursor: pointer; white-space: nowrap; }
+.amd-action:hover { background: var(--amd-menu-hover); }
+.amd-action:focus-visible { outline: 2px solid var(--amd-menu-text); outline-offset: -2px; }
+.amd-more { position: relative; }
+.amd-more-menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 2; display: flex; flex-direction: column; min-width: 148px; padding: 6px; border: 1px solid var(--amd-menu-border); border-radius: 10px; background: var(--amd-menu-bg); box-shadow: var(--amd-menu-shadow); }
+.amd-more-menu-up { top: auto; bottom: calc(100% + 6px); }
+.amd-more-menu .amd-action { width: 100%; text-align: left; font-size: 14px; font-weight: 400; line-height: 1.4; padding: 8px 12px; border-radius: 6px; }
+/* A status takes its own row, so the zoom group stays on one line. */
+.amd-note { flex: 1 0 100%; margin: 0; text-align: right; font-size: 12px; line-height: 1.2; color: var(--amd-menu-text); }
+.amd-source { margin: 8px 0 0; max-height: 240px; overflow: auto; }
+.amd-measure-host { position: absolute; left: 0; top: 0; width: 100%; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
+.amd-diagram { max-width: 100%; overflow: auto; contain: content; }
+.mc-conversation-body .amd-diagram > svg,
+.amd-diagram > svg { display: block; max-width: none; height: auto; }
+.mc-conversation-body [data-testid^='assistant-chat-ai-bubble-']:has(.amd-figure),
+[data-testid='file-companion-message-assistant']:has(.amd-figure) { width: 100%; }
+/* Mermaid nests its stylesheet under the svg id. A matching copy is written
+   into the svg after render; that id is what keeps these from losing. */
+.amd-diagram .statediagram .edgeLabel { color: var(--amd-ink); }
+.amd-diagram .stateGroup .alt-composit { fill: var(--amd-paper); }
+/* Mindmap connectors are stroked with the node fill. On a dark bubble that
+   fill is too close to the page, so the line disappears. */
+.amd-diagram [class*="section-edge-"] { stroke: var(--amd-line); }
+/* The plate behind an HTML label is the span, and its parent is a 50% fade.
+   SVG plates are a rect at half opacity. A later stylesheet ties the rect
+   rule, so this selector stays one class deeper. */
+.amd-diagram .edgeLabel .label rect,
+.amd-diagram .edgeLabel .labelBkg,
+.amd-diagram .labelBkg > .edgeLabel {
+  opacity: 1;
+  background-color: var(--amd-chip);
+  fill: var(--amd-chip);
+  color: var(--amd-ink);
+}
+/* Flowchart arrowheads are marker paths with no fill of their own, so they
+   paint black. A marker that already names a fill keeps that color. */
+.amd-diagram .arrowMarkerPath:not([fill]) { fill: var(--amd-line); }
+.amd-diagram .arrowMarkerPath:not([stroke]) { stroke: var(--amd-line); }
+/* Plain labels are a paragraph. The browser's default margin is measured
+   into the box, so the scratch host has to clear it too. */
+.amd-diagram .label p,
+.amd-diagram .edgeLabel p,
+.amd-diagram .cluster-label p,
+.amd-measure-host .label p,
+.amd-measure-host .edgeLabel p,
+.amd-measure-host .cluster-label p { margin: 0; }
+/* Edge text sits on the line, with no node padding around it. A few pixels
+   keep the stroke from showing through the last glyph. */
+.amd-diagram .edgeLabel p,
+.amd-measure-host .edgeLabel p { padding: 0 4px; }
+/* Journey section titles carry the bar class, so Mermaid fills the title
+   with the bar color. Task labels are a fixed white. Both sit on the bar. */
+.amd-diagram text.journey-section,
+.amd-diagram [class*="task-type-"] ~ text.task { fill: var(--amd-ink); }
 
 /* AssistantPinnedNewsCards.tsx */
 .apnc-title-row { display: flex; align-items: center; gap: 6px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }

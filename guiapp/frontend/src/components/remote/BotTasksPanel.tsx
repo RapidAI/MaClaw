@@ -73,8 +73,10 @@ export function BotTasksPanel({ tasks, names, localizeText }: Props) {
                                     <td style={remoteTableCellStyle}>
                                         <div style={{ fontWeight: 700 }}>{title}</div>
                                     </td>
-                                    <td style={{ ...remoteTableCellStyle, maxWidth: 360, wordBreak: "break-word" }} title={task.text}>
-                                        {text}
+                                    <td style={remoteTableCellStyle} title={task.text || undefined}>
+                                        <div style={{ display: "-webkit-box", maxWidth: 360, overflow: "hidden", wordBreak: "break-word", overflowWrap: "anywhere", WebkitBoxOrient: "vertical", WebkitLineClamp: 3 }}>
+                                            {text}
+                                        </div>
                                     </td>
                                     <td style={remoteTableCellStyle}>{phaseLabel(task.phase, localizeText)}</td>
                                     <td style={remoteTableCellStyle}>{startedLabel(task.startedAt)}</td>

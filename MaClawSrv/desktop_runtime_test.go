@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
@@ -160,6 +161,20 @@ func TestDesktopAppStepsStayOnXdotoolArgs(t *testing.T) {
 	if argv != "type --delay 20 hello key Return" {
 		t.Fatalf("argv=%s", argv)
 	}
+	wide, err := desktopAppSteps([]any{map[string]any{"action": "click", "x": 7680, "y": 2160}})
+	if err != nil || len(wide) != 1 || len(wide[0]) < 4 || wide[0][2] != "7680" || wide[0][3] != "2160" {
+		t.Fatalf("wide click = %#v err=%v", wide, err)
+	}
+	if _, err := desktopAppSteps([]any{map[string]any{"action": "click", "x": 20000, "y": 10}}); err == nil || !strings.Contains(err.Error(), "outside 0..") {
+		t.Fatal(err)
+	}
+	if _, err := desktopAppSteps([]any{map[string]any{"action": "click", "x": 10}}); err == nil || !strings.Contains(err.Error(), "requires x and y") {
+		t.Fatal(err)
+	}
+	decimal, err := desktopAppSteps([]any{map[string]any{"action": "click", "x": "140.0", "y": "220"}})
+	if err != nil || len(decimal) != 1 || decimal[0][2] != "140" || decimal[0][3] != "220" {
+		t.Fatalf("decimal click = %#v err=%v", decimal, err)
+	}
 	if _, err := desktopAppSteps([]any{map[string]any{"action": "key", "key": "rm -rf"}}); err == nil {
 		t.Fatal("unsafe key unexpectedly accepted")
 	}
@@ -292,8 +307,9 @@ func TestCaptchaPausesTheDesktopTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := agent.ParseAskUserResult(login); !ok || !takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
-		t.Fatal("login page did not hand the desktop to the user")
+	asked, ok := agent.ParseAskUserResult(login)
+	if !ok || asked.InputType != "secret_fill" || asked.SecretName != "SITE_LOGIN_EX" || takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
+		t.Fatal("login page did not ask in the chat")
 	}
 	mentioned, err := finishDesktopAction(scope, "the article explains how to login", nil)
 	if err != nil || mentioned != "the article explains how to login" {
@@ -304,12 +320,17 @@ func TestCaptchaPausesTheDesktopTurn(t *testing.T) {
 	if !strings.Contains(trimmed, "page flags: login_wall") {
 		t.Fatal("long observation dropped the login flag")
 	}
+	han := strings.Repeat("界", 5000) + "\npage flags: login_wall"
+	trimmedHan := trimDesktopText(han)
+	if !utf8.ValidString(trimmedHan) || !strings.Contains(trimmedHan, "page flags: login_wall") {
+		t.Fatal("long observation split a character or dropped the login flag")
+	}
 	longLogin, err := finishDesktopAction(scope, trimmed, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := agent.ParseAskUserResult(longLogin); !ok || !takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
-		t.Fatal("long login page did not hand the desktop to the user")
+	if asked, ok = agent.ParseAskUserResult(longLogin); !ok || asked.SecretName != "SITE_LOGIN" || takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
+		t.Fatal("long login page did not ask in the chat")
 	}
 	navigated, err := desktopActionText(&browser.BrowserActionResult{
 		Display: "navigated to https://ex/login",
@@ -322,8 +343,15 @@ func TestCaptchaPausesTheDesktopTurn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := agent.ParseAskUserResult(navigatedHand); !ok || !takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
-		t.Fatal("navigate onto a login page did not hand the desktop to the user")
+	if asked, ok = agent.ParseAskUserResult(navigatedHand); !ok || asked.SecretName != "SITE_LOGIN_EX" || takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
+		t.Fatal("navigate onto a login page did not ask in the chat")
+	}
+	qr, err := finishDesktopAction(scope, "page flags: login_qr", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if asked, ok = agent.ParseAskUserResult(qr); !ok || asked.Question != desktopLoginQuestion || !takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
+		t.Fatal("a QR login did not hand the desktop back")
 	}
 	other := scope
 	other.InstanceID = "bot-b"
@@ -336,6 +364,62 @@ func TestCaptchaPausesTheDesktopTurn(t *testing.T) {
 	plain, err := finishDesktopAction(scope, "status=ok", nil)
 	if err != nil || plain != "status=ok" {
 		t.Fatalf("plain=%q err=%v", plain, err)
+	}
+}
+
+func TestReplyThatNeedsAPersonHandsOverTheComputer(t *testing.T) {
+	scope := agentruntime.Scope{TenantID: "tenant", UserID: "alice", InstanceID: "bot-a"}
+	t.Cleanup(func() {
+		desktopHandoff.Delete(desktopHandoffKey(scope.TenantID, scope.UserID, scope.InstanceID))
+		desktopAttention.Delete(desktopHandoffKey(scope.TenantID, scope.UserID, scope.InstanceID))
+		desktopResumeFocus.Delete(desktopResumeKey(scope))
+		desktopResumeUser.Delete(desktopRunKey(scope.TenantID, scope.UserID))
+		desktopLoginDocument.Delete(desktopRunKey(scope.TenantID, scope.UserID))
+		desktopRunsMu.Lock()
+		delete(desktopHolds, desktopRunKey(scope.TenantID, scope.UserID))
+		desktopRunsMu.Unlock()
+	})
+	if got := desktopReplyNeedsComputer("页面已登录，账号 Dr.Daniel。标题、正文、5 张图都已就位。"); got != "" {
+		t.Fatalf("signed-in report handed over: %q", got)
+	}
+	if got := desktopReplyNeedsComputer("已通过扫码登录并发布成功。"); got != "" {
+		t.Fatalf("finished scan handed over: %q", got)
+	}
+	if got := desktopReplyNeedsComputer("笔记配图使用了二维码。"); got != "" {
+		t.Fatalf("picture mention handed over: %q", got)
+	}
+	if got := desktopReplyNeedsComputer("请在这个桌面的浏览器里完成登录。"); got != "login_wall" {
+		t.Fatalf("desktop login ask = %q", got)
+	}
+	if got := desktopReplyNeedsComputer("缺少用户扫描二维码登录小红书，笔记尚未发布。"); got != "login_wall" {
+		t.Fatalf("qr login reply = %q", got)
+	}
+	noteDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID)
+	noteDesktopAttention(scope.TenantID, scope.UserID, scope.InstanceID, "captcha_widget")
+	noteDesktopReplyHandoff(scope.TenantID, scope.UserID, scope.InstanceID, "缺少用户扫描二维码登录小红书，笔记尚未发布。")
+	desktopRunsMu.Lock()
+	holds := desktopHolds[desktopRunKey(scope.TenantID, scope.UserID)]
+	desktopRunsMu.Unlock()
+	if holds != 1 {
+		t.Fatalf("holds = %d, a reply must not count a handoff the tool path already recorded", holds)
+	}
+	if reason := takeDesktopAttention(scope.TenantID, scope.UserID, scope.InstanceID); reason != "captcha_widget" {
+		t.Fatalf("attention = %q, a reply must not replace the page-flag reason", reason)
+	}
+	desktopHandoff.Delete(desktopHandoffKey(scope.TenantID, scope.UserID, scope.InstanceID))
+	noteDesktopReplyHandoff(scope.TenantID, scope.UserID, scope.InstanceID, "缺少用户扫描二维码登录小红书，笔记尚未发布。")
+	handoff, attention := takeDesktopTurn(scope.TenantID, scope.UserID, scope.InstanceID)
+	if !handoff || attention != "login_wall" {
+		t.Fatalf("handoff=%v attention=%q", handoff, attention)
+	}
+	if !consumeDesktopResume(scope) {
+		t.Fatal("the next turn did not keep the page the person signs in on")
+	}
+	end := markDesktopUnattended("sched-reply")
+	defer end()
+	noteDesktopReplyHandoff(scope.TenantID, scope.UserID, "sched-reply", "缺少用户扫描二维码登录")
+	if takeDesktopHandoff(scope.TenantID, scope.UserID, "sched-reply") {
+		t.Fatal("a scheduled run handed the desktop to a person")
 	}
 }
 

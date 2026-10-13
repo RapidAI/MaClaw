@@ -22,7 +22,7 @@ const CJK_PREFIX_MAX = 0.35;
 const CJK_SUFFIX_MIN = 0.45;
 
 const INTERNAL_MONOLOGUE_RE =
-    /(?:^|\n)\s*(?:The user is asking\b|Let me think\b|The system prompt\b|No tools needed\b|Keep it reasonably concise\b|\u7528\u6237(?:\u5728\u95ee|\u95ee\u7684\u662f)|\u8ba9\u6211\u60f3\u60f3|\u6211\u6765\u601d\u8003|\u4e0d\u9700\u8981\u5de5\u5177)/i;
+    /(?:^|\n)\s*(?:The user is asking\b|The user wants\b|The user asked\b|The user said\b|Let me think\b|The system prompt\b|No tools needed\b|Keep it reasonably concise\b|\u7528\u6237(?:\u5728\u95ee|\u95ee\u7684\u662f|\u8981\u7684\u662f)|\u8ba9\u6211\u60f3\u60f3|\u6211\u6765\u601d\u8003|\u4e0d\u9700\u8981\u5de5\u5177)/i;
 
 const MONOLOGUE_COMMIT_RE =
     /(?:I should answer[^\n]*|I(?:'ll| will) answer[^\n]*|Let me (?:now )?answer[^\n]*|\u76f4\u63a5(?:\u7528[^\n]{0,12})?\u56de\u7b54[^\n]*|\u4e0b\u9762(?:\u7ed9\u51fa|\u56de\u7b54)[^\n]*)\n+/gi;
@@ -279,7 +279,10 @@ function splitMonologueFromDeliverableUnchecked(text: string): { content: string
     if (cut < 0) return null;
     const think = source.slice(0, cut).trim();
     const body = source.slice(cut).trim();
-    if (think.length < REASONING_FOLLOWUP_MAX_CHARS || body.length < REASONING_FOLLOWUP_MAX_CHARS) return null;
+    if (think.length < REASONING_FOLLOWUP_MAX_CHARS) return null;
+    // A one-line Chinese conclusion is still the answer. The 80-character
+    // floor is for English prose, which is too short to tell from a stub.
+    if (body.length < REASONING_FOLLOWUP_MAX_CHARS && !cjkDeliverable(body)) return null;
     return { content: body, reasoning: think };
 }
 
@@ -308,12 +311,31 @@ function firstLanguageShiftCut(source: string): number {
         const at = (match.index ?? 0) + 2;
         if (at <= REASONING_FOLLOWUP_MAX_CHARS) continue;
         const suffix = source.slice(at).trim();
-        if (suffix.length < REASONING_FOLLOWUP_MAX_CHARS) continue;
+        if (suffix.length < REASONING_FOLLOWUP_MAX_CHARS && !cjkDeliverable(suffix)) continue;
         if (cjkRatio(source.slice(0, at)) > CJK_PREFIX_MAX) continue;
         if (cjkRatio(suffix) < CJK_SUFFIX_MIN) continue;
         return at;
     }
-    return -1;
+    // "Figure 3 是…" is a Chinese answer that does not start on a CJK character.
+    // The last such paragraph is the conclusion; an earlier break still has
+    // the rest of the plan in its tail.
+    let cut = -1;
+    for (const match of source.matchAll(/\n\n/g)) {
+        const at = (match.index ?? 0) + 2;
+        if (at <= REASONING_FOLLOWUP_MAX_CHARS) continue;
+        const suffix = source.slice(at).trim();
+        if (!cjkDeliverable(suffix)) continue;
+        if (cjkRatio(source.slice(0, at)) > CJK_PREFIX_MAX) continue;
+        cut = at;
+    }
+    return cut;
+}
+
+function cjkDeliverable(text: string): boolean {
+    const body = (text || "").trim();
+    if (body.length < 12) return false;
+    if (looksLikeInternalMonologue(body)) return false;
+    return cjkRatio(body) >= CJK_SUFFIX_MIN;
 }
 
 function cjkRatio(text: string): number {

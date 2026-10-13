@@ -288,9 +288,9 @@ func (c *srvPrincipalIntentClassifier) defaultIntentTree(ctx, parentCtx context.
 	// hint the hub reads that text and can send this call to the slow code
 	// model, which misses the fusion budget. Third-party endpoints stay
 	// unmarked: the hint must not turn them into hub-managed calls.
-	// A hub bot's viewer token would otherwise spend the owner's other
-	// service groups. The late tree no longer has the turn context, so the
-	// lease recorded at classify time carries the same pin.
+	// A hub bot bills through the owner's viewer token. The late tree no
+	// longer has the turn context, so the lease keeps that call on the
+	// same unpinned path Hub uses for a GUI viewer.
 	llmConfig = c.hubBotLLMConfig(ctx, parentCtx, p, userText, llmConfig)
 	llmConfig = srvIntentLLMConfig(llmConfig)
 	if ctx != nil && ctx.Err() != nil {

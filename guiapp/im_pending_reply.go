@@ -117,13 +117,14 @@ const pendingReplyTTL = 30 * time.Minute
 // pendingAskUserState tracks an ask_user question that is waiting for the
 // user's response. Stored in IMMessageHandler.pendingAskUser keyed by userID.
 type pendingAskUserState struct {
-	Question     string
-	Options      []string
-	InputType    string
-	Context      string
-	History      []agent.ConversationEntry
-	Timestamp    time.Time
-	WorkingState *agent.WorkingState
+	Question       string
+	Options        []string
+	InputType      string
+	Context        string
+	History        []agent.ConversationEntry
+	Timestamp      time.Time
+	WorkingState   *agent.WorkingState
+	MailboxDraftID string
 }
 
 // pendingRecordAudioState tracks an interactive recording session waiting for
@@ -388,7 +389,10 @@ func (h *IMMessageHandler) consumePendingAskUserAnswer(userID, trimmed string, e
 	// be swallowed as a pending ask_user answer — doing so would both lose the
 	// command and resume a working state the user never answered.
 	if isInternalCommand(trimmed) {
-		if _, hadPending := h.pendingAskUser.LoadAndDelete(userID); hadPending {
+		if raw, hadPending := h.pendingAskUser.LoadAndDelete(userID); hadPending {
+			if id := mailboxDraftIDFromPending(raw); id != "" {
+				h.dropMailboxDraft(userID, id)
+			}
 			log.Printf("[AskUser] discarded by internal command for user=%s cmd_len=%d", userID, len(trimmed))
 		}
 		return "", nil, false
@@ -398,17 +402,31 @@ func (h *IMMessageHandler) consumePendingAskUserAnswer(userID, trimmed string, e
 		return "", nil, false
 	}
 	pending, pendingFresh := pendingAskUserForCurrentHistory(raw, entries)
-	if !pendingFresh && pending != nil {
-		log.Printf("[AskUser] discarded stale pending ask_user for user %s, currentLen=%d boundLen=%d answer_len=%d", userID, len(entries), len(pending.History), len([]rune(trimmed)))
-	}
 	if !pendingFresh {
+		if id := mailboxDraftIDFromPending(raw); id != "" {
+			h.dropMailboxDraft(userID, id)
+		}
+		if pending != nil {
+			log.Printf("[AskUser] discarded stale pending ask_user for user %s, currentLen=%d boundLen=%d answer_len=%d", userID, len(entries), len(pending.History), len([]rune(trimmed)))
+		}
 		return "", nil, false
 	}
 	context := agent.FormatPendingAskUserAnswerHint(pending.Question, trimmed, pending.Context)
+	if hint, handled := h.finishMailboxAskUser(userID, trimmed, pending.MailboxDraftID); handled {
+		context = hint
+	}
 	log.Printf("[AskUser] consumed pending ask_user for user %s, question_len=%d answer_len=%d", userID, len([]rune(pending.Question)), len([]rune(trimmed)))
 	ws := agent.CloneWorkingState(pending.WorkingState)
 	agent.AdvanceWorkingStateAfterUserReply(ws)
 	return context, ws, true
+}
+
+func mailboxDraftIDFromPending(raw interface{}) string {
+	pending, ok := raw.(*pendingAskUserState)
+	if !ok || pending == nil {
+		return ""
+	}
+	return strings.TrimSpace(pending.MailboxDraftID)
 }
 
 func pendingRecordAudioForCurrentHistory(raw interface{}, entries []agent.ConversationEntry) (*pendingRecordAudioState, bool) {

@@ -13,6 +13,25 @@ const zhHant = {
     workflows: '\u5de5\u4f5c\u6d41',
 };
 
+function settingsPageTitle(lang: string, t: (key: string) => string, settingsTab?: string) {
+    if (settingsTab === 'knowledge') {
+        if (lang === 'zh-Hans') return '知识库';
+        if (lang === 'zh-Hant') return '知識庫';
+        return 'Knowledge base';
+    }
+    if (settingsTab === 'email') {
+        if (lang === 'zh-Hans') return '邮箱配置';
+        if (lang === 'zh-Hant') return '郵箱配置';
+        return 'Mailbox configuration';
+    }
+    if (settingsTab === 'im') {
+        if (lang === 'zh-Hans') return '即时通讯';
+        if (lang === 'zh-Hant') return '即時通訊';
+        return 'Messaging';
+    }
+    return t('globalSettings');
+}
+
 export const getHeaderTitle = (navTab: string, lang: string, t: (key: string) => string, splitUtilities = false, settingsTab?: string) => (
     isToolTab(navTab) ? getToolLabel(navTab) :
         navTab === 'projects' ? t('projectManagement') :
@@ -28,7 +47,7 @@ export const getHeaderTitle = (navTab: string, lang: string, t: (key: string) =>
                             navTab === 'files' ? (lang === 'zh-Hans' ? '云盘' : lang === 'zh-Hant' ? '雲端硬碟' : 'Cloud drive') :
                                 navTab === 'api-store' ? t('apiStore') :
                                     navTab === 'mcp' ? 'MCP' :
-                                        navTab === 'settings' ? (settingsTab === 'knowledge' ? (lang === 'zh-Hans' ? '知识库' : lang === 'zh-Hant' ? '知識庫' : 'Knowledge base') : t('globalSettings')) :
+                                        navTab === 'settings' ? settingsPageTitle(lang, t, settingsTab) :
                                             navTab === LATEX_TEMPLATES_NAV_TAB ? (lang === 'zh-Hant' ? 'LaTeX 模板' : lang === 'en' ? 'LaTeX Templates' : 'LaTeX 模板') :
                                             t('about')
 );

@@ -171,12 +171,16 @@ func (s *Service) tokenBankCenterOnce(ctx context.Context, method, rawURL, secre
 	return env, resp.StatusCode, nil
 }
 
-// RunTokenBankAutoOnce pulls for every local user who has no spendable
-// credits left, including a new-user period window. It is the default-on
-// background path. A local ceiling, when set, is the most one pull takes.
-// With no ceiling, amount zero and manual false ask HubCenter for the 1/N
-// cap. A positive remainder does not top up here. A request that cannot start
-// on that remainder pulls through PullTokenBankForAdmissionShortfall instead.
+// RunTokenBankAutoOnce pulls one share for every local user whose wallet is
+// under llmservice.TokenBankAutoTopUpCredits. That wallet does not include
+// the new-user period window. A window that still has credits does not
+// withdraw by itself, and it does not hide a wallet under the floor. It is
+// the default-on background path. A local ceiling, when set, is the most one
+// pull takes. With no ceiling, amount zero and manual false ask HubCenter
+// for the 1/N cap. A wallet of at least 100 credits does not top up here.
+// A free route does not hide a smaller finite wallet. An unlimited grant does.
+// A request that cannot start on a smaller remainder still pulls through
+// PullTokenBankForAdmissionShortfall.
 //
 // An automatic id whose grant is already stored is confirmed here, including
 // while other credits remain. The confirm calls Finish only. A withdraw of
@@ -234,7 +238,7 @@ func (s *Service) RunTokenBankAutoOnce(ctx context.Context) error {
 			errs = append(errs, err)
 			return errors.Join(errs...)
 		}
-		if llmservice.UserHasAvailableCredits(ctx, reg, user.ID, user.Email, time.Now().UTC()) {
+		if !llmservice.UserNeedsTokenBankAutoTopUp(ctx, reg, user.ID, user.Email, time.Now().UTC()) {
 			continue
 		}
 		openSeq, requestID, open := firstOpenAutoRequest(reg, record.HubID, user.Email, groupID, seq)

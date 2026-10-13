@@ -30,6 +30,10 @@ func ToolGoal(store *goal.Store, args map[string]interface{}) string {
 	switch action {
 	case "create":
 		return toolGoalCreate(store, args)
+	case "plan":
+		return toolGoalPlan(store, args)
+	case "step":
+		return toolGoalStep(store, args)
 	case "complete":
 		return toolGoalComplete(store, args)
 	case "fail":
@@ -37,7 +41,7 @@ func ToolGoal(store *goal.Store, args map[string]interface{}) string {
 	case "get":
 		return toolGoalGet(store)
 	default:
-		return fmt.Sprintf("未知 goal action: %s（支持: create/complete/fail/get）", action)
+		return fmt.Sprintf("未知 goal action: %s（支持: create/plan/step/complete/fail/get）", action)
 	}
 }
 
@@ -82,11 +86,93 @@ func toolGoalComplete(store *goal.Store, args map[string]interface{}) string {
 		return fmt.Sprintf("目标已处于终态（%s）。", g.Status)
 	}
 	summary, _ := args["summary"].(string)
-	if summary == "" {
-		summary = "目标已完成"
+	summary = strings.TrimSpace(summary)
+	if refusal := goal.CompletionRefusal(g, summary); refusal != "" {
+		return refusal
 	}
 	store.UpdateStatus("default", g.GoalID, goal.StatusComplete, summary)
-	return fmt.Sprintf("目标已完成: %s\n总结: %s\n轮次: %d", g.Objective, summary, g.TurnsUsed)
+	updated := store.Get("default")
+	if updated == nil {
+		updated = g
+	}
+	return goal.FormatCompletionReport(updated, summary)
+}
+
+func toolGoalPlan(store *goal.Store, args map[string]interface{}) string {
+	g := store.Get("default")
+	if g == nil {
+		return "错误: 当前没有活跃目标"
+	}
+	if g.IsTerminal() {
+		return fmt.Sprintf("错误: 目标已处于终态（%s）", g.Status)
+	}
+	understanding, _ := args["understanding"].(string)
+	steps, err := goal.ParseSteps(args["steps"])
+	if err != nil {
+		return "错误: " + err.Error()
+	}
+	criteria := stringSliceFromArg(args, "acceptance_criteria")
+	if len(criteria) == 0 {
+		criteria = goal.ParseStringList(args["acceptance_criteria"])
+	}
+	if err := store.SavePlan("default", g.GoalID, understanding, steps, criteria); err != nil {
+		return "错误: " + err.Error()
+	}
+	updated := store.Get("default")
+	return formatGoalPlanSaved(updated)
+}
+
+func toolGoalStep(store *goal.Store, args map[string]interface{}) string {
+	g := store.Get("default")
+	if g == nil {
+		return "错误: 当前没有活跃目标"
+	}
+	if g.IsTerminal() {
+		return fmt.Sprintf("错误: 目标已处于终态（%s）", g.Status)
+	}
+	index, ok := intFromArg(args, "index")
+	if !ok || index <= 0 {
+		return "错误: 缺少 index 参数"
+	}
+	statusRaw, _ := args["status"].(string)
+	result, _ := args["result"].(string)
+	if strings.TrimSpace(result) == "" {
+		result, _ = args["reason"].(string)
+	}
+	if err := store.UpdateStep("default", g.GoalID, index, goal.StepStatus(statusRaw), result); err != nil {
+		return "错误: " + err.Error()
+	}
+	updated := store.Get("default")
+	if updated == nil {
+		return "错误: 步骤更新后目标丢失"
+	}
+	for _, step := range updated.Steps {
+		if step.Index == index && step.Status == goal.StepFailed {
+			reason := fmt.Sprintf("步骤 %d 失败：%s", index, step.Result)
+			store.UpdateStatus("default", g.GoalID, goal.StatusFailed, reason)
+			return "错误: " + reason
+		}
+	}
+	return fmt.Sprintf("步骤 %d 已完成", index)
+}
+
+func formatGoalPlanSaved(g *goal.Goal) string {
+	if g == nil {
+		return "计划已保存"
+	}
+	var b strings.Builder
+	b.WriteString("计划已保存\n")
+	b.WriteString("理解: " + g.Understanding + "\n")
+	b.WriteString("步骤:\n")
+	for _, step := range g.Steps {
+		b.WriteString(fmt.Sprintf("  %d. %s\n", step.Index, step.Title))
+	}
+	b.WriteString("验收标准:\n")
+	for _, criterion := range g.AcceptanceCriteria {
+		b.WriteString("  • " + criterion + "\n")
+	}
+	b.WriteString("下一轮只执行第 1 步。")
+	return b.String()
 }
 
 func toolGoalFail(store *goal.Store, args map[string]interface{}) string {

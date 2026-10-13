@@ -18,6 +18,11 @@ func TestLLMEndpointForcedServiceGroupStaysOnTheViewer(t *testing.T) {
 		t.Fatalf("system-free header group=%q forced=%v", group, forced)
 	}
 
+	req.Header.Set(llmpool.ServiceGroupIDHeader, llmservice.MaClawOfficialServiceGroupID)
+	if group, forced = llmEndpointForcedServiceGroup(context.Background(), req); forced || group != "" {
+		t.Fatalf("official header group=%q forced=%v", group, forced)
+	}
+
 	req.Header.Set(llmpool.ServiceGroupIDHeader, "paid-group")
 	if group, forced = llmEndpointForcedServiceGroup(context.Background(), req); forced || group != "" {
 		t.Fatalf("paid header group=%q forced=%v", group, forced)

@@ -46,6 +46,10 @@ type desktopStateRecord struct {
 	// Userviewed is the same hold for a user watching or taking over a
 	// desktop from their own Bot page.
 	Userviewed map[string]string `json:"userviewed,omitempty"`
+	// Tasks is the compact record of admitted desktop runs. A finished run
+	// stays until the GUI has been given the result, so a client that was
+	// offline can pick it up after the process restarts.
+	Tasks map[string]*desktopTaskPin `json:"tasks,omitempty"`
 }
 
 // ensureDesktopHydrated restores the persisted desktop state into memory once
@@ -140,6 +144,7 @@ func (s *Service) ensureDesktopHydrated(tenantID string) {
 		}
 		s.desktopUserView[key] = last
 	}
+	s.restoreDesktopTasks(tenantID, rec.Desktop.Tasks)
 }
 
 // persistDesktopState writes the in-memory desktop pins and views of this
@@ -219,6 +224,9 @@ func (s *Service) persistDesktopState(tenantID string) {
 			st.Userviewed = map[string]string{}
 		}
 		st.Userviewed[key] = last.UTC().Format(time.RFC3339)
+	}
+	if tasks := s.desktopTaskPins(tenantID); len(tasks) > 0 {
+		st.Tasks = tasks
 	}
 	rec, err := s.load(ctx, tenantID)
 	if err != nil {

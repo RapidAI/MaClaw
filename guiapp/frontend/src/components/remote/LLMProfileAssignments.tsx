@@ -545,51 +545,43 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         const hideDuplicateVisionLine = captionWarningVisible && shownVision !== "inconclusive";
         const testDisabled = testingProfile !== null || (profile === "caption" && !(caption?.provider_id && caption?.model));
         return (
-            <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: 8 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <div className="llm-profile-probe">
+                <div className="llm-profile-probe__row">
                     <button type="button" onClick={() => void testProfile(profile)} disabled={testDisabled}
-                        style={{ fontSize: "0.7rem", padding: "4px 8px", cursor: testingProfile ? "wait" : "pointer", background: colors.surface, color: colors.primaryDark, border: `1px solid ${colors.border}`, borderRadius: 4 }}>
+                        className="llm-profile-probe-btn" aria-busy={testingProfile === profile || undefined}>
                         {testingProfile === profile ? t("Checking…", "正在检查…") : canProbeVision
                             ? t("Test connection and image support", "测试连接与图片能力")
                             : t("Test connection", "测试连接")}
                     </button>
-                    {probe && <span role="status" style={{ fontSize: "0.7rem", color: health === "configured" ? colors.success : health === "unavailable" || health === "invalid" ? colors.danger : colors.textMuted }}>{probeLabel(probe)}</span>}
+                    {probe && <span role="status" className={"llm-profile-probe-status" + (health === "configured" ? " is-ok" : (health === "unavailable" || health === "invalid") ? " is-bad" : "")}>{probeLabel(probe)}</span>}
                 </div>
-                {provider && model && !hideDuplicateVisionLine ? <span role="status" style={{ fontSize: "0.7rem", color: shownVision === "supported" ? colors.success : colors.textMuted }}>{visionStatusLabel(shownVision, provider.is_hub_service)}</span> : null}
+                {provider && model && !hideDuplicateVisionLine ? <span role="status" className={"llm-profile-probe-status" + (shownVision === "supported" ? " is-ok" : "")}>{visionStatusLabel(shownVision, provider.is_hub_service)}</span> : null}
             </div>
         );
     };
 
-    const sectionStyle = {
-        marginBottom: 16,
-        padding: "14px 16px",
-        border: `1px solid ${colors.border}`,
-        background: colors.surface,
-        borderRadius: 6,
-        minWidth: 0,
-    } as const;
     const header = (
-        <div style={{ marginBottom: 14 }}>
-            <h3 id="llm-profile-assignments-title" style={{ fontSize: "0.86rem", color: colors.text, margin: 0 }}>{t("Model assignments", "模型分配")}</h3>
-            <div className="llm-profile-assignments__lede" style={{ color: colors.textMuted }}>
+        <div className="llm-profile-assignments__head">
+            <h3 id="llm-profile-assignments-title" className="llm-profile-assignments__title">{t("Model assignments", "模型分配")}</h3>
+            <div className="llm-profile-assignments__lede">
                 <span>{t("Providers that passed a connection test, plus the provider currently in use. Connections and credentials are managed separately.", "此处显示已通过连接测试的服务商，以及当前正在使用的服务商；连接与凭据在服务商管理中维护。")}</span>
                 {descriptionAction ? <span className="llm-profile-assignments__lede-action">{descriptionAction}</span> : null}
             </div>
         </div>
     );
     const wrapSection = (body: ReactNode) => (
-        <section aria-labelledby="llm-profile-assignments-title" style={sectionStyle}>
+        <div className="llm-config-card llm-profile-assignments" role="region" aria-labelledby="llm-profile-assignments-title">
             {header}
             {body}
-        </section>
+        </div>
     );
 
-    if (loading) return wrapSection(<div role="status" style={{ color: colors.textMuted, fontSize: "0.78rem" }}>{t("Loading model assignments…", "正在加载模型分配…")}</div>);
-    if (!state || !draft) return wrapSection(<div role="alert" style={{ color: colors.danger, fontSize: "0.76rem" }}>{error || t("Could not load model assignments.", "无法加载模型分配。")}</div>);
+    if (loading) return wrapSection(<div role="status" className="llm-profile-assignments__state">{t("Loading model assignments…", "正在加载模型分配…")}</div>);
+    if (!state || !draft) return wrapSection(<div role="alert" className="llm-profile-assignments__state llm-profile-assignments__state--error">{error || t("Could not load model assignments.", "无法加载模型分配。")}</div>);
 
     const captionVision = visionSelection("caption");
     return wrapSection(<>
-        {providers.length === 0 && <div role="status" style={{ margin: "0 0 14px", padding: "8px 10px", borderRadius: 4, background: colors.bg, color: colors.textSecondary, fontSize: "0.72rem", lineHeight: 1.45 }}>
+        {providers.length === 0 && <div role="status" className="llm-profile-assignments__state llm-profile-assignments__state--soft">
             {t("No eligible providers yet. Test and save a provider in Provider management, or keep using the current assistant provider.", "暂无可用服务商。请先在服务商管理中检测并保存，或继续使用当前助手服务商。")}
         </div>}
 
@@ -626,11 +618,11 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
                 </div>
             </div>
         </div>
-        {error && <div role="alert" style={{ color: colors.danger, fontSize: "0.72rem", marginTop: 10, display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}><span>{error}</span>{dirty && <button type="button" onClick={refreshDraft} style={{ fontSize: "0.7rem", padding: "3px 7px", cursor: "pointer", background: colors.surface, color: colors.danger, border: `1px solid ${colors.danger}`, borderRadius: 4 }}>{t("Refresh draft", "刷新草稿")}</button>}</div>}
-        <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 8, marginTop: 14, flexWrap: "wrap" }}>
-            {dirty && <span style={{ marginRight: "auto", fontSize: "0.7rem", color: colors.primaryDark }}>{t("Unsaved changes", "有未保存更改")}</span>}
-            {dirty && <button type="button" onClick={refreshDraft} disabled={saving} style={{ fontSize: "0.74rem", padding: "6px 10px", cursor: saving ? "default" : "pointer", background: colors.surface, color: colors.textSecondary, border: `1px solid ${colors.border}`, borderRadius: 4 }}>{t("Discard", "放弃更改")}</button>}
-            <button type="button" disabled={!dirty || saving} onClick={() => void save()} style={{ fontSize: "0.74rem", padding: "6px 12px", cursor: !dirty || saving ? "default" : "pointer", opacity: !dirty || saving ? 0.6 : 1, background: colors.primaryLight, color: colors.primaryDark, border: `1px solid ${colors.primary}`, borderRadius: 4 }}>
+        {error && <div role="alert" className="llm-profile-error"><span>{error}</span>{dirty && <button type="button" className="llm-profile-error__btn" onClick={refreshDraft}>{t("Refresh draft", "刷新草稿")}</button>}</div>}
+        <div className="llm-profile-footer">
+            {dirty && <span className="llm-profile-footer__unsaved">{t("Unsaved changes", "有未保存更改")}</span>}
+            {dirty && <button type="button" onClick={refreshDraft} disabled={saving} className="llm-config-btn llm-config-btn--quiet llm-profile-footer__btn">{t("Discard", "放弃更改")}</button>}
+            <button type="button" disabled={!dirty || saving} onClick={() => void save()} className="llm-config-btn llm-config-btn--primary llm-profile-footer__btn">
                 {saving ? t("Saving…", "正在保存…") : t("Save changes", "保存更改")}
             </button>
         </div>

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 )
 
@@ -21,8 +22,6 @@ import (
 // canonical PDF URL, downloaded once into a local folder, and opened as a
 // normal companion tab.
 const (
-	// arxivPaperDirName is the folder the downloaded PDFs land in.
-	arxivPaperDirName = "MaClaw 伴读"
 	// arxivDownloadTimeoutS bounds one PDF download. Papers can be tens of
 	// megabytes, so this is far above the text-fetch default.
 	arxivDownloadTimeoutS = 90
@@ -228,6 +227,22 @@ func arxivPaperFileName(id string) string {
 	return name + ".pdf"
 }
 
+// arxivPaperFolderName is the subfolder downloaded papers land in, under the
+// user's Downloads folder. The prefix is the build's brand so a TigerClaw or
+// MetaStaff build does not file its papers under another product's name; the
+// MaClaw default keeps existing folders exactly where they are.
+func arxivPaperFolderName() string {
+	return arxivPaperFolderNameFor(brand.Current().DisplayName)
+}
+
+func arxivPaperFolderNameFor(displayName string) string {
+	name := strings.TrimSpace(displayName)
+	if name == "" {
+		name = "MaClaw"
+	}
+	return name + " 伴读"
+}
+
 // arxivPaperDir is the folder downloaded papers are written to: the user's
 // Downloads folder (resolved through the platform helper, so a redirected
 // OneDrive folder on Windows is honoured rather than bypassed) with a
@@ -261,7 +276,15 @@ func (a *App) arxivPaperDir() (string, error) {
 		}
 		base = home
 	}
-	dir := filepath.Join(base, arxivPaperDirName)
+	return arxivPaperDirUnder(base)
+}
+
+// arxivPaperDirUnder creates and returns the companion subfolder inside base.
+// It is split out from the base lookup so a test can prove the folder really is
+// filed under the build's brand, rather than only that the name helper agrees
+// with the brand.
+func arxivPaperDirUnder(base string) (string, error) {
+	dir := filepath.Join(base, arxivPaperFolderName())
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", fmt.Errorf("创建目录失败：%s", err.Error())
 	}

@@ -922,7 +922,7 @@
   color: var(--theme-text-primary) !important;
   box-shadow: var(--shadow-sm) !important;
 }
-#App[data-nav-tab='settings'] :where(.settings-panel p, .settings-panel small, .settings-panel label, .settings-panel-desc, .prog-tools__field-label) {
+#App[data-nav-tab='settings'] :where(.settings-panel p, .settings-panel small, .settings-panel label:not(.hub-service-redeem__history-toggle), .settings-panel-desc, .prog-tools__field-label) {
   color: var(--theme-text-secondary) !important;
 }
 #App[data-nav-tab='settings'] :where(.settings-top-tabs, .settings-top-tabs__group) {
@@ -2139,6 +2139,41 @@
 .mc-taskcfg-name-input::placeholder {
     color: color-mix(in srgb, currentColor 42%, transparent);
     font-weight: 400;
+}
+/* The run-window popover is portaled to document.body, outside the surfaces
+   that force color-scheme. WebView2 then paints the native datetime indicator
+   with the OS scheme, so a light glyph disappears on the light field. */
+.mc-taskcfg-datetime-wrap {
+    position: relative;
+    display: block;
+}
+.mc-taskcfg-datetime::-webkit-calendar-picker-indicator {
+    display: none;
+}
+.mc-taskcfg-datetime-btn {
+    position: absolute;
+    z-index: 1;
+    top: 1px;
+    right: 1px;
+    bottom: 1px;
+    width: 32px;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 0 7px 7px 0;
+    background: transparent;
+    color: inherit;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+.mc-taskcfg-datetime-btn:hover {
+    background: color-mix(in srgb, currentColor 10%, transparent);
+}
+.mc-taskcfg-datetime-btn:focus-visible {
+    outline: 2px solid var(--theme-primary, #2f6fbc);
+    outline-offset: -2px;
 }
 @media (prefers-reduced-motion: reduce) {
     .mc-taskcfg-pop,

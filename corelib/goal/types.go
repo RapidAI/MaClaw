@@ -17,6 +17,32 @@ import (
 	"github.com/google/uuid"
 )
 
+// Phase is the auto-continuation stage of an active goal.
+type Phase string
+
+const (
+	PhasePlan    Phase = "plan"
+	PhaseExecute Phase = "execute"
+)
+
+// StepStatus is the lifecycle of one decomposed step.
+type StepStatus string
+
+const (
+	StepPending StepStatus = "pending"
+	StepDone    StepStatus = "done"
+	StepFailed  StepStatus = "failed"
+)
+
+// Step is one ordered unit of work produced by the planning turn.
+type Step struct {
+	Index  int        `json:"index"`
+	Title  string     `json:"title"`
+	Detail string     `json:"detail,omitempty"`
+	Status StepStatus `json:"status"`
+	Result string     `json:"result,omitempty"`
+}
+
 // Status represents the lifecycle state of a goal.
 type Status string
 
@@ -82,6 +108,12 @@ type Goal struct {
 	// MaClaw-specific: verifiable completion conditions
 	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
 	ProjectPath        string   `json:"project_path,omitempty"`
+
+	// Plan is filled by the first continuation turn. PhasePlan forbids
+	// implementation; PhaseExecute runs one pending step at a time.
+	Understanding string `json:"understanding,omitempty"`
+	Steps         []Step `json:"steps,omitempty"`
+	Phase         Phase  `json:"phase,omitempty"`
 
 	// Continuation control
 	ConsecutiveNoToolTurns int `json:"consecutive_no_tool_turns"`

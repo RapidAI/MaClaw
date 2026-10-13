@@ -111,14 +111,15 @@ type CompactElementRef struct {
 // BrowserPageFlags captures observe-time page conditions that should stop
 // blind clicking.
 type BrowserPageFlags struct {
-	CaptchaWidget bool `json:"captcha_widget,omitempty"`
-	Captcha       bool `json:"captcha,omitempty"`
-	LoginWall     bool `json:"login_wall,omitempty"`
-	MFA           bool `json:"mfa,omitempty"`
-	Canvas          bool `json:"canvas,omitempty"`
-	PaymentConfirm  bool `json:"payment_confirm,omitempty"`
-	ConsentDialog   bool `json:"consent_dialog,omitempty"`
-	VisionUsed      bool `json:"vision_used,omitempty"`
+	CaptchaWidget  bool `json:"captcha_widget,omitempty"`
+	Captcha        bool `json:"captcha,omitempty"`
+	LoginWall      bool `json:"login_wall,omitempty"`
+	LoginQR        bool `json:"login_qr,omitempty"`
+	MFA            bool `json:"mfa,omitempty"`
+	Canvas         bool `json:"canvas,omitempty"`
+	PaymentConfirm bool `json:"payment_confirm,omitempty"`
+	ConsentDialog  bool `json:"consent_dialog,omitempty"`
+	VisionUsed     bool `json:"vision_used,omitempty"`
 }
 
 // ExpectSpec is an optional post-condition for navigate/click/type/select.
@@ -263,6 +264,9 @@ type BrowserAgentSession struct {
 	snapshots       map[string]*BrowserSnapshot
 	lastSnapshotID  string
 	lastFingerprint string
+	// probeFlagsStale is set when a page script runs. The probe still has
+	// refs, but its flags describe the page from before that script.
+	probeFlagsStale bool
 	lastExpect      ExpectSpec
 	lastMissingKey  string
 	missingExpectN  int

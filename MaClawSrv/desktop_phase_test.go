@@ -23,7 +23,7 @@ func TestPlanPhaseDoesNotMutateOrHandOffLogin(t *testing.T) {
 		Input: agentservice.ExecuteRequest{Message: agentservice.Message{Metadata: map[string]string{"bot_phase": "plan"}}},
 	}
 	mod := desktopRuntimeModule{}
-	for _, action := range []string{"navigate", "click", "type", "press", "task_run", "app_run", "app_open", "install", "deliver", "file_write", "file_edit", "bash"} {
+	for _, action := range []string{"navigate", "click", "type", "press", "task_run", "script", "skill_run", "app_run", "app_open", "install", "deliver", "file_write", "file_edit", "bash"} {
 		_, err := mod.InvokeTool(context.Background(), plan, "desktop", map[string]any{
 			"action": action,
 			"url":    "https://example.com",
@@ -47,14 +47,11 @@ func TestPlanPhaseDoesNotMutateOrHandOffLogin(t *testing.T) {
 		t.Fatal(err)
 	}
 	asked, ok := agent.ParseAskUserResult(login)
-	if !ok || asked.Question != desktopLoginQuestion {
+	if !ok || asked.InputType != "secret_fill" || asked.SecretName != "SITE_LOGIN" {
 		t.Fatalf("execute login=%q", login)
 	}
-	if !takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
-		t.Fatal("execute did not record the login handoff")
-	}
-	if reason := takeDesktopAttention(scope.TenantID, scope.UserID, scope.InstanceID); reason != "login_wall" {
-		t.Fatalf("attention=%q", reason)
+	if takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) || takeDesktopAttention(scope.TenantID, scope.UserID, scope.InstanceID) != "" {
+		t.Fatal("a password login handed the desktop back")
 	}
 }
 
@@ -85,9 +82,38 @@ func TestPaymentConfirmHandsOffOnlyDuringExecution(t *testing.T) {
 		t.Fatal("card payment did not hand off during execution")
 	}
 	consent, err := finishDesktopActionPhase(scope, "page flags: consent_dialog", nil, "execute")
-	asked, ok = agent.ParseAskUserResult(consent)
-	if err != nil || !ok || asked.Question != "这一步需要你在当前桌面的浏览器里确认这项同意。完成后这个 bot 会接着操作。" {
+	if err != nil || consent != "page flags: consent_dialog" || takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
 		t.Fatalf("consent=%q err=%v", consent, err)
+	}
+	code, err := finishDesktopActionPhase(scope, "page flags: mfa", nil, "execute")
+	asked, ok = agent.ParseAskUserResult(code)
+	if err != nil || !ok || asked.InputType != "secret_fill" || asked.SecretName != "SITE_CODE" || takeDesktopHandoff(scope.TenantID, scope.UserID, scope.InstanceID) {
+		t.Fatalf("code=%q err=%v", code, err)
+	}
+	if got := desktopFillSecretName("login_wall", "script ok: url https://www.docs.example.com/draft"); got != "SITE_LOGIN_DOCS_EXAMPLE_COM" {
+		t.Fatalf("secret name=%s", got)
+	}
+	listed := "probed page Sign in (https://login.example/a); page flags: login_wall\nOpen browser pages (2), including tabs behind the front window:\n- attached Sign in — https://login.example/a\n- Mail — https://mail.example.com/inbox"
+	if got := desktopFillSecretName("login_wall", listed); got != "SITE_LOGIN_LOGIN_EXAMPLE" {
+		t.Fatalf("open tabs changed the secret name: %s", got)
+	}
+	if got := desktopFillSecretName("mfa", "https://accounts.example.com/mfa page flags: mfa"); got != "SITE_CODE_ACCOUNTS_EXAMPLE_COM" {
+		t.Fatalf("code name=%s", got)
+	}
+	if got := desktopAttentionReason("page flags: mfa,login_wall"); got != "login_wall" {
+		t.Fatalf("both flags attention=%s", got)
+	}
+	// The screenshot and its reading follow the flag line. "mfa" in that
+	// reading is a word on the page, not a request for a verification code.
+	shot := "page flags: consent_dialog\nscreen_vision:\n  e0 [text] \"page flags: mfa\" center=1,2\ncaptcha challenge\n" + strings.Repeat("mfa", 30)
+	if got := desktopAttentionReason(shot); got != "" {
+		t.Fatalf("screen reading attention=%s", got)
+	}
+	if got := desktopAttentionReason("page has a captcha challenge\nscreen_vision:\n  e0 [text] \"ok\""); got != "captcha_widget" {
+		t.Fatalf("captcha before the reading=%s", got)
+	}
+	if got := desktopAttentionReason("page flags: login_wall\nscreen_vision:\n  e0 [text] \"mfa\" center=1,2"); got != "login_wall" {
+		t.Fatalf("flag line with a later reading=%s", got)
 	}
 }
 

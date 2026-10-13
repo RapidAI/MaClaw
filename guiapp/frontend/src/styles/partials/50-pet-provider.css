@@ -610,7 +610,7 @@
     .proxy-settings-switch span,
     .proxy-settings-switch span::after {
         animation: none !important;
-        transition-duration: 0.01ms !important;
+        transition: none !important;
     }
 }
 

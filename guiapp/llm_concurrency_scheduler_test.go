@@ -19,12 +19,15 @@ func TestLLMConcurrencySchedulerClassifiesBackgroundCallers(t *testing.T) {
 		{Caller: "experience-extraction"},
 		{Caller: "knowledge-card"},
 		{Caller: "gossip-auto"},
-		{Caller: "vision-probe"},
-		{Caller: "provider-test"},
 		{Caller: "unified-intent-classifier-late"},
 	} {
 		if got := classifyLLMRequestPriority(trace); got != llmPriorityBackground {
 			t.Fatalf("classifyLLMRequestPriority(%+v) = %s, want background", trace, got)
+		}
+	}
+	for _, caller := range []string{"provider-test", "vision-probe"} {
+		if got := classifyLLMRequestPriority(llm.RequestTrace{Caller: caller}); got != llmPriorityInteractive {
+			t.Fatalf("%s priority = %s, want interactive", caller, got)
 		}
 	}
 	if got := classifyLLMRequestPriority(llm.RequestTrace{Caller: "agent_loop", OwnerID: "desktop-user"}); got != llmPriorityForeground {
@@ -609,6 +612,89 @@ func TestLLMConcurrencySchedulerBGPreemptedWhenFGEnqueuesAfterBGDispatched(t *te
 	case <-time.After(time.Second):
 		t.Fatal("FG was not dispatched after BG released")
 	}
+}
+
+func TestProviderConfirmationRunsBesideCodingTurn(t *testing.T) {
+	s := newLLMConcurrencyScheduler()
+	s.foregroundWork = func() int64 { return 1 }
+
+	coding, err := s.Acquire(context.Background(), llm.RequestTrace{Caller: "coding-subagent", OwnerID: "desktop-user"})
+	if err != nil {
+		t.Fatalf("coding acquire: %v", err)
+	}
+	defer coding.Release()
+
+	for _, caller := range []string{"provider-test", "vision-probe"} {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		probe, err := s.Acquire(ctx, llm.RequestTrace{Caller: caller})
+		cancel()
+		if err != nil {
+			t.Fatalf("%s acquire: %v", caller, err)
+		}
+		probeCancelled := make(chan struct{})
+		probe.SetCancel(func() { close(probeCancelled) })
+
+		next, err := s.Acquire(context.Background(), llm.RequestTrace{Caller: "coding-subagent", OwnerID: "desktop-user"})
+		if err != nil {
+			probe.Release()
+			t.Fatalf("next coding acquire: %v", err)
+		}
+		next.Release()
+
+		select {
+		case <-probeCancelled:
+			probe.Release()
+			t.Fatalf("%s was cancelled when the next coding request started", caller)
+		case <-time.After(50 * time.Millisecond):
+		}
+		probe.Release()
+	}
+}
+
+func TestProviderConfirmationDoesNotPreemptBackground(t *testing.T) {
+	s := newLLMConcurrencyScheduler()
+	s.foregroundWork = func() int64 { return 0 }
+
+	bg, err := s.Acquire(context.Background(), llm.RequestTrace{Caller: "memory-maintenance"})
+	if err != nil {
+		t.Fatalf("background acquire: %v", err)
+	}
+	defer bg.Release()
+	bgCancelled := make(chan struct{})
+	bg.SetCancel(func() { close(bgCancelled) })
+
+	probe, err := s.Acquire(context.Background(), llm.RequestTrace{Caller: "provider-test"})
+	if err != nil {
+		t.Fatalf("provider-test acquire: %v", err)
+	}
+	defer probe.Release()
+
+	select {
+	case <-bgCancelled:
+		t.Fatal("provider confirmation cancelled in-flight background work")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestInteractiveProbePressureDoesNotThrottleOtherLanes(t *testing.T) {
+	s := newLLMConcurrencyScheduler()
+	s.foregroundWork = func() int64 { return 0 }
+	s.ObserveResult(llm.RequestTrace{Caller: "provider-test"}, errors.New("HTTP 429 too many requests"))
+	if s.IsForegroundDegraded() {
+		t.Fatal("provider-test 429 degraded the foreground lane")
+	}
+
+	fg, err := s.Acquire(context.Background(), llm.RequestTrace{Caller: "agent_loop", OwnerID: "desktop-user"})
+	if err != nil {
+		t.Fatalf("foreground acquire: %v", err)
+	}
+	fg.Release()
+
+	bg, err := s.Acquire(context.Background(), llm.RequestTrace{Caller: "memory-maintenance"})
+	if err != nil {
+		t.Fatalf("background acquire after probe 429: %v", err)
+	}
+	bg.Release()
 }
 
 func TestLLMConcurrencySchedulerForegroundPreemptsActiveBackground(t *testing.T) {

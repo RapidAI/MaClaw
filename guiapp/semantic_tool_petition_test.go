@@ -481,7 +481,7 @@ func TestSemanticPetitionableCapabilitiesResolveRuleBackedLabels(t *testing.T) {
 // inspection legs are read-only; every other petitionable name is effectful
 // and denied outright in group-restricted contexts.
 func TestSemanticPetitionReadOnlyClassification(t *testing.T) {
-	readOnly := []string{"web_search", "web_fetch", "current_datetime", "read_file", "git_status", "knowledge_search", "session_search", "asr"}
+	readOnly := []string{"web_search", "web_fetch", "current_datetime", "read_file", "git_status", "knowledge_search", "session_search", "asr", "mailbox_query"}
 	for _, name := range readOnly {
 		if _, ok := semanticPetitionableCapabilities[name]; !ok {
 			t.Errorf("read-only pin %q is not petitionable", name)

@@ -847,8 +847,9 @@
             </div>
             <div class="grid2">
               <div><label for="tenantCheckinCredits" id="tenantCheckinCreditsLabel"></label><input id="tenantCheckinCredits" type="number" min="1" max="1000000" step="1" placeholder="10"></div>
-              <div class="item-meta" id="tenantCheckinSettingsHint" style="align-self:end"></div>
+              <div><label for="tenantCheckinDurationDays" id="tenantCheckinDurationDaysLabel"></label><input id="tenantCheckinDurationDays" type="number" min="1" max="3650" step="1" placeholder="30"></div>
             </div>
+            <div class="item-meta" id="tenantCheckinSettingsHint"></div>
           </div>
           <div class="actions" style="margin-top:10px"><button class="btn-primary" onclick="saveTenantCheckinSettings()" id="tenantCheckinSettingsSaveBtn"></button><button class="btn-secondary" type="button" onclick="openCheckinRecordsModal()" id="tenantCheckinViewBtn"></button></div>
         </div>

@@ -472,6 +472,27 @@ func anyToInt64(v any) int64 {
 	}
 }
 
+// HubRetryWait is how long a Hub denial asked the caller to wait.
+// A body with no clock returns 0. now is the moment the denial was read.
+func HubRetryWait(body []byte, now time.Time) time.Duration {
+	fields := extractLLMErrorFields(body)
+	if fields.RetryAfterSeconds > 0 {
+		return time.Duration(fields.RetryAfterSeconds) * time.Second
+	}
+	if fields.RetryAfterAt == "" {
+		return 0
+	}
+	retryAt, err := time.Parse(time.RFC3339, fields.RetryAfterAt)
+	if err != nil {
+		return 0
+	}
+	wait := retryAt.Sub(now)
+	if wait <= 0 {
+		return 0
+	}
+	return wait
+}
+
 func formatHubRetryText(seconds int64, retryAfterAt string) string {
 	if seconds <= 0 && retryAfterAt != "" {
 		if retryAt, err := time.Parse(time.RFC3339, retryAfterAt); err == nil {

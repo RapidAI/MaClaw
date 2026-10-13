@@ -216,7 +216,7 @@ func normalizeOwnerLLMOverride(in PrincipalLLMInput, rec record, hubUserID strin
 	// Selections resolve by name inside one app_config. A name already carrying
 	// meaning there would silently shadow it: MaClawSrv returns the first
 	// match, and MaclawLLMProviderNameEqual folds some vendor aliases together.
-	if strings.EqualFold(name, botLLMProviderName) || strings.EqualFold(name, llmCurrentSystemFree) {
+	if reservedBotLLMName(name) {
 		return nil, fmt.Errorf("%w: llm provider name is reserved", ErrInvalidInput)
 	}
 	for _, item := range rec.LLM.Providers {

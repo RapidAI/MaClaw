@@ -9,6 +9,8 @@ export type WindowGeometryAPI = {
     getSize: () => Promise<{ w?: number; width?: number; h?: number; height?: number }>;
     getPosition: () => Promise<{ x?: number; y?: number }>;
     setSize: (width: number, height: number) => void;
+    // Screen coordinates, the same space as WindowGetPosition. On Windows that
+    // must not be Wails WindowSetPosition: it adds the monitor work-area origin.
     setPosition: (x: number, y: number) => void;
 };
 

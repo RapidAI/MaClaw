@@ -5,7 +5,17 @@ param(
 $ErrorActionPreference = 'Stop'
 $numberPath = Join-Path $Root 'build_number'
 $n = if (Test-Path $numberPath) { [int](Get-Content $numberPath) + 1 } else { 1 }
-Set-Content -Path $numberPath -Value $n -NoNewline
+# Concurrent editors (indexers, other agent sessions) can hold build_number in a
+# memory-mapped read for a moment; retry briefly instead of failing the build.
+for ($attempt = 1; $attempt -le 10; $attempt++) {
+    try {
+        Set-Content -Path $numberPath -Value $n -NoNewline -ErrorAction Stop
+        break
+    } catch {
+        if ($attempt -eq 10) { throw }
+        Start-Sleep -Milliseconds 700
+    }
+}
 $cfg = Get-Content (Join-Path $Root 'wails.json') -Raw | ConvertFrom-Json
 $parts = @([string]$cfg.info.productVersion -split '\.')
 if ($parts.Count -eq 3) { $parts += '0' }

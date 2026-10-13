@@ -1261,7 +1261,7 @@ export const ThirdPartyAccessSettings = ({
                 <span>Token</span>
                 <span className="im-settings-token-row">
                     <input type="password" disabled={settingsBusy} value={(config as any)?.thirdparty_gateway_token || ''} onChange={(e) => saveRemoteConfigField({ thirdparty_gateway_token: e.target.value })} placeholder="Bearer token" autoComplete="off" />
-                    <button type="button" className="im-settings-button im-settings-button--primary" disabled={settingsBusy} onClick={() => void generateToken()}>
+                    <button type="button" className="im-settings-button im-settings-button--accent" disabled={settingsBusy} onClick={() => void generateToken()}>
                         {isZh ? '生成 Token' : 'Generate Token'}
                     </button>
                 </span>
@@ -1270,7 +1270,7 @@ export const ThirdPartyAccessSettings = ({
 
         <div className="im-settings-endpoint-row">
             <code>{`http://${(config as any)?.thirdparty_gateway_host || '127.0.0.1'}:${(config as any)?.thirdparty_gateway_port || 18777}/api/im-gateway/v1`}</code>
-            <button type="button" className="im-settings-button im-settings-button--primary" onClick={() => {
+            <button type="button" className="im-settings-button im-settings-button--accent" onClick={() => {
                 const base = String((config as any)?.remote_hub_url || '').replace(/\/+$/, '');
                 BrowserOpenURL(base ? base + '/connector' : '/connector');
             }}>{textForLang(lang, 'Open docs', '打开接入文档', '開啟接入文件')}</button>
@@ -1336,7 +1336,7 @@ export const ThirdPartyAccessSettings = ({
                         : <small>{isZh ? '点击获取后，在硬件配置页输入。' : 'Get a code, then enter it in the hardware setup portal.'}</small>}
                 </div>
                 <div className="im-settings-hardware__actions">
-                    <button type="button" className="im-settings-button im-settings-button--primary" disabled={hardwareControlsDisabled || hardwareBindingAtCapacity || pairingBusy} onClick={async () => {
+                    <button type="button" className="im-settings-button im-settings-button--accent" disabled={hardwareControlsDisabled || hardwareBindingAtCapacity || pairingBusy} onClick={async () => {
 						const requestID = ++pairingRequestRef.current;
 						setPairingBusy(true);
                         try {
@@ -1548,7 +1548,7 @@ export const ThirdPartyAccessSettings = ({
 										</div>
 										</div>
 										<div className="im-settings-hardware__device-command-actions">
-		                                        <button type="button" className="im-settings-button im-settings-button--primary" aria-label={`${isZh ? '远程播放' : 'Play remotely'} ${name}`} disabled={hardwareControlsDisabled || !welcomeAudioPath || !device.online || deletingClientIds.has(device.clientId) || previewingClientIds.has(device.clientId)} title={!device.online ? (isZh ? '设备离线，无法远程播放。' : 'This device is offline.') : undefined} onClick={() => void previewRemoteHardware(device)}>{previewingClientIds.has(device.clientId) ? (isZh ? '播放中…' : 'Playing…') : (isZh ? '远程播放' : 'Play remotely')}</button>
+		                                        <button type="button" className="im-settings-button im-settings-button--accent" aria-label={`${isZh ? '远程播放' : 'Play remotely'} ${name}`} disabled={hardwareControlsDisabled || !welcomeAudioPath || !device.online || deletingClientIds.has(device.clientId) || previewingClientIds.has(device.clientId)} title={!device.online ? (isZh ? '设备离线，无法远程播放。' : 'This device is offline.') : undefined} onClick={() => void previewRemoteHardware(device)}>{previewingClientIds.has(device.clientId) ? (isZh ? '播放中…' : 'Playing…') : (isZh ? '远程播放' : 'Play remotely')}</button>
 		                                    <button type="button" className="im-settings-button im-settings-button--danger" aria-label={`${isZh ? '解绑' : 'Remove'} ${name}`} disabled={deletingClientIds.has(device.clientId) || savingDeviceNameClientIds.has(device.clientId)} onClick={async () => {
                                         const confirmed = await showConfirm(
                                             isZh ? `解绑后，${name} 的 Token 将立即失效；如需再次使用，必须重新配对。` : `${name}'s token will be revoked immediately. The device must pair again before it can reconnect.`,
@@ -1662,7 +1662,7 @@ export const ThirdPartyAccessSettings = ({
                             showToastMessage(err?.message || String(err));
                         }
                     })}>{welcomeAction === 'import' ? (isZh ? '导入中…' : 'Importing…') : (isZh ? '选择音频文件' : 'Choose audio')}</button>
-                    <button type="button" className="im-settings-button im-settings-button--primary" disabled={busy || !welcomeAudioPath} onClick={() => void runWelcomeAction('preview-local', async () => {
+                    <button type="button" className="im-settings-button im-settings-button--accent" disabled={busy || !welcomeAudioPath} onClick={() => void runWelcomeAction('preview-local', async () => {
                         try {
                             if (await playLocalWelcomePreview()) showToastMessage(isZh ? 'GUI 本地播放完成。' : 'Local GUI playback completed.');
                         } catch (err: any) {

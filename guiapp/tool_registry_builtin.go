@@ -9,6 +9,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/audioconv"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/database"
+	"github.com/RapidAI/CodeClaw/corelib/mailbox"
 	corememory "github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
@@ -330,7 +331,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	goalSchema, goalRequired := overlayCoreToolSchema("goal", map[string]interface{}{
 		"project_path": map[string]string{"type": "string", "description": "项目工作目录（可选）"},
 	})
-	reg("goal", "管理持久化长时间运行目标（action: create/complete/fail/get）。创建目标后系统自动持续推进直到达成或预算耗尽。只在用户明确要求时创建目标，不要从普通任务中推断。",
+	reg("goal", "管理持久化长时间运行目标（action: create/plan/step/complete/fail/get）。创建后先分解任务，再按步执行，直到完成或失败。只在用户明确要求时创建目标，不要从普通任务中推断。",
 		ToolCategoryBuiltin, []string{"goal", "objective", "autonomous", "long-running"},
 		goalSchema, goalRequired,
 		func(args map[string]interface{}) string { return h.toolGoal(args) })
@@ -429,7 +430,7 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	}}, []tool.EffectClass{tool.EffectSensitive})
 
 	editFileSchema, editFileRequired := overlayCoreToolSchema("edit_file", nil)
-	reg("edit_file", "修改已有文件的首选工具（搜索替换模式，token 开销极小）。old_string 必须精确匹配文件原文（含缩进），建议包含修改点前后 1-2 行确保唯一匹配。修改已有文件时优先用此工具，不要用 write_file 重写整个文件。",
+	reg("edit_file", "修改已有文件的首选工具（搜索替换模式，token 开销极小）。old_string 必须精确匹配文件原文（含缩进）。换行符是文件的存储约定：CR、LF、CRLF 视为同一处换行，写回时保持文件原有约定，不必在参数里写 \\r。建议包含修改点前后 1-2 行确保唯一匹配。修改已有文件时优先用此工具，不要用 write_file 重写整个文件。",
 		ToolCategoryBuiltin, []string{"file", "edit", "replace"},
 		editFileSchema, editFileRequired,
 		func(args map[string]interface{}) string { return h.toolEditFile(args) })
@@ -873,6 +874,31 @@ func registerBuiltinTools(registry *ToolRegistry, h *IMMessageHandler) {
 	annotateSemanticTool(registry, "database_query", []tool.CapabilityProvision{{
 		Capability: tool.CapabilityBusinessDataRead, Quality: 1,
 	}}, []tool.EffectClass{tool.EffectReadOnly})
+
+	regCtxP("mailbox_query", mailbox.ToolDescriptionQuery(),
+		ToolCategoryBuiltin, []string{"mailbox", "email", "imap", "inbox", "邮箱", "邮件"},
+		mailbox.QueryProperties(), []string{"action"}, func(ctx context.Context, args map[string]interface{}, _ tool.ProgressCallback) string {
+			return h.toolMailboxQuery(ctx, args)
+		})
+	annotateSemanticTool(registry, "mailbox_query", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityMessageReadMailbox, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectReadOnly})
+	regCtxP("mailbox_send", mailbox.ToolDescriptionSend(),
+		ToolCategoryBuiltin, []string{"mailbox", "email", "smtp", "send", "邮箱", "发信"},
+		mailbox.SendProperties(), []string{"action"}, func(ctx context.Context, args map[string]interface{}, _ tool.ProgressCallback) string {
+			return h.toolMailboxSend(ctx, args)
+		})
+	annotateSemanticTool(registry, "mailbox_send", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityMessageSendMailbox, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectExternalEffect})
+	regCtxP("mailbox_configure", mailbox.ToolDescriptionConfigure(),
+		ToolCategoryBuiltin, []string{"mailbox", "email", "imap", "smtp", "邮箱", "配置邮箱"},
+		mailbox.ConfigureProperties(), []string{"action", "email", "name"}, func(ctx context.Context, args map[string]interface{}, _ tool.ProgressCallback) string {
+			return h.toolMailboxConfigure(ctx, args)
+		})
+	annotateSemanticTool(registry, "mailbox_configure", []tool.CapabilityProvision{{
+		Capability: tool.CapabilityMessageConfigureMailbox, Quality: 1,
+	}}, []tool.EffectClass{tool.EffectSensitive})
 
 	officeSchema, officeRequired := overlayCoreToolSchema("office", map[string]interface{}{
 		"phase_id": map[string]string{"type": "string", "description": workflowDocGeneratePDFPhaseIDSchemaDescription()},

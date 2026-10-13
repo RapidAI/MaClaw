@@ -284,6 +284,46 @@ describe("usePendingAssistantTabOpen expert welcome seed", () => {
         expect(welcomes.length).toBe(1);
     });
 
+    it("keeps the expert open slot until task registration finishes", async () => {
+        let resolveTask: () => void = () => {};
+        const handled = vi.fn();
+        const sendExpertMessage = vi.fn();
+        const { result } = renderHook(() => {
+            const manager = useAITabManager();
+            const [pending, setPending] = useState<PendingExpertOpen | null>(null);
+            usePendingAssistantTabOpen({
+                lang: "zh-Hans",
+                createVETab: manager.createVETab,
+                createGroupTab: manager.createGroupTab,
+                createProjectTab: manager.createProjectTab,
+                createExpertTab: manager.createExpertTab,
+                activateTab: manager.activateTab,
+                getTabState: manager.getTabState,
+                saveTabState: manager.saveTabState,
+                getTabList: manager.getTabs,
+                pendingExpertOpen: pending,
+                onPendingExpertOpenHandled: handled,
+                sendExpertMessage,
+                onEnsureExpertTask: () => new Promise<void>((resolve) => {
+                    resolveTask = resolve;
+                }),
+            });
+            return { manager, setPending };
+        });
+
+        act(() => {
+            result.current.setPending({ expert: expertA, initialMessage: "夜间润色" });
+        });
+        expect(handled).not.toHaveBeenCalled();
+        expect(sendExpertMessage).not.toHaveBeenCalled();
+
+        await act(async () => {
+            resolveTask();
+        });
+        expect(handled).toHaveBeenCalledTimes(1);
+        expect(sendExpertMessage).toHaveBeenCalledWith("夜间润色", "exp-paper-polish");
+    });
+
     it("binds the expert tab to its task directory and opens the LaTeX source", async () => {
         resetLatexDocumentRequestForTests();
         const sendExpertMessage = vi.fn();

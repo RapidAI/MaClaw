@@ -28,6 +28,8 @@ describe("diagram UI copy follows the UI language", () => {
         expect(budget).toContain("渲染上限");
         expect(budget).toMatch(/750/);
         expect(budget).toMatch(/1,500/);
+        expect(getMermaidFallbackMessage(budget, "zh-Hans")).toBe(budget);
+        expect(getMermaidFallbackMessage("Mermaid 代码块为空。", "zh-Hans")).toBe("Mermaid 代码块为空。");
     });
 });
 

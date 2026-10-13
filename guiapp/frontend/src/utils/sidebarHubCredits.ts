@@ -11,9 +11,11 @@ function grantIsPermanent(grant: { permanent?: unknown; Permanent?: unknown }): 
 function normalizeSidebarCheckin(status?: SidebarHubServiceStatus | null): SidebarHubCheckin | undefined {
     const raw = status?.checkin;
     if (!raw || raw.enabled !== true) return undefined;
+    const durationDays = Math.trunc(numeric(raw.duration_days));
     return {
         enabled: true,
         credits: numeric(raw.credits),
+        durationDays: Number.isFinite(durationDays) && durationDays > 0 ? durationDays : 0,
         checkedInToday: raw.checked_in_today === true,
     };
 }

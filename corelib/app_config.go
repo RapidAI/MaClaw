@@ -4,6 +4,7 @@ package corelib
 import (
 	"encoding/json"
 	"github.com/RapidAI/CodeClaw/corelib/database"
+	"github.com/RapidAI/CodeClaw/corelib/mailbox"
 	"net"
 	"net/url"
 	"os"
@@ -19,6 +20,12 @@ type AppConfig struct {
 	// DatabaseProfiles contains non-secret data-source profiles. Credentials
 	// are referenced through secret_ref and resolved by the host at runtime.
 	DatabaseProfiles []database.Profile `json:"database_profiles,omitempty"`
+	// MailboxAccounts are named IMAP/SMTP accounts. Passwords stay in the
+	// host secret store; only keyring locators are persisted here.
+	MailboxAccounts []mailbox.Account `json:"mailbox_accounts,omitempty"`
+	// MailboxSignatures are shared email signatures. A mailbox may point at
+	// one by id; an empty id uses the signature marked default.
+	MailboxSignatures []mailbox.Signature `json:"mailbox_signatures,omitempty"`
 	// DatabaseToolEnabled is the master kill switch for the shared database
 	// tool. Nil means enabled (backward compatible).
 	DatabaseToolEnabled  *bool           `json:"database_tool_enabled,omitempty"`

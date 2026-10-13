@@ -12285,9 +12285,10 @@ export namespace main {
 	export class HubLLMCheckinInfo {
 	    enabled: boolean;
 	    credits?: number;
+	    duration_days?: number;
 	    checked_in_today: boolean;
 	    static createFrom(source: any = {}) { return new HubLLMCheckinInfo(source); }
-	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.enabled = source["enabled"]; this.credits = source["credits"]; this.checked_in_today = source["checked_in_today"]; }
+	    constructor(source: any = {}) { if ('string' === typeof source) source = JSON.parse(source); this.enabled = source["enabled"]; this.credits = source["credits"]; this.duration_days = source["duration_days"]; this.checked_in_today = source["checked_in_today"]; }
 	}
 
 	export class HubLLMCheckinResult {

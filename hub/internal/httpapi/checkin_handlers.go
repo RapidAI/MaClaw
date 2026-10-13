@@ -28,24 +28,30 @@ const (
 	checkinLastKeyPrefix = "checkin:last:"
 	// checkinLogKeyPrefix scopes the per-day check-in audit log used by the
 	// admin records view: "checkin:log:<YYYY-MM-DD>" (UTC day).
-	checkinLogKeyPrefix = "checkin:log:"
-	checkinGrantSource  = "checkin"
-	checkinMaxCredits   = 1000000
-	checkinLogDayFormat = "2006-01-02"
+	checkinLogKeyPrefix        = "checkin:log:"
+	checkinGrantSource         = "checkin"
+	checkinMaxCredits          = 1000000
+	checkinDefaultDurationDays = 30
+	checkinMaxDurationDays     = 3650
+	checkinLogDayFormat        = "2006-01-02"
 
 	maxCheckinConfigBodyBytes = 64 << 10
 )
 
 // CheckinConfig is the tenant-scoped daily check-in policy configured from the
 // admin console system settings. Credits are granted once per user per local
-// day while Enabled is on.
+// day while Enabled is on. DurationDays is how long a new reward stays
+// spendable. A stored value that is missing or non-positive loads as 30 days
+// (one month). An update must send an integer from 1 to 3650; omitting the
+// field keeps the stored duration.
 type CheckinConfig struct {
-	Enabled bool    `json:"enabled"`
-	Credits float64 `json:"credits"`
+	Enabled      bool    `json:"enabled"`
+	Credits      float64 `json:"credits"`
+	DurationDays int     `json:"duration_days"`
 }
 
 func defaultCheckinConfig() CheckinConfig {
-	return CheckinConfig{Enabled: false, Credits: 10}
+	return CheckinConfig{Enabled: false, Credits: 10, DurationDays: checkinDefaultDurationDays}
 }
 
 func loadCheckinConfig(ctx context.Context, system store.SystemSettingsRepository) CheckinConfig {
@@ -70,15 +76,42 @@ func normalizeCheckinConfig(cfg CheckinConfig) CheckinConfig {
 	if cfg.Credits > checkinMaxCredits {
 		cfg.Credits = checkinMaxCredits
 	}
+	if cfg.DurationDays <= 0 {
+		cfg.DurationDays = checkinDefaultDurationDays
+	} else if cfg.DurationDays > checkinMaxDurationDays {
+		cfg.DurationDays = checkinMaxDurationDays
+	}
 	return cfg
 }
 
+// checkinConfigUpdate distinguishes an omitted duration from an explicit one.
+// A missing duration keeps the stored value so an older admin page cannot
+// reset a custom validity back to the 30-day default.
+type checkinConfigUpdate struct {
+	Enabled      bool     `json:"enabled"`
+	Credits      float64  `json:"credits"`
+	DurationDays *float64 `json:"duration_days"`
+}
+
+func checkinDurationFromUpdate(raw *float64) (int, bool, error) {
+	if raw == nil {
+		return 0, false, nil
+	}
+	if math.IsNaN(*raw) || math.IsInf(*raw, 0) || *raw != math.Trunc(*raw) || *raw < 1 || *raw > float64(checkinMaxDurationDays) {
+		return 0, true, fmt.Errorf("duration_days must be an integer between 1 and %d", checkinMaxDurationDays)
+	}
+	return int(*raw), true, nil
+}
+
 func validateCheckinConfig(cfg CheckinConfig) error {
-	if cfg.Credits < 0 || cfg.Credits > checkinMaxCredits {
+	if math.IsNaN(cfg.Credits) || math.IsInf(cfg.Credits, 0) || cfg.Credits < 0 || cfg.Credits > checkinMaxCredits {
 		return fmt.Errorf("credits must be between 0 and %d", checkinMaxCredits)
 	}
 	if cfg.Enabled && cfg.Credits < 1 {
 		return fmt.Errorf("credits must be at least 1 when check-in is enabled")
+	}
+	if cfg.DurationDays < 1 || cfg.DurationDays > checkinMaxDurationDays {
+		return fmt.Errorf("duration_days must be an integer between 1 and %d", checkinMaxDurationDays)
 	}
 	return nil
 }
@@ -99,14 +132,14 @@ func UpdateCheckinConfigHandler(system store.SystemSettingsRepository) http.Hand
 			writeError(w, http.StatusInternalServerError, "SYSTEM_SETTINGS_UNAVAILABLE", "System settings are unavailable")
 			return
 		}
-		var cfg CheckinConfig
+		var req checkinConfigUpdate
 		data, err := io.ReadAll(io.LimitReader(r.Body, maxCheckinConfigBodyBytes+1))
 		if err != nil || len(data) > maxCheckinConfigBodyBytes {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
 		dec := json.NewDecoder(bytes.NewReader(data))
-		if err := dec.Decode(&cfg); err != nil {
+		if err := dec.Decode(&req); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Invalid request body")
 			return
 		}
@@ -114,7 +147,21 @@ func UpdateCheckinConfigHandler(system store.SystemSettingsRepository) http.Hand
 			writeError(w, http.StatusBadRequest, "INVALID_JSON", "Request body must contain one JSON object")
 			return
 		}
-		cfg = normalizeCheckinConfig(cfg)
+		days, present, err := checkinDurationFromUpdate(req.DurationDays)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_CHECKIN_CONFIG", err.Error())
+			return
+		}
+		settings := scopedSystemSettingsForRequest(r, system)
+		// Clamp credits the way this endpoint always has, then apply duration.
+		// An omitted duration keeps the saved value; the 30-day default applies
+		// only when nothing has been stored yet.
+		cfg := normalizeCheckinConfig(CheckinConfig{Enabled: req.Enabled, Credits: req.Credits})
+		if present {
+			cfg.DurationDays = days
+		} else {
+			cfg.DurationDays = loadCheckinConfig(r.Context(), settings).DurationDays
+		}
 		if err := validateCheckinConfig(cfg); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_CHECKIN_CONFIG", err.Error())
 			return
@@ -124,7 +171,7 @@ func UpdateCheckinConfigHandler(system store.SystemSettingsRepository) http.Hand
 			writeError(w, http.StatusInternalServerError, "CHECKIN_CONFIG_SAVE_FAILED", err.Error())
 			return
 		}
-		if err := scopedSystemSettingsForRequest(r, system).Set(r.Context(), checkinConfigKey, string(encoded)); err != nil {
+		if err := settings.Set(r.Context(), checkinConfigKey, string(encoded)); err != nil {
 			writeError(w, http.StatusInternalServerError, "CHECKIN_CONFIG_SAVE_FAILED", err.Error())
 			return
 		}
@@ -137,6 +184,7 @@ func UpdateCheckinConfigHandler(system store.SystemSettingsRepository) http.Hand
 type hubCheckinInfo struct {
 	Enabled        bool    `json:"enabled"`
 	Credits        float64 `json:"credits"`
+	DurationDays   int     `json:"duration_days,omitempty"`
 	CheckedInToday bool    `json:"checked_in_today"`
 }
 
@@ -176,19 +224,64 @@ func checkinLastDay(ctx context.Context, system store.SystemSettingsRepository, 
 // already checked in on their current local day.
 func checkinInfoForUser(ctx context.Context, system store.SystemSettingsRepository, reg *llmservice.Registry, userID, email string) *hubCheckinInfo {
 	cfg := loadCheckinConfig(ctx, system)
+	checkedIn := cfg.Enabled && checkinLastDay(ctx, system, userID) == checkinDayKeyFor(reg, email, time.Now())
+	return cfg.viewerCheckinInfo(checkedIn)
+}
+
+func (cfg CheckinConfig) viewerCheckinInfo(checkedInToday bool) *hubCheckinInfo {
 	if !cfg.Enabled {
 		return &hubCheckinInfo{Enabled: false}
 	}
-	info := &hubCheckinInfo{Enabled: true, Credits: cfg.Credits}
-	info.CheckedInToday = checkinLastDay(ctx, system, userID) == checkinDayKeyFor(reg, email, time.Now())
-	return info
+	return &hubCheckinInfo{
+		Enabled:        true,
+		Credits:        cfg.Credits,
+		DurationDays:   cfg.DurationDays,
+		CheckedInToday: checkedInToday,
+	}
+}
+
+// splitCheckinCredits divides a reward across service groups at milli-credit
+// precision. Earlier shares are rounded, and the last share keeps the
+// remainder so the grants still add up to the awarded total.
+func splitCheckinCredits(total float64, groups int) []float64 {
+	if groups <= 0 {
+		return nil
+	}
+	total = math.Round(total*1000) / 1000
+	shares := make([]float64, groups)
+	if groups == 1 {
+		shares[0] = total
+		return shares
+	}
+	each := math.Round((total/float64(groups))*1000) / 1000
+	used := 0.0
+	for i := 0; i < groups-1; i++ {
+		share := each
+		// Rounding every earlier share up can exceed the awarded total when
+		// the reward is small relative to the group count. Cap that share
+		// instead of letting the excess land in the wallet.
+		if used+share > total {
+			share = math.Round((total-used)*1000) / 1000
+			if share < 0 {
+				share = 0
+			}
+		}
+		shares[i] = share
+		used = math.Round((used+share)*1000) / 1000
+	}
+	last := math.Round((total-used)*1000) / 1000
+	if last < 0 {
+		last = 0
+	}
+	shares[groups-1] = last
+	return shares
 }
 
 type hubCheckinResponse struct {
-	Success          bool                `json:"success"`
-	AlreadyCheckedIn bool                `json:"already_checked_in"`
-	CreditsAwarded   float64             `json:"credits_awarded"`
-	Checkin          *hubCheckinInfo     `json:"checkin,omitempty"`
+	Success          bool                      `json:"success"`
+	AlreadyCheckedIn bool                      `json:"already_checked_in"`
+	CreditsAwarded   float64                   `json:"credits_awarded"`
+	Checkin          *hubCheckinInfo           `json:"checkin,omitempty"`
 	ServiceStatus    *llmservice.ServiceStatus `json:"service_status,omitempty"`
 }
 
@@ -219,8 +312,7 @@ func PostLLMServiceCheckinHandler(identity *auth.IdentityService, system store.S
 		}
 		today := checkinDayKeyFor(reg, principal.Email, time.Now())
 		if checkinLastDay(ctx, system, principal.UserID) == today {
-			info := &hubCheckinInfo{Enabled: true, Credits: cfg.Credits, CheckedInToday: true}
-			writeJSON(w, http.StatusOK, hubCheckinResponse{Success: true, AlreadyCheckedIn: true, Checkin: info})
+			writeJSON(w, http.StatusOK, hubCheckinResponse{Success: true, AlreadyCheckedIn: true, Checkin: cfg.viewerCheckinInfo(true)})
 			return
 		}
 		awarded := 0.0
@@ -230,12 +322,16 @@ func PostLLMServiceCheckinHandler(identity *auth.IdentityService, system store.S
 				writeError(w, http.StatusBadRequest, "CHECKIN_NO_SERVICE_GROUPS", "No metered LLM service groups are available for check-in rewards")
 				return
 			}
-			creditsPerGroup := cfg.Credits / float64(len(groupIDs))
+			shares := splitCheckinCredits(cfg.Credits, len(groupIDs))
 			now := time.Now().UTC()
-			for _, groupID := range groupIDs {
-				// Check-in rewards behave like token-bank wallet credits: they
-				// never expire and stay spendable until used up. Permanent
-				// grants are also excluded from the GUI's expiry displays.
+			expiresAt := now.AddDate(0, 0, cfg.DurationDays)
+			grantedGroups := 0
+			for i, groupID := range groupIDs {
+				if shares[i] <= 0 {
+					continue
+				}
+				grantedGroups++
+				awarded += shares[i]
 				reg.Grants = append(reg.Grants, llmservice.Grant{
 					ID:             llmservice.NewID("grant"),
 					UserID:         principal.UserID,
@@ -243,20 +339,19 @@ func PostLLMServiceCheckinHandler(identity *auth.IdentityService, system store.S
 					ServiceGroupID: groupID,
 					Source:         checkinGrantSource,
 					StartsAt:       now,
-					ExpiresAt:      llmservice.PermanentGrantExpiresAt(),
+					ExpiresAt:      expiresAt,
 					CreatedAt:      now,
-					Permanent:      true,
-					CreditsTotal:   creditsPerGroup,
+					CreditsTotal:   shares[i],
 				})
 			}
-			awarded = cfg.Credits
+			awarded = math.Round(awarded*1000) / 1000
 			if err := llmservice.SaveRegistry(ctx, system, reg); err != nil {
 				writeError(w, http.StatusInternalServerError, "CHECKIN_SAVE_FAILED", err.Error())
 				return
 			}
 			invalidateLLMRuntimeCaches(system)
-			log.Printf("[checkin] granted credits user_id=%s email=%s tenant_id=%s credits=%.2f groups=%d",
-				principal.UserID, principal.Email, principal.TenantID, awarded, len(groupIDs))
+			log.Printf("[checkin] granted credits user_id=%s email=%s tenant_id=%s credits=%.3f groups=%d duration_days=%d expires_at=%s",
+				principal.UserID, principal.Email, principal.TenantID, awarded, grantedGroups, cfg.DurationDays, expiresAt.Format(time.RFC3339))
 		}
 		if err := system.Set(ctx, checkinLastKey(principal.UserID), today); err != nil {
 			log.Printf("[checkin] last-checkin marker save failed user_id=%s err=%v", principal.UserID, err)
@@ -270,7 +365,7 @@ func PostLLMServiceCheckinHandler(identity *auth.IdentityService, system store.S
 		response := hubCheckinResponse{
 			Success:        true,
 			CreditsAwarded: awarded,
-			Checkin:        &hubCheckinInfo{Enabled: true, Credits: cfg.Credits, CheckedInToday: true},
+			Checkin:        cfg.viewerCheckinInfo(true),
 		}
 		if status, _, statusErr := llmservice.ResolveStatusFromRegistryForUser(ctx, reg, securitySvc, principal.UserID, principal.Email, externalLLMBaseURL(r)); statusErr == nil {
 			response.ServiceStatus = status

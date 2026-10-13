@@ -78,6 +78,9 @@ func (h *IMMessageHandler) schedulePostLoopSideEffects(msg IMUserMessage, loopCt
 		// Goal continuation: after all post-loop side effects, check if the
 		// active goal should trigger the next iteration.
 		h.maybeScheduleGoalContinuation(msg.UserID, &respSnapshot, msg.Platform)
+		if h.app != nil {
+			h.app.noteRunWindowSessionSettled(msg.UserID)
+		}
 	}()
 }
 

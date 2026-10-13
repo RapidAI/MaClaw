@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import { revealElementInScrollport, scrollportContentInset, SettingsTabsRail } from '../SettingsTabsRail';
-import type { SettingsTabOption } from '../../../config/settingsTabs';
+import { getSettingsTabOptions, type SettingsTabOption } from '../../../config/settingsTabs';
 
 const tabs: SettingsTabOption[] = [
     { id: 'general', label: 'General', desc: 'Language, projects, and environment', icon: '<svg></svg>' },
@@ -166,6 +166,27 @@ describe('SettingsTabsRail', () => {
         expect(groups[0].querySelectorAll('.settings-top-tab')).toHaveLength(2);
         expect(groups[1].querySelectorAll('.settings-top-tab')).toHaveLength(2);
         expect(groups[1].querySelector('.settings-top-tab.active')?.textContent).toBe('LLM');
+    });
+
+    it('buckets integration items even when system tabs are interleaved in the source list', () => {
+        const { container } = render(
+            <SettingsTabsRail tabs={getSettingsTabOptions('zh-Hans')} activeTab="im" onChange={vi.fn()} />,
+        );
+        const labeled = Array.from(container.querySelectorAll('.settings-top-tabs__group')).map((group) => ({
+            label: group.querySelector('.settings-top-tabs__group-label')?.textContent,
+            items: Array.from(group.querySelectorAll('.settings-top-tab__label')).map((node) => node.textContent),
+        }));
+
+        expect(labeled.find((group) => group.label === '系统')?.items).toEqual([
+            '服务兑换', 'Token 银行', '安全策略', '系统', '资产管理',
+        ]);
+        expect(labeled.find((group) => group.label === '集成与接入')?.items).toEqual([
+            '数字员工', 'IM', '邮箱', '硬件接入',
+        ]);
+        const systemIndex = labeled.findIndex((group) => group.label === '系统');
+        const integrationIndex = labeled.findIndex((group) => group.label === '集成与接入');
+        expect(systemIndex).toBeGreaterThanOrEqual(0);
+        expect(integrationIndex).toBeGreaterThan(systemIndex);
     });
 
     it('renders tabs without a group under no group label', () => {

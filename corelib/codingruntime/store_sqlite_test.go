@@ -577,3 +577,34 @@ func TestSQLiteStoreListActiveTaskStatusesSuppressesStaleInterrupted(t *testing.
 		t.Fatalf("newest interrupted run status=%q, want interrupted", got)
 	}
 }
+
+func TestSQLiteExpiredRunningWriterDoesNotBlockWithoutLocalExecutor(t *testing.T) {
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	now := time.Date(2026, 10, 13, 5, 38, 0, 0, time.UTC)
+	root := filepath.Join("D:", "shared")
+	first, err := store.CreateTask(Task{ProjectRef: root, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.CreateTask(Task{ProjectRef: root, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := PolicySnapshot{ProjectRoot: root, Mode: "local"}
+	attempt, err := store.StartAttempt(first.TaskID, "holder", time.Minute, policy, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	markLocalLiveWriter(attempt.AttemptID)
+	if _, err := store.StartAttempt(second.TaskID, "waiter", time.Minute, policy, now.Add(2*time.Minute)); !errors.Is(err, ErrWriterConflict) {
+		t.Fatalf("local executor was admitted beside an expired lease: %v", err)
+	}
+	unmarkLocalLiveWriter(attempt.AttemptID)
+	if _, err := store.StartAttempt(second.TaskID, "waiter", time.Minute, policy, now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("dead expired writer still locked the directory: %v", err)
+	}
+}

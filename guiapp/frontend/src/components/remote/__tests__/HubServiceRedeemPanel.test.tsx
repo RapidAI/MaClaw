@@ -1,4 +1,6 @@
 ﻿// @vitest-environment jsdom
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { StrictMode } from 'react';
 import { render, screen, fireEvent, waitFor, cleanup, act } from '@testing-library/react';
@@ -205,6 +207,8 @@ describe('HubServiceRedeemPanel', () => {
         render(<HubServiceRedeemPanel lang="zh-Hans" onStatusChange={vi.fn()} />);
 
         expect((await screen.findAllByText('新用户周期福利')).length).toBeGreaterThanOrEqual(2);
+        expect(screen.getAllByText('充值卡（点卡）').length).toBe(1);
+        fireEvent.click(screen.getByRole('switch', { name: /显示已过期和已耗尽/ }));
         expect(screen.getAllByText('充值卡（点卡）').length).toBe(2);
         expect(screen.getByText('这是可循环使用的限额，不是账户总点数。')).toBeTruthy();
         expect(screen.getByText('总额度').parentElement?.textContent).toContain('80000');
@@ -327,6 +331,8 @@ describe('HubServiceRedeemPanel', () => {
 
         expect(await screen.findByText('Not active yet')).toBeTruthy();
         expect(screen.getByText(/authorization starts in about 2h/i)).toBeTruthy();
+        expect(screen.queryByText('Credits exhausted')).toBeNull();
+        fireEvent.click(screen.getByRole('switch', { name: /Show expired and used up/i }));
         expect(screen.getByText('Credits exhausted')).toBeTruthy();
     });
 
@@ -899,6 +905,8 @@ describe('HubServiceRedeemPanel', () => {
         expect(screen.getByText('充值卡（点卡）')).toBeTruthy();
         expect(screen.getByText('充值卡（包月卡）')).toBeTruthy();
         expect(screen.getByText('充值卡（包年卡）')).toBeTruthy();
+        expect(screen.queryByText('新用户赠送')).toBeNull();
+        fireEvent.click(screen.getByRole('switch', { name: /显示已过期和已耗尽/ }));
         expect(screen.getByText('新用户赠送')).toBeTruthy();
         expect(screen.queryByText('default_new_user_backfill')).toBeNull();
     });
@@ -1274,6 +1282,20 @@ describe('HubServiceRedeemPanel', () => {
         expect(document.getElementById(hintId || '')?.textContent).toMatch(/Use before expiry/i);
     });
 
+    it('paints the reset voucher on a muted control so the label stays readable', () => {
+        const css = readFileSync(join(process.cwd(), 'src/styles/partials/60-hub-updates-models.css'), 'utf8');
+        const baseRule = css.slice(css.indexOf('.hub-service-redeem__button {'), css.indexOf('.hub-service-redeem__button:hover'));
+        expect(baseRule).toContain('appearance: none');
+        expect(baseRule).toContain('background: var(--theme-surface)');
+        expect(baseRule).toContain('color: var(--theme-text-primary)');
+        const voucherRule = css.slice(css.indexOf('.hub-service-redeem__button--voucher {'), css.indexOf('.hub-service-redeem__button--voucher:hover'));
+        expect(voucherRule).toContain('background: var(--theme-surface-muted)');
+        expect(voucherRule).toContain('color: var(--theme-text-primary)');
+        expect(voucherRule).toContain('white-space: normal');
+        expect(css).toMatch(/\.hub-service-redeem__voucher-action,\s*\.hub-service-redeem__voucher-icon \{[^}]*color: var\(--theme-primary-strong\)/);
+        expect(css).toMatch(/\.hub-service-redeem__voucher-expiry \{[^}]*color: var\(--theme-text-primary\)/);
+    });
+
     it('applies a reset voucher after confirmation and shows success', async () => {
         GetHubLLMServiceStatusMock.mockResolvedValue({
             active: true,
@@ -1407,5 +1429,86 @@ describe('HubServiceRedeemPanel', () => {
 
         expect(await screen.findByText('This reset voucher has expired.')).toBeTruthy();
         expect(screen.getByRole('button', { name: /Use reset voucher/i })).toBeTruthy();
+    });
+
+    it('hides expired and used-up grants until the header switch is on, then pages 20 rows', async () => {
+        const activeGrants = Array.from({ length: 21 }, (_, index) => ({
+            id: `active-${index + 1}`,
+            service_group_id: `group-${String(index + 1).padStart(2, '0')}`,
+            source: 'card',
+            expires_at: '2026-12-01T00:00:00Z',
+            active: true,
+            status: 'active',
+            credits_total: 100,
+            credits_used: 1,
+            credits_remaining: 99,
+        }));
+        GetHubLLMServiceStatusMock.mockResolvedValue({
+            active: true,
+            skip_llm_config: true,
+            service_group_names: ['LLM'],
+            default_model: 'auto',
+            available_models: ['auto'],
+            hub_llm_base_url: 'https://hub.example.com/api/llm/v1',
+            credit_grants: [
+                {
+                    id: 'used-up',
+                    service_group_id: 'group-used-up',
+                    source: 'card',
+                    expires_at: '2026-12-01T00:00:00Z',
+                    active: false,
+                    status: 'exhausted',
+                    credits_total: 50,
+                    credits_used: 50,
+                    credits_remaining: 0,
+                },
+                {
+                    id: 'expired-grant',
+                    service_group_id: 'group-expired',
+                    source: 'card',
+                    expires_at: '2026-01-01T00:00:00Z',
+                    active: false,
+                    status: 'expired',
+                    credits_total: 20,
+                    credits_used: 5,
+                    credits_remaining: 15,
+                },
+                ...activeGrants,
+            ],
+        });
+
+        render(<HubServiceRedeemPanel lang="zh-Hans" onStatusChange={vi.fn()} />);
+
+        const historySwitch = await screen.findByRole('switch', { name: /显示已过期和已耗尽（2）/ });
+        expect(historySwitch.getAttribute('aria-checked')).not.toBe('true');
+        expect(historySwitch.closest('.hub-service-redeem__header-aside')).toBeTruthy();
+        expect(screen.getByText('group-01')).toBeTruthy();
+        expect(screen.getByText('group-20')).toBeTruthy();
+        expect(screen.queryByText('group-21')).toBeNull();
+        expect(screen.queryByText('group-used-up')).toBeNull();
+        expect(screen.queryByText('group-expired')).toBeNull();
+        const grantPages = screen.getByRole('navigation', { name: '授权明细分页' });
+        expect(grantPages.closest('.hub-service-redeem__section')).toBeNull();
+        expect(screen.getByText('第 1 / 2 页 · 每页 20 条')).toBeTruthy();
+
+        fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+        expect(screen.getByText('group-21')).toBeTruthy();
+        expect(screen.queryByText('group-01')).toBeNull();
+        expect(screen.getByText('第 2 / 2 页 · 每页 20 条')).toBeTruthy();
+
+        fireEvent.click(historySwitch);
+        expect(screen.getByRole('switch', { name: /显示已过期和已耗尽（2）/ }).getAttribute('aria-checked')).toBe('true');
+        expect(screen.getByText('第 1 / 2 页 · 每页 20 条')).toBeTruthy();
+        expect(screen.getByText('group-01')).toBeTruthy();
+        expect(screen.queryByText('group-21')).toBeNull();
+        expect(screen.queryByText('group-used-up')).toBeNull();
+        expect(screen.queryByText('group-expired')).toBeNull();
+
+        fireEvent.click(screen.getByRole('button', { name: '下一页' }));
+        expect(screen.getByText('group-21')).toBeTruthy();
+        expect(screen.getByText('group-used-up')).toBeTruthy();
+        expect(screen.getByText('group-expired')).toBeTruthy();
+        expect(screen.getByText('已耗尽')).toBeTruthy();
+        expect(screen.getByText('已过期')).toBeTruthy();
     });
 });

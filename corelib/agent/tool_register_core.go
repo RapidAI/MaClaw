@@ -17,6 +17,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/audioconv"
 	"github.com/RapidAI/CodeClaw/corelib/database"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
+	"github.com/RapidAI/CodeClaw/corelib/mailbox"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/task"
@@ -175,7 +176,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Properties: map[string]interface{}{
 			"id":     map[string]string{"type": "string", "description": "Handle id from [tool_result_handle]"},
 			"offset": map[string]string{"type": "integer", "description": "0-based byte offset into the full result (default 0)"},
-			"limit": map[string]string{"type": "integer", "description": fmt.Sprintf("Max bytes to return (default %d, max %d)", toolresult.DefaultReadLimit, toolresult.MaxReadLimit)},
+			"limit":  map[string]string{"type": "integer", "description": fmt.Sprintf("Max bytes to return (default %d, max %d)", toolresult.DefaultReadLimit, toolresult.MaxReadLimit)},
 		},
 		// id is enforced in the handler; legacy internal callers may still pass path.
 		Handler: func(args map[string]interface{}) string { return ToolReadToolResult(args) },
@@ -394,9 +395,9 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Name:        "ask_user",
 		Description: "Ask the user a structured follow-up question and wait for an answer.",
 		Properties: map[string]interface{}{
-			"question":   map[string]string{"type": "string", "description": "Question to ask"},
-			"options":    map[string]interface{}{"type": "array", "description": "Optional choices", "items": map[string]string{"type": "string"}},
-			"context":    map[string]string{"type": "string", "description": "Optional background context"},
+			"question":    map[string]string{"type": "string", "description": "Question to ask"},
+			"options":     map[string]interface{}{"type": "array", "description": "Optional choices", "items": map[string]string{"type": "string"}},
+			"context":     map[string]string{"type": "string", "description": "Optional background context"},
 			"input_type":  map[string]string{"type": "string", "description": "Input type: text, choice, confirm, secret, or secret_fill"},
 			"secret_name": map[string]string{"type": "string", "description": "Environment-style name such as SITE_PASSWORD. Never put the secret value here."},
 		},
@@ -454,14 +455,19 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "goal",
-		Description: "Manage a persistent long-running goal (action: create/complete/fail/get). Create a goal only when explicitly requested by the user; do not infer goals from ordinary tasks. The system auto-continues until the goal is complete or budget is exhausted.",
+		Description: "Manage a persistent long-running goal (action: create/plan/step/complete/fail/get). Create a goal only when explicitly requested by the user; do not infer goals from ordinary tasks. The first continuation must plan; later turns execute one step at a time until complete or failed.",
 		Properties: map[string]interface{}{
-			"action":              map[string]string{"type": "string", "description": "Action: create, complete, fail, get"},
+			"action":              map[string]string{"type": "string", "description": "Action: create, plan, step, complete, fail, get"},
 			"objective":           map[string]string{"type": "string", "description": "Goal description (required for create)"},
+			"understanding":       map[string]string{"type": "string", "description": "Restatement of the task (required for plan)"},
+			"steps":               map[string]interface{}{"type": "array", "description": "Ordered steps for plan. Each item is a string or {title, detail}", "items": map[string]string{"type": "object"}},
+			"index":               map[string]string{"type": "integer", "description": "1-based step index (required for step)"},
+			"status":              map[string]string{"type": "string", "description": "Step outcome for action=step: done or failed"},
+			"result":              map[string]string{"type": "string", "description": "Step result (required for step)"},
 			"token_budget":        map[string]string{"type": "integer", "description": "Token budget limit (optional, 0=unlimited)"},
 			"max_turns":           map[string]string{"type": "integer", "description": "Max iteration rounds (optional, default 50)"},
-			"acceptance_criteria": map[string]interface{}{"type": "array", "description": "Verifiable completion conditions (optional)", "items": map[string]string{"type": "string"}},
-			"summary":             map[string]string{"type": "string", "description": "Completion summary (for complete action)"},
+			"acceptance_criteria": map[string]interface{}{"type": "array", "description": "Verifiable completion conditions (required for plan)", "items": map[string]string{"type": "string"}},
+			"summary":             map[string]string{"type": "string", "description": "Completion summary (for complete action). Must mention each acceptance criterion."},
 			"reason":              map[string]string{"type": "string", "description": "Failure reason (for fail action)"},
 		},
 		Required: []string{"action"},
@@ -523,7 +529,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "office",
-		Description: "Office/PDF/text document tool. action: read_document (auto-detect .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx and text files), read_excel, write_excel, read_pptx, write_pptx, preview_pptx, generate_pdf. Prefer read_document for mixed formats; read_excel is spreadsheet-only and read_pptx is PPTX-only. write_pptx renders a designed deck (cover, accent rail, cards, page footer; theme auto or business/academic/warm/launch/tech/education/ceremony/minimal, with purpose selecting a style when theme is auto; slide layout auto/bullets/cards/section/agenda/kpi/quote/closing) and automatically renders per-slide preview images next to the deck (<name>_preview/) so the visual result can be checked and fixed by rewriting; preview_pptx renders a .pptx deck to per-slide PNG/JPEG images on demand.",
+		Description: "Office/PDF/text document tool. action: read_document (auto-detect .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx and text files), read_excel, write_excel, read_pptx, write_pptx, preview_pptx, generate_pdf. Prefer read_document for mixed formats; read_excel is spreadsheet-only and read_pptx is PPTX-only. write_pptx renders a designed deck (each theme has its own cover, header, and cards; theme auto or clean/magazine/eink/dashboard/retro/sketch/whiteboard/handmade/research/mckinsey/official/course, with purpose selecting a style when theme is auto; slide layout auto/bullets/cards/section/agenda/kpi/quote/closing) and automatically renders per-slide preview images next to the deck (<name>_preview/) so the visual result can be checked and fixed by rewriting; preview_pptx renders a .pptx deck to per-slide PNG/JPEG images on demand.",
 		Properties: map[string]interface{}{
 			"action":       map[string]string{"type": "string", "description": "read_document/read_doc/read_docx/read_pdf/read_excel/write_excel/read_pptx/write_pptx/preview_pptx/generate_pdf"},
 			"content":      map[string]string{"type": "string", "description": "Markdown body for generate_pdf"},
@@ -676,6 +682,33 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Required:    []string{"action"},
 		Handler:     extraReadOnlyDatabaseHandler(deps, "数据库连接工具未初始化。请先配置数据源 profile。"),
 		HandlerCtx:  extraReadOnlyDatabaseHandlerCtx(deps, "数据库连接工具未初始化。请先配置数据源 profile。"),
+	})
+	// Mailbox execution for the desktop bot is executeSharedHostTool. This
+	// registration only keeps the shared catalog name; a host without the
+	// mailbox runtime returns the not-configured message.
+	r.Register(ToolEntry{
+		Name:        "mailbox_query",
+		Description: mailbox.ToolDescriptionQuery(),
+		Properties:  mailbox.QueryProperties(),
+		Required:    []string{"action"},
+		Handler:     extraHandler(deps, "mailbox_query", mailbox.MsgNotConfigured),
+		HandlerCtx:  extraHandlerCtx(deps, "mailbox_query", mailbox.MsgNotConfigured),
+	})
+	r.Register(ToolEntry{
+		Name:        "mailbox_send",
+		Description: mailbox.ToolDescriptionSend(),
+		Properties:  mailbox.SendProperties(),
+		Required:    []string{"action"},
+		Handler:     extraHandler(deps, "mailbox_send", mailbox.MsgNotConfigured),
+		HandlerCtx:  extraHandlerCtx(deps, "mailbox_send", mailbox.MsgNotConfigured),
+	})
+	r.Register(ToolEntry{
+		Name:        "mailbox_configure",
+		Description: mailbox.ToolDescriptionConfigure(),
+		Properties:  mailbox.ConfigureProperties(),
+		Required:    []string{"action", "email", "name"},
+		Handler:     extraHandler(deps, "mailbox_configure", mailbox.MsgNotConfigured),
+		HandlerCtx:  extraHandlerCtx(deps, "mailbox_configure", mailbox.MsgNotConfigured),
 	})
 
 	r.Register(ToolEntry{

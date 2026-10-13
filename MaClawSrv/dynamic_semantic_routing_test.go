@@ -111,7 +111,7 @@ func TestSrvFusionTreeWaitsTheFullLLMBudget(t *testing.T) {
 	}
 }
 
-func TestSrvIntentLLMConfigPinsSystemFreeForHubBot(t *testing.T) {
+func TestSrvIntentLLMConfigLeavesHubBotOnViewerPath(t *testing.T) {
 	c := newSrvPrincipalIntentClassifier(nil)
 	p := agentservice.Principal{TenantID: "tenant-a", UserID: "user-a"}
 	plain := c.hubBotLLMConfig(context.Background(), context.Background(), p, "hi", corelib.MaclawLLMConfig{Model: "auto"})
@@ -120,24 +120,24 @@ func TestSrvIntentLLMConfigPinsSystemFreeForHubBot(t *testing.T) {
 	}
 	ctx := agentservice.WithHubBotLLMGroup(context.Background())
 	pinned := srvIntentLLMConfig(c.hubBotLLMConfig(ctx, context.Background(), p, "hi", corelib.MaclawLLMConfig{
-		URL: "https://hub.example/api/llm/v1", Model: "auto",
+		URL: "https://hub.example/api/llm/v1", Model: "auto", ServiceGroupID: "maclaw_official_group",
 	}))
-	if pinned.ServiceGroupID != "system-free" || pinned.TaskTypeHint != string(llm.TaskIntent) || !pinned.HubManaged {
+	if pinned.ServiceGroupID != "" || pinned.TaskTypeHint != string(llm.TaskIntent) || !pinned.HubManaged {
 		t.Fatalf("hub bot classify = %+v", pinned)
 	}
 	c.rememberPrincipal(p, "hi", true)
-	late := c.hubBotLLMConfig(context.Background(), context.Background(), p, "hi", corelib.MaclawLLMConfig{Model: "auto"})
-	if late.ServiceGroupID != "system-free" {
-		t.Fatalf("late tree lost the bot group: %+v", late)
+	late := c.hubBotLLMConfig(context.Background(), context.Background(), p, "hi", corelib.MaclawLLMConfig{Model: "auto", ServiceGroupID: "system-free"})
+	if late.ServiceGroupID != "" {
+		t.Fatalf("late tree kept a group pin: %+v", late)
 	}
-	otherText := c.hubBotLLMConfig(context.Background(), context.Background(), p, "other", corelib.MaclawLLMConfig{Model: "auto"})
-	if otherText.ServiceGroupID != "" {
-		t.Fatalf("another utterance inherited the bot group: %+v", otherText)
+	otherText := c.hubBotLLMConfig(context.Background(), context.Background(), p, "other", corelib.MaclawLLMConfig{Model: "auto", ServiceGroupID: "keep"})
+	if otherText.ServiceGroupID != "keep" {
+		t.Fatalf("another utterance lost its own group: %+v", otherText)
 	}
 	c.rememberPrincipal(p, "hi", false)
-	kept := c.hubBotLLMConfig(context.Background(), context.Background(), p, "hi", corelib.MaclawLLMConfig{Model: "auto"})
-	if kept.ServiceGroupID != "system-free" {
-		t.Fatalf("a later non-bot remember cleared the pin: %+v", kept)
+	kept := c.hubBotLLMConfig(context.Background(), context.Background(), p, "hi", corelib.MaclawLLMConfig{Model: "auto", ServiceGroupID: "maclaw_official_group"})
+	if kept.ServiceGroupID != "" {
+		t.Fatalf("a later non-bot remember restored a pin: %+v", kept)
 	}
 }
 

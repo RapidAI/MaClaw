@@ -906,7 +906,7 @@ func subAgentRetryRecoveryHint(errSummary string) string {
 		strings.Contains(normalized, "no exploration before editing existing files") ||
 		strings.Contains(normalized, "first edit") ||
 		strings.Contains(normalized, "首次修改前"):
-		return "Before editing existing files, use codegraph explore/codegraph node first when .codegraph/ exists; otherwise use Glob/ripgrep/read_file to inspect the relevant code. Then make the minimal edit and continue with verification."
+		return "Before editing existing files, call code_navigation for structure, symbols, and call edges even when .codegraph/ is absent; the tool installs and inits. A text search that already returned lines is evidence; use those lines and do not repeat that search. Then make the minimal edit and continue with verification."
 	case strings.Contains(normalized, "before the final edit") ||
 		strings.Contains(normalized, "rerun test/build/lint/typecheck after editing"):
 		return "Run verification after the final edit, not before it. Re-run the focused test/build/lint/typecheck command after making changes and use that fresh result."
@@ -1057,7 +1057,7 @@ func subAgentQualityAuditRecoveryHint(normalized string) string {
 		strings.Contains(normalized, "no exploration before editing existing files") ||
 		strings.Contains(normalized, "first edit") ||
 		strings.Contains(normalized, "首次修改前") {
-		add("inspect/explore before editing existing files; use codegraph explore/codegraph node when .codegraph/ exists, then keep the edit minimal.")
+		add("inspect/explore before editing existing files; call code_navigation (codegraph explore / codegraph node) even when .codegraph/ is absent, then keep the edit minimal.")
 	}
 	if strings.Contains(normalized, "created files without inspection") ||
 		strings.Contains(normalized, "project-context evidence") {

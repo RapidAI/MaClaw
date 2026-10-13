@@ -27,7 +27,12 @@ const root = resolve(fileURLToPath(new URL('.', import.meta.url)), '..')
 // office-theme .sidebar button[aria-current] fill and the violet focus ring.
 // Refreshed 1574 -> 1572 (2026-10-09) after dropping the compact-rail popup
 // left overrides. Those percentages were viewport-sized on position:fixed.
-const IMPORTANT_BASELINE = 1572
+// Refreshed 1572 -> 1608 (2026-10-13) for the provider-management dialog
+// redesign: chips / option buttons / footer CTAs moved from inline styles to
+// classes that must out-rank the generic office-ink repaint
+// (.settings-panel button:not(...) sets border-color + color on every
+// in-panel button, so the dialog's stateful fills pin their colors).
+const IMPORTANT_BASELINE = 1608
 const INLINE_STYLE_BASELINE = 4064
 
 function countImportant(css) {

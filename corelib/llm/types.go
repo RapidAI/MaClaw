@@ -359,6 +359,9 @@ func ParseNonStreamOpenAIResponseBody(body []byte) (*Response, error) {
 	if bytes.HasPrefix(trimmed, []byte("data:")) {
 		return ParseSSEToResponse(body)
 	}
+	if upstreamErr := upstreamModelErrorFromPayload(trimmed); upstreamErr != nil {
+		return nil, upstreamErr
+	}
 
 	var wire openAIWireResponse
 	if err := json.Unmarshal(body, &wire); err != nil {

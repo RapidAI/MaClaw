@@ -35,18 +35,18 @@ func TestHandleGoalCreateRemoteUnarmedDefersContinuation(t *testing.T) {
 		RemoteProjectDir: "/home/u/app",
 	})
 	resp := h.handleGoalCreate(IMUserMessage{UserID: userID, Text: "/goal ship feature"}, "ship feature")
-	if resp == nil || resp.Error != "" {
+	if resp == nil || resp.Error == "" {
 		t.Fatalf("create resp=%+v", resp)
 	}
-	if !strings.Contains(resp.Text, "SSH") && !strings.Contains(resp.Text, "重连") {
-		t.Fatalf("expected reconnect guidance: %q", resp.Text)
+	if !strings.Contains(resp.Error, "SSH") && !strings.Contains(resp.Error, "重连") {
+		t.Fatalf("expected reconnect error: %q", resp.Error)
 	}
 	if h.hasPendingTemplateSubAgentExecution(userID) {
 		t.Fatal("dead remote should not be armed")
 	}
 	g := h.getGoalStore().Get(userID)
-	if g == nil || g.Objective != "ship feature" {
-		t.Fatalf("goal should still be stored: %+v", g)
+	if g == nil || g.Objective != "ship feature" || g.Status != goal.StatusFailed {
+		t.Fatalf("goal should be stored as failed: %+v", g)
 	}
 }
 
@@ -210,5 +210,129 @@ func TestCodingGoalToolDefinitionAndExecute(t *testing.T) {
 	}
 	if found {
 		t.Fatal("full env BuildTools must not expose model-writable goal without durable CAS")
+	}
+}
+
+func TestGoalPlanStepAndComplete(t *testing.T) {
+	h := &IMMessageHandler{goalStore: goal.NewStore("")}
+	userID := "desktop-user:D:/goal-loop"
+	created := h.toolGoalForUser(userID, map[string]interface{}{
+		"action":    "create",
+		"objective": "实现登录",
+	})
+	if !strings.Contains(created, "目标已创建") {
+		t.Fatalf("create = %q", created)
+	}
+	refused := h.toolGoalForUser(userID, map[string]interface{}{
+		"action":  "complete",
+		"summary": "go test 通过",
+	})
+	if !strings.Contains(refused, "尚未分解") {
+		t.Fatalf("complete before plan = %q", refused)
+	}
+	if g := h.getGoalStore().Get(userID); g == nil || g.Status != goal.StatusActive {
+		t.Fatalf("refused complete changed status: %+v", g)
+	}
+
+	planned := h.toolGoalForUser(userID, map[string]interface{}{
+		"action":        "plan",
+		"understanding": "交付可登录接口",
+		"steps": []interface{}{
+			map[string]interface{}{"title": "检查环境"},
+			map[string]interface{}{"title": "编写代码"},
+		},
+		"acceptance_criteria": []interface{}{"go test 通过"},
+	})
+	if !strings.Contains(planned, "计划已保存") || !strings.Contains(planned, "检查环境") {
+		t.Fatalf("plan = %q", planned)
+	}
+
+	done := h.toolGoalForUser(userID, map[string]interface{}{
+		"action": "step",
+		"index":  1,
+		"status": "done",
+		"result": "环境可用",
+	})
+	if !strings.Contains(done, "步骤 1 已完成") {
+		t.Fatalf("step = %q", done)
+	}
+	early := h.toolGoalForUser(userID, map[string]interface{}{
+		"action":  "complete",
+		"summary": "go test 通过",
+	})
+	if !strings.Contains(early, "未完成") {
+		t.Fatalf("complete with a pending step = %q", early)
+	}
+
+	if got := h.toolGoalForUser(userID, map[string]interface{}{
+		"action": "step",
+		"index":  2,
+		"status": "done",
+		"result": "代码已写",
+	}); !strings.Contains(got, "步骤 2 已完成") {
+		t.Fatalf("step 2 = %q", got)
+	}
+	uncovered := h.toolGoalForUser(userID, map[string]interface{}{
+		"action":  "complete",
+		"summary": "做完了",
+	})
+	if !strings.Contains(uncovered, "未覆盖验收标准") {
+		t.Fatalf("uncovered summary = %q", uncovered)
+	}
+
+	finished := h.toolGoalForUser(userID, map[string]interface{}{
+		"action":  "complete",
+		"summary": "go test 通过",
+	})
+	if !strings.Contains(finished, "目标已完成") || !strings.Contains(finished, "go test 通过") || !strings.Contains(finished, "代码已写") {
+		t.Fatalf("complete = %q", finished)
+	}
+	if g := h.getGoalStore().Get(userID); g == nil || g.Status != goal.StatusComplete {
+		t.Fatalf("status = %+v", g)
+	}
+}
+
+func TestGoalStepFailureFailsTheGoal(t *testing.T) {
+	h := &IMMessageHandler{goalStore: goal.NewStore("")}
+	userID := "desktop-user:D:/goal-fail-step"
+	h.toolGoalForUser(userID, map[string]interface{}{"action": "create", "objective": "实现登录"})
+	g := h.getGoalStore().Get(userID)
+	if err := h.getGoalStore().SavePlan(userID, g.GoalID, "写接口", []goal.Step{{Title: "检查环境"}}, []string{"go test 通过"}); err != nil {
+		t.Fatal(err)
+	}
+	got := h.toolGoalForUser(userID, map[string]interface{}{
+		"action": "step",
+		"index":  1,
+		"status": "failed",
+		"result": "没有编译器",
+	})
+	if !strings.Contains(got, "步骤 1 失败") || !strings.Contains(got, "没有编译器") {
+		t.Fatalf("step fail = %q", got)
+	}
+	stored := h.getGoalStore().Get(userID)
+	if stored == nil || stored.Status != goal.StatusFailed || !strings.Contains(stored.Summary, "没有编译器") {
+		t.Fatalf("stored = %+v", stored)
+	}
+}
+
+func TestGoalContinuationExposesGoalTool(t *testing.T) {
+	h := &IMMessageHandler{goalStore: goal.NewStore("")}
+	userID := "desktop-user:D:/goal-tool-exposed"
+	sa := &CodingSubAgent{
+		handler:         h,
+		fullEnvironment: true,
+		loopCtx:         &LoopContext{UserID: userID},
+		exposeGoalTool:  true,
+	}
+	cb := &codingSubAgentCallbacks{subagent: sa}
+	found := false
+	for _, tool := range cb.BuildTools("test") {
+		fn, _ := tool["function"].(map[string]interface{})
+		if fn["name"] == "goal" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("continuation turn should expose the goal tool")
 	}
 }

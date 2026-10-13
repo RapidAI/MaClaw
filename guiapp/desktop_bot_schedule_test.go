@@ -133,3 +133,123 @@ func TestExecuteDesktopBotScheduleReportsTheWorkerReply(t *testing.T) {
 		t.Fatalf("report = %s", payload)
 	}
 }
+
+func TestExecuteDesktopBotScheduleHoldsTheSharedDesktop(t *testing.T) {
+	var marks []bool
+	desktopBotBusySink = func(botID string, busy bool) {
+		if botID != "bot_1" {
+			t.Errorf("busy bot = %q", botID)
+		}
+		marks = append(marks, busy)
+	}
+	t.Cleanup(func() { desktopBotBusySink = nil })
+	desktopBotRelayOverride = func(context.Context, string, string, string) (desktopBotRelayResult, error) {
+		if len(marks) != 1 || !marks[0] {
+			t.Errorf("desktop busy before the run = %v", marks)
+		}
+		return desktopBotRelayResult{Text: "做好了。"}, nil
+	}
+	t.Cleanup(func() { desktopBotRelayOverride = nil })
+	_, err := (&App{}).executeDesktopBotScheduledTask(context.Background(), &scheduler.ScheduledTask{
+		ID:           "sched-busy",
+		DesktopBotID: "bot_1",
+		Action:       "整理早间简报。",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(marks) != 2 || !marks[0] || marks[1] {
+		t.Fatalf("busy marks = %v", marks)
+	}
+}
+
+func TestExecuteDesktopBotScheduleReleasesTheDesktopForALogin(t *testing.T) {
+	released := false
+	desktopBotBusySink = func(botID string, busy bool) {
+		if botID != "bot_1" {
+			t.Errorf("busy bot = %q", botID)
+		}
+		if !busy {
+			released = true
+		}
+	}
+	t.Cleanup(func() { desktopBotBusySink = nil })
+	desktopBotReportSink = func(string) {
+		if !released {
+			t.Error("login handoff was reported while the desktop was still held")
+		}
+	}
+	t.Cleanup(func() { desktopBotReportSink = nil })
+	desktopBotRelayOverride = func(context.Context, string, string, string) (desktopBotRelayResult, error) {
+		if released {
+			t.Error("desktop was released before the run finished")
+		}
+		return desktopBotRelayResult{Text: "需要登录", UserControl: true}, nil
+	}
+	t.Cleanup(func() { desktopBotRelayOverride = nil })
+	_, err := (&App{}).executeDesktopBotScheduledTask(context.Background(), &scheduler.ScheduledTask{
+		ID:              "sched-login",
+		DesktopBotID:    "bot_1",
+		DesktopBotOwner: "alice",
+		Action:          "打开网站。",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !released {
+		t.Fatal("desktop was still held after a login handoff")
+	}
+}
+
+func TestGetDesktopBotBusyRestoresHoldsForTheOpenAccount(t *testing.T) {
+	desktopBotBusyMu.Lock()
+	desktopBotBusyCount = map[string]int{}
+	desktopBotBusyMu.Unlock()
+	t.Cleanup(func() {
+		desktopBotBusyMu.Lock()
+		desktopBotBusyCount = map[string]int{}
+		desktopBotBusyMu.Unlock()
+	})
+	app := &App{}
+	app.noteDesktopBotBusy("bot_1", "alice", true)
+	app.noteDesktopBotBusy("bot_1", "alice", true)
+	app.noteDesktopBotBusy("bot_2", "alice", true)
+	app.noteDesktopBotBusy("bot_9", "bob", true)
+	got := app.GetDesktopBotBusy("alice")
+	if len(got.Marks) != 2 || got.Marks[0].BotID != "bot_1" || got.Marks[0].Count != 2 || got.Marks[1].BotID != "bot_2" || got.Marks[1].Count != 1 {
+		t.Fatalf("alice holds = %+v", got.Marks)
+	}
+	app.noteDesktopBotBusy("bot_1", "alice", false)
+	got = app.GetDesktopBotBusy("alice")
+	if len(got.Marks) != 2 || got.Marks[0].Count != 1 {
+		t.Fatalf("alice holds after one release = %+v", got.Marks)
+	}
+	if bob := app.GetDesktopBotBusy("bob"); len(bob.Marks) != 1 || bob.Marks[0].BotID != "bot_9" {
+		t.Fatalf("bob holds = %+v", bob.Marks)
+	}
+}
+
+func TestGetDesktopBotBusyKeepsALiveRunAfterTheBubbleAgesOut(t *testing.T) {
+	activeDesktopRunsMu.Lock()
+	previous := activeDesktopRuns
+	activeDesktopRuns = map[string]*ActiveDesktopRun{}
+	activeDesktopRunsMu.Unlock()
+	t.Cleanup(func() {
+		activeDesktopRunsMu.Lock()
+		activeDesktopRuns = previous
+		activeDesktopRunsMu.Unlock()
+	})
+	app := &App{}
+	app.registerActiveDesktopRun("bot_1", "req-1", "alice:bot_1", "打开网站。", "execute")
+	got := app.GetDesktopBotBusy("alice")
+	if len(got.Runs) != 1 || got.Runs[0] != "bot_1" {
+		t.Fatalf("runs = %v", got.Runs)
+	}
+	if bob := app.GetDesktopBotBusy("bob"); len(bob.Runs) != 0 {
+		t.Fatalf("bob runs = %v", bob.Runs)
+	}
+	app.markDesktopRunWaitingForUser("bot_1", "req-1")
+	if waiting := app.GetDesktopBotBusy("alice"); len(waiting.Runs) != 0 {
+		t.Fatalf("login handoff still driving: %v", waiting.Runs)
+	}
+}

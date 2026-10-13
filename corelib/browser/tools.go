@@ -111,7 +111,7 @@ func RegisterTools(registry *tool.Registry) {
 		},
 		{
 			Name:        "browser_probe",
-			Description: "Lightweight page probe: interactive refs in the page and child frames, for planning one task_run. No page-text excerpt, vision, or console log.",
+			Description: "Lightweight page probe: interactive refs in the page and child frames, for planning one script or task_run. No page-text excerpt, vision, or console log.",
 			Category:    tool.CategoryBuiltin,
 			Tags:        []string{"browser", "probe", "snapshot", "浏览器", "探测"},
 			Priority:    6,
@@ -588,6 +588,45 @@ func RegisterTools(registry *tool.Registry) {
 				result, _ := json.Marshal(info)
 				return string(result)
 			},
+		},
+		{
+			Name:        "browser_script",
+			Description: "Run one page script after probe. click, type, select, press, scroll, and waitFor run in that script. Optional name stores it for skill_run.",
+			Category:    tool.CategoryBuiltin,
+			Tags:        []string{"browser", "script", "batch", "浏览器", "脚本"},
+			Priority:    6,
+			Required:    []string{"session_id", "script"},
+			InputSchema: map[string]interface{}{
+				"session_id": map[string]interface{}{"type": "string", "description": "browser session id"},
+				"script":     map[string]interface{}{"type": "string", "description": "Statements: click(\"保存\"), type(\"#q\", \"weather\"), select(\"状态\", \"完成\"), press(\"Enter\"), scroll(600), waitFor(\"下一步\", 3000). Do not read cookies, storage, or passwords."},
+				"name":       map[string]interface{}{"type": "string", "description": "Optional kebab-case name, such as save-draft. A script that finishes is stored under this name."},
+			},
+			Handler: browserScriptTool,
+		},
+		{
+			Name:        "browser_skill_list",
+			Description: "List page scripts saved for this browser owner.",
+			Category:    tool.CategoryBuiltin,
+			Tags:        []string{"browser", "script", "skill", "浏览器"},
+			Priority:    4,
+			Required:    []string{"session_id"},
+			InputSchema: map[string]interface{}{
+				"session_id": map[string]interface{}{"type": "string", "description": "browser session id"},
+			},
+			Handler: browserSkillListTool,
+		},
+		{
+			Name:        "browser_skill_run",
+			Description: "Run a saved page script on the website it was stored for. No second probe.",
+			Category:    tool.CategoryBuiltin,
+			Tags:        []string{"browser", "script", "skill", "浏览器"},
+			Priority:    5,
+			Required:    []string{"session_id", "name"},
+			InputSchema: map[string]interface{}{
+				"session_id": map[string]interface{}{"type": "string", "description": "browser session id"},
+				"name":       map[string]interface{}{"type": "string", "description": "kebab-case name from script or skill_list"},
+			},
+			Handler: browserSkillRunTool,
 		},
 	}
 

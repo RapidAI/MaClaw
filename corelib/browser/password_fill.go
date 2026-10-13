@@ -23,7 +23,9 @@ func FillPasswordField(focused bool, inputType, value string, send func(method s
 	if !focused {
 		return errFill("no_focus")
 	}
-	if kind != "password" {
+	switch kind {
+	case "password", "tel", "phone", "otp":
+	default:
 		return errFill("not_password_field")
 	}
 	if strings.TrimSpace(value) == "" || send == nil {
@@ -86,7 +88,12 @@ const focusedInputKindJS = `(function () {
       const tab = el.getAttribute ? el.getAttribute('tabindex') : null;
       if (tab === null && tag.indexOf('-') !== -1) return 'closed-shadow';
     }
-    return nativeKind(el);
+    const type = nativeKind(el);
+    const blob = String((el.getAttribute && (el.getAttribute('name') || '') + ' ' + (el.getAttribute('id') || '') + ' ' + (el.getAttribute('placeholder') || '') + ' ' + (el.getAttribute('autocomplete') || '')) || '').toLowerCase();
+    if (type === 'password') return 'password';
+    if (type === 'tel' || /phone|mobile|手机|电话/.test(blob)) return 'phone';
+    if ((type === 'text' || type === 'number' || type === '') && /one-time-code|otp|验证码/.test(blob)) return 'otp';
+    return type;
   }
   const el = document.activeElement;
   if (!el || el === document.body || el === document.documentElement) return JSON.stringify({kind: ''});
@@ -510,6 +517,74 @@ func (s *BrowserAgentSession) FocusedInputKind() (bool, string) {
 	defer session.mu.Unlock()
 	kind, err := session.evalString(focusedInputKindJS, "kind")
 	return focusKindFromEval(kind, err)
+}
+
+// FocusCredential focuses the password or phone field, or the code field
+// when kind is "code", so a chat secret is inserted into that control.
+func (s *BrowserAgentSession) FocusCredential(kind string) error {
+	if s == nil || !s.DesktopConnected() {
+		return errors.New("unavailable")
+	}
+	if kind != "code" {
+		kind = "password"
+	}
+	s.mu.RLock()
+	session := s.session
+	s.mu.RUnlock()
+	if session == nil {
+		return errors.New("unavailable")
+	}
+	if _, err := session.Eval(focusCredentialJS(kind)); err != nil {
+		return errors.New("unavailable")
+	}
+	return nil
+}
+
+func focusCredentialJS(kind string) string {
+	encoded, _ := json.Marshal(kind)
+	return `(function () {
+  const want = ` + string(encoded) + `;
+  function visible(el) {
+    if (!el || !el.getBoundingClientRect) return false;
+    const r = el.getBoundingClientRect();
+    return r.width >= 1 && r.height >= 1;
+  }
+  function blob(el) {
+    return String((el.getAttribute && ((el.getAttribute('name') || '') + ' ' + (el.getAttribute('id') || '') + ' ' + (el.getAttribute('placeholder') || '') + ' ' + (el.getAttribute('autocomplete') || ''))) || '').toLowerCase();
+  }
+  function score(el) {
+    if (!visible(el) || el.disabled) return 0;
+    const type = String((el.getAttribute && (el.getAttribute('type') || el.type)) || '').toLowerCase();
+    const text = blob(el);
+    if (want === 'code') {
+      if (/one-time-code|otp|验证码/.test(text)) return 2;
+      if (type === 'tel' || type === 'number') return 1;
+      return 0;
+    }
+    if (type === 'password') return 3;
+    if (type === 'tel' || /phone|mobile|手机|电话/.test(text)) return 2;
+    return 0;
+  }
+  const found = [];
+  function walk(doc) {
+    if (!doc || !doc.querySelectorAll) return;
+    try { found.push.apply(found, Array.from(doc.querySelectorAll('input,textarea'))); } catch (e) {}
+    let frames = [];
+    try { frames = Array.from(doc.querySelectorAll('iframe,frame')); } catch (e) { frames = []; }
+    for (const frame of frames) {
+      try { if (frame.contentDocument) walk(frame.contentDocument); } catch (e) {}
+    }
+  }
+  walk(document);
+  let best = null, bestScore = 0;
+  for (const el of found) {
+    const next = score(el);
+    if (next > bestScore) { bestScore = next; best = el; }
+  }
+  if (!best) return 'miss';
+  try { best.focus(); } catch (e) { return 'miss'; }
+  return 'ok';
+})()`
 }
 
 // InsertPasswordText sends one CDP Input.insertText. It does not fall

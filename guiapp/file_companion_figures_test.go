@@ -3,6 +3,8 @@ package guiapp
 import (
 	"archive/zip"
 	"bytes"
+	"context"
+	"encoding/base64"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -14,6 +16,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/docgen"
 )
 
 // writeCompanionFigurePNG writes a real, decodable PNG above the minimum size
@@ -264,6 +267,24 @@ func TestFileCompanionReplyCarriesTheFiguresTheAnswerMentions(t *testing.T) {
 		t.Fatalf("unrelated reply carried figures: %+v", got)
 	}
 
+	// This turn's only render is 图1. A model that kept counting from the
+	// previous answer writes 图2, and "Figure 3" is the paper's caption.
+	// The render still belongs under the reply.
+	page := []companionFigure{{path: "/cache/render-p6-d220.png", caption: "第 6 页整页渲染"}}
+	got = fileCompanionFiguresForReply(page, "只要figure3", "Figure 3 是矢量绘制的，下图右栏中部那块小图就是 Figure 3：\n\n图2")
+	if len(got) != 1 || got[0].Index != 2 || got[0].Label != "图2" || got[0].Path != "/cache/render-p6-d220.png" {
+		t.Fatalf("off-range 图2 = %+v, want the single render labeled 图2", got)
+	}
+	if got := fileCompanionFiguresForReply(page, "只要figure3", "Figure 3 在右栏，论文里没有单独的位图。"); len(got) != 0 {
+		t.Fatalf("paper Figure 3 without 图N carried a render: %+v", got)
+	}
+	if got := fileCompanionFiguresForReply(page, "只要figure3", "论文的图9在附录。"); len(got) != 0 {
+		t.Fatalf("unrelated 图9 carried the only render: %+v", got)
+	}
+	if got := fileCompanionFiguresForReply(figures, "解释一下", "见图9"); len(got) != 0 {
+		t.Fatalf("off-range 图9 with several figures = %+v, want none", got)
+	}
+
 	// A whole-document question still gets the leading figures.
 	got = fileCompanionFiguresForReply(figures, "总结一下这篇文档", "这篇文档介绍了三段内容。")
 	if len(got) != 3 {
@@ -328,6 +349,43 @@ func TestFileCompanionDisplayHidesFigureBookkeeping(t *testing.T) {
 	}
 	if out[1].Figures == nil || len(out[1].Figures) != 1 || out[1].Figures[0].Label != "图1" {
 		t.Fatalf("restored figures = %+v, want 图1 matched through the question", out[1].Figures)
+	}
+}
+
+func TestFileCompanionDisplayFoldsToolPlanningIntoTheAnswer(t *testing.T) {
+	plan := "The user wants only Figure 3. The user says \"只要figure3\". Let me render page 6."
+	figures := []companionFigure{{path: "/cache/render-p6-d220.png", caption: "第 6 页整页渲染"}}
+	out := fileCompanionDisplayMessages([]agent.ConversationEntry{
+		{Role: "user", Content: "只要figure3"},
+		{Role: "assistant", Content: plan, ReasoningContent: plan, FinishReason: "tool_calls", ToolCalls: []interface{}{map[string]interface{}{"id": "c1"}}},
+		{Role: "tool", Content: "第 6 页没有可提取的内嵌位图。", ToolName: "pdf_extract_images"},
+		{Role: "assistant", Content: "先渲染这一页。", ReasoningContent: "short aside", FinishReason: "tool_calls", ToolCalls: []interface{}{map[string]interface{}{"id": "c2"}}},
+		{Role: "assistant", Content: "Figure 3 是矢量绘制的，下图就是 Figure 3：\n\n图2", ReasoningContent: "Keep the reply short.", FinishReason: "stop"},
+	}, figures)
+	if len(out) != 3 {
+		t.Fatalf("messages = %d, want the question, the aside, and the answer", len(out))
+	}
+	if out[1].Text != "先渲染这一页。" || strings.Contains(out[1].Text, "The user wants") {
+		t.Fatalf("aside = %q", out[1].Text)
+	}
+	if strings.Contains(out[2].Text, "The user wants") || strings.Contains(out[2].Text, "先渲染这一页") {
+		t.Fatalf("tool round leaked into the answer: %q", out[2].Text)
+	}
+	if !strings.Contains(out[2].Reasoning, "The user wants only Figure 3") || !strings.Contains(out[2].Reasoning, "Keep the reply short.") {
+		t.Fatalf("answer reasoning = %q", out[2].Reasoning)
+	}
+	if len(out[2].Figures) != 1 || out[2].Figures[0].Label != "图2" || out[2].Figures[0].Path != figures[0].path {
+		t.Fatalf("answer figures = %+v", out[2].Figures)
+	}
+
+	// A turn that never reached an answer still keeps the plan, instead of
+	// disappearing.
+	aborted := fileCompanionDisplayMessages([]agent.ConversationEntry{
+		{Role: "user", Content: "只要figure3"},
+		{Role: "assistant", Content: plan, ReasoningContent: plan, FinishReason: "tool_calls"},
+	}, figures)
+	if len(aborted) != 2 || aborted[1].Text != "" || !strings.Contains(aborted[1].Reasoning, "Let me render page 6") {
+		t.Fatalf("aborted display = %#v", aborted)
 	}
 }
 
@@ -637,4 +695,103 @@ func TestCompanionFigureImageDownscalesOversizedDrawings(t *testing.T) {
 	if cfg, _, err := image.DecodeConfig(bytes.NewReader(data)); err != nil || cfg.Width > fileCompanionFigureVisionEdge {
 		t.Fatalf("vision image = %+v err=%v", cfg, err)
 	}
+}
+
+// A reopened window must still be able to show a document's drawings.
+//
+// The inventory that says "this figure belongs to this document" lives in
+// memory, but the files it points at do not. After a restart the files are
+// still there and the window still lists them, so refusing to serve them
+// breaks every consumer of the binding — most visibly an export, which then
+// produces a document with the pictures quietly missing.
+func TestFileCompanionFiguresSurviveARestart(t *testing.T) {
+	gen := docgen.New()
+	if !gen.HasFont() {
+		t.Skip("跳过：系统未找到中文字体")
+	}
+	pdfBytes, err := gen.Generate(docgen.Spec{
+		Title: "report", Brand: "b", PaperSize: "A4",
+		Content: "## 图\n\n![](" + companionTestFigureDataURL(t) + ")\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	doc := filepath.Join(dir, "report.pdf")
+	if err := os.WriteFile(doc, pdfBytes, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := &App{testHomeDir: t.TempDir()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	app.ctx = ctx
+	app.seedFileCompanionPaths(nil)
+	if _, err := app.FileCompanionOpen(doc); err != nil {
+		t.Fatal(err)
+	}
+	canonical, err := fileCompanionCanonicalPath(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	figures := app.fileCompanionFigures(canonical)
+	if len(figures) == 0 {
+		t.Skip("跳过：这份 PDF 没有可提取的配图")
+	}
+	figurePath := figures[0].path
+
+	// Everything the running process remembered, gone — the files remain.
+	st := app.companionRuntime()
+	st.mu.Lock()
+	st.figures = map[string]*companionFigureInventory{}
+	st.figureLedger = map[string][]string{}
+	st.mu.Unlock()
+
+	dataURL, err := app.FileCompanionFigureDataURL(figurePath)
+	if err != nil {
+		t.Fatalf("a figure of an open document was refused after a restart: %v", err)
+	}
+	if !strings.HasPrefix(dataURL, "data:image/") {
+		t.Fatalf("figure served as %q", dataURL)
+	}
+}
+
+// The relaxation above must not become a way to read arbitrary files: a path
+// outside every open document's figure directory is still refused.
+func TestFileCompanionFiguresOutsideTheSessionDirectoryAreRefused(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	app.ctx = ctx
+	app.seedFileCompanionPaths(nil)
+
+	dir := t.TempDir()
+	doc := filepath.Join(dir, "notes.md")
+	if err := os.WriteFile(doc, []byte("# alpha\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.FileCompanionOpen(doc); err != nil {
+		t.Fatal(err)
+	}
+	stranger := filepath.Join(dir, "elsewhere.png")
+	writeCompanionFigurePNG(t, stranger, 200, 150)
+	if _, err := app.FileCompanionFigureDataURL(stranger); err == nil {
+		t.Fatal("a file outside every figure directory was served")
+	}
+}
+
+func companionTestFigureDataURL(t *testing.T) string {
+	t.Helper()
+	canvas := image.NewRGBA(image.Rect(0, 0, 240, 180))
+	for y := 0; y < 180; y++ {
+		for x := 0; x < 240; x++ {
+			hash := (x*7919 + y*104729) % 1021
+			canvas.Set(x, y, color.RGBA{R: uint8(hash % 251), G: uint8((hash * 7) % 251), B: 130, A: 255})
+		}
+	}
+	var buf bytes.Buffer
+	if err := jpeg.Encode(&buf, canvas, &jpeg.Options{Quality: 85}); err != nil {
+		t.Fatal(err)
+	}
+	return "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
 }

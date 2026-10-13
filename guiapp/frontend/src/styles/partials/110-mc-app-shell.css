@@ -2557,6 +2557,119 @@ button.mc-workbench-status-card__row:disabled { cursor: default; }
   overflow-x: hidden;
   overflow-y: auto;
 }
+.stsm-task-folder + .stsm-task-folder {
+  margin-top: 4px;
+}
+.stsm-task-folder__head {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  border-radius: 8px;
+  user-select: none;
+}
+.stsm-task-folder__head.is-draggable,
+.stsm-task-folder__head.is-draggable .stsm-task-folder__toggle {
+  cursor: grab;
+}
+.stsm-task-folder__head.is-draggable:active,
+.stsm-task-folder__head.is-draggable:active .stsm-task-folder__toggle {
+  cursor: grabbing;
+}
+.stsm-task-folder[data-folder-drop-target='before'] > .stsm-task-folder__head {
+  box-shadow: inset 0 2px 0 var(--theme-primary);
+}
+.stsm-task-folder[data-folder-drop-target='after'] > .stsm-task-folder__head {
+  box-shadow: inset 0 -2px 0 var(--theme-primary);
+}
+.stsm-task-folder__grip {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  color: var(--theme-text-muted);
+  opacity: 0.55;
+}
+.stsm-task-folder__head:hover .stsm-task-folder__grip,
+.stsm-task-folder[data-folder-drop-target] .stsm-task-folder__grip {
+  opacity: 1;
+}
+.stsm-task-folder__grip-icon {
+  display: block;
+}
+.stsm-task-folder__toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+  margin: 0;
+  padding: 5px 8px 5px 2px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--theme-text-primary);
+  font: inherit;
+  font-size: 0.74rem;
+  font-weight: 650;
+  line-height: 1.3;
+  text-align: left;
+  cursor: pointer;
+}
+.stsm-task-folder__toggle:hover {
+  background: color-mix(in srgb, var(--theme-text-primary) 5%, transparent);
+}
+.stsm-task-folder__toggle:focus-visible {
+  outline: 2px solid var(--theme-primary);
+  outline-offset: -2px;
+}
+.stsm-task-folder__head:not(.is-draggable) .stsm-task-folder__toggle {
+  padding-left: 8px;
+}
+.stsm-task-folder__chevron {
+  display: block;
+  flex-shrink: 0;
+  color: var(--theme-text-muted);
+  transition: transform 0.15s ease;
+}
+.stsm-task-folder__toggle[aria-expanded="false"] .stsm-task-folder__chevron {
+  transform: none;
+}
+.stsm-task-folder__toggle[aria-expanded="true"] .stsm-task-folder__chevron {
+  transform: rotate(90deg);
+}
+.stsm-task-folder__icon {
+  display: block;
+  flex-shrink: 0;
+  color: var(--theme-text-muted);
+}
+.stsm-task-folder__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.stsm-task-folder__count {
+  margin-left: auto;
+  flex-shrink: 0;
+  color: var(--theme-text-muted);
+  font-size: 0.68rem;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+.stsm-task-folder__items {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding-left: 8px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .stsm-task-folder__chevron {
+    transition: none;
+  }
+}
 .stsm-list-notice {
   margin: 0 8px 8px;
   padding: 7px 10px;
@@ -3596,6 +3709,10 @@ input.cwshare-url {
      opens it: anchored to a button, the panel sat off-centre and a narrow
      window clipped it against the window edge. */
   position: relative;
+  /* Above the document pane. The PDF preview is an iframe, and without a
+     stacking context here the open menu — which hangs below the bar — is
+     painted underneath that frame, so the panel looks like it never opened. */
+  z-index: 40;
 }
 /* The bar clips its own row, which would also clip the 打开 menu. Names stay
    clipped by .file-companion-titlebar-files while the menu is open. */
@@ -3634,6 +3751,17 @@ input.cwshare-url {
 .file-companion-titlebar-gap {
   flex: 1 1 auto;
   min-width: 0;
+}
+/* Everything clickable opts out of the window drag region. --wails-draggable
+   inherits, and Wails starts the drag on the first mousemove after mousedown,
+   so a click with a pixel of shake on a tab or a tool button moved the window
+   instead of pressing the control. The brand and the flexible gap stay
+   draggable, so the bar is still a drag handle. */
+.file-companion-titlebar-files,
+.file-companion-titlebar-tabs,
+.file-companion-titlebar-actions,
+.file-companion-titlebar .file-companion-tool--close {
+  --wails-draggable: no-drag;
 }
 .file-companion-titlebar-actions {
   display: flex;
@@ -3746,6 +3874,12 @@ input.cwshare-url {
 .file-companion-open {
   display: inline-flex;
   flex: 0 0 auto;
+  /* The titlebar is a window-drag region and --wails-draggable inherits, so
+     without this the trigger and the whole 打开 panel would be draggable too.
+     Wails defers the drag to the first mousemove, which means a slightly shaky
+     click on the arXiv box moves the window instead of focusing the input.
+     This covers the panel as well: it is a child of this element. */
+  --wails-draggable: no-drag;
 }
 .file-companion-open-caret {
   display: inline-flex;
@@ -3756,6 +3890,16 @@ input.cwshare-url {
   display: block;
   width: 9px;
   height: 6px;
+}
+/* Covers the document under the bar, including the PDF iframe, without
+   covering the bar's own buttons. A click there closes the panel. */
+.file-companion-open-scrim {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  height: 100vh;
+  z-index: 20;
 }
 .file-companion-open-menu {
   position: absolute;

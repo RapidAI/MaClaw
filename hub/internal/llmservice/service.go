@@ -3322,11 +3322,17 @@ func availableCreditsForServiceGroups(reg *Registry, owner userAccountRef, servi
 // A background decision that should wait until credits are actually consumed
 // uses the result directly.
 func spendableGrantCredits(reg *Registry, owner userAccountRef, serviceGroupSet map[string]struct{}, now time.Time) float64 {
+	all, _ := spendableBalances(reg, owner, serviceGroupSet, now)
+	return all
+}
+
+// spendableBalances is one pass over the grants. all includes the new-user
+// period window. wallet does not.
+func spendableBalances(reg *Registry, owner userAccountRef, serviceGroupSet map[string]struct{}, now time.Time) (all float64, wallet float64) {
 	if reg == nil || owner.empty() || len(serviceGroupSet) == 0 {
-		return 0
+		return 0, 0
 	}
 	limitCardGroupSet := activePeriodLimitedNewUserLimitCardGroupSet(reg, owner, serviceGroupSet, now)
-	total := 0.0
 	seenLimitCardGroups := map[string]struct{}{}
 	for i, grant := range reg.Grants {
 		grant = effectiveGrantForRegistry(reg, grant)
@@ -3339,6 +3345,7 @@ func spendableGrantCredits(reg *Registry, owner userAccountRef, serviceGroupSet 
 		if _, ok := serviceGroupSet[strings.ToLower(strings.TrimSpace(grant.ServiceGroupID))]; !ok {
 			continue
 		}
+		welcome := isNewUserLimitCardSource(grant.Source)
 		if nonWelcomeGrantBlockedByLimitCard(reg, grant, limitCardGroupSet) {
 			continue
 		}
@@ -3354,9 +3361,13 @@ func spendableGrantCredits(reg *Registry, owner userAccountRef, serviceGroupSet 
 		if skipDuplicateNewUserLimitCardGroup(seenLimitCardGroups, reg, grant) {
 			continue
 		}
-		total += availableGrantCredits(grant, now)
+		amount := availableGrantCredits(grant, now)
+		all += amount
+		if !welcome {
+			wallet += amount
+		}
 	}
-	return total
+	return all, wallet
 }
 
 func hasEarlyStartableUnmeteredUnlimitedGrant(reg *Registry, owner userAccountRef, serviceGroupIDs []string, now time.Time) bool {

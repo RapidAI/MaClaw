@@ -239,6 +239,7 @@ func executeCodingBashWithContext(parent context.Context, args map[string]interf
 
 	output := formatCodingCommandOutput(stdout.String(), stderr.String())
 	if err == nil {
+		output = codingEmptySearchOutput(command, output, 0)
 		if output == "" {
 			output = "(command completed with no output)"
 		}
@@ -262,6 +263,7 @@ func executeCodingBashWithContext(parent context.Context, args map[string]interf
 	if exitErr, ok := err.(*exec.ExitError); ok {
 		exitCode = exitErr.ExitCode()
 	}
+	output = codingEmptySearchOutput(command, output, exitCode)
 	output = appendCodingCommandExitStatus(output, exitCode)
 	return codingCommandExecutionResult{Text: output, Kind: codingCommandResultExitError, ExitCode: exitCode}
 }
@@ -534,6 +536,107 @@ func appendCodingCommandStatus(output, status string) string {
 		return status
 	}
 	return output + "\n" + status
+}
+
+// codingQuietSearchHitText is rg -q / grep -q with exit 0. Those tools print
+// nothing when a match exists. The generic "no output" note reads as a miss.
+const codingQuietSearchHitText = "a match was found; quiet mode printed nothing. A search without quiet mode can show the lines."
+
+// codingEmptySearchOutput rewrites an empty text search. Exit 1 is no match.
+// Exit 0 is no match only when the tool was not asked to hide hits; quiet mode
+// uses exit 0 for a hit.
+func codingEmptySearchOutput(command, output string, exitCode int) string {
+	if !commandAllowsInformationalExitOne(command) {
+		return output
+	}
+	trimmed := strings.TrimSpace(output)
+	quiet := codingSearchCommandIsQuiet(command)
+	if quiet && strings.EqualFold(trimmed, "true") {
+		return codingQuietSearchHitText
+	}
+	if quiet && strings.EqualFold(trimmed, "false") {
+		return "no matches found"
+	}
+	if trimmed != "" {
+		return output
+	}
+	if exitCode == 1 {
+		return "no matches found"
+	}
+	if exitCode == 0 && quiet {
+		return codingQuietSearchHitText
+	}
+	return output
+}
+
+func codingSearchCommandIsQuiet(command string) bool {
+	for _, segment := range shellCommandSegments(strings.ToLower(command)) {
+		name, args, ok := codingSearchToolArgs(segment)
+		if !ok {
+			continue
+		}
+		for i := 0; i < len(args); i++ {
+			arg := args[i]
+			if arg == "--" {
+				break
+			}
+			if codingSearchArgIsQuiet(name, arg) {
+				return true
+			}
+			if codingShellFlagTakesValue(arg) && i+1 < len(args) {
+				i++
+			}
+		}
+	}
+	return false
+}
+
+func codingSearchToolArgs(segment []string) (string, []string, bool) {
+	segment = stripVerificationCommandPrefixes(segment)
+	if len(segment) == 0 {
+		return "", nil, false
+	}
+	name := commandNameBase(segment[0])
+	switch name {
+	case "rg", "ripgrep", "grep", "egrep", "fgrep", "select-string", "sls":
+		return name, segment[1:], true
+	case "git":
+		rest := segment[1:]
+		if gitCommandSubcommand(rest) != "grep" {
+			return "", nil, false
+		}
+		for i, arg := range rest {
+			if arg == "grep" {
+				return "grep", rest[i+1:], true
+			}
+		}
+	}
+	return "", nil, false
+}
+
+func codingSearchArgIsQuiet(name, arg string) bool {
+	lower := strings.ToLower(arg)
+	switch name {
+	case "select-string", "sls":
+		// PowerShell accepts -q as a prefix of -Quiet.
+		return lower == "--quiet" || (strings.HasPrefix(lower, "-q") && strings.HasPrefix("-quiet", lower))
+	}
+	switch arg {
+	case "-q", "--quiet", "--silent":
+		return true
+	}
+	if strings.HasPrefix(arg, "--") || !strings.HasPrefix(arg, "-") || len(arg) < 3 {
+		return false
+	}
+	for _, r := range arg[1:] {
+		if r < 'A' || (r > 'Z' && r < 'a') || r > 'z' {
+			return false
+		}
+		if r == 'q' {
+			return true
+		}
+	}
+	return false
 }
 
 func appendCodingCommandExitStatus(output string, exitCode int) string {

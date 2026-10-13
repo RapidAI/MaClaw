@@ -32,8 +32,10 @@ var colorfulH2Colors = []string{
 }
 var inlineMathSegmentRe = regexp.MustCompile(`\$(.+?)\$`)
 var inlineCodeRe = regexp.MustCompile("`([^`]+)`")
-var inlineBoldRe = regexp.MustCompile(`\*\*(.+?)\*\*`)
+var inlineStarBoldRe = regexp.MustCompile(`\*\*(.+?)\*\*`)
+var inlineUnderscoreBoldRe = regexp.MustCompile(`__(.+?)__`)
 var inlineItalicRe = regexp.MustCompile(`\*(.+?)\*`)
+var inlineLinkRe = regexp.MustCompile(`(^|[^!])\[([^\]\n]+)\]\(([^)\s]+)\)`)
 var sanitizeFileNameRe = regexp.MustCompile(`[<>:"/\\|?*\s]+`)
 
 // newLongestReplacer lists longer commands first. strings.NewReplacer keeps the
@@ -412,15 +414,15 @@ func markdownToHTMLWithScratch(scratch *dataURLScratch, md string, colorful bool
 			i = nextIdx
 			continue
 		}
-		if strings.HasPrefix(trimmed, "```") {
+		if marker, ok := markdownFenceMarker(trimmed); ok {
 			if listType != "" {
 				closeList()
 			}
-			// Fenced code block — collect lines until closing ```
+			// Fenced code block — ``` or ~~~, closed by a matching fence.
 			var codeLines []string
-			i++ // skip the opening ``` line
+			i++ // skip the opening fence line
 			for i < len(lines) {
-				if strings.TrimSpace(lines[i]) == "```" {
+				if isClosingFence(lines[i], marker) {
 					break
 				}
 				codeLines = append(codeLines, lines[i])
@@ -844,8 +846,7 @@ func renderInlineHTMLMode(text string, colorful bool) string {
 	text = restoreMathHTML(text)
 
 	// Step 5: Process bold and italic
-	text = inlineBoldRe.ReplaceAllString(text, "<b>$1</b>")
-	text = inlineItalicRe.ReplaceAllString(text, "<i>$1</i>")
+	text = applyInlineEmphasis(text)
 
 	// Step 6: Restore code span placeholders
 	for idx, rendered := range codePlaceholders {
@@ -1400,14 +1401,37 @@ func restoreMathHTML(text string) string {
 }
 
 func inlineMD(text string) string {
-	// Inline code must be processed first to protect its content from bold/italic
+	// Code is taken out before emphasis. Otherwise ** inside `code` is seen
+	// as bold and the span tag gets cut in half.
+	var codes []string
 	text = inlineCodeRe.ReplaceAllStringFunc(text, func(match string) string {
-		inner := match[1 : len(match)-1] // strip backticks
-		return fmt.Sprintf(`<span style="font-family:monospace; background-color:#f3f4f6; padding:1px 3px; font-size:9pt">%s</span>`, inner)
+		inner := match[1 : len(match)-1]
+		codes = append(codes, fmt.Sprintf(`<span style="font-family:monospace; background-color:#f3f4f6; padding:1px 3px; font-size:9pt">%s</span>`, inner))
+		return fmt.Sprintf("\x1aC%d\x1a", len(codes)-1)
 	})
-	text = inlineBoldRe.ReplaceAllString(text, "<b>$1</b>")
-	text = inlineItalicRe.ReplaceAllString(text, "<i>$1</i>")
+	text = applyInlineEmphasis(text)
+	for i, rendered := range codes {
+		text = strings.Replace(text, fmt.Sprintf("\x1aC%d\x1a", i), rendered, 1)
+	}
 	return text
+}
+
+// applyInlineEmphasis turns **bold**, __bold__, and *italic* into tags.
+//
+// Star bold runs before underscore bold, so __**粗**__ does not keep the
+// stars. A single "_" is left alone: file_name and Qwen2.5 are not emphasis.
+func applyInlineEmphasis(text string) string {
+	text = inlineStarBoldRe.ReplaceAllString(text, "<b>$1</b>")
+	text = inlineUnderscoreBoldRe.ReplaceAllString(text, "<b>$1</b>")
+	text = inlineItalicRe.ReplaceAllString(text, "<i>$1</i>")
+	return inlineLinkRe.ReplaceAllStringFunc(text, func(match string) string {
+		parts := inlineLinkRe.FindStringSubmatch(match)
+		if len(parts) != 4 {
+			return match
+		}
+		href := strings.ReplaceAll(parts[3], `"`, "&quot;")
+		return parts[1] + `<a href="` + href + `">` + parts[2] + `</a>`
+	})
 }
 
 func escapeHTML(s string) string {

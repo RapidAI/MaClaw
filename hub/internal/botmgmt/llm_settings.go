@@ -15,9 +15,16 @@ import (
 )
 
 const (
-	llmCurrentSystemFree = botLLMServiceGroupID
-	llmProviderLimit     = 8
+	llmDefaultServiceGroup  = botLLMServiceGroupID
+	legacyBotServiceGroupID = "system-free"
+	llmProviderLimit        = 8
 )
+
+func reservedBotLLMName(name string) bool {
+	return strings.EqualFold(name, botLLMProviderName) ||
+		strings.EqualFold(name, llmDefaultServiceGroup) ||
+		strings.EqualFold(name, legacyBotServiceGroupID)
+}
 
 var llmProviderIDPattern = regexp.MustCompile(`^lp_[a-z0-9]{8,32}$`)
 
@@ -33,10 +40,14 @@ type llmProvider struct {
 }
 
 // llmSettings is the tenant LLM choice for MaClawSrv bot turns.
-// Current is system-free, or the id of one provider in Providers.
+// Current is the MaClaw official service group, or the id of one provider.
 type llmSettings struct {
 	Current   string        `json:"current,omitempty"`
 	Providers []llmProvider `json:"providers,omitempty"`
+	// SystemFreeCreditsLimit is how many credits one bot owner may spend on
+	// system-free. Zero means that consumption is not limited. Bots do not
+	// draw this from the new-user benefit allowance.
+	SystemFreeCreditsLimit float64 `json:"system_free_credits_limit,omitempty"`
 }
 
 // LLMProviderInput is one provider in an admin save. An empty key keeps the
@@ -60,17 +71,21 @@ type LLMProviderView struct {
 	KeySet   bool   `json:"key_set"`
 }
 
-// LLMSettingsView is the admin LLM card. DefaultServiceGroup is the built-in
-// system-free route. Current is that id, or one provider id.
+// LLMSettingsView is the admin LLM card. DefaultServiceGroup is the MaClaw
+// official service group. Current is that id, or one provider id.
 type LLMSettingsView struct {
 	DefaultServiceGroup string            `json:"default_service_group"`
 	Current             string            `json:"current"`
 	Providers           []LLMProviderView `json:"providers"`
+	// SystemFreeCreditsLimit is the credits cap for bot system-free usage.
+	// Zero means unlimited.
+	SystemFreeCreditsLimit float64 `json:"system_free_credits_limit"`
 }
 
 // SaveLLMSettings replaces the extra providers MaClawSrv may call.
-// system-free stays available. A blank key on a known id keeps the stored key.
-func (s *Service) SaveLLMSettings(ctx context.Context, tenantID, current string, inputs []LLMProviderInput) (SettingsView, error) {
+// The official group stays available. A blank key on a known id keeps the stored key.
+// A nil credits limit keeps the limit already stored.
+func (s *Service) SaveLLMSettings(ctx context.Context, tenantID, current string, inputs []LLMProviderInput, creditsLimit *float64) (SettingsView, error) {
 	if s == nil || s.System == nil {
 		return SettingsView{}, ErrSettingsUnavailable
 	}
@@ -84,6 +99,14 @@ func (s *Service) SaveLLMSettings(ctx context.Context, tenantID, current string,
 	if err != nil {
 		return SettingsView{}, err
 	}
+	limit := rec.LLM.SystemFreeCreditsLimit
+	if creditsLimit != nil {
+		limit, err = normalizeSystemFreeCreditsLimit(*creditsLimit)
+		if err != nil {
+			return SettingsView{}, err
+		}
+	}
+	next.SystemFreeCreditsLimit = limit
 	rec.LLM = next
 	if err := s.save(ctx, tenantID, rec); err != nil {
 		return SettingsView{}, err
@@ -92,10 +115,7 @@ func (s *Service) SaveLLMSettings(ctx context.Context, tenantID, current string,
 }
 
 func llmView(settings llmSettings) LLMSettingsView {
-	current := strings.TrimSpace(settings.Current)
-	if current == "" {
-		current = llmCurrentSystemFree
-	}
+	current := canonicalBotServiceGroup(settings.Current)
 	providers := make([]LLMProviderView, 0, len(settings.Providers))
 	for _, item := range settings.Providers {
 		providers = append(providers, LLMProviderView{
@@ -108,9 +128,10 @@ func llmView(settings llmSettings) LLMSettingsView {
 		})
 	}
 	return LLMSettingsView{
-		DefaultServiceGroup: llmCurrentSystemFree,
-		Current:             current,
-		Providers:           providers,
+		DefaultServiceGroup:    llmDefaultServiceGroup,
+		Current:                current,
+		Providers:              providers,
+		SystemFreeCreditsLimit: settings.SystemFreeCreditsLimit,
 	}
 }
 
@@ -118,12 +139,25 @@ func llmIsDefault(settings llmSettings) bool {
 	if len(settings.Providers) > 0 {
 		return false
 	}
-	current := strings.TrimSpace(settings.Current)
-	return current == "" || strings.EqualFold(current, llmCurrentSystemFree)
+	return isBotDefaultServiceGroup(settings.Current)
+}
+
+// isBotDefaultServiceGroup reports the built-in bot route. Empty and the
+// older system-free id are the same choice: the MaClaw official group.
+func isBotDefaultServiceGroup(current string) bool {
+	current = strings.TrimSpace(current)
+	return current == "" || strings.EqualFold(current, legacyBotServiceGroupID) || strings.EqualFold(current, llmDefaultServiceGroup)
+}
+
+func canonicalBotServiceGroup(current string) string {
+	if isBotDefaultServiceGroup(current) {
+		return llmDefaultServiceGroup
+	}
+	return strings.TrimSpace(current)
 }
 
 // llmConfigStamp names the provider list last written to MaClawSrv.
-// The default system-free route has an empty stamp, so a deployment that
+// The default official route has an empty stamp, so a deployment that
 // has never saved an extra provider does not rewrite on the next command.
 // The stamp is a hash. It does not contain the provider key.
 func llmConfigStamp(settings llmSettings) string {
@@ -131,7 +165,7 @@ func llmConfigStamp(settings llmSettings) string {
 		return ""
 	}
 	hash := sha256.New()
-	_, _ = io.WriteString(hash, strings.TrimSpace(settings.Current))
+	_, _ = io.WriteString(hash, canonicalBotServiceGroup(settings.Current))
 	_, _ = io.WriteString(hash, "\n")
 	for _, item := range settings.Providers {
 		_, _ = io.WriteString(hash, item.ID+"\n"+item.Name+"\n"+item.Protocol+"\n"+item.URL+"\n"+item.Model+"\n")
@@ -161,7 +195,7 @@ func (s *Service) llmSettingsSnapshot(ctx context.Context, tenantID string) llmS
 
 func selectedBotLLMProvider(settings llmSettings) (llmProvider, bool) {
 	current := strings.TrimSpace(settings.Current)
-	if current == "" || strings.EqualFold(current, llmCurrentSystemFree) {
+	if isBotDefaultServiceGroup(current) {
 		return llmProvider{}, false
 	}
 	for _, item := range settings.Providers {
@@ -206,11 +240,8 @@ func normalizeLLMSettings(prev llmSettings, current string, inputs []LLMProvider
 		seenNames = append(seenNames, item.Name)
 		out = append(out, item)
 	}
-	current = strings.TrimSpace(current)
-	switch {
-	case current == "" || strings.EqualFold(current, llmCurrentSystemFree):
-		current = llmCurrentSystemFree
-	default:
+	current = canonicalBotServiceGroup(current)
+	if !isBotDefaultServiceGroup(current) {
 		if _, ok := seenID[current]; !ok {
 			return llmSettings{}, fmt.Errorf("%w: llm current provider was not found", ErrInvalidInput)
 		}
@@ -230,7 +261,7 @@ func normalizeLLMProvider(in LLMProviderInput, prev map[string]llmProvider) (llm
 	if name == "" || utf8.RuneCountInString(name) > 64 || strings.ContainsAny(name, "\r\n") {
 		return llmProvider{}, fmt.Errorf("%w: llm provider name is required", ErrInvalidInput)
 	}
-	if strings.EqualFold(name, botLLMProviderName) || strings.EqualFold(name, llmCurrentSystemFree) {
+	if reservedBotLLMName(name) {
 		return llmProvider{}, fmt.Errorf("%w: llm provider name is reserved", ErrInvalidInput)
 	}
 	protocol := strings.ToLower(strings.TrimSpace(in.Protocol))

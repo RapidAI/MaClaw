@@ -3,9 +3,11 @@ package httpapi
 import (
 	"context"
 	"encoding/json"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -56,25 +58,30 @@ func TestPostLLMServiceCheckinGrantsCreditsOncePerDay(t *testing.T) {
 	if !first.Success || first.AlreadyCheckedIn || first.CreditsAwarded != 10 {
 		t.Fatalf("unexpected first check-in response: %+v", first)
 	}
-	if first.Checkin == nil || !first.Checkin.CheckedInToday {
-		t.Fatalf("expected checked_in_today in first response: %+v", first.Checkin)
+	if first.Checkin == nil || !first.Checkin.CheckedInToday || first.Checkin.DurationDays != checkinDefaultDurationDays {
+		t.Fatalf("expected checked_in_today and default duration in first response: %+v", first.Checkin)
 	}
 	reg, err := llmservice.LoadRegistry(ctx, tenantSystem)
 	if err != nil {
 		t.Fatal(err)
 	}
 	granted := 0.0
-	permanent := 0
+	var expiresAt time.Time
 	for _, grant := range reg.Grants {
 		if grant.Source == checkinGrantSource {
 			granted += grant.CreditsTotal
 			if grant.Permanent {
-				permanent++
+				t.Fatalf("check-in credits must expire, grant %+v", grant)
 			}
+			expiresAt = grant.ExpiresAt
 		}
 	}
-	if granted != 10 || permanent == 0 {
-		t.Fatalf("expected 10 permanent check-in credits granted, got %v (permanent=%d)", granted, permanent)
+	if granted != 10 {
+		t.Fatalf("expected 10 check-in credits granted, got %v", granted)
+	}
+	wantExpiry := time.Now().UTC().AddDate(0, 0, checkinDefaultDurationDays)
+	if d := expiresAt.Sub(wantExpiry); d < -2*time.Minute || d > 2*time.Minute {
+		t.Fatalf("expected default %d-day expiry near %s, got %s", checkinDefaultDurationDays, wantExpiry.Format(time.RFC3339), expiresAt.Format(time.RFC3339))
 	}
 
 	// A repeat check-in on the same day is idempotent and grants nothing.
@@ -101,6 +108,183 @@ func TestPostLLMServiceCheckinGrantsCreditsOncePerDay(t *testing.T) {
 	}
 	if totals != 10 {
 		t.Fatalf("repeat check-in must not double-grant, got %v", totals)
+	}
+}
+
+func TestSplitCheckinCreditsKeepsTheAwardedTotal(t *testing.T) {
+	shares := splitCheckinCredits(10, 3)
+	if len(shares) != 3 {
+		t.Fatalf("shares = %v", shares)
+	}
+	sum := 0.0
+	for _, share := range shares {
+		sum += share
+	}
+	if math.Abs(sum-10) > 0.0001 {
+		t.Fatalf("shares %v sum to %v, want 10", shares, sum)
+	}
+	if shares[0] != 3.333 || shares[1] != 3.333 || shares[2] != 3.334 {
+		t.Fatalf("unexpected milli-credit split: %v", shares)
+	}
+	if got := splitCheckinCredits(6, 1); len(got) != 1 || got[0] != 6 {
+		t.Fatalf("single group = %v", got)
+	}
+	// Rounding every earlier share up must not pay out more than the reward.
+	tiny := splitCheckinCredits(0.005, 7)
+	tinySum := 0.0
+	for _, share := range tiny {
+		if share < 0 {
+			t.Fatalf("negative share in %v", tiny)
+		}
+		tinySum += share
+	}
+	if math.Abs(tinySum-0.005) > 0.0001 {
+		t.Fatalf("tiny shares %v sum to %v, want 0.005", tiny, tinySum)
+	}
+}
+
+func TestCheckinConfigDurationDefaultsToOneMonth(t *testing.T) {
+	if got := normalizeCheckinConfig(CheckinConfig{Enabled: true, Credits: 10}); got.DurationDays != checkinDefaultDurationDays {
+		t.Fatalf("missing duration = %d, want %d", got.DurationDays, checkinDefaultDurationDays)
+	}
+	var legacy CheckinConfig
+	if err := json.Unmarshal([]byte(`{"enabled":true,"credits":8}`), &legacy); err != nil {
+		t.Fatal(err)
+	}
+	legacy = normalizeCheckinConfig(legacy)
+	if legacy.DurationDays != checkinDefaultDurationDays || legacy.Credits != 8 {
+		t.Fatalf("legacy config = %+v", legacy)
+	}
+	if err := validateCheckinConfig(CheckinConfig{Enabled: true, Credits: 10, DurationDays: 0}); err == nil {
+		t.Fatal("expected an explicit zero duration to be rejected")
+	}
+	if err := validateCheckinConfig(CheckinConfig{Enabled: true, Credits: 10, DurationDays: checkinMaxDurationDays + 1}); err == nil {
+		t.Fatal("expected duration above the max to be rejected")
+	}
+	if err := validateCheckinConfig(CheckinConfig{Enabled: true, Credits: 10, DurationDays: -1}); err == nil {
+		t.Fatal("expected a negative duration to be rejected")
+	}
+	if _, _, err := checkinDurationFromUpdate(nil); err != nil {
+		t.Fatal(err)
+	}
+	fraction := 30.5
+	if _, _, err := checkinDurationFromUpdate(&fraction); err == nil {
+		t.Fatal("expected a fractional duration to be rejected")
+	}
+
+	system := newTestLLMServiceSystemSettings()
+	put := func(body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPut, "/api/admin/settings/checkin", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		UpdateCheckinConfigHandler(system).ServeHTTP(rec, req)
+		return rec
+	}
+	rec := put(`{"enabled":true,"credits":12}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("default duration save status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	var saved CheckinConfig
+	if err := json.Unmarshal(rec.Body.Bytes(), &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.DurationDays != checkinDefaultDurationDays {
+		t.Fatalf("saved duration = %d, want %d", saved.DurationDays, checkinDefaultDurationDays)
+	}
+	rec = put(`{"enabled":true,"credits":12,"duration_days":45}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("custom duration save status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/admin/settings/checkin", nil)
+	rec = httptest.NewRecorder()
+	GetCheckinConfigHandler(system).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("get status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.DurationDays != 45 || saved.Credits != 12 {
+		t.Fatalf("loaded config = %+v", saved)
+	}
+	// An older client that omits duration must not reset a custom validity.
+	rec = put(`{"enabled":true,"credits":12}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("omit duration status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.DurationDays != 45 {
+		t.Fatalf("omitted duration reset stored value to %d", saved.DurationDays)
+	}
+	rec = put(`{"enabled":true,"credits":12,"duration_days":0}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("zero duration status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = put(`{"enabled":true,"credits":12,"duration_days":30.5}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("fractional duration status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	rec = put(`{"enabled":true,"credits":12,"duration_days":4000}`)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("invalid duration status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	// Over-max credits stay clamped, matching the previous save behavior.
+	rec = put(`{"enabled":false,"credits":1000001,"duration_days":45}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("credit clamp status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved.Credits != checkinMaxCredits || saved.DurationDays != 45 {
+		t.Fatalf("clamped config = %+v", saved)
+	}
+}
+
+func TestPostLLMServiceCheckinHonorsConfiguredDuration(t *testing.T) {
+	identity, _, _ := newHTTPAPITestServices(t)
+	viewerToken := issueViewerTokenForTenant(t, identity, "tenant_checkin_days", "days@example.com")
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	tenantSystem := scopedSystemSettingsForTenant("tenant_checkin_days", system)
+	data, err := json.Marshal(CheckinConfig{Enabled: true, Credits: 6, DurationDays: 7})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tenantSystem.Set(ctx, checkinConfigKey, string(data)); err != nil {
+		t.Fatal(err)
+	}
+	if err := llmservice.SaveRegistry(ctx, tenantSystem, &llmservice.Registry{
+		ModelServiceGroups:    []llmservice.ModelServiceGroup{{ID: "coding-basic", Name: "Coding Basic", AccessPolicy: llmservice.AccessPolicyGrantRequired}},
+		GlobalServiceGroupIDs: []string{"coding-basic"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/llm/service/checkin", nil)
+	req.Header.Set("Authorization", "Bearer "+viewerToken)
+	rec := httptest.NewRecorder()
+	PostLLMServiceCheckinHandler(identity, system, nil).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("check-in status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	reg, err := llmservice.LoadRegistry(ctx, tenantSystem)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var grant *llmservice.Grant
+	for i := range reg.Grants {
+		if reg.Grants[i].Source == checkinGrantSource {
+			grant = &reg.Grants[i]
+			break
+		}
+	}
+	if grant == nil {
+		t.Fatal("expected a check-in grant")
+	}
+	want := time.Now().UTC().AddDate(0, 0, 7)
+	if grant.Permanent || grant.ExpiresAt.Sub(want) < -2*time.Minute || grant.ExpiresAt.Sub(want) > 2*time.Minute {
+		t.Fatalf("expected 7-day expiry near %s, got permanent=%v expires=%s", want.Format(time.RFC3339), grant.Permanent, grant.ExpiresAt.Format(time.RFC3339))
 	}
 }
 
@@ -191,12 +375,27 @@ func TestGetCheckinRecordsPeriodsPaginationAndStats(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Seed the log directly: 3 entries today across 2 users plus one yesterday.
+	// Seed inside the same UTC windows the handler queries. Offsets from
+	// time.Now() fall into yesterday during the first hours of a UTC day, and
+	// a Monday has no earlier day inside the current week.
 	now := time.Now().UTC()
-	appendCheckinLog(ctx, tenantSystem, checkinLogEntry{UserID: "u1", Email: "u1@example.com", Credits: 3, At: now.Add(-time.Hour)})
-	appendCheckinLog(ctx, tenantSystem, checkinLogEntry{UserID: "u2", Email: "u2@example.com", Credits: 3, At: now.Add(-2 * time.Hour)})
-	appendCheckinLog(ctx, tenantSystem, checkinLogEntry{UserID: "u1", Email: "u1@example.com", Credits: 3, At: now.Add(-3 * time.Hour)})
-	appendCheckinLog(ctx, tenantSystem, checkinLogEntry{UserID: "u1", Email: "u1@example.com", Credits: 3, At: now.AddDate(0, 0, -1)})
+	dayStart, _, ok := checkinPeriodRange("day", now)
+	if !ok {
+		t.Fatal("day period")
+	}
+	weekStart, _, ok := checkinPeriodRange("week", now)
+	if !ok {
+		t.Fatal("week period")
+	}
+	appendCheckinLog(ctx, tenantSystem, checkinLogEntry{UserID: "u1", Email: "u1@example.com", Credits: 3, At: dayStart.Add(3 * time.Hour)})
+	appendCheckinLog(ctx, tenantSystem, checkinLogEntry{UserID: "u2", Email: "u2@example.com", Credits: 3, At: dayStart.Add(2 * time.Hour)})
+	appendCheckinLog(ctx, tenantSystem, checkinLogEntry{UserID: "u1", Email: "u1@example.com", Credits: 3, At: dayStart.Add(time.Hour)})
+	olderInThisWeek := weekStart.Before(dayStart)
+	olderAt := dayStart.Add(-time.Hour)
+	if olderInThisWeek {
+		olderAt = weekStart.Add(time.Hour)
+	}
+	appendCheckinLog(ctx, tenantSystem, checkinLogEntry{UserID: "u1", Email: "u1@example.com", Credits: 3, At: olderAt})
 
 	fetch := func(period string, page int) map[string]any {
 		t.Helper()
@@ -218,8 +417,12 @@ func TestGetCheckinRecordsPeriodsPaginationAndStats(t *testing.T) {
 	if dayStats["users"].(float64) != 2 || dayStats["credits"].(float64) != 9 {
 		t.Fatalf("unexpected day stats: %+v", dayStats)
 	}
+	weekCredits := 9.0
+	if olderInThisWeek {
+		weekCredits = 12
+	}
 	weekStats := fetch("week", 1)["stats"].(map[string]any)
-	if weekStats["users"].(float64) != 2 || weekStats["credits"].(float64) != 12 {
+	if weekStats["users"].(float64) != 2 || weekStats["credits"].(float64) != weekCredits {
 		t.Fatalf("unexpected week stats: %+v", weekStats)
 	}
 
@@ -228,7 +431,7 @@ func TestGetCheckinRecordsPeriodsPaginationAndStats(t *testing.T) {
 		t.Fatalf("expected 3 day records, got %d", len(records))
 	}
 	first := records[0].(map[string]any)
-	// Newest first: the -1h entry leads.
+	// Newest first: the 03:00 UTC entry leads.
 	if first["email"].(string) != "u1@example.com" || first["credits"].(float64) != 3 {
 		t.Fatalf("unexpected first record: %+v", first)
 	}

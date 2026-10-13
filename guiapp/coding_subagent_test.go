@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -93,8 +94,14 @@ func TestBuildCodingSubAgentSystemPrompt_Minimal(t *testing.T) {
 	if !strings.Contains(prompt, "edit_file") || !strings.Contains(prompt, "edit_lines") {
 		t.Error("prompt should contain edit_file/edit_lines strategy")
 	}
-	if !strings.Contains(prompt, "codegraph explore") || !strings.Contains(prompt, "codegraph node") || !strings.Contains(prompt, ".codegraph/") {
-		t.Error("prompt should prefer CodeGraph when an index is available")
+	if !strings.Contains(prompt, "codegraph explore") || !strings.Contains(prompt, "codegraph node") || !strings.Contains(prompt, ".codegraph/") || !strings.Contains(prompt, "npm install -g @colbymchenry/codegraph") {
+		t.Error("prompt should prefer CodeGraph, install it when missing, and fall back when that fails")
+	}
+	if strings.Contains(prompt, "如果项目根目录存在 .codegraph/") {
+		t.Error("prompt must call code_navigation even when the index directory is not already present")
+	}
+	if !strings.Contains(prompt, "不要删除它") {
+		t.Error("prompt should keep the codegraph index out of the task diff")
 	}
 	if !strings.Contains(prompt, "ripgrep") || !strings.Contains(prompt, "Glob") {
 		t.Error("prompt should keep Glob/ripgrep fallback before reading/editing")
@@ -620,6 +627,7 @@ func TestCodingSubAgentTaskUserMessageIncludesPreflightChecklist(t *testing.T) {
 		"codegraph explore",
 		"codegraph node",
 		"Glob/ripgrep/read_file",
+		"not a reason to skip",
 		"risk/impact",
 		"minimal edit",
 		"retry context",
@@ -3623,6 +3631,9 @@ func TestRemoteCodingSubAgentPromptAndToolDefinitionsExposeAliases(t *testing.T)
 		"\"find . -maxdepth 3 -print | sort\"",
 		"非 Git 仓库",
 		"不要附带 git log",
+		"codegraph explore",
+		"codegraph node",
+		"没有 .codegraph/",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("remote prompt should expose alias hint %q, got %q", want, prompt)
@@ -4951,6 +4962,92 @@ func TestRemoteCodingSubAgentReadFileRangeCommandAndArgs(t *testing.T) {
 	}
 }
 
+func TestRemoteEditFilePythonMatchesCRLFPassage(t *testing.T) {
+	python, err := exec.LookPath("python")
+	if err != nil {
+		python, err = exec.LookPath("python3")
+	}
+	if err != nil {
+		t.Skip("python unavailable")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "win.go")
+	if err := os.WriteFile(path, []byte("func run() {\r\n\tpm.Run()\r\n}\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := decodeRemotePythonCommandForTest(t, remoteEditFilePythonCommand(
+		path,
+		"func run() {\n\tpm.Run()\n}",
+		"func run() {\n\tpr, err := pm.Run()\n}",
+	))
+	out, err := exec.Command(python, "-c", script).CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "OK: replaced 1 occurrence") {
+		t.Fatalf("python edit err=%v out=%s", err, out)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "func run() {\r\n\tpr, err := pm.Run()\r\n}\r\n"
+	if string(data) != want {
+		t.Fatalf("file=%q", data)
+	}
+}
+
+func TestRemoteEditFilePythonReplacesALineWithoutABreak(t *testing.T) {
+	python, err := exec.LookPath("python")
+	if err != nil {
+		python, err = exec.LookPath("python3")
+	}
+	if err != nil {
+		t.Skip("python unavailable")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "plain.txt")
+	if err := os.WriteFile(path, []byte("hello world"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := decodeRemotePythonCommandForTest(t, remoteEditFilePythonCommand(path, "hello", "hi"))
+	out, err := exec.Command(python, "-c", script).CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "OK: replaced 1 occurrence") {
+		t.Fatalf("python edit err=%v out=%s", err, out)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "hi world" {
+		t.Fatalf("file=%q", data)
+	}
+}
+
+func TestRemoteEditFilePythonKeepsAMixedBreak(t *testing.T) {
+	python, err := exec.LookPath("python")
+	if err != nil {
+		python, err = exec.LookPath("python3")
+	}
+	if err != nil {
+		t.Skip("python unavailable")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mixed.go")
+	if err := os.WriteFile(path, []byte("a\rb\r\nkeep\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	script := decodeRemotePythonCommandForTest(t, remoteEditFilePythonCommand(path, "a\nb", "x\ny"))
+	out, err := exec.Command(python, "-c", script).CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "OK: replaced 1 occurrence") {
+		t.Fatalf("python edit err=%v out=%s", err, out)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != "x\ry\r\nkeep\n" {
+		t.Fatalf("file=%q", data)
+	}
+}
+
 func decodeRemotePythonCommandForTest(t *testing.T, command string) string {
 	t.Helper()
 	const prefix = "python3 -c \"$(printf '%s' '"
@@ -6123,6 +6220,48 @@ func TestCodingCommandExecutionResultSucceededMatchesToolOutcome(t *testing.T) {
 		if got := tc.succeeded(); got != want {
 			t.Fatalf("succeeded() = %v, want %v for %#v", got, want, tc)
 		}
+	}
+}
+
+func TestCodingEmptySearchOutputStaysAMiss(t *testing.T) {
+	if got := codingEmptySearchOutput("rg missing .", "", 1); got != "no matches found" {
+		t.Fatalf("rg miss = %q", got)
+	}
+	if got := codingEmptySearchOutput("rg -q pattern .", "", 0); got != codingQuietSearchHitText {
+		t.Fatalf("rg -q exit 0 means a match was found, got %q", got)
+	}
+	if got := codingEmptySearchOutput("rg -Hqn pattern .", "", 0); got != codingQuietSearchHitText {
+		t.Fatalf("clustered -q still means quiet, got %q", got)
+	}
+	if codingSearchCommandIsQuiet("rg -e -q file.txt") {
+		t.Fatal("-q after -e is the pattern, not quiet mode")
+	}
+	if got := codingEmptySearchOutput("grep -q pattern file.txt", "", 1); got != "no matches found" {
+		t.Fatalf("grep -q exit 1 is a miss, got %q", got)
+	}
+	if got := codingEmptySearchOutput("Select-String missing file.txt", "", 0); got != "" {
+		t.Fatalf("exit 0 with no output must not be called a miss, got %q", got)
+	}
+	if got := codingEmptySearchOutput("Select-String -Quiet -Pattern foo file.txt", "True", 0); got != codingQuietSearchHitText {
+		t.Fatalf("Select-String -Quiet True is a hidden hit, got %q", got)
+	}
+	if got := codingEmptySearchOutput("Select-String -Quiet -Pattern foo file.txt", "False", 0); got != "no matches found" {
+		t.Fatalf("Select-String -Quiet False is a miss, got %q", got)
+	}
+	if got := codingEmptySearchOutput("git grep -q pattern", "", 0); got != codingQuietSearchHitText {
+		t.Fatalf("git grep -q exit 0 means a match was found, got %q", got)
+	}
+	if got := codingEmptySearchOutput("rg pattern .", "True", 0); got != "True" {
+		t.Fatalf("a printed True from a normal search must stay, got %q", got)
+	}
+	if got := codingEmptySearchOutput("exit 7", "", 1); got != "" {
+		t.Fatalf("non-search empty exit must keep the diagnostic path, got %q", got)
+	}
+	if got := codingEmptySearchOutput("rg hit .", "a.go:1:hit", 0); got != "a.go:1:hit" {
+		t.Fatalf("hits must stay, got %q", got)
+	}
+	if got := codingEmptySearchOutput("rg missing . && go test ./...", "", 1); got != "" {
+		t.Fatalf("mixed command must not be rewritten, got %q", got)
 	}
 }
 
@@ -12871,5 +13010,61 @@ func TestCodingLoopRequestContextDisablesTransparentCompatibilityRetries(t *test
 	defer finish(nil)
 	if !llm.TransparentRequestRetriesDisabled(ctx) {
 		t.Fatal("Coding request context must keep compatibility retries under RunLoop ownership")
+	}
+}
+
+func TestCodingLLMRetryParkReleasesForegroundSlot(t *testing.T) {
+	previous := globalLLMScheduler
+	scheduler := newLLMConcurrencyScheduler()
+	scheduler.foregroundWork = func() int64 { return 0 }
+	globalLLMScheduler = scheduler
+	t.Cleanup(func() { globalLLMScheduler = previous })
+
+	ctx, finish, err := codingLoopLLMRequestContext(context.Background(), nil, "coding-subagent", 3)
+	if err != nil {
+		t.Fatalf("request context: %v", err)
+	}
+	slot := codingLLMLeaseSlotFrom(ctx)
+	if slot == nil {
+		t.Fatal("coding request context must carry its scheduler lease")
+	}
+	slot.mu.Lock()
+	held := slot.lease != nil
+	slot.mu.Unlock()
+	if !held {
+		t.Fatal("lease must be held while the model request can run")
+	}
+
+	bgCtx, bgCancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	_, bgErr := scheduler.Acquire(bgCtx, llm.RequestTrace{Caller: "memory-maintenance", OwnerID: "owner"})
+	bgCancel()
+	if !errors.Is(bgErr, context.DeadlineExceeded) {
+		t.Fatalf("background acquire while coding holds the slot: %v", bgErr)
+	}
+
+	slot.drop()
+	bgCtx, bgCancel = context.WithTimeout(context.Background(), time.Second)
+	bgLease, bgErr := scheduler.Acquire(bgCtx, llm.RequestTrace{Caller: "memory-maintenance", OwnerID: "owner"})
+	bgCancel()
+	if bgErr != nil {
+		t.Fatalf("background acquire after parking the coding slot: %v", bgErr)
+	}
+	bgLease.Release()
+
+	if err := slot.resume(ctx); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	slot.mu.Lock()
+	held = slot.lease != nil
+	slot.mu.Unlock()
+	if !held {
+		t.Fatal("resume must take the foreground slot back before the next send")
+	}
+	finish(nil)
+	slot.mu.Lock()
+	held = slot.lease != nil
+	slot.mu.Unlock()
+	if held {
+		t.Fatal("finishing the round must release the resumed lease")
 	}
 }

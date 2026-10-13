@@ -54,18 +54,37 @@ describe('getSettingsTabOptions', () => {
         expect(zhSystem?.groupLabel).toBe('系統');
     });
 
-    it('places Token Bank in Services after IM', () => {
+    it('keeps service, security, and assets in System', () => {
         const zh = getSettingsTabOptions('zh-Hans');
         const tokenBank = zh.find((tab) => tab.id === 'tokenBank');
-        expect(tokenBank?.group).toBe('services');
+        expect(tokenBank?.group).toBe('system');
         expect(tokenBank?.label).toBe('Token 银行');
-        expect(tokenBank?.groupLabel).toBe('服务与集成');
+        expect(tokenBank?.groupLabel).toBe('系统');
+        expect(zh.find((tab) => tab.id === 'assetManagement')?.group).toBe('system');
 
-        const services = zh.filter((tab) => tab.group === 'services').map((tab) => tab.id);
-        expect(services).toEqual(['redeem', 'virtualEmployee', 'im', 'tokenBank']);
+        const system = zh.filter((tab) => tab.group === 'system').map((tab) => tab.id);
+        expect(system).toEqual(['redeem', 'tokenBank', 'security', 'system', 'assetManagement']);
 
         expect(getSettingsTabOptions('zh-Hant').find((tab) => tab.id === 'tokenBank')?.label).toBe('Token 銀行');
         expect(getSettingsTabOptions('en').find((tab) => tab.id === 'tokenBank')?.label).toBe('Token Bank');
+    });
+
+    it('groups employees, IM, email, and hardware under Integrations', () => {
+        const zh = getSettingsTabOptions('zh-Hans');
+        const integration = zh.filter((tab) => tab.group === 'integration').map((tab) => tab.id);
+        expect(integration).toEqual(['virtualEmployee', 'im', 'email', 'hardware']);
+
+        const im = zh.find((tab) => tab.id === 'im');
+        expect(im?.groupLabel).toBe('集成与接入');
+        expect(zh.find((tab) => tab.id === 'email')?.label).toBe('邮箱');
+        expect(getSettingsTabOptions('zh-Hant').find((tab) => tab.id === 'im')?.groupLabel).toBe('整合與接入');
+        expect(getSettingsTabOptions('en').find((tab) => tab.id === 'im')?.groupLabel).toBe('Integrations');
+        expect(getSettingsTabOptions('zh-Hant').find((tab) => tab.id === 'email')?.label).toBe('郵箱');
+        expect(getSettingsTabOptions('en').find((tab) => tab.id === 'email')?.label).toBe('Email');
+
+        const hidden = getSettingsTabOptions('zh-Hans', { hideVirtualEmployee: true });
+        expect(hidden.filter((tab) => tab.group === 'integration').map((tab) => tab.id)).toEqual(['im', 'email', 'hardware']);
+        expect(hidden.find((tab) => tab.id === 'assetManagement')?.group).toBe('system');
     });
 
     it('keeps group order stable by first appearance', () => {
@@ -73,7 +92,7 @@ describe('getSettingsTabOptions', () => {
             .map((tab) => tab.group)
             .filter((group, index, all): group is NonNullable<typeof group> => Boolean(group) && all.indexOf(group) === index);
 
-        expect(groups).toEqual(['essentials', 'ai', 'services', 'data', 'system']);
+        expect(groups).toEqual(['essentials', 'ai', 'data', 'system', 'integration']);
     });
 });
 

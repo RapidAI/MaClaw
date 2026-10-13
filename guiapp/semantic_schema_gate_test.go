@@ -40,6 +40,10 @@ const (
 	// it; deleting the entry needs a credential broker the host can bind per
 	// subject.
 	reasonTrustedSSHConnectCredential = "login password is the connect capability parameter, used for the dial only and never persisted"
+	// The mailbox configure tool takes the password because saving an account
+	// is the capability. The host writes it only to the maclaw keyring and
+	// never returns, logs, or pushes it through Hub.
+	reasonMailboxKeyringCredential = "mailbox password is written only to the maclaw keyring and is never returned, logged, or synced"
 )
 
 // managedSchemaGateBaseline maps an adapter to the crossings that were reviewed
@@ -139,6 +143,14 @@ var managedSchemaGateBaseline = map[string]map[string]string{
 		"host":                reasonReadOnlyLegacyFamily,
 		"statements[]":        reasonReadOnlyLegacyFamily,
 		"statements[].params": reasonReadOnlyLegacyFamily,
+	},
+	// mailbox_configure saves the account the user described. The password is
+	// the credential the keyring stores. The hosts are the IMAP and SMTP
+	// targets the capability has to name.
+	"mailbox_configure": {
+		"password":      reasonMailboxKeyringCredential,
+		"inbound.host":  reasonCapabilityTargetURL,
+		"outbound.host": reasonCapabilityTargetURL,
 	},
 }
 
@@ -271,7 +283,10 @@ func TestManagedSchemaGateLegacySurfaceDoesNotGrow(t *testing.T) {
 		// payload including its params object. The ssh connect surface
 		// (2026-09-18, reviewed) adds 1: the login password is the connect
 		// capability parameter and is used for the dial only.
-		reviewedLegacyCrossings = 15
+		// mailbox_configure (reviewed) adds 1: the password is written only
+		// to the maclaw keyring. inbound.host and outbound.host are the
+		// capability target and do not count toward this ceiling.
+		reviewedLegacyCrossings = 16
 		// mis_query contributes 5 and the database_query read-only
 		// projection contributes the same 8 crossings minus the write-only
 		// payload distinctions, i.e. all 8 of its published crossings.

@@ -365,6 +365,630 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
 
+func TestEnvelopeStreamPublishesOneCompletionID(t *testing.T) {
+	var buf bytes.Buffer
+	writer := &envelopeWriter{w: &buf}
+	const upstreamID = "e490d351-4f4e-4afd-8ae4-f5319cd34700"
+	bodies := []string{
+		`{"id":"chatcmpl-2d3d1de2-1d4c-9ae0-a57a-9dc541f14472","choices":[{"index":0,"delta":{"content":"Reading the evidence now. "}}]}`,
+		`{"choices":[{"index":0,"delta":{"content":"build/ has artifacts. a < b","tool_calls":[{"index":0,"id":"` + upstreamID + `","type":"function","function":{"name":"bash","arguments":"{\"id\": \"` + upstreamID + `\"}"}}]},"finish_reason":"tool_calls"}],"id":"` + upstreamID + `","usage":{"prompt_tokens":9007199254740993}}`,
+		`{"choices":[{"index":0,"delta":{}}]}`,
+		`{"id":"` + upstreamID + `","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":4,"total_tokens":7}}`,
+	}
+	for i, body := range bodies {
+		payload, err := json.Marshal(map[string]any{"headers": map[string]any{}, "body": body})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !writer.line("data:" + string(payload)) {
+			t.Fatal("envelope line stopped the completion")
+		}
+		if i == 0 && !strings.Contains(buf.String(), "data: "+body+"\n\n") {
+			t.Fatalf("first chunk was re-encoded:\n%s", buf.String())
+		}
+	}
+
+	raw := buf.String()
+	var ids []string
+	var contents []string
+	var sawTool bool
+	var promptTokens float64
+	scanner := bufio.NewScanner(strings.NewReader(raw))
+	for scanner.Scan() {
+		line := scanner.Text()
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var chunk map[string]any
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			t.Fatalf("translated chunk: %v\n%s", err, payload)
+		}
+		if id, _ := chunk["id"].(string); id != "" {
+			ids = append(ids, id)
+		}
+		if strings.Contains(payload, `\u003c`) {
+			t.Fatalf("rewritten chunk escaped text: %s", payload)
+		}
+		choices, _ := chunk["choices"].([]any)
+		if len(choices) == 0 {
+			if usage, _ := chunk["usage"].(map[string]any); usage != nil {
+				promptTokens, _ = usage["prompt_tokens"].(float64)
+			}
+			continue
+		}
+		choice, _ := choices[0].(map[string]any)
+		delta, _ := choice["delta"].(map[string]any)
+		if content, _ := delta["content"].(string); content != "" {
+			contents = append(contents, content)
+		}
+		if calls, _ := delta["tool_calls"].([]any); len(calls) > 0 {
+			sawTool = true
+			call, _ := calls[0].(map[string]any)
+			fn, _ := call["function"].(map[string]any)
+			if call["id"] != upstreamID {
+				t.Fatalf("tool call id = %#v, want the provider call id", call["id"])
+			}
+			if fn["name"] != "bash" || fn["arguments"] != `{"id": "`+upstreamID+`"}` {
+				t.Fatalf("tool call = %#v", fn)
+			}
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range ids {
+		if id != "chatcmpl-2d3d1de2-1d4c-9ae0-a57a-9dc541f14472" {
+			t.Fatalf("published ids = %#v, want one completion id", ids)
+		}
+	}
+	if len(ids) != 3 {
+		t.Fatalf("published ids = %#v, want the first id on every id-bearing chunk", ids)
+	}
+	if strings.Join(contents, "") != "Reading the evidence now. build/ has artifacts. a < b" {
+		t.Fatalf("content = %#v", contents)
+	}
+	if !sawTool {
+		t.Fatal("tool call was dropped while stabilizing the completion id")
+	}
+	if promptTokens != 3 {
+		t.Fatalf("prompt_tokens = %v, want 3", promptTokens)
+	}
+	if !strings.Contains(raw, `"id":"`+upstreamID+`"`) {
+		t.Fatalf("nested tool-call id was rewritten with the completion id:\n%s", raw)
+	}
+	if !strings.Contains(raw, `9007199254740993`) {
+		t.Fatal("usage integer was re-encoded")
+	}
+	if strings.Contains(raw, `"id":"`+upstreamID+`","choices"`) || strings.Contains(raw, `"id":"`+upstreamID+`","usage"`) {
+		t.Fatalf("top-level upstream id leaked:\n%s", raw)
+	}
+}
+
+func TestEnvelopeErrorCodeIsNotForwardedAsCompletion(t *testing.T) {
+	var buf bytes.Buffer
+	writer := &envelopeWriter{w: &buf}
+	body := `{"id":"chatcmpl-x","code":"provider_error","message":"nope","choices":[{"delta":{"content":"hidden"}}]}`
+	payload, err := json.Marshal(map[string]any{"body": body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writer.line("data:" + string(payload)) {
+		t.Fatal("error chunk continued the completion")
+	}
+	raw := buf.String()
+	if strings.Contains(raw, "hidden") || strings.Contains(raw, "chatcmpl-x") {
+		t.Fatalf("error chunk was forwarded:\n%s", raw)
+	}
+	if !strings.Contains(raw, "nope") {
+		t.Fatalf("error message missing:\n%s", raw)
+	}
+
+	// code after choices still matches the leading-id shape. It must not be
+	// published as a completion delta.
+	var after bytes.Buffer
+	later := &envelopeWriter{w: &after}
+	laterBody := `{"id":"chatcmpl-x","choices":[{"delta":{"content":"hidden"}}],"code":"provider_error","message":"later"}`
+	laterPayload, err := json.Marshal(map[string]any{"body": laterBody})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if later.line("data:" + string(laterPayload)) {
+		t.Fatal("error after choices continued the completion")
+	}
+	if strings.Contains(after.String(), "hidden") {
+		t.Fatalf("error after choices was forwarded:\n%s", after.String())
+	}
+
+	var shaped bytes.Buffer
+	shapedWriter := &envelopeWriter{w: &shaped}
+	shapedBody := `{"id":"chatcmpl-x","object":"chat.completion.chunk","model":"qfmodel","choices":[{"delta":{"content":"hidden"}}],"code":"provider_error","message":"later"}`
+	shapedPayload, err := json.Marshal(map[string]any{"body": shapedBody})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if shapedWriter.line("data:" + string(shapedPayload)) {
+		t.Fatal("error on an openai-shaped chunk continued the completion")
+	}
+	if strings.Contains(shaped.String(), "hidden") {
+		t.Fatalf("openai-shaped error was forwarded:\n%s", shaped.String())
+	}
+}
+
+func TestEnvelopeForwardsNonStringCompletionID(t *testing.T) {
+	var buf bytes.Buffer
+	writer := &envelopeWriter{w: &buf}
+	bodies := []string{
+		`{"id":null,"choices":[{"delta":{"content":"first "}}]}`,
+		`{"id":"chatcmpl-stable","choices":[{"delta":{"content":"keep "}}]}`,
+		`{"id":null,"choices":[{"delta":{"content":"a < b"}}],"usage":{"prompt_tokens":9007199254740993}}`,
+		`{"id":17,"choices":[{"delta":{"content":" and more"}}]}`,
+	}
+	for _, body := range bodies {
+		payload, err := json.Marshal(map[string]any{"body": body})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !writer.line("data:" + string(payload)) {
+			t.Fatal("envelope line stopped the completion")
+		}
+	}
+	raw := buf.String()
+	if !strings.Contains(raw, "first ") || !strings.Contains(raw, "keep ") || !strings.Contains(raw, "a < b") || !strings.Contains(raw, " and more") {
+		t.Fatalf("non-string id dropped a delta:\n%s", raw)
+	}
+	if strings.Contains(raw, `\u003c`) || !strings.Contains(raw, "9007199254740993") {
+		t.Fatalf("non-string id chunk was re-encoded:\n%s", raw)
+	}
+	if strings.Contains(raw, `"id":null`) || strings.Contains(raw, `"id":17`) {
+		t.Fatalf("non-string id still published:\n%s", raw)
+	}
+	if strings.Count(raw, "chatcmpl-stable") != 3 {
+		t.Fatalf("string completion id count:\n%s", raw)
+	}
+}
+
+func TestStableCompletionBodyReplacesEveryTopLevelID(t *testing.T) {
+	var buf bytes.Buffer
+	writer := &envelopeWriter{w: &buf}
+	bodies := []string{
+		`{"id":"chatcmpl-stable","choices":[{"delta":{"content":"a"}}]}`,
+		`{"id":"upstream-a","choices":[{"delta":{"content":"b"}}],"id":"upstream-b"}`,
+	}
+	for _, body := range bodies {
+		payload, err := json.Marshal(map[string]any{"body": body})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !writer.line("data:" + string(payload)) {
+			t.Fatal("envelope line stopped the completion")
+		}
+	}
+	raw := buf.String()
+	if strings.Contains(raw, "upstream-a") || strings.Contains(raw, "upstream-b") {
+		t.Fatalf("a second top-level id survived:\n%s", raw)
+	}
+	if strings.Count(raw, "chatcmpl-stable") != 3 {
+		t.Fatalf("published ids:\n%s", raw)
+	}
+}
+
+func TestReplaceTopLevelJSONStringLeavesNestedFields(t *testing.T) {
+	const upstream = "e490d351-4f4e-4afd-8ae4-f5319cd34700"
+	body := `{"choices":[{"delta":{"tool_calls":[{"id":"` + upstream + `","function":{"arguments":"{\"id\": \"` + upstream + `\"}"}}]}}], "id" : "` + upstream + `", "id":"` + upstream + `"}`
+	got, ok := replaceTopLevelJSONString(body, "id", "chatcmpl-stable")
+	if !ok {
+		t.Fatal("top-level id was not found")
+	}
+	if strings.Count(got, "chatcmpl-stable") != 2 {
+		t.Fatalf("rewritten = %s", got)
+	}
+	if !strings.Contains(got, `"id" : "chatcmpl-stable"`) || !strings.Contains(got, `"id":"chatcmpl-stable"`) {
+		t.Fatalf("whitespace around the id field changed: %s", got)
+	}
+	if !strings.Contains(got, `"id":"`+upstream+`"`) {
+		t.Fatalf("nested id removed: %s", got)
+	}
+	if strings.Count(got, upstream) != 2 {
+		t.Fatalf("nested id or argument text changed: %s", got)
+	}
+}
+
+func TestEnvelopeIngestSplitsPartialLines(t *testing.T) {
+	events := []string{
+		`{"id":"chatcmpl-first","choices":[{"delta":{"content":"one"}}]}`,
+		`{"id":"upstream-second","choices":[{"delta":{"content":"two"}}]}`,
+	}
+	var whole strings.Builder
+	for _, body := range events {
+		payload, err := json.Marshal(map[string]string{"body": body})
+		if err != nil {
+			t.Fatal(err)
+		}
+		whole.WriteString("data:")
+		whole.Write(payload)
+		whole.WriteString("\n")
+	}
+	raw := whole.String()
+
+	var got bytes.Buffer
+	writer := &envelopeWriter{w: &got}
+	for i := 0; i < len(raw); i++ {
+		if !writer.ingest(raw[i : i+1]) {
+			t.Fatal("partial line stopped the stream")
+		}
+	}
+	var want bytes.Buffer
+	once := &envelopeWriter{w: &want}
+	if !once.ingest(raw) {
+		t.Fatal("whole buffer stopped the stream")
+	}
+	if got.String() != want.String() {
+		t.Fatalf("split ingest =\n%s\nwant\n%s", got.String(), want.String())
+	}
+	if strings.Count(got.String(), `"id":"chatcmpl-first"`) != 2 {
+		t.Fatalf("split stream did not keep one completion id:\n%s", got.String())
+	}
+}
+
+func TestAggregateEnvelopeKeepsToolCallWhenCompletionIDChanges(t *testing.T) {
+	const callID = "call_write_arch"
+	const upstream = "f3199d9b-9a16-4c9d-b4d4-41f2c76a31d9"
+	events := []string{
+		`{"id":"chatcmpl-0e29264b-a54e-9a77-a013-2eeafa3c8df9","choices":[{"index":0,"delta":{"content":"空沙箱，我直接产出完整架构设计。先落盘文档再展示。","reasoning_content":"先写文件。"}}]}`,
+		`{"id":"` + upstream + `","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"id":"call_send","type":"function","function":{"name":"send_file","arguments":"{\"path\":\"arch.md\""}}]}}]}`,
+		`{"id":"` + upstream + `","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"id":"` + callID + `","type":"function","function":{"name":"write_file","arguments":"{\"path\":\"arch.md\",\"content\":\"a < b"}}]},"finish_reason":"tool_calls"}]}`,
+		`{"id":"` + upstream + `","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"}"}}]}}]}`,
+		`{"id":"` + upstream + `","choices":[{"index":0,"delta":{"tool_calls":[{"index":1,"function":{"arguments":"}"}}]}}]}`,
+		`{"id":"` + upstream + `","choices":[],"usage":{"prompt_tokens":9007199254740993,"completion_tokens":4}}`,
+	}
+	var raw strings.Builder
+	for _, body := range events {
+		payload, err := json.Marshal(map[string]string{"body": body})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw.WriteString("data:")
+		raw.Write(payload)
+		raw.WriteString("\n\n")
+	}
+	got, err := aggregateEnvelopeStream(strings.NewReader(raw.String()), "qfmodel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var completion struct {
+		Choices []struct {
+			Message struct {
+				Content   string `json:"content"`
+				Reasoning string `json:"reasoning_content"`
+				ToolCalls []struct {
+					ID       string `json:"id"`
+					Type     string `json:"type"`
+					Function struct {
+						Name      string `json:"name"`
+						Arguments string `json:"arguments"`
+					} `json:"function"`
+				} `json:"tool_calls"`
+			} `json:"message"`
+			FinishReason string `json:"finish_reason"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(got, &completion); err != nil {
+		t.Fatalf("aggregated completion: %v\n%s", err, got)
+	}
+	if len(completion.Choices) != 1 {
+		t.Fatalf("choices = %d", len(completion.Choices))
+	}
+	msg := completion.Choices[0].Message
+	if msg.Content != "空沙箱，我直接产出完整架构设计。先落盘文档再展示。" {
+		t.Fatalf("content = %q", msg.Content)
+	}
+	if msg.Reasoning != "先写文件。" {
+		t.Fatalf("reasoning = %q", msg.Reasoning)
+	}
+	if completion.Choices[0].FinishReason != "tool_calls" {
+		t.Fatalf("finish_reason = %q", completion.Choices[0].FinishReason)
+	}
+	if len(msg.ToolCalls) != 2 {
+		t.Fatalf("tool_calls = %#v", msg.ToolCalls)
+	}
+	writeCall := msg.ToolCalls[0]
+	if writeCall.ID != callID || writeCall.Type != "function" || writeCall.Function.Name != "write_file" {
+		t.Fatalf("tool call 0 = %#v", writeCall)
+	}
+	if writeCall.Function.Arguments != `{"path":"arch.md","content":"a < b"}` {
+		t.Fatalf("write arguments = %q", writeCall.Function.Arguments)
+	}
+	sendCall := msg.ToolCalls[1]
+	if sendCall.ID != "call_send" || sendCall.Function.Name != "send_file" || sendCall.Function.Arguments != `{"path":"arch.md"}` {
+		t.Fatalf("tool call 1 = %#v", sendCall)
+	}
+	if strings.Contains(string(got), `\u003c`) {
+		t.Fatalf("aggregated tool arguments were HTML-escaped:\n%s", got)
+	}
+	if !strings.Contains(string(got), "9007199254740993") {
+		t.Fatalf("usage integer was rounded:\n%s", got)
+	}
+}
+
+func TestAggregateEnvelopeReportsUpstreamError(t *testing.T) {
+	body := `{"code":"provider_error","message":"nope"}`
+	payload, err := json.Marshal(map[string]string{"body": body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = aggregateEnvelopeStream(strings.NewReader("data:"+string(payload)+"\n\n"), "qfmodel")
+	if err == nil || !strings.Contains(err.Error(), "nope") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestAggregateEnvelopeKeepsPartialWhenUpstreamErrors(t *testing.T) {
+	events := []string{
+		`{"id":"chatcmpl-stable","choices":[{"delta":{"content":"partial"}}]}`,
+		`{"code":"provider_error","message":"nope"}`,
+	}
+	var raw strings.Builder
+	for _, body := range events {
+		payload, err := json.Marshal(map[string]string{"body": body})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw.WriteString("data:")
+		raw.Write(payload)
+		raw.WriteString("\n\n")
+	}
+	got, err := aggregateEnvelopeStream(strings.NewReader(raw.String()), "qfmodel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "partial") {
+		t.Fatalf("partial output dropped:\n%s", got)
+	}
+}
+
+func TestAggregateEnvelopeStopsAfterUpstreamError(t *testing.T) {
+	events := []string{
+		`{"id":"chatcmpl-stable","choices":[{"delta":{"content":"partial"}}]}`,
+		`{"code":"provider_error","message":"nope"}`,
+		`{"id":"chatcmpl-stable","choices":[{"delta":{"content":"hidden"}}]}`,
+	}
+	var raw strings.Builder
+	for _, body := range events {
+		payload, err := json.Marshal(map[string]string{"body": body})
+		if err != nil {
+			t.Fatal(err)
+		}
+		raw.WriteString("data:")
+		raw.Write(payload)
+		raw.WriteString("\n\n")
+	}
+	got, err := aggregateEnvelopeStream(strings.NewReader(raw.String()), "qfmodel")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "partial") || strings.Contains(string(got), "hidden") {
+		t.Fatalf("tokens after the error were folded in:\n%s", got)
+	}
+}
+
+func TestPlainLeadingCompletionIDShape(t *testing.T) {
+	id, ok := plainLeadingCompletionID(`{"id":"chatcmpl-x","choices":[{"delta":{"content":"identity"}}]}`)
+	if !ok || id != "chatcmpl-x" {
+		t.Fatalf("plain id = %q ok=%v", id, ok)
+	}
+	if _, ok := plainLeadingCompletionID(`{"id":"chatcmpl-x","choices":[{"delta":{"content":"id"}}]}`); ok {
+		t.Fatal("a string value of id must use the structural path")
+	}
+	if _, ok := plainLeadingCompletionID(`{"id":"chatcmpl-x"},`); ok {
+		t.Fatal("trailing junk matched the fast path")
+	}
+	if _, ok := plainLeadingCompletionID(`{"id":"chatcmpl-x","choices":[],"ID":"other"}`); ok {
+		t.Fatal("case-insensitive id must use the structural path")
+	}
+	var buf bytes.Buffer
+	writer := &envelopeWriter{w: &buf}
+	for _, folded := range []string{
+		`{"id":"chatcmpl-stable","choices":[{"delta":{"content":"a"}}]}`,
+		`{"id":"chatcmpl-stable","choices":[{"delta":{"content":"b"}}],"ID":"upstream-b"}`,
+	} {
+		payload, err := json.Marshal(map[string]string{"body": folded})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !writer.line("data:" + string(payload)) {
+			t.Fatal("folded id stopped the stream")
+		}
+	}
+	if strings.Contains(buf.String(), "upstream-b") {
+		t.Fatalf("case-insensitive id leaked:\n%s", buf.String())
+	}
+	if id, ok := plainLeadingCompletionID("{\"id\":\"chatcmpl-x\"} \n"); !ok || id != "chatcmpl-x" {
+		t.Fatalf("closing whitespace id = %q ok=%v", id, ok)
+	}
+	full := `{"id":"chatcmpl-x","object":"chat.completion.chunk","created":1,"model":"qfmodel","choices":[{"delta":{"content":"hi"}}]}`
+	if id, ok := plainLeadingCompletionID(full); !ok || id != "chatcmpl-x" {
+		t.Fatalf("openai chunk id = %q ok=%v", id, ok)
+	}
+}
+
+func TestPlainLeadingIDRewritesOpenAIChunk(t *testing.T) {
+	first := `{"id":"chatcmpl-stable","object":"chat.completion.chunk","model":"qfmodel","choices":[{"delta":{"content":"a"}}]}`
+	second := `{"id":"upstream-b","object":"chat.completion.chunk","created":1,"model":"qfmodel","choices":[{"delta":{"content":"a < b"}}],"usage":{"prompt_tokens":9007199254740993}}`
+	var buf bytes.Buffer
+	writer := &envelopeWriter{w: &buf}
+	for _, body := range []string{first, second} {
+		payload, err := json.Marshal(map[string]string{"body": body})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !writer.line("data:" + string(payload)) {
+			t.Fatal("openai chunk stopped the stream")
+		}
+	}
+	raw := buf.String()
+	if strings.Contains(raw, "upstream-b") || strings.Contains(raw, `\u003c`) || !strings.Contains(raw, "9007199254740993") {
+		t.Fatalf("openai chunk rewrite:\n%s", raw)
+	}
+	if strings.Count(raw, `"id":"chatcmpl-stable"`) != 2 || !strings.Contains(raw, `"object":"chat.completion.chunk"`) || !strings.Contains(raw, `"content":"a < b"`) {
+		t.Fatalf("openai fields changed:\n%s", raw)
+	}
+	for _, line := range strings.Split(raw, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if payload == "" || payload == "[DONE]" {
+			continue
+		}
+		var chunk struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal([]byte(payload), &chunk); err != nil {
+			t.Fatalf("rewritten chunk is not JSON: %v\n%s", err, payload)
+		}
+		if chunk.ID != "chatcmpl-stable" {
+			t.Fatalf("published id = %q", chunk.ID)
+		}
+	}
+}
+
+func TestCompletionIDTextKeepsPublishedBytes(t *testing.T) {
+	if got := completionIDText(json.RawMessage(`" chatcmpl-x "`)); got != " chatcmpl-x " {
+		t.Fatalf("id = %q", got)
+	}
+	if completionIDText(json.RawMessage(`"   "`)) != "" {
+		t.Fatal("blank id should be empty")
+	}
+}
+
+func TestOmitTopLevelIDDropsForeignID(t *testing.T) {
+	body := `{"id":"upstream","choices":[{"delta":{"content":"a < b"}}],"usage":{"prompt_tokens":9007199254740993}}`
+	got, ok := omitTopLevelID(body)
+	if !ok {
+		t.Fatal("omit failed")
+	}
+	if strings.Contains(got, "upstream") || strings.Contains(got, `\u003c`) || !strings.Contains(got, "9007199254740993") || !strings.Contains(got, "a < b") {
+		t.Fatalf("got %s", got)
+	}
+	var chunk map[string]any
+	if err := json.Unmarshal([]byte(got), &chunk); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := chunk["id"]; exists {
+		t.Fatalf("id still present: %s", got)
+	}
+}
+
+func TestEnvelopeFailureTailIsAnError(t *testing.T) {
+	var buf bytes.Buffer
+	writer := &envelopeWriter{w: &buf}
+	payload := `{"success":false,"msgCode":500,"message":"Internal Server Error"}`
+	if writer.line("data:" + payload) {
+		t.Fatal("failure tail continued the stream")
+	}
+	if !strings.Contains(buf.String(), "Internal Server Error") || !strings.Contains(buf.String(), "500") {
+		t.Fatalf("error missing:\n%s", buf.String())
+	}
+
+	withBody, err := json.Marshal(map[string]any{
+		"msgCode": 502,
+		"message": "nope",
+		"body":    `{"id":"chatcmpl-x","choices":[{"delta":{"content":"hidden"}}]}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf.Reset()
+	writer = &envelopeWriter{w: &buf}
+	if writer.line("data:" + string(withBody)) {
+		t.Fatal("msgCode with a body continued the stream")
+	}
+	if strings.Contains(buf.String(), "hidden") || !strings.Contains(buf.String(), "nope") {
+		t.Fatalf("body survived the error tail:\n%s", buf.String())
+	}
+}
+
+func TestEnvelopeBodyMatchesJSON(t *testing.T) {
+	bodies := []string{
+		`{"id":"x","choices":[{"delta":{"content":"你好"}}]}`,
+		`{"id":"x","choices":[{"delta":{"content":"a < b & c"}}]}`,
+		"{\"id\":\"x\",\"choices\":[{\"delta\":{\"content\":\"line\\n\\t\\\"q\\\" \\\\ /\"}}]}",
+		`{"id":"x","choices":[{"delta":{"content":"中"}}]}`,
+		`{"id":"x"}`,
+		``,
+	}
+	var writer envelopeWriter
+	for _, body := range bodies {
+		payload, err := json.Marshal(map[string]any{
+			"headers": map[string]any{"Content-Type": []string{"application/json"}},
+			"body":    body,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, ok := writer.envelopeBody(string(payload))
+		var want struct {
+			Body string `json:"body"`
+		}
+		if err := json.Unmarshal(payload, &want); err != nil {
+			t.Fatal(err)
+		}
+		if !ok || got != want.Body {
+			t.Fatalf("body %q\ngot %q ok=%v\nwant %q", body, got, ok, want.Body)
+		}
+	}
+	// Body before headers, plus surrogate pairs encoding/json would decode.
+	// An invalid pair is two replacement characters, not one.
+	for _, manual := range []string{
+		`{"body":"\uD83D\uDE00","headers":{"n":1,"s":"a\"b"}}`,
+		`{"body":"\uD800\uD800"}`,
+		`{"body":"\uDE00\uD800"}`,
+		`{"body":"\uD800\u0041"}`,
+		`{"body":"\uD800A"}`,
+	} {
+		got, ok := writer.envelopeBody(manual)
+		var want struct {
+			Body string `json:"body"`
+		}
+		if err := json.Unmarshal([]byte(manual), &want); err != nil {
+			t.Fatal(err)
+		}
+		if !ok || got != want.Body {
+			t.Fatalf("surrogate %s\ngot %q ok=%v want %q", manual, got, ok, want.Body)
+		}
+	}
+	if _, ok := writer.envelopeBody(`{"success":false,"msgCode":500}`); ok {
+		t.Fatal("failure tail was treated as an envelope body")
+	}
+	if _, ok := writer.envelopeBody(`{"body":"x"}{"extra":true}`); ok {
+		t.Fatal("trailing junk was accepted as an envelope")
+	}
+}
+
+func TestFlushPartialDataLine(t *testing.T) {
+	body := `{"id":"chatcmpl-x","choices":[{"delta":{"content":"tail"}}]}`
+	payload, err := json.Marshal(map[string]string{"body": body})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var buf bytes.Buffer
+	writer := &envelopeWriter{w: &buf}
+	if !writer.ingest("data:" + string(payload)) {
+		t.Fatal("partial ingest stopped")
+	}
+	if buf.Len() != 0 {
+		t.Fatalf("incomplete line was forwarded:\n%s", buf.String())
+	}
+	if !writer.flushPartial() {
+		t.Fatal("flush stopped")
+	}
+	if !strings.Contains(buf.String(), `"content":"tail"`) {
+		t.Fatalf("flushed %s", buf.String())
+	}
+}
+
 func writeChatEvent(w http.ResponseWriter, innerBody string) {
 	inner, _ := json.Marshal(innerBody)
 	_, _ = w.Write([]byte("data:" + `{"headers":{"Content-Type":["application/json"]},"body":` + string(inner) + "}" + "\n\n"))

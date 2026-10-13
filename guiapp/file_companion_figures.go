@@ -93,6 +93,10 @@ var (
 	fileCompanionHTMLAltRe = regexp.MustCompile(`(?i)\balt\s*=\s*["']([^"']*)["']`)
 )
 var fileCompanionFigureRefRe = regexp.MustCompile(`(?i)(?:图\s*|figure\s*|fig\.\s*|fig\s*)(\d+)`)
+
+// Host labels are 「图N」 only. "Figure 3" in a paper is the document's own
+// caption, not the number this turn assigned to a render.
+var fileCompanionHostFigureRefRe = regexp.MustCompile(`图\s*(\d+)`)
 var fileCompanionSummaryRe = regexp.MustCompile(`(?i)(总结|概括|摘要|概述|主要内容|主要讲|讲的什么|说什么|讲什么|summar|overview|abstract|outline)`)
 
 // fileCompanionFigures is the open document's image inventory. The inventory is
@@ -328,7 +332,7 @@ func (a *App) writeFileCompanionFigure(canonical string, order int, kind, format
 			return "", false
 		}
 	}
-	dir := filepath.Join(a.GetDataDir(), "file-companion", "figures", fileCompanionSessionID(canonical))
+	dir := a.fileCompanionFigureDir(canonical)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		logFileCompanion("figure cache failed")
 		return "", false
@@ -339,6 +343,13 @@ func (a *App) writeFileCompanionFigure(canonical string, order int, kind, format
 		return "", false
 	}
 	return path, true
+}
+
+// fileCompanionFigureDir is where one document's extracted drawings live. The
+// name comes from the document path alone, so a figure can be traced back to
+// its document without any in-memory bookkeeping.
+func (a *App) fileCompanionFigureDir(canonical string) string {
+	return filepath.Join(a.GetDataDir(), "file-companion", "figures", fileCompanionSessionID(canonical))
 }
 
 // companionFigureResolve turns one reference into a real path. Remote images and
@@ -536,6 +547,16 @@ func fileCompanionFiguresForReply(figures []companionFigure, asked, reply string
 			found++
 		}
 	}
+	// Numbering restarts at 图1 each turn. The model often continues from the
+	// previous answer, so the only render is 图1 and the reply says 图2.
+	// Show that render under the number the reply used. A farther number is
+	// the paper's own figure, not a guess at this picture.
+	cited := 0
+	if found == 0 && len(figures) == 1 && fileCompanionReplyCitesNextHostFigure(reply, 1) {
+		matched[0] = true
+		found = 1
+		cited = 2
+	}
 	if found == 0 && fileCompanionSummaryRe.MatchString(asked) {
 		for i := 0; i < len(figures) && i < fileCompanionFigureMaxFallback; i++ {
 			matched[i] = true
@@ -550,14 +571,49 @@ func fileCompanionFiguresForReply(figures []companionFigure, asked, reply string
 		if !matched[i] {
 			continue
 		}
+		number := i + 1
+		if cited > 0 {
+			number = cited
+		}
 		out = append(out, FileCompanionFigure{
-			Index:   i + 1,
-			Label:   fmt.Sprintf("图%d", i+1),
+			Index:   number,
+			Label:   fmt.Sprintf("图%d", number),
 			Caption: strings.TrimSpace(fig.caption),
 			Path:    fig.path,
 		})
 	}
 	return out
+}
+
+// fileCompanionReplyCitesNextHostFigure is true when the reply's 「图N」 labels
+// include count+1 and none of them name a picture this turn actually has.
+// An in-range 图N stays with the normal match.
+func fileCompanionReplyCitesNextHostFigure(reply string, count int) bool {
+	if count < 1 {
+		return false
+	}
+	matches := fileCompanionHostFigureRefRe.FindAllStringSubmatch(reply, -1)
+	if len(matches) == 0 {
+		return false
+	}
+	next := count + 1
+	sawNext := false
+	for _, match := range matches {
+		if len(match) < 2 {
+			continue
+		}
+		value, err := strconv.Atoi(match[1])
+		if err != nil || value <= 0 {
+			continue
+		}
+		if value <= count {
+			return false
+		}
+		if value == next {
+			sawNext = true
+		}
+	}
+	return sawNext
 }
 
 func fileCompanionReplyMentionsFigure(reply string, index int, fig companionFigure) bool {
@@ -695,6 +751,19 @@ func (a *App) fileCompanionFigureListed(canonical string) bool {
 			if fileCompanionFigureKey(fig.path) == canonical {
 				return true
 			}
+		}
+	}
+	// A drawing this document produced lives in its own figure directory, whose
+	// name is derived from the document. Recognising that directory is what lets
+	// a reopened window serve figures extracted before the app restarted: the
+	// inventory is in memory, but the files on disk are not.
+	//
+	// Without this, a PDF's figures disappear from anything built after a
+	// restart — an export would silently lose every picture while the window
+	// still displayed them.
+	for _, granted := range open {
+		if companionFigureInsideDir(a.fileCompanionFigureDir(granted), canonical) {
+			return true
 		}
 	}
 	// Tool-produced figures (page renders, extracted images) live outside any

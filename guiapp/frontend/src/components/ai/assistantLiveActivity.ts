@@ -1,6 +1,7 @@
 import { localizeText } from "../../i18n";
 import { stripLeadingEmojiCluster } from "./aiAssistantProgressUtils";
 import { stripAssistantToolCallMarkers } from "./assistantToolCall";
+import { codingAgentShellExplorationTarget, codingAgentShellSearchTarget } from "./CodingAgentProgressStatus";
 
 /** Live activity shown on the reasoning-panel summary while a round is in flight. */
 export type AssistantLiveActivityKind =
@@ -17,6 +18,7 @@ export type AssistantLiveActivityKind =
     | "listing_dir"
     | "searching_files"
     | "searching_content"
+    | "exploring_source"
     | "searching_web"
     | "fetching_page"
     | "using_browser"
@@ -52,6 +54,7 @@ const TOOL_KIND_BY_NAME: Record<string, AssistantLiveActivityKind> = {
     search_files: "searching_files",
     search: "searching_files",
     glob: "searching_files",
+    code_navigation: "exploring_source",
     git_diff: "searching_content",
     ripgrep: "searching_content",
     grep_search: "searching_content",
@@ -88,6 +91,7 @@ const ACTION_PHRASE_KIND: Array<[RegExp, AssistantLiveActivityKind]> = [
     [/编辑文件|edit file/i, "editing_file"],
     [/列出目录|list directory/i, "listing_dir"],
     [/搜索文件|search files/i, "searching_files"],
+    [/探索源码|探索代码|explore source/i, "exploring_source"],
     [/检索内容|search content/i, "searching_content"],
     [/搜索网络|web search/i, "searching_web"],
     [/访问网页|提取网页|open page|fetch(?:ing)? pages?/i, "fetching_page"],
@@ -119,6 +123,7 @@ const TOOL_ACTIVITY_KINDS: ReadonlySet<AssistantLiveActivityKind> = new Set([
     "listing_dir",
     "searching_files",
     "searching_content",
+    "exploring_source",
     "searching_web",
     "fetching_page",
     "using_browser",
@@ -165,6 +170,8 @@ export function assistantLiveActivityLabel(kind: AssistantLiveActivityKind, lang
             return localizeText(lang, "Searching files", "正在搜索文件", "正在搜尋檔案");
         case "searching_content":
             return localizeText(lang, "Searching content", "正在检索内容", "正在檢索內容");
+        case "exploring_source":
+            return localizeText(lang, "Exploring source", "正在探索源码", "正在探索原始碼");
         case "searching_web":
             return localizeText(lang, "Searching the web", "正在搜索网络", "正在搜尋網路");
         case "fetching_page":
@@ -204,6 +211,8 @@ export function assistantLiveActivityObject(
         modelId?: string;
         isHubService?: boolean;
         toolName?: string;
+        /** File, command, glob, or symbol already carried by the in-flight event. */
+        target?: string;
     },
 ): string {
     if (!kind) return "";
@@ -211,6 +220,10 @@ export function assistantLiveActivityObject(
         return formatLiveModelObject(lang, ctx?.providerName, ctx?.modelId, ctx?.isHubService);
     }
     if (TOOL_ACTIVITY_KINDS.has(kind)) {
+        // The event's own detail is the object. A kind allowlist used to drop
+        // read/edit/command targets that the tool row already shows.
+        const target = String(ctx?.target || "").trim();
+        if (target) return target;
         const toolName = normalizeLiveToolName(ctx?.toolName);
         if (!toolName || isImpliedToolName(kind, toolName)) return "";
         // The generic title already includes the name ("正在调用工具 todo_write").
@@ -413,15 +426,27 @@ export function resolveAssistantLiveActivity(opts: {
     hasReasoning?: boolean;
     reasoningText?: string;
     progressMessages?: Array<{ content?: string }>;
-    codingProgress?: { event?: string; detail?: string } | null;
+    codingProgress?: { event?: string; detail?: string; command?: string; target?: string } | null;
     /** Latest call already written into the assistant transcript. */
     latestToolCall?: { name?: string; action?: string } | null;
+    /**
+     * The assistant bubble already has answer text. Thought tokens then belong
+     * in the thought body; the live status is the model request, which has a
+     * target. Reporting "thinking" here is discarded by the coding workbench
+     * and replaced with the word Working.
+     */
+    answerStarted?: boolean;
+    /**
+     * Coding timeline only. False when the latest row is a tool, so an earlier
+     * thought must not keep the status. Undefined when there is no timeline.
+     */
+    thoughtIsCurrent?: boolean;
 }): AssistantLiveActivityKind | null {
     if (!opts.busy && !opts.streaming) return null;
     const codingEvent = (opts.codingProgress?.event || "").trim().toLowerCase();
     // An in-flight tool wins even if a few reasoning tokens are still flushing.
     if (codingEvent === "tool_started") {
-        return assistantLiveActivityFromToolName(opts.codingProgress?.detail || "");
+        return liveActivityFromCodingEvent(codingEvent, opts.codingProgress?.detail || "", opts.codingProgress?.command, opts.codingProgress?.target);
     }
     const latestText = latestProgressText(opts.progressMessages);
     if (isInFlightToolProgressText(latestText)) {
@@ -433,17 +458,27 @@ export function resolveAssistantLiveActivity(opts: {
         const embedded = liveActivityFromEmbeddedToolCall(opts.latestToolCall);
         if (embedded) return embedded;
     }
-    if (codingEvent === "tool_finished" && opts.streaming) return "thinking";
+    // The tool row is done. The next model request is the status, unless the
+    // timeline's current row is still the thought that should wear it.
+    if (codingEvent === "tool_finished" && opts.streaming) {
+        if (!opts.answerStarted && opts.thoughtIsCurrent !== false) return "thinking";
+        return "accessing_model";
+    }
     const fromStatus = liveActivityFromReasoningStatus(opts.reasoningText)
         || liveActivityFromStatusText(latestText);
     const hasModelThought = opts.hasReasoning || reasoningHasModelThought(opts.reasoningText);
+    const toolRowIsCurrent = opts.thoughtIsCurrent === false;
+    // Reasoning has closed or a tool row is latest. Earlier "分析任务 / 正在思考"
+    // milestones are stale; keeping them hides the model request behind Working.
+    const hideStaleGeneric = toolRowIsCurrent || !!opts.answerStarted;
     // Status-only milestones (environment / context / analyze) stay on the
     // header until the model actually writes thought tokens.
-    if (opts.streaming && hasModelThought) return "thinking";
-    if (fromStatus) return fromStatus;
+    if (opts.streaming && hasModelThought && !opts.answerStarted && !toolRowIsCurrent) return "thinking";
+    if (fromStatus && !(hideStaleGeneric && isStaleCodingStatusKind(fromStatus))) return fromStatus;
     if (opts.streaming) return "accessing_model";
     const fromProgress = latestText ? parseLiveActivityFromProgressText(latestText) : null;
-    if (fromProgress) return fromProgress;
+    if (fromProgress && !(hideStaleGeneric && isStaleCodingStatusKind(fromProgress))) return fromProgress;
+    if (hideStaleGeneric) return "accessing_model";
     // After the model has already produced a thought trail, a silent busy
     // gap is the tool round — show that step on the thinking header.
     // Before any model prose, the round is still contacting the model.
@@ -465,14 +500,71 @@ export function assistantLiveReasoningSource(msg: {
     return [msg.reasoning || "", ...timelineThoughts].filter(Boolean).join("\n");
 }
 
+/**
+ * Live-header view of the same message. Status lines stay in reasoningText.
+ * Thought bodies are not copied on each token flush; hasReasoning only records
+ * that one exists.
+ */
+export function codingLiveReasoningCue(msg: {
+    role?: string;
+    content?: string;
+    reasoning?: string;
+    codingTimeline?: Array<{ kind?: string; content?: string }>;
+} | undefined): { reasoningText: string; hasReasoning: boolean; answerProse: boolean } {
+    if (!msg || msg.role !== "assistant") {
+        return { reasoningText: "", hasReasoning: false, answerProse: false };
+    }
+    // Real answer text, not a tool-call marker. The header then stops copying
+    // this message on every later token.
+    if (assistantBodyBesidesToolCalls(msg.content)) {
+        return { reasoningText: "", hasReasoning: false, answerProse: true };
+    }
+    const reasoningText = String(msg.reasoning || "");
+    const scanned = scanLiveReasoning(reasoningText);
+    const timeline = msg.codingTimeline;
+    if (!scanned.hasThought && timeline) {
+        // The row being written is the last one. Stop there when it already
+        // contains prose, instead of scanning every earlier thought.
+        for (let i = timeline.length - 1; i >= 0; i--) {
+            const item = timeline[i];
+            if (item?.kind !== "thinking") continue;
+            if (reasoningHasModelThought(item.content)) {
+                scanned.hasThought = true;
+                break;
+            }
+        }
+    }
+    return { reasoningText: scanned.statusText, hasReasoning: scanned.hasThought, answerProse: false };
+}
+
+/** Status lines before the first prose line, and whether prose exists. */
+function scanLiveReasoning(reasoning: string): { statusText: string; hasThought: boolean } {
+    let start = 0;
+    let statusEnd = 0;
+    while (start < reasoning.length) {
+        let end = reasoning.indexOf("\n", start);
+        if (end < 0) end = reasoning.length;
+        let lineStart = start;
+        let lineEnd = end;
+        if (lineEnd > lineStart && reasoning.charCodeAt(lineEnd - 1) === 13) lineEnd -= 1;
+        while (lineStart < lineEnd && (reasoning.charCodeAt(lineStart) === 32 || reasoning.charCodeAt(lineStart) === 9)) lineStart += 1;
+        while (lineEnd > lineStart && (reasoning.charCodeAt(lineEnd - 1) === 32 || reasoning.charCodeAt(lineEnd - 1) === 9)) lineEnd -= 1;
+        if (lineEnd > lineStart) {
+            const bullet = reasoning.charCodeAt(lineStart) === 0x2022 && lineStart + 1 < lineEnd && reasoning.charCodeAt(lineStart + 1) === 32;
+            const status = reasoning.startsWith("[Status]", lineStart);
+            if (!bullet && !status) {
+                return { statusText: reasoning.slice(0, statusEnd).trim(), hasThought: true };
+            }
+            statusEnd = end;
+        }
+        start = end + 1;
+    }
+    return { statusText: reasoning.slice(0, statusEnd).trim(), hasThought: false };
+}
+
 export function reasoningHasModelThought(reasoning?: string): boolean {
-    if (!reasoning?.trim()) return false;
-    return reasoning.split(/\r?\n/).some((line) => {
-        const text = line.trim();
-        if (!text) return false;
-        if (text.startsWith("\u2022 ") || text.startsWith("[Status]")) return false;
-        return true;
-    });
+    if (!reasoning) return false;
+    return scanLiveReasoning(reasoning).hasThought;
 }
 
 function liveActivityFromReasoningStatus(reasoning?: string): AssistantLiveActivityKind | null {
@@ -504,9 +596,15 @@ function liveActivityFromStatusText(text: string): AssistantLiveActivityKind | n
     return null;
 }
 
-function codingLiveAnswerStarted(msg: { reasoningLive?: boolean; content?: string } | undefined): boolean {
-    return !!msg && (msg.reasoningLive === false
-        || (msg.reasoningLive !== true && !!String(msg.content || "").trim()));
+export function codingLiveAnswerStarted(msg: { reasoningLive?: boolean; content?: string } | undefined): boolean {
+    if (!msg) return false;
+    // Reasoning has closed, even if the first answer token has not landed yet.
+    if (msg.reasoningLive === false) return true;
+    // Thought tokens still own the status while reasoning is live.
+    if (msg.reasoningLive === true) return false;
+    // A tool-call marker is not answer text. Treating it as one swaps the
+    // open thought for a model-request status before the answer exists.
+    return !!assistantBodyBesidesToolCalls(msg.content);
 }
 
 /**
@@ -595,6 +693,14 @@ export function codingShownLiveLabel(
     return liveLabel;
 }
 
+/** True when the latest coding timeline row is the thought. Undefined with no timeline. */
+export function codingTimelineThoughtIsCurrent(
+    timeline: Array<{ kind?: string }> | undefined,
+): boolean | undefined {
+    if (!timeline?.length) return undefined;
+    return timeline[timeline.length - 1]?.kind === "thinking";
+}
+
 /**
  * Coding timeline: the live sheen belongs on the last thought while that
  * thought is still the last item. A generic tool call has no trail row, so
@@ -629,17 +735,29 @@ export function codingTimelineLastThoughtIndex(
     return -1;
 }
 
+/** Only thinking is already worn by the thought row. Prepare, sync, and analyze name the current operation. */
 const GENERIC_CODING_LIVE_KINDS: ReadonlySet<AssistantLiveActivityKind> = new Set([
+    "thinking",
+]);
+
+/** Milestones that are stale once a tool row is latest or the answer has started. */
+const STALE_CODING_STATUS_KINDS: ReadonlySet<AssistantLiveActivityKind> = new Set([
     "thinking",
     "preparing",
     "syncing_context",
     "analyzing",
-    "accessing_model",
 ]);
 
-/** Coding timeline + plan already show generic thinking; do not add a second bar. */
+/**
+ * Kinds the thought row already displays.
+ * Hiding a named operation is what leaves the hardcoded Working trail on screen.
+ */
 export function isGenericCodingLiveKind(kind?: AssistantLiveActivityKind | null): boolean {
     return !!kind && GENERIC_CODING_LIVE_KINDS.has(kind);
+}
+
+function isStaleCodingStatusKind(kind?: AssistantLiveActivityKind | null): boolean {
+    return !!kind && STALE_CODING_STATUS_KINDS.has(kind);
 }
 
 /** Live header that is not already attached to a coding timeline thought. */
@@ -690,7 +808,7 @@ export function parseLiveActivityFromProgressText(text: string): AssistantLiveAc
     const trimmed = (text || "").trim();
     if (!trimmed) return null;
     const coding = parseCodingToolEvent(trimmed);
-    if (coding) return liveActivityFromCodingEvent(coding.event, coding.detail);
+    if (coding) return liveActivityFromCodingEvent(coding.event, coding.detail, coding.command, coding.target);
     const firstLine = stripLeadingEmojiCluster((trimmed.split(/\r?\n/)[0] || "")).trim();
     const runningTools = parseRunningToolsLine(firstLine);
     if (runningTools) return runningTools;
@@ -708,7 +826,7 @@ function parseRunningToolsLine(firstLine: string): AssistantLiveActivityKind | n
     return named?.[1] ? assistantLiveActivityFromToolName(named[1]) : "calling_tool";
 }
 
-function parseCodingToolEvent(text: string): { event: string; detail: string } | null {
+function parseCodingToolEvent(text: string): { event: string; detail: string; command: string; target: string } | null {
     if (!text.startsWith(CODING_EVENT_PREFIX)) return null;
     try {
         const raw = JSON.parse(text.slice(CODING_EVENT_PREFIX.length).trim()) as Record<string, unknown>;
@@ -716,14 +834,29 @@ function parseCodingToolEvent(text: string): { event: string; detail: string } |
         return {
             event: typeof raw.event === "string" ? raw.event : "",
             detail: typeof raw.detail === "string" ? raw.detail : "",
+            command: typeof raw.command === "string" ? raw.command : "",
+            target: typeof raw.target === "string" ? raw.target : "",
         };
     } catch {
         return null;
     }
 }
 
-function liveActivityFromCodingEvent(event: string, detail: string): AssistantLiveActivityKind | null {
+function codingShellExploresSource(detail?: string, command?: string, target?: string): boolean {
+    return !!codingAgentShellExplorationTarget({
+        phase: "running",
+        title: "",
+        event: "tool_started",
+        detail,
+        command,
+        target,
+    });
+}
+
+function liveActivityFromCodingEvent(event: string, detail: string, command?: string, target?: string): AssistantLiveActivityKind | null {
     const normalized = (event || "").trim().toLowerCase();
+    if (normalized === "tool_started" && codingAgentShellSearchTarget({ phase: "running", title: "", event: "tool_started", detail, command, target })) return "searching_content";
+    if (normalized === "tool_started" && codingShellExploresSource(detail, command, target)) return "exploring_source";
     if (normalized === "tool_started") return assistantLiveActivityFromToolName(detail);
     if (normalized === "tool_finished") return "thinking";
     return null;

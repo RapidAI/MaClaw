@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"image/jpeg"
+	"image/png"
 	"os"
 	"runtime"
 	"strings"
@@ -404,5 +405,44 @@ func TestSplitDataURLRejectsUnsupportedForms(t *testing.T) {
 	}
 	if ext, _, ok := splitDataURL("data:image/gif;base64,AAAA"); !ok || ext != ".gif" {
 		t.Fatalf("gif support broken: ext=%q ok=%v", ext, ok)
+	}
+}
+
+// The diagram export hands over a PNG data URL, so that exact form has to
+// embed. It travels the re-encode branch — a PNG is decoded and written back —
+// which is the path a JPEG never exercises.
+func TestGenerateEmbedsAPNGDataURL(t *testing.T) {
+	gen := New()
+	if !gen.HasFont() {
+		t.Skip("跳过：系统未找到中文字体")
+	}
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, testSolidImage(320, 200)); err != nil {
+		t.Fatal(err)
+	}
+	dataURL := "data:image/png;base64," + base64.StdEncoding.EncodeToString(buf.Bytes())
+
+	pdf, err := gen.Generate(Spec{
+		Title:     "t",
+		Brand:     "b",
+		PaperSize: "A4",
+		Content:   "## 图\n\n![](" + dataURL + ")\n",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(pdf), "FlateDecode") {
+		t.Fatal("the PNG was not embedded")
+	}
+	text, err := gopdf.ExtractTextFromPage(pdf, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got strings.Builder
+	for _, item := range text {
+		got.WriteString(item.Text)
+	}
+	if strings.Contains(got.String(), "未找到") {
+		t.Fatalf("the renderer reported the picture missing: %s", got.String())
 	}
 }

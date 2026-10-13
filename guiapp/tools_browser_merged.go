@@ -24,7 +24,7 @@ Session:
 
 Page actions:
 - navigate: open URL
-- probe: interactive refs only; use this before a same-page task_run and again after a batch stops
+- probe: interactive refs only; use this before one script, or before a same-page task_run, and again after a batch stops
 - observe: full snapshot with page text; use for one control when probe refs are not enough
 - click: click by ref, selector, or visible text
 - type: type text by ref/selector, or into current focused editable element; set content_format="markdown" for rich editors/article publishing
@@ -33,10 +33,11 @@ Page actions:
 - extract, wait
 - Optional expect= url_contains:… / text:… / ref_appears:@eN / dialog. Required on a lone submit/publish click or navigate. Not required when that submit is the last task_run step; the batch stops and returns the page. Links/tabs do not need expect. If page flags include captcha_widget, ask the user; after they continue, probe first. login_wall and MFA/OTP are not automatic stops.
 
-Task helpers:
-- task_run, task_status, task_verify, list_flows; task_run runs the probed steps in one call, skips a full observe between them, and returns one snapshot at the end. It stops early on navigate, submit, dialog, a URL change, a same-URL view change, or an unchanged submit. Do not observe again before the next batch; probe. Type steps support focused editable input after click, plus params.content_format="markdown" or top-level content_format="markdown"
+Batch:
+- script: one page script after probe. click("保存") or click("button.primary") clicks. type("#q", "weather") types. select("状态", "完成") chooses an option. press("Enter"), scroll(600), and waitFor("下一步", 3000) stay in that same script. Optional name, kebab-case such as save-draft, stores a script that finishes. skill_list shows saved scripts. skill_run repeats one on the same site without another probe. The script must not read cookies, storage, or passwords, and must not type into a password or card field.
+- task_run, task_status, task_verify, list_flows; task_run runs a short ref sequence in one call, skips a full observe between steps, and returns one snapshot at the end. It stops early on navigate, submit, dialog, a URL change, a same-URL view change, or an unchanged submit. Do not observe again before the next batch; probe. Type steps support focused editable input after click, plus params.content_format="markdown" or top-level content_format="markdown"
 
-All page actions require session_id. First call browser(action="session_start") or browser(action="connect"). Same-page work is probe once, then one task_run. A single click or type still observes. Use persistent for normal work; isolated is clean debug only. Browser process lifetime is managed by the app, not by tool calls. Arbitrary JavaScript, click_at, and screenshots are not part of the stable path.`
+All page actions require session_id. First call browser(action="session_start") or browser(action="connect"). Same-page work is probe once, then one script. task_run remains for a short ref sequence. A single click or type still observes. Use persistent for normal work; isolated is clean debug only. Browser process lifetime is managed by the app, not by tool calls. eval, click_at, and screenshots are not part of the stable path. action=script is the sandboxed batch.`
 
 var mergedBrowserInputSchema = map[string]interface{}{
 	"action":         map[string]string{"type": "string", "description": "Action name"},
@@ -50,6 +51,8 @@ var mergedBrowserInputSchema = map[string]interface{}{
 	"delta_x":        map[string]string{"type": "number", "description": "Horizontal scroll delta"},
 	"delta_y":        map[string]string{"type": "number", "description": "Scroll delta"},
 	"target_id":      map[string]string{"type": "string", "description": "Tab target id"},
+	"script":         map[string]string{"type": "string", "description": "Statements for action=script. click(\"保存\") or click(\"button.primary\") clicks. type(\"#q\", \"weather\") types. select(\"状态\", \"完成\") chooses an option. press(\"Enter\"), scroll(600), and waitFor(\"下一步\", 3000) run in the same script. Do not read cookies, storage, or passwords."},
+	"name":           map[string]string{"type": "string", "description": "Optional kebab-case name for action=script, such as save-draft. action=skill_run runs the script stored under that name."},
 	"steps":          map[string]string{"type": "array", "description": "Steps for task_run. Pass snapshot_id from probe on each ref step. Type steps may omit ref/selector to type into the currently focused editable element after a click. Type steps may set params.content_format=markdown for rich editors; top-level content_format=markdown applies to type steps that omit it."},
 	"task_id":        map[string]string{"type": "string", "description": "Task id for task_status"},
 	"flow_name":      map[string]string{"type": "string", "description": "Flow name for list_flows"},

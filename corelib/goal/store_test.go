@@ -353,3 +353,56 @@ func TestStatusVocabularyCanonicalizesTheModelFacingSet(t *testing.T) {
 		t.Fatalf("hint %q does not name the canonical set", hint)
 	}
 }
+
+func TestSetStartsInPlanPhase(t *testing.T) {
+	s := NewStore("")
+	g, err := s.Set("user1", "实现登录")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Phase != PhasePlan || g.EffectivePhase() != PhasePlan {
+		t.Fatalf("phase = %q", g.Phase)
+	}
+}
+
+func TestSavePlanAndUpdateStep(t *testing.T) {
+	s := NewStore("")
+	g, err := s.Set("user1", "实现登录")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SavePlan("user1", g.GoalID, "", nil, nil); err == nil {
+		t.Fatal("empty plan should fail")
+	}
+	err = s.SavePlan("user1", g.GoalID, "先写登录接口再补测试", []Step{
+		{Title: "编写接口", Detail: "JWT"},
+		{Title: "补充测试"},
+	}, []string{"go test 通过"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := s.Get("user1")
+	if got.EffectivePhase() != PhaseExecute || len(got.Steps) != 2 || got.Steps[0].Index != 1 || got.Steps[0].Status != StepPending {
+		t.Fatalf("plan = %+v", got)
+	}
+	current, ok := got.CurrentStep()
+	if !ok || current.Title != "编写接口" {
+		t.Fatalf("current = %+v ok=%v", current, ok)
+	}
+	if err := s.UpdateStep("user1", g.GoalID, 1, StepDone, "接口已写"); err != nil {
+		t.Fatal(err)
+	}
+	got = s.Get("user1")
+	if got.Steps[0].Result != "接口已写" || got.ReadyToComplete() {
+		t.Fatalf("after step: %+v", got.Steps)
+	}
+	if err := s.UpdateStep("user1", "stale", 2, StepDone, "x"); err == nil {
+		t.Fatal("stale goal id should fail")
+	}
+	if missing := MissingCriteria("还没测", got.AcceptanceCriteria); len(missing) != 1 || missing[0] != "go test 通过" {
+		t.Fatalf("missing = %#v", missing)
+	}
+	if missing := MissingCriteria("go test 通过", got.AcceptanceCriteria); len(missing) != 0 {
+		t.Fatalf("covered criteria reported missing: %#v", missing)
+	}
+}

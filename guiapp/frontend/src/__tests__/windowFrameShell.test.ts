@@ -141,6 +141,8 @@ describe('frameless window shell regression guards', () => {
         const app = readSource('App.tsx');
 
         expect(app).toContain('createWindowMaximizeRestoreSession');
+        expect(app).toContain('SetMainWindowScreenPosition(x, y)');
+        expect(app).not.toContain('setPosition: WindowSetPosition');
         expect(app).toContain('windowMaximizeRestore.rememberNormal(op)');
         expect(app).toContain('windowMaximizeRestore.restoreNormal()');
         expect(app).toContain('windowMaximizeRestore.shouldSkipClamp()');

@@ -38,14 +38,17 @@ type IMVoicePart struct {
 
 // IMAgentResponse is the structured reply sent back to Hub.
 type IMAgentResponse struct {
-	Text           string                    `json:"text"`
-	Reasoning      string                    `json:"reasoning,omitempty"`
-	ClearUI        bool                      `json:"clear_ui,omitempty"`
-	Fields         []IMResponseField         `json:"fields,omitempty"`
-	Actions        []IMResponseAction        `json:"actions,omitempty"`
-	Confirmation   *IMResponseConfirmation   `json:"confirmation,omitempty"`
-	UnfinishedTask *IMResponseUnfinishedTask `json:"unfinished_task,omitempty"`
-	UnfinishedSlot *IMResponseUnfinishedTask `json:"unfinished_slot,omitempty"`
+	Text string `json:"text"`
+	// runWindowPaused tells follow-up schedulers not to start another model
+	// request after the run window ends. It stays on the host.
+	runWindowPaused bool                      `json:"-"`
+	Reasoning       string                    `json:"reasoning,omitempty"`
+	ClearUI         bool                      `json:"clear_ui,omitempty"`
+	Fields          []IMResponseField         `json:"fields,omitempty"`
+	Actions         []IMResponseAction        `json:"actions,omitempty"`
+	Confirmation    *IMResponseConfirmation   `json:"confirmation,omitempty"`
+	UnfinishedTask  *IMResponseUnfinishedTask `json:"unfinished_task,omitempty"`
+	UnfinishedSlot  *IMResponseUnfinishedTask `json:"unfinished_slot,omitempty"`
 	// CodingRuntimeRecovery is supplied only after the durable ledger has run
 	// the mandatory read-only recovery probe. The client must send its opaque
 	// review digest to ConfirmCodingRuntimeRecovery; it must not resume a prior

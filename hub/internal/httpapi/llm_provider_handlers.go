@@ -1357,6 +1357,7 @@ func LLMV1ChatCompletionsHandler(identity *auth.IdentityService, system store.Sy
 		}
 		system := scopedSystemSettingsForTenant(principal.TenantID, system)
 		ctx := withLLMEndpointPrincipalContext(withClassHeadUser(withLLMBillingState(withLLMPromptCacheTenant(store.WithTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID), principal.TenantID), startedAt, requestID), firstNonEmpty(principal.UserID, principal.Email)), principal)
+		ctx = attachSystemFreeBotBilling(ctx, r, principal, promptCacheSources)
 		r = r.WithContext(ctx)
 		providerReg, err := loadCachedLLMProviderRegistry(ctx, system)
 		if err != nil {
@@ -1726,6 +1727,7 @@ func LLMV1ResponsesHandler(identity *auth.IdentityService, system store.SystemSe
 		}
 		system := scopedSystemSettingsForTenant(principal.TenantID, system)
 		ctx := withLLMEndpointPrincipalContext(withClassHeadUser(withLLMBillingState(withLLMPromptCacheTenant(store.WithTenant(security.WithTenant(r.Context(), principal.TenantID), principal.TenantID), principal.TenantID), startedAt, requestID), firstNonEmpty(principal.UserID, principal.Email)), principal)
+		ctx = attachSystemFreeBotBilling(ctx, r, principal, promptCacheSources)
 		r = r.WithContext(ctx)
 		providerReg, err := loadCachedLLMProviderRegistry(ctx, system)
 		if err != nil {
@@ -5215,9 +5217,11 @@ func resolveAuthorizedModels(ctx context.Context, r *http.Request, system store.
 
 // llmEndpointForcedServiceGroup pins a request to one group.
 // An endpoint API key stays on the group that key was issued for.
-// A viewer request that names system-free — the header a bot turn sends —
-// uses that reserved free group. Billing still follows the viewer principal,
-// so the usage record stays on the associated Hub user.
+// A viewer request that names system-free uses that reserved free group.
+// The MaClaw official group is not forced. A GUI call and a bot on that
+// route both resolve the caller's entitlements, then spend cards in the
+// same order. The new-user benefit on system-free applies only to MaClaw
+// GUI calls, which do not send the system-free pin.
 func llmEndpointForcedServiceGroup(ctx context.Context, r *http.Request) (string, bool) {
 	if apiKeyAuth, ok := llmEndpointAPIKeyAuthFromContext(ctx); ok {
 		return apiKeyAuth.ServiceGroupID, true

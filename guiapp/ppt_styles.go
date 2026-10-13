@@ -44,7 +44,7 @@ func (a *App) pptStylePath() string {
 	return filepath.Join(a.GetDataDir(), "ppt_styles.json")
 }
 
-const pptStylePreviewRevision = "7"
+const pptStylePreviewRevision = "11"
 
 func (a *App) pptStylePreviewPath(id, lang string) string {
 	return filepath.Join(a.GetDataDir(), "ppt_style_previews", id+"-"+pptx.NormalizeStyleLang(lang)+"-"+pptStylePreviewRevision+".png")
@@ -340,6 +340,9 @@ func parseGeneratedPPTStyle(raw string) (pptx.CustomStyle, error) {
 		style.ID = "custom-style"
 	}
 	if err := pptx.ValidateCustomStyle(style); err != nil {
+		if strings.Contains(err.Error(), "ppt_style_motif_invalid") {
+			return pptx.CustomStyle{}, fmt.Errorf("版式名称无效，必须是 report、split、ink、dashboard、poster、sketch、board、craft、defense、consulting、official、lesson 之一")
+		}
 		return pptx.CustomStyle{}, fmt.Errorf("这套配色不完整：%s", err.Error())
 	}
 	return style, nil
@@ -347,13 +350,14 @@ func parseGeneratedPPTStyle(raw string) (pptx.CustomStyle, error) {
 
 const pptStyleSystemPrompt = `你是演示文稿配色设计师。根据用户需求设计一套可复用的 PPT 风格。只输出一个 JSON 对象，不要解释。
 字段：
-id：英文小写和短横线，2-32 字符，不要用 business、consulting、executive、academic、warm、launch、tech、education、ceremony、minimal
+id：英文小写和短横线，2-32 字符，不要用 clean、magazine、eink、dashboard、retro、sketch、whiteboard、handmade、research、mckinsey、official、course，也不要用它们的旧别名 business、consulting、academic、warm、launch、tech、education、minimal、modern
 label：不超过 8 个汉字
 summary：不超过 28 个字，说明适合什么场合、主色是什么
 keywords：2 到 6 个中文词，用户以后做这类 PPT 时用来自动选中这套风格
-cover_dark：封面是否用深色底
+motif：版式，必须是 report、split、ink、dashboard、poster、sketch、board、craft、defense、consulting、official、lesson 之一。report 是左色条和证据卡，split 是对半撞色，ink 是米纸大标题，dashboard 是指标卡，poster 是色块与描边卡，sketch 是细线开放要点，board 是便签，craft 是暖纸便签，defense 是学术蓝加红色结论，consulting 是浅底细线，official 是红金正式，lesson 是课头色带
+cover_dark：封面主区域是否用深色底
 colors：6 位十六进制，不要带 #。必须包含 paper、ink、navy、navy2、accent、gold、white、mute、slate、card、on_dark、on_dark_mute
-navy 是封面大色，accent 是强调色，paper 是内容页底色，ink 是正文色，on_dark 是深色封面上的标题色。文字和背景对比要够。`
+navy 是结构色，accent 是强调色，paper 是内容页底色，ink 是正文色，on_dark 是深色区域上的标题色。文字和背景对比要够。`
 
 func (a *App) completePPTStyleJSON(request string) (string, error) {
 	cfg := captionRequestConfig(a.withGlobalThinkingMode(a.GetMaclawLLMConfig()))

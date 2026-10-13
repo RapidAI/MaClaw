@@ -2,8 +2,10 @@ package codingruntime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -77,6 +79,10 @@ type Runner struct {
 	// WorkspaceProber is optional and must be read-only. When present it
 	// captures the baseline for recovery before the host invokes a model/tool.
 	WorkspaceProber WorkspaceProber
+	// OnAdmissionWait is notified once when this run cannot start because
+	// another live writer holds an overlapping claim. The runner then waits
+	// and retries. Hosts use it to say the task is queued, not failed.
+	OnAdmissionWait func(WriteSetConflict)
 }
 
 // ContinuationReview carries the opaque parent Attempt identity selected by
@@ -199,10 +205,15 @@ func (r Runner) RunWithContinuation(ctx context.Context, task Task, policy Polic
 			return created, nil, err
 		}
 	}
-	attempt, err := r.Store.StartAttempt(created.TaskID, r.LeaseOwner, leaseFor, policy, now)
+	attempt, err := r.acquireAttempt(ctx, created.TaskID, leaseFor, policy, now)
 	if err != nil {
 		return created, nil, err
 	}
+	// The lease has to stay visible until FinishAttempt, including the final
+	// workspace probe. Stopping it when the model returns lets the next task
+	// on this directory start while this attempt is still running.
+	stopLease := r.keepAttemptLease(attempt.AttemptID, leaseFor)
+	defer stopLease()
 	if parentAttemptID != "" {
 		if err := r.Store.ConsumeParentContinuation(created.TaskID, parentAttemptID, attempt.AttemptID, r.now()); err != nil {
 			// StartAttempt acquired the lease first. Close only this new attempt;
@@ -221,7 +232,7 @@ func (r Runner) RunWithContinuation(ctx context.Context, task Task, policy Polic
 	// snapshot so adapter-visible ExecutionRequest and final-diff enforcement
 	// cannot drift from the ledger fact.
 	policy = attempt.Policy
-	_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "attempt_started", policy.Digest, now)
+	_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "attempt_started", policy.Digest, attempt.StartedAt)
 	// A final-workspace gate is an execution precondition, not merely a
 	// completion check.  Before this guard, a writer could advertise
 	// FinalWorkspaceGateRequired while the host forgot to provide a prober (or
@@ -400,6 +411,122 @@ func (r Runner) RunWithContinuation(ctx context.Context, task Task, policy Polic
 		return created, finished, err
 	}
 	return updated, finished, nil
+}
+
+// acquireAttempt is the single-writer gate for one directory. StartAttempt
+// denies an overlapping live claim. Two desktop tasks on the same project
+// both reach this gate; failing the second task's plan is the wrong outcome.
+// The second waits until the holder finishes or the caller cancels, then
+// takes the directory itself.
+func (r Runner) acquireAttempt(ctx context.Context, taskID string, leaseFor time.Duration, policy PolicySnapshot, now time.Time) (*Attempt, error) {
+	notified := false
+	for {
+		attempt, err := r.Store.StartAttempt(taskID, r.LeaseOwner, leaseFor, policy, now)
+		if err == nil {
+			return attempt, nil
+		}
+		var admission WriterAdmissionError
+		if !errors.As(err, &admission) {
+			return nil, err
+		}
+		if ctx != nil && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if !notified {
+			notified = true
+			if r.OnAdmissionWait != nil {
+				r.OnAdmissionWait(admission.Conflict)
+			}
+		}
+		if !waitCodingWriterTurn(ctx, time.Second) {
+			if ctx != nil && ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, err
+		}
+		now = r.now()
+	}
+}
+
+func waitCodingWriterTurn(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	if ctx == nil {
+		<-timer.C
+		return true
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// localLiveWriters records attempts whose executor is still on this
+// process's stack. Admission treats those as holders even when the stored
+// lease clock has passed (the process was suspended). A dead process cannot
+// be in this set, so its expired row does not lock the directory.
+var localLiveWriters sync.Map
+
+func markLocalLiveWriter(attemptID string) {
+	if attemptID != "" {
+		localLiveWriters.Store(attemptID, struct{}{})
+	}
+}
+
+func unmarkLocalLiveWriter(attemptID string) {
+	localLiveWriters.Delete(attemptID)
+}
+
+func localWriterLive(attemptID string) bool {
+	_, ok := localLiveWriters.Load(attemptID)
+	return ok
+}
+
+// keepAttemptLease renews the admission lease until stop is called. The
+// interval stays inside the lease so a long step never becomes invisible to
+// the next task's admission check.
+func (r Runner) keepAttemptLease(attemptID string, leaseFor time.Duration) func() {
+	if leaseFor <= 0 {
+		leaseFor = 10 * time.Minute
+	}
+	interval := leaseFor / 3
+	if interval < time.Second {
+		interval = time.Second
+	}
+	if interval > time.Minute {
+		interval = time.Minute
+	}
+	markLocalLiveWriter(attemptID)
+	stop := make(chan struct{})
+	var once sync.Once
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				err := r.Store.RenewAttemptLease(attemptID, r.LeaseOwner, leaseFor, r.now())
+				if err == nil {
+					continue
+				}
+				// A locked ledger is transient. Dropping the goroutine here
+				// expires the claim while the step is still writing.
+				if errors.Is(err, ErrAttemptNotRunning) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrLeaseOwnerMismatch) {
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		once.Do(func() {
+			unmarkLocalLiveWriter(attemptID)
+			close(stop)
+		})
+	}
 }
 
 // blockBeforeExecution closes a just-started Attempt without invoking its

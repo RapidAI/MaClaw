@@ -210,6 +210,7 @@ export function BotFilePreview({ lang, botId }: { lang: string; botId: string })
                         <button
                             type="button"
                             data-testid="bot-file-preview-close"
+                            className="bot-file-preview__close"
                             aria-label={closeLabel(lang)}
                             title={closeLabel(lang)}
                             onClick={dismiss}
@@ -222,14 +223,15 @@ export function BotFilePreview({ lang, botId }: { lang: string; botId: string })
                                 background: 'none',
                                 border: 'none',
                                 cursor: 'pointer',
-                                fontSize: 14,
                                 padding: 0,
                                 borderRadius: 8,
-                                color: 'var(--theme-text-muted, #64748b)',
                                 lineHeight: 1,
                             }}
                         >
-                            X
+                            {/* 关闭用两笔线的图标字符，字母 X 在标题栏里像漏进去的文本。 */}
+                            <svg viewBox="0 0 14 14" width="14" height="14" aria-hidden="true" focusable="false">
+                                <path d="M3.2 3.2 10.8 10.8M10.8 3.2 3.2 10.8" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                            </svg>
                         </button>
                     </div>
                 </div>

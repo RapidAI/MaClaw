@@ -57,6 +57,46 @@ type PeriodEntry = {
 
 type Translate = (en: string, zhHans: string, zhHant?: string) => string;
 
+const GRANT_DETAIL_PAGE_SIZE = 20;
+
+function isSettledGrant(grant: HubLLMActiveGrant): boolean {
+    const status = String(grant.status || "").toLowerCase();
+    return status === "expired" || status === "exhausted";
+}
+
+function grantsForDetailTable(grants: HubLLMActiveGrant[], includeSettled: boolean): HubLLMActiveGrant[] {
+    if (!includeSettled) return grants.filter((grant) => !isSettledGrant(grant));
+    const current: HubLLMActiveGrant[] = [];
+    const settled: HubLLMActiveGrant[] = [];
+    for (const grant of grants) {
+        if (isSettledGrant(grant)) settled.push(grant);
+        else current.push(grant);
+    }
+    return current.concat(settled);
+}
+
+function nearestScrollParent(node: HTMLElement): HTMLElement | null {
+    let parent = node.parentElement;
+    while (parent) {
+        const overflowY = getComputedStyle(parent).overflowY;
+        const scrolls = overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay";
+        if (scrolls && parent.scrollHeight > parent.clientHeight + 1) return parent;
+        parent = parent.parentElement;
+    }
+    return null;
+}
+
+function scrollGrantDetailsIntoView(node: HTMLElement | null) {
+    if (!node || typeof getComputedStyle !== "function") return;
+    // The settings shell and its body are both scrollers. scrollIntoView would
+    // move every ancestor, including the navigation column.
+    const scroller = nearestScrollParent(node);
+    if (!scroller) return;
+    const delta = node.getBoundingClientRect().top - scroller.getBoundingClientRect().top;
+    if (delta >= 0 && delta < scroller.clientHeight * 0.5) return;
+    scroller.scrollTop += delta;
+}
+
 interface HubLLMServiceStatus {
     active: boolean;
     skip_llm_config: boolean;
@@ -576,6 +616,9 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
     const [redeemResult, setRedeemResult] = useState<{ ok: boolean; msg: string } | null>(null);
     const [resettingVoucher, setResettingVoucher] = useState<string | null>(null);
     const [clockTick, setClockTick] = useState(0);
+    const [showSettledGrants, setShowSettledGrants] = useState(false);
+    const [grantDetailPage, setGrantDetailPage] = useState(1);
+    const grantDetailsRef = useRef<HTMLDivElement | null>(null);
     const voucherHintId = useId();
     const redeemResultRef = useRef<HTMLDivElement | null>(null);
 
@@ -723,17 +766,36 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
     }, [authorizedModelsForDisplay, availableModels]);
 
     const totals = useMemo(() => creditTotals(status), [status]);
-    const periodBenefitGrants = useMemo(() => creditGrants(status).filter((grant) => (
+    const detailGrants = useMemo(() => creditGrants(status), [status]);
+    const periodBenefitGrants = useMemo(() => detailGrants.filter((grant) => (
         isNewUserLimitCard(grant) && String(grant.status || "").toLowerCase() !== "expired"
-    )), [status]);
+    )), [detailGrants]);
     const hasValidityOnlyNewUserBenefit = useMemo(() => (
         periodBenefitGrants.length > 0 && periodBenefitGrants.every((grant) => !hasPeriodLimits(grant))
     ), [periodBenefitGrants]);
-    const grantsForDetails = useMemo(() => {
-        // Filter out expired grants from the details table
-        const all = creditGrants(status);
-        return all.filter((grant) => String(grant.status || "").toLowerCase() !== "expired");
-    }, [status]);
+    // Non-expired grants still count as metered service, including exhausted
+    // rows that the details table hides until the switch is on.
+    const grantsForDetails = useMemo(() => (
+        detailGrants.filter((grant) => String(grant.status || "").toLowerCase() !== "expired")
+    ), [detailGrants]);
+    const settledGrantCount = useMemo(() => detailGrants.filter(isSettledGrant).length, [detailGrants]);
+    const visibleDetailGrants = useMemo(
+        () => grantsForDetailTable(detailGrants, showSettledGrants),
+        [detailGrants, showSettledGrants],
+    );
+    const grantDetailPageCount = Math.max(1, Math.ceil(visibleDetailGrants.length / GRANT_DETAIL_PAGE_SIZE));
+    const grantDetailPageSafe = Math.min(grantDetailPage, grantDetailPageCount);
+    const pagedDetailGrants = visibleDetailGrants.slice(
+        (grantDetailPageSafe - 1) * GRANT_DETAIL_PAGE_SIZE,
+        grantDetailPageSafe * GRANT_DETAIL_PAGE_SIZE,
+    );
+    const settledGrantToggleLabel = settledGrantCount > 0
+        ? t(
+            `Show expired and used up (${settledGrantCount})`,
+            `显示已过期和已耗尽（${settledGrantCount}）`,
+            `顯示已過期和已耗盡（${settledGrantCount}）`,
+        )
+        : t("Show expired and used up", "显示已过期和已耗尽", "顯示已過期和已耗盡");
     const isActiveUnmeteredService = useMemo(() => {
         if (!status?.active || (grantsForDetails.length > 0 && !hasValidityOnlyNewUserBenefit) || hasAnyCreditValue(status)) return false;
         return availableModels.length > 0 || authorizedModelsForDisplay.length > 0 || activeGroupNames.length > 0;
@@ -748,6 +810,15 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
         return "-";
     }, [isActiveUnmeteredService, lang, status, t]);
     const statusSummary = useMemo(() => serviceStatusSummary(status, lang, t), [clockTick, status, lang, t]);
+
+    useEffect(() => {
+        if (grantDetailPage > grantDetailPageCount) setGrantDetailPage(grantDetailPageCount);
+    }, [grantDetailPage, grantDetailPageCount]);
+
+    const showGrantDetailPage = useCallback((page: number) => {
+        setGrantDetailPage(page);
+        window.requestAnimationFrame(() => scrollGrantDetailsIntoView(grantDetailsRef.current));
+    }, []);
 
     // Aggregate period limits and usage from grants that have period constraints.
     // Keep welcome benefits separate from metered cards: the two are different
@@ -1143,16 +1214,40 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                     <div className="hub-service-redeem__title-group">
                         <h3 className="hub-service-redeem__title">{t("Authorization Breakdown", "授权明细")}</h3>
                     </div>
-                    <div className="hub-service-redeem__model-summary">
-                        <span className="hub-service-redeem__label">{t("Available Models", "可用模型")}</span>
-                        <span className="hub-service-redeem__value">{availableModelSummary}</span>
+                    <div className="hub-service-redeem__header-aside">
+                        <div className="hub-service-redeem__model-summary">
+                            <span className="hub-service-redeem__label">{t("Available Models", "可用模型")}</span>
+                            <span className="hub-service-redeem__value">{availableModelSummary}</span>
+                        </div>
+                        <label
+                            className="hub-service-redeem__history-toggle"
+                            data-on={showSettledGrants ? "true" : "false"}
+                            title={settledGrantCount > 0
+                                ? t("Show grants that are expired or have no credits left", "打开后显示已过期和已耗尽的授权", "打開後顯示已過期和已耗盡的授權")
+                                : t("No expired or used-up grants", "当前没有已过期或已耗尽的授权", "目前沒有已過期或已耗盡的授權")}
+                        >
+                            <input
+                                type="checkbox"
+                                role="switch"
+                                aria-checked={showSettledGrants}
+                                checked={showSettledGrants}
+                                disabled={settledGrantCount === 0}
+                                onChange={(event) => {
+                                    setShowSettledGrants(event.target.checked);
+                                    setGrantDetailPage(1);
+                                }}
+                            />
+                            <span className="hub-service-redeem__history-track" aria-hidden="true"><span /></span>
+                            <span>{settledGrantToggleLabel}</span>
+                        </label>
                     </div>
                 </div>
 
-                {/* Grant details include active, queued, period-limited, and exhausted grants. */}
-                <div className="hub-service-redeem__section">
+                {/* Settled grants stay hidden until the header switch is on. */}
+                <div ref={grantDetailsRef}>
+                    <div className="hub-service-redeem__section">
                     <div className="hub-service-redeem__label">{t("Grant credit details", "授权额度明细", "授權額度明細")}</div>
-                    {grantsForDetails.length ? (
+                    {pagedDetailGrants.length ? (
                         <table className="hub-service-redeem__detail-table">
                             <thead>
                                 <tr>
@@ -1166,8 +1261,14 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                                 </tr>
                             </thead>
                             <tbody>
-                                {grantsForDetails.map((grant, index) => (
-                                    <tr key={(grant.card_order_id || grant.card_id || grant.id || grant.service_group_id || "") + "-" + index}>
+                                {pagedDetailGrants.map((grant, index) => (
+                                    <tr key={[
+                                        grant.card_order_id || grant.card_id || grant.id || grant.service_group_id || "grant",
+                                        grant.starts_at || "",
+                                        grant.expires_at || "",
+                                        grant.status || "",
+                                        (grantDetailPageSafe - 1) * GRANT_DETAIL_PAGE_SIZE + index,
+                                    ].join("-")}>
                                         <td><span className="hub-service-redeem__strong">{grant.service_group_id || "-"}</span></td>
                                         <td>{formatGrantSource(grant, t)}</td>
                                         <td>{formatTime(grant.starts_at, lang)}</td>
@@ -1196,11 +1297,43 @@ export function HubServiceRedeemPanel({ lang, onStatusChange }: Props) {
                         </table>
                     ) : (
                         <div className="hub-service-redeem__empty">
-                            {isActiveUnmeteredService
-                                ? t("Free service does not require grant credit details.", "免费服务无需授权额度明细。", "免費服務無需授權額度明細。")
-                                : t("No grant credit details", "暂无授权额度明细", "暫無授權額度明細")}
+                            {settledGrantCount > 0 && !showSettledGrants
+                                ? t(
+                                    "Expired and used-up grants are hidden. Turn on the switch to show them.",
+                                    "已过期和已耗尽的授权已隐藏，打开开关后显示。",
+                                    "已過期和已耗盡的授權已隱藏，打開開關後顯示。",
+                                )
+                                : isActiveUnmeteredService
+                                    ? t("Free service does not require grant credit details.", "免费服务无需授权额度明细。", "免費服務無需授權額度明細。")
+                                    : t("No grant credit details", "暂无授权额度明细", "暫無授權額度明細")}
                         </div>
                     )}
+                    </div>
+                    {grantDetailPageCount > 1 ? (
+                        <nav className="hub-service-redeem__pagination" aria-label={t("Grant credit pages", "授权明细分页", "授權明细分頁")}>
+                            <button
+                                type="button"
+                                disabled={grantDetailPageSafe <= 1}
+                                onClick={() => showGrantDetailPage(Math.max(1, grantDetailPageSafe - 1))}
+                            >
+                                {t("Previous", "上一页", "上一頁")}
+                            </button>
+                            <span>
+                                {t(
+                                    `Page ${grantDetailPageSafe} of ${grantDetailPageCount} · ${GRANT_DETAIL_PAGE_SIZE} per page`,
+                                    `第 ${grantDetailPageSafe} / ${grantDetailPageCount} 页 · 每页 ${GRANT_DETAIL_PAGE_SIZE} 条`,
+                                    `第 ${grantDetailPageSafe} / ${grantDetailPageCount} 頁 · 每頁 ${GRANT_DETAIL_PAGE_SIZE} 條`,
+                                )}
+                            </span>
+                            <button
+                                type="button"
+                                disabled={grantDetailPageSafe >= grantDetailPageCount}
+                                onClick={() => showGrantDetailPage(Math.min(grantDetailPageCount, grantDetailPageSafe + 1))}
+                            >
+                                {t("Next", "下一页", "下一頁")}
+                            </button>
+                        </nav>
+                    ) : null}
                 </div>
 
                 {/* Authorized Models table */}

@@ -3781,7 +3781,7 @@ func (c *sharedAgentLoopCallbacks) executeToolWithoutSemanticSurface(name, argsJ
 	}
 	policyUserID := c.handler.workflowPolicyOwnerID(c.userID, c.loopCtx)
 	exec := c.handler.executeToolDetailedWithRuntimeContextAndContextTokens(
-		withTrustedAuditPrincipal(execCtx, c.semanticPrincipalID()),
+		withMailboxOwner(withTrustedAuditPrincipal(execCtx, c.semanticPrincipalID()), c.userID),
 		policyUserID,
 		loopContextHasExplicitRuntimeOwner(c.loopCtx),
 		platform,

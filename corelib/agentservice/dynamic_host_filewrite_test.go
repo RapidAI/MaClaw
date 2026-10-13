@@ -252,6 +252,18 @@ func TestReviewedHostFileEditReplacesOnlyAnUnambiguousPassage(t *testing.T) {
 		t.Fatal("workspace escape must fail closed")
 	}
 
+	crlfPath := filepath.Join(dir, "win.go")
+	if err := os.WriteFile(crlfPath, []byte("func run() {\r\n\tpm.Run()\r\n}\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cb.EditReviewedHostFile(context.Background(), principal, "win.go", "func run() {\n\tpm.Run()\n}", "func run() {\n\tpr, err := pm.Run()\n}"); err != nil {
+		t.Fatalf("CRLF passage edit err=%v", err)
+	}
+	winData, err := os.ReadFile(crlfPath)
+	if err != nil || string(winData) != "func run() {\r\n\tpr, err := pm.Run()\r\n}\r\n" {
+		t.Fatalf("CRLF file=%q err=%v", winData, err)
+	}
+
 	// Deleting a passage is a replacement with empty text, not a separate mode.
 	if _, err := cb.EditReviewedHostFile(context.Background(), principal, "main.go", "\nfunc Beta() int { return 1 }", ""); err != nil {
 		t.Fatalf("delete via empty new_string err=%v", err)

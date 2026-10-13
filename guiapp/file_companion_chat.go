@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -257,7 +258,7 @@ func fileCompanionPrompt(name, ext string) string {
 	base := "你是文件伴读。只讨论当前打开的这一个文件：" + name + "。不要引用其他文件。用户没有要求生成新文件时，不要声称已经生成或发送了 PDF。"
 	switch strings.ToLower(ext) {
 	case ".pdf":
-		return base + "查看这份 PDF 可以用工具：pdf_read_pages 读指定页原文；pdf_render_page 把某一页整页渲染成图片；pdf_extract_images 提取文档内嵌位图（矢量图表用渲染）。工具生成的图按「图N」连续编号，回答里写「图N」，宿主会把那张原图放在回答下面展示给用户；没有编号的图不要编造图号。"
+		return base + "查看这份 PDF 可以用工具：pdf_read_pages 读指定页原文；pdf_render_page 把某一页整页渲染成图片；pdf_extract_images 提取文档内嵌位图（矢量图表用渲染）。工具生成的图在本轮从「图1」重新编号，和上一轮的图号无关。回答里写工具刚刚返回的那个「图N」，宿主会把这张原图放在回答下面展示给用户；不要沿用上一轮的编号，也不要自己加一。"
 	case ".xlsx":
 		return base + "不要使用工具。如果用户要求修改这个工作簿，只返回一个完整的 JSON 对象 {\"sheets\":[...]}，不要附加说明。宿主会在工具循环之外整本替换当前文件。只讨论内容时用普通文字回答，不要返回 sheets JSON。"
 	case ".pptx":
@@ -668,6 +669,7 @@ func fileCompanionDisplayMessages(entries []agent.ConversationEntry, figures []c
 	}
 	out := make([]FileCompanionMessage, 0, len(entries))
 	asked := ""
+	pendingPlan := ""
 	for _, entry := range entries {
 		role := strings.ToLower(strings.TrimSpace(entry.Role))
 		if role != "user" && role != "assistant" {
@@ -677,6 +679,10 @@ func fileCompanionDisplayMessages(entries []agent.ConversationEntry, figures []c
 		paper := role == "user" && strings.Contains(raw, fileCompanionPaperMarker)
 		text := raw
 		if role == "user" {
+			if pendingPlan != "" {
+				out = append(out, FileCompanionMessage{Role: "assistant", Reasoning: pendingPlan})
+				pendingPlan = ""
+			}
 			text = fileCompanionVisibleUserText(text)
 			if !paper {
 				asked = text
@@ -688,8 +694,19 @@ func fileCompanionDisplayMessages(entries []agent.ConversationEntry, figures []c
 			continue
 		}
 		reasoning := strings.TrimSpace(entry.ReasoningContent)
+		// The plan is copied into content when that field was empty. That row
+		// is not an answer. A different sentence written beside the call stays
+		// its own bubble, and the plan still waits for the closing answer.
+		if fileCompanionPlanningOnly(entry) {
+			pendingPlan = fileCompanionJoinReasoning(pendingPlan, fileCompanionPlanningText(entry))
+			continue
+		}
 		if text == "" && reasoning == "" {
 			continue
+		}
+		if !fileCompanionEntryHasToolCall(entry) {
+			reasoning = fileCompanionJoinReasoning(pendingPlan, reasoning)
+			pendingPlan = ""
 		}
 		out = append(out, FileCompanionMessage{
 			Role:      role,
@@ -699,10 +716,56 @@ func fileCompanionDisplayMessages(entries []agent.ConversationEntry, figures []c
 			Figures:   fileCompanionFiguresForReply(figures, asked, text),
 		})
 	}
+	if pendingPlan != "" {
+		out = append(out, FileCompanionMessage{Role: "assistant", Reasoning: pendingPlan})
+	}
 	if len(out) == 0 {
 		return nil
 	}
 	return out
+}
+
+func fileCompanionPlanningOnly(entry agent.ConversationEntry) bool {
+	if !fileCompanionEntryHasToolCall(entry) {
+		return false
+	}
+	content := strings.TrimSpace(fileCompanionEntryText(entry.Content))
+	return content == "" || content == strings.TrimSpace(entry.ReasoningContent)
+}
+
+func fileCompanionEntryHasToolCall(entry agent.ConversationEntry) bool {
+	if strings.EqualFold(strings.TrimSpace(entry.FinishReason), "tool_calls") {
+		return true
+	}
+	if entry.ToolCalls == nil {
+		return false
+	}
+	value := reflect.ValueOf(entry.ToolCalls)
+	switch value.Kind() {
+	case reflect.Slice, reflect.Array:
+		return value.Len() > 0
+	default:
+		return false
+	}
+}
+
+func fileCompanionPlanningText(entry agent.ConversationEntry) string {
+	return fileCompanionJoinReasoning(entry.ReasoningContent, fileCompanionEntryText(entry.Content))
+}
+
+func fileCompanionJoinReasoning(prior, next string) string {
+	prior = strings.TrimSpace(prior)
+	next = strings.TrimSpace(next)
+	if prior == "" {
+		return next
+	}
+	if next == "" || prior == next || strings.Contains(prior, next) {
+		return prior
+	}
+	if strings.Contains(next, prior) {
+		return next
+	}
+	return prior + "\n\n" + next
 }
 
 func fileCompanionVisibleUserText(text string) string {

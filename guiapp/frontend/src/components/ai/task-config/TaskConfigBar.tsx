@@ -12,6 +12,7 @@ import {
     isWorkflowChosen,
     needsLocalPath,
     withTaskType,
+    withRunWindow,
     withExpert,
     withLocalWorkspace,
     withCloudWorkspace,
@@ -22,9 +23,11 @@ import {
     workspaceSummaryLabel,
     WORKFLOW_AUTO,
     type RemoteTarget,
+    type RunWindow,
     type TaskDraft,
     type TaskType,
 } from "./taskDraft";
+import { isRunWindowScheduled, nextHourLocalValue, runWindowChipLabel, toDatetimeLocalValue } from "./runWindow";
 import { LATEX_BLANK_TEMPLATE_ID, latexBlankTemplateName, type LatexTemplate } from "../../../utils/latexTemplates";
 import { LatexTemplatePickerPopover } from "./LatexTemplatePickerPopover";
 import type { ExpertOption } from "./ExpertPickerPopover";
@@ -39,7 +42,7 @@ export type { ExpertOption } from "./ExpertPickerPopover";
 export type { WorkflowOption } from "./WorkflowPickerPopover";
 export type { CloudWorkspaceOption } from "./WorkspacePickerPopover";
 
-type ConfigMenu = 'type' | 'expert' | 'workflow' | 'workspace' | 'latex';
+type ConfigMenu = 'type' | 'expert' | 'workflow' | 'workspace' | 'latex' | 'window';
 
 export interface TaskConfigBarProps {
     draft: TaskDraft;
@@ -95,6 +98,8 @@ function configLeadIcon(key: ConfigMenu, draft: TaskDraft, workflowLocked: boole
             return 'file';
         case 'workspace':
             return 'monitor';
+        case 'window':
+            return 'clock';
     }
 }
 
@@ -144,9 +149,11 @@ export function TaskConfigBar({
         workflow: useRef<HTMLButtonElement | null>(null),
         workspace: useRef<HTMLButtonElement | null>(null),
         latex: useRef<HTMLButtonElement | null>(null),
+        window: useRef<HTMLButtonElement | null>(null),
     } satisfies Record<ConfigMenu, RefObject<HTMLButtonElement | null>>;
 
-    const expanded = userExpanded || !isDraftDefault(draft);
+    const scheduledWindow = isRunWindowScheduled(draft);
+    const expanded = userExpanded || !isDraftDefault(draft) || scheduledWindow;
     const expertSpecified = isExpertSpecified(draft);
     const workflowLocked = !canSpecifyWorkflow(draft);
     const expertLocked = !canSpecifyExpert(draft);
@@ -372,6 +379,10 @@ export function TaskConfigBar({
                                 ? (isZh ? "可选择本地工作目录" : "Choose a local working directory")
                                 : undefined,
                     })}
+                    {renderChip('window', "task-config-chip-window", isZh ? "运行时段" : "Window", runWindowChipLabel(draft.runWindow, isZh), {
+                        active: scheduledWindow,
+                        title: isZh ? "立即执行，或设定开始和结束时间" : "Run now, or set a start and optional end",
+                    })}
                 </>
             )}
 
@@ -443,7 +454,196 @@ export function TaskConfigBar({
                     onClose={() => closeMenu('workspace')}
                 />
             )}
+            {menu === 'window' && (
+                <RunWindowPopover
+                    anchor={chipRefs.window.current}
+                    theme={t}
+                    lang={lang}
+                    runWindow={draft.runWindow}
+                    onChange={(next) => onChange(withRunWindow(draft, next))}
+                    onClose={() => closeMenu('window')}
+                />
+            )}
         </div>
+    );
+}
+
+function openDatetimePicker(input: HTMLInputElement | null) {
+    if (!input) return;
+    try {
+        if (typeof input.showPicker === "function") {
+            input.showPicker();
+            return;
+        }
+    } catch {
+        // WebView2 rejects showPicker outside a direct gesture.
+    }
+    input.focus({ preventScroll: true });
+}
+
+function RunWindowDatetimeField({
+    label,
+    testId,
+    pickerLabel,
+    value,
+    min,
+    theme: t,
+    onValue,
+}: {
+    label: string;
+    testId: string;
+    pickerLabel: string;
+    value: string;
+    min?: string;
+    theme: Theme;
+    onValue: (value: string) => void;
+}) {
+    const inputRef = useRef<HTMLInputElement | null>(null);
+    const field: CSSProperties = {
+        width: "100%",
+        boxSizing: "border-box",
+        height: 32,
+        borderRadius: 8,
+        border: `1px solid ${t.fieldBorder}`,
+        background: t.fieldBg,
+        color: t.text,
+        padding: "0 36px 0 8px",
+        fontSize: 13,
+        fontFamily: "system-ui, -apple-system, sans-serif",
+        colorScheme: t.isDark ? "dark" : "light",
+    };
+    return (
+        <div>
+            <label htmlFor={testId} style={{ display: "block", fontSize: 12, color: t.textMuted, marginBottom: 4 }}>{label}</label>
+            <span className="mc-taskcfg-datetime-wrap">
+                <input
+                    ref={inputRef}
+                    id={testId}
+                    className="mc-taskcfg-datetime"
+                    data-testid={testId}
+                    type="datetime-local"
+                    value={value}
+                    min={min}
+                    onChange={(event) => onValue(event.target.value)}
+                    style={field}
+                />
+                <button
+                    type="button"
+                    className="mc-taskcfg-datetime-btn"
+                    data-testid={`${testId}-picker`}
+                    aria-label={pickerLabel}
+                    style={{ color: t.text }}
+                    onMouseDown={(event) => event.preventDefault()}
+                    onClick={() => openDatetimePicker(inputRef.current)}
+                >
+                    <TaskConfigIcon name="calendar" size={15} />
+                </button>
+            </span>
+        </div>
+    );
+}
+
+function RunWindowPopover({
+    anchor,
+    theme: t,
+    lang,
+    runWindow,
+    onChange,
+    onClose,
+}: {
+    anchor: HTMLElement | null;
+    theme: Theme;
+    lang?: string;
+    runWindow?: RunWindow;
+    onChange: (next: RunWindow) => void;
+    onClose: () => void;
+}) {
+    const isZh = !lang?.startsWith("en");
+    const scheduled = runWindow?.mode === "scheduled";
+    const startValue = runWindow?.startAt || "";
+    const endValue = runWindow?.endAt || "";
+    const chooseImmediate = () => {
+        onChange({ mode: "immediate", startAt: "", endAt: "" });
+        onClose();
+    };
+    const chooseScheduled = () => {
+        onChange({
+            mode: "scheduled",
+            startAt: startValue || nextHourLocalValue(),
+            endAt: endValue,
+        });
+    };
+    return (
+        <TaskConfigPopoverShell anchor={anchor} theme={t} onClose={onClose} width={360} data-testid="task-config-popover-window">
+            <div style={{ padding: "8px 10px 12px" }}>
+                <div
+                    role="button"
+                    tabIndex={0}
+                    data-testid="run-window-immediate"
+                    className="mc-taskcfg-item"
+                    onClick={chooseImmediate}
+                    onKeyDown={popoverItemKeyDown(chooseImmediate)}
+                    style={{
+                        padding: "8px 10px",
+                        borderRadius: 10,
+                        cursor: "pointer",
+                        fontSize: 13.5,
+                        fontWeight: scheduled ? 400 : 600,
+                        color: scheduled ? t.text : t.btnColor,
+                        background: scheduled ? "transparent" : `color-mix(in srgb, ${t.btnColor} 9%, ${t.bg})`,
+                    }}
+                >
+                    {isZh ? "立即" : "Now"}
+                    <span style={{ display: "block", fontSize: 12, fontWeight: 400, color: t.textMuted, marginTop: 2 }}>
+                        {isZh ? "创建后马上执行" : "Start as soon as the task is created"}
+                    </span>
+                </div>
+                <div
+                    role="button"
+                    tabIndex={0}
+                    data-testid="run-window-scheduled"
+                    className="mc-taskcfg-item"
+                    onClick={chooseScheduled}
+                    onKeyDown={popoverItemKeyDown(chooseScheduled)}
+                    style={{
+                        padding: "8px 10px",
+                        borderRadius: 10,
+                        cursor: "pointer",
+                        fontSize: 13.5,
+                        fontWeight: scheduled ? 600 : 400,
+                        color: scheduled ? t.btnColor : t.text,
+                        background: scheduled ? `color-mix(in srgb, ${t.btnColor} 9%, ${t.bg})` : "transparent",
+                    }}
+                >
+                    {isZh ? "定时" : "Scheduled"}
+                    <span style={{ display: "block", fontSize: 12, fontWeight: 400, color: t.textMuted, marginTop: 2 }}>
+                        {isZh ? "到开始时间再执行。结束时间可不填，不填则任务完成即结束" : "Wait until the start time. Leave the end empty to run until the work finishes"}
+                    </span>
+                </div>
+                {scheduled && (
+                    <div style={{ display: "grid", gap: 10, padding: "8px 10px 0" }}>
+                        <RunWindowDatetimeField
+                            label={isZh ? "开始" : "Start"}
+                            testId="run-window-start"
+                            pickerLabel={isZh ? "选择开始时间" : "Choose start time"}
+                            value={startValue}
+                            min={toDatetimeLocalValue(new Date())}
+                            theme={t}
+                            onValue={(startAt) => onChange({ mode: "scheduled", startAt, endAt: endValue })}
+                        />
+                        <RunWindowDatetimeField
+                            label={isZh ? "结束（可选）" : "End (optional)"}
+                            testId="run-window-end"
+                            pickerLabel={isZh ? "选择结束时间" : "Choose end time"}
+                            value={endValue}
+                            min={startValue || undefined}
+                            theme={t}
+                            onValue={(endAt) => onChange({ mode: "scheduled", startAt: startValue, endAt })}
+                        />
+                    </div>
+                )}
+            </div>
+        </TaskConfigPopoverShell>
     );
 }
 

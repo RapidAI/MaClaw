@@ -60,10 +60,15 @@ import {
     compactCodingTrailPath,
     codingAgentEditedFileDetailText,
     codingAgentPreviewTargetPaths,
+    codingAgentShellExplorationTarget,
+    codingAgentShellSearchTarget,
     codingAgentToolDisplayName,
+    codingAgentToolDetailText,
+    codingAgentToolOperandText,
     CodingAgentPreviewFocusContext,
     isCodingAgentChatHiddenEvent,
     codingAgentMessagesHavePlainTrail,
+    openCodingAgentToolProgress,
     isCodingAgentPlainTrailEvent,
     isCodingAgentProgressContent,
     pickCodingAgentFeedHeader,
@@ -1456,6 +1461,8 @@ describe('CodingAgentProgressStatus', () => {
         expect(codingAgentToolDisplayName('apply_patch')).toBe('Edit');
         expect(codingAgentToolDisplayName('ssh_write_file')).toBe('Write');
         expect(codingAgentToolDisplayName('bash')).toBe('$');
+        expect(codingAgentToolDisplayName('ripgrep')).toBe('Search');
+        expect(codingAgentToolDisplayName('code_navigation')).toBe('Explore');
         expect(codingAgentToolDisplayName('ssh_bash')).toBe('$');
         expect(isCodingAgentChatHiddenEvent({ phase: 'result', title: '', event: 'command_summary' })).toBe(true);
         expect(isCodingAgentChatHiddenEvent({ phase: 'result', title: '', event: 'quality_summary' })).toBe(true);
@@ -1491,6 +1498,18 @@ describe('CodingAgentProgressStatus', () => {
         expect(trail?.querySelector('.assistant-reasoning-live-label')?.textContent).toBe('Working');
     });
 
+    it('uses the tool operand as the live object and keeps the task title off it', () => {
+        const read = parseCodingAgentProgress('Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","title":"需求理解","detail":"read_file","files":["snake.cpp"]}');
+        expect(codingAgentToolOperandText(read, 'zh-Hans', 72)).toBe('snake.cpp');
+        const search = parseCodingAgentProgress('Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","title":"需求理解","detail":"ripgrep","target":"snake.cpp · Beep","files":["snake.cpp"]}');
+        expect(codingAgentToolOperandText(search, 'zh-Hans', 72)).toBe('snake.cpp · Beep');
+        const command = parseCodingAgentProgress('Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","title":"需求理解","detail":"bash","command":"git status"}');
+        expect(codingAgentToolOperandText(command, 'zh-Hans', 72)).toBe('git status');
+        const titledOnly = parseCodingAgentProgress('Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","title":"需求理解","detail":"todo_write"}');
+        expect(codingAgentToolOperandText(titledOnly, 'zh-Hans', 72)).toBeUndefined();
+        expect(codingAgentToolDetailText(titledOnly!, 'zh-Hans', 72)).toBe('需求理解');
+    });
+
     it('renders apply_patch as Edit in the activity trail', () => {
         const { container } = render(
             <>
@@ -1503,6 +1522,249 @@ describe('CodingAgentProgressStatus', () => {
         );
         expect(container.querySelector('[data-testid="coding-agent-tool-line"]')?.textContent).toContain('Edit');
         expect(container.querySelector('[data-testid="coding-agent-tool-line"]')?.textContent).toContain('main.go');
+    });
+
+    it('keeps search and source exploration targets visible like other tool calls', () => {
+        const { container } = render(
+            <>
+                {renderCodingAgentActivityFeed(
+                    [makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T1","title":"Fix auth","turn_id":"turn-1","detail":"ripgrep","target":"func main · src/main.go"}')],
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'zh-Hans',
+                )}
+            </>,
+        );
+        const search = container.querySelector('[data-testid="coding-agent-tool-line"]');
+        expect(search?.textContent).toContain('Search');
+        expect(search?.textContent).toContain('func main · src/main.go');
+        expect(search?.getAttribute('data-tool-collapsed')).toBe('false');
+        expect(search?.textContent).not.toContain('Fix auth');
+
+        const explored = render(
+            <>
+                {renderCodingAgentActivityFeed(
+                    [makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"tool_finished","phase":"running","task_id":"T1","title":"Fix auth","turn_id":"turn-1","detail":"code_navigation","outcome":"success","target":"buildTask · guiapp/coding_subagent.go"}')],
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'zh-Hans',
+                )}
+            </>,
+        );
+        const line = explored.container.querySelector('[data-testid="coding-agent-tool-line"]');
+        expect(line?.textContent).toContain('Explore');
+        expect(line?.textContent).toContain('buildTask · guiapp/coding_subagent.go');
+        expect(line?.getAttribute('data-tool-collapsed')).toBe('false');
+
+        const codegraph = render(
+            <>
+                {renderCodingAgentActivityFeed(
+                    [makeProgressMsg('Coding Agent Event: {"version":1,"agent":"coding","event":"tool_started","phase":"running","task_id":"T1","title":"Fix auth","turn_id":"turn-1","detail":"bash","command":"codegraph explore \\"buildTask\\"","target":"buildTask"}')],
+                    { text: '#111827', fieldLabel: '#6b7280' },
+                    'zh-Hans',
+                )}
+            </>,
+        );
+        const graph = codegraph.container.querySelector('[data-testid="coding-agent-tool-line"]');
+        expect(graph?.textContent).toContain('Explore');
+        expect(graph?.textContent).toContain('buildTask');
+        expect(graph?.textContent).not.toContain('codegraph explore');
+        expect(graph?.getAttribute('data-tool-collapsed')).toBe('false');
+
+        expect(codingAgentShellExplorationTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'echo codegraph explore buildTask',
+        })).toBeUndefined();
+        expect(codingAgentShellExplorationTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'cd src && ./tools/codegraph explore handler.ServeHTTP',
+        })).toBe('handler.ServeHTTP');
+        expect(codingAgentShellExplorationTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'codegraph explore --json handler.ServeHTTP',
+        })).toBe('handler.ServeHTTP');
+        expect(codingAgentShellExplorationTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'codegraph explore --limit 20 handler.ServeHTTP',
+        })).toBe('handler.ServeHTTP');
+        expect(codingAgentShellExplorationTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'codegraph explore --limit',
+        })).toBe('explore');
+        expect(openCodingAgentToolProgress([
+            makeProgressMsg('Coding Agent Event: {"agent":"coding","event":"tool_started","phase":"running","turn_id":"t1","detail":"bash","command":"codegraph explore buildTask","target":"buildTask"}', 'start'),
+            makeProgressMsg('Coding Agent Event: {"agent":"coding","event":"assistant_note","phase":"running","turn_id":"t1","detail":"looking"}', 'note'),
+        ], 'bash')?.target).toBe('buildTask');
+        expect(openCodingAgentToolProgress([
+            makeProgressMsg('Coding Agent Event: {"agent":"coding","event":"tool_started","phase":"running","turn_id":"t1","detail":"bash","target":"buildTask"}', 'start2'),
+            makeProgressMsg('Coding Agent Event: {"agent":"coding","event":"tool_finished","phase":"running","turn_id":"t1","detail":"bash","outcome":"success"}', 'done'),
+        ], 'bash')).toBeUndefined();
+        expect(openCodingAgentToolProgress([
+            makeProgressMsg('Coding Agent Event: {"agent":"coding","event":"tool_started","phase":"running","detail":"bash","target":"old-symbol"}', 'old'),
+            makeProgressMsg('Coding Agent Event: {"agent":"coding","event":"assistant_note","phase":"running","turn_id":"t1","detail":"looking"}', 'note2'),
+        ], 'bash')).toBeUndefined();
+        expect(codingAgentShellExplorationTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'gopls definition -json src/main.go:10:2',
+        })).toBe('src/main.go');
+        expect(codingAgentPreviewTargetPaths({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            target: 'guiapp/coding_subagent.go',
+        })).toEqual(['guiapp/coding_subagent.go']);
+        expect(codingAgentPreviewTargetPaths({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            target: 'handler.ServeHTTP',
+        })).toEqual([]);
+        expect(codingAgentPreviewTargetPaths({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            target: 'net/http.Server',
+        })).toEqual([]);
+        expect(codingAgentShellSearchTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'findstr /n /i "bmp frame_ window_live BITMAPFILEHEADER WriteFile" F:\\test-prog\\snake.cpp',
+        })).toBe('snake.cpp · bmp frame_ window_live BITMAPFILEHEADER WriteFile');
+        expect(codingAgentShellSearchTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: "cd F:\\test-prog; Select-String -Path snake.cpp -Pattern 'playTone|tonecheck|ToneCheck|TONE_|g_sound|Beep' | ForEach-Object { $_.Line }",
+        })).toBe('snake.cpp · playTone|tonecheck|ToneCheck|TONE_|g_sound|Beep');
+        expect(codingAgentShellSearchTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'echo findstr playTone snake.cpp',
+        })).toBeUndefined();
+        expect(codingAgentShellSearchTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'findstr /n /i "bmp frame" snake.cpp 2>&1',
+        })).toBe('snake.cpp · bmp frame');
+        expect(codingAgentShellSearchTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'cd F:\\test-prog; Select-String -Path build\\CMakeCache.txt -Pattern "CMAKE_CXX_COMPILER:|CMAKE_LINKER" | ForEach-Object { $_.Line }',
+        })).toBe('build/CMakeCache.txt · CMAKE_CXX_COMPILER:|CMAKE_LINKER');
+        expect(codingAgentShellSearchTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'cmake --build build 2>&1 | Select-Object -Last 25',
+        })).toBeUndefined();
+        expect(codingAgentShellSearchTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'cd F:\\test-prog; cmd /c "findstr /i /c:\\"tone\\" /c:\\"sound\\" /c:\\"silent\\" /c:\\"gui\\" build\\\\selftest_before.txt"',
+        })).toBe('build/selftest_before.txt · tone | sound | silent | gui');
+        expect(codingAgentShellSearchTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'cd F:\\test-prog; Get-Content build\\selftest_before.txt | Select-String -Pattern "FAIL|passed|gui "',
+        })).toBe('build/selftest_before.txt · FAIL|passed|gui');
+        expect(codingAgentShellSearchTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'cd F:\\test-prog; .\\build\\Release\\snake.exe --selftest 2>&1 | Select-String -Pattern "FAIL|passed|logic|gui "',
+        })).toBe('FAIL|passed|logic|gui');
+        expect(codingAgentShellSearchTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'grep -n "selftest\\|tonecheck\\|main(\\|WinMain" F:\\test-prog\\snake.cpp',
+        })).toBe('snake.cpp · selftest\\|tonecheck\\|main(\\|WinMain');
+        expect(codingAgentShellSearchTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'Get-Content build\\selftest_before.txt | Select-String -Pattern snake.cpp',
+        })).toBe('build/selftest_before.txt · snake.cpp');
+        expect(codingAgentShellSearchTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'Get-Content -Tail 20 build\\selftest_before.txt | Select-String -Pattern FAIL',
+        })).toBe('build/selftest_before.txt · FAIL');
+        expect(codingAgentShellSearchTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'Get-Content build\\selftest_before.txt -Tail 20 | Select-String -Pattern FAIL',
+        })).toBe('build/selftest_before.txt · FAIL');
+        expect(codingAgentShellSearchTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'Get-Content build\\selftest_before.txt 2>&1 | Select-String -Pattern FAIL',
+        })).toBe('build/selftest_before.txt · FAIL');
+        expect(codingAgentShellSearchTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'Get-Content build\\selftest_before.txt & Select-String -Pattern FAIL',
+        })).toBe('FAIL');
+        expect(codingAgentShellExplorationTarget({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'codegraph explore "handler | grep"',
+            target: 'handler | grep',
+        })).toBe('handler | grep');
+        expect(codingAgentPreviewTargetPaths({
+            phase: 'running',
+            title: '',
+            event: 'tool_started',
+            detail: 'bash',
+            command: 'Select-String -Path snake.cpp -Pattern playTone',
+            target: 'snake.cpp · playTone',
+        })).toEqual(['snake.cpp']);
     });
 
     it('collapses completed tool details but keeps a concise receipt visible', () => {

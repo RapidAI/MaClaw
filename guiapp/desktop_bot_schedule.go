@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
@@ -209,6 +211,191 @@ func (a *App) DeleteDesktopBotSchedule(botID, taskID string) error {
 	return nil
 }
 
+// desktopBotBusySink records schedule runs that are on the shared desktop.
+// Tests read it; production also emits desktop-bot-busy for the Bot page.
+var desktopBotBusySink func(botID string, busy bool)
+
+// desktopBotBusyCount is how many schedule occurrences of one owner and bot
+// are inside relay right now. The Bot page reads it on open, because the
+// busy event fired while that page was closed.
+var (
+	desktopBotBusyMu    sync.Mutex
+	desktopBotBusySeq   int64
+	desktopBotBusyCount = map[string]int{}
+)
+
+func desktopBotBusyKey(owner, botID string) string {
+	return owner + "\x00" + botID
+}
+
+func noteDesktopBotBusyCount(owner, botID string, busy bool) (int64, int) {
+	desktopBotBusyMu.Lock()
+	defer desktopBotBusyMu.Unlock()
+	desktopBotBusySeq++
+	key := desktopBotBusyKey(owner, botID)
+	count := desktopBotBusyCount[key]
+	if busy {
+		count++
+	} else if count > 0 {
+		count--
+	}
+	if count <= 0 {
+		delete(desktopBotBusyCount, key)
+		count = 0
+	} else {
+		desktopBotBusyCount[key] = count
+	}
+	return desktopBotBusySeq, count
+}
+
+// DesktopBotBusyMark is one bot whose schedule still holds the shared desktop.
+type DesktopBotBusyMark struct {
+	OwnerID string `json:"owner_id"`
+	BotID   string `json:"bot_id"`
+	Count   int    `json:"count"`
+}
+
+// DesktopBotBusySnapshot is the schedule holds for one account.
+// Seq moves forward on every hold change. A page that already applied a
+// newer event ignores an older snapshot. Runs are chat turns still on the
+// keyboard, including ones whose bubble has aged off the pending list.
+type DesktopBotBusySnapshot struct {
+	Seq   int64                `json:"seq"`
+	Marks []DesktopBotBusyMark `json:"marks"`
+	Runs  []string             `json:"runs"`
+}
+
+// GetDesktopBotBusy lists schedule holds for owner. An empty owner lists every
+// account, which is what a signed-out page uses to keep the keyboard closed.
+func (a *App) GetDesktopBotBusy(owner string) DesktopBotBusySnapshot {
+	owner = strings.TrimSpace(owner)
+	desktopBotBusyMu.Lock()
+	out := DesktopBotBusySnapshot{Seq: desktopBotBusySeq, Marks: []DesktopBotBusyMark{}}
+	for key, count := range desktopBotBusyCount {
+		if count <= 0 {
+			continue
+		}
+		markOwner, botID, ok := strings.Cut(key, "\x00")
+		if !ok || botID == "" || (owner != "" && markOwner != owner) {
+			continue
+		}
+		out.Marks = append(out.Marks, DesktopBotBusyMark{OwnerID: markOwner, BotID: botID, Count: count})
+	}
+	sort.Slice(out.Marks, func(i, j int) bool {
+		if out.Marks[i].BotID == out.Marks[j].BotID {
+			return out.Marks[i].OwnerID < out.Marks[j].OwnerID
+		}
+		return out.Marks[i].BotID < out.Marks[j].BotID
+	})
+	desktopBotBusyMu.Unlock()
+	out.Runs = desktopDrivingRuns(owner)
+	return out
+}
+
+func desktopRunOwner(sessionKey string) string {
+	sessionKey = strings.TrimSpace(sessionKey)
+	split := strings.LastIndex(sessionKey, ":")
+	if split <= 0 {
+		return ""
+	}
+	return strings.TrimSpace(sessionKey[:split])
+}
+
+// desktopDrivingRuns lists bots whose cloud-desktop turn is still on the
+// keyboard. A turn that stopped to ask the person is not driving. An empty
+// owner keeps a turn whose session did not name an account, so that keyboard
+// stays closed for whoever has the page open.
+func desktopDrivingRuns(owner string) []string {
+	owner = strings.TrimSpace(owner)
+	activeDesktopRunsMu.Lock()
+	defer activeDesktopRunsMu.Unlock()
+	seen := map[string]struct{}{}
+	for _, run := range activeDesktopRuns {
+		if run == nil || run.WaitingForUser {
+			continue
+		}
+		botID := strings.TrimSpace(run.BotID)
+		if botID == "" {
+			continue
+		}
+		runOwner := desktopRunOwner(run.SessionKey)
+		if owner != "" && runOwner != "" && runOwner != owner {
+			continue
+		}
+		seen[botID] = struct{}{}
+	}
+	out := make([]string, 0, len(seen))
+	for botID := range seen {
+		out = append(out, botID)
+	}
+	sort.Strings(out)
+	return out
+}
+
+func desktopRunDriving(botID string) (bool, string) {
+	botID = strings.TrimSpace(botID)
+	activeDesktopRunsMu.Lock()
+	defer activeDesktopRunsMu.Unlock()
+	owner := ""
+	driving := false
+	prefix := botID + desktopRunSeparator
+	for key, run := range activeDesktopRuns {
+		if run == nil || !strings.HasPrefix(key, prefix) || run.WaitingForUser {
+			continue
+		}
+		driving = true
+		if owner == "" {
+			owner = desktopRunOwner(run.SessionKey)
+		}
+	}
+	return driving, owner
+}
+
+// publishDesktopRunDriving tells the Bot page whether this bot's turn still
+// has the shared keyboard. The page may have dropped the chat bubble.
+func (a *App) publishDesktopRunDriving(botID string) {
+	botID = strings.TrimSpace(botID)
+	if a == nil || botID == "" {
+		return
+	}
+	driving, owner := desktopRunDriving(botID)
+	raw, err := json.Marshal(map[string]any{
+		"bot_id":      botID,
+		"owner_id":    owner,
+		"run_driving": driving,
+	})
+	if err != nil {
+		return
+	}
+	a.emitEvent("desktop-bot-busy", string(raw))
+}
+
+func (a *App) noteDesktopBotBusy(botID, owner string, busy bool) {
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return
+	}
+	owner = strings.TrimSpace(owner)
+	seq, count := noteDesktopBotBusyCount(owner, botID, busy)
+	if desktopBotBusySink != nil {
+		desktopBotBusySink(botID, busy)
+	}
+	if a == nil {
+		return
+	}
+	raw, err := json.Marshal(map[string]any{
+		"bot_id":   botID,
+		"owner_id": owner,
+		"busy":     busy,
+		"count":    count,
+		"seq":      seq,
+	})
+	if err != nil {
+		return
+	}
+	a.emitEvent("desktop-bot-busy", string(raw))
+}
+
 func cancelDesktopBotSchedules(mgr *scheduler.Manager, owner, botID, name string) int {
 	if mgr == nil {
 		return 0
@@ -240,11 +427,28 @@ func (a *App) executeDesktopBotScheduledTask(ctx context.Context, task *schedule
 		return "", fmt.Errorf("desktop bot id is required")
 	}
 	order := "This occurrence of a schedule is already set. Do the work below once and put the result in the reply. Do not create, change, or cancel a schedule.\n" + strings.TrimSpace(task.Action)
+	// The chat has no pending bubble for a schedule, but the run still uses
+	// the shared desktop. The Bot page locks takeover until this returns.
+	// A login handoff is the end of that hold: the person has to take the keys.
+	owner := task.DesktopBotOwner
+	held := true
+	releaseDesktop := func() {
+		if !held {
+			return
+		}
+		held = false
+		a.noteDesktopBotBusy(task.DesktopBotID, owner, false)
+	}
+	a.noteDesktopBotBusy(task.DesktopBotID, owner, true)
+	defer releaseDesktop()
 	// A scheduled occurrence has no client request behind it, so there is no
 	// request id to name the run by. setActiveDesktopRunID skips empty ones,
 	// which leaves this turn unaddressable for supplements — it has no
 	// conversation waiting to add anything.
 	result, err := a.relayDesktopBot(ctx, task.DesktopBotID, order, "execute", "")
+	if result.UserControl || strings.TrimSpace(result.AttentionReason) != "" {
+		releaseDesktop()
+	}
 	text := strings.TrimSpace(result.Text)
 	if err != nil && text == "" {
 		text = err.Error()

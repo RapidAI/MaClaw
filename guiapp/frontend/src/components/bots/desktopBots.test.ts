@@ -1,12 +1,24 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest';
-import { addDesktopBot, botsForUser, botTranscriptGeneration, clearLiveBotTurn, currentInProgressBotTasks, deleteDesktopBot, desktopBotAccountId, desktopBotFiles, desktopBotImages, desktopBotLocalPaths, desktopTaskStep, inProgressBotTasks, messagesForBot, noteLiveBotTurn, renameDesktopBot, saveBotMessages, settlePendingBotReply, userRequestBefore, BOT_PENDING_REPLY_WAIT_MS } from './desktopBots';
+import { addDesktopBot, botsForUser, botTaskText, botTranscriptGeneration, clearLiveBotTurn, confirmedWorkOrder, currentInProgressBotTasks, deleteDesktopBot, desktopBotAccountId, desktopBotFiles, desktopBotImages, desktopBotLocalPaths, desktopCreditReadout, desktopTaskStep, inProgressBotTasks, messageNeedsComputerTakeover, messagesForBot, namesLaterTime, noteLiveBotTurn, renameDesktopBot, saveBotMessages, settlePendingBotReply, userRequestBefore, BOT_PENDING_REPLY_WAIT_MS } from './desktopBots';
 
 beforeEach(() => {
     localStorage.clear();
 });
 
 describe('desktop bots', () => {
+    it('turns an approved arrangement into the execute order', () => {
+        const plan = '下一轮就去跑 apt get install evince，把 PDF 阅读器装上。';
+        expect(confirmedWorkOrder(plan)).toContain(plan);
+        expect(confirmedWorkOrder(plan)).toContain('不实际');
+        expect(confirmedWorkOrder(plan)).toContain('不要做');
+        expect(confirmedWorkOrder('  ')).toBe('');
+        expect(namesLaterTime(plan)).toBe(false);
+        expect(namesLaterTime('安装一个pdf阅读器')).toBe(false);
+        expect(namesLaterTime('每天凌晨删掉下载目录')).toBe(true);
+        expect(namesLaterTime('每个工作日早上 8:30 做简报')).toBe(true);
+    });
+
     it('keeps each user on a separate bot list and desktop identity', () => {
         addDesktopBot('alice', 1);
         addDesktopBot('alice', 2);
@@ -340,6 +352,99 @@ describe('desktop bots', () => {
         ]);
     });
 
+    it('shows the confirmed arrangement instead of the confirm, return, or secret control', () => {
+        const now = 1_700_000_000_000;
+        const id = (stamp: number, suffix: string) => `m-${stamp.toString(36)}-${suffix}`;
+        const confirm = '安排已确认。请按你上一条安排执行。做完、失败或需要我时，在对话里告诉我。';
+        const arrangement = '打开小红书，写三篇产品笔记并配封面图。确认后按这个安排执行。';
+        saveBotMessages('alice', 'bot_promo', [
+            { id: id(now, 'user'), role: 'user', content: '做小红书宣传，产品是台灯，发三篇' },
+            { id: id(now, 'ack'), role: 'assistant', content: '你要做三篇台灯笔记。', ack: true, understood: true },
+            { id: id(now, 'old'), role: 'assistant', content: '更早的安排，不要用这句。', phase: 'plan' },
+            { id: id(now + 1, 'more'), role: 'user', content: '封面用产品图' },
+            { id: id(now + 1, 'plan'), role: 'assistant', content: arrangement, phase: 'plan' },
+            { id: id(now + 2, 'confirm'), role: 'user', content: confirm, phase: 'execute' },
+            { id: id(now + 2, 'told'), role: 'assistant', content: '我按这个安排做。', ack: true, understood: true },
+            { id: id(now + 2, 'run'), role: 'assistant', content: '', pending: true, phase: 'execute' },
+        ]);
+        expect(inProgressBotTasks('alice', now).map(task => task.text)).toEqual([arrangement]);
+
+        const returned = '登录或验证已在当前桌面浏览器完成，请沿用这个登录状态继续。';
+        saveBotMessages('alice', 'bot_login', [
+            { id: id(now, 'user'), role: 'user', content: '登录邮箱后导出账单' },
+            { id: id(now, 'hand'), role: 'assistant', content: '请在这个浏览器里登录。', userControl: true, attentionReason: 'login' },
+            { id: id(now + 3, 'back'), role: 'user', content: returned, phase: 'execute' },
+            { id: id(now + 3, 'run'), role: 'assistant', content: '', pending: true, phase: 'execute' },
+        ]);
+        expect(inProgressBotTasks('alice', now).find(task => task.botId === 'bot_login')?.text).toBe('登录邮箱后导出账单');
+
+        saveBotMessages('alice', 'bot_secret', [
+            { id: id(now, 'user'), role: 'user', content: '打开后台并登录' },
+            { id: id(now + 4, 'saved'), role: 'user', content: '已在本机保存 SITE_PASSWORD。', phase: 'execute' },
+            { id: id(now + 4, 'run'), role: 'assistant', content: '', pending: true, phase: 'execute' },
+        ]);
+        expect(inProgressBotTasks('alice', now).find(task => task.botId === 'bot_secret')?.text).toBe('打开后台并登录');
+
+        const filled = [
+            { id: id(now, 'user'), role: 'user' as const, content: '把密码填进登录框' },
+            { id: id(now + 5, 'filled'), role: 'user' as const, content: 'SITE_PASSWORD 已在本地填入当前密码框。请沿用这个结果继续，不要向我索要它的内容。' },
+            { id: id(now + 5, 'run'), role: 'assistant' as const, content: '', pending: true, phase: 'execute' as const },
+        ];
+        expect(botTaskText(filled, 2)).toBe('把密码填进登录框');
+
+        const queued = [
+            { id: id(now, 'user'), role: 'user' as const, content: '做小红书宣传' },
+            { id: id(now, 'plan'), role: 'assistant' as const, content: arrangement, phase: 'plan' as const },
+            { id: id(now + 6, 'wait'), role: 'user' as const, content: confirm, queued: true, phase: 'execute' as const },
+        ];
+        expect(botTaskText(queued, 2)).toBe(arrangement);
+        expect(botTaskText([
+            { id: 'u', role: 'user', content: '做小红书宣传' },
+            { id: 'c', role: 'user', content: confirm },
+            { id: 'a', role: 'assistant', content: '', pending: true, phase: 'execute' },
+        ], 2)).toBe('做小红书宣传');
+
+        expect(botTaskText([
+            { id: 'old', role: 'assistant', content: '北京今天晴，25 度。' },
+            { id: 'u', role: 'user', content: '做小红书宣传，产品是台灯，发三篇' },
+            { id: 'more', role: 'user', content: '封面用产品图' },
+            { id: 'ack', role: 'assistant', content: '你要发三篇，封面用产品图。', ack: true, understood: true },
+            { id: 'c', role: 'user', content: confirm },
+            { id: 'run', role: 'assistant', content: '', pending: true, phase: 'execute' },
+        ], 5)).toBe('做小红书宣传，产品是台灯，发三篇；封面用产品图');
+
+        expect(botTaskText([
+            { id: 'plan', role: 'assistant', content: arrangement, phase: 'plan' },
+            { id: 'who', role: 'user', content: '你是谁呀?' },
+            { id: 'chat', role: 'assistant', content: '我是你在这台云桌面上的同事。', chat: true },
+            { id: 'c', role: 'user', content: confirm },
+            { id: 'run', role: 'assistant', content: '', pending: true, phase: 'execute' },
+        ], 4)).toBe(arrangement);
+
+        expect(botTaskText([
+            { id: 'u', role: 'user', content: '登录邮箱后导出账单' },
+            { id: 'hand', role: 'assistant', content: '请在这个浏览器里登录。', userControl: true, attentionReason: 'login' },
+            { id: 'c', role: 'user', content: confirm },
+            { id: 'run', role: 'assistant', content: '', pending: true, phase: 'execute' },
+        ], 3)).toBe('登录邮箱后导出账单');
+
+        expect(botTaskText([
+            { id: 'old-user', role: 'user', content: '上一件已经做完的事' },
+            { id: 'old-plan', role: 'assistant', content: '更早的安排，确认后执行。', phase: 'plan' },
+            { id: 'u', role: 'user', content: '看看北京天气' },
+            { id: 'result', role: 'assistant', content: '北京今天晴，25 度。', phase: 'execute' },
+            { id: 'c', role: 'user', content: confirm },
+            { id: 'run', role: 'assistant', content: '', pending: true, phase: 'execute' },
+        ], 5)).toBe('看看北京天气');
+
+        expect(botTaskText([
+            { id: 'u', role: 'user', content: '截屏发我' },
+            { id: 'shot', role: 'assistant', content: '已截屏并发送。图片已附在上方，可直接查看。', phase: 'plan' },
+            { id: 'c', role: 'user', content: confirm },
+            { id: 'run', role: 'assistant', content: '', pending: true, phase: 'execute' },
+        ], 3)).toBe('截屏发我');
+    });
+
     it('keeps a handoff after the turn settles, until a later reply takes over', () => {
         const now = 1_700_000_000_000;
         const id = (stamp: number, suffix: string) => `m-${stamp.toString(36)}-${suffix}`;
@@ -444,7 +549,84 @@ describe('desktop bots', () => {
         expect(empty).toEqual([]);
         expect(currentInProgressBotTasks('nobody', now + 60_000)).toBe(empty);
         expect(desktopBotAccountId({ remote_user_id: 'alice', remote_email: 'a@b.c' })).toBe('alice');
-        expect(desktopBotAccountId({ remote_email: 'a@b.c' })).toBe('a@b.c');
+        expect(desktopBotAccountId({ remote_user_id: '  alice  ', remote_email: 'a@b.c' })).toBe('alice');
+        expect(desktopBotAccountId({ remote_email: '  a@b.c  ' })).toBe('a@b.c');
         expect(desktopBotAccountId(null)).toBe('local');
+    });
+
+    it('asks for the computer when a reply needs a person at the desktop', () => {
+        expect(messageNeedsComputerTakeover({ content: '缺少用户扫描二维码登录小红书，笔记尚未发布。' })).toBe(true);
+        expect(messageNeedsComputerTakeover({ content: '请在这个桌面的浏览器里完成登录。', attentionReason: 'login_wall' })).toBe(true);
+        expect(messageNeedsComputerTakeover({ content: '页面已登录，账号 Dr.Daniel。标题和图片都已就位。' })).toBe(false);
+        expect(messageNeedsComputerTakeover({ content: '已通过扫码登录并发布成功。' })).toBe(false);
+        expect(messageNeedsComputerTakeover({ content: '笔记配图使用了二维码。' })).toBe(false);
+        expect(messageNeedsComputerTakeover({ content: '登录失败', failed: true, userControl: true })).toBe(false);
+    });
+
+    it('warns while official credits can still stop a desktop task', () => {
+        expect(desktopCreditReadout({
+            mode: 'default',
+            authorized: true,
+            windows: [{ limit: 400, used: 320 }],
+        })).toEqual({ total: 400, remaining: 80, notice: 'low' });
+        expect(desktopCreditReadout({
+            mode: 'default',
+            authorized: true,
+            status: 'period_limited',
+            windows: [{ limit: 400, used: 400 }],
+        })?.notice).toBe('empty');
+        expect(desktopCreditReadout({
+            mode: 'default',
+            authorized: true,
+            windows: [
+                { limit: 1000, used: 100 },
+                { limit: 200, used: 170, held: 10 },
+            ],
+        })).toEqual({ total: 200, remaining: 20, notice: 'low' });
+        expect(desktopCreditReadout({
+            mode: 'default',
+            authorized: true,
+            windows: [{ limit: 400, used: 100 }],
+        })?.notice).toBe('');
+        expect(desktopCreditReadout({
+            mode: 'default',
+            authorized: true,
+            total: 6399.52,
+            remaining: 462.56,
+        })?.notice).toBe('');
+        expect(desktopCreditReadout({
+            mode: 'default',
+            authorized: true,
+            total: 6399.52,
+            remaining: 100,
+        })?.notice).toBe('');
+        expect(desktopCreditReadout({
+            mode: 'default',
+            authorized: true,
+            total: 6399.52,
+            remaining: 99.99,
+        })?.notice).toBe('low');
+        expect(desktopCreditReadout({
+            mode: 'default',
+            authorized: true,
+            windows: [
+                { group: 'welcome', limit: 100, used: 99 },
+                { group: 'system-free', limit: 400, used: 10 },
+            ],
+        })).toEqual({ total: 400, remaining: 390, notice: '' });
+        expect(desktopCreditReadout({
+            mode: 'default',
+            authorized: true,
+            status: 'period_limited',
+            windows: [{ group: 'system-free', limit: 400, used: 80 }],
+        })).toEqual({ total: 400, remaining: 0, notice: 'empty' });
+        expect(desktopCreditReadout({ mode: 'custom', authorized: true, windows: [{ limit: 400, used: 400 }] })).toBeNull();
+        expect(desktopCreditReadout({ mode: 'default', unlimited: true, authorized: true })).toBeNull();
+        expect(desktopCreditReadout({
+            mode: 'default',
+            unlimited: true,
+            authorized: true,
+            windows: [{ limit: 400, used: 320 }],
+        })?.notice).toBe('low');
     });
 });
