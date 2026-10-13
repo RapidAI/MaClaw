@@ -10,20 +10,21 @@ import "unsafe"
 // positions. Pure-Go fallback for non-amd64 platforms; see
 // dot_strided_amd64.s for the AVX2+FMA implementation.
 func dotStridedFMA4x2(x []float32, xStride int, w []float32, wStride int, wOcStride int, taps, n int) (r0, r1, r2, r3, r4, r5, r6, r7 float32) {
+	w0 := unsafe.Pointer(unsafe.SliceData(w))
 	for t := 0; t < taps; t++ {
 		xo := t * xStride
 		wo := t * wStride
 		for i := 0; i < n; i++ {
 			xa := x[xo+i]
 			xb := x[xo+n+i]
-			r0 += xa * w[wo+i]
-			r1 += xb * w[wo+i]
-			r2 += xa * w[wo+wOcStride+i]
-			r3 += xb * w[wo+wOcStride+i]
-			r4 += xa * w[wo+2*wOcStride+i]
-			r5 += xb * w[wo+2*wOcStride+i]
-			r6 += xa * w[wo+3*wOcStride+i]
-			r7 += xb * w[wo+3*wOcStride+i]
+			r0 += xa * wAt(w0, wo+i)
+			r1 += xb * wAt(w0, wo+i)
+			r2 += xa * wAt(w0, wo+wOcStride+i)
+			r3 += xb * wAt(w0, wo+wOcStride+i)
+			r4 += xa * wAt(w0, wo+2*wOcStride+i)
+			r5 += xb * wAt(w0, wo+2*wOcStride+i)
+			r6 += xa * wAt(w0, wo+3*wOcStride+i)
+			r7 += xb * wAt(w0, wo+3*wOcStride+i)
 		}
 	}
 	return r0, r1, r2, r3, r4, r5, r6, r7
@@ -32,15 +33,16 @@ func dotStridedFMA4x2(x []float32, xStride int, w []float32, wStride int, wOcStr
 // dotStridedFMA4 computes one output position for four output channels,
 // sharing each x row across all four weight rows.
 func dotStridedFMA4(x []float32, xStride int, w []float32, wStride int, wOcStride int, taps, n int) (r0, r1, r2, r3 float32) {
+	w0 := unsafe.Pointer(unsafe.SliceData(w))
 	for t := 0; t < taps; t++ {
 		xo := t * xStride
 		wo := t * wStride
 		for i := 0; i < n; i++ {
 			xv := x[xo+i]
-			r0 += xv * w[wo+i]
-			r1 += xv * w[wo+wOcStride+i]
-			r2 += xv * w[wo+2*wOcStride+i]
-			r3 += xv * w[wo+3*wOcStride+i]
+			r0 += xv * wAt(w0, wo+i)
+			r1 += xv * wAt(w0, wo+wOcStride+i)
+			r2 += xv * wAt(w0, wo+2*wOcStride+i)
+			r3 += xv * wAt(w0, wo+3*wOcStride+i)
 		}
 	}
 	return r0, r1, r2, r3
@@ -102,3 +104,7 @@ func conv4x2G(x []float32, xStride int, w []float32, wStride, wOcStride int, tap
 		}
 	}
 }
+
+// wAt reads w[i] relative to the slice start; i may be negative because the
+// strided conv kernels walk weight taps with a negative stride.
+func wAt(w0 unsafe.Pointer, i int) float32 { return *(*float32)(unsafe.Add(w0, i*4)) }
