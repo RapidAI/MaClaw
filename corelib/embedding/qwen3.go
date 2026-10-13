@@ -27,8 +27,10 @@ import (
 	"math"
 	"os"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding/gguf"
 	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
@@ -293,12 +295,15 @@ func parseQwen3TwoPass(v string) qwen3TwoPass {
 		// SDOT where two-pass is slower than float. Override with
 		// MACLAW_QWEN3_Q8P_2PASS=all|none|qkv,o,gu,down.
 		switch tensor.Q8PISAName() {
-		case "avx2", "sdot":
+		case "avx2":
 			return qwen3TwoPass{} // single-pass
-		default: // avx512, avxvnni, or off (unused)
+		default: // avx512, avxvnni, sdot, i8mm (fused X2: forwardFrom skips the residual pass), off
+			// sdot: single-pass int8 activations measured min cos 0.9992
+			// vs float on Apple M4 (846 texts); two-pass is ≥0.999998.
 			return qwen3TwoPass{true, true, true, true}
 		}
 	}
+
 	if v == "none" || v == "0" {
 		return qwen3TwoPass{}
 	}
@@ -513,7 +518,7 @@ func (q *Qwen3Embedder) embed(text string, maxWorkers int) (vec []float32, err e
 }
 
 // EmbedBatch embeds texts in parallel (up to min(NumCPU, 8) goroutines,
-// single-threaded kernels each).
+// single-threaded kernels each; all cores on Apple Silicon, see qwen3BatchWorkers).
 func (q *Qwen3Embedder) EmbedBatch(texts []string) ([][]float32, error) {
 	results := make([][]float32, len(texts))
 	if len(texts) <= 1 {
@@ -526,10 +531,7 @@ func (q *Qwen3Embedder) EmbedBatch(texts []string) ([][]float32, error) {
 		}
 		return results, nil
 	}
-	workers := runtime.NumCPU()
-	if workers > 8 {
-		workers = 8
-	}
+	workers := qwen3BatchWorkers()
 	if workers > len(texts) {
 		workers = len(texts)
 	}
@@ -652,9 +654,24 @@ func (q *Qwen3Embedder) forwardFrom(ids []int, pre, capture *qwen3PrefixKV, s *q
 			}
 		}
 		tp := qwen3Q8PTwoPass
+		if tensor.Q8PFusedTwoTerm() {
+			tp = qwen3TwoPass{} // X2 activations are already two-term
+		}
+		// Row-parallel element-wise ops for long sequences (per-row results
+		// are identical to the serial loop).
+		rows := func(f func(r0, r1 int)) {
+			if maxWorkers == 1 || seq < 64 {
+				f(0, seq)
+				return
+			}
+			tensor.ParallelRanges(seq, f)
+		}
+		half := hp.HeadDim / 2
 		for li := range q.layers {
 			l := &q.layers[li]
-			tensor.RMSNormRows(normed, x, l.attnNormW, seq, dim, eps)
+			rows(func(r0, r1 int) {
+				tensor.RMSNormRows(normed[r0*dim:], x[r0*dim:], l.attnNormW, r1-r0, dim, eps)
+			})
 			a2 := quant(normed, dim, tp.qkv)
 			if a2 == nil {
 				tensor.MatMulQ8PMulti([][]float32{qb, kb, vb}, act, []*tensor.Q8Packed{l.pq, l.pk, l.pv}, maxWorkers)
@@ -663,8 +680,10 @@ func (q *Qwen3Embedder) forwardFrom(ids []int, pre, capture *qwen3PrefixKV, s *q
 				mm(kb, a2, l.pk, false)
 				mm(vb, a2, l.pv, false)
 			}
-			tensor.RMSNormRoPESeq(qb, l.qNormW, cosT, sinT, seq, hp.NHeads, hp.HeadDim, eps)
-			tensor.RMSNormRoPESeq(kb, l.kNormW, cosT, sinT, seq, hp.NKVHeads, hp.HeadDim, eps)
+			rows(func(r0, r1 int) {
+				tensor.RMSNormRoPESeq(qb[r0*qDim:], l.qNormW, cosT[r0*half:], sinT[r0*half:], r1-r0, hp.NHeads, hp.HeadDim, eps)
+				tensor.RMSNormRoPESeq(kb[r0*kvDim:], l.kNormW, cosT[r0*half:], sinT[r0*half:], r1-r0, hp.NKVHeads, hp.HeadDim, eps)
+			})
 			if pre != nil {
 				copy(kAll[:P*kvDim], pre.k[li])
 				copy(vAll[:P*kvDim], pre.v[li])
@@ -676,7 +695,9 @@ func (q *Qwen3Embedder) forwardFrom(ids []int, pre, capture *qwen3PrefixKV, s *q
 			qwen3CausalAttention(attn, qb, kAll, vAll, s.scores, seq, P, hp.NHeads, hp.NKVHeads, hp.HeadDim, maxWorkers)
 			a2 = quant(attn, qDim, tp.o)
 			mm(x, a2, l.po, true) // x += attn·Wo
-			tensor.RMSNormRows(normed, x, l.ffNormW, seq, dim, eps)
+			rows(func(r0, r1 int) {
+				tensor.RMSNormRows(normed[r0*dim:], x[r0*dim:], l.ffNormW, r1-r0, dim, eps)
+			})
 			a2 = quant(normed, dim, tp.gu)
 			if a2 == nil {
 				tensor.MatMulQ8PMulti([][]float32{gate, up}, act, []*tensor.Q8Packed{l.pg, l.pu}, maxWorkers)
@@ -684,7 +705,9 @@ func (q *Qwen3Embedder) forwardFrom(ids []int, pre, capture *qwen3PrefixKV, s *q
 				mm(gate, a2, l.pg, false)
 				mm(up, a2, l.pu, false)
 			}
-			tensor.SiLUMul(gate, up)
+			rows(func(r0, r1 int) {
+				tensor.SiLUMul(gate[r0*ffDim:r1*ffDim], up[r0*ffDim:r1*ffDim])
+			})
 			a2 = quant(gate, ffDim, tp.down)
 			mm(x, a2, l.pd, true) // x += (silu(g)⊙u)·Wd
 		}
@@ -778,23 +801,50 @@ func qwen3CausalAttention(out, qb, kb, vb, scores []float32, seq, off, nHeads, n
 	kvStride := nKV * headDim
 	group := nHeads / nKV
 	scale := float32(1.0 / math.Sqrt(float64(headDim)))
-	head := func(h int, sc []float32) {
+	rowsT := func(h, t0, t1 int, sc []float32) {
 		kOff := (h / group) * headDim
 		hOff := h * headDim
 		vBase := vb[kOff:]
-		for t := 0; t < seq; t++ {
+		for t := t0; t < t1; t++ {
 			qv := qb[t*qStride+hOff : t*qStride+hOff+headDim]
 			n := off + t + 1
-			for s := 0; s < n; s++ {
-				sc[s] = tensor.Dot(qv, kb[s*kvStride+kOff:s*kvStride+kOff+headDim]) * scale
+			if headDim == 128 {
+				tensor.AttnDots128(sc[:n], qv, kb[kOff:], n, kvStride, scale)
+			} else {
+				for s := 0; s < n; s++ {
+					sc[s] = tensor.Dot(qv, kb[s*kvStride+kOff:s*kvStride+kOff+headDim]) * scale
+				}
 			}
 			tensor.SoftmaxWeightedSum128(out[t*qStride+hOff:t*qStride+hOff+headDim], sc[:n], vBase, n, kvStride, headDim)
 		}
 	}
 	if maxWorkers == 1 || seq < 32 {
 		for h := 0; h < nHeads; h++ {
-			head(h, scores)
+			rowsT(h, 0, seq, scores)
 		}
+		return
+	}
+	if qwen3AttnPool {
+		// (head, 16-row block) units handed out dynamically on the matmul
+		// pool: balances causal row cost and P/E core speed.
+		const tb = 16
+		nTB := (seq + tb - 1) / tb
+		units := nHeads * nTB
+		nw := min(tensor.PoolWorkers(), units)
+		var next atomic.Int64
+		tensor.ParallelRangesN(nw, func() {
+			sc := make([]float32, off+seq)
+			for {
+				u := int(next.Add(1)) - 1
+				if u >= units {
+					return
+				}
+				// Largest (latest) row blocks first.
+				b := nTB - 1 - u/nHeads
+				h := u % nHeads
+				rowsT(h, b*tb, min(b*tb+tb, seq), sc)
+			}
+		})
 		return
 	}
 	var wg sync.WaitGroup
@@ -802,8 +852,35 @@ func qwen3CausalAttention(out, qb, kb, vb, scores []float32, seq, off, nHeads, n
 		wg.Add(1)
 		go func(h int) {
 			defer wg.Done()
-			head(h, make([]float32, off+seq))
+			rowsT(h, 0, seq, make([]float32, off+seq))
 		}(h)
 	}
 	wg.Wait()
+}
+
+// qwen3AttnPool: dynamic pooled attention (default on arm64; set
+// MACLAW_QWEN3_ATTN_POOL=1/0 to force).
+var qwen3AttnPool = func() bool {
+	switch os.Getenv("MACLAW_QWEN3_ATTN_POOL") {
+	case "1":
+		return true
+	case "0":
+		return false
+	}
+	return runtime.GOARCH == "arm64"
+}()
+
+// qwen3BatchWorkers: EmbedBatch parallelism (texts in flight, each with
+// single-threaded kernels). MACLAW_QWEN3_BATCH_WORKERS overrides; default
+// min(NumCPU, 8).
+func qwen3BatchWorkers() int {
+	if v, err := strconv.Atoi(os.Getenv("MACLAW_QWEN3_BATCH_WORKERS")); err == nil && v > 0 {
+		return v
+	}
+	if runtime.GOARCH == "arm64" && runtime.GOOS == "darwin" {
+		// Apple Silicon: E-cores add ~10% throughput on top of the P-cores
+		// (M4 4P+6E: 8 workers 20.6 → 10 workers 22.8 items/s).
+		return min(runtime.NumCPU(), 16)
+	}
+	return min(runtime.NumCPU(), 8)
 }

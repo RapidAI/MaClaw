@@ -25,6 +25,10 @@ package tensor
 
 import (
 	"math"
+	"os"
+	"runtime"
+	"sync"
+	"sync/atomic"
 )
 
 // Q8Packed is a Q8_0 weight matrix [N rows (outputs) × K] repacked for
@@ -38,6 +42,7 @@ type Q8Packed struct {
 	QB       []byte
 	SB       []float32
 	Signed   bool // true: QB is s8 (arm64 SDOT); false: u8=w+128 (amd64)
+	I8MM     bool // QB in the SMMLA layout (q8p_x2.go); activations must be X2
 }
 
 // q8pPackSigned is set by the arm64 build; amd64 keeps the u8 offset layout.
@@ -62,13 +67,17 @@ func packQ8PTo(t *Q8Tensor, qb []byte, sb []float32) *Q8Packed {
 		return nil
 	}
 	nb := K / 32
-	p := &Q8Packed{N: N, K: K, NB: nb, QB: qb[:N*K], SB: sb[:N*nb], Signed: q8pPackSigned}
+	p := &Q8Packed{N: N, K: K, NB: nb, QB: qb[:N*K], SB: sb[:N*nb], Signed: q8pPackSigned || q8pX2, I8MM: q8pX2}
 	for n := 0; n < N; n++ {
 		pair, nn := n/32, n%32
 		for b := 0; b < nb; b++ {
 			blk := t.Data[(n*nb+b)*q8BlockBytes : (n*nb+b+1)*q8BlockBytes]
 			p.SB[(pair*nb+b)*32+nn] = float16to32(uint16(blk[0]) | uint16(blk[1])<<8)
 			base := (pair*nb + b) * 8 * 128
+			if p.I8MM {
+				packI8MMBlock(p.QB, base, nn, blk)
+				continue
+			}
 			for j := 0; j < 8; j++ {
 				o := base + j*128 + nn*4
 				for e := 0; e < 4; e++ {
@@ -91,6 +100,11 @@ type Q8Act struct {
 	Q              []int8
 	S              []float32 // [Mpad][NB] block scales
 	C              []int32   // [Mpad][NB] −128·Σq (VNNI u8 offset correction)
+	// X2 (q8p_x2.go): Q/Q2 in the row-pair SMMLA layout, S = d/256,
+	// S4 the row-pair duplicated scales.
+	X2 bool
+	Q2 []int8
+	S4 []float32
 }
 
 // QuantizeQ8Act quantizes a[M×K] into dst (grown as needed) and returns it.
@@ -111,6 +125,11 @@ func QuantizeQ8Act(dst *Q8Act, a []float32, M, K int) *Q8Act {
 	}
 	dst.S = dst.S[:mp*nb]
 	dst.C = dst.C[:mp*nb]
+	dst.X2 = false
+	if q8pX2 {
+		quantizeQ8ActX2(dst, a, M, K)
+		return dst
+	}
 	if !quantizeQ8ActAsm(dst, a, M, K) {
 		quantizeQ8ActGo(dst.Q, dst.S, dst.C, a, M, K)
 	}
@@ -153,6 +172,10 @@ func quantizeQ8ActGo(q []int8, s []float32, c []int32, a []float32, M, K int) {
 // for rows m0..m0+3 of act and column pair p of w (portable reference).
 // Handles both u8-offset (amd64, uses C) and signed s8 (arm64, C ignored) layouts.
 func q8pTileGo(out *[128]float32, act *Q8Act, w *Q8Packed, m0, p int) {
+	if w.I8MM {
+		q8pTileGoX2(out, act, w, m0, p)
+		return
+	}
 	nb := w.NB
 	K := w.K
 	for i := range out {
@@ -189,6 +212,9 @@ func q8pTileGo(out *[128]float32, act *Q8Act, w *Q8Packed, m0, p int) {
 }
 
 func q8pTile(out *[128]float32, act *Q8Act, w *Q8Packed, m0, p int) {
+	if w.I8MM != act.X2 {
+		panic("q8p: activation/weight layout mismatch (X2 vs I8MM)")
+	}
 	if q8pTileAsm(out, act, w, m0, p) {
 		return
 	}
@@ -232,13 +258,17 @@ func MatMulQ8P(out []float32, act *Q8Act, w *Q8Packed, accum bool, maxWorkers in
 	if maxWorkers > 1 && nw > maxWorkers {
 		nw = maxWorkers
 	}
-	parallelRangesWithWorkers(pairs, nw, run)
+	q8pParallel(pairs, nw, run)
 }
 
 // Q8ActResidual writes a − dequant(act) into r (len ≥ act.M*act.K): the
 // rounding error of the int8 activation, which a second Q8P pass can add
 // back (two-term "int8+int8" activations ≈ 15-bit precision at 2× cost).
 func Q8ActResidual(r, a []float32, act *Q8Act) {
+	if act.X2 { // already two-term: nothing left for a second pass
+		clear(r[:act.M*act.K])
+		return
+	}
 	K, nb := act.K, act.NB
 	for i := 0; i < act.M*nb; i++ {
 		d := act.S[i]
@@ -269,6 +299,17 @@ func SoftmaxWeightedSum128(out, scores, values []float32, rows, stride, dim int)
 	}
 	if !attnWSum128Asm(out, scores, values, rows, stride, inv) {
 		weightedSumStridedScaled(out, scores, values, rows, stride, dim, inv)
+	}
+}
+
+// AttnDots128 writes out[s] = scale·dot(q[:128], k[s*stride:s*stride+128])
+// for s < n (NEON on arm64; tensor.Dot elsewhere, unchanged results).
+func AttnDots128(out, q, k []float32, n, stride int, scale float32) {
+	if attnDots128Asm(out, q, k, n, stride, scale) {
+		return
+	}
+	for s := 0; s < n; s++ {
+		out[s] = Dot(q[:128], k[s*stride:s*stride+128]) * scale
 	}
 }
 
@@ -318,7 +359,7 @@ func MatMulQ8PMulti(outs [][]float32, act *Q8Act, ws []*Q8Packed, maxWorkers int
 	if maxWorkers > 1 && nw > maxWorkers {
 		nw = maxWorkers
 	}
-	parallelRangesWithWorkers(total, nw, run)
+	q8pParallel(total, nw, run)
 }
 
 // Q8PSelfTestTile runs the 4×32 tile (asm if available, else Go) and the Go
@@ -336,4 +377,94 @@ func Q8PSelfTestTile(w *Q8Packed, act *Q8Act, m0, p int) float64 {
 		}
 	}
 	return maxRel
+}
+
+// q8pDynamic: work-stealing column-pair chunks instead of one equal static
+// range per worker. On heterogeneous CPUs (Apple P+E cores) equal ranges
+// leave the fast cores idle waiting for the slow ones. Default on for arm64
+// (MACLAW_Q8P_DYNAMIC=0 disables; =1 forces it elsewhere).
+var q8pDynamic = q8pDynamicDefault()
+
+func q8pParallel(total, nw int, run func(ps, pe int)) {
+	if !q8pDynamic || nw <= 1 || total < 2*nw {
+		parallelRangesWithWorkers(total, nw, run)
+		return
+	}
+	chunk := total / (nw * 4)
+	if chunk < 1 {
+		chunk = 1
+	}
+	var next atomic.Int64
+	ParallelRangesN(nw, func() {
+		for {
+			e := int(next.Add(int64(chunk)))
+			s := e - chunk
+			if s >= total {
+				return
+			}
+			run(s, min(e, total))
+		}
+	})
+}
+
+func q8pDynamicDefault() bool {
+	switch os.Getenv("MACLAW_Q8P_DYNAMIC") {
+	case "0":
+		return false
+	case "1":
+		return true
+	}
+	return runtime.GOARCH == "arm64"
+}
+
+// ParallelRangesN runs fn on nw pool workers (the caller runs one) and waits.
+func ParallelRangesN(nw int, fn func()) {
+	ensureMatmulPool()
+	var wg sync.WaitGroup
+	for i := 1; i < nw; i++ {
+		wg.Add(1)
+		atomic.AddInt64(&jobEnqueueN, 1)
+		jobQueue <- matmulRangeJob{run: fn, wg: &wg}
+	}
+	fn()
+	wg.Wait()
+}
+
+// Q8PQuantSelfTest quantizes a[M×K] with the dispatched quantizer and the Go
+// reference and returns the number of differing q values and scales (both
+// should be 0). Used by cross-arch check tools.
+func Q8PQuantSelfTest(a []float32, M, K int) (qDiff, sDiff int) {
+	act := QuantizeQ8Act(nil, a, M, K)
+	if act.X2 {
+		ref := &Q8Act{M: act.M, Mpad: act.Mpad, K: K, NB: act.NB,
+			Q: make([]int8, len(act.Q)), Q2: make([]int8, len(act.Q2)), S: make([]float32, len(act.S))}
+		quantizeQ8ActX2Go(ref, a, M, K)
+		for i := range ref.Q {
+			if ref.Q[i] != act.Q[i] || ref.Q2[i] != act.Q2[i] {
+				qDiff++
+			}
+		}
+		for i := 0; i < M*act.NB; i++ {
+			if ref.S[i] != act.S[i] {
+				sDiff++
+			}
+		}
+		return
+	}
+	nb := K / 32
+	q := make([]int8, M*K)
+	s := make([]float32, M*nb)
+	c := make([]int32, M*nb)
+	quantizeQ8ActGo(q, s, c, a, M, K)
+	for i := range q {
+		if q[i] != act.Q[i] {
+			qDiff++
+		}
+	}
+	for i := range s {
+		if s[i] != act.S[i] {
+			sDiff++
+		}
+	}
+	return
 }

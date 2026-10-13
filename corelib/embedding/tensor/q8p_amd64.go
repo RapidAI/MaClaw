@@ -161,3 +161,7 @@ func attnWSum128Asm(out, w, v []float32, rows, stride int, scale float32) bool {
 	attnWSum128AVX512(&out[0], &w[0], &v[0], rows, stride*4, scale)
 	return true
 }
+
+func attnDots128Asm(out, q, k []float32, n, stride int, scale float32) bool { return false }
+
+func quantizeQ8ActX2Asm(dst *Q8Act, a []float32, M, K int) bool { return false }
