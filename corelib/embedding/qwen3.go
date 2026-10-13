@@ -635,7 +635,11 @@ func (q *Qwen3Embedder) forwardFrom(ids []int, pre, capture *qwen3PrefixKV, s *q
 		act := &s.act
 		// quant quantizes a[seq×K] into act and, when the matmul class is
 		// configured for two-pass activations, its residual into act2.
+		// mr is the number of rows still live: seq, except after the last
+		// layer's attention, where only the final (pooled) row is needed.
+		mr := seq
 		quant := func(a []float32, K int, two bool) *tensor.Q8Act {
+			seq := mr
 			tensor.QuantizeQ8Act(act, a, seq, K)
 			if !two {
 				return nil
@@ -660,11 +664,11 @@ func (q *Qwen3Embedder) forwardFrom(ids []int, pre, capture *qwen3PrefixKV, s *q
 		// Row-parallel element-wise ops for long sequences (per-row results
 		// are identical to the serial loop).
 		rows := func(f func(r0, r1 int)) {
-			if maxWorkers == 1 || seq < 64 {
-				f(0, seq)
+			if maxWorkers == 1 || mr < 64 {
+				f(0, mr)
 				return
 			}
-			tensor.ParallelRanges(seq, f)
+			tensor.ParallelRanges(mr, f)
 		}
 		half := hp.HeadDim / 2
 		for li := range q.layers {
@@ -692,7 +696,20 @@ func (q *Qwen3Embedder) forwardFrom(ids []int, pre, capture *qwen3PrefixKV, s *q
 				capture.k[li] = append([]float32(nil), kb...)
 				capture.v[li] = append([]float32(nil), vb...)
 			}
-			qwen3CausalAttention(attn, qb, kAll, vAll, s.scores, seq, P, hp.NHeads, hp.NKVHeads, hp.HeadDim, maxWorkers)
+			xl, attnL, normedL, gateL, upL := x, attn, normed, gate, up
+			if li == len(q.layers)-1 && seq > 1 && qwen3PruneLast {
+				// Last layer: K/V of every row are done; only the final row
+				// feeds the pooled embedding, so attention, Wo and the FFN
+				// run on that row alone (per-row results are unchanged).
+				t := seq - 1
+				qwen3CausalAttention(attn[:qDim], qb[t*qDim:], kAll, vAll, s.scores, 1, P+t, hp.NHeads, hp.NKVHeads, hp.HeadDim, maxWorkers)
+				mr = 1
+				xl = x[t*dim : seq*dim]
+				attnL, normedL, gateL, upL = attn[:qDim], normed[:dim], gate[:ffDim], up[:ffDim]
+			} else {
+				qwen3CausalAttention(attn, qb, kAll, vAll, s.scores, seq, P, hp.NHeads, hp.NKVHeads, hp.HeadDim, maxWorkers)
+			}
+			x, attn, normed, gate, up := xl, attnL, normedL, gateL, upL
 			a2 = quant(attn, qDim, tp.o)
 			mm(x, a2, l.po, true) // x += attn·Wo
 			rows(func(r0, r1 int) {
@@ -895,6 +912,10 @@ func qwen3CausalAttention(out, qb, kb, vb, scores []float32, seq, off, nHeads, n
 	}
 	wg.Wait()
 }
+
+// qwen3PruneLast: compute the last layer's attention output / FFN only for
+// the pooled final row (exact). MACLAW_QWEN3_PRUNE_LAST=0 disables.
+var qwen3PruneLast = os.Getenv("MACLAW_QWEN3_PRUNE_LAST") != "0"
 
 // qwen3AttnTile: 4-query tiled attention where a kernel exists (arm64);
 // MACLAW_QWEN3_ATTN_TILE=0 disables.
