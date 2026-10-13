@@ -20,8 +20,8 @@
    "filename": "tool_head_ovr_qwen3go.json",
    "kind": "tool_head",
    "subdir": "tool_heads",
-   "size": 935594,
-   "sha256": "e52352851da9fdaa69d5ad33ceb33352a090b3f1961b15e5dd6684b050454a50"
+   "size": 512287,
+   "sha256": "7fe77c0fdccdb1f9b9a0e91cda1210e2cef00bca350348748501bdbccde2f059"
   },
   {
    "filename": "interrupt_relevance_qwen3go.json",
