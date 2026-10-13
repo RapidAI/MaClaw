@@ -114,6 +114,15 @@ func CheckLocalHead(emb embedding.Embedder, h *LocalHead) error {
 	return nil
 }
 
+// ShippedLocalHeadName is the intent head pinned in
+// corelib/embedding/release_assets.json (r7: 20-net merged MLP, per-class
+// temperature folded into w2/b2, τ 0.80 / τ_s 0.97, calibration "oof_rule").
+// When it is present it is the only "head_mlp_qwen3go_*" candidate besides
+// the GK/KG defaults: legacy "*_xf*.json" heads already on disk are used only
+// while it is missing (first run before the download lands, or a failed
+// download), so a compute-mode-matched legacy head never outranks it.
+const ShippedLocalHeadName = "head_mlp_qwen3go_r7.json"
+
 // DefaultLocalHeadNames lists, in preference order, the shipped head file
 // names for a family. Any "*_xf*.json" retrained head for the family found in
 // the same directory is preferred over these (newest file name first).
@@ -164,6 +173,17 @@ func LocalHeadCandidates(family, defaultDir string) []string {
 		if !fi.IsDir() {
 			add(r)
 			continue
+		}
+		if family == embedding.FamilyQwen3 {
+			if p := filepath.Join(r, ShippedLocalHeadName); fileExists(p) {
+				add(p)
+				for _, n := range DefaultLocalHeadNames(family) {
+					if p := filepath.Join(r, n); fileExists(p) {
+						add(p)
+					}
+				}
+				continue
+			}
 		}
 		if pre := familyPrefix(family); pre != "" {
 			xf, _ := filepath.Glob(filepath.Join(r, pre+"xf*.json"))
