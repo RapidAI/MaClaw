@@ -105,6 +105,10 @@ type Qwen3Embedder struct {
 	q8p         bool             // layers carry Q8P packed weights (forwardFrom uses MatMulQ8P)
 	q8pArena    *tensor.Q8PArena // off-heap storage of the packed weights (freed by Close)
 	q8pFallback string           // why Q8P was wanted but not used; see Q8PFallbackReason
+
+	// Metal GPU backend (qwen3_metal.go); nil = CPU path.
+	gpu       atomic.Pointer[qwen3GPU]
+	gpuReason string // why the GPU is not used (empty when active or not darwin)
 }
 
 type qwen3Scratch struct {
@@ -188,6 +192,7 @@ func NewQwen3Embedder(modelPath string, dim int) (*Qwen3Embedder, error) {
 	addBOS := gguf.GetMetaBool(mf.Meta, "tokenizer.ggml.add_bos_token", false)
 	q.tokenizer = NewBPETokenizer(tokens, merges, tokenTypes, bos, eos, addBOS, addEOS)
 	q.ensureRoPE(64)
+	q.initGPU()
 	return q, nil
 }
 
@@ -504,6 +509,9 @@ func (q *Qwen3Embedder) embed(text string, maxWorkers int) (vec []float32, err e
 	if len(ids) == 0 {
 		return nil, fmt.Errorf("qwen3: empty token sequence")
 	}
+	if v, ok := q.embedGPU([][]int{ids}); ok {
+		return v[0], nil
+	}
 	pre := q.matchPrefix(ids)
 	s := q.getScratch(len(ids) + 8) // +8: room for the 8-row matmul padding after a prefix
 	defer q.putScratch(s)
@@ -530,6 +538,11 @@ func (q *Qwen3Embedder) EmbedBatch(texts []string) ([][]float32, error) {
 			results[i] = v
 		}
 		return results, nil
+	}
+	if q.gpu.Load() != nil {
+		if res, ok := q.embedBatchGPU(texts); ok {
+			return res, nil
+		}
 	}
 	workers := qwen3BatchWorkers()
 	if workers > len(texts) {
@@ -576,6 +589,9 @@ func (q *Qwen3Embedder) Close() {
 	arena := q.q8pArena
 	q.q8pArena = nil
 	q.mu.Unlock()
+	if g := q.gpu.Swap(nil); g != nil {
+		g.release()
+	}
 	enqueueMmapClose(mf)
 	// In-flight calls have drained (inflight.close waits) and later calls
 	// fail before touching weights, so the packed weights can go now.

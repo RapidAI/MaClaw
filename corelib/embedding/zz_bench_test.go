@@ -13,8 +13,10 @@ import (
 	"encoding/json"
 	"math"
 	"os"
+	"os/exec"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -32,13 +34,20 @@ func TestZZBench(t *testing.T) {
 	if model == "" {
 		t.Skip("ZZ_BENCH_MODEL not set")
 	}
+	tLoad := time.Now()
 	emb, err := NewEmbedderFromFile(model, DefaultEmbeddingDim)
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Logf("RESULT load_ms=%.1f", float64(time.Since(tLoad).Microseconds())/1000)
+	defer zzRSS(t, "end")
 	defer emb.Close()
 	q, _ := emb.(*Qwen3Embedder)
 	if q != nil {
+		on, why := q.GPUBackend()
+		gw, ga := q.GPUMemoryBytes()
+		t.Logf("metal=%v reason=%q gpu_weights_MB=%.0f gpu_acts_MB=%.0f", on, why, float64(gw)/1e6, float64(ga)/1e6)
+		zzRSS(t, "after-load")
 		t.Logf("isa=%s q8p=%v fallback=%q GOMAXPROCS=%d NumCPU=%d", tensor.Q8PISAName(), q.q8p, q.q8pFallback, runtime.GOMAXPROCS(0), runtime.NumCPU())
 	}
 	short := ApplyQwen3Prompt("帮我把这个文件发给张三", RoleClassification)
@@ -106,5 +115,13 @@ func TestZZBench(t *testing.T) {
 		}
 		w.Flush()
 		vf.Close()
+	}
+}
+
+func zzRSS(t *testing.T, tag string) {
+	out, err := exec.Command("ps", "-o", "rss=", "-p", strconv.Itoa(os.Getpid())).Output()
+	if err == nil {
+		kb, _ := strconv.Atoi(strings.TrimSpace(string(out)))
+		t.Logf("RESULT rss_%s_MB=%.0f", tag, float64(kb)/1024)
 	}
 }
