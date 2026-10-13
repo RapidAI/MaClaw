@@ -140,8 +140,11 @@ func main() {
 	report("after tool-description embeds")
 
 	// First-party tool head (same vector as intent L2).
+	var toolHeadPaths []string
 	for _, dir := range []string{filepath.Join(*models, "tool_heads"), *heads, *models} {
-		p := filepath.Join(dir, "tool_head_ovr_qwen3go.json")
+		toolHeadPaths = append(toolHeadPaths, filepath.Join(dir, "tool_head_ovr_qwen3go_r5.json"), filepath.Join(dir, "tool_head_ovr_qwen3go.json"))
+	}
+	for _, p := range toolHeadPaths {
 		if h, err := tool.LoadToolHead(p); err == nil {
 			if err := h.CheckEmbedderOf(emb); err != nil {
 				fmt.Printf("[toolhead] %s refused: %v\n", h.ID, err)

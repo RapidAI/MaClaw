@@ -105,7 +105,7 @@ func toolHeadCandidates(modelsDir string) []string {
 		filepath.Join(modelsDir, intent.LocalHeadsDirName),
 		modelsDir,
 	} {
-		for _, n := range []string{"tool_head_ovr_qwen3go.json", "tool_head_ovr_qwen3.json"} {
+		for _, n := range []string{"tool_head_ovr_qwen3go_r5.json", "tool_head_ovr_qwen3go.json", "tool_head_ovr_qwen3.json"} {
 			p := filepath.Join(dir, n)
 			if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
 				out = append(out, p)

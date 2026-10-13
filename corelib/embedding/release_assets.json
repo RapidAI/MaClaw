@@ -17,7 +17,7 @@
    "sha256": "c0256107d90dbf9f381cc1d1c46872984714234d2d024ff3fe0a0f0e6f640c69"
   },
   {
-   "filename": "tool_head_ovr_qwen3go.json",
+   "filename": "tool_head_ovr_qwen3go_r5.json",
    "kind": "tool_head",
    "subdir": "tool_heads",
    "size": 512287,
