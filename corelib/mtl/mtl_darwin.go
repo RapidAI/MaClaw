@@ -221,14 +221,28 @@ type Pipeline struct {
 	MaxThreads int
 }
 
-// Compile builds the MSL source and returns pipelines for the named kernels.
+// Compile builds the MSL source (default options, fast math on) and returns
+// pipelines for the named kernels.
 func (d *Device) Compile(src string, names []string) (map[string]*Pipeline, error) {
+	return d.CompileOpts(src, names, true)
+}
+
+// CompileOpts is Compile with fast math selectable; fastMath=false gives
+// IEEE-conforming exp/div etc. (needed to track CPU float results closely).
+func (d *Device) CompileOpts(src string, names []string, fastMath bool) (map[string]*Pipeline, error) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	pool := NewPool()
 	defer pool.Drain()
 	var errID objc.ID
-	lib := objc.ID(send(d.dev, selNewLibraryWithSource, uintptr(nsString(src)), 0, uintptr(unsafe.Pointer(&errID))))
+	var opts objc.ID
+	if !fastMath {
+		cls := objc.GetClass("MTLCompileOptions")
+		opts = objc.ID(send0(objc.ID(send0(objc.ID(cls), selAlloc)), selInit))
+		send(opts, objc.RegisterName("setFastMathEnabled:"), 0)
+		defer send0(opts, selRelease)
+	}
+	lib := objc.ID(send(d.dev, selNewLibraryWithSource, uintptr(nsString(src)), uintptr(opts), uintptr(unsafe.Pointer(&errID))))
 	if lib == 0 {
 		return nil, fmt.Errorf("mtl: compile: %s", errString(errID))
 	}
