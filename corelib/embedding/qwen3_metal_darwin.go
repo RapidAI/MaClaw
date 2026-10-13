@@ -12,7 +12,7 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/RapidAI/CodeClaw/corelib/embedding/mtl"
+	"github.com/RapidAI/CodeClaw/corelib/mtl"
 	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
 )
 

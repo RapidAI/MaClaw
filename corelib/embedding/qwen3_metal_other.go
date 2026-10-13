@@ -5,7 +5,7 @@ package embedding
 import (
 	"errors"
 
-	"github.com/RapidAI/CodeClaw/corelib/embedding/mtl"
+	"github.com/RapidAI/CodeClaw/corelib/mtl"
 )
 
 type qwen3GPU struct {

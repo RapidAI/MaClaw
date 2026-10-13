@@ -24,36 +24,10 @@ import (
 
 // encodeHidden runs SAN-M encoder; returns [totalFrames, hidden] features (bufs-owned).
 func (m *SenseVoiceModel) encodeHidden(lfrFeats []float32, lfrFrames int) (cur []float32, totalFrames int) {
-	hp := m.hp
-	hidden := hp.HiddenSize
-	featsDim := hp.FeatsDim
-	totalFrames = 4 + lfrFrames
-
-	bufs := m.ensureEncBufs(totalFrames)
-
-	// Build input sequence into featsBuf: [4 prompt embeddings ; LFR features].
-	// Avoid full-buffer clear — only zero missing prompt rows; LFR is fully overwritten.
-	featsN := totalFrames * featsDim
-	xFeats := bufs.featsBuf[:featsN]
-	promptIDs := [4]int{0, 1, 2, 14}
-	if m.w.embedding != nil {
-		embRows := len(m.w.embedding) / featsDim
-		for i, pid := range promptIDs {
-			dst := xFeats[i*featsDim : (i+1)*featsDim]
-			if pid < embRows {
-				copy(dst, m.w.embedding[pid*featsDim:(pid+1)*featsDim])
-			} else {
-				clear(dst)
-			}
-		}
-	} else {
-		clear(xFeats[:4*featsDim])
-	}
-	copy(xFeats[4*featsDim:], lfrFeats[:lfrFrames*featsDim])
-
-	// Scale by sqrt(hidden) + add positional encoding in one pass.
-	scale := float32(math.Sqrt(float64(hidden)))
-	svScaleAddPosEncoding(xFeats, totalFrames, featsDim, scale, bufs)
+	hidden := m.hp.HiddenSize
+	featsDim := m.hp.FeatsDim
+	xFeats, totalFrames := m.prepFeats(lfrFeats, lfrFrames)
+	bufs := m.encBufs
 
 	// Entry block: 560-dim → 512-dim into bufA
 	x := bufs.bufA[:totalFrames*hidden]
@@ -75,6 +49,43 @@ func (m *SenseVoiceModel) encodeHidden(lfrFeats []float32, lfrFrames int) (cur [
 
 	svLayerNormBias(cur, totalFrames, hidden, m.w.tpNormW, m.w.tpNormB)
 	return cur, totalFrames
+}
+
+// prepFeats builds the encoder input [4 prompt embeddings ; LFR features],
+// scaled by sqrt(hidden) plus positional encoding, in bufs.featsBuf.
+func (m *SenseVoiceModel) prepFeats(lfrFeats []float32, lfrFrames int) (xFeats []float32, totalFrames int) {
+	hp := m.hp
+	hidden := hp.HiddenSize
+	featsDim := hp.FeatsDim
+	totalFrames = 4 + lfrFrames
+
+	bufs := m.ensureEncBufs(totalFrames)
+
+	// Build input sequence into featsBuf: [4 prompt embeddings ; LFR features].
+	// Avoid full-buffer clear — only zero missing prompt rows; LFR is fully overwritten.
+	featsN := totalFrames * featsDim
+	xFeats = bufs.featsBuf[:featsN]
+	promptIDs := [4]int{0, 1, 2, 14}
+	if m.w.embedding != nil {
+		embRows := len(m.w.embedding) / featsDim
+		for i, pid := range promptIDs {
+			dst := xFeats[i*featsDim : (i+1)*featsDim]
+			if pid < embRows {
+				copy(dst, m.w.embedding[pid*featsDim:(pid+1)*featsDim])
+			} else {
+				clear(dst)
+			}
+		}
+	} else {
+		clear(xFeats[:4*featsDim])
+	}
+	copy(xFeats[4*featsDim:], lfrFeats[:lfrFrames*featsDim])
+
+	// Scale by sqrt(hidden) + add positional encoding in one pass.
+	scale := float32(math.Sqrt(float64(hidden)))
+	svScaleAddPosEncoding(xFeats, totalFrames, featsDim, scale, bufs)
+
+	return xFeats, totalFrames
 }
 
 // encode runs the full SenseVoice encoder.

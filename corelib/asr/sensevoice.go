@@ -83,6 +83,10 @@ type SenseVoiceModel struct {
 	// Pre-allocated encoder buffers (avoid alloc in hot loop)
 	encBufs *svEncoderBufs
 	mu      sync.Mutex
+
+	// Metal GPU encoder (sensevoice_metal.go); nil = CPU path. Guarded by mu.
+	gpu       *svGPU
+	gpuReason string
 }
 
 // svEncoderBufs holds pre-allocated buffers for encoder forward pass.
@@ -145,6 +149,7 @@ func NewSenseVoice(modelPath string) (*SenseVoiceModel, error) {
 	}
 	m.loadVocab(mf)
 	m.loadCMVN(mf)
+	m.initGPU()
 	return m, nil
 }
 
@@ -157,6 +162,10 @@ func (m *SenseVoiceModel) Close() {
 		m.mmap = nil
 	}
 	m.encBufs = nil
+	if m.gpu != nil {
+		m.gpu.release()
+		m.gpu = nil
+	}
 }
 
 // ensureEncBufs ensures encoder buffers are allocated for the given frame count.
@@ -255,7 +264,10 @@ func (m *SenseVoiceModel) Transcribe(pcm []float32) (string, error) {
 	_ = m.cmvnIstd
 
 	// 4. Encode + fused CTC argmax (skip full logits materialization)
-	frameIDs := m.encodeArgmax(lfrFeats, lfrFrames)
+	frameIDs, ok := m.encodeArgmaxGPU(lfrFeats, lfrFrames)
+	if !ok {
+		frameIDs = m.encodeArgmax(lfrFeats, lfrFrames)
+	}
 
 	// 5. CTC collapse (repeats + blank), reusing the model-owned token scratch.
 	bufs.ctcTokens = ctcCollapseIDsInto(frameIDs, bufs.ctcTokens)
