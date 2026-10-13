@@ -870,7 +870,7 @@
 }
 
 .llm-config-header__desc {
-    margin: 4px 0 0;
+    margin: 0;
     color: var(--theme-text-secondary);
     font-size: 0.78rem;
     line-height: 1.55;
@@ -949,10 +949,12 @@
 
 /* Panel-level CTAs: the management dialog is the primary action, the QR
    hand-off is its quiet companion. Scoped at (0,4,1) so the generic
-   .settings-panel button repaint (0,3,1) cannot dull the state fill. */
+   .settings-panel button repaint (0,3,1) cannot dull the state fill.
+   min-height 36px matches the .settings-panel button floor exactly so the
+   lower-specificity shape block here stays declarative, not overridable. */
 .llm-config-primary-action,
 .llm-config-qr-action {
-    min-height: 34px;
+    min-height: 36px;
     padding: 6px 16px;
     font-size: 0.78rem;
     font-weight: 600;
@@ -1032,6 +1034,13 @@
     min-width: 0;
 }
 
+/* Panel cards keep the bordered look the old inline styles painted. The
+   group rule above only carries border-color (the dialog form cards are
+   flat section shells), so the panel scope owns the full shorthand here. */
+.settings-content .llm-config-panel .llm-config-card {
+    border: 1px solid var(--theme-border);
+}
+
 /* Danger strips: retry row doubles as the layout for its side-by-side button. */
 .llm-config-retry-row {
     display: flex;
@@ -1064,7 +1073,8 @@
 
 /* Color declarations live on the (0,2,0) scoped pair below: the (0,1,0)
    settings-panel/shell repaint would otherwise repaint alert text at equal
-   specificity seen later in the cascade. */
+   specificity seen later in the cascade. The base rule owns the full border
+   shorthand: these are plain divs, so border-color alone leaves no border. */
 .llm-config-alert {
     margin: 0;
     padding: 10px 12px;
@@ -1072,7 +1082,7 @@
     line-height: 1.5;
     font-weight: 600;
     border-radius: 10px;
-    border-color: color-mix(in srgb, var(--theme-danger) 32%, transparent);
+    border: 1px solid color-mix(in srgb, var(--theme-danger) 32%, transparent);
     background: var(--theme-danger-bg);
 }
 
@@ -1511,6 +1521,303 @@
 
 .llm-config-save-error__reason {
     margin-top: 4px;
+}
+
+/* ── Settings ▸ LLM panel: runtime tuning rows (one card, three rows) ── */
+.llm-tuning-stack__title {
+    margin: 0;
+    font-size: 0.84rem;
+    font-weight: 700;
+    color: var(--theme-text-primary);
+}
+
+.llm-tuning-stack > .llm-tuning-row {
+    margin-top: 12px;
+}
+
+.llm-tuning-stack > .llm-tuning-row + .llm-tuning-row {
+    border-top: 1px solid var(--theme-border-subtle);
+    padding-top: 12px;
+}
+
+.llm-tuning-row__head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.llm-tuning-row__title {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--theme-text-primary);
+}
+
+.llm-tuning-row__hint {
+    font-size: 0.68rem;
+    line-height: 1.45;
+    color: var(--theme-text-muted);
+}
+
+.llm-tuning-row__controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+}
+
+.llm-tuning-slider {
+    flex: 1 1 auto;
+    min-width: 120px;
+    accent-color: var(--theme-primary);
+}
+
+.llm-tuning-number {
+    flex: 0 0 auto;
+    width: 64px;
+    padding: 5px 8px;
+    text-align: center;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md, 10px);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font-size: 0.8rem;
+}
+
+.llm-tuning-meta {
+    flex: 0 0 auto;
+    min-width: 56px;
+    font-size: 0.72rem;
+    color: var(--theme-text-secondary);
+    white-space: nowrap;
+}
+
+.llm-config-option-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+}
+
+.llm-tuning-row__note {
+    margin: 6px 0 0;
+    font-size: 0.68rem;
+    line-height: 1.4;
+    color: var(--theme-text-muted);
+}
+
+.llm-tuning-row__note--danger {
+    color: var(--theme-danger);
+}
+
+/* ── Settings ▸ LLM panel: profile assignment card ── */
+.llm-profile-assignments__head {
+    display: grid;
+    gap: 3px;
+    margin-bottom: 12px;
+}
+
+.llm-profile-assignments__title {
+    margin: 0;
+    font-size: 0.84rem;
+    font-weight: 700;
+    color: var(--theme-text-primary);
+}
+
+.llm-profile-assignments__lede {
+    margin: 4px 0 0;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    color: var(--theme-text-muted);
+}
+
+.llm-profile-assignments__lede-action {
+    display: inline-flex;
+    align-items: center;
+    vertical-align: middle;
+    margin-left: 8px;
+    color: var(--theme-text-primary);
+}
+
+.settings-content.settings-panel .llm-profile-assignments .llm-config-import-action {
+    min-height: 30px;
+    padding: 4px 12px;
+    font-size: 0.72rem;
+    line-height: 1.2;
+    white-space: nowrap;
+    border-radius: 8px;
+    cursor: pointer;
+    background: var(--theme-surface);
+    color: var(--theme-primary-strong);
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 46%, var(--theme-border));
+}
+
+.settings-content.settings-panel .llm-profile-assignments .llm-config-import-action:hover:not(:disabled) {
+    border-color: var(--theme-primary);
+    background: var(--theme-primary-soft);
+}
+
+.settings-content.settings-panel .llm-profile-assignments .llm-config-import-action:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+.settings-content.settings-panel .llm-profile-assignments .llm-config-import-action[aria-busy='true'] {
+    cursor: wait;
+}
+
+.llm-config-import-action:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+.llm-profile-assignments__state {
+    font-size: 0.76rem;
+    line-height: 1.5;
+    color: var(--theme-text-muted);
+}
+
+.llm-profile-assignments__state--error {
+    color: var(--theme-danger);
+}
+
+.llm-profile-assignments__state--soft {
+    margin-bottom: 14px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-secondary);
+    font-size: 0.72rem;
+    line-height: 1.45;
+}
+
+.llm-profile-probe {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.llm-profile-probe__row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+/* Test/refresh buttons mirror the old flat small buttons; the office repaint
+   provides border-color/color, so the surface fill lives here too (the UA
+   buttonface default shows through otherwise). */
+.settings-content.settings-panel .llm-profile-assignments button.llm-profile-probe-btn {
+    min-height: 28px;
+    padding: 4px 10px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    border-radius: 8px;
+    cursor: pointer;
+    background: var(--theme-surface);
+    color: var(--theme-primary-strong);
+    border-color: color-mix(in srgb, var(--theme-primary) 34%, var(--theme-border));
+}
+
+.settings-content.settings-panel .llm-profile-assignments button.llm-profile-probe-btn:hover:not(:disabled) {
+    border-color: var(--theme-primary);
+    background: var(--theme-primary-soft);
+}
+
+.settings-content.settings-panel .llm-profile-assignments button.llm-profile-probe-btn[aria-busy] {
+    cursor: wait;
+}
+
+.llm-profile-probe-status {
+    font-size: 0.7rem;
+    line-height: 1.4;
+    color: var(--theme-text-muted);
+}
+
+.settings-content .llm-profile-probe-status.is-ok {
+    color: var(--theme-success);
+}
+
+.settings-content .llm-profile-probe-status.is-bad {
+    color: var(--theme-danger);
+}
+
+.llm-profile-error {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 10px;
+    font-size: 0.72rem;
+    line-height: 1.45;
+}
+
+.llm-profile-error__btn {
+    min-height: 26px;
+    padding: 3px 9px;
+    font-size: 0.7rem;
+    border-radius: 8px;
+    cursor: pointer;
+    background: var(--theme-surface);
+}
+
+.settings-content .llm-profile-assignments .llm-profile-error .llm-profile-error__btn {
+    color: var(--theme-danger);
+    border-color: color-mix(in srgb, var(--theme-danger) 45%, transparent);
+}
+
+.settings-content .llm-profile-assignments .llm-profile-error .llm-profile-error__btn:hover:not(:disabled) {
+    border-color: var(--theme-danger);
+    background: var(--theme-danger-bg);
+}
+
+.llm-profile-footer {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 14px;
+}
+
+.llm-profile-footer__unsaved {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-right: auto;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--theme-warning);
+}
+
+/* Same unsaved-state dot language as the dialog footer. */
+.llm-profile-footer__unsaved::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: currentColor;
+}
+
+/* ── Settings ▸ LLM panel: MoA section head ── */
+.moa-config-section__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.moa-config-section__head > label {
+    flex-shrink: 0;
+    margin-bottom: 0;
+}
+
+.moa-config-section__status {
+    font-size: 0.8rem;
+    color: var(--theme-text-muted);
 }
 
 .model-config-loading {

@@ -621,8 +621,8 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         {error && <div role="alert" className="llm-profile-error"><span>{error}</span>{dirty && <button type="button" className="llm-profile-error__btn" onClick={refreshDraft}>{t("Refresh draft", "刷新草稿")}</button>}</div>}
         <div className="llm-profile-footer">
             {dirty && <span className="llm-profile-footer__unsaved">{t("Unsaved changes", "有未保存更改")}</span>}
-            {dirty && <button type="button" onClick={refreshDraft} disabled={saving} className="llm-config-btn llm-config-btn--quiet llm-profile-footer__btn">{t("Discard", "放弃更改")}</button>}
-            <button type="button" disabled={!dirty || saving} onClick={() => void save()} className="llm-config-btn llm-config-btn--primary llm-profile-footer__btn">
+            {dirty && <button type="button" onClick={refreshDraft} disabled={saving} className="llm-config-btn">{t("Discard", "放弃更改")}</button>}
+            <button type="button" disabled={!dirty || saving} onClick={() => void save()} className="llm-config-btn llm-config-btn--primary">
                 {saving ? t("Saving…", "正在保存…") : t("Save changes", "保存更改")}
             </button>
         </div>

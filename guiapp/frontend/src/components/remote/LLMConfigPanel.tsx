@@ -963,6 +963,15 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
         : isNone
             ? (hasHubEntitlement ? "hub" : "missing")
             : "configured";
+    const summaryText = !providerListReady
+        ? (providerListLoading
+            ? (providerLoadSlow
+                ? t("Still reading saved providers…", "仍在读取已保存的服务商…")
+                : t("Reading saved providers…", "正在读取已保存的服务商…"))
+            : t("Provider list unavailable", "服务商列表不可用"))
+        : isNone
+        ? (hasHubEntitlement ? t("MaClaw Official", "MaClaw 官方") : t("None", "未配置"))
+        : currentName;
 
     return (
         <div className="llm-config-panel">
@@ -988,16 +997,11 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                         <span className="llm-config-header__status-label">
                             {t("Assistant provider", "助手服务商")}
                         </span>
-                        <span className="llm-config-header__status-value">
-                            {!providerListReady
-                                ? (providerListLoading
-                                    ? (providerLoadSlow
-                                        ? t("Still reading saved providers…", "仍在读取已保存的服务商…")
-                                        : t("Reading saved providers…", "正在读取已保存的服务商…"))
-                                    : t("Provider list unavailable", "服务商列表不可用"))
-                                : isNone
-                                ? (hasHubEntitlement ? t("MaClaw Official", "MaClaw 官方") : t("None", "未配置"))
-                                : currentName}
+                        <span
+                            className="llm-config-header__status-value"
+                            title={summaryText}
+                        >
+                            {summaryText}
                         </span>
                     </p>
                 </div>
@@ -1115,8 +1119,7 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                 {dlgProviders.map((p, i) => {
                                     const isHubProvider = hasHubEntitlement && p.name === HUB_SERVICE_PROVIDER_NAME;
                                     const active = isHubProvider ? dlgHubSelected : dlgSelectedIdx === i;
-                                    const badge: Record<string, string> = {};
-                                    const tag = isHubProvider && hubOfficial.kind !== "active" ? hubOfficial.label : badge[p.name];
+                                    const tag = isHubProvider && hubOfficial.kind !== "active" ? hubOfficial.label : undefined;
                                     return (
                                         <span key={i} className="llm-config-provider-chip-slot">
                                         <button
@@ -1461,21 +1464,21 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                         {/* Pinned action bar */}
                         <div className="llm-config-dialog__footer">
                             <LLMConfigDialogFooter
-                            dirty={dlgDirty}
-                            error={dlgFailureReason}
-                            errorTitle={dlgFailureTitle}
-                            hubSelected={dlgHubSelected}
-                            hubAlreadySynced={hubSelectionAlreadySynced}
-                            hubModelDirty={hubModelDirty}
-                            needsOAuthLogin={dlgNeedsOAuthLogin}
-                            oauthBusy={oauthBusy}
-                            saving={dlgSaving}
-                            t={t}
-                            tested={dlgTested}
-                            onCancel={closeDialog}
-                            onSave={dlgHandleSave}
-                            onSaveHub={dlgHandleSaveHubService}
-                        />
+                                dirty={dlgDirty}
+                                error={dlgFailureReason}
+                                errorTitle={dlgFailureTitle}
+                                hubSelected={dlgHubSelected}
+                                hubAlreadySynced={hubSelectionAlreadySynced}
+                                hubModelDirty={hubModelDirty}
+                                needsOAuthLogin={dlgNeedsOAuthLogin}
+                                oauthBusy={oauthBusy}
+                                saving={dlgSaving}
+                                t={t}
+                                tested={dlgTested}
+                                onCancel={closeDialog}
+                                onSave={dlgHandleSave}
+                                onSaveHub={dlgHandleSaveHubService}
+                            />
                         </div>
                     </div>
                 </div>

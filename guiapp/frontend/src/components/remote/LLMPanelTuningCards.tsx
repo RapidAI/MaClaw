@@ -27,21 +27,19 @@ export function LLMMaxIterationsCard({ maxIter, setMaxIter, t }: {
     return tuningRow(
         t("Agent Max Iterations", "Agent 最大推理轮数"),
         t("0=unlimited, default 300", "0=不限制，默认 300"),
-        <>
-            <div className="llm-tuning-row__controls">
-                <input type="range" min={0} max={300} step={1} value={maxIter}
-                    className="llm-tuning-slider"
-                    aria-label={t("Agent Max Iterations", "Agent 最大推理轮数")}
-                    onChange={e => { setMaxIter(Number(e.target.value)); }} />
-                <input type="number" min={0} max={300} value={maxIter}
-                    className="llm-tuning-number"
-                    aria-label={t("Agent Max Iterations", "Agent 最大推理轮数")}
-                    onChange={e => { setMaxIter(Math.max(0, Math.min(300, Number(e.target.value) || 0))); }} />
-                <span className="llm-tuning-meta">
-                    {maxIter === 0 ? t("Unlimited", "不限制") : `${maxIter} ${t("rounds", "轮")}`}
-                </span>
-            </div>
-        </>
+        <div className="llm-tuning-row__controls">
+            <input type="range" min={0} max={300} step={1} value={maxIter}
+                className="llm-tuning-slider"
+                aria-label={t("Agent Max Iterations", "Agent 最大推理轮数")}
+                onChange={e => { setMaxIter(Number(e.target.value)); }} />
+            <input type="number" min={0} max={300} value={maxIter}
+                className="llm-tuning-number"
+                aria-label={t("Agent Max Iterations", "Agent 最大推理轮数")}
+                onChange={e => { setMaxIter(Math.max(0, Math.min(300, Number(e.target.value) || 0))); }} />
+            <span className="llm-tuning-meta">
+                {maxIter === 0 ? t("Unlimited", "不限制") : `${maxIter} ${t("rounds", "轮")}`}
+            </span>
+        </div>
     );
 }
 

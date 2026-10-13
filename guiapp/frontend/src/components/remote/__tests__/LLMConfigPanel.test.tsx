@@ -375,8 +375,9 @@ describe('LLMConfigPanel test-and-save flow', () => {
 
         const offButton = await screen.findByTestId('thinking-mode-disabled');
         await waitFor(() => {
-            expect(offButton.style.background).not.toBe('');
+            expect(offButton.getAttribute('aria-pressed')).toBe('true');
         });
+        expect(offButton.className).toContain('is-active');
     });
 
     it('saves a custom User-Agent value', async () => {

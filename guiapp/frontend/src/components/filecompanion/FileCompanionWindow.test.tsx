@@ -430,6 +430,12 @@ describe("FileCompanionWindow", () => {
         // A click on the PDF never reaches document, because the preview is an
         // iframe. The scrim is what receives that click.
         fireEvent.mouseDown(screen.getByTestId("file-companion-open-scrim"));
+        // React keeps a module-level mouseDown flag; a real pointer always
+        // releases, so pair the press or every later onSelect in this file
+        // sees stale "mouse dragging" state and swallows selection events.
+        // The mouseup must fire on a node that is still inside the React root:
+        // the scrim unmounts with the menu on mousedown, the titlebar survives.
+        fireEvent.mouseUp(screen.getByTestId("file-companion-titlebar"));
         expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
     });
 
@@ -497,6 +503,9 @@ describe("FileCompanionWindow", () => {
         await waitFor(() => expect(screen.getByTestId("file-companion-arxiv-go").textContent).toBe("下载中…"));
         fireEvent.keyDown(document, { key: "Escape" });
         fireEvent.mouseDown(document.body);
+        // mouseup must enter a React root container for React's module-level
+        // mouseDown flag to reset; <body> itself is above every root.
+        fireEvent.mouseUp(screen.getByTestId("file-companion-window"));
         fireEvent.click(screen.getByTestId("file-companion-choose"));
         expect(screen.getByTestId("file-companion-open-menu")).toBeTruthy();
         release("");
@@ -524,6 +533,9 @@ describe("FileCompanionWindow", () => {
 
         fireEvent.click(trigger);
         fireEvent.mouseDown(document.body);
+        // Outside click must NOT return focus to the trigger; the paired
+        // mouseup has to be inside the React root to reset React's flag.
+        fireEvent.mouseUp(screen.getByTestId("file-companion-window"));
         expect(screen.queryByTestId("file-companion-open-menu")).toBeNull();
         expect(document.activeElement).not.toBe(trigger);
     });

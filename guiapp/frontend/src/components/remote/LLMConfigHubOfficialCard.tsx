@@ -1,4 +1,4 @@
-import { hubOfficialStatus } from "./LLMConfigPanelShared";
+import type { hubOfficialStatus } from "./LLMConfigPanelShared";
 import { capabilityModelMenuLabel } from "../../utils/capabilityModelLabel";
 
 type Translate = (en: string, zhHans: string, zhHant?: string) => string;

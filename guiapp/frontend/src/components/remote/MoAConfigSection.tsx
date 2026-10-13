@@ -3,7 +3,7 @@ import { GetMoAConfig, GetMoASessionState, GetMoAStats, SaveMoAConfig, SetMoASti
 import { corelib } from '../../../wailsjs/go/models';
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
-import { inputStyle, labelStyle } from "./LLMConfigPanelShared";
+import { inputStyle } from "./LLMConfigPanelShared";
 import type { LLMProvider } from "./LLMConfigPanelShared";
 
 type MoAStatsSnapshot = {
@@ -415,10 +415,10 @@ export function MoAConfigSection({ lang, providers }: Props) {
         <div className="llm-config-card moa-config-section" data-testid="moa-config-section">
             <div className="moa-config-section__head">
                 <div style={{ minWidth: 0 }}>
-                    <label className="llm-tuning-row__title" style={{ ...labelStyle, marginBottom: 2, display: "block", color: "var(--theme-text-primary, inherit)" }}>
+                    <label className="llm-tuning-row__title" style={{ display: "block", marginBottom: 2 }}>
                         {t("Ask multiple models first", "先问多个模型再回答")}
                     </label>
-                    <div className="llm-tuning-row__hint" style={{ lineHeight: 1.45 }}>
+                    <div className="llm-tuning-row__hint">
                         {t(
                             "For hard questions, other models give opinions first; your current main model writes the final answer. Chat: + → multi-model. Kill switch: MACLAW_MOA=off.",
                             "遇到难题时，可先让其他模型各说一遍看法，再由你现在用的主模型综合并写最终答案。聊天点 + →「多模型会诊」。紧急关闭：环境变量 MACLAW_MOA=off。",

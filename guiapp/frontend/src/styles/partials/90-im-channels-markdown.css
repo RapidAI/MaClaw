@@ -1540,13 +1540,13 @@
 }
 
 @media (max-width: 640px) {
-    .llm-config-panel__intro {
-        align-items: stretch !important;
+    .llm-config-header {
+        align-items: stretch;
         flex-direction: column;
     }
 
-    .llm-config-primary-action {
-        margin-left: 0 !important;
+    .llm-config-header__actions {
+        justify-content: flex-start;
     }
 
     /* Sections sit inside .llm-config-dialog__body, which owns the inset. */
