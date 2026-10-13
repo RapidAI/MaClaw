@@ -187,7 +187,7 @@ func collectEmbeddingModelStatus() embeddingModelRuntimeStatus {
 	if ready && !downloading {
 		warmSharedEmbeddingModel()
 	}
-	embedderReady := embedding.SharedGemmaReady()
+	embedderReady := embedding.SharedEmbedderReady()
 	warming := embeddingModelWarming() && !embedderReady
 	status := "missing"
 	switch {
@@ -284,7 +284,7 @@ func runEmbeddingModelDownload(force bool) {
 		return
 	}
 	_ = os.WriteFile(filepath.Join(cacheDir, embeddingModelSentinelName), []byte(time.Now().UTC().Format(time.RFC3339)+"\n"), 0o644)
-	if emb := embedding.ReloadSharedGemmaIfReady(); embedding.IsNoop(emb) {
+	if emb := embedding.ReloadSharedEmbedderIfReady(); embedding.IsNoop(emb) {
 		appendEmbeddingLog(logPath, "model cached; embedder still not ready (invalid or unloadable GGUF)")
 	} else {
 		appendEmbeddingLog(logPath, "model cached; embedder ready")
@@ -675,7 +675,7 @@ func embeddingModelWarming() bool {
 }
 
 func warmSharedEmbeddingModel() {
-	if !embeddingWarmEnabled() || embedding.SharedGemmaReady() {
+	if !embeddingWarmEnabled() || embedding.SharedEmbedderReady() {
 		return
 	}
 	_ = syncEmbeddingModelCopies()
@@ -690,7 +690,7 @@ func warmSharedEmbeddingModel() {
 	go func() {
 		defer embeddingWarmWG.Done()
 		defer embeddingWarmDone.Store(true)
-		if emb := embedding.ReloadSharedGemmaIfReady(); embedding.IsNoop(emb) {
+		if emb := embedding.ReloadSharedEmbedderIfReady(); embedding.IsNoop(emb) {
 			appendEmbeddingLog(embeddingModelLogPath(), "model cached; embedder still not ready (invalid or unloadable GGUF)")
 			log.Printf("[embedding-model] cached GGUF did not load")
 			return

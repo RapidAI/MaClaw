@@ -53,14 +53,14 @@ func zzModelProbe(t *testing.T, stage string, emb embedding.Embedder) {
 	}
 	sort.Strings(files)
 	_, isGemma := emb.(*embedding.GemmaEmbedder)
-	fmt.Fprintf(os.Stderr, "ZZ probe[%s] embedder=%T isGemma=%v isa=%s 2pass_env=%q sharedGemmaReady=%v mapped_gguf=%v\n",
-		stage, emb, isGemma, tensor.Q8PISAName(), os.Getenv("MACLAW_QWEN3_Q8P_2PASS"), embedding.SharedGemmaReady(), files)
+	fmt.Fprintf(os.Stderr, "ZZ probe[%s] embedder=%T isGemma=%v isa=%s 2pass_env=%q sharedEmbReady=%v mapped_gguf=%v\n",
+		stage, emb, isGemma, tensor.Q8PISAName(), os.Getenv("MACLAW_QWEN3_Q8P_2PASS"), embedding.SharedEmbedderReady(), files)
 	if os.Getenv("ZZ_EXPECT_SINGLE_GGUF") == "1" {
 		want := os.Getenv("ZZ_GGUF")
 		if len(files) != 1 || files[0] != want {
 			t.Fatalf("single-model check failed at %s: mapped=%v want only %s", stage, files, want)
 		}
-		if embedding.SharedGemmaReady() {
+		if embedding.SharedEmbedderReady() {
 			t.Fatalf("single-model check failed at %s: shared Gemma singleton loaded", stage)
 		}
 	}

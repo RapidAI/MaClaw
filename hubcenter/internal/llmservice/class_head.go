@@ -346,7 +346,7 @@ func officialHeadEmbedderAvailable() bool {
 	if officialHeadEmbedderFn != nil {
 		return true
 	}
-	return embedding.SharedGemmaReady()
+	return embedding.SharedEmbedderReady()
 }
 
 // officialHeadEmbedFamily is the family of the embedder
@@ -357,7 +357,7 @@ var officialHeadEmbedFamilyFn = func() string {
 	if officialHeadEmbedderFn != nil {
 		return ""
 	}
-	return embedding.EmbedderFamily(embedding.SharedGemma256())
+	return embedding.EmbedderFamily(embedding.SharedEmbedder())
 }
 
 func embedOfficialHeadPreview(preview string) ([]float32, error) {
@@ -368,7 +368,7 @@ func embedOfficialHeadPreview(preview string) ([]float32, error) {
 	if officialHeadEmbedderFn != nil {
 		return officialHeadEmbedderFn(preview)
 	}
-	emb := embedding.SharedGemma256()
+	emb := embedding.SharedEmbedder()
 	if embedding.IsNoop(emb) {
 		return nil, errors.New("embedding model not ready")
 	}

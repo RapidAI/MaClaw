@@ -6,25 +6,25 @@ import (
 	"testing"
 )
 
-func TestSharedGemma256FallsBackToNoopWithoutModel(t *testing.T) {
-	ResetSharedGemmaForTest()
-	t.Cleanup(ResetSharedGemmaForTest)
-	emb := SharedGemma256()
+func TestSharedEmbedderFallsBackToNoopWithoutModel(t *testing.T) {
+	ResetSharedEmbedderForTest()
+	t.Cleanup(ResetSharedEmbedderForTest)
+	emb := SharedEmbedder()
 	if emb == nil {
 		t.Fatal("expected embedder")
 	}
 	if !IsNoop(emb) && emb.Dim() != 256 {
 		t.Fatalf("unexpected embedder dim=%d noop=%v", emb.Dim(), IsNoop(emb))
 	}
-	again := SharedGemma256()
+	again := SharedEmbedder()
 	if again != emb {
-		t.Fatal("SharedGemma256 should reuse the process-wide instance")
+		t.Fatal("SharedEmbedder should reuse the process-wide instance")
 	}
 }
 
-func TestSharedGemmaReadyDoesNotLoad(t *testing.T) {
-	ResetSharedGemmaForTest()
-	t.Cleanup(ResetSharedGemmaForTest)
+func TestSharedEmbedderReadyDoesNotLoad(t *testing.T) {
+	ResetSharedEmbedderForTest()
+	t.Cleanup(ResetSharedEmbedderForTest)
 	prev, _ := BaseDirFunc.Load().(func() string)
 	dir := t.TempDir()
 	BaseDirFunc.Store(func() string { return dir })
@@ -40,20 +40,20 @@ func TestSharedGemmaReadyDoesNotLoad(t *testing.T) {
 	if err := os.WriteFile(path, []byte("not-a-real-gguf"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if SharedGemmaReady() {
+	if SharedEmbedderReady() {
 		t.Fatal("peek must not start a load")
 	}
-	if !IsNoop(SharedGemma256()) {
+	if !IsNoop(SharedEmbedder()) {
 		t.Fatal("invalid GGUF must stay noop")
 	}
-	if SharedGemmaReady() {
+	if SharedEmbedderReady() {
 		t.Fatal("invalid GGUF must stay not ready")
 	}
 }
 
-func TestReloadSharedGemmaIfReadyRetriesAfterFileAppears(t *testing.T) {
-	ResetSharedGemmaForTest()
-	t.Cleanup(ResetSharedGemmaForTest)
+func TestReloadSharedEmbedderIfReadyRetriesAfterFileAppears(t *testing.T) {
+	ResetSharedEmbedderForTest()
+	t.Cleanup(ResetSharedEmbedderForTest)
 	prev, _ := BaseDirFunc.Load().(func() string)
 	dir := t.TempDir()
 	BaseDirFunc.Store(func() string { return dir })
@@ -63,7 +63,7 @@ func TestReloadSharedGemmaIfReadyRetriesAfterFileAppears(t *testing.T) {
 		}
 	})
 
-	if !IsNoop(SharedGemma256()) {
+	if !IsNoop(SharedEmbedder()) {
 		t.Fatal("expected noop before the model file exists")
 	}
 	path := filepath.Join(dir, "models", DefaultModelFilename)
@@ -73,7 +73,7 @@ func TestReloadSharedGemmaIfReadyRetriesAfterFileAppears(t *testing.T) {
 	if err := os.WriteFile(path, []byte("not-a-real-gguf"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	emb := ReloadSharedGemmaIfReady()
+	emb := ReloadSharedEmbedderIfReady()
 	if emb == nil {
 		t.Fatal("expected embedder after reload")
 	}

@@ -845,9 +845,8 @@ func (a *App) GetEmbedAccelInfo() embedding.AccelInfo {
 	}
 	a.embeddingMu.Lock()
 	defer a.embeddingMu.Unlock()
-	// Interface, not a concrete model type: with Qwen3 as the single model a
-	// *GemmaEmbedder assertion always failed and the badge fell back to the
-	// global NPU detection instead of the live instance.
+	// Interface, not a concrete model type, so the badge reports the live
+	// Qwen3 instance rather than the global NPU detection.
 	if g, ok := a.intentEmbedder.(embedding.AccelEmbedder); ok && g != nil && !embedding.IsNoop(a.intentEmbedder) {
 		return g.Accel()
 	}
@@ -868,7 +867,7 @@ func (a *App) SetEmbedHWAccel(enabled bool) (corelib.AppConfig, error) {
 		}
 		a.embeddingMu.Unlock()
 	}
-	embedding.ReloadSharedGemmaAccel()
+	embedding.ReloadSharedEmbedderAccel()
 	return a.PatchConfigFields(map[string]interface{}{"embed_hw_accel": enabled})
 }
 

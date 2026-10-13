@@ -150,12 +150,12 @@ func (g *GemmaEmbedder) ApplyAccel(enabled bool) {
 	g.accelInfo = info
 }
 
-// ReloadSharedGemmaAccel applies HWAccelPreferred to the process singleton
+// ReloadSharedEmbedderAccel applies HWAccelPreferred to the process singleton
 // (whatever model it is; see AccelEmbedder).
-func ReloadSharedGemmaAccel() {
-	sharedGemmaMu.Lock()
-	defer sharedGemmaMu.Unlock()
-	if g, ok := sharedGemma.(AccelEmbedder); ok && g != nil && !IsNoop(sharedGemma) {
+func ReloadSharedEmbedderAccel() {
+	sharedEmbMu.Lock()
+	defer sharedEmbMu.Unlock()
+	if g, ok := sharedEmb.(AccelEmbedder); ok && g != nil && !IsNoop(sharedEmb) {
 		g.ApplyAccel(HWAccelPreferred())
 	}
 }

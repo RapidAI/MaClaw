@@ -46,10 +46,6 @@ func (s *loadSpy) loaders() modelLoaders {
 			s.qwen = &fakePrefEmb{dim: 1024, id: "qwen3-embedding:1024", fail: s.qwenSmokeFail}
 			return s.qwen, nil
 		},
-		gemma: func(string, int) (Embedder, error) {
-			s.gemmaCalls++
-			return &fakePrefEmb{dim: 768, id: "gemma-embedding:768"}, nil
-		},
 	}
 }
 
@@ -106,7 +102,7 @@ func TestPreferredQwen3ChosenGemmaNeverLoaded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Family != FamilyQwen3 || res.Fallback || res.Embedder.Dim() != 1024 {
+	if res.Family != FamilyQwen3 || res.Embedder.Dim() != 1024 {
 		t.Fatalf("got %+v", res)
 	}
 	if spy.gemmaCalls != 0 {
@@ -129,7 +125,7 @@ func TestPreferredQwen3MissingDoesNotFallBackToGemma(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !IsNoop(res.Embedder) || res.Family != "" || res.Fallback || res.QwenErr == nil {
+	if !IsNoop(res.Embedder) || res.Family != "" || res.QwenErr == nil {
 		t.Fatalf("got %+v", res)
 	}
 	if spy.qwenCalls != 0 || spy.gemmaCalls != 0 {
@@ -189,9 +185,6 @@ func TestPreferredLegacyGemmaPinIgnored(t *testing.T) {
 	if err != nil || res.Family != FamilyQwen3 || spy.gemmaCalls != 0 || spy.qwenCalls != 1 {
 		t.Fatalf("got %+v err=%v spy=%+v", res, err, spy)
 	}
-	if GemmaPinned() {
-		t.Fatal("GemmaPinned must be retired (always false)")
-	}
 }
 
 func TestPreferredNoFilesIsNoop(t *testing.T) {
@@ -239,7 +232,7 @@ func TestPreferredRealModels(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !IsNoop(res.Embedder) || res.Fallback {
+	if !IsNoop(res.Embedder) {
 		t.Fatalf("want noop (no gemma fallback), got %s", res)
 	}
 }

@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 
 	"github.com/RapidAI/CodeClaw/corelib/asr"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
@@ -65,16 +64,9 @@ func main() {
 		copy(g, w.SpeakerEmb[sid*hp.GinChannels:(sid+1)*hp.GinChannels])
 	}
 
-	// Load Gemma for BERT embedding
-	gemmaPath := filepath.Join(embedding.DefaultModelsDir(), embedding.LegacyGemmaModelFilename) // offline BERT experiment only
+	// No BERT feature embedder: the EmbeddingGemma-based ja-BERT experiment is
+	// retired, so the "gemma_*" configs run with zero BERT inputs.
 	var embedder embedding.Embedder
-	if _, err3 := os.Stat(gemmaPath); err3 == nil {
-		embedder, _ = embedding.NewGemmaEmbedder(gemmaPath, embedding.DefaultEmbeddingDim)
-		if embedder != nil {
-			defer embedder.Close()
-			fmt.Printf("Gemma loaded: dim=%d\n", embedder.Dim())
-		}
-	}
 
 	tests := []struct {
 		text        string

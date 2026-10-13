@@ -6,24 +6,20 @@ package embedding
 // There is no automatic Gemma fallback: when Qwen3 is missing, unloadable,
 // refused by the low-memory guard or backing off after a failure, the result
 // is a NoopEmbedder and hosts degrade to rules + BM25 (+ remote L3) while the
-// background fetch / retry runs. The EmbeddingGemma code stays and is loaded
-// only when explicitly pinned (rollback switch), so a process can never hold
-// both models through this factory.
+// background fetch / retry runs. The EmbeddingGemma engine code stays in the
+// package (gemma*.go) but nothing in this factory loads it.
 //
 // Environment (read on every call):
 //
-//	MACLAW_EMBED_MODEL       ignored: Qwen3 is the only model ("gemma" is
-//	                         logged once and ignored; see GemmaPinned)
+//	MACLAW_EMBED_MODEL       ignored: Qwen3 is the only model (any value, including "gemma")
 //	MACLAW_EMBED_MODEL_PATH  Qwen3 GGUF file or directory (see ResolveQwen3ModelPath)
 //	MACLAW_EMBED_MEM_GUARD   "0" disables the low-memory guard (CheckModelMemory)
 
 import (
 	"fmt"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding/gguf"
 	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
@@ -37,15 +33,11 @@ const (
 
 // PreferredLoad reports which single model LoadPreferredEmbedder loaded and why.
 type PreferredLoad struct {
-	Embedder  Embedder // never nil; NoopEmbedder when nothing could be loaded
-	Family    string   // FamilyQwen3, FamilyGemma or "" (noop)
-	Path      string   // file the embedder was loaded from
-	QwenPath  string   // Qwen3 candidate path ("" when pinned to Gemma)
-	QwenErr   error    // why Qwen3 was not used (nil when it was, or when pinned to Gemma)
-	GemmaPath string
-	// Fallback is retained for API compatibility; the factory no longer
-	// falls back to Gemma, so it is always false.
-	Fallback bool
+	Embedder Embedder // never nil; NoopEmbedder when nothing could be loaded
+	Family   string   // FamilyQwen3 or "" (noop)
+	Path     string   // file the embedder was loaded from
+	QwenPath string   // Qwen3 candidate path
+	QwenErr  error    // why Qwen3 was not used (nil when it was)
 	// Tried lists the Qwen3 locations considered (path resolution log).
 	Tried []Qwen3PathCandidate
 }
@@ -55,10 +47,6 @@ func (p PreferredLoad) String() string {
 	switch {
 	case p.Family == FamilyQwen3:
 		return fmt.Sprintf("qwen3 %s (dim=%d)", p.Path, p.Embedder.Dim())
-	case p.Family == FamilyGemma && p.Fallback:
-		return fmt.Sprintf("gemma %s (dim=%d) — fallback, qwen3 unavailable: %v", p.Path, p.Embedder.Dim(), p.QwenErr)
-	case p.Family == FamilyGemma:
-		return fmt.Sprintf("gemma %s (dim=%d) — pinned by %s=gemma", p.Path, p.Embedder.Dim(), EmbedModelEnv)
 	default:
 		return fmt.Sprintf("noop — local embedder unavailable, degraded to rules+BM25 (qwen3: %v)", p.QwenErr)
 	}
@@ -67,17 +55,14 @@ func (p PreferredLoad) String() string {
 // PreferredOptions tunes LoadPreferredEmbedder.
 type PreferredOptions struct {
 	// SmokeTest embeds "test" after loading; a failure counts as a load
-	// failure (Qwen3 → fall back to Gemma; Gemma → error).
+	// failure (degrades to NoopEmbedder; there is no fallback model).
 	SmokeTest bool
-	// GemmaDim is the Gemma output width (<=0 → DefaultEmbeddingDim).
-	GemmaDim int
 }
 
 // modelLoaders is swappable in tests so the factory can be exercised without
-// real GGUFs and the "Gemma never opened" property can be asserted.
+// real GGUFs.
 type modelLoaders struct {
 	qwen3 func(path string) (Embedder, error)
-	gemma func(path string, dim int) (Embedder, error)
 }
 
 var preferredLoaders = modelLoaders{
@@ -95,45 +80,24 @@ var preferredLoaders = modelLoaders{
 		}
 		return e, nil
 	},
-	gemma: func(path string, dim int) (Embedder, error) {
-		e, err := NewGemmaEmbedder(path, dim)
-		if err != nil {
-			return nil, err
-		}
-		return e, nil
-	},
 }
 
-// PreferredQwen3Path returns the Qwen3 GGUF candidate for a Gemma model path:
+// PreferredQwen3Path returns the Qwen3 GGUF candidate for a model-slot path:
 // MACLAW_EMBED_MODEL_PATH if set, else Qwen3ModelFilename in the same dir.
-func PreferredQwen3Path(gemmaPath string) string {
+func PreferredQwen3Path(slotPath string) string {
 	if p := strings.TrimSpace(os.Getenv(EmbedModelPathEnv)); p != "" {
 		return p
 	}
-	if strings.TrimSpace(gemmaPath) == "" {
+	if strings.TrimSpace(slotPath) == "" {
 		return ""
 	}
-	return filepath.Join(filepath.Dir(gemmaPath), Qwen3ModelFilename)
+	return filepath.Join(filepath.Dir(slotPath), Qwen3ModelFilename)
 }
-
-// GemmaPinned is retired and always false: Qwen3-Embedding-0.6B is the only
-// local embedding model (no Gemma rollback pin, no Gemma fallback). A legacy
-// MACLAW_EMBED_MODEL=gemma is ignored and logged once.
-func GemmaPinned() bool {
-	if strings.EqualFold(strings.TrimSpace(os.Getenv(EmbedModelEnv)), "gemma") {
-		legacyGemmaPinOnce.Do(func() {
-			log.Printf("[embedding] %s=gemma is no longer supported; using Qwen3-Embedding-0.6B", EmbedModelEnv)
-		})
-	}
-	return false
-}
-
-var legacyGemmaPinOnce sync.Once
 
 // PreferredModelFileExists reports whether the model file the factory would
 // load is present (used by hosts to decide whether a download is needed).
-func PreferredModelFileExists(gemmaPath string) bool {
-	p, _ := ResolveQwen3ModelPath(gemmaPath)
+func PreferredModelFileExists(slotPath string) bool {
+	p, _ := ResolveQwen3ModelPath(slotPath)
 	return p != ""
 }
 
@@ -146,22 +110,22 @@ func regularNonEmpty(p string) bool {
 }
 
 // LoadPreferredEmbedder loads the single embedding model, Qwen3 (there is no
-// Gemma path). gemmaPath is the host's model
+// other model). slotPath is the host's model
 // slot (embedding.DefaultModelPath()); the Qwen3 file is located with
 // ResolveQwen3ModelPath. When no Qwen3 file exists, or a retry is not yet due
 // after a failure, the result is a NoopEmbedder with a nil error (callers
 // treat that as "download needed / degraded"). A non-nil error means a model
 // file existed but failed to load (or the low-memory guard refused it).
-func LoadPreferredEmbedder(gemmaPath string, opt PreferredOptions) (PreferredLoad, error) {
-	return loadPreferredWith(preferredLoaders, gemmaPath, opt)
+func LoadPreferredEmbedder(slotPath string, opt PreferredOptions) (PreferredLoad, error) {
+	return loadPreferredWith(preferredLoaders, slotPath, opt)
 }
 
-func loadPreferredWith(ld modelLoaders, gemmaPath string, opt PreferredOptions) (PreferredLoad, error) {
-	res := PreferredLoad{Embedder: NoopEmbedder{}, GemmaPath: gemmaPath}
-	path, tried := ResolveQwen3ModelPath(gemmaPath)
+func loadPreferredWith(ld modelLoaders, slotPath string, opt PreferredOptions) (PreferredLoad, error) {
+	res := PreferredLoad{Embedder: NoopEmbedder{}}
+	path, tried := ResolveQwen3ModelPath(slotPath)
 	res.Tried = tried
 	if path == "" {
-		res.QwenPath = PreferredQwen3Path(gemmaPath)
+		res.QwenPath = PreferredQwen3Path(slotPath)
 		res.QwenErr = fmt.Errorf("model file missing (tried: %s)", describeCandidates(tried))
 		return res, nil
 	}
@@ -221,12 +185,11 @@ func tryLoad(path string, load func(string) (Embedder, error), smoke bool) (emb 
 
 // EmbedderFamily classifies a live embedder: by concrete type, then by
 // ModelID, then by width (1024 → qwen3, 768 → gemma). "" when unknown.
+// FamilyGemma is only reported for legacy / foreign embedders (by ModelID or
+// width) so stale Gemma-space heads and vectors can be recognised and refused.
 func EmbedderFamily(e Embedder) string {
-	switch e.(type) {
-	case *Qwen3Embedder:
+	if _, ok := e.(*Qwen3Embedder); ok {
 		return FamilyQwen3
-	case *GemmaEmbedder:
-		return FamilyGemma
 	}
 	if e == nil || IsNoop(e) {
 		return ""

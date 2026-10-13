@@ -72,14 +72,13 @@ func report(stage string) {
 }
 
 func main() {
-	models := flag.String("models", "", "models dir (contains Qwen3-Embedding-0.6B-Q8_0.gguf; embeddinggemma-300M-Q8_0.gguf only for -also-load-gemma)")
+	models := flag.String("models", "", "models dir (contains Qwen3-Embedding-0.6B-Q8_0.gguf)")
 	heads := flag.String("heads", "", "head dir (default <models>/intent_heads)")
-	alsoGemma := flag.Bool("also-load-gemma", false, "counterfactual: additionally load Gemma at the end to show the RSS of two resident models")
 	flag.Parse()
 	if *heads == "" {
 		*heads = locall3.DefaultHeadDir(*models)
 	}
-	gemmaPath := filepath.Join(*models, embedding.DefaultModelFilename)
+	slotPath := filepath.Join(*models, embedding.DefaultModelFilename)
 	report("start")
 
 	var remoteCalls atomic.Int64
@@ -105,7 +104,7 @@ func main() {
 
 	// ensureEmbeddingEngineSync / activate*: one embedder for everything.
 	t0 := time.Now()
-	load, err := locall3.LoadEmbedder(gemmaPath, false)
+	load, err := locall3.LoadEmbedder(slotPath, false)
 	if err != nil {
 		fmt.Println("load error:", err)
 		os.Exit(1)
@@ -191,13 +190,5 @@ func main() {
 	}
 	fmt.Printf("[l3] remote tree LLM calls: %d\n", remoteCalls.Load())
 	report("after classify")
-	if *alsoGemma {
-		g, err := embedding.NewGemmaEmbedder(filepath.Join(*models, embedding.LegacyGemmaModelFilename), embedding.DefaultEmbeddingDim)
-		if err == nil {
-			g.Embed("test")
-			report("COUNTERFACTUAL +gemma")
-			g.Close()
-		}
-	}
 	emb.Close()
 }

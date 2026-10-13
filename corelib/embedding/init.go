@@ -1,6 +1,7 @@
 package embedding
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,7 +19,7 @@ import (
 const DefaultEmbeddingDim = 768
 
 // EmbedModelEnv selects the local embedding model family for
-// NewDefaultEmbedder (and therefore SharedGemma256) and LoadPreferredEmbedder:
+// NewDefaultEmbedder (and therefore SharedEmbedder) and LoadPreferredEmbedder:
 //
 //	any value                  Qwen3-Embedding-0.6B (Q8_0 GGUF, the single
 //	                            shipped model), located by ResolveQwen3ModelPath;
@@ -32,9 +33,8 @@ const EmbedModelEnv = "MACLAW_EMBED_MODEL"
 const EmbedModelPathEnv = "MACLAW_EMBED_MODEL_PATH"
 
 // SelectedEmbedModel returns the local embedding model family: always "qwen3"
-// (the Gemma pin is retired; see GemmaPinned).
+// (MACLAW_EMBED_MODEL is ignored).
 func SelectedEmbedModel() string {
-	GemmaPinned() // logs a legacy MACLAW_EMBED_MODEL=gemma once
 	return "qwen3"
 }
 
@@ -51,8 +51,8 @@ func resolveModelPath(modelPath string) string {
 }
 
 // NewEmbedderFromFile loads a GGUF embedding model, dispatching on
-// general.architecture (qwen3 → Qwen3Embedder at full width, everything else
-// → GemmaEmbedder at dim).
+// general.architecture. Only qwen3 is supported (Qwen3Embedder at full width;
+// dim is ignored); any other architecture is an error.
 func NewEmbedderFromFile(modelPath string, dim int) (Embedder, error) {
 	arch, err := gguf.PeekArchitecture(modelPath)
 	if err != nil {
@@ -61,7 +61,7 @@ func NewEmbedderFromFile(modelPath string, dim int) (Embedder, error) {
 	if arch == "qwen3" {
 		return NewQwen3Embedder(modelPath, 0)
 	}
-	return NewGemmaEmbedder(modelPath, dim)
+	return nil, fmt.Errorf("embedding: unsupported GGUF architecture %q in %s (want qwen3)", arch, modelPath)
 }
 
 // NewDefaultEmbedder loads the local embedder (Qwen3) from the model slot

@@ -10,7 +10,7 @@
 //	uic := intent.New(intent.Config{
 //	        LLMFunc:        rt.LLMFunc(remoteFn),
 //	        LLMContextFunc: rt.ContextFunc(remoteCtxFn), ...})
-//	load, _ := locall3.LoadEmbedder(gemmaPath, true)
+//	load, _ := locall3.LoadEmbedder(slotPath, true)
 //	uic.SetEmbedder(load.Embedder)
 //	rt.Attach(load.Embedder)                      // picks + validates the head
 package locall3
@@ -29,8 +29,8 @@ import (
 
 // LoadEmbedder is the single shared embedder factory (see
 // embedding.LoadPreferredEmbedder).
-func LoadEmbedder(gemmaPath string, smoke bool) (embedding.PreferredLoad, error) {
-	return embedding.LoadPreferredEmbedder(gemmaPath, embedding.PreferredOptions{SmokeTest: smoke})
+func LoadEmbedder(slotPath string, smoke bool) (embedding.PreferredLoad, error) {
+	return embedding.LoadPreferredEmbedder(slotPath, embedding.PreferredOptions{SmokeTest: smoke})
 }
 
 // DefaultHeadDir is <modelsDir>/intent_heads.

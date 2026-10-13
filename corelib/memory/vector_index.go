@@ -63,7 +63,7 @@ func (v *vectorIndex) rebuild(entries []Entry) {
 }
 
 // score computes cosine similarity between queryEmb and all stored embeddings.
-// If embeddings are L2-normalized (as produced by GemmaEmbedder), this reduces
+// If embeddings are L2-normalized (as produced by the local embedder), this reduces
 // to a dot product. Uses SIMD-accelerated tensor.Dot for performance.
 func (v *vectorIndex) score(queryEmb []float32) map[string]float64 {
 	if len(queryEmb) == 0 {

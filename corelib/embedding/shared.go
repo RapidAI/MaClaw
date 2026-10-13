@@ -8,24 +8,23 @@ import (
 )
 
 var (
-	sharedGemmaMu        sync.Mutex
-	sharedGemma          Embedder
-	sharedGemmaOnce      bool
-	sharedGemmaTriedPath string
-	sharedGemmaTriedMod  time.Time
-	sharedGemmaReady     atomic.Bool
+	sharedEmbMu        sync.Mutex
+	sharedEmb          Embedder
+	sharedEmbOnce      bool
+	sharedEmbTriedPath string
+	sharedEmbTriedMod  time.Time
+	sharedEmbReady     atomic.Bool
 )
 
-// SharedGemmaReady reports whether the process-wide Gemma embedder is already
+// SharedEmbedderReady reports whether the process-wide embedder (Qwen3) is already
 // loaded. It does not take the load mutex, so status/admin reads stay non-blocking
-// while ReloadSharedGemmaIfReady is opening a GGUF.
-func SharedGemmaReady() bool {
-	return sharedGemmaReady.Load()
+// while ReloadSharedEmbedderIfReady is opening a GGUF.
+func SharedEmbedderReady() bool {
+	return sharedEmbReady.Load()
 }
 
-// SharedGemma256 returns the process-wide frozen default embedder. Since the
-// single-model switch this is Qwen3-Embedding-0.6B (EmbeddingGemma only when
-// MACLAW_EMBED_MODEL=gemma); the name is kept for API stability. Consumers
+// SharedEmbedder returns the process-wide frozen default embedder. Since the
+// single-model switch this is Qwen3-Embedding-0.6B (the only local model). Consumers
 // that persist vectors or train on them (llmpool class head) must tag them
 // with EmbedderFamily so a model switch cannot mix vector spaces.
 //
@@ -37,74 +36,73 @@ func SharedGemmaReady() bool {
 //
 // Missing model files fall back to NoopEmbedder. If the file later appears
 // (admin download / copy into ~/.maclaw/models), the next call retries load.
-// Tests should not rely on Gemma.
-func SharedGemma256() Embedder {
-	sharedGemmaMu.Lock()
-	defer sharedGemmaMu.Unlock()
-	if sharedGemmaOnce && !IsNoop(sharedGemma) {
-		return sharedGemma
+func SharedEmbedder() Embedder {
+	sharedEmbMu.Lock()
+	defer sharedEmbMu.Unlock()
+	if sharedEmbOnce && !IsNoop(sharedEmb) {
+		return sharedEmb
 	}
-	reloadSharedGemmaLocked(false)
-	sharedGemmaOnce = true
-	return sharedGemma
+	reloadSharedEmbedderLocked(false)
+	sharedEmbOnce = true
+	return sharedEmb
 }
 
-// ReloadSharedGemmaIfReady forces a reload when the current embedder is still
+// ReloadSharedEmbedderIfReady forces a reload when the current embedder is still
 // noop. Call after a successful model download so the running process picks up
 // the new GGUF without a restart.
-func ReloadSharedGemmaIfReady() Embedder {
-	sharedGemmaMu.Lock()
-	defer sharedGemmaMu.Unlock()
-	reloadSharedGemmaLocked(true)
-	sharedGemmaOnce = true
-	return sharedGemma
+func ReloadSharedEmbedderIfReady() Embedder {
+	sharedEmbMu.Lock()
+	defer sharedEmbMu.Unlock()
+	reloadSharedEmbedderLocked(true)
+	sharedEmbOnce = true
+	return sharedEmb
 }
 
-func reloadSharedGemmaLocked(force bool) {
-	if sharedGemma != nil && !IsNoop(sharedGemma) {
+func reloadSharedEmbedderLocked(force bool) {
+	if sharedEmb != nil && !IsNoop(sharedEmb) {
 		return
 	}
 	path := sharedModelPath()
 	if path == "" {
-		if sharedGemma == nil {
-			sharedGemma = NoopEmbedder{}
+		if sharedEmb == nil {
+			sharedEmb = NoopEmbedder{}
 		}
 		return
 	}
 	fi, err := os.Stat(path)
 	if err != nil || fi.IsDir() || fi.Size() == 0 {
-		if sharedGemma == nil {
-			sharedGemma = NoopEmbedder{}
+		if sharedEmb == nil {
+			sharedEmb = NoopEmbedder{}
 		}
 		return
 	}
-	if !force && sharedGemmaTriedPath == path && sharedGemmaTriedMod.Equal(fi.ModTime()) && sharedGemma != nil {
+	if !force && sharedEmbTriedPath == path && sharedEmbTriedMod.Equal(fi.ModTime()) && sharedEmb != nil {
 		return
 	}
 	next := NewDefaultEmbedder(path)
-	sharedGemmaTriedPath = path
-	sharedGemmaTriedMod = fi.ModTime()
+	sharedEmbTriedPath = path
+	sharedEmbTriedMod = fi.ModTime()
 	if IsNoop(next) {
-		if sharedGemma == nil {
-			sharedGemma = next
+		if sharedEmb == nil {
+			sharedEmb = next
 		}
 		return
 	}
-	sharedGemma = next
-	sharedGemmaReady.Store(true)
+	sharedEmb = next
+	sharedEmbReady.Store(true)
 }
 
-func ResetSharedGemmaForTest() {
-	sharedGemmaMu.Lock()
-	defer sharedGemmaMu.Unlock()
-	if sharedGemma != nil && !IsNoop(sharedGemma) {
-		sharedGemma.Close()
+func ResetSharedEmbedderForTest() {
+	sharedEmbMu.Lock()
+	defer sharedEmbMu.Unlock()
+	if sharedEmb != nil && !IsNoop(sharedEmb) {
+		sharedEmb.Close()
 	}
-	sharedGemma = nil
-	sharedGemmaOnce = false
-	sharedGemmaTriedPath = ""
-	sharedGemmaTriedMod = time.Time{}
-	sharedGemmaReady.Store(false)
+	sharedEmb = nil
+	sharedEmbOnce = false
+	sharedEmbTriedPath = ""
+	sharedEmbTriedMod = time.Time{}
+	sharedEmbReady.Store(false)
 }
 
 // sharedModelPath is the file the shared embedder loads: the resolved Qwen3

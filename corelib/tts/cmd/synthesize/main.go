@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"math"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
@@ -43,20 +42,9 @@ func main() {
 	}
 	fmt.Printf("Phoneme table: %d symbols\n", pt.Size())
 
-	// Load Gemma Embedding model
-	gemmaPath := filepath.Join(embedding.DefaultModelsDir(), embedding.LegacyGemmaModelFilename) // offline BERT experiment only
+	// No BERT feature embedder: the EmbeddingGemma-based ja-BERT experiment is
+	// retired (Qwen3 is the only local embedding model), so BERT inputs stay zero.
 	var embedder embedding.Embedder
-	if _, err := os.Stat(gemmaPath); err == nil {
-		embedder, err = embedding.NewGemmaEmbedder(gemmaPath, embedding.DefaultEmbeddingDim)
-		if err != nil {
-			fmt.Printf("Gemma load warning: %v (continuing without BERT)\n", err)
-		} else {
-			fmt.Printf("Gemma Embedding loaded: dim=%d\n", embedder.Dim())
-			defer embedder.Close()
-		}
-	} else {
-		fmt.Printf("Gemma model not found at %s (continuing without BERT)\n", gemmaPath)
-	}
 	fmt.Println()
 	sentences := splitSentences(text)
 	var allAudio []float32

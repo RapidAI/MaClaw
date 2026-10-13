@@ -4,10 +4,17 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
 
-// ComputeBertEmbedding generates per-phoneme embeddings using Gemma Embedder.
-// Returns bert1024 [1024, T] (zeros) and jaBert768 [768, T] (Gemma per-token states).
+// TokenStateEmbedder exposes per-token hidden states [seq, dim] row-major.
+type TokenStateEmbedder interface {
+	EmbedTokenStates(text string) (states []float32, seq, dim int, err error)
+}
+
+// ComputeBertEmbedding generates per-phoneme embeddings from an embedder that
+// exposes per-token hidden states (TokenStateEmbedder). Returns bert1024
+// [1024, T] (zeros) and jaBert768 [768, T]; both stay zero when emb does not
+// expose token states (no shipped model does today).
 //
-// Strategy: run Gemma on the input text to get per-token hidden states [seq, 768],
+// Strategy: run the embedder on the input text to get per-token hidden states [seq, 768],
 // then align/interpolate to match the phoneme sequence length T.
 func ComputeBertEmbedding(text string, phonemes []string, T int,
 	emb embedding.Embedder) (bert1024 []float32, jaBert768 []float32) {
@@ -15,13 +22,13 @@ func ComputeBertEmbedding(text string, phonemes []string, T int,
 	bert1024 = make([]float32, 1024*T) // zeros
 	jaBert768 = make([]float32, 768*T) // will be filled
 
-	gemma, ok := emb.(*embedding.GemmaEmbedder)
-	if gemma == nil || !ok {
+	ts, ok := emb.(TokenStateEmbedder)
+	if !ok || ts == nil {
 		return
 	}
 
 	// Get per-token hidden states from Gemma
-	states, seq, dim, err := gemma.EmbedTokenStates(text)
+	states, seq, dim, err := ts.EmbedTokenStates(text)
 	if err != nil || seq == 0 {
 		return
 	}
