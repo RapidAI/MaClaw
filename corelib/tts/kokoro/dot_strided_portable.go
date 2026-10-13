@@ -2,6 +2,8 @@
 
 package kokoro
 
+import "unsafe"
+
 // dotStridedFMA4x2 computes four output channels at two adjacent output
 // positions. Position 1 starts n elements (one row) after position 0;
 // x rows are shared across the four channels and weight rows across the two
@@ -74,7 +76,10 @@ func squareInplace(x []float32) {
 // conv4x2G evaluates two adjacent output positions for four output channels
 // and stores bias(+residual)+dot results directly into out. Pure-Go version;
 // the amd64 build replaces it with the AVX2+FMA kernel in dot_strided_amd64.s.
+// wStride may be negative (callers walk taps backwards from the slice start),
+// so w is addressed with pointer arithmetic like the assembly kernel does.
 func conv4x2G(x []float32, xStride int, w []float32, wStride, wOcStride int, taps, n, xPosStride int, out []float32, outOcStride, outPosStride int, bias []float32, res []float32) {
+	w0 := unsafe.Pointer(unsafe.SliceData(w))
 	for oc := 0; oc < 4; oc++ {
 		for p := 0; p < 2; p++ {
 			sum := float32(0)
@@ -85,8 +90,9 @@ func conv4x2G(x []float32, xStride int, w []float32, wStride, wOcStride int, tap
 			for t := 0; t < taps; t++ {
 				xo := t*xStride + p*xPosStride
 				woff := wo + t*wStride
+				wp := unsafe.Add(w0, woff*4)
 				for i := 0; i < n; i++ {
-					sum += x[xo+i] * w[woff+i]
+					sum += x[xo+i] * *(*float32)(unsafe.Add(wp, i*4))
 				}
 			}
 			if res != nil {
