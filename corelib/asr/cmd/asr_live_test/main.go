@@ -1,10 +1,11 @@
 // asr_live — 简单的 ASR 在线测试工具
 //
 // 使用方式:
-//   go run . <wav_file>          — 转写指定的 WAV 文件
-//   go run . --record <seconds>  — 录音指定秒数后转写（需要 ffmpeg）
-//   go run . --dir <dir>         — 转写目录下所有 WAV 文件
-//   go run . --batch             — 转写项目根目录下所有已知测试 WAV
+//
+//	go run . <wav_file>          — 转写指定的 WAV 文件
+//	go run . --record <seconds>  — 录音指定秒数后转写（需要 ffmpeg）
+//	go run . --dir <dir>         — 转写目录下所有 WAV 文件
+//	go run . --batch             — 转写项目根目录下所有已知测试 WAV
 //
 // WAV 文件要求: 16kHz mono 16-bit PCM（非此格式会自动重采样）
 package main
@@ -31,19 +32,20 @@ func main() {
 
 	modelPath := findModelPath()
 	if modelPath == "" {
-		log.Fatal("找不到 ASR 模型文件 moonshine-base-zh.gguf\n" +
-			"搜索路径: ~/.maclaw/models/, ./models/, ../../RapidSpeech.cpp/models/gguf/")
+		log.Fatal("找不到 ASR 模型文件 " + asr.DefaultModelFilename + "\n" +
+			"搜索路径: ~/.maclaw/models/, ./models/")
 	}
 	fmt.Printf("模型: %s\n", modelPath)
 
 	// 加载模型
 	fmt.Print("加载模型...")
 	start := time.Now()
-	model, err := asr.NewMoonshine(modelPath)
-	if err != nil {
+	// Same engine path as the app: asr.Manager (SenseVoice auto-detected).
+	model := asr.NewManager(modelPath)
+	defer model.Unload()
+	if _, err := model.Transcribe(make([]float32, 16000)); err != nil {
 		log.Fatalf("加载模型失败: %v", err)
 	}
-	defer model.Close()
 	fmt.Printf(" 完成 (%.1fs)\n\n", time.Since(start).Seconds())
 
 	switch os.Args[1] {
@@ -83,10 +85,8 @@ func printUsage() {
 func findModelPath() string {
 	home, _ := os.UserHomeDir()
 	candidates := []string{
-		filepath.Join(home, ".maclaw", "models", "moonshine-base-zh.gguf"),
-		filepath.Join(".", "models", "moonshine-base-zh.gguf"),
-		filepath.Join("..", "..", "..", "..", "RapidSpeech.cpp", "models", "gguf", "moonshine-base-zh.gguf"),
-		filepath.Join("..", "..", "..", "..", "RapidSpeech.cpp", "build", "moonshine-base-zh.gguf"),
+		filepath.Join(home, ".maclaw", "models", asr.DefaultModelFilename),
+		filepath.Join(".", "models", asr.DefaultModelFilename),
 	}
 	for _, p := range candidates {
 		if _, err := os.Stat(p); err == nil {
@@ -97,7 +97,7 @@ func findModelPath() string {
 	return ""
 }
 
-func transcribeFile(model *asr.MoonshineModel, wavPath string) {
+func transcribeFile(model *asr.Manager, wavPath string) {
 	fmt.Printf("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n")
 	fmt.Printf("文件: %s\n", wavPath)
 
@@ -134,7 +134,7 @@ func transcribeFile(model *asr.MoonshineModel, wavPath string) {
 	fmt.Printf("  耗时: %dms | RTF: %.2f\n\n", elapsed.Milliseconds(), rtf)
 }
 
-func transcribeDir(model *asr.MoonshineModel, dir string) {
+func transcribeDir(model *asr.Manager, dir string) {
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		log.Fatalf("读取目录失败: %v", err)
@@ -155,7 +155,7 @@ func transcribeDir(model *asr.MoonshineModel, dir string) {
 	}
 }
 
-func recordAndTranscribe(model *asr.MoonshineModel, seconds int) {
+func recordAndTranscribe(model *asr.Manager, seconds int) {
 	// 使用 ffmpeg 从默认音频设备录音
 	tmpFile := filepath.Join(os.TempDir(), "maclaw_asr_test.wav")
 	defer os.Remove(tmpFile)
