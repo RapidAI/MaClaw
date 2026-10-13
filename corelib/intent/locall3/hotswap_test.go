@@ -20,7 +20,7 @@ func TestHotSwapUnderConcurrentRequests(t *testing.T) {
 	t.Setenv(intent.LocalHeadEnv, "")
 	t.Setenv(intent.LocalTauSEnv, "")
 	dir := t.TempDir()
-	writeHead(t, dir, "head_mlp_qwen3go_GK.json", "", 1024, nil)
+	writeHead(t, dir, intent.ShippedLocalHeadName, "", 1024, nil)
 	for _, mode := range []string{intent.LocalL3On, intent.LocalL3Strict} {
 		t.Run(mode, func(t *testing.T) {
 			rt := NewWithMode(dir, mode)

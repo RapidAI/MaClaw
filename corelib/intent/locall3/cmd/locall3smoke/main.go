@@ -74,7 +74,13 @@ func report(stage string) {
 func main() {
 	models := flag.String("models", "", "models dir (contains Qwen3-Embedding-0.6B-Q8_0.gguf)")
 	heads := flag.String("heads", "", "head dir (default <models>/intent_heads)")
+	cleanLegacy := flag.Bool("remove-legacy-heads", true, "delete legacy head files (embedding.LegacyHeadFilenames) under -models, as the app does at startup")
 	flag.Parse()
+	if *cleanLegacy {
+		for _, p := range embedding.RemoveLegacyHeadFiles(*models) {
+			fmt.Printf("[legacy] removed %s\n", p)
+		}
+	}
 	if *heads == "" {
 		*heads = locall3.DefaultHeadDir(*models)
 	}
@@ -141,7 +147,7 @@ func main() {
 	// First-party tool head (same vector as intent L2).
 	var toolHeadPaths []string
 	for _, dir := range []string{filepath.Join(*models, "tool_heads"), *heads, *models} {
-		toolHeadPaths = append(toolHeadPaths, filepath.Join(dir, "tool_head_ovr_qwen3go_r5.json"), filepath.Join(dir, "tool_head_ovr_qwen3go.json"))
+		toolHeadPaths = append(toolHeadPaths, filepath.Join(dir, "tool_head_ovr_qwen3go_r5.json"))
 	}
 	for _, p := range toolHeadPaths {
 		if h, err := tool.LoadToolHead(p); err == nil {

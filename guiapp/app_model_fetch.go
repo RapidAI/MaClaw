@@ -127,6 +127,7 @@ func (a *App) startHeadAssetFetch() {
 		if dir == "" {
 			return
 		}
+		a.removeLegacyHeadFiles(dir)
 		hub := a.modelHubURL()
 		for _, asset := range embedding.ReleaseAssets() {
 			if asset.Kind == "model" {
@@ -135,6 +136,7 @@ func (a *App) startHeadAssetFetch() {
 			f := embedding.NewReleaseAssetFetcher(dir, asset, hub)
 			f.Logf = log.Printf
 			f.Start(context.Background(), func(path string) {
+				a.removeLegacyHeadFiles(dir) // a stale copy may have landed meanwhile; never loaded either way
 				if emb := a.activeInterruptEmbedder(); emb != nil && !embedding.IsNoop(emb) {
 					a.attachLocalL3(emb)
 					a.attachToolHead(emb)
@@ -142,4 +144,15 @@ func (a *App) startHeadAssetFetch() {
 			})
 		}
 	})
+}
+
+// removeLegacyHeadFiles deletes the intent / tool head files earlier releases
+// shipped (embedding.LegacyHeadFilenames: xf / GK / KG intent heads, the
+// pre-r5 tool heads). Only those exact names are touched; nothing loads them
+// any more, so until the pinned heads have downloaded the app runs L1/L2
+// (+ remote L3) and hot-attaches the new heads when they land.
+func (a *App) removeLegacyHeadFiles(dir string) {
+	for _, p := range embedding.RemoveLegacyHeadFiles(dir) {
+		log.Printf("[embedding] removed legacy head file %s", p)
+	}
 }

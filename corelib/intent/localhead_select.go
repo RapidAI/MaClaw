@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -117,35 +116,25 @@ func CheckLocalHead(emb embedding.Embedder, h *LocalHead) error {
 // ShippedLocalHeadName is the intent head pinned in
 // corelib/embedding/release_assets.json (r7: 20-net merged MLP, per-class
 // temperature folded into w2/b2, τ 0.80 / τ_s 0.97, calibration "oof_rule").
-// When it is present it is the only "head_mlp_qwen3go_*" candidate besides
-// the GK/KG defaults: legacy "*_xf*.json" heads already on disk are used only
-// while it is missing (first run before the download lands, or a failed
-// download), so a compute-mode-matched legacy head never outranks it.
+// It is the only head auto-selected from a head dir; older heads are never
+// loaded (see embedding.RemoveLegacyHeadFiles). Until it has been downloaded
+// there is no local head and L3 stays remote / unknown.
 const ShippedLocalHeadName = "head_mlp_qwen3go_r7.json"
 
-// DefaultLocalHeadNames lists, in preference order, the shipped head file
-// names for a family. Any "*_xf*.json" retrained head for the family found in
-// the same directory is preferred over these (newest file name first).
+// DefaultLocalHeadNames lists the shipped head file names for a family.
 func DefaultLocalHeadNames(family string) []string {
 	switch family {
 	case embedding.FamilyQwen3:
-		return []string{"head_mlp_qwen3go_GK.json", "head_mlp_qwen3go_KG.json"}
+		return []string{ShippedLocalHeadName}
 	}
-	// No shipped heads for any other family: the retired EmbeddingGemma heads
-	// are never auto-selected (Qwen3 is the only local model).
+	// No shipped heads for any other family.
 	return nil
 }
 
-func familyPrefix(family string) string {
-	switch family {
-	case embedding.FamilyQwen3:
-		return "head_mlp_qwen3go_"
-	}
-	return ""
-}
-
 // LocalHeadCandidates expands LocalHeadEnv (or, when unset, defaultDir) into
-// an ordered list of head files to try for family.
+// an ordered list of head files to try for family. A file path in
+// LocalHeadEnv is taken as is; a directory contributes only the shipped
+// head names.
 func LocalHeadCandidates(family, defaultDir string) []string {
 	var roots []string
 	if v := strings.TrimSpace(os.Getenv(LocalHeadEnv)); v != "" {
@@ -173,24 +162,6 @@ func LocalHeadCandidates(family, defaultDir string) []string {
 		if !fi.IsDir() {
 			add(r)
 			continue
-		}
-		if family == embedding.FamilyQwen3 {
-			if p := filepath.Join(r, ShippedLocalHeadName); fileExists(p) {
-				add(p)
-				for _, n := range DefaultLocalHeadNames(family) {
-					if p := filepath.Join(r, n); fileExists(p) {
-						add(p)
-					}
-				}
-				continue
-			}
-		}
-		if pre := familyPrefix(family); pre != "" {
-			xf, _ := filepath.Glob(filepath.Join(r, pre+"xf*.json"))
-			sort.Sort(sort.Reverse(sort.StringSlice(xf)))
-			for _, p := range xf {
-				add(p)
-			}
 		}
 		for _, n := range DefaultLocalHeadNames(family) {
 			if p := filepath.Join(r, n); fileExists(p) {

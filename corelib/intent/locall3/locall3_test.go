@@ -76,13 +76,13 @@ func TestAttachPicksQwen3HeadAndRunsLocally(t *testing.T) {
 	t.Setenv(intent.LocalTauSEnv, "")
 	dir := t.TempDir()
 	writeHead(t, dir, "head_mlp_gemmacls_GK.json", "", 768, nil)
-	writeHead(t, dir, "head_mlp_qwen3go_GK.json", "", 1024, nil)
+	writeHead(t, dir, intent.ShippedLocalHeadName, "", 1024, nil)
 	rt := NewWithMode(dir, intent.LocalL3On)
 	h, err := rt.Attach(qwen)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(h.ID, "head_mlp_qwen3go_GK.json@") || h.TauS != intent.DefaultLocalTauS {
+	if !strings.HasPrefix(h.ID, intent.ShippedLocalHeadName+"@") || h.TauS != intent.DefaultLocalTauS {
 		t.Fatalf("head %s tau_s %.2f", h.ID, h.TauS)
 	}
 	calls := 0
@@ -93,13 +93,20 @@ func TestAttachPicksQwen3HeadAndRunsLocally(t *testing.T) {
 	}
 }
 
-func TestAttachPrefersXFHead(t *testing.T) {
+// Legacy heads (xf / GK / KG) are never loaded: with only those on disk
+// there is no local head (L3 stays remote) until the shipped r7 head lands,
+// and then r7 attaches.
+func TestAttachIgnoresLegacyHeads(t *testing.T) {
 	t.Setenv(intent.LocalHeadEnv, "")
 	dir := t.TempDir()
 	writeHead(t, dir, "head_mlp_qwen3go_GK.json", "", 1024, nil)
 	writeHead(t, dir, "head_mlp_qwen3go_xf.json", "qwen3", 1024, nil)
+	if h, err := NewWithMode(dir, intent.LocalL3On).Attach(qwen); err == nil || h != nil {
+		t.Fatalf("legacy head attached: h=%v err=%v", h, err)
+	}
+	writeHead(t, dir, intent.ShippedLocalHeadName, "qwen3", 1024, nil)
 	h, err := NewWithMode(dir, intent.LocalL3On).Attach(qwen)
-	if err != nil || !strings.HasPrefix(h.ID, "head_mlp_qwen3go_xf.json@") {
+	if err != nil || !strings.HasPrefix(h.ID, intent.ShippedLocalHeadName+"@") {
 		t.Fatalf("h=%v err=%v", h, err)
 	}
 }
@@ -111,12 +118,12 @@ func TestRetiredGemmaHeadNotAutoSelected(t *testing.T) {
 	t.Setenv(intent.LocalHeadEnv, "")
 	dir := t.TempDir()
 	writeHead(t, dir, "head_mlp_gemmacls_GK.json", "", 768, nil)
-	writeHead(t, dir, "head_mlp_qwen3go_GK.json", "", 1024, nil)
+	writeHead(t, dir, intent.ShippedLocalHeadName, "", 1024, nil)
 	if h, err := NewWithMode(dir, intent.LocalL3On).Attach(gemma); err == nil && h != nil {
 		t.Fatalf("retired Gemma head must not attach: h=%v", h.ID)
 	}
 	h, err := NewWithMode(dir, intent.LocalL3On).Attach(qwen)
-	if err != nil || !strings.HasPrefix(h.ID, "head_mlp_qwen3go_GK.json@") {
+	if err != nil || !strings.HasPrefix(h.ID, intent.ShippedLocalHeadName+"@") {
 		t.Fatalf("qwen3 head: h=%v err=%v", h, err)
 	}
 }
@@ -155,7 +162,7 @@ func TestMismatchRefused(t *testing.T) {
 func TestRollbackOffUsesRemote(t *testing.T) {
 	t.Setenv(intent.LocalL3Env, "0")
 	dir := t.TempDir()
-	writeHead(t, dir, "head_mlp_qwen3go_GK.json", "", 1024, nil)
+	writeHead(t, dir, intent.ShippedLocalHeadName, "", 1024, nil)
 	rt := New(dir)
 	if rt.Mode() != intent.LocalL3Off {
 		t.Fatalf("mode %s", rt.Mode())
@@ -174,7 +181,7 @@ func TestHumanCalibratedTauSKept(t *testing.T) {
 	t.Setenv(intent.LocalHeadEnv, "")
 	t.Setenv(intent.LocalTauSEnv, "")
 	dir := t.TempDir()
-	writeHead(t, dir, "head_mlp_qwen3go_GK.json", "", 1024, map[string]any{
+	writeHead(t, dir, intent.ShippedLocalHeadName, "", 1024, map[string]any{
 		"tau_s": 0.97, "calibration": map[string]any{"source": "human_labels"}})
 	h, err := NewWithMode(dir, intent.LocalL3On).Attach(qwen)
 	if err != nil || h.TauS != 0.97 {
@@ -217,13 +224,12 @@ func TestRecalibratedHeadFile(t *testing.T) {
 	}
 	json.Unmarshal(b, &f)
 	dir := t.TempDir()
-	writeHead(t, dir, "head_mlp_qwen3go_GK.json", "", 1024, nil)
-	os.WriteFile(filepath.Join(dir, "head_mlp_qwen3go_xf.json"), b, 0o644)
+	os.WriteFile(filepath.Join(dir, intent.ShippedLocalHeadName), b, 0o644)
 	h, err := NewWithMode(dir, intent.LocalL3On).Attach(qwen)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.HasPrefix(h.ID, "head_mlp_qwen3go_xf.json@") || h.CalibrationSource != "human_labels" || h.TauS != f.TauSv || h.Tau != f.Tau {
+	if !strings.HasPrefix(h.ID, intent.ShippedLocalHeadName+"@") || h.CalibrationSource != "human_labels" || h.TauS != f.TauSv || h.Tau != f.Tau {
 		t.Fatalf("id=%s src=%q tau=%v tau_s=%v want %v/%v", h.ID, h.CalibrationSource, h.Tau, h.TauS, f.Tau, f.TauSv)
 	}
 	t.Logf("recalibrated head %s tau=%.3f tau_s=%.3f", h.ID, h.Tau, h.TauS)
@@ -237,19 +243,19 @@ type fakeComputeEmb struct {
 func (f fakeComputeEmb) ComputeMode() string { return f.mode }
 
 // τ is pass-mode sensitive: the head recalibrated under the live compute
-// mode is preferred over one calibrated under another mode.
+// mode is preferred over one calibrated under another mode (explicit
+// MACLAW_INTENT_LOCAL_HEAD file list; a head dir only offers the shipped head).
 func TestHeadCalibratedForLiveComputeModePreferred(t *testing.T) {
-	t.Setenv(intent.LocalHeadEnv, "")
 	dir := t.TempDir()
-	writeHead(t, dir, "head_mlp_qwen3go_GK.json", "", 1024, nil)
-	writeHead(t, dir, "head_mlp_qwen3go_xf_avx512.json", "qwen3", 1024, map[string]any{
+	p512 := writeHead(t, dir, "head_mlp_qwen3go_xf_avx512.json", "qwen3", 1024, map[string]any{
 		"calibration": map[string]any{"source": "human_labels", "compute": "q8p:avx512:2pass"}})
-	writeHead(t, dir, "head_mlp_qwen3go_xf_avx2.json", "qwen3", 1024, map[string]any{
+	p2 := writeHead(t, dir, "head_mlp_qwen3go_xf_avx2.json", "qwen3", 1024, map[string]any{
 		"calibration": map[string]any{"source": "human_labels", "compute": "q8p:avx2:1pass"}})
+	t.Setenv(intent.LocalHeadEnv, p512+","+p2)
 	for mode, want := range map[string]string{
 		"q8p:avx2:1pass":   "head_mlp_qwen3go_xf_avx2.json@",
 		"q8p:avx512:2pass": "head_mlp_qwen3go_xf_avx512.json@",
-		"q8p:sdot:1pass":   "head_mlp_qwen3go_xf_avx512.json@", // no match: first candidate (reverse-sorted xf)
+		"q8p:sdot:1pass":   "head_mlp_qwen3go_xf_avx512.json@", // no match: first candidate
 	} {
 		rt := NewWithMode(dir, intent.LocalL3On)
 		h, err := rt.Attach(fakeComputeEmb{qwen, mode})

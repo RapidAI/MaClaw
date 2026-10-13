@@ -8,9 +8,9 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
 
-// The shipped r7 head, when present, outranks any legacy *_xf*.json head on
-// disk; the legacy head is only a fallback while r7 is missing.
-func TestLocalHeadCandidatesPreferShippedR7(t *testing.T) {
+// Only the shipped r7 head is auto-selected from a head dir; legacy heads
+// (xf / GK / KG) are never candidates, so before r7 lands there is no head.
+func TestLocalHeadCandidatesOnlyShippedR7(t *testing.T) {
 	t.Setenv(LocalHeadEnv, "")
 	dir := t.TempDir()
 	touch := func(n string) string {
@@ -20,12 +20,20 @@ func TestLocalHeadCandidatesPreferShippedR7(t *testing.T) {
 		}
 		return p
 	}
-	xf := touch("head_mlp_qwen3go_xf.json")
-	if got := LocalHeadCandidates(embedding.FamilyQwen3, dir); len(got) != 1 || got[0] != xf {
-		t.Fatalf("without r7: %v", got)
+	touch("head_mlp_qwen3go_xf.json")
+	touch("head_mlp_qwen3go_GK.json")
+	touch("head_mlp_qwen3go_KG.json")
+	if got := LocalHeadCandidates(embedding.FamilyQwen3, dir); len(got) != 0 {
+		t.Fatalf("legacy heads must not be candidates: %v", got)
 	}
 	r7 := touch(ShippedLocalHeadName)
 	if got := LocalHeadCandidates(embedding.FamilyQwen3, dir); len(got) != 1 || got[0] != r7 {
 		t.Fatalf("with r7: %v", got)
+	}
+	// An explicit file in MACLAW_INTENT_LOCAL_HEAD is still honoured as is.
+	other := touch("custom_head.json")
+	t.Setenv(LocalHeadEnv, other)
+	if got := LocalHeadCandidates(embedding.FamilyQwen3, dir); len(got) != 1 || got[0] != other {
+		t.Fatalf("env file: %v", got)
 	}
 }

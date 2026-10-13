@@ -93,6 +93,9 @@ const (
 	toolHeadEnv      = "MACLAW_TOOL_HEAD"     // path to tool_head_ovr_*.json; empty = auto
 	toolHeadDisable  = "MACLAW_TOOL_HEAD_OFF" // 1/true → never load
 	toolHeadsDirName = "tool_heads"           // default dir under models/
+	// shippedToolHeadName is the tool head pinned in release_assets.json; it is
+	// the only one auto-loaded (legacy tool heads are removed at startup).
+	shippedToolHeadName = "tool_head_ovr_qwen3go_r5.json"
 )
 
 func toolHeadCandidates(modelsDir string) []string {
@@ -105,7 +108,7 @@ func toolHeadCandidates(modelsDir string) []string {
 		filepath.Join(modelsDir, intent.LocalHeadsDirName),
 		modelsDir,
 	} {
-		for _, n := range []string{"tool_head_ovr_qwen3go_r5.json", "tool_head_ovr_qwen3go.json", "tool_head_ovr_qwen3.json"} {
+		for _, n := range []string{shippedToolHeadName} {
 			p := filepath.Join(dir, n)
 			if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
 				out = append(out, p)
