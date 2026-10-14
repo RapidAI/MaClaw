@@ -145,7 +145,7 @@ func (f *fakeDocker) run(_ context.Context, args ...string) (string, error) {
 	case "rmi":
 		f.stateLabel = "missing"
 		return "untagged", nil
-	case "tag", "rm", "run", "stop", "update", "start", "volume", "cp":
+	case "tag", "rm", "run", "stop", "update", "start", "volume", "cp", "create":
 		return "ok", nil
 	case "exec":
 		return `{"display":":20","cdp_port":19020}`, nil
@@ -263,6 +263,21 @@ func TestNewDesktopUsesMatchingStateImage(t *testing.T) {
 	}
 	if !f.has("run ", state+" -c") || !f.has("run ", "--label maclaw.image=maclaw-gui:2") || f.has("tag ", state) {
 		t.Fatalf("matching state image was not used: %v", f.commands)
+	}
+	// The state image's supervisor may be older than the image: refresh it.
+	if !f.has("create ", "maclaw-gui:2") || !f.has("cp ", "-supervisor:/desktop_supervisor.py") || !f.has("cp ", ":/desktop_supervisor.py") {
+		t.Fatalf("supervisor was not refreshed from the base image: %v", f.commands)
+	}
+}
+
+func TestNewDesktopFromBaseImageSkipsSupervisorRefresh(t *testing.T) {
+	f := &fakeDocker{t: t}
+	svc := &Service{AdvertiseHost: "docker.example", Run: f.run}
+	if _, err := svc.Create(context.Background(), Spec{TenantID: "tenant", UserID: "bob", Image: "maclaw-gui:2"}); err != nil {
+		t.Fatal(err)
+	}
+	if f.has("cp ", "desktop_supervisor.py") {
+		t.Fatalf("base-image desktop got a supervisor copy: %v", f.commands)
 	}
 }
 

@@ -168,6 +168,9 @@ func (s *Service) createUnlocked(ctx context.Context, spec Spec) (Desktop, error
 		if err := s.runContainer(ctx, name, spec, image); err != nil {
 			return Desktop{}, err
 		}
+		if image != spec.Image {
+			s.refreshSupervisor(ctx, name, spec.Image)
+		}
 	} else {
 		if _, err := s.docker(ctx, "update", "--memory", spec.Memory, "--cpus", spec.CPUs, name); err != nil {
 			return Desktop{}, err
@@ -709,6 +712,35 @@ func (s *Service) migrateLiveFiles(ctx context.Context, name string, spec Spec) 
 	}
 	_, err = s.docker(ctx, "rm", "-f", tmp)
 	return err
+}
+
+// refreshSupervisor puts the requested image's desktop_supervisor.py into a
+// container that runs this user's state image. The state image was committed
+// from an older container, so its supervisor can predate the image the user
+// is on (and lack newer ops such as ctl). Failure is logged; the old
+// supervisor keeps running the desktop.
+func (s *Service) refreshSupervisor(ctx context.Context, container, base string) {
+	tmp := container + "-supervisor"
+	_, _ = s.docker(ctx, "rm", "-f", tmp)
+	if _, err := s.docker(ctx, "create", "--name", tmp, base); err != nil {
+		log.Printf("desktopd: refresh supervisor in %s: %v", container, err)
+		return
+	}
+	defer func() { _, _ = s.docker(context.WithoutCancel(ctx), "rm", "-f", tmp) }()
+	dir, err := os.MkdirTemp("", "maclaw-desktop-supervisor-")
+	if err != nil {
+		log.Printf("desktopd: refresh supervisor in %s: %v", container, err)
+		return
+	}
+	defer os.RemoveAll(dir)
+	local := filepath.Join(dir, "desktop_supervisor.py")
+	if _, err := s.docker(ctx, "cp", tmp+":/desktop_supervisor.py", local); err != nil {
+		log.Printf("desktopd: refresh supervisor in %s: %v", container, err)
+		return
+	}
+	if _, err := s.docker(ctx, "cp", local, container+":/desktop_supervisor.py"); err != nil {
+		log.Printf("desktopd: refresh supervisor in %s: %v", container, err)
+	}
 }
 
 func (s *Service) copyContainerPath(ctx context.Context, from, to string) error {
