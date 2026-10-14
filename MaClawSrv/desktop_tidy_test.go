@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
 
 func TestDesktopTidyOncePerRunExecuteOnly(t *testing.T) {
@@ -33,5 +34,11 @@ func TestDesktopTidyOncePerRunExecuteOnly(t *testing.T) {
 	desktopTidyOnce(exec, agentruntime.Scope{UserID: "u", RunID: "run-tidy-2"}, "app_open")
 	if calls != 1 {
 		t.Fatal("tidy ran while disabled")
+	}
+}
+
+func TestDesktopTidyScriptPassesBashValidator(t *testing.T) {
+	if _, err := desktop.BashArgs(desktopContainerName(), desktopTidyScript); err != nil {
+		t.Fatalf("tidy script rejected: %v", err)
 	}
 }
