@@ -270,3 +270,14 @@ env = sup.desktop_env(20) if False else None
 		t.Errorf("window frame was marked: %s", out)
 	}
 }
+
+func TestBrowserTestTypeIsOptIn(t *testing.T) {
+	out := runSupervisorPython(t, `print("--test-type" in sup.browser_argv(Path("/p"), 18020))`)
+	if out != "False" {
+		t.Fatalf("default argv has --test-type: %s", out)
+	}
+	out = runSupervisorPython(t, `print("--test-type" in sup.browser_argv(Path("/p"), 18020))`, "MACLAW_BROWSER_TEST_TYPE=1")
+	if out != "True" {
+		t.Fatalf("opt-in argv lacks --test-type: %s", out)
+	}
+}

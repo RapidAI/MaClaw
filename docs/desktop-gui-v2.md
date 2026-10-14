@@ -612,7 +612,7 @@ Agent(MaClawSrv `desktop` 工具)记住每个用户最近一次**全屏**截图�
 - xfce4-notifyd:用户 autostart 覆盖文件 `Hidden=true`(包文件不动),并在 `/etc/xdg/xfce4/xfconf/.../xfce4-notifyd.xml` 默认开启勿扰。
 - 新容器默认分辨率 1280x800:镜像 `ENV MACLAW_DESKTOP_GEOMETRY=1280x800x24`(容器级 env 仍可覆盖)。supervisor 内置回退值仍为 1440x900,所以旧镜像创建的现有容器拿到新 supervisor 后分辨率不变。
 - 会话环境去掉 `NO_AT_BRIDGE`,设置 `QT_ACCESSIBILITY=1`(GTK 程序默认就暴露 AT-SPI)。
-- `--test-type`:见下文结论,未启用。
+- `--test-type`:已在测试桌面评估(2026-10-14)——加上后 `--no-sandbox` 警告条消失、CDP 正常;但它是测试框架开关,会把警告对人也隐藏,其它副作用不属于稳定契约。结论:默认不启用,仅当容器环境 `MACLAW_BROWSER_TEST_TYPE=1` 时追加(opt-in)。
 - xfwm4 没有"新窗口一律最大化"的设置,未做;Chromium 仍用 `--start-maximized`,其它窗口可用 `window maximize`。
 
 ### 7.5 MCP 服务

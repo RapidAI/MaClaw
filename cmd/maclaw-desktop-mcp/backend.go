@@ -63,7 +63,7 @@ func newHTTPBackend(kind, base, token, image string) (*httpBackend, error) {
 	if image == "" {
 		image = "maclaw-gui:2"
 	}
-	return &httpBackend{base: base, token: token, hub: kind == "hub", image: image, client: &http.Client{Timeout: 3 * time.Minute}, display: ""}, nil
+	return &httpBackend{base: base, token: token, hub: kind == "hub", image: image, client: &http.Client{Timeout: 3 * time.Minute}, display: ":20"}, nil
 }
 
 func (b *httpBackend) path(name string) string {

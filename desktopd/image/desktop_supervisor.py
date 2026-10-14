@@ -724,7 +724,19 @@ def browser_argv(profile, chrome_port):
         "--remote-debugging-port=%d" % chrome_port,
         "--remote-allow-origins=*",
         "--start-maximized",
-    ] + browser_proxy_flags()
+    ] + browser_test_type_flags() + browser_proxy_flags()
+
+
+def browser_test_type_flags():
+    """--test-type hides the "--no-sandbox ... security will suffer" bar.
+
+    Opt-in only (MACLAW_BROWSER_TEST_TYPE=1, e.g. on test desktops): it is a
+    switch for Chromium's own test harnesses, it hides that warning from the
+    person as well, and its other effects are not a stable contract.
+    """
+    if os.environ.get("MACLAW_BROWSER_TEST_TYPE", "").strip() == "1":
+        return ["--test-type"]
+    return []
 
 
 def browser_proxy_flags():
@@ -3440,16 +3452,23 @@ def ctl_window(request):
                 ctl_run(["wmctrl", "-i", "-r", hexid, "-b", "remove,maximized_vert,maximized_horz"])
             steps.append(["xdotool", "windowsize", str(wid), str(w), str(h)])
     elif op == "close":
-        steps = [["wmctrl", "-i", "-c", hexid]] if wm else [["xdotool", "windowclose", str(wid)]]
+        # A polite close (WM_DELETE_WINDOW): the program may still ask to
+        # save. xdotool windowclose destroys the window and loses the work.
+        if wm:
+            steps = [["wmctrl", "-i", "-c", hexid]]
+        else:
+            steps = [["xdotool", "windowactivate", "--sync", str(wid)], ["xdotool", "key", "--clearmodifiers", "alt+F4"]]
     else:
         return {"ok": False, "error": "window action must be activate, maximize, minimize, restore, move, resize, move_resize, or close"}
     for argv in steps:
         code, _, err = ctl_run(argv)
         if code != 0:
             return {"ok": False, "error": "%s failed: %s" % (argv[0], err.decode("utf-8", "replace").strip()[:200])}
-    time.sleep(0.2)
+    time.sleep(0.5 if op == "close" else 0.2)
     ids, active = ctl_client_windows()
     window = ctl_window_info(wid, active) if wid in ids else {"id": hexid, "closed": True}
+    if op == "close" and wid in ids:
+        window["note"] = "still open: the program may be asking to save; answer its dialog"
     return {"ok": True, "do": op, "window": window, "method": "wmctrl" if wm and steps and steps[0][0] == "wmctrl" else "xdotool"}
 
 
