@@ -19,6 +19,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -56,6 +57,16 @@ type Runtime struct {
 	st      atomic.Pointer[state]
 	mu      sync.Mutex
 	lastErr error
+	// Logf receives per-turn L3 path lines; nil → log.Printf.
+	Logf func(string, ...any)
+}
+
+func (r *Runtime) logf(format string, args ...any) {
+	if r.Logf != nil {
+		r.Logf(format, args...)
+		return
+	}
+	log.Printf(format, args...)
 }
 
 // New reads intent.LocalL3Env once.
@@ -140,8 +151,9 @@ func (r *Runtime) ProbeFunc() intent.LocalHeadProbeFunc {
 var ErrNotReady = errors.New("local L3 not ready (embedder or head not loaded)")
 
 // ContextFunc returns the L3 callback for intent.Config.LLMContextFunc /
-// SetLLMContextFunc. Off → remote unchanged. On → local head when attached,
-// otherwise remote. Strict → local head or ErrNotReady (never remote).
+// SetLLMContextFunc. Off → remote unchanged. On → local head when attached
+// (remote tree LLM when the head abstains; head error kept if the remote
+// fails), otherwise remote. Strict → local head or ErrNotReady (never remote).
 func (r *Runtime) ContextFunc(remote intent.LLMClassifyContextFunc) intent.LLMClassifyContextFunc {
 	if r == nil || r.mode == intent.LocalL3Off {
 		return remote
@@ -149,7 +161,25 @@ func (r *Runtime) ContextFunc(remote intent.LLMClassifyContextFunc) intent.LLMCl
 	strict := r.mode == intent.LocalL3Strict
 	return func(ctx, parent context.Context, sys, user string) (string, error) {
 		if s := r.st.Load(); s != nil {
-			return s.fn(ctx, parent, sys, user)
+			out, err := s.fn(ctx, parent, sys, user)
+			if err == nil {
+				r.logf("[intent] L3 decided by local head (%s)", s.head.ID)
+				return out, nil
+			}
+			if strict || remote == nil || !intent.IsLocalHeadUncertain(err) {
+				return "", err
+			}
+			// Local head abstained: ask the remote tree LLM. If the remote
+			// is unavailable, return the head's uncertain error so the
+			// classifier keeps its L2-hint / unknown behaviour (and the
+			// head veto) exactly as without a remote.
+			rout, rerr := remote(ctx, parent, sys, user)
+			if rerr != nil {
+				r.logf("[intent] L3 local head abstained (%v); remote fallback failed: %v", err, rerr)
+				return "", err
+			}
+			r.logf("[intent] L3 decided by remote fallback (local head abstained: %v)", err)
+			return rout, nil
 		}
 		if strict || remote == nil {
 			return "", ErrNotReady
@@ -183,7 +213,7 @@ func (r *Runtime) Describe() string {
 		}
 		warn := ""
 		if live := embedding.EmbedderComputeMode(s.emb); s.head.CalibrationCompute != "" && s.head.CalibrationCompute != live {
-			warn = " WARNING: head calibrated under a different compute mode"
+			warn = " note: head calibrated under a different compute mode (decisions within ~0.01 of tau may differ; r7 avx2:1pass vs avx512:2pass: 13/1320 accept flips)"
 		}
 		return fmt.Sprintf("local L3 %s: head=%s family=%s dim=%d tau=%.3f tau_s=%.3f embedder=%s compute=%s head_calibrated_for=%s%s",
 			r.mode, s.head.ID, intent.HeadFamily(s.head), s.head.Dim(), s.head.Tau, s.head.TauS, embedding.EmbedderFamily(s.emb),

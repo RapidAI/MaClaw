@@ -399,3 +399,11 @@ var codingSessionToolNames = tool.CodingSessionToolNames
 func filterCodingTools(tools []map[string]interface{}) []map[string]interface{} {
 	return tool.FilterCodingTools(tools)
 }
+
+// ToolHead returns the first-party tool head bound to the router, if any.
+func (r *ToolRouter) ToolHead() *tool.ToolHead {
+	if r == nil || r.inner == nil {
+		return nil
+	}
+	return r.inner.ToolHead()
+}

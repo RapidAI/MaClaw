@@ -262,7 +262,7 @@ func TestHeadCalibratedForLiveComputeModePreferred(t *testing.T) {
 		if err != nil || !strings.HasPrefix(h.ID, want) {
 			t.Fatalf("%s: got %v err=%v want %s", mode, h, err, want)
 		}
-		if mode == "q8p:sdot:1pass" && !strings.Contains(rt.Describe(), "WARNING") {
+		if mode == "q8p:sdot:1pass" && !strings.Contains(rt.Describe(), "calibrated under a different compute mode") {
 			t.Fatalf("mismatched compute mode should warn: %s", rt.Describe())
 		}
 	}

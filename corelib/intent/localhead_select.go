@@ -106,6 +106,9 @@ func CheckLocalHead(emb embedding.Embedder, h *LocalHead) error {
 	if emb.Dim() != h.Dim() {
 		return fmt.Errorf("%w: head %s dim %d != embedder dim %d", ErrHeadMismatch, h.ID, h.Dim(), emb.Dim())
 	}
+	if h.NeedsPooling() && !embedding.SupportsPooling(emb) {
+		return fmt.Errorf("%w: head %s needs mean pooling, embedder %T has none", ErrHeadMismatch, h.ID, emb)
+	}
 	ef, hf := embedding.EmbedderFamily(emb), HeadFamily(h)
 	if ef != "" && hf != "" && ef != hf {
 		return fmt.Errorf("%w: head %s is for %s, embedder is %s", ErrHeadMismatch, h.ID, hf, ef)
@@ -114,12 +117,14 @@ func CheckLocalHead(emb embedding.Embedder, h *LocalHead) error {
 }
 
 // ShippedLocalHeadName is the intent head pinned in
-// corelib/embedding/release_assets.json (r7: 20-net merged MLP, per-class
-// temperature folded into w2/b2, τ 0.80 / τ_s 0.97, calibration "oof_rule").
-// It is the only head auto-selected from a head dir; older heads are never
+// corelib/embedding/release_assets.json (r13 F1v2/TC: input = [last-token |
+// mean-pool] of one classification-role pass (input_blocks), 5-net merged
+// MLP, per-class temperature folded into w2/b2, τ 0.75 / τ_s 0.97,
+// calibration "oof_rule"; needs an embedder with mean pooling). It is the
+// only head auto-selected from a head dir; older heads (incl. r7) are never
 // loaded (see embedding.RemoveLegacyHeadFiles). Until it has been downloaded
 // there is no local head and L3 stays remote / unknown.
-const ShippedLocalHeadName = "head_mlp_qwen3go_r7.json"
+const ShippedLocalHeadName = "head_mlp_qwen3go_r13f1.json"
 
 // DefaultLocalHeadNames lists the shipped head file names for a family.
 func DefaultLocalHeadNames(family string) []string {

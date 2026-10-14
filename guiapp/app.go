@@ -11184,6 +11184,9 @@ func (a *App) clearBugReportDiagnostics() {
 	// fail, and truncating that same path leaves the original handle's offset
 	// past EOF, so later writes never show up in the file the operator reads.
 	base := a.getMaclawBaseDir()
+	// Runs after the sinks are reopened and logSinkMu is released: startup
+	// head attach lines are gone with the cleared logs, so restate them.
+	defer a.logHeadStatus("diagnostics-cleared")
 	logSinkMu.Lock()
 	defer logSinkMu.Unlock()
 	closeLogSinksLocked()

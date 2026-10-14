@@ -49,6 +49,9 @@ type qwen3PrefixKV struct {
 	ids  []int
 	n    int
 	k, v [][]float32
+	// rowSum is the sum of the prefix rows' final-normed hidden states
+	// (prefix states never depend on later tokens), for mean pooling.
+	rowSum []float32
 }
 
 func (p *qwen3PrefixKV) matches(ids []int) bool {
@@ -167,7 +170,8 @@ func (q *Qwen3Embedder) computePrefix(ids []int) (*qwen3PrefixKV, error) {
 	}
 	s := q.getScratch(len(ids) + 8)
 	defer q.putScratch(s)
-	if _, err := q.forwardFrom(ids, nil, p, s, 0); err != nil {
+	p.rowSum = make([]float32, q.hp.Dim)
+	if _, err := q.forwardPool(ids, nil, p, s, 0, p.rowSum); err != nil {
 		return nil, err
 	}
 	return p, nil

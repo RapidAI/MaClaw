@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
@@ -280,6 +281,10 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 				}
 				bareIntent := *semanticIntent
 				mergedBare := false
+				var bareActionHint *intent.ClassificationResult
+				if hint, ok := semanticBareL2ActionHint(bareIntent); ok {
+					bareActionHint = &hint
+				}
 				if !releasedSpentWave && (semanticClassificationNeedsTaskContext(semanticIntent) || pendingAnswerPrefersTaskMerge(semanticIntent, isPendingAnswerTurn)) {
 					// The bare message classified nowhere actionable, this turn
 					// answers a pending question with a weak standalone verdict,
@@ -294,14 +299,18 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 					if residueOpen || factsOnly {
 						taskSummary = residue.Summary
 					}
-					if merged, ok := h.classifyWithTaskContextMerge(turnCtx, msg, history, recentHistoryTexts(history, 6), taskSummary); ok {
+					if merged, ok := h.classifyWithTaskContextMerge(turnCtx, msg, history, recentHistoryTexts(history, 6), taskSummary); ok && semanticMergeDropsBareActionHint(bareActionHint, merged) {
+						log.Printf("[semantic-routing] task-context merge rejected: merged=%s drops this turn's L2 action %s(%.2f) user=%q", merged.Primary, bareActionHint.Primary, bareActionHint.Confidence, msg.UserID)
+					} else if ok {
 						copied := merged
 						semanticIntent = &copied
 						mergedBare = true
 						executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
 					}
 				}
-				if residueOpen {
+				if residueOpen && semanticBareActionHintOverridesResidue(bareActionHint, residue) {
+					log.Printf("[semantic-routing] session residue skipped: this turn's L2 action %s(%.2f) differs from the open obligation user=%q", bareActionHint.Primary, bareActionHint.Confidence, msg.UserID)
+				} else if residueOpen {
 					// The bare sentence is delivery of a document this task
 					// already produced. Unclear or pending-answer merge must
 					// not inherit document_generate: that replans search and
@@ -332,6 +341,15 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 					}
 				} else if factsOnly && semanticReuseStoredLookupFacts(msg.Text, *semanticIntent) {
 					loopCtx.semanticResidueLookupFacts = true
+				}
+				// Final verdict still unknown / non-capability: admit this
+				// turn's own L2 action leader into the plan instead of a
+				// tool-less (or residue-only) surface.
+				if bareActionHint != nil && !imSemanticIntentIsManaged(*semanticIntent) {
+					copied := *bareActionHint
+					semanticIntent = &copied
+					executionProfile = executionProfileFromSemanticIntent(semanticIntent, h.executionContractForRegisteredToolName)
+					log.Printf("[semantic-routing] L2 action hint admitted user=%q primary=%s conf=%.2f", msg.UserID, copied.Primary, copied.Confidence)
 				}
 			}
 		}

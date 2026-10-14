@@ -30,6 +30,13 @@ func (a *App) ensureConfiguredAIModels() {
 			pending = true
 		} else {
 			if cfg.VectorSearchEnabled {
+				// The intent / tool / interrupt heads are separate release
+				// assets. They used to be fetched only alongside a Qwen3
+				// download, so an install that already had the model never
+				// got (or hot-attached) a newly pinned head and stayed on the
+				// remote tree LLM for L3. Idempotent (sync.Once); verified
+				// files on disk are kept and attached immediately.
+				a.startHeadAssetFetch()
 				if !a.vectorSearchReady() {
 					startPreload("embedding", a.backgroundPreloadEmbeddingModel)
 				}

@@ -18,6 +18,7 @@ package guiapp
 // calls the remote LLM even before the head is attached.
 
 import (
+	"fmt"
 	"log"
 	"os"
 	"path/filepath"
@@ -77,6 +78,10 @@ func (a *App) attachLocalL3(emb embedding.Embedder) {
 		return
 	}
 	rt := a.localL3Runtime()
+	if h, cur := rt.Active(); h != nil && cur == emb {
+		log.Printf("[intent] local L3 attach skipped (already attached): head=%s", h.ID)
+		return
+	}
 	if _, err := rt.Attach(emb); err != nil {
 		if rt.Mode() == intent.LocalL3Strict {
 			log.Printf("[intent] local L3 unavailable (strict: intent L3 fails closed): %v", err)
@@ -122,7 +127,11 @@ func toolHeadCandidates(modelsDir string) []string {
 // tool router (intent scope ∪ head top-k ∪ Track A). No-op when disabled,
 // no matching file, or the head refuses the embedder (wrong model id / dim).
 func (a *App) attachToolHead(emb embedding.Embedder) {
-	if a == nil || a.toolRouter == nil || emb == nil || embedding.IsNoop(emb) {
+	if a == nil {
+		return
+	}
+	if a.toolRouter == nil || emb == nil || embedding.IsNoop(emb) {
+		log.Printf("[tool] tool head attach deferred: router=%v embedder=%v (retried when the embedder is wired)", a.toolRouter != nil, emb != nil && !embedding.IsNoop(emb))
 		return
 	}
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(toolHeadDisable))) {
@@ -132,7 +141,21 @@ func (a *App) attachToolHead(emb embedding.Embedder) {
 		return
 	}
 	var last error
-	for _, p := range toolHeadCandidates(embedding.DefaultModelsDir()) {
+	cands := toolHeadCandidates(embedding.DefaultModelsDir())
+	if cur := a.toolRouter.ToolHead(); cur != nil {
+		for _, p := range cands {
+			if filepath.Base(p) == shippedToolHeadName && cur.ID == pinnedHeadAssetID(shippedToolHeadName) {
+				if err := cur.CheckEmbedderOf(emb); err == nil {
+					log.Printf("[tool] tool head attach skipped (already attached): %s", cur.ID)
+					return
+				}
+			}
+		}
+	}
+	if len(cands) == 0 {
+		last = fmt.Errorf("no %s under %s/{%s,%s,.}", shippedToolHeadName, embedding.DefaultModelsDir(), toolHeadsDirName, intent.LocalHeadsDirName)
+	}
+	for _, p := range cands {
 		h, err := tool.LoadToolHead(p)
 		if err != nil {
 			last = err

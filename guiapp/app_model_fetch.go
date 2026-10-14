@@ -135,12 +135,21 @@ func (a *App) startHeadAssetFetch() {
 			}
 			f := embedding.NewReleaseAssetFetcher(dir, asset, hub)
 			f.Logf = log.Printf
+			kind, name := asset.Kind, asset.Filename
 			f.Start(context.Background(), func(path string) {
 				a.removeLegacyHeadFiles(dir) // a stale copy may have landed meanwhile; never loaded either way
-				if emb := a.activeInterruptEmbedder(); emb != nil && !embedding.IsNoop(emb) {
-					a.attachLocalL3(emb)
-					a.attachToolHead(emb)
+				emb := a.activeInterruptEmbedder()
+				live := emb != nil && !embedding.IsNoop(emb)
+				log.Printf("[embedding] head asset ready: kind=%s file=%s path=%s embedder_live=%v", kind, name, path, live)
+				if live {
+					switch kind {
+					case "intent_head":
+						a.attachLocalL3(emb)
+					case "tool_head":
+						a.attachToolHead(emb)
+					}
 				}
+				a.logHeadStatus("head-asset-ready:" + name)
 			})
 		}
 	})

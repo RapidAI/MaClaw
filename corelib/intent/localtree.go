@@ -60,6 +60,14 @@ func LocalHeadUncertainTop(err error) (label string, prob float64, ok bool) {
 	return "", 0, false
 }
 
+// IsLocalHeadUncertain reports whether err is a local-head abstention
+// (sub-threshold top-1, or the head could not embed / predict), as opposed
+// to a remote tree failure.
+func IsLocalHeadUncertain(err error) bool {
+	var e errLocalUncertain
+	return errors.As(err, &e)
+}
+
 // LocalHeadProbeFunc returns the local head's top-1 for text without
 // applying any threshold: label, its probability, and the head's strong
 // (sensitive) threshold max(Tau, TauS). ok=false when no head is attached or
@@ -73,7 +81,7 @@ func LocalHeadProbe(emb embedding.Embedder, h *LocalHead) LocalHeadProbeFunc {
 		return nil
 	}
 	return func(ctx context.Context, text string) (string, float64, float64, bool) {
-		v, scores, err := IntentQueryEmbeddingScores(ctx, emb, text)
+		v, scores, err := HeadQueryInput(ctx, emb, h, text)
 		if err != nil {
 			return "", 0, 0, false
 		}
@@ -103,7 +111,7 @@ func LocalTreeFunc(emb embedding.Embedder, h *LocalHead, fb LocalFallback) LLMCl
 		}
 	}
 	return func(ctx, _ context.Context, _ string, userText string) (string, error) {
-		v, scores, err := IntentQueryEmbeddingScores(ctx, emb, userText)
+		v, scores, err := HeadQueryInput(ctx, emb, h, userText)
 		if err != nil {
 			return "", errLocalUncertain{msg: "embed: " + err.Error()}
 		}
