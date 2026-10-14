@@ -105,7 +105,7 @@ var errSrvAIModelNotReady = errors.New("ai model is not ready")
 var errSrvAIModelInvalidInput = errors.New("invalid ai model input")
 
 var srvPreparePlayableVoiceMP3 = tts.PreparePlayableVoiceMP3
-var srvDownloadModelFile = downloadModelFile
+var srvDownloadModelFile = downloadModelFileSlowAbort
 
 const srvAIModelDownloadStatusMaxAge = 35 * time.Minute
 
@@ -651,17 +651,43 @@ func (m *srvAIModelManager) downloadWithFallback(filename, primaryURL string, cf
 	if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 		return err
 	}
-	if err := srvDownloadModelFile(primaryURL, destPath, done); err == nil {
-		return nil
-	}
 	hubURL := strings.TrimRight(strings.TrimSpace(cfg.RemoteHubURL), "/")
 	if hubURL == "" {
 		hubURL = strings.TrimRight(strings.TrimSpace(os.Getenv("MACLAW_HUB_URL")), "/")
 	}
-	if hubURL == "" {
-		return fmt.Errorf("download %s failed and Hub URL is not configured", filename)
+	urls := srvModelDownloadURLs(primaryURL, hubURL, filename)
+	var lastErr error
+	for i, u := range urls {
+		// Every source but the last gives up when it crawls, so a slow
+		// overseas link falls through to the next one instead of holding
+		// the model for half an hour.
+		err := srvDownloadModelFile(u, destPath, done, i < len(urls)-1)
+		if err == nil {
+			return nil
+		}
+		log.Printf("[ai-models] download %s from %s failed: %v", filename, u, err)
+		lastErr = err
 	}
-	return srvDownloadModelFile(hubURL+"/api/v1/models/"+filename, destPath, done)
+	if hubURL == "" && lastErr != nil {
+		return fmt.Errorf("download %s failed and Hub URL is not configured: %w", filename, lastErr)
+	}
+	return lastErr
+}
+
+// srvModelDownloadURLs orders model sources: MACLAW_MODEL_MIRROR_URLS bases
+// first (comma separated, e.g. a domestic object store), then the Hub mirror
+// (same region as this server), then the GitHub release.
+func srvModelDownloadURLs(primaryURL, hubURL, filename string) []string {
+	var urls []string
+	for _, base := range strings.Split(os.Getenv("MACLAW_MODEL_MIRROR_URLS"), ",") {
+		if base = strings.TrimRight(strings.TrimSpace(base), "/"); base != "" {
+			urls = append(urls, base+"/"+filename)
+		}
+	}
+	if hubURL != "" {
+		urls = append(urls, hubURL+"/api/v1/models/"+filename)
+	}
+	return append(urls, primaryURL)
 }
 
 func (m *srvAIModelManager) modelPath(filename string) string {

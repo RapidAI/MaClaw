@@ -555,7 +555,7 @@ func TestSrvAIModelStartDownloadSuccessResetsSharedRuntime(t *testing.T) {
 	manager.embeddingMgr = embeddingMgr
 
 	oldDownload := srvDownloadModelFile
-	srvDownloadModelFile = func(url, destPath string, done <-chan struct{}) error {
+	srvDownloadModelFile = func(url, destPath string, done <-chan struct{}, _ bool) error {
 		_ = url
 		_ = done
 		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
@@ -581,7 +581,7 @@ func TestSrvAIModelCloseCancelsActiveDownload(t *testing.T) {
 	cancelled := make(chan struct{})
 	releaseReturn := make(chan struct{})
 	oldDownload := srvDownloadModelFile
-	srvDownloadModelFile = func(url, destPath string, done <-chan struct{}) error {
+	srvDownloadModelFile = func(url, destPath string, done <-chan struct{}, _ bool) error {
 		_ = url
 		_ = destPath
 		started <- struct{}{}
@@ -810,7 +810,7 @@ func TestSrvAIModelStartDownloadRetriesStaleTask(t *testing.T) {
 	}
 	started := make(chan struct{}, 1)
 	oldDownload := srvDownloadModelFile
-	srvDownloadModelFile = func(url, destPath string, done <-chan struct{}) error {
+	srvDownloadModelFile = func(url, destPath string, done <-chan struct{}, _ bool) error {
 		_ = url
 		_ = destPath
 		_ = done
@@ -840,14 +840,14 @@ func TestSrvAIModelManagerUsesGlobalDownloadHubForSharedModels(t *testing.T) {
 	var mu sync.Mutex
 	var urls []string
 	oldDownload := srvDownloadModelFile
-	srvDownloadModelFile = func(url, destPath string, done <-chan struct{}) error {
+	srvDownloadModelFile = func(url, destPath string, done <-chan struct{}, _ bool) error {
 		_ = done
 		mu.Lock()
 		urls = append(urls, url)
 		call := len(urls)
 		mu.Unlock()
 		if call == 1 {
-			return errors.New("primary unavailable")
+			return errors.New("hub unavailable")
 		}
 		if err := os.MkdirAll(filepath.Dir(destPath), 0o755); err != nil {
 			return err
@@ -868,8 +868,9 @@ func TestSrvAIModelManagerUsesGlobalDownloadHubForSharedModels(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("download calls = %d, want 2: %#v", len(got), got)
 	}
-	if got[1] != "https://global.example/api/v1/models/"+srvEmbeddingModelFilename() {
-		t.Fatalf("fallback URL = %q, want global hub", got[1])
+	// The Hub mirror (same region) is tried before the GitHub release.
+	if got[0] != "https://global.example/api/v1/models/"+srvEmbeddingModelFilename() {
+		t.Fatalf("first URL = %q, want global hub", got[0])
 	}
 }
 

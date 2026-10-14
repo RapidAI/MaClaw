@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -11,6 +12,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -213,32 +215,26 @@ func (m *knowledgeStoreManager) backgroundDownloadAndActivate() {
 		os.Remove(failMarker)
 	}
 
-	// Try primary URL (GitHub Releases).
-	log.Printf("[knowledge] downloading embedding model from %s", embeddingModelDefaultURL)
-	if err := downloadModelFile(embeddingModelDefaultURL, destPath, m.done); err != nil {
-		log.Printf("[knowledge] primary download failed: %v, trying fallback...", err)
-
-		// Check shutdown before fallback attempt.
+	// Mirrors and the Hub first (same region), GitHub last; a crawling
+	// source gives way to the next one.
+	urls := srvModelDownloadURLs(embeddingModelDefaultURL, strings.TrimRight(strings.TrimSpace(os.Getenv("MACLAW_HUB_URL")), "/"), embedding.DefaultModelFilename)
+	var dlErr error
+	for i, u := range urls {
 		select {
 		case <-m.done:
 			return
 		default:
 		}
-
-		// Fallback: Hub URL from environment.
-		hubURL := strings.TrimSpace(os.Getenv("MACLAW_HUB_URL"))
-		if hubURL == "" {
-			log.Printf("[knowledge] embedding model download failed, no fallback URL configured. Vector search unavailable.")
-			m.writeDownloadFailMarker(failMarker)
-			return
+		log.Printf("[knowledge] downloading embedding model from %s", u)
+		if dlErr = downloadModelFileSlowAbort(u, destPath, m.done, i < len(urls)-1); dlErr == nil {
+			break
 		}
-		fallbackURL := strings.TrimRight(hubURL, "/") + "/api/v1/models/" + embedding.DefaultModelFilename
-		log.Printf("[knowledge] downloading embedding model from fallback: %s", fallbackURL)
-		if err := downloadModelFile(fallbackURL, destPath, m.done); err != nil {
-			log.Printf("[knowledge] fallback download also failed: %v. Vector search unavailable.", err)
-			m.writeDownloadFailMarker(failMarker)
-			return
-		}
+		log.Printf("[knowledge] download from %s failed: %v", u, dlErr)
+	}
+	if dlErr != nil {
+		log.Printf("[knowledge] embedding model download failed. Vector search unavailable.")
+		m.writeDownloadFailMarker(failMarker)
+		return
 	}
 
 	// Check shutdown before activation.
@@ -282,6 +278,21 @@ func (m *knowledgeStoreManager) activateEmbedder(modelPath string) {
 // downloadModelFile downloads a file from url to destPath with HTTP Range resume support.
 // The done channel allows early cancellation (e.g., process shutdown).
 func downloadModelFile(url, destPath string, done <-chan struct{}) error {
+	return downloadModelFileSlowAbort(url, destPath, done, false)
+}
+
+// Slow-source detection: over each window the download must move at least
+// modelDownloadMinBytes, else (when abortWhenSlow) it stops and keeps the
+// .tmp for the next source to resume with a Range request.
+var (
+	modelDownloadSlowWindow = 60 * time.Second
+	modelDownloadMinBytes   = int64(2 << 20)
+	modelDownloadLogEvery   = 60 * time.Second
+)
+
+var errModelDownloadTooSlow = errors.New("download too slow")
+
+func downloadModelFileSlowAbort(url, destPath string, done <-chan struct{}, abortWhenSlow bool) error {
 	tmpPath := destPath + ".tmp"
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
@@ -352,6 +363,36 @@ func downloadModelFile(url, destPath string, done <-chan struct{}) error {
 	buf := make([]byte, 64*1024)
 	downloaded := resumeOffset
 	lastLog := time.Now()
+	lastLogPct := -1
+	name := filepath.Base(destPath)
+	var progress atomic.Int64
+	var tooSlow atomic.Bool
+	progress.Store(downloaded)
+	if abortWhenSlow {
+		// A watchdog, not an inline check: a source that sends nothing at
+		// all blocks Read and would never reach an inline test.
+		stopWatch := make(chan struct{})
+		defer close(stopWatch)
+		go func() {
+			t := time.NewTicker(modelDownloadSlowWindow)
+			defer t.Stop()
+			last := progress.Load()
+			for {
+				select {
+				case <-stopWatch:
+					return
+				case <-t.C:
+					now := progress.Load()
+					if now-last < modelDownloadMinBytes {
+						tooSlow.Store(true)
+						cancel()
+						return
+					}
+					last = now
+				}
+			}
+		}()
+	}
 
 	for {
 		n, readErr := resp.Body.Read(buf)
@@ -361,20 +402,26 @@ func downloadModelFile(url, destPath string, done <-chan struct{}) error {
 				return fmt.Errorf("write file: %w", wErr)
 			}
 			downloaded += int64(n)
-			if time.Since(lastLog) > 10*time.Second {
-				pct := 0
-				if totalSize > 0 {
-					pct = int(downloaded * 100 / totalSize)
-				}
-				log.Printf("[knowledge] embedding model download progress: %d%% (%d/%d bytes)", pct, downloaded, totalSize)
-				lastLog = time.Now()
+			pct := 0
+			if totalSize > 0 {
+				pct = int(downloaded * 100 / totalSize)
+			}
+			// One line a minute, or each 10%: two stalled downloads used to
+			// write a line every 10s each for hours.
+			if time.Since(lastLog) >= modelDownloadLogEvery || pct/10 != lastLogPct/10 {
+				log.Printf("[ai-models] %s download progress: %d%% (%d/%d bytes)", name, pct, downloaded, totalSize)
+				lastLog, lastLogPct = time.Now(), pct
 			}
 		}
+		progress.Store(downloaded)
 		if readErr == io.EOF {
 			break
 		}
 		if readErr != nil {
 			out.Close()
+			if tooSlow.Load() {
+				return fmt.Errorf("%w: under %d bytes per %s from %s", errModelDownloadTooSlow, modelDownloadMinBytes, modelDownloadSlowWindow, url)
+			}
 			return fmt.Errorf("read body: %w", readErr)
 		}
 	}

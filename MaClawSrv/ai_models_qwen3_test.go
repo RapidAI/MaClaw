@@ -23,7 +23,7 @@ func TestSrvQwen3DownloadRejectsCorruptFileAndRemovesIt(t *testing.T) {
 	defer func() { srvVerifyEmbeddingModel = orig }()
 	origDL := srvDownloadModelFile
 	var gotURL string
-	srvDownloadModelFile = func(url, dest string, done <-chan struct{}) error {
+	srvDownloadModelFile = func(url, dest string, done <-chan struct{}, _ bool) error {
 		gotURL = url
 		return os.WriteFile(dest, []byte("truncated"), 0o644)
 	}
