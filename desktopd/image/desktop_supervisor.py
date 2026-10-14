@@ -34,7 +34,10 @@ VNC_GATE_PORT = 6080
 VNC_WEBSOCKIFY_PORT = 6081
 # A fixed screen size keeps agent click coordinates and screenshots stable;
 # noVNC scales it for people. MACLAW_DESKTOP_GEOMETRY overrides it per image
-# or container (WIDTHxHEIGHT or WIDTHxHEIGHTxDEPTH).
+# or container (WIDTHxHEIGHT or WIDTHxHEIGHTxDEPTH). Images built from
+# Dockerfile.v2 set it to 1280x800 (smaller screenshots for models); this
+# fallback stays 1440x900 so containers created from an older image keep
+# their screen size when they get a newer supervisor.
 DEFAULT_DESKTOP_GEOMETRY = "1440x900x24"
 
 
@@ -496,6 +499,10 @@ def main(argv):
         return 0
     if len(argv) >= 2 and argv[1] == "browser":
         return open_shared_browser(argv[2:])
+    if len(argv) == 3 and argv[1] == "ctl":
+        return run_ctl(argv[2])
+    if len(argv) == 3 and argv[1] == "a11y":
+        return run_a11y(argv[2])
     if len(argv) == 2 and argv[1] == "install-browser":
         install_browser_integration()
         return 0
@@ -683,6 +690,11 @@ def desktop_env(display):
     env["XDG_CACHE_HOME"] = str(user_home / ".cache")
     env["PATH"] = str(user_home / ".local" / "bin") + os.pathsep + env.get("PATH", "")
     env["DISPLAY"] = ":%d" % display
+    # The agent reads non-browser programs through AT-SPI (a11y command).
+    # GTK exposes its tree unless NO_AT_BRIDGE is set; Qt only when asked.
+    env.pop("NO_AT_BRIDGE", None)
+    env["QT_ACCESSIBILITY"] = "1"
+    env["QT_LINUX_ACCESSIBILITY_ALWAYS_ON"] = "1"
     return env
 
 
@@ -2094,6 +2106,39 @@ MACLAW_SUPERVISED_BROWSER=1 exec /usr/bin/chromium --no-sandbox "$@"
 
 BROWSER_SIGNIN_POLICY = '{"BrowserSignin": 0}\n'
 
+# Fewer prompts and bubbles in front of what the agent works on. Downloads go
+# to ~/Downloads of the desktop user without the save dialog; the person can
+# still change a site's settings. "${home}" is a Chromium policy variable.
+AGENT_BROWSER_POLICY = json.dumps({
+    "TranslateEnabled": False,
+    "PromptForDownloadLocation": False,
+    "DownloadDirectory": "${home}/Downloads",
+    "PasswordManagerEnabled": False,
+    "AutofillAddressEnabled": False,
+    "AutofillCreditCardEnabled": False,
+    "DefaultNotificationsSetting": 2,
+    "DefaultBrowserSettingEnabled": False,
+    "PromotionalTabsEnabled": False,
+}, indent=2, sort_keys=True) + "\n"
+
+# xfce4-notifyd draws popups over the screen the agent reads. It is not
+# started with the session, and if a program starts it over D-Bus it stays
+# in do-not-disturb (notifications are still logged).
+NOTIFYD_AUTOSTART_OFF = """[Desktop Entry]
+Type=Application
+Name=Notification Daemon
+Exec=/usr/lib/x86_64-linux-gnu/xfce4/notifyd/xfce4-notifyd
+Hidden=true
+X-XFCE-Autostart-Override=true
+"""
+NOTIFYD_DND = """<?xml version="1.0" encoding="UTF-8"?>
+
+<channel name="xfce4-notifyd" version="1.0">
+  <property name="do-not-disturb" type="bool" value="true"/>
+  <property name="notification-log" type="bool" value="true"/>
+</channel>
+"""
+
 BROWSER_MIME_TYPES = (
     "text/html",
     "application/xhtml+xml",
@@ -2168,6 +2213,13 @@ def install_browser_integration(root=Path("/")):
         # Turning browser sign-in off keeps the website login. Logging in to
         # Google websites still works.
         write_if_changed(root / "etc/chromium/policies/managed/maclaw-browser-signin.json", BROWSER_SIGNIN_POLICY, 0o644)
+        write_if_changed(root / "etc/chromium/policies/managed/maclaw-agent.json", AGENT_BROWSER_POLICY, 0o644)
+    if (root / "etc/xdg/autostart/xfce4-notifyd.desktop").exists():
+        # Overrides the package entry by name from the user's autostart
+        # directory, which XFCE reads first; the package file stays untouched.
+        write_if_changed(root / "etc/skel/.config/autostart/xfce4-notifyd.desktop", NOTIFYD_AUTOSTART_OFF, 0o644)
+        write_if_changed(root / "home/desktop/.config/autostart/xfce4-notifyd.desktop", NOTIFYD_AUTOSTART_OFF, 0o644)
+        write_if_changed(root / "etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-notifyd.xml", NOTIFYD_DND, 0o644)
     # XFCE "Preferred Applications": the panel's Web Browser launcher and
     # exo-open/xdg-open use this helper. chromium.desktop runs /usr/bin/chromium,
     # which the hook above routes to the shared browser.
@@ -2870,6 +2922,646 @@ def request_authorized(head, token):
             return False
         return hmac.compare_digest(credential.strip(), token)
     return False
+
+
+
+# ---------------------------------------------------------------------------
+# Accessibility (AT-SPI) element tree for programs other than the browser.
+#
+# "a11y <base64 json>" prints one JSON line. The agent runs it through the
+# container bash API, so the answer stays small (the bash output is capped):
+# only showing elements with a size on screen, interactive ones first, and
+# a node/depth cap. Ids are numbered per probe; the probe writes the path of
+# every id (child indexes from the desktop root, plus role and name) so a
+# later "act" finds the same element, or reports that it changed.
+
+A11Y_SNAPSHOT = "/tmp/.maclaw-a11y-%d.json"
+A11Y_MARKS = "/tmp/.maclaw-a11y-%d.mvg"
+A11Y_MAX_NODES = 400
+A11Y_DEFAULT_NODES = 120
+A11Y_MAX_DEPTH = 40
+A11Y_DEFAULT_DEPTH = 25
+A11Y_NAME_MAX = 80
+A11Y_INTERACTIVE_ROLES = frozenset((
+    "push button", "toggle button", "check box", "radio button", "menu item",
+    "check menu item", "radio menu item", "menu", "combo box", "text", "entry",
+    "password text", "link", "page tab", "list item", "table cell", "tree item",
+    "spin button", "slider", "icon", "toggle", "button", "scroll bar",
+    "terminal", "document text", "editbar", "tool bar item",
+))
+A11Y_ACTION_NAMES = ("click", "press", "activate", "toggle", "jump", "open")
+
+
+def a11y_display():
+    raw = os.environ.get("DISPLAY", "") or (":%d" % DISPLAY_MIN)
+    try:
+        return int(raw.split(":", 1)[1].split(".", 1)[0])
+    except (IndexError, ValueError):
+        return DISPLAY_MIN
+
+
+def a11y_prepare_env(display):
+    os.environ["DISPLAY"] = ":%d" % display
+    bus = "/tmp/.maclaw-dbus-%d" % display
+    if not os.environ.get("DBUS_SESSION_BUS_ADDRESS") and Path(bus).exists():
+        os.environ["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=" + bus
+    os.environ.pop("NO_AT_BRIDGE", None)
+
+
+def a11y_clean(text, limit=A11Y_NAME_MAX):
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= limit else text[: limit - 1] + "\u2026"
+
+
+def a11y_states(node, pyatspi):
+    names = []
+    try:
+        states = node.getState()
+    except Exception:
+        return names
+    for label, state in (
+        ("focused", pyatspi.STATE_FOCUSED), ("focusable", pyatspi.STATE_FOCUSABLE),
+        ("selected", pyatspi.STATE_SELECTED), ("checked", pyatspi.STATE_CHECKED),
+        ("pressed", pyatspi.STATE_PRESSED), ("expanded", pyatspi.STATE_EXPANDED),
+        ("editable", pyatspi.STATE_EDITABLE), ("active", pyatspi.STATE_ACTIVE),
+    ):
+        if states.contains(state):
+            names.append(label)
+    if not states.contains(pyatspi.STATE_SENSITIVE):
+        names.append("disabled")
+    return names
+
+
+def a11y_showing(node, pyatspi):
+    try:
+        states = node.getState()
+        return states.contains(pyatspi.STATE_SHOWING) and states.contains(pyatspi.STATE_VISIBLE)
+    except Exception:
+        return False
+
+
+def a11y_bounds(node, pyatspi):
+    try:
+        ext = node.queryComponent().getExtents(pyatspi.DESKTOP_COORDS)
+        return [int(ext.x), int(ext.y), int(ext.width), int(ext.height)]
+    except Exception:
+        return None
+
+
+def a11y_actions(node):
+    try:
+        action = node.queryAction()
+        return [action.getName(i) for i in range(action.nActions)]
+    except Exception:
+        return []
+
+
+def a11y_text(node):
+    try:
+        text = node.queryText()
+        return text.getText(0, min(text.characterCount, 200))
+    except Exception:
+        return ""
+
+
+def a11y_windows(desktop, scope, pyatspi):
+    """Top-level windows to walk: [(path, app name, window)]."""
+    out = []
+    for ai in range(desktop.childCount):
+        try:
+            app = desktop.getChildAtIndex(ai)
+        except Exception:
+            continue
+        if app is None:
+            continue
+        app_name = a11y_clean(app.name, 40)
+        # Chromium's own tree is large; the browser stays on CDP.
+        if app_name.lower() in ("chromium", "google chrome", "chrome"):
+            continue
+        for wi in range(app.childCount):
+            try:
+                win = app.getChildAtIndex(wi)
+            except Exception:
+                continue
+            if win is None or not a11y_showing(win, pyatspi):
+                continue
+            bounds = a11y_bounds(win, pyatspi)
+            # xfwm4 keeps an "active" 5x5 helper window off screen.
+            if not bounds or bounds[2] <= 8 or bounds[3] <= 8 or bounds[0] + bounds[2] <= 0 or bounds[1] + bounds[3] <= 0:
+                continue
+            out.append(([ai, wi], app_name, win))
+    if scope == "all":
+        return out
+    if scope in ("", "focused", "active"):
+        active = []
+        for item in out:
+            try:
+                if item[2].getState().contains(pyatspi.STATE_ACTIVE):
+                    active.append(item)
+            except Exception:
+                pass
+        if not active:
+            # Nothing reports active (a menu popup, the desktop): take the
+            # last application window, not the panel or desktop background.
+            active = [item for item in out if item[1] not in ("xfce4-panel", "xfdesktop", "xfwm4")][-1:]
+        return active[:1]
+    needle = scope.lower()
+    return [item for item in out if needle in a11y_clean(item[2].name, 200).lower() or needle == item[1].lower()][:3]
+
+
+def a11y_probe(request, pyatspi):
+    display = a11y_display()
+    scope = str(request.get("window") or "focused").strip()
+    max_nodes = max(1, min(int(request.get("max_nodes") or A11Y_DEFAULT_NODES), A11Y_MAX_NODES))
+    max_depth = max(1, min(int(request.get("max_depth") or A11Y_DEFAULT_DEPTH), A11Y_MAX_DEPTH))
+    interactive_only = bool(request.get("interactive_only"))
+    desktop = pyatspi.Registry.getDesktop(0)
+    windows = a11y_windows(desktop, scope, pyatspi)
+    found, visited = [], 0
+    for path, app_name, win in windows:
+        stack = [(win, path, 0)]
+        while stack and visited < 20000:
+            node, node_path, depth = stack.pop()
+            visited += 1
+            if not a11y_showing(node, pyatspi):
+                continue
+            try:
+                role = node.getRoleName()
+            except Exception:
+                role = ""
+            bounds = a11y_bounds(node, pyatspi)
+            name = a11y_clean(node.name)
+            interactive = role in A11Y_INTERACTIVE_ROLES
+            if bounds and bounds[2] > 0 and bounds[3] > 0 and (interactive or name or depth == 0):
+                found.append({
+                    "path": node_path, "role": role, "name": name, "bounds": bounds,
+                    "interactive": interactive, "depth": depth, "app": app_name, "node": node,
+                    "order": len(found),
+                })
+            if depth >= max_depth:
+                continue
+            try:
+                count = min(node.childCount, 500)
+            except Exception:
+                count = 0
+            for ci in range(count - 1, -1, -1):
+                try:
+                    child = node.getChildAtIndex(ci)
+                except Exception:
+                    continue
+                if child is not None:
+                    stack.append((child, node_path + [ci], depth + 1))
+    pool = [item for item in found if item["interactive"] or item["depth"] == 0]
+    if not interactive_only:
+        pool += [item for item in found if not (item["interactive"] or item["depth"] == 0)]
+    truncated = len(pool) > max_nodes
+    keep = sorted(pool[:max_nodes], key=lambda item: item["order"])
+    elements, snapshot = [], {}
+    for index, item in enumerate(keep, 1):
+        element = {"id": index, "role": item["role"], "name": item["name"], "bounds": item["bounds"]}
+        states = a11y_states(item["node"], pyatspi)
+        if states:
+            element["states"] = states
+        if item["depth"] == 0:
+            element["window"] = True
+            element["app"] = item["app"]
+        if item["role"] in ("text", "entry", "document text", "terminal"):
+            value = a11y_clean(a11y_text(item["node"]), 60)
+            if value:
+                element["value"] = value
+        elements.append(element)
+        snapshot[str(index)] = {"path": item["path"], "role": item["role"], "name": item["name"], "bounds": item["bounds"]}
+    write_if_changed(A11Y_SNAPSHOT % display, json.dumps({"time": int(time.time()), "ids": snapshot}), 0o600)
+    write_if_changed(A11Y_MARKS % display, a11y_marks_mvg(elements), 0o600)
+    return {"ok": True, "scope": scope, "windows": len(windows), "count": len(elements), "truncated": truncated, "elements": elements}
+
+
+A11Y_MARK_COLORS = ("#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#008080", "#9a6324", "#800000")
+
+
+def a11y_marks_mvg(elements):
+    """ImageMagick draw commands: one numbered box per element (set-of-marks)."""
+    lines = ["fill none", "stroke-width 2", "font-size 12"]
+    for element in elements:
+        if element.get("window"):
+            continue
+        x, y, w, h = element["bounds"]
+        color = A11Y_MARK_COLORS[element["id"] % len(A11Y_MARK_COLORS)]
+        label = str(element["id"])
+        lines.append("stroke '%s' fill none rectangle %d,%d %d,%d" % (color, x, y, x + w - 1, y + h - 1))
+        lw = 7 * len(label) + 4
+        lines.append("stroke none fill '%s' rectangle %d,%d %d,%d" % (color, x, y, x + lw, y + 14))
+        lines.append("fill white text %d,%d '%s'" % (x + 2, y + 12, label))
+    return "\n".join(lines) + "\n"
+
+
+def a11y_resolve(element_id, pyatspi):
+    display = a11y_display()
+    try:
+        snapshot = json.loads(Path(A11Y_SNAPSHOT % display).read_text(encoding="utf-8"))
+        entry = snapshot["ids"][str(int(element_id))]
+    except (OSError, ValueError, KeyError, TypeError):
+        raise LookupError("element %s is not in the last probe; run app_probe again" % element_id)
+    node = pyatspi.Registry.getDesktop(0)
+    try:
+        for index in entry["path"]:
+            node = node.getChildAtIndex(int(index))
+            if node is None:
+                raise LookupError
+    except Exception:
+        raise LookupError("element %s is gone; run app_probe again" % element_id)
+    try:
+        role = node.getRoleName()
+    except Exception:
+        role = ""
+    if role != entry["role"] or a11y_clean(node.name) != entry["name"]:
+        raise LookupError("element %s changed (now %s %r); run app_probe again" % (element_id, role, a11y_clean(node.name)))
+    return node, entry
+
+
+def a11y_act(request, pyatspi):
+    """Act on one probed element. Clicks are left to xdotool at the returned
+    center when the element is on screen (a real click is what a person does);
+    AT-SPI actions are the fallback, and focus / set_text use AT-SPI."""
+    op = str(request.get("do") or "").strip()
+    node, entry = a11y_resolve(request.get("id"), pyatspi)
+    bounds = a11y_bounds(node, pyatspi) or entry["bounds"]
+    center = [bounds[0] + bounds[2] // 2, bounds[1] + bounds[3] // 2]
+    role = entry["role"]
+    result = {"ok": True, "id": int(request.get("id")), "role": role, "name": entry["name"], "bounds": bounds, "center": center}
+    if op == "locate":
+        result["method"] = "locate"
+        return result
+    if op == "click":
+        names = a11y_actions(node)
+        onscreen = bounds[2] > 0 and bounds[3] > 0 and center[0] >= 0 and center[1] >= 0
+        if onscreen and not request.get("prefer_action"):
+            result["method"] = "xdotool"
+            return result
+        for wanted in A11Y_ACTION_NAMES:
+            if wanted in names:
+                node.queryAction().doAction(names.index(wanted))
+                result["method"] = "atspi:" + wanted
+                return result
+        result["method"] = "xdotool"
+        return result
+    if op == "focus":
+        try:
+            if node.queryComponent().grabFocus():
+                result["method"] = "atspi"
+                return result
+        except Exception:
+            pass
+        result["method"] = "xdotool"
+        return result
+    if op == "set_text":
+        if role == "password text":
+            raise PermissionError("element %s is a password field; the person types passwords" % request.get("id"))
+        text = str(request.get("text") or "")
+        try:
+            editable = node.queryEditableText()
+            if editable.setTextContents(text):
+                result["method"] = "atspi"
+                return result
+        except Exception:
+            pass
+        result["method"] = "xdotool"
+        return result
+    raise ValueError("unknown a11y action %r" % op)
+
+
+def run_a11y(raw):
+    try:
+        request = json.loads(base64.b64decode(raw.encode("ascii"), validate=True).decode("utf-8"))
+        if not isinstance(request, dict):
+            raise ValueError("request is not an object")
+    except (ValueError, UnicodeError) as exc:
+        print(json.dumps({"ok": False, "error": "bad request: %s" % exc}))
+        return 2
+    a11y_prepare_env(a11y_display())
+    try:
+        import pyatspi  # noqa: imported here: only the a11y command needs it
+    except ImportError:
+        print(json.dumps({"ok": False, "error": "pyatspi is not installed in this desktop image"}))
+        return 1
+    try:
+        if request.get("op") == "act":
+            result = a11y_act(request, pyatspi)
+        else:
+            result = a11y_probe(request, pyatspi)
+    except (LookupError, PermissionError, ValueError) as exc:
+        result = {"ok": False, "error": str(exc)}
+    except Exception as exc:  # AT-SPI raises its own GLib errors.
+        result = {"ok": False, "error": "accessibility bus error: %s" % a11y_clean(exc, 200)}
+    print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    return 0 if result.get("ok") else 1
+
+
+# ---------------------------------------------------------------------------
+# "ctl <base64 json>": clipboard, windows, screen info, waiting, and the
+# person-viewer status, for desktopd's /v1/desktops/ctl. One JSON line out.
+# wmctrl is used when the image has it (maclaw-gui:2 built after it was
+# added); older containers fall back to xdotool and xprop.
+
+CTL_TEXT_MAX = 256 << 10
+CTL_IMAGE_MAX = 4 << 20
+CTL_WAIT_MAX = 60.0
+
+
+def ctl_run(argv, data=None, timeout=10):
+    try:
+        done = subprocess.run(argv, input=data, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=timeout)
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return 127, b"", str(exc).encode()
+    return done.returncode, done.stdout, done.stderr
+
+
+def ctl_clipboard_get(request):
+    target = str(request.get("type") or "text")
+    if target == "image":
+        code, out, _ = ctl_run(["xclip", "-selection", "clipboard", "-o", "-t", "image/png"])
+        if code != 0 or not out.startswith(b"\x89PNG"):
+            return {"ok": True, "type": "image", "empty": True}
+        if len(out) > CTL_IMAGE_MAX:
+            return {"ok": False, "error": "clipboard image is larger than %d bytes" % CTL_IMAGE_MAX}
+        return {"ok": True, "type": "image", "mime": "image/png", "image_base64": base64.b64encode(out).decode()}
+    code, out, _ = ctl_run(["xclip", "-selection", "clipboard", "-o", "-t", "UTF8_STRING"])
+    if code != 0:
+        code, out, _ = ctl_run(["xclip", "-selection", "clipboard", "-o"])
+    if code != 0:
+        return {"ok": True, "type": "text", "text": "", "empty": True}
+    text = out[:CTL_TEXT_MAX].decode("utf-8", "replace")
+    return {"ok": True, "type": "text", "text": text, "truncated": len(out) > CTL_TEXT_MAX}
+
+
+def ctl_clipboard_set(request):
+    if request.get("image_base64"):
+        try:
+            data = base64.b64decode(str(request["image_base64"]), validate=True)
+        except ValueError:
+            return {"ok": False, "error": "image_base64 is not base64"}
+        if not data.startswith(b"\x89PNG") or len(data) > CTL_IMAGE_MAX:
+            return {"ok": False, "error": "clipboard image must be a PNG up to %d bytes" % CTL_IMAGE_MAX}
+        targets = [("clipboard", "image/png", data)]
+    else:
+        text = request.get("text")
+        if not isinstance(text, str):
+            return {"ok": False, "error": "text is required"}
+        data = text.encode("utf-8")
+        if len(data) > CTL_TEXT_MAX:
+            return {"ok": False, "error": "clipboard text is larger than %d bytes" % CTL_TEXT_MAX}
+        targets = [("clipboard", "UTF8_STRING", data), ("primary", "UTF8_STRING", data)]
+    for selection, mime, payload in targets:
+        # xclip keeps serving the selection in the background; its output
+        # must not hold the docker exec pipe open.
+        try:
+            proc = subprocess.Popen(
+                ["xclip", "-selection", selection, "-t", mime, "-i"],
+                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                start_new_session=True,
+            )
+            proc.communicate(payload, timeout=10)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {"ok": False, "error": "xclip failed: %s" % exc}
+        if proc.returncode != 0:
+            return {"ok": False, "error": "xclip failed"}
+    return {"ok": True, "bytes": len(data)}
+
+
+def ctl_xprop(wid, *names):
+    code, out, _ = ctl_run(["xprop", "-id", str(wid)] + list(names), timeout=3)
+    return out.decode("utf-8", "replace") if code == 0 else ""
+
+
+def ctl_window_info(wid, active):
+    info = {"id": "0x%08x" % wid, "active": wid == active}
+    code, out, _ = ctl_run(["xdotool", "getwindowname", str(wid)], timeout=3)
+    info["title"] = out.decode("utf-8", "replace").strip() if code == 0 else ""
+    code, out, _ = ctl_run(["xdotool", "getwindowgeometry", "--shell", str(wid)], timeout=3)
+    geo = {}
+    for line in out.decode().splitlines():
+        if "=" in line:
+            key, value = line.split("=", 1)
+            if value.strip().lstrip("-").isdigit():
+                geo[key.strip()] = int(value)
+    info["x"], info["y"] = geo.get("X", 0), geo.get("Y", 0)
+    info["width"], info["height"] = geo.get("WIDTH", 0), geo.get("HEIGHT", 0)
+    props = ctl_xprop(wid, "WM_CLASS", "_NET_WM_PID", "_NET_WM_DESKTOP", "_NET_WM_STATE")
+    m = re.search(r'WM_CLASS\(STRING\) = "([^"]*)", "([^"]*)"', props)
+    info["class"] = m.group(2) if m else ""
+    m = re.search(r"_NET_WM_PID\(CARDINAL\) = (\d+)", props)
+    info["pid"] = int(m.group(1)) if m else 0
+    m = re.search(r"_NET_WM_DESKTOP\(CARDINAL\) = (\d+)", props)
+    info["desktop"] = int(m.group(1)) if m else 0
+    state = props.split("_NET_WM_STATE(ATOM) = ", 1)[1].split("\n", 1)[0] if "_NET_WM_STATE(ATOM) = " in props else ""
+    info["minimized"] = "_NET_WM_STATE_HIDDEN" in state
+    info["maximized"] = "_NET_WM_STATE_MAXIMIZED_VERT" in state and "_NET_WM_STATE_MAXIMIZED_HORZ" in state
+    return info
+
+
+def ctl_client_windows():
+    """Managed top-level windows in stacking order, from the window manager."""
+    code, out, _ = ctl_run(["xprop", "-root", "_NET_CLIENT_LIST"], timeout=3)
+    ids = [int(x, 16) for x in re.findall(r"0x[0-9a-fA-F]+", out.decode())] if code == 0 else []
+    code, out, _ = ctl_run(["xprop", "-root", "_NET_ACTIVE_WINDOW"], timeout=3)
+    m = re.search(r"0x[0-9a-fA-F]+", out.decode()) if code == 0 else None
+    return ids, int(m.group(0), 16) if m else 0
+
+
+def ctl_windows(request):
+    ids, active = ctl_client_windows()
+    windows = []
+    for wid in ids:
+        info = ctl_window_info(wid, active)
+        # The desktop background and panels are not windows to work with.
+        if info["class"].lower() in ("xfdesktop", "xfce4-panel", "wrapper-2.0") and not request.get("all"):
+            continue
+        windows.append(info)
+    return {"ok": True, "windows": windows, "wmctrl": shutil.which("wmctrl") is not None}
+
+
+def ctl_find_window(request):
+    raw = str(request.get("id") or "").strip()
+    ids, active = ctl_client_windows()
+    if raw:
+        try:
+            wid = int(raw, 16) if raw.lower().startswith("0x") else int(raw)
+        except ValueError:
+            raise LookupError("window id %r is invalid" % raw)
+        if wid not in ids:
+            raise LookupError("window %s is not open" % raw)
+        return wid
+    title = str(request.get("title") or "").strip().lower()
+    if not title:
+        if active:
+            return active
+        raise LookupError("give a window id or title")
+    for wid in reversed(ids):
+        info = ctl_window_info(wid, active)
+        if title in info["title"].lower() or title == info["class"].lower():
+            return wid
+    raise LookupError("no window matches %r" % request.get("title"))
+
+
+def ctl_window(request):
+    op = str(request.get("do") or "").strip()
+    wid = ctl_find_window(request)
+    wm = shutil.which("wmctrl") is not None
+    hexid = "0x%08x" % wid
+    steps = []
+    if op in ("activate", "focus"):
+        steps = [["xdotool", "windowactivate", "--sync", str(wid)]]
+    elif op == "minimize":
+        steps = [["xdotool", "windowminimize", str(wid)]]
+    elif op in ("maximize", "restore"):
+        action = "add" if op == "maximize" else "remove"
+        if wm:
+            steps = [["wmctrl", "-i", "-r", hexid, "-b", action + ",maximized_vert,maximized_horz"]]
+            if op == "restore":
+                steps.append(["wmctrl", "-i", "-a", hexid])
+        elif op == "restore":
+            steps = [["xdotool", "windowmap", str(wid)], ["xdotool", "windowactivate", str(wid)]]
+        else:
+            # Without wmctrl: fill the work area the panel leaves free.
+            code, out, _ = ctl_run(["xprop", "-root", "_NET_WORKAREA"], timeout=3)
+            nums = [int(n) for n in re.findall(r"\d+", out.decode().split("=", 1)[-1])][:4] if code == 0 else []
+            if len(nums) < 4:
+                nums = [0, 0] + ctl_screen_size()
+            steps = [["xdotool", "windowactivate", str(wid)], ["xdotool", "windowmove", str(wid), str(nums[0]), str(nums[1])],
+                     ["xdotool", "windowsize", str(wid), str(nums[2]), str(nums[3])]]
+    elif op in ("move", "resize", "move_resize"):
+        if op in ("move", "move_resize"):
+            steps.append(["xdotool", "windowmove", str(wid), str(int(request.get("x", 0))), str(int(request.get("y", 0)))])
+        if op in ("resize", "move_resize"):
+            w, h = int(request.get("width", 0)), int(request.get("height", 0))
+            if w < 50 or h < 50:
+                return {"ok": False, "error": "width and height must be at least 50"}
+            if wm:
+                ctl_run(["wmctrl", "-i", "-r", hexid, "-b", "remove,maximized_vert,maximized_horz"])
+            steps.append(["xdotool", "windowsize", str(wid), str(w), str(h)])
+    elif op == "close":
+        steps = [["wmctrl", "-i", "-c", hexid]] if wm else [["xdotool", "windowclose", str(wid)]]
+    else:
+        return {"ok": False, "error": "window action must be activate, maximize, minimize, restore, move, resize, move_resize, or close"}
+    for argv in steps:
+        code, _, err = ctl_run(argv)
+        if code != 0:
+            return {"ok": False, "error": "%s failed: %s" % (argv[0], err.decode("utf-8", "replace").strip()[:200])}
+    time.sleep(0.2)
+    ids, active = ctl_client_windows()
+    window = ctl_window_info(wid, active) if wid in ids else {"id": hexid, "closed": True}
+    return {"ok": True, "do": op, "window": window, "method": "wmctrl" if wm and steps and steps[0][0] == "wmctrl" else "xdotool"}
+
+
+def ctl_screen_size():
+    code, out, _ = ctl_run(["xdotool", "getdisplaygeometry"], timeout=3)
+    try:
+        w, h = out.decode().split()[:2]
+        return [int(w), int(h)]
+    except ValueError:
+        return [0, 0]
+
+
+def ctl_screen(request):
+    w, h = ctl_screen_size()
+    code, out, _ = ctl_run(["xdotool", "getmouselocation", "--shell"], timeout=3)
+    pos = dict(line.split("=", 1) for line in out.decode().splitlines() if "=" in line)
+    return {"ok": True, "width": w, "height": h, "scale": 1.0, "display": os.environ.get("DISPLAY", ""),
+            "cursor": [int(pos.get("X", 0)), int(pos.get("Y", 0))] if pos else None}
+
+
+def ctl_screen_hash():
+    code, out, _ = ctl_run(["sh", "-c", "import -window root -resize 160x100! -colorspace gray gray:- 2>/dev/null"], timeout=10)
+    return out if code == 0 else b""
+
+
+def ctl_wait(request):
+    timeout = max(0.1, min(float(request.get("timeout") or 10), CTL_WAIT_MAX))
+    what = str(request.get("for") or "change")
+    deadline = time.time() + timeout
+    if what == "window":
+        title = str(request.get("title") or "").strip().lower()
+        if not title:
+            return {"ok": False, "error": "title is required"}
+        gone = bool(request.get("gone"))
+        while True:
+            ids, active = ctl_client_windows()
+            match = None
+            for wid in ids:
+                info = ctl_window_info(wid, active)
+                if title in info["title"].lower() or title == info["class"].lower():
+                    match = info
+                    break
+            if (match is None) == gone:
+                return {"ok": True, "found": not gone, "window": match, "waited": round(timeout - (deadline - time.time()), 2)}
+            if time.time() >= deadline:
+                return {"ok": False, "timeout": True, "error": "window %r did not %s within %.1fs" % (request.get("title"), "close" if gone else "appear", timeout)}
+            time.sleep(0.3)
+    if what != "change":
+        return {"ok": False, "error": "wait for must be change or window"}
+    threshold = max(0.0001, min(float(request.get("threshold") or 0.005), 1.0))
+    first = ctl_screen_hash()
+    if not first:
+        return {"ok": False, "error": "cannot read the screen"}
+    while time.time() < deadline:
+        time.sleep(0.4)
+        now = ctl_screen_hash()
+        if len(now) == len(first):
+            changed = sum(1 for a, b in zip(first, now) if abs(a - b) > 24) / float(len(first))
+            if changed >= threshold:
+                return {"ok": True, "changed": round(changed, 4), "waited": round(timeout - (deadline - time.time()), 2)}
+    return {"ok": False, "timeout": True, "error": "the screen did not change within %.1fs" % timeout}
+
+
+def ctl_status(request):
+    """Whether a person has the desktop open in noVNC right now."""
+    viewers = 0
+    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+        try:
+            lines = Path(table).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for line in lines:
+            parts = line.split()
+            if len(parts) > 3 and parts[3] == "01" and int(parts[1].rsplit(":", 1)[1], 16) == VNC_GATE_PORT:
+                viewers += 1
+    return {"ok": True, "viewers": viewers, "screen": ctl_screen_size()}
+
+
+CTL_OPS = {
+    "clipboard_get": ctl_clipboard_get,
+    "clipboard_set": ctl_clipboard_set,
+    "windows": ctl_windows,
+    "window": ctl_window,
+    "screen": ctl_screen,
+    "wait": ctl_wait,
+    "status": ctl_status,
+}
+
+
+def run_ctl(raw):
+    try:
+        request = json.loads(base64.b64decode(raw.encode("ascii"), validate=True).decode("utf-8"))
+        if not isinstance(request, dict):
+            raise ValueError("request is not an object")
+    except (ValueError, UnicodeError) as exc:
+        print(json.dumps({"ok": False, "error": "bad request: %s" % exc}))
+        return 2
+    op = str(request.get("op") or "")
+    if op in ("a11y_probe", "a11y_act"):
+        request["op"] = "act" if op == "a11y_act" else "probe"
+        return run_a11y(base64.b64encode(json.dumps(request).encode()).decode())
+    handler = CTL_OPS.get(op)
+    if handler is None:
+        print(json.dumps({"ok": False, "error": "unknown op %r" % op}))
+        return 2
+    a11y_prepare_env(a11y_display())
+    try:
+        result = handler(request)
+    except (LookupError, ValueError, TypeError) as exc:
+        result = {"ok": False, "error": str(exc)}
+    print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    return 0 if result.get("ok") else 1
 
 
 if __name__ == "__main__":

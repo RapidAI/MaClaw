@@ -552,6 +552,73 @@ curl -fsS -X POST -H "Authorization: Bearer $MACLAW_DESKTOP_API_TOKEN" -H 'Conte
 `MACLAW_DESKTOP_API_TOKEN` 都存在时走 Hub,操作 noVNC 那个人的云桌面。Hub 机器人缺任一变量时工具直接失败,返回 `this bot's desktop is the person's cloud desktop, and the connection is not configured`,不会改去截本机 `maclaw-gui`。没有绑定云桌面的调用仍可以走本机容器。图片附给支持视觉的模型
 (过大时转 JPEG),对话历史里只有尺寸说明,像素坐标与 `app_run` 点击坐标一致。
 
+### 7.1 截图参数(缩放 / 局部放大 / 格式 / 光标 / 标号)
+
+三层接口都接受同一组可选参数(GET 用 query,POST 用 JSON 字段;Hub 同 JSON 字段)。全部不填时与旧接口逐字节一致(全屏 PNG)。
+
+| 参数 | 说明 |
+|---|---|
+| `max_width` / `max_height` | 等比缩小到不超过该宽/高(只缩不放,16..8192) |
+| `region` | 局部放大:`{"x":..,"y":..,"width":..,"height":..}`(屏幕像素;GET 写 `region=x,y,w,h`)。先裁剪再按 max_* 缩放 |
+| `format` / `quality` | `png`(默认)/`jpeg`/`webp`;`quality` 1..100,默认 80 |
+| `cursor` | 在图上画鼠标指针(Xvfb 截图本身不含指针) |
+| `marks` | 画出最近一次 AT-SPI `app_probe` 的编号框(set-of-marks) |
+
+desktopd 在响应头里返回几何信息:`X-Desktop-Screen-Size: 1280x800`、`X-Desktop-Image-Size: 1024x640`、
+`X-Desktop-Shot-Region: 0,0,1280,800`、`X-Desktop-Shot-Scale: 0.800000`(图像像素/屏幕像素)、`X-Desktop-Cursor: x,y`;
+Content-Type 随格式变化。Hub JSON 增加 `screen_width/screen_height/image_width/image_height/scale/region/cursor`。
+屏幕像素 = region 原点 + 图像像素 / scale。处理在容器内用 ImageMagick 完成(WebP 需要它)。
+
+Agent(MaClawSrv `desktop` 工具)记住每个用户最近一次**全屏**截图的几何:之后 `app_run`/`computer` 里的坐标都按该截图像素换算回屏幕像素;
+`zoom`/`region` 截图不改变坐标系;输入后的自动截图沿用上次的缩放/格式参数。
+
+### 7.2 桌面控制 API(剪贴板 / 窗口 / 屏幕 / 等待 / 无障碍树)
+
+`POST /v1/desktops/ctl`(desktopd)与 `POST /api/v1/desktop-services/ctl`(Hub,同一 desktop API token),body:
+`{"tenant_id":..,"user_id":..,"display":":20","request":{"op":...}}`,返回 supervisor 输出的 JSON(`"ok":false` 时带 `error`,HTTP 仍为 200;未知 op 为 400)。
+实现在容器内 `python3 /desktop_supervisor.py ctl <base64 json>`,随 supervisor 一起 `docker cp` 更新,旧容器下次打开即可用。
+
+| op | 参数 | 说明 |
+|---|---|---|
+| `clipboard_get` | `type`: text/image | 读剪贴板(UTF-8 文本,或 PNG base64) |
+| `clipboard_set` | `text` 或 `image_base64`(PNG) | 写 CLIPBOARD(文本同时写 PRIMARY);用于粘贴长文本/中文,绕过输入法 |
+| `windows` | `all` | 窗口列表:id、title、class、pid、x/y/width/height、desktop、active/maximized/minimized |
+| `window` | `id` 或 `title`,`do`: activate/maximize/minimize/restore/move/resize/move_resize/close,`x,y,width,height` | 有 wmctrl 时用 wmctrl(新镜像已装),旧容器回退 xdotool/xprop(最大化改为铺满工作区) |
+| `screen` | | 分辨率、指针位置 |
+| `wait` | `for`: change/window,`title`,`gone`,`timeout`(≤60s),`threshold` | 等屏幕变化或窗口出现/关闭 |
+| `status` | | 当前 noVNC 连接数(`viewers`),MCP 用来判断有人在接管 |
+| `a11y_probe` | `window`: focused/all/标题片段,`max_nodes`(≤400,默认 120),`max_depth`,`interactive_only` | AT-SPI 元素树:id、role、name、states、bounds(屏幕像素);只列 showing+visible 且有尺寸的元素,可交互的优先;浏览器不在内(用 CDP) |
+| `a11y_act` | `id`,`do`: click/focus/set_text/locate,`text` | 按最近一次 probe 的 id 操作;id 对应的元素变了会报错要求重新 probe;click 默认返回中心点由 xdotool 真点击,focus 用 grabFocus,set_text 用 EditableText(密码框拒绝) |
+
+### 7.3 Agent 动作(MaClawSrv `desktop` 工具)
+
+- `app_run` 步骤新增:`right_click`/`double_click`/`triple_click`/`middle_click`、`click{button,clicks,modifiers}`、`move`、`mouse_down`/`mouse_up`、
+  `drag{from_x,from_y,to_x,to_y}`、`scroll{x,y,direction,amount,modifiers}`、`cursor_position`、`wait{duration}`、`hold_key{key,duration}`、
+  `key{key,repeat}`、`paste{text}`(剪贴板 + Ctrl+V,终端里 Ctrl+Shift+V)、按元素 id 的 `click/focus/set_text`、`screenshot`、`zoom{region}`。
+  只用老四种步骤且未使用缩放截图时走原路径,行为不变。
+- `action=computer`:`actions` 数组,兼容 Anthropic computer-use(`left_click`、`left_click_drag`、`scroll` 的 `scroll_direction/scroll_amount`、`key`/`hold_key` 的 `text`、`zoom` 的 `region` 等;
+  `{name:"computer",input:{...}}` 也可)与 OpenAI CUA(`{type:click|double_click|scroll|type|keypress|wait|screenshot|move|drag}`)。按顺序执行,遇到第一个失败即停,
+  逐步返回结果,后续步骤标为 `not executed`;有输入时最后附一张新截图。
+- `app_probe`(可 `marks:true` 附带编号截图)、`clipboard_get`/`clipboard_set`、`window_list`/`window`、`screen_info`、`wait`。
+- 密码框保护、用户接管时让出(每步之前再检查)保持不变;`paste` 的 Ctrl+V 与 `type` 走同一个密码框检查。
+- 共享实现在 `corelib/desktop/computeruse`(MCP 服务也用)。
+
+### 7.4 减少干扰(镜像与 supervisor 安装)
+
+`install_browser_integration`(镜像构建时与每次 ensure 时都执行,幂等):
+- Chromium 托管策略 `/etc/chromium/policies/managed/maclaw-agent.json`:`TranslateEnabled=false`、`PromptForDownloadLocation=false`、
+  `DownloadDirectory=${home}/Downloads`、`PasswordManagerEnabled=false`、`AutofillAddressEnabled=false`、`AutofillCreditCardEnabled=false`、
+  `DefaultNotificationsSetting=2`、`DefaultBrowserSettingEnabled=false`、`PromotionalTabsEnabled=false`(另有 `maclaw-browser-signin.json`)。
+- xfce4-notifyd:用户 autostart 覆盖文件 `Hidden=true`(包文件不动),并在 `/etc/xdg/xfce4/xfconf/.../xfce4-notifyd.xml` 默认开启勿扰。
+- 新容器默认分辨率 1280x800:镜像 `ENV MACLAW_DESKTOP_GEOMETRY=1280x800x24`(容器级 env 仍可覆盖)。supervisor 内置回退值仍为 1440x900,所以旧镜像创建的现有容器拿到新 supervisor 后分辨率不变。
+- 会话环境去掉 `NO_AT_BRIDGE`,设置 `QT_ACCESSIBILITY=1`(GTK 程序默认就暴露 AT-SPI)。
+- `--test-type`:见下文结论,未启用。
+- xfwm4 没有"新窗口一律最大化"的设置,未做;Chromium 仍用 `--start-maximized`,其它窗口可用 `window maximize`。
+
+### 7.5 MCP 服务
+
+见 [desktop-mcp.md](desktop-mcp.md)。
+
 ## 8. 验证与冒烟
 
 部署后(`rollout_desktop_gui2.sh verify` 会做前 3 项):

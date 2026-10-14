@@ -65,7 +65,7 @@ RUN set -eux; \
       fcitx5 fcitx5-chinese-addons fcitx5-frontend-gtk3 fcitx5-frontend-gtk4 fcitx5-frontend-qt5 \
       sudo ca-certificates curl wget gnupg git unzip xz-utils less nano procps psmisc iproute2 \
       xauth x11-utils x11-xserver-utils xclip xsel libfuse2 \
-      scrot imagemagick at-spi2-core python3-pyatspi; \
+      scrot imagemagick at-spi2-core python3-pyatspi wmctrl; \
     sed -i 's/^# *\(zh_CN.UTF-8\)/\1/; s/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen; \
     locale-gen; \
     ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime; echo Asia/Shanghai > /etc/timezone; \
@@ -102,9 +102,21 @@ RUN python3 /desktop_supervisor.py apt-mirror --default \
 # (same profile and login) instead of starting a root Chromium that exits.
 # The supervisor writes the same files again on every ensure, so containers
 # made from an older image pick them up with a supervisor update.
+# It also writes the agent browser policies (no translate/password/autofill
+# bubbles, downloads to ~/Downloads without a prompt, notifications blocked)
+# and keeps xfce4-notifyd popups off (autostart hidden, do-not-disturb).
 RUN python3 /desktop_supervisor.py install-browser \
  && test -x /usr/bin/maclaw-browser && test -f /etc/chromium.d/zz-maclaw-shared-browser \
- && grep -qx 'WebBrowser=chromium' /etc/xdg/xfce4/helpers.rc
+ && grep -qx 'WebBrowser=chromium' /etc/xdg/xfce4/helpers.rc \
+ && test -f /etc/chromium/policies/managed/maclaw-agent.json \
+ && grep -qx 'Hidden=true' /home/desktop/.config/autostart/xfce4-notifyd.desktop \
+ && python3 -c 'import pyatspi'
+# Programs other than the browser expose their UI tree over AT-SPI
+# (desktop_supervisor.py a11y). Qt apps do so only when asked.
+ENV QT_ACCESSIBILITY=1 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1
+# New desktops: 1280x800 (the size computer-use models are tuned for). A
+# container keeps the value it was created with; desktopd can override it.
+ENV MACLAW_DESKTOP_GEOMETRY=1280x800x24
 USER root
 VOLUME ["/desktops"]
 EXPOSE 6080 19020

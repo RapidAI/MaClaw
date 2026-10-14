@@ -12,6 +12,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
 	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
 	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
@@ -695,24 +696,65 @@ func PostDesktopScreenshotHandler(pool *desktoppool.Pool) http.HandlerFunc {
 			UserID   string `json:"user_id"`
 			Display  string `json:"display"`
 			Name     string `json:"name"`
+			desktop.ShotOptions
 		}
 		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
 			return
 		}
-		png, saved, err := pool.Screenshot(r.Context(), in.TenantID, in.UserID, in.Display, in.Name)
+		shot, saved, err := pool.ScreenshotWith(r.Context(), in.TenantID, in.UserID, in.Display, in.Name, in.ShotOptions)
 		if err != nil {
 			writeDesktopError(w, err)
 			return
 		}
 		body := map[string]any{
-			"mime":         "image/png",
-			"image_base64": base64.StdEncoding.EncodeToString(png),
-			"bytes":        len(png),
+			"mime":          shot.MIME,
+			"image_base64":  base64.StdEncoding.EncodeToString(shot.Data),
+			"bytes":         len(shot.Data),
+			"screen_width":  shot.ScreenWidth,
+			"screen_height": shot.ScreenHeight,
+			"image_width":   shot.ImageWidth,
+			"image_height":  shot.ImageHeight,
+			"scale":         shot.Scale,
+			"region":        shot.Region,
+		}
+		if shot.HasCursor {
+			body["cursor"] = []int{shot.CursorX, shot.CursorY}
 		}
 		if saved != "" {
 			body["saved_path"] = saved
 		}
 		writeJSON(w, http.StatusOK, body)
+	}
+}
+
+// PostDesktopCtlHandler runs one desktop control request (clipboard,
+// windows, screen info, wait, status, accessibility tree) for MaClawSrv's
+// desktop tool and the desktop MCP server. Same desktop API token as /app.
+func PostDesktopCtlHandler(pool *desktoppool.Pool) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if pool == nil {
+			writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "desktop service store is unavailable")
+			return
+		}
+		if !authorizeDesktopAPI(w, r) {
+			return
+		}
+		var in struct {
+			TenantID string         `json:"tenant_id"`
+			UserID   string         `json:"user_id"`
+			Display  string         `json:"display"`
+			Request  map[string]any `json:"request"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 256<<10)).Decode(&in); err != nil || in.Request == nil {
+			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop control request")
+			return
+		}
+		out, err := pool.Ctl(r.Context(), in.TenantID, in.UserID, in.Display, in.Request)
+		if err != nil {
+			writeDesktopError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, out)
 	}
 }

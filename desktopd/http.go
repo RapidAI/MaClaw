@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -250,8 +251,11 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		}
 		writeJSON(w, http.StatusOK, map[string]string{"output": text})
 	})
-	// screenshot returns the user's display as image/png. GET takes query
-	// parameters, POST the same JSON fields as /v1/desktops/app.
+	// screenshot returns the user's display as an image. GET takes query
+	// parameters, POST the same JSON fields as /v1/desktops/app, plus the
+	// optional desktop.ShotOptions fields (max_width, max_height, region,
+	// format, quality, cursor, marks). X-Desktop-* headers carry the screen
+	// size, image size, region, scale and pointer.
 	screenshot := func(w http.ResponseWriter, r *http.Request) {
 		if !authOK(r) {
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
@@ -262,27 +266,65 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 			UserID   string `json:"user_id"`
 			Display  string `json:"display"`
 			Name     string `json:"name"`
+			desktop.ShotOptions
 		}
 		if r.Method == http.MethodGet {
 			query := r.URL.Query()
 			in.TenantID, in.UserID, in.Display = query.Get("tenant_id"), query.Get("user_id"), query.Get("display")
+			opts, err := shotOptionsFromQuery(query)
+			if err != nil {
+				writeErr(w, http.StatusBadRequest, err.Error())
+				return
+			}
+			in.ShotOptions = opts
 		} else if !decodeBody(w, r, &in) {
 			return
 		}
-		png, saved, err := svc.CaptureScreenshot(r.Context(), in.TenantID, in.UserID, in.Display, in.Name)
+		shot, saved, err := svc.CaptureShot(r.Context(), in.TenantID, in.UserID, in.Display, in.Name, in.ShotOptions)
 		if err != nil {
 			writeServiceErr(w, err)
 			return
 		}
-		w.Header().Set("Content-Type", "image/png")
-		w.Header().Set("Content-Length", strconv.Itoa(len(png)))
+		w.Header().Set("Content-Type", shot.MIME)
+		w.Header().Set("Content-Length", strconv.Itoa(len(shot.Data)))
 		w.Header().Set("Cache-Control", "no-store")
+		for key, value := range desktop.ShotHeaderValues(shot) {
+			w.Header().Set(key, value)
+		}
 		if saved != "" {
 			w.Header().Set("X-Desktop-Saved-Path", saved)
 		}
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(png)
+		_, _ = w.Write(shot.Data)
 	}
+	// ctl runs one control request: {"tenant_id","user_id","display",
+	// "request":{"op":...}}. The answer is the supervisor's JSON object;
+	// "ok":false is a 200 with the reason, a bad request is a 400.
+	mux.HandleFunc("POST /v1/desktops/ctl", func(w http.ResponseWriter, r *http.Request) {
+		if !authOK(r) {
+			writeErr(w, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		var in struct {
+			TenantID string         `json:"tenant_id"`
+			UserID   string         `json:"user_id"`
+			Display  string         `json:"display"`
+			Request  map[string]any `json:"request"`
+		}
+		if !decodeBody(w, r, &in) {
+			return
+		}
+		if in.Request == nil {
+			writeErr(w, http.StatusBadRequest, "request is required")
+			return
+		}
+		result, err := svc.Ctl(r.Context(), in.TenantID, in.UserID, in.Display, in.Request)
+		if err != nil {
+			writeServiceErr(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, result)
+	})
 	mux.HandleFunc("GET /v1/desktops/screenshot", screenshot)
 	mux.HandleFunc("POST /v1/desktops/screenshot", screenshot)
 	mux.HandleFunc("POST /v1/desktops/stop", func(w http.ResponseWriter, r *http.Request) {
@@ -367,4 +409,41 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(data)
+}
+
+// shotOptionsFromQuery reads screenshot options from GET parameters:
+// max_width, max_height, format, quality, cursor, marks, and region=x,y,w,h.
+func shotOptionsFromQuery(query url.Values) (desktop.ShotOptions, error) {
+	var opts desktop.ShotOptions
+	number := func(key string) (int, error) {
+		raw := strings.TrimSpace(query.Get(key))
+		if raw == "" {
+			return 0, nil
+		}
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return 0, fmt.Errorf("%s must be a number", key)
+		}
+		return n, nil
+	}
+	var err error
+	if opts.MaxWidth, err = number("max_width"); err != nil {
+		return opts, err
+	}
+	if opts.MaxHeight, err = number("max_height"); err != nil {
+		return opts, err
+	}
+	if opts.Quality, err = number("quality"); err != nil {
+		return opts, err
+	}
+	opts.Format = query.Get("format")
+	opts.Cursor = query.Get("cursor") == "1" || query.Get("cursor") == "true"
+	opts.Marks = query.Get("marks") == "1" || query.Get("marks") == "true"
+	if raw := strings.TrimSpace(query.Get("region")); raw != "" {
+		r := &opts.Region
+		if _, err := fmt.Sscanf(raw, "%d,%d,%d,%d", &r.X, &r.Y, &r.Width, &r.Height); err != nil {
+			return opts, fmt.Errorf("region must be x,y,width,height")
+		}
+	}
+	return opts, nil
 }

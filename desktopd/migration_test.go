@@ -430,3 +430,74 @@ func TestMissingNewImageLeavesTheOldDesktopRunning(t *testing.T) {
 		}
 	}
 }
+
+func TestScreenshotOptionsReturnGeometryHeaders(t *testing.T) {
+	want := testPNG(t)
+	var script string
+	svc := &Service{Run: func(_ context.Context, args ...string) (string, error) {
+		script = args[len(args)-1]
+		return "MACLAW_SHOT 1280 800 0 0 1280 800 1024 640 10 20\n" + base64.StdEncoding.EncodeToString(want), nil
+	}}
+	srv := httptest.NewServer(Handler(svc, "primary-token", "", nil, nil))
+	defer srv.Close()
+	req, _ := http.NewRequest(http.MethodGet, srv.URL+"/v1/desktops/screenshot?tenant_id=tenant&user_id=alice&max_width=1024&cursor=1", nil)
+	req.Header.Set("Authorization", "Bearer primary-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK || !bytes.Equal(body, want) || !strings.Contains(script, `-resize "1024x>"`) {
+		t.Fatalf("status=%d script=%s", resp.StatusCode, script)
+	}
+	if resp.Header.Get("X-Desktop-Screen-Size") != "1280x800" || resp.Header.Get("X-Desktop-Shot-Scale") != "0.800000" || resp.Header.Get("X-Desktop-Cursor") != "10,20" {
+		t.Fatalf("headers=%v", resp.Header)
+	}
+	req, _ = http.NewRequest(http.MethodPost, srv.URL+"/v1/desktops/screenshot", strings.NewReader(`{"tenant_id":"tenant","user_id":"alice","format":"gif"}`))
+	req.Header.Set("Authorization", "Bearer primary-token")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("bad format status=%d", resp.StatusCode)
+	}
+}
+
+func TestCtlEndpointRunsSupervisorRequest(t *testing.T) {
+	var got []string
+	svc := &Service{Run: func(_ context.Context, args ...string) (string, error) {
+		got = args
+		return `{"ok":true,"text":"你好"}`, nil
+	}}
+	srv := httptest.NewServer(Handler(svc, "primary-token", "", nil, nil))
+	defer srv.Close()
+	post := func(body string) (*http.Response, string) {
+		req, _ := http.NewRequest(http.MethodPost, srv.URL+"/v1/desktops/ctl", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer primary-token")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		data, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		return resp, string(data)
+	}
+	resp, body := post(`{"tenant_id":"tenant","user_id":"alice","request":{"op":"clipboard_get"}}`)
+	if resp.StatusCode != http.StatusOK || !strings.Contains(body, "你好") {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
+	}
+	joined := strings.Join(got, " ")
+	if !strings.Contains(joined, "DISPLAY=:20") || !strings.Contains(joined, "/desktop_supervisor.py ctl") {
+		t.Fatalf("args=%v", got)
+	}
+	if resp, _ := post(`{"tenant_id":"tenant","user_id":"alice","request":{"op":"rm -rf"}}`); resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown op status=%d", resp.StatusCode)
+	}
+	svc.Run = func(context.Context, ...string) (string, error) { return "", nil }
+	if resp, _ := post(`{"tenant_id":"tenant","user_id":"alice","request":{"op":"windows"}}`); resp.StatusCode == http.StatusOK {
+		t.Fatal("old supervisor answer was accepted")
+	}
+}

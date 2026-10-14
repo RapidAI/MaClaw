@@ -656,9 +656,22 @@ var pngSignature = []byte("\x89PNG\r\n\x1a\n")
 // Screenshot returns a PNG of the user's desktop from the Docker service that
 // owns the user. An empty display means the service's default (:20).
 func (p *Pool) Screenshot(ctx context.Context, tenantID, userID, display, name string) ([]byte, string, error) {
+	shot, saved, err := p.ScreenshotWith(ctx, tenantID, userID, display, name, desktop.ShotOptions{})
+	return shot.Data, saved, err
+}
+
+// ScreenshotWith is Screenshot with scaling, a zoom region, another format,
+// the pointer, or accessibility marks. The Shot carries the screen size and
+// scale the service reported; an older service without those headers can
+// only answer plain options, whose PNG is the full screen.
+func (p *Pool) ScreenshotWith(ctx context.Context, tenantID, userID, display, name string, opts desktop.ShotOptions) (desktop.Shot, string, error) {
+	opts, err := opts.Normalize()
+	if err != nil {
+		return desktop.Shot{}, "", fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
+	}
 	server, err := p.resolve(ctx, tenantID, userID)
 	if err != nil {
-		return nil, "", err
+		return desktop.Shot{}, "", err
 	}
 	body := map[string]any{
 		"tenant_id": store.NormalizeTenantID(tenantID),
@@ -669,39 +682,80 @@ func (p *Pool) Screenshot(ctx context.Context, tenantID, userID, display, name s
 	if name != "" {
 		body["name"] = name
 	}
+	if !opts.Plain() {
+		body["max_width"], body["max_height"], body["format"] = opts.MaxWidth, opts.MaxHeight, opts.Format
+		body["quality"], body["cursor"], body["marks"] = opts.Quality, opts.Cursor, opts.Marks
+		if !opts.Region.Empty() {
+			body["region"] = opts.Region
+		}
+	}
 	raw, err := json.Marshal(body)
 	if err != nil {
-		return nil, "", err
+		return desktop.Shot{}, "", err
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(server.BaseURL, "/")+"/v1/desktops/screenshot", bytes.NewReader(raw))
 	if err != nil {
-		return nil, "", fmt.Errorf("%w: %s", ErrService, err.Error())
+		return desktop.Shot{}, "", fmt.Errorf("%w: %s", ErrService, err.Error())
 	}
 	req.Header.Set("Authorization", "Bearer "+server.AccessToken)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := p.client().Do(req)
 	if err != nil {
-		return nil, "", fmt.Errorf("%w: %s", ErrService, err.Error())
+		return desktop.Shot{}, "", fmt.Errorf("%w: %s", ErrService, err.Error())
 	}
 	defer resp.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxScreenshotBytes+1))
 	if err != nil {
-		return nil, "", fmt.Errorf("%w: %s", ErrService, err.Error())
+		return desktop.Shot{}, "", fmt.Errorf("%w: %s", ErrService, err.Error())
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		if len(payload) > 1<<20 {
 			payload = payload[:1<<20]
 		}
-		return nil, "", upstream.NewStatusError(ErrService, resp.StatusCode, payload)
+		return desktop.Shot{}, "", upstream.NewStatusError(ErrService, resp.StatusCode, payload)
 	}
-	if len(payload) > maxScreenshotBytes || !bytes.HasPrefix(payload, pngSignature) {
-		return nil, "", fmt.Errorf("%w: screenshot is not a PNG image", ErrService)
+	if len(payload) > maxScreenshotBytes || desktop.SniffImageMIME(payload) != opts.MIME() {
+		return desktop.Shot{}, "", fmt.Errorf("%w: screenshot is not a %s image", ErrService, opts.MIME())
+	}
+	if opts.Plain() && !bytes.HasPrefix(payload, pngSignature) {
+		return desktop.Shot{}, "", fmt.Errorf("%w: screenshot is not a PNG image", ErrService)
+	}
+	shot, err := desktop.ParseShotHeaders(resp.Header.Get, payload)
+	if err != nil {
+		return desktop.Shot{}, "", fmt.Errorf("%w: %s", ErrService, err.Error())
+	}
+	if !opts.Plain() && resp.Header.Get(desktop.HeaderShotScreen) == "" {
+		return desktop.Shot{}, "", fmt.Errorf("%w: this desktop service does not support screenshot options yet", ErrService)
 	}
 	saved := strings.TrimSpace(resp.Header.Get("X-Desktop-Saved-Path"))
 	if name == "" || saved != desktop.DesktopShotPath(name) {
 		saved = ""
 	}
-	return payload, saved, nil
+	return shot, saved, nil
+}
+
+// Ctl runs one desktop control request (clipboard, windows, screen, wait,
+// status, accessibility) on the Docker service that owns the user.
+func (p *Pool) Ctl(ctx context.Context, tenantID, userID, display string, request map[string]any) (map[string]any, error) {
+	op, _ := request["op"].(string)
+	if !desktop.ValidCtlOp(strings.TrimSpace(op)) {
+		return nil, fmt.Errorf("%w: desktop control op must be one of %s", ErrInvalidInput, strings.Join(desktop.CtlOps, ", "))
+	}
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+		"display":   strings.TrimSpace(display),
+		"request":   request,
+	}
+	var out map[string]any
+	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops/ctl", body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (p *Pool) resolve(ctx context.Context, tenantID, userID string) (Server, error) {

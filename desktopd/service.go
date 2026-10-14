@@ -508,20 +508,32 @@ func (s *Service) Screenshot(ctx context.Context, tenantID, userID, display stri
 // also copies that file to /home/desktop/Desktop before the temp capture is removed.
 // The returned path is set only after the copy command exits 0.
 func (s *Service) CaptureScreenshot(ctx context.Context, tenantID, userID, display, name string) ([]byte, string, error) {
-	script, err := desktop.ScreenshotScriptFor(name)
+	shot, saved, err := s.CaptureShot(ctx, tenantID, userID, display, name, desktop.ShotOptions{})
+	return shot.Data, saved, err
+}
+
+// CaptureShot is CaptureScreenshot with scaling, a zoom region, another
+// format, the pointer, or accessibility marks. The Shot says how its pixels
+// map onto the screen. Plain options capture exactly like CaptureScreenshot.
+func (s *Service) CaptureShot(ctx context.Context, tenantID, userID, display, name string, opts desktop.ShotOptions) (desktop.Shot, string, error) {
+	opts, err := opts.Normalize()
 	if err != nil {
-		return nil, "", fmt.Errorf("%w: %s", ErrInvalid, err.Error())
+		return desktop.Shot{}, "", fmt.Errorf("%w: %s", ErrInvalid, err.Error())
+	}
+	script, err := desktop.ShotScript(name, opts)
+	if err != nil {
+		return desktop.Shot{}, "", fmt.Errorf("%w: %s", ErrInvalid, err.Error())
 	}
 	spec, err := normalize(Spec{TenantID: tenantID, UserID: userID})
 	if err != nil {
-		return nil, "", err
+		return desktop.Shot{}, "", err
 	}
 	display = strings.TrimSpace(display)
 	if display == "" {
 		display = desktop.DefaultDisplay
 	}
 	if !desktop.ValidDisplay(display) {
-		return nil, "", fmt.Errorf("%w: display is invalid", ErrInvalid)
+		return desktop.Shot{}, "", fmt.Errorf("%w: display is invalid", ErrInvalid)
 	}
 	var out string
 	err = s.withUser(spec.TenantID, spec.UserID, func() error {
@@ -530,13 +542,13 @@ func (s *Service) CaptureScreenshot(ctx context.Context, tenantID, userID, displ
 		return runErr
 	})
 	if err != nil {
-		return nil, "", err
+		return desktop.Shot{}, "", err
 	}
-	data, err := decodeScreenshot(out)
+	shot, err := desktop.DecodeShot(out, opts)
 	if err != nil {
-		return nil, "", err
+		return desktop.Shot{}, "", fmt.Errorf("%w: %s", ErrDocker, err.Error())
 	}
-	return data, desktop.DesktopShotPath(name), nil
+	return shot, desktop.DesktopShotPath(name), nil
 }
 
 func decodeScreenshot(out string) ([]byte, error) {
@@ -956,4 +968,40 @@ func missingObject(err error) bool {
 	}
 	text := strings.ToLower(err.Error())
 	return strings.Contains(text, "no such object") || strings.Contains(text, "no such container") || strings.Contains(text, "no such image")
+}
+
+// Ctl runs one desktop control request (clipboard, windows, screen, wait,
+// status, accessibility) through the supervisor on the user's display. Like
+// App it acts on the container a session already opened.
+func (s *Service) Ctl(ctx context.Context, tenantID, userID, display string, request map[string]any) (map[string]any, error) {
+	spec, err := normalize(Spec{TenantID: tenantID, UserID: userID})
+	if err != nil {
+		return nil, err
+	}
+	display = strings.TrimSpace(display)
+	if display == "" {
+		display = desktop.DefaultDisplay
+	}
+	if !desktop.ValidDisplay(display) {
+		return nil, fmt.Errorf("%w: display is invalid", ErrInvalid)
+	}
+	tail, err := desktop.CtlArgs(request)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrInvalid, strings.TrimPrefix(err.Error(), desktop.ErrInvalid.Error()+": "))
+	}
+	var out string
+	err = s.withUser(spec.TenantID, spec.UserID, func() error {
+		var runErr error
+		command := append([]string{"exec", "-e", "DISPLAY=" + display, containerName(spec.TenantID, spec.UserID)}, tail...)
+		out, runErr = s.docker(ctx, command...)
+		return runErr
+	})
+	if err != nil {
+		return nil, err
+	}
+	result, err := desktop.DecodeCtl(out)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %s", ErrDocker, err.Error())
+	}
+	return result, nil
 }

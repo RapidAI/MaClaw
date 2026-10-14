@@ -84,7 +84,7 @@ root = tmp / "rootfs"
 sup.install_browser_integration(root)
 print(sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()))
 `)
-	if out != "['etc/chromium.d/zz-maclaw-shared-browser', 'etc/chromium/policies/managed/maclaw-browser-signin.json', 'usr/bin/maclaw-browser']" {
+	if out != "['etc/chromium.d/zz-maclaw-shared-browser', 'etc/chromium/policies/managed/maclaw-agent.json', 'etc/chromium/policies/managed/maclaw-browser-signin.json', 'usr/bin/maclaw-browser']" {
 		t.Fatalf("files = %s", out)
 	}
 }
@@ -204,5 +204,69 @@ func TestPanelLauncherRaisesAMinimizedBrowser(t *testing.T) {
 	// open a second window instead of bringing the person's one back.
 	if !strings.Contains(string(raw), `"_NET_CLIENT_LIST_STACKING"`) {
 		t.Fatal("browser windows are not taken from the window manager's client list")
+	}
+}
+
+func TestAgentPoliciesAndQuietNotifications(t *testing.T) {
+	out := runSupervisorPython(t, `
+root = tmp / "rootfs"
+(root / "etc/chromium.d").mkdir(parents=True)
+(root / "etc/xdg/autostart").mkdir(parents=True)
+(root / "etc/xdg/autostart/xfce4-notifyd.desktop").write_text("[Desktop Entry]\\n")
+sup.install_browser_integration(root)
+paths = ("etc/chromium/policies/managed/maclaw-agent.json", "home/desktop/.config/autostart/xfce4-notifyd.desktop", "etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-notifyd.xml")
+first = {p: (root / p).read_text() for p in paths}
+changed = sup.write_if_changed(root / paths[0], first[paths[0]], 0o644)
+policy = json.loads(first[paths[0]])
+print(json.dumps({"changed_again": changed, "policy": policy, "autostart": first[paths[1]], "dnd": first[paths[2]],
+                  "package_kept": (root / "etc/xdg/autostart/xfce4-notifyd.desktop").read_text(), "geometry": sup.desktop_geometry()}))
+`)
+	for _, want := range []string{
+		`"changed_again": false`,
+		`"TranslateEnabled": false`, `"PromptForDownloadLocation": false`, `"DownloadDirectory": "${home}/Downloads"`,
+		`"PasswordManagerEnabled": false`, `"AutofillAddressEnabled": false`, `"AutofillCreditCardEnabled": false`,
+		`"DefaultNotificationsSetting": 2`, `Hidden=true`, `do-not-disturb\" type=\"bool\" value=\"true`,
+		`"package_kept": "[Desktop Entry]`, `"geometry": "1440x900x24"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in %s", want, out)
+		}
+	}
+	if got := runSupervisorPython(t, "print(sup.desktop_geometry())", "MACLAW_DESKTOP_GEOMETRY=1280x800"); got != "1280x800x24" {
+		t.Fatalf("override = %s", got)
+	}
+	raw, err := os.ReadFile("image/Dockerfile.v2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"ENV MACLAW_DESKTOP_GEOMETRY=1280x800x24", "maclaw-agent.json", " wmctrl", "QT_ACCESSIBILITY=1"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("Dockerfile.v2 lacks %q", want)
+		}
+	}
+}
+
+func TestA11yMarksAndCtlRequests(t *testing.T) {
+	out := runSupervisorPython(t, `
+mvg = sup.a11y_marks_mvg([{"id": 1, "window": True, "bounds": [0, 0, 100, 100]}, {"id": 2, "bounds": [10, 20, 30, 40]}])
+print(json.dumps({"mvg": mvg}))
+import base64, io, contextlib
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    code = sup.run_ctl(base64.b64encode(b'{"op":"nope"}').decode())
+print(code, buf.getvalue().strip())
+buf = io.StringIO()
+with contextlib.redirect_stdout(buf):
+    code = sup.run_ctl("!!")
+print(code, buf.getvalue().strip())
+env = sup.desktop_env(20) if False else None
+`)
+	for _, want := range []string{"rectangle 10,20 39,59", "text 12,32 '2'", `2 {"ok": false, "error": "unknown op 'nope'"}`, `"error": "bad request`} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in %s", want, out)
+		}
+	}
+	if strings.Contains(out, "rectangle 0,0 99,99") {
+		t.Errorf("window frame was marked: %s", out)
 	}
 }

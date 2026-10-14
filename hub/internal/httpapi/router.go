@@ -427,6 +427,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/v1/desktop-services/bash", PostDesktopBashHandler(desktopPool))
 	mux.HandleFunc("POST /api/v1/desktop-services/http", PostDesktopHTTPHandler(desktopPool))
 	mux.HandleFunc("POST /api/v1/desktop-services/screenshot", PostDesktopScreenshotHandler(desktopPool))
+	mux.HandleFunc("POST /api/v1/desktop-services/ctl", PostDesktopCtlHandler(desktopPool))
 	mux.HandleFunc("GET /api/v1/bots/access", GetBotAccessHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/credits", GetBotCreditsHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots", ListBotsHandler(botSvc, identity))
