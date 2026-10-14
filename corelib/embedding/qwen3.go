@@ -613,6 +613,15 @@ func (q *Qwen3Embedder) forward(ids []int, s *qwen3Scratch, maxWorkers int) ([]f
 // capture. Returns the final-normed hidden state of the last token (aliases
 // scratch; caller copies). s must hold len(ids)+8 rows.
 func (q *Qwen3Embedder) forwardFrom(ids []int, pre, capture *qwen3PrefixKV, s *qwen3Scratch, maxWorkers int) ([]float32, error) {
+	return q.forwardPool(ids, pre, capture, s, maxWorkers, nil)
+}
+
+// forwardPool is forwardFrom that, when rowSum != nil (len dim), also adds the
+// final-normed hidden state of every computed row (ids[P:]) into rowSum for
+// mean pooling. rowSum != nil disables the last-layer prune (all rows must
+// reach the output norm); rowSum == nil is exactly the forwardFrom path, so
+// the retrieval / Layer 2 last-token vector is unchanged byte for byte.
+func (q *Qwen3Embedder) forwardPool(ids []int, pre, capture *qwen3PrefixKV, s *qwen3Scratch, maxWorkers int, rowSum []float32) ([]float32, error) {
 	hp := q.hp
 	P := 0
 	if pre != nil {
@@ -712,7 +721,7 @@ func (q *Qwen3Embedder) forwardFrom(ids []int, pre, capture *qwen3PrefixKV, s *q
 				capture.v[li] = append([]float32(nil), vb...)
 			}
 			xl, attnL, normedL, gateL, upL := x, attn, normed, gate, up
-			if li == len(q.layers)-1 && seq > 1 && qwen3PruneLast {
+			if li == len(q.layers)-1 && seq > 1 && qwen3PruneLast && rowSum == nil {
 				// Last layer: K/V of every row are done; only the final row
 				// feeds the pooled embedding, so attention, Wo and the FFN
 				// run on that row alone (per-row results are unchanged).
@@ -742,6 +751,9 @@ func (q *Qwen3Embedder) forwardFrom(ids []int, pre, capture *qwen3PrefixKV, s *q
 			})
 			a2 = quant(gate, ffDim, tp.down)
 			mm(x, a2, l.pd, true) // x += (silu(g)⊙u)·Wd
+		}
+		if rowSum != nil {
+			q.addNormedRows(rowSum, x, seq, normed[:dim], eps)
 		}
 		last := x[(seq-1)*dim : seq*dim]
 		out := normed[:dim]
@@ -805,6 +817,9 @@ func (q *Qwen3Embedder) forwardFrom(ids []int, pre, capture *qwen3PrefixKV, s *q
 			tensor.MatMulQ8N(projM, a, &l.downParts[pi], mr, dim, w, maxWorkers)
 			tensor.Add(x, x, proj)
 		}
+	}
+	if rowSum != nil {
+		q.addNormedRows(rowSum, x, seq, normed[:dim], eps)
 	}
 	last := x[(seq-1)*dim : seq*dim]
 	out := normed[:dim]
@@ -961,4 +976,15 @@ func qwen3BatchWorkers() int {
 		return min(runtime.NumCPU(), 16)
 	}
 	return min(runtime.NumCPU(), 8)
+}
+
+// addNormedRows adds RMSNorm(x_r)·outputNorm of rows 0..seq-1 into sum (tmp: dim scratch).
+func (q *Qwen3Embedder) addNormedRows(sum, x []float32, seq int, tmp []float32, eps float32) {
+	dim := q.hp.Dim
+	for r := 0; r < seq; r++ {
+		tensor.RMSNorm(tmp, x[r*dim:(r+1)*dim], q.outputNorm, eps)
+		for i, v := range tmp {
+			sum[i] += v
+		}
+	}
 }
