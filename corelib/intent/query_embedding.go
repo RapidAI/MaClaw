@@ -20,6 +20,7 @@ package intent
 import (
 	"context"
 	"strings"
+	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
@@ -115,4 +116,56 @@ func IntentQueryEmbeddingScores(ctx context.Context, emb embedding.Embedder, tex
 	}
 	vec, err = embedIntentQuery(emb, text)
 	return vec, nil, err
+}
+
+// HeadQueryInput returns the input vector for head h: the Layer 2 query
+// vector (reused from ctx, plus its anchor scores) for ordinary heads, or —
+// for heads with InputBlocks (r13 F1 last+mean) — the concatenated pooled
+// views of one classification-role pass (embedding.EmbedPooledAs; the Layer
+// 2 vector itself is not used or changed).
+func HeadQueryInput(ctx context.Context, emb embedding.Embedder, h *LocalHead, text string) (vec []float32, scores map[string]float64, err error) {
+	if h == nil || len(h.InputBlocks) == 0 {
+		return IntentQueryEmbeddingScores(ctx, emb, text)
+	}
+	key := pooledKey{emb: emb, text: text, blocks: strings.Join(h.InputBlocks, ",")}
+	pooledMemo.Lock()
+	if pooledMemo.key == key && pooledMemo.vec != nil {
+		vec = append([]float32(nil), pooledMemo.vec...)
+		pooledMemo.Unlock()
+		return vec, nil, nil
+	}
+	pooledMemo.Unlock()
+	last, mean, err := embedding.EmbedPooledAs(emb, text, intentEmbeddingRole)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer func() {
+		pooledMemo.Lock()
+		pooledMemo.key, pooledMemo.vec = key, append([]float32(nil), vec...)
+		pooledMemo.Unlock()
+	}()
+	vec = make([]float32, 0, len(h.InputBlocks)*len(last))
+	for _, b := range h.InputBlocks {
+		if b == "mean" {
+			vec = append(vec, mean...)
+		} else {
+			vec = append(vec, last...)
+		}
+	}
+	return vec, nil, nil
+}
+
+// pooledMemo keeps the last pooled head input so the composite-override
+// probe and the L3 call of the same turn embed once (deterministic embedder,
+// so a hit returns exactly what a fresh pass would).
+type pooledKey struct {
+	emb    embedding.Embedder
+	text   string
+	blocks string
+}
+
+var pooledMemo struct {
+	sync.Mutex
+	key pooledKey
+	vec []float32
 }

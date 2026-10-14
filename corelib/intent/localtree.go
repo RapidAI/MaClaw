@@ -81,7 +81,7 @@ func LocalHeadProbe(emb embedding.Embedder, h *LocalHead) LocalHeadProbeFunc {
 		return nil
 	}
 	return func(ctx context.Context, text string) (string, float64, float64, bool) {
-		v, scores, err := IntentQueryEmbeddingScores(ctx, emb, text)
+		v, scores, err := HeadQueryInput(ctx, emb, h, text)
 		if err != nil {
 			return "", 0, 0, false
 		}
@@ -111,7 +111,7 @@ func LocalTreeFunc(emb embedding.Embedder, h *LocalHead, fb LocalFallback) LLMCl
 		}
 	}
 	return func(ctx, _ context.Context, _ string, userText string) (string, error) {
-		v, scores, err := IntentQueryEmbeddingScores(ctx, emb, userText)
+		v, scores, err := HeadQueryInput(ctx, emb, h, userText)
 		if err != nil {
 			return "", errLocalUncertain{msg: "embed: " + err.Error()}
 		}

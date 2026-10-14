@@ -106,6 +106,9 @@ func CheckLocalHead(emb embedding.Embedder, h *LocalHead) error {
 	if emb.Dim() != h.Dim() {
 		return fmt.Errorf("%w: head %s dim %d != embedder dim %d", ErrHeadMismatch, h.ID, h.Dim(), emb.Dim())
 	}
+	if h.NeedsPooling() && !embedding.SupportsPooling(emb) {
+		return fmt.Errorf("%w: head %s needs mean pooling, embedder %T has none", ErrHeadMismatch, h.ID, emb)
+	}
 	ef, hf := embedding.EmbedderFamily(emb), HeadFamily(h)
 	if ef != "" && hf != "" && ef != hf {
 		return fmt.Errorf("%w: head %s is for %s, embedder is %s", ErrHeadMismatch, h.ID, hf, ef)

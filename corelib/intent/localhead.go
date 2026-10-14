@@ -65,6 +65,12 @@ type LocalHead struct {
 	// labels (optional "anchor_features" JSON field; Qwen3 r4 heads only).
 	AnchorFeatureLabels []string
 
+	// InputBlocks, when non-empty (r13 F1: ["last","mean"]), means the head
+	// input is the concatenation of these pooled views of one classification-
+	// role forward pass, each L2-normalised on its own (optional
+	// "input_blocks" JSON field). Use PredictPooled / HeadInputVector.
+	InputBlocks []string
+
 	sensitive map[string]bool
 	dim       int
 	hidden    int
@@ -122,6 +128,7 @@ type localHeadFile struct {
 	// AnchorFeatures (optional): labels whose raw L2 max anchor cosines are
 	// appended to the query vector, in this order. Standardisation is folded
 	// into w1/b1 at export time.
+	InputBlocks []string `json:"input_blocks,omitempty"`
 	AnchorFeatures *struct {
 		Labels []string `json:"labels"`
 	} `json:"anchor_features,omitempty"`
@@ -296,12 +303,39 @@ func ParseLocalHead(b []byte) (*LocalHead, error) {
 		}
 		h.AnchorFeatureLabels = append([]string(nil), f.AnchorFeatures.Labels...)
 	}
+	if len(f.InputBlocks) > 0 {
+		seen := map[string]bool{}
+		for _, b := range f.InputBlocks {
+			if (b != "last" && b != "mean") || seen[b] {
+				return nil, fmt.Errorf("input_blocks: bad or repeated block %q", b)
+			}
+			seen[b] = true
+		}
+		if h.dim%len(f.InputBlocks) != 0 || h.mean != nil || h.srcDim > 0 || len(h.AnchorFeatureLabels) > 0 {
+			return nil, fmt.Errorf("input_blocks %v: input dim %d must split evenly; no mean/scale, source_dim or anchor_features", f.InputBlocks, h.dim)
+		}
+		h.InputBlocks = append([]string(nil), f.InputBlocks...)
+	}
 	return h, nil
+}
+
+// NeedsPooling reports whether the head input includes the mean-pooled view
+// (embedding.PooledEmbedder required).
+func (h *LocalHead) NeedsPooling() bool {
+	for _, b := range h.InputBlocks {
+		if b == "mean" {
+			return true
+		}
+	}
+	return false
 }
 
 // Dim is the query-vector (embedding) dimension the head expects; for heads
 // with anchor features the network input is Dim()+len(AnchorFeatureLabels).
 func (h *LocalHead) Dim() int {
+	if len(h.InputBlocks) > 0 {
+		return h.dim / len(h.InputBlocks)
+	}
 	if h.srcDim > 0 {
 		return h.srcDim
 	}
@@ -377,6 +411,9 @@ func (h *LocalHead) Predict(v []float32) ([]float64, error) {
 	}
 	if len(v) != h.dim {
 		return nil, fmt.Errorf("local head: vector dim %d != head dim %d", len(v), h.dim)
+	}
+	if len(h.InputBlocks) > 0 {
+		return h.forward(blockNormalize(v, len(h.InputBlocks), h.l2norm)), nil
 	}
 	x := make([]float64, h.dim)
 	var n float64
@@ -532,4 +569,24 @@ func normalizeCalibrationCompute(s string) string {
 		return "q8p:avx512:2pass"
 	}
 	return strings.TrimSpace(s)
+}
+
+// blockNormalize converts v to float64, L2-normalising each of nb equal blocks.
+func blockNormalize(v []float32, nb int, l2 bool) []float64 {
+	x := make([]float64, len(v))
+	bd := len(v) / nb
+	for b := 0; b < nb; b++ {
+		var n float64
+		for i := b * bd; i < (b+1)*bd; i++ {
+			x[i] = float64(v[i])
+			n += x[i] * x[i]
+		}
+		if l2 && n > 0 {
+			inv := 1 / math.Sqrt(n)
+			for i := b * bd; i < (b+1)*bd; i++ {
+				x[i] *= inv
+			}
+		}
+	}
+	return x
 }
