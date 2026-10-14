@@ -234,13 +234,45 @@ func TestZZLocalEval(t *testing.T) {
 		// Head/L2 hint fix (head_hint_fix.go) needs the composite-override
 		// probe; the weak-hint veto rides on LocalTreeFunc's uncertain error.
 		cfg.LocalHeadProbe = LocalHeadProbe(emb, h)
+		// ZZ_REMOTE mirrors locall3.Runtime.ContextFunc's abstain → remote
+		// fallback: "" = none (head error), "down" = remote fails (head error
+		// kept), "oracle" = remote returns the ZZ_GOLD label (upper bound).
+		remoteMode := os.Getenv("ZZ_REMOTE")
+		gold := map[string]string{}
+		if gp := os.Getenv("ZZ_GOLD"); gp != "" {
+			b, err := os.ReadFile(gp)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, ln := range bytes.Split(b, []byte("\n")) {
+				var g struct{ Text, Intent string }
+				if json.Unmarshal(ln, &g) == nil && g.Text != "" {
+					gold[g.Text] = g.Intent
+				}
+			}
+		}
 		cfg.LLMContextFunc = func(ctx, parent context.Context, sys, user string) (string, error) {
 			l3Calls++
 			out, err := base(ctx, parent, sys, user)
-			if err != nil {
-				l3Errs++
+			if err == nil {
+				zzL3Path = "local"
+				return out, nil
 			}
-			return out, err
+			if remoteMode == "" || !IsLocalHeadUncertain(err) {
+				zzL3Path = "local-err"
+				l3Errs++
+				return out, err
+			}
+			zzL3Path = "remote"
+			if remoteMode == "oracle" {
+				g := gold[user]
+				if g == "" || g == "unknown" {
+					g = string(LabelAmbiguous)
+				}
+				return fmt.Sprintf(`{"top":[{"skill":%q,"score":0.95}]}`, g), nil
+			}
+			l3Errs++
+			return "", err
 		}
 	case "head", "headllm":
 		// Local L3 = calibrated classification head on the SAME embedder,
@@ -420,6 +452,7 @@ func TestZZLocalEval(t *testing.T) {
 			_, _, _, raw := classifyByEmbeddingVecScores(emb, anchors, r.Text)
 			rec["l2_anchor_maxcos"] = raw
 		}
+		zzL3Path = "none"
 		ta = time.Now()
 		res := u.ClassifyContext(context.Background(), MessageContext{Text: r.Text, UserID: "zz"})
 		rec["cls_ms"] = float64(time.Since(ta).Microseconds()) / 1000
@@ -431,6 +464,7 @@ func TestZZLocalEval(t *testing.T) {
 		rec["cls_degraded"] = res.Degraded
 		rec["cls_cpf"] = res.ControlPlaneFailure
 		rec["cls_reason"] = res.Reason
+		rec["l3_path"] = zzL3Path
 		if head != nil {
 			ta = time.Now()
 			v, _ := zzHeadEmbed(emb, head, r.Text)
@@ -690,3 +724,6 @@ func zzStubL3(t *testing.T, calls, errs *int) LLMClassifyContextFunc {
 		return string(b), nil
 	}
 }
+
+// zzL3Path is the L3 path of the current eval row (sequential harness).
+var zzL3Path string

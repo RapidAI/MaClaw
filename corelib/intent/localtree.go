@@ -60,6 +60,14 @@ func LocalHeadUncertainTop(err error) (label string, prob float64, ok bool) {
 	return "", 0, false
 }
 
+// IsLocalHeadUncertain reports whether err is a local-head abstention
+// (sub-threshold top-1, or the head could not embed / predict), as opposed
+// to a remote tree failure.
+func IsLocalHeadUncertain(err error) bool {
+	var e errLocalUncertain
+	return errors.As(err, &e)
+}
+
 // LocalHeadProbeFunc returns the local head's top-1 for text without
 // applying any threshold: label, its probability, and the head's strong
 // (sensitive) threshold max(Tau, TauS). ok=false when no head is attached or
