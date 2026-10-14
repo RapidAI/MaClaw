@@ -431,6 +431,12 @@ func TestZZLocalEval(t *testing.T) {
 		if b, err := os.ReadFile(hp); err == nil && strings.Contains(string(b), `"anchor_features"`) {
 			head = nil // anchor-feature heads need L2 scores; head_top recording is skipped (pipeline uses LocalTreeFunc)
 		}
+		if b, err := os.ReadFile(hp); err == nil && strings.Contains(string(b), `"input_blocks"`) {
+			head = nil // r13 pooled heads: head_top via the production LocalHead/HeadQueryInput path below
+			if ph, err := LoadLocalHead(hp); err == nil {
+				zzPooledHead = ph
+			}
+		}
 	}
 	u.mu.RLock()
 	anchors := u.anchors
@@ -465,6 +471,16 @@ func TestZZLocalEval(t *testing.T) {
 		rec["cls_cpf"] = res.ControlPlaneFailure
 		rec["cls_reason"] = res.Reason
 		rec["l3_path"] = zzL3Path
+		if ph := zzPooledHead; ph != nil {
+			ta = time.Now()
+			v, _, err := HeadQueryInput(context.Background(), emb, ph, r.Text)
+			rec["head_embed_ms"] = float64(time.Since(ta).Microseconds()) / 1000
+			if err == nil {
+				if probs, err := ph.Predict(v); err == nil {
+					rec["head_top"] = ph.TopK(probs, 5)
+				}
+			}
+		}
 		if head != nil {
 			ta = time.Now()
 			v, _ := zzHeadEmbed(emb, head, r.Text)
@@ -519,6 +535,8 @@ type zzHead struct {
 
 // zzHeadEmbed embeds text in the vector space the head was trained on.
 // zzHeadReused counts L3 head calls that reused the Layer 2 query vector.
+var zzPooledHead *LocalHead
+
 var zzHeadReused, zzHeadReembedded, zzHeadVerifyOK, zzHeadVerifyBad int
 
 // zzHeadEmbedCtx is the production-path local L3 embed: reuse the Layer 2
