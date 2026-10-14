@@ -57,11 +57,11 @@ func (c *coreAgentCallbacks) ReviewDesktopOutcome(userText, draft string, histor
 			gap = "当前结果还没有对照桌面确认。"
 		}
 		if c.desktopOutcomeMissContinues >= desktopOutcomeContinueMax {
-			log.Printf("[desktop-outcome] replace=true misses=%d", c.desktopOutcomeMissContinues)
+			log.Printf("[desktop-outcome] replace=true misses=%d gap=%q", c.desktopOutcomeMissContinues, desktopOutcomeGapForLog(gap))
 			return agent.DesktopOutcomeDecision{Replace: gap}
 		}
 		c.desktopOutcomeMissContinues++
-		log.Printf("[desktop-outcome] continue=true misses=%d", c.desktopOutcomeMissContinues)
+		log.Printf("[desktop-outcome] continue=true misses=%d gap=%q", c.desktopOutcomeMissContinues, desktopOutcomeGapForLog(gap))
 		return agent.DesktopOutcomeDecision{Continue: true, Message: desktopOutcomeNudge(gap, sawSSH, remoteOnly)}
 	}
 	log.Printf("[desktop-outcome] ok=true misses=%d", c.desktopOutcomeMissContinues)
@@ -215,4 +215,14 @@ func clipDesktopOutcomeEvidence(text string, limit int) string {
 		return string(runes[:limit])
 	}
 	return string(runes[:head]) + string(mark) + string(runes[len(runes)-tail:])
+}
+
+// desktopOutcomeGapForLog keeps the judge's reason short in the log; it says
+// why a finished-looking run was sent back, which logs never showed.
+func desktopOutcomeGapForLog(gap string) string {
+	r := []rune(strings.Join(strings.Fields(gap), " "))
+	if len(r) > 100 {
+		return string(r[:100]) + "…"
+	}
+	return string(r)
 }

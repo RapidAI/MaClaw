@@ -268,7 +268,8 @@ func (desktopRuntimeModule) ContributePrompt(_ context.Context, request agentrun
 const desktopDocumentPrompt = "Office documents (Word, report, illustrated document): build the file in one action=bash step with python3 and python-docx (installed), or write ODT/HTML and convert with soffice --headless --convert-to docx. " +
 	"Save it under /home/desktop/Desktop with a fixed name, insert pictures with their file paths (add_picture), and print the saved path and size in the same step. " +
 	"If that step fails, fix the error it printed and run it again; do not rewrite the whole script for each small change. " +
-	"Do not type the document into the LibreOffice window key by key, and do not drive its Save As dialog. To show the result, app_open with program libreoffice and the saved path. " +
+	"Do not type the document into the LibreOffice window key by key, and do not drive its Save As dialog. " +
+	"Before reporting, app_open with program libreoffice and the saved path so the front window shows the finished document: the result check compares your report with that screen, and a run whose screen still shows an older page is sent back. " +
 	"Then action=deliver with that path. Chinese text goes into the file content or through clipboard_set, never through typed keystrokes. " +
 	"For a dialog or button in a non-browser window, use app_probe and its element ids before pixel clicks; keyboard shortcuts (ctrl+s, ctrl+o, alt+f4 only on windows you opened) beat menus. "
 
