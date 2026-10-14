@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"image/jpeg"
 	"image/png"
+	"log"
 	"net/url"
 	"os"
 	"os/exec"
@@ -206,7 +207,11 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 		ctx = context.WithValue(ctx, desktopCloudKey{}, true)
 		ctx = context.WithValue(ctx, desktopPersonKey{}, desktopAccount{TenantID: scope.TenantID, UserID: scope.UserID})
 	}
-	return operateDesktop(ctx, scope, args)
+	desktopTidyOnce(ctx, desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))))
+	started := time.Now()
+	out, err := operateDesktop(ctx, scope, args)
+	log.Print(desktopStepLogLine(scope.UserID, args, out, err, time.Since(started)))
+	return out, err
 }
 
 func (desktopRuntimeModule) ContributePrompt(_ context.Context, request agentruntime.TurnRequest) (string, error) {
@@ -252,9 +257,20 @@ func (desktopRuntimeModule) ContributePrompt(_ context.Context, request agentrun
 		"A probe with no filter that finds no element ref includes one desktop image so you can see the page. If a filter matches nothing, probe again without it. The next web step is still an element ref, not a pixel click. " +
 		"Other apps: action=app_open with program starts a window. xfce4-terminal is already installed. app_open is not a shell. That window does not use the Chinese input method, so ASCII typed into it is literal. app_run focus only activates a window that is already open; exit status 1 means that window is not open. One type step can contain several lines. The terminal is a shell, so a line break runs that line. Write the source as a heredoc in that step, then compile on the next line. Then app_list and one app_run. After click, type, or key, that result includes one fresh desktop image. app_run click uses those pixels. " + desktopScreenVisionClickPrompt(desktopTurnSeesImages(request)) + desktopScreenCheckPrompt(desktopTurnSeesImages(request)) + "Use screenshot when app_list is not enough, or to check a result before any input. " +
 		"To put a screenshot on the desktop, action=screenshot with name set to one .png file name. The result line Saved is the file that was written under /home/desktop/Desktop. If the result says the screenshot was not written, the desktop folder has no new file. Do not invent a path. " +
+		desktopDocumentPrompt +
 		"To install software, action=install with packages set to Debian package names. That runs apt-get update and apt-get install -y in this desktop container. " +
 		"Do not claim the screen changed until the tool result shows the new page or window.", nil
 }
+
+// desktopDocumentPrompt steers Office/document tasks to the fast, reliable
+// path. Seen live: a "write an illustrated Office document" task spent 30+
+// model rounds re-editing a generator script and never reached a file.
+const desktopDocumentPrompt = "Office documents (Word, report, illustrated document): build the file in one action=bash step with python3 and python-docx (installed), or write ODT/HTML and convert with soffice --headless --convert-to docx. " +
+	"Save it under /home/desktop/Desktop with a fixed name, insert pictures with their file paths (add_picture), and print the saved path and size in the same step. " +
+	"If that step fails, fix the error it printed and run it again; do not rewrite the whole script for each small change. " +
+	"Do not type the document into the LibreOffice window key by key, and do not drive its Save As dialog. To show the result, app_open with program libreoffice and the saved path. " +
+	"Then action=deliver with that path. Chinese text goes into the file content or through clipboard_set, never through typed keystrokes. " +
+	"For a dialog or button in a non-browser window, use app_probe and its element ids before pixel clicks; keyboard shortcuts (ctrl+s, ctrl+o, alt+f4 only on windows you opened) beat menus. "
 
 func srvDesktopRuntimeModules() []agentruntime.Module {
 	if !desktopAvailable() {
