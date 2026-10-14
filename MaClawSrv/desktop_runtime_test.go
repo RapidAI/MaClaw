@@ -1305,7 +1305,9 @@ func TestAppOpenStartsTheProgramAndFocusExplainsAMissingWindow(t *testing.T) {
 		"action":  "app_open",
 		"program": "/usr/bin/chromium",
 	})
-	if err == nil || !strings.Contains(err.Error(), "browser") || gotProgram != "" {
+	// The browser is never started a second time; app_open of it activates
+	// the agent browser window instead of being refused.
+	if gotProgram != "" || err != nil && strings.Contains(err.Error(), "rejected the program") {
 		t.Fatalf("browser err=%v program=%s", err, gotProgram)
 	}
 	_, err = operateDesktopApp(context.Background(), agentruntime.Scope{TenantID: "tenant-open", UserID: "alice"}, ":20", "app_run", map[string]any{

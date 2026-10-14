@@ -25,6 +25,7 @@ func TestDesktopTidyOncePerRunExecuteOnly(t *testing.T) {
 	plan := context.WithValue(context.Background(), desktopPhaseKey{}, "plan")
 	desktopTidyOnce(plan, scope, "screenshot")
 	desktopTidyOnce(exec, scope, "deliver")
+	desktopLastStep.Delete("t/u") // a fresh person, not a follow-up
 	desktopTidyOnce(exec, scope, "app_open")
 	desktopTidyOnce(exec, scope, "app_run")
 	if calls != 1 {
@@ -40,5 +41,25 @@ func TestDesktopTidyOncePerRunExecuteOnly(t *testing.T) {
 func TestDesktopTidyScriptPassesBashValidator(t *testing.T) {
 	if _, err := desktop.BashArgs(desktopContainerName(), desktopTidyScript); err != nil {
 		t.Fatalf("tidy script rejected: %v", err)
+	}
+}
+
+func TestDesktopTidySkipsTheSameFlowAndShowsTheBrowser(t *testing.T) {
+	calls := 0
+	old := desktopTidyBash
+	desktopTidyBash = func(ctx context.Context, scope agentruntime.Scope, cmd string) (string, error) {
+		calls++
+		return "minimized 0x1\nfront 0x2\n", nil
+	}
+	defer func() { desktopTidyBash = old }()
+	exec := context.WithValue(context.Background(), desktopPhaseKey{}, "execute")
+	desktopLastStep.Delete("t/flow")
+	desktopTidyOnce(exec, agentruntime.Scope{TenantID: "t", UserID: "flow", RunID: "r1"}, "app_open")
+	desktopTidyOnce(exec, agentruntime.Scope{TenantID: "t", UserID: "flow", RunID: "r2"}, "app_open")
+	if calls != 1 {
+		t.Fatalf("follow-up run tidied again: calls=%d", calls)
+	}
+	if !strings.Contains(desktopTidyScript, "windowactivate") {
+		t.Fatal("tidy leaves the screen empty")
 	}
 }

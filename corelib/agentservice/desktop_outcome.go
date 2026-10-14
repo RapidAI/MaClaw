@@ -49,14 +49,23 @@ func (c *coreAgentCallbacks) ReviewDesktopOutcome(userText, draft string, histor
 	}
 	ok, gap, err := agent.JudgeDesktopOutcome(ctx, c.llmCfg, c.httpClient, userText, evidence, image)
 	if err != nil {
-		log.Printf("[desktop-outcome] check_err=%v misses=%d", err, c.desktopOutcomeMissContinues)
-		gap = ""
+		// A failed or unparseable check says nothing about the result:
+		// keep the worker's reply (seen live: "not json" replaced a
+		// delivered docx report with a gap text).
+		log.Printf("[desktop-outcome] check_err=%v misses=%d keep=true", err, c.desktopOutcomeMissContinues)
+		return agent.DesktopOutcomeDecision{}
 	}
-	if err != nil || !ok {
+	if !ok {
 		if strings.TrimSpace(gap) == "" {
 			gap = "当前结果还没有对照桌面确认。"
 		}
 		if c.desktopOutcomeMissContinues >= desktopOutcomeContinueMax {
+			if desktopOutcomeDelivered(history) {
+				// Files already reached the person; a gap text in place
+				// of the report would hide what was sent.
+				log.Printf("[desktop-outcome] replace=skipped delivered=true misses=%d gap=%q", c.desktopOutcomeMissContinues, desktopOutcomeGapForLog(gap))
+				return agent.DesktopOutcomeDecision{}
+			}
 			log.Printf("[desktop-outcome] replace=true misses=%d gap=%q", c.desktopOutcomeMissContinues, desktopOutcomeGapForLog(gap))
 			return agent.DesktopOutcomeDecision{Replace: gap}
 		}
@@ -82,7 +91,7 @@ func desktopOutcomeEvidence(history []agent.ConversationEntry) (used, ask, remot
 	var desktopParts []string
 	var sshParts []string
 	sawDesktop := false
-	deliverIndex := -1
+	var deliverIndexes []int
 	for _, entry := range history {
 		if entry.Role != "tool" {
 			continue
@@ -100,7 +109,7 @@ func desktopOutcomeEvidence(history []agent.ConversationEntry) (used, ask, remot
 				continue
 			}
 			if strings.HasPrefix(body, "Delivered ") {
-				deliverIndex = len(desktopParts)
+				deliverIndexes = append(deliverIndexes, len(desktopParts))
 			}
 			desktopParts = append(desktopParts, formatDesktopOutcomeEvidence("desktop", body))
 			continue
@@ -113,14 +122,18 @@ func desktopOutcomeEvidence(history []agent.ConversationEntry) (used, ask, remot
 		// Keep the file delivery even when later checks pushed it out of
 		// the window: the judge otherwise reports "not delivered" for a
 		// file that is already attached (seen live twice).
-		var delivered string
-		if deliverIndex >= 0 && deliverIndex < len(desktopParts)-4 {
-			delivered = desktopParts[deliverIndex]
+		// Every delivery in the run is kept, not only the latest: a later
+		// screenshot delivery otherwise hid the document (seen live).
+		var delivered []string
+		for _, i := range deliverIndexes {
+			if i < len(desktopParts)-4 {
+				delivered = append(delivered, desktopParts[i])
+			}
 		}
-		desktopParts = desktopParts[len(desktopParts)-4:]
-		if delivered != "" {
-			desktopParts = append([]string{delivered}, desktopParts...)
+		if len(delivered) > 8 {
+			delivered = delivered[len(delivered)-8:]
 		}
+		desktopParts = append(delivered, desktopParts[len(desktopParts)-4:]...)
 	}
 	if len(sshParts) > 2 {
 		sshParts = sshParts[len(sshParts)-2:]
@@ -239,4 +252,15 @@ func desktopOutcomeGapForLog(gap string) string {
 		return string(r[:100]) + "…"
 	}
 	return string(r)
+}
+
+// desktopOutcomeDelivered reports a successful desktop deliver in the run.
+func desktopOutcomeDelivered(history []agent.ConversationEntry) bool {
+	for _, entry := range history {
+		if entry.Role == "tool" && strings.TrimSpace(entry.ToolName) == "desktop" &&
+			strings.HasPrefix(strings.TrimSpace(fmt.Sprint(entry.Content)), "Delivered ") {
+			return true
+		}
+	}
+	return false
 }

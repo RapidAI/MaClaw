@@ -26,9 +26,18 @@ for w in $(xprop -root _NET_CLIENT_LIST 2>/dev/null | grep -o '0x[0-9a-f]*'); do
   case "$c" in *xfce4-panel*|*xfdesktop*|*chromium*|*chrome*|*fcitx*|*notif*) continue;; esac
   xdotool windowminimize "$w" 2>/dev/null && echo "minimized $w"
 done
+# Never leave an empty desktop on screen: bring the browser to the front.
+b=$(xdotool search --onlyvisible --class chromium 2>/dev/null | tail -1)
+[ -n "$b" ] && xdotool windowactivate "$b" 2>/dev/null && echo "front $b"
 exit 0`
 
+// desktopTidySameFlow: a run that starts this soon after the same person's
+// last desktop step continues their flow (a follow-up asking to fix the
+// document just made), so its windows are left as they are.
+const desktopTidySameFlow = 30 * time.Minute
+
 var (
+	desktopLastStep sync.Map // tenant/user -> time.Time of the last desktop step
 	desktopTidied   sync.Map // run key -> time.Time
 	desktopTidyBash = desktopContainerBash
 )
@@ -56,6 +65,7 @@ func desktopTidyKey(scope agentruntime.Scope) string {
 // touches the desktop in the execute phase. Best effort: a failure is
 // logged and never blocks the step.
 func desktopTidyOnce(ctx context.Context, scope agentruntime.Scope, action string) {
+	defer desktopLastStep.Store(scope.TenantID+"/"+scope.UserID, time.Now())
 	if !desktopTidyEnabled() || action == "deliver" {
 		return
 	}
@@ -69,6 +79,12 @@ func desktopTidyOnce(ctx context.Context, scope agentruntime.Scope, action strin
 	now := time.Now()
 	if _, seen := desktopTidied.LoadOrStore(key, now); seen {
 		return
+	}
+	if last, ok := desktopLastStep.Load(scope.TenantID + "/" + scope.UserID); ok {
+		if t, ok := last.(time.Time); ok && now.Sub(t) < desktopTidySameFlow {
+			log.Printf("[desktop-tidy] user=%s skipped: same flow (last step %s ago)", scope.UserID, now.Sub(t).Round(time.Second))
+			return
+		}
 	}
 	desktopTidied.Range(func(k, v any) bool {
 		if t, ok := v.(time.Time); ok && now.Sub(t) > 6*time.Hour {

@@ -207,6 +207,10 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 		ctx = context.WithValue(ctx, desktopCloudKey{}, true)
 		ctx = context.WithValue(ctx, desktopPersonKey{}, desktopAccount{TenantID: scope.TenantID, UserID: scope.UserID})
 	}
+	if fixed, ok := desktopBrowserOpenAsNavigate(args); ok {
+		log.Printf("[desktop-step] app_open of the browser with a URL runs as navigate")
+		args = fixed
+	}
 	if fixed, ok := recoverDesktopLeakedArgs(args); ok {
 		log.Printf("[desktop-step] recovered leaked tool-call markup into action=%s", desktopArg(fixed, "action"))
 		args = fixed
@@ -214,6 +218,7 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 	desktopTidyOnce(ctx, desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))))
 	started := time.Now()
 	out, err := operateDesktop(ctx, scope, args)
+	err = desktopDeliverSizeHint(args, err)
 	log.Print(desktopStepLogLine(scope.UserID, args, out, err, time.Since(started)))
 	return out, err
 }
@@ -402,7 +407,8 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 	}
 	var openProgram string
 	var openArgs []string
-	if action == "app_open" {
+	browserOpen := action == "app_open" && desktopIsBrowserProgram(desktopArg(args, "program"))
+	if action == "app_open" && !browserOpen {
 		parsed, argErr := desktop.ProgramArgs(args["args"])
 		if argErr != nil {
 			return "", fmt.Errorf("desktop app_open rejected the program: %w", argErr)
@@ -451,6 +457,9 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 	// The check above ran before that. Acting now would switch the page.
 	if err := desktopBlockedByPerson(scope); err != nil {
 		return "", err
+	}
+	if browserOpen {
+		return desktopActivateBrowser(ctx, scope, endpoint.Display)
 	}
 	if action == "app_open" {
 		before, listErr := desktopWindowsNow(ctx, scope, endpoint.Display)
