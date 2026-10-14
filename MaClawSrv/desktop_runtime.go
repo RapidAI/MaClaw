@@ -276,6 +276,7 @@ const desktopDocumentPrompt = "Office documents (Word, report, illustrated docum
 	"Do not type the document into the LibreOffice window key by key, and do not drive its Save As dialog. " +
 	"Before reporting, app_open with program libreoffice and the saved path so the front window shows the finished document: the result check compares your report with that screen, and a run whose screen still shows an older page is sent back. " +
 	"deliver attaches at most about 145 KB, so shrink pictures before inserting them (ImageMagick: convert in.png -resize 800x800> -quality 70 out.jpg) and check the saved size. " +
+	"Do not write your own CDP/DevTools or headless-browser scripts in bash to read or screenshot pages; use navigate, probe, script, and screenshot, which work on the visible browser and are faster. " +
 	"The person watches this desktop: when you write or edit a document, open it visibly in its program (app_open, e.g. lowriter ~/Desktop/file.docx) so its window is in front, and keep the browser behind unless the step is a browser step; headless conversion is only for the final export. " +
 	"If LibreOffice shows a document-recovery, tip, or first-start dialog, answer that dialog; never delete ~/.config/libreoffice or other profile folders, which hold the person's settings. " +
 	"Then action=deliver with that path. Chinese text goes into the file content or through clipboard_set, never through typed keystrokes. " +
