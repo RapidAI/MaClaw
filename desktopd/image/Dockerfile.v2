@@ -105,7 +105,7 @@ COPY theme/gtk-panel.css /etc/maclaw/gtk-panel.css
 COPY theme/maclaw-icon-64.png /usr/share/icons/hicolor/64x64/apps/maclaw.png
 RUN set -eux; \
     mkdir -p /etc/dconf/profile; printf 'user-db:user\nsystem-db:local\n' > /etc/dconf/profile/user; dconf update; \
-    mkdir -p /usr/share/backgrounds/maclaw /etc/maclaw; echo clean > /etc/maclaw/theme; gtk-update-icon-cache -f /usr/share/icons/hicolor || true; \
+    mkdir -p /usr/share/backgrounds/maclaw /etc/maclaw; echo soft25 > /etc/maclaw/theme; gtk-update-icon-cache -f /usr/share/icons/hicolor || true; \
     convert -size 1920x1200 radial-gradient:'#f1f3f5-#bfc4cb' -depth 8 /usr/share/backgrounds/maclaw/gray-gradient.png; \
     printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=MaClaw theme (wallpaper, picom, Plank)' \
       'Exec=/usr/bin/maclaw-theme' 'OnlyShowIn=XFCE;' 'X-GNOME-Autostart-Phase=Panel' > /etc/xdg/autostart/maclaw-theme.desktop; \

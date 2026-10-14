@@ -61,7 +61,7 @@ curl -sI -H "Authorization: Bearer $T" \
 | 能力 | 说明 |
 | --- | --- |
 | 桌面 | Debian 12 + XFCE(xfwm4、Thunar、xfce4-terminal、Mousepad、LibreOffice Writer),`startxfce4` 启动;没有 XFCE 的旧镜像自动回退 fluxbox |
-| 外观 | 无顶部面板/桌面图标;底部居中 Plank dock(Chromium、Thunar、终端、Writer、Mousepad,并显示运行中的程序用于切换窗口,hide-mode none 保留 48px strut,最大化不压住 dock);picom(xrender、阴影+短淡入淡出、无 GPU);灰色渐变壁纸(feh);Arc GTK/xfwm4 主题、Papirus 图标、Noto Sans CJK SC。配置在 `desktopd/image/theme/`,由 `/usr/bin/maclaw-theme`(XFCE autostart)启动 |
+| 外观 | 默认主题 `soft25`:淡彩渐变壁纸、浅色 Arc GTK/xfwm4 主题、Papirus 图标、Noto Sans CJK SC;无顶部面板、无桌面图标;底部居中磨砂 Plank dock(Chromium、Thunar、终端、Writer、Mousepad,运行中的程序带指示点、点击切换窗口;hide-mode none 保留约 50px strut,最大化不压住 dock);picom(xrender、阴影+短淡入淡出、无 GPU)。见下文「桌面主题」 |
 | 浏览器 | Chromium,CDP 端口经 token gate 暴露;登录态写在每用户 profile 卷里 |
 | 共用浏览器 | 面板/底部 dock 的“网络浏览器”、应用菜单、`xdg-open`/`exo-open`、`x-www-browser` 都进入**同一个**受监管 Chromium(同 profile、同登录态、带 CDP):有窗口就恢复并激活(含最小化窗口),带链接就作为新标签打开;浏览器被关掉/崩溃时只重启浏览器(恢复 CDP 与登录态),不会再起第二套桌面。实现见 `desktop_supervisor.py browser` 与 `/usr/bin/maclaw-browser`、`/etc/chromium.d/zz-maclaw-shared-browser` |
 | 中文输入 | fcitx5 + 拼音,默认输入法列表 `keyboard-us` + `pinyin`,**Ctrl+Space** 切换;`GTK_IM_MODULE/QT_IM_MODULE/XMODIFIERS=fcitx`,`LANG=zh_CN.UTF-8` |
@@ -72,6 +72,25 @@ curl -sI -H "Authorization: Bearer $T" \
 | 工具 | noVNC/websockify、x11vnc、xdotool、ImageMagick `import`、scrot、at-spi2(无障碍树) |
 
 ![fcitx5 拼音输入 "nihao shijie" 得到 "你好世界"](images/desktop-gui-v2-pinyin.png)
+
+
+## 桌面主题
+
+配置在 `desktopd/image/theme/`,XFCE autostart 运行 `/usr/bin/maclaw-theme`:先应用主题,再启动 picom 和 Plank。
+
+```sh
+# 在容器内(桌面会话的 DISPLAY / DBUS_SESSION_BUS_ADDRESS / HOME=/home/desktop)即时切换:
+maclaw-theme-variant soft25      # 默认:淡彩(25%)
+maclaw-theme-variant soft40      # 中等淡彩;soft55 更浓
+maclaw-theme-variant soft-topbar # soft40 + 28px 顶栏(应用菜单、窗口按钮、托盘/fcitx、时钟)
+maclaw-theme-variant clean       # 灰色渐变;dark = Arc-Dark + 深色壁纸;colorful = 鲜艳渐变
+```
+
+- 选择记在 `~/.config/maclaw-theme`;新桌面的默认值在镜像的 `/etc/maclaw/theme`。
+- 壁纸由 `theme/gen_wallpapers.py`(Pillow+numpy)程序生成,不含第三方图片;dark 壁纸用仓库自带的 MaClaw logo。
+- Plank 主题 `MaClaw-Light` / `MaClaw-Dark` 在 `/usr/share/plank/themes/`;启动项在 `~/.config/plank/dock1/launchers/`。浏览器启动项指向 supervisor 按用户生成的 `~/.local/share/applications/maclaw-browser.desktop`(StartupWMClass 匹配 `chromium (<profile>)`),dock 不会出现第二个浏览器图标。
+- Agent 侧:Plank、xfce4-panel 不在 `window_list` 里;工作区 `_NET_WORKAREA` 已扣除 dock/顶栏,`wmctrl` 最大化、app_probe、截图都不受影响;`keep_screen_awake` 不变。
+- 已有用户容器(或由旧 state 镜像重建的容器)的 home 保留旧配置,只有新容器使用新外观。
 
 ## 2. 架构
 

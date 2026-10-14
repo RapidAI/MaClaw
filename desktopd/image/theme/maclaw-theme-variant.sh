@@ -6,7 +6,7 @@
 v="$1"
 [ -n "$v" ] || v=$(cat "$HOME/.config/maclaw-theme" 2>/dev/null)
 [ -n "$v" ] || v=$(cat /etc/maclaw/theme 2>/dev/null)
-[ -n "$v" ] || v=clean
+[ -n "$v" ] || v=soft25
 W=/usr/share/backgrounds/maclaw
 case "$v" in
   dark)     gtk=Arc-Dark; wm=Arc-Dark; icons=Papirus-Dark; wall=$W/maclaw-dark.jpg;     plank=MaClaw-Dark;  panel=0 ;;
