@@ -760,6 +760,9 @@ func (p *Pool) Ctl(ctx context.Context, tenantID, userID, display string, reques
 
 func (p *Pool) resolve(ctx context.Context, tenantID, userID string) (Server, error) {
 	ctx = directoryContext(ctx, tenantID)
+	// An isolated bot's desktop user lives on its owner's Docker service:
+	// the bot's display is inside the owner's container.
+	userID, _ = desktop.SplitDesktopUser(userID)
 	userID = strings.TrimSpace(userID)
 	if userID == "" {
 		return Server{}, fmt.Errorf("%w: user is required", ErrInvalidInput)

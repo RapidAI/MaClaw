@@ -229,6 +229,14 @@ func (s *Service) Bash(ctx context.Context, tenantID, userID, command string) (s
 	if err != nil {
 		return "", err
 	}
+	if spec.BotID != "" {
+		// GUI programs a bot starts from bash belong on its own display.
+		display, displayErr := s.specDisplay(ctx, spec, "")
+		if displayErr != nil {
+			return "", displayErr
+		}
+		args = append([]string{args[0], "-e", "DISPLAY=" + display}, args[1:]...)
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}

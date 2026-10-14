@@ -515,6 +515,7 @@ func GetBotDesktopHandler(svc *botmgmt.Service, identity botAuthenticator) http.
 			"novnc_url":        novnc,
 			"user_control":     userControl,
 			"attention_reason": svc.DesktopAttention(principal.TenantID, principal.UserID, botID),
+			"desktop_mode":     botDesktopModeOf(r, svc, principal.TenantID, principal.UserID, botID),
 		})
 	}
 }
@@ -555,6 +556,7 @@ func PostBotDesktopWatchHandler(svc *botmgmt.Service, identity botAuthenticator)
 			"novnc_url":        novnc,
 			"user_control":     userControl,
 			"attention_reason": svc.DesktopAttention(principal.TenantID, principal.UserID, botID),
+			"desktop_mode":     botDesktopModeOf(r, svc, principal.TenantID, principal.UserID, botID),
 		})
 	}
 }
@@ -600,4 +602,14 @@ func GetDesktopHandoffHandler(svc *botmgmt.Service) http.HandlerFunc {
 		w.Header().Set("Content-Security-Policy", "frame-ancestors *")
 		svc.ProxyDesktopHandoff(w, r, r.PathValue("token"), r.PathValue("rest"))
 	}
+}
+
+// botDesktopModeOf tells the GUI whether this bot's picture is its own
+// display ("isolated") or the owner's desktop ("shared").
+func botDesktopModeOf(r *http.Request, svc *botmgmt.Service, tenantID, userID, botID string) string {
+	mode, err := svc.BotDesktopMode(r.Context(), tenantID, userID, botID)
+	if err != nil {
+		return "shared"
+	}
+	return mode
 }

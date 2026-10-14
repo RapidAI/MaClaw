@@ -150,6 +150,8 @@ func (s *Service) HoldDesktopView(ctx context.Context, tenantID, userID, botID s
 	if index < 0 || rec.Bots[index].OwnerUserID != userID {
 		return "", false, ErrNotFound
 	}
+	// An isolated bot's picture, holds and stop are its own display's.
+	userID = desktopUserForBot(userID, rec.Bots[index])
 	// A poll that already gave up must not pin the desktop or start it. The
 	// start that is already running keeps its own deadline; this one does not
 	// begin another.
@@ -274,6 +276,7 @@ func (s *Service) ReleaseUserDesktopView(ctx context.Context, tenantID, userID, 
 		return ErrNotFound
 	}
 	instanceID := rec.Bots[index].InstanceID
+	userID = desktopUserForBot(userID, rec.Bots[index])
 	epoch := desktopWatchEpoch(ctx)
 	s.mu.Lock()
 	s.ensureDesktopHydrated(tenantID)

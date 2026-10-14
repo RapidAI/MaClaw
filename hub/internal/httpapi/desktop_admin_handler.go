@@ -70,6 +70,15 @@ func (c botDesktopControl) Open(ctx context.Context, tenantID, userID string) (s
 	return session.Novnc, nil
 }
 
+// Ctl runs one supervisor control op on the desktop user's display (an
+// isolated bot's takeover state).
+func (c botDesktopControl) Ctl(ctx context.Context, tenantID, userID string, request map[string]any) (map[string]any, error) {
+	if c.pool == nil {
+		return nil, desktoppool.ErrNotAssigned
+	}
+	return c.pool.Ctl(ctx, tenantID, userID, "", request)
+}
+
 func (c botDesktopControl) Stop(ctx context.Context, tenantID, userID string) error {
 	if c.pool == nil {
 		return nil
@@ -409,10 +418,16 @@ func PostDesktopSessionHandler(pool *desktoppool.Pool, bots *botmgmt.Service) ht
 		var in struct {
 			TenantID string `json:"tenant_id"`
 			UserID   string `json:"user_id"`
+			// BotID names an isolated bot (or its instance id). A bot that
+			// is not isolated, or not this user's, opens the user's desktop.
+			BotID string `json:"bot_id"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			writeError(w, http.StatusBadRequest, "INVALID_DESKTOP_SERVICE", "invalid desktop service settings")
 			return
+		}
+		if strings.TrimSpace(in.BotID) != "" && bots != nil {
+			in.UserID = bots.IsolatedDesktopUser(r.Context(), in.TenantID, in.UserID, in.BotID)
 		}
 		session, err := pool.OpenDesktop(r.Context(), in.TenantID, in.UserID)
 		if err != nil {

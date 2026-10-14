@@ -32,6 +32,53 @@ DISPLAY_MAX = 50
 # itself only listens on loopback so the raw screen cannot be reached.
 VNC_GATE_PORT = 6080
 VNC_WEBSOCKIFY_PORT = 6081
+# Per-bot displays (desktop_mode=isolated). A bot key is the owner's 16-hex
+# user key followed by 16 hex of the bot id. Each bot gets its own display
+# above DISPLAY_MIN with only Xvfb, xfwm4 and its own Chromium profile. The
+# owner's two published gates (CDP 19020, noVNC 6080) route a bot's token to
+# that bot's display, so no new container port is needed.
+BOT_IDLE_SECONDS = 600
+BOT_BUSY_SECONDS = 120
+BOT_HUMAN_YIELD_SECONDS = 20
+MAX_BOTS_RUNNING = 3
+# Memory savers for bot browsers (measured: a bot display costs ~70 MB plus
+# its Chromium). Merged into the one --disable-features flag.
+BOT_BROWSER_FLAGS = [
+    "--renderer-process-limit=2",
+    "--disable-site-isolation-trials",
+    "--process-per-site",
+    "--disable-component-update",
+    "--js-flags=--max-old-space-size=512",
+    "--disk-cache-size=67108864",
+]
+BOT_DISABLE_FEATURES = ["IsolateOrigins", "site-per-process", "Translate", "OptimizationHints", "MediaRouter", "BackForwardCache"]
+
+
+def env_int(name, default):
+    try:
+        value = int(os.environ.get(name, "").strip())
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+def owner_key():
+    owner = os.environ.get("MACLAW_DESKTOP_KEY", "").strip()
+    return owner if valid_key(owner) and len(owner) == 16 else ""
+
+
+def is_bot_key(key, owner=None):
+    """A bot display key of this container's owner: owner key + 16 hex."""
+    owner = owner_key() if owner is None else owner
+    return bool(owner) and valid_key(key) and len(key) == 32 and key.startswith(owner)
+
+
+def vnc_ws_port(display):
+    return VNC_WEBSOCKIFY_PORT + (int(display) - DISPLAY_MIN)
+
+
+def vnc_rfb_port(display):
+    return 5900 + (int(display) - DISPLAY_MIN)
 # A fixed screen size keeps agent click coordinates and screenshots stable;
 # noVNC scales it for people. MACLAW_DESKTOP_GEOMETRY overrides it per image
 # or container (WIDTHxHEIGHT or WIDTHxHEIGHTxDEPTH). Images built from
@@ -522,6 +569,20 @@ def main(argv):
             print("invalid user key", file=sys.stderr)
             return 2
         return print_idle(key)
+    if len(argv) == 3 and argv[1] == "display":
+        key = argv[2]
+        if not valid_key(key):
+            print("invalid user key", file=sys.stderr)
+            return 2
+        entry = (load_registry().get("users", {}) or {}).get(key) or {}
+        if not entry.get("display"):
+            print("desktop was never opened", file=sys.stderr)
+            return 1
+        print(json.dumps({"display": ":%d" % int(entry["display"]), "running": desktop_running(key)}))
+        return 0
+    if len(argv) == 2 and argv[1] == "bots-busy":
+        print(json.dumps({"busy": [key for key in running_bot_keys() if bot_busy(key)]}))
+        return 0
     if len(argv) == 3 and argv[1] == "stop":
         key = argv[2]
         if not valid_key(key):
@@ -537,7 +598,7 @@ def main(argv):
         print("invalid user key", file=sys.stderr)
         return 2
     owner = os.environ.get("MACLAW_DESKTOP_KEY", "").strip()
-    if owner and key != owner:
+    if owner and key != owner and not is_bot_key(key):
         print("desktop data belongs to another user", file=sys.stderr)
         return 2
     with desktop_lock():
@@ -577,6 +638,8 @@ def valid_key(key):
 
 
 def ensure(key):
+    if is_bot_key(key):
+        return ensure_bot(key)
     ensure_apt_config()
     try:
         install_browser_integration()
@@ -594,7 +657,7 @@ def ensure(key):
     owner = os.environ.get("MACLAW_DESKTOP_KEY", "").strip()
     if owner == key:
         for other in list(users):
-            if other != key:
+            if other != key and not is_bot_key(other, owner):
                 stop_desktop(other)
                 del users[other]
         if int(entry.get("display") or 0) != DISPLAY_MIN:
@@ -698,7 +761,7 @@ def desktop_env(display):
     return env
 
 
-def browser_argv(profile, chrome_port):
+def browser_argv(profile, chrome_port, bot=False):
     """The one browser of this desktop: the agent's CDP and the person's window.
 
     Every other way to open a browser here (panel launcher, menu, xdg-open,
@@ -720,11 +783,11 @@ def browser_argv(profile, chrome_port):
         "--no-default-browser-check",
         "--disable-session-crashed-bubble",
         "--restore-last-session",
-        "--disable-features=TrackingProtection3pcd,ThirdPartyStoragePartitioning",
+        "--disable-features=" + ",".join(["TrackingProtection3pcd", "ThirdPartyStoragePartitioning"] + (BOT_DISABLE_FEATURES if bot else [])),
         "--remote-debugging-port=%d" % chrome_port,
         "--remote-allow-origins=*",
         "--start-maximized",
-    ] + browser_test_type_flags() + browser_proxy_flags()
+    ] + (BOT_BROWSER_FLAGS if bot else []) + browser_test_type_flags() + browser_proxy_flags()
 
 
 def browser_test_type_flags():
@@ -772,13 +835,13 @@ def browser_proxy_flags():
     return ["--proxy-server=http://%s" % host, "--proxy-bypass-list=%s" % ";".join(rules)]
 
 
-def start_browser(profile, env, log, chrome_port):
+def start_browser(profile, env, log, chrome_port, bot=False):
     env = dict(env)
     # /etc/chromium.d/zz-maclaw-shared-browser sends every other chromium
     # start to open_shared_browser. This is the start it must let through.
     env[SUPERVISED_BROWSER_ENV] = "1"
     log_signin(Path(profile).parent.name, "start: before browser", browser=False)
-    spawn(browser_argv(profile, chrome_port), env, log)
+    spawn(browser_argv(profile, chrome_port, bot), env, log)
     # The launcher pid can exit. Only the process that still has this profile
     # open is the browser with the website login.
     wait_for(lambda: browser_pid(profile) and port_open(chrome_port), "chromium profile %s" % profile)
@@ -924,6 +987,7 @@ def start_desktop(key, display):
     pids["chromium"] = browser_pid(profile)
     if proxy is not None:
         pids["proxy"] = proxy.pid
+        pids["proxy_code"] = supervisor_code()
     write_pids(key, pids)
 
 
@@ -2284,6 +2348,14 @@ def shared_browser_key(env=None):
         display = 0
     users = load_registry().get("users", {})
     owner = env.get("MACLAW_DESKTOP_KEY", "").strip()
+    # A bot display's browser is that bot's profile, never the owner's.
+    if display and display != DISPLAY_MIN:
+        for key, entry in users.items():
+            try:
+                if valid_key(key) and int(entry.get("display") or 0) == display:
+                    return key
+            except (TypeError, ValueError):
+                continue
     if valid_key(owner) and owner in users:
         return owner
     for key, entry in users.items():
@@ -2473,7 +2545,7 @@ def proc_on_display(pid, display):
 
 
 # Desktop parts found by command line. Chromium is found by its profile.
-DESKTOP_PARTS = ("xvfb", "fluxbox", "dbus", "x11vnc", "vnc", "vgate", "proxy", "watch")
+DESKTOP_PARTS = ("xvfb", "fluxbox", "dbus", "x11vnc", "vnc", "vgate", "proxy", "watch", "fcitx")
 
 
 def desktop_part(pid, key, display):
@@ -2491,13 +2563,21 @@ def desktop_part(pid, key, display):
         return "dbus" if "--address=unix:path=/tmp/.maclaw-dbus-%d" % display in argv else ""
     if names[0] in ("xfce4-session", "fluxbox") or "startxfce4" in names:
         return "fluxbox" if proc_on_display(pid, display) else ""
+    if names[0] == "xfwm4" and display != DISPLAY_MIN:
+        # A bot display runs only the window manager; the pid key stays
+        # "fluxbox" (the window session) like the owner's desktop.
+        return "fluxbox" if proc_on_display(pid, display) else ""
+    if names[0] == "fcitx5" and display != DISPLAY_MIN:
+        return "fcitx" if proc_on_display(pid, display) else ""
     if "websockify" in names:
-        return "vnc" if "127.0.0.1:%d" % VNC_WEBSOCKIFY_PORT in argv else ""
+        return "vnc" if "127.0.0.1:%d" % vnc_ws_port(display) in argv else ""
     if len(argv) >= 4 and names[1] == "desktop_supervisor.py":
+        # The two gates belong to the owner's display. A bot display reuses
+        # them by token, so stopping a bot must never adopt or kill them.
         if argv[2] == "gate" and argv[3] == str(VNC_GATE_PORT):
-            return "vgate"
+            return "vgate" if display == DISPLAY_MIN else ""
         if argv[2] == "gate" and argv[3] == str(proxy_port(display)):
-            return "proxy"
+            return "proxy" if display == DISPLAY_MIN else ""
         if argv[2] == "watch" and argv[3] == key:
             return "watch"
     return ""
@@ -2619,6 +2699,7 @@ def ensure_proxy(key, display):
     chrome_port = 18000 + display
     proxy = spawn([sys.executable, __file__, "gate", str(proxy_port(display)), str(chrome_port), token], os.environ.copy(), log)
     pids["proxy"] = proxy.pid
+    pids["proxy_code"] = supervisor_code()
     write_pids(key, pids)
 
 
@@ -2660,6 +2741,8 @@ def record_vnc(pids, pair):
             pids[name] = proc.pid
         else:
             pids.pop(name, None)
+    if pids.get("vgate"):
+        pids["vgate_code"] = supervisor_code()
 
 
 def vnc_pair_alive(pids):
@@ -2722,6 +2805,8 @@ def supervisor_code():
 def watch_vnc(key, display):
     if not valid_key(key):
         return 2
+    if is_bot_key(key):
+        return watch_bot(key, display)
     started = time.time()
     checks = [20, 90]
     while desktop_running(key):
@@ -2788,7 +2873,8 @@ def proxy_port(display):
 
 
 def reap(users, current):
-    running = [key for key in users if key != current and desktop_running(key)]
+    # Bot displays have their own idle stop and cap (evict_bots).
+    running = [key for key in users if key != current and not is_bot_key(key) and desktop_running(key)]
     running.sort(key=lambda key: int(users[key].get("last_used") or 0))
     while len(running) + 1 > MAX_RUNNING:
         stop_desktop(running.pop(0))
@@ -2858,12 +2944,14 @@ def save_registry(registry):
     os.replace(temporary, path)
 
 
-def pipe(left, right):
+def pipe(left, right, watch=None):
     try:
         while True:
             data = left.recv(65536)
             if not data:
                 break
+            if watch is not None:
+                watch.feed(data)
             right.sendall(data)
     except OSError:
         pass
@@ -2900,15 +2988,23 @@ def serve_gate(listen_port, target_port, token):
 
     while True:
         client, _ = server.accept()
+        reap_children()
         try:
             head = read_request_head(client)
-            if head is None or not request_authorized(head, token):
+            route = None
+            if head is not None:
+                if request_authorized(head, token):
+                    route = (target_port, "")
+                else:
+                    route = bot_gate_route(listen_port, request_bearer(head))
+            if route is None:
                 client.close()
                 continue
+            target, bot = route
             remote = None
             for _ in range(40):
                 try:
-                    remote = socket.create_connection(("127.0.0.1", target_port), 1)
+                    remote = socket.create_connection(("127.0.0.1", target), 1)
                     break
                 except OSError:
                     time.sleep(0.25)
@@ -2922,7 +3018,11 @@ def serve_gate(listen_port, target_port, token):
             client.settimeout(None)
             remote.settimeout(None)
             remote.sendall(head)
-            threading.Thread(target=pipe, args=(client, remote), daemon=True).start()
+            watch = None
+            if bot:
+                touch_bot_file(bot, "activity")
+                watch = BotTraffic(bot, sniff_input=listen_port == VNC_GATE_PORT)
+            threading.Thread(target=pipe, args=(client, remote, watch), daemon=True).start()
             threading.Thread(target=pipe, args=(remote, client), daemon=True).start()
         except OSError:
             try:
@@ -2954,6 +3054,23 @@ def read_request_head(client, limit=16384, timeout=10):
     return None
 
 
+def request_bearer(head):
+    """The Bearer credential of an HTTP request head, or ""."""
+    try:
+        text = head.decode("latin-1")
+    except UnicodeDecodeError:
+        return ""
+    for line in text.split("\n")[1:]:
+        if line.strip() == "":
+            break
+        name, _, value = line.partition(":")
+        if name.strip().lower() != "authorization":
+            continue
+        scheme, _, credential = value.strip().partition(" ")
+        return credential.strip() if scheme.lower() == "bearer" else ""
+    return ""
+
+
 def request_authorized(head, token):
     try:
         text = head.decode("latin-1")
@@ -2972,6 +3089,451 @@ def request_authorized(head, token):
         return hmac.compare_digest(credential.strip(), token)
     return False
 
+
+
+# ---------------------------------------------------------------------------
+# Per-bot displays (desktop_mode=isolated).
+#
+# ensure <owner+bot> starts a light display for one bot: Xvfb, a session bus,
+# xfwm4 and that bot's own Chromium profile with the memory-saving flags. The
+# person watches it through the owner's noVNC gate (6080) with the bot's
+# token; x11vnc and websockify for that display start only on the first
+# view. The bot's CDP goes through the owner's CDP gate (19020) the same way.
+# A bot display stops after MACLAW_BOT_IDLE_SECONDS without traffic, never
+# while the person has it (takeover), and at most MACLAW_DESKTOP_MAX_BOTS run
+# at once (least recently used first, a busy one never).
+
+
+def touch_bot_file(key, name, force=False):
+    path = ROOT / key / name
+    try:
+        if not force and time.time() - path.stat().st_mtime < 2:
+            return
+    except OSError:
+        pass
+    try:
+        path.parent.mkdir(mode=0o700, exist_ok=True)
+        path.touch()
+        os.utime(path, None)
+    except OSError:
+        pass
+
+
+def bot_file_age(key, name):
+    try:
+        return max(0.0, time.time() - (ROOT / key / name).stat().st_mtime)
+    except OSError:
+        return None
+
+
+def takeover_state(key):
+    try:
+        data = json.loads((ROOT / key / "takeover.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else None
+
+
+def bot_last_activity(key):
+    entry = (load_registry().get("users", {}) or {}).get(key) or {}
+    last = float(entry.get("last_used") or 0)
+    for name in ("activity", "human_input"):
+        try:
+            last = max(last, (ROOT / key / name).stat().st_mtime)
+        except OSError:
+            pass
+    return last
+
+
+def bot_busy(key):
+    """A bot display that must not be evicted: the person has it, or the bot
+    used it within BOT_BUSY_SECONDS (a running task)."""
+    if takeover_state(key) is not None:
+        return True
+    return time.time() - bot_last_activity(key) < BOT_BUSY_SECONDS
+
+
+def running_bot_keys():
+    users = load_registry().get("users", {}) or {}
+    return [key for key in users if is_bot_key(key) and desktop_running(key)]
+
+
+def ensure_bot(key):
+    registry = load_registry()
+    users = registry.setdefault("users", {})
+    entry = users.get(key)
+    try:
+        display = int((entry or {}).get("display") or 0)
+    except (TypeError, ValueError):
+        display = 0
+    if entry is None or not (DISPLAY_MIN < display <= DISPLAY_MAX):
+        used = {DISPLAY_MIN}
+        for other, item in users.items():
+            if other != key:
+                try:
+                    used.add(int(item.get("display") or 0))
+                except (TypeError, ValueError):
+                    pass
+        free = [d for d in range(DISPLAY_MIN + 1, DISPLAY_MAX + 1) if d not in used]
+        if not free:
+            raise SystemExit("no free desktop display")
+        entry = dict(entry or {})
+        entry["display"] = free[0]
+        users[key] = entry
+    display = int(entry["display"])
+    entry["bot"] = True
+    entry["last_used"] = int(time.time())
+    token = entry.get("token")
+    if not token or not valid_key(token):
+        entry["token"] = secrets.token_hex(16)
+    token = entry["token"]
+    save_registry(registry)
+    ensure_gates()
+    if not desktop_running(key):
+        evict_bots(key)
+        start_bot_desktop(key, display)
+    ensure_watch(key, display)
+    touch_bot_file(key, "activity", force=True)
+    return {"display": ":%d" % display, "cdp_port": proxy_port(DISPLAY_MIN), "token": token}
+
+
+def evict_bots(current):
+    cap = env_int("MACLAW_DESKTOP_MAX_BOTS", MAX_BOTS_RUNNING)
+    running = [key for key in running_bot_keys() if key != current]
+    while len(running) + 1 > cap:
+        idle = [key for key in running if not bot_busy(key)]
+        if not idle:
+            # Every other bot is working or with the person: run over the cap
+            # rather than kill a task.
+            return
+        victim = min(idle, key=bot_last_activity)
+        stop_desktop(victim)
+        running.remove(victim)
+
+
+def start_bot_desktop(key, display):
+    home = ROOT / key
+    home.mkdir(mode=0o700, exist_ok=True)
+    profile = home / "profile"
+    profile.mkdir(mode=0o700, exist_ok=True)
+    clear_flush_flag(key)
+    release_profile_lock(profile)
+    keep_website_login(profile)
+    log = open(home / "desktop.log", "ab")
+    env = desktop_env(display)
+    chrome_port = 18000 + display
+    pids = current_pids(key, display)
+    if not (pid_alive(pids.get("xvfb")) and Path("/tmp/.X11-unix/X%d" % display).exists()):
+        for name in ("vnc", "x11vnc", "fcitx", "fluxbox", "dbus", "xvfb"):
+            kill_pid(pids.pop(name, None))
+        clear_stale_display(display)
+        xvfb = spawn(["Xvfb", ":%d" % display, "-screen", "0", desktop_geometry(), "-ac", "+extension", "GLX", "+render", "-noreset", "-s", "0"], env, log)
+        pids["xvfb"] = xvfb.pid
+        write_pids(key, pids)
+        wait_for(lambda: Path("/tmp/.X11-unix/X%d" % display).exists(), "display :%d" % display)
+    keep_screen_awake(display)
+    bus = Path("/tmp/.maclaw-dbus-%d" % display)
+    if pid_alive(pids.get("dbus")) and bus.exists():
+        env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=%s" % bus
+    else:
+        kill_pid(pids.pop("dbus", None))
+        address, bus_pid = start_session_bus(env, log, display)
+        if address:
+            env["DBUS_SESSION_BUS_ADDRESS"] = address
+            pids["dbus"] = bus_pid
+    if not pid_alive(pids.get("fluxbox")):
+        wm = ["xfwm4", "--compositor=off"] if shutil.which("xfwm4") else ["fluxbox"]
+        pids["fluxbox"] = spawn(wm, env, log).pid
+    write_pids(key, pids)
+    start_browser(profile, env, log, chrome_port, bot=True)
+    try:
+        restore_page_login(key)
+    except (OSError, ValueError, TypeError):
+        pass
+    pids["chromium"] = browser_pid(profile)
+    write_pids(key, pids)
+
+
+def ensure_gates():
+    """The owner's CDP and noVNC gates, running the current supervisor code.
+
+    Bot displays reach the outside only through them. They run even while
+    the owner's own desktop is stopped. Gates started by an older supervisor
+    do not know bot tokens, so they are replaced once.
+    """
+    owner = owner_key()
+    if not owner:
+        return
+    registry = load_registry()
+    users = registry.setdefault("users", {})
+    entry = users.get(owner)
+    if entry is None:
+        entry = {"display": DISPLAY_MIN, "last_used": 0}
+        users[owner] = entry
+    token = entry.get("token")
+    if not token or not valid_key(token):
+        token = secrets.token_hex(16)
+        entry["token"] = token
+        save_registry(registry)
+    pids = current_pids(owner, DISPLAY_MIN)
+    code = supervisor_code()
+    changed = False
+    for name, port, target in (
+        ("proxy", proxy_port(DISPLAY_MIN), 18000 + DISPLAY_MIN),
+        ("vgate", VNC_GATE_PORT, VNC_WEBSOCKIFY_PORT),
+    ):
+        if pid_alive(pids.get(name)) and pids.get(name + "_code") == code:
+            continue
+        kill_pid(pids.get(name))
+        for _ in range(20):
+            if not port_open(port):
+                break
+            time.sleep(0.1)
+        home = ROOT / owner
+        home.mkdir(mode=0o700, exist_ok=True)
+        log = open(home / "desktop.log", "ab")
+        proc = spawn([sys.executable, __file__, "gate", str(port), str(target), token], os.environ.copy(), log)
+        pids[name] = proc.pid
+        pids[name + "_code"] = code
+        changed = True
+    if changed:
+        write_pids(owner, pids)
+
+
+def ensure_bot_vnc(key, display):
+    """x11vnc + websockify for one bot display, started on the first view."""
+    if shutil.which("x11vnc") is None or shutil.which("websockify") is None:
+        return 0
+    with desktop_lock():
+        if not desktop_running(key):
+            return 0
+        pids = current_pids(key, display)
+        ws = vnc_ws_port(display)
+        if pid_alive(pids.get("x11vnc")) and pid_alive(pids.get("vnc")):
+            return ws
+        kill_pid(pids.get("vnc"))
+        kill_pid(pids.get("x11vnc"))
+        log = open(ROOT / key / "desktop.log", "ab")
+        env = os.environ.copy()
+        env["DISPLAY"] = ":%d" % display
+        rfb = vnc_rfb_port(display)
+        x11 = spawn(["x11vnc", "-display", ":%d" % display, "-nopw", "-localhost", "-forever", "-shared", "-rfbport", str(rfb)], env, log)
+        web = spawn(["websockify", "--web", "/usr/share/novnc", "127.0.0.1:%d" % ws, "localhost:%d" % rfb], env, log)
+        pids["x11vnc"] = x11.pid
+        pids["vnc"] = web.pid
+        write_pids(key, pids)
+        for _ in range(40):
+            if port_open(ws) and port_open(rfb):
+                break
+            time.sleep(0.1)
+        return ws
+
+
+def start_bot_fcitx(key, display):
+    """The input method for a person typing on a bot display (lazy)."""
+    if shutil.which("fcitx5") is None:
+        return
+    pids = current_pids(key, display)
+    if pid_alive(pids.get("fcitx")):
+        return
+    env = desktop_env(display)
+    bus = Path("/tmp/.maclaw-dbus-%d" % display)
+    if bus.exists():
+        env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=%s" % bus
+    log = open(ROOT / key / "desktop.log", "ab")
+    pids["fcitx"] = spawn(["fcitx5"], env, log).pid
+    write_pids(key, pids)
+
+
+def bot_gate_route(listen_port, credential):
+    """(local port, bot key) for a bot token on one of the owner's gates."""
+    if not credential or listen_port not in (VNC_GATE_PORT, proxy_port(DISPLAY_MIN)):
+        return None
+    users = load_registry().get("users", {}) or {}
+    for key, entry in users.items():
+        token = str((entry or {}).get("token") or "")
+        if not token or not is_bot_key(key) or not hmac.compare_digest(token, credential):
+            continue
+        try:
+            display = int(entry.get("display") or 0)
+        except (TypeError, ValueError):
+            return None
+        if not (DISPLAY_MIN < display <= DISPLAY_MAX):
+            return None
+        if listen_port == VNC_GATE_PORT:
+            port = ensure_bot_vnc(key, display)
+            reap_children()
+            return (port, key) if port else None
+        return (18000 + display, key)
+    return None
+
+
+class BotTraffic:
+    """Marks bot activity, and person input on a bot's noVNC connection.
+
+    The viewer's bytes are WebSocket frames carrying the RFB client stream.
+    A key event, a pointer event with a button down, or a paste is a person
+    acting on that display; the bot yields while that is recent.
+    """
+
+    SIZES = {0: 20, 3: 10, 4: 8, 5: 6, 150: 10, 248: 12}
+
+    def __init__(self, key, sniff_input):
+        self.key = key
+        self.sniff = sniff_input
+        self.frames = b""
+        self.rfb = b""
+        self.stage = 0
+
+    def feed(self, data):
+        touch_bot_file(self.key, "activity")
+        if not self.sniff:
+            return
+        try:
+            self.frames += data
+            if len(self.frames) > (1 << 20):
+                self.sniff = False
+                return
+            self._frames()
+        except (ValueError, IndexError, struct.error):
+            self.sniff = False
+
+    def _frames(self):
+        buf = self.frames
+        while len(buf) >= 2:
+            length = buf[1] & 0x7F
+            pos = 2
+            if length == 126:
+                if len(buf) < 4:
+                    break
+                length = struct.unpack(">H", buf[2:4])[0]
+                pos = 4
+            elif length == 127:
+                if len(buf) < 10:
+                    break
+                length = struct.unpack(">Q", buf[2:10])[0]
+                pos = 10
+            mask = b""
+            if buf[1] & 0x80:
+                mask = buf[pos:pos + 4]
+                pos += 4
+            if len(buf) < pos + length:
+                break
+            payload = buf[pos:pos + length]
+            if mask:
+                payload = bytes(b ^ mask[i % 4] for i, b in enumerate(payload))
+            if buf[0] & 0x0F in (0, 1, 2):
+                self.rfb += payload
+                self._messages()
+            buf = buf[pos + length:]
+        self.frames = buf
+
+    def _messages(self):
+        data = self.rfb
+        while True:
+            if self.stage == 0:  # ProtocolVersion
+                if len(data) < 12:
+                    break
+                data, self.stage = data[12:], 1
+            elif self.stage in (1, 2):  # security type, ClientInit
+                if len(data) < 1:
+                    break
+                data, self.stage = data[1:], self.stage + 1
+            else:
+                if not data:
+                    break
+                kind = data[0]
+                if kind in self.SIZES:
+                    need = self.SIZES[kind]
+                elif kind == 2:
+                    if len(data) < 4:
+                        break
+                    need = 4 + 4 * struct.unpack(">H", data[2:4])[0]
+                elif kind == 6:
+                    if len(data) < 8:
+                        break
+                    need = 8 + struct.unpack(">I", data[4:8])[0]
+                elif kind == 251:
+                    if len(data) < 8:
+                        break
+                    need = 8 + 16 * data[6]
+                else:
+                    self.sniff = False
+                    break
+                if len(data) < need:
+                    break
+                if kind in (4, 6, 248) or (kind == 5 and data[1] != 0):
+                    touch_bot_file(self.key, "human_input")
+                data = data[need:]
+        self.rfb = data
+
+
+def watch_bot(key, display):
+    idle_limit = env_int("MACLAW_BOT_IDLE_SECONDS", BOT_IDLE_SECONDS)
+    while desktop_running(key):
+        stopped = False
+        with desktop_lock():
+            if desktop_running(key):
+                ensure_gates()
+                keep_screen_awake(display)
+                if takeover_state(key) is None and time.time() - bot_last_activity(key) >= idle_limit:
+                    print("bot display %s idle, stopping" % key, file=sys.stderr)
+                    stop_desktop(key)
+                    stopped = True
+        reap_children()
+        if stopped:
+            break
+        time.sleep(5)
+    return 0
+
+
+def ctl_bot_key(request):
+    key = str(request.get("key") or "")
+    if not is_bot_key(key):
+        raise ValueError("this is not a bot display")
+    return key
+
+
+def ctl_bot_state(request):
+    key = ctl_bot_key(request)
+    touch_bot_file(key, "activity")
+    human = bot_file_age(key, "human_input")
+    state = takeover_state(key)
+    yield_limit = env_int("MACLAW_BOT_HUMAN_YIELD_SECONDS", BOT_HUMAN_YIELD_SECONDS)
+    return {
+        "ok": True,
+        "running": desktop_running(key),
+        "takeover": state is not None,
+        "reason": str((state or {}).get("reason") or ""),
+        "human_input_age": int(human) if human is not None else -1,
+        "yield": state is not None or (human is not None and human < yield_limit),
+    }
+
+
+def ctl_takeover_begin(request):
+    key = ctl_bot_key(request)
+    reason = str(request.get("reason") or "").strip()[:300]
+    path = ROOT / key / "takeover.json"
+    path.parent.mkdir(mode=0o700, exist_ok=True)
+    path.write_text(json.dumps({"reason": reason, "since": int(time.time())}), encoding="utf-8")
+    entry = (load_registry().get("users", {}) or {}).get(key) or {}
+    try:
+        display = int(entry.get("display") or 0)
+    except (TypeError, ValueError):
+        display = 0
+    if DISPLAY_MIN < display <= DISPLAY_MAX and desktop_running(key):
+        start_bot_fcitx(key, display)
+    return {"ok": True, "takeover": True, "reason": reason}
+
+
+def ctl_takeover_end(request):
+    key = ctl_bot_key(request)
+    try:
+        (ROOT / key / "takeover.json").unlink()
+    except OSError:
+        pass
+    touch_bot_file(key, "activity", force=True)
+    return {"ok": True, "takeover": False}
 
 
 # ---------------------------------------------------------------------------
@@ -3657,6 +4219,9 @@ CTL_OPS = {
     "screen": ctl_screen,
     "wait": ctl_wait,
     "status": ctl_status,
+    "bot_state": ctl_bot_state,
+    "takeover_begin": ctl_takeover_begin,
+    "takeover_end": ctl_takeover_end,
 }
 
 

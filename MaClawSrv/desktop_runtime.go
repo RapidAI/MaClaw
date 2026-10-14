@@ -42,7 +42,7 @@ const desktopMaxSteps = 16
 // teaches. Plan phase exposes the read-only prefix of the same list; which of
 // the remaining actions a plan-phase turn may take is the phase gate's own
 // decision, not a second vocabulary.
-var desktopExecuteActions = []string{"navigate", "probe", "click", "type", "press", "task_run", "script", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait"}
+var desktopExecuteActions = []string{"navigate", "probe", "click", "type", "press", "task_run", "script", "skill_list", "skill_run", "app_list", "app_run", "app_open", "install", "screenshot", "deliver", "file_read", "file_write", "file_edit", "file_list", "bash", "computer", "app_probe", "clipboard_get", "clipboard_set", "window_list", "window", "screen_info", "wait", "request_takeover"}
 
 var desktopPlanActions = []string{"probe", "screenshot", "app_list", "file_read", "file_list", "skill_list", "app_probe", "window_list", "screen_info", "clipboard_get", "wait"}
 
@@ -141,11 +141,13 @@ func (desktopRuntimeModule) Tools(_ context.Context, request agentruntime.TurnRe
 			"For non-browser windows: action=app_probe lists the accessible elements (role, name, states, bounds) of the focused window with numbered ids; app_run or computer steps then target {\"id\":N} (click, focus, set_text). marks=true adds a screenshot with those numbers drawn. " +
 			"action=computer runs a batch of computer-use actions (Anthropic or OpenAI names) and reports each step; it stops at the first failure. " +
 			"action=clipboard_set then a paste step (or app_run paste{text}) inserts long or Chinese text without the input method. clipboard_get reads it. window_list, window (activate, maximize, minimize, restore, move, resize, close), screen_info, and wait (for screen change or a window) manage windows. " +
-			"action=screenshot accepts max_width/max_height (scaled image; your coordinates stay in that image), region (zoom), format jpeg/webp, quality, and cursor.",
+			"action=screenshot accepts max_width/max_height (scaled image; your coordinates stay in that image), region (zoom), format jpeg/webp, quality, and cursor. " +
+			"When a site needs a login, password, 2FA/SMS code, or a captcha, do not try to get past it yourself: call action=request_takeover with reason, then stop and end your turn, telling the person what to do on the desktop and to press hand back (交还) when done. You resume after the hand back.",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"action":      map[string]any{"type": "string", "description": "probe, script, skill_list, skill_run, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, bash, computer, app_probe, clipboard_get, clipboard_set, window_list, window, screen_info, or wait", "enum": desktopExecuteActions},
+				"action":      map[string]any{"type": "string", "description": "probe, script, skill_list, skill_run, task_run, app_list, app_run, app_open, install, screenshot, navigate, click, type, press, deliver, file_read, file_write, file_edit, file_list, bash, computer, app_probe, clipboard_get, clipboard_set, window_list, window, screen_info, wait, or request_takeover", "enum": desktopExecuteActions},
+				"reason":      map[string]any{"type": "string", "description": "request_takeover: one short sentence for the person, what they need to do on this desktop (log in, enter the 2FA code, solve the captcha)."},
 				"path":        map[string]any{"type": "string", "description": "Container path. file_read, file_write, file_edit, and file_list use it as the file. action=deliver attaches that existing file, such as /home/desktop/Desktop/北京天气.pdf. /home/desktop/Desktop/a.c and ~/Desktop/a.c are the same folder."},
 				"old_string":  map[string]any{"type": "string", "description": "Exact passage file_edit replaces. It must occur once."},
 				"new_string":  map[string]any{"type": "string", "description": "Replacement text for file_edit."},
@@ -352,7 +354,13 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 		}
 		return deliverDesktopDocument(ctx, scope, args)
 	}
+	if action == "request_takeover" {
+		return requestDesktopTakeover(ctx, scope, desktopArg(args, "reason"))
+	}
 	if err := desktopBlockedByPerson(scope); err != nil {
+		return "", err
+	}
+	if err := desktopBotYield(ctx, scope); err != nil {
 		return "", err
 	}
 	if action == "navigate" && desktopArg(args, "url") == "" {
@@ -911,7 +919,7 @@ func desktopScopeForTurn(request agentruntime.TurnRequest) (agentruntime.Scope, 
 	scope = desktopOwner(scope)
 	cloud := false
 	if user := strings.TrimSpace(meta["hub_user_id"]); desktop.ValidUserID(user) {
-		scope.UserID = user
+		scope.UserID = desktopBotUser(user, meta)
 		cloud = true
 		if tenant := strings.TrimSpace(meta["hub_tenant_id"]); validDesktopTenant(tenant) {
 			scope.TenantID = tenant

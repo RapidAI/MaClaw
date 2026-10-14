@@ -414,6 +414,10 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	}
 	botID = rec.Bots[index].ID
 	instanceID := rec.Bots[index].InstanceID
+	// The desktop state of this command: the owner's desktop, or this bot's
+	// own display when it is isolated.
+	desktopUser := desktopUserForBot(userID, rec.Bots[index])
+	isolated := botIsolated(rec.Bots[index])
 	traceBot(botID, "post_begin", nil,
 		"tenant", tenantID,
 		"user", userID,
@@ -430,7 +434,16 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	// uses the same browser now. The keyboard is returned only after this
 	// command is counted, so a stop cannot shut the browser in between.
 	step := time.Now()
-	novnc, opened, err := s.openDesktop(ctx, tenantID, userID, instanceID, botID)
+	var novnc string
+	var opened bool
+	if isolated {
+		// An isolated bot's display starts on its first desktop action
+		// (MaClawSrv opens the session), not on every message. A waiting
+		// login still hands the keyboard back to the bot here.
+		s.releaseDesktopKeyboard(tenantID, desktopUser, botID)
+	} else {
+		novnc, opened, err = s.openDesktop(ctx, tenantID, userID, instanceID, botID)
+	}
 	traceBot(botID, "open_desktop", err,
 		"instance", instanceID,
 		"opened", traceYes(opened),
@@ -440,7 +453,7 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	if err != nil {
 		// The desktop did not change hands. If this bot was already waiting
 		// for a login, the person still needs the keyboard on that browser.
-		s.restoreDesktopKeyboard(tenantID, userID, botID)
+		s.restoreDesktopKeyboard(tenantID, desktopUser, botID)
 		return BotAdmission{}, err
 	}
 	var payload struct {
@@ -464,8 +477,8 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	fresh, token, tokenErr := s.ownerToken(ctx, tenantID, userID)
 	traceBot(botID, "owner_token", tokenErr, "dur_ms", traceMS(time.Since(step)))
 	if tokenErr != nil {
-		s.restoreDesktopKeyboard(tenantID, userID, botID)
-		s.finishDesktopOpen(tenantID, userID, instanceID, opened, true)
+		s.restoreDesktopKeyboard(tenantID, desktopUser, botID)
+		s.finishDesktopOpen(tenantID, desktopUser, instanceID, opened, true)
 		return BotAdmission{}, tokenErr
 	}
 	instancePath := "/api/v1/instances/" + url.PathEscape(rec.Bots[index].InstanceID)
@@ -475,11 +488,11 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	// If those settings cannot be read, skip the write. A partial map would
 	// replace them and the next command would not be this same bot.
 	step = time.Now()
-	metadata, writeMetadata, metaErr := s.desktopIdentityMetadata(ctx, &fresh, &token, instancePath, userID, tenantID)
+	metadata, writeMetadata, metaErr := s.desktopIdentityMetadata(ctx, &fresh, &token, instancePath, userID, tenantID, rec.Bots[index])
 	traceBot(botID, "read_instance", metaErr, "instance", instanceID, "dur_ms", traceMS(time.Since(step)))
 	if metaErr != nil {
-		s.restoreDesktopKeyboard(tenantID, userID, botID)
-		s.finishDesktopOpen(tenantID, userID, instanceID, opened, true)
+		s.restoreDesktopKeyboard(tenantID, desktopUser, botID)
+		s.finishDesktopOpen(tenantID, desktopUser, instanceID, opened, true)
 		return BotAdmission{}, metaErr
 	}
 	step = time.Now()
@@ -491,8 +504,8 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		"metadata": metadata,
 	}, nil); err != nil {
 		traceBot(botID, "patch_instance", err, "instance", instanceID, "dur_ms", traceMS(time.Since(step)))
-		s.restoreDesktopKeyboard(tenantID, userID, botID)
-		s.finishDesktopOpen(tenantID, userID, instanceID, opened, true)
+		s.restoreDesktopKeyboard(tenantID, desktopUser, botID)
+		s.finishDesktopOpen(tenantID, desktopUser, instanceID, opened, true)
 		return BotAdmission{}, err
 	} else {
 		traceBot(botID, "patch_instance", nil, "instance", instanceID, "dur_ms", traceMS(time.Since(step)))
@@ -504,8 +517,8 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		"dur_ms", traceMS(time.Since(step)),
 	)
 	if llmErr != nil {
-		s.restoreDesktopKeyboard(tenantID, userID, botID)
-		s.finishDesktopOpen(tenantID, userID, instanceID, opened, true)
+		s.restoreDesktopKeyboard(tenantID, desktopUser, botID)
+		s.finishDesktopOpen(tenantID, desktopUser, instanceID, opened, true)
 		return BotAdmission{}, llmErr
 	}
 	path := instancePath + "/messages"
@@ -616,6 +629,9 @@ type desktopCommandBody struct {
 }
 
 func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novnc string, opened bool, body desktopCommandBody) (Reply, error) {
+	// Holds, keyboard and picture are the bot's own display's when it is
+	// isolated. The attention reason is keyed per bot and owner either way.
+	userID = s.desktopUserOf(tenantID, userID, botID)
 	if body.CallErr != nil {
 		// The instance may already be waiting for a login. Stopping here
 		// would close that browser before the person can use it. A failed
@@ -693,7 +709,7 @@ func (s *Service) settleDesktopCommand(tenantID, userID, botID, instanceID, novn
 // desktopIdentityMetadata is this Hub user on the instance, plus any
 // metadata the instance already had. The desktop key is the Hub user.
 // Other fields stay so this bot remains the same instance.
-func (s *Service) desktopIdentityMetadata(ctx context.Context, rec *record, token *string, instancePath, userID, tenantID string) (map[string]string, bool, error) {
+func (s *Service) desktopIdentityMetadata(ctx context.Context, rec *record, token *string, instancePath, userID, tenantID string, bot Bot) (map[string]string, bool, error) {
 	var existing struct {
 		ID       string            `json:"id"`
 		Metadata map[string]string `json:"metadata"`
@@ -716,6 +732,12 @@ func (s *Service) desktopIdentityMetadata(ctx context.Context, rec *record, toke
 	metadata["hub_bot"] = "1"
 	metadata["hub_user_id"] = userID
 	metadata["hub_tenant_id"] = tenantID
+	// MaClawSrv gives an isolated bot its own desktop user (and display).
+	if botIsolated(bot) {
+		metadata[desktopBotMetadataKey] = bot.ID
+	} else {
+		delete(metadata, desktopBotMetadataKey)
+	}
 	// Bot turns bill the MaClaw official group. A group copied from an older
 	// instance, including system-free, would skip that deduction channel.
 	metadata["llm_service_group_id"] = botLLMServiceGroupID
@@ -897,9 +919,11 @@ func (s *Service) HoldDesktop(ctx context.Context, tenantID, userID, instanceID 
 	if err != nil {
 		return err
 	}
+	// MaClawSrv names an isolated bot's desktop by its desktop user.
+	owner, _ := desktop.SplitDesktopUser(userID)
 	for _, bot := range rec.Bots {
-		if bot.InstanceID == instanceID && bot.OwnerUserID == userID {
-			s.noteDesktopHeld(tenantID, userID, bot.ID)
+		if bot.InstanceID == instanceID && bot.OwnerUserID == owner {
+			s.noteDesktopHeld(tenantID, desktopUserForBot(owner, bot), bot.ID)
 			return nil
 		}
 	}
@@ -1309,6 +1333,7 @@ func (s *Service) DesktopWatch(ctx context.Context, tenantID, userID, botID stri
 	if index < 0 || rec.Bots[index].OwnerUserID != userID {
 		return "", false, ErrNotFound
 	}
+	userID = desktopUserForBot(userID, rec.Bots[index])
 	novnc := s.desktopViewURL(tenantID, userID)
 	return novnc, novnc != "" && s.desktopKeyboardForBot(tenantID, userID, botID), nil
 }

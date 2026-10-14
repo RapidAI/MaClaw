@@ -61,6 +61,10 @@ type Bot struct {
 	InstanceID  string `json:"instance_id"`
 	OwnerUserID string `json:"owner_user_id,omitempty"`
 	CreatedAt   string `json:"created_at"`
+	// DesktopMode is "isolated" when this bot drives its own virtual display
+	// in the owner's desktop container; empty or "shared" is the owner's
+	// desktop, as before.
+	DesktopMode string `json:"desktop_mode,omitempty"`
 }
 
 type record struct {

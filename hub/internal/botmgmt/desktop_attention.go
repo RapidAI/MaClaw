@@ -1,9 +1,16 @@
 package botmgmt
 
-import "strings"
+import (
+	"strings"
 
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
+)
+
+// The attention reason is per bot already, so it is keyed by the owner even
+// when an isolated bot's desktop user is passed in.
 func desktopAttentionKey(tenantID, userID, botID string) string {
-	return desktopViewKey(tenantID, userID) + "\x00" + strings.TrimSpace(botID)
+	owner, _ := desktop.SplitDesktopUser(userID)
+	return desktopViewKey(tenantID, owner) + "\x00" + strings.TrimSpace(botID)
 }
 
 func (s *Service) noteDesktopAttention(tenantID, userID, botID, reason string) {

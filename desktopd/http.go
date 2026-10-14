@@ -346,7 +346,7 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 		}
 		writeJSON(w, http.StatusOK, desktop)
 	})
-	return mux
+	return withBotID(mux)
 }
 
 // decodeBody caps request bodies: the desktop API only ever carries small

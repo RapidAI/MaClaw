@@ -388,7 +388,7 @@ func rememberDesktopOwner(instanceID string, metadata map[string]string, fallbac
 	bound := false
 	if metadata != nil {
 		if user := strings.TrimSpace(metadata["hub_user_id"]); desktop.ValidUserID(user) {
-			account.UserID = user
+			account.UserID = desktopBotUser(user, metadata)
 			bound = true
 		}
 		if tenant := strings.TrimSpace(metadata["hub_tenant_id"]); validDesktopTenant(tenant) {

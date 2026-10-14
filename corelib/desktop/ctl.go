@@ -36,7 +36,31 @@ const CtlRequestMax = 96 << 10
 const CtlTimeoutSeconds = 60
 
 // ValidCtlOp reports whether op is a known control operation.
+// Bot display control ops. They act on one isolated bot display; the
+// Docker service fills in that display's key, a client never names it.
+const (
+	CtlBotState      = "bot_state"
+	CtlTakeoverBegin = "takeover_begin"
+	CtlTakeoverEnd   = "takeover_end"
+)
+
+// CtlBotOps are accepted only for a bot desktop (desktop_mode=isolated).
+var CtlBotOps = []string{CtlBotState, CtlTakeoverBegin, CtlTakeoverEnd}
+
+// IsCtlBotOp reports whether op is one of CtlBotOps.
+func IsCtlBotOp(op string) bool {
+	for _, known := range CtlBotOps {
+		if op == known {
+			return true
+		}
+	}
+	return false
+}
+
 func ValidCtlOp(op string) bool {
+	if IsCtlBotOp(op) {
+		return true
+	}
 	for _, known := range CtlOps {
 		if op == known {
 			return true

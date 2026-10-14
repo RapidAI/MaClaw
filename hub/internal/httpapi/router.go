@@ -399,6 +399,7 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/admin/bots/llm", requireTenantAdmin(PutBotLLMSettingsAdminHandler(botSvc, adminAudit)))
 	mux.HandleFunc("POST /api/admin/bots/connection/test", requireTenantAdmin(TestBotConnectionAdminHandler(botSvc)))
 	mux.HandleFunc("POST /api/admin/bots/grants", requireTenantAdmin(PostBotGrantAdminHandler(botSvc, adminAudit)))
+	mux.HandleFunc("PUT /api/admin/bots/{id}/desktop-mode", requireTenantAdmin(PutBotDesktopModeAdminHandler(botSvc)))
 	mux.HandleFunc("DELETE /api/admin/bots/grants/{id}", requireTenantAdmin(DeleteBotGrantAdminHandler(botSvc, adminAudit)))
 	var desktopDirectory desktoppool.Directory
 	if platformUsers != nil && securitySvc != nil {
@@ -456,6 +457,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/v1/bots/{id}/secret-fill", PostBotSecretFillHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/{id}/desktop", GetBotDesktopHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/desktop", PostBotDesktopWatchHandler(botSvc, identity))
+	mux.HandleFunc("POST /api/v1/bots/{id}/desktop/handback", PostBotDesktopHandBackHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/llm", GetBotLLMHandler(botSvc, identity))
 	mux.HandleFunc("PUT /api/v1/bots/llm", PutBotLLMHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/desktop-handoff/{token}/{rest...}", GetDesktopHandoffHandler(botSvc))

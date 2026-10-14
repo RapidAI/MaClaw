@@ -46,6 +46,8 @@ type CommandRunner func(ctx context.Context, stdin io.Reader, args ...string) (o
 // the next start: the stop writes the website login, and a start in the
 // middle would open a second browser.
 type Service struct {
+	// botOwners: see stopOwnerOnlyWhileBotsBusy.
+	botOwners     sync.Map
 	Run           Runner
 	RunCommand    CommandRunner
 	AdvertiseHost string
@@ -84,10 +86,13 @@ func (s *Service) desktopProxy() string {
 type Spec struct {
 	TenantID string
 	UserID   string
-	Image    string
-	Memory   string
-	CPUs     string
-	ShmSize  string
+	// BotID is set for an isolated bot's display. UserID is then the owner:
+	// the container is the owner's, only the X display is the bot's.
+	BotID   string
+	Image   string
+	Memory  string
+	CPUs    string
+	ShmSize string
 }
 
 // Desktop is one user's container on this Docker host.
@@ -301,6 +306,19 @@ func (s *Service) Stop(ctx context.Context, tenantID, userID string) (Desktop, e
 
 func (s *Service) stopUnlocked(ctx context.Context, spec Spec) (Desktop, error) {
 	name := containerName(spec.TenantID, spec.UserID)
+	if spec.BotID != "" {
+		// A bot display stops itself after its idle time (the supervisor
+		// watcher), with its browser login written first. Stopping it at the
+		// end of every run would cost a cold start on the next command.
+		out := desktopOf(spec, name, "idle")
+		out.Image, out.Memory, out.CPUs, out.ShmSize = "", "", "", ""
+		return out, nil
+	}
+	if s.stopOwnerOnlyWhileBotsBusy(ctx, name, spec) {
+		out := desktopOf(spec, name, "stopped")
+		out.Image, out.Memory, out.CPUs, out.ShmSize = "", "", "", ""
+		return out, nil
+	}
 	// Best effort. A stopped container has nothing to flush, and a failed
 	// flush must not leave the desktop running.
 	// The caller may already have disconnected. This write still has to finish,
@@ -352,9 +370,12 @@ func (s *Service) openSessionUnlocked(ctx context.Context, spec Spec) (Session, 
 		return Session{}, err
 	}
 	spec, _ = normalize(spec)
-	key, err := desktop.UserKey(spec.TenantID, spec.UserID)
+	key, err := specKey(spec)
 	if err != nil {
 		return Session{}, err
+	}
+	if spec.BotID != "" {
+		s.noteBotOwner(spec)
 	}
 	out, err := s.docker(ctx, "exec", created.Container, "python3", "/desktop_supervisor.py", "ensure", key)
 	if err != nil {
@@ -396,6 +417,9 @@ func (s *Service) App(ctx context.Context, tenantID, userID, display string, arg
 	if err != nil {
 		return "", err
 	}
+	if display, err = s.specDisplay(ctx, spec, display); err != nil {
+		return "", err
+	}
 	if !desktop.ValidDisplay(display) {
 		return "", fmt.Errorf("%w: display is invalid", ErrInvalid)
 	}
@@ -426,6 +450,9 @@ func (s *Service) App(ctx context.Context, tenantID, userID, display string, arg
 func (s *Service) Open(ctx context.Context, tenantID, userID, display, program string, args []string) (string, error) {
 	spec, err := normalize(Spec{TenantID: tenantID, UserID: userID})
 	if err != nil {
+		return "", err
+	}
+	if display, err = s.specDisplay(ctx, spec, display); err != nil {
 		return "", err
 	}
 	command, err := desktop.OpenExecArgs(containerName(spec.TenantID, spec.UserID), display, program, args)
@@ -529,6 +556,9 @@ func (s *Service) CaptureShot(ctx context.Context, tenantID, userID, display, na
 	}
 	spec, err := normalize(Spec{TenantID: tenantID, UserID: userID})
 	if err != nil {
+		return desktop.Shot{}, "", err
+	}
+	if display, err = s.specDisplay(ctx, spec, display); err != nil {
 		return desktop.Shot{}, "", err
 	}
 	display = strings.TrimSpace(display)
@@ -947,6 +977,15 @@ func defaultRun(ctx context.Context, args ...string) (string, error) {
 func normalize(spec Spec) (Spec, error) {
 	spec.TenantID = strings.TrimSpace(spec.TenantID)
 	spec.UserID = strings.TrimSpace(spec.UserID)
+	if owner, bot := desktop.SplitDesktopUser(spec.UserID); bot != "" {
+		spec.UserID, spec.BotID = owner, bot
+	} else if strings.Contains(spec.UserID, desktop.BotUserSep) {
+		return Spec{}, fmt.Errorf("%w: bot is invalid", ErrInvalid)
+	}
+	spec.BotID = strings.TrimSpace(spec.BotID)
+	if spec.BotID != "" && !desktop.ValidBotID(spec.BotID) {
+		return Spec{}, fmt.Errorf("%w: bot is invalid", ErrInvalid)
+	}
 	if spec.TenantID == "" || strings.ContainsAny(spec.TenantID, "\r\n\x00") {
 		return Spec{}, fmt.Errorf("%w: tenant is required", ErrInvalid)
 	}
@@ -1010,12 +1049,31 @@ func (s *Service) Ctl(ctx context.Context, tenantID, userID, display string, req
 	if err != nil {
 		return nil, err
 	}
+	if display, err = s.specDisplay(ctx, spec, display); err != nil {
+		return nil, err
+	}
 	display = strings.TrimSpace(display)
 	if display == "" {
 		display = desktop.DefaultDisplay
 	}
 	if !desktop.ValidDisplay(display) {
 		return nil, fmt.Errorf("%w: display is invalid", ErrInvalid)
+	}
+	// The supervisor acts on a bot display's own state only for the key
+	// derived here. A key a client sent is never used.
+	if request != nil {
+		delete(request, "key")
+		op, _ := request["op"].(string)
+		if desktop.IsCtlBotOp(strings.TrimSpace(op)) {
+			if spec.BotID == "" {
+				return nil, fmt.Errorf("%w: %s is only for a bot desktop", ErrInvalid, op)
+			}
+			key, keyErr := specKey(spec)
+			if keyErr != nil {
+				return nil, keyErr
+			}
+			request["key"] = key
+		}
 	}
 	tail, err := desktop.CtlArgs(request)
 	if err != nil {

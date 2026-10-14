@@ -760,3 +760,7 @@ docker ps -a --filter label=maclaw.user=rollout-test-gui2 -q    # 找到容器�
 | `deploy/linux/rollout_desktop_gui2.sh` | Linux 本地:编译、打包、上传、逐步执行 |
 | `deploy/linux/rollout_remote.sh` | 主机端:备份、部署、验证、切换、回滚 |
 | `deploy/linux/systemd/*.service.example` | maclaw-desktopd / maclawsrv systemd unit |
+
+## Per-bot desktops
+
+Bots with `desktop_mode=isolated` get their own display; see [desktop-per-bot.md](desktop-per-bot.md) for the GUI API (view per bot, takeover, hand back).
