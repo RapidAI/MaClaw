@@ -76,12 +76,17 @@ func desktopStepClip(s string, n int) string {
 //
 //	bash<tool_sep:ID>\n<arg_key:ID>command</arg_key:ID>\n<arg_value:ID>ls</arg_value:ID>
 //
+// or the DSML form (seen live 10-15, fullwidth bars, sometimes doubled):
+//
+//	bash">\n<｜｜DSML｜｜ parameter name="command" string="true">ls</｜｜DSML｜｜ parameter>
+//
 // recoverDesktopLeakedArgs turns that back into action=bash, command=ls so
 // the call runs instead of failing with an invalid action.
 var (
 	desktopLeakSep   = regexp.MustCompile(`<tool_sep(?::[^>]*)?>`)
 	desktopLeakPair  = regexp.MustCompile(`(?s)<arg_key(?::[^>]*)?>(.*?)</arg_key(?::[^>]*)?>\s*<arg_value(?::[^>]*)?>(.*?)(?:</arg_value(?::[^>]*)?>|$)`)
-	desktopLeakStart = regexp.MustCompile(`<(?:tool_sep|arg_key|arg_value|tool_call)`)
+	desktopLeakStart = regexp.MustCompile(`<(?:tool_sep|arg_key|arg_value|tool_call)|<\s*/?\s*[｜|]+\s*DSML\s*[｜|]+`)
+	desktopLeakDSML  = regexp.MustCompile(`(?s)<\s*[｜|]+\s*DSML\s*[｜|]+\s*parameter\s+name\s*=\s*"([^"]+)"[^>]*>(.*?)(?:<\s*/\s*[｜|]+\s*DSML\s*[｜|]+\s*parameter\s*>|<\s*/?\s*[｜|]+\s*DSML|$)`)
 )
 
 func recoverDesktopLeakedArgs(args map[string]any) (map[string]any, bool) {
@@ -93,7 +98,7 @@ func recoverDesktopLeakedArgs(args map[string]any) (map[string]any, bool) {
 	if loc := desktopLeakStart.FindStringIndex(raw); loc != nil {
 		head = raw[:loc[0]]
 	}
-	action := strings.ToLower(strings.TrimSpace(head))
+	action := strings.ToLower(strings.Trim(head, " \t\r\n\"'>"))
 	if !desktopActionAllowed(action) {
 		return args, false
 	}
@@ -103,7 +108,9 @@ func recoverDesktopLeakedArgs(args map[string]any) (map[string]any, bool) {
 	}
 	out["action"] = action
 	rest := desktopLeakSep.ReplaceAllString(raw[len(head):], "")
-	for _, m := range desktopLeakPair.FindAllStringSubmatch(rest, -1) {
+	pairs := desktopLeakPair.FindAllStringSubmatch(rest, -1)
+	pairs = append(pairs, desktopLeakDSML.FindAllStringSubmatch(rest, -1)...)
+	for _, m := range pairs {
 		key := strings.TrimSpace(m[1])
 		if key == "" || key == "action" {
 			continue
@@ -111,7 +118,7 @@ func recoverDesktopLeakedArgs(args map[string]any) (map[string]any, bool) {
 		if _, set := out[key]; set {
 			continue
 		}
-		out[key] = m[2]
+		out[key] = strings.TrimSpace(m[2])
 	}
 	return out, true
 }

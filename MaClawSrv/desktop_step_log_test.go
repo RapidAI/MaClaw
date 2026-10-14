@@ -47,3 +47,14 @@ func TestRecoverDesktopLeakedArgs(t *testing.T) {
 		t.Fatal("clean args touched")
 	}
 }
+
+func TestRecoverDesktopLeakedDSMLArgs(t *testing.T) {
+	raw := "bash\">\n<｜｜DSML｜｜ parameter name=\"command\" string=\"true\">cd /tmp && ls; echo /done</｜｜DSML｜｜ parameter>\n<｜DSML｜parameter name=\"timeout\" string=\"false\">30"
+	got, ok := recoverDesktopLeakedArgs(map[string]any{"action": raw})
+	if !ok || got["action"] != "bash" || got["command"] != "cd /tmp && ls; echo /done" || got["timeout"] != "30" {
+		t.Fatalf("%v %#v", ok, got)
+	}
+	if _, ok := recoverDesktopLeakedArgs(map[string]any{"action": "rm\">\n<｜DSML｜parameter name=\"x\">y"}); ok {
+		t.Fatal("unknown action recovered")
+	}
+}
