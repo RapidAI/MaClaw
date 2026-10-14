@@ -1,5 +1,5 @@
 #!/bin/sh
-# maclaw-theme-variant <clean|dark|colorful|topbar>
+# maclaw-theme-variant <clean|dark|colorful|topbar|soft25|soft40|soft55|soft-topbar>
 # Applies a desktop look to the running XFCE session (live) and remembers it
 # in ~/.config/maclaw-theme. Without an argument: the remembered variant,
 # else /etc/maclaw/theme, else "clean".
@@ -11,6 +11,8 @@ W=/usr/share/backgrounds/maclaw
 case "$v" in
   dark)     gtk=Arc-Dark; wm=Arc-Dark; icons=Papirus-Dark; wall=$W/maclaw-dark.jpg;     plank=MaClaw-Dark;  panel=0 ;;
   colorful) gtk=Arc;      wm=Arc;      icons=Papirus;      wall=$W/maclaw-colorful.jpg; plank=MaClaw-Light; panel=0 ;;
+  soft25|soft40|soft55) gtk=Arc; wm=Arc; icons=Papirus; wall=$W/maclaw-soft-${v#soft}.jpg; plank=MaClaw-Light; panel=0 ;;
+  soft-topbar) gtk=Arc; wm=Arc; icons=Papirus; wall=$W/maclaw-soft-40.jpg; plank=MaClaw-Light; panel=1 ;;
   topbar)   gtk=Arc;      wm=Arc;      icons=Papirus;      wall=$W/maclaw-colorful.jpg; plank=MaClaw-Light; panel=1 ;;
   *)        v=clean; gtk=Arc; wm=Arc;  icons=Papirus;      wall=$W/gray-gradient.png;   plank=Transparent;  panel=0 ;;
 esac

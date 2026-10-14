@@ -1,7 +1,7 @@
 # MaClaw Plank theme (MaClaw-Light). Self-made, no third-party assets.
 [PlankTheme]
-TopRoundness=14
-BottomRoundness=14
+TopRoundness=10
+BottomRoundness=10
 LineWidth=1
 OuterStrokeColor=0;;0;;0;;40
 FillStartColor=255;;255;;255;;175
@@ -9,10 +9,10 @@ FillEndColor=245;;246;;250;;160
 InnerStrokeColor=255;;255;;255;;120
 
 [PlankDockTheme]
-HorizPadding=6
-TopPadding=4
-BottomPadding=6
-ItemPadding=8
+HorizPadding=4
+TopPadding=1
+BottomPadding=2
+ItemPadding=6
 IndicatorSize=4
 IconShadowSize=1
 UrgentBounceHeight=0

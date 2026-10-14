@@ -58,6 +58,13 @@ def colorful():
     img = img * 0.9 + 255 * 0.1
     im = dither(img).filter(ImageFilter.GaussianBlur(3))
     im.save(OUT / "maclaw-colorful.jpg", quality=92, optimize=True)
+    # Softer pastel levels: the same color field mixed toward a light
+    # neutral (not white) so the desktop stays calm at mid-high luminance.
+    light = np.array([226, 229, 236], np.float32)
+    for level in (25, 40, 55):
+        k = level / 100.0
+        soft = img * k + light * (1 - k)
+        dither(soft).filter(ImageFilter.GaussianBlur(3)).save(OUT / ("maclaw-soft-%d.jpg" % level), quality=92, optimize=True)
 
 def gray():
     t = np.sqrt(((xx - W / 2) / W) ** 2 + ((yy - H / 2) / H) ** 2)[..., None] / 0.71

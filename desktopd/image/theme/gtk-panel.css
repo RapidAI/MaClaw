@@ -1,0 +1,5 @@
+/* MaClaw top bar: dark text on the light panel (Arc's default is faint gray). */
+.xfce4-panel, .xfce4-panel label, .xfce4-panel button, .xfce4-panel button label,
+#tasklist-button label, .tasklist button label { color: #23262b; }
+.xfce4-panel button:checked label, .tasklist button:checked label { color: #000000; font-weight: bold; }
+.xfce4-panel { border-bottom: 1px solid rgba(0,0,0,0.10); }

@@ -15,7 +15,7 @@
       <property name="background-style" type="uint" value="1"/>
       <property name="background-rgba" type="array">
         <value type="double" value="0.97"/><value type="double" value="0.97"/>
-        <value type="double" value="0.98"/><value type="double" value="0.82"/>
+        <value type="double" value="0.98"/><value type="double" value="0.94"/>
       </property>
       <property name="plugin-ids" type="array">
         <value type="int" value="1"/><value type="int" value="2"/><value type="int" value="3"/>

@@ -101,6 +101,7 @@ COPY theme/maclaw-theme-variant.sh /usr/bin/maclaw-theme-variant
 COPY theme/wallpapers/ /usr/share/backgrounds/maclaw/
 COPY theme/plank-themes/ /usr/share/plank/themes/
 COPY theme/panel-top.xml /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml
+COPY theme/gtk-panel.css /etc/maclaw/gtk-panel.css
 COPY theme/maclaw-icon-64.png /usr/share/icons/hicolor/64x64/apps/maclaw.png
 RUN set -eux; \
     mkdir -p /etc/dconf/profile; printf 'user-db:user\nsystem-db:local\n' > /etc/dconf/profile/user; dconf update; \
@@ -109,7 +110,7 @@ RUN set -eux; \
     printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=MaClaw theme (wallpaper, picom, Plank)' \
       'Exec=/usr/bin/maclaw-theme' 'OnlyShowIn=XFCE;' 'X-GNOME-Autostart-Phase=Panel' > /etc/xdg/autostart/maclaw-theme.desktop; \
     for d in /etc/skel /home/desktop; do \
-      mkdir -p $d/.config/plank/dock1/launchers; \
+      mkdir -p $d/.config/plank/dock1/launchers $d/.config/gtk-3.0; cp /etc/maclaw/gtk-panel.css $d/.config/gtk-3.0/gtk.css; \
       for a in thunar xfce4-terminal libreoffice-writer org.xfce.mousepad; do \
         test -f /usr/share/applications/$a.desktop; \
         printf '[PlankDockItemPreferences]\nLauncher=file:///usr/share/applications/%s.desktop\n' $a > $d/.config/plank/dock1/launchers/$a.dockitem; \

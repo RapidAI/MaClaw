@@ -2,7 +2,7 @@
 position='bottom'
 alignment='center'
 hide-mode='none'
-icon-size=40
+icon-size=36
 zoom-enabled=false
 theme='Transparent'
 show-dock-item=false
