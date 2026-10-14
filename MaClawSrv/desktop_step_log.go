@@ -27,7 +27,7 @@ func desktopStepLogLine(user string, args map[string]any, out string, err error,
 	if !desktopActionAllowed(action) {
 		// Never log a malformed action verbatim: models have leaked whole
 		// tool-call markup (with the command text) into this field.
-		action = fmt.Sprintf("invalid(%d)", len(action))
+		action = fmt.Sprintf("invalid(%d shape=%q)", len(action), desktopActionShape(action))
 	}
 	keys := make([]string, 0, len(args))
 	for k := range args {
@@ -114,4 +114,17 @@ func recoverDesktopLeakedArgs(args map[string]any) (map[string]any, bool) {
 		out[key] = m[2]
 	}
 	return out, true
+}
+
+var desktopShapeWord = regexp.MustCompile(`[\p{L}\p{N}]+`)
+
+// desktopActionShape keeps only the punctuation skeleton of a malformed
+// action (words become w), so new leak formats can be recognised from the
+// log without logging their text.
+func desktopActionShape(action string) string {
+	r := []rune(action)
+	if len(r) > 80 {
+		r = r[:80]
+	}
+	return desktopShapeWord.ReplaceAllString(string(r), "w")
 }
