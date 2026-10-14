@@ -204,7 +204,7 @@ func callDesktopBotUnderstandLLM(ctx context.Context, app *App, req desktopBotUn
 // sent in its place, and the missing reading does not take the turn down with
 // it. The result is empty except for Reading, which names what happened so the
 // caller can decide what to do with the person's own words.
-func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier FlexStrings, persona string) (*DesktopBotUnderstanding, error) {
+func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []string, persona string) (*DesktopBotUnderstanding, error) {
 	text := strings.TrimSpace(content)
 	if text == "" {
 		return nil, fmt.Errorf("message text is required")
@@ -783,51 +783,4 @@ func heuristicDesktopTaskSupplement(activeTask, newMessage string) *DesktopTaskS
 		}
 	}
 	return &DesktopTaskSupplementEval{IsSupplement: false, Reason: "not classified as supplement"}
-}
-
-// FlexStrings is a []string binding argument that also accepts a single
-// string: a JSON-encoded array ("[\"a\",\"b\"]"), or one value. A frontend
-// that passed a string here used to fail the whole call before Go ran
-// ("error parsing arguments: json: cannot unmarshal string into Go value of
-// type []string"), so the person's message got no reply at all.
-type FlexStrings []string
-
-func (f *FlexStrings) UnmarshalJSON(data []byte) error {
-	var list []string
-	if err := json.Unmarshal(data, &list); err == nil {
-		*f = list
-		return nil
-	}
-	var mixed []interface{}
-	if err := json.Unmarshal(data, &mixed); err == nil {
-		out := make([]string, 0, len(mixed))
-		for _, v := range mixed {
-			if v != nil {
-				out = append(out, fmt.Sprint(v))
-			}
-		}
-		*f = out
-		return nil
-	}
-	var one string
-	if err := json.Unmarshal(data, &one); err != nil {
-		if string(data) == "null" {
-			*f = nil
-			return nil
-		}
-		return err
-	}
-	one = strings.TrimSpace(one)
-	if one == "" {
-		*f = nil
-		return nil
-	}
-	if strings.HasPrefix(one, "[") {
-		if err := json.Unmarshal([]byte(one), &list); err == nil {
-			*f = list
-			return nil
-		}
-	}
-	*f = FlexStrings{one}
-	return nil
 }

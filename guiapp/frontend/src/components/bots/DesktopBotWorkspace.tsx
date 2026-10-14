@@ -266,10 +266,7 @@ async function readDesktopBotTurn(
 ): Promise<BotReading> {
     let understood: Record<string, unknown>;
     try {
-        // Always a string array on the wire: a string here used to fail the
-        // binding before Go ran ("cannot unmarshal string into []string").
-        const earlierList = (Array.isArray(earlier) ? earlier : (earlier ? [earlier] : [])).map(item => String(item ?? ''));
-        understood = await UnderstandDesktopBotTask(content, phase, lang, earlierList, persona) as Record<string, unknown>;
+        understood = await UnderstandDesktopBotTask(content, phase, lang, earlier, persona) as Record<string, unknown>;
     } catch (error) {
         // The reading itself could not be attempted: no text, no backend. That
         // is not this person's fault and it is not a reading.
