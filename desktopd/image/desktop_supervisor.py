@@ -3200,6 +3200,33 @@ def a11y_resolve(element_id, pyatspi):
     return node, entry
 
 
+def a11y_raise_window(node, center):
+    """Activate the managed window that owns node; return its hex id or ""."""
+    try:
+        pid = int(node.get_process_id())
+    except Exception:
+        pid = 0
+    if pid <= 0:
+        return ""
+    ids, active = ctl_client_windows()
+    best = 0
+    for wid in reversed(ids):
+        info = ctl_window_info(wid, active)
+        if info.get("pid") != pid:
+            continue
+        x, y, w, h = info["x"], info["y"], info["width"], info["height"]
+        inside = x <= center[0] < x + w and y <= center[1] < y + h
+        if inside or not best:
+            best = wid
+            if inside:
+                break
+    if not best or best == active:
+        return ""
+    ctl_run(["xdotool", "windowactivate", "--sync", str(best)], timeout=3)
+    time.sleep(0.15)
+    return "0x%08x" % best
+
+
 def a11y_act(request, pyatspi):
     """Act on one probed element. Clicks are left to xdotool at the returned
     center when the element is on screen (a real click is what a person does);
@@ -3213,6 +3240,13 @@ def a11y_act(request, pyatspi):
     if op == "locate":
         result["method"] = "locate"
         return result
+    if op in ("click", "focus"):
+        # The element's window may sit behind another one (seen: a Thunar
+        # menu opened while Thunar stayed behind Chromium, so the next
+        # xdotool click at the returned center hit Chromium).
+        raised = a11y_raise_window(node, center)
+        if raised:
+            result["raised"] = raised
     if op == "click":
         names = a11y_actions(node)
         onscreen = bounds[2] > 0 and bounds[3] > 0 and center[0] >= 0 and center[1] >= 0
@@ -3424,6 +3458,30 @@ def ctl_find_window(request):
     raise LookupError("no window matches %r" % request.get("title"))
 
 
+def ctl_maximize_by_key(wid):
+    """Old/state containers may lack wmctrl. xfwm4's maximize toggle
+    (alt+F10) sets the real _NET_WM_STATE, so the window reports
+    maximized=true, unlike moving and resizing it to the work area."""
+    if not ctl_wm_is_xfwm():
+        return False
+    _, active = ctl_client_windows()
+    if ctl_window_info(wid, active)["maximized"]:
+        return True
+    ctl_run(["xdotool", "windowactivate", "--sync", str(wid)], timeout=3)
+    ctl_run(["xdotool", "key", "--clearmodifiers", "alt+F10"], timeout=3)
+    for _ in range(10):
+        time.sleep(0.1)
+        _, active = ctl_client_windows()
+        if ctl_window_info(wid, active)["maximized"]:
+            return True
+    return False
+
+
+def ctl_wm_is_xfwm():
+    code, out, _ = ctl_run(["pgrep", "-x", "xfwm4"], timeout=3)
+    return code == 0 and bool(out.strip())
+
+
 def ctl_window(request):
     op = str(request.get("do") or "").strip()
     wid = ctl_find_window(request)
@@ -3442,6 +3500,8 @@ def ctl_window(request):
                 steps.append(["wmctrl", "-i", "-a", hexid])
         elif op == "restore":
             steps = [["xdotool", "windowmap", str(wid)], ["xdotool", "windowactivate", str(wid)]]
+        elif ctl_maximize_by_key(wid):
+            steps = []
         else:
             # Without wmctrl: fill the work area the panel leaves free.
             code, out, _ = ctl_run(["xprop", "-root", "_NET_WORKAREA"], timeout=3)
@@ -3478,7 +3538,12 @@ def ctl_window(request):
     window = ctl_window_info(wid, active) if wid in ids else {"id": hexid, "closed": True}
     if op == "close" and wid in ids:
         window["note"] = "still open: the program may be asking to save; answer its dialog"
-    return {"ok": True, "do": op, "window": window, "method": "wmctrl" if wm and steps and steps[0][0] == "wmctrl" else "xdotool"}
+    method = "wmctrl" if wm and steps and steps[0][0] == "wmctrl" else ("xfwm-key" if op == "maximize" and not steps else "xdotool")
+    if op == "maximize" and not window.get("closed") and not window.get("maximized"):
+        # Filled the work area by move+resize: say so instead of a bare
+        # maximized=false that reads like a failure.
+        window["filled_work_area"] = True
+    return {"ok": True, "do": op, "window": window, "method": method}
 
 
 def ctl_screen_size():
