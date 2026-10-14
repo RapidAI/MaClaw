@@ -82,6 +82,7 @@ func desktopOutcomeEvidence(history []agent.ConversationEntry) (used, ask, remot
 	var desktopParts []string
 	var sshParts []string
 	sawDesktop := false
+	deliverIndex := -1
 	for _, entry := range history {
 		if entry.Role != "tool" {
 			continue
@@ -98,6 +99,9 @@ func desktopOutcomeEvidence(history []agent.ConversationEntry) (used, ask, remot
 				ask = true
 				continue
 			}
+			if strings.HasPrefix(body, "Delivered ") {
+				deliverIndex = len(desktopParts)
+			}
 			desktopParts = append(desktopParts, formatDesktopOutcomeEvidence("desktop", body))
 			continue
 		}
@@ -106,7 +110,17 @@ func desktopOutcomeEvidence(history []agent.ConversationEntry) (used, ask, remot
 	}
 	remoteOnly = sawSSH && !sawDesktop
 	if len(desktopParts) > 4 {
+		// Keep the file delivery even when later checks pushed it out of
+		// the window: the judge otherwise reports "not delivered" for a
+		// file that is already attached (seen live twice).
+		var delivered string
+		if deliverIndex >= 0 && deliverIndex < len(desktopParts)-4 {
+			delivered = desktopParts[deliverIndex]
+		}
 		desktopParts = desktopParts[len(desktopParts)-4:]
+		if delivered != "" {
+			desktopParts = append([]string{delivered}, desktopParts...)
+		}
 	}
 	if len(sshParts) > 2 {
 		sshParts = sshParts[len(sshParts)-2:]

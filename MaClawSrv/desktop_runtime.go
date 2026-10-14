@@ -275,6 +275,8 @@ const desktopDocumentPrompt = "Office documents (Word, report, illustrated docum
 	"If that step fails, fix the error it printed and run it again; do not rewrite the whole script for each small change. " +
 	"Do not type the document into the LibreOffice window key by key, and do not drive its Save As dialog. " +
 	"Before reporting, app_open with program libreoffice and the saved path so the front window shows the finished document: the result check compares your report with that screen, and a run whose screen still shows an older page is sent back. " +
+	"deliver attaches at most about 145 KB, so shrink pictures before inserting them (ImageMagick: convert in.png -resize 800x800> -quality 70 out.jpg) and check the saved size. " +
+	"If LibreOffice shows a document-recovery, tip, or first-start dialog, answer that dialog; never delete ~/.config/libreoffice or other profile folders, which hold the person's settings. " +
 	"Then action=deliver with that path. Chinese text goes into the file content or through clipboard_set, never through typed keystrokes. " +
 	"For a dialog or button in a non-browser window, use app_probe and its element ids before pixel clicks; keyboard shortcuts (ctrl+s, ctrl+o, alt+f4 only on windows you opened) beat menus. "
 
