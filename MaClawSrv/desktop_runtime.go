@@ -1928,7 +1928,16 @@ func runGuardedDesktopAppSteps(steps [][]string, beforeInsert func() error, brow
 			// tool result.
 			restoreID := ""
 			unnamed := len(lastFocus) == 0
-			raiseSteals := unnamed && desktopArgvInsertsText(step) && beforeInsert != nil && (browserRaises == nil || browserRaises())
+			// Text going to a focused non-browser window (editor, Office,
+			// file manager) cannot land in a browser password field. Skip
+			// the browser read there: attaching CDP raised Chromium, and
+			// the windowactivate --sync back to the target made a Chinese
+			// paste into Mousepad take ~17s.
+			stepGuard := beforeInsert
+			if unnamed && stepGuard != nil && desktopArgvInsertsText(step) && desktopFocusedWindowOutsideBrowser(run) {
+				stepGuard = nil
+			}
+			raiseSteals := unnamed && desktopArgvInsertsText(step) && stepGuard != nil && (browserRaises == nil || browserRaises())
 			releaseSteals := unnamed && !released && !raiseSteals
 			if raiseSteals || releaseSteals {
 				restoreID = desktopReadActiveWindow(run)
@@ -1939,8 +1948,8 @@ func runGuardedDesktopAppSteps(steps [][]string, beforeInsert func() error, brow
 			// A browser class, or a class that cannot be read, still stops
 			// here and the text is not typed.
 			var insertErr error
-			if desktopArgvInsertsText(step) && beforeInsert != nil {
-				insertErr = beforeInsert()
+			if desktopArgvInsertsText(step) && stepGuard != nil {
+				insertErr = stepGuard()
 				focusPending = len(lastFocus) > 0
 			}
 			// No window is waiting to be focused, and the active window was
