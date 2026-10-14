@@ -822,6 +822,30 @@ def session_alive(pids, display):
     )
 
 
+def write_dock_browser_entry(profile):
+    """Desktop entry the Plank dock's browser launcher points to.
+
+    Chromium started with --user-data-dir names its windows
+    WM_CLASS "chromium (<profile>)", and bamf (Plank's window matcher) treats
+    such a window as a separate app, so the dock showed a second browser icon
+    instead of marking the launcher running. StartupWMClass with that exact
+    instance joins them. The profile path is per user, so it is written here.
+    """
+    src = Path("/usr/share/applications/chromium.desktop")
+    if not src.exists() or not shutil.which("plank"):
+        return
+    lines = []
+    for line in src.read_text(encoding="utf-8", errors="replace").splitlines():
+        if line.startswith("StartupWMClass="):
+            continue
+        lines.append(line)
+        if line.strip() == "[Desktop Entry]":
+            lines.append("StartupWMClass=chromium (%s)" % profile)
+    target = Path("/home/desktop/.local/share/applications/maclaw-browser.desktop")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    write_if_changed(target, "\n".join(lines) + "\n", 0o644)
+
+
 def start_desktop(key, display):
     home = ROOT / key
     home.mkdir(mode=0o700, exist_ok=True)
@@ -836,6 +860,10 @@ def start_desktop(key, display):
     log_path = home / "desktop.log"
     log = open(log_path, "ab")
     env = desktop_env(display)
+    try:
+        write_dock_browser_entry(profile)
+    except OSError:
+        pass
     chrome_port = 18000 + display
     # What actually runs in this container, not only what pids.json says. An
     # earlier start that was cut off (desktopd restarted, the request was
@@ -3084,7 +3112,7 @@ def a11y_windows(desktop, scope, pyatspi):
         if not active:
             # Nothing reports active (a menu popup, the desktop): take the
             # last application window, not the panel or desktop background.
-            active = [item for item in out if item[1] not in ("xfce4-panel", "xfdesktop", "xfwm4")][-1:]
+            active = [item for item in out if item[1] not in ("xfce4-panel", "xfdesktop", "xfwm4", "plank")][-1:]
         return active[:1]
     needle = scope.lower()
     return [item for item in out if needle in a11y_clean(item[2].name, 200).lower() or needle == item[1].lower()][:3]
@@ -3428,8 +3456,8 @@ def ctl_windows(request):
     windows = []
     for wid in ids:
         info = ctl_window_info(wid, active)
-        # The desktop background and panels are not windows to work with.
-        if info["class"].lower() in ("xfdesktop", "xfce4-panel", "wrapper-2.0") and not request.get("all"):
+        # The desktop background, panels and the Plank dock are not windows to work with.
+        if info["class"].lower() in ("xfdesktop", "xfce4-panel", "wrapper-2.0", "plank") and not request.get("all"):
             continue
         windows.append(info)
     return {"ok": True, "windows": windows, "wmctrl": shutil.which("wmctrl") is not None}

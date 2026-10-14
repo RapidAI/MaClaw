@@ -60,7 +60,8 @@ curl -sI -H "Authorization: Bearer $T" \
 
 | 能力 | 说明 |
 | --- | --- |
-| 桌面 | Debian 12 + XFCE(面板、Thunar、xfce4-terminal、Mousepad),`startxfce4` 启动;没有 XFCE 的旧镜像自动回退 fluxbox |
+| 桌面 | Debian 12 + XFCE(xfwm4、Thunar、xfce4-terminal、Mousepad、LibreOffice Writer),`startxfce4` 启动;没有 XFCE 的旧镜像自动回退 fluxbox |
+| 外观 | 无顶部面板/桌面图标;底部居中 Plank dock(Chromium、Thunar、终端、Writer、Mousepad,并显示运行中的程序用于切换窗口,hide-mode none 保留 48px strut,最大化不压住 dock);picom(xrender、阴影+短淡入淡出、无 GPU);灰色渐变壁纸(feh);Arc GTK/xfwm4 主题、Papirus 图标、Noto Sans CJK SC。配置在 `desktopd/image/theme/`,由 `/usr/bin/maclaw-theme`(XFCE autostart)启动 |
 | 浏览器 | Chromium,CDP 端口经 token gate 暴露;登录态写在每用户 profile 卷里 |
 | 共用浏览器 | 面板/底部 dock 的“网络浏览器”、应用菜单、`xdg-open`/`exo-open`、`x-www-browser` 都进入**同一个**受监管 Chromium(同 profile、同登录态、带 CDP):有窗口就恢复并激活(含最小化窗口),带链接就作为新标签打开;浏览器被关掉/崩溃时只重启浏览器(恢复 CDP 与登录态),不会再起第二套桌面。实现见 `desktop_supervisor.py browser` 与 `/usr/bin/maclaw-browser`、`/etc/chromium.d/zz-maclaw-shared-browser` |
 | 中文输入 | fcitx5 + 拼音,默认输入法列表 `keyboard-us` + `pinyin`,**Ctrl+Space** 切换;`GTK_IM_MODULE/QT_IM_MODULE/XMODIFIERS=fcitx`,`LANG=zh_CN.UTF-8` |

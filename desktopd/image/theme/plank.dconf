@@ -1,0 +1,11 @@
+[net/launchpad/plank/docks/dock1]
+position='bottom'
+alignment='center'
+hide-mode='none'
+icon-size=40
+zoom-enabled=false
+theme='Transparent'
+show-dock-item=false
+lock-items=false
+pressure-reveal=false
+dock-items=['maclaw-browser.dockitem', 'thunar.dockitem', 'xfce4-terminal.dockitem', 'libreoffice-writer.dockitem', 'org.xfce.mousepad.dockitem']
