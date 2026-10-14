@@ -29,6 +29,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 )
 
 // Local head decisions under τ / τ_s.
@@ -186,7 +187,7 @@ func ParseLocalHead(b []byte) (*LocalHead, error) {
 		Note:               f.Note,
 		EmbedModel:         firstNonEmpty(f.EmbedModel, f.EmbedderModelID),
 		CalibrationSource:  f.Calibration.Source,
-		CalibrationCompute: f.Calibration.Compute,
+		CalibrationCompute: normalizeCalibrationCompute(f.Calibration.Compute),
 		sensitive:          map[string]bool{},
 		l2norm:             f.L2Norm,
 		temp:               f.Temperature,
@@ -517,4 +518,18 @@ func (d denseLayer) relu(x []float64) []float64 {
 		}
 	}
 	return y
+}
+
+// normalizeCalibrationCompute maps free-text calibration tags written by
+// older export scripts to the embedder compute-mode token they were measured
+// under. "box amd64 TestZZVecDump vectors" (r7 and earlier box exports) is
+// q8p:avx512:2pass: on old-339 + indep839 + M_confirm (1320 texts) the r7
+// head's probabilities under that mode match float (MACLAW_Q8P=0) within
+// 0.0004 with identical decisions (2026-10-14).
+func normalizeCalibrationCompute(s string) string {
+	switch strings.TrimSpace(s) {
+	case "box amd64 TestZZVecDump vectors":
+		return "q8p:avx512:2pass"
+	}
+	return strings.TrimSpace(s)
 }

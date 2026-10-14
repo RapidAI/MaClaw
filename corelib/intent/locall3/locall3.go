@@ -213,7 +213,7 @@ func (r *Runtime) Describe() string {
 		}
 		warn := ""
 		if live := embedding.EmbedderComputeMode(s.emb); s.head.CalibrationCompute != "" && s.head.CalibrationCompute != live {
-			warn = " WARNING: head calibrated under a different compute mode"
+			warn = " note: head calibrated under a different compute mode (decisions within ~0.01 of tau may differ; r7 avx2:1pass vs avx512:2pass: 13/1320 accept flips)"
 		}
 		return fmt.Sprintf("local L3 %s: head=%s family=%s dim=%d tau=%.3f tau_s=%.3f embedder=%s compute=%s head_calibrated_for=%s%s",
 			r.mode, s.head.ID, intent.HeadFamily(s.head), s.head.Dim(), s.head.Tau, s.head.TauS, embedding.EmbedderFamily(s.emb),
