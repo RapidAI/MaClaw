@@ -1,4 +1,4 @@
-package main
+package desktopmcp
 
 import (
 	"bytes"
@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
 )
@@ -84,11 +85,15 @@ func (f *fakeBackend) Session(context.Context, Identity) (map[string]any, error)
 	return map[string]any{"display": ":20", "cdp_url": "http://desktop:x@host:1"}, nil
 }
 
+var testTokens map[string]Identity
+
 func newTestServer(f *fakeBackend) (*Server, *httptest.Server) {
-	s := &Server{backend: f, takeover: "viewer", tokens: map[string]Identity{
+	testTokens = map[string]Identity{
 		HashToken("control-token"): {Name: "c", TenantID: "t", UserID: "u", Scope: "control"},
 		HashToken("read-token"):    {Name: "r", TenantID: "t", UserID: "u2", Scope: "read"},
-	}}
+		HashToken("admin-token"):   {Name: "a", TenantID: "t", Scope: "control", AnyUser: true},
+	}
+	s := New(f, Options{Auth: StaticTokens(testTokens), Settle: time.Millisecond})
 	return s, httptest.NewServer(s)
 }
 
@@ -225,7 +230,7 @@ func TestMCPProbeWindowsFilesAndStdio(t *testing.T) {
 	if out := contentText(callTool(t, srv.URL, "read-token", "desktop_file_download", map[string]any{"path": "~/a.bin"})); out != "<resource>" {
 		t.Fatalf("download = %s", out)
 	}
-	s.tokens[HashToken("bash-token")] = Identity{TenantID: "t", UserID: "u", Scope: "control", AllowBash: true}
+	testTokens[HashToken("bash-token")] = Identity{TenantID: "t", UserID: "u", Scope: "control", AllowBash: true}
 	if out := callTool(t, srv.URL, "control-token", "desktop_bash", map[string]any{"command": "id"}); out["isError"] != true {
 		t.Fatal("bash without allow_bash ran")
 	}
@@ -242,5 +247,31 @@ func TestMCPProbeWindowsFilesAndStdio(t *testing.T) {
 	lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
 	if len(lines) != 2 || !strings.Contains(lines[0], `"protocolVersion":"2024-11-05"`) || !strings.Contains(lines[1], `"id":2`) {
 		t.Fatalf("stdio = %s", stdout.String())
+	}
+}
+
+func TestAdminTargetsUserAndOthersCannot(t *testing.T) {
+	f := &fakeBackend{}
+	_, srv := newTestServer(f)
+	defer srv.Close()
+	out := rpc(t, srv.URL, "admin-token", "tools/call", map[string]any{"name": "desktop_screen_info", "arguments": map[string]any{}})
+	if !strings.Contains(fmt.Sprint(out), "user_id is required") {
+		t.Fatalf("admin without user_id = %v", out)
+	}
+	out = rpc(t, srv.URL, "admin-token", "tools/call", map[string]any{"name": "desktop_screen_info", "arguments": map[string]any{"user_id": "alice"}})
+	if strings.Contains(fmt.Sprint(out), "isError:true") {
+		t.Fatalf("admin with user_id = %v", out)
+	}
+	out = rpc(t, srv.URL, "admin-token", "tools/call", map[string]any{"name": "desktop_screen_info", "arguments": map[string]any{"user_id": "alice", "tenant_id": "other"}})
+	if !strings.Contains(fmt.Sprint(out), "limited to tenant") {
+		t.Fatalf("admin other tenant = %v", out)
+	}
+	out = rpc(t, srv.URL, "control-token", "tools/call", map[string]any{"name": "desktop_screen_info", "arguments": map[string]any{"user_id": "alice"}})
+	if !strings.Contains(fmt.Sprint(out), "only reaches its own desktop") {
+		t.Fatalf("user naming another = %v", out)
+	}
+	list := rpc(t, srv.URL, "admin-token", "tools/list", map[string]any{})
+	if !strings.Contains(fmt.Sprint(list), "user_id") {
+		t.Fatalf("admin tools/list lacks user_id")
 	}
 }

@@ -13,32 +13,13 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/corelib/desktop/desktopmcp"
 )
 
 // Identity is the desktop one MCP client may use, and what it may do there.
-type Identity struct {
-	Name         string `json:"name"`
-	TenantID     string `json:"tenant_id"`
-	UserID       string `json:"user_id"`
-	Scope        string `json:"scope"` // "read" or "control"
-	AllowBash    bool   `json:"allow_bash"`
-	AllowInstall bool   `json:"allow_install"`
-}
 
-// Control reports whether the identity may change the desktop.
-func (id Identity) Control() bool { return id.Scope == "control" }
-
-// Backend is the desktop service the MCP server forwards to.
-type Backend interface {
-	Screenshot(ctx context.Context, id Identity, opts desktop.ShotOptions) (desktop.Shot, error)
-	App(ctx context.Context, id Identity, argv []string) (string, error)
-	Ctl(ctx context.Context, id Identity, request map[string]any) (map[string]any, error)
-	Open(ctx context.Context, id Identity, program string, args []string) (string, error)
-	File(ctx context.Context, id Identity, action, path, content string) (string, error)
-	Bash(ctx context.Context, id Identity, command string) (string, error)
-	Install(ctx context.Context, id Identity, packages []string) (string, error)
-	Session(ctx context.Context, id Identity) (map[string]any, error)
-}
+// Identity is the desktop a client reaches.
+type Identity = desktopmcp.Identity
 
 // httpBackend talks to Hub (/api/v1/desktop-services/*, multi-tenant, the
 // production path) or straight to one desktopd (/v1/desktops/*). The token

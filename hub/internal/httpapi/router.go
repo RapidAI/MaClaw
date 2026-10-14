@@ -428,6 +428,15 @@ func NewRouter(
 	mux.HandleFunc("POST /api/v1/desktop-services/http", PostDesktopHTTPHandler(desktopPool))
 	mux.HandleFunc("POST /api/v1/desktop-services/screenshot", PostDesktopScreenshotHandler(desktopPool))
 	mux.HandleFunc("POST /api/v1/desktop-services/ctl", PostDesktopCtlHandler(desktopPool))
+	desktopMCPTokens := &desktopMCPTokenStore{system: system}
+	desktopMCP := DesktopMCPHandler(desktopPool, desktopMCPTokens, identity, admins)
+	userMCPTokens := DesktopMCPUserTokensHandler(desktopMCPTokens, identity)
+	adminMCPTokens := DesktopMCPAdminTokensHandler(desktopMCPTokens, requireTenantAdmin)
+	for _, method := range []string{"GET", "POST", "DELETE"} {
+		mux.Handle(method+" /mcp", desktopMCP)
+		mux.HandleFunc(method+" /api/v1/desktop-mcp/tokens", userMCPTokens)
+		mux.HandleFunc(method+" /api/admin/desktop-mcp/tokens", adminMCPTokens)
+	}
 	mux.HandleFunc("GET /api/v1/bots/access", GetBotAccessHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/credits", GetBotCreditsHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots", ListBotsHandler(botSvc, identity))

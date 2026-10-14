@@ -1,86 +1,78 @@
-# MaClaw 云桌面 MCP 服务(maclaw-desktop-mcp)
+# MaClaw 云桌面 MCP(Hub `/mcp`)
 
-把一个用户的 MaClaw 云桌面(maclaw-gui:2)以 MCP 工具暴露给外部 agent(Claude Desktop / Claude Code / Cursor 等)。
-源码:`cmd/maclaw-desktop-mcp`;动作解析与执行与 MaClawSrv 的 `desktop` 工具共用 `corelib/desktop/computeruse`。
+把用户的 MaClaw 云桌面(maclaw-gui:2)以 MCP 工具暴露给外部 agent(Claude Desktop / Claude Code / Cursor 等)。
+**MCP 内置在 Hub 里**:地址就是 `https://<hub 域名>/mcp`,无需单独部署服务、tokens 文件或额外 nginx location。
 
-## 部署位置的选择
-
-独立小二进制,转发到 **Hub 的 desktop-services API**(`/api/v1/desktop-services/*`,生产推荐):
-Hub 已负责多租户路由到正确的 desktopd;MCP 服务只做客户端鉴权、权限范围和协议转换,不需要改 Hub 配置,也不持有 desktopd token。
-测试时也可直接指向一台 desktopd(`MACLAW_MCP_BACKEND=desktopd`)。
-
-- 传输:Streamable HTTP(`POST /mcp`,返回 `application/json`;`GET` 返回 405,即不提供服务端推送流)和 stdio(本地单用户)。
+- 源码:协议与工具 `corelib/desktop/desktopmcp`;Hub 挂载与鉴权 `hub/internal/httpapi/desktop_mcp.go`(直接调用 Hub 内部的
+  desktop pool,不走 HTTP 回环);动作解析与执行与 MaClawSrv 的 `desktop` 工具共用 `corelib/desktop/computeruse`。
+- 传输:Streamable HTTP(`POST /mcp`,返回 `application/json`;`GET`/`DELETE` 返回 405,即不提供服务端推送流,
+  所以反向代理不需要特殊的 SSE 配置;Hub 已带 `X-Accel-Buffering: no`)。
 - 协议版本:`2025-06-18`、`2025-03-26`、`2024-11-05`(按客户端请求协商)。
-- 鉴权:`Authorization: Bearer <client token>`。服务端只保存 token 的 SHA-256(tokens 文件),每个 token 绑定一个 tenant/user 与范围:
-  - `scope: "read"`:截图、无障碍树、窗口列表、剪贴板读取、屏幕信息、等待、读文件/下载;
-  - `scope: "control"`:再加鼠标键盘、剪贴板写、窗口操作、启动程序、写文件;
-  - `allow_bash` / `allow_install`:单独开启 `desktop_bash`、`desktop_file_upload` 与 `desktop_install`(默认关闭)。
-  `tools/list` 只列出该 token 可用的工具。
-- 人工接管:`MACLAW_MCP_TAKEOVER=viewer`(默认)时,每次控制类调用(以及 `desktop_computer` 的每一步之前)查询容器内 noVNC 连接数,有人正在看/操作时拒绝并提示稍后再试;`off` 关闭此检查。
+
+## 鉴权(`Authorization: Bearer <token>`)
+
+| token | 能访问的桌面 | 范围 |
+|---|---|---|
+| 桌面 MCP token(`mcpd_...`,推荐) | 绑定的那个用户 | `read` 或 `control`;`allow_bash` / `allow_install` 只能由管理员开启 |
+| 用户自己的 Hub 登录 token | 自己的桌面 | `control`(LLM endpoint API key 不可用) |
+| Hub 管理员 token | 租户管理员:本租户任意用户;全局管理员:任意租户 | `control` + bash/install,每次调用用参数 `user_id`(全局管理员还可 `tenant_id`)指定桌面 |
+
+服务间的 desktop API token(`MACLAW_DESKTOP_API_TOKEN`)**不能**直接访问 `/mcp`。
+
+- `read`:截图、无障碍树、窗口列表、剪贴板读取、屏幕信息、等待、读文件/下载;
+- `control`:再加鼠标键盘、剪贴板写、窗口操作、启动程序、写文件;
+- `tools/list` 只列出该 token 可用的工具;普通 token 传别人的 `user_id` 会被拒绝。
+
+桌面 MCP token 只以 SHA-256 存在 Hub system settings(键 `desktop_mcp_tokens`),明文只在创建时返回一次。管理接口:
+
+```sh
+# 用户自己(Hub 登录 token):列出 / 创建 / 删除
+curl -H "Authorization: Bearer $HUB_USER_TOKEN" https://<hub>/api/v1/desktop-mcp/tokens
+curl -X POST -H "Authorization: Bearer $HUB_USER_TOKEN" -d '{"name":"cursor","scope":"control"}' https://<hub>/api/v1/desktop-mcp/tokens
+curl -X DELETE -H "Authorization: Bearer $HUB_USER_TOKEN" "https://<hub>/api/v1/desktop-mcp/tokens?id=<id>"
+# 租户管理员(或服务器上的 desktop API token,用于开通):给某用户发 token
+curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
+  -d '{"user_id":"<user_id>","scope":"read","name":"ops"}' https://<hub>/api/admin/desktop-mcp/tokens
+```
+
+- 人工接管:每次控制类调用(以及 `desktop_computer` 的每一步之前)查询容器内 noVNC 连接数,有人正在看/操作时拒绝并提示稍后再试。
 - 密码框:MCP 无法读取网页焦点,所以当前焦点窗口是浏览器时拒绝 `type`/会输入字符的按键,网页请用 `desktop_browser_info` 返回的 CDP 端点;AT-SPI `set_text` 拒绝密码框。
 
-## 工具
+## nginx
 
-| 工具 | 范围 | 说明 |
-|---|---|---|
-| `desktop_screenshot` | read | `max_width/max_height`、`region`([x0,y0,x1,y1],上次全屏截图像素)、`format` png/jpeg/webp、`quality`、`cursor`、`marks`;返回图片 + `screen_width/height,image_width/height,scale,region,cursor` |
-| `desktop_computer` | control | `actions` 数组:Anthropic computer-use / OpenAI CUA / MaClaw 步骤;按序执行,首个失败即停,逐步结果;有输入时附一张新截图。坐标为上次全屏截图像素,自动换算 |
-| `desktop_app_probe` | read | AT-SPI 元素树(id/role/name/states/bounds,含截图坐标);`marks:true` 附编号截图 |
-| `desktop_clipboard_get` / `desktop_clipboard_set` | read / control | UTF-8 文本(中文可用),或 PNG |
-| `desktop_windows` / `desktop_window` | read / control | 列表;activate/maximize/minimize/restore/move/resize/move_resize/close |
-| `desktop_screen_info`、`desktop_wait` | read | 分辨率与缩放;等屏幕变化或窗口出现/关闭 |
-| `desktop_app_open` | control | 启动 GUI 程序(不是 shell) |
-| `desktop_file_read` / `desktop_file_list` / `desktop_file_download` | read | 文本读、目录、任意文件 base64(embedded resource) |
-| `desktop_file_write` / `desktop_file_upload` | control(upload 需 allow_bash) | 写文本 / 上传任意文件 |
-| `desktop_bash` | control + allow_bash | 容器内执行一条命令 |
-| `desktop_install` | control + allow_install | apt 安装 |
-| `desktop_browser_info` | control | 打开/复用桌面,返回 display 与浏览器 CDP 地址 |
+Hub 现有的 HTTPS server 块只要把 `/` 反代到 Hub,`/mcp` 就能用。截图、等待类调用可能较慢,如全局 `proxy_read_timeout` 很短,可加:
 
-## 运行
-
-```sh
-go build -trimpath -ldflags='-s -w' -o maclaw-desktop-mcp ./cmd/maclaw-desktop-mcp
-# 客户端 token:自己生成,只把哈希写进 tokens 文件
-TOKEN=$(openssl rand -hex 24); printf '%s\n' "$TOKEN" | ./maclaw-desktop-mcp -hash-token
-cat > /etc/maclaw/mcp-tokens.json <<'JSON'
-[{"name":"alice-cursor","token_sha256":"<上一步输出>","tenant_id":"tenant_default","user_id":"<user_id>","scope":"control","allow_bash":false,"allow_install":false}]
-JSON
-chmod 600 /etc/maclaw/mcp-tokens.json
-# backend token 只从环境/systemd EnvironmentFile 传入,不要写进仓库
-MACLAW_MCP_BACKEND=hub MACLAW_MCP_BACKEND_URL=https://hub.example.com \
-MACLAW_MCP_BACKEND_TOKEN="$MACLAW_DESKTOP_API_TOKEN" MACLAW_MCP_TOKENS_FILE=/etc/maclaw/mcp-tokens.json \
-./maclaw-desktop-mcp -http 127.0.0.1:8790
+```nginx
+location = /mcp { proxy_pass http://127.0.0.1:9399; proxy_http_version 1.1; proxy_buffering off; proxy_read_timeout 300s; client_max_body_size 16m; }
 ```
 
-对外请放在 HTTPS 反向代理后(`location /mcp { proxy_pass http://127.0.0.1:8790; proxy_read_timeout 300s; }`)。
-
-环境变量:`MACLAW_MCP_BACKEND`(hub|desktopd)、`MACLAW_MCP_BACKEND_URL`、`MACLAW_MCP_BACKEND_TOKEN`、`MACLAW_MCP_TOKENS_FILE`、
-`MACLAW_MCP_TAKEOVER`(viewer|off)、stdio 用 `MACLAW_MCP_TENANT`、`MACLAW_MCP_USER`、`MACLAW_MCP_SCOPE`、`MACLAW_MCP_ALLOW_BASH`、`MACLAW_MCP_ALLOW_INSTALL`;
-desktopd 后端打开会话时用 `MACLAW_MCP_IMAGE`、`MACLAW_MCP_MEMORY`、`MACLAW_MCP_CPUS`、`MACLAW_MCP_SHM_SIZE`。
-
-## 客户端配置示例
-
-Claude Code:
-
-```sh
-claude mcp add --transport http maclaw-desktop https://mcp.example.com/mcp --header "Authorization: Bearer $MACLAW_MCP_TOKEN"
-```
+## 客户端配置示例(token 用占位符)
 
 Cursor(`~/.cursor/mcp.json` 或项目 `.cursor/mcp.json`):
 
 ```json
-{"mcpServers": {"maclaw-desktop": {"url": "https://mcp.example.com/mcp", "headers": {"Authorization": "Bearer ${env:MACLAW_MCP_TOKEN}"}}}}
+{"mcpServers": {"maclaw-desktop": {"url": "https://hubs.maclaw.top/mcp", "headers": {"Authorization": "Bearer ${env:MACLAW_MCP_TOKEN}"}}}}
 ```
 
-Claude Desktop(stdio,本地二进制直连 Hub;`claude_desktop_config.json`):
+Claude Code:
+
+```sh
+claude mcp add --transport http maclaw-desktop https://hubs.maclaw.top/mcp --header "Authorization: Bearer $MACLAW_MCP_TOKEN"
+```
+
+Claude Desktop(`claude_desktop_config.json`;通过 `mcp-remote` 桥接带 header 的远程 HTTP):
 
 ```json
-{"mcpServers": {"maclaw-desktop": {"command": "/usr/local/bin/maclaw-desktop-mcp", "args": ["-stdio"],
-  "env": {"MACLAW_MCP_BACKEND": "hub", "MACLAW_MCP_BACKEND_URL": "https://hub.example.com",
-          "MACLAW_MCP_BACKEND_TOKEN": "<desktop API token>", "MACLAW_MCP_USER": "<user_id>", "MACLAW_MCP_SCOPE": "control"}}}}
+{"mcpServers": {"maclaw-desktop": {"command": "npx", "args": ["-y", "mcp-remote", "https://hubs.maclaw.top/mcp", "--header", "Authorization:${MACLAW_MCP_TOKEN}"],
+  "env": {"MACLAW_MCP_TOKEN": "Bearer mcpd_<your token>"}}}}
 ```
 
-stdio 模式持有 backend token,只适合运维人员自己的机器;对外分发请用 HTTP 模式 + 个人 token。
+## 可选:本地 stdio 二进制
+
+`cmd/maclaw-desktop-mcp` 只保留 stdio 模式(运维/本地调试),它持有服务端 desktop API token,只能在允许存放该 token 的机器上运行;
+对外一律用 Hub 的 `/mcp`。环境变量:`MACLAW_MCP_BACKEND`(hub|desktopd)、`MACLAW_MCP_BACKEND_URL`、`MACLAW_MCP_BACKEND_TOKEN`、
+`MACLAW_MCP_TENANT`、`MACLAW_MCP_USER`、`MACLAW_MCP_SCOPE`、`MACLAW_MCP_ALLOW_BASH`、`MACLAW_MCP_ALLOW_INSTALL`、`MACLAW_MCP_TAKEOVER`;
+desktopd 后端打开会话时用 `MACLAW_MCP_IMAGE`、`MACLAW_MCP_MEMORY`、`MACLAW_MCP_CPUS`、`MACLAW_MCP_SHM_SIZE`。
 
 ## computer 动作对照
 

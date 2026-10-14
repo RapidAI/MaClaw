@@ -1,4 +1,7 @@
-package main
+// Package desktopmcp is the MCP (Model Context Protocol) server for a MaClaw
+// cloud desktop. Hub mounts it at /mcp; cmd/maclaw-desktop-mcp runs it over
+// stdio for local use.
+package desktopmcp
 
 import (
 	"bufio"
@@ -28,9 +31,9 @@ var supportedProtocols = []string{"2025-06-18", "2025-03-26", "2024-11-05"}
 // with a bearer token that maps to an Identity; stdio uses one Identity.
 type Server struct {
 	backend  Backend
-	tokens   map[string]Identity // sha256 hex of the token -> identity
-	takeover string              // "viewer" refuses control while someone watches in noVNC; "off" does not check
-	frames   sync.Map            // tenant/user -> *frameState
+	auth     Authenticator
+	takeover string   // "viewer" refuses control while someone watches in noVNC; "off" does not check
+	frames   sync.Map // tenant/user -> *frameState
 	settle   time.Duration
 }
 
@@ -65,19 +68,62 @@ func HashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-func (s *Server) identityFor(r *http.Request) (Identity, bool) {
-	auth := r.Header.Get("Authorization")
-	token, ok := strings.CutPrefix(auth, "Bearer ")
-	if !ok || strings.TrimSpace(token) == "" {
+// Authenticator maps an HTTP request (its bearer token) to an Identity.
+type Authenticator func(r *http.Request) (Identity, bool)
+
+// Options configure a Server.
+type Options struct {
+	// Auth authenticates HTTP clients. Without it every HTTP request is 401.
+	Auth Authenticator
+	// Takeover is "viewer" (default: refuse control while a person has the
+	// desktop open in noVNC) or "off".
+	Takeover string
+	// Settle is the pause after input before the follow-up screenshot.
+	Settle time.Duration
+}
+
+// New returns a server for backend.
+func New(backend Backend, opts Options) *Server {
+	if opts.Takeover != "off" {
+		opts.Takeover = "viewer"
+	}
+	if opts.Settle <= 0 {
+		opts.Settle = 500 * time.Millisecond
+	}
+	return &Server{backend: backend, auth: opts.Auth, takeover: opts.Takeover, settle: opts.Settle}
+}
+
+// BearerToken returns the request's bearer token, or "".
+func BearerToken(r *http.Request) string {
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if len(auth) < 7 || !strings.EqualFold(auth[:7], "bearer ") {
+		return ""
+	}
+	return strings.TrimSpace(auth[7:])
+}
+
+// StaticTokens authenticates against identities keyed by HashToken(token).
+func StaticTokens(tokens map[string]Identity) Authenticator {
+	return func(r *http.Request) (Identity, bool) {
+		token := BearerToken(r)
+		if token == "" {
+			return Identity{}, false
+		}
+		hash := HashToken(token)
+		for known, id := range tokens {
+			if subtle.ConstantTimeCompare([]byte(known), []byte(hash)) == 1 {
+				return id, true
+			}
+		}
 		return Identity{}, false
 	}
-	hash := HashToken(strings.TrimSpace(token))
-	for known, id := range s.tokens {
-		if subtle.ConstantTimeCompare([]byte(known), []byte(hash)) == 1 {
-			return id, true
-		}
+}
+
+func (s *Server) identityFor(r *http.Request) (Identity, bool) {
+	if s.auth == nil {
+		return Identity{}, false
 	}
-	return Identity{}, false
+	return s.auth(r)
 }
 
 type rpcRequest struct {
@@ -103,10 +149,6 @@ type rpcResponse struct {
 // a batch) and get application/json back. No server-initiated stream is
 // offered, so GET answers 405 as the specification allows.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/mcp" {
-		http.NotFound(w, r)
-		return
-	}
 	if r.Method == http.MethodGet || r.Method == http.MethodDelete {
 		w.Header().Set("Allow", "POST")
 		w.WriteHeader(http.StatusMethodNotAllowed)
@@ -339,8 +381,12 @@ func (s *Server) toolList(id Identity) []map[string]any {
 		if s.allowed(id, t) != nil {
 			continue
 		}
+		schema := t.Schema
+		if id.AnyUser {
+			schema = withTarget(schema, id.AnyTenant)
+		}
 		out = append(out, map[string]any{
-			"name": t.Name, "description": t.Description, "inputSchema": t.Schema,
+			"name": t.Name, "description": t.Description, "inputSchema": schema,
 			"annotations": map[string]any{"readOnlyHint": t.ReadOnly, "destructiveHint": t.Control && (t.Needs != "" || t.Name == "desktop_window" || t.Name == "desktop_file_write"), "openWorldHint": false},
 		})
 	}
@@ -370,6 +416,10 @@ func (s *Server) personControls(ctx context.Context, id Identity) error {
 }
 
 func (s *Server) call(ctx context.Context, id Identity, t tool, args map[string]any) map[string]any {
+	id, err := id.target(args)
+	if err != nil {
+		return toolError(err)
+	}
 	if err := s.allowed(id, t); err != nil {
 		return toolError(err)
 	}
@@ -629,4 +679,24 @@ func (s *Server) guardTyping(ctx context.Context, id Identity, argv []string) er
 		return fmt.Errorf("typing into the browser window is refused here (a password field cannot be ruled out); use the CDP endpoint from desktop_browser_info for web pages")
 	}
 	return nil
+}
+
+// withTarget adds the admin-only user_id (and tenant_id) arguments.
+func withTarget(schema map[string]any, tenant bool) map[string]any {
+	out := map[string]any{}
+	for k, v := range schema {
+		out[k] = v
+	}
+	props := map[string]any{}
+	if old, ok := schema["properties"].(map[string]any); ok {
+		for k, v := range old {
+			props[k] = v
+		}
+	}
+	props["user_id"] = prop("string", "Admin only: the user whose desktop to use.")
+	if tenant {
+		props["tenant_id"] = prop("string", "Admin only: that user's tenant.")
+	}
+	out["properties"] = props
+	return out
 }
