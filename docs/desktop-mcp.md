@@ -1,7 +1,7 @@
 # MaClaw 云桌面 MCP(Hub `/mcp`)
 
 把用户的 MaClaw 云桌面(maclaw-gui:2)以 MCP 工具暴露给外部 agent(Claude Desktop / Claude Code / Cursor 等)。
-**MCP 内置在 Hub 里**:地址就是 `https://<hub 域名>/mcp`,无需单独部署服务、tokens 文件或额外 nginx location。
+**MCP 内置在 Hub 里**:地址就是 `https://hub.mypapers.top/mcp 或 https://hub.maclaw.top/mcp`,无需单独部署服务、tokens 文件或额外 nginx location。
 
 - 源码:协议与工具 `corelib/desktop/desktopmcp`;Hub 挂载与鉴权 `hub/internal/httpapi/desktop_mcp.go`(直接调用 Hub 内部的
   desktop pool,不走 HTTP 回环);动作解析与执行与 MaClawSrv 的 `desktop` 工具共用 `corelib/desktop/computeruse`。
@@ -23,17 +23,33 @@
 - `control`:再加鼠标键盘、剪贴板写、窗口操作、启动程序、写文件;
 - `tools/list` 只列出该 token 可用的工具;普通 token 传别人的 `user_id` 会被拒绝。
 
-桌面 MCP token 只以 SHA-256 存在 Hub system settings(键 `desktop_mcp_tokens`),明文只在创建时返回一次。管理接口:
+### 创建 `mcpd_` token
+
+MCP 地址:`https://hub.mypapers.top/mcp`、`https://hub.maclaw.top/mcp`(注意是 `hub.*`;`hubs.*` 是 hubcenter,不是 Hub)。
+token 只以 SHA-256 存在 Hub system settings(键 `desktop_mcp_tokens`),明文只在创建响应的 `token` 字段里出现一次,请立即保存。
+
+用户给自己的桌面开 token(用 Hub 登录 token;`scope` 为 `read` 或 `control`,用户不能自开 bash/install):
 
 ```sh
-# 用户自己(Hub 登录 token):列出 / 创建 / 删除
-curl -H "Authorization: Bearer $HUB_USER_TOKEN" https://<hub>/api/v1/desktop-mcp/tokens
-curl -X POST -H "Authorization: Bearer $HUB_USER_TOKEN" -d '{"name":"cursor","scope":"control"}' https://<hub>/api/v1/desktop-mcp/tokens
-curl -X DELETE -H "Authorization: Bearer $HUB_USER_TOKEN" "https://<hub>/api/v1/desktop-mcp/tokens?id=<id>"
-# 租户管理员(或服务器上的 desktop API token,用于开通):给某用户发 token
-curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -d '{"user_id":"<user_id>","scope":"read","name":"ops"}' https://<hub>/api/admin/desktop-mcp/tokens
+curl -X POST https://hub.mypapers.top/api/v1/desktop-mcp/tokens \
+  -H "Authorization: Bearer <HUB_USER_TOKEN>" -H "Content-Type: application/json" \
+  -d '{"name":"cursor","scope":"control"}'
+# 列出 / 吊销
+curl -H "Authorization: Bearer <HUB_USER_TOKEN>" https://hub.mypapers.top/api/v1/desktop-mcp/tokens
+curl -X DELETE -H "Authorization: Bearer <HUB_USER_TOKEN>" "https://hub.mypapers.top/api/v1/desktop-mcp/tokens?id=<TOKEN_ID>"
 ```
+
+租户管理员给本租户用户开 token(可开 `allow_bash` / `allow_install`;服务器上的 desktop API token 也可用于开通):
+
+```sh
+curl -X POST https://hub.maclaw.top/api/admin/desktop-mcp/tokens \
+  -H "Authorization: Bearer <HUB_ADMIN_TOKEN>" -H "Content-Type: application/json" \
+  -d '{"user_id":"<USER_ID>","scope":"read","name":"ops","allow_bash":false,"allow_install":false}'
+curl -H "Authorization: Bearer <HUB_ADMIN_TOKEN>" https://hub.maclaw.top/api/admin/desktop-mcp/tokens
+curl -X DELETE -H "Authorization: Bearer <HUB_ADMIN_TOKEN>" "https://hub.maclaw.top/api/admin/desktop-mcp/tokens?id=<TOKEN_ID>"
+```
+
+客户端里把返回的 `mcpd_...` 作为 `Authorization: Bearer mcpd_<token>` 使用。
 
 - 人工接管:每次控制类调用(以及 `desktop_computer` 的每一步之前)查询容器内 noVNC 连接数,有人正在看/操作时拒绝并提示稍后再试。
 - 密码框:MCP 无法读取网页焦点,所以当前焦点窗口是浏览器时拒绝 `type`/会输入字符的按键,网页请用 `desktop_browser_info` 返回的 CDP 端点;AT-SPI `set_text` 拒绝密码框。
@@ -51,19 +67,19 @@ location = /mcp { proxy_pass http://127.0.0.1:9399; proxy_http_version 1.1; prox
 Cursor(`~/.cursor/mcp.json` 或项目 `.cursor/mcp.json`):
 
 ```json
-{"mcpServers": {"maclaw-desktop": {"url": "https://hubs.maclaw.top/mcp", "headers": {"Authorization": "Bearer ${env:MACLAW_MCP_TOKEN}"}}}}
+{"mcpServers": {"maclaw-desktop": {"url": "https://hub.maclaw.top/mcp", "headers": {"Authorization": "Bearer ${env:MACLAW_MCP_TOKEN}"}}}}
 ```
 
 Claude Code:
 
 ```sh
-claude mcp add --transport http maclaw-desktop https://hubs.maclaw.top/mcp --header "Authorization: Bearer $MACLAW_MCP_TOKEN"
+claude mcp add --transport http maclaw-desktop https://hub.maclaw.top/mcp --header "Authorization: Bearer $MACLAW_MCP_TOKEN"
 ```
 
 Claude Desktop(`claude_desktop_config.json`;通过 `mcp-remote` 桥接带 header 的远程 HTTP):
 
 ```json
-{"mcpServers": {"maclaw-desktop": {"command": "npx", "args": ["-y", "mcp-remote", "https://hubs.maclaw.top/mcp", "--header", "Authorization:${MACLAW_MCP_TOKEN}"],
+{"mcpServers": {"maclaw-desktop": {"command": "npx", "args": ["-y", "mcp-remote", "https://hub.maclaw.top/mcp", "--header", "Authorization:${MACLAW_MCP_TOKEN}"],
   "env": {"MACLAW_MCP_TOKEN": "Bearer mcpd_<your token>"}}}}
 ```
 
