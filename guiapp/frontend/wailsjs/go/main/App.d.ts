@@ -2292,7 +2292,7 @@ export function SendBtwQuery(arg1:string,arg2:string):Promise<main.IMAgentRespon
 
 export function SendDesktopBotTask(arg1:string,arg2:string,arg3:string):Promise<main.IMAgentResponse>;
 
-export function UnderstandDesktopBotTask(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:string):Promise<{told:string,instruction:string,pace?:string,persona?:string,reading?:string,schedule?:{name?:string,mode?:string,interval_minutes?:number,hour?:number,minute?:number,day_of_week?:number}}>;
+export function UnderstandDesktopBotTask(arg1:string,arg2:string,arg3:string,arg4:Array<string>|string,arg5:string):Promise<{told:string,instruction:string,pace?:string,persona?:string,reading?:string,schedule?:{name?:string,mode?:string,interval_minutes?:number,hour?:number,minute?:number,day_of_week?:number}}>;
 
 export function EvaluateDesktopTaskSupplement(arg1:string,arg2:string,arg3:string):Promise<{is_supplement:boolean,reason?:string,instruction?:string}>;
 
