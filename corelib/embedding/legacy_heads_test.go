@@ -22,9 +22,10 @@ func TestRemoveLegacyHeadFilesOnlyKnownNames(t *testing.T) {
 		mk("intent_heads/head_mlp_qwen3go_GK.json"),
 		mk("tool_heads/tool_head_ovr_qwen3go.json"),
 		mk("tool_head_ovr_qwen3go.json"),
+		mk("intent_heads/head_mlp_qwen3go_r7.json"),
 	}
 	keep := []string{
-		mk("intent_heads/head_mlp_qwen3go_r7.json"),
+		mk("intent_heads/head_mlp_qwen3go_r13f1.json"),
 		mk("intent_heads/head_mlp_qwen3go_xf_custom.json"),
 		mk("tool_heads/tool_head_ovr_qwen3go_r5.json"),
 		mk("interrupt_heads/interrupt_relevance_qwen3go.json"),

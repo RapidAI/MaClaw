@@ -7,7 +7,7 @@ import (
 
 // LegacyHeadFilenames are head files earlier releases put under the models
 // dir (root, intent_heads/, tool_heads/) that nothing loads any more: the
-// shipped heads are the ones pinned in release_assets.json (intent r7,
+// shipped heads are the ones pinned in release_assets.json (intent r13f1,
 // tool r5, interrupt). Only these exact names (plus their download side
 // files) are ever deleted by RemoveLegacyHeadFiles.
 var LegacyHeadFilenames = []string{
@@ -19,6 +19,7 @@ var LegacyHeadFilenames = []string{
 	"head_mlp_qwen3go_KG.json",
 	"head_mlp_gemmacls_GK.json",
 	"head_mlp_gemmacls_KG.json",
+	"head_mlp_qwen3go_r7.json", // superseded by r13f1 (2026-10-15)
 	// tool heads
 	"tool_head_ovr_qwen3go.json",
 	"tool_head_ovr_qwen3.json",

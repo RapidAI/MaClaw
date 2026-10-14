@@ -1,6 +1,6 @@
 {
  "release": "https://github.com/RapidAI/MaClaw/releases/download/Model_Release",
- "generated": "2026-10-14T04:50:00+08:00",
+ "generated": "2026-10-15T06:00:00+08:00",
  "assets": [
   {
    "filename": "Qwen3-Embedding-0.6B-Q8_0.gguf",
@@ -10,11 +10,11 @@
    "sha256": "06507c7b42688469c4e7298b0a1e16deff06caf291cf0a5b278c308249c3e439"
   },
   {
-   "filename": "head_mlp_qwen3go_r7.json",
+   "filename": "head_mlp_qwen3go_r13f1.json",
    "kind": "intent_head",
    "subdir": "intent_heads",
-   "size": 135009815,
-   "sha256": "6d2da25c7a0e442d7b913fea0ddc59bfeeb1d318c0df9d7d10c415e68536c318"
+   "size": 68191723,
+   "sha256": "e336f11a391ae0c65f957f33b31f16bb757aaf2ce8781b58f174cb023be5ba58"
   },
   {
    "filename": "tool_head_ovr_qwen3go_r5.json",

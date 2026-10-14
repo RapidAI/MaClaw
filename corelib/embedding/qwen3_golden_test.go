@@ -21,7 +21,12 @@ func TestQwen3RetrievalGolden(t *testing.T) {
 	if gp == "" {
 		t.Skip("MACLAW_QWEN3_GOLDEN not set")
 	}
-	e := loadQwen3(t)
+	// own instance: keeps the shared embedder's prefix cache untouched for other tests
+	e, err := NewQwen3Embedder(qwen3TestModel(t), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer e.Close()
 	var buf bytes.Buffer
 	put := func(v []float32, err error) {
 		if err != nil {
