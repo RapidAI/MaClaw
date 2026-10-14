@@ -232,8 +232,18 @@ func TreeResponseFormat() map[string]interface{} {
 }
 
 // ParseTreeResponse parses the LLM response into TreeCandidate list.
-// Handles: <think>...</think> + JSON, plain JSON, JSON in prose.
+// Handles: <think>...</think> + JSON, plain JSON, fenced JSON, and JSON
+// buried in prose (including chain-of-thought that quotes other braces
+// before the final answer).
 func ParseTreeResponse(text string) []TreeCandidate {
+	candidates := parseTreeResponseQuiet(text)
+	if len(candidates) == 0 {
+		log.Printf("[intent-tree] failed to parse LLM response: len=%d snippet=%q", len(text), RedactTreeSnippet(text, 120))
+	}
+	return candidates
+}
+
+func parseTreeResponseQuiet(text string) []TreeCandidate {
 	// Strip <think> block if present.
 	if idx := strings.LastIndex(text, "</think>"); idx >= 0 {
 		text = text[idx+len("</think>"):]
@@ -244,29 +254,101 @@ func ParseTreeResponse(text string) []TreeCandidate {
 	if candidates := tryParseTreeJSON(text); len(candidates) > 0 {
 		return candidates
 	}
+	// Scan every balanced JSON object (string-aware) and prefer the last
+	// one that parses: reasoning models usually put the answer at the end.
+	objs := balancedJSONObjects(text)
+	for i := len(objs) - 1; i >= 0; i-- {
+		if candidates := tryParseTreeJSON(objs[i]); len(candidates) > 0 {
+			return candidates
+		}
+	}
+	return nil
+}
 
-	// Try extracting JSON object from prose.
-	if start := strings.Index(text, "{"); start >= 0 {
-		// Find matching closing brace.
-		depth := 0
-		for i := start; i < len(text); i++ {
-			switch text[i] {
-			case '{':
-				depth++
-			case '}':
+// balancedJSONObjects returns top-level {...} spans, ignoring braces inside
+// JSON string literals.
+func balancedJSONObjects(text string) []string {
+	var out []string
+	depth, start := 0, -1
+	inStr, esc := false, false
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if inStr {
+			switch {
+			case esc:
+				esc = false
+			case c == '\\':
+				esc = true
+			case c == '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			if depth > 0 {
+				inStr = true
+			}
+		case '{':
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		case '}':
+			if depth > 0 {
 				depth--
-				if depth == 0 {
-					if candidates := tryParseTreeJSON(text[start : i+1]); len(candidates) > 0 {
-						return candidates
-					}
+				if depth == 0 && start >= 0 {
+					out = append(out, text[start:i+1])
+					start = -1
 				}
 			}
 		}
 	}
-
-	log.Printf("[intent-tree] failed to parse LLM response: %.200s", text)
-	return nil
+	return out
 }
+
+// RedactTreeSnippet shortens a model reply for logs and blanks quoted
+// spans, which is where models echo the user's message.
+func RedactTreeSnippet(text string, max int) string {
+	var b, q strings.Builder
+	inQuote := false
+	for _, r := range text {
+		switch r {
+		case '"', '\u201c', '\u201d', '\u300c', '\u300d':
+			if inQuote {
+				// Keep short quoted tokens (JSON keys, labels); blank long
+				// ones, which is where models echo the user's message.
+				if len([]rune(q.String())) <= 24 {
+					b.WriteString(q.String())
+				} else {
+					b.WriteString("…")
+				}
+				q.Reset()
+			}
+			b.WriteRune('"')
+			inQuote = !inQuote
+			continue
+		}
+		if inQuote {
+			q.WriteRune(r)
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	if inQuote {
+		b.WriteString("…")
+	}
+	out := []rune(strings.Join(strings.Fields(b.String()), " "))
+	if len(out) > max {
+		out = append(out[:max], '…')
+	}
+	return string(out)
+}
+
+// treeJSONRetryInstruction is appended on the single retry after a reply
+// without a parseable answer (seen with hub "auto" models that ignore
+// response_format and answer with chain-of-thought prose).
+const treeJSONRetryInstruction = "\n\nIMPORTANT: Your previous reply contained no JSON. Do not explain or reason in the output. Reply with ONLY one JSON object of the form {\"top\":[{\"skill\":\"<label>\",\"score\":0.0,\"workflow_type\":\"\"}]} and nothing else."
 
 // tryParseTreeJSON attempts to parse a JSON string into TreeCandidate list.
 func tryParseTreeJSON(s string) []TreeCandidate {
@@ -364,9 +446,24 @@ func ClassifyByTreeContext(ctx context.Context, parentCtx context.Context, llmCo
 		return nil, fmt.Errorf("tree reasoning LLM call failed: %w", err)
 	}
 
-	candidates := ParseTreeResponse(response)
+	candidates := parseTreeResponseQuiet(response)
 	if len(candidates) == 0 {
-		return nil, &TreeResponseProtocolError{}
+		log.Printf("[intent-tree] unparseable reply, retrying once: len=%d snippet=%q", len(response), RedactTreeSnippet(response, 120))
+		if ctx != nil && ctx.Err() != nil {
+			return nil, &TreeResponseProtocolError{}
+		}
+		retryPrompt := prompt + treeJSONRetryInstruction
+		if llmContextFunc != nil {
+			response, err = llmContextFunc(ctx, parentCtx, retryPrompt, message)
+		} else {
+			response, err = llmFunc(retryPrompt, message)
+		}
+		if err == nil {
+			candidates = ParseTreeResponse(response)
+		}
+		if len(candidates) == 0 {
+			return nil, &TreeResponseProtocolError{}
+		}
 	}
 
 	return candidates, nil
