@@ -2839,7 +2839,16 @@ def pipe(left, right):
             right.sendall(data)
     except OSError:
         pass
+    # shutdown() before close(): the opposite pipe thread is blocked in
+    # recv() on these sockets, and a bare close() from this thread neither
+    # wakes it nor sends FIN while that recv holds the file. websockify then
+    # never sees the viewer leave and its per-connection child lives forever
+    # (seen live: 16 children, one real viewer).
     for item in (left, right):
+        try:
+            item.shutdown(socket.SHUT_RDWR)
+        except OSError:
+            pass
         try:
             item.close()
         except OSError:
