@@ -21,3 +21,29 @@ func TestDesktopStepLogLineRedactsFreeText(t *testing.T) {
 		t.Fatal(l)
 	}
 }
+
+func TestDesktopStepLogInvalidActionNotVerbatim(t *testing.T) {
+	line := desktopStepLogLine("u", map[string]any{"action": "bash<tool_sep:1>secret cmd"}, "", errors.New("x"), 0)
+	if strings.Contains(line, "secret") || !strings.Contains(line, "action=invalid(") {
+		t.Fatal(line)
+	}
+}
+
+func TestRecoverDesktopLeakedArgs(t *testing.T) {
+	raw := "bash<tool_sep:6124c78e>\n<arg_key:6124c78e>command</arg_key:6124c78e>\n<arg_value:6124c78e>cd /tmp/img && ls -lh</arg_value:6124c78e>"
+	got, ok := recoverDesktopLeakedArgs(map[string]any{"action": raw})
+	if !ok || got["action"] != "bash" || got["command"] != "cd /tmp/img && ls -lh" {
+		t.Fatalf("%v %#v", ok, got)
+	}
+	// Unterminated value (seen live) still recovers.
+	got, ok = recoverDesktopLeakedArgs(map[string]any{"action": "bash<tool_sep:1><arg_key:1>command</arg_key:1><arg_value:1>echo hi"})
+	if !ok || got["command"] != "echo hi" {
+		t.Fatalf("%#v", got)
+	}
+	if _, ok := recoverDesktopLeakedArgs(map[string]any{"action": "rm<tool_sep:1>"}); ok {
+		t.Fatal("unknown action recovered")
+	}
+	if _, ok := recoverDesktopLeakedArgs(map[string]any{"action": "bash", "command": "ls"}); ok {
+		t.Fatal("clean args touched")
+	}
+}

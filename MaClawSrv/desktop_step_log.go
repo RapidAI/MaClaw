@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
@@ -23,6 +24,11 @@ var desktopStepLogLenOnly = map[string]bool{
 
 func desktopStepLogLine(user string, args map[string]any, out string, err error, took time.Duration) string {
 	action := strings.ToLower(strings.TrimSpace(desktopArg(args, "action")))
+	if !desktopActionAllowed(action) {
+		// Never log a malformed action verbatim: models have leaked whole
+		// tool-call markup (with the command text) into this field.
+		action = fmt.Sprintf("invalid(%d)", len(action))
+	}
 	keys := make([]string, 0, len(args))
 	for k := range args {
 		if k != "action" {
@@ -63,4 +69,49 @@ func desktopStepClip(s string, n int) string {
 		return string(r[:n]) + "…"
 	}
 	return fmt.Sprintf("%q", s)[1 : len(fmt.Sprintf("%q", s))-1]
+}
+
+// Leaked tool-call markup: some models put their own call encoding into the
+// action field, e.g.
+//
+//	bash<tool_sep:ID>\n<arg_key:ID>command</arg_key:ID>\n<arg_value:ID>ls</arg_value:ID>
+//
+// recoverDesktopLeakedArgs turns that back into action=bash, command=ls so
+// the call runs instead of failing with an invalid action.
+var (
+	desktopLeakSep   = regexp.MustCompile(`<tool_sep(?::[^>]*)?>`)
+	desktopLeakPair  = regexp.MustCompile(`(?s)<arg_key(?::[^>]*)?>(.*?)</arg_key(?::[^>]*)?>\s*<arg_value(?::[^>]*)?>(.*?)(?:</arg_value(?::[^>]*)?>|$)`)
+	desktopLeakStart = regexp.MustCompile(`<(?:tool_sep|arg_key|arg_value|tool_call)`)
+)
+
+func recoverDesktopLeakedArgs(args map[string]any) (map[string]any, bool) {
+	raw, _ := args["action"].(string)
+	if !desktopLeakStart.MatchString(raw) {
+		return args, false
+	}
+	head := raw
+	if loc := desktopLeakStart.FindStringIndex(raw); loc != nil {
+		head = raw[:loc[0]]
+	}
+	action := strings.ToLower(strings.TrimSpace(head))
+	if !desktopActionAllowed(action) {
+		return args, false
+	}
+	out := make(map[string]any, len(args)+2)
+	for k, v := range args {
+		out[k] = v
+	}
+	out["action"] = action
+	rest := desktopLeakSep.ReplaceAllString(raw[len(head):], "")
+	for _, m := range desktopLeakPair.FindAllStringSubmatch(rest, -1) {
+		key := strings.TrimSpace(m[1])
+		if key == "" || key == "action" {
+			continue
+		}
+		if _, set := out[key]; set {
+			continue
+		}
+		out[key] = m[2]
+	}
+	return out, true
 }

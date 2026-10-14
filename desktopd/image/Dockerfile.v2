@@ -64,7 +64,7 @@ RUN set -eux; \
       locales tzdata fonts-noto-cjk fonts-noto-color-emoji \
       fcitx5 fcitx5-chinese-addons fcitx5-frontend-gtk3 fcitx5-frontend-gtk4 fcitx5-frontend-qt5 \
       sudo ca-certificates curl wget gnupg git unzip xz-utils less nano procps psmisc iproute2 \
-      xauth x11-utils x11-xserver-utils xclip xsel libfuse2 \
+      xauth x11-utils x11-xserver-utils xclip xsel libfuse2 file xxd \
       scrot imagemagick at-spi2-core python3-pyatspi wmctrl; \
     sed -i 's/^# *\(zh_CN.UTF-8\)/\1/; s/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen; \
     locale-gen; \

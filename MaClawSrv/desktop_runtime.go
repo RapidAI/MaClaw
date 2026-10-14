@@ -207,6 +207,10 @@ func (desktopRuntimeModule) InvokeTool(ctx context.Context, request agentruntime
 		ctx = context.WithValue(ctx, desktopCloudKey{}, true)
 		ctx = context.WithValue(ctx, desktopPersonKey{}, desktopAccount{TenantID: scope.TenantID, UserID: scope.UserID})
 	}
+	if fixed, ok := recoverDesktopLeakedArgs(args); ok {
+		log.Printf("[desktop-step] recovered leaked tool-call markup into action=%s", desktopArg(fixed, "action"))
+		args = fixed
+	}
 	desktopTidyOnce(ctx, desktopOwner(scope), strings.ToLower(strings.TrimSpace(desktopArg(args, "action"))))
 	started := time.Now()
 	out, err := operateDesktop(ctx, scope, args)
@@ -266,6 +270,7 @@ func (desktopRuntimeModule) ContributePrompt(_ context.Context, request agentrun
 // path. Seen live: a "write an illustrated Office document" task spent 30+
 // model rounds re-editing a generator script and never reached a file.
 const desktopDocumentPrompt = "Office documents (Word, report, illustrated document): build the file in one action=bash step with python3 and python-docx (installed), or write ODT/HTML and convert with soffice --headless --convert-to docx. " +
+	"To check a downloaded picture, use ImageMagick identify (installed); older desktops may lack file and xxd. " +
 	"Save it under /home/desktop/Desktop with a fixed name, insert pictures with their file paths (add_picture), and print the saved path and size in the same step. " +
 	"If that step fails, fix the error it printed and run it again; do not rewrite the whole script for each small change. " +
 	"Do not type the document into the LibreOffice window key by key, and do not drive its Save As dialog. " +
