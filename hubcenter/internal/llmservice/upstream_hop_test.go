@@ -63,6 +63,196 @@ func TestEgressProviderHopsWhenLocalNodeNotAllowed(t *testing.T) {
 	}
 }
 
+func TestEgressHopSendsAPIKeyWhenPeerRowHasNone(t *testing.T) {
+	var gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok","choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	peerSvc := NewService(&mockSystemSettings{})
+	if err := peerSvc.AddProvider(context.Background(), llmpool.ProviderConfig{
+		ID: "OpenCode-1-copy", Name: "OpenCode-1（副本）", APIURL: upstream.URL + "/v1",
+		Protocol: "openai", AllowedNodeIDs: []string{"hc-us"},
+	}); err != nil {
+		t.Fatalf("add peer provider: %v", err)
+	}
+	peer := httptest.NewServer(UpstreamHopHandler(&ProxyConfig{Service: peerSvc, NodeID: "hc-us"}, func(*http.Request) error { return nil }))
+	t.Cleanup(peer.Close)
+
+	origin := &llmpool.ProviderConfig{
+		ID: "OpenCode-1-copy", Name: "OpenCode-1（副本）", APIURL: upstream.URL + "/v1",
+		APIKey: "sk-secret", Protocol: "openai", AllowedNodeIDs: []string{"hc-us"},
+	}
+	cfg := &ProxyConfig{
+		NodeID: "hc-cn",
+		LookupAccessPeer: func(nodeID string) (string, bool, int64) {
+			if nodeID == "hc-us" {
+				return peer.URL, true, 10
+			}
+			return "", false, 0
+		},
+	}
+	got, err := egressProvider(context.Background(), cfg, origin, map[string]any{
+		"model": "gpt-4o", "messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}, "gpt-4o", "gpt-4o")
+	if err != nil {
+		t.Fatalf("egressProvider: %v", err)
+	}
+	if got == nil || got.StatusCode != http.StatusOK {
+		t.Fatalf("hop response = %#v", got)
+	}
+	if gotAuth != "Bearer sk-secret" {
+		t.Fatalf("upstream authorization = %q, want the copied key", gotAuth)
+	}
+}
+
+func TestEgressHopKeepsPeerAPIKey(t *testing.T) {
+	var gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok","choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	peerSvc := NewService(&mockSystemSettings{})
+	if err := peerSvc.AddProvider(context.Background(), llmpool.ProviderConfig{
+		ID: "OpenCode-1", APIURL: upstream.URL + "/v1", APIKey: "sk-stored",
+		Protocol: "openai", AllowedNodeIDs: []string{"hc-us"},
+	}); err != nil {
+		t.Fatalf("add peer provider: %v", err)
+	}
+	peer := httptest.NewServer(UpstreamHopHandler(&ProxyConfig{Service: peerSvc, NodeID: "hc-us"}, func(*http.Request) error { return nil }))
+	t.Cleanup(peer.Close)
+	got, err := egressProvider(context.Background(), &ProxyConfig{
+		NodeID: "hc-cn",
+		LookupAccessPeer: func(nodeID string) (string, bool, int64) {
+			if nodeID == "hc-us" {
+				return peer.URL, true, 10
+			}
+			return "", false, 0
+		},
+	}, &llmpool.ProviderConfig{
+		ID: "OpenCode-1", APIURL: "https://evil.example/v1", APIKey: "sk-from-hop",
+		Protocol: "openai", AuthKind: llmpool.ProviderAuthWorkBuddy, AllowedNodeIDs: []string{"hc-us"},
+	}, map[string]any{
+		"model": "gpt-4o", "messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}, "gpt-4o", "gpt-4o")
+	if err != nil {
+		t.Fatalf("egressProvider: %v", err)
+	}
+	if got == nil || got.StatusCode != http.StatusOK {
+		t.Fatalf("hop response = %#v", got)
+	}
+	if gotAuth != "Bearer sk-stored" {
+		t.Fatalf("upstream authorization = %q, want the key stored on the egress node", gotAuth)
+	}
+}
+
+func TestHopSuppliedProviderRejectsUnsafeURL(t *testing.T) {
+	supplied, allowed := hopSuppliedProvider(&llmpool.ProviderConfig{
+		ID: "OpenCode-1-copy", APIURL: "http://user:pass@opencode.ai/v1", APIKey: "sk-secret",
+		AllowedNodeIDs: []string{"hc-us"},
+	}, "OpenCode-1-copy", "hc-us")
+	if supplied != nil || allowed {
+		t.Fatalf("userinfo URL supplied=%v allowed=%v", supplied != nil, allowed)
+	}
+	dst := &llmpool.ProviderConfig{ID: "OpenCode-1", APIKey: "sk-stored", APIURL: "https://opencode.ai/zen/go/v1"}
+	overlayHopCredentials(dst, &llmpool.ProviderConfig{ID: "other", APIKey: "sk-other"})
+	if dst.APIKey != "sk-stored" || dst.APIURL != "https://opencode.ai/zen/go/v1" {
+		t.Fatalf("mismatched snapshot changed the stored provider: %#v", dst)
+	}
+	keyless, allowed := hopSuppliedProvider(&llmpool.ProviderConfig{
+		ID: "OpenCode-1-copy", APIURL: "https://opencode.ai/zen/go/v1",
+		AllowedNodeIDs: []string{"hc-us"},
+	}, "OpenCode-1-copy", "hc-us")
+	if keyless != nil || allowed {
+		t.Fatalf("keyless snapshot supplied=%v allowed=%v", keyless != nil, allowed)
+	}
+	static := &llmpool.ProviderConfig{ID: "OpenCode-1", APIKey: ""}
+	overlayHopCredentials(static, &llmpool.ProviderConfig{
+		ID: "OpenCode-1", AuthKind: llmpool.ProviderAuthWorkBuddy, TokenBankExtraKeys: []string{"sk-extra"},
+	})
+	if len(static.TokenBankExtraKeys) != 0 || static.AuthKind != "" {
+		t.Fatalf("different auth kind changed the stored provider: %#v", static)
+	}
+}
+
+func TestEgressHopDialsCopyMissingOnPeer(t *testing.T) {
+	var gotAuth string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"ok","choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	t.Cleanup(upstream.Close)
+
+	peer := httptest.NewServer(UpstreamHopHandler(&ProxyConfig{
+		Service: NewService(&mockSystemSettings{}),
+		NodeID:  "hc-us",
+	}, func(*http.Request) error { return nil }))
+	t.Cleanup(peer.Close)
+
+	origin := &llmpool.ProviderConfig{
+		ID: "OpenCode-1-copy", APIURL: upstream.URL + "/v1", APIKey: "sk-secret",
+		Protocol: "openai", AllowedNodeIDs: []string{"hc-us"},
+	}
+	got, err := egressProvider(context.Background(), &ProxyConfig{
+		NodeID: "hc-cn",
+		LookupAccessPeer: func(nodeID string) (string, bool, int64) {
+			if nodeID == "hc-us" {
+				return peer.URL, true, 10
+			}
+			return "", false, 0
+		},
+	}, origin, map[string]any{
+		"model": "gpt-4o", "messages": []any{map[string]any{"role": "user", "content": "hi"}},
+	}, "gpt-4o", "gpt-4o")
+	if err != nil {
+		t.Fatalf("egressProvider: %v", err)
+	}
+	if got == nil || got.StatusCode != http.StatusOK {
+		t.Fatalf("hop response = %#v", got)
+	}
+	if gotAuth != "Bearer sk-secret" {
+		t.Fatalf("upstream authorization = %q, want the copied key", gotAuth)
+	}
+}
+
+func TestEgressHopRejectsCopyOutsidePeerScope(t *testing.T) {
+	called := false
+	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		called = true
+	}))
+	t.Cleanup(upstream.Close)
+	peer := httptest.NewServer(UpstreamHopHandler(&ProxyConfig{
+		Service: NewService(&mockSystemSettings{}),
+		NodeID:  "hc-us",
+	}, func(*http.Request) error { return nil }))
+	t.Cleanup(peer.Close)
+	got, err := egressProvider(context.Background(), &ProxyConfig{
+		NodeID: "hc-cn",
+		LookupAccessPeer: func(nodeID string) (string, bool, int64) {
+			if nodeID == "hc-eu" {
+				return peer.URL, true, 10
+			}
+			return "", false, 0
+		},
+	}, &llmpool.ProviderConfig{
+		ID: "OpenCode-1-copy", APIURL: upstream.URL + "/v1", APIKey: "sk-secret",
+		AllowedNodeIDs: []string{"hc-eu"},
+	}, map[string]any{"model": "gpt-4o"}, "gpt-4o", "gpt-4o")
+	if err == nil && (got == nil || got.StatusCode != http.StatusForbidden) {
+		t.Fatalf("expected the peer to reject a provider it is not allowed to dial; err=%v got=%#v", err, got)
+	}
+	if called {
+		t.Fatal("peer dialed upstream outside its allowlist")
+	}
+}
+
 func TestEgressProviderDoesNotCallLocalWhenRestrictedAndNoPeer(t *testing.T) {
 	called := false
 	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {

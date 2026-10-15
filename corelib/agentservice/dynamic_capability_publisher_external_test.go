@@ -47,9 +47,9 @@ func TestPublishRegistersVendorDeclaredCapability(t *testing.T) {
 	principal := Principal{TenantID: "tenant", UserID: "user"}
 	tools := []ObservedMCPTool{
 		{
-			Name:        "translate",
-			InputSchema: map[string]interface{}{"type": "object"},
-			Annotations: &MCPToolAnnotations{ReadOnlyHint: boolPtr(true)},
+			Name:                 "translate",
+			InputSchema:          map[string]interface{}{"type": "object"},
+			Annotations:          &MCPToolAnnotations{ReadOnlyHint: boolPtr(true)},
 			DeclaredCapabilities: []coretool.CapabilityID{"x:acme:translate"},
 		},
 	}
@@ -89,9 +89,9 @@ func TestPublishVendorDeclaredCapabilityListedNotReviewed(t *testing.T) {
 	principal := Principal{TenantID: "tenant", UserID: "user"}
 	tools := []ObservedMCPTool{
 		{
-			Name:                "translate",
-			InputSchema:         map[string]interface{}{"type": "object"},
-			Annotations:         &MCPToolAnnotations{ReadOnlyHint: boolPtr(true)},
+			Name:                 "translate",
+			InputSchema:          map[string]interface{}{"type": "object"},
+			Annotations:          &MCPToolAnnotations{ReadOnlyHint: boolPtr(true)},
 			DeclaredCapabilities: []coretool.CapabilityID{"x:acme:translate"},
 		},
 	}
@@ -108,7 +108,19 @@ func TestPublishVendorDeclaredCapabilityListedNotReviewed(t *testing.T) {
 	if listed[0].CeilingReviewed {
 		t.Fatal("namespace still at default ceiling should report CeilingReviewed=false")
 	}
-	if len(listed[0].DeclaredCapabilities) != 1 || listed[0].DeclaredCapabilities[0] != "x:acme:translate" {
+	// The listing carries both the vendor self-declaration and the
+	// host-issued exact capability x:mcp:srv1:translate — the latter is what
+	// makes every installed tool addressable, not just vendors that declare.
+	var sawVendor, sawAuto bool
+	for _, capID := range listed[0].DeclaredCapabilities {
+		switch capID {
+		case "x:acme:translate":
+			sawVendor = true
+		case AutoMCPCapabilityIDForBinding("srv1", "translate"):
+			sawAuto = true
+		}
+	}
+	if !sawVendor || !sawAuto {
 		t.Fatalf("unexpected declared capabilities: %+v", listed[0].DeclaredCapabilities)
 	}
 }
@@ -132,8 +144,8 @@ func TestPublishVendorDeclaredCapabilityEffectCeilingEnforced(t *testing.T) {
 	// A write/unannotated tool (external effect) declaring the cap.
 	tools := []ObservedMCPTool{
 		{
-			Name:                "translate",
-			InputSchema:         map[string]interface{}{"type": "object"},
+			Name:                 "translate",
+			InputSchema:          map[string]interface{}{"type": "object"},
 			DeclaredCapabilities: []coretool.CapabilityID{"x:acme:translate"},
 		},
 	}
@@ -143,8 +155,15 @@ func TestPublishVendorDeclaredCapabilityEffectCeilingEnforced(t *testing.T) {
 	if _, ok := reg.Lookup("x:acme:translate"); ok {
 		t.Fatal("over-ceiling vendor capability must not be registered")
 	}
-	if listed := pub.ListInstalledNotReviewedProviders(); len(listed) != 0 {
-		t.Fatalf("over-ceiling provider must not be surfaced: %+v", listed)
+	// The over-ceiling vendor DECLARATION is what must not surface. The
+	// server itself is still installed and keeps its host-issued exact
+	// capability, so the provider appears — carrying no x:acme cap.
+	for _, listed := range pub.ListInstalledNotReviewedProviders() {
+		for _, capID := range listed.DeclaredCapabilities {
+			if capID == "x:acme:translate" {
+				t.Fatalf("over-ceiling vendor capability must not be surfaced: %+v", listed)
+			}
+		}
 	}
 	// But a read-only-annotated tool under the same narrowed ceiling still works.
 	tools[0].Annotations = &MCPToolAnnotations{ReadOnlyHint: boolPtr(true)}
@@ -168,9 +187,9 @@ func TestRevokeClearsInstalledNotReviewed(t *testing.T) {
 	principal := Principal{TenantID: "tenant", UserID: "user"}
 	tools := []ObservedMCPTool{
 		{
-			Name:                "translate",
-			InputSchema:         map[string]interface{}{"type": "object"},
-			Annotations:         &MCPToolAnnotations{ReadOnlyHint: boolPtr(true)},
+			Name:                 "translate",
+			InputSchema:          map[string]interface{}{"type": "object"},
+			Annotations:          &MCPToolAnnotations{ReadOnlyHint: boolPtr(true)},
 			DeclaredCapabilities: []coretool.CapabilityID{"x:acme:translate"},
 		},
 	}
@@ -196,13 +215,13 @@ func boolPtr(b bool) *bool { return &b }
 // never silently starves discovery.
 func TestRecommendedDiscoveryBudgetScalesWithN(t *testing.T) {
 	cases := []struct {
-		n        int
-		want     int
+		n    int
+		want int
 	}{
-		{0, discoveryBudgetBase},                       // 8
+		{0, discoveryBudgetBase},                                    // 8
 		{10, discoveryBudgetBase + 10*discoveryBudgetPerUnreviewed}, // 28
 		{50, discoveryBudgetBase + 50*discoveryBudgetPerUnreviewed}, // 108
-		{200, discoveryBudgetCap},                      // saturates at 128
+		{200, discoveryBudgetCap},                                   // saturates at 128
 	}
 	for _, c := range cases {
 		got := RecommendedDiscoveryBudget(c.n)
@@ -239,9 +258,9 @@ func TestRecommendedDiscoveryBudgetForInstalledTracksInstalledCount(t *testing.T
 		capID := coretool.CapabilityID(fmt.Sprintf("x:vendor%d:tool", i))
 		tools := []ObservedMCPTool{
 			{
-				Name:                "tool",
-				InputSchema:         map[string]interface{}{"type": "object"},
-				Annotations:         &MCPToolAnnotations{ReadOnlyHint: boolPtr(true)},
+				Name:                 "tool",
+				InputSchema:          map[string]interface{}{"type": "object"},
+				Annotations:          &MCPToolAnnotations{ReadOnlyHint: boolPtr(true)},
 				DeclaredCapabilities: []coretool.CapabilityID{capID},
 			},
 		}

@@ -1130,6 +1130,12 @@ function formatActionLabel(action: ChatAction, lang: string): string {
     if (/^__cancel_execution__\s+\S+$/.test(action.command) && (!normalizedLabel || normalizedLabel === 'cancel')) {
         return localizeText(lang, "Cancel", "\u53d6\u6d88", "\u53d6\u6d88");
     }
+    if (action.command === "confirm" && (!normalizedLabel || normalizedLabel === "confirm")) {
+        return localizeText(lang, "Confirm", "\u786e\u8ba4", "\u78ba\u8a8d");
+    }
+    if (action.command === "cancel" && (!normalizedLabel || normalizedLabel === "cancel")) {
+        return localizeText(lang, "Cancel", "\u53d6\u6d88", "\u53d6\u6d88");
+    }
     return action.label;
 }
 

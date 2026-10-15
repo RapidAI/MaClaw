@@ -878,8 +878,8 @@ func TestStoredLookupFactsServeGenerateButNotNewLookup(t *testing.T) {
 	if semanticReuseStoredLookupFacts("重庆天气，生成格式化pdf", chongqing) {
 		t.Fatal("a new city PDF reused the previous city's lookup facts")
 	}
-	if semanticReuseStoredLookupFacts("再查一下最新天气", generate) != true {
-		t.Fatal("a generate label reused or dropped facts based on refresh wording")
+	if semanticReuseStoredLookupFacts("再查一下最新天气", generate) {
+		t.Fatal("refresh wording must not reuse stored lookup facts")
 	}
 	if semanticReuseStoredLookupFacts("latest weather", fresh) {
 		t.Fatal("a lookup label reused stored facts")

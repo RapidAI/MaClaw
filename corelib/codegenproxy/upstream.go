@@ -129,6 +129,12 @@ func (c openAISDKUpstreamClient) DoChatCompletions(ctx context.Context, endpoint
 	return response, nil
 }
 
+// PrepareOpenAICompatChatBody normalizes assistant messages that have neither
+// content nor a valid tool call before they leave for an OpenAI-compatible API.
+func PrepareOpenAICompatChatBody(body []byte) []byte {
+	return ensureOpenAICompatAssistantContentBeforeUpstream(body)
+}
+
 // ensureOpenAICompatAssistantContentBeforeUpstream is the final, deliberately
 // narrow guard before an OpenAI-compatible chat body leaves TigerProxy. Earlier
 // compatibility passes normalize full message histories, but tool-less retry

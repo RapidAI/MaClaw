@@ -24,14 +24,25 @@ const (
 
 var aiAssistantUIStateMu sync.Mutex
 
+// AIAssistantPromptAttachment is a file that was attached to a submitted
+// input. Paths are restored into the composer when that input is recalled.
+// Thumbnails are not stored; the UI reloads a preview from the path.
+type AIAssistantPromptAttachment struct {
+	FilePath  string `json:"filePath"`
+	FileName  string `json:"fileName"`
+	Extension string `json:"extension"`
+	IsImage   bool   `json:"isImage"`
+}
+
 // AIAssistantUIState stores frontend-only AI assistant UI history under the
 // MaClaw data directory, avoiding WebView localStorage profile splits.
 type AIAssistantUIState struct {
-	Messages                 []map[string]interface{} `json:"messages"`
-	Prompts                  []string                 `json:"prompts"`
-	ContextBoundaryMessageID string                   `json:"context_boundary_message_id,omitempty"`
-	UpdatedAt                string                   `json:"updated_at,omitempty"`
-	StoragePath              string                   `json:"storage_path,omitempty"`
+	Messages                 []map[string]interface{}        `json:"messages"`
+	Prompts                  []string                        `json:"prompts"`
+	PromptAttachments        [][]AIAssistantPromptAttachment `json:"prompt_attachments,omitempty"`
+	ContextBoundaryMessageID string                          `json:"context_boundary_message_id,omitempty"`
+	UpdatedAt                string                          `json:"updated_at,omitempty"`
+	StoragePath              string                          `json:"storage_path,omitempty"`
 }
 
 func (a *App) aiAssistantUIStatePath() string {
@@ -197,22 +208,82 @@ func normalizeAIAssistantUIState(state *AIAssistantUIState) {
 	if state.Messages == nil {
 		state.Messages = []map[string]interface{}{}
 	}
-	if len(state.Prompts) > 0 {
-		prompts := make([]string, 0, len(state.Prompts))
-		for _, prompt := range state.Prompts {
-			trimmed := strings.TrimSpace(prompt)
-			if trimmed != "" {
-				prompts = append(prompts, trimmed)
+	normalizeAIAssistantPromptHistory(state)
+}
+
+func normalizeAIAssistantPromptHistory(state *AIAssistantUIState) {
+	prompts := state.Prompts
+	if prompts == nil {
+		prompts = []string{}
+	}
+	keptPrompts := make([]string, 0, len(prompts))
+	keptRows := make([][]AIAssistantPromptAttachment, 0, len(prompts))
+	for i, prompt := range prompts {
+		text := strings.TrimSpace(prompt)
+		row := normalizeAIAssistantPromptAttachments(promptAttachmentRow(state.PromptAttachments, i))
+		if text == "" && len(row) == 0 {
+			continue
+		}
+		keptPrompts = append(keptPrompts, text)
+		keptRows = append(keptRows, row)
+	}
+	if len(keptPrompts) > maxAIAssistantUIStatePrompts {
+		start := len(keptPrompts) - maxAIAssistantUIStatePrompts
+		keptPrompts = keptPrompts[start:]
+		keptRows = keptRows[start:]
+	}
+	hasAttachment := false
+	for _, row := range keptRows {
+		if len(row) > 0 {
+			hasAttachment = true
+			break
+		}
+	}
+	state.Prompts = keptPrompts
+	if hasAttachment {
+		state.PromptAttachments = keptRows
+		return
+	}
+	state.PromptAttachments = nil
+}
+
+func promptAttachmentRow(rows [][]AIAssistantPromptAttachment, index int) []AIAssistantPromptAttachment {
+	if index < 0 || index >= len(rows) {
+		return nil
+	}
+	return rows[index]
+}
+
+func normalizeAIAssistantPromptAttachments(row []AIAssistantPromptAttachment) []AIAssistantPromptAttachment {
+	if len(row) == 0 {
+		return []AIAssistantPromptAttachment{}
+	}
+	out := make([]AIAssistantPromptAttachment, 0, len(row))
+	seen := make(map[string]struct{}, len(row))
+	for _, attachment := range row {
+		filePath := strings.TrimSpace(attachment.FilePath)
+		if filePath == "" {
+			continue
+		}
+		if _, ok := seen[filePath]; ok {
+			continue
+		}
+		seen[filePath] = struct{}{}
+		fileName := strings.TrimSpace(attachment.FileName)
+		if fileName == "" {
+			fileName = filePath
+			if slash := strings.LastIndexAny(filePath, `/\`); slash >= 0 && slash < len(filePath)-1 {
+				fileName = filePath[slash+1:]
 			}
 		}
-		state.Prompts = prompts
+		out = append(out, AIAssistantPromptAttachment{
+			FilePath:  filePath,
+			FileName:  fileName,
+			Extension: strings.TrimSpace(attachment.Extension),
+			IsImage:   attachment.IsImage,
+		})
 	}
-	if len(state.Prompts) > maxAIAssistantUIStatePrompts {
-		state.Prompts = state.Prompts[len(state.Prompts)-maxAIAssistantUIStatePrompts:]
-	}
-	if state.Prompts == nil {
-		state.Prompts = []string{}
-	}
+	return out
 }
 
 func normalizeAIAssistantUIMessage(message map[string]interface{}) {

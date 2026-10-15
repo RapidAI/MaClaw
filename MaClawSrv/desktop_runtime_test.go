@@ -70,6 +70,11 @@ func TestDesktopPromptContinuesOnTheLoggedInSite(t *testing.T) {
 	if strings.Contains(prompt, "same-page sequence") {
 		t.Fatal("prompt keeps the agent on one page after login")
 	}
+	for _, phrase := range []string{"本回合不要", "只说明", "等你点头", "确认后", "下一轮", "leftover arrangement wording", "carry out the actions"} {
+		if !strings.Contains(prompt, phrase) {
+			t.Fatalf("execute prompt does not treat plan hedging as leftover wording: missing %s in %s", phrase, prompt)
+		}
+	}
 }
 
 func TestOperateDesktopLiveNavigate(t *testing.T) {

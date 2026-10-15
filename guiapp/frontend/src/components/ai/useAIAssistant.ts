@@ -3,6 +3,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { corelib, main } from '../../../wailsjs/go/models';
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import type { AgentView } from "./agentViewTypes";
+import { appendPromptHistory, normalizePromptHistory, promptHistoryFromPersisted, PROMPT_HISTORY_LIMIT, type PromptHistoryAttachment, type PromptHistoryEntry } from "./promptHistory";
 import type { AIAssistantPanelHookState, AIAssistantPanelHookActions } from "./aiAssistantPanelTypes";
 import { localizeText } from "./aiAssistantI18n";
 import { normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey as normalizedProjectPathFromSessionKey, projectSessionKey, expertIdFromSessionKey, expertSessionKey } from "./aiAssistantPanelSessionUtils";
@@ -608,7 +609,6 @@ const AI_ASSISTANT_CONTEXT_BOUNDARY_END = "__maclaw_context_boundary_end__";
 const AI_ASSISTANT_CONTEXT_BOUNDARY_AFTER_PREFIX = "__maclaw_context_boundary_after__:";
 const MAX_PERSISTED_MESSAGES = 200;
 const MAX_CONTEXT_MESSAGES_TO_SEND = 80;
-const MAX_PERSISTED_PROMPTS = 100;
 const FILE_PATH_PROMPT_PREFIX = "[用户选择的本地文件路径]";
 // These are the raster formats the desktop host validates and can forward as
 // direct vision input. Other image-like files remain ordinary local files.
@@ -990,10 +990,14 @@ function loadPersistedPrompts(): string[] {
             .filter((value: unknown): value is string => typeof value === 'string')
             .map(value => value.trim())
             .filter(Boolean)
-            .slice(-MAX_PERSISTED_PROMPTS);
+            .slice(-PROMPT_HISTORY_LIMIT);
     } catch {
         return [];
     }
+}
+
+function loadPersistedPromptHistory(): PromptHistoryEntry[] {
+    return loadPersistedPrompts().map(text => ({ text, attachments: [] }));
 }
 
 function loadPersistedContextBoundaryMessageID(): string | null {
@@ -1161,18 +1165,11 @@ function buildAIAssistantSendPayload(
     return payload;
 }
 
-function appendSubmittedPrompt(prompts: string[], prompt: string): string[] {
-    const trimmed = prompt.trim();
-    if (!trimmed) return prompts;
-    if (prompts[prompts.length - 1] === trimmed) return prompts;
-    return [...prompts, trimmed].slice(-MAX_PERSISTED_PROMPTS);
-}
-
-function normalizePersistedPrompts(prompts: string[]): string[] {
-    return prompts
-        .map(prompt => prompt.trim())
-        .filter(Boolean)
-        .slice(-MAX_PERSISTED_PROMPTS);
+function backendStatePromptHistory(state: any): PromptHistoryEntry[] {
+    return promptHistoryFromPersisted(
+        state?.prompts ?? state?.Prompts,
+        state?.prompt_attachments ?? state?.PromptAttachments,
+    );
 }
 
 function parseSerializedMessages(serialized: string | null): ChatMessage[] {
@@ -1201,11 +1198,6 @@ function backendStateMessages(state: any): ChatMessage[] {
     return raw
         .filter((m: any) => m && m.id && m.role && m.role !== 'progress' && m.role !== 'system')
         .map(sanitizeChatMessageForDisplay) as ChatMessage[];
-}
-
-function backendStatePrompts(state: any): string[] {
-    const raw = state?.prompts || state?.Prompts || [];
-    return Array.isArray(raw) ? normalizePersistedPrompts(raw.filter((value: unknown): value is string => typeof value === 'string')) : [];
 }
 
 function backendStateBoundary(state: any): string | null {
@@ -3557,7 +3549,9 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const [messages, setMessages] = useState<ChatMessage[]>(loadPersistedMessages);
     const messagesRef = useRef(messages);
     messagesRef.current = messages;
-    const [submittedPrompts, setSubmittedPrompts] = useState<string[]>(loadPersistedPrompts);
+    const [promptHistory, setPromptHistory] = useState<PromptHistoryEntry[]>(loadPersistedPromptHistory);
+    const submittedPrompts = useMemo(() => promptHistory.map(entry => entry.text), [promptHistory]);
+    const submittedPromptAttachments = useMemo(() => promptHistory.map(entry => entry.attachments), [promptHistory]);
     const [draftInputValue, setDraftInputValue] = useState("");
     const [progressMessages, setProgressMessages] = useState<ChatMessage[]>([]);
     const [selectedFilePaths, setSelectedFilePaths] = useState<string[]>([]);
@@ -4643,7 +4637,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
 
     const persistTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const latestMessagesRef = useRef(messages);
-    const latestPromptsRef = useRef(submittedPrompts);
+    const latestPromptsRef = useRef(promptHistory);
     const lastPersistedPayloadRef = useRef<string | null>(null);
     const lastPersistedPromptsPayloadRef = useRef<string | null>(null);
     const persistOnUnmountRef = useRef(true);
@@ -4651,12 +4645,14 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const uiStateLoadedRef = useRef(false);
     const persistQueueRef = useRef<Promise<boolean>>(Promise.resolve(true));
 
-    const persistUIState = useCallback((nextMessages: ChatMessage[], nextPrompts: string[], nextBoundary: string | null): Promise<boolean> => {
+    const persistUIState = useCallback((nextMessages: ChatMessage[], nextHistory: PromptHistoryEntry[], nextBoundary: string | null): Promise<boolean> => {
         const messagesToSave = parseSerializedMessages(serializePersistedMessages(nextMessages));
-        const promptsToSave = normalizePersistedPrompts(nextPrompts);
+        const historyToSave = normalizePromptHistory(nextHistory);
+        const promptAttachments = historyToSave.map(entry => entry.attachments);
         const payload = {
             messages: messagesToSave,
-            prompts: promptsToSave,
+            prompts: historyToSave.map(entry => entry.text),
+            ...(promptAttachments.some(row => row.length > 0) ? { prompt_attachments: promptAttachments } : {}),
             context_boundary_message_id: nextBoundary || '',
         };
         const save = () => SaveAIAssistantUIState(payload).then(() => true).catch((err) => {
@@ -4673,32 +4669,32 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         void LoadAIAssistantUIState().then((state) => {
             if (cancelled) return;
             const loadedMessages = backendStateMessages(state);
-            const loadedPrompts = backendStatePrompts(state);
+            const loadedHistory = backendStatePromptHistory(state);
             const loadedBoundary = backendStateBoundary(state);
             const legacyMessages = latestMessagesRef.current;
-            const legacyPrompts = latestPromptsRef.current;
+            const legacyHistory = latestPromptsRef.current;
             const legacyBoundary = contextBoundaryMessageIDRef.current;
-            const hasBackendState = loadedMessages.length > 0 || loadedPrompts.length > 0 || !!loadedBoundary;
-            const hasLegacyState = legacyMessages.length > 0 || legacyPrompts.length > 0 || !!legacyBoundary;
+            const hasBackendState = loadedMessages.length > 0 || loadedHistory.length > 0 || !!loadedBoundary;
+            const hasLegacyState = legacyMessages.length > 0 || legacyHistory.length > 0 || !!legacyBoundary;
             if (hasBackendState) {
                 const mergedMessages = loadedMessages.length > 0 ? loadedMessages : legacyMessages;
-                const mergedPrompts = loadedPrompts.length > 0 ? loadedPrompts : legacyPrompts;
+                const mergedHistory = loadedHistory.length > 0 ? loadedHistory : legacyHistory;
                 const mergedBoundary = loadedBoundary || legacyBoundary;
                 latestMessagesRef.current = mergedMessages;
-                latestPromptsRef.current = mergedPrompts;
+                latestPromptsRef.current = mergedHistory;
                 contextBoundaryMessageIDRef.current = mergedBoundary;
                 lastPersistedPayloadRef.current = serializePersistedMessages(mergedMessages);
-                lastPersistedPromptsPayloadRef.current = JSON.stringify(mergedPrompts);
+                lastPersistedPromptsPayloadRef.current = JSON.stringify(mergedHistory);
                 setMessages(mergedMessages);
-                setSubmittedPrompts(mergedPrompts);
-                if (hasLegacyState && (loadedMessages.length === 0 || loadedPrompts.length === 0 || !loadedBoundary)) {
-                    void persistUIState(mergedMessages, mergedPrompts, mergedBoundary)
+                setPromptHistory(mergedHistory);
+                if (hasLegacyState && (loadedMessages.length === 0 || loadedHistory.length === 0 || !loadedBoundary)) {
+                    void persistUIState(mergedMessages, mergedHistory, mergedBoundary)
                         .then((saved) => { if (saved) legacyClearAIAssistantUIState(); });
                 } else {
                     legacyClearAIAssistantUIState();
                 }
             } else if (hasLegacyState) {
-                void persistUIState(legacyMessages, legacyPrompts, contextBoundaryMessageIDRef.current)
+                void persistUIState(legacyMessages, legacyHistory, contextBoundaryMessageIDRef.current)
                     .then((saved) => { if (saved) legacyClearAIAssistantUIState(); });
             }
             uiStateLoadedRef.current = true;
@@ -4737,20 +4733,20 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         }, 300);
     }, [messages, persistUIState]);
     useEffect(() => {
-        latestPromptsRef.current = submittedPrompts;
+        latestPromptsRef.current = promptHistory;
         if (!uiStateLoadedRef.current) return;
-        const nextPayload = JSON.stringify(submittedPrompts);
+        const nextPayload = JSON.stringify(promptHistory);
         if (nextPayload === lastPersistedPromptsPayloadRef.current) {
             return;
         }
         const messagePayload = serializePersistedMessages(latestMessagesRef.current);
-        void persistUIState(latestMessagesRef.current, submittedPrompts, contextBoundaryMessageIDRef.current)
+        void persistUIState(latestMessagesRef.current, promptHistory, contextBoundaryMessageIDRef.current)
             .then((saved) => {
                 if (!saved) return;
                 lastPersistedPayloadRef.current = messagePayload;
                 lastPersistedPromptsPayloadRef.current = nextPayload;
             });
-    }, [submittedPrompts, persistUIState]);
+    }, [promptHistory, persistUIState]);
     useEffect(() => {
         lastPersistedPayloadRef.current = serializePersistedMessages(latestMessagesRef.current);
         lastPersistedPromptsPayloadRef.current = JSON.stringify(latestPromptsRef.current);
@@ -5742,8 +5738,8 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         }
     }, [activeSessionKeyForEvents, bumpSessionResetEpoch, clearTransientProgress, doFetchNews, persistUIState, resetActiveRound, resetAllStreamTokenBuffers, setSelectedFiles, stopAllResponseTimeouts]);
 
-    const recordSubmittedPrompt = useCallback((prompt: string) => {
-        setSubmittedPrompts(prev => appendSubmittedPrompt(prev, prompt));
+    const recordSubmittedPrompt = useCallback((prompt: string, attachments?: PromptHistoryAttachment[]) => {
+        setPromptHistory(prev => appendPromptHistory(prev, prompt, attachments));
     }, []);
 
     const executeAction = useCallback(async (
@@ -5965,6 +5961,12 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         // Remove ALL actions from the containing message — action buttons are
         // one-shot (mutually exclusive choices or single confirm/cancel).
         setMessages(prev => disableActionsForCommand(prev, command));
+        if (command === "confirm" || command === "cancel") {
+            const displayText = command === "confirm"
+                ? localizeText(uiLang, "Confirm", "\u786e\u8ba4", "\u78ba\u8a8d")
+                : localizeText(uiLang, "Cancel", "\u53d6\u6d88", "\u53d6\u6d88");
+            return sendActionMessage(command, { uiAction: true, displayText });
+        }
         return sendActionMessage(command, { uiAction: true });
     }, [activeSessionKeyForEvents, sendMessage, showConfirm, uiLang]);
 
@@ -6616,11 +6618,12 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         initStatus,
         selectedFilePaths,
         submittedPrompts,
+        submittedPromptAttachments,
         draftInputValue,
         trialReflectEnabled,
         scrollToTopSeq,
         agentView,
-    }), [messages, progressMessages, sending, sendingSessionKey, busySessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, submittedPrompts, draftInputValue, trialReflectEnabled, scrollToTopSeq, agentView]);
+    }), [messages, progressMessages, sending, sendingSessionKey, busySessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, submittedPrompts, submittedPromptAttachments, draftInputValue, trialReflectEnabled, scrollToTopSeq, agentView]);
 
     const deactivateRecordingSession = useCallback((messageId: string) => {
         const id = String(messageId || "").trim();
@@ -6655,7 +6658,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         deactivateRecordingSession,
     }), [browseFile, clearSelectedFile, setSelectedFiles, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView, deactivateRecordingSession]);
 
-    return { messages, submittedPrompts, draftInputValue, progressMessages, sending, sendingSessionKey, busySessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, agentView, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary, guideLaunchReference, submitAgentView, dismissAgentView, panelState, panelActions };
+    return { messages, submittedPrompts, submittedPromptAttachments, draftInputValue, progressMessages, sending, sendingSessionKey, busySessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, agentView, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary, guideLaunchReference, submitAgentView, dismissAgentView, panelState, panelActions };
 }
 
 // Polyfill for Array.findLastIndex (not available in all environments)

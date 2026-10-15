@@ -947,9 +947,42 @@ func TestAdminPageLLMProviderSequenceCards(t *testing.T) {
 		`font-variant-numeric:tabular-nums`,
 		`#llmProvidersList.llm-card-grid{grid-template-columns:1fr}`,
 		`#llmProvidersList .data-row{min-height:0;align-items:center;display:grid`,
-		`#llmProvidersList .data-row-actions{grid-area:actions;max-width:420px;align-items:center;flex-wrap:wrap;justify-content:flex-end}`,
+		`#llmProvidersList .data-row-actions{grid-area:actions;max-width:500px;align-items:center;flex-wrap:wrap;justify-content:flex-end}`,
 		`#llmProvidersList .data-row-meta{display:block;white-space:nowrap`,
 		`.provider-seq.is-unset`,
+	})
+}
+
+func TestAdminPageLLMProviderCopyButtonPrecedesPause(t *testing.T) {
+	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
+	rowFn := regexp.MustCompile(`function renderProviderRow\(p\)[\s\S]*?function renderProviderArray`)
+	row := rowFn.FindString(js)
+	if row == "" {
+		t.Fatal("renderProviderRow is missing")
+	}
+	copyAt := strings.Index(row, `onclick="copyLLMProvider('`)
+	pauseAt := strings.Index(row, `onclick="toggleLLMProviderPaused('`)
+	if copyAt < 0 || pauseAt < 0 || copyAt > pauseAt {
+		t.Fatalf("copy button must precede pause: copy=%d pause=%d", copyAt, pauseAt)
+	}
+	assertContainsAll(t, js, "provider copy action", []string{
+		`copyProvider: 'Copy'`,
+		`copyProvider: '\u590d\u5236'`,
+		`/api/admin/llm/providers/' + encodeURIComponent(id) + '/copy'`,
+		`window.copyLLMProvider = async function(id)`,
+		`providerArrayProtected(providerArrayByID(p.array_id || p.id))`,
+		`providerCopyInFlight[p.id] ? ' disabled' : ''`,
+		`provider-copy-btn`,
+		`class="data-row-name" title="' + esc(providerLabel) + '"`,
+		`<strong title="' + esc(arrayLabel) + '">'`,
+		`fieldKeyKept: 'Saved. Leave blank to keep the current key'`,
+		`fieldKeyKept: '\u5df2\u4fdd\u5b58\uff0c\u7559\u7a7a\u5219\u4fdd\u7559\u5f53\u524d\u5bc6\u94a5'`,
+		`function providerStoresStaticKey(p)`,
+		`function providerKeyField(p)`,
+		`function providerRowMetaText(p)`,
+		`title="' + esc(metaText) + '"`,
+		`placeholder="' + esc(t('fieldKeyKept')) + '"'`,
+		`key.placeholder = (!preset && providerStoresStaticKey(editing)) ? t('fieldKeyKept') : ''`,
 	})
 }
 
@@ -1532,7 +1565,7 @@ func TestAdminPageTokenBankArraysCannotBeDeleted(t *testing.T) {
 	html := readAdminPageHTML(t)
 	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
 	assertContainsAll(t, html, "token bank array protect cache", []string{
-		`/admin/assets/js/llm-service-tab.js?v=serve-window-20261006-1`,
+		`/admin/assets/js/llm-service-tab.js?v=provider-name-tip-20261015-3`,
 	})
 	assertContainsAll(t, js, "token bank array delete guard", []string{
 		`function providerArrayProtected(array)`,
@@ -1561,8 +1594,8 @@ func TestAdminPageServiceGroupArrayDrag(t *testing.T) {
 	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
 	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
 	assertContainsAll(t, html, "service group array drag cache", []string{
-		`/admin/assets/js/llm-service-tab.js?v=serve-window-20261006-1`,
-		`/admin/assets/css/admin-shell.css?v=serve-window-20261006-1`,
+		`/admin/assets/js/llm-service-tab.js?v=provider-name-tip-20261015-3`,
+		`/admin/assets/css/admin-shell.css?v=provider-name-tip-20261015-3`,
 	})
 	assertContainsAll(t, js, "service group array drag", []string{
 		`sgArrayDragHint: 'Drag an array to change its place in this group'`,
@@ -1668,8 +1701,8 @@ func TestAdminPageProviderCanaryMark(t *testing.T) {
 	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
 	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
 	assertContainsAll(t, html, "provider canary mark cache", []string{
-		`/admin/assets/js/llm-service-tab.js?v=serve-window-20261006-1`,
-		`/admin/assets/css/admin-shell.css?v=serve-window-20261006-1`,
+		`/admin/assets/js/llm-service-tab.js?v=provider-name-tip-20261015-3`,
+		`/admin/assets/css/admin-shell.css?v=provider-name-tip-20261015-3`,
 	})
 	assertContainsAll(t, js, "provider canary mark", []string{
 		`providerCanaryUntil: 'Canary until {time}'`,
@@ -1694,7 +1727,7 @@ func TestAdminPageProviderCanaryMark(t *testing.T) {
 		`document.addEventListener('visibilitychange'`,
 		`data-provider-id="' + esc(provider && provider.id || '') + '"`,
 		`scheduleProviderCanaryRefresh();`,
-		`class="data-row-name" title="' + dragHint + '"`,
+		`class="data-row-name" title="' + esc(providerLabel) + '"`,
 		`class="data-row-main" draggable="true"><div class="data-row-title"`,
 	})
 	if strings.Contains(js, `class="data-row-main" draggable="true" title="`) {

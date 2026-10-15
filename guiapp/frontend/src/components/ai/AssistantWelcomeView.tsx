@@ -13,6 +13,7 @@ import {
 } from "./WelcomePromptParamDialog";
 import { getComposeActionPlaceholder, type ComposeAction, type FireSlashCommand, type PlusMenuActionId } from "./composeAction";
 import type { AttachmentInfo } from "./useBufferQueue";
+import type { PromptHistoryAttachment } from "./promptHistory";
 import type { UseVoiceInputResult } from "./useVoiceInput";
 import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 import { CODING_TASK_COMMAND_MAX_LEN, type PureCodingAgentMode } from "./codingTaskMode";
@@ -430,6 +431,8 @@ export interface WelcomeComposerProps {
     setPendingAttachments: React.Dispatch<React.SetStateAction<AttachmentInfo[]>>;
     showBusySpinner: boolean;
     submittedPrompts?: string[];
+    submittedPromptAttachments?: PromptHistoryAttachment[][];
+    onHistoryTextAccepted?: (text: string) => void;
     updateInputValue: (value: string) => void;
     voiceInput: UseVoiceInputResult;
 }
@@ -1656,6 +1659,8 @@ export function AssistantWelcomeView({
                         boxShadow: `0 3px 8px color-mix(in srgb, ${t.btnColor} 22%, transparent)`,
                     }}
                     submittedPrompts={cp.submittedPrompts}
+                    submittedPromptAttachments={cp.submittedPromptAttachments}
+                    onHistoryTextAccepted={cp.onHistoryTextAccepted}
                     theme={t}
                     themeMode={themeMode}
                     updateInputValue={cp.updateInputValue}

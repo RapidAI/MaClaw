@@ -49,19 +49,23 @@ func (h *IMMessageHandler) prepareIMMessagePreflight(msg *IMUserMessage, trimmed
 	// runs after the owning loop's Cleanup() has completed.
 
 	result.Decision = resolveExplicitTaskSlotDecision(*msg, result.UnfinishedSlot)
-	if pendingResult := h.handlePendingExecutionConfirmation(msg, trimmed); pendingResult.Handled {
-		result.Handled = true
-		result.Response = pendingResult.Response
-		return result
-	} else if pendingResult.ConfirmedResume {
-		result.ConfirmedResume = true
-		result.SkipWorkflowRouting = true
-		result.ConfirmedWorkflowAgentLoop = pendingResult.WorkflowAgentLoop
-	} else if pendingResult.SkipWorkflowOnce || pendingResult.ReprocessAsFreshTask {
-		// User cancelled or revised a workflow confirmation — the modified msg.Text
-		// should not be re-routed through workflow matching (it would re-trigger the
-		// same workflow confirmation panel in an infinite loop).
-		result.SkipWorkflowRouting = true
+	// A frozen mailbox draft is already approved by this click. The execution
+	// confirmation classifier must not spend a model call on the same word.
+	if h.freshMailboxDraftID(msg.UserID, *trimmed, result.EntriesBeforeClear) == "" {
+		if pendingResult := h.handlePendingExecutionConfirmation(msg, trimmed); pendingResult.Handled {
+			result.Handled = true
+			result.Response = pendingResult.Response
+			return result
+		} else if pendingResult.ConfirmedResume {
+			result.ConfirmedResume = true
+			result.SkipWorkflowRouting = true
+			result.ConfirmedWorkflowAgentLoop = pendingResult.WorkflowAgentLoop
+		} else if pendingResult.SkipWorkflowOnce || pendingResult.ReprocessAsFreshTask {
+			// User cancelled or revised a workflow confirmation — the modified msg.Text
+			// should not be re-routed through workflow matching (it would re-trigger the
+			// same workflow confirmation panel in an infinite loop).
+			result.SkipWorkflowRouting = true
+		}
 	}
 
 	if h.app != nil && h.getSessionStarter() == nil {
@@ -76,7 +80,7 @@ func (h *IMMessageHandler) prepareIMMessagePreflight(msg *IMUserMessage, trimmed
 		return result
 	}
 
-	if !h.isMaclawLLMConfigured() {
+	if !h.isMaclawLLMConfigured() && h.freshMailboxDraftID(msg.UserID, *trimmed, result.EntriesBeforeClear) == "" {
 		result.Handled = true
 		result.Response = &IMAgentResponse{
 			Error: "MaClaw LLM is not configured, so the request cannot be processed. Configure LLM in the MaClaw client settings.",

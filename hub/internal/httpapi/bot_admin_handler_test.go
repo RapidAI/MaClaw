@@ -178,4 +178,13 @@ func TestAdminBotErrorShowsUpstreamStatusButUserErrorDoesNot(t *testing.T) {
 		!strings.Contains(user.Body.String(), "MACLAWSRV_REQUEST_FAILED") {
 		t.Fatalf("user status=%d body=%s", user.Code, user.Body.String())
 	}
+
+	busy := httptest.NewRecorder()
+	writeBotUserError(busy, req, &auth.MachinePrincipal{TenantID: "t_demo", UserID: "u_demo"}, botmgmt.ErrDesktopBusy, "turn-1")
+	if busy.Code != http.StatusConflict ||
+		!strings.Contains(busy.Body.String(), "DESKTOP_BUSY") ||
+		!strings.Contains(busy.Body.String(), "这台云桌面还有一件在做。") ||
+		!strings.Contains(busy.Body.String(), "turn-1") {
+		t.Fatalf("busy status=%d body=%s", busy.Code, busy.Body.String())
+	}
 }

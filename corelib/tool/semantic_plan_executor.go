@@ -226,6 +226,12 @@ func (s *memoryPlanExecutionStore) ReconcileStaleRunning(now time.Time, maxAge t
 type SelectionExecutionResult struct {
 	Result    string
 	Succeeded bool
+	// Paused marks a non-terminal user-interaction suspend (e.g. an
+	// interactive confirmation the executor emitted instead of invoking the
+	// adapter). Nothing executed, so neither the plan-execution record nor the
+	// host-call journal may settle: a completed record would make a later
+	// re-issue replay the pause as a terminal failure.
+	Paused    bool
 	// AwaitingReceipt is the generic execution-plane boundary for an external
 	// operation that has been durably prepared but not observed as accepted or
 	// failed by its trusted transport adapter. It is deliberately distinct from
@@ -456,6 +462,13 @@ func (e *PlanExecutor) ExecuteAdmitted(selection PlannedSelection, scope Invocat
 
 func (e *PlanExecutor) executeAdmitted(selection PlannedSelection, scope InvocationScope, plan ToolPlan, invoke SelectionExecutor) (SelectionExecutionResult, PlannedSelection, error) {
 	result := invoke(selection)
+	if result.Paused {
+		// A pause is not an outcome: the selection record stays Running so
+		// the call can be re-issued after the interaction settles. Writing a
+		// terminal state here would burn the one-shot admission on a result
+		// that never ran.
+		return result, selection, nil
+	}
 	state := PlanExecutionSucceeded
 	if result.Unknown {
 		state = PlanExecutionUnknown

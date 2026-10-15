@@ -32,6 +32,15 @@ var (
 	// as bot deletion treat a missing instance as success.
 	ErrSrvNotFound = errors.New("maclawsrv instance not found")
 	ErrDisabled    = errors.New("bot feature is disabled")
+	// ErrDesktopBusy is one cloud desktop already running a command for this
+	// user. A second execute is refused. The same client message is not a
+	// second execute: MaClawSrv replays that key.
+	ErrDesktopBusy = errors.New("这台云桌面还有一件在做。")
+	// ErrNotPrimary is a bot other than this account's primary trying to
+	// notify or hand work to another bot.
+	ErrNotPrimary = errors.New("我不能去叫别的 Bot。你跟主 Bot 说，或者直接打开那个 Bot。")
+	// ErrNoSuchBot is a cross-talk target that is not one of this user's bots.
+	ErrNoSuchBot = errors.New("没有这个 Bot。")
 	// ErrAdminSecretMissing is ErrNotConfigured for the MaClawSrv admin secret.
 	// It is a separate sentinel so callers do not have to match on the message
 	// text to explain what is missing.
@@ -93,6 +102,11 @@ type record struct {
 	// starts with, keyed by hub user id. Absent means shared, as before; it
 	// does not change existing bots or other owners.
 	OwnerDesktopModeDefaults map[string]string `json:"owner_desktop_mode_defaults,omitempty"`
+	// PrimaryBot maps a hub user id to that account's one primary bot id.
+	// Empty means the client-visible primary is the earliest CreatedAt.
+	PrimaryBot map[string]string `json:"primary_bot,omitempty"`
+	// CrossNotes are messages one bot left for another. They are not runs.
+	CrossNotes []BotCrossNote `json:"cross_notes,omitempty"`
 }
 
 // SettingsView is the admin payload. The access token is never returned.
@@ -396,6 +410,11 @@ func (s *Service) DeleteBot(ctx context.Context, tenantID, botID string) error {
 		return err
 	}
 	rec.Bots = append(rec.Bots[:index], rec.Bots[index+1:]...)
+	// The slot is cleared in this same save. The next earliest remaining bot
+	// becomes primary by the read rule. The next id is not written here.
+	if rec.PrimaryBot != nil && strings.TrimSpace(rec.PrimaryBot[bot.OwnerUserID]) == bot.ID {
+		delete(rec.PrimaryBot, bot.OwnerUserID)
+	}
 	key := desktopViewKey(tenantID, bot.OwnerUserID)
 	stopHeld := false
 	s.ensureDesktopHydrated(tenantID)

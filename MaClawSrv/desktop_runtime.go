@@ -255,6 +255,7 @@ func (desktopRuntimeModule) ContributePrompt(_ context.Context, request agentrun
 		"When the user asked for a file, action=deliver. A file already on this desktop, including a pdf, uses path, and the chat receives that file. name and content send the supplied text under that name. A name ending in .docx is a Word file built from that text. Say that it is attached to this message, or say what failed. Do not ask the user to choose a delivery method or to save the file themselves. Do not refuse a file because of its type. " +
 		"Do not paste the document into the chat, and do not tell the user to copy it into Word. " +
 		"The user message is the confirmed task order. Follow it, then report what happened. " +
+		"When this phase is already execute, wording left in that order such as 本回合不要, 只说明, 等你点头, 确认后, or 下一轮 is leftover arrangement wording, so carry out the actions and do not ask for confirmation again. " +
 		"Do the work in this turn. Do not stop to ask for another confirmation. A cookie notice is accepted in the script. A password, phone number, or verification code is typed into the input that appears in this chat, then filled in; do not ask the person to type it on the desktop. Hand the desktop back only for a QR-code login, a captcha, or a payment confirmation. After they hand it back, continue the same task on the page that is already open. Do not open another tab of that page. " +
 		"The person and this agent share that desktop's browser window, so a login or verification finished by the person stays in this browser. " +
 		"A window that only shows a network error is not that session when another page has already loaded. " +
@@ -352,6 +353,7 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 		if phase, keyed := desktopPhase(ctx); keyed && phase != "execute" {
 			return "", fmt.Errorf("plan phase blocks deliver until the user confirms")
 		}
+		defer beginDesktopActivity(scope.RunID, "正在交付")()
 		return deliverDesktopDocument(ctx, scope, args)
 	}
 	if action == "request_takeover" {
@@ -403,6 +405,7 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 		return operateDesktopBashGUI(ctx, scope, args)
 	}
 	if action == "file_read" || action == "file_write" || action == "file_edit" || action == "file_list" || action == "bash" {
+		defer beginDesktopActivity(scope.RunID, desktopContainerPhrase(action))()
 		return operateDesktopContainer(ctx, scope, action, args)
 	}
 	var installPackages []string
@@ -439,6 +442,7 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 		return "", err
 	}
 	if action == "skill_list" {
+		defer beginDesktopActivity(scope.RunID, "正在查看")()
 		return listDesktopBrowserSkills(userKey)
 	}
 	endpoint, err := desktopSession(ctx, scope, userKey)
@@ -449,6 +453,7 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 		return "", err
 	}
 	if action == "install" {
+		defer beginDesktopActivity(scope.RunID, "正在安装")()
 		text, installErr := installDesktopPackages(ctx, scope, installPackages)
 		if installErr != nil {
 			if strings.TrimSpace(text) == "" {
@@ -467,9 +472,11 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 		return "", err
 	}
 	if browserOpen {
+		defer beginDesktopActivity(scope.RunID, "正在打开")()
 		return desktopActivateBrowser(ctx, scope, endpoint.Display)
 	}
 	if action == "app_open" {
+		defer beginDesktopActivity(scope.RunID, "正在打开")()
 		before, listErr := desktopWindowsNow(ctx, scope, endpoint.Display)
 		text, openErr := operateDesktopOpen(ctx, scope, endpoint.Display, openProgram, openArgs)
 		if openErr != nil || listErr != nil {
@@ -517,9 +524,14 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 			}
 		}
 		if action == "app_list" {
+			defer beginDesktopActivity(scope.RunID, "正在查看")()
 			text, listErr := operateDesktopApp(ctx, scope, endpoint.Display, action, args, nil)
 			return withDesktopPages(text, listErr, endpoint.CDP, "")
 		}
+		// Steps replace this with the verb they are actually performing.
+		// The shot after an input step says the screen is being read.
+		// When the whole command returns, the run is choosing its next step.
+		defer beginDesktopActivity(scope.RunID, "正在查看")()
 		browserRaises := func() bool {
 			return desktopAppBrowserRaises(binding, scope, endpoint.CDP)
 		}
@@ -530,6 +542,7 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 		if appErr != nil || !appStepsIncludeInput(args["steps"]) {
 			return text, appErr
 		}
+		setDesktopActivity(scope.RunID, "正在看屏幕")
 		return desktopAppRunWithShot(ctx, scope, endpoint.Display, text)
 	}
 	if action == "screenshot" {
@@ -545,6 +558,7 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 				return "", err
 			}
 		}
+		defer beginDesktopActivity(scope.RunID, "正在看屏幕")()
 		session, _ := desktopOpenBrowser(binding, scope, userKey, endpoint.CDP)
 		attached := ""
 		if session != nil {
@@ -581,9 +595,15 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 	var text string
 	switch action {
 	case "navigate":
+		defer beginDesktopActivity(scope.RunID, "正在打开网页")()
 		result, callErr := session.Navigate(desktopArg(args, "url"))
 		text, err = desktopActionText(result, callErr)
 	case "probe":
+		probePhrase := "正在看屏幕"
+		if desktopArg(args, "query") != "" {
+			probePhrase = "正在查找"
+		}
+		defer beginDesktopActivity(scope.RunID, probePhrase)()
 		obs, callErr := session.Probe(desktopArg(args, "query"))
 		text, err = desktopObservationText(ctx, scope, endpoint.Display, desktopArg(args, "query"), obs, callErr)
 		text, err = withDesktopPages(text, err, endpoint.CDP, session.TargetID)
@@ -592,9 +612,11 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 		if stepErr != nil {
 			return "", stepErr
 		}
+		defer beginDesktopActivity(scope.RunID, desktopBrowserStepsPhrase(steps))()
 		state, callErr := browser.RunAgentFastBatchUntilPerson(session, steps, desktopArg(args, "text"))
 		text, err = desktopTaskText(state, callErr)
 	case "click":
+		defer beginDesktopActivity(scope.RunID, "正在点击")()
 		var result *browser.BrowserActionResult
 		var callErr error
 		if ref := desktopArg(args, "ref"); ref != "" {
@@ -604,16 +626,20 @@ func operateDesktop(ctx context.Context, scope agentruntime.Scope, args map[stri
 		}
 		text, err = desktopActionText(result, callErr)
 	case "type":
+		defer beginDesktopActivity(scope.RunID, "正在输入")()
 		result, callErr := session.Type(desktopArg(args, "snapshot_id"), desktopArg(args, "ref"), "", desktopArg(args, "text"))
 		text, err = desktopActionText(result, callErr)
 	case "press":
+		defer beginDesktopActivity(scope.RunID, desktopKeyPhrase(desktopArg(args, "key")))()
 		result, callErr := session.Press(desktopArg(args, "key"))
 		text, err = desktopActionText(result, callErr)
 	case "script":
+		defer beginDesktopActivity(scope.RunID, desktopScriptPhrase(desktopArg(args, "script")))()
 		result, callErr := browser.RunPageScriptBatch(session, desktopArg(args, "script"), desktopArg(args, "name"), userKey, desktopBrowserSkillRoot)
 		text, err = desktopActionText(result, callErr)
 		text, err = withDesktopPages(text, err, endpoint.CDP, session.TargetID)
 	case "skill_run":
+		defer beginDesktopActivity(scope.RunID, "正在操作网页")()
 		result, callErr := browser.RunSavedPageScript(session, userKey, desktopArg(args, "name"), desktopBrowserSkillRoot)
 		text, err = desktopActionText(result, callErr)
 		text, err = withDesktopPages(text, err, endpoint.CDP, session.TargetID)
@@ -1822,7 +1848,9 @@ func desktopAppRun(ctx context.Context, scope agentruntime.Scope, display, actio
 		if err != nil {
 			return "", err
 		}
-		return runGuardedDesktopAppSteps(steps, beforeInsert, browserRaises, run)
+		return runGuardedDesktopAppSteps(steps, beforeInsert, browserRaises, run, func(phrase string) {
+			setDesktopActivity(scope.RunID, phrase)
+		})
 	default:
 		return "", fmt.Errorf("unknown desktop app action %s", action)
 	}
@@ -1885,7 +1913,10 @@ func operateDesktopOpen(ctx context.Context, scope agentruntime.Scope, display, 
 // after the menu is closed, including a warm browser and a bare Return. A
 // later key does not record again. A named focus still wins. The id is not
 // the tool result. browserRaises nil means the read might raise.
-func runGuardedDesktopAppSteps(steps [][]string, beforeInsert func() error, browserRaises func() bool, run func(...string) (string, error)) (string, error) {
+func runGuardedDesktopAppSteps(steps [][]string, beforeInsert func() error, browserRaises func() bool, run func(...string) (string, error), onStep func(string)) (string, error) {
+	if onStep == nil {
+		onStep = func(string) {}
+	}
 	var pending [][]string
 	var lastFocus []string
 	focusPending := false
@@ -1923,13 +1954,16 @@ func runGuardedDesktopAppSteps(steps [][]string, beforeInsert func() error, brow
 		// click. A Whisker Menu id is not restored. A failed activate
 		// must not click. A non-numeric id is ignored. None of those
 		// outputs is the tool result. A later click in this app_run
-		// already released, so it does not record.
+		// already released, so it does not record. The click phrase
+		// waits until that activate returns: the poll can sit for
+		// about 15s, and that wait is a window change, not a click.
 		if release && !released {
 			restore := desktopReadActiveWindow(run)
 			if releaseOnce() {
 				dismissDesktopWhisker(run)
 			}
 			if restore != "" {
+				onStep(desktopArgvPhrase([]string{"windowactivate"}))
 				activated, activateErr := run("windowactivate", "--sync", restore)
 				if activateErr != nil {
 					if strings.TrimSpace(activated) != "" {
@@ -1941,6 +1975,7 @@ func runGuardedDesktopAppSteps(steps [][]string, beforeInsert func() error, brow
 		} else if release {
 			releaseOnce()
 		}
+		onStep(desktopClickPhrase(argv))
 		out, err := run(argv...)
 		if strings.TrimSpace(out) != "" {
 			last = out
@@ -2008,6 +2043,7 @@ func runGuardedDesktopAppSteps(steps [][]string, beforeInsert func() error, brow
 			}
 			activatedTarget := false
 			if focusPending {
+				onStep(desktopArgvPhrase(lastFocus))
 				out, err := run(lastFocus...)
 				if err != nil {
 					return desktopAppResult(out, err)
@@ -2019,7 +2055,10 @@ func runGuardedDesktopAppSteps(steps [][]string, beforeInsert func() error, brow
 				activatedTarget = true
 			} else if restoreID != "" {
 				// Activate by id, not search. A failed activate must not
-				// type: the browser is the focused window then.
+				// type: the browser is the focused window then. The poll
+				// can sit for about 15s, so the row says the window is
+				// changing until that call returns.
+				onStep(desktopArgvPhrase([]string{"windowactivate"}))
 				out, err := run("windowactivate", "--sync", restoreID)
 				if err != nil {
 					return desktopAppResult(out, err)
@@ -2040,6 +2079,7 @@ func runGuardedDesktopAppSteps(steps [][]string, beforeInsert func() error, brow
 				calls = expanded
 			}
 			for _, call := range calls {
+				onStep(desktopArgvPhrase(call))
 				out, err := run(call...)
 				if err != nil {
 					return desktopAppResult(out, err)

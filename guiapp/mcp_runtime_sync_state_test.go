@@ -512,7 +512,7 @@ func TestReconcileRemoteMCPObservationsProbesManualServer(t *testing.T) {
 	if lists.Load() != 1 {
 		t.Fatalf("tools/list calls=%d, want 1", lists.Load())
 	}
-	inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background(), "desktop-user")
+	inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -545,7 +545,7 @@ func TestReconcileRemoteMCPObservationsRebuildsMarketReady(t *testing.T) {
 	if err := app.markMCPRuntimeSyncReady(entry.ID); err != nil {
 		t.Fatal(err)
 	}
-	before, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background(), "desktop-user")
+	before, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -563,7 +563,7 @@ func TestReconcileRemoteMCPObservationsRebuildsMarketReady(t *testing.T) {
 	if !ok || state.Status != "ready" || state.Attempts != 0 {
 		t.Fatalf("ready state after rebuild = %+v ok=%v", state, ok)
 	}
-	after, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background(), "desktop-user")
+	after, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -610,7 +610,7 @@ func TestReconcileRemoteMCPObservationsSkipsNeedsReview(t *testing.T) {
 	if !ok || after != before {
 		t.Fatalf("needs_review changed: before=%+v after=%+v", before, after)
 	}
-	inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background(), "desktop-user")
+	inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

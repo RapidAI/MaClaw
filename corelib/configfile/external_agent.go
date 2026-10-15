@@ -257,6 +257,12 @@ func extractOpenCodeZenKey(auth map[string]interface{}) string {
 	return strings.TrimSpace(stringValue(auth["OPENCODE_API_KEY"]))
 }
 
+// OpenCodePreferredModel returns the model id saved by the OpenCode CLI.
+// A provider prefix such as "opencode/" is removed. Comments in opencode.jsonc are ignored.
+func OpenCodePreferredModel() string {
+	return readOpenCodePreferredModel()
+}
+
 func readOpenCodePreferredModel() string {
 	for _, path := range []string{OpencodeConfigPath(), OpencodeConfigJSONCPath()} {
 		data, err := os.ReadFile(path)
@@ -464,5 +470,42 @@ func stripJSONC(data []byte) []byte {
 		b.WriteByte(c)
 		i++
 	}
-	return []byte(b.String())
+	return []byte(stripJSONCTrailingCommas(b.String()))
+}
+
+func stripJSONCTrailingCommas(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inStr := false
+	esc := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if inStr {
+			b.WriteByte(c)
+			if esc {
+				esc = false
+			} else if c == '\\' {
+				esc = true
+			} else if c == '"' {
+				inStr = false
+			}
+			continue
+		}
+		if c == '"' {
+			inStr = true
+			b.WriteByte(c)
+			continue
+		}
+		if c == ',' {
+			j := i + 1
+			for j < len(s) && (s[j] == ' ' || s[j] == '\t' || s[j] == '\n' || s[j] == '\r') {
+				j++
+			}
+			if j < len(s) && (s[j] == '}' || s[j] == ']') {
+				continue
+			}
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
 }

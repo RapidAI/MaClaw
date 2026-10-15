@@ -23,12 +23,33 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/intent/locall3"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
+
+// headAttachLog suppresses repeated attach lines. Startup wires the same
+// embedder from the sync path and again from activateEmbedderAsync while the
+// head file is still downloading; without this the log shows the same failure
+// twice before the file lands.
+var headAttachLog = struct {
+	sync.Mutex
+	intent string
+	tool   string
+}{}
+
+func logHeadAttach(slot *string, line string) {
+	headAttachLog.Lock()
+	defer headAttachLog.Unlock()
+	if *slot == line {
+		return
+	}
+	*slot = line
+	log.Print(line)
+}
 
 // loadAppEmbedder is the only embedder loader guiapp uses. path is the
 // model slot (embedding.DefaultModelPath()); the Qwen3 file is located with
@@ -56,7 +77,6 @@ func loadAppEmbedder(smoke bool) func(string) (embedding.Embedder, error) {
 func (a *App) localL3Runtime() *locall3.Runtime {
 	a.localL3Once.Do(func() {
 		a.localL3 = locall3.New(locall3.DefaultHeadDir(embedding.DefaultModelsDir()))
-		log.Printf("[intent] %s", a.localL3.Describe())
 	})
 	return a.localL3
 }
@@ -71,6 +91,18 @@ func (a *App) intentL3Func() intent.LLMClassifyFunc {
 	return a.localL3Runtime().LLMFunc(a.buildUICLLMFunc())
 }
 
+// attachClassificationHeads binds both local heads. Safe to call more than
+// once; a repeat with the same embedder does not reload the head file.
+func (a *App) attachClassificationHeads(emb embedding.Embedder) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[intent] local L3 attach failed: panic %v", r)
+		}
+	}()
+	a.attachLocalL3(emb)
+	a.attachToolHead(emb)
+}
+
 // attachLocalL3 binds the head matching emb; call whenever the shared
 // embedder is (re)wired into the classifiers.
 func (a *App) attachLocalL3(emb embedding.Embedder) {
@@ -83,14 +115,21 @@ func (a *App) attachLocalL3(emb embedding.Embedder) {
 		return
 	}
 	if _, err := rt.Attach(emb); err != nil {
+		// "no local head file" is the steady state until the release download
+		// finishes. Strict mode still fails closed; otherwise say we are waiting
+		// so a startup log is not a hard failure that later succeeds.
+		if rt.Mode() != intent.LocalL3Strict && strings.Contains(err.Error(), "no local head file found") {
+			logHeadAttach(&headAttachLog.intent, fmt.Sprintf("[intent] local L3 waiting for head file: %v", err))
+			return
+		}
 		if rt.Mode() == intent.LocalL3Strict {
-			log.Printf("[intent] local L3 unavailable (strict: intent L3 fails closed): %v", err)
+			logHeadAttach(&headAttachLog.intent, fmt.Sprintf("[intent] local L3 attach failed (strict: intent L3 fails closed): %v", err))
 		} else {
-			log.Printf("[intent] local L3 unavailable, remote tree LLM stays L3: %v", err)
+			logHeadAttach(&headAttachLog.intent, fmt.Sprintf("[intent] local L3 attach failed; remote tree LLM stays L3: %v", err))
 		}
 		return
 	}
-	log.Printf("[intent] %s", rt.Describe())
+	logHeadAttach(&headAttachLog.intent, fmt.Sprintf("[intent] %s", rt.Describe()))
 }
 
 // Tool-head env (first-party OvR injection into the tool router).
@@ -124,8 +163,9 @@ func toolHeadCandidates(modelsDir string) []string {
 }
 
 // attachToolHead binds the first-party tool head that matches emb onto the
-// tool router (intent scope ∪ head top-k ∪ Track A). No-op when disabled,
-// no matching file, or the head refuses the embedder (wrong model id / dim).
+// tool router (intent scope ∪ head top-k ∪ Track A). No-op when the router or
+// embedder is missing. A missing file or a head that refuses the embedder
+// (wrong model id / dim) is logged; log_detail off still keeps that line.
 func (a *App) attachToolHead(emb embedding.Embedder) {
 	if a == nil {
 		return
@@ -165,11 +205,18 @@ func (a *App) attachToolHead(emb embedding.Embedder) {
 			last = err
 			continue
 		}
-		log.Printf("[tool] tool head attached: %s (θ=%.2f k=%d, embedder=%s)", h.ID, h.Theta, h.TopKDefault, embedding.EmbedderFamily(emb))
+		logHeadAttach(&headAttachLog.tool, fmt.Sprintf("[tool] tool head attached: %s (θ=%.2f k=%d, embedder=%s)", h.ID, h.Theta, h.TopKDefault, embedding.EmbedderFamily(emb)))
 		return
 	}
-	_ = a.toolRouter.SetToolHead(nil, nil, 0, 0)
+	// Do not clear a head that a concurrent fetch callback just installed.
+	// Stat runs outside the router lock, so SetToolHead(nil) here can land
+	// after a successful attach and drop the live head.
 	if last != nil {
-		log.Printf("[tool] tool head not attached: %v", last)
+		logHeadAttach(&headAttachLog.tool, fmt.Sprintf("[tool] tool head attach failed: %v", last))
+		return
 	}
+	if a.toolRouter.ToolHead() != nil {
+		return
+	}
+	logHeadAttach(&headAttachLog.tool, fmt.Sprintf("[tool] tool head waiting for %s", shippedToolHeadName))
 }

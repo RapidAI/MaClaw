@@ -216,7 +216,7 @@ func TestReviewedMCPPublicationQuarantinesUnlistedTools(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := &IMMessageHandler{app: app}
-	project, err := h.semanticDynamicInventory(context.Background(), "desktop-user:D:/proj")
+	project, err := h.semanticDynamicInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -269,22 +269,33 @@ func TestReviewedMCPPublicationQuarantinesUnlistedTools(t *testing.T) {
 			t.Fatalf("unlisted name contracted an unexpected effect: %#v", unlisted.Contract)
 		}
 	}
-	other, err := h.semanticDynamicInventory(context.Background(), "user-1")
+	// The GUI semantic surface resolves under the single host contract scope,
+	// so every session reaching it observes the same published contracts.
+	other, err := h.semanticDynamicInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, entry := range other.mcpEntries {
+		if len(entry.Contract.Provisions) == 0 || entry.Contract.ObservedBindingDigest == "" {
+			t.Fatalf("host contract missing for %s: %#v", entry.ToolName, entry.Contract)
+		}
+	}
+	// Per-principal scopes stay isolated through the execution-time entry: a
+	// Coding principal resolves its own scope and must not see the desktop
+	// contracts.
+	coding, err := h.semanticDynamicInventoryForPrincipal(context.Background(), agentservice.Principal{TenantID: "desktop", UserID: "principal"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range coding.mcpEntries {
 		if len(entry.Contract.Provisions) != 0 || entry.Contract.ObservedBindingDigest != "" {
 			t.Fatalf("desktop contract leaked to %s: %#v", entry.ToolName, entry.Contract)
 		}
 	}
-	if semanticContractPrincipal(agentservice.Principal{TenantID: "desktop", UserID: "principal"}).UserID != "principal" {
-		t.Fatal("coding principal was collapsed")
-	}
 	if err := app.publishReviewedMCPServerTools("tengyun", []MCPToolView{tools[0]}); err != nil {
 		t.Fatal(err)
 	}
-	revoked, err := h.semanticDynamicInventory(context.Background(), "desktop-user")
+	revoked, err := h.semanticDynamicInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -314,7 +325,7 @@ func TestArbitraryMCPToolIsCallableThroughOpenLookup(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := &IMMessageHandler{app: app}
-	inventory, err := h.semanticDynamicInventory(context.Background(), "desktop-user")
+	inventory, err := h.semanticDynamicInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -327,8 +338,9 @@ func TestArbitraryMCPToolIsCallableThroughOpenLookup(t *testing.T) {
 	if entry.ToolName == "" {
 		t.Fatalf("arbitrary tool was not contracted: %#v", inventory.mcpEntries)
 	}
-	if len(entry.Contract.Provisions) != 1 ||
+	if len(entry.Contract.Provisions) != 2 ||
 		entry.Contract.Provisions[0].Capability != agentservice.CapabilityInformationLookup ||
+		entry.Contract.Provisions[1].Capability != agentservice.AutoMCPCapabilityIDForBinding("brand-new-mcp", "totally_new_vendor_tool") ||
 		entry.Contract.Effects[0] != tool.EffectExternalEffect {
 		t.Fatalf("arbitrary contract=%#v", entry.Contract)
 	}
@@ -355,7 +367,7 @@ func TestArbitraryMCPToolIsCallableThroughOpenLookup(t *testing.T) {
 	// The provider must carry the open capability, or it is in the catalog but
 	// nothing can ever select it for a need.
 	provides := catalog.Providers[0].Provides
-	if len(provides) != 1 || provides[0].Capability != agentservice.CapabilityInformationLookup {
+	if len(provides) != 2 || provides[0].Capability != agentservice.CapabilityInformationLookup {
 		t.Fatalf("catalog provision=%#v", provides)
 	}
 }
@@ -423,6 +435,7 @@ func TestOpenLookupNeedRequiresAProvider(t *testing.T) {
 		t.Fatalf("no provider must not add a need: %+v", got)
 	}
 	providers := []tool.ProviderSpec{{
+		Ready:       true,
 		AdapterName: "dynamic_mcp_probe",
 		Binding:     tool.ProviderBinding{Kind: "mcp", ProviderID: "brand-new-mcp", ImplementationID: "totally_new_vendor_tool"},
 		Provides:    []tool.CapabilityProvision{{Capability: agentservice.CapabilityInformationLookup, Quality: 1}},
@@ -489,7 +502,8 @@ func TestTightBudgetOmitsTheOpenNeed(t *testing.T) {
 // server whose observation did not succeed must not hand an arbitrary tool a
 // capability, or an unreachable server becomes callable on the strength of a
 // stale tools/list alone.
-func TestDegradedMCPDoesNotPublishOpenLookup(t *testing.T) {	app := &App{testHomeDir: t.TempDir()}
+func TestDegradedMCPDoesNotPublishOpenLookup(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
 	defer app.closeSemanticInvocationStore()
 	schema := map[string]interface{}{"type": "object"}
 	tools := []MCPToolView{{Name: "totally_new_vendor_tool", InputSchema: schema}}
@@ -499,7 +513,7 @@ func TestDegradedMCPDoesNotPublishOpenLookup(t *testing.T) {	app := &App{testHom
 		t.Fatal(err)
 	}
 	h := &IMMessageHandler{app: app}
-	inventory, err := h.semanticDynamicInventory(context.Background(), "desktop-user")
+	inventory, err := h.semanticDynamicInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -541,7 +555,7 @@ func TestLocalStdioMCPJoinsTheOpenFamily(t *testing.T) {
 		t.Fatal(err)
 	}
 	h := &IMMessageHandler{app: app}
-	inventory, err := h.semanticDynamicInventory(context.Background(), "desktop-user")
+	inventory, err := h.semanticDynamicInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -551,7 +565,7 @@ func TestLocalStdioMCPJoinsTheOpenFamily(t *testing.T) {
 			continue
 		}
 		found = true
-		if len(entry.Contract.Provisions) != 1 || entry.Contract.Provisions[0].Capability != agentservice.CapabilityInformationLookup {
+		if len(entry.Contract.Provisions) != 2 || entry.Contract.Provisions[0].Capability != agentservice.CapabilityInformationLookup || entry.Contract.Provisions[1].Capability != agentservice.AutoMCPCapabilityIDForBinding("local-stdio", "local_vendor_tool") {
 			t.Fatalf("local stdio contract=%#v", entry.Contract)
 		}
 		if entry.Contract.ObservedBindingDigest != agentservice.DynamicMCPObservedBindingDigest("local-stdio", "local_vendor_tool", schema) {
@@ -569,7 +583,7 @@ func TestLocalStdioMCPJoinsTheOpenFamily(t *testing.T) {
 	if err := app.publishReviewedMCPServerTools("local-stdio", tools); err != nil {
 		t.Fatal(err)
 	}
-	inventory, err = h.semanticDynamicInventory(context.Background(), "desktop-user")
+	inventory, err = h.semanticDynamicInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -727,7 +741,7 @@ func TestReviewedMCPCapabilityIdentityPublishesInstalledSearchTool(t *testing.T)
 		t.Fatal(err)
 	}
 	h := &IMMessageHandler{app: app}
-	blocked, err := h.semanticDynamicInventory(context.Background(), "desktop-user")
+	blocked, err := h.semanticDynamicInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -749,7 +763,7 @@ func TestReviewedMCPCapabilityIdentityPublishesInstalledSearchTool(t *testing.T)
 	if err := app.publishReviewedMCPServerTools("web-search-prime", tools); err != nil {
 		t.Fatal(err)
 	}
-	project, err := h.semanticDynamicInventory(context.Background(), "desktop-user")
+	project, err := h.semanticDynamicInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -765,8 +779,13 @@ func TestReviewedMCPCapabilityIdentityPublishesInstalledSearchTool(t *testing.T)
 	if search.CapabilityGlobalKey != agentservice.ReviewedMCPWebSearchPrimeGlobalKey || search.InstalledCapabilityID != "cap_43f40e502b689144" {
 		t.Fatalf("inventory identity=%q/%q", search.CapabilityGlobalKey, search.InstalledCapabilityID)
 	}
-	if len(search.Contract.Provisions) != 2 || search.Contract.Provisions[0].Capability != tool.CapabilityID("information.search.web") || search.Contract.Provisions[0].Quality <= 2 {
+	if len(search.Contract.Provisions) != 3 || search.Contract.Provisions[0].Capability != tool.CapabilityID("information.search.web") || search.Contract.Provisions[0].Quality <= 2 {
 		t.Fatalf("search contract=%#v", search.Contract)
+	}
+	// The reviewed contract also carries the host-issued exact capability so
+	// naming web_search_prime resolves this binding.
+	if search.Contract.Provisions[2].Capability != agentservice.AutoMCPCapabilityIDForBinding("web-search-prime", agentservice.ReviewedMCPWebSearchPrimeTool) {
+		t.Fatalf("search contract missing auto capability=%#v", search.Contract.Provisions)
 	}
 	// An unreviewed name is callable through the open read-only family, but it
 	// must not render as the reviewed product's model function: the identity
@@ -808,7 +827,7 @@ func TestReviewedMCPCapabilityIdentityPublishesInstalledSearchTool(t *testing.T)
 	if err := app.publishReviewedMCPServerTools("web-search-prime", tools); err != nil {
 		t.Fatal(err)
 	}
-	revoked, err := h.semanticDynamicInventory(context.Background(), "desktop-user")
+	revoked, err := h.semanticDynamicInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -901,7 +920,7 @@ func TestFixtureSkillContractRendersOpaqueInvokeForWorklogRead(t *testing.T) {
 			ObservedBindingDigest: "forged-by-caller",
 		},
 	})
-	principal := agentservice.Principal{TenantID: semanticDesktopTenantID(), UserID: "user-1"}
+	principal := semanticDesktopContractPrincipal()
 	if err := publisher.PublishReviewedSkillObservation(principal, []corelib.NLSkillEntry{entry}); err != nil {
 		t.Fatal(err)
 	}
@@ -957,7 +976,7 @@ func TestFixtureWorklogUpdateContractRendersInvoke(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	principal := agentservice.Principal{TenantID: semanticDesktopTenantID(), UserID: "user-1"}
+	principal := semanticDesktopContractPrincipal()
 	if err := contracts.PublishMCPContract(principal, "fixture-mcp", toolName, agentservice.DynamicCapabilityContract{
 		Provisions:            []tool.CapabilityProvision{{Capability: tool.CapabilityRecordUpdateWorklog, Quality: 3}},
 		Effects:               []tool.EffectClass{tool.EffectExternalEffect},
@@ -1043,7 +1062,7 @@ func TestReviewedMCPWebSearchRecordsLookupEvidence(t *testing.T) {
 	transport := &mcpEvidenceRoundTrip{mode: "search"}
 	app.mcpRegistry.client = &http.Client{Transport: transport}
 	h := &IMMessageHandler{app: app}
-	inventory, err := h.semanticDynamicInventory(context.Background(), desktopUserID)
+	inventory, err := h.semanticDynamicInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

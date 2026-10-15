@@ -37,6 +37,52 @@ func (a *App) QueryDesktopBotTaskStatus(botID, hint, lang string) (string, error
 	return text, nil
 }
 
+// DesktopBotTaskItem is one row from Hub's task list. An empty run id is not
+// a row the person can open; a posting reserve still arrives as status running.
+type DesktopBotTaskItem struct {
+	RunID  string `json:"run_id"`
+	BotID  string `json:"bot_id"`
+	Status string `json:"status"`
+	Task   string `json:"task"`
+}
+
+// ListDesktopBotTasks reads this bot's recent runs. The window uses the list
+// to see when the shared desktop is free. The desktop worker is not called.
+func (a *App) ListDesktopBotTasks(botID string) ([]DesktopBotTaskItem, error) {
+	return a.listDesktopBotTasks(context.Background(), botID)
+}
+
+func (a *App) listDesktopBotTasks(ctx context.Context, botID string) ([]DesktopBotTaskItem, error) {
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return nil, fmt.Errorf("bot id is required")
+	}
+	var out struct {
+		Items []DesktopBotTaskItem `json:"items"`
+	}
+	path := "/api/v1/bots/" + url.PathEscape(botID) + "/tasks"
+	if err := a.desktopBotCall(ctx, http.MethodGet, path, nil, &out, 20*time.Second); err != nil {
+		return nil, err
+	}
+	if out.Items == nil {
+		return []DesktopBotTaskItem{}, nil
+	}
+	return out.Items, nil
+}
+
+// CancelDesktopBotRun stops one admitted desktop run. The person said stop.
+// The chat reading is not given a tool for this; the GUI calls Hub's cancel
+// route with the run id it already has.
+func (a *App) CancelDesktopBotRun(botID, runID string) error {
+	botID = strings.TrimSpace(botID)
+	runID = strings.TrimSpace(runID)
+	if botID == "" || runID == "" {
+		return fmt.Errorf("bot id and run id are required")
+	}
+	path := "/api/v1/bots/" + url.PathEscape(botID) + "/runs/" + url.PathEscape(runID) + "/cancel"
+	return a.desktopBotCall(context.Background(), http.MethodPost, path, map[string]string{}, nil, 20*time.Second)
+}
+
 // PullDesktopBotDeliveries pushes finished runs the GUI missed while it was
 // offline. A run this process is still waiting on is left for that wait, which
 // acks it when the reply is shown. Each pushed run is acked so the next pull

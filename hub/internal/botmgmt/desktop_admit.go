@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,7 +32,44 @@ type desktopAdmitState struct {
 	started      time.Time
 	mediaFetched bool
 	mediaNext    time.Time
+	// clientMessageID is the caller's turn key. A repeat of this key is the
+	// same execute, not a second one. It is persisted only once a real run id
+	// exists, so a restart can still replay that run.
+	clientMessageID string
+	// posting is how many message posts are still in flight for an empty-run
+	// reserve. The reserve stays while this is above zero. The last post to
+	// leave deletes it.
+	posting int
+	// abandoned is when the last post left this empty reserve behind. A sweep
+	// drops it after desktopAdmitAbandonAfter. A post still in flight does not
+	// set this.
+	abandoned time.Time
+	// activity is the step MaClawSrv last reported for this run. It is not
+	// persisted: a restart learns it again from the next run read. Empty
+	// means the run has not named a step.
+	activity string
 }
+
+// desktopRunActivityPattern is the shape of a working-row phrase. Two to six
+// Han characters after 正在. Anything else, including typed text, is dropped.
+var desktopRunActivityPattern = regexp.MustCompile(`^正在\p{Han}{2,6}$`)
+
+func desktopRunActivityText(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if !desktopRunActivityPattern.MatchString(raw) {
+		return ""
+	}
+	switch raw {
+	case "正在处理", "正在一点点推进", "正在询问":
+		return ""
+	default:
+		return raw
+	}
+}
+
+// desktopAdmitAbandonAfter is how long an empty-run reserve may sit after its
+// post has been given up. A post that is still waiting is not abandoned.
+const desktopAdmitAbandonAfter = 30 * time.Second
 
 // botPreferenceWithdrawRounds bounds how many list-and-delete passes one
 // withdrawal performs. The list answers one page at a time, so clearing a long
@@ -43,16 +81,17 @@ const botPreferenceWithdrawRounds = 20
 // background run. It does not carry the caller's request context: that
 // request has already returned.
 type admittedDesktopFollow struct {
-	TenantID   string
-	UserID     string
-	BotID      string
-	InstanceID string
-	Novnc      string
-	RunID      string
-	Phase      string
-	Task       string
-	Opened     bool
-	Started    time.Time
+	TenantID        string
+	UserID          string
+	BotID           string
+	InstanceID      string
+	Novnc           string
+	RunID           string
+	Phase           string
+	Task            string
+	Opened          bool
+	Started         time.Time
+	ClientMessageID string
 }
 
 type desktopRunView struct {
@@ -62,6 +101,7 @@ type desktopRunView struct {
 	DesktopReady    bool   `json:"desktop_ready"`
 	DesktopHandoff  bool   `json:"desktop_handoff"`
 	AttentionReason string `json:"attention_reason"`
+	Activity        string `json:"activity,omitempty"`
 	Message         struct {
 		Content     string            `json:"content"`
 		Metadata    map[string]string `json:"metadata"`
@@ -71,6 +111,156 @@ type desktopRunView struct {
 
 func desktopAdmitKey(tenantID, userID, botID, runID string) string {
 	return strings.TrimSpace(tenantID) + "\x00" + strings.TrimSpace(userID) + "\x00" + strings.TrimSpace(botID) + "\x00" + strings.TrimSpace(runID)
+}
+
+// desktopReserveAbandoned reports an empty-run reserve whose post is no longer
+// waiting and has been sitting longer than desktopAdmitAbandonAfter. Callers
+// hold state.mu. A post still in flight is never abandoned.
+func desktopReserveAbandoned(state *desktopAdmitState, now time.Time) bool {
+	if state == nil || strings.TrimSpace(state.runID) != "" || state.done || state.posting > 0 {
+		return false
+	}
+	stamp := state.abandoned
+	if stamp.IsZero() {
+		stamp = state.started
+	}
+	if stamp.IsZero() {
+		return false
+	}
+	return now.Sub(stamp) > desktopAdmitAbandonAfter
+}
+
+// dropAbandonedDesktopReserves removes empty-run reserves this user has given
+// up on. Callers hold s.mu. An empty botID sweeps every bot of the user; a
+// bot id sweeps only that bot. A post that is still waiting stays, and it
+// still counts as a running admit.
+func (s *Service) dropAbandonedDesktopReserves(tenantID, userID, botID string, now time.Time) {
+	if s == nil || len(s.desktopAdmits) == 0 {
+		return
+	}
+	prefix := desktopTenantPrefix(tenantID) + strings.TrimSpace(userID) + "\x00"
+	if strings.TrimSpace(botID) != "" {
+		prefix = desktopAdmitKey(tenantID, userID, botID, "")
+	}
+	for key, state := range s.desktopAdmits {
+		if state == nil || !strings.HasPrefix(key, prefix) {
+			continue
+		}
+		state.mu.Lock()
+		drop := desktopReserveAbandoned(state, now)
+		state.mu.Unlock()
+		if drop {
+			delete(s.desktopAdmits, key)
+		}
+	}
+}
+
+// claimDesktopTurn reserves this user's desktop for one message post.
+//
+// The lock covers only the ledger. openDesktop, the owner token, and the
+// message post happen after it returns. The same client message does not
+// reserve a second time and is not refused: MaClawSrv replays that key.
+// Any other non-terminal admit for this user refuses the post. The returned
+// function drops the empty reserve when the post ends without a real run id.
+func (s *Service) claimDesktopTurn(tenantID, userID, botID, clientMessageID, task, phase string) (func(), error) {
+	noop := func() {}
+	if s == nil {
+		return noop, ErrSettingsUnavailable
+	}
+	clientMessageID = strings.TrimSpace(clientMessageID)
+	botID = strings.TrimSpace(botID)
+	userID = strings.TrimSpace(userID)
+	s.mu.Lock()
+	s.ensureDesktopHydrated(tenantID)
+	if s.desktopAdmits == nil {
+		s.desktopAdmits = map[string]*desktopAdmitState{}
+	}
+	now := s.now()
+	s.dropAbandonedDesktopReserves(tenantID, userID, "", now)
+	userPrefix := desktopTenantPrefix(tenantID) + userID + "\x00"
+	botPrefix := desktopAdmitKey(tenantID, userID, botID, "")
+	var sameEmpty *desktopAdmitState
+	sameReal := false
+	otherLive := false
+	for key, state := range s.desktopAdmits {
+		if state == nil || !strings.HasPrefix(key, userPrefix) {
+			continue
+		}
+		state.mu.Lock()
+		live := !state.done
+		id := strings.TrimSpace(state.clientMessageID)
+		runID := strings.TrimSpace(state.runID)
+		state.mu.Unlock()
+		if !live {
+			continue
+		}
+		sameBot := strings.HasPrefix(key, botPrefix)
+		sameKey := clientMessageID != "" && id == clientMessageID && sameBot
+		if sameKey && runID == "" {
+			sameEmpty = state
+			continue
+		}
+		if sameKey {
+			sameReal = true
+			continue
+		}
+		otherLive = true
+	}
+	if otherLive {
+		s.mu.Unlock()
+		return noop, ErrDesktopBusy
+	}
+	hold := false
+	if sameEmpty != nil {
+		sameEmpty.mu.Lock()
+		sameEmpty.posting++
+		sameEmpty.abandoned = time.Time{}
+		sameEmpty.mu.Unlock()
+		hold = true
+	} else if !sameReal {
+		s.desktopAdmits[botPrefix] = &desktopAdmitState{
+			task:            clipDesktopRunes(task, 500),
+			status:          "running",
+			userID:          userID,
+			botID:           botID,
+			clientMessageID: clientMessageID,
+			phase:           strings.TrimSpace(phase),
+			posting:         1,
+			started:         now,
+		}
+		hold = true
+	}
+	s.mu.Unlock()
+	return func() { s.releaseDesktopTurn(botPrefix, clientMessageID, hold) }, nil
+}
+
+// releaseDesktopTurn drops the empty reserve this post was holding. A real
+// run id is a different key and is left alone. The last in-flight post
+// deletes the reserve immediately, so a failed send does not keep the desktop
+// busy for the abandon window.
+func (s *Service) releaseDesktopTurn(key, clientMessageID string, hold bool) {
+	if s == nil || !hold {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	state := s.desktopAdmits[key]
+	if state == nil {
+		return
+	}
+	state.mu.Lock()
+	if strings.TrimSpace(state.runID) != "" || strings.TrimSpace(state.clientMessageID) != strings.TrimSpace(clientMessageID) {
+		state.mu.Unlock()
+		return
+	}
+	if state.posting > 0 {
+		state.posting--
+	}
+	left := state.posting
+	state.mu.Unlock()
+	if left <= 0 {
+		delete(s.desktopAdmits, key)
+	}
 }
 
 func (s *Service) admitPollWait() time.Duration {
@@ -176,6 +366,19 @@ func (s *Service) followAdmittedDesktopRun(job admittedDesktopFollow) {
 			delete(s.desktopAdmits, id)
 		}
 	}
+	// The empty reserve and the real run change hands under this same lock.
+	// A gap would let a second execute through, and leaving the empty key
+	// would keep the desktop busy after the run id is known.
+	emptyKey := desktopAdmitKey(job.TenantID, job.UserID, job.BotID, "")
+	if empty := s.desktopAdmits[emptyKey]; empty != nil {
+		empty.mu.Lock()
+		dropEmpty := strings.TrimSpace(empty.runID) == "" &&
+			(job.ClientMessageID == "" || empty.clientMessageID == "" || empty.clientMessageID == job.ClientMessageID)
+		empty.mu.Unlock()
+		if dropEmpty {
+			delete(s.desktopAdmits, emptyKey)
+		}
+	}
 	// Adopting is a claim, not an upsert. One run gets one watcher, because
 	// that watcher settles it — it hands back the keyboard, clears the hold,
 	// and closes the desktop open. Two watchers for the same run run that
@@ -279,6 +482,7 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 		if err != nil || !desktopRunTerminal(view.Status) {
 			if err == nil {
 				firstTerminal = time.Time{}
+				s.rememberDesktopRunActivity(state, view.Activity)
 				writePoll("status:"+view.Status, nil,
 					"instance", job.InstanceID,
 					"run", job.RunID,
@@ -381,6 +585,39 @@ func (s *Service) watchAdmittedDesktopRun(job admittedDesktopFollow, state *desk
 		)
 		return
 	}
+}
+
+// rememberDesktopRunActivity keeps the latest step phrase for the GUI poll.
+// The watcher already reads the run, so this does not add a request. An
+// empty or rejected phrase clears the previous one.
+func (s *Service) rememberDesktopRunActivity(state *desktopAdmitState, activity string) {
+	if state == nil {
+		return
+	}
+	activity = desktopRunActivityText(activity)
+	state.mu.Lock()
+	state.activity = activity
+	state.mu.Unlock()
+}
+
+// DesktopRunActivity is the step phrase cached for a run that is still going.
+// A finished run answers with its reply instead, so this is empty then.
+func (s *Service) DesktopRunActivity(tenantID, userID, botID, runID string) string {
+	if s == nil {
+		return ""
+	}
+	s.mu.Lock()
+	state := s.desktopAdmits[desktopAdmitKey(tenantID, userID, botID, runID)]
+	s.mu.Unlock()
+	if state == nil {
+		return ""
+	}
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.done {
+		return ""
+	}
+	return state.activity
 }
 
 func (s *Service) readAdmittedDesktopRun(job admittedDesktopFollow, path string) (desktopRunView, error) {

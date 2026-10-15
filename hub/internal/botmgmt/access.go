@@ -434,6 +434,14 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 		traceBot(botID, "configured", err, "dur_ms", traceMS(time.Since(pipelineStarted)))
 		return BotAdmission{}, err
 	}
+	// One non-terminal admit per user. The reserve is visible to the next
+	// scan before the lock drops. The long message post stays outside it.
+	releaseTurn, busyErr := s.claimDesktopTurn(tenantID, userID, botID, clientMessageID, content, phase)
+	if busyErr != nil {
+		traceBot(botID, "desktop_busy", busyErr, "dur_ms", traceMS(time.Since(pipelineStarted)))
+		return BotAdmission{}, busyErr
+	}
+	defer releaseTurn()
 	// The person finished logging in and sent the next command. The agent
 	// uses the same browser now. The keyboard is returned only after this
 	// command is counted, so a stop cannot shut the browser in between.
@@ -576,16 +584,17 @@ func (s *Service) deliverDesktopMessage(ctx context.Context, tenantID, userID, b
 	if admit && callErr == nil && payload.Async && strings.TrimSpace(payload.Run.ID) != "" &&
 		strings.TrimSpace(payload.Message.Content) == "" && strings.TrimSpace(payload.Error) == "" && !payload.DesktopHandoff {
 		s.followAdmittedDesktopRun(admittedDesktopFollow{
-			TenantID:   tenantID,
-			UserID:     userID,
-			BotID:      botID,
-			InstanceID: instanceID,
-			Novnc:      novnc,
-			RunID:      payload.Run.ID,
-			Phase:      phase,
-			Task:       content,
-			Opened:     opened,
-			Started:    pipelineStarted,
+			TenantID:        tenantID,
+			UserID:          userID,
+			BotID:           botID,
+			InstanceID:      instanceID,
+			Novnc:           novnc,
+			RunID:           payload.Run.ID,
+			Phase:           phase,
+			Task:            content,
+			Opened:          opened,
+			Started:         pipelineStarted,
+			ClientMessageID: clientMessageID,
 		})
 		traceBot(botID, "admit", nil,
 			"instance", instanceID,

@@ -286,7 +286,7 @@
     #tab-llmservice #llmProvidersList .provider-array-head .data-row-actions{max-width:none}
     #tab-llmservice #llmProvidersList .data-row>.provider-seq{grid-area:seq}
     #tab-llmservice #llmProvidersList .data-row-main{grid-area:main;min-width:0}
-    #tab-llmservice #llmProvidersList .data-row-actions{grid-area:actions;max-width:420px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
+    #tab-llmservice #llmProvidersList .data-row-actions{grid-area:actions;max-width:500px;align-items:center;flex-wrap:wrap;justify-content:flex-end}
     #tab-llmservice #llmProvidersList .data-row-meta{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;overflow-wrap:normal;-webkit-line-clamp:unset;line-clamp:unset}
     #tab-llmservice #llmProvidersList .provider-test-status{margin-top:4px;min-height:0}
     #tab-llmservice #llmSubViewProviders .head>.actions,#tab-llmservice #llmSubViewGroups .head>.actions{align-items:center;gap:10px;flex-wrap:wrap}

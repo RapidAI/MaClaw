@@ -1008,6 +1008,46 @@ describe('useAIAssistant property tests', () => {
         expect(result.current.submittedPrompts).toEqual(['same prompt', 'different prompt']);
     });
 
+    it('persists images attached to a submitted prompt and restores them on remount', async () => {
+        const image = { filePath: 'D:/shots/see.png', fileName: 'see.png', extension: '.png', isImage: true };
+        const { result, unmount } = renderAssistantHook();
+
+        await act(async () => {
+            result.current.recordSubmittedPrompt('see this', [image]);
+        });
+
+        expect(result.current.submittedPrompts).toEqual(['see this']);
+        expect(result.current.submittedPromptAttachments).toEqual([[image]]);
+        await waitFor(() => {
+            expect(mockUIState.prompts).toEqual(['see this']);
+            expect(mockUIState.prompt_attachments).toEqual([[image]]);
+        });
+
+        unmount();
+
+        const { result: remounted } = renderAssistantHook();
+        await waitFor(() => {
+            expect(remounted.current.submittedPrompts).toEqual(['see this']);
+            expect(remounted.current.submittedPromptAttachments).toEqual([[image]]);
+        });
+    });
+
+    it('keeps an image-only prompt and does not collapse the same text when the images differ', async () => {
+        const first = { filePath: 'D:/shots/a.png', fileName: 'a.png', extension: '.png', isImage: true };
+        const second = { filePath: 'D:/shots/b.png', fileName: 'b.png', extension: '.png', isImage: true };
+        const { result } = renderAssistantHook();
+
+        await act(async () => {
+            result.current.recordSubmittedPrompt('', [first]);
+            result.current.recordSubmittedPrompt('see this', [first]);
+            result.current.recordSubmittedPrompt('see this', [second]);
+            result.current.recordSubmittedPrompt('see this', [second]);
+        });
+
+        expect(result.current.submittedPrompts).toEqual(['', 'see this', 'see this']);
+        expect(result.current.submittedPromptAttachments).toEqual([[first], [first], [second]]);
+    });
+
     it('Property 3b: persisted history is restored on remount and reset by clearHistory', async () => {
         const persistedMessages = [
             { id: 'u-1', role: 'user', content: 'remember this', timestamp: 1 },

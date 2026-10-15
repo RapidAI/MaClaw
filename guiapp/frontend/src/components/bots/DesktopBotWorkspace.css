@@ -409,6 +409,38 @@
     white-space: nowrap;
 }
 
+.desktop-bot-workspace__who .desktop-bot-workspace__titleline {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+    max-width: 100%;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: normal;
+}
+
+.desktop-bot-workspace__titleline strong {
+    flex: 1 1 auto;
+    min-width: 0;
+}
+
+.desktop-bot-workspace__who .desktop-bot-workspace__primary {
+    flex: 0 0 auto;
+    overflow: visible;
+    text-overflow: clip;
+    white-space: nowrap;
+    font-style: normal;
+    font-size: 10px;
+    font-weight: 650;
+    line-height: 1.4;
+    letter-spacing: 0.04em;
+    padding: 0 4px;
+    border-radius: 4px;
+    color: var(--theme-text, #344054);
+    background: var(--theme-surface-muted, rgba(15, 23, 42, 0.06));
+}
+
 .desktop-bot-workspace__who span {
     max-width: 100%;
     overflow: hidden;
@@ -863,6 +895,114 @@
     gap: 14px;
     width: 100%;
     min-width: 0;
+}
+
+/* Working row pinned above the composer, so scrolling the log does not hide it.
+   The mark is a picture of motion, not a stop. The sentence stays at full
+   strength; a light band walks through the glyphs. */
+.desktop-bot-chat__processing {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex: 0 0 auto;
+    margin: 2px var(--desktop-bot-gutter, 8%) 0;
+    min-width: 0;
+    min-height: 22px;
+    color: var(--theme-text-secondary, #546479);
+    font-size: 14px;
+    line-height: 22px;
+}
+
+.desktop-bot-chat__processing-mark {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    width: 22px;
+    height: 22px;
+    flex: 0 0 auto;
+    border-radius: 999px;
+    background: var(--mc-accent, var(--theme-primary, #2f6fbc));
+}
+
+.desktop-bot-chat__processing-mark::before,
+.desktop-bot-chat__processing-mark::after {
+    content: "";
+    flex: 0 0 auto;
+    width: 3px;
+    height: 10px;
+    border-radius: 999px;
+    background: #fff;
+    transform-origin: center;
+    animation: desktop-bot-processing-bars 0.85s ease-in-out infinite;
+}
+
+.desktop-bot-chat__processing-mark::after {
+    animation-delay: 0.18s;
+}
+
+.desktop-bot-chat__processing-label {
+    flex: 0 1 auto;
+    width: max-content;
+    max-width: 100%;
+    min-width: 0;
+    color: var(--theme-text-secondary, #546479);
+    /* A narrow band, not a fade of the whole line. 40% of the ink is still
+       darker than the page, so the glyphs stay drawn while the light passes. */
+    background-image: linear-gradient(90deg, currentColor 0%, currentColor 38%, color-mix(in srgb, currentColor 40%, #fff) 50%, currentColor 62%, currentColor 100%);
+    background-size: 220% 100%;
+    /* repeat-x fills a subpixel gap with the solid edge of the gradient.
+       no-repeat would leave that gap empty, and the transparent text fill
+       would drop the glyph. */
+    background-repeat: repeat-x;
+    background-position: 100% 0;
+    -webkit-background-clip: text;
+    background-clip: text;
+    -webkit-text-fill-color: transparent;
+    animation: desktop-bot-processing-shimmer 1.8s linear infinite;
+}
+
+@keyframes desktop-bot-processing-bars {
+    0%, 100% { transform: scaleY(0.72); }
+    50% { transform: scaleY(1); }
+}
+
+/* 100% puts the light just off the left edge. 0% puts it just off the right.
+   Past 0% the gradient no longer covers the first glyph. */
+@keyframes desktop-bot-processing-shimmer {
+    0% { background-position: 100% 0; }
+    100% { background-position: 0% 0; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .desktop-bot-chat__processing-mark::before,
+    .desktop-bot-chat__processing-mark::after {
+        animation: none;
+        transform: none;
+    }
+    .desktop-bot-chat__processing-label {
+        animation: none;
+        background-image: none;
+        -webkit-text-fill-color: currentColor;
+    }
+}
+
+@media (forced-colors: active) {
+    .desktop-bot-chat__processing-mark {
+        background: CanvasText;
+    }
+    .desktop-bot-chat__processing-mark::before,
+    .desktop-bot-chat__processing-mark::after {
+        background: Canvas;
+        animation: none;
+        transform: none;
+    }
+    .desktop-bot-chat__processing-label {
+        animation: none;
+        background-image: none;
+        color: CanvasText;
+        -webkit-text-fill-color: CanvasText;
+    }
 }
 
 .desktop-bot-chat__entry {
@@ -1351,16 +1491,18 @@
 
 /* 桌面舞台：观看 / 接管共用的嵌入面板 */
 .desktop-bot-stage {
+    position: relative;
     display: flex;
     flex-direction: column;
     flex: 1.5;
     min-height: 320px;
     max-height: 560px;
     margin: 0 var(--desktop-bot-gutter, 8%) 10px;
-    border: 1px solid var(--theme-border, #e6e6e8);
+    border: 1px solid #34343b;
     border-radius: 12px;
     overflow: hidden;
-    background: #111;
+    background: #17171a;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.28);
     /* 相对状态条内容盒，给右上角按钮留空。放大是 32px 按钮；全屏恢复更宽。 */
     --desktop-bot-fit-reserve: 40px;
 }
@@ -1579,11 +1721,75 @@
 }
 
 .desktop-bot-panel .desktop-bot-stage.is-fullscreen .desktop-bot-stage__frame {
-    position: absolute;
-    inset: 0;
+    position: relative;
+    flex: 1 1 auto;
     width: auto;
     height: auto;
     min-height: 0;
+}
+
+/* 底部模式条：对齐远控窗口，仅观看 / 取得控制权 */
+.desktop-bot-stage__dock {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 7px 12px;
+    background: #1d1d20;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.desktop-bot-stage__mode {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 3px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.94);
+    box-shadow: 0 2px 10px rgba(0, 0, 0, 0.35);
+}
+
+.desktop-bot-stage__mode-btn {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 30px;
+    padding: 0 16px;
+    border: 0;
+    border-radius: 999px;
+    background: transparent;
+    color: #3a3a3e;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+    line-height: 1.3;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.desktop-bot-stage__mode-btn:hover:not(:disabled):not([aria-pressed='true']) {
+    background: rgba(16, 16, 20, 0.07);
+    color: #101014;
+}
+
+.desktop-bot-stage__mode-btn[aria-pressed='true'] {
+    background: #1d1d21;
+    color: #fff;
+}
+
+/* 禁用的未选中段变淡；当前模式的激活段即使不可点也保持实心，像个状态指示。 */
+.desktop-bot-stage__mode-btn:disabled {
+    cursor: default;
+}
+
+.desktop-bot-stage__mode-btn:disabled:not([aria-pressed='true']) {
+    opacity: 0.45;
+}
+
+.desktop-bot-stage__mode-btn:focus-visible {
+    outline: 2px solid #101014;
+    outline-offset: 2px;
 }
 
 /* 输入开关在 noVNC 文档和观看挡板上。iframe 本身保持可点，接管换页后鼠标才能进去。 */
@@ -1997,6 +2203,45 @@
 }
 
 /* Beat .desktop-bot-workspace p { padding: 0 }. */
+.desktop-bot-panel__action {
+    margin: 12px 16px 0;
+    align-self: flex-start;
+    border: 1px solid var(--theme-border, rgba(15, 23, 42, 0.12));
+    background: transparent;
+    color: var(--theme-text, #344054);
+    border-radius: 8px;
+    padding: 6px 10px;
+    font: inherit;
+    font-size: 13px;
+    cursor: pointer;
+}
+
+.desktop-bot-panel__action:disabled {
+    cursor: default;
+    opacity: 0.6;
+}
+
+.desktop-bot-chat__notice-bots {
+    display: inline-flex;
+    gap: 4px;
+    margin-left: 8px;
+    vertical-align: middle;
+}
+
+.desktop-bot-chat__notice-avatar {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    overflow: visible;
+    font-size: 9px;
+    font-weight: 700;
+    color: #fff;
+    background: var(--theme-accent, #475467);
+}
+
 .desktop-bot-workspace .desktop-bot-panel__note {
     display: flex;
     align-items: flex-start;
@@ -2104,4 +2349,90 @@
 .bot-file-preview__close:focus-visible {
     outline: 2px solid var(--mc-accent, var(--theme-primary, #2f6fbc));
     outline-offset: 1px;
+}
+
+.desktop-bot-handoff-notice {
+    position: absolute;
+    z-index: 40;
+    top: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    max-width: min(420px, calc(100% - 24px));
+    padding: 10px 14px;
+    border: 0;
+    border-radius: 12px;
+    background: #101828;
+    color: #fff;
+    box-shadow: 0 8px 24px rgba(16, 24, 40, 0.28);
+    text-align: left;
+    cursor: pointer;
+}
+
+.desktop-bot-handoff-notice strong {
+    font-size: 13px;
+}
+
+.desktop-bot-handoff-notice span {
+    font-size: 12px;
+    line-height: 1.4;
+}
+
+.desktop-screen-switch {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 8px 12px 0;
+}
+
+.desktop-screen-switch button {
+    appearance: none;
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 28px;
+    padding: 0 10px;
+    border: 1px solid var(--theme-border, #d0d5dd);
+    border-radius: 999px;
+    background: var(--theme-surface, #fff);
+    color: var(--theme-text-primary, #101828);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.desktop-screen-switch button.is-selected {
+    border-color: transparent;
+    background: #101828;
+    color: #fff;
+}
+
+.desktop-screen-switch button em {
+    font-style: normal;
+    font-size: 11px;
+    opacity: 0.75;
+}
+
+.desktop-screen-switch__error {
+    margin: 8px 12px 0;
+    color: var(--theme-danger, #b42318);
+    font-size: 12px;
+}
+
+.desktop-bot-panel__mode {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    margin: 12px 16px 0;
+    font-size: 13px;
+}
+
+.desktop-bot-panel__mode small {
+    display: block;
+    margin-top: 2px;
+    color: var(--theme-text-muted, #667085);
+    font-size: 12px;
 }

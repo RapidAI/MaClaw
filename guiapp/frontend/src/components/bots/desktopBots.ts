@@ -3,6 +3,8 @@ export interface DesktopBot {
     title: string;
     description: string;
     createdAt: number;
+    // Copied from the hub list. This client does not recompute it from CreatedAt.
+    primary?: boolean;
 }
 
 export type BotPhase = 'plan' | 'execute';
@@ -66,23 +68,262 @@ export function namesLaterTime(text: string): boolean {
     return LATER_TIME.test(text || '');
 }
 
-// confirmedWorkOrder is the desktop order for the confirm button. The
-// arrangement on screen is already the task. A second reading of the
-// confirmation sentence can come back empty, and that used to send nothing.
+// confirmedWorkOrder is the arrangement itself. The old worker lead is not
+// part of the desktop send: the button hands the stored work order over.
 export function confirmedWorkOrder(arrangement: string): string {
-    const plan = arrangement.trim();
-    if (!plan) return '';
-    return `${CONFIRMED_ORDER_LEAD}\n${plan}`;
+    return stripConfirmedOrderLead(arrangement);
+}
+
+export function stripConfirmedOrderLead(text: string): string {
+    const trimmed = text.trim();
+    if (!trimmed.startsWith(CONFIRMED_ORDER_LEAD)) return trimmed;
+    return trimmed.slice(CONFIRMED_ORDER_LEAD.length).trim();
 }
 export const BOT_RETURN_TASK = '登录或验证已在当前桌面浏览器完成，请沿用这个登录状态继续。';
 export const BOT_SAVED_TASK = /^已在本机保存 ([A-Z][A-Z0-9_]{0,63})。$/;
 const BOT_FILLED_TASK = /^[A-Z][A-Z0-9_]{0,63} 已在本地填入当前密码框。/;
 
-function protocolControl(text: string): 'confirm' | 'resume' | '' {
+export function protocolControl(text: string): 'confirm' | 'resume' | '' {
     const trimmed = text.trim();
     if (trimmed === BOT_CONFIRM_TASK) return 'confirm';
     if (trimmed === BOT_RETURN_TASK || BOT_SAVED_TASK.test(trimmed) || BOT_FILLED_TASK.test(trimmed)) return 'resume';
     return '';
+}
+
+// Local control is only the three short classes that cannot wait for the
+// reading. Anything with a task name, including 「别装了」, still goes to it.
+export type DesktopBotLocalControl = 'status' | 'stop' | '';
+
+const DESKTOP_BOT_STOP = new Set(['停', '停下', '别做了', '取消']);
+
+// Same courtesy words Hub strips in desktopTaskHint. A leftover piece is a
+// name, so the question is not answered from the generic live-run sentence.
+const DESKTOP_BOT_QUESTION_PHRASES = [
+    '查一下', '看一下', '怎么样', '怎样了', '如何了', '什么情况', '什么进度',
+    '完成了吗', '好了吗', '好了没', '做完了吗', '状态如何', '进度如何',
+    'what about', "how's", 'how is', 'status of', 'progress of', 'it going',
+];
+const DESKTOP_BOT_EDGE_PREFIXES = ['那个', '这个'];
+const DESKTOP_BOT_EDGE_SUFFIXES = ['状态', '进度', 'status', 'progress'];
+const DESKTOP_BOT_PARTICLES = new Set(['了', '的', '吗', '嗎', '呢', '啊', '呀', '吧']);
+const DESKTOP_BOT_GENERIC = [
+    '任务', '结果', '情况', '状态', '进度', '那个', '这个', '现在', '查询', '看看', '一下',
+    '后台', '在运行', '在跑', '跑着', '运行',
+    '後台', '在運行', '跑著', '運行',
+    'task', 'about', 'status', 'progress', 'the', 'a', 'an', 'it', 'is', 'my', 'this', 'that', 'going',
+    'of', 'and', 'or', 'to', 'for', 'in', 'on', 'at', 'by',
+];
+
+function desktopBotUtf8Size(value: string): number {
+    let size = 0;
+    for (const ch of value) {
+        const code = ch.codePointAt(0) || 0;
+        if (code <= 0x7f) size += 1;
+        else if (code <= 0x7ff) size += 2;
+        else if (code <= 0xffff) size += 3;
+        else size += 4;
+    }
+    return size;
+}
+
+const DESKTOP_BOT_GENERIC_ORDER = [...DESKTOP_BOT_GENERIC].sort((a, b) => desktopBotUtf8Size(b) - desktopBotUtf8Size(a));
+
+function desktopBotTrimParticles(field: string): string {
+    const runes = Array.from(field);
+    while (runes.length > 0 && DESKTOP_BOT_PARTICLES.has(runes[runes.length - 1])) runes.pop();
+    return runes.join('');
+}
+
+function desktopBotTrimPrefix(field: string): string {
+    for (const word of DESKTOP_BOT_EDGE_PREFIXES) {
+        if (!word || Array.from(field).length <= Array.from(word).length) continue;
+        if (field.startsWith(word)) return field.slice(word.length).trim();
+    }
+    return field;
+}
+
+function desktopBotTrimStatusSuffix(field: string): string {
+    for (const word of DESKTOP_BOT_EDGE_SUFFIXES) {
+        if (!field.endsWith(word) || field.length <= word.length) continue;
+        const head = Array.from(field.slice(0, field.length - word.length));
+        if (head.length === 0 || !DESKTOP_BOT_PARTICLES.has(head[head.length - 1])) continue;
+        return desktopBotTrimParticles(head.join(''));
+    }
+    return field;
+}
+
+function desktopBotDropLinker(field: string): string {
+    if (!field.includes('的')) return field;
+    const parts = field.split('的');
+    if (parts.some(part => Array.from(part).length < 2)) return field;
+    return parts.join('');
+}
+
+function desktopBotTrimEdges(field: string): string {
+    let current = field;
+    for (;;) {
+        let next = desktopBotTrimPrefix(current);
+        next = desktopBotTrimStatusSuffix(next);
+        next = desktopBotDropLinker(next);
+        next = desktopBotTrimParticles(next);
+        if (next === current) return current;
+        current = next;
+    }
+}
+
+function desktopBotGenericField(field: string): boolean {
+    if (!field) return false;
+    if (DESKTOP_BOT_GENERIC.includes(field)) return true;
+    let rest = field;
+    while (rest) {
+        const word = DESKTOP_BOT_GENERIC_ORDER.find(item => item && rest.startsWith(item));
+        if (!word) return false;
+        rest = rest.slice(word.length);
+    }
+    return true;
+}
+
+// desktopBotTaskHint is the name left after the "how is it going" words are
+// gone. Empty means the person did not name a task.
+export function desktopBotTaskHint(hint: string): string {
+    let text = hint.trim().toLowerCase();
+    if (!text) return '';
+    for (const phrase of DESKTOP_BOT_QUESTION_PHRASES) text = text.split(phrase).join(' ');
+    const cleaned = Array.from(text).map(ch => (
+        '，。？！、,.?!:：;；"\'“”（）()'.includes(ch) ? ' ' : ch
+    )).join('');
+    const kept: string[] = [];
+    for (const field of cleaned.split(/\s+/)) {
+        const trimmed = desktopBotTrimEdges(field);
+        if (!trimmed || desktopBotGenericField(trimmed)) continue;
+        kept.push(trimmed);
+    }
+    return kept.join(' ');
+}
+
+function desktopBotAsksAboutRunning(text: string): boolean {
+    const trimmed = text.trim();
+    if (!trimmed) return false;
+    const last = Array.from(trimmed).pop() || '';
+    if (last === '吗' || last === '嗎' || last === '呢' || last === '？' || last === '?') return true;
+    return ['怎么样', '怎麼樣', '进度', '進度', '状态', '狀態', '在运行', '在運行', '在跑', '做完了'].some(word => trimmed.includes(word));
+}
+
+export function desktopBotLocalControl(text: string): DesktopBotLocalControl {
+    const trimmed = text.trim();
+    if (!trimmed) return '';
+    if (DESKTOP_BOT_STOP.has(trimmed)) return 'stop';
+    if (!desktopBotTaskHint(trimmed) && desktopBotAsksAboutRunning(trimmed)) return 'status';
+    return '';
+}
+
+function desktopBotVoice(lang: string): 'en' | 'hant' | 'hans' {
+    const value = String(lang || '').trim();
+    if (value.toLowerCase().startsWith('en')) return 'en';
+    if (value.includes('Hant')) return 'hant';
+    return 'hans';
+}
+
+// The same sentences Hub speaks. A spoken status is never the working
+// row, and never the four characters 「正在处理」. The row says
+// 「正在一点点推进」 only when this turn has not reported a real step.
+export function desktopBotRunningSentence(titles: string[], lang: string): string {
+    const names = titles.map(item => item.trim()).filter(Boolean);
+    const voice = desktopBotVoice(lang);
+    if (names.length === 1) {
+        if (voice === 'en') return `Working on "${names[0]}".`;
+        if (voice === 'hant') return `在做。這件是「${names[0]}」。`;
+        return `在做。这件是「${names[0]}」。`;
+    }
+    const head = voice === 'en' ? 'Working on these:' : voice === 'hant' ? '在做這幾件：' : '在做这几件：';
+    return [head, ...names].join('\n');
+}
+
+// A new job that arrived while the shared desktop is already in use.
+// The older read-ahead lines stay in queuedAckReply.
+export function desktopBotQueuedSentence(lang: string): string {
+    const voice = desktopBotVoice(lang);
+    if (voice === 'en') return "I'll do this once the one in progress is finished.";
+    if (voice === 'hant') return '好，這個等手上的做完我就做。';
+    return '好，这个等手上的做完我就做。';
+}
+
+export function desktopBotAdmittingSentence(lang: string): string {
+    const voice = desktopBotVoice(lang);
+    if (voice === 'en') return 'Just accepted. Still handing it to the background.';
+    if (voice === 'hant') return '剛接下，還在交給後台。';
+    return '刚接下，还在交给后台。';
+}
+
+export function desktopBotWaitingSentence(reason: string, lang: string): string {
+    const voice = desktopBotVoice(lang);
+    const lead = voice === 'en' ? 'Waiting on you.' : voice === 'hant' ? '停在你這兒。' : '停在你这儿。';
+    const extra = reason.trim();
+    if (!extra || extra === lead || extra.startsWith(lead)) return extra || lead;
+    return `${lead}${extra}`;
+}
+
+export function desktopBotStatusUnreachableSentence(lang: string): string {
+    const voice = desktopBotVoice(lang);
+    if (voice === 'en') return 'I could not reach the background. Say it again.';
+    if (voice === 'hant') return '剛才沒問到後台，你再說一次。';
+    return '刚才没问到后台，你再说一次。';
+}
+
+export function desktopBotStillHandingReason(lang: string): string {
+    const voice = desktopBotVoice(lang);
+    if (voice === 'en') return 'still handing it to the background';
+    if (voice === 'hant') return '還在交給後台';
+    return '还在交给后台';
+}
+
+// Typing the old approval sentence is not an approval. The button under the
+// arrangement is the only way that sentence used to start work.
+export function desktopBotTypedConfirmSentence(lang: string): string {
+    const voice = desktopBotVoice(lang);
+    if (voice === 'en') return 'Use the button under the arrangement. Typing this sentence does not start it.';
+    if (voice === 'hant') return '點安排下面那個按鈕就行，打這句不會開始。';
+    return '点安排下面那个按钮就行，打这句不会开始。';
+}
+
+export function desktopBotStoppedSentence(titles: string[], hadNext: boolean, lang: string): string {
+    const voice = desktopBotVoice(lang);
+    if (hadNext) {
+        if (voice === 'en') return 'Stopped. One more is written down, and I can do it when you ask.';
+        if (voice === 'hant') return '停了。後面還有一件記下的，你要的話我再做。';
+        return '停了。后面还有一件记下的，你要的话我再做。';
+    }
+    const names = titles.map(item => item.trim()).filter(Boolean);
+    if (voice === 'en') {
+        if (names.length > 1) return `Stopped.\n${names.map(name => `${name} will not continue.`).join('\n')}`;
+        return names[0] ? `Stopped. ${names[0]} will not continue.` : 'Stopped.';
+    }
+    if (voice === 'hant') {
+        if (names.length > 1) return `停了。\n${names.map(name => `${name} 不再繼續。`).join('\n')}`;
+        return names[0] ? `停了。${names[0]} 不再繼續。` : '停了。';
+    }
+    if (names.length > 1) return `停了。\n${names.map(name => `${name} 不再继续。`).join('\n')}`;
+    return names[0] ? `停了。${names[0]} 不再继续。` : '停了。';
+}
+
+export function desktopBotStopIdleSentence(lang: string): string {
+    const voice = desktopBotVoice(lang);
+    if (voice === 'en') return 'Nothing is running, so there is nothing to stop.';
+    if (voice === 'hant') return '現在沒有在做的事，不用停。';
+    return '现在没有在做的事，不用停。';
+}
+
+export function desktopBotStopFailedSentence(reason: string, lang: string): string {
+    const clean = reason.trim().replace(/[。．.]+$/u, '');
+    const voice = desktopBotVoice(lang);
+    if (!clean) {
+        if (voice === 'en') return 'It did not stop.';
+        if (voice === 'hant') return '沒停下來。';
+        return '没停下来。';
+    }
+    if (voice === 'en') return `It did not stop: ${clean}.`;
+    if (voice === 'hant') return `沒停下來：${clean}。`;
+    return `没停下来：${clean}。`;
 }
 
 // A chat, a phaseless failure, or a phaseless question is answered beside the
@@ -512,6 +753,9 @@ export interface DesktopBotMessage {
     askUser?: DesktopBotAsk;
     askResolved?: boolean;
     requestId?: string;
+    // The worker order for a confirm arrangement. The visible content is the
+    // short plan; this is what the accept button sends. It is not a user bubble.
+    workOrder?: string;
     // Instant "colleague accepted the task" reply. It never carries a handoff
     // or a result, so result lookups skip it.
     ack?: boolean;
@@ -546,11 +790,21 @@ export interface DesktopBotMessage {
     files?: DesktopBotFile[];
     // Documents written under the maclaw data directory. The result card opens these.
     localPaths?: string[];
+    // A delegate that still needs the button on this thread. Claiming happens
+    // on that click, not when the note is shown.
+    crossNoteId?: string;
+    // Small faces beside 「已发消息给 N 个 Bot」.
+    noticeBots?: DesktopBotNoticeBot[];
     // This turn has no reading, so the person's own words are parked on the
     // bubble: one control sends exactly those words, the other reads again.
     // Nothing has gone to the desktop yet. The words are kept because the
     // reading is a helper for the turn, not the turn itself.
     noReading?: { text: string; phase: BotPhase; kind: DesktopBotNoReading };
+}
+
+export interface DesktopBotNoticeBot {
+    id: string;
+    name: string;
 }
 
 export interface DesktopBotImage {
@@ -1003,10 +1257,124 @@ export function applySupplementOutcomes(userId: string, botId: string, runId: st
     if (changed) saveBotMessages(userId, botId, next);
 }
 
-// appendDesktopBotReport adds one scheduled result. The same request id is
-// written once, so the open page and the store can both hear the event.
-// The bubble has no phase, so it does not take the confirm control.
-export function appendDesktopBotReport(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; files?: DesktopBotFile[]; localPaths?: string[] }) {
+// A plan-turn order that installs, removes, pays, sends on someone's behalf,
+// or wipes still waits for the one button. An execute turn is already that button.
+const DESKTOP_BOT_INSTALL_WORD = /(?:^|[^a-z])install(?:[^a-z]|$)/i;
+
+export const DESKTOP_BOT_NOT_PRIMARY = '我不能去叫别的 Bot。你跟主 Bot 说，或者直接打开那个 Bot。';
+
+export function desktopBotDestructive(text: string): boolean {
+    const value = text || '';
+    if (/安装|卸载|刪除|删除|付款|支付|代发|代發|清空/.test(value)) return true;
+    const lower = value.toLowerCase();
+    if (lower.includes('uninstall') || lower.includes('wipe') || lower.includes('delete')) return true;
+    return DESKTOP_BOT_INSTALL_WORD.test(lower);
+}
+
+// A working-row phrase is 正在 plus two to six Han characters. Typed text,
+// a tool name, and the spoken word 正在处理 are not phrases. 正在一点点推进
+// is the row's own fallback, and 正在询问 is composed with the other bot's name.
+const DESKTOP_BOT_ACTIVITY = /^正在[\u4e00-\u9fff]{2,6}$/;
+const DESKTOP_BOT_ACTIVITY_BLOCKED = new Set(['正在处理', '正在一点点推进', '正在询问']);
+
+export function desktopBotActivityText(raw: string): string {
+    const text = (raw || '').trim();
+    if (!DESKTOP_BOT_ACTIVITY.test(text) || DESKTOP_BOT_ACTIVITY_BLOCKED.has(text)) return '';
+    return text;
+}
+
+// Asking another bot wins over the step. With no reported step the row
+// keeps the fallback sentence.
+export function desktopBotWorkingLabel(asking: string, activity: string): string {
+    const who = (asking || '').trim();
+    if (who) return `正在询问 ${who}`;
+    return desktopBotActivityText(activity) || '正在一点点推进';
+}
+
+export function desktopBotAskingLabel(target: string, bots: Array<{ id: string; title: string }>): string {
+    const raw = (target || '').trim();
+    const lower = raw.toLowerCase();
+    if (!raw || lower === 'all' || raw === '*' || raw === '所有' || lower === '所有bot' || raw === '所有的bot') return '这些 Bot';
+    const named = bots.find(bot => bot.id === raw);
+    return (named?.title || raw).trim() || '这些 Bot';
+}
+
+export function desktopBotCrossTargetText(kind: string, text: string): string {
+    const body = (text || '').trim();
+    if (kind === 'notify') return `主 Bot 说：${body}`;
+    return `主 Bot 交代：${body}`;
+}
+
+const NOTICE_KEY = 'maclaw.desktopBotNotices.v1';
+const CROSS_RUN_KEY = 'maclaw.desktopBotCrossRuns.v1';
+
+function readNoticeMap(): Record<string, string[]> {
+    const store = storage();
+    if (!store) return {};
+    try {
+        const parsed = JSON.parse(store.getItem(NOTICE_KEY) || '{}') as Record<string, string[]>;
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+export function desktopBotNoticeSeen(userId: string, key: string): boolean {
+    if (!userId || !key) return false;
+    const list = readNoticeMap()[userId];
+    return Array.isArray(list) && list.includes(key);
+}
+
+export function markDesktopBotNotice(userId: string, key: string): void {
+    const store = storage();
+    if (!store || !userId || !key) return;
+    const all = readNoticeMap();
+    const list = Array.isArray(all[userId]) ? all[userId].slice() : [];
+    if (list.includes(key)) return;
+    list.push(key);
+    all[userId] = list.slice(-400);
+    try { store.setItem(NOTICE_KEY, JSON.stringify(all)); } catch { /* private mode */ }
+}
+
+type DesktopBotCrossRun = { noteId: string; from: string };
+
+function readCrossRuns(): Record<string, DesktopBotCrossRun> {
+    const store = storage();
+    if (!store) return {};
+    try {
+        const parsed = JSON.parse(store.getItem(CROSS_RUN_KEY) || '{}') as Record<string, DesktopBotCrossRun>;
+        return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+        return {};
+    }
+}
+
+export function rememberDesktopBotCrossRun(userId: string, botId: string, noteId: string, from: string): void {
+    const store = storage();
+    const id = (noteId || '').trim();
+    if (!store || !userId || !botId || !id) return;
+    const all = readCrossRuns();
+    all[`${userId}\0${botId}`] = { noteId: id, from: (from || '').trim() };
+    try { store.setItem(CROSS_RUN_KEY, JSON.stringify(all)); } catch { /* private mode */ }
+}
+
+export function takeDesktopBotCrossRun(userId: string, botId: string): DesktopBotCrossRun | undefined {
+    const store = storage();
+    if (!store || !userId || !botId) return undefined;
+    const all = readCrossRuns();
+    const key = `${userId}\0${botId}`;
+    const run = all[key];
+    if (!run?.noteId) return undefined;
+    delete all[key];
+    try { store.setItem(CROSS_RUN_KEY, JSON.stringify(all)); } catch { /* private mode */ }
+    return run;
+}
+
+// appendDesktopBotReport adds one scheduled result, or one cross-note line.
+// The same request id is written once, so the open page and the store can
+// both hear the event. A scheduled report passes no phase, so it does not
+// take the confirm control. A destructive delegate passes phase plan.
+export function appendDesktopBotReport(userId: string, botId: string, patch: { content: string; failed: boolean; handoffUrl?: string; userControl?: boolean; attentionReason?: string; askUser?: DesktopBotAsk; requestId?: string; images?: DesktopBotImage[]; shotPaths?: string[]; files?: DesktopBotFile[]; localPaths?: string[]; phase?: BotPhase; workOrder?: string; crossNoteId?: string; noticeBots?: DesktopBotNoticeBot[]; chat?: boolean }) {
     const requestId = (patch.requestId || '').trim();
     const current = messagesForBot(userId, botId);
     if (requestId && current.some(item => item.requestId === requestId)) return;
@@ -1027,6 +1395,11 @@ export function appendDesktopBotReport(userId: string, botId: string, patch: { c
         shotPaths,
         localPaths,
         files: patch.failed || localPaths ? undefined : desktopBotFiles(patch.files),
+        phase: patch.phase,
+        workOrder: patch.workOrder || undefined,
+        crossNoteId: (patch.crossNoteId || '').trim() || undefined,
+        noticeBots: patch.noticeBots && patch.noticeBots.length > 0 ? patch.noticeBots : undefined,
+        chat: patch.chat === true ? true : undefined,
     };
     saveBotMessages(userId, botId, [...current, message]);
 }

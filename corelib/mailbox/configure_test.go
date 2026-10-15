@@ -1,6 +1,7 @@
 package mailbox
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -35,6 +36,31 @@ func TestApplyConfigureStoresNoPasswordInTheAccount(t *testing.T) {
 		"action": "save", "name": "Other", "email": "o@ex.com", "password": "x", "host": "imap.example.com",
 	}, now); err == nil {
 		t.Fatal("top-level host was accepted")
+	}
+	_, numbered, _, _, err := ApplyConfigure(nil, map[string]interface{}{
+		"action": "save", "name": "custom-port", "email": "c@ex.com",
+		"outbound": map[string]interface{}{"host": "smtp.example.com", "port": json.Number("2525"), "security": "tls"},
+	}, now)
+	if err != nil || numbered.Outbound == nil || numbered.Outbound.Port != 2525 {
+		t.Fatalf("canonical port saved=%+v err=%v", numbered.Outbound, err)
+	}
+}
+
+func TestConfigureShapeReasonRefusesBeforeWrite(t *testing.T) {
+	cases := []struct {
+		name string
+		args map[string]interface{}
+		want string
+	}{
+		{"missing server", map[string]interface{}{"action": "save", "email": "a@ex.com", "name": "a"}, "mailbox_configure_server_required"},
+		{"bad address", map[string]interface{}{"action": "save", "email": "not an email", "name": "a", "outbound": map[string]interface{}{"host": "smtp.example.com"}}, "mailbox_configure_identity_invalid"},
+		{"bad port", map[string]interface{}{"action": "save", "email": "a@ex.com", "name": "a", "outbound": map[string]interface{}{"host": "smtp.example.com", "port": json.Number("70000"), "security": "tls"}}, "mailbox_configure_server_invalid"},
+		{"ready", map[string]interface{}{"action": "save", "email": "a@ex.com", "name": "a", "outbound": map[string]interface{}{"host": "smtp.example.com", "port": json.Number("2525"), "security": "ssl"}}, ""},
+	}
+	for _, tc := range cases {
+		if got := ConfigureShapeReason(tc.args); got != tc.want {
+			t.Fatalf("%s: got %q want %q", tc.name, got, tc.want)
+		}
 	}
 }
 

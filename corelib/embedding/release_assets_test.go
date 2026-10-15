@@ -148,6 +148,32 @@ func TestFetchBothFailGraceful(t *testing.T) {
 	}
 }
 
+func TestHeadFetcherIgnoresEmbedModelURL(t *testing.T) {
+	t.Setenv(ModelURLEnv, "https://example.invalid/custom.gguf")
+	var head ReleaseAsset
+	for _, a := range ReleaseAssets() {
+		if a.Kind == "intent_head" {
+			head = a
+			break
+		}
+	}
+	if head.Filename == "" {
+		t.Fatal("no intent head in release assets")
+	}
+	f := NewReleaseAssetFetcher(t.TempDir(), head, "https://hub.example")
+	if len(f.spec.URLs) != 2 {
+		t.Fatalf("urls = %v", f.spec.URLs)
+	}
+	for _, u := range f.spec.URLs {
+		if strings.Contains(u, "custom.gguf") || !strings.Contains(u, head.Filename) {
+			t.Fatalf("head download followed the GGUF override: %v", f.spec.URLs)
+		}
+	}
+	if !strings.Contains(f.spec.URLs[1], "https://hub.example/api/v1/models/") {
+		t.Fatalf("hub mirror missing: %v", f.spec.URLs)
+	}
+}
+
 func TestHeadAssetKeepsLocalFile(t *testing.T) {
 	dir := t.TempDir()
 	var head ReleaseAsset

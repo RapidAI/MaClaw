@@ -741,6 +741,17 @@ func (u *UnifiedIntentClassifier) classifyContext(ctx context.Context, msg Messa
 						}
 					}
 				}
+				// A narrow gap escalates so the tree can accept or reject a
+				// lookup companion. An office score that already cleared the
+				// confident floor must survive a read the staged-image path
+				// would answer by looking: that demotion sends an empty tool
+				// list (2026-10-14: office 0.849 beside document_read 0.810,
+				// "总结成可填写的表格").
+				if l2Ran {
+					if retained, ok := retainSettledOfficeLeader(l2Result, bestResult); ok {
+						bestResult = retained
+					}
+				}
 				NormalizeDeclaredComposite(&bestResult)
 				applyExecutionAffordances(msg.Text, &bestResult)
 				bestResult.ToolNames = u.affinity.Resolve(bestResult.Primary, bestResult.Secondary)
@@ -864,6 +875,123 @@ func skipTreeForShortAmbiguousLookup(text string, result ClassificationResult) b
 		}
 	}
 	return result.Confidence < EmbeddingLookupMinScore
+}
+
+// retainSettledOfficeLeader keeps an office primary that already cleared the
+// confident score floor when the tree answers with a read the staged-image
+// path would answer by looking. That demotion sends the model an empty tool
+// list, so the file is never written. The result stays a degraded office
+// hint: the tree did not confirm the artifact, and the office hint gate is
+// what plans the write.
+//
+// Lookup composites belong to synthesis, which runs first and keeps office
+// plus the lookup half. A screenshot that still plans capture is not a
+// demotion, and neither is a verdict that carries a workflow type. A
+// non-capability state, and any read that rides with another real
+// capability, keeps the tree ruling: the image path does not empty those
+// turns.
+func retainSettledOfficeLeader(l2, tree ClassificationResult) (ClassificationResult, bool) {
+	if l2.Primary != LabelOffice || l2.Confidence < EmbeddingConfidentMinScore {
+		return ClassificationResult{}, false
+	}
+	if tree.HasLabel(LabelOffice) || !treeVerdictDropsOfficeWrite(tree) {
+		return ClassificationResult{}, false
+	}
+	kept := l2
+	kept.Secondary = nil
+	kept.Degraded = true
+	kept.Layer = 2
+	kept.WorkflowType = ""
+	kept.ToolNames = nil
+	kept.CreationOriented = false
+	kept.ControlPlaneFailure = false
+	kept.RunnerUp = tree.Primary
+	kept.RunnerUpScore = tree.Confidence
+	kept.Reason = fmt.Sprintf("office leader %.3f retained over read verdict %s(%.3f)", l2.Confidence, tree.Primary, tree.Confidence)
+	return kept, true
+}
+
+// treeVerdictDropsOfficeWrite reports a tree verdict the staged-image path
+// answers by looking, so it never authors the office file. A workflow type
+// keeps the governed plan. A screenshot primary that still plans capture
+// does too. Anything else is a document_read the turn cannot satisfy, a
+// file_read of the staged bytes, a bare knowledge_read, or a screenshot too
+// weak to plan capture. A second capability — including another read —
+// keeps the tree ruling.
+func treeVerdictDropsOfficeWrite(tree ClassificationResult) bool {
+	if tree.Primary == "" || strings.TrimSpace(tree.WorkflowType) != "" {
+		return false
+	}
+	if tree.Primary == LabelScreenshot && screenshotPlansCapture(tree) {
+		return false
+	}
+	caps := capabilityLabels(tree)
+	if len(caps) == 0 {
+		return false
+	}
+	return stagedImageDocumentRead(caps) || stagedImageFileRead(caps) || stagedImageKnowledgeRead(caps) || stagedImageWeakScreenshot(caps)
+}
+
+// screenshotPlansCapture is the staged-image exception for a screenshot
+// primary: not degraded, and either at the resolver floor or a tree-confirmed
+// score. Below that the same label is a weak image-understand verdict and
+// the host demotes it.
+func screenshotPlansCapture(tree ClassificationResult) bool {
+	if tree.Degraded {
+		return false
+	}
+	if tree.Confidence >= EmbeddingConfidentMinScore {
+		return true
+	}
+	return (tree.Layer == 3 || tree.Layer == 23) && tree.Confidence >= EmbeddingLookupMinScore
+}
+
+func capabilityLabels(tree ClassificationResult) []IntentLabel {
+	caps := make([]IntentLabel, 0, 1+len(tree.Secondary))
+	for _, label := range tree.Labels() {
+		if label.IsNonCapabilityLabel() {
+			continue
+		}
+		caps = append(caps, label)
+	}
+	return caps
+}
+
+func stagedImageDocumentRead(caps []IntentLabel) bool {
+	return labelsOnly(caps, LabelDocumentRead, LabelScreenshot) && containsLabel(caps, LabelDocumentRead)
+}
+
+func stagedImageFileRead(caps []IntentLabel) bool {
+	return labelsOnly(caps, LabelFileRead, LabelScreenshot) && containsLabel(caps, LabelFileRead)
+}
+
+func stagedImageKnowledgeRead(caps []IntentLabel) bool {
+	return labelsOnly(caps, LabelKnowledgeRead)
+}
+
+func stagedImageWeakScreenshot(caps []IntentLabel) bool {
+	return labelsOnly(caps, LabelScreenshot)
+}
+
+func labelsOnly(caps []IntentLabel, allowed ...IntentLabel) bool {
+	if len(caps) == 0 {
+		return false
+	}
+	for _, label := range caps {
+		if !containsLabel(allowed, label) {
+			return false
+		}
+	}
+	return true
+}
+
+func containsLabel(labels []IntentLabel, want IntentLabel) bool {
+	for _, label := range labels {
+		if label == want {
+			return true
+		}
+	}
+	return false
 }
 
 // lookupHintOrUnknownFromL2 keeps an unconfirmed search/live_data primary as a
@@ -1640,9 +1768,10 @@ const verdictLocalLeaderFloor = 0.80
 
 // verdictLocalMargin is the leader-minus-verdict embedding gap that marks
 // a verdict as locally unsupported. Sized from production measurements on the
-// installed 768-dim model: a gross misroll (coding on a PPT request) scored
-// 0.198 below the office leader, while legitimate corrections stay within
-// ~0.15 of the leader.
+// earlier 768-dim Gemma model: a gross misroll (coding on a PPT request)
+// scored 0.198 below the office leader, while legitimate corrections stay
+// within ~0.15 of the leader. Re-measure the margin distribution if the
+// embedding model changes.
 const verdictLocalMargin = 0.15
 
 // truncateText truncates text to maxRunes for logging.

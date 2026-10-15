@@ -340,8 +340,15 @@ func observedMCPSchemaHasStringFields(schema map[string]interface{}, fields map[
 	return nil
 }
 
+// reviewedMCPContractShapeMatches reports that the published contract still
+// declares the reviewed capability shape it was written from. Provisions are
+// a multiset SUBSET check (want ⊆ got): the publisher legitimately appends
+// host-issued and vendor-declared x: provisions onto the same contract, and
+// those extras must not strip a reviewed tool of its invocation. Effects stay
+// an exact multiset match — the effect envelope is the reviewed contract's
+// own claim and is not allowed to grow with extra provisions.
 func reviewedMCPContractShapeMatches(got, want DynamicCapabilityContract) bool {
-	if len(got.Provisions) != len(want.Provisions) || len(got.Effects) != len(want.Effects) {
+	if len(got.Provisions) < len(want.Provisions) || len(got.Effects) != len(want.Effects) {
 		return false
 	}
 	effects := make(map[coretool.EffectClass]int, len(want.Effects))
@@ -354,14 +361,14 @@ func reviewedMCPContractShapeMatches(got, want DynamicCapabilityContract) bool {
 		}
 		effects[effect]--
 	}
-	used := make([]bool, len(want.Provisions))
-	for _, provision := range got.Provisions {
+	unmatched := make([]bool, len(got.Provisions))
+	for _, candidate := range want.Provisions {
 		found := false
-		for i, candidate := range want.Provisions {
-			if used[i] || provision.Capability != candidate.Capability || provision.Quality != candidate.Quality || !reviewedMCPQualifiersEqual(provision.Qualifiers, candidate.Qualifiers) {
+		for i, provision := range got.Provisions {
+			if unmatched[i] || provision.Capability != candidate.Capability || provision.Quality != candidate.Quality || !reviewedMCPQualifiersEqual(provision.Qualifiers, candidate.Qualifiers) {
 				continue
 			}
-			used[i] = true
+			unmatched[i] = true
 			found = true
 			break
 		}

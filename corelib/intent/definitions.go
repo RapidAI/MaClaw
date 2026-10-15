@@ -284,6 +284,10 @@ func DefaultDefinitions() []IntentDefinition {
 				"\u83b7\u53d6\u67d0\u5730\u5b9e\u65f6\u5929\u6c14\u4fe1\u606f",
 				"\u67e5\u8be2\u67d0\u57ce\u5e02\u5929\u6c14\u5e76\u8f93\u51fa\u683c\u5f0f\u5316PDF\u62a5\u544a",
 				"\u67e5\u8be2\u6bd4\u7279\u5e01\u4ef7\u683c\u5e76\u8f93\u51fa\u683c\u5f0f\u5316PDF\u62a5\u544a",
+				"\u67e5\u8be2\u4eca\u65e5\u65b0\u95fb\u70ed\u70b9\u5e76\u8f93\u51fa\u683c\u5f0f\u5316PDF\u62a5\u544a",
+				"\u67e5\u8be2\u7f8e\u5143\u5151\u4eba\u6c11\u5e01\u6c47\u7387\u5e76\u8f93\u51fa\u683c\u5f0f\u5316PDF\u62a5\u544a",
+				"\u67e5\u8be2\u4eca\u65e5\u80a1\u5e02\u884c\u60c5\u5e76\u8f93\u51fa\u683c\u5f0f\u5316PDF\u62a5\u544a",
+				"\u67e5\u8be2\u822a\u73ed\u52a8\u6001\u5e76\u8f93\u51fa\u683c\u5f0f\u5316PDF\u62a5\u544a",
 				"\u67e5\u8be2\u4eca\u65e5\u65b0\u95fb\u70ed\u70b9",
 				"\u7f8e\u5143\u5bf9\u4eba\u6c11\u5e01\u6c47\u7387",
 				"\u67e5\u6700\u65b0\u80a1\u4ef7",
@@ -1175,23 +1179,36 @@ func DefaultDefinitions() []IntentDefinition {
 		{
 			Label:  LabelMailboxSend,
 			Domain: "邮箱 (Mailbox)",
-			TreeText: "用户要通过已配置的邮箱发信、回复或转发，或让代理保存一个邮箱帐号。发送前必须由用户确认。" +
-				"语义判据：用户目标是把一封邮件送到对方邮箱，或提供服务器、端口、协议和密码来配置邮箱。" +
+			TreeText: "用户要通过已配置的邮箱发信、回复或转发。发送前必须由用户确认。" +
+				"语义判据：用户目标是把一封邮件送到对方邮箱。" +
 				"边界：「发到微信或 QQ」→ 既有 IM 发送；「只查看收件箱」→ mailbox_read；" +
+				"「配置或添加邮箱帐号」→ mailbox_configure；" +
 				"「用浏览器打开网页邮箱」→ browser；「把文件发到邮箱」→ document_delivery。",
 			EmbedTexts: []string{
 				"给对方发一封邮件",
 				"回复这封邮件",
 				"把这封邮件转发出去",
 				"用工作邮箱发这封信",
-				"帮我配置邮箱",
-				"添加一个邮箱帐号",
 				"send an email to them",
 				"reply to this email",
 				"forward this message by email",
 				"send it from the default mailbox",
 			},
-			ToolNames: []string{"mailbox_send", "mailbox_configure"},
+			ToolNames: []string{"mailbox_send"},
+		},
+		{
+			Label:  LabelMailboxConfigure,
+			Domain: "邮箱 (Mailbox)",
+			TreeText: "用户要保存一个邮箱帐号，提供服务器、端口、协议或密码。这个动作不发送邮件。" +
+				"语义判据：用户目标是配置、添加或修改邮箱接入信息。" +
+				"边界：「发邮件、回复或转发」→ mailbox_send；「只查看收件箱」→ mailbox_read。",
+			EmbedTexts: []string{
+				"帮我配置邮箱",
+				"添加一个邮箱帐号",
+				"把 SMTP 服务器存下来",
+				"save this mailbox account",
+			},
+			ToolNames: []string{"mailbox_configure"},
 		},
 		{
 			Label:      LabelAmbiguous,

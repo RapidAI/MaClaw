@@ -1764,7 +1764,7 @@ func localizationPathIsWindowsAbs(path string) bool {
 
 func buildCodeNavigationToolDefinition() map[string]interface{} {
 	return buildRemoteToolDef(codeNavigationToolName,
-		"Explore source structure with codegraph. Use node for one symbol or file, callers or callees for call edges, and explore only for an area overview. A returned hit is evidence; do not repeat that lookup. A text search that already returned lines also counts. If the codegraph command is missing, tries npm install -g @colbymchenry/codegraph once; if the project has no .codegraph/ index, tries codegraph init.",
+		"Explore source structure with codegraph. Use node for one symbol, file_symbols for a file, callers or callees for call edges, and explore for an area overview. A returned hit is evidence. A different symbol, file, or call edge is a new code_navigation call. A text search that already returned lines also counts. If the codegraph command is missing, tries npm install -g @colbymchenry/codegraph once; if the project has no .codegraph/ index, tries codegraph init.",
 		map[string]interface{}{
 			"operation": map[string]interface{}{"type": "string", "enum": []string{"explore", "node", "workspace_symbol", "definition", "references", "implementation", "callers", "callees", "file_symbols"}},
 			"query":     map[string]interface{}{"type": "string", "description": "Symbol, file, or code question"},
@@ -2296,21 +2296,717 @@ func formatCodegraphRemoteInvocation(cmds [][]string) string {
 		if symbol := codegraphNodeSymbolArg(cmds[0]); symbol != "" {
 			accept = codegraphRemoteAcceptNamedNode(symbol)
 		}
-		return "if _cg_out=$(\"$_cg_bin\" " + formatCodegraphRemoteArgs(cmds[0]) + " 2>&1); then " + accept + "; fi"
+		script := "if _cg_out=$(\"$_cg_bin\" " + formatCodegraphRemoteArgs(cmds[0]) + " 2>&1); then " + accept + "; fi"
+		if cmds[0][0] == "query" {
+			script += "; " + codegraphRemoteSymbolMapFrom("_cg_out")
+		}
+		return script
 	}
 	var b strings.Builder
-	b.WriteString("for _cg_term in")
+	b.WriteString("_cg_blob=; for _cg_term in")
 	for _, cmd := range cmds {
 		b.WriteByte(' ')
 		b.WriteString(remoteShellQuote(cmd[len(cmd)-1]))
 	}
-	b.WriteString("; do _cg_term_hit=0; if _cg_out=$(\"$_cg_bin\" query --limit 4 \"$_cg_term\" 2>&1); then " + codegraphRemoteAcceptHit + "; fi; if [ \"$_cg_term_hit\" -eq 0 ]; then _cg_miss=\"${_cg_miss} ${_cg_term}\"; fi; done; if [ \"$_cg_hit\" -eq 1 ] && [ -n \"$_cg_miss\" ]; then for _cg_term in $_cg_miss; do if _cg_found=$(command -v rg 2>&1); then rg -n --no-heading --color never -m 20 -- \"$_cg_term\" .; else grep -RIn -m 20 -- \"$_cg_term\" .; fi; done; fi")
+	b.WriteString("; do _cg_term_hit=0; if _cg_out=$(\"$_cg_bin\" query --limit 4 \"$_cg_term\" 2>&1); then " + codegraphRemoteAcceptHit + "; fi; if [ \"$_cg_term_hit\" -eq 1 ]; then _cg_blob=\"${_cg_blob}\n${_cg_out}\"; fi; if [ \"$_cg_term_hit\" -eq 0 ]; then _cg_miss=\"${_cg_miss} ${_cg_term}\"; fi; done; " + codegraphRemoteSymbolMapFrom("_cg_blob") + "; if [ \"$_cg_hit\" -eq 1 ] && [ -n \"$_cg_miss\" ]; then for _cg_term in $_cg_miss; do if _cg_found=$(command -v rg 2>&1); then rg -n --no-heading --color never -m 20 -- \"$_cg_term\" .; else grep -RIn -m 20 -- \"$_cg_term\" .; fi; done; fi")
 	return b.String()
+}
+
+// codegraphSymbolMapNote tells the model the names in a file map are the next
+// lookups. The prose query that found the file does not include those bodies.
+const codegraphSymbolMapNote = "Symbol map for %s. A name below is a symbol: call code_navigation with operation node and that name for its body. read_file may use the line after the dash."
+
+// codegraphDominantFileAwk prints score:file for each source file named by a
+// query location. The score is the one on the immediately previous line. The
+// shell keeps the highest score whose file is still on disk.
+const codegraphDominantFileAwk = `{
+  s=$0
+  gsub(/\033\[[0-9;]*[A-Za-z]/, "", s)
+  sub(/\r$/, "", s)
+  sub(/^[ \t]+/, "", s)
+  sub(/[ \t]+$/, "", s)
+  cur=0
+  got=0
+  if (match(s, /\(([0-9]+)%\)/)) {
+    sc=substr(s, RSTART, RLENGTH)
+    gsub(/[^0-9]/, "", sc)
+    cur=sc+0
+    got=1
+  }
+  if (s ~ /^[A-Za-z0-9_.\/\\-]+:[0-9]+$/) {
+    f=s
+    sub(/:[0-9]+$/, "", f)
+    ext=f
+    sub(/^.*\./, "", ext)
+    use=0
+    if (had) use=prev
+    if (f ~ /\.[A-Za-z0-9]+$/ && index(f, "..") == 0 && index(f, "/") != 1 && index(f, ".codegraph") == 0 && ext ~ /^(go|ts|tsx|js|jsx|py|rs|java|c|h|cc|cpp|hpp|cs|rb|php|vue|svelte|kt|swift)$/) {
+      if (!(f in seen) || bestsc[f] < use) bestsc[f]=use
+      seen[f]=1
+    }
+    had=0
+    prev=0
+  } else {
+    had=got
+    prev=cur
+  }
+}
+END { for (f in seen) print bestsc[f] ":" f }`
+
+// codegraphSymbolMapFilterAwk drops the CLI footer that tells the model to
+// read the whole file. With hit line numbers it keeps the dozen symbols on
+// either side of the one that contains each hit. A fixed span of source lines
+// drops the next function when that function starts far below the hit.
+const codegraphSymbolMapFilterAwk = `BEGIN { nh=0; if (hits != "") nh=split(hits, hv, ",") }
+{
+  if (index($0, "like Read") != 0) next
+  n++
+  a[n]=$0
+}
+END {
+  if (0 < nh && 90 < n) {
+    scount=0
+    matched=0
+    for (j=1; j<=n; j++) {
+      t=a[j]
+      sub(/\r$/, "", t)
+      sub(/^[ \t]+/, "", t)
+      sym=0
+      ln=0
+      if (t ~ /^- /) {
+        sym=1
+        if (match(t, /:[0-9]+$/)) ln=substr(t, RSTART+1)+0
+      }
+      if (sym) {
+        scount++
+        sj[scount]=j
+        sl[scount]=ln
+      } else {
+        m++
+        b[m]=a[j]
+        gap=0
+      }
+    }
+    for (k=1; k<=scount; k++) {
+      if (k <= 15) keep[k]=1
+    }
+    for (i=1; i<=nh; i++) {
+      chosen=0
+      for (k=1; k<=scount; k++) {
+        if (sl[k] == hv[i]) chosen=k
+      }
+      if (chosen == 0) continue
+      matched=1
+      lo=chosen-12
+      if (lo < 1) lo=1
+      hi=chosen+12
+      if (scount < hi) hi=scount
+      for (k=lo; k<=hi; k++) keep[k]=1
+    }
+    if (matched == 1) {
+    gap=0
+    m=0
+    seen=0
+    for (j=1; j<=n; j++) {
+      t=a[j]
+      sub(/\r$/, "", t)
+      sub(/^[ \t]+/, "", t)
+      if (t ~ /^- /) {
+        seen++
+        if (keep[seen]) { m++; b[m]=a[j]; gap=0 }
+        else if (0 < m && gap == 0) { m++; b[m]="..."; gap=1 }
+      } else {
+        m++
+        b[m]=a[j]
+        gap=0
+      }
+    }
+    for (i=1; i<=m; i++) print b[i]
+    exit
+    }
+  }
+  if (n <= 90) { for (i=1; i<=n; i++) print a[i]; exit }
+  for (i=1; i<=45; i++) print a[i]
+  print "..."
+  s=n-44
+  for (i=s; i<=n; i++) print a[i]
+}`
+
+// codegraphFileHitLinesAwk prints the comma-separated line numbers of one
+// source file in a query result. The symbol map uses them to keep the
+// surrounding names.
+const codegraphFileHitLinesAwk = `{
+  s=$0
+  gsub(/\033\[[0-9;]*[A-Za-z]/, "", s)
+  sub(/\r$/, "", s)
+  sub(/^[ \t]+/, "", s)
+  sub(/[ \t]+$/, "", s)
+  if (s ~ /^[A-Za-z0-9_.\/\\-]+:[0-9]+$/) {
+    path=s
+    sub(/:[0-9]+$/, "", path)
+    if (path == f) {
+      ln=s
+      sub(/^.*:/, "", ln)
+      k++
+      lv[k]=ln+0
+    }
+  }
+}
+END {
+  out=""
+  for (i=1; i<=k; i++) {
+    if (1 < i) out=out ","
+    out=out lv[i]
+  }
+  if (out != "") print out
+}`
+
+func codegraphRemoteSymbolMapFrom(varName string) string {
+	quoted := "\"$" + varName + "\""
+	return "if [ \"$_cg_hit\" -eq 1 ]; then _cg_map_file=; _cg_best=-1; for _cg_row in $(printf '%s\\n' " + quoted + " | awk " + remoteShellQuote(codegraphDominantFileAwk) + "); do _cg_sc=${_cg_row%%:*}; _cg_f=${_cg_row#*:}; if [ -n \"$_cg_f\" ] && [ -f \"$_cg_f\" ] && [ \"$_cg_sc\" -gt \"$_cg_best\" ]; then _cg_best=$_cg_sc; _cg_map_file=$_cg_f; fi; done; if [ -n \"$_cg_map_file\" ]; then " + codegraphRemoteHitBodies(quoted) + "; if _cg_map=$(\"$_cg_bin\" node --symbols-only \"$_cg_map_file\" 2>&1); then if printf '%s\\n' \"$_cg_map\" | grep -F -q '### Symbols'; then printf '%s\\n' \"" + fmt.Sprintf(codegraphSymbolMapNote, "${_cg_map_file}") + "\"; _cg_hits=$(printf '%s\\n' " + quoted + " | awk -v f=\"$_cg_map_file\" " + remoteShellQuote(codegraphFileHitLinesAwk) + "); printf '%s\\n' \"$_cg_map\" | awk -v hits=\"$_cg_hits\" " + remoteShellQuote(codegraphSymbolMapFilterAwk) + "; fi; fi; fi; fi"
+}
+
+// codegraphNamedHitAwk prints score:name for each query hit in one file.
+// The name is the token before the score, and only the following location
+// line belongs to that score.
+const codegraphNamedHitAwk = `{
+  s=$0
+  gsub(/\033\[[0-9;]*[A-Za-z]/, "", s)
+  sub(/\r$/, "", s)
+  sub(/^[ \t]+/, "", s)
+  sub(/[ \t]+$/, "", s)
+  if (match(s, /\(([0-9]+)%\)/)) {
+    sc=substr(s, RSTART, RLENGTH)
+    gsub(/[^0-9]/, "", sc)
+    name=s
+    sub(/ *\([0-9][0-9]*%\).*/, "", name)
+    sub(/^[^ ]+ +/, "", name)
+    if (name ~ /^[A-Za-z_][A-Za-z0-9_:.]*$/) { pending=name; pscore=sc+0; got=1 }
+  }
+  if (s ~ /^[A-Za-z0-9_.\/\\-]+:[0-9]+$/) {
+    path=s
+    sub(/:[0-9]+$/, "", path)
+    if (got && path == f && 2000 <= pscore) print pscore ":" pending
+    got=0
+  }
+}`
+
+// codegraphSourceBodyAwk prints the current definition of one symbol.
+// codegraph node --file omits the source, and node without --file prints the
+// indexed byte range, which stays on the old line after the file changes.
+const codegraphSourceBodyAwk = `{
+  s = $0
+  sub(/\r$/, "", s)
+  if (taking == 0) {
+    t = s
+    sub(/^[ \t]+/, "", t)
+    if (pending == 0 && (t ~ /^\/\// || t ~ /^\/\*/ || t ~ /^\*/ || t ~ /^#/)) next
+    if (pending == 0) {
+      key = name "("
+      p = index(s, key)
+      if (p == 0) next
+      if (1 < p) {
+        ch = substr(s, p - 1, 1)
+        if (ch ~ /[A-Za-z0-9_]/) next
+        q = p - 1
+        while (0 < q && (substr(s, q, 1) == " " || substr(s, q, 1) == "\t")) q = q - 1
+        ch = substr(s, q, 1)
+        if (ch == "(" || ch == ".") next
+      }
+      cmt = index(s, "//")
+      if (0 < cmt && cmt < p) next
+      rest = substr(s, p)
+      br = index(rest, "{")
+      sm = index(rest, ";")
+      if (0 < br && (sm == 0 || br < sm)) taking = 1
+      else if (sm == 0 && br == 0) { pending = 1; held = NR "\t" s; heldn = 1; next }
+      else next
+    } else {
+      if (6 < heldn) { pending = 0; held = ""; next }
+      br = index(s, "{")
+      sm = index(s, ";")
+      if (0 < br && (sm == 0 || br < sm)) { taking = 1; pending = 0; n = heldn; print held }
+      else if (0 < sm && (br == 0 || sm < br)) { pending = 0; held = ""; next }
+      else { held = held "\n" NR "\t" s; heldn++; next }
+    }
+  }
+  n++
+  print NR "\t" s
+  cut = s
+  cmt = index(cut, "//")
+  if (0 < cmt) cut = substr(cut, 1, cmt - 1)
+  tmp = cut
+  o = gsub(/{/, "{", tmp)
+  tmp = cut
+  c = gsub(/}/, "}", tmp)
+  depth = depth + o - c
+  if (0 < o) seen = 1
+  if (seen == 1 && depth < 1) exit
+  if (400 < n) { print "..."; exit }
+}`
+
+func codegraphRemoteHitBodies(quoted string) string {
+	return "_cg_b1=; _cg_s1=-1; _cg_b2=; _cg_s2=-1; for _cg_row in $(printf '%s\\n' " + quoted + " | awk -v f=\"$_cg_map_file\" " + remoteShellQuote(codegraphNamedHitAwk) + "); do _cg_sc=${_cg_row%%:*}; _cg_nm=${_cg_row#*:}; if [ -n \"$_cg_nm\" ] && [ \"$_cg_sc\" -gt \"$_cg_s1\" ]; then if [ \"$_cg_nm\" != \"$_cg_b1\" ]; then _cg_s2=$_cg_s1; _cg_b2=$_cg_b1; fi; _cg_s1=$_cg_sc; _cg_b1=$_cg_nm; elif [ -n \"$_cg_nm\" ] && [ \"$_cg_nm\" != \"$_cg_b1\" ] && [ \"$_cg_nm\" != \"$_cg_b2\" ] && [ \"$_cg_sc\" -gt \"$_cg_s2\" ]; then _cg_s2=$_cg_sc; _cg_b2=$_cg_nm; fi; done; for _cg_nm in $_cg_b1 $_cg_b2; do if [ -n \"$_cg_nm\" ] && [ -f \"$_cg_map_file\" ]; then _cg_src=$(awk -v name=\"$_cg_nm\" " + remoteShellQuote(codegraphSourceBodyAwk) + " \"$_cg_map_file\"); if [ -n \"$_cg_src\" ]; then printf '%s\\n' \"Body for ${_cg_nm} in ${_cg_map_file}.\"; printf '%s\\n' \"$_cg_src\"; fi; fi; done"
+}
+
+var codegraphHitLocationPattern = regexp.MustCompile(`^[ \t]*([A-Za-z0-9_./\\-]+\.[A-Za-z0-9]+):([0-9]+)[ \t]*$`)
+
+// codegraphSourceBodyLines is the longest function text attached to a query
+// hit. drawScene in the snake program is 127 lines, so a shorter cap drops
+// its closing brace. A function that never balances stops here.
+const codegraphSourceBodyLines = 400
+
+func codegraphQueryBatch(cmds [][]string) bool {
+	if len(cmds) == 0 {
+		return false
+	}
+	for _, cmd := range cmds {
+		if len(cmd) == 0 || cmd[0] != "query" {
+			return false
+		}
+	}
+	return true
+}
+
+func codegraphIndexedSourcePath(rel string) bool {
+	switch strings.ToLower(filepath.Ext(rel)) {
+	case ".go", ".ts", ".tsx", ".js", ".jsx", ".py", ".rs", ".java", ".c", ".h", ".cc", ".cpp", ".hpp", ".cs", ".rb", ".php", ".vue", ".svelte", ".kt", ".swift":
+		return true
+	default:
+		return false
+	}
+}
+
+// codegraphDominantHitFile is the source file of the highest-scoring query
+// hit that is still on disk. A missing top hit must not hide the next file.
+func codegraphDominantHitFile(output, root string) string {
+	plain := codegraphANSIPattern.ReplaceAllString(output, "")
+	best, bestScore := "", -1
+	prevScore, prevHad := 0, false
+	for _, line := range strings.Split(plain, "\n") {
+		line = strings.TrimRight(line, "\r")
+		thisScore, thisHad := 0, false
+		if match := codegraphScorePattern.FindStringSubmatch(line); match != nil {
+			if score, err := strconv.Atoi(match[1]); err == nil {
+				thisScore, thisHad = score, true
+			}
+		}
+		match := codegraphHitLocationPattern.FindStringSubmatch(line)
+		if match == nil {
+			prevScore, prevHad = thisScore, thisHad
+			continue
+		}
+		rel := filepath.ToSlash(strings.TrimSpace(match[1]))
+		score := 0
+		if prevHad {
+			score = prevScore
+		}
+		prevScore, prevHad = 0, false
+		if rel == "" || strings.Contains(rel, "..") || strings.HasPrefix(rel, "/") || strings.Contains(rel, ".codegraph") || filepath.IsAbs(rel) || !codegraphIndexedSourcePath(rel) {
+			continue
+		}
+		if root != "" {
+			info, err := os.Stat(filepath.Join(root, filepath.FromSlash(rel)))
+			if err != nil || info.IsDir() {
+				continue
+			}
+		}
+		if score > bestScore {
+			best, bestScore = rel, score
+		}
+	}
+	return best
+}
+
+var codegraphQueryScoreLine = regexp.MustCompile(`^(\S+)\s+(\S+)\s+\((\d+)%\)\s*$`)
+
+// codegraphBodyTargets is the highest-scoring symbol names in one file.
+// A prose query only lists those names. The model then ripgreps guesses and
+// reads the whole file unless the tool also returns the bodies.
+func codegraphBodyTargets(output, file string) []string {
+	plain := codegraphANSIPattern.ReplaceAllString(output, "")
+	file = filepath.ToSlash(strings.TrimSpace(file))
+	type namedHit struct {
+		name  string
+		score int
+	}
+	var hits []namedHit
+	pending, pendingScore := "", -1
+	for _, line := range strings.Split(plain, "\n") {
+		line = strings.TrimSpace(strings.TrimRight(line, "\r"))
+		if match := codegraphQueryScoreLine.FindStringSubmatch(line); match != nil {
+			score, err := strconv.Atoi(match[3])
+			if err != nil || !codegraphRemoteNodeSymbol(match[2]) {
+				pending, pendingScore = "", -1
+				continue
+			}
+			pending, pendingScore = match[2], score
+			continue
+		}
+		loc := codegraphHitLocationPattern.FindStringSubmatch(line)
+		if loc == nil || pending == "" {
+			continue
+		}
+		if filepath.ToSlash(strings.TrimSpace(loc[1])) == file && pendingScore >= 2000 {
+			hits = append(hits, namedHit{name: pending, score: pendingScore})
+		}
+		pending, pendingScore = "", -1
+	}
+	sort.SliceStable(hits, func(i, j int) bool {
+		return hits[i].score > hits[j].score
+	})
+	var names []string
+	seen := map[string]bool{}
+	for _, hit := range hits {
+		if seen[hit.name] {
+			continue
+		}
+		seen[hit.name] = true
+		names = append(names, hit.name)
+		if len(names) == 2 {
+			break
+		}
+	}
+	return names
+}
+
+// codegraphSourceBody is the function as it exists in the file now.
+// The brace may be on the same line or on one of the next few lines.
+// A call such as drawScene(dc); or if (drawScene(dc)) { is not a definition.
+func codegraphSourceBody(root, file, name string) string {
+	if root == "" || !codegraphRemoteNodeSymbol(name) || navigationQueryEscapesRoot(file) {
+		return ""
+	}
+	abs := filepath.Join(root, filepath.FromSlash(file))
+	if !navigationWithinRoot(root, abs) {
+		return ""
+	}
+	data, err := os.ReadFile(abs)
+	if err != nil || len(data) > 2<<20 {
+		return ""
+	}
+	lines := strings.Split(string(data), "\n")
+	start := codegraphDefinitionStart(lines, name)
+	if start < 0 {
+		return ""
+	}
+	var b strings.Builder
+	depth, seen := 0, false
+	for i := start; i < len(lines) && i < start+codegraphSourceBodyLines; i++ {
+		line := strings.TrimRight(lines[i], "\r")
+		fmt.Fprintf(&b, "%d\t%s\n", i+1, line)
+		opens, closes := codegraphBraceDelta(line)
+		depth += opens - closes
+		if opens > 0 {
+			seen = true
+		}
+		if seen && depth < 1 {
+			break
+		}
+	}
+	if !seen {
+		return ""
+	}
+	text := strings.TrimSpace(b.String())
+	if start+codegraphSourceBodyLines < len(lines) && depth > 0 {
+		text += "\n..."
+	}
+	return text
+}
+
+func codegraphDefinitionStart(lines []string, name string) int {
+	for i, line := range lines {
+		rest, ok := codegraphNameCall(strings.TrimRight(line, "\r"), name)
+		if !ok {
+			continue
+		}
+		if codegraphBraceOpens(rest) {
+			return i
+		}
+		if codegraphSemiEnds(rest) {
+			continue
+		}
+		for j := i + 1; j < len(lines) && j <= i+6; j++ {
+			part := strings.TrimRight(lines[j], "\r")
+			if codegraphBraceOpens(part) {
+				return i
+			}
+			if codegraphSemiEnds(part) {
+				break
+			}
+		}
+	}
+	return -1
+}
+
+func codegraphNameCall(line, name string) (string, bool) {
+	trim := strings.TrimSpace(line)
+	if trim == "" || strings.HasPrefix(trim, "//") || strings.HasPrefix(trim, "/*") || strings.HasPrefix(trim, "*") || strings.HasPrefix(trim, "#") {
+		return "", false
+	}
+	key := name + "("
+	p := strings.Index(line, key)
+	if p < 0 {
+		return "", false
+	}
+	if p > 0 {
+		prev, _ := utf8.DecodeLastRuneInString(line[:p])
+		if prev == '_' || unicode.IsLetter(prev) || unicode.IsDigit(prev) {
+			return "", false
+		}
+		// `if (drawScene(dc)) {` and `obj.drawScene() {` are calls. A definition
+		// is preceded by a type or by `::`.
+		head := strings.TrimRight(line[:p], " \t")
+		if head != "" {
+			r, _ := utf8.DecodeLastRuneInString(head)
+			if r == '(' || r == '.' {
+				return "", false
+			}
+		}
+	}
+	if cmt := strings.Index(line, "//"); cmt >= 0 && cmt < p {
+		return "", false
+	}
+	return line[p:], true
+}
+
+func codegraphCodeHead(line string) string {
+	if cmt := strings.Index(line, "//"); cmt >= 0 {
+		return line[:cmt]
+	}
+	return line
+}
+
+func codegraphBraceOpens(line string) bool {
+	line = codegraphCodeHead(line)
+	brace := strings.Index(line, "{")
+	semi := strings.Index(line, ";")
+	return brace >= 0 && (semi < 0 || brace < semi)
+}
+
+func codegraphSemiEnds(line string) bool {
+	line = codegraphCodeHead(line)
+	brace := strings.Index(line, "{")
+	semi := strings.Index(line, ";")
+	return semi >= 0 && (brace < 0 || semi < brace)
+}
+
+func codegraphBraceDelta(line string) (opens, closes int) {
+	if cmt := strings.Index(line, "//"); cmt >= 0 {
+		line = line[:cmt]
+	}
+	var quote byte
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if quote != 0 {
+			if c == '\\' && i+1 < len(line) {
+				i++
+				continue
+			}
+			if c == quote {
+				quote = 0
+			}
+			continue
+		}
+		switch c {
+		case '"', '\'':
+			quote = c
+		case '{':
+			opens++
+		case '}':
+			closes++
+		}
+	}
+	return opens, closes
+}
+
+func codegraphCapText(text string, max int) string {
+	text = strings.TrimSpace(text)
+	if len(text) <= max {
+		return text
+	}
+	cut := max
+	for cut > 0 && !utf8.RuneStart(text[cut]) {
+		cut--
+	}
+	return strings.TrimSpace(text[:cut]) + "\n..."
+}
+
+// codegraphTrimSymbolMap removes the CLI footer. Hit line numbers keep the
+// symbols around those lines, including one that sits in the middle of a long
+// file. Without hit lines, both ends are kept so the list is not only its first page.
+func codegraphTrimSymbolMap(data string, hits []int) string {
+	var lines []string
+	for _, line := range strings.Split(data, "\n") {
+		line = strings.TrimRight(line, "\r")
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, ">") || strings.Contains(trim, "like Read") {
+			continue
+		}
+		if trim == "" && len(lines) == 0 {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	if len(hits) > 0 && len(lines) > 90 {
+		type mapRow struct {
+			text   string
+			symbol int
+		}
+		var rows []mapRow
+		var starts []int
+		symbols := 0
+		for _, line := range lines {
+			lineNo, isSymbol := codegraphMapSymbolLine(line)
+			if !isSymbol {
+				rows = append(rows, mapRow{text: line})
+				continue
+			}
+			symbols++
+			rows = append(rows, mapRow{text: line, symbol: symbols})
+			starts = append(starts, lineNo)
+		}
+		keep := make([]bool, symbols+1)
+		headN := symbols
+		if headN > 15 {
+			headN = 15
+		}
+		for i := 1; i <= headN; i++ {
+			keep[i] = true
+		}
+		matched := false
+		for _, hit := range hits {
+			chosen := 0
+			for i, start := range starts {
+				if start == hit {
+					chosen = i + 1
+				}
+			}
+			if chosen == 0 {
+				continue
+			}
+			matched = true
+			lo, hi := chosen-12, chosen+12
+			if lo < 1 {
+				lo = 1
+			}
+			if hi > symbols {
+				hi = symbols
+			}
+			for i := lo; i <= hi; i++ {
+				keep[i] = true
+			}
+		}
+		if matched {
+			var kept []string
+			gap := false
+			for _, row := range rows {
+				if row.symbol == 0 {
+					kept = append(kept, row.text)
+					gap = false
+					continue
+				}
+				if keep[row.symbol] {
+					kept = append(kept, row.text)
+					gap = false
+					continue
+				}
+				if len(kept) > 0 && !gap {
+					kept = append(kept, "...")
+					gap = true
+				}
+			}
+			return strings.TrimSpace(strings.Join(kept, "\n"))
+		}
+	}
+	const head, tail = 45, 45
+	if len(lines) > head+tail {
+		kept := make([]string, 0, head+tail+1)
+		kept = append(kept, lines[:head]...)
+		kept = append(kept, "...")
+		kept = append(kept, lines[len(lines)-tail:]...)
+		lines = kept
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func codegraphMapSymbolLine(line string) (int, bool) {
+	trim := strings.TrimSpace(line)
+	if !strings.HasPrefix(trim, "- ") {
+		return 0, false
+	}
+	colon := strings.LastIndex(trim, ":")
+	if colon < 0 {
+		return 0, true
+	}
+	n, err := strconv.Atoi(strings.TrimSpace(trim[colon+1:]))
+	if err != nil || n <= 0 {
+		return 0, true
+	}
+	return n, true
+}
+
+func codegraphHitLinesForFile(output, file string) []int {
+	plain := codegraphANSIPattern.ReplaceAllString(output, "")
+	file = filepath.ToSlash(strings.TrimSpace(file))
+	var lines []int
+	for _, line := range strings.Split(plain, "\n") {
+		line = strings.TrimRight(line, "\r")
+		match := codegraphHitLocationPattern.FindStringSubmatch(line)
+		if match == nil || filepath.ToSlash(strings.TrimSpace(match[1])) != file {
+			continue
+		}
+		n, err := strconv.Atoi(match[2])
+		if err != nil || n <= 0 {
+			continue
+		}
+		lines = append(lines, n)
+	}
+	return lines
+}
+
+func attachCodegraphSymbolMap(bin, root, output string, cmds [][]string) string {
+	if bin == "" || root == "" || !codegraphQueryBatch(cmds) {
+		return output
+	}
+	file := codegraphDominantHitFile(output, root)
+	if file == "" {
+		return output
+	}
+	var bodies strings.Builder
+	for _, name := range codegraphBodyTargets(output, file) {
+		// node --file returns the trail only. node without --file returns the
+		// indexed range, which can be an older line of a different function.
+		body := codegraphSourceBody(root, file, name)
+		if body == "" {
+			continue
+		}
+		if bodies.Len() > 0 {
+			bodies.WriteString("\n\n")
+		}
+		bodies.WriteString("Body for " + name + " in " + file + ".\n")
+		bodies.WriteString(codegraphCapText(body, 8000))
+	}
+	ctx, cancel := codegraphStepContext()
+	defer cancel()
+	data, err := runCodegraphCommand(ctx, bin, root, "node", "--symbols-only", file)
+	if err != nil || !strings.Contains(data, "### Symbols") {
+		if bodies.Len() == 0 {
+			return output
+		}
+		return strings.TrimSpace(output) + "\n\n" + bodies.String()
+	}
+	data = codegraphTrimSymbolMap(data, codegraphHitLinesForFile(output, file))
+	result := strings.TrimSpace(output)
+	if bodies.Len() > 0 {
+		result += "\n\n" + bodies.String()
+	}
+	return result + "\n\n" + fmt.Sprintf(codegraphSymbolMapNote, file) + "\n" + data
 }
 
 // codegraphRemoteAcceptHit keeps a codegraph result. A one-line miss, or a
 // query score below 2000, falls through to text search.
-const codegraphRemoteAcceptHit = "_cg_esc=$(printf '\\033'); _cg_plain=$(printf '%s\\n' \"$_cg_out\" | sed \"s/${_cg_esc}\\\\[[0-9;]*[A-Za-z]//g\"); _cg_first=$(printf '%s\\n' \"$_cg_plain\" | sed -n '/[[:alpha:]]/p' | head -n 1); _cg_score=$(printf '%s\\n' \"$_cg_plain\" | sed -n 's/.*(\\([0-9][0-9]*\\)%).*/\\1/p' | head -n 1); case \"$_cg_first\" in *'Symbol \"'*' not found'*) ;; *'No results found'*) ;; *'No indexed file matches'*) ;; *'No callers found'*) ;; *'No callees found'*) ;; *'Search Results'*) if [ -z \"$_cg_score\" ] || [ \"$_cg_score\" -ge 2000 ]; then printf '%s\\n' \"$_cg_out\"; _cg_hit=1; _cg_term_hit=1; fi ;; *[![:space:]]*) printf '%s\\n' \"$_cg_out\"; _cg_hit=1; _cg_term_hit=1 ;; esac"
+const codegraphRemoteAcceptHit = "_cg_esc=$(printf '\\033'); _cg_plain=$(printf '%s\\n' \"$_cg_out\" | sed \"s/${_cg_esc}\\\\[[0-9;]*[A-Za-z]//g\"); _cg_first=$(printf '%s\\n' \"$_cg_plain\" | sed -n '/[[:alpha:]]/p' | head -n 1); _cg_score=$(printf '%s\\n' \"$_cg_plain\" | sed -n 's/.*(\\([0-9][0-9]*\\)%).*/\\1/p' | head -n 1); case \"$_cg_first\" in *'Symbol \"'*' not found'*) ;; *'No results found'*) ;; *'No relevant code found'*) ;; *'No files indexed'*) ;; *'No indexed file matches'*) ;; *'No callers found'*) ;; *'No callees found'*) ;; *'Search Results'*) if [ -z \"$_cg_score\" ] || [ \"$_cg_score\" -ge 2000 ]; then printf '%s\\n' \"$_cg_out\"; _cg_hit=1; _cg_term_hit=1; fi ;; *[![:space:]]*) printf '%s\\n' \"$_cg_out\"; _cg_hit=1; _cg_term_hit=1 ;; esac"
 
 // codegraphRemoteAcceptNamedNode is the node accept path. A misspelled name
 // still prints the nearest symbol and exits 0; that body is not the symbol
@@ -2417,7 +3113,7 @@ func codegraphOutputUseful(output string) bool {
 	// next line that contains a letter. Source that merely mentions that
 	// header later is still a hit.
 	first := codegraphFirstLetterLine(text)
-	if strings.Contains(first, "No results found") || strings.Contains(first, "No indexed file matches") || strings.Contains(first, "No callers found") || strings.Contains(first, "No callees found") {
+	if strings.Contains(first, "No results found") || strings.Contains(first, "No relevant code found") || strings.Contains(first, "No files indexed") || strings.Contains(first, "No indexed file matches") || strings.Contains(first, "No callers found") || strings.Contains(first, "No callees found") {
 		return false
 	}
 	if strings.Contains(first, "Symbol \"") && strings.Contains(first, " not found") {
@@ -2665,11 +3361,15 @@ func runLocalCodeNavigationWithPosition(root, operation, query, file string, lin
 	// it, so a subdirectory must not build a second database beside that one.
 	haveIndex := bin != "" && (codegraphNearestIndexRoot(root) != "" || (bootstrap && ensureLocalCodegraphIndex(root, bin)))
 	if haveIndex {
+		if text, mcpErr := codegraphMCPNavigate(root, bin, operation, query, navigationQuestion(operation, query, depth), file, line); mcpErr == nil && strings.TrimSpace(text) != "" {
+			return "codegraph", text, nil
+		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		argsList := codegraphCommandList(operation, query, navigationQuestion(operation, query, depth), file)
 		output, missed := runCodegraphCommands(ctx, bin, root, argsList)
 		cancel()
 		if strings.TrimSpace(output) != "" {
+			output = attachCodegraphSymbolMap(bin, root, output, argsList)
 			if len(missed) > 0 {
 				extraCtx, extraCancel := context.WithTimeout(context.Background(), 30*time.Second)
 				extra, _, extraErr := runLocalNavigationTextFallback(extraCtx, root, "explore", strings.Join(missed, " "))
@@ -3129,16 +3829,44 @@ func (c *remoteCodingCallbacks) executeRemoteCodeNavigation(args map[string]inte
 	bootstrap, releaseBootstrap := c.claimRemoteCodegraphBootstrap()
 	// The call that is still running init owns a partial database. Another
 	// call must not query that file until init has finished.
-	command := remoteCodeNavigationCommand(operation, query, question, file, int(line), int(column), bootstrap, remoteCodegraphQueryAllowed(c.agent.projectDir, bootstrap))
-	result := c.sshBash(map[string]interface{}{"command": command, "working_dir": c.agent.projectDir})
-	_, ran := remoteCodingParseAuthoritativeExitMarker(result)
-	releaseBootstrap(ran)
-	succeeded := remoteCodingToolOutcome(result) == "success"
-	// The marker is its own line, checked before the output cap. A long result
-	// must not lose it, and a source line that merely mentions the word must
-	// not count as a hit. The status test after the marker keeps a failed
-	// text search from being reported as success.
-	result, codegraphHit := takeRemoteCodegraphHitMarker(result)
+	allowQuery := remoteCodegraphQueryAllowed(c.agent.projectDir, bootstrap)
+	var result string
+	codegraphHit := false
+	succeeded := false
+	if allowQuery && c.remoteCodegraphIndexCachedOrProbe() {
+		// The index is already usable. Release the init claim before the
+		// daemon handshake, or every other lookup in this task skips
+		// codegraph while this connection is opening.
+		if bootstrap {
+			releaseBootstrap(false)
+			bootstrap = false
+		}
+		text, mcpErr := c.callRemoteCodegraphMCP(operation, query, question, file, int(line))
+		if mcpErr == nil && strings.TrimSpace(text) != "" {
+			result = text
+			codegraphHit = true
+			succeeded = true
+		} else if mcpErr != nil {
+			// A symbol miss is an empty result, not a dead index. Drop the
+			// cache only when the proxy itself failed.
+			remoteCodegraphForgetIndex(c.agent.projectDir)
+		}
+	}
+	if result == "" {
+		command := remoteCodeNavigationCommand(operation, query, question, file, int(line), int(column), bootstrap, allowQuery)
+		result = c.sshBash(map[string]interface{}{"command": command, "working_dir": c.agent.projectDir})
+		_, ran := remoteCodingParseAuthoritativeExitMarker(result)
+		releaseBootstrap(ran)
+		succeeded = remoteCodingToolOutcome(result) == "success"
+		// The marker is its own line, checked before the output cap. A long result
+		// must not lose it, and a source line that merely mentions the word must
+		// not count as a hit. The status test after the marker keeps a failed
+		// text search from being reported as success.
+		result, codegraphHit = takeRemoteCodegraphHitMarker(result)
+		if codegraphHit {
+			remoteCodegraphRememberIndex(c.agent.projectDir)
+		}
+	}
 	result, truncated := capCodeNavigationOutput(result)
 	if succeeded {
 		c.trackRemoteSearch(codeNavigationToolName, question, c.agent.projectDir, result, true)

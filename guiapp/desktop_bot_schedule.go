@@ -3,6 +3,7 @@ package guiapp
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"sort"
@@ -445,7 +446,11 @@ func (a *App) executeDesktopBotScheduledTask(ctx context.Context, task *schedule
 	// request id to name the run by. setActiveDesktopRunID skips empty ones,
 	// which leaves this turn unaddressable for supplements — it has no
 	// conversation waiting to add anything.
-	result, err := a.relayDesktopBot(ctx, task.DesktopBotID, order, "execute", "")
+	result, err := a.relayDesktopBotWhenFree(ctx, task.DesktopBotID, order, "execute", "", nil)
+	if errors.Is(err, errDesktopOccurrenceSkipped) {
+		log.Printf("[desktop-bot-schedule] skip id=%s bot=%q reason=busy_timeout", task.ID, task.DesktopBotID)
+		return "", nil
+	}
 	if result.UserControl || strings.TrimSpace(result.AttentionReason) != "" {
 		releaseDesktop()
 	}

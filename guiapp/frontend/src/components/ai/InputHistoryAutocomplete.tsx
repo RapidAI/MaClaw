@@ -7,6 +7,8 @@ interface InputHistoryAutocompleteProps {
     selectedIndex: number;
     /** Current draft — used to bold the completion suffix. */
     prefix?: string;
+    /** Image counts parallel to matches. */
+    imageCounts?: number[];
     /** Stable DOM id shared with the textarea aria-controls / activedescendant. */
     listboxId: string;
     onSelectIndex: (index: number) => void;
@@ -46,6 +48,7 @@ export const InputHistoryAutocomplete = memo(function InputHistoryAutocomplete({
     matches,
     selectedIndex,
     prefix = "",
+    imageCounts,
     listboxId,
     onSelectIndex,
     onAccept,
@@ -117,6 +120,10 @@ export const InputHistoryAutocomplete = memo(function InputHistoryAutocomplete({
             {matches.map((item, index) => {
                 const active = index === safeIndex;
                 const optionId = `${listboxId}-option-${index}`;
+                const imageCount = imageCounts?.[index] || 0;
+                const imageLabel = imageCount === 1
+                    ? (isZh ? "含图片" : "image")
+                    : (isZh ? `${imageCount} 张图片` : `${imageCount} images`);
                 return (
                     <button
                         key={`${index}-${item.slice(0, 48)}`}
@@ -136,10 +143,16 @@ export const InputHistoryAutocomplete = memo(function InputHistoryAutocomplete({
                         onClick={() => onAccept(index)}
                         style={{
                             ...baseItemStyle,
+                            display: "flex",
+                            alignItems: "flex-start",
+                            gap: 8,
                             background: active ? activeBg : "transparent",
                         }}
                     >
-                        {renderMatchLabel(item, prefix)}
+                        <span style={{ flex: 1, minWidth: 0 }}>{renderMatchLabel(item, prefix)}</span>
+                        {imageCount > 0 ? (
+                            <span style={{ flexShrink: 0, fontSize: 11, color: t.textMuted }}>{imageLabel}</span>
+                        ) : null}
                     </button>
                 );
             })}

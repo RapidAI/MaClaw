@@ -19,7 +19,8 @@ func NewToolAffinityRegistry() *ToolAffinityRegistry {
 			LabelBusinessData:     {"mis_data"},
 			LabelDatabase:         {"database", "database_query"},
 			LabelMailboxRead:      {"mailbox_query"},
-			LabelMailboxSend:      {"mailbox_send", "mailbox_configure"},
+			LabelMailboxSend:      {"mailbox_send"},
+			LabelMailboxConfigure: {"mailbox_configure"},
 			LabelBrowser: {
 				"browser",
 			},

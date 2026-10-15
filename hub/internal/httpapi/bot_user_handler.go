@@ -110,7 +110,7 @@ func ListBotsHandler(svc *botmgmt.Service, identity botAuthenticator) http.Handl
 			}
 			return
 		}
-		bots, err := svc.BotsForUser(r.Context(), principal.TenantID, principal.UserID)
+		bots, err := svc.ListBotsForUser(r.Context(), principal.TenantID, principal.UserID)
 		if err != nil {
 			writeBotUserError(w, r, principal, err, "")
 			return
@@ -354,11 +354,15 @@ func GetBotRunHandler(svc *botmgmt.Service, identity botAuthenticator) http.Hand
 			return
 		}
 		if !done {
-			writeJSON(w, http.StatusAccepted, map[string]any{
+			body := map[string]any{
 				"accepted": true,
 				"status":   "running",
 				"run_id":   r.PathValue("runID"),
-			})
+			}
+			if activity := svc.DesktopRunActivity(principal.TenantID, principal.UserID, r.PathValue("id"), r.PathValue("runID")); activity != "" {
+				body["activity"] = activity
+			}
+			writeJSON(w, http.StatusAccepted, body)
 			return
 		}
 		writeJSON(w, http.StatusOK, reply)

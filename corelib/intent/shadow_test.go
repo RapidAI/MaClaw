@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -146,7 +147,8 @@ func TestShadowRecordsAndIdenticalResult(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if st.Mode().Perm() != 0o600 {
+	// Windows has no POSIX permission bits; os.Stat always reports 0666.
+	if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
 		t.Fatalf("log mode %v", st.Mode().Perm())
 	}
 	recs := readShadowRecords(t, logPath)
@@ -261,7 +263,7 @@ func TestShadowTextModes(t *testing.T) {
 		t.Fatalf("hashes %v", hashes)
 	}
 	st, err := os.Stat(filepath.Join(dir, ".intent_shadow_salt"))
-	if err != nil || st.Mode().Perm() != 0o600 {
+	if err != nil || (runtime.GOOS != "windows" && st.Mode().Perm() != 0o600) {
 		t.Fatalf("salt %v %v", err, st)
 	}
 }
@@ -492,7 +494,7 @@ func TestShadowRotation(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
-		if st.Mode().Perm() != 0o600 {
+		if runtime.GOOS != "windows" && st.Mode().Perm() != 0o600 {
 			t.Fatalf("%s mode %v", name, st.Mode().Perm())
 		}
 		if st.Size() > 1500 {

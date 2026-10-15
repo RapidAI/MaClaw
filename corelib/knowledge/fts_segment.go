@@ -298,11 +298,11 @@ func isCJKStopChar(r rune) bool {
 	return false
 }
 
-// RebuildFTSIndex drops and rebuilds all FTS indexes with properly segmented content.
-// This should be called once after upgrading to gse-based FTS to re-index existing data.
-// The rebuild is atomic per table — if any table rebuild fails, that table's FTS is
-// restored to its previous state (the other tables that succeeded remain rebuilt).
-func (s *SQLiteStore) RebuildFTSIndex(ctx context.Context) error {
+// RebuildFTSSegmentation rebuilds the lexical indexes from stored text.
+// It does not embed. Callers that also need vectors use RebuildFTSIndex or
+// SetEmbedder. A second embedding pass would not raise
+// LibraryEmbeddingRefreshActive, so search would wait behind it.
+func (s *SQLiteStore) RebuildFTSSegmentation(ctx context.Context) error {
 	if err := s.rebuildNodesFTS(ctx); err != nil {
 		return fmt.Errorf("rebuild document_nodes_fts: %w", err)
 	}
@@ -311,6 +311,15 @@ func (s *SQLiteStore) RebuildFTSIndex(ctx context.Context) error {
 	}
 	if err := s.rebuildFactsFTS(ctx); err != nil {
 		return fmt.Errorf("rebuild knowledge_facts_fts: %w", err)
+	}
+	return nil
+}
+
+// RebuildFTSIndex rebuilds lexical indexes, then fills missing vectors with
+// the embedder already attached.
+func (s *SQLiteStore) RebuildFTSIndex(ctx context.Context) error {
+	if err := s.RebuildFTSSegmentation(ctx); err != nil {
+		return err
 	}
 	// Backfill card embeddings if embedder is available
 	if emb := s.currentEmbedder(); emb != nil && !embedding.IsNoop(emb) {
@@ -330,133 +339,186 @@ func (s *SQLiteStore) RebuildFTSIndex(ctx context.Context) error {
 	return nil
 }
 
+const ftsRebuildPageSize = 128
+
+// Pages stay small because the store keeps a single SQLite connection.
+// A prepared statement or an open query would occupy that connection and
+// block the following write. Each page is closed before its rows are inserted.
 func (s *SQLiteStore) rebuildNodesFTS(ctx context.Context) error {
-	// Incremental: only rebuild nodes whose FTS content doesn't match segmented form.
-	// For first-time migration, all nodes need rebuild. For subsequent runs (after
-	// marker is set), this is a no-op since new inserts already use segmentTextForFTS.
-	rows, err := s.db.QueryContext(ctx, `SELECT id, title, text FROM document_nodes`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	type nodeRow struct {
-		id, title, text string
-	}
-	var nodes []nodeRow
-	for rows.Next() {
-		var n nodeRow
-		if err := rows.Scan(&n.id, &n.title, &n.text); err != nil {
-			return err
-		}
-		nodes = append(nodes, n)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if len(nodes) == 0 {
-		return nil
-	}
-	// Atomic: delete + re-insert
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM document_nodes_fts`); err != nil {
 		return err
 	}
-	for _, n := range nodes {
-		if ctx.Err() != nil {
-			return ctx.Err()
+	after := ""
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		_, _ = s.db.ExecContext(ctx, `INSERT INTO document_nodes_fts(node_id, title, text) VALUES (?, ?, ?)`,
-			n.id, segmentTextForFTS(n.title), segmentTextForFTS(n.text))
+		rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(title, ''), COALESCE(text, '') FROM document_nodes WHERE id > ? ORDER BY id LIMIT ?`, after, ftsRebuildPageSize)
+		if err != nil {
+			return err
+		}
+		type nodeRow struct{ id, title, text string }
+		page := make([]nodeRow, 0, ftsRebuildPageSize)
+		for rows.Next() {
+			var n nodeRow
+			if err := rows.Scan(&n.id, &n.title, &n.text); err != nil {
+				rows.Close()
+				return err
+			}
+			page = append(page, n)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		if len(page) == 0 {
+			return nil
+		}
+		args := make([][]any, len(page))
+		for i, n := range page {
+			args[i] = []any{n.id, segmentTextForFTS(n.title), segmentTextForFTS(n.text)}
+		}
+		if err := s.insertFTSPage(ctx, `INSERT INTO document_nodes_fts(node_id, title, text) VALUES (?, ?, ?)`, args); err != nil {
+			return err
+		}
+		if len(page) < ftsRebuildPageSize {
+			return nil
+		}
+		after = page[len(page)-1].id
 	}
-	return nil
 }
 
 func (s *SQLiteStore) rebuildCardsFTS(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, title, claim, summary, entities_json, topics_json, tags_json FROM knowledge_cards`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	type cardRow struct {
-		id, title, claim, summary, entitiesJSON, topicsJSON, tagsJSON string
-	}
-	var cards []cardRow
-	for rows.Next() {
-		var c cardRow
-		if err := rows.Scan(&c.id, &c.title, &c.claim, &c.summary, &c.entitiesJSON, &c.topicsJSON, &c.tagsJSON); err != nil {
-			return err
-		}
-		cards = append(cards, c)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM knowledge_cards_fts`); err != nil {
 		return err
 	}
-	for _, c := range cards {
-		if ctx.Err() != nil {
-			return ctx.Err()
+	after := ""
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		parts := []string{c.summary}
-		var entities []string
-		if c.entitiesJSON != "" && c.entitiesJSON != "null" {
-			_ = json.Unmarshal([]byte(c.entitiesJSON), &entities)
+		rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(title, ''), COALESCE(claim, ''), COALESCE(summary, ''), COALESCE(entities_json, ''), COALESCE(topics_json, ''), COALESCE(tags_json, '') FROM knowledge_cards WHERE id > ? ORDER BY id LIMIT ?`, after, ftsRebuildPageSize)
+		if err != nil {
+			return err
 		}
-		if len(entities) > 0 {
-			parts = append(parts, strings.Join(entities, " "))
+		type cardRow struct {
+			id, title, claim, summary, entitiesJSON, topicsJSON, tagsJSON string
 		}
-		var topics []string
-		if c.topicsJSON != "" && c.topicsJSON != "null" {
-			_ = json.Unmarshal([]byte(c.topicsJSON), &topics)
+		page := make([]cardRow, 0, ftsRebuildPageSize)
+		for rows.Next() {
+			var c cardRow
+			if err := rows.Scan(&c.id, &c.title, &c.claim, &c.summary, &c.entitiesJSON, &c.topicsJSON, &c.tagsJSON); err != nil {
+				rows.Close()
+				return err
+			}
+			page = append(page, c)
 		}
-		if len(topics) > 0 {
-			parts = append(parts, strings.Join(topics, " "))
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
 		}
-		var tags []string
-		if c.tagsJSON != "" && c.tagsJSON != "null" {
-			_ = json.Unmarshal([]byte(c.tagsJSON), &tags)
+		if len(page) == 0 {
+			return nil
 		}
-		if len(tags) > 0 {
-			parts = append(parts, strings.Join(tags, " "))
+		args := make([][]any, 0, len(page))
+		for _, c := range page {
+			parts := []string{c.summary}
+			var entities []string
+			if c.entitiesJSON != "" && c.entitiesJSON != "null" {
+				_ = json.Unmarshal([]byte(c.entitiesJSON), &entities)
+			}
+			if len(entities) > 0 {
+				parts = append(parts, strings.Join(entities, " "))
+			}
+			var topics []string
+			if c.topicsJSON != "" && c.topicsJSON != "null" {
+				_ = json.Unmarshal([]byte(c.topicsJSON), &topics)
+			}
+			if len(topics) > 0 {
+				parts = append(parts, strings.Join(topics, " "))
+			}
+			var tags []string
+			if c.tagsJSON != "" && c.tagsJSON != "null" {
+				_ = json.Unmarshal([]byte(c.tagsJSON), &tags)
+			}
+			if len(tags) > 0 {
+				parts = append(parts, strings.Join(tags, " "))
+			}
+			ftsSummary := strings.TrimSpace(strings.Join(parts, "\n"))
+			args = append(args, []any{c.id, segmentTextForFTS(c.title), segmentTextForFTS(c.claim), segmentTextForFTS(ftsSummary)})
 		}
-		ftsSummary := strings.TrimSpace(strings.Join(parts, "\n"))
-		_, _ = s.db.ExecContext(ctx, `INSERT INTO knowledge_cards_fts(card_id, title, claim, summary) VALUES (?, ?, ?, ?)`,
-			c.id, segmentTextForFTS(c.title), segmentTextForFTS(c.claim), segmentTextForFTS(ftsSummary))
+		if err := s.insertFTSPage(ctx, `INSERT INTO knowledge_cards_fts(card_id, title, claim, summary) VALUES (?, ?, ?, ?)`, args); err != nil {
+			return err
+		}
+		if len(page) < ftsRebuildPageSize {
+			return nil
+		}
+		after = page[len(page)-1].id
 	}
-	return nil
 }
 
 func (s *SQLiteStore) rebuildFactsFTS(ctx context.Context) error {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, subject, predicate, object FROM knowledge_facts`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	type factRow struct {
-		id, subject, predicate, object string
-	}
-	var facts []factRow
-	for rows.Next() {
-		var f factRow
-		if err := rows.Scan(&f.id, &f.subject, &f.predicate, &f.object); err != nil {
-			return err
-		}
-		facts = append(facts, f)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
 	if _, err := s.db.ExecContext(ctx, `DELETE FROM knowledge_facts_fts`); err != nil {
 		return err
 	}
-	for _, f := range facts {
-		if ctx.Err() != nil {
-			return ctx.Err()
+	after := ""
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		_, _ = s.db.ExecContext(ctx, `INSERT INTO knowledge_facts_fts(fact_id, subject, predicate, object) VALUES (?, ?, ?, ?)`,
-			f.id, segmentTextForFTS(f.subject), segmentTextForFTS(f.predicate), segmentTextForFTS(f.object))
+		rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(subject, ''), COALESCE(predicate, ''), COALESCE(object, '') FROM knowledge_facts WHERE id > ? ORDER BY id LIMIT ?`, after, ftsRebuildPageSize)
+		if err != nil {
+			return err
+		}
+		type factRow struct{ id, subject, predicate, object string }
+		page := make([]factRow, 0, ftsRebuildPageSize)
+		for rows.Next() {
+			var f factRow
+			if err := rows.Scan(&f.id, &f.subject, &f.predicate, &f.object); err != nil {
+				rows.Close()
+				return err
+			}
+			page = append(page, f)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		if len(page) == 0 {
+			return nil
+		}
+		args := make([][]any, len(page))
+		for i, f := range page {
+			args[i] = []any{f.id, segmentTextForFTS(f.subject), segmentTextForFTS(f.predicate), segmentTextForFTS(f.object)}
+		}
+		if err := s.insertFTSPage(ctx, `INSERT INTO knowledge_facts_fts(fact_id, subject, predicate, object) VALUES (?, ?, ?, ?)`, args); err != nil {
+			return err
+		}
+		if len(page) < ftsRebuildPageSize {
+			return nil
+		}
+		after = page[len(page)-1].id
 	}
-	return nil
+}
+
+func (s *SQLiteStore) insertFTSPage(ctx context.Context, query string, rows [][]any) error {
+	if len(rows) == 0 {
+		return nil
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, row := range rows {
+		if _, err := tx.ExecContext(ctx, query, row...); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // ftsSegmentationVersion is bumped when the segmentation algorithm changes,

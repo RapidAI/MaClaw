@@ -1,4 +1,5 @@
 import { useCallback, useId, useMemo, useState } from "react";
+import { imageCountsForHistoryMatches } from "./promptHistory";
 import { AssistantAttachmentsStrip } from "./AssistantAttachmentsStrip";
 import { AssistantInputActionsLeft, AssistantInputActionsRight } from "./AssistantInputActions";
 import { getAssistantInputComposerStyles } from "./AssistantInputComposerStyles";
@@ -22,7 +23,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
         lang, onComposeActionChange, onFireSlashCommand, onInsertTemplate, onPlusMenuAction, pendingAttachments,
         pendingAttachmentsTestId, permissionMode, taskCommandAllowed, showPermissionMode, showWorkspacePermissionOption, onPermissionModeChange, placeholderText, ready, recallHistory, rememberHistoryEdit, removeSelectedFile,
         resizeInput, selectedFilePaths, sendButtonStyle, sendButtonTestId, setPendingAttachments, showBusySpinner,
-        showMemoryUsage = true, showVoiceInput = true, submittedPrompts: submittedPromptsProp, textareaAriaLabel, textareaTestId = "ai-input",
+        showMemoryUsage = true, showVoiceInput = true, submittedPrompts: submittedPromptsProp, submittedPromptAttachments, onHistoryTextAccepted, textareaAriaLabel, textareaTestId = "ai-input",
         theme: t, themeMode, toolbarAddon, toolbarEndContent, toolbarTestId = "ai-input-toolbar", trailingToolbarContent, updateInputValue, voiceInput,
     } = props;
 
@@ -40,8 +41,9 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
     const applyAutocompleteValue = useCallback((next: string) => {
         rememberHistoryEdit(next);
         updateInputValue(next);
+        onHistoryTextAccepted?.(next);
         requestAnimationFrame(() => resizeInput());
-    }, [rememberHistoryEdit, resizeInput, updateInputValue]);
+    }, [onHistoryTextAccepted, rememberHistoryEdit, resizeInput, updateInputValue]);
 
     const insertLineBreak = useCallback((textarea: HTMLTextAreaElement) => {
         insertTextareaLineBreak(textarea, (next) => {
@@ -61,6 +63,10 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
     });
 
     const autocompleteOpen = autocomplete.open;
+    const historyImageCounts = useMemo(
+        () => imageCountsForHistoryMatches(submittedPrompts, submittedPromptAttachments, autocomplete.matches),
+        [autocomplete.matches, submittedPromptAttachments, submittedPrompts],
+    );
 
     const { inputBarStyle, inputRowStyle, textareaStyle, toolbarStyle, toolbarLeftStyle, toolbarRightStyle } = useMemo(
         () => getAssistantInputComposerStyles({
@@ -95,6 +101,7 @@ export function AssistantInputComposer(props: AssistantInputComposerProps) {
                     matches={autocomplete.matches}
                     selectedIndex={autocomplete.selectedIndex}
                     prefix={inputValue}
+                    imageCounts={historyImageCounts}
                     listboxId={historyListboxId}
                     onSelectIndex={autocomplete.setSelectedIndex}
                     onAccept={autocomplete.accept}

@@ -48,7 +48,7 @@ func TestSemanticMCPInventorySeparatesSuccessfulSlowFromFailedProbe(t *testing.T
 				app.mcpRegistry.toolsCache["remote"] = []MCPToolView{{Name: "work_log_query"}}
 			}
 			h := &IMMessageHandler{app: app}
-			inventory, err := h.semanticDynamicInventory(context.Background(), "desktop-user")
+			inventory, err := h.semanticDynamicInventory(context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -229,7 +229,7 @@ func TestAutoStartFalseLocalMCPDoesNotOpenFamily(t *testing.T) {
 		app.mcpRegistry = NewMCPRegistry(app)
 		app.mcpRegistry.health["tengyun"] = &mcpHealthState{Status: mcpHealthStatusHealthy}
 		app.mcpRegistry.toolsCache["tengyun"] = []MCPToolView{{Name: "work_log_query", InputSchema: schema}}
-		inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background(), "desktop-user")
+		inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -255,7 +255,7 @@ func TestAutoStartFalseLocalMCPDoesNotOpenFamily(t *testing.T) {
 		t.Cleanup(func() { app.localMCPManager.cancel() })
 		// A sync has already returned and left the launch server down.
 		app.localMCPManager.syncFinished.Store(true)
-		inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background(), "desktop-user")
+		inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -293,7 +293,7 @@ func TestAutoStartFalseLocalMCPDoesNotOpenFamily(t *testing.T) {
 		if app.localMCPManager.configSyncFinished() {
 			t.Fatal("canceled sync marked the launch set finished")
 		}
-		inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background(), "desktop-user")
+		inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -313,7 +313,7 @@ func TestAutoStartFalseLocalMCPDoesNotOpenFamily(t *testing.T) {
 		app.mcpRegistry = NewMCPRegistry(app)
 		app.localMCPManager = NewLocalMCPManager(app.mcpRegistry)
 		t.Cleanup(func() { app.localMCPManager.cancel() })
-		inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background(), "desktop-user")
+		inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -331,7 +331,7 @@ func TestAutoStartFalseLocalMCPDoesNotOpenFamily(t *testing.T) {
 			t.Fatal(err)
 		}
 		app.mcpRegistry = NewMCPRegistry(app)
-		inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background(), "desktop-user")
+		inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -353,7 +353,7 @@ func TestAutoStartFalseLocalMCPDoesNotOpenFamily(t *testing.T) {
 		t.Cleanup(func() { app.localMCPManager.cancel() })
 		app.localMCPManager.syncFinished.Store(true)
 		app.localMCPManager.syncInFlight.Add(1)
-		inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background(), "desktop-user")
+		inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -389,7 +389,7 @@ func TestAutoStartFalseLocalMCPDoesNotOpenFamily(t *testing.T) {
 		client.tools = []MCPToolView{{Name: "disabled_tool", InputSchema: schema}}
 		client.stateMu.Unlock()
 		app.localMCPManager.clients[disabled.ID] = client
-		inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background(), "desktop-user")
+		inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -499,7 +499,7 @@ func TestDurableSyncBlockerKeepsStaleHealthyObservationUnselectable(t *testing.T
 	app.mcpRegistry.toolsCache["stale"] = []MCPToolView{{Name: "stale_tool", InputSchema: schema}}
 	app.mcpRegistry.health["fresh"] = &mcpHealthState{Status: mcpHealthStatusHealthy}
 	app.mcpRegistry.toolsCache["fresh"] = []MCPToolView{{Name: "fresh_tool", InputSchema: schema}}
-	inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background(), "desktop-user")
+	inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -548,7 +548,7 @@ func TestNeedsReviewLocalAutoStartDoesNotOpenMCPFamily(t *testing.T) {
 	}
 	app.mcpRegistry.health["tengyun"] = &mcpHealthState{Status: mcpHealthStatusHealthy}
 	app.mcpRegistry.toolsCache["tengyun"] = []MCPToolView{{Name: "work_log_query", InputSchema: schema}}
-	inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background(), "desktop-user")
+	inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -596,7 +596,7 @@ func TestRunningLocalUnderNeedsReviewStaysBlocked(t *testing.T) {
 	client.tools = []MCPToolView{{Name: "local_tool", InputSchema: schema}}
 	client.stateMu.Unlock()
 	app.localMCPManager.clients[localEntry.ID] = client
-	inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background(), "desktop-user")
+	inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -647,7 +647,7 @@ func TestPersistenceFenceClosesReadyMarkerWithoutToolList(t *testing.T) {
 	setMCPRuntimeSyncPersistenceFence(t, stale.ID)
 	app.mcpRegistry.health["fresh"] = &mcpHealthState{Status: mcpHealthStatusHealthy}
 	app.mcpRegistry.toolsCache["fresh"] = []MCPToolView{{Name: "fresh_tool", InputSchema: schema}}
-	inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background(), "desktop-user")
+	inventory, err := (&IMMessageHandler{app: app}).semanticDynamicInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

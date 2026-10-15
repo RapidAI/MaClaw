@@ -205,3 +205,58 @@ func TestSemanticSelectionProvenanceNamesDynamicProviderOnly(t *testing.T) {
 		t.Fatalf("builtin result must be untouched: %q", got)
 	}
 }
+
+// A folded tool-name match must not pin the sibling spelling the user did
+// not type: '-' and '_' fold together in the matcher but stay distinct in
+// the slug the capability id derives from.
+func TestSemanticProviderPinsVerbatimSpellingNarrowsFoldedSiblings(t *testing.T) {
+	providers := []tool.ProviderSpec{
+		pinTestMCPProvider("docs-server", "Docs", "search_docs", "information.lookup"),
+		pinTestMCPProvider("docs-server", "Docs", "search-docs", "document.read.local"),
+	}
+	entries := []agentservice.MCPToolEntry{
+		{ServerID: "docs-server", ServerName: "Docs", ToolName: "search_docs"},
+		{ServerID: "docs-server", ServerName: "Docs", ToolName: "search-docs"},
+	}
+	pins := semanticProviderPins("用 search_docs 查一下", providers, entries)
+	var implPin, siblingImplPin *tool.ProviderPin
+	for i := range pins {
+		switch pins[i].ImplementationID {
+		case "search_docs":
+			implPin = &pins[i]
+		case "search-docs":
+			siblingImplPin = &pins[i]
+		}
+	}
+	if implPin == nil || implPin.Capability != "information.lookup" {
+		t.Fatalf("verbatim spelling must carry an impl pin on its own caps: %#v", pins)
+	}
+	if siblingImplPin != nil {
+		t.Fatalf("folded sibling must not take an impl pin: %#v", pins)
+	}
+}
+
+// Naming one spelling must mint exactly one named need: the folded sibling
+// mints a different x:mcp: capability, and requiring it would drag an
+// unnamed tool into the plan.
+func TestSemanticNamedProviderNeedsVerbatimSpellingNarrowsFoldedSiblings(t *testing.T) {
+	providers := []tool.ProviderSpec{
+		pinTestMCPProvider("docs-server", "Docs", "search_docs"),
+		pinTestMCPProvider("docs-server", "Docs", "search-docs"),
+	}
+	registry := tool.NewCapabilityRegistry("test-v1")
+	needs, pins := semanticNamedProviderNeeds("用 search_docs 查一下", registry, providers)
+	if len(needs) != 1 || len(pins) != 1 {
+		t.Fatalf("needs=%#v pins=%#v", needs, pins)
+	}
+	if pins[0].ImplementationID != "search_docs" || needs[0].Capability != "x:mcp:docs-server:search_docs" {
+		t.Fatalf("need=%#v pin=%#v", needs[0], pins[0])
+	}
+	// A case-only difference still contains the verbatim spelling once case
+	// folds, so it narrows to the underscore impl — the separator stays the
+	// distinguishing byte.
+	needs, pins = semanticNamedProviderNeeds("用 SEARCH_DOCS 查一下", registry, providers)
+	if len(needs) != 1 || len(pins) != 1 || pins[0].ImplementationID != "search_docs" {
+		t.Fatalf("case-folded verbatim must still narrow: needs=%#v pins=%#v", needs, pins)
+	}
+}

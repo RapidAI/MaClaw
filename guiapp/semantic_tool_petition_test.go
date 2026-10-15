@@ -792,3 +792,125 @@ func TestSemanticSubFloorWeakEffectfulAndDegradedStayMiss(t *testing.T) {
 		t.Fatal("degraded read-only hint below the lookup floor must stay a miss")
 	}
 }
+
+// petitionTestVisionFallthroughCallbacks builds the closed surface a
+// staged-image vision-fallthrough turn runs on: no managed surface, no
+// name-router output, and the LoopContext flag that blocks the legacy router.
+func petitionTestVisionFallthroughCallbacks(t *testing.T) *sharedAgentLoopCallbacks {
+	t.Helper()
+	h := &IMMessageHandler{registry: NewToolRegistry(), unifiedClassifier: semanticClassifierForLabel(t, intent.LabelUnknown)}
+	registerBuiltinTools(h.registry, h)
+	ctx := NewLoopContext("vf-petition", 5, nil)
+	ctx.Runtime.VisionFallthrough = true
+	return &sharedAgentLoopCallbacks{handler: h, loopCtx: ctx, platform: "desktop", userText: "这是哪"}
+}
+
+// Regression for 2026-10-15 06:40: a staged-image "这是哪？" turn demoted to
+// the closed vision fallthrough rendered no tools at all, and every honest
+// petition — manage_skill, bash, discover_tool, web_search, image_search —
+// met the bare nil-surface denial. The loop burned its iteration budget and
+// hard-exited with the photo still ungeocoded. The fallthrough now honours
+// the governed petition contract over the legacy overlay: provisioned
+// petitionable names join the next request surface.
+func TestVisionFallthroughPetitionGrantsReadOnlyLeg(t *testing.T) {
+	cb := petitionTestVisionFallthroughCallbacks(t)
+	if cb.semanticSurface != nil {
+		t.Fatal("fixture must be a closed surface")
+	}
+	granted, message := cb.PetitionToolCall("web_search")
+	if !granted || !strings.Contains(message, "web_search") {
+		t.Fatalf("read-only petition on a closed fallthrough must be admitted: granted=%v message=%q", granted, message)
+	}
+	if !cb.semanticPetitionConsumed {
+		t.Fatal("read-only petition must consume the read-only budget")
+	}
+	if !cb.legacyPetitionAllows("web_search") {
+		t.Fatal("a granted petition must be callable through the overlay")
+	}
+	found := false
+	for _, def := range cb.BuildToolsForModelRequest("这是哪", 1) {
+		if extractToolName(def) == "web_search" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("granted web_search must render on the next request: %v", agentLoopToolNamesForLog(cb.tools))
+	}
+	if granted, _ := cb.PetitionToolCall("web_fetch"); granted {
+		t.Fatal("a second read-only petition must be denied by the class budget")
+	}
+	if granted, message := cb.PetitionToolCall("image_search"); granted || message != "" {
+		t.Fatalf("an unlisted name must still fail closed: granted=%v message=%q", granted, message)
+	}
+}
+
+// Effectful names share the managed contract too: one effectful grant per
+// turn, the group-policy gate, and an independent read-only budget.
+func TestVisionFallthroughPetitionGrantsEffectfulLegOnce(t *testing.T) {
+	cb := petitionTestVisionFallthroughCallbacks(t)
+	granted, message := cb.PetitionToolCall("bash")
+	if !granted || !strings.Contains(message, "bash") {
+		t.Fatalf("effectful bash petition must be admitted: granted=%v message=%q", granted, message)
+	}
+	if !cb.semanticEffectfulPetitionConsumed {
+		t.Fatal("bash must consume the effectful petition budget")
+	}
+	if granted, _ := cb.PetitionToolCall("write_file"); granted {
+		t.Fatal("a second effectful petition must be denied")
+	}
+	if granted, _ := cb.PetitionToolCall("current_datetime"); !granted {
+		t.Fatal("the read-only budget must stay open after an effectful grant")
+	}
+}
+
+// The production call that opened the turn: manage_skill run on an installed
+// skill. It is banned on managed surfaces, but this path is unmanaged — the
+// adapter catalog sanctions it as the host-bound local skill runtime and the
+// execution gate still rejects everything except list/info/run on an
+// installed skill. The rendered overlay must carry the narrowed contract.
+func TestVisionFallthroughPetitionAdmitsNarrowedManageSkill(t *testing.T) {
+	cb := petitionTestVisionFallthroughCallbacks(t)
+	granted, _ := cb.PetitionToolCall("manage_skill")
+	if !granted {
+		t.Fatal("manage_skill must be petitionable on the unmanaged fallthrough")
+	}
+	if !cb.semanticEffectfulPetitionConsumed {
+		t.Fatal("manage_skill must consume the effectful budget")
+	}
+	for _, def := range cb.tools {
+		if extractToolName(def) != "manage_skill" {
+			continue
+		}
+		fn, _ := def["function"].(map[string]interface{})
+		desc, _ := fn["description"].(string)
+		if !strings.Contains(desc, "run") || strings.Contains(desc, "install") {
+			t.Fatalf("manage_skill overlay must carry the narrowed contract, desc=%q", desc)
+		}
+		return
+	}
+	t.Fatal("petitioned manage_skill missing from the visible tools")
+}
+
+// The group gate still wins on the unmanaged channel: an effectful petition
+// is denied outright in a restricted context, while read-only stays open.
+func TestVisionFallthroughPetitionGroupPolicyGatesEffectful(t *testing.T) {
+	cb := petitionTestVisionFallthroughCallbacks(t)
+	cb.loopCtx.LansengerGroupPermissions = &lansengerGroupPermissionPolicy{}
+	if granted, _ := cb.PetitionToolCall("bash"); granted {
+		t.Fatal("group-restricted context must deny an effectful petition")
+	}
+	if granted, _ := cb.PetitionToolCall("web_search"); !granted {
+		t.Fatal("read-only petition must remain available under group policy")
+	}
+}
+
+// The escape is scoped to the closed vision fallthrough: an ordinary
+// surface-less unmanaged turn (name-router output governs it) keeps the old
+// denial for non-rescue names.
+func TestNonFallthroughClosedSurfaceDeniesGenericPetition(t *testing.T) {
+	cb := petitionTestVisionFallthroughCallbacks(t)
+	cb.loopCtx.Runtime.VisionFallthrough = false
+	if granted, message := cb.PetitionToolCall("web_search"); granted || message != "" {
+		t.Fatalf("non-fallthrough nil-surface turn must keep the denial: granted=%v message=%q", granted, message)
+	}
+}

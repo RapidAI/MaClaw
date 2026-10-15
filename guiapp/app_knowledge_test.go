@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -24,6 +25,65 @@ func knowledgeImageTestJPEG(t *testing.T, width, height int) []byte {
 		t.Fatalf("encode jpeg: %v", err)
 	}
 	return encoded.Bytes()
+}
+
+func TestAttachKnowledgeEmbedderDoesNotRefreshTheSearchStore(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(closeKnowledgeEmbeddingRefresh)
+	app.intentEmbedder = &appEmbeddingTestEmbedder{}
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "search.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	app.attachKnowledgeEmbedder(store)
+	knowledgeIndexMu.Lock()
+	index := knowledgeIndexStore
+	firstModel := knowledgeIndexModelID
+	knowledgeIndexMu.Unlock()
+	if index == nil || firstModel == "" {
+		t.Fatal("shared library refresh was not started")
+	}
+	app.attachKnowledgeEmbedder(store)
+	knowledgeIndexMu.Lock()
+	defer knowledgeIndexMu.Unlock()
+	if knowledgeIndexStore != index {
+		t.Fatal("attaching the same model again replaced the refresh connection")
+	}
+}
+
+func TestEnsureKnowledgeRefreshSingleFlight(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	t.Cleanup(closeKnowledgeEmbeddingRefresh)
+	app.intentEmbedder = &appEmbeddingTestEmbedder{}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			app.ensureKnowledgeEmbeddingRefresh(app.intentEmbedder)
+		}()
+	}
+	wg.Wait()
+	knowledgeIndexMu.Lock()
+	store := knowledgeIndexStore
+	opening := knowledgeIndexOpening
+	knowledgeIndexMu.Unlock()
+	if store == nil {
+		t.Fatal("shared library refresh was not started")
+	}
+	if opening {
+		t.Fatal("refresh open was left in progress")
+	}
+	pauseKnowledgeEmbeddingRefresh()
+	app.ensureKnowledgeEmbeddingRefresh(app.intentEmbedder)
+	knowledgeIndexMu.Lock()
+	paused := knowledgeIndexStore
+	knowledgeIndexMu.Unlock()
+	resumeKnowledgeEmbeddingRefresh()
+	if paused != nil {
+		t.Fatal("search during pause opened another refresh connection")
+	}
 }
 
 func TestKnowledgeImportRuntimeStatusUsesSharedVocabulary(t *testing.T) {

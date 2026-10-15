@@ -3291,6 +3291,10 @@ export function ListMCPServers() {
   return window['go']['main']['App']['ListMCPServers']();
 }
 
+export function ListInstalledNotReviewedMCPProviders() {
+  return window['go']['main']['App']['ListInstalledNotReviewedMCPProviders']();
+}
+
 export function ListMaclawAppApprovalInstances(arg1, arg2, arg3) {
   return window['go']['main']['App']['ListMaclawAppApprovalInstances'](arg1, arg2, arg3);
 }
@@ -4582,8 +4586,8 @@ export function SendDesktopBotTask(arg1, arg2, arg3) {
   return window['go']['main']['App']['SendDesktopBotTask'](arg1, arg2, arg3);
 }
 
-export function UnderstandDesktopBotTask(arg1, arg2, arg3, arg4, arg5) {
-  return window['go']['main']['App']['UnderstandDesktopBotTask'](arg1, arg2, arg3, arg4, arg5);
+export function UnderstandDesktopBotTask(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['UnderstandDesktopBotTask'](arg1, arg2, arg3, arg4, arg5, arg6);
 }
 
 export function EvaluateDesktopTaskSupplement(arg1, arg2, arg3) {
@@ -4614,6 +4618,14 @@ export function QueryDesktopBotTaskStatus(arg1, arg2, arg3) {
   return window['go']['main']['App']['QueryDesktopBotTaskStatus'](arg1, arg2, arg3);
 }
 
+export function CancelDesktopBotRun(arg1, arg2) {
+  return window['go']['main']['App']['CancelDesktopBotRun'](arg1, arg2);
+}
+
+export function ArmDesktopBotAdmitCancel(arg1) {
+  return window['go']['main']['App']['ArmDesktopBotAdmitCancel'](arg1);
+}
+
 export function PullDesktopBotDeliveries() {
   return window['go']['main']['App']['PullDesktopBotDeliveries']();
 }
@@ -4626,6 +4638,10 @@ export function ListDesktopBotSchedules(arg1) {
   return window['go']['main']['App']['ListDesktopBotSchedules'](arg1);
 }
 
+export function ListDesktopBotTasks(arg1) {
+  return window['go']['main']['App']['ListDesktopBotTasks'](arg1);
+}
+
 export function DeleteDesktopBotSchedule(arg1, arg2) {
   return window['go']['main']['App']['DeleteDesktopBotSchedule'](arg1, arg2);
 }
@@ -4636,6 +4652,26 @@ export function DesktopBotAccess() {
 
 export function ListDesktopBots() {
   return window['go']['main']['App']['ListDesktopBots']();
+}
+
+export function SetDesktopBotPrimary(arg1) {
+  return window['go']['main']['App']['SetDesktopBotPrimary'](arg1);
+}
+
+export function PostDesktopBotCross(arg1, arg2, arg3, arg4, arg5, arg6) {
+  return window['go']['main']['App']['PostDesktopBotCross'](arg1, arg2, arg3, arg4, arg5, arg6);
+}
+
+export function PullDesktopBotCrossNotes() {
+  return window['go']['main']['App']['PullDesktopBotCrossNotes']();
+}
+
+export function ClaimDesktopBotCrossStart(arg1, arg2) {
+  return window['go']['main']['App']['ClaimDesktopBotCrossStart'](arg1, arg2);
+}
+
+export function ArmDesktopBotCrossRun(arg1, arg2) {
+  return window['go']['main']['App']['ArmDesktopBotCrossRun'](arg1, arg2);
 }
 
 export function CreateDesktopBot(arg1, arg2) {
@@ -5636,6 +5672,22 @@ export function TokenBankWithdrawGift(arg1, arg2, arg3) {
 
 export function WatchDesktopBot(arg1, arg2) {
   return window['go']['main']['App']['WatchDesktopBot'](arg1, arg2);
+}
+
+export function GetDesktopBotScreen(arg1) {
+  return window['go']['main']['App']['GetDesktopBotScreen'](arg1);
+}
+
+export function HandBackDesktopBot(arg1) {
+  return window['go']['main']['App']['HandBackDesktopBot'](arg1);
+}
+
+export function SetDesktopBotDesktopMode(arg1, arg2) {
+  return window['go']['main']['App']['SetDesktopBotDesktopMode'](arg1, arg2);
+}
+
+export function DesktopBotDesktopAdmin() {
+  return window['go']['main']['App']['DesktopBotDesktopAdmin']();
 }
 
 export function ReleaseDesktopBotWatch(arg1, arg2) {

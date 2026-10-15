@@ -12,16 +12,33 @@ import (
 // semanticClassificationNeedsTaskContext reports whether a fresh per-message
 // classification landed nowhere actionable. Only then may the host retry with
 // conversation context merged in — a clear new request must never be
-// rewritten by an older task's intent.
+// rewritten by an older task's intent. A degraded office hint whose runner-up
+// is the read it replaced is already that request.
 func semanticClassificationNeedsTaskContext(result *intent.ClassificationResult) bool {
 	if result == nil {
 		return false
 	}
 	if result.Degraded {
+		// A tree timeout is unconfirmed and may belong to the open task.
+		// An office leader kept over a read is already the write: the read
+		// was rejected because a staged image would answer it with no tools.
+		// Merging an older sentence back in rewrites that write.
+		if semanticOfficeGovernedHint(*result) && officeReadRunnerUp(result.RunnerUp) {
+			return false
+		}
 		return true
 	}
 	primary := result.Primary
 	return primary == "" || primary == intent.LabelUnknown || primary.IsNonCapabilityLabel()
+}
+
+func officeReadRunnerUp(label intent.IntentLabel) bool {
+	switch label {
+	case intent.LabelDocumentRead, intent.LabelFileRead, intent.LabelKnowledgeRead, intent.LabelScreenshot:
+		return true
+	default:
+		return false
+	}
 }
 
 // pendingAnswerPrefersTaskMerge reports whether a turn that answers a pending

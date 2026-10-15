@@ -510,20 +510,22 @@ describe('SidebarNavRail favorite employees', () => {
         expect(props.switchTool).toHaveBeenCalledWith('utilities');
     });
 
-    it('splits the AI Experts and Tools entries when the dedicated tools rail is enabled', () => {
+    it('keeps Tools inside the 专业功能 menu instead of a rail item', () => {
         const props = renderRail({ lang: 'zh-Hans', showToolsEntry: true });
 
         const expertsEntry = screen.getByTestId('sidebar-utilities-nav');
-        const toolsEntry = screen.getByTestId('sidebar-tools-nav');
         expect(expertsEntry.textContent).toContain('专业功能');
         expect(screen.getByTestId('sidebar-pro-features-icon')).toBeTruthy();
         expect(expertsEntry.textContent).not.toContain('AI 专家');
         expect(expertsEntry.textContent).not.toContain('专家&工具');
-        expect(toolsEntry.textContent).toContain('工具');
-        expect(toolsEntry.getAttribute('title')).toBe('工具');
+        expect(screen.queryByTestId('sidebar-tools-nav')).toBeNull();
 
-        fireEvent.click(toolsEntry);
+        fireEvent.click(expertsEntry);
+        const toolsItem = screen.getByTestId('pro-features-menu-tools');
+        expect(toolsItem.textContent).toContain('工具');
+        fireEvent.click(toolsItem);
         expect(props.switchTool).toHaveBeenCalledWith('tools');
+        expect(screen.queryByTestId('pro-features-popup-menu')).toBeNull();
     });
 
     it('defaults the utilities rail label to 专家&工具 in Simplified Chinese', () => {
@@ -842,6 +844,11 @@ describe('SidebarNavRail professional features menu', () => {
         expect(entry.getAttribute('aria-expanded')).toBe('true');
         expect(entry.getAttribute('aria-haspopup')).toBe('menu');
         expect(props.switchTool).not.toHaveBeenCalled();
+        expect(screen.getAllByRole('menuitem').map(item => item.getAttribute('data-testid'))).toEqual([
+            'pro-features-menu-utilities',
+            'pro-features-menu-workflows',
+            'pro-features-menu-tools',
+        ]);
 
         fireEvent.click(screen.getByTestId('pro-features-menu-utilities'));
         expect(props.switchTool).toHaveBeenCalledWith('utilities');
@@ -859,6 +866,7 @@ describe('SidebarNavRail professional features menu', () => {
         expect(screen.getByTestId('sidebar-utilities-nav').textContent).toContain('Features');
         expect(screen.getByTestId('pro-features-menu-utilities').textContent).toContain('AI Experts');
         expect(screen.getByTestId('pro-features-menu-workflows').textContent).toContain('Workflows');
+        expect(screen.getByTestId('pro-features-menu-tools').textContent).toContain('Tools');
         english.unmount();
 
         renderRail({ lang: 'zh-Hant', showToolsEntry: true });
@@ -866,15 +874,21 @@ describe('SidebarNavRail professional features menu', () => {
         expect(screen.getByTestId('sidebar-utilities-nav').textContent).toContain('專業功能');
         expect(screen.getByTestId('pro-features-menu-utilities').textContent).toContain('AI 專家');
         expect(screen.getByTestId('pro-features-menu-workflows').textContent).toContain('工作流');
+        expect(screen.getByTestId('pro-features-menu-tools').textContent).toContain('工具');
     });
 
-    it('marks the 专业功能 entry active on the experts and workflows pages', () => {
+    it('marks the 专业功能 entry active on the experts, workflows and tools pages', () => {
         const experts = renderRail({ lang: 'zh-Hans', showToolsEntry: true, navTab: 'utilities' });
         expect(screen.getByTestId('sidebar-utilities-nav').classList.contains('active')).toBe(true);
         expect(screen.getByTestId('sidebar-utilities-nav').getAttribute('aria-current')).toBe('page');
         experts.unmount();
 
-        renderRail({ lang: 'zh-Hans', showToolsEntry: true, navTab: 'workflows' });
+        const workflows = renderRail({ lang: 'zh-Hans', showToolsEntry: true, navTab: 'workflows' });
+        expect(screen.getByTestId('sidebar-utilities-nav').classList.contains('active')).toBe(true);
+        expect(screen.getByTestId('sidebar-utilities-nav').getAttribute('aria-current')).toBe('page');
+        workflows.unmount();
+
+        renderRail({ lang: 'zh-Hans', showToolsEntry: true, navTab: 'tools' });
         expect(screen.getByTestId('sidebar-utilities-nav').classList.contains('active')).toBe(true);
         expect(screen.getByTestId('sidebar-utilities-nav').getAttribute('aria-current')).toBe('page');
     });
@@ -884,45 +898,80 @@ describe('SidebarNavRail professional features menu', () => {
         fireEvent.click(screen.getByTestId('sidebar-utilities-nav'));
         expect(screen.getByTestId('pro-features-menu-utilities').getAttribute('aria-current')).toBe('page');
         expect(screen.getByTestId('pro-features-menu-workflows').getAttribute('aria-current')).toBeNull();
+        expect(screen.getByTestId('pro-features-menu-tools').getAttribute('aria-current')).toBeNull();
         view.unmount();
 
-        renderRail({ lang: 'zh-Hans', showToolsEntry: true, navTab: 'workflows' });
+        const workflows = renderRail({ lang: 'zh-Hans', showToolsEntry: true, navTab: 'workflows' });
         fireEvent.click(screen.getByTestId('sidebar-utilities-nav'));
         expect(screen.getByTestId('pro-features-menu-workflows').getAttribute('aria-current')).toBe('page');
         expect(screen.getByTestId('pro-features-menu-utilities').getAttribute('aria-current')).toBeNull();
+        expect(screen.getByTestId('pro-features-menu-tools').getAttribute('aria-current')).toBeNull();
         expect(document.activeElement).toBe(screen.getByTestId('pro-features-menu-workflows'));
+        workflows.unmount();
+
+        renderRail({ lang: 'zh-Hans', showToolsEntry: true, navTab: 'tools' });
+        fireEvent.click(screen.getByTestId('sidebar-utilities-nav'));
+        expect(screen.getByTestId('pro-features-menu-tools').getAttribute('aria-current')).toBe('page');
+        expect(screen.getByTestId('pro-features-menu-utilities').getAttribute('aria-current')).toBeNull();
+        expect(screen.getByTestId('pro-features-menu-workflows').getAttribute('aria-current')).toBeNull();
+        expect(document.activeElement).toBe(screen.getByTestId('pro-features-menu-tools'));
     });
 
-    it('opens the only remaining destination directly when workflow is disabled', () => {
+    it('keeps the menu when workflow is disabled because Tools remains', () => {
         const props = renderRail({ lang: 'zh-Hans', showToolsEntry: true, config: { show_workflow_entry: false } });
+        const entry = screen.getByTestId('sidebar-utilities-nav');
+
+        fireEvent.click(entry);
+
+        expect(screen.getByTestId('pro-features-popup-menu')).toBeTruthy();
+        expect(screen.getByTestId('pro-features-menu-utilities')).toBeTruthy();
+        expect(screen.getByTestId('pro-features-menu-tools')).toBeTruthy();
+        expect(screen.queryByTestId('pro-features-menu-workflows')).toBeNull();
+        expect(props.switchTool).not.toHaveBeenCalled();
+    });
+
+    it('keeps the menu when the experts entry is disabled because Tools remains', () => {
+        const props = renderRail({ lang: 'zh-Hans', showToolsEntry: true, showUtilitiesEntry: false });
+        const entry = screen.getByTestId('sidebar-utilities-nav');
+
+        fireEvent.click(entry);
+
+        expect(screen.getByTestId('pro-features-popup-menu')).toBeTruthy();
+        expect(screen.getByTestId('pro-features-menu-workflows')).toBeTruthy();
+        expect(screen.getByTestId('pro-features-menu-tools')).toBeTruthy();
+        expect(screen.queryByTestId('pro-features-menu-utilities')).toBeNull();
+        expect(props.switchTool).not.toHaveBeenCalled();
+    });
+
+    it('opens Tools directly when experts and workflows are both disabled', () => {
+        const props = renderRail({
+            lang: 'zh-Hans',
+            showToolsEntry: true,
+            showUtilitiesEntry: false,
+            config: { show_workflow_entry: false },
+        });
         const entry = screen.getByTestId('sidebar-utilities-nav');
 
         fireEvent.click(entry);
 
         expect(screen.queryByTestId('pro-features-popup-menu')).toBeNull();
         expect(entry.getAttribute('aria-haspopup')).toBeNull();
-        expect(props.switchTool).toHaveBeenCalledWith('utilities');
+        expect(props.switchTool).toHaveBeenCalledWith('tools');
     });
 
-    it('opens workflows directly when the experts entry is disabled', () => {
-        const props = renderRail({ lang: 'zh-Hans', showToolsEntry: true, showUtilitiesEntry: false });
-        const entry = screen.getByTestId('sidebar-utilities-nav');
-
-        fireEvent.click(entry);
-
-        expect(screen.queryByTestId('pro-features-popup-menu')).toBeNull();
-        expect(props.switchTool).toHaveBeenCalledWith('workflows');
-    });
-
-    it('hides 专业功能 when both destinations are disabled', () => {
+    it('keeps 专业功能 current when Tools is the only destination and that page is open', () => {
         renderRail({
             lang: 'zh-Hans',
             showToolsEntry: true,
             showUtilitiesEntry: false,
+            navTab: 'tools',
             config: { show_workflow_entry: false },
         });
+        const entry = screen.getByTestId('sidebar-utilities-nav');
 
-        expect(screen.getByTestId('sidebar-utilities-nav').getAttribute('style')).toContain('display: none');
+        expect(entry.classList.contains('active')).toBe(true);
+        expect(entry.getAttribute('aria-current')).toBe('page');
+        expect(entry.getAttribute('aria-haspopup')).toBeNull();
     });
 
     it('does not treat a disabled workflow page as the current professional feature', () => {

@@ -112,7 +112,7 @@ func TestConsumePendingAskUserAnswerReturnsWorkingState(t *testing.T) {
 		Timestamp:    time.Now(),
 		WorkingState: paused,
 	})
-	_, ws, ok := h.consumePendingAskUserAnswer("user-1", "A", entries)
+	_, ws, ok, _ := h.consumePendingAskUserAnswer("user-1", "A", entries)
 	if !ok || ws == nil || ws.Goal != "keep goal" {
 		t.Fatalf("ok=%v ws=%#v", ok, ws)
 	}

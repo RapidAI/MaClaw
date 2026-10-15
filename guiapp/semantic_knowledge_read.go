@@ -90,7 +90,7 @@ func (h *IMMessageHandler) readTrustedKnowledge(principalID, query string) (stri
 		return "", fmt.Errorf("trusted_knowledge_read_unavailable")
 	}
 	defer store.Close()
-	ctx, cancel := trustedKnowledgeReadContext(h.app.knowledgeContext())
+	ctx, cancel := trustedKnowledgeReadContext(knowledgeSearchContext(h.app.knowledgeContext()))
 	defer cancel()
 	owner, lineage, includeEmpty := knowledgeOwnerScope(principalID)
 	results, err := store.Search(ctx, knowledge.SearchOptions{

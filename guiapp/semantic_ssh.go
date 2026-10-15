@@ -195,14 +195,14 @@ func semanticTrustedSSHConnectSchema() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
-			"host":     strProp("Server hostname or IP to connect to."),
-			"user":     strProp("SSH login user."),
+			"host":     strProp("Server hostname, IP, or an OpenSSH config alias such as gpu84. An alias uses ~/.ssh/config, including its IdentityFile and ProxyJump."),
+			"user":     strProp("SSH login user. Omit it when host is an OpenSSH config alias that already sets User."),
 			"password": strProp("SSH password (or omit when using key auth configured host-side)."),
 			"port":     map[string]interface{}{"type": "integer", "description": "SSH port, default 22."},
 			"label":    strProp("Optional label for the saved host entry."),
 			"command":  strProp("Optional command to run on the session right after connecting (the session is reused when one is already connected)."),
 		},
-		"required":             []string{"host", "user"},
+		"required":             []string{"host"},
 		"additionalProperties": false,
 	}
 }
@@ -224,9 +224,11 @@ func semanticSSHSchemaIsConnectMode(schema map[string]interface{}) bool {
 // side. Canonicalization has already enforced the closed schema.
 func semanticTrustedSSHConnectArgsAllowed(args map[string]interface{}) (map[string]interface{}, error) {
 	host, _ := args["host"].(string)
-	user, _ := args["user"].(string)
-	if strings.TrimSpace(host) == "" || strings.TrimSpace(user) == "" {
-		return nil, fmt.Errorf("trusted_ssh_connect_host_user_required")
+	if strings.TrimSpace(host) == "" {
+		return nil, fmt.Errorf("trusted_ssh_connect_host_required")
+	}
+	if user, _ := args["user"].(string); strings.TrimSpace(user) == "" {
+		delete(args, "user")
 	}
 	return args, nil
 }

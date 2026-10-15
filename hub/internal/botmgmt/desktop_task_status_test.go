@@ -68,6 +68,14 @@ func TestDesktopTaskStatusQueryAndOfflineDelivery(t *testing.T) {
 	svc.admitReadyGrace = 20 * time.Millisecond
 	svc.Desktop = &desktopCounter{url: "http://dockerd.example:6081/vnc.html?autoconnect=1"}
 
+	idle, idleItems, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "后台在运行吗", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(idleItems) != 0 || idle != "现在没有在做的事。" || strings.Contains(idle, "没有找到") {
+		t.Fatalf("idle = %q %#v", idle, idleItems)
+	}
+
 	admission, err := svc.AdmitDesktopMessage(context.Background(), "tenant-a", "alice", "bot_alice", "下载报表并保存", "execute", "turn-1")
 	if err != nil {
 		t.Fatal(err)
@@ -79,8 +87,15 @@ func TestDesktopTaskStatusQueryAndOfflineDelivery(t *testing.T) {
 	if len(items) != 1 || items[0].Status != "running" || items[0].RunID != admission.RunID {
 		t.Fatalf("running query = %q %#v", text, items)
 	}
-	if !strings.Contains(text, "还在进行") || !strings.Contains(text, "下载报表") {
+	if !strings.Contains(text, "在做。这件是「") || !strings.Contains(text, "下载报表") || strings.Contains(text, "还在进行") {
 		t.Fatalf("running sentence = %q", text)
+	}
+	live, _, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "后台在运行吗", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(live, "在做。这件是「") || !strings.Contains(live, "下载报表") || strings.Contains(live, "没有找到") {
+		t.Fatalf("live sentence = %q", live)
 	}
 
 	gate.Lock()
@@ -115,14 +130,14 @@ func TestDesktopTaskStatusQueryAndOfflineDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(shown, "已经完成") || !strings.Contains(shown, "报表已下载") {
+	if !strings.Contains(shown, "已经做完") || !strings.Contains(shown, "报表已下载") || strings.Contains(shown, "没有找到") {
 		t.Fatalf("finished sentence = %q", shown)
 	}
 	miss, _, err := restarted.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "另一个完全无关的名字", "zh-Hans")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(miss, "没有找到") {
+	if !strings.Contains(miss, "我没对上你说的那件") || !strings.Contains(miss, "下载报表") || strings.Contains(miss, "没有找到") {
 		t.Fatalf("miss = %q", miss)
 	}
 	if err := restarted.AckDesktopTask(context.Background(), "tenant-a", "alice", "bot_alice", admission.RunID); err != nil {
@@ -149,6 +164,21 @@ func TestDesktopTaskStatusQueryAndOfflineDelivery(t *testing.T) {
 func TestDesktopTaskHintDropsStatusWords(t *testing.T) {
 	if got := desktopTaskHint("那个下载报表怎么样了"); got != "下载报表" {
 		t.Fatalf("hint = %q", got)
+	}
+	if got := desktopTaskHint("后台在运行吗"); got != "" {
+		t.Fatalf("generic run hint = %q", got)
+	}
+	if got := desktopTaskHint("现在在跑吗"); got != "" {
+		t.Fatalf("generic running hint = %q", got)
+	}
+	if got := desktopTaskHint("跑着吗"); got != "" {
+		t.Fatalf("generic going hint = %q", got)
+	}
+	if got := desktopTaskHint("运行窗口怎么样了"); got != "运行窗口" {
+		t.Fatalf("window name was swallowed: %q", got)
+	}
+	if got := desktopTaskHint("後台在跑嗎"); got != "" {
+		t.Fatalf("traditional generic hint = %q", got)
 	}
 	if got := desktopTaskHint("任务状态"); got != "" {
 		t.Fatalf("generic hint = %q", got)
@@ -210,5 +240,95 @@ func TestDesktopTaskStatusOrdersRunningThenNewest(t *testing.T) {
 	sortDesktopTaskStatus(items)
 	if items[0].RunID != "run" || items[1].RunID != "new" || items[2].RunID != "old" {
 		t.Fatalf("%#v", items)
+	}
+}
+
+func TestDesktopTaskQueryStripsLeadAndSpeaksEachLanguage(t *testing.T) {
+	settings := &memSettings{}
+	raw, err := json.Marshal(record{
+		Bots:   []Bot{{ID: "bot_alice", Name: "duty", InstanceID: "inst_alice", OwnerUserID: "alice"}},
+		Grants: []Grant{{ID: "g1", Scope: ScopeUser, TargetID: "alice"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := settings.Set(context.Background(), storageKey("tenant-a"), string(raw)); err != nil {
+		t.Fatal(err)
+	}
+	svc := NewService(settings)
+	for _, lang := range []struct{ lang, want string }{
+		{"en", "Nothing is running."},
+		{"zh-Hant", "現在沒有在做的事。"},
+	} {
+		got, items, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "后台在运行吗", lang.lang)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(items) != 0 || got != lang.want {
+			t.Fatalf("%s idle = %q %#v", lang.lang, got, items)
+		}
+	}
+
+	started := time.Date(2026, 10, 14, 1, 0, 0, 0, time.UTC)
+	lead := "现在就执行下面这项安排。同意已经给出：文中的「下一轮」「确认后」「等你点头」以及「不实际」「先不要」都是确认前的说法，现在按其中的动作做完，不要再陈述，也不要再征求确认。顺带提到的其他还在等待确认的事不要做。\n安装 Evince"
+	evince := &desktopAdmitState{
+		task: lead, status: "running", userID: "alice", botID: "bot_alice", runID: "run_evince", started: started,
+	}
+	other := &desktopAdmitState{
+		task: "打开百度", status: "running", userID: "alice", botID: "bot_alice", runID: "run_baidu", started: started.Add(time.Minute),
+	}
+	svc.desktopAdmits = map[string]*desktopAdmitState{
+		desktopAdmitKey("tenant-a", "alice", "bot_alice", "run_evince"): evince,
+		desktopAdmitKey("tenant-a", "alice", "bot_alice", "run_baidu"):  other,
+	}
+	several, items, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "后台在运行吗", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 || !strings.Contains(several, "在做这几件：") || !strings.Contains(several, "安装 Evince") || !strings.Contains(several, "打开百度") {
+		t.Fatalf("several = %q %#v", several, items)
+	}
+	if strings.Contains(several, "现在就执行") || strings.Contains(several, "不实际") || strings.Contains(several, "没有找到") {
+		t.Fatalf("lead leaked = %q", several)
+	}
+	for _, item := range items {
+		if strings.Contains(item.Task, "现在就执行") || strings.Contains(item.Task, "不实际") {
+			t.Fatalf("item task = %q", item.Task)
+		}
+	}
+
+	delete(svc.desktopAdmits, desktopAdmitKey("tenant-a", "alice", "bot_alice", "run_baidu"))
+	en, _, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "how's it going", "en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if en != `Working on "安装 Evince".` {
+		t.Fatalf("en = %q", en)
+	}
+	hant, _, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "後台在跑嗎", "zh-Hant")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if hant != "在做。這件是「安装 Evince」。" {
+		t.Fatalf("hant = %q", hant)
+	}
+	miss, _, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "另一个完全无关的名字", "en")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(miss, "I could not match that task.") || !strings.Contains(miss, "安装 Evince") || strings.Contains(miss, "No task matches") {
+		t.Fatalf("en miss = %q", miss)
+	}
+
+	evince.status = "succeeded"
+	evince.done = true
+	evince.finished = started.Add(time.Hour)
+	evince.reply.Text = "装好了"
+	done, _, err := svc.DesktopTaskQuery(context.Background(), "tenant-a", "alice", "bot_alice", "安装 Evince", "zh-Hans")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(done, "已经做完") || !strings.Contains(done, "装好了") || strings.Contains(done, "在做。这件是") {
+		t.Fatalf("done = %q", done)
 	}
 }

@@ -1,4 +1,5 @@
 import type { AIAssistantInitStatus, CancelAIAssistantResult, ChatMessage, AIAssistantActionRouteOptions } from "./useAIAssistant";
+import type { PromptHistoryAttachment } from "./promptHistory";
 import type { AgentView } from "./agentViewTypes";
 export type { GroupDiscussionPanelControl, GroupDiscussionPanelStatus } from "./groupDiscussionTypes";
 import type { GroupDiscussionPanelControl } from "./groupDiscussionTypes";
@@ -34,6 +35,8 @@ export interface AIAssistantPanelHookState {
     initStatus: AIAssistantInitStatus;
     selectedFilePaths: string[];
     submittedPrompts: string[];
+    /** Files attached to each submittedPrompts entry, same index order. */
+    submittedPromptAttachments?: PromptHistoryAttachment[][];
     draftInputValue: string;
     trialReflectEnabled: boolean;
     scrollToTopSeq: number;
@@ -75,7 +78,7 @@ export interface AIAssistantPanelHookActions {
     injectSupplementary: (text: string, sessionKey?: string) => Promise<boolean>;
     guideLaunchReference: (text: string, sessionKey?: string, launchId?: string) => Promise<boolean>;
     clearHistory: () => Promise<void>;
-    recordSubmittedPrompt: (text: string) => void;
+    recordSubmittedPrompt: (text: string, attachments?: PromptHistoryAttachment[]) => void;
     setDraftInputValue: (text: string) => void;
     executeAction: (command: string, routeOptions?: AIAssistantActionRouteOptions) => Promise<boolean | undefined | void>;
     refreshNews: () => void;

@@ -665,6 +665,15 @@ type ManagedSemanticTurn interface {
 	ManagedSemanticTurn() bool
 }
 
+// RequiredEffectGuard is an optional host callback. A tool-less stop is not
+// completion while a required external selection still has no settled
+// execution record. The loop does not insert a user message; the same tool
+// surface stays listed. A prose stop gets one more look; an empty stop
+// uses the empty-response bound. Either exhaustion is a hard exit, not success.
+type RequiredEffectGuard interface {
+	RequiredEffectUnsettled() bool
+}
+
 // EarlyStopper is an optional host callback for non-cancel stops (e.g. daily
 // LLM budget). Distinct from ShouldStop(), which maps to "cancelled".
 type EarlyStopper interface {
@@ -1009,6 +1018,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 		}
 	}
 	consecutiveEmpty := 0
+	unsettledNoToolStops := 0
 	const maxConsecutiveEmpty = 5
 	var lastToolName string         // track last tool name for empty-response recovery
 	var lastToolOutcome toolOutcome // structured outcome of last tool execution
@@ -2586,6 +2596,30 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 
 		// No tool calls → final answer.
 		if !hasToolCalls {
+			// A required external effect with no execution record is not a
+			// final answer. Continue on the same tool list without a new
+			// user message. A prose stop gets one more look; an empty stop
+			// uses the empty-response bound. Either exhaustion is a hard
+			// exit, not success.
+			if guard, ok := cb.(RequiredEffectGuard); ok && guard.RequiredEffectUnsettled() {
+				unsettledNoToolStops++
+				limit := maxConsecutiveEmpty
+				if strings.TrimSpace(content) != "" {
+					limit = 2
+				}
+				if unsettledNoToolStops >= limit || iteration+1 >= maxIter {
+					disposeSurface(ToolSurfaceResponseSettled)
+					return finish(LoopResult{
+						Text:       StripThinkingTags(content),
+						Error:      "required_effect_unsettled",
+						Iterations: iteration + 1,
+						ToolCalls:  totalToolCalls,
+						HardExit:   true,
+					})
+				}
+				disposeSurface(ToolSurfaceResponseSettled)
+				continue
+			}
 			// A malformed content tool-markup interception is a transport-level
 			// artifact, not a user-meaningful answer: the model tried to emit a
 			// tool call as raw markup and the llm layer replaced the content
@@ -2698,6 +2732,7 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 			disposeSurface(ToolSurfaceResponseSettled)
 			return finish(LoopResult{Text: finalText, Iterations: iteration + 1, ToolCalls: totalToolCalls})
 		}
+		unsettledNoToolStops = 0
 
 		// Persist a valid conversation prefix before any tool begins. A batch of
 		// known read-only tools cannot have changed state, so a crash during it

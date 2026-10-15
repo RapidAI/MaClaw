@@ -2,8 +2,8 @@ import { useCallback, useState, useEffect, useRef } from 'react';
 import { SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
 import { SystemPopupMenu, type SystemMenuItem } from './SystemPopupMenu';
 import type { FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
-import { BotRailIcon, CheckinRailIcon, ConnectMenuHardwareIcon, ConnectMenuIMIcon, ConnectMenuMailIcon, SystemIcon, AboutIcon, SkillsIcon, MCPIcon, GossipIcon, RankingIcon, MobileDocsIcon, KnowledgeIcon, LatexTemplateIcon, ExpertRailIcon, WorkflowIcon, InviteGiftIcon } from './SidebarNavIcons';
-import { SidebarBrandHeader, SidebarPrimaryNav, useNavMenuToggles } from './SidebarNavRailPieces';
+import { BotRailIcon, CheckinRailIcon, ConnectMenuHardwareIcon, ConnectMenuIMIcon, ConnectMenuMailIcon, SystemIcon, AboutIcon, SkillsIcon, MCPIcon, GossipIcon, RankingIcon, MobileDocsIcon, KnowledgeIcon, LatexTemplateIcon, ExpertRailIcon, WorkflowIcon, ToolsRailIcon, InviteGiftIcon } from './SidebarNavIcons';
+import { SidebarBrandHeader, SidebarPrimaryNav, useNavMenuToggles, visibleProFeatureTabs, type ProFeatureTab } from './SidebarNavRailPieces';
 import { openSettingsTab } from '../../utils/settingsNavigation';
 import { connectSoloActive } from '../../utils/settingsSolo';
 import { BrowserOpenURL } from '../../../wailsjs/runtime';
@@ -13,7 +13,7 @@ import { useInProgressBotTaskCount } from './useInProgressBotTaskCount';
 import { desktopBotAccountId } from '../bots/desktopBots';
 import { miniAppShortLabel } from '../../i18n/maclawMiniAppLabels';
 import type { SidebarHubCheckin } from '../../types/appShell';
-import { expertsNavLabel, expertsPageTitle, toolsNavLabel, toolsPageTitle, utilitiesNavLabel, utilitiesPageTitle } from '../../i18n/utilitiesLabels';
+import { expertsNavLabel, expertsPageTitle, toolsNavLabel, utilitiesNavLabel, utilitiesPageTitle } from '../../i18n/utilitiesLabels';
 import { HubInvitationDialog } from '../HubInvitationDialog';
 import { LATEX_TEMPLATES_NAV_TAB } from '../../utils/latexTemplates';
 
@@ -124,7 +124,6 @@ export const SidebarNavRail = ({
     const resolvedUtilitiesLabel = utilitiesLabel || (showToolsEntry ? expertsNavLabel(lang) : utilitiesNavLabel(lang));
     const resolvedUtilitiesTitle = showToolsEntry ? expertsPageTitle(lang) : utilitiesPageTitle(lang);
     const resolvedToolsLabel = toolsNavLabel(lang);
-    const resolvedToolsTitle = toolsPageTitle(lang);
     const systemLabel = lang === 'zh-Hans' ? zhHans.system : lang === 'zh-Hant' ? zhHant.system : 'System';
     // Background runs plus bot tasks still in progress. Scheduled tasks and
     // passthrough commands stay off this badge; they are not running.
@@ -182,20 +181,24 @@ export const SidebarNavRail = ({
         { id: 'knowledge', icon: <KnowledgeIcon />, label: knowledgeLabel, visible: true },
         { id: LATEX_TEMPLATES_NAV_TAB, icon: <LatexTemplateIcon />, label: latexTemplatesLabel, visible: true },
     ];
-    const proMenuItems: SystemMenuItem[] = [
-        { id: 'utilities', icon: <ExpertRailIcon marked={false} />, label: expertsMenuLabel, visible: showUtilitiesEntry },
-        { id: 'workflows', icon: <WorkflowIcon />, label: workflowLabel, visible: showWorkflowEntry },
-    ];
+    const proTabs = visibleProFeatureTabs({ showUtilitiesEntry, showWorkflowEntry, showToolsEntry });
+    const proMenuByTab: Record<ProFeatureTab, SystemMenuItem> = {
+        utilities: { id: 'utilities', icon: <ExpertRailIcon marked={false} />, label: expertsMenuLabel, visible: true },
+        workflows: { id: 'workflows', icon: <WorkflowIcon />, label: workflowLabel, visible: true },
+        tools: { id: 'tools', icon: <ToolsRailIcon />, label: resolvedToolsLabel, visible: true },
+    };
+    const proMenuItems = proTabs.map(id => proMenuByTab[id]);
     const { closeSiblingMenus, toggleSystemMenu, toggleExtensionsMenu, toggleLibraryMenu, toggleProMenu, toggleConnectMenu } = useNavMenuToggles({
         systemMenuOpen, extensionsMenuOpen, libraryMenuOpen, proMenuOpen, connectMenuOpen,
         systemMenuOpenerRef, extensionsMenuOpenerRef, libraryMenuOpenerRef, proMenuOpenerRef, connectMenuOpenerRef,
         setSystemMenuOpen, setExtensionsMenuOpen, setLibraryMenuOpen, setProMenuOpen, setConnectMenuOpen,
         setExtensionsMenuTop, setLibraryMenuTop, setProMenuTop, setConnectMenuTop,
     });
-    const proMenuChoices = (showUtilitiesEntry ? 1 : 0) + (showWorkflowEntry ? 1 : 0);
     useEffect(() => {
-        if ((!showToolsEntry || proMenuChoices < 2) && proMenuOpen) setProMenuOpen(false);
-    }, [showToolsEntry, proMenuChoices, proMenuOpen]);
+        // Split mode is what turns this rail entry into a menu. One remaining
+        // destination opens directly, so a one-item popup must not stay up.
+        if ((!showToolsEntry || proTabs.length < 2) && proMenuOpen) setProMenuOpen(false);
+    }, [showToolsEntry, proTabs.length, proMenuOpen]);
     // The popups are position fixed and stay at their open-time viewport spot;
     // scrolling the nav content under an open menu would leave it detached
     // from its trigger, so any scroll dismisses the menus.
@@ -241,7 +244,7 @@ export const SidebarNavRail = ({
                 the system trigger + popup menus below stay outside so they are
                 never clipped by the scroll container. */}
             <div className="mc-nav-rail__scroll" onScroll={handleRailScroll}>
-                <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showUtilitiesEntry={showUtilitiesEntry} showToolsEntry={showToolsEntry} switchTool={switchTool} extensionsLabel={extensionsLabel} extensionsMenuOpen={extensionsMenuOpen} onToggleExtensionsMenu={toggleExtensionsMenu} libraryMenuOpen={libraryMenuOpen} onToggleLibraryMenu={toggleLibraryMenu} knowledgeActive={knowledgeActive} latexTemplatesActive={latexTemplatesActive} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} toolsLabel={resolvedToolsLabel} toolsTitle={resolvedToolsTitle} runningTaskCount={runningTaskTotal} onOpenBackgroundTasks={onOpenBackgroundTasks} proMenuOpen={proMenuOpen} onToggleProMenu={toggleProMenu} proFeaturesLabel={proFeaturesLabel} showWorkflowEntry={showWorkflowEntry} connectLabel={connectLabel} connectTitle={connectTitle} connectMenuOpen={connectMenuOpen} onToggleConnectMenu={toggleConnectMenu} connectSoloActive={connectSolo} />
+                <SidebarPrimaryNav navTab={navTab} aiAssistantLabel={aiAssistantLabel} appsLabel={appsLabel} showAppEntry={showAppEntry} showUtilitiesEntry={showUtilitiesEntry} showToolsEntry={showToolsEntry} switchTool={switchTool} extensionsLabel={extensionsLabel} extensionsMenuOpen={extensionsMenuOpen} onToggleExtensionsMenu={toggleExtensionsMenu} libraryMenuOpen={libraryMenuOpen} onToggleLibraryMenu={toggleLibraryMenu} knowledgeActive={knowledgeActive} latexTemplatesActive={latexTemplatesActive} workflowLabel={workflowLabel} utilitiesLabel={resolvedUtilitiesLabel} utilitiesTitle={resolvedUtilitiesTitle} runningTaskCount={runningTaskTotal} onOpenBackgroundTasks={onOpenBackgroundTasks} proMenuOpen={proMenuOpen} onToggleProMenu={toggleProMenu} proFeaturesLabel={proFeaturesLabel} showWorkflowEntry={showWorkflowEntry} connectLabel={connectLabel} connectTitle={connectTitle} connectMenuOpen={connectMenuOpen} onToggleConnectMenu={toggleConnectMenu} connectSoloActive={connectSolo} />
                 <div className="snr-spacer" />
                 {hubCheckin?.enabled && (
                     <button
@@ -361,7 +364,7 @@ export const SidebarNavRail = ({
                     onClose={() => setProMenuOpen(false)}
                     returnFocus={() => proMenuOpenerRef.current}
                     ariaLabel={proFeaturesLabel}
-                    activeId={navTab === 'utilities' || navTab === 'workflows' ? navTab : undefined}
+                    activeId={(proTabs as readonly string[]).includes(navTab) ? navTab : undefined}
                     anchorTop={proMenuTop}
                     excludeTriggerSelector='[data-testid="sidebar-utilities-nav"]'
                     menuId="pro-features-popup-menu"

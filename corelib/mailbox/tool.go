@@ -513,6 +513,68 @@ var sendArgs = map[string]bool{
 	"subject": true, "text": true, "uid": true, "reply_all": true,
 }
 
+// SendShapeReason reports a call that cannot freeze a draft. It does not open
+// a mailbox or spend a send. A one-shot grant must be refused before admission
+// when this is non-empty: the host would reject the same call only after the
+// grant was already consumed.
+func SendShapeReason(args map[string]interface{}) string {
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	switch strings.TrimSpace(stringArg(args, "action")) {
+	case "send":
+		if reason := recipientListReason(args["to"], true); reason != "" {
+			if reason == "mailbox_send_recipient_required" {
+				return "mailbox_send_message_required"
+			}
+			return reason
+		}
+		if reason := recipientListReason(args["cc"], false); reason != "" {
+			return reason
+		}
+		if reason := recipientListReason(args["bcc"], false); reason != "" {
+			return reason
+		}
+		if strings.TrimSpace(stringArg(args, "subject")) == "" || strings.TrimSpace(stringArg(args, "text")) == "" {
+			return "mailbox_send_message_required"
+		}
+	case "reply":
+		if _, ok := uintArg(args, "uid"); !ok || strings.TrimSpace(stringArg(args, "text")) == "" {
+			return "mailbox_send_reply_required"
+		}
+	case "forward":
+		if _, ok := uintArg(args, "uid"); !ok {
+			return "mailbox_send_forward_required"
+		}
+		if reason := recipientListReason(args["to"], true); reason != "" {
+			return reason
+		}
+		if reason := recipientListReason(args["cc"], false); reason != "" {
+			return reason
+		}
+		if reason := recipientListReason(args["bcc"], false); reason != "" {
+			return reason
+		}
+	default:
+		return "mailbox_send_action_required"
+	}
+	return ""
+}
+
+func recipientListReason(raw interface{}, required bool) string {
+	list, err := normalizeRecipients(stringList(raw))
+	if err != nil {
+		return "mailbox_send_recipient_invalid"
+	}
+	if len(list) > SendMaxRecipients {
+		return "mailbox_send_recipient_limit"
+	}
+	if required && len(list) == 0 {
+		return "mailbox_send_recipient_required"
+	}
+	return ""
+}
+
 func rejectArgs(args map[string]interface{}, allow map[string]bool) error {
 	return rejectArgsMode(args, allow, false)
 }

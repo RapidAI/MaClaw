@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeEach, describe, expect, it } from 'vitest';
-import { addDesktopBot, botsForUser, botTaskText, botTranscriptGeneration, clearLiveBotTurn, confirmedWorkOrder, currentInProgressBotTasks, deleteDesktopBot, desktopBotAccountId, desktopBotFiles, desktopBotImages, desktopBotLocalPaths, desktopCreditReadout, desktopTaskStep, inProgressBotTasks, messageNeedsComputerTakeover, messagesForBot, namesLaterTime, noteLiveBotTurn, renameDesktopBot, saveBotMessages, settlePendingBotReply, userRequestBefore, BOT_PENDING_REPLY_WAIT_MS } from './desktopBots';
+import { addDesktopBot, appendDesktopBotReport, botsForUser, botTaskText, botTranscriptGeneration, clearLiveBotTurn, confirmedWorkOrder, currentInProgressBotTasks, deleteDesktopBot, desktopBotAccountId, desktopBotActivityText, desktopBotAdmittingSentence, desktopBotAskingLabel, desktopBotCrossTargetText, desktopBotDestructive, desktopBotFiles, desktopBotImages, desktopBotLocalControl, desktopBotLocalPaths, desktopBotNoticeSeen, desktopBotRunningSentence, desktopBotStatusUnreachableSentence, desktopBotStopFailedSentence, desktopBotStopIdleSentence, desktopBotStoppedSentence, desktopBotTaskHint, desktopBotTypedConfirmSentence, desktopBotWorkingLabel, desktopCreditReadout, desktopTaskStep, inProgressBotTasks, markDesktopBotNotice, messageNeedsComputerTakeover, messagesForBot, namesLaterTime, noteLiveBotTurn, renameDesktopBot, saveBotMessages, settlePendingBotReply, userRequestBefore, BOT_PENDING_REPLY_WAIT_MS } from './desktopBots';
 
 beforeEach(() => {
     localStorage.clear();
@@ -9,9 +9,9 @@ beforeEach(() => {
 describe('desktop bots', () => {
     it('turns an approved arrangement into the execute order', () => {
         const plan = '下一轮就去跑 apt get install evince，把 PDF 阅读器装上。';
-        expect(confirmedWorkOrder(plan)).toContain(plan);
-        expect(confirmedWorkOrder(plan)).toContain('不实际');
-        expect(confirmedWorkOrder(plan)).toContain('不要做');
+        expect(confirmedWorkOrder(plan)).toBe(plan);
+        expect(confirmedWorkOrder(`  ${plan}  `)).toBe(plan);
+        expect(confirmedWorkOrder(plan)).not.toContain('现在就执行下面这项安排');
         expect(confirmedWorkOrder('  ')).toBe('');
         expect(namesLaterTime(plan)).toBe(false);
         expect(namesLaterTime('安装一个pdf阅读器')).toBe(false);
@@ -628,5 +628,80 @@ describe('desktop bots', () => {
             authorized: true,
             windows: [{ limit: 400, used: 320 }],
         })?.notice).toBe('low');
+    });
+
+    it('treats a generic how-is-it-going question as status and an exact stop as stop', () => {
+        expect(desktopBotLocalControl('后台在运行吗？')).toBe('status');
+        expect(desktopBotLocalControl('任务现在怎么样了')).toBe('status');
+        expect(desktopBotLocalControl('后台在跑吗')).toBe('status');
+        expect(desktopBotTaskHint('后台在运行吗？')).toBe('');
+        expect(desktopBotTaskHint('那个下载报表怎么样了')).toBe('下载报表');
+        expect(desktopBotLocalControl('那个下载报表怎么样了')).toBe('');
+        expect(desktopBotTaskHint('运行窗口')).toBe('运行窗口');
+        expect(desktopBotLocalControl('运行窗口')).toBe('');
+        expect(desktopBotLocalControl('把 Evince 装上')).toBe('');
+        for (const word of ['停', '停下', '别做了', '取消']) expect(desktopBotLocalControl(word)).toBe('stop');
+        expect(desktopBotLocalControl('  取消  ')).toBe('stop');
+        expect(desktopBotLocalControl('别装了')).toBe('');
+        expect(desktopBotLocalControl('取消任务')).toBe('');
+        expect(desktopBotRunningSentence(['安装 Evince'], 'zh-Hans')).toBe('在做。这件是「安装 Evince」。');
+        expect(desktopBotRunningSentence(['安装 Evince', '下载报表'], 'zh-Hans')).toBe('在做这几件：\n安装 Evince\n下载报表');
+        expect(desktopBotRunningSentence(['安装 Evince'], 'zh-Hant')).toBe('在做。這件是「安装 Evince」。');
+        expect(desktopBotAdmittingSentence('zh-Hans')).toBe('刚接下，还在交给后台。');
+        expect(desktopBotStoppedSentence(['安装 Evince'], false, 'zh-Hans')).toBe('停了。安装 Evince 不再继续。');
+        expect(desktopBotStoppedSentence(['安装 Evince'], true, 'zh-Hans')).toBe('停了。后面还有一件记下的，你要的话我再做。');
+        expect(desktopBotStopIdleSentence('zh-Hans')).toBe('现在没有在做的事，不用停。');
+        expect(desktopBotStopFailedSentence('还在交给后台', 'zh-Hans')).toBe('没停下来：还在交给后台。');
+        expect(desktopBotTypedConfirmSentence('zh-Hans')).toBe('点安排下面那个按钮就行，打这句不会开始。');
+        expect(desktopBotStatusUnreachableSentence('zh-Hans')).toBe('刚才没问到后台，你再说一次。');
+    });
+
+    it('treats install, delete, pay, and wipe as destructive and keeps a cross note once', () => {
+        expect(desktopBotDestructive('安装一个pdf阅读器')).toBe(true);
+        expect(desktopBotDestructive('请 uninstall 这个包')).toBe(true);
+        expect(desktopBotDestructive('please install it')).toBe(true);
+        expect(desktopBotDestructive('打开示例网站')).toBe(false);
+        expect(desktopBotDestructive('安装包的说明')).toBe(true);
+        expect(desktopBotCrossTargetText('notify', '到了')).toBe('主 Bot 说：到了');
+        expect(desktopBotCrossTargetText('delegate', '装一下')).toBe('主 Bot 交代：装一下');
+        expect(desktopBotAskingLabel('all', [])).toBe('这些 Bot');
+        expect(desktopBotAskingLabel('bot_6', [{ id: 'bot_6', title: 'Bot 6' }])).toBe('Bot 6');
+        expect(desktopBotActivityText('正在输入')).toBe('正在输入');
+        expect(desktopBotActivityText('正在点击')).toBe('正在点击');
+        expect(desktopBotActivityText('正在处理')).toBe('');
+        expect(desktopBotActivityText('正在一点点推进')).toBe('');
+        expect(desktopBotActivityText('正在输入 hello')).toBe('');
+        expect(desktopBotWorkingLabel('', '')).toBe('正在一点点推进');
+        expect(desktopBotWorkingLabel('', '正在输入')).toBe('正在输入');
+        expect(desktopBotWorkingLabel('这些 Bot', '正在输入')).toBe('正在询问 这些 Bot');
+        expect(desktopBotWorkingLabel('', '正在处理')).toBe('正在一点点推进');
+        appendDesktopBotReport('alice', 'bot_6', {
+            content: '主 Bot 交代：装一下',
+            failed: false,
+            requestId: 'n1:target',
+            phase: 'plan',
+            workOrder: '安装一个pdf阅读器',
+            crossNoteId: 'n1',
+        });
+        appendDesktopBotReport('alice', 'bot_6', {
+            content: '主 Bot 交代：装一下',
+            failed: false,
+            requestId: 'n1:target',
+            phase: 'plan',
+            workOrder: '安装一个pdf阅读器',
+            crossNoteId: 'n1',
+        });
+        const landed = messagesForBot('alice', 'bot_6');
+        expect(landed).toHaveLength(1);
+        expect(landed[0]?.phase).toBe('plan');
+        expect(landed[0]?.workOrder).toBe('安装一个pdf阅读器');
+        expect(landed[0]?.crossNoteId).toBe('n1');
+        expect(landed[0]?.chat).toBeUndefined();
+        appendDesktopBotReport('alice', 'bot_1', { content: '到点了', failed: false, requestId: 'desktop-bot-sched-1' });
+        expect(messagesForBot('alice', 'bot_1')[0]?.phase).toBeUndefined();
+        expect(desktopBotNoticeSeen('alice', 'n1:from')).toBe(false);
+        markDesktopBotNotice('alice', 'n1:from');
+        expect(desktopBotNoticeSeen('alice', 'n1:from')).toBe(true);
+        expect(desktopBotNoticeSeen('alice', 'n1:target')).toBe(false);
     });
 });

@@ -191,8 +191,12 @@ func TestSemanticTrustedSSHConnectArgsValidation(t *testing.T) {
 	if _, err := semanticTrustedSSHConnectArgsAllowed(map[string]interface{}{"user": "root"}); err == nil {
 		t.Fatal("missing host must be rejected")
 	}
-	if _, err := semanticTrustedSSHConnectArgsAllowed(map[string]interface{}{"host": "h", "user": "  "}); err == nil {
-		t.Fatal("blank user must be rejected")
+	blankUser, err := semanticTrustedSSHConnectArgsAllowed(map[string]interface{}{"host": "h", "user": "  "})
+	if err != nil {
+		t.Fatalf("blank user is filled from OpenSSH config, got %v", err)
+	}
+	if _, ok := blankUser["user"]; ok {
+		t.Fatal("blank user must be omitted so OpenSSH config can fill it")
 	}
 	args, err := semanticTrustedSSHConnectArgsAllowed(map[string]interface{}{"host": "h", "user": "root", "password": "x", "port": float64(22)})
 	if err != nil {

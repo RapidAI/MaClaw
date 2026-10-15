@@ -1648,6 +1648,8 @@ export function ListLocalMCPServers():Promise<Array<main.LocalMCPServerView>>;
 
 export function ListMCPServers():Promise<Array<main.MCPServerView>>;
 
+export function ListInstalledNotReviewedMCPProviders():Promise<main.InstalledNotReviewedMCPView>;
+
 export function ListMaclawAppApprovalInstances(arg1:string,arg2:string,arg3:number):Promise<Array<main.maclawAppApprovalInstance>>;
 
 export function ListMaclawAppApprovalInstancesAll(arg1:string,arg2:number):Promise<Array<main.maclawAppApprovalInstance>>;
@@ -2292,7 +2294,7 @@ export function SendBtwQuery(arg1:string,arg2:string):Promise<main.IMAgentRespon
 
 export function SendDesktopBotTask(arg1:string,arg2:string,arg3:string):Promise<main.IMAgentResponse>;
 
-export function UnderstandDesktopBotTask(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:string):Promise<{told:string,instruction:string,pace?:string,persona?:string,reading?:string,schedule?:{name?:string,mode?:string,interval_minutes?:number,hour?:number,minute?:number,day_of_week?:number}}>;
+export function UnderstandDesktopBotTask(arg1:string,arg2:string,arg3:string,arg4:Array<string>,arg5:string,arg6?:string):Promise<{told:string,instruction:string,pace?:string,persona?:string,reading?:string,schedule?:{name?:string,mode?:string,interval_minutes?:number,hour?:number,minute?:number,day_of_week?:number},cross?:{kind?:string,target?:string,text?:string,order?:string}}>;
 
 export function EvaluateDesktopTaskSupplement(arg1:string,arg2:string,arg3:string):Promise<{is_supplement:boolean,reason?:string,instruction?:string}>;
 
@@ -2308,17 +2310,33 @@ export function PersistDesktopBotPreference(arg1:string,arg2:string):Promise<voi
 
 export function QueryDesktopBotTaskStatus(arg1:string,arg2:string,arg3:string):Promise<string>;
 
+export function CancelDesktopBotRun(arg1:string,arg2:string):Promise<void>;
+
+export function ArmDesktopBotAdmitCancel(arg1:string):Promise<void>;
+
 export function PullDesktopBotDeliveries():Promise<void>;
 
 export function ArmDesktopBotSchedule(arg1:string,arg2:string,arg3:string,arg4:string,arg5:number,arg6:number,arg7:number,arg8:number):Promise<string>;
 
 export function ListDesktopBotSchedules(arg1:string):Promise<Array<{id:string,name:string,action:string,interval_minutes:number,hour:number,minute:number,day_of_week:number,next_run_at?:string,status?:string}>>;
 
+export function ListDesktopBotTasks(arg1:string):Promise<Array<{run_id:string,bot_id:string,status:string,task:string}>>;
+
 export function DeleteDesktopBotSchedule(arg1:string,arg2:string):Promise<void>;
 
 export function DesktopBotAccess():Promise<{enabled:boolean,message?:string}>;
 
-export function ListDesktopBots():Promise<Array<{id:string,title:string,description:string,instance_id:string,created_at:string}>>;
+export function ListDesktopBots():Promise<Array<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean}>>;
+
+export function SetDesktopBotPrimary(arg1:string):Promise<Array<{id:string,title:string,description:string,instance_id:string,created_at:string,primary?:boolean}>>;
+
+export function PostDesktopBotCross(arg1:string,arg2:string,arg3:string,arg4:string,arg5:string,arg6:string):Promise<{posted:boolean,ask?:string,primary_line?:string,names?:Array<string>,notes?:Array<{id:string,from?:string,target?:string,kind?:string,text?:string,order?:string,reply_to?:string}>}>;
+
+export function PullDesktopBotCrossNotes():Promise<Array<{id:string,owner?:string,from?:string,target?:string,kind?:string,text?:string,order?:string,created_at?:string,started_at?:string,run_id?:string,reply_to?:string}>>;
+
+export function ClaimDesktopBotCrossStart(arg1:string,arg2:string):Promise<{claimed:boolean,id?:string,from?:string,target?:string,kind?:string,text?:string,order?:string,started_at?:string,run_id?:string}>;
+
+export function ArmDesktopBotCrossRun(arg1:string,arg2:string):Promise<void>;
 
 export function CreateDesktopBot(arg1:string,arg2:string):Promise<{id:string,title:string,description:string,instance_id:string,created_at:string}>;
 
@@ -2786,7 +2804,15 @@ export function TokenBankPreviewGiftLink(arg1:string):Promise<Record<string, any
 export function TokenBankClaimGiftLink(arg1:string):Promise<Record<string, any>>;
 export function TokenBankWithdrawGift(arg1:string,arg2:string,arg3:number):Promise<Record<string, any>>;
 
-export function WatchDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string}>;
+export function WatchDesktopBot(arg1:string,arg2:number):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string,desktop_mode?:string}>;
+
+export function GetDesktopBotScreen(arg1:string):Promise<{novnc_url:string,user_control:boolean,attention_reason?:string,desktop_mode:string}>;
+
+export function HandBackDesktopBot(arg1:string):Promise<{handed_back:boolean,accepted?:boolean,run_id?:string,status?:string,client_message_id?:string}>;
+
+export function SetDesktopBotDesktopMode(arg1:string,arg2:string):Promise<string>;
+
+export function DesktopBotDesktopAdmin():Promise<boolean>;
 
 export function ReleaseDesktopBotWatch(arg1:string,arg2:number):Promise<void>;
 

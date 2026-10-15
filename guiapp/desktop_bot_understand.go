@@ -50,6 +50,10 @@ type DesktopBotUnderstanding struct {
 	// failure is observed, and no layer has to guess it back out of an error
 	// string; the model cannot set it either.
 	Reading string `json:"reading,omitempty"`
+	// Cross is set only when this bot is the primary and the message tells
+	// another bot something or hands it work. It is not a pace. A non-primary
+	// reading may still carry one; the client drops it and does not post.
+	Cross *DesktopBotCross `json:"cross,omitempty"`
 }
 
 // The reading of a message is a helper for the turn, not the turn itself, so a
@@ -137,7 +141,7 @@ instruction is the work order for the worker that drives this person's cloud des
 
 pace is direct, confirm, ask, reply, schedule, or status.
 - direct: the request is clear and this turn can finish it. A lookup, a screenshot, opening or reading a named page, writing or revising a file they already described, a small change they spelled out. told says you are doing it now. instruction is the concrete work. A document they asked for uses desktop action=deliver. A file already on the desktop, including a pdf, uses path so the chat receives that file. Text to send uses name and content. Do not leave a confirmation. A request that names a later time or a repeat is schedule, not direct.
-- confirm: the change is large or hard to undo, and they have not already approved it. Installing or removing software, deleting, paying, sending on their behalf, wiping, or a long procedure. told is the one arrangement. instruction tells the worker to state that one arrangement and not to make the change on this turn. There is no second confirmation. A large or hard-to-undo change that also names a time stays confirm, and schedule is omitted. After they approve, the execute reading is direct and instruction is that concrete work. It is schedule only when the confirmed work itself names a later time or a repeat.
+- confirm: the change is large or hard to undo, and they have not already approved it. Installing or removing software, deleting, paying, sending on their behalf, wiping, or a long procedure. told is the one arrangement, in one or two sentences. instruction is the concrete work the worker will do after they approve: the outcome, the steps that matter, and what the reply must contain. Do not tell the worker to only describe the arrangement, to skip the change, or to wait for another confirmation. There is no second confirmation. A large or hard-to-undo change that also names a time stays confirm, and schedule is omitted. After they approve, the execute reading is direct and instruction is that concrete work. It is schedule only when the confirmed work itself names a later time or a repeat.
 - ask: a fact only this person knows is missing, or they must finish a login, captcha, payment, or consent. told is that one question. instruction repeats the question. Do not offer a menu of methods. A missing clock time or a missing repeat is ask only when you cannot tell when the work should run.
 - reply: Small talk and other short answers that need no desktop, no file, and no lookup. A greeting, thanks, a question about who this bot is, or an identity with no desktop work. told is the whole answer this person sees. When a persona is already kept, the answer uses it. Leave instruction empty. Do not change persona unless this message tells you a new identity. There is no desktop job and no confirmation. A lookup, a file, a screenshot, or any desktop action is not reply. A greeting, thanks, or other short answer that names a later time or a repeat is schedule, not reply. If the same message also asks for desktop work, this is not reply: pace is direct, confirm, or schedule from that work, and instruction is only that work.
 - schedule: they want work at a later time or on a repeat, or they want that timed work stopped. A clear one is armed on this turn. told says it is set or stopped. instruction is the order for one later run. Do not ask them to confirm a clear schedule. Do not do the work in told.
@@ -157,11 +161,8 @@ When a persona is already kept and this message is desktop work:
 
 The phase is a fact about this turn:
 - plan: choose pace from the latest message. A clear request is direct, even when it opens a page or delivers a file. A clear timed or repeating request is schedule. confirm is only for a large or hard-to-undo change. ask is only when you cannot proceed without this person. reply is small talk, a question about who this bot is, or an identity with no desktop work. reply does not call the worker. status is a question about work already started or finished. status does not call the worker and does not invent the answer.
-When earlier messages contain a task being planned or arranged, and the latest message provides supplementary information, additional requirements, constraints, filters, or modifications (e.g. adding filtering criteria, changing output format, adding steps), do not treat it as an isolated request. Seamlessly fuse and synthesize the earlier task and the supplementary requirements into a complete, updated work order in instruction, and present the updated arrangement in told. If the task was awaiting confirmation or is a multi-step arrangement, keep pace as confirm (or direct if clear and safe) so the person can review the updated plan. When an earlier job is already underway and the latest message is a different job, do not fold it into that job, do not stop that job, and do not tell them to wait until it finishes. instruction is only the new job. told says this job has started and the earlier one keeps going; they do not interrupt each other. A constraint, filter, or correction of the job already underway is still fused into that job. Otherwise classify the latest message on its own. Earlier user messages explain a pronoun or a question you already asked. They are not a reason to repeat an earlier desktop job. If the latest message is small talk, pace is reply even when an earlier job is unfinished.
+When earlier messages contain a task being planned or arranged, and the latest message provides supplementary information, additional requirements, constraints, filters, or modifications (e.g. adding filtering criteria, changing output format, adding steps), do not treat it as an isolated request. Seamlessly fuse and synthesize the earlier task and the supplementary requirements into a complete, updated work order in instruction, and present the updated arrangement in told. If the task was awaiting confirmation or is a multi-step arrangement, keep pace as confirm (or direct if clear and safe) so the person can review the updated plan. When an earlier job is already underway and the latest message is a different job, do not fold it into that job and do not stop that job. instruction is only the new job. told says this one waits until the job already underway finishes. Do not say the new job has started. A constraint, filter, or correction of the job already underway is still fused into that job. Otherwise classify the latest message on its own. Earlier user messages explain a pronoun or a question you already asked. They are not a reason to repeat an earlier desktop job. If the latest message is small talk, pace is reply even when an earlier job is unfinished.
 - execute: they already confirmed, or this is the direct work. pace is direct, unless the confirmed work is itself timed or repeating: then pace is schedule and schedule carries that time. instruction is the concrete work taken from the earlier messages and this message. Do the work now. Do not ask them to confirm again. Use ask only when a fact still blocks the work.
-
-The confirmation control is exactly: 安排已确认。请按你上一条安排执行。做完、失败或需要我时，在对话里告诉我。
-When the latest message is that sentence, the task is the earlier user messages. That sentence is not the task. pace is direct and the order does the work now, unless that earlier work itself names a later time or a repeat: then pace is schedule and schedule carries that time.
 
 Do not ask this person to choose a method. Do not reuse a stock sentence. Do not match the message against a list of phrases. Do not add keys other than schedule, markdown, or text outside the JSON object. instruction and persona may be empty strings. told may be empty only when pace is status. Otherwise told may not.`
 
@@ -204,13 +205,23 @@ func callDesktopBotUnderstandLLM(ctx context.Context, app *App, req desktopBotUn
 // sent in its place, and the missing reading does not take the turn down with
 // it. The result is empty except for Reading, which names what happened so the
 // caller can decide what to do with the person's own words.
-func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []string, persona string) (*DesktopBotUnderstanding, error) {
+//
+// catalog is one JSON object naming the account's bots. Wails unmarshals each
+// argument into that parameter's own type. A variadic parameter is a slice,
+// and the page's string is then rejected before the reading starts.
+func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []string, persona, catalog string) (*DesktopBotUnderstanding, error) {
 	text := strings.TrimSpace(content)
 	if text == "" {
 		return nil, fmt.Errorf("message text is required")
 	}
 	phase = desktopBotPhase(phase)
 	lang = strings.TrimSpace(lang)
+	// The old approval sentence is not a task and not an approval. Typing it
+	// does not call the model and does not rebuild an order from earlier lines.
+	if text == desktopBotConfirmTask {
+		log.Printf("[desktop-bot-understand] confirm sentence ignored phase=%s text_len=%d", phase, utf8.RuneCountInString(text))
+		return &DesktopBotUnderstanding{Reading: desktopBotReadingUnread}, nil
+	}
 	if pass, ok := desktopBotProtocolUnderstanding(text, phase); ok {
 		log.Printf("[desktop-bot-understand] protocol=yes phase=%s text_len=%d", phase, utf8.RuneCountInString(text))
 		return pass, nil
@@ -225,7 +236,13 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 	if ms != nil {
 		userPref = ms.UserPreferenceSummaryForPrompt(memory.UserPreferenceSummaryPromptOptions{MaxRunes: 300})
 	}
+	roster := parseDesktopBotRoster(catalog)
 	userPrompt := desktopBotUnderstandUser(text, phase, lang, earlier, persona, userPref)
+	systemPrompt := desktopBotUnderstandSystem
+	if rosterPrimary(roster) {
+		systemPrompt += "\n\n" + desktopBotCrossSystem
+		userPrompt += desktopBotRosterPrompt(roster)
+	}
 	started := time.Now()
 	deadline := started.Add(desktopBotReadBudget)
 	ctx, cancel := context.WithDeadline(context.Background(), deadline)
@@ -245,7 +262,7 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 			timeoutSec = 1
 		}
 		raw, err := desktopBotUnderstandLLM(ctx, a, desktopBotUnderstandRequest{
-			systemPrompt: desktopBotUnderstandSystem,
+			systemPrompt: systemPrompt,
 			userPrompt:   userPrompt,
 			timeoutSec:   timeoutSec,
 		})
@@ -255,8 +272,13 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 			// Retry only what waiting is likely to fix, and only while most of
 			// the budget is unspent: a fault that shows up after tens of
 			// seconds of generation is not going to be answered in the
-			// remainder either.
+			// remainder either. An upstream that named a wait is given that
+			// wait first, capped so the next attempt still has room.
 			if attempt < desktopBotReadAttempts && desktopBotReadFaultClears(err) && time.Until(deadline)*2 > desktopBotReadBudget {
+				if wait := desktopBotReadRetryWait(err, deadline); wait > 0 {
+					log.Printf("[desktop-bot-understand] phase=%s attempt=%d waiting=%s for upstream retry hint", phase, attempt, wait.Round(time.Millisecond))
+					desktopBotReadSleep(ctx, wait)
+				}
 				continue
 			}
 			return desktopBotConfirmOrLost(desktopBotReadingUnreachable, "no answer", text, phase, earlier), nil
@@ -268,6 +290,7 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 			return desktopBotConfirmOrLost(desktopBotReadingUnread, "answer was not a reading", text, phase, earlier), nil
 		}
 		understood.Pace = desktopBotPace(understood.Pace, phase)
+		finishDesktopBotCross(understood, roster)
 		if err := normalizeDesktopBotSchedule(understood); err != nil {
 			log.Printf("[desktop-bot-understand] phase=%s pace=%s attempt=%d elapsed=%s earlier=%d text_len=%d schedule_err=%v",
 				phase, understood.Pace, attempt, time.Since(started).Round(time.Millisecond), len(earlier), utf8.RuneCountInString(text), err)
@@ -289,48 +312,10 @@ func (a *App) UnderstandDesktopBotTask(content, phase, lang string, earlier []st
 	return desktopBotConfirmOrLost(desktopBotReadingUnreachable, "budget spent", text, phase, earlier), nil
 }
 
-// desktopBotConfirmedOrderLead is the worker order for an approval whose
-// reading produced no usable instruction. The arrangement often still says
-// the work waits, or that this round will not do it.
-const desktopBotConfirmedOrderLead = "现在就执行下面这项安排。同意已经给出：文中的「下一轮」「确认后」「等你点头」以及「不实际」「先不要」都是确认前的说法，现在按其中的动作做完，不要再陈述，也不要再征求确认。顺带提到的其他还在等待确认的事不要做。"
-
-// desktopBotLaterTime is the same gate as the confirm button. A large change
-// that also names a time must not run on this turn when its reading failed.
-var desktopBotLaterTime = regexp.MustCompile(`(?i)每(?:分钟|分鐘|小时|小時|天|周|週|月|年|个工作日|個工作日|隔)|定时|定時|凌晨|午夜|点半|點半|\d{1,2}\s*[:：]\s*\d{2}|\d{1,2}\s*[点點]|every\s+(?:day|hour|minute|week)|daily|weekly|hourly`)
-
-// desktopBotConfirmOrLost keeps a confirmed job when the second reading fails.
-// The person already approved an arrangement. An empty reading or no answer
-// must not drop that job. A schedule that names no time stays unscheduled:
-// running that job immediately would do a timed change on this turn.
+// desktopBotConfirmOrLost reports a reading that was not made. It does not
+// rebuild an order from the stock confirmation sentence or from earlier lines.
 func desktopBotConfirmOrLost(class, outcome, text, phase string, earlier []string) *DesktopBotUnderstanding {
-	if class != desktopBotReadingUnscheduled && text == desktopBotConfirmTask && phase == "execute" {
-		if order := desktopBotApprovedTask(earlier); order != "" && !desktopBotLaterTime.MatchString(order) {
-			log.Printf("[desktop-bot-understand] confirm kept earlier task phase=%s class=%s order_len=%d", phase, class, utf8.RuneCountInString(order))
-			return &DesktopBotUnderstanding{
-				Instruction: desktopBotConfirmedOrderLead + "\n" + order,
-				Pace:        "direct",
-			}
-		}
-	}
 	return desktopBotReadingLost(class, outcome, text, phase, len(earlier))
-}
-
-// desktopBotApprovedTask is the request the confirmation approves. Protocol
-// lines are not tasks. The latest remaining line is the one just arranged;
-// older lines are other jobs and are not started again from this approval.
-func desktopBotApprovedTask(earlier []string) string {
-	last := ""
-	for _, line := range earlier {
-		line = strings.TrimSpace(line)
-		if line == "" || line == desktopBotConfirmTask || line == desktopBotReturnTask {
-			continue
-		}
-		if desktopBotSavedTask.MatchString(line) || desktopBotFilledTask.MatchString(line) {
-			continue
-		}
-		last = line
-	}
-	return last
 }
 
 // desktopBotReadingLost reports a reading that was not made. No order, no
@@ -359,6 +344,35 @@ func desktopBotReadFaultClears(err error) bool {
 		return false
 	}
 	return isNetworkLLMRetryError(err) || isRetryableLLMError(err)
+}
+
+// desktopBotReadSleep pauses between attempts. It is a var so a test does not
+// have to sit out a server's retry hint.
+var desktopBotReadSleep = func(ctx context.Context, wait time.Duration) {
+	timer := time.NewTimer(wait)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+	case <-timer.C:
+	}
+}
+
+// desktopBotReadRetryWait is the pause an upstream asked for before the next
+// attempt — Qoder's queue reply names retryAfterSeconds. The hint is capped
+// at half of the budget that remains: waiting longer leaves the retry no
+// room to finish, which is the same failure reported later.
+func desktopBotReadRetryWait(err error, deadline time.Time) time.Duration {
+	hint := llmRetryAfterHint(err, time.Now())
+	if hint <= 0 {
+		return 0
+	}
+	wait := hint
+	if max := time.Until(deadline) / 2; wait > max {
+		wait = max
+		log.Printf("[desktop-bot-understand] upstream retry hint %s capped to %s by the reading's remaining budget",
+			hint.Round(time.Millisecond), wait.Round(time.Millisecond))
+	}
+	return wait
 }
 
 // desktopBotReadTimeout names the timeout markers the shared classifier counts
@@ -472,7 +486,7 @@ func desktopBotPhase(phase string) string {
 }
 
 func desktopBotProtocolUnderstanding(text, phase string) (*DesktopBotUnderstanding, bool) {
-	if text == desktopBotReturnTask || desktopBotSavedTask.MatchString(text) || desktopBotFilledTask.MatchString(text) || (text == desktopBotConfirmTask && phase != "execute") {
+	if text == desktopBotReturnTask || desktopBotSavedTask.MatchString(text) || desktopBotFilledTask.MatchString(text) {
 		return &DesktopBotUnderstanding{Told: text, Instruction: text}, true
 	}
 	return nil, false

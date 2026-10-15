@@ -25,6 +25,9 @@ type SSHHostConfig struct {
 	Label string `json:"label,omitempty"`
 	// KnownHostsPath 可选的 known_hosts 文件路径。
 	KnownHostsPath string `json:"known_hosts_path,omitempty"`
+	// KnownHostsFiles 是 OpenSSH 会查阅的全部 known_hosts。非空时覆盖
+	// KnownHostsPath，避免只命中系统文件而漏掉用户自己的主机记录。
+	KnownHostsFiles []string `json:"known_hosts_files,omitempty"`
 	// HostKeyFingerprint pins one SHA256 host-key fingerprint for callers that
 	// maintain a dedicated trust store.
 	HostKeyFingerprint string `json:"host_key_fingerprint,omitempty"`
@@ -32,6 +35,26 @@ type SSHHostConfig struct {
 	// during this connection's SSH handshake. It is runtime-only and lets a
 	// caller establish a first-use pin without a second, unbound connection.
 	HostKeyFingerprintCapture func(string) `json:"-"`
+	// HostAlias is the OpenSSH config name when Host was rewritten from an alias
+	// such as gpu84 to the config HostName. Host-key checks try both names.
+	HostAlias string `json:"host_alias,omitempty"`
+	// JumpHosts are dialed in order before Host. ApplyOpenSSHClientConfig fills
+	// this from ProxyJump so the session can be reconnected without reading
+	// ssh config again.
+	JumpHosts []SSHHostConfig `json:"jump_hosts,omitempty"`
+	// IdentityFiles are OpenSSH identity files in the order the client offers them.
+	IdentityFiles []string `json:"identity_files,omitempty"`
+	// CertificateFiles are OpenSSH certificate files. A sibling "<key>-cert.pub"
+	// is also tried when it exists.
+	CertificateFiles []string `json:"certificate_files,omitempty"`
+	// PreferAgent adds ssh-agent after the configured identity file. The file is
+	// offered first so unrelated agent keys do not exhaust the server's auth
+	// attempts. The agent still supplies a certificate that has not been written
+	// beside the key yet.
+	PreferAgent bool `json:"prefer_agent,omitempty"`
+	// OpenSSHChecked marks that ApplyOpenSSHClientConfig already ran. Reconnect
+	// and the pool must not resolve the alias a second time.
+	OpenSSHChecked bool `json:"-"`
 	// ConnectTimeout 连接超时，默认 10s。
 	ConnectTimeout time.Duration `json:"connect_timeout,omitempty"`
 	// KeepaliveInterval 心跳间隔，默认 15s（更快检测 NAT/防火墙断连与半开连接）。

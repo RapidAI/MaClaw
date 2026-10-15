@@ -35,6 +35,13 @@ func (a *App) reviewedDynamicPublisher() (*agentservice.DynamicCapabilityContrac
 	if err != nil {
 		return nil, err
 	}
+	// declaredExternal is in-process bookkeeping; the contracts it projects
+	// are durable. Rebuild the installed-not-reviewed listing from the
+	// persisted snapshot so a restart does not silently hide installed MCP
+	// providers from the management surface until their next observation.
+	if err := publisher.RestoreInstalledNotReviewed(semanticDesktopContractPrincipal()); err != nil {
+		log.Printf("[semantic-routing] restore installed MCP provider listing: %v", err)
+	}
 	a.semanticDynamicPublisher = publisher
 	return publisher, nil
 }
@@ -57,9 +64,9 @@ func (a *App) publishReviewedMCPServerTools(serverID string, tools []MCPToolView
 	observed := make([]agentservice.ObservedMCPTool, 0, len(tools))
 	for _, tool := range tools {
 		observed = append(observed, agentservice.ObservedMCPTool{
-			Name:        tool.Name,
-			InputSchema: tool.InputSchema,
-			Annotations: tool.Annotations,
+			Name:                 tool.Name,
+			InputSchema:          tool.InputSchema,
+			Annotations:          tool.Annotations,
 			DeclaredCapabilities: tool.DeclaredCapabilities,
 		})
 	}
@@ -88,8 +95,30 @@ func (a *App) mcpOpenLookupReady(serverID string) bool {
 	if a.mcpRegistry == nil {
 		return false
 	}
+	// A durable local observation is the restart-time equivalent of the live
+	// client check above: the process can start the server on demand, and the
+	// tools/list evidence survived the restart for the same endpoint.
+	for _, configured := range a.mcpRegistry.ListLocalServers() {
+		if strings.TrimSpace(configured.ID) != serverID || configured.Disabled {
+			continue
+		}
+		if _, ok := durableLocalMCPTools(a.mcpRegistry, configured); ok {
+			return true
+		}
+	}
 	status, _, observed := a.mcpRegistry.remoteHealthObservation(serverID)
-	return observed && mcpHealthObservationSucceeded(status)
+	if observed && mcpHealthObservationSucceeded(status) {
+		return true
+	}
+	// Only an UNKNOWN this-process observation may fall back to durable
+	// evidence. A finished failure/degraded verdict this process is newer
+	// than the durable success and must keep the tool unpublished.
+	if !observed && normalizeMCPHealthStatus(status) == mcpHealthStatusUnknown {
+		if _, ok := durableRemoteMCPTools(a.mcpRegistry, serverID); ok {
+			return true
+		}
+	}
+	return false
 }
 
 // mcpCapabilityIdentity reads the capability ref stored on the installed
@@ -157,6 +186,13 @@ func (a *App) reconcileReviewedDynamicContracts() {
 		for _, server := range a.mcpRegistry.ListServers() {
 			tools, observed := a.mcpRegistry.CachedServerTools(server.ID)
 			if !observed {
+				// Restart path: the process never observed this server, but a
+				// previous process did. A fresh durable observation for the
+				// same endpoint republishes instead of leaving the tools
+				// contracted-but-invisible until the next probe.
+				tools, observed = durableRemoteMCPTools(a.mcpRegistry, server.ID)
+			}
+			if !observed {
 				continue
 			}
 			if err := a.publishReviewedMCPServerTools(server.ID, tools); err != nil {
@@ -171,6 +207,26 @@ func (a *App) reconcileReviewedDynamicContracts() {
 			}
 		}
 	}
+	if a.mcpRegistry != nil {
+		running := map[string]bool{}
+		if a.localMCPManager != nil {
+			for _, set := range a.localMCPManager.GetAllTools() {
+				running[set.ServerID] = true
+			}
+		}
+		for _, configured := range a.mcpRegistry.ListLocalServers() {
+			if running[configured.ID] || configured.Disabled {
+				continue
+			}
+			tools, ok := durableLocalMCPTools(a.mcpRegistry, configured)
+			if !ok {
+				continue
+			}
+			if err := a.publishReviewedMCPServerTools(configured.ID, tools); err != nil {
+				log.Printf("[semantic-routing] publish reviewed local MCP %s: %v", configured.ID, err)
+			}
+		}
+	}
 	if a.skillExecutor != nil {
 		if err := a.publishReviewedSkillContracts(a.skillExecutor.loadSkills()); err != nil {
 			log.Printf("[semantic-routing] publish reviewed skills: %v", err)
@@ -179,7 +235,15 @@ func (a *App) reconcileReviewedDynamicContracts() {
 }
 
 func (r *MCPRegistry) publishReviewedMCPContracts(serverID string, tools []MCPToolView) {
-	if r == nil || r.app == nil {
+	if r == nil {
+		return
+	}
+	// A finished tools/list is durable evidence before it is a contract: the
+	// observation must outlive this process or every restart hides installed
+	// tools until the next probe. Record it first; the contract publish below
+	// then has an endpoint-bound record to lean on.
+	r.recordRemoteToolObservation(serverID, tools)
+	if r.app == nil {
 		return
 	}
 	if err := r.app.publishReviewedMCPServerTools(serverID, tools); err != nil {
@@ -188,7 +252,11 @@ func (r *MCPRegistry) publishReviewedMCPContracts(serverID string, tools []MCPTo
 }
 
 func (m *LocalMCPManager) publishReviewedServerTools(serverID string, tools []MCPToolView) {
-	if m == nil || m.registry == nil || m.registry.app == nil {
+	if m == nil {
+		return
+	}
+	m.recordLocalToolObservation(serverID, tools)
+	if m.registry == nil || m.registry.app == nil {
 		return
 	}
 	if err := m.registry.app.publishReviewedMCPServerTools(serverID, tools); err != nil {
@@ -203,4 +271,66 @@ func (e *SkillExecutor) publishReviewedSkillContracts() {
 	if err := e.app.publishReviewedSkillContracts(e.loadSkills()); err != nil {
 		log.Printf("[skill-load] reviewed capability publication: %v", err)
 	}
+}
+
+// InstalledNotReviewedMCPProviderView is the management-surface projection of
+// one installed MCP server whose declared capabilities are still governed by
+// the host default effect ceiling — installed, contract-published, but never
+// host-reviewed. It must be visible rather than silently hidden.
+type InstalledNotReviewedMCPProviderView struct {
+	ServerID             string   `json:"server_id"`
+	ServerName           string   `json:"server_name,omitempty"`
+	DeclaredCapabilities []string `json:"declared_capabilities"`
+	Namespace            string   `json:"namespace"`
+	CeilingReviewed      bool     `json:"ceiling_reviewed"`
+}
+
+// InstalledNotReviewedMCPView is the Wails payload for the unreviewed
+// provider listing plus the discovery budget the surface should grant it.
+type InstalledNotReviewedMCPView struct {
+	Providers     []InstalledNotReviewedMCPProviderView `json:"providers"`
+	PetitionSlots int                                   `json:"petition_slots"`
+	SearchPasses  int                                   `json:"search_passes"`
+}
+
+// ListInstalledNotReviewedMCPProviders exposes the publisher's
+// installed-but-unreviewed provider list to the MCP management UI. Empty
+// result is a valid answer; an unavailable publisher fails closed to empty
+// rather than inventing providers.
+func (a *App) ListInstalledNotReviewedMCPProviders() InstalledNotReviewedMCPView {
+	out := InstalledNotReviewedMCPView{Providers: []InstalledNotReviewedMCPProviderView{}}
+	publisher, err := a.reviewedDynamicPublisher()
+	if err != nil || publisher == nil {
+		return out
+	}
+	names := map[string]string{}
+	if a.mcpRegistry != nil {
+		for _, server := range a.mcpRegistry.ListServers() {
+			if name := strings.TrimSpace(server.Name); name != "" {
+				names[server.ID] = name
+			}
+		}
+		for _, server := range a.mcpRegistry.ListLocalServers() {
+			if name := strings.TrimSpace(server.Name); name != "" {
+				names[server.ID] = name
+			}
+		}
+	}
+	for _, provider := range publisher.ListInstalledNotReviewedProviders() {
+		caps := make([]string, 0, len(provider.DeclaredCapabilities))
+		for _, capID := range provider.DeclaredCapabilities {
+			caps = append(caps, string(capID))
+		}
+		out.Providers = append(out.Providers, InstalledNotReviewedMCPProviderView{
+			ServerID:             provider.ServerID,
+			ServerName:           names[provider.ServerID],
+			DeclaredCapabilities: caps,
+			Namespace:            provider.Namespace,
+			CeilingReviewed:      provider.CeilingReviewed,
+		})
+	}
+	budget := publisher.RecommendedDiscoveryBudgetForInstalled()
+	out.PetitionSlots = budget.PetitionSlots
+	out.SearchPasses = budget.SearchPasses
+	return out
 }

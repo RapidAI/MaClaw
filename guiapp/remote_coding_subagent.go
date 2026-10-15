@@ -5858,6 +5858,11 @@ func remoteSSHWaitSeconds(command string) int {
 	if strings.Contains(command, "npm install -g "+codegraphNPMPackage) || strings.Contains(command, `"$_cg_bin" init .`) {
 		return 300
 	}
+	// A query hit then opens that file's symbol map. Both are codegraph
+	// processes, so the ceiling matches a node-plus-callers lookup.
+	if strings.Contains(command, `"$_cg_bin" query`) && strings.Contains(command, "--symbols-only") {
+		return 120
+	}
 	if strings.Contains(command, `"$_cg_bin" node`) && (strings.Contains(command, `"$_cg_bin" callers`) || strings.Contains(command, `"$_cg_bin" callees`)) {
 		return 120
 	}
@@ -6072,7 +6077,7 @@ func (c *remoteCodingCallbacks) buildRemoteKnowledgePromptSections() string {
 			ProjectPath: c.agent.projectDir,
 			Limit:       10,
 		}
-		pack, err := c.agent.generalKB.ContextPack(ctx, knowledge.ContextPackOptions{
+		pack, err := c.agent.generalKB.ContextPack(knowledgeSearchContext(ctx), knowledge.ContextPackOptions{
 			SearchOptions: searchOpts,
 			MaxItems:      3,
 			MaxChars:      2000,
@@ -6162,7 +6167,7 @@ func (c *remoteCodingCallbacks) executeRemoteKnowledgeSearch(argsJSON string) st
 		return "Error: query parameter is required"
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(knowledgeSearchContext(context.Background()), 8*time.Second)
 	defer cancel()
 
 	results, err := c.agent.generalKB.Search(ctx, knowledge.SearchOptions{
@@ -6204,7 +6209,7 @@ func (c *remoteCodingCallbacks) executeRemoteKnowledgeImageSearch(argsJSON strin
 		return "Error: query parameter is required"
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(knowledgeSearchContext(context.Background()), 8*time.Second)
 	defer cancel()
 	results, err := c.agent.generalKB.SearchImages(ctx, knowledge.ImageSearchOptions{SearchOptions: codingKnowledgeImageSearchOptions(args, c.agent.projectDir)})
 	if err != nil {

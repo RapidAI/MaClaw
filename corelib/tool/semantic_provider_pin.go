@@ -42,6 +42,11 @@ type ProviderPin struct {
 	Capability CapabilityID
 	Kind       string // mcp, skill
 	ProviderID string // MCP server id; skill stable id
+	// ImplementationID further narrows the pin to one implementation inside
+	// the provider (e.g. one tool on a server that publishes several). Empty
+	// leaves the pin provider-wide; set, it excludes sibling implementations —
+	// the user named that exact tool.
+	ImplementationID string
 }
 
 // valid reports whether the pin carries enough identity to narrow selection.
@@ -61,8 +66,14 @@ func (p ProviderPin) Matches(binding ProviderBinding) bool {
 	if !p.valid() {
 		return false
 	}
-	return strings.TrimSpace(binding.Kind) == strings.TrimSpace(p.Kind) &&
-		strings.TrimSpace(binding.ProviderID) == strings.TrimSpace(p.ProviderID)
+	if strings.TrimSpace(binding.Kind) != strings.TrimSpace(p.Kind) ||
+		strings.TrimSpace(binding.ProviderID) != strings.TrimSpace(p.ProviderID) {
+		return false
+	}
+	if impl := strings.TrimSpace(p.ImplementationID); impl != "" {
+		return strings.TrimSpace(binding.ImplementationID) == impl
+	}
+	return true
 }
 
 // PinForCapability returns the pin that governs capability. The first pin wins
@@ -93,9 +104,10 @@ func CloneProviderPins(pins []ProviderPin) []ProviderPin {
 	out := make([]ProviderPin, 0, len(pins))
 	for _, pin := range pins {
 		out = append(out, ProviderPin{
-			Capability: CapabilityID(strings.TrimSpace(string(pin.Capability))),
-			Kind:       strings.TrimSpace(pin.Kind),
-			ProviderID: strings.TrimSpace(pin.ProviderID),
+			Capability:       CapabilityID(strings.TrimSpace(string(pin.Capability))),
+			Kind:             strings.TrimSpace(pin.Kind),
+			ProviderID:       strings.TrimSpace(pin.ProviderID),
+			ImplementationID: strings.TrimSpace(pin.ImplementationID),
 		})
 	}
 	return out

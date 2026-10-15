@@ -1,6 +1,7 @@
 package mailbox
 
 import (
+	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -71,6 +72,37 @@ func ApplyConfigure(existing []Account, args map[string]interface{}, now time.Ti
 	return next, saved, nil, fmt.Sprintf(MsgConfiguredNoSecret, saved.Name), nil
 }
 
+// ConfigureShapeReason reports a save that cannot be written. It does not
+// read or change stored accounts. A grant must be refused before admission
+// when this is non-empty.
+func ConfigureShapeReason(args map[string]interface{}) string {
+	if args == nil {
+		args = map[string]interface{}{}
+	}
+	if strings.TrimSpace(stringArg(args, "action")) != "save" {
+		return "mailbox_configure_action_required"
+	}
+	email := strings.TrimSpace(stringArg(args, "email"))
+	if email == "" || strings.TrimSpace(stringArg(args, "name")) == "" {
+		return "mailbox_configure_identity_required"
+	}
+	if _, err := normalizeAddress(email); err != nil {
+		return "mailbox_configure_identity_invalid"
+	}
+	inbound := endpointFromMap(args["inbound"], true, "", email)
+	outbound := endpointFromMap(args["outbound"], false, "", email)
+	if inbound == nil && outbound == nil {
+		return "mailbox_configure_server_required"
+	}
+	if _, err := normalizeEndpoint(inbound, true); err != nil {
+		return "mailbox_configure_server_invalid"
+	}
+	if _, err := normalizeEndpoint(outbound, false); err != nil {
+		return "mailbox_configure_server_invalid"
+	}
+	return ""
+}
+
 func endpointFromMap(raw interface{}, inbound bool, username, email string) *Endpoint {
 	fields, ok := raw.(map[string]interface{})
 	if !ok || len(fields) == 0 {
@@ -119,6 +151,12 @@ func intFrom(raw interface{}) int {
 		return n
 	case int64:
 		return int(n)
+	case json.Number:
+		parsed, err := n.Int64()
+		if err != nil {
+			return 0
+		}
+		return int(parsed)
 	case string:
 		parsed, err := strconv.Atoi(strings.TrimSpace(n))
 		if err != nil {

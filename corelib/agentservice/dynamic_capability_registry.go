@@ -81,6 +81,25 @@ func dynamicContractSnapshotPrincipalMatches(a, b Principal) bool {
 	return dynamicContractScopeValue(a.TenantID) == dynamicContractScopeValue(b.TenantID) && dynamicContractScopeValue(a.UserID) == dynamicContractScopeValue(b.UserID) && validateDynamicContractScope(b) == nil
 }
 
+// DynamicCapabilityContractSnapshot returns a principal-scoped resolver over
+// one immutable contract generation for a catalog build, when the registry
+// supports snapshots. Resolvers without snapshot support pass through
+// unchanged, and a nil resolver stays nil.
+func DynamicCapabilityContractSnapshot(resolver DynamicCapabilityContractResolver, p Principal) (DynamicCapabilityContractResolver, error) {
+	if resolver == nil {
+		return nil, nil
+	}
+	provider, ok := resolver.(dynamicCapabilityContractSnapshotProvider)
+	if !ok {
+		return resolver, nil
+	}
+	snapshot, err := provider.SnapshotDynamicCapabilityContracts(p)
+	if err != nil {
+		return nil, err
+	}
+	return snapshot, nil
+}
+
 // DynamicCapabilityRegistry is the service-owned control-plane publication
 // point for dynamic provider contracts. It is deliberately independent from
 // agent prompts, discovery responses and runtime tool schemas. The registry

@@ -24,9 +24,11 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/codegenproxy"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
-	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 	"github.com/RapidAI/CodeClaw/corelib/kimicode"
+	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
+	"github.com/RapidAI/CodeClaw/corelib/qoder"
+	"github.com/RapidAI/CodeClaw/corelib/windsurf"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -36,13 +38,19 @@ const (
 	defaultListenAddress = "0.0.0.0:18086"
 	defaultProxyAPIKey   = "tigerproxy-local-key"
 
-	AuthModeSSO            = "sso"
-	AuthModeCustomOpenAI   = "custom_openai"
-	AuthModeOpenAIOAuth    = "openai_oauth"
-	AuthModeXAIOAuth       = "xai_oauth"
-	AuthModeAnthropicOAuth = "anthropic_oauth"
-	AuthModeZhipuCoding    = "zhipu_coding"
-	AuthModeKimiWeb        = "kimi_web"
+	AuthModeSSO             = "sso"
+	AuthModeCustomOpenAI    = "custom_openai"
+	AuthModeOpenAIOAuth     = "openai_oauth"
+	AuthModeXAIOAuth        = "xai_oauth"
+	AuthModeAnthropicOAuth  = "anthropic_oauth"
+	AuthModeZhipuCoding     = "zhipu_coding"
+	AuthModeKimiWeb         = "kimi_web"
+	AuthModeDevin           = "devin"
+	AuthModeQoderCN         = "qoder_cn"
+	AuthModeQoderGlobal     = "qoder_global"
+	AuthModeWorkBuddyCN     = "workbuddy_cn"
+	AuthModeWorkBuddyGlobal = "workbuddy_global"
+	AuthModeOpenCode        = "opencode"
 
 	zhipuCodingDefaultURL   = "https://open.bigmodel.cn/api/coding/paas/v4"
 	zhipuCodingDefaultModel = "glm-5.3"
@@ -61,6 +69,7 @@ type App struct {
 	lastError       string
 	mu              sync.Mutex
 	settingsMu      sync.Mutex
+	vendorRefreshMu sync.Mutex
 	shown           bool
 	codexInstalling bool
 	promptCache     *llmpool.Cache
@@ -78,6 +87,9 @@ type App struct {
 	openaiCancel      context.CancelFunc
 	openaiDone        bool
 	kimiLogin         *kimiDeviceLogin
+	devinLogin        *devinLoginFlow
+	qoderLogin        *qoderLoginFlow
+	workbuddyLogin    *workbuddyLoginFlow
 	relaunchAfterAuth bool
 
 	// Cumulative token counters (atomic, updated via usage callback).
@@ -117,6 +129,11 @@ type AuthProfile struct {
 	Email        string        `json:"email,omitempty"`
 	ModelID      string        `json:"model_id,omitempty"`
 	Models       []ModelOption `json:"models,omitempty"`
+	// Account fields used by Qoder signing and WorkBuddy account headers.
+	UserID       string `json:"user_id,omitempty"`
+	EnterpriseID string `json:"enterprise_id,omitempty"`
+	Domain       string `json:"domain,omitempty"`
+	ExpiresAt    int64  `json:"expires_at,omitempty"`
 }
 
 type ModelOption struct {
@@ -361,6 +378,11 @@ func (a *App) applySettingsWithRestart(s Settings) error {
 	if refreshed, changed := a.refreshKimiTokenIfLoggedIn(s); changed {
 		s = refreshed
 	}
+	if refreshed, changed, refreshErr := refreshVendorCredential(s); changed {
+		s = refreshed
+	} else if refreshErr != nil {
+		log.Printf("[codexproxy] vendor token refresh failed")
+	}
 	wasRunning := a.isRunning()
 	if err := a.restartProxy(s); err != nil {
 		if wasRunning && !a.isRunning() {
@@ -486,6 +508,9 @@ func (a *App) logout() {
 	a.cancelXAILogin()
 	a.cancelOpenAILogin()
 	a.cancelKimiLogin()
+	a.cancelDevinLogin()
+	a.cancelQoderLogin()
+	a.cancelWorkBuddyLogin()
 }
 
 func (a *App) Logout() (Status, error) {
@@ -1116,6 +1141,14 @@ func (a *App) startProxyFromDisk() {
 			}
 		}
 	}
+	if refreshed, changed, refreshErr := refreshVendorCredential(s); changed {
+		s = refreshed
+		if err := writeSettings(s); err != nil {
+			log.Printf("[codexproxy] vendor startup refresh not persisted")
+		}
+	} else if refreshErr != nil {
+		log.Printf("[codexproxy] vendor startup refresh failed")
+	}
 	_ = a.restartProxy(s)
 }
 
@@ -1218,6 +1251,14 @@ func (a *App) restartProxy(s Settings) error {
 				headers[key] = kimiHeaders.Get(key)
 			}
 			server.SetUpstreamExtraHeaders(headers)
+		case AuthModeDevin:
+			server.SetUpstreamExtraHeaders(nil)
+			server.SetOpenAIUpstreamClient(windsurf.Upstream{})
+		case AuthModeQoderCN, AuthModeQoderGlobal, AuthModeWorkBuddyCN, AuthModeWorkBuddyGlobal:
+			configureVendorUpstream(a, server, s)
+		case AuthModeOpenCode:
+			server.SetUpstreamExtraHeaders(nil)
+			server.SetOpenAIUpstreamClient(newOpenCodeUpstream())
 		default:
 			server.SetUpstreamExtraHeaders(nil)
 		}
@@ -1485,6 +1526,18 @@ func normalizeSettings(s Settings) Settings {
 			// Fold anything that is not a Kimi Code coding endpoint back to the
 			// hosted one, keeping the international endpoint the login chose.
 			s.BaseURL = kimicode.CanonicalBaseURL(s.BaseURL)
+		}
+		if s.ActiveAuthMode == AuthModeDevin {
+			s.BaseURL = windsurf.CanonicalAPIServer(s.AccessToken, s.BaseURL)
+		}
+		if s.ActiveAuthMode == AuthModeQoderCN || s.ActiveAuthMode == AuthModeQoderGlobal {
+			s.BaseURL = qoder.ChatBase
+		}
+		if profile, ok := workbuddyProfileForMode(s.ActiveAuthMode); ok {
+			s.BaseURL = strings.TrimRight(profile.ChatURL, "/")
+		}
+		if s.ActiveAuthMode == AuthModeOpenCode {
+			s.BaseURL = openCodeBaseURL()
 		}
 		snapshotActiveProfile(&s)
 	} else if strings.TrimSpace(s.BaseURL) == "" {

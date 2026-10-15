@@ -4,7 +4,7 @@ CodexProxy（原 TigerProxy）是一个面向 Codex / Claude Code 的桌面协�
 
 ## 功能范围
 
-- 登录方式：CodeGen SSO、自定义 OpenAI API、OpenAI / xAI Grok / Claude Code 账号登录、智谱编程、Kimi Web 登录。每种方式的凭据分开保存。
+- 登录方式：CodeGen SSO、自定义 OpenAI API、OpenAI / xAI Grok / Claude Code 账号登录、智谱编程、Kimi Web 登录、Devin（原 Windsurf）账号登录、Qoder 国内版 / 国际版、WorkBuddy 国内版 / 国际版、OpenCode 登录。每种方式的凭据分开保存。
 - SSO 登录：使用与 MaClaw onboarding 相同的 CodeGen callback 登录流程获取 token。
 - 本地监听：默认监听 `0.0.0.0:18086`，同时支持 `127.0.0.1` 与本机局域网地址访问。
 - 本地 API Key：默认值为 `tigerproxy-local-key`，用户可在主界面修改并保存；OpenAI 和 Anthropic 协议共用同一个 key。

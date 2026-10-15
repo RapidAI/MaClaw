@@ -69,7 +69,7 @@ func (p *workflowFormRecallProvider) RecallForField(ctx context.Context, query s
 	// but broader coverage. Query facts first, then supplement with cards.
 	if p.knowledgeStore != nil {
 		// 2a. Facts first (structured triples — ideal for field extraction)
-		factResults, err := p.knowledgeStore.Search(ctx, knowledge.SearchOptions{
+		factResults, err := p.knowledgeStore.Search(knowledgeSearchContext(ctx), knowledge.SearchOptions{
 			Query:       query,
 			OwnerID:     p.userID,
 			ResultTypes: []string{"fact"},
@@ -98,7 +98,7 @@ func (p *workflowFormRecallProvider) RecallForField(ctx context.Context, query s
 		// 2b. Cards/nodes (paragraph summaries — broader coverage for textarea fields)
 		remaining := maxResults - len(results)
 		if remaining > 0 {
-			cardResults, err := p.knowledgeStore.Search(ctx, knowledge.SearchOptions{
+			cardResults, err := p.knowledgeStore.Search(knowledgeSearchContext(ctx), knowledge.SearchOptions{
 				Query:   query,
 				OwnerID: p.userID,
 				Limit:   remaining + 2, // fetch a few extra to account for empty snippets

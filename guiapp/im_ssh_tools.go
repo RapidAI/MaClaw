@@ -310,11 +310,7 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 		}
 	}
 
-	if host == "" || user == "" {
-		return "错误: connect 需要 host 和 user 参数（或通过 label 引用已配置主机）"
-	}
-
-	port := 22
+	port := 0
 	if p, ok := args["port"].(float64); ok && p > 0 {
 		port = int(p)
 	}
@@ -327,6 +323,16 @@ func (h *IMMessageHandler) sshConnect(args map[string]interface{}) string {
 		Password:           sshStrArg(args, "password"),
 		Label:              label,
 		HostKeyFingerprint: sshStrArg(args, "host_key_fingerprint"),
+	}
+	resolved, resolveErr := remote.ApplyOpenSSHClientConfig(cfg)
+	if resolveErr != nil {
+		return "SSH 连接失败: " + resolveErr.Error()
+	}
+	cfg = resolved
+	cfg.Defaults()
+	host, user, port = cfg.Host, cfg.User, cfg.Port
+	if host == "" || user == "" {
+		return "错误: connect 需要 host 和 user 参数（或通过 label 引用已配置主机）"
 	}
 	captureHostKey, _ := args["capture_host_key"].(bool)
 	if captureHostKey && cfg.HostKeyFingerprint == "" {

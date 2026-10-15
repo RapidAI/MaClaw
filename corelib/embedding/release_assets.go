@@ -84,7 +84,16 @@ func NewReleaseAssetFetcher(modelsDir string, a ReleaseAsset, hubURL string) *Mo
 	if a.Subdir != "" {
 		dir = filepath.Join(modelsDir, a.Subdir)
 	}
-	f := NewModelFetcher(dir, a.Spec().WithHubFallback(hubURL))
+	spec := a.Spec().WithHubFallback(hubURL)
+	f := NewModelFetcher(dir, spec)
+	if a.Kind != "model" {
+		// MACLAW_EMBED_MODEL_URL retargets the GGUF. NewModelFetcher applies it
+		// to every spec, which would make a head request download the model
+		// bytes and fail verification. Heads keep the release URL and hub mirror.
+		f.mu.Lock()
+		f.spec.URLs = append([]string(nil), spec.URLs...)
+		f.mu.Unlock()
+	}
 	f.KeepExisting = a.Kind != "model"
 	return f
 }

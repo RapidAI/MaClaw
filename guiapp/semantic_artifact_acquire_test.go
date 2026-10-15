@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 	"github.com/RapidAI/CodeClaw/corelib/websearch"
 )
@@ -200,8 +201,8 @@ func TestSemanticFailedRetiredToolDenialDoesNotClaimSuccess(t *testing.T) {
 		t.Fatalf("handled=%v err=%v", handled, err)
 	}
 	cb := &sharedAgentLoopCallbacks{handler: h, semanticSurface: surface, userID: "user-1"}
-	// The family budget is three invocations; all three fail.
-	for i := 1; i <= 3; i++ {
+	// The family budget is the published download wave; every invocation fails.
+	for i := 1; i <= agentservice.DownloadRepeatBudget; i++ {
 		if got := cb.ExecuteTool("download_file", `{"url":"https://example.com/r.jpg"}`); !strings.Contains(got, "HTTP 403") {
 			t.Fatalf("failed acquire %d must surface the adapter failure: %q", i, got)
 		}

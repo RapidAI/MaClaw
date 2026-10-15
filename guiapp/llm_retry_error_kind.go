@@ -1,6 +1,8 @@
 package guiapp
 
 import (
+	"time"
+
 	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 )
 
@@ -55,6 +57,10 @@ func isHubRateLimitWaitCanceledError(err error) bool {
 
 func isTransientServerError(err error) bool {
 	return agentruntime.IsTransientServerError(err)
+}
+
+func llmRetryAfterHint(err error, now time.Time) time.Duration {
+	return agentruntime.LLMRetryAfterHint(err, now)
 }
 
 func isContextWindowExceeded(err error) bool {

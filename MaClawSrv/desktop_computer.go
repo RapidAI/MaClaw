@@ -377,7 +377,7 @@ func desktopComputerEnv(ctx context.Context, scope agentruntime.Scope, display s
 		Ctx:   ctx,
 		Frame: frame.get,
 		Exec: func(batch [][]string) (string, error) {
-			return runGuardedDesktopAppSteps(batch, beforeInsert, browserRaises, run)
+			return runGuardedDesktopAppSteps(batch, beforeInsert, browserRaises, run, nil)
 		},
 		Ctl: func(request map[string]any) (map[string]any, error) {
 			return desktopCtlCall(ctx, scope, display, request)

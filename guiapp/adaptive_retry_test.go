@@ -431,6 +431,52 @@ func TestIsTransientServerError_ChineseServiceBusy(t *testing.T) {
 	}
 }
 
+func TestIsTransientServerError_QoderUpstreamQueued(t *testing.T) {
+	err := errors.New(`Qoder 上游错误 (403): {"code":"10605","message":"{\"isQueued\":true,\"modelKey\":\"qfmodel\",\"queueCount\":14566,\"queueType\":\"p3\",\"retryAfterSeconds\":30,\"serviceAvailable\":true,\"waitTime\":369}"}`)
+	if !isTransientServerError(err) {
+		t.Error("expected true for Qoder upstream queue pressure")
+	}
+	if !isRetryableLLMError(err) {
+		t.Error("Qoder upstream queue pressure should be retryable")
+	}
+	if hint := llmRetryAfterHint(err, time.Now()); hint != 30*time.Second {
+		t.Errorf("expected 30s retry hint from the queue reply, got %s", hint)
+	}
+	if hint := llmRetryAfterHint(errors.New("plain failure"), time.Now()); hint != 0 {
+		t.Errorf("expected no retry hint, got %s", hint)
+	}
+	// A body-free HTTPStatusError still exposes its body's hint, camelCase too.
+	statusErr := &llm.HTTPStatusError{StatusCode: 429, Body: []byte(`{"code":"LLM_ENDPOINT_USER_RATE_LIMITED","retry_after_seconds":2}`)}
+	if hint := llmRetryAfterHint(statusErr, time.Now()); hint != 2*time.Second {
+		t.Errorf("expected 2s retry hint from the status body, got %s", hint)
+	}
+	statusErr.Body = []byte(`{"code":"10605","retryAfterSeconds":7}`)
+	if hint := llmRetryAfterHint(statusErr, time.Now()); hint != 7*time.Second {
+		t.Errorf("expected 7s retry hint from the camelCase body, got %s", hint)
+	}
+	// Bare retry_after and the header-style Retry-After carry the same delay.
+	for _, text := range []string{
+		`{"error":"slow down","retry_after":15}`,
+		`HTTP 429 Retry-After: 40`,
+		`retryAfter=9`,
+	} {
+		if hint := llmRetryAfterHint(errors.New(text), time.Now()); hint <= 0 {
+			t.Errorf("expected a retry hint from %q, got %s", text, hint)
+		}
+	}
+	// retry_after_at and retry_after_ms are different clocks the seconds
+	// pattern must not read as a delay; a timestamp's year is not seconds.
+	for _, text := range []string{
+		`{"retry_after_ms":500}`,
+		`{"retry_after_epoch":1730000000}`,
+		`{"retry_after":"2026-10-15T06:00:00Z"}`,
+	} {
+		if hint := llmRetryAfterHint(errors.New(text), time.Now()); hint != 0 {
+			t.Errorf("expected no seconds hint from %q, got %s", text, hint)
+		}
+	}
+}
+
 // --- RecordFailure counting ---
 
 // TestRecordFailure_NotCalledOnSkip moved to corelib/agentruntime (uses internals).
@@ -533,7 +579,7 @@ func TestRecordFailurePersistsProviderMetadata(t *testing.T) {
 	if summary.ProviderName != "ChatFire" || summary.Model != "gpt-5.1-codex-mini" || summary.WireAPI != "responses" {
 		t.Fatalf("summary should expose provider metadata: %#v", summary)
 	}
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 	result := app.QueryExperienceToolRecoverySummaries(ExperienceToolRecoveryQuery{})
 	if result.ProviderCounts["ChatFire"] != 1 || result.ModelCounts["gpt-5.1-codex-mini"] != 1 || result.WireAPICounts["responses"] != 1 {
 		t.Fatalf("provider/model/wire_api governance counts missing: %#v", result)

@@ -123,7 +123,13 @@ func (h *IMMessageHandler) toolDiscoverToolForOwner(ownerID string, args map[str
 	}
 
 	idx.RebuildIfChanged(docs)
-	scores := idx.Score(need)
+	// A discovery need is a capability description, not a stored entity name.
+	// Score() applies the short-entity strict conjunction to a pure-CJK
+	// phrase (e.g. "把本地目录导入知识库外脑" anchors 本地/目录/导入/知识库/外脑
+	// and demands every anchor hit), which blanks the whole result set when a
+	// function word like 本地 appears in no tool doc. ScoreOverlaps keeps the
+	// ordinary loose scoring a discover query needs.
+	scores := idx.ScoreOverlaps(need)
 
 	var ranked []discoveredToolScore
 	for name, score := range scores {

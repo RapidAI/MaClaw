@@ -7,6 +7,27 @@ REM ============================================================================
 
 echo [INFO] Starting the MetaStaff build process...
 
+REM -- Build mutex: same lock dir as build_win.bat / build_win_tiger.bat — the
+REM    brand scripts share dist\, guiapp\resource_windows_*.syso,
+REM    guiapp\frontend\dist and the service binary names; serialize runs. --
+set "BUILD_LOCK_DIR=%~dp0.build_win_lock"
+set "LOCK_AGE_MIN=0"
+:acquire_build_lock
+if exist "%BUILD_LOCK_DIR%" (
+    for /f %%a in ('powershell -NoProfile -Command "try { [int]((Get-Date).Subtract((Get-Item '%BUILD_LOCK_DIR%' -ErrorAction Stop).CreationTime)).TotalMinutes } catch { 0 }" 2^>nul') do set "LOCK_AGE_MIN=%%a"
+    if !LOCK_AGE_MIN! gtr 40 (
+        echo [INFO] Build lock is stale !LOCK_AGE_MIN! min old, taking over...
+        rmdir /s /q "%BUILD_LOCK_DIR%" 2>nul
+    )
+)
+mkdir "%BUILD_LOCK_DIR%" 2>nul
+if errorlevel 1 (
+    echo [INFO] Another build_win*.bat run holds the build lock; waiting 30s...
+    ping -n 31 127.0.0.1 >nul
+    goto :acquire_build_lock
+)
+echo %DATE% %TIME% > "%BUILD_LOCK_DIR%\holder.txt"
+
 REM -- Set Environment Variables --
 set "APP_NAME=MetaStaff"
 set "OEM_TAG=oem_metastaff"
@@ -357,17 +378,23 @@ echo [WARN] datasrv go build failed with exit code !GO_BUILD_ERROR!, retrying...
 set /a GO_BUILD_ATTEMPT+=1
 goto :go_build_datasrv_retry
 
+:release_build_lock
+rmdir /s /q "%BUILD_LOCK_DIR%" 2>nul
+exit /b 0
+
 :nsis_missing
 echo [ERROR] NSIS not found at "%NSIS_PATH%". Please install NSIS.
 goto :error
 
 :success
+call :release_build_lock
 echo.
 echo [SUCCESS] MetaStaff build and packaging complete!
 echo Artifacts are in: %OUTPUT_DIR%
 endlocal & exit /b 0
 
 :error
+call :release_build_lock
 echo.
 echo [FAILED] The MetaStaff build process failed. Please check the output above for errors.
 endlocal & exit /b 1

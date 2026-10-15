@@ -95,3 +95,19 @@ func TestSemanticArchetypeBundlesArePinnedToRules(t *testing.T) {
 		}
 	}
 }
+
+func TestMailboxSendNeedIsOnlySend(t *testing.T) {
+	im := IMSemanticIntentCapabilityNeedRules()
+	send := im[intent.LabelMailboxSend]
+	if len(send) != 1 || send[0].Capability != coretool.CapabilityMessageSendMailbox || !send[0].Required || send[0].MaxInvocations != 1 {
+		t.Fatalf("send rule=%#v", send)
+	}
+	read := im[intent.LabelMailboxRead]
+	if len(read) != 1 || read[0].Capability != coretool.CapabilityMessageReadMailbox {
+		t.Fatalf("read rule=%#v", read)
+	}
+	configure := im[intent.LabelMailboxConfigure]
+	if len(configure) != 1 || configure[0].Capability != coretool.CapabilityMessageConfigureMailbox || !configure[0].Required {
+		t.Fatalf("configure rule=%#v", configure)
+	}
+}

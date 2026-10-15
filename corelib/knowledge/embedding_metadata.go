@@ -19,6 +19,11 @@ const (
 // embeddingModelIdentifier uses an explicit ID when an embedder exposes one.
 // The fallback is deliberately conservative: vectors from different concrete
 // implementations or dimensions never share a retrieval space.
+// EmbeddingModelID is the retrieval-space identity persisted with each vector.
+func EmbeddingModelID(emb embedding.Embedder) string {
+	return embeddingModelIdentifier(emb)
+}
+
 func embeddingModelIdentifier(emb embedding.Embedder) string {
 	if emb == nil || embedding.IsNoop(emb) {
 		return ""
@@ -32,14 +37,20 @@ func embeddingModelIdentifier(emb embedding.Embedder) string {
 }
 
 func ensureEmbeddingMetadataSchema(ctx context.Context, db *sql.DB) error {
-	_, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS knowledge_embedding_metadata (
+	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS knowledge_embedding_metadata (
 		entity_type TEXT NOT NULL,
 		entity_id TEXT NOT NULL,
 		model_id TEXT NOT NULL,
 		dimension INTEGER NOT NULL,
 		updated_at TEXT NOT NULL,
 		PRIMARY KEY(entity_type, entity_id)
-	)`)
+	)`); err != nil {
+		return err
+	}
+	// Search asks "does this model have any vector?" before embedding the query.
+	// The primary key is (entity_type, entity_id), so that probe cannot use it.
+	_, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS knowledge_embedding_metadata_space
+		ON knowledge_embedding_metadata(model_id, dimension, entity_type)`)
 	return err
 }
 

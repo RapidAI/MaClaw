@@ -1,6 +1,8 @@
 package guiapp
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -203,12 +205,44 @@ func (h *IMMessageHandler) commitPendingAskUser(userID string, askReq *AskUserRe
 		Question:       askReq.Question,
 		Options:        askReq.Options,
 		InputType:      askReq.InputType,
-		Context:        askReq.Context,
+		Context:        pendingAskUserContext(askReq.Context),
 		History:        cloneConversationEntries(history),
 		Timestamp:      time.Now(),
 		WorkingState:   agent.CloneWorkingState(workingState),
-		MailboxDraftID: h.takeMailboxDraftNote(userID),
+		MailboxDraftID: h.takeMailboxDraftNoteFor(userID, askReq),
+		MCPServerWrite: h.takeMCPServerWriteNoteFor(userID, askReq),
 	})
+}
+
+// newConfirmNonce mints the unguessable token a confirmation gate stamps
+// into its ask_user card's context. The pending note records it, and only
+// the committed question repeating it may consume the note — tool results
+// that echo the sentinel cannot forge a card that binds.
+func newConfirmNonce() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b[:])
+}
+
+// pendingAskUserContext strips the binding sentinels gates stamp onto a
+// card's context — mailbox send confirmation, unreviewed MCP write
+// confirmation. The segment right after a sentinel is the nonce that binds
+// the pending note; what follows it is the real context the model-facing
+// answer hint may repeat.
+func pendingAskUserContext(context string) string {
+	trimmed := strings.TrimSpace(context)
+	for _, marker := range []string{mailboxDraftAskContext, mcpServerWriteAskContext} {
+		if rest, ok := strings.CutPrefix(trimmed, marker); ok {
+			// <marker><nonce>;<context>
+			if _, after, found := strings.Cut(rest, ";"); found {
+				return strings.TrimSpace(after)
+			}
+			return ""
+		}
+	}
+	return trimmed
 }
 
 func buildAskUserResponse(displayText string, askReq *AskUserRequest) *IMAgentResponse {

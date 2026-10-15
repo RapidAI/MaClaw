@@ -260,7 +260,14 @@ func (r *CapabilityRegistry) externalEffectCeiling(ns string) []EffectClass {
 func (r *CapabilityRegistry) ExternalEffectCeiling(ns string) []EffectClass {
 	// externalEffectCeiling already handles a nil receiver and falls back to the
 	// package default when the namespace has no reviewed override.
-	ceiling := r.externalEffectCeiling(strings.TrimSpace(ns))
+	return canonicalizeExternalEffects(r.externalEffectCeiling(strings.TrimSpace(ns)))
+}
+
+// canonicalizeExternalEffects normalizes an effect ceiling into the canonical
+// planner order (read_only, local_mutation, external_effect, sensitive) with
+// duplicates removed. externalDescriptorEqual compares Effects by index, so
+// every descriptor stamped with a ceiling must present it in this order.
+func canonicalizeExternalEffects(ceiling []EffectClass) []EffectClass {
 	seen := make(map[EffectClass]bool, len(ceiling))
 	for _, e := range ceiling {
 		seen[e] = true
@@ -342,6 +349,20 @@ func (r *CapabilityRegistry) SetExternalCapabilityCeiling(ns string, effects []E
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.externalEffectCeilings[ns] = append([]EffectClass(nil), effects...)
+	// Retarget external descriptors already registered under this namespace
+	// to the new ceiling. Namespace-ceiling descriptors are derived, not
+	// vendor-authored, so leaving the old ceiling stamped on them would make
+	// later RegisterExternalCapability calls for the same capability conflict
+	// against a descriptor that no longer reflects the governing ceiling.
+	canonical := canonicalizeExternalEffects(effects)
+	prefix := string(ExternalCapabilityPrefix) + ns + ":"
+	for id, descriptor := range r.descriptors {
+		if !strings.HasPrefix(string(id), prefix) {
+			continue
+		}
+		descriptor.Effects = append([]EffectClass(nil), canonical...)
+		r.descriptors[id] = descriptor
+	}
 	return nil
 }
 

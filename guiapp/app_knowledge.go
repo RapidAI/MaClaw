@@ -341,6 +341,10 @@ func (a *App) KnowledgeClearAll() error {
 	// Close the cached auto-recall store so it doesn't hold stale data
 	// and to avoid it reading partially-cleared state during purge.
 	CloseAutoRecallStore()
+	// Hold the refresh slot shut until purge finishes. A search during Close
+	// must not open another connection and start a second rebuild.
+	pauseKnowledgeEmbeddingRefresh()
+	defer resumeKnowledgeEmbeddingRefresh()
 
 	store, err := a.openKnowledgeStore()
 	if err != nil {
@@ -407,13 +411,192 @@ func (a *App) knowledgeEmbedder() embedding.Embedder {
 	return nil
 }
 
+// knowledgeIndexMu guards the single library-refresh connection. Search
+// connections must not start or cancel that job.
+var (
+	knowledgeIndexMu          sync.Mutex
+	knowledgeIndexCond        = sync.NewCond(&knowledgeIndexMu)
+	knowledgeIndexStore       *knowledge.SQLiteStore
+	knowledgeIndexDBPath      string
+	knowledgeIndexModelID     string
+	knowledgeIndexPause       int
+	knowledgeIndexOpening     bool
+	knowledgeIndexPending     embedding.Embedder
+	knowledgeIndexPendingPath string
+)
+
+// ensureKnowledgeEmbeddingRefresh owns the one full-library rebuild for a
+// database path and model identity. Search calls with the same model return
+// immediately, so they neither cancel the running job nor scan the library
+// again. A different model replaces that job. Close and SetEmbedder run
+// without holding knowledgeIndexMu.
+func (a *App) ensureKnowledgeEmbeddingRefresh(emb embedding.Embedder) {
+	if a == nil || emb == nil || embedding.IsNoop(emb) {
+		return
+	}
+	modelID := knowledge.EmbeddingModelID(emb)
+	if modelID == "" {
+		return
+	}
+	dbPath := a.knowledgeDBPath()
+	publishEmb := emb
+	publishPath := dbPath
+	publishModel := modelID
+	owner := false
+	knowledgeIndexMu.Lock()
+	for {
+		if knowledgeIndexPause > 0 {
+			if owner {
+				knowledgeIndexOpening = false
+				knowledgeIndexPending = nil
+				knowledgeIndexPendingPath = ""
+				knowledgeIndexCond.Broadcast()
+			}
+			knowledgeIndexMu.Unlock()
+			return
+		}
+		if !owner && !knowledgeIndexOpening && knowledgeIndexStore != nil && knowledgeIndexDBPath == publishPath && knowledgeIndexModelID == publishModel {
+			store := knowledgeIndexStore
+			knowledgeIndexMu.Unlock()
+			// A failed pass waits out a short cooldown, then the next search fills
+			// the rows still missing. A running pass is left alone.
+			if store.EmbeddingRefreshResumeDue() {
+				store.SetEmbedder(publishEmb)
+			}
+			return
+		}
+		if !owner && !knowledgeIndexOpening && knowledgeIndexStore != nil && knowledgeIndexDBPath == publishPath {
+			knowledgeIndexModelID = publishModel
+			store := knowledgeIndexStore
+			knowledgeIndexMu.Unlock()
+			store.SetEmbedder(publishEmb)
+			return
+		}
+		if knowledgeIndexOpening && !owner {
+			knowledgeIndexPending = publishEmb
+			knowledgeIndexPendingPath = publishPath
+			knowledgeIndexMu.Unlock()
+			return
+		}
+		if !owner {
+			knowledgeIndexOpening = true
+			owner = true
+		}
+		knowledgeIndexMu.Unlock()
+
+		store, err := knowledge.NewSQLiteStore(publishPath)
+		if err != nil {
+			log.Printf("[knowledge] embedding refresh store: %v", err)
+			knowledgeIndexMu.Lock()
+			knowledgeIndexOpening = false
+			knowledgeIndexPending = nil
+			knowledgeIndexPendingPath = ""
+			knowledgeIndexCond.Broadcast()
+			knowledgeIndexMu.Unlock()
+			return
+		}
+		knowledgeIndexMu.Lock()
+		if knowledgeIndexPause > 0 {
+			knowledgeIndexOpening = false
+			knowledgeIndexPending = nil
+			knowledgeIndexPendingPath = ""
+			knowledgeIndexCond.Broadcast()
+			knowledgeIndexMu.Unlock()
+			store.Close()
+			return
+		}
+		if knowledgeIndexPending != nil && knowledgeIndexPendingPath != "" {
+			nextModel := knowledge.EmbeddingModelID(knowledgeIndexPending)
+			if knowledgeIndexPendingPath != publishPath || nextModel != publishModel {
+				publishEmb = knowledgeIndexPending
+				publishPath = knowledgeIndexPendingPath
+				publishModel = nextModel
+				knowledgeIndexPending = nil
+				knowledgeIndexPendingPath = ""
+				knowledgeIndexMu.Unlock()
+				store.Close()
+				if publishModel == "" {
+					knowledgeIndexMu.Lock()
+					knowledgeIndexOpening = false
+					knowledgeIndexCond.Broadcast()
+					knowledgeIndexMu.Unlock()
+					return
+				}
+				knowledgeIndexMu.Lock()
+				continue
+			}
+		}
+		displaced := knowledgeIndexStore
+		knowledgeIndexStore = store
+		knowledgeIndexDBPath = publishPath
+		knowledgeIndexModelID = publishModel
+		knowledgeIndexPending = nil
+		knowledgeIndexPendingPath = ""
+		knowledgeIndexOpening = false
+		knowledgeIndexCond.Broadcast()
+		knowledgeIndexMu.Unlock()
+		if displaced != nil && displaced != store {
+			displaced.Close()
+		}
+		store.SetEmbedder(publishEmb)
+		return
+	}
+}
+
+// pauseKnowledgeEmbeddingRefresh closes the shared rebuild and keeps the slot
+// shut so a concurrent search cannot start another one. resume clears the shut.
+func pauseKnowledgeEmbeddingRefresh() {
+	knowledgeIndexMu.Lock()
+	knowledgeIndexPause++
+	for knowledgeIndexOpening {
+		knowledgeIndexCond.Wait()
+	}
+	store := knowledgeIndexStore
+	knowledgeIndexStore = nil
+	knowledgeIndexDBPath = ""
+	knowledgeIndexModelID = ""
+	knowledgeIndexPending = nil
+	knowledgeIndexPendingPath = ""
+	knowledgeIndexMu.Unlock()
+	if store != nil {
+		store.Close()
+	}
+}
+
+func resumeKnowledgeEmbeddingRefresh() {
+	knowledgeIndexMu.Lock()
+	if knowledgeIndexPause > 0 {
+		knowledgeIndexPause--
+	}
+	knowledgeIndexCond.Broadcast()
+	knowledgeIndexMu.Unlock()
+}
+
+// closeKnowledgeEmbeddingRefresh stops the shared library rebuild.
+func closeKnowledgeEmbeddingRefresh() {
+	pauseKnowledgeEmbeddingRefresh()
+	resumeKnowledgeEmbeddingRefresh()
+}
+
+func knowledgeSearchContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Always mark interactive search. Vector search checks the rebuild again
+	// at embed time, so a rebuild that starts during full-text search still
+	// does not take the query, and a rebuild that has already finished does.
+	return knowledge.SkipQueryEmbedding(ctx)
+}
+
 // attachKnowledgeEmbedder wires the shared embedding model into a knowledge store.
+// The connection can embed queries. The library rebuild stays on one long-lived store.
 func (a *App) attachKnowledgeEmbedder(store *knowledge.SQLiteStore) {
 	if a == nil || store == nil {
 		return
 	}
 	if emb := a.knowledgeEmbedder(); emb != nil {
-		store.SetEmbedder(emb)
+		store.UseEmbedder(emb)
+		a.ensureKnowledgeEmbeddingRefresh(emb)
 	}
 }
 
@@ -2694,18 +2877,31 @@ func (a *App) KnowledgeSearch(opts knowledge.SearchOptions) ([]knowledge.SearchR
 	}
 	defer store.Close()
 	opts = a.normalizeKnowledgeSearchOptions(opts)
-	results, personalErr := store.Search(a.knowledgeContext(), opts)
+	// Enterprise search has its own timeout. Run it with the local search so a
+	// slow hub does not wait until the local query has already finished.
+	type enterpriseSearch struct {
+		hits []knowledge.SearchResult
+		err  error
+	}
+	enterpriseDone := make(chan enterpriseSearch, 1)
+	if q := strings.TrimSpace(opts.Query); q != "" {
+		go func() {
+			hits, err := a.EnterpriseKnowledgeSearch(q, "")
+			enterpriseDone <- enterpriseSearch{hits: hits, err: err}
+		}()
+	} else {
+		enterpriseDone <- enterpriseSearch{}
+	}
+	results, personalErr := store.Search(knowledgeSearchContext(a.knowledgeContext()), opts)
 	// Merge enterprise digital assets (active libraries only) into UI search.
 	// Still attempt enterprise when personal search fails so Hub cache remains usable.
-	if q := strings.TrimSpace(opts.Query); q != "" {
-		if ent, entErr := a.EnterpriseKnowledgeSearch(q, ""); entErr == nil && len(ent) > 0 {
-			limit := opts.Limit
-			if limit <= 0 {
-				limit = 20
-			}
-			results = enterpriseknowledge.MergeSearchResults(results, ent, limit, true)
-			return results, nil
+	if ent := <-enterpriseDone; ent.err == nil && len(ent.hits) > 0 {
+		limit := opts.Limit
+		if limit <= 0 {
+			limit = 20
 		}
+		results = enterpriseknowledge.MergeSearchResults(results, ent.hits, limit, true)
+		return results, nil
 	}
 	if personalErr != nil {
 		return nil, personalErr
@@ -2724,7 +2920,7 @@ func (a *App) KnowledgeSearchImages(opts knowledge.ImageSearchOptions) ([]knowle
 	}
 	defer store.Close()
 	opts.SearchOptions = a.normalizeKnowledgeSearchOptions(opts.SearchOptions)
-	return store.SearchImages(a.knowledgeContext(), opts)
+	return store.SearchImages(knowledgeSearchContext(a.knowledgeContext()), opts)
 }
 
 func (a *App) KnowledgeSearchStructured(opts knowledge.StructuredSearchOptions) ([]knowledge.SearchResult, error) {
@@ -2734,7 +2930,7 @@ func (a *App) KnowledgeSearchStructured(opts knowledge.StructuredSearchOptions) 
 	}
 	defer store.Close()
 	opts = a.normalizeKnowledgeStructuredSearchOptions(opts)
-	return store.SearchStructured(a.knowledgeContext(), opts)
+	return store.SearchStructured(knowledgeSearchContext(a.knowledgeContext()), opts)
 }
 
 func (a *App) KnowledgeStructuredCatalog(opts knowledge.StructuredCatalogOptions) (knowledge.StructuredCatalogResult, error) {
@@ -2754,7 +2950,7 @@ func (a *App) KnowledgeExplain(opts knowledge.SearchOptions) (knowledge.ExplainR
 	}
 	defer store.Close()
 	opts = a.normalizeKnowledgeSearchOptions(opts)
-	return store.Explain(a.knowledgeContext(), opts)
+	return store.Explain(knowledgeSearchContext(a.knowledgeContext()), opts)
 }
 
 func (a *App) KnowledgeSearchFacets(opts knowledge.SearchOptions) (knowledge.SearchFacetsResult, error) {
@@ -2764,7 +2960,7 @@ func (a *App) KnowledgeSearchFacets(opts knowledge.SearchOptions) (knowledge.Sea
 	}
 	defer store.Close()
 	opts = a.normalizeKnowledgeSearchOptions(opts)
-	return store.SearchFacets(a.knowledgeContext(), opts)
+	return store.SearchFacets(knowledgeSearchContext(a.knowledgeContext()), opts)
 }
 
 func (a *App) KnowledgeTopicRelevance(opts knowledge.SearchOptions) (knowledge.TopicRelevanceReport, error) {
@@ -2784,7 +2980,7 @@ func (a *App) KnowledgeContextPack(opts knowledge.ContextPackOptions) (knowledge
 	}
 	defer store.Close()
 	opts.SearchOptions = a.normalizeKnowledgeSearchOptions(opts.SearchOptions)
-	return store.ContextPack(a.knowledgeContext(), opts)
+	return store.ContextPack(knowledgeSearchContext(a.knowledgeContext()), opts)
 }
 
 func (a *App) KnowledgeFactGraph(opts knowledge.SearchOptions) (knowledge.FactGraphResult, error) {

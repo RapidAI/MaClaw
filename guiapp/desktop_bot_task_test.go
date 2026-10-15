@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -372,6 +373,429 @@ func fillDesktopBotDest(t *testing.T, dest any, payload any) {
 	if err := json.Unmarshal(raw, dest); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func TestCancelDesktopBotRun(t *testing.T) {
+	t.Cleanup(func() { desktopBotExchangeOverride = nil })
+
+	t.Run("posts the hub cancel route", func(t *testing.T) {
+		var method, path string
+		desktopBotExchangeOverride = func(_ context.Context, gotMethod, gotPath string, body any, dest any, timeout time.Duration, _ map[string]string) (int, error) {
+			method, path = gotMethod, gotPath
+			if timeout != 20*time.Second {
+				t.Fatalf("timeout = %s", timeout)
+			}
+			raw, err := json.Marshal(body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(raw) != "{}" {
+				t.Fatalf("body = %s", raw)
+			}
+			if dest != nil {
+				t.Fatal("cancel has no response body to decode")
+			}
+			return http.StatusOK, nil
+		}
+		if err := (&App{}).CancelDesktopBotRun("bot_1", "run_1"); err != nil {
+			t.Fatal(err)
+		}
+		if method != http.MethodPost || path != "/api/v1/bots/bot_1/runs/run_1/cancel" {
+			t.Fatalf("call = %s %s", method, path)
+		}
+	})
+
+	t.Run("rejects an empty id before the hub call", func(t *testing.T) {
+		desktopBotExchangeOverride = func(_ context.Context, method, path string, _ any, _ any, _ time.Duration, _ map[string]string) (int, error) {
+			t.Fatalf("hub was called: %s %s", method, path)
+			return 0, nil
+		}
+		if err := (&App{}).CancelDesktopBotRun("bot_1", " "); err == nil {
+			t.Fatal("empty run id was accepted")
+		}
+		if err := (&App{}).CancelDesktopBotRun(" ", "run_1"); err == nil {
+			t.Fatal("empty bot id was accepted")
+		}
+	})
+
+	t.Run("returns the hub reason", func(t *testing.T) {
+		desktopBotExchangeOverride = func(_ context.Context, _, _ string, _ any, _ any, _ time.Duration, _ map[string]string) (int, error) {
+			return http.StatusConflict, fmt.Errorf("这台云桌面还有一件在做。")
+		}
+		err := (&App{}).CancelDesktopBotRun("bot_1", "run_1")
+		if err == nil || !strings.Contains(err.Error(), "这台云桌面还有一件在做。") {
+			t.Fatalf("err = %v", err)
+		}
+	})
+}
+
+func TestDesktopBotAdmitCancelStopsTheRunHubNames(t *testing.T) {
+	resetActiveDesktopRuns(t)
+	resetDesktopAdmitCancel()
+	t.Cleanup(func() {
+		desktopBotExchangeOverride = nil
+		resetDesktopAdmitCancel()
+		resetActiveDesktopRuns(t)
+	})
+
+	t.Run("cancels when the admit names the run and leaves the next run alone", func(t *testing.T) {
+		resetActiveDesktopRuns(t)
+		resetDesktopAdmitCancel()
+		app := &App{}
+		app.registerActiveDesktopRun("bot_1", "turn-stop", "alice:bot_1", "打开示例网站", "execute")
+		if err := app.ArmDesktopBotAdmitCancel("bot_1"); err != nil {
+			t.Fatal(err)
+		}
+		var paths []string
+		desktopBotExchangeOverride = func(_ context.Context, method, path string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+			paths = append(paths, method+" "+path)
+			if strings.Contains(path, "/cancel") {
+				return http.StatusOK, nil
+			}
+			if method == http.MethodPost {
+				fillDesktopBotDest(t, dest, map[string]any{"accepted": true, "run_id": "run-late", "status": "running"})
+				return http.StatusAccepted, nil
+			}
+			fillDesktopBotDest(t, dest, map[string]any{"text": "已停", "status": "cancelled"})
+			return http.StatusOK, nil
+		}
+		got, err := app.relayDesktopBot(context.Background(), "bot_1", "打开示例网站", "execute", "turn-stop")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Text != "已停" {
+			t.Fatalf("text=%q paths=%v", got.Text, paths)
+		}
+		cancel := http.MethodPost + " /api/v1/bots/bot_1/runs/run-late/cancel"
+		found := false
+		for _, path := range paths {
+			if path == cancel {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("cancel missing: %v", paths)
+		}
+		paths = nil
+		desktopBotExchangeOverride = func(_ context.Context, method, path string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+			paths = append(paths, method+" "+path)
+			if strings.Contains(path, "/cancel") {
+				t.Fatalf("next run was cancelled: %s", path)
+			}
+			if method == http.MethodPost {
+				fillDesktopBotDest(t, dest, map[string]any{"accepted": true, "run_id": "run-next", "status": "running"})
+				return http.StatusAccepted, nil
+			}
+			fillDesktopBotDest(t, dest, map[string]any{"text": "开了", "status": "succeeded"})
+			return http.StatusOK, nil
+		}
+		got, err = app.relayDesktopBot(context.Background(), "bot_1", "下一件", "execute", "turn-next")
+		if err != nil || got.Text != "开了" {
+			t.Fatalf("text=%q err=%v paths=%v", got.Text, err, paths)
+		}
+	})
+
+	t.Run("drops the mark when the admit never names a run", func(t *testing.T) {
+		resetActiveDesktopRuns(t)
+		resetDesktopAdmitCancel()
+		app := &App{}
+		app.registerActiveDesktopRun("bot_1", "turn-fail", "alice:bot_1", "打开示例网站", "execute")
+		if err := app.ArmDesktopBotAdmitCancel("bot_1"); err != nil {
+			t.Fatal(err)
+		}
+		desktopBotExchangeOverride = func(_ context.Context, _ string, path string, _ any, _ any, _ time.Duration, _ map[string]string) (int, error) {
+			if strings.Contains(path, "/cancel") {
+				t.Fatalf("failed admit cancelled: %s", path)
+			}
+			return http.StatusBadRequest, fmt.Errorf("拒绝")
+		}
+		if _, err := app.relayDesktopBot(context.Background(), "bot_1", "打开示例网站", "execute", "turn-fail"); err == nil {
+			t.Fatal("expected the admit to fail")
+		}
+		desktopBotExchangeOverride = func(_ context.Context, method, path string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+			if strings.Contains(path, "/cancel") {
+				t.Fatalf("next run was cancelled: %s", path)
+			}
+			if method == http.MethodPost {
+				fillDesktopBotDest(t, dest, map[string]any{"accepted": true, "run_id": "run-after", "status": "running"})
+				return http.StatusAccepted, nil
+			}
+			fillDesktopBotDest(t, dest, map[string]any{"text": "开了", "status": "succeeded"})
+			return http.StatusOK, nil
+		}
+		got, err := app.relayDesktopBot(context.Background(), "bot_1", "下一件", "execute", "turn-after")
+		if err != nil || got.Text != "开了" {
+			t.Fatalf("text=%q err=%v", got.Text, err)
+		}
+	})
+
+	t.Run("cancels a run that was named before the stop", func(t *testing.T) {
+		resetActiveDesktopRuns(t)
+		resetDesktopAdmitCancel()
+		app := &App{}
+		app.registerActiveDesktopRun("bot_1", "req-1", "alice:bot_1", "打开示例网站", "execute")
+		app.setActiveDesktopRunID("bot_1", "req-1", "run-late")
+		var path string
+		desktopBotExchangeOverride = func(_ context.Context, _ string, gotPath string, _ any, _ any, _ time.Duration, _ map[string]string) (int, error) {
+			path = gotPath
+			return http.StatusOK, nil
+		}
+		if err := app.ArmDesktopBotAdmitCancel("bot_1"); err != nil {
+			t.Fatal(err)
+		}
+		if path != "/api/v1/bots/bot_1/runs/run-late/cancel" {
+			t.Fatalf("path=%s", path)
+		}
+		path = ""
+		if err := app.nameAdmittedDesktopRun("bot_1", "req-2", "run-next"); err != nil {
+			t.Fatal(err)
+		}
+		if path != "" {
+			t.Fatalf("next run cancelled via %s", path)
+		}
+	})
+
+	t.Run("keeps the stop when another admit of the same bot ends unnamed", func(t *testing.T) {
+		resetDesktopAdmitCancel()
+		resetActiveDesktopRuns(t)
+		app := &App{}
+		started := make(chan struct{})
+		release := make(chan struct{})
+		var releaseOnce sync.Once
+		letGo := func() { releaseOnce.Do(func() { close(release) }) }
+		t.Cleanup(letGo)
+		var startOnce sync.Once
+		var mu sync.Mutex
+		var paths []string
+		record := func(method, path string) {
+			mu.Lock()
+			paths = append(paths, method+" "+path)
+			mu.Unlock()
+		}
+		snapshot := func() []string {
+			mu.Lock()
+			defer mu.Unlock()
+			out := make([]string, len(paths))
+			copy(out, paths)
+			return out
+		}
+		desktopBotExchangeOverride = func(_ context.Context, method, path string, body any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+			record(method, path)
+			if strings.Contains(path, "/cancel") {
+				return http.StatusOK, nil
+			}
+			if method != http.MethodPost {
+				if dest == nil {
+					return http.StatusOK, nil
+				}
+				raw, err := json.Marshal(map[string]any{"text": "已停", "status": "cancelled"})
+				if err != nil {
+					return 0, err
+				}
+				if err := json.Unmarshal(raw, dest); err != nil {
+					return 0, err
+				}
+				return http.StatusOK, nil
+			}
+			raw, err := json.Marshal(body)
+			if err != nil {
+				return 0, err
+			}
+			var posted struct {
+				ClientMessageID string `json:"client_message_id"`
+			}
+			if err := json.Unmarshal(raw, &posted); err != nil {
+				return 0, err
+			}
+			if posted.ClientMessageID != "turn-a" {
+				return http.StatusBadRequest, fmt.Errorf("拒绝")
+			}
+			startOnce.Do(func() { close(started) })
+			<-release
+			if dest == nil {
+				return 0, fmt.Errorf("admit dest is nil")
+			}
+			raw, err = json.Marshal(map[string]any{"accepted": true, "run_id": "run-a", "status": "running"})
+			if err != nil {
+				return 0, err
+			}
+			if err := json.Unmarshal(raw, dest); err != nil {
+				return 0, err
+			}
+			return http.StatusAccepted, nil
+		}
+		done := make(chan error, 1)
+		go func() {
+			got, err := app.relayDesktopBot(context.Background(), "bot_1", "打开示例网站", "execute", "turn-a")
+			if err != nil {
+				done <- err
+				return
+			}
+			if got.Text != "已停" {
+				done <- fmt.Errorf("text=%q", got.Text)
+				return
+			}
+			done <- nil
+		}()
+		select {
+		case <-started:
+		case <-time.After(5 * time.Second):
+			t.Fatal("admit did not start")
+		}
+		if err := app.ArmDesktopBotAdmitCancel("bot_1"); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := app.relayDesktopBot(context.Background(), "bot_1", "别的", "execute", ""); err == nil {
+			t.Fatal("expected the other admit to fail")
+		}
+		for _, path := range snapshot() {
+			if strings.Contains(path, "/cancel") {
+				t.Fatalf("unnamed admit cancelled: %v", snapshot())
+			}
+		}
+		letGo()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("%v paths=%v", err, snapshot())
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("admit did not finish")
+		}
+		cancel := http.MethodPost + " /api/v1/bots/bot_1/runs/run-a/cancel"
+		found := 0
+		for _, path := range snapshot() {
+			if !strings.Contains(path, "/cancel") {
+				continue
+			}
+			found++
+			if path != cancel {
+				t.Fatalf("cancel path = %s", path)
+			}
+		}
+		if found != 1 {
+			t.Fatalf("cancels=%d paths=%v", found, snapshot())
+		}
+	})
+
+	t.Run("keeps the stop across a busy refusal of the same request", func(t *testing.T) {
+		resetActiveDesktopRuns(t)
+		resetDesktopAdmitCancel()
+		prev := desktopBotBusyPoll
+		desktopBotBusyPoll = 5 * time.Millisecond
+		t.Cleanup(func() { desktopBotBusyPoll = prev })
+		app := &App{}
+		app.registerActiveDesktopRun("bot_1", "turn-busy", "alice:bot_1", "打开示例网站", "execute")
+		if err := app.ArmDesktopBotAdmitCancel("bot_1"); err != nil {
+			t.Fatal(err)
+		}
+		posts := 0
+		var paths []string
+		desktopBotExchangeOverride = func(_ context.Context, method, path string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+			paths = append(paths, method+" "+path)
+			if strings.Contains(path, "/cancel") {
+				return http.StatusOK, nil
+			}
+			if method == http.MethodPost && strings.Contains(path, "/messages") {
+				posts++
+				if posts == 1 {
+					return http.StatusConflict, fmt.Errorf("%s", desktopBotBusyMessage)
+				}
+				fillDesktopBotDest(t, dest, map[string]any{"accepted": true, "run_id": "run-retry", "status": "running"})
+				return http.StatusAccepted, nil
+			}
+			if method == http.MethodGet && strings.Contains(path, "/tasks") {
+				fillDesktopBotDest(t, dest, map[string]any{"items": []any{}})
+				return http.StatusOK, nil
+			}
+			if method == http.MethodGet && strings.Contains(path, "/runs/") {
+				fillDesktopBotDest(t, dest, map[string]any{"text": "已停", "status": "cancelled"})
+				return http.StatusOK, nil
+			}
+			return 0, fmt.Errorf("no bot list")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		got, err := app.relayDesktopBotWhenFree(ctx, "bot_1", "打开示例网站", "execute", "turn-busy", nil)
+		if err != nil || got.Text != "已停" {
+			t.Fatalf("text=%q err=%v paths=%v", got.Text, err, paths)
+		}
+		cancelPath := http.MethodPost + " /api/v1/bots/bot_1/runs/run-retry/cancel"
+		found := 0
+		for _, path := range paths {
+			if !strings.Contains(path, "/cancel") {
+				continue
+			}
+			found++
+			if path != cancelPath {
+				t.Fatalf("cancel path = %s", path)
+			}
+		}
+		if found != 1 || posts != 2 {
+			t.Fatalf("cancels=%d posts=%d paths=%v", found, posts, paths)
+		}
+	})
+
+	t.Run("keeps a registered turn's stop when another request starts first", func(t *testing.T) {
+		resetActiveDesktopRuns(t)
+		resetDesktopAdmitCancel()
+		app := &App{}
+		app.registerActiveDesktopRun("bot_1", "req-chat", "alice:bot_1", "打开示例网站", "execute")
+		if err := app.ArmDesktopBotAdmitCancel("bot_1"); err != nil {
+			t.Fatal(err)
+		}
+		desktopBotExchangeOverride = func(_ context.Context, _, path string, _ any, _ any, _ time.Duration, _ map[string]string) (int, error) {
+			if strings.Contains(path, "/cancel") {
+				t.Fatalf("other request cancelled: %s", path)
+			}
+			return http.StatusBadRequest, fmt.Errorf("拒绝")
+		}
+		if _, err := app.relayDesktopBot(context.Background(), "bot_1", "别的", "execute", ""); err == nil {
+			t.Fatal("expected the other admit to fail")
+		}
+		cancels := 0
+		desktopBotExchangeOverride = func(_ context.Context, _, path string, _ any, _ any, _ time.Duration, _ map[string]string) (int, error) {
+			if strings.Contains(path, "/cancel") {
+				cancels++
+				return http.StatusOK, nil
+			}
+			t.Fatalf("unexpected %s", path)
+			return 0, nil
+		}
+		if err := app.nameAdmittedDesktopRun("bot_1", "req-chat", "run-chat"); err != nil {
+			t.Fatal(err)
+		}
+		if err := app.ArmDesktopBotAdmitCancel("bot_1"); err != nil {
+			t.Fatal(err)
+		}
+		if cancels != 1 {
+			t.Fatalf("cancels=%d", cancels)
+		}
+	})
+
+	t.Run("does not stop a later admit when nothing was underway", func(t *testing.T) {
+		resetActiveDesktopRuns(t)
+		resetDesktopAdmitCancel()
+		app := &App{}
+		if err := app.ArmDesktopBotAdmitCancel("bot_1"); err != nil {
+			t.Fatal(err)
+		}
+		desktopBotExchangeOverride = func(_ context.Context, method, path string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+			if strings.Contains(path, "/cancel") {
+				t.Fatalf("later admit cancelled: %s", path)
+			}
+			if method == http.MethodPost {
+				fillDesktopBotDest(t, dest, map[string]any{"accepted": true, "run_id": "run-later", "status": "running"})
+				return http.StatusAccepted, nil
+			}
+			fillDesktopBotDest(t, dest, map[string]any{"text": "开了", "status": "succeeded"})
+			return http.StatusOK, nil
+		}
+		got, err := app.relayDesktopBot(context.Background(), "bot_1", "下一件", "execute", "turn-later")
+		if err != nil || got.Text != "开了" {
+			t.Fatalf("text=%q err=%v", got.Text, err)
+		}
+	})
 }
 
 func TestDesktopBotAdmissionPoll(t *testing.T) {
@@ -745,5 +1169,55 @@ func TestDesktopBotPollStretchCapsAndResets(t *testing.T) {
 	// A read that answers resets the count, so a slow run never pays it.
 	if got := desktopBotPollStretch(0); got != time.Second {
 		t.Fatalf("reset wait = %s", got)
+	}
+}
+
+func TestFinishDesktopBotTaskWaitsOutABusyDesktop(t *testing.T) {
+	prev := desktopBotBusyPoll
+	desktopBotBusyPoll = 5 * time.Millisecond
+	app := &App{}
+	var got *IMAgentResponse
+	var queued []string
+	relays := 0
+	t.Cleanup(func() {
+		desktopBotBusyPoll = prev
+		desktopBotRelayOverride = nil
+		desktopBotExchangeOverride = nil
+		desktopBotResultSink = nil
+		desktopBotQueuedSink = nil
+	})
+	desktopBotResultSink = func(resp *IMAgentResponse) { got = resp }
+	desktopBotQueuedSink = func(payload string) { queued = append(queued, payload) }
+	desktopBotRelayOverride = func(context.Context, string, string, string) (desktopBotRelayResult, error) {
+		relays++
+		if relays == 1 {
+			return desktopBotRelayResult{}, fmt.Errorf("%s", desktopBotBusyMessage)
+		}
+		return desktopBotRelayResult{Text: "页面打开了。"}, nil
+	}
+	polls := 0
+	desktopBotExchangeOverride = func(_ context.Context, method, path string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+		if method == http.MethodGet && strings.Contains(path, "/tasks") {
+			polls++
+			payload := map[string]any{
+				"items": []map[string]any{{"run_id": "run-1", "bot_id": "bot_1", "status": "running", "task": "早报"}},
+			}
+			if polls >= 2 {
+				payload = map[string]any{"items": []any{}}
+			}
+			fillDesktopBotDest(t, dest, payload)
+			return http.StatusOK, nil
+		}
+		return 0, fmt.Errorf("no bot list")
+	}
+	app.finishDesktopBotTask("desktop-bot-busy", "alice:bot_1", "bot_1", "打开示例网站", "execute")
+	if relays != 2 || got == nil || got.Text != "页面打开了。" || got.Error != "" {
+		t.Fatalf("relays=%d reply=%#v", relays, got)
+	}
+	if strings.Contains(got.Error, desktopBotBusyMessage) || strings.Contains(got.Text, desktopBotBusyMessage) {
+		t.Fatalf("busy sentence became the reply: %#v", got)
+	}
+	if len(queued) != 1 || !strings.Contains(queued[0], `"waiting":true`) || !strings.Contains(queued[0], `"bot_id":"bot_1"`) || !strings.Contains(queued[0], `"session_key":"alice:bot_1"`) {
+		t.Fatalf("queued = %v", queued)
 	}
 }

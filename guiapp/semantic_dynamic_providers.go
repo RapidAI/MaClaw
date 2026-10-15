@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	mcputil "github.com/RapidAI/CodeClaw/corelib/mcp"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
@@ -24,7 +25,7 @@ type semanticDynamicInventory struct {
 	coverage     tool.CatalogCoverage
 }
 
-func (h *IMMessageHandler) semanticDynamicInventory(ctx context.Context, userID string) (semanticDynamicInventory, error) {
+func (h *IMMessageHandler) semanticDynamicInventory(ctx context.Context) (semanticDynamicInventory, error) {
 	contracts, err := h.semanticDynamicCapabilityContracts()
 	if err != nil {
 		return semanticDynamicInventory{}, fmt.Errorf("load dynamic capability contracts: %w", err)
@@ -35,12 +36,18 @@ func (h *IMMessageHandler) semanticDynamicInventory(ctx context.Context, userID 
 	if contracts == nil {
 		return semanticDynamicInventory{coverage: semanticDynamicCoverage("catalog_incomplete", "catalog_incomplete")}, nil
 	}
-	principal := semanticContractPrincipal(agentservice.Principal{TenantID: semanticDesktopTenantID(), UserID: strings.TrimSpace(userID)})
-	if principal.UserID == "" {
-		return semanticDynamicInventory{coverage: semanticDynamicCoverage("catalog_incomplete", "catalog_incomplete")}, nil
+	// Dynamic contracts are host state: the lifecycle publisher writes them
+	// under the single desktop contract principal, so every session reaching
+	// this host's semantic surface resolves against that same scope. The
+	// session principal stays on the invocation scope instead. One snapshot
+	// keeps every entry in the same control-plane generation.
+	principal := semanticDesktopContractPrincipal()
+	resolver, err := agentservice.DynamicCapabilityContractSnapshot(contracts, principal)
+	if err != nil {
+		return semanticDynamicInventory{}, fmt.Errorf("snapshot dynamic capability contracts: %w", err)
 	}
-	mcpEntries, mcpCoverage := h.semanticMCPInventory(ctx, principal, contracts)
-	skillEntries, skillCoverage := h.semanticSkillInventory(ctx, principal, contracts)
+	mcpEntries, mcpCoverage := h.semanticMCPInventory(ctx, principal, resolver)
+	skillEntries, skillCoverage := h.semanticSkillInventory(ctx, principal, resolver)
 	return semanticDynamicInventory{
 		mcpEntries: mcpEntries, skillEntries: skillEntries,
 		coverage: tool.CatalogCoverage{State: tool.CatalogCoverageComplete, Families: []tool.CatalogCoverageFamily{mcpCoverage, skillCoverage}},
@@ -58,25 +65,16 @@ func (h *IMMessageHandler) semanticDynamicInventoryForPrincipal(ctx context.Cont
 	if contracts == nil || strings.TrimSpace(principal.TenantID) == "" || strings.TrimSpace(principal.UserID) == "" {
 		return semanticDynamicInventory{coverage: semanticDynamicCoverage("catalog_incomplete", "catalog_incomplete")}, nil
 	}
-	mcpEntries, mcpCoverage := h.semanticMCPInventory(ctx, principal, contracts)
-	skillEntries, skillCoverage := h.semanticSkillInventory(ctx, principal, contracts)
+	resolver, err := agentservice.DynamicCapabilityContractSnapshot(contracts, principal)
+	if err != nil {
+		return semanticDynamicInventory{}, fmt.Errorf("snapshot dynamic capability contracts: %w", err)
+	}
+	mcpEntries, mcpCoverage := h.semanticMCPInventory(ctx, principal, resolver)
+	skillEntries, skillCoverage := h.semanticSkillInventory(ctx, principal, resolver)
 	return semanticDynamicInventory{mcpEntries: mcpEntries, skillEntries: skillEntries, coverage: tool.CatalogCoverage{State: tool.CatalogCoverageComplete, Families: []tool.CatalogCoverageFamily{mcpCoverage, skillCoverage}}}, nil
 }
 
 func semanticDesktopTenantID() string { return "desktop" }
-
-// semanticContractPrincipal collapses a desktop project session onto the
-// desktop owner for dynamic-contract lookup only. Session residue and the
-// invocation scope keep the raw session id. Coding principals such as
-// "principal" are left unchanged.
-func semanticContractPrincipal(principal agentservice.Principal) agentservice.Principal {
-	principal.TenantID = strings.TrimSpace(principal.TenantID)
-	principal.UserID = strings.TrimSpace(principal.UserID)
-	if trustedDesktopPrincipal(principal.UserID) {
-		principal.UserID = desktopUserID
-	}
-	return principal
-}
 
 func semanticDynamicCoverage(mcpReason, skillReason string) tool.CatalogCoverage {
 	return tool.CatalogCoverage{State: tool.CatalogCoverageIncomplete, ReasonCode: tool.CatalogCoverageReasonIncomplete, Families: []tool.CatalogCoverageFamily{
@@ -111,6 +109,21 @@ func (h *IMMessageHandler) semanticMCPInventory(ctx context.Context, principal a
 	if registry != nil {
 		for _, server := range registry.ListServers() {
 			status, discoveredTools, observed := registry.remoteHealthObservation(server.ID)
+			if !observed && normalizeMCPHealthStatus(status) == mcpHealthStatusUnknown {
+				// This process never finished looking at the server. A fresh
+				// durable observation for the same configured endpoint is the
+				// restart-time equivalent of the in-memory cache: it admits
+				// the tools and kicks a background revalidation so the record
+				// stays a cache, never a substitute for re-checking.
+				if durableTools, ok := durableRemoteMCPTools(registry, server.ID); ok {
+					// The durable record IS a finished successful observation
+					// (fresh, same endpoint): admit it as such for this pass and
+					// let the background refresh overwrite it either way.
+					discoveredTools, observed = durableTools, true
+					status = mcpHealthStatusHealthy
+					scheduleRemoteMCPObservationRefresh(registry, server.ID)
+				}
+			}
 			retryDue := h.app != nil && h.app.mcpRuntimeSyncShouldRetry(server.ID)
 			if remoteMCPMemberOpen(status, observed, server.RuntimeSyncStatus, retryDue) {
 				// This process has not finished looking at a server the
@@ -145,6 +158,7 @@ func (h *IMMessageHandler) semanticMCPInventory(ctx context.Context, principal a
 		// not admitted, even if its process has not exited yet.
 		blockedLocal := map[string]bool{}
 		admittedLocal := map[string]bool{}
+		durableLocalToolSets := map[string]LocalMCPToolSet{}
 		for _, configured := range registry.ListLocalServers() {
 			id := strings.TrimSpace(configured.ID)
 			if configured.Capability != nil {
@@ -155,6 +169,22 @@ func (h *IMMessageHandler) semanticMCPInventory(ctx context.Context, principal a
 			}
 			running := local != nil && local.IsRunning(configured.ID)
 			if !configured.AutoStart && !running {
+				// An enabled server that does not auto-start is offline by
+				// operator choice, but its tools are still installed:
+				// CallToolForOwner starts the process on demand. Admit it
+				// from the durable tools observation so the server is
+				// addressable instead of invisible; the runtime call gate
+				// marks it blocked whenever an on-demand start would be
+				// refused right now.
+				if durableTools, ok := durableLocalMCPTools(registry, configured); ok {
+					admittedLocal[id] = true
+					durableLocalToolSets[id] = LocalMCPToolSet{ServerID: id, ServerName: configured.Name, Tools: durableTools}
+					if h.app == nil {
+						blockedLocal[id] = true
+					} else if blocked, _ := h.app.mcpRuntimeSyncGate(id); blocked {
+						blockedLocal[id] = true
+					}
+				}
 				continue
 			}
 			if !running {
@@ -179,6 +209,13 @@ func (h *IMMessageHandler) semanticMCPInventory(ctx context.Context, principal a
 					entry.RuntimeBlocked = blockedLocal[id]
 					entries = append(entries, entry)
 				}
+			}
+		}
+		for id, set := range durableLocalToolSets {
+			for _, discovered := range set.Tools {
+				entry := semanticMCPEntry(ctx, principal, contracts, set.ServerID, set.ServerName, localCapability[id], discovered)
+				entry.RuntimeBlocked = blockedLocal[id]
+				entries = append(entries, entry)
 			}
 		}
 	} else if local != nil {
@@ -337,7 +374,10 @@ func (c *sharedAgentLoopCallbacks) executeSemanticDynamicProviderWithContext(exe
 		defer cancel()
 	}
 	principal := agentservice.Principal{TenantID: semanticDesktopTenantID(), UserID: strings.TrimSpace(c.semanticSurface.scope.PrincipalID)}
-	inventory, err := c.handler.semanticDynamicInventoryForPrincipal(ctx, semanticContractPrincipal(principal))
+	// Binding revalidation must observe the same host contract scope the plan
+	// was admitted under; the session principal is kept only as the call
+	// owner for the eventual bound dispatch.
+	inventory, err := c.handler.semanticDynamicInventoryForPrincipal(ctx, semanticDesktopContractPrincipal())
 	if err != nil {
 		return tool.SelectionExecutionResult{Result: "[system rejected] dynamic_catalog_incomplete", ReasonCode: "dynamic_catalog_incomplete"}, true
 	}
@@ -351,6 +391,13 @@ func (c *sharedAgentLoopCallbacks) executeSemanticDynamicProviderWithContext(exe
 	}
 	var coordinator agentservice.DynamicExternalEffectCoordinator
 	if semanticDynamicSelectionRequiresReceipt(selection) {
+		// Unreviewed external-effect calls settle through the receipt boundary
+		// AND through a per-server session confirmation: an installed vendor
+		// tool must not gain silent write authority merely by being installed.
+		// Read-only selections skip this gate entirely.
+		if gated, ok := c.mcpServerWriteGateForSelection(selection, inventory.mcpEntries); ok {
+			return gated, true
+		}
 		coordinator, err = c.handler.semanticDynamicEffectCoordinator()
 		if err != nil {
 			return tool.SelectionExecutionResult{Result: "[system rejected] dynamic_effect_coordinator_unavailable", ReasonCode: "dynamic_effect_coordinator_unavailable"}, true
@@ -398,6 +445,21 @@ func (b guiSemanticMCPBridge) CallBoundTool(_ context.Context, principal agentse
 				continue
 			}
 			if !mcpHealthObservationSucceeded(server.HealthStatus) {
+				// A finished negative observation this process stays
+				// authoritative; only an unknown status may fall back to
+				// the durable record, the same rule the inventory applied
+				// when it admitted the binding. The HTTP call itself is the
+				// final revalidation and fails naturally when the server is
+				// actually gone.
+				if normalizeMCPHealthStatus(server.HealthStatus) == mcpHealthStatusUnknown {
+					if durableTools, ok := durableRemoteMCPTools(registry, server.ID); ok {
+						for _, discovered := range durableTools {
+							if discovered.Name == binding.ToolName {
+								return boundMCPToolContent(registry.CallToolForOwner(principal.UserID, binding.ServerID, binding.ToolName, arguments))
+							}
+						}
+					}
+				}
 				return "", fmt.Errorf("mcp_binding_stale")
 			}
 			// Inventory revalidation already required a lifecycle-owned cached
@@ -418,10 +480,12 @@ func (b guiSemanticMCPBridge) CallBoundTool(_ context.Context, principal agentse
 			return "", fmt.Errorf("mcp_binding_stale")
 		}
 	}
-	// Never construct/start a local provider during a bound semantic call. A
-	// selected binding was admitted only from the lifecycle-owned ready
-	// snapshot; if that runtime vanished afterwards, it is stale.
-	local := b.handler.peekLocalMCPManager()
+	// This is an execution, not a passive observation: constructing the
+	// manager here only wires the lifecycle handle — it starts no process by
+	// itself. A durable-admitted AutoStart=false server must stay callable;
+	// with a mere peek, a manager nobody created yet would make the admitted
+	// binding permanently stale.
+	local := b.handler.getLocalMCPManager()
 	if local != nil {
 		for _, server := range local.GetAllTools() {
 			if server.ServerID != binding.ServerID {
@@ -439,6 +503,30 @@ func (b guiSemanticMCPBridge) CallBoundTool(_ context.Context, principal agentse
 			}
 			return "", fmt.Errorf("mcp_binding_stale")
 		}
+		// An enabled server that does not auto-start is offline until a call
+		// needs it: the inventory admitted it from the durable observation,
+		// and CallToolForOwner starts the process under the same runtime gate
+		// and discovery checks a synced start performs. The durable record
+		// only proves the tool existed at the last observation for this exact
+		// endpoint; the fresh DiscoverTools inside the call path remains the
+		// final truth on whether it still does.
+		if registry := b.handler.getMCPRegistry(); registry != nil {
+			for _, configured := range registry.ListLocalServers() {
+				if strings.TrimSpace(configured.ID) != binding.ServerID || configured.Disabled {
+					continue
+				}
+				durableTools, ok := durableLocalMCPTools(registry, configured)
+				if !ok {
+					break
+				}
+				for _, discovered := range durableTools {
+					if discovered.Name == binding.ToolName {
+						return boundMCPToolContent(local.CallToolForOwner(principal.UserID, binding.ServerID, binding.ToolName, arguments))
+					}
+				}
+				return "", fmt.Errorf("mcp_binding_stale")
+			}
+		}
 	}
 	return "", fmt.Errorf("mcp_binding_stale")
 }
@@ -447,7 +535,14 @@ func boundMCPToolContent(raw string, err error) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return mcputil.ToolCallContent(raw)
+	content, err := mcputil.ToolCallContent(raw)
+	if err != nil {
+		return "", err
+	}
+	// A bound result is content, not control: the host-emitted markers a
+	// vendor must not forge are escaped at the agent package (see
+	// agent.SanitizeVendorToolResultText).
+	return agent.SanitizeVendorToolResultText(content), nil
 }
 
 type guiSemanticSkillBridge struct{ handler *IMMessageHandler }
@@ -472,5 +567,12 @@ func (b guiSemanticSkillBridge) CallBoundSkill(_ context.Context, _ agentservice
 	if executor == nil {
 		return "", fmt.Errorf("skill_bound_execution_unavailable")
 	}
-	return executor.executeBoundSkill(binding.StableID, binding.Name, binding.Version, binding.ContentDigest, arguments)
+	text, err := executor.executeBoundSkill(binding.StableID, binding.Name, binding.Version, binding.ContentDigest, arguments)
+	if err != nil {
+		return "", err
+	}
+	// Skill output is content, not control — a skill that returns a forged
+	// __ASK_USER__ must not pause the loop on a question the host never
+	// asked, the same bound-execution rule MCP results already obey.
+	return agent.SanitizeVendorToolResultText(text), nil
 }

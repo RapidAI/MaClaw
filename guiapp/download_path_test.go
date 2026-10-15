@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"bytes"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -49,6 +50,16 @@ func TestIsImportantLogLineKeepsDownloadWorkdirDiagnostics(t *testing.T) {
 		`[skill-runner] inject workdir owner="desktop-user" workdir="C:\\wd" temp="C:\\wd\\.maclaw-tmp"`,
 		`[startup] begin`,
 		`[startup] complete in 2s`,
+		`[intent] local L3 waiting for head file: no local head file found`,
+		`[intent] local L3 attach failed (strict: intent L3 fails closed): no local head file found`,
+		`[intent] local L3 on: head=head_mlp_qwen3go_r7`,
+		`[tool] tool head waiting for tool_head_ovr_qwen3go_r5.json`,
+		`[tool] tool head attach failed: dim mismatch`,
+		`[tool] tool head attached: tool_head_ovr_qwen3go_r5`,
+		`[embedding] head asset fetch started kind=intent_head file=head_mlp_qwen3go_r7.json`,
+		`[embedding] head asset fetch kind=intent_head file=head_mlp_qwen3go_r7.json 40%`,
+		`[embedding] head asset fetch failed kind=intent_head file=head_mlp_qwen3go_r7.json err=timeout`,
+		`[embedding] head asset ready path=C:\Users\me\.maclaw\models\intent_heads\head_mlp_qwen3go_r7.json`,
 	}
 	for _, line := range must {
 		if !isImportantLogLine(line) {
@@ -69,6 +80,44 @@ func TestIsImportantLogLineKeepsDownloadWorkdirDiagnostics(t *testing.T) {
 		if !isImportantLogLine(line) || !isRegistrationLogLine(line) {
 			t.Fatalf("expected registration important: %s", line)
 		}
+	}
+}
+
+func TestLogHeadAttachSuppressesRepeat(t *testing.T) {
+	var buf bytes.Buffer
+	prev := log.Writer()
+	log.SetOutput(&buf)
+	t.Cleanup(func() { log.SetOutput(prev) })
+
+	headAttachLog.Lock()
+	savedI, savedT := headAttachLog.intent, headAttachLog.tool
+	headAttachLog.intent, headAttachLog.tool = "", ""
+	headAttachLog.Unlock()
+	t.Cleanup(func() {
+		headAttachLog.Lock()
+		headAttachLog.intent, headAttachLog.tool = savedI, savedT
+		headAttachLog.Unlock()
+	})
+
+	waiting := "[intent] local L3 waiting for head file: no local head file found"
+	logHeadAttach(&headAttachLog.intent, waiting)
+	logHeadAttach(&headAttachLog.intent, waiting)
+	logHeadAttach(&headAttachLog.intent, "[intent] local L3 on: head=head_mlp_qwen3go_r7")
+	got := buf.String()
+	if strings.Count(got, "waiting for head file") != 1 {
+		t.Fatalf("waiting line repeated:\n%s", got)
+	}
+	if !strings.Contains(got, "head=head_mlp_qwen3go_r7") {
+		t.Fatalf("success line missing:\n%s", got)
+	}
+}
+
+func TestSkipHeadAssetFetchDuringGoTest(t *testing.T) {
+	if !(&App{}).skipHeadAssetFetch() {
+		t.Fatal("go test must not download classification heads into the user models dir")
+	}
+	if !(&App{testHomeDir: t.TempDir()}).skipHeadAssetFetch() {
+		t.Fatal("an App bound to a temp home must not download classification heads")
 	}
 }
 

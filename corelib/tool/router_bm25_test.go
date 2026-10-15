@@ -1121,7 +1121,7 @@ func TestRouter_PreferEmbeddingOnlySkipsTreeLLM(t *testing.T) {
 		Embedder: embedding.NoopEmbedder{},
 		LLMFunc: func(systemPrompt, userText string) (string, error) {
 			llmCalls.Add(1)
-			return `[{"label":"browser","score":0.95}]`, nil
+			return `{"top":[{"skill":"browser","score":0.95}]}`, nil
 		},
 	}))
 

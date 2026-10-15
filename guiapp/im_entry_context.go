@@ -93,6 +93,12 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 	msg := opts.Message
 	trimmed := *opts.Trimmed
 
+	if resp := h.settleFreshMailboxConfirmation(msg, trimmed, result.EntriesBeforeClear); resp != nil {
+		result.Handled = true
+		result.Response = resp
+		return result
+	}
+
 	// App-exit slots (written at graceful shutdown for in-flight sessions) bind
 	// automatically: reopening the restored/historical tab is the resume intent.
 	opts.Decision = applyAppExitAutoResumeDecision(*msg, trimmed, result.UnfinishedSlot, opts.Decision)
@@ -200,7 +206,7 @@ func (h *IMMessageHandler) resolveIMEntryContext(opts imEntryContextOptions) imE
 
 	var resumeWS *agent.WorkingState
 	h.prepareMailboxTurn(msg.UserID, trimmed)
-	result.AskUserContext, resumeWS, result.HasPendingAskUser = h.consumePendingAskUserAnswer(msg.UserID, trimmed, result.EntriesBeforeClear)
+	result.AskUserContext, resumeWS, result.HasPendingAskUser, _ = h.consumePendingAskUserAnswer(msg.UserID, trimmed, result.EntriesBeforeClear)
 	result.ResumeWorkingState = resumeWS
 
 	// Engine-injected post-recording choice (minutes / transcribe / keep_only).

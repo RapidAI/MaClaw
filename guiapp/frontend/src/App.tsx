@@ -28,6 +28,7 @@ import type { AIExecutionProfile } from './components/ai/AITabTypes';
 import { createWindowMaximizeRestoreSession } from './utils/windowRestoreGeometry';
 import { SuggestCombobox } from './components/ui/SuggestCombobox';
 import { clipboardImageExtension, readClipboardImageBase64 } from './utils/clipboardImage';
+import { problemReportDescriptionPreview } from './utils/problemReportPreview';
 import { PetCompanionSurface } from './components/pet/PetCompanionSurface';
 
 const windowMaximizeRestore = createWindowMaximizeRestoreSession({
@@ -6225,12 +6226,18 @@ ${instruction}`;
                             <section className="problem-report-dialog__history" aria-labelledby="problem-report-history-title">
                                 <span className="form-label" id="problem-report-history-title">{t('myProblemReports')}</span>
                                 <div className="problem-report-dialog__history-list">
-                                    {myProblemReports.map(report => (
-                                        <div className="problem-report-dialog__history-item" key={report.id}>
-                                            <code title={String(report.id)}>{report.id}</code>
-                                            <span>{problemReportStatusLabel(report.status)}</span>
-                                        </div>
-                                    ))}
+                                    {myProblemReports.map((report, index) => {
+                                        const preview = problemReportDescriptionPreview(report?.description);
+                                        return (
+                                            <div className="problem-report-dialog__history-item" key={String(report?.id || index)}>
+                                                <div className="problem-report-dialog__history-main">
+                                                    <code title={String(report?.id || '')}>{report.id}</code>
+                                                    {preview.text ? <span className="problem-report-dialog__history-desc" title={preview.title || undefined}>{preview.text}</span> : null}
+                                                </div>
+                                                <span className="problem-report-dialog__history-status">{problemReportStatusLabel(report.status)}</span>
+                                            </div>
+                                        );
+                                    })}
                                 </div>
                             </section>
                         )}

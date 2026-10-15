@@ -14,6 +14,7 @@ import (
 
 type nodeEmbeddingRow struct {
 	id, title, text string
+	textLen         int
 }
 
 type tableRowEmbeddingRow struct {
@@ -45,6 +46,18 @@ func (s *SQLiteStore) searchByEmbedding(ctx context.Context, opts SearchOptions)
 	if emb == nil || embedding.IsNoop(emb) {
 		return nil, nil
 	}
+	// A library rebuild is embedding documents on this model. The query would
+	// wait behind those batches. Once that rebuild has finished, a search that
+	// was already in flight still embeds against the vectors now on disk.
+	if skipQueryEmbeddingDuringRefresh(ctx) {
+		return nil, nil
+	}
+	// The active model has no stored vectors yet. Embedding the query would only
+	// contend with the library refresh and still match nothing.
+	modelID := embeddingModelIdentifier(emb)
+	if !s.hasCurrentModelEmbeddings(ctx, modelID, emb.Dim()) {
+		return nil, nil
+	}
 	// The query side of asymmetric retrieval carries its own EmbeddingGemma task
 	// prompt; documents were indexed with RoleDocument, so the two spaces are a
 	// matched pair. Embedders without prompt support fall back to a plain Embed.
@@ -57,7 +70,6 @@ func (s *SQLiteStore) searchByEmbedding(ctx context.Context, opts SearchOptions)
 	if !s.isEmbedderGenerationCurrent(generation) {
 		return nil, nil
 	}
-	modelID := embeddingModelIdentifier(emb)
 
 	limit := opts.Limit
 	if limit <= 0 {
@@ -76,9 +88,9 @@ func (s *SQLiteStore) searchByEmbedding(ctx context.Context, opts SearchOptions)
 		args = append(args, modelID, len(queryVec))
 	}
 
-	sqlQuery := `SELECT c.id, COALESCE(c.node_id, ''), c.title, c.claim, c.summary, c.embedding,
-		s.id, s.kind, s.uri, s.canonical_uri, s.title, s.author, s.site_name, s.published_at, s.fetched_at, s.content_hash,
-		s.owner_id, s.tenant_id, s.project_path, s.topic_hint, s.source_trust, s.batch_id, s.relative_path, s.status, s.error_message, s.created_at, s.updated_at
+	sqlQuery := `SELECT c.id, COALESCE(c.node_id, ''), COALESCE(c.title, ''), COALESCE(c.claim, ''), COALESCE(c.summary, ''), c.embedding,
+		s.id, s.kind, s.uri, COALESCE(s.canonical_uri, ''), COALESCE(s.title, ''), COALESCE(s.author, ''), COALESCE(s.site_name, ''), COALESCE(s.published_at, ''), s.fetched_at, s.content_hash,
+		COALESCE(s.owner_id, ''), COALESCE(s.tenant_id, ''), COALESCE(s.project_path, ''), COALESCE(s.topic_hint, ''), COALESCE(s.source_trust, 0.5), COALESCE(s.batch_id, ''), COALESCE(s.relative_path, ''), s.status, COALESCE(s.error_message, ''), s.created_at, s.updated_at
 		FROM knowledge_cards c
 		JOIN knowledge_sources s ON s.id = c.source_id
 		WHERE ` + strings.Join(where, " AND ") + `
@@ -416,6 +428,67 @@ func exactSearchEvidenceKey(r SearchResult) string {
 	return source + "\x00" + location + "\x00" + text
 }
 
+type skipQueryEmbeddingKey struct{}
+
+// SkipQueryEmbedding marks ctx so vector search returns without embedding the
+// query. Full-text results are unaffected. Interactive search uses this while
+// a library rebuild is running.
+func SkipQueryEmbedding(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, skipQueryEmbeddingKey{}, true)
+}
+
+func skipQueryEmbedding(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	skipped, _ := ctx.Value(skipQueryEmbeddingKey{}).(bool)
+	return skipped
+}
+
+// skipQueryEmbeddingDuringRefresh reports that this search opted out of query
+// embedding and a library rebuild currently owns the model.
+func skipQueryEmbeddingDuringRefresh(ctx context.Context) bool {
+	return skipQueryEmbedding(ctx) && LibraryEmbeddingRefreshActive()
+}
+
+// embeddingBackfillBatchSize is how many cards are embedded and persisted
+// before the next cancellation check. Tests shrink it to prove a cancelled
+// batch leaves earlier batches on disk.
+var embeddingBackfillBatchSize = 64
+
+// hasCurrentModelEmbeddings reports whether card or node search has any vector
+// in this retrieval space. Table-row vectors do not count: text search never
+// reads them, so they must not cause a query embed that cannot match.
+func (s *SQLiteStore) hasCurrentModelEmbeddings(ctx context.Context, modelID string, dimension int) bool {
+	if s == nil || s.db == nil || strings.TrimSpace(modelID) == "" || dimension <= 0 {
+		return false
+	}
+	var one int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM knowledge_embedding_metadata
+		WHERE model_id = ? AND dimension = ? AND entity_type IN (?, ?) LIMIT 1`,
+		modelID, dimension, embeddingEntityCard, embeddingEntityNode).Scan(&one)
+	return err == nil && one == 1
+}
+
+func (s *SQLiteStore) hasCurrentModelEmbeddingsFor(ctx context.Context, entityType, modelID string, dimension int) bool {
+	if s == nil || s.db == nil || strings.TrimSpace(modelID) == "" || dimension <= 0 {
+		return false
+	}
+	query := `SELECT 1 FROM knowledge_embedding_metadata WHERE model_id = ? AND dimension = ?`
+	args := []interface{}{modelID, dimension}
+	if entityType = strings.TrimSpace(entityType); entityType != "" {
+		query += ` AND entity_type = ?`
+		args = append(args, entityType)
+	}
+	query += ` LIMIT 1`
+	var one int
+	err := s.db.QueryRowContext(ctx, query, args...).Scan(&one)
+	return err == nil && one == 1
+}
+
 // backfillCardEmbeddings generates embeddings for cards that don't have one yet.
 func (s *SQLiteStore) backfillCardEmbeddings(ctx context.Context) error {
 	emb, generation := s.currentEmbedderSnapshot()
@@ -430,65 +503,88 @@ func (s *SQLiteStore) backfillCardEmbeddingsForGeneration(ctx context.Context, e
 		return nil
 	}
 	modelID := embeddingModelIdentifier(emb)
-	rows, err := s.db.QueryContext(ctx, `SELECT c.id, c.title, c.claim, c.summary FROM knowledge_cards c
-		WHERE c.embedding IS NULL OR LENGTH(c.embedding) = 0
-		OR NOT EXISTS (SELECT 1 FROM knowledge_embedding_metadata em
-			WHERE em.entity_type = 'card' AND em.entity_id = c.id AND em.model_id = ? AND em.dimension = ?)`, modelID, emb.Dim())
-	if err != nil {
-		return err
+	batchSize := embeddingBackfillBatchSize
+	if batchSize <= 0 {
+		batchSize = 64
 	}
-	defer rows.Close()
-
-	type cardInfo struct {
-		id, title, claim, summary string
-	}
-	var cards []cardInfo
-	for rows.Next() {
-		var c cardInfo
-		if err := rows.Scan(&c.id, &c.title, &c.claim, &c.summary); err != nil {
-			return err
-		}
-		cards = append(cards, c)
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	if len(cards) == 0 {
-		return nil
-	}
-
-	// Batch embed
-	texts := make([]string, len(cards))
-	for i, c := range cards {
-		texts[i] = cardEmbeddingText(Card{Title: c.title, Claim: c.claim, Summary: c.summary})
-	}
-	vectors, err := embedding.EmbedBatchAs(emb, texts, embedding.RoleDocument)
-	if err != nil {
-		return err
-	}
-	if err := validateEmbeddingBatchOutput("card", vectors, len(cards), emb.Dim()); err != nil {
-		return err
-	}
-
-	// Update cards with embeddings
-	for i, c := range cards {
+	// Page by id so a library rebuild does not hold every card before the first
+	// batch is persisted, and a cancel does not discard that work.
+	after := ""
+	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		if !s.isEmbedderGenerationCurrent(generation) {
 			return nil
 		}
-		updated, err := s.persistEmbeddingIfCurrent(ctx, embeddingEntityCard, c.id, embeddingModelIdentifier(emb), vectors[i], generation, `UPDATE knowledge_cards SET embedding = ?
-			WHERE id = ? AND COALESCE(title, '') = ? AND COALESCE(claim, '') = ? AND COALESCE(summary, '') = ?`,
-			float32SliceToBytes(vectors[i]), c.id, c.title, c.claim, c.summary)
+		rows, err := s.db.QueryContext(ctx, `SELECT c.id, COALESCE(c.title, ''), COALESCE(c.claim, ''), COALESCE(c.summary, '') FROM knowledge_cards c
+			WHERE c.id > ?
+			AND (c.embedding IS NULL OR LENGTH(c.embedding) = 0
+				OR NOT EXISTS (SELECT 1 FROM knowledge_embedding_metadata em
+					WHERE em.entity_type = 'card' AND em.entity_id = c.id AND em.model_id = ? AND em.dimension = ?))
+			ORDER BY c.id
+			LIMIT ?`, after, modelID, emb.Dim(), batchSize)
 		if err != nil {
 			return err
 		}
-		if !updated {
-			continue // card was deleted or rewritten while EmbedBatch was running
+		type cardInfo struct {
+			id, title, claim, summary string
+		}
+		batch := make([]cardInfo, 0, batchSize)
+		for rows.Next() {
+			var c cardInfo
+			if err := rows.Scan(&c.id, &c.title, &c.claim, &c.summary); err != nil {
+				rows.Close()
+				return err
+			}
+			batch = append(batch, c)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		if len(batch) == 0 {
+			return nil
+		}
+		after = batch[len(batch)-1].id
+		texts := make([]string, len(batch))
+		for i, c := range batch {
+			texts[i] = cardEmbeddingText(Card{Title: c.title, Claim: c.claim, Summary: c.summary})
+		}
+		vectors, err := embedding.EmbedBatchAs(emb, texts, embedding.RoleDocument)
+		if err != nil {
+			return err
+		}
+		// Drop this batch when the refresh was cancelled while the model ran.
+		// Batches already persisted stay in the database.
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if !s.isEmbedderGenerationCurrent(generation) {
+			return nil
+		}
+		if err := validateEmbeddingBatchOutput("card", vectors, len(batch), emb.Dim()); err != nil {
+			return err
+		}
+		for i, c := range batch {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			if !s.isEmbedderGenerationCurrent(generation) {
+				return nil
+			}
+			updated, err := s.persistEmbeddingIfCurrent(ctx, embeddingEntityCard, c.id, embeddingModelIdentifier(emb), vectors[i], generation, `UPDATE knowledge_cards SET embedding = ?
+				WHERE id = ? AND COALESCE(title, '') = ? AND COALESCE(claim, '') = ? AND COALESCE(summary, '') = ?`,
+				float32SliceToBytes(vectors[i]), c.id, c.title, c.claim, c.summary)
+			if err != nil {
+				return err
+			}
+			if !updated {
+				continue // card was deleted or rewritten while EmbedBatch was running
+			}
 		}
 	}
-	return nil
 }
 
 // BackfillTableRowEmbeddings embeds normalized spreadsheet row text. Structured
@@ -506,37 +602,75 @@ func (s *SQLiteStore) backfillTableRowEmbeddingsForGeneration(ctx context.Contex
 	if !s.isEmbedderGenerationCurrent(generation) {
 		return nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT r.id, COALESCE(r.primary_key_text, ''), COALESCE(r.row_text, '')
-		FROM kb_rows r
-		WHERE r.embedding IS NULL OR LENGTH(r.embedding) = 0
-		OR NOT EXISTS (SELECT 1 FROM knowledge_embedding_metadata em
-			WHERE em.entity_type = 'table_row' AND em.entity_id = r.id AND em.model_id = ? AND em.dimension = ?)`, embeddingModelIdentifier(emb), emb.Dim())
-	if err != nil {
-		return err
+	pageSize := embeddingBackfillBatchSize
+	if pageSize <= 0 {
+		pageSize = 64
 	}
-	defer rows.Close()
-	var pending []tableRowEmbeddingRow
-	for rows.Next() {
-		var row tableRowEmbeddingRow
-		if err := rows.Scan(&row.id, &row.primaryKey, &row.text); err != nil {
+	modelID := embeddingModelIdentifier(emb)
+	after := ""
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if !s.isEmbedderGenerationCurrent(generation) {
+			return nil
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT r.id, COALESCE(r.primary_key_text, ''), COALESCE(r.row_text, '')
+			FROM kb_rows r
+			WHERE r.id > ?
+			AND (r.embedding IS NULL OR LENGTH(r.embedding) = 0
+				OR NOT EXISTS (SELECT 1 FROM knowledge_embedding_metadata em
+					WHERE em.entity_type = 'table_row' AND em.entity_id = r.id AND em.model_id = ? AND em.dimension = ?))
+			ORDER BY r.id
+			LIMIT ?`, after, modelID, emb.Dim(), pageSize)
+		if err != nil {
 			return err
 		}
-		if strings.TrimSpace(row.text) != "" || strings.TrimSpace(row.primaryKey) != "" {
-			pending = append(pending, row)
+		page := make([]tableRowEmbeddingRow, 0, pageSize)
+		for rows.Next() {
+			var row tableRowEmbeddingRow
+			if err := rows.Scan(&row.id, &row.primaryKey, &row.text); err != nil {
+				rows.Close()
+				return err
+			}
+			page = append(page, row)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		if len(page) == 0 {
+			return nil
+		}
+		after = page[len(page)-1].id
+		pending := make([]tableRowEmbeddingRow, 0, len(page))
+		for _, row := range page {
+			if tableRowEmbeddingText(row.primaryKey, row.text) != "" {
+				pending = append(pending, row)
+			}
+		}
+		if len(pending) == 0 {
+			continue
+		}
+		if err := s.embedAndStoreTableRowEmbeddings(ctx, pending, emb, generation); err != nil {
+			return err
 		}
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	return s.embedAndStoreTableRowEmbeddings(ctx, pending, emb, generation)
 }
 
 func (s *SQLiteStore) embedAndStoreTableRowEmbeddings(ctx context.Context, pending []tableRowEmbeddingRow, emb embedding.Embedder, generation uint64) error {
 	if len(pending) == 0 {
 		return nil
 	}
-	const batchSize = 64
+	batchSize := embeddingBackfillBatchSize
+	if batchSize <= 0 {
+		batchSize = 64
+	}
 	for start := 0; start < len(pending); start += batchSize {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		if !s.isEmbedderGenerationCurrent(generation) {
 			return nil
 		}
@@ -551,6 +685,9 @@ func (s *SQLiteStore) embedAndStoreTableRowEmbeddings(ctx context.Context, pendi
 		vectors, err := embedding.EmbedBatchAs(emb, texts, embedding.RoleDocument)
 		if err != nil {
 			return err
+		}
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 		if err := validateEmbeddingBatchOutput("table-row", vectors, len(texts), emb.Dim()); err != nil {
 			return err
@@ -693,31 +830,56 @@ func (s *SQLiteStore) backfillNodeEmbeddingsForGeneration(ctx context.Context, e
 		return err
 	}
 
-	rows, err := s.db.QueryContext(ctx, `SELECT n.id, n.title, n.text FROM document_nodes n
-		WHERE n.embedding IS NULL OR LENGTH(n.embedding) = 0
-		OR NOT EXISTS (SELECT 1 FROM knowledge_embedding_metadata em
-			WHERE em.entity_type = 'node' AND em.entity_id = n.id AND em.model_id = ? AND em.dimension = ?)`, embeddingModelIdentifier(emb), emb.Dim())
-	if err != nil {
-		// Column may not exist yet on older DBs — not fatal
-		if strings.Contains(err.Error(), "no such column") {
+	// Page by id so a library rebuild does not hold every document body at once.
+	pageSize := embeddingBackfillBatchSize
+	if pageSize <= 0 {
+		pageSize = 64
+	}
+	modelID := embeddingModelIdentifier(emb)
+	after := ""
+	for {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+		if !s.isEmbedderGenerationCurrent(generation) {
 			return nil
 		}
-		return err
-	}
-	defer rows.Close()
-
-	var nodes []nodeEmbeddingRow
-	for rows.Next() {
-		var n nodeEmbeddingRow
-		if err := rows.Scan(&n.id, &n.title, &n.text); err != nil {
+		rows, err := s.db.QueryContext(ctx, `SELECT n.id, COALESCE(n.title, ''), substr(COALESCE(n.text, ''), 1, `+nodeEmbeddingReadCharsSQL+`), length(COALESCE(n.text, '')) FROM document_nodes n
+			WHERE n.id > ?
+			AND (n.embedding IS NULL OR LENGTH(n.embedding) = 0
+				OR NOT EXISTS (SELECT 1 FROM knowledge_embedding_metadata em
+					WHERE em.entity_type = 'node' AND em.entity_id = n.id AND em.model_id = ? AND em.dimension = ?))
+			ORDER BY n.id
+			LIMIT ?`, after, modelID, emb.Dim(), pageSize)
+		if err != nil {
+			// Column may not exist yet on older DBs — not fatal
+			if strings.Contains(err.Error(), "no such column") {
+				return nil
+			}
 			return err
 		}
-		nodes = append(nodes, n)
+		page := make([]nodeEmbeddingRow, 0, pageSize)
+		for rows.Next() {
+			var n nodeEmbeddingRow
+			if err := rows.Scan(&n.id, &n.title, &n.text, &n.textLen); err != nil {
+				rows.Close()
+				return err
+			}
+			page = append(page, n)
+		}
+		err = rows.Err()
+		rows.Close()
+		if err != nil {
+			return err
+		}
+		if len(page) == 0 {
+			return nil
+		}
+		after = page[len(page)-1].id
+		if err := s.embedAndStoreNodeEmbeddingsForGeneration(ctx, page, emb, generation, nil); err != nil {
+			return err
+		}
 	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	return s.embedAndStoreNodeEmbeddingsForGeneration(ctx, nodes, emb, generation, nil)
 }
 
 // BackfillNodeEmbeddingsForSources generates missing document node embeddings
@@ -803,7 +965,7 @@ func (s *SQLiteStore) queryMissingNodeEmbeddingsForGeneration(ctx context.Contex
 			args = append(args, id)
 		}
 		args = append(args, embeddingModelIdentifier(emb), emb.Dim())
-		rows, err := s.db.QueryContext(ctx, `SELECT n.id, n.title, n.text FROM document_nodes n
+		rows, err := s.db.QueryContext(ctx, `SELECT n.id, COALESCE(n.title, ''), substr(COALESCE(n.text, ''), 1, `+nodeEmbeddingReadCharsSQL+`), length(COALESCE(n.text, '')) FROM document_nodes n
 			WHERE n.source_id IN (`+strings.Join(placeholders, ",")+`)
 			AND (n.embedding IS NULL OR LENGTH(n.embedding) = 0
 				OR NOT EXISTS (SELECT 1 FROM knowledge_embedding_metadata em
@@ -816,7 +978,7 @@ func (s *SQLiteStore) queryMissingNodeEmbeddingsForGeneration(ctx context.Contex
 		}
 		for rows.Next() {
 			var n nodeEmbeddingRow
-			if err := rows.Scan(&n.id, &n.title, &n.text); err != nil {
+			if err := rows.Scan(&n.id, &n.title, &n.text, &n.textLen); err != nil {
 				rows.Close()
 				return nil, err
 			}
@@ -854,14 +1016,13 @@ func (s *SQLiteStore) embedAndStoreNodeEmbeddingsForGeneration(ctx context.Conte
 	if !s.isEmbedderGenerationCurrent(generation) {
 		return nil
 	}
-	// Parallel text prep (truncate/join) before model calls.
-	texts := make([]string, len(nodes))
-	parallelFor(len(nodes), func(i int) {
-		texts[i] = nodeEmbeddingText(nodes[i].title, nodes[i].text)
-	})
 
-	// Process in batches to allow progress reporting and avoid huge single calls.
-	const batchSize = 64
+	// Process in batches so document text is prepared for the batch in hand,
+	// not copied for the whole library first.
+	batchSize := embeddingBackfillBatchSize
+	if batchSize <= 0 {
+		batchSize = 64
+	}
 	totalNodes := len(nodes)
 	for batchStart := 0; batchStart < totalNodes; batchStart += batchSize {
 		if ctx.Err() != nil {
@@ -874,9 +1035,18 @@ func (s *SQLiteStore) embedAndStoreNodeEmbeddingsForGeneration(ctx context.Conte
 		if batchEnd > totalNodes {
 			batchEnd = totalNodes
 		}
-		vectors, embErr := embedding.EmbedBatchAs(emb, texts[batchStart:batchEnd], embedding.RoleDocument)
+		texts := make([]string, batchEnd-batchStart)
+		for i := batchStart; i < batchEnd; i++ {
+			texts[i-batchStart] = nodeEmbeddingText(nodes[i].title, nodes[i].text)
+		}
+		vectors, embErr := embedding.EmbedBatchAs(emb, texts, embedding.RoleDocument)
 		if embErr != nil {
 			return embErr
+		}
+		// Drop this batch when the refresh was cancelled while the model ran.
+		// Batches already persisted stay in the database.
+		if ctx.Err() != nil {
+			return ctx.Err()
 		}
 		if err := validateEmbeddingBatchOutput("node", vectors, batchEnd-batchStart, emb.Dim()); err != nil {
 			return err
@@ -889,9 +1059,12 @@ func (s *SQLiteStore) embedAndStoreNodeEmbeddingsForGeneration(ctx context.Conte
 			if nodeIdx >= totalNodes {
 				return fmt.Errorf("node embedding batch index %d exceeds %d nodes", nodeIdx, totalNodes)
 			}
+			// The read kept only a prefix. Match that prefix and the full character
+			// length so a long page still persists, while an edit during the
+			// model call does not keep a stale vector.
 			updated, err := s.persistEmbeddingIfCurrent(ctx, embeddingEntityNode, nodes[nodeIdx].id, embeddingModelIdentifier(emb), vec, generation, `UPDATE document_nodes SET embedding = ?
-				WHERE id = ? AND COALESCE(title, '') = ? AND COALESCE(text, '') = ?`,
-				float32SliceToBytes(vec), nodes[nodeIdx].id, nodes[nodeIdx].title, nodes[nodeIdx].text)
+				WHERE id = ? AND COALESCE(title, '') = ? AND substr(COALESCE(text, ''), 1, `+nodeEmbeddingReadCharsSQL+`) = ? AND length(COALESCE(text, '')) = ?`,
+				float32SliceToBytes(vec), nodes[nodeIdx].id, nodes[nodeIdx].title, nodes[nodeIdx].text, nodes[nodeIdx].textLen)
 			if err != nil {
 				return err
 			}
@@ -917,6 +1090,11 @@ func nodeEmbeddingText(title, text string) string {
 	}
 	return t
 }
+
+// nodeEmbeddingReadCharsSQL is the document prefix, in characters, read while
+// embedding. The model keeps 2000 runes, so a rebuild must not copy the rest
+// of a long page into memory.
+const nodeEmbeddingReadCharsSQL = "8000"
 
 // extractQueryTermsForSnippet splits a query into meaningful terms for snippet extraction.
 // Uses gse tokenization for CJK, keeping multi-char tokens. For non-CJK, splits on whitespace.
@@ -982,9 +1160,12 @@ func (s *SQLiteStore) searchNodesByEmbedding(ctx context.Context, queryVec []flo
 		args = append(args, modelID, len(queryVec))
 	}
 
-	sqlQuery := `SELECT n.id, n.title, n.type, n.text, n.page, n.embedding,
-		s.id, s.kind, s.uri, s.canonical_uri, s.title, s.author, s.site_name, s.published_at, s.fetched_at, s.content_hash,
-		s.owner_id, s.tenant_id, s.project_path, s.topic_hint, s.source_trust, s.batch_id, s.relative_path, s.status, s.error_message, s.created_at, s.updated_at
+	// Score vectors without the document body. Full text is loaded only for the
+	// hits that will be returned, so a library of long pages is not copied on
+	// every query.
+	sqlQuery := `SELECT n.id, COALESCE(n.title, ''), n.type, COALESCE(n.page, 0), n.embedding,
+		s.id, s.kind, s.uri, COALESCE(s.canonical_uri, ''), COALESCE(s.title, ''), COALESCE(s.author, ''), COALESCE(s.site_name, ''), COALESCE(s.published_at, ''), s.fetched_at, s.content_hash,
+		COALESCE(s.owner_id, ''), COALESCE(s.tenant_id, ''), COALESCE(s.project_path, ''), COALESCE(s.topic_hint, ''), COALESCE(s.source_trust, 0.5), COALESCE(s.batch_id, ''), COALESCE(s.relative_path, ''), s.status, COALESCE(s.error_message, ''), s.created_at, s.updated_at
 		FROM document_nodes n
 		JOIN knowledge_sources s ON s.id = n.source_id
 		WHERE ` + strings.Join(where, " AND ")
@@ -1011,10 +1192,9 @@ func (s *SQLiteStore) searchNodesByEmbedding(ctx context.Context, queryVec []flo
 		var result SearchResult
 		var source Source
 		var embBlob []byte
-		var nodeText string
 		var publishedAt, fetchedAt, createdAt, updatedAt string
 
-		if err := rows.Scan(&result.NodeID, &result.NodeTitle, &result.NodeType, &nodeText, &result.Page, &embBlob,
+		if err := rows.Scan(&result.NodeID, &result.NodeTitle, &result.NodeType, &result.Page, &embBlob,
 			&source.ID, &source.Kind, &source.URI, &source.CanonicalURI, &source.Title, &source.Author, &source.SiteName, &publishedAt, &fetchedAt,
 			&source.ContentHash, &source.OwnerID, &source.TenantID, &source.ProjectPath, &source.TopicHint, &source.SourceTrust, &source.BatchID, &source.RelativePath,
 			&source.Status, &source.ErrorMessage, &createdAt, &updatedAt); err != nil {
@@ -1032,14 +1212,13 @@ func (s *SQLiteStore) searchNodesByEmbedding(ctx context.Context, queryVec []flo
 		source.UpdatedAt = parseTime(updatedAt)
 		result.Source = source
 		result.ResultType = "node"
-		// Return full node text for embedding-matched nodes. These are already
-		// semantically relevant (cosine sim > 0.25). Full text ensures the LLM
-		// has complete evidence for count/list questions.
-		result.Snippet = nodeText
 		candidates = append(candidates, candidate{result: result, vector: nodeVec})
 		vectorCandidates = append(vectorCandidates, vectorANNVector{key: "node:" + result.NodeID, vector: nodeVec})
 	}
 	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
 		return nil, err
 	}
 	if len(candidates) > 0 {
@@ -1072,5 +1251,61 @@ func (s *SQLiteStore) searchNodesByEmbedding(ctx context.Context, queryVec []flo
 		}
 		results = append(results, c.result)
 	}
+	if err := s.fillNodeEmbeddingSnippets(ctx, results); err != nil {
+		return nil, err
+	}
 	return results, nil
+}
+
+// fillNodeEmbeddingSnippets loads the original document text for the nodes
+// already chosen by cosine rank.
+func (s *SQLiteStore) fillNodeEmbeddingSnippets(ctx context.Context, results []SearchResult) error {
+	if s == nil || s.db == nil || len(results) == 0 {
+		return nil
+	}
+	ids := make([]string, 0, len(results))
+	seen := make(map[string]struct{}, len(results))
+	for _, result := range results {
+		id := strings.TrimSpace(result.NodeID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+	placeholders := make([]string, len(ids))
+	args := make([]interface{}, len(ids))
+	for i, id := range ids {
+		placeholders[i] = "?"
+		args[i] = id
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(text, '') FROM document_nodes WHERE id IN (`+strings.Join(placeholders, ",")+`)`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	texts := make(map[string]string, len(ids))
+	for rows.Next() {
+		var id, text string
+		if err := rows.Scan(&id, &text); err != nil {
+			return err
+		}
+		texts[id] = text
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for i := range results {
+		if text, ok := texts[results[i].NodeID]; ok {
+			// Full text of a hit gives the model the evidence that was embedded.
+			results[i].Snippet = text
+		}
+	}
+	return nil
 }

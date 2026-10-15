@@ -2981,6 +2981,7 @@ func (a *App) SetChatFontSize(size int) error {
 }
 
 func (a *App) shutdown(ctx context.Context) {
+	closeKnowledgeEmbeddingRefresh()
 	a.releaseAllCloudWorkspaces()
 	if a.screenDimCancel != nil {
 		a.screenDimCancel()

@@ -139,7 +139,7 @@ func TestSemanticManagedTurnCannotEnterLegacyNameRouter(t *testing.T) {
 		toolDef("bash", "shell", nil, nil),
 		toolDef("discover_tool", "discover", nil, nil),
 	}
-	routed, ranked := h.routeSessionToolsWithRanking("user-1", "open a browser", defs, false, nil, managedLiveDataLoopContext())
+	routed, ranked := h.routeSessionToolsWithRanking("user-1", "open a browser", defs, false, nil, managedLiveDataLoopContext(), agentLoopPhase{})
 	if len(routed) != 0 || len(ranked) != 0 {
 		t.Fatalf("managed turn entered legacy router: routed=%#v ranked=%#v", routed, ranked)
 	}

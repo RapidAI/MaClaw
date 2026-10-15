@@ -122,6 +122,14 @@ func TestAllQuerySitesUseQueryRole(t *testing.T) {
 		{
 			name: "vector_search.searchByEmbedding",
 			query: func(s *SQLiteStore) error {
+				// A query is embedded only after this model has a stored vector.
+				// Seed one directly so the role assertion is not skipped.
+				if err := s.SaveSource(ctx, Source{ID: "role-query-source", Kind: SourceKindText, URI: "manual://role-query", Status: StatusParsed}); err != nil {
+					return err
+				}
+				if err := s.SaveCard(ctx, Card{ID: "role-query-card", SourceID: "role-query-source", Title: "prompt", Claim: "官方接入", Embedding: []float32{1, 0}}); err != nil {
+					return err
+				}
 				_, err := s.searchByEmbedding(ctx, SearchOptions{Query: "如何接入官方 prompt", Limit: 5})
 				return err
 			},

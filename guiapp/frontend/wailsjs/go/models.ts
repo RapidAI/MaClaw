@@ -8222,6 +8222,8 @@ export namespace main {
 	export class AIAssistantUIState {
 	    messages: any[];
 	    prompts: string[];
+	    /** Parallel to prompts. Each row is the files attached to that input. */
+	    prompt_attachments?: any[][];
 	    context_boundary_message_id?: string;
 	    updated_at?: string;
 	    storage_path?: string;
@@ -8234,6 +8236,7 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	        this.messages = source["messages"];
 	        this.prompts = source["prompts"];
+	        this.prompt_attachments = source["prompt_attachments"];
 	        this.context_boundary_message_id = source["context_boundary_message_id"];
 	        this.updated_at = source["updated_at"];
 	        this.storage_path = source["storage_path"];
@@ -14082,6 +14085,60 @@ export namespace main {
 	        if ('string' === typeof source) source = JSON.parse(source);
 	
 	    }
+	}
+	export class InstalledNotReviewedMCPProviderView {
+	    server_id: string;
+	    server_name?: string;
+	    declared_capabilities: string[];
+	    namespace: string;
+	    ceiling_reviewed: boolean;
+
+	    static createFrom(source: any = {}) {
+	        return new InstalledNotReviewedMCPProviderView(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.server_id = source["server_id"];
+	        this.server_name = source["server_name"];
+	        this.declared_capabilities = source["declared_capabilities"];
+	        this.namespace = source["namespace"];
+	        this.ceiling_reviewed = source["ceiling_reviewed"];
+	    }
+	}
+	export class InstalledNotReviewedMCPView {
+	    providers: InstalledNotReviewedMCPProviderView[];
+	    petition_slots: number;
+	    search_passes: number;
+
+	    static createFrom(source: any = {}) {
+	        return new InstalledNotReviewedMCPView(source);
+	    }
+
+	    constructor(source: any = {}) {
+	        if ('string' === typeof source) source = JSON.parse(source);
+	        this.providers = this.convertValues(source["providers"], InstalledNotReviewedMCPProviderView);
+	        this.petition_slots = source["petition_slots"];
+	        this.search_passes = source["search_passes"];
+	    }
+
+		convertValues(a: any, classs: any, asMap: boolean = false): any {
+		    if (!a) {
+		        return a;
+		    }
+		    if (a.slice && a.map) {
+		        return (a as any[]).map(elem => this.convertValues(elem, classs));
+		    } else if ("object" === typeof a) {
+		        if (asMap) {
+		            for (const key of Object.keys(a)) {
+		                a[key] = new classs(a[key]);
+		            }
+		            return a;
+		        }
+		        return new classs(a);
+		    }
+		    return a;
+		}
 	}
 	export class MCPServerView {
 	    id: string;

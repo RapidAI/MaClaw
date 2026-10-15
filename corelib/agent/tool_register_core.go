@@ -360,12 +360,12 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "ssh",
-		Description: "Manage SSH connections and remote operations such as connect, exec, background exec, upload, download, list, and close.",
+		Description: "Manage SSH connections and remote operations such as connect, exec, background exec, upload, download, list, and close. connect accepts an OpenSSH config alias such as gpu84 and applies that alias's IdentityFile and ProxyJump.",
 		Properties: map[string]interface{}{
 			"action":          map[string]string{"type": "string", "description": "Action such as connect, exec, exec_background, check_task, wait_task, list_tasks, kill_task, sudo_prepare, upload, download, list, close"},
 			"timeout":         map[string]string{"type": "integer", "description": "wait_task timeout seconds"},
-			"host":            map[string]string{"type": "string", "description": "Remote host for connect"},
-			"user":            map[string]string{"type": "string", "description": "Login username for connect"},
+			"host":            map[string]string{"type": "string", "description": "Remote host, IP, or an OpenSSH config alias such as gpu84. An alias uses ~/.ssh/config, including its IdentityFile and ProxyJump."},
+			"user":            map[string]string{"type": "string", "description": "Login username. Omit it when host is an OpenSSH config alias that already sets User."},
 			"port":            map[string]string{"type": "integer", "description": "SSH port, default 22"},
 			"auth_method":     map[string]string{"type": "string", "description": "Authentication method: password, key, or agent"},
 			"key_path":        map[string]string{"type": "string", "description": "Private key path"},

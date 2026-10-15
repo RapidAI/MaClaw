@@ -108,7 +108,7 @@ func (c *codingSubAgentCallbacks) buildKnowledgePromptSections() string {
 			ProjectPath: projectPath,
 			Limit:       10,
 		}
-		pack, err := c.subagent.generalKB.ContextPack(ctx, knowledge.ContextPackOptions{
+		pack, err := c.subagent.generalKB.ContextPack(knowledgeSearchContext(ctx), knowledge.ContextPackOptions{
 			SearchOptions: searchOpts,
 			MaxItems:      3,
 			MaxChars:      2000,
@@ -306,7 +306,7 @@ func (c *codingSubAgentCallbacks) executeKnowledgeSearch(argsJSON string) coding
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(knowledgeSearchContext(context.Background()), 8*time.Second)
 	defer cancel()
 
 	results, err := c.subagent.generalKB.Search(ctx, knowledge.SearchOptions{
@@ -357,7 +357,7 @@ func (c *codingSubAgentCallbacks) executeKnowledgeImageSearch(argsJSON string) c
 	if query == "" {
 		return codingToolExecutionResult{Text: "Error: query parameter is required", Outcome: codingToolOutcomeFailed}
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	ctx, cancel := context.WithTimeout(knowledgeSearchContext(context.Background()), 8*time.Second)
 	defer cancel()
 	results, err := c.subagent.generalKB.SearchImages(ctx, knowledge.ImageSearchOptions{SearchOptions: codingKnowledgeImageSearchOptions(args, c.subagent.projectPath)})
 	if err != nil {

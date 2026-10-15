@@ -131,7 +131,9 @@ func (h *IMMessageHandler) saveConversationHistoryTimed(userID string, history [
 	isAnswerCacheHit := resp != nil && (resp.ResponseSource == "answer_cache" || resp.ResponseSource == "answer_cache_semantic")
 	if resp != nil {
 		resp.MemorySaveNanos = time.Since(startedAt).Nanoseconds()
-		if !isAnswerCacheHit {
+		// A settled mailbox reply is the host result. It must not become a
+		// question that captures the next message.
+		if !isAnswerCacheHit && resp.ResponseSource != "mailbox_send" {
 			h.updatePendingUserReplyFromHistory(userID, trimmed, resp)
 		}
 	}

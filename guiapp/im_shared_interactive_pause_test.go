@@ -79,7 +79,7 @@ func TestConsumePendingAskUserAnswerKeepsContext(t *testing.T) {
 		History:   entries,
 		Timestamp: time.Now(),
 	})
-	got, _, ok := h.consumePendingAskUserAnswer("user-1", "continue", entries)
+	got, _, ok, _ := h.consumePendingAskUserAnswer("user-1", "continue", entries)
 	if !ok {
 		t.Fatal("expected pending ask answer")
 	}

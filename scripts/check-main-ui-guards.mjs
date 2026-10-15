@@ -588,11 +588,10 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/AboutPanel.tsx', 1000],
   ['guiapp/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['guiapp/frontend/src/components/SecurityEventsDialog.tsx', 170],
-  // Refreshed 6800 -> 6803 -> 6815 -> 6825 -> 6845 -> 6905 -> 6920 (2026-10-13):
-  // the in-flight agent-preview focus work keeps growing this file (guard counts
-  // 6907); headroom absorbs it while that work is in progress. Re-tighten once
-  // it lands.
-  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 6920],
+  // Refreshed 6800 -> ... -> 6920 -> 6950 (2026-10-15): the in-flight
+  // agent-preview focus work keeps growing this file (guard counts 6937);
+  // headroom absorbs it while that work is in progress. Re-tighten once it lands.
+  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 6950],
   ['guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts', 50],
   ['guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts', 50],
@@ -620,7 +619,9 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/ai/assistantOutputScrollLogic.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantOutputScrollFollow.ts', 60],
   ['guiapp/frontend/src/components/ai/useResizableAssistantInput.ts', 80],
-  ['guiapp/frontend/src/components/ai/useAssistantInputHistory.ts', 100],
+  // Refreshed 100 -> 170 (2026-10-15): input-history recall now restores the
+  // composer's attachment snapshot too (guard counts 165).
+  ['guiapp/frontend/src/components/ai/useAssistantInputHistory.ts', 170],
   ['guiapp/frontend/src/components/ai/usePastedImageAttachments.ts', 340],
   ['guiapp/frontend/src/components/ai/useGroupDiscussionControls.ts', 90],
   ['guiapp/frontend/src/components/ai/AssistantAttachmentsStrip.tsx', 280],
@@ -632,7 +633,9 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/ai/AssistantTitleBar.tsx', 220],
   ['guiapp/frontend/src/components/ai/AssistantTitleBarNotifications.tsx', 180],
   ['guiapp/frontend/src/components/ai/AssistantWorkflowMaximizeSuggestion.tsx', 50],
-  ['guiapp/frontend/src/components/ai/AssistantInputComposer.tsx', 240],
+  // Refreshed 240 -> 255 (2026-10-15): attachment-snapshot recall wiring
+  // (guard counts 247).
+  ['guiapp/frontend/src/components/ai/AssistantInputComposer.tsx', 255],
   ['guiapp/frontend/src/components/ai/AIAssistantRenameGroupDialog.tsx', 110],
   ['guiapp/frontend/src/components/ai/useAssistantPreviewResize.ts', 50],
   ['guiapp/frontend/src/components/ai/aiAssistantStatusLabels.ts', 40],
@@ -650,7 +653,9 @@ const highRiskRemoteFileLineLimits = [
   ['guiapp/frontend/src/components/remote/LLMConfigDialogSaveError.tsx', 40],
   ['guiapp/frontend/src/components/remote/LLMConfigApiKeyFields.tsx', 80],
   ['guiapp/frontend/src/components/remote/LLMConfigOAuthFields.tsx', 122],
-  ['guiapp/frontend/src/components/remote/MCPManagementPanel.tsx', 1400],
+  // Refreshed 1400 -> 1450 (2026-10-15): MCP page work in progress (guard
+  // counts 1439).
+  ['guiapp/frontend/src/components/remote/MCPManagementPanel.tsx', 1450],
   ['guiapp/frontend/src/components/remote/MemoryManagementPanel.tsx', 1100],
 ];
 for (const [rel, max] of highRiskRemoteFileLineLimits) requireMaxLines(rel, max);

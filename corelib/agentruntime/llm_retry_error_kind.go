@@ -4,8 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
+	"regexp"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
@@ -75,6 +79,62 @@ func IsRetryableLLMError(err error) bool {
 	return ClassifyLLMRetryError(err).Retryable()
 }
 
+// llmRetryAfterSecondsPattern catches a server's named wait at any depth of
+// a lowered string, escaped or not: Hub's "retry_after_seconds", provider
+// queue replies such as Qoder's \"retryAfterSeconds\":30 nested inside a
+// message field, and the occasional "key=value" or header-style rendering.
+var llmRetryAfterSecondsPattern = regexp.MustCompile(`retry[-_]?after(?:[-_]?seconds)?\\?["']?\\?\s*[:=]\s*\\?["']?(\d+)(?:[^-\d]|$)`)
+
+// LLMRetryAfterHint is the pause an upstream asked for before the next call.
+// It reads a Hub denial's retry_after_seconds or retry_after_at from an
+// HTTPStatusError body, and falls back to a seconds field anywhere in the
+// error text. Zero means the error named no wait; now is when it was read.
+func LLMRetryAfterHint(err error, now time.Time) time.Duration {
+	if err == nil {
+		return 0
+	}
+	var httpErr *llm.HTTPStatusError
+	if errors.As(err, &httpErr) && httpErr != nil && len(httpErr.Body) > 0 {
+		// HTTPStatusError.Error() is deliberately body-free, so a hint inside
+		// the body is only visible here.
+		if wait := llm.HubRetryWait(httpErr.Body, now); wait > 0 {
+			return wait
+		}
+		if wait := llmRetryAfterSeconds(string(httpErr.Body)); wait > 0 {
+			return wait
+		}
+	}
+	// A wrapped error's text can still embed a JSON body with a snake_case
+	// clock, or a retry_after_at timestamp the seconds pattern cannot see.
+	if wait := llm.HubRetryWait([]byte(err.Error()), now); wait > 0 {
+		return wait
+	}
+	return llmRetryAfterSeconds(err.Error())
+}
+
+func llmRetryAfterSeconds(text string) time.Duration {
+	m := llmRetryAfterSecondsPattern.FindStringSubmatch(strings.ToLower(text))
+	if m == nil {
+		return 0
+	}
+	seconds, conv := strconv.Atoi(m[1])
+	// A bogus or hostile wait (a ten-plus-digit seconds field) overflows
+	// either here at parse or below at the multiplication — the caller reads
+	// a 0 or wrapped-negative result as "no hint" and retries instantly.
+	// The capture is all digits by construction, so any overflow still means
+	// "wait": saturate instead of dropping the hint.
+	if conv != nil {
+		return time.Duration(math.MaxInt64)
+	}
+	if seconds <= 0 {
+		return 0
+	}
+	if int64(seconds) > math.MaxInt64/int64(time.Second) {
+		return time.Duration(math.MaxInt64)
+	}
+	return time.Duration(seconds) * time.Second
+}
+
 func IsLLMHTTPStatusError(err error, status int) bool {
 	if err == nil {
 		return false
@@ -122,6 +182,11 @@ func HasHubGatewayPressureMarker(s string) bool {
 		strings.Contains(s, "llm_provider_queue_full") ||
 		strings.Contains(s, "llm_provider_queue_timeout") ||
 		strings.Contains(s, "llm_endpoint_concurrency_full") ||
+		strings.Contains(s, `"code":"10605"`) ||
+		strings.Contains(s, `"code": "10605"`) ||
+		strings.Contains(s, `"isqueued"`) ||
+		strings.Contains(s, `"queuetype"`) ||
+		strings.Contains(s, `"queuecount"`) ||
 		strings.Contains(s, "请求过于频繁") ||
 		strings.Contains(s, "请求过快") ||
 		strings.Contains(s, "排队已超时") ||

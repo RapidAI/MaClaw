@@ -265,11 +265,17 @@ func TestReviewedMCPCapabilityBindingJoinsIdentityNotToolName(t *testing.T) {
 	}
 	contract, ok := contracts.ResolveMCPDynamicContract(context.Background(), principal, "web-search-prime", ReviewedMCPWebSearchPrimeTool)
 	wantDigest := DynamicMCPObservedBindingDigest("web-search-prime", ReviewedMCPWebSearchPrimeTool, schema)
-	if !ok || contract.ObservedBindingDigest != wantDigest || len(contract.Provisions) != 2 || contract.Provisions[0].Quality <= 2 || contract.Effects[0] != coretool.EffectReadOnly {
+	if !ok || contract.ObservedBindingDigest != wantDigest || len(contract.Provisions) != 3 || contract.Provisions[0].Quality <= 2 || contract.Effects[0] != coretool.EffectReadOnly {
 		t.Fatalf("search contract=%#v ok=%v", contract, ok)
 	}
-	var sawReference, sawCurrent bool
+	var sawReference, sawCurrent, sawAuto bool
 	for _, provision := range contract.Provisions {
+		if provision.Capability == AutoMCPCapabilityIDForBinding("web-search-prime", ReviewedMCPWebSearchPrimeTool) {
+			// A reviewed tool still carries its exact x:mcp: capability so a
+			// user naming the product's tool resolves this binding.
+			sawAuto = true
+			continue
+		}
 		if provision.Capability != CapabilityInformationSearchWeb {
 			t.Fatalf("provision=%#v", provision)
 		}
@@ -280,8 +286,8 @@ func TestReviewedMCPCapabilityBindingJoinsIdentityNotToolName(t *testing.T) {
 			sawCurrent = true
 		}
 	}
-	if !sawReference || !sawCurrent {
-		t.Fatalf("freshness provisions=%#v", contract.Provisions)
+	if !sawReference || !sawCurrent || !sawAuto {
+		t.Fatalf("freshness/auto provisions=%#v", contract.Provisions)
 	}
 	if _, ok := contracts.ResolveMCPDynamicContract(context.Background(), principal, "web-search-prime", "extra_tool"); ok {
 		t.Fatal("unlisted tool on a matching server was published")

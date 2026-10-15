@@ -126,6 +126,13 @@ func prepareCodingDynamicSemanticPlan(identity *trustedCodingInvocationIdentity,
 		return codingDynamicPlanPreparation{}, fmt.Errorf("coding dynamic capability needs are required")
 	}
 	registry := newIMSemanticCapabilityRegistry()
+	// Same contract as the IM turn registry: the dynamic projection can carry
+	// host-issued x: capabilities the publisher registered at observation
+	// time, and PublishWithCoverage rejects provisions a sealed per-call
+	// registry does not know.
+	if err := agentservice.EnsureExternalCapabilityVocabulary(registry, semanticExternalCapabilityVocabulary(dynamic.Catalog.Providers)); err != nil {
+		return codingDynamicPlanPreparation{}, fmt.Errorf("seed external capability vocabulary: %w", err)
+	}
 	catalog := tool.NewToolCatalog(registry)
 	snapshot, err := catalog.PublishWithCoverage(dynamic.Catalog.Providers, dynamic.Coverage, now)
 	if err != nil {

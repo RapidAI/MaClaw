@@ -12,6 +12,12 @@ let xaiWaiting = false;
 let openaiWaiting = false;
 let kimiWaiting = false;
 let kimiHint = "";
+let devinWaiting = false;
+let devinPaste = false;
+let qoderWaiting = false;
+let qoderCancelled = false;
+let workbuddyWaiting = false;
+let workbuddyCancelled = false;
 let refreshGen = 0;
 
 function formatCacheDecision(status) {
@@ -127,7 +133,7 @@ function collectModels() {
     .filter((model) => model.id);
 }
 
-const MODE_INPUT_IDS = ["baseURL", "upstreamKey", "anthropicCode", "xaiCode", "openaiCode", "kimiCode", "modelID"];
+const MODE_INPUT_IDS = ["baseURL", "upstreamKey", "anthropicCode", "xaiCode", "openaiCode", "kimiCode", "devinToken", "opencodeKey", "modelID"];
 
 function snapshotModeInputs() {
   const snap = {};
@@ -144,6 +150,9 @@ function restoreModeInputs(snap) {
   if (snap.anthropicCode && $("anthropicCode")) $("anthropicCode").value = snap.anthropicCode;
   if (snap.xaiCode && $("xaiCode")) $("xaiCode").value = snap.xaiCode;
   if (snap.openaiCode && $("openaiCode")) $("openaiCode").value = snap.openaiCode;
+  if (snap.kimiCode && $("kimiCode")) $("kimiCode").value = snap.kimiCode;
+  if (snap.devinToken && $("devinToken")) $("devinToken").value = snap.devinToken;
+  if (snap.opencodeKey && $("opencodeKey")) $("opencodeKey").value = snap.opencodeKey;
   const select = $("modelID");
   if (select && snap.modelID && Array.from(select.options).some((option) => option.value === snap.modelID)) {
     select.value = snap.modelID;
@@ -193,6 +202,16 @@ function guideStepsFor(mode) {
       return ["Max/Pro 点 <strong>登录</strong> 走 Claude.ai", "没有订阅则填写 <strong>API Key</strong>", "选择 <strong>默认模型</strong> 并保存", "再点击 <strong>配置 Codex</strong>"];
     case "kimi_web":
       return ["点击 <strong>登录</strong>，自动打开 Kimi 授权页", "在网页里输入 <strong>验证码</strong> 并确认授权", "授权完成后自动保存登录并 <strong>重启</strong>", "选择 <strong>默认模型</strong> 并配置 Codex"];
+    case "devin":
+      return ["点击 <strong>Devin 登录</strong>，使用与本机 Devin IDE 相同的账号", "在浏览器完成授权；若页面只显示令牌，粘贴到配置区", "授权完成后自动保存并 <strong>重启</strong>", "选择 <strong>默认模型</strong> 并配置 Codex"];
+    case "qoder_cn":
+    case "qoder_global":
+      return ["点击对应的 <strong>Qoder 登录</strong>，打开国内或国际账号页", "在网页里确认设备授权", "授权完成后自动保存并 <strong>重启</strong>", "选择 <strong>默认模型</strong> 并配置 Codex"];
+    case "workbuddy_cn":
+    case "workbuddy_global":
+      return ["点击对应的 <strong>WorkBuddy 登录</strong>，打开国内或国际账号页", "在网页里完成授权", "授权完成后自动保存并 <strong>重启</strong>", "选择 <strong>默认模型</strong> 并配置 Codex"];
+    case "opencode":
+      return ["点击 <strong>OpenCode 登录</strong>，打开 opencode.ai 的密钥页", "复制密钥并粘贴，或使用本机 OpenCode 已保存的登录", "保存后自动 <strong>重启</strong>", "选择 <strong>默认模型</strong> 并配置 Codex"];
     default:
       return ["确认 <strong>Codex Desktop</strong> 已安装", "使用当前登录方式完成认证", "选择 <strong>默认模型</strong> 并保存", "点击 <strong>配置 Codex</strong> 后启动 Desktop"];
   }
@@ -276,6 +295,43 @@ function modeFieldsHTML(mode, s, loggedIn) {
         <div class="field"><label>Anthropic API Key <span class="label-hint">没有 Max/Pro 时用这个</span></label><input id="upstreamKey" placeholder="${escapeAttr(keyPlaceholder)}" spellcheck="false" /></div>`}
       ${modelSelectWithList("列出")}`;
   }
+  if (mode === "devin") {
+    const waiting = !loggedIn && devinWaiting;
+    return `
+      <div class="field"><label>上游 Base URL</label><input id="baseURL" value="${escapeAttr(url)}" disabled /></div>
+      ${loggedIn ? `<div class="oauth-status">Devin 已登录${email ? " · " + escapeAttr(email) : ""}</div>` : `
+        <p class="sub">${waiting ? "已打开 Devin 登录页。授权完成后会自动保存。若页面给出令牌，粘贴到下面。" : "使用与本机 Devin IDE 相同的账号。也可以粘贴 Devin 的授权令牌。"}</p>
+        <div class="field"><label>授权令牌 <span class="label-hint">登录页或 Devin 的 Provide auth token</span></label><div class="inline wide-action"><input id="devinToken" placeholder="粘贴 Devin 授权令牌" spellcheck="false" /><button id="completeDevinBtn" class="ghost" type="button">完成</button></div></div>`}
+      ${loggedIn ? modelSelectWithList("刷新") : modelSelect}`;
+  }
+  if (mode === "qoder_cn" || mode === "qoder_global") {
+    const waiting = !loggedIn && qoderWaiting;
+    const edition = mode === "qoder_cn" ? "Qoder 国内版" : "Qoder 国际版";
+    return `
+      <div class="field"><label>上游 Base URL</label><input id="baseURL" value="${escapeAttr(url)}" disabled /></div>
+      ${loggedIn ? `<div class="oauth-status">${edition}已登录${email ? " · " + escapeAttr(email) : ""}</div>` : waiting ? `
+        <p class="sub">已打开 ${edition} 授权页。在网页里确认后会自动保存。</p>
+        <button id="cancelQoderBtn" class="ghost" type="button">取消登录</button>` : `<p class="sub">点击右上角登录，浏览器会打开 ${edition} 的设备授权页，无需 API Key。</p>`}
+      ${loggedIn ? modelSelectWithList("刷新") : modelSelect}`;
+  }
+  if (mode === "workbuddy_cn" || mode === "workbuddy_global") {
+    const waiting = !loggedIn && workbuddyWaiting;
+    const edition = mode === "workbuddy_cn" ? "WorkBuddy 国内版" : "WorkBuddy 国际版";
+    return `
+      <div class="field"><label>上游 Base URL</label><input id="baseURL" value="${escapeAttr(url)}" disabled /></div>
+      ${loggedIn ? `<div class="oauth-status">${edition}已登录${email ? " · " + escapeAttr(email) : ""}</div>` : waiting ? `
+        <p class="sub">已打开 ${edition} 授权页。在网页里确认后会自动保存。</p>
+        <button id="cancelWorkBuddyBtn" class="ghost" type="button">取消登录</button>` : `<p class="sub">点击右上角登录，浏览器会打开 ${edition} 的账号页，无需 API Key。</p>`}
+      ${loggedIn ? modelSelectWithList("刷新") : modelSelect}`;
+  }
+  if (mode === "opencode") {
+    return `
+      <div class="field"><label>上游 Base URL</label><input id="baseURL" value="${escapeAttr(url)}" disabled /></div>
+      ${loggedIn ? `<div class="oauth-status">OpenCode 已登录${email ? " · " + escapeAttr(email) : ""}</div>` : `<p class="sub">打开 OpenCode 密钥页，复制 API Key 后粘贴。如果本机 OpenCode 已经登录，也可以直接导入。</p>`}
+      <div class="field"><label>API Key</label><div class="inline wide-action"><input id="opencodeKey" placeholder="粘贴 OpenCode API Key" spellcheck="false" autocomplete="off" /><button id="completeOpenCodeBtn" class="ghost" type="button">完成</button></div></div>
+      <button id="useLocalOpenCodeBtn" class="ghost" type="button">使用本机 OpenCode 登录</button>
+      ${loggedIn ? modelSelectWithList("刷新") : modelSelect}`;
+  }
   if (mode === "kimi_web") {
     const waiting = !loggedIn && kimiWaiting;
     const hint = kimiHint || "";
@@ -302,6 +358,16 @@ function bindModeFieldActions() {
   if (listBtn) listBtn.addEventListener("click", () => listModels().catch((err) => notify(errorMessage(err), "error")));
   const kimiCancelBtn = $("cancelKimiBtn");
   if (kimiCancelBtn) kimiCancelBtn.addEventListener("click", () => cancelKimiLogin().catch((err) => notify(errorMessage(err), "error")));
+  const devinBtn = $("completeDevinBtn");
+  if (devinBtn) devinBtn.addEventListener("click", () => completeDevinToken().catch((err) => notify(errorMessage(err), "error")));
+  const openCodeBtn = $("completeOpenCodeBtn");
+  if (openCodeBtn) openCodeBtn.addEventListener("click", () => completeOpenCodeKey().catch((err) => notify(errorMessage(err), "error")));
+  const localOpenCodeBtn = $("useLocalOpenCodeBtn");
+  if (localOpenCodeBtn) localOpenCodeBtn.addEventListener("click", () => useLocalOpenCode().catch((err) => notify(errorMessage(err), "error")));
+  const qoderCancelBtn = $("cancelQoderBtn");
+  if (qoderCancelBtn) qoderCancelBtn.addEventListener("click", () => cancelQoderLogin().catch((err) => notify(errorMessage(err), "error")));
+  const workbuddyCancelBtn = $("cancelWorkBuddyBtn");
+  if (workbuddyCancelBtn) workbuddyCancelBtn.addEventListener("click", () => cancelWorkBuddyLogin().catch((err) => notify(errorMessage(err), "error")));
   const anthBtn = $("completeAnthropicBtn");
   if (anthBtn) anthBtn.addEventListener("click", () => completeAnthropic().catch((err) => notify(errorMessage(err), "error")));
   const xaiBtn = $("completeXaiBtn");
@@ -385,6 +451,55 @@ async function cancelKimiLogin() {
   kimiHint = "";
   await refresh();
   notify("已取消 Kimi 登录");
+}
+
+async function completeOpenCodeKey() {
+  const key = $("opencodeKey")?.value || "";
+  if (!key.trim()) throw new Error("请粘贴 OpenCode API Key");
+  const btn = $("completeOpenCodeBtn");
+  setBusy(btn, true, "登录中...");
+  try {
+    const status = await api.CompleteOpenCodeLogin(key.trim());
+    if ($("opencodeKey")) $("opencodeKey").value = "";
+    showRelaunchNotice();
+    if (handleRelaunch(status)) return;
+    await refresh();
+    notify("OpenCode 登录成功");
+  } finally {
+    setBusy(btn, false);
+  }
+}
+
+async function useLocalOpenCode() {
+  const btn = $("useLocalOpenCodeBtn");
+  setBusy(btn, true, "导入中...");
+  try {
+    const status = await api.UseLocalOpenCodeLogin();
+    showRelaunchNotice();
+    if (handleRelaunch(status)) return;
+    await refresh();
+    notify("已导入本机 OpenCode 登录");
+  } finally {
+    setBusy(btn, false);
+  }
+}
+
+async function completeDevinToken() {
+  const token = $("devinToken")?.value || "";
+  if (!token.trim()) throw new Error("请粘贴 Devin 授权令牌");
+  const btn = $("completeDevinBtn");
+  devinPaste = true;
+  setBusy(btn, true, "登录中...");
+  try {
+    const status = await api.CompleteDevinLoginWithToken(token.trim());
+    devinWaiting = false;
+    if (handleRelaunch(status)) return;
+    await refresh();
+    notify("Devin 登录成功");
+  } finally {
+    devinPaste = false;
+    setBusy(btn, false);
+  }
 }
 
 async function completeAnthropic() {
@@ -478,7 +593,7 @@ function updateRuntimeChrome(status, opts = {}) {
   }
   if ($("loginActionBtn") && !loginInProgress) {
     $("loginActionBtn").style.display = loggedIn ? "none" : "";
-    $("loginActionBtn").textContent = mode === "sso" ? "SSO 登录" : "登录";
+    $("loginActionBtn").textContent = loginButtonLabel(mode);
   }
   if ($("logoutBtn")) $("logoutBtn").style.display = loggedIn ? "" : "none";
   $("cacheEntries").textContent = String(pick(status, "cache_entries", "CacheEntries") || 0);
@@ -586,6 +701,35 @@ async function save(options = {}) {
   }
 }
 
+function loginButtonLabel(mode) {
+  switch (mode) {
+    case "sso": return "SSO 登录";
+    case "devin": return "Devin 登录";
+    case "qoder_cn": return "Qoder 国内版登录";
+    case "qoder_global": return "Qoder 国际版登录";
+    case "workbuddy_cn": return "WorkBuddy 国内版登录";
+    case "workbuddy_global": return "WorkBuddy 国际版登录";
+    case "opencode": return "OpenCode 登录";
+    default: return "登录";
+  }
+}
+
+async function cancelQoderLogin() {
+  qoderWaiting = false;
+  qoderCancelled = true;
+  if (api.CancelQoderLogin) await api.CancelQoderLogin();
+  await refresh();
+  notify("已取消 Qoder 登录");
+}
+
+async function cancelWorkBuddyLogin() {
+  workbuddyWaiting = false;
+  workbuddyCancelled = true;
+  if (api.CancelWorkBuddyLogin) await api.CancelWorkBuddyLogin();
+  await refresh();
+  notify("已取消 WorkBuddy 登录");
+}
+
 async function runLogin() {
   if (loginInProgress) return;
   loginInProgress = true;
@@ -652,6 +796,95 @@ async function runLogin() {
     if (mode === "anthropic_oauth") {
       await api.StartAnthropicOAuth();
       notify("已打开 Claude.ai，授权后把 code 粘贴到配置区。");
+      return;
+    }
+    if (mode === "devin") {
+      const start = await api.StartDevinLogin();
+      devinWaiting = true;
+      await refresh();
+      const opened = pick(start, "browser_opened", "BrowserOpened");
+      const authURL = pick(start, "auth_url", "AuthURL") || "";
+      notify(opened ? "已打开 Devin 登录页。" : `浏览器未能自动打开，请手动访问：${authURL}`);
+      try {
+        const status = await api.WaitDevinLogin();
+        devinWaiting = false;
+        showRelaunchNotice();
+        if (handleRelaunch(status)) return;
+        await refresh();
+        notify("Devin 登录成功");
+      } catch (err) {
+        devinWaiting = false;
+        await refresh();
+        if (devinPaste || pick(lastStatus, "logged_in", "LoggedIn")) return;
+        if (($("authMode")?.value || currentAuthMode) !== "devin") return;
+        throw err;
+      }
+      return;
+    }
+    if (mode === "qoder_cn" || mode === "qoder_global") {
+      qoderCancelled = false;
+      qoderWaiting = true;
+      let start;
+      try {
+        start = await api.StartQoderLogin(mode);
+      } catch (err) {
+        qoderWaiting = false;
+        throw err;
+      }
+      await refresh();
+      const opened = pick(start, "browser_opened", "BrowserOpened");
+      const authURL = pick(start, "auth_url", "AuthURL") || "";
+      notify(opened ? "已打开 Qoder 授权页。" : `浏览器未能自动打开，请手动访问：${authURL}`);
+      try {
+        const status = await api.WaitQoderLogin();
+        qoderWaiting = false;
+        showRelaunchNotice();
+        if (handleRelaunch(status)) return;
+        await refresh();
+        notify("Qoder 登录成功");
+      } catch (err) {
+        qoderWaiting = false;
+        await refresh();
+        if (qoderCancelled || pick(lastStatus, "logged_in", "LoggedIn")) return;
+        if (($("authMode")?.value || currentAuthMode) !== mode) return;
+        throw err;
+      }
+      return;
+    }
+    if (mode === "workbuddy_cn" || mode === "workbuddy_global") {
+      workbuddyCancelled = false;
+      workbuddyWaiting = true;
+      let start;
+      try {
+        start = await api.StartWorkBuddyLogin(mode);
+      } catch (err) {
+        workbuddyWaiting = false;
+        throw err;
+      }
+      await refresh();
+      const opened = pick(start, "browser_opened", "BrowserOpened");
+      const authURL = pick(start, "auth_url", "AuthURL") || "";
+      notify(opened ? "已打开 WorkBuddy 授权页。" : `浏览器未能自动打开，请手动访问：${authURL}`);
+      try {
+        const status = await api.WaitWorkBuddyLogin();
+        workbuddyWaiting = false;
+        showRelaunchNotice();
+        if (handleRelaunch(status)) return;
+        await refresh();
+        notify("WorkBuddy 登录成功");
+      } catch (err) {
+        workbuddyWaiting = false;
+        await refresh();
+        if (workbuddyCancelled || pick(lastStatus, "logged_in", "LoggedIn")) return;
+        if (($("authMode")?.value || currentAuthMode) !== mode) return;
+        throw err;
+      }
+      return;
+    }
+    if (mode === "opencode") {
+      const start = await api.StartOpenCodeLogin();
+      const opened = pick(start, "browser_opened", "BrowserOpened");
+      notify(opened ? "已打开 OpenCode 密钥页。复制 API Key 后粘贴到配置区。" : "请打开 https://opencode.ai/auth ，复制 API Key 后粘贴。");
       return;
     }
     if (mode === "kimi_web") {

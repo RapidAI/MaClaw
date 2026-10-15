@@ -12,6 +12,9 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib/kimicode"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
+	"github.com/RapidAI/CodeClaw/corelib/qoder"
+	"github.com/RapidAI/CodeClaw/corelib/windsurf"
+	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 	"github.com/pkg/browser"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -33,6 +36,12 @@ func authModeCatalog() []AuthModeInfo {
 		{ID: AuthModeAnthropicOAuth, Name: "Claude Code 登录", Hint: "Max/Pro 走账号登录，否则填写 API Key", Kind: "oauth_code", Icon: "CC"},
 		{ID: AuthModeZhipuCoding, Name: "智谱编程", Hint: "预置 OpenAI 兼容端点，填写 API Key", Kind: "apikey", Icon: "智"},
 		{ID: AuthModeKimiWeb, Name: "Kimi Code 登录", Hint: "浏览器授权登录 Kimi Code，无需 API Key", Kind: "kimi_device", Icon: "K"},
+		{ID: AuthModeDevin, Name: "Devin 登录", Hint: "原 Windsurf。使用与本机 Devin IDE 相同的账号", Kind: "devin", Icon: "Dv"},
+		{ID: AuthModeQoderCN, Name: "Qoder 国内版", Hint: "浏览器授权登录 qoder.cn，无需 API Key", Kind: "qoder", Icon: "Q中"},
+		{ID: AuthModeQoderGlobal, Name: "Qoder 国际版", Hint: "浏览器授权登录 qoder.com，无需 API Key", Kind: "qoder", Icon: "Q际"},
+		{ID: AuthModeWorkBuddyCN, Name: "WorkBuddy 国内版", Hint: "浏览器授权登录 CodeBuddy 国内账号", Kind: "workbuddy", Icon: "W中"},
+		{ID: AuthModeWorkBuddyGlobal, Name: "WorkBuddy 国际版", Hint: "浏览器授权登录 workbuddy.ai", Kind: "workbuddy", Icon: "W际"},
+		{ID: AuthModeOpenCode, Name: "OpenCode 登录", Hint: "打开 opencode.ai 获取密钥，或使用本机 OpenCode 已保存的登录", Kind: "opencode", Icon: "OC"},
 	}
 }
 
@@ -54,7 +63,7 @@ func authModeLabel(mode string) string {
 
 func validAuthMode(mode string) bool {
 	switch strings.TrimSpace(mode) {
-	case AuthModeSSO, AuthModeCustomOpenAI, AuthModeOpenAIOAuth, AuthModeXAIOAuth, AuthModeAnthropicOAuth, AuthModeZhipuCoding, AuthModeKimiWeb:
+	case AuthModeSSO, AuthModeCustomOpenAI, AuthModeOpenAIOAuth, AuthModeXAIOAuth, AuthModeAnthropicOAuth, AuthModeZhipuCoding, AuthModeKimiWeb, AuthModeDevin, AuthModeQoderCN, AuthModeQoderGlobal, AuthModeWorkBuddyCN, AuthModeWorkBuddyGlobal, AuthModeOpenCode:
 		return true
 	default:
 		return false
@@ -75,6 +84,16 @@ func defaultAuthBaseURL(mode string) string {
 		return zhipuCodingDefaultURL
 	case AuthModeKimiWeb:
 		return kimiCodingDefaultURL()
+	case AuthModeDevin:
+		return windsurf.DefaultAPIServer
+	case AuthModeQoderCN, AuthModeQoderGlobal:
+		return qoder.ChatBase
+	case AuthModeWorkBuddyCN:
+		return workbuddy.ChinaProfile().ChatURL
+	case AuthModeWorkBuddyGlobal:
+		return workbuddy.GlobalProfile().ChatURL
+	case AuthModeOpenCode:
+		return openCodeBaseURL()
 	default:
 		return ""
 	}
@@ -108,6 +127,14 @@ func defaultAuthModelID(mode string) string {
 		return kimiCodingDefaultModel()
 	case AuthModeAnthropicOAuth:
 		return "claude-sonnet-4-5"
+	case AuthModeQoderCN, AuthModeQoderGlobal:
+		return qoder.DefaultModel
+	case AuthModeWorkBuddyCN:
+		return workbuddy.ChinaProfile().DefaultModel
+	case AuthModeWorkBuddyGlobal:
+		return workbuddy.GlobalProfile().DefaultModel
+	case AuthModeOpenCode:
+		return openCodeDefaultModel()
 	default:
 		return ""
 	}
@@ -141,6 +168,10 @@ func snapshotActiveProfile(s *Settings) {
 		Email:        s.Email,
 		ModelID:      s.ModelID,
 		Models:       s.Models,
+		UserID:       prev.UserID,
+		EnterpriseID: prev.EnterpriseID,
+		Domain:       prev.Domain,
+		ExpiresAt:    prev.ExpiresAt,
 	}
 }
 
@@ -667,6 +698,10 @@ func (a *App) CompleteAnthropicOAuth(code string) (Status, error) {
 }
 
 func (a *App) applyOAuthResult(mode, baseURL string, result *oauth.TokenResult) (Status, error) {
+	return a.applyOAuthResultLabeled(mode, baseURL, result, "", false)
+}
+
+func (a *App) applyOAuthResultLabeled(mode, baseURL string, result *oauth.TokenResult, email string, setEmail bool) (Status, error) {
 	token := ""
 	if result != nil {
 		token = strings.TrimSpace(result.AccessToken)
@@ -703,6 +738,9 @@ func (a *App) applyOAuthResult(mode, baseURL string, result *oauth.TokenResult) 
 	if def := defaultAuthModelID(mode); def != "" && !modelExistsInList(s.ModelID, s.Models) {
 		s.ModelID = def
 		s.Models = nil
+	}
+	if setEmail {
+		s.Email = strings.TrimSpace(email)
 	}
 	s = normalizeSettings(s)
 	if err := a.applySettingsWithRestart(s); err != nil {
@@ -757,7 +795,11 @@ func (a *App) ListUpstreamModels(baseURL, apiKey string) ([]ModelOption, error) 
 	if apiKey == "" {
 		return nil, fmt.Errorf("请先填写上游 API Key")
 	}
-	models, err := fetchModelsForMode(s.ActiveAuthMode, baseURL, apiKey)
+	account := AuthProfile{}
+	if s.AuthProfiles != nil {
+		account = s.AuthProfiles[s.ActiveAuthMode]
+	}
+	models, err := fetchModelsForMode(s.ActiveAuthMode, baseURL, apiKey, account)
 	if err != nil {
 		return nil, err
 	}
@@ -772,7 +814,11 @@ func (a *App) refreshModelsForActiveMode() {
 	if err != nil || strings.TrimSpace(s.AccessToken) == "" || strings.TrimSpace(s.BaseURL) == "" {
 		return
 	}
-	models, err := fetchModelsForMode(s.ActiveAuthMode, s.BaseURL, s.AccessToken)
+	account := AuthProfile{}
+	if s.AuthProfiles != nil {
+		account = s.AuthProfiles[s.ActiveAuthMode]
+	}
+	models, err := fetchModelsForMode(s.ActiveAuthMode, s.BaseURL, s.AccessToken, account)
 	if err != nil || len(models) == 0 {
 		return
 	}
@@ -781,7 +827,7 @@ func (a *App) refreshModelsForActiveMode() {
 	}
 }
 
-func fetchModelsForMode(mode, baseURL, apiKey string) ([]ModelOption, error) {
+func fetchModelsForMode(mode, baseURL, apiKey string, account AuthProfile) ([]ModelOption, error) {
 	if mode == AuthModeSSO {
 		models, _, err := oauth.FetchCodeGenModels(apiKey)
 		if err != nil {
@@ -791,6 +837,19 @@ func fetchModelsForMode(mode, baseURL, apiKey string) ([]ModelOption, error) {
 	}
 	if mode == AuthModeAnthropicOAuth {
 		return fetchAnthropicModels(baseURL, apiKey)
+	}
+	if mode == AuthModeDevin {
+		return fetchDevinModels(baseURL, apiKey)
+	}
+	if profile, ok := qoderProfileForMode(mode); ok {
+		return fetchQoderModels(context.Background(), profile, account.UserID, apiKey)
+	}
+	if profile, ok := workbuddyProfileForMode(mode); ok {
+		account.AccessToken = apiKey
+		return fetchWorkBuddyModels(profile, account)
+	}
+	if mode == AuthModeOpenCode {
+		return fetchOpenAICompatibleModels(baseURL, apiKey, openCodeModelHeaders())
 	}
 	headers := map[string]string{}
 	if mode == AuthModeXAIOAuth {

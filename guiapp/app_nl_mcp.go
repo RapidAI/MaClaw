@@ -23,10 +23,10 @@ import (
 // Wails bindings. MCP wire format uses camelCase ("inputSchema"); use
 // mcpWireToolView for deserializing tools/list responses.
 type MCPToolView struct {
-	Name        string                        `json:"name"`
-	Description string                        `json:"description"`
-	InputSchema map[string]interface{}        `json:"input_schema"`
-	Annotations  *agentservice.MCPToolAnnotations `json:"annotations,omitempty"`
+	Name        string                           `json:"name"`
+	Description string                           `json:"description"`
+	InputSchema map[string]interface{}           `json:"input_schema"`
+	Annotations *agentservice.MCPToolAnnotations `json:"annotations,omitempty"`
 	// DeclaredCapabilities carries vendor self-declared external (x:) capability
 	// IDs parsed from the MCP tools/list "x_capabilities" extension field.
 	DeclaredCapabilities []coretool.CapabilityID `json:"declared_capabilities,omitempty"`
@@ -47,11 +47,11 @@ type mcpWireToolAnnotations struct {
 // mcpWireToolView mirrors MCPToolView but uses the MCP protocol's camelCase
 // field names for JSON deserialization of tools/list responses.
 type mcpWireToolView struct {
-	Name        string                 `json:"name"`
-	Description string                 `json:"description"`
-	InputSchema map[string]interface{} `json:"inputSchema"`
-	Annotations  *mcpWireToolAnnotations `json:"annotations,omitempty"`
-	XCapabilities []string `json:"x_capabilities,omitempty"`
+	Name          string                  `json:"name"`
+	Description   string                  `json:"description"`
+	InputSchema   map[string]interface{}  `json:"inputSchema"`
+	Annotations   *mcpWireToolAnnotations `json:"annotations,omitempty"`
+	XCapabilities []string                `json:"x_capabilities,omitempty"`
 }
 
 // toView converts a wire-format tool to the internal MCPToolView.
@@ -1511,6 +1511,7 @@ func (a *App) UnregisterMCPServer(serverID string) error {
 	if err := a.mcpRegistry.Unregister(serverID); err != nil {
 		return err
 	}
+	clearMCPToolObservation("remote", serverID)
 	a.invalidateIMToolCaches()
 	return nil
 }
@@ -2076,7 +2077,11 @@ func (a *App) UnregisterLocalMCPServer(serverID string) error {
 			return fmt.Errorf("此 MCP 为企业强制下发，不可删除")
 		}
 	}
-	return a.mcpRegistry.UnregisterLocal(serverID)
+	if err := a.mcpRegistry.UnregisterLocal(serverID); err != nil {
+		return err
+	}
+	clearMCPToolObservation("local", serverID)
+	return nil
 }
 
 // SyncLocalMCPServers triggers the local MCP manager to re-read config

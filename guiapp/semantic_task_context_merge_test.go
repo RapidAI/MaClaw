@@ -45,6 +45,7 @@ func TestSemanticClassificationNeedsTaskContext(t *testing.T) {
 	}{
 		{"nil", nil, false},
 		{"degraded", &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .9, Degraded: true}, true},
+		{"office kept over a read", &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .849, Degraded: true, Layer: 2, RunnerUp: intent.LabelDocumentRead}, false},
 		{"unknown", &intent.ClassificationResult{Primary: intent.LabelUnknown, Confidence: .5}, true},
 		{"empty primary", &intent.ClassificationResult{Confidence: .5}, true},
 		{"managed office", &intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: .9}, false},

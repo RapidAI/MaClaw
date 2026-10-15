@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/bm25"
 )
 
 func TestValidateMCPJSONRPCSuccess(t *testing.T) {
@@ -682,6 +683,13 @@ func TestDiscoverToolDoesNotFetchUncachedRemoteMCPTools(t *testing.T) {
 	if _, err := app.mcpRegistry.register(corelib.MCPServerEntry{ID: "slow", Name: "Slow", EndpointURL: server.URL}, false); err != nil {
 		t.Fatalf("register: %v", err)
 	}
+
+	// Warm process-global cold state outside the timed section: the first
+	// LoadConfig/Tokenize in a process pays one-time file and dictionary
+	// setup (~1s) that has nothing to do with whether discover_tool blocks
+	// on an uncached remote MCP fetch.
+	(&IMMessageHandler{app: app}).toolDiscoverTool(map[string]interface{}{"need": "warm"})
+	bm25.Tokenize("warm the dictionary")
 
 	started := time.Now()
 	out := (&IMMessageHandler{app: app}).toolDiscoverTool(map[string]interface{}{"need": "query enterprise content"})

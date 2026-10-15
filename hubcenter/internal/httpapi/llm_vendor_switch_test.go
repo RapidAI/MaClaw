@@ -158,6 +158,67 @@ func TestAdminUpdateLLMProviderToStaticKeyDropsAccessToken(t *testing.T) {
 	}
 }
 
+// A static-key row stores an empty auth kind, while the editor always sends
+// "api_key" and leaves the password blank. Saving that form must keep the key.
+func TestAdminUpdateLLMProviderStaticKeyKeptWhenFormOmitsIt(t *testing.T) {
+	ctx := context.Background()
+	svc := llmservice.NewService(&llmDeleteTestSettings{data: map[string]string{}})
+	if err := svc.AddProvider(ctx, llmpool.ProviderConfig{
+		ID: "OpenCode-1", Name: "OpenCode-1", APIURL: "https://opencode.ai/zen/go/v1",
+		APIKey: "sk-secret", Protocol: "openai",
+	}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/llm/providers/OpenCode-1",
+		strings.NewReader(`{"name":"OpenCode-1（副本）","api_url":"https://opencode.ai/zen/go/v1","protocol":"openai","auth_kind":"api_key","models":["gpt-5"]}`))
+	req.SetPathValue("id", "OpenCode-1")
+	rec := httptest.NewRecorder()
+	adminUpdateLLMProvider(svc)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	stored, err := svc.GetProvider(ctx, "OpenCode-1")
+	if err != nil || stored == nil {
+		t.Fatalf("stored err=%v provider=%#v", err, stored)
+	}
+	if stored.APIKey != "sk-secret" {
+		t.Fatalf("api key = %q, want the stored key kept", stored.APIKey)
+	}
+}
+
+// Switching an account login to a static key without typing a new key must
+// drop the account token. Blank means "keep" only inside the static-key family.
+func TestAdminUpdateLLMProviderVendorToStaticWithoutKeyDropsToken(t *testing.T) {
+	ctx := context.Background()
+	svc := llmservice.NewService(&llmDeleteTestSettings{data: map[string]string{}})
+	if err := svc.AddProvider(ctx, llmpool.ProviderConfig{
+		ID: "trae-cn", Name: "Trae 国内版", APIURL: "https://trae-api-cn.mchost.guru",
+		APIKey: "trae-access", Protocol: "openai", AuthKind: llmpool.ProviderAuthTrae,
+		TraeEdition: "china", TraeRefreshToken: "trae-refresh", TraeUserID: "tu",
+		TraeMachineID: "tm", TraeDeviceID: "td", Models: []string{"gpt-5"},
+	}); err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/llm/providers/trae-cn",
+		strings.NewReader(`{"name":"Trae 国内版","api_url":"https://trae-api-cn.mchost.guru","protocol":"openai","auth_kind":"api_key","models":["gpt-5"]}`))
+	req.SetPathValue("id", "trae-cn")
+	rec := httptest.NewRecorder()
+	adminUpdateLLMProvider(svc)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
+	}
+	stored, err := svc.GetProvider(ctx, "trae-cn")
+	if err != nil || stored == nil {
+		t.Fatalf("stored err=%v provider=%#v", err, stored)
+	}
+	if stored.APIKey != "" {
+		t.Fatalf("api key = %q, want the account token dropped", stored.APIKey)
+	}
+	if stored.TraeRefreshToken != "" || stored.TraeUserID != "" || stored.TraeMachineID != "" || stored.TraeDeviceID != "" {
+		t.Fatalf("vendor credential survived = %#v", stored)
+	}
+}
+
 // An update that omits auth_kind entirely (the array-move payload) must keep
 // both the vendor account and its access token.
 func TestAdminUpdateLLMProviderWithoutAuthKindKeepsAccount(t *testing.T) {

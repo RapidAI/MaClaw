@@ -26,6 +26,7 @@ if (typeof I18N_ZH !== 'undefined') {
       deleteProviderInUse: 'Delete blocked: the provider is still bound to service groups:',
       providerDialogTitleNew: 'New Provider', providerDialogTitleEdit: 'Edit Provider',
       fieldID: 'Provider ID', fieldName: 'Name', fieldURL: 'API URL', fieldKey: 'API Key',
+      fieldKeyKept: 'Saved. Leave blank to keep the current key',
       fieldAuth: 'Authentication', authAPIKey: 'API Key',
       authWorkBuddyChina: 'WorkBuddy China', authWorkBuddyGlobal: 'WorkBuddy International',
       authQoderChina: 'Qoder China', authQoderGlobal: 'Qoder International',
@@ -45,7 +46,7 @@ if (typeof I18N_ZH !== 'undefined') {
       accessScopeAvailable: 'Available nodes: ', accessScopeAvailableEmpty: 'No cluster nodes are listed. You can still type node names.',
       accessScopeNodesInput: 'Nodes', accessScopeNodesPlaceholder: 'hc-1, hc-2, hc-3',
       accessScopeNeedNode: 'Select at least one HubCenter node.', accessScopeOffline: 'offline', accessScopeSelf: 'this node', accessScopeUnreachable: 'unreachable',
-      lbGroup: 'LB group', pauseProvider: 'Pause', resumeProvider: 'Resume',
+      lbGroup: 'LB group', copyProvider: 'Copy', providerCopied: 'Provider copied.', pauseProvider: 'Pause', resumeProvider: 'Resume',
       providerArray: 'Provider array', providerArrayOwn: 'Independent array', providerArrayJoin: 'Array',
       providerArrayName: 'Array name', providerArrayHint: 'One array is one logical provider. Members share the multiplier and token price, rotate on each request, and a 429 or 5xx tries the next member.',
       providerArrayUseShared: 'This provider will use the array multiplier and token price.',
@@ -239,6 +240,7 @@ if (typeof I18N_ZH !== 'undefined') {
       deleteProviderInUse: '\u5220\u9664\u88ab\u963b\u6b62\uff1a\u670d\u52a1\u5546\u4ecd\u7ed1\u5b9a\u4ee5\u4e0b\u670d\u52a1\u7ec4\uff1a',
       providerDialogTitleNew: '\u65b0\u5efa\u670d\u52a1\u5546', providerDialogTitleEdit: '\u7f16\u8f91\u670d\u52a1\u5546',
       fieldID: '\u670d\u52a1\u5546 ID', fieldName: '\u540d\u79f0', fieldURL: 'API \u5730\u5740', fieldKey: 'API \u5bc6\u94a5',
+      fieldKeyKept: '\u5df2\u4fdd\u5b58\uff0c\u7559\u7a7a\u5219\u4fdd\u7559\u5f53\u524d\u5bc6\u94a5',
       fieldAuth: '\u8ba4\u8bc1\u65b9\u5f0f', authAPIKey: 'API \u5bc6\u94a5',
       authWorkBuddyChina: 'WorkBuddy \u56fd\u5185\u7248', authWorkBuddyGlobal: 'WorkBuddy \u56fd\u9645\u7248',
       authQoderChina: 'Qoder \u56fd\u5185\u7248', authQoderGlobal: 'Qoder \u56fd\u9645\u7248',
@@ -258,7 +260,7 @@ if (typeof I18N_ZH !== 'undefined') {
       accessScopeAvailable: '\u53ef\u7528\u8282\u70b9\uff1a', accessScopeAvailableEmpty: '\u5f53\u524d\u6ca1\u6709\u5217\u51fa\u96c6\u7fa4\u8282\u70b9\uff0c\u4ecd\u53ef\u624b\u5199\u8282\u70b9\u540d\u3002',
       accessScopeNodesInput: '\u6307\u5b9a\u8282\u70b9', accessScopeNodesPlaceholder: 'hc-1, hc-2, hc-3',
       accessScopeNeedNode: '\u8bf7\u81f3\u5c11\u9009\u62e9\u4e00\u4e2a\u8282\u70b9\u3002', accessScopeOffline: '\u5df2\u4e0b\u7ebf', accessScopeSelf: '\u672c\u8282\u70b9', accessScopeUnreachable: '\u4e0d\u53ef\u8fbe',
-      lbGroup: 'LB \u7ec4', pauseProvider: '\u6682\u505c', resumeProvider: '\u6062\u590d',
+      lbGroup: 'LB \u7ec4', copyProvider: '\u590d\u5236', providerCopied: '\u5df2\u590d\u5236\u670d\u52a1\u5546\u3002', pauseProvider: '\u6682\u505c', resumeProvider: '\u6062\u590d',
       providerArray: '\u670d\u52a1\u5546\u9635\u5217', providerArrayOwn: '\u72ec\u7acb\u9635\u5217', providerArrayJoin: '\u6240\u5c5e\u9635\u5217',
       providerArrayName: '\u9635\u5217\u540d\u79f0', providerArrayHint: '\u4e00\u4e2a\u9635\u5217\u5c31\u662f\u4e00\u4e2a\u903b\u8f91\u670d\u52a1\u5546\u3002\u6210\u5458\u5171\u4eab\u500d\u7387\u4e0e\u8d39\u7528\uff0c\u8bf7\u6c42\u8f6e\u8be2\u8bbf\u95ee\uff1b\u67d0\u4e2a\u6210\u5458\u8fd4\u56de 429 \u6216 5xx \u65f6\u81ea\u52a8\u8bbf\u95ee\u4e0b\u4e00\u4e2a\u3002',
       providerArrayUseShared: '\u5c06\u4f7f\u7528\u8be5\u9635\u5217\u5df2\u6709\u7684\u500d\u7387\u4e0e\u8d39\u7528\u3002',
@@ -1503,9 +1505,11 @@ if (typeof I18N_ZH !== 'undefined') {
     var seq = Number(p.sequence || 0);
     var paused = !!p.paused;
     var dragHint = esc(t('providerArrayDragHint'));
+    var providerLabel = p.name || p.id;
+    var metaText = providerRowMetaText(p);
     return '<div class="data-row' + (paused ? ' is-paused' : '') + '" data-provider-id="' + esc(p.id) + '">'
       + '<div class="provider-seq' + (seq > 0 ? '' : ' is-unset') + '" draggable="true" title="' + dragHint + '">' + esc(seq > 0 ? String(seq) : '-') + '</div>'
-      + '<div class="data-row-main" draggable="true"><div class="data-row-title"><strong><span class="data-row-name" title="' + dragHint + '">' + esc(p.name||p.id) + '</span>' + providerCanaryMark(p) + '</strong>'
+      + '<div class="data-row-main" draggable="true"><div class="data-row-title"><strong><span class="data-row-name" title="' + esc(providerLabel) + '">' + esc(providerLabel) + '</span>' + providerCanaryMark(p) + '</strong>'
       + (paused ? '<span class="badge warn">' + esc(t('pauseProvider')) + '</span>' : '')
       + (p.lb_group && Number(p.lb_group_size||0) >= 2 ? '<span class="badge info">' + esc(t('lbGroup')) + ' ' + esc(p.lb_group) + '</span>' : '')
       + providerBillingBadge(p)
@@ -1513,7 +1517,7 @@ if (typeof I18N_ZH !== 'undefined') {
       + providerAccessBadge(p)
       + providerServeBadge(p)
       + '</div>'
-      + '<span class="data-row-meta" title="' + dragHint + '">' + esc(p.api_url) + ' \u00b7 ' + esc(p.protocol||'openai')
+      + '<span class="data-row-meta" title="' + esc(metaText) + '">' + esc(p.api_url) + ' \u00b7 ' + esc(p.protocol||'openai')
       + (p.has_api_key ? ' \u00b7 key' : '') + (p.lb_group ? ' \u00b7 ' + esc(p.lb_group) : '')
       + (providerPriceSummary(p) ? ' \u00b7 ' + esc(providerPriceSummary(p)) : '')
       + (providerPriceScheduleCount(p) ? ' \u00b7 ' + esc(t('pricingSchedule')) + ': ' + providerPriceScheduleCount(p) : '') + '</span>'
@@ -1522,6 +1526,7 @@ if (typeof I18N_ZH !== 'undefined') {
       + '<div class="data-row-actions">'
       + '<button class="btn-ghost" onclick="moveLLMProvider(' + providerArg + ',-1)">\u2191</button>'
       + '<button class="btn-ghost" onclick="moveLLMProvider(' + providerArg + ',1)">\u2193</button>'
+      + (providerArrayProtected(providerArrayByID(p.array_id || p.id)) ? '' : '<button class="btn-ghost provider-copy-btn" type="button" onclick="copyLLMProvider(' + providerArg + ')"' + (providerCopyInFlight[p.id] ? ' disabled' : '') + '>' + esc(t('copyProvider')) + '</button>')
       + '<button class="btn-ghost" onclick="toggleLLMProviderPaused(' + providerArg + ')">' + esc(paused ? t('resumeProvider') : t('pauseProvider')) + '</button>'
       + '<button class="btn-ghost provider-test-btn" onclick="testLLMProvider(' + providerArg + ')"' + testDisabled + '>' + esc(testState && testState.status === 'testing' ? t('providerTesting') : t('testProvider')) + '</button>'
       + '<button class="btn-ghost" onclick="editLLMProvider(' + providerArg + ')">' + esc(t('editProvider')) + '</button>'
@@ -1534,7 +1539,8 @@ if (typeof I18N_ZH !== 'undefined') {
     var headTraffic = '';
     if (multi) headTraffic = '<div class="provider-traffic' + (providerTrafficReady ? '' : ' is-pending') + '" data-traffic-array="' + esc(array.id) + '"></div>';
     else if (!open && array.members[0]) headTraffic = '<div class="provider-traffic' + (providerTrafficReady ? '' : ' is-pending') + '" data-provider-id="' + esc(array.members[0].id) + '"></div>';
-    var head = '<div class="provider-array-head"><div class="provider-array-title"><strong>' + esc(array.name || array.id) + '</strong>'
+    var arrayLabel = array.name || array.id;
+    var head = '<div class="provider-array-head"><div class="provider-array-title"><strong title="' + esc(arrayLabel) + '">' + esc(arrayLabel) + '</strong>'
       + '<span class="badge">' + esc(t('providerArray')) + ' \u00b7 ' + array.members.length + '</span>'
       + (multi ? '<span class="badge info">' + esc(t('providerArrayShared')) + '</span>' : '')
       + (providerPriceSummary(array) ? '<span class="data-row-meta"> ' + esc(providerPriceSummary(array)) + '</span>' : '')
@@ -1575,6 +1581,7 @@ if (typeof I18N_ZH !== 'undefined') {
     renderProviders();
   };
   var providerArrayExpanded = {};
+  var providerCopyInFlight = {};
   var providerDragID = '';
   var providerDragHome = '';
   function dragEventNode(event) {
@@ -1849,6 +1856,16 @@ if (typeof I18N_ZH !== 'undefined') {
     days = uniqueProviderBillingDays(days);
     if (!days.length) return true;
     return days.indexOf(weekday) >= 0;
+  }
+  function providerRowMetaText(p) {
+    var parts = [p && p.api_url || '', (p && p.protocol) || 'openai'];
+    if (p && p.has_api_key) parts.push('key');
+    if (p && p.lb_group) parts.push(String(p.lb_group));
+    var price = providerPriceSummary(p);
+    if (price) parts.push(price);
+    var schedule = providerPriceScheduleCount(p);
+    if (schedule) parts.push(t('pricingSchedule') + ': ' + schedule);
+    return parts.join(' \u00b7 ');
   }
   function providerPriceSummary(p) {
     var tp = p && p.token_pricing || {};
@@ -2606,7 +2623,7 @@ if (typeof I18N_ZH !== 'undefined') {
       + field('llmPrvName', t('fieldName'), p ? p.name : '')
       + providerAuthField(p)
       + field('llmPrvURL', t('fieldURL'), p ? p.api_url : '')
-      + field('llmPrvKey', t('fieldKey'), '', false, 'password')
+      + providerKeyField(p)
       + '<div><label>' + esc(t('fieldProtocol')) + '</label><select id="llmPrvProtocol"><option value="openai"' + ((!p||p.protocol==='openai')?' selected':'') + '>OpenAI</option><option value="anthropic"' + (p&&p.protocol==='anthropic'?' selected':'') + '>Anthropic</option></select></div>'
       + providerModelsField(p ? (p.models||[]).join(', ') : '')
       + providerCapabilitiesField(p ? (p.capability_tags||[]).join(', ') : '')
@@ -2644,6 +2661,13 @@ if (typeof I18N_ZH !== 'undefined') {
     var key = edition ? p.auth_kind + '-' + edition : p.auth_kind;
     return vendorLoginAuths[key] ? key : '';
   }
+  function providerStoresStaticKey(p) {
+    return !!(p && p.has_api_key && !providerAuthValue(p));
+  }
+  function providerKeyField(p) {
+    var kept = providerStoresStaticKey(p) ? ' placeholder="' + esc(t('fieldKeyKept')) + '"' : '';
+    return '<div><label for="llmPrvKey">' + esc(t('fieldKey')) + '</label><input id="llmPrvKey" type="password" value=""' + kept + '></div>';
+  }
   function providerAuthField(p) {
     var selected = providerAuthValue(p);
     var options = ['', 'china', 'global', 'qoder-china', 'qoder-global', 'trae-china', 'trae-global', 'lobsterai'].map(function(value) {
@@ -2673,6 +2697,10 @@ if (typeof I18N_ZH !== 'undefined') {
     var probe = document.querySelector('#llmPrvModels') && document.querySelector('#llmPrvModels').parentNode.querySelector('.provider-probe-btn');
     if (panel) panel.hidden = !preset;
     if (key && key.parentNode) key.parentNode.hidden = !!preset;
+    if (key) {
+      var editing = providers.find(function(x) { return x.id === providerDialogID; });
+      key.placeholder = (!preset && providerStoresStaticKey(editing)) ? t('fieldKeyKept') : '';
+    }
     if (probe) probe.hidden = !!preset;
     if (url) url.readOnly = !!preset;
     if (!preset) {
@@ -3232,6 +3260,30 @@ if (typeof I18N_ZH !== 'undefined') {
       p.paused = !next;
       toast(e.message, 'error');
       renderProviders();
+    }
+  };
+  window.copyLLMProvider = async function(id) {
+    if (!id || providerCopyInFlight[id]) return;
+    var p = providers.find(function(x){ return x.id === id; });
+    if (!p) return;
+    if (providerArrayProtected(providerArrayByID(p.array_id || p.id))) return;
+    providerCopyInFlight[id] = true;
+    providersLoadSeq += 1;
+    renderProviders();
+    try {
+      var data = await api('/api/admin/llm/providers/' + encodeURIComponent(id) + '/copy', { method: 'POST', body: '{}' });
+      var openID = (data && data.array_id) || p.array_id || p.id;
+      if (openID) providerArrayExpanded[openID] = true;
+      delete providerCopyInFlight[id];
+      await loadProviders({ traffic: false });
+      toast(t('providerCopied'), 'success');
+    } catch (e) {
+      toast(e.message, 'error');
+    } finally {
+      var root = document.getElementById('llmProvidersList');
+      var stuck = !!providerCopyInFlight[id] || !!(root && root.querySelector('.provider-copy-btn:disabled'));
+      delete providerCopyInFlight[id];
+      if (stuck) renderProviders();
     }
   };
   async function loadAgents() {

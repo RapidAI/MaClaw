@@ -2,6 +2,7 @@ package guiapp
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -160,19 +161,30 @@ func (h *IMMessageHandler) toolMailboxQuery(ctx context.Context, args map[string
 }
 
 func (h *IMMessageHandler) toolMailboxConfigure(ctx context.Context, args map[string]interface{}) string {
-	if h == nil || h.app == nil {
-		return mailbox.MsgNotConfigured
-	}
-	cfg, err := h.app.LoadConfig()
-	if err != nil {
-		return "邮箱没有保存"
-	}
-	next, saved, secrets, msg, err := mailbox.ApplyConfigure(cfg.MailboxAccounts, args, time.Now())
+	text, err := h.applyMailboxConfigure(ctx, args)
 	if err != nil {
 		return configureMailboxToolErr(err, stringArg(args, "password"))
 	}
+	return text
+}
+
+// applyMailboxConfigure writes one account. A class error is returned before
+// PatchConfig, so a missing server does not become a saved mailbox.
+func (h *IMMessageHandler) applyMailboxConfigure(ctx context.Context, args map[string]interface{}) (string, error) {
+	_ = ctx
+	if h == nil || h.app == nil {
+		return "", fmt.Errorf("%s", mailbox.MsgNotConfigured)
+	}
+	cfg, err := h.app.LoadConfig()
+	if err != nil {
+		return "", fmt.Errorf("邮箱没有保存")
+	}
+	next, saved, secrets, msg, err := mailbox.ApplyConfigure(cfg.MailboxAccounts, args, time.Now())
+	if err != nil {
+		return "", err
+	}
 	if err := h.app.PatchConfig(func(cfg *corelib.AppConfig) { cfg.MailboxAccounts = next }); err != nil {
-		return "邮箱没有保存"
+		return "", fmt.Errorf("邮箱没有保存")
 	}
 	for _, sec := range secrets {
 		if err := h.app.MailboxAccountSetSecret(sec.ID, sec.Side, sec.Secret); err != nil {
@@ -180,10 +192,12 @@ func (h *IMMessageHandler) toolMailboxConfigure(ctx context.Context, args map[st
 			if strings.Contains(text, sec.Secret) {
 				text = mailbox.MsgKeyringLong
 			}
-			return fmt.Sprintf("邮箱「%s」已保存，但%s", saved.Name, text)
+			// The account row is already committed. The warning is the result
+			// of that write, not a rejection that would invite another save.
+			return fmt.Sprintf("邮箱「%s」已保存，但%s", saved.Name, text), nil
 		}
 	}
-	return msg
+	return msg, nil
 }
 
 func configureMailboxToolErr(err error, secret string) string {
@@ -209,31 +223,106 @@ func (h *IMMessageHandler) toolMailboxSend(ctx context.Context, args map[string]
 	text := host.Send(ctx, args)
 	if strings.HasPrefix(text, "__ASK_USER__") && host.Drafts != nil {
 		if draft, ok := host.Drafts.Pending(host.Principal, host.Session); ok {
-			h.noteMailboxDraft(userID, draft.ID)
+			// Stash the note only for a card that carries the binding
+			// marker: an unparseable or hand-rolled card stays unbound, so
+			// the draft it froze can never be claimed by a different
+			// question.
+			if bound, nonce, ok := bindMailboxDraftAskContext(text); ok {
+				text = bound
+				h.noteMailboxDraft(userID, draft.ID, nonce)
+			}
 		}
 	}
 	return text
 }
 
-func (h *IMMessageHandler) noteMailboxDraft(userID, draftID string) {
-	if h == nil || strings.TrimSpace(draftID) == "" {
-		return
-	}
-	h.mailboxDraftNotes.Store(strings.TrimSpace(userID), strings.TrimSpace(draftID))
+// mailboxDraftAskContext is the sentinel prefix stamped onto the
+// confirmation card a frozen send emits. commitPendingAskUser binds a
+// stashed draft note only to a pendingAskUserState carrying this marker, so
+// a deferred or rewritten ask — or any unrelated later question — cannot
+// inherit the draft id and have the user's "确认" settle a send it never
+// described. The draft id itself stays out of the payload.
+const mailboxDraftAskContext = "mailbox-send-confirm;"
+
+// pendingMailboxDraftNote stashes the frozen draft id together with the
+// nonce stamped into the emitted card's context. The nonce is the binding:
+// only the committed question carrying this exact nonce may consume the
+// note, and a forged card echoing the sentinel cannot name it.
+type pendingMailboxDraftNote struct {
+	DraftID string
+	Nonce   string
 }
 
-// takeMailboxDraftNote copies the stashed draft id and clears it so a later
-// unrelated ask_user cannot inherit it. The id never enters the question.
-func (h *IMMessageHandler) takeMailboxDraftNote(userID string) string {
-	if h == nil {
+// bindMailboxDraftAskContext prepends the send-confirmation marker plus a
+// fresh nonce to the ask_user card's context and returns the bound text and
+// the nonce. ok is false when the card is not a parseable __ASK_USER__
+// payload; the caller then leaves the draft unbound (fail closed — the
+// frozen draft is never sent, it simply stays pending).
+func bindMailboxDraftAskContext(text string) (string, string, bool) {
+	if !strings.HasPrefix(text, "__ASK_USER__") {
+		return "", "", false
+	}
+	var payload map[string]interface{}
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(text, "__ASK_USER__")), &payload); err != nil {
+		return "", "", false
+	}
+	nonce := newConfirmNonce()
+	ctx, _ := payload["context"].(string)
+	if ctx = strings.TrimSpace(ctx); ctx != "" {
+		payload["context"] = mailboxDraftAskContext + nonce + "; " + ctx
+	} else {
+		payload["context"] = mailboxDraftAskContext + nonce + "; mailbox draft send confirmation"
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return "", "", false
+	}
+	return "__ASK_USER__" + string(data), nonce, true
+}
+
+func (h *IMMessageHandler) noteMailboxDraft(userID, draftID, nonce string) {
+	if h == nil || strings.TrimSpace(draftID) == "" || nonce == "" {
+		return
+	}
+	h.mailboxDraftNotes.Store(strings.TrimSpace(userID), pendingMailboxDraftNote{
+		DraftID: strings.TrimSpace(draftID),
+		Nonce:   nonce,
+	})
+}
+
+// takeMailboxDraftNoteFor binds a stashed draft id to the ask_user question
+// being committed, but only when that question repeats the nonce the send
+// stamped into its own card. Any other committed ask — a rewritten or
+// deferred card, an unrelated model question, a tool result echoing the
+// sentinel — leaves the note in place (prepareMailboxTurn clears it on the
+// next user turn), so a confirmation can never settle a draft the shown
+// question did not freeze. The id never enters the question.
+func (h *IMMessageHandler) takeMailboxDraftNoteFor(userID string, askReq *AskUserRequest) string {
+	if h == nil || askReq == nil {
 		return ""
 	}
-	raw, ok := h.mailboxDraftNotes.LoadAndDelete(strings.TrimSpace(userID))
+	rest, ok := strings.CutPrefix(strings.TrimSpace(askReq.Context), mailboxDraftAskContext)
 	if !ok {
 		return ""
 	}
-	id, _ := raw.(string)
-	return strings.TrimSpace(id)
+	questionNonce, _, _ := strings.Cut(rest, ";")
+	if questionNonce == "" {
+		return ""
+	}
+	raw, ok := h.mailboxDraftNotes.Load(strings.TrimSpace(userID))
+	if !ok {
+		return ""
+	}
+	note, ok := raw.(pendingMailboxDraftNote)
+	if !ok || note.Nonce != questionNonce {
+		return ""
+	}
+	// Consume atomically: a racing commit that already swapped or deleted
+	// the note fails the compare, and this question binds nothing.
+	if !h.mailboxDraftNotes.CompareAndDelete(strings.TrimSpace(userID), raw) {
+		return ""
+	}
+	return strings.TrimSpace(note.DraftID)
 }
 
 func (h *IMMessageHandler) dropMailboxDraft(userID, draftID string) {
@@ -244,6 +333,23 @@ func (h *IMMessageHandler) dropMailboxDraft(userID, draftID string) {
 		guiMailboxDrafts.Drop(strings.TrimSpace(draftID))
 	}
 	h.mailboxDraftNotes.Delete(strings.TrimSpace(userID))
+}
+
+// freshMailboxDraftID is a frozen send waiting on this history. Only an
+// approve or cancel click settles it; other text stays on the normal ask path.
+func (h *IMMessageHandler) freshMailboxDraftID(userID, text string, entries []agent.ConversationEntry) string {
+	if h == nil || (!mailbox.IsApproveText(text) && !mailbox.IsCancelText(text)) {
+		return ""
+	}
+	raw, ok := h.pendingAskUser.Load(strings.TrimSpace(userID))
+	if !ok {
+		return ""
+	}
+	pending, fresh := pendingAskUserForCurrentHistory(raw, entries)
+	if !fresh || pending == nil {
+		return ""
+	}
+	return strings.TrimSpace(pending.MailboxDraftID)
 }
 
 func (h *IMMessageHandler) peekMailboxDraftID(userID string) string {
@@ -282,20 +388,13 @@ func (h *IMMessageHandler) prepareMailboxTurn(userID, text string) {
 func (h *IMMessageHandler) approveMailboxDraft(userID, draftID string) string {
 	host := h.mailboxHost(userID)
 	if host == nil {
-		return mailbox.MsgExpired + "\n不要再次调用 mailbox_send。"
+		return mailbox.MsgExpired
 	}
 	result, class := host.Approve(context.Background(), draftID)
-	switch class {
-	case "approved":
-		return result + "\n这封邮件已经发送。不要再次调用 mailbox_send。"
-	case "uncertain":
+	if class == "uncertain" {
 		h.noteMailboxUncertain(userID, mailbox.Draft{ID: draftID})
-		return result + "\n发送结果还不能确定。不要再次调用 mailbox_send。"
-	case "rejected":
-		return result + "\n不要再次调用 mailbox_send。"
-	default:
-		return result + "\n不要再次调用 mailbox_send。"
 	}
+	return result
 }
 
 func (h *IMMessageHandler) cancelMailboxDraft(userID, draftID string) string {
@@ -307,7 +406,47 @@ func (h *IMMessageHandler) cancelMailboxDraft(userID, draftID string) string {
 		guiMailboxDrafts.Drop(draftID)
 	}
 	h.mailboxDraftNotes.Delete(strings.TrimSpace(userID))
-	return result + "\n没有连接邮件服务器。不要再次调用 mailbox_send。"
+	return result
+}
+
+// mailboxUserTurnText is the chat text for a confirm or cancel button.
+// The command stays confirm/cancel so approval still matches; the transcript
+// uses the same label the button showed.
+func mailboxUserTurnText(text, lang string) string {
+	// The button labels follow the UI default: an empty language is Chinese.
+	if strings.TrimSpace(lang) == "" {
+		lang = string(appLanguageZhHans)
+	}
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "confirm":
+		return unfinishedSlotText(lang, "Confirm", "确认", "確認")
+	case "cancel":
+		return unfinishedSlotText(lang, "Cancel", "取消", "取消")
+	default:
+		return text
+	}
+}
+
+// settleFreshMailboxConfirmation approves or cancels a frozen draft before
+// workflow routing and reply classification. The host already dials or drops
+// the draft here, so this turn does not start a model.
+func (h *IMMessageHandler) settleFreshMailboxConfirmation(msg *IMUserMessage, trimmed string, entries []agent.ConversationEntry) *IMAgentResponse {
+	if msg == nil || h.freshMailboxDraftID(msg.UserID, trimmed, entries) == "" {
+		return nil
+	}
+	h.prepareMailboxTurn(msg.UserID, trimmed)
+	hint, _, _, settled := h.consumePendingAskUserAnswer(msg.UserID, trimmed, entries)
+	if !settled {
+		return nil
+	}
+	text := strings.TrimSpace(hint)
+	history := append(cloneConversationEntries(entries),
+		agent.ConversationEntry{Role: "user", Content: mailboxUserTurnText(trimmed, msg.Lang)},
+		agent.ConversationEntry{Role: "assistant", Content: text},
+	)
+	resp := &IMAgentResponse{Text: text, ResponseSource: "mailbox_send"}
+	h.saveConversationHistoryTimed(msg.UserID, history, resp)
+	return resp
 }
 
 // finishMailboxAskUser approves, cancels, or drops a frozen draft. Other text

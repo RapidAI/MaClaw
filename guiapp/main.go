@@ -755,7 +755,10 @@ func isImportantLogLine(line string) bool {
 		"-lifecycle]",
 		"[download_file]", "download_file=builtin", "effective_wd=", "configured_wd=",
 		"workdir ready", "inject workdir",
-		"[startup] loadconfig", "[startup] begin", "[startup] complete", "[startup] workdir"}
+		"[startup] loadconfig", "[startup] begin", "[startup] complete", "[startup] workdir",
+		// Classification heads must stay visible with log_detail off: a missing
+		// intent/tool head silently falls back to the remote tree LLM.
+		"[intent] local l3", "[tool] tool head", "[embedding] head asset"}
 	for _, kw := range keywords {
 		if strings.Contains(lower, kw) {
 			return true

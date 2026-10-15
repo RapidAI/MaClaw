@@ -558,6 +558,12 @@ func latexTemplateArchiveRoot(zr *zip.Reader) string {
 	root := ""
 	seen := false
 	for _, file := range zr.File {
+		if latexTemplateDirectoryEntry(file) {
+			// An explicit "elsarticle/" directory entry carries no slash after
+			// trimming and would read as a top-level file, cancelling wrapper
+			// detection. Directories name no file — skip them.
+			continue
+		}
 		slashed := strings.TrimPrefix(filepath.ToSlash(file.Name), "./")
 		slashed = strings.Trim(slashed, "/")
 		if slashed == "" || latexTemplateJunkEntry(slashed) {

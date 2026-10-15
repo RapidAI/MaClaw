@@ -1017,15 +1017,16 @@
 
 .problem-report-dialog__history-list {
     display: grid;
-    max-height: 138px;
-    overflow: auto;
+    max-height: 232px;
+    overflow-x: hidden;
+    overflow-y: auto;
     border: 1px solid var(--theme-border);
     border-radius: 8px;
 }
 
 .problem-report-dialog__history-item {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
     padding: 8px 12px;
@@ -1037,13 +1038,48 @@
     border-top: 1px solid var(--theme-border);
 }
 
+.problem-report-dialog__history-main {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    overflow: hidden;
+}
+
 .problem-report-dialog__history-item code {
+    display: block;
     min-width: 0;
     overflow: hidden;
     color: var(--theme-text-primary);
     font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
     font-size: 0.76rem;
     text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.problem-report-dialog__history-item:has(.problem-report-dialog__history-desc) code {
+    color: var(--theme-text-secondary);
+    font-size: 0.72rem;
+}
+
+.problem-report-dialog__history-desc {
+    display: -webkit-box;
+    order: -1;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--theme-text-primary);
+    font-size: 0.8rem;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+}
+
+.problem-report-dialog__history-status {
+    flex: none;
+    padding-top: 1px;
     white-space: nowrap;
 }
 
@@ -11848,25 +11884,159 @@ button.knowledge-chip:disabled {
     padding: 0 4px;
 }
 
-.llm-config-panel__intro {
-    display: flex !important;
-    justify-content: space-between !important;
-    align-items: center !important;
-    gap: 12px;
-    margin-bottom: 0 !important;
+/* Data cards keep the panel's 14px gap; their own legacy top margin would
+   double that rhythm. Pill-corner parity with .llm-config-card so the panel
+   reads as one canvas instead of mixed-radius islands. */
+.llm-config-panel .usage-display,
+.llm-config-panel .token-usage-panel {
+    border-radius: 12px;
 }
 
-.llm-config-panel__intro p {
+.llm-config-panel .token-usage-panel {
+    margin-top: 0;
+}
+
+/* Panel header: intent copy + current provider state on the left,
+   panel-level actions on the right. */
+.llm-config-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 12px;
+}
+
+.llm-config-header__copy {
+    display: grid;
+    gap: 2px;
+    min-width: 0;
+}
+
+.llm-config-header__desc {
     margin: 0;
     color: var(--theme-text-secondary);
     font-size: 0.78rem;
     line-height: 1.55;
 }
 
-.llm-config-primary-action {
-    min-height: 38px;
-    border-radius: 6px !important;
-    font-weight: 700;
+.llm-config-header__status {
+    margin: 0;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    font-size: 0.72rem;
+    color: var(--theme-text-muted);
+}
+
+.llm-config-header__status-label {
+    flex-shrink: 0;
+}
+
+.llm-config-header__status-value {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 300px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 0.76rem;
+    font-weight: 600;
+    color: var(--theme-text-primary);
+}
+
+/* State dot: primary once a provider is in use, success for the Hub service,
+   danger while unconfigured, neutral while readings are pending. */
+.llm-config-header__status-value::before {
+    content: "";
+    flex-shrink: 0;
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--theme-primary);
+}
+
+.llm-config-header__status.is-busy .llm-config-header__status-value::before {
+    background: var(--theme-border);
+}
+
+.llm-config-header__status.is-hub .llm-config-header__status-value::before {
+    background: var(--theme-success);
+}
+
+.llm-config-header__status.is-missing .llm-config-header__status-value::before {
+    background: var(--theme-danger);
+}
+
+/* States colors out-rank the (0,1,0) office-ink wrapper repaint. */
+.settings-content .llm-config-header__status.is-hub .llm-config-header__status-value {
+    color: var(--theme-primary-strong);
+}
+
+.settings-content .llm-config-header__status.is-missing .llm-config-header__status-value {
+    color: var(--theme-danger);
+}
+
+.settings-content .llm-config-header__status.is-busy .llm-config-header__status-value {
+    color: var(--theme-text-muted);
+}
+
+.llm-config-header__actions {
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+/* Panel-level CTAs: the management dialog is the primary action, the QR
+   hand-off is its quiet companion. Scoped at (0,4,1) so the generic
+   .settings-panel button repaint (0,3,1) cannot dull the state fill.
+   min-height 36px matches the .settings-panel button floor exactly so the
+   lower-specificity shape block here stays declarative, not overridable. */
+.llm-config-primary-action,
+.llm-config-qr-action {
+    min-height: 36px;
+    padding: 6px 16px;
+    font-size: 0.78rem;
+    font-weight: 600;
+    border-radius: 8px;
+    cursor: pointer;
+}
+
+.settings-content.settings-panel .llm-config-header button.llm-config-primary-action {
+    background: var(--theme-primary);
+    border-color: var(--theme-primary);
+    color: var(--theme-on-primary);
+}
+
+.settings-content.settings-panel .llm-config-header button.llm-config-primary-action:hover:not(:disabled) {
+    background: var(--theme-primary-strong);
+    border-color: var(--theme-primary-strong);
+    color: var(--theme-on-primary);
+}
+
+.settings-content.settings-panel .llm-config-header button.llm-config-primary-action:disabled,
+.settings-content.settings-panel .llm-config-header button.llm-config-qr-action:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+.settings-content.settings-panel .llm-config-header button.llm-config-qr-action {
+    background: var(--theme-surface-muted);
+    border-color: var(--theme-border);
+    color: var(--theme-text-primary);
+}
+
+.settings-content.settings-panel .llm-config-header button.llm-config-qr-action:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border));
+    color: var(--theme-primary-strong);
+}
+
+.llm-config-primary-action:focus-visible,
+.llm-config-qr-action:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
 }
 
 .llm-profile-assignments__lede {
@@ -11887,71 +12057,127 @@ button.knowledge-chip:disabled {
     white-space: nowrap;
 }
 
-.llm-config-summary,
 .llm-config-card,
 .llm-config-form-card {
-    border-radius: 12px !important;
-    border-color: var(--theme-border) !important;
-    background: var(--theme-surface) !important;
+    border-radius: 12px;
+    border-color: var(--theme-border);
+    background: var(--theme-surface);
     box-shadow: var(--shadow-sm);
 }
 
-/* Inside the dialog, the form card is a section divider, not a floating card.
-   border-color needs !important: the base card group declares it with !important,
-   which otherwise beats this override regardless of specificity. */
+/* Inside the dialog, the form card is a section divider, not a floating card. */
 .llm-config-dialog .llm-config-form-card {
-    border-color: var(--theme-border-subtle) !important;
+    border-color: var(--theme-border-subtle);
     box-shadow: none;
 }
 
-.llm-config-summary {
-    min-height: 48px;
-    margin-bottom: 0 !important;
-}
-
-.llm-config-summary__label {
-    color: var(--theme-text-muted) !important;
-    font-weight: 600;
-}
-
-.llm-config-summary__value {
-    max-width: 260px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    font-weight: 900 !important;
-}
-
 .llm-config-card {
-    margin-bottom: 0 !important;
-    padding: 14px 16px !important;
+    padding: 14px 16px;
+    min-width: 0;
 }
 
+/* Panel cards keep the bordered look the old inline styles painted. The
+   group rule above only carries border-color (the dialog form cards are
+   flat section shells), so the panel scope owns the full shorthand here. */
+.settings-content .llm-config-panel .llm-config-card {
+    border: 1px solid var(--theme-border);
+}
+
+/* Danger strips: retry row doubles as the layout for its side-by-side button. */
+.llm-config-retry-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 12px;
+}
+
+.settings-content .llm-config-panel .llm-config-retry-row button.llm-config-retry-row__btn {
+    flex-shrink: 0;
+    min-height: 30px;
+    padding: 4px 12px;
+    font-size: 0.72rem;
+    border-radius: 8px;
+    cursor: pointer;
+    background: var(--theme-surface);
+    border-color: color-mix(in srgb, var(--theme-danger) 45%, transparent);
+    color: var(--theme-danger);
+}
+
+.settings-content .llm-config-panel .llm-config-retry-row button.llm-config-retry-row__btn:hover:not(:disabled) {
+    border-color: var(--theme-danger);
+    background: var(--theme-danger-bg);
+}
+
+.llm-config-retry-row__btn:focus-visible {
+    outline: 2px solid var(--theme-danger);
+    outline-offset: 2px;
+}
+
+/* Color declarations live on the (0,2,0) scoped pair below: the (0,1,0)
+   settings-panel/shell repaint would otherwise repaint alert text at equal
+   specificity seen later in the cascade. The base rule owns the full border
+   shorthand: these are plain divs, so border-color alone leaves no border. */
 .llm-config-alert {
-    border-radius: 10px !important;
-    font-weight: 700;
+    margin: 0;
+    padding: 10px 12px;
+    font-size: 0.74rem;
+    line-height: 1.5;
+    font-weight: 600;
+    border-radius: 10px;
+    border: 1px solid color-mix(in srgb, var(--theme-danger) 32%, transparent);
+    background: var(--theme-danger-bg);
 }
 
-.llm-config-alert--danger {
-    background: var(--theme-danger-bg) !important;
-    border-color: color-mix(in srgb, var(--theme-danger) 32%, transparent) !important;
-    color: var(--theme-danger) !important;
+.settings-content .llm-config-alert,
+.settings-content .llm-config-alert--danger {
+    color: var(--theme-danger);
+    background: var(--theme-danger-bg);
+    border-color: color-mix(in srgb, var(--theme-danger) 32%, transparent);
+}
+
+/* Context note strip, e.g. the assistant still runs on a locally imported
+   agent that is intentionally not managed here. Same scoped-pair structure as
+   the danger colours above, so later (0,1,0) shell repaints cannot retint it. */
+.llm-config-alert--info {
+    background: var(--theme-info-bg);
+    color: var(--theme-text-secondary);
+    border-color: color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border));
+}
+
+.settings-content .llm-config-alert--info {
+    color: var(--theme-text-secondary);
+    background: var(--theme-info-bg);
+    border-color: color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border));
 }
 
 .llm-config-dialog-overlay {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 9999;
     background: color-mix(in srgb, var(--theme-page-bg) 58%, rgba(0, 0, 0, 0.48)) !important;
     backdrop-filter: blur(6px);
     -webkit-app-region: no-drag;
     --wails-draggable: no-drag;
 }
 
+/* Dialog shell: pinned header, scrollable body, pinned action bar. */
 .llm-config-dialog {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
     width: min(780px, calc(100vw - 36px)) !important;
     max-width: 780px !important;
     max-height: min(86vh, 820px) !important;
     padding: 0 !important;
     border: 1px solid var(--theme-border);
-    border-radius: 12px !important;
+    border-radius: 14px !important;
     background: var(--theme-surface) !important;
     box-shadow: 0 24px 70px rgba(15, 23, 42, 0.24), 0 0 0 1px var(--theme-border-subtle) !important;
     -webkit-app-region: no-drag;
@@ -11959,10 +12185,21 @@ button.knowledge-chip:disabled {
 }
 
 .llm-config-dialog__header {
+    flex-shrink: 0;
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 16px;
     margin-bottom: 0 !important;
-    padding: 20px 24px 16px;
+    padding: 18px 24px 16px;
     border-bottom: 1px solid var(--theme-border-subtle);
     background: linear-gradient(135deg, color-mix(in srgb, var(--theme-primary) 9%, var(--theme-surface)) 0%, var(--theme-surface) 70%);
+}
+
+.llm-config-dialog__heading {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
 }
 
 .llm-config-dialog__title {
@@ -11971,33 +12208,135 @@ button.knowledge-chip:disabled {
     font-weight: 700 !important;
 }
 
+.llm-config-dialog__subtitle {
+    font-size: 0.74rem;
+    color: var(--theme-text-secondary) !important;
+    line-height: 1.5;
+}
+
 .llm-config-dialog__close {
-    width: 36px;
-    height: 36px;
+    flex-shrink: 0;
+    width: 34px;
+    height: 34px;
     display: inline-flex;
     align-items: center;
     justify-content: center;
+    padding: 0 !important;
+    cursor: pointer;
     border: 1px solid var(--theme-border) !important;
     border-radius: 10px;
     background: var(--theme-surface-muted) !important;
     color: var(--theme-text-secondary) !important;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.llm-config-dialog__close:hover {
+    border-color: var(--theme-primary) !important;
+    color: var(--theme-primary-strong) !important;
+}
+
+.llm-config-dialog__close:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+.llm-config-dialog__close svg {
+    display: block;
+}
+
+.llm-config-dialog__body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: 4px 24px 20px;
+}
+
+.llm-config-dialog__footer {
+    flex-shrink: 0;
+    padding: 12px 24px 16px;
+    border-top: 1px solid var(--theme-border-subtle);
+    background: var(--theme-surface-muted);
 }
 
 .llm-config-provider-section,
 .llm-config-form-card,
 .llm-config-alert {
-    margin: 16px 24px !important;
+    margin: 16px 0 0 !important;
 }
 
 .llm-config-provider-grid {
+    display: flex;
+    flex-wrap: wrap;
     gap: 8px !important;
+    align-items: center;
+    padding-top: 8px;
 }
 
-.llm-config-provider-chip {
-    min-height: 38px;
+/* Provider chips: pill toggles with a tested dot and an optional corner tag. */
+.llm-config-dialog button.llm-config-provider-chip,
+.settings-content.settings-panel .llm-config-provider-grid button.llm-config-provider-chip {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    min-height: 36px;
+    padding: 5px 14px !important;
     border-radius: 999px !important;
-    padding: 7px 14px !important;
-    font-weight: 800;
+    font-size: 0.78rem;
+    font-weight: 600;
+    cursor: pointer;
+    background: var(--theme-surface) !important;
+    color: var(--theme-text-primary) !important;
+    border: 1px solid var(--theme-border) !important;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.llm-config-dialog button.llm-config-provider-chip:hover:not(.is-active):not(:disabled),
+.settings-content.settings-panel button.llm-config-provider-chip:hover:not(.is-active):not(:disabled) {
+    border-color: color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border)) !important;
+}
+
+.llm-config-dialog button.llm-config-provider-chip.is-active,
+.settings-content.settings-panel button.llm-config-provider-chip.is-active {
+    background: var(--theme-primary-soft) !important;
+    border-color: var(--theme-primary) !important;
+    color: var(--theme-primary-strong) !important;
+    font-weight: 700;
+}
+
+/* The hub-managed official service keeps a success edge while unselected. */
+.llm-config-dialog button.llm-config-provider-chip.is-hub:not(.is-active),
+.settings-content.settings-panel button.llm-config-provider-chip.is-hub:not(.is-active) {
+    border-color: var(--theme-success) !important;
+}
+
+.llm-config-provider-chip:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+.llm-config-provider-chip__dot {
+    flex-shrink: 0;
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--theme-success);
+}
+
+.llm-config-provider-chip__tag {
+    position: absolute;
+    top: -8px;
+    right: -10px;
+    font-size: 0.56rem;
+    line-height: 1;
+    padding: 2px 5px;
+    border-radius: 6px;
+    white-space: nowrap;
+    background: var(--theme-info-bg);
+    color: var(--theme-primary-strong);
+    border: 1px solid var(--theme-primary);
+    font-weight: 600;
+    pointer-events: none;
 }
 
 .llm-config-form-card {
@@ -12026,6 +12365,516 @@ button.knowledge-chip:disabled {
 .llm-config-form-card input[role='combobox'] {
     border-start-end-radius: 0;
     border-end-end-radius: 0;
+}
+
+/* Grouped form sections inside the config card. */
+.llm-config-form-section {
+    border-top: 1px solid var(--theme-border-subtle);
+    padding-top: 14px;
+}
+
+.llm-config-form-section__title {
+    margin: 0 0 10px;
+    font-size: 0.66rem;
+    font-weight: 700;
+    color: var(--theme-text-muted) !important;
+    text-transform: uppercase;
+    letter-spacing: 0.07em;
+}
+
+/* Whitespace rhythm: fields carry their own bottom margin; the trailing
+   element must not add a stray gap before the next divider. */
+.llm-config-form-section > :last-child {
+    margin-bottom: 0 !important;
+}
+
+/* Segmented option buttons (protocol / user-agent / hub model picks, and the
+   panel-page toggles such as the thinking-mode switch). */
+.llm-config-dialog button.llm-config-option-btn,
+.settings-content.settings-panel button.llm-config-option-btn,
+.settings-content.settings-panel .llm-config-panel button.llm-config-option-btn {
+    min-height: 30px;
+    padding: 4px 14px;
+    border-radius: 999px;
+    font-size: 0.76rem;
+    font-weight: 600;
+    cursor: pointer;
+    flex-shrink: 0;
+    background: var(--theme-surface) !important;
+    color: var(--theme-text-secondary) !important;
+    border: 1px solid var(--theme-border) !important;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.llm-config-dialog button.llm-config-option-btn:hover:not(.is-active):not(:disabled),
+.settings-content.settings-panel button.llm-config-option-btn:hover:not(.is-active):not(:disabled),
+.settings-content.settings-panel .llm-config-panel button.llm-config-option-btn:hover:not(.is-active):not(:disabled) {
+    border-color: color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border)) !important;
+    color: var(--theme-text-primary) !important;
+}
+
+.llm-config-dialog button.llm-config-option-btn.is-active,
+.settings-content.settings-panel button.llm-config-option-btn.is-active,
+.settings-content.settings-panel .llm-config-panel button.llm-config-option-btn.is-active {
+    background: var(--theme-primary-soft) !important;
+    border-color: var(--theme-primary) !important;
+    color: var(--theme-primary-strong) !important;
+    font-weight: 700;
+}
+
+.llm-config-option-btn:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+/* Hub-managed official service card. */
+.llm-config-hub-card {
+    margin: 16px 0 0 !important;
+    padding: 18px 20px;
+    border-radius: var(--radius-lg, 14px);
+    border: 1px solid color-mix(in srgb, var(--theme-success) 28%, var(--theme-border));
+    background: var(--theme-surface-muted);
+}
+
+.llm-config-hub-card__status {
+    flex: 0 0 auto;
+    padding: 4px 10px;
+    border-radius: 999px;
+    border: 1px solid color-mix(in srgb, var(--theme-success) 34%, var(--theme-border));
+    background: var(--theme-success-bg);
+    color: var(--theme-success);
+    font-size: 0.68rem;
+    font-weight: 800;
+}
+
+.llm-config-hub-card__cell {
+    padding: 10px 12px;
+    border-radius: var(--radius-md, 10px);
+    background: var(--theme-surface);
+    border: 1px solid var(--theme-border-subtle);
+}
+
+/* Pinned action bar contents. */
+.llm-config-footer__actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
+.llm-config-footer__unsaved {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-right: auto;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--theme-warning);
+}
+
+.llm-config-footer__unsaved::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: currentColor;
+}
+
+/* Dialog buttons + profile-assignment footer buttons: quiet secondary, solid
+   primary CTA. The dialog-scoped selectors keep working standalone; the
+   .llm-config-btn selectors reach the in-panel footer via the office repainted
+   button base (these declarations carry !important, so they win there too). */
+.llm-config-dialog button.llm-config-btn,
+.settings-content.settings-panel .llm-config-dialog button.llm-config-btn,
+.settings-content.settings-panel .llm-config-btn {
+    min-height: 36px;
+    padding: 0 20px;
+    border-radius: 10px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    cursor: pointer;
+    background: var(--theme-surface) !important;
+    color: var(--theme-text-primary) !important;
+    border: 1px solid var(--theme-border) !important;
+    transition: background 0.15s, border-color 0.15s, color 0.15s;
+}
+
+.llm-config-dialog button.llm-config-btn:hover:not(:disabled),
+.settings-content.settings-panel .llm-config-dialog button.llm-config-btn:hover:not(:disabled),
+.settings-content.settings-panel .llm-config-btn:hover:not(:disabled) {
+    background: var(--theme-surface-muted) !important;
+    border-color: color-mix(in srgb, var(--theme-primary) 40%, var(--theme-border)) !important;
+}
+
+.llm-config-dialog button.llm-config-btn:disabled,
+.settings-content.settings-panel .llm-config-dialog button.llm-config-btn:disabled,
+.settings-content.settings-panel .llm-config-btn:disabled {
+    opacity: 0.55;
+    cursor: default;
+}
+
+.llm-config-dialog button.llm-config-btn--primary,
+.settings-content.settings-panel .llm-config-dialog button.llm-config-btn--primary,
+.settings-content.settings-panel .llm-config-btn--primary {
+    background: var(--theme-primary) !important;
+    border-color: var(--theme-primary) !important;
+    color: var(--theme-on-primary) !important;
+    font-weight: 700;
+}
+
+.llm-config-dialog button.llm-config-btn--primary:hover:not(:disabled),
+.settings-content.settings-panel .llm-config-dialog button.llm-config-btn--primary:hover:not(:disabled),
+.settings-content.settings-panel .llm-config-btn--primary:hover:not(:disabled) {
+    background: var(--theme-primary-strong) !important;
+    border-color: var(--theme-primary-strong) !important;
+    color: var(--theme-on-primary) !important;
+}
+
+.llm-config-dialog button.llm-config-btn--primary:disabled,
+.settings-content.settings-panel .llm-config-dialog button.llm-config-btn--primary:disabled,
+.settings-content.settings-panel .llm-config-btn--primary:disabled {
+    background: var(--theme-primary-soft) !important;
+    border-color: var(--theme-primary-soft) !important;
+    color: var(--theme-primary-strong) !important;
+    opacity: 1;
+}
+
+/* The assignments footer rebuilds this CTA family at a smaller scale. */
+.settings-content.settings-panel .llm-profile-footer button.llm-config-btn {
+    min-height: 32px;
+    padding: 0 14px;
+    font-size: 0.74rem;
+}
+
+.settings-content.settings-panel .llm-profile-footer button.llm-config-btn--primary {
+    background: var(--theme-primary) !important;
+    border-color: var(--theme-primary) !important;
+    color: var(--theme-on-primary) !important;
+    font-weight: 700;
+}
+
+.llm-config-btn:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+/* Test & save failure strip inside the action bar. */
+.llm-config-save-error {
+    margin-bottom: 10px;
+    padding: 9px 12px;
+    border-radius: 10px;
+    border: 1px solid color-mix(in srgb, var(--theme-danger) 30%, transparent);
+    background: var(--theme-danger-bg);
+    color: var(--theme-danger);
+    font-size: 0.72rem;
+    line-height: 1.45;
+    white-space: pre-wrap;
+    word-break: break-word;
+}
+
+.llm-config-save-error__title {
+    font-weight: 700;
+}
+
+.llm-config-save-error__reason {
+    margin-top: 4px;
+}
+
+/* ── Settings ▸ LLM panel: runtime tuning rows (one card, three rows) ── */
+.llm-tuning-stack__title {
+    margin: 0;
+    font-size: 0.84rem;
+    font-weight: 700;
+    color: var(--theme-text-primary);
+}
+
+.llm-tuning-stack > .llm-tuning-row {
+    margin-top: 12px;
+}
+
+.llm-tuning-stack > .llm-tuning-row + .llm-tuning-row {
+    border-top: 1px solid var(--theme-border-subtle);
+    padding-top: 12px;
+}
+
+.llm-tuning-row__head {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.llm-tuning-row__title {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--theme-text-primary);
+}
+
+.llm-tuning-row__hint {
+    font-size: 0.68rem;
+    line-height: 1.45;
+    color: var(--theme-text-muted);
+}
+
+.llm-tuning-row__controls {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 8px;
+}
+
+.llm-tuning-slider {
+    flex: 1 1 auto;
+    min-width: 120px;
+    accent-color: var(--theme-primary);
+}
+
+.llm-tuning-number {
+    flex: 0 0 auto;
+    width: 64px;
+    padding: 5px 8px;
+    text-align: center;
+    border: 1px solid var(--theme-border);
+    border-radius: var(--radius-md, 10px);
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    font-size: 0.8rem;
+}
+
+.llm-tuning-meta {
+    flex: 0 0 auto;
+    min-width: 56px;
+    font-size: 0.72rem;
+    color: var(--theme-text-secondary);
+    white-space: nowrap;
+}
+
+.llm-config-option-group {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+}
+
+.llm-tuning-row__note {
+    margin: 6px 0 0;
+    font-size: 0.68rem;
+    line-height: 1.4;
+    color: var(--theme-text-muted);
+}
+
+.llm-tuning-row__note--danger {
+    color: var(--theme-danger);
+}
+
+/* ── Settings ▸ LLM panel: profile assignment card ── */
+.llm-profile-assignments__head {
+    display: grid;
+    gap: 3px;
+    margin-bottom: 12px;
+}
+
+.llm-profile-assignments__title {
+    margin: 0;
+    font-size: 0.84rem;
+    font-weight: 700;
+    color: var(--theme-text-primary);
+}
+
+.llm-profile-assignments__lede {
+    margin: 4px 0 0;
+    font-size: 0.72rem;
+    line-height: 1.5;
+    color: var(--theme-text-muted);
+}
+
+.llm-profile-assignments__lede-action {
+    display: inline-flex;
+    align-items: center;
+    vertical-align: middle;
+    margin-left: 8px;
+    color: var(--theme-text-primary);
+}
+
+.settings-content.settings-panel .llm-profile-assignments .llm-config-import-action {
+    min-height: 30px;
+    padding: 4px 12px;
+    font-size: 0.72rem;
+    line-height: 1.2;
+    white-space: nowrap;
+    border-radius: 8px;
+    cursor: pointer;
+    background: var(--theme-surface);
+    color: var(--theme-primary-strong);
+    border: 1px solid color-mix(in srgb, var(--theme-primary) 46%, var(--theme-border));
+}
+
+.settings-content.settings-panel .llm-profile-assignments .llm-config-import-action:hover:not(:disabled) {
+    border-color: var(--theme-primary);
+    background: var(--theme-primary-soft);
+}
+
+.settings-content.settings-panel .llm-profile-assignments .llm-config-import-action:disabled {
+    opacity: 0.6;
+    cursor: default;
+}
+
+.settings-content.settings-panel .llm-profile-assignments .llm-config-import-action[aria-busy='true'] {
+    cursor: wait;
+}
+
+.llm-config-import-action:focus-visible {
+    outline: 2px solid var(--theme-primary);
+    outline-offset: 2px;
+}
+
+.llm-profile-assignments__state {
+    font-size: 0.76rem;
+    line-height: 1.5;
+    color: var(--theme-text-muted);
+}
+
+.llm-profile-assignments__state--error {
+    color: var(--theme-danger);
+}
+
+.llm-profile-assignments__state--soft {
+    margin-bottom: 14px;
+    padding: 8px 10px;
+    border-radius: 8px;
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-secondary);
+    font-size: 0.72rem;
+    line-height: 1.45;
+}
+
+.llm-profile-probe {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.llm-profile-probe__row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+/* Test/refresh buttons mirror the old flat small buttons; the office repaint
+   provides border-color/color, so the surface fill lives here too (the UA
+   buttonface default shows through otherwise). */
+.settings-content.settings-panel .llm-profile-assignments button.llm-profile-probe-btn {
+    min-height: 28px;
+    padding: 4px 10px;
+    font-size: 0.7rem;
+    font-weight: 600;
+    border-radius: 8px;
+    cursor: pointer;
+    background: var(--theme-surface);
+    color: var(--theme-primary-strong);
+    border-color: color-mix(in srgb, var(--theme-primary) 34%, var(--theme-border));
+}
+
+.settings-content.settings-panel .llm-profile-assignments button.llm-profile-probe-btn:hover:not(:disabled) {
+    border-color: var(--theme-primary);
+    background: var(--theme-primary-soft);
+}
+
+.settings-content.settings-panel .llm-profile-assignments button.llm-profile-probe-btn[aria-busy] {
+    cursor: wait;
+}
+
+.llm-profile-probe-status {
+    font-size: 0.7rem;
+    line-height: 1.4;
+    color: var(--theme-text-muted);
+}
+
+.settings-content .llm-profile-probe-status.is-ok {
+    color: var(--theme-success);
+}
+
+.settings-content .llm-profile-probe-status.is-bad {
+    color: var(--theme-danger);
+}
+
+.llm-profile-error {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin-top: 10px;
+    font-size: 0.72rem;
+    line-height: 1.45;
+}
+
+.llm-profile-error__btn {
+    min-height: 26px;
+    padding: 3px 9px;
+    font-size: 0.7rem;
+    border-radius: 8px;
+    cursor: pointer;
+    background: var(--theme-surface);
+}
+
+.settings-content .llm-profile-assignments .llm-profile-error .llm-profile-error__btn {
+    color: var(--theme-danger);
+    border-color: color-mix(in srgb, var(--theme-danger) 45%, transparent);
+}
+
+.settings-content .llm-profile-assignments .llm-profile-error .llm-profile-error__btn:hover:not(:disabled) {
+    border-color: var(--theme-danger);
+    background: var(--theme-danger-bg);
+}
+
+.llm-profile-footer {
+    display: flex;
+    justify-content: flex-end;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 14px;
+}
+
+.llm-profile-footer__unsaved {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    margin-right: auto;
+    font-size: 0.72rem;
+    font-weight: 600;
+    color: var(--theme-warning);
+}
+
+/* Same unsaved-state dot language as the dialog footer. */
+.llm-profile-footer__unsaved::before {
+    content: "";
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: currentColor;
+}
+
+/* ── Settings ▸ LLM panel: MoA section head ── */
+.moa-config-section__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.moa-config-section__head > label {
+    flex-shrink: 0;
+    margin-bottom: 0;
+}
+
+.moa-config-section__status {
+    font-size: 0.8rem;
+    color: var(--theme-text-muted);
 }
 
 .model-config-loading {
@@ -13936,11 +14785,6 @@ button.tbk-pill {
     display: inline-flex;
     align-self: center;
     max-width: 100%;
-}
-
-.llm-config-provider-grid {
-    align-items: center;
-    padding-top: 8px;
 }
 
 .llm-config-provider-grid .llm-config-tokenbank-btn {
@@ -18770,7 +19614,13 @@ button.tbk-pill {
 }
 
 .email-settings-empty {
+    padding: 18px 12px;
+    border: 1px dashed var(--theme-border);
+    border-radius: 10px;
+    background: var(--theme-surface-muted);
+    color: var(--theme-text-muted);
     font-size: 0.78rem;
+    text-align: center;
 }
 
 .email-settings-notice {
@@ -18792,6 +19642,26 @@ button.tbk-pill {
     min-width: 0;
 }
 
+.email-settings-section__head {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 10px 16px;
+}
+
+.email-settings-section__title {
+    display: grid;
+    gap: 3px;
+    min-width: 0;
+}
+
+.email-settings-section__desc {
+    margin: 0;
+    color: var(--theme-text-muted);
+    font-size: 0.73rem;
+    line-height: 1.5;
+}
+
 .email-settings-list {
     display: grid;
     gap: 8px;
@@ -18808,6 +19678,17 @@ button.tbk-pill {
     border: 1px solid var(--theme-border-subtle);
     border-radius: 10px;
     background: var(--theme-surface-muted);
+    transition: border-color 120ms ease;
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .email-settings-row {
+        transition: none;
+    }
+}
+
+.email-settings-row:hover {
+    border-color: color-mix(in srgb, var(--theme-primary) 22%, var(--theme-border-subtle));
 }
 
 .email-settings-row--editing {
@@ -18818,8 +19699,25 @@ button.tbk-pill {
 .email-settings-editing {
     margin: 0;
     color: var(--theme-primary-strong);
-    font-size: 0.78rem;
+    font-size: 0.8rem;
     font-weight: 750;
+}
+
+.email-settings-editing--new {
+    color: var(--theme-text-muted);
+    font-weight: 650;
+}
+
+.email-settings-avatar {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 auto;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    background: color-mix(in srgb, var(--theme-primary) 10%, var(--theme-surface));
+    color: var(--theme-primary-strong);
 }
 
 .email-settings-row__head {
@@ -18831,6 +19729,8 @@ button.tbk-pill {
 }
 
 .email-settings-row__main {
+    display: grid;
+    gap: 4px;
     min-width: 0;
 }
 
@@ -18866,17 +19766,33 @@ button.tbk-pill {
 }
 
 .email-settings-badge--muted {
-    background: var(--theme-surface-muted);
+    border: 1px solid var(--theme-border-subtle);
+    background: var(--theme-surface);
     color: var(--theme-text-secondary);
 }
 
 .email-settings-meta {
     display: flex;
     flex-wrap: wrap;
-    gap: 4px 14px;
+    gap: 2px 14px;
     margin: 0;
     color: var(--theme-text-muted);
-    font-size: 0.74rem;
+    font-size: 0.73rem;
+}
+
+.email-settings-meta__item::before {
+    content: '';
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    margin-right: 6px;
+    border-radius: 50%;
+    background: color-mix(in srgb, var(--theme-text-muted) 55%, var(--theme-surface));
+    vertical-align: 1px;
+}
+
+.email-settings-meta__item--ok::before {
+    background: var(--theme-success);
 }
 
 .email-settings-signature {
@@ -18922,16 +19838,51 @@ button.tbk-pill {
 
 .email-settings-test--ok {
     background: var(--theme-success-bg);
+    color: var(--theme-success);
 }
 
 .email-settings-test--err {
     background: var(--theme-danger-bg);
+    color: var(--theme-danger);
+}
+
+.email-settings-test--ok::before {
+    content: '✓ ';
+    font-weight: 800;
+}
+
+.email-settings-test--err::before {
+    content: '✕ ';
+    font-weight: 800;
 }
 
 .email-settings-editor {
     display: grid;
-    gap: 14px;
+    gap: 12px;
     min-width: 0;
+    padding: 14px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: 12px;
+    background: var(--theme-surface);
+    box-shadow: var(--shadow-sm);
+}
+
+.email-settings-provider {
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+}
+
+.email-settings-provider__field {
+    /* A fixed comfortable row so the provider choice reads as a form header,
+       not as one more stretched input on wide monitors. */
+    max-width: 460px;
+}
+
+.email-settings-provider__hint {
+    color: var(--theme-text-muted);
+    font-size: 0.73rem;
+    line-height: 1.5;
 }
 
 .email-settings-grid,
@@ -18952,6 +19903,7 @@ button.tbk-pill {
 
 .email-settings-field {
     display: grid;
+    align-content: start;
     gap: 7px;
     min-width: 0;
     margin: 0;
@@ -18976,16 +19928,14 @@ button.tbk-pill {
     line-height: 1.45;
 }
 
-.email-settings-checks,
 .email-settings-editor__footer {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 10px;
-}
-
-.email-settings-editor__footer {
     justify-content: flex-start;
+    gap: 10px;
+    padding-top: 12px;
+    border-top: 1px solid var(--theme-border-subtle);
 }
 
 .email-settings-editor__actions {
@@ -18995,15 +19945,15 @@ button.tbk-pill {
     margin-left: auto;
 }
 
-.email-settings-hint {
-    color: var(--theme-text-muted);
-    font-size: 0.72rem;
-    font-weight: 500;
-    line-height: 1.4;
-}
-
 #App .email-settings-panel .email-settings-field input::placeholder {
     color: transparent;
+}
+
+/* The password boxes carry their hint in the placeholder (labels alone do not
+   say "blank keeps the saved one"), so lift the global hiding there. */
+#App .email-settings-panel .email-settings-field input[type='password']::placeholder {
+    color: var(--theme-text-muted);
+    font-weight: 500;
 }
 
 .email-settings-check {
@@ -19035,7 +19985,7 @@ button.tbk-pill {
     padding: 12px;
     border: 1px solid var(--theme-border-subtle);
     border-radius: 10px;
-    background: var(--theme-surface);
+    background: var(--theme-surface-muted);
 }
 
 .email-settings-endpoint legend {
@@ -19046,7 +19996,7 @@ button.tbk-pill {
 }
 
 .email-settings-endpoint__grid {
-    grid-template-columns: minmax(150px, 1.45fr) 92px 112px minmax(120px, 1fr) minmax(120px, 1fr) minmax(170px, 1.25fr);
+    grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .settings-content.settings-panel.email-settings-panel button.email-settings-button {
@@ -19078,7 +20028,67 @@ button.tbk-pill {
     box-shadow: 0 0 0 2px var(--theme-primary-soft);
 }
 
-.settings-content.settings-panel.email-settings-panel button.email-settings-button--save:not(:disabled) {
+/* Secondary row actions: borderless until hovered, so a six-button row stops reading as a wall of boxes.
+   Base variant state is unconditional: a busy-disabled button must keep its variant look
+   instead of flashing back to the outlined default before the opacity dim applies. */
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--ghost {
+    border-color: transparent;
+    background: transparent;
+    color: var(--theme-text-secondary);
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--ghost:hover:not(:disabled) {
+    border-color: transparent;
+    /* surface-muted would vanish on the row's own surface; the primary tint reads on both row and card backgrounds. */
+    background: var(--theme-primary-soft);
+    color: var(--theme-primary-strong);
+    outline: none;
+    box-shadow: none;
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--danger {
+    border-color: transparent;
+    background: transparent;
+    color: var(--theme-danger);
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--danger:hover:not(:disabled) {
+    border-color: color-mix(in srgb, var(--theme-danger) 40%, transparent);
+    background: var(--theme-danger-bg);
+    color: var(--theme-danger);
+    outline: none;
+    box-shadow: none;
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--add {
+    border-color: transparent;
+    background: var(--theme-primary-soft);
+    color: var(--theme-primary-strong);
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--add:hover:not(:disabled) {
+    border-color: transparent;
+    background: color-mix(in srgb, var(--theme-primary) 20%, transparent);
+    color: var(--theme-primary-strong);
+    outline: none;
+    box-shadow: none;
+}
+
+/* Keyboard focus keeps the soft ring the hover states drop; declared after the
+   hover rules so the ring wins over their box-shadow: none at equal specificity. */
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--ghost:focus-visible,
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--danger:focus-visible,
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--add:focus-visible {
+    color: var(--theme-primary-strong);
+    outline: none;
+    box-shadow: 0 0 0 2px var(--theme-primary-soft);
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--danger:focus-visible {
+    color: var(--theme-danger);
+}
+
+.settings-content.settings-panel.email-settings-panel button.email-settings-button--save {
     border-color: transparent;
     background: var(--theme-primary);
     color: var(--theme-on-primary, #ffffff);
@@ -19089,19 +20099,6 @@ button.tbk-pill {
     border-color: transparent;
     background: var(--theme-primary-strong);
     color: var(--theme-on-primary, #ffffff);
-}
-
-.settings-content.settings-panel.email-settings-panel button.email-settings-button--danger:not(:disabled) {
-    border-color: color-mix(in srgb, var(--theme-danger) 42%, var(--theme-border));
-    background: var(--theme-surface);
-    color: var(--theme-danger);
-}
-
-.settings-content.settings-panel.email-settings-panel button.email-settings-button--danger:hover:not(:disabled),
-.settings-content.settings-panel.email-settings-panel button.email-settings-button--danger:focus-visible:not(:disabled) {
-    border-color: var(--theme-danger);
-    background: var(--theme-danger-bg);
-    color: var(--theme-danger);
 }
 
 @container email-settings (max-width: 920px) {
@@ -19118,8 +20115,18 @@ button.tbk-pill {
         grid-template-columns: minmax(0, 1fr);
     }
 
+    .email-settings-section__head {
+        flex-wrap: wrap;
+    }
+
     .email-settings-row__head {
         flex-wrap: wrap;
+    }
+
+    /* After the wrap above, space-between would push the info block to the far
+       edge; let it keep the room next to the avatar instead. */
+    .email-settings-row__main {
+        flex: 1 1 auto;
     }
 
     .email-settings-row__actions {
@@ -20670,20 +21677,20 @@ button.tbk-pill {
 }
 
 @media (max-width: 640px) {
-    .llm-config-panel__intro {
-        align-items: stretch !important;
+    .llm-config-header {
+        align-items: stretch;
         flex-direction: column;
     }
 
-    .llm-config-primary-action {
-        margin-left: 0 !important;
+    .llm-config-header__actions {
+        justify-content: flex-start;
     }
 
-    .llm-config-provider-section,
-    .llm-config-form-card,
-    .llm-config-alert {
-        margin-left: 16px !important;
-        margin-right: 16px !important;
+    /* Sections sit inside .llm-config-dialog__body, which owns the inset. */
+    .llm-config-dialog__body,
+    .llm-config-dialog__footer {
+        padding-left: 16px;
+        padding-right: 16px;
     }
 
     .llm-config-dialog__header {

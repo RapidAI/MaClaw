@@ -1,5 +1,6 @@
 import type { ClipboardEvent, CSSProperties, Dispatch, DragEvent, KeyboardEvent, MouseEvent, PointerEvent, ReactNode, Ref, SetStateAction } from "react";
 import type { AttachmentInfo } from "./useBufferQueue";
+import type { PromptHistoryAttachment } from "./promptHistory";
 import type { ComposeAction, FireSlashCommand, PlusMenuActionId } from "./composeAction";
 import type { UseVoiceInputResult } from "./useVoiceInput";
 import type { Theme } from "./aiAssistantPanelTheme";
@@ -79,6 +80,10 @@ export interface AssistantInputComposerProps {
     showVoiceInput?: boolean;
     /** Recent submitted prompts used for prefix autocomplete. */
     submittedPrompts?: string[];
+    /** Files attached to each submitted prompt, same index order. */
+    submittedPromptAttachments?: PromptHistoryAttachment[][];
+    /** Called after a history suggestion replaces the draft, so images can be restored. */
+    onHistoryTextAccepted?: (text: string) => void;
     sendButtonTestId?: string;
     sendButtonStyle?: CSSProperties;
     textareaAriaLabel?: string;

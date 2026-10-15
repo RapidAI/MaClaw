@@ -153,10 +153,7 @@ func (m *SSHSessionManager) Pool() *SSHPool { return m.pool }
 
 // Create 创建并启动一个新的 SSH 交互会话。
 func (m *SSHSessionManager) Create(spec SSHSessionSpec) (*SSHManagedSession, error) {
-	spec.HostConfig.Defaults()
-	hostID := spec.HostConfig.SSHHostID()
-
-	// 从连接池获取连接
+	// 从连接池获取连接。OpenSSH 别名在这里解析成真实地址和跳板，会话 ID 用解析后的主机。
 	client, resolvedHostConfig, err := m.pool.AcquireResolved(spec.HostConfig)
 	if err != nil {
 		return nil, fmt.Errorf("acquire ssh connection: %w", err)
@@ -164,6 +161,7 @@ func (m *SSHSessionManager) Create(spec SSHSessionSpec) (*SSHManagedSession, err
 	// Host-key capture is resolved before the PTY starts, so the session's
 	// identity, lifecycle release and every later reconnect share one pin.
 	spec.HostConfig = resolvedHostConfig
+	hostID := spec.HostConfig.SSHHostID()
 
 	// 创建 PTY 会话
 	ptySession := NewSSHPTYSession(client, hostID)

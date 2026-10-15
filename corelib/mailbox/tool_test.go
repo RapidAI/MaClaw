@@ -437,3 +437,22 @@ func TestForwardQuotesFullRawBodyFromNamedBox(t *testing.T) {
 		t.Fatalf("attachment box=%s", mail.lastBox)
 	}
 }
+
+func TestSendShapeReasonRefusesBeforeADraft(t *testing.T) {
+	cases := []struct {
+		name string
+		args map[string]interface{}
+		want string
+	}{
+		{"send missing body", map[string]interface{}{"action": "send", "to": []interface{}{"a@ex.com"}}, "mailbox_send_message_required"},
+		{"send bad address", map[string]interface{}{"action": "send", "to": []interface{}{"not an email"}, "subject": "s", "text": "t"}, "mailbox_send_recipient_invalid"},
+		{"forward missing recipient", map[string]interface{}{"action": "forward", "uid": float64(3)}, "mailbox_send_recipient_required"},
+		{"reply ready", map[string]interface{}{"action": "reply", "uid": "3", "text": "ack"}, ""},
+		{"send ready", map[string]interface{}{"action": "send", "to": []interface{}{"A@Ex.com"}, "subject": "s", "text": "t"}, ""},
+	}
+	for _, tc := range cases {
+		if got := SendShapeReason(tc.args); got != tc.want {
+			t.Fatalf("%s: got %q want %q", tc.name, got, tc.want)
+		}
+	}
+}

@@ -43,6 +43,7 @@ func TestFullEmbeddingActivationReusesIntentEmbedder(t *testing.T) {
 		configCacheValid: true,
 		configCache:      corelib.AppConfig{VectorSearchEnabled: true},
 	}
+	t.Cleanup(closeKnowledgeEmbeddingRefresh)
 
 	intentEmb := &appEmbeddingTestEmbedder{}
 	app.activateIntentClassifierEmbedderAsync(intentEmb)

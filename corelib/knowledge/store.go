@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -27,38 +28,104 @@ type ImportProgressFunc func(DirectoryImportResult)
 type ScanProgressFunc func(phase string, done, total int, path string)
 
 type SQLiteStore struct {
-	db                     *sql.DB
-	dbPath                 string // for background post-import work on a separate connection
-	distiller              CardDistiller
-	progressMu             sync.Mutex // serializes callback installation and delivery
-	importProgress         ImportProgressFunc
-	scanProgress           ScanProgressFunc
-	embedder               embedding.Embedder
-	embedderMu             sync.RWMutex
-	embedderGeneration     uint64 // invalidates in-flight writes after a model switch
-	vectorANN              *vectorANNStore
-	vectorANNEnabled       bool // opt-in: exact scan remains the safe default
-	imageAssets            *ImageAssetManager
-	imageDescriber         ImageDescriber
-	pdfOCR                 OCRProvider   // local OCR used only for scanned/mixed PDF pages
-	pdfOCRMu               sync.RWMutex  // protects live OCR-provider reconfiguration
-	imageDescSem           chan struct{} // semaphore for concurrent image description calls
-	bgWG                   sync.WaitGroup
-	backgroundMu           sync.Mutex // serializes background starts, waits, and shutdown
-	closed                 bool
-	closeOnce              sync.Once
-	closeErr               error
-	embeddingRefreshMu     sync.Mutex
-	embeddingRefreshCancel context.CancelFunc
-	embeddingRefreshGen    uint64 // prevents an older refresh from clearing a newer cancel handle
-	bgCancelMu             sync.Mutex
-	bgCancel               context.CancelFunc
-	bgCancelGen            uint64 // increments per schedule; clear only matches gen
-	bgCancelRequested      bool   // set if CancelBackground raced ahead of schedule
+	db                         *sql.DB
+	dbPath                     string // for background post-import work on a separate connection
+	distiller                  CardDistiller
+	progressMu                 sync.Mutex // serializes callback installation and delivery
+	importProgress             ImportProgressFunc
+	scanProgress               ScanProgressFunc
+	embedder                   embedding.Embedder
+	embedderMu                 sync.RWMutex
+	embedderGeneration         uint64 // invalidates in-flight writes after a model switch
+	vectorANN                  *vectorANNStore
+	vectorANNEnabled           bool // opt-in: exact scan remains the safe default
+	imageAssets                *ImageAssetManager
+	imageDescriber             ImageDescriber
+	pdfOCR                     OCRProvider   // local OCR used only for scanned/mixed PDF pages
+	pdfOCRMu                   sync.RWMutex  // protects live OCR-provider reconfiguration
+	imageDescSem               chan struct{} // semaphore for concurrent image description calls
+	bgWG                       sync.WaitGroup
+	backgroundMu               sync.Mutex // serializes background starts, waits, and shutdown
+	closed                     bool
+	closeOnce                  sync.Once
+	closeErr                   error
+	embeddingRefreshMu         sync.Mutex
+	embeddingRefreshCancel     context.CancelFunc
+	embeddingRefreshGen        uint64       // prevents an older refresh from clearing a newer cancel handle
+	embeddingRefreshIncomplete atomic.Bool  // last pass stopped on an error; missing rows are still unembedded
+	embeddingRefreshRetryAt    atomic.Int64 // unix nano; searches do not resume a failure before this
+	bgCancelMu                 sync.Mutex
+	bgCancel                   context.CancelFunc
+	bgCancelGen                uint64 // increments per schedule; clear only matches gen
+	bgCancelRequested          bool   // set if CancelBackground raced ahead of schedule
 }
 
-// SetEmbedder sets the embedding model for vector search.
-// When set, card embeddings are generated on insert and used for semantic search.
+// sameKnowledgeEmbedder reports whether both embedders address one retrieval
+// space. A repeat attach of that space must not cancel a refresh already writing it.
+func sameKnowledgeEmbedder(current, next embedding.Embedder) bool {
+	currentAbsent := current == nil || embedding.IsNoop(current)
+	nextAbsent := next == nil || embedding.IsNoop(next)
+	if currentAbsent || nextAbsent {
+		return currentAbsent && nextAbsent
+	}
+	return embeddingModelIdentifier(current) == embeddingModelIdentifier(next) && current.Dim() == next.Dim()
+}
+
+// UseEmbedder attaches the model used to embed queries on this connection.
+// It does not schedule a library refresh. Short-lived search connections use
+// this so opening one cannot restart or wait out the shared index build.
+func (s *SQLiteStore) UseEmbedder(emb embedding.Embedder) {
+	if s == nil {
+		return
+	}
+	s.embedderMu.Lock()
+	if s.closed || sameKnowledgeEmbedder(s.embedder, emb) {
+		s.embedderMu.Unlock()
+		return
+	}
+	s.embedder = emb
+	s.embedderGeneration++
+	s.embedderMu.Unlock()
+	s.invalidateVectorANN()
+}
+
+// libraryEmbeddingRefreshInflight counts full-library rebuilds. Interactive
+// search skips query embedding while one is running so it does not wait behind
+// the document batches.
+var libraryEmbeddingRefreshInflight atomic.Int32
+
+// LibraryEmbeddingRefreshActive reports whether a full-library rebuild is
+// embedding documents right now.
+func LibraryEmbeddingRefreshActive() bool {
+	return libraryEmbeddingRefreshInflight.Load() > 0
+}
+
+// embeddingRefreshRetryDelay keeps a failed rebuild from being started again
+// by every search. The model is shared with those searches.
+var embeddingRefreshRetryDelay = 30 * time.Second
+
+// EmbeddingRefreshIncomplete reports that the last library rebuild stopped
+// before every missing row was embedded. A later SetEmbedder of the same
+// model fills only those rows.
+func (s *SQLiteStore) EmbeddingRefreshIncomplete() bool {
+	return s != nil && s.embeddingRefreshIncomplete.Load()
+}
+
+// EmbeddingRefreshResumeDue reports that a failed rebuild may be started again.
+// Immediately after a failure this is false, so interactive search does not
+// relaunch the model on every query.
+func (s *SQLiteStore) EmbeddingRefreshResumeDue() bool {
+	if s == nil || !s.embeddingRefreshIncomplete.Load() {
+		return false
+	}
+	return time.Now().UnixNano() >= s.embeddingRefreshRetryAt.Load()
+}
+
+// SetEmbedder sets the embedding model for vector search and, when the
+// retrieval space changes, refreshes stored vectors in the background.
+// Attaching the model that is already refreshing does not cancel that job.
+// After it finishes, the same model starts another pass that only fills rows
+// still missing its vectors.
 func (s *SQLiteStore) SetEmbedder(emb embedding.Embedder) {
 	if s == nil {
 		return
@@ -66,6 +133,12 @@ func (s *SQLiteStore) SetEmbedder(emb embedding.Embedder) {
 	s.embedderMu.Lock()
 	if s.closed {
 		s.embedderMu.Unlock()
+		return
+	}
+	if sameKnowledgeEmbedder(s.embedder, emb) {
+		generation := s.embedderGeneration
+		s.embedderMu.Unlock()
+		s.startEmbeddingRefresh(emb, generation, false)
 		return
 	}
 	s.embedder = emb
@@ -81,18 +154,84 @@ func (s *SQLiteStore) SetEmbedder(emb embedding.Embedder) {
 	// therefore refresh stale vectors instead of comparing incompatible spaces.
 	// A generation check prevents stale writes, while cancellation stops stale
 	// jobs from consuming further database and model capacity after a switch.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	refreshGen := s.replaceEmbeddingRefreshCancel(cancel)
+	// Finished batches stay on disk; there is no deadline that discards them.
+	s.startEmbeddingRefresh(emb, generation, true)
+}
+
+// RestartEmbeddingRefresh cancels the library rebuild in progress and starts
+// another pass with the embedder already attached. SetEmbedder leaves a
+// same-model pass alone; that pass is useless when it began before the
+// weights existed, and search would keep skipping vectors until it finished.
+func (s *SQLiteStore) RestartEmbeddingRefresh() {
+	if s == nil {
+		return
+	}
+	s.embedderMu.Lock()
+	if s.closed {
+		s.embedderMu.Unlock()
+		return
+	}
+	emb := s.embedder
+	generation := s.embedderGeneration
+	s.embedderMu.Unlock()
+	if emb == nil || embedding.IsNoop(emb) {
+		return
+	}
+	s.startEmbeddingRefresh(emb, generation, true)
+}
+
+// startEmbeddingRefresh launches a library rebuild. replace cancels the job
+// already writing a previous model. A same-model call leaves that job alone
+// and only starts when nothing is running.
+func (s *SQLiteStore) startEmbeddingRefresh(emb embedding.Embedder, generation uint64, replace bool) {
+	if s == nil || emb == nil || embedding.IsNoop(emb) || s.db == nil || generation == 0 {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var refreshGen uint64
+	if replace {
+		refreshGen = s.replaceEmbeddingRefreshCancel(cancel)
+	} else {
+		s.embeddingRefreshMu.Lock()
+		if s.embeddingRefreshCancel != nil {
+			s.embeddingRefreshMu.Unlock()
+			cancel()
+			return
+		}
+		s.embeddingRefreshGen++
+		refreshGen = s.embeddingRefreshGen
+		s.embeddingRefreshCancel = cancel
+		s.embeddingRefreshMu.Unlock()
+	}
 	if !s.startBackground(func() {
-		defer cancel()
-		defer s.clearEmbeddingRefreshCancel(refreshGen)
+		libraryEmbeddingRefreshInflight.Add(1)
+		incomplete := false
+		defer func() {
+			// Publish the failure only after this pass has dropped its cancel
+			// handle, so the next same-model attach can start the resume.
+			finished := ctx.Err() == nil
+			s.clearEmbeddingRefreshCancel(refreshGen)
+			cancel()
+			libraryEmbeddingRefreshInflight.Add(-1)
+			if finished {
+				s.embeddingRefreshIncomplete.Store(incomplete)
+				if incomplete {
+					s.embeddingRefreshRetryAt.Store(time.Now().Add(embeddingRefreshRetryDelay).UnixNano())
+				} else {
+					s.embeddingRefreshRetryAt.Store(0)
+				}
+			}
+		}()
 		if err := s.backfillCardEmbeddingsForGeneration(ctx, emb, generation); err != nil && ctx.Err() == nil {
+			incomplete = true
 			fmt.Printf("[knowledge] card embedding refresh failed: %v\n", err)
 		}
 		if err := s.backfillNodeEmbeddingsForGeneration(ctx, emb, generation); err != nil && ctx.Err() == nil {
+			incomplete = true
 			fmt.Printf("[knowledge] node embedding refresh failed: %v\n", err)
 		}
 		if err := s.backfillTableRowEmbeddingsForGeneration(ctx, emb, generation); err != nil && ctx.Err() == nil {
+			incomplete = true
 			fmt.Printf("[knowledge] table-row embedding refresh failed: %v\n", err)
 		}
 	}) {
@@ -740,6 +879,7 @@ func createTables(db *sql.DB) error {
 			FOREIGN KEY(batch_id) REFERENCES knowledge_import_batches(id) ON DELETE CASCADE,
 			FOREIGN KEY(source_id) REFERENCES knowledge_sources(id) ON DELETE SET NULL
 		)`,
+		`CREATE INDEX IF NOT EXISTS idx_document_nodes_type ON document_nodes(type)`,
 		`CREATE INDEX IF NOT EXISTS idx_sources_scope ON knowledge_sources(tenant_id, owner_id, project_path, kind, status)`,
 		`CREATE INDEX IF NOT EXISTS idx_sources_hash ON knowledge_sources(content_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_sources_batch ON knowledge_sources(batch_id, relative_path)`,

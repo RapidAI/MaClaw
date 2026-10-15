@@ -125,6 +125,9 @@ type pendingAskUserState struct {
 	Timestamp      time.Time
 	WorkingState   *agent.WorkingState
 	MailboxDraftID string
+	// MCPServerWrite is set when the pending question is an unreviewed-MCP
+	// write confirmation: approving it must grant this server, not any other.
+	MCPServerWrite *pendingMCPServerWrite
 }
 
 // pendingRecordAudioState tracks an interactive recording session waiting for
@@ -379,9 +382,9 @@ func (h *IMMessageHandler) bindPendingUserReplyAnswer(msg IMUserMessage, trimmed
 	return "", false
 }
 
-func (h *IMMessageHandler) consumePendingAskUserAnswer(userID, trimmed string, entries []agent.ConversationEntry) (string, *agent.WorkingState, bool) {
+func (h *IMMessageHandler) consumePendingAskUserAnswer(userID, trimmed string, entries []agent.ConversationEntry) (string, *agent.WorkingState, bool, bool) {
 	if h == nil {
-		return "", nil, false
+		return "", nil, false, false
 	}
 	// Structured internal commands (button clicks such as
 	// __confirm_execution__ / __cancel_execution__) are deterministic routing
@@ -395,11 +398,11 @@ func (h *IMMessageHandler) consumePendingAskUserAnswer(userID, trimmed string, e
 			}
 			log.Printf("[AskUser] discarded by internal command for user=%s cmd_len=%d", userID, len(trimmed))
 		}
-		return "", nil, false
+		return "", nil, false, false
 	}
 	raw, ok := h.pendingAskUser.LoadAndDelete(userID)
 	if !ok {
-		return "", nil, false
+		return "", nil, false, false
 	}
 	pending, pendingFresh := pendingAskUserForCurrentHistory(raw, entries)
 	if !pendingFresh {
@@ -409,16 +412,23 @@ func (h *IMMessageHandler) consumePendingAskUserAnswer(userID, trimmed string, e
 		if pending != nil {
 			log.Printf("[AskUser] discarded stale pending ask_user for user %s, currentLen=%d boundLen=%d answer_len=%d", userID, len(entries), len(pending.History), len([]rune(trimmed)))
 		}
-		return "", nil, false
+		return "", nil, false, false
 	}
 	context := agent.FormatPendingAskUserAnswerHint(pending.Question, trimmed, pending.Context)
+	mailboxSettled := false
 	if hint, handled := h.finishMailboxAskUser(userID, trimmed, pending.MailboxDraftID); handled {
+		context = hint
+		mailboxSettled = true
+	}
+	if hint, handled := h.finishMCPServerWriteAskUser(userID, trimmed, pending.MCPServerWrite); handled {
+		// Unlike a mailbox draft, an approved write grant must resume the
+		// paused task so the model re-issues the call — settle stays false.
 		context = hint
 	}
 	log.Printf("[AskUser] consumed pending ask_user for user %s, question_len=%d answer_len=%d", userID, len([]rune(pending.Question)), len([]rune(trimmed)))
 	ws := agent.CloneWorkingState(pending.WorkingState)
 	agent.AdvanceWorkingStateAfterUserReply(ws)
-	return context, ws, true
+	return context, ws, true, mailboxSettled
 }
 
 func mailboxDraftIDFromPending(raw interface{}) string {

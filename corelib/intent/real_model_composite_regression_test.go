@@ -25,7 +25,7 @@ func TestRealModelLiveDataDocumentCompositeRegression(t *testing.T) {
 	if _, err := os.Stat(modelPath); err != nil {
 		t.Skipf("embedding model not installed: %v", err)
 	}
-	emb, err := embedding.NewGemmaEmbedder(modelPath, embedding.DefaultEmbeddingDim)
+	emb, err := embedding.NewEmbedderFromFile(modelPath, embedding.DefaultEmbeddingDim)
 	if err != nil {
 		t.Fatal(err)
 	}

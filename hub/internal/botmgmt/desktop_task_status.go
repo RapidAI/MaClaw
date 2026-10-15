@@ -27,20 +27,21 @@ const (
 // bytes stay in memory with the live reply; this record is the text, the
 // status, and whether the GUI has already been given that result.
 type desktopTaskPin struct {
-	UserID     string `json:"user_id"`
-	BotID      string `json:"bot_id"`
-	RunID      string `json:"run_id"`
-	InstanceID string `json:"instance_id,omitempty"`
-	Task       string `json:"task"`
-	Phase      string `json:"phase,omitempty"`
-	Status     string `json:"status"`
-	Text       string `json:"text,omitempty"`
-	Error      string `json:"error,omitempty"`
-	Handoff    bool   `json:"handoff,omitempty"`
-	Attention  string `json:"attention,omitempty"`
-	Delivered  bool   `json:"delivered,omitempty"`
-	Started    string `json:"started,omitempty"`
-	Finished   string `json:"finished,omitempty"`
+	UserID          string `json:"user_id"`
+	BotID           string `json:"bot_id"`
+	RunID           string `json:"run_id"`
+	InstanceID      string `json:"instance_id,omitempty"`
+	Task            string `json:"task"`
+	Phase           string `json:"phase,omitempty"`
+	Status          string `json:"status"`
+	Text            string `json:"text,omitempty"`
+	Error           string `json:"error,omitempty"`
+	Handoff         bool   `json:"handoff,omitempty"`
+	Attention       string `json:"attention,omitempty"`
+	Delivered       bool   `json:"delivered,omitempty"`
+	Started         string `json:"started,omitempty"`
+	Finished        string `json:"finished,omitempty"`
+	ClientMessageID string `json:"client_message_id,omitempty"`
 }
 
 // DesktopTaskStatus is one run as a status question would see it.
@@ -70,14 +71,15 @@ func newRunningDesktopTask(job admittedDesktopFollow) *desktopAdmitState {
 		started = time.Now()
 	}
 	return &desktopAdmitState{
-		task:       clipDesktopRunes(job.Task, 500),
-		status:     "running",
-		userID:     strings.TrimSpace(job.UserID),
-		botID:      strings.TrimSpace(job.BotID),
-		runID:      strings.TrimSpace(job.RunID),
-		instanceID: strings.TrimSpace(job.InstanceID),
-		phase:      strings.TrimSpace(job.Phase),
-		started:    started,
+		task:            clipDesktopRunes(job.Task, 500),
+		status:          "running",
+		userID:          strings.TrimSpace(job.UserID),
+		botID:           strings.TrimSpace(job.BotID),
+		runID:           strings.TrimSpace(job.RunID),
+		instanceID:      strings.TrimSpace(job.InstanceID),
+		phase:           strings.TrimSpace(job.Phase),
+		started:         started,
+		clientMessageID: strings.TrimSpace(job.ClientMessageID),
 	}
 }
 
@@ -118,18 +120,19 @@ func (st *desktopAdmitState) pinLocked() *desktopTaskPin {
 		errText = clipDesktopRunes(st.err.Error(), 500)
 	}
 	pin := &desktopTaskPin{
-		UserID:     st.userID,
-		BotID:      st.botID,
-		RunID:      st.runID,
-		InstanceID: st.instanceID,
-		Task:       st.task,
-		Phase:      st.phase,
-		Status:     status,
-		Text:       clipDesktopRunes(st.reply.Text, desktopTaskTextKeep),
-		Error:      errText,
-		Handoff:    st.reply.Handoff,
-		Attention:  strings.TrimSpace(st.reply.AttentionReason),
-		Delivered:  st.delivered,
+		UserID:          st.userID,
+		BotID:           st.botID,
+		RunID:           st.runID,
+		InstanceID:      st.instanceID,
+		Task:            st.task,
+		Phase:           st.phase,
+		Status:          status,
+		Text:            clipDesktopRunes(st.reply.Text, desktopTaskTextKeep),
+		Error:           errText,
+		Handoff:         st.reply.Handoff,
+		Attention:       strings.TrimSpace(st.reply.AttentionReason),
+		Delivered:       st.delivered,
+		ClientMessageID: strings.TrimSpace(st.clientMessageID),
 	}
 	if !st.started.IsZero() {
 		pin.Started = st.started.UTC().Format(time.RFC3339)
@@ -188,14 +191,15 @@ func (s *Service) restoreDesktopTasks(tenantID string, tasks map[string]*desktop
 			continue
 		}
 		state := &desktopAdmitState{
-			task:       pin.Task,
-			status:     strings.TrimSpace(pin.Status),
-			userID:     strings.TrimSpace(pin.UserID),
-			botID:      strings.TrimSpace(pin.BotID),
-			runID:      strings.TrimSpace(pin.RunID),
-			instanceID: strings.TrimSpace(pin.InstanceID),
-			phase:      pin.Phase,
-			delivered:  pin.Delivered,
+			task:            pin.Task,
+			status:          strings.TrimSpace(pin.Status),
+			userID:          strings.TrimSpace(pin.UserID),
+			botID:           strings.TrimSpace(pin.BotID),
+			runID:           strings.TrimSpace(pin.RunID),
+			instanceID:      strings.TrimSpace(pin.InstanceID),
+			phase:           pin.Phase,
+			delivered:       pin.Delivered,
+			clientMessageID: strings.TrimSpace(pin.ClientMessageID),
 			reply: Reply{
 				Text:            pin.Text,
 				Handoff:         pin.Handoff,
@@ -467,6 +471,7 @@ func (s *Service) listDesktopTasks(ctx context.Context, tenantID, userID, botID 
 	s.ensureDesktopHydrated(tenantID)
 	prefix := desktopAdmitKey(tenantID, userID, botID, "")
 	now := s.now()
+	s.dropAbandonedDesktopReserves(tenantID, userID, botID, now)
 	items := make([]DesktopTaskStatus, 0)
 	for key, state := range s.desktopAdmits {
 		if state == nil || !strings.HasPrefix(key, prefix) {
@@ -501,7 +506,7 @@ func statusFromState(state *desktopAdmitState) DesktopTaskStatus {
 	return DesktopTaskStatus{
 		RunID:   state.runID,
 		BotID:   state.botID,
-		Task:    state.task,
+		Task:    desktopTaskBody(state.task),
 		Status:  status,
 		Text:    state.reply.Text,
 		Error:   errText,
@@ -565,13 +570,21 @@ var desktopTaskEdgeSuffixes = []string{"状态", "进度", "status", "progress"}
 var desktopTaskGenericWords = map[string]struct{}{
 	"任务": {}, "结果": {}, "情况": {}, "状态": {}, "进度": {}, "那个": {}, "这个": {},
 	"现在": {}, "查询": {}, "看看": {}, "一下": {},
+	"后台": {}, "在运行": {}, "在跑": {}, "跑着": {}, "运行": {},
+	"後台": {}, "在運行": {}, "跑著": {}, "運行": {},
 	"task": {}, "about": {}, "status": {}, "progress": {}, "the": {}, "a": {}, "an": {},
 	"it": {}, "is": {}, "my": {}, "this": {}, "that": {}, "going": {},
 	"of": {}, "and": {}, "or": {}, "to": {}, "for": {}, "in": {}, "on": {}, "at": {}, "by": {},
 }
 
+// desktopConfirmedOrderLead is the old desktop worker prefix. The GUI package
+// owns the send path; this copy exists so a stored task can be shown without
+// that internal sentence. A generic word drops out only when it consumes the
+// whole field, so 运行窗口 stays a task name.
+const desktopConfirmedOrderLead = "现在就执行下面这项安排。同意已经给出：文中的「下一轮」「确认后」「等你点头」以及「不实际」「先不要」都是确认前的说法，现在按其中的动作做完，不要再陈述，也不要再征求确认。顺带提到的其他还在等待确认的事不要做。"
+
 var desktopTaskParticles = map[rune]struct{}{
-	'了': {}, '的': {}, '吗': {}, '呢': {}, '啊': {}, '呀': {}, '吧': {},
+	'了': {}, '的': {}, '吗': {}, '嗎': {}, '呢': {}, '啊': {}, '呀': {}, '吧': {},
 }
 
 // desktopTaskHint is what remains of a status question after the words that
@@ -719,7 +732,7 @@ func desktopTaskMatches(hint, task string) bool {
 	if needle == "" {
 		return true
 	}
-	hay := strings.ToLower(strings.TrimSpace(task))
+	hay := strings.ToLower(desktopTaskBody(task))
 	if hay == "" {
 		return false
 	}
@@ -778,93 +791,173 @@ func desktopTaskFocusWord(hint string) string {
 	return last
 }
 
+func desktopTaskBody(task string) string {
+	task = strings.TrimSpace(task)
+	if strings.HasPrefix(task, desktopConfirmedOrderLead) {
+		task = strings.TrimSpace(strings.TrimPrefix(task, desktopConfirmedOrderLead))
+	}
+	return task
+}
+
+func desktopTaskTitle(task string) string {
+	body := desktopTaskBody(task)
+	if body == "" {
+		return ""
+	}
+	line := body
+	if i := strings.IndexAny(body, "\r\n"); i >= 0 {
+		line = strings.TrimSpace(body[:i])
+		if line == "" {
+			line = strings.TrimSpace(body[i:])
+			if j := strings.IndexAny(line, "\r\n"); j >= 0 {
+				line = strings.TrimSpace(line[:j])
+			}
+		}
+	}
+	return clipDesktopRunes(line, desktopTaskLabelKeep)
+}
+
+func desktopTaskLang(lang string) (hant bool, en bool) {
+	hant = strings.Contains(lang, "Hant")
+	en = strings.HasPrefix(strings.ToLower(strings.TrimSpace(lang)), "en")
+	return hant, en
+}
+
+func desktopTaskIdleSentence(lang string) string {
+	hant, en := desktopTaskLang(lang)
+	if en {
+		return "Nothing is running."
+	}
+	if hant {
+		return "現在沒有在做的事。"
+	}
+	return "现在没有在做的事。"
+}
+
+func desktopTaskMissLead(lang string) string {
+	hant, en := desktopTaskLang(lang)
+	if en {
+		return "I could not match that task."
+	}
+	if hant {
+		return "我沒對上你說的那件。"
+	}
+	return "我没对上你说的那件。"
+}
+
 func formatDesktopTaskStatus(chosen, recent []DesktopTaskStatus, lang string, matched bool) string {
-	hant := strings.Contains(lang, "Hant")
-	en := strings.HasPrefix(strings.ToLower(strings.TrimSpace(lang)), "en")
 	if !matched {
-		lead := "没有找到和这句话对应的任务。"
-		if hant {
-			lead = "沒有找到和這句話對應的任務。"
-		}
-		if en {
-			lead = "No task matches that."
-		}
 		if len(recent) == 0 {
-			if en {
-				return "No running or recently finished task."
-			}
-			if hant {
-				return "沒有還在進行或剛完成的任務。"
-			}
-			return "没有还在进行或刚完成的任务。"
+			return desktopTaskIdleSentence(lang)
 		}
-		lines := make([]string, 0, len(recent)+1)
-		lines = append(lines, lead)
+		lines := make([]string, 0, 4)
+		lines = append(lines, desktopTaskMissLead(lang))
 		limit := len(recent)
 		if limit > 3 {
 			limit = 3
 		}
 		for _, item := range recent[:limit] {
-			lines = append(lines, desktopTaskStatusLine(item, lang, false))
+			label := desktopTaskTitle(item.Task)
+			if label == "" {
+				label = item.RunID
+			}
+			lines = append(lines, label)
 		}
 		return strings.Join(lines, "\n")
 	}
+	running := make([]DesktopTaskStatus, 0, len(chosen))
+	for _, item := range chosen {
+		if item.Status == "running" {
+			running = append(running, item)
+		}
+	}
+	if len(running) > 0 {
+		return formatDesktopTaskRunning(running, lang)
+	}
 	if len(chosen) == 0 {
-		if en {
-			return "No running or recently finished task."
-		}
-		if hant {
-			return "沒有還在進行或剛完成的任務。"
-		}
-		return "没有还在进行或刚完成的任务。"
+		return desktopTaskIdleSentence(lang)
 	}
 	lines := make([]string, 0, len(chosen))
+	showTitle := len(chosen) > 1
 	for _, item := range chosen {
-		lines = append(lines, desktopTaskStatusLine(item, lang, true))
+		lines = append(lines, desktopTaskStatusLine(item, lang, true, showTitle))
 	}
 	return strings.Join(lines, "\n\n")
 }
 
-func desktopTaskStatusLine(item DesktopTaskStatus, lang string, withResult bool) string {
-	label := clipDesktopRunes(item.Task, desktopTaskLabelKeep)
+func formatDesktopTaskRunning(items []DesktopTaskStatus, lang string) string {
+	hant, en := desktopTaskLang(lang)
+	labels := make([]string, 0, len(items))
+	for _, item := range items {
+		label := desktopTaskTitle(item.Task)
+		if label == "" {
+			label = item.RunID
+		}
+		labels = append(labels, label)
+	}
+	if len(labels) == 1 {
+		if en {
+			return `Working on "` + labels[0] + `".`
+		}
+		if hant {
+			return "在做。這件是「" + labels[0] + "」。"
+		}
+		return "在做。这件是「" + labels[0] + "」。"
+	}
+	head := "在做这几件："
+	if en {
+		head = "Working on these:"
+	} else if hant {
+		head = "在做這幾件："
+	}
+	lines := make([]string, 0, len(labels)+1)
+	lines = append(lines, head)
+	lines = append(lines, labels...)
+	return strings.Join(lines, "\n")
+}
+
+func desktopTaskStatusLine(item DesktopTaskStatus, lang string, withResult, showTitle bool) string {
+	label := desktopTaskTitle(item.Task)
 	if label == "" {
 		label = item.RunID
 	}
-	hant := strings.Contains(lang, "Hant")
-	en := strings.HasPrefix(strings.ToLower(strings.TrimSpace(lang)), "en")
+	hant, en := desktopTaskLang(lang)
 	var line string
 	switch item.Status {
 	case "running":
-		if en {
-			line = `"` + label + `" is still running.`
-		} else if hant {
-			line = "「" + label + "」還在進行。"
-		} else {
-			line = "「" + label + "」还在进行。"
-		}
+		return formatDesktopTaskRunning([]DesktopTaskStatus{item}, lang)
 	case "failed", "cancelled":
 		if en {
-			line = `"` + label + `" did not finish.`
+			line = "That one did not finish."
 		} else if hant {
-			line = "「" + label + "」沒有完成。"
+			line = "沒有完成。"
 		} else {
-			line = "「" + label + "」没有完成。"
+			line = "没有完成。"
 		}
 	default:
 		if en {
-			line = `"` + label + `" is finished.`
+			line = "That one is done."
 		} else if hant {
-			line = "「" + label + "」已經完成。"
+			line = "已經做完。"
 		} else {
-			line = "「" + label + "」已经完成。"
+			line = "已经做完。"
+		}
+	}
+	if showTitle && label != "" {
+		if en {
+			line = `"` + label + `". ` + line
+		} else if hant {
+			line = line + "這件是「" + label + "」。"
+		} else {
+			line = line + "这件是「" + label + "」。"
 		}
 	}
 	if !withResult || item.Status == "running" {
 		return line
 	}
-	detail := strings.TrimSpace(item.Text)
+	detail := desktopTaskBody(item.Text)
 	if detail == "" {
-		detail = strings.TrimSpace(item.Error)
+		detail = desktopTaskBody(item.Error)
 	}
 	detail = clipDesktopRunes(detail, desktopTaskStatusKeep)
 	if detail == "" || detail == label {

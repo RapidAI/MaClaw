@@ -2852,7 +2852,7 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// descriptor used by Core Agent. Discovery descriptions never enter the
 	// prompt or capability decision. An unavailable lifecycle is represented by
 	// coverage, not by pretending an empty list proves no implementation exists.
-	dynamicInventory, err := h.semanticDynamicInventory(requestCtx, userID)
+	dynamicInventory, err := h.semanticDynamicInventory(requestCtx)
 	if err != nil {
 		return nil, true, fmt.Errorf("load GUI dynamic semantic inventory: %w", err)
 	}
@@ -3369,6 +3369,15 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	if err := semanticRoutingRequestErr(requestCtx); err != nil {
 		return nil, true, err
 	}
+	// The planning registry is rebuilt per turn and sealed, while installed
+	// MCP contracts carry host-issued and vendor-declared x: capabilities the
+	// publisher registered at observation time. Seed the vocabulary from this
+	// turn's provider set BEFORE snapshot validation — PublishWithCoverage
+	// rejects a provider whose provisions name a capability the registry does
+	// not know.
+	if err := agentservice.EnsureExternalCapabilityVocabulary(registry, semanticExternalCapabilityVocabulary(providers)); err != nil {
+		return nil, true, fmt.Errorf("seed external capability vocabulary: %w", err)
+	}
 	snapshot, err := catalog.PublishWithCoverage(providers, coverage, time.Now().UTC())
 	if err != nil {
 		return nil, true, fmt.Errorf("publish IM semantic catalog: %w", err)
@@ -3424,6 +3433,13 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	// the observation goes bad. The pin narrows selection to what the user
 	// named and nothing else.
 	providerPins := semanticProviderPins(userText, providers, dynamicInventory.mcpEntries)
+	// A compound vendor tool name in the user text is an exact address, not
+	// just a provider preference: mint the x:mcp:<server>:<tool> need and the
+	// impl-narrowed pin so the plan resolves to that binding or reports it
+	// unavailable instead of reaching a sibling behind a shared capability.
+	namedNeeds, namedPins := semanticNamedProviderNeeds(userText, registry, dynamicCatalog.Providers)
+	needs = append(needs, namedNeeds...)
+	providerPins = append(providerPins, namedPins...)
 	// A required need the user installed an MCP to serve must not be answered
 	// by killing the turn. See semanticNeedsWithContractOnlyGraft. It needs the
 	// finished provider list and therefore runs here; it changes the needs the
@@ -4111,6 +4127,8 @@ func semanticUnpublishedManagedProvider(registered RegisteredTool, channel, dest
 		semanticUnpublishedLegacyBrowserProvider,
 		semanticUnpublishedLegacyComputerUseProvider,
 		semanticUnpublishedLegacyMessageSendProvider,
+		semanticUnpublishedLegacyMailboxSendProvider,
+		semanticUnpublishedLegacyMailboxConfigureProvider,
 		semanticUnpublishedLegacyRepoMutateProvider,
 		semanticUnpublishedLegacyDownloadProvider,
 	} {
@@ -5197,6 +5215,8 @@ func appendClosedHostSemanticProviders(providers *[]tool.ProviderSpec, defsByNam
 		{semanticTrustedOfficeWriteAdapter, semanticTrustedOfficeWriteImplementation, semanticTrustedOfficeWriteDefinition(), semanticTrustedOfficeWriteInvocationSchema(), tool.CapabilityDocumentWriteOffice, map[string]string{"format": "spreadsheet"}, []tool.EffectClass{tool.EffectSensitive}, true},
 		{semanticTrustedShellAdapter, semanticTrustedShellImplementation, semanticTrustedShellDefinition(), semanticTrustedShellInvocationSchema(), tool.CapabilityShellExecuteLocal, nil, []tool.EffectClass{tool.EffectSensitive}, true},
 		{semanticTrustedRepoMutateAdapter, semanticTrustedRepoMutateImplementation, semanticTrustedRepoMutateDefinition(), semanticTrustedRepoMutateInvocationSchema(), tool.CapabilityRepoMutateVCS, nil, []tool.EffectClass{tool.EffectExternalEffect}, true},
+		{semanticTrustedMailboxSendAdapter, semanticTrustedMailboxSendImplementation, semanticTrustedMailboxSendDefinition(), semanticTrustedMailboxSendInvocationSchema(), tool.CapabilityMessageSendMailbox, nil, []tool.EffectClass{tool.EffectExternalEffect}, true},
+		{semanticTrustedMailboxConfigureAdapter, semanticTrustedMailboxConfigureImplementation, semanticTrustedMailboxConfigureDefinition(), semanticTrustedMailboxConfigureInvocationSchema(), tool.CapabilityMessageConfigureMailbox, nil, []tool.EffectClass{tool.EffectSensitive}, true},
 		{semanticTrustedBuildVerifyAdapter, semanticTrustedBuildVerifyImplementation, semanticTrustedBuildVerifyDefinition(), semanticTrustedBuildVerifyInvocationSchema(), tool.CapabilityBuildVerifyLocal, nil, []tool.EffectClass{tool.EffectSensitive}, true},
 		{semanticTrustedAcquireRemoteAdapter, semanticTrustedAcquireRemoteImplementation, semanticTrustedAcquireRemoteDefinition(), semanticTrustedAcquireRemoteInvocationSchema(), tool.CapabilityArtifactAcquireRemote, nil, []tool.EffectClass{tool.EffectSensitive}, true},
 	}

@@ -16079,7 +16079,7 @@ func appendCodingSubAgentPreflightChecklist(b *strings.Builder, qualityGateEnabl
 		return
 	}
 	b.WriteString("**Before editing**:\n")
-	b.WriteString("1. Use code_navigation for structure, symbols, and call edges. A missing .codegraph/ directory is not a reason to skip the tool; on a modify turn it installs codegraph and runs codegraph init. A text search that already returned lines is evidence; use those lines and do not repeat that search.\n")
+	b.WriteString("1. Use code_navigation (codegraph explore / codegraph node) for structure, symbols, and call edges; fall back to Glob/ripgrep/read_file when it is unavailable. A missing .codegraph/ directory is not a reason to skip the tool; on a modify turn it installs codegraph and runs codegraph init. A text search that already returned lines is evidence; use those lines and do not repeat that search.\n")
 	b.WriteString("2. State likely files and risk/impact.\n")
 	b.WriteString("3. Choose the minimal edit approach.\n")
 	b.WriteString("4. If this is a retry, use retry context and avoid repeating the failed approach.\n")
@@ -17317,7 +17317,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 	b.WriteString(codingAgentTodoControlPlanePromptSection)
 	b.WriteString(`
 ## 工作流
-- 结构、符号和调用关系优先 code_navigation（运行 codegraph explore / codegraph node）。顶层没有 .codegraph/ 时，可修改的任务里该工具会尝试 npm install -g @colbymchenry/codegraph，没有索引时再 codegraph init。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。所有读取、搜索、列目录都必须限定在项目路径内；不要读取项目外文件。
+- 结构、符号和调用关系优先 code_navigation（运行 codegraph explore / codegraph node）。顶层没有 .codegraph/ 时，可修改的任务里该工具会尝试 npm install -g @colbymchenry/codegraph，没有索引时再 codegraph init。code_navigation 不可用或检索失败时，用 Glob、ripgrep、list_directory 完成同样的定位再读文件。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。所有读取、搜索、列目录都必须限定在项目路径内；不要读取项目外文件。
 - .codegraph/ 是 code_navigation 的本地索引，不是任务改动。不要删除它，不要提交它，也不要因为它出现在 git status 里就回滚。
 - 修复 bug 时，优先复现或确认错误，再沿调用链追踪输入、状态变化和影响范围。不要基于猜测修改。
 - 修改已有文件时优先使用 edit_file 或 edit_lines；禁止用 write_file 重写已有文件来做小修改。edit_file 失败时先 read_file 确认当前内容，再改用 edit_lines。

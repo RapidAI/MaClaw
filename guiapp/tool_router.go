@@ -143,6 +143,14 @@ func (r *ToolRouter) SetToolHead(h *tool.ToolHead, emb embedding.Embedder, theta
 	return r.inner.SetToolHead(h, emb, theta, k)
 }
 
+// ToolHead returns the installed first-party OvR head, if any.
+func (r *ToolRouter) ToolHead() *tool.ToolHead {
+	if r == nil || r.inner == nil {
+		return nil
+	}
+	return r.inner.ToolHead()
+}
+
 // HybridActive returns true if hybrid retrieval is currently enabled.
 func (r *ToolRouter) HybridActive() bool {
 	return r.inner.HybridActive()
@@ -400,10 +408,3 @@ func filterCodingTools(tools []map[string]interface{}) []map[string]interface{} 
 	return tool.FilterCodingTools(tools)
 }
 
-// ToolHead returns the first-party tool head bound to the router, if any.
-func (r *ToolRouter) ToolHead() *tool.ToolHead {
-	if r == nil || r.inner == nil {
-		return nil
-	}
-	return r.inner.ToolHead()
-}

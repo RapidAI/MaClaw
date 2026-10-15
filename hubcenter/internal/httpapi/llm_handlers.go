@@ -64,14 +64,23 @@ func queryTimezone(r *http.Request) string {
 
 // sameAuthKind reports whether two auth kinds name the same account family.
 // A blank kind on the incoming side means the caller is not touching the
-// login, so the stored kind is the one that must match.
+// login, so the stored kind is the one that must match. Empty and "api_key"
+// are the same static-key family: the editor sends "api_key" while a saved
+// row stores an empty kind, and a blank key field must keep the stored key.
 func sameAuthKind(existingKind, incomingKind string) bool {
 	existingKind = strings.TrimSpace(existingKind)
 	incomingKind = strings.TrimSpace(incomingKind)
 	if incomingKind == "" {
 		incomingKind = existingKind
 	}
-	return existingKind == incomingKind
+	return staticAuthKind(existingKind) == staticAuthKind(incomingKind)
+}
+
+func staticAuthKind(kind string) string {
+	if strings.TrimSpace(kind) == llmpool.ProviderAuthAPIKey {
+		return ""
+	}
+	return strings.TrimSpace(kind)
 }
 
 // forgetVendorLogin drops the in-memory logins a saved provider consumed. A
@@ -308,6 +317,31 @@ func adminSetLLMProviderPaused(svc *llmservice.Service) http.HandlerFunc {
 			return
 		}
 		writeJSONResp(w, http.StatusOK, map[string]any{"status": "ok", "paused": *req.Paused})
+	}
+}
+
+func adminCopyLLMProvider(svc *llmservice.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimSpace(r.PathValue("id"))
+		if id == "" {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "provider id required"})
+			return
+		}
+		copied, err := svc.CopyProvider(r.Context(), id)
+		if err != nil {
+			writeLLMProviderError(w, err)
+			return
+		}
+		if copied == nil || strings.TrimSpace(copied.ID) == "" {
+			writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": "provider was not copied"})
+			return
+		}
+		writeJSONResp(w, http.StatusOK, map[string]string{
+			"status":   "ok",
+			"id":       copied.ID,
+			"name":     copied.Name,
+			"array_id": copied.ArrayID,
+		})
 	}
 }
 

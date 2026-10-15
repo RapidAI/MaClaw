@@ -187,7 +187,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	// (e.g. confirmationApprovedText replaces "确认" with the full execution plan).
 	// Use CompactQueryForEmbedding so a 20k–40k document body does not dominate
 	// (or timeout) the embedding query — recall keys on intent + paths.
-	if h.memoryStore != nil {
+	if h.memoryStore != nil && h.freshMailboxDraftID(msg.UserID, trimmed, preflight.EntriesBeforeClear) == "" {
 		if query := semanticUserIntentText(msg.Text); query != "" {
 			h.memoryStore.WarmQueryEmbedding(agent.CompactQueryForEmbedding(query))
 		}

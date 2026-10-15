@@ -2,9 +2,12 @@ package guiapp
 
 import (
 	"context"
+	"fmt"
+	"net/http"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 )
@@ -198,6 +201,96 @@ func TestExecuteDesktopBotScheduleReleasesTheDesktopForALogin(t *testing.T) {
 	}
 	if !released {
 		t.Fatal("desktop was still held after a login handoff")
+	}
+}
+
+func TestExecuteDesktopBotScheduleSendsOnceWhenTheDesktopIsFree(t *testing.T) {
+	prev := desktopBotBusyPoll
+	desktopBotBusyPoll = 5 * time.Millisecond
+	t.Cleanup(func() {
+		desktopBotBusyPoll = prev
+		desktopBotRelayOverride = nil
+		desktopBotExchangeOverride = nil
+		desktopBotReportSink = nil
+	})
+	relays := 0
+	successes := 0
+	desktopBotRelayOverride = func(context.Context, string, string, string) (desktopBotRelayResult, error) {
+		relays++
+		if relays == 1 {
+			return desktopBotRelayResult{}, fmt.Errorf("%s", desktopBotBusyMessage)
+		}
+		successes++
+		return desktopBotRelayResult{Text: "做好了。"}, nil
+	}
+	polls := 0
+	desktopBotExchangeOverride = func(_ context.Context, method, path string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+		if method == http.MethodGet && strings.Contains(path, "/tasks") {
+			polls++
+			payload := map[string]any{
+				"items": []map[string]any{{"run_id": "run-1", "bot_id": "bot_1", "status": "running", "task": "早报"}},
+			}
+			if polls >= 2 {
+				payload = map[string]any{"items": []any{}}
+			}
+			fillDesktopBotDest(t, dest, payload)
+			return http.StatusOK, nil
+		}
+		return 0, fmt.Errorf("no bot list")
+	}
+	var payload string
+	desktopBotReportSink = func(raw string) { payload = raw }
+	text, err := (&App{}).executeDesktopBotScheduledTask(context.Background(), &scheduler.ScheduledTask{
+		ID:              "sched-wait",
+		DesktopBotID:    "bot_1",
+		DesktopBotOwner: "alice",
+		Action:          "整理早间简报。",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if text != "做好了。" || successes != 1 || relays != 2 {
+		t.Fatalf("text=%q relays=%d successes=%d polls=%d", text, relays, successes, polls)
+	}
+	if strings.Contains(payload, desktopBotBusyMessage) || !strings.Contains(payload, `"text":"做好了。"`) {
+		t.Fatalf("report = %s", payload)
+	}
+}
+
+func TestExecuteDesktopBotScheduleSkipsWhenTheDesktopStaysBusy(t *testing.T) {
+	prev := desktopBotBusyPoll
+	desktopBotBusyPoll = 5 * time.Millisecond
+	t.Cleanup(func() {
+		desktopBotBusyPoll = prev
+		desktopBotRelayOverride = nil
+		desktopBotExchangeOverride = nil
+		desktopBotReportSink = nil
+	})
+	relays := 0
+	desktopBotRelayOverride = func(context.Context, string, string, string) (desktopBotRelayResult, error) {
+		relays++
+		return desktopBotRelayResult{}, fmt.Errorf("%s", desktopBotBusyMessage)
+	}
+	desktopBotExchangeOverride = func(_ context.Context, method, path string, _ any, dest any, _ time.Duration, _ map[string]string) (int, error) {
+		if method == http.MethodGet && strings.Contains(path, "/tasks") {
+			fillDesktopBotDest(t, dest, map[string]any{
+				"items": []map[string]any{{"run_id": "run-1", "bot_id": "bot_1", "status": "running", "task": "早报"}},
+			})
+			return http.StatusOK, nil
+		}
+		return 0, fmt.Errorf("no bot list")
+	}
+	reports := 0
+	desktopBotReportSink = func(string) { reports++ }
+	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Millisecond)
+	defer cancel()
+	text, err := (&App{}).executeDesktopBotScheduledTask(ctx, &scheduler.ScheduledTask{
+		ID:           "sched-skip",
+		DesktopBotID: "bot_1",
+		Action:       "整理早间简报。",
+	})
+	if err != nil || text != "" || reports != 0 || relays != 1 {
+		t.Fatalf("text=%q err=%v reports=%d relays=%d", text, err, reports, relays)
 	}
 }
 

@@ -17,6 +17,16 @@ func (s *SQLiteStore) searchTableRowsByEmbedding(ctx context.Context, opts Struc
 	if emb == nil || embedding.IsNoop(emb) || strings.TrimSpace(opts.Query) == "" {
 		return nil, nil
 	}
+	// A library rebuild is embedding documents on this model. The query would
+	// wait behind those batches and still rank rows the rebuild has not
+	// rewritten yet.
+	if skipQueryEmbeddingDuringRefresh(ctx) {
+		return nil, nil
+	}
+	// No row of this model is stored yet. The query embed cannot match.
+	if !s.hasCurrentModelEmbeddingsFor(ctx, embeddingEntityRow, embeddingModelIdentifier(emb), emb.Dim()) {
+		return nil, nil
+	}
 	queryVector, err := embedding.EmbedAs(emb, opts.Query, embedding.RoleQuery)
 	if err != nil || !validEmbeddingVector(queryVector, emb.Dim()) {
 		return nil, nil

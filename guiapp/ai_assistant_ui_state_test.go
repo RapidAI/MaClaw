@@ -248,3 +248,76 @@ func TestLoadAIAssistantUIStateRewritesControlCharacters(t *testing.T) {
 		t.Fatalf("rewritten state still contains controls: %s", rewritten)
 	}
 }
+
+func TestAIAssistantUIStateKeepsPromptAttachmentsAligned(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	if err := app.SaveAIAssistantUIState(AIAssistantUIState{
+		Prompts: []string{" see this ", " ", "only text", "   "},
+		PromptAttachments: [][]AIAssistantPromptAttachment{
+			{
+				{FilePath: " D:/shots/see.png ", FileName: "see.png", Extension: ".png", IsImage: true},
+				{FilePath: "D:/shots/see.png", FileName: "duplicate.png", Extension: ".png", IsImage: true},
+			},
+			{{FilePath: "D:/shots/alone.png", FileName: "", Extension: ".png", IsImage: true}},
+			nil,
+			{},
+		},
+	}); err != nil {
+		t.Fatalf("SaveAIAssistantUIState() error = %v", err)
+	}
+
+	loaded, err := app.LoadAIAssistantUIState()
+	if err != nil {
+		t.Fatalf("LoadAIAssistantUIState() error = %v", err)
+	}
+	if len(loaded.Prompts) != 3 || loaded.Prompts[0] != "see this" || loaded.Prompts[1] != "" || loaded.Prompts[2] != "only text" {
+		t.Fatalf("Prompts = %#v", loaded.Prompts)
+	}
+	if len(loaded.PromptAttachments) != 3 {
+		t.Fatalf("PromptAttachments = %#v", loaded.PromptAttachments)
+	}
+	if got := loaded.PromptAttachments[0]; len(got) != 1 || got[0].FilePath != "D:/shots/see.png" || !got[0].IsImage {
+		t.Fatalf("first attachments = %#v", got)
+	}
+	if got := loaded.PromptAttachments[1]; len(got) != 1 || got[0].FilePath != "D:/shots/alone.png" || got[0].FileName != "alone.png" {
+		t.Fatalf("image-only attachments = %#v", got)
+	}
+	if len(loaded.PromptAttachments[2]) != 0 {
+		t.Fatalf("text-only attachments = %#v", loaded.PromptAttachments[2])
+	}
+}
+
+func TestAIAssistantUIStateDropsPromptAttachmentsOutsideTheKeptWindow(t *testing.T) {
+	app := &App{testHomeDir: t.TempDir()}
+	prompts := make([]string, 0, maxAIAssistantUIStatePrompts+4)
+	rows := make([][]AIAssistantPromptAttachment, 0, maxAIAssistantUIStatePrompts+4)
+	prompts = append(prompts, "old image")
+	rows = append(rows, []AIAssistantPromptAttachment{{FilePath: "D:/old.png", FileName: "old.png", IsImage: true}})
+	for i := 0; i < maxAIAssistantUIStatePrompts+3; i++ {
+		prompts = append(prompts, "later")
+		rows = append(rows, nil)
+	}
+	prompts = append(prompts, "newest image")
+	rows = append(rows, []AIAssistantPromptAttachment{{FilePath: "D:/new.png", FileName: "new.png", IsImage: true}})
+
+	if err := app.SaveAIAssistantUIState(AIAssistantUIState{Prompts: prompts, PromptAttachments: rows}); err != nil {
+		t.Fatalf("SaveAIAssistantUIState() error = %v", err)
+	}
+	loaded, err := app.LoadAIAssistantUIState()
+	if err != nil {
+		t.Fatalf("LoadAIAssistantUIState() error = %v", err)
+	}
+	if len(loaded.Prompts) != maxAIAssistantUIStatePrompts || len(loaded.PromptAttachments) != maxAIAssistantUIStatePrompts {
+		t.Fatalf("len prompts=%d attachments=%d", len(loaded.Prompts), len(loaded.PromptAttachments))
+	}
+	if loaded.Prompts[0] == "old image" {
+		t.Fatalf("oldest image prompt was kept: %#v", loaded.Prompts[:2])
+	}
+	last := len(loaded.Prompts) - 1
+	if loaded.Prompts[last] != "newest image" || len(loaded.PromptAttachments[last]) != 1 || loaded.PromptAttachments[last][0].FilePath != "D:/new.png" {
+		t.Fatalf("newest prompt = %q attachments = %#v", loaded.Prompts[last], loaded.PromptAttachments[last])
+	}
+	if len(loaded.PromptAttachments[0]) != 0 {
+		t.Fatalf("kept window inherited a dropped image: %#v", loaded.PromptAttachments[0])
+	}
+}

@@ -13,7 +13,7 @@ func TestGuardedStepsSkipBrowserReadOutsideBrowser(t *testing.T) {
 		}
 		return "", nil
 	}
-	_, err := runGuardedDesktopAppSteps([][]string{{"key", "ctrl+v"}}, func() error { called = true; return nil }, func() bool { return true }, run)
+	_, err := runGuardedDesktopAppSteps([][]string{{"key", "ctrl+v"}}, func() error { called = true; return nil }, func() bool { return true }, run, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -27,7 +27,7 @@ func TestGuardedStepsSkipBrowserReadOutsideBrowser(t *testing.T) {
 		}
 		return "", nil
 	}
-	_, _ = runGuardedDesktopAppSteps([][]string{{"type", "--", "x"}}, func() error { called = true; return nil }, func() bool { return false }, browserRun)
+	_, _ = runGuardedDesktopAppSteps([][]string{{"type", "--", "x"}}, func() error { called = true; return nil }, func() bool { return false }, browserRun, nil)
 	if !called {
 		t.Fatal("browser window must keep the password read")
 	}

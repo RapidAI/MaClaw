@@ -5,7 +5,7 @@ import { parseRelaxedJson } from './MCPJsonImportParser';
 import { HubMCPSecretRequirement, MCPSecretRequirementsNotice } from './MCPSecretRequirementsNotice';
 import { MCPSecretConfigurationEditor } from './MCPSecretConfigurationEditor';
 import { MCPRemoteServerRow } from './MCPRemoteServerRow';
-import { CheckMCPServerHealth, GetHubMCPHubSecrets, GetHubMCPSecretBindings, GetHubMCPSecretRequirements, GetLocalMCPServerStatuses, GetMCPServerTools, ListLocalMCPServers, ListMCPServers, ProbeMCPServers, RegisterLocalMCPServer, RegisterMCPServer, RetryMCPRuntimeSync, SaveHubMCPHubSecret, SaveHubMCPSecretBinding, SetLocalMCPAutoStart, SyncLocalMCPServers, UnregisterLocalMCPServer, UnregisterMCPServer, UpdateLocalMCPServer, UpdateMCPServer } from '../../../wailsjs/go/main/App';
+import { CheckMCPServerHealth, GetHubMCPHubSecrets, GetHubMCPSecretBindings, GetHubMCPSecretRequirements, GetLocalMCPServerStatuses, GetMCPServerTools, ListInstalledNotReviewedMCPProviders, ListLocalMCPServers, ListMCPServers, ProbeMCPServers, RegisterLocalMCPServer, RegisterMCPServer, RetryMCPRuntimeSync, SaveHubMCPHubSecret, SaveHubMCPSecretBinding, SetLocalMCPAutoStart, SyncLocalMCPServers, UnregisterLocalMCPServer, UnregisterMCPServer, UpdateLocalMCPServer, UpdateMCPServer } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
 interface MCPToolView {
     name: string;
@@ -119,9 +119,27 @@ function makeBackdropProps(onClose: () => void, ref: React.MutableRefObject<bool
         },
     };
 }
+interface UnreviewedMCPProvider {
+    server_id: string;
+    server_name?: string;
+    declared_capabilities: string[];
+    namespace: string;
+    ceiling_reviewed: boolean;
+}
 export function MCPManagementPanel({ translate }: Props) {
     const [activeTab, setActiveTab] = useState<MCPTab>("remote");
     const [installedCapabilityIDs, setInstalledCapabilityIDs] = useState<string[]>([]);
+    const [unreviewedProviders, setUnreviewedProviders] = useState<UnreviewedMCPProvider[]>([]);
+    const refreshUnreviewedProviders = useCallback(async () => {
+        try {
+            const view = await ListInstalledNotReviewedMCPProviders();
+            const providers = Array.isArray(view?.providers) ? view.providers : [];
+            setUnreviewedProviders(providers.filter((p) => p && p.server_id));
+        } catch {
+            setUnreviewedProviders([]);
+        }
+    }, []);
+    useEffect(() => { void refreshUnreviewedProviders(); }, [refreshUnreviewedProviders]);
     const refreshInstalledCapabilities = useCallback(async () => {
         try {
             const [remoteServers, localServers] = await Promise.all([
@@ -149,7 +167,7 @@ export function MCPManagementPanel({ translate }: Props) {
         }
     }, []);
     useEffect(() => { void refreshInstalledCapabilities(); }, [refreshInstalledCapabilities]);
-    const handleMarketplaceChanged = useCallback(async () => { await refreshInstalledCapabilities(); }, [refreshInstalledCapabilities]);
+    const handleMarketplaceChanged = useCallback(async () => { await refreshInstalledCapabilities(); await refreshUnreviewedProviders(); }, [refreshInstalledCapabilities, refreshUnreviewedProviders]);
     return (
         <div style={{ display: "flex", flexDirection: "column", gap: "10px", textAlign: "left", minWidth: 0 }}>
             <div style={{ display: "flex", borderBottom: `1px solid ${colors.border}` }}>
@@ -157,6 +175,31 @@ export function MCPManagementPanel({ translate }: Props) {
                 <button style={activeTab === "remote" ? tabActiveStyle : tabStyle} onClick={() => setActiveTab("remote")}>{translate("mcpTabRemote")}</button>
                 <button style={activeTab === "marketplace" ? tabActiveStyle : tabStyle} onClick={() => setActiveTab("marketplace")}>{translate("mcpTabMarketplace")}</button>
             </div>
+            {unreviewedProviders.length > 0 && (
+                <div style={{
+                    border: `1px solid ${colors.border}`,
+                    borderRadius: radius.md,
+                    padding: "8px 10px",
+                    background: colors.surfaceMuted,
+                    display: "flex",
+                    flexDirection: "column",
+                    gap: "6px",
+                }}>
+                    <div style={{ fontSize: "0.74rem", fontWeight: 600, color: colors.textSecondary }}>
+                        {translate("mcpUnreviewedTitle").replace("{n}", String(unreviewedProviders.length))}
+                    </div>
+                    {unreviewedProviders.map((p) => (
+                        <div key={p.server_id} style={{ display: "flex", alignItems: "center", gap: "6px", fontSize: "0.72rem" }}>
+                            <span style={{ color: colors.text, fontWeight: 600 }}>{p.server_name || p.server_id}</span>
+                            <span style={{ color: colors.textMuted }}>
+                                {translate("mcpUnreviewedBadge")}
+                                {Array.isArray(p.declared_capabilities) && p.declared_capabilities.length > 0 ? ` · ${p.declared_capabilities.length} ${translate("mcpUnreviewedTools")}` : ""}
+                            </span>
+                        </div>
+                    ))}
+                    <div style={{ fontSize: "0.68rem", color: colors.textMuted }}>{translate("mcpUnreviewedHint")}</div>
+                </div>
+            )}
             {activeTab === "local" && <LocalMCPPanel translate={translate} />}
             {activeTab === "remote" && <RemoteMCPPanel translate={translate} />}
             {activeTab === "marketplace" && <MCPMarketplacePanel translate={translate} onChanged={handleMarketplaceChanged} installedCapabilities={installedCapabilityIDs} />}

@@ -265,7 +265,17 @@ func (p *DynamicCapabilityContractPublisher) publishReviewedMCPObservationForCap
 	}
 	p.declaredExternal[serverID] = nil
 	p.declaredExternalMu.Unlock()
-	for name, tool := range seen {
+	// Deterministic tool order: the per-server auto-capability limit below
+	// cuts a deterministic prefix, and a stable iteration keeps published
+	// contract digests reproducible across identical observations.
+	orderedNames := make([]string, 0, len(seen))
+	for name := range seen {
+		orderedNames = append(orderedNames, name)
+	}
+	sort.Strings(orderedNames)
+	autoCapabilities := 0
+	for _, name := range orderedNames {
+		tool := seen[name]
 		template, ok := reviewed[name]
 		if !ok {
 			// No reviewed name. The tool is callable only through the open
@@ -301,6 +311,21 @@ func (p *DynamicCapabilityContractPublisher) publishReviewedMCPObservationForCap
 		errs = append(errs, mergeErrs...)
 		if len(declared) > 0 {
 			p.recordDeclaredExternal(serverID, declared)
+		}
+		// Host-issued exact capability for this tool (x:mcp:<server>:<tool>).
+		// The generic open family lets an arbitrary installed tool be reached,
+		// but with several providers it leaves WHICH tool to quality ranking;
+		// the auto capability gives the planner an address that can only
+		// resolve to this binding. Registration is idempotent vocabulary work;
+		// the provision is attached only when this contract's effect envelope
+		// is inside the namespace ceiling (fail-closed, same rule as vendor
+		// declarations above).
+		autoCap, autoErr := p.publishAutoMCPToolCapability(serverID, name, &contract, autoCapabilities)
+		if autoErr != nil {
+			errs = append(errs, autoErr)
+		} else {
+			autoCapabilities++
+			p.recordDeclaredExternal(serverID, []coretool.CapabilityID{autoCap})
 		}
 		if err := p.publishObservedMCP(principal, serverID, name, contract); err != nil {
 			errs = append(errs, err)
@@ -620,6 +645,121 @@ func (p *DynamicCapabilityContractPublisher) mergeVendorDeclaredCapabilities(pri
 		seenCap[capID] = true
 	}
 	return contract, declared, errs
+}
+
+// publishAutoMCPToolCapability registers the exact x:mcp:<server>:<tool>
+// capability for one observed tool and appends it to the contract's
+// provisions. The descriptor is stamped with the namespace ceiling, not the
+// tool's own envelope, so the same capability registers identically no matter
+// how the vendor annotated this particular tool — the per-provider envelope
+// stays enforced by validateContract on contract.Effects.
+//
+// The provision is appended only when this contract's effects are inside the
+// namespace ceiling: RegisterExternalCapability's own ceiling check is
+// vacuous for a descriptor stamped at the ceiling, so the explicit
+// EffectsWithinCeiling guard here is the enforcement. A contract that fails
+// the guard keeps its open/reviewed provisions but gets no exact address.
+func (p *DynamicCapabilityContractPublisher) publishAutoMCPToolCapability(serverID, toolName string, contract *DynamicCapabilityContract, alreadyIssued int) (coretool.CapabilityID, error) {
+	if p == nil || p.registry == nil || contract == nil {
+		return "", fmt.Errorf("dynamic capability publisher is unavailable")
+	}
+	if alreadyIssued >= maxAutoMCPCapabilitiesPerServer {
+		return "", fmt.Errorf("server %s exceeds %d auto capability limit; tool %q has no exact capability", serverID, maxAutoMCPCapabilitiesPerServer, toolName)
+	}
+	capID, err := AutoMCPCapabilityID(serverID, toolName)
+	if err != nil {
+		return "", err
+	}
+	ns := externalNamespaceOf(capID)
+	nsCeiling := p.registry.ExternalEffectCeiling(ns)
+	desc := coretool.CapabilityDescriptor{
+		ID:      capID,
+		Version: "v1",
+		Owner:   "vendor",
+		Summary: fmt.Sprintf("Installed MCP tool capability %s", capID),
+		Effects: nsCeiling,
+	}
+	if err := p.registry.RegisterExternalCapability(ns, desc); err != nil {
+		return "", fmt.Errorf("register installed MCP capability %q: %w", capID, err)
+	}
+	if !coretool.EffectsWithinCeiling(contract.Effects, nsCeiling) {
+		return "", fmt.Errorf("installed MCP capability %q contract effects %v exceed namespace %q ceiling %v", capID, contract.Effects, ns, nsCeiling)
+	}
+	for _, provision := range contract.Provisions {
+		if provision.Capability == capID {
+			return capID, nil
+		}
+	}
+	contract.Provisions = append(contract.Provisions, coretool.CapabilityProvision{Capability: capID, Quality: 1})
+	return capID, nil
+}
+
+// RestoreInstalledNotReviewed repopulates the in-process
+// installed-not-reviewed listing from the durable contract snapshot after a
+// process restart. declaredExternal is a projection of published contracts,
+// not independent truth, so rebuilding it from the snapshot cannot resurrect
+// a revoked provider — the contract itself is the admission decision.
+func (p *DynamicCapabilityContractPublisher) RestoreInstalledNotReviewed(principal Principal) error {
+	if p == nil || p.contracts == nil {
+		return fmt.Errorf("dynamic capability publisher is unavailable")
+	}
+	provider, ok := p.contracts.(dynamicCapabilityContractSnapshotProvider)
+	if !ok {
+		return nil
+	}
+	snapshot, err := provider.SnapshotDynamicCapabilityContracts(principal)
+	if err != nil {
+		return err
+	}
+	byServer := make(map[string][]coretool.CapabilityID)
+	for key, contract := range snapshot.contracts {
+		parsed, ok := parseDynamicContractRegistryKey(key)
+		if !ok || parsed.kind != "mcp" {
+			continue
+		}
+		for _, provision := range contract.Provisions {
+			capID := provision.Capability
+			if !strings.HasPrefix(string(capID), string(coretool.ExternalCapabilityPrefix)) {
+				continue
+			}
+			found := false
+			for _, existing := range byServer[parsed.providerID] {
+				if existing == capID {
+					found = true
+					break
+				}
+			}
+			if !found {
+				byServer[parsed.providerID] = append(byServer[parsed.providerID], capID)
+			}
+		}
+	}
+	p.declaredExternalMu.Lock()
+	defer p.declaredExternalMu.Unlock()
+	if p.declaredExternal == nil {
+		p.declaredExternal = make(map[string][]coretool.CapabilityID)
+	}
+	for serverID, caps := range byServer {
+		sort.Slice(caps, func(i, j int) bool { return caps[i] < caps[j] })
+		p.declaredExternal[serverID] = caps
+	}
+	return nil
+}
+
+// dynamicContractRegistryKeyParts is the parsed form of a persisted contract
+// key: principal segments, then kind, then the binding identities. Only the
+// fields the restore path needs are surfaced.
+type dynamicContractRegistryKeyParts struct {
+	kind       string
+	providerID string
+}
+
+func parseDynamicContractRegistryKey(key string) (dynamicContractRegistryKeyParts, bool) {
+	parts := strings.Split(key, "\x00")
+	if len(parts) < 4 {
+		return dynamicContractRegistryKeyParts{}, false
+	}
+	return dynamicContractRegistryKeyParts{kind: parts[2], providerID: parts[3]}, true
 }
 
 func (p *DynamicCapabilityContractPublisher) recordDeclaredExternal(serverID string, caps []coretool.CapabilityID) {

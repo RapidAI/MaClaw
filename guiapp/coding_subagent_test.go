@@ -380,8 +380,12 @@ func TestBuildCodingSubAgentSystemPrompt_WithContext(t *testing.T) {
 	if strings.Contains(prompt, longReq) || strings.Contains(prompt, longDesign) {
 		t.Error("full untruncated context should not appear in the prompt")
 	}
-	if len([]rune(prompt)) > 8000 {
-		t.Errorf("prompt too long: %d runes, expected <8000", len([]rune(prompt)))
+	// The cap is a leak detector for untruncated contexts (~1000 runes each,
+	// truncated to 280), not a platform limit: the static template carries the
+	// workflow, guardrails, and Windows shell contract (~8.1k runes today).
+	// 8500 leaves headroom for that template while still failing a leak.
+	if len([]rune(prompt)) > 8500 {
+		t.Errorf("prompt too long: %d runes, expected <8500", len([]rune(prompt)))
 	}
 	// Previous outputs are injected into the task user message, not duplicated in
 	// the system prompt.

@@ -41,6 +41,7 @@ func storeDesktopTurnResult(run *agentservice.Run, msg *agentservice.Message, ha
 		}
 		copied = &clone
 	}
+	clearDesktopActivity(run.ID)
 	desktopTurnResults.Store(run.ID, desktopTurnResult{
 		Ready:     true,
 		Handoff:   handoff,
@@ -74,6 +75,10 @@ type desktopRunAPI struct {
 	DesktopHandoff  bool                  `json:"desktop_handoff"`
 	AttentionReason string                `json:"attention_reason,omitempty"`
 	Message         *agentservice.Message `json:"message,omitempty"`
+	// Activity is the step this run is in right now. It is empty once the
+	// run has a finished reply. The words are a fixed phrase, never the
+	// text the step typed.
+	Activity string `json:"activity,omitempty"`
 }
 
 func desktopRunAPIBody(dataRoot string, run *agentservice.Run) any {
@@ -81,15 +86,18 @@ func desktopRunAPIBody(dataRoot string, run *agentservice.Run) any {
 	if run == nil {
 		return sanitized
 	}
+	activity := loadDesktopActivity(run.ID)
 	result, ok := loadDesktopTurnResult(run.ID)
-	if !ok {
+	if !ok && activity == "" {
 		return sanitized
 	}
-	return desktopRunAPI{
-		Run:             sanitized,
-		DesktopReady:    true,
-		DesktopHandoff:  result.Handoff,
-		AttentionReason: result.Attention,
-		Message:         result.Message,
+	body := desktopRunAPI{Run: sanitized, Activity: activity}
+	if !ok {
+		return body
 	}
+	body.DesktopReady = true
+	body.DesktopHandoff = result.Handoff
+	body.AttentionReason = result.Attention
+	body.Message = result.Message
+	return body
 }

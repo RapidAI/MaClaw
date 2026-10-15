@@ -77,7 +77,7 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 	if ctx != nil {
 		preResolved = ctx.Runtime.SemanticIntent
 	}
-	baseTools, routerRankedNames := h.routeSessionToolsWithRanking(userID, userText, allTools, loopContextHasChatProjection(ctx) || loopContextHasRoutingMissFallback(ctx), preResolved, ctx)
+	baseTools, routerRankedNames := h.routeSessionToolsWithRanking(userID, userText, allTools, loopContextHasChatProjection(ctx) || loopContextHasRoutingMissFallback(ctx), preResolved, ctx, phase)
 	tools := baseTools
 
 	BrowserDiagCP1_Route(userText, tools)

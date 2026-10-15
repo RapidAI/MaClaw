@@ -49,6 +49,12 @@ type IMMessageHandler struct {
 	databaseManager       *database.Manager
 	mailboxBudgets        sync.Map
 	mailboxDraftNotes     sync.Map
+	// mcpServerWriteNotes stashes a paused unreviewed-MCP write confirmation
+	// between the gate's __ASK_USER__ result and commitPendingAskUser.
+	mcpServerWriteNotes sync.Map
+	// mcpServerWriteGrants records per-user, per-server session grants for
+	// unreviewed external-effect MCP calls (once per server per session).
+	mcpServerWriteGrants sync.Map
 
 	// --- Extracted App dependencies (agent-unification Phase 1) ---
 	// These fields are wired from App at construction time (GUI) or from
@@ -1230,7 +1236,7 @@ func (h *IMMessageHandler) routeToolsForUser(userID, userMessage string, allTool
 }
 
 func (h *IMMessageHandler) routeSessionTools(userID, userMessage string, allTools []map[string]interface{}, skipUnifiedClassifier bool, preResolved *intent.ClassificationResult) []map[string]interface{} {
-	routed, _ := h.routeSessionToolsWithRanking(userID, userMessage, allTools, skipUnifiedClassifier, preResolved, nil)
+	routed, _ := h.routeSessionToolsWithRanking(userID, userMessage, allTools, skipUnifiedClassifier, preResolved, nil, agentLoopPhase{})
 	return routed
 }
 
@@ -1240,7 +1246,7 @@ func (h *IMMessageHandler) routeSessionTools(userID, userMessage string, allTool
 // own tail is prunable under the plan count guard, while pipeline-mandated
 // additions (channel delivery, ambient retrieval, result reader) are never
 // silently removed.
-func (h *IMMessageHandler) routeSessionToolsWithRanking(userID, userMessage string, allTools []map[string]interface{}, skipUnifiedClassifier bool, preResolved *intent.ClassificationResult, ctx *LoopContext) ([]map[string]interface{}, []string) {
+func (h *IMMessageHandler) routeSessionToolsWithRanking(userID, userMessage string, allTools []map[string]interface{}, skipUnifiedClassifier bool, preResolved *intent.ClassificationResult, ctx *LoopContext, phase agentLoopPhase) ([]map[string]interface{}, []string) {
 	// A semantic-managed turn already owns a closed, grant-bound surface. Keep
 	// this boundary here as well as in prepareAgentLoopTools so future callers
 	// cannot accidentally re-enter the legacy name router and union tools onto
@@ -1300,7 +1306,7 @@ func (h *IMMessageHandler) routeSessionToolsWithRanking(userID, userMessage stri
 		PreferEmbeddingOnly:   true,
 		PreResolved:           preResolved,
 		CacheMessage:          classificationCacheMessageForTurn(ctx, userID, routeMessage, loopHistory(ctx)),
-		HostKeepTools:         h.hostKeepToolsForTurn(ctx, routeMessage),
+		HostKeepTools:         h.hostKeepToolsForTurnScoped(ctx, routeMessage, !phase.ForceSkillPreference),
 	}
 	routed := router.RouteForSession(userID, routeMessage, allTools, routeOpts)
 	// Capture the router's raw ranked selection before the mandatory merges
@@ -1349,6 +1355,10 @@ func hostKeepMessageForTurn(ctx *LoopContext, userMessage string) string {
 }
 
 func (h *IMMessageHandler) hostKeepToolsForTurn(ctx *LoopContext, userMessage string) []string {
+	return h.hostKeepToolsForTurnScoped(ctx, userMessage, true)
+}
+
+func (h *IMMessageHandler) hostKeepToolsForTurnScoped(ctx *LoopContext, userMessage string, includeDiscoveryGrants bool) []string {
 	var names []string
 	if h != nil && h.databaseManager != nil && h.databaseManager.HostReadGrant(userMessage) {
 		names = append(names, database.HostReadToolNames...)
@@ -1359,7 +1369,9 @@ func (h *IMMessageHandler) hostKeepToolsForTurn(ctx *LoopContext, userMessage st
 	// discover_tool grants are loop-scoped. Putting them in HostKeep makes
 	// them mustKeepCore so the closed leftover plan cannot prune an unranked
 	// write_file after "granted for the next request" (2026-09-21 生成markdown).
-	if ctx != nil {
+	// A forced skill-preference round is a narrowed surface: the grant is
+	// deferred, matching the applyLoopDiscoveredConditionalTools guard.
+	if ctx != nil && includeDiscoveryGrants {
 		names = append(names, ctx.discoveredConditionalToolNames()...)
 	}
 	return names

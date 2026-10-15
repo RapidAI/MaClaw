@@ -262,32 +262,34 @@ func defaultAnchors() []intentAnchor {
 const (
 	EmbeddingConfidentMinScore = 0.78
 	EmbeddingConfidentMinGap   = 0.10
-	// The companion floor is calibrated against the installed production Gemma
-	// model.  It is intentionally separate from a single-label grant: the
-	// leading label must still meet EmbeddingCompositePrimaryMinScore and the
-	// pair must be explicitly declared by the taxonomy.
+	// The companion floor is calibrated against the installed production
+	// Qwen3 embedding model.  It is intentionally separate from a
+	// single-label grant: the leading label must still meet
+	// EmbeddingCompositePrimaryMinScore and the pair must be explicitly
+	// declared by the taxonomy.
 	// The floor is calibrated with generic live-data-to-PDF requests against
-	// PDF-only negative controls, and it is dimension-sensitive: absolute
-	// cosines rise with the embedding width, so the value must be re-measured
-	// whenever DefaultEmbeddingDim or the model changes. At 768 dimensions
-	// (2026-08-24) the strongest observed PDF-only live_data score is 0.715
-	// ("将附件里的内容排版并导出为PDF报告") and the weakest genuine weather+PDF
-	// companion is 0.744 ("天津天气…"); 0.73 sits between them. (At 256 the
-	// same negatives peaked at 0.643 and the floor was 0.67.)
+	// PDF-only negative controls, and it is model-sensitive: absolute
+	// cosines depend on the embedding family and width, so the value must
+	// be re-measured whenever the model changes. Measured on Qwen3-0.6B at
+	// full width (2026-10-15): the document_generate half of genuine
+	// live-data+PDF queries scores 0.775-0.890, well clear of the floor.
 	EmbeddingCompositeSecondaryMinScore = 0.73
 	// EmbeddingCompositeLiveDataMinScore is the companion floor specific to a
 	// live_data half.  PDF-only negatives ("将附件里的内容排版并导出为PDF报告"
 	// family) embed close to the generic live_data anchors, so once the
 	// composite anchors ("查询某城市天气并输出格式化PDF报告",
-	// "查询比特币价格并输出格式化PDF报告") lifted genuine live-data+PDF
-	// queries, the negatives rose with them and the generic 0.73 floor
-	// stopped separating the two groups.  Measured at 768 dimensions with
-	// those anchors installed (2026-08-24): genuine live-data+PDF queries
-	// score live_data 0.841-0.957 across 19 phrasings (weather-first and
-	// PDF-first, 10 city names, FX/stock/news/flight/crypto); PDF-only
-	// negatives peak at 0.802.  0.82 leaves margin on both sides
-	// (+0.021 / -0.018).  Re-measure whenever DefaultEmbeddingDim, the
-	// model, or the live_data anchor set changes.
+	// "查询比特币价格并输出格式化PDF报告", and the per-subdomain news/FX/
+	// stock/flight companions) lift genuine live-data+PDF queries, the
+	// negatives rise with them and the generic 0.73 floor stops separating
+	// the two groups.  Measured on Qwen3-0.6B at full width with those
+	// anchors installed (2026-10-15): genuine live-data+PDF queries score
+	// live_data 0.891-0.942 across 14 phrasings (weather-first and
+	// PDF-first, city names, FX/stock/news/flight/crypto); PDF-only
+	// negatives peak at 0.804.  0.82 leaves margin on both sides
+	// (+0.071 / -0.016).  Every live_data subdomain needs its own composite
+	// anchor on this model — an unanchored subdomain (e.g. 股市行情 before
+	// its anchor was added) scores ~0.81, just under the floor. Re-measure
+	// whenever the model or the live_data anchor set changes.
 	EmbeddingCompositeLiveDataMinScore = 0.82
 	// EmbeddingCompositePrimaryMinScore is the minimum score for the leading
 	// half of a declared composite to stand on its own.  A compound result is
@@ -817,12 +819,12 @@ func classifyByEmbeddingVecScores(embedder embedding.Embedder, anchors []intentA
 		// Mirror guard for a confident office/deck request whose companion is a
 		// lookup ("网上找几张照片做成生日PPT").  The deck half is settled, but
 		// the search boundary is not locally separable: on the installed
-		// 768-dim model (2026-08-25) office-only negatives score the lookup
-		// labels up to 0.740 while the genuine find-images phrasings score
-		// 0.65, so any local floor would mis-grant search on plain Excel/PPT
-		// requests.  Attach the half and let the tree read the request;
-		// shipping confident office-only dropped web_search in production and
-		// the turn reported the search tool as unavailable.
+		// Qwen3 model (2026-10-15) office-only controls score the lookup
+		// labels up to ~0.71 while the genuine find-images phrasings score
+		// 0.685-0.732, so any local floor would mis-grant search on plain
+		// Excel/PPT requests.  Attach the half and let the tree read the
+		// request; shipping confident office-only dropped web_search in
+		// production and the turn reported the search tool as unavailable.
 		if top1.label == LabelOffice && isLookupIntentLabel(declaredCompanion.label) && declaredCompanion.score >= EmbeddingLookupCompositeFloor {
 			result.Secondary = []IntentLabel{declaredCompanion.label}
 			result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, declaredCompanion.label, declaredCompanion.score, gap)

@@ -7,7 +7,9 @@ package guiapp
 // SHA-256 verified before install). Until it is ready the app runs exactly as
 // with no embedder: intent = L1 rules + L2 none + remote L3 (or rules only when
 // offline / MACLAW_INTENT_LOCAL_L3=strict), tools = BM25 Track A + intent scope,
-// no local L3 head / tool head attached. When the verified file lands,
+// no local L3 head / tool head attached. Head JSON is fetched on its own
+// (startHeadAssetFetch), including when this GGUF is already installed.
+// When the verified file lands,
 // verifyAndEnableEmbedding loads it through the normal factory and
 // activateEmbedderAsync attaches LocalTreeFunc + the tool head and warms the
 // ModelID-keyed tool vector cache. locall3.Runtime swaps atomically, so
@@ -116,26 +118,65 @@ func (a *App) modelHubURL() string {
 
 var headAssetFetchOnce sync.Once
 
-// startHeadAssetFetch downloads the intent / tool heads named in
-// embedding.ReleaseAssets into <models>/intent_heads and <models>/tool_heads
-// (GitHub release, then hub; size+sha verified). Existing local heads are
-// kept. When a head lands after the embedder is already live, it is attached
-// immediately (attachLocalL3 / attachToolHead are idempotent).
+// skipHeadAssetFetch reports that this process must not download release heads
+// into the developer's ~/.maclaw (unit tests, or an App bound to a temp home).
+func (a *App) skipHeadAssetFetch() bool {
+	if a == nil || a.disableBackgroundEmbeddingForTest {
+		return true
+	}
+	if strings.TrimSpace(a.testHomeDir) != "" {
+		return true
+	}
+	base := strings.ToLower(filepath.Base(os.Args[0]))
+	return strings.Contains(base, ".test")
+}
+
+// startHeadAssetFetch downloads the intent / tool / interrupt heads named in
+// embedding.ReleaseAssets into <models>/<subdir> (GitHub release, then hub;
+// size+sha verified). It is independent of whether the Qwen3 GGUF is already
+// installed. Existing local heads are kept. When a head lands after the
+// embedder is already live, that head is attached immediately
+// (attachLocalL3 / attachToolHead are idempotent). The interrupt head is
+// loaded lazily on the next relevance call.
 func (a *App) startHeadAssetFetch() {
+	if a.skipHeadAssetFetch() {
+		return
+	}
+	dir := embedding.DefaultModelsDir()
+	if dir == "" {
+		log.Printf("[embedding] head asset fetch failed: models dir unavailable")
+		return // leave the once unconsumed so a later call can retry
+	}
 	headAssetFetchOnce.Do(func() {
-		dir := embedding.DefaultModelsDir()
-		if dir == "" {
-			return
-		}
 		a.removeLegacyHeadFiles(dir)
 		hub := a.modelHubURL()
 		for _, asset := range embedding.ReleaseAssets() {
 			if asset.Kind == "model" {
 				continue
 			}
+			asset := asset
+			dest := filepath.Join(dir, asset.Subdir, asset.Filename)
+			_, statErr := os.Stat(dest)
+			existed := statErr == nil
+			if !existed {
+				log.Printf("[embedding] head asset fetch started kind=%s file=%s", asset.Kind, asset.Filename)
+			}
 			f := embedding.NewReleaseAssetFetcher(dir, asset, hub)
 			f.Logf = log.Printf
 			kind, name := asset.Kind, asset.Filename
+			f.OnProgress = func(s embedding.FetchStatus) {
+				switch s.State {
+				case embedding.FetchFailed:
+					log.Printf("[embedding] head asset fetch failed kind=%s file=%s err=%s", kind, name, s.Err)
+				case embedding.FetchDownloading:
+					// 135MB intent head otherwise sits between "started" and
+					// "ready" with log_detail off. Emit each 10% once; the
+					// fetcher already suppresses repeat percents.
+					if p := s.Percent(); p > 0 && p%10 == 0 {
+						log.Printf("[embedding] head asset fetch kind=%s file=%s %d%%", kind, name, p)
+					}
+				}
+			}
 			f.Start(context.Background(), func(path string) {
 				a.removeLegacyHeadFiles(dir) // a stale copy may have landed meanwhile; never loaded either way
 				emb := a.activeInterruptEmbedder()

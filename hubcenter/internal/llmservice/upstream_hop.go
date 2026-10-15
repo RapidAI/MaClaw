@@ -51,6 +51,11 @@ type upstreamHopRequest struct {
 	// upstream answers 429 or 5xx. An explicit node test is about that node;
 	// those statuses are the result, not a signal to try a different peer.
 	Body map[string]any `json:"body,omitempty"`
+	// Provider carries the upstream credential from the node that accepted the
+	// request. A copy's egress node may not have that row yet, or may still
+	// have an empty key. The hop is HA-authenticated and the node is already
+	// in the provider allowlist.
+	Provider *llmpool.ProviderConfig `json:"provider,omitempty"`
 	// SingleAttempt tells the peer not to repeat a failed upstream call.
 	// Array members already fail over to a sibling, so the extra attempts
 	// only add latency. Older peers ignore the field and keep their retries.
@@ -209,6 +214,7 @@ func hopProviderForwardAttempts(ctx context.Context, cfg *ProxyConfig, provider 
 		UpstreamModel: upstreamModel,
 		ResponseModel: responseModel,
 		Body:          body,
+		Provider:      hopProviderSnapshot(provider),
 		SingleAttempt: singleAttempt,
 	})
 	if err != nil {
@@ -258,6 +264,7 @@ func hopProviderStream(ctx context.Context, cfg *ProxyConfig, provider *llmpool.
 		UpstreamModel: upstreamModel,
 		ResponseModel: responseModel,
 		Body:          body,
+		Provider:      hopProviderSnapshot(provider),
 	})
 	if err != nil {
 		return nil, fmt.Errorf("marshal upstream hop: %w", err)
@@ -483,13 +490,26 @@ func UpstreamHopHandler(cfg *ProxyConfig, authenticate func(*http.Request) error
 			return
 		}
 		provider, err := cfg.Service.GetProvider(r.Context(), providerID)
-		if err != nil || provider == nil {
+		if err != nil {
 			writeJSONError(w, http.StatusNotFound, "provider not found")
 			return
 		}
-		if !llmpool.ProviderAllowedOnNode(*provider, cfg.NodeID) {
+		if provider == nil {
+			supplied, allowed := hopSuppliedProvider(req.Provider, providerID, cfg.NodeID)
+			if supplied == nil {
+				if req.Provider != nil && !allowed {
+					writeJSONError(w, http.StatusForbidden, "this hubcenter node is not in the provider access scope")
+					return
+				}
+				writeJSONError(w, http.StatusNotFound, "provider not found")
+				return
+			}
+			provider = supplied
+		} else if !llmpool.ProviderAllowedOnNode(*provider, cfg.NodeID) {
 			writeJSONError(w, http.StatusForbidden, "this hubcenter node is not in the provider access scope")
 			return
+		} else {
+			overlayHopCredentials(provider, req.Provider)
 		}
 		if provider.Paused {
 			writeJSONError(w, http.StatusConflict, "provider is paused")
@@ -923,6 +943,127 @@ func hopStatusAfterPrefix(errMsg, prefix string) int {
 	return code
 }
 
+func hopProviderSnapshot(provider *llmpool.ProviderConfig) *llmpool.ProviderConfig {
+	if provider == nil {
+		return nil
+	}
+	clones := cloneProviderConfigs([]llmpool.ProviderConfig{*provider})
+	snap := clones[0]
+	snap.WorkBuddySessionID = ""
+	snap.QoderSessionID = ""
+	snap.TraeSessionID = ""
+	snap.LobsterAISessionID = ""
+	snap.AllowedNodes = ""
+	snap.ArrayName = ""
+	return &snap
+}
+
+// hopSuppliedProvider is the credential from the accepting node when this
+// egress node does not have the row yet. allowed is false when the snapshot
+// names a real provider that this node must not dial.
+func hopSuppliedProvider(supplied *llmpool.ProviderConfig, providerID, nodeID string) (*llmpool.ProviderConfig, bool) {
+	if supplied == nil || strings.TrimSpace(supplied.APIURL) == "" {
+		return nil, true
+	}
+	if !strings.EqualFold(strings.TrimSpace(supplied.ID), strings.TrimSpace(providerID)) {
+		return nil, true
+	}
+	if !hopUpstreamURLAllowed(supplied.APIURL) || !hopSnapshotCanDial(supplied) {
+		return nil, false
+	}
+	if len(llmpool.NormalizeAllowedNodeIDs(supplied.AllowedNodeIDs)) == 0 || !llmpool.ProviderAllowedOnNode(*supplied, nodeID) {
+		return nil, false
+	}
+	return hopProviderSnapshot(supplied), true
+}
+
+// hopSnapshotCanDial reports whether a peer-supplied row has a credential.
+// A URL alone must not make this node call an upstream it does not store.
+func hopSnapshotCanDial(provider *llmpool.ProviderConfig) bool {
+	if provider == nil {
+		return false
+	}
+	if strings.TrimSpace(provider.APIKey) != "" {
+		return true
+	}
+	return strings.TrimSpace(provider.WorkBuddyRefreshToken) != "" ||
+		strings.TrimSpace(provider.QoderRefreshToken) != "" ||
+		strings.TrimSpace(provider.TraeRefreshToken) != "" ||
+		strings.TrimSpace(provider.LobsterAIRefreshToken) != ""
+}
+
+func sameHopAuthKind(dstKind, srcKind string) bool {
+	normalize := func(kind string) string {
+		kind = strings.TrimSpace(kind)
+		if kind == llmpool.ProviderAuthAPIKey {
+			return ""
+		}
+		return kind
+	}
+	return normalize(dstKind) == normalize(srcKind)
+}
+
+func hopUpstreamURLAllowed(raw string) bool {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" || parsed.User != nil {
+		return false
+	}
+	return parsed.Scheme == "http" || parsed.Scheme == "https"
+}
+
+func overlayHopCredentials(dst, src *llmpool.ProviderConfig) {
+	if dst == nil || src == nil {
+		return
+	}
+	if !strings.EqualFold(strings.TrimSpace(src.ID), strings.TrimSpace(dst.ID)) {
+		return
+	}
+	// A stored key wins. The hop key only fills a row that does not have one
+	// yet, which is the copy whose egress node has not received the secret.
+	// The stored URL and auth kind stay as they are.
+	if strings.TrimSpace(dst.APIKey) == "" {
+		if key := strings.TrimSpace(src.APIKey); key != "" {
+			dst.APIKey = key
+		}
+	}
+	if !sameHopAuthKind(dst.AuthKind, src.AuthKind) {
+		return
+	}
+	if len(dst.TokenBankExtraKeys) == 0 && len(src.TokenBankExtraKeys) > 0 {
+		dst.TokenBankExtraKeys = append([]string(nil), src.TokenBankExtraKeys...)
+	}
+	if token := strings.TrimSpace(src.WorkBuddyRefreshToken); token != "" && strings.TrimSpace(dst.WorkBuddyRefreshToken) == "" {
+		dst.WorkBuddyEdition = src.WorkBuddyEdition
+		dst.WorkBuddyRefreshToken = token
+		dst.WorkBuddyExpiresAt = src.WorkBuddyExpiresAt
+		dst.WorkBuddyUserID = src.WorkBuddyUserID
+		dst.WorkBuddyEnterpriseID = src.WorkBuddyEnterpriseID
+		dst.WorkBuddyDomain = src.WorkBuddyDomain
+	}
+	if token := strings.TrimSpace(src.QoderRefreshToken); token != "" && strings.TrimSpace(dst.QoderRefreshToken) == "" {
+		dst.QoderEdition = src.QoderEdition
+		dst.QoderRefreshToken = token
+		dst.QoderExpiresAt = src.QoderExpiresAt
+		dst.QoderUserID = src.QoderUserID
+		dst.QoderMachineID = src.QoderMachineID
+	}
+	if token := strings.TrimSpace(src.TraeRefreshToken); token != "" && strings.TrimSpace(dst.TraeRefreshToken) == "" {
+		dst.TraeEdition = src.TraeEdition
+		dst.TraeRefreshToken = token
+		dst.TraeExpiresAt = src.TraeExpiresAt
+		dst.TraeUserID = src.TraeUserID
+		dst.TraeMachineID = src.TraeMachineID
+		dst.TraeDeviceID = src.TraeDeviceID
+	}
+	if token := strings.TrimSpace(src.LobsterAIRefreshToken); token != "" && strings.TrimSpace(dst.LobsterAIRefreshToken) == "" {
+		dst.LobsterAIRefreshToken = token
+		dst.LobsterAIExpiresAt = src.LobsterAIExpiresAt
+		dst.LobsterAIUserID = src.LobsterAIUserID
+		dst.LobsterAISessionUUID = src.LobsterAISessionUUID
+		dst.LobsterAIFirstKeyfrom = src.LobsterAIFirstKeyfrom
+	}
+}
+
 func hopAdminJSON(ctx context.Context, cfg *ProxyConfig, provider *llmpool.ProviderConfig, kind, model string) ([]byte, error) {
 	if provider == nil {
 		return nil, fmt.Errorf("provider is required")
@@ -931,6 +1072,7 @@ func hopAdminJSON(ctx context.Context, cfg *ProxyConfig, provider *llmpool.Provi
 		Kind:       kind,
 		ProviderID: provider.ID,
 		Model:      model,
+		Provider:   hopProviderSnapshot(provider),
 	})
 	if err != nil {
 		return nil, err
@@ -1058,6 +1200,7 @@ func hopMemberTest(ctx context.Context, cfg *ProxyConfig, provider *llmpool.Prov
 		Model:            spec.Model,
 		Tools:            spec.Tools,
 		ToolChoice:       spec.ToolChoice,
+		Provider:         hopProviderSnapshot(provider),
 		ReportTestResult: strings.TrimSpace(spec.Node) != "",
 	})
 	if err != nil {

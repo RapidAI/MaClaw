@@ -129,6 +129,7 @@ func (m *knowledgeStoreManager) UseSharedAIModels(aiModels *srvAIModelManager, c
 	}
 	aiModels.setEmbeddingReadyHook(func() {
 		attachSrvIntentEmbedder(adapter)
+		m.resumeEmbeddingRefresh()
 		m.backfillEmbeddingsAsync("shared embedding model ready")
 	})
 	if exists, _ := modelFileReady(aiModels.modelPath(embedding.DefaultModelFilename)); exists {
@@ -136,6 +137,25 @@ func (m *knowledgeStoreManager) UseSharedAIModels(aiModels *srvAIModelManager, c
 		m.backfillEmbeddingsAsync("shared embedding model already ready")
 	}
 	log.Printf("[knowledge] embedding uses shared AI model manager")
+}
+
+// resumeEmbeddingRefresh cancels the pass in progress and starts another.
+// A pass that began before the weights existed fails its first batch and then
+// waits out the retry delay. The ready signal means the file is on disk, so
+// the next pass starts immediately. Rows already written stay on disk.
+func (m *knowledgeStoreManager) resumeEmbeddingRefresh() {
+	if m == nil {
+		return
+	}
+	m.mu.Lock()
+	store := m.store
+	emb := m.embedder
+	closed := m.closed
+	m.mu.Unlock()
+	if closed || store == nil || emb == nil || embedding.IsNoop(emb) {
+		return
+	}
+	store.RestartEmbeddingRefresh()
 }
 
 func (m *knowledgeStoreManager) backfillEmbeddingsAsync(reason string) {
@@ -162,14 +182,29 @@ func (m *knowledgeStoreManager) backfillEmbeddingsAsync(reason string) {
 			case <-ctx.Done():
 			}
 		}()
-		if err := store.RebuildFTSIndex(ctx); err != nil {
+		if err := m.syncKnowledgeFTSSegmentation(ctx, store); err != nil {
 			if ctx.Err() == nil {
-				log.Printf("[knowledge] embedding backfill failed after %s: %v", reason, err)
+				log.Printf("[knowledge] FTS segmentation failed after %s: %v", reason, err)
 			}
-		} else {
-			log.Printf("[knowledge] embedding backfill completed after %s", reason)
+			return
 		}
+		log.Printf("[knowledge] FTS segmentation current after %s", reason)
 	}()
+}
+
+// syncKnowledgeFTSSegmentation rebuilds lexical indexes once per segmentation
+// version. Vector refresh stays on SetEmbedder: RebuildFTSIndex would embed
+// the library again without raising LibraryEmbeddingRefreshActive, so search
+// would wait behind that pass.
+func (m *knowledgeStoreManager) syncKnowledgeFTSSegmentation(ctx context.Context, store *knowledge.SQLiteStore) error {
+	if store == nil || store.HasFTSSegmentationMarker() {
+		return nil
+	}
+	if err := store.RebuildFTSSegmentation(ctx); err != nil {
+		return err
+	}
+	store.SetFTSSegmentationMarker()
+	return nil
 }
 
 // backgroundDownloadAndActivate is the legacy knowledge-store download path.
@@ -272,6 +307,7 @@ func (m *knowledgeStoreManager) writeDownloadFailMarker(path string) {
 // rows through the shared AI model manager rather than loading another model.
 func (m *knowledgeStoreManager) activateEmbedder(modelPath string) {
 	_ = modelPath
+	m.resumeEmbeddingRefresh()
 	m.backfillEmbeddingsAsync("legacy embedding activation")
 }
 

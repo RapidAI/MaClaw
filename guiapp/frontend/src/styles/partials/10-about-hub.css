@@ -860,15 +860,16 @@
 
 .problem-report-dialog__history-list {
     display: grid;
-    max-height: 138px;
-    overflow: auto;
+    max-height: 232px;
+    overflow-x: hidden;
+    overflow-y: auto;
     border: 1px solid var(--theme-border);
     border-radius: 8px;
 }
 
 .problem-report-dialog__history-item {
     display: flex;
-    align-items: center;
+    align-items: flex-start;
     justify-content: space-between;
     gap: 12px;
     padding: 8px 12px;
@@ -880,13 +881,48 @@
     border-top: 1px solid var(--theme-border);
 }
 
+.problem-report-dialog__history-main {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+    overflow: hidden;
+}
+
 .problem-report-dialog__history-item code {
+    display: block;
     min-width: 0;
     overflow: hidden;
     color: var(--theme-text-primary);
     font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
     font-size: 0.76rem;
     text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.problem-report-dialog__history-item:has(.problem-report-dialog__history-desc) code {
+    color: var(--theme-text-secondary);
+    font-size: 0.72rem;
+}
+
+.problem-report-dialog__history-desc {
+    display: -webkit-box;
+    order: -1;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--theme-text-primary);
+    font-size: 0.8rem;
+    line-height: 1.4;
+    overflow-wrap: anywhere;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+}
+
+.problem-report-dialog__history-status {
+    flex: none;
+    padding-top: 1px;
     white-space: nowrap;
 }
 

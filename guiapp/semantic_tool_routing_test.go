@@ -1988,7 +1988,7 @@ func TestSemanticDynamicMCPUsesOpaqueBoundCatalogWithoutRequestStartup(t *testin
 	if len(tools) != 1 || len(tools[0].Tools) != 1 {
 		t.Fatalf("lifecycle did not publish local tool inventory: %#v", tools)
 	}
-	principal := agentservice.Principal{TenantID: semanticDesktopTenantID(), UserID: "user-1"}
+	principal := semanticDesktopContractPrincipal()
 	contracts, err := app.semanticDynamicCapabilityContractsForApp()
 	if err != nil {
 		t.Fatal(err)
@@ -2001,7 +2001,7 @@ func TestSemanticDynamicMCPUsesOpaqueBoundCatalogWithoutRequestStartup(t *testin
 	if err := contracts.PublishMCPContract(principal, "semantic-local", "ping", contract); err != nil {
 		t.Fatal(err)
 	}
-	inventory, err := h.semanticDynamicInventory(context.Background(), "user-1")
+	inventory, err := h.semanticDynamicInventory(context.Background())
 	if err != nil || len(inventory.mcpEntries) != 1 || inventory.mcpEntries[0].Contract.Digest() != contract.Digest() {
 		t.Fatalf("published MCP inventory=%#v coverage=%+v err=%v", inventory.mcpEntries, inventory.coverage, err)
 	}
@@ -2133,7 +2133,7 @@ func TestSemanticDynamicBindingStalePublishesRestrictedReplacementRevision(t *te
 		t.Fatal(err)
 	}
 	h := &IMMessageHandler{app: app, registry: registry, unifiedClassifier: semanticClassifierForLabel(t, intent.LabelLiveData)}
-	principal := agentservice.Principal{TenantID: semanticDesktopTenantID(), UserID: "user-1"}
+	principal := semanticDesktopContractPrincipal()
 	contracts, err := app.semanticDynamicCapabilityContractsForApp()
 	if err != nil {
 		t.Fatal(err)
@@ -2250,7 +2250,7 @@ func TestSemanticDynamicSkillIsQuarantinedWithoutReviewedBinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	principal := agentservice.Principal{TenantID: semanticDesktopTenantID(), UserID: "user-1"}
+	principal := semanticDesktopContractPrincipal()
 	if err := contracts.PublishSkillContract(principal, agentservice.DynamicSkillStableID(entry), agentservice.DynamicCapabilityContract{
 		Provisions: []tool.CapabilityProvision{{Capability: "information.search.web", Qualifiers: map[string]string{"freshness": "current"}, Quality: 3}}, Effects: []tool.EffectClass{tool.EffectReadOnly},
 		ObservedBindingDigest: agentservice.DynamicSkillObservedBindingDigest(agentservice.DynamicSkillStableID(entry), entry.Version, agentservice.DynamicSkillContentDigest(entry)),
@@ -2381,7 +2381,7 @@ func TestSemanticMCPInventoryTreatsObservedEmptyServerAsComplete(t *testing.T) {
 	app.mcpRegistry.toolsCache["empty-server"] = []MCPToolView{}
 	app.mcpRegistry.mu.Unlock()
 	h := &IMMessageHandler{app: app}
-	inventory, err := h.semanticDynamicInventory(context.Background(), "user-1")
+	inventory, err := h.semanticDynamicInventory(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}

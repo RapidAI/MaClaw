@@ -68,7 +68,7 @@ func TestBuildExperienceTraceFollowUpDraftsApprovedRollback(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	entry := mustFindExperienceReviewEntry(t, store, groupDiscussionRollbackTag)
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 
 	draft, err := app.BuildExperienceTraceFollowUp("memory:" + entry.ID)
 	if err != nil {
@@ -103,7 +103,7 @@ func TestBuildExperienceTraceFollowUpDraftsTriggeredRollbackReview(t *testing.T)
 		t.Fatalf("Save: %v", err)
 	}
 	entry := mustFindExperienceReviewEntry(t, store, groupDiscussionRollbackTriggered)
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 
 	draft, err := app.BuildExperienceTraceFollowUp("memory:" + entry.ID)
 	if err != nil {
@@ -138,7 +138,7 @@ func TestBuildExperienceRollbackWorkflowDraftFromApprovedRollbackReview(t *testi
 		t.Fatalf("Save: %v", err)
 	}
 	entry := mustFindExperienceReviewEntry(t, store, groupDiscussionRollbackTag)
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 
 	draft, err := app.BuildExperienceRollbackWorkflowDraft("memory:" + entry.ID)
 	if err != nil {
@@ -170,7 +170,7 @@ func TestBuildExperienceRollbackWorkflowDraftRejectsPendingReview(t *testing.T) 
 		t.Fatalf("Save: %v", err)
 	}
 	entry := mustFindExperienceReviewEntry(t, store, groupDiscussionRollbackTag)
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 
 	if _, err := app.BuildExperienceRollbackWorkflowDraft("memory:" + entry.ID); err == nil || !strings.Contains(err.Error(), "must be approved") {
 		t.Fatalf("expected approved rollback draft rejection, got %v", err)
@@ -194,7 +194,7 @@ func TestBuildExperienceEscalationBriefFromEscalationEvidence(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	entry := mustFindExperienceReviewEntry(t, store, "has_escalation")
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 
 	draft, err := app.BuildExperienceEscalationBrief("memory:" + entry.ID)
 	if err != nil {
@@ -240,7 +240,7 @@ func TestBuildExperienceConflictReconciliationDraftFromApprovedConflictReview(t 
 		t.Fatalf("Save: %v", err)
 	}
 	entry := mustFindExperienceReviewEntry(t, store, groupDiscussionConflictTag)
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 
 	draft, err := app.BuildExperienceConflictReconciliationDraft("memory:" + entry.ID)
 	if err != nil {
@@ -276,7 +276,7 @@ func TestBuildExperienceTraceFollowUpRejectsPendingReview(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	entry := mustFindExperienceReviewEntry(t, store, groupDiscussionRollbackTag)
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 
 	if _, err := app.BuildExperienceTraceFollowUp("memory:" + entry.ID); err == nil || !strings.Contains(err.Error(), "must be reviewed") {
 		t.Fatalf("expected pending review rejection, got %v", err)
@@ -299,7 +299,7 @@ func TestBuildExperienceTraceFollowUpDraftsApprovedSkillNudge(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	entry := mustFindExperienceReviewEntry(t, store, "skill_nudge_candidate")
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 
 	draft, err := app.BuildExperienceTraceFollowUp("memory:" + entry.ID)
 	if err != nil {
@@ -332,7 +332,7 @@ func TestBuildExperienceSkillDraftRejectsLegacyBrowserSkillNudge(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	entry := mustFindExperienceReviewEntry(t, store, "skill_nudge_candidate")
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 
 	if _, err := app.BuildExperienceSkillDraft("memory:" + entry.ID); err == nil || !strings.Contains(err.Error(), "not a skill nudge review") {
 		t.Fatalf("expected legacy browser skill nudge rejection, got %v", err)
@@ -405,7 +405,7 @@ func TestBuildExperienceSkillDraftRejectsNonApprovedSkillNudge(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	entry := mustFindExperienceReviewEntry(t, store, "skill_nudge_candidate")
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 
 	if _, err := app.BuildExperienceSkillDraft("memory:" + entry.ID); err == nil || !strings.Contains(err.Error(), "must be approved") {
 		t.Fatalf("expected approved skill draft rejection, got %v", err)
@@ -429,7 +429,7 @@ func TestRecordExperienceTraceFollowUpCompletedRemovesNextAction(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	entry := mustFindExperienceReviewEntry(t, store, groupDiscussionRollbackTag)
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 
 	record, err := app.RecordExperienceTraceFollowUp("memory:"+entry.ID, ExperienceTraceFollowUpRequest{Status: "done", Note: "owner accepted manual workflow", Actor: "owner"})
 	if err != nil {
@@ -476,7 +476,7 @@ func TestRecordExperienceDraftReviewCreatesFollowUpTrace(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(store.Stop)
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 	source := memory.Entry{
 		ID:         "rollback-source",
 		Title:      "A2A: rollback source",
@@ -547,7 +547,7 @@ func TestRecordExperienceDraftReviewSupportsTraceDraftKinds(t *testing.T) {
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(store.Stop)
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 
 	cases := []struct {
 		name      string
@@ -610,7 +610,7 @@ func TestRecordExperienceDraftReviewReturnsSkillDraftExecutionPreview(t *testing
 		t.Fatalf("NewStore: %v", err)
 	}
 	t.Cleanup(store.Stop)
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 	draftID := "skill_draft:mark_needs_review:broken:"
 
 	record, err := app.RecordExperienceDraftReview(ExperienceDraftReviewRequest{
@@ -801,7 +801,7 @@ func TestRecordBlockedSkillDraftReviewPersistsReviewAndSourceTransitionInSQLiteB
 	}
 	store.SetBackend(backend, memory.SyncConfig{Enabled: false})
 	t.Cleanup(store.Stop)
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 	source, err := app.RecordExperienceDraftReview(ExperienceDraftReviewRequest{
 		Kind:    experienceDraftKindSkill,
 		Status:  experienceFollowUpOutcomeCompleted,
@@ -863,7 +863,7 @@ func TestRecordExperienceTraceFollowUpDeferredKeepsNextAction(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	entry := mustFindExperienceReviewEntry(t, store, "skill_nudge_candidate")
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 
 	if _, err := app.RecordExperienceTraceFollowUp("memory:"+entry.ID, ExperienceTraceFollowUpRequest{Status: "later", Note: "needs two more examples"}); err != nil {
 		t.Fatalf("RecordExperienceTraceFollowUp: %v", err)
@@ -904,7 +904,7 @@ func TestRecordExperienceTraceFollowUpTriggeredRollbackReviewKeepsAuditKind(t *t
 		t.Fatalf("Save: %v", err)
 	}
 	entry := mustFindExperienceReviewEntry(t, store, groupDiscussionRollbackTriggered)
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 
 	if _, err := app.RecordExperienceTraceFollowUp("memory:"+entry.ID, ExperienceTraceFollowUpRequest{Status: "blocked", Note: "owner rejected rollback path"}); err != nil {
 		t.Fatalf("RecordExperienceTraceFollowUp: %v", err)
@@ -981,7 +981,7 @@ func TestExperienceLearningToolBuildsNonExecutingFollowUp(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	entry := mustFindExperienceReviewEntry(t, store, "skill_nudge_candidate")
-	handler := &IMMessageHandler{app: &App{memoryStore: store}}
+	handler := &IMMessageHandler{app: newExperienceTestApp(t, store, nil)}
 
 	result := handler.toolExperienceLearning(map[string]interface{}{"action": "build_followup", "trace_id": "memory:" + entry.ID})
 	if !strings.Contains(result, `"ok":true`) || !strings.Contains(result, "Manual skill draft brief") || strings.Contains(result, "install skills automatically") || !strings.Contains(result, "recommended_focus_context") || !strings.Contains(result, "non_executing_boundary") {
@@ -1006,7 +1006,7 @@ func TestExperienceLearningToolBuildsNonExecutingSkillDraft(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	entry := mustFindExperienceReviewEntry(t, store, "skill_nudge_candidate")
-	handler := &IMMessageHandler{app: &App{memoryStore: store}}
+	handler := &IMMessageHandler{app: newExperienceTestApp(t, store, nil)}
 
 	result := handler.toolExperienceLearning(map[string]interface{}{"action": "build_skill_draft", "trace_id": "memory:" + entry.ID})
 	if !strings.Contains(result, `"ok":false`) || !strings.Contains(result, "not a skill nudge review") {
@@ -1030,7 +1030,7 @@ func TestExperienceLearningToolBuildsNonExecutingRollbackDraft(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	entry := mustFindExperienceReviewEntry(t, store, groupDiscussionRollbackTag)
-	handler := &IMMessageHandler{app: &App{memoryStore: store}}
+	handler := &IMMessageHandler{app: newExperienceTestApp(t, store, nil)}
 
 	result := handler.toolExperienceLearning(map[string]interface{}{"action": "build_rollback_draft", "trace_id": "memory:" + entry.ID})
 	if !strings.Contains(result, `"ok":true`) || !strings.Contains(result, "Manual Rollback Workflow Draft") || !strings.Contains(result, "read-only rollback workflow draft only") || !strings.Contains(result, "recommended_focus_context") {
@@ -1055,7 +1055,7 @@ func TestExperienceLearningToolBuildsNonExecutingEscalationBrief(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	entry := mustFindExperienceReviewEntry(t, store, "has_escalation")
-	handler := &IMMessageHandler{app: &App{memoryStore: store}}
+	handler := &IMMessageHandler{app: newExperienceTestApp(t, store, nil)}
 
 	result := handler.toolExperienceLearning(map[string]interface{}{"action": "build_escalation_brief", "trace_id": "memory:" + entry.ID})
 	if !strings.Contains(result, `"ok":true`) || !strings.Contains(result, "A2A Escalation Handoff Brief") || !strings.Contains(result, "read-only escalation brief only") || !strings.Contains(result, "recommended_focus_context") {
@@ -1089,7 +1089,7 @@ func TestExperienceLearningToolBuildsNonExecutingConflictDraft(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	entry := mustFindExperienceReviewEntry(t, store, groupDiscussionConflictTag)
-	handler := &IMMessageHandler{app: &App{memoryStore: store}}
+	handler := &IMMessageHandler{app: newExperienceTestApp(t, store, nil)}
 
 	result := handler.toolExperienceLearning(map[string]interface{}{"action": "build_conflict_draft", "trace_id": "memory:" + entry.ID})
 	if !strings.Contains(result, `"ok":true`) || !strings.Contains(result, "A2A Conflict Reconciliation Draft") || !strings.Contains(result, "read-only conflict reconciliation draft only") || !strings.Contains(result, "recommended_focus_context") {
@@ -1122,7 +1122,7 @@ func TestExperienceLearningToolTraceDetailsFiltersGovernanceQueues(t *testing.T)
 	}); err != nil {
 		t.Fatalf("Save skill: %v", err)
 	}
-	handler := &IMMessageHandler{app: &App{memoryStore: store}}
+	handler := &IMMessageHandler{app: newExperienceTestApp(t, store, nil)}
 
 	requiredResult := parseExperienceTraceDetailsToolResult(t, handler.toolExperienceLearning(map[string]interface{}{"action": "trace_details", "filter": "review", "review_status": "required", "limit": 1}))
 	if !requiredResult.OK || requiredResult.Count != 1 || requiredResult.Returned != 1 || requiredResult.Query.Limit != 1 {
@@ -1178,7 +1178,7 @@ func TestExperienceLearningToolQueuesReturnsBoundedGovernanceDetails(t *testing.
 		t.Fatalf("Save conflict: %v", err)
 	}
 	conflict := mustFindExperienceReviewEntry(t, store, groupDiscussionConflictTag)
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 	if _, err := app.RecordExperienceTraceFollowUp("memory:"+conflict.ID, ExperienceTraceFollowUpRequest{Status: "blocked", Note: "owner rejected reconciliation"}); err != nil {
 		t.Fatalf("RecordExperienceTraceFollowUp: %v", err)
 	}
@@ -1224,7 +1224,7 @@ func TestExperienceLearningToolRecordsFollowUpAuditOnly(t *testing.T) {
 		t.Fatalf("Save: %v", err)
 	}
 	entry := mustFindExperienceReviewEntry(t, store, "skill_nudge_candidate")
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 	handler := &IMMessageHandler{app: app}
 
 	result := handler.toolExperienceLearning(map[string]interface{}{"action": "record_followup", "trace_id": "memory:" + entry.ID, "status": "completed", "note": "draft created by owner", "actor": "owner"})
@@ -1379,7 +1379,7 @@ func TestExperienceLearningToolNextActionsIncludesFollowUpAuditCounts(t *testing
 		t.Fatalf("Save: %v", err)
 	}
 	entry := mustFindExperienceReviewEntry(t, store, groupDiscussionRollbackTag)
-	app := &App{memoryStore: store}
+	app := newExperienceTestApp(t, store, nil)
 	if _, err := app.RecordExperienceTraceFollowUp("memory:"+entry.ID, ExperienceTraceFollowUpRequest{Status: "blocked", Note: "owner rejected trigger"}); err != nil {
 		t.Fatalf("RecordExperienceTraceFollowUp: %v", err)
 	}

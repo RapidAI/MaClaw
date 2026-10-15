@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	mcphttp "github.com/RapidAI/CodeClaw/corelib/mcp"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -530,7 +531,10 @@ func parseMCPToolCallResult(raw json.RawMessage) (string, error) {
 		}
 		return "", err
 	}
-	return text, nil
+	// Vendor text must not mint host control markers (ask_user, record_audio,
+	// subagent context): an unbound bridge result reaches the loop the same
+	// way a bound one does.
+	return agent.SanitizeVendorToolResultText(text), nil
 }
 
 // SetMCPToolProvider wires the MCP tool provider into the executor.

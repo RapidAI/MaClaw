@@ -31,9 +31,9 @@ func TestComputerUseCalibrationWithRealModel(t *testing.T) {
 	if _, err := os.Stat(modelPath); err != nil {
 		t.Skipf("embedding model not installed: %v", err)
 	}
-	emb, err := embedding.NewGemmaEmbedder(modelPath, embedding.DefaultEmbeddingDim)
+	emb, err := embedding.NewEmbedderFromFile(modelPath, embedding.DefaultEmbeddingDim)
 	if err != nil {
-		t.Skipf("gemma embedder unavailable: %v", err)
+		t.Skipf("embedder unavailable: %v", err)
 	}
 	defer emb.Close()
 

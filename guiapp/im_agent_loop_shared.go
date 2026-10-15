@@ -1396,11 +1396,18 @@ type sharedAgentLoopCallbacks struct {
 	taskAnchor      *taskIdentityAnchor
 	tools           []map[string]interface{}
 	semanticSurface *semanticCallSurface
-	// legacyPetitionTools are live SQL database adapters granted after a
+	// legacyPetitionTools are host tool names admitted onto the visible
+	// surface through a governed overlay: live SQL database adapters after a
 	// semantic petition for database / database_query could not expand a
-	// governed MIS candidate. They overlay the closed semantic surface so a
-	// follow-up like "查看 rapidbi库" can keep using the host database tool.
+	// governed MIS candidate, the legacy ssh rescue on surface-less turns,
+	// continuation readers, and vision-fallthrough petitions.
 	legacyPetitionTools map[string]bool
+	// legacyContinuationReaders marks the subset of legacyPetitionTools that
+	// were installed to page a truncated auto_extract or a spilled tool
+	// result. Only those overlay entries render the narrowed reader contract
+	// (e.g. office restricted to read_document); an explicitly petitioned
+	// name keeps its full host definition.
+	legacyContinuationReaders map[string]bool
 	// legacySurface is refreshed only when a complete replacement list is sent
 	// to the model. It is never rebuilt from the registry, history, pins or
 	// BaseTools, so a stale legacy response cannot execute a hidden function.
@@ -2041,6 +2048,9 @@ func (c *sharedAgentLoopCallbacks) semanticIntakeRejectReason(name, argsJSON str
 		return reason
 	}
 	if reason := c.fileDeleteIntakeReason(name, argsJSON); reason != "" {
+		return reason
+	}
+	if reason := c.mailboxIntakeRejectReasonForName(name, argsJSON); reason != "" {
 		return reason
 	}
 	grant, ok := c.semanticSurface.grants[name]
@@ -2697,11 +2707,15 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 		// exposed on a non-degraded LabelSSH turn, and it is the only
 		// connect-capable tool (production 2026-09-18 11:04: a degraded
 		// fallback turn answered "SSH 工具不在可用工具列表" because this
-		// branch used to return bare false).
+		// branch used to return bare false). A closed vision-fallthrough
+		// surface gets the same governed petition inventory.
 		if granted, message := c.grantLegacySQLDatabasePetition(name); granted {
 			return true, message
 		}
-		return c.grantLegacySSHPetition(name)
+		if granted, message := c.grantLegacySSHPetition(name); granted {
+			return true, message
+		}
+		return c.grantVisionFallthroughPetition(name)
 	}
 	surface := c.semanticSurface
 	// Rendered or already-consumed names are not petitions; the core loop owns
@@ -3038,11 +3052,15 @@ func (c *sharedAgentLoopCallbacks) maybeOverlayDocumentContinuationForTurn(userT
 		c.legacyPetitionTools = map[string]bool{}
 	}
 	var added []string
+	if c.legacyContinuationReaders == nil {
+		c.legacyContinuationReaders = map[string]bool{}
+	}
 	for _, name := range agent.AutoExtractContinuationToolNames() {
 		if c.continuationOverlayDefinitionByName(name) == nil {
 			continue
 		}
 		c.legacyPetitionTools[name] = true
+		c.legacyContinuationReaders[name] = true
 		added = append(added, name)
 		// One host-owned continuation reader is enough; prefer read_document
 		// (listed first) over write-capable office.
@@ -3122,7 +3140,11 @@ func (c *sharedAgentLoopCallbacks) activateSpilledToolResultReader() bool {
 	if c.legacyPetitionTools == nil {
 		c.legacyPetitionTools = map[string]bool{}
 	}
+	if c.legacyContinuationReaders == nil {
+		c.legacyContinuationReaders = map[string]bool{}
+	}
 	c.legacyPetitionTools[name] = true
+	c.legacyContinuationReaders[name] = true
 	// Do not rewrite c.tools here. BuildToolsForModelRequest appends this name
 	// when it renders the next request. Attaching it to the previous snapshot
 	// would publish a reader the current receipt did not list.
@@ -3323,6 +3345,73 @@ func (c *sharedAgentLoopCallbacks) grantLegacySSHPetition(name string) (bool, st
 	return true, fmt.Sprintf("工具 ssh 已由主机授权并加入当前工具面，请立即重新发起调用：这是完整的 ssh 工具，必须带 action 参数（如 {\"action\":\"connect\",\"host\":...,\"user\":...,\"password\":...}，或 action=exec 加 session_id 和 command）。[ssh-rescue:legacy_overlay]")
 }
 
+// grantVisionFallthroughPetition admits one governed tool on a closed
+// vision-fallthrough surface. A fallthrough turn's planner verdict is "the
+// staged image answers this", so it renders no name-router surface and may
+// render nothing at all — yet it is still an agentic turn whose model sees
+// the full assistant prompt and can honestly conclude the picture alone is
+// not enough (a geolocation question needs web_search, an EXIF read needs
+// bash). It carries no managed surface the expansion path above could
+// widen, so without this rescue the only recoverable names were ssh and the
+// SQL adapters: every other petition stranded the loop on an empty surface
+// (production 2026-10-15 06:40: 「这是哪？」 with a staged photo had
+// manage_skill, bash, discover_tool, web_search and image_search denied
+// five iterations in a row, then hard-exited).
+//
+// The admission contract is the managed petition's, applied to the legacy
+// overlay channel: the closed name→capability inventory, one read-only and
+// one effectful grant per turn, the group-policy gate for effectful names,
+// and no grant for a name the live host cannot render. Granting a name does
+// not weaken the turn's vision-only intent — it converts an impossible
+// request into the governed retry the core loop already models.
+func (c *sharedAgentLoopCallbacks) grantVisionFallthroughPetition(name string) (bool, string) {
+	if !loopContextIsVisionFallthrough(c.loopCtx) || c.handler == nil {
+		return false, ""
+	}
+	name = strings.TrimSpace(name)
+	_, petitionable := semanticPetitionableCapabilities[name]
+	// manage_skill sits outside the managed petition inventory because a
+	// governed turn must bind a skill through a managed selection. This path
+	// is unmanaged: the adapter catalog already sanctions it as the
+	// host-bound local skill runtime, and the action gate only executes
+	// list/info/run on an installed skill — the same contract an unmanaged
+	// full surface renders it under. It is effectful: run starts a process.
+	if !petitionable && name != "manage_skill" {
+		return false, ""
+	}
+	effectful := name == "manage_skill" || semanticPetitionIsEffectful(name)
+	if _, denied := c.semanticPetitionDenied[name]; denied {
+		return false, ""
+	}
+	if effectful {
+		if c.semanticEffectfulPetitionConsumed || c.groupPolicy() != nil {
+			return false, ""
+		}
+	} else if c.semanticPetitionConsumed {
+		return false, ""
+	}
+	// Resolve with the overlay's own renderer before spending the budget: a
+	// petitionable name the live host cannot render (no provision or no host
+	// definition on this build) is an authority miss, not a consumed
+	// petition.
+	if c.liveLegacyPetitionDefinitionByName(name) == nil {
+		c.notePetitionAuthorityMiss(name, effectful)
+		return false, ""
+	}
+	if effectful {
+		c.semanticEffectfulPetitionConsumed = true
+	} else {
+		c.semanticPetitionConsumed = true
+	}
+	if c.legacyPetitionTools == nil {
+		c.legacyPetitionTools = map[string]bool{}
+	}
+	c.legacyPetitionTools[name] = true
+	c.tools = c.appendLegacyPetitionedDatabaseTools(c.tools)
+	log.Printf("[semantic-routing] vision-fallthrough tool petition %q granted via legacy overlay", name)
+	return true, semanticPetitionGrantedMessage(name)
+}
+
 // liveLegacyPetitionDefinitionByName resolves an overlaid petitioned tool's
 // definition. SQL database names go through the reviewed adapter lookup; ssh
 // resolves from the builtin registry (its legacy definition is unpublished
@@ -3395,11 +3484,23 @@ func (c *sharedAgentLoopCallbacks) appendLegacyPetitionedDatabaseTools(definitio
 		if present[name] {
 			continue
 		}
-		if def := c.continuationOverlayDefinitionByName(name); def != nil {
-			definitions = append(definitions, def)
+		// Continuation readers render the narrowed read-only contract; an
+		// explicitly petitioned name keeps its full host definition (a
+		// petitioned office is for document write, not extract paging).
+		if c.legacyContinuationReaders[name] {
+			if def := c.continuationOverlayDefinitionByName(name); def != nil {
+				definitions = append(definitions, def)
+			}
+			continue
+		}
+		if def := c.liveLegacyPetitionDefinitionByName(name); def != nil {
+			definitions = append(definitions, cloneMISInterfaceMap(def))
 		}
 	}
-	return definitions
+	// The registry manage_skill schema advertises install and governance
+	// actions this path rejects at execution; publish the same narrowed
+	// contract an unmanaged full surface does (list/info/run only).
+	return narrowLegacyManageSkillSurface(definitions)
 }
 
 func (h *IMMessageHandler) liveLegacyDefinitionByName(name string) map[string]interface{} {
@@ -4003,6 +4104,9 @@ func (c *sharedAgentLoopCallbacks) executeSemanticTool(functionName, argsJSON st
 	if reason := c.semanticIntakeRejectReason(functionName, argsJSON); reason != "" {
 		return "[system rejected] " + reason
 	}
+	if reason := c.semanticReceiptIntakeRejection(functionName); reason != "" {
+		return reason
+	}
 	// Knowledge ingest's source check used to run inside the adapter, after
 	// the one-shot grant was admitted, so a correctable text+path call closed
 	// the tool. Refuse it here, before admission, matching the coordinated path.
@@ -4037,6 +4141,17 @@ func (c *sharedAgentLoopCallbacks) executeSemanticTool(functionName, argsJSON st
 		return semanticGrantRejectMessage(err.Error())
 	}
 	result := execResult.Result
+	// A paused user interaction is not an outcome: the gate that emitted the
+	// ask marker (e.g. the unreviewed-MCP write confirmation) executed
+	// nothing, so the one-shot grant must survive for the model to re-issue
+	// the paused call after the user's answer. Retiring here would strand
+	// every approved call behind a token the surface no longer carries.
+	// Paused is the signal — an __ASK_USER__ payload alone is not: a mailbox
+	// send confirmation DID execute (it froze a draft) and its grant must
+	// retire so a second call cannot freeze another message.
+	if execResult.Paused {
+		return result
+	}
 	// An awaiting-receipt selection has consumed its one-time grant and must
 	// immediately disappear from the model surface.  It has not completed its
 	// effect, however, so it must not be passed to advanceSemanticCallSurface:
@@ -4100,6 +4215,9 @@ func (c *sharedAgentLoopCallbacks) executeSemanticToolCallWithEpoch(functionName
 	}
 	if reason := c.semanticIntakeRejectReason(functionName, argsJSON); reason != "" {
 		return "[system rejected] " + reason
+	}
+	if reason := c.semanticReceiptIntakeRejection(functionName); reason != "" {
+		return reason
 	}
 	if c.semanticSurface.coordinator != nil {
 		return c.executeCoordinatedSemanticToolCall(functionName, argsJSON, callID, surfaceEpoch, grant)
@@ -4221,6 +4339,15 @@ func (c *sharedAgentLoopCallbacks) executeCoordinatedSemanticToolCall(functionNa
 	})
 	if err != nil {
 		return "[system rejected] " + err.Error()
+	}
+	if result.Paused {
+		// A paused interaction ran no adapter and no effect: the admission
+		// must stay open so the model can re-issue the call after the user's
+		// answer. Completing it here — even as failed — would burn the
+		// one-shot admission on a question. The ask marker text alone is not
+		// the signal: a confirmation that already executed an effect (a
+		// frozen mailbox draft) settles through the ordinary outcome path.
+		return result.Result
 	}
 	if c.usesUnifiedDynamicEffectCoordinator(selected) && (result.AwaitingReceipt || result.Unknown || result.Succeeded || result.ReasonCode == "dynamic_binding_stale" || strings.HasSuffix(result.ReasonCode, "_binding_stale") || strings.HasSuffix(result.ReasonCode, "_bound_execution_unavailable")) {
 		// The dynamic external-effect coordinator committed the host call and
@@ -4861,6 +4988,37 @@ func semanticHostObservedExternalSelection(selection tool.PlannedSelection) bool
 		semanticTrustedComputerUseAdapter, semanticTrustedRepoMutateAdapter)
 }
 
+// semanticReceiptBoundaryMissing reports an external or sensitive selection
+// whose outcome nobody observes. Mailbox send has its own receipt: the
+// confirmation is not completion, and Approve settles the SMTP result.
+// semanticReceiptIntakeRejection refuses an unexecutable external selection
+// before PlanExecutor admits the grant. The inner gate remains for callers
+// that invoke the adapter directly.
+func (c *sharedAgentLoopCallbacks) semanticReceiptIntakeRejection(functionName string) string {
+	if c == nil || c.semanticSurface == nil {
+		return ""
+	}
+	grant, ok := c.semanticSurface.grants[functionName]
+	if !ok {
+		return ""
+	}
+	selection, found := semanticSelectionByID(c.semanticSurface.plan, grant.SelectionID)
+	if !found || !semanticReceiptBoundaryMissing(selection) {
+		return ""
+	}
+	return "[system rejected] external_effect_receipt_boundary_missing"
+}
+
+func semanticReceiptBoundaryMissing(selection tool.PlannedSelection) bool {
+	return semanticSelectionRequiresReceipt(selection) &&
+		!semanticCurrentChannelArtifactDelivery(selection) &&
+		!semanticScheduleChannelDispatch(selection) &&
+		!semanticSpecifiedTargetArtifactDelivery(selection) &&
+		!semanticBuiltinLocalMutationSelection(selection) &&
+		!semanticHostObservedExternalSelection(selection) &&
+		!semanticMailboxSendReceiptSelection(selection)
+}
+
 // semanticSelectionAwaitsReceipt identifies a local, host-owned receipt-aware
 // adapter that has prepared an operation but whose trusted transport outcome
 // is still pending. It keeps the generic PlanExecutor state machine
@@ -4903,6 +5061,15 @@ func (c *sharedAgentLoopCallbacks) executeBoundSemanticSelectionCanonicalWithCon
 		c.recordCompletedSemanticLookupEvidence(selection, result)
 		return result
 	}
+	// Mailbox send and configure return a typed result. A confirmation card
+	// and a class error must not fall through to the plain-string success
+	// projection.
+	if semanticMailboxSendReceiptSelection(selection) {
+		return c.executeTrustedMailboxSend(ctx, canonicalArgs)
+	}
+	if semanticMailboxConfigureSelection(selection) {
+		return c.executeTrustedMailboxConfigure(ctx, canonicalArgs)
+	}
 	// An external/sensitive selection may never pass through the legacy text
 	// dispatcher unless its provider family exposes a trusted receipt boundary.
 	// Otherwise a friendly local return could be mistaken for delivery, write,
@@ -4914,7 +5081,7 @@ func (c *sharedAgentLoopCallbacks) executeBoundSemanticSelectionCanonicalWithCon
 	// watched its own effect land before returning. Every other such selection
 	// fails closed before its legacy handler can produce an untracked side
 	// effect.
-	if semanticSelectionRequiresReceipt(selection) && !semanticCurrentChannelArtifactDelivery(selection) && !semanticScheduleChannelDispatch(selection) && !semanticSpecifiedTargetArtifactDelivery(selection) && !semanticBuiltinLocalMutationSelection(selection) && !semanticHostObservedExternalSelection(selection) {
+	if semanticReceiptBoundaryMissing(selection) {
 		return tool.SelectionExecutionResult{Result: "[system rejected] external_effect_receipt_boundary_missing", ReasonCode: "external_effect_receipt_boundary_missing"}
 	}
 	// A legacy multiplexer reached through a managed grant is bounded by the
@@ -7584,6 +7751,48 @@ func (c *sharedAgentLoopCallbacks) ShouldStop() bool {
 		return false
 	}
 	return c.loopCtx.IsCancelled()
+}
+
+// RequiredEffectUnsettled reports a planned mailbox send that has not settled.
+// A model stop before that call is not turn success. A settled failure or an
+// uncertain SMTP result is an execution record. A frozen confirmation is not:
+// SMTP has not been observed, so a later stop must not be recorded as success.
+func (c *sharedAgentLoopCallbacks) RequiredEffectUnsettled() bool {
+	if c == nil || c.semanticSurface == nil {
+		return false
+	}
+	surface := c.semanticSurface
+	for _, selection := range surface.plan.Selections {
+		if selection.FitProof.MatchedCapability != tool.CapabilityMessageSendMailbox {
+			continue
+		}
+		if surface.completed[selection.ID] {
+			continue
+		}
+		if surface.executor == nil {
+			for _, grant := range surface.grants {
+				if grant.SelectionID == selection.ID {
+					return true
+				}
+			}
+			continue
+		}
+		record, err := surface.executor.Execution(surface.scope, selection.ID)
+		if err != nil {
+			return true
+		}
+		switch record.State {
+		case tool.PlanExecutionSucceeded:
+			continue
+		case tool.PlanExecutionFailed:
+			if record.ReasonCode == mailboxSendAwaitingConfirmation {
+				return true
+			}
+		default:
+			return true
+		}
+	}
+	return false
 }
 
 // EarlyStop implements agent.EarlyStopper. Two stop shapes: the daily LLM

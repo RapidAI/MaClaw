@@ -6334,6 +6334,25 @@ describe('AIAssistantPanel property tests', () => {
         expect(container.textContent).toContain('\u786e\u8ba4\u5e76\u5f00\u59cb');
     });
 
+    it('localizes ask-user confirm and cancel buttons', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '请确认发送这封邮件',
+                actions: [
+                    { label: 'Confirm', command: 'confirm', style: 'primary' },
+                    { label: 'Cancel', command: 'cancel', style: 'danger' },
+                ],
+            }),
+        ];
+        const { getAllByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+        const labels = getAllByTestId('action-button').map((button) => button.textContent);
+        expect(labels).toEqual(['\u786e\u8ba4', '\u53d6\u6d88']);
+    });
+
     it('renders backend-provided confirmation labels and primary action styling', () => {
         const messages: ChatMessage[] = [
             makeMsg({
@@ -6926,6 +6945,56 @@ describe('AIAssistantPanel property tests', () => {
         input.setSelectionRange(input.value.length, input.value.length);
         fireEvent.keyDown(input, { key: 'ArrowDown' });
         await waitFor(() => expect(input.value).toBe('latest prompt edited'));
+    });
+
+    it('restores images when a historical input is recalled', async () => {
+        const image = { filePath: 'D:/shots/see.png', fileName: 'see.png', extension: '.png', isImage: true };
+        const { getByTestId, queryByTestId } = renderPanel({
+            state: {
+                messages: [makeMsg({ role: 'user', content: 'earlier' })],
+                submittedPrompts: ['see this photo'],
+                submittedPromptAttachments: [[image]],
+                sending: false,
+                streaming: false,
+                ready: true,
+            },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'draft' } });
+        input.setSelectionRange(input.value.length, input.value.length);
+        fireEvent.keyDown(input, { key: 'ArrowUp' });
+
+        await waitFor(() => expect(input.value).toBe('see this photo'));
+        expect(getByTestId('ai-pending-attachments').textContent || '').toContain('see.png');
+
+        input.setSelectionRange(input.value.length, input.value.length);
+        fireEvent.keyDown(input, { key: 'ArrowDown' });
+        await waitFor(() => expect(input.value).toBe('draft'));
+        expect(queryByTestId('ai-pending-attachments')).toBeNull();
+    });
+
+    it('restores images when a history suggestion is accepted', async () => {
+        const image = { filePath: 'D:/shots/see.png', fileName: 'see.png', extension: '.png', isImage: true };
+        const { getByTestId } = renderPanel({
+            state: {
+                messages: [makeMsg({ role: 'user', content: 'earlier' })],
+                submittedPrompts: ['see this photo'],
+                submittedPromptAttachments: [[image]],
+                sending: false,
+                streaming: false,
+                ready: true,
+            },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'see' } });
+        const suggestion = await waitFor(() => getByTestId('ai-input-history-item-0'));
+        expect(suggestion.textContent || '').toContain('image');
+        fireEvent.click(suggestion);
+
+        await waitFor(() => expect(input.value).toBe('see this photo'));
+        expect(getByTestId('ai-pending-attachments').textContent || '').toContain('see.png');
     });
 
     it('does not recall history when ArrowUp is pressed away from the first line', async () => {

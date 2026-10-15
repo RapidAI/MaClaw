@@ -147,7 +147,7 @@ var managedSchemaGateBaseline = map[string]map[string]string{
 	// mailbox_configure saves the account the user described. The password is
 	// the credential the keyring stores. The hosts are the IMAP and SMTP
 	// targets the capability has to name.
-	"mailbox_configure": {
+	semanticTrustedMailboxConfigureAdapter: {
 		"password":      reasonMailboxKeyringCredential,
 		"inbound.host":  reasonCapabilityTargetURL,
 		"outbound.host": reasonCapabilityTargetURL,

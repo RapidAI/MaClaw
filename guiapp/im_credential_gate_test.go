@@ -356,7 +356,7 @@ func TestConsumePendingAskUserAnswerSkipsInternalCommand(t *testing.T) {
 	h := &IMMessageHandler{}
 	h.pendingAskUser.Store("u1", &pendingAskUserState{Question: "选哪个？"})
 
-	ctx, ws, ok := h.consumePendingAskUserAnswer("u1", "__confirm_execution__ card-1", nil)
+	ctx, ws, ok, _ := h.consumePendingAskUserAnswer("u1", "__confirm_execution__ card-1", nil)
 	if ok || ctx != "" || ws != nil {
 		t.Fatalf("internal command must not bind as ask_user answer: ctx=%q ws=%v ok=%v", ctx, ws, ok)
 	}

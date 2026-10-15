@@ -158,7 +158,7 @@ func maxAnchorScore(queryVec []float32, anchor intentAnchor, cal intentScoreCali
 // Anchor vector disk cache
 // ---------------------------------------------------------------------------
 //
-// Warming ~530 anchors one by one costs ~25 s on a desktop CPU at every cold
+// Warming ~570 anchors one by one costs ~25 s on a desktop CPU at every cold
 // start. Vectors are cached on disk under a key that covers the embedder's
 // ModelID (model identity, dimension, prompt regime), the Layer 2 role prompt
 // and every anchor label/text, so a model, prompt or anchor change can never

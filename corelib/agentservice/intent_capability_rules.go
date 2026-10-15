@@ -135,6 +135,9 @@ func IMSemanticIntentCapabilityNeedRules() map[intent.IntentLabel][]IntentCapabi
 		intent.LabelFileWrite: {
 			{Capability: coretool.CapabilityFSWriteLocal, Required: true},
 		},
+		intent.LabelFileDelete: {
+			{Capability: coretool.CapabilityFSDeleteLocal, Required: true},
+		},
 		intent.LabelShellCommand: {
 			{Capability: coretool.CapabilityShellExecuteLocal, Required: true, MaxInvocations: 8},
 		},
@@ -187,11 +190,12 @@ func IMSemanticIntentCapabilityNeedRules() map[intent.IntentLabel][]IntentCapabi
 		},
 		intent.LabelMailboxRead: {
 			{Capability: coretool.CapabilityMessageReadMailbox, Required: true, MaxInvocations: 8},
-			{Capability: coretool.CapabilityMessageConfigureMailbox, Required: false, MaxInvocations: 4},
 		},
 		intent.LabelMailboxSend: {
 			{Capability: coretool.CapabilityMessageSendMailbox, Required: true, MaxInvocations: 1},
-			{Capability: coretool.CapabilityMessageConfigureMailbox, Required: false, MaxInvocations: 4},
+		},
+		intent.LabelMailboxConfigure: {
+			{Capability: coretool.CapabilityMessageConfigureMailbox, Required: true, MaxInvocations: 4},
 		},
 		intent.LabelScheduleManage: {
 			{Capability: coretool.CapabilityScheduleAdministerLocal, Required: true},

@@ -145,6 +145,10 @@ func (s *Service) persistRegistry(ctx context.Context, reg *Registry) error {
 	}
 	toSave := cloneRegistry(reg)
 	normalizeRegistry(toSave)
+	// A blank key in this save must not erase a key already stored for the
+	// same provider and auth kind. Copy and other registry rewrites clone the
+	// in-memory row; if that row lost its secret, keep the stored one.
+	preserveStoredProviderSecrets(ctx, s.system, toSave)
 	toSave.UpdatedAt = time.Now().UTC()
 	data, err := json.Marshal(toSave)
 	if err != nil {
@@ -158,6 +162,77 @@ func (s *Service) persistRegistry(ctx context.Context, reg *Registry) error {
 	s.cachedAt = time.Now()
 	s.mu.Unlock()
 	return nil
+}
+
+// fillProviderSecretFromStore copies the stored API key onto provider when the
+// in-memory row lost it. The auth kind must still match, so a vendor switch
+// that intentionally drops the old token is left alone.
+func (s *Service) fillProviderSecretFromStore(ctx context.Context, provider llmpool.ProviderConfig) llmpool.ProviderConfig {
+	if s == nil || strings.TrimSpace(provider.APIKey) != "" {
+		return provider
+	}
+	prev, ok := s.storedProviderByID(ctx, provider.ID)
+	if !ok || !sameHopAuthKind(prev.AuthKind, provider.AuthKind) {
+		return provider
+	}
+	if key := strings.TrimSpace(prev.APIKey); key != "" {
+		provider.APIKey = key
+	}
+	return provider
+}
+
+func (s *Service) storedProviderByID(ctx context.Context, id string) (llmpool.ProviderConfig, bool) {
+	if s == nil || s.system == nil {
+		return llmpool.ProviderConfig{}, false
+	}
+	raw, err := s.system.Get(ctx, RegistrySettingKey)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return llmpool.ProviderConfig{}, false
+	}
+	var prev Registry
+	if err := json.Unmarshal([]byte(raw), &prev); err != nil {
+		return llmpool.ProviderConfig{}, false
+	}
+	idx := providerIndex(&prev, id)
+	if idx < 0 {
+		return llmpool.ProviderConfig{}, false
+	}
+	return prev.Providers[idx], true
+}
+
+// preserveStoredProviderSecrets puts a previously stored API key back when this
+// save would replace it with an empty one for the same auth kind.
+func preserveStoredProviderSecrets(ctx context.Context, system store.SystemSettingsRepository, next *Registry) {
+	if system == nil || next == nil {
+		return
+	}
+	raw, err := system.Get(ctx, RegistrySettingKey)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return
+	}
+	var prev Registry
+	if err := json.Unmarshal([]byte(raw), &prev); err != nil {
+		return
+	}
+	byID := make(map[string]llmpool.ProviderConfig, len(prev.Providers))
+	for _, provider := range prev.Providers {
+		id := strings.ToLower(strings.TrimSpace(provider.ID))
+		if id != "" {
+			byID[id] = provider
+		}
+	}
+	for i := range next.Providers {
+		id := strings.ToLower(strings.TrimSpace(next.Providers[i].ID))
+		old, ok := byID[id]
+		if !ok || !sameHopAuthKind(old.AuthKind, next.Providers[i].AuthKind) {
+			continue
+		}
+		if strings.TrimSpace(next.Providers[i].APIKey) == "" {
+			if key := strings.TrimSpace(old.APIKey); key != "" {
+				next.Providers[i].APIKey = key
+			}
+		}
+	}
 }
 
 // MutateRegistry clones the current registry, applies fn, and persists only when
@@ -214,9 +289,12 @@ func cloneProviderConfigs(in []llmpool.ProviderConfig) []llmpool.ProviderConfig 
 		out[i].CapabilityTags = append([]string(nil), p.CapabilityTags...)
 		out[i].AllowedNodeIDs = append([]string(nil), p.AllowedNodeIDs...)
 		out[i].CreditMultiplierSchedule = cloneCreditWindows(p.CreditMultiplierSchedule)
+		out[i].TokenBankAudiences = append([]llmpool.TokenBankAudience(nil), p.TokenBankAudiences...)
+		out[i].TokenBankExtraKeys = append([]string(nil), p.TokenBankExtraKeys...)
 		out[i].TokenBankShareWindow.Days = append([]int(nil), p.TokenBankShareWindow.Days...)
 		out[i].ServeWindows = cloneShareWindows(p.ServeWindows)
 		out[i].ModelMap = cloneStringMap(p.ModelMap)
+		out[i].TokenPricing = p.TokenPricing.Clone()
 	}
 	return out
 }

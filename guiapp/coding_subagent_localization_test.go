@@ -240,6 +240,156 @@ func TestCodegraphIndexReadyRequiresDatabase(t *testing.T) {
 	}
 }
 
+func TestCodegraphDominantHitFilePrefersRepeatedSource(t *testing.T) {
+	dir := t.TempDir()
+	src := "if (drawScene(dc)) {\n    miss(dc);\n}\nstatic void drawScene(HDC dc) {\n    fill(dc);\n}\nstatic void paint() {\n    drawScene(g_memDc);\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "snake.cpp"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body := codegraphSourceBody(dir, "snake.cpp", "drawScene")
+	if !strings.Contains(body, "static void drawScene") || !strings.Contains(body, "fill(dc);") || strings.Contains(body, "miss(dc)") || strings.Contains(body, "void paint") {
+		t.Fatalf("source body = %q", body)
+	}
+	var longFn strings.Builder
+	longFn.WriteString("static void drawScene(HDC dc) {\n")
+	for i := 0; i < 125; i++ {
+		longFn.WriteString("    fill(dc);\n")
+	}
+	longFn.WriteString("}\nstatic void paint() {\n}\n")
+	if err := os.WriteFile(filepath.Join(dir, "long.cpp"), []byte(longFn.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	longBody := codegraphSourceBody(dir, "long.cpp", "drawScene")
+	if !strings.Contains(longBody, "\t}") || strings.Contains(longBody, "void paint") || strings.Contains(longBody, "...") {
+		t.Fatalf("a 127-line function was cut: %q", longBody)
+	}
+	split := "static void drawCenteredText(HDC dc, const wchar_t* text, int top, int height,\n    COLORREF color, int fontHeight) {\n    DrawTextW(dc, text);\n}\nstatic void other() {\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "split.cpp"), []byte(split), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	splitBody := codegraphSourceBody(dir, "split.cpp", "drawCenteredText")
+	if !strings.Contains(splitBody, "const wchar_t* text") || !strings.Contains(splitBody, "DrawTextW") || strings.Contains(splitBody, "void other") {
+		t.Fatalf("split signature body = %q", splitBody)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "src", "other.cpp"), []byte("void x() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sample := "Search Results for \"bmp\":\nfunction ghost (9900%)\n  gone.cpp:1\nfunction helper (2200%)\n  src/other.cpp:1\n  note (50%)\nfunction drawScene (9000%)\n  snake.cpp:400\nfunction eyes (8000%)\n  snake.cpp:80\nfunction tail (3000%)\n  snake.cpp:20\nfunction noise (400%)\n  snake.cpp:9\n  ../secret.cpp:2\n  /etc/passwd:1\n  readme.md:3\n"
+	if got := codegraphDominantHitFile(sample, dir); got != "snake.cpp" {
+		t.Fatalf("dominant file = %q", got)
+	}
+	if got := codegraphBodyTargets(sample, "snake.cpp"); len(got) != 2 || got[0] != "drawScene" || got[1] != "eyes" || strings.Contains(strings.Join(got, ","), "tail") || strings.Contains(strings.Join(got, ","), "noise") {
+		t.Fatalf("body targets = %v", got)
+	}
+	trimmed := codegraphTrimSymbolMap("### Symbols\n- `drawScene` (function) — :400\n> Drop `symbolsOnly` to read the source, like Read.\n", nil)
+	if !strings.Contains(trimmed, "drawScene") || strings.Contains(trimmed, "like Read") || strings.Contains(trimmed, ">") {
+		t.Fatalf("symbol map kept the read footer: %q", trimmed)
+	}
+	var longMap strings.Builder
+	longMap.WriteString("### Symbols\n")
+	for i := 0; i < 100; i++ {
+		fmt.Fprintf(&longMap, "- `fn%03d` (function) — :%d\n", i, i+1)
+	}
+	longMap.WriteString("> Drop `symbolsOnly` to read the source, like Read.\n")
+	capped := codegraphTrimSymbolMap(longMap.String(), nil)
+	if !strings.Contains(capped, "fn000") || !strings.Contains(capped, "fn099") || strings.Contains(capped, "fn050") || strings.Contains(capped, "like Read") {
+		t.Fatalf("long symbol map dropped an end: %q", capped)
+	}
+	var wide strings.Builder
+	wide.WriteString("### Symbols\n")
+	for i := 0; i < 100; i++ {
+		fmt.Fprintf(&wide, "- `fn%03d` (function) — :%d\n", i, (i+1)*30)
+	}
+	around := codegraphTrimSymbolMap(wide.String(), []int{51 * 30})
+	if !strings.Contains(around, "fn000") || !strings.Contains(around, "fn038") || !strings.Contains(around, "fn050") || strings.Contains(around, "fn037") || strings.Contains(around, "fn099") || strings.Contains(around, "fn030") {
+		t.Fatalf("symbol map missed the hit neighborhood: %q", around)
+	}
+	missed := codegraphTrimSymbolMap(wide.String(), []int{99999})
+	if !strings.Contains(missed, "fn040") || !strings.Contains(missed, "fn060") || strings.Contains(missed, "fn050") {
+		t.Fatalf("a hit past the listed symbols should keep both ends: %q", missed)
+	}
+	if codegraphQueryBatch([][]string{{"node", "playTone"}}) || !codegraphQueryBatch([][]string{{"query", "--limit", "4", "bmp"}, {"query", "--limit", "4", "draw"}}) {
+		t.Fatal("symbol map attaches to a query batch, not a node lookup")
+	}
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash is not installed")
+	}
+	script := "cd " + remoteShellQuote(dir) + "; _cg_map_file=; _cg_best=-1; for _cg_row in $(printf '%s\\n' " + remoteShellQuote(sample) + " | awk " + remoteShellQuote(codegraphDominantFileAwk) + "); do _cg_sc=${_cg_row%%:*}; _cg_f=${_cg_row#*:}; if [ -n \"$_cg_f\" ] && [ -f \"$_cg_f\" ] && [ \"$_cg_sc\" -gt \"$_cg_best\" ]; then _cg_best=$_cg_sc; _cg_map_file=$_cg_f; fi; done; printf '%s\\n' \"$_cg_map_file\""
+	cmd := exec.Command(bash, "-c", script)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("awk: %v\n%s", err, out)
+	}
+	if strings.TrimSpace(string(out)) != "snake.cpp" {
+		t.Fatalf("remote file picker = %q", out)
+	}
+	names := exec.Command(bash, "-c", "printf '%s\\n' "+remoteShellQuote(sample)+" | awk -v f=snake.cpp "+remoteShellQuote(codegraphNamedHitAwk))
+	nameOut, err := names.CombinedOutput()
+	if err != nil {
+		t.Fatalf("named hits: %v\n%s", err, nameOut)
+	}
+	listed := string(nameOut)
+	if !strings.Contains(listed, "9000:drawScene") || !strings.Contains(listed, "8000:eyes") || !strings.Contains(listed, "3000:tail") || strings.Contains(listed, "noise") || strings.Contains(listed, "helper") || strings.Contains(listed, "ghost") {
+		t.Fatalf("remote body targets = %q", listed)
+	}
+	bodyScript := "awk -v name=drawScene " + remoteShellQuote(codegraphSourceBodyAwk) + " " + remoteShellQuote(filepath.ToSlash(filepath.Join(dir, "snake.cpp")))
+	bodyOut, err := exec.Command(bash, "-c", bodyScript).CombinedOutput()
+	if err != nil {
+		t.Fatalf("source body awk: %v\n%s", err, bodyOut)
+	}
+	remoteBody := string(bodyOut)
+	if !strings.Contains(remoteBody, "static void drawScene") || !strings.Contains(remoteBody, "fill(dc);") || strings.Contains(remoteBody, "miss(dc)") || strings.Contains(remoteBody, "void paint") {
+		t.Fatalf("remote source body = %q", remoteBody)
+	}
+	longScript := "awk -v name=drawScene " + remoteShellQuote(codegraphSourceBodyAwk) + " " + remoteShellQuote(filepath.ToSlash(filepath.Join(dir, "long.cpp")))
+	longOut, err := exec.Command(bash, "-c", longScript).CombinedOutput()
+	if err != nil {
+		t.Fatalf("long source body awk: %v\n%s", err, longOut)
+	}
+	if !strings.Contains(string(longOut), "\t}") || strings.Contains(string(longOut), "void paint") || strings.Contains(string(longOut), "...") {
+		t.Fatalf("remote 127-line function was cut: %q", longOut)
+	}
+	splitScript := "awk -v name=drawCenteredText " + remoteShellQuote(codegraphSourceBodyAwk) + " " + remoteShellQuote(filepath.ToSlash(filepath.Join(dir, "split.cpp")))
+	splitOut, err := exec.Command(bash, "-c", splitScript).CombinedOutput()
+	if err != nil {
+		t.Fatalf("split signature awk: %v\n%s", err, splitOut)
+	}
+	if !strings.Contains(string(splitOut), "const wchar_t* text") || !strings.Contains(string(splitOut), "DrawTextW") || strings.Contains(string(splitOut), "void other") {
+		t.Fatalf("remote split signature body = %q", splitOut)
+	}
+	filter := exec.Command(bash, "-c", "printf '%s\\n' "+remoteShellQuote(longMap.String())+" | awk "+remoteShellQuote(codegraphSymbolMapFilterAwk))
+	filtered, err := filter.CombinedOutput()
+	if err != nil {
+		t.Fatalf("symbol map filter: %v\n%s", err, filtered)
+	}
+	text := string(filtered)
+	if !strings.Contains(text, "fn000") || !strings.Contains(text, "fn099") || strings.Contains(text, "fn050") || strings.Contains(text, "like Read") {
+		t.Fatalf("remote symbol map dropped an end: %q", text)
+	}
+	aroundScript := "printf '%s\\n' " + remoteShellQuote(wide.String()) + " | awk -v hits=1530 " + remoteShellQuote(codegraphSymbolMapFilterAwk)
+	aroundOut, err := exec.Command(bash, "-c", aroundScript).CombinedOutput()
+	if err != nil {
+		t.Fatalf("hit window: %v\n%s", err, aroundOut)
+	}
+	window := string(aroundOut)
+	if !strings.Contains(window, "fn000") || !strings.Contains(window, "fn038") || !strings.Contains(window, "fn050") || strings.Contains(window, "fn037") || strings.Contains(window, "fn099") || strings.Contains(window, "fn030") {
+		t.Fatalf("remote symbol map missed the hit neighborhood: %q", window)
+	}
+	missedScript := "printf '%s\\n' " + remoteShellQuote(wide.String()) + " | awk -v hits=99999 " + remoteShellQuote(codegraphSymbolMapFilterAwk)
+	missedOut, err := exec.Command(bash, "-c", missedScript).CombinedOutput()
+	if err != nil {
+		t.Fatalf("unlisted hit: %v\n%s", err, missedOut)
+	}
+	missedText := string(missedOut)
+	if !strings.Contains(missedText, "fn040") || !strings.Contains(missedText, "fn060") || strings.Contains(missedText, "fn050") {
+		t.Fatalf("remote map hid both ends for an unlisted hit: %q", missedText)
+	}
+}
+
 func TestCodegraphContinueHintStaysOnAfterAHit(t *testing.T) {
 	t.Setenv("CODEGRAPH_DIR", "")
 	hint := codegraphContinueHint("codegraph")
@@ -436,8 +586,8 @@ func TestRemoteCodeNavigationShellPrefersCodeGraphThenFallsBack(t *testing.T) {
 	if remoteSSHWaitSeconds(explore) != 300 {
 		t.Fatalf("bootstrap navigation should wait for install/init, wait=%d", remoteSSHWaitSeconds(explore))
 	}
-	if remoteSSHWaitSeconds(plain) != 60 {
-		t.Fatalf("plain navigation wait=%d", remoteSSHWaitSeconds(plain))
+	if remoteSSHWaitSeconds(plain) != 120 {
+		t.Fatalf("a query plus its symbol map should keep the longer ceiling, wait=%d", remoteSSHWaitSeconds(plain))
 	}
 	node := remoteCodeNavigationShell("node", "guiapp/coding_subagent.go", "ignored", "", 0, 0, false)
 	if !strings.Contains(node, `"$_cg_bin" node`) || !strings.Contains(node, "--symbols-only") || strings.Contains(node, `"$_cg_bin" explore`) {
@@ -492,8 +642,11 @@ func TestRemoteCodeNavigationShellPrefersCodeGraphThenFallsBack(t *testing.T) {
 		t.Fatal("path escape check mismatch")
 	}
 	multi := remoteCodeNavigationShell("explore", "visual polish frame screenshot bmp capture checks", "visual polish frame screenshot bmp capture checks", "", 0, 0, false)
-	if !strings.Contains(multi, "for _cg_term in") || !strings.Contains(multi, "'bmp'") || !strings.Contains(multi, "'screenshot'") || !strings.Contains(multi, "'capture'") || !strings.Contains(multi, "_cg_miss") {
+	if !strings.Contains(multi, "for _cg_term in") || !strings.Contains(multi, "'bmp'") || !strings.Contains(multi, "'screenshot'") || !strings.Contains(multi, "'capture'") || !strings.Contains(multi, "_cg_miss") || !strings.Contains(multi, "--symbols-only") || !strings.Contains(multi, "### Symbols") || !strings.Contains(multi, "Symbol map for") {
 		t.Fatalf("multi-token shell = %s", multi)
+	}
+	if !strings.Contains(plain, "--symbols-only") || !strings.Contains(plain, "Symbol map for") || !strings.Contains(plain, "Body for") || strings.Contains(plain, `_cg_body=$("$_cg_bin" node --file`) || strings.Contains(plain, `_cg_out=$("$_cg_bin" node`) {
+		t.Fatalf("a prose query should attach the current function text: %s", plain)
 	}
 	for _, script := range []string{explore, plain, node, def, callers, symbol, fileSym, outside, abs, multi} {
 		assertRemoteNavigationShellSyntax(t, script)
@@ -598,6 +751,12 @@ func TestCodegraphOutputUsefulIgnoresMissBanner(t *testing.T) {
 	}
 	if codegraphOutputUseful("No callers found for \"playTone\"") || codegraphOutputUseful("No callees found for \"playTone\"") {
 		t.Fatal("an empty edge list should fall back to text search")
+	}
+	if codegraphOutputUseful("No relevant code found for \"draw the board\"") || codegraphOutputUseful("No files indexed. Run `codegraph index` first.") {
+		t.Fatal("an empty explore or an empty index should fall back to text search")
+	}
+	if !codegraphOutputUseful("## Exploration: draw\nNo relevant code found in a comment\n") {
+		t.Fatal("source that mentions an explore miss should stay")
 	}
 	if !codegraphOutputUseful("## playTone (function)\nNo callers found in a comment\n") {
 		t.Fatal("source that mentions an empty edge list should stay")
@@ -949,7 +1108,10 @@ func assertRemoteNavigationShellSyntax(t *testing.T, script string) {
 	if err != nil {
 		t.Skip("bash is not installed")
 	}
-	cmd := exec.Command(bash, "-n", "-c", script)
+	// The navigation script is larger than the local bash argument limit, so
+	// the syntax check reads it on stdin.
+	cmd := exec.Command(bash, "-n", "-s")
+	cmd.Stdin = strings.NewReader(script)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("navigation shell syntax: %v\n%s\n%s", err, out, script)

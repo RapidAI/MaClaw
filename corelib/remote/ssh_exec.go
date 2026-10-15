@@ -1,8 +1,10 @@
 package remote
 
 import (
+	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"strings"
 	"sync"
 	"time"
@@ -132,4 +134,89 @@ func (m *SSHSessionManager) ExecCommandChannel(ctx context.Context, sessionID, c
 		return SSHExecResult{}, fmt.Errorf("ssh session %s is closed", sessionID)
 	}
 	return RunSSHCommand(ctx, client, command, timeout)
+}
+
+// SSHCommandStream is one long-lived exec channel. Stdin and stdout stay open
+// so a remote process can speak a line protocol for the rest of the task.
+// Closing it closes the channel. A detached child that process started is not
+// signaled.
+type SSHCommandStream struct {
+	session *ssh.Session
+	stdin   io.WriteCloser
+	stdout  *bufio.Reader
+}
+
+// OpenSSHCommand starts command on its own non-PTY channel. The command is
+// not passed through a login shell unless the caller includes one. Stderr is
+// discarded so a chatty process cannot fill the channel and stall stdout.
+func OpenSSHCommand(client *ssh.Client, command string) (*SSHCommandStream, error) {
+	if client == nil {
+		return nil, fmt.Errorf("ssh command stream: nil client")
+	}
+	if strings.TrimSpace(command) == "" {
+		return nil, fmt.Errorf("ssh command stream: empty command")
+	}
+	session, err := client.NewSession()
+	if err != nil {
+		return nil, fmt.Errorf("ssh command stream: new session: %w", err)
+	}
+	stdin, err := session.StdinPipe()
+	if err != nil {
+		_ = session.Close()
+		return nil, fmt.Errorf("ssh command stream: stdin: %w", err)
+	}
+	stdout, err := session.StdoutPipe()
+	if err != nil {
+		_ = session.Close()
+		return nil, fmt.Errorf("ssh command stream: stdout: %w", err)
+	}
+	session.Stderr = io.Discard
+	if err := session.Start(command); err != nil {
+		_ = session.Close()
+		return nil, fmt.Errorf("ssh command stream: start: %w", err)
+	}
+	return &SSHCommandStream{
+		session: session,
+		stdin:   stdin,
+		stdout:  bufio.NewReaderSize(stdout, 1024*1024),
+	}, nil
+}
+
+// Write sends bytes to the remote process stdin.
+func (s *SSHCommandStream) Write(p []byte) (int, error) {
+	if s == nil || s.stdin == nil {
+		return 0, fmt.Errorf("ssh command stream: closed")
+	}
+	return s.stdin.Write(p)
+}
+
+// ReadLine reads one newline-terminated chunk. The newline is kept.
+func (s *SSHCommandStream) ReadLine() (string, error) {
+	if s == nil || s.stdout == nil {
+		return "", fmt.Errorf("ssh command stream: closed")
+	}
+	return s.stdout.ReadString('\n')
+}
+
+// Wait blocks until the remote process exits. Call it once.
+func (s *SSHCommandStream) Wait() error {
+	if s == nil || s.session == nil {
+		return nil
+	}
+	return s.session.Wait()
+}
+
+// Close closes stdin and the exec channel. It does not signal a daemon the
+// remote process may have detached.
+func (s *SSHCommandStream) Close() error {
+	if s == nil {
+		return nil
+	}
+	if s.stdin != nil {
+		_ = s.stdin.Close()
+	}
+	if s.session != nil {
+		return s.session.Close()
+	}
+	return nil
 }

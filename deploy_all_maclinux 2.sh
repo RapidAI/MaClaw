@@ -557,7 +557,7 @@ clean_hubcenter_db_if_requested() {
 }
 
 is_allowed_model_file() {
-  case "$1" in ""|*/*|*\\*|*..*) return 1 ;; *.gguf|*.yolow|*.koro|*.zip) return 0 ;; *) return 1 ;; esac
+  case "$1" in ""|*/*|*\\*|*..*) return 1 ;; *.gguf|*.yolow|*.koro|*.zip|*.json) return 0 ;; *) return 1 ;; esac
 }
 
 seed_home_models() {

@@ -63,7 +63,7 @@ func TestPublishedExternalEffectHostAdaptersHaveAReceiptBoundary(t *testing.T) {
 			AdapterName: provider.AdapterName,
 			Effects:     provider.Effects,
 		}
-		if semanticHostObservedExternalSelection(selection) {
+		if semanticHostObservedExternalSelection(selection) || semanticMailboxSendReceiptSelection(selection) {
 			continue
 		}
 		if semanticCurrentChannelArtifactDelivery(selection) || semanticScheduleChannelDispatch(selection) {

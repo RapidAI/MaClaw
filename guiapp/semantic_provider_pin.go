@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"log"
 	"sort"
 	"strings"
 
@@ -42,6 +43,44 @@ func semanticProviderPins(userText string, providers []tool.ProviderSpec, mcpEnt
 	matcher := tool.NewProviderReferenceMatcher(userText)
 	pins := make([]tool.ProviderPin, 0, len(providers))
 	seen := map[tool.CapabilityID]bool{}
+	// The reference matcher folds '-' into '_', so one mention can hit two
+	// sibling impl spellings (foo-bar and foo_bar). Verbatim occurrences —
+	// case-folded but separator-preserving — narrow the folded set to the
+	// spelling the user actually typed; with none, every folded match stands.
+	matchedImplIDs := map[string]bool{}
+	for _, provider := range providers {
+		implID := strings.TrimSpace(provider.Binding.ImplementationID)
+		if implID != "" && matcher.ToolNames(implID) {
+			matchedImplIDs[implID] = true
+		}
+	}
+	if verbatim := verbatimToolNameMentions(userText, matchedImplIDs); len(verbatim) > 0 {
+		matchedImplIDs = verbatim
+	}
+	// A tool-name hit pins that exact implementation: one server can publish
+	// several tools sharing a capability (every tool on a server offers the
+	// open lookup family), so a provider-wide pin would still leave a sibling
+	// tool substitutable. Impl-narrowed pins are emitted first; the
+	// provider-wide server-name pins below only fill capabilities the tool
+	// match did not already claim, so one capability never carries two pins.
+	for _, provider := range providers {
+		if strings.TrimSpace(provider.Binding.Kind) != "mcp" {
+			continue
+		}
+		serverID := strings.TrimSpace(provider.Binding.ProviderID)
+		implID := strings.TrimSpace(provider.Binding.ImplementationID)
+		if serverID == "" || implID == "" || !matchedImplIDs[implID] || matcher.ServerNames(serverID, names[serverID]...) {
+			continue
+		}
+		for _, provision := range provider.Provides {
+			capability := provision.Capability
+			if capability == "" || seen[capability] {
+				continue
+			}
+			seen[capability] = true
+			pins = append(pins, tool.ProviderPin{Capability: capability, Kind: "mcp", ProviderID: serverID, ImplementationID: implID})
+		}
+	}
 	for _, provider := range providers {
 		kind := strings.TrimSpace(provider.Binding.Kind)
 		if kind != "mcp" {
@@ -75,6 +114,26 @@ func semanticProviderPins(userText string, providers []tool.ProviderSpec, mcpEnt
 		return pins[i].ProviderID < pins[j].ProviderID
 	})
 	return pins
+}
+
+// verbatimToolNameMentions narrows folded tool-name matches to the spellings
+// that appear in the user's text as written. The reference matcher folds
+// '-' into '_', so "foo-bar" also names a sibling impl literally spelled
+// "foo_bar" — yet each spelling mints a distinct capability id, and folding
+// the hit would pin a tool the user never named (or fail the turn when that
+// sibling is degraded). The verbatim fold is case-insensitive only: '-' and
+// '_' stay distinct, mirroring the slug the capability id derives. An empty
+// result means no spelling appeared verbatim and the caller keeps every
+// folded match.
+func verbatimToolNameMentions(userText string, matchedImplIDs map[string]bool) map[string]bool {
+	lowered := strings.ToLower(userText)
+	out := make(map[string]bool, len(matchedImplIDs))
+	for implID := range matchedImplIDs {
+		if strings.Contains(lowered, strings.ToLower(implID)) {
+			out[implID] = true
+		}
+	}
+	return out
 }
 
 // semanticMCPServerDisplayNames maps each server id to its display name. A
@@ -142,4 +201,104 @@ func semanticStringInList(value string, list []string) bool {
 		}
 	}
 	return false
+}
+
+// semanticNamedProviderNeeds mints the demand side of exact tool naming.
+// semanticProviderPins narrows selection among providers of capabilities the
+// turn already needed; it cannot create a need for a capability no intent
+// rule ever declares. When the user names an installed vendor tool by its
+// compound spelling (search_docs, create_issue — bare one-word names are
+// never eligible), the host mints an exact x:mcp:<server>:<tool> need plus
+// the pin that binds it, so "use the X tool" reaches that binding and only
+// that binding.
+//
+// The need is Required: an explicitly named implementation that cannot be
+// selected must surface as pinned_provider_unavailable, not be silently
+// omitted while the turn answers through a sibling.
+//
+// The registry is seeded here rather than at publication time because the
+// planning registry is rebuilt per turn: the capability vocabulary each plan
+// resolves against must be re-derived from this turn's own provider set.
+// semanticExternalCapabilityVocabulary collects the x: capability IDs a
+// provider set publishes. Shared by the pre-publish registry seed and the
+// named-provider pin path: both must see the same vocabulary.
+func semanticExternalCapabilityVocabulary(providers []tool.ProviderSpec) []tool.CapabilityID {
+	caps := make([]tool.CapabilityID, 0, len(providers))
+	for _, provider := range providers {
+		for _, provision := range provider.Provides {
+			if strings.HasPrefix(string(provision.Capability), string(tool.ExternalCapabilityPrefix)) {
+				caps = append(caps, provision.Capability)
+			}
+		}
+	}
+	return caps
+}
+
+func semanticNamedProviderNeeds(userText string, registry *tool.CapabilityRegistry, providers []tool.ProviderSpec) ([]tool.CapabilityNeed, []tool.ProviderPin) {
+	if strings.TrimSpace(userText) == "" || registry == nil {
+		return nil, nil
+	}
+	matcher := tool.NewProviderReferenceMatcher(userText)
+	// Seed every external capability this turn's providers publish, named or
+	// not: the vocabulary a plan resolves against must contain the caps the
+	// contracts granted, and seeding is idempotent.
+	allExternal := semanticExternalCapabilityVocabulary(providers)
+	type namedBinding struct {
+		serverID string
+		implID   string
+	}
+	matched := make([]namedBinding, 0, len(providers))
+	matchedImplIDs := map[string]bool{}
+	for _, provider := range providers {
+		serverID := strings.TrimSpace(provider.Binding.ProviderID)
+		implID := strings.TrimSpace(provider.Binding.ImplementationID)
+		if strings.TrimSpace(provider.Binding.Kind) != "mcp" || serverID == "" || implID == "" {
+			continue
+		}
+		if matcher.ToolNames(implID) {
+			matched = append(matched, namedBinding{serverID: serverID, implID: implID})
+			matchedImplIDs[implID] = true
+		}
+	}
+	// Same fold disambiguation as semanticProviderPins: a verbatim spelling
+	// occurrence keeps only the impls the user actually typed.
+	if verbatim := verbatimToolNameMentions(userText, matchedImplIDs); len(verbatim) > 0 {
+		narrowed := matched[:0]
+		for _, binding := range matched {
+			if verbatim[binding.implID] {
+				narrowed = append(narrowed, binding)
+			}
+		}
+		matched = narrowed
+	}
+	if len(allExternal) > 0 {
+		if err := agentservice.EnsureExternalCapabilityVocabulary(registry, allExternal); err != nil {
+			log.Printf("[semantic-routing] external capability vocabulary seeding incomplete: %v", err)
+		}
+	}
+	if len(matched) == 0 {
+		return nil, nil
+	}
+	namedSeen := map[tool.CapabilityID]bool{}
+	needs := make([]tool.CapabilityNeed, 0, len(matched))
+	pins := make([]tool.ProviderPin, 0, len(matched))
+	for _, binding := range matched {
+		capID := agentservice.AutoMCPCapabilityIDForBinding(binding.serverID, binding.implID)
+		if capID == "" || namedSeen[capID] {
+			continue
+		}
+		namedSeen[capID] = true
+		needs = append(needs, tool.CapabilityNeed{
+			ID:          "need:~named:" + string(capID),
+			Capability:  capID,
+			Polarity:    tool.NeedRequire,
+			Required:    true,
+			Confidence:  1,
+			EvidenceIDs: []string{"named:mcp_tool"},
+		})
+		pins = append(pins, tool.ProviderPin{Capability: capID, Kind: "mcp", ProviderID: binding.serverID, ImplementationID: binding.implID})
+	}
+	sort.Slice(needs, func(i, j int) bool { return needs[i].ID < needs[j].ID })
+	sort.Slice(pins, func(i, j int) bool { return pins[i].Capability < pins[j].Capability })
+	return needs, pins
 }

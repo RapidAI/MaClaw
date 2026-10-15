@@ -2984,15 +2984,18 @@ func TestOAuthProviderCapabilityCheckKeepsExistingVisionOnInconclusiveProbe(t *t
 
 	var requests atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if requests.Add(1) == 1 {
-			w.Header().Set("Content-Type", "application/json")
-			_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"hello"}}]}`))
+		requests.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		raw, _ := io.ReadAll(r.Body)
+		if bytes.Contains(raw, []byte("image_url")) {
+			// A malformed response represents an inconclusive image request,
+			// not a model-confirmed lack of image input support. The probe
+			// runs concurrently with the text test, so match on the request
+			// body, not arrival order.
+			_, _ = w.Write([]byte(`{`))
 			return
 		}
-		// A malformed response represents an inconclusive image request, not a
-		// model-confirmed lack of image input support.
-		w.Header().Set("Content-Type", "application/json")
-		_, _ = w.Write([]byte(`{`))
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"hello"}}]}`))
 	}))
 	defer srv.Close()
 

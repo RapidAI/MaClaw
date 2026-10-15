@@ -4,6 +4,7 @@ import { AssistantInputComposer } from "./AssistantInputComposer";
 import type { Theme } from "./aiAssistantPanelTheme";
 import type { ComposeAction, FireSlashCommand, PlusMenuActionId } from "./composeAction";
 import type { AttachmentInfo, BufferEntry } from "./useBufferQueue";
+import type { PromptHistoryAttachment } from "./promptHistory";
 import type { UseVoiceInputResult } from "./useVoiceInput";
 import type { AssistantPermissionMode } from "./AssistantInputComposerTypes";
 
@@ -81,6 +82,8 @@ interface AssistantInputStackProps {
     showResizeHandle?: boolean;
     showVoiceInput?: boolean;
     submittedPrompts?: string[];
+    submittedPromptAttachments?: PromptHistoryAttachment[][];
+    onHistoryTextAccepted?: (text: string) => void;
     sendButtonStyle?: React.CSSProperties;
     sendButtonTestId?: string;
     startInputResize: (event: React.MouseEvent<HTMLDivElement>) => void;
@@ -107,7 +110,7 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
         inputLocked, hardLockInput = false, inputOverlay, allowInputOverflow = true, inputRef, inputRowTestId, inputValue, inline, flushBottom = false, isBusy, isSelectionCollapsedAtBoundary, lang, onComposeActionChange, onFireSlashCommand, onInsertTemplate, onPlusMenuAction, pendingAttachments,
         pendingAttachmentsTestId, permissionMode, taskCommandAllowed, showPermissionMode, showWorkspacePermissionOption, onPermissionModeChange, placeholderText, queue, queuePanelTestId, ready, recallHistory, rememberHistoryEdit, removeEntry, removeSelectedFile, reorderEntry,
         resizeInput, selectedFilePaths, setPendingAttachments, showBusySpinner, showMemoryUsage, showResizeHandle = true,
-        showVoiceInput, submittedPrompts, sendButtonStyle, sendButtonTestId, startInputResize, textareaAriaLabel, textareaTestId, theme: t,
+        showVoiceInput, submittedPrompts, submittedPromptAttachments, onHistoryTextAccepted, sendButtonStyle, sendButtonTestId, startInputResize, textareaAriaLabel, textareaTestId, theme: t,
         themeMode, toolbarEndContent, toolbarTestId, trailingToolbarContent, updateInputValue, voiceInput,
     } = props;
 
@@ -226,6 +229,8 @@ export function AssistantInputStack(props: AssistantInputStackProps) {
                     showMemoryUsage={showMemoryUsage}
                     showVoiceInput={showVoiceInput}
                     submittedPrompts={submittedPrompts}
+                    submittedPromptAttachments={submittedPromptAttachments}
+                    onHistoryTextAccepted={onHistoryTextAccepted}
                     sendButtonStyle={sendButtonStyle}
                     sendButtonTestId={sendButtonTestId}
                     textareaAriaLabel={textareaAriaLabel}

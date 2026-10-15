@@ -11,7 +11,11 @@ import (
 
 func TestRunWindowCreateClaimAndStop(t *testing.T) {
 	m := newTestRunWindowManager(t)
-	now := time.Date(2026, 10, 14, 1, 0, 0, 0, time.Local)
+	// time.Now, not a fixed date: MarkStarted pauses a task whose
+	// window already ended against the real clock, so the window must
+	// stay in the future. Truncate to the minute because Create parses
+	// StartAt/EndAt at minute precision and Equal() compares instants.
+	now := time.Now().Truncate(time.Minute)
 	start := now.Add(2 * time.Hour)
 	end := start.Add(4 * time.Hour)
 	id, err := m.Create(RunWindowCreateRequest{
@@ -160,7 +164,11 @@ func TestRunWindowRejectsInvalidRangeAndMissesClosedWindow(t *testing.T) {
 
 func TestRunWindowUpdateTimesAndDeleteCancels(t *testing.T) {
 	m := newTestRunWindowManager(t)
-	now := time.Date(2026, 10, 14, 9, 0, 0, 0, time.Local)
+	// time.Now, not a fixed date: MarkStarted pauses a task whose
+	// window already ended against the real clock, so the window must
+	// stay in the future. Truncate to the minute because Create parses
+	// StartAt/EndAt at minute precision and Equal() compares instants.
+	now := time.Now().Truncate(time.Minute)
 	start := now.Add(time.Hour)
 	id, err := m.Create(RunWindowCreateRequest{
 		Prompt:  "可改时间",
@@ -291,7 +299,11 @@ func TestRunWindowNoEndCompletesWhenWorkFinishes(t *testing.T) {
 
 func TestRunWindowCompletesInsideOpenWindow(t *testing.T) {
 	m := newTestRunWindowManager(t)
-	now := time.Date(2026, 10, 14, 1, 0, 0, 0, time.Local)
+	// time.Now, not a fixed date: MarkStarted pauses a task whose
+	// window already ended against the real clock, so the window must
+	// stay in the future. Truncate to the minute because Create parses
+	// StartAt/EndAt at minute precision and Equal() compares instants.
+	now := time.Now().Truncate(time.Minute)
 	start := now.Add(time.Hour)
 	end := start.Add(4 * time.Hour)
 	id, err := m.Create(RunWindowCreateRequest{
@@ -461,7 +473,11 @@ func TestRunWindowReclaimsAbandonedClaim(t *testing.T) {
 
 func TestRunWindowRetriesPauseUntilLoopExists(t *testing.T) {
 	m := newTestRunWindowManager(t)
-	now := time.Date(2026, 10, 14, 1, 0, 0, 0, time.Local)
+	// time.Now, not a fixed date: MarkStarted pauses a task whose
+	// window already ended against the real clock, so the window must
+	// stay in the future. Truncate to the minute because Create parses
+	// StartAt/EndAt at minute precision and Equal() compares instants.
+	now := time.Now().Truncate(time.Minute)
 	start := now.Add(time.Hour)
 	end := start.Add(time.Hour)
 	id, err := m.Create(RunWindowCreateRequest{

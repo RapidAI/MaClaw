@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -73,6 +74,23 @@ var desktopBotWatchOverride func(ctx context.Context, botID string) (novncURL st
 var desktopBotViewSink func(payload string)
 var desktopBotResultSink func(*IMAgentResponse)
 
+// desktopBotQueuedSink records the one quiet line a refused send shows while
+// it waits. Production leaves it nil; the desktop-bot-queued event still runs.
+var desktopBotQueuedSink func(payload string)
+
+// desktopBotBusyMessage is Hub's refusal while this user's cloud desktop still
+// has a non-terminal admit. The same job is sent once the desktop is free.
+const desktopBotBusyMessage = "这台云桌面还有一件在做。"
+
+// desktopBotBusyPoll is how often a refused send reads the task list.
+// Tests set a few milliseconds. The default is one second.
+var desktopBotBusyPoll = time.Second
+
+// errDesktopOccurrenceSkipped is a scheduled occurrence whose wait ran out
+// while the desktop stayed busy. It is not the busy sentence, and it is not
+// reported as a failure.
+var errDesktopOccurrenceSkipped = errors.New("desktop occurrence skipped")
+
 // DesktopBotAccess is the gate for the left-hand bot entry.
 type DesktopBotAccess struct {
 	Enabled bool   `json:"enabled"`
@@ -87,6 +105,8 @@ type DesktopBotInfo struct {
 	Description string `json:"description"`
 	InstanceID  string `json:"instance_id"`
 	CreatedAt   string `json:"created_at"`
+	// Primary is copied from the list item. The client does not recompute it.
+	Primary bool `json:"primary,omitempty"`
 }
 
 // DesktopBotWatch is one watch poll result: the live noVNC page for this
@@ -95,6 +115,27 @@ type DesktopBotWatch struct {
 	NovncURL        string `json:"novnc_url"`
 	UserControl     bool   `json:"user_control"`
 	AttentionReason string `json:"attention_reason,omitempty"`
+	DesktopMode     string `json:"desktop_mode,omitempty"`
+}
+
+// DesktopBotScreen is one GET /api/v1/bots/{id}/desktop result. Shared bots
+// all return the owner's display; an isolated bot returns its own.
+type DesktopBotScreen struct {
+	NovncURL        string `json:"novnc_url"`
+	UserControl     bool   `json:"user_control"`
+	AttentionReason string `json:"attention_reason,omitempty"`
+	DesktopMode     string `json:"desktop_mode"`
+}
+
+// DesktopBotHandBack is the reply from POST /api/v1/bots/{id}/desktop/handback.
+// A running continuation is 202; a settled reply is 200; resume=false is not
+// requested here, so the bot continues the task.
+type DesktopBotHandBack struct {
+	HandedBack      bool   `json:"handed_back"`
+	Accepted        bool   `json:"accepted,omitempty"`
+	RunID           string `json:"run_id,omitempty"`
+	Status          string `json:"status,omitempty"`
+	ClientMessageID string `json:"client_message_id,omitempty"`
 }
 
 // WatchDesktopBot polls the live desktop for the Bot page. The GUI calls it
@@ -110,6 +151,7 @@ func (a *App) WatchDesktopBot(botID string, epoch int) (*DesktopBotWatch, error)
 		NovncURL        string `json:"novnc_url"`
 		UserControl     bool   `json:"user_control"`
 		AttentionReason string `json:"attention_reason"`
+		DesktopMode     string `json:"desktop_mode"`
 	}
 	// The generation travels with every poll of this open panel. Hub ignores
 	// a release from the panel that was just closed when a newer one is up.
@@ -127,7 +169,101 @@ func (a *App) WatchDesktopBot(botID string, epoch int) (*DesktopBotWatch, error)
 		NovncURL:        a.absoluteHubPath(out.NovncURL),
 		UserControl:     out.UserControl,
 		AttentionReason: strings.TrimSpace(out.AttentionReason),
+		DesktopMode:     desktopModeLabel(out.DesktopMode),
 	}, nil
+}
+
+// GetDesktopBotScreen reads GET /api/v1/bots/{id}/desktop. The picture is that
+// bot's display when desktop_mode is isolated, and the owner's display when
+// it is shared.
+func (a *App) GetDesktopBotScreen(botID string) (*DesktopBotScreen, error) {
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return nil, fmt.Errorf("bot id is required")
+	}
+	var out struct {
+		NovncURL        string `json:"novnc_url"`
+		UserControl     bool   `json:"user_control"`
+		AttentionReason string `json:"attention_reason"`
+		DesktopMode     string `json:"desktop_mode"`
+	}
+	err := a.desktopBotCall(context.Background(), http.MethodGet, "/api/v1/bots/"+url.PathEscape(botID)+"/desktop", nil, &out, 20*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	return &DesktopBotScreen{
+		NovncURL:        a.absoluteHubPath(out.NovncURL),
+		UserControl:     out.UserControl,
+		AttentionReason: strings.TrimSpace(out.AttentionReason),
+		DesktopMode:     desktopModeLabel(out.DesktopMode),
+	}, nil
+}
+
+// HandBackDesktopBot ends the person's takeover of this bot's display and
+// asks the bot to continue. The body is omitted: Hub resumes with its own
+// continuation message.
+func (a *App) HandBackDesktopBot(botID string) (*DesktopBotHandBack, error) {
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return nil, fmt.Errorf("bot id is required")
+	}
+	var out DesktopBotHandBack
+	err := a.desktopBotCall(context.Background(), http.MethodPost, "/api/v1/bots/"+url.PathEscape(botID)+"/desktop/handback", nil, &out, 60*time.Second)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SetDesktopBotDesktopMode switches one bot between the owner's desktop and
+// its own display. Hub only accepts this from a tenant admin.
+func (a *App) SetDesktopBotDesktopMode(botID, mode string) (string, error) {
+	botID = strings.TrimSpace(botID)
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if botID == "" {
+		return "", fmt.Errorf("bot id is required")
+	}
+	if mode != "isolated" && mode != "shared" {
+		return "", fmt.Errorf("desktop_mode must be shared or isolated")
+	}
+	var out struct {
+		ID   string `json:"id"`
+		Mode string `json:"desktop_mode"`
+	}
+	err := a.desktopBotCall(context.Background(), http.MethodPut, "/api/admin/bots/"+url.PathEscape(botID)+"/desktop-mode", map[string]string{
+		"desktop_mode": mode,
+	}, &out, 20*time.Second)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(out.Mode) == "" {
+		return mode, nil
+	}
+	return desktopModeLabel(out.Mode), nil
+}
+
+// DesktopBotDesktopAdmin reports whether the signed-in Hub credential can
+// call the tenant-admin desktop-mode route. A machine token is not an admin
+// token, and that refusal hides the switch.
+func (a *App) DesktopBotDesktopAdmin() (bool, error) {
+	if a == nil {
+		return false, nil
+	}
+	status, err := a.desktopBotExchange(context.Background(), http.MethodGet, "/api/admin/bots/settings", nil, nil, 15*time.Second, nil)
+	if status == http.StatusOK {
+		return true, nil
+	}
+	if status == http.StatusUnauthorized || status == http.StatusForbidden || err != nil {
+		return false, nil
+	}
+	return false, nil
+}
+
+func desktopModeLabel(mode string) string {
+	if strings.EqualFold(strings.TrimSpace(mode), "isolated") {
+		return "isolated"
+	}
+	return "shared"
 }
 
 // ReleaseDesktopBotWatch drops the watch hold for the Bot page that just hid.
@@ -149,6 +285,7 @@ type hubBot struct {
 	Description string `json:"description"`
 	InstanceID  string `json:"instance_id"`
 	CreatedAt   string `json:"created_at"`
+	Primary     bool   `json:"primary,omitempty"`
 }
 
 func (a *App) DesktopBotAccess() (*DesktopBotAccess, error) {
@@ -343,6 +480,244 @@ func (a *App) registerActiveDesktopRun(botID, requestID, sessionKey, text, phase
 	return run
 }
 
+// A stop belongs to the requests that were already in flight, not to the bot.
+// The chat admit and a schedule can overlap. One of them returning without a
+// run id must not forget a stop that still belongs to the other.
+//
+// live counts beginAdmitRequest calls still open for that request.
+// relayDesktopBotWhenFree and the relay inside it share the count, so a busy
+// refusal does not drop the stop before the same request is sent again.
+// want is a stop for one request id that was already underway. A stop said
+// while nothing is underway is not kept for whatever starts later.
+// sent is a cancel already posted for that run, so naming the run and
+// arming the stop do not both call Hub.
+var (
+	desktopAdmitCancelMu   sync.Mutex
+	desktopAdmitLive       = map[string]map[string]int{}
+	desktopAdmitWant       = map[string]map[string]struct{}{}
+	desktopAdmitCancelSent = map[string]struct{}{}
+)
+
+func beginAdmitRequest(botID, requestID string) {
+	botID = strings.TrimSpace(botID)
+	requestID = strings.TrimSpace(requestID)
+	if botID == "" {
+		return
+	}
+	desktopAdmitCancelMu.Lock()
+	defer desktopAdmitCancelMu.Unlock()
+	byBot := desktopAdmitLive[botID]
+	if byBot == nil {
+		byBot = map[string]int{}
+		desktopAdmitLive[botID] = byBot
+	}
+	byBot[requestID]++
+}
+
+func endAdmitRequest(botID, requestID string) {
+	botID = strings.TrimSpace(botID)
+	requestID = strings.TrimSpace(requestID)
+	if botID == "" {
+		return
+	}
+	desktopAdmitCancelMu.Lock()
+	defer desktopAdmitCancelMu.Unlock()
+	byBot := desktopAdmitLive[botID]
+	if byBot == nil {
+		return
+	}
+	depth := byBot[requestID]
+	if depth > 1 {
+		byBot[requestID] = depth - 1
+		return
+	}
+	delete(byBot, requestID)
+	if len(byBot) == 0 {
+		delete(desktopAdmitLive, botID)
+	}
+	if want := desktopAdmitWant[botID]; want != nil {
+		delete(want, requestID)
+		if len(want) == 0 {
+			delete(desktopAdmitWant, botID)
+		}
+	}
+}
+
+func noteAdmitWantLocked(botID, requestID string) {
+	want := desktopAdmitWant[botID]
+	if want == nil {
+		want = map[string]struct{}{}
+		desktopAdmitWant[botID] = want
+	}
+	want[requestID] = struct{}{}
+}
+
+func takeAdmitCancel(botID, requestID string) bool {
+	botID = strings.TrimSpace(botID)
+	requestID = strings.TrimSpace(requestID)
+	desktopAdmitCancelMu.Lock()
+	defer desktopAdmitCancelMu.Unlock()
+	want := desktopAdmitWant[botID]
+	if want == nil {
+		return false
+	}
+	if _, ok := want[requestID]; !ok {
+		return false
+	}
+	delete(want, requestID)
+	if len(want) == 0 {
+		delete(desktopAdmitWant, botID)
+	}
+	return true
+}
+
+func resetDesktopAdmitCancel() {
+	desktopAdmitCancelMu.Lock()
+	desktopAdmitLive = map[string]map[string]int{}
+	desktopAdmitWant = map[string]map[string]struct{}{}
+	desktopAdmitCancelSent = map[string]struct{}{}
+	desktopAdmitCancelMu.Unlock()
+}
+
+// desktopAdmitPlaceholderIDs lists request ids already registered for this
+// bot, including a turn Hub has not named. The schedule does not register, so
+// its empty request id is not a placeholder here.
+func desktopAdmitPlaceholderIDs(botID string) []string {
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return nil
+	}
+	activeDesktopRunsMu.Lock()
+	defer activeDesktopRunsMu.Unlock()
+	prefix := botID + desktopRunSeparator
+	seen := map[string]struct{}{}
+	var ids []string
+	for key, run := range activeDesktopRuns {
+		if !strings.HasPrefix(key, prefix) || run == nil {
+			continue
+		}
+		id := strings.TrimSpace(run.RequestID)
+		// A named run is cancelled from the active list. Remembering its
+		// request as well would stick a stop to a turn that has already
+		// been named, including one that has already finished.
+		if id == "" || strings.TrimSpace(run.RunID) != "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// ArmDesktopBotAdmitCancel remembers that the admits already underway for
+// this bot should stop as soon as Hub names them. A run that already has an
+// id is cancelled now. The page does not poll for the id: the admit call
+// itself can take the whole 45-minute budget, and the page may be gone
+// before that returns.
+func (a *App) ArmDesktopBotAdmitCancel(botID string) error {
+	if a == nil {
+		return fmt.Errorf("AI assistant backend is unavailable")
+	}
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return fmt.Errorf("bot id is required")
+	}
+	// Placeholders use the run lock. Naming a run takes that lock and then
+	// the admit lock, so this side must not hold the admit lock across the
+	// placeholder read.
+	placeholders := desktopAdmitPlaceholderIDs(botID)
+	desktopAdmitCancelMu.Lock()
+	for id, depth := range desktopAdmitLive[botID] {
+		if depth > 0 {
+			noteAdmitWantLocked(botID, id)
+		}
+	}
+	for _, id := range placeholders {
+		noteAdmitWantLocked(botID, id)
+	}
+	desktopAdmitCancelMu.Unlock()
+
+	runs := a.GetActiveDesktopRuns(botID)
+	if len(runs) == 0 {
+		return nil
+	}
+	// Named runs are cancelled here. A request that is still waiting for its
+	// id keeps its mark. This stop does not move on to whatever starts next.
+	var first error
+	for _, run := range runs {
+		if run == nil {
+			continue
+		}
+		if err := a.cancelAdmittedRunOnce(botID, run.RunID); err != nil && first == nil {
+			first = err
+		}
+	}
+	return first
+}
+
+// cancelAdmittedRunOnce posts Hub's cancel for this run a single time.
+// A failed post forgets that it was sent, so a later stop can try again.
+func (a *App) cancelAdmittedRunOnce(botID, runID string) error {
+	botID = strings.TrimSpace(botID)
+	runID = strings.TrimSpace(runID)
+	if botID == "" || runID == "" {
+		return nil
+	}
+	key := desktopRunKey(botID, runID)
+	desktopAdmitCancelMu.Lock()
+	if _, ok := desktopAdmitCancelSent[key]; ok {
+		desktopAdmitCancelMu.Unlock()
+		return nil
+	}
+	desktopAdmitCancelSent[key] = struct{}{}
+	desktopAdmitCancelMu.Unlock()
+	if err := a.CancelDesktopBotRun(botID, runID); err != nil {
+		desktopAdmitCancelMu.Lock()
+		delete(desktopAdmitCancelSent, key)
+		desktopAdmitCancelMu.Unlock()
+		botlog.Write(botID, "gui.admit_cancel", err, "run", runID)
+		return err
+	}
+	// A schedule never registers a local run, so nothing else will drop this
+	// mark. A chat run stays marked until it is unregistered, which is what
+	// keeps a second stop from posting again while that turn is still open.
+	if !desktopRunStillTracked(botID, runID) {
+		forgetAdmitCancelSent(key)
+	}
+	return nil
+}
+
+func desktopRunStillTracked(botID, runID string) bool {
+	activeDesktopRunsMu.Lock()
+	defer activeDesktopRunsMu.Unlock()
+	_, ok := activeDesktopRuns[desktopRunKey(botID, runID)]
+	return ok
+}
+
+func forgetAdmitCancelSent(keys ...string) {
+	if len(keys) == 0 {
+		return
+	}
+	desktopAdmitCancelMu.Lock()
+	defer desktopAdmitCancelMu.Unlock()
+	for _, key := range keys {
+		delete(desktopAdmitCancelSent, key)
+	}
+}
+
+// nameAdmittedDesktopRun records the run id and, when this request was
+// already stopped, cancels that run before the page waits on it.
+func (a *App) nameAdmittedDesktopRun(botID, requestID, runID string) error {
+	a.setActiveDesktopRunID(botID, requestID, runID)
+	if !takeAdmitCancel(botID, requestID) {
+		return nil
+	}
+	return a.cancelAdmittedRunOnce(botID, runID)
+}
+
 // setActiveDesktopRunID swaps the request-id placeholder for the real run id
 // once the admit response names it. Until then the entry stays reachable by
 // request id and invisible to run-keyed lookups.
@@ -365,18 +740,21 @@ func (a *App) setActiveDesktopRunID(botID, requestID, runID string) {
 }
 
 func unregisterActiveDesktopRun(botID, requestID, runID string) {
-	activeDesktopRunsMu.Lock()
-	defer activeDesktopRunsMu.Unlock()
 	keys := []string{desktopRunKey(botID, runID)}
 	if strings.TrimSpace(requestID) != "" {
 		keys = append(keys, desktopRunKey(botID, requestID))
 	}
+	activeDesktopRunsMu.Lock()
 	for _, key := range keys {
 		if key == desktopRunSeparator {
 			continue
 		}
 		delete(activeDesktopRuns, key)
 	}
+	activeDesktopRunsMu.Unlock()
+	// The run is gone. A later admit may reuse nothing, but the sent-cancel
+	// mark must not keep a recycled id from being cancelled.
+	forgetAdmitCancelSent(keys...)
 }
 
 // GetActiveDesktopRuns lists every cloud-desktop turn still believed to be
@@ -645,7 +1023,9 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 	if desktopBotRelayOverride == nil {
 		go a.publishDesktopBotView(ctx, requestID, sessionKey, botID)
 	}
-	result, err := a.relayDesktopBot(ctx, botID, text, phase, requestID)
+	result, err := a.relayDesktopBotWhenFree(ctx, botID, text, phase, requestID, func() {
+		a.noteDesktopBotQueued(botID, sessionKey)
+	})
 	resp := &IMAgentResponse{RequestID: requestID, SessionKey: sessionKey, EventScopeID: sessionKey}
 	waiting := false
 	if err != nil {
@@ -734,10 +1114,143 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 	)
 }
 
+func desktopBotIsBusy(err error) bool {
+	return err != nil && strings.Contains(err.Error(), desktopBotBusyMessage)
+}
+
+// noteDesktopBotQueued tells the open chat that this job waits for the desktop
+// already in use. It does not settle the pending bubble: the later result still
+// belongs to that bubble.
+func (a *App) noteDesktopBotQueued(botID, sessionKey string) {
+	raw, err := json.Marshal(map[string]any{
+		"bot_id":      strings.TrimSpace(botID),
+		"session_key": sessionKey,
+		"waiting":     true,
+	})
+	if err != nil {
+		return
+	}
+	if desktopBotQueuedSink != nil {
+		desktopBotQueuedSink(string(raw))
+	}
+	if a != nil {
+		a.emitEvent("desktop-bot-queued", string(raw))
+	}
+}
+
+// relayDesktopBotWhenFree sends this job once. A busy refusal waits until this
+// user's task list has no non-terminal admit, then sends the same request
+// again. onBusy runs once, the first time the desktop refuses. The wait is not
+// inside relayDesktopBot: a caller that never sees the busy sentence must not
+// read the task list.
+func (a *App) relayDesktopBotWhenFree(ctx context.Context, botID, text, phase, requestID string, onBusy func()) (desktopBotRelayResult, error) {
+	// The busy wait stays inside this loop, so the stop has to stay too.
+	// The inner relay counts as well: tests call it directly, and a nested
+	// return must not be the moment the stop is forgotten. A stubbed relay
+	// never names a run and must not touch the mark.
+	if desktopBotRelayOverride == nil {
+		beginAdmitRequest(botID, requestID)
+		defer endAdmitRequest(botID, requestID)
+	}
+	noted := false
+	for {
+		result, err := a.relayDesktopBot(ctx, botID, text, phase, requestID)
+		if !desktopBotIsBusy(err) {
+			return result, err
+		}
+		if !noted {
+			noted = true
+			if onBusy != nil {
+				onBusy()
+			}
+		}
+		if waitErr := a.waitUntilDesktopFree(ctx, botID); waitErr != nil {
+			return desktopBotRelayResult{}, waitErr
+		}
+	}
+}
+
+// waitUntilDesktopFree returns when this user has no non-terminal desktop
+// admit. A task-list error is not "free". The context ending during the wait
+// is a skipped occurrence, not the busy sentence.
+func (a *App) waitUntilDesktopFree(ctx context.Context, botID string) error {
+	for {
+		if err := ctx.Err(); err != nil {
+			return errDesktopOccurrenceSkipped
+		}
+		busy, unknown := a.desktopUserBusy(ctx, botID)
+		if !busy && !unknown {
+			return nil
+		}
+		timer := time.NewTimer(desktopBotBusyPoll)
+		select {
+		case <-ctx.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return errDesktopOccurrenceSkipped
+		case <-timer.C:
+		}
+	}
+}
+
+// desktopUserBusy reads the task list for this user's bots. A bot-list failure
+// falls back to botID. A task-list failure is unknown, so the caller keeps
+// waiting instead of sending into a desktop that may still be busy.
+func (a *App) desktopUserBusy(ctx context.Context, botID string) (busy bool, unknown bool) {
+	if ctx.Err() != nil {
+		return false, true
+	}
+	ids := []string{strings.TrimSpace(botID)}
+	var listed struct {
+		Items []hubBot `json:"items"`
+	}
+	if err := a.desktopBotCall(ctx, http.MethodGet, "/api/v1/bots", nil, &listed, 20*time.Second); err == nil {
+		next := make([]string, 0, len(listed.Items))
+		for _, bot := range listed.Items {
+			if id := strings.TrimSpace(bot.ID); id != "" {
+				next = append(next, id)
+			}
+		}
+		if len(next) > 0 {
+			ids = next
+		}
+	}
+	for _, id := range ids {
+		if id == "" {
+			continue
+		}
+		items, err := a.listDesktopBotTasks(ctx, id)
+		if err != nil {
+			return false, true
+		}
+		for _, item := range items {
+			if !desktopTaskTerminal(item.Status) {
+				return true, false
+			}
+		}
+	}
+	return false, false
+}
+
+func desktopTaskTerminal(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "succeeded", "failed", "cancelled":
+		return true
+	default:
+		return false
+	}
+}
+
 func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID string) (desktopBotRelayResult, error) {
 	if desktopBotRelayOverride != nil {
 		return desktopBotRelayOverride(ctx, botID, text, phase)
 	}
+	beginAdmitRequest(botID, requestID)
+	defer endAdmitRequest(botID, requestID)
 	var out struct {
 		Text               string            `json:"text"`
 		NovncURL           string            `json:"novnc_url"`
@@ -820,9 +1333,15 @@ func (a *App) relayDesktopBot(ctx context.Context, botID, text, phase, requestID
 			"phase", phase,
 		)
 		// The turn only becomes addressable once Hub names its run. Before this
-		// line nothing can route supplementary input to it.
-		a.setActiveDesktopRunID(botID, requestID, out.RunID)
-		return a.waitDesktopBotRun(ctx, botID, out.RunID)
+		// line nothing can route supplementary input to it. A stop said while
+		// the id was still missing cancels here, before the wait.
+		runID := strings.TrimSpace(out.RunID)
+		if err := a.nameAdmittedDesktopRun(botID, requestID, runID); err != nil {
+			a.noteArmedDesktopBotCross(botID, runID)
+			return desktopBotRelayResult{}, err
+		}
+		a.noteArmedDesktopBotCross(botID, runID)
+		return a.waitDesktopBotRun(ctx, botID, runID)
 	}
 	botlog.Write(botID, "gui.admit", nil,
 		"mode", "sync",
@@ -874,6 +1393,46 @@ func desktopBotAdmitAgain(status int, err error) bool {
 // One slow read is tried again. The run itself is not limited by this gap.
 var desktopBotPollInterval = time.Second
 
+// desktopBotActivityPattern matches a working-row phrase. The poll drops
+// anything else, so a typed password or a tool name cannot become the label.
+// 正在处理 is the spoken-status word and is not a step. 正在一点点推进 is the
+// row's own fallback. 正在询问 is composed locally with the other bot's name.
+var desktopBotActivityPattern = regexp.MustCompile(`^正在\p{Han}{2,6}$`)
+
+func desktopBotActivityText(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if !desktopBotActivityPattern.MatchString(raw) {
+		return ""
+	}
+	switch raw {
+	case "正在处理", "正在一点点推进", "正在询问":
+		return ""
+	default:
+		return raw
+	}
+}
+
+// desktopBotActivitySink is set by tests. Production also emits the event.
+// The run id is part of the event so a finished run clears only its own step.
+var desktopBotActivitySink func(botID, runID, activity string)
+
+func (a *App) publishDesktopBotActivity(botID, runID, activity string) {
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return
+	}
+	runID = strings.TrimSpace(runID)
+	activity = strings.TrimSpace(activity)
+	if desktopBotActivitySink != nil {
+		desktopBotActivitySink(botID, runID, activity)
+	}
+	raw, err := json.Marshal(map[string]string{"bot_id": botID, "run_id": runID, "activity": activity})
+	if err != nil {
+		return
+	}
+	a.emitEvent("desktop-bot-activity", string(raw))
+}
+
 func (a *App) desktopRelayFromWire(text, novnc, attention, askType, askName, askQuestion, askOptions string, handoff bool, images []DesktopBotImage, files []DesktopBotFile) (desktopBotRelayResult, error) {
 	if strings.TrimSpace(text) == "" {
 		return desktopBotRelayResult{}, fmt.Errorf("MaClawSrv 没有返回结果")
@@ -902,6 +1461,16 @@ func (a *App) waitDesktopBotRun(ctx context.Context, botID, runID string) (deskt
 	// WriteOnce keys only the stage and the error text. A later state would
 	// stay hidden for the repeat window, so a changed state is written now.
 	lastState := ""
+	lastActivity := ""
+	// A second job of this bot can already be reporting its own step.
+	// Clearing without the run id would wipe that step when this wait ends.
+	defer func() {
+		if lastActivity == "" {
+			return
+		}
+		lastActivity = ""
+		a.publishDesktopBotActivity(botID, runID, "")
+	}()
 	writePoll := func(state string, err error, kv ...string) {
 		if state != lastState {
 			botlog.Write(botID, "gui.run_poll", err, kv...)
@@ -932,6 +1501,7 @@ func (a *App) waitDesktopBotRun(ctx context.Context, botID, runID string) (deskt
 			Files              []DesktopBotFile  `json:"files"`
 			Accepted           bool              `json:"accepted"`
 			Status             string            `json:"status"`
+			Activity           string            `json:"activity"`
 		}
 		// Derived from ctx, not Background: this read must be interruptible
 		// when the turn is abandoned. A Background parent leaves each poll
@@ -976,6 +1546,11 @@ func (a *App) waitDesktopBotRun(ctx context.Context, botID, runID string) (deskt
 				"status", out.Status,
 				"polls", strconv.Itoa(polls),
 			)
+			activity := desktopBotActivityText(out.Activity)
+			if activity != lastActivity {
+				lastActivity = activity
+				a.publishDesktopBotActivity(botID, runID, activity)
+			}
 			if sleepErr := sleepDesktopBotPoll(ctx, desktopBotPollInterval); sleepErr != nil {
 				botlog.Write(botID, "gui.run_poll", sleepErr, "run", runID, "polls", strconv.Itoa(polls))
 				return desktopBotRelayResult{}, sleepErr
@@ -1692,5 +2267,6 @@ func desktopBotInfo(bot hubBot) DesktopBotInfo {
 		Description: bot.Description,
 		InstanceID:  bot.InstanceID,
 		CreatedAt:   strings.TrimSpace(bot.CreatedAt),
+		Primary:     bot.Primary,
 	}
 }

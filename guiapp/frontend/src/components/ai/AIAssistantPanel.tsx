@@ -28,7 +28,8 @@ import { useTTSReadback } from "./useTTSReadback";
 import { useAIAssistantVoiceControls } from "./useAIAssistantVoiceControls";
 import { ASSISTANT_OUTPUT_NEAR_BOTTOM_PX, useAssistantOutputScroll } from "./useAssistantOutputScroll";
 import { useResizableAssistantInput } from "./useResizableAssistantInput";
-import { useAssistantInputHistory } from "./useAssistantInputHistory";
+import { useAssistantInputHistory, type ComposerAttachmentSnapshot } from "./useAssistantInputHistory";
+import { historyAttachmentsFromSources } from "./promptHistory";
 import { usePastedImageAttachments } from "./usePastedImageAttachments";
 import { useCiteMermaidDiagramDraft } from "./useCiteMermaidDiagramDraft";
 import { useContinueEditTaskResultDraft } from "./useContinueEditTaskResultDraft";
@@ -147,7 +148,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const state = props.state || props;
     const actions = props.actions || props;
     const panelWindow = props.window || props;
-    const { messages, progressMessages = [], sending, sendingSessionKey: rawSendingSessionKey, busySessionKeys: rawBusySessionKeys, streaming, streamingSessionKey: rawStreamingSessionKey, streamingSessionKeys: rawStreamingSessionKeys, visualBusy, ready, initStatus, selectedFilePath: selectedFilePathFromState = "", submittedPrompts = [], draftInputValue = "", trialReflectEnabled = false, scrollToTopSeq, onboardingIncomplete, showTraceEntry = false, active: panelActive = true, agentView = null } = state;
+    const { messages, progressMessages = [], sending, sendingSessionKey: rawSendingSessionKey, busySessionKeys: rawBusySessionKeys, streaming, streamingSessionKey: rawStreamingSessionKey, streamingSessionKeys: rawStreamingSessionKeys, visualBusy, ready, initStatus, selectedFilePath: selectedFilePathFromState = "", submittedPrompts = [], submittedPromptAttachments = [], draftInputValue = "", trialReflectEnabled = false, scrollToTopSeq, onboardingIncomplete, showTraceEntry = false, active: panelActive = true, agentView = null } = state;
     const { browseFile, clearSelectedFile, setSelectedFilePaths, removeSelectedFile, sendMessage, sendBtwMessage, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews, onOpenOnboarding, cancelSession, onOpenTutorial, onTaskPrefsChanged, submitAgentView, dismissAgentView, deactivateRecordingSession } = actions;
     const selectedFilePaths = Array.isArray(state.selectedFilePaths) ? state.selectedFilePaths : (selectedFilePathFromState ? [selectedFilePathFromState] : []);
     const selectedFilePath = selectedFilePaths[0] || "";
@@ -4980,7 +4981,33 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             inputRef.current.setSelectionRange(caret, caret);
         });
     }, [resizeInput, updateInputValue]);
-    const { exitHistoryBrowsing, isSelectionCollapsedAtBoundary, recallHistory, rememberHistoryEdit, resetHistoryBrowsing } = useAssistantInputHistory({ applyInputValue, inputRef, inputValue, submittedPrompts });
+    const pendingAttachmentsRef = useRef(pendingAttachments);
+    pendingAttachmentsRef.current = pendingAttachments;
+    const selectedFilePathsRef = useRef(selectedFilePaths);
+    selectedFilePathsRef.current = selectedFilePaths;
+    const readInputAttachments = useCallback((): ComposerAttachmentSnapshot => ({
+        pending: historyAttachmentsFromSources(pendingAttachmentsRef.current, []),
+        selectedFilePaths: selectedFilePathsRef.current,
+    }), []);
+    const applyInputAttachments = useCallback((next: ComposerAttachmentSnapshot) => {
+        setPendingAttachments(next.pending.map(item => ({ ...item })));
+        if (setSelectedFilePaths) setSelectedFilePaths(next.selectedFilePaths);
+        else if (next.selectedFilePaths.length === 0) clearSelectedFile?.();
+    }, [clearSelectedFile, setPendingAttachments, setSelectedFilePaths]);
+    const { acceptHistoryText, exitHistoryBrowsing, isSelectionCollapsedAtBoundary, recallHistory, rememberHistoryEdit, resetHistoryBrowsing } = useAssistantInputHistory({
+        applyInputValue,
+        applyInputAttachments,
+        readInputAttachments,
+        inputRef,
+        inputValue,
+        submittedPrompts,
+        submittedPromptAttachments,
+    });
+    const recordPrompt = useCallback((text: string, attachments?: AttachmentInfo[]) => {
+        const normalized = historyAttachmentsFromSources(attachments || [], []);
+        if (normalized.length > 0) recordSubmittedPrompt?.(text, normalized);
+        else recordSubmittedPrompt?.(text);
+    }, [recordSubmittedPrompt]);
     const handleComposeActionChange = useCallback((action: ComposeAction | null) => {
         setComposeAction(action);
         requestAnimationFrame(() => inputRef.current?.focus());
@@ -5024,13 +5051,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         try {
             await sendBtwMessage(btwQueryFromText(recorded));
             // Only record after a successful handoff so failed sends can be retried cleanly.
-            recordSubmittedPrompt?.(recorded);
+            recordPrompt(recorded);
             return true;
         } catch (err: unknown) {
             console.warn("[AIAssistantPanel] /btw send failed", err);
             return false;
         }
-    }, [recordSubmittedPrompt, sendBtwMessage]);
+    }, [recordPrompt, sendBtwMessage]);
     const handleInsertTemplate = useCallback((template: string) => {
         setComposeAction(null);
         updateInputValue(template);
@@ -5060,12 +5087,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         userScrolledUpRef.current = false;
         try {
             const sent = await sendMessageForTab(command);
-            if (sent !== false) recordSubmittedPrompt?.(command);
+            if (sent !== false) recordPrompt(command);
         } finally {
             fireSlashInFlightRef.current = false;
             requestAnimationFrame(() => inputRef.current?.focus());
         }
-    }, [activeSessionKey, addEntry, codingTaskReadyForIntents, ready, recordSubmittedPrompt, sendMessageForTab]);
+    }, [activeSessionKey, addEntry, codingTaskReadyForIntents, ready, recordPrompt, sendMessageForTab]);
     const handleClearInput = useCallback(() => {
         clearComposerDraft({ clearAttachments: false });
     }, [clearComposerDraft]);
@@ -5118,7 +5145,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         try {
             const sent = await sendMessageForTab(trimmed);
             if (sent !== false) {
-                recordSubmittedPrompt?.(trimmed);
+                recordPrompt(trimmed);
                 if (meta && shouldOfferWelcomeTemplateSave({ body: trimmed, title: meta.title })) {
                     setWelcomeTemplateOffer({ title: meta.title, body: trimmed });
                 }
@@ -5139,7 +5166,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         addEntry,
         clearComposerDraft,
         sendMessageForTab,
-        recordSubmittedPrompt,
+        recordPrompt,
         handleWelcomePromptSelect,
         updateInputValue,
     ]);
@@ -5166,7 +5193,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         inputLocked,
         newConversationInFlightRef,
         ready,
-        recordSubmittedPrompt,
+        recordSubmittedPrompt: recordPrompt,
         recordingActive,
         refreshQueueInFlight,
         sendBtwMessage,
@@ -5266,7 +5293,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             userScrolledUpRef.current = false;
             try {
                 const sent = await sendMessageForTab(installText);
-                if (sent !== false) recordSubmittedPrompt?.(installText);
+                if (sent !== false) recordPrompt(installText);
             } catch (err: unknown) {
                 console.warn("[AIAssistantPanel] install command send failed", err);
                 updateInputValue(installText);
@@ -5349,7 +5376,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 displayText: buildAttachmentDisplayText(text, displayAttachments),
                 displayAttachments,
             });
-            if (sent !== false) recordSubmittedPrompt?.(text);
+            if (sent !== false) recordPrompt(text, displayAttachments);
             // The shared send path refused the turn (e.g. cloud workspace lease
             // recovery failed). Restore the draft so the user can retry instead
             // of losing the text — but never clobber typing started mid-flight.
@@ -5357,7 +5384,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         } finally {
             sendInFlightRef.current = false;
         }
-    }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, activeTab.expertId, activeTab.id, activeTab.projectPath, activeTab.type, addEntry, busySessionKeys, cancelPending, clearComposerDraft, codingTaskReadyForIntents, composeAction, dismissWorkbenchHome, dispatchBtwText, inputValue, pendingAttachments, queueEditDraftActive, recordSubmittedPrompt, recordingActive, refreshQueueInFlight, remoteReconnect.success, selectedFilePaths, sendBtwMessage, sendMessageForTab, sending, sendingSessionKey, startOnWorkbenchHome, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, updateInputValue, workbenchHomeRequested]);
+    }, [activeSessionIsSending, activeSessionIsStreaming, activeSessionKey, activeTab.expertId, activeTab.id, activeTab.projectPath, activeTab.type, addEntry, busySessionKeys, cancelPending, clearComposerDraft, codingTaskReadyForIntents, composeAction, dismissWorkbenchHome, dispatchBtwText, inputValue, pendingAttachments, queueEditDraftActive, recordPrompt, recordingActive, refreshQueueInFlight, remoteReconnect.success, selectedFilePaths, sendBtwMessage, sendMessageForTab, sending, sendingSessionKey, startOnWorkbenchHome, streaming, streamingSessionKey, streamingSessionKeys, submitLocked, updateInputValue, workbenchHomeRequested]);
 
     // --- New-task wizard (TaskConfigBar) wiring ---
     // Draft state, expert/workflow loading and the send orchestration live in
@@ -5467,7 +5494,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
 				if (!removeEntry(entry.id)) return;
 				continueQueueDrainSessionKeysRef.current.add(entrySessionKey);
                 // dispatchBtwText already records the prompt; only record normal sends here.
-                if (!entryIsBtw) recordSubmittedPrompt?.(entryInstall ?? entry.text);
+                if (!entryIsBtw) recordPrompt(entryInstall ?? entry.text, entryInstall ? [] : entry.attachments);
             }).catch(() => {}).finally(() => {
                 drainingEntryIdsRef.current.delete(entry.id);
                 refreshQueueInFlight();
@@ -5475,7 +5502,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         prevSubmitLockedRef.current = submitLocked;
         prevShowChatUIRef.current = showChatUI;
-    }, [activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, codingTaskReadyForIntents, dispatchBtwText, displayMessages, queue, queueEditDraftActive, queueInFlightVersion, ready, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage, sendMessageForTab, showChatUI, submitLocked, updateEntry]);
+    }, [activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.type, codingTaskReadyForIntents, dispatchBtwText, displayMessages, queue, queueEditDraftActive, queueInFlightVersion, ready, recordPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage, sendMessageForTab, showChatUI, submitLocked, updateEntry]);
     const handleFireEntry = useCallback(async (id: string) => {
         if (firingEntryIdsRef.current.has(id) || drainingEntryIdsRef.current.has(id)) return;
         const entry = queue.find(item => item.id === id);
@@ -5512,7 +5539,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             if (fireInstall) {
                 const sent = await sendEntryAsTurn(fireInstall);
                 if (sent !== false) {
-					if (removeEntry(id)) recordSubmittedPrompt?.(fireInstall);
+					if (removeEntry(id)) recordPrompt(fireInstall);
                 }
                 return;
             }
@@ -5537,7 +5564,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 updateEntry(id, entry.text, entry.attachments, { autoDrain: true, steerWhenBusy: false });
                 return;
             }
-			if (removeEntry(id)) recordSubmittedPrompt?.(entry.text);
+			if (removeEntry(id)) recordPrompt(entry.text, entry.attachments);
         } catch {
             updateEntry(id, entry.text, entry.attachments, { autoDrain: true, steerWhenBusy: false });
             return;
@@ -5545,7 +5572,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             firingEntryIdsRef.current.delete(id);
             refreshQueueInFlight();
         }
-    }, [activeSessionKey, codingTaskReadyForIntents, dispatchBtwText, guideLaunchReference, injectSupplementary, queue, recordSubmittedPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage, sendMessageForTab, updateEntry]);
+    }, [activeSessionKey, codingTaskReadyForIntents, dispatchBtwText, guideLaunchReference, injectSupplementary, queue, recordPrompt, refreshQueueInFlight, removeEntry, sendBtwMessage, sendMessageForTab, updateEntry]);
     useEffect(() => {
         if (activeProjectPreparing || cancelPending || recordingActive) return;
         // Preserve conversational order. In particular, a later ordinary
@@ -6673,6 +6700,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                 setPendingAttachments,
                                 showBusySpinner: wizardOverlayActive ? false : showBusySpinner,
                                 submittedPrompts,
+                                submittedPromptAttachments,
+                                onHistoryTextAccepted: acceptHistoryText,
                                 updateInputValue,
                                 voiceInput,
                             }}
@@ -6764,7 +6793,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 )}
                 {!showWelcomeView && <ComputerUseReadinessBanner lang={lang} theme={t} />}
                 {!showWelcomeView && <ComputerUseQuickBar lang={lang} theme={t} themeMode={themeMode} />}
-                {!showWelcomeView && <AssistantInputStack active={panelActive} browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} hardLockInput={recordingActive} inputRef={inputRef} inputValue={inputValue} inline={false} flushBottom isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={pendingAttachments} permissionMode={permissionMode} taskCommandAllowed={taskCommandHint} showWorkspacePermissionOption={isPureCodingEnvironment} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} sendButtonStyle={{ minWidth: 40, width: 40, height: 40, borderRadius: 12, flexShrink: 0, background: t.sendBtnBg || t.btnColor, borderColor: t.sendBtnBorder || t.sendBtnBg || t.btnColor, color: t.sendBtnColor || "#fff", opacity: canSend ? 1 : 0.72, boxShadow: `0 3px 8px color-mix(in srgb, ${t.btnColor} 22%, transparent)` }} theme={t} themeMode={themeMode} toolbarEndContent={<AssistantQuickModelSwitcher lang={lang} theme={t} active={panelActive} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelMultipliers={modelMultipliers} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} activeProfile={activeExecutionProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} onOpenLLMSettings={onOpenLLMSettings} chipTestId="composer-model-chip" />} trailingToolbarContent={(activeTab?.type === "local" || activeTab?.type === "project" || activeTab?.type === "expert") ? (
+                {!showWelcomeView && <AssistantInputStack active={panelActive} browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} hardLockInput={recordingActive} inputRef={inputRef} inputValue={inputValue} inline={false} flushBottom isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={pendingAttachments} permissionMode={permissionMode} taskCommandAllowed={taskCommandHint} showWorkspacePermissionOption={isPureCodingEnvironment} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} submittedPromptAttachments={submittedPromptAttachments} onHistoryTextAccepted={acceptHistoryText} sendButtonStyle={{ minWidth: 40, width: 40, height: 40, borderRadius: 12, flexShrink: 0, background: t.sendBtnBg || t.btnColor, borderColor: t.sendBtnBorder || t.sendBtnBg || t.btnColor, color: t.sendBtnColor || "#fff", opacity: canSend ? 1 : 0.72, boxShadow: `0 3px 8px color-mix(in srgb, ${t.btnColor} 22%, transparent)` }} theme={t} themeMode={themeMode} toolbarEndContent={<AssistantQuickModelSwitcher lang={lang} theme={t} active={panelActive} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelMultipliers={modelMultipliers} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} activeProfile={activeExecutionProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} onOpenLLMSettings={onOpenLLMSettings} chipTestId="composer-model-chip" />} trailingToolbarContent={(activeTab?.type === "local" || activeTab?.type === "project" || activeTab?.type === "expert") ? (
                     // Working-directory chip inside the composer toolbar, after the
                     // permission-mode button: the primary entry for viewing/changing
                     // where this session operates.

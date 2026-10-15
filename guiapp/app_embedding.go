@@ -104,6 +104,10 @@ func (a *App) ensureEmbeddingEngineSync(vectorSearchEnabled bool) {
 		log.Println("[startup] embedding sync: skipped (vector search disabled)")
 		return
 	}
+	// Head files are separate release assets. An already-installed GGUF used to
+	// skip backgroundPreloadEmbeddingModel, so intent_heads/ and tool_heads/
+	// were never downloaded and L3 stayed on the remote tree LLM.
+	a.startHeadAssetFetch()
 
 	modelPath := embedding.DefaultModelPath()
 	if modelPath == "" {
@@ -127,11 +131,14 @@ func (a *App) ensureEmbeddingEngineSync(vectorSearchEnabled bool) {
 		return
 	}
 
-	// Wire to UIC immediately (creates UIC if not yet created via classifierOnce).
+	// Wire L2 before the UI is interactive. The intent head JSON is about 135MB;
+	// parsing it here would hold startup after the GGUF is already loaded.
+	// attachClassificationHeads runs that parse off this thread. A fetch that
+	// finished before the embedder existed only logged attach=deferred; this
+	// call is what binds the file.
 	a.initEarlyClassifier()
-	a.attachLocalL3(emb)
-	a.attachToolHead(emb)
 	a.unifiedClassifier.SetEmbedder(emb)
+	go a.attachClassificationHeads(emb)
 	// The interrupt path needs the same runtime even before the broader async
 	// vector-search wiring completes. Otherwise a task submitted during startup
 	// can permanently capture a nil task embedding and fall back to broad intent
@@ -676,9 +683,10 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 	// openKnowledgeStore also attaches via attachKnowledgeEmbedder for stores created later.
 	knowledgeAutoRecallStoreMu.Lock()
 	if knowledgeAutoRecallStore != nil {
-		knowledgeAutoRecallStore.SetEmbedder(emb)
+		knowledgeAutoRecallStore.UseEmbedder(emb)
 	}
 	knowledgeAutoRecallStoreMu.Unlock()
+	a.ensureKnowledgeEmbeddingRefresh(emb)
 
 	// Wire embedder into tool router (enables hybrid retrieval).
 	if a.toolRouter != nil {
@@ -709,6 +717,7 @@ func (a *App) activateEmbedderAsync(emb embedding.Embedder) {
 	a.initEarlyClassifier() // idempotent via sync.Once
 	a.attachLocalL3(emb)
 	a.attachToolHead(emb)
+	a.startHeadAssetFetch()
 	if !reusedIntentEmbedder {
 		a.unifiedClassifier.SetEmbedder(emb)
 	}
@@ -800,6 +809,7 @@ func (a *App) activateIntentClassifierEmbedderAsync(emb embedding.Embedder) {
 	a.initEarlyClassifier()
 	a.attachLocalL3(emb)
 	a.attachToolHead(emb)
+	a.startHeadAssetFetch()
 	a.unifiedClassifier.SetEmbedder(emb)
 	a.unifiedClassifier.SetLLMFunc(a.intentL3Func())
 	a.unifiedClassifier.SetLLMContextFunc(a.intentL3ContextFunc())

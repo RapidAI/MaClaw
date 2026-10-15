@@ -6,10 +6,16 @@ import { normalizeSidebarHubCredits } from '../../utils/sidebarHubCredits';
 import { openSettingsTab } from '../../utils/settingsNavigation';
 import {
     ArmDesktopBotSchedule,
+    ArmDesktopBotAdmitCancel,
     CreateDesktopBot,
+    CancelDesktopBotRun,
     AppendDesktopBotSupplement,
     DeleteDesktopBot,
     DeleteDesktopBotSchedule,
+    DesktopBotDesktopAdmin,
+    GetDesktopBotScreen,
+    HandBackDesktopBot,
+    SetDesktopBotDesktopMode,
     EvaluateDesktopTaskSupplement,
     FillBotSecret,
     GetActiveDesktopRuns,
@@ -18,8 +24,14 @@ import {
     GetDesktopBotLLM,
     GetHubLLMServiceStatus,
     GetMaclawLLMProviders,
+    ArmDesktopBotCrossRun,
+    ClaimDesktopBotCrossStart,
     ListDesktopBots,
     ListDesktopBotSchedules,
+    ListDesktopBotTasks,
+    PostDesktopBotCross,
+    PullDesktopBotCrossNotes,
+    SetDesktopBotPrimary,
     PersistDesktopBotPreference,
     QueryDesktopBotTaskStatus,
     RecallBotSecret,
@@ -35,11 +47,32 @@ import {
     UnderstandDesktopBotTask,
     WatchDesktopBot,
 } from '../../../wailsjs/go/main/App';
+import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
 import {
     appendDesktopBotReport,
+    DESKTOP_BOT_NOT_PRIMARY,
+    desktopBotAdmittingSentence,
+    desktopBotActivityText,
+    desktopBotAskingLabel,
+    desktopBotCrossTargetText,
+    desktopBotDestructive,
+    desktopBotNoticeSeen,
+    markDesktopBotNotice,
+    rememberDesktopBotCrossRun,
+    takeDesktopBotCrossRun,
+    desktopBotQueuedSentence,
     desktopBotFiles,
     desktopBotImages,
+    desktopBotLocalControl,
     desktopBotLocalPaths,
+    desktopBotRunningSentence,
+    desktopBotStatusUnreachableSentence,
+    desktopBotStopFailedSentence,
+    desktopBotStopIdleSentence,
+    desktopBotStoppedSentence,
+    desktopBotTypedConfirmSentence,
+    desktopBotWaitingSentence,
+    desktopBotWorkingLabel,
     desktopTaskStep,
     foldPlanConfirmation,
     forgetBotPersona,
@@ -57,9 +90,10 @@ import {
     pendingBotReplyIsStale,
     sideNote,
     userRequestBefore,
-    namesLaterTime,
+
     BOT_CONFIRM_TASK,
-    confirmedWorkOrder,
+    protocolControl,
+    stripConfirmedOrderLead,
     BOT_RETURN_TASK,
     BOT_SAVED_TASK,
     notePendingBotDesktop,
@@ -69,6 +103,7 @@ import {
     type BotPhase,
     type DesktopBot,
     type DesktopBotAsk,
+    type DesktopBotNoticeBot,
     type DesktopBotFile,
     type DesktopBotMessage,
     type DesktopBotNoReading,
@@ -108,6 +143,23 @@ function SharedDesktopIcon() {
         <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
             <rect x="1.5" y="2.5" width="13" height="8.5" rx="1.4" fill="none" stroke="currentColor" strokeWidth="1.3" />
             <path d="M5.5 13.5h5M8 11v2.5" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+        </svg>
+    );
+}
+
+function ScreenWatchIcon() {
+    return (
+        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+            <path fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" d="M2.5 12s3.5-6.5 9.5-6.5S21.5 12 21.5 12s-3.5 6.5-9.5 6.5S2.5 12 2.5 12Z" />
+            <circle cx="12" cy="12" r="2.6" fill="none" stroke="currentColor" strokeWidth="1.8" />
+        </svg>
+    );
+}
+
+function ScreenControlIcon() {
+    return (
+        <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true">
+            <path fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" d="M6.5 3.8 18.6 12.2l-6.5.9-2.9 6.2Z" />
         </svg>
     );
 }
@@ -176,6 +228,29 @@ const CONFIRM_COMMAND = BOT_CONFIRM_TASK;
 // Composer text starts as a plan. A clear request is then sent as execute.
 // A large change stays a plan until the confirm button. Typing the confirm
 // sentence stays a plan; only that button passes execute.
+function oneLine(text: string): string {
+    const line = text.trim().split(/\r?\n/).find(part => part.trim()) || '';
+    const chars = Array.from(line.trim());
+    if (chars.length <= 80) return chars.join('');
+    return chars.slice(0, 80).join('');
+}
+
+// A status or stop question does not wait on the reading. The local run
+// record has 200ms. Hub's task sentence, only when that record is empty, has 800ms.
+function withinBudget<T>(work: Promise<T>, ms: number): Promise<T | undefined> {
+    return new Promise(resolve => {
+        let settled = false;
+        const finish = (value: T | undefined) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            resolve(value);
+        };
+        const timer = setTimeout(() => finish(undefined), ms);
+        work.then(value => finish(value), () => finish(undefined));
+    });
+}
+
 function phaseFor(content: string, requested: BotPhase): BotPhase {
     if (planSaveName(content)) return 'plan';
     return requested === 'execute' ? 'execute' : 'plan';
@@ -257,16 +332,55 @@ type BotReading =
 // Shared with DesktopBotMessage so the two cannot drift apart again.
 type NoReading = DesktopBotNoReading;
 
+function desktopBotCatalog(selfId: string, bots: DesktopBot[]): string {
+    const self = selfId.trim();
+    if (!self || bots.length === 0) return '';
+    return JSON.stringify({
+        self,
+        bots: bots.filter(bot => bot.id).map(bot => ({
+            id: bot.id,
+            name: bot.title,
+            primary: bot.primary === true,
+        })),
+    });
+}
+
+function crossOf(understood: Record<string, unknown>): { kind: string; target: string; text: string; order: string } | null {
+    const raw = understood.cross ?? understood.Cross;
+    if (!raw || typeof raw !== 'object') return null;
+    const item = raw as Record<string, unknown>;
+    const kind = String(item.kind ?? item.Kind ?? '').trim().toLowerCase();
+    if (kind !== 'notify' && kind !== 'delegate') return null;
+    return {
+        kind,
+        target: String(item.target ?? item.Target ?? '').trim(),
+        text: String(item.text ?? item.Text ?? '').trim(),
+        order: String(item.order ?? item.Order ?? '').trim(),
+    };
+}
+
+function reportDesktopBotCrossResult(userId: string, botId: string, text: string) {
+    const run = takeDesktopBotCrossRun(userId, botId);
+    const body = (text || '').trim();
+    if (!run || !body) return;
+    markDesktopBotNotice(userId, `${run.noteId}:result:${botId}`);
+    void PostDesktopBotCross(botId, 'result', '', body, '', run.noteId).then(posted => {
+        const id = String(posted?.notes?.[0]?.id || '').trim();
+        if (id) markDesktopBotNotice(userId, `${id}:target`);
+    }).catch(() => undefined);
+}
+
 async function readDesktopBotTurn(
     content: string,
     phase: BotPhase,
     lang: string,
     earlier: string[],
     persona: string,
+    catalog = '',
 ): Promise<BotReading> {
     let understood: Record<string, unknown>;
     try {
-        understood = await UnderstandDesktopBotTask(content, phase, lang, earlier, persona) as Record<string, unknown>;
+        understood = await UnderstandDesktopBotTask(content, phase, lang, earlier, persona, catalog) as Record<string, unknown>;
     } catch (error) {
         // The reading itself could not be attempted: no text, no backend. That
         // is not this person's fault and it is not a reading.
@@ -281,7 +395,12 @@ async function readDesktopBotTurn(
     const told = String(understood.told ?? understood.Told ?? '').trim();
     const instruction = String(understood.instruction ?? understood.Instruction ?? '').trim();
     const personaRaw = String(understood.persona ?? understood.Persona ?? '').trim();
-    const pace = workPace(understood, phase);
+    let pace = workPace(understood, phase);
+    // A destructive order on a plan turn still needs the one button, even when
+    // the reading said to start now. The execute turn is that button.
+    if (phase !== 'execute' && pace === 'direct' && desktopBotDestructive(`${instruction}\n${content}`)) {
+        pace = 'confirm';
+    }
     const decided = emptyOrderPace(pace, instruction, personaRaw, phase, scheduleOf(understood).mode);
     if (decided === 'failed') return { kind: 'unread' };
     return { kind: 'read', told, instruction, persona: personaRaw, pace: decided, understood };
@@ -430,6 +549,7 @@ function storedQueuePhase(item: DesktopBotMessage): BotPhase {
 // dispatched is the latest message, so it is not repeated here. A message
 // still waiting in the queue is a later job, not context for this one.
 type PreparedTurn = { told: string; instruction: string; pace: 'confirm' | 'direct'; persona: string; earlier: string[] };
+type QueuedSend = { text: string; phase: BotPhase; verbatim?: boolean; prepared?: PreparedTurn; userText?: string; crossNoteId?: string; claimed?: boolean };
 
 function sameContext(left: string[], right: string[]): boolean {
     return left.length === right.length && left.every((item, index) => item === right[index]);
@@ -454,8 +574,8 @@ type ScreenEvent = { url: string; reported: boolean; userControl: boolean; reaso
 
 function screenOf(data: Record<string, unknown>): ScreenEvent {
     const url = String(data.novnc_url || data.NovncURL || data.desktop_handoff_url || data.DesktopHandoffURL || '');
-    const reported = ['user_control', 'desktop_user_control', 'UserControl', 'DesktopUserControl'].some(key => Object.prototype.hasOwnProperty.call(data, key));
-    const userControl = data.user_control === true || data.desktop_user_control === true || data.UserControl === true || data.DesktopUserControl === true;
+    const reported = ['user_control', 'desktop_user_control', 'UserControl', 'DesktopUserControl', 'desktop_handoff', 'DesktopHandoff'].some(key => Object.prototype.hasOwnProperty.call(data, key));
+    const userControl = data.user_control === true || data.desktop_user_control === true || data.UserControl === true || data.DesktopUserControl === true || data.desktop_handoff === true || data.DesktopHandoff === true;
     const reason = String(data.attention_reason || data.desktop_attention_reason || data.AttentionReason || '').trim();
     const cleared = data.cleared === true || data.Cleared === true;
     return { url, reported, userControl, reason, cleared };
@@ -546,6 +666,9 @@ function copy(lang: string) {
             pickEmpty: 'No conversation yet — send the first task below.',
             messageTo: (name: string) => `Message ${name}`,
             details: 'Details',
+            primaryMark: 'Primary',
+            makePrimary: 'Set as primary bot',
+            primaryNow: 'Already the primary bot',
             computer: 'Computer',
             status: 'Status',
             created: 'Created',
@@ -585,7 +708,22 @@ function copy(lang: string) {
             takeoverHint: 'Fullscreen the desktop and take the keyboard from the bot.',
             takeoverBusyHint: 'A bot is driving the shared desktop — takeover is unavailable right now.',
             takeoverActive: 'You have the desktop. Release it to hand the keyboard back.',
+            myDesktop: 'My desktop',
+            sharedScreen: 'Shared',
+            screenSwitch: 'Desktops',
+            handBack: 'Hand back to the bot',
+            handBackBusy: 'Handing the desktop back…',
+            handoffFallback: 'This bot needs you on its desktop.',
+            handBackFailed: 'The desktop was not handed back.',
+            noSharedDesktop: 'No bot is sharing your desktop.',
+            isolatedDesktop: 'Own desktop',
+            isolatedDesktopHint: 'This bot uses its own virtual desktop. Off means it shares yours.',
+            desktopModeFailed: 'The desktop mode was not changed.',
             watching: 'Watching the desktop. It stays open while you watch.',
+            viewOnly: 'View only',
+            takeControl: 'Take control',
+            screenMode: 'Screen mode',
+            watchLockedHint: 'The bot handed you the keyboard — finish the login, then press "Login done, continue".',
             expandScreen: 'Expand',
             restoreScreen: 'Restore',
             connectingDesktop: 'Starting the desktop…',
@@ -652,6 +790,9 @@ function copy(lang: string) {
             pickEmpty: '還沒有對話，在下面安排第一件事吧。',
             messageTo: (name: string) => `給 ${name} 發消息`,
             details: '詳情',
+            primaryMark: '主',
+            makePrimary: '設為主 Bot',
+            primaryNow: '已是主 Bot',
             computer: '電腦',
             status: '狀態',
             created: '建立時間',
@@ -691,7 +832,22 @@ function copy(lang: string) {
             takeoverHint: '全螢幕顯示桌面，並把鍵盤交給你。',
             takeoverBusyHint: '有 Bot 正在操作桌面，現在不能接管。',
             takeoverActive: '你已接管桌面。完成後退出接管，把鍵盤交還。',
+            myDesktop: '我的桌面',
+            sharedScreen: '共享',
+            screenSwitch: '桌面',
+            handBack: '交還給 Bot',
+            handBackBusy: '正在交還桌面…',
+            handoffFallback: '這個 Bot 需要你在它的桌面上操作。',
+            handBackFailed: '桌面沒有交還給 Bot。',
+            noSharedDesktop: '沒有 Bot 在共用你的桌面。',
+            isolatedDesktop: '獨立桌面',
+            isolatedDesktopHint: '這個 Bot 使用自己的虛擬桌面。關閉後改回共用你的桌面。',
+            desktopModeFailed: '桌面模式沒有改成。',
             watching: '正在觀看桌面。觀看期間桌面保持開啟。',
+            viewOnly: '僅觀看',
+            takeControl: '取得控制權',
+            screenMode: '螢幕模式',
+            watchLockedHint: 'Bot 已把鍵盤交給你，完成登入後點「登入完成，繼續」。',
             expandScreen: '放大',
             restoreScreen: '恢復',
             connectingDesktop: '正在連接桌面…',
@@ -757,6 +913,9 @@ function copy(lang: string) {
         pickEmpty: '还没有对话，在下面安排第一件事吧。',
         messageTo: (name: string) => `给 ${name} 发消息`,
         details: '详情',
+        primaryMark: '主',
+        makePrimary: '设为主 Bot',
+        primaryNow: '已是主 Bot',
         computer: '电脑',
         status: '状态',
         created: '创建时间',
@@ -796,7 +955,22 @@ function copy(lang: string) {
         takeoverHint: '全屏显示桌面，并把键盘交给你。',
         takeoverBusyHint: '有 Bot 正在操作桌面，现在不能接管。',
         takeoverActive: '你已接管桌面。完成后退出接管，把键盘交回。',
+        myDesktop: '我的桌面',
+        sharedScreen: '共享',
+        screenSwitch: '桌面',
+        handBack: '交还给 bot',
+        handBackBusy: '正在交还桌面…',
+        handoffFallback: '这个 bot 需要你在它的桌面上操作。',
+        handBackFailed: '桌面没有交还给 bot。',
+        noSharedDesktop: '没有 bot 在共用你的桌面。',
+        isolatedDesktop: '独立桌面',
+        isolatedDesktopHint: '这个 bot 使用自己的虚拟桌面。关闭后改回共用你的桌面。',
+        desktopModeFailed: '桌面模式没有改成。',
         watching: '正在观看桌面。观看期间桌面保持开启。',
+        viewOnly: '仅观看',
+        takeControl: '取得控制权',
+        screenMode: '屏幕模式',
+        watchLockedHint: 'Bot 已把键盘交给你，完成登录后点“登录完成，继续”。',
         expandScreen: '放大',
         restoreScreen: '恢复',
         connectingDesktop: '正在连接桌面…',
@@ -1024,7 +1198,9 @@ export function handleDesktopBotResult(payload: unknown) {
     const result = responseText(data, '后台没有返回结果。');
     const screen = screenOf(data);
     const attached = attachedFiles(data, result.failed);
-    settlePendingBotReply(sessionKey.slice(0, split), sessionKey.slice(split + 1), {
+    const resultUser = sessionKey.slice(0, split);
+    const resultBot = sessionKey.slice(split + 1);
+    settlePendingBotReply(resultUser, resultBot, {
         content: result.content,
         failed: result.failed,
         handoffUrl: screen.userControl || screen.reason ? screen.url : '',
@@ -1037,6 +1213,7 @@ export function handleDesktopBotResult(payload: unknown) {
         files: attached.files,
         localPaths: attached.localPaths,
     });
+    reportDesktopBotCrossResult(resultUser, resultBot, result.content);
 }
 
 export function handleDesktopBotReport(payload: unknown) {
@@ -1437,6 +1614,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const text = copy(lang);
     const { showConfirm } = useDialog();
     const [bots, setBots] = useState<DesktopBot[]>([]);
+    const botsRef = useRef(bots);
+    botsRef.current = bots;
+    const pendingCrossNotes = useRef<Array<Record<string, unknown>>>([]);
+    const landCrossRef = useRef<(notes: Array<Record<string, unknown>>) => void>(() => undefined);
     const loadGen = useRef(0);
     // Local writes that happen while a list request is in flight. The response
     // is still applied; these overlays keep a create, rename, or delete that
@@ -1478,6 +1659,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [messagesByBot, setMessagesByBot] = useState<Record<string, DesktopBotMessage[]>>({});
     const [command, setCommand] = useState('');
     const [listNotice, setListNotice] = useState('');
+    const [askingByBot, setAskingByBot] = useState<Record<string, string>>({});
+    const [activityByBot, setActivityByBot] = useState<Record<string, { text: string; runId: string }>>({});
     const [listFailed, setListFailed] = useState(false);
     // The picture follows the panel, not the desktop address. 'auto' is a screen
     // handoff, 'user' is the identity chip / 人类接管, 'off' is 收起. Unset stays closed.
@@ -1488,6 +1671,15 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const [scheduleNotice, setScheduleNotice] = useState('');
     const [personaByBot, setPersonaByBot] = useState<Record<string, string>>({});
     const [liveDesktop, setLiveDesktop] = useState<Record<string, LiveDesktop | undefined>>({});
+    const [screenByBot, setScreenByBot] = useState<Record<string, BotScreen>>({});
+    const [screenPick, setScreenPick] = useState('mine');
+    const [screenPickTouched, setScreenPickTouched] = useState(false);
+    const [handoffNotice, setHandoffNotice] = useState<{ botId: string; reason: string; url: string } | null>(null);
+    const [desktopAdmin, setDesktopAdmin] = useState(false);
+    const [modeSaving, setModeSaving] = useState(false);
+    const [handingBack, setHandingBack] = useState(false);
+    const [handBackError, setHandBackError] = useState('');
+    const [modeError, setModeError] = useState('');
     const [takeoverByBot, setTakeoverByBot] = useState<Record<string, boolean>>({});
     // A handoff the person accepted from the chat. The bot asked them to take
     // the computer, so a still-open run must not take the keyboard back.
@@ -1498,6 +1690,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // Chat turns still on the keyboard. A stale bubble is not enough to know
     // the run ended, and a run that asked the person is absent here.
     const [desktopRunByBot, setDesktopRunByBot] = useState<Record<string, boolean>>({});
+    // The send closure can be older than the latest busy event. The ref is the
+    // gate; the state is what the page paints.
+    const desktopRunByBotRef = useRef<Record<string, boolean>>({});
+    const drainDeskRef = useRef<(botId: string, fromList?: boolean) => void>(() => undefined);
+    const drainAllDeskRef = useRef<() => void>(() => undefined);
+    const noteQueuedRef = useRef<(botId: string) => void>(() => undefined);
+    const langRef = useRef(lang);
+    langRef.current = lang;
     // Seq is the process-wide hold generation. A snapshot older than the last
     // applied event must not put a finished schedule back on the keyboard.
     const busySeqRef = useRef(0);
@@ -1675,19 +1875,49 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         for (const [id, panel] of Object.entries(desktopPanels)) {
             if (id === selected.id || (panel !== 'auto' && panel !== 'user')) continue;
             const url = liveDesktop[id]?.url || '';
-            if (url) {
+            // An isolated bot's picture is not the shared desktop. Borrowing it
+            // paints the wrong screen while this bot's own poll is still starting.
+            if (url && screenByBot[id]?.mode !== 'isolated') {
                 sharedOpenUrl = url;
                 break;
             }
         }
     }
     const desktopUrl = showDesktop ? (live?.url || sharedOpenUrl) : '';
+    const screenPickNow = effectiveScreenPick(screenPickTouched, screenPick, selected?.id || '', screenByBot[selected?.id || '']?.mode);
+    const shownDesktopUrl = showDesktop ? shownScreenURL(screenPickNow, selected?.id || '', bots, screenByBot, desktopUrl) : '';
+    const holdBotId = screenNeedsOwnHold(screenPickNow, selectedId, screenByBot, bots);
+    // "My desktop" is missing only for an isolated bot: a shared bot's "mine"
+    // is its own display and already has retry/loading through its own poll.
+    // While a shared-display hold is being fetched, it is still connecting,
+    // not missing.
+    const ownerDesktopMissing = screenPickNow === 'mine' && !!selected && screenByBot[selected.id]?.mode === 'isolated' && !holdBotId && bots.length > 0 && bots.every(bot => !!screenByBot[bot.id]) && mineScreenURL(bots, screenByBot) === '';
     const storedSection = selected ? sectionByBot[selected.id] : undefined;
     const panelSection: PanelSection = storedSection === 'details' || storedSection === 'schedules' ? storedSection : 'computer';
     const retryForSelected = !!selected && retryByBot[selected.id] === true;
     // Voluntary viewing stays view-only while any bot is driving the shared
     // computer. A handoff keeps the keyboard only when nobody is driving.
-    const stageInteractive = showDesktop && !agentOperating && (liveControl || liveReason !== '' || takeover);
+    const botAskedForDesktop = (botId: string) => {
+        if (!botId) return false;
+        if (handoffNotice?.botId === botId) return true;
+        const view = liveDesktop[botId];
+        if (view?.userControl || view?.attentionReason) return true;
+        return messagesForBot(userId, botId).some(item => item.userControl || !!item.attentionReason);
+    };
+    // The chat bot's keyboard state belongs to the screen the chat is holding.
+    // Another isolated display is its own keyboard: a login there has to accept
+    // clicks even while a different bot is still driving the shared desktop.
+    const otherScreen = screenPickNow !== 'mine' && selected && screenPickNow !== selected.id ? screenPickNow : '';
+    const otherIsolated = !!otherScreen && screenByBot[otherScreen]?.mode === 'isolated';
+    const otherHandoff = otherIsolated && botAskedForDesktop(otherScreen);
+    const shownSharedScreen = screenPickNow === 'mine' || screenByBot[screenPickNow]?.mode === 'shared';
+    // The handoff live flags belong to the display the selected bot holds —
+    // the shared desktop for a shared bot, its own display for an isolated
+    // one. They must not unlock a different display that happens to be up.
+    const liveOnShownScreen = !!selected && (screenByBot[selected.id]?.mode === 'isolated' ? screenPickNow === selected.id : shownSharedScreen);
+    const stageInteractive = showDesktop && (otherIsolated
+        ? otherHandoff
+        : !agentOperating && (((liveControl || liveReason !== '') && liveOnShownScreen) || takeover));
     // Watch and control are different noVNC documents. Reusing the iframe leaves
     // the first page's viewOnly in place, so takeover looks active and clicks do nothing.
     const frameMode = stageInteractive ? 'live' : 'watch';
@@ -1789,6 +2019,11 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // from inside a state updater — the updater may run later than the write.
     const commit = (botId: string, next: DesktopBotMessage[]) => {
         rememberMessages(botId, next);
+    };
+    noteQueuedRef.current = (botId: string) => {
+        const owner = userIdRef.current;
+        const stored = messagesForBot(owner, botId);
+        commit(botId, [...stored, { id: messageID(), role: 'assistant', content: desktopBotQueuedSentence(langRef.current), ack: true }]);
     };
     // The model writes the identity. A single hyphen withdraws it. The stored
     // text is what the next understanding call reads, not a phrase list.
@@ -1903,6 +2138,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if (foreignQuiet) return;
             latchRef.current[botId] = false;
             delete latchRequestRef.current[botId];
+            setHandoffNotice(prev => prev?.botId === botId ? null : prev);
             const panel = panelsRef.current[botId];
             if (panel === 'auto' || panel === 'user') {
                 const url = screen.url || liveRef.current[botId]?.url || '';
@@ -1918,6 +2154,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             latchRef.current[botId] = true;
             if (requestId) latchRequestRef.current[botId] = requestId;
             syncLive(botId, { url: screen.url || liveRef.current[botId]?.url || '', userControl: screen.userControl, attentionReason: screen.reason });
+            setHandoffNotice({ botId, reason: screen.reason, url: screen.url });
             openPanel(botId, 'auto', true);
             showComputer(botId);
             setRetryByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
@@ -1969,7 +2206,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             pending = true;
             try {
                 const requestedAt = Date.now();
-                const view = await WatchDesktopBot(botId, epoch) as { novnc_url?: string; user_control?: boolean; attention_reason?: string } | undefined;
+                const view = await WatchDesktopBot(botId, epoch) as { novnc_url?: string; user_control?: boolean; attention_reason?: string; desktop_mode?: string } | undefined;
                 if (!alive) return;
                 const url = String(view?.novnc_url || '');
                 if (!url) {
@@ -2029,6 +2266,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     showComputer(botId);
                 }
                 syncLive(botId, { url, userControl, attentionReason: reason });
+                if (view?.desktop_mode === 'isolated' || view?.desktop_mode === 'shared') {
+                    const mode = desktopModeOf(view.desktop_mode);
+                    setScreenByBot(prev => {
+                        const existing = prev[botId];
+                        if (existing && existing.mode === mode && (existing.url === url || !url)) return prev;
+                        return { ...prev, [botId]: { url: url || existing?.url || '', mode } };
+                    });
+                }
             } catch {
                 fail();
             } finally {
@@ -2058,6 +2303,93 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             });
         };
     }, [selectedId, showDesktop]);
+
+    const botScreenKey = bots.map(bot => bot.id).join('\n');
+    useEffect(() => {
+        if (!showDesktop || !botScreenKey) return;
+        let alive = true;
+        const ids = botScreenKey.split('\n');
+        void (async () => {
+            const loaded = await Promise.all(ids.map(async id => {
+                try {
+                    const view = await GetDesktopBotScreen(id) as { novnc_url?: string; desktop_mode?: string } | undefined;
+                    return [id, { url: String(view?.novnc_url || ''), mode: desktopModeOf(view?.desktop_mode) }] as const;
+                } catch {
+                    return null;
+                }
+            }));
+            if (!alive) return;
+            setScreenByBot(prev => {
+                let changed = false;
+                const next = { ...prev };
+                for (const item of loaded) {
+                    if (!item) continue;
+                    const [id, screen] = item;
+                    // A watch that already published an address is newer than this
+                    // list read. Letting the list win swaps in a stale token.
+                    const url = next[id]?.url || screen.url;
+                    if (next[id]?.url === url && next[id]?.mode === screen.mode) continue;
+                    next[id] = { url, mode: screen.mode };
+                    changed = true;
+                }
+                return changed ? next : prev;
+            });
+        })();
+        return () => { alive = false; };
+    }, [showDesktop, botScreenKey]);
+
+    useEffect(() => {
+        if (!showDesktop) return;
+        let alive = true;
+        void DesktopBotDesktopAdmin().then(ok => {
+            if (alive) setDesktopAdmin(ok === true);
+        }).catch(() => {
+            if (alive) setDesktopAdmin(false);
+        });
+        return () => { alive = false; };
+    }, [showDesktop]);
+
+    // GET does not start noVNC. Hold a display the chat bot's poll is not
+    // already holding. A second epoch on the shared owner display would
+    // replace that poll and drop the picture.
+    useEffect(() => {
+        if (!showDesktop || !holdBotId) return;
+        const botId = holdBotId;
+        const epoch = takeDesktopWatchEpoch();
+        let alive = true;
+        let pending = false;
+        const tick = async () => {
+            // Same rule as the chat bot's poll: a hold that is still opening
+            // must not be joined by another start.
+            if (pending) return;
+            pending = true;
+            try {
+                const view = await WatchDesktopBot(botId, epoch) as { novnc_url?: string; desktop_mode?: string } | undefined;
+                if (!alive) return;
+                const url = String(view?.novnc_url || '');
+                setScreenByBot(prev => {
+                    const existing = prev[botId];
+                    const next = {
+                        url: url || existing?.url || '',
+                        mode: view?.desktop_mode ? desktopModeOf(view.desktop_mode) : (existing?.mode || 'shared'),
+                    };
+                    if (existing && existing.url === next.url && existing.mode === next.mode) return prev;
+                    return { ...prev, [botId]: next };
+                });
+            } catch {
+                // The last picture stays up while this display is still starting.
+            } finally {
+                pending = false;
+            }
+        };
+        void tick();
+        const timer = window.setInterval(() => { void tick(); }, DESKTOP_BOT_WATCH_INTERVAL_MS);
+        return () => {
+            alive = false;
+            window.clearInterval(timer);
+            void ReleaseDesktopBotWatch(botId, epoch).catch(() => undefined);
+        };
+    }, [showDesktop, holdBotId]);
 
     useEffect(() => {
         if (!screenExpanded || !selectedId) return;
@@ -2152,13 +2484,19 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             if ('run_driving' in data || 'RunDriving' in data) {
                 runEpochRef.current += 1;
                 const driving = data.run_driving === true || data.RunDriving === true;
-                setDesktopRunByBot(prev => {
-                    if (driving) return prev[botId] ? prev : { ...prev, [botId]: true };
-                    if (!prev[botId]) return prev;
-                    const next = { ...prev };
+                const prev = desktopRunByBotRef.current;
+                let next = prev;
+                if (driving) {
+                    if (!prev[botId]) next = { ...prev, [botId]: true };
+                } else if (prev[botId]) {
+                    next = { ...prev };
                     delete next[botId];
-                    return next;
-                });
+                }
+                if (next !== prev) {
+                    desktopRunByBotRef.current = next;
+                    setDesktopRunByBot(next);
+                }
+                if (!driving && next !== prev) drainAllDeskRef.current();
                 if (!('busy' in data) && !('Busy' in data) && !('count' in data) && !('Count' in data)) return;
             }
             const seq = Number(data.seq || data.Seq || 0);
@@ -2202,6 +2540,61 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         return () => { if (typeof off === 'function') off(); };
     }, []);
 
+    // The step the desktop run is in. Empty clears back to the fallback
+    // sentence, but only for the run that wrote the step: a second job of
+    // this bot keeps the step it reported. A phrase that is not a real step
+    // is ignored, so the previous step stays. Asking another bot is a
+    // separate label and wins over this.
+    useEffect(() => {
+        const handler = (payload: unknown) => {
+            let data: Record<string, unknown>;
+            try {
+                data = (typeof payload === 'string' ? JSON.parse(payload) : payload) as Record<string, unknown>;
+            } catch {
+                return;
+            }
+            if (!data || typeof data !== 'object') return;
+            const botId = String(data.bot_id || data.BotID || '').trim();
+            if (!botId) return;
+            const runId = String(data.run_id || data.RunID || '').trim();
+            const raw = String(data.activity ?? data.Activity ?? '');
+            setActivityByBot(prev => {
+                const current = prev[botId];
+                if (!raw.trim()) {
+                    if (!current) return prev;
+                    if (runId && current.runId && current.runId !== runId) return prev;
+                    const next = { ...prev };
+                    delete next[botId];
+                    return next;
+                }
+                const activity = desktopBotActivityText(raw);
+                if (!activity || (current?.text === activity && current.runId === runId)) return prev;
+                return { ...prev, [botId]: { text: activity, runId } };
+            });
+        };
+        const off = EventsOn('desktop-bot-activity', handler);
+        return () => { if (typeof off === 'function') off(); };
+    }, []);
+
+    // A send that Hub refused is still the pending bubble. This line is only
+    // the wait. The result that arrives later still settles that bubble.
+    useEffect(() => {
+        const handler = (payload: unknown) => {
+            let data: Record<string, unknown>;
+            try {
+                data = (typeof payload === 'string' ? JSON.parse(payload) : payload) as Record<string, unknown>;
+            } catch {
+                return;
+            }
+            if (data.waiting !== true && data.Waiting !== true) return;
+            const botId = String(data.bot_id || data.BotID || '').trim();
+            if (!botId) return;
+            noteQueuedRef.current(botId);
+        };
+        const off = EventsOn('desktop-bot-queued', handler);
+        return () => { if (typeof off === 'function') off(); };
+    }, []);
+
     useEffect(() => {
         let cancelled = false;
         const seenRuns = runEpochRef.current;
@@ -2226,6 +2619,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     const botId = String(id || '').trim();
                     if (botId) runs[botId] = true;
                 }
+                desktopRunByBotRef.current = runs;
                 setDesktopRunByBot(runs);
             }
         }).catch(() => undefined);
@@ -2268,6 +2662,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         setTakeoverByBot({});
         setTakeoverHoldByBot({});
         setDesktopBusyByBot({});
+        desktopRunByBotRef.current = {};
         setDesktopRunByBot({});
         setScreenExpandedByBot({});
         setSecretPrompt(null);
@@ -2301,9 +2696,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 title: item.title,
                 description: item.description || '',
                 createdAt: createdMillis(item.created_at),
+                primary: item.primary === true,
             }));
             const merged = mergeListed(list);
+            botsRef.current = merged;
             setBots(merged);
+            if (pendingCrossNotes.current.length > 0) landCrossRef.current(pendingCrossNotes.current);
             // The live queue is this session's authority. Storage is only the
             // reload copy, so a list that arrives after the user already queued
             // a message must not append that message again.
@@ -2425,6 +2823,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     files: attached.files,
                 } : item);
                 commit(botId, foldPlanConfirmation(next, next.findIndex(item => item.id === pending.messageId)));
+                reportDesktopBotCrossResult(userId, botId, result.content);
                 drainIfIdle(botId);
             }
             const botId = sessionBotId(sessionKey, userId);
@@ -2548,7 +2947,108 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
 
     const selectBot = (bot: DesktopBot) => {
         setSelectedId(bot.id);
+        setScreenPick('mine');
+        setScreenPickTouched(false);
+        setHandBackError('');
+        setModeError('');
         setMessagesByBot(prev => prev[bot.id] ? prev : { ...prev, [bot.id]: messagesForBot(userId, bot.id) });
+    };
+
+    const chooseScreen = (pick: string) => {
+        setScreenPickTouched(true);
+        setScreenPick(pick);
+        setHandBackError('');
+        if (pick === 'mine' || screenByBot[pick]?.url) return;
+        void GetDesktopBotScreen(pick).then(view => {
+            const url = String(view?.novnc_url || '');
+            setScreenByBot(prev => ({
+                ...prev,
+                [pick]: { url: prev[pick]?.url || url, mode: desktopModeOf(view?.desktop_mode) },
+            }));
+        }).catch(() => undefined);
+    };
+
+    const openHandoffScreen = (notice: { botId: string; reason: string; url: string }) => {
+        const bot = bots.find(item => item.id === notice.botId);
+        if (bot) {
+            setSelectedId(bot.id);
+            setMessagesByBot(prev => prev[bot.id] ? prev : { ...prev, [bot.id]: messagesForBot(userId, bot.id) });
+        }
+        if (notice.url) {
+            setScreenByBot(prev => ({
+                ...prev,
+                [notice.botId]: { url: notice.url, mode: prev[notice.botId]?.mode || 'shared' },
+            }));
+        }
+        openPanel(notice.botId, 'user', true);
+        showComputer(notice.botId);
+        chooseScreen(notice.botId);
+    };
+
+    const handBackTarget = screenPickNow !== 'mine' ? screenPickNow : (selected?.id || '');
+    // Hand-back admits a continuation, so it belongs to a bot that asked for
+    // the person. Looking at another screen must not start that task.
+    const showHandBack = botAskedForDesktop(handBackTarget);
+    const handBackToBot = async (botId: string) => {
+        if (!botId || handingBack) return;
+        setHandingBack(true);
+        setHandBackError('');
+        try {
+            const handed = await HandBackDesktopBot(botId);
+            const requestId = String(handed?.client_message_id || '').trim();
+            const messageId = handed?.accepted && requestId ? messageID() : '';
+            if (messageId) pendingRef.current.set(requestId, { botId, messageId, settled: false, admitted: true });
+            const stored = messagesForBot(userId, botId).map(item => (
+                item.userControl || item.attentionReason ? { ...item, userControl: false, attentionReason: '' } : item
+            ));
+            if (messageId) stored.push({ id: messageId, role: 'assistant', content: '', pending: true, phase: 'execute', requestId });
+            commit(botId, stored);
+            setHandoffNotice(prev => prev?.botId === botId ? null : prev);
+            clearLiveFlags(botId);
+            latchRef.current[botId] = false;
+            delete latchRequestRef.current[botId];
+            setTakeoverByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
+            setTakeoverHoldByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
+        } catch (error) {
+            setHandBackError(failureMessage(error).trim() || text.handBackFailed);
+        } finally {
+            setHandingBack(false);
+        }
+    };
+
+    const saveDesktopMode = async (botId: string, mode: 'isolated' | 'shared') => {
+        setModeSaving(true);
+        setModeError('');
+        try {
+            const saved = await SetDesktopBotDesktopMode(botId, mode);
+            const next = desktopModeOf(saved || mode);
+            // A mode flip changes which display this entry names. The old URL
+            // still points at the previous display — drop it before it paints
+            // as the new mode's screen; the GET below refills the right one.
+            setScreenByBot(prev => ({ ...prev, [botId]: { url: prev[botId]?.mode === next ? (prev[botId]?.url || '') : '', mode: next } }));
+            const view = await GetDesktopBotScreen(botId);
+            setScreenByBot(prev => ({
+                ...prev,
+                [botId]: { url: String(view?.novnc_url || prev[botId]?.url || ''), mode: desktopModeOf(view?.desktop_mode || next) },
+            }));
+        } catch (error) {
+            setModeError(failureMessage(error).trim() || text.desktopModeFailed);
+        } finally {
+            setModeSaving(false);
+        }
+    };
+
+    const makePrimary = async (botId: string) => {
+        const gen = loadGen.current;
+        try {
+            const items = await SetDesktopBotPrimary(botId);
+            if (gen !== loadGen.current || userIdRef.current !== userId) return;
+            const flags = new Map((items || []).map(item => [item.id, item.primary === true]));
+            setBots(prev => prev.map(bot => ({ ...bot, primary: flags.get(bot.id) === true })));
+        } catch (error) {
+            if (gen !== loadGen.current) return;
+            setListNotice(failureMessage(error).trim() || text.unavailable);
+        }
     };
 
     const create = async () => {
@@ -2836,13 +3336,23 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // being read, and it holds desktop work while the person has the keyboard.
     // MaClawSrv keeps each run's supplements on that run, so a new job is not
     // written into the one already going.
-    const queueRef = useRef<Map<string, Array<{ text: string; phase: BotPhase; verbatim?: boolean; prepared?: PreparedTurn }>>>(new Map());
+    const queueRef = useRef<Map<string, QueuedSend[]>>(new Map());
     // Readings finish out of order. Slots keep the order the person sent them,
     // so a fast later reading cannot run before an earlier one.
     // verbatim marks a queue entry whose reading already failed once: this
     // person chose their own words, so the queue must not read it again.
-    type ReadAhead = { text: string; phase: BotPhase; settled: boolean; enqueue: boolean; verbatim?: boolean; prepared?: PreparedTurn };
+    type ReadAhead = { text: string; phase: BotPhase; settled: boolean; enqueue: boolean; drop?: boolean; wanted?: boolean; verbatim?: boolean; prepared?: PreparedTurn };
     const readAheadRef = useRef<Map<string, ReadAhead[]>>(new Map());
+    // Set only while a stop is still deciding whether a live run exists.
+    // Cleared before the cancel request returns, after the old slots are marked.
+    const stopHoldRef = useRef<Set<string>>(new Set());
+    // drainIfIdle and releaseReadAhead are defined further down. Stop fills
+    // these in before any click, so a held queue can be put back without a
+    // forward call.
+    const followUps = {
+        drain(botId: string) { void botId; },
+        release(ownerId: string, botId: string) { void ownerId; void botId; },
+    };
 
     const dropAutoPanel = (botId: string) => {
         // This turn failed before it had a desktop. Another job already on
@@ -2861,7 +3371,186 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // The reading is a helper for the turn, not a gate on it: once it has
     // failed and this person has chosen to send what they typed, that choice
     // is the order.
+    const personHoldReason = (botId: string) => {
+        const items = messagesForBot(userId, botId);
+        for (let i = items.length - 1; i >= 0; i--) {
+            const reason = String(items[i]?.attentionReason || '').trim();
+            if (reason) return reason;
+        }
+        return String(liveDesktop[botId]?.attentionReason || '').trim();
+    };
+    // GetActiveDesktopRuns drops an empty run id, so 「刚接下」 comes from the
+    // driving flag instead. A timeout is not the same as an empty list.
+    const runsOnThisDesktop = async (botId: string) => {
+        const rows = await withinBudget(
+            GetActiveDesktopRuns(botId) as Promise<Array<{ run_id?: string; task_text?: string; waiting_for_user?: boolean }> | null>,
+            200,
+        );
+        if (!rows) return undefined;
+        return rows.flatMap(item => {
+            const runId = String(item?.run_id || '').trim();
+            if (!runId) return [];
+            const title = oneLine(stripConfirmedOrderLead(String(item?.task_text || ''))) || runId;
+            return [{ runId, title, waiting: item?.waiting_for_user === true }];
+        });
+    };
+    // Take the queue out before any await. A reading that settles during the
+    // lookup must not start the next order. Nothing is restored until we know
+    // there is no run to cancel, and a stop does not leave the hold behind.
+    const holdFollowUps = (botId: string) => {
+        stopHoldRef.current.add(botId);
+        const queued = [...(queueRef.current.get(botId) || [])];
+        queueRef.current.delete(botId);
+        const slots = readAheadRef.current.get(`${userId}\0${botId}`) || [];
+        const hadNext = queued.length > 0 || slots.some(slot => !slot.settled || !!slot.wanted || !!slot.enqueue);
+        for (const slot of slots) {
+            slot.drop = true;
+            slot.enqueue = false;
+        }
+        let released = false;
+        const release = (keepDropped: boolean) => {
+            if (released) return;
+            released = true;
+            if (!keepDropped) {
+                for (const slot of slots) {
+                    slot.drop = false;
+                    if (slot.settled && slot.wanted) slot.enqueue = true;
+                }
+                if (queued.length > 0) {
+                    const current = queueRef.current.get(botId) || [];
+                    queueRef.current.set(botId, [...queued, ...current]);
+                }
+            }
+            stopHoldRef.current.delete(botId);
+            if (!keepDropped && userIdRef.current === userId) {
+                followUps.release(userId, botId);
+                followUps.drain(botId);
+            }
+        };
+        return { hadNext, release };
+    };
+    const statusSpokenRun = async (ownerId: string, botId: string): Promise<string> => {
+        const local = await runsOnThisDesktop(botId);
+        if (userIdRef.current !== ownerId) return '';
+        const running = local?.filter(run => !run.waiting) || [];
+        if (local && running.length > 0) return desktopBotRunningSentence(running.map(run => run.title), lang);
+        if (local && local.length > 0) return desktopBotWaitingSentence(personHoldReason(botId), lang);
+        // The run list already waited. Driving can flip during that wait, and
+        // this closure still holds the previous render. The ref is updated
+        // with the event, before React renders.
+        if (desktopRunByBotRef.current[botId]) return desktopBotAdmittingSentence(lang);
+        const remote = String(await withinBudget(QueryDesktopBotTaskStatus(botId, '', lang), 800) || '').trim();
+        if (userIdRef.current !== ownerId) return '';
+        return remote || desktopBotStatusUnreachableSentence(lang);
+    };
+    const stopSpokenRun = async (ownerId: string, botId: string, held: { hadNext: boolean; release: (keepDropped: boolean) => void }): Promise<string> => {
+        const local = await runsOnThisDesktop(botId);
+        if (userIdRef.current !== ownerId) {
+            held.release(false);
+            return '';
+        }
+        const admitting = !!desktopRunByBotRef.current[botId];
+        if (!local || local.length === 0) {
+            if (admitting) {
+                // Hub names the run only when the admit call returns, which
+                // can take the whole 45-minute budget. Arm the cancel now
+                // and drop the next order. The admit path cancels that id.
+                held.release(true);
+                let reason = '';
+                try {
+                    await ArmDesktopBotAdmitCancel(botId);
+                } catch (error) {
+                    reason = failureMessage(error).trim();
+                }
+                if (userIdRef.current !== ownerId) return '';
+                if (reason) return desktopBotStopFailedSentence(reason, lang);
+                return desktopBotStoppedSentence([], held.hadNext, lang);
+            }
+            held.release(false);
+            if (!local) return desktopBotStatusUnreachableSentence(lang);
+            return desktopBotStopIdleSentence(lang);
+        }
+        const hadNext = held.hadNext;
+        held.release(true);
+        let reason = '';
+        for (const run of local) {
+            try {
+                await CancelDesktopBotRun(botId, run.runId);
+            } catch (error) {
+                reason = failureMessage(error).trim();
+                break;
+            }
+        }
+        if (userIdRef.current !== ownerId) return '';
+        if (reason) return desktopBotStopFailedSentence(reason, lang);
+        return desktopBotStoppedSentence(local.map(run => run.title), hadNext, lang);
+    };
+    // No pending bubble, so this answer is not the working row
+    // 「正在一点点推进」. The question itself is an ordinary user line.
+    // A queued copy is already in the thread.
+    const answerDesktopControl = (botId: string, content: string, control: 'status' | 'stop', mode: 'now' | 'fromQueue') => {
+        if (mode === 'now') {
+            const prior = messagesForBot(userId, botId);
+            commit(botId, [...prior, { id: messageID(), role: 'user', content }]);
+        }
+        const ownerId = userId;
+        const held = control === 'stop' ? holdFollowUps(botId) : undefined;
+        void (async () => {
+            const answer = control === 'stop' && held
+                ? await stopSpokenRun(ownerId, botId, held)
+                : await statusSpokenRun(ownerId, botId);
+            if (userIdRef.current !== ownerId || !answer) return;
+            const stored = messagesForBot(ownerId, botId);
+            commit(botId, [...stored, { id: messageID(), role: 'assistant', content: answer, chat: true }]);
+        })();
+    };
+
+    const deliverCross = async (botId: string, cross: { kind: string; target: string; text: string; order: string }) => {
+        const self = botsRef.current.find(item => item.id === botId);
+        const label = desktopBotAskingLabel(cross.target, botsRef.current);
+        setAskingByBot(prev => ({ ...prev, [botId]: label }));
+        try {
+            if (!self?.primary) return { content: DESKTOP_BOT_NOT_PRIMARY, ask: false, noticeBots: undefined as DesktopBotNoticeBot[] | undefined };
+            const posted = await PostDesktopBotCross(botId, cross.kind, cross.target, cross.text, cross.order, '');
+            if (!posted || posted.ask || !posted.posted) {
+                return { content: String(posted?.ask || '').trim() || '你要跟哪一个 Bot 说，说什么？', ask: true, noticeBots: undefined as DesktopBotNoticeBot[] | undefined };
+            }
+            for (const note of posted.notes || []) {
+                const id = String(note?.id || '').trim();
+                if (id) markDesktopBotNotice(userId, `${id}:from`);
+            }
+            const names = (posted.names || []).map(name => String(name || '').trim()).filter(Boolean);
+            const noticeBots = names.length > 1
+                ? (posted.notes || []).map((note, index) => ({ id: String(note?.target || index), name: names[index] || String(note?.target || '') })).filter(item => item.name)
+                : undefined;
+            return { content: String(posted.primary_line || '').trim() || names.join('、'), ask: false, noticeBots };
+        } catch (error) {
+            const raw = failureMessage(error).trim();
+            return { content: raw || DESKTOP_BOT_NOT_PRIMARY, ask: false, noticeBots: undefined as DesktopBotNoticeBot[] | undefined };
+        } finally {
+            setAskingByBot(prev => {
+                if (!prev[botId]) return prev;
+                const next = { ...prev };
+                delete next[botId];
+                return next;
+            });
+        }
+    };
+
+    const sayTypedConfirm = (botId: string) => {
+        const prior = messagesForBot(userId, botId);
+        commit(botId, [...prior, { id: messageID(), role: 'assistant', content: desktopBotTypedConfirmSentence(lang), chat: true }]);
+    };
     const startTask = (botId: string, content: string, phase: BotPhase, mode: 'now' | 'fromQueue', verbatim = false, prepared?: PreparedTurn) => {
+        if (content.trim() === CONFIRM_COMMAND) {
+            sayTypedConfirm(botId);
+            return;
+        }
+        const control = desktopBotLocalControl(content);
+        if (control) {
+            answerDesktopControl(botId, content, control, mode);
+            return;
+        }
         const turnPhase = phaseFor(content, phase);
         // A second job starts beside one that is already going. It must not
         // take the keyboard or the desktop watch away from that job. Only the
@@ -2869,6 +3558,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         // takes the keyboard back.
         const siblingLive = [...pendingRef.current.values()].some(value => value.botId === botId && !value.settled);
         const takingKeyboard = !siblingLive || content.trim() === RETURN_COMMAND;
+        if (!siblingLive) {
+            setActivityByBot(prev => {
+                if (!(botId in prev)) return prev;
+                const next = { ...prev };
+                delete next[botId];
+                return next;
+            });
+        }
         const prior = messagesForBot(userId, botId).map(item => {
             // A turn this page already admitted stays live, however old the
             // bubble looks. Clearing it here would cancel the other job on
@@ -3005,7 +3702,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 let understood: Record<string, unknown> = {};
                 let keepIdentity = '';
                 try {
-                    const reading = await readDesktopBotTurn(content, turnPhase, lang, earlier, personaForBot(ownerId, botId));
+                    const reading = await readDesktopBotTurn(content, turnPhase, lang, earlier, personaForBot(ownerId, botId), desktopBotCatalog(botId, botsRef.current));
                     if (reading.kind !== 'read') {
                         // This turn has not started. It stops here with the
                         // sentence that was typed, which is why the reading
@@ -3033,6 +3730,30 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         // server too: a preference still honoured after being
                         // taken back explains itself nowhere on screen.
                         void PersistDesktopBotPreference(botId, keepIdentity).catch(() => undefined);
+                    }
+                    const cross = crossOf(understood);
+                    if (cross) {
+                        const delivered = await deliverCross(botId, cross);
+                        if (ownerLeft()) {
+                            leaveAccount();
+                            return;
+                        }
+                        if (bubbleGone()) return;
+                        pending.settled = true;
+                        pendingRef.current.delete(ticket);
+                        clearLiveBotTurn(ownerId, botId, assistantMessage.id);
+                        const stored = messagesForBot(ownerId, botId);
+                        commit(botId, stored.map(item => item.id === assistantMessage.id ? {
+                            ...item,
+                            content: delivered.content,
+                            pending: false,
+                            chat: delivered.ask ? undefined : true,
+                            phase: undefined,
+                            askUser: delivered.ask ? { question: delivered.content } : undefined,
+                            noticeBots: delivered.noticeBots,
+                        } : item));
+                        drainIfIdle(botId);
+                        return;
                     }
                     if (pace === 'ask') {
                         if (ownerLeft()) {
@@ -3141,6 +3862,27 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         drainIfIdle(botId);
                         return;
                     }
+                    if (pace === 'confirm' && protocolControl(content) !== 'resume') {
+                        if (ownerLeft()) {
+                            leaveAccount();
+                            return;
+                        }
+                        if (bubbleGone()) return;
+                        pending.settled = true;
+                        pendingRef.current.delete(ticket);
+                        clearLiveBotTurn(ownerId, botId, assistantMessage.id);
+                        const arrangement = told || oneLine(content);
+                        const stored = messagesForBot(ownerId, botId);
+                        commit(botId, stored.map(item => item.id === assistantMessage.id ? {
+                            ...item,
+                            content: arrangement,
+                            pending: false,
+                            phase: 'plan' as const,
+                            workOrder: instruction,
+                        } : item));
+                        drainIfIdle(botId);
+                        return;
+                    }
                     if (pace === 'direct' && turnPhase !== 'execute') {
                         const stored = messagesForBot(ownerId, botId);
                         commit(botId, stored.map(item => item.id === assistantMessage.id ? { ...item, phase: 'execute' as const } : item));
@@ -3163,11 +3905,15 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 return;
             }
             if (bubbleGone()) return;
-            if (told && told !== content.trim()) {
+            // direct with no sentence still owes one line of the person's words.
+            // A button accept is verbatim and must not grow another bubble.
+            let sentence = told.trim();
+            if (!sentence && !verbatim && sendPhase === 'execute') sentence = oneLine(content);
+            if (sentence && (sentence !== content.trim() || !told.trim())) {
                 const stored = messagesForBot(ownerId, botId);
                 const at = stored.findIndex(item => item.id === assistantMessage.id);
                 if (at >= 0) {
-                    const ackMessage: DesktopBotMessage = { id: messageID(), role: 'assistant', content: told, ack: true, understood: true };
+                    const ackMessage: DesktopBotMessage = { id: messageID(), role: 'assistant', content: sentence, ack: true, understood: true };
                     commit(botId, [...stored.slice(0, at), ackMessage, ...stored.slice(at)]);
                 }
             }
@@ -3244,6 +3990,28 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             // a later line stays behind it, so a supplement is not overtaken
             // by the next command.
             pending.admitted = true;
+            // A desktop that is already driving does not take this execute.
+            // The reading's sentence is already in the thread. This pending
+            // bubble becomes the wait, and the order is sent once the desktop
+            // is free. A drain uses fromQueue, so it does not queue again.
+            if (mode === 'now' && sendPhase === 'execute' && Object.values(desktopRunByBotRef.current).some(Boolean)) {
+                pending.settled = true;
+                pendingRef.current.delete(ticket);
+                clearLiveBotTurn(ownerId, botId, assistantMessage.id);
+                const sentence = desktopBotQueuedSentence(lang);
+                const stored = messagesForBot(ownerId, botId);
+                commit(botId, stored.map(item => {
+                    if (item.id === assistantMessage.id) {
+                        return { ...item, content: sentence, pending: false, ack: true, phase: undefined };
+                    }
+                    if (item.id === userMessage.id) return { ...item, queued: true };
+                    return item;
+                }));
+                const queued = queueRef.current.get(botId) || [];
+                queued.push({ text: instruction, phase: sendPhase, verbatim: true, userText: content.trim() });
+                queueRef.current.set(botId, queued);
+                return;
+            }
             try {
                 const response = await SendDesktopBotTask(botId, instruction, sendPhase) as { request_id?: string; RequestID?: string; deferred?: boolean; Deferred?: boolean; text?: string; Text?: string; error?: string; Error?: string };
                 if (ownerLeft()) {
@@ -3335,15 +4103,15 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // even when a reload rebuilt the queue in chat order.
     const continuationQueued = (item: { text: string; phase: BotPhase }) =>
         item.phase === 'execute' && item.text === RETURN_COMMAND;
-    const takeNextQueued = (botId: string, queue: Array<{ text: string; phase: BotPhase; verbatim?: boolean; prepared?: PreparedTurn }>) => {
+    const takeNextQueued = (botId: string, queue: QueuedSend[]) => {
         const resumeAt = queue.findIndex(continuationQueued);
         if (resumeAt >= 0) return queue.splice(resumeAt, 1)[0];
         if (messagesForBot(userId, botId).some(item => item.userControl || item.attentionReason)) return undefined;
         return queue.shift();
     };
-    // A job already sent to the desktop is not a lock on the next one.
-    // Only a line that is still being read holds the queue, so two jobs are
-    // not started out of the order the person typed.
+    // A live desktop run holds the next execute. A line that is still being
+    // read also holds the queue, so two jobs are not started out of order.
+    // fromList is the task list saying the local flag is stale.
     const turnStillReading = (botId: string) =>
         [...pendingRef.current.values()].some(value => value.botId === botId && !value.settled && !value.admitted);
     // A bubble this page has already sent is not a lock. A pending bubble
@@ -3356,37 +4124,69 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const slot = id ? pendingRef.current.get(id) : undefined;
             return !(slot && slot.botId === botId && slot.admitted && !slot.settled);
         });
-    const drainIfIdle = (botId: string) => {
+    const drainIfIdle = (botId: string, fromList = false) => {
+        if (stopHoldRef.current.has(botId)) return;
         const queue = queueRef.current.get(botId);
         if (!queue || queue.length === 0) return;
+        if (!fromList && Object.values(desktopRunByBotRef.current).some(Boolean)) return;
         if (turnStillReading(botId) || pendingBubbleHoldsQueue(botId)) return;
         const nextSend = takeNextQueued(botId, queue);
         if (!nextSend) return;
         queueRef.current.set(botId, queue);
-        const stored = messagesForBot(userId, botId);
-        let cleared = false;
-        // Dispatching the continuation means the person already finished this
-        // handoff. A late reply can have written the prompt back; leave it
-        // set and the next ordinary message waits forever.
-        const resuming = continuationQueued(nextSend);
-        const next = stored.map(item => {
-            let copy = item;
-            if (resuming && (copy.userControl || copy.attentionReason)) {
-                copy = { ...copy, userControl: false, attentionReason: '' };
-            }
-            if (!cleared && copy.role === 'user' && copy.queued && copy.content === nextSend.text) {
-                cleared = true;
-                copy = { ...copy, queued: false };
-            }
-            return copy;
-        });
-        commit(botId, next);
-        startTask(botId, nextSend.text, nextSend.phase, 'fromQueue', nextSend.verbatim === true, nextSend.prepared);
+        const dispatchQueued = (item: QueuedSend) => {
+            const stored = messagesForBot(userId, botId);
+            let cleared = false;
+            // Dispatching the continuation means the person already finished this
+            // handoff. A late reply can have written the prompt back; leave it
+            // set and the next ordinary message waits forever.
+            const resuming = continuationQueued(item);
+            const next = stored.map(entry => {
+                let copy = entry;
+                if (resuming && (copy.userControl || copy.attentionReason)) {
+                    copy = { ...copy, userControl: false, attentionReason: '' };
+                }
+                if (!cleared && copy.role === 'user' && copy.queued && (copy.content === item.text || (!!item.userText && copy.content === item.userText))) {
+                    cleared = true;
+                    copy = { ...copy, queued: false };
+                }
+                return copy;
+            });
+            commit(botId, next);
+            startTask(botId, item.text, item.phase, 'fromQueue', item.verbatim === true, item.prepared);
+        };
+        // A handed-off order waits out the turn already on screen. Only this
+        // branch is async. Everything else still starts in this turn.
+        if (nextSend.crossNoteId) {
+            const noteId = nextSend.crossNoteId;
+            void (async () => {
+                try {
+                    if (!nextSend.claimed) {
+                        const claim = await ClaimDesktopBotCrossStart(botId, noteId);
+                        if (!claim?.claimed) return;
+                        rememberDesktopBotCrossRun(userId, botId, noteId, String(claim.from || ''));
+                    }
+                    await ArmDesktopBotCrossRun(botId, noteId);
+                } catch {
+                    const current = queueRef.current.get(botId) || [];
+                    queueRef.current.set(botId, [nextSend, ...current]);
+                    return;
+                }
+                if (stopHoldRef.current.has(botId)) {
+                    const current = queueRef.current.get(botId) || [];
+                    queueRef.current.set(botId, [nextSend, ...current]);
+                    return;
+                }
+                dispatchQueued(nextSend);
+            })();
+            return;
+        }
+        dispatchQueued(nextSend);
     };
     // A fast later reading must not run before an earlier message that is
     // still being classified. A local answer is not a queue item, and it
     // does not hold the ones behind it once it has settled.
     const releaseReadAhead = (ownerId: string, botId: string) => {
+        if (stopHoldRef.current.has(botId)) return;
         const slots = readAheadRef.current.get(`${ownerId}\0${botId}`);
         if (!slots || slots.length === 0) return;
         let queued = queueRef.current.get(botId) || [];
@@ -3402,6 +4202,146 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         queueRef.current.set(botId, queued);
         drainIfIdle(botId);
     };
+    followUps.drain = drainIfIdle;
+    followUps.release = releaseReadAhead;
+    drainDeskRef.current = drainIfIdle;
+    drainAllDeskRef.current = () => {
+        for (const id of [...queueRef.current.keys()]) drainIfIdle(id);
+    };
+    landCrossRef.current = (notes) => {
+        const bots = botsRef.current;
+        if (bots.length === 0) {
+            pendingCrossNotes.current = notes;
+            return;
+        }
+        pendingCrossNotes.current = [];
+        const known = new Set(bots.map(bot => bot.id));
+        const touched = new Set<string>();
+        const show = (botId: string) => { if (botId) touched.add(botId); };
+        for (const note of notes) {
+            const id = String(note.id || '').trim();
+            const kind = String(note.kind || '').trim().toLowerCase();
+            const from = String(note.from || '').trim();
+            const target = String(note.target || '').trim();
+            const text = String(note.text || '').trim();
+            const order = String(note.order || '').trim();
+            if (!id || (kind !== 'notify' && kind !== 'delegate' && kind !== 'result')) continue;
+            if (kind === 'result') {
+                const replyTo = String(note.reply_to || note.replyTo || '').trim();
+                const local = replyTo !== '' && target !== '' && desktopBotNoticeSeen(userId, `${replyTo}:result:${target}`);
+                if (target && known.has(target) && !local && !desktopBotNoticeSeen(userId, `${id}:target`)) {
+                    appendDesktopBotReport(userId, target, { content: text, failed: false, requestId: `${id}:target`, chat: true });
+                    markDesktopBotNotice(userId, `${id}:target`);
+                    show(target);
+                }
+                if (from && known.has(from) && !desktopBotNoticeSeen(userId, `${id}:from`)) {
+                    appendDesktopBotReport(userId, from, { content: text, failed: false, requestId: `${id}:from`, chat: true });
+                    markDesktopBotNotice(userId, `${id}:from`);
+                    show(from);
+                }
+                continue;
+            }
+            if (from && known.has(from) && !desktopBotNoticeSeen(userId, `${id}:from`)) {
+                const name = bots.find(bot => bot.id === target)?.title || target;
+                const line = kind === 'notify'
+                    ? `跟 ${name} 说了一声：${text}`
+                    : desktopBotDestructive(order || text)
+                        ? (desktopBotDestructive(order || text) && (/安装/.test(order || text) || /(?:^|[^a-z])install(?:[^a-z]|$)/i.test(order || text))
+                            ? `交给 ${name} 了。装软件还是得你在他那边点一下。`
+                            : `交给 ${name} 了。这一步还是得你在他那边点一下。`)
+                        : `交给 ${name} 了，他现在去做。`;
+                appendDesktopBotReport(userId, from, { content: line, failed: false, requestId: `${id}:from`, chat: true });
+                markDesktopBotNotice(userId, `${id}:from`);
+                show(from);
+            }
+            if (!target || !known.has(target) || desktopBotNoticeSeen(userId, `${id}:target`)) continue;
+            const body = order || text;
+            const destructive = kind === 'delegate' && desktopBotDestructive(body);
+            if (destructive) {
+                appendDesktopBotReport(userId, target, {
+                    content: desktopBotCrossTargetText(kind, text || order),
+                    failed: false,
+                    requestId: `${id}:target`,
+                    phase: 'plan',
+                    workOrder: body,
+                    crossNoteId: id,
+                });
+            } else if (kind === 'delegate') {
+                appendDesktopBotReport(userId, target, {
+                    content: desktopBotCrossTargetText(kind, text || order),
+                    failed: false,
+                    requestId: `${id}:target`,
+                    chat: true,
+                });
+                const busy = Object.values(desktopRunByBotRef.current).some(Boolean) || turnStillReading(target) || pendingBubbleHoldsQueue(target);
+                const queued = queueRef.current.get(target) || [];
+                queueRef.current.set(target, [...queued, { text: body, phase: 'execute', verbatim: true, crossNoteId: id }]);
+                if (!busy) drainIfIdle(target);
+            } else {
+                appendDesktopBotReport(userId, target, {
+                    content: desktopBotCrossTargetText(kind, text),
+                    failed: false,
+                    requestId: `${id}:target`,
+                    chat: true,
+                });
+            }
+            markDesktopBotNotice(userId, `${id}:target`);
+            show(target);
+        }
+        if (touched.size === 0) return;
+        setMessagesByBot(prev => {
+            const next = { ...prev };
+            for (const id of touched) next[id] = messagesForBot(userId, id);
+            return next;
+        });
+    };
+    useEffect(() => {
+        let cancelled = false;
+        const pull = async () => {
+            let notes: Array<Record<string, unknown>> = [];
+            try {
+                notes = (await PullDesktopBotCrossNotes()) as Array<Record<string, unknown>>;
+            } catch {
+                return;
+            }
+            if (cancelled || userIdRef.current !== userId) return;
+            landCrossRef.current(notes || []);
+        };
+        void pull();
+        const timer = window.setInterval(() => { void pull(); }, 4000);
+        return () => {
+            cancelled = true;
+            window.clearInterval(timer);
+        };
+    }, [userId]);
+    useEffect(() => {
+        const timer = window.setInterval(() => {
+            const queuedIds = [...queueRef.current.entries()].filter(([, items]) => items.length > 0).map(([id]) => id);
+            if (queuedIds.length === 0) return;
+            const known = new Set<string>(queuedIds);
+            for (const bot of botsRef.current) {
+                if (bot.id) known.add(bot.id);
+            }
+            void (async () => {
+                let blocked = false;
+                for (const id of known) {
+                    try {
+                        const items = await ListDesktopBotTasks(id);
+                        const live = (items || []).some(item => {
+                            const status = String(item?.status || '').trim().toLowerCase();
+                            return status !== 'succeeded' && status !== 'failed' && status !== 'cancelled';
+                        });
+                        if (live) blocked = true;
+                    } catch {
+                        blocked = true;
+                    }
+                }
+                if (blocked) return;
+                for (const id of queuedIds) drainDeskRef.current(id, true);
+            })();
+        }, 400);
+        return () => window.clearInterval(timer);
+    }, []);
     // A follow-up that is still being read has no queue entry yet. A later
     // command waits for that reading, then starts. It does not wait for the
     // desktop job itself to finish.
@@ -3417,6 +4357,22 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const botId = selected.id;
         const content = (preset ?? command).trim();
         if (!content) return;
+        // Typing the old approval sentence is not an approval and not a task.
+        if (content === CONFIRM_COMMAND) {
+            if (!preset) setCommand('');
+            sayTypedConfirm(botId);
+            return;
+        }
+        // A generic status question or an exact stop is answered from the live
+        // run. It does not wait for a reading that is already in flight, and
+        // it does not become a queued order.
+        const control = desktopBotLocalControl(content);
+        if (control) {
+            if (!preset) setCommand('');
+            applyFollowRef.current(true);
+            answerDesktopControl(botId, content, control, 'now');
+            return;
+        }
         // Sending is a new line the person just asked to see.
         applyFollowRef.current(true);
         const turnPhase = phaseFor(content, phase);
@@ -3445,6 +4401,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             void (async () => {
                 let enqueue = false;
                 try {
+                    if (content.trim() === CONFIRM_COMMAND || desktopBotLocalControl(content)) {
+                        return;
+                    }
                     if (slot.verbatim || slot.prepared) {
                         // Nothing to read. Verbatim is the person's own words.
                         // A prepared confirm already has the arrangement they
@@ -3455,8 +4414,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         let told = '';
                         let instruction = '';
                         let understood: Record<string, unknown> = {};
-                        const reading = await readDesktopBotTurn(content, turnPhase, lang, earlier, personaForBot(ownerId, botId));
-                        if (userIdRef.current !== ownerId) return;
+                        const reading = await readDesktopBotTurn(content, turnPhase, lang, earlier, personaForBot(ownerId, botId), desktopBotCatalog(botId, botsRef.current));
+                        if (userIdRef.current !== ownerId || slot.drop) return;
                         if (reading.kind !== 'read') {
                             // Nothing is queued and nothing was sent: the queue
                             // only holds work somebody stated.
@@ -3469,18 +4428,30 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         instruction = reading.instruction;
                         pace = reading.pace;
                         if (reading.persona && userIdRef.current === ownerId) keepPersona(ownerId, botId, reading.persona);
+                        const cross = crossOf(understood);
+                        if (cross) {
+                            if (userIdRef.current !== ownerId || slot.drop) return;
+                            const delivered = await deliverCross(botId, cross);
+                            if (userIdRef.current !== ownerId || slot.drop) return;
+                            const stored = messagesForBot(ownerId, botId);
+                            const local: DesktopBotMessage = delivered.ask
+                                ? { id: messageID(), role: 'assistant', content: delivered.content, askUser: { question: delivered.content } }
+                                : { id: messageID(), role: 'assistant', content: delivered.content, chat: true, noticeBots: delivered.noticeBots };
+                            commit(botId, [...stored, local]);
+                            return;
+                        }
                         if (pace === 'status') {
                             let answer = '';
                             try {
                                 answer = String(await QueryDesktopBotTaskStatus(botId, instruction || content, lang) || '').trim();
                             } catch (error) {
-                                if (userIdRef.current !== ownerId) return;
+                                if (userIdRef.current !== ownerId || slot.drop) return;
                                 const raw = friendlyFailure(failureMessage(error), lang) || text.unavailable;
                                 const stored = messagesForBot(ownerId, botId);
                                 commit(botId, [...stored, { id: messageID(), role: 'assistant', content: raw, failed: true }]);
                                 return;
                             }
-                            if (userIdRef.current !== ownerId) return;
+                            if (userIdRef.current !== ownerId || slot.drop) return;
                             if (!answer) {
                                 const stored = messagesForBot(ownerId, botId);
                                 commit(botId, [...stored, { id: messageID(), role: 'assistant', content: text.unavailable, failed: true }]);
@@ -3495,7 +4466,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             try {
                                 await armDesktopSchedule(botId, understood, instruction);
                             } catch (error) {
-                                if (userIdRef.current !== ownerId) return;
+                                if (userIdRef.current !== ownerId || slot.drop) return;
                                 const raw = missedSchedule(error)
                                     ? text.scheduleNone
                                     : friendlyFailure(failureMessage(error), lang) || text.unavailable;
@@ -3503,10 +4474,29 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 commit(botId, [...stored, { id: messageID(), role: 'assistant', content: raw, failed: true }]);
                                 return;
                             }
-                            if (userIdRef.current !== ownerId) return;
+                            if (userIdRef.current !== ownerId || slot.drop) return;
                             const answer = scheduleAck(told, spec.mode, text);
                             const stored = messagesForBot(ownerId, botId);
                             commit(botId, [...stored, { id: messageID(), role: 'assistant', content: answer, chat: true }]);
+                            return;
+                        }
+                        if (pace === 'confirm' && protocolControl(content) !== 'resume') {
+                            if (userIdRef.current !== ownerId || slot.drop) return;
+                            const arrangement = told || oneLine(content);
+                            const stored = messagesForBot(ownerId, botId);
+                            const at = stored.findIndex(item => item.id === userMessage.id);
+                            const plan: DesktopBotMessage = {
+                                id: messageID(),
+                                role: 'assistant',
+                                content: arrangement,
+                                phase: 'plan',
+                                workOrder: instruction,
+                            };
+                            const user = { ...userMessage, queued: false };
+                            const next = at >= 0
+                                ? [...stored.slice(0, at), user, plan, ...stored.slice(at + 1)]
+                                : [...stored, user, plan];
+                            commit(botId, next);
                             return;
                         }
                         // Small talk and a missing-fact question are answered here.
@@ -3542,9 +4532,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         enqueue = true;
                     }
                 } finally {
+                    slot.wanted = enqueue && userIdRef.current === ownerId;
                     slot.settled = true;
-                    slot.enqueue = enqueue && userIdRef.current === ownerId;
-                    releaseReadAhead(ownerId, botId);
+                    slot.enqueue = !!slot.wanted && !slot.drop;
+                    if (!slot.drop) releaseReadAhead(ownerId, botId);
                 }
             })();
             return;
@@ -4038,6 +5029,17 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             data-user-id={userId}
             style={{ '--desktop-bot-list-width': `${listWidth}px` } as CSSProperties}
         >
+            {handoffNotice ? (
+                <button
+                    type="button"
+                    className="desktop-bot-handoff-notice"
+                    data-testid="desktop-bot-handoff-notice"
+                    onClick={() => openHandoffScreen(handoffNotice)}
+                >
+                    <strong>{bots.find(bot => bot.id === handoffNotice.botId)?.title || text.myDesktop}</strong>
+                    <span>{handoffNotice.reason || text.handoffFallback}</span>
+                </button>
+            ) : null}
             <aside className="desktop-bot-workspace__list-pane" aria-label={text.listTitle}>
                 <header className="desktop-bot-workspace__bar">
                     <div className="desktop-bot-workspace__bar-head">
@@ -4087,7 +5089,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     <button type="button" className="desktop-bot-workspace__open" aria-pressed={selectedId === bot.id} onClick={() => selectBot(bot)}>
                                         <span className="desktop-bot-workspace__avatar" style={{ background: botColor(bot.title) }} aria-hidden="true">{botInitial(bot.title)}</span>
                                         <span className="desktop-bot-workspace__who">
-                                            <strong>{bot.title}</strong>
+                                            {bot.primary ? (
+                                                <span className="desktop-bot-workspace__titleline">
+                                                    <strong>{bot.title}</strong>
+                                                    <em className="desktop-bot-workspace__primary" data-testid={`desktop-bot-primary-${bot.id}`}>{text.primaryMark}</em>
+                                                </span>
+                                            ) : <strong>{bot.title}</strong>}
                                             <span>{description}</span>
                                         </span>
                                         {rowPhase ? (
@@ -4164,12 +5171,20 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 <p className="desktop-bot-chat__pick" data-testid="desktop-bot-pick">{text.pickEmpty}</p>
                             ) : null}
                             {messages.filter(message => !message.pending).map(message => {
-                                const body = message.failed ? (friendlyFailure(message.content, lang) || message.content) : message.content;
+                                const rawBody = message.failed ? (friendlyFailure(message.content, lang) || message.content) : message.content;
+                                const body = message.role === 'assistant' ? stripConfirmedOrderLead(rawBody) : rawBody;
                                 const structured = message.role === 'assistant' && !message.failed && botMessageIsStructured(body);
                                 return (
                                 <div key={message.id} className={`desktop-bot-chat__entry desktop-bot-chat__entry--${message.role}`} data-message-role={message.role}>
                                     <div className={`desktop-bot-chat__bubble desktop-bot-chat__bubble--${message.role}${message.failed ? ' is-failed' : ''}${structured ? '' : ' is-plain'}`}>
                                         {structured ? <BotMessageBody text={body} /> : body}
+                                        {message.role === 'assistant' && message.noticeBots && message.noticeBots.length > 0 ? (
+                                            <span className="desktop-bot-chat__notice-bots" data-testid="desktop-bot-notice-bots">
+                                                {message.noticeBots.map(bot => (
+                                                    <span key={bot.id} className="desktop-bot-chat__notice-avatar" title={bot.name} aria-label={bot.name}>{botInitial(bot.name)}</span>
+                                                ))}
+                                            </span>
+                                        ) : null}
                                         {message.role === 'assistant' && !message.failed && message.shotPaths?.length ? message.shotPaths.map(path => (
                                             <BotShot key={path} path={path} alt={text.screenshot} openLabel={text.viewShot} onOpen={openShot} />
                                         )) : null}
@@ -4200,26 +5215,42 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     </div>
                                     {confirmMessage && confirmMessage.id === message.id ? (
                                         <button type="button" className="desktop-bot-chat__action" data-testid="desktop-bot-confirm" disabled={confirmMessage.disabled} onClick={() => {
-                                            if (!selected) return;
+                                            if (!selected || confirmMessage.disabled) return;
                                             const stored = messagesForBot(userId, selected.id);
-                                            const index = stored.findIndex(item => item.id === confirmMessage.id);
-                                            const arrangement = index >= 0 ? stored[index].content || '' : '';
-                                            const request = index >= 0 ? userRequestBefore(stored, index) : '';
-                                            // A time named on a large change is armed by the reading.
-                                            // Doing that change in this turn would miss the time.
-                                            if (namesLaterTime(request) || namesLaterTime(arrangement)) {
-                                                void send(CONFIRM_COMMAND, 'execute');
+                                            const plan = stored.find(item => item.id === confirmMessage.id);
+                                            const order = (plan?.workOrder || plan?.content || '').trim();
+                                            if (!order || order === CONFIRM_COMMAND) return;
+                                            const noteId = (plan?.crossNoteId || '').trim();
+                                            const botId = selected.id;
+                                            const queueOrder = (claimed: boolean) => {
+                                                const queued = queueRef.current.get(botId) || [];
+                                                queueRef.current.set(botId, [...queued, { text: order, phase: 'execute', verbatim: true, crossNoteId: noteId || undefined, claimed }]);
+                                                const current = messagesForBot(userId, botId);
+                                                commit(botId, [...current, { id: messageID(), role: 'assistant', content: desktopBotQueuedSentence(lang), ack: true }]);
+                                            };
+                                            if (!noteId) {
+                                                if (Object.values(desktopRunByBotRef.current).some(Boolean)) {
+                                                    queueOrder(false);
+                                                    return;
+                                                }
+                                                void startTask(botId, order, 'execute', 'fromQueue', true);
                                                 return;
                                             }
-                                            const instruction = confirmedWorkOrder(arrangement);
-                                            if (!instruction) return;
-                                            void send(CONFIRM_COMMAND, 'execute', false, {
-                                                told: '',
-                                                instruction,
-                                                pace: 'direct',
-                                                persona: '',
-                                                earlier: earlierUserAsks(stored, CONFIRM_COMMAND, 'now'),
-                                            });
+                                            void (async () => {
+                                                try {
+                                                    const claim = await ClaimDesktopBotCrossStart(botId, noteId);
+                                                    if (!claim?.claimed) return;
+                                                    rememberDesktopBotCrossRun(userId, botId, noteId, String(claim.from || ''));
+                                                } catch {
+                                                    return;
+                                                }
+                                                if (Object.values(desktopRunByBotRef.current).some(Boolean)) {
+                                                    queueOrder(true);
+                                                    return;
+                                                }
+                                                try { await ArmDesktopBotCrossRun(botId, noteId); } catch { /* the run id note is best-effort */ }
+                                                void startTask(botId, order, 'execute', 'fromQueue', true);
+                                            })();
                                         }}>{text.confirm}</button>
                                     ) : null}
                                     {message.askUser?.options && !message.askResolved && !message.userControl ? (
@@ -4281,11 +5312,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 </div>
                                 );
                             })}
-                            {botPending(selected.id) ? (
-                                <p className="desktop-bot-chat__bubble desktop-bot-chat__bubble--assistant is-typing" aria-hidden="true">
-                                    <i /><i /><i />
-                                </p>
-                            ) : null}
                             {handoffMessage && !agentOperating ? (
                                 <p className="desktop-bot-chat__entry">
                                     <button type="button" className="desktop-bot-chat__action" data-testid="desktop-bot-return-control" onClick={() => resumeFromScreenHandoff(selected.id)}>{text.returnControl}</button>
@@ -4301,6 +5327,9 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     <button type="button" className="desktop-bot-credit__link" data-testid="desktop-bot-credit-settings" onClick={() => { void openLLMSettings(); }}>{text.creditSettings}</button>
                                 </div>
                             </div>
+                        ) : null}
+                        {botPending(selected.id) ? (
+                            <p className="desktop-bot-chat__processing" data-testid="desktop-bot-processing" role="status"><span className="desktop-bot-chat__processing-mark" aria-hidden="true" /><span className="desktop-bot-chat__processing-label">{desktopBotWorkingLabel(askingByBot[selected.id] || '', activityByBot[selected.id]?.text || '')}</span></p>
                         ) : null}
                         <DesktopBotComposer
                             userId={userId}
@@ -4372,6 +5401,28 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     <dd data-testid="desktop-bot-persona">{personaByBot[selected.id] || text.personaEmpty}</dd>
                                 </div>
                             </dl>
+                            {desktopAdmin ? (
+                                <label className="desktop-bot-panel__mode" data-testid="desktop-bot-isolated-toggle">
+                                    <input
+                                        type="checkbox"
+                                        checked={screenByBot[selected.id]?.mode === 'isolated'}
+                                        disabled={modeSaving}
+                                        onChange={event => { void saveDesktopMode(selected.id, event.target.checked ? 'isolated' : 'shared'); }}
+                                    />
+                                    <span>
+                                        <strong>{text.isolatedDesktop}</strong>
+                                        <small>{text.isolatedDesktopHint}</small>
+                                    </span>
+                                </label>
+                            ) : null}
+                            {modeError ? <p className="desktop-screen-switch__error" data-testid="desktop-bot-mode-error" role="status">{modeError}</p> : null}
+                            <button
+                                type="button"
+                                className="desktop-bot-panel__action"
+                                data-testid="desktop-bot-set-primary"
+                                disabled={selected.primary === true}
+                                onClick={() => { void makePrimary(selected.id); }}
+                            >{selected.primary ? text.primaryNow : text.makePrimary}</button>
                             <p className="desktop-bot-panel__note"><SharedDesktopIcon /><span>{text.shared}</span></p>
                         </div>
                     ) : panelSection === 'schedules' ? (
@@ -4401,13 +5452,46 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         </div>
                     ) : (
                         <div className="desktop-bot-panel__computer" id="desktop-bot-computer" data-testid="desktop-bot-computer" role="tabpanel" aria-labelledby="desktop-bot-tab-computer">
-                            {desktopUrl ? (
+                            <div className="desktop-screen-switch" role="group" aria-label={text.screenSwitch} data-testid="desktop-screen-switch">
+                                <button
+                                    type="button"
+                                    aria-pressed={screenPickNow === 'mine'}
+                                    data-testid="desktop-screen-mine"
+                                    className={screenPickNow === 'mine' ? 'is-selected' : ''}
+                                    onClick={() => chooseScreen('mine')}
+                                >{text.myDesktop}</button>
+                                {bots.map(bot => {
+                                    const shared = (screenByBot[bot.id]?.mode || 'shared') !== 'isolated';
+                                    return (
+                                        <button
+                                            type="button"
+                                            key={bot.id}
+                                            aria-pressed={screenPickNow === bot.id}
+                                            data-testid={`desktop-screen-bot-${bot.id}`}
+                                            className={screenPickNow === bot.id ? 'is-selected' : ''}
+                                            onClick={() => chooseScreen(bot.id)}
+                                        >
+                                            {bot.title}
+                                            {shared ? <em>{text.sharedScreen}</em> : null}
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                            {handBackError ? <p className="desktop-screen-switch__error" data-testid="desktop-bot-handback-error" role="status">{handBackError}</p> : null}
+                            {shownDesktopUrl ? (
                                 <div ref={stageRef} className={'desktop-bot-stage' + (stageInteractive ? ' is-user' : ' is-bot') + ((takeover || screenExpanded) ? ' is-fullscreen' : '')} data-testid="desktop-bot-stage">
                                     <div className="desktop-bot-stage__bar">
                                         <p title={stageStatusText}>{stageStatusText}</p>
-                                        {takeover ? (
+                                        {takeover || showHandBack ? (
                                             <div className="desktop-bot-stage__bar-actions">
-                                                <button type="button" data-testid="desktop-bot-exit-takeover" onClick={() => releaseTakeover(selected.id)}>{text.exitTakeover}</button>
+                                                {showHandBack ? (
+                                                    <button type="button" data-testid="desktop-bot-handback" disabled={handingBack} onClick={() => { void handBackToBot(handBackTarget); }}>
+                                                        {handingBack ? text.handBackBusy : text.handBack}
+                                                    </button>
+                                                ) : null}
+                                                {takeover ? (
+                                                    <button type="button" data-testid="desktop-bot-exit-takeover" onClick={() => releaseTakeover(selected.id)}>{text.exitTakeover}</button>
+                                                ) : null}
                                             </div>
                                         ) : null}
                                     </div>
@@ -4419,7 +5503,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             data-testid="desktop-bot-handoff"
                                             data-input={frameMode}
                                             title="desktop"
-                                            src={desktopFrameSrc(desktopUrl, stageInteractive)}
+                                            src={desktopFrameSrc(shownDesktopUrl, stageInteractive)}
                                             tabIndex={screenExpanded && !stageInteractive ? -1 : undefined}
                                             onFocus={screenExpanded && !stageInteractive ? () => { restoreBtnRef.current?.focus({ preventScroll: true }); } : undefined}
                                         />
@@ -4437,6 +5521,38 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             </button>
                                         )}
                                     </div>
+                                    <div className="desktop-bot-stage__dock">
+                                        <div className="desktop-bot-stage__mode" role="group" aria-label={text.screenMode}>
+                                            <button
+                                                type="button"
+                                                className="desktop-bot-stage__mode-btn"
+                                                data-testid="desktop-bot-watch-only"
+                                                aria-pressed={!stageInteractive}
+                                                disabled={stageInteractive && !takeover}
+                                                title={stageInteractive && !takeover ? text.watchLockedHint : text.watching}
+                                                onClick={() => { if (takeover) releaseTakeover(selected.id); }}
+                                            >
+                                                <ScreenWatchIcon />
+                                                {text.viewOnly}
+                                            </button>
+                                            <button
+                                                type="button"
+                                                className="desktop-bot-stage__mode-btn"
+                                                data-testid="desktop-bot-take-control"
+                                                aria-pressed={stageInteractive}
+                                                disabled={stageInteractive || agentOperating || otherIsolated}
+                                                title={agentOperating ? text.takeoverBusyHint : text.takeoverHint}
+                                                onClick={() => enterTakeover(selected.id)}
+                                            >
+                                                <ScreenControlIcon />
+                                                {text.takeControl}
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+                            ) : ownerDesktopMissing ? (
+                                <div className="desktop-bot-screen" data-testid="desktop-bot-screen">
+                                    <p>{text.noSharedDesktop}</p>
                                 </div>
                             ) : retryForSelected ? (
                                 <div className="desktop-bot-screen" data-testid="desktop-bot-screen">
@@ -4460,7 +5576,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     type="button"
                                     data-testid="desktop-bot-takeover"
                                     className={'desktop-bot-chat__takeover' + (takeover ? ' is-active' : '')}
-                                    disabled={agentOperating}
+                                    disabled={agentOperating || otherIsolated}
                                     title={agentOperating ? text.takeoverBusyHint : text.takeoverHint}
                                     onClick={toggleTakeover}
                                 >

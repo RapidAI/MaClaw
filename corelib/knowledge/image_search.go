@@ -43,8 +43,8 @@ func (s *SQLiteStore) SearchImages(ctx context.Context, opts ImageSearchOptions)
 	// this is deliberately not an image-to-image embedding implementation.
 	// A composite name stays lexical: fusion would keep Limit neighbors and
 	// drop the real caption before the evidence filter runs.
-	if _, strict := bm25.QueryAnchors(normalizeKnowledgeLexicalText(searchOpts.Query)); !strict {
-		if emb, generation := s.currentEmbedderSnapshot(); emb != nil && !embedding.IsNoop(emb) {
+	if _, strict := bm25.QueryAnchors(normalizeKnowledgeLexicalText(searchOpts.Query)); !strict && !skipQueryEmbeddingDuringRefresh(ctx) {
+		if emb, generation := s.currentEmbedderSnapshot(); emb != nil && !embedding.IsNoop(emb) && s.hasCurrentModelImageEmbeddings(ctx, embeddingModelIdentifier(emb), emb.Dim()) {
 			queryVec, embedErr := embedding.EmbedAs(emb, searchOpts.Query, embedding.RoleQuery)
 			if embedErr == nil && validEmbeddingVector(queryVec, emb.Dim()) && s.isEmbedderGenerationCurrent(generation) {
 				embResults, vectorErr := s.searchNodesByEmbedding(ctx, queryVec, embeddingModelIdentifier(emb), generation, searchOpts, NodeTypeImage)
@@ -70,6 +70,20 @@ func (s *SQLiteStore) SearchImages(ctx context.Context, opts ImageSearchOptions)
 		return nil, err
 	}
 	return results, nil
+}
+
+func (s *SQLiteStore) hasCurrentModelImageEmbeddings(ctx context.Context, modelID string, dimension int) bool {
+	if s == nil || s.db == nil || strings.TrimSpace(modelID) == "" || dimension <= 0 {
+		return false
+	}
+	var one int
+	err := s.db.QueryRowContext(ctx, `SELECT 1 FROM document_nodes n
+		WHERE n.type = ?
+		AND EXISTS (
+			SELECT 1 FROM knowledge_embedding_metadata em
+			WHERE em.entity_type = ? AND em.entity_id = n.id AND em.model_id = ? AND em.dimension = ?
+		) LIMIT 1`, NodeTypeImage, embeddingEntityNode, modelID, dimension).Scan(&one)
+	return err == nil && one == 1
 }
 
 func (s *SQLiteStore) searchImageNodesFTS(ctx context.Context, opts SearchOptions) ([]SearchResult, error) {
