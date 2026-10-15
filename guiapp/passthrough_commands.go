@@ -810,12 +810,19 @@ func passthroughRuntimeProgram(name string) string {
 			}
 		}
 	}
-	if strings.EqualFold(name, "powershell.exe") {
+	if strings.EqualFold(name, "powershell") || strings.EqualFold(name, "powershell.exe") {
+		// Windows PowerShell 5.1 first. The coding shell rewrites && for 5.1
+		// and must not switch to pwsh just because pwsh is also installed.
 		if systemRoot := strings.TrimSpace(os.Getenv("SystemRoot")); systemRoot != "" {
 			candidate := filepath.Join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe")
 			if st, err := os.Stat(candidate); err == nil && !st.IsDir() {
 				return candidate
 			}
+		}
+		// GUI launches often inherit a PATH with no powershell. Never hand
+		// LookPath a bare name when an absolute fallback exists.
+		if resolved, err := coretool.ResolveWindowsPowerShell(); err == nil && filepath.IsAbs(resolved) {
+			return resolved
 		}
 	}
 	if strings.EqualFold(name, "git") || strings.EqualFold(name, "git.exe") {

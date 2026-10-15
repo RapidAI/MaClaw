@@ -212,7 +212,7 @@ func (a *App) DeleteDesktopBotSchedule(botID, taskID string) error {
 	return nil
 }
 
-// desktopBotBusySink records schedule runs that are on the shared desktop.
+// desktopBotBusySink records schedule runs on that bot's own desktop.
 // Tests read it; production also emits desktop-bot-busy for the Bot page.
 var desktopBotBusySink func(botID string, busy bool)
 
@@ -249,7 +249,7 @@ func noteDesktopBotBusyCount(owner, botID string, busy bool) (int64, int) {
 	return desktopBotBusySeq, count
 }
 
-// DesktopBotBusyMark is one bot whose schedule still holds the shared desktop.
+// DesktopBotBusyMark is one bot whose schedule still holds its own desktop.
 type DesktopBotBusyMark struct {
 	OwnerID string `json:"owner_id"`
 	BotID   string `json:"bot_id"`
@@ -429,7 +429,7 @@ func (a *App) executeDesktopBotScheduledTask(ctx context.Context, task *schedule
 	}
 	order := "This occurrence of a schedule is already set. Do the work below once and put the result in the reply. Do not create, change, or cancel a schedule.\n" + strings.TrimSpace(task.Action)
 	// The chat has no pending bubble for a schedule, but the run still uses
-	// the shared desktop. The Bot page locks takeover until this returns.
+	// this bot's desktop. The Bot page locks takeover of this bot until this returns.
 	// A login handoff is the end of that hold: the person has to take the keys.
 	owner := task.DesktopBotOwner
 	held := true

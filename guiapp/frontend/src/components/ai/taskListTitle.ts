@@ -1,7 +1,7 @@
 import type { AITab } from "./AITabTypes";
 import { getAITabDisplayTitle } from "./AITabItem";
 import { normalizeProjectSessionPath } from "./aiAssistantPanelSessionUtils";
-import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields, lookupCloudWorkspaceDisplayName, visibleTaskRows } from "./codingTaskMode";
+import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields, isExplicitTaskCopy, lookupCloudWorkspaceDisplayName, visibleTaskRows } from "./codingTaskMode";
 import { listedTaskTitle } from "./describeTaskTitle";
 
 export type TaskTitleSource = {
@@ -34,8 +34,9 @@ function pickTaskRow(rows: TaskTitleSource[], tabPath: string, tabWs: string): T
             if (titled) return task;
         }
         // The sidebar also highlights a row when the open path is its working directory.
-        if (!work && tabKey && pathKey(String(task.working_dir || "")) === tabKey) work = task;
-        if (!workspace && tabWs && cloudWorkspaceIdFromTaskFields(task) === tabWs && titled) workspace = task;
+        // A copy shares the source cache path. That path identifies the source chat.
+        if (!work && !isExplicitTaskCopy(task.tags) && tabKey && pathKey(String(task.working_dir || "")) === tabKey) work = task;
+        if (!workspace && tabWs && !isExplicitTaskCopy(task.tags) && cloudWorkspaceIdFromTaskFields(task) === tabWs && titled) workspace = task;
     }
     if (work && listedTaskTitle(work)) return work;
     return workspace || project || work;

@@ -33,7 +33,7 @@ func correlatedLocalCodingCallbacksForTest(t *testing.T, correlated bool) *codin
 func TestCorrelatedLocalCodingSurfaceRendersEffectfulTools(t *testing.T) {
 	cb := correlatedLocalCodingCallbacksForTest(t, true)
 	names := codingSubAgentToolDefinitionNamesForTest(cb.BuildToolsForModelRequest("implement", 0))
-	for _, wanted := range []string{"write_file", "edit_file", "bash"} {
+	for _, wanted := range []string{"write_file", "edit_file", "bash", "ssh", "web_search", "web_fetch"} {
 		found := false
 		for _, name := range names {
 			if name == wanted {

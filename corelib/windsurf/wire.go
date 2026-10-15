@@ -180,6 +180,11 @@ func readConnectFrame(r io.Reader) (payload []byte, eos bool, err error) {
 	}
 	raw := make([]byte, n)
 	if _, err = io.ReadFull(r, raw); err != nil {
+		// ReadFull reports a clean EOF when the declared payload is missing
+		// entirely. The header already promised those bytes, so the frame was cut.
+		if err == io.EOF {
+			err = io.ErrUnexpectedEOF
+		}
 		return nil, false, err
 	}
 	if flags&0x01 != 0 {

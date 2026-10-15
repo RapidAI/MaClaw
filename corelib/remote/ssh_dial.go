@@ -469,6 +469,7 @@ func identityFileAuth(cfg SSHHostConfig) (ssh.AuthMethod, []ssh.Signer, error) {
 }
 
 func signerFromKeyFile(path, passphrase string, certPaths []string) (ssh.Signer, error) {
+	path = expandHome(strings.TrimSpace(path))
 	keyData, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read ssh key %s: %w", path, err)
@@ -499,7 +500,7 @@ func signerWithCertificate(signer ssh.Signer, keyPath string, certPaths []string
 	seen := make(map[string]struct{}, len(candidates))
 	now := time.Now()
 	for _, certPath := range candidates {
-		certPath = strings.TrimSpace(certPath)
+		certPath = expandHome(strings.TrimSpace(certPath))
 		if certPath == "" {
 			continue
 		}

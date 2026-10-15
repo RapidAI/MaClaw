@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -291,7 +292,34 @@ func TestOpenCodeChatSessionFollowsConversation(t *testing.T) {
 	if len(sessions) != 3 || sessions[0] == "" || sessions[0] != sessions[1] || sessions[0] == sessions[2] {
 		t.Fatal("session header was not stable per conversation")
 	}
+	if !regexp.MustCompile(`^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$`).MatchString(sessions[0]) {
+		t.Fatalf("session id = %q, want ses_ + 12 hex + 14 base62", sessions[0])
+	}
 	if !sawEmptyAssistant {
 		t.Fatal("empty assistant content was not normalized")
+	}
+}
+
+func TestOpenCodeUpstreamSendsOfficialClientIdentity(t *testing.T) {
+	var ua, session string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ua = r.Header.Get("User-Agent")
+		session = r.Header.Get(corelib.OpenCodeSessionHeader)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"c","choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+	}))
+	defer srv.Close()
+	upstream := newOpenCodeUpstream()
+	upstream.client = srv.Client()
+	resp, err := upstream.DoChatCompletions(context.Background(), srv.URL+"/v1/chat/completions", "oc-test-key-123456", "opencode", []byte(`{"model":"big-pickle","messages":[{"role":"user","content":"hello"}]}`), "application/json", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if ua != "opencode/"+corelib.OpenCodeClientVersion {
+		t.Fatalf("User-Agent = %q", ua)
+	}
+	if !regexp.MustCompile(`^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$`).MatchString(session) {
+		t.Fatalf("session = %q", session)
 	}
 }

@@ -390,16 +390,136 @@ func TestCodegraphDominantHitFilePrefersRepeatedSource(t *testing.T) {
 	}
 }
 
+func TestCodegraphLocationPathDropsLineAndColumn(t *testing.T) {
+	if got := codegraphLocationPath("**Location:** snake.cpp:1247:8"); got != "snake.cpp" {
+		t.Fatalf("column location = %q", got)
+	}
+	if got := codegraphLocationPath("**Location:** src/pkg/file.go:10:5"); got != "src/pkg/file.go" {
+		t.Fatalf("nested location = %q", got)
+	}
+	if got := codegraphLocationPath("**Location:** `snake.cpp:1247`"); got != "snake.cpp" {
+		t.Fatalf("quoted location = %q", got)
+	}
+	if got := codegraphLocationPath("**Location:** Makefile:12"); got != "Makefile" {
+		t.Fatalf("makefile location = %q", got)
+	}
+	if got := codegraphLocationPath("**Location:** my snake.cpp:10"); got != "my snake.cpp" {
+		t.Fatalf("spaced location = %q", got)
+	}
+	if got := codegraphLocationPath("**Called by** main (snake.cpp:10)"); got != "" {
+		t.Fatalf("trail line = %q", got)
+	}
+	if got := codegraphLocationPath("Makefile:12"); got != "" {
+		t.Fatalf("unmarked makefile = %q", got)
+	}
+	if !codegraphHitLocationPattern.MatchString("snake.cpp:792:4") || !codegraphHitLocationPattern.MatchString("snake.cpp:792") {
+		t.Fatal("hit location dropped a column or a line")
+	}
+}
+
+func TestCodegraphAttachReferencedDecls(t *testing.T) {
+	dir := t.TempDir()
+	src := "#include \"theme.h\"\n#include <windows.h>\n#include \"../secret.h\"\n#define MAX(a, b) ((a) > (b) ? (a) : (b))\n#define SCALE(v) \\\n    ((v) * DPI)\nREGISTER_GAME(drawScene)\nnamespace {\nstatic const int CLIENT_W = 824;\nstatic const int PAD = CLIENT_W;\nstatic const int MARGIN = CLIENT_W;\nstatic const int GAP = CLIENT_W;\nstatic const int BORDER = CLIENT_W;\nstatic const int SHADOW = CLIENT_W;\nstatic const int TITLE_H = CLIENT_W;\nstatic const int FOOTER_H = CLIENT_W;\nstatic const int ICON_W = CLIENT_W;\nstatic const int ICON_H = CLIENT_W;\nstatic const int GRID_W = CLIENT_W;\nstatic const int GRID_H = CLIENT_W;\nstatic const int HUD_W = CLIENT_W;\nstatic const int DPI = 96;\nstatic bool g_polishEnabled = true;\nstatic HBRUSH g_brush = CreateSolidBrush(\n    RGB(1, 2, 3));\nenum {\n    CELL_SIZE = 16,\n};\nstatic void fillDot(\n    int x);\nstatic void fillDot(int x) { x = CLIENT_W; }\nstatic void drawScene() {\n    if (g_polishEnabled) fillDot(MAX(CLIENT_W, SCALE(DPI)));\n    SelectObject(dc, g_brush);\n    step(CELL_SIZE);\n    paint(THEME_W);\n}\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "snake.cpp"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "theme.h"), []byte("static const int THEME_W = 40;\nstatic const int PAD_H = THEME_W;\nstatic void fillHeader(int x) { x = THEME_W; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "other.h"), []byte("static const int THEME_W = 1;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body := "## drawScene (function)\n\n**Location:** snake.cpp:20:4\n\n```cpp\n20\tstatic void drawScene() {\n21\t    if (g_polishEnabled) fillDot(MAX(CLIENT_W, SCALE(DPI)));\n22\t    SelectObject(dc, g_brush);\n23\t    step(CELL_SIZE);\n24\t    log(\"PAD\");\n25\t    paint(THEME_W);\n26\t}\n```\n"
+	got := codegraphAttachReferencedDecls(dir, body)
+	if !strings.Contains(got, "CLIENT_W = 824") || !strings.Contains(got, "g_polishEnabled = true") || !strings.Contains(got, "DPI = 96") || !strings.Contains(got, "#define MAX(a, b)") || !strings.Contains(got, "#define SCALE(v)") || !strings.Contains(got, "((v) * DPI)") || !strings.Contains(got, "CreateSolidBrush(") || !strings.Contains(got, "CELL_SIZE = 16") || !strings.Contains(got, "In theme.h:\nstatic const int THEME_W = 40;") {
+		t.Fatalf("referenced declarations missing: %s", got)
+	}
+	if strings.Contains(got, "PAD = CLIENT_W") || strings.Contains(got, "PAD_H") || strings.Contains(got, "THEME_W = 1") || strings.Contains(got, "fillHeader") {
+		t.Fatalf("unrelated declaration was attached: %s", got)
+	}
+	if strings.Contains(got, "void fillDot") {
+		t.Fatalf("function body was attached with the declarations: %s", got)
+	}
+}
+
+func TestCodegraphHeaderDeclSurvivesFileCap(t *testing.T) {
+	dir := t.TempDir()
+	var src strings.Builder
+	src.WriteString("#include \"theme.h\"\n")
+	var use strings.Builder
+	for i := 0; i < 12; i++ {
+		name := fmt.Sprintf("GLOB%d", i)
+		fmt.Fprintf(&src, "static const int %s = %d;\n", name, i)
+		fmt.Fprintf(&use, "    use(%s);\n", name)
+	}
+	src.WriteString("static void drawScene() {\n")
+	src.WriteString(use.String())
+	src.WriteString("    use(THEME_W);\n}\n")
+	if err := os.WriteFile(filepath.Join(dir, "snake.cpp"), []byte(src.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "theme.h"), []byte("static const int THEME_W = 40;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	body := "## drawScene (function)\n\n**Location:** snake.cpp:1\n\n```cpp\nstatic void drawScene() {\n" + use.String() + "    use(THEME_W);\n}\n```\n"
+	got := codegraphAttachReferencedDecls(dir, body)
+	if !strings.Contains(got, "In theme.h:\nstatic const int THEME_W = 40;") || !strings.Contains(got, "GLOB0 = 0") || !strings.Contains(got, "GLOB11 = 11") {
+		t.Fatalf("header constant was dropped after the file declarations: %s", got)
+	}
+}
+
+func TestCodegraphDeclsSurviveOutputCap(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "snake.cpp"), []byte("static const int CLIENT_W = 824;\nstatic void drawScene() { use(CLIENT_W); }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var body strings.Builder
+	body.WriteString("## drawScene (function)\n\n**Location:** snake.cpp:1\n\n```cpp\nstatic void drawScene() { use(CLIENT_W); }\n")
+	for body.Len() < 23000 {
+		body.WriteString("// pad the indexed body so the declaration is not the first thing cut\n")
+	}
+	body.WriteString("```\n")
+	got, _ := codegraphCapWithDecls(dir, body.String())
+	if !strings.Contains(got, "CLIENT_W = 824") || len(got) > 24000 {
+		t.Fatalf("long body dropped the declaration len=%d", len(got))
+	}
+}
+
 func TestCodegraphContinueHintStaysOnAfterAHit(t *testing.T) {
 	t.Setenv("CODEGRAPH_DIR", "")
-	hint := codegraphContinueHint("codegraph")
+	hint := codegraphContinueHint("codegraph", "")
 	if !strings.Contains(hint, "call code_navigation") || !strings.Contains(hint, "evidence") || !strings.Contains(hint, "Do not repeat") || strings.Contains(hint, "again") || strings.Contains(hint, "only") {
 		t.Fatalf("hit hint = %q", hint)
 	}
 	if strings.Contains(hint, "stale") || strings.Contains(hint, "before ripgrep") {
 		t.Fatalf("hit hint retracts the lookup: %q", hint)
 	}
-	fallback := codegraphContinueHint("rg")
+	names := codegraphContinueHint("codegraph", "### Symbols\n- `playTone` (function) — :792\n")
+	if strings.Contains(names, "current source") || !strings.Contains(names, "call code_navigation") || !strings.Contains(names, "node") || !strings.Contains(names, "Do not read_file") {
+		t.Fatalf("name hint = %q", names)
+	}
+	secret := codegraphContinueHint("codegraph", "### Keys\n- `token` (property) — :2\n> Values may be secrets, so codegraph indexes keys only. Read the file directly if you need a value.\n")
+	if strings.Contains(secret, "Do not read_file") || !strings.Contains(secret, "withheld") || !strings.Contains(secret, "call code_navigation") {
+		t.Fatalf("secret hint = %q", secret)
+	}
+	unread := codegraphContinueHint("codegraph", "> Read `snake.cpp` directly for its current content.\n")
+	if strings.Contains(unread, "Do not read_file") || !strings.Contains(unread, "could not read") {
+		t.Fatalf("unread hint = %q", unread)
+	}
+	body := codegraphContinueHint("codegraph", "## playTone (function)\n\n**Location:** snake.cpp:1\n\n```cpp\n1\tstatic void playTone() {}\n```\n")
+	if !strings.Contains(body, "current source") || strings.Contains(body, "names and locations") {
+		t.Fatalf("body hint = %q", body)
+	}
+	banner := "⚠️ Some files referenced below were edited since the last index sync — their codegraph entries may be stale:\n  - snake.cpp (edited 10ms ago, pending sync)\nFor accurate content of those specific files, Read them directly. The rest of this response is fresh.\n## drawScene (function)\n\n**Location:** snake.cpp:1\n\n```cpp\n1\tstatic void drawScene(HDC dc) { old(); }\n```\n"
+	staleHint := codegraphContinueHint("codegraph", banner)
+	if strings.Contains(staleHint, "Do not read_file") || strings.Contains(staleHint, "current source") {
+		t.Fatalf("stale banner hint = %q", staleHint)
+	}
+	freshBeside := "⚠️ Some files referenced below were edited since the last index sync — their codegraph entries may be stale:\n  - extra.go (edited 10ms ago, pending sync)\nFor accurate content of those specific files, Read them directly.\n## playTone (function)\n\n**Location:** snake.cpp:1\n\n```cpp\n1\tstatic void playTone() {}\n```\n"
+	if hint := codegraphContinueHint("codegraph", freshBeside); !strings.Contains(hint, "current source") {
+		t.Fatalf("fresh file beside another banner = %q", hint)
+	}
+	fallback := codegraphContinueHint("rg", "")
 	if strings.Contains(fallback, "index is ready") || strings.Contains(fallback, "before ripgrep") || strings.Contains(fallback, "stale") {
 		t.Fatalf("a text fallback must not withdraw the lookup: %q", fallback)
 	}
@@ -729,6 +849,26 @@ printf '%s\n' "HIT:$_cg_hit"
 	if len(pinnedDef) != 1 || strings.Join(pinnedDef[0], " ") != "node --file snake.cpp playTone" {
 		t.Fatalf("pinned definition = %v", pinnedDef)
 	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "snake.cpp"), []byte("static void playTone() {\n    beep();\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	outline := "## playTone (function)\n\n**Location:** snake.cpp:792\n"
+	withBody := attachCodegraphPinnedNodeBody(dir, outline, pinnedDef)
+	if !strings.Contains(withBody, "Body for playTone in snake.cpp.") || !strings.Contains(withBody, "beep()") {
+		t.Fatalf("pinned node omitted the current body: %q", withBody)
+	}
+	if again := attachCodegraphPinnedNodeBody(dir, withBody, pinnedDef); strings.Count(again, "Body for playTone") != 1 {
+		t.Fatalf("pinned body was duplicated: %q", again)
+	}
+	pinnedDefShell := remoteCodeNavigationShell("definition", "playTone", "def", "snake.cpp", 0, 0, false)
+	if !strings.Contains(pinnedDefShell, "Body for playTone in snake.cpp.") || !strings.Contains(pinnedDefShell, "--file") {
+		t.Fatalf("pinned definition shell = %s", pinnedDefShell)
+	}
+	if msg := rejectDisallowedCodingBashCommand(pinnedDefShell); msg != "" {
+		t.Fatalf("pinned definition shell rejected: %s", msg)
+	}
+	assertRemoteNavigationShellSyntax(t, pinnedDefShell)
 	if outside := codegraphCommandList("callers", "playTone", "callers", "../snake.cpp"); len(outside) != 1 || len(outside[0]) != 2 {
 		t.Fatalf("outside file must not pin: %v", outside)
 	}
@@ -754,6 +894,40 @@ func TestCodegraphOutputUsefulIgnoresMissBanner(t *testing.T) {
 	}
 	if codegraphOutputUseful("No relevant code found for \"draw the board\"") || codegraphOutputUseful("No files indexed. Run `codegraph index` first.") {
 		t.Fatal("an empty explore or an empty index should fall back to text search")
+	}
+	if strings.Contains(codegraphKeepUsingHint, "read_file may") || strings.Contains(codegraphSymbolMapNote, "read_file may") {
+		t.Fatal("a codegraph hit must not send the model back to read_file")
+	}
+	body := "## playTone (function)\n\n**Location:** snake.cpp:1\n\n```cpp\n1\tstatic void playTone() {}\n```\n"
+	if files := codegraphFilesReadyToEdit(body); len(files) != 1 || files[0] != "snake.cpp" {
+		t.Fatalf("body files = %#v", files)
+	}
+	call := "## drawScene (function)\n\n**Location:** snake.cpp:1247\n\n```cpp\n1247\tdrawScene(mem);\n```\n"
+	if files := codegraphFilesReadyToEdit(call); len(files) != 0 {
+		t.Fatalf("call-site files = %#v", files)
+	}
+	if files := codegraphFilesReadyToEdit("Symbol map for snake.cpp.\n### Symbols\n- playTone — 1"); len(files) != 0 {
+		t.Fatalf("symbol map files = %#v", files)
+	}
+	advice := "**snake.cpp** — 2 symbols\n\n### Symbols\n- `playTone` (function) — :792\n\n> Drop `symbolsOnly` (or pass `offset`/`limit`) to read the source, like Read.\n"
+	rewritten := codegraphRetargetReadAdvice(advice)
+	if strings.Contains(rewritten, "like Read") || strings.Contains(rewritten, "read the source") || !strings.Contains(rewritten, "code_navigation") || !strings.Contains(rewritten, "playTone") {
+		t.Fatalf("symbol map advice = %s", rewritten)
+	}
+	if got := codegraphRetargetReadAdvice("> do NOT Read these files.\nstatic void playTone() {}"); strings.Contains(got, "code_navigation") || !strings.Contains(got, "playTone") {
+		t.Fatalf("kept source = %s", got)
+	}
+	secret := "> Values may be secrets, so codegraph indexes keys only. Read the file directly if you need a value."
+	if got := codegraphRetargetReadAdvice(secret); got != secret {
+		t.Fatalf("secret advice = %s", got)
+	}
+	unread := "> Read `snake.cpp` directly for its current content."
+	if got := codegraphRetargetReadAdvice(unread); got != unread {
+		t.Fatalf("unread file advice = %s", got)
+	}
+	outline := "> Structural outline only. Read `snake.cpp` or call codegraph_node on a specific member for its body."
+	if got := codegraphRetargetReadAdvice(outline); strings.Contains(got, "Read `snake.cpp`") || !strings.Contains(got, "code_navigation") {
+		t.Fatalf("outline advice = %s", got)
 	}
 	if !codegraphOutputUseful("## Exploration: draw\nNo relevant code found in a comment\n") {
 		t.Fatal("source that mentions an explore miss should stay")

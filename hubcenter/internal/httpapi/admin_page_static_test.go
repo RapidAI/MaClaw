@@ -1565,7 +1565,7 @@ func TestAdminPageTokenBankArraysCannotBeDeleted(t *testing.T) {
 	html := readAdminPageHTML(t)
 	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
 	assertContainsAll(t, html, "token bank array protect cache", []string{
-		`/admin/assets/js/llm-service-tab.js?v=provider-name-tip-20261015-3`,
+		`/admin/assets/js/llm-service-tab.js?v=provider-array-order-20261015-8`,
 	})
 	assertContainsAll(t, js, "token bank array delete guard", []string{
 		`function providerArrayProtected(array)`,
@@ -1594,8 +1594,8 @@ func TestAdminPageServiceGroupArrayDrag(t *testing.T) {
 	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
 	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
 	assertContainsAll(t, html, "service group array drag cache", []string{
-		`/admin/assets/js/llm-service-tab.js?v=provider-name-tip-20261015-3`,
-		`/admin/assets/css/admin-shell.css?v=provider-name-tip-20261015-3`,
+		`/admin/assets/js/llm-service-tab.js?v=provider-array-order-20261015-8`,
+		`/admin/assets/css/admin-shell.css?v=provider-array-order-20261015-8`,
 	})
 	assertContainsAll(t, js, "service group array drag", []string{
 		`sgArrayDragHint: 'Drag an array to change its place in this group'`,
@@ -1696,13 +1696,89 @@ func TestAdminPageServiceGroupArrayDrag(t *testing.T) {
 	})
 }
 
+func TestAdminPageProviderArrayOrderDrag(t *testing.T) {
+	html := readAdminPageHTML(t)
+	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
+	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
+	assertContainsAll(t, html, "provider array order drag cache", []string{
+		`/admin/assets/js/llm-service-tab.js?v=provider-array-order-20261015-8`,
+		`/admin/assets/css/admin-shell.css?v=provider-array-order-20261015-8`,
+	})
+	assertContainsAll(t, js, "provider array order drag", []string{
+		`providerArrayOrderHint: 'Drag an array to change its place'`,
+		`providerArrayOrderHint: '\u62d6\u52a8\u9635\u5217\uff0c\u8c03\u6574\u5b83\u7684\u4f4d\u7f6e'`,
+		`function renderProviderArray(array, orderableCount)`,
+		`var canOrder = !!(array.members && array.members.length) && Number(orderableCount) > 1`,
+		`draggable="true" title="' + esc(t('providerArrayOrderHint')) + '"'`,
+		`data-array-orderable="1"`,
+		`class="provider-array-grip"`,
+		`return renderProviderArray(array, orderableCount)`,
+		`function providerArrayOrderCards(root)`,
+		`node.closest('.provider-array-head')`,
+		`titleDrag.getAttribute('draggable') !== 'true'`,
+		`node.closest('button, a, input, select, textarea, label, .provider-traffic, .data-row-actions')`,
+		`scrollIntoView({ block: 'nearest' })`,
+		`function providerArrayRevealCard(arrayID)`,
+		`if (rect.bottom > 0 && rect.top < height) return;`,
+		`var providerArrayOrderOriginY = null`,
+		`Math.abs(event.clientY - providerArrayOrderOriginY) < 12`,
+		`function providerArrayOrderPointerInList(event, pad)`,
+		`function cancelProviderArrayOrderDrag()`,
+		`if (providerArrayOrderID) cancelProviderArrayOrderDrag()`,
+		`requestAnimationFrame(function() {`,
+		`orderCard.classList.add('is-order-dragging')`,
+		`function providerArrayInsertAt(cards, clientY)`,
+		`cards[i].querySelector('.provider-array-head') || cards[i]`,
+		`function providerArrayOrderHover(root, clientY)`,
+		`clearProviderArrayGap(root)`,
+		`function providerArrayFinalIndex(from, insertAt, length)`,
+		`if (insertAt > from) insertAt -= 1;`,
+		`function markProviderArrayGap(root, insertAt)`,
+		`var providerArrayOrderTo = null`,
+		`providerArrayOrderTo = providerArrayFinalIndex(providerArrayOrderFrom, providerArrayInsertAt(cards, event.clientY), cards.length)`,
+		`if (orderID && to != null && to !== from) window.moveProviderArrayOrder(orderID, to)`,
+		`if (orderID) providerArrayIgnoreClickUntil = Date.now() + 80`,
+		`window.moveProviderArrayOrder = async function(arrayID, toIndex)`,
+		`if (!before[aid]) { insertAt = k; break; }`,
+		`if (gen !== providerSequenceSaveGen) return;`,
+		`if (id && id.indexOf('array:') === 0) return;`,
+		`/api/admin/llm/providers/sequences`,
+		`if (providerArrayOrderID) {`,
+		`window.moveProviderToArray(id, target)`,
+	})
+	if strings.Contains(js, `head.setAttribute('draggable', 'true')`) {
+		t.Fatal("array reorder must drag from the title, not the whole head")
+	}
+	if strings.Count(js, `window.moveProviderArrayOrder(orderID, to)`) != 1 {
+		t.Fatal("array reorder must run once, after the drag ends")
+	}
+	move := strings.Index(js, `window.moveProviderArrayOrder(orderID, to)`)
+	armed := strings.Index(js, `if (orderID) providerArrayIgnoreClickUntil = Date.now() + 80`)
+	if move < 0 || armed < 0 || armed < move {
+		t.Fatal("post-drag click window must arm after the array reorder")
+	}
+	assertContainsAll(t, css, "provider array order drag style", []string{
+		`#tab-llmservice #llmProvidersList .provider-array[data-array-orderable="1"] .provider-array-head .data-row-actions button{cursor:pointer}`,
+		`#tab-llmservice #llmProvidersList .provider-array[data-array-orderable="1"] .provider-array-head .provider-traffic{cursor:auto;user-select:text}`,
+		`#tab-llmservice #llmProvidersList .provider-array.is-order-dragging>.data-row,#tab-llmservice #llmProvidersList .provider-array.is-order-dragging>.hint{display:none}`,
+		`#tab-llmservice #llmProvidersList .provider-array-title[draggable="true"]{cursor:grab;user-select:none}`,
+		`#tab-llmservice #llmProvidersList .provider-array.is-order-dragging{opacity:.55}`,
+		`#tab-llmservice #llmProvidersList .provider-array.is-order-dragging .provider-array-title{cursor:grabbing}`,
+		`#tab-llmservice #llmProvidersList .provider-array.is-drop-before,#tab-llmservice #llmProvidersList .provider-array.is-drop-after{position:relative;z-index:1}`,
+		`#tab-llmservice #llmProvidersList .provider-array.is-drop-before{box-shadow:0 -3px 0 #5b6cff}`,
+		`#tab-llmservice #llmProvidersList .provider-array.is-drop-after{box-shadow:0 3px 0 #5b6cff}`,
+		`#tab-llmservice #llmProvidersList .provider-array-grip{`,
+		`color:#5b6cff`,
+	})
+}
+
 func TestAdminPageProviderCanaryMark(t *testing.T) {
 	html := readAdminPageHTML(t)
 	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
 	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
 	assertContainsAll(t, html, "provider canary mark cache", []string{
-		`/admin/assets/js/llm-service-tab.js?v=provider-name-tip-20261015-3`,
-		`/admin/assets/css/admin-shell.css?v=provider-name-tip-20261015-3`,
+		`/admin/assets/js/llm-service-tab.js?v=provider-array-order-20261015-8`,
+		`/admin/assets/css/admin-shell.css?v=provider-array-order-20261015-8`,
 	})
 	assertContainsAll(t, js, "provider canary mark", []string{
 		`providerCanaryUntil: 'Canary until {time}'`,
@@ -2027,5 +2103,41 @@ func TestTokenBankSubViewsLeaveHiddenClass(t *testing.T) {
 		if !strings.Contains(js, must) {
 			t.Fatalf("token bank model cards missing %q", must)
 		}
+	}
+}
+
+
+func TestAdminPageLLMProviderUserAgentField(t *testing.T) {
+	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
+	html := readAdminPageHTML(t)
+	assertContainsAll(t, js, "llm provider user agent", []string{
+		`id="llmPrvUserAgent"`,
+		`id="llmPrvUserAgentCustom"`,
+		`value: 'claude code 2.0', label: 'Claude Code'`,
+		`value: 'ZCode', label: 'ZCode'`,
+		`value: 'Codex', label: 'Codex'`,
+		`value: 'OpenCode', label: 'OpenCode'`,
+		`value="__custom__"`,
+		`function providerUserAgentField(`,
+		`function providerUserAgentValue()`,
+		`window.onProviderUserAgentChange`,
+		`payload.agent_type = providerUserAgentValue()`,
+		`agent_type: providerUserAgentValue()`,
+		`'agent_type'`,
+		`fieldUserAgent: 'User-Agent'`,
+		`uaCustom: 'Custom'`,
+		`uaCustom: '\u81ea\u5b9a\u4e49'`,
+		`fieldUserAgentHint: '\u4e0a\u6e38\u8bf7\u6c42\u4f1a\u5e26\u4e0a\u8fd9\u4e2a User-Agent`,
+		`maxlength="128"`,
+		`class="provider-ua-custom"`,
+		`class="provider-ua-hint"`,
+		`class="grid-span-all"><label for="llmPrvUserAgent"`,
+	})
+	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
+	if !strings.Contains(css, `.sg-form-grid .provider-ua-custom[hidden]{display:none}`) {
+		t.Fatal("custom user agent input must stay hidden until custom is selected")
+	}
+	if !strings.Contains(html, `/admin/assets/js/llm-service-tab.js?v=provider-array-order-20261015-8`) {
+		t.Fatal("admin page is still serving a stale llm-service-tab.js")
 	}
 }

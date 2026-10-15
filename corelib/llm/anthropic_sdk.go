@@ -207,7 +207,7 @@ func anthropicSDKOptions(ctx context.Context, cfg corelib.MaclawLLMConfig, clien
 		anthropicopt.WithAPIKey(cfg.Key),
 		anthropicopt.WithAuthToken(cfg.Key),
 		anthropicopt.WithHTTPClient(client),
-		anthropicopt.WithHeader("User-Agent", cfg.UserAgent()),
+		anthropicopt.WithHeader("User-Agent", corelib.OpenCodeWireUserAgent(cfg.URL, cfg.UserAgent())),
 		anthropicopt.WithMaxRetries(0),
 	}
 	if corelib.IsCodeGenURL(cfg.URL) {

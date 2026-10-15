@@ -1,14 +1,12 @@
 package guiapp
 
 import (
-	"bytes"
 	"context"
 	"fmt"
-	"os/exec"
-	"runtime"
 	"strings"
-	"time"
 	"unicode/utf8"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // stepNeedsVerifyGate returns true when a completed plan step should run an
@@ -53,44 +51,19 @@ func runCodingWorkbenchStepVerify(ctx context.Context, projectPath string) (ok b
 	if strings.TrimSpace(cmd) == "" {
 		return true, "", "", true
 	}
-	if ctx == nil {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(context.Background(), 3*time.Minute)
-		defer cancel()
-	} else {
-		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, 3*time.Minute)
-		defer cancel()
-	}
-
-	var c *exec.Cmd
-	if runtime.GOOS == "windows" {
-		c = exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", cmd)
-	} else {
-		c = exec.CommandContext(ctx, "bash", "-lc", cmd)
-	}
-	hideCommandWindow(c)
-	c.Dir = projectPath
-	var buf bytes.Buffer
-	c.Stdout = &buf
-	c.Stderr = &buf
-	err := c.Run()
-	out := strings.TrimSpace(buf.String())
+	// Same launcher as the coding agent's bash tool: absolute PowerShell,
+	// UTF-8, and the MSVC/MinGW PATH repair. A bare "powershell" fails when
+	// the GUI process inherits a stripped PATH, and cmake then cannot see cl.
+	res := executeCodingBashWithContext(ctx, map[string]interface{}{
+		"command":     cmd,
+		"working_dir": projectPath,
+		"timeout":     corelib.DefaultAgentTimeoutSec,
+	}, nil)
+	out := strings.TrimSpace(res.Text)
 	if utf8.RuneCountInString(out) > 2000 {
 		out = truncateRunesForSubAgent(out, 2000)
 	}
-	if err != nil {
-		if out == "" {
-			out = err.Error()
-		} else {
-			out = out + "\n" + err.Error()
-		}
-		return false, cmd, out, false
-	}
-	if out == "" {
-		out = "(verify command completed with no output)"
-	}
-	return true, cmd, out, false
+	return res.succeeded(), cmd, out, false
 }
 
 // codingWorkbenchStepGateSummary formats verify result for step status / report.

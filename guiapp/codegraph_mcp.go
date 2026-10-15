@@ -123,12 +123,14 @@ func codegraphMCPRepair(root, text, symbol, pin string) (string, bool) {
 		file = codegraphLocationFile(text)
 	}
 	// The indexed text can still contain name( after an edit. The daemon
-	// says so with its staleness banner. A function body then has to come
-	// from the current file; keeping the indexed slice would show the old one.
+	// names that file in its staleness banner. Only that file's function
+	// body has to come from disk. A banner for some other file means this
+	// definition is the fresh part of the response; dropping it made the
+	// lookup miss and the agent read the whole project.
 	if codegraphMCPStale(text) {
 		_, kind, kindOK := codegraphMCPHeading(text)
-		if !kindOK || codegraphMCPKindHasBody(kind) {
-			if root != "" && file != "" && !navigationQueryEscapesRoot(file) {
+		if (!kindOK || codegraphMCPKindHasBody(kind)) && file != "" && codegraphMCPStaleFile(text, file) {
+			if root != "" && !navigationQueryEscapesRoot(file) {
 				if body := strings.TrimSpace(codegraphSourceBody(root, file, symbol)); body != "" {
 					return "Body for " + symbol + " in " + file + ".\n" + body, true
 				}
@@ -193,6 +195,7 @@ func codegraphMCPRefreshExplore(root, text string) string {
 	}
 	lines := strings.Split(text, "\n")
 	var out []string
+	refreshed := map[string]bool{}
 	for i := 0; i < len(lines); i++ {
 		path, symbols := codegraphMCPExploreHeader(lines[i])
 		if path == "" || len(symbols) == 0 {
@@ -222,23 +225,31 @@ func codegraphMCPRefreshExplore(root, text string) string {
 		stale := codegraphMCPStaleFile(text, path)
 		var fresh []string
 		kept := false
+		sawBody := false
+		missedDisk := false
 		for _, sym := range symbols {
 			if !codegraphMCPKindHasBody(sym.kind) || !codegraphRemoteNodeSymbol(sym.name) {
 				continue
 			}
-			if disk := strings.TrimSpace(codegraphSourceBody(root, path, sym.name)); stale && disk != "" {
+			sawBody = true
+			disk := strings.TrimSpace(codegraphSourceBody(root, path, sym.name))
+			if stale && disk != "" {
 				fresh = append(fresh, disk)
 				continue
+			}
+			if stale {
+				missedDisk = true
 			}
 			if codegraphExcerptDefines(body, sym.name) {
 				kept = true
 				continue
 			}
-			if !stale {
-				if disk := strings.TrimSpace(codegraphSourceBody(root, path, sym.name)); disk != "" {
-					fresh = append(fresh, disk)
-				}
+			if !stale && disk != "" {
+				fresh = append(fresh, disk)
 			}
+		}
+		if stale && sawBody && !missedDisk {
+			refreshed[strings.ReplaceAll(path, `\`, "/")] = true
 		}
 		out = append(out, lines[i])
 		if fence > i+1 {
@@ -261,7 +272,66 @@ func codegraphMCPRefreshExplore(root, text string) string {
 		out = append(out, lines[end])
 		i = end
 	}
-	return strings.Join(out, "\n")
+	return codegraphStripRefreshedStaleBanner(strings.Join(out, "\n"), refreshed)
+}
+
+// codegraphStripRefreshedStaleBanner removes files whose bodies were just
+// read from disk. The banner tells the model to Read those files; leaving it
+// in place sends the agent back to the whole file after the body is current.
+func codegraphStripRefreshedStaleBanner(text string, refreshed map[string]bool) string {
+	if len(refreshed) == 0 || !codegraphMCPStale(text) {
+		return text
+	}
+	lines := strings.Split(text, "\n")
+	drop := map[int]bool{}
+	header := -1
+	instruction := -1
+	remaining := 0
+	for i, line := range lines {
+		trim := strings.TrimSpace(line)
+		if header < 0 && strings.Contains(trim, "were edited since the last index sync") {
+			header = i
+			continue
+		}
+		if header < 0 {
+			continue
+		}
+		if instruction < 0 && strings.HasPrefix(trim, "- ") && strings.Contains(trim, " (edited ") {
+			listed := strings.TrimSpace(strings.TrimPrefix(trim, "- "))
+			if j := strings.Index(listed, " (edited "); j >= 0 {
+				listed = strings.TrimSpace(listed[:j])
+			}
+			if refreshed[strings.ReplaceAll(listed, `\`, "/")] {
+				drop[i] = true
+			} else {
+				remaining++
+			}
+			continue
+		}
+		if strings.Contains(trim, "Read them directly") {
+			instruction = i
+			break
+		}
+		if trim != "" {
+			break
+		}
+	}
+	if remaining == 0 && header >= 0 {
+		drop[header] = true
+		if instruction >= 0 {
+			drop[instruction] = true
+		}
+	}
+	if len(drop) == 0 {
+		return text
+	}
+	kept := make([]string, 0, len(lines))
+	for i, line := range lines {
+		if !drop[i] {
+			kept = append(kept, line)
+		}
+	}
+	return strings.Join(kept, "\n")
 }
 
 type codegraphMCPExploreSymbol struct {
@@ -349,22 +419,52 @@ func codegraphLocationFile(text string) string {
 }
 
 func codegraphLocationPath(line string) string {
+	marked := false
 	const marker = "**Location:**"
 	if i := strings.Index(line, marker); i >= 0 {
+		marked = true
 		line = strings.TrimSpace(line[i+len(marker):])
 	}
-	colon := strings.LastIndex(line, ":")
-	if colon <= 0 {
+	line = strings.Trim(strings.TrimSpace(line), "`")
+	line = codegraphStripLocationSuffix(line)
+	path := strings.TrimSpace(line)
+	if path == "" || strings.Contains(path, "\t") || (strings.Contains(path, " ") && !marked) {
 		return ""
 	}
-	path := strings.Trim(strings.TrimSpace(line[:colon]), "`")
-	if path == "" || strings.ContainsAny(path, " \t") || !strings.Contains(path, ".") {
+	if !marked && !strings.Contains(path, ".") {
 		return ""
 	}
 	if navigationQueryEscapesRoot(path) {
 		return ""
 	}
 	return strings.ReplaceAll(path, `\`, "/")
+}
+
+// codegraphStripLocationSuffix removes :line and :line:column. A colon that
+// belongs to the path, including a drive letter, stays.
+func codegraphStripLocationSuffix(path string) string {
+	for n := 0; n < 2; n++ {
+		colon := strings.LastIndex(path, ":")
+		if colon <= 0 {
+			break
+		}
+		suffix := path[colon+1:]
+		if suffix == "" {
+			break
+		}
+		digits := true
+		for _, r := range suffix {
+			if r < '0' || r > '9' {
+				digits = false
+				break
+			}
+		}
+		if !digits {
+			break
+		}
+		path = path[:colon]
+	}
+	return path
 }
 
 type codegraphMCPPipe struct {
@@ -523,12 +623,16 @@ func codegraphMCPResultText(raw json.RawMessage) (string, error) {
 }
 
 // codegraphMCPUnindexed reports CodeGraph's own not-indexed tool errors.
-// A source excerpt that merely mentions indexing must not force the CLI fallback.
+// The error is the first line of the tool result. A later source line that
+// quotes the same sentence must not throw the definition away.
 func codegraphMCPUnindexed(text string) bool {
-	trimmed := strings.TrimSpace(text)
-	return strings.HasPrefix(trimmed, "No CodeGraph project is loaded") ||
-		strings.Contains(trimmed, "isn't indexed with codegraph") ||
-		strings.HasPrefix(trimmed, "No indexed file matches")
+	line := strings.TrimSpace(codegraphFirstLetterLine(text))
+	if line == "" {
+		return false
+	}
+	return strings.HasPrefix(line, "No CodeGraph project is loaded") ||
+		strings.Contains(line, "isn't indexed with codegraph") ||
+		strings.HasPrefix(line, "No indexed file matches")
 }
 
 func codegraphMCPLocal(ctx context.Context, root, bin string) (*codegraphMCPSession, error) {

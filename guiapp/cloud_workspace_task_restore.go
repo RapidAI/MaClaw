@@ -150,6 +150,43 @@ func (a *App) countVisibleCloudWorkspaceTasks(workspaceID, exceptPath string) in
 	return n
 }
 
+// anotherOpenTabUsesCloudWorkspace reports whether a different open project
+// tab still resolves to workspaceID. The tab being closed must already be
+// removed from tabProjectPaths.
+func (a *App) anotherOpenTabUsesCloudWorkspace(workspaceID, exceptPath string) bool {
+	workspaceID = strings.TrimSpace(workspaceID)
+	exceptPath = normalizeProjectSessionPath(exceptPath)
+	if a == nil || workspaceID == "" {
+		return false
+	}
+	used := false
+	a.tabProjectPaths.Range(func(_, value any) bool {
+		path, _ := value.(string)
+		path = normalizeProjectSessionPath(path)
+		if path == "" || path == exceptPath {
+			return true
+		}
+		if a.lookupCloudWorkspaceIDForProject(path) == workspaceID {
+			used = true
+			return false
+		}
+		return true
+	})
+	return used
+}
+
+// releaseCloudWorkspaceIfLastRow drops the shared lease and tombstones the
+// workspace only when no other visible row still uses it.
+func (a *App) releaseCloudWorkspaceIfLastRow(projectPath string) {
+	workspaceID := a.lookupCloudWorkspaceIDForProject(projectPath)
+	if workspaceID == "" || a.countVisibleCloudWorkspaceTasks(workspaceID, projectPath) > 0 {
+		return
+	}
+	a.releaseCloudWorkspaceForProjectPath(projectPath)
+	a.dismissCloudWorkspaceTask(workspaceID)
+	a.dropShareAccessSession(workspaceID)
+}
+
 func (a *App) dismissCloudWorkspaceTaskByPath(projectPath string) {
 	if id := a.lookupCloudWorkspaceIDForProject(projectPath); id != "" {
 		a.dismissCloudWorkspaceTask(id)
@@ -193,7 +230,7 @@ func (a *App) restoreCloudWorkspaceTaskRecord(ws CloudWorkspaceEntitlementWorksp
 	if _, skip := a.loadDismissedCloudWorkspaceTasks()[workspaceID]; skip {
 		return ProjectSearchResult{}
 	}
-	if existing := a.findLocalCloudWorkspaceTask(workspaceID, true); strings.TrimSpace(existing.ProjectPath) != "" {
+	if existing := a.findCanonicalCloudWorkspaceTask(workspaceID, true); strings.TrimSpace(existing.ProjectPath) != "" {
 		hidden, archived := a.cloudWorkspaceTaskFlags(existing)
 		if archived {
 			return ProjectSearchResult{}
@@ -353,16 +390,43 @@ func (a *App) hideOtherLocalCloudWorkspaceTasksForKeep(keep map[string]string) i
 		return 0
 	}
 	cloudWorkspaceRestoreMu.Lock()
-	var extras []string
-	for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
+	matches := pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
 		id := localCloudWorkspaceID(candidate)
 		_, ok := normalized[id]
 		return ok
-	}) {
+	})
+	primaryNonCopy := make(map[string]memory.ProjectRecord, len(normalized))
+	keepIsCopy := make(map[string]bool, len(normalized))
+	for _, rec := range matches {
+		id := localCloudWorkspaceID(rec)
+		path := normalizeProjectSessionPath(rec.ProjectPath)
+		if path == "" || pi.IsArchived(path) || pi.IsHidden(path) {
+			continue
+		}
+		if projectRecordHasTag(rec, taskCopyTag) {
+			if path == normalized[id] {
+				keepIsCopy[id] = true
+			}
+			continue
+		}
+		if current, ok := primaryNonCopy[id]; !ok || preferCloudWorkspaceTaskRecord(rec, current) {
+			primaryNonCopy[id] = rec
+		}
+	}
+	var extras []string
+	for _, rec := range matches {
 		id := localCloudWorkspaceID(rec)
 		keepPath := normalized[id]
 		path := normalizeProjectSessionPath(rec.ProjectPath)
 		if path == "" || path == keepPath || pi.IsArchived(path) || pi.IsHidden(path) {
+			continue
+		}
+		// Explicit copies stay in the list. Opening a copy also keeps the
+		// canonical row so the original transcript is not hidden.
+		if projectRecordHasTag(rec, taskCopyTag) {
+			continue
+		}
+		if keepIsCopy[id] && path == normalizeProjectSessionPath(primaryNonCopy[id].ProjectPath) {
 			continue
 		}
 		pi.SetHidden(path, true)
@@ -445,7 +509,7 @@ func (a *App) restoreCloudWorkspaceTasks() []ProjectSearchResult {
 			skippedDismissed++
 			continue
 		}
-		existing := a.findLocalCloudWorkspaceTask(workspaceID, true)
+		existing := a.findCanonicalCloudWorkspaceTask(workspaceID, true)
 		if strings.TrimSpace(existing.ProjectPath) == "" {
 			pending = append(pending, ws)
 			continue
@@ -487,7 +551,7 @@ func (a *App) restoreCloudWorkspaceTasks() []ProjectSearchResult {
 			cloudWorkspaceRestoreMu.Unlock()
 			continue
 		}
-		if existing := a.findLocalCloudWorkspaceTask(workspaceID, true); strings.TrimSpace(existing.ProjectPath) != "" {
+		if existing := a.findCanonicalCloudWorkspaceTask(workspaceID, true); strings.TrimSpace(existing.ProjectPath) != "" {
 			hidden, archived := a.cloudWorkspaceTaskFlags(existing)
 			if archived {
 				cloudWorkspaceRestoreMu.Unlock()

@@ -142,7 +142,7 @@ var (
 	setupStatusOpts      = []string{"needs_setup", "needs_llm_key", "needs_redeem", "mcp_optional", "official_ready", "llm_ready"}
 	workDirProfileOpts   = []string{"default_workspace", "current_directory", "home_directory", "custom"}
 	maxIterationOpts     = []string{"30", "60", "100", "150", "300"}
-	contextLengthOpts    = []string{"32000", "64000", "110000", "200000", "400000"}
+	contextLengthOpts    = []string{"32000", "64000", "110000", "200000", "256000", "400000"}
 	llmModelChoiceOpts   = []string{"auto", "glm-5-turbo", corelib.ZhipuCodingDefaultModel, "deepseek-v4-flash", "kimi-for-coding", "MiniMax-M2.7", "astron-code-latest", "qwen2.5-coder:32b", "deepseek-coder-v2", "llama3.1"}
 	auxLLMProfileOpts    = []string{"off", "same_as_primary", "custom"}
 	imChannelProfileOpts = []string{"off", "weixin", "telegram", "qq", "lansenger"}
@@ -155,6 +155,7 @@ type llmProviderPreset struct {
 	Name          string
 	URL           string
 	Model         string
+	Models        []string
 	Protocol      string
 	ContextLength int
 	TimeoutSec    int
@@ -170,6 +171,7 @@ var llmProviderPresets = []llmProviderPreset{
 	{Name: "OpenCode", URL: configfile.OpenCodeZenBaseURL, Model: configfile.OpenCodeZenDefaultModel, Protocol: "openai", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: configfile.ExternalAgentTypeOpenCode, AuthType: "apikey"},
 	{Name: "Kimi", URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude code 2.0", AuthType: "apikey"},
 	{Name: "Xfyun Astron", URL: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", Model: "astron-code-latest", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "apikey"},
+	{Name: "星辰大模型", URL: "https://api-maas.teleai.com.cn/v1", Model: "TeleChat3-438B-A24B", Models: []string{"TeleChat3-438B-A24B", "Xing4.0-29B-A4B"}, Protocol: "openai", ContextLength: 256000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "apikey"},
 	{Name: "OpenAI API Key", URL: "https://api.openai.com/v1", Model: "gpt-4o", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "apikey"},
 	{Name: "Anthropic", URL: "https://api.anthropic.com", Model: "claude-sonnet-4-20250514", Protocol: "anthropic", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude code 2.0", AuthType: "apikey"},
 	{Name: "Ollama Local", URL: "http://localhost:11434/v1", Model: "qwen2.5-coder:32b", Protocol: "openai", ContextLength: 32000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AuthType: "none"},
@@ -293,6 +295,7 @@ func applyLLMProviderPreset(c *corelib.AppConfig, name string) {
 		if !preset.IsCustom {
 			c.MaclawLLMProviders[i].URL = strings.TrimRight(preset.URL, "/")
 			c.MaclawLLMProviders[i].Model = preset.Model
+			c.MaclawLLMProviders[i].Models = mergePresetModels(c.MaclawLLMProviders[i].Models, preset.Models)
 		}
 		c.MaclawLLMProviders[i].Protocol = c.MaclawLLMProtocol
 		c.MaclawLLMProviders[i].ContextLength = c.MaclawLLMContextLength
@@ -309,6 +312,7 @@ func applyLLMProviderPreset(c *corelib.AppConfig, name string) {
 			URL:           c.MaclawLLMUrl,
 			Key:           c.MaclawLLMKey,
 			Model:         c.MaclawLLMModel,
+			Models:        mergePresetModels(nil, preset.Models),
 			Protocol:      c.MaclawLLMProtocol,
 			ContextLength: c.MaclawLLMContextLength,
 			TimeoutSec:    c.MaclawLLMTimeoutSec,
@@ -350,14 +354,34 @@ func providerModelOptionsFromConfig(c *corelib.AppConfig, providerName string) [
 			continue
 		}
 		values := cloneConfigValues(provider.Models...)
-		return appendUniqueOption(values, provider.Model)
+		values = appendUniqueOption(values, provider.Model)
+		return mergePresetModelOptions(values, providerName)
 	}
+	return mergePresetModelOptions(nil, providerName)
+}
+
+func mergePresetModels(existing, extras []string) []string {
+	merged := cloneConfigValues(existing...)
+	for _, model := range extras {
+		merged = appendUniqueOption(merged, model)
+	}
+	return merged
+}
+
+func mergePresetModelOptions(values []string, providerName string) []string {
 	for _, preset := range llmProviderPresets {
-		if preset.Name == providerName {
-			return cloneConfigValues(preset.Model)
+		if preset.Name != providerName {
+			continue
 		}
+		if len(preset.Models) > 0 {
+			values = mergePresetModels(values, preset.Models)
+		}
+		if len(values) == 0 {
+			return appendUniqueOption(values, preset.Model)
+		}
+		return values
 	}
-	return nil
+	return values
 }
 
 func applyLLMModelChoice(c *corelib.AppConfig, model string) {

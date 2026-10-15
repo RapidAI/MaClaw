@@ -3,10 +3,10 @@ import { FetchCodeGenModels, FetchProviderModels, GetHubLLMServiceStatus, GetMac
 import { corelib } from '../../../wailsjs/go/models';
 import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
 import { colors } from "./styles";
-import { HUB_SERVICE_PROVIDER_NAME, KNOWN_OPENAI_ENDPOINTS, LLM_CONFIG_LOAD_TIMEOUT_MS, NONE_PROVIDER, canQueryOpenAIOrganizationCosts, formatProviderTestError, formatProviderTestErrorOrFallback, hubCreditGrants, hubOfficialStatus, inputStyle, isOpenCodeProvider, isLocalImportProvider, isProviderTestCancelMessage, labelStyle, listProviderModelsForShare, probeProviderModelForShare, readonlyStyle, withTimeout, type HubLLMServiceStatus, type LLMProvider } from "./LLMConfigPanelShared";
+import { HUB_SERVICE_PROVIDER_NAME, KNOWN_OPENAI_ENDPOINTS, LLM_CONFIG_LOAD_TIMEOUT_MS, NONE_PROVIDER, canQueryOpenAIOrganizationCosts, formatProviderTestError, formatProviderTestErrorOrFallback, hubCreditGrants, hubOfficialStatus, inputStyle, isOpenCodeProvider, isLocalImportProvider, isProviderTestCancelMessage, labelStyle, listProviderModelsForShare, nextProviderModelChoices, probeProviderModelForShare, providerModelChoices, quickFillModelCatalog, readonlyStyle, withTimeout, type HubLLMServiceStatus, type LLMProvider } from "./LLMConfigPanelShared";
 import { UsageDisplay } from "./UsageDisplay";
 import { TokenUsagePanel } from "./TokenUsagePanel";
-import { cancelNamedProviderOAuth, promptKimiCodeDeviceLogin, runProviderOAuthLogin } from "./providerOAuth";
+import { cancelNamedProviderOAuth, completeDevinPastedToken, promptKimiCodeDeviceLogin, runProviderOAuthLogin } from "./providerOAuth";
 import { isKimiCodeProvider, isLobsterAIProvider, isQoderProvider, isTraeProvider, isWorkBuddyProvider, PROVIDER_LOGOS } from "./providerLogos";
 import { useDialog } from "../CustomDialog";
 import { KNOWN_USER_AGENTS, commitCustomAgentValue, customAgentSeedForProvider, editableCustomAgentValue, effectiveAgentType, isKnownUserAgent, selectableAgentType } from "./userAgent";
@@ -199,6 +199,16 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                 onStatusChange?.(true, true);
                 onProviderChanged?.();
                 if (!connectionVerified) {
+                    if (providerName === "Devin") {
+                        setDlgTestResult({
+                            ok: true,
+                            msg: loginMessage || t(
+                                "Devin login successful. Fetch and choose a model before chatting.",
+                                "Devin 登录成功。对话前请先获取并选择模型。",
+                            ),
+                        });
+                        return;
+                    }
                     setDlgTestResult({
                         // Credentials are saved, but the provider is not yet
                         // assignable. This is an actionable warning, not a
@@ -571,12 +581,17 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
         if (!dlgOpen || dlgSelectedIdx === null) return;
         const selected = dlgProviders[dlgSelectedIdx];
         if (!selected?.import_source) return;
-        const models = (selected.models || []).map(id => ({ id, name: id }));
-        if (selected.model && !models.some(item => item.id === selected.model)) {
-            models.unshift({ id: selected.model, name: selected.model });
-        }
-        setProviderModels(models);
+        setProviderModels(providerModelChoices(selected));
         setProviderModelsError(null);
+    }, [dlgOpen, dlgSelectedIdx, dlgProviders]);
+
+    useEffect(() => {
+        if (!dlgOpen || dlgSelectedIdx === null) return;
+        const selected = dlgProviders[dlgSelectedIdx];
+        if (!selected || selected.import_source) return;
+        // Replace the dropdown when the saved ids change. An unchanged catalog
+        // keeps the list already on screen, including names from Fetch.
+        setProviderModels(prev => nextProviderModelChoices(prev, selected));
     }, [dlgOpen, dlgSelectedIdx, dlgProviders]);
 
     const dlgIsNone = dlgSelectedIdx === null && !dlgHubSelected;
@@ -815,7 +830,8 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                 ...previous,
                 name: ep.name,
                 url: ep.url,
-                model: ep.model,
+                model: ep.model || "",
+                models: quickFillModelCatalog(previous, ep),
                 protocol: ep.protocol || "openai",
                 auth_type: ep.auth_type || "",
                 // A provider switch must never reuse a token from a different
@@ -1454,6 +1470,14 @@ export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequ
                                             setDlgTestResult({ ok: true, msg });
                                         }}
                                         onImportError={(e) => setDlgTestResult({ ok: false, msg: String(e) })}
+                                        onDevinToken={async (token) => {
+                                            const msg = await completeDevinPastedToken(token);
+                                            await refreshProviderList();
+                                            setDlgDirty(false);
+                                            onStatusChange?.(true, true);
+                                            onProviderChanged?.();
+                                            setDlgTestResult({ ok: true, msg: msg || t("Devin login successful", "Devin 登录成功") });
+                                        }}
                                     />
                                 ) : (
                                     <LLMConfigApiKeyFields

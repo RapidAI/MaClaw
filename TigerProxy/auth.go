@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/kimicode"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/RapidAI/CodeClaw/corelib/qoder"
@@ -799,12 +800,16 @@ func (a *App) ListUpstreamModels(baseURL, apiKey string) ([]ModelOption, error) 
 	if s.AuthProfiles != nil {
 		account = s.AuthProfiles[s.ActiveAuthMode]
 	}
-	models, err := fetchModelsForMode(s.ActiveAuthMode, baseURL, apiKey, account)
+	models, err := fetchModelsForMode(s.ActiveAuthMode, baseURL, apiKey, proxyClientName(s), account)
 	if err != nil {
 		return nil, err
 	}
-	if strings.EqualFold(baseURL, s.BaseURL) && apiKey == s.AccessToken {
-		a.updateModelsForCurrentToken(apiKey, models)
+	savedToken := apiKey
+	if s.ActiveAuthMode == AuthModeDevin && apiKey == s.AccessToken {
+		savedToken = a.persistDevinAccess(apiKey)
+	}
+	if apiKey == s.AccessToken && (strings.EqualFold(baseURL, s.BaseURL) || savedToken != apiKey) {
+		a.updateModelsForCurrentToken(savedToken, models)
 	}
 	return models, nil
 }
@@ -818,16 +823,20 @@ func (a *App) refreshModelsForActiveMode() {
 	if s.AuthProfiles != nil {
 		account = s.AuthProfiles[s.ActiveAuthMode]
 	}
-	models, err := fetchModelsForMode(s.ActiveAuthMode, s.BaseURL, s.AccessToken, account)
+	models, err := fetchModelsForMode(s.ActiveAuthMode, s.BaseURL, s.AccessToken, proxyClientName(s), account)
 	if err != nil || len(models) == 0 {
 		return
 	}
-	if a.updateModelsForCurrentToken(s.AccessToken, models) && a.ctx != nil {
+	savedToken := s.AccessToken
+	if s.ActiveAuthMode == AuthModeDevin {
+		savedToken = a.persistDevinAccess(s.AccessToken)
+	}
+	if a.updateModelsForCurrentToken(savedToken, models) && a.ctx != nil {
 		runtime.EventsEmit(a.ctx, "models-refreshed", nil)
 	}
 }
 
-func fetchModelsForMode(mode, baseURL, apiKey string, account AuthProfile) ([]ModelOption, error) {
+func fetchModelsForMode(mode, baseURL, apiKey, agentType string, account AuthProfile) ([]ModelOption, error) {
 	if mode == AuthModeSSO {
 		models, _, err := oauth.FetchCodeGenModels(apiKey)
 		if err != nil {
@@ -836,7 +845,7 @@ func fetchModelsForMode(mode, baseURL, apiKey string, account AuthProfile) ([]Mo
 		return modelOptionsFromOAuth(models), nil
 	}
 	if mode == AuthModeAnthropicOAuth {
-		return fetchAnthropicModels(baseURL, apiKey)
+		return fetchAnthropicModels(baseURL, apiKey, agentType)
 	}
 	if mode == AuthModeDevin {
 		return fetchDevinModels(baseURL, apiKey)
@@ -849,16 +858,33 @@ func fetchModelsForMode(mode, baseURL, apiKey string, account AuthProfile) ([]Mo
 		return fetchWorkBuddyModels(profile, account)
 	}
 	if mode == AuthModeOpenCode {
-		return fetchOpenAICompatibleModels(baseURL, apiKey, openCodeModelHeaders())
+		headers := openCodeModelHeaders()
+		setAgentHeader(headers, agentType)
+		return fetchOpenAICompatibleModels(baseURL, apiKey, headers)
 	}
 	headers := map[string]string{}
 	if mode == AuthModeXAIOAuth {
 		headers["X-XAI-Token-Auth"] = "xai-grok-cli"
 	}
+	setAgentHeader(headers, agentType)
 	return fetchOpenAICompatibleModels(baseURL, apiKey, headers)
 }
 
-func fetchAnthropicModels(baseURL, apiKey string) ([]ModelOption, error) {
+func setAgentHeader(headers map[string]string, agentType string) {
+	if headers == nil {
+		return
+	}
+	if _, ok := headers["User-Agent"]; ok {
+		return
+	}
+	ua := strings.TrimSpace(agentType)
+	if ua == "" {
+		ua = corelib.CodeGenClientName
+	}
+	headers["User-Agent"] = ua
+}
+
+func fetchAnthropicModels(baseURL, apiKey, agentType string) ([]ModelOption, error) {
 	endpoint := strings.TrimRight(baseURL, "/") + "/models"
 	req, err := http.NewRequest(http.MethodGet, endpoint, nil)
 	if err != nil {
@@ -867,6 +893,9 @@ func fetchAnthropicModels(baseURL, apiKey string) ([]ModelOption, error) {
 	req.Header.Set("x-api-key", apiKey)
 	req.Header.Set("Authorization", "Bearer "+apiKey)
 	req.Header.Set("anthropic-version", "2023-06-01")
+	if ua := strings.TrimSpace(agentType); ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
 	client := &http.Client{Timeout: 20 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {

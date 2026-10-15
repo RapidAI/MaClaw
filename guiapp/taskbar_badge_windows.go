@@ -7,11 +7,13 @@ import (
 	"log"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
 	"unsafe"
 
+	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/energye/systray"
 )
 
@@ -35,12 +37,19 @@ const (
 	// 32px icon and the shell drops or clips it.
 	taskbarBadgeSmCxIcon = 49
 
-	// Vtable layout: 3 IUnknown methods, then ITaskbarList (HrInit, AddTab,
-	// DeleteTab, ActivateTab, SetActiveAlt), then ITaskbarList2
-	// (MarkFullscreenWindow) — SetOverlayIcon therefore lands at index 11.
+	// Vtable layout, counted from zero:
+	//   IUnknown: QueryInterface, AddRef, Release
+	//   ITaskbarList: HrInit, AddTab, DeleteTab, ActivateTab, SetActiveAlt
+	//   ITaskbarList2: MarkFullscreenWindow
+	//   ITaskbarList3: SetProgressValue, SetProgressState, RegisterTab,
+	//     UnregisterTab, SetTabOrder, SetTabActive, ThumbBarAddButtons,
+	//     ThumbBarUpdateButtons, ThumbBarSetImageList, then SetOverlayIcon.
+	// Index 11 is RegisterTab. Calling it with an icon handle returns E_FAIL
+	// and never paints a badge.
 	taskbarBadgeVtableRelease        = 2
 	taskbarBadgeVtableHrInit         = 3
-	taskbarBadgeVtableSetOverlayIcon = 11
+	taskbarBadgeVtableAddTab         = 4
+	taskbarBadgeVtableSetOverlayIcon = 18
 
 	taskbarBadgeBkModeTransparent = 1
 	taskbarBadgeFontWeightBold    = 700
@@ -56,9 +65,14 @@ const (
 	taskbarBadgeHWNDRetryWait = 500 * time.Millisecond
 	taskbarBadgeHWNDSlowWait  = 2 * time.Second
 
+	// SetOverlayIcon can fail until the shell creates the taskbar button.
+	// Retry quickly, call AddTab once, then keep a slow poll so a count
+	// that arrived while the window was hidden still appears later.
+	taskbarBadgeOverlayTries = 8
+
 	// taskbarBadgeColorRef is the disc fill, COLORREF 0x00BBGGRR for
-	// RGB(230, 68, 68) — the QQ-style notification red.
-	taskbarBadgeColorRef = 0x004444E6
+	// RGB(19, 59, 67) — the app icon's dark green outline.
+	taskbarBadgeColorRef = 0x00433B13
 )
 
 type taskbarBadgeGUID struct {
@@ -79,12 +93,15 @@ var (
 	procBadgeCoCreateInst   = taskbarBadgeOle32.NewProc("CoCreateInstance")
 	procBadgeCoUninitialize = taskbarBadgeOle32.NewProc("CoUninitialize")
 
-	taskbarBadgeUser32          = syscall.NewLazyDLL("user32.dll")
-	procBadgeSystemMetrics      = taskbarBadgeUser32.NewProc("GetSystemMetrics")
-	procBadgeIsWindow           = taskbarBadgeUser32.NewProc("IsWindow")
-	procBadgeDrawText           = taskbarBadgeUser32.NewProc("DrawTextW")
-	procBadgeCreateIconIndirect = taskbarBadgeUser32.NewProc("CreateIconIndirect")
-	procBadgeDestroyIcon        = taskbarBadgeUser32.NewProc("DestroyIcon")
+	taskbarBadgeUser32           = syscall.NewLazyDLL("user32.dll")
+	procBadgeSystemMetrics       = taskbarBadgeUser32.NewProc("GetSystemMetrics")
+	procBadgeIsWindow            = taskbarBadgeUser32.NewProc("IsWindow")
+	procBadgeGetAncestor         = taskbarBadgeUser32.NewProc("GetAncestor")
+	procBadgeGetDpiForWindow     = taskbarBadgeUser32.NewProc("GetDpiForWindow")
+	procBadgeSystemMetricsForDpi = taskbarBadgeUser32.NewProc("GetSystemMetricsForDpi")
+	procBadgeDrawText            = taskbarBadgeUser32.NewProc("DrawTextW")
+	procBadgeCreateIconIndirect  = taskbarBadgeUser32.NewProc("CreateIconIndirect")
+	procBadgeDestroyIcon         = taskbarBadgeUser32.NewProc("DestroyIcon")
 
 	taskbarBadgeGdi32           = syscall.NewLazyDLL("gdi32.dll")
 	procBadgeSetBkMode          = taskbarBadgeGdi32.NewProc("SetBkMode")
@@ -152,6 +169,8 @@ func notifyTaskbarBadgeCount(count int) {
 // replayTaskbarBadge paints the last requested count again. Called on the
 // tray window thread when explorer broadcasts TaskbarCreated.
 func replayTaskbarBadge() {
+	// The HWND survives explorer restart, but the taskbar button does not.
+	taskbarBadgeForgetHWND()
 	taskbarBadgeMu.Lock()
 	count, ok := taskbarBadgeLast, taskbarBadgeLastSet
 	taskbarBadgeMu.Unlock()
@@ -193,10 +212,41 @@ func taskbarBadgeWorker(requests <-chan int) {
 	var pending int
 	waiting := false
 	misses := 0
-	// A stopped timer that never fires. Reset arms it only while the window
-	// handle is still missing.
+	overlayAttempt := 0
+	// A stopped timer that never fires. Reset arms it only while a count
+	// still needs a window or a taskbar button.
 	retry := time.NewTimer(time.Hour)
 	taskbarBadgeDrainTimer(retry)
+
+	apply := func(count int) {
+		var result taskbarBadgeResult
+		liveIcon, result = taskbarBadgeServeCount(taskbar, count, liveIcon, taskbarBadgeRegisterTab(overlayAttempt))
+		switch result {
+		case taskbarBadgeApplied:
+			waiting = false
+			misses = 0
+			overlayAttempt = 0
+		case taskbarBadgeNoWindow:
+			// The frame is gone. A later window needs its own plain tries
+			// before the one AddTab.
+			overlayAttempt = 0
+			waiting = true
+			misses++
+			wait := taskbarBadgeHWNDRetryWait
+			if misses > taskbarBadgeHWNDTries {
+				wait = taskbarBadgeHWNDSlowWait
+			}
+			retry.Reset(wait)
+		case taskbarBadgeOverlayMiss:
+			overlayAttempt++
+			waiting = true
+			wait := taskbarBadgeHWNDRetryWait
+			if overlayAttempt > taskbarBadgeOverlayTries {
+				wait = taskbarBadgeHWNDSlowWait
+			}
+			retry.Reset(wait)
+		}
+	}
 
 	for {
 		var wake <-chan time.Time
@@ -210,70 +260,156 @@ func taskbarBadgeWorker(requests <-chan int) {
 			}
 			pending = count
 			taskbarBadgeDrainTimer(retry)
-			var applied bool
-			liveIcon, applied = taskbarBadgeServeCount(taskbar, count, liveIcon)
-			if applied {
-				waiting = false
-				misses = 0
-				continue
-			}
-			waiting = true
-			misses = 1
-			retry.Reset(taskbarBadgeHWNDRetryWait)
+			misses = 0
+			overlayAttempt = 0
+			apply(count)
 		case <-wake:
 			if !waiting {
 				continue
 			}
-			var applied bool
-			liveIcon, applied = taskbarBadgeServeCount(taskbar, pending, liveIcon)
-			if applied {
-				waiting = false
-				misses = 0
-				continue
-			}
-			misses++
-			wait := taskbarBadgeHWNDRetryWait
-			if misses > taskbarBadgeHWNDTries {
-				wait = taskbarBadgeHWNDSlowWait
-			}
-			retry.Reset(wait)
+			apply(pending)
 		}
 	}
 }
 
+// taskbarBadgeRegisterTab reports whether this one overlay attempt may call
+// AddTab. Later slow polls only call SetOverlayIcon; repeating AddTab can
+// pin an extra taskbar button.
+func taskbarBadgeRegisterTab(attempt int) bool {
+	return attempt == taskbarBadgeOverlayTries
+}
+
+// taskbarBadgeResult is the outcome of one overlay attempt.
+type taskbarBadgeResult int
+
+const (
+	// taskbarBadgeApplied means the count is on the taskbar. The worker stops.
+	taskbarBadgeApplied taskbarBadgeResult = iota
+	// taskbarBadgeNoWindow means the top-level window does not exist yet.
+	taskbarBadgeNoWindow
+	// taskbarBadgeOverlayMiss means the window exists but SetOverlayIcon
+	// did not stick. The worker keeps trying.
+	taskbarBadgeOverlayMiss
+)
+
 // taskbarBadgeServeCount renders and applies one badge on the worker thread.
-// applied is false only when the main window does not exist yet; the worker
-// keeps the count and tries again. The badge is purely decorative: any
-// failure here is logged and dropped, never allowed to take the app down.
-func taskbarBadgeServeCount(taskbar unsafe.Pointer, count int, liveIcon uintptr) (nextLive uintptr, applied bool) {
+// NoWindow means the frame is not up yet. OverlayMiss means the button
+// rejected the icon and the worker should try again. A panic is swallowed
+// so a badge cannot take the process down.
+func taskbarBadgeServeCount(taskbar unsafe.Pointer, count int, liveIcon uintptr, allowAddTab bool) (nextLive uintptr, result taskbarBadgeResult) {
+	var staged uintptr
+	committed := false
 	defer func() {
 		if r := recover(); r != nil {
 			log.Printf("[taskbar-badge] panic suppressed: %v", r)
-			nextLive = liveIcon
-			applied = true
+			if !committed && staged != 0 {
+				procBadgeDestroyIcon.Call(staged)
+			}
+			if !committed {
+				nextLive = liveIcon
+				result = taskbarBadgeApplied
+			}
 		}
 	}()
-	hwnd := taskbarBadgeHWND()
-	if hwnd == 0 {
-		return liveIcon, false
-	}
-	icon := taskbarBadgeRenderIcon(count)
-	if icon == 0 && count > 0 {
-		// Render failed; keep the overlay that is already in place
-		// rather than silently clearing a live count.
-		return liveIcon, true
-	}
-	if hr := taskbarBadgeVtableCall(taskbar, taskbarBadgeVtableSetOverlayIcon, hwnd, icon, 0); hr != 0 {
-		log.Printf("[taskbar-badge] SetOverlayIcon failed: hr=0x%08x", uint32(hr))
-		if icon != 0 {
-			procBadgeDestroyIcon.Call(icon)
+	cached := taskbarBadgeCachedHWND()
+	var candidates []uintptr
+	if cached == 0 {
+		candidates = taskbarBadgeFreshCandidates()
+		if len(candidates) == 0 {
+			return taskbarBadgeNoWindowResult(count, liveIcon)
 		}
-		return liveIcon, true
+	}
+	hwnd := cached
+	if hwnd == 0 && len(candidates) > 0 {
+		hwnd = candidates[0]
+	}
+	staged = taskbarBadgeRenderIconFor(count, hwnd)
+	if staged == 0 && count > 0 {
+		// Render failed. Leave the current overlay in place and try again.
+		return liveIcon, taskbarBadgeOverlayMiss
+	}
+	desc, _ := syscall.UTF16PtrFromString(taskbarBadgeDescriptionText())
+	keep := func(hwnd uintptr) {
+		taskbarBadgeRememberHWND(hwnd)
+		nextLive = staged
+		result = taskbarBadgeApplied
+		committed = true
+		taken := staged
+		staged = 0
+		if liveIcon != 0 && liveIcon != taken {
+			procBadgeDestroyIcon.Call(liveIcon)
+		}
+	}
+	try := func(hwnd uintptr) bool {
+		if taskbarBadgeSetOverlay(taskbar, hwnd, staged, desc) != 0 {
+			return false
+		}
+		keep(hwnd)
+		return true
+	}
+	drop := func() {
+		if staged == 0 {
+			return
+		}
+		icon := staged
+		staged = 0
+		procBadgeDestroyIcon.Call(icon)
+	}
+	if cached != 0 && try(cached) {
+		return nextLive, result
+	}
+	if cached != 0 {
+		// The cached handle is still a window, but it is not the taskbar
+		// button. Drop it and resolve the real top-level windows once.
+		taskbarBadgeForgetHWND()
+		candidates = taskbarBadgeFreshCandidates()
+		if len(candidates) == 0 {
+			drop()
+			return taskbarBadgeNoWindowResult(count, liveIcon)
+		}
+	}
+	// The cached call just failed. Calling SetOverlayIcon again on that
+	// same handle in this attempt fails the same way.
+	if candidates[0] != cached && try(candidates[0]) {
+		return nextLive, result
+	}
+	if allowAddTab {
+		hr := taskbarBadgeAddTabAndOverlay(taskbar, candidates[0], staged, desc)
+		if hr == 0 {
+			keep(candidates[0])
+			return nextLive, result
+		}
+		log.Printf("[taskbar-badge] SetOverlayIcon failed: hr=0x%08x", uint32(hr))
+		for _, hwnd := range candidates[1:] {
+			if try(hwnd) {
+				return nextLive, result
+			}
+		}
+	}
+	taskbarBadgeForgetHWND()
+	drop()
+	return liveIcon, taskbarBadgeOverlayMiss
+}
+
+// taskbarBadgeNoWindowResult handles a count that arrived with no frame.
+// A positive count keeps waiting. A clear with nothing on the taskbar stops,
+// and releases the icon we still hold.
+func taskbarBadgeNoWindowResult(count int, liveIcon uintptr) (uintptr, taskbarBadgeResult) {
+	if count > 0 {
+		return liveIcon, taskbarBadgeNoWindow
 	}
 	if liveIcon != 0 {
 		procBadgeDestroyIcon.Call(liveIcon)
 	}
-	return icon, true
+	return 0, taskbarBadgeApplied
+}
+
+func taskbarBadgeDescriptionText() string {
+	name := strings.TrimSpace(brand.Current().DisplayName)
+	if name == "" {
+		return "MaClaw"
+	}
+	return name
 }
 
 // taskbarBadgeCreateTaskbarList3 creates and initializes the shell taskbar
@@ -314,30 +450,85 @@ func taskbarBadgeVtableCall(itf unsafe.Pointer, index int, args ...uintptr) uint
 	return hr
 }
 
-// taskbarBadgeHWND resolves the main window handle. findMainWindowHWND only
-// matches visible windows, so it falls back to the Wails window-class scan:
-// tasks keep running while the window sits hidden in the tray or minimized,
-// and the overlay must still track their count.
-func taskbarBadgeHWND() uintptr {
+func taskbarBadgeCachedHWND() uintptr {
 	taskbarBadgeHWNDCacheMu.Lock()
 	hwnd := taskbarBadgeHWNDCache
 	taskbarBadgeHWNDCacheMu.Unlock()
-	if hwnd != 0 {
-		if alive, _, _ := procBadgeIsWindow.Call(hwnd); alive != 0 {
-			return hwnd
-		}
-	}
-	hwnd = findMainWindowHWND()
-	if hwnd == 0 {
-		hwnd = findWailsWindowHWND()
-	}
 	if hwnd == 0 {
 		return 0
 	}
+	if alive, _, _ := procBadgeIsWindow.Call(hwnd); alive != 0 {
+		return hwnd
+	}
+	taskbarBadgeForgetHWND()
+	return 0
+}
+
+func taskbarBadgeRememberHWND(hwnd uintptr) {
 	taskbarBadgeHWNDCacheMu.Lock()
 	taskbarBadgeHWNDCache = hwnd
 	taskbarBadgeHWNDCacheMu.Unlock()
+}
+
+func taskbarBadgeForgetHWND() {
+	taskbarBadgeHWNDCacheMu.Lock()
+	taskbarBadgeHWNDCache = 0
+	taskbarBadgeHWNDCacheMu.Unlock()
+}
+
+// taskbarBadgeFreshCandidates lists taskbar-button windows, Wails frame
+// first. The title scan can land on another visible top-level window, so it
+// is only the fallback. Each handle is walked to its unowned root first.
+func taskbarBadgeFreshCandidates() []uintptr {
+	return taskbarBadgeCandidateOrder(
+		taskbarBadgeRootOwner(findWailsWindowHWND()),
+		taskbarBadgeRootOwner(findMainWindowHWND()),
+	)
+}
+
+// taskbarBadgeCandidateOrder keeps the Wails frame ahead of the title-scan
+// window and drops zeros and duplicates.
+func taskbarBadgeCandidateOrder(wails, main uintptr) []uintptr {
+	out := make([]uintptr, 0, 2)
+	push := func(hwnd uintptr) {
+		if hwnd == 0 {
+			return
+		}
+		for _, have := range out {
+			if have == hwnd {
+				return
+			}
+		}
+		out = append(out, hwnd)
+	}
+	push(wails)
+	push(main)
+	return out
+}
+
+// taskbarBadgeRootOwner walks to the unowned top-level window. Overlay icons
+// attach to that taskbar button, not to an owned dialog.
+func taskbarBadgeRootOwner(hwnd uintptr) uintptr {
+	if hwnd == 0 {
+		return 0
+	}
+	root, _, _ := procBadgeGetAncestor.Call(hwnd, 3) // GA_ROOTOWNER
+	if root != 0 {
+		return root
+	}
 	return hwnd
+}
+
+func taskbarBadgeSetOverlay(taskbar unsafe.Pointer, hwnd, icon uintptr, desc *uint16) uintptr {
+	return taskbarBadgeVtableCall(taskbar, taskbarBadgeVtableSetOverlayIcon, hwnd, icon, uintptr(unsafe.Pointer(desc)))
+}
+
+// taskbarBadgeAddTabAndOverlay registers the window with the taskbar and
+// paints the overlay. Used only after a plain SetOverlayIcon failed, and
+// only for the preferred top-level window.
+func taskbarBadgeAddTabAndOverlay(taskbar unsafe.Pointer, hwnd, icon uintptr, desc *uint16) uintptr {
+	_ = taskbarBadgeVtableCall(taskbar, taskbarBadgeVtableAddTab, hwnd)
+	return taskbarBadgeSetOverlay(taskbar, hwnd, icon, desc)
 }
 
 type taskbarBadgeBitmapInfoHeader struct {
@@ -374,6 +565,10 @@ type taskbarBadgeIconInfo struct {
 // taskbarBadgeRenderIcon draws the count as a red disc with a bold white
 // number and returns an ARGB HICON, or 0 for "no badge" (count <= 0).
 func taskbarBadgeRenderIcon(count int) uintptr {
+	return taskbarBadgeRenderIconFor(count, 0)
+}
+
+func taskbarBadgeRenderIconFor(count int, hwnd uintptr) uintptr {
 	if count <= 0 {
 		return 0
 	}
@@ -381,10 +576,7 @@ func taskbarBadgeRenderIcon(count int) uintptr {
 	if count > 99 {
 		label = "99+"
 	}
-	size := int(taskbarBadgeSystemMetrics(taskbarBadgeSmCxIcon))
-	if size <= 0 || size > 128 {
-		size = 32
-	}
+	size := taskbarBadgeIconSize(hwnd)
 
 	var bits *byte
 	bmi := taskbarBadgeBitmapInfo{header: taskbarBadgeBitmapInfoHeader{
@@ -471,20 +663,68 @@ func taskbarBadgeRenderIcon(count int) uintptr {
 
 	procBadgeSelectObject.Call(hdc, oldBmp)
 
-	// An all-zero mask keeps every pixel alpha-driven; the color bitmap's
-	// alpha channel alone decides transparency. CreateBitmap documents NULL
-	// bits as *uninitialized*, so pass explicit zeroes instead of trusting
-	// the allocator to hand back a clean page.
-	maskBits := make([]byte, ((size+15)/16)*2*size) // WORD-aligned monochrome rows
+	// CreateBitmap is bottom-up, so the mask's first row is the bottom of
+	// the icon. A zero bit is opaque; a one bit is transparent. Filling only
+	// the clear pixels keeps the disc visible when the shell ignores alpha.
+	stride := ((size + 15) / 16) * 2
+	maskBits := make([]byte, stride*size)
+	taskbarBadgeFillMask(maskBits, size, func(x, y int) bool {
+		pixel := *(*uint32)(unsafe.Add(unsafe.Pointer(bits), uintptr((y*size+x)*4)))
+		return pixel>>24 != 0
+	})
 	mask, _, _ := procBadgeCreateBitmap.Call(
 		uintptr(size), uintptr(size), 1, 1,
 		uintptr(unsafe.Pointer(&maskBits[0])),
 	)
+	if mask == 0 {
+		procBadgeDeleteObject.Call(hbm)
+		return 0
+	}
 	defer procBadgeDeleteObject.Call(mask)
 	iconInfo := taskbarBadgeIconInfo{fIcon: 1, hbmMask: mask, hbmColor: hbm}
 	icon, _, _ := procBadgeCreateIconIndirect.Call(uintptr(unsafe.Pointer(&iconInfo)))
 	procBadgeDeleteObject.Call(hbm)
 	return icon
+}
+
+// taskbarBadgeFillMask writes a bottom-up monochrome AND mask. Opaque pixels
+// stay 0. Transparent pixels get a 1 in MSB-first order, which is what
+// CreateBitmap expects.
+func taskbarBadgeFillMask(mask []byte, size int, opaque func(x, y int) bool) {
+	if size <= 0 || opaque == nil {
+		return
+	}
+	stride := ((size + 15) / 16) * 2
+	if len(mask) < stride*size {
+		return
+	}
+	for y := 0; y < size; y++ {
+		srcY := size - 1 - y
+		row := mask[y*stride : y*stride+stride]
+		for x := 0; x < size; x++ {
+			if opaque(x, srcY) {
+				continue
+			}
+			row[x/8] |= 0x80 >> (uint(x) % 8)
+		}
+	}
+}
+
+func taskbarBadgeIconSize(hwnd uintptr) int {
+	const max = 128
+	if hwnd != 0 && procBadgeGetDpiForWindow.Find() == nil && procBadgeSystemMetricsForDpi.Find() == nil {
+		dpi, _, _ := procBadgeGetDpiForWindow.Call(hwnd)
+		if dpi != 0 {
+			if v, _, _ := procBadgeSystemMetricsForDpi.Call(uintptr(taskbarBadgeSmCxIcon), dpi); v > 0 && int(v) <= max {
+				return int(v)
+			}
+		}
+	}
+	size := int(taskbarBadgeSystemMetrics(taskbarBadgeSmCxIcon))
+	if size <= 0 || size > max {
+		return 32
+	}
+	return size
 }
 
 func taskbarBadgeSystemMetrics(index int) int32 {

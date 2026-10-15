@@ -995,7 +995,10 @@ type MaclawLLMProvider struct {
 	CacheWritePricePerMTokensRMB float64 `json:"cache_write_price_per_m_tokens_rmb,omitempty"`
 }
 
-// UserAgent returns the User-Agent header value for LLM API requests.
+// UserAgent returns the saved client identity for LLM API requests.
+// CodeGen endpoints always send the canonical CodeGen client name.
+// The opencode preset stays "opencode" here; the versioned client name is
+// applied only when the request is sent to an OpenCode host.
 func (p MaclawLLMProvider) UserAgent() string {
 	return codeGenRequestUserAgent(p.URL, p.AgentType)
 }
@@ -1206,8 +1209,10 @@ type WebSearchEngineConfig struct {
 	BaseURL   string `json:"base_url,omitempty"`
 }
 
-// UserAgent returns the User-Agent header value for LLM API requests.
+// UserAgent returns the saved client identity for LLM API requests.
 // CodeGen endpoints always send the canonical CodeGen client name.
+// The opencode preset stays "opencode" here; the versioned client name is
+// applied only when the request is sent to an OpenCode host.
 func (c MaclawLLMConfig) UserAgent() string {
 	return codeGenRequestUserAgent(c.URL, c.AgentType)
 }

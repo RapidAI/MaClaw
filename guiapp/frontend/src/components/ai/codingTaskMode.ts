@@ -58,6 +58,11 @@ function cloudWorkspaceTaskNameScore(name?: string | null): number {
 }
 
 /** Keep at most one sidebar row per cloud workspace. Prefer a named title. */
+/** User-made copy. It shares configuration with the source but is its own row and chat. */
+export function isExplicitTaskCopy(tags?: string[] | null): boolean {
+    return !!tags?.some(tag => String(tag || "").trim() === "task_copy");
+}
+
 export function collapseCloudWorkspaceTasks<T extends {
     name?: string | null;
     tags?: string[] | null;
@@ -71,7 +76,8 @@ export function collapseCloudWorkspaceTasks<T extends {
     const out: T[] = [];
     for (const task of tasks) {
         const id = cloudWorkspaceIdFromTaskFields(task);
-        if (!id) {
+        // A copy is a second chat on the same workspace, not a leftover duplicate row.
+        if (!id || isExplicitTaskCopy(task.tags)) {
             out.push(task);
             continue;
         }

@@ -48,7 +48,7 @@ func detectProjectVerifyCommand(projectPath string) string {
 		file    string
 		command string
 	}{
-		{"go.mod", goVerifyCommand(isWindows)},
+		{"go.mod", goVerifyCommand()},
 		{"Cargo.toml", "cargo check"},
 		{"package.json", detectNodeVerifyCommand(projectPath)},
 		{"pyproject.toml", pythonVerifyCommand(isWindows)},
@@ -67,10 +67,10 @@ func detectProjectVerifyCommand(projectPath string) string {
 	return ""
 }
 
-func goVerifyCommand(isWindows bool) string {
-	if isWindows {
-		return "go build ./...; go vet ./..."
-	}
+// goVerifyCommand short-circuits. A semicolon would keep going after a failed
+// build, and a later successful go vet would hide that failure. The Windows
+// coding shell rewrites && for PowerShell 5.1.
+func goVerifyCommand() string {
 	return "go build ./... && go vet ./..."
 }
 

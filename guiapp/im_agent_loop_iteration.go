@@ -38,7 +38,7 @@ func (h *IMMessageHandler) prepareAgentLoopIteration(ctx *LoopContext, userID, u
 			milestoneTracker.Tick()
 		}
 	}
-	conversation, injectedText := h.appendPendingSteerInjections(userID, conversation, iteration)
+	conversation, injectedText, _ := h.appendPendingSteerInjections(userID, conversation, iteration)
 	return conversation, false, injectedText
 }
 
@@ -47,13 +47,34 @@ func (h *IMMessageHandler) prepareAgentLoopIteration(ctx *LoopContext, userID, u
 // coding SubAgents (local CodingSubAgent / remote RemoteCodingSubAgent), which
 // otherwise never see buffer-queue guide launches.
 //
-// Returns the (possibly extended) conversation and a non-empty injectedText
-// summary when anything was applied.
-func (h *IMMessageHandler) appendPendingSteerInjections(userID string, conversation []interface{}, iteration int) ([]interface{}, string) {
+// Returns the (possibly extended) conversation, a non-empty injectedText
+// summary when anything was applied, and guideText: only the user-fired
+// guide launches. System supplements stay in injectedText so a host nudge
+// cannot be reclassified as a new capability.
+func (h *IMMessageHandler) appendPendingSteerInjections(userID string, conversation []interface{}, iteration int) ([]interface{}, string, string) {
 	if h == nil || strings.TrimSpace(userID) == "" {
-		return conversation, ""
+		return conversation, "", ""
 	}
 	var injectedText string
+	var guideText string
+	noteInjected := func(text string) {
+		if text == "" {
+			return
+		}
+		if injectedText == "" {
+			injectedText = text
+		} else {
+			injectedText += "\n" + text
+		}
+	}
+	noteGuide := func(text string) {
+		noteInjected(text)
+		if guideText == "" {
+			guideText = text
+		} else {
+			guideText += "\n" + text
+		}
+	}
 	if injected, ok := h.pendingInjection.LoadAndDelete(userID); ok {
 		raw, _ := injected.(string)
 		for _, pending := range splitPendingInjections(raw) {
@@ -73,11 +94,7 @@ func (h *IMMessageHandler) appendPendingSteerInjections(userID string, conversat
 					})
 					// Return the user-facing text (not the English wrapper) so
 					// callers that gate on injectedText see real steering content.
-					if injectedText == "" {
-						injectedText = guideUserText
-					} else {
-						injectedText += "\n" + guideUserText
-					}
+					noteGuide(guideUserText)
 					log.Printf("[injection] user=%s guide reference as user-role (iteration=%d): %s", userID, iteration, truncateForLog(guideUserText, 50))
 				} else {
 					log.Printf("[injection] user=%s discarded empty guide reference wrapper (iteration=%d)", userID, iteration)
@@ -89,11 +106,7 @@ func (h *IMMessageHandler) appendPendingSteerInjections(userID string, conversat
 					"role":    "system",
 					"content": pending,
 				})
-				if injectedText == "" {
-					injectedText = pending
-				} else {
-					injectedText += "\n" + pending
-				}
+				noteInjected(pending)
 				log.Printf("[injection] user=%s injected supplementary message: %s", userID, truncateForLog(pending, 50))
 			}
 		}
@@ -109,18 +122,14 @@ func (h *IMMessageHandler) appendPendingSteerInjections(userID string, conversat
 					"role":    "user",
 					"content": buildLiveSteerUserMessage(entry.Text),
 				})
-				if injectedText == "" {
-					injectedText = entry.Text
-				} else {
-					injectedText += "\n" + entry.Text
-				}
+				noteGuide(entry.Text)
 				log.Printf("[injection] user=%s pre-loop guide supplement: %s", userID, truncateForLog(entry.Text, 50))
 			} else {
 				log.Printf("[injection] user=%s discarded stale pre-loop guide (age=%v): %s", userID, time.Since(entry.CreatedAt).Round(time.Second), truncateForLog(entry.Text, 50))
 			}
 		}
 	}
-	return conversation, injectedText
+	return conversation, injectedText, guideText
 }
 
 // pendingSteerInjectionNote peeks queued mid-run steering for the user

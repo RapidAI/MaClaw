@@ -706,7 +706,7 @@ function copy(lang: string) {
             takeComputerHint: 'Take the keyboard and finish the login or check on this computer.',
             exitTakeover: 'Release',
             takeoverHint: 'Fullscreen the desktop and take the keyboard from the bot.',
-            takeoverBusyHint: 'A bot is driving the shared desktop — takeover is unavailable right now.',
+            takeoverBusyHint: 'This bot is using its desktop — takeover is unavailable right now.',
             takeoverActive: 'You have the desktop. Release it to hand the keyboard back.',
             myDesktop: 'My desktop',
             sharedScreen: 'Shared',
@@ -830,7 +830,7 @@ function copy(lang: string) {
             takeComputerHint: '接管這台電腦，用鍵盤和滑鼠完成登入或驗證。',
             exitTakeover: '退出接管',
             takeoverHint: '全螢幕顯示桌面，並把鍵盤交給你。',
-            takeoverBusyHint: '有 Bot 正在操作桌面，現在不能接管。',
+            takeoverBusyHint: '這個 Bot 正在操作桌面，現在不能接管。',
             takeoverActive: '你已接管桌面。完成後退出接管，把鍵盤交還。',
             myDesktop: '我的桌面',
             sharedScreen: '共享',
@@ -953,7 +953,7 @@ function copy(lang: string) {
         takeComputerHint: '接管这台电脑，用键盘和鼠标完成登录或验证。',
         exitTakeover: '退出接管',
         takeoverHint: '全屏显示桌面，并把键盘交给你。',
-        takeoverBusyHint: '有 Bot 正在操作桌面，现在不能接管。',
+        takeoverBusyHint: '这个 Bot 正在操作桌面，现在不能接管。',
         takeoverActive: '你已接管桌面。完成后退出接管，把键盘交回。',
         myDesktop: '我的桌面',
         sharedScreen: '共享',
@@ -1684,7 +1684,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // A handoff the person accepted from the chat. The bot asked them to take
     // the computer, so a still-open run must not take the keyboard back.
     const [takeoverHoldByBot, setTakeoverHoldByBot] = useState<Record<string, boolean>>({});
-    // Schedule runs use the shared desktop without a chat bubble. A positive
+    // A schedule uses that bot's own desktop and has no chat bubble. A positive
     // count means that bot's occurrence is still inside relay.
     const [desktopBusyByBot, setDesktopBusyByBot] = useState<Record<string, number>>({});
     // Chat turns still on the keyboard. A stale bubble is not enough to know
@@ -1837,23 +1837,37 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (personHolds) return false;
         return liveTurn && !liveHandoff;
     };
-    // Every bot shares this one remote computer. Takeover follows the computer,
-    // so a bot that is off screen, including a schedule with no chat bubble,
-    // still closes it while that bot is driving.
-    const scheduleDriving = Object.values(desktopBusyByBot).some(count => count > 0);
-    // Another of this bot's jobs can still be running after it handed the
-    // keyboard over. That job does not take the login keyboard back. A run
-    // on any other bot still does: there is only one desktop.
-    const handedOver = !!handoffMessage || liveControl || liveReason !== '';
-    const runDriving = Object.entries(desktopRunByBot).some(([id, on]) => on && !(handedOver && selected && id === selected.id));
-    const agentOperating = scheduleDriving || runDriving || bots.some(bot => botDrivingDesktop(bot.id));
+    // The latest assistant turn, skipping a stale pending bubble left from a
+    // reload. An older login further up the transcript is not this turn.
+    const latestAssistantTurn = (botId: string) => {
+        const items = messagesByBot[botId] || messagesForBot(userId, botId);
+        const liveTurn = turnLive(botId);
+        for (let i = items.length - 1; i >= 0; i--) {
+            const message = items[i];
+            if (message.role !== 'assistant') continue;
+            if (message.pending && !liveTurn && pendingReplyIsStale(message)) continue;
+            return message;
+        }
+        return undefined;
+    };
+    // Each bot has its own desktop. Takeover closes only while this bot is
+    // using it. A schedule still in relay wins over a login left in the
+    // transcript: that count is the schedule, and it is cleared when the
+    // schedule hands the keys over. A run mark does not win once this turn
+    // has handed the keys to the person. Another bot stays on its own display.
+    const botUsingDesktop = (botId: string) => {
+        if (!botId) return false;
+        if (botDrivingDesktop(botId)) return true;
+        if ((desktopBusyByBot[botId] || 0) > 0) return true;
+        const view = liveDesktop[botId];
+        if (view?.userControl === true || (view?.attentionReason || '') !== '') return false;
+        const latest = latestAssistantTurn(botId);
+        if (latest && (latest.userControl || latest.attentionReason)) return false;
+        return desktopRunByBot[botId] === true;
+    };
+    const agentOperating = !!selected && botUsingDesktop(selected.id);
     const takeoverHeld = !!selected && !!takeoverHoldByBot[selected.id];
     const takeover = !!selected && (takeoverHeld || (!!takeoverByBot[selected.id] && !agentOperating));
-    const otherBotDriving = (botId: string) => (
-        Object.entries(desktopBusyByBot).some(([id, count]) => id !== botId && count > 0)
-        || Object.entries(desktopRunByBot).some(([id, on]) => id !== botId && on)
-        || bots.some(bot => bot.id !== botId && botDrivingDesktop(bot.id))
-    );
     const screenExpanded = !!selected && !!screenExpandedByBot[selected.id] && !takeover;
     const panelState = selected ? desktopPanels[selected.id] : undefined;
     const showDesktop = panelState === 'auto' || panelState === 'user';
@@ -1895,8 +1909,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const storedSection = selected ? sectionByBot[selected.id] : undefined;
     const panelSection: PanelSection = storedSection === 'details' || storedSection === 'schedules' ? storedSection : 'computer';
     const retryForSelected = !!selected && retryByBot[selected.id] === true;
-    // Voluntary viewing stays view-only while any bot is driving the shared
-    // computer. A handoff keeps the keyboard only when nobody is driving.
+    // Voluntary viewing stays view-only while this bot is using its desktop.
+    // A handoff keeps the keyboard when this bot is not using it.
     const botAskedForDesktop = (botId: string) => {
         if (!botId) return false;
         if (handoffNotice?.botId === botId) return true;
@@ -1904,10 +1918,16 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (view?.userControl || view?.attentionReason) return true;
         return messagesForBot(userId, botId).some(item => item.userControl || !!item.attentionReason);
     };
-    // The chat bot's keyboard state belongs to the screen the chat is holding.
-    // Another isolated display is its own keyboard: a login there has to accept
-    // clicks even while a different bot is still driving the shared desktop.
+    // The chat bot's keyboard belongs to the screen this chat is holding.
+    // Another isolated display is its own keyboard, so a login there accepts
+    // clicks on its own.
     const otherScreen = screenPickNow !== 'mine' && selected && screenPickNow !== selected.id ? screenPickNow : '';
+    // Two missed polls mean the display this chat is holding is down. The
+    // screen list can still be holding the last address, and that address
+    // would keep the iframe up instead of the retry card. "My desktop" on an
+    // isolated bot is a different display, so a failure here leaves it up.
+    const viewingThisDisplay = !!selected && (screenPickNow === selected.id || (screenPickNow === 'mine' && screenByBot[selected.id]?.mode !== 'isolated'));
+    const ownPictureDown = retryForSelected && viewingThisDisplay;
     const otherIsolated = !!otherScreen && screenByBot[otherScreen]?.mode === 'isolated';
     const otherHandoff = otherIsolated && botAskedForDesktop(otherScreen);
     const shownSharedScreen = screenPickNow === 'mine' || screenByBot[screenPickNow]?.mode === 'shared';
@@ -2190,9 +2210,22 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             const misses = (watchMisses.current[botId] || 0) + 1;
             watchMisses.current[botId] = misses;
             if (misses < 2) return;
-            // One desktop. A dead picture on this bot is the same picture the
-            // other open bot was showing, so leaving that copy up hides the retry.
-            setLiveDesktop(prev => Object.keys(prev).length === 0 ? prev : {});
+            // Drop this bot's picture. Another bot showing the same address is
+            // the shared desktop, and leaving that copy up hides the retry.
+            // A different address is that bot's own display and stays.
+            setLiveDesktop(prev => {
+                const dead = prev[botId];
+                if (!dead && !(botId in prev)) return prev;
+                const next = { ...prev };
+                delete next[botId];
+                const url = dead?.url || '';
+                if (url) {
+                    for (const [id, view] of Object.entries(next)) {
+                        if (view?.url === url) delete next[id];
+                    }
+                }
+                return next;
+            });
             setTakeoverByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
             setTakeoverHoldByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
             setScreenExpandedByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
@@ -2435,39 +2468,23 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         };
     }, [screenExpanded, takeover, desktopUrl]);
 
-    // A bot that starts driving takes the shared keyboard back. A takeover left
-    // on another bot would hand that keyboard to the person again when the
-    // driver finishes.
+    // This bot starting a drive takes its own keyboard back. A takeover on
+    // another bot stays, because that desktop is a different one. A hold is
+    // a handoff this bot already asked for, so a still-open run does not
+    // clear it.
     useEffect(() => {
-        if (!agentOperating) return;
-        const someoneElseDriving = (botId: string) => (
-            Object.entries(desktopBusyByBot).some(([id, count]) => id !== botId && count > 0)
-            || Object.entries(desktopRunByBot).some(([id, on]) => id !== botId && on)
-            || bots.some(bot => bot.id !== botId && botDrivingDesktop(bot.id))
-        );
-        setTakeoverHoldByBot(prev => {
-            const next = { ...prev };
-            let changed = false;
-            for (const id of Object.keys(next)) {
-                if (next[id] && someoneElseDriving(id)) {
-                    next[id] = false;
-                    changed = true;
-                }
-            }
-            return changed ? next : prev;
-        });
         setTakeoverByBot(prev => {
             const next = { ...prev };
             let changed = false;
             for (const id of Object.keys(next)) {
-                if (next[id] && !takeoverHoldByBot[id]) {
+                if (next[id] && !takeoverHoldByBot[id] && botUsingDesktop(id)) {
                     next[id] = false;
                     changed = true;
                 }
             }
             return changed ? next : prev;
         });
-    }, [agentOperating, takeoverHoldByBot, desktopBusyByBot, desktopRunByBot, bots, messagesByBot]);
+    }, [takeoverHoldByBot, desktopBusyByBot, desktopRunByBot, bots, messagesByBot, liveDesktop]);
 
     useEffect(() => {
         const handler = (payload: unknown) => {
@@ -3555,7 +3572,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         // A second job starts beside one that is already going. It must not
         // take the keyboard or the desktop watch away from that job. Only the
         // first job, or the continuation that the person asked to resume,
-        // takes the keyboard back.
+        // takes this bot's keyboard back. Another bot's desktop stays as it is.
         const siblingLive = [...pendingRef.current.values()].some(value => value.botId === botId && !value.settled);
         const takingKeyboard = !siblingLive || content.trim() === RETURN_COMMAND;
         if (!siblingLive) {
@@ -3590,8 +3607,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         noteLiveBotTurn(userId, botId, assistantMessage.id);
         if (takingKeyboard) {
             clearLiveFlags(botId);
-            setTakeoverByBot({});
-            setTakeoverHoldByBot({});
+            setTakeoverByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
+            setTakeoverHoldByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
         }
         const pending: PendingSend = { botId, messageId: assistantMessage.id, settled: false, admitted: false };
         const ticket = assistantMessage.requestId || `local:${assistantMessage.id}`;
@@ -3990,11 +4007,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
             // a later line stays behind it, so a supplement is not overtaken
             // by the next command.
             pending.admitted = true;
-            // A desktop that is already driving does not take this execute.
-            // The reading's sentence is already in the thread. This pending
-            // bubble becomes the wait, and the order is sent once the desktop
-            // is free. A drain uses fromQueue, so it does not queue again.
-            if (mode === 'now' && sendPhase === 'execute' && Object.values(desktopRunByBotRef.current).some(Boolean)) {
+            // This bot's desktop is already driving, so it does not take this
+            // execute. Another bot's run is a different display. The reading's
+            // sentence is already in the thread. This pending bubble becomes
+            // the wait, and the order is sent once this desktop is free. A
+            // drain uses fromQueue, so it does not queue again.
+            if (mode === 'now' && sendPhase === 'execute' && desktopRunByBotRef.current[botId]) {
                 pending.settled = true;
                 pendingRef.current.delete(ticket);
                 clearLiveBotTurn(ownerId, botId, assistantMessage.id);
@@ -4128,7 +4146,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (stopHoldRef.current.has(botId)) return;
         const queue = queueRef.current.get(botId);
         if (!queue || queue.length === 0) return;
-        if (!fromList && Object.values(desktopRunByBotRef.current).some(Boolean)) return;
+        if (!fromList && desktopRunByBotRef.current[botId]) return;
         if (turnStillReading(botId) || pendingBubbleHoldsQueue(botId)) return;
         const nextSend = takeNextQueued(botId, queue);
         if (!nextSend) return;
@@ -4273,7 +4291,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                     requestId: `${id}:target`,
                     chat: true,
                 });
-                const busy = Object.values(desktopRunByBotRef.current).some(Boolean) || turnStillReading(target) || pendingBubbleHoldsQueue(target);
+                const busy = !!desktopRunByBotRef.current[target] || turnStillReading(target) || pendingBubbleHoldsQueue(target);
                 const queued = queueRef.current.get(target) || [];
                 queueRef.current.set(target, [...queued, { text: body, phase: 'execute', verbatim: true, crossNoteId: id }]);
                 if (!busy) drainIfIdle(target);
@@ -4649,7 +4667,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     };
 
     const enterTakeover = (botId: string) => {
-        if (otherBotDriving(botId)) return;
+        if (botUsingDesktop(botId)) return;
         setScreenExpandedByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
         setTakeoverHoldByBot(prev => ({ ...prev, [botId]: true }));
         setTakeoverByBot(prev => ({ ...prev, [botId]: true }));
@@ -5229,7 +5247,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                                 commit(botId, [...current, { id: messageID(), role: 'assistant', content: desktopBotQueuedSentence(lang), ack: true }]);
                                             };
                                             if (!noteId) {
-                                                if (Object.values(desktopRunByBotRef.current).some(Boolean)) {
+                                                if (desktopRunByBotRef.current[botId]) {
                                                     queueOrder(false);
                                                     return;
                                                 }
@@ -5244,7 +5262,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                                 } catch {
                                                     return;
                                                 }
-                                                if (Object.values(desktopRunByBotRef.current).some(Boolean)) {
+                                                if (desktopRunByBotRef.current[botId]) {
                                                     queueOrder(true);
                                                     return;
                                                 }
@@ -5291,8 +5309,8 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             type="button"
                                             className="desktop-bot-chat__action"
                                             data-testid="desktop-bot-take-computer"
-                                            disabled={otherBotDriving(selected.id)}
-                                            title={otherBotDriving(selected.id) ? text.takeoverBusyHint : text.takeComputerHint}
+                                            disabled={botUsingDesktop(selected.id)}
+                                            title={botUsingDesktop(selected.id) ? text.takeoverBusyHint : text.takeComputerHint}
                                             onClick={() => enterTakeover(selected.id)}
                                         >{text.takeComputer}</button>
                                     ) : null}
@@ -5478,7 +5496,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                 })}
                             </div>
                             {handBackError ? <p className="desktop-screen-switch__error" data-testid="desktop-bot-handback-error" role="status">{handBackError}</p> : null}
-                            {shownDesktopUrl ? (
+                            {!ownPictureDown && shownDesktopUrl ? (
                                 <div ref={stageRef} className={'desktop-bot-stage' + (stageInteractive ? ' is-user' : ' is-bot') + ((takeover || screenExpanded) ? ' is-fullscreen' : '')} data-testid="desktop-bot-stage">
                                     <div className="desktop-bot-stage__bar">
                                         <p title={stageStatusText}>{stageStatusText}</p>
@@ -5550,7 +5568,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                         </div>
                                     </div>
                                 </div>
-                            ) : ownerDesktopMissing ? (
+                            ) : ownerDesktopMissing && !ownPictureDown ? (
                                 <div className="desktop-bot-screen" data-testid="desktop-bot-screen">
                                     <p>{text.noSharedDesktop}</p>
                                 </div>

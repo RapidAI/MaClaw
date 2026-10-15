@@ -115,6 +115,23 @@ describe('taskbarInProgressCount', () => {
         })).toBe(1);
     });
 
+    it('does not hide the source cloud session behind a running copy', () => {
+        expect(taskbarInProgressCount({
+            tasks: [row({
+                id: 'copy',
+                project_path: 'D:/work/tasks/math-copy',
+                working_dir: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_math',
+                tags: ['task_management', 'cloud_workspace:cws_math', 'task_copy'],
+                active_workflow: { status: 'running' },
+            })],
+            remoteSessions: [{
+                launch_source: 'ai',
+                status: 'running',
+                project_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_math/chapter-1.md',
+            }],
+        })).toBe(2);
+    });
+
     it('ignores finished sessions, paused task rows, and a non-numeric bot count', () => {
         expect(taskbarInProgressCount({
             tasks: [row({ active_workflow: { status: 'paused' } })],

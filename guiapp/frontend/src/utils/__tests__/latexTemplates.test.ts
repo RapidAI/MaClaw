@@ -208,4 +208,11 @@ describe('latexExpertTaskIsLive', () => {
         expect(latexExpertTaskIsLive(laterSeq, [earlierSeq, laterSeq])).toBe(true);
         expect(latexExpertTaskIsLive(earlierSeq, [earlierSeq, laterSeq])).toBe(false);
     });
+
+    it('does not let a copied paper take over the live expert session', () => {
+        const source = { project_path: 'D:/tasks/latex-a', tags: [tag], created_at: '2026-09-30T04:50:00Z' };
+        const copy = { project_path: 'D:/tasks/latex-b', tags: [tag, 'task_copy'], created_at: '2026-09-30T13:00:00Z' };
+        expect(latexExpertTaskIsLive(copy, [source, copy])).toBe(false);
+        expect(latexExpertTaskIsLive(source, [source, copy])).toBe(true);
+    });
 });

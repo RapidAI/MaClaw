@@ -41,6 +41,20 @@ describe("assistant task title", () => {
         expect(assistantTaskTitle(cloudTab, "zh-CN", tasks)).toBe("标书项目");
     });
 
+    it("does not title the open cloud tab with a copied row", () => {
+        const cloudTab: AITab = {
+            ...tab,
+            title: "v1",
+            projectPath: "E:/new-cache/cloud-workspaces/tenant/cws-42",
+            cloudWorkspaceId: "cws-42",
+        };
+        const tasks = [
+            { name: "（副本）标书项目", project_path: "D:/tasks/cloud-copy", tags: ["cloud_workspace:cws-42", "task_copy"], working_dir: cloudTab.projectPath },
+            { name: "标书项目", project_path: "D:/tasks/cloud-source", tags: ["cloud_workspace:cws-42"] },
+        ];
+        expect(assistantTaskTitle(cloudTab, "zh-CN", tasks)).toBe("标书项目");
+    });
+
     it("uses the cached cloud workspace name when the task row has no name", () => {
         rememberCloudWorkspaceDisplayName("cws-empty", "标书项目");
         try {

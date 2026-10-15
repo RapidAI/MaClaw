@@ -47,7 +47,7 @@ type DesktopBotTaskItem struct {
 }
 
 // ListDesktopBotTasks reads this bot's recent runs. The window uses the list
-// to see when the shared desktop is free. The desktop worker is not called.
+// to see when this bot's desktop is free. The desktop worker is not called.
 func (a *App) ListDesktopBotTasks(botID string) ([]DesktopBotTaskItem, error) {
 	return a.listDesktopBotTasks(context.Background(), botID)
 }

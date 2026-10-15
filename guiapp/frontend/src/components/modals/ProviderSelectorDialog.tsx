@@ -32,6 +32,7 @@ const localizeProviderDescription = (
         'Official OpenAI API': ['OpenAI 官方 API', 'OpenAI 官方 API'],
         'xAI Grok Build API': ['xAI Grok Build API', 'xAI Grok Build API'],
         'Tencent Cloud OpenAI-compatible endpoint': ['腾讯云 OpenAI 兼容端点', '騰訊雲 OpenAI 相容端點'],
+        'Tencent Token Plan OpenAI-compatible endpoint': ['腾讯 Token Plan OpenAI 兼容端点', '騰訊 Token Plan OpenAI 相容端點'],
     };
     const localized = descriptions[description];
     return localized ? localizeText(description, localized[0], localized[1]) : description;

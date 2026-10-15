@@ -311,6 +311,13 @@ type ClassificationResult struct {
 	// space of the live embedder). Not serialised. Tool routing reuses it for
 	// the first-party tool head and for Track A (same vector, no second embed).
 	QueryVec []float32 `json:"-"`
+
+	// EmbeddingEarlyExit is set only by ClassifyEmbeddingOnly. It is Layer 2's
+	// confident return: the embedding separated this utterance, so the tree was
+	// not required. An abstention (ambiguous composite, a lone document
+	// generation, a narrow gap, or no embedder) leaves it false. The bit is
+	// not a capability grant; it only says the local reading is complete.
+	EmbeddingEarlyExit bool `json:"-"`
 }
 
 // Labels returns the primary label followed by any secondary labels.

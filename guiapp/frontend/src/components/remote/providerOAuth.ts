@@ -5,6 +5,8 @@ import {
     CancelOpenAIOAuth,
     CancelQoderOAuth,
     CancelTraeOAuth,
+    CancelDevinLogin,
+    CompleteDevinLoginWithToken,
     CancelWorkBuddyOAuth,
     CancelXAIOAuth,
     CancelZhipuCodingOAuth,
@@ -16,6 +18,8 @@ import {
     StartOpenAIOAuth,
     StartQoderOAuth,
     StartTraeOAuth,
+    StartDevinLogin,
+    WaitDevinLogin,
     StartWorkBuddyOAuth,
     StartXAIOAuth,
     StartZhipuCodingOAuth,
@@ -43,6 +47,21 @@ import {
 
 type Translate = (en: string, zhHans: string, zhHant?: string) => string;
 
+let devinPasteEpoch = 0;
+
+/** Saves a token copied from the Devin login page or Provide auth token. */
+export async function completeDevinPastedToken(token: string): Promise<string> {
+    const value = token.trim();
+    if (!value) throw new Error("请粘贴 Devin 授权令牌");
+    const epoch = ++devinPasteEpoch;
+    try {
+        return await CompleteDevinLoginWithToken(value);
+    } catch (err) {
+        if (devinPasteEpoch === epoch) devinPasteEpoch = epoch - 1;
+        throw err;
+    }
+}
+
 /** Edition sent to StartQoderOAuth for the 国内/国际 pair. */
 export function qoderEdition(providerName?: string): string | null {
     if (!isQoderProvider(providerName)) return null;
@@ -62,6 +81,10 @@ export function cancelNamedProviderOAuth(providerName?: string) {
     }
     if (providerName === "xAI-Grok") {
         void CancelXAIOAuth();
+        return;
+    }
+    if (providerName === "Devin") {
+        void CancelDevinLogin();
         return;
     }
     if (isWorkBuddyProvider(providerName)) {
@@ -94,6 +117,7 @@ export function cancelNamedProviderOAuth(providerName?: string) {
 export function cancelAllNativeOAuth() {
     CancelOpenAIOAuth();
     void CancelXAIOAuth();
+    void CancelDevinLogin();
     void CancelWorkBuddyOAuth();
     void CancelKimiCodeOAuth();
     void CancelQoderOAuth();
@@ -105,6 +129,9 @@ export function cancelAllNativeOAuth() {
 export function oauthBrowserHelp(name: string, t: Translate): string {
     if (name === "xAI-Grok") {
         return t("Click below to authorize with your xAI account in the browser. After you approve, MaClaw finishes automatically.", "点击下方按钮，将在浏览器中完成 xAI 账号授权。允许后这里会自动完成，不用复制验证码。");
+    }
+    if (name === "Devin") {
+        return t("Uses the same account as the Devin IDE on this computer. You can also paste a Devin auth token.", "使用与本机 Devin IDE 相同的账号。也可以粘贴 Devin 的授权令牌。");
     }
     if (isWorkBuddyProvider(name)) {
         return t("Click below to authorize with your WorkBuddy account in the browser.", "点击下方按钮，将在浏览器中完成 WorkBuddy 账号授权。");
@@ -126,6 +153,7 @@ export function oauthBrowserHelp(name: string, t: Translate): string {
 
 export function oauthSignInLabel(name: string, t: Translate): string {
     if (name === "xAI-Grok") return t("Sign in with xAI", "使用 xAI 账号登录");
+    if (name === "Devin") return t("Sign in with Devin", "使用 Devin 账号登录");
     if (isWorkBuddyProvider(name)) return t("Sign in with WorkBuddy", "使用 WorkBuddy 账号登录");
     if (isKimiCodeProvider(name)) return t("Sign in with Kimi Code", "使用 Kimi Code 账号登录");
     if (isQoderProvider(name)) return t("Sign in with Qoder", "使用 Qoder 账号登录");
@@ -281,6 +309,21 @@ export async function runProviderOAuthLogin(options: {
             "正在打开浏览器。在页面上点允许即可，这里会自动完成，不用把验证码贴回来。",
         ));
         return StartXAIOAuth();
+    }
+    if (providerName === "Devin") {
+        const pasteEpoch = devinPasteEpoch;
+        const start = await StartDevinLogin() as { auth_url?: string; browser_opened?: boolean; AuthURL?: string; BrowserOpened?: boolean };
+        const opened = !!(start?.browser_opened || start?.BrowserOpened);
+        const authURL = start?.auth_url || start?.AuthURL || "";
+        onDeviceHint(opened
+            ? t("Devin login page is open. It is saved automatically. If the page shows a token, paste it below.", "已打开 Devin 登录页。授权完成后会自动保存。若页面给出令牌，粘贴到下面。")
+            : `${t("The browser did not open. Open this page:", "浏览器未能自动打开，请手动访问：")}\n${authURL}`);
+        try {
+            return await WaitDevinLogin();
+        } catch (err) {
+            if (devinPasteEpoch !== pasteEpoch) return null;
+            throw err;
+        }
     }
     if (isWorkBuddyProvider(providerName)) {
         return StartWorkBuddyOAuth(providerName);

@@ -41,6 +41,7 @@ var (
 	recoverChildMu           sync.Mutex
 	recoverChildren          []uintptr
 	recoverTopMu             sync.Mutex
+	recoverTopScanMu         sync.Mutex
 	recoverTopWindows        []recoverWinInfo
 	recoverChildEnumCallback = syscall.NewCallback(enumRecoverChild)
 	recoverTopEnumCallback   = syscall.NewCallback(enumRecoverTop)
@@ -96,21 +97,13 @@ func recoverBlankWebView(reason string) {
 	pid, _, _ := procGetCurrentProcess.Call()
 	bootLog("recover start reason=%s pid=%d", reason, pid)
 
-	recoverTopMu.Lock()
-	recoverTopWindows = recoverTopWindows[:0]
-	recoverTopMu.Unlock()
-	procEnumWindowsRW.Call(recoverTopEnumCallback, pid)
-
-	recoverTopMu.Lock()
-	tops := append([]recoverWinInfo(nil), recoverTopWindows...)
-	recoverTopMu.Unlock()
+	recoverTopScanMu.Lock()
+	tops := scanRecoverTopWindows(pid)
+	recoverTopScanMu.Unlock()
 	bootLog("top-level windows count=%d", len(tops))
-	var wailsWin recoverWinInfo
+	wailsWin := pickWailsWindow(tops)
 	for i, w := range tops {
 		bootLog("top[%d] hwnd=0x%X vis=%v class=%q title=%q pos=%d,%d size=%dx%d", i, w.hwnd, w.visible, w.class, w.title, w.x, w.y, w.w, w.h)
-		if w.class == "wailsWindow" {
-			wailsWin = w
-		}
 	}
 
 	hwnd := findMainWindowHWND()
@@ -246,19 +239,41 @@ func recoverWindowText(hwnd uintptr) string {
 }
 
 func findWailsWindowHWND() uintptr {
+	recoverTopScanMu.Lock()
+	defer recoverTopScanMu.Unlock()
 	pid, _, _ := procGetCurrentProcess.Call()
+	return pickWailsWindow(scanRecoverTopWindows(pid)).hwnd
+}
+
+// scanRecoverTopWindows enumerates this process's top-level windows.
+// Callers must hold recoverTopScanMu: the enum writes a shared slice, and
+// the callback locks only that slice.
+func scanRecoverTopWindows(pid uintptr) []recoverWinInfo {
 	recoverTopMu.Lock()
 	recoverTopWindows = recoverTopWindows[:0]
 	recoverTopMu.Unlock()
 	procEnumWindowsRW.Call(recoverTopEnumCallback, pid)
 	recoverTopMu.Lock()
 	defer recoverTopMu.Unlock()
-	for _, w := range recoverTopWindows {
-		if w.class == "wailsWindow" {
-			return w.hwnd
+	return append([]recoverWinInfo(nil), recoverTopWindows...)
+}
+
+// pickWailsWindow prefers a visible frame with a real client size. A hidden
+// or empty wails window has no taskbar button.
+func pickWailsWindow(tops []recoverWinInfo) recoverWinInfo {
+	var hidden recoverWinInfo
+	for _, w := range tops {
+		if w.class != "wailsWindow" {
+			continue
+		}
+		if w.visible && w.w > 0 && w.h > 0 {
+			return w
+		}
+		if hidden.hwnd == 0 {
+			hidden = w
 		}
 	}
-	return 0
+	return hidden
 }
 
 func syncWebViewClientSize() {

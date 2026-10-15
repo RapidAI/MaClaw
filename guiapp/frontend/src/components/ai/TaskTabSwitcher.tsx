@@ -3,7 +3,7 @@ import type { AITab } from "./AITabTypes";
 import { getAITabDisplayTitle } from "./AITabItem";
 import { listedTaskTitle } from "./describeTaskTitle";
 import { projectPathsMatch } from "./taskListTitle";
-import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields, visibleTaskRows } from "./codingTaskMode";
+import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields, isExplicitTaskCopy, visibleTaskRows } from "./codingTaskMode";
 import { sanitizeProjectTabTitle } from "./useAITabManager";
 import type { TaskManagementItem } from "../layout/SidebarTaskManagement";
 
@@ -120,11 +120,14 @@ export function TaskTabSwitcher({ tabs, activeTabId, lang, onActivate, onClose, 
         rows = [];
         const matchedTabIds = new Set<string>();
         visibleTaskRows(tasks).forEach((task, index) => {
-            const wsId = cloudWorkspaceIdFromTaskFields(task);
+            const copied = isExplicitTaskCopy(task.tags);
+            // A copy shares the workspace id and cache path with its source.
+            // Matching those would label the source chat with the copy's name.
+            const wsId = copied ? "" : cloudWorkspaceIdFromTaskFields(task);
             const tab = tabs.find(candidate => candidate.type !== "local" && !matchedTabIds.has(candidate.id) && (
                 (!!wsId && (String(candidate.cloudWorkspaceId || "").trim() || cloudWorkspaceIdFromPath(candidate.projectPath)) === wsId)
                 || projectPathsMatch(candidate.projectPath || "", task.project_path || "")
-                || projectPathsMatch(candidate.projectPath || "", task.working_dir || "")
+                || (!copied && projectPathsMatch(candidate.projectPath || "", task.working_dir || ""))
             )) || null;
             if (tab) matchedTabIds.add(tab.id);
             const title = listedTaskTitle(task) || sanitizeProjectTabTitle(String(task.project_path || "").trim(), task.project_path);

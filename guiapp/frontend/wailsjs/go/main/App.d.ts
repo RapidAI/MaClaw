@@ -174,6 +174,8 @@ export function CancelSwarmRun(arg1:string):Promise<void>;
 
 export function CancelVirtualRepositoryOperation(arg1:string):Promise<void>;
 
+export function CancelDevinLogin():Promise<void>;
+
 export function CancelWorkBuddyOAuth():Promise<void>;
 
 export function CancelXAIOAuth():Promise<void>;
@@ -564,6 +566,8 @@ export function DownloadUpdateWithSHA256(arg1:string,arg2:string,arg3:string):Pr
 export function DownloadYOLOModel():Promise<void>;
 
 export function DuplicateSurvey(arg1:string):Promise<string>;
+
+export function DuplicateTask(arg1:string):Promise<main.ProjectSearchResult>;
 
 export function EffectiveDesktopWorkingDir():Promise<string>;
 
@@ -2577,6 +2581,12 @@ export function StartWorkflowDirect(arg1:string,arg2:string):Promise<string>;
 export function StartWorkflowTemplate(arg1:string,arg2:string):Promise<string>;
 
 export function StartWorkflowTemplateInTab(arg1:string,arg2:string,arg3:string):Promise<string>;
+
+export function StartDevinLogin():Promise<{auth_url:string; token_page:string; browser_opened:boolean}>;
+
+export function WaitDevinLogin():Promise<string>;
+
+export function CompleteDevinLoginWithToken(arg1:string):Promise<string>;
 
 export function StartWorkBuddyOAuth(arg1:string):Promise<string>;
 

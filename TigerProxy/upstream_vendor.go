@@ -12,7 +12,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/codegenproxy"
 	"github.com/RapidAI/CodeClaw/corelib/qoder"
 	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
@@ -205,7 +204,7 @@ func (a *App) rotateVendorCredential() (Settings, error) {
 	srv := a.server
 	a.mu.Unlock()
 	if srv != nil {
-		srv.SetUpstreamWithClientName(next.BaseURL, next.AccessToken, corelib.CodeGenClientName)
+		srv.SetUpstreamWithClientName(next.BaseURL, next.AccessToken, proxyClientName(next))
 	}
 	return next, nil
 }
@@ -411,7 +410,7 @@ func (u *workbuddyChatUpstream) DoChatCompletions(ctx context.Context, endpoint,
 	})
 }
 
-func postChat(ctx context.Context, client *http.Client, endpoint, apiKey, _ string, body []byte, accept string, stream bool, extra func(http.Header)) (*http.Response, error) {
+func postChat(ctx context.Context, client *http.Client, endpoint, apiKey, clientName string, body []byte, accept string, stream bool, extra func(http.Header)) (*http.Response, error) {
 	if client == nil {
 		client = http.DefaultClient
 	}
@@ -421,6 +420,9 @@ func postChat(ctx context.Context, client *http.Client, endpoint, apiKey, _ stri
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+apiKey)
+	if ua := strings.TrimSpace(clientName); ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
 	if stream || strings.TrimSpace(accept) == "" {
 		req.Header.Set("Accept", "text/event-stream")
 	} else {

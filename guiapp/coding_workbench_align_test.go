@@ -2,7 +2,9 @@ package guiapp
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -132,6 +134,60 @@ func TestRestoreApprovedCodingPlanAsPending(t *testing.T) {
 		t.Fatalf("approved plan must be cleared after restore: %+v", mem)
 	}
 	h.clearStickyCodingWorkbenchMemory(userID)
+}
+
+func TestWindowsCodingBashFindsPowerShellWithoutPATH(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows shell resolution")
+	}
+	shell, args := windowsCodingBashInvocation("cmake --build build")
+	if !filepath.IsAbs(shell) {
+		t.Fatalf("shell %q must be absolute so a stripped PATH still starts powershell", shell)
+	}
+	base := strings.ToLower(filepath.Base(shell))
+	if base != "powershell.exe" && base != "pwsh.exe" {
+		t.Fatalf("shell %q", shell)
+	}
+	if len(args) == 0 || !strings.Contains(args[len(args)-1], "cmake --build build") {
+		t.Fatalf("args %q", args)
+	}
+	if got := passthroughRuntimeProgram("powershell"); !filepath.IsAbs(got) {
+		t.Fatalf("passthrough powershell %q", got)
+	}
+}
+
+func TestWindowsPowerShellWrapperStopsAfterNativeFailure(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows shell")
+	}
+	shell, args := windowsCodingBashInvocation("cmd /c exit 3 && echo RAN_SECOND")
+	cmd := exec.Command(shell, args...)
+	hideCommandWindow(cmd)
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("expected non-zero exit, output: %s", out)
+	}
+	if strings.Contains(string(out), "RAN_SECOND") {
+		t.Fatalf("command after && ran despite failure: %s", out)
+	}
+	okShell, okArgs := windowsCodingBashInvocation("cmd /c exit 0")
+	okCmd := exec.Command(okShell, okArgs...)
+	hideCommandWindow(okCmd)
+	okOut, okErr := okCmd.CombinedOutput()
+	if okErr != nil {
+		t.Fatalf("successful command exited %v: %s", okErr, okOut)
+	}
+}
+
+func TestGoVerifyCommandShortCircuits(t *testing.T) {
+	got := goVerifyCommand()
+	if strings.Contains(got, ";") || !strings.Contains(got, "&&") {
+		t.Fatalf("verify command %q must stop after a failed build", got)
+	}
+	ps := convertUnquotedAndAndForPowerShell(got)
+	if !strings.Contains(ps, "$LASTEXITCODE") || strings.Contains(ps, "&&") {
+		t.Fatalf("powershell translation = %q", ps)
+	}
 }
 
 func TestStepNeedsVerifyGate(t *testing.T) {

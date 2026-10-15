@@ -6,9 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"time"
@@ -260,18 +258,30 @@ func execHookCommand(projectPath, command string, timeout time.Duration) (string
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	var cmd *exec.Cmd
-	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command", command)
-	} else {
-		cmd = exec.CommandContext(ctx, "bash", "-lc", command)
+	secs := int(timeout / time.Second)
+	if secs <= 0 {
+		secs = 1
 	}
-	hideCommandWindow(cmd)
-	if projectPath != "" {
-		cmd.Dir = projectPath
+	res := executeCodingBashWithContext(context.Background(), map[string]interface{}{
+		"command":     command,
+		"working_dir": projectPath,
+		"timeout":     secs,
+	}, nil)
+	if res.succeeded() {
+		text := strings.TrimSpace(stripCodingCommandExitStatus(res.Text))
+		if text == "(command completed with no output)" {
+			text = ""
+		}
+		return text, nil
 	}
-	out, err := cmd.CombinedOutput()
-	return string(out), err
+	switch res.Kind {
+	case codingCommandResultTimeout:
+		return res.Text, fmt.Errorf("command timed out after %s", timeout)
+	case codingCommandResultCancelled:
+		return res.Text, fmt.Errorf("command cancelled")
+	}
+	if res.ExitCode >= 0 {
+		return res.Text, fmt.Errorf("exit %d", res.ExitCode)
+	}
+	return res.Text, fmt.Errorf("command failed")
 }

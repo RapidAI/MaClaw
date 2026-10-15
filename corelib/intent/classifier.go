@@ -1224,10 +1224,13 @@ func (u *UnifiedIntentClassifier) ClassifyEmbeddingOnly(msg MessageContext) Clas
 		}
 	}
 
-	result, _, queryVec := classifyByEmbeddingVec(emb, anchors, msg.Text)
+	result, confident, queryVec := classifyByEmbeddingVec(emb, anchors, msg.Text)
 	if len(queryVec) > 0 {
 		result.QueryVec = append([]float32(nil), queryVec...)
 	}
+	// Keep the abstention bit. Callers that treat this result as a route
+	// must not read a high cosine on an unresolved composite as a grant.
+	result.EmbeddingEarlyExit = confident
 	NormalizeDeclaredComposite(&result)
 	applyExecutionAffordances(msg.Text, &result)
 	result.ToolNames = u.affinity.Resolve(result.Primary, result.Secondary)

@@ -406,6 +406,39 @@ func TestAdminTestLLMProviderChatProviderIDDoesNotUseCallerEndpoint(t *testing.T
 	}
 }
 
+func TestAdminTestLLMProviderChatSendsStoredUserAgent(t *testing.T) {
+	svc := llmservice.NewService(&llmDeleteTestSettings{data: map[string]string{}})
+	var gotUA string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer upstream.Close()
+	if err := svc.AddProvider(t.Context(), llmpool.ProviderConfig{
+		ID: "configured", Name: "Configured", APIURL: upstream.URL + "/v1", APIKey: "stored-key",
+		Models: []string{"selected-model"}, AgentType: "Claude Code",
+	}); err != nil {
+		t.Fatalf("add provider: %v", err)
+	}
+	body, err := json.Marshal(map[string]string{
+		"provider_id": "configured",
+		"model":       "selected-model",
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	adminTestLLMProviderChat(svc, nil)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d response=%s", rec.Code, rec.Body.String())
+	}
+	if gotUA != "claude code 2.0" {
+		t.Fatalf("User-Agent = %q, want claude code 2.0", gotUA)
+	}
+}
+
 func TestAdminTestLLMProviderChatRejectsUnknownProviderID(t *testing.T) {
 	body := []byte(`{"provider_id":"missing","api_url":"https://attacker.example/v1","model":"selected-model"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", bytes.NewReader(body))

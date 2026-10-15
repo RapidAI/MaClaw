@@ -85,7 +85,8 @@ func openCodeDefaultModel() string {
 
 func openCodeModelHeaders() map[string]string {
 	return map[string]string{
-		corelib.OpenCodeSessionHeader: corelib.StableOpenCodeSessionID("codexproxy", "models"),
+		"User-Agent":                  corelib.OpenCodeClientUserAgent("opencode"),
+		corelib.OpenCodeSessionHeader: corelib.OpenCodeClientSessionID("codexproxy", "models"),
 	}
 }
 
@@ -169,7 +170,7 @@ func openCodeTransport() *http.Transport {
 	}
 }
 
-func (u openCodeUpstream) DoModels(ctx context.Context, endpoint, apiKey, _ string) (*http.Response, error) {
+func (u openCodeUpstream) DoModels(ctx context.Context, endpoint, apiKey, clientName string) (*http.Response, error) {
 	client := u.client
 	if client == nil {
 		client = http.DefaultClient
@@ -179,7 +180,8 @@ func (u openCodeUpstream) DoModels(ctx context.Context, endpoint, apiKey, _ stri
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set(corelib.OpenCodeSessionHeader, corelib.StableOpenCodeSessionID("codexproxy", "models"))
+	req.Header.Set("User-Agent", corelib.OpenCodeClientUserAgent(clientName))
+	req.Header.Set(corelib.OpenCodeSessionHeader, corelib.OpenCodeClientSessionID("codexproxy", "models"))
 	return client.Do(req)
 }
 
@@ -187,6 +189,7 @@ func (u openCodeUpstream) DoChatCompletions(ctx context.Context, endpoint, apiKe
 	body = codegenproxy.PrepareOpenAICompatChatBody(body)
 	session := openCodeSessionForBody(body)
 	return postChat(ctx, u.client, endpoint, apiKey, clientName, body, accept, stream, func(h http.Header) {
+		h.Set("User-Agent", corelib.OpenCodeClientUserAgent(clientName))
 		h.Set(corelib.OpenCodeSessionHeader, session)
 	})
 }
@@ -198,7 +201,7 @@ func openCodeSessionForBody(body []byte) string {
 	}
 	seed := corelib.OpenCodeConversationSeed(payload)
 	if seed == "" {
-		return corelib.StableOpenCodeSessionID("codexproxy", "chat")
+		return corelib.OpenCodeClientSessionID("codexproxy", "chat")
 	}
-	return corelib.StableOpenCodeSessionID("codexproxy", seed)
+	return corelib.OpenCodeClientSessionID("codexproxy", seed)
 }

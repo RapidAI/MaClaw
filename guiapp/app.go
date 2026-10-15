@@ -309,6 +309,8 @@ type App struct {
 	lobsterOwnedGen          uint64                      // oauth generation owned by the LobsterAI login above
 	zhipuLogin               *zhipuLoginFlow             // in-progress Zhipu (智谱) online login
 	zhipuOwnedGen            uint64                      // oauth generation owned by the Zhipu login above
+	devinLogin               *devinLoginFlow             // in-progress Devin account login
+	devinSaveMu              sync.Mutex                  // serializes Devin credential writes
 	// Smart session components
 	memoryStore                       *memory.Store
 	memoryStoreMu                     sync.Mutex

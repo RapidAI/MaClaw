@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import { createPortal } from 'react-dom';
-import { AbortCloudWorkspaceTaskProvision, CloudWorkspaceCacheDir, CloudWorkspaceEntitlement, CompleteCloudWorkspaceTaskProvision, CopyCloudWorkspaceTaskFilesToLocal, CopyTaskFilesToCloudWorkspace, CreateCloudWorkspace, DeleteCloudWorkspace, ForceDeleteCloudWorkspace, GetProjectScene, GetRemoteCodingTaskMeta, ListExperts, ListManagedIndustryExperts, OpenProjectDirectory, PrepareCloudWorkspace, ProvisionCloudWorkspaceTask, RenameCloudWorkspace, RestoreCloudWorkspace, SelectWorkingDir, ShowFileCompanion, TestRemoteSSHConnection, UpdateRemoteCodingTaskMeta } from '../../../wailsjs/go/main/App';
+import { AbortCloudWorkspaceTaskProvision, CloudWorkspaceCacheDir, CloudWorkspaceEntitlement, CompleteCloudWorkspaceTaskProvision, CopyCloudWorkspaceTaskFilesToLocal, CopyTaskFilesToCloudWorkspace, CreateCloudWorkspace, DeleteCloudWorkspace, DuplicateTask, ForceDeleteCloudWorkspace, GetProjectScene, GetRemoteCodingTaskMeta, ListExperts, ListManagedIndustryExperts, OpenProjectDirectory, PrepareCloudWorkspace, ProvisionCloudWorkspaceTask, RenameCloudWorkspace, RestoreCloudWorkspace, ResumeCloudWorkspaceTask, SelectWorkingDir, ShowFileCompanion, TestRemoteSSHConnection, UpdateRemoteCodingTaskMeta } from '../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../wailsjs/runtime';
 import { EVENT_OPEN_CLOUD_DRIVE, EVENT_OPEN_CREATE_CODING_TASK, EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_PROJECT_TASK_CLOSED, type OpenCreateCodingTaskDetail } from '../../constants/events';
 import { localizeText } from '../../i18n';
@@ -9,7 +9,7 @@ import { restoreCloudWorkspaceTasksShared, invalidateCloudWorkspaceTaskRestore }
 import { ProjectSearchIcon } from '../ai/ProjectSearchIcon';
 import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
 import { listedTaskTitle } from '../ai/describeTaskTitle';
-import { agentModeFromTaskTags, cloudSafePathLabel, cloudWorkspaceIdFromPath, isCloudWorkspacePath, cloudWorkspaceIdFromTags, cloudWorkspaceIdFromTaskFields, cloudWorkspaceSharePermissionFromTags, cloudWorkspaceSharedFromFromTags, CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, isOwnedCloudWorkspaceTask, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isTaskManagementTaskRow, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, remoteWorkspaceLocationLabel, scrubCloudWorkspaceError, visibleTaskRows, type PureCodingAgentMode } from '../ai/codingTaskMode';
+import { agentModeFromTaskTags, cloudSafePathLabel, cloudWorkspaceIdFromPath, isCloudWorkspacePath, cloudWorkspaceIdFromTags, cloudWorkspaceIdFromTaskFields, cloudWorkspaceSharePermissionFromTags, cloudWorkspaceSharedFromFromTags, CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, isExplicitTaskCopy, isOwnedCloudWorkspaceTask, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isTaskManagementTaskRow, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, remoteWorkspaceLocationLabel, scrubCloudWorkspaceError, visibleTaskRows, type PureCodingAgentMode } from '../ai/codingTaskMode';
 import { CloudWorkspaceFilesDialog } from './CloudWorkspaceFilesDialog';
 import { CloudWorkspaceShareDialog } from './CloudWorkspaceShareDialog';
 import { TaskWorkspaceTransferDialog, type TaskTransferCloudWorkspace, type TaskTransferDirection, type TaskTransferTarget } from './TaskWorkspaceTransferDialog';
@@ -382,17 +382,6 @@ const TaskStatusMark = ({ kind, label }: { kind: TaskListStatusKind; label: stri
     </span>
 );
 
-const TaskFolderGrip = () => (
-    <svg className="stsm-task-folder__grip-icon" width="10" height="14" viewBox="0 0 10 14" aria-hidden="true" focusable="false">
-        <circle cx="3" cy="2.5" r="1" fill="currentColor" />
-        <circle cx="7" cy="2.5" r="1" fill="currentColor" />
-        <circle cx="3" cy="7" r="1" fill="currentColor" />
-        <circle cx="7" cy="7" r="1" fill="currentColor" />
-        <circle cx="3" cy="11.5" r="1" fill="currentColor" />
-        <circle cx="7" cy="11.5" r="1" fill="currentColor" />
-    </svg>
-);
-
 const TaskFolderChevron = () => (
     <svg className="stsm-task-folder__chevron" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
         <path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="m9 6 6 6-6 6" />
@@ -649,6 +638,12 @@ export const TASK_LIST_ORDER_STORAGE_KEY = 'maclaw.sidebar-task-order.v1';
 
 /** Identity that stays put when opening a task rewrites its path or activity time. */
 export function taskOrderKey(task: Pick<TaskManagementItem, 'id' | 'name' | 'project_path' | 'tags' | 'working_dir' | 'preview'>): string {
+    // Copies share a cloud workspace or expert with the source. Keying them
+    // the same way drops one row once the user has a saved list order.
+    if (isExplicitTaskCopy(task.tags)) {
+        const copyPath = normalizeProjectSessionPath(task.project_path || '');
+        if (copyPath) return `path:${copyPath}`;
+    }
     const cloud = cloudWorkspaceIdFromTaskFields(task);
     if (cloud) return `cloud:${cloud}`;
     const expert = expertIDFromTaskTags(task.tags);
@@ -713,7 +708,8 @@ export function placeTaskOrderKey(order: string[], key: string, pinned: boolean,
     return [...without.slice(0, insertAt), key, ...without.slice(insertAt)];
 }
 
-/** Move fromKey to toKey inside the visible sequence, leaving hidden rows where they are. */
+/** Move fromKey to toKey inside the visible sequence, leaving hidden rows where they are.
+ * Dragging downward lands after the target; dragging upward lands before it. */
 export function reorderTaskList(order: string[], visibleKeys: string[], fromKey: string, toKey: string): string[] {
     const base = order.length ? [...order] : [];
     const known = new Set(base);
@@ -731,6 +727,45 @@ export function reorderTaskList(order: string[], visibleKeys: string[], fromKey:
     const nextVisible = currentVisible.slice();
     const [moved] = nextVisible.splice(fromVis, 1);
     nextVisible.splice(toVis, 0, moved);
+    const queue = [...nextVisible];
+    return base.map(key => (visibleSet.has(key) ? queue.shift() || key : key));
+}
+
+/** Move a whole working-directory block with the same before/after rule as one row.
+ * `fromBlock` and `toBlock` are visible order keys. Hidden rows stay in place. */
+export function reorderTaskBlocks(
+    order: string[],
+    visibleKeys: string[],
+    fromBlock: readonly string[],
+    toBlock: readonly string[],
+): string[] {
+    if (!fromBlock.length || !toBlock.length) return order.length ? [...order] : [];
+    const base = order.length ? [...order] : [];
+    const known = new Set(base);
+    for (const key of visibleKeys) {
+        if (!known.has(key)) {
+            known.add(key);
+            base.push(key);
+        }
+    }
+    const visibleSet = new Set(visibleKeys);
+    const currentVisible = base.filter(key => visibleSet.has(key));
+    const fromIndex = currentVisible.indexOf(fromBlock[0]);
+    const toIndex = currentVisible.indexOf(toBlock[0]);
+    if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return base;
+    const present = new Set(currentVisible);
+    const moving = new Set(fromBlock);
+    const rest = currentVisible.filter(key => !moving.has(key));
+    const placeBefore = fromIndex > toIndex;
+    const anchor = placeBefore ? toBlock[0] : toBlock[toBlock.length - 1];
+    let index = rest.indexOf(anchor);
+    if (index < 0) return base;
+    if (!placeBefore) index += 1;
+    const nextVisible = [
+        ...rest.slice(0, index),
+        ...fromBlock.filter(key => present.has(key)),
+        ...rest.slice(index),
+    ];
     const queue = [...nextVisible];
     return base.map(key => (visibleSet.has(key) ? queue.shift() || key : key));
 }
@@ -840,8 +875,9 @@ function matchesActiveTaskRowContext(
     proj: Pick<TaskManagementItem, 'project_path' | 'tags' | 'working_dir' | 'preview' | 'name'>,
     ctx: ActiveTaskRowMatchContext,
 ): boolean {
+    const copied = isExplicitTaskCopy(proj.tags);
     const expertID = expertIDFromTaskTags(proj.tags);
-    if (ctx.expertId) {
+    if (!copied && ctx.expertId) {
         if (expertID !== ctx.expertId) return false;
         if (ctx.activePath && isLatexExpertId(ctx.expertId)) {
             return normalizeProjectSessionPath(proj.project_path) === ctx.activePath;
@@ -849,9 +885,14 @@ function matchesActiveTaskRowContext(
         return true;
     }
     // Expert rows stay bound to expert tabs even if a project tab shares a path.
-    if (expertID) return false;
+    // A copy keeps the expert tag but owns an empty project chat, so it must
+    // not light up with the original expert tab.
+    if (!copied && expertID) return false;
     const target = normalizeProjectSessionPath(proj.project_path);
     if (target && target === ctx.activePath) return true;
+    // A copy shares the source working directory. Matching that directory
+    // would light up the copy while the source chat is the open tab.
+    if (copied) return false;
     const workDir = normalizeProjectSessionPath(proj.working_dir);
     if (workDir && workDir === ctx.activePath) return true;
     // Cloud resume rebinds the tab onto a cache path that may differ from the
@@ -908,17 +949,20 @@ export function liveRunningRowContext(signals?: LiveRunningRowSignals | null): L
  * or cloud workspace id (mirrors isActiveTaskRow's binding rules). */
 export function isLiveRunningTaskRow(task: TaskManagementItem, ctx: LiveRunningRowContext): boolean {
     if (ctx.activeAssistantTaskRunning && ctx.activeRowContext && matchesActiveTaskRowContext(task, ctx.activeRowContext)) return true;
-    if (ctx.busyExpertSet.size > 0) {
+    const copied = isExplicitTaskCopy(task.tags);
+    if (!copied && ctx.busyExpertSet.size > 0) {
         const expertID = expertIDFromTaskTags(task.tags);
         if (expertID && ctx.busyExpertSet.has(expertID)) return true;
     }
     if (ctx.busyPathSet.size > 0) {
         const target = normalizeProjectSessionPath(task.project_path);
         if (target && ctx.busyPathSet.has(target)) return true;
-        const workDir = normalizeProjectSessionPath(task.working_dir);
-        if (workDir && ctx.busyPathSet.has(workDir)) return true;
+        if (!copied) {
+            const workDir = normalizeProjectSessionPath(task.working_dir);
+            if (workDir && ctx.busyPathSet.has(workDir)) return true;
+        }
     }
-    if (ctx.busyWorkspaceIdSet.size > 0) {
+    if (!copied && ctx.busyWorkspaceIdSet.size > 0) {
         const rowWorkspaceId = cloudWorkspaceIdFromTaskFields(task);
         if (rowWorkspaceId && ctx.busyWorkspaceIdSet.has(rowWorkspaceId)) return true;
     }
@@ -1014,6 +1058,216 @@ export function groupTasksIntoFolders<T extends Pick<TaskManagementItem, 'tags'>
         .map(kind => ({ kind, tasks: buckets[kind] }));
 }
 
+/** Sidebar folder names stay on one line. A parent/name label keeps the directory itself. */
+export const TASK_WORKDIR_FOLDER_LABEL_MAX = 18;
+
+export function abbreviateTaskFolderLabel(name: string, max = TASK_WORKDIR_FOLDER_LABEL_MAX): string {
+    const text = String(name || '').trim();
+    const chars = Array.from(text);
+    if (chars.length <= max) return text;
+    if (max <= 1) return '…';
+    const slash = text.lastIndexOf('/');
+    if (slash > 0) {
+        const leaf = Array.from(text.slice(slash));
+        const headRoom = max - leaf.length - 1;
+        if (headRoom > 0) return `${chars.slice(0, headRoom).join('')}…${leaf.join('')}`;
+    }
+    return `${chars.slice(0, max - 1).join('')}…`;
+}
+
+type TaskDirectorySource = Pick<TaskManagementItem, 'tags' | 'working_dir' | 'execution_dir' | 'project_path'>;
+
+export type TaskWorkingDirectoryIdentity = {
+    key: string;
+    label: string;
+    title: string;
+};
+
+const foldDirectoryKey = (path: string): string => normalizeProjectSessionPath(path).toLowerCase();
+
+/** Shared working directory. The task record path is unique per row, so it
+ * must not join copies that only share a project folder. */
+function taskDirectoryPath(task: TaskDirectorySource): string {
+    return String(task.working_dir || task.execution_dir || '').trim();
+}
+
+/** Ancestors plus the visible leaf. A `tasks/<slug>/workspace` row shows the slug,
+ * so the chain must not treat `workspace` as that name. */
+function directoryNameChain(path: string, leaf: string): string[] {
+    const parts = path.trim().replace(/[\\/]+$/, '').split(/[\\/]/).filter(part => part && part !== '.');
+    let ancestors = parts.slice(0, -1);
+    if (parts.length >= 2 && parts[parts.length - 1].toLowerCase() !== leaf.toLowerCase()
+        && parts[parts.length - 2].toLowerCase() === leaf.toLowerCase()) {
+        ancestors = parts.slice(0, -2);
+    }
+    const body = ancestors.filter(part => part.toLowerCase() !== leaf.toLowerCase());
+    return [...body, leaf];
+}
+
+/** Keep prepending path segments until folder names in this band are distinct. */
+function disambiguateFolderLabels<T>(entries: TaskWorkdirEntry<T>[]): void {
+    const folders: Array<{ folder: TaskWorkdirFolder<T>; chain: string[] }> = [];
+    for (const entry of entries) {
+        if (entry.kind !== 'folder') continue;
+        folders.push({ folder: entry.folder, chain: directoryNameChain(entry.folder.title, entry.folder.label) });
+    }
+    if (folders.length < 2) return;
+    const labels = folders.map(item => item.chain[item.chain.length - 1] || item.folder.label);
+    const maxDepth = folders.reduce((depth, item) => Math.max(depth, item.chain.length), 1);
+    for (let depth = 2; depth <= maxDepth; depth += 1) {
+        const counts = new Map<string, number>();
+        for (const label of labels) counts.set(label.toLowerCase(), (counts.get(label.toLowerCase()) || 0) + 1);
+        let changed = false;
+        folders.forEach((item, index) => {
+            if ((counts.get(labels[index].toLowerCase()) || 0) < 2) return;
+            if (item.chain.length < depth) return;
+            const next = item.chain.slice(item.chain.length - depth).join('/');
+            if (next === labels[index]) return;
+            labels[index] = next;
+            changed = true;
+        });
+        if (!changed) break;
+    }
+    folders.forEach((item, index) => {
+        item.folder.label = labels[index];
+    });
+}
+
+/** Identity of the working directory used to nest rows inside a type folder.
+ * Session and coding stay apart because grouping runs on one type at a time.
+ * Returns null when there is no directory to share. */
+export function taskWorkingDirectoryIdentity(task: TaskDirectorySource): TaskWorkingDirectoryIdentity | null {
+    if (isCloudWorkspaceTask(task)) {
+        const id = cloudWorkspaceIdFromTaskFields(task);
+        if (!id) return null;
+        const path = String(task.working_dir || task.execution_dir || '').trim();
+        const leaf = localWorkspaceFolderName(path) || id;
+        return { key: `cloud:${id}`, label: leaf, title: path || id };
+    }
+    if (agentModeFromTaskTags(task.tags) === 'remote_coding_dev') {
+        const meta = remoteCodingMetaFromTaskTags(task.tags);
+        const dir = String(meta.workDir || '').trim();
+        const host = String(meta.host || '').trim();
+        if (!dir || !host) return null;
+        const leaf = localWorkspaceFolderName(dir);
+        if (!leaf) return null;
+        return {
+            key: `remote:${host.toLowerCase()}:${meta.port}:${foldDirectoryKey(dir)}`,
+            label: leaf,
+            title: remoteWorkspaceLocationLabel(host, dir, meta.port) || dir,
+        };
+    }
+    const path = taskDirectoryPath(task);
+    if (!path) return null;
+    const folded = foldDirectoryKey(path);
+    if (!folded) return null;
+    const leaf = localWorkspaceFolderName(path);
+    if (!leaf) return null;
+    return { key: `local:${folded}`, label: leaf, title: path };
+}
+
+export type TaskWorkdirFolder<T> = {
+    key: string;
+    label: string;
+    title: string;
+    tasks: T[];
+};
+
+export type TaskWorkdirEntry<T> =
+    | { kind: 'task'; task: T }
+    | { kind: 'folder'; folder: TaskWorkdirFolder<T> };
+
+function groupDirectoryBand<T extends TaskDirectorySource>(tasks: T[]): TaskWorkdirEntry<T>[] {
+    const identities = tasks.map(task => taskWorkingDirectoryIdentity(task));
+    const counts = new Map<string, number>();
+    for (const identity of identities) {
+        if (!identity) continue;
+        counts.set(identity.key, (counts.get(identity.key) || 0) + 1);
+    }
+    const grouped = new Map<string, T[]>();
+    const entries: TaskWorkdirEntry<T>[] = [];
+    tasks.forEach((task, index) => {
+        const identity = identities[index];
+        if (!identity || (counts.get(identity.key) || 0) < 2) {
+            entries.push({ kind: 'task', task });
+            return;
+        }
+        let bucket = grouped.get(identity.key);
+        if (!bucket) {
+            bucket = [];
+            grouped.set(identity.key, bucket);
+            entries.push({
+                kind: 'folder',
+                folder: { key: identity.key, label: identity.label, title: identity.title, tasks: bucket },
+            });
+        }
+        bucket.push(task);
+    });
+    disambiguateFolderLabels(entries);
+    return entries;
+}
+
+/** Pull tasks that share a working directory into one folder, placed where
+ * the first of them already sits. A directory with a single task stays a row.
+ * Pinned and unpinned rows stay in separate bands, matching the list order. */
+export function groupTasksByWorkingDirectory<T extends TaskDirectorySource & { pinned?: boolean }>(tasks: T[]): TaskWorkdirEntry<T>[] {
+    const entries: TaskWorkdirEntry<T>[] = [];
+    let band: T[] = [];
+    let bandPinned = false;
+    const flush = () => {
+        if (band.length) entries.push(...groupDirectoryBand(band));
+        band = [];
+    };
+    for (const task of tasks) {
+        const pinned = !!task.pinned;
+        if (band.length && pinned !== bandPinned) flush();
+        bandPinned = pinned;
+        band.push(task);
+    }
+    flush();
+    return entries;
+}
+
+/** Collapse storage distinguishes type and pin, so two folders with the same
+ * directory do not open and close as one. */
+export function taskWorkdirCollapseKey(kind: TaskListFolderKind, pinned: boolean, directoryKey: string): string {
+    return `${kind}:${pinned ? '1' : '0'}:${directoryKey}`;
+}
+
+export function taskWorkdirFolderLabel(
+    folder: Pick<TaskWorkdirFolder<unknown>, 'key' | 'label'>,
+    workspaceNameById?: Map<string, string>,
+): string {
+    let name = folder.label;
+    if (folder.key.startsWith('cloud:')) {
+        const id = folder.key.slice('cloud:'.length);
+        const named = (workspaceNameById?.get(id) || lookupCloudWorkspaceDisplayName(id) || '').trim();
+        if (named) name = named;
+    }
+    return abbreviateTaskFolderLabel(name);
+}
+
+export const TASK_WORKDIR_COLLAPSE_STORAGE_KEY = 'maclaw.sidebar-task-workdir-folders.v1';
+
+export function readCollapsedWorkdirFolders(): Set<string> {
+    if (typeof localStorage === 'undefined') return new Set();
+    try {
+        const parsed = JSON.parse(localStorage.getItem(TASK_WORKDIR_COLLAPSE_STORAGE_KEY) || '[]');
+        if (!Array.isArray(parsed)) return new Set();
+        return new Set(parsed.filter((item): item is string => typeof item === 'string' && item.length > 0));
+    } catch {
+        return new Set();
+    }
+}
+
+export function writeCollapsedWorkdirFolders(keys: ReadonlySet<string>) {
+    try {
+        localStorage.setItem(TASK_WORKDIR_COLLAPSE_STORAGE_KEY, JSON.stringify([...keys]));
+    } catch {
+        // Private mode or a full quota should not block the in-memory collapse.
+    }
+}
+
 export function taskListFolderLabel(kind: TaskListFolderKind, lang: string): string {
     if (kind === 'coding') return textForLang(lang, 'Coding', '编程', '程式');
     return textForLang(lang, 'Sessions', '会话', '工作階段');
@@ -1044,7 +1298,7 @@ const newCloudWorkspaceActionLabel = (lang: string, creating: boolean) => (
         : textForLang(lang, 'New cloud workspace', '新建云端工作区', '新建雲端工作區')
 );
 
-type TaskContextMenuIconName = 'rename' | 'browse' | 'share' | 'ssh' | 'cloud' | 'local' | 'pin' | 'remove';
+type TaskContextMenuIconName = 'rename' | 'copy' | 'browse' | 'share' | 'ssh' | 'cloud' | 'local' | 'pin' | 'remove';
 
 type TaskContextMenuItem = {
     label: string;
@@ -1062,6 +1316,12 @@ const TaskContextMenuIcon = ({ name }: { name: TaskContextMenuIconName }) => (
             <>
                 <path {...TASK_ICON_PROPS} d="M4 20h4L19.5 8.5 15.5 4.5 4 16v4z" />
                 <path {...TASK_ICON_PROPS} d="m13.2 6.8 4 4" />
+            </>
+        )}
+        {name === 'copy' && (
+            <>
+                <rect {...TASK_ICON_PROPS} x="8" y="8" width="11" height="12" rx="1.6" />
+                <path {...TASK_ICON_PROPS} d="M6 15.5V5.6A1.6 1.6 0 0 1 7.6 4H16" />
             </>
         )}
         {name === 'browse' && (
@@ -1129,7 +1389,7 @@ const contextMenuPosition = (x: number, y: number): { left: number; top: number 
     // a future menu grows beyond this estimate.
     return {
         left: Math.max(8, Math.min(Number(x) || 8, Math.max(8, viewportWidth - 184))),
-        top: Math.max(8, Math.min(Number(y) || 8, Math.max(8, viewportHeight - 240))),
+        top: Math.max(8, Math.min(Number(y) || 8, Math.max(8, viewportHeight - 320))),
     };
 };
 
@@ -1140,6 +1400,7 @@ function buildTaskContextMenuItems(opts: {
     setRenameValue: (value: string) => void;
     setTaskContextMenu: (menu: TaskContextMenu) => void;
     pinTask: (projectPath: string, pinned: boolean) => Promise<unknown>;
+    onDuplicateTask?: (menu: NonNullable<TaskContextMenu>) => void | Promise<void>;
     confirmRemoveTask: (menu: NonNullable<TaskContextMenu>) => void | Promise<void>;
     refreshTasks: () => void;
     openEditRemoteDialog: (projectPath: string, name: string, tags?: string[]) => void | Promise<void>;
@@ -1154,7 +1415,7 @@ function buildTaskContextMenuItems(opts: {
 }): TaskContextMenuItem[] {
     const {
         lang, menu, setRenamingTaskPath, setRenameValue,
-        setTaskContextMenu, pinTask, confirmRemoveTask, refreshTasks, openEditRemoteDialog, browseCloudWorkspace, allowCloudWorkspaceBrowse, onShareCloudWorkspace, onTransferTask,
+        setTaskContextMenu, pinTask, onDuplicateTask, confirmRemoveTask, refreshTasks, openEditRemoteDialog, browseCloudWorkspace, allowCloudWorkspaceBrowse, onShareCloudWorkspace, onTransferTask,
     } = opts;
     const items: TaskContextMenuItem[] = [
         {
@@ -1164,6 +1425,16 @@ function buildTaskContextMenuItems(opts: {
                 setRenamingTaskPath(menu.projectPath);
                 setRenameValue(menu.name);
                 setTaskContextMenu(null);
+            },
+        },
+        {
+            label: textForLang(lang, 'Copy', '复制', '複製'),
+            icon: 'copy',
+            testId: 'task-context-copy',
+            title: textForLang(lang, 'New task with the same settings and no chat history', '复制为新任务：配置相同，没有聊天记录', '複製為新任務：設定相同，沒有聊天記錄'),
+            action: () => {
+                setTaskContextMenu(null);
+                void onDuplicateTask?.(menu);
             },
         },
     ];
@@ -1933,6 +2204,7 @@ export const SidebarTaskManagement = ({
     const [remoteSafety, setRemoteSafety] = useState<OpenCreateCodingTaskDetail['remoteSafety']>();
     const [createError, setCreateError] = useState('');
     const [taskListNotice, setTaskListNotice] = useState('');
+    const duplicatingTaskRef = useRef(false);
     /** Last Hub entitlement for this process session. Null means still loading. */
     const [cloudEntitlement, setCloudEntitlement] = useState<CloudEntitlementState | null>(null);
     const [workspaceKind, setWorkspaceKind] = useState<'local' | 'cloud'>('local');
@@ -2232,7 +2504,18 @@ export const SidebarTaskManagement = ({
     // actions are disabled for this surface.
     const [taskListOrder, setTaskListOrder] = useState<string[]>(readTaskListOrder);
     const [collapsedTaskFolders, setCollapsedTaskFolders] = useState<ReadonlySet<TaskListFolderKind>>(readCollapsedTaskFolders);
+    const [collapsedWorkdirFolders, setCollapsedWorkdirFolders] = useState<ReadonlySet<string>>(readCollapsedWorkdirFolders);
     const [taskFolderOrder, setTaskFolderOrder] = useState<TaskListFolderKind[]>(readTaskFolderOrder);
+    const toggleWorkdirFolder = (key: string) => {
+        if (!key) return;
+        setCollapsedWorkdirFolders(prev => {
+            const next = new Set(prev);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
+            writeCollapsedWorkdirFolders(next);
+            return next;
+        });
+    };
     const toggleTaskFolder = (kind: TaskListFolderKind) => {
         setCollapsedTaskFolders(prev => {
             const next = new Set(prev);
@@ -2361,9 +2644,25 @@ export const SidebarTaskManagement = ({
         return base.filter(task => !isLiveRunningRow(task) && taskStatusBucketFor(task) === taskFilter);
     }, [visibleTasks, taskFilter, workspaceFilter, isLiveRunningRow]);
     const taskFolders = useMemo(
-        () => groupTasksIntoFolders(filteredTasks, taskFolderOrder),
+        () => groupTasksIntoFolders(filteredTasks, taskFolderOrder).map(folder => ({
+            ...folder,
+            entries: groupTasksByWorkingDirectory(folder.tasks),
+        })),
         [filteredTasks, taskFolderOrder],
     );
+    const workdirGroupIdByTaskKey = useMemo(() => {
+        const map = new Map<string, string>();
+        for (const folder of taskFolders) {
+            for (const entry of folder.entries) {
+                const groupedTasks = entry.kind === 'folder' ? entry.folder.tasks : [entry.task];
+                const groupId = entry.kind === 'folder'
+                    ? taskWorkdirCollapseKey(folder.kind, !!groupedTasks[0]?.pinned, entry.folder.key)
+                    : '';
+                for (const task of groupedTasks) map.set(taskOrderKey(task), groupId);
+            }
+        }
+        return map;
+    }, [taskFolders]);
     const taskDragKeyRef = useRef<string | null>(null);
     const taskDragFolderRef = useRef<TaskListFolderKind | null>(null);
     const taskDragPinnedRef = useRef<boolean | null>(null);
@@ -2436,10 +2735,21 @@ export const SidebarTaskManagement = ({
         // last drag is shown at the top but is not in the saved keys yet;
         // appending it here would throw it to the bottom on this drop.
         const visualKeys = visibleTasks.map(taskOrderKey);
+        const fromGroup = workdirGroupIdByTaskKey.get(fromKey) || '';
+        const toGroup = workdirGroupIdByTaskKey.get(toKey) || '';
+        const blockFor = (key: string) => {
+            const groupId = workdirGroupIdByTaskKey.get(key) || '';
+            if (!groupId) return [key];
+            return visibleKeys.filter(item => (workdirGroupIdByTaskKey.get(item) || '') === groupId);
+        };
         setTaskListOrder(prev => {
             const seen = new Set(visualKeys);
             const seeded = [...visualKeys, ...prev.filter(key => !seen.has(key))];
-            const next = reorderTaskList(seeded, visibleKeys, fromKey, toKey);
+            // A directory folder is one block. Moving any of its rows past
+            // another row moves the whole folder, so the drop does not snap back.
+            const next = fromGroup && fromGroup === toGroup
+                ? reorderTaskList(seeded, visibleKeys, fromKey, toKey)
+                : reorderTaskBlocks(seeded, visibleKeys, blockFor(fromKey), blockFor(toKey));
             writeTaskListOrder(next);
             return next;
         });
@@ -2500,17 +2810,12 @@ export const SidebarTaskManagement = ({
         return chips;
     }, [lang, visibleTasks.length, workspaceFilterCounts]);
     const taskListRef = useRef<HTMLDivElement | null>(null);
-    const activeRowPresent = useMemo(
-        () => activeRowContext
-            ? visibleTasks.some(proj => matchesActiveTaskRowContext(proj, activeRowContext))
-            : false,
-        [visibleTasks, activeRowContext],
-    );
-    const activeFolderKind = useMemo(() => {
+    const activeListedTask = useMemo(() => {
         if (!activeRowContext) return null;
-        const task = visibleTasks.find(proj => matchesActiveTaskRowContext(proj, activeRowContext));
-        return task ? taskListFolderKind(task) : null;
+        return visibleTasks.find(proj => matchesActiveTaskRowContext(proj, activeRowContext)) ?? null;
     }, [visibleTasks, activeRowContext]);
+    const activeFolderKind = activeListedTask ? taskListFolderKind(activeListedTask) : null;
+    const activeRowPresent = activeListedTask != null;
     // Identity of the task whose folder we already revealed. A fresh object for
     // the same task must not pop a folder the user just collapsed back open.
     const activeFolderExpandKey = activeFolderKind && activeRowContext
@@ -2529,15 +2834,37 @@ export const SidebarTaskManagement = ({
             return next;
         });
     }, [activeFolderExpandKey, activeFolderKind]);
+    // Only a row that is actually inside a directory folder. A lone task, or a
+    // partner hidden by the current filter, must not clear that folder's collapse.
+    const activeWorkdirKey = activeListedTask
+        ? (workdirGroupIdByTaskKey.get(taskOrderKey(activeListedTask)) || '')
+        : '';
+    const activeWorkdirExpandKey = activeWorkdirKey && activeRowContext
+        ? `${activeWorkdirKey}\0${activeRowContext.expertId}\0${activeRowContext.activePath}\0${activeRowContext.activeWorkspaceId}`
+        : '';
+    const revealedWorkdirTaskKeyRef = useRef('');
+    useEffect(() => {
+        if (!activeWorkdirExpandKey || !activeWorkdirKey) return;
+        if (revealedWorkdirTaskKeyRef.current === activeWorkdirExpandKey) return;
+        revealedWorkdirTaskKeyRef.current = activeWorkdirExpandKey;
+        setCollapsedWorkdirFolders(prev => {
+            if (!prev.has(activeWorkdirKey)) return prev;
+            const next = new Set(prev);
+            next.delete(activeWorkdirKey);
+            writeCollapsedWorkdirFolders(next);
+            return next;
+        });
+    }, [activeWorkdirExpandKey, activeWorkdirKey]);
     // Only the active folder's own expand state. Collapsing the other folder
     // must not scroll the list back to the current task.
     const activeFolderExpanded = !activeFolderKind || !collapsedTaskFolders.has(activeFolderKind);
+    const activeWorkdirExpanded = !activeWorkdirKey || !collapsedWorkdirFolders.has(activeWorkdirKey);
     useEffect(() => {
-        if (!taskListVisible || !activeRowPresent || !activeFolderExpanded) return;
+        if (!taskListVisible || !activeRowPresent || !activeFolderExpanded || !activeWorkdirExpanded) return;
         const el = taskListRef.current?.querySelector('[data-active="true"]') as HTMLElement | null;
         if (!el || typeof el.scrollIntoView !== 'function') return;
         el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
-    }, [taskListVisible, activeRowPresent, activeAssistantTask, activeFolderExpanded]);
+    }, [taskListVisible, activeRowPresent, activeAssistantTask, activeFolderExpanded, activeWorkdirExpanded]);
     useEffect(() => {
         const ids = pendingRestoreWorkspaceIdsRef.current;
         if (!ids || ids.size === 0) return;
@@ -3129,11 +3456,20 @@ export const SidebarTaskManagement = ({
                 return;
             }
 
-            if (!prepareCloudFn) {
+            if (!prepareCloudFn && !isExplicitTaskCopy(tags) && cloudWorkspaceSharePermissionFromTags(tags) !== 'read') {
                 throw new Error(textForLang(lang, 'Cloud workspace preparation is unavailable.', '云端工作区准备功能不可用', '雲端工作區準備功能不可用'));
             }
-            const prepared = await prepareCloudFn(id) as { local_path?: string; LocalPath?: string };
-            const preparedPath = cloudProvisionText(prepared, 'local_path', 'LocalPath');
+            // A copy or a read-only share must not take a writer lease. Prepare
+            // also replaces the pending transcript bundle; Resume keeps that
+            // bundle for the canonical task.
+            let preparedPath = '';
+            if (isExplicitTaskCopy(tags) || cloudWorkspaceSharePermissionFromTags(tags) === 'read') {
+                const bound = await ResumeCloudWorkspaceTask(id, path);
+                preparedPath = cloudProvisionText(bound, 'working_dir', 'WorkingDir');
+            } else {
+                const prepared = await prepareCloudFn!(id) as { local_path?: string; LocalPath?: string };
+                preparedPath = cloudProvisionText(prepared, 'local_path', 'LocalPath');
+            }
             if (!preparedPath) throw new Error(textForLang(lang, 'Cloud workspace folder is not available.', '云端工作区目录不可用', '雲端工作區目錄不可用'));
             const opened = await reveal(preparedPath);
             if (!opened && isCurrent()) {
@@ -3810,6 +4146,11 @@ export const SidebarTaskManagement = ({
     /** True when this row's assistant tab is currently open (running instance). */
     const isTaskInstanceOpen = (task: TaskManagementItem): boolean => {
         const expertID = expertIDFromTaskTags(task.tags);
+        // A copy has its own project tab. The source expert or cloud tab must
+        // not count as this row already being open.
+        if (isExplicitTaskCopy(task.tags)) {
+            return isProjectTabOpen(task.project_path, openProjectTabPaths);
+        }
         if (expertID && isLatexExpertId(expertID)) {
             const livePath = activeAssistantTask?.expertId === expertID
                 ? normalizeProjectSessionPath(activeAssistantTask.projectPath)
@@ -3938,10 +4279,11 @@ export const SidebarTaskManagement = ({
         if (removeTaskConfirmOpenRef.current) return;
         const projectPath = menu.projectPath;
         if (!projectPath) return;
-        const expertID = expertIDFromTaskTags(menu.tags);
-        // Same identity derivation as isTaskInstanceOpen so the dialog wording
-        // always matches the row highlight (tags, then cache path/working dir).
-        const cloudWorkspaceId = cloudWorkspaceIdFromTaskFields({ tags: menu.tags, project_path: projectPath, working_dir: menu.workingDir });
+        const copied = isExplicitTaskCopy(menu.tags);
+        const expertID = copied ? '' : expertIDFromTaskTags(menu.tags);
+        // A copy's open tab is its own project path. The source expert or cloud
+        // tab must not make the delete dialog say this copy is in use.
+        const cloudWorkspaceId = copied ? '' : cloudWorkspaceIdFromTaskFields({ tags: menu.tags, project_path: projectPath, working_dir: menu.workingDir });
         const tabOpen = isProjectTabOpen(projectPath, openProjectTabPaths, cloudWorkspaceId, openProjectTabIdentities)
             || (!!expertID && (openExpertTabIDs || []).includes(expertID));
         const name = String(menu.name || '').trim();
@@ -3976,6 +4318,37 @@ export const SidebarTaskManagement = ({
         }
         if (!confirmed || !mountedRef.current) return;
         await handleRemoveTask(projectPath, expertID ? menu.tags : undefined);
+    };
+
+    /** Copies a task's settings into a new empty task and opens it. */
+    const duplicateTask = async (menu: NonNullable<TaskContextMenu>) => {
+        if (duplicatingTaskRef.current) return;
+        duplicatingTaskRef.current = true;
+        setTaskListNotice(textForLang(lang, 'Copying…', '正在复制…', '正在複製…'));
+        try {
+            const created = await DuplicateTask(menu.projectPath);
+            refreshTasks();
+            setTaskListNotice('');
+            const projectPath = String(created?.project_path || '').trim();
+            if (!projectPath) {
+                setTaskListNotice(textForLang(lang, 'Could not copy the task', '复制任务失败', '複製任務失敗'));
+                return;
+            }
+            if (!assistantReady) {
+                onTaskSwitchBlocked?.();
+                return;
+            }
+            await resumeTask(projectPath, {
+                project_path: projectPath,
+                name: created?.name,
+                tags: created?.tags,
+                working_dir: created?.working_dir,
+            });
+        } catch (error) {
+            setTaskListNotice(extractErrorMessage(error) || textForLang(lang, 'Could not copy the task', '复制任务失败', '複製任務失敗'));
+        } finally {
+            duplicatingTaskRef.current = false;
+        }
     };
 
     /** Opens the move dialog for a task row. */
@@ -4416,11 +4789,17 @@ export const SidebarTaskManagement = ({
                 }}
             >
             <div
-                className={`stsm-task-folder__head${foldersDraggable ? ' is-draggable' : ''}`}
-                data-testid={`task-folder-drag-${folder.kind}`}
+                role="button"
+                tabIndex={0}
+                className={`stsm-task-folder__head stsm-task-folder__toggle${foldersDraggable ? ' is-draggable' : ''}`}
+                data-testid={`task-folder-toggle-${folder.kind}`}
                 draggable={foldersDraggable}
+                aria-expanded={folderExpanded}
+                aria-controls={`task-folder-items-${folder.kind}`}
+                title={folderTitle}
                 onDragStart={e => {
                     if (!foldersDraggable || taskDragKeyRef.current) { e.preventDefault(); return; }
+                    e.stopPropagation();
                     folderDidDragRef.current = true;
                     folderDragKindRef.current = folder.kind;
                     if (e.dataTransfer) {
@@ -4434,16 +4813,6 @@ export const SidebarTaskManagement = ({
                     window.setTimeout(() => { folderDidDragRef.current = false; }, 0);
                 }}
                 onClick={() => { if (folderDidDragRef.current) return; toggleTaskFolder(folder.kind); }}
-            >
-            {foldersDraggable ? <span className="stsm-task-folder__grip" aria-hidden="true"><TaskFolderGrip /></span> : null}
-            <div
-                role="button"
-                tabIndex={0}
-                className="stsm-task-folder__toggle"
-                data-testid={`task-folder-toggle-${folder.kind}`}
-                aria-expanded={folderExpanded}
-                aria-controls={`task-folder-items-${folder.kind}`}
-                title={folderTitle}
                 onKeyDown={e => {
                     if (e.key !== 'Enter' && e.key !== ' ') return;
                     e.preventDefault();
@@ -4456,10 +4825,17 @@ export const SidebarTaskManagement = ({
                 <span className="stsm-task-folder__label">{folderLabel}</span>
                 <span className="stsm-task-folder__count">{folder.tasks.length}</span>
             </div>
-            </div>
             {folderExpanded ? (
             <div id={`task-folder-items-${folder.kind}`} className="stsm-task-folder__items">
-            {folder.tasks.map(proj => {
+            {folder.entries.map(entry => {
+            const workdirCollapseKey = entry.kind === 'folder'
+                ? taskWorkdirCollapseKey(folder.kind, !!entry.folder.tasks[0]?.pinned, entry.folder.key)
+                : '';
+            const workdirExpanded = entry.kind !== 'folder' || !collapsedWorkdirFolders.has(workdirCollapseKey);
+            const rowTasks = entry.kind === 'folder'
+                ? (workdirExpanded ? entry.folder.tasks : [])
+                : [entry.task];
+            const rows = rowTasks.map(proj => {
             const taskIconKind = taskIconKindForProject(proj);
             const remoteMaintenance = isRemoteMaintenanceTask(proj);
             const cloudWorkspace = isCloudWorkspaceTask(proj);
@@ -4647,6 +5023,45 @@ export const SidebarTaskManagement = ({
                 </div>
                 {sceneDetailPath === proj.project_path && <SidebarTaskEvidencePanel detail={sceneDetail} loading={sceneDetailLoading} lang={lang} onContinueWorkflow={continueWorkflowProject} error={sceneDetailError} onRetry={() => { void openSceneDetail(proj.project_path, proj.name, true); }} />}
             </div>
+            });
+            if (entry.kind !== 'folder') return rows;
+            const workdirLabel = taskWorkdirFolderLabel(entry.folder, cloudWorkspaceNames);
+            const workdirTitle = entry.folder.title || workdirLabel;
+            const workdirToggleLabel = workdirExpanded
+                ? textForLang(lang, `Collapse ${entry.folder.label}`, `折叠${entry.folder.label}`, `摺疊${entry.folder.label}`)
+                : textForLang(lang, `Expand ${entry.folder.label}`, `展开${entry.folder.label}`, `展開${entry.folder.label}`);
+            return (
+            <section
+                key={workdirCollapseKey}
+                className="stsm-task-workdir"
+                data-testid="task-workdir-folder"
+                data-workdir-key={entry.folder.key}
+                data-expanded={workdirExpanded ? 'true' : 'false'}
+                aria-label={workdirTitle}
+            >
+            <div className="stsm-task-workdir__head" onClick={() => toggleWorkdirFolder(workdirCollapseKey)}>
+            <div
+                role="button"
+                tabIndex={0}
+                className="stsm-task-folder__toggle"
+                data-testid="task-workdir-toggle"
+                aria-expanded={workdirExpanded}
+                title={joinHoverLines(workdirTitle, workdirToggleLabel)}
+                onKeyDown={e => {
+                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                    e.preventDefault();
+                    toggleWorkdirFolder(workdirCollapseKey);
+                }}
+            >
+                <TaskFolderChevron />
+                <TaskFolderIcon open={workdirExpanded} />
+                <span className="stsm-task-folder__label">{workdirLabel}</span>
+                <span className="stsm-task-folder__count">{entry.folder.tasks.length}</span>
+            </div>
+            </div>
+            {workdirExpanded ? <div className="stsm-task-workdir__items">{rows}</div> : null}
+            </section>
+            );
             })}
             </div>
             ) : null}
@@ -5399,6 +5814,7 @@ export const SidebarTaskManagement = ({
                     setRenamingTaskPath,
                     setRenameValue,
                     setTaskContextMenu,
+                    onDuplicateTask: duplicateTask,
                     pinTask: async (projectPath, pinned) => {
                         await pinTask(projectPath, pinned);
                         const menu = taskContextMenu;

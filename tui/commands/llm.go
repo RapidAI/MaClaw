@@ -107,12 +107,36 @@ type presetProvider struct {
 	Name          string
 	URL           string
 	Model         string
+	Models        []string
 	Protocol      string
 	ContextLength int
 	TimeoutSec    int
 	AuthType      string // "apikey", "oauth", "sso", "none"
 	AgentType     string
 	Hint          string // 显示给用户的说明
+}
+
+func mergePresetModels(existing, extras []string) []string {
+	if len(extras) == 0 {
+		return existing
+	}
+	out := append([]string(nil), existing...)
+	seen := make(map[string]struct{}, len(out)+len(extras))
+	for _, model := range out {
+		seen[strings.TrimSpace(model)] = struct{}{}
+	}
+	for _, model := range extras {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		if _, ok := seen[model]; ok {
+			continue
+		}
+		seen[model] = struct{}{}
+		out = append(out, model)
+	}
+	return out
 }
 
 // presetProviders 返回 TUI 可用的预置服务商列表。
@@ -144,6 +168,12 @@ func presetProviders() []presetProvider {
 			Name: "讯飞星辰", URL: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2",
 			Model: "astron-code-latest", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
 			AuthType: "apikey", Hint: "training.xfyun.cn 获取 API Key",
+		},
+		{
+			Name: "星辰大模型", URL: "https://api-maas.teleai.com.cn/v1",
+			Model: "TeleChat3-438B-A24B", Models: []string{"TeleChat3-438B-A24B", "Xing4.0-29B-A4B"},
+			ContextLength: 256000, TimeoutSec: corelib.DefaultLLMTimeoutSec,
+			AuthType: "apikey", Hint: "天翼 AI 开放平台申请 API Key，另有 Xing4.0-29B-A4B",
 		},
 		{
 			Name: "OpenAI (API Key)", URL: "https://api.openai.com/v1",
@@ -279,6 +309,7 @@ func llmSetup(args []string) error {
 			if contextLength > 0 {
 				appCfg.MaclawLLMProviders[i].ContextLength = contextLength
 			}
+			appCfg.MaclawLLMProviders[i].Models = mergePresetModels(appCfg.MaclawLLMProviders[i].Models, selected.Models)
 			found = true
 			break
 		}
@@ -289,6 +320,7 @@ func llmSetup(args []string) error {
 			URL:           apiURL,
 			Key:           apiKey,
 			Model:         model,
+			Models:        mergePresetModels(nil, selected.Models),
 			Protocol:      protocol,
 			AgentType:     agentType,
 			ContextLength: contextLength,
@@ -494,7 +526,7 @@ func llmProviderNeedsKeyFromAppConfig(cfg corelib.AppConfig) bool {
 		return llmURLUsuallyNeedsKey(cfg.MaclawLLMUrl)
 	case "OpenAI API Key", "OpenAI (API Key)", "Anthropic",
 		"Zhipu GLM Lobster", "Zhipu GLM Coding", "智谱 GLM (龙虾)", "智谱 GLM (Coding)",
-		"MiniMax", "Kimi", "Xfyun Astron", "讯飞星辰":
+		"MiniMax", "Kimi", "Xfyun Astron", "讯飞星辰", "星辰大模型":
 		return true
 	}
 	return llmURLUsuallyNeedsKey(cfg.MaclawLLMUrl)

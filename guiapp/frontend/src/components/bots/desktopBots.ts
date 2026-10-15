@@ -239,7 +239,7 @@ export function desktopBotRunningSentence(titles: string[], lang: string): strin
     return [head, ...names].join('\n');
 }
 
-// A new job that arrived while the shared desktop is already in use.
+// A new job that arrived while this bot's desktop is already in use.
 // The older read-ahead lines stay in queuedAckReply.
 export function desktopBotQueuedSentence(lang: string): string {
     const voice = desktopBotVoice(lang);
@@ -767,7 +767,7 @@ export interface DesktopBotMessage {
     // arrangement, so the confirm control does not attach to it.
     chat?: boolean;
     // A user message accepted while that bot was still working. The dispatch
-    // waits for the current run on the shared desktop; the marker is cleared
+    // waits for this bot's current run; the marker is cleared
     // the moment the dispatch starts, so a page reload can recover the queue
     // without double-sending.
     queued?: boolean;

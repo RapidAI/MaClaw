@@ -86,7 +86,7 @@ func TestCodingStaticCompatibilityModelSurfaceExcludesUncorrelatedLocalEffects(t
 		task:     &TaskItem{Title: "implement", Description: "change source", RequestKind: codingRequestImplementation},
 	}
 	assertCodingStaticCompatibilitySurfaceHasOnlyReadOrControlPlane(t, codingStaticCompatibilityHostLocal, cb.BuildToolsForModelRequest("implement", 0))
-	for _, name := range []string{"edit_file", "edit_lines", "write_file", "bash", "download_file"} {
+	for _, name := range []string{"edit_file", "edit_lines", "write_file", "bash", "ssh", "download_file"} {
 		result := cb.ExecuteToolCallWithContext(name, `{}`, "blocked-"+name, agent.ToolCallExecutionContext{})
 		if result.Outcome != agent.ToolExecutionOutcomeError || !strings.Contains(result.Result, "static_surface_unavailable") {
 			t.Fatalf("uncorrelated local effect %q reached dispatcher: %#v", name, result)

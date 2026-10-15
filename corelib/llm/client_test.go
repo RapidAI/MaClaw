@@ -988,6 +988,7 @@ func TestOpenAIChatCompletionsEndpointNormalizesBaseURL(t *testing.T) {
 		{"paas v4", "https://open.bigmodel.cn/api/paas/v4", "https://open.bigmodel.cn/api/paas/v4/chat/completions"},
 		{"full", "https://api.example.com/v1/chat/completions", "https://api.example.com/v1/chat/completions"},
 		{"qwen compatible", "https://dashscope.aliyuncs.com/compatible-mode/v1", "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"},
+		{"tencent tokenplan", "https://tokenhub.tencentmaas.com/plan/v3", "https://tokenhub.tencentmaas.com/plan/v3/chat/completions"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -1051,6 +1052,11 @@ func TestBuildOpenAIModelsEndpointCandidates(t *testing.T) {
 			name: "volcengine tokenplan openai v3",
 			url:  "https://ark.cn-beijing.volces.com/api/plan/v3",
 			want: []string{"https://ark.cn-beijing.volces.com/api/plan/v3/models"},
+		},
+		{
+			name: "tencent tokenplan",
+			url:  "https://tokenhub.tencentmaas.com/plan/v3",
+			want: []string{"https://tokenhub.tencentmaas.com/plan/v3/models"},
 		},
 	}
 	for _, tt := range tests {
@@ -5963,6 +5969,21 @@ func TestBuildOpenAIChatRequestBody_ThinkingModeUsesProviderNativeControl(t *tes
 	}
 	if _, hasBudget := thinking["budget_tokens"]; hasBudget {
 		t.Fatalf("WorkBuddy DeepSeek thinking must not include Anthropic budget_tokens: %#v", thinking)
+	}
+	tokenHub := buildOpenAIChatRequestBody(
+		corelib.MaclawLLMConfig{URL: "https://tokenhub.tencentmaas.com/plan/v3", Model: "auto", ThinkingMode: "enabled"},
+		messages,
+		OpenAIChatRequestOptions{Tools: []map[string]interface{}{{"type": "function", "function": map[string]interface{}{"name": "web_search"}}}},
+	)
+	tokenThinking, _ := tokenHub["thinking"].(map[string]interface{})
+	if tokenThinking["type"] != "enabled" {
+		t.Fatalf("TokenHub thinking = %#v, want enabled", tokenHub["thinking"])
+	}
+	if _, hasBudget := tokenThinking["budget_tokens"]; hasBudget {
+		t.Fatalf("TokenHub thinking must not include Anthropic budget_tokens: %#v", tokenThinking)
+	}
+	if tokenHub["model"] != "auto" {
+		t.Fatalf("TokenHub model = %#v, want auto", tokenHub["model"])
 	}
 	if got := workbuddy["reasoning_effort"]; got != "high" {
 		t.Fatalf("WorkBuddy DeepSeek reasoning_effort = %#v, want high", got)

@@ -193,6 +193,23 @@ func storeCloudWorkspacePendingSidecars(workspaceID string, bundle cloudWorkspac
 	cloudWorkspacePendingSidecars[workspaceID] = bundle
 }
 
+// keepCloudWorkspacePendingSidecars runs fn and, when keep is set, puts back
+// the pending bundle fn may have replaced. Opening a task copy prepares the
+// shared files and that prepare fetches sidecars; the fetch must not discard
+// a canonical snapshot that has not been applied yet.
+func keepCloudWorkspacePendingSidecars(workspaceID string, keep bool, fn func() error) error {
+	var preserved cloudWorkspaceSidecarBundle
+	preservedOK := false
+	if keep {
+		preserved, preservedOK = peekCloudWorkspacePendingSidecars(workspaceID)
+	}
+	err := fn()
+	if keep && preservedOK {
+		storeCloudWorkspacePendingSidecars(workspaceID, preserved)
+	}
+	return err
+}
+
 // mergeCloudWorkspacePendingSessionSidecar updates only the Session field of
 // the pending bundle. A wholesale store here would race a concurrent full
 // fetch (fetchCloudWorkspaceSidecars) and could drop its workbench/checkpoint
@@ -283,12 +300,19 @@ func (a *App) cloudWorkspaceTaskProjectPath(workspaceID string) string {
 	if workspaceID == "" {
 		return ""
 	}
-	if result, ok := lookupCloudWorkspaceTask(workspaceID); ok {
+	// Sidecars belong to the canonical task. A remembered copy must not
+	// upload its empty transcript over the workspace history.
+	if result, ok := lookupCloudWorkspaceTask(workspaceID); ok && !projectResultIsTaskCopy(result) {
 		if path := normalizeProjectSessionPath(result.ProjectPath); path != "" {
 			return path
 		}
 	}
-	return normalizeProjectSessionPath(a.findVisibleCloudWorkspaceTask(workspaceID).ProjectPath)
+	if found := a.findVisibleCloudWorkspaceTask(workspaceID); strings.TrimSpace(found.ProjectPath) != "" && !projectResultIsTaskCopy(found) {
+		return normalizeProjectSessionPath(found.ProjectPath)
+	}
+	// A copy's empty transcript must not replace the workspace sidecar,
+	// including after the original row has been hidden.
+	return ""
 }
 
 func (a *App) putCloudWorkspaceSidecarLimited(ctx context.Context, workspaceID, name string, data []byte) error {
@@ -595,9 +619,9 @@ func (a *App) flushCloudWorkspaceSidecars(ctx context.Context, workspaceID strin
 }
 
 func (a *App) cloudWorkspaceTaskSidecarPayload(workspaceID string) cloudWorkspaceTaskSidecar {
-	result := a.findVisibleCloudWorkspaceTask(workspaceID)
+	result := a.findCanonicalCloudWorkspaceTask(workspaceID, false)
 	if strings.TrimSpace(result.Name) == "" && strings.TrimSpace(result.ProjectPath) == "" {
-		if cached, ok := lookupCloudWorkspaceTask(workspaceID); ok {
+		if cached, ok := lookupCloudWorkspaceTask(workspaceID); ok && !projectResultIsTaskCopy(cached) {
 			result = cached
 		}
 	}
@@ -669,6 +693,15 @@ func (a *App) flushCloudWorkspaceSession(ctx context.Context, workspaceID, proje
 	if workspaceID == "" || projectPath == "" {
 		return nil
 	}
+	// The copy keeps its own chat. Publishing it would merge that transcript,
+	// or an empty clear, into the workspace history owned by the source task.
+	// The owner check still holds after the copy record itself has been deleted.
+	if a.projectHasTaskCopyTag(projectPath) {
+		return nil
+	}
+	if owner := normalizeProjectSessionPath(a.cloudWorkspaceTaskProjectPath(workspaceID)); owner != "" && owner != projectPath {
+		return nil
+	}
 	session := a.collectCloudWorkspaceTabSession(projectPath)
 	if session == nil {
 		return nil
@@ -710,6 +743,11 @@ func (a *App) refreshCloudWorkspaceSidecars(workspaceID, projectPath string) {
 	if a == nil || workspaceID == "" || projectPath == "" {
 		return
 	}
+	// A copy does not own the transcript. Fetching here replaces the pending
+	// bundle the canonical task has not applied yet.
+	if a.projectHasTaskCopyTag(projectPath) {
+		return
+	}
 	ctx, cancel := a.cloudWorkspaceSyncContext()
 	defer cancel()
 	a.fetchCloudWorkspaceSidecars(ctx, workspaceID)
@@ -724,6 +762,9 @@ func (a *App) refreshCloudWorkspaceSessionSidecar(workspaceID, projectPath strin
 	workspaceID = strings.TrimSpace(workspaceID)
 	projectPath = normalizeProjectSessionPath(projectPath)
 	if a == nil || workspaceID == "" || projectPath == "" {
+		return
+	}
+	if a.projectHasTaskCopyTag(projectPath) {
 		return
 	}
 	ctx, cancel := a.cloudWorkspaceSyncContext()
@@ -787,6 +828,11 @@ func (a *App) fetchCloudWorkspaceSidecars(ctx context.Context, workspaceID strin
 func (a *App) applyCloudWorkspaceSidecars(workspaceID, projectPath string) {
 	projectPath = normalizeProjectSessionPath(projectPath)
 	if projectPath == "" {
+		return
+	}
+	// A copy starts with an empty chat. Leave the pending sidecar bundle for
+	// the canonical task instead of restoring that transcript here.
+	if a.projectHasTaskCopyTag(projectPath) {
 		return
 	}
 	bundle, ok := takeCloudWorkspacePendingSidecars(workspaceID)

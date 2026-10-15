@@ -1139,7 +1139,7 @@ func (a *App) noteDesktopBotQueued(botID, sessionKey string) {
 }
 
 // relayDesktopBotWhenFree sends this job once. A busy refusal waits until this
-// user's task list has no non-terminal admit, then sends the same request
+// bot's task list has no non-terminal admit, then sends the same request
 // again. onBusy runs once, the first time the desktop refuses. The wait is not
 // inside relayDesktopBot: a caller that never sees the busy sentence must not
 // read the task list.
@@ -1170,18 +1170,22 @@ func (a *App) relayDesktopBotWhenFree(ctx context.Context, botID, text, phase, r
 	}
 }
 
-// waitUntilDesktopFree returns when this user has no non-terminal desktop
-// admit. A task-list error is not "free". The context ending during the wait
-// is a skipped occurrence, not the busy sentence.
+// waitUntilDesktopFree returns when this bot has no non-terminal desktop
+// admit. Hub has already refused, so a list that does not show the work yet
+// still waits one poll: sending again in the same instant spins. A task-list
+// error is not "free". The context ending during the wait is a skipped
+// occurrence, not the busy sentence.
 func (a *App) waitUntilDesktopFree(ctx context.Context, botID string) error {
+	sawPause := false
 	for {
 		if err := ctx.Err(); err != nil {
 			return errDesktopOccurrenceSkipped
 		}
 		busy, unknown := a.desktopUserBusy(ctx, botID)
-		if !busy && !unknown {
+		if sawPause && !busy && !unknown {
 			return nil
 		}
+		sawPause = true
 		timer := time.NewTimer(desktopBotBusyPoll)
 		select {
 		case <-ctx.Done():
@@ -1197,40 +1201,25 @@ func (a *App) waitUntilDesktopFree(ctx context.Context, botID string) error {
 	}
 }
 
-// desktopUserBusy reads the task list for this user's bots. A bot-list failure
-// falls back to botID. A task-list failure is unknown, so the caller keeps
-// waiting instead of sending into a desktop that may still be busy.
+// desktopUserBusy reads this bot's task list. Each bot has its own desktop, so
+// another bot's run does not keep this one waiting. A task-list failure is
+// unknown: the caller keeps waiting instead of sending into a desktop that
+// may still be busy.
 func (a *App) desktopUserBusy(ctx context.Context, botID string) (busy bool, unknown bool) {
 	if ctx.Err() != nil {
 		return false, true
 	}
-	ids := []string{strings.TrimSpace(botID)}
-	var listed struct {
-		Items []hubBot `json:"items"`
+	botID = strings.TrimSpace(botID)
+	if botID == "" {
+		return false, true
 	}
-	if err := a.desktopBotCall(ctx, http.MethodGet, "/api/v1/bots", nil, &listed, 20*time.Second); err == nil {
-		next := make([]string, 0, len(listed.Items))
-		for _, bot := range listed.Items {
-			if id := strings.TrimSpace(bot.ID); id != "" {
-				next = append(next, id)
-			}
-		}
-		if len(next) > 0 {
-			ids = next
-		}
+	items, err := a.listDesktopBotTasks(ctx, botID)
+	if err != nil {
+		return false, true
 	}
-	for _, id := range ids {
-		if id == "" {
-			continue
-		}
-		items, err := a.listDesktopBotTasks(ctx, id)
-		if err != nil {
-			return false, true
-		}
-		for _, item := range items {
-			if !desktopTaskTerminal(item.Status) {
-				return true, false
-			}
+	for _, item := range items {
+		if !desktopTaskTerminal(item.Status) {
+			return true, false
 		}
 	}
 	return false, false

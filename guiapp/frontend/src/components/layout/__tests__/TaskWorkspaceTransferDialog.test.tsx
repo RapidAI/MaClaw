@@ -149,6 +149,67 @@ describe('TaskWorkspaceTransferDialog', () => {
         expect(screen.getByTestId('task-transfer-confirm').textContent).toContain('Moving');
     });
 
+    it('selects the suggested workspace name once and keeps a draft across keystrokes and parent rerenders', () => {
+        const select = vi.spyOn(HTMLInputElement.prototype, 'select');
+        try {
+            const view = render(
+                <TaskWorkspaceTransferDialog
+                    open
+                    lang="zh"
+                    direction="to-cloud"
+                    taskName="北京天气，生成pdf"
+                    cloudWorkspaces={[]}
+                    busy={false}
+                    error=""
+                    onCreateCloudWorkspace={vi.fn()}
+                    onConfirm={vi.fn()}
+                    onClose={vi.fn()}
+                />,
+            );
+            const dialog = () => screen.getByTestId('task-transfer-dialog');
+            fireEvent.click(within(dialog()).getByTestId('task-transfer-create-workspace'));
+            const input = () => within(dialog()).getByTestId('task-transfer-create-name') as HTMLInputElement;
+            expect(input().value).toBe('工作区 1');
+            expect(select).toHaveBeenCalledTimes(1);
+            expect(document.activeElement).toBe(input());
+            expect(input().selectionStart).toBe(0);
+            expect(input().selectionEnd).toBe(input().value.length);
+            // cwshare-input is width:100%. In this 300px dialog that basis
+            // squeezes the create button down to one CJK glyph, so 「创建」 wraps.
+            expect(input().style.width).toBe('auto');
+            const submit = within(dialog()).getByTestId('task-transfer-create-submit') as HTMLButtonElement;
+            expect(submit.style.flexShrink).toBe('0');
+            expect(submit.style.whiteSpace).toBe('nowrap');
+
+            select.mockClear();
+            fireEvent.change(input(), { target: { value: '工作区 1研' } });
+            expect(input().value).toBe('工作区 1研');
+            expect(select).not.toHaveBeenCalled();
+
+            // The sidebar re-renders this dialog as the task list changes.
+            // That must not select the draft again or replace it with a new suggestion.
+            view.rerender(
+                <TaskWorkspaceTransferDialog
+                    open
+                    lang="zh"
+                    direction="to-cloud"
+                    taskName="北京天气，生成pdf"
+                    cloudWorkspaces={[ws('cws_late', '工作区 1')]}
+                    busy={false}
+                    error=""
+                    onCreateCloudWorkspace={vi.fn()}
+                    onConfirm={vi.fn()}
+                    onClose={vi.fn()}
+                />,
+            );
+            expect(input().value).toBe('工作区 1研');
+            expect(select).not.toHaveBeenCalled();
+            expect(input().selectionStart).toBe(input().selectionEnd);
+        } finally {
+            select.mockRestore();
+        }
+    });
+
     it('creates a workspace, selects it, and confirms with the created id', async () => {
         const onConfirm = vi.fn();
         const onCreateCloudWorkspace = vi.fn().mockResolvedValue({ id: 'cws_new', name: 'Sprint 42' });
@@ -240,6 +301,9 @@ describe('TaskWorkspaceTransferDialog', () => {
         );
         expect((screen.getByTestId('task-transfer-confirm') as HTMLButtonElement).disabled).toBe(true);
         expect(screen.getByTestId('task-transfer-local-dir').textContent).toContain('No folder selected');
+        const pickDir = screen.getByTestId('task-transfer-pick-dir') as HTMLButtonElement;
+        expect(pickDir.style.flexShrink).toBe('0');
+        expect(pickDir.style.whiteSpace).toBe('nowrap');
 
         view.rerender(
             <TaskWorkspaceTransferDialog

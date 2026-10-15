@@ -51,6 +51,9 @@ export type TaskWorkspaceTransferDialogProps = {
     onClose: () => void;
 };
 
+/** CJK labels wrap to one glyph when a flex row runs out of width. */
+const nowrapActionStyle: CSSProperties = { flexShrink: 0, whiteSpace: 'nowrap' };
+
 const workspaceRowStyle = (selected: boolean, disabled: boolean): CSSProperties => ({
     display: 'flex',
     alignItems: 'center',
@@ -72,6 +75,18 @@ const workspaceRowStyle = (selected: boolean, disabled: boolean): CSSProperties 
 /** Chinese and English both need Enter to submit, but a live IME must not. */
 const isImeComposing = (event: ReactKeyboardEvent<HTMLInputElement>) =>
     event.nativeEvent.isComposing || event.keyCode === 229;
+
+/**
+ * Select the suggested name when the field mounts so it can be typed over.
+ * Must be a stable function: a new ref, or an effect that depends on the name,
+ * calls select() again after every keystroke and the next character replaces
+ * the whole value. Task-list updates re-render this dialog while the draft is open.
+ */
+function focusCreateInput(node: HTMLInputElement | null) {
+    if (!node) return;
+    node.focus({ preventScroll: true });
+    node.select();
+}
 
 /** Stable identity so an omitted prop cannot invalidate memos on every render. */
 const NO_CLOUD_WORKSPACES: TaskTransferCloudWorkspace[] = [];
@@ -110,7 +125,6 @@ export function TaskWorkspaceTransferDialog({
     const [createError, setCreateError] = useState('');
     const [creatingBusy, setCreatingBusy] = useState(false);
     const creatingRef = useRef(false);
-    const createInputRef = useRef<HTMLInputElement | null>(null);
     const { backdropProps, dialogProps } = useSafeBackdropDismiss(onClose, { enabled: !busy && !creatingBusy });
 
     const freeWorkspaces = useMemo(
@@ -133,13 +147,6 @@ export function TaskWorkspaceTransferDialog({
         setCreatingBusy(false);
         creatingRef.current = false;
     }, [open]);
-
-    useEffect(() => {
-        if (creatingName === null) return;
-        const input = createInputRef.current;
-        input?.focus();
-        input?.select();
-    }, [creatingName]);
 
     useEffect(() => {
         if (!open) return;
@@ -327,6 +334,7 @@ export function TaskWorkspaceTransferDialog({
                                     className="btn-secondary"
                                     data-testid="task-transfer-pick-dir"
                                     disabled={busy || creatingBusy || !onPickLocalDir}
+                                    style={nowrapActionStyle}
                                     onClick={() => { void onPickLocalDir?.(); }}
                                 >{textForLang(lang, 'Choose folder…', '选择目录…', '選擇目錄…')}</button>
                             </div>
@@ -349,12 +357,12 @@ export function TaskWorkspaceTransferDialog({
                             ) : (
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                                     <input
-                                        ref={createInputRef}
+                                        ref={focusCreateInput}
                                         data-testid="task-transfer-create-name"
                                         aria-label={textForLang(lang, 'Workspace name', '工作区名称', '工作區名稱')}
                                         placeholder={textForLang(lang, 'Workspace name', '工作区名称', '工作區名稱')}
                                         className="cwshare-input"
-                                        style={{ flex: '1 1 auto', minWidth: 0 }}
+                                        style={{ flex: '1 1 0px', width: 'auto', minWidth: 0 }}
                                         readOnly={creatingBusy}
                                         value={creatingName}
                                         onChange={event => setCreatingName(event.target.value)}
@@ -370,6 +378,7 @@ export function TaskWorkspaceTransferDialog({
                                         className="btn-primary"
                                         data-testid="task-transfer-create-submit"
                                         disabled={creatingBusy || !(creatingName ?? '').trim()}
+                                        style={nowrapActionStyle}
                                         onClick={() => { void submitCreate(); }}
                                     >
                                         {creatingBusy

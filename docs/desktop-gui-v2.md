@@ -480,6 +480,32 @@ maclawsrv 这次大约 10 秒后才开始监听，比本节前面记的 3 秒慢
 
 这次又撞上并行发布：maclaw.top 上抓到 `cp -f /tmp/aicoder_deploy/src/bin/maclaw-hubcenter /data/soft/hubcenter/maclaw-hubcenter`，另一个发布流程同时在刷 hubcenter。本节的流程不碰 hubcenter，但两边同时重启会互相干扰，验证前先重新取 PID。
 
+#### 双机同步 20261016.sync（2026-10-16 05:25 CST）
+
+中间两台已被换过一轮（线上是 `20261015.perbot`，commit `0e78a74b`）。本地 HEAD 走到 `984114cc`（V8.0.0.12371 发布提交），`build_number` 是 `12384`，工作区 135 个改动。
+
+版本标签这次沿用上一轮的 `日期.标签` 写法（上一份 `/version` 报的就是 `20261015.perbot`），所以用 `20261016.sync`；想换回正规版本号，把 `deploy_maclawsrv.cmd` 的 `VERSION` 取回 `build_number` 即可（当前 12384）。
+
+| 二进制 | 新哈希（20261016.sync） |
+| --- | --- |
+| maclawsrv | `e4dd1968641e55b37f1b6443ae284413b104fdef80ba71905e8554078e5655b7` |
+| maclaw-hub | `5f33088ac8e8a3da68e7f6fe1033825cc32918722a51b66e8e9dbcae51e8e690` |
+| desktopd | `212f82f541ea518f09ff5a2ed58607d18fcac6416d5a1f1e9f98b4bfb93a4acd` |
+
+三个哈希都变，其中 hub、desktopd 没有注入版本变量，变化即代表代码真的动了。
+
+| 项 | mypapers | maclaw.top |
+| --- | --- | --- |
+| `/version` | `20261016.sync`，commit `984114cc-dirty` | 同左 |
+| PID | maclawsrv 1089、desktopd 1076、hub 1294 | maclawsrv 333594、desktopd 333577、hub 333647 |
+| `/v1/health`（带 token） | 200 | 200 |
+| `/api/mobile/bootstrap` | 401 | — |
+| 桌面容器 | 5 个，ID 与状态前后一致 | 3 个，ID 与状态前后一致 |
+
+mypapers 上有一个**正在运行**的桌面容器 `9d26279f8038`（Up 21 小时），重启 desktopd 之后仍是 Up——和「desktopd 收到停止信号时只关掉自己的 HTTP 服务，已有容器继续跑」一致，这是头一次在一个真正开着的桌面上验证到。
+
+备份（两台各一份）：`maclawsrv.bak-sync-20261016`、`maclaw-hub.bak-sync-20261016`、`desktopd.bak-sync-20261016`。
+
 ## 5. Hub 配置
 
 Hub 把 Docker 桌面服务存在 `system_settings` 表的 `desktop_service` 键(多租户为

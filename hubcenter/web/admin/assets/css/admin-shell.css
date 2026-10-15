@@ -59,6 +59,9 @@
 .sg-form-dialog input:not([type=checkbox]),.sg-form-dialog select,.sg-form-dialog textarea{height:36px;padding:0 10px;border-radius:8px}
 .sg-form-dialog textarea{height:auto;min-height:64px;padding:8px 10px}
 .sg-form-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px 12px}
+.sg-form-grid .provider-ua-custom{margin-top:8px}
+.sg-form-grid .provider-ua-custom[hidden]{display:none}
+.sg-form-grid .provider-ua-hint{margin-top:6px;padding:0;border:0;background:none;border-radius:0;color:#707684;font-size:12px;line-height:1.45}
 .sg-section{margin-top:16px;padding-top:14px;border-top:1px solid #e7eaf0}
 .sg-section-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:8px}
 .sg-section-copy{min-width:0}
@@ -268,7 +271,7 @@
     #tab-llmservice #llmProvidersList .provider-array-head{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:12px;margin-bottom:8px}
     #tab-llmservice #llmProvidersList .provider-array.is-collapsed{padding-bottom:12px}
     #tab-llmservice #llmProvidersList .provider-array.is-collapsed .provider-array-head{margin-bottom:0}
-    #tab-llmservice #llmProvidersList .provider-array.is-drop-target{outline:2px solid #5b6cff;outline-offset:2px;background:#f5f7ff}
+    #tab-llmservice #llmProvidersList .provider-array.is-drop-target{outline:2px solid #5b6cff;outline-offset:2px;background:#f5f7ff}#tab-llmservice #llmProvidersList .provider-array[data-array-orderable="1"] .provider-array-head .data-row-actions button{cursor:pointer}#tab-llmservice #llmProvidersList .provider-array[data-array-orderable="1"] .provider-array-head .provider-traffic{cursor:auto;user-select:text}#tab-llmservice #llmProvidersList .provider-array.is-order-dragging>.data-row,#tab-llmservice #llmProvidersList .provider-array.is-order-dragging>.hint{display:none}#tab-llmservice #llmProvidersList .provider-array-title[draggable="true"]{cursor:grab;user-select:none}#tab-llmservice #llmProvidersList .provider-array.is-order-dragging{opacity:.55}#tab-llmservice #llmProvidersList .provider-array.is-order-dragging .provider-array-title{cursor:grabbing}#tab-llmservice #llmProvidersList .provider-array.is-drop-before,#tab-llmservice #llmProvidersList .provider-array.is-drop-after{position:relative;z-index:1}#tab-llmservice #llmProvidersList .provider-array.is-drop-before{box-shadow:0 -3px 0 #5b6cff}#tab-llmservice #llmProvidersList .provider-array.is-drop-after{box-shadow:0 3px 0 #5b6cff}#tab-llmservice #llmProvidersList .provider-array-grip{flex:0 0 14px;width:14px;height:18px;border-radius:4px;background-color:rgba(91,108,255,.08);background-image:radial-gradient(currentColor 1.35px, transparent 1.55px);background-size:4px 5px;background-position:center;background-repeat:repeat;color:#5b6cff}
     #tab-llmservice #llmProvidersList .provider-seq[draggable="true"],#tab-llmservice #llmProvidersList .data-row-main[draggable="true"]{cursor:grab;user-select:none}
     #tab-llmservice #llmProvidersList .data-row.is-dragging{opacity:.45}
     #tab-llmservice #llmProvidersList .data-row.is-dragging .provider-seq,#tab-llmservice #llmProvidersList .data-row.is-dragging .data-row-main{cursor:grabbing}

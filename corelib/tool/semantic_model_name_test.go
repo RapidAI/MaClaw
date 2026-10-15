@@ -21,6 +21,20 @@ func TestSemanticModelFunctionNameIsStableAndIgnoresGrantTokens(t *testing.T) {
 	if got := SemanticModelFunctionName("semantic_send_trusted_im"); got != "send_im_text" {
 		t.Fatalf("message=%q", got)
 	}
+	if got := SemanticModelFunctionName("semantic_send_trusted_mailbox"); got != "mailbox_send" {
+		t.Fatalf("mailbox send=%q", got)
+	}
+	if got := SemanticModelFunctionName("semantic_configure_trusted_mailbox"); got != "mailbox_configure" {
+		t.Fatalf("mailbox configure=%q", got)
+	}
+	sendA := RenderedSemanticFunctionName("semantic_send_trusted_mailbox", "invoke_turn_a")
+	sendB := RenderedSemanticFunctionName("semantic_send_trusted_mailbox", "invoke_turn_b")
+	if sendA != "mailbox_send" || sendB != "mailbox_send" {
+		t.Fatalf("mailbox send tokens rendered %q and %q", sendA, sendB)
+	}
+	if got := RenderedSemanticFunctionName("mailbox_query", "invoke_token"); got != "mailbox_query" {
+		t.Fatalf("mailbox query render=%q", got)
+	}
 	if got := SemanticModelFunctionName("mcp.acme.ping"); got != "" {
 		t.Fatalf("dynamic adapters must not invent a prompt name: %q", got)
 	}

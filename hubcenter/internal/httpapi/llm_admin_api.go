@@ -617,22 +617,7 @@ func adminTestLLMProviderMember(svc *llmservice.Service, proxyCfg *llmservice.Pr
 			WireAPI:    corelib.NormalizeLLMProviderWireAPI(existing.WireAPI),
 			TimeoutSec: existing.UpstreamTimeoutSec,
 		}
-		if wb, ok := llmservice.WorkBuddyMaclawConfig(existing, model); ok {
-			wb.TimeoutSec = cfg.TimeoutSec
-			cfg = wb
-		}
-		if qd, ok := llmservice.QoderMaclawConfig(existing, model); ok {
-			qd.TimeoutSec = cfg.TimeoutSec
-			cfg = qd
-		}
-		if tr, ok := llmservice.TraeMaclawConfig(existing, model); ok {
-			tr.TimeoutSec = cfg.TimeoutSec
-			cfg = tr
-		}
-		if lb, ok := llmservice.LobsterAIMaclawConfig(existing, model); ok {
-			lb.TimeoutSec = cfg.TimeoutSec
-			cfg = lb
-		}
+		cfg = providerTestConfig(cfg, existing)
 		ctx, cancel := context.WithTimeout(r.Context(), llmProviderTestTimeout(cfg))
 		defer cancel()
 		reply, errMsg, latencyMs, calls := runLLMProviderChatTestBody(ctx, cfg, spec.Tools, spec.ToolChoice)

@@ -1230,3 +1230,26 @@ func TestSyncCurrentLLMProviderMigratesZhipuCodingDefault(t *testing.T) {
 		t.Fatalf("provider model = %q, want %q", cfg.MaclawLLMProviders[0].Model, corelib.ZhipuCodingDefaultModel)
 	}
 }
+
+func TestXingchenPresetOffersLiteModelAndContext(t *testing.T) {
+	cfg := corelib.AppConfig{}
+	ApplyConfigValue(&cfg, "maclaw_llm_provider_preset", "星辰大模型")
+	if cfg.MaclawLLMModel != "TeleChat3-438B-A24B" || cfg.MaclawLLMContextLength != 256000 {
+		t.Fatalf("preset model/context = %q/%d", cfg.MaclawLLMModel, cfg.MaclawLLMContextLength)
+	}
+	var provider corelib.MaclawLLMProvider
+	for _, item := range cfg.MaclawLLMProviders {
+		if item.Name == "星辰大模型" {
+			provider = item
+		}
+	}
+	if len(provider.Models) != 2 || provider.Models[0] != "TeleChat3-438B-A24B" || provider.Models[1] != "Xing4.0-29B-A4B" {
+		t.Fatalf("preset models = %v", provider.Models)
+	}
+	opts := providerModelOptionsFromConfig(&cfg, "星辰大模型")
+	for _, want := range []string{"TeleChat3-438B-A24B", "Xing4.0-29B-A4B"} {
+		if !containsString(opts, want) {
+			t.Fatalf("model options missing %q: %v", want, opts)
+		}
+	}
+}

@@ -122,6 +122,24 @@ export function ZhipuLogo() {
     );
 }
 
+/** Tianyi (天翼) cloud mark, filled with currentColor so it follows the chip color. */
+function TianyiLogo() {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="-3 171 1135 697" fill="currentColor" aria-hidden="true">
+            <path d="M257 333c11 -17 22 -36 35 -53 28 -36 63 -63 105 -82 23 -10 46 -17 70 -21 24 -4 49 -4 74 -1 44 5 84 20 119 46 18 13 35 29 51 44 3 3 6 4 11 2 21 -6 41 -8 63 -6 35 3 63 18 87 44 21 23 35 49 48 77 1 2 2 6 4 8 46 7 87 24 122 55 40 35 64 80 73 132 11 63 1 123 -34 177 -35 53 -85 87 -146 103 -23 6 -46 8 -70 6 -39 -3 -75 -15 -107 -36 -50 -31 -85 -74 -107 -128 -8 -21 -13 -43 -19 -65 -1 -4 -2 -6 -8 -6h-46c-5 0 -11 -1 -16 -2 -14 -4 -16 -19 -6 -31 8 -9 17 -18 25 -27 21 -23 43 -45 64 -67 8 -8 14 -16 23 -23 13 -10 24 -9 35 3 37 38 75 75 111 113 5 5 8 13 9 19 2 8 -5 15 -16 16 -9 1 -19 1 -28 1 -4 0 -6 1 -7 5 -2 33 5 63 30 85 19 18 43 27 70 30 28 3 53 -2 79 -12 12 -4 20 -13 28 -23 17 -19 30 -40 36 -65 9 -43 -1 -82 -30 -116 -21 -25 -49 -39 -80 -45 -24 -4 -47 -1 -70 5 -1 1 -2 1 -5 1 9 -29 10 -56 -4 -83 -9 -18 -24 -31 -42 -39 -31 -14 -77 -14 -113 35 -7 -13 -14 -27 -22 -40 -31 -48 -75 -79 -131 -89 -45 -8 -88 2 -124 31 -33 26 -52 62 -63 101 -4 14 -7 28 -10 43 -6 -3 -12 -6 -18 -9 -26 -10 -52 -11 -79 -6 -27 6 -52 16 -73 34 -28 23 -46 52 -50 89 -5 41 3 79 28 111 19 26 46 42 78 49 18 4 36 6 54 6 30 1 60 1 90 1 85 1 171 1 257 1 7 0 11 2 15 8 24 38 55 67 93 90 1 1 2 2 6 4H276c-47 0 -94 -7 -137 -27 -25 -12 -48 -26 -68 -46 -31 -31 -51 -70 -62 -112C3 625 -1 600 0 574 5 514 23 459 62 413c33 -38 74 -63 123 -73 25 -4 49 -4 72 -7z"/>
+        </svg>
+    );
+}
+
+/** Tencent QQ penguin, filled with currentColor so it follows the chip color. */
+function TencentLogo() {
+    return (
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M21.395 15.035a40 40 0 0 0-.803-2.264l-1.079-2.695c.001-.032.014-.562.014-.836C19.526 4.632 17.351 0 12 0S4.474 4.632 4.474 9.241c0 .274.013.804.014.836l-1.08 2.695a39 39 0 0 0-.802 2.264c-1.021 3.283-.69 4.643-.438 4.673.54.065 2.103-2.472 2.103-2.472 0 1.469.756 3.387 2.394 4.771-.612.188-1.363.479-1.845.835-.434.32-.379.646-.301.778.343.578 5.883.369 7.482.189 1.6.18 7.14.389 7.483-.189.078-.132.132-.458-.301-.778-.483-.356-1.233-.646-1.846-.836 1.637-1.384 2.393-3.302 2.393-4.771 0 0 1.563 2.537 2.103 2.472.251-.03.581-1.39-.438-4.673"/>
+        </svg>
+    );
+}
+
 /** Inline SVG logos for known LLM providers, keyed by provider name. */
 export const PROVIDER_LOGOS: Record<string, React.ReactNode> = {
     OpenAI: (
@@ -157,6 +175,12 @@ export const PROVIDER_LOGOS: Record<string, React.ReactNode> = {
             <path d="M8 7 3 12l5 5M16 7l5 5-5 5M13 5l-2 14" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"/>
         </svg>
     ),
+    Devin: (
+        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M7 4h7.2a5 5 0 0 1 0 10H7V4Z" stroke="currentColor" strokeWidth="1.8"/>
+            <path d="M7 14h8.4a4.2 4.2 0 0 1 0 6H7v-6Z" fill="currentColor"/>
+        </svg>
+    ),
     Anthropic: (
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path d="M4 20 10.1 4h3.8L20 20h-3.4l-1.4-3.8H8.8L7.4 20H4Zm5.8-6.7h4.4L12 7.1l-2.2 6.2Z" fill="currentColor"/>
@@ -172,6 +196,8 @@ export const PROVIDER_LOGOS: Record<string, React.ReactNode> = {
             <path d="M5 4h3.3l2.9 4.5L14 4h3.2l-4.3 6.5L18.7 20h-3.3l-4-6.2L7.2 20H4l5.7-8.7L5 4Z" fill="currentColor"/>
         </svg>
     ),
+    "\u817e\u8bafTokenPlan": <TencentLogo />,
+    "\u817e\u8baf\u4e91": <TencentLogo />,
     "\u706b\u5c71\u5f15\u64ce Agent Plan": (
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
             <path d="M4 6.2 11.9 2 20 6.2v3.4l-8.1 4.2L4 9.6V6.2Z" fill="currentColor"/>
@@ -192,6 +218,7 @@ export const PROVIDER_LOGOS: Record<string, React.ReactNode> = {
         </svg>
     ),
     [KIMI_CODE_PROVIDER]: <KimiCodeLogo />,
+    "星辰大模型": <TianyiLogo />,
     "讯飞星辰": (
         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none">
             <path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="currentColor" strokeWidth="1.8" fill="none"/>

@@ -1,3 +1,4 @@
+import { isExplicitTaskCopy } from '../components/ai/codingTaskMode';
 import { localizeText } from '../i18n/langSelect';
 import { getWailsAppModule } from './wailsAppModule';
 
@@ -125,9 +126,14 @@ export function latexExpertTaskIsLive(
     const path = normalizedTaskPath(task?.project_path);
     if (!path) return true;
     const peers = (tasks || []).filter(item => isLatexExpertId(expertIdFromTaskTags(item?.tags)) && String(item?.project_path || '').trim());
-    if (peers.length <= 1) return true;
-    let newest = peers[0];
-    for (const item of peers.slice(1)) {
+    // A copied paper is a new empty task. It must not become the live expert
+    // session while the paper it was copied from is still in the list.
+    const canonical = peers.filter(item => !isExplicitTaskCopy(item.tags));
+    if (isExplicitTaskCopy(task?.tags) && canonical.length > 0) return false;
+    const pool = canonical.length > 0 ? canonical : peers;
+    if (pool.length <= 1) return true;
+    let newest = pool[0];
+    for (const item of pool.slice(1)) {
         if (latexTaskRecencyKey(item) > latexTaskRecencyKey(newest)) newest = item;
     }
     return normalizedTaskPath(newest.project_path) === path;

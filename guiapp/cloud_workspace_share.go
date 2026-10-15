@@ -443,12 +443,12 @@ type cloudWorkspaceShareAccessSession struct {
 }
 
 var (
-	cloudWorkspaceShareAccessMu          sync.Mutex
-	cloudWorkspaceShareAccessCache       map[string]cloudWorkspaceShareAccessSession
-	cloudWorkspaceShareAccessLoaded      bool
-	shareAccessBoundRemoteUser           string
-	shareAccessBoundRemoteUserSet        bool
-	shareAccessRemoteUserOverride        string
+	cloudWorkspaceShareAccessMu     sync.Mutex
+	cloudWorkspaceShareAccessCache  map[string]cloudWorkspaceShareAccessSession
+	cloudWorkspaceShareAccessLoaded bool
+	shareAccessBoundRemoteUser      string
+	shareAccessBoundRemoteUserSet   bool
+	shareAccessRemoteUserOverride   string
 )
 
 func resetCloudWorkspaceShareAccessCache() {
@@ -538,7 +538,7 @@ func (a *App) shareAccessMapLocked() map[string]cloudWorkspaceShareAccessSession
 }
 
 type cloudWorkspaceShareAccessFile struct {
-	BoundUserID string                                    `json:"bound_user_id,omitempty"`
+	BoundUserID string                                      `json:"bound_user_id,omitempty"`
 	Sessions    map[string]cloudWorkspaceShareAccessSession `json:"sessions"`
 }
 
@@ -755,7 +755,7 @@ func (a *App) AcceptCloudWorkspaceShare(tokenOrURL, password string) (ProjectSea
 			Name:        strings.TrimSpace(accepted.Name),
 		})
 	}
-	if existing := a.findVisibleCloudWorkspaceTask(workspaceID); strings.TrimSpace(existing.ProjectPath) != "" {
+	if existing := a.findCanonicalCloudWorkspaceTask(workspaceID, false); strings.TrimSpace(existing.ProjectPath) != "" {
 		return a.tagSharedCloudWorkspaceTask(existing, workspaceID, permission, ownerLabel), nil
 	}
 	name := strings.TrimSpace(accepted.Name)

@@ -849,8 +849,9 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 			verificationSummary = ""
 		}
 		unresolvedGuardrailViolations := unresolvedSubAgentGuardrailViolations(allGuardrailViolations, filterPostEditSubAgentCommands(allCommandsRun, audit.LastEditSeq))
-		status, errMsg = applySubAgentGuardrailOutcome(status, errMsg, unresolvedGuardrailViolations)
-		cb.emitGuardrailSummaryEvent(unresolvedGuardrailViolations)
+		taskGuardrails := guardrailViolationsForTaskOutcome(unresolvedGuardrailViolations, qualityGateEnabled)
+		status, errMsg = applySubAgentGuardrailOutcome(status, errMsg, taskGuardrails)
+		cb.emitGuardrailSummaryEvent(taskGuardrails)
 		cb.emitCommandSummaryEvent(allCommandsRun)
 		if modelSummary == "" {
 			summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
@@ -888,9 +889,10 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 			explorationStatus, explorationSummary = codingSubAgentQualityNotNeeded, ""
 			verificationStatus, verificationSummary = codingSubAgentQualityNotNeeded, ""
 		}
-		status, errMsg = applySubAgentGuardrailOutcome(status, errMsg, unresolvedGuardrailViolations)
+		taskGuardrails := guardrailViolationsForTaskOutcome(unresolvedGuardrailViolations, qualityGateEnabled)
+		status, errMsg = applySubAgentGuardrailOutcome(status, errMsg, taskGuardrails)
 		cb.emitFileActivitySummaryEvent(filesRead, filesModified, filesCreated)
-		cb.emitGuardrailSummaryEvent(unresolvedGuardrailViolations)
+		cb.emitGuardrailSummaryEvent(taskGuardrails)
 		if qualityGateEnabled {
 			cb.emitExplorationSummaryEvent(explorationStatus, explorationSummary, countSuccessfulSubAgentSearches(allSearchesRun))
 		}
@@ -1905,9 +1907,11 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 		return cloneCodingSubAgentToolDefinitions(c.appendExposedGoalTool(tools))
 	}
 
-	// Full workbench extras (web research / clock) — always on for full env.
+	// Local programming agent: web research plus the host SSH client.
+	// Always on for the full workbench; task wording cannot add or remove them.
 	if c.subagent != nil && c.subagent.isFullEnvironment() {
 		tools = append(tools, buildCodingFullEnvExtraToolDefinitions()...)
+		tools = append(tools, buildCodingLocalSSHToolDefinition())
 	}
 	// Nested explorer/reviewer still need research helpers even without full env.
 	if c.subagent != nil && !c.subagent.isFullEnvironment() && c.subagent.nestDepth > 0 {
@@ -2766,6 +2770,22 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 		succeeded := !codingWebFetchResultLooksFailed(text)
 		c.trackSearchResult("web_fetch", args, text, succeeded)
 		return codingToolExecutionResult{Text: text, Outcome: codingOutcomeFromSuccess(succeeded)}
+	case "ssh":
+		c.bindCodingSSHLocalPath(args)
+		if msg := c.guardCodingSSHArgs(args); msg != "" {
+			return codingToolExecutionResult{Text: c.rejectToolCall("ssh", args, msg), Outcome: codingToolOutcomeBlocked}
+		}
+		if h == nil {
+			return codingToolExecutionResult{Text: "ssh unavailable: host handler missing", Outcome: codingToolOutcomeFailed}
+		}
+		text := h.toolSSH(args)
+		succeeded := !codingSSHResultLooksFailed(text)
+		if succeeded && classifySSHToolAction(sshStringArg(args, "action")) == sshToolActionDownload {
+			if path := strings.TrimSpace(sshStringArg(args, "local_path")); path != "" {
+				c.trackFile(path)
+			}
+		}
+		return codingToolExecutionResult{Text: text, Outcome: codingOutcomeFromSuccess(succeeded)}
 	case "download_file":
 		if h == nil {
 			return codingToolExecutionResult{Text: "download_file unavailable: host handler missing", Outcome: codingToolOutcomeFailed}
@@ -2954,6 +2974,8 @@ func codingSubAgentRequiredArgumentFields(name string) []string {
 		return []string{"server_id", "tool_name"}
 	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
 		return []string{"query"}
+	case "ssh":
+		return []string{"action"}
 	default:
 		return nil
 	}
@@ -3062,6 +3084,8 @@ func codingSubAgentStringArgumentFields(name string) []string {
 		return []string{"server_id", "tool_name"}
 	case "coding_knowledge_search", "knowledge_search", "knowledge_image_search":
 		return []string{"query"}
+	case "ssh":
+		return []string{"action", "host", "user", "auth_method", "key_path", "password", "label", "initial_command", "session_id", "command", "task_id", "local_path", "remote_path"}
 	default:
 		return nil
 	}
@@ -3075,6 +3099,8 @@ func codingSubAgentNumberArgumentFields(name string) []string {
 		return []string{"start_line", "end_line"}
 	case "bash":
 		return []string{"timeout"}
+	case "ssh":
+		return []string{"port", "timeout", "wait_seconds", "tail_lines"}
 	default:
 		return nil
 	}
@@ -3094,6 +3120,11 @@ func codingSubAgentNumberArgumentMin(name, field string) (int64, bool) {
 		}
 	case "bash":
 		if field == "timeout" {
+			return 1, true
+		}
+	case "ssh":
+		switch field {
+		case "port", "timeout", "wait_seconds", "tail_lines":
 			return 1, true
 		}
 	}
@@ -5604,6 +5635,9 @@ func (c *codingSubAgentCallbacks) trackGuardrailViolation(toolName string, args 
 		path, _ = args["working_dir"].(string)
 	}
 	command, _ := args["command"].(string)
+	if strings.TrimSpace(command) == "" {
+		command, _ = args["initial_command"].(string)
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	seq := c.nextEventSeqLocked()
@@ -6753,10 +6787,54 @@ func classifyCodingGuardrailCategory(toolName, path, command, result string) Cod
 	case codingGuardrailResultMarkerProjectScope:
 		return codingSubAgentGuardrailCategoryScope
 	}
+	// A path on a read-snapshot rejection is the file to re-read, not evidence
+	// that the call left the project. Leaving it as scope made the quality
+	// gate's "read before edit" nudge fail the task like an out-of-tree write.
+	if codingGuardrailResultIsReadSnapshot(result) {
+		return codingSubAgentGuardrailCategoryPolicy
+	}
 	if path != "" {
 		return codingSubAgentGuardrailCategoryScope
 	}
 	return codingSubAgentGuardrailCategoryPolicy
+}
+
+// codingGuardrailResultIsReadSnapshot reports a recoverable edit rejection:
+// the tool told the model to read_file and retry. It is not a safety block.
+func codingGuardrailResultIsReadSnapshot(result string) bool {
+	switch {
+	case strings.Contains(result, "请先调用 read_file"),
+		strings.Contains(result, "不允许未读文件"),
+		strings.Contains(result, "缺少 read_file 快照"),
+		strings.Contains(result, "自上次 read_file"),
+		strings.Contains(result, "重新调用 read_file"),
+		strings.Contains(result, "只有创建全新文件"):
+		return true
+	default:
+		return false
+	}
+}
+
+// guardrailViolationsForTaskOutcome decides which blocked calls fail the task.
+// The quality gate is off by default. While it is off, a read-before-edit
+// rejection stays a tool error the model can recover from inside the turn, and
+// does not by itself fail the task. Destructive git, recursive delete, shell
+// file writes, project-scope escapes, and host failures still do.
+func guardrailViolationsForTaskOutcome(violations []CodingSubAgentGuardrailViolation, qualityGateOn bool) []CodingSubAgentGuardrailViolation {
+	if qualityGateOn || len(violations) == 0 {
+		return violations
+	}
+	out := make([]CodingSubAgentGuardrailViolation, 0, len(violations))
+	for _, violation := range violations {
+		if codingGuardrailResultIsReadSnapshot(violation.Summary) {
+			continue
+		}
+		out = append(out, violation)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func compactSearchResult(result string) string {
@@ -14290,7 +14368,7 @@ func relaxCodingPromptForDisabledQualityGate(prompt string) string {
 	if strings.Contains(prompt, "Host quality gate is off for this turn.") {
 		return prompt
 	}
-	return prompt + "\nHost quality gate is off for this turn. Do not mention that setting. Missing exploration, a pipe or redirection in a verifier, or a skipped git diff will not fail the task. Destructive git, recursive delete, and shell file-write guardrails still apply.\n"
+	return prompt + "\nHost quality gate is off for this turn. Do not mention that setting. Missing exploration, a pipe or redirection in a verifier, or a skipped git diff will not fail the task. Destructive git, recursive delete, and shell file-write guardrails still apply. edit_file, edit_lines, and write_file on an existing file still require a current read_file of that exact path. If the tool says to read first, call read_file and retry the edit once. Do not send the same edit again.\n"
 }
 
 func (c *remoteCodingCallbacks) remoteQualityGateEnabled() bool {
@@ -14658,7 +14736,7 @@ func (c *codingSubAgentCallbacks) emitToolFinishedEvent(name, argsJSON, result s
 
 func codingToolEventCommand(name, argsJSON string) string {
 	name = canonicalCodingSubAgentToolName(name)
-	if name != "bash" && name != remoteSSHBashToolName {
+	if name != "bash" && name != "ssh" && name != remoteSSHBashToolName {
 		return ""
 	}
 	var args map[string]interface{}
@@ -14666,6 +14744,9 @@ func codingToolEventCommand(name, argsJSON string) string {
 		return ""
 	}
 	command, _ := args["command"].(string)
+	if name == "ssh" && strings.TrimSpace(command) == "" {
+		command, _ = args["initial_command"].(string)
+	}
 	return strings.TrimSpace(redactCodingSubAgentFreeformLogText(command))
 }
 
@@ -17123,7 +17204,7 @@ func buildLocalInspectionRoleSystemPrompt(projectPath string, role codingSubAgen
 func buildFullCodingEnvironmentPromptPreamble() string {
 	return `## 全功能编程环境（Full Coding Workbench）
 你运行在与 Claude Code / Codex 同级目标的完整编程工作台中（同一模型下追求同等工程能力）：
-- 可使用文件读写、搜索、shell、git_diff、web_search/web_fetch、current_datetime、goal（长时目标 plan/step/complete/fail/get），以及本轮工具列表中实际出现的受管扩展函数。
+- 可使用文件读写、搜索、shell、git_diff、ssh（连接远程主机并执行命令或传文件）、web_search/web_fetch、current_datetime、goal（长时目标 plan/step/complete/fail/get），以及本轮工具列表中实际出现的受管扩展函数。
 - 不得猜测或调用 Skill/MCP 的旧通用入口；只有本轮实际列出的受限别名才可调用。若未出现扩展函数，继续使用静态工具或说明需要重新规划。
 - 工作区根目录已绑定；下方「工作区概览」是宿主 os.ReadDir 的权威顶层清单，请先消化再深入探索。
 - 禁止仅用 python/python3/os.listdir/ls/dir 复核顶层是否为空；失败的列目录命令不能当成「目录为空」。深入文件用 list_directory / read_file / glob。
@@ -17148,7 +17229,7 @@ func buildFullCodingEnvironmentPromptPreamble() string {
 func buildNestedFullCodingEnvironmentPromptPreamble() string {
 	return `## 嵌套实现子代理（Nested Worker）
 你是全功能编程工作台派发的实现子代理（干净上下文）：
-- 可使用文件读写、搜索、shell、git_diff、web_search/web_fetch、current_datetime，以及本轮工具列表中实际出现的受管扩展函数；不得猜测旧 Skill/MCP 入口。
+- 可使用文件读写、搜索、shell、git_diff、ssh、web_search/web_fetch、current_datetime，以及本轮工具列表中实际出现的受管扩展函数；不得猜测旧 Skill/MCP 入口。
 - 结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node）。没有 .codegraph/ 时，可修改的任务里该工具会安装并 codegraph init。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。
 - 禁止再派生子代理；请在本上下文中直接完成指派任务并验证。
 - 最小必要改动；工具失败时换策略；完成后用工程师短文说明改了什么以及实际跑过的验证，不要写审计标题。
@@ -17317,7 +17398,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 	b.WriteString(codingAgentTodoControlPlanePromptSection)
 	b.WriteString(`
 ## 工作流
-- 结构、符号和调用关系优先 code_navigation（运行 codegraph explore / codegraph node）。顶层没有 .codegraph/ 时，可修改的任务里该工具会尝试 npm install -g @colbymchenry/codegraph，没有索引时再 codegraph init。code_navigation 不可用或检索失败时，用 Glob、ripgrep、list_directory 完成同样的定位再读文件。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。所有读取、搜索、列目录都必须限定在项目路径内；不要读取项目外文件。
+- 结构、符号和调用关系优先 code_navigation（运行 codegraph explore / codegraph node）。顶层没有 .codegraph/ 时，可修改的任务里该工具会尝试 npm install -g @colbymchenry/codegraph，没有索引时再 codegraph init。code_navigation 不可用或检索失败时，用 Glob、ripgrep、list_directory 完成同样的定位再读文件。code_navigation 已经给出的符号正文就是当前源码，不要为同一个符号再 read_file 或 ripgrep。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。所有读取、搜索、列目录都必须限定在项目路径内；不要读取项目外文件。
 - .codegraph/ 是 code_navigation 的本地索引，不是任务改动。不要删除它，不要提交它，也不要因为它出现在 git status 里就回滚。
 - 修复 bug 时，优先复现或确认错误，再沿调用链追踪输入、状态变化和影响范围。不要基于猜测修改。
 - 修改已有文件时优先使用 edit_file 或 edit_lines；禁止用 write_file 重写已有文件来做小修改。edit_file 失败时先 read_file 确认当前内容，再改用 edit_lines。
@@ -17549,6 +17630,7 @@ var codingSubAgentDynamicToolNames = map[string]bool{
 	"knowledge_image_search":    true,
 	"web_search":                true,
 	"web_fetch":                 true,
+	"ssh":                       true,
 	"download_file":             true,
 	"current_datetime":          true,
 	"goal":                      true,
@@ -17687,6 +17769,303 @@ func buildCodingFullEnvExtraToolDefinitions() []map[string]interface{} {
 			},
 		},
 	}
+}
+
+// buildCodingLocalSSHToolDefinition is the host SSH client injected into the
+// local programming agent. Local files stay on read_file/edit_file/bash.
+func buildCodingLocalSSHToolDefinition() map[string]interface{} {
+	return buildToolDef("ssh",
+		"Connect to a remote host and run commands or transfer files. Actions: connect, exec, exec_background, check_task, wait_task, list_tasks, kill_task, sudo_prepare, upload, download, list, close, close_all. connect accepts host/user, a saved label, or an OpenSSH config alias. exec and exec_background require session_id from connect plus command. Use read_file, edit_file, and bash for the local workspace.",
+		map[string]interface{}{
+			"action":          map[string]interface{}{"type": "string", "description": "connect | exec | exec_background | check_task | wait_task | list_tasks | kill_task | sudo_prepare | upload | download | list | close | close_all"},
+			"host":            map[string]interface{}{"type": "string", "description": "Remote host, IP, or OpenSSH config alias"},
+			"user":            map[string]interface{}{"type": "string", "description": "Login username. Omit when the alias already sets User."},
+			"port":            map[string]interface{}{"type": "integer", "description": "SSH port, default 22"},
+			"auth_method":     map[string]interface{}{"type": "string", "description": "password, key, or agent"},
+			"key_path":        map[string]interface{}{"type": "string", "description": "Private key path"},
+			"password":        map[string]interface{}{"type": "string", "description": "SSH password. Do not echo it back."},
+			"label":           map[string]interface{}{"type": "string", "description": "Optional saved host label"},
+			"session_id":      map[string]interface{}{"type": "string", "description": "Session ID returned by connect"},
+			"command":         map[string]interface{}{"type": "string", "description": "Remote command for exec or exec_background"},
+			"wait_seconds":    map[string]interface{}{"type": "integer", "description": "Seconds to wait for exec output"},
+			"task_id":         map[string]interface{}{"type": "string", "description": "Background task ID"},
+			"timeout":         map[string]interface{}{"type": "integer", "description": "wait_task timeout seconds"},
+			"tail_lines":      map[string]interface{}{"type": "integer", "description": "Tail lines for task output"},
+			"local_path":      map[string]interface{}{"type": "string", "description": "Local path for upload or download. A relative path is resolved inside the coding project."},
+			"remote_path":     map[string]interface{}{"type": "string", "description": "Remote path for upload or download"},
+			"initial_command": map[string]interface{}{"type": "string", "description": "Command to run immediately after connect"},
+		},
+		[]string{"action"},
+	)
+}
+
+// guardCodingSSHArgs applies remote-command and local-path gates to the host
+// SSH client. The command runs on the remote shell, so it does not inherit
+// the local PowerShell compatibility rules or the local "edit files with
+// edit_file, not the shell" rule. Destructive remote commands still need the
+// same high-risk approval as local bash. Upload reads a local file and
+// download writes one, so those paths stay inside the project unless the
+// user approves the scope.
+func (c *codingSubAgentCallbacks) guardCodingSSHArgs(args map[string]interface{}) string {
+	if c == nil {
+		return "coding subagent is unavailable"
+	}
+	switch classifySSHToolAction(sshStringArg(args, "action")) {
+	case sshToolActionConnect:
+		if command := strings.TrimSpace(sshStringArg(args, "initial_command")); command != "" {
+			if msg := c.guardCodingRemoteShellCommand(command); msg != "" {
+				return msg
+			}
+		}
+	case sshToolActionExec, sshToolActionExecBackground:
+		if msg := c.guardCodingRemoteShellCommand(sshStringArg(args, "command")); msg != "" {
+			return msg
+		}
+	case sshToolActionUpload, sshToolActionDownload:
+		if path := strings.TrimSpace(sshStringArg(args, "local_path")); path != "" {
+			if msg := c.requireCodingSSHLocalPath(path); msg != "" {
+				return msg
+			}
+		}
+	}
+	return ""
+}
+
+// bindCodingSSHLocalPath resolves a relative upload/download path against the
+// coding project. filepath.Abs would otherwise use the process working
+// directory, so "inside.txt" could be rejected or transferred from the wrong
+// place.
+func (c *codingSubAgentCallbacks) bindCodingSSHLocalPath(args map[string]interface{}) {
+	if c == nil || args == nil {
+		return
+	}
+	switch classifySSHToolAction(sshStringArg(args, "action")) {
+	case sshToolActionUpload, sshToolActionDownload:
+	default:
+		return
+	}
+	raw := expandCodingSSHHomePath(strings.TrimSpace(sshStringArg(args, "local_path")))
+	projectPath := c.projectPath()
+	if raw == "" || projectPath == "" {
+		return
+	}
+	if !filepath.IsAbs(raw) {
+		raw = filepath.Join(projectPath, raw)
+	}
+	args["local_path"] = raw
+}
+
+// expandCodingSSHHomePath turns "~/file" into the user home path before the
+// project scope check. filepath.IsAbs does not treat a tilde as absolute, so
+// joining it onto the project would look at the wrong file.
+func expandCodingSSHHomePath(path string) string {
+	path = strings.TrimSpace(path)
+	if path != "~" && !strings.HasPrefix(path, "~/") && !strings.HasPrefix(path, `~\`) {
+		return path
+	}
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return path
+	}
+	if path == "~" {
+		return home
+	}
+	return filepath.Join(home, path[2:])
+}
+
+func (c *codingSubAgentCallbacks) requireCodingSSHLocalPath(path string) string {
+	projectPath := c.projectPath()
+	path = strings.TrimSpace(path)
+	if projectPath == "" || path == "" {
+		return ""
+	}
+	ok, err := isPathWithinDir(path, projectPath)
+	if err != nil {
+		return fmt.Sprintf("无法确认 ssh 本地路径是否位于项目目录内：%s", err.Error())
+	}
+	if ok {
+		return ""
+	}
+	if c.subagent != nil && c.subagent.scopeApproval != nil {
+		return c.subagent.scopeApproval.check("ssh", path, projectPath)
+	}
+	return formatScopeRejection("ssh", path, projectPath)
+}
+
+// guardCodingRemoteShellCommand is the high-risk half of the local bash
+// guard. Windows syntax checks and local shell-mutation bans do not apply:
+// mkdir, ls -la, cp, and redirection are normal on the remote host.
+func (c *codingSubAgentCallbacks) guardCodingRemoteShellCommand(command string) string {
+	if c == nil {
+		return "coding subagent is unavailable"
+	}
+	c.refreshTaskCommandAllowance()
+	msg := rejectDisallowedRemoteCodingCommand(command)
+	if msg == "" {
+		return ""
+	}
+	if c.subagent != nil && c.subagent.scopeApproval != nil {
+		msg = c.subagent.scopeApproval.checkHighRisk("ssh", command, c.projectPath(), "", msg)
+	}
+	return msg
+}
+
+func rejectDisallowedRemoteCodingCommand(command string) string {
+	normalized := strings.ToLower(strings.Join(strings.Fields(command), " "))
+	if normalized == "" || !remoteCodingCommandIsHighRisk(normalized) {
+		return ""
+	}
+	return fmt.Sprintf("拒绝执行高风险命令：%s。远程 SSH 不允许自动执行 Git 工作区改写、递归删除或 find 写入；请改用更小范围的操作，或等用户确认。", command)
+}
+
+// remoteCodingCommandIsHighRisk applies the remote high-risk detectors to the
+// whole command, to each shell segment, and again after privilege or wrapper
+// prefixes. "sudo rm", "bash -lc", "/bin/rm", and "command rm" are not visible
+// to a detector that only looks at the first token.
+func remoteCodingCommandIsHighRisk(normalized string) bool {
+	normalized = codingRemoteBasenameExecutables(normalized)
+	if codingRemoteShellPatternIsHighRisk(normalized) {
+		return true
+	}
+	for _, segment := range shellCommandSegments(normalized) {
+		joined := strings.Join(segment, " ")
+		if joined != "" && joined != normalized && codingRemoteShellPatternIsHighRisk(joined) {
+			return true
+		}
+		peeled := peelRemoteCodingCommandPrefix(segment)
+		peeledText := strings.Join(peeled, " ")
+		if peeledText == "" || peeledText == joined {
+			continue
+		}
+		if remoteCodingCommandIsHighRisk(peeledText) {
+			return true
+		}
+	}
+	return false
+}
+
+func codingRemoteBasenameExecutables(normalized string) string {
+	fields := shellCommandFields(normalized)
+	changed := false
+	for i, field := range fields {
+		token := normalizeShellCommandToken(field)
+		if !strings.Contains(token, "/") && !strings.Contains(token, "\\") {
+			continue
+		}
+		base := commandNameBase(token)
+		if base == "" || base == field {
+			continue
+		}
+		fields[i] = base
+		changed = true
+	}
+	if !changed {
+		return normalized
+	}
+	return strings.Join(fields, " ")
+}
+
+func peelRemoteCodingCommandPrefix(segment []string) []string {
+	segment = stripOperationalExecEval(stripOperationalPrivilegePrefix(segment))
+	if len(segment) == 0 {
+		return segment
+	}
+	switch commandNameBase(segment[0]) {
+	case "command", "builtin", "busybox":
+		segment = segment[1:]
+		for len(segment) > 0 && strings.HasPrefix(segment[0], "-") {
+			if segment[0] == "--" {
+				return segment[1:]
+			}
+			segment = segment[1:]
+		}
+	}
+	return segment
+}
+
+func codingRemoteShellPatternIsHighRisk(normalized string) bool {
+	return hasOpaqueShellWrapperCommand(normalized) ||
+		hasDisallowedGitCommand(normalized) ||
+		hasDisallowedRecursiveDeleteCommand(normalized) ||
+		hasFindWritePrimary(normalized)
+}
+
+func sshStringArg(args map[string]interface{}, key string) string {
+	if args == nil {
+		return ""
+	}
+	value, _ := args[key].(string)
+	return value
+}
+
+func codingSSHResultLooksFailed(result string) bool {
+	text := strings.TrimSpace(result)
+	if text == "" {
+		return true
+	}
+	// A recovered session prefixes the real outcome. Classify the outcome.
+	text = strings.TrimSpace(strings.TrimPrefix(text, "连接已断开并自动重连\n"))
+	if codingSSHBackgroundTaskFailed(text) {
+		return true
+	}
+	lower := strings.ToLower(text)
+	for _, prefix := range codingSSHFailurePrefixes {
+		if strings.HasPrefix(text, prefix) || strings.HasPrefix(lower, strings.ToLower(prefix)) {
+			return true
+		}
+	}
+	return strings.HasPrefix(text, "SSH 会话 ") && strings.Contains(text, "无响应")
+}
+
+// codingSSHBackgroundTaskFailed reports a finished background task whose
+// remote command failed. A completed task and a still-running check stay
+// successful so the agent can keep polling.
+func codingSSHBackgroundTaskFailed(text string) bool {
+	if strings.HasPrefix(text, "[failed] task ") || strings.HasPrefix(text, "[killed] task ") {
+		return true
+	}
+	const marker = "wait_task reached terminal status "
+	if !strings.HasPrefix(text, marker) {
+		return false
+	}
+	rest := strings.TrimPrefix(text, marker)
+	if len(rest) < 2 || rest[0] != '"' {
+		return false
+	}
+	end := strings.IndexByte(rest[1:], '"')
+	if end < 0 {
+		return false
+	}
+	switch normalizeRuntimeTaskStatus(rest[1 : 1+end]) {
+	case runtimeTaskStatusFailed, runtimeTaskStatusKilled:
+		return true
+	default:
+		return false
+	}
+}
+
+var codingSSHFailurePrefixes = []string{
+	"错误",
+	"未知 SSH",
+	"SSH 连接失败",
+	"SSH 会话已断开",
+	"SSH 会话不存在",
+	"发送命令失败",
+	"提交后台任务失败",
+	"终止任务失败",
+	"上传失败",
+	"下载失败",
+	"ssh failed",
+	"check_task failed",
+	"wait_task failed",
+	"wait_task timed out",
+	"error:",
+	"无法获取 sudo",
+	"执行 sudo -v 失败",
+	"未检测到 sudo",
+	"写入密码失败",
+	"sudo 密码验证失败",
+	"刷新 sudo token 失败",
 }
 
 // buildCodingGoalToolDefinition exposes persistent /goal lifecycle actions to

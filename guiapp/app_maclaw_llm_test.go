@@ -26,6 +26,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/RapidAI/CodeClaw/corelib/qoder"
 	"github.com/RapidAI/CodeClaw/corelib/trae"
+	"github.com/RapidAI/CodeClaw/corelib/windsurf"
 	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 	"pgregory.net/rapid"
 )
@@ -98,6 +99,57 @@ func TestDoFetchModelsRequestNormalizesLegacyTigerclawUserAgent(t *testing.T) {
 	})}
 
 	resp, err := app.doFetchModelsRequest(client, "https://codegen.qianxin-inc.cn/api/v1/models", "token", "openai", "tigerclaw")
+	if err != nil {
+		t.Fatalf("doFetchModelsRequest() error = %v", err)
+	}
+	_ = resp.Body.Close()
+}
+
+func TestDoFetchModelsRequestUsesOfficialOpenCodeClient(t *testing.T) {
+	app := &App{}
+	for _, agent := range []string{"opencode", "OpenCode"} {
+		client := &http.Client{Transport: appLLMRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+			if got := req.Header.Get("User-Agent"); got != "opencode/"+corelib.OpenCodeClientVersion {
+				t.Fatalf("User-Agent = %q, want opencode/%s", got, corelib.OpenCodeClientVersion)
+			}
+			if got := req.Header.Get(corelib.OpenCodeSessionHeader); !strings.HasPrefix(got, "ses_") || len(got) != 30 {
+				t.Fatalf("session = %q, want ses_ + 12 hex + 14 base62", got)
+			}
+			if req.Header.Get("x-opencode-client") != "" || req.Header.Get("x-opencode-request") != "" {
+				t.Fatal("unneeded OpenCode headers were added")
+			}
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Header:     make(http.Header),
+				Body:       io.NopCloser(bytes.NewReader([]byte(`{"data":[]}`))),
+				Request:    req,
+			}, nil
+		})}
+		resp, err := app.doFetchModelsRequest(client, "https://opencode.ai/zen/v1/models", "zen-key", "openai", agent)
+		if err != nil {
+			t.Fatalf("doFetchModelsRequest(%q) error = %v", agent, err)
+		}
+		_ = resp.Body.Close()
+	}
+}
+
+func TestDoFetchModelsRequestKeepsOpenCodeUserAgentForGLM(t *testing.T) {
+	app := &App{}
+	client := &http.Client{Transport: appLLMRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Header.Get("User-Agent"); got != "opencode" {
+			t.Fatalf("User-Agent = %q, want opencode", got)
+		}
+		if got := req.Header.Get(corelib.OpenCodeSessionHeader); got != "" {
+			t.Fatalf("session = %q, want empty", got)
+		}
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader([]byte(`{"data":[]}`))),
+			Request:    req,
+		}, nil
+	})}
+	resp, err := app.doFetchModelsRequest(client, "https://open.bigmodel.cn/api/paas/v4/models", "key", "openai", "opencode")
 	if err != nil {
 		t.Fatalf("doFetchModelsRequest() error = %v", err)
 	}
@@ -1658,6 +1710,46 @@ func TestGetMaclawLLMProvidersDropsEmptyZhipuDefaultWhenTUIAliasExists(t *testin
 	}
 	if zhipu.ID != "zhipu" || zhipu.Key != "glm-key" {
 		t.Fatalf("kept zhipu provider = %+v, want credentialed TUI alias", zhipu)
+	}
+}
+
+func TestGetMaclawLLMProvidersRestoresXingchenLiteModel(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("HOME", tmpHome)
+	app := &App{testHomeDir: tmpHome}
+	if err := app.SaveConfig(corelib.AppConfig{
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			ID: "xingchen", Name: xingchenProviderName, URL: "https://old.example/v1", Key: "ty-key",
+			Model: xingchenLiteModel, Models: []string{xingchenLiteModel, "custom-routed"},
+		}},
+		MaclawLLMCurrentProvider: xingchenProviderName,
+	}); err != nil {
+		t.Fatalf("SaveConfig: %v", err)
+	}
+
+	data := app.GetMaclawLLMProviders()
+	var got corelib.MaclawLLMProvider
+	for _, provider := range data.Providers {
+		if provider.Name == xingchenProviderName {
+			got = provider
+			break
+		}
+	}
+	if got.Key != "ty-key" || got.Model != xingchenLiteModel {
+		t.Fatalf("xingchen provider = %+v, want saved key and selected lite model", got)
+	}
+	if got.URL != xingchenProviderURL {
+		t.Fatalf("xingchen URL = %q, want %q", got.URL, xingchenProviderURL)
+	}
+	want := []string{xingchenLiteModel, "custom-routed", xingchenDefaultModel}
+	if len(got.Models) != len(want) {
+		t.Fatalf("xingchen models = %v, want %v", got.Models, want)
+	}
+	for i, model := range want {
+		if got.Models[i] != model {
+			t.Fatalf("xingchen models = %v, want %v", got.Models, want)
+		}
 	}
 }
 
@@ -5278,7 +5370,50 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		t.Errorf("火山引擎 Agent Plan WireAPI = %q, want %q", tokenPlan.WireAPI, "responses")
 	}
 
-	expectedNames := []string{"OpenAI", "Anthropic", "GitHub Copilot", "DeepSeek", "Qwen", "xAI-Grok", "OpenCode", "智谱编程", "MiniMax", "Kimi", "Kimi Code", volcengineAgentPlanProviderName, "讯飞星辰", workbuddy.NameChina, workbuddy.NameGlobal, qoder.NameCN, qoder.NameGlobal, trae.NameCN, trae.NameGlobal, lobsterai.Name, "Custom1", "Custom2"}
+	tencentPlan, ok := findProviderByName(providers, tencentTokenPlanProviderName)
+	if !ok {
+		t.Fatalf("providers missing %s: %+v", tencentTokenPlanProviderName, providers)
+	}
+	if tencentPlan.URL != tencentTokenPlanProviderURL {
+		t.Errorf("腾讯TokenPlan URL = %q, want %q", tencentPlan.URL, tencentTokenPlanProviderURL)
+	}
+	if tencentPlan.Model != tencentTokenPlanDefaultModel {
+		t.Errorf("腾讯TokenPlan Model = %q, want %q", tencentPlan.Model, tencentTokenPlanDefaultModel)
+	}
+	if tencentPlan.Protocol != "openai" {
+		t.Errorf("腾讯TokenPlan Protocol = %q, want openai", tencentPlan.Protocol)
+	}
+	if tencentPlan.WireAPI != "" {
+		t.Errorf("腾讯TokenPlan WireAPI = %q, want chat (empty)", tencentPlan.WireAPI)
+	}
+	if tencentPlan.ContextLength != 128000 {
+		t.Errorf("腾讯TokenPlan ContextLength = %d, want 128000", tencentPlan.ContextLength)
+	}
+	if tencentPlan.IsCustom {
+		t.Error("腾讯TokenPlan IsCustom = true, want false")
+	}
+
+	xingchen, ok := findProviderByName(providers, xingchenProviderName)
+	if !ok {
+		t.Fatalf("providers missing %s: %+v", xingchenProviderName, providers)
+	}
+	if xingchen.URL != xingchenProviderURL {
+		t.Errorf("星辰大模型 URL = %q, want %q", xingchen.URL, xingchenProviderURL)
+	}
+	if xingchen.Model != xingchenDefaultModel {
+		t.Errorf("星辰大模型 Model = %q, want %q", xingchen.Model, xingchenDefaultModel)
+	}
+	if xingchen.Protocol != "openai" || xingchen.WireAPI != "" {
+		t.Errorf("星辰大模型 protocol/wire = %q/%q, want openai/chat", xingchen.Protocol, xingchen.WireAPI)
+	}
+	if xingchen.ContextLength != xingchenContextLength {
+		t.Errorf("星辰大模型 ContextLength = %d, want %d", xingchen.ContextLength, xingchenContextLength)
+	}
+	if len(xingchen.Models) != 2 || xingchen.Models[0] != xingchenDefaultModel || xingchen.Models[1] != xingchenLiteModel {
+		t.Errorf("星辰大模型 Models = %v, want %s and %s", xingchen.Models, xingchenDefaultModel, xingchenLiteModel)
+	}
+
+	expectedNames := []string{"OpenAI", "Anthropic", "GitHub Copilot", "DeepSeek", "Qwen", "xAI-Grok", "OpenCode", "Devin", "智谱编程", "MiniMax", "Kimi", "Kimi Code", volcengineAgentPlanProviderName, tencentTokenPlanProviderName, "讯飞星辰", xingchenProviderName, workbuddy.NameChina, workbuddy.NameGlobal, qoder.NameCN, qoder.NameGlobal, trae.NameCN, trae.NameGlobal, lobsterai.Name, "Custom1", "Custom2"}
 	if len(providers) < len(expectedNames) {
 		t.Fatalf("provider count = %d, want >= %d", len(providers), len(expectedNames))
 	}
@@ -5286,6 +5421,13 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 		if providers[i].Name != want {
 			t.Errorf("providers[%d].Name = %q, want %q", i, providers[i].Name, want)
 		}
+	}
+	devin, ok := findProviderByName(providers, "Devin")
+	if !ok {
+		t.Fatal("providers missing Devin")
+	}
+	if devin.AuthType != "oauth" || devin.URL != windsurf.DefaultAPIServer {
+		t.Fatalf("Devin auth/url = %q/%q", devin.AuthType, devin.URL)
 	}
 
 	traeCN, ok := findProviderByName(providers, trae.NameCN)
@@ -5512,6 +5654,13 @@ func TestGetMaclawLLMProviders_BackfillsVolcengineAgentPlanProvider(t *testing.T
 	}
 	if provider.IsCustom {
 		t.Fatal("火山引擎 Agent Plan IsCustom = true, want false")
+	}
+	tencentPlan, ok := findProviderByName(data.Providers, tencentTokenPlanProviderName)
+	if !ok {
+		t.Fatalf("providers missing 腾讯TokenPlan card: %+v", data.Providers)
+	}
+	if tencentPlan.URL != tencentTokenPlanProviderURL || tencentPlan.Model != tencentTokenPlanDefaultModel || tencentPlan.Protocol != "openai" || tencentPlan.WireAPI != "" || tencentPlan.IsCustom {
+		t.Fatalf("腾讯TokenPlan config = url %q model %q protocol %q wire %q custom %v", tencentPlan.URL, tencentPlan.Model, tencentPlan.Protocol, tencentPlan.WireAPI, tencentPlan.IsCustom)
 	}
 }
 

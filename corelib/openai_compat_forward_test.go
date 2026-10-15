@@ -158,6 +158,9 @@ func TestForwardOpenAICompatRequestWithSDKReturnsStructuredErrorBody(t *testing.
 
 func TestForwardOpenAICompatRequestSendsOpenCodeSessionHeader(t *testing.T) {
 	client := &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if got := req.Header.Get("User-Agent"); got != "opencode/"+OpenCodeClientVersion {
+			t.Fatalf("User-Agent = %q", got)
+		}
 		if got := req.Header.Get(OpenCodeSessionHeader); got != OpenCodeClientSessionID("hub-conv-1") {
 			t.Fatalf("%s = %q, want the official session for hub-conv-1", OpenCodeSessionHeader, got)
 		}

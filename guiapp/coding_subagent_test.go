@@ -197,8 +197,8 @@ func TestBuildFullCodingEnvironmentPromptPreamble(t *testing.T) {
 	if !strings.Contains(preamble, "受管扩展函数") || !strings.Contains(preamble, "受限别名") {
 		t.Fatal("preamble should explain that only request-listed managed extensions are callable")
 	}
-	if !strings.Contains(preamble, "web_search") || !strings.Contains(preamble, "web_fetch") {
-		t.Fatal("preamble should mention web research tools")
+	if !strings.Contains(preamble, "web_search") || !strings.Contains(preamble, "web_fetch") || !strings.Contains(preamble, "ssh") {
+		t.Fatal("preamble should mention ssh and web research tools")
 	}
 	if !strings.Contains(preamble, "多轮") {
 		t.Fatal("preamble should mention multi-turn continuation")
@@ -235,9 +235,152 @@ func TestCodingSubAgentFullEnvIncludesExtraToolsInBuildTools(t *testing.T) {
 		name, _ := fn["name"].(string)
 		names[name] = true
 	}
-	for _, want := range []string{"web_search", "web_fetch", "current_datetime", "read_file", "bash", codingSubAgentSpawnToolName} {
+	for _, want := range []string{"ssh", "web_search", "web_fetch", "current_datetime", "read_file", "bash", codingSubAgentSpawnToolName} {
 		if !names[want] {
 			t.Fatalf("full-env BuildTools missing %q; got %#v", want, names)
+		}
+	}
+}
+
+func TestLocalProgrammingAgentInjectsSSHAndWebTools(t *testing.T) {
+	cb := correlatedLocalCodingCallbacksForTest(t, true)
+	names := codingSubAgentToolDefinitionNamesForTest(cb.BuildToolsForModelRequest("implement", 0))
+	for _, want := range []string{"ssh", "web_search", "web_fetch"} {
+		if !containsStringForTest(names, want) {
+			t.Fatalf("local programming agent omitted %s: %v", want, names)
+		}
+	}
+
+	explorer := &codingSubAgentCallbacks{
+		subagent: &CodingSubAgent{projectPath: t.TempDir(), fullEnvironment: true, nestDepth: 1, role: codingRoleExplorer},
+		task:     &TaskItem{Title: "explore", Description: "map the repo"},
+	}
+	explorerNames := codingSubAgentToolDefinitionNamesForTest(explorer.BuildTools("map"))
+	if containsStringForTest(explorerNames, "ssh") {
+		t.Fatalf("explorer must not receive ssh: %v", explorerNames)
+	}
+	if !containsStringForTest(explorerNames, "web_search") || !containsStringForTest(explorerNames, "web_fetch") {
+		t.Fatalf("explorer must keep web research tools: %v", explorerNames)
+	}
+
+	missing := cb.ExecuteTool("ssh", `{"host":"example"}`)
+	if !strings.Contains(missing, "action") {
+		t.Fatalf("ssh without action = %q", missing)
+	}
+	blocked := cb.executeToolWithOutcome("ssh", `{"action":"exec","command":"rm -rf /","session_id":"s"}`)
+	if blocked.Outcome != codingToolOutcomeBlocked || strings.Contains(blocked.Text, "host handler missing") {
+		t.Fatalf("destructive ssh exec must be blocked before the host handler: %#v", blocked)
+	}
+	for _, command := range []string{"ls -la /var", "mkdir -p /tmp/build"} {
+		payload, err := json.Marshal(map[string]string{"action": "exec", "session_id": "s", "command": command})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := cb.executeToolWithOutcome("ssh", string(payload))
+		if got.Outcome == codingToolOutcomeBlocked || !strings.Contains(got.Text, "host handler missing") {
+			t.Fatalf("remote command %q must reach the host SSH client: %#v", command, got)
+		}
+	}
+	rewritten := cb.executeToolWithOutcome("ssh", `{"action":"exec","session_id":"s","command":"git reset --hard"}`)
+	if rewritten.Outcome != codingToolOutcomeBlocked {
+		t.Fatalf("remote git rewrite must stay high-risk: %#v", rewritten)
+	}
+	for _, command := range []string{
+		"sudo rm -rf /",
+		"sudo -u root git reset --hard",
+		"doas find . -delete",
+		"/bin/rm -rf /",
+		"/usr/bin/git reset --hard",
+		`bash -lc "rm -rf /"`,
+		"command rm -rf /tmp/build",
+		"busybox rm -rf /",
+	} {
+		payload, err := json.Marshal(map[string]string{"action": "exec", "session_id": "s", "command": command})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := cb.executeToolWithOutcome("ssh", string(payload))
+		if got.Outcome != codingToolOutcomeBlocked || strings.Contains(got.Text, "host handler missing") {
+			t.Fatalf("privileged remote command %q must be blocked: %#v", command, got)
+		}
+	}
+	for _, command := range []string{"sudo git status", `bash -lc "ls -la /var"`, "/usr/bin/git status"} {
+		payload, err := json.Marshal(map[string]string{"action": "exec", "session_id": "s", "command": command})
+		if err != nil {
+			t.Fatal(err)
+		}
+		got := cb.executeToolWithOutcome("ssh", string(payload))
+		if got.Outcome == codingToolOutcomeBlocked || !strings.Contains(got.Text, "host handler missing") {
+			t.Fatalf("remote command %q must reach the host SSH client: %#v", command, got)
+		}
+	}
+	if got := codingToolEventCommand("ssh", `{"action":"connect","initial_command":"uname -a"}`); got != "uname -a" {
+		t.Fatalf("ssh connect progress command = %q", got)
+	}
+	initial := cb.executeToolWithOutcome("ssh", `{"action":"connect","host":"h","user":"u","initial_command":"rm -rf /"}`)
+	if initial.Outcome != codingToolOutcomeBlocked || strings.Contains(initial.Text, "host handler missing") {
+		t.Fatalf("destructive ssh initial_command must be blocked: %#v", initial)
+	}
+	outside := filepath.Join(filepath.Dir(cb.subagent.projectPath), "outside.txt")
+	uploadArgs, err := json.Marshal(map[string]string{"action": "upload", "session_id": "s", "local_path": outside, "remote_path": "/tmp/outside.txt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	upload := cb.executeToolWithOutcome("ssh", string(uploadArgs))
+	if upload.Outcome != codingToolOutcomeBlocked || strings.Contains(upload.Text, "host handler missing") {
+		t.Fatalf("ssh upload outside the project must be blocked: %#v", upload)
+	}
+	relative := cb.executeToolWithOutcome("ssh", `{"action":"upload","session_id":"s","local_path":"inside.txt","remote_path":"/tmp/inside.txt"}`)
+	if relative.Outcome == codingToolOutcomeBlocked || !strings.Contains(relative.Text, "host handler missing") {
+		t.Fatalf("project-relative ssh upload must reach the host client: %#v", relative)
+	}
+	escape := cb.executeToolWithOutcome("ssh", `{"action":"download","session_id":"s","local_path":"../outside.txt","remote_path":"/tmp/outside.txt"}`)
+	if escape.Outcome != codingToolOutcomeBlocked {
+		t.Fatalf("ssh path escape must be blocked: %#v", escape)
+	}
+	homePath := cb.executeToolWithOutcome("ssh", `{"action":"upload","session_id":"s","local_path":"~/outside.txt","remote_path":"/tmp/outside.txt"}`)
+	if homePath.Outcome != codingToolOutcomeBlocked || strings.Contains(homePath.Text, "host handler missing") {
+		t.Fatalf("ssh upload from home must be blocked: %#v", homePath)
+	}
+	unavailable := cb.executeToolWithOutcome("ssh", `{"action":"list"}`)
+	if unavailable.Outcome != codingToolOutcomeFailed || !strings.Contains(unavailable.Text, "host handler missing") {
+		t.Fatalf("ssh list without a host handler = %#v", unavailable)
+	}
+	for _, success := range []string{
+		"SSH 连接成功\n会话 ID: s",
+		"连接已断开并自动重连\n[s] 状态: running\n$ true\nok",
+		"当前无活跃 SSH 会话",
+		"上传完成: a -> b",
+		"sudo 已就绪（NOPASSWD 或已有 token）",
+		"sudo token 获取成功（有效期约 15 分钟）",
+		"wait_task reached terminal status \"completed\" after 1 check(s).",
+		"[completed] task t1\nstatus: completed",
+		"[running] task t1\nstatus: running",
+	} {
+		if codingSSHResultLooksFailed(success) {
+			t.Fatalf("ssh success classified as failure: %q", success)
+		}
+	}
+	for _, failure := range []string{
+		"",
+		"错误: exec 需要 session_id 和 command 参数",
+		"SSH 连接失败: denied",
+		"连接已断开并自动重连\n发送命令失败: closed",
+		"上传失败: denied",
+		"wait_task timed out after 5s; task is still active.",
+		"ssh failed: runtime owner is missing",
+		"SSH 会话不存在",
+		"sudo 密码验证失败，请检查密码是否正确",
+		"无法获取 sudo token：SSH 连接使用密钥认证，未存储密码。请配置 NOPASSWD 或使用密码认证",
+		"error: no SSH background task manager",
+		"error: wait_task requires task_id",
+		"wait_task reached terminal status \"failed\" after 2 check(s).",
+		"wait_task reached terminal status \"killed\" after 1 check(s).",
+		"[failed] task t1\nstatus: failed\nexit_code: 1",
+		"[killed] task t1\nstatus: killed",
+	} {
+		if !codingSSHResultLooksFailed(failure) {
+			t.Fatalf("ssh failure classified as success: %q", failure)
 		}
 	}
 }
@@ -253,7 +396,7 @@ func TestCodingSubAgentOperationalTaskUsesFocusedNonMutatingTools(t *testing.T) 
 			t.Fatalf("operational BuildTools missing %q; got %#v", want, names)
 		}
 	}
-	for _, forbidden := range []string{"write_file", "edit_file", "edit_lines", codingSubAgentSpawnToolName, codingAgentTodoToolName, "manage_skill", "call_mcp_tool"} {
+	for _, forbidden := range []string{"ssh", "web_search", "web_fetch", "write_file", "edit_file", "edit_lines", codingSubAgentSpawnToolName, codingAgentTodoToolName, "manage_skill", "call_mcp_tool"} {
 		if containsStringForTest(names, forbidden) {
 			t.Fatalf("operational BuildTools exposed %q; got %#v", forbidden, names)
 		}
@@ -278,7 +421,7 @@ func TestCodingSubAgentLeanTaskWordingCannotMaterializeResearchTools(t *testing.
 	if strings.Join(plainNames, "\n") != strings.Join(versionSensitiveNames, "\n") {
 		t.Fatalf("task wording changed lean static surface: plain=%v version_sensitive=%v", plainNames, versionSensitiveNames)
 	}
-	for _, forbidden := range []string{"web_search", "web_fetch", "download_file"} {
+	for _, forbidden := range []string{"ssh", "web_search", "web_fetch", "download_file"} {
 		if containsStringForTest(versionSensitiveNames, forbidden) {
 			t.Fatalf("lean task wording must not materialize %q: %v", forbidden, versionSensitiveNames)
 		}
@@ -7081,6 +7224,29 @@ func TestCodingSubAgentRejectsModifyAfterExternalFileChange(t *testing.T) {
 	}
 }
 
+func TestCodegraphBodyCountsAsReadSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "snake.cpp")
+	if err := os.WriteFile(path, []byte("static void playTone() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cb := &codingSubAgentCallbacks{}
+	cb.noteCodegraphReadSnapshots(dir, "## playTone (function)\n\n**Location:** snake.cpp:1\n\n```cpp\n1\tstatic void playTone() {}\n```\n")
+	if msg := cb.requireReadBeforeModify(path, "edit_file"); msg != "" {
+		t.Fatalf("codegraph body should allow the edit, got %q", msg)
+	}
+	mapOnly := &codingSubAgentCallbacks{}
+	mapOnly.noteCodegraphReadSnapshots(dir, "Symbol map for snake.cpp.\n### Symbols\n- playTone — 1")
+	if msg := mapOnly.requireReadBeforeModify(path, "edit_file"); msg == "" {
+		t.Fatal("a symbol map must still require read_file")
+	}
+	callOnly := &codingSubAgentCallbacks{}
+	callOnly.noteCodegraphReadSnapshots(dir, "## drawScene (function)\n\n**Location:** snake.cpp:1247\n\n```cpp\n1247\tdrawScene(mem);\n```\n")
+	if msg := callOnly.requireReadBeforeModify(path, "edit_file"); msg == "" {
+		t.Fatal("a call site must not count as reading the file")
+	}
+}
+
 func TestCanonicalCodingPathKeyNormalizesWindowsCase(t *testing.T) {
 	if got, want := canonicalCodingPathKey(`C:\Repo\App\MAIN.go`), "c:/repo/app/main.go"; got != want {
 		t.Fatalf("Windows drive path key = %q, want %q", got, want)
@@ -7945,6 +8111,7 @@ func TestClassifyCodingGuardrail(t *testing.T) {
 		{name: "scope_result_marker", tool: "call_mcp_tool", result: "requested path is outside the project scope", category: "scope"},
 		{name: "host", tool: "read_file", result: "coding subagent host tool handler is unavailable", category: "host"},
 		{name: "policy_with_project_word", tool: "call_mcp_tool", result: "project approval policy rejected this dynamic tool", category: "policy"},
+		{name: "read_snapshot", tool: "edit_file", path: `F:\test-prog\audio.cpp`, result: "请先调用 read_file(path=\"F:\\test-prog\\audio.cpp\") 查看当前内容，再使用 edit_file 修改。编码 SubAgent 不允许未读文件就修改已有内容。", category: "policy"},
 	}
 	for _, tc := range cases {
 		if got := classifyCodingGuardrailCategory(tc.tool, tc.path, tc.command, tc.result).String(); got != tc.category {

@@ -2327,6 +2327,9 @@ func TestRunLoopResponsesPartialReadTimeoutRetries(t *testing.T) {
 func TestRunLoopPartialStreamTimeoutDoesNotRetry(t *testing.T) {
 	useLLMRetryBackoff(t, time.Millisecond)
 	useLLMRouteTimeout(t, 200*time.Millisecond)
+	previousIdle := llm.SSEIdleTimeout
+	llm.SSEIdleTimeout = 40 * time.Millisecond
+	t.Cleanup(func() { llm.SSEIdleTimeout = previousIdle })
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -2337,7 +2340,7 @@ func TestRunLoopPartialStreamTimeoutDoesNotRetry(t *testing.T) {
 		}
 		select {
 		case <-r.Context().Done():
-		case <-time.After(500 * time.Millisecond):
+		case <-time.After(2 * time.Second):
 		}
 	}))
 	defer func() {
@@ -4385,9 +4388,9 @@ func TestRunLoopToolEscalationUpdatesProjectionAndNextRequestBudget(t *testing.T
 	client := server.Client()
 	baseTransport := client.Transport
 	client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		deadline, ok := req.Context().Deadline()
+		deadline, ok := llm.OwnedRouteDeadline(req.Context())
 		if !ok {
-			return nil, fmt.Errorf("LLM request missing deadline")
+			return nil, fmt.Errorf("LLM request missing route deadline")
 		}
 		requestTimeouts = append(requestTimeouts, time.Until(deadline))
 		return baseTransport.RoundTrip(req)

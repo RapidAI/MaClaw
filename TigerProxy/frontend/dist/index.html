@@ -86,6 +86,14 @@
             <select id="authMode"></select>
           </div>
           <div id="modeFields"></div>
+          <div class="field">
+            <label for="agentType">User-Agent <span class="label-hint">上游请求使用的编程工具身份，也可自定义</span></label>
+            <select id="agentType"></select>
+          </div>
+          <div class="field" id="customAgentField" hidden>
+            <label for="customAgentType">自定义 User-Agent</label>
+            <input id="customAgentType" spellcheck="false" maxlength="128" placeholder="输入要发送的 User-Agent" />
+          </div>
           <div class="divider"></div>
           <div class="local-head">本地服务</div>
           <div class="field">

@@ -105,6 +105,11 @@ func rememberCloudWorkspaceTask(workspaceID string, result ProjectSearchResult) 
 	}
 	cloudWorkspaceDialogMu.Lock()
 	defer cloudWorkspaceDialogMu.Unlock()
+	// A copy must not replace the canonical row as the workspace's sidecar
+	// owner. The canonical row keeps the existing transcript.
+	if existing, ok := cloudWorkspaceTaskByID[workspaceID]; ok && projectResultIsTaskCopy(result) && !projectResultIsTaskCopy(existing) {
+		return
+	}
 	cloudWorkspaceTaskByID[workspaceID] = result
 }
 
@@ -886,32 +891,58 @@ func (a *App) findLocalCloudWorkspaceTask(workspaceID string, includeHidden bool
 	}
 	hidden := ProjectSearchResult{}
 	archived := ProjectSearchResult{}
+	var taskCopy ProjectSearchResult
 	for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
 		return recordIsLocalCloudWorkspaceTask(candidate, workspaceID)
 	}) {
 		result := a.projectRecordToSearchResult(pi, rec)
 		if pi.IsArchived(rec.ProjectPath) {
-			if includeHidden && strings.TrimSpace(archived.ProjectPath) == "" {
+			if includeHidden && strings.TrimSpace(archived.ProjectPath) == "" && !projectRecordHasTag(rec, taskCopyTag) {
 				archived = result
 			}
 			continue
 		}
 		if pi.IsHidden(rec.ProjectPath) {
-			if includeHidden && strings.TrimSpace(hidden.ProjectPath) == "" {
+			if includeHidden && strings.TrimSpace(hidden.ProjectPath) == "" && !projectRecordHasTag(rec, taskCopyTag) {
 				hidden = result
+			}
+			continue
+		}
+		// Prefer the canonical row. A copy is only the workspace identity when
+		// no non-copy row is visible.
+		if projectRecordHasTag(rec, taskCopyTag) {
+			if strings.TrimSpace(taskCopy.ProjectPath) == "" {
+				taskCopy = result
 			}
 			continue
 		}
 		rememberCloudWorkspaceTask(workspaceID, result)
 		return result
 	}
+	// A hidden or archived canonical still owns the workspace. A visible copy
+	// must not keep restore from finding it.
 	if includeHidden && strings.TrimSpace(hidden.ProjectPath) != "" {
 		return hidden
 	}
 	if includeHidden && strings.TrimSpace(archived.ProjectPath) != "" {
 		return archived
 	}
+	if strings.TrimSpace(taskCopy.ProjectPath) != "" {
+		rememberCloudWorkspaceTask(workspaceID, taskCopy)
+		return taskCopy
+	}
 	return ProjectSearchResult{}
+}
+
+// findCanonicalCloudWorkspaceTask is the workspace's transcript owner.
+// A task copy shares the files but is never that owner, even when it is the
+// only visible row.
+func (a *App) findCanonicalCloudWorkspaceTask(workspaceID string, includeHidden bool) ProjectSearchResult {
+	found := a.findLocalCloudWorkspaceTask(workspaceID, includeHidden)
+	if projectResultIsTaskCopy(found) {
+		return ProjectSearchResult{}
+	}
+	return found
 }
 
 func (a *App) findVisibleCloudWorkspaceTask(workspaceID string) ProjectSearchResult {
@@ -987,7 +1018,7 @@ func (a *App) createTaskWithCloudWorkspace(name, workingDir, mode, workspaceID s
 	if strings.TrimSpace(prepared.LocalPath) == "" {
 		return ProjectSearchResult{}, fmt.Errorf("cloud workspace cache path is empty")
 	}
-	if existing := a.findVisibleCloudWorkspaceTask(workspaceID); strings.TrimSpace(existing.ProjectPath) != "" {
+	if existing := a.findCanonicalCloudWorkspaceTask(workspaceID, false); strings.TrimSpace(existing.ProjectPath) != "" {
 		bound := a.bindPreparedCloudWorkspaceTask(workspaceID, existing, prepared.LocalPath)
 		a.hideOtherLocalCloudWorkspaceTasks(workspaceID, bound.ProjectPath)
 		a.refreshCloudWorkspaceSidecars(workspaceID, bound.ProjectPath)
@@ -1038,12 +1069,15 @@ func (a *App) ResumeCloudWorkspaceTask(workspaceID, projectPath string) (Project
 		alreadyHeld = true
 	}
 	var prepared PreparedCloudWorkspace
-	var err error
-	if cloudWorkspaceTaskIsReadShare(existing) {
-		prepared, err = a.PrepareCloudWorkspaceReadOnly(workspaceID)
-	} else {
-		prepared, err = a.PrepareCloudWorkspace(workspaceID)
-	}
+	err := keepCloudWorkspacePendingSidecars(workspaceID, projectResultIsTaskCopy(existing), func() error {
+		var prepareErr error
+		if cloudWorkspaceTaskIsReadShare(existing) {
+			prepared, prepareErr = a.PrepareCloudWorkspaceReadOnly(workspaceID)
+		} else {
+			prepared, prepareErr = a.PrepareCloudWorkspace(workspaceID)
+		}
+		return prepareErr
+	})
 	if err != nil {
 		log.Printf("[cloud_workspace] resume prepare failed id=%s err=%v", workspaceID, err)
 		return ProjectSearchResult{}, err

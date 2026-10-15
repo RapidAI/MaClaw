@@ -10,12 +10,14 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"regexp"
 	"runtime"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
@@ -23,6 +25,9 @@ const (
 	authService   = "exa.auth_pb.AuthService/GetUserJwt"
 	chatService   = "exa.api_server_pb.ApiServerService/GetChatMessage"
 	maxToolDesc   = 6998
+
+	cascadeEnableMCPTools = 245
+	maxChatNewlines       = 100000
 )
 
 var jwtPattern = regexp.MustCompile(`^eyJ[A-Za-z0-9_-]{10,}={0,2}\.[A-Za-z0-9_-]+={0,2}\.[A-Za-z0-9_-]+={0,2}$`)
@@ -32,6 +37,12 @@ type chatMessage struct {
 	text       string
 	toolCallID string
 	toolCalls  []toolCall
+	images     []chatImage
+}
+
+type chatImage struct {
+	mime string
+	data string
 }
 
 type toolCall struct {
@@ -43,11 +54,13 @@ type toolDef struct {
 }
 
 type chatRequest struct {
-	model       string
-	messages    []chatMessage
-	tools       []toolDef
-	maxTokens   int
-	temperature *float64
+	model           string
+	messages        []chatMessage
+	tools           []toolDef
+	maxTokens       int
+	temperature     *float64
+	disableParallel bool
+	forcedTool      string
 }
 
 type chatEvent struct {
@@ -83,6 +96,14 @@ func buildMetadata(apiKey, userJWT, sessionID string, requestID uint64, triggerI
 	return bytes.Join(parts, nil)
 }
 
+func setDevinHeaders(req *http.Request, apiKey, contentType string) {
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("Connect-Protocol-Version", "1")
+	if strings.TrimSpace(apiKey) != "" {
+		req.Header.Set("X-Api-Key", strings.TrimSpace(apiKey))
+	}
+}
+
 func osName() string {
 	switch runtime.GOOS {
 	case "windows":
@@ -108,13 +129,23 @@ func buildChatRequest(apiKey, userJWT, model, cascadeID, promptID, sessionID str
 	}
 	parts = append(parts, encodeVarintField(7, 5))
 	parts = append(parts, encodeBytes(8, encodeCompletion(req)))
+	parts = append(parts, encodeBytes(9, disableMCPExperiment()))
 	for _, tool := range req.tools {
+		if strings.TrimSpace(tool.name) == "" {
+			continue
+		}
 		parts = append(parts, encodeBytes(10, encodeTool(tool)))
+	}
+	if req.disableParallel {
+		parts = append(parts, encodeVarintField(11, 1))
+	}
+	if name := strings.TrimSpace(req.forcedTool); name != "" && toolOffered(req.tools, name) {
+		parts = append(parts, encodeBytes(12, encodeString(2, name)))
 	}
 	parts = append(parts,
 		encodeString(16, cascadeID),
+		encodeString(17, promptID),
 		encodeString(21, model),
-		encodeString(22, promptID),
 	)
 	return bytes.Join(parts, nil)
 }
@@ -131,7 +162,7 @@ func collapseSystem(messages []chatMessage) []chatMessage {
 		return wrapped
 	}
 	for _, msg := range messages {
-		if msg.role == "system" {
+		if msg.role == "system" || msg.role == "developer" {
 			if strings.TrimSpace(msg.text) != "" {
 				pending = append(pending, msg.text)
 			}
@@ -159,6 +190,15 @@ func encodePrompt(msg chatMessage, source uint64) []byte {
 	if msg.toolCallID != "" {
 		parts = append(parts, encodeString(7, msg.toolCallID))
 	}
+	for _, image := range msg.images {
+		if strings.TrimSpace(image.data) == "" {
+			continue
+		}
+		parts = append(parts, encodeBytes(10, bytes.Join([][]byte{
+			encodeString(1, image.data),
+			encodeString(2, image.mime),
+		}, nil)))
+	}
 	for _, call := range msg.toolCalls {
 		parts = append(parts, encodeBytes(6, bytes.Join([][]byte{
 			encodeString(1, call.id),
@@ -169,11 +209,17 @@ func encodePrompt(msg chatMessage, source uint64) []byte {
 	return bytes.Join(parts, nil)
 }
 
-func encodeTool(tool toolDef) []byte {
-	desc := tool.description
-	if len(desc) > maxToolDesc {
-		desc = desc[:maxToolDesc-24] + "\n…(truncated for cloud)"
+func toolOffered(tools []toolDef, name string) bool {
+	for _, tool := range tools {
+		if tool.name == name {
+			return true
+		}
 	}
+	return false
+}
+
+func encodeTool(tool toolDef) []byte {
+	desc := trimToolDesc(tool.description)
 	params := tool.parameters
 	if strings.TrimSpace(params) == "" {
 		params = "{}"
@@ -185,6 +231,43 @@ func encodeTool(tool toolDef) []byte {
 	}, nil)
 }
 
+func trimToolDesc(desc string) string {
+	const suffix = "\n…(truncated for cloud)"
+	if len(desc) <= maxToolDesc {
+		return desc
+	}
+	limit := maxToolDesc - len(suffix)
+	if limit < 0 {
+		limit = 0
+	}
+	if limit > len(desc) {
+		limit = len(desc)
+	}
+	for limit > 0 && !utf8.RuneStart(desc[limit]) {
+		limit--
+	}
+	return desc[:limit] + suffix
+}
+
+func disableMCPExperiment() []byte {
+	return encodeBytes(2, encodeVarint(cascadeEnableMCPTools))
+}
+
+func mcpConfigError(err error) bool {
+	return err != nil && strings.Contains(strings.ToLower(err.Error()), "mcp configuration")
+}
+
+func explainDevin(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if mcpConfigError(err) {
+		return msg + "。请在 Devin 设置里停用有问题的 MCP 服务器后再试"
+	}
+	return msg
+}
+
 func encodeCompletion(req chatRequest) []byte {
 	maxOut := req.maxTokens
 	if maxOut <= 0 {
@@ -194,16 +277,34 @@ func encodeCompletion(req chatRequest) []byte {
 	if req.temperature != nil {
 		temp = *req.temperature
 	}
+	// Field 2 is max_tokens. Field 3 is max_newlines. Leaving it unset makes the
+	// server stop at the first line, which is the autocomplete default.
 	return bytes.Join([][]byte{
 		encodeVarintField(1, 1),
-		encodeVarintField(2, 64000),
-		encodeVarintField(3, uint64(maxOut)),
+		encodeVarintField(2, uint64(maxOut)),
+		encodeVarintField(3, maxChatNewlines),
 		encodeDouble(5, temp),
 		encodeDouble(6, 0.95),
 		encodeVarintField(7, 50),
 		encodeDouble(8, 1),
 		encodeDouble(11, 1),
 	}, nil)
+}
+
+var devinStreamClient = &http.Client{
+	Transport: &http.Transport{
+		Proxy: http.ProxyFromEnvironment,
+		DialContext: (&net.Dialer{
+			Timeout:   30 * time.Second,
+			KeepAlive: 30 * time.Second,
+		}).DialContext,
+		ForceAttemptHTTP2:     false,
+		DisableCompression:    true,
+		ResponseHeaderTimeout: 2 * time.Minute,
+		IdleConnTimeout:       90 * time.Second,
+		MaxIdleConns:          8,
+		ExpectContinueTimeout: time.Second,
+	},
 }
 
 type sessionIDs struct {
@@ -230,6 +331,7 @@ func resetCaches() {
 	jwtMu.Lock()
 	jwtCache = map[string]cachedJWT{}
 	jwtMu.Unlock()
+	resetDevinHosts()
 }
 
 func sessionFor(apiKey, host string) sessionIDs {
@@ -254,13 +356,35 @@ func forEachChatEvent(ctx context.Context, apiServer, apiKey string, req chatReq
 }
 
 func openChat(ctx context.Context, apiServer, apiKey string, req chatRequest) (io.ReadCloser, error) {
-	apiServer = strings.TrimRight(strings.TrimSpace(apiServer), "/")
 	apiKey = strings.TrimSpace(apiKey)
-	if apiServer == "" || apiKey == "" {
+	if apiKey == "" {
 		return nil, fmt.Errorf("请先完成 Devin 登录")
 	}
 	if strings.TrimSpace(req.model) == "" {
 		return nil, fmt.Errorf("请先选择 Devin 模型")
+	}
+	apiServer, apiKey = resolveAccess(ctx, apiServer, apiKey)
+	primary := apiServer
+	body, err := openChatOn(ctx, primary, apiKey, req)
+	if err == nil {
+		noteDevinHost(apiKey, primary)
+		return body, nil
+	}
+	alt, ok := devinHostFallback(primary)
+	if devinSessionKey(apiKey) || !ok || alt == primary || !devinAuthRejected(err) {
+		return nil, err
+	}
+	body, err2 := openChatOn(ctx, alt, apiKey, req)
+	if err2 != nil {
+		return nil, err
+	}
+	noteDevinHost(apiKey, alt)
+	return body, nil
+}
+
+func openChatOn(ctx context.Context, apiServer, apiKey string, req chatRequest) (io.ReadCloser, error) {
+	if apiServer == "" || apiKey == "" {
+		return nil, fmt.Errorf("请先完成 Devin 登录")
 	}
 	userJWT, err := userJWT(ctx, apiServer, apiKey)
 	if err != nil {
@@ -276,12 +400,10 @@ func openChat(ctx context.Context, apiServer, apiKey string, req chatRequest) (i
 	if err != nil {
 		return nil, err
 	}
-	httpReq.Header.Set("Content-Type", "application/connect+proto")
-	httpReq.Header.Set("Connect-Protocol-Version", "1")
+	setDevinHeaders(httpReq, apiKey, "application/connect+proto")
 	httpReq.Header.Set("Connect-Content-Encoding", "gzip")
 	httpReq.Header.Set("Connect-Accept-Encoding", "gzip")
-	client := &http.Client{Transport: &http.Transport{DisableCompression: true}}
-	resp, err := client.Do(httpReq)
+	resp, err := devinStreamClient.Do(httpReq)
 	if err != nil {
 		return nil, fmt.Errorf("Devin 对话失败: %w", err)
 	}
@@ -295,20 +417,33 @@ func openChat(ctx context.Context, apiServer, apiKey string, req chatRequest) (i
 
 func readChatEvents(body io.Reader, fn func(chatEvent) error) error {
 	sawEOS := false
+	sawData := false
 	for {
 		payload, eos, err := readConnectFrame(body)
-		if err == io.EOF || err == io.ErrUnexpectedEOF {
+		if err == io.EOF {
 			break
+		}
+		// A frame that ends mid-header or mid-body is not a finished reply.
+		// Treating it as success runs a tool whose arguments never arrived.
+		if err == io.ErrUnexpectedEOF {
+			return fmt.Errorf("Devin 对话中断: %w", err)
 		}
 		if err != nil {
 			return fmt.Errorf("Devin 对话中断: %w", err)
 		}
-		if eos {
-			sawEOS = true
+		if eos || (len(payload) > 0 && payload[0] == '{') {
+			if eos {
+				sawEOS = true
+			}
 			if msg := trailerError(payload); msg != "" {
 				return fmt.Errorf("Devin 对话失败: %s", msg)
 			}
-			continue
+			if eos {
+				continue
+			}
+		}
+		if len(payload) > 0 {
+			sawData = true
 		}
 		events := decodeChatFrame(payload)
 		for _, event := range events {
@@ -317,7 +452,7 @@ func readChatEvents(body io.Reader, fn func(chatEvent) error) error {
 			}
 		}
 	}
-	if !sawEOS {
+	if !sawEOS && !sawData {
 		return fmt.Errorf("Devin 对话未正常结束")
 	}
 	return nil
@@ -363,16 +498,20 @@ func decodeChatFrame(payload []byte) []chatEvent {
 			}
 		case f.num == 5 && f.wire == 0:
 			v, _ := f.value.(uint64)
-			reason := "stop"
+			reason := ""
 			switch v {
+			case 2, 6, 9, 12:
+				reason = "stop"
+			case 3, 5:
+				reason = "length"
 			case 10:
 				reason = "tool_calls"
 			case 11:
 				reason = "content_filter"
-			case 1, 3:
-				reason = "length"
 			}
-			events = append(events, chatEvent{kind: "finish", reason: reason})
+			if reason != "" {
+				events = append(events, chatEvent{kind: "finish", reason: reason})
+			}
 		case f.num == 28 && f.wire == 2:
 			if usage, ok := decodeUsage(f.value.([]byte)); ok {
 				events = append(events, usage)
@@ -450,8 +589,7 @@ func userJWT(ctx context.Context, apiServer, apiKey string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("Content-Type", "application/proto")
-	req.Header.Set("Connect-Protocol-Version", "1")
+	setDevinHeaders(req, apiKey, "application/proto")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("Devin 会话校验失败: %w", err)

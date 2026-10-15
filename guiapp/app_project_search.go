@@ -605,6 +605,12 @@ func collapseDuplicateCloudWorkspaceRecords(records []memory.ProjectRecord) []me
 			out = append(out, rec)
 			continue
 		}
+		// An explicit copy is a second chat on the same workspace, not a
+		// leftover duplicate of the canonical row.
+		if projectRecordHasTag(rec, taskCopyTag) {
+			out = append(out, rec)
+			continue
+		}
 		if cloudWorkspaceTaskNameScore(rec.Name) == 0 {
 			// A legacy row can contain tags from several workspaces. Its
 			// working_dir (and therefore primary ID) identifies the row it
@@ -1527,10 +1533,21 @@ func (a *App) newestVisibleExpertTask(pi *memory.ProjectIndex, sourceTag string,
 	}
 	var best memory.ProjectRecord
 	found := false
+	var copyFallback memory.ProjectRecord
+	haveCopy := false
 	for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
 		return projectRecordHasTag(candidate, taskManagementTag) && projectRecordHasTag(candidate, sourceTag)
 	}) {
 		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
+			continue
+		}
+		// A copy must not replace the expert row the launcher resumes.
+		// Fall back to it only when the original row is gone.
+		if projectRecordHasTag(rec, taskCopyTag) {
+			if !haveCopy || (pickNewest && latexExpertRecordIsNewer(rec, copyFallback)) {
+				copyFallback = rec
+				haveCopy = true
+			}
 			continue
 		}
 		if !pickNewest {
@@ -1541,7 +1558,13 @@ func (a *App) newestVisibleExpertTask(pi *memory.ProjectIndex, sourceTag string,
 			found = true
 		}
 	}
-	return best, found
+	if found {
+		return best, true
+	}
+	if haveCopy {
+		return copyFallback, true
+	}
+	return memory.ProjectRecord{}, false
 }
 
 func latexExpertRecordIsNewer(candidate, current memory.ProjectRecord) bool {
@@ -5102,6 +5125,149 @@ func (a *App) isManagedRecentTaskWorkspacePath(projectPath string) bool {
 	return defaultTaskRoot != "" && (pathKey == defaultTaskRoot || strings.HasPrefix(pathKey, defaultTaskRoot+"/"))
 }
 
+// removeManagedTaskDir deletes a synthetic task directory. When another task
+// still executes inside it (a copy of an unconfigured task uses workspace/),
+// only the task metadata is removed and that shared directory is left in place.
+func (a *App) removeManagedTaskDir(projectPath string) error {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return nil
+	}
+	if !a.anotherTaskExecutesWithin(projectPath, projectPath) {
+		return os.RemoveAll(projectPath)
+	}
+	entries, err := os.ReadDir(projectPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var errs []error
+	for _, entry := range entries {
+		if a.taskDirEntryStillInUse(projectPath, entry.Name()) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(projectPath, entry.Name())); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// managedTaskRootContaining returns the tasks/<slug> directory that holds dir.
+// A path outside the managed task roots returns empty.
+func (a *App) managedTaskRootContaining(dir string) string {
+	dir = normalizeProjectSessionPath(dir)
+	if a == nil || dir == "" {
+		return ""
+	}
+	roots := []string{
+		normalizeProjectSessionPath(filepath.Join(a.GetDataDir(), "tasks")),
+		normalizeProjectSessionPath(filepath.Join(corelib.MaclawDefaultBaseDir(), "data", "tasks")),
+	}
+	dirKey := normalizeRecentTaskPathKey(dir)
+	for _, root := range roots {
+		rootKey := normalizeRecentTaskPathKey(root)
+		if root == "" || rootKey == "" || dirKey == rootKey || !strings.HasPrefix(dirKey, rootKey+"/") {
+			continue
+		}
+		rel, err := filepath.Rel(root, dir)
+		if err != nil {
+			continue
+		}
+		rel = filepath.ToSlash(filepath.Clean(rel))
+		if rel == "." || rel == "" || rel == ".." || strings.HasPrefix(rel, "../") {
+			continue
+		}
+		slug, _, _ := strings.Cut(rel, "/")
+		if slug == "" || slug == "." || slug == ".." {
+			continue
+		}
+		return normalizeProjectSessionPath(filepath.Join(root, slug))
+	}
+	return ""
+}
+
+// removeOrphanManagedTaskDir deletes the leftover tasks/<slug>-<id> folder of
+// an unconfigured task after its copy was the last user of workspace/. A
+// directory the user picked, including one that happens to sit under the
+// tasks folder, is left alone.
+func (a *App) removeOrphanManagedTaskDir(dir string) error {
+	root := a.managedTaskRootContaining(dir)
+	if root == "" || !a.isManagedRecentTaskWorkspacePath(root) {
+		return nil
+	}
+	if !looksLikeManagedTaskDirName(lastPathComponent(root)) {
+		return nil
+	}
+	sandbox := normalizeProjectSessionPath(filepath.Join(root, "workspace"))
+	if !pathWithinDir(sandbox, dir) {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(root, "task.md")); err == nil || !os.IsNotExist(err) {
+		return nil
+	}
+	if a.memoryStore != nil {
+		if pi := a.memoryStore.ProjectIndex(); pi != nil && pi.Get(root) != nil {
+			return nil
+		}
+	}
+	if a.anotherTaskExecutesWithin(root, "") {
+		return nil
+	}
+	return os.RemoveAll(root)
+}
+
+// looksLikeManagedTaskDirName reports the tasks/<slug>-<unixnano> layout used
+// when a task record is created. Short numeric suffixes such as a year are
+// not enough: those folders can be a directory the user chose.
+func looksLikeManagedTaskDirName(name string) bool {
+	name = strings.TrimSpace(name)
+	i := strings.LastIndex(name, "-")
+	if i <= 0 {
+		return false
+	}
+	suffix := name[i+1:]
+	if len(suffix) < 16 {
+		return false
+	}
+	return isAllDecimalDigits(suffix)
+}
+
+func (a *App) taskDirEntryStillInUse(projectPath, name string) bool {
+	return a.anotherTaskExecutesWithin(filepath.Join(projectPath, name), projectPath)
+}
+
+// anotherTaskExecutesWithin reports whether a task other than exceptPath runs
+// in dir or in a directory inside it.
+func (a *App) anotherTaskExecutesWithin(dir, exceptPath string) bool {
+	dir = normalizeProjectSessionPath(dir)
+	exceptPath = normalizeProjectSessionPath(exceptPath)
+	if a == nil || dir == "" || a.memoryStore == nil {
+		return false
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return false
+	}
+	for _, rec := range pi.ListAllMatching(func(memory.ProjectRecord) bool { return true }) {
+		path := normalizeProjectSessionPath(rec.ProjectPath)
+		if path == "" || path == exceptPath || pi.IsArchived(path) {
+			continue
+		}
+		execDir := a.recentTaskWorkingDir(path)
+		if execDir == "" {
+			execDir = a.managedTaskExecutionDirForDisplay(path)
+		}
+		execDir = normalizeProjectSessionPath(execDir)
+		if execDir != "" && pathWithinDir(dir, execDir) {
+			return true
+		}
+	}
+	return false
+}
+
 func (a *App) ensureRecentTaskWorkspace(projectPath, taskName string) bool {
 	projectPath = strings.TrimSpace(projectPath)
 	if projectPath == "" || !a.isManagedRecentTaskWorkspacePath(projectPath) {
@@ -5747,11 +5913,14 @@ func (a *App) RenameTask(projectPath, newName string) string {
 	pi.SetCustomName(projectPath, newName)
 	displayName := pi.GetDisplayName(projectPath)
 	if workspaceID := a.lookupCloudWorkspaceIDForProject(projectPath); workspaceID != "" {
-		if result, ok := lookupCloudWorkspaceTask(workspaceID); ok {
+		// Only the row being renamed may change the cached workspace title.
+		// A copy shares the workspace id, so writing its name here retitles
+		// the original task and, while the lease is held, the Hub task too.
+		if result, ok := lookupCloudWorkspaceTask(workspaceID); ok && normalizeProjectSessionPath(result.ProjectPath) == projectPath {
 			result.Name = displayName
 			rememberCloudWorkspaceTask(workspaceID, result)
 		}
-		if lookupHeldCloudWorkspace(workspaceID) != nil {
+		if !a.projectHasTaskCopyTag(projectPath) && lookupHeldCloudWorkspace(workspaceID) != nil {
 			a.flushCloudWorkspaceTaskSidecarBestEffort(workspaceID)
 		}
 	}
@@ -5799,13 +5968,11 @@ func (a *App) HideTask(projectPath string) {
 		log.Printf("[project_search] HideTask skipped path=%q reason=project_index_unavailable", projectPath)
 		return
 	}
-	// Tombstone first so an in-flight restore cannot unhide this row
-	// before the hidden flag is visible.
-	a.dismissCloudWorkspaceTaskByPath(projectPath)
+	// A copy shares the workspace with its source. Tombstone and release the
+	// lease only when this row is the last visible one, so hiding the copy
+	// cannot unmount the original.
+	a.releaseCloudWorkspaceIfLastRow(projectPath)
 	pi.SetHidden(projectPath, true)
-	// Push + DELETE lease before dropping the process map so HideTask always
-	// releases a cloud_workspace: task even if the frontend only closes the row.
-	a.releaseCloudWorkspaceForProjectPath(projectPath)
 	// Soft-hide would leave ResumeCloudWorkspaceTask pointing at this path
 	// (the task dir still exists). Drop the 1:1 bind so a later open can create a replacement.
 	forgetCloudWorkspaceTaskByPath(projectPath)
@@ -5829,13 +5996,18 @@ func (a *App) DeleteTask(projectPath string) error {
 		return fmt.Errorf("project path is required")
 	}
 	log.Printf("[project_search] DeleteTask requested path=%q", projectPath)
-	workspaceID := a.lookupCloudWorkspaceIDForProject(projectPath)
-	a.releaseCloudWorkspaceForProjectPath(projectPath)
-	forgetCloudWorkspaceTaskByPath(projectPath)
-	if workspaceID != "" && a.countVisibleCloudWorkspaceTasks(workspaceID, projectPath) == 0 {
-		a.dismissCloudWorkspaceTask(workspaceID)
-		a.dropShareAccessSession(workspaceID)
+	// Captured before the record is removed. A copy shares the expert tag and
+	// the cloud workspace, but its chat is a separate project session.
+	taskCopy := a.projectHasTaskCopyTag(projectPath)
+	// A copy of an unconfigured task executes in the source workspace/, which
+	// lives outside the copy's own task directory. Remember it so the last
+	// remaining user can remove that leftover folder.
+	sharedExecDir := normalizeProjectSessionPath(a.recentTaskWorkingDir(projectPath))
+	if sharedExecDir == "" {
+		sharedExecDir = normalizeProjectSessionPath(a.managedTaskExecutionDirForDisplay(projectPath))
 	}
+	a.releaseCloudWorkspaceIfLastRow(projectPath)
+	forgetCloudWorkspaceTaskByPath(projectPath)
 	// Directory updates and task deletion both mutate the same tab session files
 	// and runtime maps. Hold the lifecycle mutex so a picker completion cannot
 	// recreate a deleted tab's directory override halfway through this cleanup.
@@ -5848,7 +6020,10 @@ func (a *App) DeleteTask(projectPath string) error {
 	// Expert tasks keep their agent session under "desktop-user:expert:<id>"
 	// rather than the task's project path. Resolve the expert id BEFORE the
 	// record is deleted below, so the expert session can be purged too.
-	expertID := a.expertIDForTaskPath(projectPath)
+	expertID := ""
+	if !taskCopy {
+		expertID = a.expertIDForTaskPath(projectPath)
+	}
 	assistantTabType := a.assistantTabTypeForTaskPath(projectPath)
 	// Dismiss before dropping the record so a concurrent EnsureAssistantTabTask
 	// cannot mint a replacement VS Code / ACP row in the gap.
@@ -5957,14 +6132,22 @@ func (a *App) DeleteTask(projectPath string) error {
 		errs = append(errs, err)
 	}
 	// Synthetic task directories are app-owned state. Never delete a user
-	// project or a remote working directory.
+	// project or a remote working directory. A copy of an unconfigured task
+	// keeps using this task's workspace/ folder, so that directory stays.
 	if a.isManagedRecentTaskWorkspacePath(projectPath) {
 		root := normalizeRecentTaskPathKey(filepath.Join(a.GetDataDir(), "tasks"))
 		key := normalizeRecentTaskPathKey(projectPath)
 		if root != "" && strings.HasPrefix(key, root+"/") {
-			if err := os.RemoveAll(projectPath); err != nil {
+			if err := a.removeManagedTaskDir(projectPath); err != nil {
 				errs = append(errs, fmt.Errorf("delete task workspace: %w", err))
 			}
+		}
+	}
+	// The shared sandbox is not inside this task directory. Once no record and
+	// no other task still use the managed folder that contains it, remove it.
+	if sharedExecDir != "" && !pathWithinDir(projectPath, sharedExecDir) {
+		if err := a.removeOrphanManagedTaskDir(sharedExecDir); err != nil {
+			errs = append(errs, fmt.Errorf("delete shared task workspace: %w", err))
 		}
 	}
 	if assistantTabType == assistantTabACPType {
@@ -6772,14 +6955,51 @@ func (a *App) CloseProjectTabSession(tabID string) {
 		// Clean up working directory override — prevents stale overrides from
 		// leaking into future sessions that reuse the same projectPath.
 		a.cancelProjectTaskLoop(projectPath)
-		if workingDir := a.recentTaskWorkingDir(projectPath); workingDir != "" && !strings.EqualFold(workingDir, projectPath) {
+		// A copy shares the source cache. Cancelling that directory would stop
+		// the original task when this copy's tab closes.
+		if workingDir := a.recentTaskWorkingDir(projectPath); workingDir != "" && !strings.EqualFold(workingDir, projectPath) && !a.anotherVisibleTaskUsesWorkingDir(projectPath, workingDir) {
 			a.cancelProjectTaskLoop(workingDir)
 		}
 	}
 	log.Printf("[CloseProjectTabSession] tab=%s closed project=%q", tabID, projectPath)
-	if strings.TrimSpace(projectPath) != "" {
-		a.releaseCloudWorkspaceForProjectPath(projectPath)
+	if path := normalizeProjectSessionPath(projectPath); path != "" {
+		if id := a.lookupCloudWorkspaceIDForProject(path); id != "" && !a.anotherOpenTabUsesCloudWorkspace(id, path) {
+			a.releaseCloudWorkspaceForProjectPath(path)
+		}
 	}
+}
+
+// anotherVisibleTaskUsesWorkingDir is true when a different visible task still
+// runs in workingDir. Closing either the source or a copy must not cancel that
+// shared directory.
+func (a *App) anotherVisibleTaskUsesWorkingDir(projectPath, workingDir string) bool {
+	workingDir = normalizeProjectSessionPath(workingDir)
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || workingDir == "" || a.memoryStore == nil {
+		return false
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return false
+	}
+	for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
+		return true
+	}) {
+		path := normalizeProjectSessionPath(rec.ProjectPath)
+		if path == "" || path == projectPath || pi.IsHidden(path) || pi.IsArchived(path) {
+			continue
+		}
+		// A task with no working_dir tag still runs in its workspace/ sandbox.
+		// A copy of that task stores the same path explicitly.
+		execDir := a.recentTaskWorkingDir(path)
+		if execDir == "" {
+			execDir = a.managedTaskExecutionDirForDisplay(path)
+		}
+		if path == workingDir || normalizeProjectSessionPath(execDir) == workingDir {
+			return true
+		}
+	}
+	return false
 }
 
 // CloseAssistantTabSession releases the runtime-only directory binding for any

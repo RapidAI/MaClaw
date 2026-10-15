@@ -2,6 +2,7 @@ import { ArchiveProject, DeleteTask, PinTask } from "../../../wailsjs/go/main/Ap
 import type { Theme } from "./aiAssistantPanelTheme";
 import { localizeText } from "./aiAssistantI18n";
 import { expertIDFromTaskTags, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache } from "./aiAssistantPanelSessionUtils";
+import { isExplicitTaskCopy } from "./codingTaskMode";
 import { useDialog } from "../CustomDialog";
 import type { ProjectSearchItem } from "./projectSearchTypes";
 
@@ -14,7 +15,7 @@ export function ProjectSearchContextMenu({ ctxMenu, lang, theme: t, refreshResul
         try {
             await DeleteTask(ctxMenu.item.project_path);
             purgeDeletedProjectTabLocalCache(ctxMenu.item.project_path);
-            const expertID = expertIDFromTaskTags(ctxMenu.item.tags);
+            const expertID = isExplicitTaskCopy(ctxMenu.item.tags) ? "" : expertIDFromTaskTags(ctxMenu.item.tags);
             if (expertID) purgeDeletedExpertTabLocalCache(expertID);
             // The backend emits project-task:closed after deletion. Keep this
             // direct close for hosts where runtime events are unavailable.

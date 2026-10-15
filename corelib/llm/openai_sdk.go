@@ -18,6 +18,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/lobsterai"
 	"github.com/RapidAI/CodeClaw/corelib/qoder"
 	"github.com/RapidAI/CodeClaw/corelib/trae"
+	"github.com/RapidAI/CodeClaw/corelib/windsurf"
 	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 	openai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -36,6 +37,9 @@ func openAISDKChatRaw(ctx context.Context, cfg corelib.MaclawLLMConfig, body []b
 	}
 	if qoder.Matches(cfg) {
 		client = qoder.WrapClientForConfig(client, cfg)
+	}
+	if windsurf.MatchesProvider(cfg.ProviderName, cfg.URL) {
+		client = windsurf.WrapClient(client)
 	}
 	if !json.Valid(body) {
 		return nil, 0, fmt.Errorf("parse openai request body: invalid JSON")
@@ -103,9 +107,17 @@ func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body
 	if qoder.Matches(cfg) {
 		client = qoder.WrapClientForConfig(client, cfg)
 	}
+	if windsurf.MatchesProvider(cfg.ProviderName, cfg.URL) {
+		client = windsurf.WrapClient(client)
+	}
 	cfg = bindOpenCodeSessionFromJSONBody(ctx, cfg, body)
 	endpoint := BuildOpenAIChatCompletionsEndpoint(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(cfg.URL, cfg.UserAgent()))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	// The route deadline still bounds time-to-headers. Once an SSE body
+	// starts, it may continue past that deadline. Caller cancellation is
+	// preserved, including a stop that arrives after the deadline.
+	reqCtx, cancelReq, markHeaders, headerDeadline := streamingRequestContext(ctx)
+	defer cancelReq()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, nil, err
 	}
@@ -123,7 +135,7 @@ func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, 0, nil, normalizeStreamSetupError(headerDeadline, err)
 	}
 	defer resp.Body.Close()
 	status := resp.StatusCode
@@ -154,6 +166,12 @@ func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body
 			return result, status, nil, nil
 		}
 		return nil, status, raw, fmt.Errorf("parse openai stream response: expected SSE event stream or JSON body (body_len=%d)", len(raw))
+	}
+	// Only a live event stream outlives the route deadline. Error and JSON
+	// bodies stay on that deadline because they are not token streams.
+	// Losing the claim means the route timer already canceled this request.
+	if !markHeaders() {
+		return nil, status, nil, context.DeadlineExceeded
 	}
 	idleBody := newIdleTimeoutReader(resp.Body, SSEIdleTimeout)
 	defer idleBody.Close()
@@ -447,7 +465,7 @@ func openAISDKOptions(cfg corelib.MaclawLLMConfig, client *http.Client) []option
 		option.WithBaseURL(openAISDKBaseURL(cfg)),
 		option.WithAPIKey(cfg.Key),
 		option.WithHTTPClient(client),
-		option.WithHeader("User-Agent", cfg.UserAgent()),
+		option.WithHeader("User-Agent", corelib.OpenCodeWireUserAgent(cfg.URL, cfg.UserAgent())),
 		option.WithMaxRetries(0),
 	}
 	if corelib.IsCodeGenURL(cfg.URL) {

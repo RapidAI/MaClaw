@@ -47,6 +47,9 @@ var codingStaticCompatibilityInventory = []codingStaticCompatibilityInventoryIte
 	{codingStaticCompatibilityHostLocal, "edit_lines", tool.CapabilityFSWriteLocal, tool.EffectLocalMutation, "local-workspace", false},
 	{codingStaticCompatibilityHostLocal, "write_file", tool.CapabilityFSWriteLocal, tool.EffectLocalMutation, "local-workspace", false},
 	{codingStaticCompatibilityHostLocal, "bash", tool.CapabilityShellExecuteLocal, tool.EffectSensitive, "local-workspace", false},
+	// Host SSH client for the local programming agent. This is not the remote
+	// workspace family (ssh_read_file / ssh_bash); those stay on the remote host.
+	{codingStaticCompatibilityHostLocal, "ssh", tool.CapabilityShellExecuteRemoteHost, tool.EffectExternalEffect, "ssh-session", false},
 	// Local optional research/knowledge. These remain legacy compatibility
 	// families until their own network/artifact contracts are migrated.
 	{codingStaticCompatibilityHostLocal, "web_search", tool.CapabilityInformationFetchWeb, tool.EffectReadOnly, "network-policy", false},

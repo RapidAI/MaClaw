@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { ImportCodexAuth } from '../../../wailsjs/go/main/App';
 import { ClipboardSetText } from '../../../wailsjs/runtime';
 import { colors } from './styles';
@@ -20,6 +21,7 @@ function oauthSignInLabel(name: string, t: Translate): string {
     if (name === 'GitHub Copilot') return t('Sign in with GitHub', '\u4f7f\u7528 GitHub \u8d26\u53f7\u767b\u5f55');
     if (name === 'Anthropic') return t('Sign in with Claude.ai', '\u4f7f\u7528 Claude.ai \u8d26\u53f7\u767b\u5f55');
     if (name === 'xAI-Grok') return t('Sign in with xAI', '\u4f7f\u7528 xAI \u8d26\u53f7\u767b\u5f55');
+    if (name === 'Devin') return t('Sign in with Devin', '\u4f7f\u7528 Devin \u8d26\u53f7\u767b\u5f55');
     if (isWorkBuddyProvider(name)) return t('Sign in with WorkBuddy', '\u4f7f\u7528 WorkBuddy \u8d26\u53f7\u767b\u5f55');
     if (isKimiCodeProvider(name)) return t('Sign in with Kimi Code', '\u4f7f\u7528 Kimi Code \u8d26\u53f7\u767b\u5f55');
     if (isQoderProvider(name)) return t('Sign in with Qoder', '\u4f7f\u7528 Qoder \u8d26\u53f7\u767b\u5f55');
@@ -38,6 +40,7 @@ export function LLMConfigOAuthFields({
     onCancel,
     onImported,
     onImportError,
+    onDevinToken,
 }: {
     provider: LLMProvider;
     oauthBusy: boolean;
@@ -48,7 +51,10 @@ export function LLMConfigOAuthFields({
     onCancel: () => void;
     onImported: (msg: string) => Promise<void> | void;
     onImportError: (error: unknown) => void;
+    onDevinToken?: (token: string) => Promise<void> | void;
 }) {
+    const [devinToken, setDevinToken] = useState('');
+    const [devinTokenBusy, setDevinTokenBusy] = useState(false);
     return (
         <div>
             <label style={labelStyle}>{t('Authentication', '\u8ba4\u8bc1\u65b9\u5f0f')}</label>
@@ -102,6 +108,41 @@ export function LLMConfigOAuthFields({
                     )}
                 </>
             )}
+            {provider.name === 'Devin' && !provider.key && onDevinToken ? (
+                <div style={{ marginTop: 10 }}>
+                    <label style={labelStyle}>{t('Auth token', '授权令牌')}</label>
+                    <div style={{ display: 'flex', gap: 8 }}>
+                        <input
+                            value={devinToken}
+                            spellCheck={false}
+                            placeholder={t('Paste the Devin auth token', '粘贴 Devin 授权令牌')}
+                            onChange={e => setDevinToken(e.target.value)}
+                            style={{ flex: 1, fontSize: '0.78rem', padding: '8px 10px' }}
+                        />
+                        <button
+                            type="button"
+                            disabled={devinTokenBusy || !devinToken.trim()}
+                            onClick={() => {
+                                setDevinTokenBusy(true);
+                                Promise.resolve(onDevinToken(devinToken))
+                                    .then(() => setDevinToken(''))
+                                    .catch(onImportError)
+                                    .finally(() => setDevinTokenBusy(false));
+                            }}
+                            style={{
+                                fontSize: '0.76rem', padding: '0 14px', cursor: 'pointer',
+                                background: 'transparent', color: 'var(--theme-primary)',
+                                border: `1px solid ${colors.primary}`, borderRadius: 4,
+                            }}
+                        >
+                            {devinTokenBusy ? t('Signing in...', '登录中...') : t('Done', '完成')}
+                        </button>
+                    </div>
+                    <p style={{ fontSize: '0.68rem', color: colors.textMuted, margin: '4px 0 0', lineHeight: 1.4 }}>
+                        {t('From the login page, or Devin Provide auth token.', '登录页给出的令牌，或 Devin 的 Provide auth token。')}
+                    </p>
+                </div>
+            ) : null}
             {oauthBusy && hint ? (
                 <p style={{ fontSize: '0.76rem', color: colors.textSecondary, margin: '8px 0 0', lineHeight: 1.45, whiteSpace: 'pre-wrap', wordBreak: 'break-all' }}>
                     {hint}

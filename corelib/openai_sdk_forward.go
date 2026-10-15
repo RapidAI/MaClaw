@@ -50,7 +50,7 @@ func openAICompatSDKOptions(cfg MaclawLLMConfig, client *http.Client) []option.R
 		option.WithBaseURL(openAICompatSDKBaseURL(cfg)),
 		option.WithAPIKey(cfg.Key),
 		option.WithHTTPClient(client),
-		option.WithHeader("User-Agent", cfg.UserAgent()),
+		option.WithHeader("User-Agent", OpenCodeWireUserAgent(cfg.URL, cfg.UserAgent())),
 		option.WithHeader("Cache-Control", "no-cache"),
 		option.WithMaxRetries(0),
 	}

@@ -264,12 +264,15 @@ func TestFetchAnthropicModels(t *testing.T) {
 		if r.Header.Get("anthropic-version") == "" {
 			t.Error("missing anthropic-version")
 		}
+		if r.Header.Get("User-Agent") != "claude code" {
+			t.Errorf("User-Agent = %q, want claude code", r.Header.Get("User-Agent"))
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"data": []map[string]string{{"id": "claude-sonnet-4-5", "display_name": "Claude Sonnet 4.5"}},
 		})
 	}))
 	defer upstream.Close()
-	models, err := fetchAnthropicModels(upstream.URL+"/v1", "sk-ant-test")
+	models, err := fetchAnthropicModels(upstream.URL+"/v1", "sk-ant-test", "claude code")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -21,7 +21,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/codegenproxy"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
 	"github.com/RapidAI/CodeClaw/corelib/kimicode"
@@ -88,6 +87,7 @@ type App struct {
 	openaiDone        bool
 	kimiLogin         *kimiDeviceLogin
 	devinLogin        *devinLoginFlow
+	devinSaveMu       sync.Mutex
 	qoderLogin        *qoderLoginFlow
 	workbuddyLogin    *workbuddyLoginFlow
 	relaunchAfterAuth bool
@@ -103,11 +103,14 @@ type App struct {
 }
 
 type Settings struct {
-	ListenAddress              string                 `json:"listen_address"`
-	APIKey                     string                 `json:"api_key"`
-	AccessToken                string                 `json:"access_token,omitempty"`
-	BaseURL                    string                 `json:"base_url"`
-	ModelID                    string                 `json:"model_id,omitempty"`
+	ListenAddress string `json:"listen_address"`
+	APIKey        string `json:"api_key"`
+	AccessToken   string `json:"access_token,omitempty"`
+	BaseURL       string `json:"base_url"`
+	ModelID       string `json:"model_id,omitempty"`
+	// AgentType is the User-Agent sent upstream. Empty keeps the QAgent default.
+	// A value that is not one of the built-in tool names is sent as typed.
+	AgentType                  string                 `json:"agent_type,omitempty"`
 	CodexContextWindow         int                    `json:"codex_context_window,omitempty"`
 	CodexAutoCompactTokenLimit int                    `json:"codex_auto_compact_token_limit,omitempty"`
 	Email                      string                 `json:"email,omitempty"`
@@ -313,10 +316,18 @@ func (a *App) SaveSettings(s Settings) (Status, error) {
 	if strings.TrimSpace(s.ActiveAuthMode) == "" {
 		s.ActiveAuthMode = cur.ActiveAuthMode
 	}
+	// An omitted agent type keeps the saved identity. The UI sends "QAgent"
+	// when that preset is selected, so an empty value means "not provided".
+	if strings.TrimSpace(s.AgentType) == "" {
+		s.AgentType = cur.AgentType
+	}
 	if len(s.AuthProfiles) == 0 {
 		s.AuthProfiles = cur.AuthProfiles
 	}
 	s = normalizeSettings(s)
+	if !printableAgentType(s.AgentType) {
+		return Status{}, fmt.Errorf("User-Agent 只能包含英文、数字和常见符号")
+	}
 	if s.CodexAutoCompactTokenLimit >= s.CodexContextWindow {
 		return Status{}, fmt.Errorf("Codex 压缩启动长度必须小于上下文长度")
 	}
@@ -351,6 +362,9 @@ func (a *App) SaveSettings(s Settings) (Status, error) {
 		if err := writeSettings(s); err != nil {
 			return Status{}, err
 		}
+	}
+	if !needsRestart && proxyClientName(s) != proxyClientName(cur) {
+		a.applyUpstreamClientName(s)
 	}
 
 	if s.APIKey != cur.APIKey {
@@ -1232,7 +1246,7 @@ func (a *App) restartProxy(s Settings) error {
 		}
 	})
 	if strings.TrimSpace(s.AccessToken) != "" && strings.TrimSpace(s.BaseURL) != "" {
-		server.SetUpstreamWithClientName(s.BaseURL, s.AccessToken, corelib.CodeGenClientName)
+		server.SetUpstreamWithClientName(s.BaseURL, s.AccessToken, proxyClientName(s))
 		switch s.ActiveAuthMode {
 		case AuthModeXAIOAuth:
 			server.SetUpstreamExtraHeaders(map[string]string{"X-XAI-Token-Auth": "xai-grok-cli"})
@@ -1504,6 +1518,7 @@ func normalizeSettings(s Settings) Settings {
 		s.CodexAutoCompactTokenLimit = defaultAutoCompactTokenLimit
 	}
 	s.Email = strings.TrimSpace(s.Email)
+	s.AgentType = normalizeAgentType(s.AgentType)
 	s.Models = normalizeModelOptions(s.Models)
 	s.ActiveAuthMode = strings.TrimSpace(s.ActiveAuthMode)
 	if s.AuthProfiles == nil {
@@ -1544,6 +1559,21 @@ func normalizeSettings(s Settings) Settings {
 		s.BaseURL = oauth.CodeGenBaseURL
 	}
 	return s
+}
+
+// applyUpstreamClientName points the running proxy at the saved User-Agent
+// without rebinding the listener. Callers must not hold a.mu.
+func (a *App) applyUpstreamClientName(s Settings) {
+	if a == nil || strings.TrimSpace(s.AccessToken) == "" || strings.TrimSpace(s.BaseURL) == "" {
+		return
+	}
+	a.mu.Lock()
+	server := a.server
+	a.mu.Unlock()
+	if server == nil {
+		return
+	}
+	server.SetUpstreamWithClientName(s.BaseURL, s.AccessToken, proxyClientName(s))
 }
 
 func normalizeListenAddress(addr string) (string, error) {

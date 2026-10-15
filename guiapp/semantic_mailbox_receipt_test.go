@@ -18,8 +18,8 @@ func TestMailboxSendPlanMaterializesOnlyTheTrustedSendAdapter(t *testing.T) {
 	if err != nil || !handled || surface == nil {
 		t.Fatalf("handled=%v surface=%v err=%v", handled, surface != nil, err)
 	}
-	if semanticGrantNameForAdapter(surface, semanticTrustedMailboxSendAdapter) == "" {
-		t.Fatal("send plan did not materialize the trusted mailbox send adapter")
+	if got := semanticGrantNameForAdapter(surface, semanticTrustedMailboxSendAdapter); got != "mailbox_send" {
+		t.Fatalf("send plan model name=%q, want mailbox_send", got)
 	}
 	if semanticGrantNameForAdapter(surface, semanticTrustedMailboxConfigureAdapter) != "" {
 		t.Fatal("send plan materialized mailbox configure")
@@ -34,6 +34,15 @@ func TestMailboxSendPlanMaterializesOnlyTheTrustedSendAdapter(t *testing.T) {
 	}
 	if !causesReceipt(surface) {
 		t.Fatal("trusted mailbox send is not recognised as a receipt boundary")
+	}
+	cb := &sharedAgentLoopCallbacks{semanticSurface: surface}
+	if got := semanticToolsSearchStatus(cb, "mailbox_send"); got != "[已在当前工具面]" {
+		t.Fatalf("discovery status=%s", got)
+	}
+	for _, entry := range semanticToolsSearchCatalog(cb) {
+		if strings.HasPrefix(entry.name, "invoke_") && entry.capability == tool.CapabilityMessageSendMailbox {
+			t.Fatalf("discovery advertised rotating mailbox name %q", entry.name)
+		}
 	}
 }
 
@@ -59,8 +68,8 @@ func TestMailboxConfigurePlanDoesNotMaterializeSend(t *testing.T) {
 	if err != nil || !handled || surface == nil {
 		t.Fatalf("handled=%v surface=%v err=%v", handled, surface != nil, err)
 	}
-	if semanticGrantNameForAdapter(surface, semanticTrustedMailboxConfigureAdapter) == "" {
-		t.Fatal("configure plan did not materialize the trusted configure adapter")
+	if got := semanticGrantNameForAdapter(surface, semanticTrustedMailboxConfigureAdapter); got != "mailbox_configure" {
+		t.Fatalf("configure plan model name=%q, want mailbox_configure", got)
 	}
 	if semanticGrantNameForAdapter(surface, semanticTrustedMailboxSendAdapter) != "" {
 		t.Fatal("configure plan materialized mailbox send")
@@ -226,13 +235,16 @@ func TestTrustedMailboxConfigureSaveAdvancesTheSelection(t *testing.T) {
 		}
 	})
 	name := semanticGrantNameForAdapter(surface, semanticTrustedMailboxConfigureAdapter)
+	consumed := surface.grants[name]
 	cb := &sharedAgentLoopCallbacks{handler: h, userID: userID, semanticSurface: surface, tools: defs}
 	got := cb.ExecuteTool(name, `{"action":"save","email":"other@ex.com","name":"other-box","outbound":{"host":"smtp.example.com","port":2525,"security":"tls"}}`)
 	if !strings.Contains(got, "other-box") || strings.Contains(got, "[system rejected]") {
 		t.Fatalf("result=%q", got)
 	}
-	if _, live := surface.grants[surface.resolveFunctionName(name)]; live {
-		t.Fatal("saved configure left the grant live")
+	// Configure allows several saves. The prompt name stays mailbox_configure;
+	// the consumed grant must not remain the live authority.
+	if next, live := surface.grants[name]; live && (next.Token == consumed.Token || next.SelectionID == consumed.SelectionID) {
+		t.Fatal("saved configure reused the consumed grant")
 	}
 	after, err := h.app.LoadConfig()
 	if err != nil {

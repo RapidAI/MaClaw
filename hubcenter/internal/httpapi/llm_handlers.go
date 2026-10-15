@@ -391,6 +391,7 @@ func adminProbeLLMProviderModels(svc *llmservice.Service, proxyCfg *llmservice.P
 			APIURL     string `json:"api_url"`
 			APIKey     string `json:"api_key"`
 			Protocol   string `json:"protocol"`
+			AgentType  string `json:"agent_type"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -409,15 +410,23 @@ func adminProbeLLMProviderModels(svc *llmservice.Service, proxyCfg *llmservice.P
 			models []string
 			err    error
 		)
+		agentType := strings.TrimSpace(req.AgentType)
+		if agentType == "" && existing != nil {
+			agentType = existing.AgentType
+		}
 		// A saved provider's key must not be sent to a caller-supplied URL.
 		if existing != nil && strings.TrimSpace(req.APIKey) == "" {
-			if proxyCfg != nil && !llmpool.ProviderAllowedOnNode(*existing, proxyCfg.NodeID) {
-				models, err = llmservice.ProbeProviderModelsWithScope(r.Context(), proxyCfg, existing, existing.APIURL, existing.APIKey, existing.Protocol)
+			probeProvider := *existing
+			if agentType != "" {
+				probeProvider.AgentType = agentType
+			}
+			if proxyCfg != nil && !llmpool.ProviderAllowedOnNode(probeProvider, proxyCfg.NodeID) {
+				models, err = llmservice.ProbeProviderModelsWithScope(r.Context(), proxyCfg, &probeProvider, probeProvider.APIURL, probeProvider.APIKey, probeProvider.Protocol)
 			} else {
-				models, err = probeLLMProviderModels(r.Context(), existing.APIURL, existing.APIKey, existing.Protocol)
+				models, err = probeLLMProviderModels(r.Context(), probeProvider.APIURL, probeProvider.APIKey, probeProvider.Protocol, probeProvider.AgentType)
 			}
 		} else {
-			models, err = probeLLMProviderModels(r.Context(), req.APIURL, req.APIKey, req.Protocol)
+			models, err = probeLLMProviderModels(r.Context(), req.APIURL, req.APIKey, req.Protocol, agentType)
 		}
 		if err != nil {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -427,7 +436,7 @@ func adminProbeLLMProviderModels(svc *llmservice.Service, proxyCfg *llmservice.P
 	}
 }
 
-func probeLLMProviderModels(ctx context.Context, apiURL, apiKey, protocol string) ([]string, error) {
+func probeLLMProviderModels(ctx context.Context, apiURL, apiKey, protocol, agentType string) ([]string, error) {
 	apiURL = strings.TrimSpace(apiURL)
 	if apiURL == "" {
 		return nil, fmt.Errorf("api_url is required")
@@ -449,6 +458,11 @@ func probeLLMProviderModels(ctx context.Context, apiURL, apiKey, protocol string
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	req.Header.Set("Accept", "application/json")
+	probeCfg := corelib.MaclawLLMConfig{URL: apiURL, AgentType: llmservice.RequestAgentType(agentType)}
+	if ua := probeCfg.UserAgent(); ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
+	corelib.ApplyOpenCodeSessionHeader(req, probeCfg)
 	resp, err := llmProviderProbeHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
@@ -595,24 +609,7 @@ func adminTestLLMProviderChat(svc *llmservice.Service, proxyCfg *llmservice.Prox
 			WireAPI:    corelib.NormalizeLLMProviderWireAPI(req.WireAPI),
 			TimeoutSec: timeoutSec,
 		}
-		if existing != nil {
-			if wb, ok := llmservice.WorkBuddyMaclawConfig(existing, cfg.Model); ok {
-				wb.TimeoutSec = cfg.TimeoutSec
-				cfg = wb
-			}
-			if qd, ok := llmservice.QoderMaclawConfig(existing, cfg.Model); ok {
-				qd.TimeoutSec = cfg.TimeoutSec
-				cfg = qd
-			}
-			if tr, ok := llmservice.TraeMaclawConfig(existing, cfg.Model); ok {
-				tr.TimeoutSec = cfg.TimeoutSec
-				cfg = tr
-			}
-			if lb, ok := llmservice.LobsterAIMaclawConfig(existing, cfg.Model); ok {
-				lb.TimeoutSec = cfg.TimeoutSec
-				cfg = lb
-			}
-		}
+		cfg = providerTestConfig(cfg, existing)
 		// An availability test must use the provider's production timeout. Slower
 		// reasoning providers can legitimately take more than 15 seconds before
 		// returning their first completion.
@@ -670,30 +667,46 @@ func testLLMProviderChatStatus(ctx context.Context, svc *llmservice.Service, pro
 		WireAPI:    corelib.NormalizeLLMProviderWireAPI(existing.WireAPI),
 		TimeoutSec: existing.UpstreamTimeoutSec,
 	}
-	if wb, ok := llmservice.WorkBuddyMaclawConfig(existing, model); ok {
-		wb.TimeoutSec = cfg.TimeoutSec
-		cfg = wb
-	}
-	if qd, ok := llmservice.QoderMaclawConfig(existing, model); ok {
-		qd.TimeoutSec = cfg.TimeoutSec
-		cfg = qd
-	}
-	if tr, ok := llmservice.TraeMaclawConfig(existing, model); ok {
-		tr.TimeoutSec = cfg.TimeoutSec
-		cfg = tr
-	}
-	if lb, ok := llmservice.LobsterAIMaclawConfig(existing, model); ok {
-		lb.TimeoutSec = cfg.TimeoutSec
-		cfg = lb
-	}
+	cfg = providerTestConfig(cfg, existing)
 	testCtx, cancel := context.WithTimeout(ctx, llmProviderTestTimeout(cfg))
 	defer cancel()
 	_, errMsg, latencyMs, _ = runLLMProviderChatTest(testCtx, cfg)
 	return errMsg == "", errMsg, latencyMs
 }
 
+// providerTestConfig keeps a vendor account on that vendor's own request
+// shape. A static key keeps the provider's saved User-Agent when the vendor
+// config did not already choose one. Account logins still replace that header
+// in their own ApplyHeaders.
+func providerTestConfig(cfg corelib.MaclawLLMConfig, provider *llmpool.ProviderConfig) corelib.MaclawLLMConfig {
+	if provider == nil {
+		return cfg
+	}
+	if wb, ok := llmservice.WorkBuddyMaclawConfig(provider, cfg.Model); ok {
+		wb.TimeoutSec = cfg.TimeoutSec
+		cfg = wb
+	}
+	if qd, ok := llmservice.QoderMaclawConfig(provider, cfg.Model); ok {
+		qd.TimeoutSec = cfg.TimeoutSec
+		cfg = qd
+	}
+	if tr, ok := llmservice.TraeMaclawConfig(provider, cfg.Model); ok {
+		tr.TimeoutSec = cfg.TimeoutSec
+		cfg = tr
+	}
+	if lb, ok := llmservice.LobsterAIMaclawConfig(provider, cfg.Model); ok {
+		lb.TimeoutSec = cfg.TimeoutSec
+		cfg = lb
+	}
+	if strings.TrimSpace(cfg.AgentType) == "" {
+		cfg.AgentType = llmservice.RequestAgentType(provider.AgentType)
+	}
+	return cfg
+}
+
 // runLLMProviderChatTest executes one availability probe against cfg and
 // returns the model reply. A non-empty errMsg marks the provider unavailable.
+
 func runLLMProviderChatTest(ctx context.Context, cfg corelib.MaclawLLMConfig) (reply string, errMsg string, latencyMs int64, calls []llmservice.ProviderToolCall) {
 	return runLLMProviderChatTestBody(ctx, cfg, nil, nil)
 }
@@ -796,6 +809,10 @@ func newLLMProviderTestRequest(ctx context.Context, cfg corelib.MaclawLLMConfig,
 			req.Header.Set("x-api-key", cfg.Key)
 		}
 		req.Header.Set("anthropic-version", "2023-06-01")
+		if ua := cfg.UserAgent(); ua != "" {
+			req.Header.Set("User-Agent", ua)
+		}
+		corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
 		corelib.ApplyOpenCodeSessionHeader(req, cfg)
 		return req, nil
 	}

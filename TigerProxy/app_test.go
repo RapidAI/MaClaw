@@ -374,6 +374,52 @@ func TestTigerProxyUpstreamRequestsCarryQAgentClientName(t *testing.T) {
 	}
 }
 
+func TestTigerProxyUpstreamUsesConfiguredAgentType(t *testing.T) {
+	seen := make(chan http.Header, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"list","data":[]}`)
+	}))
+	defer upstream.Close()
+
+	app := NewApp()
+	err := app.restartProxy(Settings{
+		ListenAddress: "127.0.0.1:0",
+		APIKey:        "local-key",
+		AccessToken:   "upstream-token",
+		BaseURL:       upstream.URL,
+		AgentType:     "opencode",
+	})
+	if err != nil {
+		t.Fatalf("restartProxy: %v", err)
+	}
+	defer app.stopProxy()
+
+	req, err := http.NewRequest(http.MethodGet, tigerProxyTestBaseURL(t, app)+"/v1/models", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer local-key")
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("proxy request: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("proxy status = %d, want 200", resp.StatusCode)
+	}
+	var headers http.Header
+	select {
+	case headers = <-seen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream did not receive proxied request")
+	}
+	if got := headers.Get("User-Agent"); got != "opencode" {
+		t.Fatalf("upstream User-Agent = %q, want opencode", got)
+	}
+}
+
 func TestTigerProxyOpenAIChatUpstreamServesChatAndResponsesClients(t *testing.T) {
 	seen := make(chan tigerProxyUpstreamRequest, 2)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

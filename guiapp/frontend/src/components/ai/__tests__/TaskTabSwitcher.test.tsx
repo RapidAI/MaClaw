@@ -234,4 +234,21 @@ describe('TaskTabSwitcher with task list', () => {
         expect(onActivate).toHaveBeenCalledWith('cws-tab');
         expect(onOpenTask).not.toHaveBeenCalled();
     });
+
+    it('does not bind a copied cloud task to the source workspace tab', () => {
+        const cloudTabs: AITab[] = [
+            { id: 'local', type: 'local', title: 'Local', closable: false },
+            { id: 'cws-tab', type: 'project', title: 'Cloud task', projectPath: 'E:/new-cache/cloud-workspaces/tenant/cws-42', cloudWorkspaceId: 'cws-42', closable: true },
+        ];
+        const cloudTasks: TaskManagementItem[] = [
+            { id: 'copy', name: '（副本）Cloud task', project_path: 'D:/tasks/cloud-copy', tags: ['cloud_workspace:cws-42', 'task_copy'], working_dir: 'E:/new-cache/cloud-workspaces/tenant/cws-42' },
+            { id: 'ct1', name: 'Cloud task', project_path: 'D:/tasks/cloud-source', tags: ['cloud_workspace:cws-42'] },
+        ];
+        renderTaskSwitcher({ tabs: cloudTabs, tasks: cloudTasks, activeTabId: 'local' });
+        openSwitcher();
+
+        expect(screen.getByTestId('task-tab-switcher-task-copy').textContent).toContain('（副本）Cloud task');
+        expect(screen.queryByTestId('task-tab-switcher-task-ct1')).toBeNull();
+        expect(screen.getByTestId('task-tab-switcher-item-cws-tab').textContent).not.toContain('副本');
+    });
 });

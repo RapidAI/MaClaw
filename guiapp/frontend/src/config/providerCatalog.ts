@@ -4,6 +4,7 @@ export const subscriptionUrls: { [key: string]: string } = {
     "Doubao": "https://www.volcengine.com/activity/codingplan",
     "腾讯云": "https://cloud.tencent.com/document/product/1772/128947",
     "讯飞星辰": "https://www.xfyun.cn/doc/spark/CodingPlan.html",
+    "星辰大模型": "https://console.teleai.com.cn",
     "MiniMax": "https://platform.minimaxi.com/user-center/payment/coding-plan",
     "百度千帆": "https://cloud.baidu.com/product/codingplan.html",
     "Codex": "https://www.aicodemirror.com/register?invitecode=CZPPWZ",
@@ -47,6 +48,8 @@ export const knownProviderEndpoints: ProviderEndpoint[] = [
     { name: "Kimi", url: "https://api.kimi.com/coding/v1", protocol: "openai", region: "china" },
     { name: "Doubao", url: "https://ark.cn-beijing.volces.com/api/coding", protocol: "openai", region: "china" },
     { name: "腾讯云", url: "https://api.lkeap.cloud.tencent.com/coding/v3", protocol: "openai", region: "china", description: "Tencent Cloud OpenAI-compatible endpoint" },
+    { name: "腾讯TokenPlan", url: "https://tokenhub.tencentmaas.com/plan/v3", protocol: "openai", region: "china", description: "Tencent Token Plan OpenAI-compatible endpoint" },
+    { name: "星辰大模型", url: "https://api-maas.teleai.com.cn/v1", protocol: "openai", region: "china", description: "China Telecom TeleAI MaaS" },
     { name: "Doubao Codex", url: "https://ark.cn-beijing.volces.com/api/coding/v3", protocol: "openai", region: "china" },
     { name: "DeepSeek Codex", url: "https://api.aicodemirror.com/api/codex/backend-api/codex", protocol: "openai", region: "china" },
     { name: "OpenRouter", url: "https://openrouter.ai/api/v1", protocol: "openai", region: "global" },
@@ -68,6 +71,13 @@ export const recommendedModels: { [provider: string]: { id: string; note?: strin
     "XiaoMi": [{ id: "mimo-v2-flash" }],
     "摩尔线程": [{ id: "GLM-4.7" }],
     "快手": [{ id: "kat-coder-pro-v1" }],
+    "腾讯TokenPlan": [
+        { id: "auto", note: "智能路由" },
+    ],
+    "星辰大模型": [
+        { id: "TeleChat3-438B-A24B", note: "旗舰" },
+        { id: "Xing4.0-29B-A4B", note: "轻量" },
+    ],
     "腾讯云": [
         { id: "glm-5", note: "默认" },
         { id: "tc-code-latest", note: "Auto" },

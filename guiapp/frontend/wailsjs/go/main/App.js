@@ -330,6 +330,10 @@ export function CancelVirtualRepositoryOperation(arg1) {
   return window['go']['main']['App']['CancelVirtualRepositoryOperation'](arg1);
 }
 
+export function CancelDevinLogin() {
+  return window['go']['main']['App']['CancelDevinLogin']();
+}
+
 export function CancelWorkBuddyOAuth() {
   return window['go']['main']['App']['CancelWorkBuddyOAuth']();
 }
@@ -1117,6 +1121,10 @@ export function DownloadYOLOModel() {
 
 export function DuplicateSurvey(arg1) {
   return window['go']['main']['App']['DuplicateSurvey'](arg1);
+}
+
+export function DuplicateTask(arg1) {
+  return window['go']['main']['App']['DuplicateTask'](arg1);
 }
 
 export function EffectiveDesktopWorkingDir() {
@@ -5160,6 +5168,18 @@ export function StartWorkflowTemplate(arg1, arg2) {
 
 export function StartWorkflowTemplateInTab(arg1, arg2, arg3) {
   return window['go']['main']['App']['StartWorkflowTemplateInTab'](arg1, arg2, arg3);
+}
+
+export function StartDevinLogin() {
+  return window['go']['main']['App']['StartDevinLogin']();
+}
+
+export function WaitDevinLogin() {
+  return window['go']['main']['App']['WaitDevinLogin']();
+}
+
+export function CompleteDevinLoginWithToken(arg1) {
+  return window['go']['main']['App']['CompleteDevinLoginWithToken'](arg1);
 }
 
 export function StartWorkBuddyOAuth(arg1) {

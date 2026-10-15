@@ -1310,8 +1310,9 @@ func RunLoopWithUserContent(cb LoopCallbacks, userText string, userContent inter
 
 		// Apply the active route's timeout at the request boundary. This preserves
 		// host-provided cancellation/tracing while making a tool-driven config
-		// promotion effective immediately. It also covers the whole streaming
-		// response rather than only the time spent waiting for response headers.
+		// promotion effective immediately. The deadline bounds time-to-headers.
+		// An SSE body that is already delivering tokens continues until it goes
+		// idle, the caller cancels, or the stream continuation cap.
 		requestBaseCtx := ctx
 		requestCtx, cancelRequestTimeout := llmRequestContextWithTimeout(requestBaseCtx, aggCFG)
 		finishRequest := func(requestErr error) {
@@ -4665,7 +4666,17 @@ func llmRequestContextWithTimeout(ctx context.Context, cfg corelib.MaclawLLMConf
 	if llmRouteTimeoutOverride > 0 {
 		timeout = llmRouteTimeoutOverride
 	}
-	return context.WithTimeout(ctx, timeout)
+	timeoutCtx, cancel := context.WithTimeout(ctx, timeout)
+	// Record the deadline only when this timeout is the one that expires.
+	// An earlier host deadline stays attached to the request and still aborts
+	// an in-flight stream. Streaming may outlive a deadline we own, after headers.
+	if deadline, ok := timeoutCtx.Deadline(); ok {
+		parentDeadline, parentHasDeadline := ctx.Deadline()
+		if !parentHasDeadline || deadline.Before(parentDeadline) {
+			timeoutCtx = llm.BindRouteStreamDeadline(timeoutCtx, deadline, ctx)
+		}
+	}
+	return timeoutCtx, cancel
 }
 
 // ---------------------------------------------------------------------------

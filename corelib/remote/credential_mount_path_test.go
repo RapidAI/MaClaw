@@ -26,6 +26,21 @@ func TestExpandCredentialPathTilde(t *testing.T) {
 	}
 }
 
+func TestSignerFromKeyFileExpandsHomeTilde(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("UserHomeDir unavailable")
+	}
+	_, err = signerFromKeyFile("~/.ssh/id_rsa_does_not_exist_aicoder", "", nil)
+	if err == nil {
+		t.Fatal("missing key must fail")
+	}
+	want := filepath.Join(home, ".ssh", "id_rsa_does_not_exist_aicoder")
+	if strings.Contains(err.Error(), "~") || !strings.Contains(err.Error(), want) {
+		t.Fatalf("signerFromKeyFile error = %v, want expanded path %s", err, want)
+	}
+}
+
 func TestExpandCredentialPathDoesNotExpandOtherUser(t *testing.T) {
 	// ~other must not be concatenated onto home (old bug: home + path[1:]).
 	got, err := ExpandCredentialPath("~other/keys")

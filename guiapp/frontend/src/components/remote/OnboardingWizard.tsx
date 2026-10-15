@@ -4,7 +4,7 @@ import { colors, radius } from './styles';
 import { QRCodeSVG } from 'qrcode.react';
 import { ActivateReferralRemoteEmail, ActivateReferralRemotePhone, ActivateRemote, ActivateRemoteEmail, ActivateRemoteSMS, CancelCodeGenSSOPolling, CancelKimiCodeOAuth, CancelOpenAIOAuth, CancelXAIOAuth, ClaimReferralHandoff, FetchCodeGenModels, GetHubLLMServiceStatus, GetMaclawLLMProviders, GetReferralRegistrationStatus, GetRemoteConnectionStatus, GetRemoteRegistrationAuth, GetUserDataMigrationJob, GetWeixinStatus, PollWeixinQRStatus, ProbeRemoteHub, RedeemHubLLMService, RegisterReferralEmail, RegisterReferralPhone, ResolveRemoteRegistrationTarget, ResolveRemoteRegistrationTargetWithInvitation, SaveCodeGenModelChoice, SaveMaclawLLMProviders, SendReferralRegistrationEmail, SendReferralRegistrationSMS, SendRemoteRegistrationEmail, SendRemoteRegistrationSMS, StartCodeGenSSO, StartCodeGenSSOEmbedded, StartUserDataMigrationImport, StartWeixinQRLogin, TestAndSaveMaclawLLMProviders, UserDataMigrationInstances, UserDataMigrationStatus, WaitCodeGenSSOResult } from '../../../wailsjs/go/main/App';
 import { corelib } from '../../../wailsjs/go/models';
-import { cancelAllNativeOAuth, cancelNamedProviderOAuth, oauthBrowserHelp, oauthSignInLabel, promptKimiCodeDeviceLogin, runProviderOAuthLogin } from "./providerOAuth";
+import { cancelAllNativeOAuth, cancelNamedProviderOAuth, completeDevinPastedToken, oauthBrowserHelp, oauthSignInLabel, promptKimiCodeDeviceLogin, runProviderOAuthLogin } from "./providerOAuth";
 import { PROVIDER_LOGOS } from "./providerLogos";
 import { useDialog } from '../CustomDialog';
 import { localizeHubServiceReason, localizeHubServiceRedeemError } from "../../utils/hubServiceI18n";
@@ -281,6 +281,7 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
     const [llmResult, setLlmResult] = useState<{ ok: boolean; msg: string; pending?: boolean } | null>(null);
     const [llmDone, setLlmDone] = useState(false);
     const [oauthBusy, setOauthBusy] = useState(false);
+    const [devinToken, setDevinToken] = useState("");
     const { showPrompt } = useDialog();
     const oauthAttemptRef = useRef(0);
     const oauthPendingAttemptRef = useRef(0);
@@ -2186,6 +2187,27 @@ export function OnboardingWizard({ lang, hubUrl, email, referralHandoff, brandId
                                                     ? t("等待浏览器授权...", "Waiting for browser auth...")
                                                     : oauthSignInLabel(selectedProvider.name, (en, zh) => t(zh, en))}
                                             </button>
+                                            {selectedProvider.name === "Devin" && !selectedProvider.key && (
+                                                <div style={{ display: "flex", gap: 8, marginTop: 8 }}>
+                                                    <input
+                                                        value={devinToken}
+                                                        spellCheck={false}
+                                                        placeholder="粘贴 Devin 授权令牌"
+                                                        onChange={e => setDevinToken(e.target.value)}
+                                                        style={{ flex: 1, fontSize: "0.78rem", padding: "8px 10px" }}
+                                                    />
+                                                    <button type="button" disabled={!devinToken.trim()} onClick={() => {
+                                                        void completeDevinPastedToken(devinToken).then(msg => {
+                                                            setDevinToken("");
+                                                            setLlmResult({ ok: true, msg: msg || "Devin 登录成功" });
+                                                            setLlmDone(true);
+                                                            onLLMConfigured();
+                                                        }).catch(e => setLlmResult({ ok: false, msg: String(e) }));
+                                                    }} style={{ ...wizardGhostButtonBlockStyle, width: "auto", padding: "0 14px" }}>
+                                                        {t("完成", "Done")}
+                                                    </button>
+                                                </div>
+                                            )}
                                             {oauthBusy && (
                                                 <button onClick={() => {
                                                     cancelActiveOAuth(selectedProvider.name);

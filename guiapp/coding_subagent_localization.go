@@ -1982,7 +1982,17 @@ type codeNavigationOutput struct {
 // codegraphKeepUsingHint is attached to a real codegraph hit. The hit is
 // evidence. Naming the next lookup must not retract this one: "an earlier
 // miss is stale" was read as "the search that just returned did not happen."
-const codegraphKeepUsingHint = "This codegraph lookup succeeded; the lines above are evidence. Do not repeat this search. The next symbol, file, caller, or callee lookup should call code_navigation (node, file_symbols, callers, or callees). read_file may use a span named in this result."
+const codegraphKeepUsingHint = "This codegraph lookup succeeded; the lines above are the current source and are evidence. Do not repeat this search, and do not read_file or ripgrep a symbol already shown here. The next symbol, file, caller, or callee lookup should call code_navigation (node, file_symbols, callers, or callees)."
+
+// codegraphNamesHint is for a hit that lists names or locations and does not
+// include a definition. Calling that list the current source made the model
+// edit from the map, or read the whole file, instead of asking for the body.
+const codegraphNamesHint = "This codegraph lookup succeeded with names and locations. Those names are evidence. Do not repeat this search. The body is a new lookup: call code_navigation with operation node and a name below. Do not read_file the file to find that body."
+
+// codegraphDirectReadHint is for a names result that tells the model to
+// read the file. The names hint forbids that, so a withheld config value,
+// a file codegraph could not open, or a staleness banner would stay unread.
+const codegraphDirectReadHint = "This codegraph lookup succeeded. The names above are evidence. Do not repeat this search. A source symbol's body is a new lookup: call code_navigation with operation node and that name. Read the file directly when codegraph withheld a value, could not read the file, or tells you to read it directly."
 
 // codegraphSearchAgainHint is attached after a text search that already ran.
 // It must not say the search is stale, or that code_navigation had to run
@@ -2019,12 +2029,128 @@ func takeRemoteCodegraphHitMarker(result string) (string, bool) {
 	return strings.Join(kept, "\n"), hit
 }
 
-func codegraphContinueHint(backend string) string {
+func codegraphContinueHint(backend, output string) string {
 	if backend == "codegraph" {
+		if strings.TrimSpace(output) != "" && len(codegraphFilesReadyToEdit(output)) == 0 {
+			if codegraphOutputAllowsDirectRead(output) {
+				return codegraphDirectReadHint
+			}
+			return codegraphNamesHint
+		}
 		return codegraphKeepUsingHint
 	}
 	// "before ripgrep" told the model the lookup it just made does not count.
 	return "This lookup did not return a codegraph hit. The output above still counts. A literal or regular-expression search may follow it."
+}
+
+func codegraphOutputAllowsDirectRead(output string) bool {
+	return strings.Contains(output, "Read the file directly") || strings.Contains(output, "directly for its current content") || strings.Contains(output, "Read them directly") || codegraphMCPStale(output)
+}
+
+// noteCodegraphReadSnapshots records files whose current body was just
+// returned. The edit gate otherwise demands a separate read_file of the
+// whole file even though this lookup already read it.
+func (c *codingSubAgentCallbacks) noteCodegraphReadSnapshots(root, output string) {
+	if c == nil || strings.TrimSpace(root) == "" {
+		return
+	}
+	for _, rel := range codegraphFilesReadyToEdit(output) {
+		abs := rel
+		if !filepath.IsAbs(rel) {
+			abs = filepath.Join(root, filepath.FromSlash(rel))
+		}
+		if !navigationWithinRoot(root, abs) {
+			continue
+		}
+		if _, err := os.Stat(abs); err != nil {
+			continue
+		}
+		c.refreshFileSnapshot(abs)
+	}
+}
+
+// codegraphFilesReadyToEdit lists files whose current definition was
+// included. A symbol map, or a fenced slice that does not contain the
+// definition, does not count as a read of that file.
+func codegraphFilesReadyToEdit(output string) []string {
+	lines := strings.Split(output, "\n")
+	var files []string
+	seen := map[string]bool{}
+	add := func(path string) {
+		path = strings.TrimSpace(path)
+		if path == "" || seen[path] || navigationQueryEscapesRoot(path) {
+			return
+		}
+		seen[path] = true
+		files = append(files, path)
+	}
+	heading := ""
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if name, kind, ok := codegraphMCPHeading(line); ok && codegraphMCPKindHasBody(kind) {
+			heading = name
+		}
+		if strings.HasPrefix(line, "Body for ") && strings.HasSuffix(line, ".") {
+			rest := strings.TrimSuffix(strings.TrimPrefix(line, "Body for "), ".")
+			if j := strings.LastIndex(rest, " in "); j >= 0 {
+				add(rest[j+len(" in "):])
+			}
+		}
+		fence := codegraphFenceAfter(lines, i)
+		if fence == "" {
+			continue
+		}
+		if strings.Contains(line, "**Location:**") && heading != "" && codegraphExcerptDefines(fence, heading) {
+			add(codegraphLocationPath(line))
+		}
+		if path, symbols := codegraphMCPExploreHeader(line); path != "" {
+			for _, sym := range symbols {
+				if codegraphMCPKindHasBody(sym.kind) && codegraphExcerptDefines(fence, sym.name) {
+					add(path)
+					break
+				}
+			}
+		}
+	}
+	// A file still named by the staleness banner was not replaced from disk.
+	// Its indexed lines are not a read of the current file.
+	if codegraphMCPStale(output) {
+		kept := files[:0]
+		for _, path := range files {
+			if codegraphMCPStaleFile(output, path) {
+				delete(seen, path)
+				continue
+			}
+			kept = append(kept, path)
+		}
+		files = kept
+	}
+	return files
+}
+
+func codegraphFenceAfter(lines []string, header int) string {
+	fence := -1
+	for i := header + 1; i < len(lines) && i <= header+40; i++ {
+		trim := strings.TrimSpace(lines[i])
+		if strings.HasPrefix(trim, "##") {
+			break
+		}
+		if strings.HasPrefix(trim, "```") {
+			fence = i
+			break
+		}
+	}
+	if fence < 0 {
+		return ""
+	}
+	end := fence + 1
+	for end < len(lines) && !strings.HasPrefix(strings.TrimSpace(lines[end]), "```") {
+		end++
+	}
+	if end >= len(lines) {
+		return ""
+	}
+	return strings.Join(lines[fence+1:end], "\n")
 }
 
 // appendCodegraphSearchHint is added only after a text search that returned
@@ -2296,7 +2422,13 @@ func formatCodegraphRemoteInvocation(cmds [][]string) string {
 		if symbol := codegraphNodeSymbolArg(cmds[0]); symbol != "" {
 			accept = codegraphRemoteAcceptNamedNode(symbol)
 		}
-		script := "if _cg_out=$(\"$_cg_bin\" " + formatCodegraphRemoteArgs(cmds[0]) + " 2>&1); then " + accept + "; fi"
+		script := "if _cg_out=$(\"$_cg_bin\" " + formatCodegraphRemoteArgs(cmds[0]) + " 2>&1); then " + accept
+		if file, symbol, ok := codegraphPinnedNode(cmds[0]); ok {
+			// node --file names the symbol and omits its source. The body is
+			// read from the current file only after that name matched.
+			script += "; if [ \"$_cg_hit\" -eq 1 ]; then " + codegraphRemotePinnedBody(file, symbol) + "; fi"
+		}
+		script += "; fi"
 		if cmds[0][0] == "query" {
 			script += "; " + codegraphRemoteSymbolMapFrom("_cg_out")
 		}
@@ -2314,7 +2446,7 @@ func formatCodegraphRemoteInvocation(cmds [][]string) string {
 
 // codegraphSymbolMapNote tells the model the names in a file map are the next
 // lookups. The prose query that found the file does not include those bodies.
-const codegraphSymbolMapNote = "Symbol map for %s. A name below is a symbol: call code_navigation with operation node and that name for its body. read_file may use the line after the dash."
+const codegraphSymbolMapNote = "Symbol map for %s. A name below is a symbol: call code_navigation with operation node and that name for its body. Do not read_file the file to find that body."
 
 // codegraphDominantFileAwk prints score:file for each source file named by a
 // query location. The score is the one on the immediately previous line. The
@@ -2545,11 +2677,30 @@ const codegraphSourceBodyAwk = `{
   if (400 < n) { print "..."; exit }
 }`
 
+// codegraphPinnedNode is `node --file <file> <symbol>`. That CLI form pins
+// an overload and does not set includeCode, so the result has no body.
+func codegraphPinnedNode(args []string) (file, symbol string, ok bool) {
+	if len(args) != 4 || args[0] != "node" || args[1] != "--file" {
+		return "", "", false
+	}
+	if args[2] == "" || navigationQueryEscapesRoot(args[2]) || codegraphTargetIsFile(args[3]) || !codegraphRemoteNodeSymbol(args[3]) {
+		return "", "", false
+	}
+	return args[2], args[3], true
+}
+
+// codegraphRemotePinnedBody prints the current definition after a pinned node
+// hit. The indexed trail stays; the body comes from the file on disk.
+func codegraphRemotePinnedBody(file, symbol string) string {
+	header := "Body for " + symbol + " in " + file + "."
+	return "if [ -f " + remoteShellQuote(file) + " ]; then _cg_src=$(awk -v name=" + remoteShellQuote(symbol) + " " + remoteShellQuote(codegraphSourceBodyAwk) + " " + remoteShellQuote(file) + "); if [ -n \"$_cg_src\" ]; then printf '%s\\n' " + remoteShellQuote(header) + "; printf '%s\\n' \"$_cg_src\"; fi; fi"
+}
+
 func codegraphRemoteHitBodies(quoted string) string {
 	return "_cg_b1=; _cg_s1=-1; _cg_b2=; _cg_s2=-1; for _cg_row in $(printf '%s\\n' " + quoted + " | awk -v f=\"$_cg_map_file\" " + remoteShellQuote(codegraphNamedHitAwk) + "); do _cg_sc=${_cg_row%%:*}; _cg_nm=${_cg_row#*:}; if [ -n \"$_cg_nm\" ] && [ \"$_cg_sc\" -gt \"$_cg_s1\" ]; then if [ \"$_cg_nm\" != \"$_cg_b1\" ]; then _cg_s2=$_cg_s1; _cg_b2=$_cg_b1; fi; _cg_s1=$_cg_sc; _cg_b1=$_cg_nm; elif [ -n \"$_cg_nm\" ] && [ \"$_cg_nm\" != \"$_cg_b1\" ] && [ \"$_cg_nm\" != \"$_cg_b2\" ] && [ \"$_cg_sc\" -gt \"$_cg_s2\" ]; then _cg_s2=$_cg_sc; _cg_b2=$_cg_nm; fi; done; for _cg_nm in $_cg_b1 $_cg_b2; do if [ -n \"$_cg_nm\" ] && [ -f \"$_cg_map_file\" ]; then _cg_src=$(awk -v name=\"$_cg_nm\" " + remoteShellQuote(codegraphSourceBodyAwk) + " \"$_cg_map_file\"); if [ -n \"$_cg_src\" ]; then printf '%s\\n' \"Body for ${_cg_nm} in ${_cg_map_file}.\"; printf '%s\\n' \"$_cg_src\"; fi; fi; done"
 }
 
-var codegraphHitLocationPattern = regexp.MustCompile(`^[ \t]*([A-Za-z0-9_./\\-]+\.[A-Za-z0-9]+):([0-9]+)[ \t]*$`)
+var codegraphHitLocationPattern = regexp.MustCompile(`^[ \t]*([A-Za-z0-9_./\\-]+\.[A-Za-z0-9]+):([0-9]+)(?::[0-9]+)?[ \t]*$`)
 
 // codegraphSourceBodyLines is the longest function text attached to a query
 // hit. drawScene in the snake program is 127 lines, so a shorter cap drops
@@ -2832,6 +2983,44 @@ func codegraphCapText(text string, max int) string {
 	return strings.TrimSpace(text[:cut]) + "\n..."
 }
 
+// codegraphRetargetReadAdvice replaces CodeGraph's own "Read the file"
+// footer. A symbols-only result ends with that line, and the model then
+// reads the whole file instead of asking for the named body.
+func codegraphRetargetReadAdvice(output string) string {
+	if !strings.Contains(output, ">") {
+		return output
+	}
+	lines := strings.Split(output, "\n")
+	changed := false
+	for i, line := range lines {
+		if !codegraphReadAdviceLine(strings.TrimSpace(line)) {
+			continue
+		}
+		lines[i] = "> Call code_navigation with operation node and a name above for its body. Do not read_file this file to find it."
+		changed = true
+	}
+	if !changed {
+		return output
+	}
+	return strings.Join(lines, "\n")
+}
+
+func codegraphReadAdviceLine(trim string) bool {
+	if !strings.HasPrefix(trim, ">") {
+		return false
+	}
+	if strings.Contains(trim, "do NOT Read") || strings.Contains(trim, "do not Read") {
+		return false
+	}
+	if strings.Contains(trim, "like Read") {
+		return true
+	}
+	// A member outline offers Read or codegraph_node. The body is a node
+	// lookup. A file codegraph could not read, and a config value it
+	// withholds, still have to be read directly.
+	return strings.Contains(trim, "Read `") && strings.Contains(trim, "codegraph_node")
+}
+
 // codegraphTrimSymbolMap removes the CLI footer. Hit line numbers keep the
 // symbols around those lines, including one that sits in the middle of a long
 // file. Without hit lines, both ends are kept so the list is not only its first page.
@@ -2963,6 +3152,577 @@ func codegraphHitLinesForFile(output, file string) []int {
 		lines = append(lines, n)
 	}
 	return lines
+}
+
+// codegraphAttachReferencedDecls adds file-scope constants, globals, and macros
+// used by a returned function body. The body is the current source of that
+// function; it is not the top of the file, and reading the file to find
+// CLIENT_W or g_polishEnabled repeats work codegraph already located.
+func codegraphAttachReferencedDecls(root, output string) string {
+	if root == "" || strings.Contains(output, "Declarations referenced by this result") {
+		return output
+	}
+	idents := codegraphFenceIdents(output)
+	if len(idents) == 0 {
+		return output
+	}
+	seen := map[string]bool{}
+	var filePieces []codegraphDeclPiece
+	var headers []string
+	seenPath := map[string]bool{}
+	for _, rel := range codegraphFilesReadyToEdit(output) {
+		abs := rel
+		if !filepath.IsAbs(rel) {
+			abs = filepath.Join(root, filepath.FromSlash(rel))
+		}
+		abs = filepath.Clean(abs)
+		if seenPath[abs] || !navigationWithinRoot(root, abs) {
+			continue
+		}
+		seenPath[abs] = true
+		data, err := os.ReadFile(abs)
+		if err != nil || len(data) > 2<<20 {
+			continue
+		}
+		filePieces = append(filePieces, codegraphCollectDeclPieces(string(data), output, "", idents, seen)...)
+		for _, inc := range codegraphQuotedIncludes(string(data)) {
+			header := codegraphResolveInclude(root, abs, inc)
+			if header == "" || seenPath[header] {
+				continue
+			}
+			seenPath[header] = true
+			headers = append(headers, header)
+		}
+	}
+	var headerOnly, headerRest []codegraphDeclPiece
+	fileNames := map[string]bool{}
+	for _, piece := range filePieces {
+		for _, name := range piece.names {
+			fileNames[name] = true
+		}
+	}
+	for _, header := range headers {
+		data, err := os.ReadFile(header)
+		if err != nil || len(data) > 2<<20 {
+			continue
+		}
+		label, err := filepath.Rel(root, header)
+		if err != nil || !navigationWithinRoot(root, header) {
+			continue
+		}
+		for _, piece := range codegraphCollectDeclPieces(string(data), output, filepath.ToSlash(label), idents, seen) {
+			only := false
+			for _, name := range piece.names {
+				if !fileNames[name] {
+					only = true
+					break
+				}
+			}
+			if only {
+				headerOnly = append(headerOnly, piece)
+			} else {
+				headerRest = append(headerRest, piece)
+			}
+		}
+	}
+	reserve := len(headerOnly)
+	if reserve > 6 {
+		reserve = 6
+	}
+	reservedBytes := 0
+	for i := 0; i < reserve; i++ {
+		reservedBytes += len(headerOnly[i].block) + len(headerOnly[i].label) + 16
+	}
+	fileBytes := codegraphDeclBytes - reservedBytes
+	if fileBytes < 400 {
+		fileBytes = 400
+	}
+	var b strings.Builder
+	added := 0
+	wrote := map[string]bool{}
+	emit := func(pieces []codegraphDeclPiece, countLimit, byteLimit int) int {
+		n := 0
+		for _, piece := range pieces {
+			if added >= countLimit || b.Len() > byteLimit {
+				break
+			}
+			if piece.label != "" && !wrote[piece.label] {
+				if b.Len() > 0 {
+					b.WriteByte('\n')
+				}
+				b.WriteString("In " + piece.label + ":\n")
+				wrote[piece.label] = true
+			} else if b.Len() > 0 {
+				b.WriteByte('\n')
+			}
+			b.WriteString(piece.block)
+			added++
+			n++
+		}
+		return n
+	}
+	n := emit(filePieces, codegraphDeclCap-reserve, fileBytes)
+	emit(headerOnly, codegraphDeclCap, codegraphDeclBytes)
+	if n < len(filePieces) {
+		emit(filePieces[n:], codegraphDeclCap, codegraphDeclBytes)
+	}
+	emit(headerRest, codegraphDeclCap, codegraphDeclBytes)
+	if b.Len() == 0 {
+		return output
+	}
+	return strings.TrimSpace(output) + codegraphDeclSection + b.String()
+}
+
+const codegraphDeclSection = "\n\nDeclarations referenced by this result, from the current file:\n"
+const codegraphDeclCap = 24
+const codegraphDeclBytes = 2500
+
+type codegraphDeclPiece struct {
+	label string
+	block string
+	names []string
+}
+
+func codegraphCollectDeclPieces(src, output, label string, idents, seen map[string]bool) []codegraphDeclPiece {
+	var out []codegraphDeclPiece
+	for _, block := range codegraphFileScopeDecls(src, idents) {
+		key := strings.TrimSpace(block)
+		if key == "" || seen[key] || strings.Contains(output, key) {
+			continue
+		}
+		seen[key] = true
+		line := block
+		if i := strings.IndexByte(block, '\n'); i >= 0 {
+			line = block[:i]
+		}
+		out = append(out, codegraphDeclPiece{label: label, block: block, names: codegraphDefinedNames(line)})
+		if len(out) >= 40 {
+			break
+		}
+	}
+	return out
+}
+
+// codegraphQuotedIncludes lists headers the file itself includes. A constant
+// used by the function often lives in that header, not in the function file.
+// System includes use angle brackets and are not project source.
+func codegraphQuotedIncludes(src string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, line := range strings.Split(src, "\n") {
+		trim := strings.TrimSpace(strings.TrimRight(line, "\r"))
+		if cmt := strings.Index(trim, "//"); cmt >= 0 {
+			trim = strings.TrimSpace(trim[:cmt])
+		}
+		if strings.HasPrefix(trim, "#") {
+			trim = "#" + strings.TrimSpace(trim[1:])
+		}
+		if !strings.HasPrefix(trim, "#include \"") {
+			continue
+		}
+		rest := strings.TrimPrefix(trim, "#include \"")
+		end := strings.Index(rest, "\"")
+		if end <= 0 || seen[rest[:end]] {
+			continue
+		}
+		seen[rest[:end]] = true
+		out = append(out, rest[:end])
+	}
+	return out
+}
+
+func codegraphResolveInclude(root, fromFile, inc string) string {
+	inc = strings.TrimSpace(inc)
+	if inc == "" || strings.Contains(inc, "\x00") {
+		return ""
+	}
+	inc = filepath.Clean(filepath.FromSlash(inc))
+	candidates := []string{
+		filepath.Join(filepath.Dir(fromFile), inc),
+		filepath.Join(root, inc),
+	}
+	for _, abs := range candidates {
+		abs = filepath.Clean(abs)
+		if !navigationWithinRoot(root, abs) {
+			continue
+		}
+		info, err := os.Stat(abs)
+		if err != nil || !info.Mode().IsRegular() {
+			continue
+		}
+		return abs
+	}
+	return ""
+}
+
+func codegraphFenceIdents(output string) map[string]bool {
+	want := map[string]bool{}
+	in := false
+	for _, line := range strings.Split(output, "\n") {
+		trim := strings.TrimSpace(line)
+		if strings.HasPrefix(trim, "```") {
+			in = !in
+			continue
+		}
+		if !in {
+			continue
+		}
+		code := codegraphStripStrings(codegraphCodeHead(codegraphStripNumberedLine(line)))
+		for _, id := range codegraphScanIdents(code) {
+			if len(id) < 3 || codegraphDeclSkip[id] {
+				continue
+			}
+			want[id] = true
+		}
+	}
+	return want
+}
+
+func codegraphStripNumberedLine(line string) string {
+	if i := strings.IndexByte(line, '\t'); i > 0 && i < 8 {
+		if _, err := strconv.Atoi(line[:i]); err == nil {
+			return line[i+1:]
+		}
+	}
+	return line
+}
+
+func codegraphScanIdents(line string) []string {
+	var ids []string
+	start := -1
+	for i, r := range line {
+		if r == '_' || unicode.IsLetter(r) || (start >= 0 && unicode.IsDigit(r)) {
+			if start < 0 {
+				start = i
+			}
+			continue
+		}
+		if start >= 0 {
+			ids = append(ids, line[start:i])
+			start = -1
+		}
+	}
+	if start >= 0 {
+		ids = append(ids, line[start:])
+	}
+	return ids
+}
+
+var codegraphDeclSkip = map[string]bool{
+	"auto": true, "bool": true, "break": true, "case": true, "char": true, "class": true,
+	"const": true, "continue": true, "default": true, "double": true, "else": true, "enum": true,
+	"false": true, "float": true, "for": true, "goto": true, "int": true, "long": true,
+	"nullptr": true, "return": true, "short": true, "signed": true, "sizeof": true, "static": true,
+	"struct": true, "switch": true, "this": true, "true": true, "unsigned": true, "void": true, "while": true,
+}
+
+func codegraphFileScopeDecls(src string, want map[string]bool) []string {
+	lines := strings.Split(src, "\n")
+	var out []string
+	depth := 0
+	funcDepth := -1
+	pendingFn := false
+	for i := 0; i < len(lines); i++ {
+		line := strings.TrimRight(lines[i], "\r")
+		opens, closes := codegraphBraceDelta(line)
+		if funcDepth >= 0 {
+			depth += opens - closes
+			if depth < 0 {
+				depth = 0
+			}
+			if depth <= funcDepth {
+				funcDepth = -1
+			}
+			continue
+		}
+		if pendingFn && !codegraphBreaksSignature(line) {
+			if codegraphSignatureOpens(line) {
+				base := depth
+				depth += opens - closes
+				if depth < 0 {
+					depth = 0
+				}
+				if depth > base {
+					funcDepth = base
+				}
+				pendingFn = false
+				continue
+			}
+			if codegraphSemiEnds(line) {
+				pendingFn = false
+				continue
+			}
+			if !codegraphBraceOpens(line) {
+				continue
+			}
+			pendingFn = false
+		}
+		pendingFn = false
+		if codegraphLineOpensFunction(line) {
+			base := depth
+			depth += opens - closes
+			if depth < 0 {
+				depth = 0
+			}
+			if depth > base {
+				funcDepth = base
+			} else if !codegraphSemiEnds(line) {
+				pendingFn = true
+			}
+			continue
+		}
+		if codegraphIsFileScopeDecl(line) && codegraphNamesWanted(line, want) {
+			block, consumed := codegraphTakeDecl(lines, i)
+			if strings.TrimSpace(block) != "" {
+				out = append(out, block)
+			}
+			for n := 0; n <= consumed && i+n < len(lines); n++ {
+				opens, closes := codegraphBraceDelta(strings.TrimRight(lines[i+n], "\r"))
+				depth += opens - closes
+			}
+			if depth < 0 {
+				depth = 0
+			}
+			i += consumed
+			continue
+		}
+		opens, closes = codegraphBraceDelta(line)
+		depth += opens - closes
+		if depth < 0 {
+			depth = 0
+		}
+	}
+	return out
+}
+
+func codegraphIsFileScopeDecl(line string) bool {
+	trim := strings.TrimSpace(line)
+	if trim == "" || strings.HasPrefix(trim, "//") || strings.HasPrefix(trim, "/*") || strings.HasPrefix(trim, "*") || strings.HasPrefix(trim, "#include") {
+		return false
+	}
+	if strings.HasPrefix(trim, "#define ") {
+		return true
+	}
+	return strings.Contains(trim, ";") || strings.Contains(trim, "=")
+}
+
+func codegraphNamesWanted(line string, want map[string]bool) bool {
+	for _, name := range codegraphDefinedNames(line) {
+		if want[name] {
+			return true
+		}
+	}
+	return false
+}
+
+// codegraphDefinedNames is the name a declaration introduces. A later
+// constant that only mentions CLIENT_W in its initializer is not that name,
+// so it does not take a slot from the global the function actually uses.
+func codegraphDefinedNames(line string) []string {
+	line = codegraphCodeHead(line)
+	trim := strings.TrimSpace(line)
+	if strings.HasPrefix(trim, "#define") {
+		rest := strings.TrimSpace(strings.TrimPrefix(trim, "#define"))
+		ids := codegraphScanIdents(rest)
+		if len(ids) == 0 || len(ids[0]) < 3 || codegraphDeclSkip[ids[0]] {
+			return nil
+		}
+		return []string{ids[0]}
+	}
+	var names []string
+	seen := map[string]bool{}
+	paren := 0
+	init := false
+	pending := ""
+	flush := func(next byte) {
+		name := pending
+		pending = ""
+		if name == "" || init || paren > 0 || len(name) < 3 || codegraphDeclSkip[name] || seen[name] {
+			return
+		}
+		switch next {
+		case '=', '[', ',', ';':
+			seen[name] = true
+			names = append(names, name)
+		}
+	}
+	for i := 0; i < len(line); {
+		r, size := utf8.DecodeRuneInString(line[i:])
+		if r == '"' || r == '\'' {
+			flush(0)
+			i = codegraphSkipString(line, i)
+			continue
+		}
+		if r == '_' || unicode.IsLetter(r) {
+			flush(0)
+			start := i
+			i += size
+			for i < len(line) {
+				r2, s2 := utf8.DecodeRuneInString(line[i:])
+				if r2 == '_' || unicode.IsLetter(r2) || unicode.IsDigit(r2) {
+					i += s2
+					continue
+				}
+				break
+			}
+			pending = line[start:i]
+			continue
+		}
+		switch r {
+		case '(':
+			flush('(')
+			if !init {
+				paren++
+			}
+		case ')':
+			flush(')')
+			if paren > 0 && !init {
+				paren--
+			}
+		case '=':
+			flush('=')
+			if paren == 0 {
+				init = true
+			}
+		case ',':
+			flush(',')
+			if paren == 0 {
+				init = false
+			}
+		case ';':
+			flush(';')
+		case '[':
+			flush('[')
+		case ' ', '\t', '*', '&', ':':
+		default:
+			flush(0)
+		}
+		i += size
+	}
+	flush(0)
+	return names
+}
+
+func codegraphStripStrings(line string) string {
+	var b strings.Builder
+	for i := 0; i < len(line); {
+		if line[i] == '"' || line[i] == '\'' {
+			b.WriteByte(' ')
+			i = codegraphSkipString(line, i)
+			continue
+		}
+		b.WriteByte(line[i])
+		i++
+	}
+	return b.String()
+}
+
+func codegraphSkipString(line string, i int) int {
+	if i >= len(line) {
+		return len(line)
+	}
+	quote := line[i]
+	i++
+	for i < len(line) {
+		if line[i] == '\\' && i+1 < len(line) {
+			i += 2
+			continue
+		}
+		if line[i] == quote {
+			return i + 1
+		}
+		i++
+	}
+	return len(line)
+}
+
+// codegraphBreaksSignature reports a new declaration that follows a line
+// which only looked like the start of a function. A macro call has
+// parentheses and no brace; the next global still has to be kept.
+func codegraphBreaksSignature(line string) bool {
+	trim := strings.TrimSpace(codegraphCodeHead(line))
+	if strings.HasPrefix(trim, "#define ") || strings.HasPrefix(trim, "namespace ") || strings.HasPrefix(trim, "class ") || strings.HasPrefix(trim, "struct ") || strings.HasPrefix(trim, "enum ") {
+		return true
+	}
+	return strings.Contains(trim, "=") && len(codegraphDefinedNames(line)) > 0
+}
+
+// codegraphSignatureOpens reports the brace that begins a split function.
+// namespace { also has a brace, and it is not that function.
+func codegraphSignatureOpens(line string) bool {
+	if !codegraphBraceOpens(line) {
+		return false
+	}
+	head := strings.TrimSpace(codegraphCodeHead(line))
+	if strings.HasPrefix(head, "{") {
+		return true
+	}
+	brace := strings.Index(head, "{")
+	return brace > 0 && strings.Contains(head[:brace], ")")
+}
+
+// codegraphLineOpensFunction reports a function definition. A macro and a
+// global initialized by a call also contain parentheses. The macro starts
+// with #, and the initializer has '=' before the call.
+func codegraphLineOpensFunction(line string) bool {
+	trim := strings.TrimSpace(line)
+	if strings.HasPrefix(trim, "#") || !strings.Contains(line, "(") {
+		return false
+	}
+	head := codegraphCodeHead(line)
+	if eq := strings.Index(head, "="); eq >= 0 {
+		if paren := strings.Index(head, "("); paren < 0 || eq < paren {
+			return false
+		}
+	}
+	if codegraphBraceOpens(line) {
+		return true
+	}
+	return !strings.Contains(head, ";")
+}
+
+func codegraphTakeDecl(lines []string, start int) (string, int) {
+	first := strings.TrimRight(lines[start], "\r")
+	if strings.HasPrefix(strings.TrimSpace(first), "#define ") {
+		var b []string
+		for n := 0; n < 8 && start+n < len(lines); n++ {
+			line := strings.TrimRight(lines[start+n], "\r")
+			b = append(b, line)
+			if !strings.HasSuffix(strings.TrimRight(line, " \t"), `\`) {
+				return strings.Join(b, "\n"), n
+			}
+		}
+		return strings.Join(b, "\n"), len(b) - 1
+	}
+	var b []string
+	depth := 0
+	for n := 0; n < 8 && start+n < len(lines); n++ {
+		line := strings.TrimRight(lines[start+n], "\r")
+		b = append(b, line)
+		opens, closes := codegraphBraceDelta(line)
+		depth += opens - closes
+		if strings.Contains(line, ";") && depth <= 0 {
+			return strings.Join(b, "\n"), n
+		}
+	}
+	return strings.Join(b, "\n"), len(b) - 1
+}
+
+// attachCodegraphPinnedNodeBody supplies the definition `node --file` leaves
+// out. A result that already contains that definition is left as it is.
+func attachCodegraphPinnedNodeBody(root, output string, cmds [][]string) string {
+	if root == "" || len(cmds) != 1 {
+		return output
+	}
+	file, symbol, ok := codegraphPinnedNode(cmds[0])
+	if !ok || codegraphExcerptDefines(output, symbol) {
+		return output
+	}
+	body := strings.TrimSpace(codegraphSourceBody(root, file, symbol))
+	if body == "" {
+		return output
+	}
+	return "Body for " + symbol + " in " + file + ".\n" + body + "\n" + strings.TrimSpace(output)
 }
 
 func attachCodegraphSymbolMap(bin, root, output string, cmds [][]string) string {
@@ -3313,8 +4073,18 @@ func (c *codingSubAgentCallbacks) executeLocalCodeNavigation(args map[string]int
 	if runErr != nil {
 		return codingToolExecutionResult{Text: runErr.Error(), Outcome: codingToolOutcomeFailed}
 	}
-	output, truncated := capCodeNavigationOutput(output)
-	payload, _ := json.Marshal(codeNavigationOutput{Backend: backend, Operation: operation, Query: query, Output: output, Truncated: truncated, ContinueWith: codegraphContinueHint(backend)})
+	output = codegraphRetargetReadAdvice(output)
+	var truncated bool
+	if backend == "codegraph" {
+		// A function body does not include the globals and constants it uses.
+		// The model otherwise read_file's the top of the file and ripgreps those names.
+		// The declaration section stays after the cap so a long body cannot cut it off.
+		output, truncated = codegraphCapWithDecls(root, output)
+		c.noteCodegraphReadSnapshots(root, output)
+	} else {
+		output, truncated = capCodeNavigationOutput(output)
+	}
+	payload, _ := json.Marshal(codeNavigationOutput{Backend: backend, Operation: operation, Query: query, Output: output, Truncated: truncated, ContinueWith: codegraphContinueHint(backend, output)})
 	// Candidate ranking is included in the structured output so the model can
 	// compare suspects without rereading every raw match.
 	candidates := localizationCandidatesFromOutput(output)
@@ -3370,6 +4140,7 @@ func runLocalCodeNavigationWithPosition(root, operation, query, file string, lin
 		cancel()
 		if strings.TrimSpace(output) != "" {
 			output = attachCodegraphSymbolMap(bin, root, output, argsList)
+			output = attachCodegraphPinnedNodeBody(root, output, argsList)
 			if len(missed) > 0 {
 				extraCtx, extraCancel := context.WithTimeout(context.Background(), 30*time.Second)
 				extra, _, extraErr := runLocalNavigationTextFallback(extraCtx, root, "explore", strings.Join(missed, " "))
@@ -3867,6 +4638,9 @@ func (c *remoteCodingCallbacks) executeRemoteCodeNavigation(args map[string]inte
 			remoteCodegraphRememberIndex(c.agent.projectDir)
 		}
 	}
+	if codegraphHit {
+		result = codegraphRetargetReadAdvice(result)
+	}
 	result, truncated := capCodeNavigationOutput(result)
 	if succeeded {
 		c.trackRemoteSearch(codeNavigationToolName, question, c.agent.projectDir, result, true)
@@ -3875,7 +4649,7 @@ func (c *remoteCodingCallbacks) executeRemoteCodeNavigation(args map[string]inte
 	if codegraphHit {
 		hintBackend = "codegraph"
 	}
-	payload, _ := json.Marshal(map[string]interface{}{"backend": "remote:auto", "operation": operation, "query": query, "output": result, "truncated": truncated, "continue_with": codegraphContinueHint(hintBackend), "candidates": localizationCandidatesFromOutput(result)})
+	payload, _ := json.Marshal(map[string]interface{}{"backend": "remote:auto", "operation": operation, "query": query, "output": result, "truncated": truncated, "continue_with": codegraphContinueHint(hintBackend, result), "candidates": localizationCandidatesFromOutput(result)})
 	return string(payload)
 }
 
@@ -4414,8 +5188,11 @@ func codegraphRememberIndexFailure(root string) {
 }
 
 func capCodeNavigationOutput(output string) (string, bool) {
-	const maxBytes = 24000
-	if len(output) <= maxBytes {
+	return capCodeNavigationOutputTo(output, 24000)
+}
+
+func capCodeNavigationOutputTo(output string, maxBytes int) (string, bool) {
+	if maxBytes < 1 || len(output) <= maxBytes {
 		return output, false
 	}
 	cut := maxBytes
@@ -4426,6 +5203,24 @@ func capCodeNavigationOutput(output string) (string, bool) {
 		cut = maxBytes
 	}
 	return output[:cut], true
+}
+
+// codegraphCapWithDecls keeps the referenced-declaration section when the
+// function body is long enough to fill the output cap. Cutting that section
+// is what sent the model back to read the top of the file.
+func codegraphCapWithDecls(root, output string) (string, bool) {
+	attached := codegraphAttachReferencedDecls(root, output)
+	i := strings.LastIndex(attached, codegraphDeclSection)
+	if i < 0 {
+		return capCodeNavigationOutput(attached)
+	}
+	body, decls := attached[:i], attached[i:]
+	const maxBytes = 24000
+	if len(decls) >= maxBytes {
+		return capCodeNavigationOutput(attached)
+	}
+	capped, truncated := capCodeNavigationOutputTo(body, maxBytes-len(decls))
+	return capped + decls, truncated
 }
 
 func maxLocalizationInt(a, b int) int {

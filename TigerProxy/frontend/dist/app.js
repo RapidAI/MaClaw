@@ -133,6 +133,79 @@ function collectModels() {
     .filter((model) => model.id);
 }
 
+const AGENT_CUSTOM = "__custom__";
+const AGENT_TYPES = [
+  { value: "QAgent", label: "QAgent" },
+  { value: "Codex", label: "Codex" },
+  { value: "claude code", label: "Claude Code" },
+  { value: "opencode", label: "OpenCode" },
+  { value: "Kilo Code", label: "Kilo Code" },
+  { value: "Cursor", label: "Cursor" },
+  { value: "Cline", label: "Cline" },
+  { value: "Roo Code", label: "Roo Code" },
+  { value: "Crush", label: "Crush" },
+  { value: "Goose", label: "Goose" },
+  { value: "ZCode", label: "ZCode" },
+];
+
+function initAgentType() {
+  const select = $("agentType");
+  if (!select || select.dataset.ready === "1") return;
+  select.dataset.ready = "1";
+  AGENT_TYPES.forEach((item) => {
+    const option = document.createElement("option");
+    option.value = item.value;
+    option.textContent = item.label;
+    select.appendChild(option);
+  });
+  const custom = document.createElement("option");
+  custom.value = AGENT_CUSTOM;
+  custom.textContent = "自定义";
+  select.appendChild(custom);
+  select.addEventListener("change", syncCustomAgentField);
+}
+
+function syncCustomAgentField() {
+  const field = $("customAgentField");
+  if (!field) return;
+  field.hidden = ($("agentType")?.value || "") !== AGENT_CUSTOM;
+}
+
+function selectedAgentType() {
+  const choice = $("agentType")?.value || "QAgent";
+  if (choice === AGENT_CUSTOM) return ($("customAgentType")?.value || "").trim();
+  return choice;
+}
+
+async function persistAgentType() {
+  initAgentType();
+  const agentType = selectedAgentType();
+  if (!agentType) throw new Error("请填写自定义 User-Agent");
+  const s = (lastStatus && (lastStatus.settings || lastStatus.Settings)) || {};
+  const saved = String(pick(s, "agent_type", "AgentType") || "").trim();
+  if ((saved || "QAgent") === agentType) return;
+  await api.SaveSettings({
+    api_key: pick(s, "api_key", "APIKey") || $("apiKey")?.value || "",
+    agent_type: agentType,
+  });
+}
+
+function renderAgentType(value) {
+  initAgentType();
+  const select = $("agentType");
+  if (!select) return;
+  const raw = String(value || "").trim();
+  const known = !raw || AGENT_TYPES.some((item) => item.value === raw);
+  if (known) {
+    select.value = raw || "QAgent";
+    if ($("customAgentType")) $("customAgentType").value = "";
+  } else {
+    select.value = AGENT_CUSTOM;
+    if ($("customAgentType")) $("customAgentType").value = raw;
+  }
+  syncCustomAgentField();
+}
+
 const MODE_INPUT_IDS = ["baseURL", "upstreamKey", "anthropicCode", "xaiCode", "openaiCode", "kimiCode", "devinToken", "opencodeKey", "modelID"];
 
 function snapshotModeInputs() {
@@ -407,6 +480,7 @@ async function listModels() {
     const models = await api.ListUpstreamModels($("baseURL")?.value || "", $("upstreamKey")?.value || "");
     const list = normalizeModelList(models);
     renderModels(list, $("modelID")?.value || "");
+    if (($("authMode")?.value || currentAuthMode) === "devin") await applySavedBaseURL();
     notify(`已列出 ${list.length} 个模型`);
   } finally {
     setBusy(btn, false);
@@ -419,6 +493,7 @@ async function completeOpenAICode() {
   const btn = $("completeOpenAIBtn");
   setBusy(btn, true, "完成");
   try {
+    await persistAgentType();
     const status = await api.CompleteOpenAIOAuthWithCode(code.trim());
     openaiWaiting = false;
     if (handleRelaunch(status)) return;
@@ -435,6 +510,7 @@ async function completeXaiCode() {
   const btn = $("completeXaiBtn");
   setBusy(btn, true, "登录中...");
   try {
+    await persistAgentType();
     const status = await api.CompleteXAIOAuthWithCode(code.trim());
     xaiWaiting = false;
     if (handleRelaunch(status)) return;
@@ -459,6 +535,7 @@ async function completeOpenCodeKey() {
   const btn = $("completeOpenCodeBtn");
   setBusy(btn, true, "登录中...");
   try {
+    await persistAgentType();
     const status = await api.CompleteOpenCodeLogin(key.trim());
     if ($("opencodeKey")) $("opencodeKey").value = "";
     showRelaunchNotice();
@@ -474,6 +551,7 @@ async function useLocalOpenCode() {
   const btn = $("useLocalOpenCodeBtn");
   setBusy(btn, true, "导入中...");
   try {
+    await persistAgentType();
     const status = await api.UseLocalOpenCodeLogin();
     showRelaunchNotice();
     if (handleRelaunch(status)) return;
@@ -484,6 +562,10 @@ async function useLocalOpenCode() {
   }
 }
 
+function devinLoginReplaced(err) {
+  return devinPaste || String(errorMessage(err) || "").includes("被新的登录替代");
+}
+
 async function completeDevinToken() {
   const token = $("devinToken")?.value || "";
   if (!token.trim()) throw new Error("请粘贴 Devin 授权令牌");
@@ -491,8 +573,10 @@ async function completeDevinToken() {
   devinPaste = true;
   setBusy(btn, true, "登录中...");
   try {
+    await persistAgentType();
     const status = await api.CompleteDevinLoginWithToken(token.trim());
     devinWaiting = false;
+    if ($("devinToken")) $("devinToken").value = "";
     if (handleRelaunch(status)) return;
     await refresh();
     notify("Devin 登录成功");
@@ -505,6 +589,7 @@ async function completeDevinToken() {
 async function completeAnthropic() {
   const code = $("anthropicCode")?.value || "";
   if (!code.trim()) throw new Error("请粘贴授权码");
+  await persistAgentType();
   const status = await api.CompleteAnthropicOAuth(code.trim());
   if (handleRelaunch(status)) return;
   await refresh();
@@ -550,6 +635,7 @@ async function refresh() {
     $("apiKey").value = pick(s, "api_key", "APIKey") || "";
     $("codexContextWindow").value = pick(s, "codex_context_window", "CodexContextWindow") || "";
     $("codexAutoCompactTokenLimit").value = pick(s, "codex_auto_compact_token_limit", "CodexAutoCompactTokenLimit") || "";
+    renderAgentType(pick(s, "agent_type", "AgentType") || "");
     renderModeFields(status);
     if (previousMode && previousMode === currentAuthMode) restoreModeInputs(snap);
     renderGuide(currentAuthMode);
@@ -640,11 +726,26 @@ async function refreshChrome() {
   }
 }
 
+async function applySavedBaseURL() {
+  try {
+    const status = await api.Status();
+    lastStatus = status;
+    const url = pick(status.settings || status.Settings || {}, "base_url", "BaseURL") || "";
+    const input = $("baseURL");
+    if (url && input && input.disabled) input.value = url;
+  } catch {
+    /* keep the address already on screen */
+  }
+}
+
 async function refreshModelsChrome() {
   try {
     const status = await api.Status();
     updateRuntimeChrome(status);
     const s = status.settings || status.Settings || {};
+    const base = $("baseURL");
+    const url = pick(s, "base_url", "BaseURL") || "";
+    if (url && base && base.disabled) base.value = url;
     const mode = pick(status, "active_auth_mode", "ActiveAuthMode") || currentAuthMode;
     if (mode !== currentAuthMode || !$("modelID")) return;
     const selected = $("modelID").value || pick(s, "model_id", "ModelID") || "";
@@ -668,7 +769,7 @@ async function copyText(event) {
 
 async function save(options = {}) {
   const saveBtn = $("saveBtn");
-  setBusy(saveBtn, true, "保存中...");
+  if (!options.silent) setBusy(saveBtn, true, "保存中...");
   try {
     const codexContextWindow = Number($("codexContextWindow").value);
     const codexAutoCompactTokenLimit = Number($("codexAutoCompactTokenLimit").value);
@@ -678,12 +779,15 @@ async function save(options = {}) {
     if (codexAutoCompactTokenLimit >= codexContextWindow) {
       throw new Error("Codex 压缩启动长度必须小于上下文长度");
     }
+    const agentType = selectedAgentType();
+    if (!agentType) throw new Error("请填写自定义 User-Agent");
     const payload = {
       listen_address: $("listenAddress").value,
       api_key: $("apiKey").value,
       base_url: $("baseURL")?.value || "",
       model_id: $("modelID")?.value || "",
       models: collectModels(),
+      agent_type: agentType,
       codex_context_window: codexContextWindow,
       codex_auto_compact_token_limit: codexAutoCompactTokenLimit,
       email: $("email")?.value || "",
@@ -697,7 +801,7 @@ async function save(options = {}) {
     notify(notice.message, notice.kind);
     return status;
   } finally {
-    setBusy(saveBtn, false);
+    if (!options.silent) setBusy(saveBtn, false);
   }
 }
 
@@ -799,7 +903,13 @@ async function runLogin() {
       return;
     }
     if (mode === "devin") {
-      const start = await api.StartDevinLogin();
+      let start;
+      try {
+        start = await api.StartDevinLogin();
+      } catch (err) {
+        if (devinLoginReplaced(err)) return;
+        throw err;
+      }
       devinWaiting = true;
       await refresh();
       const opened = pick(start, "browser_opened", "BrowserOpened");
@@ -813,9 +923,10 @@ async function runLogin() {
         await refresh();
         notify("Devin 登录成功");
       } catch (err) {
+        if (devinLoginReplaced(err)) return;
         devinWaiting = false;
         await refresh();
-        if (devinPaste || pick(lastStatus, "logged_in", "LoggedIn")) return;
+        if (pick(lastStatus, "logged_in", "LoggedIn")) return;
         if (($("authMode")?.value || currentAuthMode) !== "devin") return;
         throw err;
       }
@@ -1144,6 +1255,7 @@ document.querySelectorAll(".period-btn").forEach((btn) => {
     refreshTokenStats();
   });
 });
+initAgentType();
 refresh();
 checkCodexInstalled();
 refreshTokenStats();

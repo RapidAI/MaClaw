@@ -57,7 +57,7 @@ func anthropicSDKForwardOptions(cfg MaclawLLMConfig, client *http.Client) []anth
 		anthropicopt.WithAPIKey(cfg.Key),
 		anthropicopt.WithAuthToken(cfg.Key),
 		anthropicopt.WithHTTPClient(client),
-		anthropicopt.WithHeader("User-Agent", cfg.UserAgent()),
+		anthropicopt.WithHeader("User-Agent", OpenCodeWireUserAgent(cfg.URL, cfg.UserAgent())),
 		anthropicopt.WithMaxRetries(0),
 	}
 	if IsCodeGenURL(cfg.URL) {

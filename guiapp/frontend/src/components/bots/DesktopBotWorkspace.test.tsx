@@ -881,7 +881,7 @@ describe('DesktopBotWorkspace', () => {
         expect(sendTask.mock.calls.length).toBe(sentBeforeExit);
     });
 
-    it('refuses takeover on an idle bot while another bot is driving the shared desktop', async () => {
+    it('lets a person take over an idle bot while another bot is using its own desktop', async () => {
         listBots.mockResolvedValue([
             { id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' },
             { id: 'bot_2', title: '日报', description: '共用桌面', instance_id: 'inst_2' },
@@ -912,30 +912,20 @@ describe('DesktopBotWorkspace', () => {
         });
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
         expect((await screen.findByTestId('desktop-bot-takeover') as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('这个 Bot 正在操作桌面');
 
         openRow('bot_2');
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
-        const blocked = await screen.findByTestId('desktop-bot-takeover');
-        expect((blocked as HTMLButtonElement).disabled).toBe(true);
-        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('有 Bot 正在操作桌面');
-        fireEvent.click(blocked);
-        expect(screen.getByTestId('desktop-bot-stage').className).not.toContain('is-fullscreen');
-        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1');
-        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('watch');
-
-        responseListeners.byEvent['ai-assistant-response']?.({
-            request_id: 'desktop-bot-operating-bot_1',
-            session_key: 'alice:bot_1',
-            text: '已打开 example.org',
-        });
-        const idle = await screen.findByTestId('desktop-bot-takeover');
-        await waitFor(() => expect((idle as HTMLButtonElement).disabled).toBe(false));
-        fireEvent.click(idle);
+        const open = await screen.findByTestId('desktop-bot-takeover');
+        expect((open as HTMLButtonElement).disabled).toBe(false);
+        expect(screen.getByTestId('desktop-bot-ops').textContent || '').not.toContain('正在操作桌面');
+        fireEvent.click(open);
         expect(screen.getByTestId('desktop-bot-stage').className).toContain('is-fullscreen');
         expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=0');
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('data-input')).toBe('live');
     });
 
-    it('drops a takeover already held when another bot starts driving the shared desktop', async () => {
+    it('keeps a takeover when another bot starts using its own desktop', async () => {
         listBots.mockResolvedValue([
             { id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' },
             { id: 'bot_2', title: '日报', description: '共用桌面', instance_id: 'inst_2' },
@@ -967,14 +957,14 @@ describe('DesktopBotWorkspace', () => {
         await waitFor(() => expect(sendTask).toHaveBeenCalled());
 
         openRow('bot_2');
-        const blocked = await screen.findByTestId('desktop-bot-takeover');
-        expect((blocked as HTMLButtonElement).disabled).toBe(true);
-        expect(screen.getByTestId('desktop-bot-stage').className).not.toContain('is-fullscreen');
-        expect(screen.queryByTestId('desktop-bot-exit-takeover')).toBeNull();
-        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1');
+        const held = await screen.findByTestId('desktop-bot-takeover');
+        expect((held as HTMLButtonElement).disabled).toBe(false);
+        expect(screen.getByTestId('desktop-bot-stage').className).toContain('is-fullscreen');
+        expect(screen.getByTestId('desktop-bot-exit-takeover')).toBeTruthy();
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=0');
     });
 
-    it('locks takeover on an idle bot while a schedule is using the shared desktop', async () => {
+    it('locks takeover only while this bot is using its own desktop', async () => {
         listBots.mockResolvedValue([
             { id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' },
             { id: 'bot_2', title: '日报', description: '共用桌面', instance_id: 'inst_2' },
@@ -996,17 +986,23 @@ describe('DesktopBotWorkspace', () => {
         await act(async () => {
             responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', busy: true });
         });
-        expect((screen.getByTestId('desktop-bot-takeover') as HTMLButtonElement).disabled).toBe(true);
-        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1');
-        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('有 Bot 正在操作桌面');
+        expect((screen.getByTestId('desktop-bot-takeover') as HTMLButtonElement).disabled).toBe(false);
+        expect(screen.getByTestId('desktop-bot-ops').textContent || '').not.toContain('正在操作桌面');
 
         await act(async () => {
-            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', busy: false });
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_2', busy: true });
+        });
+        expect((screen.getByTestId('desktop-bot-takeover') as HTMLButtonElement).disabled).toBe(true);
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1');
+        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('这个 Bot 正在操作桌面');
+
+        await act(async () => {
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_2', busy: false });
         });
         expect((screen.getByTestId('desktop-bot-takeover') as HTMLButtonElement).disabled).toBe(false);
     });
 
-    it('keeps the shared desktop locked until every overlapping schedule finishes', async () => {
+    it('keeps this bot locked until its own overlapping schedules finish', async () => {
         listBots.mockResolvedValue([
             { id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' },
         ]);
@@ -1024,6 +1020,7 @@ describe('DesktopBotWorkspace', () => {
 
         await act(async () => {
             responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', busy: true });
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', busy: true });
             responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_2', owner_id: 'alice', busy: true });
         });
         expect(takeover().disabled).toBe(true);
@@ -1031,17 +1028,32 @@ describe('DesktopBotWorkspace', () => {
         await act(async () => {
             responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'bob', busy: false });
             responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', busy: false });
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_2', owner_id: 'alice', busy: false });
         });
         expect(takeover().disabled).toBe(true);
 
         await act(async () => {
-            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_2', owner_id: 'alice', busy: false });
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', busy: false });
         });
         expect(takeover().disabled).toBe(false);
     });
 
-    it('locks takeover when the page opens onto a schedule that is already driving', async () => {
+    it('does not lock takeover when another bot schedule is already driving', async () => {
         getDesktopBusy.mockResolvedValue({ seq: 4, marks: [{ owner_id: 'alice', bot_id: 'bot_1', count: 1 }] });
+        listBots.mockResolvedValue([
+            { id: 'bot_2', title: '日报', description: '共用桌面', instance_id: 'inst_2' },
+        ]);
+        watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('日报'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        const takeover = () => screen.getByTestId('desktop-bot-takeover') as HTMLButtonElement;
+        await screen.findByTestId('desktop-bot-takeover');
+        await waitFor(() => expect(takeover().disabled).toBe(false));
+    });
+
+    it('locks takeover when this bot schedule is already driving', async () => {
+        getDesktopBusy.mockResolvedValue({ seq: 4, marks: [{ owner_id: 'alice', bot_id: 'bot_2', count: 1 }] });
         listBots.mockResolvedValue([
             { id: 'bot_2', title: '日报', description: '共用桌面', instance_id: 'inst_2' },
         ]);
@@ -1055,17 +1067,17 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1');
 
         await act(async () => {
-            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', busy: false, count: 0, seq: 3 });
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_2', owner_id: 'alice', busy: false, count: 0, seq: 3 });
         });
         expect(takeover().disabled).toBe(true);
 
         await act(async () => {
-            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', busy: false, count: 0, seq: 5 });
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_2', owner_id: 'alice', busy: false, count: 0, seq: 5 });
         });
         expect(takeover().disabled).toBe(false);
     });
 
-    it('keeps takeover locked when a live run has outlasted its chat bubble', async () => {
+    it('locks takeover only for the bot whose run is still on its desktop', async () => {
         const stale = Date.now() - 31 * 60 * 1000 - 5000;
         localStorage.setItem('maclaw.desktopBotMessages.v1', JSON.stringify({
             alice: {
@@ -1074,14 +1086,26 @@ describe('DesktopBotWorkspace', () => {
         }));
         getDesktopBusy.mockResolvedValue({ seq: 2, marks: [], runs: ['bot_1'] });
         listBots.mockResolvedValue([
+            { id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' },
             { id: 'bot_2', title: '日报', description: '共用桌面', instance_id: 'inst_2' },
         ]);
         watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        const openRow = (botId: string) => {
+            const row = screen.getByTestId(`desktop-bot-${botId}`);
+            const button = row.querySelector('button.desktop-bot-workspace__open');
+            if (!button) throw new Error(`missing row button for ${botId}`);
+            fireEvent.click(button);
+        };
         renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
-        fireEvent.click(await screen.findByText('日报'));
+        await screen.findByTestId('desktop-bot-bot_2');
+        openRow('bot_2');
         fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
         const takeover = () => screen.getByTestId('desktop-bot-takeover') as HTMLButtonElement;
         await screen.findByTestId('desktop-bot-takeover');
+        await waitFor(() => expect(takeover().disabled).toBe(false));
+
+        openRow('bot_1');
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
         await waitFor(() => expect(takeover().disabled).toBe(true));
         expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1');
 
@@ -1112,7 +1136,28 @@ describe('DesktopBotWorkspace', () => {
         expect(screen.queryByTestId('desktop-bot-return-control')).toBeNull();
     });
 
-    it('withholds a login handoff on the open bot while another bot is driving', async () => {
+    it('keeps takeover locked when this bot schedule is running over an older login', async () => {
+        const now = Date.now();
+        localStorage.setItem('maclaw.desktopBotMessages.v1', JSON.stringify({
+            alice: {
+                bot_1: [{ id: `m-${now.toString(36)}-old`, role: 'assistant', content: '请在这个浏览器里登录。', userControl: true, attentionReason: 'login', handoffUrl: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1' }],
+            },
+        }));
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        watchBot.mockResolvedValue({ novnc_url: 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1', user_control: false });
+        renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+        fireEvent.click(await screen.findByText('值班'));
+        fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+        const takeover = () => screen.getByTestId('desktop-bot-takeover') as HTMLButtonElement;
+        await screen.findByTestId('desktop-bot-takeover');
+        await act(async () => {
+            responseListeners.byEvent['desktop-bot-busy']?.({ bot_id: 'bot_1', owner_id: 'alice', busy: true });
+        });
+        expect(takeover().disabled).toBe(true);
+        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('这个 Bot 正在操作桌面');
+    });
+
+    it('keeps a login handoff when another bot is using its own desktop', async () => {
         const now = Date.now();
         const liveDesktop = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
         localStorage.setItem('maclaw.desktopBotMessages.v1', JSON.stringify({
@@ -1131,7 +1176,11 @@ describe('DesktopBotWorkspace', () => {
             { id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' },
             { id: 'bot_2', title: '日报', description: '共用桌面', instance_id: 'inst_2' },
         ]);
-        watchBot.mockResolvedValue({ novnc_url: liveDesktop, user_control: false });
+        watchBot.mockImplementation(async (botId?: string) => ({
+            novnc_url: liveDesktop,
+            user_control: botId === 'bot_2',
+            attention_reason: botId === 'bot_2' ? 'login' : '',
+        }));
         sendTask.mockImplementation(async (botId: string) => ({
             request_id: `desktop-bot-operating-${botId}`,
             deferred: true,
@@ -1156,11 +1205,12 @@ describe('DesktopBotWorkspace', () => {
         await waitFor(() => expect(sendTask).toHaveBeenCalled());
 
         openRow('bot_2');
-        expect(screen.queryByTestId('desktop-bot-return-control')).toBeNull();
-        const blocked = await screen.findByTestId('desktop-bot-takeover');
-        expect((blocked as HTMLButtonElement).disabled).toBe(true);
-        expect(screen.getByTestId('desktop-bot-ops').textContent).toContain('有 Bot 正在操作桌面');
-        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=1');
+        expect(screen.getByTestId('desktop-bot-return-control')).toBeTruthy();
+        const open = await screen.findByTestId('desktop-bot-takeover');
+        expect((open as HTMLButtonElement).disabled).toBe(false);
+        expect(screen.getByTestId('desktop-bot-ops').textContent || '').not.toContain('正在操作桌面');
+        fireEvent.click(open);
+        expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src') || '').toContain('view_only=0');
     });
 
     it('fullscreens the computer preview from the corner control and restores it without taking the keyboard', async () => {
@@ -3930,6 +3980,66 @@ describe('DesktopBotWorkspace', () => {
             fireEvent.click(screen.getByTestId('desktop-bot-stage-close'));
             await act(async () => { await Promise.resolve(); });
             expect(releaseWatch).toHaveBeenCalledWith('bot_1', watchBot.mock.calls[0][1]);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('shows a retry when the watch fails even if the screen list still has a picture', async () => {
+        listBots.mockResolvedValue([{ id: 'bot_1', title: '值班', description: '共用桌面', instance_id: 'inst_1' }]);
+        const cached = 'http://hub.example/api/v1/desktop-handoff/abc/vnc.html?autoconnect=1';
+        getScreen.mockResolvedValue({ novnc_url: cached, user_control: false, desktop_mode: 'shared' });
+        watchBot.mockResolvedValue({ novnc_url: '', user_control: false, desktop_mode: 'shared' });
+        vi.useFakeTimers();
+        try {
+            renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+            await act(async () => { await Promise.resolve(); });
+            fireEvent.click(screen.getByText('值班'));
+            fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+            await act(async () => { await Promise.resolve(); });
+            expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src')).toContain(cached);
+            await act(async () => { await vi.advanceTimersByTimeAsync(4000); });
+            expect(screen.getByTestId('desktop-bot-retry')).toBeTruthy();
+            expect(screen.queryByTestId('desktop-bot-handoff')).toBeNull();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('keeps my desktop up when an isolated bot watch fails', async () => {
+        listBots.mockResolvedValue([
+            { id: 'bot_1', title: '值班', description: '自己的桌面', instance_id: 'inst_1' },
+            { id: 'bot_2', title: '日报', description: '共用桌面', instance_id: 'inst_2' },
+        ]);
+        const mine = 'http://hub.example/api/v1/desktop-handoff/mine/vnc.html?autoconnect=1';
+        const isolated = 'http://hub.example/api/v1/desktop-handoff/bot-1/vnc.html?autoconnect=1';
+        let bot1Up = true;
+        watchBot.mockImplementation(async (botId?: string) => ({
+            novnc_url: botId === 'bot_1' ? (bot1Up ? isolated : '') : mine,
+            user_control: false,
+            desktop_mode: botId === 'bot_1' ? 'isolated' : 'shared',
+        }));
+        getScreen.mockImplementation(async (botId?: string) => ({
+            novnc_url: botId === 'bot_1' ? isolated : mine,
+            user_control: false,
+            desktop_mode: botId === 'bot_1' ? 'isolated' : 'shared',
+        }));
+        vi.useFakeTimers();
+        try {
+            renderBots(<DesktopBotWorkspace lang="zh-Hans" userId="alice" />);
+            await act(async () => { await Promise.resolve(); });
+            fireEvent.click(screen.getByText('值班'));
+            fireEvent.click(screen.getByTestId('desktop-bot-open-desktop'));
+            await act(async () => { await Promise.resolve(); });
+            await act(async () => { await Promise.resolve(); });
+            expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src')).toContain('bot-1');
+            fireEvent.click(screen.getByTestId('desktop-screen-mine'));
+            await act(async () => { await Promise.resolve(); });
+            expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src')).toContain('mine');
+            bot1Up = false;
+            await act(async () => { await vi.advanceTimersByTimeAsync(8000); });
+            expect(screen.getByTestId('desktop-bot-handoff').getAttribute('src')).toContain('mine');
+            expect(screen.queryByTestId('desktop-bot-retry')).toBeNull();
         } finally {
             vi.useRealTimers();
         }

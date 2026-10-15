@@ -257,10 +257,17 @@ func verifyResponsesWSFrameToolSurface(frameData []byte, tools []map[string]inte
 func buildResponsesWSHeaders(cfg corelib.MaclawLLMConfig, wsURL string) http.Header {
 	headers := http.Header{}
 	headers.Set("Authorization", "Bearer "+cfg.Key)
-	headers.Set("User-Agent", cfg.UserAgent())
+	headers.Set("User-Agent", corelib.OpenCodeWireUserAgent(wsURL, cfg.UserAgent()))
 	headers.Set("originator", "codex_cli_rs")
 	if corelib.IsCodeGenURL(wsURL) {
 		headers.Set(corelib.CodeGenClientNameHeader, corelib.NormalizeCodeGenClientName(cfg.UserAgent()))
+	}
+	if corelib.IsOpenCodeURL(wsURL) {
+		wire := cfg
+		wire.URL = wsURL
+		if name, value, ok := corelib.OpenCodeSessionHeaderForConfig(wire); ok {
+			headers.Set(name, value)
+		}
 	}
 	llm.ApplyWorkloadHintHeaderMap(headers, cfg)
 	return headers

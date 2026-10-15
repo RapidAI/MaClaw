@@ -1,4 +1,4 @@
-import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields, visibleTaskRows } from '../ai/codingTaskMode';
+import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields, isExplicitTaskCopy, visibleTaskRows } from '../ai/codingTaskMode';
 import { normalizeProjectSessionPath } from '../ai/aiAssistantPanelSessionUtils';
 import { isLiveAISession } from './backgroundTaskCount';
 import {
@@ -57,9 +57,13 @@ function collectRunningRows(tasks: readonly TaskManagementItem[], signals?: Live
         if (!isLiveRunningTaskRow(task, ctx) && taskStatusBucketFor(task) !== 'running') continue;
         count += 1;
         addPath(coverage, task.project_path);
-        addPath(coverage, task.working_dir);
-        const rowId = cloudWorkspaceIdFromTaskFields(task);
-        if (rowId) coverage.workspaceIds.add(rowId);
+        // A copy shares the source cache. Covering that path would hide the
+        // source's own live session behind the copy's chat.
+        if (!isExplicitTaskCopy(task.tags)) {
+            addPath(coverage, task.working_dir);
+            const rowId = cloudWorkspaceIdFromTaskFields(task);
+            if (rowId) coverage.workspaceIds.add(rowId);
+        }
     }
     return { count, coverage };
 }

@@ -2913,9 +2913,19 @@ func (c *sharedAgentLoopCallbacks) leaveLightProfileForUnsafePetition(parent too
 	exec.Layer = full.Layer
 	exec.TaskType = full.TaskType
 	exec.PromptProfile = full.PromptProfile
+	// ToolBudget 0 and IterationBudget 0 are the full profile's unlimited
+	// budgets. A positive cap here would re-apply the light selection limit
+	// and drop the file step. The running loop's iteration ceiling is
+	// GetMaxIterations, which floors a small light budget at the host minimum.
 	exec.ToolBudget = full.ToolBudget
 	exec.IterationBudget = full.IterationBudget
 	exec.Reason = full.Reason
+	// The light lookup recorded only information.search.web. Profile filters
+	// (catalog refresh, native PDF recovery) match contracts against that
+	// list and would drop the file step this petition just signed. The full
+	// profile matches any contract.
+	exec.RequiredCapabilities = nil
+	exec.DirectToolName = ""
 	c.loopCtx.Runtime.Execution = exec
 	c.surfaceRefreshPending = true
 	if c.handler == nil {
@@ -7574,12 +7584,19 @@ func (c *sharedAgentLoopCallbacks) TransformConversation(conversation []interfac
 	if c.loopCtx != nil {
 		processedRevision = c.loopCtx.ReplanRevision()
 	}
-	next, injected := c.handler.appendPendingSteerInjections(c.userID, conversation, 0)
+	next, injected, guide := c.handler.appendPendingSteerInjections(c.userID, conversation, 0)
 	if c.loopCtx != nil {
 		c.llmReplanRevision.Store(processedRevision)
 	}
 	if injected == "" {
 		next = conversation
+	} else if guide != "" {
+		// Only the user's own steer is a new classification input. A host
+		// supplement in the same drain must not widen the grant.
+		c.admitLiveSteerIntoPlan(guide)
+		if prompt := c.PetitionSystemPrompt(); prompt != "" {
+			replaceConversationSystemMessage(next, prompt)
+		}
 	}
 	effectiveLimit := c.llmCfg.EffectiveContextTokens()
 	if !c.firstRequestBudgetApplied {

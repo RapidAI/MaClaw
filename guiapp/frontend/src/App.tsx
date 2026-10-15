@@ -127,7 +127,7 @@ import { isDigitalEmployeeAuthorizationUsable, shouldShowDigitalEmployeeFeatureT
 import type { HistoryDiscussionSummary } from './components/layout/SidebarHistorySessions';
 import { activeCodingAgentProgress, latestCodingAgentTurnSnapshot } from './components/ai/CodingAgentProgressStatus';
 import { readStoredAssistantThemeMode, writeStoredAssistantThemeMode } from './components/ai/assistantThemeStorage';
-import { agentModeFromTaskTags, cloudWorkspaceIdFromTaskFields, remoteHostFromTaskTags } from './components/ai/codingTaskMode';
+import { agentModeFromTaskTags, cloudWorkspaceIdFromTaskFields, isExplicitTaskCopy, remoteHostFromTaskTags } from './components/ai/codingTaskMode';
 import { normalizeCodingTaskLaunch, type CodingTaskLaunch } from './components/ai/codingTaskLaunch';
 import { saveRemoteSSHPassword } from './components/ai/welcomeTaskMemory';
 import { getAssistantDarkScheme, readStoredAssistantDarkSchemeId, writeStoredAssistantDarkSchemeId, type AssistantDarkSchemeId } from './components/ai/assistantDarkSchemes';
@@ -541,11 +541,14 @@ function App() {
         // Guard against silent deletion of an open task. The sidebar's remove
         // flow passes force after the user confirms in the dialog; DeleteTask
         // then broadcasts the closed/deleted events that retire the open tab.
-        const cloudWorkspaceId = cloudWorkspaceIdFromTaskFields({ project_path: projectPath, tags });
+        const copied = isExplicitTaskCopy(tags);
+        const cloudWorkspaceId = copied ? '' : cloudWorkspaceIdFromTaskFields({ project_path: projectPath, tags });
         if (!force && isProjectTabOpen(projectPath, openProjectTabPaths, cloudWorkspaceId, openProjectTabIdentities)) {
             return false;
         }
-        const expertID = expertIDFromTaskTags(tags);
+        // A copy keeps the expert tag for its icon. The shared expert transcript
+        // belongs to the original row, so removing the copy must not purge it.
+        const expertID = copied ? '' : expertIDFromTaskTags(tags);
         if (!force && expertID && openExpertTabIDs.includes(expertID)) {
             return false;
         }
@@ -2678,8 +2681,9 @@ function App() {
     // The assistant panel resolves the tab (project by path/cloud id, expert by
     // id) and selects it; no recovery, transcript hydration, or remount runs.
     const activateTaskInstance = (projectPath: string, task?: { tags?: string[]; working_dir?: string }) => {
-        const expertID = expertIDFromTaskTags(task?.tags);
-        const cloudWorkspaceId = cloudWorkspaceIdFromTaskFields({ tags: task?.tags, project_path: projectPath, working_dir: task?.working_dir });
+        const copied = isExplicitTaskCopy(task?.tags);
+        const expertID = copied ? '' : expertIDFromTaskTags(task?.tags);
+        const cloudWorkspaceId = copied ? '' : cloudWorkspaceIdFromTaskFields({ tags: task?.tags, project_path: projectPath, working_dir: task?.working_dir });
         try {
             EventsEmit(EVENT_PROJECT_TASK_ACTIVATE, {
                 projectPath,
@@ -3415,9 +3419,12 @@ function App() {
             const proj = currentRow || taskItemsRef.current.find(p => norm(p.project_path || '') === want);
             console.info("[task_management] open requested", { taskPath: projectPath, foundInList: !!proj });
             const expertID = expertIDFromTaskTags(proj?.tags);
+            // A copy keeps the expert tag for display, but its chat is a new
+            // project session. Opening it must not enter the shared expert transcript.
+            const copiedTask = isExplicitTaskCopy(proj?.tags);
             // A new LaTeX paper owns the expert conversation. An older paper
             // keeps the transcript archived on its project tab.
-            if (expertID && !(isLatexExpertId(expertID) && proj && !latexExpertTaskIsLive(proj, taskItemsRef.current))) {
+            if (!copiedTask && expertID && !(isLatexExpertId(expertID) && proj && !latexExpertTaskIsLive(proj, taskItemsRef.current))) {
                 const app = await getWailsAppModule();
                 const rawExperts = typeof app.ListExperts === 'function' ? await app.ListExperts() : '';
                 const expert = parseExpertListJSON(rawExperts).find(item => item.id === expertID);
@@ -5040,13 +5047,17 @@ function App() {
         } else if (tool === "gemini") {
             return "gemini-2.0-flash-exp";
         } else if (tool === "codex") {
+            if (p.includes("tokenplan")) return "auto";
             if (p.includes("aigocode") || p.includes("aicodemirror") || p.includes("coderelay")) return "gpt-5.2-codex";
+            if (p.includes("星辰大模型") || p.includes("xingchen")) return "TeleChat3-438B-A24B";
             if (p.includes("deepseek")) return "deepseek-chat";
             if (p.includes("glm")) return "glm-5.1";
             if (p.includes("doubao")) return "doubao-seed-code-preview-latest";
             if (p.includes("kimi")) return "kimi-for-coding";
             if (p.includes("minimax")) return "MiniMax-M2.1";
         } else if (tool === "opencode" || tool === "codebuddy" || tool === "iflow" || tool === "kilo") {
+            if (p.includes("tokenplan")) return "auto";
+            if (p.includes("星辰大模型") || p.includes("xingchen")) return "TeleChat3-438B-A24B";
             if (p.includes("deepseek")) return "deepseek-chat";
             if (p.includes("glm")) return "glm-5.1";
             if (p.includes("doubao")) return "doubao-seed-code-preview-latest";

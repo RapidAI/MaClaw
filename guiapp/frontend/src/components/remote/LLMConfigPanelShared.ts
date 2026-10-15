@@ -76,8 +76,48 @@ export function isLocalImportProvider(provider: Pick<LLMProvider, "import_source
 export const HUB_SERVICE_PROVIDER_NAME = "MaClaw\u5b98\u65b9"; // Must match Go hubServiceProviderName.
 export const LLM_CONFIG_LOAD_TIMEOUT_MS = 5000;
 
-/** Known OpenAI-compatible providers for quick-fill in custom provider config. */
-export const KNOWN_OPENAI_ENDPOINTS: { name: string; url: string; model: string; context_length?: number; protocol?: string; auth_type?: string; agent_type?: string; wire_api?: string }[] = [
+/** Known OpenAI-compatible providers for quick-fill in custom provider config.
+ * model is optional: endpoints like Devin have no fixed chat model, and
+ * quickFillModelCatalog already treats a missing model as an empty catalog. */
+export type KnownOpenAIEndpoint = { name: string; url: string; model?: string; models?: string[]; context_length?: number; protocol?: string; auth_type?: string; agent_type?: string; wire_api?: string };
+
+/** Saved catalog plus the current model, for the provider dialog's model list. */
+export function providerModelChoices(provider: { model?: string; models?: string[] } | null | undefined): { id: string; name: string }[] {
+    const choices: { id: string; name: string }[] = [];
+    const seen = new Set<string>();
+    const add = (value: string) => {
+        const id = String(value || "").trim();
+        const key = id.toLowerCase();
+        if (!id || seen.has(key)) return;
+        seen.add(key);
+        choices.push({ id, name: id });
+    };
+    for (const id of provider?.models || []) add(id);
+    if (choices.length > 0) add(provider?.model || "");
+    return choices;
+}
+
+/** Keep the visible list when its ids already match the saved catalog. */
+export function nextProviderModelChoices(
+    current: { id: string; name?: string }[],
+    provider: { model?: string; models?: string[] } | null | undefined,
+): { id: string; name: string }[] {
+    const next = providerModelChoices(provider);
+    const same = current.length === next.length && current.every((item, index) => item.id === next[index].id);
+    return same ? current.map(item => ({ id: item.id, name: item.name || item.id })) : next;
+}
+
+/** Model ids to store when a quick-fill endpoint replaces the selected provider. */
+export function quickFillModelCatalog(previous: { name?: string; models?: string[] }, endpoint: { name: string; model?: string; models?: string[] }): string[] | undefined {
+    if (endpoint.models && endpoint.models.length > 0) return [...endpoint.models];
+    if ((previous.name || "") !== endpoint.name) {
+        const model = String(endpoint.model || "").trim();
+        return model ? [model] : [];
+    }
+    return previous.models;
+}
+
+export const KNOWN_OPENAI_ENDPOINTS: KnownOpenAIEndpoint[] = [
     { name: "OpenAI Official", url: "https://api.openai.com/v1", model: "gpt-5.4", context_length: 128000 },
 	{ name: "DeepSeek", url: "https://api.deepseek.com/v1", model: "deepseek-chat", context_length: 128000 },
 	{ name: "Qwen", url: "https://dashscope.aliyuncs.com/compatible-mode/v1", model: "qwen3.8-flash", context_length: 400000 },
@@ -85,12 +125,15 @@ export const KNOWN_OPENAI_ENDPOINTS: { name: string; url: string; model: string;
     { name: "\u667a\u8c31\u7f16\u7a0b", url: "https://open.bigmodel.cn/api/anthropic", model: "glm-5.3", context_length: 400000, protocol: "anthropic", agent_type: "claude code 2.0" },
     { name: "Kimi (\u6708\u4e4b\u6697\u9762)", url: "https://api.kimi.com/coding/v1", model: "kimi-k2-thinking", context_length: 128000 },
     { name: "\u8baf\u98de\u661f\u8fb0", url: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", model: "astron-code-latest", context_length: 128000 },
+    { name: "\u661f\u8fb0\u5927\u6a21\u578b", url: "https://api-maas.teleai.com.cn/v1", model: "TeleChat3-438B-A24B", models: ["TeleChat3-438B-A24B", "Xing4.0-29B-A4B"], context_length: 256000, protocol: "openai" },
     { name: "Doubao (\u8c46\u5305)", url: "https://ark.cn-beijing.volces.com/api/coding", model: "doubao-seed-code-preview-latest", context_length: 128000 },
     { name: "\u706b\u5c71\u5f15\u64ce Agent Plan", url: "https://ark.cn-beijing.volces.com/api/plan/v3", model: "glm-5.2", context_length: 128000, protocol: "openai", wire_api: "responses" },
     { name: "MiniMax", url: "https://api.minimaxi.com/v1", model: "MiniMax-M2.7", context_length: 128000 },
     { name: "\u817e\u8baf\u4e91", url: "https://api.lkeap.cloud.tencent.com/coding/v3", model: "glm-5", context_length: 128000 },
+    { name: "\u817e\u8bafTokenPlan", url: "https://tokenhub.tencentmaas.com/plan/v3", model: "auto", context_length: 128000, protocol: "openai" },
     { name: "xAI-Grok", url: "https://api.x.ai/v1", model: "grok-4.6", context_length: 400000, auth_type: "oauth", wire_api: "responses" },
     { name: "OpenCode", url: "https://opencode.ai/zen/v1", model: "big-pickle", context_length: 128000, agent_type: "OpenCode" },
+    { name: "Devin", url: "https://server.codeium.com", context_length: 128000 },
     { name: "OpenRouter", url: "https://openrouter.ai/api/v1", model: "openai/gpt-4o", context_length: 128000 },
     { name: "Together AI", url: "https://api.together.xyz/v1", model: "meta-llama/Llama-3-70b-chat-hf", context_length: 128000 },
     { name: "Groq", url: "https://api.groq.com/openai/v1", model: "llama-3.3-70b-versatile", context_length: 128000 },

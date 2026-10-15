@@ -86,6 +86,14 @@ func TestCodegraphExcerptDefinesIgnoresStaleSlice(t *testing.T) {
 	if _, ok := codegraphMCPRepair("", banner, "drawScene", "snake.cpp"); ok {
 		t.Fatal("stale function body without the file must fall back")
 	}
+	otherFile := strings.Replace(banner, "- snake.cpp (edited", "- extra.go (edited", 1)
+	keptOtherFile, ok := codegraphMCPRepair(dir, otherFile, "drawScene", "snake.cpp")
+	if !ok || !strings.Contains(keptOtherFile, "old()") || strings.Contains(keptOtherFile, "fill(dc)") {
+		t.Fatalf("banner for another file replaced this definition: %q ok=%v", keptOtherFile, ok)
+	}
+	if _, ok := codegraphMCPRepair("", otherFile, "drawScene", "snake.cpp"); !ok {
+		t.Fatal("banner for another file must not drop a definition that cannot be re-read")
+	}
 	explore := "#### snake.cpp — drawScene(function)\n\n```cpp\n1\tif (step()) {\n2\t    drawScene(mem);\n3\t}\n```\n"
 	area, ok := codegraphMCPRepair(dir, explore, "", "")
 	if !ok || strings.Contains(area, "drawScene(mem)") || !strings.Contains(area, "fill(dc)") {
@@ -103,8 +111,13 @@ func TestCodegraphExcerptDefinesIgnoresStaleSlice(t *testing.T) {
 	}
 	short := "⚠️ Some files referenced below were edited since the last index sync — their codegraph entries may be stale:\n  - snake.cpp (edited 10ms ago, pending sync)\n\n#### snake.cpp — drawScene(function)\n\n```cpp\n1\tstatic void drawScene(HDC dc) { old(); }\n```\n"
 	full, ok := codegraphMCPRepair(dir, short, "", "")
-	if !ok || strings.Contains(full, "old()") || !strings.Contains(full, "fill(dc)") {
+	if !ok || strings.Contains(full, "old()") || !strings.Contains(full, "fill(dc)") || strings.Contains(full, "were edited since the last index sync") || strings.Contains(full, "Read them directly") {
 		t.Fatalf("stale explore slice = %q ok=%v", full, ok)
+	}
+	told := strings.Replace(short, "pending sync)\n", "pending sync)\nFor accurate content of those specific files, Read them directly. The rest of this response is fresh.\n", 1)
+	toldFull, ok := codegraphMCPRepair(dir, told, "", "")
+	if !ok || strings.Contains(toldFull, "Read them directly") || strings.Contains(toldFull, "were edited since the last index sync") || !strings.Contains(toldFull, "fill(dc)") {
+		t.Fatalf("refreshed explore kept the read instruction: %q ok=%v", toldFull, ok)
 	}
 	other := strings.Replace(short, "- snake.cpp (edited", "- extra.go (edited", 1)
 	keptOther, _ := codegraphMCPRepair(dir, other, "", "")
@@ -181,6 +194,15 @@ func TestCodegraphMCPResultTextKeepsSourceThatMentionsIndexing(t *testing.T) {
 	text, err := codegraphMCPResultText(raw)
 	if err != nil || !strings.Contains(text, "comment") {
 		t.Fatalf("text=%q err=%v", text, err)
+	}
+	raw = []byte("{\"content\":[{\"type\":\"text\",\"text\":\"## drawScene (function)\\n\\nstatic void drawScene() {\\n  // the project isn't indexed with codegraph\\n}\\n\"}]}")
+	text, err = codegraphMCPResultText(raw)
+	if err != nil || !strings.Contains(text, "drawScene") {
+		t.Fatalf("source quote was treated as an unindexed project: text=%q err=%v", text, err)
+	}
+	raw = []byte(`{"content":[{"type":"text","text":"snake.cpp isn't indexed with codegraph. Run codegraph init."}]}`)
+	if _, err := codegraphMCPResultText(raw); err == nil {
+		t.Fatal("expected unindexed error")
 	}
 	raw = []byte(`{"content":[{"type":"text","text":"No CodeGraph project is loaded for this session."}]}`)
 	if _, err := codegraphMCPResultText(raw); err == nil {

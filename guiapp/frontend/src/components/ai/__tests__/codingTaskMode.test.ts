@@ -228,6 +228,14 @@ describe("codingTaskMode", () => {
         expect(collapsed[1].project_path).toBe("D:/tasks/local");
     });
 
+    it("keeps an explicit cloud copy beside the workspace task", () => {
+        const collapsed = collapseCloudWorkspaceTasks([
+            { name: "经营材料", tags: ["cloud_workspace:cws_x"], project_path: "D:/tasks/source" },
+            { name: "（副本）经营材料", tags: ["cloud_workspace:cws_x", "task_copy"], project_path: "D:/tasks/copy" },
+        ]);
+        expect(collapsed.map(task => task.project_path)).toEqual(["D:/tasks/source", "D:/tasks/copy"]);
+    });
+
     it("detects local cache paths of cloud workspaces", () => {
         expect(isCloudWorkspacePath("C:\\Users\\me\\.maclaw\\data\\cloud-workspaces\\tenant_default\\cws_abc")).toBe(true);
         expect(isCloudWorkspacePath("/home/me/.maclaw/data/cloud-workspaces/tenant_default/cws_abc")).toBe(true);

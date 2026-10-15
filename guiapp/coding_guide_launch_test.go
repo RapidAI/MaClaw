@@ -15,7 +15,7 @@ func TestAppendPendingSteerInjections_GuideLaunchAsUserRole(t *testing.T) {
 		map[string]string{"role": "system", "content": "coding system"},
 		map[string]string{"role": "user", "content": "写一个硬件检查工具"},
 	}
-	out, injected := h.appendPendingSteerInjections(userID, conversation, 1)
+	out, injected, _ := h.appendPendingSteerInjections(userID, conversation, 1)
 	if injected != "使用 c++ 开发" {
 		t.Fatalf("injected text = %q, want user-facing guide only", injected)
 	}
@@ -49,7 +49,7 @@ func TestAppendPendingSteerInjections_PreLoopGuide(t *testing.T) {
 	userID := "desktop-user:C:/tasks/local-demo"
 	h.accumulatePreLoopGuide(userID, "改用 TypeScript")
 
-	out, injected := h.appendPendingSteerInjections(userID, nil, 0)
+	out, injected, _ := h.appendPendingSteerInjections(userID, nil, 0)
 	if injected == "" || !strings.Contains(injected, "改用 TypeScript") {
 		t.Fatalf("pre-loop guide not applied: %q", injected)
 	}
@@ -72,7 +72,7 @@ func TestAppendPendingSteerInjections_DiscardsStalePreLoopGuide(t *testing.T) {
 		Text:      "too old",
 		CreatedAt: time.Now().Add(-preLoopGuideMaxAge - time.Second),
 	})
-	out, injected := h.appendPendingSteerInjections(userID, nil, 0)
+	out, injected, _ := h.appendPendingSteerInjections(userID, nil, 0)
 	if injected != "" {
 		t.Fatalf("stale pre-loop guide should be discarded, got %q", injected)
 	}
@@ -312,7 +312,7 @@ func TestAppendPendingSteerInjections_ReturnsUserFacingGuideText(t *testing.T) {
 	h := &IMMessageHandler{}
 	userID := "desktop-user:C:/tasks/guide-text"
 	h.accumulateInjection(userID, buildGuideLaunchInjection("使用 c++ 开发"))
-	_, injected := h.appendPendingSteerInjections(userID, nil, 0)
+	_, injected, _ := h.appendPendingSteerInjections(userID, nil, 0)
 	if injected != "使用 c++ 开发" {
 		t.Fatalf("injected text = %q, want user-facing guide only", injected)
 	}
@@ -339,7 +339,7 @@ func TestAppendPendingSteerInjections_PreservesMixedInjectionRolesAndOrder(t *te
 	h.accumulateInjection(userID, buildGuideLaunchInjection("switch storage to SQLite"))
 	h.accumulateInjection(userID, "[用户补充] retain migration support")
 
-	out, injected := h.appendPendingSteerInjections(userID, nil, 2)
+	out, injected, _ := h.appendPendingSteerInjections(userID, nil, 2)
 	if len(out) != 3 {
 		t.Fatalf("conversation len = %d, want 3 distinct injections: %#v", len(out), out)
 	}

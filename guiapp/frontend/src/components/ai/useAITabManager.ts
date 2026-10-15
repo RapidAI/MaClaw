@@ -9,7 +9,7 @@ import { addParticipantIdentityKeys, participantIdentityMatches } from "./partic
 import { veStatusEventInfo } from "./veStatusEvent";
 import { safeAvatarDataURL } from "./virtualEmployeeAvatar";
 import { archiveExpertTranscriptForProject, expertSessionKey, normalizeProjectSessionPath, purgeDeletedExpertTabLocalCache } from "./aiAssistantPanelSessionUtils";
-import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields } from "./codingTaskMode";
+import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields, isExplicitTaskCopy } from "./codingTaskMode";
 import type { TaskManagementItem } from "../layout/SidebarTaskManagement";
 import { updateAssistantTabTaskSession } from "./aiAssistantPanelSessionUtils";
 import type { ExpertDefinition } from "./expertTypes";
@@ -1595,8 +1595,11 @@ export function useAITabManager(options: UseAITabManagerOptions = {}): UseAITabM
             const tabWsId = String(tab.cloudWorkspaceId || "").trim() || cloudWorkspaceIdFromPath(tab.projectPath);
             const claimed = tasks.some(task => {
                 const taskPath = normalizeProjectSessionPath(String(task.project_path || ""));
+                if (taskPath && taskPath === tabPath) return true;
+                // A copy shares the workspace id but not the source chat tab.
+                if (isExplicitTaskCopy(task.tags)) return false;
                 const wsId = cloudWorkspaceIdFromTaskFields(task);
-                return (!!wsId && !!tabWsId && wsId === tabWsId) || (!!taskPath && taskPath === tabPath);
+                return !!wsId && !!tabWsId && wsId === tabWsId;
             });
             if (!claimed) orphanIDs.push(tab.id);
         }

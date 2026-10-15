@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { __resetWorkspaceDirectoryCacheForTests } from '../../ai/CodePreviewWorkspace';
-import { cloudWorkspaceNameMapFromEntitlement, countRunningTaskRows, groupTasksIntoFolders, isActiveTaskRow, isProjectTabOpen, localWorkspaceFolderName, normalizeTaskFolderOrder, reorderTaskListFolders, SidebarTaskManagement, sortTaskManagementItems, TASK_FOLDER_COLLAPSE_STORAGE_KEY, TASK_FOLDER_ORDER_STORAGE_KEY, TASK_LIST_ORDER_STORAGE_KEY, taskCreationLabel, taskListFolderKind, taskListStatusKind, taskSecondaryLabelFor, taskStatusBucketFor, workflowStatusForTask, workflowStatusForTaskRow } from '../SidebarTaskManagement';
+import { abbreviateTaskFolderLabel, applyTaskListOrder, cloudWorkspaceNameMapFromEntitlement, countRunningTaskRows, groupTasksByWorkingDirectory, groupTasksIntoFolders, isActiveTaskRow, isProjectTabOpen, localWorkspaceFolderName, normalizeTaskFolderOrder, reorderTaskBlocks, reorderTaskListFolders, SidebarTaskManagement, sortTaskManagementItems, TASK_FOLDER_COLLAPSE_STORAGE_KEY, TASK_FOLDER_ORDER_STORAGE_KEY, TASK_LIST_ORDER_STORAGE_KEY, TASK_WORKDIR_COLLAPSE_STORAGE_KEY, taskCreationLabel, taskListFolderKind, taskListStatusKind, taskOrderKey, taskSecondaryLabelFor, taskStatusBucketFor, taskWorkingDirectoryIdentity, workflowStatusForTask, workflowStatusForTaskRow } from '../SidebarTaskManagement';
 import type { ComponentProps, ReactElement } from 'react';
 import { GetProjectScene, OpenFileOrShowInFolder, OpenProjectDirectory, SelectWorkingDir } from '../../../../wailsjs/go/main/App';
 import { EventsEmit } from '../../../../wailsjs/runtime';
@@ -32,6 +32,7 @@ const {
     restoreCloudWorkspaceMock,
     restoreCloudWorkspaceTasksMock,
     prepareCloudWorkspaceMock,
+    resumeCloudWorkspaceTaskMock,
     syncCloudWorkspaceFilesMock,
     getCodingWorkbenchDirectoryMock,
     deleteCodingWorkbenchEntryMock,
@@ -46,6 +47,7 @@ const {
     removeCloudWorkspaceShareRecipientMock,
     copyTaskFilesToCloudWorkspaceMock,
     copyCloudWorkspaceTaskFilesToLocalMock,
+    duplicateTaskMock,
     chooseFileCompanionFilesMock,
     showFileCompanionMock,
 } = vi.hoisted(() => {
@@ -67,6 +69,7 @@ const {
         restoreCloudWorkspaceMock: vi.fn(),
         restoreCloudWorkspaceTasksMock: vi.fn().mockResolvedValue([]),
         prepareCloudWorkspaceMock: vi.fn().mockResolvedValue({ local_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a' }),
+        resumeCloudWorkspaceTaskMock: vi.fn().mockResolvedValue({ working_dir: 'C:/Users/me/.maclaw/data/cloud-workspaces-readonly/tenant_default/cws_a' }),
         syncCloudWorkspaceFilesMock: vi.fn().mockResolvedValue({ local_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a' }),
         getCodingWorkbenchDirectoryMock: vi.fn().mockResolvedValue({ root: '', entries: [] }),
         deleteCodingWorkbenchEntryMock: vi.fn().mockResolvedValue(undefined),
@@ -86,6 +89,11 @@ const {
         removeCloudWorkspaceShareRecipientMock: vi.fn().mockResolvedValue(undefined),
         copyTaskFilesToCloudWorkspaceMock: vi.fn().mockResolvedValue({ files: 0, bytes: 0 }),
         copyCloudWorkspaceTaskFilesToLocalMock: vi.fn().mockResolvedValue({ files: 0, bytes: 0 }),
+        duplicateTaskMock: vi.fn().mockResolvedValue({
+            project_path: 'D:/work/tasks/build-dashboard-copy',
+            name: '（副本）Build dashboard',
+            tags: ['task_management', 'task_copy'],
+        }),
         chooseFileCompanionFilesMock: vi.fn().mockResolvedValue([]),
         showFileCompanionMock: vi.fn().mockResolvedValue(undefined),
     };
@@ -112,6 +120,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     RestoreCloudWorkspaceTasks: restoreCloudWorkspaceTasksMock,
     CloudWorkspaceCacheDir: cloudWorkspaceCacheDirMock,
     PrepareCloudWorkspace: prepareCloudWorkspaceMock,
+    ResumeCloudWorkspaceTask: resumeCloudWorkspaceTaskMock,
     SyncCloudWorkspaceFiles: syncCloudWorkspaceFilesMock,
     GetCodingWorkbenchDirectory: (...args: unknown[]) => getCodingWorkbenchDirectoryMock(...args),
     DeleteCodingWorkbenchEntry: (...args: unknown[]) => deleteCodingWorkbenchEntryMock(...args),
@@ -132,6 +141,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     RemoveCloudWorkspaceShareRecipient: removeCloudWorkspaceShareRecipientMock,
     CopyTaskFilesToCloudWorkspace: copyTaskFilesToCloudWorkspaceMock,
     CopyCloudWorkspaceTaskFilesToLocal: copyCloudWorkspaceTaskFilesToLocalMock,
+    DuplicateTask: duplicateTaskMock,
     ChooseFileCompanionFiles: (...args: unknown[]) => chooseFileCompanionFilesMock(...args),
     ShowFileCompanion: (...args: unknown[]) => showFileCompanionMock(...args),
 }));
@@ -229,6 +239,8 @@ afterEach(async () => {
     restoreCloudWorkspaceTasksMock.mockResolvedValue([]);
     prepareCloudWorkspaceMock.mockReset();
     prepareCloudWorkspaceMock.mockResolvedValue({ local_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a' });
+    resumeCloudWorkspaceTaskMock.mockReset();
+    resumeCloudWorkspaceTaskMock.mockResolvedValue({ working_dir: 'C:/Users/me/.maclaw/data/cloud-workspaces-readonly/tenant_default/cws_a' });
     syncCloudWorkspaceFilesMock.mockReset();
     syncCloudWorkspaceFilesMock.mockResolvedValue({ local_path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant_default/cws_a' });
     getCodingWorkbenchDirectoryMock.mockReset();
@@ -287,6 +299,28 @@ describe('isActiveTaskRow', () => {
         expect(isActiveTaskRow(newer, active)).toBe(true);
         expect(isActiveTaskRow(older, active)).toBe(false);
         expect(isActiveTaskRow(older, { expertId: 'builtin-latex-paper' })).toBe(true);
+    });
+
+    it('does not treat a copied task as the open source row', () => {
+        const expert = { ...baseProject, tags: ['task_management', 'source:expert:paper-review'] };
+        const expertCopy = { ...baseProject, project_path: 'D:/tasks/expert-copy', tags: ['task_management', 'source:expert:paper-review', 'task_copy'] };
+        expect(isActiveTaskRow(expert, { expertId: 'paper-review' })).toBe(true);
+        expect(isActiveTaskRow(expertCopy, { expertId: 'paper-review' })).toBe(false);
+        expect(isActiveTaskRow(expertCopy, { projectPath: 'D:/tasks/expert-copy' })).toBe(true);
+
+        const cloud = { ...baseProject, project_path: 'D:/tasks/cloud', tags: ['task_management', 'cloud_workspace:cws_a'] };
+        const cloudCopy = { ...baseProject, project_path: 'D:/tasks/cloud-copy', tags: ['task_management', 'cloud_workspace:cws_a', 'task_copy'] };
+        expect(taskOrderKey(cloud)).toBe('cloud:cws_a');
+        expect(taskOrderKey(cloudCopy)).toBe('path:D:/tasks/cloud-copy');
+        const ordered = applyTaskListOrder([cloudCopy, cloud], [taskOrderKey(cloud)]);
+        expect(ordered.map(item => item.project_path)).toEqual(['D:/tasks/cloud-copy', 'D:/tasks/cloud']);
+        expect(isActiveTaskRow(cloud, { projectPath: 'D:/tasks/cloud', cloudWorkspaceId: 'cws_a' })).toBe(true);
+        expect(isActiveTaskRow(cloudCopy, { projectPath: 'D:/tasks/cloud', cloudWorkspaceId: 'cws_a' })).toBe(false);
+        const cachePath = 'E:/cache/cloud-workspaces/tenant/cws_a';
+        const cloudOnCache = { ...cloud, working_dir: cachePath };
+        const copyOnCache = { ...cloudCopy, working_dir: cachePath };
+        expect(isActiveTaskRow(cloudOnCache, { projectPath: cachePath, cloudWorkspaceId: 'cws_a' })).toBe(true);
+        expect(isActiveTaskRow(copyOnCache, { projectPath: cachePath, cloudWorkspaceId: 'cws_a' })).toBe(false);
     });
 
     it('highlights a cloud workspace row even when resume rebound the tab onto a cache path', () => {
@@ -369,6 +403,17 @@ describe('countRunningTaskRows', () => {
         expect(countRunningTaskRows([cloudRow], {
             busyTaskRuns: { projectPaths: ['C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_other/chapter-1.md'], expertIds: [] },
         })).toBe(0);
+        const cache = 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_math';
+        const copy = {
+            ...cloudRow,
+            id: 'cw-copy',
+            project_path: 'D:/work/tasks/math-book-copy',
+            tags: ['task_management', 'cloud_workspace:cws_math', 'task_copy'],
+            working_dir: cache,
+        };
+        expect(countRunningTaskRows([cloudRow, copy], {
+            busyTaskRuns: { projectPaths: [cache], expertIds: [] },
+        })).toBe(1);
     });
 
     it('returns zero for an empty list', () => {
@@ -2792,6 +2837,35 @@ describe('SidebarTaskManagement', () => {
         expect(screen.getByText(/Edit remote SSH|编辑远程 SSH|編輯遠端 SSH/i)).toBeTruthy();
     });
 
+    it('copies a task from the context menu as a new empty task', async () => {
+        const refreshTasks = vi.fn();
+        const resumeTask = vi.fn().mockResolvedValue(true);
+        duplicateTaskMock.mockClear();
+        renderTaskManagement({
+            lang: 'zh',
+            refreshTasks,
+            resumeTask,
+            taskContextMenu: {
+                x: 10,
+                y: 20,
+                projectPath: baseProject.project_path,
+                name: baseProject.name,
+                pinned: false,
+                tags: ['coding_dev'],
+            },
+        });
+
+        fireEvent.click(screen.getByTestId('task-context-copy'));
+
+        await waitFor(() => expect(duplicateTaskMock).toHaveBeenCalledWith(baseProject.project_path));
+        expect(screen.getByTestId('task-context-copy').textContent || '').toMatch(/复制/);
+        await waitFor(() => expect(refreshTasks).toHaveBeenCalled());
+        expect(resumeTask).toHaveBeenCalledWith('D:/work/tasks/build-dashboard-copy', expect.objectContaining({
+            project_path: 'D:/work/tasks/build-dashboard-copy',
+            name: '（副本）Build dashboard',
+        }));
+    });
+
     it('hides Edit remote SSH for ordinary tasks', () => {
         renderTaskManagement({
             taskContextMenu: {
@@ -3088,6 +3162,25 @@ describe('SidebarTaskManagement', () => {
         expect(await screen.findByText('无法打开本地缓存文件夹')).toBeTruthy();
         expect(screen.queryByText(/cloud-workspaces/i)).toBeNull();
         expect(syncCloudWorkspaceFilesMock).not.toHaveBeenCalled();
+    });
+
+    it('browses a copied read-only cloud task without taking a writer lease', async () => {
+        const cachePath = 'C:/Users/me/.maclaw/data/cloud-workspaces-readonly/tenant_default/cws_a';
+        renderTaskManagement({
+            lang: 'zh',
+            taskContextMenu: {
+                x: 10,
+                y: 20,
+                projectPath: 'D:/tasks/cloud-copy',
+                name: '（副本）云端工作区任务1',
+                pinned: false,
+                tags: ['cloud_workspace:cws_a', 'cloud_workspace_share:read', 'task_copy'],
+            },
+        });
+        fireEvent.click(screen.getByTestId('task-context-browse-cloud'));
+        await waitFor(() => expect(OpenProjectDirectory).toHaveBeenCalledWith(cachePath));
+        expect(resumeCloudWorkspaceTaskMock).toHaveBeenCalledWith('cws_a', 'D:/tasks/cloud-copy');
+        expect(prepareCloudWorkspaceMock).not.toHaveBeenCalled();
     });
 
     it('lets double-click cancel an in-flight Browse resume', async () => {
@@ -5848,7 +5941,11 @@ describe('task list folders', () => {
         expect(within(codingFolder).getByText('Coding feature')).toBeTruthy();
         expect(within(codingFolder).getByText('Remote fix')).toBeTruthy();
         expect(session.querySelector('.stsm-task-folder__icon')).toBeTruthy();
-        expect(session.querySelector('.stsm-task-folder__grip-icon')).toBeTruthy();
+        expect(session.querySelector('.stsm-task-folder__grip')).toBeNull();
+        expect(screen.getByTestId('task-folder-toggle-session').getAttribute('draggable')).toBe('true');
+        const folderCss = readFileSync(join(process.cwd(), 'src/styles/partials/110-mc-app-shell.css'), 'utf8');
+        expect(folderCss).not.toMatch(/\.stsm-task-folder__grip/);
+        expect(folderCss).toMatch(/\[data-folder-drop-target='before'\] > \.stsm-task-folder__head \{[^}]*box-shadow: inset 0 2px 0/);
         expect(folderOrder()).toEqual(['task-folder-session', 'task-folder-coding']);
     });
 
@@ -5868,7 +5965,7 @@ describe('task list folders', () => {
         renderTaskManagement({ tasks: [chat, coding] });
         expect(folderOrder()).toEqual(['task-folder-session', 'task-folder-coding']);
 
-        fireEvent.dragStart(screen.getByTestId('task-folder-drag-coding'));
+        fireEvent.dragStart(screen.getByTestId('task-folder-toggle-coding'));
         fireEvent.dragOver(screen.getByTestId('task-folder-session'));
         expect(screen.getByTestId('task-folder-session').getAttribute('data-folder-drop-target')).toBe('before');
         fireEvent.drop(screen.getByTestId('task-folder-session'));
@@ -5885,11 +5982,11 @@ describe('task list folders', () => {
         expect(folderOrder()).toEqual(['task-folder-coding', 'task-folder-session']);
     });
 
-    it('hides the drag grip when only one folder is present', () => {
+    it('does not drag a folder when it is the only one', () => {
         renderTaskManagement({ tasks: [chat] });
         expect(screen.queryByTestId('task-folder-coding')).toBeNull();
-        expect(screen.getByTestId('task-folder-drag-session').getAttribute('draggable')).toBe('false');
-        expect(screen.getByTestId('task-folder-drag-session').querySelector('.stsm-task-folder__grip')).toBeNull();
+        expect(screen.getByTestId('task-folder-toggle-session').getAttribute('draggable')).toBe('false');
+        expect(screen.getByTestId('task-folder-toggle-session').querySelector('.stsm-task-folder__grip')).toBeNull();
         fireEvent.keyDown(screen.getByTestId('task-folder-toggle-session'), { key: 'Enter' });
         expect(screen.getByTestId('task-folder-session').getAttribute('data-expanded')).toBe('false');
     });
@@ -5952,8 +6049,115 @@ describe('task list folders', () => {
 
     it('marks a downward folder drop on the far side of the target', () => {
         renderTaskManagement({ tasks: [chat, coding] });
-        fireEvent.dragStart(screen.getByTestId('task-folder-drag-session'));
+        fireEvent.dragStart(screen.getByTestId('task-folder-toggle-session'));
         fireEvent.dragOver(screen.getByTestId('task-folder-coding'));
         expect(screen.getByTestId('task-folder-coding').getAttribute('data-folder-drop-target')).toBe('after');
+    });
+
+    it('nests tasks that share a working directory under that directory name', () => {
+        const source = { ...baseProject, id: 'code-a', name: '编程开发测试', project_path: 'D:/work/tasks/a', working_dir: 'F:/test-prog', tags: ['coding_dev'], created_at: '2026-10-14T10:00:00Z' };
+        const copy = { ...baseProject, id: 'code-b', name: '（副本）编程开发测试', project_path: 'D:/work/tasks/b', working_dir: 'F:\\test-prog\\', tags: ['coding_dev', 'task_copy'], created_at: '2026-10-15T10:00:00Z' };
+        const other = { ...baseProject, id: 'code-c', name: '图形界面', project_path: 'D:/work/tasks/c', working_dir: 'D:/work/ui', tags: ['coding_dev'], created_at: '2026-10-13T10:00:00Z' };
+        const chatA = { ...baseProject, id: 'chat-a', name: '会话甲', project_path: 'D:/work/tasks/d', working_dir: 'F:/test-prog', tags: [] as string[], created_at: '2026-10-12T10:00:00Z' };
+        const chatB = { ...baseProject, id: 'chat-b', name: '会话乙', project_path: 'D:/work/tasks/e', working_dir: 'F:/test-prog', tags: [] as string[], created_at: '2026-10-11T10:00:00Z' };
+        const alone = { ...baseProject, id: 'code-d', name: '单独任务', project_path: 'D:/work/tasks/f', working_dir: 'D:/only-once', tags: ['coding_dev'], created_at: '2026-10-10T10:00:00Z' };
+
+        expect(taskWorkingDirectoryIdentity(source)?.key).toBe('local:f:/test-prog');
+        expect(taskWorkingDirectoryIdentity(copy)?.key).toBe(taskWorkingDirectoryIdentity(source)?.key);
+        expect(abbreviateTaskFolderLabel('very-long-directory-name')).toBe('very-long-directo…');
+        expect(abbreviateTaskFolderLabel('workspace/long-name')).toBe('workspa…/long-name');
+        expect(abbreviateTaskFolderLabel('test-prog')).toBe('test-prog');
+        expect(taskWorkingDirectoryIdentity({ ...source, working_dir: '', execution_dir: '', project_path: 'F:/test-prog' })).toBeNull();
+
+        const sameLeaf = groupTasksByWorkingDirectory([
+            { ...source, id: 'l1', project_path: 'D:/work/tasks/l1', working_dir: 'D:/alpha/src' },
+            { ...source, id: 'l2', project_path: 'D:/work/tasks/l2', working_dir: 'D:/alpha/src' },
+            { ...source, id: 'r1', project_path: 'D:/work/tasks/r1', working_dir: 'D:/beta/src' },
+            { ...source, id: 'r2', project_path: 'D:/work/tasks/r2', working_dir: 'D:/beta/src' },
+        ]);
+        expect(sameLeaf.map(entry => entry.kind === 'folder' ? entry.folder.label : '')).toEqual(['alpha/src', 'beta/src']);
+        const drives = groupTasksByWorkingDirectory([
+            { ...source, id: 'd1', project_path: 'D:/work/tasks/d1', working_dir: 'F:/test-prog' },
+            { ...source, id: 'd2', project_path: 'D:/work/tasks/d2', working_dir: 'F:/test-prog' },
+            { ...source, id: 'd3', project_path: 'D:/work/tasks/d3', working_dir: 'D:/test-prog' },
+            { ...source, id: 'd4', project_path: 'D:/work/tasks/d4', working_dir: 'D:/test-prog' },
+        ]);
+        expect(drives.map(entry => entry.kind === 'folder' ? entry.folder.label : '')).toEqual(['F:/test-prog', 'D:/test-prog']);
+        const sameParent = groupTasksByWorkingDirectory([
+            { ...source, id: 's1', project_path: 'D:/work/tasks/s1', working_dir: 'D:/work/src' },
+            { ...source, id: 's2', project_path: 'D:/work/tasks/s2', working_dir: 'D:/work/src' },
+            { ...source, id: 's3', project_path: 'D:/work/tasks/s3', working_dir: 'E:/work/src' },
+            { ...source, id: 's4', project_path: 'D:/work/tasks/s4', working_dir: 'E:/work/src' },
+        ]);
+        expect(sameParent.map(entry => entry.kind === 'folder' ? entry.folder.label : '')).toEqual(['D:/work/src', 'E:/work/src']);
+        const pinnedApart = groupTasksByWorkingDirectory([
+            { ...source, id: 'pin', project_path: 'D:/work/tasks/pin', pinned: true },
+            { ...source, id: 'plain', project_path: 'D:/work/tasks/plain', pinned: false },
+        ]);
+        expect(pinnedApart.every(entry => entry.kind === 'task')).toBe(true);
+        expect(reorderTaskBlocks(['a1', 'a2', 'c'], ['a1', 'a2', 'c'], ['c'], ['a1', 'a2'])).toEqual(['c', 'a1', 'a2']);
+        expect(reorderTaskBlocks(['a1', 'a2', 'c'], ['a1', 'a2', 'c'], ['a1', 'a2'], ['c'])).toEqual(['c', 'a1', 'a2']);
+
+        renderTaskManagement({ lang: 'zh', tasks: [source, copy, other, alone, chatA, chatB] });
+
+        const codingFolder = screen.getByTestId('task-folder-coding');
+        const workdir = within(codingFolder).getByTestId('task-workdir-folder');
+        expect(workdir.getAttribute('data-workdir-key')).toBe('local:f:/test-prog');
+        expect(within(workdir).getByTestId('task-workdir-toggle').querySelector('.stsm-task-folder__label')?.textContent).toBe('test-prog');
+        expect(within(workdir).getByText('编程开发测试')).toBeTruthy();
+        expect(within(workdir).getByText('（副本）编程开发测试')).toBeTruthy();
+        expect(within(workdir).queryByText('图形界面')).toBeNull();
+        expect(within(workdir).queryByText('单独任务')).toBeNull();
+        expect(within(codingFolder).getByText('图形界面')).toBeTruthy();
+        expect(within(codingFolder).getByText('单独任务')).toBeTruthy();
+
+        const sessionFolder = screen.getByTestId('task-folder-session');
+        const sessionDir = within(sessionFolder).getByTestId('task-workdir-folder');
+        expect(within(sessionDir).getByText('会话甲')).toBeTruthy();
+        expect(within(sessionDir).getByText('会话乙')).toBeTruthy();
+        expect(within(sessionDir).queryByText('编程开发测试')).toBeNull();
+
+        fireEvent.click(within(workdir).getByTestId('task-workdir-toggle'));
+        expect(workdir.getAttribute('data-expanded')).toBe('false');
+        expect(within(workdir).queryByText('编程开发测试')).toBeNull();
+        expect(within(codingFolder).getByText('图形界面')).toBeTruthy();
+        expect(JSON.parse(localStorage.getItem(TASK_WORKDIR_COLLAPSE_STORAGE_KEY) || '[]')).toEqual(['coding:0:local:f:/test-prog']);
+
+        fireEvent.click(within(workdir).getByTestId('task-workdir-toggle'));
+        expect(within(workdir).getByText('编程开发测试')).toBeTruthy();
+    });
+
+    it('groups remote tasks by the remote working directory', () => {
+        const tags = ['remote_coding_dev', 'remote_host:home.rapidai.tech', 'remote_port:55', 'remote_workdir:/home/proj'];
+        const first = { ...baseProject, id: 'remote-a', name: '巡检甲', project_path: 'D:/work/tasks/ra', tags, created_at: '2026-10-15T08:00:00Z' };
+        const second = { ...baseProject, id: 'remote-b', name: '巡检乙', project_path: 'D:/work/tasks/rb', working_dir: 'D:/unrelated', tags: [...tags], created_at: '2026-10-14T08:00:00Z' };
+        renderTaskManagement({ lang: 'zh', tasks: [first, second] });
+        const workdir = within(screen.getByTestId('task-folder-coding')).getByTestId('task-workdir-folder');
+        expect(within(workdir).getByTestId('task-workdir-toggle').querySelector('.stsm-task-folder__label')?.textContent).toBe('proj');
+        expect(within(workdir).getByText('巡检甲')).toBeTruthy();
+        expect(within(workdir).getByText('巡检乙')).toBeTruthy();
+        expect(workdir.getAttribute('aria-label')).toContain('home.rapidai.tech');
+    });
+
+    it('opens a collapsed directory when its task becomes active, and keeps it collapsed when the pair is split', () => {
+        const source = { ...baseProject, id: 'code-a', name: '编程开发测试', project_path: 'D:/work/tasks/a', working_dir: 'F:/test-prog', tags: ['coding_dev'], created_at: '2026-10-14T10:00:00Z' };
+        const copy = { ...baseProject, id: 'code-b', name: '（副本）编程开发测试', project_path: 'D:/work/tasks/b', working_dir: 'F:/test-prog', tags: ['coding_dev', 'task_copy'], created_at: '2026-10-15T10:00:00Z' };
+        const collapseKey = 'coding:0:local:f:/test-prog';
+        localStorage.setItem(TASK_WORKDIR_COLLAPSE_STORAGE_KEY, JSON.stringify([collapseKey]));
+        const view = renderTaskManagement({ lang: 'zh', tasks: [source, copy] });
+        expect(screen.getByTestId('task-workdir-folder').getAttribute('data-expanded')).toBe('false');
+
+        view.rerenderWith({ activeAssistantTask: { projectPath: source.project_path } });
+        expect(screen.getByTestId('task-workdir-folder').getAttribute('data-expanded')).toBe('true');
+        expect(screen.getByText('编程开发测试')).toBeTruthy();
+
+        localStorage.setItem(TASK_WORKDIR_COLLAPSE_STORAGE_KEY, JSON.stringify([collapseKey]));
+        view.rerenderWith({
+            tasks: [source],
+            activeAssistantTask: { projectPath: source.project_path },
+        });
+        expect(screen.queryByTestId('task-workdir-folder')).toBeNull();
+        expect(screen.getByText('编程开发测试')).toBeTruthy();
+        expect(JSON.parse(localStorage.getItem(TASK_WORKDIR_COLLAPSE_STORAGE_KEY) || '[]')).toEqual([collapseKey]);
     });
 });

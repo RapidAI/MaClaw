@@ -83,8 +83,8 @@ func TestCodingQualityGateOffPromptDropsAuditThreat(t *testing.T) {
 		task: &TaskItem{Title: "update parser error handling"},
 	}
 	off := local.BuildSystemPrompt("update parser error handling", true)
-	if strings.Contains(off, "Enforced hard gates") || strings.Contains(off, "failure-suppressing") || strings.Contains(off, "Quality audit gates") || strings.Contains(off, "质量门禁") || strings.Contains(off, "门禁") || strings.Contains(off, "report_localization before editing") || !strings.Contains(off, "does not block edits") || !strings.Contains(off, "Host quality gate is off for this turn.") {
-		t.Fatalf("disabled quality gate prompt must stop threatening an audit failure")
+	if strings.Contains(off, "Enforced hard gates") || strings.Contains(off, "failure-suppressing") || strings.Contains(off, "Quality audit gates") || strings.Contains(off, "质量门禁") || strings.Contains(off, "门禁") || strings.Contains(off, "report_localization before editing") || !strings.Contains(off, "does not block edits") || !strings.Contains(off, "Host quality gate is off for this turn.") || !strings.Contains(off, "still require a current read_file") || !strings.Contains(off, "Do not send the same edit again.") {
+		t.Fatalf("disabled quality gate prompt must stop threatening an audit failure and must keep the read-before-edit tool rule")
 	}
 	userMsg := local.buildTaskUserMessage()
 	if strings.Contains(userMsg, "Do not present pre-edit verification as final verification") || strings.Contains(userMsg, "the gate says") || strings.Contains(userMsg, "before editing existing code") {
@@ -238,6 +238,46 @@ func TestDisabledQualityGateOperationalChecklistOmitsGateName(t *testing.T) {
 	cb.qualityGateEnabled = &on
 	if !strings.Contains(cb.buildTaskUserMessage(), "通过质量门禁") {
 		t.Fatal("enabled quality gate keeps the operational checklist wording")
+	}
+}
+
+func TestDisabledQualityGateDoesNotFailTaskForReadSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "audio.cpp")
+	if err := os.WriteFile(path, []byte("int x;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	off := false
+	cb := &codingSubAgentCallbacks{qualityGateEnabled: &off}
+	msg := cb.requireReadBeforeModify(path, "edit_file")
+	if !strings.Contains(msg, "read_file") {
+		t.Fatalf("read-before-edit must still reject the tool call, got %q", msg)
+	}
+	if got := classifyCodingGuardrailCategory("edit_file", path, "", msg); got != codingSubAgentGuardrailCategoryPolicy {
+		t.Fatalf("read-before-edit category = %q, want policy", got)
+	}
+	unread := []CodingSubAgentGuardrailViolation{
+		{Tool: "edit_file", Path: path, Summary: msg},
+		{Tool: "edit_file", Path: path, Summary: msg},
+		{Tool: "edit_file", Path: path, Summary: "文件 audio.cpp 自上次 read_file 后已变化。请先重新调用 read_file 再修改。"},
+		{Tool: "write_file", Path: path, Summary: "目标文件已存在，请先调用 read_file；只有创建全新文件时才能直接 write_file。"},
+	}
+	if kept := guardrailViolationsForTaskOutcome(unread, false); len(kept) != 0 {
+		t.Fatalf("disabled quality gate must not fail the task for read snapshots, kept %#v", kept)
+	}
+	status, errMsg := applySubAgentGuardrailOutcome(TaskExecPassed, "", guardrailViolationsForTaskOutcome(unread, false))
+	if status != TaskExecPassed || errMsg != "" {
+		t.Fatalf("disabled quality gate changed a passed task: status=%s err=%q", status, errMsg)
+	}
+	safety := []CodingSubAgentGuardrailViolation{
+		{Tool: "bash", Category: codingSubAgentGuardrailCategoryGit, Command: "git reset --hard", Summary: "blocked destructive git command"},
+	}
+	status, errMsg = applySubAgentGuardrailOutcome(TaskExecPassed, "", guardrailViolationsForTaskOutcome(append(unread, safety...), false))
+	if status != TaskExecFailed || !strings.Contains(errMsg, "1 guardrail block") || !strings.Contains(errMsg, "blocked destructive git command") || strings.Contains(errMsg, "read_file") {
+		t.Fatalf("safety guardrail must still fail the task without the read snapshot, status=%s err=%q", status, errMsg)
+	}
+	if kept := guardrailViolationsForTaskOutcome(unread, true); len(kept) != len(unread) {
+		t.Fatalf("enabled quality gate must keep read-snapshot violations, kept %d", len(kept))
 	}
 }
 

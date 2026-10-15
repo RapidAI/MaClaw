@@ -300,7 +300,7 @@ func (h *codingSubAgentHooks) TransformConversation(conversation []interface{}) 
 	if h != nil && h.handler != nil && strings.TrimSpace(h.userID) != "" {
 		// Prefer length growth over injected payload text: a drained-but-empty
 		// guide wrapper should not force a no-op conversation rewrite.
-		next, _ := h.handler.appendPendingSteerInjections(h.userID, out, h.iteration)
+		next, _, _ := h.handler.appendPendingSteerInjections(h.userID, out, h.iteration)
 		if len(next) > len(out) {
 			out = next
 			changed = true

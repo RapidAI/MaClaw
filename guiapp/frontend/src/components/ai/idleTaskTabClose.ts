@@ -1,6 +1,6 @@
 import type { AITab, AITabState } from "./AITabTypes";
 import { expertIDFromTaskTags, expertSessionKey, isACPAssistantSessionKey, normalizeProjectSessionPath, projectSessionKey } from "./aiAssistantPanelSessionUtils";
-import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields } from "./codingTaskMode";
+import { cloudWorkspaceIdFromPath, cloudWorkspaceIdFromTaskFields, isExplicitTaskCopy } from "./codingTaskMode";
 import { taskStatusBucketFor, workflowStatusForTaskRow, type TaskManagementItem } from "../layout/SidebarTaskManagement";
 
 /**
@@ -57,16 +57,21 @@ function taskForAssistantTab(tab: AITab, tasks: TaskManagementItem[]): TaskManag
     if (tab.type === "expert") {
         const expertId = String(tab.expertId || "").trim();
         if (!expertId) return undefined;
-        return tasks.find(task => expertIDFromTaskTags(task.tags) === expertId);
+        return tasks.find(task => expertIDFromTaskTags(task.tags) === expertId && !isExplicitTaskCopy(task.tags))
+            || tasks.find(task => expertIDFromTaskTags(task.tags) === expertId);
     }
     if (tab.type !== "project") return undefined;
     const path = normalizeProjectSessionPath(tab.projectPath);
-    const workspaceId = String(tab.cloudWorkspaceId || "").trim() || cloudWorkspaceIdFromPath(tab.projectPath);
-    return tasks.find(task => {
-        const taskWorkspaceId = cloudWorkspaceIdFromTaskFields(task);
-        if (workspaceId && taskWorkspaceId && workspaceId === taskWorkspaceId) return true;
+    const byPath = tasks.find(task => {
         const taskPath = normalizeProjectSessionPath(task.project_path);
         return !!path && !!taskPath && taskPath === path;
+    });
+    if (byPath) return byPath;
+    const workspaceId = String(tab.cloudWorkspaceId || "").trim() || cloudWorkspaceIdFromPath(tab.projectPath);
+    return tasks.find(task => {
+        if (isExplicitTaskCopy(task.tags)) return false;
+        const taskWorkspaceId = cloudWorkspaceIdFromTaskFields(task);
+        return !!workspaceId && !!taskWorkspaceId && workspaceId === taskWorkspaceId;
     });
 }
 

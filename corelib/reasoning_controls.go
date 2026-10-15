@@ -508,7 +508,30 @@ func FinishOpenAIChatReasoningControls(cfg MaclawLLMConfig, body map[string]inte
 		RewriteAMDRadeonChatReasoning(cfg, body)
 		return
 	}
+	// TokenHub chat accepts thinking.type only. budget_tokens is the Anthropic
+	// spelling and is added for tool calls on other OpenAI-compatible hosts.
+	if IsTencentTokenHubEndpoint(cfg) {
+		if thinking, _ := body["thinking"].(map[string]interface{}); thinking != nil {
+			delete(thinking, "budget_tokens")
+		}
+	}
 	StampDeepSeekReasoningEffort(cfg, body)
+}
+
+// IsTencentTokenHubEndpoint reports the Token Plan chat hosts. Guangzhou and
+// Singapore, on both the mainland and international domains, share this schema.
+func IsTencentTokenHubEndpoint(cfg MaclawLLMConfig) bool {
+	endpoint, err := url.Parse(strings.TrimSpace(cfg.URL))
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(endpoint.Hostname())) {
+	case "tokenhub.tencentmaas.com", "tokenhub-intl.tencentmaas.com",
+		"tokenhub.tencentcloudmaas.com", "tokenhub-intl.tencentcloudmaas.com":
+		return true
+	default:
+		return false
+	}
 }
 
 // RewriteAMDRadeonChatReasoning removes thinking from an AMD public chat body.

@@ -50,6 +50,10 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     WaitZhipuCodingOAuth: (...args: unknown[]) => WaitZhipuCodingOAuthMock(...args),
     CancelZhipuCodingOAuth: vi.fn(),
     StartXAIOAuth: (...args: unknown[]) => StartXAIOAuthMock(...args),
+    StartDevinLogin: vi.fn(),
+    WaitDevinLogin: vi.fn(),
+    CompleteDevinLoginWithToken: vi.fn(),
+    CancelDevinLogin: vi.fn(),
     StartWorkBuddyOAuth: (...args: unknown[]) => StartWorkBuddyOAuthMock(...args),
     StartKimiCodeOAuth: (...args: unknown[]) => StartKimiCodeOAuthMock(...args),
     WaitKimiCodeOAuth: (...args: unknown[]) => WaitKimiCodeOAuthMock(...args),
@@ -187,6 +191,55 @@ describe('LLMConfigPanel test-and-save flow', () => {
         });
 
         expect(await screen.findByText(/Vision support: enabled/)).toBeTruthy();
+    });
+
+    it('offers both saved Xingchen models before fetching', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [{
+                name: '星辰大模型',
+                url: 'https://api-maas.teleai.com.cn/v1',
+                key: 'ty-key',
+                model: 'TeleChat3-438B-A24B',
+                models: ['TeleChat3-438B-A24B', 'Xing4.0-29B-A4B'],
+                protocol: 'openai',
+            }],
+            current: '星辰大模型',
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        fireEvent.click(await screen.findByRole('button', { name: 'Show model list' }));
+
+        expect(await screen.findByRole('option', { name: 'TeleChat3-438B-A24B' })).toBeTruthy();
+        expect(screen.getByRole('option', { name: 'Xing4.0-29B-A4B' })).toBeTruthy();
+        expect(FetchProviderModelsMock).not.toHaveBeenCalled();
+    });
+
+    it('replaces the open model list when quick-fill changes the catalog', async () => {
+        GetMaclawLLMProvidersMock.mockResolvedValue({
+            providers: [{
+                name: 'Custom1',
+                url: 'https://old.example/v1',
+                key: 'k',
+                model: 'old-model',
+                models: ['old-model'],
+                protocol: 'openai',
+                is_custom: true,
+            }],
+            current: 'Custom1',
+        });
+
+        render(<LLMConfigPanel lang="en" onStatusChange={vi.fn()} />);
+        fireEvent.click(await screen.findByRole('button', { name: 'Manage providers' }));
+        const quickFill = screen.getAllByRole('combobox').find(element =>
+            Array.from(element.querySelectorAll('option')).some(option => option.value === '星辰大模型'),
+        );
+        expect(quickFill).toBeTruthy();
+        fireEvent.change(quickFill!, { target: { value: '星辰大模型' } });
+        fireEvent.click(screen.getByRole('button', { name: 'Show model list' }));
+
+        expect(await screen.findByRole('option', { name: 'Xing4.0-29B-A4B' })).toBeTruthy();
+        expect(screen.queryByRole('option', { name: 'old-model' })).toBeNull();
     });
 
     it('keeps configuration unavailable until a slow provider read has completed', async () => {

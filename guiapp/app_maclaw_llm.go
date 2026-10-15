@@ -30,6 +30,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
 	"github.com/RapidAI/CodeClaw/corelib/qoder"
 	"github.com/RapidAI/CodeClaw/corelib/trae"
+	"github.com/RapidAI/CodeClaw/corelib/windsurf"
 	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 )
 
@@ -45,6 +46,21 @@ const volcengineAgentPlanProviderName = "\u706b\u5c71\u5f15\u64ce Agent Plan"
 const legacyVolcengineTokenPlanProviderName = "\u706b\u5c71\u5f15\u64ceTokenPlan"
 const legacyVolcengineTokenPlanAnthropicProviderName = "\u706b\u5c71\u5f15\u64ceTokenPlan (Anthropic)"
 const legacyVolcengineTokenPlanAnthropicProviderNameAlt = "\u706b\u5c71\u5f15\u64ceTokenPlan Anthropic"
+
+// Tencent Token Plan (Guangzhou) speaks OpenAI Chat Completions at /plan/v3.
+// The documented router model is "auto"; wire stays chat so requests land on
+// /plan/v3/chat/completions rather than the optional Responses URL.
+const tencentTokenPlanProviderName = "\u817e\u8bafTokenPlan"
+const tencentTokenPlanProviderURL = "https://tokenhub.tencentmaas.com/plan/v3"
+const tencentTokenPlanDefaultModel = "auto"
+
+// China Telecom TeleAI (星辰大模型) on the public MaaS gateway.
+// Distinct from 讯飞星辰. Chat Completions live at {base}/chat/completions.
+const xingchenProviderName = "\u661f\u8fb0\u5927\u6a21\u578b"
+const xingchenProviderURL = "https://api-maas.teleai.com.cn/v1"
+const xingchenDefaultModel = "TeleChat3-438B-A24B"
+const xingchenLiteModel = "Xing4.0-29B-A4B"
+const xingchenContextLength = 256000
 
 const (
 	maclawLLMProfileAssistant = "assistant"
@@ -695,6 +711,17 @@ func canonicalVolcengineTokenPlanProviderName(name string) string {
 	return name
 }
 
+func devinProvider() corelib.MaclawLLMProvider {
+	return corelib.MaclawLLMProvider{
+		Name:          "Devin",
+		URL:           windsurf.DefaultAPIServer,
+		Protocol:      "openai",
+		AuthType:      "oauth",
+		ContextLength: 128000,
+		TimeoutSec:    corelib.DefaultLLMTimeoutSec,
+	}
+}
+
 func defaultOpenCodeProvider() corelib.MaclawLLMProvider {
 	return corelib.MaclawLLMProvider{
 		Name:          configfile.ExternalAgentProviderOpenCode,
@@ -872,12 +899,15 @@ func defaultMaclawLLMProviders() []corelib.MaclawLLMProvider {
 		// OpenAI request and model-discovery path.
 		{Name: "xAI-Grok", URL: "https://api.x.ai/v1", Model: "grok-4.6", Protocol: "openai", AuthType: "oauth", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses"},
 		defaultOpenCodeProvider(),
+		devinProvider(),
 		{Name: zhipuCodingProviderName, URL: "https://open.bigmodel.cn/api/anthropic", Model: zhipuCodingDefaultModel, Protocol: "anthropic", AgentType: "claude code 2.0", ContextLength: 400000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "MiniMax", URL: "https://api.minimaxi.com/v1", Model: "MiniMax-M2.7", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "Kimi", URL: "https://api.kimi.com/coding/v1", Model: "kimi-for-coding", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, AgentType: "claude code 2.0"},
 		kimiCodeProvider(),
 		{Name: volcengineAgentPlanProviderName, URL: "https://ark.cn-beijing.volces.com/api/plan/v3", Model: "glm-5.2", Protocol: "openai", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec, WireAPI: "responses"},
+		{Name: tencentTokenPlanProviderName, URL: tencentTokenPlanProviderURL, Model: tencentTokenPlanDefaultModel, Protocol: "openai", ContextLength: 128000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		{Name: "讯飞星辰", URL: "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2", Model: "astron-code-latest", ContextLength: 110000, TimeoutSec: corelib.DefaultLLMTimeoutSec},
+		{Name: xingchenProviderName, URL: xingchenProviderURL, Model: xingchenDefaultModel, Models: []string{xingchenDefaultModel, xingchenLiteModel}, Protocol: "openai", ContextLength: xingchenContextLength, TimeoutSec: corelib.DefaultLLMTimeoutSec},
 		workbuddyProvider(workbuddy.ChinaProfile()),
 		workbuddyProvider(workbuddy.GlobalProfile()),
 		qoderProvider(qoder.CNProfile()),
@@ -982,6 +1012,25 @@ func (a *App) GetMaclawLLMProviders() struct {
 		if !providers[i].IsCustom {
 			if u, ok := defaultURL[providers[i].Name]; ok {
 				providers[i].URL = u
+			}
+			// Official catalogs (星辰 flagship + lite) stay selectable when a
+			// TUI setup saved the provider with only the default model id.
+			if d, ok := defaultProvider[providers[i].Name]; ok && len(d.Models) > 0 {
+				merged := appendMissingModelIDs(providers[i].Models, d.Models)
+				if len(merged) != len(providers[i].Models) {
+					providers[i].Models = merged
+				}
+			}
+			if providers[i].Name == "Devin" {
+				providers[i].AuthType = "oauth"
+				providers[i].Protocol = "openai"
+				key := strings.TrimSpace(providers[i].Key)
+				if key == "" {
+					key = strings.TrimSpace(providers[i].OAuthAccessToken)
+				}
+				// A session token is rejected by server.codeium.com. Keep the
+				// host that can actually use the saved credential.
+				providers[i].URL = windsurf.CanonicalAPIServer(key, providers[i].URL)
 			}
 			if providers[i].Name == "xAI-Grok" {
 				if d, ok := defaultProvider[providers[i].Name]; ok {
@@ -2150,6 +2199,33 @@ func projectAssistantProfileCompatibility(cfg *corelib.AppConfig, profiles corel
 	cfg.MaclawLLMContextLength = provider.ContextLength
 	cfg.MaclawLLMTimeoutSec = provider.TimeoutSec
 	return nil
+}
+
+func appendMissingModelIDs(existing, extras []string) []string {
+	out := make([]string, 0, len(existing)+len(extras))
+	seen := make(map[string]struct{}, cap(out))
+	add := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		key := strings.ToLower(value)
+		if _, exists := seen[key]; exists {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	for _, value := range existing {
+		add(value)
+	}
+	for _, value := range extras {
+		add(value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func mergeProviderModelCatalog(provider *corelib.MaclawLLMProvider, extra ...string) {
@@ -6647,6 +6723,30 @@ func (a *App) fetchProviderModels(baseURL, apiKey, protocol, userAgent string, s
 	baseURL = strings.TrimRight(strings.TrimSpace(baseURL), "/")
 	apiKey = strings.TrimSpace(apiKey)
 	protocol = strings.TrimSpace(protocol)
+
+	if windsurf.MatchesProvider("", baseURL) {
+		if apiKey == "" {
+			apiKey = a.resolveAPIKeyForModelFetch(baseURL)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		defer cancel()
+		log.Printf("[FetchProviderModels] devin catalog url=%s keyLen=%d", baseURL, len(apiKey))
+		models, err := windsurf.ListModels(ctx, baseURL, apiKey)
+		if err != nil {
+			log.Printf("[FetchProviderModels] devin catalog failed: %v", err)
+			return nil, err
+		}
+		items := make([]ProviderModelItem, 0, len(models))
+		for _, model := range models {
+			name := model.Name
+			if name == "" {
+				name = model.ID
+			}
+			items = append(items, ProviderModelItem{ID: model.ID, Name: name})
+		}
+		log.Printf("[FetchProviderModels] devin catalog: %d models", len(items))
+		return items, nil
+	}
 
 	if profile, ok := workbuddy.ProfileByURL(baseURL); ok {
 		if apiKey == "" {
