@@ -5,4 +5,9 @@ xsetroot -solid '#d6d9de'
 /usr/bin/maclaw-theme-variant
 pgrep -u "$(id -u)" -x picom >/dev/null || picom --config /etc/xdg/picom.conf --daemon
 sleep 1
-pgrep -u "$(id -u)" -x plank >/dev/null || exec plank
+# Bot displays run their own Plank (per-bot dock); only a dock on this
+# DISPLAY counts.
+for p in $(pgrep -u "$(id -u)" -x plank); do
+  tr '\0' '\n' </proc/$p/environ 2>/dev/null | grep -qx "DISPLAY=$DISPLAY" && exit 0
+done
+exec plank

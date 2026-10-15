@@ -67,7 +67,7 @@ RUN set -eux; \
       xauth x11-utils x11-xserver-utils xclip xsel libfuse2 file xxd \
       scrot imagemagick at-spi2-core python3-pyatspi wmctrl \
       plank picom feh arc-theme papirus-icon-theme dconf-cli dconf-gsettings-backend \
-      libreoffice-writer libreoffice-gtk3 libreoffice-l10n-zh-cn libreoffice-style-breeze fonts-noto-core; \
+      libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-gtk3 libreoffice-l10n-zh-cn libreoffice-style-breeze fonts-noto-core; \
     sed -i 's/^# *\(zh_CN.UTF-8\)/\1/; s/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen; \
     locale-gen; \
     ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime; echo Asia/Shanghai > /etc/timezone; \

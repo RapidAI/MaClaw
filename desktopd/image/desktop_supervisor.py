@@ -13,6 +13,7 @@ import json
 import os
 import re
 import secrets
+import shlex
 import shutil
 import socket
 import struct
@@ -2569,7 +2570,7 @@ def desktop_part(pid, key, display):
         # A bot display runs only the window manager; the pid key stays
         # "fluxbox" (the window session) like the owner's desktop.
         return "fluxbox" if proc_on_display(pid, display) else ""
-    if names[0] == "xfce4-panel" and display != DISPLAY_MIN:
+    if names[0] in ("xfce4-panel", BOT_DOCK_NAME) and display != DISPLAY_MIN:
         return "panel" if proc_on_display(pid, display) else ""
     if names[0] == "fcitx5" and display != DISPLAY_MIN:
         return "fcitx" if proc_on_display(pid, display) else ""
@@ -3348,13 +3349,135 @@ def set_bot_wallpaper(display, log):
         pass
 
 
-def ensure_bot_panel(key, display, pids=None, log=None):
-    """Wallpaper and bottom window list on a running bot display.
+BOT_DOCK_NAME = "maclaw-botdock"
+BOT_DOCK_SETTINGS = """[net/launchpad/plank/docks/dock1]
+position='bottom'
+alignment='center'
+hide-mode='none'
+icon-size=40
+zoom-enabled=false
+theme='MaClaw-Bot'
+show-dock-item=false
+lock-items=true
+pressure-reveal=false
+dock-items=[%s]
+"""
+# MaClaw-Light without transparency: a bot display has no compositor (picom
+# alone would cost ~27 MB), and Plank's translucent fill is drawn over black
+# there, which showed a gray box. Same light colours, opaque, square.
+BOT_DOCK_THEME = """# MaClaw bot dock (MaClaw-Light, opaque). Written by /desktop_supervisor.py.
+[PlankTheme]
+TopRoundness=0
+BottomRoundness=0
+LineWidth=1
+OuterStrokeColor=200;;203;;210;;255
+FillStartColor=250;;250;;252;;255
+FillEndColor=240;;241;;245;;255
+InnerStrokeColor=255;;255;;255;;255
 
-    Started at most once per BOT_PANEL_RETRY_SECONDS, so a panel that keeps
-    crashing is not respawned every watcher tick. Never touches Chromium.
+[PlankDockTheme]
+HorizPadding=6
+TopPadding=2
+BottomPadding=3
+ItemPadding=8
+IndicatorSize=4
+IconShadowSize=0
+UrgentBounceHeight=0
+LaunchBounceHeight=0
+FadeOpacity=1
+ClickTime=120
+UrgentBounceTime=0
+LaunchBounceTime=0
+ActiveTime=150
+SlideTime=150
+FadeTime=150
+HideTime=150
+GlowSize=0
+GlowTime=0
+GlowPulseTime=2000
+"""
+# (dock item, Name, Icon, StartupWMClass, command). {profile} and {lo} are
+# this bot's Chromium profile and LibreOffice user dir. A launcher is shown
+# only when its program is installed.
+BOT_DOCK_APPS = (
+    ("browser", "Chromium", "chromium", "chromium ({profile})", ["/usr/bin/maclaw-browser"], "/usr/bin/maclaw-browser"),
+    ("files", "文件管理器", "org.xfce.thunar", "Thunar", ["thunar"], "thunar"),
+    ("terminal", "终端", "org.xfce.terminal", "Xfce4-terminal", ["xfce4-terminal"], "xfce4-terminal"),
+    ("writer", "LibreOffice Writer", "libreoffice-writer", "libreoffice-writer", ["libreoffice", "--writer", "-env:UserInstallation=file://{lo}"], "/usr/share/applications/libreoffice-writer.desktop"),
+    ("calc", "LibreOffice Calc", "libreoffice-calc", "libreoffice-calc", ["libreoffice", "--calc", "-env:UserInstallation=file://{lo}"], "/usr/share/applications/libreoffice-calc.desktop"),
+    ("impress", "LibreOffice Impress", "libreoffice-impress", "libreoffice-impress", ["libreoffice", "--impress", "-env:UserInstallation=file://{lo}"], "/usr/share/applications/libreoffice-impress.desktop"),
+)
+
+
+BOT_DOCK_IDS = {'browser': 'maclaw-bot-browser', 'files': 'thunar', 'terminal': 'xfce4-terminal', 'writer': 'libreoffice-writer', 'calc': 'libreoffice-calc', 'impress': 'libreoffice-impress'}
+
+
+def bot_app_env_script(display):
+    """Launcher wrapper: what the dock starts runs like the bot's Chromium.
+
+    The dock itself runs on a private bus, with its own config dir and
+    without the accessibility bridge. Programs started from it must not
+    inherit that: they join the bot display's session bus (one Thunar or
+    terminal per bot display, not the owner's), use the desktop user's
+    config and stay readable over AT-SPI.
     """
-    if display == DISPLAY_MIN or shutil.which("xfce4-panel") is None or shutil.which("dbus-daemon") is None:
+    env = desktop_env(display)
+    lines = ["#!/bin/sh", "# Written by /desktop_supervisor.py: dock launcher for bot display :%d." % display,
+             "unset NO_AT_BRIDGE GSETTINGS_BACKEND XDG_CONFIG_DIRS SESSION_MANAGER"]
+    for name in ("HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME", "PATH", "DISPLAY", "QT_ACCESSIBILITY", "QT_LINUX_ACCESSIBILITY_ALWAYS_ON"):
+        lines.append("export %s=%s" % (name, shlex.quote(env[name])))
+    lines.append("export DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/.maclaw-dbus-%d" % display)
+    lines.append("export XDG_SESSION_TYPE=x11 XDG_CURRENT_DESKTOP=XFCE")
+    lines.append('exec "$@"')
+    return "\n".join(lines) + "\n"
+
+
+def write_bot_dock(key, display, cfg):
+    """Settings, launchers and desktop entries of one bot display's dock."""
+    profile = ROOT / key / "profile"
+    lo = ROOT / key / "libreoffice"
+    run = cfg / "run"
+    write_if_changed(run, bot_app_env_script(display), 0o700)
+    apps = cfg / "data" / "applications"
+    launchers = cfg / "plank" / "dock1" / "launchers"
+    items = []
+    for item, name, icon, wmclass, argv, needs in BOT_DOCK_APPS:
+        if not (os.path.exists(needs) or shutil.which(needs)):
+            continue
+        cmd = " ".join(shlex.quote(part.format(profile=profile, lo=lo)) for part in [str(run)] + argv)
+        desktop = "\n".join([
+            "[Desktop Entry]", "Type=Application", "Name=%s" % name, "Icon=%s" % icon,
+            "Exec=%s" % cmd, "StartupWMClass=%s" % wmclass.format(profile=profile), "Terminal=false", "",
+        ])
+        # The system's desktop id (shadowed in the dock's XDG_DATA_HOME), so
+        # bamf puts a started window on its launcher instead of a new icon.
+        path = apps / ("%s.desktop" % BOT_DOCK_IDS.get(item, "maclaw-bot-" + item))
+        write_if_changed(path, desktop, 0o600)
+        write_if_changed(launchers / ("%s.dockitem" % item), "[PlankDockItemPreferences]\nLauncher=file://%s\n" % path, 0o600)
+        items.append("'%s.dockitem'" % item)
+    write_if_changed(cfg / "data" / "plank" / "themes" / "MaClaw-Bot" / "dock.theme", BOT_DOCK_THEME, 0o600)
+    write_if_changed(cfg / "glib-2.0" / "settings" / "keyfile", BOT_DOCK_SETTINGS % ", ".join(items), 0o600)
+    link = cfg / BOT_DOCK_NAME
+    if not link.is_symlink():
+        try:
+            link.unlink()
+        except OSError:
+            pass
+        # Started under its own name: maclaw-theme's "pgrep -x plank" must
+        # keep seeing only the owner's dock.
+        os.symlink(shutil.which("plank"), str(link))
+
+
+def ensure_bot_panel(key, display, pids=None, log=None):
+    """Wallpaper and bottom dock (or tasklist panel) on a running bot display.
+
+    Plank, styled like the owner's soft25 dock, with this bot's launchers;
+    xfce4-panel with a tasklist when Plank is not installed. Started at most
+    once per BOT_PANEL_RETRY_SECONDS, so a dock that keeps crashing is not
+    respawned every watcher tick. Never touches Chromium.
+    """
+    dock = shutil.which("plank") is not None
+    if display == DISPLAY_MIN or shutil.which("dbus-daemon") is None or not (dock or shutil.which("xfce4-panel")):
         return
     if os.environ.get("MACLAW_BOT_PANEL", "1").strip() == "0":
         return
@@ -3375,7 +3498,10 @@ def ensure_bot_panel(key, display, pids=None, log=None):
     set_bot_wallpaper(display, log)
     cfg = home / "panel-config"
     try:
-        write_if_changed(cfg / "xfce4" / "xfconf" / "xfce-perchannel-xml" / "xfce4-panel.xml", BOT_PANEL_XML, 0o600)
+        if dock:
+            write_bot_dock(key, display, cfg)
+        else:
+            write_if_changed(cfg / "xfce4" / "xfconf" / "xfce-perchannel-xml" / "xfce4-panel.xml", BOT_PANEL_XML, 0o600)
         write_if_changed(cfg / "gtk-3.0" / "gtk.css", BOT_PANEL_CSS, 0o600)
     except OSError as exc:
         print("bot panel config: %s" % exc, file=sys.stderr)
@@ -3384,6 +3510,9 @@ def ensure_bot_panel(key, display, pids=None, log=None):
     env["XDG_CONFIG_HOME"] = str(cfg)
     env["XDG_CONFIG_DIRS"] = str(cfg)
     env["NO_AT_BRIDGE"] = "1"
+    if dock:
+        env["XDG_DATA_HOME"] = str(cfg / "data")
+        env["GSETTINGS_BACKEND"] = "keyfile"
     for name in ("QT_ACCESSIBILITY", "QT_LINUX_ACCESSIBILITY_ALWAYS_ON", "SESSION_MANAGER"):
         env.pop(name, None)
     bus = bot_panel_bus(display)
@@ -3392,15 +3521,16 @@ def ensure_bot_panel(key, display, pids=None, log=None):
         os.unlink(bus)
     except OSError:
         pass
-    # xfconfd is started by this bus and inherits its environment (the
-    # panel's own config dir).
+    # bamfdaemon (Plank) or xfconfd (xfce4-panel) is started by this bus and
+    # inherits its environment: the dock's own config dir.
     pids["panelbus"] = spawn(["dbus-daemon", "--session", "--nofork", "--nopidfile", "--address=unix:path=%s" % bus], env, log).pid
     for _ in range(40):
         if Path(bus).exists():
             break
         time.sleep(0.05)
     env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=%s" % bus
-    pids["panel"] = spawn(["xfce4-panel", "--disable-wm-check"], env, log).pid
+    argv = [str(cfg / BOT_DOCK_NAME)] if dock else ["xfce4-panel", "--disable-wm-check"]
+    pids["panel"] = spawn(argv, env, log).pid
     write_pids(key, pids)
 
 
