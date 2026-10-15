@@ -458,6 +458,7 @@ func NewRouter(
 	mux.HandleFunc("GET /api/v1/bots/{id}/desktop", GetBotDesktopHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/desktop", PostBotDesktopWatchHandler(botSvc, identity))
 	mux.HandleFunc("POST /api/v1/bots/{id}/desktop/handback", PostBotDesktopHandBackHandler(botSvc, identity))
+	mux.HandleFunc("PUT /api/v1/bots/{id}/desktop-mode", PutBotDesktopModeUserHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/bots/llm", GetBotLLMHandler(botSvc, identity))
 	mux.HandleFunc("PUT /api/v1/bots/llm", PutBotLLMHandler(botSvc, identity))
 	mux.HandleFunc("GET /api/v1/desktop-handoff/{token}/{rest...}", GetDesktopHandoffHandler(botSvc))

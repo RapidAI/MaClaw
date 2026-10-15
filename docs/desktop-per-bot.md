@@ -28,7 +28,23 @@ keyboard) by it, so two bots of one person never share a lock or a picture.
 The display is always derived by desktopd from the bot id; a client cannot
 name a display for a bot.
 
-## Admin: switch a bot
+## Switch a bot (owner, no admin needed)
+
+The GUI switch uses the person's normal login token, like the other
+`/api/v1/bots/{id}/desktop` calls. Only the bot's owner can switch it
+(another user's bot answers 404):
+
+```
+PUT /api/v1/bots/{bot_id}/desktop-mode
+Authorization: Bearer <the person's login token>
+{"desktop_mode": "isolated"}   # or "shared"
+-> 200 {"id": "...", "desktop_mode": "isolated"}
+```
+
+`GET /api/v1/bots` (and the `PATCH /api/v1/bots/{id}` response) include
+`"desktop_mode": "shared"|"isolated"` for every bot.
+
+## Admin: switch any bot of the tenant
 
 ```
 PUT /api/admin/bots/{bot_id}/desktop-mode     (tenant admin)

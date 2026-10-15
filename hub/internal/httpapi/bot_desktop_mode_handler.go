@@ -96,3 +96,31 @@ func PostBotDesktopHandBackHandler(svc *botmgmt.Service, identity botAuthenticat
 		writeJSON(w, http.StatusOK, map[string]any{"handed_back": true, "reply": admission.Reply})
 	}
 }
+
+// PutBotDesktopModeUserHandler PUT /api/v1/bots/{id}/desktop-mode
+// {"desktop_mode":"isolated"|"shared"}: the owner switches their own bot.
+// No admin token is needed; another user's bot answers 404.
+func PutBotDesktopModeUserHandler(svc *botmgmt.Service, identity botAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, ok := botMachine(w, r, identity)
+		if !ok || svc == nil {
+			if ok {
+				writeError(w, http.StatusServiceUnavailable, "SETTINGS_UNAVAILABLE", "bot settings store is unavailable")
+			}
+			return
+		}
+		var in struct {
+			DesktopMode string `json:"desktop_mode"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 4096)).Decode(&in); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_BOT_SETTINGS", "invalid bot settings")
+			return
+		}
+		bot, err := svc.SetBotDesktopModeForUser(r.Context(), principal.TenantID, principal.UserID, r.PathValue("id"), in.DesktopMode)
+		if err != nil {
+			writeBotUserError(w, r, principal, err, "")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"id": bot.ID, "desktop_mode": bot.DesktopMode})
+	}
+}

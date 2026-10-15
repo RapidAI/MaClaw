@@ -154,3 +154,35 @@ func (s *Service) HandBackDesktop(ctx context.Context, tenantID, userID, botID s
 	s.releaseDesktopKeyboard(tenantID, dUser, bot.ID)
 	return nil
 }
+
+// withDesktopModeView spells out the default for API responses: a stored
+// empty mode is "shared".
+func withDesktopModeView(bot Bot) Bot {
+	if botIsolated(bot) {
+		bot.DesktopMode = desktop.BotDesktopModeIsolated
+	} else {
+		bot.DesktopMode = desktop.BotDesktopModeShared
+	}
+	return bot
+}
+
+// SetBotDesktopModeForUser is SetBotDesktopMode for the bot's own owner.
+// Another user's bot is not found.
+func (s *Service) SetBotDesktopModeForUser(ctx context.Context, tenantID, userID, botID, mode string) (Bot, error) {
+	if _, err := NormalizeDesktopMode(mode); err != nil {
+		return Bot{}, err
+	}
+	rec, err := s.loadForUser(ctx, tenantID, userID)
+	if err != nil {
+		return Bot{}, err
+	}
+	index := indexOf(rec.Bots, botID)
+	if index < 0 || rec.Bots[index].OwnerUserID != strings.TrimSpace(userID) || strings.TrimSpace(userID) == "" {
+		return Bot{}, ErrNotFound
+	}
+	bot, err := s.SetBotDesktopMode(ctx, tenantID, botID, mode)
+	if err != nil {
+		return bot, err
+	}
+	return withDesktopModeView(bot), nil
+}

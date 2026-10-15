@@ -163,7 +163,7 @@ func (s *Service) BotsForUser(ctx context.Context, tenantID, userID string) ([]B
 	out := make([]Bot, 0)
 	for _, bot := range rec.Bots {
 		if bot.OwnerUserID == userID {
-			out = append(out, bot)
+			out = append(out, withDesktopModeView(bot))
 		}
 	}
 	return out, nil
@@ -185,7 +185,11 @@ func (s *Service) UpdateBotForUser(ctx context.Context, tenantID, userID, botID,
 	if index < 0 || rec.Bots[index].OwnerUserID != userID {
 		return Bot{}, ErrNotFound
 	}
-	return s.UpdateBot(ctx, tenantID, botID, name, description)
+	bot, err := s.UpdateBot(ctx, tenantID, botID, name, description)
+	if err != nil {
+		return bot, err
+	}
+	return withDesktopModeView(bot), nil
 }
 
 func (s *Service) DeleteBotForUser(ctx context.Context, tenantID, userID, botID string) error {
