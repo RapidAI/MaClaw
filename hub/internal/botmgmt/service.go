@@ -89,6 +89,10 @@ type record struct {
 	// principal so the choice survives a principal that has not been
 	// provisioned yet; it is applied on that owner's first bot open.
 	OwnerLLMOverrides map[string]*ownerLLMOverride `json:"owner_llm_overrides,omitempty"`
+	// OwnerDesktopModeDefaults is the desktop_mode a new bot of that owner
+	// starts with, keyed by hub user id. Absent means shared, as before; it
+	// does not change existing bots or other owners.
+	OwnerDesktopModeDefaults map[string]string `json:"owner_desktop_mode_defaults,omitempty"`
 }
 
 // SettingsView is the admin payload. The access token is never returned.

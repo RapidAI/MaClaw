@@ -186,3 +186,44 @@ func (s *Service) SetBotDesktopModeForUser(ctx context.Context, tenantID, userID
 	}
 	return withDesktopModeView(bot), nil
 }
+
+// ownerDefaultDesktopMode is the mode a new bot of ownerUserID starts with.
+func ownerDefaultDesktopMode(rec record, ownerUserID string) string {
+	ownerUserID = strings.TrimSpace(ownerUserID)
+	if ownerUserID == "" {
+		return ""
+	}
+	mode, err := NormalizeDesktopMode(rec.OwnerDesktopModeDefaults[ownerUserID])
+	if err != nil {
+		return ""
+	}
+	return mode
+}
+
+// SetOwnerDesktopModeDefault sets the desktop_mode new bots of one owner
+// start with. "shared" or "" removes the default. Existing bots keep theirs.
+func (s *Service) SetOwnerDesktopModeDefault(ctx context.Context, tenantID, ownerUserID, mode string) error {
+	mode, err := NormalizeDesktopMode(mode)
+	if err != nil {
+		return err
+	}
+	ownerUserID = strings.TrimSpace(ownerUserID)
+	if ownerUserID == "" {
+		return fmt.Errorf("%w: user is required", ErrInvalidInput)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	if mode == "" {
+		delete(rec.OwnerDesktopModeDefaults, ownerUserID)
+	} else {
+		if rec.OwnerDesktopModeDefaults == nil {
+			rec.OwnerDesktopModeDefaults = map[string]string{}
+		}
+		rec.OwnerDesktopModeDefaults[ownerUserID] = mode
+	}
+	return s.save(ctx, tenantID, rec)
+}

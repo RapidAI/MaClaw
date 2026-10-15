@@ -1670,6 +1670,35 @@ func TestBotsOfOneUserAreThatUsersInstances(t *testing.T) {
 	if _, err := svc.PostMessage(ctx, "tenant-a", "alice", first.ID, "go"); err != nil {
 		t.Fatal(err)
 	}
+
+	// A per-owner default applies only to that owner's new bots.
+	if first.DesktopMode != "" || other.DesktopMode != "" {
+		t.Fatalf("default modes first=%q other=%q", first.DesktopMode, other.DesktopMode)
+	}
+	if err := svc.SetOwnerDesktopModeDefault(ctx, "tenant-a", "alice", "isolated"); err != nil {
+		t.Fatal(err)
+	}
+	third, err := svc.CreateBotForUser(ctx, "tenant-a", "alice", "three", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bobs, err := svc.CreateBotForUser(ctx, "tenant-a", "bob", "bob two", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.DesktopMode != "isolated" || bobs.DesktopMode != "" {
+		t.Fatalf("owner default: alice=%q bob=%q", third.DesktopMode, bobs.DesktopMode)
+	}
+	if mode, _ := svc.BotDesktopMode(ctx, "tenant-a", "alice", first.ID); mode != "shared" {
+		t.Fatalf("existing bot changed to %q", mode)
+	}
+	if err := svc.SetOwnerDesktopModeDefault(ctx, "tenant-a", "alice", "shared"); err != nil {
+		t.Fatal(err)
+	}
+	fourth, err := svc.CreateBotForUser(ctx, "tenant-a", "alice", "four", "")
+	if err != nil || fourth.DesktopMode != "" {
+		t.Fatalf("cleared default: mode=%q err=%v", fourth.DesktopMode, err)
+	}
 }
 
 func TestDesktopWatchClearsWhenTheDesktopStops(t *testing.T) {

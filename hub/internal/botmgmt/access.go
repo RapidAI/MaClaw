@@ -1236,6 +1236,7 @@ func (s *Service) createBot(ctx context.Context, tenantID, ownerUserID, name, de
 		InstanceID:  strings.TrimSpace(created.ID),
 		OwnerUserID: ownerUserID,
 		CreatedAt:   s.now().UTC().Format(time.RFC3339),
+		DesktopMode: ownerDefaultDesktopMode(rec, ownerUserID),
 	}
 	rec.Bots = append(rec.Bots, bot)
 	if err := s.save(ctx, tenantID, rec); err != nil {
