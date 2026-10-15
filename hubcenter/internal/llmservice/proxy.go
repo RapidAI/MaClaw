@@ -1834,6 +1834,7 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 		Model:              upstreamModel,
 		Protocol:           provider.Protocol,
 		WireAPI:            provider.WireAPI,
+		AgentType:          RequestAgentType(provider.AgentType),
 		UpstreamTimeoutSec: provider.UpstreamTimeoutSec,
 	}.MaclawLLMConfig()
 	cfg = corelib.BindOpenCodeSessionID(ctx, cfg)
@@ -4116,6 +4117,7 @@ func forwardToProviderAttempts(ctx context.Context, client *http.Client, provide
 		Model:                    upstreamModel,
 		Protocol:                 provider.Protocol,
 		WireAPI:                  provider.WireAPI,
+		AgentType:                RequestAgentType(provider.AgentType),
 		UpstreamTimeoutSec:       provider.UpstreamTimeoutSec,
 		MaxConcurrency:           provider.MaxConcurrency,
 		MaxQueueWaiters:          provider.MaxQueueWaiters,

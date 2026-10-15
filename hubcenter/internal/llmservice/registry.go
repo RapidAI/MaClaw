@@ -13,6 +13,10 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
+	"github.com/RapidAI/CodeClaw/corelib/lobsterai"
+	"github.com/RapidAI/CodeClaw/corelib/qoder"
+	"github.com/RapidAI/CodeClaw/corelib/trae"
+	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
@@ -400,6 +404,7 @@ func normalizeRegistry(reg *Registry) {
 	for i := range reg.Providers {
 		normalizeProviderGatewayLimits(&reg.Providers[i])
 		normalizeProviderAccessScope(&reg.Providers[i])
+		normalizeProviderAgentType(&reg.Providers[i])
 		normalizeProviderAuth(&reg.Providers[i])
 		reg.Providers[i].NormalizeBilling()
 	}
@@ -470,6 +475,155 @@ func normalizeProviderAccessScope(provider *llmpool.ProviderConfig) {
 		provider.AllowedNodeIDs = llmpool.NormalizeAllowedNodeIDs(provider.AllowedNodeIDs)
 	}
 	provider.AllowedNodes = ""
+}
+
+// normalizeProviderAgentType trims the User-Agent and drops characters that
+// cannot appear in an HTTP header. A longer value is cut to 128 characters.
+func normalizeProviderAgentType(provider *llmpool.ProviderConfig) {
+	if provider == nil {
+		return
+	}
+	raw := strings.TrimSpace(provider.AgentType)
+	if raw == "" {
+		provider.AgentType = ""
+		return
+	}
+	var b strings.Builder
+	b.Grow(len(raw))
+	for _, r := range raw {
+		if r < 0x20 || r == 0x7f {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	out := strings.TrimSpace(b.String())
+	runes := []rune(out)
+	if len(runes) > 128 {
+		out = string(runes[:128])
+	}
+	provider.AgentType = canonicalProviderAgentType(out)
+}
+
+// RequestAgentType is the User-Agent a dial or probe should send. It matches
+// what a save would store, so a legacy value still in memory uses the same
+// client name as the editor.
+func RequestAgentType(raw string) string {
+	provider := llmpool.ProviderConfig{AgentType: raw}
+	normalizeProviderAgentType(&provider)
+	return provider.AgentType
+}
+
+// canonicalProviderAgentType maps the editor's default and the legacy client
+// names onto the value upstream actually sees. A custom string, including the
+// lowercase "opencode" identity, is kept as typed.
+func canonicalProviderAgentType(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "openclaw", "__custom__":
+		return ""
+	case "claude code", "claude-code/2.0.0", "claude code 2.0":
+		return "claude code 2.0"
+	case "tigerclaw", "qagent":
+		return "QAgent"
+	case "zcode":
+		return "ZCode"
+	case "codex":
+		return "Codex"
+	case "cline":
+		return "Cline"
+	case "roo code":
+		return "Roo Code"
+	case "kilo code":
+		return "Kilo Code"
+	case "cursor":
+		return "Cursor"
+	case "crush":
+		return "Crush"
+	case "goose":
+		return "Goose"
+	case "workbuddy", "codebuddy":
+		return workbuddy.UserAgent
+	case "qoder":
+		return qoder.UserAgent
+	case "trae":
+		return traeChatUserAgent()
+	case "lobsterai", "lobster":
+		return lobsterai.UserAgent
+	case "opencode":
+		// The lowercase spelling is a separate wire identity. Any other
+		// capitalization is the OpenCode preset.
+		if strings.TrimSpace(raw) == "opencode" {
+			return "opencode"
+		}
+		return "OpenCode"
+	default:
+		if ua, ok := canonicalVendorUserAgent(strings.TrimSpace(raw)); ok {
+			return ua
+		}
+		return strings.TrimSpace(raw)
+	}
+}
+
+// traeChatUserAgent is the User-Agent Trae chat and its model catalog send.
+// Both realms currently share that client version.
+func traeChatUserAgent() string {
+	return trae.UserAgentPrefix + trae.CNProfile().ClientVersion
+}
+
+// canonicalVendorUserAgent rewrites a numbered build of a vendor client onto
+// the User-Agent that client sends now. A custom string that only shares the
+// prefix, such as "qoder/my-agent", stays as typed.
+func canonicalVendorUserAgent(raw string) (string, bool) {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	switch {
+	case vendorVersionUA(lower, "cli/", "codebuddy/"):
+		return workbuddy.UserAgent, true
+	case vendorVersionUA(lower, "qoder/", ""):
+		return qoder.UserAgent, true
+	case vendorVersionUA(lower, "trae/", ""):
+		return traeChatUserAgent(), true
+	case vendorVersionUA(lower, "lobsterai/", ""):
+		return lobsterai.UserAgent, true
+	default:
+		return "", false
+	}
+}
+
+// vendorVersionUA reports a "<prefix><version>" client id, or
+// "<prefix><version> <marker><version>" when marker is set.
+func vendorVersionUA(lower, prefix, marker string) bool {
+	if prefix == "" || !strings.HasPrefix(lower, prefix) {
+		return false
+	}
+	rest := lower[len(prefix):]
+	if marker == "" {
+		return dottedVersion(rest)
+	}
+	version, tail, ok := strings.Cut(rest, " ")
+	if !ok || !dottedVersion(version) || !strings.HasPrefix(tail, marker) {
+		return false
+	}
+	return dottedVersion(tail[len(marker):])
+}
+
+func dottedVersion(value string) bool {
+	if value == "" {
+		return false
+	}
+	sawDigit := false
+	for i := 0; i < len(value); i++ {
+		switch value[i] {
+		case '.':
+			if !sawDigit || i == len(value)-1 {
+				return false
+			}
+			sawDigit = false
+		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+			sawDigit = true
+		default:
+			return false
+		}
+	}
+	return sawDigit
 }
 
 func normalizeProviderGatewayLimits(provider *llmpool.ProviderConfig) {
@@ -873,6 +1027,12 @@ func mergeUnspecifiedProviderFields(existing, incoming llmpool.ProviderConfig) l
 	}
 	if strings.TrimSpace(incoming.WireAPI) == "" {
 		incoming.WireAPI = existing.WireAPI
+	}
+	// The editor always sends a User-Agent, including "openclaw" for the
+	// default. An empty value was omitted by a partial update, so keep the
+	// stored identity instead of falling back to openclaw.
+	if strings.TrimSpace(incoming.AgentType) == "" {
+		incoming.AgentType = existing.AgentType
 	}
 	if incoming.ResolutionTier == 0 {
 		incoming.ResolutionTier = existing.ResolutionTier

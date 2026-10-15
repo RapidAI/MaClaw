@@ -54,6 +54,7 @@ func workBuddyMaclawConfig(provider *llmpool.ProviderConfig, model string) (core
 		Protocol:              "openai",
 		ProviderName:          profile.Name,
 		TimeoutSec:            provider.UpstreamTimeoutSec,
+		AgentType:             RequestAgentType(provider.AgentType),
 		WorkBuddyOrigin:       profile.Origin,
 		WorkBuddyUserID:       strings.TrimSpace(provider.WorkBuddyUserID),
 		WorkBuddyEnterpriseID: strings.TrimSpace(provider.WorkBuddyEnterpriseID),

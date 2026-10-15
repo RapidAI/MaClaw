@@ -2,10 +2,14 @@ package workbuddy
 
 import (
 	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -79,6 +83,78 @@ func setOrAbsent(h http.Header, name, absentName, value string) {
 		return
 	}
 	h.Set(absentName, "1")
+}
+
+// ApplyConversationHeaders fills the identifiers www.workbuddy.ai requires on
+// hy3 and deepseek. The official client sends them on every call. A Token Bank
+// share has no account session to copy, and a health probe does not either, so
+// a missing X-Conversation-ID comes back as HTTP 400. Each call gets its own
+// ids: a shared key must not reuse one conversation across callers. A value
+// already on the request is kept. Callers decide which host and model need it.
+func ApplyConversationHeaders(h http.Header) {
+	if h == nil || conversationHeadersComplete(h) {
+		return
+	}
+	raw := conversationEntropy()
+	setHeaderIfEmpty(h, "X-Conversation-ID", formatUUID(raw[0:16]))
+	setHeaderIfEmpty(h, "X-Conversation-Request-ID", hex.EncodeToString(raw[16:32]))
+	setHeaderIfEmpty(h, "X-Conversation-Message-ID", hex.EncodeToString(raw[32:48]))
+	setHeaderIfEmpty(h, "X-Request-ID", hex.EncodeToString(raw[48:64]))
+}
+
+func conversationHeadersComplete(h http.Header) bool {
+	for _, name := range []string{
+		"X-Conversation-ID",
+		"X-Conversation-Request-ID",
+		"X-Conversation-Message-ID",
+		"X-Request-ID",
+	} {
+		if strings.TrimSpace(h.Get(name)) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// modelNeedsConversationID reports the international models that reject a chat
+// call without X-Conversation-ID. Other models on the same host still accept
+// the previous request shape.
+func modelNeedsConversationID(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(model, "hy3") || strings.HasPrefix(model, "deepseek")
+}
+
+func setHeaderIfEmpty(h http.Header, name, value string) {
+	if strings.TrimSpace(h.Get(name)) != "" || strings.TrimSpace(value) == "" {
+		return
+	}
+	h.Set(name, value)
+}
+
+func conversationEntropy() []byte {
+	buf := make([]byte, 64)
+	if _, err := rand.Read(buf); err == nil {
+		return buf
+	}
+	now := strconv.FormatInt(time.Now().UnixNano(), 10)
+	for i := 0; i < 4; i++ {
+		sum := sha256.Sum256([]byte(now + ":" + strconv.Itoa(i)))
+		copy(buf[i*16:], sum[:16])
+	}
+	return buf
+}
+
+func formatUUID(b []byte) string {
+	var u [16]byte
+	copy(u[:], b)
+	u[6] = (u[6] & 0x0f) | 0x40
+	u[8] = (u[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%s-%s-%s-%s-%s",
+		hex.EncodeToString(u[0:4]),
+		hex.EncodeToString(u[4:6]),
+		hex.EncodeToString(u[6:8]),
+		hex.EncodeToString(u[8:10]),
+		hex.EncodeToString(u[10:16]))
 }
 
 // PrepareBody forces streaming, a leading system message, template rewrites,
@@ -188,6 +264,16 @@ func modelName(obj map[string]any) string {
 	}
 	model, _ := obj["model"].(string)
 	return model
+}
+
+func modelNameFromPayload(payload []byte) string {
+	var obj struct {
+		Model string `json:"model"`
+	}
+	if err := json.Unmarshal(payload, &obj); err != nil {
+		return ""
+	}
+	return obj.Model
 }
 
 func toolChoiceName(choice map[string]any) string {
@@ -326,6 +412,9 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	outgoing.Header = req.Header.Clone()
 	outgoing.Header.Del(MarkerHeader)
+	if profile, ok := ProfileByURL(req.URL.String()); ok && profile.StoreID == StoreGlobal && modelNeedsConversationID(modelNameFromPayload(prepared)) {
+		ApplyConversationHeaders(outgoing.Header)
+	}
 	outgoing.ContentLength = int64(len(prepared))
 	outgoing.GetBody = func() (io.ReadCloser, error) {
 		return io.NopCloser(bytes.NewReader(prepared)), nil

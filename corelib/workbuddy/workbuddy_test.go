@@ -69,6 +69,109 @@ func TestApplyHeadersSkipsStaticAPIKey(t *testing.T) {
 	}
 }
 
+func TestApplyConversationHeadersFillsMissingIDs(t *testing.T) {
+	h := make(http.Header)
+	h.Set("X-Conversation-ID", "keep-me")
+	h.Set("X-Request-ID", "req-keep")
+	ApplyConversationHeaders(h)
+	if h.Get("X-Conversation-ID") != "keep-me" || h.Get("X-Request-ID") != "req-keep" {
+		t.Fatalf("existing ids were replaced: %v", h)
+	}
+	requestID := h.Get("X-Conversation-Request-ID")
+	messageID := h.Get("X-Conversation-Message-ID")
+	if len(requestID) != 32 || len(messageID) != 32 || requestID == messageID {
+		t.Fatalf("rotating ids request=%q message=%q", requestID, messageID)
+	}
+	ApplyConversationHeaders(nil)
+
+	fresh := make(http.Header)
+	ApplyConversationHeaders(fresh)
+	again := make(http.Header)
+	ApplyConversationHeaders(again)
+	conv := fresh.Get("X-Conversation-ID")
+	if strings.Count(conv, "-") != 4 || len(conv) != 36 || conv == again.Get("X-Conversation-ID") {
+		t.Fatalf("conversation ids = %q and %q", conv, again.Get("X-Conversation-ID"))
+	}
+
+	complete := fresh.Clone()
+	ApplyConversationHeaders(complete)
+	if complete.Get("X-Conversation-ID") != fresh.Get("X-Conversation-ID") || complete.Get("X-Request-ID") != fresh.Get("X-Request-ID") {
+		t.Fatalf("complete headers were regenerated: %v", complete)
+	}
+	for _, model := range []string{"hy3", "hy3-x", "deepseek-v4.1-flash"} {
+		if !modelNeedsConversationID(model) {
+			t.Fatalf("%s should require a conversation id", model)
+		}
+	}
+	for _, model := range []string{"gpt-5.4", "hy4-preview", "glm-5.3", ""} {
+		if modelNeedsConversationID(model) {
+			t.Fatalf("%s should keep the previous request shape", model)
+		}
+	}
+}
+
+type headerRoundTripper struct {
+	header http.Header
+}
+
+func (h *headerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	h.header = req.Header.Clone()
+	return &http.Response{
+		StatusCode: http.StatusOK,
+		Header:     make(http.Header),
+		Body:       io.NopCloser(strings.NewReader(`{"id":"ok","choices":[{"message":{"role":"assistant","content":"ok"}}]}`)),
+		Request:    req,
+	}, nil
+}
+
+func TestTransportAddsConversationHeadersOnlyForGlobal(t *testing.T) {
+	global := &headerRoundTripper{}
+	client := WrapClient(&http.Client{Transport: global})
+	req, err := http.NewRequest(http.MethodPost, GlobalProfile().ChatURL+"/chat/completions", strings.NewReader(`{"model":"hy3","stream":true,"messages":[{"role":"system","content":"s"},{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("X-Conversation-ID", "session-9")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if global.header.Get("X-Conversation-ID") != "session-9" || global.header.Get("X-Conversation-Request-ID") == "" || global.header.Get("X-Conversation-Message-ID") == "" || global.header.Get("X-Request-ID") == "" {
+		t.Fatalf("global headers = %v", global.header)
+	}
+
+	other := &headerRoundTripper{}
+	otherClient := WrapClient(&http.Client{Transport: other})
+	otherReq, err := http.NewRequest(http.MethodPost, GlobalProfile().ChatURL+"/chat/completions", strings.NewReader(`{"model":"gpt-5.4","stream":true,"messages":[{"role":"system","content":"s"},{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherResp, err := otherClient.Do(otherReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	otherResp.Body.Close()
+	if other.header.Get("X-Conversation-ID") != "" || other.header.Get("X-Request-ID") != "" {
+		t.Fatalf("unaffected global model gained conversation headers: %v", other.header)
+	}
+
+	china := &headerRoundTripper{}
+	chinaClient := WrapClient(&http.Client{Transport: china})
+	chinaReq, err := http.NewRequest(http.MethodPost, ChinaProfile().ChatURL+"/chat/completions", strings.NewReader(`{"model":"hy3","stream":true,"messages":[{"role":"system","content":"s"},{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	chinaResp, err := chinaClient.Do(chinaReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	chinaResp.Body.Close()
+	if china.header.Get("X-Conversation-ID") != "" || china.header.Get("X-Request-ID") != "" {
+		t.Fatalf("domestic request gained conversation headers: %v", china.header)
+	}
+}
+
 func TestPrepareBodySkipsRewriteWhenAlreadyCompatible(t *testing.T) {
 	original := []byte(`{"model":"glm-5.3","stream":true,"messages":[{"role":"system","content":"s"},{"role":"user","content":"hi"}]}`)
 	got, stream, ok := PrepareBody(original)

@@ -565,7 +565,7 @@ func UpstreamHopHandler(cfg *ProxyConfig, authenticate func(*http.Request) error
 			}
 			writeJSONError(w, http.StatusBadGateway, "upstream stream ended before business data")
 		case upstreamHopKindProbe:
-			models, err := probeProviderModels(r.Context(), probeHTTPClient(cfg), provider.APIURL, provider.APIKey, provider.Protocol)
+			models, err := probeProviderModels(r.Context(), probeHTTPClient(cfg), provider.APIURL, provider.APIKey, provider.Protocol, provider.AgentType)
 			if err != nil {
 				writeJSONError(w, http.StatusBadGateway, err.Error())
 				return
@@ -623,7 +623,7 @@ func (w *hopStreamWriter) Flush() {
 	}
 }
 
-func probeProviderModels(ctx context.Context, client *http.Client, apiURL, apiKey, protocol string) ([]string, error) {
+func probeProviderModels(ctx context.Context, client *http.Client, apiURL, apiKey, protocol, agentType string) ([]string, error) {
 	endpoint, err := hopModelsEndpoint(apiURL, protocol)
 	if err != nil {
 		return nil, err
@@ -641,6 +641,11 @@ func probeProviderModels(ctx context.Context, client *http.Client, apiURL, apiKe
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	req.Header.Set("Accept", "application/json")
+	probeCfg := corelib.MaclawLLMConfig{URL: apiURL, AgentType: RequestAgentType(agentType)}
+	if ua := probeCfg.UserAgent(); ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
+	corelib.ApplyOpenCodeSessionHeader(req, probeCfg)
 	if client == nil {
 		client = &http.Client{Timeout: 20 * time.Second}
 	}
@@ -1026,6 +1031,13 @@ func overlayHopCredentials(dst, src *llmpool.ProviderConfig) {
 			dst.APIKey = key
 		}
 	}
+	// The User-Agent is not a secret. Fill it when this node has not stored
+	// one yet, and leave a stored choice in place.
+	if strings.TrimSpace(dst.AgentType) == "" {
+		if ua := RequestAgentType(src.AgentType); ua != "" {
+			dst.AgentType = ua
+		}
+	}
 	if !sameHopAuthKind(dst.AuthKind, src.AuthKind) {
 		return
 	}
@@ -1115,7 +1127,11 @@ func ProbeProviderModelsWithScope(ctx context.Context, cfg *ProxyConfig, provide
 		apiKey = provider.APIKey
 		protocol = provider.Protocol
 	}
-	return probeProviderModels(ctx, &http.Client{Timeout: 20 * time.Second}, apiURL, apiKey, protocol)
+	agentType := ""
+	if provider != nil {
+		agentType = provider.AgentType
+	}
+	return probeProviderModels(ctx, &http.Client{Timeout: 20 * time.Second}, apiURL, apiKey, protocol, agentType)
 }
 
 // ProviderChatTest is one saved-member probe. Node empty uses this node when

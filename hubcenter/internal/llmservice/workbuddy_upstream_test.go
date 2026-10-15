@@ -44,6 +44,7 @@ func TestForwardWorkBuddyAppliesAccountHeaders(t *testing.T) {
 		WorkBuddyDomain:       "dept",
 		WorkBuddyRefreshToken: "refresh-token",
 		Models:                []string{"gpt-5.4"},
+		AgentType:             "Claude Code",
 	}
 	resp, err := forwardToProvider(context.Background(), client, provider, map[string]any{
 		"model":    "gpt-5.4",
@@ -63,6 +64,9 @@ func TestForwardWorkBuddyAppliesAccountHeaders(t *testing.T) {
 	}
 	if seen.Get("X-Domain") != "dept" || seen.Get("X-Refresh-Token") != "refresh-token" || seen.Get("X-Product") != workbuddy.Product {
 		t.Fatalf("account headers = %v", seen)
+	}
+	if seen.Get("User-Agent") != workbuddy.UserAgent {
+		t.Fatalf("User-Agent = %q, want the WorkBuddy account agent", seen.Get("User-Agent"))
 	}
 	if !bytes.Contains(body, []byte(`"stream":true`)) || !bytes.Contains(body, []byte(`"role":"system"`)) {
 		t.Fatalf("body = %s", body)
@@ -87,12 +91,13 @@ func TestForwardTokenBankWorkBuddyRewritesRealClientBody(t *testing.T) {
 		}, nil
 	})}
 	provider := &llmpool.ProviderConfig{
-		ID:       "tbk_share__aHkz",
-		Name:     "Token Bank · WorkBuddy 国际版 · hy3",
-		APIURL:   "https://www.workbuddy.ai/v2",
-		APIKey:   "shared-key",
-		Protocol: "openai",
-		Models:   []string{"hy3"},
+		ID:        "tbk_share__aHkz",
+		Name:      "Token Bank · WorkBuddy 国际版 · hy3",
+		APIURL:    "https://www.workbuddy.ai/v2",
+		APIKey:    "shared-key",
+		Protocol:  "openai",
+		Models:    []string{"hy3"},
+		AgentType: "Claude Code",
 	}
 	resp, err := forwardToProvider(context.Background(), client, provider, map[string]any{
 		"model": "official-mid",
@@ -117,10 +122,16 @@ func TestForwardTokenBankWorkBuddyRewritesRealClientBody(t *testing.T) {
 	if seen.Get("Authorization") != "Bearer shared-key" {
 		t.Fatalf("headers = %v", seen)
 	}
+	if seen.Get("X-Conversation-ID") == "" || seen.Get("X-Conversation-Request-ID") == "" || seen.Get("X-Conversation-Message-ID") == "" || seen.Get("X-Request-ID") == "" {
+		t.Fatalf("token bank share omitted conversation headers: %v", seen)
+	}
 	if seen.Get("X-Product") != "" || seen.Get("X-User-Id") != "" || seen.Get("X-Refresh-Token") != "" ||
 		seen.Get("X-No-User-Id") != "" || seen.Get("X-No-Enterprise-Id") != "" || seen.Get("X-No-Department-Info") != "" ||
 		seen.Get("User-Agent") == workbuddy.UserAgent {
 		t.Fatalf("static key gained account headers: %v", seen)
+	}
+	if seen.Get("User-Agent") != "claude code 2.0" {
+		t.Fatalf("User-Agent = %q, want the saved caller agent", seen.Get("User-Agent"))
 	}
 	if !bytes.Contains(body, []byte(`"stream":true`)) || !bytes.Contains(body, []byte(`"role":"system"`)) {
 		t.Fatalf("body = %s", body)
@@ -180,6 +191,9 @@ func TestForwardTokenBankWorkBuddyKeepsDeepSeekToolChoice(t *testing.T) {
 	}
 	if seen.Get("X-Product") != "" || seen.Get("X-No-User-Id") != "" {
 		t.Fatalf("static key gained account headers: %v", seen)
+	}
+	if seen.Get("X-Conversation-ID") == "" {
+		t.Fatalf("deepseek share omitted conversation id: %v", seen)
 	}
 	if bytes.Contains(body, []byte(`"tool_choice":"required"`)) || bytes.Contains(body, []byte(`"tool_choice":"auto"`)) || !bytes.Contains(body, []byte(`"tool_choice":{"`)) {
 		t.Fatalf("deepseek tool_choice = %s", body)

@@ -3753,6 +3753,44 @@ func TestHandleProxyStreamRequestSetsCodeGenClientNameHeader(t *testing.T) {
 	}
 }
 
+func TestHandleProxyStreamRequestSendsProviderUserAgent(t *testing.T) {
+	var seenUA string
+	client := &http.Client{Transport: proxyRoundTripFunc(func(req *http.Request) (*http.Response, error) {
+		seenUA = req.Header.Get("User-Agent")
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       io.NopCloser(strings.NewReader("data: {\"choices\":[{\"delta\":{\"content\":\"ok\"},\"index\":0}]}\n\ndata: [DONE]\n\n")),
+		}, nil
+	})}
+
+	svc := NewService(&mockSystemSettings{})
+	if err := svc.SaveRegistry(context.Background(), &Registry{
+		Providers: []llmpool.ProviderConfig{{
+			ID: "opencode", Name: "OpenCode", APIURL: "https://opencode.ai/zen/go/v1", APIKey: "sk", AgentType: "Claude Code",
+		}},
+		ServiceGroups: []llmpool.ServiceGroup{{
+			ID: "g1", Name: "G1", AccessPolicy: AccessPolicyFree,
+			Models: []llmpool.ModelConfig{{Name: "gpt-4", ProviderConfigs: []llmpool.ModelProviderConfig{{ProviderID: "opencode"}}}},
+		}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	cfg := &ProxyConfig{Service: svc, AuthChecker: NewAuthorizationChecker(&mockAuthRepo{}), HTTPClient: client}
+	writer := newLockedResponseRecorder()
+	err := HandleProxyStreamRequest(context.Background(), cfg, &ProxyRequest{
+		HubID: "hub1", TenantID: "t1",
+		Body: map[string]any{"model": "gpt-4", "stream": true},
+	}, writer)
+	if err != nil {
+		t.Fatalf("HandleProxyStreamRequest() error = %v", err)
+	}
+	if seenUA != "claude code 2.0" {
+		t.Fatalf("User-Agent = %q, want claude code 2.0", seenUA)
+	}
+}
+
 type errorAfterReader struct {
 	r      *strings.Reader
 	failed bool
@@ -7249,9 +7287,10 @@ func TestStreamProviderToWriterAMDDeepSeekOmitsThinking(t *testing.T) {
 }
 
 func TestStreamProviderToWriterSendsOpenCodeSessionHeader(t *testing.T) {
-	var got string
+	var got, gotUA string
 	client := &http.Client{Transport: proxyRoundTripFunc(func(req *http.Request) (*http.Response, error) {
 		got = req.Header.Get(corelib.OpenCodeSessionHeader)
+		gotUA = req.Header.Get("User-Agent")
 		stream := "data: {\"id\":\"c1\",\"choices\":[{\"index\":0,\"delta\":{\"content\":\"ok\"}}]}\n\n" +
 			"data: [DONE]\n\n"
 		return &http.Response{
@@ -7261,9 +7300,10 @@ func TestStreamProviderToWriterSendsOpenCodeSessionHeader(t *testing.T) {
 		}, nil
 	})}
 	provider := &llmpool.ProviderConfig{
-		ID:     "opencode-go",
-		Name:   "OpenCode",
-		APIURL: "https://opencode.ai/zen/go/v1",
+		ID:        "opencode-go",
+		Name:      "OpenCode",
+		APIURL:    "https://opencode.ai/zen/go/v1",
+		AgentType: "opencode",
 	}
 	ctx := corelib.WithOpenCodeSessionID(context.Background(), "proxy-session-1")
 	if _, err := streamProviderToWriter(ctx, client, provider, map[string]any{
@@ -7271,7 +7311,10 @@ func TestStreamProviderToWriterSendsOpenCodeSessionHeader(t *testing.T) {
 	}, "glm-5.3-flash", "auto", newLockedResponseRecorder()); err != nil {
 		t.Fatalf("streamProviderToWriter() error = %v", err)
 	}
-	if got != "proxy-session-1" {
-		t.Fatalf("%s = %q, want proxy-session-1", corelib.OpenCodeSessionHeader, got)
+	if got != corelib.OpenCodeClientSessionID("proxy-session-1") {
+		t.Fatalf("%s = %q, want the official session for proxy-session-1", corelib.OpenCodeSessionHeader, got)
+	}
+	if gotUA != "opencode/"+corelib.OpenCodeClientVersion {
+		t.Fatalf("User-Agent = %q", gotUA)
 	}
 }
