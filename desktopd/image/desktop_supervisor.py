@@ -2545,7 +2545,7 @@ def proc_on_display(pid, display):
 
 
 # Desktop parts found by command line. Chromium is found by its profile.
-DESKTOP_PARTS = ("xvfb", "fluxbox", "dbus", "x11vnc", "vnc", "vgate", "proxy", "watch", "fcitx")
+DESKTOP_PARTS = ("xvfb", "fluxbox", "dbus", "x11vnc", "vnc", "vgate", "proxy", "watch", "fcitx", "panel", "panelbus")
 
 
 def desktop_part(pid, key, display):
@@ -2559,6 +2559,8 @@ def desktop_part(pid, key, display):
         return "xvfb" if len(argv) > 1 and argv[1] == screen else ""
     if names[0] == "x11vnc":
         return "x11vnc" if screen in argv else ""
+    if names[0] == "dbus-daemon" and display != DISPLAY_MIN and "--address=unix:path=%s" % bot_panel_bus(display) in argv:
+        return "panelbus"
     if names[0] == "dbus-daemon":
         return "dbus" if "--address=unix:path=/tmp/.maclaw-dbus-%d" % display in argv else ""
     if names[0] in ("xfce4-session", "fluxbox") or "startxfce4" in names:
@@ -2567,6 +2569,8 @@ def desktop_part(pid, key, display):
         # A bot display runs only the window manager; the pid key stays
         # "fluxbox" (the window session) like the owner's desktop.
         return "fluxbox" if proc_on_display(pid, display) else ""
+    if names[0] == "xfce4-panel" and display != DISPLAY_MIN:
+        return "panel" if proc_on_display(pid, display) else ""
     if names[0] == "fcitx5" and display != DISPLAY_MIN:
         return "fcitx" if proc_on_display(pid, display) else ""
     if "websockify" in names:
@@ -3192,6 +3196,8 @@ def ensure_bot(key):
     if not desktop_running(key):
         evict_bots(key)
         start_bot_desktop(key, display)
+    else:
+        ensure_bot_panel(key, display)
     ensure_watch(key, display)
     touch_bot_file(key, "activity", force=True)
     return {"display": ":%d" % display, "cdp_port": proxy_port(DISPLAY_MIN), "token": token}
@@ -3224,7 +3230,7 @@ def start_bot_desktop(key, display):
     chrome_port = 18000 + display
     pids = current_pids(key, display)
     if not (pid_alive(pids.get("xvfb")) and Path("/tmp/.X11-unix/X%d" % display).exists()):
-        for name in ("vnc", "x11vnc", "fcitx", "fluxbox", "dbus", "xvfb"):
+        for name in ("vnc", "x11vnc", "fcitx", "panel", "panelbus", "fluxbox", "dbus", "xvfb"):
             kill_pid(pids.pop(name, None))
         clear_stale_display(display)
         xvfb = spawn(["Xvfb", ":%d" % display, "-screen", "0", desktop_geometry(), "-ac", "+extension", "GLX", "+render", "-noreset", "-s", "0"], env, log)
@@ -3245,12 +3251,156 @@ def start_bot_desktop(key, display):
         wm = ["xfwm4", "--compositor=off"] if shutil.which("xfwm4") else ["fluxbox"]
         pids["fluxbox"] = spawn(wm, env, log).pid
     write_pids(key, pids)
+    ensure_bot_panel(key, display, pids, log)
     start_browser(profile, env, log, chrome_port, bot=True)
     try:
         restore_page_login(key)
     except (OSError, ValueError, TypeError):
         pass
     pids["chromium"] = browser_pid(profile)
+    write_pids(key, pids)
+
+
+# A bot display has no XFCE session: without a wallpaper and a window list a
+# minimized Chromium leaves a black screen with no way back. Each bot display
+# gets the theme wallpaper (feh sets the root pixmap once and exits) and a
+# light bottom xfce4-panel with only a tasklist. The panel runs on its own
+# private D-Bus with its own XDG config dir, so its xfconfd reads this panel
+# file, not the owner's ~/.config (shared by every display) and not the
+# xfconfd that xfwm4 already started on the bot's session bus. It sets a
+# strut, so a maximized Chromium ends above it. NO_AT_BRIDGE keeps it out of
+# the AT-SPI tree the agent reads. About 13 MB PSS per display.
+
+BOT_PANEL_SIZE = 30
+BOT_PANEL_RETRY_SECONDS = 60
+BOT_WALLPAPERS = {
+    "soft25": "maclaw-soft-25.jpg", "soft40": "maclaw-soft-40.jpg", "soft55": "maclaw-soft-55.jpg",
+    "soft-topbar": "maclaw-soft-40.jpg", "dark": "maclaw-dark.jpg", "colorful": "maclaw-colorful.jpg",
+    "topbar": "maclaw-colorful.jpg", "clean": "gray-gradient.png",
+}
+BOT_PANEL_XML = """<?xml version="1.0" encoding="UTF-8"?>
+<channel name="xfce4-panel" version="1.0">
+  <property name="configver" type="int" value="2"/>
+  <property name="panels" type="array">
+    <value type="int" value="1"/>
+    <property name="dark-mode" type="bool" value="false"/>
+    <property name="panel-1" type="empty">
+      <property name="position" type="string" value="p=10;x=0;y=0"/>
+      <property name="length" type="uint" value="100"/>
+      <property name="position-locked" type="bool" value="true"/>
+      <property name="size" type="uint" value="%d"/>
+      <property name="icon-size" type="uint" value="16"/>
+      <property name="background-style" type="uint" value="1"/>
+      <property name="background-rgba" type="array">
+        <value type="double" value="0.97"/><value type="double" value="0.97"/>
+        <value type="double" value="0.98"/><value type="double" value="0.94"/>
+      </property>
+      <property name="plugin-ids" type="array"><value type="int" value="1"/></property>
+    </property>
+  </property>
+  <property name="plugins" type="empty">
+    <property name="plugin-1" type="string" value="tasklist">
+      <property name="flat-buttons" type="bool" value="true"/>
+      <property name="show-handle" type="bool" value="false"/>
+      <property name="grouping" type="uint" value="0"/>
+      <property name="show-labels" type="bool" value="true"/>
+    </property>
+  </property>
+</channel>
+""" % BOT_PANEL_SIZE
+BOT_PANEL_CSS = """.xfce4-panel, .xfce4-panel label, .xfce4-panel button, .xfce4-panel button label,
+#tasklist-button label, .tasklist button label { color: #23262b; }
+.xfce4-panel button:checked label, .tasklist button:checked label { color: #000000; font-weight: bold; }
+.xfce4-panel { border-top: 1px solid rgba(0,0,0,0.10); }
+"""
+_bot_panel_tried = {}
+
+
+def bot_panel_bus(display):
+    return "/tmp/.maclaw-panelbus-%d" % int(display)
+
+
+def bot_wallpaper():
+    try:
+        theme = Path("/etc/maclaw/theme").read_text(encoding="utf-8").strip()
+    except OSError:
+        theme = ""
+    base = Path("/usr/share/backgrounds/maclaw")
+    for name in (BOT_WALLPAPERS.get(theme), BOT_WALLPAPERS["soft25"]):
+        if name and (base / name).is_file():
+            return str(base / name)
+    return ""
+
+
+def set_bot_wallpaper(display, log):
+    env = os.environ.copy()
+    env["DISPLAY"] = ":%d" % int(display)
+    wall = bot_wallpaper()
+    if wall and shutil.which("feh"):
+        argv = ["feh", "--no-fehbg", "--bg-fill", wall]
+    elif shutil.which("xsetroot"):
+        argv = ["xsetroot", "-solid", "#dde1ea"]
+    else:
+        return
+    try:
+        subprocess.call(argv, env=env, stdout=log, stderr=subprocess.STDOUT, timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+
+def ensure_bot_panel(key, display, pids=None, log=None):
+    """Wallpaper and bottom window list on a running bot display.
+
+    Started at most once per BOT_PANEL_RETRY_SECONDS, so a panel that keeps
+    crashing is not respawned every watcher tick. Never touches Chromium.
+    """
+    if display == DISPLAY_MIN or shutil.which("xfce4-panel") is None or shutil.which("dbus-daemon") is None:
+        return
+    if os.environ.get("MACLAW_BOT_PANEL", "1").strip() == "0":
+        return
+    if not Path("/tmp/.X11-unix/X%d" % display).exists():
+        return
+    if pids is None:
+        pids = current_pids(key, display)
+    if pid_alive(pids.get("panel")):
+        return
+    now = time.time()
+    if now - _bot_panel_tried.get(key, 0) < BOT_PANEL_RETRY_SECONDS:
+        return
+    _bot_panel_tried[key] = now
+    home = ROOT / key
+    home.mkdir(mode=0o700, exist_ok=True)
+    if log is None:
+        log = open(home / "desktop.log", "ab")
+    set_bot_wallpaper(display, log)
+    cfg = home / "panel-config"
+    try:
+        write_if_changed(cfg / "xfce4" / "xfconf" / "xfce-perchannel-xml" / "xfce4-panel.xml", BOT_PANEL_XML, 0o600)
+        write_if_changed(cfg / "gtk-3.0" / "gtk.css", BOT_PANEL_CSS, 0o600)
+    except OSError as exc:
+        print("bot panel config: %s" % exc, file=sys.stderr)
+        return
+    env = desktop_env(display)
+    env["XDG_CONFIG_HOME"] = str(cfg)
+    env["XDG_CONFIG_DIRS"] = str(cfg)
+    env["NO_AT_BRIDGE"] = "1"
+    for name in ("QT_ACCESSIBILITY", "QT_LINUX_ACCESSIBILITY_ALWAYS_ON", "SESSION_MANAGER"):
+        env.pop(name, None)
+    bus = bot_panel_bus(display)
+    kill_pid(pids.pop("panelbus", None))
+    try:
+        os.unlink(bus)
+    except OSError:
+        pass
+    # xfconfd is started by this bus and inherits its environment (the
+    # panel's own config dir).
+    pids["panelbus"] = spawn(["dbus-daemon", "--session", "--nofork", "--nopidfile", "--address=unix:path=%s" % bus], env, log).pid
+    for _ in range(40):
+        if Path(bus).exists():
+            break
+        time.sleep(0.05)
+    env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=%s" % bus
+    pids["panel"] = spawn(["xfce4-panel", "--disable-wm-check"], env, log).pid
     write_pids(key, pids)
 
 
@@ -3476,6 +3626,7 @@ def watch_bot(key, display):
             if desktop_running(key):
                 ensure_gates()
                 keep_screen_awake(display)
+                ensure_bot_panel(key, display)
                 if takeover_state(key) is None and time.time() - bot_last_activity(key) >= idle_limit:
                     print("bot display %s idle, stopping" % key, file=sys.stderr)
                     stop_desktop(key)
