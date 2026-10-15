@@ -38,7 +38,11 @@ if (typeof I18N_ZH !== 'undefined') {
       vendorHint: 'After sign-in, choose models and save. This account becomes a provider. Expose the models from a service group.',
       vendorOpen: 'If the login page did not open, use this link.',
       vendorCatalogWarn: 'The live catalog was unavailable. Showing the built-in model list.',
-      fieldProtocol: 'Protocol', fieldModels: 'Models (comma-separated)', fieldCapabilities: 'Capabilities',
+      fieldProtocol: 'Protocol', fieldUserAgent: 'User-Agent',
+      fieldUserAgentHint: 'Sent as the User-Agent on upstream requests. Choose a coding tool, or type your own.',
+      fieldUserAgentAccountHint: 'An account login sends its own User-Agent:',
+      uaDefault: 'openclaw (default)', uaCustom: 'Custom', uaCustomPlaceholder: 'Type a User-Agent',
+      fieldModels: 'Models (comma-separated)', fieldCapabilities: 'Capabilities',
       fieldPriority: 'Priority', fieldConcurrency: 'Max Concurrency', fieldTimeout: 'Timeout (sec)',
       fieldSequence: 'Sequence', sequenceHint: 'Lower numbers are tried first. 0 means unset.',
       accessScope: 'Access scope', accessScopeAll: 'All nodes', accessScopeSelected: 'Selected nodes',
@@ -56,6 +60,7 @@ if (typeof I18N_ZH !== 'undefined') {
       providerArrayID: 'Array ID', providerArrayNeedID: 'Enter an array ID.',
       providerArrayEmpty: 'No providers in this array yet.',
       providerArrayDragHint: 'Drag onto another array',
+      providerArrayOrderHint: 'Drag an array to change its place',
       providerArrayMoved: 'Moved into that array. It now uses the array rate.',
       providerArrayBusy: 'That array is still updating. Try the drag again in a moment.',
       providerArrayTrafficSum: 'Total', providerArraysTrafficSum: 'All arrays',
@@ -252,7 +257,11 @@ if (typeof I18N_ZH !== 'undefined') {
       vendorHint: '\u767b\u5f55\u540e\u52fe\u9009\u6a21\u578b\u5e76\u4fdd\u5b58\uff0c\u5373\u4ee5\u6b64\u8d26\u53f7\u63a5\u5165\u670d\u52a1\u5546\u3002\u4e4b\u540e\u5728\u6a21\u578b\u670d\u52a1\u7ec4\u4e2d\u66b4\u9732\u8fd9\u4e9b\u6a21\u578b\u3002',
       vendorOpen: '\u5982\u679c\u767b\u5f55\u9875\u6ca1\u6709\u6253\u5f00\uff0c\u8bf7\u4f7f\u7528\u6b64\u94fe\u63a5\u3002',
       vendorCatalogWarn: '\u5b9e\u65f6\u6a21\u578b\u76ee\u5f55\u6682\u4e0d\u53ef\u7528\uff0c\u5df2\u663e\u793a\u5185\u7f6e\u6a21\u578b\u5217\u8868\u3002',
-      fieldProtocol: '\u534f\u8bae', fieldModels: '\u6a21\u578b\uff08\u9017\u53f7\u5206\u9694\uff09', fieldCapabilities: '\u80fd\u529b\u6807\u7b7e',
+      fieldProtocol: '\u534f\u8bae', fieldUserAgent: 'User-Agent',
+      fieldUserAgentHint: '\u4e0a\u6e38\u8bf7\u6c42\u4f1a\u5e26\u4e0a\u8fd9\u4e2a User-Agent\u3002\u53ef\u9009\u5e38\u89c1\u7f16\u7a0b\u5de5\u5177\uff0c\u4e5f\u53ef\u81ea\u884c\u586b\u5199\u3002',
+      fieldUserAgentAccountHint: '\u8d26\u53f7\u767b\u5f55\u4f1a\u5e26\u4e0a\u5b83\u81ea\u5df1\u7684 User-Agent\uff1a',
+      uaDefault: 'openclaw\uff08\u9ed8\u8ba4\uff09', uaCustom: '\u81ea\u5b9a\u4e49', uaCustomPlaceholder: '\u8f93\u5165 User-Agent',
+      fieldModels: '\u6a21\u578b\uff08\u9017\u53f7\u5206\u9694\uff09', fieldCapabilities: '\u80fd\u529b\u6807\u7b7e',
       fieldPriority: '\u4f18\u5148\u7ea7', fieldConcurrency: '\u6700\u5927\u5e76\u53d1', fieldTimeout: '\u8d85\u65f6\uff08\u79d2\uff09',
       fieldSequence: '\u5e8f\u5217', sequenceHint: '\u6570\u5b57\u8d8a\u5c0f\u8d8a\u5148\u8bd5\u30020 \u8868\u793a\u672a\u8bbe\u3002',
       accessScope: '\u63a5\u5165\u8303\u56f4', accessScopeAll: '\u5168\u90e8\u8282\u70b9', accessScopeSelected: '\u6307\u5b9a\u8282\u70b9',
@@ -270,6 +279,7 @@ if (typeof I18N_ZH !== 'undefined') {
       providerArrayID: '\u9635\u5217 ID', providerArrayNeedID: '\u8bf7\u586b\u5199\u9635\u5217 ID\u3002',
       providerArrayEmpty: '\u9635\u5217\u91cc\u8fd8\u6ca1\u6709\u670d\u52a1\u5546\u3002',
       providerArrayDragHint: '\u62d6\u5230\u5176\u5b83\u9635\u5217',
+      providerArrayOrderHint: '\u62d6\u52a8\u9635\u5217\uff0c\u8c03\u6574\u5b83\u7684\u4f4d\u7f6e',
       providerArrayMoved: '\u5df2\u79fb\u5165\u8be5\u9635\u5217\uff0c\u5e76\u6539\u7528\u8be5\u9635\u5217\u7684\u8ba1\u8d39\u3002',
       providerArrayBusy: '\u8be5\u9635\u5217\u6b63\u5728\u66f4\u65b0\uff0c\u8bf7\u7a0d\u540e\u518d\u62d6\u3002',
       providerArrayTrafficSum: '\u5408\u8ba1', providerArraysTrafficSum: '\u5168\u90e8\u9635\u5217',
@@ -504,6 +514,7 @@ if (typeof I18N_ZH !== 'undefined') {
   var llmInitInFlight = null;
   var providersLoadSeq = 0;
   var providerSequenceInFlight = {};
+  var providerSequenceSaveGen = 0;
   var providerTrafficReady = false;
   var providerTrafficLoadSeq = 0;
   var providerTrafficInFlight = 0;
@@ -1518,6 +1529,7 @@ if (typeof I18N_ZH !== 'undefined') {
       + providerServeBadge(p)
       + '</div>'
       + '<span class="data-row-meta" title="' + esc(metaText) + '">' + esc(p.api_url) + ' \u00b7 ' + esc(p.protocol||'openai')
+      + (providerUserAgentMeta(p) ? ' \u00b7 ' + esc(providerUserAgentMeta(p)) : '')
       + (p.has_api_key ? ' \u00b7 key' : '') + (p.lb_group ? ' \u00b7 ' + esc(p.lb_group) : '')
       + (providerPriceSummary(p) ? ' \u00b7 ' + esc(providerPriceSummary(p)) : '')
       + (providerPriceScheduleCount(p) ? ' \u00b7 ' + esc(t('pricingSchedule')) + ': ' + providerPriceScheduleCount(p) : '') + '</span>'
@@ -1533,14 +1545,15 @@ if (typeof I18N_ZH !== 'undefined') {
       + '<button class="btn-danger-ghost" onclick="deleteLLMProvider(' + providerArg + ')">' + esc(t('deleteProvider')) + '</button>'
       + '</div></div>';
   }
-  function renderProviderArray(array) {
+  function renderProviderArray(array, orderableCount) {
     var multi = array.members.length > 1;
     var open = !!providerArrayExpanded[array.id];
+    var canOrder = !!(array.members && array.members.length) && Number(orderableCount) > 1;
     var headTraffic = '';
     if (multi) headTraffic = '<div class="provider-traffic' + (providerTrafficReady ? '' : ' is-pending') + '" data-traffic-array="' + esc(array.id) + '"></div>';
     else if (!open && array.members[0]) headTraffic = '<div class="provider-traffic' + (providerTrafficReady ? '' : ' is-pending') + '" data-provider-id="' + esc(array.members[0].id) + '"></div>';
     var arrayLabel = array.name || array.id;
-    var head = '<div class="provider-array-head"><div class="provider-array-title"><strong title="' + esc(arrayLabel) + '">' + esc(arrayLabel) + '</strong>'
+    var head = '<div class="provider-array-head"><div class="provider-array-title"' + (canOrder ? ' draggable="true" title="' + esc(t('providerArrayOrderHint')) + '" aria-label="' + esc(t('providerArrayOrderHint')) + '"' : '') + '>' + (canOrder ? '<span class="provider-array-grip" aria-hidden="true"></span>' : '') + '<strong title="' + esc(arrayLabel) + '">' + esc(arrayLabel) + '</strong>'
       + '<span class="badge">' + esc(t('providerArray')) + ' \u00b7 ' + array.members.length + '</span>'
       + (multi ? '<span class="badge info">' + esc(t('providerArrayShared')) + '</span>' : '')
       + (providerPriceSummary(array) ? '<span class="data-row-meta"> ' + esc(providerPriceSummary(array)) + '</span>' : '')
@@ -1557,18 +1570,21 @@ if (typeof I18N_ZH !== 'undefined') {
         ? array.members.map(function(member) { return renderProviderRow(member); }).join('')
         : '<div class="hint">' + esc(t('providerArrayEmpty')) + '</div>';
     }
-    return '<div class="provider-array' + (multi ? ' is-multi' : '') + (open ? '' : ' is-collapsed') + '" data-array-id="' + esc(array.id) + '">' + head + body + '</div>';
+    return '<div class="provider-array' + (multi ? ' is-multi' : '') + (open ? '' : ' is-collapsed') + '"' + (canOrder ? ' data-array-orderable="1"' : '') + ' data-array-id="' + esc(array.id) + '">' + head + body + '</div>';
   }
   function renderProviders() {
     var el = document.getElementById('llmProvidersList');
     if (!el) return;
+    if (providerArrayOrderID) cancelProviderArrayOrderDrag();
     syncProviderTrafficSwitch();
     var arrays = providerArrayRecords();
     var alive = {};
     arrays.forEach(function(array) { if (array && array.id) alive[array.id] = true; });
     Object.keys(providerArrayExpanded).forEach(function(id) { if (!alive[id]) delete providerArrayExpanded[id]; });
     if (!arrays.length) { el.innerHTML = '<div class="hint">' + esc(t('noProviders')) + '</div>'; renderAllArrayTraffic(); scheduleProviderCanaryRefresh(); return; }
-    el.innerHTML = arrays.map(renderProviderArray).join('');
+    var orderableCount = 0;
+    arrays.forEach(function(array) { if (array && array.members && array.members.length) orderableCount++; });
+    el.innerHTML = arrays.map(function(array) { return renderProviderArray(array, orderableCount); }).join('');
     bindProviderArrayDrag(el);
     patchProviderTraffic();
     scheduleProviderCanaryRefresh();
@@ -1584,6 +1600,18 @@ if (typeof I18N_ZH !== 'undefined') {
   var providerCopyInFlight = {};
   var providerDragID = '';
   var providerDragHome = '';
+  var providerArrayOrderID = '';
+  var providerArrayOrderFrom = -1;
+  var providerArrayOrderTo = null;
+  var providerArrayOrderScrollAt = 0;
+  var providerArrayOrderScroller = null;
+  var providerArrayOrderRoot = null;
+  var providerArrayOrderCardCache = null;
+  var providerArrayOrderMark = -1;
+  var providerArrayIgnoreClickUntil = 0;
+  var providerArrayOrderPointerY = null;
+  var providerArrayOrderOriginY = null;
+  var providerArrayOrderFrame = 0;
   function dragEventNode(event) {
     var node = event && event.target;
     if (!node) return null;
@@ -1591,10 +1619,14 @@ if (typeof I18N_ZH !== 'undefined') {
     return node || null;
   }
   function clearProviderDragMarks(root) {
+    providerArrayOrderMark = -1;
     if (!root) return;
-    root.querySelectorAll('.is-dragging, .is-drop-target').forEach(function(node) {
+    root.querySelectorAll('.is-dragging, .is-drop-target, .is-drop-before, .is-drop-after, .is-order-dragging').forEach(function(node) {
       node.classList.remove('is-dragging');
       node.classList.remove('is-drop-target');
+      node.classList.remove('is-drop-before');
+      node.classList.remove('is-drop-after');
+      node.classList.remove('is-order-dragging');
     });
   }
   function setProviderDragOver(root, card) {
@@ -1603,11 +1635,203 @@ if (typeof I18N_ZH !== 'undefined') {
     if (current) current.classList.remove('is-drop-target');
     if (card) card.classList.add('is-drop-target');
   }
+  function providerArrayInsertAt(cards, clientY) {
+    for (var i = 0; i < cards.length; i++) {
+      var head = cards[i].querySelector('.provider-array-head') || cards[i];
+      var rect = head.getBoundingClientRect();
+      if (clientY < rect.top + rect.height / 2) return i;
+    }
+    return cards.length;
+  }
+  function providerArrayFinalIndex(from, insertAt, length) {
+    if (insertAt > from) insertAt -= 1;
+    if (insertAt < 0) insertAt = 0;
+    if (length < 1) return 0;
+    if (insertAt > length - 1) insertAt = length - 1;
+    return insertAt;
+  }
+  function providerArrayOrderCards(root) {
+    if (providerArrayOrderCardCache) return providerArrayOrderCardCache;
+    return root ? root.querySelectorAll('.provider-array[data-array-orderable="1"]') : [];
+  }
+  function clearProviderArrayGap(root) {
+    if (providerArrayOrderMark === -1) return;
+    providerArrayOrderMark = -1;
+    if (!root) return;
+    root.querySelectorAll('.provider-array.is-drop-before, .provider-array.is-drop-after').forEach(function(node) {
+      node.classList.remove('is-drop-before');
+      node.classList.remove('is-drop-after');
+    });
+  }
+  function providerArrayOrderHover(root, clientY) {
+    var cards = providerArrayOrderCards(root);
+    var insertAt = providerArrayInsertAt(cards, clientY);
+    if (providerArrayFinalIndex(providerArrayOrderFrom, insertAt, cards.length) === providerArrayOrderFrom) {
+      clearProviderArrayGap(root);
+      return;
+    }
+    markProviderArrayGap(root, insertAt);
+  }
+  function markProviderArrayGap(root, insertAt) {
+    if (insertAt === providerArrayOrderMark) return;
+    providerArrayOrderMark = insertAt;
+    root.querySelectorAll('.provider-array.is-drop-before, .provider-array.is-drop-after').forEach(function(node) {
+      node.classList.remove('is-drop-before');
+      node.classList.remove('is-drop-after');
+    });
+    var cards = providerArrayOrderCards(root);
+    if (!cards.length) return;
+    if (insertAt <= 0) cards[0].classList.add('is-drop-before');
+    else if (insertAt >= cards.length) cards[cards.length - 1].classList.add('is-drop-after');
+    else cards[insertAt].classList.add('is-drop-before');
+  }
+  function providerArrayScrollParent(node) {
+    var current = node && node.parentElement;
+    while (current && current !== document.body && current !== document.documentElement) {
+      var overflow = window.getComputedStyle(current).overflowY;
+      if ((overflow === 'auto' || overflow === 'scroll') && current.scrollHeight > current.clientHeight + 4) return current;
+      current = current.parentElement;
+    }
+    return document.scrollingElement || document.documentElement;
+  }
+  function providerArrayOrderAutoScroll(event) {
+    var now = Date.now();
+    if (now - providerArrayOrderScrollAt < 40) return;
+    var scroller = providerArrayOrderScroller;
+    if (!scroller) return;
+    if (providerArrayOrderOriginY != null && Math.abs(event.clientY - providerArrayOrderOriginY) < 12) return;
+    var view = scroller === document.body || scroller === document.documentElement || scroller === document.scrollingElement;
+    var rect = view ? { top: 0, bottom: window.innerHeight } : scroller.getBoundingClientRect();
+    var edge = 28;
+    var dy = 0;
+    if (event.clientY < rect.top + edge) dy = -Math.ceil((rect.top + edge - event.clientY) / 2);
+    else if (event.clientY > rect.bottom - edge) dy = Math.ceil((event.clientY - (rect.bottom - edge)) / 2);
+    if (!dy) return;
+    if (dy > 24) dy = 24;
+    if (dy < -24) dy = -24;
+    providerArrayOrderScrollAt = now;
+    if (view) window.scrollBy(0, dy);
+    else scroller.scrollTop += dy;
+    if (providerArrayOrderRoot && providerArrayOrderPointerInList(event, 48)) providerArrayOrderHover(providerArrayOrderRoot, event.clientY);
+  }
+  function providerArrayOrderPointerInList(event, pad) {
+    var root = providerArrayOrderRoot;
+    if (!root || !event) return false;
+    var rect = root.getBoundingClientRect();
+    pad = Number(pad) || 0;
+    return event.clientX >= rect.left - pad && event.clientX <= rect.right + pad && event.clientY >= rect.top - pad && event.clientY <= rect.bottom + pad;
+  }
+  function providerArrayRevealCard(arrayID) {
+    var list = document.getElementById('llmProvidersList');
+    if (!list) return;
+    var cards = list.querySelectorAll('.provider-array');
+    var card = null;
+    for (var i = 0; i < cards.length; i++) {
+      if (cards[i].getAttribute('data-array-id') === arrayID) { card = cards[i]; break; }
+    }
+    if (!card || !card.getBoundingClientRect || !card.scrollIntoView) return;
+    var rect = card.getBoundingClientRect();
+    var height = window.innerHeight || document.documentElement.clientHeight || 0;
+    if (rect.bottom > 0 && rect.top < height) return;
+    try { card.scrollIntoView({ block: 'nearest' }); } catch (e) {}
+  }
+  function cancelProviderArrayOrderDrag() {
+    var root = providerArrayOrderRoot;
+    providerArrayOrderID = '';
+    providerArrayOrderFrom = -1;
+    providerArrayOrderTo = null;
+    providerArrayOrderCardCache = null;
+    providerArrayOrderRoot = null;
+    providerArrayOrderScroller = null;
+    providerArrayOrderPointerY = null;
+    providerArrayOrderOriginY = null;
+    if (providerArrayOrderFrame) {
+      cancelAnimationFrame(providerArrayOrderFrame);
+      providerArrayOrderFrame = 0;
+    }
+    if (root) clearProviderDragMarks(root);
+  }
   function bindProviderArrayDrag(root) {
     if (!root || root.getAttribute('data-array-drag') === '1') return;
     root.setAttribute('data-array-drag', '1');
+    document.addEventListener('pointerdown', function() {
+      providerArrayIgnoreClickUntil = 0;
+    }, true);
+    document.addEventListener('click', function(event) {
+      if (Date.now() > providerArrayIgnoreClickUntil) return;
+      providerArrayIgnoreClickUntil = 0;
+      var clickNode = dragEventNode(event);
+      if (!clickNode || !root.contains(clickNode)) return;
+      event.preventDefault();
+      event.stopPropagation();
+      event.stopImmediatePropagation();
+    }, true);
+    document.addEventListener('dragover', function(event) {
+      if (!providerArrayOrderID) return;
+      providerArrayOrderPointerY = event.clientY;
+      var node = dragEventNode(event);
+      var inside = !!(node && root.contains(node));
+      if (!inside && providerArrayOrderPointerInList(event, 48)) {
+        event.preventDefault();
+        if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+        providerArrayOrderHover(root, event.clientY);
+      } else if (!inside) clearProviderArrayGap(root);
+      if (inside || providerArrayOrderPointerInList(event, 48)) providerArrayOrderAutoScroll(event);
+    }, true);
+    document.addEventListener('drop', function(event) {
+      if (!providerArrayOrderID) return;
+      var node = dragEventNode(event);
+      if (node && root.contains(node)) return;
+      if (!providerArrayOrderPointerInList(event, 48)) return;
+      event.preventDefault();
+      var cards = providerArrayOrderCards(root);
+      providerArrayOrderTo = providerArrayFinalIndex(providerArrayOrderFrom, providerArrayInsertAt(cards, event.clientY), cards.length);
+    }, true);
     root.addEventListener('dragstart', function(event) {
       var node = dragEventNode(event);
+      var head = node && node.closest('.provider-array-head');
+      if (head && root.contains(head) && !(node.closest('.data-row'))) {
+        var titleDrag = node.closest('.provider-array-title');
+        if (!titleDrag || titleDrag.getAttribute('draggable') !== 'true' || node.closest('button, a, input, select, textarea, label, .provider-traffic, .data-row-actions')) {
+          event.preventDefault();
+          return;
+        }
+        var orderCard = head.closest('.provider-array');
+        var orderID = (orderCard && orderCard.getAttribute('data-array-id')) || '';
+        providerArrayOrderCardCache = null;
+        var orderCards = providerArrayOrderCards(root);
+        var orderFrom = -1;
+        for (var i = 0; i < orderCards.length; i++) {
+          if (orderCards[i] === orderCard) { orderFrom = i; break; }
+        }
+        if (!orderCard || !orderID || orderFrom < 0 || orderCards.length < 2) {
+          event.preventDefault();
+          return;
+        }
+        providerArrayOrderID = orderID;
+        providerArrayOrderFrom = orderFrom;
+        providerArrayOrderTo = null;
+        providerArrayOrderScrollAt = 0;
+        providerArrayOrderMark = -1;
+        providerArrayOrderRoot = root;
+        providerArrayOrderCardCache = orderCards;
+        providerArrayOrderScroller = providerArrayScrollParent(root);
+        if (event.dataTransfer) {
+          event.dataTransfer.effectAllowed = 'move';
+          try { event.dataTransfer.setData('text/plain', 'array:' + orderID); } catch (e) {}
+          try { event.dataTransfer.setDragImage(head.querySelector('.provider-array-title') || head, 24, 14); } catch (e) {}
+        }
+        providerArrayOrderPointerY = event.clientY;
+        providerArrayOrderOriginY = event.clientY;
+        if (providerArrayOrderFrame) cancelAnimationFrame(providerArrayOrderFrame);
+        providerArrayOrderFrame = requestAnimationFrame(function() {
+          providerArrayOrderFrame = 0;
+          if (providerArrayOrderID !== orderID) return;
+          orderCard.classList.add('is-order-dragging');
+          if (providerArrayOrderRoot && providerArrayOrderPointerY != null) providerArrayOrderHover(providerArrayOrderRoot, providerArrayOrderPointerY);
+        });
+        return;
+      }
       var row = node && node.closest('.data-row');
       if (!row || !root.contains(row)) return;
       if (node.closest('button, a, input, select, textarea, label')) {
@@ -1625,7 +1849,18 @@ if (typeof I18N_ZH !== 'undefined') {
       event.dataTransfer.effectAllowed = 'move';
       try { event.dataTransfer.setData('text/plain', id); } catch (e) {}
     });
+    function allowProviderArrayOrderDrop(event) {
+      if (!providerArrayOrderID) return;
+      event.preventDefault();
+      if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+      providerArrayOrderPointerY = event.clientY;
+      providerArrayOrderHover(root, event.clientY);
+    }
     function allowProviderArrayDrop(event) {
+      if (providerArrayOrderID) {
+        allowProviderArrayOrderDrop(event);
+        return;
+      }
       if (!providerDragID) return;
       var node = dragEventNode(event);
       var card = node && node.closest('.provider-array');
@@ -1641,12 +1876,19 @@ if (typeof I18N_ZH !== 'undefined') {
     root.addEventListener('dragenter', allowProviderArrayDrop);
     root.addEventListener('dragover', allowProviderArrayDrop);
     root.addEventListener('drop', function(event) {
+      if (providerArrayOrderID) {
+        var cards = providerArrayOrderCards(root);
+        event.preventDefault();
+        providerArrayOrderTo = providerArrayFinalIndex(providerArrayOrderFrom, providerArrayInsertAt(cards, event.clientY), cards.length);
+        return;
+      }
       var node = dragEventNode(event);
       var card = node && node.closest('.provider-array');
       var id = providerDragID;
       if (!id && event.dataTransfer) {
         try { id = event.dataTransfer.getData('text/plain') || ''; } catch (e) {}
       }
+      if (id && id.indexOf('array:') === 0) return;
       var target = (card && card.getAttribute('data-array-id')) || '';
       if (!card || !id || !target || providerDragHome === providerArrayLockKey(target)) return;
       event.preventDefault();
@@ -1656,11 +1898,93 @@ if (typeof I18N_ZH !== 'undefined') {
       window.moveProviderToArray(id, target);
     });
     root.addEventListener('dragend', function() {
+      var orderID = providerArrayOrderID;
+      var from = providerArrayOrderFrom;
+      var to = providerArrayOrderTo;
+      if (providerArrayOrderFrame) {
+        cancelAnimationFrame(providerArrayOrderFrame);
+        providerArrayOrderFrame = 0;
+      }
+      providerArrayOrderID = '';
+      providerArrayOrderFrom = -1;
+      providerArrayOrderTo = null;
+      providerArrayOrderScroller = null;
+      providerArrayOrderRoot = null;
+      providerArrayOrderCardCache = null;
+      providerArrayOrderOriginY = null;
       providerDragID = '';
       providerDragHome = '';
       clearProviderDragMarks(root);
+      if (orderID && to != null && to !== from) window.moveProviderArrayOrder(orderID, to);
+      if (orderID) providerArrayIgnoreClickUntil = Date.now() + 80;
     });
   }
+  window.moveProviderArrayOrder = async function(arrayID, toIndex) {
+    arrayID = String(arrayID || '');
+    var arrays = [];
+    providerArrayRecords().forEach(function(array) {
+      if (array && array.members && array.members.length) arrays.push(array);
+    });
+    var from = -1;
+    for (var i = 0; i < arrays.length; i++) {
+      if (arrays[i] && String(arrays[i].id) === arrayID) { from = i; break; }
+    }
+    toIndex = Number(toIndex);
+    if (from < 0 || !isFinite(toIndex) || toIndex === from) return;
+    if (toIndex < 0) toIndex = 0;
+    if (toIndex > arrays.length - 1) toIndex = arrays.length - 1;
+    if (toIndex === from) return;
+    var next = arrays.slice();
+    next.splice(toIndex, 0, next.splice(from, 1)[0]);
+    var before = {};
+    for (var j = 0; j < toIndex; j++) {
+      if (next[j] && next[j].id) before[String(next[j].id)] = true;
+    }
+    var current = sortedProviders();
+    var block = [];
+    var rest = [];
+    current.forEach(function(provider) {
+      var id = String((provider && (provider.array_id || provider.id)) || '');
+      if (id === arrayID) block.push(provider);
+      else rest.push(provider);
+    });
+    if (!block.length) return;
+    var insertAt = rest.length;
+    for (var k = 0; k < rest.length; k++) {
+      var aid = String((rest[k] && (rest[k].array_id || rest[k].id)) || '');
+      if (!before[aid]) { insertAt = k; break; }
+    }
+    var ordered = rest.slice(0, insertAt).concat(block, rest.slice(insertAt));
+    var same = ordered.length === current.length;
+    if (same) {
+      for (var n = 0; n < ordered.length; n++) {
+        if (!ordered[n] || !current[n] || ordered[n].id !== current[n].id) { same = false; break; }
+      }
+    }
+    if (same || !ordered.length) return;
+    var gen = ++providerSequenceSaveGen;
+    providersLoadSeq += 1;
+    var sequences = {};
+    ordered.forEach(function(provider, index) {
+      var seq = index + 1;
+      sequences[provider.id] = seq;
+      providerSequenceInFlight[provider.id] = seq;
+      provider.sequence = seq;
+    });
+    renderProviders();
+    try {
+      providerArrayRevealCard(arrayID);
+      await api('/api/admin/llm/providers/sequences', { method: 'PUT', body: JSON.stringify({ sequences: sequences }) });
+      if (gen !== providerSequenceSaveGen) return;
+      providersLoadSeq += 1;
+      providerSequenceInFlight = {};
+    } catch (e) {
+      if (gen !== providerSequenceSaveGen) return;
+      toast(e.message, 'error');
+      providerSequenceInFlight = {};
+      loadProviders({ traffic: false });
+    }
+  };
   function providerMovePayload(provider, arrayID) {
     var payload = copyProviderExtraFields(provider);
     payload.id = provider.id;
@@ -1859,6 +2183,7 @@ if (typeof I18N_ZH !== 'undefined') {
   }
   function providerRowMetaText(p) {
     var parts = [p && p.api_url || '', (p && p.protocol) || 'openai'];
+    if (providerUserAgentWire(p)) parts.push(providerUserAgentWire(p));
     if (p && p.has_api_key) parts.push('key');
     if (p && p.lb_group) parts.push(String(p.lb_group));
     var price = providerPriceSummary(p);
@@ -2019,7 +2344,7 @@ if (typeof I18N_ZH !== 'undefined') {
   function copyProviderExtraFields(src) {
     if (!src) return {};
     var out = {};
-    ['wire_api','resolution_tier','max_queue_waiters','queue_timeout_ms','circuit_breaker_threshold','circuit_breaker_cooldown_ms','failure_backoff_base_ms','failure_backoff_max_ms'].forEach(function(k) {
+    ['wire_api','agent_type','resolution_tier','max_queue_waiters','queue_timeout_ms','circuit_breaker_threshold','circuit_breaker_cooldown_ms','failure_backoff_base_ms','failure_backoff_max_ms'].forEach(function(k) {
       if (src[k] != null && src[k] !== '') out[k] = src[k];
     });
     return out;
@@ -2625,6 +2950,7 @@ if (typeof I18N_ZH !== 'undefined') {
       + field('llmPrvURL', t('fieldURL'), p ? p.api_url : '')
       + providerKeyField(p)
       + '<div><label>' + esc(t('fieldProtocol')) + '</label><select id="llmPrvProtocol"><option value="openai"' + ((!p||p.protocol==='openai')?' selected':'') + '>OpenAI</option><option value="anthropic"' + (p&&p.protocol==='anthropic'?' selected':'') + '>Anthropic</option></select></div>'
+      + providerUserAgentField(p)
       + providerModelsField(p ? (p.models||[]).join(', ') : '')
       + providerCapabilitiesField(p ? (p.capability_tags||[]).join(', ') : '')
       + field('llmPrvPriority', t('fieldPriority'), p ? String(p.priority||0) : '0', false, 'number')
@@ -2661,6 +2987,123 @@ if (typeof I18N_ZH !== 'undefined') {
     var key = edition ? p.auth_kind + '-' + edition : p.auth_kind;
     return vendorLoginAuths[key] ? key : '';
   }
+  var providerUserAgentPresets = [
+    { value: 'claude code 2.0', label: 'Claude Code' },
+    { value: 'ZCode', label: 'ZCode' },
+    { value: 'Codex', label: 'Codex' },
+    { value: 'OpenCode', label: 'OpenCode' },
+    { value: 'Cline', label: 'Cline' },
+    { value: 'Roo Code', label: 'Roo Code' },
+    { value: 'Kilo Code', label: 'Kilo Code' },
+    { value: 'Cursor', label: 'Cursor' },
+    { value: 'Crush', label: 'Crush' },
+    { value: 'Goose', label: 'Goose' },
+    { value: 'QAgent', label: 'QAgent' },
+    { value: 'CLI/2.63.2 CodeBuddy/2.63.2', label: 'WorkBuddy', names: ['workbuddy', 'codebuddy'], prefix: 'cli/', marker: 'codebuddy/' },
+    { value: 'qoder/1.1.64', label: 'Qoder', names: ['qoder'], prefix: 'qoder/' },
+    { value: 'Trae/0.1.69', label: 'Trae', names: ['trae'], prefix: 'trae/' },
+    { value: 'LobsterAI/0.1.0', label: 'LobsterAI', names: ['lobsterai', 'lobster'], prefix: 'lobsterai/' }
+  ];
+  function providerUserAgentDottedVersion(value) {
+    return /^\d+(?:\.\d+)*$/.test(value);
+  }
+  function providerUserAgentFamily(item, lower) {
+    if (!item.prefix || lower.indexOf(item.prefix) !== 0) return false;
+    var rest = lower.slice(item.prefix.length);
+    if (!item.marker) return providerUserAgentDottedVersion(rest);
+    var cut = rest.indexOf(' ');
+    if (cut <= 0) return false;
+    var tail = rest.slice(cut + 1);
+    return providerUserAgentDottedVersion(rest.slice(0, cut)) && tail.indexOf(item.marker) === 0 && providerUserAgentDottedVersion(tail.slice(item.marker.length));
+  }
+  function providerUserAgentPreset(value) {
+    var current = String(value || '').trim();
+    if (!current) return null;
+    for (var i = 0; i < providerUserAgentPresets.length; i++) {
+      if (providerUserAgentPresets[i].value === current) return providerUserAgentPresets[i];
+    }
+    var lower = current.toLowerCase();
+    for (var j = 0; j < providerUserAgentPresets.length; j++) {
+      var item = providerUserAgentPresets[j];
+      var names = item.names || [];
+      for (var n = 0; n < names.length; n++) {
+        if (names[n] === lower) return item;
+      }
+      if (providerUserAgentFamily(item, lower)) return item;
+    }
+    return null;
+  }
+  function providerUserAgentPresetByKind(kind) {
+    var label = { workbuddy: 'WorkBuddy', qoder: 'Qoder', trae: 'Trae', lobsterai: 'LobsterAI' }[String(kind || '').toLowerCase()];
+    if (!label) return null;
+    for (var i = 0; i < providerUserAgentPresets.length; i++) {
+      if (providerUserAgentPresets[i].label === label) return providerUserAgentPresets[i];
+    }
+    return null;
+  }
+  // Account logins replace the header in their own client. The row shows that
+  // header. A static API key keeps the User-Agent selected below.
+  function providerAccountUserAgentPreset(p) {
+    return p ? providerUserAgentPresetByKind(p.auth_kind) : null;
+  }
+  function providerUserAgentWire(p) {
+    var account = providerAccountUserAgentPreset(p);
+    if (account) return account.value;
+    var value = String(p && p.agent_type || '').trim();
+    if (!value || value.toLowerCase() === 'openclaw') return '';
+    var item = providerUserAgentPreset(value);
+    return item ? item.value : value;
+  }
+  function providerUserAgentMeta(p) {
+    var account = providerAccountUserAgentPreset(p);
+    if (account) return account.label;
+    var value = String(p && p.agent_type || '').trim();
+    if (!value || value.toLowerCase() === 'openclaw') return '';
+    var item = providerUserAgentPreset(value);
+    return item ? item.label : value;
+  }
+  function refreshProviderUserAgentHint() {
+    var hint = document.querySelector('.sg-form-dialog .provider-ua-hint');
+    if (!hint) return;
+    var auth = vendorLoginAuths[val('llmPrvAuth')];
+    var account = auth && providerUserAgentPresetByKind(auth.kind);
+    hint.textContent = account ? t('fieldUserAgentAccountHint') + ' ' + account.value : t('fieldUserAgentHint');
+  }
+  // Returns the canonical preset value, '' for the default, or null for a custom string.
+  function providerUserAgentKnown(value) {
+    var current = String(value || '').trim();
+    if (!current || current.toLowerCase() === 'openclaw') return '';
+    var item = providerUserAgentPreset(current);
+    return item ? item.value : null;
+  }
+  function providerUserAgentField(p) {
+    var current = String(p && p.agent_type || '').trim();
+    var known = providerUserAgentKnown(current);
+    var custom = known === null;
+    var options = '<option value="openclaw"' + (!custom && !known ? ' selected' : '') + '>' + esc(t('uaDefault')) + '</option>'
+      + providerUserAgentPresets.map(function(item) {
+        return '<option value="' + esc(item.value) + '"' + (known === item.value ? ' selected' : '') + '>' + esc(item.label) + '</option>';
+      }).join('')
+      + '<option value="__custom__"' + (custom ? ' selected' : '') + '>' + esc(t('uaCustom')) + '</option>';
+    return '<div class="grid-span-all"><label for="llmPrvUserAgent">' + esc(t('fieldUserAgent')) + '</label><select id="llmPrvUserAgent" onchange="onProviderUserAgentChange(true)">' + options + '</select>'
+      + '<input id="llmPrvUserAgentCustom" class="provider-ua-custom" type="text" maxlength="128" autocomplete="off" value="' + esc(custom ? current : '') + '"' + (custom ? '' : ' hidden') + ' placeholder="' + esc(t('uaCustomPlaceholder')) + '">'
+      + '<div class="provider-ua-hint">' + esc(t('fieldUserAgentHint')) + '</div></div>';
+  }
+  function providerUserAgentValue() {
+    var selected = val('llmPrvUserAgent');
+    if (selected === '__custom__') {
+      var custom = String(val('llmPrvUserAgentCustom') || '').replace(/[\u0000-\u001f\u007f]/g, '').trim();
+      return custom || 'openclaw';
+    }
+    return selected || 'openclaw';
+  }
+  window.onProviderUserAgentChange = function(focusCustom) {
+    var custom = document.getElementById('llmPrvUserAgentCustom');
+    if (!custom) return;
+    var show = val('llmPrvUserAgent') === '__custom__';
+    custom.hidden = !show;
+    if (show && focusCustom && typeof custom.focus === 'function') custom.focus();
+  };
   function providerStoresStaticKey(p) {
     return !!(p && p.has_api_key && !providerAuthValue(p));
   }
@@ -2703,6 +3146,7 @@ if (typeof I18N_ZH !== 'undefined') {
     }
     if (probe) probe.hidden = !!preset;
     if (url) url.readOnly = !!preset;
+    refreshProviderUserAgentHint();
     if (!preset) {
       stopWorkBuddyLoginPoll();
       return;
@@ -2882,7 +3326,7 @@ if (typeof I18N_ZH !== 'undefined') {
     if (choices) choices.innerHTML = '';
     try {
       var data = await api('/api/admin/llm/providers/probe-models', { method: 'POST', body: JSON.stringify({
-        provider_id: providerDialogID, api_url: val('llmPrvURL'), api_key: val('llmPrvKey'), protocol: val('llmPrvProtocol') || 'openai'
+        provider_id: providerDialogID, api_url: val('llmPrvURL'), api_key: val('llmPrvKey'), protocol: val('llmPrvProtocol') || 'openai', agent_type: providerUserAgentValue()
       }) });
       var models = data.models || [];
       if (list) list.innerHTML = models.map(function(m){ return '<option value="' + esc(m) + '"></option>'; }).join('');
@@ -2904,6 +3348,7 @@ if (typeof I18N_ZH !== 'undefined') {
     payload.name = val('llmPrvName');
     payload.api_url = val('llmPrvURL');
     payload.protocol = val('llmPrvProtocol');
+    payload.agent_type = providerUserAgentValue();
     payload.models = csv('llmPrvModels');
     payload.capability_tags = csv('llmPrvCaps');
     payload.priority = num('llmPrvPriority');
@@ -3227,6 +3672,7 @@ if (typeof I18N_ZH !== 'undefined') {
     if (from < 0) return;
     var to = from + Number(delta || 0);
     if (to < 0 || to >= list.length) return;
+    var gen = ++providerSequenceSaveGen;
     var item = list.splice(from, 1)[0];
     list.splice(to, 0, item);
     var sequences = {};
@@ -3239,9 +3685,11 @@ if (typeof I18N_ZH !== 'undefined') {
     renderProviders();
     try {
       await api('/api/admin/llm/providers/sequences', { method: 'PUT', body: JSON.stringify({ sequences: sequences }) });
+      if (gen !== providerSequenceSaveGen) return;
       providersLoadSeq += 1;
       providerSequenceInFlight = {};
     } catch (e) {
+      if (gen !== providerSequenceSaveGen) return;
       toast(e.message, 'error');
       providerSequenceInFlight = {};
       loadProviders({ traffic: false });
@@ -4870,7 +5318,8 @@ if (typeof I18N_ZH !== 'undefined') {
     var focus = sgSnapFocus(document.getElementById('llmDialogContent'));
     var snap = {
       id: val('llmPrvID'), name: val('llmPrvName'), url: val('llmPrvURL'), key: val('llmPrvKey'),
-      protocol: val('llmPrvProtocol'), models: val('llmPrvModels'), caps: val('llmPrvCaps'),
+      protocol: val('llmPrvProtocol'), userAgent: val('llmPrvUserAgent'), userAgentCustom: val('llmPrvUserAgentCustom'),
+      models: val('llmPrvModels'), caps: val('llmPrvCaps'),
       priority: val('llmPrvPriority'), sequence: val('llmPrvSequence'), conc: val('llmPrvConc'), timeout: val('llmPrvTimeout'),
       timezone: val('llmPrvTimezone'), multiplier: val('llmPrvMultiplier'),
       tpIn: val('llmPrvTpIn'), tpOut: val('llmPrvTpOut'), tpRmbIn: val('llmPrvTpRmbIn'), tpRmbOut: val('llmPrvTpRmbOut'),
@@ -4887,7 +5336,9 @@ if (typeof I18N_ZH !== 'undefined') {
     function restore() {
       function set(id, value) { var node = document.getElementById(id); if (node && value != null) node.value = value; }
       set('llmPrvID', snap.id); set('llmPrvName', snap.name); set('llmPrvURL', snap.url); set('llmPrvKey', snap.key);
-      set('llmPrvProtocol', snap.protocol); set('llmPrvModels', snap.models); set('llmPrvCaps', snap.caps);
+      set('llmPrvProtocol', snap.protocol); set('llmPrvUserAgent', snap.userAgent); set('llmPrvUserAgentCustom', snap.userAgentCustom);
+      if (typeof window.onProviderUserAgentChange === 'function') window.onProviderUserAgentChange(false);
+      set('llmPrvModels', snap.models); set('llmPrvCaps', snap.caps);
       set('llmPrvPriority', snap.priority); set('llmPrvSequence', snap.sequence); set('llmPrvConc', snap.conc); set('llmPrvTimeout', snap.timeout);
       set('llmPrvArray', snap.arrayID);
       if (typeof window.setProviderDialogArray === 'function') window.setProviderDialogArray(snap.arrayID || '');

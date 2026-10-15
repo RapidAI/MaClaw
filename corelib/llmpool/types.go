@@ -15,6 +15,10 @@ type ProviderConfig struct {
 	Sequence       int      `json:"sequence"`                  // admin dispatch order; smaller numbers are tried first. Runtime health does not rewrite this. Always exported so admin cards can show and sort by it.
 	Protocol       string   `json:"protocol"`                  // "openai" / "anthropic"
 	WireAPI        string   `json:"wire_api,omitempty"`        // "" / "responses"
+	// AgentType is the User-Agent sent to this provider. Empty means openclaw.
+	// A known coding client (Claude Code, ZCode, Codex, OpenCode, …) or any
+	// custom string is stored as typed.
+	AgentType string `json:"agent_type,omitempty"`
 	Models         []string `json:"models,omitempty"`          // supported models
 	CapabilityTags []string `json:"capability_tags,omitempty"` // e.g. "tools", "vision", "document"
 	Priority       int      `json:"priority,omitempty"`        // higher = preferred
