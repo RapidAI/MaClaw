@@ -478,7 +478,9 @@ func normalizeProviderAccessScope(provider *llmpool.ProviderConfig) {
 }
 
 // normalizeProviderAgentType trims the User-Agent and drops characters that
-// cannot appear in an HTTP header. A longer value is cut to 128 characters.
+// cannot appear in an HTTP header field value. Only printable ASCII survives:
+// Go would carry bytes above 0x7f, but upstreams routinely reject them. A
+// longer value is cut to 128 characters.
 func normalizeProviderAgentType(provider *llmpool.ProviderConfig) {
 	if provider == nil {
 		return
@@ -491,7 +493,7 @@ func normalizeProviderAgentType(provider *llmpool.ProviderConfig) {
 	var b strings.Builder
 	b.Grow(len(raw))
 	for _, r := range raw {
-		if r < 0x20 || r == 0x7f {
+		if r < 0x20 || r > 0x7e {
 			continue
 		}
 		b.WriteRune(r)

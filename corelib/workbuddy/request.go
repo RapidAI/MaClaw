@@ -164,13 +164,21 @@ func formatUUID(b []byte) string {
 // accepts it, and replacing a named function with "required" would drop the
 // function the client pinned. originalStream is the value the caller asked for.
 func PrepareBody(payload []byte) (prepared []byte, originalStream bool, ok bool) {
+	prepared, originalStream, ok, _ = prepareBody(payload)
+	return prepared, originalStream, ok
+}
+
+// prepareBody is PrepareBody plus the model it read, so a caller that needs
+// the model does not parse the same payload a second time.
+func prepareBody(payload []byte) (prepared []byte, originalStream bool, ok bool, model string) {
 	var obj map[string]any
 	if err := json.Unmarshal(payload, &obj); err != nil {
-		return payload, false, false
+		return payload, false, false, ""
 	}
 	originalStream, _ = obj["stream"].(bool)
+	model = modelName(obj)
 	if !needsRewrite(payload, obj) {
-		return payload, originalStream, true
+		return payload, originalStream, true, model
 	}
 	obj["stream"] = true
 	ensureSystemPrompt(obj)
@@ -179,9 +187,9 @@ func PrepareBody(payload []byte) (prepared []byte, originalStream bool, ok bool)
 	flattenToolChoice(obj)
 	out, err := json.Marshal(obj)
 	if err != nil {
-		return payload, originalStream, false
+		return payload, originalStream, false, model
 	}
-	return out, originalStream, true
+	return out, originalStream, true, model
 }
 
 func needsRewrite(payload []byte, obj map[string]any) bool {
@@ -264,16 +272,6 @@ func modelName(obj map[string]any) string {
 	}
 	model, _ := obj["model"].(string)
 	return model
-}
-
-func modelNameFromPayload(payload []byte) string {
-	var obj struct {
-		Model string `json:"model"`
-	}
-	if err := json.Unmarshal(payload, &obj); err != nil {
-		return ""
-	}
-	return obj.Model
 }
 
 func toolChoiceName(choice map[string]any) string {
@@ -395,14 +393,15 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if base == nil {
 		base = http.DefaultTransport
 	}
-	if !shouldAdapt(req) {
+	profile, adapt := shouldAdapt(req)
+	if !adapt {
 		return base.RoundTrip(req)
 	}
 	payload, err := readBody(req.Body)
 	if err != nil {
 		return nil, err
 	}
-	prepared, originalStream, ok := PrepareBody(payload)
+	prepared, originalStream, ok, model := prepareBody(payload)
 	if !ok {
 		prepared = payload
 	}
@@ -412,7 +411,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	outgoing.Header = req.Header.Clone()
 	outgoing.Header.Del(MarkerHeader)
-	if profile, ok := ProfileByURL(req.URL.String()); ok && profile.StoreID == StoreGlobal && modelNeedsConversationID(modelNameFromPayload(prepared)) {
+	if profile.StoreID == StoreGlobal && modelNeedsConversationID(model) {
 		ApplyConversationHeaders(outgoing.Header)
 	}
 	outgoing.ContentLength = int64(len(prepared))
@@ -437,11 +436,6 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	if !looksLikeSSE(raw) {
 		return replaceBody(resp, raw, resp.Header.Get("Content-Type")), nil
-	}
-	model := ""
-	var probe map[string]any
-	if json.Unmarshal(prepared, &probe) == nil {
-		model, _ = probe["model"].(string)
 	}
 	aggregated, err := AggregateSSE(bytes.NewReader(raw), model)
 	if err != nil {
@@ -511,18 +505,22 @@ func replaceBody(resp *http.Response, payload []byte, contentType string) *http.
 	return resp
 }
 
-func shouldAdapt(req *http.Request) bool {
+// shouldAdapt reports whether this chat call needs the WorkBuddy translation
+// and which edition it targets. A marked request is translated even when the
+// URL is not an edition host; the zero Profile then adds no conversation
+// headers.
+func shouldAdapt(req *http.Request) (Profile, bool) {
 	if req == nil || req.URL == nil || req.Method != http.MethodPost {
-		return false
+		return Profile{}, false
 	}
 	if !strings.HasSuffix(req.URL.Path, "/chat/completions") {
-		return false
+		return Profile{}, false
 	}
 	if req.Header.Get(MarkerHeader) == "1" {
-		return true
+		return Profile{}, true
 	}
-	_, ok := ProfileByURL(req.URL.String())
-	return ok
+	profile, ok := ProfileByURL(req.URL.String())
+	return profile, ok
 }
 
 func looksLikeSSE(body []byte) bool {

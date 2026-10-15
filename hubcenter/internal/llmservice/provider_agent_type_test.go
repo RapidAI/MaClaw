@@ -78,6 +78,21 @@ func TestNormalizeProviderAgentTypeCapsLength(t *testing.T) {
 	}
 }
 
+func TestNormalizeProviderAgentTypeDropsNonASCII(t *testing.T) {
+	// Go would carry bytes above 0x7f in a header, but upstreams routinely
+	// reject them. A custom agent stays usable as printable ASCII.
+	provider := &llmpool.ProviderConfig{AgentType: "My Agent 中文\tv1"}
+	normalizeProviderAgentType(provider)
+	if provider.AgentType != "My Agent v1" {
+		t.Fatalf("agent type = %q, want printable ASCII only", provider.AgentType)
+	}
+	empty := &llmpool.ProviderConfig{AgentType: "中文"}
+	normalizeProviderAgentType(empty)
+	if empty.AgentType != "" {
+		t.Fatalf("agent type = %q, want empty", empty.AgentType)
+	}
+}
+
 func TestNormalizeProviderAgentTypeAliases(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"Claude Code", "claude code 2.0"},

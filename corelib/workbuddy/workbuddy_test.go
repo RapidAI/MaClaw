@@ -172,6 +172,21 @@ func TestTransportAddsConversationHeadersOnlyForGlobal(t *testing.T) {
 	}
 }
 
+func TestPrepareBodyReportsModelForHeaderScope(t *testing.T) {
+	prepared, _, ok, model := prepareBody([]byte(`{"model":"hy3","stream":false,"messages":[{"role":"user","content":"hi"}]}`))
+	if !ok || model != "hy3" {
+		t.Fatalf("model = %q ok=%v prepared=%s", model, ok, prepared)
+	}
+	kept, _, ok, model := prepareBody([]byte(`{"model":"deepseek-v4.1","stream":true,"reasoning_effort":"high","messages":[{"role":"system","content":"s"},{"role":"user","content":"hi"}]}`))
+	if !ok || model != "deepseek-v4.1" || string(kept) == "" {
+		t.Fatalf("model = %q ok=%v", model, ok)
+	}
+	_, _, ok, model = prepareBody([]byte(`not json`))
+	if ok || model != "" {
+		t.Fatalf("invalid payload: ok=%v model=%q", ok, model)
+	}
+}
+
 func TestPrepareBodySkipsRewriteWhenAlreadyCompatible(t *testing.T) {
 	original := []byte(`{"model":"glm-5.3","stream":true,"messages":[{"role":"system","content":"s"},{"role":"user","content":"hi"}]}`)
 	got, stream, ok := PrepareBody(original)
