@@ -2910,7 +2910,10 @@ def stop_desktop(key):
     # Only pids from this run of the container: older numbers are now other
     # processes.
     pids = read_pids(key)
-    for name, pid in pids.items():
+    # The idle stop runs inside this display's watcher: signaling "watch"
+    # ends this very process, so it goes last or the parts after it in
+    # pids.json (dock, its bus, websockify) were left running.
+    for name, pid in sorted(pids.items(), key=lambda item: item[0] == "watch"):
         if not isinstance(pid, int):
             continue
         # The browser was already asked to exit. Signaling it again, or
