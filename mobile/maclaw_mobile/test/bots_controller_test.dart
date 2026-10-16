@@ -108,12 +108,12 @@ class _SignedInSessionController extends SessionController {
 
 MobileBootstrap _botTestBootstrap() {
   return const MobileBootstrap(
-    user: const MobileUser(
+    user: MobileUser(
       userId: 'u1',
       email: 'a@example.com',
       tenantId: 'tenant-a',
     ),
-    services: const MobileServices(
+    services: MobileServices(
       hubStatus: 'online',
       llmStatus: 'available',
       searchStatus: 'available',
@@ -126,14 +126,14 @@ MobileBootstrap _botTestBootstrap() {
       digitalEmployeesPath: '/api/mobile/digital-employees',
       realtimePath: '/api/mobile/realtime',
     ),
-    features: const MobileFeatures(
+    features: MobileFeatures(
       search: true,
       documents: true,
       backendSshSessions: true,
       digitalEmployees: true,
       pushNotifications: false,
     ),
-    limits: const MobileLimits(maxUploadBytes: 1024, maxExportJobs: 2),
+    limits: MobileLimits(maxUploadBytes: 1024, maxExportJobs: 2),
   );
 }
 
