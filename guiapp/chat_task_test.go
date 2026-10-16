@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -231,6 +232,148 @@ func TestChatTaskStatusReplyDoesNotRequireALoop(t *testing.T) {
 	}
 	if _, handled := h.tryChatTaskStatusReply(IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "please write a new essay about rivers"}); handled {
 		t.Fatal("a new request was treated as a status question")
+	}
+	if _, handled := h.tryChatTaskStatusReply(IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "git status"}); handled {
+		t.Fatal("git status was treated as a background-task question")
+	}
+	resp, handled = h.tryChatTaskStatusReply(IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "task status"})
+	if !handled || resp == nil || !strings.Contains(resp.Text, "ct-live") {
+		t.Fatalf("task status = handled:%v resp:%+v", handled, resp)
+	}
+}
+
+func TestChatTaskDispatchCapIsAtomic(t *testing.T) {
+	h, _ := testChatTaskHandler(t)
+	reg := h.ensureChatTasks()
+	release := make(chan struct{})
+	reg.executor = func(*IMMessageHandler, *chatTaskRecord) chatTaskRunResult {
+		<-release
+		return chatTaskRunResult{Text: "ok"}
+	}
+	var wg sync.WaitGroup
+	var mu sync.Mutex
+	okN, errN := 0, 0
+	for i := 0; i < 8; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := reg.Dispatch(AIAssistantChatTaskDispatchRequest{Text: "parallel task", SessionKey: desktopUserID})
+			mu.Lock()
+			if err != nil {
+				errN++
+			} else {
+				okN++
+			}
+			mu.Unlock()
+		}()
+	}
+	wg.Wait()
+	close(release)
+	if okN != chatTaskPerSessionLimit || errN != 8-chatTaskPerSessionLimit {
+		t.Fatalf("accepted %d rejected %d", okN, errN)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if reg.activeCount(desktopUserID) == 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("accepted tasks still active: %d", reg.activeCount(desktopUserID))
+}
+
+func TestChatTaskCancelUnblocksRequestInput(t *testing.T) {
+	h, _ := testChatTaskHandler(t)
+	reg := h.ensureChatTasks()
+	waiting := make(chan struct{})
+	reg.executor = func(handler *IMMessageHandler, task *chatTaskRecord) chatTaskRunResult {
+		close(waiting)
+		_, err := handler.ensureChatTasks().requestInput(task.ID, "which color?")
+		if err == nil {
+			return chatTaskRunResult{Text: "should have been canceled"}
+		}
+		return chatTaskRunResult{Err: err}
+	}
+	snap, err := reg.Dispatch(AIAssistantChatTaskDispatchRequest{Text: "paint the deck", SessionKey: desktopUserID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case <-waiting:
+	case <-time.After(2 * time.Second):
+		t.Fatal("task did not wait for input")
+	}
+	waitChatTaskStatus(t, reg, snap.ID, chatTaskNeedsInput)
+	if err := reg.Cancel(snap.ID); err != nil {
+		t.Fatal(err)
+	}
+	got := waitChatTaskStatus(t, reg, snap.ID, chatTaskCanceled)
+	if got.ResultText != "" {
+		t.Fatalf("canceled task returned %q", got.ResultText)
+	}
+}
+
+func TestChatTaskCancelReleasesQueuedSlot(t *testing.T) {
+	h, _ := testChatTaskHandler(t)
+	mgr := NewBackgroundLoopManager(nil)
+	mgr.SetSlotLimit(SlotKindChatTask, 1)
+	h.bgManager = mgr
+	reg := h.ensureChatTasks()
+	entered := make(chan string, 4)
+	release := make(chan struct{})
+	reg.executor = func(_ *IMMessageHandler, task *chatTaskRecord) chatTaskRunResult {
+		entered <- task.ID
+		<-release
+		return chatTaskRunResult{Text: "ok"}
+	}
+	first, err := reg.Dispatch(AIAssistantChatTaskDispatchRequest{Text: "first task", SessionKey: desktopUserID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case id := <-entered:
+		if id != first.ID {
+			t.Fatalf("first executor was %s", id)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("first task did not start")
+	}
+	second, err := reg.Dispatch(AIAssistantChatTaskDispatchRequest{Text: "second task", SessionKey: desktopUserID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && mgr.QueueLength(SlotKindChatTask) != 1 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if mgr.QueueLength(SlotKindChatTask) != 1 {
+		t.Fatalf("queue length = %d", mgr.QueueLength(SlotKindChatTask))
+	}
+	if err := reg.Cancel(second.ID); err != nil {
+		t.Fatal(err)
+	}
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && mgr.QueueLength(SlotKindChatTask) != 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if mgr.QueueLength(SlotKindChatTask) != 0 {
+		t.Fatalf("canceled task stayed queued: %d", mgr.QueueLength(SlotKindChatTask))
+	}
+	select {
+	case id := <-entered:
+		t.Fatalf("queued task started: %s", id)
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	waitChatTaskStatus(t, reg, first.ID, chatTaskDone)
+	waitChatTaskStatus(t, reg, second.ID, chatTaskCanceled)
+	select {
+	case id := <-entered:
+		t.Fatalf("queued task started after the slot freed: %s", id)
+	case <-time.After(300 * time.Millisecond):
+	}
+	if mgr.RunningCount(SlotKindChatTask) != 0 || mgr.QueueLength(SlotKindChatTask) != 0 {
+		t.Fatalf("slot leaked: running=%d queued=%d", mgr.RunningCount(SlotKindChatTask), mgr.QueueLength(SlotKindChatTask))
 	}
 }
 

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { appendChatTaskResultMessage, isChatTaskResultResponse, parseChatTaskEvent, upsertChatTaskCard, type ChatTaskMessage, type ChatTaskView } from "../chatTaskModel";
+import { appendChatTaskResultMessage, chatTasksToRestore, isChatTaskResultResponse, parseChatTaskEvent, upsertChatTaskCard, type ChatTaskMessage, type ChatTaskView } from "../chatTaskModel";
 
 const task: ChatTaskView = {
     id: "ct-1",
@@ -39,6 +39,18 @@ describe("chat task transcript", () => {
         expect(isChatTaskResultResponse({ response_source: "chat_task_result" })).toBe(true);
         expect(isChatTaskResultResponse({ request_id: "chat-task-result-ct-9" })).toBe(true);
         expect(isChatTaskResultResponse({ request_id: "desktop-ai-1", response_source: "agent" })).toBe(false);
+    });
+
+    it("restores open, failed, and interrupted cards without replaying finished ones", () => {
+        const tasks: ChatTaskView[] = [
+            { ...task, id: "live", status: "running" },
+            { ...task, id: "old", status: "done" },
+            { ...task, id: "stopped", status: "canceled" },
+            { ...task, id: "crash", status: "interrupted", recovered: true },
+            { ...task, id: "bad", status: "failed" },
+            { ...task, id: "ask", status: "needs_input" },
+        ];
+        expect(chatTasksToRestore(tasks).map(item => item.id)).toEqual(["live", "crash", "bad", "ask"]);
     });
 
     it("parses the task event stream", () => {

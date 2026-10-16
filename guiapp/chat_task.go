@@ -8,7 +8,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -78,8 +77,10 @@ type chatTaskRecord struct {
 	UpdatedAt     time.Time
 	Recovered     bool
 
-	loop     *LoopContext
-	answerCh chan string
+	loop       *LoopContext
+	answerCh   chan string
+	cancelCh   chan struct{}
+	cancelOnce sync.Once
 }
 
 type chatTaskRunResult struct {
@@ -95,9 +96,10 @@ type chatTaskRegistry struct {
 	storePath string
 	executor  chatTaskExecutor
 
-	mu     sync.Mutex
-	tasks  map[string]*chatTaskRecord
-	nextID uint64
+	mu        sync.Mutex
+	persistMu sync.Mutex
+	tasks     map[string]*chatTaskRecord
+	nextID    uint64
 }
 
 type chatTaskDisk struct {
@@ -179,11 +181,14 @@ func (r *chatTaskRegistry) Dispatch(req AIAssistantChatTaskDispatchRequest) (AIA
 	if !chatTaskSessionAllowed(sessionKey, r.codingWorkbench(sessionKey)) {
 		return AIAssistantChatTask{}, fmt.Errorf("background chat tasks are only available in the local assistant and project chat")
 	}
-	if r.activeCount(sessionKey) >= chatTaskPerSessionLimit {
+	now := time.Now()
+	r.mu.Lock()
+	if r.activeCountLocked(sessionKey) >= chatTaskPerSessionLimit {
+		r.mu.Unlock()
 		return AIAssistantChatTask{}, fmt.Errorf("this chat already has %d background tasks", chatTaskPerSessionLimit)
 	}
-	now := time.Now()
-	id := fmt.Sprintf("ct-%d-%d", now.UnixNano(), atomic.AddUint64(&r.nextID, 1))
+	r.nextID++
+	id := fmt.Sprintf("ct-%d-%d", now.UnixNano(), r.nextID)
 	task := &chatTaskRecord{
 		ID:         id,
 		SessionKey: sessionKey,
@@ -194,8 +199,8 @@ func (r *chatTaskRegistry) Dispatch(req AIAssistantChatTaskDispatchRequest) (AIA
 		CreatedAt:  now,
 		UpdatedAt:  now,
 		answerCh:   make(chan string, 1),
+		cancelCh:   make(chan struct{}),
 	}
-	r.mu.Lock()
 	r.tasks[id] = task
 	snap := task.snapshotLocked()
 	r.mu.Unlock()
@@ -223,16 +228,14 @@ func (r *chatTaskRegistry) List(sessionKey string) []AIAssistantChatTask {
 }
 
 func (r *chatTaskRegistry) Cancel(taskID string) error {
-	task, snap, ok := r.finishLocked(taskID, chatTaskCanceled, "", nil, "")
+	task, loop, snap, ok := r.finishLocked(taskID, chatTaskCanceled, "", nil, "")
 	if !ok {
 		if task == nil {
 			return fmt.Errorf("chat task not found")
 		}
 		return nil
 	}
-	r.stopLoop(task)
-	r.persist()
-	r.emit(snap)
+	r.publishTerminal(task, loop, snap, chatTaskCanceled)
 	return nil
 }
 
@@ -338,20 +341,14 @@ func (r *chatTaskRegistry) requestInput(taskID, question string) (string, error)
 	task.UpdatedAt = time.Now()
 	ch := task.answerCh
 	loop := task.loop
+	cancelWait := task.cancelCh
 	snap := task.snapshotLocked()
 	r.mu.Unlock()
 	r.persist()
 	r.emit(snap)
-	var cancel <-chan struct{}
+	var loopCancel <-chan struct{}
 	if loop != nil {
-		cancel = loop.CancelC
-	}
-	if cancel == nil {
-		ans, ok := <-ch
-		if !ok || strings.TrimSpace(ans) == "" {
-			return "", fmt.Errorf("canceled")
-		}
-		return strings.TrimSpace(ans), nil
+		loopCancel = loop.CancelC
 	}
 	select {
 	case ans, ok := <-ch:
@@ -359,7 +356,9 @@ func (r *chatTaskRegistry) requestInput(taskID, question string) (string, error)
 			return "", fmt.Errorf("canceled")
 		}
 		return strings.TrimSpace(ans), nil
-	case <-cancel:
+	case <-cancelWait:
+		return "", fmt.Errorf("canceled")
+	case <-loopCancel:
 		return "", fmt.Errorf("canceled")
 	}
 }
@@ -370,26 +369,96 @@ func (r *chatTaskRegistry) run(task *chatTaskRecord) {
 			r.finish(task.ID, chatTaskRunResult{Err: fmt.Errorf("chat task panic: %v", rec)})
 		}
 	}()
+	if r.isTerminal(task.ID) {
+		return
+	}
+	var slot *LoopContext
+	releaseSlot := func() {
+		if slot == nil || r.handler == nil || r.handler.bgManager == nil {
+			return
+		}
+		r.handler.bgManager.Complete(slot.ID)
+		slot = nil
+	}
 	if r.handler != nil && r.handler.bgManager != nil {
-		slot, waitC := r.handler.bgManager.SpawnOrQueue(SlotKindChatTask, task.MemoryKey, task.Title, 1)
+		acquired, waitC := r.handler.bgManager.SpawnOrQueue(SlotKindChatTask, task.MemoryKey, task.Title, 1)
+		slot = acquired
 		if slot == nil && waitC != nil {
-			select {
-			case slot = <-waitC:
-			case <-time.After(2 * time.Minute):
-				r.finish(task.ID, chatTaskRunResult{Err: fmt.Errorf("no background slot")})
+			slot = r.waitChatTaskSlot(task, waitC)
+			if slot == nil {
 				return
 			}
 		}
-		if slot != nil {
-			defer r.handler.bgManager.Complete(slot.ID)
-		}
 	}
-	r.mark(task.ID, chatTaskRunning, "")
+	if r.isTerminal(task.ID) || !r.mark(task.ID, chatTaskRunning, "") {
+		releaseSlot()
+		return
+	}
+	defer releaseSlot()
 	exec := r.executor
 	if exec == nil {
 		exec = (*IMMessageHandler).executeChatTaskAgentLoop
 	}
 	r.finish(task.ID, exec(r.handler, task))
+}
+
+// waitChatTaskSlot blocks until a chat-task slot opens, the task is canceled,
+// or the queue wait expires. A nil return means the caller must not start work;
+// the task is already terminal or has been finished with a slot error.
+func (r *chatTaskRegistry) waitChatTaskSlot(task *chatTaskRecord, waitC <-chan *LoopContext) *LoopContext {
+	timer := time.NewTimer(2 * time.Minute)
+	defer timer.Stop()
+	var cancelWait <-chan struct{}
+	if task != nil {
+		cancelWait = task.cancelCh
+	}
+	select {
+	case slot := <-waitC:
+		return slot
+	case <-cancelWait:
+		if slot := r.abandonQueuedSlot(waitC); slot != nil && r.handler != nil && r.handler.bgManager != nil {
+			r.handler.bgManager.Complete(slot.ID)
+		}
+		return nil
+	case <-timer.C:
+		if slot := r.abandonQueuedSlot(waitC); slot != nil {
+			return slot
+		}
+		if !r.isTerminal(task.ID) {
+			r.finish(task.ID, chatTaskRunResult{Err: fmt.Errorf("no background slot")})
+		}
+		return nil
+	}
+}
+
+// abandonQueuedSlot drops a queued waiter. Complete hands the next slot off
+// after releasing its lock, so CancelPending can miss a task that was already
+// dequeued. A slot waiting in the buffer is returned to the caller. A slot
+// that arrives after this returns is completed by a short drain so it cannot
+// occupy the chat-task limit forever.
+func (r *chatTaskRegistry) abandonQueuedSlot(waitC <-chan *LoopContext) *LoopContext {
+	if r == nil || r.handler == nil || r.handler.bgManager == nil || waitC == nil {
+		return nil
+	}
+	mgr := r.handler.bgManager
+	mgr.CancelPending(SlotKindChatTask, waitC)
+	select {
+	case slot := <-waitC:
+		return slot
+	default:
+	}
+	go func() {
+		timer := time.NewTimer(30 * time.Second)
+		defer timer.Stop()
+		select {
+		case slot := <-waitC:
+			if slot != nil {
+				mgr.Complete(slot.ID)
+			}
+		case <-timer.C:
+		}
+	}()
+	return nil
 }
 
 func (h *IMMessageHandler) executeChatTaskAgentLoop(task *chatTaskRecord) chatTaskRunResult {
@@ -440,22 +509,32 @@ func (h *IMMessageHandler) executeChatTaskAgentLoop(task *chatTaskRecord) chatTa
 
 func (h *IMMessageHandler) bindChatTaskLoop(taskID string, loop *LoopContext) {
 	reg := h.ensureChatTasks()
-	if reg == nil {
+	if reg == nil || loop == nil {
 		return
 	}
 	reg.mu.Lock()
-	if task := reg.tasks[taskID]; task != nil {
-		task.loop = loop
+	task := reg.tasks[taskID]
+	if task == nil {
+		reg.mu.Unlock()
+		loop.Cancel()
+		return
 	}
+	task.loop = loop
+	alreadyStopped := task.Status.terminal()
 	reg.mu.Unlock()
+	// Cancel can win before the loop pointer is published. Stop the loop
+	// here so a late bind cannot keep running after the task is terminal.
+	if alreadyStopped {
+		loop.Cancel()
+	}
 }
 
-func (r *chatTaskRegistry) mark(id string, status chatTaskStatus, progress string) {
+func (r *chatTaskRegistry) mark(id string, status chatTaskStatus, progress string) bool {
 	r.mu.Lock()
 	task := r.tasks[id]
 	if task == nil || task.Status.terminal() {
 		r.mu.Unlock()
-		return
+		return false
 	}
 	task.Status = status
 	if strings.TrimSpace(progress) != "" {
@@ -466,6 +545,7 @@ func (r *chatTaskRegistry) mark(id string, status chatTaskStatus, progress strin
 	r.mu.Unlock()
 	r.persist()
 	r.emit(snap)
+	return true
 }
 
 func (r *chatTaskRegistry) noteProgress(id, text string) {
@@ -497,27 +577,22 @@ func (r *chatTaskRegistry) finish(id string, result chatTaskRunResult) {
 			errText = result.Err.Error()
 		}
 	}
-	task, snap, ok := r.finishLocked(id, status, result.Text, result.Artifacts, errText)
+	task, loop, snap, ok := r.finishLocked(id, status, result.Text, result.Artifacts, errText)
 	if !ok {
 		return
 	}
-	r.stopLoop(task)
-	r.persist()
-	r.emit(snap)
-	if status == chatTaskDone {
-		r.deliverResult(snap)
-	}
+	r.publishTerminal(task, loop, snap, status)
 }
 
-func (r *chatTaskRegistry) finishLocked(id string, status chatTaskStatus, text string, artifacts []string, errText string) (*chatTaskRecord, AIAssistantChatTask, bool) {
+func (r *chatTaskRegistry) finishLocked(id string, status chatTaskStatus, text string, artifacts []string, errText string) (*chatTaskRecord, *LoopContext, AIAssistantChatTask, bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	task := r.tasks[strings.TrimSpace(id)]
 	if task == nil {
-		return nil, AIAssistantChatTask{}, false
+		return nil, nil, AIAssistantChatTask{}, false
 	}
 	if task.Status.terminal() {
-		return task, task.snapshotLocked(), false
+		return task, nil, task.snapshotLocked(), false
 	}
 	task.Status = status
 	task.ResultText = strings.TrimSpace(text)
@@ -527,14 +602,33 @@ func (r *chatTaskRegistry) finishLocked(id string, status chatTaskStatus, text s
 	}
 	task.Question = ""
 	task.UpdatedAt = time.Now()
-	return task, task.snapshotLocked(), true
+	return task, task.loop, task.snapshotLocked(), true
 }
 
-func (r *chatTaskRegistry) stopLoop(task *chatTaskRecord) {
-	if task == nil || task.loop == nil {
+func (r *chatTaskRegistry) publishTerminal(task *chatTaskRecord, loop *LoopContext, snap AIAssistantChatTask, status chatTaskStatus) {
+	if task != nil {
+		task.signalCancel()
+	}
+	// Successful and failed finishes have already returned from the executor.
+	// Canceling that loop marks the completed turn cancelled. Only a user
+	// cancel should stop a loop that may still be inside the agent.
+	if status == chatTaskCanceled && loop != nil {
+		loop.Cancel()
+	}
+	r.persist()
+	r.emit(snap)
+	if status == chatTaskDone {
+		r.deliverResult(snap)
+	}
+}
+
+func (task *chatTaskRecord) signalCancel() {
+	if task == nil || task.cancelCh == nil {
 		return
 	}
-	task.loop.Cancel()
+	task.cancelOnce.Do(func() {
+		close(task.cancelCh)
+	})
 }
 
 func (r *chatTaskRegistry) deliverResult(snap AIAssistantChatTask) {
@@ -577,6 +671,10 @@ func (r *chatTaskRegistry) persist() {
 	if r == nil || r.storePath == "" {
 		return
 	}
+	// Serialize the snapshot and the rename. Otherwise two persists can list
+	// in order A, B and write in order B, A, dropping the newer snapshot.
+	r.persistMu.Lock()
+	defer r.persistMu.Unlock()
 	blob, err := json.MarshalIndent(chatTaskDisk{Tasks: r.List("")}, "", "  ")
 	if err != nil {
 		log.Printf("[chat-task] persist marshal: %v", err)
@@ -624,6 +722,7 @@ func (r *chatTaskRegistry) load() {
 			changed = true
 		}
 		rec.answerCh = make(chan string, 1)
+		rec.cancelCh = make(chan struct{})
 		r.tasks[rec.ID] = rec
 	}
 	r.mu.Unlock()
@@ -635,6 +734,10 @@ func (r *chatTaskRegistry) load() {
 func (r *chatTaskRegistry) activeCount(sessionKey string) int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	return r.activeCountLocked(sessionKey)
+}
+
+func (r *chatTaskRegistry) activeCountLocked(sessionKey string) int {
 	n := 0
 	for _, task := range r.tasks {
 		if task.SessionKey == sessionKey && !task.Status.terminal() {
@@ -642,6 +745,16 @@ func (r *chatTaskRegistry) activeCount(sessionKey string) int {
 		}
 	}
 	return n
+}
+
+func (r *chatTaskRegistry) isTerminal(id string) bool {
+	if r == nil {
+		return true
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	task := r.tasks[id]
+	return task == nil || task.Status.terminal()
 }
 
 func (r *chatTaskRegistry) codingWorkbench(sessionKey string) bool {
@@ -971,7 +1084,7 @@ func looksLikeChatTaskStatusQuestion(text string) bool {
 	if text == "" || utf8.RuneCountInString(text) > 80 {
 		return false
 	}
-	needles := []string{"进度", "怎么样", "做完", "好了吗", "完成了吗", "status", "how's", "how is", "how are", "where are we", "还在跑", "后台任务"}
+	needles := []string{"进度", "怎么样", "做完", "好了吗", "完成了吗", "task status", "how's", "how is", "how are", "where are we", "background task", "还在跑", "后台任务"}
 	for _, needle := range needles {
 		if strings.Contains(text, needle) {
 			return true

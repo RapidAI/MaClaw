@@ -15,7 +15,7 @@ import { reasoningHasCodingStatusMilestone, stripCodingWorkbenchStatusReasoning 
 import { clearAssistantRoundProse, isRejectedRoundContentToken, rejectStreamedAssistantContent, rejectedRoundContentToken } from "./assistantRoundProse";
 import { appendToolCallMarker, contentHasAssistantToolCall, isProgressOnlyToolAction, isTranscriptToolCallText, parseAssistantToolStatus, stripAssistantToolCallMarkers, type AssistantToolCall } from "./assistantToolCall";
 import { cleanReasoningTrailForBody, parkReplacedStreamInReasoning } from "./assistantReasoningBody";
-import { answerDesktopChatTask, appendChatTaskResultMessage, cancelDesktopChatTask, chatTaskCardMessage, chatTaskEventName, dispatchDesktopChatTask, isChatTaskResultResponse, listDesktopChatTasks, parseChatTaskEvent, steerDesktopChatTask, upsertChatTaskCard, upsertChatTaskList, type ChatTaskView } from "./chatTaskModel";
+import { answerDesktopChatTask, appendChatTaskResultMessage, cancelDesktopChatTask, chatTaskCardMessage, chatTaskEventName, chatTasksToRestore, dispatchDesktopChatTask, isChatTaskResultResponse, listDesktopChatTasks, parseChatTaskEvent, steerDesktopChatTask, upsertChatTaskCard, upsertChatTaskList, type ChatTaskView } from "./chatTaskModel";
 
 export interface CancelAIAssistantResult {
     canceledText: string;
@@ -6654,7 +6654,8 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         void listDesktopChatTasks("").then(tasks => {
             if (cancelled || tasks.length === 0) return;
             setChatTasks(tasks);
-            setMessages(prev => tasks.reduce((messages, task) => upsertChatTaskCard(messages, task) as ChatMessage[], prev));
+            const visible = chatTasksToRestore(tasks);
+            setMessages(prev => visible.reduce((messages, task) => upsertChatTaskCard(messages, task) as ChatMessage[], prev));
         }).catch(() => {});
         const unsubscribe = subscribeEvent(chatTaskEventName(), (payload: unknown) => {
             const task = parseChatTaskEvent(payload);

@@ -82,6 +82,12 @@ export function parseChatTaskEvent(payload: unknown): ChatTaskView | null {
     return normalizeChatTask(raw);
 }
 
+const restoredOnStartup = new Set(["queued", "running", "needs_input", "failed", "interrupted"]);
+
+export function chatTasksToRestore(tasks: ChatTaskView[]): ChatTaskView[] {
+    return tasks.filter(task => restoredOnStartup.has(task.status));
+}
+
 export function upsertChatTaskList(tasks: ChatTaskView[], next: ChatTaskView): ChatTaskView[] {
     const index = tasks.findIndex(task => task.id === next.id);
     if (index < 0) return [...tasks, next];
