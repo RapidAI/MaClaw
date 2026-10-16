@@ -1799,6 +1799,9 @@ func (c *sharedAgentLoopCallbacks) IsToolAllowedForPromptProfile(name string, pr
 	if c.sessionTurnDeniesTools() {
 		return false
 	}
+	if c != nil && !goalPlanPhaseAllowsTool(c.userText, name) {
+		return false
+	}
 	// The companion's closed surface is decided here too, not only at
 	// exposure: a companion question is often short enough to be routed onto
 	// the light prompt, and the light allowlist knows nothing about these
@@ -1866,6 +1869,9 @@ func (c *sharedAgentLoopCallbacks) semanticLightLookup() bool {
 // is the text that made the model ask the user to re-authorize tools.
 func (c *sharedAgentLoopCallbacks) IsToolAllowed(name string) bool {
 	if c.sessionTurnDeniesTools() {
+		return false
+	}
+	if c != nil && !goalPlanPhaseAllowsTool(c.userText, name) {
 		return false
 	}
 	// Same closed surface as IsToolAllowedForPromptProfile: what is published
@@ -2698,6 +2704,11 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
+		return false, ""
+	}
+	// A plan continuation's surface is read-only plus goal. Granting bash or
+	// write_file here puts the mutation tools back onto the next request.
+	if !goalPlanPhaseAllowsTool(c.userText, name) {
 		return false, ""
 	}
 	// A spilled tool result names this reader in its footer. It is a host
@@ -4378,7 +4389,7 @@ func (c *sharedAgentLoopCallbacks) executeCoordinatedSemanticToolCall(functionNa
 		// frozen mailbox draft) settles through the ordinary outcome path.
 		return result.Result
 	}
-	if c.usesUnifiedDynamicEffectCoordinator(selected) && (result.AwaitingReceipt || result.Unknown || result.Succeeded || result.ReasonCode == "dynamic_binding_stale" || strings.HasSuffix(result.ReasonCode, "_binding_stale") || strings.HasSuffix(result.ReasonCode, "_bound_execution_unavailable")) {
+	if c.usesUnifiedDynamicEffectCoordinator(selected) && (result.AwaitingReceipt || result.Unknown || result.Succeeded || result.ReasonCode == "dynamic_binding_stale" || result.ReasonCode == "mcp_tool_error" || strings.HasSuffix(result.ReasonCode, "_binding_stale") || strings.HasSuffix(result.ReasonCode, "_bound_execution_unavailable")) {
 		// The dynamic external-effect coordinator committed the host call and
 		// plan execution atomically with the operation state. Completing it
 		// again through the generic path would corrupt the one-way state
@@ -4386,6 +4397,16 @@ func (c *sharedAgentLoopCallbacks) executeCoordinatedSemanticToolCall(functionNa
 		delete(c.semanticSurface.pendingArtifacts, selected.ID)
 		if c.replanAfterSemanticLifecycleFailure(result.ReasonCode) {
 			return result.Result
+		}
+		if result.Succeeded && !result.AwaitingReceipt && !result.Unknown {
+			// A synchronous MCP or Skill observation is already succeeded.
+			// Advance the local closure so a dependant can run. Retire-only
+			// would leave the DAG waiting for a receipt that was just settled.
+			note, err := c.advanceSemanticToolSurface(selected.ID)
+			if err != nil {
+				return semanticAdvanceAfterSuccess(result.Result, err)
+			}
+			return result.Result + note
 		}
 		if err := c.retireSemanticToolSurface(functionName, selected.ID); err != nil {
 			return "[system rejected] semantic_plan_retire_failed"
@@ -5023,6 +5044,12 @@ func semanticHostObservedExternalSelection(selection tool.PlannedSelection) bool
 // semanticReceiptIntakeRejection refuses an unexecutable external selection
 // before PlanExecutor admits the grant. The inner gate remains for callers
 // that invoke the adapter directly.
+//
+// A dynamic MCP or Skill selection is not missing that boundary. Its receipt
+// is the dynamic effect coordinator, and an unreviewed MCP write also stops
+// for per-server confirmation, both inside executeSemanticDynamicProvider.
+// Applying the legacy host allow-list here rejected the call before either
+// could run, so an installed external-effect tool never executed.
 func (c *sharedAgentLoopCallbacks) semanticReceiptIntakeRejection(functionName string) string {
 	if c == nil || c.semanticSurface == nil {
 		return ""
@@ -5032,7 +5059,7 @@ func (c *sharedAgentLoopCallbacks) semanticReceiptIntakeRejection(functionName s
 		return ""
 	}
 	selection, found := semanticSelectionByID(c.semanticSurface.plan, grant.SelectionID)
-	if !found || !semanticReceiptBoundaryMissing(selection) {
+	if !found || !semanticReceiptBoundaryMissing(selection) || tool.SelectionIsDynamic(selection) {
 		return ""
 	}
 	return "[system rejected] external_effect_receipt_boundary_missing"
@@ -7771,6 +7798,11 @@ func (c *sharedAgentLoopCallbacks) RefreshAfterToolExecution(name string) bool {
 func (c *sharedAgentLoopCallbacks) systemPromptWithTaskAnchor(systemPrompt string) string {
 	if c == nil {
 		return systemPrompt
+	}
+	// The host phase outranks the chat prompt. A continuation that only
+	// appears in the user message is easy to answer in prose.
+	if section := goalContinuationPhaseSection(c.userText); section != "" {
+		systemPrompt = section + systemPrompt
 	}
 	return appendTaskIdentityAnchorPrompt(systemPrompt, c.taskAnchor)
 }

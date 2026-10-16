@@ -7,6 +7,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -46,6 +48,9 @@ func TestNormalizeSettingsUsesCodexContextDefaultsAndPreservesOverrides(t *testi
 	defaults := normalizeSettings(Settings{})
 	if defaults.CodexContextWindow != 199000 || defaults.CodexAutoCompactTokenLimit != 180000 {
 		t.Fatalf("Codex defaults = %d/%d, want 199000/180000", defaults.CodexContextWindow, defaults.CodexAutoCompactTokenLimit)
+	}
+	if defaults.ModelAlias != defaultCodexModelAlias {
+		t.Fatalf("model alias = %q, want %q", defaults.ModelAlias, defaultCodexModelAlias)
 	}
 
 	overrides := normalizeSettings(Settings{
@@ -417,6 +422,273 @@ func TestTigerProxyUpstreamUsesConfiguredAgentType(t *testing.T) {
 	}
 	if got := headers.Get("User-Agent"); got != "opencode" {
 		t.Fatalf("upstream User-Agent = %q, want opencode", got)
+	}
+}
+
+func TestConfigureCodexWritesModelAlias(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	app := NewApp()
+	if err := writeSettings(Settings{APIKey: "local-key", ModelID: "gpt-5.5"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.ConfigureCodex(); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(configfile.CodexConfigPath())
+	if err != nil {
+		t.Fatal(err)
+	}
+	content := string(data)
+	if !strings.Contains(content, `model = "auto"`) {
+		t.Fatalf("Codex config model alias missing:\n%s", content)
+	}
+	if strings.Contains(content, `model = "gpt-5.5"`) {
+		t.Fatalf("selected model was written into Codex config:\n%s", content)
+	}
+}
+
+func TestModelAliasRewriteFollowsSelectedModel(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	seen := make(chan string, 4)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		model, _ := body["model"].(string)
+		seen <- model
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-tigerproxy","model":"`+model+`","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer upstream.Close()
+
+	app := NewApp()
+	err := app.restartProxy(Settings{
+		ListenAddress: "127.0.0.1:0",
+		APIKey:        "local-key",
+		AccessToken:   "upstream-token",
+		BaseURL:       upstream.URL,
+		ModelID:       "gpt-5.5",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer app.stopProxy()
+
+	baseURL := tigerProxyTestBaseURL(t, app)
+	client := &http.Client{Timeout: 5 * time.Second}
+	post := func(path, payload string) map[string]interface{} {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, baseURL+path, strings.NewReader(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer local-key")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("%s status = %d body=%s", path, resp.StatusCode, raw)
+		}
+		var decoded map[string]interface{}
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatalf("decode %s: %v body=%s", path, err, raw)
+		}
+		return decoded
+	}
+
+	if got := post("/v1/responses", `{"model":"auto","input":"hi"}`)["model"]; got != "auto" {
+		t.Fatalf("responses model = %#v, want the alias", got)
+	}
+	if got := <-seen; got != "gpt-5.5" {
+		t.Fatalf("upstream model = %q, want gpt-5.5", got)
+	}
+
+	app.applyLocalModelAlias(Settings{ModelID: "glm-5.3"})
+	if got := post("/v1/chat/completions", `{"model":"auto","messages":[{"role":"user","content":"hi"}]}`)["model"]; got != "auto" {
+		t.Fatalf("chat model = %#v, want the alias", got)
+	}
+	if got := <-seen; got != "glm-5.3" {
+		t.Fatalf("upstream model after switch = %q, want glm-5.3", got)
+	}
+
+	if got := post("/v1/chat/completions", `{"model":"gpt-5.5","messages":[{"role":"user","content":"hi"}]}`)["model"]; got != "gpt-5.5" {
+		t.Fatalf("explicit chat model = %#v, want it left unchanged", got)
+	}
+	if got := <-seen; got != "gpt-5.5" {
+		t.Fatalf("explicit model = %q, want it left unchanged", got)
+	}
+}
+
+func TestSaveSettingsKeepsLiveAliasUntilCodexIsReconfigured(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
+
+	seen := make(chan string, 4)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		model, _ := body["model"].(string)
+		seen <- model
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-tigerproxy","model":"`+model+`","choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`)
+	}))
+	defer upstream.Close()
+
+	app := NewApp()
+	settings := Settings{
+		ListenAddress: "127.0.0.1:0",
+		APIKey:        "local-key",
+		AccessToken:   "upstream-token",
+		BaseURL:       upstream.URL,
+		ModelID:       "gpt-5.5",
+		ModelAlias:    "auto",
+	}
+	if err := writeSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+	if err := app.restartProxy(settings); err != nil {
+		t.Fatal(err)
+	}
+	defer app.stopProxy()
+
+	settings.ModelID = "glm-5.3"
+	settings.ModelAlias = "tiger"
+	if _, err := app.SaveSettings(settings); err != nil {
+		t.Fatal(err)
+	}
+
+	baseURL := tigerProxyTestBaseURL(t, app)
+	client := &http.Client{Timeout: 5 * time.Second}
+	post := func(model string) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/chat/completions", strings.NewReader(`{"model":"`+model+`","messages":[{"role":"user","content":"hi"}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer local-key")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d body=%s", resp.StatusCode, raw)
+		}
+	}
+
+	post("auto")
+	if got := <-seen; got != "glm-5.3" {
+		t.Fatalf("saved model = %q, want glm-5.3 on the previous alias", got)
+	}
+	post("tiger")
+	if got := <-seen; got != "tiger" {
+		t.Fatalf("new alias before reconfigure = %q, want it left unchanged", got)
+	}
+
+	if _, err := app.ConfigureCodex(); err != nil {
+		t.Fatal(err)
+	}
+	post("tiger")
+	if got := <-seen; got != "glm-5.3" {
+		t.Fatalf("alias after configure = %q, want glm-5.3", got)
+	}
+	post("auto")
+	if got := <-seen; got != "auto" {
+		t.Fatalf("previous alias after configure = %q, want it left unchanged", got)
+	}
+}
+
+func TestRestartUsesCodexConfigModelAsLiveAlias(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	configPath := configfile.CodexConfigPath()
+	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	config := "model_provider = \"tigerproxy\"\nmodel = \"auto\"\n\n[model_providers.tigerproxy]\nname = \"TigerProxy\"\n"
+	if err := os.WriteFile(configPath, []byte(config), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	seen := make(chan string, 2)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		model, _ := body["model"].(string)
+		seen <- model
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"chatcmpl-tigerproxy","choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
+	}))
+	defer upstream.Close()
+
+	app := NewApp()
+	if err := app.restartProxy(Settings{
+		ListenAddress: "127.0.0.1:0",
+		APIKey:        "local-key",
+		AccessToken:   "upstream-token",
+		BaseURL:       upstream.URL,
+		ModelID:       "gpt-5.5",
+		ModelAlias:    "tiger",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	defer app.stopProxy()
+
+	baseURL := tigerProxyTestBaseURL(t, app)
+	client := &http.Client{Timeout: 5 * time.Second}
+	post := func(model string) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, baseURL+"/v1/chat/completions", strings.NewReader(`{"model":"`+model+`","messages":[{"role":"user","content":"hi"}]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer local-key")
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status = %d body=%s", resp.StatusCode, raw)
+		}
+	}
+	post("auto")
+	if got := <-seen; got != "gpt-5.5" {
+		t.Fatalf("config alias upstream = %q, want gpt-5.5", got)
+	}
+	post("tiger")
+	if got := <-seen; got != "tiger" {
+		t.Fatalf("settings alias before configure = %q, want it left unchanged", got)
 	}
 }
 

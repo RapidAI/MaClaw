@@ -185,6 +185,8 @@ func CanonicalDeliveryChannel(channel string) string {
 		return DeliveryChannelTelegram
 	case DeliveryChannelQQ, "qqlocal", "qqbot", "qqbotlocal":
 		return DeliveryChannelQQ
+	case DeliveryChannelSlack, "slacklocal":
+		return DeliveryChannelSlack
 	case DeliveryChannelDevice, "devicelocal", "hardware", "hardwarelocal", "esp32", "companion", "maclawdevice":
 		return DeliveryChannelDevice
 	default:

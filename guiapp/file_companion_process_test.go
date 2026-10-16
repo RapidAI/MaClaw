@@ -398,16 +398,19 @@ func TestCompanionRevealKeepsAMaximisedWindow(t *testing.T) {
 }
 
 func TestShowFileCompanionLaunchesWithoutAPath(t *testing.T) {
-	app := &App{}
+	app := &App{testHomeDir: t.TempDir()}
 	var argv []string
 	app.processHooks.startProcess = func(got []string) error {
 		argv = append([]string(nil), got...)
 		return nil
 	}
+	// Nothing is remembered, and the dialog is cancelled. No process starts:
+	// an empty companion used to treat the launch verb as a file tab.
+	app.processHooks.chooseFiles = func() ([]string, error) { return nil, nil }
 	if err := app.ShowFileCompanion(); err != nil {
 		t.Fatal(err)
 	}
-	if len(argv) != 2 || argv[1] != "open-file" {
+	if len(argv) != 0 {
 		t.Fatalf("argv = %#v", argv)
 	}
 }

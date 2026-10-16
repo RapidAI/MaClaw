@@ -1609,7 +1609,7 @@ func DeepSeekFlashAcceptsImages(model string) bool {
 		model = strings.TrimSpace(model[:i])
 	}
 	switch model {
-	case "deepseek-v4.1-flash", "deepseek-flash", "deepseek-v4-flash-vision-exp":
+	case "deepseek-v4.1-flash", "deepseek-v4.1-flash-free", "deepseek-flash", "deepseek-v4-flash-vision-exp":
 		return true
 	default:
 		return false

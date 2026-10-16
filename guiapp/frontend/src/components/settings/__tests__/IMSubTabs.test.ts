@@ -9,4 +9,8 @@ describe('imSubTabOptions', () => {
     it('shows Lansenger for TigerClaw IM settings', () => {
         expect(imSubTabOptions('zh-Hans', { showLansenger: true }).some(tab => tab.key === 'lansenger' && tab.label === '蓝信')).toBe(true);
     });
+
+    it('includes Slack as an IM channel', () => {
+        expect(imSubTabOptions('zh-Hans').some(tab => tab.key === 'slack' && tab.label === 'Slack')).toBe(true);
+    });
 });

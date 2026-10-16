@@ -635,6 +635,7 @@ async function refresh() {
     $("apiKey").value = pick(s, "api_key", "APIKey") || "";
     $("codexContextWindow").value = pick(s, "codex_context_window", "CodexContextWindow") || "";
     $("codexAutoCompactTokenLimit").value = pick(s, "codex_auto_compact_token_limit", "CodexAutoCompactTokenLimit") || "";
+    if ($("modelAlias")) $("modelAlias").value = pick(s, "model_alias", "ModelAlias") || "auto";
     renderAgentType(pick(s, "agent_type", "AgentType") || "");
     renderModeFields(status);
     if (previousMode && previousMode === currentAuthMode) restoreModeInputs(snap);
@@ -786,6 +787,7 @@ async function save(options = {}) {
       api_key: $("apiKey").value,
       base_url: $("baseURL")?.value || "",
       model_id: $("modelID")?.value || "",
+      model_alias: $("modelAlias")?.value || "auto",
       models: collectModels(),
       agent_type: agentType,
       codex_context_window: codexContextWindow,

@@ -835,6 +835,7 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContextAndContextTokens
 	}
 	name = strings.TrimSpace(name)
 	argsJSON = strings.TrimSpace(argsJSON)
+	name, argsJSON = rewriteOpenCodeReadToolCall(name, argsJSON)
 	kind := classifyAgentToolKind(name)
 	if reason := rejectUnstableBrowserToolCallJSON(name, argsJSON); reason != "" {
 		return toolExecutionResult{Text: "[system rejected] " + reason, ToolName: name, ToolKind: kind, Outcome: toolOutcomeFailed, FailureKind: toolFailurePolicyRejected}
@@ -1150,6 +1151,13 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContextAndContextTokens
 					return gateResult
 				}
 			}
+			// goal is stored per session owner. lastUserID is process-global and
+			// another tab can overwrite it while this call is in flight. The
+			// turn owner is already on the context.
+			if name == "goal" {
+				text := h.toolGoalForUser(goalExecutionOwner(execCtx, h.lastUserID), args)
+				return registeredToolExecutionResult(text)
+			}
 			if tool.HandlerCtx != nil {
 				text := tool.HandlerCtx(execCtx, args, onProgress)
 				result := registeredToolExecutionResultForContext(text, execCtx)
@@ -1352,6 +1360,29 @@ func (h *IMMessageHandler) consumeRuntimePlatformFromToolArgsOrCurrent(args map[
 		return platform
 	}
 	return ""
+}
+
+// rewriteOpenCodeReadToolCall maps the Zen free-tier tool name onto the
+// local file reader. filePath is the official argument; read_file uses path.
+func rewriteOpenCodeReadToolCall(name, argsJSON string) (string, string) {
+	if !strings.EqualFold(strings.TrimSpace(name), "read") {
+		return name, argsJSON
+	}
+	var args map[string]interface{}
+	if json.Unmarshal([]byte(strings.TrimSpace(argsJSON)), &args) != nil || args == nil {
+		return "read_file", argsJSON
+	}
+	if _, ok := args["path"]; !ok {
+		if filePath, ok := args["filePath"]; ok {
+			args["path"] = filePath
+		}
+	}
+	delete(args, "filePath")
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return "read_file", argsJSON
+	}
+	return "read_file", string(encoded)
 }
 
 func (h *IMMessageHandler) registeredToolAcceptsRuntimePolicyOwnerArg(name string) bool {

@@ -935,22 +935,31 @@ func (m *srvAIModelManager) synthesizeTextMP3(ctx context.Context, cfg corelib.A
 	return playable.Data, voiceID, nil
 }
 
+// srvAIModelEmbedderAdapter is stored in embedding.Embedder and compared
+// with == (query-vector reuse, local L3 attach). A func field makes that
+// comparison panic: "comparing uncomparable type". Live config stays on the
+// manager, which is already a comparable pointer.
 type srvAIModelEmbedderAdapter struct {
 	manager *srvAIModelManager
-	config  func() corelib.AppConfig
+}
+
+func (a srvAIModelEmbedderAdapter) appConfig() corelib.AppConfig {
+	fallback := corelib.AppConfigDefaults()
+	if a.manager == nil {
+		return fallback
+	}
+	return a.manager.downloadConfig(fallback)
 }
 
 func (a srvAIModelEmbedderAdapter) Embed(text string) ([]float32, error) {
 	if a.manager == nil {
 		return nil, errSrvAIModelNotReady
 	}
-	cfg := corelib.AppConfigDefaults()
-	if a.config != nil {
-		cfg = a.config()
-	}
-	vector, err := a.manager.embedText(context.Background(), cfg, text)
+	// The loaded model does not read download config. startDownload loads the
+	// live provider itself and uses this fallback only when none is installed.
+	vector, err := a.manager.embedText(context.Background(), corelib.AppConfig{}, text)
 	if errors.Is(err, errSrvAIModelNotReady) {
-		_ = a.manager.startDownload(srvAIModelEmbedding, cfg, false)
+		_ = a.manager.startDownload(srvAIModelEmbedding, corelib.AppConfigDefaults(), false)
 	}
 	return vector, err
 }
@@ -959,13 +968,9 @@ func (a srvAIModelEmbedderAdapter) EmbedBatch(texts []string) ([][]float32, erro
 	if a.manager == nil {
 		return nil, errSrvAIModelNotReady
 	}
-	cfg := corelib.AppConfigDefaults()
-	if a.config != nil {
-		cfg = a.config()
-	}
-	vectors, err := a.manager.embedBatch(context.Background(), cfg, texts)
+	vectors, err := a.manager.embedBatch(context.Background(), corelib.AppConfig{}, texts)
 	if errors.Is(err, errSrvAIModelNotReady) {
-		_ = a.manager.startDownload(srvAIModelEmbedding, cfg, false)
+		_ = a.manager.startDownload(srvAIModelEmbedding, corelib.AppConfigDefaults(), false)
 	}
 	return vectors, err
 }

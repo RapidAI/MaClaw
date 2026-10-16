@@ -11,14 +11,103 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 )
 
+// isGoalSystemContinuation reports a host-owned goal turn. The text is the
+// continuation engine's phase contract (plan, or one execute step), not a
+// user request. Callers must not reclassify it as a fresh intent or as a
+// coding-workbench file plan.
+func isGoalSystemContinuation(text string) bool {
+	return strings.HasPrefix(strings.TrimSpace(text), "[系统续接]")
+}
+
+// goalContinuationPhase is the host phase encoded in the continuation text.
+// "plan" must not edit files. "execute" does one step and then reports it.
+func goalContinuationPhase(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "[系统续接]") {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "[系统续接][plan]") || strings.Contains(trimmed, "本轮只做规划") {
+		return "plan"
+	}
+	return "execute"
+}
+
+// taskIsGoalPlanPhase reports a host planning turn. It does not write the
+// workspace, so coding file audits and the writable-surface gate do not apply.
+func taskIsGoalPlanPhase(task *TaskItem, reqCtx string) bool {
+	return goalContinuationPhase(goalContinuationSource(task, reqCtx)) == "plan"
+}
+
+// goalContinuationTurn is a host phase of an existing goal. Platform is the
+// dispatch channel; the marker is the phase contract inside the text.
+func goalContinuationTurn(text, platform string) bool {
+	return platform == "goal-continuation" || isGoalSystemContinuation(text)
+}
+
+// goalPlanPhaseAllowsTool is the plan-phase tool contract for the shared
+// loop. Execute and ordinary turns are unchanged. goal is not a read tool,
+// but it is the only write the plan turn is allowed to make.
+func goalPlanPhaseAllowsTool(userText, name string) bool {
+	if goalContinuationPhase(userText) != "plan" {
+		return true
+	}
+	name = strings.TrimSpace(name)
+	return name == goalContinuationLifecycleTool || isGoalPlanPhaseTool(name)
+}
+
+// goalContinuationPhaseSection is the assignment that outranks a coding
+// workbench's generic edit-and-verify prompt. Plan and execute name the
+// goal call the host will accept for that phase.
+func goalContinuationPhaseSection(text string) string {
+	switch goalContinuationPhase(text) {
+	case "plan":
+		return `## 宿主目标阶段
+本轮是已有目标的规划，不是改文件任务。用户消息是宿主写的阶段合同。
+只调用 goal(action="plan", understanding, steps, acceptance_criteria)。
+不要修改文件，不要运行实现，不要调用 complete。步骤或验收标准为空时不要调用 plan。
+
+`
+	case "execute":
+		return `## 宿主目标阶段
+本轮只执行用户消息里的当前步骤。
+做完调用 goal(action="step", index, status, result)。
+步骤都完成时调用 goal(action="complete", summary)；无法收尾时调用 goal(action="fail", reason)。
+不要提前做后续步骤。
+
+`
+	default:
+		return ""
+	}
+}
+
+// goalContinuationSource is the host phase text carried by a coding task.
+func goalContinuationSource(task *TaskItem, reqCtx string) string {
+	if task != nil {
+		if isGoalSystemContinuation(task.Description) {
+			return task.Description
+		}
+		if isGoalSystemContinuation(task.Title) {
+			return task.Title
+		}
+	}
+	if isGoalSystemContinuation(reqCtx) {
+		return reqCtx
+	}
+	return ""
+}
+
+// goalContinuationLifecycleTool is the registry tool the phase prompt names.
+// The closed plan must keep it as host policy, not as a retrieval candidate.
+const goalContinuationLifecycleTool = "goal"
+
 func taskCarriesGoalContinuation(task *TaskItem, reqCtx string) bool {
-	if strings.Contains(reqCtx, "[系统续接]") {
+	if isGoalSystemContinuation(reqCtx) {
 		return true
 	}
 	if task == nil {
 		return false
 	}
-	return strings.Contains(task.Title, "[系统续接]") || strings.Contains(task.Description, "[系统续接]")
+	return isGoalSystemContinuation(task.Title) || isGoalSystemContinuation(task.Description)
 }
 
 // GoalContinuationEngine manages the auto-continuation loop for active goals.
@@ -34,7 +123,18 @@ type GoalContinuationEngine struct {
 	store           *goal.Store
 	app             *App
 	scheduledTimers map[string]*time.Timer // userID → pending continuation timer
-	cooldown        time.Duration          // delay between continuations (default 2s)
+	pendingExpect   map[string]goalContinuationExpect
+	cooldown        time.Duration // delay between continuations (default 2s)
+}
+
+// goalContinuationExpect is the host phase at the moment a continuation is
+// fired. The turn is finished only when the goal store records that phase.
+type goalContinuationExpect struct {
+	goalID     string
+	phase      goal.Phase
+	stepIndex  int
+	stepStatus goal.StepStatus
+	stepResult string
 }
 
 // NewGoalContinuationEngine creates a continuation engine.
@@ -43,6 +143,7 @@ func NewGoalContinuationEngine(store *goal.Store, app *App) *GoalContinuationEng
 		store:           store,
 		app:             app,
 		scheduledTimers: make(map[string]*time.Timer),
+		pendingExpect:   make(map[string]goalContinuationExpect),
 		cooldown:        2 * time.Second,
 	}
 }
@@ -73,8 +174,13 @@ func (e *GoalContinuationEngine) MaybeScheduleContinuation(userID, goalID string
 
 	// Re-read after accounting (status may have changed to budget_limited)
 	g = e.store.Get(userID)
+	expect := e.takeContinuationExpect(userID)
 	if g != nil && g.Status == goal.StatusActive && g.EffectivePhase() == goal.PhasePlan && len(g.Steps) == 0 {
 		e.failGoal(userID, g.GoalID, "未能分解任务", true)
+		return
+	}
+	if reason := continuationMissedReport(expect, g); reason != "" {
+		e.failGoal(userID, g.GoalID, reason, true)
 		return
 	}
 	if g == nil || !g.ShouldContinue() {
@@ -173,6 +279,7 @@ func (e *GoalContinuationEngine) fireContinuation(userID, goalID string) {
 	}
 
 	prompt := e.buildContinuationPrompt(g)
+	e.noteContinuationExpect(userID, g)
 	log.Printf("[goal-continuation] firing continuation: user=%s goal_id=%s turn=%d", userID, goalID, g.TurnsUsed)
 
 	// Dispatch via HandleIMMessage with platform="goal-continuation".
@@ -271,11 +378,43 @@ func (e *GoalContinuationEngine) runForegroundContinuation(handler *IMMessageHan
 		emitEvent("ai-assistant-stream-done", "")
 	}
 
+	// The coding workbench refuses an implementation step that has no desktop
+	// ingress token. A continuation is a host request for the same owner, so
+	// it mints that token here and drops it when this request returns.
+	if endIngress := e.attachCodingIngress(&msg); endIngress != nil {
+		defer endIngress()
+	}
 	resp := handler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound, onStreamDone)
 	if resp == nil {
 		resp = &IMAgentResponse{}
 	}
 	emitFinalResponse(resp)
+}
+
+// attachCodingIngress mints the same desktop coding credential a user send
+// gets at the Wails boundary. startNewTask is false: this phase continues
+// the owner's current relation and must not fence it. The returned function
+// closes that request's ingress, including any step token chained from it.
+func (e *GoalContinuationEngine) attachCodingIngress(msg *IMUserMessage) func() {
+	if e == nil || e.app == nil || msg == nil {
+		return nil
+	}
+	projectPath := projectPathFromSessionOwnerID(msg.UserID)
+	if !e.app.isDesktopCodingWorkbenchSession(msg.UserID, projectPath) {
+		return nil
+	}
+	workspaceDir := ""
+	if projectPath != "" && e.app.projectPathIsLocalCodingWorkbench(projectPath) {
+		workspaceDir = e.app.codingWorkbenchLocalExecDirOrDesktop(projectPath)
+	}
+	token := e.app.beginDesktopCodingTaskIngressForRequestWithWorkspace(msg.UserID, workspaceDir, false)
+	if token == "" {
+		return nil
+	}
+	msg.CodingTaskIngressToken = token
+	app := e.app
+	ownerID := msg.UserID
+	return func() { app.endDesktopCodingTaskIngressForOwner(ownerID) }
 }
 
 func (e *GoalContinuationEngine) emitForegroundRoundStarted(requestID, userID, prompt, displayText string) {
@@ -322,7 +461,7 @@ func (e *GoalContinuationEngine) buildContinuationDisplayText(g *goal.Goal) stri
 // buildContinuationPrompt constructs the message that drives the next iteration.
 func (e *GoalContinuationEngine) buildContinuationPrompt(g *goal.Goal) string {
 	if g == nil {
-		return "[系统续接] 当前没有可推进的目标。"
+		return "[系统续接][plan] 当前没有可推进的目标。"
 	}
 	if g.EffectivePhase() == goal.PhasePlan {
 		return buildGoalPlanPrompt(g)
@@ -332,7 +471,7 @@ func (e *GoalContinuationEngine) buildContinuationPrompt(g *goal.Goal) string {
 
 func buildGoalPlanPrompt(g *goal.Goal) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("[系统续接] 先理解并分解目标，不要实现。\n\n目标：%s\n\n", g.Objective))
+	b.WriteString(fmt.Sprintf("[系统续接][plan] 先理解并分解目标，不要实现。\n\n目标：%s\n\n", g.Objective))
 	b.WriteString("本轮只做规划：\n")
 	b.WriteString("1. 用你自己的话复述任务，确认你理解要交付的结果。\n")
 	b.WriteString("2. 把任务分解成有序、可独立执行的步骤。\n")
@@ -344,7 +483,7 @@ func buildGoalPlanPrompt(g *goal.Goal) string {
 
 func buildGoalExecutePrompt(g *goal.Goal) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("[系统续接] 按步骤执行目标：%s\n\n", g.Objective))
+	b.WriteString(fmt.Sprintf("[系统续接][execute] 按步骤执行目标：%s\n\n", g.Objective))
 	if strings.TrimSpace(g.Understanding) != "" {
 		b.WriteString("理解：" + g.Understanding + "\n")
 	}
@@ -388,6 +527,104 @@ func buildGoalExecutePrompt(g *goal.Goal) string {
 	return b.String()
 }
 
+func continuationExpectOf(g *goal.Goal) goalContinuationExpect {
+	if g == nil {
+		return goalContinuationExpect{}
+	}
+	exp := goalContinuationExpect{goalID: g.GoalID, phase: g.EffectivePhase()}
+	if step, ok := g.CurrentStep(); ok {
+		exp.stepIndex = step.Index
+		exp.stepStatus = step.Status
+		exp.stepResult = step.Result
+	}
+	return exp
+}
+
+func (e *GoalContinuationEngine) noteContinuationExpect(userID string, g *goal.Goal) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.pendingExpect == nil {
+		e.pendingExpect = make(map[string]goalContinuationExpect)
+	}
+	e.pendingExpect[userID] = continuationExpectOf(g)
+}
+
+func (e *GoalContinuationEngine) peekContinuationExpect(userID string) goalContinuationExpect {
+	if e == nil {
+		return goalContinuationExpect{}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.pendingExpect == nil {
+		return goalContinuationExpect{}
+	}
+	return e.pendingExpect[userID]
+}
+
+func (e *GoalContinuationEngine) takeContinuationExpect(userID string) goalContinuationExpect {
+	if e == nil {
+		return goalContinuationExpect{}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	exp := e.pendingExpect[userID]
+	delete(e.pendingExpect, userID)
+	return exp
+}
+
+func (e *GoalContinuationEngine) clearContinuationExpect(userID string) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	delete(e.pendingExpect, userID)
+	e.mu.Unlock()
+}
+
+// goalContinuationContractMet is true when the turn already stored the record
+// this phase required. An empty expect is not a met contract.
+func goalContinuationContractMet(exp goalContinuationExpect, g *goal.Goal) bool {
+	if exp.goalID == "" || g == nil || g.GoalID != exp.goalID || g.IsTerminal() {
+		return false
+	}
+	switch exp.phase {
+	case goal.PhasePlan:
+		return len(g.Steps) > 0
+	case goal.PhaseExecute:
+		return continuationMissedReport(exp, g) == ""
+	default:
+		return false
+	}
+}
+
+// continuationMissedReport is set when an execute continuation ended without
+// recording the step that was current when the turn started. A later step
+// that is still pending is the next turn, not a missed report.
+func continuationMissedReport(exp goalContinuationExpect, g *goal.Goal) string {
+	if exp.goalID == "" || g == nil || g.GoalID != exp.goalID || g.IsTerminal() || exp.phase != goal.PhaseExecute {
+		return ""
+	}
+	if exp.stepIndex > 0 {
+		for _, step := range g.Steps {
+			if step.Index != exp.stepIndex {
+				continue
+			}
+			if step.Status == exp.stepStatus && step.Result == exp.stepResult {
+				return "未提交当前步骤"
+			}
+			return ""
+		}
+		return "未提交当前步骤"
+	}
+	if g.ReadyToComplete() && g.Status == goal.StatusActive {
+		return "未提交完成"
+	}
+	return ""
+}
+
 // failGoal marks the active goal failed and optionally tells the user.
 func (e *GoalContinuationEngine) failGoal(userID, goalID, reason string, announce bool) {
 	if e == nil || e.store == nil {
@@ -409,6 +646,7 @@ func (e *GoalContinuationEngine) failGoal(userID, goalID, reason string, announc
 	}
 	e.store.UpdateStatus(userID, goalID, goal.StatusFailed, reason)
 	e.CancelPending(userID)
+	e.clearContinuationExpect(userID)
 	updated := e.store.Get(userID)
 	e.emitGoalStateChanged(userID, updated)
 	if announce {
@@ -515,8 +753,11 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuation(userID string, resp *IM
 		return
 	}
 
-	// A failed turn must close the goal. The turn response already carries Error.
-	if resp != nil && strings.TrimSpace(resp.Error) != "" {
+	// A failed turn closes the goal only when this phase's contract is still
+	// open. A plan or step already stored is the host record; a later audit
+	// error must not erase it. A continuation with no such record still fails
+	// with the turn error.
+	if resp != nil && strings.TrimSpace(resp.Error) != "" && !goalContinuationContractMet(engine.peekContinuationExpect(userID), g) {
 		log.Printf("[goal-continuation] failing goal after turn error user=%s", userID)
 		engine.failGoal(userID, g.GoalID, resp.Error, false)
 		return

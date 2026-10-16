@@ -625,6 +625,10 @@ export function FileCompanionUIReady():Promise<Array<string>>;
 
 export function FileCompanionOpen(arg1:string):Promise<Record<string, any>>;
 
+export function FileCompanionResumePaths():Promise<Array<string>>;
+
+export function SetFileCompanionOpenSet(arg1:Array<string>):Promise<void>;
+
 export function FileCompanionOpenArxiv(arg1:string):Promise<string>;
 
 export function FileCompanionSaveText(arg1:string,arg2:string,arg3:string):Promise<Record<string, any>>;
@@ -1037,6 +1041,12 @@ export function GetTTSVoiceID():Promise<string>;
 export function GetTabWorkingDir(arg1:string):Promise<Record<string, any>>;
 
 export function GetTelegramLocalMode():Promise<boolean>;
+
+export function GetSlackLoginHint():Promise<Record<string, any>>;
+
+export function GetSlackStatus():Promise<string>;
+
+export function GetSlackConnectionError():Promise<string>;
 
 export function GetTelegramStatus():Promise<string>;
 
@@ -2111,6 +2121,10 @@ export function RestartLansengerBot(arg1:string):Promise<string>;
 export function RestartQQBot():Promise<string>;
 
 export function RestartTelegram():Promise<string>;
+
+export function StartSlackLogin():Promise<string>;
+
+export function DisconnectSlack():Promise<void>;
 
 export function RestartThirdPartyGateway():Promise<string>;
 

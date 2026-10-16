@@ -104,7 +104,7 @@ import { useExpertOptimize } from "./useExpertOptimize";
 import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, CreateTaskUnified, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, ListWorkflowTemplateSummaries, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, RenameTask, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, ResumeCloudWorkspaceTask, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SelectProjectDir, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { formatGoalSessionPlan, suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { CodingAgentPlanChecklist } from "./CodingAgentPlanChecklist";
-import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepStatusColor, codingStepStatusLabel, CodingWorkbenchControlPanel, CodingControlSection } from "./CodingWorkbenchControlPanel";
+import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepStatusColor, codingStepStatusLabel, CodingWorkbenchControlPanel, CodingControlSection, presentCodingAgentChecklist } from "./CodingWorkbenchControlPanel";
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
 import { AssistantPureCodingEmptyState } from "./AssistantPureCodingEmptyState";
 import { NewTaskWizardRunningBanner } from "./NewTaskWizardRunningBanner";
@@ -4317,6 +4317,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         });
         return { task: activeTask, raw };
     }, [activeTab?.projectPath, codingStepStatuses, taskListProp, workflowAwaitingReview, workflowCurrentPhaseStatus, workflowState.active]);
+    const codingChecklistSteps = useMemo(() => presentCodingAgentChecklist(codingExecutionPlan, codingStepStatuses), [codingExecutionPlan, codingStepStatuses]);
     const { workspace: remoteWorkspace, label: remoteWorkspaceLabel } = resolveRemoteWorkspaceDisplay({ isRemoteCodingDev: isRemoteCodingDevEnvironment, isLive: remoteReconnectStatusPath === activeRemoteProjectPath, liveHost: remoteReconnect.host, liveWorkDir: remoteReconnect.workDir, livePort: remoteReconnect.port, tabHost: activeTab.remoteHost, tags: activeTaskExecutionSnapshot.task?.tags });
     const activeTaskSnapshotRunning = useMemo(() => executionSnapshotRawIsRunning(activeTaskExecutionSnapshot.raw), [activeTaskExecutionSnapshot]);
     const hasExplicitStreamingSessionList = Array.isArray(rawStreamingSessionKeys);
@@ -6149,7 +6150,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         remoteHost={activeTab?.remoteHost}
                         preparing={activeProjectPreparing}
                         prepareMode={activeProjectPrepareMode || undefined}
-                        stepStatuses={codingStepStatuses}
+                        stepStatuses={codingChecklistSteps}
                         pendingApproval={codingPendingApproval}
                         conflictCount={codingConflictCount}
                         lockExpanded={remoteCodingNeedsReconnect}
@@ -6355,12 +6356,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                 </span>
                                             )}
                                         </div>
-                                        {codingStepStatuses.length > 0 && (
+                                        {codingChecklistSteps.length > 0 && (
                                             <div data-testid="coding-step-statuses" className="mc-execution-timeline" style={{ marginTop: 4, padding: "6px 8px", borderRadius: 6, border: `1px solid ${codingBannerChrome.border}`, background: codingBannerChrome.insetBg, fontSize: 11, color: codingBannerChrome.muted, maxHeight: 100, overflow: "auto" }}>
                                                 <div style={{ fontWeight: 600, marginBottom: 4, color: codingBannerChrome.accentStrong }}>
                                                     {localizeText(lang, "Steps", "执行步骤", "執行步驟")}
                                                 </div>
-                                                {codingStepStatuses.map((st) => {
+                                                {codingChecklistSteps.map((st) => {
                                                     const icon = codingStepGlyph(st.status);
                                                     const color = codingStepStatusColor(st.status, codingBannerChrome);
                                                     const statusLabel = codingStepStatusLabel(lang, st.status);
@@ -6790,7 +6791,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         lang={lang}
                         theme={t}
                         chrome={codingBannerChrome}
-                        steps={codingStepStatuses}
+                        steps={codingChecklistSteps}
                         understanding={codingRequirementRestatement}
                         pendingApproval={codingPendingApproval}
                         ready={codingTaskReadyForIntents}

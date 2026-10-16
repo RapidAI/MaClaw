@@ -3,6 +3,8 @@ package guiapp
 import (
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
 )
 
 func TestClassifyImmediateIMCommand_MoA(t *testing.T) {
@@ -16,6 +18,7 @@ func TestClassifyImmediateIMCommand_MoA(t *testing.T) {
 		{"  /moa  spaced  ", imCommandMoA},
 		{"/moab", imCommandUnknown},
 		{"/goal x", imCommandGoal},
+		{"／moa\u3000你好", imCommandMoA},
 	}
 	for _, tc := range cases {
 		if got := classifyImmediateIMCommand(tc.in); got != tc.want {
@@ -57,6 +60,14 @@ func TestMoaPromptFromText(t *testing.T) {
 	}
 	if got := moaPromptFromText("/moa stats"); got != "" {
 		t.Fatalf("stats is not a prompt: %q", got)
+	}
+}
+
+func TestFullwidthMoAParsesAfterCommandNormalize(t *testing.T) {
+	text := "／moa\u3000你好"
+	cmd := moa.ParseSlash(normalizeImmediateCommandText(text))
+	if cmd.Kind != moa.SlashOneShot || cmd.Prompt != "你好" {
+		t.Fatalf("parsed %+v", cmd)
 	}
 }
 

@@ -559,6 +559,48 @@ describe('useTaskConfigWiring new-task wizard opening', () => {
         expect(result.current.taskConfig.draft.runWindow?.mode).toBe('immediate');
     });
 
+    it('creates a task when the guide send types /goal', async () => {
+        const create = CreateTaskUnified as unknown as ReturnType<typeof vi.fn>;
+        create.mockResolvedValue({ projectPath: 'D:/tasks/typed-goal' });
+        const handleSend = vi.fn();
+        const launches: CustomEvent[] = [];
+        const listener = (event: Event) => launches.push(event as CustomEvent);
+        window.addEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+        try {
+            const { result } = renderHook(() => useTaskConfigWiring(makeOptions({
+                localGuideVisible: true,
+                inputValue: '/goal 整理周报',
+                handleSend,
+            })));
+            await act(async () => {
+                result.current.handleSendWithTaskConfig();
+            });
+            await waitFor(() => expect(create).toHaveBeenCalled());
+            expect(handleSend).not.toHaveBeenCalled();
+            expect(create.mock.calls.at(-1)?.[0]).toEqual(expect.objectContaining({ name: '整理周报' }));
+            expect(String((launches.at(-1)?.detail as { initialMessage?: string })?.initialMessage || '')).toBe('/goal 整理周报');
+        } finally {
+            window.removeEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+            create.mockReset();
+        }
+    });
+
+    it('keeps /goal status on the current conversation', async () => {
+        const create = CreateTaskUnified as unknown as ReturnType<typeof vi.fn>;
+        create.mockClear();
+        const handleSend = vi.fn();
+        const { result } = renderHook(() => useTaskConfigWiring(makeOptions({
+            localGuideVisible: true,
+            inputValue: '/goal status',
+            handleSend,
+        })));
+        await act(async () => {
+            result.current.handleSendWithTaskConfig();
+        });
+        expect(handleSend).toHaveBeenCalledTimes(1);
+        expect(create).not.toHaveBeenCalled();
+    });
+
     it('creates a task when the guide send is in compose mode', async () => {
         const create = CreateTaskUnified as unknown as ReturnType<typeof vi.fn>;
         create.mockResolvedValue({ projectPath: 'D:/tasks/goal' });

@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	mcphttp "github.com/RapidAI/CodeClaw/corelib/mcp"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
@@ -497,6 +498,9 @@ func executeDynamicExternalEffect(ctx context.Context, coordinator DynamicExtern
 			return coretool.SelectionExecutionResult{Result: "[system rejected] dynamic_effect_awaiting_receipt", AwaitingReceipt: true, ReasonCode: firstDynamicEffectReason(reason, "dynamic_effect_awaiting_receipt")}
 		}
 		if receipt.State == DynamicEffectReceiptFailed {
+			if observed := observedMCPToolFailureResult(invocation.Selection.Provider.Kind, reason, dispatched, dispatchedResult, dispatchedErr); observed != nil {
+				return *observed
+			}
 			return coretool.SelectionExecutionResult{Result: "[system rejected] dynamic_effect_failed", ReasonCode: firstDynamicEffectReason(reason, "dynamic_effect_failed")}
 		}
 		return coretool.SelectionExecutionResult{Result: "[system rejected] dynamic_effect_execution_unknown", Unknown: true, ReasonCode: firstDynamicEffectReason(reason, "dynamic_effect_execution_unknown")}
@@ -559,6 +563,13 @@ func dynamicSemanticDispatchErrorForExternal(kind string, err error) *coretool.S
 		result := dynamicSemanticExecutionCancelledResult()
 		return &result
 	}
+	// isError and a JSON-RPC error are a finished tools/call. The response
+	// arrived, and it says the tool failed. That is not a lost transport.
+	var toolErr *mcphttp.ToolCallError
+	if kind == "mcp" && errors.As(err, &toolErr) {
+		result := coretool.SelectionExecutionResult{Result: "Error: " + toolErr.Error(), ReasonCode: dynamicMCPToolErrorReason}
+		return &result
+	}
 	code := strings.TrimSpace(err.Error())
 	if code == "dynamic_binding_stale" || code == kind+"_binding_stale" || code == kind+" bound execution is unavailable" || code == kind+"_bound_execution_unavailable" {
 		if code == "dynamic_binding_stale" {
@@ -567,6 +578,26 @@ func dynamicSemanticDispatchErrorForExternal(kind string, err error) *coretool.S
 		}
 		result := dynamicSemanticExecutionError(kind, err)
 		return &result
+	}
+	return nil
+}
+
+// observedMCPToolFailureResult returns the tool's own error text when the
+// coordinator has already recorded a completed tools/call failure. The generic
+// dynamic_effect_failed placeholder would hide that text from the model.
+func observedMCPToolFailureResult(kind, reason string, dispatched bool, dispatchedResult string, dispatchedErr error) *coretool.SelectionExecutionResult {
+	if reason != dynamicMCPToolErrorReason || !dispatched {
+		return nil
+	}
+	if text := strings.TrimSpace(dispatchedResult); text != "" && agentruntime.SelectionFailed(text) {
+		result := coretool.SelectionExecutionResult{Result: text, ReasonCode: dynamicMCPToolErrorReason}
+		return &result
+	}
+	if dispatchedErr == nil {
+		return nil
+	}
+	if deterministic := dynamicSemanticDispatchErrorForExternal(kind, dispatchedErr); deterministic != nil && deterministic.ReasonCode == dynamicMCPToolErrorReason {
+		return deterministic
 	}
 	return nil
 }

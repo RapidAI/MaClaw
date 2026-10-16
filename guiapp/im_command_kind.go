@@ -30,8 +30,21 @@ const (
 	imCommandInstall // other commands added only via shared allowlist JSON
 )
 
+// normalizeImmediateCommandText matches the composer. A Chinese IME often
+// emits a fullwidth slash and ideographic spaces; both are folded before a
+// slash command is classified or parsed.
+func normalizeImmediateCommandText(text string) string {
+	text = strings.ReplaceAll(text, "\u3000", " ")
+	text = strings.TrimPrefix(strings.TrimSpace(text), "\uFEFF")
+	text = strings.TrimSpace(text)
+	if strings.HasPrefix(text, "／") {
+		text = "/" + strings.TrimPrefix(text, "／")
+	}
+	return strings.TrimSpace(text)
+}
+
 func classifyImmediateIMCommand(trimmed string) imCommandKind {
-	trimmed = strings.TrimSpace(trimmed)
+	trimmed = normalizeImmediateCommandText(trimmed)
 	switch trimmed {
 	case "/new", "/reset", "/clear":
 		return imCommandReset

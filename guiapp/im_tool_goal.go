@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -8,8 +9,9 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 )
 
-// toolGoal handles the goal management tool using the handler's lastUserID
-// (set by the agent loop for the active session).
+// toolGoal handles the goal management tool. The shared loop dispatch passes
+// the turn owner from the call context; this entry remains for callers that
+// only have lastUserID.
 // Model-facing actions: create, plan, step, complete, get, fail
 // System-only transitions: pause, resume (also used by /goal slash commands).
 func (h *IMMessageHandler) toolGoal(args map[string]interface{}) string {
@@ -45,6 +47,20 @@ func (h *IMMessageHandler) toolGoalForUser(userID string, args map[string]interf
 	default:
 		return fmt.Sprintf("未知 goal action: %s（模型可用: create/plan/step/complete/fail/get）", action)
 	}
+}
+
+// goalExecutionOwner is the session that owns the goal store row for this
+// tool call. A mailbox owner is the turn that dispatched the call. lastUserID
+// remains the fallback for callers that do not carry a turn context.
+func goalExecutionOwner(ctx context.Context, lastUserID string) string {
+	if ctx != nil {
+		if id, ok := ctx.Value(mailboxOwnerContextKey{}).(string); ok {
+			if id = strings.TrimSpace(id); id != "" {
+				return id
+			}
+		}
+	}
+	return strings.TrimSpace(lastUserID)
 }
 
 func (h *IMMessageHandler) resolveGoalUserID(userID string) string {

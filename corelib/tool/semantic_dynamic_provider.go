@@ -35,8 +35,8 @@ type DynamicProviderDescriptor struct {
 	// TrustTier is projected from the resolved control-plane contract family
 	// (reviewed -> approved, open lookup -> unreviewed). The host adapter sets
 	// it from entry.Contract.TrustTier; discovery metadata cannot influence it.
-	TrustTier ProviderTrustTier
-	InvocationSchema     map[string]interface{}
+	TrustTier        ProviderTrustTier
+	InvocationSchema map[string]interface{}
 	// ModelFunction is set only by a code-reviewed binding whose capability
 	// already has a stable prompt spelling. Empty keeps the opaque grant token.
 	ModelFunction string
@@ -119,17 +119,26 @@ func projectedDynamicInvocationSchema(schema map[string]interface{}) (map[string
 	if schema == nil {
 		return nil, fmt.Errorf("dynamic invocation schema is required")
 	}
-	if strings.TrimSpace(fmt.Sprint(schema["type"])) != "object" {
+	// Refs are resolved against the original document. A $ref target does not
+	// carry the root $defs map, and rewriting the root in place would let one
+	// tool's projection mutate the inventory schema.
+	stack := map[string]bool{}
+	resolved, err := resolveDynamicSchemaNode(schema, schema, stack)
+	if err != nil {
+		return nil, err
+	}
+	kind, _ := resolved["type"].(string)
+	if strings.TrimSpace(kind) != "object" {
 		return nil, fmt.Errorf("dynamic invocation schema must be an object")
 	}
-	properties, ok := schema["properties"].(map[string]interface{})
-	if !ok {
-		return nil, fmt.Errorf("dynamic invocation schema properties are required")
+	properties, err := dynamicObjectProperties(resolved)
+	if err != nil {
+		return nil, err
 	}
-	if additional, ok := schema["additionalProperties"].(bool); !ok || additional {
+	if err := dynamicObjectClosed(resolved); err != nil {
 		return nil, fmt.Errorf("dynamic invocation schema must close additional properties")
 	}
-	required, err := dynamicRequiredFields(schema["required"])
+	required, err := dynamicRequiredFields(resolved["required"])
 	if err != nil {
 		return nil, err
 	}
@@ -142,7 +151,7 @@ func projectedDynamicInvocationSchema(schema map[string]interface{}) (map[string
 		if !ok {
 			return nil, fmt.Errorf("dynamic invocation property %q is invalid", name)
 		}
-		projected, err := projectDynamicSchemaNode(property)
+		projected, err := projectDynamicSchemaNode(property, schema, stack)
 		if err != nil {
 			return nil, fmt.Errorf("dynamic invocation property %q: %w", name, err)
 		}
@@ -156,30 +165,36 @@ func projectedDynamicInvocationSchema(schema map[string]interface{}) (map[string
 	return map[string]interface{}{"type": "object", "properties": projectedProperties, "required": required, "additionalProperties": false}, nil
 }
 
-func projectDynamicSchemaNode(schema map[string]interface{}) (map[string]interface{}, error) {
-	kind, _ := schema["type"].(string)
+func projectDynamicSchemaNode(schema, root map[string]interface{}, stack map[string]bool) (map[string]interface{}, error) {
+	resolved, err := resolveDynamicSchemaNode(schema, root, stack)
+	if err != nil {
+		return nil, err
+	}
+	kind, _ := resolved["type"].(string)
 	switch strings.TrimSpace(kind) {
 	case "string", "number", "integer", "boolean":
+		// Descriptions, titles, defaults, examples and enums are vendor text.
+		// The model sees the type only.
 		return map[string]interface{}{"type": kind}, nil
 	case "array":
-		rawItems, ok := schema["items"].(map[string]interface{})
+		rawItems, ok := resolved["items"].(map[string]interface{})
 		if !ok {
 			return nil, fmt.Errorf("array items are required")
 		}
-		items, err := projectDynamicSchemaNode(rawItems)
+		items, err := projectDynamicSchemaNode(rawItems, root, stack)
 		if err != nil {
 			return nil, err
 		}
 		return map[string]interface{}{"type": "array", "items": items}, nil
 	case "object":
-		rawProperties, ok := schema["properties"].(map[string]interface{})
-		if !ok {
-			return nil, fmt.Errorf("object properties are required")
+		if err := dynamicObjectClosed(resolved); err != nil {
+			return nil, err
 		}
-		if additional, ok := schema["additionalProperties"].(bool); !ok || additional {
-			return nil, fmt.Errorf("object must close additional properties")
+		rawProperties, err := dynamicObjectProperties(resolved)
+		if err != nil {
+			return nil, err
 		}
-		required, err := dynamicRequiredFields(schema["required"])
+		required, err := dynamicRequiredFields(resolved["required"])
 		if err != nil {
 			return nil, err
 		}
@@ -192,7 +207,7 @@ func projectDynamicSchemaNode(schema map[string]interface{}) (map[string]interfa
 			if !ok {
 				return nil, fmt.Errorf("object property %q is invalid", name)
 			}
-			projected, err := projectDynamicSchemaNode(child)
+			projected, err := projectDynamicSchemaNode(child, root, stack)
 			if err != nil {
 				return nil, err
 			}
@@ -207,6 +222,241 @@ func projectDynamicSchemaNode(schema map[string]interface{}) (map[string]interfa
 	default:
 		return nil, fmt.Errorf("unsupported schema type %q", kind)
 	}
+}
+
+// resolveDynamicSchemaNode reduces the vendor shapes that still name one
+// structural type. A same-document $ref is followed back into root; remote
+// refs and cycles are not. Nullable unions (type arrays and anyOf/oneOf with
+// null) become that type. An object that only declares properties is an
+// object. A union of two real types stays unrepresentable: projecting one of
+// them would authorize arguments the tool did not declare.
+func resolveDynamicSchemaNode(schema, root map[string]interface{}, stack map[string]bool) (map[string]interface{}, error) {
+	if schema == nil {
+		return nil, fmt.Errorf("unsupported schema type %q", "")
+	}
+	if ref, ok := schema["$ref"].(string); ok && strings.TrimSpace(ref) != "" {
+		ref = strings.TrimSpace(ref)
+		if stack[ref] {
+			return nil, fmt.Errorf("unsupported schema type %q", "$ref")
+		}
+		target, err := lookupDynamicSchemaRef(root, ref)
+		if err != nil {
+			return nil, err
+		}
+		if stack == nil {
+			stack = map[string]bool{}
+		}
+		stack[ref] = true
+		resolved, err := resolveDynamicSchemaNode(target, root, stack)
+		delete(stack, ref)
+		return resolved, err
+	}
+	if alts, ok := schema["allOf"].([]interface{}); ok && len(alts) > 0 {
+		return nil, fmt.Errorf("unsupported schema type %q", "allOf")
+	}
+	alternatives, exclusive, err := dynamicSchemaAlternatives(schema)
+	if err != nil {
+		return nil, err
+	}
+	if exclusive {
+		branch, err := oneDynamicSchemaAlternative(alternatives)
+		if err != nil {
+			return nil, err
+		}
+		return resolveDynamicSchemaNode(branch, root, stack)
+	}
+	if types, ok := dynamicSchemaTypeList(schema["type"]); ok {
+		kind, err := oneDynamicSchemaType(types)
+		if err != nil {
+			return nil, err
+		}
+		copied := make(map[string]interface{}, len(schema)+1)
+		for key, value := range schema {
+			copied[key] = value
+		}
+		copied["type"] = kind
+		return copied, nil
+	}
+	if _, ok := schema["type"].(string); ok {
+		return schema, nil
+	}
+	if _, ok := schema["properties"].(map[string]interface{}); ok {
+		return copyDynamicSchemaWithType(schema, "object"), nil
+	}
+	if _, ok := schema["items"].(map[string]interface{}); ok {
+		return copyDynamicSchemaWithType(schema, "array"), nil
+	}
+	return schema, nil
+}
+
+// lookupDynamicSchemaRef resolves one local JSON pointer. Only "#/..." refs
+// into this document are structural; a URL or a missing target is not a type
+// we can project without fetching or inventing a schema.
+func lookupDynamicSchemaRef(root map[string]interface{}, ref string) (map[string]interface{}, error) {
+	if root == nil || !strings.HasPrefix(ref, "#") {
+		return nil, fmt.Errorf("unsupported schema type %q", "$ref")
+	}
+	pointer := strings.TrimPrefix(ref, "#")
+	if pointer == "" {
+		return root, nil
+	}
+	if !strings.HasPrefix(pointer, "/") {
+		return nil, fmt.Errorf("unsupported schema type %q", "$ref")
+	}
+	current := interface{}(root)
+	for _, raw := range strings.Split(pointer[1:], "/") {
+		token := strings.ReplaceAll(strings.ReplaceAll(raw, "~1", "/"), "~0", "~")
+		if token == "" {
+			return nil, fmt.Errorf("unsupported schema type %q", "$ref")
+		}
+		object, ok := current.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("unsupported schema type %q", "$ref")
+		}
+		next, ok := object[token]
+		if !ok {
+			return nil, fmt.Errorf("unsupported schema type %q", "$ref")
+		}
+		current = next
+	}
+	object, ok := current.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("unsupported schema type %q", "$ref")
+	}
+	return object, nil
+}
+
+func copyDynamicSchemaWithType(schema map[string]interface{}, kind string) map[string]interface{} {
+	copied := make(map[string]interface{}, len(schema)+1)
+	for key, value := range schema {
+		copied[key] = value
+	}
+	copied["type"] = kind
+	return copied
+}
+
+// dynamicSchemaAlternatives reports anyOf or oneOf. Both at once is not a
+// single type, so it is an error rather than a silent pick.
+func dynamicSchemaAlternatives(schema map[string]interface{}) ([]interface{}, bool, error) {
+	anyOf, anyOK := schema["anyOf"].([]interface{})
+	oneOf, oneOK := schema["oneOf"].([]interface{})
+	if anyOK && oneOK && len(anyOf) > 0 && len(oneOf) > 0 {
+		return nil, false, fmt.Errorf("unsupported schema type %q", "anyOf+oneOf")
+	}
+	if anyOK && len(anyOf) > 0 {
+		return anyOf, true, nil
+	}
+	if oneOK && len(oneOf) > 0 {
+		return oneOf, true, nil
+	}
+	return nil, false, nil
+}
+
+func oneDynamicSchemaAlternative(alternatives []interface{}) (map[string]interface{}, error) {
+	var branch map[string]interface{}
+	for _, raw := range alternatives {
+		candidate, ok := raw.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("unsupported schema type %q", "anyOf")
+		}
+		if dynamicSchemaIsNull(candidate) {
+			continue
+		}
+		if branch != nil {
+			return nil, fmt.Errorf("unsupported schema type %q", "anyOf")
+		}
+		branch = candidate
+	}
+	if branch == nil {
+		return nil, fmt.Errorf("unsupported schema type %q", "null")
+	}
+	return branch, nil
+}
+
+func dynamicSchemaIsNull(schema map[string]interface{}) bool {
+	types, ok := dynamicSchemaTypeList(schema["type"])
+	if !ok {
+		kind, _ := schema["type"].(string)
+		return kind == "null"
+	}
+	if len(types) == 0 {
+		return false
+	}
+	for _, kind := range types {
+		if kind != "null" {
+			return false
+		}
+	}
+	return true
+}
+
+func dynamicSchemaTypeList(value interface{}) ([]string, bool) {
+	switch typed := value.(type) {
+	case []string:
+		return append([]string(nil), typed...), true
+	case []interface{}:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			kind, ok := item.(string)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, kind)
+		}
+		return out, true
+	default:
+		return nil, false
+	}
+}
+
+func oneDynamicSchemaType(types []string) (string, error) {
+	var kind string
+	for _, candidate := range types {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || candidate == "null" {
+			continue
+		}
+		switch candidate {
+		case "string", "number", "integer", "boolean", "array", "object":
+		default:
+			return "", fmt.Errorf("unsupported schema type %q", candidate)
+		}
+		if kind != "" && kind != candidate {
+			return "", fmt.Errorf("unsupported schema type %q", candidate)
+		}
+		kind = candidate
+	}
+	if kind == "" {
+		return "", fmt.Errorf("unsupported schema type %q", "null")
+	}
+	return kind, nil
+}
+
+// dynamicObjectClosed rejects a map-valued additionalProperties. A missing
+// flag, or an explicit true, is closed by the host: the root schema already
+// forces that, and a nested object that merely omitted the flag was dropping
+// the whole tool before planning.
+func dynamicObjectClosed(schema map[string]interface{}) error {
+	raw, exists := schema["additionalProperties"]
+	if !exists || raw == nil {
+		return nil
+	}
+	if _, ok := raw.(bool); ok {
+		return nil
+	}
+	return fmt.Errorf("object must close additional properties")
+}
+
+func dynamicObjectProperties(schema map[string]interface{}) (map[string]interface{}, error) {
+	raw, exists := schema["properties"]
+	if !exists || raw == nil {
+		return map[string]interface{}{}, nil
+	}
+	properties, ok := raw.(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("object properties are required")
+	}
+	return properties, nil
 }
 
 func reservedDynamicInvocationField(field string) bool {

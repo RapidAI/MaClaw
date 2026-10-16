@@ -1239,6 +1239,14 @@ export function FileCompanionOpen(arg1) {
   return window['go']['main']['App']['FileCompanionOpen'](arg1);
 }
 
+export function FileCompanionResumePaths() {
+  return window['go']['main']['App']['FileCompanionResumePaths']();
+}
+
+export function SetFileCompanionOpenSet(arg1) {
+  return window['go']['main']['App']['SetFileCompanionOpenSet'](arg1);
+}
+
 export function FileCompanionOpenArxiv(arg1) {
   return window['go']['main']['App']['FileCompanionOpenArxiv'](arg1);
 }
@@ -2065,6 +2073,18 @@ export function GetTabWorkingDir(arg1) {
 
 export function GetTelegramLocalMode() {
   return window['go']['main']['App']['GetTelegramLocalMode']();
+}
+
+export function GetSlackLoginHint() {
+  return window['go']['main']['App']['GetSlackLoginHint']();
+}
+
+export function GetSlackStatus() {
+  return window['go']['main']['App']['GetSlackStatus']();
+}
+
+export function GetSlackConnectionError() {
+  return window['go']['main']['App']['GetSlackConnectionError']();
 }
 
 export function GetTelegramStatus() {
@@ -4220,6 +4240,14 @@ export function RestartQQBot() {
 
 export function RestartTelegram() {
   return window['go']['main']['App']['RestartTelegram']();
+}
+
+export function StartSlackLogin() {
+  return window['go']['main']['App']['StartSlackLogin']();
+}
+
+export function DisconnectSlack() {
+  return window['go']['main']['App']['DisconnectSlack']();
 }
 
 export function RestartThirdPartyGateway() {

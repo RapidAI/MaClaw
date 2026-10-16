@@ -49,6 +49,50 @@ func TestInstalledMCPToolSummaryNamesTheTool(t *testing.T) {
 	}
 }
 
+// TestInstalledMCPDescriptorAgreesAcrossRegistrationPaths: publication and
+// the per-turn vocabulary seed must write one descriptor. A mismatch is
+// rejected, and the publisher then skips the provision, so the tool has no
+// exact address.
+func TestInstalledMCPDescriptorAgreesAcrossRegistrationPaths(t *testing.T) {
+	id := AutoMCPCapabilityIDForBinding("tengyun-mt0y9cwv", "query_worklog")
+	tools := []ObservedMCPTool{{
+		Name:        "query_worklog",
+		InputSchema: map[string]interface{}{"type": "object"},
+		Annotations: &MCPToolAnnotations{ReadOnlyHint: boolPtr(true)},
+	}}
+	principal := Principal{TenantID: "tenant", UserID: "user"}
+	publish := func(reg *coretool.CapabilityRegistry) error {
+		contracts := NewDynamicCapabilityRegistry()
+		pub, err := NewLifecycleDynamicCapabilityContractPublisher(contracts, reg, nil, nil)
+		if err != nil {
+			return err
+		}
+		return pub.PublishReviewedMCPObservationForCapabilityWithOpenLookup(
+			principal, "tengyun-mt0y9cwv", MCPCapabilityIdentity{}, tools, func(string) bool { return true },
+		)
+	}
+	seededFirst := sealedTestRegistry(t)
+	if err := EnsureExternalCapabilityVocabulary(seededFirst, []coretool.CapabilityID{id}); err != nil {
+		t.Fatal(err)
+	}
+	if err := publish(seededFirst); err != nil {
+		t.Fatalf("publish after vocabulary seed: %v", err)
+	}
+	publishedFirst := sealedTestRegistry(t)
+	if err := publish(publishedFirst); err != nil {
+		t.Fatal(err)
+	}
+	if err := EnsureExternalCapabilityVocabulary(publishedFirst, []coretool.CapabilityID{id}); err != nil {
+		t.Fatalf("vocabulary seed after publish: %v", err)
+	}
+	for _, reg := range []*coretool.CapabilityRegistry{seededFirst, publishedFirst} {
+		desc, ok := reg.Lookup(id)
+		if !ok || !strings.Contains(desc.Summary, "query_worklog") || !strings.Contains(desc.Summary, "tengyun-mt0y9cwv") {
+			t.Fatalf("summary = %q ok=%v", desc.Summary, ok)
+		}
+	}
+}
+
 // TestPublishRegistersVendorDeclaredCapability closes the first Phase 1
 // acceptance point: an installed MCP that declares x:acme:translate enters the
 // semantic surface under its own capability name (not merely generic lookup)

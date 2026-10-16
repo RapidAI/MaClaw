@@ -470,6 +470,43 @@ func TestPrevOutputsIncludesProjectInstructions(t *testing.T) {
 	}
 }
 
+func TestUnplannedTurnDoesNotPaintOutcomeOntoAgentChecklist(t *testing.T) {
+	userID := "desktop-user:agent-checklist"
+	h := &IMMessageHandler{}
+	h.clearStickyCodingWorkbenchMemory(userID)
+	t.Cleanup(func() { h.clearStickyCodingWorkbenchMemory(userID) })
+	h.setStickyCodingStepStatuses(userID, []codingWorkbenchStepStatus{
+		{Index: 1, Title: "定位通道", Status: codingStepPassed},
+		{Index: 2, Title: "编写脚本", Status: codingStepPassed},
+		{Index: 3, Title: "验证发送", Status: codingStepPassed},
+	})
+
+	h.recordOrchestratedCodingStepStatus(false, userID, 1, codingStepFailed, "邮件已成功发送")
+	h.skipRemainingOrchestratedCodingSteps(false, userID, 1, "skipped: prior step failed")
+
+	mem := h.getStickyCodingWorkbenchMemory(userID)
+	if len(mem.StepStatuses) != 3 {
+		t.Fatalf("checklist len=%d, want 3", len(mem.StepStatuses))
+	}
+	for _, st := range mem.StepStatuses {
+		if st.Status != codingStepPassed {
+			t.Fatalf("agent checklist row changed: %+v", st)
+		}
+		if st.Summary != "" {
+			t.Fatalf("turn summary landed on a checklist row: %+v", st)
+		}
+	}
+
+	h.recordOrchestratedCodingStepStatus(true, userID, 1, codingStepFailed, "guardrail")
+	got := h.getStickyCodingWorkbenchMemory(userID)
+	if got.StepStatuses[0].Status != codingStepFailed || got.StepStatuses[0].Summary != "guardrail" {
+		t.Fatalf("planned step was not updated: %+v", got.StepStatuses[0])
+	}
+	if got.StepStatuses[1].Status != codingStepPassed || got.StepStatuses[2].Status != codingStepPassed {
+		t.Fatalf("later plan steps changed: %+v", got.StepStatuses)
+	}
+}
+
 func TestMarkRemainingCodingStepsSkippedRewritesPrematurePassed(t *testing.T) {
 	userID := "desktop-user:skip-premature"
 	h := &IMMessageHandler{}

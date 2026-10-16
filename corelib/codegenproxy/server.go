@@ -93,6 +93,10 @@ type Server struct {
 	clientName     string // upstream CodeGen client identity for User-Agent and X-Codegen-Client-Name
 	clientKey      string // optional local proxy API key for OpenAI/Anthropic clients
 	modelAliasByID map[string]string
+	// localModelAlias is the stable name clients such as Codex send.
+	// localModelTarget is the upstream model that name currently selects.
+	localModelAlias  string
+	localModelTarget string
 
 	usageCallback func(promptTokens, completionTokens, totalTokens int)
 
@@ -403,6 +407,53 @@ func (s *Server) getUpstreamClient() OpenAIUpstreamClient {
 	return NewOpenAISDKUpstreamClient(s.client)
 }
 
+// SetLocalModelAlias records the client model name that should be replaced
+// with target before a request is forwarded. An empty alias means auto.
+// An empty target leaves the requested name unchanged.
+func (s *Server) SetLocalModelAlias(alias, target string) {
+	alias = strings.TrimSpace(alias)
+	if alias == "" {
+		alias = "auto"
+	}
+	s.mu.Lock()
+	s.localModelAlias = alias
+	s.localModelTarget = strings.TrimSpace(target)
+	s.mu.Unlock()
+}
+
+// SetLocalModelTarget points the current alias at a different upstream model.
+// The alias string stays put so a client that still requests the previous
+// name keeps matching after the selected model changes.
+func (s *Server) SetLocalModelTarget(target string) {
+	s.mu.Lock()
+	s.localModelTarget = strings.TrimSpace(target)
+	s.mu.Unlock()
+}
+
+func (s *Server) localModelAliasName() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.localModelAlias
+}
+
+// localModelAliasTarget reports the upstream model when model is the
+// configured alias. The second result is false when the name should pass
+// through, including when no target is selected.
+func (s *Server) localModelAliasTarget(model string) (string, bool) {
+	model = strings.TrimSpace(model)
+	s.mu.RLock()
+	alias := s.localModelAlias
+	target := s.localModelTarget
+	s.mu.RUnlock()
+	if alias == "" || target == "" || !strings.EqualFold(model, alias) || strings.EqualFold(model, target) {
+		return model, false
+	}
+	return target, true
+}
+
 func (s *Server) getModelAlias(model string) string {
 	key := strings.ToLower(strings.TrimSpace(model))
 	if key == "" {
@@ -683,6 +734,7 @@ func (s *Server) handleModelsForProtocol(w http.ResponseWriter, r *http.Request,
 		writeError(w, http.StatusBadGateway, "parse upstream models: "+err.Error())
 		return
 	}
+	normalized = s.includeLocalModelAlias(normalized, protocol)
 	log.Printf("[codegenproxy] models proxy response id=%s protocol=%s normalized_models=%s",
 		reqID, protocol, strings.Join(extractModelIDsFromModelsBody(normalized), ","))
 	w.Header().Set("Content-Type", "application/json")
@@ -701,15 +753,23 @@ func (s *Server) handleModelForProtocol(w http.ResponseWriter, r *http.Request, 
 		writeError(w, http.StatusBadRequest, "model id required")
 		return
 	}
+	_, _, _, clientKey := s.getConfig()
+	if !s.authorizeClient(r, clientKey) {
+		log.Printf("[codegenproxy] model request id=%s protocol=%s model=%q rejected: invalid proxy api key", reqID, protocol, modelID)
+		writeError(w, http.StatusUnauthorized, "invalid proxy api key")
+		return
+	}
+	// Answer the alias before the upstream catalog. A provider model named
+	// Auto must not replace the client-facing alias auto.
+	if sameModelID(modelID, s.localModelAliasName()) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write(localModelAliasObject(s.localModelAliasName(), protocol))
+		return
+	}
 	upURL, fallbackKey, clientName, clientKey := s.getConfig()
 	if upURL == "" {
 		log.Printf("[codegenproxy] model request id=%s protocol=%s model=%q rejected: upstream not configured", reqID, protocol, modelID)
 		writeError(w, http.StatusServiceUnavailable, "upstream not configured")
-		return
-	}
-	if !s.authorizeClient(r, clientKey) {
-		log.Printf("[codegenproxy] model request id=%s protocol=%s model=%q rejected: invalid proxy api key", reqID, protocol, modelID)
-		writeError(w, http.StatusUnauthorized, "invalid proxy api key")
 		return
 	}
 	apiKey := fallbackKey
@@ -752,9 +812,8 @@ func (s *Server) handleModelForProtocol(w http.ResponseWriter, r *http.Request, 
 }
 
 // handleOpenAIChatCompletions forwards OpenAI-compatible chat completion
-// requests directly to CodeGen. The request body, including model name, is
-// passed through unchanged so agent-side /model commands can select models
-// without TigerProxy rewriting them.
+// requests. The configured alias is rewritten to the selected upstream model.
+// Any other model name is forwarded as sent.
 func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Request) {
 	reqID := newLogRequestID()
 	if r.Method != http.MethodPost {
@@ -785,7 +844,15 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	originalModel := extractJSONFieldString(body, "model")
-	body = normalizeOpenAIModelInBody(body)
+	clientModel := strings.TrimSpace(originalModel)
+	aliasRewritten := false
+	if target, ok := s.localModelAliasTarget(originalModel); ok {
+		aliasRewritten = true
+		body = setOpenAIModelInBody(body, target)
+	} else {
+		clientModel = ""
+		body = normalizeOpenAIModelInBody(body)
+	}
 	normalizedModel := extractJSONFieldString(body, "model")
 	if resolvedModel := s.resolveCodeGenModelAlias(r.Context(), upURL, apiKey, clientName, normalizedModel); resolvedModel != "" && resolvedModel != normalizedModel {
 		body = setOpenAIModelInBody(body, resolvedModel)
@@ -830,7 +897,7 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 				cacheKey, _, _ = corelib.LLMPromptCacheKey(normalizedModel, originalModel, parsed, opts)
 				if cacheKey != "" {
 					if entry, err := promptCache.Get(r.Context(), cacheKey); err == nil && entry != nil && len(entry.Payload) > 0 {
-						if writePromptCacheHitPayload(w, entry.Payload, isStreaming) {
+						if writePromptCacheHitPayload(w, withClientModel(entry.Payload, aliasRewritten, clientModel), isStreaming) {
 							atomic.AddInt64(&s.cacheHits, 1)
 							s.notifyCacheEvent(true)
 							s.notifyCacheDecision(CacheDecisionEvent{Protocol: "chat", Outcome: "hit", Streaming: isStreaming})
@@ -853,7 +920,7 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 						cacheFlight, cacheFlightLeader = s.joinPromptCacheFlight(cacheKey)
 						if !cacheFlightLeader {
 							if shared, ok := waitPromptCacheFlight(r, cacheFlight, promptCacheSingleflightWait); ok {
-								if writePromptCacheHitPayload(w, shared, false) {
+								if writePromptCacheHitPayload(w, withClientModel(shared, aliasRewritten, clientModel), false) {
 									atomic.AddInt64(&s.cacheHits, 1)
 									atomic.AddInt64(&s.cacheSingleflightShared, 1)
 									s.notifyCacheEvent(true)
@@ -879,7 +946,7 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 						s.promptCacheFlightMu.Unlock()
 						if existing != nil {
 							if shared, ok := waitPromptCacheFlight(r, existing, promptCacheSingleflightWait); ok {
-								if writePromptCacheHitPayload(w, shared, true) {
+								if writePromptCacheHitPayload(w, withClientModel(shared, aliasRewritten, clientModel), true) {
 									atomic.AddInt64(&s.cacheHits, 1)
 									atomic.AddInt64(&s.cacheSingleflightShared, 1)
 									s.notifyCacheEvent(true)
@@ -998,6 +1065,7 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	if !isStreaming && cacheKey != "" && !retried && promptCache != nil && upResp.StatusCode == http.StatusOK {
 		maxCacheableResponseBytes := corelib.DefaultLLMPromptCacheMaxResponseBytes
 		respBody, _ := io.ReadAll(io.LimitReader(upResp.Body, int64(maxCacheableResponseBytes)+1))
+		respBody = withClientModel(respBody, aliasRewritten, clientModel)
 		_, _ = w.Write(respBody)
 		s.extractAndReportUsage(respBody)
 		if stored, reason := s.storePromptCacheChatPayload(r.Context(), promptCache, cacheKey, normalizedModel, respBody, upResp.StatusCode); stored {
@@ -1013,6 +1081,18 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 			log.Printf("[codegenproxy] openai chat cache store skipped id=%s key=%.16s reason=%s",
 				reqID, cacheKey, reason)
 		}
+	} else if !isStreaming && aliasRewritten && upResp.StatusCode == http.StatusOK {
+		respBody, _ := io.ReadAll(io.LimitReader(upResp.Body, 10*1024*1024))
+		respBody = withClientModel(respBody, true, clientModel)
+		_, _ = w.Write(respBody)
+		s.extractAndReportUsage(respBody)
+	} else if isStreaming && aliasRewritten && upResp.StatusCode == http.StatusOK {
+		tail := &tailBuffer{max: 4096}
+		src := bufio.NewReaderSize(io.TeeReader(upResp.Body, tail), 64*1024)
+		if err := writeAliasedChatStream(w, src, clientModel); err != nil {
+			log.Printf("[codegenproxy] openai chat stream model rewrite failed id=%s err=%v", reqID, err)
+		}
+		s.extractAndReportUsage(tail.Bytes())
 	} else {
 		tail := &tailBuffer{max: 4096}
 		_, _ = io.Copy(w, io.TeeReader(upResp.Body, tail))
@@ -1060,11 +1140,23 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "convert responses request: "+err.Error())
 		return
 	}
-	chatBody = normalizeOpenAIModelInBody(chatBody)
+	aliasRewritten := false
+	if target, ok := s.localModelAliasTarget(originalModel); ok {
+		aliasRewritten = true
+		chatBody = setOpenAIModelInBody(chatBody, target)
+	} else {
+		chatBody = normalizeOpenAIModelInBody(chatBody)
+	}
 	normalizedModel := extractJSONFieldString(chatBody, "model")
 	if resolvedModel := s.resolveCodeGenModelAlias(r.Context(), upURL, apiKey, clientName, normalizedModel); resolvedModel != "" && resolvedModel != normalizedModel {
 		chatBody = setOpenAIModelInBody(chatBody, resolvedModel)
 		normalizedModel = resolvedModel
+	}
+	// Echo the alias on cache hits as well as live replies. The cached chat
+	// payload still carries the upstream model name.
+	clientModel := normalizedModel
+	if aliasRewritten {
+		clientModel = strings.TrimSpace(originalModel)
 	}
 	// Keep the semantic state from the converted Responses request. The
 	// compatibility sanitizer can remove orphaned tool-result messages, which is
@@ -1092,7 +1184,7 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 		cacheKey, cacheReason = resolvePromptCacheKey(chatBody, normalizedModel, originalModel)
 		if cacheKey != "" {
 			if entry, err := promptCache.Get(r.Context(), cacheKey); err == nil && entry != nil && len(entry.Payload) > 0 {
-				if writePromptCacheHitResponsesPayload(w, entry.Payload, normalizedModel, reqID, stream) {
+				if writePromptCacheHitResponsesPayload(w, entry.Payload, clientModel, reqID, stream) {
 					atomic.AddInt64(&s.cacheHits, 1)
 					s.notifyCacheEvent(true)
 					s.notifyCacheDecision(CacheDecisionEvent{Protocol: "responses", Outcome: "hit", Streaming: stream})
@@ -1109,7 +1201,7 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 				cacheFlight, cacheFlightLeader = s.joinPromptCacheFlight(cacheKey)
 				if !cacheFlightLeader {
 					if shared, ok := waitPromptCacheFlight(r, cacheFlight, promptCacheSingleflightWait); ok {
-						if writePromptCacheHitResponsesPayload(w, shared, normalizedModel, reqID, false) {
+						if writePromptCacheHitResponsesPayload(w, shared, clientModel, reqID, false) {
 							atomic.AddInt64(&s.cacheHits, 1)
 							atomic.AddInt64(&s.cacheSingleflightShared, 1)
 							s.notifyCacheEvent(true)
@@ -1135,7 +1227,7 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 				s.promptCacheFlightMu.Unlock()
 				if existing != nil {
 					if shared, ok := waitPromptCacheFlight(r, existing, promptCacheSingleflightWait); ok {
-						if writePromptCacheHitResponsesPayload(w, shared, normalizedModel, reqID, true) {
+						if writePromptCacheHitResponsesPayload(w, shared, clientModel, reqID, true) {
 							atomic.AddInt64(&s.cacheHits, 1)
 							atomic.AddInt64(&s.cacheSingleflightShared, 1)
 							s.notifyCacheEvent(true)
@@ -1203,7 +1295,7 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if stream {
-		s.handleOpenAIResponsesStream(w, upResp, normalizedModel, reqID, cacheKey, promptCache)
+		s.handleOpenAIResponsesStream(w, upResp, clientModel, reqID, cacheKey, promptCache)
 		return
 	}
 	respBody, _ := io.ReadAll(io.LimitReader(upResp.Body, 10*1024*1024))
@@ -1239,7 +1331,7 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	responsesBody, err := convertOpenAIChatResponseToResponses(respBody, normalizedModel)
+	responsesBody, err := convertOpenAIChatResponseToResponses(respBody, clientModel)
 	if err != nil {
 		log.Printf("[codegenproxy] openai responses convert response failed id=%s model=%q err=%v body=%s", reqID, normalizedModel, err, truncateForLog(respBody, 4096))
 		writeError(w, http.StatusBadGateway, "convert upstream response: "+err.Error())
@@ -1699,6 +1791,12 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	}
 	originalModel := anthReq.Model
 	anthReq.Model = normalizeModelIdentifier(anthReq.Model)
+	clientModel := anthReq.Model
+	if target, ok := s.localModelAliasTarget(anthReq.Model); ok {
+		anthReq.Model = target
+	} else {
+		clientModel = ""
+	}
 	if resolvedModel := s.resolveCodeGenModelAlias(r.Context(), upURL, apiKey, clientName, anthReq.Model); resolvedModel != "" && resolvedModel != anthReq.Model {
 		log.Printf("[codegenproxy] anthropic model alias resolved id=%s original_model=%q resolved_model=%q", reqID, anthReq.Model, resolvedModel)
 		anthReq.Model = resolvedModel
@@ -1795,10 +1893,14 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 			reqID, anthReq.Model, anthReq.Stream, upResp.StatusCode, upResp.Header.Get("Content-Type"))
 	}
 
+	responseModel := anthReq.Model
+	if clientModel != "" {
+		responseModel = clientModel
+	}
 	if anthReq.Stream {
-		s.handleStreamResponse(w, upResp, anthReq.Model, reqID, toolSchemas)
+		s.handleStreamResponse(w, upResp, responseModel, reqID, toolSchemas)
 	} else {
-		s.handleNonStreamResponse(w, upResp, anthReq.Model, reqID, toolSchemas)
+		s.handleNonStreamResponse(w, upResp, responseModel, reqID, toolSchemas)
 	}
 }
 
@@ -3679,7 +3781,14 @@ func estimateAnthropicTokenValue(value interface{}) int {
 
 func (s *Server) resolveCodeGenModelAlias(ctx context.Context, upURL, apiKey, clientName, model string) string {
 	model = strings.TrimSpace(model)
-	if model == "" || strings.Contains(model, "/") {
+	if model == "" {
+		return model
+	}
+	// The Codex-facing alias wins over a provider short name such as Auto.
+	if target, ok := s.localModelAliasTarget(model); ok {
+		return target
+	}
+	if strings.Contains(model, "/") {
 		return model
 	}
 	if cached := s.getModelAlias(model); cached != "" {
@@ -3796,33 +3905,203 @@ func isSensitiveLogKey(key string) bool {
 }
 
 func normalizeOpenAIModelInBody(body []byte) []byte {
-	var payload map[string]interface{}
-	if err := json.Unmarshal(body, &payload); err != nil {
-		return body
-	}
-	if model, ok := payload["model"].(string); ok {
-		payload["model"] = normalizeModelIdentifier(model)
-		if out, err := json.Marshal(payload); err == nil {
-			return out
+	return replaceOpenAIModelField(body, func(current string, ok bool) (string, bool) {
+		if !ok {
+			return current, false
 		}
-	}
-	return body
+		trimmed := normalizeModelIdentifier(current)
+		if trimmed == current {
+			return current, false
+		}
+		return trimmed, true
+	})
 }
 
 func setOpenAIModelInBody(body []byte, model string) []byte {
-	var payload map[string]interface{}
-	if err := json.Unmarshal(body, &payload); err != nil {
+	model = strings.TrimSpace(model)
+	return replaceOpenAIModelField(body, func(current string, ok bool) (string, bool) {
+		if ok && current == model {
+			return current, false
+		}
+		return model, true
+	})
+}
+
+// withClientModel puts the alias back on a chat payload when the request used it.
+func withClientModel(body []byte, aliasRewritten bool, clientModel string) []byte {
+	if !aliasRewritten || strings.TrimSpace(clientModel) == "" {
 		return body
 	}
-	payload["model"] = strings.TrimSpace(model)
-	if out, err := json.Marshal(payload); err == nil {
-		return out
+	return setOpenAIModelInBody(body, clientModel)
+}
+
+// replaceExistingOpenAIModel rewrites a model field that is already present.
+// Chunks without a model are left untouched.
+func replaceExistingOpenAIModel(body []byte, model string) []byte {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return body
 	}
-	return body
+	return replaceOpenAIModelField(body, func(current string, ok bool) (string, bool) {
+		if !ok || current == model {
+			return current, false
+		}
+		return model, true
+	})
+}
+
+// writeAliasedChatStream echoes the alias on a streaming chat response.
+// Gateways sometimes answer stream=true with one JSON object instead of SSE.
+func writeAliasedChatStream(dst io.Writer, src *bufio.Reader, clientModel string) error {
+	peek, err := src.Peek(64)
+	if err != nil && err != io.EOF && len(peek) == 0 {
+		return err
+	}
+	if bytes.HasPrefix(bytes.TrimSpace(peek), []byte("{")) {
+		body, rerr := io.ReadAll(io.LimitReader(src, 10*1024*1024))
+		if rerr != nil {
+			return rerr
+		}
+		_, werr := dst.Write(withClientModel(body, true, clientModel))
+		return werr
+	}
+	return rewriteOpenAIChatStreamModel(dst, src, clientModel)
+}
+
+// rewriteOpenAIChatStreamModel copies an OpenAI SSE body and replaces the
+// top-level model on data lines with the client-facing alias.
+func rewriteOpenAIChatStreamModel(dst io.Writer, src io.Reader, clientModel string) error {
+	flusher, _ := dst.(http.Flusher)
+	reader := bufio.NewReaderSize(src, 64*1024)
+	for {
+		line, err := reader.ReadBytes('\n')
+		if len(line) > 0 {
+			if _, werr := dst.Write(rewriteSSEDataModel(line, clientModel)); werr != nil {
+				return werr
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		if err == io.EOF {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+	}
+}
+
+func rewriteSSEDataModel(line []byte, clientModel string) []byte {
+	trimmed := bytes.TrimSpace(line)
+	const prefix = "data:"
+	if !bytes.HasPrefix(trimmed, []byte(prefix)) {
+		return line
+	}
+	payload := bytes.TrimSpace(trimmed[len(prefix):])
+	if len(payload) == 0 || payload[0] != '{' {
+		return line
+	}
+	updated := replaceExistingOpenAIModel(payload, clientModel)
+	if bytes.Equal(updated, payload) {
+		return line
+	}
+	newline := []byte("\n")
+	if bytes.HasSuffix(line, []byte("\r\n")) {
+		newline = []byte("\r\n")
+	}
+	out := make([]byte, 0, len("data: ")+len(updated)+len(newline))
+	out = append(out, "data: "...)
+	out = append(out, updated...)
+	out = append(out, newline...)
+	return out
+}
+
+// replaceOpenAIModelField rewrites the top-level model when next asks it to.
+// Unchanged bodies are returned as-is. Numbers stay decimal text and "<" is
+// left literal so a model swap does not reshape the rest of the request.
+func replaceOpenAIModelField(body []byte, next func(current string, ok bool) (string, bool)) []byte {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	var payload map[string]interface{}
+	if err := dec.Decode(&payload); err != nil || payload == nil {
+		return body
+	}
+	var extra interface{}
+	if err := dec.Decode(&extra); err != io.EOF {
+		return body
+	}
+	current, ok := payload["model"].(string)
+	replacement, write := next(current, ok)
+	if !write || (ok && replacement == current) {
+		return body
+	}
+	payload["model"] = replacement
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(payload); err != nil {
+		return body
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n")
 }
 
 func normalizeModelIdentifier(model string) string {
 	return strings.TrimSpace(model)
+}
+
+func (s *Server) includeLocalModelAlias(body []byte, protocol string) []byte {
+	alias := strings.TrimSpace(s.localModelAliasName())
+	if alias == "" || len(body) == 0 {
+		return body
+	}
+	var raw map[string]interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return body
+	}
+	entries, ok := modelEntries(raw)
+	if !ok {
+		return body
+	}
+	for _, entry := range entries {
+		m, ok := entry.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if sameModelID(modelField(m, "id"), alias) {
+			return body
+		}
+	}
+	var synthetic map[string]interface{}
+	if err := json.Unmarshal(localModelAliasObject(alias, protocol), &synthetic); err != nil {
+		return body
+	}
+	listed := make([]interface{}, 0, len(entries)+1)
+	listed = append(listed, synthetic)
+	listed = append(listed, entries...)
+	raw["data"] = listed
+	out, err := json.Marshal(raw)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+func localModelAliasObject(alias, protocol string) []byte {
+	if protocol == "anthropic" {
+		data, _ := json.Marshal(normalizeAnthropicModelMap(map[string]interface{}{
+			"id":           alias,
+			"display_name": alias,
+		}))
+		return data
+	}
+	data, _ := json.Marshal(map[string]interface{}{
+		"id":       alias,
+		"object":   "model",
+		"created":  0,
+		"owned_by": "codexproxy",
+	})
+	return data
 }
 
 func normalizeModelsResponse(body []byte, protocol string) ([]byte, error) {

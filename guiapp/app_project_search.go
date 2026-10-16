@@ -4912,18 +4912,18 @@ func codingRuntimeRefForTaskTags(tags []string) string {
 	return ""
 }
 
-// activeCodingRuntimeStatusesByRef loads the non-terminal coding runtime
-// statuses keyed by normalized project_ref. It deliberately reuses an already
-// opened store instead of ensuring one: SearchTasks runs on every task list
-// refresh, and apps that never run coding work should not create the ledger
-// database as a side effect of opening the sidebar.
+// activeCodingRuntimeStatusesByRef loads the coding runtime status the task
+// list should merge, keyed by normalized project_ref. A newest failure is
+// included: the registry only records that a file exists, and the list would
+// otherwise show that as completed. An already-open store is reused. When the
+// ledger file already exists, the first task-list refresh opens it, so a
+// failed turn stays failed after a restart. SearchTasks does not create the
+// database: an app that has never run coding work keeps an empty sidebar.
 func (a *App) activeCodingRuntimeStatusesByRef() map[string]string {
 	if a == nil {
 		return nil
 	}
-	a.codingRuntimeStoreMu.Lock()
-	store := a.codingRuntimeStore
-	a.codingRuntimeStoreMu.Unlock()
+	store := a.openExistingCodingRuntimeStore()
 	if store == nil {
 		return nil
 	}
@@ -5064,6 +5064,10 @@ func activeCodingRuntimeWorkflowForTags(tags []string, activeByRef map[string]st
 	case codingruntime.TaskWaitingApproval:
 		// Only an approval is waiting on the user. There is a concrete decision.
 		return &ProjectWorkflowState{Status: "waiting_review", PendingReview: true}
+	case codingruntime.TaskFailed:
+		// The ledger outcome is the task outcome. A later has_output check must
+		// not turn this into a completed row.
+		return &ProjectWorkflowState{Status: string(codingruntime.TaskFailed)}
 	case codingruntime.TaskBlocked:
 		// A gate block is not something the user can confirm. Surface it as a
 		// failure. "failed" (not "blocked") matches the header and the sidebar

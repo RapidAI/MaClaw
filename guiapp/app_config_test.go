@@ -2355,6 +2355,11 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 		"qqbot_app_secret":             "qq-secret ",
 		"telegram_bot_enabled":         true,
 		"telegram_bot_token":           " tg-token ",
+		"slack_enabled":                true,
+		"slack_client_id":              " slack-client ",
+		"slack_client_secret":          " slack-secret ",
+		"slack_bot_token":              " xoxb-token ",
+		"slack_team_name":              " Acme ",
 		"lansenger_enabled":            true,
 		"lansenger_app_id":             " lx-app ",
 		"lansenger_app_secret":         "lx-secret ",
@@ -2446,7 +2451,7 @@ func TestPatchConfigFieldsUpdatesExtendedScalarFields(t *testing.T) {
 	if patched.MaclawRoleName != "reviewer" || patched.MaclawRoleDescription != "checks code" {
 		t.Fatalf("maclaw role fields not applied: %#v", patched)
 	}
-	if patched.IMProgressNudgeEnabled == nil || *patched.IMProgressNudgeEnabled || !patched.QQBotEnabled || patched.QQBotAppID != "qq-app" || patched.QQBotAppSecret != "qq-secret " || !patched.TelegramBotEnabled || patched.TelegramBotToken != "tg-token" {
+	if patched.IMProgressNudgeEnabled == nil || *patched.IMProgressNudgeEnabled || !patched.QQBotEnabled || patched.QQBotAppID != "qq-app" || patched.QQBotAppSecret != "qq-secret " || !patched.TelegramBotEnabled || patched.TelegramBotToken != "tg-token" || !patched.SlackEnabled || patched.SlackClientID != "slack-client" || patched.SlackClientSecret != "slack-secret" || patched.SlackBotToken != "xoxb-token" || patched.SlackTeamName != "Acme" {
 		t.Fatalf("IM bot fields not applied: %#v", patched)
 	}
 	if !patched.LansengerEnabled || patched.LansengerAppID != "lx-app" || patched.LansengerAppSecret != "lx-secret " || patched.LansengerGatewayURL != "https://apigw.example.com" || patched.LansengerWSSURL != "wss://ws.example.com" {

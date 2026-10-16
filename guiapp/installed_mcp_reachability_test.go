@@ -59,7 +59,9 @@ func TestContractOnlyGraftMintsOneNeedPerCapability(t *testing.T) {
 
 // TestContractOnlyGraftIsDeterministicAcrossCapabilityOrder: the graft must not
 // depend on map iteration order, or identical inputs produce different plans
-// and different Unmet rows run to run.
+// and different Unmet rows run to run. Two contract-only capabilities that
+// both fall back to information.lookup share one graft: a second need would
+// select the same adapter again and the renderer rejects the name collision.
 func TestContractOnlyGraftIsDeterministicAcrossCapabilityOrder(t *testing.T) {
 	lookup := tool.ProviderSpec{
 		AdapterName: "v",
@@ -97,8 +99,17 @@ func TestContractOnlyGraftIsDeterministicAcrossCapabilityOrder(t *testing.T) {
 			}
 		}
 	}
-	if len(first) != 4 {
-		t.Fatalf("two distinct capabilities must each get a graft, got %d needs: %#v", len(first), first)
+	if len(first) != 3 || first[0].Required || first[1].Required {
+		t.Fatalf("both obligations must relax onto one shared lookup graft, got %#v", first)
+	}
+	lookups := 0
+	for _, need := range first {
+		if need.Capability == agentservice.CapabilityInformationLookup {
+			lookups++
+		}
+	}
+	if lookups != 1 || first[2].ID != "need:~installed-fallback:record.read.worklog" {
+		t.Fatalf("the shared graft must be the single deterministic lookup need, got %#v", first)
 	}
 }
 
@@ -530,9 +541,11 @@ func TestInstalledUnannotatedToolsPlanWithoutCatalogRefusal(t *testing.T) {
 	}
 }
 
-// TestContractOnlyGraftHonorsANamedServer keeps a sibling server off the
-// surface when the user named one that can do the job.
-func TestContractOnlyGraftHonorsANamedServer(t *testing.T) {
+// TestContractOnlyGraftDoesNotHideServersBehindAnIncidentalPin: a pin of
+// information.lookup names one server for that family. It must not hide
+// another server's exact tool, and a pin of a server that cannot carry the
+// need must not leave the work-log need required.
+func TestContractOnlyGraftDoesNotHideServersBehindAnIncidentalPin(t *testing.T) {
 	registry := newIMSemanticCapabilityRegistry()
 	namedID := agentservice.AutoMCPCapabilityIDForBinding("tengyun", "work_log_query")
 	otherID := agentservice.AutoMCPCapabilityIDForBinding("other", "search_docs")
@@ -548,8 +561,178 @@ func TestContractOnlyGraftHonorsANamedServer(t *testing.T) {
 		ID: "need:record.read.worklog:abc", Capability: tool.CapabilityRecordReadWorklog,
 		Polarity: tool.NeedRequire, Required: true,
 	}}, []tool.ProviderSpec{named, sibling}, pins, registry)
-	if len(got) != 2 || got[1].Capability != namedID {
-		t.Fatalf("named server must be the only fallback, got %#v", got)
+	if len(got) != 3 || got[0].Required {
+		t.Fatalf("an incidental lookup pin must still expose every carrying tool, got %#v", got)
+	}
+	seen := map[tool.CapabilityID]bool{}
+	for _, need := range got[1:] {
+		seen[need.Capability] = true
+	}
+	if !seen[namedID] || !seen[otherID] {
+		t.Fatalf("both servers must stay reachable, got %#v", got)
+	}
+
+	absent := []tool.ProviderPin{{
+		Capability: agentservice.CapabilityInformationLookup, Kind: "mcp", ProviderID: "absent-server",
+	}}
+	got = semanticNeedsWithContractOnlyGraft([]tool.CapabilityNeed{{
+		ID: "need:record.read.worklog:abc", Capability: tool.CapabilityRecordReadWorklog,
+		Polarity: tool.NeedRequire, Required: true,
+	}}, []tool.ProviderSpec{named}, absent, registry)
+	if len(got) != 2 || got[0].Required || got[1].Capability != namedID {
+		t.Fatalf("a pin of a server that cannot carry the need must not restore the catalog miss, got %#v", got)
+	}
+}
+
+// TestContractOnlyGraftDropsAmbientLookupWhenEachToolIsExposed: the open
+// family is attached before the graft on a work-log turn. Leaving it beside
+// the exact tools force-calls one arbitrary sibling.
+func TestContractOnlyGraftDropsAmbientLookupWhenEachToolIsExposed(t *testing.T) {
+	registry := newIMSemanticCapabilityRegistry()
+	queryID := agentservice.AutoMCPCapabilityIDForBinding("tengyun", "work_log_query")
+	listID := agentservice.AutoMCPCapabilityIDForBinding("tengyun", "list_projects")
+	if err := agentservice.EnsureExternalCapabilityVocabulary(registry, []tool.CapabilityID{queryID, listID}); err != nil {
+		t.Fatal(err)
+	}
+	query := unannotatedLookupProvider("work_log_query", "tengyun", []tool.CapabilityID{queryID})
+	other := unannotatedLookupProvider("list_projects", "tengyun", []tool.CapabilityID{listID})
+	needs := []tool.CapabilityNeed{
+		agentservice.AmbientDynamicLookupNeed(),
+		{
+			ID: "need:record.read.worklog:6d6f8a6a31c1", Capability: tool.CapabilityRecordReadWorklog,
+			Polarity: tool.NeedRequire, Required: true,
+		},
+	}
+	got := semanticNeedsWithContractOnlyGraft(needs, []tool.ProviderSpec{query, other}, nil, registry)
+	if len(got) != 3 || got[0].Required || got[0].Capability != tool.CapabilityRecordReadWorklog {
+		t.Fatalf("exact tools must replace the ambient lookup need, got %#v", got)
+	}
+	for _, need := range got {
+		if need.Capability == agentservice.CapabilityInformationLookup {
+			t.Fatalf("ambient lookup must not stay beside exact tools, got %#v", got)
+		}
+	}
+}
+
+// TestContractOnlyGraftReusesAmbientLookupWhenNoExactCapability: a tool
+// published only as information.lookup already has the ambient need. A second
+// lookup need would select the same adapter twice.
+func TestContractOnlyGraftReusesAmbientLookupWhenNoExactCapability(t *testing.T) {
+	installed := unannotatedLookupProvider("query_worklog", "tengyun", nil)
+	ambient := agentservice.AmbientDynamicLookupNeed()
+	needs := []tool.CapabilityNeed{
+		ambient,
+		{
+			ID: "need:record.read.worklog:6d6f8a6a31c1", Capability: tool.CapabilityRecordReadWorklog,
+			Polarity: tool.NeedRequire, Required: true,
+		},
+	}
+	got := semanticNeedsWithContractOnlyGraft(needs, []tool.ProviderSpec{installed}, nil, newIMSemanticCapabilityRegistry())
+	if len(got) != 2 || got[1].Required {
+		t.Fatalf("the sealed need must relax onto the ambient lookup that is already demanded, got %#v", got)
+	}
+	lookups := 0
+	for _, need := range got {
+		if need.Capability == agentservice.CapabilityInformationLookup {
+			lookups++
+			if need.ID != ambient.ID {
+				t.Fatalf("fallback must reuse the ambient need, got %#v", got)
+			}
+		}
+	}
+	if lookups != 1 {
+		t.Fatalf("lookup needs = %d in %#v", lookups, got)
+	}
+}
+
+// TestContractOnlyGraftDoesNotRepeatANamedToolNeed: a compound tool name
+// already minted a required exact need. The graft must not demand that
+// capability again, or the planner selects the same tool twice.
+func TestContractOnlyGraftDoesNotRepeatANamedToolNeed(t *testing.T) {
+	registry := newIMSemanticCapabilityRegistry()
+	queryID := agentservice.AutoMCPCapabilityIDForBinding("tengyun", "work_log_query")
+	listID := agentservice.AutoMCPCapabilityIDForBinding("tengyun", "list_projects")
+	if err := agentservice.EnsureExternalCapabilityVocabulary(registry, []tool.CapabilityID{queryID, listID}); err != nil {
+		t.Fatal(err)
+	}
+	query := unannotatedLookupProvider("work_log_query", "tengyun", []tool.CapabilityID{queryID})
+	other := unannotatedLookupProvider("list_projects", "tengyun", []tool.CapabilityID{listID})
+	got := semanticNeedsWithContractOnlyGraft([]tool.CapabilityNeed{
+		{
+			ID: "need:~named:" + string(queryID), Capability: queryID,
+			Polarity: tool.NeedRequire, Required: true,
+		},
+		{
+			ID: "need:record.read.worklog:abc", Capability: tool.CapabilityRecordReadWorklog,
+			Polarity: tool.NeedRequire, Required: true,
+		},
+	}, []tool.ProviderSpec{query, other}, nil, registry)
+	queryNeeds := 0
+	var queryRequired bool
+	for _, need := range got {
+		if need.Capability == queryID {
+			queryNeeds++
+			queryRequired = need.Required
+		}
+		if need.Capability == agentservice.CapabilityInformationLookup {
+			t.Fatalf("ambient or shared lookup must stay off, got %#v", got)
+		}
+	}
+	if queryNeeds != 1 || !queryRequired {
+		t.Fatalf("the named tool must stay the one required exact need, got %#v", got)
+	}
+	seenList := false
+	worklogOptional := false
+	for _, need := range got {
+		if need.Capability == listID && !need.Required {
+			seenList = true
+		}
+		if need.Capability == tool.CapabilityRecordReadWorklog && !need.Required {
+			worklogOptional = true
+		}
+	}
+	if !seenList || !worklogOptional {
+		t.Fatalf("the sibling stays optional and the sealed need relaxes, got %#v", got)
+	}
+}
+
+// TestContractOnlyGraftUsesTheHostToolAddress: a vendor-declared x:mcp id
+// that sorts first must not become the need. The call has to resolve to the
+// binding the host issued for this server and tool.
+func TestContractOnlyGraftUsesTheHostToolAddress(t *testing.T) {
+	registry := newIMSemanticCapabilityRegistry()
+	hostID := agentservice.AutoMCPCapabilityIDForBinding("tengyun", "work_log_query")
+	decoy := tool.CapabilityID("x:mcp:aaa:decoy")
+	if err := agentservice.EnsureExternalCapabilityVocabulary(registry, []tool.CapabilityID{hostID, decoy}); err != nil {
+		t.Fatal(err)
+	}
+	installed := unannotatedLookupProvider("work_log_query", "tengyun", []tool.CapabilityID{decoy, hostID})
+	got := semanticNeedsWithContractOnlyGraft([]tool.CapabilityNeed{{
+		ID: "need:record.read.worklog:abc", Capability: tool.CapabilityRecordReadWorklog,
+		Polarity: tool.NeedRequire, Required: true,
+	}}, []tool.ProviderSpec{installed}, nil, registry)
+	if len(got) != 2 || got[0].Required || got[1].Capability != hostID {
+		t.Fatalf("host address must win over a vendor x:mcp declaration, got %#v", got)
+	}
+}
+
+// TestContractOnlyGraftKeepsExactSiblingsWhenOneToolHasNoCapability: one
+// unpublished auto capability must not hide the tools that do have one, and
+// must not add the force-called shared family beside them.
+func TestContractOnlyGraftKeepsExactSiblingsWhenOneToolHasNoCapability(t *testing.T) {
+	registry := newIMSemanticCapabilityRegistry()
+	queryID := agentservice.AutoMCPCapabilityIDForBinding("tengyun", "work_log_query")
+	if err := agentservice.EnsureExternalCapabilityVocabulary(registry, []tool.CapabilityID{queryID}); err != nil {
+		t.Fatal(err)
+	}
+	query := unannotatedLookupProvider("work_log_query", "tengyun", []tool.CapabilityID{queryID})
+	plain := unannotatedLookupProvider("list_projects", "tengyun", nil)
+	got := semanticNeedsWithContractOnlyGraft([]tool.CapabilityNeed{{
+		ID: "need:record.read.worklog:abc", Capability: tool.CapabilityRecordReadWorklog,
+		Polarity: tool.NeedRequire, Required: true,
+	}}, []tool.ProviderSpec{query, plain}, nil, registry)
+	if len(got) != 2 || got[0].Required || got[1].Capability != queryID {
+		t.Fatalf("the declared tool must stay exact and the shared family must stay off, got %#v", got)
 	}
 }
 

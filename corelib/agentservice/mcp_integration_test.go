@@ -20,6 +20,9 @@ type boundMCPProviderStub struct {
 	called      MCPToolBinding
 	arguments   map[string]interface{}
 	err         error
+	// result, when set, is the successful tools/call body. An empty result
+	// keeps the historical "bound" stub text.
+	result string
 }
 
 type contractDriftMCPProviderStub struct {
@@ -110,6 +113,9 @@ func (s *boundMCPProviderStub) CallBoundTool(_ context.Context, _ Principal, bin
 	s.arguments = arguments
 	if s.err != nil {
 		return "", s.err
+	}
+	if s.result != "" {
+		return s.result, nil
 	}
 	return "bound", nil
 }

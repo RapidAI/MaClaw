@@ -9,11 +9,13 @@ import {
     FileCompanionOpen,
     FileCompanionOpenArxiv,
     FileCompanionReplaceOffice,
+    FileCompanionResumePaths,
     FileCompanionSaveText,
     FileCompanionUIReady,
     FileCompanionUploadCloud,
     GetBrandInfo,
     GetFileCompanionBoot,
+    SetFileCompanionOpenSet,
     SendFileCompanionMessage,
 } from "../../../wailsjs/go/main/App";
 import { WindowHide } from "../../../wailsjs/runtime";
@@ -322,6 +324,30 @@ function bootPaths(boot: { paths?: unknown; Paths?: unknown } | null | undefined
     const raw = boot?.paths ?? boot?.Paths;
     if (!Array.isArray(raw)) return [];
     return raw.filter((item): item is string => typeof item === "string" && item.trim() !== "");
+}
+
+function companionTabStaysInOpenSet(tab: { path: string; error?: string }): boolean {
+    if (!tab.path) return false;
+    switch (tab.error) {
+        case "file not found":
+        case "directories are not opened as tabs":
+        case "empty path":
+        case "path contains NUL":
+            return false;
+        default:
+            return true;
+    }
+}
+
+export function companionOpenSetPaths(tabs: { path: string; error?: string }[], active: string): string[] {
+    const paths: string[] = [];
+    const activeTab = tabs.find((tab) => tab.path === active && companionTabStaysInOpenSet(tab));
+    if (activeTab?.path) paths.push(activeTab.path);
+    for (const tab of tabs) {
+        if (!companionTabStaysInOpenSet(tab) || paths.includes(tab.path)) continue;
+        paths.push(tab.path);
+    }
+    return paths;
 }
 
 function isDirectoryError(error: string): boolean {
@@ -1190,6 +1216,7 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
     const choosingRef = useRef(false);
     const chooseFilesRef = useRef<() => Promise<void>>(async () => undefined);
     const bootSettledRef = useRef(false);
+    const [bootSettled, setBootSettled] = useState(false);
     const opensInFlight = useRef(0);
     const tabCommittedRef = useRef(false);
     const bootPromiseRef = useRef<Promise<unknown> | null>(null);
@@ -1440,12 +1467,19 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
                 }
                 if (cancelled) return;
                 bootSettledRef.current = true;
+                setBootSettled(true);
                 askIfEmpty();
             };
             try {
                 const boot = await bootPromise;
                 if (cancelled) return;
-                const paths = bootPaths(boot as { paths?: unknown; Paths?: unknown });
+                // A launch with no documents is "show the companion". The files
+                // it had open last time are the session; the launch verb is not
+                // one of them. The dialog runs only when that session is empty.
+                let paths = bootPaths(boot as { paths?: unknown; Paths?: unknown });
+                if (paths.length === 0) {
+                    paths = readyPaths(await Promise.resolve(FileCompanionResumePaths()).catch(() => undefined));
+                }
                 for (const path of paths) {
                     if (cancelled) return;
                     await openPath(path, false);
@@ -1468,6 +1502,30 @@ export default function FileCompanionWindow({ askOnOpen = true }: { askOnOpen?: 
             runtime?.OnFileDropOff?.();
         };
     }, []);
+
+    // The open set is the session the next icon click restores. The payload is
+    // the path list only, so a streaming token or a draft edit does not rewrite
+    // it. An empty list is written after the window has shown a document, which
+    // is the user closing the last tab. The empty render at boot is not that:
+    // writing it would erase the files this boot is about to open.
+    const openSetPayload = JSON.stringify(companionOpenSetPaths(tabs, active));
+    const openSetSawDocument = useRef(false);
+    const openSetSeq = useRef(0);
+    const openSetChain = useRef(Promise.resolve());
+    useEffect(() => {
+        if (!bootSettled) return;
+        const paths = JSON.parse(openSetPayload) as string[];
+        if (paths.length === 0 && !openSetSawDocument.current) return;
+        if (paths.length > 0) openSetSawDocument.current = true;
+        // Writes overlap when the user closes a tab while the previous save
+        // is still on disk. A later list must land last, or the closed tab
+        // comes back.
+        const seq = ++openSetSeq.current;
+        openSetChain.current = openSetChain.current.then(() => {
+            if (seq !== openSetSeq.current) return undefined;
+            return SetFileCompanionOpenSet(paths);
+        }).catch(() => undefined);
+    }, [bootSettled, openSetPayload]);
 
     const tabStripKey = tabs.map((tab) => `${tab.path}\0${tab.name}\0${tab.dirty ? "*" : ""}`).join("\n");
     useLayoutEffect(() => {

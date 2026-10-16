@@ -590,6 +590,9 @@ func (h *IMMessageHandler) resolveCodingRequestUnderstanding(userText string, me
 }
 
 func (h *IMMessageHandler) publishCodingRequestUnderstanding(userID, userText string, mem stickyCodingWorkbenchMemory, onToken func(string)) string {
+	if isGoalSystemContinuation(userText) {
+		return ""
+	}
 	if !codingRequestShouldRestateEarly(userText) {
 		return ""
 	}
@@ -606,6 +609,9 @@ func (h *IMMessageHandler) publishCodingRequestUnderstanding(userID, userText st
 }
 
 func (h *IMMessageHandler) refineCodingRequestUnderstanding(userID, userText string, mem stickyCodingWorkbenchMemory, decision codingRequestDecision) string {
+	if isGoalSystemContinuation(userText) {
+		return ""
+	}
 	if !codingRequestShouldRestate(decision, userText) || codingRequestUnderstandingKeepsHostFallback(userText, mem) {
 		return strings.TrimSpace(mem.RequirementRestatement)
 	}

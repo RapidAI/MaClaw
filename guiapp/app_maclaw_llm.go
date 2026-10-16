@@ -726,7 +726,7 @@ func defaultOpenCodeProvider() corelib.MaclawLLMProvider {
 	return corelib.MaclawLLMProvider{
 		Name:          configfile.ExternalAgentProviderOpenCode,
 		URL:           configfile.OpenCodeZenBaseURL,
-		Model:         configfile.OpenCodeZenDefaultModel,
+		Model:         "glm-5.3-flash-free",
 		Protocol:      "openai",
 		AgentType:     configfile.ExternalAgentTypeOpenCode,
 		ContextLength: 128000,
@@ -1658,13 +1658,20 @@ func constrainOpenCodeModel(provider corelib.MaclawLLMProvider, model string) st
 		return strings.TrimSpace(model)
 	}
 	model = strings.TrimSpace(model)
-	if model != "" {
-		return model
+	const prefix = "opencode/"
+	if len(model) > len(prefix) && strings.EqualFold(model[:len(prefix)], prefix) {
+		model = strings.TrimSpace(model[len(prefix):])
 	}
-	if fallback := strings.TrimSpace(provider.Model); fallback != "" {
-		return fallback
+	if strings.EqualFold(model, configfile.OpenCodeZenDefaultModel) {
+		return "glm-5.3-flash-free"
 	}
-	return configfile.OpenCodeZenDefaultModel
+	if model == "" {
+		if fallback := strings.TrimSpace(provider.Model); fallback != "" && !strings.EqualFold(fallback, configfile.OpenCodeZenDefaultModel) {
+			return fallback
+		}
+		return "glm-5.3-flash-free"
+	}
+	return model
 }
 
 func isOpenCodePresetSlot(provider corelib.MaclawLLMProvider) bool {

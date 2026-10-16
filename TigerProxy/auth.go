@@ -860,7 +860,11 @@ func fetchModelsForMode(mode, baseURL, apiKey, agentType string, account AuthPro
 	if mode == AuthModeOpenCode {
 		headers := openCodeModelHeaders()
 		setAgentHeader(headers, agentType)
-		return fetchOpenAICompatibleModels(baseURL, apiKey, headers)
+		models, err := fetchOpenAICompatibleModels(baseURL, apiKey, headers)
+		if err != nil {
+			return nil, err
+		}
+		return withOpenCodeZenFreeModels(models), nil
 	}
 	headers := map[string]string{}
 	if mode == AuthModeXAIOAuth {

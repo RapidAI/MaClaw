@@ -255,6 +255,11 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 	reportActivity, cleanupActivity, crossChannelPrompt := h.startAgentLoopActivity(opts.UserID, opts.Platform, opts.UserText, configStart.MaxIterations)
 	cleanupFns = append(cleanupFns, cleanupActivity)
 	systemPrompt := opts.SystemPrompt
+	// The first model request uses this prompt. A later refresh prepends the
+	// same section; without it here the opening turn only sees the chat prompt.
+	if section := goalContinuationPhaseSection(opts.UserText); section != "" {
+		systemPrompt = section + systemPrompt
+	}
 	if extra := crossChannelPrompt; extra != "" {
 		systemPrompt += extra
 	}

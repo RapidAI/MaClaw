@@ -19,6 +19,7 @@ export {
     codingStepIsFailed,
     codingStepIsSettled,
     codingStepIsSkipped,
+    presentCodingAgentChecklist,
 } from "./codingStepStatus";
 
 /** Chrome tokens for coding workbench floating control (light/dark + remote/local). */
@@ -215,6 +216,11 @@ export function deriveChipStatus(
     }
     if (needsAttention) {
         return localizeText(lang, "Attention", "需处理", "需處理");
+    }
+    // A finished checklist is step progress. "Done" on a multi-step chip reads
+    // as the task outcome, which the header already owns.
+    if (steps.length > 1 && steps.every((step) => codingStepIsDone(step.status))) {
+        return `${steps.length}/${steps.length}`;
     }
     if (steps.length > 0) {
         const last = steps[steps.length - 1];

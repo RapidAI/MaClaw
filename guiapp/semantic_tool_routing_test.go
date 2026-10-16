@@ -291,6 +291,51 @@ func TestSemanticReplanBindingReplacementCannotAddParameterAuthority(t *testing.
 	}
 }
 
+func TestSemanticReceiptIntakeLetsDynamicMCPReachItsCoordinator(t *testing.T) {
+	mcp := tool.PlannedSelection{
+		ID:          "selection:mcp",
+		Provider:    tool.ProviderBinding{Kind: "mcp", ProviderID: "tengyun", ImplementationID: "query_worklog"},
+		AdapterName: "dynamic_mcp_query",
+		Effects:     []tool.EffectClass{tool.EffectExternalEffect},
+	}
+	skill := tool.PlannedSelection{
+		ID:          "selection:skill",
+		Provider:    tool.ProviderBinding{Kind: "skill", ProviderID: "acme", ImplementationID: "report"},
+		AdapterName: "dynamic_skill_report",
+		Effects:     []tool.EffectClass{tool.EffectExternalEffect},
+	}
+	builtin := tool.PlannedSelection{
+		ID:          "selection:builtin",
+		Provider:    tool.ProviderBinding{Kind: "builtin", ProviderID: "host", ImplementationID: "untracked"},
+		AdapterName: "untracked_external_adapter",
+		Effects:     []tool.EffectClass{tool.EffectExternalEffect},
+	}
+	callback := &sharedAgentLoopCallbacks{
+		semanticSurface: &semanticCallSurface{
+			plan: tool.ToolPlan{Selections: []tool.PlannedSelection{mcp, skill, builtin}},
+			grants: map[string]tool.InvocationGrant{
+				"invoke_mcp":     {SelectionID: mcp.ID, Token: "invoke_mcp"},
+				"invoke_skill":   {SelectionID: skill.ID, Token: "invoke_skill"},
+				"invoke_builtin": {SelectionID: builtin.ID, Token: "invoke_builtin"},
+			},
+		},
+	}
+	// The legacy dispatcher still has no receipt for these selections. Intake
+	// must not use that fact to drop a dynamic call before its coordinator.
+	if !semanticReceiptBoundaryMissing(mcp) || !semanticReceiptBoundaryMissing(skill) {
+		t.Fatal("dynamic external selections must stay closed on the legacy dispatcher")
+	}
+	if got := callback.semanticReceiptIntakeRejection("invoke_mcp"); got != "" {
+		t.Fatalf("MCP intake = %q", got)
+	}
+	if got := callback.semanticReceiptIntakeRejection("invoke_skill"); got != "" {
+		t.Fatalf("skill intake = %q", got)
+	}
+	if got := callback.semanticReceiptIntakeRejection("invoke_builtin"); got != "[system rejected] external_effect_receipt_boundary_missing" {
+		t.Fatalf("builtin intake = %q", got)
+	}
+}
+
 func TestSemanticExternalEffectWithoutReceiptBoundaryFailsBeforeLegacyDispatch(t *testing.T) {
 	called := false
 	selection := tool.PlannedSelection{

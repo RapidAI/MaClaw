@@ -2,11 +2,15 @@ package guiapp
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
 func TestDesktopBotProtocolSkipsTheModel(t *testing.T) {
@@ -561,6 +565,80 @@ func TestDesktopBotUnderstandTextPrefersParsedReasoning(t *testing.T) {
 	if got := desktopBotUnderstandText("不是 JSON", ""); got != "不是 JSON" {
 		t.Fatalf("unparsed body was replaced: %q", got)
 	}
+}
+
+func TestDesktopBotUnderstandClassifyRequestDisablesThinking(t *testing.T) {
+	req := desktopBotUnderstandClassifyRequest(desktopBotUnderstandRequest{
+		systemPrompt: "system", userPrompt: "user", timeoutSec: 12,
+	})
+	if req.PreferLightweight || !req.NoThinking || req.Tag != "desktop-bot-understand" || req.MaxOutputTokens != desktopBotUnderstandMaxOutputTokens {
+		t.Fatalf("reading request = %+v", req)
+	}
+	if req.SystemPrompt != "system" || req.UserMessage != "user" || req.TimeoutSec != 12 {
+		t.Fatalf("reading request dropped the prompt: %+v", req)
+	}
+}
+
+func TestReadingLLMConfigStopsAutoDeepSeekThinking(t *testing.T) {
+	cfg := corelib.MaclawLLMConfig{
+		URL:          "https://www.workbuddy.ai/v2",
+		Model:        "deepseek-v4.1-flash",
+		ProviderName: "WorkBuddy",
+	}
+	if got := openAIThinkingType(t, cfg); got != "enabled" {
+		t.Fatalf("auto deepseek thinking = %q, want enabled", got)
+	}
+	forced := cfg
+	forced.ThinkingMode = "enabled"
+	forced.ReasoningEffort = "high"
+	if got := openAIThinkingType(t, forced); got != "enabled" {
+		t.Fatalf("explicit deepseek thinking = %q, want enabled", got)
+	}
+	reading := readingLLMConfig(forced, desktopBotUnderstandMaxOutputTokens)
+	if reading.ThinkingMode != "disabled" || reading.ReasoningEffort != "none" || reading.MaxOutputTokens != desktopBotUnderstandMaxOutputTokens {
+		t.Fatalf("reading config = %+v", reading)
+	}
+	body := openAIChatBody(t, reading)
+	if got, _ := body["thinking"].(map[string]any)["type"].(string); got != "disabled" {
+		t.Fatalf("reading thinking = %q, want disabled", got)
+	}
+	if _, ok := body["reasoning_effort"]; ok {
+		t.Fatal("disabled deepseek request kept reasoning_effort")
+	}
+	if body["max_tokens"] != float64(desktopBotUnderstandMaxOutputTokens) {
+		t.Fatalf("max_tokens = %v, want %d", body["max_tokens"], desktopBotUnderstandMaxOutputTokens)
+	}
+	if desktopBotUnderstandMaxOutputTokens < desktopBotUnderstandToldMax+desktopBotUnderstandOrderMax+desktopBotUnderstandPersonaMax {
+		t.Fatalf("output cap %d is below the fields the parser keeps", desktopBotUnderstandMaxOutputTokens)
+	}
+	always := readingLLMConfig(corelib.MaclawLLMConfig{
+		URL: "https://api.openai.com/v1", Model: "glm-5.3", ThinkingMode: "enabled", MaxOutputTokens: 8192,
+	}, desktopBotUnderstandMaxOutputTokens)
+	if always.ThinkingMode != "enabled" || always.MaxOutputTokens != 8192 {
+		t.Fatalf("always-on model was rewritten: %+v", always)
+	}
+}
+
+func openAIChatBody(t *testing.T, cfg corelib.MaclawLLMConfig) map[string]any {
+	t.Helper()
+	_, raw, err := llm.BuildOpenAIChatRequestData(cfg, []any{
+		map[string]string{"role": "user", "content": "hi"},
+	}, llm.OpenAIChatRequestOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(raw, &body); err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func openAIThinkingType(t *testing.T, cfg corelib.MaclawLLMConfig) string {
+	t.Helper()
+	thinking, _ := openAIChatBody(t, cfg)["thinking"].(map[string]any)
+	typ, _ := thinking["type"].(string)
+	return typ
 }
 
 func TestCallDesktopBotUnderstandNeedsAModel(t *testing.T) {

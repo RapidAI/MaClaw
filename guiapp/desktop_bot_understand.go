@@ -98,12 +98,18 @@ const (
 	// on one request, and a window too small drops the request they modify.
 	desktopBotUnderstandEarlierMax = 20
 	desktopBotUnderstandLineMax    = 500
+	// The parser clips a finished object. The model is not told those sizes,
+	// and dense CJK is about one token per rune, so the cap is twice the
+	// fields the parser will keep. A shorter cap cuts the JSON mid-string
+	// and the reading is reported as if no arrangement came back.
+	desktopBotUnderstandMaxOutputTokens = 2 * (desktopBotUnderstandToldMax + desktopBotUnderstandOrderMax + desktopBotUnderstandPersonaMax)
 
 	// desktopBotReadBudget is everything one reading may spend — first attempt,
-	// second attempt, parse and all. This prompt is answered by a reasoning
-	// model, and the body arrives when generation finishes, not at the first
-	// byte. A completed reading of the same sentence took 43s. A 45s cap sat
-	// inside that cost: the context then cancelled the stream with an empty
+	// second attempt, parse and all. The body arrives when generation finishes,
+	// not at the first byte. Turning thinking off for this call does not shrink
+	// the budget: models that reject thinking.type=disabled still spend the
+	// trace here. A completed reading of the same sentence took 43s. A 45s cap
+	// sat inside that cost: the context then cancelled the stream with an empty
 	// body, and the turn was reported as if no answer had come. One number
 	// still covers the reading. It has to be long enough for that generation
 	// to finish. A fast failure in the first half still gets the second try.
@@ -166,6 +172,18 @@ When earlier messages contain a task being planned or arranged, and the latest m
 
 Do not ask this person to choose a method. Do not reuse a stock sentence. Do not match the message against a list of phrases. Do not add keys other than schedule, markdown, or text outside the JSON object. instruction and persona may be empty strings. told may be empty only when pace is status. Otherwise told may not.`
 
+func desktopBotUnderstandClassifyRequest(req desktopBotUnderstandRequest) LLMClassifyRequest {
+	return LLMClassifyRequest{
+		SystemPrompt:      req.systemPrompt,
+		UserMessage:       req.userPrompt,
+		TimeoutSec:        req.timeoutSec,
+		Tag:               "desktop-bot-understand",
+		PreferLightweight: false,
+		NoThinking:        true,
+		MaxOutputTokens:   desktopBotUnderstandMaxOutputTokens,
+	}
+}
+
 func callDesktopBotUnderstandLLM(ctx context.Context, app *App, req desktopBotUnderstandRequest) (string, error) {
 	if app == nil {
 		return "", fmt.Errorf("AI assistant backend is unavailable")
@@ -178,13 +196,7 @@ func callDesktopBotUnderstandLLM(ctx context.Context, app *App, req desktopBotUn
 	if handler == nil {
 		return "", fmt.Errorf("LLM not configured")
 	}
-	result, err := handler.LLMClassify(ctx, LLMClassifyRequest{
-		SystemPrompt:      req.systemPrompt,
-		UserMessage:       req.userPrompt,
-		TimeoutSec:        req.timeoutSec,
-		Tag:               "desktop-bot-understand",
-		PreferLightweight: false,
-	})
+	result, err := handler.LLMClassify(ctx, desktopBotUnderstandClassifyRequest(req))
 	if err != nil {
 		return "", err
 	}

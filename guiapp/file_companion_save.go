@@ -82,9 +82,12 @@ func (a *App) FileCompanionOpen(path string) (FileCompanionDocument, error) {
 		return doc, nil
 	}
 	// The tab identity is the canonical path. A second spelling of the same
-	// file, including Windows case, must not open another tab.
-	if canonical, canonErr := fileCompanionCanonicalPath(path); canonErr == nil {
-		doc.Path = canonical
+	// file, including Windows case, must not open another tab. The display
+	// path is that same walk, before case folding, so the tab keeps the
+	// on-disk name.
+	identity, display, canonErr := fileCompanionPathIdentity(path)
+	if canonErr == nil {
+		doc.Path = identity
 	}
 	info, err := os.Stat(path)
 	if err != nil {
@@ -99,11 +102,14 @@ func (a *App) FileCompanionOpen(path string) (FileCompanionDocument, error) {
 		doc.Error = "directories are not opened as tabs"
 		return doc, nil
 	}
-	canonical, err := fileCompanionCanonicalPath(path)
-	if err != nil {
+	if canonErr != nil {
 		doc.Error = "path is not readable"
 		return doc, nil
 	}
+	if base := filepath.Base(display); base != "" && base != "." && base != ".." {
+		doc.Name = base
+	}
+	canonical := identity
 	fileLock := a.fileCompanionFileLock(canonical)
 	fileLock.Lock()
 	unlocked := false

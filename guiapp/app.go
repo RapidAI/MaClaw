@@ -392,6 +392,7 @@ type App struct {
 	taskOrchestrator2                *TaskOrchestrator2
 	qqBotGateway                     *qqBotGatewayManager
 	telegramGateway                  *telegramGatewayManager
+	slackGateway                     *slackGatewayManager
 	weixinGateway                    *weixinGatewayManager
 	lansengerGateway                 *lansengerGatewayManager
 	lansengerGateways                *lansengerGatewayRegistry
@@ -996,6 +997,9 @@ func (a *App) notifyMemoryWarehouseChanged(change memoryWarehouseChange) {
 	}
 	if a.telegramGateway != nil {
 		add(a.telegramGateway.currentLocalHandler())
+	}
+	if a.slackGateway != nil {
+		add(a.slackGateway.currentLocalHandler())
 	}
 	if a.qqBotGateway != nil {
 		add(a.qqBotGateway.currentLocalHandler())
@@ -2586,6 +2590,7 @@ func (a *App) syncIMGatewaysFromConfig() {
 
 	a.ensureQQBotGateway()
 	a.ensureTelegramGateway()
+	a.ensureSlackGateway()
 	a.ensureWeixinGateway()
 	a.ensureLansengerGateway()
 	a.ensureThirdPartyGatewayLocked()
@@ -3110,6 +3115,9 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.telegramGateway != nil {
 		a.telegramGateway.Stop()
+	}
+	if a.slackGateway != nil {
+		a.slackGateway.Stop()
 	}
 	if a.weixinGateway != nil {
 		a.weixinGateway.Stop()
@@ -8058,6 +8066,50 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				}
 			}
 			cfg.TelegramBotOwnerChatID = id
+		case "slack_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SlackEnabled = v
+			imGatewayChanged = true
+		case "slack_client_id":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SlackClientID = strings.TrimSpace(v)
+		case "slack_client_secret":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SlackClientSecret = strings.TrimSpace(v)
+		case "slack_bot_token":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SlackBotToken = strings.TrimSpace(v)
+			imGatewayChanged = true
+		case "slack_team_id":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SlackTeamID = strings.TrimSpace(v)
+		case "slack_team_name":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SlackTeamName = strings.TrimSpace(v)
+		case "slack_bot_user_id":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SlackBotUserID = strings.TrimSpace(v)
 		case "lansenger_enabled":
 			v, err := boolField(key, value)
 			if err != nil {

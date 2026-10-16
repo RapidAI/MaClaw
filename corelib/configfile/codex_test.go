@@ -13,6 +13,32 @@ import (
 	_ "modernc.org/sqlite"
 )
 
+func TestTigerProxyCodexModelReadsActiveProvider(t *testing.T) {
+	tmpHome := t.TempDir()
+	t.Setenv("HOME", tmpHome)
+	t.Setenv("USERPROFILE", tmpHome)
+
+	if _, ok := TigerProxyCodexModel(); ok {
+		t.Fatal("missing config reported a model")
+	}
+	if err := os.MkdirAll(filepath.Dir(CodexConfigPath()), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(CodexConfigPath(), []byte("model_provider = \"openai\"\nmodel = \"gpt-5.5\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := TigerProxyCodexModel(); ok {
+		t.Fatal("openai provider was treated as the CodexProxy alias")
+	}
+	if err := os.WriteFile(CodexConfigPath(), []byte("model_provider = \"tigerproxy\"\nmodel = \"auto\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, ok := TigerProxyCodexModel()
+	if !ok || got != "auto" {
+		t.Fatalf("TigerProxyCodexModel = %q, %v", got, ok)
+	}
+}
+
 func TestWriteCodexConfigAvoidsOpenAIReservedProviderName(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)

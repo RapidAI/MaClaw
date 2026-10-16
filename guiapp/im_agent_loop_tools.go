@@ -277,10 +277,29 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		tools = applySkillPreferenceSurface(tools, phase)
 		baseTools = applySkillPreferenceSurface(baseTools, phase)
 	}
+	// Pin after the last host filter and before the closed plan. The
+	// continuation names goal(action=plan|step|complete|fail). A retrieval
+	// rank would make that name optional, and the count guard can drop it.
+	// Leaving it off the ranked list records host_policy_required, the same
+	// rule the execution baseline uses for bash and read_file.
+	// A plan continuation forbids workspace mutation. The execution baseline
+	// above just pinned bash and write_file; drop them before the plan so
+	// the model cannot spend the turn on a file edit and never call goal.
+	planPhase := goalContinuationPhase(userText) == "plan"
+	if planPhase {
+		tools = narrowGoalPlanPhaseSurface(tools)
+		baseTools = narrowGoalPlanPhaseSurface(baseTools)
+	}
+	rankedForPlan := routerRankedNames
+	if goalContinuationTurn(userText, platform) {
+		tools = ensureNamedToolsPresent(tools, lookupCatalog, []string{goalContinuationLifecycleTool})
+		baseTools = ensureNamedToolsPresent(baseTools, lookupCatalog, []string{goalContinuationLifecycleTool})
+		rankedForPlan = rankedNamesWithout(routerRankedNames, goalContinuationLifecycleTool)
+	}
 
 	toolsForLLM := stripExecutionContractMetadataForLLM(tools)
 	baseToolsForLLM := stripExecutionContractMetadataForLLM(baseTools)
-	plannedTools, clientToolNames, legacyPlanBacked, planErr := h.renderClosedLegacyReplacementSurface(userText, ctx, toolsForLLM, routerRankedNames)
+	plannedTools, clientToolNames, legacyPlanBacked, planErr := h.renderClosedLegacyReplacementSurface(userText, ctx, toolsForLLM, rankedForPlan)
 	if planErr != nil {
 		// Never revive the raw compatibility slice after an adapter-plan error.
 		// Mixed unprovisioned names are already dropped inside the renderer;
@@ -306,17 +325,24 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		plannedTools = filterDirectModeAllowedTools(plannedTools)
 		baseToolsForLLM = filterDirectModeAllowedTools(baseToolsForLLM)
 	}
+	// An agent-guided reseal can put write_file back from the full catalog.
+	// Narrow again, keeping goal only when the closed plan already bound it.
+	if planPhase {
+		plannedTools = narrowGoalPlanPhaseSurface(plannedTools)
+		baseToolsForLLM = narrowGoalPlanPhaseSurface(baseToolsForLLM)
+	}
 	if ctx != nil {
 		ctx.setExposedToolNames(agentLoopToolNamesForLog(plannedTools))
 	}
 	// A continuation whose plan only kept lookups must not erase the
 	// execution tools it failed to place on this request. A continuation
 	// that did render bash must not drop ssh that was already carried.
+	// A plan turn's read-only surface must not replace that carry either.
 	if operationalExecutionProfile(profile) {
 		if len(nonLightToolNames(plannedTools)) > 0 {
 			h.noteParentExecutionUnion(userID, plannedTools)
 		}
-	} else {
+	} else if !planPhase {
 		h.noteParentExecution(userID, executionSurfaceIsFull(profile), plannedTools)
 	}
 	return agentLoopToolSet{
@@ -329,6 +355,45 @@ func (h *IMMessageHandler) prepareAgentLoopTools(userID, userText string, ctx *L
 		WorkflowDecision: workflowFilterPolicy,
 		BrowserBeforeWF:  browserBeforeWF,
 	}
+}
+
+// narrowGoalPlanPhaseSurface keeps the read tools a host plan turn may use.
+// goal stays only when this slice already contains it, so a post-plan narrow
+// does not attach a definition the closed plan never bound.
+func narrowGoalPlanPhaseSurface(tools []map[string]interface{}) []map[string]interface{} {
+	if len(tools) == 0 {
+		return tools
+	}
+	kept := filterGoalPlanPhaseTools(tools)
+	for _, item := range tools {
+		if extractToolName(item) != goalContinuationLifecycleTool {
+			continue
+		}
+		return ensureNamedToolsPresent(kept, tools, []string{goalContinuationLifecycleTool})
+	}
+	return kept
+}
+
+// rankedNamesWithout drops one name from the router's order. A tool that
+// stays on the surface but is absent from this list is host_policy_required,
+// so the closed plan's count guard cannot prune it.
+func rankedNamesWithout(ranked []string, drop string) []string {
+	if len(ranked) == 0 || drop == "" {
+		return ranked
+	}
+	out := make([]string, 0, len(ranked))
+	removed := false
+	for _, name := range ranked {
+		if name == drop {
+			removed = true
+			continue
+		}
+		out = append(out, name)
+	}
+	if !removed {
+		return ranked
+	}
+	return out
 }
 
 // protectPresentRetrieval keeps memory and knowledge_search from being the

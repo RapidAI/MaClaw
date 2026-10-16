@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -38,10 +39,32 @@ func emitDynamicEffectUnknown(observer DynamicEffectEventObserver, reasonCode st
 	}
 }
 
+// dynamicEffectObservedReason is the receipt recorded when a synchronous
+// MCP or Skill response is itself the observation. It is not a channel
+// acceptance and it is not a later integration's receipt.
+const dynamicEffectObservedReason = "dynamic_effect_observed"
+
+// dynamicMCPToolErrorReason is a completed tools/call failure. The transport
+// delivered the tool's own error, so the outcome is failed rather than unknown.
+const dynamicMCPToolErrorReason = "mcp_tool_error"
+
 // LedgerDynamicExternalEffectCoordinator is the default durable coordinator
-// for a receipt-bound dynamic effect. It deliberately does not treat a
-// successful provider return as a remote receipt: a newly dispatched external
-// operation remains awaiting_receipt until a trusted integration settles it.
+// for a receipt-bound dynamic effect. A provider return is not by itself a
+// remote receipt: a newly dispatched external operation remains
+// awaiting_receipt until a trusted integration settles it.
+//
+// One case is different. An installed MCP or Skill call selected as the
+// host-issued x:mcp address, or as the open information.lookup family, has
+// no later receipt source. The tools/call or skill response is the
+// observation. On the unified coordinator a successful response is settled
+// as the receipt and returned to the model. A completed tools/call error is
+// recorded failed and returned as that error; a lost transport stays
+// unknown. The legacy ledger path does not settle successes this way: a
+// host that registers a receipt source still settles those operations
+// itself. A reviewed mutation stays awaiting on both paths, including when
+// the planner addressed that same binding through its x:mcp grant, because
+// its provider text is not evidence the system of record changed. A channel
+// delivery stays awaiting for the same reason.
 //
 // This is provider-neutral. The selected immutable binding and canonical
 // arguments derive the logical operation identity; neither a model tool-call
@@ -271,10 +294,89 @@ func (c LedgerDynamicExternalEffectCoordinator) coordinateUnifiedSemanticExterna
 		emitDynamicEffectUnknown(c.EventObserver, "dynamic_effect_dispatch_unknown")
 		return DynamicEffectReceipt{OperationID: prepared.OperationKey, State: DynamicEffectReceiptUnknown, ReasonCode: "dynamic_effect_dispatch_unknown"}, nil
 	}
+	if synchronousDynamicEffectObservation(invocation.Selection) {
+		// A body that the host already classifies as a hard failure is not an
+		// observation of success. Settling it would unlock dependants off an
+		// error page. The legacy bridge encodes that failure as an "Error:"
+		// string with a nil Go error; keep it on the failure record.
+		if agentruntime.SelectionFailed(result) {
+			if _, err := c.SemanticCoordinator.CompleteExternalEffectDispatch(admission, prepared.OperationKey, coretool.SemanticExternalEffectFailed, result, dynamicMCPToolErrorReason, c.now()); err != nil {
+				return DynamicEffectReceipt{}, fmt.Errorf("record dynamic external effect tool failure: %w", err)
+			}
+			return DynamicEffectReceipt{OperationID: prepared.OperationKey, State: DynamicEffectReceiptFailed, ReasonCode: dynamicMCPToolErrorReason}, nil
+		}
+		return c.observeSynchronousDynamicExternalEffect(admission, prepared.OperationKey, invocation, result)
+	}
 	if _, err := c.SemanticCoordinator.CompleteExternalEffectDispatch(admission, prepared.OperationKey, coretool.SemanticExternalEffectAwaitingReceipt, result, "dynamic_effect_awaiting_receipt", c.now()); err != nil {
 		return DynamicEffectReceipt{}, fmt.Errorf("record dynamic external effect awaiting receipt: %w", err)
 	}
 	return DynamicEffectReceipt{OperationID: prepared.OperationKey, State: DynamicEffectReceiptAwaiting, ReasonCode: "dynamic_effect_awaiting_receipt"}, nil
+}
+
+// observeSynchronousDynamicExternalEffect records a completed MCP or Skill
+// response as the receipt of that same call. The dispatch is first closed as
+// awaiting_receipt, which is the only state SettleExternalEffectReceipt
+// accepts, and then settled with a digest of the returned text. Reconciled
+// stays false so the caller returns that text instead of a reconciliation
+// placeholder. A dispatch that did not return is never observed here.
+func (c LedgerDynamicExternalEffectCoordinator) observeSynchronousDynamicExternalEffect(admission coretool.SemanticExecutionAdmission, operationKey string, invocation DynamicExternalEffectInvocation, result string) (DynamicEffectReceipt, error) {
+	now := c.now()
+	if _, err := c.SemanticCoordinator.CompleteExternalEffectDispatch(admission, operationKey, coretool.SemanticExternalEffectAwaitingReceipt, result, dynamicEffectObservedReason, now); err != nil {
+		return DynamicEffectReceipt{}, fmt.Errorf("record dynamic external effect observation: %w", err)
+	}
+	settled, err := c.SemanticCoordinator.SettleExternalEffectReceipt(invocation.Scope, invocation.Selection.ID, dynamicSemanticSelectionDigest(invocation.Selection), invocation.Selection.Provider.StableID(), operationKey, coretool.SemanticExternalEffectSucceeded, coretool.SchemaDigest([]byte(result)), dynamicEffectObservedReason, now)
+	if err != nil {
+		return DynamicEffectReceipt{}, fmt.Errorf("settle dynamic external effect observation: %w", err)
+	}
+	if settled.State != coretool.SemanticExternalEffectSucceeded || settled.ReceiptDigest != coretool.SchemaDigest([]byte(result)) {
+		return DynamicEffectReceipt{}, fmt.Errorf("dynamic external effect observation conflict")
+	}
+	return DynamicEffectReceipt{OperationID: operationKey, State: DynamicEffectReceiptAccepted, ReasonCode: dynamicEffectObservedReason}, nil
+}
+
+// synchronousDynamicEffectObservation reports a request/response MCP or Skill
+// call whose returned text is the effect. The host-issued per-tool address
+// and the open lookup family are that shape. A reviewed mutation, a delivery,
+// or any other external capability still waits for its own receipt. The
+// x:mcp grant is only an address: a reviewed mutation selected through it
+// still waits.
+func synchronousDynamicEffectObservation(selection coretool.PlannedSelection) bool {
+	switch strings.ToLower(strings.TrimSpace(selection.Provider.Kind)) {
+	case "mcp", "skill":
+	default:
+		return false
+	}
+	if reviewedMCPEffectDefersObservation(selection.Provider.ImplementationID) {
+		return false
+	}
+	capability := strings.TrimSpace(string(selection.FitProof.MatchedCapability))
+	if capability == string(CapabilityInformationLookup) {
+		return true
+	}
+	return strings.HasPrefix(capability, autoMCPCapabilityPrefix)
+}
+
+// reviewedMCPEffectDefersObservation reports a code-reviewed MCP tool whose
+// contract is an external effect and not a read. work_log_update is that
+// shape, so its provider text cannot close the receipt. work_log_query is a
+// read, and unannotated tools are not in the reviewed map, so both stay on
+// the observation path.
+func reviewedMCPEffectDefersObservation(implementationID string) bool {
+	contract, ok := ReviewedMCPCapabilityContracts()[strings.TrimSpace(implementationID)]
+	if !ok {
+		return false
+	}
+	readOnly := false
+	external := false
+	for _, effect := range contract.Effects {
+		switch effect {
+		case coretool.EffectReadOnly:
+			readOnly = true
+		case coretool.EffectExternalEffect, coretool.EffectSensitive:
+			external = true
+		}
+	}
+	return external && !readOnly
 }
 
 // DynamicSemanticExternalEffectOperationFromInvocation exposes the stable

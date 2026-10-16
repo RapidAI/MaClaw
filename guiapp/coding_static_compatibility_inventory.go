@@ -163,10 +163,16 @@ func filterUncorrelatedCodingStaticCompatibilityEffects(hostKind string, definit
 // isolate/approval capacity; that is an effectful lifecycle operation, not a
 // revision-CAS update. Both wait for a correlation-bound admission/journal
 // path even though the inventory classifies them as control-plane capability.
+//
+// goal writes the host goal store for this session. The owner comes from the
+// loop context, not from the model, and the call does not touch the workspace,
+// a shell, a child, or an artifact. A plan continuation is allowed to run
+// without a writable workspace binding; dropping goal there leaves the phase
+// with no way to record steps.
 func codingStaticCompatibilityItemAllowedWithoutTransportCorrelation(item codingStaticCompatibilityInventoryItem) bool {
 	if item.ControlPlane {
 		switch item.Capability {
-		case tool.CapabilityTaskTrackLocal:
+		case tool.CapabilityTaskTrackLocal, tool.CapabilityGoalManageLongRunning:
 			return true
 		case tool.CapabilityAgentDelegateSubtask, tool.CapabilityID("code.localization_evidence"):
 			return false

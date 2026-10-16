@@ -3720,6 +3720,105 @@ func TestOpenAIResponsesPromptCacheMissThenHit(t *testing.T) {
 	}
 }
 
+func TestLocalModelAliasCacheHitKeepsAliasAndFollowsTarget(t *testing.T) {
+	seen := make(chan string, 4)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		model, _ := body["model"].(string)
+		seen <- model
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id":"chatcmpl-alias","model":%q,"choices":[{"message":{"role":"assistant","content":"from-%s"},"finish_reason":"stop"}]}`, model, model)
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+	srv.SetPromptCache(llmpool.NewCache(nil, llmpool.CacheConfig{MemoryMaxEntries: 32, MemoryMaxBytes: 1 << 20}))
+	srv.SetLocalModelAlias("tiger", "gpt-5.5")
+
+	post := func(payload string) (string, map[string]interface{}) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, "http://"+srv.Addr().String()+"/v1/responses", strings.NewReader(payload))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Authorization", "Bearer local-key")
+		req.Header.Set("Content-Type", "application/json")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		raw, _ := io.ReadAll(resp.Body)
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("status=%d body=%s", resp.StatusCode, raw)
+		}
+		var decoded map[string]interface{}
+		if err := json.Unmarshal(raw, &decoded); err != nil {
+			t.Fatalf("decode response: %v body=%s", err, raw)
+		}
+		return resp.Header.Get("X-Cache"), decoded
+	}
+
+	if _, decoded := post(`{"model":"auto","input":"leave explicit","temperature":0}`); decoded["model"] != "auto" {
+		t.Fatalf("explicit model response = %#v", decoded["model"])
+	}
+	if got := <-seen; got != "auto" {
+		t.Fatalf("explicit upstream model = %q, want auto", got)
+	}
+
+	cacheHeader, first := post(`{"model":"tiger","input":"ping alias cache","temperature":0}`)
+	if cacheHeader != "MISS" {
+		t.Fatalf("first X-Cache=%q, want MISS", cacheHeader)
+	}
+	if first["model"] != "tiger" {
+		t.Fatalf("first model = %#v, want alias", first["model"])
+	}
+	rawFirst, _ := json.Marshal(first)
+	if !bytes.Contains(rawFirst, []byte("from-gpt-5.5")) {
+		t.Fatalf("first body = %s", rawFirst)
+	}
+	if got := <-seen; got != "gpt-5.5" {
+		t.Fatalf("alias upstream model = %q, want gpt-5.5", got)
+	}
+
+	cacheHeader, second := post(`{"model":"tiger","input":"ping alias cache","temperature":0}`)
+	if cacheHeader != "HIT" {
+		t.Fatalf("second X-Cache=%q, want HIT", cacheHeader)
+	}
+	if second["model"] != "tiger" {
+		t.Fatalf("cached model = %#v, want alias", second["model"])
+	}
+	select {
+	case got := <-seen:
+		t.Fatalf("cache hit reached upstream with model %q", got)
+	default:
+	}
+
+	srv.SetLocalModelTarget("glm-5.3")
+	cacheHeader, third := post(`{"model":"tiger","input":"ping alias cache","temperature":0}`)
+	if cacheHeader == "HIT" {
+		t.Fatalf("switched model reused the previous cache: %#v", third)
+	}
+	if third["model"] != "tiger" {
+		t.Fatalf("switched model response = %#v, want alias", third["model"])
+	}
+	rawThird, _ := json.Marshal(third)
+	if !bytes.Contains(rawThird, []byte("from-glm-5.3")) {
+		t.Fatalf("switched body = %s", rawThird)
+	}
+	if got := <-seen; got != "glm-5.3" {
+		t.Fatalf("switched upstream model = %q, want glm-5.3", got)
+	}
+}
+
 func TestOpenAIResponsesStreamPromptCacheStoreAndHit(t *testing.T) {
 	var upstreamHits atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -4026,6 +4125,169 @@ func TestAnthropicStreamProxyWithOpenAISDKClientFallsBackToRawHTTP(t *testing.T)
 	}
 }
 
+func TestLocalModelAliasBeatsProviderShortName(t *testing.T) {
+	seen := make(chan string, 2)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/models" || strings.HasSuffix(r.URL.Path, "/models") {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"data":[{"id":"qax-codegen/Auto","name":"Auto","object":"model"}]}`))
+			return
+		}
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		model, _ := body["model"].(string)
+		seen <- model
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprintf(w, "data: {\"model\":%q,\"choices\":[{\"delta\":{\"content\":\"hi\"}}]}\n\n", model)
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+	srv.SetLocalModelAlias("auto", "gpt-5.5")
+
+	listReq, _ := http.NewRequest(http.MethodGet, "http://"+srv.Addr().String()+"/v1/models", nil)
+	listReq.Header.Set("Authorization", "Bearer local-key")
+	listResp, err := http.DefaultClient.Do(listReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listResp.Body.Close()
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("models status=%d", listResp.StatusCode)
+	}
+	if got := srv.resolveCodeGenModelAlias(context.Background(), upstream.URL, "fallback-key", "", "auto"); got != "gpt-5.5" {
+		t.Fatalf("catalog resolved alias to %q, want gpt-5.5", got)
+	}
+
+	req, _ := http.NewRequest(http.MethodPost, "http://"+srv.Addr().String()+"/v1/chat/completions", strings.NewReader(`{"model":"auto","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer local-key")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("chat status=%d body=%s", resp.StatusCode, raw)
+	}
+	if !bytes.Contains(raw, []byte(`"model":"auto"`)) {
+		t.Fatalf("stream echoed upstream model: %s", raw)
+	}
+	if bytes.Contains(raw, []byte(`"model":"gpt-5.5"`)) || bytes.Contains(raw, []byte("qax-codegen/Auto")) {
+		t.Fatalf("stream leaked real model: %s", raw)
+	}
+	if got := <-seen; got != "gpt-5.5" {
+		t.Fatalf("upstream model = %q, want gpt-5.5", got)
+	}
+}
+
+func TestLocalModelAliasJSONStreamEchoesAlias(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]interface{}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode upstream body: %v", err)
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		model, _ := body["model"].(string)
+		if model != "gpt-5.5" {
+			t.Errorf("upstream model = %q, want gpt-5.5", model)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"id":"chatcmpl-json","model":%q,"choices":[{"message":{"role":"assistant","content":"ok"}}]}`, model)
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+	srv.SetLocalModelAlias("auto", "gpt-5.5")
+
+	req, _ := http.NewRequest(http.MethodPost, "http://"+srv.Addr().String()+"/v1/chat/completions", strings.NewReader(`{"model":"auto","stream":true,"messages":[{"role":"user","content":"hi"}]}`))
+	req.Header.Set("Authorization", "Bearer local-key")
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	raw, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status=%d body=%s", resp.StatusCode, raw)
+	}
+	if !bytes.Contains(raw, []byte(`"model":"auto"`)) || bytes.Contains(raw, []byte(`"model":"gpt-5.5"`)) {
+		t.Fatalf("json stream body = %s", raw)
+	}
+}
+
+func TestLocalModelAliasIsListedAheadOfUpstreamAuto(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":[{"id":"qax-codegen/Auto","name":"Auto","object":"model"}]}`))
+	}))
+	defer upstream.Close()
+
+	srv, cancel := startTestServer(t)
+	defer cancel()
+	srv.SetClientAPIKey("local-key")
+	srv.SetUpstream(upstream.URL, "fallback-key")
+	srv.SetLocalModelAlias("auto", "gpt-5.5")
+
+	listReq, _ := http.NewRequest(http.MethodGet, "http://"+srv.Addr().String()+"/v1/models", nil)
+	listReq.Header.Set("Authorization", "Bearer local-key")
+	listResp, err := http.DefaultClient.Do(listReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listResp.Body.Close()
+	listBody, _ := io.ReadAll(listResp.Body)
+	if listResp.StatusCode != http.StatusOK {
+		t.Fatalf("list status=%d body=%s", listResp.StatusCode, listBody)
+	}
+	var listed struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(listBody, &listed); err != nil {
+		t.Fatal(err)
+	}
+	if len(listed.Data) != 2 || listed.Data[0].ID != "auto" || listed.Data[1].ID != "qax-codegen/Auto" {
+		t.Fatalf("models = %+v", listed.Data)
+	}
+
+	oneReq, _ := http.NewRequest(http.MethodGet, "http://"+srv.Addr().String()+"/v1/models/auto", nil)
+	oneReq.Header.Set("Authorization", "Bearer local-key")
+	oneResp, err := http.DefaultClient.Do(oneReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer oneResp.Body.Close()
+	oneBody, _ := io.ReadAll(oneResp.Body)
+	if oneResp.StatusCode != http.StatusOK {
+		t.Fatalf("model status=%d body=%s", oneResp.StatusCode, oneBody)
+	}
+	var one struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(oneBody, &one); err != nil {
+		t.Fatal(err)
+	}
+	if one.ID != "auto" {
+		t.Fatalf("model id = %q, want auto", one.ID)
+	}
+}
+
 func TestModelsProxySetsUpstreamUserAgent(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if got := r.Header.Get("User-Agent"); got != "custom-agent" {
@@ -4272,13 +4534,30 @@ func TestNormalizeModelsResponseOpenAIPreservesProviderPrefix(t *testing.T) {
 }
 
 func TestNormalizeOpenAIModelInBodyPreservesProviderPrefix(t *testing.T) {
-	got := normalizeOpenAIModelInBody([]byte(`{"model":"qax-codegen/Qwen-Flash","messages":[]}`))
+	body := []byte(`{"model":"qax-codegen/Qwen-Flash","messages":[]}`)
+	got := normalizeOpenAIModelInBody(body)
+	if !bytes.Equal(got, body) {
+		t.Fatalf("unchanged model was re-encoded: %s", got)
+	}
 	var payload map[string]interface{}
 	if err := json.Unmarshal(got, &payload); err != nil {
 		t.Fatalf("decode body: %v", err)
 	}
 	if payload["model"] != "qax-codegen/Qwen-Flash" {
 		t.Fatalf("model = %q, want qax-codegen/Qwen-Flash", payload["model"])
+	}
+}
+
+func TestSetOpenAIModelInBodyPreservesNumbersAndMarkup(t *testing.T) {
+	got := setOpenAIModelInBody([]byte(`{"model":"auto","temperature":0.2,"messages":[{"role":"user","content":"<file>"}]}`), "gpt-5.5")
+	if !bytes.Contains(got, []byte(`"model":"gpt-5.5"`)) {
+		t.Fatalf("model was not replaced: %s", got)
+	}
+	if !bytes.Contains(got, []byte("0.2")) {
+		t.Fatalf("temperature was reshaped: %s", got)
+	}
+	if !bytes.Contains(got, []byte("<file>")) {
+		t.Fatalf("markup was escaped: %s", got)
 	}
 }
 

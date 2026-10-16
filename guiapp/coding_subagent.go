@@ -47,6 +47,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/codingagent"
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/config"
@@ -626,7 +627,7 @@ func (s *CodingSubAgent) refuseUnboundWritableSurface(task *TaskItem) string {
 	if s.loopCtx == nil || !isDesktopCodingOwner(s.loopCtx.UserID) {
 		return ""
 	}
-	if codingTaskLooksInquiry(task) {
+	if codingTaskLooksInquiry(task) || taskIsGoalPlanPhase(task, "") {
 		return ""
 	}
 	return desktopCodingWritableSurfaceBindFailedDiagnostic
@@ -713,6 +714,10 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	// verify+fix (that is for code-change tasks).
 	operational := codingTaskLooksOperational(task)
 	inquiry := codingTaskLooksInquiry(task)
+	// Plan and execute share one host contract: the goal call. A file audit
+	// would fail an execute step that reports progress without a diff, and
+	// that failure then closes the goal.
+	goalTurn := goalContinuationPhase(goalContinuationSource(task, reqCtx)) != ""
 
 	// Codex-inspired post-loop verification: if the model completed without
 	// errors but didn't produce auditable verification, automatically obtain a
@@ -721,7 +726,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	// quality failure after the underlying compiler already succeeded.
 	// The recovery exists only to satisfy the quality gate, so it stays idle
 	// while that gate is off.
-	if qualityGateEnabled && !s.horizonPosture && !operational && !inquiry && result.Error == "" && !result.HardExit && result.AskUser == nil && !cb.ShouldStop() {
+	if qualityGateEnabled && !s.horizonPosture && !operational && !inquiry && !goalTurn && result.Error == "" && !result.HardExit && result.AskUser == nil && !cb.ShouldStop() {
 		if verifiers := cb.recoverableVerifications(); len(verifiers) > 0 {
 			// The original wrapper already ran successfully.  Recovery exists to
 			// obtain an auditable exit status, not to let an automatic retry alter
@@ -804,6 +809,18 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 			verificationStatus, verificationSummary = codingSubAgentQualityNotNeeded, ""
 			qualityStatus, qualitySummary, qualityIssueCount = codingSubAgentQualityNotNeeded, "", 0
 		}
+		if modelSummary == "" {
+			summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
+		}
+	} else if goalTurn {
+		// The host phase is complete when the goal call is saved. File
+		// audits would fail that turn for producing no workspace changes and
+		// then fail the goal.
+		explorationStatus, explorationSummary = codingSubAgentQualityNotNeeded, "goal continuation: file audit does not apply"
+		verificationStatus, verificationSummary = codingSubAgentQualityNotNeeded, "goal continuation: no file audit"
+		diffChecked = false
+		diffSummary = ""
+		qualityStatus, qualitySummary, qualityIssueCount = codingSubAgentQualityNotNeeded, "", 0
 		if modelSummary == "" {
 			summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
 		}
@@ -926,7 +943,9 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	// nothing (and there is no follow-up execution workflow to run the plan).
 	// Implementation/operational tasks therefore require artifact or command
 	// evidence before they may pass; inquiry stays read-only by design.
-	status, errMsg = applyUncorrelatedCompatibilitySurfaceOutcome(status, errMsg, inquiry, cb, audit)
+	if !goalTurn {
+		status, errMsg = applyUncorrelatedCompatibilitySurfaceOutcome(status, errMsg, inquiry, cb, audit)
+	}
 	if modelSummary == "" {
 		summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
 	}
@@ -1587,7 +1606,24 @@ func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn
 	// the rendered surface to a real response/call identity and admission
 	// journal; it must not infer that eligibility from task text or callback IDs.
 	if c.usesUncorrelatedStaticCompatibilityModelSurface() {
+		source := goalContinuationSource(c.task, c.reqCtx)
+		// Plan's only delivery is goal(action=plan). The generic compatibility
+		// prompt never names that call, so a planning turn on this surface
+		// would inspect the repo and then end with no steps.
+		if goalContinuationPhase(source) == "plan" {
+			projectPath := ""
+			if c.subagent != nil {
+				projectPath = c.subagent.projectPath
+			}
+			prompt := buildCodingSubAgentSystemPrompt(c.task, projectPath, c.reqCtx, c.designCtx, c.prevOutputs)
+			c.cachedSystemPrompt = prompt
+			c.logCacheEvent("system_prompt", "build-goal-plan", "prompt_chars", len(prompt))
+			return prompt
+		}
 		prompt := buildUncorrelatedLocalCodingCompatibilityPrompt(c)
+		if section := goalContinuationPhaseSection(source); section != "" {
+			prompt = section + prompt
+		}
 		appendCodingWorkspaceProbe(&prompt, c)
 		if knowledgeSections := c.buildKnowledgePromptSections(); knowledgeSections != "" {
 			prompt += knowledgeSections
@@ -1724,11 +1760,21 @@ This request is running on the temporary uncorrelated Coding compatibility surfa
 - Gather repository evidence with the read-only definitions that are present (for example Glob, ripgrep, list_directory, read_file, git_diff, code_navigation, and approved knowledge/research lookups).
 - If the project has .codegraph/, use code_navigation for structure, symbols, and call edges. A text search that already returned lines is evidence; use those lines and do not repeat that search.
 - Do not claim that a file was changed, a command was run, a child was delegated, or structured localization was submitted: those operations are not available on this request surface.
-- For an implementation or operational request, inspect the code, explain the blocker imposed by this temporary safe mode, and produce a concrete next-step plan for a correlation-bound execution workflow. Do not repeatedly try unavailable operations.
 `)
+	if c != nil && taskCarriesGoalContinuation(c.task, c.reqCtx) {
+		b.WriteString("- This turn reports the host goal. Call the goal action named above. Do not replace that call with a written plan.\n")
+	} else {
+		b.WriteString("- For an implementation or operational request, inspect the code, explain the blocker imposed by this temporary safe mode, and produce a concrete next-step plan for a correlation-bound execution workflow. Do not repeatedly try unavailable operations.\n")
+	}
 	if includeTodo {
-		b.WriteString(`- todo_write is the only mutable control-plane operation. Use it only when it is listed, and preserve its expected_revision and expected_version values exactly; a stale result means re-read the current state rather than retrying the old payload.
+		if taskCarriesGoalContinuation(c.task, "") {
+			b.WriteString(`- goal updates the host goal for this session and does not write the workspace. After the current step, call goal(action="step"); if this read-only surface cannot finish the step, call goal(action="step", status="failed") or goal(action="fail").
+- todo_write, when listed, is only the checklist. Preserve its expected_revision and expected_version values exactly; a stale result means re-read the current state rather than retrying the old payload.
 `)
+		} else {
+			b.WriteString(`- todo_write is the only mutable control-plane operation. Use it only when it is listed, and preserve its expected_revision and expected_version values exactly; a stale result means re-read the current state rather than retrying the old payload.
+`)
+		}
 	}
 	if strings.TrimSpace(projectPath) != "" {
 		b.WriteString(fmt.Sprintf("\n## Project path\n%s\n", projectPath))
@@ -1893,6 +1939,12 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 	tools = append(tools, buildCodeNavigationToolDefinition())
 	if c.task == nil || codingTaskNeedsLocalization(c.task.Title+"\n"+c.task.Description) {
 		tools = append(tools, buildReportLocalizationToolDefinition())
+	}
+	if c.task != nil && taskIsGoalPlanPhase(c.task, c.reqCtx) {
+		tools = filterGoalPlanPhaseTools(tools)
+		tools = filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostLocal, tools)
+		c.logCacheEvent("tools", "build-goal-plan", "tool_count", len(tools))
+		return cloneCodingSubAgentToolDefinitions(c.appendExposedGoalTool(tools))
 	}
 	if c.task != nil && codingTaskLooksInquiry(c.task) {
 		tools = filterCodingInquiryTools(tools)
@@ -2485,6 +2537,7 @@ func (c *codingSubAgentCallbacks) executeHorizonHostTool(name, argsJSON string) 
 }
 
 func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) (toolResult codingToolExecutionResult) {
+	name, argsJSON = rewriteOpenCodeReadToolCall(name, argsJSON)
 	name = canonicalCodingSubAgentToolName(name)
 	if c != nil && c.subagent != nil && c.subagent.horizonPosture {
 		if !longhorizon.ToolAllowed(c.subagent.horizonToolSurface, name) {
@@ -2851,7 +2904,13 @@ func (c *codingSubAgentCallbacks) executeGoalTool(args map[string]interface{}) c
 		}
 	}
 	text := c.subagent.handler.toolGoalForUser(userID, args)
-	return codingToolExecutionResult{Text: text, Outcome: codingToolOutcomeSuccess}
+	// A rejected plan/step is not a finished phase. Reporting it as success
+	// lets the model end the turn, and the host then fails the goal.
+	outcome := codingToolOutcomeSuccess
+	if agentruntime.ToolTextFailure(text) {
+		outcome = codingToolOutcomeFailed
+	}
+	return codingToolExecutionResult{Text: text, Outcome: outcome}
 }
 
 func rejectInvalidCodingSubAgentToolArgumentTypes(name string, args map[string]interface{}) (codingToolExecutionResult, bool) {
@@ -14485,6 +14544,12 @@ func applyUncorrelatedCompatibilitySurfaceOutcome(status TaskExecStatus, errMsg 
 	if status != TaskExecPassed || inquiry || cb == nil || !cb.usesUncorrelatedStaticCompatibilityModelSurface() {
 		return status, errMsg
 	}
+	// A goal continuation's delivery is the goal call. This surface cannot
+	// write files, so judging the turn by missing artifacts fails a step that
+	// the host already accepted, or a plan the host is about to record.
+	if taskCarriesGoalContinuation(cb.task, cb.reqCtx) {
+		return status, errMsg
+	}
 	if len(audit.AllFilesModified) > 0 || len(audit.AllFilesCreated) > 0 || len(audit.AllCommandsRun) > 0 {
 		return status, errMsg
 	}
@@ -16077,6 +16142,9 @@ func (c *codingSubAgentCallbacks) ShouldStop() bool {
 
 func (c *codingSubAgentCallbacks) buildTaskUserMessage() string {
 	var b strings.Builder
+	if msg := goalContinuationTaskUserMessage(c.task, c.reqCtx); msg != "" {
+		return msg
+	}
 	if codingTaskLooksInquiry(c.task) {
 		b.WriteString(fmt.Sprintf("请回答下面的仓库/代码问题。先做必要的只读检索，再给出简洁、可核查的结论；不要修改文件、不要写测试、不要创建实现任务。\\n\\n## 问题\\n%s\\n\\n", compactSubAgentTaskDescription(c.task.Description)))
 		b.WriteString("**只读工作要求**：\\n")
@@ -17348,6 +17416,18 @@ func appendCodingWorkspaceProbe(prompt *string, c *codingSubAgentCallbacks) {
 
 func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string) string {
 	var b strings.Builder
+	source := goalContinuationSource(task, reqCtx)
+	if goalContinuationPhase(source) == "plan" {
+		b.WriteString(goalContinuationPhaseSection(source))
+		b.WriteString("你是目标规划器。本轮唯一交付是 goal(action=\"plan\")。\n")
+		if strings.TrimSpace(projectPath) != "" {
+			b.WriteString(fmt.Sprintf("\n## 项目路径\n%s\n", projectPath))
+		}
+		return b.String()
+	}
+	if section := goalContinuationPhaseSection(source); section != "" {
+		b.WriteString(section)
+	}
 
 	if codingTaskLooksOperational(task) {
 		b.WriteString(`你是编程工作台里的操作执行器。当前任务是运行/构建/演示已有产物，不是实现新功能。
@@ -17517,6 +17597,34 @@ func appendSubAgentAcceptanceCriteriaList(b *strings.Builder, items []string, ma
 }
 
 // truncateRunesForSubAgent truncates a string to maxRunes, preferring paragraph boundaries.
+// truncateRunesKeepingTail keeps the closing contract of a host phase.
+// Head truncation drops goal(action=step|complete|fail), which is written
+// after the step history.
+func truncateRunesKeepingTail(s string, maxRunes int) string {
+	runes := []rune(s)
+	if maxRunes <= 0 || len(runes) <= maxRunes {
+		return s
+	}
+	tailRunes := maxRunes / 5
+	if tailRunes < 400 {
+		tailRunes = 400
+	}
+	if tailRunes >= maxRunes {
+		return string(runes[len(runes)-maxRunes:])
+	}
+	head := maxRunes - tailRunes
+	return string(runes[:head]) + "\n…\n" + string(runes[len(runes)-tailRunes:])
+}
+
+func goalContinuationTaskUserMessage(task *TaskItem, reqCtx string) string {
+	source := strings.TrimSpace(goalContinuationSource(task, reqCtx))
+	if source == "" {
+		return ""
+	}
+	body := truncateRunesKeepingTail(source, codingSubAgentTaskDescriptionMaxRunes)
+	return compactCodingSubAgentTaskUserMessage(goalContinuationPhaseSection(source) + body)
+}
+
 func truncateRunesForSubAgent(s string, maxRunes int) string {
 	runes := []rune(s)
 	if len(runes) <= maxRunes {
@@ -18454,7 +18562,7 @@ func runTaskWithSubAgentRuntimeOptions(
 	// by construction; running the model loop anyway burns a full turn of
 	// tokens and then fails. Fail fast here with an actionable host-side
 	// diagnostic instead. Inquiry steps are read-only by design and pass.
-	if !verifiedBound && !sa.horizonPosture && !codingTaskLooksInquiry(task) && loopCtx != nil && isDesktopCodingOwner(loopCtx.UserID) {
+	if !verifiedBound && !sa.horizonPosture && !codingTaskLooksInquiry(task) && !taskIsGoalPlanPhase(task, reqCtx) && loopCtx != nil && isDesktopCodingOwner(loopCtx.UserID) {
 		taskTitle := ""
 		if task != nil {
 			taskTitle = task.Title

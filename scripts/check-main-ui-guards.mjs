@@ -572,7 +572,9 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/settings/ProxySettingsFields.tsx', 120],
   ['guiapp/frontend/src/components/settings/proxySettingsHelpers.ts', 40],
   ['guiapp/frontend/src/components/settings/ProxyScopeSettings.tsx', 100],
-  ['guiapp/frontend/src/components/settings/IMSettingsPanel.tsx', 220],
+  // Refreshed 220 -> 235 (2026-10-16): Slack settings sub-page mounted
+  // (guard counts 226).
+  ['guiapp/frontend/src/components/settings/IMSettingsPanel.tsx', 235],
   ['guiapp/frontend/src/components/settings/IMSubTabs.tsx', 100],
   ['guiapp/frontend/src/components/settings/WeixinSettings.tsx', 180],
   ['guiapp/frontend/src/components/settings/WeixinQRLoginPanel.tsx', 220],

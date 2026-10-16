@@ -342,7 +342,7 @@ Typical usage: User asked to send a file to WeChat or other IM`,
 	"im_message": `Parameters:
 - action (string, required): list_targets | send
 - text (string, required for send): Message body
-- channel (string, optional): lansenger|weixin|telegram|qq|device (default lansenger)
+- channel (string, optional): lansenger|weixin|telegram|qq|slack|device (default lansenger)
 - group_name / group_id / user_id: Destination shorthand
 Typical usage: Immediately send text to a Lansenger group or other IM channel (not scheduled)`,
 
@@ -590,6 +590,7 @@ var BuiltinEnrichments = map[string][]string{
 		"推送到蓝信群",
 		"send text to wechat",
 		"给群里发一条",
+		"发到 Slack",
 		"list im groups",
 		"查询蓝信群",
 	},

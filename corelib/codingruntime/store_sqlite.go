@@ -178,18 +178,26 @@ func preferActiveCodingRuntimeStatus(cur activeCodingRuntimeRefChoice, next acti
 // ListActiveTaskStatusesByProjectRef returns one coding runtime status per
 // project_ref. Pure agent loop coding runs (local and remote) never create a
 // workflow snapshot, so the task list merges this ledger status into its
-// status stats; refs whose newest row reached a terminal state are omitted.
+// status stats. A newest completed or cancelled row is omitted: the registry
+// already shows that write. A newest failed row is kept, because the registry
+// only knows that a file exists and would otherwise list the turn as completed.
 // A live run or an approval still needs the user and outranks any sibling,
-// older or newer. Otherwise the newest row wins, so a later completed run
-// suppresses an older interrupted row instead of letting that stale recovery
-// reminder surface forever. A gate block is a failure, except a
-// final_workspace_unchanged row that already recorded host file activity:
-// that write is complete and is reported as completed.
+// older or newer. A child shares the parent's project_ref, so a child's own
+// finished row is not the task outcome: its failure would fail the task, and
+// its completion would be dropped and take the parent's failure with it. An
+// interrupted or still-queued child is the same kind of row: it is newer than
+// the parent and would replace that failure. A live child or a gate block
+// still counts. Otherwise the newest row wins, so a later completed run
+// suppresses an older interrupted row
+// instead of letting that stale recovery reminder surface forever. A gate
+// block is a failure, except a final_workspace_unchanged row that already
+// recorded host file activity: that write is complete and is reported as
+// completed.
 func (s *SQLiteStore) ListActiveTaskStatusesByProjectRef() (map[string]string, error) {
 	if s == nil || s.db == nil {
 		return nil, nil
 	}
-	rows, err := s.db.Query(`SELECT t.project_ref, t.status, t.updated_at,
+	rows, err := s.db.Query(`SELECT t.project_ref, t.status, t.updated_at, t.parent_task_id,
 		COALESCE(a.error_code, ''),
 		EXISTS(SELECT 1 FROM coding_runtime_events e WHERE e.attempt_id = a.attempt_id AND e.type IN ('file_activity', 'remote_file_activity'))
 		FROM coding_runtime_tasks t
@@ -201,10 +209,10 @@ func (s *SQLiteStore) ListActiveTaskStatusesByProjectRef() (map[string]string, e
 	defer rows.Close()
 	choices := map[string]activeCodingRuntimeRefChoice{}
 	for rows.Next() {
-		var ref, status, errorCode string
+		var ref, status, parentID, errorCode string
 		var updatedAt int64
 		var hasFileActivity int
-		if err := rows.Scan(&ref, &status, &updatedAt, &errorCode, &hasFileActivity); err != nil {
+		if err := rows.Scan(&ref, &status, &updatedAt, &parentID, &errorCode, &hasFileActivity); err != nil {
 			return nil, err
 		}
 		ref = strings.TrimSpace(ref)
@@ -217,6 +225,15 @@ func (s *SQLiteStore) ListActiveTaskStatusesByProjectRef() (map[string]string, e
 		if TaskStatus(status) == TaskBlocked && errorCode == "final_workspace_unchanged" && hasFileActivity != 0 {
 			status = string(TaskCompleted)
 		}
+		// A child shares the parent's project_ref. A finished child is not the
+		// task outcome. Skipping it after the rewrite also ignores a child
+		// whose unchanged-workspace block was reported as completed.
+		if strings.TrimSpace(parentID) != "" {
+			switch TaskStatus(status) {
+			case TaskFailed, TaskCompleted, TaskCancelled, TaskInterrupted, TaskQueued:
+				continue
+			}
+		}
 		next := activeCodingRuntimeRefChoice{status: status, rawStatus: rawStatus, updatedAt: updatedAt, live: activeCodingRuntimeStatusIsLive(TaskStatus(status))}
 		if cur, ok := choices[ref]; !ok || preferActiveCodingRuntimeStatus(cur, next) {
 			choices[ref] = next
@@ -227,12 +244,11 @@ func (s *SQLiteStore) ListActiveTaskStatusesByProjectRef() (map[string]string, e
 	}
 	byRef := make(map[string]string, len(choices))
 	for ref, choice := range choices {
-		// A row born terminal carries no correction for the task list: the
-		// ref's registry row already shows that outcome. A blocked row rewritten
-		// to completed is kept — the ledger still says blocked, and this
-		// projection is what lets the task list show the finished write.
+		// Drop a newest completed or cancelled row: the task list already shows
+		// that write. Keep a newest failure, and keep a blocked row that was
+		// rewritten to completed (raw status is still blocked).
 		switch TaskStatus(choice.rawStatus) {
-		case TaskCompleted, TaskFailed, TaskCancelled:
+		case TaskCompleted, TaskCancelled:
 			continue
 		}
 		byRef[ref] = choice.status

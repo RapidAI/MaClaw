@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 )
 
@@ -47,6 +48,17 @@ type LLMClassifyRequest struct {
 	// don't need chain-of-thought reasoning and complete much faster on chat models.
 	// When true, getLightweightLLMConfig() is tried first; falls back to main model.
 	PreferLightweight bool
+
+	// NoThinking asks for the message body itself. The chat profile's thinking
+	// setting is not copied onto this call. DeepSeek V4 left on auto is stamped
+	// thinking.type=enabled, and that stamp puts the answer in reasoning_content
+	// while content stays empty. Always-on models keep their own trace.
+	NoThinking bool
+
+	// MaxOutputTokens caps this call when positive. Zero keeps the profile cap.
+	// Used with NoThinking so a reading can finish its object without reserving
+	// a chat-sized completion.
+	MaxOutputTokens int
 }
 
 // LLMClassifyResult holds the response from a lightweight LLM call.
@@ -103,6 +115,9 @@ func (h *IMMessageHandler) LLMClassify(ctx context.Context, req LLMClassifyReque
 		if lightCfg := h.getLightweightLLMConfig(); lightCfg.URL != "" && lightCfg.Model != "" {
 			cfg = lightCfg
 		}
+	}
+	if req.NoThinking {
+		cfg = readingLLMConfig(cfg, req.MaxOutputTokens)
 	}
 	cfg = attachLightweightHubHint(cfg, llm.TaskIntent)
 	if strings.TrimSpace(cfg.URL) == "" || strings.TrimSpace(cfg.Model) == "" {
@@ -167,6 +182,22 @@ func (h *IMMessageHandler) LLMClassify(ctx context.Context, req LLMClassifyReque
 		OutputTokens: outputTokens,
 		Latency:      latency,
 	}, nil
+}
+
+// readingLLMConfig is the copy used when the answer has to be the message
+// body. Auto DeepSeek V4 otherwise gains thinking.type=enabled, and the
+// object then arrives only as reasoning, or not at all. Models that reject
+// thinking.type=disabled keep the caller's trace and output cap.
+func readingLLMConfig(cfg corelib.MaclawLLMConfig, maxOut int) corelib.MaclawLLMConfig {
+	if corelib.IsAlwaysOnThinkingModel(cfg) {
+		return cfg
+	}
+	cfg.ThinkingMode = "disabled"
+	cfg.ReasoningEffort = "none"
+	if maxOut > 0 {
+		cfg.MaxOutputTokens = maxOut
+	}
+	return cfg
 }
 
 // truncateForLogGUI truncates a string for log output (GUI package version).

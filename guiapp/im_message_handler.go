@@ -90,7 +90,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		if providedLoopCtx != nil && providedLoopCtx.LansengerGroupPermissions != nil {
 			return &IMAgentResponse{Text: localizedLansengerGroupCommandRestrictedMessage(lang)}
 		}
-		cmd := moa.ParseSlash(trimmed)
+		cmd := moa.ParseSlash(normalizeImmediateCommandText(trimmed))
 		switch cmd.Kind {
 		case moa.SlashHelp:
 			return &IMAgentResponse{Text: localizedIMMoAUsageText(lang)}
