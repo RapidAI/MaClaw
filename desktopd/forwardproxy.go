@@ -69,6 +69,11 @@ type ProxyConfig struct {
 	// panel's egress config): pointing the chain at a new proxy takes effect
 	// on the next connection. nil keeps the static Upstream.
 	Upstreams *EgressSource
+	// DirectSuffixes are domain suffixes dialed directly instead of through
+	// Upstream. A mainland host lists names the overseas relay times out on
+	// (or should not carry). Empty means no bypass. ParseDirectSuffixes
+	// supplies the built-in default when DESKTOPD_PROXY_DIRECT is unset.
+	DirectSuffixes []string
 }
 
 // DefaultForwardProxyAddr is the default proxy port. 18081 is the admin API;
@@ -84,6 +89,10 @@ type ForwardProxy struct {
 	// dialHook lets tests inject a permissive dialer: loopback targets hit
 	// the public-only guard, which a test tunnel needs to bypass.
 	dialHook func(ctx context.Context, address string) (net.Conn, error)
+	// retryWait, when set, replaces the backoff sleep between upstream
+	// CONNECT attempts. Tests use it so a 502 retry does not wait.
+	retryWait func(ctx context.Context, delay time.Duration) error
+	direct    []string
 
 	mu     sync.Mutex
 	tunnel map[net.Conn]struct{}
@@ -91,13 +100,14 @@ type ForwardProxy struct {
 
 // NewForwardProxy builds a proxy server. It does not listen yet; call Start.
 func NewForwardProxy(cfg ProxyConfig) *ForwardProxy {
-	p := &ForwardProxy{cfg: cfg, tunnel: map[net.Conn]struct{}{}}
+	p := &ForwardProxy{cfg: cfg, tunnel: map[net.Conn]struct{}{}, direct: normalizeDirectSuffixes(cfg.DirectSuffixes)}
 	p.transport = &http.Transport{
 		// Proxy resolves per request: nil unless chained upstream, and the
 		// panel can repoint it between requests. dialVerified resolves each
-		// target here and only dials public addresses.
+		// target here and only dials public addresses. Names on the direct
+		// list skip the upstream the same way CONNECT does.
 		DialContext:           p.dialVerified,
-		Proxy:                 func(*http.Request) (*url.URL, error) { return p.currentUpstreamURL() },
+		Proxy:                 p.proxyForRequest,
 		ResponseHeaderTimeout: 2 * time.Minute,
 		IdleConnTimeout:       90 * time.Second,
 		DisableKeepAlives:     false,
@@ -159,6 +169,9 @@ func (p *ForwardProxy) Start(ctx context.Context) error {
 			log.Printf("[desktopd-proxy] serve error: %v", err)
 		}
 	}()
+	if len(p.direct) > 0 {
+		log.Printf("[desktopd-proxy] direct connect suffixes: %s", strings.Join(p.direct, ","))
+	}
 	log.Printf("[desktopd-proxy] forward proxy listening on %s", p.cfg.Addr)
 	return nil
 }
@@ -281,24 +294,32 @@ func (p *ForwardProxy) serveConnect(w http.ResponseWriter, r *http.Request) {
 	var backend net.Conn
 	var err error
 	upstream, upstreamErr := p.currentUpstreamURL()
-	if upstreamErr != nil {
+	// A name on the direct list is dialed here even when the upstream file
+	// cannot be read: a broken panel must not take domestic sites down with it.
+	if upstreamErr != nil && !p.directTarget(target) {
 		// Unreadable egress config denies the chain loudly.
 		log.Printf("[desktopd-proxy] upstream config unreadable: %v", upstreamErr)
 		http.Error(w, "upstream config unreadable", http.StatusBadGateway)
 		return
 	}
-	if upstream != nil {
+	switch {
+	case (upstream != nil || upstreamErr != nil) && p.directTarget(target):
+		noteProxyDirect()
+		backend, err = p.dial(dialCtx, target)
+	case upstream != nil:
 		// Chained egress: CONNECT through the upstream proxy (a desktopd
 		// abroad) so this host does not need its own route to the target.
-		backend, err = p.dialUpstream(dialCtx, target, upstream)
-	} else {
+		// 502s and timeouts are retried inside dialUpstreamWithRetry.
+		backend, err = p.dialUpstreamWithRetry(dialCtx, target, upstream)
+	default:
 		backend, err = p.dial(dialCtx, target)
 	}
 	if err != nil {
 		// Failures are logged for ops (successes never are: this proxy must
 		// not accumulate a record of what was browsed). Dialers never embed
 		// proxy credentials, so the text carries network diagnostics only.
-		log.Printf("[desktopd-proxy] CONNECT %s from %s: %v", target, r.RemoteAddr, err)
+		// Repeated failures for the same target are counted and collapsed.
+		noteProxyFailure(target, r.RemoteAddr, err)
 		http.Error(w, "upstream dial failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -486,10 +507,163 @@ func (p *ForwardProxy) currentUpstreamURL() (*url.URL, error) {
 	return parseUpstreamURL(raw)
 }
 
-// upstream, send CONNECT with the key it expects, require a 200, then hand the
-// raw socket back so the splice covers client → upstream → target. TLS to the
-// upstream (https:// scheme) keeps the CONNECT request and its key off the
-// wire between this host and the overseas machine.
+// upstreamAttempts is the CONNECT tries against a chained proxy, including
+// the first. upstreamAttemptTimeout keeps one hung dial from using the whole
+// 30s budget, so a 502 or an i/o timeout can be retried inside that budget.
+const (
+	upstreamAttempts       = 3
+	upstreamAttemptTimeout = 8 * time.Second
+)
+
+func upstreamRetryDelay(attempt int) time.Duration {
+	if attempt <= 1 {
+		return 200 * time.Millisecond
+	}
+	return 800 * time.Millisecond
+}
+
+// dialUpstreamWithRetry CONNECTs through u, retrying HTTP 502/503/504 and
+// transient dial errors with backoff. A 407 (bad key) is returned immediately.
+func (p *ForwardProxy) dialUpstreamWithRetry(ctx context.Context, target string, u *url.URL) (net.Conn, error) {
+	var last error
+	for attempt := 0; attempt < upstreamAttempts; attempt++ {
+		if attempt > 0 {
+			noteProxyRetry()
+			if err := p.waitRetry(ctx, upstreamRetryDelay(attempt)); err != nil {
+				if last != nil {
+					return nil, last
+				}
+				return nil, err
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			if last != nil {
+				return nil, last
+			}
+			return nil, err
+		}
+		attemptCtx, cancel := context.WithTimeout(ctx, upstreamAttemptTimeout)
+		conn, err := p.dialUpstream(attemptCtx, target, u)
+		cancel()
+		if err == nil {
+			return conn, nil
+		}
+		last = err
+		if !retryableUpstream(err) {
+			return nil, err
+		}
+	}
+	if last == nil {
+		return nil, fmt.Errorf("upstream proxy %s: no attempt", u.Hostname())
+	}
+	return nil, fmt.Errorf("%w (after %d attempts)", last, upstreamAttempts)
+}
+
+func (p *ForwardProxy) waitRetry(ctx context.Context, delay time.Duration) error {
+	if p != nil && p.retryWait != nil {
+		return p.retryWait(ctx, delay)
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+// proxyForRequest is the Transport proxy func. A direct-list name skips the
+// upstream (and still skips it when the upstream file is unreadable).
+func (p *ForwardProxy) proxyForRequest(req *http.Request) (*url.URL, error) {
+	host := ""
+	if req != nil && req.URL != nil {
+		host = req.URL.Host
+	}
+	if p.directTarget(host) {
+		upstream, err := p.currentUpstreamURL()
+		if err != nil || upstream != nil {
+			noteProxyDirect()
+			return nil, nil
+		}
+	}
+	return p.currentUpstreamURL()
+}
+
+// directTarget reports whether authority (host or host:port) is on the
+// direct-connect suffix list.
+func (p *ForwardProxy) directTarget(authority string) bool {
+	if p == nil || len(p.direct) == 0 || authority == "" {
+		return false
+	}
+	host := authority
+	if h, _, err := net.SplitHostPort(authority); err == nil {
+		host = h
+	}
+	host = strings.Trim(strings.ToLower(host), "[]")
+	host = strings.Trim(host, ".")
+	for _, suffix := range p.direct {
+		if host == suffix || strings.HasSuffix(host, "."+suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+// defaultDirectSuffixes are names that a mainland host can reach itself and
+// that the overseas relay (dockerd.maclaw.top) has been observed to time out
+// on. DESKTOPD_PROXY_DIRECT replaces this list; "off" disables it.
+var defaultDirectSuffixes = []string{"xiaohongshu.com", "xhscdn.com"}
+
+// ParseDirectSuffixes parses DESKTOPD_PROXY_DIRECT. An empty value returns the
+// built-in default. "off" or "-" returns no suffixes. An explicit list
+// replaces the default; repeat the defaults to keep them.
+func ParseDirectSuffixes(raw string) ([]string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return append([]string{}, defaultDirectSuffixes...), nil
+	}
+	if strings.EqualFold(raw, "off") || raw == "-" {
+		return nil, nil
+	}
+	var parts []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		if strings.ContainsAny(part, " \t/\\") || strings.Contains(part, "..") {
+			return nil, fmt.Errorf("DESKTOPD_PROXY_DIRECT suffix %q is invalid", part)
+		}
+		parts = append(parts, part)
+	}
+	if len(parts) == 0 {
+		return nil, fmt.Errorf("DESKTOPD_PROXY_DIRECT is empty")
+	}
+	return normalizeDirectSuffixes(parts), nil
+}
+
+func normalizeDirectSuffixes(in []string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, part := range in {
+		part = strings.TrimSpace(strings.ToLower(part))
+		part = strings.TrimPrefix(part, "*.")
+		part = strings.Trim(part, ".")
+		if part == "" || seen[part] {
+			continue
+		}
+		seen[part] = true
+		out = append(out, part)
+	}
+	return out
+}
+
+// dialUpstream dials the chained upstream, sends CONNECT with the key it
+// expects, requires a 200, then hands the raw socket back so the splice covers
+// client → upstream → target. TLS to the upstream (https:// scheme) keeps the
+// CONNECT request and its key off the wire between this host and the overseas
+// machine.
 func (p *ForwardProxy) dialUpstream(ctx context.Context, target string, u *url.URL) (net.Conn, error) {
 	host := u.Hostname()
 	port := u.Port()
@@ -520,8 +694,14 @@ func (p *ForwardProxy) dialUpstream(ctx context.Context, target string, u *url.U
 	}
 	request += "\r\n"
 	// Bound the upstream handshake, then clear the deadline: the tunnel
-	// itself must not carry it.
-	_ = conn.SetDeadline(time.Now().Add(30 * time.Second))
+	// itself must not carry it. A per-attempt context (see
+	// dialUpstreamWithRetry) shortens this so one hung dial cannot consume
+	// the budget of the retries.
+	deadline := time.Now().Add(30 * time.Second)
+	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
+		deadline = d
+	}
+	_ = conn.SetDeadline(deadline)
 	if _, err := io.WriteString(conn, request); err != nil {
 		_ = conn.Close()
 		return nil, fmt.Errorf("upstream proxy %s: %w", host, err)
@@ -539,7 +719,7 @@ func (p *ForwardProxy) dialUpstream(ctx context.Context, target string, u *url.U
 	}()
 	if resp.StatusCode != http.StatusOK {
 		_ = conn.Close()
-		return nil, fmt.Errorf("upstream proxy %s answered HTTP %d", host, resp.StatusCode)
+		return nil, &upstreamStatusError{host: host, code: resp.StatusCode}
 	}
 	if reader.Buffered() > 0 {
 		_ = conn.Close()

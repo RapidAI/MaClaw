@@ -304,7 +304,7 @@ DESKTOPD_ADVERTISE_HOST=dockerd.example.com DESKTOPD_IMAGE_FROM=pull \
 
 同一桌面（bot 的文件、命令、浏览器和容器网络上的 `web_search` / `web_fetch` 使用 noVNC 那个人的容器，家目录 `/home/desktop`）编在 maclawsrv、hub、desktopd 三个二进制里。容器里的 supervisor 和镜像 `maclaw-gui:2` 本来就把 `HOME` 放在 `/home/desktop`。这类发布不重建镜像，不把 supervisor 拷进正在运行的容器，不重启 Docker。
 
-不要用 `deploy_desktopd.cmd` 和 `desktopd/remote_deploy.sh`。那个脚本会重写 `/etc/systemd/system/maclaw-desktopd.service`（`StandardOutput=append:` 在这台机器上解析失败）、默认构建镜像，并对每个 `maclaw-desktop-*` 容器执行 `docker cp` supervisor。不要用 `deploy_maclawsrv.cmd` 附带的 `build/maclawsrv_deploy/remote_deploy_maclawsrv.sh`。它会重写 `/data/soft/maclaw_srv/start.sh` 和 `maclawsrv.service`。Hub 用目录里已有的 `start.sh`，不覆盖 `configs/config.yaml`，不停 `/data/soft/hubcenter/maclaw-hubcenter`。
+不要用 `deploy_desktopd.cmd` 和 `desktopd/remote_deploy.sh`。那个脚本会重写 `/etc/systemd/system/maclaw-desktopd.service`（新单元不再写 systemd 237 无法解析的 `StandardOutput=append:`；日志由 desktopd 自己追加到 `logs/desktopd.log`）、默认构建镜像，并对每个 `maclaw-desktop-*` 容器执行 `docker cp` supervisor。不要用 `deploy_maclawsrv.cmd` 附带的 `build/maclawsrv_deploy/remote_deploy_maclawsrv.sh`。它会重写 `/data/soft/maclaw_srv/start.sh` 和 `maclawsrv.service`。Hub 用目录里已有的 `start.sh`，不覆盖 `configs/config.yaml`，不停 `/data/soft/hubcenter/maclaw-hubcenter`。
 
 主机是 `maclawsrv.mypapers.top`（与 `hub.mypapers.top`、`dockerd.mypapers.top` 同一台）。常规二进制替换不改 nginx、单元文件和已有 `.env`。Hub 机器人要连上这台人的云桌面，还要有下面的连接配置。desktopd 收到停止信号时只关掉自己的 HTTP 服务，已有容器继续跑。重启这三个进程会丢掉当时还在进行的对话。
 
@@ -723,7 +723,11 @@ docker ps -a --filter label=maclaw.user=rollout-test-gui2 -q    # 找到容器�
   可以 apt 安装软件,也就能改动自己容器里的一切。
 - **close_range 垫片仅 x86_64**:ARM 主机构建会跳过/失败,需要 Docker ≥ 23 或 libseccomp ≥ 2.5.2。
 - **Ubuntu 18.04 / Docker 20.10 主机**:默认 seccomp 拦 `close_range`(见垫片);systemd 237 不支持
-  `StandardOutput=append:`,日志看 `journalctl -u maclaw-desktopd` / `-u maclawsrv`;sqlite 3.22 没有
+  `StandardOutput=append:`(每次 reload 警告 `Failed to parse output specifier`,文件日志是空的)。
+  desktopd 现在自己写 `<部署目录>/logs/desktopd.log` 并轮转,同时复制到 stderr,所以
+  `journalctl -u maclaw-desktopd` 仍然有。已有单元要删掉 `StandardOutput=` / `StandardError=`
+  的 `append:` 行后 `systemctl daemon-reload && systemctl restart maclaw-desktopd`;不要改成
+  `file:`(每次启动截断)。maclawsrv 仍看 `journalctl -u maclawsrv`。sqlite 3.22 没有
   UPSERT,`hub_desktop_settings.py` 用 UPDATE/INSERT。
 - **上行慢的部署机**:二进制压缩后仍有几十 MB。用 `rollout_desktop_gui2.sh upload`(rsync `--partial`
   断点续传)或在离主机近的机器上编译;镜像在主机上构建或从 ghcr.io 拉取,不要上传镜像。

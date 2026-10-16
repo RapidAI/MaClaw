@@ -2,14 +2,20 @@ package desktopd
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -456,4 +462,326 @@ func TestProxyTargetAllowed(t *testing.T) {
 			t.Fatalf("%q should be blocked", target)
 		}
 	}
+}
+
+func TestParseDirectSuffixes(t *testing.T) {
+	got, err := ParseDirectSuffixes("")
+	if err != nil || !containsString(got, "xiaohongshu.com") || !containsString(got, "xhscdn.com") {
+		t.Fatalf("default suffixes = %v, %v", got, err)
+	}
+	got, err = ParseDirectSuffixes("off")
+	if err != nil || len(got) != 0 {
+		t.Fatalf("off = %v, %v", got, err)
+	}
+	got, err = ParseDirectSuffixes("Foo.COM, *.bar.com")
+	if err != nil || strings.Join(got, ",") != "foo.com,bar.com" {
+		t.Fatalf("explicit = %v, %v", got, err)
+	}
+	if _, err := ParseDirectSuffixes("bad host"); err == nil {
+		t.Fatal("suffix with a space was accepted")
+	}
+}
+
+func TestDirectTargetMatchesSubdomainOnly(t *testing.T) {
+	p := NewForwardProxy(ProxyConfig{DirectSuffixes: []string{"xiaohongshu.com"}})
+	if !p.directTarget("as.xiaohongshu.com:443") || !p.directTarget("xiaohongshu.com") {
+		t.Fatal("xiaohongshu names should bypass the upstream")
+	}
+	if p.directTarget("evilxiaohongshu.com:443") || p.directTarget("googlevideo.com:443") {
+		t.Fatal("unrelated names matched the direct list")
+	}
+}
+
+func TestRetryableUpstream(t *testing.T) {
+	if !retryableUpstream(&upstreamStatusError{host: "dockerd.maclaw.top", code: 502}) {
+		t.Fatal("502 should be retried")
+	}
+	if retryableUpstream(&upstreamStatusError{host: "dockerd.maclaw.top", code: 407}) {
+		t.Fatal("407 should not be retried")
+	}
+	if !retryableUpstream(errors.New("dial tcp 1.2.3.4:443: i/o timeout")) {
+		t.Fatal("i/o timeout should be retried")
+	}
+	if classifyProxyError(&upstreamStatusError{code: 502}) != "http_502" {
+		t.Fatal("502 was not classified")
+	}
+	if classifyProxyError(errors.New("dial tcp: i/o timeout")) != "timeout" {
+		t.Fatal("timeout was not classified")
+	}
+}
+
+func TestForwardProxyRetriesUpstream502(t *testing.T) {
+	hits := &atomic.Int32{}
+	upstream := scriptedUpstream(t, hits, 502, 502, 200)
+	backend := echoBackend(t)
+	chain := newChain(t, upstream, nil)
+	conn := dialProxy(t, chain)
+	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", backend, backend)
+	if status := readProxyStatus(t, conn); !strings.Contains(status, "200") {
+		t.Fatalf("retried CONNECT expected 200, got %q", status)
+	}
+	if got := hits.Load(); got != 3 {
+		t.Fatalf("upstream attempts = %d, want 3", got)
+	}
+	if SnapshotProxyMetrics().Retries < 2 {
+		t.Fatalf("retries = %d", SnapshotProxyMetrics().Retries)
+	}
+}
+
+func TestForwardProxyDoesNotRetryUpstream407(t *testing.T) {
+	hits := &atomic.Int32{}
+	upstream := scriptedUpstream(t, hits, 407)
+	backend := echoBackend(t)
+	chain := newChain(t, upstream, nil)
+	conn := dialProxy(t, chain)
+	fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", backend, backend)
+	if status := readProxyStatus(t, conn); !strings.Contains(status, "502") {
+		t.Fatalf("bad upstream status expected 502 to the client, got %q", status)
+	}
+	if got := hits.Load(); got != 1 {
+		t.Fatalf("407 was retried: attempts = %d", got)
+	}
+}
+
+func TestForwardProxyDirectSuffixSkipsUpstream(t *testing.T) {
+	hits := &atomic.Int32{}
+	upstream := scriptedUpstream(t, hits, 502)
+	chain := newChain(t, upstream, []string{"example.test"})
+	conn := dialProxy(t, chain)
+	fmt.Fprintf(conn, "CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n\r\n")
+	if status := readProxyStatus(t, conn); !strings.Contains(status, "200") {
+		t.Fatalf("direct CONNECT expected 200, got %q", status)
+	}
+	fmt.Fprintf(conn, "GET /hello HTTP/1.1\r\nHost: example.test\r\nConnection: close\r\n\r\n")
+	body, err := io.ReadAll(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "hello:/hello") {
+		t.Fatalf("direct tunnel body %q", body)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("direct target still used the upstream (%d hits)", hits.Load())
+	}
+
+	conn = dialProxy(t, chain)
+	fmt.Fprintf(conn, "CONNECT other.test:443 HTTP/1.1\r\nHost: other.test:443\r\n\r\n")
+	if status := readProxyStatus(t, conn); !strings.Contains(status, "502") {
+		t.Fatalf("non-direct target expected the upstream 502, got %q", status)
+	}
+	if hits.Load() == 0 {
+		t.Fatal("non-direct target did not reach the upstream")
+	}
+}
+
+func TestProxyFailureLogsAreAggregated(t *testing.T) {
+	resetProxyMetrics()
+	t.Cleanup(resetProxyMetrics)
+	logs := captureLog(t)
+	err := errors.New("upstream proxy dockerd.maclaw.top: dial tcp 1.2.3.4:443: i/o timeout")
+	for i := 0; i < 20; i++ {
+		noteProxyFailure("as.xiaohongshu.com:443", "172.17.0.2:1", err)
+	}
+	noteProxyFailure("googlevideo.com:443", "172.17.0.2:1", &upstreamStatusError{host: "dockerd.maclaw.top", code: 502})
+	text := logs.String()
+	if strings.Count(text, "as.xiaohongshu.com:443") != 1 {
+		t.Fatalf("timeout log lines = %d\n%s", strings.Count(text, "as.xiaohongshu.com:443"), text)
+	}
+	if strings.Count(text, "googlevideo.com:443") != 1 {
+		t.Fatalf("502 log lines = %d\n%s", strings.Count(text, "googlevideo.com:443"), text)
+	}
+	snap := SnapshotProxyMetrics()
+	if snap.Timeout != 20 || snap.HTTP502 != 1 || snap.SuppressedLogs != 19 {
+		t.Fatalf("metrics = %+v", snap)
+	}
+}
+
+func TestProxyErrorSummaryAggregates(t *testing.T) {
+	resetProxyMetrics()
+	prevInterval := proxySummaryInterval
+	proxySummaryInterval = 20 * time.Millisecond
+	t.Cleanup(func() {
+		resetProxyMetrics()
+		proxySummaryInterval = prevInterval
+	})
+	logs := &lockedBuffer{}
+	prev := log.Writer()
+	log.SetOutput(logs)
+	t.Cleanup(func() { log.SetOutput(prev) })
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	StartProxyErrorSummary(ctx)
+	noteProxyFailure("a.example:443", "x", errors.New("dial tcp: i/o timeout"))
+	noteProxyFailure("a.example:443", "x", errors.New("dial tcp: i/o timeout"))
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) && !strings.Contains(logs.String(), "upstream errors +") {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !strings.Contains(logs.String(), "timeout=2") && !strings.Contains(logs.String(), "timeout=1") {
+		// The first line is the per-target log; the summary's delta is 2 if it
+		// started from zero, or less if a tick landed between the two notes.
+		if !strings.Contains(logs.String(), "upstream errors +") {
+			t.Fatalf("summary missing:\n%s", logs.String())
+		}
+	}
+}
+
+func TestHealthIncludesProxyMetrics(t *testing.T) {
+	resetProxyMetrics()
+	t.Cleanup(resetProxyMetrics)
+	noteProxyRetry()
+	srv := httptest.NewServer(Handler(&Service{}, "tok", "", nil, nil))
+	t.Cleanup(srv.Close)
+	req, err := http.NewRequest(http.MethodGet, srv.URL+"/v1/health", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer tok")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("health status %d", resp.StatusCode)
+	}
+	var body struct {
+		OK    bool         `json:"ok"`
+		Proxy ProxyMetrics `json:"proxy"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatal(err)
+	}
+	if !body.OK || body.Proxy.Retries != 1 {
+		t.Fatalf("health body = %+v", body)
+	}
+}
+
+func containsString(list []string, want string) bool {
+	for _, item := range list {
+		if item == want {
+			return true
+		}
+	}
+	return false
+}
+
+func newChain(t *testing.T, upstream string, direct []string) *ForwardProxy {
+	t.Helper()
+	resetProxyMetrics()
+	t.Cleanup(resetProxyMetrics)
+	chain := NewForwardProxy(ProxyConfig{
+		Addr:           "127.0.0.1:0",
+		Anonymous:      true,
+		Upstream:       "http://docker:sekret@" + upstream,
+		DirectSuffixes: direct,
+	})
+	// The hook bypasses the public-target gate. Direct names are delivered to
+	// the echo backend; the upstream path dials the scripted proxy itself.
+	var directBackend string
+	if len(direct) > 0 {
+		// Created on the test goroutine: the dial hook runs on the proxy's
+		// serve goroutine and must not touch t.
+		directBackend = echoBackend(t)
+	}
+	chain.dialHook = func(ctx context.Context, address string) (net.Conn, error) {
+		if directBackend != "" && strings.Contains(address, "example.test") {
+			return net.Dial("tcp", directBackend)
+		}
+		return net.Dial("tcp", address)
+	}
+	chain.retryWait = func(context.Context, time.Duration) error { return nil }
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(func() { cancel(); _ = chain.Stop() })
+	if err := chain.Start(ctx); err != nil {
+		t.Fatalf("start chain: %v", err)
+	}
+	return chain
+}
+
+func dialProxy(t *testing.T, p *ForwardProxy) net.Conn {
+	t.Helper()
+	conn, err := net.Dial("tcp", p.listener.Addr().String())
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	return conn
+}
+
+// scriptedUpstream answers CONNECT with the given status codes, one per
+// connection, and proxies a 200 through to the requested target. Statuses past
+// the end of the list are 200.
+func scriptedUpstream(t *testing.T, hits *atomic.Int32, statuses ...int) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				br := bufio.NewReader(c)
+				line, err := br.ReadString('\n')
+				if err != nil {
+					return
+				}
+				for {
+					h, err := br.ReadString('\n')
+					if err != nil || h == "\r\n" || h == "\n" {
+						break
+					}
+				}
+				n := int(hits.Add(1)) - 1
+				code := 200
+				if n < len(statuses) {
+					code = statuses[n]
+				}
+				if code != 200 {
+					fmt.Fprintf(c, "HTTP/1.1 %d nope\r\nContent-Length: 0\r\n\r\n", code)
+					return
+				}
+				fields := strings.Fields(line)
+				if len(fields) < 2 {
+					return
+				}
+				backend, err := net.Dial("tcp", fields[1])
+				if err != nil {
+					fmt.Fprintf(c, "HTTP/1.1 502 no backend\r\nContent-Length: 0\r\n\r\n")
+					return
+				}
+				defer backend.Close()
+				fmt.Fprintf(c, "HTTP/1.1 200 Connection Established\r\n\r\n")
+				done := make(chan struct{}, 2)
+				go func() { _, _ = io.Copy(backend, br); done <- struct{}{} }()
+				go func() { _, _ = io.Copy(c, backend); done <- struct{}{} }()
+				<-done
+			}(conn)
+		}
+	}()
+	return ln.Addr().String()
+}
+
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }

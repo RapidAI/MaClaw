@@ -34,7 +34,7 @@ func Handler(svc *Service, token, stateDir string, proxyKeys *ProxyKeySource, eg
 			writeErr(w, http.StatusUnauthorized, "unauthorized")
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "proxy": SnapshotProxyMetrics()})
 	})
 	mux.HandleFunc("POST /v1/desktops", func(w http.ResponseWriter, r *http.Request) {
 		if !authOK(r) {
