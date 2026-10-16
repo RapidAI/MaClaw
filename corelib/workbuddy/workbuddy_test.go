@@ -533,3 +533,54 @@ func TestTransportSurfacesUpstreamStreamError(t *testing.T) {
 		t.Fatalf("status=%d body=%s", resp.StatusCode, body)
 	}
 }
+
+// headerRecorder captures the outgoing headers a wrapped client sends.
+type headerRecorder struct {
+	record func(*http.Request)
+}
+
+func (r *headerRecorder) RoundTrip(req *http.Request) (*http.Response, error) {
+	if r.record != nil {
+		r.record(req)
+	}
+	return &http.Response{
+		StatusCode: 200,
+		Status:     "200 OK",
+		Body: io.NopCloser(strings.NewReader(`{"id":"c","object":"chat.completion","created":1,"model":"deepseek-v4.1-flash","choices":[{"index":0,"message":{"role":"assistant","content":"hi"},"finish_reason":"stop"}]}`)),
+		Header:     http.Header{"Content-Type": []string{"application/json"}},
+	}, nil
+}
+
+// TestTransportAddsConversationHeadersOnMarkedGlobalDeepSeek reproduces the
+// production failure: TigerProxy marks every upstream call with MarkerHeader=1
+// but still targets the live www.workbuddy.ai host. A deepseek model there
+// rejects a call without X-Conversation-ID (upstream code 11128). shouldAdapt
+// must resolve the real GlobalProfile from the URL even when the marker is
+// present, so the conversation headers are applied.
+func TestTransportAddsConversationHeadersOnMarkedGlobalDeepSeek(t *testing.T) {
+	var gotConv, gotReq, gotMarker string
+	rt := &headerRecorder{record: func(r *http.Request) {
+		gotConv = r.Header.Get("X-Conversation-ID")
+		gotReq = r.Header.Get("X-Request-ID")
+		gotMarker = r.Header.Get(MarkerHeader)
+	}}
+	client := WrapClient(&http.Client{Transport: rt})
+	req, err := http.NewRequest(http.MethodPost, "https://www.workbuddy.ai/v2/chat/completions",
+		strings.NewReader(`{"model":"deepseek-v4.1-flash","messages":[{"role":"user","content":"hi"}]}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set(MarkerHeader, "1")
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if gotMarker != "" {
+		t.Fatal("translation marker left the process")
+	}
+	if gotConv == "" || gotReq == "" {
+		t.Fatalf("conversation headers missing on marked global deepseek call: conv=%q req=%q", gotConv, gotReq)
+	}
+}

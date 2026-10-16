@@ -506,9 +506,12 @@ func replaceBody(resp *http.Response, payload []byte, contentType string) *http.
 }
 
 // shouldAdapt reports whether this chat call needs the WorkBuddy translation
-// and which edition it targets. A marked request is translated even when the
-// URL is not an edition host; the zero Profile then adds no conversation
-// headers.
+// and which edition it targets. The caller may mark a request to force
+// translation even when the URL is not an edition host (tests and the local
+// TigerProxy use this). When the URL itself resolves to an edition we prefer
+// that real Profile: TigerProxy marks every live www.workbuddy.ai call, and a
+// deepseek model there still needs the conversation headers a zero Profile
+// would skip.
 func shouldAdapt(req *http.Request) (Profile, bool) {
 	if req == nil || req.URL == nil || req.Method != http.MethodPost {
 		return Profile{}, false
@@ -516,11 +519,13 @@ func shouldAdapt(req *http.Request) (Profile, bool) {
 	if !strings.HasSuffix(req.URL.Path, "/chat/completions") {
 		return Profile{}, false
 	}
+	if profile, ok := ProfileByURL(req.URL.String()); ok {
+		return profile, true
+	}
 	if req.Header.Get(MarkerHeader) == "1" {
 		return Profile{}, true
 	}
-	profile, ok := ProfileByURL(req.URL.String())
-	return profile, ok
+	return Profile{}, false
 }
 
 func looksLikeSSE(body []byte) bool {
