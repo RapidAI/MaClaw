@@ -301,7 +301,7 @@ func TestWorkBuddyChatTranslatesAndStripsMarker(t *testing.T) {
 
 	upstream := &workbuddyChatUpstream{
 		profile: workbuddy.GlobalProfile(),
-		cred: rotatingCredential{
+		cred: &rotatingCredential{
 			mode: AuthModeWorkBuddyGlobal, access: "access-token", refresh: "refresh-secret",
 			userID: "user-1", enterpriseID: "ent-1",
 		},
@@ -361,7 +361,7 @@ func TestWorkBuddyChatUsesRefreshedToken(t *testing.T) {
 	}}
 	upstream := &workbuddyChatUpstream{
 		profile: workbuddy.GlobalProfile(),
-		cred: rotatingCredential{
+		cred: &rotatingCredential{
 			mode: AuthModeWorkBuddyGlobal, access: "stale-access", refresh: "stale-refresh",
 			expires: time.Now().Add(-time.Minute).Unix(), userID: "user-1", rotator: rotator,
 		},

@@ -245,7 +245,7 @@ func configureVendorUpstream(a *App, server *codegenproxy.Server, s Settings) {
 		server.SetOpenAIUpstreamClient(&qoderChatUpstream{
 			profile: profile,
 			client:  httpClient,
-			cred:    cred,
+			cred:    &cred,
 		})
 	case AuthModeWorkBuddyCN, AuthModeWorkBuddyGlobal:
 		profile, ok := workbuddyProfileForMode(s.ActiveAuthMode)
@@ -255,7 +255,7 @@ func configureVendorUpstream(a *App, server *codegenproxy.Server, s Settings) {
 		server.SetOpenAIUpstreamClient(&workbuddyChatUpstream{
 			profile: profile,
 			client:  workbuddy.WrapClient(&http.Client{}),
-			cred:    cred,
+			cred:    &cred,
 		})
 	}
 }
@@ -330,7 +330,7 @@ func (r *rotatingCredential) snapshot(fallback string) (access, refresh, userID,
 type qoderChatUpstream struct {
 	profile  qoder.Profile
 	client   *http.Client
-	cred     rotatingCredential
+	cred     *rotatingCredential
 	mu       sync.Mutex
 	models   []byte
 	modelsAt time.Time
@@ -367,7 +367,7 @@ func (u *qoderChatUpstream) DoChatCompletions(ctx context.Context, endpoint, api
 type workbuddyChatUpstream struct {
 	profile workbuddy.Profile
 	client  *http.Client
-	cred    rotatingCredential
+	cred    *rotatingCredential
 	mu      sync.Mutex
 	models  []byte
 }
