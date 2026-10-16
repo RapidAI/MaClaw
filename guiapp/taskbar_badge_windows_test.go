@@ -4,6 +4,7 @@ package guiapp
 
 import (
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 )
@@ -23,6 +24,70 @@ func TestPickWailsWindowPrefersVisibleFrame(t *testing.T) {
 	}
 	if pickWailsWindow(nil).hwnd != 0 {
 		t.Fatal("empty scan returned a window")
+	}
+}
+
+func TestTaskbarBadgeDiscUsesIconGreen(t *testing.T) {
+	// Center of a 16px disc is fully covered: straight RGB(19, 59, 67).
+	if got := taskbarBadgeDiscPixel(8, 8, 16); got != 0xFF133B43 {
+		t.Fatalf("center = %#08x", got)
+	}
+	if got := taskbarBadgeDiscPixel(0, 0, 16); got != 0 {
+		t.Fatalf("corner = %#08x", got)
+	}
+	rim := taskbarBadgeDiscPixel(0, 8, 16)
+	if alpha := rim >> 24; alpha == 0 || alpha == 255 {
+		t.Fatalf("rim alpha = %d", alpha)
+	}
+}
+
+func TestTaskbarBadgeComposePixelKeepsDiscAlpha(t *testing.T) {
+	const disc = uint32(0x80133B43)
+	if got := taskbarBadgeComposePixel(disc, disc&^0xFF000000); got != disc {
+		t.Fatalf("cleared alpha = %#08x", got)
+	}
+	if got := taskbarBadgeComposePixel(disc, 0); got != disc {
+		t.Fatalf("wiped pixel = %#08x", got)
+	}
+	if got := taskbarBadgeComposePixel(disc, 0x00FFFFFF); got != 0xFFFFFFFF {
+		t.Fatalf("glyph = %#08x", got)
+	}
+}
+
+func TestTaskbarBadgeHiddenWindowKeepsTheCount(t *testing.T) {
+	now := time.Now()
+	phase, result, hold := taskbarBadgeShowGate(2, false, taskbarBadgeShowIdle, time.Time{}, now)
+	if !hold || result != taskbarBadgeWindowHidden || phase != taskbarBadgeShowIdle {
+		t.Fatalf("hidden window = phase %d result %d hold %v", phase, result, hold)
+	}
+	if _, _, hold := taskbarBadgeShowGate(2, true, taskbarBadgeShowIdle, time.Time{}, now); hold {
+		t.Fatal("visible window held the badge")
+	}
+	if _, _, hold := taskbarBadgeShowGate(0, false, taskbarBadgeShowWaitShow, now, now); hold {
+		t.Fatal("clearing the badge waited for a hidden window")
+	}
+
+	armed := now
+	phase, result, hold = taskbarBadgeShowGate(2, true, taskbarBadgeShowWaitHide, armed, armed.Add(100*time.Millisecond))
+	if !hold || phase != taskbarBadgeShowWaitHide || result != taskbarBadgeWindowHidden {
+		t.Fatal("paint landed before the hide was observed")
+	}
+	phase, _, hold = taskbarBadgeShowGate(2, false, phase, armed, armed.Add(200*time.Millisecond))
+	if !hold || phase != taskbarBadgeShowWaitShow {
+		t.Fatal("hide did not arm the show replay")
+	}
+	phase, _, hold = taskbarBadgeShowGate(2, false, phase, armed, armed.Add(300*time.Millisecond))
+	if !hold || phase != taskbarBadgeShowWaitShow {
+		t.Fatal("still-hidden window painted")
+	}
+	phase, _, hold = taskbarBadgeShowGate(2, true, phase, armed, armed.Add(400*time.Millisecond))
+	if hold || phase != taskbarBadgeShowIdle {
+		t.Fatal("shown window did not paint")
+	}
+
+	phase, _, hold = taskbarBadgeShowGate(2, true, taskbarBadgeShowWaitHide, armed, armed.Add(taskbarBadgeShowGrace))
+	if hold || phase != taskbarBadgeShowIdle {
+		t.Fatal("show that beat the hide check never painted")
 	}
 }
 

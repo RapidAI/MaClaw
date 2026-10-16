@@ -2001,6 +2001,9 @@ func TestSemanticGrantPromptFenceRejectsHistoryToolNames(t *testing.T) {
 	if !strings.Contains(semanticGrantPromptFence, "the live tool list is the ground truth") || !strings.Contains(semanticGrantPromptFence, "web_search") {
 		t.Fatalf("fence=%q", semanticGrantPromptFence)
 	}
+	if !strings.Contains(semanticGrantPromptFence, "等待用户确认") || !strings.Contains(semanticGrantPromptFence, "do not perform that action with another tool") {
+		t.Fatalf("fence omitted confirmation wait: %q", semanticGrantPromptFence)
+	}
 	if !strings.Contains(semanticGrantPromptFence, "previous_turn_tool") || !strings.Contains(semanticGrantPromptFence, "do not tell the user a tool is missing") {
 		t.Fatalf("fence omitted staged-grant guidance: %q", semanticGrantPromptFence)
 	}

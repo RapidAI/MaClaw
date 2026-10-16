@@ -8111,7 +8111,7 @@ func TestClassifyCodingGuardrail(t *testing.T) {
 		{name: "scope_result_marker", tool: "call_mcp_tool", result: "requested path is outside the project scope", category: "scope"},
 		{name: "host", tool: "read_file", result: "coding subagent host tool handler is unavailable", category: "host"},
 		{name: "policy_with_project_word", tool: "call_mcp_tool", result: "project approval policy rejected this dynamic tool", category: "policy"},
-		{name: "read_snapshot", tool: "edit_file", path: `F:\test-prog\audio.cpp`, result: "请先调用 read_file(path=\"F:\\test-prog\\audio.cpp\") 查看当前内容，再使用 edit_file 修改。编码 SubAgent 不允许未读文件就修改已有内容。", category: "policy"},
+		{name: "read_snapshot", tool: "edit_file", path: `F:\test-prog\audio.cpp`, result: "请先调用 read_file(path=\"F:\\test-prog\\audio.cpp\") 查看当前内容，再使用 edit_file 修改。编码 SubAgent 不允许未读文件就修改已有内容。", category: "read_snapshot"},
 	}
 	for _, tc := range cases {
 		if got := classifyCodingGuardrailCategory(tc.tool, tc.path, tc.command, tc.result).String(); got != tc.category {
@@ -12432,6 +12432,12 @@ func TestApplySubAgentGuardrailOutcomeFailsPassedTask(t *testing.T) {
 	status, errMsg = applySubAgentGuardrailOutcome(TaskExecPassed, "", nil)
 	if status != TaskExecPassed || errMsg != "" {
 		t.Fatalf("empty guardrail outcome should not fail task, got status=%s err=%q", status, errMsg)
+	}
+
+	repeated := []CodingSubAgentGuardrailViolation{violations[0], violations[0], violations[0]}
+	status, errMsg = applySubAgentGuardrailOutcome(TaskExecPassed, "", repeated)
+	if status != TaskExecFailed || !strings.Contains(errMsg, "1 guardrail block") || strings.Contains(errMsg, "3 guardrail block") {
+		t.Fatalf("repeated identical blocks should count once, got status=%s err=%q", status, errMsg)
 	}
 }
 

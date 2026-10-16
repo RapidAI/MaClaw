@@ -468,6 +468,153 @@ func TestCodegraphHeaderDeclSurvivesFileCap(t *testing.T) {
 	}
 }
 
+func TestCodegraphFileSurveyReplacesWholeFileRead(t *testing.T) {
+	dir := t.TempDir()
+	src := "#include \"theme.h\"\n#include <windows.h>\nstatic const int CLIENT_W = 824;\nstatic void fillDot(int x) { x = CLIENT_W; }\nstatic void drawScene() {\n    fillDot(CLIENT_W);\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "snake.cpp"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "theme.h"), []byte("static const int THEME_W = 40;\nstatic void fillHeader(int x) { x = THEME_W; }\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "other.h"), []byte("static const int THEME_W = 1;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var body strings.Builder
+	body.WriteString("### Symbols\n- `drawScene` (function) — :5\n- `fillDot` (function) — :4\n")
+	for body.Len() < 23000 {
+		body.WriteString("- `padSymbol` (function) — :1\n")
+	}
+	got, _ := codegraphCapWithDecls(dir, "snake.cpp", body.String())
+	if !strings.Contains(got, "File structure for snake.cpp.") || !strings.Contains(got, "#include \"theme.h\"") || !strings.Contains(got, "#include <windows.h>") || !strings.Contains(got, "CLIENT_W = 824") || !strings.Contains(got, "In theme.h:\nstatic const int THEME_W = 40;") || len(got) > 24000 {
+		t.Fatalf("file survey missing len=%d", len(got))
+	}
+	if strings.Contains(got, "void fillDot") || strings.Contains(got, "void drawScene") || strings.Contains(got, "fillHeader") || strings.Contains(got, "THEME_W = 1") {
+		t.Fatalf("function body or unread header was included in the file survey: %s", got[len(got)-500:])
+	}
+	hint := codegraphContinueHint("codegraph", got)
+	if strings.Contains(hint, "current source") || !strings.Contains(hint, "Do not read_file") || !strings.Contains(hint, "survey") || !strings.Contains(hint, "node") || !strings.Contains(hint, "call code_navigation") {
+		t.Fatalf("file map hint = %q", hint)
+	}
+}
+
+func TestCodegraphFileSurveySkipsCommentedInclude(t *testing.T) {
+	dir := t.TempDir()
+	src := "/*\n#include \"other.h\"\nstatic const int DEAD_W = 9;\nvoid oldScene() {\n*/\n#include \"theme.h\"\nstatic const char *note = \"/*\";\nstatic const int SCALE =\n    /* ; */\n    3;\nstatic const int CLIENT_W = 824;\nstatic void fillDot(int x) { x = CLIENT_W; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "snake.cpp"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "theme.h"), []byte("static const int THEME_W = 40;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "other.h"), []byte("static const int THEME_W = 1;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := codegraphAttachFileSurvey(dir, "snake.cpp", "### Symbols\n- `fillDot` (function) — :10\n")
+	if !strings.Contains(got, "#include \"theme.h\"") || !strings.Contains(got, "CLIENT_W = 824") || !strings.Contains(got, "static const int SCALE =\n    /* ; */\n    3;") || !strings.Contains(got, "In theme.h:\nstatic const int THEME_W = 40;") {
+		t.Fatalf("survey dropped live declarations: %s", got)
+	}
+	if strings.Contains(got, "DEAD_W") || strings.Contains(got, "other.h") || strings.Contains(got, "THEME_W = 1") || strings.Contains(got, "void fillDot") {
+		t.Fatalf("commented include or function body leaked: %s", got)
+	}
+}
+
+func TestCodegraphFileSurveySkipsIfZero(t *testing.T) {
+	dir := t.TempDir()
+	src := "#if 0\n#include \"other.h\"\nstatic const int DEAD_W = 9;\nvoid oldScene() {\n#endif\n#include \"theme.h\"\n#if 1\nstatic const int CLIENT_W = 824;\n#else\nstatic const int CLIENT_W = 1;\n#endif\nstatic void fillDot(int x) { x = CLIENT_W; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "snake.cpp"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "theme.h"), []byte("static const int THEME_W = 40;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "other.h"), []byte("static const int THEME_W = 1;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := codegraphAttachFileSurvey(dir, "snake.cpp", "### Symbols\n- `fillDot` (function) — :9\n")
+	if !strings.Contains(got, "#include \"theme.h\"") || !strings.Contains(got, "CLIENT_W = 824") || !strings.Contains(got, "In theme.h:\nstatic const int THEME_W = 40;") {
+		t.Fatalf("survey dropped live declarations: %s", got)
+	}
+	if strings.Contains(got, "DEAD_W") || strings.Contains(got, "other.h") || strings.Contains(got, "CLIENT_W = 1") || strings.Contains(got, "THEME_W = 1") || strings.Contains(got, "void fillDot") {
+		t.Fatalf("disabled branch leaked into the survey: %s", got)
+	}
+}
+
+func TestCodegraphFileSurveySkipsSpacedIfZero(t *testing.T) {
+	dir := t.TempDir()
+	src := "# if 0\n#include \"other.h\"\nstatic const int DEAD_W = 9;\nvoid oldScene() {\n# endif\n#include \"theme.h\"\n# if 1\nstatic const int CLIENT_W = 824;\n# else\nstatic const int CLIENT_W = 1;\n# endif\nstatic void fillDot(int x) { x = CLIENT_W; }\n"
+	if err := os.WriteFile(filepath.Join(dir, "snake.cpp"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "theme.h"), []byte("static const int THEME_W = 40;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "other.h"), []byte("static const int THEME_W = 1;\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := codegraphAttachFileSurvey(dir, "snake.cpp", "### Symbols\n- `fillDot` (function) — :9\n")
+	if !strings.Contains(got, "#include \"theme.h\"") || !strings.Contains(got, "CLIENT_W = 824") || !strings.Contains(got, "In theme.h:\nstatic const int THEME_W = 40;") {
+		t.Fatalf("survey dropped live declarations: %s", got)
+	}
+	if strings.Contains(got, "DEAD_W") || strings.Contains(got, "other.h") || strings.Contains(got, "CLIENT_W = 1") || strings.Contains(got, "THEME_W = 1") || strings.Contains(got, "void fillDot") {
+		t.Fatalf("spaced disabled branch leaked into the survey: %s", got)
+	}
+}
+
+func TestCodegraphSurveySkipsPrototypesKeepsFunctionPointer(t *testing.T) {
+	dir := t.TempDir()
+	var hdr strings.Builder
+	for i := 0; i < 30; i++ {
+		fmt.Fprintf(&hdr, "void alpha%d(int x);\n", i)
+	}
+	hdr.WriteString("static const int THEME_W = 40;\nstatic void (*g_hook)(int x);\n")
+	if err := os.WriteFile(filepath.Join(dir, "game.h"), []byte(hdr.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src := "#include \"game.h\"\nstatic const int CLIENT_W = 824;\nstatic void (*g_render)(int x);\nstatic void drawScene() {\n    g_render(CLIENT_W);\n    g_hook(THEME_W);\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "snake.cpp"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	survey := codegraphAttachFileSurvey(dir, "snake.cpp", "### Symbols\n- `drawScene` (function) — :4\n")
+	if !strings.Contains(survey, "CLIENT_W = 824") || !strings.Contains(survey, "(*g_render)") || !strings.Contains(survey, "In game.h:\nstatic const int THEME_W = 40;") || !strings.Contains(survey, "(*g_hook)") {
+		t.Fatalf("survey dropped a constant or function pointer: %s", survey)
+	}
+	if strings.Contains(survey, "alpha0") || strings.Contains(survey, "void drawScene") {
+		t.Fatalf("prototype or function body entered the survey: %s", survey)
+	}
+	body := "## drawScene (function)\n\n**Location:** snake.cpp:4\n\n```cpp\nstatic void drawScene() {\n    g_render(CLIENT_W);\n    g_hook(THEME_W);\n}\n```\n"
+	got := codegraphAttachReferencedDecls(dir, body)
+	if !strings.Contains(got, "(*g_render)") || !strings.Contains(got, "(*g_hook)") || !strings.Contains(got, "THEME_W = 40") || !strings.Contains(got, "CLIENT_W = 824") {
+		t.Fatalf("function pointer declaration was not attached: %s", got)
+	}
+	if strings.Contains(got, "alpha0") {
+		t.Fatalf("prototype was attached: %s", got)
+	}
+}
+
+func TestCodegraphDirectInitGlobalStaysInSurvey(t *testing.T) {
+	dir := t.TempDir()
+	src := "static const int CLIENT_W = 824;\nstatic Rect g_rect(0, 0, CLIENT_W, CLIENT_H);\nstatic std::string g_title(\"snake\");\nstatic HBRUSH g_brush(CreateSolidBrush(1));\nvoid setRender(void (*cb)(int));\nstatic void drawScene() {\n    paint(g_rect, g_title, g_brush);\n}\n"
+	if err := os.WriteFile(filepath.Join(dir, "snake.cpp"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	survey := codegraphAttachFileSurvey(dir, "snake.cpp", "### Symbols\n- `drawScene` (function) — :6\n")
+	if !strings.Contains(survey, "g_rect(0, 0, CLIENT_W, CLIENT_H)") || !strings.Contains(survey, "g_title(\"snake\")") || !strings.Contains(survey, "g_brush(CreateSolidBrush(1))") {
+		t.Fatalf("direct-init global missing: %s", survey)
+	}
+	if strings.Contains(survey, "setRender") || strings.Contains(survey, "void drawScene") {
+		t.Fatalf("prototype or function body entered the survey: %s", survey)
+	}
+	body := "## drawScene (function)\n\n**Location:** snake.cpp:6\n\n```cpp\nstatic void drawScene() {\n    paint(g_rect, g_title, g_brush);\n}\n```\n"
+	got := codegraphAttachReferencedDecls(dir, body)
+	if !strings.Contains(got, "g_rect(0, 0, CLIENT_W, CLIENT_H)") || !strings.Contains(got, "g_title(\"snake\")") || !strings.Contains(got, "g_brush(CreateSolidBrush(1))") {
+		t.Fatalf("direct-init global was not attached: %s", got)
+	}
+	if strings.Contains(got, "setRender") {
+		t.Fatalf("prototype was attached: %s", got)
+	}
+}
+
 func TestCodegraphDeclsSurviveOutputCap(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "snake.cpp"), []byte("static const int CLIENT_W = 824;\nstatic void drawScene() { use(CLIENT_W); }\n"), 0o644); err != nil {
@@ -479,7 +626,7 @@ func TestCodegraphDeclsSurviveOutputCap(t *testing.T) {
 		body.WriteString("// pad the indexed body so the declaration is not the first thing cut\n")
 	}
 	body.WriteString("```\n")
-	got, _ := codegraphCapWithDecls(dir, body.String())
+	got, _ := codegraphCapWithDecls(dir, "", body.String())
 	if !strings.Contains(got, "CLIENT_W = 824") || len(got) > 24000 {
 		t.Fatalf("long body dropped the declaration len=%d", len(got))
 	}
@@ -495,7 +642,7 @@ func TestCodegraphContinueHintStaysOnAfterAHit(t *testing.T) {
 		t.Fatalf("hit hint retracts the lookup: %q", hint)
 	}
 	names := codegraphContinueHint("codegraph", "### Symbols\n- `playTone` (function) — :792\n")
-	if strings.Contains(names, "current source") || !strings.Contains(names, "call code_navigation") || !strings.Contains(names, "node") || !strings.Contains(names, "Do not read_file") {
+	if strings.Contains(names, "current source") || strings.Contains(names, "file-scope") || !strings.Contains(names, "call code_navigation") || !strings.Contains(names, "node") || !strings.Contains(names, "Do not read_file") {
 		t.Fatalf("name hint = %q", names)
 	}
 	secret := codegraphContinueHint("codegraph", "### Keys\n- `token` (property) — :2\n> Values may be secrets, so codegraph indexes keys only. Read the file directly if you need a value.\n")

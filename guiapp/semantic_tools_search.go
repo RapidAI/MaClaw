@@ -233,7 +233,11 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 		return "[system rejected] tools_search_needs_invalid"
 	}
 	semanticToolsSearchMaybeExpandScope(cb, query)
-	entries := semanticToolsSearchCatalog(cb)
+	// Keep the unfiltered directory. A needs filter may hide mailbox_send,
+	// and the confirmation line has to survive that page: the tail is what
+	// a shortened result keeps.
+	catalog := semanticToolsSearchCatalog(cb)
+	entries := catalog
 	filterNote := ""
 	var requestedNames map[string]bool
 	if len(needs) > 0 {
@@ -314,12 +318,29 @@ func semanticToolsSearchRun(cb *sharedAgentLoopCallbacks, argsJSON string) strin
 	// The action line is last, and it names only the listed tool. Repeating
 	// the petition rule here sends the model after web_fetch instead of the
 	// save that is already authorized (production 2026-09-27).
-	if listed := semanticToolsSearchListedNeeds(cb, entries[pageStart:pageEnd], requestedNames); len(listed) > 0 {
+	page := entries[pageStart:pageEnd]
+	if listed := semanticToolsSearchListedNeeds(cb, page, requestedNames); len(listed) > 0 {
 		fmt.Fprintf(&out, "%s%s。不要再查询这些名字。\n", semanticToolsSearchListedDirectivePrefix, strings.Join(listed, ", "))
 	} else {
 		out.WriteString("只有标记「可请愿」的未列出名字才可以直接调用一次请愿（每轮每类限一次）。「此名请愿未通过」只拒绝这一个名字，不关掉同类其它可请愿名字。bash、read_file、write_file 是保底工具，已列出即可反复调用。用户已声明的能力（如 ssh）会扩进当前范围；查询文字本身不会挑选工具。")
 	}
+	// Scan the unfiltered directory. A needs filter can hide the confirmation
+	// row, and a shortened preview keeps this tail. Either way the waiting
+	// send stays named here.
+	if waiting := semanticToolsSearchConfirmationWaiting(cb, catalog); len(waiting) > 0 {
+		fmt.Fprintf(&out, "\n等待用户确认：%s。不要再次调用，也不要用其它工具完成该动作。\n", strings.Join(waiting, "、"))
+	}
 	return out.String()
+}
+
+func semanticToolsSearchConfirmationWaiting(cb *sharedAgentLoopCallbacks, page []semanticToolsSearchEntry) []string {
+	names := make([]string, 0, 1)
+	for _, entry := range page {
+		if semanticToolsSearchStatus(cb, entry.name) == "[等待用户确认：不要再次调用]" {
+			names = append(names, entry.name)
+		}
+	}
+	return names
 }
 
 // semanticToolsSearchMaybeExpandScope widens the live plan when the current
@@ -821,7 +842,13 @@ func semanticToolsSearchStatus(cb *sharedAgentLoopCallbacks, name string) string
 		if _, ok := surface.grants[name]; ok {
 			return "[已在当前工具面]"
 		}
-		if _, ok := surface.retiredGrants[name]; ok {
+		if grant, ok := surface.retiredGrants[name]; ok {
+			if awaiting, reason := semanticRetiredAwaitingReceipt(surface, grant.SelectionID); awaiting {
+				if reason == mailboxSendAwaitingConfirmation {
+					return "[等待用户确认：不要再次调用]"
+				}
+				return "[结果未定：不要再次调用]"
+			}
 			return "[本轮授权已用尽，不要调用]"
 		}
 	}

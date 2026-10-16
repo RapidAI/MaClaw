@@ -5,6 +5,7 @@ package guiapp
 import (
 	"fmt"
 	"log"
+	"math"
 	"runtime"
 	"strconv"
 	"strings"
@@ -17,7 +18,7 @@ import (
 	"github.com/energye/systray"
 )
 
-// Windows taskbar badge: render the given count into a small red disc and
+// Windows taskbar badge: render the given count into a small dark-green disc and
 // set it as the ITaskbarList3 overlay icon of the main window's taskbar
 // button — the same mechanism behind the QQ unread-count badge. The frontend
 // pushes the in-progress task count through App.SetTaskbarBadgeCount whenever
@@ -70,9 +71,10 @@ const (
 	// that arrived while the window was hidden still appears later.
 	taskbarBadgeOverlayTries = 8
 
-	// taskbarBadgeColorRef is the disc fill, COLORREF 0x00BBGGRR for
-	// RGB(19, 59, 67) — the app icon's dark green outline.
-	taskbarBadgeColorRef = 0x00433B13
+	// Disc fill sampled from the app icon outline, RGB(19, 59, 67).
+	taskbarBadgeFillR = 19
+	taskbarBadgeFillG = 59
+	taskbarBadgeFillB = 67
 )
 
 type taskbarBadgeGUID struct {
@@ -96,6 +98,7 @@ var (
 	taskbarBadgeUser32           = syscall.NewLazyDLL("user32.dll")
 	procBadgeSystemMetrics       = taskbarBadgeUser32.NewProc("GetSystemMetrics")
 	procBadgeIsWindow            = taskbarBadgeUser32.NewProc("IsWindow")
+	procBadgeIsWindowVisible     = taskbarBadgeUser32.NewProc("IsWindowVisible")
 	procBadgeGetAncestor         = taskbarBadgeUser32.NewProc("GetAncestor")
 	procBadgeGetDpiForWindow     = taskbarBadgeUser32.NewProc("GetDpiForWindow")
 	procBadgeSystemMetricsForDpi = taskbarBadgeUser32.NewProc("GetSystemMetricsForDpi")
@@ -111,9 +114,6 @@ var (
 	procBadgeCreateDIBSection   = taskbarBadgeGdi32.NewProc("CreateDIBSection")
 	procBadgeSelectObject       = taskbarBadgeGdi32.NewProc("SelectObject")
 	procBadgeDeleteObject       = taskbarBadgeGdi32.NewProc("DeleteObject")
-	procBadgeCreateSolidBrush   = taskbarBadgeGdi32.NewProc("CreateSolidBrush")
-	procBadgeCreatePen          = taskbarBadgeGdi32.NewProc("CreatePen")
-	procBadgeEllipse            = taskbarBadgeGdi32.NewProc("Ellipse")
 	procBadgeCreateFont         = taskbarBadgeGdi32.NewProc("CreateFontW")
 	procBadgeCreateBitmap       = taskbarBadgeGdi32.NewProc("CreateBitmap")
 )
@@ -133,6 +133,21 @@ var (
 	// TaskbarCreated replays this value.
 	taskbarBadgeLast    int
 	taskbarBadgeLastSet bool
+
+	// Hide removes the taskbar button after WindowHide returns. The replay
+	// waits until that button has gone and come back, so a paint that lands
+	// while the old button is still up is not treated as done.
+	taskbarBadgeShow      taskbarBadgeShowPhase
+	taskbarBadgeShowArmed time.Time
+)
+
+// taskbarBadgeShowPhase tracks a hide that still has to be painted again.
+type taskbarBadgeShowPhase int
+
+const (
+	taskbarBadgeShowIdle taskbarBadgeShowPhase = iota
+	taskbarBadgeShowWaitHide
+	taskbarBadgeShowWaitShow
 )
 
 func init() {
@@ -245,6 +260,9 @@ func taskbarBadgeWorker(requests <-chan int) {
 				wait = taskbarBadgeHWNDSlowWait
 			}
 			retry.Reset(wait)
+		case taskbarBadgeWindowHidden:
+			waiting = true
+			retry.Reset(taskbarBadgeHiddenRetryWait)
 		}
 	}
 
@@ -290,7 +308,62 @@ const (
 	// taskbarBadgeOverlayMiss means the window exists but SetOverlayIcon
 	// did not stick. The worker keeps trying.
 	taskbarBadgeOverlayMiss
+	// taskbarBadgeWindowHidden means the frame is up but has no taskbar
+	// button. Hide removes the button and the overlay with it; the count
+	// has not changed, so the worker keeps the last count until the window
+	// is shown again.
+	taskbarBadgeWindowHidden
 )
+
+// taskbarBadgeHiddenRetryWait is how often a hidden window is checked.
+// The taskbar button appears with the window, so the wait stays short
+// instead of falling through to the slow miss poll.
+const taskbarBadgeHiddenRetryWait = 250 * time.Millisecond
+
+// taskbarBadgeShowGrace bounds the wait for SW_HIDE. A show that lands
+// before the first check is still painted once this elapses.
+const taskbarBadgeShowGrace = 500 * time.Millisecond
+
+// taskbarBadgeShowGate decides whether this attempt may paint. A positive
+// count on a hidden window waits. After WindowHide, a still-visible window
+// also waits until the hide is observed, or until the grace elapses because
+// the window was shown again first.
+func taskbarBadgeShowGate(count int, visible bool, phase taskbarBadgeShowPhase, armed, now time.Time) (taskbarBadgeShowPhase, taskbarBadgeResult, bool) {
+	if count <= 0 {
+		return taskbarBadgeShowIdle, 0, false
+	}
+	switch phase {
+	case taskbarBadgeShowWaitHide:
+		if !visible {
+			return taskbarBadgeShowWaitShow, taskbarBadgeWindowHidden, true
+		}
+		if !armed.IsZero() && !now.Before(armed.Add(taskbarBadgeShowGrace)) {
+			return taskbarBadgeShowIdle, 0, false
+		}
+		return phase, taskbarBadgeWindowHidden, true
+	case taskbarBadgeShowWaitShow:
+		if !visible {
+			return phase, taskbarBadgeWindowHidden, true
+		}
+		return taskbarBadgeShowIdle, 0, false
+	default:
+		if !visible {
+			return phase, taskbarBadgeWindowHidden, true
+		}
+		return phase, 0, false
+	}
+}
+
+func taskbarBadgeHoldShow(count int, visible bool) (taskbarBadgeResult, bool) {
+	taskbarBadgeMu.Lock()
+	defer taskbarBadgeMu.Unlock()
+	next, result, hold := taskbarBadgeShowGate(count, visible, taskbarBadgeShow, taskbarBadgeShowArmed, time.Now())
+	taskbarBadgeShow = next
+	if next == taskbarBadgeShowIdle {
+		taskbarBadgeShowArmed = time.Time{}
+	}
+	return result, hold
+}
 
 // taskbarBadgeServeCount renders and applies one badge on the worker thread.
 // NoWindow means the frame is not up yet. OverlayMiss means the button
@@ -322,6 +395,14 @@ func taskbarBadgeServeCount(taskbar unsafe.Pointer, count int, liveIcon uintptr,
 	hwnd := cached
 	if hwnd == 0 && len(candidates) > 0 {
 		hwnd = candidates[0]
+	}
+	if result, hold := taskbarBadgeHoldShow(count, taskbarBadgeHWNDVisible(hwnd)); hold {
+		// Keep the frame we already found. The hidden retry would otherwise
+		// enumerate every top-level window several times a second.
+		if hwnd != 0 {
+			taskbarBadgeRememberHWND(hwnd)
+		}
+		return liveIcon, result
 	}
 	staged = taskbarBadgeRenderIconFor(count, hwnd)
 	if staged == 0 && count > 0 {
@@ -450,6 +531,25 @@ func taskbarBadgeVtableCall(itf unsafe.Pointer, index int, args ...uintptr) uint
 	return hr
 }
 
+func taskbarBadgeHWNDVisible(hwnd uintptr) bool {
+	if hwnd == 0 {
+		return false
+	}
+	vis, _, _ := procBadgeIsWindowVisible.Call(hwnd)
+	return vis != 0
+}
+
+// noteTaskbarBadgeWindowHidden starts a replay of the last count. Hiding the
+// main window destroys its taskbar button, and the overlay is not restored
+// when the button comes back unless it is painted again.
+func noteTaskbarBadgeWindowHidden() {
+	taskbarBadgeMu.Lock()
+	taskbarBadgeShow = taskbarBadgeShowWaitHide
+	taskbarBadgeShowArmed = time.Now()
+	taskbarBadgeMu.Unlock()
+	replayTaskbarBadge()
+}
+
 func taskbarBadgeCachedHWND() uintptr {
 	taskbarBadgeHWNDCacheMu.Lock()
 	hwnd := taskbarBadgeHWNDCache
@@ -562,8 +662,8 @@ type taskbarBadgeIconInfo struct {
 	hbmColor uintptr
 }
 
-// taskbarBadgeRenderIcon draws the count as a red disc with a bold white
-// number and returns an ARGB HICON, or 0 for "no badge" (count <= 0).
+// taskbarBadgeRenderIcon draws the count as a dark-green disc with a bold
+// white number and returns an ARGB HICON, or 0 for "no badge" (count <= 0).
 func taskbarBadgeRenderIcon(count int) uintptr {
 	return taskbarBadgeRenderIconFor(count, 0)
 }
@@ -608,15 +708,12 @@ func taskbarBadgeRenderIconFor(count int, hwnd uintptr) uintptr {
 	}
 	oldBmp, _, _ := procBadgeSelectObject.Call(hdc, hbm)
 
-	brush, _, _ := procBadgeCreateSolidBrush.Call(taskbarBadgeColorRef)
-	pen, _, _ := procBadgeCreatePen.Call(0 /*PS_SOLID*/, 1, taskbarBadgeColorRef)
-	oldBrush, _, _ := procBadgeSelectObject.Call(hdc, brush)
-	oldPen, _, _ := procBadgeSelectObject.Call(hdc, pen)
-	procBadgeEllipse.Call(hdc, 0, 0, uintptr(size), uintptr(size))
-	procBadgeSelectObject.Call(hdc, oldBrush)
-	procBadgeSelectObject.Call(hdc, oldPen)
-	procBadgeDeleteObject.Call(brush)
-	procBadgeDeleteObject.Call(pen)
+	// Fill the disc in the bitmap. GDI Ellipse antialiases against the cleared
+	// black pixels and leaves alpha at 0; a later "any non-black pixel is
+	// opaque" pass then turns that fringe into a black ring. A dark fill sits
+	// close enough to black for the ring to eat the edge. Coverage alpha keeps
+	// the outline color and a soft rim.
+	taskbarBadgeFillDisc(bits, size)
 
 	fontHeight := size * 11 / 16
 	switch {
@@ -652,12 +749,14 @@ func taskbarBadgeRenderIconFor(count int, hwnd uintptr) uintptr {
 	procBadgeSelectObject.Call(hdc, oldFont)
 	procBadgeDeleteObject.Call(font)
 
-	// GDI writes color but leaves the DIB's alpha byte at 0; mark every
-	// drawn pixel opaque while untouched corners stay fully transparent.
-	for i := 0; i < size*size; i++ {
-		pixel := (*uint32)(unsafe.Add(unsafe.Pointer(bits), uintptr(i)*4))
-		if *pixel&0xFFFFFF != 0 {
-			*pixel |= 0xFF000000
+	// DrawText blends the white digit into the disc and writes alpha 0 on
+	// the pixels it touches. Restore the disc's own coverage everywhere the
+	// color did not change, and make the glyph opaque. Forcing every
+	// non-black pixel opaque would turn the dark rim into a black ring.
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			pixel := (*uint32)(unsafe.Add(unsafe.Pointer(bits), uintptr((y*size+x)*4)))
+			*pixel = taskbarBadgeComposePixel(taskbarBadgeDiscPixel(x, y, size), *pixel)
 		}
 	}
 
@@ -670,7 +769,7 @@ func taskbarBadgeRenderIconFor(count int, hwnd uintptr) uintptr {
 	maskBits := make([]byte, stride*size)
 	taskbarBadgeFillMask(maskBits, size, func(x, y int) bool {
 		pixel := *(*uint32)(unsafe.Add(unsafe.Pointer(bits), uintptr((y*size+x)*4)))
-		return pixel>>24 != 0
+		return pixel>>24 >= 128
 	})
 	mask, _, _ := procBadgeCreateBitmap.Call(
 		uintptr(size), uintptr(size), 1, 1,
@@ -685,6 +784,61 @@ func taskbarBadgeRenderIconFor(count int, hwnd uintptr) uintptr {
 	icon, _, _ := procBadgeCreateIconIndirect.Call(uintptr(unsafe.Pointer(&iconInfo)))
 	procBadgeDeleteObject.Call(hbm)
 	return icon
+}
+
+// taskbarBadgeDiscPixel is one premultiplied BGRA pixel of the badge disc.
+// The circle is inscribed in the size×size box. Coverage ramps across one
+// pixel at the rim so the edge stays the icon green instead of a black fringe.
+func taskbarBadgeDiscPixel(x, y, size int) uint32 {
+	if size <= 0 || x < 0 || y < 0 || x >= size || y >= size {
+		return 0
+	}
+	cx := float64(size) / 2
+	dx := float64(x) + 0.5 - cx
+	dy := float64(y) + 0.5 - cx
+	coverage := cx - math.Hypot(dx, dy) + 0.5
+	if coverage <= 0 {
+		return 0
+	}
+	if coverage > 1 {
+		coverage = 1
+	}
+	alpha := uint32(coverage*255 + 0.5)
+	if alpha == 0 {
+		return 0
+	}
+	if alpha > 255 {
+		alpha = 255
+	}
+	red := taskbarBadgeFillR * alpha / 255
+	green := taskbarBadgeFillG * alpha / 255
+	blue := taskbarBadgeFillB * alpha / 255
+	return alpha<<24 | red<<16 | green<<8 | blue
+}
+
+// taskbarBadgeComposePixel keeps the disc pixel when text did not change
+// its color, including when GDI only cleared the alpha byte. A glyph pixel
+// is made opaque.
+func taskbarBadgeComposePixel(disc, drawn uint32) uint32 {
+	if drawn == disc || drawn&0xFFFFFF == 0 || drawn&0xFFFFFF == disc&0xFFFFFF {
+		return disc
+	}
+	return drawn | 0xFF000000
+}
+
+func taskbarBadgeFillDisc(bits *byte, size int) {
+	if bits == nil || size <= 0 {
+		return
+	}
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			px := taskbarBadgeDiscPixel(x, y, size)
+			if px == 0 {
+				continue
+			}
+			*(*uint32)(unsafe.Add(unsafe.Pointer(bits), uintptr((y*size+x)*4))) = px
+		}
+	}
 }
 
 // taskbarBadgeFillMask writes a bottom-up monochrome AND mask. Opaque pixels

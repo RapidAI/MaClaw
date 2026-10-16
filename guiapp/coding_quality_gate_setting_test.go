@@ -253,14 +253,14 @@ func TestDisabledQualityGateDoesNotFailTaskForReadSnapshot(t *testing.T) {
 	if !strings.Contains(msg, "read_file") {
 		t.Fatalf("read-before-edit must still reject the tool call, got %q", msg)
 	}
-	if got := classifyCodingGuardrailCategory("edit_file", path, "", msg); got != codingSubAgentGuardrailCategoryPolicy {
-		t.Fatalf("read-before-edit category = %q, want policy", got)
+	if got := classifyCodingGuardrailCategory("edit_file", path, "", msg); got != codingSubAgentGuardrailCategoryReadSnapshot {
+		t.Fatalf("read-before-edit category = %q, want read_snapshot", got)
 	}
 	unread := []CodingSubAgentGuardrailViolation{
-		{Tool: "edit_file", Path: path, Summary: msg},
-		{Tool: "edit_file", Path: path, Summary: msg},
-		{Tool: "edit_file", Path: path, Summary: "文件 audio.cpp 自上次 read_file 后已变化。请先重新调用 read_file 再修改。"},
-		{Tool: "write_file", Path: path, Summary: "目标文件已存在，请先调用 read_file；只有创建全新文件时才能直接 write_file。"},
+		{Tool: "edit_file", Category: codingSubAgentGuardrailCategoryReadSnapshot, Path: path, Summary: msg},
+		{Tool: "edit_file", Category: codingSubAgentGuardrailCategoryReadSnapshot, Path: path, Summary: msg},
+		{Tool: "edit_file", Category: codingSubAgentGuardrailCategoryReadSnapshot, Path: path, Summary: "文件 audio.cpp 自上次 read_file 后已变化。请先重新调用 read_file 再修改。"},
+		{Tool: "write_file", Category: codingSubAgentGuardrailCategoryReadSnapshot, Path: path, Summary: "目标文件已存在，请先调用 read_file；只有创建全新文件时才能直接 write_file。"},
 	}
 	if kept := guardrailViolationsForTaskOutcome(unread, false); len(kept) != 0 {
 		t.Fatalf("disabled quality gate must not fail the task for read snapshots, kept %#v", kept)
@@ -271,9 +271,14 @@ func TestDisabledQualityGateDoesNotFailTaskForReadSnapshot(t *testing.T) {
 	}
 	safety := []CodingSubAgentGuardrailViolation{
 		{Tool: "bash", Category: codingSubAgentGuardrailCategoryGit, Command: "git reset --hard", Summary: "blocked destructive git command"},
+		{Tool: "bash", Category: codingSubAgentGuardrailCategoryShellWrite, Command: "Set-Content audio.cpp x", Summary: "请先调用 read_file 后再用文件工具修改"},
 	}
-	status, errMsg = applySubAgentGuardrailOutcome(TaskExecPassed, "", guardrailViolationsForTaskOutcome(append(unread, safety...), false))
-	if status != TaskExecFailed || !strings.Contains(errMsg, "1 guardrail block") || !strings.Contains(errMsg, "blocked destructive git command") || strings.Contains(errMsg, "read_file") {
+	keptSafety := guardrailViolationsForTaskOutcome(append(unread, safety...), false)
+	if len(keptSafety) != len(safety) {
+		t.Fatalf("safety blocks mentioning read_file must stay, kept %#v", keptSafety)
+	}
+	status, errMsg = applySubAgentGuardrailOutcome(TaskExecPassed, "", keptSafety)
+	if status != TaskExecFailed || !strings.Contains(errMsg, "2 guardrail block") || !strings.Contains(errMsg, "blocked destructive git command") || strings.Contains(errMsg, "audio.cpp") {
 		t.Fatalf("safety guardrail must still fail the task without the read snapshot, status=%s err=%q", status, errMsg)
 	}
 	if kept := guardrailViolationsForTaskOutcome(unread, true); len(kept) != len(unread) {

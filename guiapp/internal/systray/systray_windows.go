@@ -1150,25 +1150,50 @@ func ShowBalloonNotification(title, message string, iconFlag uint32) error {
 	wt.muNID.Lock()
 	defer wt.muNID.Unlock()
 
-	// Set info text (balloon body).
-	infoUTF16, err := windows.UTF16FromString(message)
-	if err != nil {
+	// The fixed fields must stay NUL-terminated. A string that fills the
+	// buffer would otherwise run into the next field.
+	if err := copyNULTerminatedUTF16(wt.nid.Info[:], message); err != nil {
 		return err
 	}
-	copy(wt.nid.Info[:], infoUTF16)
-
-	// Set info title (balloon title).
-	titleUTF16, err := windows.UTF16FromString(title)
-	if err != nil {
+	if err := copyNULTerminatedUTF16(wt.nid.InfoTitle[:], title); err != nil {
 		return err
 	}
-	copy(wt.nid.InfoTitle[:], titleUTF16)
 
 	wt.nid.InfoFlags = iconFlag
 	wt.nid.Flags |= NIF_INFO
 	wt.nid.Size = uint32(unsafe.Sizeof(*wt.nid))
 
 	return wt.nid.modify()
+}
+
+// copyNULTerminatedUTF16 writes s into dst, including a trailing NUL.
+// A value that does not fit is cut so the last slot stays NUL.
+func copyNULTerminatedUTF16(dst []uint16, s string) error {
+	for i := range dst {
+		dst[i] = 0
+	}
+	if len(dst) == 0 {
+		return nil
+	}
+	encoded, err := windows.UTF16FromString(s)
+	if err != nil {
+		return err
+	}
+	if len(encoded) == 0 {
+		return nil
+	}
+	if len(encoded) > len(dst) {
+		encoded = encoded[:len(dst)]
+		encoded[len(encoded)-1] = 0
+		// Drop a high surrogate left at the cut, so the title does not end on half an emoji.
+		if len(encoded) >= 2 {
+			if hi := encoded[len(encoded)-2]; hi >= 0xD800 && hi <= 0xDBFF {
+				encoded[len(encoded)-2] = 0
+			}
+		}
+	}
+	copy(dst, encoded)
+	return nil
 }
 
 // flashWindowInfo is the FLASHWINFO structure for FlashWindowEx.

@@ -3822,6 +3822,10 @@ func (a *App) MaximiseAndSaveGeometry() bool {
 
 func (a *App) WindowHide() {
 	runtime.WindowHide(a.ctx)
+	// The taskbar button goes away with the window. The in-progress count
+	// usually does not change while the window is hidden, so the overlay
+	// has to be painted again once the button exists.
+	noteTaskbarBadgeWindowHidden()
 	if UpdateTrayVisibility != nil {
 		UpdateTrayVisibility(false)
 	}

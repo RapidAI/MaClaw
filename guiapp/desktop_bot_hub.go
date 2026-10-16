@@ -1082,6 +1082,7 @@ func (a *App) finishDesktopBotTask(requestID, sessionKey, botID, text, phase str
 	// returns, so a pull already in flight skips it; noting it shown covers
 	// the pull that starts after this returns and before the ack lands. A
 	// transport failure is not acked.
+	resp.trayTaskName = trayTaskLabelFromCommand(text)
 	a.emitAIAssistantResponse(requestID, resp)
 	if err == nil && strings.TrimSpace(run.RunID) != "" {
 		noteDesktopRunShown(botID, run.RunID)

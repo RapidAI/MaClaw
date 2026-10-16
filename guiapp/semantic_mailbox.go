@@ -100,9 +100,12 @@ func (c *sharedAgentLoopCallbacks) executeTrustedMailboxSend(ctx context.Context
 	switch {
 	case strings.HasPrefix(text, "__ASK_USER__"):
 		// The draft is frozen. SMTP waits for Approve on the confirmation.
-		// The selection is not complete, and the grant leaves the model list
-		// so a second call cannot freeze another message.
-		return tool.SelectionExecutionResult{Result: text, Succeeded: false, ReasonCode: mailboxSendAwaitingConfirmation}
+		// This is a prepared external effect, not a failed send: recording it
+		// as a failure makes a later call to the same stable name report that
+		// the message did not go out. The selection stays incomplete, and the
+		// grant leaves the model list so a second call cannot freeze another
+		// message.
+		return tool.SelectionExecutionResult{Result: text, Succeeded: false, AwaitingReceipt: true, ReasonCode: mailboxSendAwaitingConfirmation}
 	case text == mailbox.MsgUncertain || strings.HasPrefix(strings.TrimSpace(text), "[system unknown]"):
 		return mailboxTypedFailure(text, "mailbox_send_uncertain", true)
 	default:
@@ -205,4 +208,28 @@ func mailboxSendIntakeReason(args map[string]interface{}) string {
 
 func mailboxConfigureIntakeReason(args map[string]interface{}) string {
 	return mailbox.ConfigureShapeReason(args)
+}
+
+// semanticRetiredAwaitingReceipt reports a spent selection whose effect was
+// prepared and has not been observed. A frozen mailbox draft uses this state;
+// a failed attempt does not.
+func semanticRetiredAwaitingReceipt(surface *semanticCallSurface, selectionID string) (bool, string) {
+	if surface == nil || surface.executor == nil {
+		return false, ""
+	}
+	record, err := surface.executor.Execution(surface.scope, selectionID)
+	if err != nil {
+		return false, ""
+	}
+	reason := strings.TrimSpace(record.ReasonCode)
+	switch record.State {
+	case tool.PlanExecutionAwaitingReceipt:
+		return true, reason
+	case tool.PlanExecutionFailed:
+		// Older drafts were stored as failures with this reason.
+		if reason == mailboxSendAwaitingConfirmation {
+			return true, reason
+		}
+	}
+	return false, ""
 }

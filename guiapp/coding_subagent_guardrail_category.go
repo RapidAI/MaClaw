@@ -5,13 +5,14 @@ import "strings"
 type CodingSubAgentGuardrailCategory string
 
 const (
-	codingSubAgentGuardrailCategoryPolicy     CodingSubAgentGuardrailCategory = "policy"
-	codingSubAgentGuardrailCategoryGit        CodingSubAgentGuardrailCategory = "git"
-	codingSubAgentGuardrailCategoryDelete     CodingSubAgentGuardrailCategory = "delete"
-	codingSubAgentGuardrailCategoryShellWrite CodingSubAgentGuardrailCategory = "shell_write"
-	codingSubAgentGuardrailCategoryCommand    CodingSubAgentGuardrailCategory = "command"
-	codingSubAgentGuardrailCategoryHost       CodingSubAgentGuardrailCategory = "host"
-	codingSubAgentGuardrailCategoryScope      CodingSubAgentGuardrailCategory = "scope"
+	codingSubAgentGuardrailCategoryPolicy       CodingSubAgentGuardrailCategory = "policy"
+	codingSubAgentGuardrailCategoryReadSnapshot CodingSubAgentGuardrailCategory = "read_snapshot"
+	codingSubAgentGuardrailCategoryGit          CodingSubAgentGuardrailCategory = "git"
+	codingSubAgentGuardrailCategoryDelete       CodingSubAgentGuardrailCategory = "delete"
+	codingSubAgentGuardrailCategoryShellWrite   CodingSubAgentGuardrailCategory = "shell_write"
+	codingSubAgentGuardrailCategoryCommand      CodingSubAgentGuardrailCategory = "command"
+	codingSubAgentGuardrailCategoryHost         CodingSubAgentGuardrailCategory = "host"
+	codingSubAgentGuardrailCategoryScope        CodingSubAgentGuardrailCategory = "scope"
 )
 
 func (c CodingSubAgentGuardrailCategory) String() string {

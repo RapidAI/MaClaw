@@ -2457,13 +2457,25 @@ func (c *sharedAgentLoopCallbacks) ToolDenialMessage(name string) string {
 	if c.semanticSurface != nil {
 		resolved := c.semanticSurface.resolveFunctionName(name)
 		if retired, retiredFromSurface := c.semanticSurface.retiredGrants[resolved]; retiredFromSurface {
+			if awaiting, reason := semanticRetiredAwaitingReceipt(c.semanticSurface, retired.SelectionID); awaiting {
+				if reason == mailboxSendAwaitingConfirmation {
+					return fmt.Sprintf(
+						"Error: tool %q froze a draft and is waiting for the user to confirm before any mail is sent. Do not call %q again, do not report the send as failed, and do not use another tool to send it.",
+						resolved, resolved,
+					)
+				}
+				return fmt.Sprintf(
+					"Error: tool %q is waiting for its prepared action to settle. Do not call %q again and do not report that action as failed.",
+					resolved, resolved,
+				)
+			}
 			if !c.semanticSurface.completed[retired.SelectionID] {
-				// A grant retired without a trusted completion FAILED (or its
-				// outcome is still receipt-bound). Telling the model the tool
-				// "already ran successfully" orders it to treat a failed call
-				// as valid evidence — production 2026-08-28 PPT turn burned
-				// three download_file attempts on HTTP 404/403 and the denial
-				// then reported a standing success that never happened.
+				// A grant retired without a trusted completion failed. Receipt
+				// waits are handled above. Telling the model the tool "already
+				// ran successfully" orders it to treat a failed call as valid
+				// evidence — production 2026-08-28 PPT turn burned three
+				// download_file attempts on HTTP 404/403 and the denial then
+				// reported a standing success that never happened.
 				return fmt.Sprintf(
 					"Error: tool %q was already used earlier in this turn and did not complete successfully; its budget is spent or it is not currently listed. Do not report that action as succeeded, and do not retry %q unless the name is listed again later. Continue from what you already have and state plainly what remains unfinished.",
 					resolved, resolved,
@@ -2725,7 +2737,14 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 	if _, ok := surface.grants[name]; ok {
 		return false, ""
 	}
-	if _, ok := surface.retiredGrants[name]; ok {
+	if retired, ok := surface.retiredGrants[name]; ok {
+		// The name has left this request. A frozen mailbox draft is not a
+		// missing tool and not a spent budget: the generic absence text tells
+		// the model to continue with whatever else is listed, which is how a
+		// waiting send gets carried out by another tool.
+		if awaiting, reason := semanticRetiredAwaitingReceipt(surface, retired.SelectionID); awaiting && reason == mailboxSendAwaitingConfirmation {
+			return false, c.ToolDenialMessage(name)
+		}
 		return false, ""
 	}
 	if legacySQLDatabaseToolName(name) && unsupportedExternalDatabaseUserText(c.userText) {
@@ -7802,9 +7821,14 @@ func (c *sharedAgentLoopCallbacks) RequiredEffectUnsettled() bool {
 		case tool.PlanExecutionSucceeded:
 			continue
 		case tool.PlanExecutionFailed:
+			// A confirmation used to be stored as a failure with this reason.
+			// New drafts are awaiting_receipt. A real send failure is settled.
 			if record.ReasonCode == mailboxSendAwaitingConfirmation {
 				return true
 			}
+			continue
+		case tool.PlanExecutionAwaitingReceipt:
+			return true
 		default:
 			return true
 		}

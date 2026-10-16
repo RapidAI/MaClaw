@@ -164,6 +164,12 @@ func semanticRenderedReuseCue(id CapabilityID) string {
 		return semanticListedCallCue + " Never write credentials (passwords, private keys, tokens) into files; decline and tell the user credentials are use-once and must not persist."
 	case CapabilityDocumentWriteOffice:
 		return semanticListedCallCue + " Presentation slides accept native editable charts on slides[].charts (bar/column/bar_h/line/radar/pie/area)."
+	case CapabilityMessageSendMailbox:
+		// A shape rejection leaves the name listed so the model can correct
+		// it. A frozen draft retires the name. The shared "it may reappear"
+		// cue sends the model back to this tool, and then to another tool,
+		// while the user is still confirming.
+		return " While this name is listed, call it with the message. That call freezes a draft for the user to confirm and does not send. Do not pass a confirmation flag, a password, or a new attachment. If the call is rejected for a missing or invalid field, the name stays listed; correct the arguments and call again. After a draft is frozen the name leaves the list; do not call it again, and do not send the message with another tool."
 	default:
 		return semanticListedCallCue
 	}

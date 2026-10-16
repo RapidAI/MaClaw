@@ -7,3 +7,5 @@ package guiapp
 func notifyTaskbarBadgeCount(count int) {
 	_ = count
 }
+
+func noteTaskbarBadgeWindowHidden() {}

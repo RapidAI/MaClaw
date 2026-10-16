@@ -6657,6 +6657,13 @@ func aggregateGuardrailViolations(violations []CodingSubAgentGuardrailViolation)
 	return entries
 }
 
+func guardrailBlockCount(violations []CodingSubAgentGuardrailViolation) int {
+	if len(violations) == 0 {
+		return 0
+	}
+	return len(aggregateGuardrailViolations(violations))
+}
+
 func selectSubAgentGuardrailAuditEntries(values []CodingSubAgentGuardrailViolation, maxItems int) []CodingSubAgentGuardrailViolation {
 	if maxItems <= 0 || len(values) <= maxItems {
 		return values
@@ -6686,7 +6693,7 @@ func guardrailViolationSummaryPriority(v CodingSubAgentGuardrailViolation) int {
 		return 3
 	case codingSubAgentGuardrailCategoryHost:
 		return 2
-	case codingSubAgentGuardrailCategoryPolicy:
+	case codingSubAgentGuardrailCategoryPolicy, codingSubAgentGuardrailCategoryReadSnapshot:
 		return 1
 	default:
 		return 0
@@ -6787,11 +6794,9 @@ func classifyCodingGuardrailCategory(toolName, path, command, result string) Cod
 	case codingGuardrailResultMarkerProjectScope:
 		return codingSubAgentGuardrailCategoryScope
 	}
-	// A path on a read-snapshot rejection is the file to re-read, not evidence
-	// that the call left the project. Leaving it as scope made the quality
-	// gate's "read before edit" nudge fail the task like an out-of-tree write.
+	// The path here is the file to re-read, not an out-of-project write.
 	if codingGuardrailResultIsReadSnapshot(result) {
-		return codingSubAgentGuardrailCategoryPolicy
+		return codingSubAgentGuardrailCategoryReadSnapshot
 	}
 	if path != "" {
 		return codingSubAgentGuardrailCategoryScope
@@ -6804,29 +6809,25 @@ func classifyCodingGuardrailCategory(toolName, path, command, result string) Cod
 func codingGuardrailResultIsReadSnapshot(result string) bool {
 	switch {
 	case strings.Contains(result, "请先调用 read_file"),
-		strings.Contains(result, "不允许未读文件"),
 		strings.Contains(result, "缺少 read_file 快照"),
-		strings.Contains(result, "自上次 read_file"),
-		strings.Contains(result, "重新调用 read_file"),
-		strings.Contains(result, "只有创建全新文件"):
+		strings.Contains(result, "自上次 read_file"):
 		return true
 	default:
 		return false
 	}
 }
 
-// guardrailViolationsForTaskOutcome decides which blocked calls fail the task.
-// The quality gate is off by default. While it is off, a read-before-edit
-// rejection stays a tool error the model can recover from inside the turn, and
-// does not by itself fail the task. Destructive git, recursive delete, shell
-// file writes, project-scope escapes, and host failures still do.
+// guardrailViolationsForTaskOutcome drops read-snapshot rejections when the
+// quality gate is off. The tool call stays rejected so the model can read and
+// retry. Destructive git, recursive delete, shell writes, scope, and host
+// blocks still fail the task.
 func guardrailViolationsForTaskOutcome(violations []CodingSubAgentGuardrailViolation, qualityGateOn bool) []CodingSubAgentGuardrailViolation {
 	if qualityGateOn || len(violations) == 0 {
 		return violations
 	}
 	out := make([]CodingSubAgentGuardrailViolation, 0, len(violations))
 	for _, violation := range violations {
-		if codingGuardrailResultIsReadSnapshot(violation.Summary) {
+		if violation.Category == codingSubAgentGuardrailCategoryReadSnapshot {
 			continue
 		}
 		out = append(out, violation)
@@ -7204,8 +7205,8 @@ func summarizeSubAgentQuality(explorationStatus, verificationStatus codingSubAge
 	var warnings []string
 	postEditCommandsWithBlocked := filterPostEditSubAgentCommands(commands, lastEditSeq)
 	unresolvedGuardrails := unresolvedSubAgentGuardrailViolations(guardrails, postEditCommandsWithBlocked)
-	if len(unresolvedGuardrails) > 0 {
-		failed = append(failed, fmt.Sprintf("%d guardrail block(s)", len(unresolvedGuardrails)))
+	if blockCount := guardrailBlockCount(unresolvedGuardrails); blockCount > 0 {
+		failed = append(failed, fmt.Sprintf("%d guardrail block(s)", blockCount))
 	}
 	postEditCommands := filterGuardrailBlockedSubAgentCommands(postEditCommandsWithBlocked, guardrails)
 	failedCommands := dropInspectOnlyInventoryFailures(unresolvedFailedSubAgentCommands(postEditCommands))
@@ -14417,13 +14418,12 @@ func applySubAgentGuardrailOutcome(status TaskExecStatus, errMsg string, violati
 	if len(violations) == 0 {
 		return status, errMsg
 	}
-	summary := fmt.Sprintf("%d guardrail block(s)", len(violations))
-	if entries := aggregateGuardrailViolations(violations); len(entries) > 0 {
-		v := entries[0].Violation
-		detail := firstNonEmptySubAgentString(firstLine(v.Summary), strings.TrimSpace(v.Command), strings.TrimSpace(v.Path), strings.TrimSpace(v.Tool))
-		if detail != "" {
-			summary = fmt.Sprintf("%s: %s", summary, detail)
-		}
+	entries := aggregateGuardrailViolations(violations)
+	summary := fmt.Sprintf("%d guardrail block(s)", len(entries))
+	v := entries[0].Violation
+	detail := firstNonEmptySubAgentString(firstLine(v.Summary), strings.TrimSpace(v.Command), strings.TrimSpace(v.Path), strings.TrimSpace(v.Tool))
+	if detail != "" {
+		summary = fmt.Sprintf("%s: %s", summary, detail)
 	}
 	summary = compactSubAgentErrorSummary(summary)
 	if status != TaskExecPassed {
@@ -16012,7 +16012,7 @@ func (c *codingSubAgentCallbacks) emitGuardrailSummaryEvent(violations []CodingS
 	event.Event = codingAgentEventKindGuardrailSummary.String()
 	event.Outcome = "blocked"
 	event.Summary = truncateRunesForSubAgent(summary, 240)
-	event.Count = len(violations)
+	event.Count = len(entries)
 	emitCodingAgentEvent(c.subagent.onProgress, event)
 }
 
@@ -16160,7 +16160,7 @@ func appendCodingSubAgentPreflightChecklist(b *strings.Builder, qualityGateEnabl
 		return
 	}
 	b.WriteString("**Before editing**:\n")
-	b.WriteString("1. Use code_navigation (codegraph explore / codegraph node) for structure, symbols, and call edges; fall back to Glob/ripgrep/read_file when it is unavailable. A missing .codegraph/ directory is not a reason to skip the tool; on a modify turn it installs codegraph and runs codegraph init. A text search that already returned lines is evidence; use those lines and do not repeat that search.\n")
+	b.WriteString("1. Use code_navigation (codegraph explore / codegraph node) for structure, symbols, and call edges; fall back to Glob/ripgrep/read_file when it is unavailable. Survey one file with file_symbols instead of read_file of the whole file. A missing .codegraph/ directory is not a reason to skip the tool; on a modify turn it installs codegraph and runs codegraph init. A text search that already returned lines is evidence; use those lines and do not repeat that search.\n")
 	b.WriteString("2. State likely files and risk/impact.\n")
 	b.WriteString("3. Choose the minimal edit approach.\n")
 	b.WriteString("4. If this is a retry, use retry context and avoid repeating the failed approach.\n")
@@ -17208,7 +17208,7 @@ func buildFullCodingEnvironmentPromptPreamble() string {
 - 不得猜测或调用 Skill/MCP 的旧通用入口；只有本轮实际列出的受限别名才可调用。若未出现扩展函数，继续使用静态工具或说明需要重新规划。
 - 工作区根目录已绑定；下方「工作区概览」是宿主 os.ReadDir 的权威顶层清单，请先消化再深入探索。
 - 禁止仅用 python/python3/os.listdir/ls/dir 复核顶层是否为空；失败的列目录命令不能当成「目录为空」。深入文件用 list_directory / read_file / glob。
-- 默认自主探索与实现：不要等待用户再发「去了解项目」。结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node）。顶层没有 .codegraph/ 时，可修改的任务里该工具会安装 codegraph 并 codegraph init。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。
+- 默认自主探索与实现：不要等待用户再发「去了解项目」。结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node）。摸清一个文件的分段、include 和文件级声明时用 file_symbols，不要为此 read_file 整份文件。顶层没有 .codegraph/ 时，可修改的任务里该工具会安装 codegraph 并 codegraph init。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。
 - 本会话支持多轮续写：用户后续消息仍在同一编程工作台中执行，可继续改码、验证、补测。
 - 复杂任务：系统可能已给出多步「自动规划」；若有规划，严格按步骤推进并在每步验证。若无规划，先短计划（explore → implement → verify）再动手。
 - 多步任务自行拆解、实现、验证；工具失败时换策略，不要空转重试。
@@ -17230,7 +17230,7 @@ func buildNestedFullCodingEnvironmentPromptPreamble() string {
 	return `## 嵌套实现子代理（Nested Worker）
 你是全功能编程工作台派发的实现子代理（干净上下文）：
 - 可使用文件读写、搜索、shell、git_diff、ssh、web_search/web_fetch、current_datetime，以及本轮工具列表中实际出现的受管扩展函数；不得猜测旧 Skill/MCP 入口。
-- 结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node）。没有 .codegraph/ 时，可修改的任务里该工具会安装并 codegraph init。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。
+- 结构、符号和调用关系优先 code_navigation（codegraph explore / codegraph node）。摸清一个文件的分段、include 和文件级声明时用 file_symbols，不要为此 read_file 整份文件。没有 .codegraph/ 时，可修改的任务里该工具会安装并 codegraph init。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。
 - 禁止再派生子代理；请在本上下文中直接完成指派任务并验证。
 - 最小必要改动；工具失败时换策略；完成后用工程师短文说明改了什么以及实际跑过的验证，不要写审计标题。
 
@@ -17398,7 +17398,7 @@ func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, design
 	b.WriteString(codingAgentTodoControlPlanePromptSection)
 	b.WriteString(`
 ## 工作流
-- 结构、符号和调用关系优先 code_navigation（运行 codegraph explore / codegraph node）。顶层没有 .codegraph/ 时，可修改的任务里该工具会尝试 npm install -g @colbymchenry/codegraph，没有索引时再 codegraph init。code_navigation 不可用或检索失败时，用 Glob、ripgrep、list_directory 完成同样的定位再读文件。code_navigation 已经给出的符号正文就是当前源码，不要为同一个符号再 read_file 或 ripgrep。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。所有读取、搜索、列目录都必须限定在项目路径内；不要读取项目外文件。
+- 结构、符号和调用关系优先 code_navigation（运行 codegraph explore / codegraph node）。摸清一个文件的分段、include 和文件级声明时用 file_symbols，不要为此 read_file 整份文件。顶层没有 .codegraph/ 时，可修改的任务里该工具会尝试 npm install -g @colbymchenry/codegraph，没有索引时再 codegraph init。code_navigation 不可用或检索失败时，用 Glob、ripgrep、list_directory 完成同样的定位再读文件。code_navigation 已经给出的符号正文就是当前源码，不要为同一个符号再 read_file 或 ripgrep。已经返回行的正文搜索也算数，直接使用这些行，不要把同一次查找再做一遍。所有读取、搜索、列目录都必须限定在项目路径内；不要读取项目外文件。
 - .codegraph/ 是 code_navigation 的本地索引，不是任务改动。不要删除它，不要提交它，也不要因为它出现在 git status 里就回滚。
 - 修复 bug 时，优先复现或确认错误，再沿调用链追踪输入、状态变化和影响范围。不要基于猜测修改。
 - 修改已有文件时优先使用 edit_file 或 edit_lines；禁止用 write_file 重写已有文件来做小修改。edit_file 失败时先 read_file 确认当前内容，再改用 edit_lines。
