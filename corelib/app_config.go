@@ -110,8 +110,11 @@ type AppConfig struct {
 	// coding work and an optional Computer Use caption model. A nil value means
 	// this is a legacy single-profile config and must be resolved lazily without
 	// changing it during reads.
-	MaclawLLMProfiles *MaclawLLMProfiles   `json:"maclaw_llm_profiles,omitempty"`
-	LLMPromptCache    LLMPromptCacheConfig `json:"llm_prompt_cache,omitempty"`
+	MaclawLLMProfiles *MaclawLLMProfiles `json:"maclaw_llm_profiles,omitempty"`
+	// HubRoleModels is the last Hub service-status role_models snapshot.
+	// Role rows that follow Hub read it. A local pin does not change it.
+	HubRoleModels  MaclawLLMHubRoleModels `json:"hub_role_models,omitempty"`
+	LLMPromptCache LLMPromptCacheConfig   `json:"llm_prompt_cache,omitempty"`
 	// AnswerCache is retained only as the one-time migration source for legacy
 	// single-bot Lansenger installations. New reply-cache policies live on each
 	// LansengerBotProfile; runtime code must not use this application-wide value
@@ -793,18 +796,42 @@ type MaclawLLMProfile struct {
 	InheritAssistant bool   `json:"inherit_assistant,omitempty"`
 }
 
+// MaclawLLMRoleAssignment is one desktop loop's model.
+// InheritHub nil or true follows the Hub role snapshot. False is a local pin
+// and requires Model. A *bool is required because false must survive JSON.
+type MaclawLLMRoleAssignment struct {
+	Model      string `json:"model,omitempty"`
+	InheritHub *bool  `json:"inherit_hub,omitempty"`
+}
+
+// InheritsHub reports the default: missing or true follows Hub.
+func (a MaclawLLMRoleAssignment) InheritsHub() bool {
+	return a.InheritHub == nil || *a.InheritHub
+}
+
+// MaclawLLMHubRoleModels is the desktop copy of Hub ServiceStatus.role_models.
+type MaclawLLMHubRoleModels struct {
+	Foreground  string `json:"foreground,omitempty"`
+	Background  string `json:"background,omitempty"`
+	ComputerUse string `json:"computer_use,omitempty"`
+}
+
 // MaclawLLMProfiles is the persisted model assignment.
 // Coding defaults to following Assistant when this struct is first created.
 // Caption is optional: empty provider/model means Computer Use stays on
 // heuristic/OCR/a11y labels when the chat model cannot see images.
 // Horizon is optional: empty fields keep every long-horizon role on the
 // coding profile (docs/design/longhorizon-harness-plan-zh.md P5).
+// Foreground, Background, and ComputerUse follow Hub until a local pin.
 type MaclawLLMProfiles struct {
-	Version   int                      `json:"version"`
-	Assistant MaclawLLMProfile         `json:"assistant"`
-	Coding    MaclawLLMProfile         `json:"coding"`
-	Caption   MaclawLLMProfile         `json:"caption,omitempty"`
-	Horizon   MaclawLLMHorizonProfiles `json:"horizon,omitempty"`
+	Version     int                      `json:"version"`
+	Assistant   MaclawLLMProfile         `json:"assistant"`
+	Coding      MaclawLLMProfile         `json:"coding"`
+	Caption     MaclawLLMProfile         `json:"caption,omitempty"`
+	Horizon     MaclawLLMHorizonProfiles `json:"horizon,omitempty"`
+	Foreground  MaclawLLMRoleAssignment  `json:"foreground,omitempty"`
+	Background  MaclawLLMRoleAssignment  `json:"background,omitempty"`
+	ComputerUse MaclawLLMRoleAssignment  `json:"computer_use,omitempty"`
 }
 
 // MaclawLLMHorizonProfiles holds optional per-role model overrides for the
