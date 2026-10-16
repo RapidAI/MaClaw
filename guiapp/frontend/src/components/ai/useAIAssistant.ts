@@ -15,6 +15,7 @@ import { reasoningHasCodingStatusMilestone, stripCodingWorkbenchStatusReasoning 
 import { clearAssistantRoundProse, isRejectedRoundContentToken, rejectStreamedAssistantContent, rejectedRoundContentToken } from "./assistantRoundProse";
 import { appendToolCallMarker, contentHasAssistantToolCall, isProgressOnlyToolAction, isTranscriptToolCallText, parseAssistantToolStatus, stripAssistantToolCallMarkers, type AssistantToolCall } from "./assistantToolCall";
 import { cleanReasoningTrailForBody, parkReplacedStreamInReasoning } from "./assistantReasoningBody";
+import { answerDesktopChatTask, appendChatTaskResultMessage, cancelDesktopChatTask, chatTaskCardMessage, chatTaskEventName, chatTasksToRestore, dispatchDesktopChatTask, isChatTaskResultResponse, listDesktopChatTasks, parseChatTaskEvent, steerDesktopChatTask, upsertChatTaskCard, upsertChatTaskList, type ChatTaskView } from "./chatTaskModel";
 
 export interface CancelAIAssistantResult {
     canceledText: string;
@@ -500,7 +501,9 @@ export interface ChatMessage {
     // Legacy receipt kinds remain parseable so stale local history does not
     // break after upgrade. guideInjection marks a user bubble that steered the
     // running turn rather than starting an independent turn.
-    kind?: 'news' | 'trace' | 'taskContext' | 'guideReceipt' | 'guideRejection' | 'guideInjection';
+    kind?: 'news' | 'trace' | 'taskContext' | 'guideReceipt' | 'guideRejection' | 'guideInjection' | 'chatTask';
+    /** Background chat task card. The foreground turn stays free while this runs. */
+    chatTask?: import("./chatTaskModel").ChatTaskView;
     content: string;
     /** Local attachment metadata used only for compact user-bubble rendering. */
     attachments?: ChatAttachment[];
@@ -3547,6 +3550,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const showConfirm = options?.showConfirm || nativeShowConfirm;
     const activeSessionKeyForEvents = useCallback(() => options?.activeSessionKey || getActiveSessionKey(), [options?.activeSessionKey]);
     const [messages, setMessages] = useState<ChatMessage[]>(loadPersistedMessages);
+    const [chatTasks, setChatTasks] = useState<ChatTaskView[]>([]);
     const messagesRef = useRef(messages);
     messagesRef.current = messages;
     const [promptHistory, setPromptHistory] = useState<PromptHistoryEntry[]>(loadPersistedPromptHistory);
@@ -4996,6 +5000,10 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             // the round to never finalize if the user switches tabs mid-stream,
             // permanently locking the input box.
             const normalized = normalizeSendResponse(resp, preferences.showTraceEntry);
+            if (isChatTaskResultResponse(normalized)) {
+                setMessages(prev => appendChatTaskResultMessage(prev, normalized) as ChatMessage[]);
+                return;
+            }
             const responseRequestId = resolveSendRequestID(normalized) || '';
             if (responseRequestId.startsWith('goal-cont-')) {
                 recoverGoalContinuationRound({
@@ -6604,6 +6612,63 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     // <AIAssistantPanel state={...panelState} actions={...panelActions} />,
     // eliminating the manual field-by-field mapping that caused #agentView-missing.
     // When useAIAssistant adds a new field, it flows through automatically.
+    const dispatchChatTask = useCallback(async (text: string, options?: { session_key?: string; project_path?: string }) => {
+        const prompt = String(text || "").trim();
+        if (!prompt) return false;
+        const sessionKey = String(options?.session_key || activeSessionKeyForEvents() || "desktop-user");
+        try {
+            const task = await dispatchDesktopChatTask({ text: prompt, sessionKey, projectPath: options?.project_path, lang: uiLang });
+            if (!task) {
+                setMessages(prev => [...prev, createErrorMessage("Background tasks are unavailable in this build.", sessionKey)]);
+                return false;
+            }
+            const now = Date.now();
+            setChatTasks(prev => upsertChatTaskList(prev, task));
+            setMessages(prev => [...prev, {
+                id: `chat-task-user-${task.id}`,
+                role: "user",
+                content: prompt,
+                sessionKey: task.sessionKey || sessionKey,
+                timestamp: now,
+            }, chatTaskCardMessage(task, now + 1) as ChatMessage]);
+            return true;
+        } catch (err: any) {
+            setMessages(prev => [...prev, createErrorMessage(err?.message || String(err), sessionKey)]);
+            return false;
+        }
+    }, [activeSessionKeyForEvents, uiLang]);
+
+    const cancelChatTask = useCallback(async (taskID: string) => {
+        await cancelDesktopChatTask(taskID);
+    }, []);
+    const steerChatTask = useCallback(async (taskID: string, text: string) => {
+        await steerDesktopChatTask(taskID, text);
+    }, []);
+    const answerChatTask = useCallback(async (taskID: string, text: string) => {
+        await answerDesktopChatTask(taskID, text);
+    }, []);
+
+    useEffect(() => {
+        if (!ready) return;
+        let cancelled = false;
+        void listDesktopChatTasks("").then(tasks => {
+            if (cancelled || tasks.length === 0) return;
+            setChatTasks(tasks);
+            const visible = chatTasksToRestore(tasks);
+            setMessages(prev => visible.reduce((messages, task) => upsertChatTaskCard(messages, task) as ChatMessage[], prev));
+        }).catch(() => {});
+        const unsubscribe = subscribeEvent(chatTaskEventName(), (payload: unknown) => {
+            const task = parseChatTaskEvent(payload);
+            if (!task) return;
+            setChatTasks(prev => upsertChatTaskList(prev, task));
+            setMessages(prev => upsertChatTaskCard(prev, task) as ChatMessage[]);
+        });
+        return () => {
+            cancelled = true;
+            unsubscribe();
+        };
+    }, [ready]);
+
     const panelState: AIAssistantPanelHookState = useMemo(() => ({
         messages,
         progressMessages,
@@ -6623,7 +6688,8 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         trialReflectEnabled,
         scrollToTopSeq,
         agentView,
-    }), [messages, progressMessages, sending, sendingSessionKey, busySessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, submittedPrompts, submittedPromptAttachments, draftInputValue, trialReflectEnabled, scrollToTopSeq, agentView]);
+        chatTasks,
+    }), [messages, progressMessages, sending, sendingSessionKey, busySessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, submittedPrompts, submittedPromptAttachments, draftInputValue, trialReflectEnabled, scrollToTopSeq, agentView, chatTasks]);
 
     const deactivateRecordingSession = useCallback((messageId: string) => {
         const id = String(messageId || "").trim();
@@ -6656,7 +6722,11 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         submitAgentView,
         dismissAgentView,
         deactivateRecordingSession,
-    }), [browseFile, clearSelectedFile, setSelectedFiles, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView, deactivateRecordingSession]);
+        dispatchChatTask,
+        cancelChatTask,
+        steerChatTask,
+        answerChatTask,
+    }), [browseFile, clearSelectedFile, setSelectedFiles, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView, deactivateRecordingSession, dispatchChatTask, cancelChatTask, steerChatTask, answerChatTask]);
 
     return { messages, submittedPrompts, submittedPromptAttachments, draftInputValue, progressMessages, sending, sendingSessionKey, busySessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, agentView, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary, guideLaunchReference, submitAgentView, dismissAgentView, panelState, panelActions };
 }

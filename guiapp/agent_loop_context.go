@@ -191,6 +191,16 @@ type LoopContext struct {
 	// take the value from the inbound message, not from the previous turn.
 	NoWorkflowInterception bool
 
+	// LLMCaller overrides the scheduler lane for this loop. Desktop chat
+	// tasks use chat_task_loop so a later chat turn does not cancel them.
+	LLMCaller string
+	// ForegroundChatBudget caps a desktop chat turn. Zero keeps the normal limit.
+	ForegroundChatBudget int
+	// OfferChatTaskDispatch lets this short chat turn hand long work off.
+	OfferChatTaskDispatch bool
+	// ChatTaskID is set when this loop is itself a background chat task.
+	ChatTaskID string
+
 	// WorkflowDocBuffer accumulates all non-tool text output across iterations
 	// during a V2 workflow agent loop. Used by captureWorkflowDocAfterAgentLoop
 	// to capture the complete phase document instead of relying on resp.Text

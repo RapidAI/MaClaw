@@ -41,6 +41,7 @@ export interface AIAssistantPanelHookState {
     trialReflectEnabled: boolean;
     scrollToTopSeq: number;
     agentView: AgentView | null;
+    chatTasks: import("./chatTaskModel").ChatTaskView[];
 }
 
 /**
@@ -87,6 +88,10 @@ export interface AIAssistantPanelHookActions {
     dismissAgentView: (viewId: string | undefined, data?: Record<string, unknown>, options?: { force?: boolean }) => void | Promise<void>;
     /** Mark a record_audio card inactive so the mic UI does not re-open. */
     deactivateRecordingSession: (messageId: string) => void;
+    dispatchChatTask: (text: string, options?: { session_key?: string; project_path?: string }) => Promise<boolean>;
+    cancelChatTask: (taskID: string) => Promise<void>;
+    steerChatTask: (taskID: string, text: string) => Promise<void>;
+    answerChatTask: (taskID: string, text: string) => Promise<void>;
 }
 
 export interface AIAssistantPanelAppActions {

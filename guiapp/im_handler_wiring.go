@@ -270,6 +270,12 @@ type IMMessageHandler struct {
 	// concurrently with the local tab without data races.
 	sessionLoops sync.Map // map[string]*sessionLoopState
 
+	// chatTasks is the desktop chat's background-task registry. It is not a
+	// session loop: a task runs under its own memory key and does not hold
+	// the chat tab's serialization mutex.
+	chatTasksOnce sync.Once
+	chatTasks     *chatTaskRegistry
+
 	// horizonSessions is independent of sessionLoops. A LongHorizon supervisor
 	// must not look like an IM agent loop or follow-up text is serialized/interrupted.
 	horizonSessions        sync.Map // map[string]*horizonSession

@@ -18,6 +18,7 @@ const (
 	llmPriorityForeground  llmRequestPriority = "foreground"
 	llmPriorityBackground  llmRequestPriority = "background"
 	llmPriorityInteractive llmRequestPriority = "interactive"
+	llmPriorityChatTask    llmRequestPriority = "chat_task"
 )
 
 const (
@@ -37,7 +38,11 @@ const (
 	// Two covers a text probe overlapping a vision probe. This limit stays
 	// up when foreground is degraded or background is paused: the click is
 	// the request, and it must not sit behind a coding turn.
-	interactiveLLMConcurrency    = 2
+	interactiveLLMConcurrency = 2
+	// chatTaskLLMConcurrency is the lane for desktop chat tasks. A later
+	// foreground chat turn must not cancel these leases. Pressure pauses new
+	// task iterations (limit 0) without aborting the one already in flight.
+	chatTaskLLMConcurrency       = 2
 	llmSchedulerDegradedCooldown = 45 * time.Second
 	llmSchedulerWaitLogInterval  = 5 * time.Second
 )
@@ -47,6 +52,7 @@ type llmConcurrencyScheduler struct {
 	activeFG          int
 	activeBG          int
 	activeInteractive int
+	activeChatTask    int
 	degradedUntil     time.Time
 	bgPausedUntil     time.Time
 	recoveryTimer     *time.Timer
@@ -224,6 +230,10 @@ func (l *llmSchedulerLease) Release() {
 		if s.activeInteractive > 0 {
 			s.activeInteractive--
 		}
+	case llmPriorityChatTask:
+		if s.activeChatTask > 0 {
+			s.activeChatTask--
+		}
 	default:
 		delete(s.activeBGLease, l)
 		if s.activeBG > 0 {
@@ -302,6 +312,8 @@ func (s *llmConcurrencyScheduler) dispatchLocked() {
 			s.activeFG++
 		case llmPriorityInteractive:
 			s.activeInteractive++
+		case llmPriorityChatTask:
+			s.activeChatTask++
 		default:
 			s.activeBG++
 		}
@@ -351,6 +363,17 @@ func (s *llmConcurrencyScheduler) nextDispatchIndexLocked() int {
 	if s.activeInteractive < interactiveLLMConcurrency {
 		for i, waiter := range s.queue {
 			if waiter.priority == llmPriorityInteractive {
+				return i
+			}
+		}
+	}
+	// Chat-task loops keep their own cap and are not stored with background
+	// leases, so a foreground chat turn does not cancel them. They may run
+	// beside an in-flight chat request. Provider pressure sets the cap to 0,
+	// which pauses a new iteration without aborting the current lease.
+	if s.activeChatTask < s.chatTaskLimitLocked() {
+		for i, waiter := range s.queue {
+			if waiter.priority == llmPriorityChatTask {
 				return i
 			}
 		}
@@ -552,6 +575,14 @@ func (s *llmConcurrencyScheduler) removeWaiterLocked(target *llmSchedulerWaiter)
 	return false
 }
 
+func (s *llmConcurrencyScheduler) chatTaskLimitLocked() int {
+	now := s.now()
+	if now.Before(s.degradedUntil) || now.Before(s.bgPausedUntil) {
+		return 0
+	}
+	return chatTaskLLMConcurrency
+}
+
 func (s *llmConcurrencyScheduler) limitsLocked() (int, int, bool, bool) {
 	now := s.now()
 	fgDegraded := now.Before(s.degradedUntil)
@@ -632,6 +663,9 @@ func classifyLLMRequestPriority(trace llm.RequestTrace) llmRequestPriority {
 	// under test, slow every chat. Keep these on the interactive lane.
 	if caller == "provider-test" || caller == "vision-probe" {
 		return llmPriorityInteractive
+	}
+	if strings.Contains(caller, "chat_task") {
+		return llmPriorityChatTask
 	}
 	if strings.Contains(caller, "background") || strings.Contains(caller, "memory") || strings.Contains(caller, "session-start") || strings.Contains(caller, "post-conversation") || strings.Contains(caller, "pending-reply") || strings.Contains(caller, "experience") || caller == "knowledge-card" || caller == "gossip-auto" {
 		return llmPriorityBackground

@@ -241,6 +241,18 @@ func (h *IMMessageHandler) buildToolDefinitions() []map[string]interface{} {
 		toolDefFromCore("web_fetch", "抓取指定 URL 的网页内容并提取正文文本。支持 HTTP/HTTPS/FTP 协议，自动编码检测（GBK/UTF-8 等）、HTML 正文提取。可选 JS 渲染（需本机安装 Chrome）。也可用 save_path 下载文件到本地。长页面支持续读：当返回 has_more=true 时，请使用 offset=next_offset 继续读取后续内容。", nil),
 	)
 
+	defs = append(defs,
+		toolDef("dispatch_background_task", "Hand a long piece of work to a background chat task and return immediately. Use this for files, research, multi-step generation, office documents, and batch edits. After it succeeds, tell the user you started the task and stop. Do not keep doing the work in this turn.",
+			map[string]interface{}{
+				"request": map[string]string{"type": "string", "description": "Self-contained task for the background worker, including the user's goal and any constraints already known."},
+				"title":   map[string]string{"type": "string", "description": "Short title shown on the task card. Optional."},
+			}, []string{"request"}),
+		toolDef("chat_task_request_input", "Ask the user a question and wait. Only a background chat task may call this. The answer arrives later on the task card and does not start a new chat turn.",
+			map[string]interface{}{
+				"question": map[string]string{"type": "string", "description": "The question the user must answer before the task can continue."},
+			}, []string{"question"}),
+	)
+
 	return filterDisabledExternalCodingSessionToolDefs(defs)
 }
 

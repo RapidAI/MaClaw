@@ -205,7 +205,7 @@ func projectPathFromSessionOwnerID(ownerID string) string {
 	rest := strings.TrimPrefix(ownerID, desktopUserID+":")
 	// Expert sessions ("desktop-user:expert:<id>") carry an expert id, not a
 	// project path — never let downstream code treat it as a directory.
-	if strings.HasPrefix(rest, "expert:") || strings.HasPrefix(rest, "acp:") {
+	if strings.HasPrefix(rest, "expert:") || strings.HasPrefix(rest, "acp:") || strings.HasPrefix(rest, "task:") {
 		return ""
 	}
 	return normalizeProjectSessionPath(rest)
