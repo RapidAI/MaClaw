@@ -21,6 +21,7 @@ import { cleanReasoningTrailForBody, visibleAssistantReplyForMessage } from "./a
 import { completedAssistantSummary, assistantTaskSettledIncomplete, isProgressOnlyToolAction, parseAssistantToolStatus, stripAssistantToolCallMarkers } from "./assistantToolCall";
 import { AssistantToolCallRow, renderAssistantBodyWithToolCalls } from "./assistantToolCallRow";
 import { TaskResultArtifacts } from "./assistantTaskArtifacts";
+import { ChatTaskCard } from "./ChatTaskCard";
 import {
     prepareChatBodyForDisplay,
     prepareChatBodyLines,
@@ -1522,6 +1523,9 @@ export function renderMessage(
     /** Paper expert: export the sources beside the PDF as one zip. */
     latexSourceBundle = false,
 ): React.ReactNode {
+    if (msg.kind === "chatTask" && msg.chatTask) {
+        return <ChatTaskCard key={msg.id} task={msg.chatTask} theme={t} lang={lang} />;
+    }
     // The confirmation card lives in its own module to keep this file under the
     // 2000-line UI guard cap; it receives its renderers by injection so that
     // module stays a leaf (importing back would be a cycle).

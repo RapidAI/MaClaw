@@ -117,6 +117,7 @@ import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { useDialog } from "../CustomDialog";
 import { ComputerUseOperatorPanel } from "./ComputerUseOperatorPanel";
 import { ComputerUseQuickBar } from "./ComputerUseQuickBar";
+import { ChatTaskTray } from "./ChatTaskTray";
 import { AssistantQuickSettingsBar } from "./AssistantQuickSettingsBar";
 import { ExpertTabEmptyBanner, ProjectPreparingBanner } from "./assistantPanelInlineBanners";
 import { AssistantQuickModelSwitcher } from "./AssistantQuickModelSwitcher";
@@ -148,8 +149,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const state = props.state || props;
     const actions = props.actions || props;
     const panelWindow = props.window || props;
-    const { messages, progressMessages = [], sending, sendingSessionKey: rawSendingSessionKey, busySessionKeys: rawBusySessionKeys, streaming, streamingSessionKey: rawStreamingSessionKey, streamingSessionKeys: rawStreamingSessionKeys, visualBusy, ready, initStatus, selectedFilePath: selectedFilePathFromState = "", submittedPrompts = [], submittedPromptAttachments = [], draftInputValue = "", trialReflectEnabled = false, scrollToTopSeq, onboardingIncomplete, showTraceEntry = false, active: panelActive = true, agentView = null } = state;
-    const { browseFile, clearSelectedFile, setSelectedFilePaths, removeSelectedFile, sendMessage, sendBtwMessage, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews, onOpenOnboarding, cancelSession, onOpenTutorial, onTaskPrefsChanged, submitAgentView, dismissAgentView, deactivateRecordingSession } = actions;
+    const { messages, progressMessages = [], sending, sendingSessionKey: rawSendingSessionKey, busySessionKeys: rawBusySessionKeys, streaming, streamingSessionKey: rawStreamingSessionKey, streamingSessionKeys: rawStreamingSessionKeys, visualBusy, ready, initStatus, selectedFilePath: selectedFilePathFromState = "", submittedPrompts = [], submittedPromptAttachments = [], draftInputValue = "", trialReflectEnabled = false, scrollToTopSeq, onboardingIncomplete, showTraceEntry = false, active: panelActive = true, agentView = null, chatTasks = [] } = state;
+    const { browseFile, clearSelectedFile, setSelectedFilePaths, removeSelectedFile, sendMessage, sendBtwMessage, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews, onOpenOnboarding, cancelSession, onOpenTutorial, onTaskPrefsChanged, submitAgentView, dismissAgentView, deactivateRecordingSession, dispatchChatTask, cancelChatTask, steerChatTask, answerChatTask } = actions;
     const selectedFilePaths = Array.isArray(state.selectedFilePaths) ? state.selectedFilePaths : (selectedFilePathFromState ? [selectedFilePathFromState] : []);
     const selectedFilePath = selectedFilePaths[0] || "";
     const { inline, maximized = false, onToggleMaximize, onHideWindow } = panelWindow || {};
@@ -5031,6 +5032,25 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             requestAnimationFrame(() => inputRef.current?.focus());
         }
     }, [clearSelectedFile, resetHistoryBrowsing, setPendingAttachments, updateInputValue]);
+    const handleRunChatTaskInBackground = useCallback(() => {
+        const text = (inputRef.current?.value ?? inputValue).trim();
+        if (!text || !dispatchChatTask) return;
+        clearComposerDraft({ clearAttachments: true });
+        const projectPath = isProjectTabActive ? activeTab.projectPath : "";
+        void dispatchChatTask(text, { session_key: activeSessionKey, project_path: projectPath || undefined });
+    }, [activeSessionKey, activeTab.projectPath, clearComposerDraft, dispatchChatTask, inputValue, isProjectTabActive]);
+    useEffect(() => {
+        const onAction = (event: Event) => {
+            const detail = (event as CustomEvent<{ action?: string; taskId?: string; text?: string }>).detail || {};
+            const taskId = String(detail.taskId || "").trim();
+            if (!taskId) return;
+            if (detail.action === "cancel") void cancelChatTask?.(taskId);
+            if (detail.action === "steer") void steerChatTask?.(taskId, String(detail.text || ""));
+            if (detail.action === "answer") void answerChatTask?.(taskId, String(detail.text || ""));
+        };
+        window.addEventListener("ai-chat-task-action", onAction);
+        return () => window.removeEventListener("ai-chat-task-action", onAction);
+    }, [answerChatTask, cancelChatTask, steerChatTask]);
     const newConversationInFlightRef = useRef(false);
     const handlePlusMenuAction = useCallback((actionId: PlusMenuActionId) => {
         if (actionId === "newConversation") {
@@ -6793,6 +6813,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 )}
                 {!showWelcomeView && <ComputerUseReadinessBanner lang={lang} theme={t} />}
                 {!showWelcomeView && <ComputerUseQuickBar lang={lang} theme={t} themeMode={themeMode} />}
+                {!showWelcomeView && !isPureCodingEnvironment && !isACPMirrorTabActive && !isExpertTabActive && <ChatTaskTray tasks={chatTasks.filter((task: { sessionKey?: string }) => task.sessionKey === activeSessionKey)} canDispatch={!!inputValue.trim() && !!dispatchChatTask} lang={lang} theme={t} onRunInBackground={handleRunChatTaskInBackground} onCancel={taskID => { void cancelChatTask?.(taskID); }} />}
                 {!showWelcomeView && <AssistantInputStack active={panelActive} browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} hardLockInput={recordingActive} inputRef={inputRef} inputValue={inputValue} inline={false} flushBottom isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={pendingAttachments} permissionMode={permissionMode} taskCommandAllowed={taskCommandHint} showWorkspacePermissionOption={isPureCodingEnvironment} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} submittedPromptAttachments={submittedPromptAttachments} onHistoryTextAccepted={acceptHistoryText} sendButtonStyle={{ minWidth: 40, width: 40, height: 40, borderRadius: 12, flexShrink: 0, background: t.sendBtnBg || t.btnColor, borderColor: t.sendBtnBorder || t.sendBtnBg || t.btnColor, color: t.sendBtnColor || "#fff", opacity: canSend ? 1 : 0.72, boxShadow: `0 3px 8px color-mix(in srgb, ${t.btnColor} 22%, transparent)` }} theme={t} themeMode={themeMode} toolbarEndContent={<AssistantQuickModelSwitcher lang={lang} theme={t} active={panelActive} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelMultipliers={modelMultipliers} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} activeProfile={activeExecutionProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} onOpenLLMSettings={onOpenLLMSettings} chipTestId="composer-model-chip" />} trailingToolbarContent={(activeTab?.type === "local" || activeTab?.type === "project" || activeTab?.type === "expert") ? (
                     // Working-directory chip inside the composer toolbar, after the
                     // permission-mode button: the primary entry for viewing/changing
