@@ -19,7 +19,7 @@ func (h *IMMessageHandler) prepareAgentLoopConfig(ctx *LoopContext) agentLoopCon
 	if err := h.ensureOAuthToken(); err != nil {
 		log.Printf("[LLM] OAuth token refresh failed: %v", err)
 	}
-	cfg := h.getMaclawLLMConfig()
+	cfg := h.resolveAgentLoopLLMConfig(ctx)
 	if cfg.IsResponsesAPI() {
 		keyPrefix := cfg.Key
 		if len(keyPrefix) > 20 {

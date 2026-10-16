@@ -265,6 +265,27 @@ func (h *IMMessageHandler) applyTurnModelRoute(primary corelib.MaclawLLMConfig, 
 	routeText := semanticUserIntentText(userText)
 	classified := cllm.ClassifyTurn(routeText, hints)
 	cost := cllm.DecideCostRoute(classified.Task, hints, classified.Reason)
+	// Background and computer-use already picked their role model. Desktop
+	// cost routing must not replace it. Hub auto still receives workload hints.
+	if maclawLLMRoleSkipsLocalRoute(primary.Profile) {
+		decision.Task = string(classified.Task)
+		decision.Reason = classified.Reason + "; role model kept"
+		decision.CostTier = string(cost.Tier)
+		decision.CostRouteMode = string(cost.Mode)
+		decision.CostRouteApplied = false
+		decision.ThinkingPolicy = string(cost.Thinking)
+		if cllm.CostRouteSurfaces(cost.Mode) {
+			log.Printf("[cost-route] mode=%s tier=%s task=%s model=%s applied=false reason=role:%s",
+				cost.Mode, cost.Tier, classified.Task, primary.Model, primary.Profile)
+		}
+		if h.app != nil {
+			h.app.recordLastModelRoute(decision)
+		}
+		if isHubManagedTurnConfig(h, primary) {
+			return attachHubWorkloadHints(primary, classified.Task, ctx), decision
+		}
+		return primary, decision
+	}
 	if isHubManagedTurnConfig(h, primary) {
 		decision.Task = string(classified.Task)
 		decision.Reason = classified.Reason + "; hub-managed skip desktop cost-route"

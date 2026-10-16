@@ -77,11 +77,6 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 	telemetry := opts.Telemetry
 	cleanupFns := make([]func(), 0, 2)
 
-	configStart := h.prepareAgentLoopConfig(ctx)
-	cfg := configStart.Config
-	if telemetry != nil {
-		telemetry.PreLLMConfigElapsed = configStart.Elapsed
-	}
 	// Rule-based turn routing: cheap tasks → aux/fast routes; coding → primary/reasoning.
 	// Decision is applied onto runState in the dispatcher after startState returns.
 	allowLocalAttachmentStaging := ctx == nil || ctx.LansengerGroupPermissions == nil
@@ -103,12 +98,8 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 	if ctx != nil {
 		applyStagedImageUnderstandRuntime(ctx, userText, attachments)
 	}
-	routedCfg, routeDecision := h.applyTurnModelRoute(cfg, userText, ctx, attachments)
-	cfg = routedCfg
-	phase := h.initialAgentLoopPhase(opts.UserText, ctx)
-
-	// Desktop image paths are materialized above before routing. Reuse that
-	// same current-turn attachment set for tool routing as well.
+	// Role selection has to see the same computer-use sentence the gate uses.
+	// prepareAgentLoopConfig records the gate so the later sync hits that cache.
 	toolRoutingText := computerUseRoutingText(userText, attachments)
 	if ctx != nil {
 		if strings.TrimSpace(ctx.Platform) == "" {
@@ -118,6 +109,16 @@ func (h *IMMessageHandler) prepareAgentLoopStartState(opts agentLoopStartOptions
 		if strings.TrimSpace(ctx.ComputerUseRoutingText) == "" {
 			ctx.ComputerUseRoutingText = toolRoutingText
 		}
+	}
+	configStart := h.prepareAgentLoopConfig(ctx)
+	cfg := configStart.Config
+	if telemetry != nil {
+		telemetry.PreLLMConfigElapsed = configStart.Elapsed
+	}
+	routedCfg, routeDecision := h.applyTurnModelRoute(cfg, userText, ctx, attachments)
+	cfg = routedCfg
+	phase := h.initialAgentLoopPhase(opts.UserText, ctx)
+	if ctx != nil {
 		// Record fresh even when semantic routing skips prepareAgentLoopTools.
 		syncComputerUseTurn(h, ctx, opts.UserID, opts.UserText)
 	}
