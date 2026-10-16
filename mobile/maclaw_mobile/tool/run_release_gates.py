@@ -52,7 +52,7 @@ def release_gates() -> list[ReleaseGate]:
             [
                 "go",
                 "test",
-                "./gui",
+                "./guiapp",
                 "-run",
                 "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession",
                 "-count=1",
