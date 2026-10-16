@@ -30,7 +30,7 @@ final botAccessProvider = FutureProvider<BotAccess>((ref) async {
   final api = ref.watch(botApiProvider);
   if (api == null) return BotAccess.disabled;
   try {
-    return api.fetchAccess();
+    return await api.fetchAccess();
   } on Object {
     // A failed probe must not lock the user out of a feature that may well be
     // enabled; the list page reports the real failure if the list call fails too.

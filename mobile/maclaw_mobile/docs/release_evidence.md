@@ -32,7 +32,7 @@ Run these before handing a build to QA:
 ```bash
 go test ./hub/internal/httpapi -run "TestMobile.*" -count=1
 go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemptionRouteIsNotExposed|DesktopQRSessionRouteIsNotExposed)|TestSameURLOriginHandlesDefaultPorts" -count=1
-go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1
+go test ./guiapp -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1
 cd mobile/maclaw_mobile
 python3 -m unittest tool/configure_platforms_test.py
 python3 -m unittest tool/validate_qa_build_record_test.py
@@ -222,8 +222,8 @@ tabs.
 | GUI-like chat window, user/assistant multi-turn context, multi-tab conversations, voice input, quick prompts, citations, redacted shared links/text, photo/file handoff | `test/assistant_screen_test.dart`, `test/api_client_test.dart`, `test/assistant_retry_test.dart`, `test/mobile_shared_intent_test.dart` |
 | Mobile app shell tabs, feature-flag routing, readable navigation labels, and shared-intent route fallback | `test/mobile_feature_flags_test.dart`, `test/app_smoke_test.dart`, `test/mobile_shared_intent_test.dart` |
 | Emergency document templates, import, AI actions, edit helpers, API-boundary redaction, export/share UI | `test/documents_screen_test.dart`, `test/documents_state_test.dart`, `test/document_draft_test.dart` |
-| GUI-equivalent backend SSH session management, Hub-synced sanitized desktop server metadata, GUI/agent-bound `backend_session_id`, SSH realtime incremental output evidence through `ssh_session` `output_chunk`/`output_seq` events, phone-initiated interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` with GUI/agent Ctrl+C handling, copied backend session output with a GUI/agent evidence line containing actual values for Hub session ID, `backend_session_id`, concrete `claimed_by` worker identity such as `claimed_by desktop-agent-1`, and numeric `output_seq`, AI analysis and AI/digital-employee handoff evidence tied to the same GUI/agent-bound `backend_session_id`, high-risk command confirmation, readable safety warnings | `test/servers_screen_test.dart`, `test/servers_controller_test.dart`, `test/backend_ssh_command_test.dart`, `test/ssh_risk_test.dart`, `test/secure_vault_test.dart`, `test/mobile_realtime_client_test.dart`, `test/mobile_realtime_bridge_test.dart`, `go test ./hub/internal/httpapi -run "TestMobile.*(SSH|BackendSSH|RealtimeBackendSSH)" -count=1`, `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession"` |
-| Digital employee task submission, redacted mobile prompt handoff, authorization messaging, result copy/share, document draft creation | `test/digital_employees_screen_test.dart`, `test/digital_employee_test.dart`, `test/digital_employees_controller_test.dart`, `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession"` |
+| GUI-equivalent backend SSH session management, Hub-synced sanitized desktop server metadata, GUI/agent-bound `backend_session_id`, SSH realtime incremental output evidence through `ssh_session` `output_chunk`/`output_seq` events, phone-initiated interrupt evidence through a Hub control record or `/api/mobile/ssh/sessions/{session_id}/interrupt` with GUI/agent Ctrl+C handling, copied backend session output with a GUI/agent evidence line containing actual values for Hub session ID, `backend_session_id`, concrete `claimed_by` worker identity such as `claimed_by desktop-agent-1`, and numeric `output_seq`, AI analysis and AI/digital-employee handoff evidence tied to the same GUI/agent-bound `backend_session_id`, high-risk command confirmation, readable safety warnings | `test/servers_screen_test.dart`, `test/servers_controller_test.dart`, `test/backend_ssh_command_test.dart`, `test/ssh_risk_test.dart`, `test/secure_vault_test.dart`, `test/mobile_realtime_client_test.dart`, `test/mobile_realtime_bridge_test.dart`, `go test ./hub/internal/httpapi -run "TestMobile.*(SSH|BackendSSH|RealtimeBackendSSH)" -count=1`, `go test ./guiapp -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession"` |
+| Digital employee task submission, redacted mobile prompt handoff, authorization messaging, result copy/share, document draft creation | `test/digital_employees_screen_test.dart`, `test/digital_employee_test.dart`, `test/digital_employees_controller_test.dart`, `go test ./guiapp -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession"` |
 | Account settings, notification request entry, cache clearing, credential separation | `test/account_screen_test.dart`, `test/app_preferences_test.dart`, `test/mobile_notification_service_test.dart`, `test/mobile_local_store_test.dart`, `test/secure_vault_test.dart` |
 | Realtime document/digital employee updates | `test/mobile_realtime_client_test.dart`, `test/mobile_realtime_bridge_test.dart` |
 
@@ -1019,13 +1019,13 @@ tabs.
     rejects known mojibake/replacement markers, and verifies the iOS Runner
     bundle display/name does not fall back to the Flutter template name.
 - `python -m unittest discover -s tool -p '*_test.py'`
-  - Passed: 642 Python release tool tests.
+  - Passed: 650 Python release tool tests.
   - Covers the aggregate local release-tool test suite, including release
     status, handoff, QA record validation/reporting/linking, signed artifact
     evidence, Android/iOS signing helpers, runtime-boundary verification, and
     release gate runner guard tests.
 - `python tool\configure_platforms_test.py`
-  - Passed: 19 platform configuration tests.
+  - Passed: 21 platform configuration tests.
   - Covers cleanup of Flutter's generated widget-test template so
     native wrapper regeneration does not introduce stale `MyApp` analyzer
     failures, and cleanup of Flutter Android Gradle template comments after
@@ -1744,7 +1744,7 @@ tabs.
     `android/key.properties.example` placeholder coverage, and `.gitignore`
     rules for local keystore material.
 - `python -m unittest tool\build_android_release_test.py`
-  - Passed: 15 Android release build helper tests.
+  - Passed: 17 Android release build helper tests.
   - Covers local `android/key.properties` validation, missing signing input
     errors, debug-keystore rejection, APK/AAB release command construction,
     build-name/build-number forwarding, required paired version/build
@@ -1847,7 +1847,7 @@ tabs.
     `ssh_session` event payloads used by mobile to create/attach sessions,
     receive incremental `output_chunk`/`output_seq` output, and keep evidence
     tied to the same GUI/agent-bound `backend_session_id`.
-- `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1`
+- `go test ./guiapp -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1`
   - Passed; revalidated after aligning the export URL safety checks and the
     mobile SSH model with MaClaw GUI `SSHSessionManager` behavior.
   - Passed: 17 GUI mobile worker/profile tests.
@@ -1867,7 +1867,7 @@ tabs.
   - Confirms the desktop-side worker path is used instead of phone-local SSH
     credentials, direct phone connections, or phone-local SFTP.
 - `python -m unittest tool\configure_platforms_test.py`
-  - Passed: 19 platform configuration tests.
+  - Passed: 21 platform configuration tests.
 - `python -m unittest tool\validate_qa_build_record_test.py`
   - Passed: 236 QA record validator tests.
   - Covers final automated evidence artifact references matching the record
@@ -1966,7 +1966,7 @@ tabs.
   - Passed: no issues found; revalidated on the current worktree after the
     local-store concurrent open fix.
 - `flutter test --concurrency=1`
-  - Passed: 348 tests.
+  - Passed: 517 tests.
   - No Drift debug-only multiple-database warning was emitted after adding the
     local-store concurrent open gate and isolating digital-employee widget
     history providers.
@@ -2192,7 +2192,7 @@ tabs.
   - Passed: current Hub mobile API regression suite.
 - `go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemptionRouteIsNotExposed|DesktopQRSessionRouteIsNotExposed)|TestSameURLOriginHandlesDefaultPorts" -count=1`
   - Passed: current official HubCenter route and origin regression suite.
-- `go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1`
+- `go test ./guiapp -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1`
   - Passed: current GUI/agent mobile digital-employee, document, server-profile,
     and backend SSH handoff regression suite.
 - `flutter test test/mobile_realtime_bridge_test.dart test/mobile_realtime_client_test.dart test/digital_employees_screen_test.dart test/documents_screen_test.dart test/servers_screen_test.dart --concurrency=1 --reporter compact`
@@ -2420,7 +2420,7 @@ tabs.
   suite: `go test ./hub/internal/httpapi -run
   'TestMobile(Bootstrap|Search|BackendSSH|RealtimeBackendSSH|SSHAnalyze)'
   -count=1`. The GUI control-plane suite passed with
-  `go test ./gui -run
+  `go test ./guiapp -run
   'Test(MobileDigitalEmployeeCandidateIDs|RemoteHubClient.*Mobile|MobileDocumentSourceMarkdown|ResolveMobileBackendSSHHost|MobileServerProfilesFromSSHHosts|ProcessMobileBackendSSHSession)'
   -count=1`. These are backend contract and worker-handling checks; they do
   not replace a real GUI/agent attached to a real server.

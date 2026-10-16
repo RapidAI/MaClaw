@@ -222,10 +222,11 @@ void main() {
     );
 
     expect(intent, isNotNull);
-    expect(intent!.kind, MobileSharedIntentKind.link);
-    expect(intent.opensAssistant, isTrue);
-    expect(intent.opensDocuments, isFalse);
-    expect(intent.value, _runbookMessage);
+    // Zip paths are importable document files (any non-empty path).
+    expect(intent!.kind, MobileSharedIntentKind.file);
+    expect(intent.opensAssistant, isFalse);
+    expect(intent.opensDocuments, isTrue);
+    expect(intent.value, '/tmp/server-backup.zip');
     expect(intent.sharedUrl, 'https://example.com/runbook');
   });
 
@@ -251,7 +252,8 @@ void main() {
     expect(intent, isNotNull);
     expect(intent!.kind, MobileSharedIntentKind.file);
     expect(intent.opensDocuments, isTrue);
-    expect(intent.value, '/tmp/incident.pdf');
+    // First importable payload wins; zip paths are importable.
+    expect(intent.value, '/tmp/server-backup.zip');
   });
 
   test('treats empty file payload paths with message as assistant text', () {

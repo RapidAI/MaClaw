@@ -1,0 +1,5 @@
+Final MaClaw Mobile release evidence validation failed:
+- Verification scope: android-ios
+- QA records directory: docs/qa-builds
+- Release evidence: docs/release_evidence.md
+- Final release evidence requires at least one completed signed-build QA record.

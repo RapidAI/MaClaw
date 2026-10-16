@@ -19,7 +19,7 @@ void main() {
   });
 
   test('summarizeAssistantToolEvents keeps order across tools', () {
-    final events = const [
+    const events = [
       AssistantToolEvent(kind: 'call', id: '1', name: 'web_search'),
       AssistantToolEvent(kind: 'result', id: '1', name: 'web_search'),
       AssistantToolEvent(kind: 'call', id: '2', name: 'ssh'),

@@ -153,6 +153,7 @@ class AccountScreen extends ConsumerWidget {
       await registerMobilePushDevice(
         client: client,
         services: bootstrap?.services,
+        vault: ref.read(secureVaultProvider),
       );
       await syncMobilePushPending(
         client: client,

@@ -20,6 +20,7 @@ final mobilePushRegistrationProvider = Provider<void>((ref) {
     registerMobilePushDevice(
       client: ref.read(apiClientProvider),
       services: session?.bootstrap?.services,
+      vault: ref.read(secureVaultProvider),
     ),
   );
 });
@@ -64,14 +65,15 @@ Future<void> syncMobilePushPending({
 Future<void> registerMobilePushDevice({
   required ApiClient? client,
   MobileServices? services,
+  SecureVault? vault,
 }) async {
   if (client == null) return;
   try {
-    const vault = SecureVault();
-    final deviceId = await _ensureStored(vault, _pushDeviceIdKey, () {
+    final resolvedVault = vault ?? const SecureVault();
+    final deviceId = await _ensureStored(resolvedVault, _pushDeviceIdKey, () {
       return 'dev_${_randomHex(16)}';
     });
-    final token = await _ensureStored(vault, _pushDeviceTokenKey, () {
+    final token = await _ensureStored(resolvedVault, _pushDeviceTokenKey, () {
       return 'mtok_${_randomHex(24)}';
     });
     final path = services?.pushDevicesPath ?? '/api/mobile/push/devices';
@@ -103,6 +105,7 @@ Future<void> registerMobilePushDeviceFromRef(Ref ref) async {
   await registerMobilePushDevice(
     client: ref.read(apiClientProvider),
     services: session?.bootstrap?.services,
+    vault: ref.read(secureVaultProvider),
   );
 }
 

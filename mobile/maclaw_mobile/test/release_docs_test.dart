@@ -1217,7 +1217,7 @@ void main() {
       'create, attach, interrupt, reconnect, send input to, and close gui/agent-managed backend ssh sessions',
       'keeps backend command payloads queued for hub/agent execution rather than phone-local ssh execution',
       'go test ./hub/internal/httpapi -run "testmobile.*(ssh|backendssh|realtimebackendssh)" -count=1',
-      'go test ./gui -run "testmobiledigitalemployeecandidateids|testremotehubclient.*mobile|testmobiledocumentsourcemarkdown|testresolvemobilebackendsshhost|testmobileserverprofilesfromsshhosts|testprocessmobilebackendsshsession"',
+      'go test ./guiapp -run "testmobiledigitalemployeecandidateids|testremotehubclient.*mobile|testmobiledocumentsourcemarkdown|testresolvemobilebackendsshhost|testmobileserverprofilesfromsshhosts|testprocessmobilebackendsshsession"',
       '17 gui mobile worker/profile tests',
       'missing-profile failure reporting through the worker path',
       'desktop-managed close handling that clears pending input',
@@ -1235,7 +1235,7 @@ void main() {
     expect(
       auditText,
       contains(
-        'go test ./gui -run "testmobiledigitalemployeecandidateids|testremotehubclient.*mobile|testmobiledocumentsourcemarkdown|testresolvemobilebackendsshhost|testmobileserverprofilesfromsshhosts|testprocessmobilebackendsshsession" -count=1',
+        'go test ./guiapp -run "testmobiledigitalemployeecandidateids|testremotehubclient.*mobile|testmobiledocumentsourcemarkdown|testresolvemobilebackendsshhost|testmobileserverprofilesfromsshhosts|testprocessmobilebackendsshsession" -count=1',
       ),
     );
     expect(
@@ -1653,7 +1653,7 @@ void main() {
       'flutter analyze',
       'flutter test --concurrency=1',
       'flutter build apk --debug',
-      'actions/upload-artifact@v4',
+      'actions/upload-artifact@v7',
       'maclaw-mobile-debug-apk',
       'mobile/maclaw_mobile/build/app/outputs/flutter-apk/app-debug.apk',
     ]) {
@@ -1911,7 +1911,7 @@ void main() {
     expectInOrder(checklist, [
       'go test ./hub/internal/httpapi -run "TestMobile.*" -count=1',
       'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemptionRouteIsNotExposed|DesktopQRSessionRouteIsNotExposed)|TestSameURLOriginHandlesDefaultPorts" -count=1',
-      'go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1',
+      'go test ./guiapp -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1',
       'python3 -m unittest tool/configure_platforms_test.py',
       'python3 -m unittest tool/validate_qa_build_record_test.py',
       'python3 -m unittest tool/create_qa_build_record_test.py',
@@ -1957,7 +1957,7 @@ void main() {
     expectInOrder(evidence, [
       'go test ./hub/internal/httpapi -run "TestMobile.*" -count=1',
       'go test ./hubcenter/internal/httpapi -run "TestMobile(ServiceRedemptionRouteIsNotExposed|DesktopQRSessionRouteIsNotExposed)|TestSameURLOriginHandlesDefaultPorts" -count=1',
-      'go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1',
+      'go test ./guiapp -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1',
       'cd mobile/maclaw_mobile',
       'python3 -m unittest tool/configure_platforms_test.py',
       'python3 -m unittest tool/validate_qa_build_record_test.py',

@@ -15,6 +15,7 @@ import 'package:maclaw_mobile/features/servers/server_command.dart';
 import 'package:maclaw_mobile/features/servers/server_profile.dart';
 import 'package:maclaw_mobile/features/servers/servers_controller.dart';
 import 'package:maclaw_mobile/features/servers/servers_screen.dart';
+import 'support/widget_pumps.dart';
 
 class _TestServerProfilesController extends ServerProfilesController {
   @override
@@ -131,6 +132,16 @@ class _FakeBackendSSHApiClient extends ApiClient {
   }) : super(hubUrl: 'https://tenant-a.maclaw.top');
 
   @override
+  Future<MobileSSHVaultStatus> getSSHVaultStatus(String profileId) async {
+    return const MobileSSHVaultStatus();
+  }
+
+  @override
+  Future<List<MobileSSHVaultStatus>> listSSHVault() async {
+    return const [];
+  }
+
+  @override
   Future<List<MobileBackendSSHSession>> listBackendSSHSessions() async {
     return backendSessions;
   }
@@ -138,7 +149,9 @@ class _FakeBackendSSHApiClient extends ApiClient {
   @override
   Future<MobileBackendSSHSession> createBackendSSHSession({
     required String serverProfileId,
+    String execMode = '',
   }) async {
+    execMode;
     final error = createError;
     if (error != null) throw error;
     createdProfileIds.add(serverProfileId);
@@ -202,7 +215,11 @@ class _FakeBackendSSHApiClient extends ApiClient {
   Future<MobileBackendSSHSessionInputResult> sendBackendSSHSessionInput({
     required String sessionId,
     required String input,
+    bool raw = false,
+    bool asBinary = false,
   }) async {
+    raw;
+    asBinary;
     inputs.add((sessionId: sessionId, input: input));
     return MobileBackendSSHSessionInputResult(
       sessionId: sessionId,
@@ -336,7 +353,9 @@ class _RecordingNotificationService extends MobileNotificationService {
     required String title,
     required String body,
     String? payload,
+    int? notificationId,
   }) async {
+    notificationId;
     shown.add((title: title, body: body, payload: payload));
   }
 }
@@ -599,24 +618,16 @@ void main() {
 
     expect(find.text('GUI/agent 后台 SSH 会话'), findsOneWidget);
     expect(
-      find.textContaining('手机前台 agent 只创建 Hub 后台会话管理记录'),
-      findsOneWidget,
-    );
-    expect(
-      find.textContaining('MaClaw GUI/agent 负责接管、执行、保持会话、后台任务和文件操作'),
-      findsOneWidget,
-    );
-    expect(
-      find.textContaining('不是手机本地 SSH 客户端，也不保存服务器密钥'),
+      find.textContaining('desktop_exec：由 MaClaw GUI/agent claim 接管。手机不保存服务器密钥。'),
       findsOneWidget,
     );
     await tester.scrollUntilVisible(
-      find.text('GUI/agent 文件操作', skipOffstage: false),
+      find.text('远端文件操作', skipOffstage: false),
       240,
       scrollable: find.byType(Scrollable).first,
     );
     await tester.pump(const Duration(milliseconds: 300));
-    expect(find.text('GUI/agent 文件操作'), findsOneWidget);
+    expect(find.text('远端文件操作'), findsOneWidget);
     final commandRiskTitle = find.text(
       '\u547d\u4ee4\u98ce\u9669\u9884\u68c0',
       skipOffstage: false,
@@ -731,13 +742,13 @@ void main() {
     );
     expect(
       find.textContaining(
-        '\u624b\u673a\u53ea\u53d1\u8d77\u540e\u53f0\u4f1a\u8bdd\u3001\u53d1\u9001\u786e\u8ba4\u540e\u7684\u8f93\u5165\u5e76\u67e5\u770b\u8f93\u51fa',
+        '\u670d\u52a1\u5668\u6863\u6848\u6765\u81ea Hub \u540c\u6b65\u7684 MaClaw GUI/agent \u914d\u7f6e',
       ),
       findsOneWidget,
     );
     expect(
-      find.textContaining('MaClaw GUI/agent \u6388\u6743\u914d\u7f6e'),
-      findsOneWidget,
+      find.textContaining('MaClaw GUI/agent'),
+      findsWidgets,
     );
     expect(find.text('未接管'), findsOneWidget);
     expect(find.text('连接中'), findsNothing);
@@ -938,7 +949,7 @@ void main() {
     await tester.ensureVisible(connectButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(connectButton);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(notifications.shown, hasLength(1));
     expect(notifications.shown.single.title, contains('SSH'));
@@ -993,7 +1004,7 @@ void main() {
     await tester.ensureVisible(connectButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(connectButton);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     final context = tester.element(find.byType(ServersScreen));
     final container = ProviderScope.containerOf(context);
@@ -1079,7 +1090,7 @@ void main() {
     await tester.ensureVisible(connectButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(connectButton);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     final context = tester.element(find.byType(ServersScreen));
     final container = ProviderScope.containerOf(context);
@@ -1107,11 +1118,11 @@ void main() {
     await tester.ensureVisible(analyzeButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(analyzeButton);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(find.text('发送后台会话输出给 AI？'), findsOneWidget);
     await tester.tap(find.text('确认发送'));
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(
       _RecordingSSHAnalysisController.outputs.single,
@@ -1176,7 +1187,7 @@ void main() {
         child: const MaterialApp(home: Scaffold(body: ServersScreen())),
       ),
     );
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     final attachButton = find.text('\u9644\u7740');
     expect(find.text('ssh-existing-1'), findsOneWidget);
@@ -1196,7 +1207,7 @@ void main() {
     await tester.ensureVisible(attachButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(attachButton);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(api.attachedSessionIds, ['ssh-existing-1']);
     expect(find.textContaining('Hub 控制记录: ssh-existing-1'), findsOneWidget);
@@ -1264,7 +1275,7 @@ void main() {
     await tester.ensureVisible(connectButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(connectButton);
-    await tester.pump();
+    await pumpQuietly(tester);
 
     final interruptButton = find.text('\u4e2d\u65ad');
     await tester.ensureVisible(interruptButton);
@@ -1316,7 +1327,7 @@ void main() {
     await tester.ensureVisible(connectButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(connectButton);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     final commandField = find.widgetWithText(
       TextField,
@@ -1336,7 +1347,7 @@ void main() {
     await tester.ensureVisible(taskButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(taskButton);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(api.backgroundTasks, [
       (
@@ -1368,7 +1379,7 @@ void main() {
     await tester.ensureVisible(refreshTasksButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(refreshTasksButton);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(api.listedTaskSessions, ['ssh-session-srv-prod']);
 
@@ -1376,7 +1387,7 @@ void main() {
     await tester.ensureVisible(waitButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(waitButton);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(
       api.waitedTasks.single,
@@ -1393,7 +1404,7 @@ void main() {
     await tester.ensureVisible(killButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(killButton);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(
       api.killedTasks.single,
@@ -1405,7 +1416,7 @@ void main() {
     expect(find.textContaining('状态 killed'), findsOneWidget);
 
     await tester.scrollUntilVisible(
-      find.text('GUI/agent 文件操作', skipOffstage: false),
+      find.text('远端文件操作', skipOffstage: false),
       240,
       scrollable: find.byType(Scrollable).first,
     );
@@ -1423,7 +1434,7 @@ void main() {
     await tester.ensureVisible(fileOperationButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(fileOperationButton);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(
       api.fileOperations.single,
@@ -1559,15 +1570,15 @@ void main() {
     expect(find.textContaining('\u5220\u9664\u6570\u636e'), findsOneWidget);
 
     await tester.tap(find.text('\u53d6\u6d88'));
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
     expect(_RecordingServerCommandsController.recorded, isEmpty);
 
     await tester.ensureVisible(saveButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(saveButton);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
     await tester.tap(find.text('\u786e\u8ba4\u4fdd\u5b58'));
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(
       _RecordingServerCommandsController.recorded.single,
@@ -1626,7 +1637,7 @@ void main() {
     await tester.ensureVisible(analyzeButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(analyzeButton);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(
       find.text(
@@ -1644,15 +1655,15 @@ void main() {
     );
 
     await tester.tap(find.text('\u53d6\u6d88'));
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
     expect(_RecordingSSHAnalysisController.outputs, isEmpty);
 
     await tester.ensureVisible(analyzeButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(analyzeButton);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
     await tester.tap(find.text('\u786e\u8ba4\u53d1\u9001'));
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(
       _RecordingSSHAnalysisController.outputs.single,
@@ -1713,7 +1724,7 @@ void main() {
     await tester.ensureVisible(handoffButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(handoffButton);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(find.text('交给数字员工处理'), findsOneWidget);
     expect(find.textContaining('服务器数字员工'), findsOneWidget);
@@ -1725,16 +1736,16 @@ void main() {
     );
 
     await tester.tap(find.text('取消'));
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
     expect(_RecordingDigitalEmployeeTaskController.created, isEmpty);
 
     await tester.ensureVisible(handoffButton);
     await tester.pump(const Duration(milliseconds: 300));
     await tester.tap(handoffButton);
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     await tester.tap(find.text('确认提交'));
-    await tester.pumpAndSettle();
+    await pumpQuietly(tester);
 
     expect(
       _RecordingDigitalEmployeeTaskController.created.single.employeeId,

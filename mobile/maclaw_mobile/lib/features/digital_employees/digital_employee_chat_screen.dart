@@ -561,14 +561,21 @@ class _EmployeeChatMessage {
   const _EmployeeChatMessage({
     required this.text,
     required this.fromUser,
-    this.failed = false,
-    this.streaming = false,
-    this.taskId = '',
-    this.task,
+    required this.failed,
+    required this.streaming,
+    required this.taskId,
+    required this.task,
   });
 
   const _EmployeeChatMessage.user(String text)
-      : this(text: text, fromUser: true);
+      : this(
+          text: text,
+          fromUser: true,
+          failed: false,
+          streaming: false,
+          taskId: '',
+          task: null,
+        );
 
   const _EmployeeChatMessage.employee(
     String text, {
