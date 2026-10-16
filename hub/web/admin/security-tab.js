@@ -398,6 +398,15 @@
     searchMembers: { zh: '\u641c\u7d22\u6210\u5458\u90ae\u7bb1', en: 'Search member email' },
     modelRoutes: { zh: '\u53ef\u7528\u6a21\u578b', en: 'Available Models' },
     defaultModel: { zh: '\u9ed8\u8ba4\u6a21\u578b', en: 'Default Model' },
+    roleModels: { zh: '\u89d2\u8272\u6a21\u578b', en: 'Role models' },
+    roleForeground: { zh: '\u524d\u53f0', en: 'Foreground' },
+    roleBackground: { zh: '\u540e\u53f0', en: 'Background' },
+    roleComputerUse: { zh: '\u7535\u8111\u64cd\u4f5c', en: 'Computer use' },
+    roleForegroundHint: { zh: '\u89c4\u5212\u4e0e\u5bf9\u8bdd', en: 'Planning and chat' },
+    roleBackgroundHint: { zh: '\u5de5\u4f5c\u5faa\u73af', en: 'Worker loops' },
+    roleComputerUseHint: { zh: '\u622a\u56fe\u4e0e\u70b9\u51fb\u5faa\u73af', en: 'Screenshot and click loop' },
+    roleModelFollowDefault: { zh: '\u8ddf\u968f\u79df\u6237\u9ed8\u8ba4', en: 'Follow tenant default' },
+    roleModelPinHint: { zh: '\u7559\u7a7a\u8868\u793a\u8ddf\u968f\u79df\u6237\u9ed8\u8ba4\u3002\u9ed8\u8ba4\u662f auto\uff1b\u53ea\u6709\u4e00\u4e2a\u6a21\u578b\u65f6\u4e09\u4e2a\u89d2\u8272\u90fd\u7528\u5b83\u3002', en: 'Empty follows the tenant default. That default is auto, or the only configured model.' },
     inactiveReasons: { zh: '\u672a\u6fc0\u6d3b\u539f\u56e0', en: 'Inactive Reasons' },
     credits: { zh: '\u79ef\u5206', en: 'Credits' },
     creditsRemaining: { zh: '\u5269\u4f59\u79ef\u5206', en: 'Remaining Credits' },
@@ -1666,6 +1675,48 @@
     }
   };
 
+  function secModelNames(cache) {
+    var names = [];
+    var seen = {};
+    ((cache && cache.model_service_groups) || []).forEach(function(group) {
+      (group.models || []).forEach(function(model) {
+        var name = String(model && model.name || '').trim();
+        var key = name.toLowerCase();
+        if (!name || seen[key]) return;
+        seen[key] = true;
+        names.push(name);
+      });
+    });
+    return names;
+  }
+  function secRoleSelect(id, label, hint, selected, cache) {
+    var current = String(selected || '').trim();
+    var names = secModelNames(cache);
+    var options = '<option value="">' + escapeHtml(st('roleModelFollowDefault')) + '</option>';
+    options += '<option value="auto"' + (current.toLowerCase() === 'auto' ? ' selected' : '') + '>auto</option>';
+    names.forEach(function(name) {
+      options += '<option value="' + escapeHtml(name) + '"' + (name === current ? ' selected' : '') + '>' + escapeHtml(name) + '</option>';
+    });
+    if (current && current.toLowerCase() !== 'auto' && names.indexOf(current) < 0) {
+      options += '<option value="' + escapeHtml(current) + '" selected>' + escapeHtml(current) + '</option>';
+    }
+    return '<div><label for="' + id + '">' + escapeHtml(label) + '</label><select id="' + id + '">' + options + '</select><div class="item-meta" style="margin-top:6px">' + escapeHtml(hint) + '</div></div>';
+  }
+  function secRolesNonEmpty(roles) {
+    roles = roles || {};
+    return !!(String(roles.foreground || '').trim() || String(roles.background || '').trim() || String(roles.computer_use || '').trim());
+  }
+  function readSecUserModelRoles(previous) {
+    var fg = document.getElementById('secUserRoleForeground');
+    var bg = document.getElementById('secUserRoleBackground');
+    var cu = document.getElementById('secUserRoleComputerUse');
+    if (!fg && !bg && !cu) return (previous && previous.model_roles) || {};
+    var roles = {};
+    if (fg && String(fg.value || '').trim()) roles.foreground = String(fg.value).trim();
+    if (bg && String(bg.value || '').trim()) roles.background = String(bg.value).trim();
+    if (cu && String(cu.value || '').trim()) roles.computer_use = String(cu.value).trim();
+    return roles;
+  }
   global.saveSecUserModelService = async function saveSecUserModelService() {
     var sec = state();
     var email = sec.selectedUserEmail;
@@ -1673,8 +1724,15 @@
     var select = document.getElementById('secUserModelServiceSelect');
     var selected = selectedOptions(select);
     var cache = await loadLLMServiceCache();
+    var previous = (cache.user_bindings || []).find(function(binding) { return normalizeEmailKey(binding.email) === normalizeEmailKey(email); });
+    var roles = readSecUserModelRoles(previous);
     cache.user_bindings = (cache.user_bindings || []).filter(function(binding) { return normalizeEmailKey(binding.email) !== normalizeEmailKey(email); });
-    if (selected.length) cache.user_bindings.push({ email: email, service_group_ids: selected });
+    if (selected.length || secRolesNonEmpty(roles)) {
+      var next = { email: email, service_group_ids: selected };
+      if (previous && previous.user_id) next.user_id = previous.user_id;
+      if (secRolesNonEmpty(roles)) next.model_roles = roles;
+      cache.user_bindings.push(next);
+    }
     try {
       await saveLLMServiceCache(cache);
       showToast(st('policySaved'), 'success');
@@ -1753,8 +1811,16 @@
     var source = selected.length ? st('sourceUserBinding') : ((diag && diag.matched_group_bindings && diag.matched_group_bindings.length) ? st('sourceGroupBinding') : (globalIds.length ? st('sourceGlobalBinding') : st('sourceGlobalFallback')));
     var models = (status.available_models || []).join(', ') || '-';
     var inactive = (status.inactive_reasons || []).join(', ');
+    var bindingRoles = binding && binding.model_roles || {};
+    var effectiveRoles = status.role_models || {};
+    var effectiveRoleText = st('roleForeground') + ': ' + (effectiveRoles.foreground || 'auto') + ' · ' + st('roleBackground') + ': ' + (effectiveRoles.background || 'auto') + ' · ' + st('roleComputerUse') + ': ' + (effectiveRoles.computer_use || 'auto');
+    var roleEditors = '<div style="margin-top:12px"><label>' + escapeHtml(st('roleModels')) + '</label><div class="item-meta" style="margin-top:4px">' + escapeHtml(effectiveRoleText) + '</div><div class="grid3" style="margin-top:10px">'
+      + secRoleSelect('secUserRoleForeground', st('roleForeground'), st('roleForegroundHint'), bindingRoles.foreground, cache)
+      + secRoleSelect('secUserRoleBackground', st('roleBackground'), st('roleBackgroundHint'), bindingRoles.background, cache)
+      + secRoleSelect('secUserRoleComputerUse', st('roleComputerUse'), st('roleComputerUseHint'), bindingRoles.computer_use, cache)
+      + '</div><div class="item-meta" style="margin-top:6px">' + escapeHtml(st('roleModelPinHint')) + '</div></div>';
     setCurrentModelServiceExport({ object_type: 'user', user_email: email, source: source, effective_service_group_ids: ids, effective_service_groups: serviceGroupDetails(ids, cache), direct_service_group_ids: selected, global_service_group_ids: globalIds, default_new_user_service_group_ids: defaultIds, diagnostic: diag || null, service_status: status, exported_at: new Date().toISOString() });
-    return '<div class="item" style="padding:12px;margin-top:10px"><div class="item-head"><div><div class="item-title">' + escapeHtml(st('modelServiceGroups')) + '</div><div class="item-meta">' + escapeHtml(source) + '</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">' + renderModelServiceExportButton() + '<button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="saveSecUserModelService()">' + escapeHtml(st('save')) + '</button></div></div><div style="margin-top:8px"><label>' + escapeHtml(st('modelServiceEffective')) + '</label><div style="margin-top:4px">' + serviceGroupChips(ids, cache) + '</div></div><div style="margin-top:10px"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><label>' + escapeHtml(st('modelServiceDirectOverride')) + '</label>' + renderClearModelServiceButton('secUserModelServiceSelect') + '</div><select id="secUserModelServiceSelect" multiple size="4" style="min-height:92px">' + serviceGroupMultiSelectOptions(selected, cache) + '</select><div class="item-meta" style="margin-top:6px">' + escapeHtml(st('modelServiceInheritHint')) + '</div></div><div class="grid2" style="margin-top:10px"><div><label>' + escapeHtml(st('modelRoutes')) + '</label><div class="item-meta">' + escapeHtml(models) + '</div></div><div><label>' + escapeHtml(st('defaultModel')) + '</label><div class="item-meta mono">' + escapeHtml(status.default_model || 'auto') + '</div></div></div>' + renderUserModelServiceUsage(status) + renderUserModelServiceEvidence(diag, cache) + (inactive ? '<div class="hint" style="margin-top:8px">' + escapeHtml(st('inactiveReasons') + ': ' + inactive) + '</div>' : '') + '</div>';
+    return '<div class="item" style="padding:12px;margin-top:10px"><div class="item-head"><div><div class="item-title">' + escapeHtml(st('modelServiceGroups')) + '</div><div class="item-meta">' + escapeHtml(source) + '</div></div><div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">' + renderModelServiceExportButton() + '<button class="btn-secondary" style="height:32px;font-size:12px;padding:0 12px" onclick="saveSecUserModelService()">' + escapeHtml(st('save')) + '</button></div></div><div style="margin-top:8px"><label>' + escapeHtml(st('modelServiceEffective')) + '</label><div style="margin-top:4px">' + serviceGroupChips(ids, cache) + '</div></div><div style="margin-top:10px"><div style="display:flex;align-items:center;justify-content:space-between;gap:8px"><label>' + escapeHtml(st('modelServiceDirectOverride')) + '</label>' + renderClearModelServiceButton('secUserModelServiceSelect') + '</div><select id="secUserModelServiceSelect" multiple size="4" style="min-height:92px">' + serviceGroupMultiSelectOptions(selected, cache) + '</select><div class="item-meta" style="margin-top:6px">' + escapeHtml(st('modelServiceInheritHint')) + '</div></div><div class="grid2" style="margin-top:10px"><div><label>' + escapeHtml(st('modelRoutes')) + '</label><div class="item-meta">' + escapeHtml(models) + '</div></div><div><label>' + escapeHtml(st('defaultModel')) + '</label><div class="item-meta mono">' + escapeHtml(status.default_model || 'auto') + '</div></div></div>' + roleEditors + renderUserModelServiceUsage(status) + renderUserModelServiceEvidence(diag, cache) + (inactive ? '<div class="hint" style="margin-top:8px">' + escapeHtml(st('inactiveReasons') + ': ' + inactive) + '</div>' : '') + '</div>';
   }
 
   function machineDisplayName(item) {
