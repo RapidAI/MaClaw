@@ -1709,7 +1709,7 @@ func TestAdminPageProviderArrayOrderDrag(t *testing.T) {
 		`providerArrayOrderHint: '\u62d6\u52a8\u9635\u5217\uff0c\u8c03\u6574\u5b83\u7684\u4f4d\u7f6e'`,
 		`function renderProviderArray(array, orderableCount)`,
 		`var canOrder = !!(array.members && array.members.length) && Number(orderableCount) > 1`,
-		`draggable="true" title="' + esc(t('providerArrayOrderHint')) + '"'`,
+		`draggable="true" title="' + esc(t('providerArrayOrderHint')) + '" aria-label="' + esc(t('providerArrayOrderHint')) + '"'`,
 		`data-array-orderable="1"`,
 		`class="provider-array-grip"`,
 		`return renderProviderArray(array, orderableCount)`,
