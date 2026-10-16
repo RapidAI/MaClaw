@@ -46,7 +46,7 @@ func (c *coreAgentCallbacks) readFileDetailed(args map[string]interface{}) (stri
 	if err != nil {
 		return fmt.Sprintf("Error: read failed: %v", err), fmt.Errorf("host_file_read_failed")
 	}
-	lines := strings.SplitAfter(string(data), "\n")
+	lines := coretool.SplitTextLines(string(data))
 	totalLines := len(lines)
 
 	// offset parameter: read last N lines (like tail -n)

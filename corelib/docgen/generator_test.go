@@ -1,11 +1,15 @@
 package docgen
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
+
+	gopdf "github.com/VantageDataChat/GoPDF2"
 )
 
 func TestMarkdownToHTML_Headings(t *testing.T) {
@@ -578,6 +582,54 @@ func TestMarkdownToHTML_Bold(t *testing.T) {
 	if !strings.Contains(html, "<b>粗体</b>") {
 		t.Error("should convert **text** to <b>text</b>")
 	}
+	underscore := markdownToHTML("这是__粗体__文本，file_name 保持原样")
+	if !strings.Contains(underscore, "<b>粗体</b>") {
+		t.Error("should convert __text__ to <b>text</b>")
+	}
+	if strings.Contains(underscore, "<b>file") || strings.Contains(underscore, "file<") {
+		t.Errorf("snake_case was treated as emphasis: %s", underscore)
+	}
+	nested := markdownToHTML("__**粗**__")
+	if strings.Contains(nested, "**") || strings.Contains(nested, "__") {
+		t.Errorf("nested emphasis left its markers: %s", nested)
+	}
+}
+
+func TestMarkdownToHTML_CodeInTableKeepsStars(t *testing.T) {
+	md := "| 列 | 值 |\n|---|---|\n| `**x**` | 1 |"
+	html := markdownToHTML(md)
+	if strings.Contains(html, "<b>") {
+		t.Errorf("stars inside code became bold and broke the cell: %s", html)
+	}
+	if !strings.Contains(html, "**x**") {
+		t.Errorf("code text missing: %s", html)
+	}
+}
+
+func TestMarkdownToHTML_Link(t *testing.T) {
+	html := markdownToHTML("见 [EvolveR](https://github.com/Edaizi/EvolveR) 代码")
+	if !strings.Contains(html, `<a href="https://github.com/Edaizi/EvolveR">EvolveR</a>`) {
+		t.Fatalf("link was left as markdown: %s", html)
+	}
+	if strings.Contains(html, "[EvolveR]") {
+		t.Fatalf("raw link label remained: %s", html)
+	}
+	bold := markdownToHTML("[**粗**](https://example.com)")
+	if !strings.Contains(bold, `<a href="https://example.com"><b>粗</b></a>`) {
+		t.Fatalf("bold link was flattened: %s", bold)
+	}
+	image := markdownToHTML("见图 ![图](a.png) 这里")
+	if strings.Contains(image, `<a href="a.png">`) {
+		t.Fatalf("image was turned into a link: %s", image)
+	}
+}
+
+func TestSplitTextByComma_KeepsWindowsPaths(t *testing.T) {
+	text := `日志在 C:\Users\ma139\.maclaw 里`
+	parts := splitTextByComma(text)
+	if len(parts) != 1 || !strings.Contains(parts[0], `C:\Users`) {
+		t.Fatalf("path was split: %#v", parts)
+	}
 }
 
 func TestMarkdownToHTML_Italic(t *testing.T) {
@@ -787,11 +839,204 @@ func TestSplitMarkdownBlockForFilling_TableKeepsWhole(t *testing.T) {
 		"| 支付模块 | 进行中 |",
 	}, "\n")
 	parts := splitMarkdownBlockForFilling(block)
-	if len(parts) != 1 {
-		t.Fatalf("expected table block to remain whole, got %d parts", len(parts))
+	if len(parts) != 2 {
+		t.Fatalf("expected one piece per data row, got %d", len(parts))
 	}
-	if parts[0] != block {
-		t.Fatalf("expected table block to stay unchanged, got %q", parts[0])
+	if joinFillingParts(parts) != block {
+		t.Fatalf("expected rows on one page to fold back into the table, got %q", joinFillingParts(parts))
+	}
+	for _, part := range parts {
+		html := markdownToHTML(part)
+		if !strings.Contains(html, "<table>") || strings.Contains(html, "| 用户") || strings.Contains(html, "| 支付") {
+			t.Fatalf("a row that crosses a page is no longer a table: %s", html)
+		}
+	}
+}
+
+func TestSplitMarkdownBlockForFilling_HeadingGluedToTableKeepsCells(t *testing.T) {
+	table := strings.Join([]string{
+		"| 模型 | EvolveR 平均 | 最强基线 |",
+		"|---|---|---|",
+		"| Qwen2.5-3B | 0.382 | Search-R1-instruct 0.325 |",
+		"| Qwen2.5-7B | 0.417 | Search-R1-instruct 0.385 |",
+	}, "\n")
+	block := "## 主要结果（EM 分数）\n" + table
+	parts := splitMarkdownBlockForFilling(block)
+	joined := joinFillingParts(parts)
+	if strings.Contains(joined, "Qwen2.\n") || strings.Contains(joined, "0.\n") {
+		t.Fatalf("table cells were split on periods: %#v", parts)
+	}
+	// The page ends after the heading and the first data row.
+	firstPage := joinFillingParts(parts[:2])
+	nextPage := joinFillingParts(parts[2:])
+	for _, page := range []string{firstPage, nextPage} {
+		html := markdownToHTML(page)
+		if !strings.Contains(html, "<table>") || strings.Contains(html, "| Qwen2") {
+			t.Fatalf("page break flattened the table: %s", html)
+		}
+	}
+	if !strings.Contains(markdownToHTML(nextPage), "<td>Qwen2.5-7B</td>") {
+		t.Fatalf("next page lost the continued row: %s", markdownToHTML(nextPage))
+	}
+	html := markdownToHTML(joined)
+	if !strings.Contains(html, "<table>") || strings.Contains(html, "| Qwen2") {
+		t.Fatalf("table was flattened: %s", html)
+	}
+	if !strings.Contains(html, "<td>Qwen2.5-3B</td>") || !strings.Contains(html, "<td>0.382</td>") {
+		t.Fatalf("cell text missing: %s", html)
+	}
+}
+
+func TestSplitTextByPunctuation_KeepsBoldIntact(t *testing.T) {
+	text := "见 **Fig. 1** 的结果。下一句。"
+	parts := splitTextByPunctuation(text)
+	for _, part := range parts {
+		if strings.Count(part, "**")%2 != 0 {
+			t.Fatalf("bold marker split across parts: %#v", parts)
+		}
+	}
+	if !strings.Contains(strings.Join(parts, ""), "**Fig. 1**") {
+		t.Fatalf("bold phrase broken: %#v", parts)
+	}
+	if len(parts) < 2 {
+		t.Fatalf("expected the sentence break after the bold span to remain, got %#v", parts)
+	}
+}
+
+func TestSplitTextByPunctuation_KeepsEllipsis(t *testing.T) {
+	text := "实验还在继续...下一句。结束。"
+	parts := splitTextByPunctuation(text)
+	if len(parts) < 2 {
+		t.Fatalf("expected a sentence break, got %#v", parts)
+	}
+	for _, part := range parts {
+		if part == "." || part == ".." || strings.HasPrefix(part, ".下") {
+			t.Fatalf("ellipsis was split: %#v", parts)
+		}
+	}
+	if !strings.Contains(parts[0], "继续...下一句") {
+		t.Fatalf("ellipsis was not kept with the sentence: %#v", parts)
+	}
+	bang := splitTextByPunctuation("真的吗?!下一句。")
+	for _, part := range bang {
+		if part == "?" || part == "!" {
+			t.Fatalf("repeated mark was split: %#v", bang)
+		}
+	}
+}
+
+func TestSplitTextByPunctuation_KeepsHostnames(t *testing.T) {
+	text := "代码在 github.com/Edaizi。下一句。"
+	parts := splitTextByPunctuation(text)
+	if !strings.Contains(strings.Join(parts, "\n"), "github.com/Edaizi") {
+		t.Fatalf("hostname was split: %#v", parts)
+	}
+	if len(parts) < 2 {
+		t.Fatalf("expected the sentence break to remain, got %#v", parts)
+	}
+}
+
+func TestSplitTextByComma_KeepsURLs(t *testing.T) {
+	text := "见 https://arxiv.org/abs/2510.16079 和 arXiv:2510.16079 即可"
+	parts := splitTextByComma(text)
+	if len(parts) != 1 {
+		t.Fatalf("url or id was split: %#v", parts)
+	}
+}
+
+func TestSplitTextByPunctuation_KeepsDecimalDots(t *testing.T) {
+	text := "Qwen2.5 的分数是 0.382。下一句。"
+	parts := splitTextByPunctuation(text)
+	joined := strings.Join(parts, "")
+	if !strings.Contains(joined, "Qwen2.5") || !strings.Contains(joined, "0.382") {
+		t.Fatalf("decimal was split: %#v", parts)
+	}
+	for _, part := range parts {
+		if part == "Qwen2." || part == "0." || strings.HasPrefix(part, "5 ") || strings.HasPrefix(part, "382") {
+			t.Fatalf("number was cut at a dot: %#v", parts)
+		}
+	}
+	if len(parts) < 2 {
+		t.Fatalf("expected the sentence break to remain, got %#v", parts)
+	}
+}
+
+func TestSplitPlainTextByLength_DoesNotCutARune(t *testing.T) {
+	text := strings.Repeat("测", 40)
+	parts := splitPlainTextByLength(text, 80)
+	if len(parts) < 2 {
+		t.Fatalf("expected the line to split, got %#v", parts)
+	}
+	for _, part := range parts {
+		if !utf8.ValidString(part) {
+			t.Fatalf("split inside a character: %q", part)
+		}
+	}
+	if strings.Join(parts, "") != text {
+		t.Fatalf("split dropped characters: %#v", parts)
+	}
+}
+
+func TestSplitParagraphForFilling_KeepsBoldAroundComma(t *testing.T) {
+	text := "见 **图，表** 即可继续"
+	parts := splitParagraphForFilling(text)
+	for _, part := range parts {
+		if strings.Count(part, "**")%2 != 0 {
+			t.Fatalf("bold split on a comma inside the span: %#v", parts)
+		}
+	}
+	if !strings.Contains(strings.Join(parts, ""), "**图，表**") {
+		t.Fatalf("bold phrase broken: %#v", parts)
+	}
+}
+
+func TestSplitMarkdownBlockForFilling_FenceThenTable(t *testing.T) {
+	block := strings.Join([]string{
+		"```go",
+		"x := 1.5",
+		"```",
+		"| 模型 | 分数 |",
+		"|---|---|",
+		"| Qwen2.5-3B | 0.382 |",
+		"| Qwen2.5-7B | 0.417 |",
+	}, "\n")
+	parts := splitMarkdownBlockForFilling(block)
+	joined := joinFillingParts(parts)
+	if !strings.Contains(joined, "x := 1.5") {
+		t.Fatalf("code fence was split: %q", joined)
+	}
+	html := markdownToHTML(joined)
+	if !strings.Contains(html, "<td>0.382</td>") || strings.Contains(html, "| Qwen2") {
+		t.Fatalf("table after the fence was flattened: %s", html)
+	}
+	if len(parts) < 2 {
+		t.Fatalf("table rows were not separable from the fence: %#v", parts)
+	}
+	next := markdownToHTML(joinFillingParts(parts[len(parts)-1:]))
+	if !strings.Contains(next, "<table>") || !strings.Contains(next, "<td>Qwen2.5-7B</td>") {
+		t.Fatalf("continued row is not a table: %s", next)
+	}
+}
+
+func TestSplitMarkdownBlockForFilling_CodeFenceKeepsPeriods(t *testing.T) {
+	block := strings.Join([]string{
+		"## 示例",
+		"```go",
+		"x := 1.5",
+		"```",
+	}, "\n")
+	parts := splitMarkdownBlockForFilling(block)
+	joined := joinFillingParts(parts)
+	if !strings.Contains(joined, "x := 1.5") || strings.Contains(joined, "x := 1.\n") {
+		t.Fatalf("code fence was split on a period: %q parts=%#v", joined, parts)
+	}
+}
+
+func TestSplitParagraphForFilling_HeadingStaysWhole(t *testing.T) {
+	text := "## Fig. 1 的结果"
+	parts := splitParagraphForFilling(text)
+	if len(parts) != 1 || parts[0] != text {
+		t.Fatalf("heading was split: %#v", parts)
 	}
 }
 
@@ -800,6 +1045,24 @@ func TestSplitParagraphForFilling_CommaFallback(t *testing.T) {
 	parts := splitParagraphForFilling(text)
 	if len(parts) < 2 {
 		t.Fatalf("expected comma-based split, got %d", len(parts))
+	}
+}
+
+func TestSplitParagraphForFilling_ImageLineStaysWhole(t *testing.T) {
+	text := "![原文第11页](C:/Users/ma139/.maclaw/figures/p11-1.png)"
+	parts := splitParagraphForFilling(text)
+	if len(parts) != 1 || parts[0] != text {
+		t.Fatalf("image line sliced: %#v", parts)
+	}
+	block := text + "\n图中是热力图。"
+	parts = splitMarkdownBlockForFilling(block)
+	if len(parts) < 2 || parts[0] != text {
+		t.Fatalf("image line sliced inside a block: %#v", parts)
+	}
+	long := "![原文第11页](" + strings.Repeat("dir.part/", 40) + "p11-1.png)"
+	oversized := splitOversizedMarkdownBlock(long)
+	if len(oversized) != 1 || oversized[0] != long {
+		t.Fatalf("oversized split sliced the image into %d parts", len(oversized))
 	}
 }
 
@@ -928,6 +1191,63 @@ func TestMarkdownToHTML_InlineCodeProtectsMathInside(t *testing.T) {
 	if !strings.Contains(html, "$x + y$") {
 		t.Errorf("inline code should preserve literal $x + y$, got: %s", html)
 	}
+}
+
+func TestMarkdownToHTML_TildeFence(t *testing.T) {
+	html := markdownToHTML("~~~\nscore := 0.382\n~~~")
+	if strings.Contains(html, "~~~") {
+		t.Fatalf("fence markers leaked into the paragraph: %s", html)
+	}
+	if !strings.Contains(html, "0.382") || !strings.Contains(html, "font-size:8.5pt") {
+		t.Fatalf("tilde fence was not a code block: %s", html)
+	}
+}
+
+func TestGeneratePDF_BoldSurvivesItalic(t *testing.T) {
+	gen := New()
+	if !gen.HasFont() {
+		t.Skip("跳过：系统未找到中文字体")
+	}
+	if bytes.Equal(gen.fontRegularData, gen.fontBoldData) {
+		t.Skip("跳过：粗体与常规体是同一字体")
+	}
+	html := markdownToHTML("**丙 *丁* 戊**")
+	if !strings.Contains(html, "<b>丙 <i>丁</i> 戊</b>") {
+		t.Fatalf("mixed emphasis HTML: %s", html)
+	}
+	data, err := gen.Generate(Spec{
+		Title:    "甲",
+		Subtitle: "乙",
+		Content:  "**丙 *丁* 戊**",
+	})
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	texts, err := gopdf.ExtractTextFromPage(data, 0)
+	if err != nil {
+		t.Fatalf("extract: %v", err)
+	}
+	boldFont := extractedFont(texts, "甲")
+	regularFont := extractedFont(texts, "乙")
+	innerFont := extractedFont(texts, "丁")
+	if boldFont == "" || regularFont == "" || innerFont == "" {
+		t.Fatalf("missing font names: bold=%q regular=%q inner=%q", boldFont, regularFont, innerFont)
+	}
+	if boldFont == regularFont {
+		t.Fatalf("title and subtitle resolved to the same face %q", boldFont)
+	}
+	if innerFont != boldFont {
+		t.Fatalf("italic inside bold used %q, bold face is %q", innerFont, boldFont)
+	}
+}
+
+func extractedFont(texts []gopdf.ExtractedText, needle string) string {
+	for _, item := range texts {
+		if strings.Contains(item.Text, needle) && item.FontName != "" {
+			return item.FontName
+		}
+	}
+	return ""
 }
 
 func TestMarkdownToHTML_CodeBlockPreservesHTMLChars(t *testing.T) {

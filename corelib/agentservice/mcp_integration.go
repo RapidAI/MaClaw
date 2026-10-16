@@ -5,6 +5,7 @@ import (
 	cryptorand "crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	mcphttp "github.com/RapidAI/CodeClaw/corelib/mcp"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -44,6 +47,17 @@ type MCPToolEntry struct {
 	// Contract is control-plane supplied. An inventory item without one is
 	// ready for management/diagnostics but quarantined from Agent execution.
 	Contract DynamicCapabilityContract
+	// CapabilityGlobalKey and InstalledCapabilityID are the installed server's
+	// capability ref. They select a code-reviewed binding. They are not a
+	// provision, and an instance id alone does not admit a product.
+	CapabilityGlobalKey   string
+	InstalledCapabilityID string
+	// RuntimeBlocked keeps a known tool in the catalog after its server's
+	// latest observation finished negative. The planner must not select it,
+	// and a need that only this server can serve stays provider_not_ready
+	// instead of being reported as absent. A healthy sibling in the same
+	// family stays selectable. Zero means the observation succeeded.
+	RuntimeBlocked bool
 }
 
 // MCPDynamicContractResolver is the only extension point that translates a
@@ -62,10 +76,20 @@ type MCPToolBinding struct {
 	ToolName       string
 	SchemaDigest   string
 	ContractDigest string
+	// ArgumentFields renames model arguments to observed tool fields after the
+	// model schema has been authorized. Empty means the model schema is the
+	// observed schema. It is not part of StableID: the invocation schema digest
+	// already changes when the model contract changes.
+	ArgumentFields map[string]string
 }
 
 func (b MCPToolBinding) StableID() string {
-	return strings.Join([]string{strings.TrimSpace(b.ServerID), strings.TrimSpace(b.ToolName), strings.TrimSpace(b.SchemaDigest), strings.TrimSpace(b.ContractDigest)}, ":")
+	// Phase 5: the grant-stable identity excludes the observed schema digest.
+	// A vendor description or parameter-label tweak (schema drift) keeps the
+	// same StableID, so in-flight grants survive it. A capability/effect change
+	// still rotates ContractDigest (which is rooted in StableBindingKey) and
+	// retires grants as intended.
+	return strings.Join([]string{strings.TrimSpace(b.ServerID), strings.TrimSpace(b.ToolName), strings.TrimSpace(b.ContractDigest)}, ":")
 }
 
 // boundMCPCallSurface is the per-callback materialization of one immutable MCP
@@ -184,8 +208,10 @@ func (b *MCPToolBridge) SetMCPDynamicContractResolver(resolver MCPDynamicContrac
 // the Service's MCP runtime.
 func NewMCPToolBridge(svc *Service) *MCPToolBridge {
 	bridge := &MCPToolBridge{
-		svc:       svc,
-		client:    &http.Client{Timeout: 30 * time.Second},
+		svc: svc,
+		// Tools are actually invoked through this client, so it carries the
+		// same SSRF guard as the probe path (2026-09-09 re-review).
+		client:    mcphttp.NewPrivateHTTPClient(30 * time.Second),
 		readiness: NewMCPReadinessManager(svc),
 	}
 	if svc != nil {
@@ -302,8 +328,33 @@ func DynamicMCPObservedBindingDigest(serverID, toolName string, schema map[strin
 }
 
 func dynamicMCPContractMatchesEntry(contract DynamicCapabilityContract, entry MCPToolEntry) bool {
-	want := strings.TrimSpace(contract.ObservedBindingDigest)
-	return want != "" && want == dynamicMCPObservedBindingDigest(entry.ServerID, entry.ToolName, entry.InputSchema)
+	// Phase 5: match on the grant-stable identity (capability + global_key +
+	// tool_name), not the observed schema digest. A schema drift (description or
+	// parameter-label tweak) keeps the same stable key and therefore keeps the
+	// binding usable; only a capability/effect/tool-name change mismatches and
+	// quarantines the entry.
+	want := strings.TrimSpace(contract.StableBindingKey)
+	if want == "" {
+		// Legacy declarations without a stable key fall back to the observed
+		// digest, preserving strict quarantine until they are republished.
+		want = strings.TrimSpace(contract.ObservedBindingDigest)
+		return want != "" && want == dynamicMCPObservedBindingDigest(entry.ServerID, entry.ToolName, entry.InputSchema)
+	}
+	capability := ""
+	if len(contract.Provisions) > 0 {
+		capability = string(contract.Provisions[0].Capability)
+	}
+	got := mcpStableBindingKey(entry.CapabilityGlobalKey, coretool.CapabilityID(capability), entry.ToolName)
+	if got != want {
+		return false
+	}
+	// Stable key matches: the binding is usable. Flag schema drift (observed
+	// digest changed while the stable identity held) only as a re-review hint,
+	// never as a quarantine.
+	if strings.TrimSpace(contract.ObservedBindingDigest) != "" && strings.TrimSpace(contract.ObservedBindingDigest) != dynamicMCPObservedBindingDigest(entry.ServerID, entry.ToolName, entry.InputSchema) {
+		log.Printf("[semantic-routing] MCP binding %s/%s schema drifted from its reviewed declaration (stable identity held); re-review suggested", entry.ServerID, entry.ToolName)
+	}
+	return true
 }
 
 func (b *MCPToolBridge) contractSnapshot(p Principal) (MCPDynamicContractResolver, error) {
@@ -336,6 +387,42 @@ func (b *MCPToolBridge) CallTool(ctx context.Context, p Principal, serverID, too
 	for _, srv := range cfg.AppConfig.LocalMCPServers {
 		if srv.ID == serverID && !srv.Disabled {
 			client := runtime.localClient(serverID)
+			if client == nil || !client.IsRunning() {
+				// The shared runtime only holds processes that a sync, a
+				// readiness pass or an earlier call started, so a freshly
+				// installed server used to answer "not running" here. Start on
+				// demand instead — the same correction the GUI's
+				// LocalMCPManager made. startLocal is idempotent, so a racing
+				// caller that already produced a live process is a no-op.
+				//
+				// The spawn guard is repeated here rather than left to
+				// StartMCPServer: this call is not preceded by that path, and
+				// validateLocalMCPSpawnTarget covers drift between
+				// registration and now (2026-09-08 review, /tmp/evil symlink).
+				if err := validateLocalMCPSpawnTarget(srv.Command); err != nil {
+					return "", fmt.Errorf("local MCP binary rejected: %w", err)
+				}
+				// Detach the child process from the caller's cancellation.
+				// startLocal hands ctx to exec.CommandContext, so a
+				// request-scoped ctx would tree-kill the server as soon as the
+				// request returns or is canceled — the GUI avoids this by
+				// spawning under LocalMCPManager's lifetime context.
+				// WithoutCancel keeps request-derived values (tracing) while
+				// dropping cancellation, matching hubcenter's ha_wrappers
+				// usage. The resulting process is owned by the runtime rather
+				// than by this request, and is stopped by runtime.stopLocal
+				// when the server is stopped/deleted, or by
+				// Service.Close -> stopAllLocal at host shutdown.
+				if err := runtime.startLocal(context.WithoutCancel(ctx), srv); err != nil {
+					// startLocal leaves a started-but-undiscovered client in the
+					// map when discovery fails. Drop it so the next call retries
+					// from a clean state instead of reusing a half-initialized
+					// process.
+					runtime.stopLocal(serverID)
+					return "", fmt.Errorf("start local MCP server %q: %w", serverID, err)
+				}
+				client = runtime.localClient(serverID)
+			}
 			if client == nil || !client.IsRunning() {
 				return "", fmt.Errorf("local MCP server %q is not running", serverID)
 			}
@@ -431,36 +518,23 @@ func (b *MCPToolBridge) callRemoteTool(runtime *userMCPRuntime, entry corelib.MC
 	return parseMCPToolCallResult(payload)
 }
 
-// parseMCPToolCallResult extracts text content from a tools/call response.
+// parseMCPToolCallResult projects a tools/call payload to its text body.
+// A completed tool error stays a string so the legacy agent loop can classify
+// it with the same "Error:" marker as its other adapter failures. The semantic
+// catalog treats that same error as a failed selection instead.
 func parseMCPToolCallResult(raw json.RawMessage) (string, error) {
-	// MCP tools/call result format:
-	// {"content": [{"type": "text", "text": "..."}, ...], "isError": false}
-	var result struct {
-		Content []struct {
-			Type string `json:"type"`
-			Text string `json:"text"`
-		} `json:"content"`
-		IsError bool `json:"isError"`
-	}
-	if err := json.Unmarshal(raw, &result); err != nil {
-		// Fallback: return raw JSON as string.
-		return string(raw), nil
-	}
-	var texts []string
-	for _, c := range result.Content {
-		if c.Type == "text" && c.Text != "" {
-			texts = append(texts, c.Text)
+	text, err := mcphttp.ToolCallContent(string(raw))
+	if err != nil {
+		var toolErr *mcphttp.ToolCallError
+		if errors.As(err, &toolErr) {
+			return "Error: " + toolErr.Error(), nil
 		}
+		return "", err
 	}
-	if len(texts) == 0 {
-		// No text content — return raw JSON.
-		return string(raw), nil
-	}
-	combined := strings.Join(texts, "\n")
-	if result.IsError {
-		return "Error: " + combined, nil
-	}
-	return combined, nil
+	// Vendor text must not mint host control markers (ask_user, record_audio,
+	// subagent context): an unbound bridge result reaches the loop the same
+	// way a bound one does.
+	return agent.SanitizeVendorToolResultText(text), nil
 }
 
 // SetMCPToolProvider wires the MCP tool provider into the executor.

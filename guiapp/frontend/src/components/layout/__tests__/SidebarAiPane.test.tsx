@@ -1,0 +1,274 @@
+// @vitest-environment jsdom
+import { StrictMode } from 'react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type React from 'react';
+import { SidebarAiPane, isDigitalEmployeeAuthorizationUsable, shouldShowDigitalEmployeeMiddleTabs } from '../SidebarAiPane';
+import { acknowledgeRailMiddleFocus, peekPendingRailMiddleFocus, railMiddleFocus, requestRailMiddleFocus, resetRailMiddleFocusForTests } from '../railMiddleFocus';
+
+vi.mock('../SidebarToolSelector', () => ({ SidebarToolSelector: () => <div data-testid="tool-selector" /> }));
+vi.mock('../SidebarTaskManagement', () => ({ SidebarTaskManagement: () => <div data-testid="task-management" /> }));
+vi.mock('../SidebarSystemStatus', async (importOriginal) => {
+    const actual = await importOriginal<typeof import('../SidebarSystemStatus')>();
+    return { ...actual, SidebarSystemStatus: () => <div data-testid="system-status" /> };
+});
+vi.mock('../../ai/VirtualEmployeeTab', () => ({ VirtualEmployeeTab: () => <div data-testid="digital-employees" /> }));
+vi.mock('../SidebarHistorySessions', () => ({ SidebarHistorySessions: ({ enabled = true }: { enabled?: boolean }) => enabled ? <div data-testid="history-sessions" /> : null }));
+
+const noop = vi.fn();
+
+const visibleEmployeeStatus = { visible: true, actual_count: 1, authorization: { active: true, quota: 1, expires_at: '2999-01-01T00:00:00Z' } };
+
+function paneProps(status: any, overrides: Partial<React.ComponentProps<typeof SidebarAiPane>> = {}): React.ComponentProps<typeof SidebarAiPane> {
+    return {
+        taskManagementPaneWidth: 260,
+        lang: 'en',
+        aiThemeMode: 'light',
+        maclawLLMOnline: true,
+        remoteActivationStatus: {},
+        qqBotStatus: '',
+        telegramStatus: '',
+        weixinStatus: '',
+        lansengerStatus: '',
+        config: { group_discussion: { enabled: true } },
+        activeTool: 'codex',
+        toolDropdownOpen: false,
+        setToolDropdownOpen: noop,
+        tasks: [],
+        renamingTaskPath: null,
+        setRenamingTaskPath: noop,
+        renameValue: '',
+        setRenameValue: noop,
+        resumeTask: noop,
+        continueWorkflowProject: noop,
+        createTask: noop,
+        refreshTasks: noop,
+        taskContextMenu: null,
+        setTaskContextMenu: noop,
+        renameTask: async () => undefined,
+        pinTask: async () => undefined,
+        hideTask: async () => undefined,
+        sidebarCurrentProviderTokenUsage: { provider: '', isHubService: false, input: 0, output: 0, total: 0, cachedInput: 0, cacheWrite: 0, requests: 0, cachedRequests: 0 },
+        sidebarHubCredits: null,
+        formatSidebarTokens: (value) => String(value),
+        formatSidebarHubExpiry: () => '',
+        formatSidebarHubTotalCredits: () => '',
+        formatSidebarHubUsedCredits: () => '',
+        formatSidebarCredit: (value) => String(value),
+        unlimitedHubCreditText: 'Unlimited',
+        noHubAuthorizationText: 'No auth',
+        showHubCreditAction: false,
+        openHubCreditsPage: noop,
+        handleTaskManagementResizeStart: noop,
+        isTaskManagementResizing: false,
+        switchTool: noop,
+        digitalEmployeeFeatureStatus: status,
+        ...overrides,
+    };
+}
+
+function renderPane(status: any, overrides: Partial<React.ComponentProps<typeof SidebarAiPane>> = {}) {
+    return render(<SidebarAiPane {...paneProps(status, overrides)} />);
+}
+
+describe('SidebarAiPane digital employee tabs', () => {
+    beforeEach(() => {
+        resetRailMiddleFocusForTests();
+    });
+
+    it('exposes a wide pointer-capture resize handle for the task pane', () => {
+        const onResize = vi.fn();
+        renderPane({ visible: false, reason: 'no_digital_employees', actual_count: 0 }, { handleTaskManagementResizeStart: onResize });
+
+        const handle = screen.getByTestId('task-pane-resize-handle');
+        expect(handle.getAttribute('role')).toBe('separator');
+        expect(handle.getAttribute('aria-valuemin')).toBe('180');
+        expect(handle.getAttribute('aria-valuemax')).toBe('460');
+        fireEvent.pointerDown(handle, { clientX: 260, pointerId: 7 });
+        expect(onResize).toHaveBeenCalled();
+    });
+
+    it('shows only task management when feature status is hidden', () => {
+        renderPane({ visible: false, reason: 'no_digital_employees', actual_count: 0 });
+
+        expect(screen.getByTestId('task-management')).toBeTruthy();
+        expect(screen.queryByText('Digital')).toBeNull();
+        expect(screen.queryByText('History')).toBeNull();
+    });
+
+
+
+    it('hides digital employee tabs when visible is stale but authorization is not usable', () => {
+        expect(shouldShowDigitalEmployeeMiddleTabs({ visible: true, actual_count: 1, authorization: { active: false, quota: 1 } })).toBe(false);
+        expect(shouldShowDigitalEmployeeMiddleTabs({ visible: true, actual_count: 1, authorization: { active: true, quota: 0 } })).toBe(false);
+        expect(shouldShowDigitalEmployeeMiddleTabs({ visible: true, actual_count: 0, authorization: { active: true, quota: 1 } })).toBe(false);
+        expect(shouldShowDigitalEmployeeMiddleTabs({ visible: true, actual_count: 1, authorization: { active: true, quota: 1, expires_at: '2026-05-15T00:00:00Z' } }, Date.parse('2026-05-16T00:00:00Z'))).toBe(false);
+        expect(shouldShowDigitalEmployeeMiddleTabs({ visible: true, actual_count: 1, authorization: { active: true, quota: 1, expires_at: 'not-a-date' } }, Date.parse('2026-05-16T00:00:00Z'))).toBe(false);
+
+        expect(shouldShowDigitalEmployeeMiddleTabs({ visible: true, actual_count: 1, authorization: { active: true, quota: 1 } })).toBe(false);
+
+        renderPane({ visible: true, actual_count: 1, authorization: { active: false, quota: 1 } });
+        expect(screen.queryByText('Digital')).toBeNull();
+        expect(screen.queryByText('History')).toBeNull();
+    });
+
+    it('treats expired digital employee authorization as unusable even if active is stale', () => {
+        expect(isDigitalEmployeeAuthorizationUsable({ active: true, quota: 1, expires_at: '2026-05-15T00:00:00Z' }, Date.parse('2026-05-16T00:00:00Z'))).toBe(false);
+        expect(isDigitalEmployeeAuthorizationUsable({ active: true, quota: 1, expires_at: '2026-05-17T00:00:00Z' }, Date.parse('2026-05-16T00:00:00Z'))).toBe(true);
+    });
+
+    it('restores digital employee navigation when the app shell knows Hub entries are reachable', () => {
+        renderPane({ visible: false, reason: 'no_digital_employees', actual_count: 0 }, { showDigitalEmployeeNavigation: true });
+
+        fireEvent.click(screen.getByText('AI Experts'));
+        expect(screen.getByTestId('digital-employees')).toBeTruthy();
+
+        fireEvent.click(screen.getByText('History'));
+        expect(screen.getByTestId('history-sessions')).toBeTruthy();
+    });
+
+    it('keeps cached digital employee history visible when group discussion is disabled', () => {
+        renderPane(
+            { visible: false, reason: 'no_digital_employees', actual_count: 0 },
+            { showDigitalEmployeeNavigation: true, config: { group_discussion: { enabled: false } } },
+        );
+
+        fireEvent.click(screen.getByText('History'));
+        expect(screen.getByTestId('history-sessions')).toBeTruthy();
+    });
+
+    it('shows digital employees and history tabs when feature status is visible', () => {
+        renderPane({ visible: true, actual_count: 1, authorization: { active: true, quota: 1, expires_at: '2999-01-01T00:00:00Z' } });
+
+        fireEvent.click(screen.getByText('AI Experts'));
+        expect(screen.getByTestId('digital-employees')).toBeTruthy();
+
+        fireEvent.click(screen.getByText('History'));
+        expect(screen.getByTestId('history-sessions')).toBeTruthy();
+    });
+
+    it('keeps tab content in a flexible slot above system status', () => {
+        renderPane({ visible: true, actual_count: 1, authorization: { active: true, quota: 1, expires_at: '2999-01-01T00:00:00Z' } });
+
+        fireEvent.click(screen.getByText('History'));
+
+        const contentSlot = screen.getByTestId('sidebar-ai-content-slot');
+        expect(contentSlot.contains(screen.getByTestId('history-sessions'))).toBe(true);
+        expect(contentSlot.contains(screen.getByTestId('system-status'))).toBe(false);
+        expect(contentSlot.style.flex).toBe('1 1 0%');
+        expect(contentSlot.style.minHeight).toBe('0px');
+    });
+
+    it('insets digital employee content so the pane does not press against the divider', () => {
+        renderPane({ visible: true, actual_count: 1, authorization: { active: true, quota: 1, expires_at: '2999-01-01T00:00:00Z' } });
+
+        fireEvent.click(screen.getByText('AI Experts'));
+
+        const middlePane = screen.getByTestId('sidebar-middle-pane-employees');
+        expect(middlePane.style.paddingLeft).toBe('6px');
+        expect(middlePane.style.paddingRight).toBe('6px');
+        expect(middlePane.style.boxSizing).toBe('border-box');
+    });
+
+    it('insets history content with the same pane spacing', () => {
+        renderPane({ visible: true, actual_count: 1, authorization: { active: true, quota: 1, expires_at: '2999-01-01T00:00:00Z' } });
+
+        fireEvent.click(screen.getByText('History'));
+
+        const middlePane = screen.getByTestId('sidebar-middle-pane-history');
+        expect(middlePane.style.paddingLeft).toBe('6px');
+        expect(middlePane.style.paddingRight).toBe('6px');
+        expect(middlePane.style.boxSizing).toBe('border-box');
+    });
+
+    it('keeps task management mounted while other middle tabs are active', () => {
+        renderPane({ visible: true, actual_count: 1, authorization: { active: true, quota: 1, expires_at: '2999-01-01T00:00:00Z' } });
+
+        fireEvent.click(screen.getByText('AI Experts'));
+        // Hidden but still mounted so welcome coding-task events can open create dialog.
+        expect(screen.getByTestId('task-management')).toBeTruthy();
+        expect(screen.getByTestId('sidebar-middle-pane-tasks').style.display).toBe('none');
+        expect(screen.getByTestId('digital-employees')).toBeTruthy();
+    });
+
+    it('switches back to tasks when a welcome coding-task event fires', () => {
+        renderPane({ visible: true, actual_count: 1, authorization: { active: true, quota: 1, expires_at: '2999-01-01T00:00:00Z' } });
+
+        fireEvent.click(screen.getByText('History'));
+        expect(screen.getByTestId('history-sessions')).toBeTruthy();
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent('ai-open-create-coding-task', {
+                detail: { mode: 'coding_dev', name: 'Implement a feature' },
+            }));
+        });
+
+        expect(screen.getByTestId('sidebar-middle-pane-tasks').style.display).not.toBe('none');
+        expect(screen.queryByTestId('history-sessions')).toBeNull();
+    });
+
+    it('drops a stale digital-employee highlight when the pane remounts on the task list', () => {
+        acknowledgeRailMiddleFocus('employees');
+        renderPane(visibleEmployeeStatus);
+
+        expect(screen.getByTestId('sidebar-middle-pane-tasks').style.display).not.toBe('none');
+        expect(screen.queryByTestId('digital-employees')).toBeNull();
+        expect(railMiddleFocus()).toBe('tasks');
+    });
+
+    it('shows digital employees when the rail click happened before the pane mounted', () => {
+        requestRailMiddleFocus('employees');
+        renderPane(visibleEmployeeStatus);
+
+        expect(screen.getByTestId('digital-employees')).toBeTruthy();
+        expect(screen.getByTestId('sidebar-middle-pane-tasks').style.display).toBe('none');
+        expect(peekPendingRailMiddleFocus()).toBeNull();
+        expect(railMiddleFocus()).toBe('employees');
+    });
+
+    it('keeps that pre-mount click under StrictMode', () => {
+        requestRailMiddleFocus('employees');
+        render(
+            <StrictMode>
+                <SidebarAiPane {...paneProps(visibleEmployeeStatus)} />
+            </StrictMode>,
+        );
+
+        expect(screen.getByTestId('digital-employees')).toBeTruthy();
+        expect(railMiddleFocus()).toBe('employees');
+    });
+
+    it('returns to the task list when the workbench rail intent fires', () => {
+        renderPane(visibleEmployeeStatus);
+
+        act(() => { requestRailMiddleFocus('employees'); });
+        expect(screen.getByTestId('digital-employees')).toBeTruthy();
+        expect(railMiddleFocus()).toBe('employees');
+
+        act(() => { requestRailMiddleFocus('tasks'); });
+        expect(screen.getByTestId('sidebar-middle-pane-tasks').style.display).not.toBe('none');
+        expect(screen.queryByTestId('digital-employees')).toBeNull();
+        expect(railMiddleFocus()).toBe('tasks');
+        expect(peekPendingRailMiddleFocus()).toBeNull();
+    });
+
+    it('holds a digital-employee intent until the feature gate opens', () => {
+        const hidden = { visible: false, reason: 'no_digital_employees', actual_count: 0 };
+        requestRailMiddleFocus('employees');
+        const view = renderPane(hidden, { showDigitalEmployeeNavigation: false });
+
+        expect(screen.queryByTestId('digital-employees')).toBeNull();
+        expect(peekPendingRailMiddleFocus()).toBe('employees');
+        expect(railMiddleFocus()).toBe('tasks');
+
+        act(() => { requestRailMiddleFocus('employees'); });
+        expect(screen.queryByTestId('digital-employees')).toBeNull();
+        expect(railMiddleFocus()).toBe('tasks');
+
+        view.rerender(<SidebarAiPane {...paneProps(hidden, { showDigitalEmployeeNavigation: true })} />);
+
+        expect(screen.getByTestId('digital-employees')).toBeTruthy();
+        expect(peekPendingRailMiddleFocus()).toBeNull();
+        expect(railMiddleFocus()).toBe('employees');
+    });
+});

@@ -27,6 +27,33 @@ func TestClassifyTurn_ReasoningCode(t *testing.T) {
 	}
 }
 
+func TestClassifyTurn_APIURLAndKeyAreNotReasoning(t *testing.T) {
+	for _, text := range []string{
+		"将agnes 视频 生成模型信息保存到知识库： https://api.agnes-ai.cn/v1 ，apikey: cpk-example",
+		"apikey: cpk-example 保存到知识库",
+		"api.agnes-ai.cn 的模型信息保存一下",
+		"保存 https://example.com/v1/api 的说明",
+		"保存 (https://example.com/v1/api) 的说明",
+	} {
+		got := ClassifyTurn(text, ClassifyHints{})
+		if got.Task == TaskReasoning {
+			t.Fatalf("%q must not become reasoning via api: %s (%s)", text, got.Task, got.Reason)
+		}
+	}
+	for _, text := range []string{
+		"这个 api 返回空列表",
+		"看一下这份 openapi 描述",
+	} {
+		got := ClassifyTurn(text, ClassifyHints{})
+		if got.Task != TaskReasoning {
+			t.Fatalf("%q should stay reasoning: %s (%s)", text, got.Task, got.Reason)
+		}
+	}
+	if got := ClassifyTurn("rapid 原型", ClassifyHints{}); got.Task == TaskReasoning {
+		t.Fatalf("rapid must not match api: %s (%s)", got.Task, got.Reason)
+	}
+}
+
 func TestClassifyTurn_ShortOpsCues(t *testing.T) {
 	for _, text := range []string{"帮我修一下", "run npm install", "打开终端"} {
 		got := ClassifyTurn(text, ClassifyHints{})

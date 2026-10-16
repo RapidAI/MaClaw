@@ -1,0 +1,797 @@
+package tinytex
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+func TestMissingPackagesAndNames(t *testing.T) {
+	log := "! LaTeX Error: File `lipsum.sty' not found.\n! LaTeX Error: File `ctex.cls' not found.\n! I can't find file `chapter.tex'.\n"
+	got := MissingPackages(log)
+	if strings.Join(got, ",") != "lipsum.sty,ctex.cls" {
+		t.Fatalf("missing = %#v", got)
+	}
+	if PackageNameFromFile("lipsum.sty") != "lipsum" {
+		t.Fatal(PackageNameFromFile("lipsum.sty"))
+	}
+	if PackageNameFromFile("../x.sty") != "" && PackageNameFromFile("../x.sty") != "x" {
+		t.Fatal(PackageNameFromFile("../x.sty"))
+	}
+	if PackageNameFromFile("a.sty") != "" {
+		t.Fatal("single-letter package should be rejected")
+	}
+	imageLog := "! LaTeX Error: File `example-image-a' not found.\n! Package pdftex.def Error: File `example-image-a.pdf' not found.\n"
+	images := MissingPackages(imageLog)
+	if strings.Join(images, ",") != "example-image-a,example-image-a.pdf" {
+		t.Fatalf("images = %#v", images)
+	}
+	if PackageNameFromFile("example-image-a") != "mwe" || PackageNameFromFile("example-image-a.pdf") != "mwe" {
+		t.Fatal(PackageNameFromFile("example-image-a.pdf"))
+	}
+	if PackageNameFromFile("IEEEtran.bst") != "ieeetran" {
+		t.Fatal(PackageNameFromFile("IEEEtran.bst"))
+	}
+	if strings.Join(MissingBibStyles("I couldn't open style file IEEEtran.bst\n"), ",") != "IEEEtran.bst" {
+		t.Fatal(MissingBibStyles("I couldn't open style file IEEEtran.bst\n"))
+	}
+	if !NeedsBibtex("Please (re)run BibTeX on the file") || !NeedsBiber("Please (re)run Biber") || !NeedsRerun("Rerun to get cross-references right.") {
+		t.Fatal("rerun detectors")
+	}
+	if !NeedsBibtex("LaTeX Warning: Citation `knuth' on page 1 undefined on input line 4.") || !NeedsBibtex("No file main.bbl.") {
+		t.Fatal("kernel bibliography")
+	}
+	if NeedsBibtex("LaTeX Warning: There were undefined references.") || NeedsBibtex("Output written on main.pdf") {
+		t.Fatal("cross-reference is not bibtex")
+	}
+	if NeedsBibtex("No file main.toc.\n(./main.bbl)\nOutput written on main.pdf\n") {
+		t.Fatal("opened bbl is not a missing bbl")
+	}
+	if NeedsBibtex("Package natbib Info: citation style author-year.\nLaTeX Warning: There were undefined references.\n") {
+		t.Fatal("citation elsewhere plus undefined references")
+	}
+	if !NeedsBibtex("No file main.toc.\nNo file main.bbl.\n") {
+		t.Fatal("missing bbl line")
+	}
+	if !NeedsRerun("Rerun to get bibliographical references right") {
+		t.Fatal("backref rerun")
+	}
+	if !NeedsRerun("Package natbib Warning: Citation(s) may have changed. Rerun to get citations correct.") || !NeedsRerun("Package biblatex Warning: Please rerun LaTeX.") {
+		t.Fatal("bibliography rerun")
+	}
+	if NeedsRerun("Output written on main.pdf") {
+		t.Fatal("clean log requested a rerun")
+	}
+}
+
+func TestErrorFileKeepsChapterDirectory(t *testing.T) {
+	root := t.TempDir()
+	chapterDir := filepath.Join(root, "chapters")
+	if err := os.MkdirAll(chapterDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wrong := filepath.Join(root, "a.tex")
+	chapter := filepath.Join(chapterDir, "a.tex")
+	if err := os.WriteFile(wrong, []byte("wrong\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(chapter, []byte("chapter\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := ErrorFile(root, "./chapters/a.tex:3: Undefined control sequence.\n", filepath.Join(root, "main.tex"))
+	if got != chapter {
+		t.Fatalf("error file = %s", got)
+	}
+	got = ErrorFile(root, chapter+":4: error\n", wrong)
+	if got != chapter {
+		t.Fatalf("absolute error file = %s", got)
+	}
+	got = ErrorFile(root, "D:/not/in/this/project/missing.tex:1: error\n", wrong)
+	if got != wrong {
+		t.Fatalf("fallback = %s", got)
+	}
+}
+
+func TestResolveMainFollowsInput(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main.tex")
+	chap := filepath.Join(dir, "chap.tex")
+	if err := os.WriteFile(main, []byte("\\documentclass{article}\n\\begin{document}\n\\input{chap}\n\\end{document}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(chap, []byte("Hello chapter\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveMain(chap)
+	if err != nil || got != main {
+		t.Fatalf("main = %s err=%v", got, err)
+	}
+	own, err := ResolveMain(main)
+	if err != nil || own != main {
+		t.Fatalf("own = %s err=%v", own, err)
+	}
+	nestedDir := filepath.Join(dir, "chapters", "sec")
+	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	nested := filepath.Join(nestedDir, "intro.tex")
+	if err := os.WriteFile(nested, []byte("nested chapter\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(main, []byte("\\documentclass{article}\n\\input{chapters/sec/intro}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = ResolveMain(nested)
+	if err != nil || got != main {
+		t.Fatalf("nested main = %s err=%v", got, err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "other.tex"), []byte("\\documentclass{article}\n\\input{intro}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = ResolveMain(nested)
+	if err != nil || got != main {
+		t.Fatalf("basename in a higher folder stole the main file: %s err=%v", got, err)
+	}
+}
+
+func TestResolveMainIgnoresMentionedDocumentClass(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main.tex")
+	chapDir := filepath.Join(dir, "chapters")
+	if err := os.MkdirAll(chapDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	chap := filepath.Join(chapDir, "intro.tex")
+	if err := os.WriteFile(main, []byte("\\documentclass{article}\n\\begin{document}\n\\input{chapters/intro}\n\\end{document}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(chap, []byte("% \\documentclass{article}\n本章说明 \\documentclass{article}。\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ResolveMain(chap)
+	if err != nil || got != main {
+		t.Fatalf("main = %s err=%v", got, err)
+	}
+	if _, ok := AcceptRepairedSource("\\documentclass{article}\n\\begin{document}\nbody long enough\n\\end{document}\n", "% \\documentclass{article}\nno real class but the reply is long enough\n"); ok {
+		t.Fatal("commented documentclass accepted as a repair")
+	}
+}
+
+func TestAcceptRepairedSource(t *testing.T) {
+	orig := "\\documentclass{article}\n\\begin{document}\n\\bad\n\\end{document}\n"
+	good := "```latex\n\\documentclass{article}\n\\begin{document}\nfixed\n\\end{document}\n```"
+	body, ok := AcceptRepairedSource(orig, good)
+	if !ok || !strings.Contains(body, "fixed") || strings.Contains(body, "```") {
+		t.Fatalf("body=%q ok=%v", body, ok)
+	}
+	if _, ok := AcceptRepairedSource(orig, "```latex\nno class here but long enough to pass length\n```"); ok {
+		t.Fatal("dropped documentclass")
+	}
+	long := strings.Repeat("A", 500)
+	if _, ok := AcceptRepairedSource(long+orig, "\\documentclass{article}\nshort\n"); ok {
+		t.Fatal("truncated replacement")
+	}
+}
+
+func TestPreviewInstallsPackageThenCompiles(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main.tex")
+	if err := os.WriteFile(main, []byte("\\documentclass{article}\n\\begin{document}x\\end{document}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var installed []string
+	runs := 0
+	res, err := Preview(context.Background(), main, PreviewOptions{
+		Engine: "xelatex",
+		Run: func(_ context.Context, bin, work string, args ...string) (string, int, error) {
+			runs++
+			if runs == 1 {
+				return "! LaTeX Error: File `lipsum.sty' not found.\n", 1, nil
+			}
+			pdf := filepath.Join(work, "main.pdf")
+			if err := os.WriteFile(pdf, []byte("%PDF-1.4"), 0o644); err != nil {
+				return "", -1, err
+			}
+			return "Output written on main.pdf", 0, nil
+		},
+		Install: func(_ context.Context, pkg string) error {
+			installed = append(installed, pkg)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.PDFPath == "" || res.Repaired {
+		t.Fatalf("result = %+v", res)
+	}
+	if strings.Join(installed, ",") != "lipsum" {
+		t.Fatalf("installed = %#v", installed)
+	}
+}
+
+func TestPreviewRerunsAfterBibliography(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main.tex")
+	if err := os.WriteFile(main, []byte("\\documentclass{article}\n\\begin{document}x\\end{document}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var engines, bibs int
+	res, err := Preview(context.Background(), main, PreviewOptions{
+		Engine: "xelatex",
+		Biber:  "biber",
+		Run: func(_ context.Context, bin, work string, _ ...string) (string, int, error) {
+			if bin == "biber" {
+				bibs++
+				return "", 0, nil
+			}
+			engines++
+			if err := os.WriteFile(filepath.Join(work, "main.pdf"), []byte("%PDF-1.4"), 0o644); err != nil {
+				return "", -1, err
+			}
+			switch engines {
+			case 1:
+				return "Please (re)run Biber on the file:\n", 0, nil
+			case 2:
+				return "Package biblatex Warning: Please rerun LaTeX.\n", 0, nil
+			default:
+				return "Output written on main.pdf", 0, nil
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(res.PDFPath, "main.pdf") || engines != 3 || bibs != 1 {
+		t.Fatalf("pdf=%s engines=%d bibs=%d", res.PDFPath, engines, bibs)
+	}
+}
+
+func TestPreviewInstallsBibliographyStyle(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main.tex")
+	if err := os.WriteFile(main, []byte("\\documentclass{article}\n\\begin{document}x\\end{document}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var installed []string
+	var engines, bibs int
+	res, err := Preview(context.Background(), main, PreviewOptions{
+		Engine: "xelatex",
+		Bibtex: "bibtex",
+		Run: func(_ context.Context, bin, work string, _ ...string) (string, int, error) {
+			if bin == "bibtex" {
+				bibs++
+				if bibs == 1 {
+					return "I couldn't open style file IEEEtran.bst\n", 2, nil
+				}
+				return "Database file #1: refs.bib\n", 0, nil
+			}
+			engines++
+			if err := os.WriteFile(filepath.Join(work, "main.pdf"), []byte("%PDF-1.4"), 0o644); err != nil {
+				return "", -1, err
+			}
+			if engines == 1 {
+				return "Package natbib Warning: There were undefined citations.\n", 0, nil
+			}
+			return "Output written on main.pdf", 0, nil
+		},
+		Install: func(_ context.Context, pkg string) error {
+			installed = append(installed, pkg)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(res.PDFPath, "main.pdf") || engines != 2 || bibs != 2 || strings.Join(installed, ",") != "ieeetran" {
+		t.Fatalf("pdf=%s engines=%d bibs=%d installed=%v", res.PDFPath, engines, bibs, installed)
+	}
+}
+
+func TestPreviewRunsBibtexWhenTheBibliographyIsStale(t *testing.T) {
+	t.Run("newer database", func(t *testing.T) {
+		dir := t.TempDir()
+		writeBibFixture(t, dir, true)
+		future := time.Now().Add(time.Hour)
+		if err := os.Chtimes(filepath.Join(dir, "refs.bib"), future, future); err != nil {
+			t.Fatal(err)
+		}
+		engines, bibs := runPreviewBibtex(t, dir, "")
+		if engines != 2 || bibs != 1 {
+			t.Fatalf("engines=%d bibs=%d", engines, bibs)
+		}
+	})
+	t.Run("missing bbl", func(t *testing.T) {
+		dir := t.TempDir()
+		writeBibFixture(t, dir, false)
+		engines, bibs := runPreviewBibtex(t, dir, "")
+		if engines != 2 || bibs != 1 {
+			t.Fatalf("engines=%d bibs=%d", engines, bibs)
+		}
+	})
+	t.Run("newer style", func(t *testing.T) {
+		dir := t.TempDir()
+		writeBibFixture(t, dir, true)
+		past := time.Now().Add(-time.Hour)
+		if err := os.Chtimes(filepath.Join(dir, "refs.bib"), past, past); err != nil {
+			t.Fatal(err)
+		}
+		style := filepath.Join(dir, "plain.bst")
+		if err := os.WriteFile(style, []byte("ENTRY{}\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		future := time.Now().Add(time.Hour)
+		if err := os.Chtimes(style, future, future); err != nil {
+			t.Fatal(err)
+		}
+		engines, bibs := runPreviewBibtex(t, dir, "")
+		if engines != 2 || bibs != 1 {
+			t.Fatalf("engines=%d bibs=%d", engines, bibs)
+		}
+	})
+	t.Run("current bbl", func(t *testing.T) {
+		dir := t.TempDir()
+		writeBibFixture(t, dir, true)
+		past := time.Now().Add(-time.Hour)
+		if err := os.Chtimes(filepath.Join(dir, "refs.bib"), past, past); err != nil {
+			t.Fatal(err)
+		}
+		engines, bibs := runPreviewBibtex(t, dir, "")
+		if engines != 1 || bibs != 0 {
+			t.Fatalf("engines=%d bibs=%d", engines, bibs)
+		}
+	})
+	t.Run("toc beside an opened bbl", func(t *testing.T) {
+		dir := t.TempDir()
+		writeBibFixture(t, dir, true)
+		past := time.Now().Add(-time.Hour)
+		if err := os.Chtimes(filepath.Join(dir, "refs.bib"), past, past); err != nil {
+			t.Fatal(err)
+		}
+		log := "No file main.toc.\n(./main.bbl)\nPackage natbib Info: citation style author-year.\nLaTeX Warning: There were undefined references.\nOutput written on main.pdf\n"
+		engines, bibs := runPreviewBibtex(t, dir, log)
+		if engines != 1 || bibs != 0 {
+			t.Fatalf("engines=%d bibs=%d", engines, bibs)
+		}
+	})
+}
+
+func writeBibFixture(t *testing.T, dir string, withBBL bool) {
+	t.Helper()
+	main := filepath.Join(dir, "main.tex")
+	if err := os.WriteFile(main, []byte("\\documentclass{article}\n\\begin{document}x\\end{document}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "refs.bib"), []byte("@article{a,title={t}}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !withBBL {
+		return
+	}
+	if err := os.WriteFile(filepath.Join(dir, "main.bbl"), []byte("\\begin{thebibliography}{1}\n\\end{thebibliography}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func runPreviewBibtex(t *testing.T, dir, engineLog string) (int, int) {
+	t.Helper()
+	if engineLog == "" {
+		engineLog = "Output written on main.pdf\n"
+	}
+	var engines, bibs int
+	res, err := Preview(context.Background(), filepath.Join(dir, "main.tex"), PreviewOptions{
+		Engine: "xelatex",
+		Bibtex: "bibtex",
+		Run: func(_ context.Context, bin, work string, _ ...string) (string, int, error) {
+			if bin == "bibtex" {
+				bibs++
+				return "Database file #1: refs.bib\n", 0, nil
+			}
+			engines++
+			if err := os.WriteFile(filepath.Join(work, "main.pdf"), []byte("%PDF-1.4\n"), 0o644); err != nil {
+				return "", -1, err
+			}
+			aux := "\\bibdata{refs}\n\\bibstyle{plain}\n"
+			if err := os.WriteFile(filepath.Join(work, "main.aux"), []byte(aux), 0o644); err != nil {
+				return "", -1, err
+			}
+			return engineLog, 0, nil
+		},
+	})
+	if err != nil || res.PDFPath == "" {
+		t.Fatalf("result=%+v err=%v", res, err)
+	}
+	return engines, bibs
+}
+
+func TestPreviewKeepsABibtexWarning(t *testing.T) {
+	dir := t.TempDir()
+	writeBibFixture(t, dir, true)
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "refs.bib"), future, future); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Preview(context.Background(), filepath.Join(dir, "main.tex"), PreviewOptions{
+		Engine: "xelatex",
+		Bibtex: "bibtex",
+		Run: func(_ context.Context, bin, work string, _ ...string) (string, int, error) {
+			if bin == "bibtex" {
+				return "Warning--empty journal in knuth\nDatabase file #1: refs.bib\n", 0, nil
+			}
+			if err := os.WriteFile(filepath.Join(work, "main.pdf"), []byte("%PDF-1.4\n"), 0o644); err != nil {
+				return "", -1, err
+			}
+			aux := "\\bibdata{refs}\n\\bibstyle{plain}\n"
+			if err := os.WriteFile(filepath.Join(work, "main.aux"), []byte(aux), 0o644); err != nil {
+				return "", -1, err
+			}
+			return "Output written on main.pdf\n", 0, nil
+		},
+	})
+	if err != nil || !strings.Contains(res.Log, "Warning--empty journal in knuth") {
+		t.Fatalf("result=%+v err=%v", res, err)
+	}
+}
+
+func TestPreviewReportsABibtexSyntaxError(t *testing.T) {
+	dir := t.TempDir()
+	writeBibFixture(t, dir, true)
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "refs.bib"), future, future); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Preview(context.Background(), filepath.Join(dir, "main.tex"), PreviewOptions{
+		Engine: "xelatex",
+		Bibtex: "bibtex",
+		Run: func(_ context.Context, bin, work string, _ ...string) (string, int, error) {
+			if bin == "bibtex" {
+				return "I was expecting a `,' or a `}'---line 2 of file refs.bib\n", 2, nil
+			}
+			if err := os.WriteFile(filepath.Join(work, "main.pdf"), []byte("%PDF-1.4\n"), 0o644); err != nil {
+				return "", -1, err
+			}
+			aux := "\\bibdata{refs}\n\\bibstyle{plain}\n"
+			if err := os.WriteFile(filepath.Join(work, "main.aux"), []byte(aux), 0o644); err != nil {
+				return "", -1, err
+			}
+			return "Output written on main.pdf\n", 0, nil
+		},
+	})
+	if err == nil || res.PDFPath != "" || !strings.Contains(res.Message, "refs.bib") {
+		t.Fatalf("result=%+v err=%v", res, err)
+	}
+}
+
+func TestPreviewAcceptsADraftWithNoCitations(t *testing.T) {
+	dir := t.TempDir()
+	writeBibFixture(t, dir, true)
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(filepath.Join(dir, "refs.bib"), future, future); err != nil {
+		t.Fatal(err)
+	}
+	var bibs int
+	res, err := Preview(context.Background(), filepath.Join(dir, "main.tex"), PreviewOptions{
+		Engine: "xelatex",
+		Bibtex: "bibtex",
+		Run: func(_ context.Context, bin, work string, _ ...string) (string, int, error) {
+			if bin == "bibtex" {
+				bibs++
+				return "I found no \\citation commands---while reading file main.aux\n", 2, nil
+			}
+			if err := os.WriteFile(filepath.Join(work, "main.pdf"), []byte("%PDF-1.4\n"), 0o644); err != nil {
+				return "", -1, err
+			}
+			aux := "\\bibdata{refs}\n\\bibstyle{plain}\n"
+			if err := os.WriteFile(filepath.Join(work, "main.aux"), []byte(aux), 0o644); err != nil {
+				return "", -1, err
+			}
+			return "Output written on main.pdf\n", 0, nil
+		},
+	})
+	if err != nil || res.PDFPath == "" || bibs != 1 {
+		t.Fatalf("result=%+v err=%v bibs=%d", res, err, bibs)
+	}
+}
+
+func TestPreviewReportsMissingBibliographyDatabase(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main.tex")
+	if err := os.WriteFile(main, []byte("\\documentclass{article}\n\\begin{document}x\\end{document}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	installed := false
+	res, err := Preview(context.Background(), main, PreviewOptions{
+		Engine: "xelatex",
+		Bibtex: "bibtex",
+		Run: func(_ context.Context, bin, work string, _ ...string) (string, int, error) {
+			if bin == "bibtex" {
+				return "I couldn't open database file refs.bib\n", 2, nil
+			}
+			if err := os.WriteFile(filepath.Join(work, "main.pdf"), []byte("%PDF-1.4"), 0o644); err != nil {
+				return "", -1, err
+			}
+			return "There were undefined citations.\n", 0, nil
+		},
+		Install: func(context.Context, string) error {
+			installed = true
+			return nil
+		},
+	})
+	if err == nil || res.PDFPath != "" || !strings.Contains(res.Message, "refs.bib") || installed {
+		t.Fatalf("result=%+v err=%v installed=%v", res, err, installed)
+	}
+}
+
+func TestPreviewRepairsSource(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main.tex")
+	original := "\\documentclass{article}\n\\begin{document}\n\\badcommand\n\\end{document}\n"
+	if err := os.WriteFile(main, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runs := 0
+	res, err := Preview(context.Background(), main, PreviewOptions{
+		Engine: "xelatex",
+		Run: func(_ context.Context, bin, work string, args ...string) (string, int, error) {
+			runs++
+			if runs == 1 {
+				return "./main.tex:3: Undefined control sequence.\n", 1, nil
+			}
+			if err := os.WriteFile(filepath.Join(work, "main.pdf"), []byte("%PDF-1.4"), 0o644); err != nil {
+				return "", -1, err
+			}
+			return "Output written", 0, nil
+		},
+		Repair: func(_ context.Context, path, source, excerpt string) (string, bool, error) {
+			if !strings.Contains(excerpt, "Undefined") {
+				t.Fatalf("excerpt = %s", excerpt)
+			}
+			fixed := strings.Replace(source, `\badcommand`, `fixed`, 1)
+			body, ok := AcceptRepairedSource(source, "```latex\n"+fixed+"\n```")
+			return body, ok, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Repaired || !strings.HasSuffix(res.PDFPath, "main.pdf") {
+		t.Fatalf("result = %+v", res)
+	}
+	body, err := os.ReadFile(main)
+	if err != nil || !strings.Contains(string(body), "fixed") {
+		t.Fatalf("source = %s err=%v", body, err)
+	}
+	bak, err := os.ReadFile(main + ".maclaw-bak")
+	if err != nil || !strings.Contains(string(bak), `\badcommand`) {
+		t.Fatalf("backup = %s err=%v", bak, err)
+	}
+}
+
+func TestPreviewRetriesRepairWithoutAnotherCompile(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main.tex")
+	original := "\\documentclass{article}\n\\begin{document}\n\\badcommand\n\\end{document}\n"
+	if err := os.WriteFile(main, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	runs := 0
+	repairs := 0
+	res, err := Preview(context.Background(), main, PreviewOptions{
+		Engine: "xelatex",
+		Run: func(_ context.Context, _, work string, _ ...string) (string, int, error) {
+			runs++
+			if runs == 1 {
+				return "./main.tex:3: Undefined control sequence.\n", 1, nil
+			}
+			if err := os.WriteFile(filepath.Join(work, "main.pdf"), []byte("%PDF-1.4"), 0o644); err != nil {
+				return "", -1, err
+			}
+			return "Output written", 0, nil
+		},
+		Repair: func(_ context.Context, _, source, _ string) (string, bool, error) {
+			repairs++
+			if repairs == 1 {
+				return "not a source file", false, nil
+			}
+			fixed := strings.Replace(source, `\badcommand`, `fixed`, 1)
+			body, ok := AcceptRepairedSource(source, "```latex\n"+fixed+"\n```")
+			return body, ok, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runs != 2 {
+		t.Fatalf("engine runs = %d, want 2", runs)
+	}
+	if repairs != 2 || !res.Repaired {
+		t.Fatalf("repairs = %d result = %+v", repairs, res)
+	}
+}
+
+func TestApplyRepairReplyReplacesTheCompilerLine(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("\\documentclass{article}\n\\begin{document}\n")
+	for i := 0; i < 20; i++ {
+		fmt.Fprintf(&b, "line %d stays.\n", i)
+	}
+	b.WriteString("Vaswani et al.\\~\\cite{vaswani2017}\n")
+	for i := 20; i < 40; i++ {
+		fmt.Fprintf(&b, "line %d stays.\n", i)
+	}
+	b.WriteString("\\end{document}\n")
+	source := b.String()
+	bad := 0
+	for i, line := range strings.Split(source, "\n") {
+		if strings.Contains(line, `\~\cite`) {
+			bad = i + 1
+			break
+		}
+	}
+	if bad == 0 {
+		t.Fatal("bad line not found")
+	}
+	excerpt := fmt.Sprintf("./main.tex:%d: Missing \\endcsname inserted.\n", bad)
+	reply := fmt.Sprintf("@@@ %d %d\nVaswani et al.~\\cite{vaswani2017}\n@@@", bad, bad)
+	got, ok := ApplyRepairReply(source, excerpt, "```latex\n"+reply+"\n```")
+	if !ok {
+		t.Fatal("block rejected")
+	}
+	tight := fmt.Sprintf("@@@%d %d\nVaswani et al.~\\cite{vaswani2017}\n@@@", bad, bad)
+	if tightGot, tightOK := ApplyRepairReply(source, excerpt, tight); !tightOK || strings.Contains(tightGot, `\~\cite`) {
+		t.Fatal("marker without a following space was rejected")
+	}
+	if strings.Contains(got, `\~\cite`) || !strings.Contains(got, `~\cite{vaswani2017}`) {
+		t.Fatalf("error line not replaced: %s", got)
+	}
+	if !strings.Contains(got, "line 0 stays.") || !strings.Contains(got, "line 19 stays.") || !strings.Contains(got, "line 20 stays.") || !strings.Contains(got, `\end{document}`) {
+		t.Fatal("replacement changed lines outside the block")
+	}
+	multi := fmt.Sprintf("@@@ %d %d\nVaswani et al.~\\cite{vaswani2017}\nsecond inserted line.\n@@@", bad, bad)
+	got, ok = ApplyRepairReply(source, excerpt, multi)
+	if !ok || !strings.Contains(got, "second inserted line.") || !strings.Contains(got, "line 19 stays.") || !strings.Contains(got, "line 20 stays.") {
+		t.Fatalf("inserted lines disturbed neighbors: ok=%v %s", ok, got)
+	}
+	indented := fmt.Sprintf("@@@ %d %d\n    Vaswani et al.~\\cite{vaswani2017}\n@@@", bad, bad)
+	got, ok = ApplyRepairReply(source, excerpt, indented)
+	if !ok || !strings.Contains(got, "\n    Vaswani et al.~\\cite{vaswani2017}\n") {
+		t.Fatalf("indentation dropped: ok=%v %s", ok, got)
+	}
+	if _, ok := ApplyRepairReply(source, excerpt, fmt.Sprintf("@@@ %d %d\nnope\n@@@", bad-1, bad-1)); ok {
+		t.Fatal("range that skips the compiler line was applied")
+	}
+	if _, ok := ApplyRepairReply(source, excerpt, "@@@ 1 1\n\\documentclass{article}\n@@@"); ok {
+		t.Fatal("range outside the shown window was applied")
+	}
+	if _, ok := ApplyRepairReply(source, excerpt, "请把重音改成不断行空格"); ok {
+		t.Fatal("prose was applied")
+	}
+}
+
+func TestPreviewAppliesTheCompilerLineBlock(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main.tex")
+	original := "\\documentclass{article}\n\\begin{document}\nVaswani et al.\\~\\cite{vaswani2017}\n\\end{document}\n"
+	if err := os.WriteFile(main, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Preview(context.Background(), main, PreviewOptions{
+		Engine: "xelatex",
+		Run: func(_ context.Context, _, work string, _ ...string) (string, int, error) {
+			body, readErr := os.ReadFile(filepath.Join(work, "main.tex"))
+			if readErr != nil {
+				return "", -1, readErr
+			}
+			if strings.Contains(string(body), `\~\cite`) {
+				return "./main.tex:3: Missing \\endcsname inserted.\n", 1, nil
+			}
+			if err := os.WriteFile(filepath.Join(work, "main.pdf"), []byte("%PDF-1.4"), 0o644); err != nil {
+				return "", -1, err
+			}
+			return "Output written on main.pdf", 0, nil
+		},
+		Repair: func(_ context.Context, _, source, excerpt string) (string, bool, error) {
+			line, ok := ErrorLine(excerpt)
+			if !ok {
+				t.Fatalf("excerpt = %s", excerpt)
+			}
+			lines, _ := splitSourceLines(source)
+			fixed := strings.Replace(lines[line-1], `\~\cite`, `~\cite`, 1)
+			reply := fmt.Sprintf("@@@ %d %d\n%s\n@@@", line, line, fixed)
+			body, ok := ApplyRepairReply(source, excerpt, reply)
+			return body, ok, nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !res.Repaired || !strings.HasSuffix(res.PDFPath, "main.pdf") {
+		t.Fatalf("result = %+v", res)
+	}
+	body, err := os.ReadFile(main)
+	if err != nil || strings.Contains(string(body), `\~\cite`) || !strings.Contains(string(body), `~\cite{vaswani2017}`) {
+		t.Fatalf("source = %s err=%v", body, err)
+	}
+}
+
+func TestErrorExcerptKeepsTheCompilerContext(t *testing.T) {
+	log := "Package natbib Warning: Citation `vaswani2017' on page 1 undefined on input line 111.\n" +
+		"./elsarticle-template-num.tex:187: Missing \\endcsname inserted.\n" +
+		"<to be read again> \n" +
+		"                   \\global \n" +
+		"l.187 Vaswani et al.\\~\\cite\n" +
+		"                           {vaswani2017} apply normalization\n" +
+		"Here is how much of TeX's memory you used:\n" +
+		"Output written on elsarticle-template-num.pdf (4 pages).\n"
+	got := ErrorExcerpt(log)
+	if !strings.Contains(got, "l.187") || !strings.Contains(got, `\~\cite`) || !strings.Contains(got, "Missing \\endcsname inserted.") {
+		t.Fatalf("compiler context dropped: %q", got)
+	}
+	if strings.Contains(got, "natbib Warning") || strings.Contains(got, "memory you used") || strings.Contains(got, "Output written") {
+		t.Fatalf("excerpt ran outside the error record: %q", got)
+	}
+	line, ok := ErrorLine(got)
+	if !ok || line != 187 {
+		t.Fatalf("line = %d ok=%v excerpt=%q", line, ok, got)
+	}
+}
+
+func TestErrorExcerptForUsesTheFileBeingEdited(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main.tex")
+	if err := os.WriteFile(main, []byte("\\documentclass{article}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	log := "./other.tex:4: Undefined control sequence.\n./main.tex:9: Missing \\endcsname inserted.\nl.9 bad\nHere is how much of TeX's memory you used:\n"
+	got := ErrorExcerptFor(log, dir, main)
+	line, ok := ErrorLine(got)
+	if !ok || line != 9 || strings.Contains(got, "other.tex") || !strings.Contains(got, "l.9") {
+		t.Fatalf("excerpt = %q line=%d ok=%v", got, line, ok)
+	}
+	if ErrorExcerptFor(log, dir, filepath.Join(dir, "missing.tex")) != "" {
+		t.Fatal("a file the log does not name produced an excerpt")
+	}
+}
+
+func TestRenameReplacingLeavesDestinationWhenSourceIsMissing(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, "main.tex")
+	if err := os.WriteFile(dest, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := RenameReplacing(filepath.Join(dir, "missing.tex"), dest); err == nil {
+		t.Fatal("missing source was accepted")
+	}
+	body, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(body) != "old" {
+		t.Fatalf("destination changed to %q", body)
+	}
+}
+
+func TestPreviewNamesACommandTimeout(t *testing.T) {
+	dir := t.TempDir()
+	main := filepath.Join(dir, "main.tex")
+	if err := os.WriteFile(main, []byte("\\documentclass{article}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	res, err := Preview(context.Background(), main, PreviewOptions{
+		Engine: "xelatex",
+		Run: func(context.Context, string, string, ...string) (string, int, error) {
+			return "", -1, context.DeadlineExceeded
+		},
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err=%v", err)
+	}
+	if res.Message != "编译超时" {
+		t.Fatalf("message=%q", res.Message)
+	}
+}

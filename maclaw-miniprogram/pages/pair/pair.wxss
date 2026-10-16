@@ -1,0 +1,112 @@
+.pair-page {
+  padding-bottom: 48rpx;
+}
+
+.steps-card {
+  margin-bottom: 24rpx;
+}
+
+.step {
+  display: flex;
+  margin-top: 28rpx;
+}
+
+.step-index {
+  width: 48rpx;
+  height: 48rpx;
+  flex: 0 0 48rpx;
+  border-radius: 50%;
+  background: rgba(242, 98, 46, 0.12);
+  color: var(--brand);
+  font-size: 26rpx;
+  text-align: center;
+  line-height: 48rpx;
+  font-weight: 600;
+}
+
+.step-body {
+  margin-left: 20rpx;
+  flex: 1;
+}
+
+.step-title {
+  font-size: 28rpx;
+  font-weight: 500;
+  margin-bottom: 4rpx;
+}
+
+.code-card {
+  margin-bottom: 24rpx;
+}
+
+.bound-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 20rpx 24rpx;
+  background: #f4f8f5;
+  border-radius: 16rpx;
+  margin-bottom: 28rpx;
+}
+
+.bound-title {
+  font-size: 28rpx;
+  font-weight: 600;
+  color: #2f7a41;
+}
+
+.bound-hint {
+  margin-bottom: 20rpx;
+}
+
+.code-input-wrap {
+  margin-bottom: 32rpx;
+}
+
+.code-input {
+  height: 120rpx;
+  text-align: center;
+  font-size: 56rpx;
+  letter-spacing: 24rpx;
+  border-bottom: 2rpx solid var(--line);
+  color: var(--ink);
+}
+
+.code-placeholder {
+  color: #d8dbe0;
+  letter-spacing: 24rpx;
+}
+
+.hub-card {
+  padding-bottom: 24rpx;
+}
+
+.kv {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  padding: 12rpx 0;
+  border-bottom: 2rpx solid var(--line);
+}
+
+.kv-label {
+  color: var(--ink-3);
+  font-size: 26rpx;
+  flex: 0 0 160rpx;
+}
+
+.kv-value {
+  flex: 1;
+  text-align: right;
+  font-size: 26rpx;
+  word-break: break-all;
+  color: var(--ink-2);
+}
+
+.requirement {
+  margin-top: 20rpx;
+  padding: 20rpx;
+  border-radius: 16rpx;
+  background: #fff8f2;
+  color: #a3552a;
+}

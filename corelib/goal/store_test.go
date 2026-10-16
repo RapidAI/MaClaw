@@ -3,6 +3,7 @@ package goal
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -309,5 +310,99 @@ func TestSetOptions(t *testing.T) {
 	}
 	if g.ProjectPath != "/home/user/project" {
 		t.Fatalf("project_path: got %s", g.ProjectPath)
+	}
+}
+
+// TestStatusVocabularyCanonicalizesTheModelFacingSet pins the vocabulary a
+// managed turn may set. It lives with the type for the reason IsTerminal does:
+// both semantic hosts render it and parse it, and a vocabulary owned by either
+// one alone would drift from the other. Two directions are pinned here --
+// the enum only ever advertises lifecycle names the record actually stores,
+// while the parser keeps accepting the aliases a model naturally reaches for.
+func TestStatusVocabularyCanonicalizesTheModelFacingSet(t *testing.T) {
+	options := StatusOptions()
+	if len(options) != 2 {
+		t.Fatalf("a managed turn may set complete and failed, got %v", options)
+	}
+	for _, option := range options {
+		switch Status(option) {
+		case StatusComplete, StatusFailed:
+		default:
+			t.Fatalf("advertised status %q is not a lifecycle name the record stores", option)
+		}
+		canonical, ok := StatusCanonical(option)
+		if !ok || canonical != Status(option) {
+			t.Fatalf("canonical option %q maps to (%q, %v)", option, canonical, ok)
+		}
+	}
+	aliases := map[string]Status{"completed": StatusComplete, "fail": StatusFailed, "COMPLETED": StatusComplete, " failed ": StatusFailed}
+	for sent, want := range aliases {
+		canonical, ok := StatusCanonical(sent)
+		if !ok || canonical != want {
+			t.Fatalf("alias %q maps to (%q, %v), want %q", sent, canonical, ok, want)
+		}
+	}
+	// Unlike a schedule record's optional status, an update turn parses only a
+	// status it intends to set, so there is no unset reading to preserve.
+	for _, refused := range []string{"", "active", "paused", "budget_limited", "done"} {
+		if _, ok := StatusCanonical(refused); ok {
+			t.Fatalf("status %q must not be accepted as a model-supplied update", refused)
+		}
+	}
+	if hint := StatusHint(); !strings.Contains(hint, "complete") || !strings.Contains(hint, "failed") {
+		t.Fatalf("hint %q does not name the canonical set", hint)
+	}
+}
+
+func TestSetStartsInPlanPhase(t *testing.T) {
+	s := NewStore("")
+	g, err := s.Set("user1", "实现登录")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Phase != PhasePlan || g.EffectivePhase() != PhasePlan {
+		t.Fatalf("phase = %q", g.Phase)
+	}
+}
+
+func TestSavePlanAndUpdateStep(t *testing.T) {
+	s := NewStore("")
+	g, err := s.Set("user1", "实现登录")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SavePlan("user1", g.GoalID, "", nil, nil); err == nil {
+		t.Fatal("empty plan should fail")
+	}
+	err = s.SavePlan("user1", g.GoalID, "先写登录接口再补测试", []Step{
+		{Title: "编写接口", Detail: "JWT"},
+		{Title: "补充测试"},
+	}, []string{"go test 通过"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := s.Get("user1")
+	if got.EffectivePhase() != PhaseExecute || len(got.Steps) != 2 || got.Steps[0].Index != 1 || got.Steps[0].Status != StepPending {
+		t.Fatalf("plan = %+v", got)
+	}
+	current, ok := got.CurrentStep()
+	if !ok || current.Title != "编写接口" {
+		t.Fatalf("current = %+v ok=%v", current, ok)
+	}
+	if err := s.UpdateStep("user1", g.GoalID, 1, StepDone, "接口已写"); err != nil {
+		t.Fatal(err)
+	}
+	got = s.Get("user1")
+	if got.Steps[0].Result != "接口已写" || got.ReadyToComplete() {
+		t.Fatalf("after step: %+v", got.Steps)
+	}
+	if err := s.UpdateStep("user1", "stale", 2, StepDone, "x"); err == nil {
+		t.Fatal("stale goal id should fail")
+	}
+	if missing := MissingCriteria("还没测", got.AcceptanceCriteria); len(missing) != 1 || missing[0] != "go test 通过" {
+		t.Fatalf("missing = %#v", missing)
+	}
+	if missing := MissingCriteria("go test 通过", got.AcceptanceCriteria); len(missing) != 0 {
+		t.Fatalf("covered criteria reported missing: %#v", missing)
 	}
 }

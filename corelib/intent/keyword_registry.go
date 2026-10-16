@@ -80,6 +80,16 @@ func newKeywordRegistryFromEntries(keywords []KeywordEntry) *KeywordRegistry {
 		// with git_inspect and "提交" wording with several older families, and
 		// must never outrank them on a keyword they already own.
 		LabelGitMutate: 37,
+		// SQL data-source inspect ranks after VCS so "查看…仓库" stays git_inspect.
+		LabelDatabase: 38,
+		// file_delete ranks after file_write so "写入文件" stays a write.
+		LabelFileDelete: 39,
+		// Work-record labels rank after task_track so "任务列表" stays a todo.
+		LabelWorklogRead:      40,
+		LabelWorklogUpdate:    41,
+		LabelMailboxRead:      42,
+		LabelMailboxSend:      43,
+		LabelMailboxConfigure: 44,
 	}
 
 	type entryKey struct {
@@ -135,6 +145,10 @@ func (r *KeywordRegistry) Match(text string) []KeywordMatch {
 var defaultKeywords = []KeywordEntry{
 	{Keyword: "ssh", Label: LabelSSH, Strength: Weak},
 	{Keyword: "ssh into", Label: LabelSSH, Strength: Strong},
+	{Keyword: "用ssh", Label: LabelSSH, Strength: Strong},
+	{Keyword: "ssh访问", Label: LabelSSH, Strength: Strong},
+	{Keyword: "ssh登录", Label: LabelSSH, Strength: Strong},
+	{Keyword: "登录服务器", Label: LabelSSH, Strength: Strong},
 	{Keyword: "remote server", Label: LabelSSH, Strength: Strong},
 	{Keyword: "server logs", Label: LabelSSH, Strength: Strong},
 	{Keyword: "restart service", Label: LabelSSH, Strength: Strong},
@@ -171,6 +185,16 @@ var defaultKeywords = []KeywordEntry{
 	{Keyword: "expense reimbursement", Label: LabelBusinessData, Strength: Weak},
 	{Keyword: "invoice approval", Label: LabelBusinessData, Strength: Weak},
 
+	{Keyword: "数据库", Label: LabelDatabase, Strength: Strong},
+	{Keyword: "查看库", Label: LabelDatabase, Strength: Strong},
+	{Keyword: "查看数据库", Label: LabelDatabase, Strength: Strong},
+	{Keyword: "表结构", Label: LabelDatabase, Strength: Strong},
+	{Keyword: "mysql", Label: LabelDatabase, Strength: Weak},
+	{Keyword: "postgres", Label: LabelDatabase, Strength: Weak},
+	{Keyword: "postgresql", Label: LabelDatabase, Strength: Weak},
+	{Keyword: "sqlserver", Label: LabelDatabase, Strength: Weak},
+	{Keyword: "inspect schema", Label: LabelDatabase, Strength: Weak},
+
 	{Keyword: "write code", Label: LabelCoding, Strength: Strong},
 	{Keyword: "implement feature", Label: LabelCoding, Strength: Strong},
 	{Keyword: "build app", Label: LabelCoding, Strength: Strong},
@@ -186,6 +210,10 @@ var defaultKeywords = []KeywordEntry{
 
 	{Keyword: "ppt", Label: LabelOffice, Strength: Strong},
 	{Keyword: "spreadsheet", Label: LabelOffice, Strength: Strong},
+	{Keyword: "演示文稿", Label: LabelOffice, Strength: Strong},
+	{Keyword: "幻灯片", Label: LabelOffice, Strength: Strong},
+	{Keyword: "slide deck", Label: LabelOffice, Strength: Strong},
+	{Keyword: "restyle", Label: LabelOffice, Strength: Weak},
 
 	{Keyword: "continue", Label: LabelContinuation, Strength: Weak},
 	{Keyword: "go ahead", Label: LabelContinuation, Strength: Weak},
@@ -202,6 +230,10 @@ var defaultKeywords = []KeywordEntry{
 	{Keyword: "列出目录", Label: LabelFileRead, Strength: Weak},
 	{Keyword: "read file", Label: LabelFileRead, Strength: Weak},
 	{Keyword: "list directory", Label: LabelFileRead, Strength: Weak},
+
+	{Keyword: "删除文件", Label: LabelFileDelete, Strength: Strong},
+	{Keyword: "删掉文件", Label: LabelFileDelete, Strength: Strong},
+	{Keyword: "delete file", Label: LabelFileDelete, Strength: Weak},
 
 	{Keyword: "写入文件", Label: LabelFileWrite, Strength: Strong},
 	{Keyword: "保存到文件", Label: LabelFileWrite, Strength: Strong},
@@ -311,4 +343,23 @@ var defaultKeywords = []KeywordEntry{
 	{Keyword: "知识库维护", Label: LabelKnowledgeAdmin, Strength: Strong},
 	{Keyword: "禁用知识库", Label: LabelKnowledgeAdmin, Strength: Strong},
 	{Keyword: "knowledge maintenance", Label: LabelKnowledgeAdmin, Strength: Weak},
+
+	{Keyword: "工作日志", Label: LabelWorklogRead, Strength: Strong},
+	{Keyword: "工时记录", Label: LabelWorklogRead, Strength: Strong},
+	{Keyword: "work log", Label: LabelWorklogRead, Strength: Weak},
+	{Keyword: "修改工作日志", Label: LabelWorklogUpdate, Strength: Strong},
+	{Keyword: "补工时", Label: LabelWorklogUpdate, Strength: Strong},
+	{Keyword: "update the work log", Label: LabelWorklogUpdate, Strength: Weak},
+	{Keyword: "收件箱", Label: LabelMailboxRead, Strength: Strong},
+	{Keyword: "未读邮件", Label: LabelMailboxRead, Strength: Strong},
+	{Keyword: "查邮件", Label: LabelMailboxRead, Strength: Strong},
+	{Keyword: "搜邮件", Label: LabelMailboxRead, Strength: Strong},
+	{Keyword: "mailbox", Label: LabelMailboxRead, Strength: Weak},
+	{Keyword: "inbox", Label: LabelMailboxRead, Strength: Weak},
+	{Keyword: "发邮件", Label: LabelMailboxSend, Strength: Strong},
+	{Keyword: "回复这封", Label: LabelMailboxSend, Strength: Strong},
+	{Keyword: "转发邮件", Label: LabelMailboxSend, Strength: Strong},
+	{Keyword: "配置邮箱", Label: LabelMailboxConfigure, Strength: Strong},
+	{Keyword: "添加邮箱", Label: LabelMailboxConfigure, Strength: Strong},
+	{Keyword: "send an email", Label: LabelMailboxSend, Strength: Weak},
 }

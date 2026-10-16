@@ -151,8 +151,18 @@ func PrepareSkillForUploadWithOptions(skillDir string, opts UploadPreflightOptio
 			}
 		}
 		manifest, manifestErr := GeneratePackageManifest(skillDir, skillID, version)
-		if manifestErr == nil && manifest != nil {
-			_ = WritePackageManifest(skillDir, manifest)
+		if manifestErr != nil {
+			return nil, fmt.Errorf("generate package manifest: %w", manifestErr)
+		}
+		if manifest == nil {
+			return nil, fmt.Errorf("generate package manifest: empty manifest")
+		}
+		if err := WritePackageManifest(skillDir, manifest); err != nil {
+			// A portable result without its integrity manifest is not a valid
+			// upload candidate: installation verifies this file when present, so
+			// silently ignoring a write failure would make the published package
+			// differ from the preflight evidence.
+			return nil, fmt.Errorf("write package manifest: %w", err)
 		}
 	}
 
@@ -299,6 +309,29 @@ func IsSkillRuntimePackageFile(name string) bool {
 		base == ".ds_store" ||
 		base == "thumbs.db" ||
 		base == "desktop.ini"
+}
+
+// IsSkillCredentialFile reports whether a path's base name looks like a
+// credential / secret that must never be shipped in a market package or
+// export archive. Skill directories may legitimately hold a real `.env` or
+// private key for local execution; bundling those into an upload/export leaks
+// them. Templates (`.env.example`, `.env.sample`, `.env.template`) are
+// intentionally allowed.
+func IsSkillCredentialFile(name string) bool {
+	base := strings.ToLower(filepath.Base(name))
+	switch base {
+	case ".env", ".env.local", ".env.development", ".env.production", ".env.staging",
+		".git-credentials", ".npmrc", ".pypirc",
+		"id_rsa", "id_rsa.pub", "id_ed25519", "id_ed25519.pub", "id_ecdsa", "id_dsa",
+		"credentials", "credentials.json", "service_account.json", "service-account.json",
+		"secrets.json", "secrets.yaml", "secrets.yml":
+		return true
+	}
+	return strings.HasSuffix(base, ".pem") ||
+		strings.HasSuffix(base, ".key") ||
+		strings.HasSuffix(base, ".p12") ||
+		strings.HasSuffix(base, ".pfx") ||
+		strings.HasSuffix(base, ".jks")
 }
 
 func IsSkillRuntimePackageDir(name string) bool {

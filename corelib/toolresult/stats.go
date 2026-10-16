@@ -79,7 +79,7 @@ func GetStoreStats(root string) StoreStats {
 		if err != nil || !info.Mode().IsRegular() {
 			return nil
 		}
-		if filepath.Ext(entry.Name()) != ".txt" {
+		if ext := filepath.Ext(entry.Name()); ext != ".txt" && ext != encryptedSuffix {
 			return nil
 		}
 		out.Files++

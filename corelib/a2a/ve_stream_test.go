@@ -140,6 +140,9 @@ func TestStreamMessageKindConstants(t *testing.T) {
 	if string(MessageStreamEnd) != "stream_end" {
 		t.Errorf("MessageStreamEnd = %q, want %q", MessageStreamEnd, "stream_end")
 	}
+	if string(MessageStreamStatus) != "stream_status" {
+		t.Errorf("MessageStreamStatus = %q, want %q", MessageStreamStatus, "stream_status")
+	}
 }
 
 func TestStreamChunkWithAttachments(t *testing.T) {

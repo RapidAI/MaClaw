@@ -87,7 +87,7 @@ func TestAdminTestLLMProviderChatRequiresSuccessfulCompletion(t *testing.T) {
 			}
 			req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", bytes.NewReader(body))
 			rec := httptest.NewRecorder()
-			adminTestLLMProviderChat(nil)(rec, req)
+			adminTestLLMProviderChat(nil, nil)(rec, req)
 
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d body=%s", rec.Code, rec.Body.String())
@@ -108,6 +108,83 @@ func TestAdminTestLLMProviderChatRequiresSuccessfulCompletion(t *testing.T) {
 			}
 			if tt.wantError != "" && !strings.Contains(got.Error, tt.wantError) {
 				t.Errorf("error = %q, want substring %q", got.Error, tt.wantError)
+			}
+		})
+	}
+}
+
+func TestLLMProviderTestRequestOmitsKimiLockedSampling(t *testing.T) {
+	req, err := newLLMProviderTestRequest(context.Background(), corelib.MaclawLLMConfig{
+		URL:      "https://api.kimi.com/coding/v1",
+		Key:      "sk-test",
+		Model:    "kimi-for-coding",
+		Protocol: "openai",
+		WireAPI:  "chat",
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("newLLMProviderTestRequest() error = %v", err)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		t.Fatalf("decode test request: %v", err)
+	}
+	if _, exists := body["temperature"]; exists {
+		t.Fatalf("kimi probe sent temperature: %#v", body["temperature"])
+	}
+	if _, exists := body["top_p"]; exists {
+		t.Fatalf("kimi probe sent top_p: %#v", body["top_p"])
+	}
+	if body["model"] != "kimi-for-coding" {
+		t.Fatalf("model = %#v", body["model"])
+	}
+	if _, exists := body["max_tokens"]; !exists {
+		t.Fatal("kimi probe dropped max_tokens")
+	}
+
+	plain, err := newLLMProviderTestRequest(context.Background(), corelib.MaclawLLMConfig{
+		URL:      "https://api.openai.com/v1",
+		Key:      "sk-test",
+		Model:    "gpt-4o",
+		Protocol: "openai",
+		WireAPI:  "chat",
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("plain probe: %v", err)
+	}
+	var plainBody map[string]any
+	if err := json.NewDecoder(plain.Body).Decode(&plainBody); err != nil {
+		t.Fatalf("decode plain probe: %v", err)
+	}
+	if plainBody["temperature"] != float64(0) {
+		t.Fatalf("plain probe temperature = %#v, want 0", plainBody["temperature"])
+	}
+}
+
+func TestLLMProviderTestRequestOmitsThinkingForAMDDeepSeek(t *testing.T) {
+	for _, model := range []string{"DeepSeek-V4-Flash", "DeepSeek-V4.1-Flash", "DeepSeek-V4-Pro", "deepseek-reasoner"} {
+		t.Run(model, func(t *testing.T) {
+			req, err := newLLMProviderTestRequest(context.Background(), corelib.MaclawLLMConfig{
+				URL:      "https://developer.amd.com.cn/radeon/api/v1",
+				Key:      "rk-test",
+				Model:    model,
+				Protocol: "openai",
+				WireAPI:  "chat",
+			}, nil, nil)
+			if err != nil {
+				t.Fatalf("newLLMProviderTestRequest() error = %v", err)
+			}
+			var body map[string]any
+			if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+				t.Fatalf("decode test request: %v", err)
+			}
+			if _, exists := body["thinking"]; exists {
+				t.Fatalf("provider test sent thinking to AMD: %#v", body["thinking"])
+			}
+			if _, exists := body["reasoning_effort"]; exists {
+				t.Fatalf("provider test invented reasoning_effort: %#v", body["reasoning_effort"])
+			}
+			if body["model"] != model {
+				t.Fatalf("model = %#v, want %s", body["model"], model)
 			}
 		})
 	}
@@ -146,7 +223,7 @@ func TestAdminTestLLMProviderChatUsesResponsesAPI(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	adminTestLLMProviderChat(nil)(rec, req)
+	adminTestLLMProviderChat(nil, nil)(rec, req)
 
 	var got struct {
 		Success bool   `json:"success"`
@@ -197,7 +274,7 @@ func TestAdminTestLLMProviderChatUsesAnthropicAPI(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	adminTestLLMProviderChat(nil)(rec, req)
+	adminTestLLMProviderChat(nil, nil)(rec, req)
 
 	var got struct {
 		Success bool   `json:"success"`
@@ -231,7 +308,7 @@ func TestAdminTestLLMProviderChatAnthropicThinkingFallback(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	adminTestLLMProviderChat(nil)(rec, req)
+	adminTestLLMProviderChat(nil, nil)(rec, req)
 
 	var got struct {
 		Success bool   `json:"success"`
@@ -272,7 +349,7 @@ func TestAdminTestLLMProviderChatOpenAIReasoningFallback(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	adminTestLLMProviderChat(nil)(rec, req)
+	adminTestLLMProviderChat(nil, nil)(rec, req)
 
 	var got struct {
 		Success bool   `json:"success"`
@@ -316,7 +393,7 @@ func TestAdminTestLLMProviderChatProviderIDDoesNotUseCallerEndpoint(t *testing.T
 	}
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
-	adminTestLLMProviderChat(svc)(rec, req)
+	adminTestLLMProviderChat(svc, nil)(rec, req)
 
 	var got struct {
 		Success bool `json:"success"`
@@ -329,12 +406,45 @@ func TestAdminTestLLMProviderChatProviderIDDoesNotUseCallerEndpoint(t *testing.T
 	}
 }
 
+func TestAdminTestLLMProviderChatSendsStoredUserAgent(t *testing.T) {
+	svc := llmservice.NewService(&llmDeleteTestSettings{data: map[string]string{}})
+	var gotUA string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotUA = r.Header.Get("User-Agent")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer upstream.Close()
+	if err := svc.AddProvider(t.Context(), llmpool.ProviderConfig{
+		ID: "configured", Name: "Configured", APIURL: upstream.URL + "/v1", APIKey: "stored-key",
+		Models: []string{"selected-model"}, AgentType: "Claude Code",
+	}); err != nil {
+		t.Fatalf("add provider: %v", err)
+	}
+	body, err := json.Marshal(map[string]string{
+		"provider_id": "configured",
+		"model":       "selected-model",
+	})
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	adminTestLLMProviderChat(svc, nil)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d response=%s", rec.Code, rec.Body.String())
+	}
+	if gotUA != "claude code 2.0" {
+		t.Fatalf("User-Agent = %q, want claude code 2.0", gotUA)
+	}
+}
+
 func TestAdminTestLLMProviderChatRejectsUnknownProviderID(t *testing.T) {
 	body := []byte(`{"provider_id":"missing","api_url":"https://attacker.example/v1","model":"selected-model"}`)
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	svc := llmservice.NewService(&llmDeleteTestSettings{data: map[string]string{}})
-	adminTestLLMProviderChat(svc)(rec, req)
+	adminTestLLMProviderChat(svc, nil)(rec, req)
 
 	var got struct {
 		Success bool   `json:"success"`
@@ -363,7 +473,7 @@ func TestAdminTestLLMProviderChatTrimsProviderID(t *testing.T) {
 
 	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", strings.NewReader(`{"provider_id":" configured ","model":"selected-model"}`))
 	rec := httptest.NewRecorder()
-	adminTestLLMProviderChat(svc)(rec, req)
+	adminTestLLMProviderChat(svc, nil)(rec, req)
 
 	var got struct {
 		Success bool   `json:"success"`
@@ -373,6 +483,347 @@ func TestAdminTestLLMProviderChatTrimsProviderID(t *testing.T) {
 		t.Fatalf("decode response: %v", err)
 	}
 	if rec.Code != http.StatusOK || !got.Success {
+		t.Fatalf("status=%d response=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminTestLLMProviderChatServiceGroupBandUsesMemberModel(t *testing.T) {
+	var gotModel string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer stored-key" {
+			t.Errorf("authorization = %q", got)
+		}
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		gotModel = payload.Model
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer upstream.Close()
+
+	svc := llmservice.NewService(&llmDeleteTestSettings{data: map[string]string{}})
+	if err := svc.SaveRegistry(t.Context(), &llmservice.Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "owner", Name: "Owner", ArrayID: "pool", Paused: true, APIURL: "http://127.0.0.1:1/v1", APIKey: "paused-key", Models: []string{"owner-model"}},
+			{ID: "live", Name: "Live", ArrayID: "pool", APIURL: upstream.URL + "/v1", APIKey: "stored-key", Models: []string{"agnes-3.0-flash", "agnes-2.0-flash"}},
+		},
+		ProviderArrays: []llmpool.ProviderArray{{ID: "pool", Name: "Pool", MemberIDs: []string{"owner", "live"}}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	post := func(body string) (bool, string, string) {
+		t.Helper()
+		gotModel = ""
+		req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		adminTestLLMProviderChat(svc, nil)(rec, req)
+		var got struct {
+			Success bool   `json:"success"`
+			Error   string `json:"error"`
+			Model   string `json:"model"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		return got.Success, got.Model, got.Error
+	}
+
+	success, model, errMsg := post(`{"provider_id":"pool","model":"auto","logical_model":"auto","route_model":""}`)
+	if !success || model != "agnes-3.0-flash" || gotModel != "agnes-3.0-flash" {
+		t.Fatalf("band test success=%v model=%q upstream=%q error=%q", success, model, gotModel, errMsg)
+	}
+
+	success, model, errMsg = post(`{"provider_id":"pool","model":"agnes-2.0-flash","logical_model":"auto","route_model":"agnes-2.0-flash"}`)
+	if !success || model != "agnes-2.0-flash" || gotModel != "agnes-2.0-flash" {
+		t.Fatalf("route model success=%v model=%q upstream=%q error=%q", success, model, gotModel, errMsg)
+	}
+
+	success, model, errMsg = post(`{"provider_id":"live","model":"agnes-2.0-flash"}`)
+	if !success || model != "agnes-2.0-flash" || gotModel != "agnes-2.0-flash" {
+		t.Fatalf("member test success=%v model=%q upstream=%q error=%q", success, model, gotModel, errMsg)
+	}
+
+	success, model, errMsg = post(`{"provider_id":"pool","model":"official-high"}`)
+	if !success || model != "agnes-3.0-flash" || gotModel != "agnes-3.0-flash" {
+		t.Fatalf("legacy band success=%v model=%q upstream=%q error=%q", success, model, gotModel, errMsg)
+	}
+}
+
+func TestAdminTestLLMProviderChatBandWithoutCatalogDoesNotDial(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("upstream was dialed for a billing band with no concrete model")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	svc := llmservice.NewService(&llmDeleteTestSettings{data: map[string]string{}})
+	if err := svc.AddProvider(t.Context(), llmpool.ProviderConfig{
+		ID: "band-only", Name: "Band", APIURL: upstream.URL + "/v1", Models: []string{"auto"},
+	}); err != nil {
+		t.Fatalf("add provider: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", strings.NewReader(`{"provider_id":"band-only","model":"auto","logical_model":"auto"}`))
+	rec := httptest.NewRecorder()
+	adminTestLLMProviderChat(svc, nil)(rec, req)
+	var got struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if rec.Code != http.StatusOK || got.Success || got.Error != llmservice.ErrNoUpstreamTestModel.Error() {
+		t.Fatalf("status=%d response=%s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAdminTestLLMProviderChatSkipsBandOnlyMember(t *testing.T) {
+	var hits int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		if got := r.Header.Get("Authorization"); got != "Bearer stored-key" {
+			t.Errorf("authorization = %q", got)
+		}
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if payload.Model != "agnes-3.0-flash" {
+			t.Errorf("upstream model = %q", payload.Model)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer upstream.Close()
+
+	svc := llmservice.NewService(&llmDeleteTestSettings{data: map[string]string{}})
+	if err := svc.SaveRegistry(t.Context(), &llmservice.Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "band", Name: "Band", ArrayID: "pool", APIURL: "http://127.0.0.1:1/v1", APIKey: "band-key", Models: []string{"auto"}},
+			{ID: "live", Name: "Live", ArrayID: "pool", APIURL: upstream.URL + "/v1", APIKey: "stored-key", Models: []string{"agnes-3.0-flash"}},
+		},
+		ProviderArrays: []llmpool.ProviderArray{{ID: "pool", Name: "Pool", MemberIDs: []string{"band", "live"}}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", strings.NewReader(`{"provider_id":"pool","model":"auto","logical_model":"auto","route_model":""}`))
+	rec := httptest.NewRecorder()
+	adminTestLLMProviderChat(svc, nil)(rec, req)
+	var got struct {
+		Success bool   `json:"success"`
+		Model   string `json:"model"`
+		Error   string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if rec.Code != http.StatusOK || !got.Success || got.Model != "agnes-3.0-flash" || hits != 1 {
+		t.Fatalf("status=%d hits=%d response=%s", rec.Code, hits, rec.Body.String())
+	}
+}
+
+func TestAdminTestLLMProviderChatMemberIDUsesArraySibling(t *testing.T) {
+	var hits int
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits++
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		if payload.Model != "agnes-3.0-flash" {
+			t.Errorf("upstream model = %q", payload.Model)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer stored-key" {
+			t.Errorf("authorization = %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer upstream.Close()
+
+	svc := llmservice.NewService(&llmDeleteTestSettings{data: map[string]string{}})
+	if err := svc.SaveRegistry(t.Context(), &llmservice.Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: "band-member", Name: "Band", ArrayID: "pool", APIURL: "http://127.0.0.1:1/v1", APIKey: "band-key", Models: []string{"auto"}},
+			{ID: "live", Name: "Live", ArrayID: "pool", APIURL: upstream.URL + "/v1", APIKey: "stored-key", Models: []string{"agnes-3.0-flash"}},
+		},
+		ProviderArrays: []llmpool.ProviderArray{{ID: "pool", Name: "Pool", MemberIDs: []string{"band-member", "live"}}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+
+	post := func(body string) (bool, string, string) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		adminTestLLMProviderChat(svc, nil)(rec, req)
+		var got struct {
+			Success bool   `json:"success"`
+			Model   string `json:"model"`
+			Error   string `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode response: %v body=%s", err, rec.Body.String())
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		return got.Success, got.Model, got.Error
+	}
+
+	hits = 0
+	success, model, errMsg := post(`{"provider_id":"band-member","model":"auto","logical_model":"auto","route_model":""}`)
+	if !success || model != "agnes-3.0-flash" || hits != 1 {
+		t.Fatalf("member route success=%v model=%q hits=%d error=%q", success, model, hits, errMsg)
+	}
+
+	hits = 0
+	success, model, errMsg = post(`{"provider_id":"band-member","model":"auto"}`)
+	if success || hits != 0 || errMsg != llmservice.ErrNoUpstreamTestModel.Error() {
+		t.Fatalf("provider button success=%v model=%q hits=%d error=%q", success, model, hits, errMsg)
+	}
+}
+
+func TestAdminTestLLMProviderChatSkipsTokenBankCanary(t *testing.T) {
+	var gotModel string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer stored-key" {
+			t.Errorf("authorization = %q", got)
+		}
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		gotModel = payload.Model
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer upstream.Close()
+
+	canaryID := llmservice.TokenBankMemberID("share-c", "deepseek-v4")
+	stableA := llmservice.TokenBankMemberID("share-a", "model-a")
+	stableB := llmservice.TokenBankMemberID("share-b", "model-b")
+	canaryUntil := time.Now().Add(time.Hour).UTC().Format(time.RFC3339)
+	svc := llmservice.NewService(&llmDeleteTestSettings{data: map[string]string{}})
+	if err := svc.SaveRegistry(t.Context(), &llmservice.Registry{
+		Providers: []llmpool.ProviderConfig{
+			{ID: canaryID, Name: "Canary", ArrayID: "pool", APIURL: upstream.URL + "/v1", APIKey: "canary-key", Models: []string{"deepseek-v4"}, TokenBankCanaryUntil: canaryUntil},
+			{ID: stableA, Name: "Stable A", ArrayID: "pool", APIURL: upstream.URL + "/v1", APIKey: "stored-key", Models: []string{"model-a"}},
+			{ID: stableB, Name: "Stable B", ArrayID: "pool", APIURL: upstream.URL + "/v1", APIKey: "stored-key", Models: []string{"model-b"}},
+		},
+		ProviderArrays: []llmpool.ProviderArray{{ID: "pool", Name: "Pool", MemberIDs: []string{canaryID, stableA, stableB}}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	post := func() (bool, string) {
+		t.Helper()
+		gotModel = ""
+		req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", strings.NewReader(`{"provider_id":"pool","model":"auto","logical_model":"auto","route_model":""}`))
+		rec := httptest.NewRecorder()
+		adminTestLLMProviderChat(svc, nil)(rec, req)
+		var got struct {
+			Success bool   `json:"success"`
+			Model   string `json:"model"`
+			Error   string `json:"error"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+			t.Fatalf("decode response: %v body=%s", err, rec.Body.String())
+		}
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
+		}
+		return got.Success, got.Model
+	}
+	for i := 0; i < 2; i++ {
+		success, model := post()
+		if !success || model != "model-a" || gotModel != "model-a" {
+			t.Fatalf("attempt %d success=%v model=%q upstream=%q", i, success, model, gotModel)
+		}
+	}
+}
+
+func TestAdminTestLLMProviderChatOnlyCanaryStillDials(t *testing.T) {
+	var gotModel string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Model string `json:"model"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		gotModel = payload.Model
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"pong"}}]}`))
+	}))
+	defer upstream.Close()
+	canaryID := llmservice.TokenBankMemberID("share-c", "deepseek-v4")
+	svc := llmservice.NewService(&llmDeleteTestSettings{data: map[string]string{}})
+	if err := svc.SaveRegistry(t.Context(), &llmservice.Registry{
+		Providers: []llmpool.ProviderConfig{{
+			ID: canaryID, Name: "Canary", ArrayID: "pool", APIURL: upstream.URL + "/v1", APIKey: "stored-key",
+			Models: []string{"deepseek-v4"}, TokenBankCanaryUntil: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+		}},
+		ProviderArrays: []llmpool.ProviderArray{{ID: "pool", Name: "Pool", MemberIDs: []string{canaryID}}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", strings.NewReader(`{"provider_id":"pool","model":"auto","logical_model":"auto"}`))
+	rec := httptest.NewRecorder()
+	adminTestLLMProviderChat(svc, nil)(rec, req)
+	var got struct {
+		Success bool   `json:"success"`
+		Model   string `json:"model"`
+		Error   string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if rec.Code != http.StatusOK || !got.Success || got.Model != "deepseek-v4" || gotModel != "deepseek-v4" {
+		t.Fatalf("status=%d model=%q upstream=%q body=%s", rec.Code, got.Model, gotModel, rec.Body.String())
+	}
+}
+
+func TestAdminTestLLMProviderChatEmptyResolvedModelDoesNotDial(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		t.Errorf("upstream was dialed for a member with no concrete model")
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+	memberID := llmservice.TokenBankMemberID("share-1", "other-model")
+	svc := llmservice.NewService(&llmDeleteTestSettings{data: map[string]string{}})
+	if err := svc.SaveRegistry(t.Context(), &llmservice.Registry{
+		Providers: []llmpool.ProviderConfig{{
+			ID: memberID, Name: "Bank", ArrayID: "pool", APIURL: upstream.URL + "/v1", APIKey: "stored-key", Models: []string{"other-model"},
+		}},
+		ProviderArrays: []llmpool.ProviderArray{{ID: "pool", Name: "Pool", MemberIDs: []string{memberID}}},
+	}); err != nil {
+		t.Fatalf("save registry: %v", err)
+	}
+	body := `{"provider_id":"` + memberID + `","model":"agnes-3.0-flash","logical_model":"agnes-3.0-flash"}`
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/providers/test-chat", strings.NewReader(body))
+	rec := httptest.NewRecorder()
+	adminTestLLMProviderChat(svc, nil)(rec, req)
+	var got struct {
+		Success bool   `json:"success"`
+		Error   string `json:"error"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if rec.Code != http.StatusOK || got.Success || got.Error != llmservice.ErrNoUpstreamTestModel.Error() {
 		t.Fatalf("status=%d response=%s", rec.Code, rec.Body.String())
 	}
 }

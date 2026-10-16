@@ -2,6 +2,7 @@ package agentservice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -27,7 +28,10 @@ func reviewedHostFileWriteInvocationSchema() map[string]interface{} {
 		"properties": map[string]interface{}{
 			"path":    map[string]interface{}{"type": "string"},
 			"content": map[string]interface{}{"type": "string"},
-			"mode":    map[string]interface{}{"type": "string"},
+			// An unlabelled string leaves the model to guess the spelling. The
+			// canonicalizer does not read enum, so NormalizeWriteModeKind stays
+			// the boundary and this is documentation for the model.
+			"mode": map[string]interface{}{"type": "string", "enum": coretool.WriteModeOptions()},
 			// Replacing one exact passage is an outcome whole-file content
 			// cannot express. Which pair is present decides the outcome, so the
 			// schema needs no action or operation field, and it carries none of
@@ -158,7 +162,7 @@ func executeReviewedHostFileWrite(writer reviewedHostFileWriter) func(context.Co
 			// precedence: a request carrying both says two different things
 			// about the file, and picking one silently discards the other.
 			if hasContent || hasMode {
-				return "", fmt.Errorf("host_file_edit_conflicting_fields")
+				return "", fmt.Errorf("host_file_edit_conflicting_fields (passage edit takes only path, old_string, and new_string; resend without mode or content)")
 			}
 			return writer.EditReviewedHostFile(ctx, principal, strings.TrimSpace(path), oldString, newString)
 		}
@@ -186,7 +190,7 @@ func (c *coreAgentCallbacks) WriteReviewedHostFile(ctx context.Context, principa
 	}
 	resolvedMode, err := coretool.NormalizeWriteModeKind(mode)
 	if err != nil {
-		return "", fmt.Errorf("host_file_write_mode_rejected")
+		return "", fmt.Errorf("host_file_write_mode_rejected (%s)", coretool.WriteModeHint())
 	}
 	if ctx != nil {
 		select {
@@ -269,14 +273,17 @@ func (c *coreAgentCallbacks) EditReviewedHostFile(ctx context.Context, principal
 		return "", err
 	}
 	original := string(data)
-	switch strings.Count(original, oldString) {
-	case 0:
-		return "", fmt.Errorf("host_file_edit_no_match")
-	case 1:
-	default:
+	replaced, err := coretool.ReplaceTextPassage(original, oldString, newString, false)
+	if err != nil {
+		if errors.Is(err, coretool.ErrTextPassageNotFound) {
+			return "", fmt.Errorf("host_file_edit_no_match")
+		}
+		return "", err
+	}
+	if replaced.Matches != 1 {
 		return "", fmt.Errorf("host_file_edit_ambiguous_match")
 	}
-	updated := strings.Replace(original, oldString, newString, 1)
+	updated := replaced.Text
 	if len(updated) > srvWriteFileMaxSize {
 		return "", fmt.Errorf("host_file_write_content_too_large")
 	}

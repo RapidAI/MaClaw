@@ -1,0 +1,1059 @@
+// Package desktoppool is Hub's registry of Docker desktop services.
+// Hub chooses a service for a user and asks that service to create or stop
+// the desktop. Hub does not talk to the Docker daemon.
+package desktoppool
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/desktop"
+	"github.com/RapidAI/CodeClaw/hub/internal/security"
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
+)
+
+const SettingsKey = "desktop_service"
+
+const (
+	ScopeGlobal     = "global"
+	ScopeDepartment = "department"
+	ScopeUser       = "user"
+)
+
+var (
+	ErrInvalidInput        = errors.New("invalid desktop service settings")
+	ErrSettingsUnavailable = errors.New("desktop service store is unavailable")
+	ErrNotFound            = errors.New("docker service not found")
+	ErrNotAssigned         = errors.New("no docker service is assigned")
+	ErrService             = errors.New("docker service request failed")
+)
+
+// ServiceFailureMessage turns a docker desktop service failure into a message
+// an admin can act on, instead of the generic "rejected the desktop request".
+func ServiceFailureMessage(err error) string {
+	base := "docker service rejected the desktop request"
+	if err == nil || (errors.Is(err, ErrService) && err.Error() == ErrService.Error()) {
+		return base
+	}
+	return upstream.Message(err, base)
+}
+
+// Directory resolves a user's department chain. Nil skips department matching.
+type Directory interface {
+	Email(ctx context.Context, userID string) (string, error)
+	GroupID(ctx context.Context, email string) (string, error)
+	ParentID(ctx context.Context, groupID string) (string, error)
+}
+
+// Server is one Docker desktop service Hub can call.
+type Server struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	BaseURL     string `json:"base_url"`
+	AccessToken string `json:"access_token,omitempty"`
+	Image       string `json:"image"`
+	Memory      string `json:"memory"`
+	CPUs        string `json:"cpus"`
+	ShmSize     string `json:"shm_size"`
+}
+
+// ServerView hides the access token.
+type ServerView struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	BaseURL  string `json:"base_url"`
+	TokenSet bool   `json:"token_set"`
+	Image    string `json:"image"`
+	Memory   string `json:"memory"`
+	CPUs     string `json:"cpus"`
+	ShmSize  string `json:"shm_size"`
+}
+
+// Assignment binds global users, one department, or one user to a server.
+type Assignment struct {
+	ID       string `json:"id"`
+	Scope    string `json:"scope"`
+	TargetID string `json:"target_id,omitempty"`
+	ServerID string `json:"server_id"`
+}
+
+// Desktop is the service response after create or stop.
+type Desktop struct {
+	UserID     string `json:"user_id"`
+	ServerID   string `json:"server_id"`
+	ServerName string `json:"server_name"`
+	Container  string `json:"container,omitempty"`
+	Image      string `json:"image,omitempty"`
+	Memory     string `json:"memory,omitempty"`
+	CPUs       string `json:"cpus,omitempty"`
+	ShmSize    string `json:"shm_size,omitempty"`
+	Status     string `json:"status"`
+}
+
+// AuthorizedUser is one platform user a desktop assignment covers. The
+// check-desktop list shows only these users: anyone else would fail with
+// ErrNotAssigned because no assignment resolves for them.
+// Email is the address already loaded with the user. It is not part of the
+// admin payload; the bot-scope filter uses it so a department grant does not
+// read that user a second time.
+type AuthorizedUser struct {
+	ID    string `json:"id"`
+	Label string `json:"label"`
+	Email string `json:"-"`
+}
+
+// View is the admin payload.
+type View struct {
+	Servers     []ServerView `json:"servers"`
+	Assignments []Assignment `json:"assignments"`
+	// Users lists the platform users covered by an assignment. The pool has
+	// no user list, so the admin handler fills it in via AuthorizedUsers.
+	Users []AuthorizedUser `json:"users,omitempty"`
+}
+
+type record struct {
+	Servers     []Server     `json:"servers"`
+	Assignments []Assignment `json:"assignments"`
+}
+
+// Pool stores Docker services and calls the one assigned to a user.
+type Pool struct {
+	System    store.SystemSettingsRepository
+	Directory Directory
+	HTTP      *http.Client
+	Now       func() time.Time
+
+	mu sync.Mutex
+}
+
+func New(system store.SystemSettingsRepository, directory Directory) *Pool {
+	return &Pool{System: system, Directory: directory, Now: time.Now}
+}
+
+func (p *Pool) View(ctx context.Context, tenantID string) (View, error) {
+	rec, err := p.load(ctx, tenantID)
+	if err != nil {
+		return View{}, err
+	}
+	return viewOf(rec), nil
+}
+
+// AuthorizedUsers filters candidates down to the users an assignment covers:
+// a user-scope assignment names them, a department-scope assignment covers
+// their department chain, and a global assignment covers everyone. It is
+// resolve()'s matching in reverse, so every listed user's desktop calls
+// succeed; unlisted users would fail with ErrNotAssigned.
+func (p *Pool) AuthorizedUsers(ctx context.Context, tenantID string, candidates []AuthorizedUser) []AuthorizedUser {
+	if p == nil {
+		return nil
+	}
+	p.mu.Lock()
+	rec, err := p.load(ctx, tenantID)
+	p.mu.Unlock()
+	if err != nil {
+		return nil
+	}
+	return p.filterAuthorizedUsers(directoryContext(ctx, tenantID), candidates, rec.Assignments)
+}
+
+// ViewAuthorized is the admin view with Users filled in, from one settings
+// read: the panel needs both and two reads could disagree after a write.
+func (p *Pool) ViewAuthorized(ctx context.Context, tenantID string, candidates []AuthorizedUser) (View, error) {
+	if p == nil {
+		return View{}, ErrSettingsUnavailable
+	}
+	p.mu.Lock()
+	rec, err := p.load(ctx, tenantID)
+	p.mu.Unlock()
+	if err != nil {
+		return View{}, err
+	}
+	view := viewOf(rec)
+	view.Users = p.filterAuthorizedUsers(directoryContext(ctx, tenantID), candidates, rec.Assignments)
+	return view, nil
+}
+
+// filterAuthorizedUsers applies resolve()'s matching in reverse. A global
+// assignment short-circuits everything: nobody needs a department chain, so
+// the directory is left alone for large tenants. With department assignments
+// and no global, each candidate's chain resolves at most to a first match.
+func (p *Pool) filterAuthorizedUsers(ctx context.Context, candidates []AuthorizedUser, assignments []Assignment) []AuthorizedUser {
+	var (
+		global bool
+		users  = map[string]bool{}
+		depts  = map[string]bool{}
+	)
+	for _, item := range assignments {
+		switch item.Scope {
+		case ScopeGlobal:
+			global = true
+		case ScopeUser:
+			users[item.TargetID] = true
+		case ScopeDepartment:
+			depts[item.TargetID] = true
+		}
+	}
+	if !global && len(users) == 0 && len(depts) == 0 {
+		return nil
+	}
+	out := []AuthorizedUser{}
+	add := func(id, label string) {
+		out = append(out, AuthorizedUser{ID: id, Label: label})
+	}
+	for _, candidate := range candidates {
+		id := strings.TrimSpace(candidate.ID)
+		if id == "" {
+			continue
+		}
+		switch {
+		case global || users[id]:
+			add(id, candidate.Label)
+		case len(depts) > 0:
+			for _, groupID := range p.departmentChain(ctx, id) {
+				if depts[groupID] {
+					add(id, candidate.Label)
+					break
+				}
+			}
+		}
+	}
+	return out
+}
+
+func (p *Pool) CreateServer(ctx context.Context, tenantID string, in Server) (ServerView, error) {
+	server, err := normalizeServer(in, "")
+	if err != nil {
+		return ServerView{}, err
+	}
+	if server.AccessToken == "" {
+		return ServerView{}, fmt.Errorf("%w: access token is required", ErrInvalidInput)
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	rec, err := p.load(ctx, tenantID)
+	if err != nil {
+		return ServerView{}, err
+	}
+	server.ID = newID("dsrv")
+	rec.Servers = append(rec.Servers, server)
+	if err := p.save(ctx, tenantID, rec); err != nil {
+		return ServerView{}, err
+	}
+	return serverView(server), nil
+}
+
+func (p *Pool) UpdateServer(ctx context.Context, tenantID, serverID string, in Server, tokenProvided bool) (ServerView, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	rec, err := p.load(ctx, tenantID)
+	if err != nil {
+		return ServerView{}, err
+	}
+	index := serverIndex(rec.Servers, serverID)
+	if index < 0 {
+		return ServerView{}, ErrNotFound
+	}
+	current := rec.Servers[index]
+	if !tokenProvided {
+		in.AccessToken = current.AccessToken
+	}
+	server, err := normalizeServer(in, current.AccessToken)
+	if err != nil {
+		return ServerView{}, err
+	}
+	server.ID = current.ID
+	if strings.TrimSpace(server.AccessToken) == "" {
+		return ServerView{}, fmt.Errorf("%w: access token is required", ErrInvalidInput)
+	}
+	rec.Servers[index] = server
+	if err := p.save(ctx, tenantID, rec); err != nil {
+		return ServerView{}, err
+	}
+	return serverView(server), nil
+}
+
+func (p *Pool) DeleteServer(ctx context.Context, tenantID, serverID string) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	rec, err := p.load(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	index := serverIndex(rec.Servers, serverID)
+	if index < 0 {
+		return ErrNotFound
+	}
+	for _, item := range rec.Assignments {
+		if item.ServerID == serverID {
+			return fmt.Errorf("%w: server is still assigned", ErrInvalidInput)
+		}
+	}
+	rec.Servers = append(rec.Servers[:index], rec.Servers[index+1:]...)
+	return p.save(ctx, tenantID, rec)
+}
+
+func (p *Pool) CreateAssignment(ctx context.Context, tenantID string, in Assignment) (Assignment, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	rec, err := p.load(ctx, tenantID)
+	if err != nil {
+		return Assignment{}, err
+	}
+	item, err := normalizeAssignment(in, rec)
+	if err != nil {
+		return Assignment{}, err
+	}
+	item.ID = newID("dasg")
+	rec.Assignments = append(rec.Assignments, item)
+	if err := p.save(ctx, tenantID, rec); err != nil {
+		return Assignment{}, err
+	}
+	return item, nil
+}
+
+func (p *Pool) DeleteAssignment(ctx context.Context, tenantID, assignmentID string) error {
+	p.mu.Lock()
+	rec, err := p.load(ctx, tenantID)
+	if err != nil {
+		p.mu.Unlock()
+		return err
+	}
+	index := -1
+	for i := range rec.Assignments {
+		if rec.Assignments[i].ID == assignmentID {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		p.mu.Unlock()
+		return ErrNotFound
+	}
+	removed := rec.Assignments[index]
+	p.mu.Unlock()
+
+	// A user-scope removal moves that user to another server on the next
+	// resolve. Stop the desktop the old server still holds first, or its
+	// container keeps running there with no Hub handle left to stop it.
+	// Best effort: a dead server must not block removing the assignment.
+	if removed.Scope == ScopeUser {
+		if server, err := serverByID(rec.Servers, removed.ServerID); err == nil {
+			_, _ = p.stopOnServer(ctx, server, tenantID, removed.TargetID)
+		}
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	rec, err = p.load(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	index = -1
+	for i := range rec.Assignments {
+		if rec.Assignments[i].ID == assignmentID {
+			index = i
+			break
+		}
+	}
+	if index < 0 {
+		return ErrNotFound
+	}
+	rec.Assignments = append(rec.Assignments[:index], rec.Assignments[index+1:]...)
+	return p.save(ctx, tenantID, rec)
+}
+
+// CreateDesktop asks the Docker service assigned to this user to start a desktop.
+// The service applies that server's memory, CPU, and shared-memory settings.
+func (p *Pool) CreateDesktop(ctx context.Context, tenantID, userID string) (Desktop, error) {
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return Desktop{}, err
+	}
+	var out struct {
+		Container string `json:"container"`
+		Status    string `json:"status"`
+		Image     string `json:"image"`
+		Memory    string `json:"memory"`
+		CPUs      string `json:"cpus"`
+		ShmSize   string `json:"shm_size"`
+	}
+	body := map[string]string{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+		"image":     server.Image,
+		"memory":    server.Memory,
+		"cpus":      server.CPUs,
+		"shm_size":  server.ShmSize,
+	}
+	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops", body, &out); err != nil {
+		return Desktop{}, err
+	}
+	return Desktop{
+		UserID: userID, ServerID: server.ID, ServerName: server.Name,
+		Container: out.Container, Image: out.Image, Memory: out.Memory,
+		CPUs: out.CPUs, ShmSize: out.ShmSize, Status: out.Status,
+	}, nil
+}
+
+// StopDesktop asks the assigned Docker service to stop that user's desktop.
+func (p *Pool) StopDesktop(ctx context.Context, tenantID, userID string) (Desktop, error) {
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return Desktop{}, err
+	}
+	return p.stopOnServer(ctx, server, tenantID, userID)
+}
+
+// stopOnServer stops the desktop on one specific Docker service, independent
+// of the current assignment.
+func (p *Pool) stopOnServer(ctx context.Context, server Server, tenantID, userID string) (Desktop, error) {
+	var out struct {
+		Container string `json:"container"`
+		Status    string `json:"status"`
+	}
+	body := map[string]string{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+	}
+	if err := p.callIdempotent(ctx, server, http.MethodPost, "/v1/desktops/stop", body, &out); err != nil {
+		return Desktop{}, err
+	}
+	return Desktop{UserID: userID, ServerID: server.ID, ServerName: server.Name, Container: out.Container, Status: out.Status}, nil
+}
+
+// DesktopSession is the remote desktop MaClawSrv and the GUI can reach.
+type DesktopSession struct {
+	CDP     string
+	Display string
+	Novnc   string
+}
+
+// OpenSession asks the assigned Docker service for a CDP URL MaClawSrv can
+// reach even when that service is on another machine.
+func (p *Pool) OpenSession(ctx context.Context, tenantID, userID string) (string, string, error) {
+	session, err := p.OpenDesktop(ctx, tenantID, userID)
+	if err != nil {
+		return "", "", err
+	}
+	return session.CDP, session.Display, nil
+}
+
+// OpenDesktop is OpenSession plus the noVNC page for a human login handoff.
+func (p *Pool) OpenDesktop(ctx context.Context, tenantID, userID string) (DesktopSession, error) {
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return DesktopSession{}, err
+	}
+	var out struct {
+		CDP     string `json:"cdp_url"`
+		Display string `json:"display"`
+		Novnc   string `json:"novnc_url"`
+	}
+	body := map[string]string{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+		"image":     server.Image,
+		"memory":    server.Memory,
+		"cpus":      server.CPUs,
+		"shm_size":  server.ShmSize,
+	}
+	// The session call is create-or-get for this (tenant, user): a service
+	// that never answered, or answered 5xx, is tried again rather than
+	// failing a command that has not opened a desktop yet.
+	if err := p.callIdempotent(ctx, server, http.MethodPost, "/v1/desktops/session", body, &out); err != nil {
+		return DesktopSession{}, err
+	}
+	if !strings.HasPrefix(out.CDP, "http://") && !strings.HasPrefix(out.CDP, "https://") {
+		return DesktopSession{}, fmt.Errorf("%w: cdp url is invalid", ErrService)
+	}
+	return DesktopSession{CDP: out.CDP, Display: out.Display, Novnc: strings.TrimSpace(out.Novnc)}, nil
+}
+
+// RunApp forwards one xdotool command to the Docker service that owns the user.
+func (p *Pool) RunApp(ctx context.Context, tenantID, userID, display string, args []string) (string, error) {
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Output string `json:"output"`
+	}
+	body := map[string]any{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+		"display":   display,
+		"args":      args,
+	}
+	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops/app", body, &out); err != nil {
+		return "", err
+	}
+	return out.Output, nil
+}
+
+// RunOpen asks the user's Docker service to start one GUI program on the
+// desktop display. The program is argv, not a shell command.
+func (p *Pool) RunOpen(ctx context.Context, tenantID, userID, display, program string, args []string) (string, error) {
+	if _, err := desktop.OpenArgv(program, args); err != nil {
+		return "", fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
+	}
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Output string `json:"output"`
+	}
+	body := map[string]any{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+		"display":   display,
+		"program":   program,
+		"args":      args,
+	}
+	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops/open", body, &out); err != nil {
+		return "", err
+	}
+	return out.Output, nil
+}
+
+// RunInstall asks the user's Docker service to apt-get install. The client
+// waits one minute past the apt budget so the stop sentence can be read.
+func (p *Pool) RunInstall(ctx context.Context, tenantID, userID string, packages []string) (string, error) {
+	names, err := desktop.PackageNames(packages)
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
+	}
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Output string `json:"output"`
+	}
+	body := map[string]any{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+		"packages":  names,
+	}
+	client := &http.Client{Timeout: desktop.InstallClientTimeout}
+	if err := p.callClient(ctx, client, server, http.MethodPost, "/v1/desktops/install", body, &out); err != nil {
+		return "", err
+	}
+	return out.Output, nil
+}
+
+// RunFile forwards a read, write, edit, list, or bytes fetch to the user's desktop container.
+// bytes is the base64 of the file. A PDF stays intact across the JSON string.
+func (p *Pool) RunFile(ctx context.Context, tenantID, userID, action, filePath, content, oldString, newString string) (string, error) {
+	action = strings.ToLower(strings.TrimSpace(action))
+	switch action {
+	case "read", "write", "edit", "list", "bytes":
+	default:
+		return "", fmt.Errorf("%w: file action is invalid", ErrInvalidInput)
+	}
+	if action == "list" && strings.TrimSpace(filePath) == "" {
+		filePath = desktop.ContainerHome
+	}
+	if action != "list" || strings.TrimSpace(filePath) != "" {
+		resolved, err := desktop.ContainerPath(filePath)
+		if err != nil {
+			return "", fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
+		}
+		filePath = resolved
+	}
+	if action == "write" && len(content) > desktop.FileContentMax {
+		return "", fmt.Errorf("%w: file is too large", ErrInvalidInput)
+	}
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Output string `json:"output"`
+	}
+	body := map[string]any{
+		"tenant_id":  store.NormalizeTenantID(tenantID),
+		"user_id":    strings.TrimSpace(userID),
+		"action":     action,
+		"path":       filePath,
+		"content":    content,
+		"old_string": oldString,
+		"new_string": newString,
+	}
+	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops/file", body, &out); err != nil {
+		return "", err
+	}
+	return out.Output, nil
+}
+
+// RunBash runs one command in the user's desktop container.
+func (p *Pool) RunBash(ctx context.Context, tenantID, userID, command string) (string, error) {
+	if _, err := desktop.BashArgs("container", command); err != nil {
+		return "", fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
+	}
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Output string `json:"output"`
+	}
+	body := map[string]any{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+		"command":   strings.TrimSpace(command),
+	}
+	client := &http.Client{Timeout: 2 * time.Minute}
+	if err := p.callClient(ctx, client, server, http.MethodPost, "/v1/desktops/bash", body, &out); err != nil {
+		return "", err
+	}
+	return out.Output, nil
+}
+
+// RunHTTP fetches one URL from inside the user's desktop container.
+func (p *Pool) RunHTTP(ctx context.Context, tenantID, userID, rawURL string) (string, int, string, error) {
+	if _, err := desktop.PublicURL(rawURL); err != nil {
+		return "", 0, "", fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
+	}
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return "", 0, "", err
+	}
+	var out struct {
+		Body   string `json:"body"`
+		Status int    `json:"status"`
+		Kind   string `json:"content_type"`
+	}
+	body := map[string]any{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+		"url":       strings.TrimSpace(rawURL),
+	}
+	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops/http", body, &out); err != nil {
+		return "", 0, "", err
+	}
+	return out.Body, out.Status, out.Kind, nil
+}
+
+// maxScreenshotBytes bounds one PNG read from a Docker service.
+const maxScreenshotBytes = 16 << 20
+
+var pngSignature = []byte("\x89PNG\r\n\x1a\n")
+
+// Screenshot returns a PNG of the user's desktop from the Docker service that
+// owns the user. An empty display means the service's default (:20).
+func (p *Pool) Screenshot(ctx context.Context, tenantID, userID, display, name string) ([]byte, string, error) {
+	shot, saved, err := p.ScreenshotWith(ctx, tenantID, userID, display, name, desktop.ShotOptions{})
+	return shot.Data, saved, err
+}
+
+// ScreenshotWith is Screenshot with scaling, a zoom region, another format,
+// the pointer, or accessibility marks. The Shot carries the screen size and
+// scale the service reported; an older service without those headers can
+// only answer plain options, whose PNG is the full screen.
+func (p *Pool) ScreenshotWith(ctx context.Context, tenantID, userID, display, name string, opts desktop.ShotOptions) (desktop.Shot, string, error) {
+	opts, err := opts.Normalize()
+	if err != nil {
+		return desktop.Shot{}, "", fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
+	}
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return desktop.Shot{}, "", err
+	}
+	body := map[string]any{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+		"display":   strings.TrimSpace(display),
+	}
+	name = strings.TrimSpace(name)
+	if name != "" {
+		body["name"] = name
+	}
+	if !opts.Plain() {
+		body["max_width"], body["max_height"], body["format"] = opts.MaxWidth, opts.MaxHeight, opts.Format
+		body["quality"], body["cursor"], body["marks"] = opts.Quality, opts.Cursor, opts.Marks
+		if !opts.Region.Empty() {
+			body["region"] = opts.Region
+		}
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return desktop.Shot{}, "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, strings.TrimRight(server.BaseURL, "/")+"/v1/desktops/screenshot", bytes.NewReader(raw))
+	if err != nil {
+		return desktop.Shot{}, "", fmt.Errorf("%w: %s", ErrService, err.Error())
+	}
+	req.Header.Set("Authorization", "Bearer "+server.AccessToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := p.client().Do(req)
+	if err != nil {
+		return desktop.Shot{}, "", fmt.Errorf("%w: %s", ErrService, err.Error())
+	}
+	defer resp.Body.Close()
+	payload, err := io.ReadAll(io.LimitReader(resp.Body, maxScreenshotBytes+1))
+	if err != nil {
+		return desktop.Shot{}, "", fmt.Errorf("%w: %s", ErrService, err.Error())
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		if len(payload) > 1<<20 {
+			payload = payload[:1<<20]
+		}
+		return desktop.Shot{}, "", upstream.NewStatusError(ErrService, resp.StatusCode, payload)
+	}
+	if len(payload) > maxScreenshotBytes || desktop.SniffImageMIME(payload) != opts.MIME() {
+		return desktop.Shot{}, "", fmt.Errorf("%w: screenshot is not a %s image", ErrService, opts.MIME())
+	}
+	if opts.Plain() && !bytes.HasPrefix(payload, pngSignature) {
+		return desktop.Shot{}, "", fmt.Errorf("%w: screenshot is not a PNG image", ErrService)
+	}
+	shot, err := desktop.ParseShotHeaders(resp.Header.Get, payload)
+	if err != nil {
+		return desktop.Shot{}, "", fmt.Errorf("%w: %s", ErrService, err.Error())
+	}
+	if !opts.Plain() && resp.Header.Get(desktop.HeaderShotScreen) == "" {
+		return desktop.Shot{}, "", fmt.Errorf("%w: this desktop service does not support screenshot options yet", ErrService)
+	}
+	saved := strings.TrimSpace(resp.Header.Get("X-Desktop-Saved-Path"))
+	if name == "" || saved != desktop.DesktopShotPath(name) {
+		saved = ""
+	}
+	return shot, saved, nil
+}
+
+// Ctl runs one desktop control request (clipboard, windows, screen, wait,
+// status, accessibility) on the Docker service that owns the user.
+func (p *Pool) Ctl(ctx context.Context, tenantID, userID, display string, request map[string]any) (map[string]any, error) {
+	op, _ := request["op"].(string)
+	if !desktop.ValidCtlOp(strings.TrimSpace(op)) {
+		return nil, fmt.Errorf("%w: desktop control op must be one of %s", ErrInvalidInput, strings.Join(desktop.CtlOps, ", "))
+	}
+	server, err := p.resolve(ctx, tenantID, userID)
+	if err != nil {
+		return nil, err
+	}
+	body := map[string]any{
+		"tenant_id": store.NormalizeTenantID(tenantID),
+		"user_id":   strings.TrimSpace(userID),
+		"display":   strings.TrimSpace(display),
+		"request":   request,
+	}
+	var out map[string]any
+	if err := p.call(ctx, server, http.MethodPost, "/v1/desktops/ctl", body, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (p *Pool) resolve(ctx context.Context, tenantID, userID string) (Server, error) {
+	ctx = directoryContext(ctx, tenantID)
+	// An isolated bot's desktop user lives on its owner's Docker service:
+	// the bot's display is inside the owner's container.
+	userID, _ = desktop.SplitDesktopUser(userID)
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return Server{}, fmt.Errorf("%w: user is required", ErrInvalidInput)
+	}
+	p.mu.Lock()
+	rec, err := p.load(ctx, tenantID)
+	p.mu.Unlock()
+	if err != nil {
+		return Server{}, err
+	}
+	if serverID := matchAssignment(rec.Assignments, ScopeUser, userID); serverID != "" {
+		return serverByID(rec.Servers, serverID)
+	}
+	for _, groupID := range p.departmentChain(ctx, userID) {
+		if serverID := matchAssignment(rec.Assignments, ScopeDepartment, groupID); serverID != "" {
+			return serverByID(rec.Servers, serverID)
+		}
+	}
+	if serverID := matchAssignment(rec.Assignments, ScopeGlobal, ""); serverID != "" {
+		return serverByID(rec.Servers, serverID)
+	}
+	return Server{}, ErrNotAssigned
+}
+
+// directoryContext carries the assignment's tenant into department lookups.
+// Membership is stored per tenant. Without this value the lookup reads the
+// default tenant, and a department assignment for any other tenant misses.
+func directoryContext(ctx context.Context, tenantID string) context.Context {
+	return security.WithTenant(ctx, tenantID)
+}
+
+func (p *Pool) departmentChain(ctx context.Context, userID string) []string {
+	if p == nil || p.Directory == nil {
+		return nil
+	}
+	email, err := p.Directory.Email(ctx, userID)
+	if err != nil || strings.TrimSpace(email) == "" {
+		return nil
+	}
+	groupID, err := p.Directory.GroupID(ctx, email)
+	if err != nil {
+		return nil
+	}
+	var chain []string
+	seen := map[string]bool{}
+	for groupID != "" && len(chain) < 32 && !seen[groupID] {
+		seen[groupID] = true
+		chain = append(chain, groupID)
+		parent, err := p.Directory.ParentID(ctx, groupID)
+		if err != nil {
+			break
+		}
+		groupID = strings.TrimSpace(parent)
+	}
+	return chain
+}
+
+func (p *Pool) call(ctx context.Context, server Server, method, path string, body any, dest any) error {
+	return p.callClient(ctx, p.client(), server, method, path, body, dest)
+}
+
+// desktopIdempotentAttempts is how many times one create-or-read call to the
+// Docker service is tried. The session call is create-or-get for one
+// (tenant, user) and the stop call is idempotent, so answering an overloaded
+// service with one more try cannot double a desktop. Commands that act on
+// the desktop (app, open) deliberately do not come through here.
+const desktopIdempotentAttempts = 3
+
+// desktopIdempotentRetryWait is the gap before the next try of an
+// create-or-read call. Short, because the caller is a person waiting for a
+// desktop and the failure being retried is a proxy or service blink.
+const desktopIdempotentRetryWait = 250 * time.Millisecond
+
+// callIdempotent sends one create-or-read call and tries it again when the
+// service never answered or answered 5xx. A status the service actually
+// chose — 4xx — is returned at once: retrying a rejection is how a
+// misconfigured server turns into a slow one.
+func (p *Pool) callIdempotent(ctx context.Context, server Server, method, path string, body any, dest any) error {
+	var err error
+	for attempt := 1; attempt <= desktopIdempotentAttempts; attempt++ {
+		err = p.call(ctx, server, method, path, body, dest)
+		if err == nil || !desktopPoolCallWorthRetry(err) {
+			return err
+		}
+		if attempt == desktopIdempotentAttempts {
+			return err
+		}
+		wait := time.NewTimer(desktopIdempotentRetryWait * time.Duration(attempt))
+		select {
+		case <-ctx.Done():
+			wait.Stop()
+			return err
+		case <-wait.C:
+		}
+	}
+	return err
+}
+
+// desktopPoolCallWorthRetry reports whether one Docker-service call failed
+// without the service deciding anything: a transport error, or a 5xx from a
+// proxy in front of it. Both leave the requested state unchanged, which is
+// what makes another try safe for the create-or-read calls.
+func desktopPoolCallWorthRetry(err error) bool {
+	if err == nil {
+		return false
+	}
+	var statusErr *upstream.StatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.Status >= 500
+	}
+	return true
+}
+
+func (p *Pool) callClient(ctx context.Context, client *http.Client, server Server, method, path string, body any, dest any) error {
+	if client == nil {
+		client = p.client()
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimRight(server.BaseURL, "/")+path, bytes.NewReader(raw))
+	if err != nil {
+		return fmt.Errorf("%w: %s", ErrService, err.Error())
+	}
+	req.Header.Set("Authorization", "Bearer "+server.AccessToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("%w: %s", ErrService, err.Error())
+	}
+	defer resp.Body.Close()
+	payload, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return upstream.NewStatusError(ErrService, resp.StatusCode, payload)
+	}
+	if dest != nil && len(bytes.TrimSpace(payload)) > 0 {
+		if err := json.Unmarshal(payload, dest); err != nil {
+			return fmt.Errorf("%w: %s", ErrService, err.Error())
+		}
+	}
+	return nil
+}
+
+func (p *Pool) client() *http.Client {
+	if p != nil && p.HTTP != nil {
+		return p.HTTP
+	}
+	return &http.Client{Timeout: 2 * time.Minute}
+}
+
+func (p *Pool) load(ctx context.Context, tenantID string) (record, error) {
+	out := record{Servers: []Server{}, Assignments: []Assignment{}}
+	if p == nil || p.System == nil {
+		return out, ErrSettingsUnavailable
+	}
+	raw, err := p.System.Get(ctx, storageKey(tenantID))
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return out, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return record{Servers: []Server{}, Assignments: []Assignment{}}, nil
+	}
+	if out.Servers == nil {
+		out.Servers = []Server{}
+	}
+	if out.Assignments == nil {
+		out.Assignments = []Assignment{}
+	}
+	return out, nil
+}
+
+func (p *Pool) save(ctx context.Context, tenantID string, rec record) error {
+	if p == nil || p.System == nil {
+		return ErrSettingsUnavailable
+	}
+	raw, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return p.System.Set(ctx, storageKey(tenantID), string(raw))
+}
+
+func normalizeServer(in Server, keepToken string) (Server, error) {
+	in.Name = strings.TrimSpace(in.Name)
+	in.BaseURL = strings.TrimRight(strings.TrimSpace(in.BaseURL), "/")
+	in.AccessToken = strings.TrimSpace(in.AccessToken)
+	if in.Name == "" || len([]rune(in.Name)) > 80 {
+		return Server{}, fmt.Errorf("%w: name is required", ErrInvalidInput)
+	}
+	parsed, err := url.Parse(in.BaseURL)
+	if err != nil || parsed.Host == "" || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+		return Server{}, fmt.Errorf("%w: base_url is invalid", ErrInvalidInput)
+	}
+	if in.AccessToken == "" {
+		in.AccessToken = keepToken
+	}
+	resources, err := desktop.NormalizeResources(in.Image, in.Memory, in.CPUs, in.ShmSize)
+	if err != nil {
+		return Server{}, fmt.Errorf("%w: %s", ErrInvalidInput, err.Error())
+	}
+	in.Image, in.Memory, in.CPUs, in.ShmSize = resources.Image, resources.Memory, resources.CPUs, resources.ShmSize
+	return in, nil
+}
+
+func normalizeAssignment(in Assignment, rec record) (Assignment, error) {
+	in.Scope = strings.TrimSpace(in.Scope)
+	in.TargetID = strings.TrimSpace(in.TargetID)
+	in.ServerID = strings.TrimSpace(in.ServerID)
+	if serverIndex(rec.Servers, in.ServerID) < 0 {
+		return Assignment{}, ErrNotFound
+	}
+	switch in.Scope {
+	case ScopeGlobal:
+		in.TargetID = ""
+		if matchAssignment(rec.Assignments, ScopeGlobal, "") != "" {
+			return Assignment{}, fmt.Errorf("%w: global assignment already exists", ErrInvalidInput)
+		}
+	case ScopeDepartment, ScopeUser:
+		if !desktop.ValidUserID(in.TargetID) {
+			return Assignment{}, fmt.Errorf("%w: target is required", ErrInvalidInput)
+		}
+		if matchAssignment(rec.Assignments, in.Scope, in.TargetID) != "" {
+			return Assignment{}, fmt.Errorf("%w: assignment already exists", ErrInvalidInput)
+		}
+	default:
+		return Assignment{}, fmt.Errorf("%w: scope must be global, department, or user", ErrInvalidInput)
+	}
+	return in, nil
+}
+
+func matchAssignment(items []Assignment, scope, target string) string {
+	for _, item := range items {
+		if item.Scope == scope && item.TargetID == target {
+			return item.ServerID
+		}
+	}
+	return ""
+}
+
+func serverByID(servers []Server, id string) (Server, error) {
+	index := serverIndex(servers, id)
+	if index < 0 {
+		return Server{}, ErrNotFound
+	}
+	return servers[index], nil
+}
+
+func serverIndex(servers []Server, id string) int {
+	id = strings.TrimSpace(id)
+	for i := range servers {
+		if servers[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func viewOf(rec record) View {
+	servers := make([]ServerView, 0, len(rec.Servers))
+	for _, server := range rec.Servers {
+		servers = append(servers, serverView(server))
+	}
+	assignments := rec.Assignments
+	if assignments == nil {
+		assignments = []Assignment{}
+	}
+	return View{Servers: servers, Assignments: assignments}
+}
+
+func serverView(server Server) ServerView {
+	return ServerView{
+		ID: server.ID, Name: server.Name, BaseURL: server.BaseURL,
+		TokenSet: strings.TrimSpace(server.AccessToken) != "",
+		Image:    server.Image, Memory: server.Memory, CPUs: server.CPUs, ShmSize: server.ShmSize,
+	}
+}
+
+func storageKey(tenantID string) string {
+	tenantID = store.NormalizeTenantID(tenantID)
+	if tenantID == "" || tenantID == store.DefaultTenantID {
+		return SettingsKey
+	}
+	return "tenant:" + tenantID + ":" + SettingsKey
+}
+
+func newID(prefix string) string {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		sum := sha256.Sum256([]byte(time.Now().UTC().Format(time.RFC3339Nano)))
+		return prefix + "_" + hex.EncodeToString(sum[:4])
+	}
+	return prefix + "_" + hex.EncodeToString(buf[:])
+}

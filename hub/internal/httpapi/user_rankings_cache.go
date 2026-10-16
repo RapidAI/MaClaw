@@ -53,7 +53,7 @@ type RankingCache struct {
 }
 
 type inflightEntry struct {
-	done chan struct{}       // closed when computation is complete
+	done   chan struct{}      // closed when computation is complete
 	result *rankingCacheEntry // nil if computation failed
 }
 
@@ -119,30 +119,16 @@ func (rc *RankingCache) refresh() {
 	// Collect all tenant IDs to pre-compute.
 	tenantIDs := rc.collectTenantIDs()
 
-	periods := []struct {
+	type rankingPeriod struct {
 		period string
 		start  time.Time
 		end    time.Time
 		label  string
-	}{
-		{
-			period: "daily",
-			start:  time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC),
-			end:    time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1),
-			label:  now.Format("2006-01-02"),
-		},
-		{
-			period: "monthly",
-			start:  time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC),
-			end:    time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, 1, 0),
-			label:  now.Format("2006-01"),
-		},
-		{
-			period: "weekly",
-			start:  weekStart(now),
-			end:    weekStart(now).AddDate(0, 0, 7),
-			label:  weekStart(now).Format("2006-01-02"),
-		},
+	}
+	periods := make([]rankingPeriod, 0, 3)
+	for _, period := range []string{"daily", "weekly", "monthly"} {
+		start, end, label := userRankingRange(nil, period, now)
+		periods = append(periods, rankingPeriod{period: period, start: start, end: end, label: label})
 	}
 
 	newCache := make(map[string]*rankingCacheEntry, len(tenantIDs)*len(periods))
@@ -217,14 +203,6 @@ func (rc *RankingCache) collectTenantIDs() []string {
 	}
 	sort.Strings(ids)
 	return ids
-}
-
-func weekStart(now time.Time) time.Time {
-	weekday := int(now.Weekday())
-	if weekday == 0 {
-		weekday = 7
-	}
-	return time.Date(now.Year(), now.Month(), now.Day()-(weekday-1), 0, 0, 0, 0, time.UTC)
 }
 
 func (rc *RankingCache) computeEntry(ctx context.Context, tenantID string, start, end, now time.Time) *rankingCacheEntry {

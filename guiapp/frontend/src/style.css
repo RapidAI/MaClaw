@@ -1,0 +1,59 @@
+html {
+    /* background-color is set dynamically by index.html inline script and
+       App.tsx useEffect to match the active theme.  Do NOT set a static
+       page colour here — a hardcoded value would flash on theme mismatch.
+       App.css owns `background-color: var(--theme-page-bg)`. */
+    /* Default left for product UI; set center only on heroes/empty states. */
+    text-align: left;
+    color: var(--theme-text-primary, #1c2733);
+}
+
+body {
+    margin: 0;
+    color: var(--theme-text-primary, #1c2733);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Inter", "Roboto",
+    "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue",
+    sans-serif;
+    text-align: left;
+}
+
+@font-face {
+    font-family: "Nunito";
+    font-style: normal;
+    font-weight: 400;
+    src: local(""),
+    url("assets/fonts/nunito-v16-latin-regular.woff2") format("woff2");
+}
+
+/* Legacy Wails id; real shell uses #App (see App.css). Keep both left-aligned.
+   Prefer 100% over 100vh so maximised WebView2 does not exceed the work area. */
+#app {
+    height: 100%;
+    text-align: left;
+}
+
+#root {
+    text-align: left;
+    min-height: 100%;
+}
+
+/* Global selection color */
+::selection {
+    background-color: color-mix(in srgb, var(--theme-primary) 22%, transparent);
+    color: inherit;
+}
+
+/* Smooth focus transitions */
+*:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--theme-primary) 50%, transparent);
+    outline-offset: 2px;
+    border-radius: var(--radius-xs, 4px);
+}
+
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+button:focus-visible {
+    outline: 2px solid color-mix(in srgb, var(--theme-primary) 40%, transparent);
+    outline-offset: 1px;
+}

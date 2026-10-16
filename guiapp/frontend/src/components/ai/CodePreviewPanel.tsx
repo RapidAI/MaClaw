@@ -1,0 +1,2181 @@
+/**
+ * CodePreviewPanel - main component for the code preview panel.
+ *
+ * Renders a panel with:
+ *   1. A header bar with a close button (X)
+ *   2. FileTabBar at the top for file selection
+ *   3. Code content area with line numbers, monospace font, vertical scrolling
+ *   4. Syntax highlighting via tokenizeLine
+ *   5. DiffView for files with original content (using computeDiff)
+ *   6. Scroll position preservation on content update
+ *   7. Right-edge minimap (document thumbnail + page locator)
+ *
+ * Split modules:
+ *   - codePreviewFindHelpers.ts      pure find / prefs / language helpers
+ *   - codePreviewMinimapHelpers.ts   minimap mapping / thumbnail paint
+ *   - CodePreviewMinimap.tsx         right-edge document locator
+ *   - CodePreviewMarkdown.tsx        markdown renderer
+ *   - CodePreviewPanel.tsx           this file (shell + code/diff views)
+ *
+ * Uses inline styles based on theme props (no CSS modules).
+ */
+import React, { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { CodeFileDiffStat, FileTabBar, cycleFilePath } from './FileTabBar';
+import { CodePreviewFileListButton } from './CodePreviewFileList';
+import { PreviewFileActions } from './PreviewFileActions';
+import { FilePreviewView, filePreviewUsesSpecialRenderer, isAssistantSourcePreview, isVisualFilePreview } from '../preview/FilePreviewView';
+import { WebPreviewBrowser } from '../preview/WebPreviewBrowser';
+import { filePreviewKindFromName } from '../preview/filePreviewKind';
+import type { CodePreviewTheme } from './FileTabBar';
+import type { CodeFile } from './useCodePreviewState';
+import { codeFileLineDeltaHasChange, computeCodeFileLineDelta, getDisplayFilePaths, getMruCycleOrder, isCodeFileDirty, previewBodyShowsFile, shouldDismissEmptyPreviewWithoutWorkspace } from './useCodePreviewState';
+import { buildDiffRows, computeDiff, computeDiffRowStats, type DiffLine, type DiffRow } from './diffCompute';
+import { tokenizeLine } from './syntaxHighlight';
+import type { HighlightToken } from './syntaxHighlight';
+import { CodePreviewDiffView, CodeDiffSummaryBar, type CodeDiffMode } from './CodePreviewDiffView';
+
+// The minimap samples one entry per visual row; the diff view reports the rows
+// it actually renders (folding / pairing changes that count).
+const EMPTY_MINIMAP_ROWS: DiffLine[] = [];
+import { CodePreviewMinimap } from './CodePreviewMinimap';
+import { CodePreviewWorkspace } from './CodePreviewWorkspace';
+import { CloudWorkspaceEntitlement } from '../../../wailsjs/go/main/App';
+import { cloudWorkspaceIdFromPath, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, FOCUS_CLOUD_WORKSPACE_TREE_EVENT } from './codingTaskMode';
+import { relativeLuminance, type Theme } from './aiAssistantPanelTheme';
+import { markdownPreviewIsDark } from './markdownPreviewInk';
+import {
+    CODE_PREVIEW_FONT_DEFAULT,
+    CODE_PREVIEW_FONT_MAX,
+    CODE_PREVIEW_FONT_MIN,
+    clampCodePreviewFontSize,
+    codePreviewLineHeight,
+    compileFindMatcher,
+    cycleMatchIndex,
+    formatCodeLanguageLabel,
+    loadCodePreviewViewPrefs,
+    parseGoToLineInput,
+    saveCodePreviewViewPrefs,
+    type CodePreviewViewPrefs,
+    type FindMatchOptions,
+} from './codePreviewFindHelpers';
+
+// Re-export public helpers / types so existing imports from CodePreviewPanel keep working.
+export type { CodePreviewTheme } from './FileTabBar';
+export type { CodePreviewViewPrefs, FindMatchOptions } from './codePreviewFindHelpers';
+export {
+    CODE_PREVIEW_FONT_DEFAULT,
+    CODE_PREVIEW_FONT_MAX,
+    CODE_PREVIEW_FONT_MIN,
+    CODE_PREVIEW_VIEW_PREFS_KEY,
+    clampCodePreviewFontSize,
+    codePreviewLineHeight,
+    compileFindMatcher,
+    cycleMatchIndex,
+    defaultCodePreviewViewPrefs,
+    escapeRegExp,
+    findMatchLineIndexes,
+    formatCodeLanguageLabel,
+    loadCodePreviewViewPrefs,
+    parseGoToLineInput,
+    saveCodePreviewViewPrefs,
+} from './codePreviewFindHelpers';
+
+// ── Theme Constants ──
+
+/** Light-mode editor chrome: gutter, minimap, path bar, tab strip. Neutral gray, not the chat's blue wash. */
+export const LIGHT_EDITOR_CHROME_BG = '#f5f5f5';
+export const LIGHT_EDITOR_CHROME_BORDER = '#e4e4e4';
+const LIGHT_EDITOR_CHROME_HOVER = '#eeeeee';
+
+/** Dark theme for the code preview panel. */
+export const darkCodePreviewTheme: CodePreviewTheme = {
+    bg: '#0f1720',
+    text: '#d7dee8',
+    textMuted: '#a0abbe',
+    border: '#263447',
+    lineNumBg: '#111b27',
+    lineNumText: '#8494a8',
+    tabBg: '#111b27',
+    tabActiveBg: '#162233',
+    tabActiveText: '#edf3f9',
+    tabHoverBg: '#1a293b',
+    diffAddBg: 'rgba(122, 168, 154, 0.16)',
+    diffAddText: '#b8d7cf',
+    diffDeleteBg: 'rgba(196, 61, 52, 0.12)',
+    diffDeleteText: '#e07a72',
+    syntaxKeyword: '#9bc2ea',
+    syntaxString: '#b8d7cf',
+    syntaxComment: '#8d9eb2',
+    syntaxNumber: '#b7d3ef',
+    syntaxFunction: '#d7dee8',
+    syntaxType: '#b7d3ef',
+    syntaxOperator: '#c3ccd8',
+};
+
+/** Light theme for the code preview panel. */
+export const lightCodePreviewTheme: CodePreviewTheme = {
+    bg: '#ffffff',
+    text: '#1f2937',
+    textMuted: '#64748b',
+    border: LIGHT_EDITOR_CHROME_BORDER,
+    lineNumBg: LIGHT_EDITOR_CHROME_BG,
+    lineNumText: '#94a3b8',
+    tabBg: LIGHT_EDITOR_CHROME_BG,
+    tabActiveBg: '#ffffff',
+    tabActiveText: '#111827',
+    tabHoverBg: LIGHT_EDITOR_CHROME_HOVER,
+    diffAddBg: 'rgba(79, 127, 111, 0.12)',
+    diffAddText: '#4f7f6f',
+    diffDeleteBg: 'rgba(196, 61, 52, 0.10)',
+    diffDeleteText: '#c43d34',
+    syntaxKeyword: '#2f6fbc',
+    syntaxString: '#4f7f6f',
+    syntaxComment: '#64748b',
+    syntaxNumber: '#2f6fbc',
+    syntaxFunction: '#334155',
+    syntaxType: '#2f6fbc',
+    syntaxOperator: '#334155',
+};
+
+/**
+ * Derive the source-preview palette from the active assistant scheme.
+ *
+ * Light canvases keep a neutral editor (white paper, gray chrome) so the
+ * chat's blue washes do not surround the source. Ink and syntax still follow
+ * the active scheme. Dark canvases keep scheme surfaces, including when
+ * `isDark` is omitted.
+ */
+export function createCodePreviewTheme(theme: Theme): CodePreviewTheme {
+    const isDark = theme.isDark === true;
+    const success = isDark ? '#7aa89a' : '#3f685b';
+    const successBg = `color-mix(in srgb, ${success} ${isDark ? 18 : 12}%, ${theme.fieldBg})`;
+    const canvasIsDark = markdownPreviewIsDark(theme.bg);
+    const chrome = canvasIsDark
+        ? {
+            bg: theme.bg,
+            border: theme.divider,
+            lineNumBg: theme.codeBg,
+            tabBg: theme.bg,
+            tabActiveBg: theme.fieldBg,
+            tabHoverBg: `color-mix(in srgb, ${theme.btnColor} 14%, ${theme.titleBarBg})`,
+        }
+        : {
+            bg: lightCodePreviewTheme.bg,
+            border: lightCodePreviewTheme.border,
+            lineNumBg: lightCodePreviewTheme.lineNumBg,
+            tabBg: lightCodePreviewTheme.tabBg,
+            tabActiveBg: lightCodePreviewTheme.tabActiveBg,
+            tabHoverBg: lightCodePreviewTheme.tabHoverBg,
+        };
+
+    return {
+        text: theme.text,
+        textMuted: theme.textMuted,
+        ...chrome,
+        lineNumText: theme.textMuted,
+        tabActiveText: theme.headingColor,
+        diffAddBg: successBg,
+        diffAddText: success,
+        diffDeleteBg: theme.errorBg,
+        diffDeleteText: theme.errorText,
+        syntaxKeyword: theme.linkColor,
+        syntaxString: success,
+        syntaxComment: theme.textMuted,
+        syntaxNumber: theme.pathColor,
+        syntaxFunction: theme.codeText || theme.text,
+        syntaxType: theme.linkColor,
+        syntaxOperator: theme.text,
+    };
+}
+
+/** Choose the more legible neutral ink for muted semantic fills. */
+export function maximumContrastInkOnFill(fillCss: string): string {
+    const fillLuminance = relativeLuminance(fillCss);
+    if (fillLuminance == null) return '#ffffff';
+    const contrast = (foregroundLuminance: number) => {
+        const lighter = Math.max(fillLuminance, foregroundLuminance);
+        const darker = Math.min(fillLuminance, foregroundLuminance);
+        return (lighter + 0.05) / (darker + 0.05);
+    };
+    return contrast(relativeLuminance('#111111')!) >= contrast(relativeLuminance('#ffffff')!)
+        ? '#111111'
+        : '#ffffff';
+}
+// ── Props ──
+
+export interface CodePreviewPanelProps {
+    files: Map<string, CodeFile>;
+    activeFilePath: string;
+    pinnedPaths?: string[];
+    mruOrder?: string[];
+    onSelectFile: (filePath: string) => void;
+    /** The coding task whose local/remote workdir powers the default explorer tab. */
+    projectPath?: string;
+    /** Paper task: the explorer lists that workspace and can export a submission zip. */
+    paperWorkspace?: boolean;
+    /** Bumped after remote SSH reconnect so the workspace tree reloads in place. */
+    workspaceRefreshToken?: number;
+    /** Local working-directory changes drop the previous tree immediately. */
+    workspaceResetOnRefresh?: boolean;
+    onOpenWorkspaceFile?: (file: CodeFile) => void;
+    /** Write a saved LaTeX buffer back into an open tab without selecting it. */
+    onReplaceWorkspaceFileContent?: (filePath: string, content: string) => void;
+    /** Close a single file tab (VS Code-style). */
+    onCloseFile?: (filePath: string) => void;
+    onCloseOtherFiles?: (keepPath: string) => void;
+    onCloseFilesToTheRight?: (fromPath: string) => void;
+    onCloseAllFiles?: () => void;
+    onMoveFile?: (fromPath: string, toIndex: number) => void;
+    onTogglePinFile?: (filePath: string) => void;
+    onClose: () => void;
+    /** Double-click header (outside interactive targets) toggles window maximize. */
+    onToggleMaximize?: () => void;
+    theme: CodePreviewTheme;
+    lang?: string;
+    /** Cloud workspace: file tree is remote content, not a local folder. */
+    cloudMode?: boolean;
+    /** Bumped when the user previews a task result, so the file replaces the tree. */
+    fileFocusNonce?: number;
+    /** Bumped when the user asks for the directory tree. A newer value wins over fileFocusNonce. */
+    treeFocusNonce?: number;
+    /** Known Hub workspace name. Entitlement lookup overrides this when it matches the mount. */
+    cloudWorkspaceName?: string;
+    /** Preview pane already has a close control; hide the inner header X. */
+    hideHeaderClose?: boolean;
+    /**
+     * Embed in another panel (mobile library, dialogs). Hides the file-tab
+     * header and workspace explorer so only find / go-to-line / content remain.
+     */
+    embedded?: boolean;
+    /** Hosting preview pane is expanded to full window width. */
+    previewExpanded?: boolean;
+    /** Toggle the hosting preview pane between split width and full width. */
+    onTogglePreviewExpand?: () => void;
+}
+
+/** Skip maximize when double-clicking interactive header controls / tab bar. */
+function isPreviewHeaderInteractiveTarget(target: EventTarget | null, currentTarget: HTMLElement): boolean {
+    if (!(target instanceof HTMLElement) || target === currentTarget) return false;
+    return !!target.closest('button, a, input, select, textarea, [role="button"], [role="tab"], [data-preview-no-maximize="true"]');
+}
+
+function CloudGlyph({ color }: { color: string }) {
+    return (
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true" className="cpp-glyph">
+            <path
+                d="M5 12.3h6a2.75 2.75 0 0 0 .9-5.4 3.55 3.55 0 0 0-6.6-.95 2.5 2.5 0 0 0-1.7 3.65A1.55 1.55 0 0 0 5 12.3Z"
+                stroke={color}
+                strokeWidth="1.3"
+                strokeLinejoin="round"
+            />
+        </svg>
+    );
+}
+
+function CloudWorkspaceNameLabel({ name, theme, compact = false }: { name: string; theme: CodePreviewTheme; compact?: boolean }) {
+    const text = name.trim();
+    if (!text) return null;
+    return (
+        <span
+            data-testid="code-preview-cloud-workspace-name"
+            title={text}
+            style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                color: theme.tabActiveText,
+                background: theme.tabHoverBg,
+                border: `1px solid ${theme.border}`,
+                borderRadius: 999,
+                padding: compact ? '0 7px' : '1px 9px',
+                fontSize: 11,
+                fontWeight: 500,
+                lineHeight: 1.5,
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+                whiteSpace: 'nowrap',
+                minWidth: 0,
+                flex: '0 1 auto',
+                maxWidth: compact ? 160 : '100%',
+                marginLeft: compact ? 6 : undefined,
+            }}
+        >
+            {text}
+        </span>
+    );
+}
+
+function isVisualDocumentPreview(file: Pick<CodeFile, 'fileName' | 'filePath' | 'absPath' | 'language' | 'latexWorkbench'> | undefined): boolean {
+    if (!file || isAssistantSourcePreview(file)) return false;
+    return isVisualFilePreview(file);
+}
+
+function isHtmlPreviewFile(file: Pick<CodeFile, 'fileName' | 'filePath' | 'absPath' | 'language'> | undefined): boolean {
+    if (!file) return false;
+    return filePreviewKindFromName(file.absPath || file.filePath || file.fileName || '', file.language) === 'html';
+}
+
+// ── Syntax color mapping ──
+
+function tokenColor(type: HighlightToken['type'], theme: CodePreviewTheme): string {
+    switch (type) {
+        case 'keyword': return theme.syntaxKeyword;
+        case 'string': return theme.syntaxString;
+        case 'comment': return theme.syntaxComment;
+        case 'number': return theme.syntaxNumber;
+        case 'function': return theme.syntaxFunction;
+        case 'type': return theme.syntaxType;
+        case 'operator': return theme.syntaxOperator;
+        case 'plain':
+        default:
+            return theme.text;
+    }
+}
+
+// ── Highlighted Line Renderer ──
+
+/** Stable empty match list — avoids child re-renders when find is closed. */
+const EMPTY_MATCH_LINE_INDEXES: number[] = [];
+
+/** Stable empty diff row list — keeps the diff view memo stable. */
+const EMPTY_DIFF_ROWS: DiffRow[] = [];
+
+/** Below this preview width the side-by-side diff stops being readable. */
+const DIFF_SPLIT_MIN_WIDTH = 620;
+
+const HighlightedLine = React.memo(function HighlightedLine({ line, language, theme }: {
+    line: string;
+    language: string;
+    theme: CodePreviewTheme;
+}) {
+    const tokens = tokenizeLine(line, language);
+    if (tokens.length === 0) {
+        return <span>{'\u00a0'}</span>;
+    }
+    return (
+        <>
+            {tokens.map((tok, i) => (
+                <span key={i} style={{ color: tokenColor(tok.type, theme) }}>
+                    {tok.text}
+                </span>
+            ))}
+        </>
+    );
+});
+// ── Plain Code View ──
+
+const PlainCodeView = React.memo(function PlainCodeView({
+    content,
+    language,
+    theme,
+    matchLineIndexes = EMPTY_MATCH_LINE_INDEXES,
+    activeMatchLine = -1,
+    wordWrap = false,
+    fontSize = CODE_PREVIEW_FONT_DEFAULT,
+}: {
+    content: string;
+    language: string;
+    theme: CodePreviewTheme;
+    matchLineIndexes?: number[];
+    activeMatchLine?: number;
+    wordWrap?: boolean;
+    fontSize?: number;
+}) {
+    // Same split semantics as the panel's contentLines ('' → one empty visual line).
+    const lines = useMemo(() => content.split('\n'), [content]);
+    const matchSet = useMemo(() => new Set(matchLineIndexes), [matchLineIndexes]);
+    const size = clampCodePreviewFontSize(fontSize);
+    const lineHeight = codePreviewLineHeight(size);
+
+    return (
+        <table
+            data-testid="code-preview-plain-view"
+            data-word-wrap={wordWrap ? 'true' : 'false'}
+            data-font-size={String(size)}
+            style={{
+                borderCollapse: 'collapse',
+                width: '100%',
+                fontFamily: "'Cascadia Code', 'Fira Code', 'Consolas', monospace",
+                fontSize: size,
+                lineHeight: `${lineHeight}px`,
+            }}
+        >
+            <tbody>
+                {lines.map((line, idx) => {
+                    const isMatch = matchSet.has(idx);
+                    const isActiveMatch = idx === activeMatchLine;
+                    const rowBg = isActiveMatch
+                        ? 'rgba(234, 179, 8, 0.28)'
+                        : isMatch
+                            ? 'rgba(234, 179, 8, 0.12)'
+                            : undefined;
+                    return (
+                        <tr
+                            key={idx}
+                            data-line={idx + 1}
+                            data-find-match={isMatch ? 'true' : undefined}
+                            data-find-active={isActiveMatch ? 'true' : undefined}
+                            style={{ backgroundColor: rowBg }}
+                        >
+                            <td style={{
+                                width: 50,
+                                minWidth: 50,
+                                textAlign: 'right',
+                                paddingRight: 12,
+                                paddingLeft: 8,
+                                color: theme.lineNumText,
+                                backgroundColor: rowBg ?? theme.lineNumBg,
+                                userSelect: 'none',
+                                verticalAlign: 'top',
+                                borderRight: `1px solid ${theme.border}`,
+                            }}>
+                                {idx + 1}
+                            </td>
+                            <td style={{
+                                paddingLeft: 12,
+                                paddingRight: 8,
+                                whiteSpace: wordWrap ? 'pre-wrap' : 'pre',
+                                wordBreak: wordWrap ? 'break-word' : undefined,
+                                overflowWrap: wordWrap ? 'anywhere' : undefined,
+                                color: theme.text,
+                                textAlign: 'left',
+                            }}>
+                                <HighlightedLine line={line} language={language} theme={theme} />
+                            </td>
+                        </tr>
+                    );
+                })}
+            </tbody>
+        </table>
+    );
+});
+
+// ── Find bar ──
+
+function CodePreviewFindBar({
+    query,
+    matchCount,
+    activeIndex,
+    theme,
+    lang,
+    caseSensitive,
+    wholeWord,
+    useRegex,
+    regexError,
+    onQueryChange,
+    onToggleCase,
+    onToggleWord,
+    onToggleRegex,
+    onNext,
+    onPrev,
+    onClose,
+    inputRef,
+}: {
+    query: string;
+    matchCount: number;
+    activeIndex: number;
+    theme: CodePreviewTheme;
+    lang: string;
+    caseSensitive: boolean;
+    wholeWord: boolean;
+    useRegex: boolean;
+    regexError: string | null;
+    onQueryChange: (q: string) => void;
+    onToggleCase: () => void;
+    onToggleWord: () => void;
+    onToggleRegex: () => void;
+    onNext: () => void;
+    onPrev: () => void;
+    onClose: () => void;
+    inputRef: React.RefObject<HTMLInputElement | null>;
+}) {
+    const isZh = lang.startsWith('zh');
+    const isZhHant = lang === 'zh-Hant';
+    const counter = regexError
+        ? (isZh ? '正则无效' : 'Invalid regex')
+        : matchCount === 0
+            ? (isZh ? '无结果' : 'No results')
+            : `${Math.min(activeIndex + 1, matchCount)} / ${matchCount}`;
+
+    const optBtn = (active: boolean): React.CSSProperties => ({
+        border: `1px solid ${active ? theme.tabActiveText : theme.border}`,
+        background: active ? theme.tabActiveBg : theme.bg,
+        color: active ? theme.tabActiveText : theme.textMuted,
+        borderRadius: 4,
+        padding: '2px 6px',
+        cursor: 'pointer',
+        fontSize: 11,
+        fontWeight: active ? 700 : 500,
+        fontFamily: 'inherit',
+        lineHeight: '18px',
+        flexShrink: 0,
+    });
+
+    return (
+        <div
+            data-testid="code-preview-find-bar"
+            style={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 4,
+                padding: '4px 10px 6px',
+                borderBottom: `1px solid ${theme.border}`,
+                background: theme.tabBg,
+                flexShrink: 0,
+            }}
+        >
+            <div className="cpp-find-row">
+                <input
+                    ref={inputRef as React.RefObject<HTMLInputElement>}
+                    data-testid="code-preview-find-input"
+                    type="text"
+                    value={query}
+                    onChange={(e) => onQueryChange(e.target.value)}
+                    placeholder={isZhHant ? '在檔案中尋找…' : isZh ? '在文件中查找…' : 'Find in file…'}
+                    style={{
+                        flex: 1,
+                        minWidth: 0,
+                        border: `1px solid ${regexError ? theme.diffDeleteText : theme.border}`,
+                        borderRadius: 4,
+                        padding: '4px 8px',
+                        fontSize: 12,
+                        background: theme.bg,
+                        color: theme.text,
+                        outline: 'none',
+                        fontFamily: 'inherit',
+                    }}
+                />
+                <span
+                    data-testid="code-preview-find-count"
+                    style={{
+                        fontSize: 11,
+                        color: regexError ? theme.diffDeleteText : theme.textMuted,
+                        whiteSpace: 'nowrap',
+                        minWidth: 64,
+                        textAlign: 'right',
+                    }}
+                >
+                    {counter}
+                </span>
+                <button
+                    type="button"
+                    data-testid="code-preview-find-case"
+                    data-active={caseSensitive ? 'true' : 'false'}
+                    onClick={onToggleCase}
+                    title={isZh ? '区分大小写' : 'Match Case'}
+                    style={optBtn(caseSensitive)}
+                >
+                    Aa
+                </button>
+                <button
+                    type="button"
+                    data-testid="code-preview-find-word"
+                    data-active={wholeWord ? 'true' : 'false'}
+                    onClick={onToggleWord}
+                    title={isZh ? '全词匹配' : 'Match Whole Word'}
+                    style={optBtn(wholeWord)}
+                >
+                    W
+                </button>
+                <button
+                    type="button"
+                    data-testid="code-preview-find-regex"
+                    data-active={useRegex ? 'true' : 'false'}
+                    onClick={onToggleRegex}
+                    title={isZh ? '使用正则表达式' : 'Use Regular Expression'}
+                    style={optBtn(useRegex)}
+                >
+                    {'.*'}
+                </button>
+                <button
+                    type="button"
+                    data-testid="code-preview-find-prev"
+                    onClick={onPrev}
+                    title={isZh ? '上一个 (Shift+Enter)' : 'Previous (Shift+Enter)'}
+                    style={{
+                        border: `1px solid ${theme.border}`,
+                        background: theme.bg,
+                        color: theme.text,
+                        borderRadius: 4,
+                        padding: '2px 8px',
+                        cursor: 'pointer',
+                        fontSize: 12,
+                    }}
+                >
+                    ↑
+                </button>
+                <button
+                    type="button"
+                    data-testid="code-preview-find-next"
+                    onClick={onNext}
+                    title={isZh ? '下一个 (Enter)' : 'Next (Enter)'}
+                    style={{
+                        border: `1px solid ${theme.border}`,
+                        background: theme.bg,
+                        color: theme.text,
+                        borderRadius: 4,
+                        padding: '2px 8px',
+                        cursor: 'pointer',
+                        fontSize: 12,
+                    }}
+                >
+                    ↓
+                </button>
+                <button
+                    type="button"
+                    data-testid="code-preview-find-close"
+                    onClick={onClose}
+                    title="Esc"
+                    style={{
+                        border: 'none',
+                        background: 'transparent',
+                        color: theme.textMuted,
+                        borderRadius: 4,
+                        padding: '2px 6px',
+                        cursor: 'pointer',
+                        fontSize: 14,
+                    }}
+                >
+                    {'\u00d7'}
+                </button>
+            </div>
+            {regexError && (
+                <div
+                    data-testid="code-preview-find-regex-error"
+                    style={{ fontSize: 11, color: theme.diffDeleteText, lineHeight: 1.3 }}
+                >
+                    {regexError}
+                </div>
+            )}
+        </div>
+    );
+}
+
+// ── Diff View ──
+// The change-focused diff renderer lives in CodePreviewDiffView.tsx (paired
+// modify rows, word-level marks, hunk folding, 并排/内联 layouts).
+
+/** Compact view toolbar: wrap + font zoom + minimap. Hosts set the row font
+ * (e.g. the path breadcrumb is monospace), so pin the UI font stack here. */
+function CodePreviewViewToolbar({
+    wordWrap,
+    fontSize,
+    minimap,
+    theme,
+    lang,
+    onToggleWrap,
+    onToggleMinimap,
+    onZoomIn,
+    onZoomOut,
+    onZoomReset,
+}: {
+    wordWrap: boolean;
+    fontSize: number;
+    minimap: boolean;
+    theme: CodePreviewTheme;
+    lang: string;
+    onToggleWrap: () => void;
+    onToggleMinimap: () => void;
+    onZoomIn: () => void;
+    onZoomOut: () => void;
+    onZoomReset: () => void;
+}) {
+    const isZh = lang.startsWith('zh');
+    const isZhHant = lang === 'zh-Hant';
+    const btnStyle: React.CSSProperties = {
+        border: `1px solid ${theme.border}`,
+        background: theme.bg,
+        color: theme.textMuted,
+        borderRadius: 4,
+        padding: '1px 6px',
+        cursor: 'pointer',
+        fontSize: 11,
+        lineHeight: '18px',
+        fontFamily: 'inherit',
+        flexShrink: 0,
+    };
+    return (
+        <div
+            data-testid="code-preview-view-toolbar"
+            className="cpp-view-toolbar"
+        >
+            <button
+                type="button"
+                data-testid="code-preview-wrap-toggle"
+                data-active={wordWrap ? 'true' : 'false'}
+                onClick={onToggleWrap}
+                title={isZhHant ? '自動換行 (Alt+Z)' : isZh ? '自动换行 (Alt+Z)' : 'Toggle Word Wrap (Alt+Z)'}
+                style={{
+                    ...btnStyle,
+                    background: wordWrap ? theme.tabActiveBg : theme.bg,
+                    color: wordWrap ? theme.tabActiveText : theme.textMuted,
+                    fontWeight: wordWrap ? 600 : 400,
+                }}
+            >
+                {isZh ? '换行' : 'Wrap'}
+            </button>
+            <button
+                type="button"
+                data-testid="code-preview-zoom-out"
+                onClick={onZoomOut}
+                disabled={fontSize <= CODE_PREVIEW_FONT_MIN}
+                title={isZh ? '缩小 (Ctrl+-)' : 'Zoom Out (Ctrl+-)'}
+                style={{
+                    ...btnStyle,
+                    opacity: fontSize <= CODE_PREVIEW_FONT_MIN ? 0.45 : 1,
+                    cursor: fontSize <= CODE_PREVIEW_FONT_MIN ? 'default' : 'pointer',
+                }}
+            >
+                A-
+            </button>
+            <button
+                type="button"
+                data-testid="code-preview-zoom-reset"
+                onClick={onZoomReset}
+                title={isZh ? '重置字号 (Ctrl+0)' : 'Reset Zoom (Ctrl+0)'}
+                style={{ ...btnStyle, minWidth: 36 }}
+            >
+                {fontSize}
+            </button>
+            <button
+                type="button"
+                data-testid="code-preview-zoom-in"
+                onClick={onZoomIn}
+                disabled={fontSize >= CODE_PREVIEW_FONT_MAX}
+                title={isZh ? '放大 (Ctrl+=)' : 'Zoom In (Ctrl+=)'}
+                style={{
+                    ...btnStyle,
+                    opacity: fontSize >= CODE_PREVIEW_FONT_MAX ? 0.45 : 1,
+                    cursor: fontSize >= CODE_PREVIEW_FONT_MAX ? 'default' : 'pointer',
+                }}
+            >
+                A+
+            </button>
+            <button
+                type="button"
+                data-testid="code-preview-minimap-toggle"
+                data-active={minimap ? 'true' : 'false'}
+                onClick={onToggleMinimap}
+                title={isZhHant ? '文件縮略圖 / 按頁定位' : isZh ? '文件缩略图 / 按页定位' : 'Document minimap / jump by page'}
+                style={{
+                    ...btnStyle,
+                    background: minimap ? theme.tabActiveBg : theme.bg,
+                    color: minimap ? theme.tabActiveText : theme.textMuted,
+                    fontWeight: minimap ? 600 : 400,
+                }}
+            >
+                {isZh ? '缩略' : 'Map'}
+            </button>
+        </div>
+    );
+}
+
+// ── Go to line bar ──
+
+function CodePreviewGoToLineBar({
+    value,
+    maxLines,
+    theme,
+    lang,
+    onChange,
+    onSubmit,
+    onClose,
+    inputRef,
+}: {
+    value: string;
+    maxLines: number;
+    theme: CodePreviewTheme;
+    lang: string;
+    onChange: (v: string) => void;
+    onSubmit: () => void;
+    onClose: () => void;
+    inputRef: React.RefObject<HTMLInputElement | null>;
+}) {
+    const isZh = lang.startsWith('zh');
+    const isZhHant = lang === 'zh-Hant';
+    return (
+        <div
+            data-testid="code-preview-goto-bar"
+            style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 6,
+                padding: '4px 10px',
+                borderBottom: `1px solid ${theme.border}`,
+                background: theme.tabBg,
+                flexShrink: 0,
+            }}
+        >
+            <span style={{ fontSize: 12, color: theme.textMuted, whiteSpace: 'nowrap' }}>
+                {isZhHant ? '前往行' : isZh ? '转到行' : 'Go to Line'}
+            </span>
+            <input
+                ref={inputRef as React.RefObject<HTMLInputElement>}
+                data-testid="code-preview-goto-input"
+                type="text"
+                inputMode="numeric"
+                value={value}
+                onChange={(e) => onChange(e.target.value)}
+                onKeyDown={(e) => {
+                    if (e.key === 'Enter') {
+                        e.preventDefault();
+                        onSubmit();
+                    }
+                }}
+                placeholder={isZh ? `1–${maxLines}` : `1–${maxLines}`}
+                style={{
+                    width: 96,
+                    border: `1px solid ${theme.border}`,
+                    borderRadius: 4,
+                    padding: '4px 8px',
+                    fontSize: 12,
+                    background: theme.bg,
+                    color: theme.text,
+                    outline: 'none',
+                    fontFamily: 'inherit',
+                }}
+            />
+            <span style={{ fontSize: 11, color: theme.textMuted, flex: 1 }}>
+                {isZhHant ? `共 ${maxLines} 行` : isZh ? `共 ${maxLines} 行` : `${maxLines} lines`}
+            </span>
+            <button
+                type="button"
+                data-testid="code-preview-goto-go"
+                onClick={onSubmit}
+                style={{
+                    border: `1px solid ${theme.border}`,
+                    background: theme.bg,
+                    color: theme.text,
+                    borderRadius: 4,
+                    padding: '2px 10px',
+                    cursor: 'pointer',
+                    fontSize: 12,
+                }}
+            >
+                {isZh ? '跳转' : 'Go'}
+            </button>
+            <button
+                type="button"
+                data-testid="code-preview-goto-close"
+                onClick={onClose}
+                title="Esc"
+                style={{
+                    border: 'none',
+                    background: 'transparent',
+                    color: theme.textMuted,
+                    borderRadius: 4,
+                    padding: '2px 6px',
+                    cursor: 'pointer',
+                    fontSize: 14,
+                }}
+            >
+                {'\u00d7'}
+            </button>
+        </div>
+    );
+}
+
+// ── Main Component ──
+
+export function CodePreviewPanel({
+    files,
+    activeFilePath,
+    pinnedPaths,
+    mruOrder,
+    onSelectFile,
+    projectPath,
+    paperWorkspace = false,
+    workspaceRefreshToken,
+    workspaceResetOnRefresh = false,
+    onOpenWorkspaceFile,
+    onReplaceWorkspaceFileContent,
+    onCloseFile,
+    onCloseOtherFiles,
+    onCloseFilesToTheRight,
+    onCloseAllFiles,
+    onMoveFile,
+    onTogglePinFile,
+    onClose,
+    onToggleMaximize,
+    theme,
+    lang = 'en',
+    cloudMode = false,
+    cloudWorkspaceName = '',
+    hideHeaderClose = false,
+    embedded = false,
+    previewExpanded = false,
+    onTogglePreviewExpand,
+    fileFocusNonce = 0,
+    treeFocusNonce = 0,
+}: CodePreviewPanelProps) {
+    const cloudWorkspaceId = cloudMode ? cloudWorkspaceIdFromPath(projectPath) : '';
+    const [resolvedCloudName, setResolvedCloudName] = useState(() => (
+        cloudMode ? lookupCloudWorkspaceDisplayName(cloudWorkspaceIdFromPath(projectPath), cloudWorkspaceName) : ''
+    ));
+    useEffect(() => {
+        if (!cloudMode) {
+            setResolvedCloudName('');
+            return;
+        }
+        const known = lookupCloudWorkspaceDisplayName(cloudWorkspaceId, cloudWorkspaceName);
+        setResolvedCloudName(known);
+        if (!cloudWorkspaceId || typeof CloudWorkspaceEntitlement !== 'function') return;
+        let cancelled = false;
+        void CloudWorkspaceEntitlement().then((ent) => {
+            if (cancelled) return;
+            rememberCloudWorkspaceDisplayNames(ent);
+            const name = lookupCloudWorkspaceDisplayName(cloudWorkspaceId, known);
+            if (name) setResolvedCloudName(name);
+        }).catch(() => {});
+        return () => { cancelled = true; };
+    }, [cloudMode, cloudWorkspaceId, cloudWorkspaceName]);
+    // A created or modified file is why the pane opened: show that file (its
+    // diff when the prior text is known), not the working-directory listing.
+    // A plain read, or no file yet, still starts on the tree when there is a
+    // project. The newer focus nonce wins after that, so a later tree choice
+    // stays on the directory until the next file focus.
+    const [workspaceActive, setWorkspaceActive] = useState(() => {
+        if (embedded) return false;
+        const active = activeFilePath ? files.get(activeFilePath) : undefined;
+        if (previewBodyShowsFile(active, fileFocusNonce, treeFocusNonce)) return false;
+        if (fileFocusNonce !== 0 || treeFocusNonce !== 0) return true;
+        return Boolean(projectPath);
+    });
+    const handleHeaderDoubleClick = (event: React.MouseEvent<HTMLElement>) => {
+        if (isPreviewHeaderInteractiveTarget(event.target, event.currentTarget)) return;
+        onToggleMaximize?.();
+    };
+    const scrollRef = useRef<HTMLDivElement>(null);
+    const scrollDomId = useId();
+    const findInputRef = useRef<HTMLInputElement>(null);
+    const gotoInputRef = useRef<HTMLInputElement>(null);
+    const savedScrollTop = useRef<number>(0);
+
+    // Width of the preview body, used to keep the split diff readable: two code
+    // columns inside a narrow pane are unusable, so the layout falls back to
+    // inline until the user picks a mode explicitly.
+    const [paneWidth, setPaneWidth] = useState(0);
+    useEffect(() => {
+        const el = scrollRef.current;
+        if (!el || typeof ResizeObserver === 'undefined') return;
+        const observer = new ResizeObserver((entries) => {
+            const width = entries[0]?.contentRect?.width ?? 0;
+            if (width > 0) setPaneWidth((prev) => (Math.abs(prev - width) > 8 ? width : prev));
+        });
+        observer.observe(el);
+        return () => observer.disconnect();
+    }, []);
+    const prevContentRef = useRef<string>('');
+    const scrollFlashTimerRef = useRef<number | null>(null);
+    const scrollFlashElRef = useRef<HTMLElement | null>(null);
+    const scrollFlashPrevOutlineRef = useRef({ outline: '', offset: '' });
+    const gotoRafRef = useRef<number | null>(null);
+    const focusRafRef = useRef<number | null>(null);
+    /** Bumps to invalidate in-flight double-rAF focus chains (cancel only kills one id). */
+    const focusGenRef = useRef(0);
+    const lastScrolledLineRef = useRef<number | null>(null);
+
+    const [findOpen, setFindOpen] = useState(false);
+    const [findQuery, setFindQuery] = useState('');
+    const [findIndex, setFindIndex] = useState(0);
+    const [findCaseSensitive, setFindCaseSensitive] = useState(false);
+    const [findWholeWord, setFindWholeWord] = useState(false);
+    const [findUseRegex, setFindUseRegex] = useState(false);
+    const [gotoOpen, setGotoOpen] = useState(false);
+    const [gotoValue, setGotoValue] = useState('');
+    // Track which file the find/goto UI state belongs to so a tab switch can
+    // reset during render (avoids one paint with the previous file's find index).
+    const [findUiFilePath, setFindUiFilePath] = useState(activeFilePath);
+    if (findUiFilePath !== activeFilePath) {
+        setFindUiFilePath(activeFilePath);
+        setFindIndex(0);
+        setGotoOpen(false);
+        setGotoValue('');
+    }
+    // Single localStorage read for both fields (shared across the two useState inits).
+    const initialViewPrefsRef = useRef<CodePreviewViewPrefs | null>(null);
+    if (initialViewPrefsRef.current === null) {
+        initialViewPrefsRef.current = loadCodePreviewViewPrefs();
+    }
+    const [wordWrap, setWordWrap] = useState(() => initialViewPrefsRef.current!.wordWrap);
+    const [fontSize, setFontSize] = useState(() => initialViewPrefsRef.current!.fontSize);
+    const [minimap, setMinimap] = useState(() => initialViewPrefsRef.current!.minimap);
+    const [diffMode, setDiffMode] = useState<CodeDiffMode>(() => initialViewPrefsRef.current!.diffMode);
+    /** False once the user picks a layout: automatic narrow-pane fallback stops. */
+    const [diffModeAuto, setDiffModeAuto] = useState(true);
+    const [diffOnlyChanges, setDiffOnlyChanges] = useState(() => initialViewPrefsRef.current!.diffOnlyChanges);
+    /** Fold untouched regions around each change (hunk view). */
+    const [diffFoldUnchanged, setDiffFoldUnchanged] = useState(true);
+    /** Ordinal of the change the user jumped to, plus a nonce to re-scroll. */
+    const [diffCursor, setDiffCursor] = useState(0);
+    const [diffFocusNonce, setDiffFocusNonce] = useState(0);
+    const skipNextPrefsSaveRef = useRef(true);
+
+    // Persist view prefs when wrap/font/minimap change; skip the mount effect write-back.
+    useEffect(() => {
+        if (skipNextPrefsSaveRef.current) {
+            skipNextPrefsSaveRef.current = false;
+            return;
+        }
+        saveCodePreviewViewPrefs({ wordWrap, fontSize, minimap, diffMode, diffOnlyChanges });
+    }, [wordWrap, fontSize, minimap, diffMode, diffOnlyChanges]);
+
+    const activeFile = files.get(activeFilePath);
+    const [htmlBrowserOn, setHtmlBrowserOn] = useState(true);
+    const activeIsHtml = isHtmlPreviewFile(activeFile);
+    const showHtmlBrowser = activeIsHtml && htmlBrowserOn && !workspaceActive;
+
+    useEffect(() => {
+        if (!cloudMode) return;
+        const focusTree = () => setWorkspaceActive(true);
+        window.addEventListener(FOCUS_CLOUD_WORKSPACE_TREE_EVENT, focusTree);
+        return () => window.removeEventListener(FOCUS_CLOUD_WORKSPACE_TREE_EVENT, focusTree);
+    }, [cloudMode]);
+
+    const focusFilesRef = useRef(files);
+    const focusPathRef = useRef(activeFilePath);
+    focusFilesRef.current = files;
+    focusPathRef.current = activeFilePath;
+    useEffect(() => {
+        if (embedded || (fileFocusNonce === 0 && treeFocusNonce === 0)) return;
+        const path = focusPathRef.current;
+        const file = path ? focusFilesRef.current.get(path) : undefined;
+        // Directory refresh must not rerun this. A file opened from the tree
+        // stays up until the next explicit file or tree choice. Tied focus
+        // still shows a create/modify so the body cannot stay on the tree.
+        setWorkspaceActive(!previewBodyShowsFile(file, fileFocusNonce, treeFocusNonce));
+    }, [embedded, fileFocusNonce, treeFocusNonce]);
+
+    useEffect(() => {
+        if (embedded) {
+            setWorkspaceActive(false);
+            return;
+        }
+        if (!activeFilePath || !files.has(activeFilePath)) setWorkspaceActive(true);
+    }, [activeFilePath, embedded, files]);
+
+    // Last file closed and there is no working directory to fall back to:
+    // dismiss the preview the same way as the header close button, instead of
+    // leaving an empty "working directory unavailable" card.
+    const dismissEmptyPreview = shouldDismissEmptyPreviewWithoutWorkspace(files.size, projectPath);
+    const dismissedEmptyPreviewRef = useRef(false);
+    useLayoutEffect(() => {
+        if (!dismissEmptyPreview) {
+            dismissedEmptyPreviewRef.current = false;
+            return;
+        }
+        if (dismissedEmptyPreviewRef.current) return;
+        dismissedEmptyPreviewRef.current = true;
+        onClose?.();
+    }, [dismissEmptyPreview, onClose]);
+
+    const workspaceTabRef = useRef<HTMLButtonElement>(null);
+    const tabStripRef = useRef<HTMLDivElement>(null);
+
+    const focusFileTab = useCallback((filePath: string) => {
+        const focus = () => {
+            const tabs = tabStripRef.current?.querySelectorAll('[data-testid="file-tab"]');
+            if (!tabs) return false;
+            for (let i = 0; i < tabs.length; i++) {
+                if (tabs[i].getAttribute('data-file-path') === filePath) {
+                    (tabs[i] as HTMLElement).focus();
+                    return true;
+                }
+            }
+            return false;
+        };
+        if (!focus()) requestAnimationFrame(focus);
+    }, []);
+
+    const openWorkspaceFile = useCallback((file: CodeFile) => {
+        onOpenWorkspaceFile?.(file);
+        if (!onOpenWorkspaceFile) onSelectFile(file.filePath);
+        setWorkspaceActive(false);
+        focusFileTab(file.filePath);
+    }, [onOpenWorkspaceFile, onSelectFile, focusFileTab]);
+
+    const handleWorkspaceFileDeleted = useCallback((deletedPath: string) => {
+        if (!onCloseFile || !deletedPath) return;
+        onCloseFile(deletedPath);
+        const slash = `${deletedPath}/`;
+        const win = `${deletedPath}\\`;
+        for (const filePath of files.keys()) {
+            if (filePath !== deletedPath && (filePath.startsWith(slash) || filePath.startsWith(win))) onCloseFile(filePath);
+        }
+    }, [files, onCloseFile]);
+
+    // The workspace tree owns the refresh logic; the merged header hosts the
+    // button, so the tree hands its refresh callback and busy state up here.
+    const workspaceRefreshRef = useRef<(() => void) | null>(null);
+    const [workspaceRefreshing, setWorkspaceRefreshing] = useState(false);
+    const handleWorkspaceRefreshReady = useCallback((refresh: () => void, refreshing: boolean) => {
+        workspaceRefreshRef.current = refresh;
+        setWorkspaceRefreshing(refreshing);
+    }, []);
+
+    const handleSelectFile = useCallback((filePath: string) => {
+        setWorkspaceActive(false);
+        onSelectFile(filePath);
+        focusFileTab(filePath);
+    }, [onSelectFile, focusFileTab]);
+
+    const activateWorkspaceTab = useCallback(() => {
+        if (embedded) return;
+        setWorkspaceActive(true);
+        window.dispatchEvent(new CustomEvent(FOCUS_CLOUD_WORKSPACE_TREE_EVENT));
+        workspaceTabRef.current?.focus();
+    }, [embedded]);
+
+    // Compute diff lines when active file has original content
+    const diffLines = useMemo<DiffLine[] | null>(() => {
+        // A truncated remote preview only contains a leading chunk. Computing a
+        // diff against it would imply changes across the unseen remainder.
+        if (activeFile?.original === undefined || activeFile.previewTruncated) return null;
+        return computeDiff(activeFile.original, activeFile.content);
+    }, [activeFile?.original, activeFile?.content, activeFile?.previewTruncated]);
+
+    // Pair removals with their rewrite so the view can show "改了什么" as one
+    // unit instead of a bare `-` followed by a bare `+`.
+    const diffRows = useMemo<DiffRow[]>(() => (diffLines ? buildDiffRows(diffLines) : EMPTY_DIFF_ROWS), [diffLines]);
+    const diffStats = useMemo(() => computeDiffRowStats(diffRows), [diffRows]);
+    const diffChangeCount = useMemo(
+        () => diffRows.reduce((n, row) => (row.kind === 'unchanged' ? n : n + 1), 0),
+        [diffRows],
+    );
+    const diffHasChange = diffChangeCount > 0;
+    // Narrow pane: two columns would be unreadable, so the automatic fallback
+    // applies only until the user picks a layout explicitly.
+    const effectiveDiffMode: CodeDiffMode =
+        diffModeAuto && paneWidth > 0 && paneWidth < DIFF_SPLIT_MIN_WIDTH ? 'inline' : diffMode;
+    const chooseDiffMode = useCallback((mode: CodeDiffMode) => {
+        setDiffMode(mode);
+        setDiffModeAuto(false);
+    }, []);
+
+    // Rows the diff view actually renders, mirrored into the minimap.
+    const [minimapDiffRows, setMinimapDiffRows] = useState<DiffLine[]>(EMPTY_MINIMAP_ROWS);
+    const handleRenderedDiffRows = useCallback((next: DiffLine[]) => {
+        setMinimapDiffRows((prev) => (prev === next ? prev : next));
+    }, []);
+    const diffChangeCountRef = useRef(diffChangeCount);
+    diffChangeCountRef.current = diffChangeCount;
+
+    // Switching tabs restarts the change walk at the first change.
+    useEffect(() => {
+        setDiffCursor(0);
+    }, [activeFilePath]);
+
+    // Walk 上一处 / 下一处 change; the nonce re-scrolls on repeat clicks.
+    const stepDiffChange = useCallback((delta: number) => {
+        setDiffCursor((prev) => {
+            const count = diffChangeCountRef.current;
+            if (count <= 0) return 0;
+            const base = Math.min(Math.max(prev, 0), count - 1);
+            return (base + delta + count) % count;
+        });
+        setDiffFocusNonce((n) => n + 1);
+    }, []);
+
+    const currentContent = activeFile?.content ?? '';
+    // Split once; shared by line count, find scan, and go-to-line bounds.
+    // Keep editor semantics: '' is still one empty visual line (matches PlainCodeView).
+    const contentLines = useMemo(() => currentContent.split('\n'), [currentContent]);
+    const totalLines = activeFile ? contentLines.length : 0;
+
+    // computeDiff bails out above its size guard. Large files then fall back to
+    // the plain view, which would hide the edits entirely — surface the cheap
+    // bag-of-lines counts instead so the change is still visible.
+    const diffTooLarge = activeFile != null
+        && activeFile.original !== undefined
+        && !activeFile.previewTruncated
+        && diffLines === null;
+    const diffTooLargeDelta = useMemo(
+        () => (diffTooLarge && activeFile ? computeCodeFileLineDelta(activeFile) : null),
+        [diffTooLarge, activeFile],
+    );
+
+    const findOptions = useMemo<FindMatchOptions>(() => ({
+        caseSensitive: findCaseSensitive,
+        wholeWord: findWholeWord,
+        useRegex: findUseRegex,
+    }), [findCaseSensitive, findUseRegex, findWholeWord]);
+
+    // Compile once per query/options change; reuse for error display + line scan.
+    const findCompiled = useMemo(
+        () => (findOpen ? compileFindMatcher(findQuery, findOptions) : null),
+        [findOpen, findOptions, findQuery],
+    );
+
+    const findRegexError = findCompiled && !findCompiled.ok ? findCompiled.error : null;
+
+    const matchLineIndexes = useMemo(() => {
+        if (!findOpen || !findCompiled || !findCompiled.ok) return EMPTY_MATCH_LINE_INDEXES;
+        // Skip full-file scan when the query is effectively empty.
+        const hasQuery = findUseRegex ? findQuery.length > 0 : findQuery.trim().length > 0;
+        if (!hasQuery) return EMPTY_MATCH_LINE_INDEXES;
+        const matches: number[] = [];
+        for (let i = 0; i < contentLines.length; i++) {
+            if (findCompiled.test(contentLines[i])) matches.push(i);
+        }
+        return matches.length === 0 ? EMPTY_MATCH_LINE_INDEXES : matches;
+    }, [contentLines, findCompiled, findOpen, findQuery, findUseRegex]);
+
+    const activeMatchLine = matchLineIndexes.length > 0
+        ? matchLineIndexes[Math.min(Math.max(findIndex, 0), matchLineIndexes.length - 1)]
+        : -1;
+
+    // Keep find index in range when matches change (clamp to last, not jump to first).
+    useEffect(() => {
+        if (matchLineIndexes.length === 0) {
+            if (findIndex !== 0) setFindIndex(0);
+            return;
+        }
+        if (findIndex >= matchLineIndexes.length) {
+            setFindIndex(matchLineIndexes.length - 1);
+        }
+    }, [findIndex, matchLineIndexes.length]);
+
+    const clearScrollFlash = useCallback(() => {
+        if (scrollFlashTimerRef.current != null) {
+            window.clearTimeout(scrollFlashTimerRef.current);
+            scrollFlashTimerRef.current = null;
+        }
+        const prevEl = scrollFlashElRef.current;
+        if (prevEl) {
+            prevEl.style.outline = scrollFlashPrevOutlineRef.current.outline;
+            prevEl.style.outlineOffset = scrollFlashPrevOutlineRef.current.offset;
+            scrollFlashElRef.current = null;
+        }
+    }, []);
+
+    const scrollToLine = useCallback((line1Based: number, opts?: { force?: boolean; flash?: boolean }) => {
+        if (!scrollRef.current || line1Based < 1) return;
+        // Prefer exact data-line (code/diff). Fall back to markdown blocks spanning the line.
+        let row: Element | null = scrollRef.current.querySelector(`[data-line="${line1Based}"]`);
+        if (!row) {
+            const blocks = scrollRef.current.querySelectorAll('[data-line-start]');
+            for (const el of blocks) {
+                const start = Number(el.getAttribute('data-line-start'));
+                const end = Number(el.getAttribute('data-line-end') || start);
+                if (Number.isFinite(start) && Number.isFinite(end) && line1Based >= start && line1Based <= end) {
+                    row = el;
+                    break;
+                }
+            }
+        }
+        if (row instanceof HTMLElement) {
+            // Skip redundant scroll when already on this line (e.g. re-render with same match).
+            if (!opts?.force && lastScrolledLineRef.current === line1Based) {
+                return;
+            }
+            lastScrolledLineRef.current = line1Based;
+            // 'auto' avoids stacked smooth-scroll animations when hopping matches quickly.
+            row.scrollIntoView({ block: 'center', behavior: 'auto' });
+            if (opts?.flash === false) return;
+            // Restore any previous flash before applying a new one.
+            clearScrollFlash();
+            scrollFlashPrevOutlineRef.current = {
+                outline: row.style.outline,
+                offset: row.style.outlineOffset,
+            };
+            scrollFlashElRef.current = row;
+            row.style.outline = '2px solid rgba(234, 179, 8, 0.85)';
+            row.style.outlineOffset = '-2px';
+            scrollFlashTimerRef.current = window.setTimeout(() => {
+                clearScrollFlash();
+            }, 900);
+        }
+    }, [clearScrollFlash]);
+
+    // Clear scroll flash / rAF on unmount.
+    useEffect(() => {
+        return () => {
+            clearScrollFlash();
+            focusGenRef.current += 1;
+            if (gotoRafRef.current != null) {
+                window.cancelAnimationFrame(gotoRafRef.current);
+                gotoRafRef.current = null;
+            }
+            if (focusRafRef.current != null) {
+                window.cancelAnimationFrame(focusRafRef.current);
+                focusRafRef.current = null;
+            }
+        };
+    }, [clearScrollFlash]);
+
+    // Scroll active find match into view.
+    useEffect(() => {
+        if (!findOpen || activeMatchLine < 0) return;
+        scrollToLine(activeMatchLine + 1, { flash: false });
+    }, [activeMatchLine, findOpen, activeFilePath, scrollToLine]);
+
+    // Side effects on tab switch (state already reset during render above).
+    useEffect(() => {
+        lastScrolledLineRef.current = null;
+        clearScrollFlash();
+        if (gotoRafRef.current != null) {
+            window.cancelAnimationFrame(gotoRafRef.current);
+            gotoRafRef.current = null;
+        }
+    }, [activeFilePath, clearScrollFlash]);
+
+    const scheduleFocus = useCallback((
+        getEl: () => HTMLElement | null | undefined,
+        opts?: { select?: boolean },
+    ) => {
+        // Invalidate any prior double-rAF chain (cancelAnimationFrame only cancels one id).
+        const gen = ++focusGenRef.current;
+        if (focusRafRef.current != null) {
+            window.cancelAnimationFrame(focusRafRef.current);
+            focusRafRef.current = null;
+        }
+        // Double rAF: first after setState schedule, second after the find/goto bar paints.
+        focusRafRef.current = window.requestAnimationFrame(() => {
+            if (gen !== focusGenRef.current) return;
+            focusRafRef.current = window.requestAnimationFrame(() => {
+                if (gen !== focusGenRef.current) return;
+                focusRafRef.current = null;
+                const el = getEl();
+                el?.focus();
+                if (opts?.select && el instanceof HTMLInputElement) {
+                    el.select();
+                }
+            });
+        });
+    }, []);
+
+    const openFind = useCallback(() => {
+        setGotoOpen(false);
+        setFindOpen(true);
+        // Select existing query so the next keystroke can replace it (VS Code-like).
+        scheduleFocus(() => findInputRef.current, { select: true });
+    }, [scheduleFocus]);
+
+    const closeFind = useCallback(() => {
+        setFindOpen(false);
+    }, []);
+
+    const openGoto = useCallback(() => {
+        setFindOpen(false);
+        setGotoOpen(true);
+        setGotoValue('');
+        scheduleFocus(() => gotoInputRef.current);
+    }, [scheduleFocus]);
+
+    const closeGoto = useCallback(() => {
+        setGotoOpen(false);
+        setGotoValue('');
+    }, []);
+
+    const submitGoto = useCallback(() => {
+        const line = parseGoToLineInput(gotoValue, totalLines);
+        if (line == null) return;
+        closeGoto();
+        // Deferred jump after the goto bar unmounts so layout is stable.
+        if (gotoRafRef.current != null) {
+            window.cancelAnimationFrame(gotoRafRef.current);
+        }
+        gotoRafRef.current = window.requestAnimationFrame(() => {
+            gotoRafRef.current = null;
+            scrollToLine(line, { force: true, flash: true });
+        });
+    }, [closeGoto, gotoValue, scrollToLine, totalLines]);
+
+    const goNextMatch = useCallback(() => {
+        if (matchLineIndexes.length === 0) return;
+        setFindIndex((i) => cycleMatchIndex(matchLineIndexes.length, i, 1));
+    }, [matchLineIndexes.length]);
+
+    const goPrevMatch = useCallback(() => {
+        if (matchLineIndexes.length === 0) return;
+        setFindIndex((i) => cycleMatchIndex(matchLineIndexes.length, i, -1));
+    }, [matchLineIndexes.length]);
+
+    const toggleWordWrap = useCallback(() => {
+        setWordWrap((v) => !v);
+    }, []);
+
+    const toggleMinimap = useCallback(() => {
+        setMinimap((v) => !v);
+    }, []);
+
+    const zoomIn = useCallback(() => {
+        setFontSize((s) => clampCodePreviewFontSize(s + 1));
+    }, []);
+
+    const zoomOut = useCallback(() => {
+        setFontSize((s) => clampCodePreviewFontSize(s - 1));
+    }, []);
+
+    const zoomReset = useCallback(() => {
+        setFontSize(CODE_PREVIEW_FONT_DEFAULT);
+    }, []);
+
+    const handlePanelKeyDown = useCallback((e: React.KeyboardEvent) => {
+        const fileViewHotkeys = !workspaceActive;
+        // Alt+Z — toggle word wrap (VS Code)
+        if (fileViewHotkeys && e.altKey && !e.ctrlKey && !e.metaKey && (e.key === 'z' || e.key === 'Z')) {
+            e.preventDefault();
+            e.stopPropagation();
+            toggleWordWrap();
+            return;
+        }
+        // Alt+↓ / Alt+↑ — jump between the file's changes (diff view only)
+        if (fileViewHotkeys && e.altKey && !e.ctrlKey && !e.metaKey && diffHasChange && !showHtmlBrowser
+            && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
+            e.preventDefault();
+            e.stopPropagation();
+            stepDiffChange(e.key === 'ArrowDown' ? 1 : -1);
+            return;
+        }
+        // Ctrl/Cmd + = / + — zoom in; - — zoom out; 0 — reset
+        if (fileViewHotkeys && (e.ctrlKey || e.metaKey) && !e.altKey) {
+            if (e.key === '=' || e.key === '+') {
+                e.preventDefault();
+                e.stopPropagation();
+                zoomIn();
+                return;
+            }
+            if (e.key === '-' || e.key === '_') {
+                e.preventDefault();
+                e.stopPropagation();
+                zoomOut();
+                return;
+            }
+            if (e.key === '0') {
+                e.preventDefault();
+                e.stopPropagation();
+                zoomReset();
+                return;
+            }
+        }
+        if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+            // Ctrl/Cmd+Tab — MRU cycle even when focus is in the content/find area
+            // (FileTabBar handles the same shortcut when the tab bar itself is focused).
+            if (e.key === 'Tab') {
+                e.preventDefault();
+                e.stopPropagation();
+                if (files.size > 0) {
+                    if (workspaceActive && activeFilePath && files.has(activeFilePath)) {
+                        handleSelectFile(activeFilePath);
+                    } else {
+                        const order = getMruCycleOrder(files, mruOrder ?? []);
+                        const next = cycleFilePath(order, activeFilePath, e.shiftKey ? -1 : 1);
+                        if (next) handleSelectFile(next);
+                    }
+                }
+                return;
+            }
+            // Ctrl/Cmd+W — close active tab
+            if ((e.key === 'w' || e.key === 'W') && onCloseFile && activeFilePath) {
+                e.preventDefault();
+                e.stopPropagation();
+                onCloseFile(activeFilePath);
+                return;
+            }
+        }
+        // Ctrl/Cmd+F — open find bar
+        if (fileViewHotkeys && (e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'f' || e.key === 'F')) {
+            e.preventDefault();
+            e.stopPropagation();
+            if (showHtmlBrowser) setHtmlBrowserOn(false);
+            openFind();
+            return;
+        }
+        // Ctrl/Cmd+G — go to line
+        if (fileViewHotkeys && (e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'g' || e.key === 'G')) {
+            e.preventDefault();
+            e.stopPropagation();
+            openGoto();
+            return;
+        }
+        if (e.key === 'Escape') {
+            if (findOpen) {
+                e.preventDefault();
+                closeFind();
+                return;
+            }
+            if (gotoOpen) {
+                e.preventDefault();
+                closeGoto();
+                return;
+            }
+        }
+        if (!findOpen) return;
+        if (e.key === 'Enter' && (e.target as HTMLElement)?.closest?.('[data-testid="code-preview-find-bar"]')) {
+            e.preventDefault();
+            if (e.shiftKey) goPrevMatch();
+            else goNextMatch();
+            return;
+        }
+        if (e.key === 'F3') {
+            e.preventDefault();
+            if (e.shiftKey) goPrevMatch();
+            else goNextMatch();
+        }
+    }, [
+        activeFilePath,
+        closeFind,
+        closeGoto,
+        diffHasChange,
+        files,
+        findOpen,
+        goNextMatch,
+        goPrevMatch,
+        gotoOpen,
+        mruOrder,
+        onCloseFile,
+        handleSelectFile,
+        openFind,
+        stepDiffChange,
+        workspaceActive,
+        openGoto,
+        showHtmlBrowser,
+        toggleWordWrap,
+        zoomIn,
+        zoomOut,
+        zoomReset,
+    ]);
+
+    // Preserve scroll across same-file content updates (streaming); reset on tab switch.
+    const prevActiveFilePathRef = useRef(activeFilePath);
+    useLayoutEffect(() => {
+        const el = scrollRef.current;
+        if (!el) return;
+
+        const fileSwitched = prevActiveFilePathRef.current !== activeFilePath;
+        if (fileSwitched) {
+            prevActiveFilePathRef.current = activeFilePath;
+            prevContentRef.current = currentContent;
+            savedScrollTop.current = 0;
+            el.scrollTop = 0;
+        } else if (currentContent !== prevContentRef.current) {
+            // Same file content changed — restore the pre-update position.
+            el.scrollTop = savedScrollTop.current;
+            prevContentRef.current = currentContent;
+        }
+
+        // Always install cleanup so post-switch streaming still preserves user scroll.
+        return () => {
+            if (scrollRef.current) {
+                savedScrollTop.current = scrollRef.current.scrollTop;
+            }
+        };
+    }, [activeFilePath, currentContent]);
+
+    // Shared by the embedded toolbar row and the path breadcrumb row.
+    const viewToolbar = (
+        <CodePreviewViewToolbar
+            wordWrap={wordWrap}
+            fontSize={fontSize}
+            minimap={minimap}
+            theme={theme}
+            lang={lang}
+            onToggleWrap={toggleWordWrap}
+            onToggleMinimap={toggleMinimap}
+            onZoomIn={zoomIn}
+            onZoomOut={zoomOut}
+            onZoomReset={zoomReset}
+        />
+    );
+    const htmlBrowserToggle = activeIsHtml ? (
+        <button
+            type="button"
+            data-testid="code-preview-html-browser-toggle"
+            data-mode={showHtmlBrowser ? 'browser' : 'source'}
+            onClick={() => setHtmlBrowserOn((on) => !on)}
+            title={showHtmlBrowser
+                ? (lang.startsWith('zh') ? '查看 HTML 源码' : 'Show HTML source')
+                : (lang.startsWith('zh') ? '在预览窗口中打开网页' : 'Open the page in the preview')}
+            style={{
+                flexShrink: 0,
+                border: `1px solid ${theme.border}`,
+                background: showHtmlBrowser ? theme.tabActiveBg : theme.bg,
+                color: showHtmlBrowser ? theme.tabActiveText : theme.text,
+                borderRadius: 4,
+                padding: '0 8px',
+                height: 20,
+                cursor: 'pointer',
+                font: 'inherit',
+                fontSize: 11,
+                fontWeight: 600,
+                lineHeight: '18px',
+            }}
+        >
+            {showHtmlBrowser
+                ? (lang.startsWith('zh') ? '源码' : 'Source')
+                : (lang.startsWith('zh') ? '预览' : 'Preview')}
+        </button>
+    ) : null;
+
+    // Empty state: no files
+    if (files.size === 0) {
+        if (shouldDismissEmptyPreviewWithoutWorkspace(files.size, projectPath)) return null;
+        return (
+            <div className="mc-code-preview-panel cpp-panel-root">
+                <div style={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    flex: 1,
+                    minWidth: 0,
+                    height: '100%',
+                    background: theme.bg,
+                    color: theme.text,
+                }}>
+                    {/* Header — when this bar renders it fully replaces the workspace
+                        tree's own header row (title, path/name, refresh), which is
+                        suppressed via hideHeader below. */}
+                    {cloudMode || !hideHeaderClose ? (
+                    <div
+                        data-testid="code-preview-header"
+                        onDoubleClick={handleHeaderDoubleClick}
+                        title={onToggleMaximize ? (lang.startsWith('zh') ? '双击最大化/还原' : 'Double-click to maximize/restore') : undefined}
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'space-between',
+                            padding: '8px 14px',
+                            borderBottom: `1px solid ${theme.border}`,
+                            background: theme.tabBg,
+                            flexShrink: 0,
+                            '--wails-draggable': 'no-drag',
+                        } as any}
+                    >
+                        <span className="cpp-header-title-row">
+                            {cloudMode ? <CloudGlyph color={theme.tabActiveText} /> : null}
+                            <span style={{ color: theme.tabActiveText, fontSize: 12, fontWeight: 600, letterSpacing: '0.01em', flexShrink: 0 }}>
+                                {cloudMode ? (lang.startsWith('zh') ? '云端工作区' : 'Cloud workspace') : (lang.startsWith('zh') ? '工作目录' : 'Working directory')}
+                            </span>
+                            {cloudMode && resolvedCloudName ? (
+                                <>
+                                    <span aria-hidden="true" style={{ color: theme.textMuted, flexShrink: 0 }}>·</span>
+                                    <CloudWorkspaceNameLabel name={resolvedCloudName} theme={theme} />
+                                </>
+                            ) : null}
+                            {!cloudMode && projectPath ? (
+                                <span title={projectPath} style={{ color: theme.textMuted, fontSize: 11, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+                                    {projectPath}
+                                </span>
+                            ) : null}
+                        </span>
+                        <button
+                            data-testid="code-preview-header-refresh"
+                            onClick={() => workspaceRefreshRef.current?.()}
+                            onDoubleClick={(event) => event.stopPropagation()}
+                            aria-busy={workspaceRefreshing}
+                            disabled={!projectPath}
+                            style={{
+                                background: 'none',
+                                border: 'none',
+                                cursor: projectPath ? 'pointer' : 'default',
+                                fontSize: 12,
+                                padding: '2px 6px',
+                                borderRadius: 8,
+                                color: theme.tabActiveText,
+                                lineHeight: 1,
+                                flexShrink: 0,
+                                opacity: !projectPath || workspaceRefreshing ? 0.55 : 1,
+                                transition: 'opacity 120ms ease',
+                                '--wails-draggable': 'no-drag',
+                            } as any}
+                            title={cloudMode ? (lang.startsWith('zh') ? '刷新云端文件' : 'Refresh cloud files') : (lang.startsWith('zh') ? '刷新工作目录' : 'Refresh working directory')}
+                            aria-label={cloudMode ? (lang.startsWith('zh') ? '刷新云端文件' : 'Refresh cloud files') : (lang.startsWith('zh') ? '刷新工作目录' : 'Refresh working directory')}
+                        >
+                            {workspaceRefreshing ? (lang.startsWith('zh') ? '刷新中…' : 'Refreshing…') : (lang.startsWith('zh') ? '刷新' : 'Refresh')}
+                        </button>
+                        {!hideHeaderClose ? (
+                        <button
+                            onClick={onClose}
+                            style={{
+                                background: 'none',
+                                border: 'none',
+                                cursor: 'pointer',
+                                fontSize: 16,
+                                padding: '2px 6px',
+                                borderRadius: 8,
+                                color: theme.textMuted,
+                                lineHeight: 1,
+                                transition: 'background 120ms ease, color 120ms ease',
+                                '--wails-draggable': 'no-drag',
+                            } as any}
+                            title="Close code preview"
+                        >
+                            X
+                        </button>
+                        ) : null}
+                    </div>
+                    ) : null}
+                    <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} paperWorkspace={paperWorkspace} hideHeader={cloudMode || !hideHeaderClose} onRefreshReady={handleWorkspaceRefreshReady} lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={handleWorkspaceFileDeleted} />
+                </div>
+            </div>
+        );
+    }
+
+    return (
+        <div
+            className="mc-code-preview-panel cpp-focus-root"
+            data-testid="code-preview-panel"
+            tabIndex={0}
+            onKeyDown={handlePanelKeyDown}
+        >
+            <div style={{
+                display: 'flex',
+                flexDirection: 'column',
+                flex: 1,
+                minWidth: 0,
+                height: '100%',
+                background: theme.bg,
+                color: theme.text,
+            }}>
+            {/* Header with close button - double-click empty area to toggle maximize */}
+            {!embedded ? (
+            <div
+                data-testid="code-preview-header"
+                onDoubleClick={handleHeaderDoubleClick}
+                title={onToggleMaximize ? (lang.startsWith('zh') ? '双击空白处最大化/还原' : 'Double-click empty area to maximize/restore') : undefined}
+                style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    padding: '4px 8px 4px 0',
+                    borderBottom: `1px solid ${theme.border}`,
+                    background: theme.tabBg,
+                    flexShrink: 0,
+                    // Allow FileTabBar open-editors dropdown to extend below the header.
+                    overflow: 'visible',
+                    '--wails-draggable': 'no-drag',
+                } as any}
+            >
+                <CodePreviewFileListButton
+                    files={files}
+                    pinnedPaths={pinnedPaths || []}
+                    activeFilePath={activeFilePath}
+                    theme={theme}
+                    lang={lang}
+                    onSelectFile={handleSelectFile}
+                />
+                <div
+                    ref={tabStripRef}
+                    data-preview-no-maximize="true"
+                    data-testid="code-preview-tab-strip"
+                    role="tablist"
+                    aria-label={lang.startsWith('zh') ? '代码预览标签' : 'Code preview tabs'}
+                    style={{
+                        display: 'flex',
+                        alignItems: 'stretch',
+                        flex: 1,
+                        minWidth: 0,
+                        // Keep open-editors dropdown paintable outside the strip.
+                        overflow: 'visible',
+                        '--wails-draggable': 'no-drag',
+                    } as any}
+                >
+                    <button
+                        ref={workspaceTabRef}
+                        type="button"
+                        role="tab"
+                        aria-selected={workspaceActive}
+                        data-testid="code-preview-workspace-tab"
+                        onClick={activateWorkspaceTab}
+                        onKeyDown={(event) => {
+                            if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft' && event.key !== 'Home' && event.key !== 'End') return;
+                            const order = getDisplayFilePaths(files, pinnedPaths || []);
+                            if (order.length === 0) return;
+                            event.preventDefault();
+                            event.stopPropagation();
+                            if (event.key === 'Home') return;
+                            const target = event.key === 'ArrowRight' ? order[0] : order[order.length - 1];
+                            handleSelectFile(target);
+                        }}
+                        style={{
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            flexShrink: 0,
+                            minWidth: 0,
+                            height: 36,
+                            padding: '0 10px',
+                            border: 'none',
+                            borderRight: `1px solid ${theme.border}`,
+                            borderBottom: workspaceActive ? `2px solid ${theme.tabActiveText}` : '2px solid transparent',
+                            background: workspaceActive ? theme.tabActiveBg : theme.tabBg,
+                            color: workspaceActive ? theme.tabActiveText : theme.textMuted,
+                            cursor: 'pointer',
+                            font: 'inherit',
+                            fontSize: 12,
+                            fontWeight: 600,
+                            letterSpacing: '0.01em',
+                        }}
+                    >
+                        {cloudMode ? <CloudGlyph color={workspaceActive ? theme.tabActiveText : theme.textMuted} /> : null}
+                        {cloudMode ? (lang.startsWith('zh') ? '云端文件' : 'Cloud files') : (lang.startsWith('zh') ? '工作目录' : 'Working directory')}
+                        {cloudMode ? <CloudWorkspaceNameLabel name={resolvedCloudName} theme={theme} compact /> : null}
+                    </button>
+                    <div className="cpp-tabbar-slot">
+                        <FileTabBar
+                            files={files}
+                            activeFilePath={activeFilePath}
+                            highlightActiveFile={!workspaceActive}
+                            embedded
+                            onArrowBeforeFirst={activateWorkspaceTab}
+                            onArrowAfterLast={activateWorkspaceTab}
+                            pinnedPaths={pinnedPaths}
+                            mruOrder={mruOrder}
+                            onSelectFile={handleSelectFile}
+                            onCloseFile={onCloseFile}
+                            onCloseOtherFiles={onCloseOtherFiles}
+                            onCloseFilesToTheRight={onCloseFilesToTheRight}
+                            onCloseAllFiles={onCloseAllFiles}
+                            onMoveFile={onMoveFile}
+                            onTogglePinFile={onTogglePinFile}
+                            theme={theme}
+                            lang={lang}
+                            cloudMode={cloudMode}
+                        />
+                    </div>
+                </div>
+                {onTogglePreviewExpand ? (
+                <button
+                    type="button"
+                    data-testid="code-preview-expand-toggle"
+                    data-active={previewExpanded ? 'true' : 'false'}
+                    onClick={onTogglePreviewExpand}
+                    title={lang.startsWith('zh') ? (previewExpanded ? '还原预览宽度' : '放大预览至全宽') : (previewExpanded ? 'Restore preview width' : 'Expand preview to full width')}
+                    aria-label={lang.startsWith('zh') ? (previewExpanded ? '还原预览宽度' : '放大预览至全宽') : (previewExpanded ? 'Restore preview width' : 'Expand preview to full width')}
+                    style={{
+                        border: `1px solid ${theme.border}`,
+                        background: previewExpanded ? theme.tabActiveBg : theme.bg,
+                        color: previewExpanded ? theme.tabActiveText : theme.textMuted,
+                        borderRadius: 4,
+                        padding: '1px 6px',
+                        cursor: 'pointer',
+                        fontSize: 12,
+                        lineHeight: '18px',
+                        fontFamily: 'inherit',
+                        flexShrink: 0,
+                        marginLeft: 4,
+                    }}
+                >
+                    {previewExpanded ? '⤡' : '⤢'}
+                </button>
+                ) : null}
+                {!hideHeaderClose ? (
+                <button
+                    onClick={onClose}
+                    style={{
+                        background: 'none',
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontSize: 16,
+                        padding: '2px 6px',
+                        borderRadius: 8,
+                        color: theme.textMuted,
+                        lineHeight: 1,
+                        flexShrink: 0,
+                        marginLeft: 4,
+                        transition: 'background 120ms ease, color 120ms ease',
+                        '--wails-draggable': 'no-drag',
+                    } as any}
+                    title="Close code preview"
+                >
+                    X
+                </button>
+                ) : null}
+            </div>
+            ) : !isVisualDocumentPreview(activeFile) ? (
+                <div
+                    data-testid="code-preview-embedded-toolbar"
+                    style={{
+                        display: 'flex',
+                        justifyContent: 'flex-end',
+                        alignItems: 'center',
+                        gap: 6,
+                        padding: '4px 8px',
+                        borderBottom: `1px solid ${theme.border}`,
+                        background: theme.tabBg,
+                        flexShrink: 0,
+                    }}
+                >
+                    {htmlBrowserToggle}
+                    {!showHtmlBrowser && viewToolbar}
+                </div>
+            ) : null}
+
+            {/* Active file path breadcrumb (VS Code-style status under tabs) */}
+            {!embedded && !workspaceActive && activeFile && (
+                <div
+                    data-testid="code-preview-active-path"
+                    title={cloudMode ? activeFile.filePath : (activeFile.absPath || activeFile.filePath)}
+                    style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: 8,
+                        padding: '3px 12px',
+                        borderBottom: `1px solid ${theme.border}`,
+                        background: theme.lineNumBg,
+                        color: theme.textMuted,
+                        fontSize: 11,
+                        lineHeight: 1.4,
+                        flexShrink: 0,
+                        minWidth: 0,
+                        // The toolbar + badges + actions outgrow very narrow panes;
+                        // wrap them under the path instead of clipping.
+                        flexWrap: 'wrap',
+                        rowGap: 2,
+                        fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+                    }}
+                >
+                    <span className="cpp-path-ellipsis">
+                        {cloudMode ? activeFile.filePath : (activeFile.absPath || activeFile.filePath)}
+                    </span>
+                    {/* View toolbar lives on the path row, not the tab row, so narrow
+                        panes never squeeze the file tabs against the right-side controls. */}
+                    {htmlBrowserToggle}
+                    {!showHtmlBrowser && !isVisualDocumentPreview(activeFile) && viewToolbar}
+                    <span
+                        data-testid="code-preview-lang-badge"
+                        style={{
+                            flexShrink: 0,
+                            padding: '0 6px',
+                            borderRadius: 3,
+                            border: `1px solid ${theme.border}`,
+                            lineHeight: '16px',
+                            fontSize: 10,
+                            fontWeight: 600,
+                            letterSpacing: 0.2,
+                            color: theme.textMuted,
+                            background: theme.tabBg,
+                        }}
+                    >
+                        {formatCodeLanguageLabel(activeFile.language)}
+                    </span>
+                    {activeFile.opType === 'read' && (
+                        <span
+                            data-testid="code-preview-readonly-badge"
+                            className="cpp-badge-faint"
+                        >
+                            {lang.startsWith('zh') ? '只读' : 'read-only'}
+                        </span>
+                    )}
+                    {activeFile.opType && activeFile.opType !== 'read' ? (
+                        codeFileLineDeltaHasChange(computeCodeFileLineDelta(activeFile)) ? (
+                            <CodeFileDiffStat
+                                file={activeFile}
+                                theme={theme}
+                                testId="code-preview-diff-stat"
+                            />
+                        ) : (
+                            <span className="cpp-badge-dim">
+                                {activeFile.opType === 'create' ? 'NEW' : 'MOD'}
+                            </span>
+                        )
+                    ) : null}
+                    {totalLines > 0 && (
+                        <span data-testid="code-preview-line-count" className="cpp-badge-dim">
+                            {totalLines} {lang.startsWith('zh') ? '行' : 'lines'}
+                        </span>
+                    )}
+                    {isCodeFileDirty(activeFile) && !codeFileLineDeltaHasChange(computeCodeFileLineDelta(activeFile)) ? (
+                        <span data-testid="code-preview-dirty-badge" className="cpp-badge-faint">
+                            {lang.startsWith('zh') ? '已修改' : 'changed'}
+                        </span>
+                    ) : null}
+                    <PreviewFileActions
+                        absPath={!cloudMode && activeFile.absPath ? activeFile.absPath : undefined}
+                        lang={lang}
+                        color={theme.textMuted}
+                    />
+                </div>
+            )}
+
+            {!workspaceActive && !showHtmlBrowser && findOpen && (
+                <CodePreviewFindBar
+                    query={findQuery}
+                    matchCount={matchLineIndexes.length}
+                    activeIndex={findIndex}
+                    theme={theme}
+                    lang={lang}
+                    caseSensitive={findCaseSensitive}
+                    wholeWord={findWholeWord}
+                    useRegex={findUseRegex}
+                    regexError={findRegexError}
+                    onQueryChange={(q) => {
+                        setFindQuery(q);
+                        setFindIndex(0);
+                    }}
+                    onToggleCase={() => {
+                        setFindCaseSensitive((v) => !v);
+                        setFindIndex(0);
+                    }}
+                    onToggleWord={() => {
+                        setFindWholeWord((v) => !v);
+                        setFindIndex(0);
+                    }}
+                    onToggleRegex={() => {
+                        setFindUseRegex((v) => !v);
+                        setFindIndex(0);
+                    }}
+                    onNext={goNextMatch}
+                    onPrev={goPrevMatch}
+                    onClose={closeFind}
+                    inputRef={findInputRef}
+                />
+            )}
+
+            {!workspaceActive && !showHtmlBrowser && gotoOpen && (
+                <CodePreviewGoToLineBar
+                    value={gotoValue}
+                    maxLines={Math.max(1, totalLines)}
+                    theme={theme}
+                    lang={lang}
+                    onChange={setGotoValue}
+                    onSubmit={submitGoto}
+                    onClose={closeGoto}
+                    inputRef={gotoInputRef}
+                />
+            )}
+
+            {/* Change overview: how much changed + how to read it. Hidden when
+                nothing changed, so the bar always means "there are edits here". */}
+            {!workspaceActive && !showHtmlBrowser && activeFile && diffLines && diffHasChange && !isVisualDocumentPreview(activeFile) && (
+                <CodeDiffSummaryBar
+                    stats={diffStats}
+                    changeCount={diffChangeCount}
+                    cursor={diffCursor}
+                    mode={effectiveDiffMode}
+                    onlyChanges={diffOnlyChanges}
+                    foldUnchanged={diffFoldUnchanged}
+                    theme={theme}
+                    lang={lang}
+                    onModeChange={chooseDiffMode}
+                    onToggleOnlyChanges={() => setDiffOnlyChanges((v) => !v)}
+                    onToggleFold={() => setDiffFoldUnchanged((v) => !v)}
+                    onPrevChange={() => stepDiffChange(-1)}
+                    onNextChange={() => stepDiffChange(1)}
+                />
+            )}
+
+            {/* Code content area */}
+            {activeFile?.previewTruncated && (
+                <div role="status" aria-live="polite" style={{ padding: '6px 12px', borderBottom: `1px solid ${theme.border}`, background: theme.lineNumBg, color: theme.textMuted, fontSize: 12, flexShrink: 0 }}>
+                    {lang === 'zh-Hant'
+                        ? '遠端原始碼預覽已截斷；目前僅顯示檔案開頭部分。'
+                        : lang.startsWith('zh')
+                            ? '远程源码预览已截断；当前仅显示文件开头部分。'
+                            : 'Remote preview is truncated; only the beginning of this file is shown.'}
+                </div>
+            )}
+            {/* Large files: no line diff, but the user still needs the totals. */}
+            {diffTooLarge && diffTooLargeDelta && !showHtmlBrowser && (
+                <div
+                    role="status"
+                    data-testid="code-preview-diff-too-large"
+                    style={{ padding: '6px 12px', borderBottom: `1px solid ${theme.border}`, background: theme.lineNumBg, color: theme.textMuted, fontSize: 12, flexShrink: 0 }}
+                >
+                    {lang === 'zh-Hant'
+                        ? '檔案過大，已跳過逐行對比；變更統計：'
+                        : lang.startsWith('zh')
+                            ? '文件较大，已跳过逐行对比；变更统计：'
+                            : 'File is too large for a line diff; change totals:'}
+                    <span style={{ color: theme.diffAddText, fontWeight: 700 }}>+{diffTooLargeDelta.added}</span>
+                    {' '}
+                    <span style={{ color: theme.diffDeleteText, fontWeight: 700 }}>-{diffTooLargeDelta.removed}</span>
+                </div>
+            )}
+            <div
+                className="cpp-body-row"
+            >
+                <div
+                    ref={scrollRef}
+                    id={scrollDomId}
+                    className="ai-chat-scrollbar"
+                    style={{
+                        flex: 1,
+                        overflowY: isVisualDocumentPreview(activeFile) || showHtmlBrowser ? 'hidden' : 'auto',
+                        overflowX: isVisualDocumentPreview(activeFile) || showHtmlBrowser ? 'hidden' : 'auto',
+                        minHeight: 0,
+                        minWidth: 0,
+                        display: showHtmlBrowser ? 'flex' : undefined,
+                        flexDirection: showHtmlBrowser ? 'column' : undefined,
+                    }}
+                >
+                    {showHtmlBrowser && activeFile ? (
+                        <WebPreviewBrowser
+                            key={`${activeFile.filePath}:${activeFile.absPath || ''}:${activeFile.updatedAt || 0}`}
+                            absPath={activeFile.absPath}
+                            content={activeFile.content}
+                            theme={theme}
+                            lang={lang}
+                        />
+                    ) : workspaceActive ? (
+                        <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} paperWorkspace={paperWorkspace} hideTitle lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={handleWorkspaceFileDeleted} />
+                    ) : (
+                        <FilePreviewView
+                            file={activeFile}
+                            theme={theme}
+                            lang={lang}
+                            projectPath={projectPath}
+                            onLatexSourceChange={(content) => {
+                                const path = activeFile?.filePath;
+                                if (!path || !activeFile.latexWorkbench) return;
+                                onReplaceWorkspaceFileContent?.(path, content);
+                            }}
+                            matchLineIndexes={matchLineIndexes}
+                            activeMatchLine={activeMatchLine}
+                        >
+                    {activeFile && diffLines && !isVisualDocumentPreview(activeFile) ? (
+                            <CodePreviewDiffView
+                                rows={diffRows}
+                                theme={theme}
+                                language={activeFile.language}
+                                lang={lang}
+                                mode={effectiveDiffMode}
+                                onlyChanges={diffOnlyChanges}
+                                foldUnchanged={diffFoldUnchanged}
+                                matchLineIndexes={matchLineIndexes}
+                                activeMatchLine={activeMatchLine}
+                                wordWrap={wordWrap}
+                                fontSize={fontSize}
+                                focusChangeIndex={diffHasChange ? Math.min(Math.max(diffCursor, 0), diffChangeCount - 1) : -1}
+                                focusNonce={diffFocusNonce}
+                                resetKey={activeFilePath}
+                                onRenderedRows={handleRenderedDiffRows}
+                            />
+                    ) : activeFile && !filePreviewUsesSpecialRenderer(activeFile) ? (
+                            <PlainCodeView
+                                content={activeFile.content}
+                                language={activeFile.language}
+                                theme={theme}
+                                matchLineIndexes={matchLineIndexes}
+                                activeMatchLine={activeMatchLine}
+                                wordWrap={wordWrap}
+                                fontSize={fontSize}
+                            />
+                    ) : activeFile ? null : (
+                        <div style={{
+                            padding: 20,
+                            color: theme.textMuted,
+                            fontSize: 14,
+                            textAlign: 'center',
+                        }}>
+                            File not found
+                        </div>
+                    )}
+                        </FilePreviewView>
+                    )}
+                </div>
+                {minimap && !workspaceActive && !showHtmlBrowser && activeFile && !isVisualDocumentPreview(activeFile) ? (
+                    <CodePreviewMinimap
+                        scrollRef={scrollRef}
+                        scrollId={scrollDomId}
+                        lines={contentLines}
+                        diffLines={diffLines ? minimapDiffRows : null}
+                        matchLineIndexes={matchLineIndexes}
+                        activeMatchLine={activeMatchLine}
+                        theme={theme}
+                        lang={lang}
+                    />
+                ) : null}
+            </div>
+            </div>
+        </div>
+    );
+}

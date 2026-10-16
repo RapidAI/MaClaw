@@ -338,6 +338,8 @@ func (app *TUIApp) buildScheduledTaskExecutor() scheduler.TaskExecutor {
 // tuiSchedulerCallbacks implements agent.LoopCallbacks for background scheduled
 // task execution. It's a minimal implementation that doesn't stream to the UI.
 type tuiSchedulerCallbacks struct {
+	usageTrackerFeed
+
 	app       *TUIApp
 	ctx       context.Context
 	activeLLM tuiActiveLLM
@@ -370,7 +372,20 @@ func (c *tuiSchedulerCallbacks) BuildSystemPrompt(userText string, isFirstTurn b
 }
 
 func (c *tuiSchedulerCallbacks) BuildTools(userText string) []map[string]interface{} {
-	return c.app.toolRegistry.BuildDefinitions()
+	defs := c.app.toolRegistry.BuildDefinitions()
+	// Policy consistency with tuiCallbacks (phase0 baseline §1.2/§1.3 finding #2):
+	// background scheduled tasks run a real agent.RunLoop turn whose system
+	// prompt honors MACLAW_PROMPT_PROFILE like every other variant, but the
+	// scheduler never classifies text or reports a profile itself — so the
+	// light filter applies ONLY when the env forces light globally (a provable
+	// no-op in the default state; under forced light the surface matches the
+	// light prompt instead of handing a background task a full shell/file
+	// surface). Read-only-child filtering is intentionally absent: this struct
+	// has no runtimeReadOnlyChild state.
+	if profile, ok := agent.EnvPromptProfileOverride(); ok && profile.IsLight() {
+		return agent.FilterToolDefsForLightTurn(defs)
+	}
+	return defs
 }
 
 func (c *tuiSchedulerCallbacks) ExecuteTool(name, argsJSON string) string {

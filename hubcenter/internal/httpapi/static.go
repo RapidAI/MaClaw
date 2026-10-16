@@ -113,6 +113,48 @@ func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix
 	registerStaticRoutesWithAssetCache(mux, staticDir, routePrefix, staticHTMLCacheControl)
 }
 
+// registerHomeStaticRoutes serves the public default landing page at the site
+// root "/". It is a single self-contained index.html (inline CSS/JS, no local
+// assets) so only the exact root path is handled; everything else keeps
+// matching its own API/static route or falls through to 404.
+func registerHomeStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix string) {
+	staticDir = resolveStaticDir(staticDir)
+	staticDir = strings.TrimSpace(staticDir)
+	if staticDir == "" {
+		return
+	}
+	indexPath := filepath.Join(staticDir, "index.html")
+
+	serve := func(w http.ResponseWriter, r *http.Request) {
+		// A methodless "/" is a catch-all in Go 1.22's ServeMux, so only serve
+		// the landing page at the exact root path; everything else keeps its
+		// own specific route or falls through to a real 404 (we must not mask
+		// API 404s with the home page).
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		data, err := os.ReadFile(indexPath)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write(data)
+	}
+
+	// Register the methodless "/" catch-all. More specific routes (method
+	// qualified or longer patterns) always win over it; the exact-path guard
+	// above keeps 404 semantics for any path other than "/".
+	mux.HandleFunc("/", serve)
+}
+
 func registerSharedStaticAssets(mux *http.ServeMux, staticDir string) {
 	staticDir = resolveStaticDir(staticDir)
 	if strings.TrimSpace(staticDir) == "" {

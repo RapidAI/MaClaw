@@ -24,7 +24,11 @@ func reviewedHostComputerUseInvocationSchema() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
-			"action": map[string]interface{}{"type": "string"},
+			// An unlabelled string leaves the model to guess the verb, which is
+			// how the browser adapter started refusing "open" (2026-10-10). The
+			// canonicalizer does not read enum, so the check in ArgsAllowed
+			// stays the boundary and this is documentation for the model.
+			"action": map[string]interface{}{"type": "string", "enum": coretool.ComputerControlActions()},
 		},
 		"required":             []string{"action"},
 		"additionalProperties": false,
@@ -133,10 +137,12 @@ func reviewedHostComputerUseArgsAllowed(args map[string]interface{}) (string, er
 	if !hasAction {
 		return "", fmt.Errorf("host_computer_use_action_required")
 	}
-	switch action {
-	case "observe", "click", "done":
-	default:
-		return "", fmt.Errorf("host_computer_use_action_rejected")
+	// Re-checked against the enum the model was shown, because a boundary that
+	// only exists in a rendered document is not a boundary. The set is the
+	// shared desktop contract, not a host copy: this host and the GUI surface
+	// both serve computer.control.desktop.
+	if !coretool.ComputerControlActionAllowed(action) {
+		return "", fmt.Errorf("host_computer_use_action_rejected (%s)", coretool.ComputerControlActionHint())
 	}
 	return action, nil
 }

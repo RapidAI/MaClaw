@@ -17,9 +17,11 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
+
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
-// partialWriteResult holds the outcome of a best-effort partial write.
+// partialWriteResult holds a partial body that was actually written.
 type partialWriteResult struct {
 	Path         string
 	BytesWritten int
@@ -38,6 +40,9 @@ func attemptLoopPartialWriteFile(rawArgs string) *partialWriteResult {
 
 	path := extractJSONStringFieldFromRaw(rawArgs, "path")
 	if path == "" {
+		path = extractJSONStringFieldFromRaw(rawArgs, "file_path")
+	}
+	if path == "" {
 		return nil
 	}
 
@@ -49,6 +54,9 @@ func attemptLoopPartialWriteFile(rawArgs string) *partialWriteResult {
 	}
 
 	content := extractJSONStringFieldFromRaw(rawArgs, "content")
+	if content == "" {
+		content = extractJSONStringFieldFromRaw(rawArgs, "text")
+	}
 	if content == "" {
 		return nil
 	}
@@ -63,24 +71,29 @@ func attemptLoopPartialWriteFile(rawArgs string) *partialWriteResult {
 	// Determine write mode from args (default: overwrite).
 	mode := extractJSONStringFieldFromRaw(rawArgs, "mode")
 
+	contentBytes := []byte(content)
 	if mode != "append" {
-		// Don't overwrite an existing file with truncated content — UNLESS
-		// the existing file was itself a previous partial write (smaller than
-		// the new truncated content). In that case, the new truncation contains
-		// more data and should replace the old partial.
-		if info, statErr := os.Stat(path); statErr == nil {
-			existingSize := info.Size()
-			newSize := int64(len(content))
-			if newSize <= existingSize {
-				// New content is not larger — don't regress.
-				log.Printf("[agent-loop] partial write: refusing to overwrite %q (%d bytes) with shorter truncated content (%d bytes)", path, existingSize, newSize)
+		// Replace an existing file only when it is a prefix of this body.
+		// A longer unrelated body is not a previous partial write.
+		existing, existingSize, exists, readErr := tool.ReadExistingPrefix(path, len(contentBytes))
+		if readErr != nil {
+			log.Printf("[agent-loop] partial write: cannot compare %q: %v", path, readErr)
+			return nil
+		}
+		if exists {
+			switch tool.ClassifyPartialWriteExisting(existing, contentBytes) {
+			case tool.PartialWriteExtendsExisting:
+				log.Printf("[agent-loop] partial write: extending previous partial %q (%d bytes) with %d bytes", path, existingSize, len(contentBytes))
+			case tool.PartialWriteAlreadyCovered:
+				// The file already continues through this body. Appending the
+				// "rest" would write past a real document that merely shares
+				// the prefix.
+				log.Printf("[agent-loop] partial write: %q already contains this body (%d bytes >= %d); leaving it untouched", path, existingSize, len(contentBytes))
+				return nil
+			default:
+				log.Printf("[agent-loop] partial write: leaving unrelated file %q untouched", path)
 				return nil
 			}
-			// New content is larger than existing → this is likely a fresh
-			// truncation attempt with more output. Allow overwrite.
-			log.Printf("[agent-loop] partial write: overwriting previous partial %q (%d bytes) with longer content (%d bytes)", path, existingSize, newSize)
-		} else if !os.IsNotExist(statErr) {
-			return nil
 		}
 	}
 
@@ -92,7 +105,6 @@ func attemptLoopPartialWriteFile(rawArgs string) *partialWriteResult {
 	}
 
 	var err error
-	contentBytes := []byte(content)
 	if mode == "append" {
 		f, openErr := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
 		if openErr != nil {
@@ -146,15 +158,16 @@ func buildLoopPartialWriteRecovery(pw *partialWriteResult) string {
 	)
 }
 
-// buildLoopPartialWriteAppendHint generates a hint when partial write refused
-// to overwrite an existing file — instructs LLM to use mode=append.
-func buildLoopPartialWriteAppendHint(path string, fileSize int64) string {
-	return fmt.Sprintf(
-		"[system] write_file was truncated again. The file %q already exists (%d bytes from a previous partial write). "+
-			"Do NOT use mode=overwrite — use write_file(path=%q, mode=\"append\", content=\"...remaining...\") to continue from where you left off. "+
-			"Keep each chunk under 3000 characters.",
-		path, fileSize, path,
-	)
+// partialWriteRecoveryPrompt returns the follow-up after bytes were saved.
+// An empty prompt means nothing was written, so the caller uses the ordinary
+// truncation recovery. A file that already contains this body is not a cue
+// to append.
+func partialWriteRecoveryPrompt(rawArgs string) (prompt string, saved bool) {
+	pw := attemptLoopPartialWriteFile(rawArgs)
+	if pw == nil {
+		return "", false
+	}
+	return buildLoopPartialWriteRecovery(pw), true
 }
 
 // ---------------------------------------------------------------------------

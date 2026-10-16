@@ -54,6 +54,60 @@ func TestLatestSessionCheckpointForHostReturnsNewestAndTouches(t *testing.T) {
 	}
 }
 
+func TestLatestSessionCheckpointForOwnerPrefersUpdatedAndSkipsOtherOwners(t *testing.T) {
+	store, err := NewStoreWithMode(t.TempDir(), StoreModeJSON)
+	if err != nil {
+		t.Fatalf("NewStoreWithMode: %v", err)
+	}
+	defer store.Stop()
+
+	oldTags := []string{"session_checkpoint", "D:/repo", "codex", "session-old", "user-1"}
+	if _, err := store.UpsertSessionCheckpoint(SessionCheckpointUpsertOptions{
+		Title:            "old checkpoint",
+		Content:          "checkpoint old",
+		Tags:             oldTags,
+		IdentityTagCount: 4,
+		OwnerID:          "user-1",
+	}); err != nil {
+		t.Fatalf("old checkpoint: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if _, err := store.UpsertSessionCheckpoint(SessionCheckpointUpsertOptions{
+		Title:            "later created",
+		Content:          "checkpoint later",
+		Tags:             []string{"session_checkpoint", "D:/repo", "codex", "session-later", "user-1"},
+		IdentityTagCount: 4,
+		OwnerID:          "user-1",
+	}); err != nil {
+		t.Fatalf("later checkpoint: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if _, err := store.UpsertSessionCheckpoint(SessionCheckpointUpsertOptions{
+		Title:            "old checkpoint",
+		Content:          "checkpoint refreshed",
+		Tags:             oldTags,
+		IdentityTagCount: 4,
+		OwnerID:          "user-1",
+	}); err != nil {
+		t.Fatalf("refresh checkpoint: %v", err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if _, err := store.UpsertSessionCheckpoint(SessionCheckpointUpsertOptions{
+		Title:            "foreign",
+		Content:          "checkpoint foreign",
+		Tags:             []string{"session_checkpoint", "D:/repo", "codex", "session-foreign", "user-2"},
+		IdentityTagCount: 4,
+		OwnerID:          "user-2",
+	}); err != nil {
+		t.Fatalf("foreign checkpoint: %v", err)
+	}
+
+	got := store.LatestSessionCheckpointForOwner("D:/repo", "user-1")
+	if !strings.Contains(got, "checkpoint refreshed") || strings.Contains(got, "foreign") || strings.Contains(got, "later") {
+		t.Fatalf("owner checkpoint = %q", got)
+	}
+}
+
 func TestLatestSessionCheckpointForHostEmpty(t *testing.T) {
 	var nilStore *Store
 	if got := nilStore.LatestSessionCheckpointForHost("D:/repo"); got != "" {

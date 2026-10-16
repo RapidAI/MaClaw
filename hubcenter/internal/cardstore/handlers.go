@@ -94,25 +94,38 @@ func CreateOrderHandler(svc *Service) http.HandlerFunc {
 
 // ListOrdersHandler lists orders for a hub/tenant.
 // GET /api/cardstore/orders?hub_id=X&tenant_id=Y&status=Z&statuses=A,B&offset=0&limit=20
+// maxOrderListLimit caps the page size for order listing. P1 of the
+// 2026-09-09 review: the value was previously unbounded.
+const maxOrderListLimit = 200
+
 func ListOrdersHandler(svc *Service) http.HandlerFunc {
 	return listOrdersHandler(svc, false)
 }
 
-func listOrdersHandler(svc *Service, allowActiveCards bool) http.HandlerFunc {
+func listOrdersHandler(svc *Service, admin bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		limit, _ := strconv.Atoi(q.Get("limit"))
 		if limit <= 0 {
 			limit = 20
 		}
+		// P1 (2026-09-09 review): limit was unbounded and flowed straight into
+		// the SQL LIMIT clause (llm_order_repo.go), so a single anonymous
+		// request could pull the entire order table.
+		if limit > maxOrderListLimit {
+			limit = maxOrderListLimit
+		}
 		offset, _ := strconv.Atoi(q.Get("offset"))
+		if offset < 0 {
+			offset = 0
+		}
 
 		filter := OrderFilter{
-			HubID:          q.Get("hub_id"),
-			TenantID:       q.Get("tenant_id"),
-			Email:          q.Get("email"),
-			ServiceGroupID: q.Get("service_group_id"),
-			Status:         q.Get("status"),
+			HubID:          strings.TrimSpace(q.Get("hub_id")),
+			TenantID:       strings.TrimSpace(q.Get("tenant_id")),
+			Email:          strings.TrimSpace(q.Get("email")),
+			ServiceGroupID: strings.TrimSpace(q.Get("service_group_id")),
+			Status:         strings.TrimSpace(q.Get("status")),
 			Statuses:       parseStatusList(q),
 			ArchivedOnly:   q.Get("archived") == "1" || strings.EqualFold(q.Get("archived"), "true"),
 			IncludeArchived: strings.EqualFold(q.Get("include_archived"), "1") ||
@@ -120,9 +133,20 @@ func listOrdersHandler(svc *Service, allowActiveCards bool) http.HandlerFunc {
 			Limit:  limit,
 			Offset: offset,
 		}
-		if allowActiveCards {
+		if admin {
 			filter.ActiveCardsOnly = q.Get("active_cards") == "1" || strings.EqualFold(q.Get("active_cards"), "true") ||
 				q.Get("valid_cards") == "1" || strings.EqualFold(q.Get("valid_cards"), "true")
+		}
+		// P0 (2026-09-09 review): the SQL behind this filter is "WHERE 1=1"
+		// with every predicate optional, so an anonymous request with no query
+		// parameters paged through every tenant's orders — admin emails, hub
+		// and tenant ids, amounts and payment URLs (llm_order_repo.go:43).
+		// The public route must stay scoped. The admin route is already behind
+		// RequireAdmin; the compute-store console lists the full queue with
+		// only limit/offset/statuses.
+		if !admin && filter.HubID == "" && filter.TenantID == "" && filter.Email == "" && filter.ServiceGroupID == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "hub_id, tenant_id, email or service_group_id query parameter is required"})
+			return
 		}
 		alipay := alipayConfigForRequest(r, svc)
 		orders, total, err := svc.ListOrdersWithAlipayConfig(r.Context(), filter, alipay)

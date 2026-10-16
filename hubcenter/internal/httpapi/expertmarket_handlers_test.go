@@ -2459,9 +2459,7 @@ func TestExpertMarketPurgeNeverFollowsDirectorySymlinkOutsideMarketStorage(t *te
 		t.Fatal(err)
 	}
 	linkPath := filepath.Join(h.expertMarketDir(), "outside-link")
-	if err := os.Symlink(foreignDir, linkPath); err != nil {
-		t.Skipf("directory symlinks are unavailable on this test host: %v", err)
-	}
+	requireResolvableSymlink(t, foreignDir, linkPath)
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if _, err := h.store.DB().Exec(`INSERT INTO sm_expert_market_listings (`+expertMarketListingColumns+`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,0,0,0,'',?,?)`, "purge-symlink-listing", seller.ID, seller.Email, "pkgexp-purge-symlink", "Symlinked archive", "", "", "1", 0, "public", "deleted", filepath.Join(linkPath, filepath.Base(foreignPath)), 11, now, now); err != nil {
 		t.Fatal(err)
@@ -2503,9 +2501,7 @@ func TestRemoveExpertMarketPackageRejectsNonRegularTargets(t *testing.T) {
 		t.Fatal(err)
 	}
 	linkPath := filepath.Join(h.expertMarketDir(), "package-link.zip")
-	if err := os.Symlink(packagePath, linkPath); err != nil {
-		t.Skipf("file symlinks are unavailable on this test host: %v", err)
-	}
+	requireResolvableSymlink(t, packagePath, linkPath)
 	if err := h.removeExpertMarketPackage(linkPath); err == nil {
 		t.Fatal("package cleanup must reject a symlink")
 	}
@@ -2628,5 +2624,33 @@ func TestExpertMarketRejectsIncompleteOrUnexpectedPackageContent(t *testing.T) {
 	builtin := map[string]any{"format": "maclaw-expert-package", "version": 1, "expert_package_id": "pkgexp-builtin", "expert": map[string]any{"id": "builtin-reviewer", "name": "Builtin", "system_prompt": "Work safely.", "builtin": true}}
 	if _, _, _, _, err := expertMarketManifest(makeArchive(t, builtin, "")); err == nil {
 		t.Fatal("built-in expert package should be rejected to match the desktop importer")
+	}
+}
+
+// requireResolvableSymlink creates link -> target and skips the test when the
+// host cannot produce a symlink that actually resolves.
+//
+// os.Symlink can report success on Windows without SeCreateSymbolicLink or
+// Developer Mode while leaving a link that filepath.EvalSymlinks cannot
+// follow. Assertions that depend on the link being traversable then fail for
+// an environment reason and look like a broken defence: the purge test saw
+// 200 instead of 500 simply because the target path did not exist through the
+// dead link. Verify the link resolves before asserting on it.
+func requireResolvableSymlink(t *testing.T, target, link string) {
+	t.Helper()
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks are unavailable on this test host: %v", err)
+	}
+	// Some filesystem layers (sandboxed or virtualized volumes on Windows)
+	// silently materialize os.Symlink as a plain copy (file target) or an
+	// empty directory (directory target) instead of a reparse point. Those
+	// degraded stand-ins pass EvalSymlinks with no error, so they must be
+	// caught by the mode check below: the tests only mean anything when a
+	// real symlink exists for the cleanup code to refuse to follow.
+	if info, err := os.Lstat(link); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Skipf("symlinks are unavailable on this test host: os.Symlink did not produce a symlink (lstat err=%v)", err)
+	}
+	if _, err := filepath.EvalSymlinks(link); err != nil {
+		t.Skipf("symlink is not resolvable on this test host: %v", err)
 	}
 }

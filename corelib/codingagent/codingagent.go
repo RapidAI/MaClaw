@@ -92,6 +92,14 @@ func (p ToolPolicy) FilterToolDefinitions(tools []map[string]interface{}) []map[
 // become a filesystem write when a host accepts a destination argument. The
 // common aliases are denied here so GUI, TUI and service adapters cannot
 // accidentally make an inspection child writable as their web tool evolves.
+//
+// A read-only role that deliberately admits "bash" (the reviewer validation
+// vocabulary, review P2-1) is additionally gated by
+// reviewerShellInvocationAllowed: only read-only validation commands pass.
+// "ssh_bash" is the remote transport twin of "bash" and receives the same
+// gate — the whitelist checks the command string, which is identical in shape
+// across both transports (remote execution additionally runs the host-side
+// high-risk denylist before SSH).
 func (p ToolPolicy) IsToolCallAllowed(name string, args map[string]interface{}) (bool, string) {
 	if !p.Allows(name) {
 		return false, strings.TrimSpace(name) + " is not allowed for this coding-agent role"
@@ -99,6 +107,11 @@ func (p ToolPolicy) IsToolCallAllowed(name string, args map[string]interface{}) 
 	canonical := strings.TrimSpace(name)
 	if p.Normalize != nil {
 		canonical = p.Normalize(canonical)
+	}
+	if p.Role.ReadOnly() && (canonical == "bash" || canonical == "shell" || canonical == "ssh_bash") {
+		if ok, reason := reviewerShellInvocationAllowed(args); !ok {
+			return false, reason
+		}
 	}
 	if p.Role.ReadOnly() && strings.EqualFold(canonical, "web_fetch") {
 		for _, key := range []string{"save_path", "output", "dest", "path", "filename"} {

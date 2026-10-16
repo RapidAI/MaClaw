@@ -147,6 +147,9 @@ func AssembleEpisodeContext(role string, plan ManagerPlan, state *TaskState, evi
 		ep.ToolSurface = nil
 	}
 	ep.Goal = clipRunes(ep.Goal, GoalCap)
+	if ep.Budget.MaxDurationS <= 0 {
+		ep.Budget.MaxDurationS = RoleTimeoutS(role)
+	}
 	total := utf8Len(ep.Goal) + utf8Len(ep.Acceptance) + utf8Len(ep.Evidence) + utf8Len(strings.Join(ep.RelatedAudits, "\n"))
 	if total > VerifiedContextCap {
 		ep.Evidence = clipRunes(ep.Evidence, max(0, VerifiedContextCap/4))

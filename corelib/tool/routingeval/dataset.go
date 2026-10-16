@@ -249,6 +249,12 @@ type ExpectedSpec struct {
 	PlanIDEquals         string                 `json:"plan_id_equals,omitempty"`
 	PlanIDDiffers        string                 `json:"plan_id_differs,omitempty"`
 	EquivalentTo         string                 `json:"equivalent_to,omitempty"`
+	// Omitted asserts the exact set of plan.Omitted entries (optional needs
+	// the host could not serve). Coding-family samples rely on this channel:
+	// an unservable optional coding capability must be visible to audit in
+	// Omitted, never silently dropped and never promoted into plan-failing
+	// Unmet.
+	Omitted []UnmetExpectation `json:"omitted,omitempty"`
 }
 
 // ExpectedNeedSpec is one gold need for the needs-mode comparison.

@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib/bm25"
+	"github.com/RapidAI/CodeClaw/corelib/computeruse"
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
 )
@@ -89,8 +90,9 @@ type conditionalKeepRule struct {
 	// expansion beyond everyday surfaces) and may compete as normal scored
 	// candidates instead of being filtered out whenever the semantic
 	// classifier does not activate them. Sensitive tools (ssh, browser,
-	// screenshot, record_audio, craft_tool, mis_data, IM delivery) stay
-	// fail-closed: they are exposed only through classifier activation.
+	// computer_use, screenshot, record_audio, craft_tool, mis_data, IM
+	// delivery) stay fail-closed: they are exposed only through classifier
+	// activation.
 	scoreEligible bool
 }
 
@@ -100,6 +102,11 @@ type conditionalKeepRule struct {
 var allBrowserToolNames = []string{
 	"browser",
 }
+
+// allComputerUseToolNames is the desktop-control family. It is fail-closed:
+// BM25/embedding noise and usage-hint recency must not pad an unrelated
+// turn with computer_observe/click/type. Activation is LabelComputerUse.
+var allComputerUseToolNames = append([]string(nil), computeruse.ToolNames...)
 
 // NoEagerPinToolNames returns a copy of the noEagerPinTools set as a slice.
 // Used by diagnostic code to derive tool sets from the canonical source.
@@ -134,6 +141,12 @@ var conditionalKeepRules = []conditionalKeepRule{
 	{keepTools: []string{"send_file", "send_to_im", "im_message", "open"}},
 	{keepTools: []string{"craft_tool"}},
 	{keepTools: allBrowserToolNames, noMemoryPin: true},
+	// Desktop GUI control is an external-effect family, same class as
+	// browser/screenshot. Leaving these as ordinary candidates lets fused
+	// noise plus routing-hint recency fill MaxToolBudget (production
+	// 2026-09-20: "生成markdown" exposed 10 computer_* tools and the model
+	// called computer_observe).
+	{keepTools: allComputerUseToolNames, noMemoryPin: true},
 	{keepTools: []string{"office"}, scoreEligible: true},
 	{keepTools: []string{"generate_pdf", "office"}, scoreEligible: true},
 	// Microphone capture is sensitive and must be selected from a semantic
@@ -160,9 +173,7 @@ var CodingSessionToolNames = map[string]bool{
 	"get_session_events": true,
 	"interrupt_session":  true,
 	"kill_session":       true,
-	"list_providers":     true,
 	"parallel_execute":   true,
-	"recommend_tool":     true,
 	"create_template":    true,
 	"list_templates":     true,
 	"launch_template":    true,
@@ -189,7 +200,6 @@ func FilterCodingTools(tools []map[string]interface{}) []map[string]interface{} 
 // Bootstrap and legacy-candidate names are merged in automatically via init(),
 // so there is no need to duplicate them here.
 var BuiltinToolNames = map[string]bool{
-	"list_providers":    true,
 	"ssh":               true,
 	"send_input":        true,
 	"interrupt_session": true, "kill_session": true,
@@ -197,7 +207,7 @@ var BuiltinToolNames = map[string]bool{
 	"manage_skill":   true,
 	"list_skills":    true, "run_skill": true, "get_skill_run": true,
 	"search_skill_hub": true, "install_skill_hub": true,
-	"parallel_execute": true, "recommend_tool": true, "craft_tool": true,
+	"parallel_execute": true, "craft_tool": true,
 	"open":            true,
 	"edit_file":       true,
 	"create_template": true, "list_templates": true, "launch_template": true,
@@ -323,7 +333,15 @@ type Router struct {
 	reranker           Reranker                        // nil when reranking is disabled
 	intentClassifier   *IntentClassifier               // hybrid intent classifier (Layer 1+2+3)
 	unifiedClassifier  *intent.UnifiedIntentClassifier // UIC replaces conditionalKeepRules when non-nil
+	toolHead           *ToolHead                       // first-party OvR head (Qwen3); nil = off
+	toolHeadTheta      float64                         // injection threshold (0 → head.Theta or 0.3)
+	toolHeadTopK       int                             // injection k (0 → head.TopKDefault or 5)
 	lastRecommendation RoutingRecommendation
+	legacyRouteCalls   atomic.Uint64
+	// searchTextExtra folds host-owned retrieval tokens (for example persisted
+	// database profile names) into BM25/hybrid text without changing the LLM
+	// description. Route holds mu while reading it.
+	searchTextExtra map[string][]string
 }
 
 func NewRouter(generator *DefinitionGenerator) *Router {
@@ -748,11 +766,108 @@ func (r *Router) HybridActive() bool {
 	return r.hybrid != nil
 }
 
+// SetToolHead installs a first-party OvR tool head for candidate injection
+// (intent scope ∪ head top-k ∪ Track A). The head must match the live
+// embedder (CheckEmbedderOf); a mismatch is refused and leaves the previous
+// head unchanged. Pass nil to disable. theta/k ≤ 0 use the head's defaults
+// (file theta/top_k, else 0.3/5).
+func (r *Router) SetToolHead(h *ToolHead, emb embedding.Embedder, theta float64, k int) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if h == nil {
+		r.toolHead = nil
+		return nil
+	}
+	if emb != nil && !embedding.IsNoop(emb) {
+		if err := h.CheckEmbedderOf(emb); err != nil {
+			return err
+		}
+	}
+	r.toolHead = h
+	r.toolHeadTheta = theta
+	r.toolHeadTopK = k
+	return nil
+}
+
+// ToolHead returns the installed first-party tool head, if any.
+func (r *Router) ToolHead() *ToolHead {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.toolHead
+}
+
+func (r *Router) toolHeadInjectParams() (h *ToolHead, theta float64, k int) {
+	h = r.toolHead
+	if h == nil {
+		return nil, 0, 0
+	}
+	theta = r.toolHeadTheta
+	if theta <= 0 {
+		theta = h.Theta
+	}
+	if theta <= 0 {
+		theta = 0.3
+	}
+	k = r.toolHeadTopK
+	if k <= 0 {
+		k = h.TopKDefault
+	}
+	if k <= 0 {
+		k = 5
+	}
+	return h, theta, k
+}
+
 // SetEnrichmentStore configures the enrichment store for enhanced tool descriptions.
 func (r *Router) SetEnrichmentStore(store *EnrichmentStore) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.enrichStore = store
+}
+
+// SetSearchTextExtra replaces host-owned retrieval tokens for a tool. Empty
+// queries clear the overlay. Callers must not put secrets here.
+func (r *Router) SetSearchTextExtra(name string, queries []string) {
+	if r == nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	cleaned := make([]string, 0, len(queries))
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if query != "" {
+			cleaned = append(cleaned, query)
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.searchTextExtra == nil {
+		r.searchTextExtra = make(map[string][]string)
+	}
+	if len(cleaned) == 0 {
+		delete(r.searchTextExtra, name)
+		return
+	}
+	r.searchTextExtra[name] = cleaned
+}
+
+// SearchTextExtra returns a copy of host-owned retrieval tokens for name.
+func (r *Router) SearchTextExtra(name string) []string {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	src := r.searchTextExtra[strings.TrimSpace(name)]
+	if len(src) == 0 {
+		return nil
+	}
+	out := make([]string, len(src))
+	copy(out, src)
+	return out
 }
 
 // SetUsageTracker configures the usage tracker for experience-aware scoring.
@@ -1009,17 +1124,19 @@ func isLocalPathToken(s string) bool {
 
 // buildSearchText returns the enriched search text for a tool if an enrichment
 // store is configured, otherwise falls back to name + description + tags.
+// Builtin synthetic queries and host-owned extra tokens (profile names) are
+// always folded in so short follow-ups can match without a persisted store.
 func (r *Router) buildSearchText(name, description string) string {
+	var text string
 	if r.enrichStore != nil && r.registry != nil {
 		if t, ok := r.registry.Get(name); ok {
-			return r.enrichStore.GetSearchText(*t)
+			text = r.enrichStore.GetSearchText(*t)
 		}
 	}
-	text := name + " " + description
-	if tags := r.tagsForTool(name); len(tags) > 0 {
-		text += " " + strings.Join(tags, " ")
+	if text == "" {
+		text = baseToolSearchText(name, description, r.tagsForTool(name))
 	}
-	return text
+	return appendSearchQueries(text, r.searchTextExtra[name])
 }
 
 // buildEmbeddingText returns the text used for embedding vector computation.
@@ -1284,6 +1401,36 @@ func legacyFallbackSurfaceTool(name string) bool {
 	}
 }
 
+func applyHostKeepTools(names []string, condKeep, condFilterOut, suppressed map[string]bool) {
+	for _, raw := range names {
+		name := strings.TrimSpace(raw)
+		if name == "" || IsDisabledExternalCodingSessionTool(name) {
+			continue
+		}
+		if condKeep != nil {
+			condKeep[name] = true
+		}
+		if condFilterOut != nil {
+			delete(condFilterOut, name)
+		}
+		if suppressed != nil {
+			delete(suppressed, name)
+		}
+	}
+}
+
+func hostKeepSet(names []string) map[string]bool {
+	out := map[string]bool{}
+	for _, raw := range names {
+		name := strings.TrimSpace(raw)
+		if name == "" || IsDisabledExternalCodingSessionTool(name) {
+			continue
+		}
+		out[name] = true
+	}
+	return out
+}
+
 func trimCoreToolsToBudget(core []map[string]interface{}, condKeep, mustKeep map[string]bool) []map[string]interface{} {
 	if len(core) <= MaxToolBudget && len(mustKeep) == 0 {
 		return core
@@ -1306,8 +1453,31 @@ func trimCoreToolsToBudget(core []map[string]interface{}, condKeep, mustKeep map
 }
 
 // Route selects the most relevant tools for userMessage from allTools.
+// Deprecated for task-scoped requests; use RouteForScope after the host has
+// resolved the task capability set.
 func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []map[string]interface{} {
 	return r.RouteWithOptions(userMessage, allTools, RouteOptions{})
+}
+
+// RouteForScope returns the host-admitted tool surface for a task scope. It
+// intentionally performs no text retrieval, intent rewrite, BM25 scoring or
+// reranking. The caller supplies the already-authorized names; definitions are
+// returned in deterministic name order and unknown names are ignored.
+func (r *Router) RouteForScope(allTools []map[string]interface{}, allowedNames []string) []map[string]interface{} {
+	allowed := make(map[string]bool, len(allowedNames))
+	for _, name := range allowedNames {
+		if name = strings.TrimSpace(name); name != "" {
+			allowed[name] = true
+		}
+	}
+	selected := make([]map[string]interface{}, 0, len(allowed))
+	for _, definition := range allTools {
+		if allowed[ExtractToolName(definition)] {
+			selected = append(selected, definition)
+		}
+	}
+	sort.SliceStable(selected, func(i, j int) bool { return ExtractToolName(selected[i]) < ExtractToolName(selected[j]) })
+	return selected
 }
 
 // RouteWithOptions preserves the legacy definitions return for callers that
@@ -1315,9 +1485,23 @@ func (r *Router) Route(userMessage string, allTools []map[string]interface{}) []
 // BuildLegacyAdapterPlan/RenderLegacyAdapterPlan, not treat this return value
 // as an authorization decision.
 func (r *Router) RouteWithOptions(userMessage string, allTools []map[string]interface{}, opts RouteOptions) []map[string]interface{} {
+	if r != nil {
+		r.legacyRouteCalls.Add(1)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return r.routeWithOptionsLocked(userMessage, allTools, opts)
+	selected := r.routeWithOptionsLocked(userMessage, allTools, opts)
+	RecordLegacyRoute(len(selected))
+	return selected
+}
+
+// LegacyRouteCalls returns the number of calls through the deprecated text
+// router. Hosts can use it to track migration before removing that path.
+func (r *Router) LegacyRouteCalls() uint64 {
+	if r == nil {
+		return 0
+	}
+	return r.legacyRouteCalls.Load()
 }
 
 // RecommendWithOptions returns the Router's compatibility selection together
@@ -1334,6 +1518,7 @@ func (r *Router) RecommendWithOptions(userMessage string, allTools []map[string]
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	selected := r.routeWithOptionsLocked(userMessage, allTools, opts)
+	RecordLegacyRoute(len(selected))
 	return selected, r.lastRecommendation.clone()
 }
 
@@ -1386,6 +1571,7 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 	uicResult := r.lookupRouteClassification(userMessage, opts)
 	uicUsable := classificationActivatesTools(uicResult, routeCacheActivationMin(opts))
 	if uicUsable {
+		RecordConditionalRouteActivation()
 		skillInstallEligible = uicSkillInstallEligible(uicResult)
 		// Leftover skip may consume a cached tree only to force-keep
 		// score-eligible tools. It must not inherit coding skill constraints
@@ -1394,6 +1580,18 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 			skillRequiredCapabilities, skillCapabilityConstrained = skillCapabilityConstraintForUIC(uicResult)
 		}
 
+		// First-party tool head: inject top-k (p≥θ) into condKeep using the
+		// same RoleClassification query vector intent L2/L3 already computed
+		// (uicResult.QueryVec). No extra embed; fail-closed on dim mismatch.
+		if h, theta, k := r.toolHeadInjectParams(); h != nil && len(uicResult.QueryVec) > 0 {
+			if probs, err := h.Predict(uicResult.QueryVec); err == nil {
+				for _, s := range h.TopK(probs, k, theta) {
+					if uicToolNameActivatable(s.Tool) {
+						condKeep[s.Tool] = true
+					}
+				}
+			}
+		}
 		uicKnowledgeWrite := !opts.SkipUnifiedClassifier && uicResult.Primary == intent.LabelKnowledgeWrite
 		for _, toolName := range classificationConditionalToolNames(uicResult) {
 			if !uicToolNameActivatable(toolName) {
@@ -1494,9 +1692,10 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 		// hide generic fallback/discovery surfaces so the model cannot route the
 		// same action through call_mcp_tool(server_id="ssh", tool_name="ssh") or
 		// install a community SSH skill instead of using the builtin.
+		// discover_tool stays visible: a misclassified SSH turn must still be
+		// able to recover a missing capability such as database.
 		suppressedTools["call_mcp_tool"] = true
 		suppressedTools["manage_skill"] = true
-		suppressedTools["discover_tool"] = true
 		suppressedTools["search_and_install_skill"] = true
 	}
 	// LLM / structured intent rewrite only contributes an expanded retrieval
@@ -1540,6 +1739,16 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 	}
 	suppressedTools["git_commit"] = true
 	suppressedTools["git_push"] = true
+	// "生成markdown" is a .md file write. generate_pdf descriptions used to
+	// mention Markdown as input, so retrieval ranked it #1; the agent prompt
+	// then requires calling generate_pdf whenever it is listed. Hide the PDF
+	// alias and the merged office tool (action=generate_pdf) unless the host
+	// kept them or the prompt names an Office source to read. Force write_file
+	// into core: production 2026-09-20 never even selected it.
+	hostKeep := append([]string(nil), opts.HostKeepTools...)
+	hostKeep = append(hostKeep, applyMarkdownFileSurface(userMessage, condKeep, suppressedTools)...)
+
+	applyHostKeepTools(hostKeep, condKeep, condFilterOut, suppressedTools)
 
 	// Skill matching is recommendation evidence only on this compatibility
 	// route. Dynamic Skills must enter the model surface through a managed,
@@ -1576,6 +1785,7 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 		}
 	}
 
+	mustKeepCore := hostKeepSet(hostKeep)
 	var core, candidates []map[string]interface{}
 	var candidateNames []string
 	seenNames := make(map[string]bool, len(allTools))
@@ -1588,13 +1798,20 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 		if suppressedTools[name] {
 			continue
 		}
-		if LegacyCandidateToolNames[name] && !legacyAdapterCandidateAllowed(name, routeNow) {
-			// A known compatibility name without a live reviewed provision is
-			// catalog_incomplete, not a candidate. Never let its description or
-			// a BM25 hit reconstruct authority.
+		if !mustKeepCore[name] && !legacyAdapterCandidateAllowed(name, routeNow) {
+			// A model-visible host name without a live reviewed provision is
+			// catalog_incomplete, not a candidate. This covers expired catalog
+			// entries and newly registered static tools that were never reviewed
+			// into the legacy adapter catalog. Letting them rank lets BM25
+			// select them; the closed replacement then used to reject the
+			// entire surface as unprovisioned.
+			// HostKeep is a this-turn host grant (truncated auto_extract
+			// continuation), so it may admit a core reader such as
+			// read_document that is not a petitionable adapter. UIC/condKeep
+			// pins must not inherit that exception.
 			continue
 		}
-		if LegacyBootstrapToolNames[name] || condKeep[name] || legacyRouteFallbackTool(name) {
+		if LegacyBootstrapToolNames[name] || condKeep[name] || mustKeepCore[name] || legacyRouteFallbackTool(name) {
 			core = append(core, t)
 		} else if condFilterOut[name] {
 			// This tool has a conditional keep rule that did NOT match this
@@ -1605,8 +1822,6 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 			candidateNames = append(candidateNames, name)
 		}
 	}
-
-	mustKeepCore := map[string]bool{}
 	matchedSkillCapabilities := r.matchedSkillCapabilities(matchedSkills)
 	core = trimCoreToolsToBudget(core, condKeep, mustKeepCore)
 	remainingSlots := MaxToolBudget - len(core)
@@ -1635,9 +1850,15 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 	userTokens := bm25.Tokenize(userMessage)
 	scores := r.bm25Index.ScoreWithTokens(queryTokens)
 
-	// Fuse with vector scores when hybrid retrieval is active.
+	// Fuse with vector scores when hybrid retrieval is active. Prefer the
+	// intent L2 RoleClassification vector when the turn already has one
+	// (same space as the tool head; saves a second embed).
 	if r.hybrid != nil {
-		scores = r.hybrid.FuseScores(searchQuery, scores, embeddingTexts)
+		if len(uicResult.QueryVec) > 0 {
+			scores = r.hybrid.FuseScoresWithQueryVec(searchQuery, uicResult.QueryVec, scores, embeddingTexts)
+		} else {
+			scores = r.hybrid.FuseScores(searchQuery, scores, embeddingTexts)
+		}
 
 		// Debug log top-5 tools with fused scores.
 		type debugEntry struct {
@@ -1814,7 +2035,7 @@ func (r *Router) routeWithOptionsLocked(userMessage string, allTools []map[strin
 
 	if r.recommender != nil && skillInstallEligible {
 		if hint := r.matchRecommendations(userTokens); hint != nil {
-			if name := ExtractToolName(hint); !resultNames[name] && !suppressedTools[name] {
+			if name := ExtractToolName(hint); !resultNames[name] && !suppressedTools[name] && legacyAdapterCandidateAllowed(name, routeNow) {
 				// Recommendation hints are metadata-only client-side prompts in
 				// legacy hosts. Do not let them violate the model tool budget: if
 				// the routed request surface is full, replace the lowest-priority

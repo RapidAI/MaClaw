@@ -52,7 +52,7 @@ func TransparentRequestRetriesDisabled(ctx context.Context) bool {
 // transport correlation.
 func HTTPClientForRequestContext(ctx context.Context, client *http.Client) *http.Client {
 	if client == nil {
-		client = http.DefaultClient
+		client = SharedHTTPClient
 	}
 	if !TransparentRequestRetriesDisabled(ctx) {
 		return client

@@ -4,7 +4,9 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,12 +17,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/hub/internal/cloudworkspace"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
 	_ "modernc.org/sqlite"
 )
 
 const (
-	ArchiveVersion = 1
+	ArchiveVersion = 2
 	ManifestPath   = "manifest.json"
 )
 
@@ -29,6 +32,9 @@ type CreateOptions struct {
 	OutputPath  string
 	IncludeLogs bool
 	Now         time.Time
+	// KeyProvider optionally supplies an external KMS/secret-backed provider.
+	// When nil, Cloud Workspace selects its configured environment/file provider.
+	KeyProvider cloudworkspace.KeyProvider
 }
 
 type RestoreOptions struct {
@@ -36,24 +42,46 @@ type RestoreOptions struct {
 	TargetRoot  string
 	Force       bool
 	DryRun      bool
+	// KeyProvider optionally supplies the provider needed to decrypt an
+	// environment/KMS-backed archive. It is never serialized into results.
+	KeyProvider cloudworkspace.KeyProvider
 }
 
 type Manifest struct {
-	Version      int      `json:"version"`
-	App          string   `json:"app"`
-	CreatedAt    string   `json:"created_at"`
-	ConfigPath   string   `json:"config_path,omitempty"`
-	DatabaseDSN  string   `json:"database_dsn"`
-	DataDir      string   `json:"data_dir"`
-	IncludeLogs  bool     `json:"include_logs"`
-	Entries      []Entry  `json:"entries"`
-	Instructions []string `json:"instructions,omitempty"`
+	Version        int                    `json:"version"`
+	App            string                 `json:"app"`
+	GenerationID   string                 `json:"generation_id,omitempty"`
+	CreatedAt      string                 `json:"created_at"`
+	CompletedAt    string                 `json:"completed_at,omitempty"`
+	DurationMS     int64                  `json:"duration_ms,omitempty"`
+	WritePauseMS   int64                  `json:"write_pause_ms,omitempty"`
+	Consistency    string                 `json:"consistency,omitempty"`
+	ConfigPath     string                 `json:"config_path,omitempty"`
+	DatabaseDSN    string                 `json:"database_dsn"`
+	DatabasePath   string                 `json:"database_path,omitempty"`
+	DataDir        string                 `json:"data_dir"`
+	IncludeLogs    bool                   `json:"include_logs"`
+	CloudWorkspace *CloudWorkspaceSummary `json:"cloud_workspace,omitempty"`
+	Entries        []Entry                `json:"entries"`
+	Instructions   []string               `json:"instructions,omitempty"`
 }
 
 type Entry struct {
-	Path string `json:"path"`
-	Kind string `json:"kind"`
-	Size int64  `json:"size"`
+	Path   string `json:"path"`
+	Kind   string `json:"kind"`
+	Size   int64  `json:"size"`
+	SHA256 string `json:"sha256,omitempty"`
+}
+
+type CloudWorkspaceSummary struct {
+	Root            string                              `json:"root"`
+	Workspaces      int                                 `json:"workspaces"`
+	Objects         int                                 `json:"objects"`
+	VerifiedObjects int                                 `json:"verified_objects"`
+	Snapshots       int                                 `json:"snapshots"`
+	Sidecars        int                                 `json:"sidecars"`
+	Usage           cloudworkspace.RetainedUsage        `json:"usage"`
+	MasterKey       *cloudworkspace.MasterKeyDescriptor `json:"master_key,omitempty"`
 }
 
 type CreateResult struct {
@@ -62,14 +90,19 @@ type CreateResult struct {
 }
 
 type RestoreResult struct {
-	ArchivePath string  `json:"archive_path"`
-	TargetRoot  string  `json:"target_root"`
-	DryRun      bool    `json:"dry_run"`
-	Restored    []Entry `json:"restored"`
-	Skipped     []Entry `json:"skipped,omitempty"`
+	ArchivePath  string                 `json:"archive_path"`
+	TargetRoot   string                 `json:"target_root"`
+	GenerationID string                 `json:"generation_id,omitempty"`
+	DryRun       bool                   `json:"dry_run"`
+	CompletedAt  string                 `json:"completed_at,omitempty"`
+	DurationMS   int64                  `json:"duration_ms,omitempty"`
+	Verification *CloudWorkspaceSummary `json:"cloud_workspace_verification,omitempty"`
+	Restored     []Entry                `json:"restored"`
+	Skipped      []Entry                `json:"skipped,omitempty"`
 }
 
 func Create(ctx context.Context, cfg *config.Config, opts CreateOptions) (*CreateResult, error) {
+	startedAt := time.Now()
 	if cfg == nil {
 		return nil, fmt.Errorf("config is required")
 	}
@@ -87,8 +120,20 @@ func Create(ctx context.Context, cfg *config.Config, opts CreateOptions) (*Creat
 	if err != nil {
 		return nil, err
 	}
+	// Putting generated archives directly beside the live database would make
+	// it impossible to skip the output directory without also skipping the
+	// rest of the Hub data tree. Reject that layout instead of recursively
+	// archiving prior generations on every run.
+	if sameFilePath(filepath.Dir(absOut), dataDir) {
+		return nil, fmt.Errorf("backup output directory must not be Hub data directory")
+	}
 	if err := os.MkdirAll(filepath.Dir(absOut), 0o755); err != nil {
 		return nil, fmt.Errorf("create backup output dir: %w", err)
+	}
+	if _, statErr := os.Stat(absOut); statErr == nil {
+		return nil, fmt.Errorf("backup output already exists: %s", absOut)
+	} else if !errors.Is(statErr, os.ErrNotExist) {
+		return nil, fmt.Errorf("inspect backup output: %w", statErr)
 	}
 
 	tmpDir, err := os.MkdirTemp("", "hub-backup-*")
@@ -97,30 +142,40 @@ func Create(ctx context.Context, cfg *config.Config, opts CreateOptions) (*Creat
 	}
 	defer os.RemoveAll(tmpDir)
 
-	dbSnapshot, err := snapshotSQLite(ctx, cfg.Database.DSN, tmpDir)
+	generation, err := stageConsistentGenerationWithProvider(ctx, cfg.Database.DSN, dataDir, tmpDir, opts.KeyProvider)
 	if err != nil {
 		return nil, err
 	}
+	dbSnapshot := generation.DatabasePath
+	dbArchivePath := archiveDatabasePath(dataDir, cfg.Database.DSN)
 
 	manifest := Manifest{
-		Version:     ArchiveVersion,
-		App:         "MaClaw Hub",
-		CreatedAt:   opts.Now.UTC().Format(time.RFC3339),
-		ConfigPath:  cleanOptionalPath(opts.ConfigPath),
-		DatabaseDSN: cleanOptionalPath(cfg.Database.DSN),
-		DataDir:     cleanOptionalPath(dataDir),
-		IncludeLogs: opts.IncludeLogs,
+		Version:        ArchiveVersion,
+		App:            "MaClaw Hub",
+		GenerationID:   generation.ID,
+		CreatedAt:      generation.CutAt.UTC().Format(time.RFC3339Nano),
+		WritePauseMS:   generation.WritePauseMS,
+		Consistency:    generation.Consistency,
+		ConfigPath:     cleanOptionalPath(opts.ConfigPath),
+		DatabaseDSN:    cleanOptionalPath(cfg.Database.DSN),
+		DatabasePath:   dbArchivePath,
+		DataDir:        cleanOptionalPath(dataDir),
+		IncludeLogs:    opts.IncludeLogs,
+		CloudWorkspace: cloudWorkspaceSummary(generation.Report),
 		Instructions: []string{
 			"Stop hub before restore.",
-			"Run: hub restore --file <archive.tar.gz> --target-root <hub-dir> --force",
+			"Run a validated dry-run before replacing the target data generation.",
+			"Run: hub restore --file <archive.tar.gz> --target-root <hub-dir> --dry-run",
+			"Then run: hub restore --file <archive.tar.gz> --target-root <hub-dir> --force",
 			"Start hub after restore and check /api/health.",
 		},
 	}
 
-	file, err := os.Create(absOut)
+	file, err := os.CreateTemp(filepath.Dir(absOut), "."+filepath.Base(absOut)+".tmp-*")
 	if err != nil {
-		return nil, fmt.Errorf("create backup archive: %w", err)
+		return nil, fmt.Errorf("create temporary backup archive: %w", err)
 	}
+	tempArchivePath := file.Name()
 	gw := gzip.NewWriter(file)
 	tw := tar.NewWriter(gw)
 	ok := false
@@ -129,7 +184,7 @@ func Create(ctx context.Context, cfg *config.Config, opts CreateOptions) (*Creat
 			_ = tw.Close()
 			_ = gw.Close()
 			_ = file.Close()
-			_ = os.Remove(absOut)
+			_ = os.Remove(tempArchivePath)
 		}
 	}()
 
@@ -147,12 +202,37 @@ func Create(ctx context.Context, cfg *config.Config, opts CreateOptions) (*Creat
 			return nil, err
 		}
 	}
-	dbRel, err := filepath.Rel(dataDir, cfg.Database.DSN)
-	if err != nil || strings.HasPrefix(dbRel, "..") || filepath.IsAbs(dbRel) {
-		dbRel = filepath.Base(cfg.Database.DSN)
-	}
-	if err := add(dbSnapshot, filepath.ToSlash(filepath.Join("data", dbRel)), "sqlite_snapshot"); err != nil {
+	if err := add(dbSnapshot, dbArchivePath, "sqlite_snapshot"); err != nil {
 		return nil, err
+	}
+	if generation.CloudWorkspacePath != "" {
+		archiveLocalKeyFiles := opts.KeyProvider == nil
+		if opts.KeyProvider != nil {
+			archiveLocalKeyFiles = isLocalCloudWorkspaceKeyProvider(opts.KeyProvider.ProviderName())
+		}
+		// Even an empty workspace may contain a stale key file from an older
+		// file-provider deployment. The presence of an environment secret is
+		// enough to classify the current provider; do not wait for a referenced
+		// object before deciding whether local key files are safe to archive.
+		if strings.TrimSpace(os.Getenv("MACLAW_CWS_KEYRING")) != "" || strings.TrimSpace(os.Getenv("MACLAW_CWS_MASTER_KEY")) != "" {
+			archiveLocalKeyFiles = false
+		}
+		if generation.Report != nil && generation.Report.MasterKey != nil {
+			providerName := strings.ToLower(strings.TrimSpace(generation.Report.MasterKey.Provider))
+			// Non-file providers (environment, KMS, or a custom implementation)
+			// must never leak a stale local key copy that happens to be left under
+			// cloud-workspaces. Their recovery secret is supplied out-of-band.
+			archiveLocalKeyFiles = isLocalCloudWorkspaceKeyProvider(providerName)
+		}
+		if err := addDirectoryFiltered(add, generation.CloudWorkspacePath, "data/cloud-workspaces", classifyCloudWorkspaceEntry, func(rel string) bool {
+			if archiveLocalKeyFiles {
+				return true
+			}
+			base := strings.ToLower(filepath.Base(filepath.ToSlash(rel)))
+			return base != "master.key" && base != "master-keyring.json"
+		}); err != nil {
+			return nil, err
+		}
 	}
 	if err := addExtraFile(add, dataDir, cfg.TLS.CertFile, "tls_certificate"); err != nil {
 		return nil, err
@@ -160,10 +240,12 @@ func Create(ctx context.Context, cfg *config.Config, opts CreateOptions) (*Creat
 	if err := addExtraFile(add, dataDir, cfg.TLS.KeyFile, "tls_private_key"); err != nil {
 		return nil, err
 	}
-	if err := addDataDir(tw, dataDir, cfg.Database.DSN, absOut, opts.IncludeLogs, &manifest); err != nil {
+	if err := addDataDir(tw, dataDir, cfg.Database.DSN, tempArchivePath, filepath.Join(dataDir, "cloud-workspaces"), opts.IncludeLogs, &manifest); err != nil {
 		return nil, err
 	}
 	sort.Slice(manifest.Entries, func(i, j int) bool { return manifest.Entries[i].Path < manifest.Entries[j].Path })
+	manifest.CompletedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	manifest.DurationMS = time.Since(startedAt).Milliseconds()
 	manifestData, err := json.MarshalIndent(manifest, "", "  ")
 	if err != nil {
 		return nil, fmt.Errorf("marshal manifest: %w", err)
@@ -177,11 +259,26 @@ func Create(ctx context.Context, cfg *config.Config, opts CreateOptions) (*Creat
 	if err := gw.Close(); err != nil {
 		return nil, fmt.Errorf("close backup gzip stream: %w", err)
 	}
+	if err := file.Sync(); err != nil {
+		return nil, fmt.Errorf("sync backup file: %w", err)
+	}
 	if err := file.Close(); err != nil {
 		return nil, fmt.Errorf("close backup file: %w", err)
 	}
+	// Publish with an atomic no-overwrite primitive. Two concurrent backup
+	// invocations may race on the same timestamp; a plain rename would replace
+	// the first completed archive on POSIX.
+	if err := os.Link(tempArchivePath, absOut); err != nil {
+		return nil, fmt.Errorf("publish backup archive: %w", err)
+	}
+	_ = os.Remove(tempArchivePath)
 	ok = true
 	return &CreateResult{ArchivePath: absOut, Manifest: manifest}, nil
+}
+
+func isLocalCloudWorkspaceKeyProvider(provider string) bool {
+	provider = strings.ToLower(strings.TrimSpace(provider))
+	return provider == "file-keyring" || provider == "file-legacy"
 }
 
 func Inspect(archivePath string) (*Manifest, error) {
@@ -207,7 +304,7 @@ func Inspect(archivePath string) (*Manifest, error) {
 		if err := json.NewDecoder(tr).Decode(&manifest); err != nil {
 			return nil, fmt.Errorf("decode manifest: %w", err)
 		}
-		if manifest.Version != ArchiveVersion {
+		if manifest.Version < 1 || manifest.Version > ArchiveVersion {
 			return nil, fmt.Errorf("unsupported backup version %d", manifest.Version)
 		}
 		return &manifest, nil
@@ -216,67 +313,7 @@ func Inspect(archivePath string) (*Manifest, error) {
 }
 
 func Restore(opts RestoreOptions) (*RestoreResult, error) {
-	if strings.TrimSpace(opts.ArchivePath) == "" {
-		return nil, fmt.Errorf("restore requires archive path")
-	}
-	targetRoot := strings.TrimSpace(opts.TargetRoot)
-	if targetRoot == "" {
-		targetRoot = "."
-	}
-	absRoot, err := filepath.Abs(targetRoot)
-	if err != nil {
-		return nil, fmt.Errorf("resolve target root: %w", err)
-	}
-	file, gr, tr, err := openTarGzip(opts.ArchivePath)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-	defer gr.Close()
-	manifest, err := Inspect(opts.ArchivePath)
-	if err != nil {
-		return nil, err
-	}
-
-	result := &RestoreResult{ArchivePath: opts.ArchivePath, TargetRoot: absRoot, DryRun: opts.DryRun}
-	for {
-		header, err := tr.Next()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return nil, fmt.Errorf("read backup archive: %w", err)
-		}
-		if header.Name == ManifestPath || header.Typeflag == tar.TypeDir {
-			continue
-		}
-		if err := validateArchivePath(header.Name); err != nil {
-			return nil, err
-		}
-		dst := filepath.Join(absRoot, filepath.FromSlash(header.Name))
-		if !isWithin(absRoot, dst) {
-			return nil, fmt.Errorf("archive entry escapes target root: %s", header.Name)
-		}
-		entry := Entry{Path: header.Name, Kind: entryKind(manifest, header.Name), Size: header.Size}
-		if exists(dst) && !opts.Force {
-			result.Skipped = append(result.Skipped, entry)
-			continue
-		}
-		result.Restored = append(result.Restored, entry)
-		if opts.DryRun {
-			continue
-		}
-		if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-			return nil, fmt.Errorf("create restore dir: %w", err)
-		}
-		if err := extractFile(header, tr, dst); err != nil {
-			return nil, err
-		}
-	}
-	if len(result.Skipped) > 0 && !opts.Force && !opts.DryRun {
-		return result, fmt.Errorf("restore would overwrite %d existing files; rerun with --force after stopping hub", len(result.Skipped))
-	}
-	return result, nil
+	return restoreValidated(opts)
 }
 
 func defaultArchiveName(now time.Time) string {
@@ -284,10 +321,11 @@ func defaultArchiveName(now time.Time) string {
 }
 
 func resolveDataDir(dsn string) (string, error) {
-	if strings.TrimSpace(dsn) == "" || dsn == ":memory:" {
+	dbPath := sqliteFilePath(dsn)
+	if strings.TrimSpace(dbPath) == "" || dbPath == ":memory:" || strings.HasPrefix(dbPath, ":memory:") {
 		return "", fmt.Errorf("sqlite file database dsn is required for backup")
 	}
-	absDSN, err := filepath.Abs(dsn)
+	absDSN, err := filepath.Abs(dbPath)
 	if err != nil {
 		return "", fmt.Errorf("resolve database dsn: %w", err)
 	}
@@ -295,7 +333,8 @@ func resolveDataDir(dsn string) (string, error) {
 }
 
 func snapshotSQLite(ctx context.Context, dsn, tmpDir string) (string, error) {
-	absDSN, err := filepath.Abs(dsn)
+	dbPath := sqliteFilePath(dsn)
+	absDSN, err := filepath.Abs(dbPath)
 	if err != nil {
 		return "", fmt.Errorf("resolve database dsn: %w", err)
 	}
@@ -344,12 +383,12 @@ func addExtraFile(add func(src, dst, kind string) error, dataDir, path, kind str
 	}
 	return add(absPath, filepath.ToSlash(filepath.Join("external", kind, filepath.Base(absPath))), kind)
 }
-func addDataDir(tw *tar.Writer, dataDir, dbDSN, outputPath string, includeLogs bool, manifest *Manifest) error {
+func addDataDir(tw *tar.Writer, dataDir, dbDSN, outputPath, cloudWorkspaceRoot string, includeLogs bool, manifest *Manifest) error {
 	absDataDir, err := filepath.Abs(dataDir)
 	if err != nil {
 		return fmt.Errorf("resolve data dir: %w", err)
 	}
-	absDB, err := filepath.Abs(dbDSN)
+	absDB, err := filepath.Abs(sqliteFilePath(dbDSN))
 	if err != nil {
 		return fmt.Errorf("resolve database dsn: %w", err)
 	}
@@ -357,18 +396,31 @@ func addDataDir(tw *tar.Writer, dataDir, dbDSN, outputPath string, includeLogs b
 	if err != nil {
 		return fmt.Errorf("resolve backup output path: %w", err)
 	}
+	absOutputDir := filepath.Dir(absOutput)
+	outputDirInsideDataDir := !sameFilePath(absOutputDir, absDataDir) && isWithin(absDataDir, absOutputDir)
+	absCloudWorkspaceRoot, _ := filepath.Abs(cloudWorkspaceRoot)
 	return filepath.WalkDir(absDataDir, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
 		if d.IsDir() {
+			absPath, absErr := filepath.Abs(path)
+			if absErr == nil && sameFilePath(absPath, absCloudWorkspaceRoot) {
+				return filepath.SkipDir
+			}
+			// Never archive the directory that contains the output archive.
+			// Prior generations may be kept beside the current archive; including
+			// them would recursively inflate every new backup.
+			if absErr == nil && outputDirInsideDataDir && sameFilePath(absPath, absOutputDir) {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		absPath, err := filepath.Abs(path)
 		if err != nil {
 			return err
 		}
-		if sameFilePath(absPath, absOutput) || sameFilePath(absPath, absDB) || sameFilePath(absPath, absDB+"-wal") || sameFilePath(absPath, absDB+"-shm") {
+		if sameFilePath(absPath, absOutput) || (outputDirInsideDataDir && isWithin(absOutputDir, absPath)) || sameFilePath(absPath, absDB) || sameFilePath(absPath, absDB+"-wal") || sameFilePath(absPath, absDB+"-shm") || sameFilePath(absPath, absDB+"-journal") {
 			return nil
 		}
 		if !includeLogs && isLogFile(absPath) {
@@ -432,10 +484,11 @@ func addFile(tw *tar.Writer, src, dst, kind string) (Entry, error) {
 		return Entry{}, fmt.Errorf("open %s: %w", src, err)
 	}
 	defer f.Close()
-	if _, err := io.Copy(tw, f); err != nil {
+	hasher := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(tw, hasher), f); err != nil {
 		return Entry{}, fmt.Errorf("write archive entry %s: %w", dst, err)
 	}
-	return Entry{Path: filepath.ToSlash(dst), Kind: kind, Size: info.Size()}, nil
+	return Entry{Path: filepath.ToSlash(dst), Kind: kind, Size: info.Size(), SHA256: hex.EncodeToString(hasher.Sum(nil))}, nil
 }
 
 func addBytes(tw *tar.Writer, dst string, data []byte) error {

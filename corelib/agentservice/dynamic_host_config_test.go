@@ -200,3 +200,46 @@ func TestReviewedHostConfigProjectionHidesSecrets(t *testing.T) {
 		t.Fatalf("projection=%q", got)
 	}
 }
+
+// TestReviewedHostConfigThinkingModeVocabulary pins the same drift fix at this
+// host: the shared parser the GUI surface now delegates to already decided the
+// accepted spellings here, so the two hosts cannot answer differently. The
+// enum advertises only canonical names, and the refusal names them.
+func TestReviewedHostConfigThinkingModeVocabulary(t *testing.T) {
+	schema := reviewedHostConfigInvocationSchema()
+	properties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("config schema has no properties: %#v", schema)
+	}
+	thinking, ok := properties["thinking_mode"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("config schema has no thinking_mode property: %#v", properties)
+	}
+	enum, ok := thinking["enum"].([]string)
+	if !ok || len(enum) != 2 {
+		t.Fatalf("thinking_mode must advertise the canonical pair, got %#v", thinking["enum"])
+	}
+	for _, name := range enum {
+		mode, ok := reviewedHostConfigThinkingMode(name)
+		if !ok || mode != name {
+			t.Fatalf("schema advertises mode %q, but the parser maps it to (%q, %v)", name, mode, ok)
+		}
+	}
+	// The shared set: legacy spellings accepted on both hosts, not advertised.
+	for _, sent := range []string{"true", "1", "false", "none", "auto", ""} {
+		if _, ok := reviewedHostConfigThinkingMode(sent); !ok {
+			t.Fatalf("enumless-but-valid spelling %q must stay accepted by the shared parser", sent)
+		}
+	}
+	for _, invented := range []string{"zhipu", "high", "medium"} {
+		if _, ok := reviewedHostConfigThinkingMode(invented); ok {
+			t.Fatalf("invented mode %q must not be accepted", invented)
+		}
+	}
+	// The refusal the administer path formats carries the same canonical hint
+	// the GUI surface is pinned to verify end to end, so this host cannot
+	// reject with less than the other one shows.
+	if hint := corelib.GlobalThinkingModeHint(); !strings.Contains(hint, "enabled") || !strings.Contains(hint, "disabled") {
+		t.Fatalf("hint %q does not name the canonical set", hint)
+	}
+}

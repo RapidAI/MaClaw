@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -17,6 +18,22 @@ const (
 )
 
 const DefaultWriteMode = string(WriteModeOverwrite)
+
+// WriteModeOptions is the closed set of write modes the file-write capability
+// advertises in its invocation schema, derived from the canonical constants so
+// a host cannot render one set while NormalizeWriteModeKind enforces another.
+// The schema declares mode optional, and the empty reading (overwrite) lives
+// in NormalizeWriteModeKind, not in the advertised set.
+func WriteModeOptions() []string {
+	return []string{string(WriteModeOverwrite), string(WriteModeAppend)}
+}
+
+// WriteModeHint renders the canonical vocabulary for a rejection message, so
+// a model that ignored the enum still learns the valid names from its first
+// failure and can retry inside the turn.
+func WriteModeHint() string {
+	return "allowed: " + strings.Join(WriteModeOptions(), ", ")
+}
 
 type PathResolver func() string
 
@@ -122,20 +139,14 @@ func EditTextFile(path, oldString, newString string, replaceAll bool) (*EditText
 	if err != nil {
 		return nil, fmt.Errorf("读取文件失败 %s: %w", path, err)
 	}
-	text := string(data)
-	count := strings.Count(text, oldString)
-	if count == 0 {
-		return nil, fmt.Errorf("未找到要替换的内容")
+	replaced, err := ReplaceTextPassage(string(data), oldString, newString, replaceAll)
+	if err != nil {
+		if errors.Is(err, ErrTextPassageNotFound) {
+			return nil, fmt.Errorf("未找到要替换的内容")
+		}
+		return nil, err
 	}
-	updated := text
-	applied := 1
-	if replaceAll {
-		updated = strings.ReplaceAll(text, oldString, newString)
-		applied = count
-	} else {
-		updated = strings.Replace(text, oldString, newString, 1)
-	}
-	if err := os.WriteFile(path, []byte(updated), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte(replaced.Text), 0o644); err != nil {
 		return nil, fmt.Errorf("写入文件失败 %s: %w", path, err)
 	}
 
@@ -144,7 +155,7 @@ func EditTextFile(path, oldString, newString string, replaceAll bool) (*EditText
 	if err != nil {
 		return nil, fmt.Errorf("写入验证失败 %s: %w", path, err)
 	}
-	return &EditTextFileResult{Count: applied, Size: info.Size(), Path: path}, nil
+	return &EditTextFileResult{Count: replaced.Applied, Size: info.Size(), Path: path}, nil
 }
 
 // EditLineResult is the outcome of a line-level edit operation.

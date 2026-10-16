@@ -29,7 +29,11 @@ func reviewedHostRepoMutateInvocationSchema() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
-			"action":  map[string]interface{}{"type": "string"},
+			// An unlabelled string leaves the model to guess the verb, which is
+			// how the browser adapter started refusing "open" (2026-10-10). The
+			// canonicalizer does not read enum, so the check in ArgsAllowed
+			// stays the boundary and this is documentation for the model.
+			"action":  map[string]interface{}{"type": "string", "enum": coretool.RepoMutateActions()},
 			"message": map[string]interface{}{"type": "string"},
 		},
 		"required":             []string{"action"},
@@ -142,12 +146,14 @@ func reviewedHostRepoMutateArgsAllowed(args map[string]interface{}) (action, mes
 	if !hasAction {
 		return "", "", fmt.Errorf("host_repo_mutate_action_required")
 	}
-	switch action {
-	case "commit", "push":
-	default:
-		return "", "", fmt.Errorf("host_repo_mutate_action_rejected")
+	// Re-checked against the enum the model was shown, because a boundary that
+	// only exists in a rendered document is not a boundary. The set is the
+	// shared repo-mutate contract, not a host copy: this host and the GUI
+	// surface both serve repo.mutate.vcs.
+	if !coretool.RepoMutateActionAllowed(action) {
+		return "", "", fmt.Errorf("host_repo_mutate_action_rejected (%s)", coretool.RepoMutateActionHint())
 	}
-	if action == "commit" && message == "" {
+	if coretool.RepoMutateNeedsMessage(action) && message == "" {
 		return "", "", fmt.Errorf("host_repo_mutate_message_required")
 	}
 	return action, message, nil

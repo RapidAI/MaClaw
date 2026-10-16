@@ -66,7 +66,7 @@ func TestReviewedHostSSHExecutesWithoutCoordinatorAndRejectsSoup(t *testing.T) {
 	}
 }
 
-func TestReviewedHostSSHTimeoutAndDisconnectAreUnknown(t *testing.T) {
+func TestReviewedHostSSHCancellationAndDisconnectSemantics(t *testing.T) {
 	registry, err := NewReviewedDynamicCapabilityRegistry()
 	if err != nil {
 		t.Fatal(err)
@@ -98,7 +98,7 @@ func TestReviewedHostSSHTimeoutAndDisconnectAreUnknown(t *testing.T) {
 		t.Fatalf("disconnect must be unknown, result=%#v", disconnected)
 	}
 
-	timeoutCB := &coreAgentCallbacks{
+	cancellationCB := &coreAgentCallbacks{
 		principal: principal,
 		trustedSSH: func(ctx context.Context, _ Principal, _ string) (string, error) {
 			<-ctx.Done()
@@ -107,13 +107,13 @@ func TestReviewedHostSSHTimeoutAndDisconnectAreUnknown(t *testing.T) {
 	}
 	cancelled, cancel := context.WithCancel(context.Background())
 	cancel()
-	timeoutCatalog, _, err := prepareReviewedDynamicSemanticCatalog(registry, nil, nil, DynamicCatalogLifecycle{}, reviewedHostOwnedServices{SSH: timeoutCB})
+	cancelledCatalog, _, err := prepareReviewedDynamicSemanticCatalog(registry, nil, nil, DynamicCatalogLifecycle{}, reviewedHostOwnedServices{SSH: cancellationCB})
 	if err != nil {
 		t.Fatal(err)
 	}
-	timed := timeoutCatalog.ExecuteSelection(cancelled, principal, nil, nil, plan.Selections[0], `{"command":"uname"}`)
-	if !timed.Unknown || timed.Succeeded || timed.ReasonCode != "host_ssh_timeout" {
-		t.Fatalf("timeout must be unknown, result=%#v", timed)
+	cancelledResult := cancelledCatalog.ExecuteSelection(cancelled, principal, nil, nil, plan.Selections[0], `{"command":"uname"}`)
+	if cancelledResult.Unknown || cancelledResult.Succeeded || cancelledResult.ReasonCode != "dynamic_execution_cancelled" {
+		t.Fatalf("cancelled request must fail closed as cancellation, result=%#v", cancelledResult)
 	}
 }
 

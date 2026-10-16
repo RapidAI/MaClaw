@@ -38,6 +38,15 @@ func TestSetCodeGenClientNameHeaderIfNeeded(t *testing.T) {
 		t.Fatalf("legacy default %s = %q, want %q", CodeGenClientNameHeader, got, CodeGenClientName)
 	}
 
+	legacyTigerclaw, err := http.NewRequest(http.MethodGet, "https://codegen.qianxin-inc.cn/api/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	SetCodeGenClientNameHeaderIfNeededWithName(legacyTigerclaw, "tigerclaw")
+	if got := legacyTigerclaw.Header.Get(CodeGenClientNameHeader); got != CodeGenClientName {
+		t.Fatalf("legacy tigerclaw %s = %q, want %q", CodeGenClientNameHeader, got, CodeGenClientName)
+	}
+
 	other, err := http.NewRequest(http.MethodGet, "https://api.example.com/v1/models", nil)
 	if err != nil {
 		t.Fatal(err)
@@ -122,6 +131,57 @@ func TestQwenOpenAICompatNeedsConservativeSanitization(t *testing.T) {
 	}
 	if (MaclawLLMConfig{URL: "https://api.openai.com/v1", Model: "gpt-4o"}).NeedsConservativeOpenAICompatSanitization() {
 		t.Fatal("standard OpenAI provider should not use conservative sanitization")
+	}
+}
+
+func TestUpstreamModelCanonicalizesHubBandAlias(t *testing.T) {
+	hub := MaclawLLMConfig{URL: "https://hub.example/api/llm/v1", Model: "mid"}
+	if got := hub.UpstreamModel(); got != "official-mid" {
+		t.Fatalf("upstream = %q", got)
+	}
+	if got := (MaclawLLMConfig{URL: hub.URL, Model: " LOW "}).UpstreamModel(); got != "official-low" {
+		t.Fatalf("low upstream = %q", got)
+	}
+	if !IsHubManagedLLMEndpoint(hub.URL, hub.Model) {
+		t.Fatal("mid on a hub endpoint must stay hub-managed")
+	}
+	for _, model := range []string{"auto", "official-low", "gpt-4o"} {
+		cfg := MaclawLLMConfig{URL: hub.URL, Model: model}
+		if got := cfg.UpstreamModel(); got != model {
+			t.Fatalf("model %q upstream = %q", model, got)
+		}
+	}
+	other := MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "mid"}
+	if got := other.UpstreamModel(); got != "mid" {
+		t.Fatalf("non-hub upstream = %q", got)
+	}
+	flagged := MaclawLLMConfig{URL: "https://api.deepseek.com/v1", Model: "high", HubManaged: true}
+	if got := flagged.UpstreamModel(); got != "high" {
+		t.Fatalf("non-hub hub-managed upstream = %q", got)
+	}
+	named := MaclawLLMConfig{URL: "https://hub.example/v1", Model: "mid", ProviderName: "MaClaw官方", HubManaged: true}
+	if got := named.UpstreamModel(); got != "official-mid" {
+		t.Fatalf("official provider upstream = %q", got)
+	}
+}
+
+func TestFirstPartyHubLLMSkipsCodeGenPromptRelocationIdentity(t *testing.T) {
+	hub := MaclawLLMConfig{URL: "https://hub.mypapers.top/api/llm/v1", Model: "auto"}
+	if !hub.IsFirstPartyHubLLM() {
+		t.Fatal("official Hub URL must be first-party")
+	}
+	if !hub.NeedsConservativeOpenAICompatSanitization() {
+		t.Fatal("official Hub still needs conservative tool-schema projection")
+	}
+	flagged := MaclawLLMConfig{URL: "https://example.test/v1", Model: "auto", HubManaged: true}
+	if !flagged.IsFirstPartyHubLLM() {
+		t.Fatal("HubManaged snapshot must be first-party even off the official URL")
+	}
+	if (MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", Model: "qax-codegen/Auto"}).IsFirstPartyHubLLM() {
+		t.Fatal("CodeGen is not first-party Hub")
+	}
+	if hub.ShouldSendWorkloadHints() != hub.IsFirstPartyHubLLM() || flagged.ShouldSendWorkloadHints() != flagged.IsFirstPartyHubLLM() {
+		t.Fatal("workload hints and first-party Hub identity must stay the same predicate")
 	}
 }
 
@@ -287,9 +347,9 @@ func TestMaclawLLMUserAgentTrimsCustomValue(t *testing.T) {
 		t.Fatalf("provider UserAgent() = %q, want %q", got, "custom-agent")
 	}
 
-	config := MaclawLLMConfig{AgentType: "  tigerclaw  "}
-	if got := config.UserAgent(); got != "tigerclaw" {
-		t.Fatalf("config UserAgent() = %q, want %q", got, "tigerclaw")
+	config := MaclawLLMConfig{AgentType: "  QAgent  "}
+	if got := config.UserAgent(); got != "QAgent" {
+		t.Fatalf("config UserAgent() = %q, want %q", got, "QAgent")
 	}
 
 	opencode := MaclawLLMConfig{AgentType: " opencode "}
@@ -317,6 +377,20 @@ func TestMaclawLLMUserAgentTrimsCustomValue(t *testing.T) {
 	blank := MaclawLLMConfig{AgentType: "   "}
 	if got := blank.UserAgent(); got != "openclaw" {
 		t.Fatalf("blank UserAgent() = %q, want %q", got, "openclaw")
+	}
+}
+
+func TestMaclawLLMUserAgentNormalizesCodeGenLegacyNames(t *testing.T) {
+	for _, agentType := range []string{"", "openclaw", "tigerclaw", "TigerClaw", "QAgent"} {
+		cfg := MaclawLLMConfig{URL: "https://codegen.qianxin-inc.cn/api/v1", AgentType: agentType}
+		if got := cfg.UserAgent(); got != CodeGenClientName {
+			t.Fatalf("CodeGen UserAgent(%q) = %q, want %q", agentType, got, CodeGenClientName)
+		}
+	}
+
+	other := MaclawLLMConfig{URL: "https://api.example.com/v1", AgentType: "tigerclaw"}
+	if got := other.UserAgent(); got != "tigerclaw" {
+		t.Fatalf("non-CodeGen UserAgent() = %q, want tigerclaw", got)
 	}
 }
 
@@ -408,6 +482,16 @@ func TestNormalizeLLMTokenPricePerMTokensRMBAllowsZero(t *testing.T) {
 	_, _, total := CalculateLLMCostRMB(1_000_000, 1_000_000, 0, 0)
 	if total != 0 {
 		t.Fatalf("zero token prices produced total cost %v, want 0", total)
+	}
+}
+
+func TestCalculateLLMCostRMBWithCacheSplitsAllDirections(t *testing.T) {
+	input, output, read, write, total := CalculateLLMCostRMBWithCache(
+		1_000_000, 500_000, 200_000, 100_000,
+		2, 4, 0.5, 1,
+	)
+	if input != 1.4 || output != 2 || read != 0.1 || write != 0.1 || total != 3.6 {
+		t.Fatalf("costs = input %.4f output %.4f read %.4f write %.4f total %.4f; want 1.4/2/0.1/0.1/3.6", input, output, read, write, total)
 	}
 }
 

@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"image"
 	"image/color"
@@ -15,12 +16,194 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"golang.org/x/crypto/bcrypt"
 )
+
+type rebuildBlockingEmbedder struct {
+	model   string
+	once    sync.Once
+	started chan struct{}
+	release chan struct{}
+}
+
+func (e *rebuildBlockingEmbedder) Embed(text string) ([]float32, error) {
+	vectors, err := e.EmbedBatch([]string{text})
+	if err != nil {
+		return nil, err
+	}
+	if len(vectors) == 0 {
+		return nil, nil
+	}
+	return vectors[0], nil
+}
+
+func (e *rebuildBlockingEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
+	e.once.Do(func() { close(e.started) })
+	<-e.release
+	vectors := make([][]float32, len(texts))
+	for i := range texts {
+		vectors[i] = []float32{1, 0}
+	}
+	return vectors, nil
+}
+
+func (e *rebuildBlockingEmbedder) Dim() int        { return 2 }
+func (e *rebuildBlockingEmbedder) Close()          {}
+func (e *rebuildBlockingEmbedder) ModelID() string { return e.model }
+
+type countingQueryEmbedder struct {
+	model  string
+	mu     sync.Mutex
+	embeds int
+}
+
+func (e *countingQueryEmbedder) Embed(text string) ([]float32, error) {
+	e.mu.Lock()
+	e.embeds++
+	e.mu.Unlock()
+	return []float32{1, 0}, nil
+}
+
+func (e *countingQueryEmbedder) EmbedBatch(texts []string) ([][]float32, error) {
+	vectors := make([][]float32, len(texts))
+	for i := range texts {
+		vector, err := e.Embed(texts[i])
+		if err != nil {
+			return nil, err
+		}
+		vectors[i] = vector
+	}
+	return vectors, nil
+}
+
+func (e *countingQueryEmbedder) Dim() int        { return 2 }
+func (e *countingQueryEmbedder) Close()          {}
+func (e *countingQueryEmbedder) ModelID() string { return e.model }
+
+func TestKnowledgeSearchSkipsQueryEmbeddingWhileRebuildRuns(t *testing.T) {
+	ctx := context.Background()
+	refresh, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "refresh.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer refresh.Close()
+	if err := refresh.SaveSource(ctx, knowledge.Source{ID: "refresh-source", Kind: knowledge.SourceKindText, URI: "manual://refresh", Status: knowledge.StatusParsed}); err != nil {
+		t.Fatal(err)
+	}
+	if err := refresh.SaveCard(ctx, knowledge.Card{ID: "refresh-card", SourceID: "refresh-source", Title: "Hold", Claim: "blocks the library rebuild"}); err != nil {
+		t.Fatal(err)
+	}
+	blocking := &rebuildBlockingEmbedder{model: "model-a", started: make(chan struct{}), release: make(chan struct{})}
+	refresh.SetEmbedder(blocking)
+	select {
+	case <-blocking.started:
+	case <-t.Context().Done():
+		t.Fatal("refresh did not start")
+	}
+	released := false
+	defer func() {
+		if !released {
+			close(blocking.release)
+		}
+		refresh.WaitBackground()
+	}()
+
+	store, err := knowledge.NewSQLiteStore(filepath.Join(t.TempDir(), "search.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.SaveSource(ctx, knowledge.Source{ID: "search-source", Kind: knowledge.SourceKindText, URI: "manual://search", Status: knowledge.StatusParsed, TenantID: "tenant-a", OwnerID: "user-a"}); err != nil {
+		t.Fatal(err)
+	}
+	queryEmb := &countingQueryEmbedder{model: "model-a"}
+	store.UseEmbedder(queryEmb)
+	if err := store.SaveCard(ctx, knowledge.Card{ID: "search-card", SourceID: "search-source", Title: "北京", Claim: "北京天气", Embedding: []float32{1, 0}}); err != nil {
+		t.Fatal(err)
+	}
+	multi := newMultiKnowledgeStore(store, nil)
+	if _, err := multi.Search(ctx, knowledge.SearchOptions{Query: "北京", TenantID: "tenant-a", OwnerID: "user-a", Limit: 5}); err != nil {
+		t.Fatal(err)
+	}
+	queryEmb.mu.Lock()
+	during := queryEmb.embeds
+	queryEmb.mu.Unlock()
+	if during != 0 {
+		t.Fatalf("search embedded the query %d times while the library rebuild was running", during)
+	}
+
+	close(blocking.release)
+	released = true
+	refresh.WaitBackground()
+	if _, err := multi.Search(ctx, knowledge.SearchOptions{Query: "北京", TenantID: "tenant-a", OwnerID: "user-a", Limit: 5}); err != nil {
+		t.Fatal(err)
+	}
+	queryEmb.mu.Lock()
+	defer queryEmb.mu.Unlock()
+	if queryEmb.embeds == 0 {
+		t.Fatal("search kept skipping query embedding after the rebuild finished")
+	}
+}
+
+func TestKnowledgeFTSSegmentationSkipsRebuildWhenMarkerIsCurrent(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "knowledge.db")
+	store, err := knowledge.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	if err := store.SaveSource(ctx, knowledge.Source{ID: "fts-source", Kind: knowledge.SourceKindText, URI: "manual://fts", Status: knowledge.StatusParsed}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveDocumentNode(ctx, knowledge.DocumentNode{ID: "fts-node", SourceID: "fts-source", Type: "paragraph", Title: "hello", Text: "hello world"}); err != nil {
+		t.Fatal(err)
+	}
+	probe, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer probe.Close()
+	if _, err := probe.ExecContext(ctx, `DELETE FROM document_nodes_fts WHERE node_id = 'fts-node'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := probe.ExecContext(ctx, `INSERT INTO document_nodes_fts(node_id, title, text) VALUES ('fts-node', 'STALE', 'STALE')`); err != nil {
+		t.Fatal(err)
+	}
+	store.SetFTSSegmentationMarker()
+	mgr := &knowledgeStoreManager{}
+	if err := mgr.syncKnowledgeFTSSegmentation(ctx, store); err != nil {
+		t.Fatal(err)
+	}
+	var text string
+	if err := probe.QueryRowContext(ctx, `SELECT text FROM document_nodes_fts WHERE node_id = 'fts-node'`).Scan(&text); err != nil {
+		t.Fatal(err)
+	}
+	if text != "STALE" {
+		t.Fatalf("FTS text = %q, want the existing row left in place", text)
+	}
+
+	if _, err := probe.ExecContext(ctx, `DELETE FROM knowledge_meta WHERE key = 'fts_segmentation_version'`); err != nil {
+		t.Fatal(err)
+	}
+	if err := mgr.syncKnowledgeFTSSegmentation(ctx, store); err != nil {
+		t.Fatal(err)
+	}
+	if !store.HasFTSSegmentationMarker() {
+		t.Fatal("segmentation marker was not recorded")
+	}
+	if err := probe.QueryRowContext(ctx, `SELECT text FROM document_nodes_fts WHERE node_id = 'fts-node'`).Scan(&text); err != nil {
+		t.Fatal(err)
+	}
+	if text == "STALE" {
+		t.Fatal("missing marker did not rebuild the stale FTS row")
+	}
+}
 
 func TestSanitizeKnowledgeDirectoryImportResultForAPIRedactsPaths(t *testing.T) {
 	dataRoot := t.TempDir()
@@ -1462,9 +1645,12 @@ func TestKnowledgeImportEndpointsUsePrincipalScope(t *testing.T) {
 		{name: "func (s *HTTPServer) handleKnowledgeImportURL", next: "func (s *HTTPServer) handleKnowledgeImportURLs", want: []string{"OwnerID:   p.UserID", "TenantID:  p.TenantID"}},
 		{name: "func (s *HTTPServer) handleKnowledgeImportURLs", next: "func (s *HTTPServer) handleKnowledgeImportText", want: []string{"OwnerID:   p.UserID", "TenantID:  p.TenantID", "OwnerID:        p.UserID", "TenantID:       p.TenantID"}},
 	} {
-		block := knowledgeHandlerBlock(t, body, tc.name, tc.next)
+		// gofmt aligns composite-literal values according to the longest field;
+		// compare normalized whitespace so this guard checks principal scope,
+		// rather than depending on incidental alignment.
+		block := strings.Join(strings.Fields(knowledgeHandlerBlock(t, body, tc.name, tc.next)), " ")
 		for _, needle := range tc.want {
-			if !strings.Contains(block, needle) {
+			if !strings.Contains(block, strings.Join(strings.Fields(needle), " ")) {
 				t.Fatalf("%s missing principal-scope marker %q", tc.name, needle)
 			}
 		}

@@ -19,11 +19,11 @@ const (
 	reviewedHostDocumentReadImplementation = "local"
 	reviewedHostDocumentReadAdapterName    = "host_document_read_local"
 	QualifierDocumentFormat                = "format"
-	DocumentFormatPDF                      = "pdf"
-	DocumentFormatWord                     = "word"
-	DocumentFormatSpreadsheet              = "spreadsheet"
-	DocumentFormatPresentation             = "presentation"
-	DocumentFormatText                     = "text"
+	DocumentFormatPDF                      = agent.DocumentAttachmentFormatPDF
+	DocumentFormatWord                     = agent.DocumentAttachmentFormatWord
+	DocumentFormatSpreadsheet              = agent.DocumentAttachmentFormatSpreadsheet
+	DocumentFormatPresentation             = agent.DocumentAttachmentFormatPresentation
+	DocumentFormatText                     = agent.DocumentAttachmentFormatText
 )
 
 type reviewedHostDocumentInput struct {
@@ -168,7 +168,7 @@ func reviewedHostDocumentInputsForTurn(rootTaskID, turnID, principalID string, a
 	}
 	inputScope := coretool.InvocationScope{
 		RootTaskID:  strings.TrimSpace(rootTaskID),
-		PlanID:      "input:" + strings.TrimSpace(turnID),
+		PlanID:      coretool.TrustedInputPlanID(turnID),
 		SessionID:   strings.TrimSpace(principalID),
 		TurnID:      strings.TrimSpace(turnID),
 		PrincipalID: strings.TrimSpace(principalID),
@@ -176,7 +176,7 @@ func reviewedHostDocumentInputsForTurn(rootTaskID, turnID, principalID string, a
 	attachments = CanonicalizeReviewedHostMessageAttachments(attachments)
 	inputs := make([]reviewedHostDocumentInput, 0, len(attachments))
 	for index, attachment := range attachments {
-		format, mimeType, ok := reviewedHostDocumentFormat(attachment.FileName, attachment.MimeType)
+		format, mimeType, ok := agent.DocumentAttachmentFormat(attachment.FileName, attachment.MimeType)
 		if !ok {
 			continue
 		}
@@ -188,10 +188,7 @@ func reviewedHostDocumentInputsForTurn(rootTaskID, turnID, principalID string, a
 			return nil, fmt.Errorf("trusted_document_attachment_too_large")
 		}
 		encoded := base64.StdEncoding.EncodeToString(raw)
-		sourceID := strings.TrimSpace(attachment.SourceMediaID)
-		if sourceID == "" {
-			sourceID = fmt.Sprintf("attachment:%d:%s:%s", index, filepath.Base(attachment.FileName), mimeType)
-		}
+		sourceID := coretool.TrustedAttachmentSourceID(index, attachment.FileName, mimeType, attachment.SourceMediaID)
 		producer := "trusted-input:host-attachment:" + coretool.SchemaDigest([]byte(sourceID))[:24]
 		payload, err := coretool.NewArtifactPayload(inputScope, producer, "document", mimeType, encoded, time.Now().UTC())
 		if err != nil {
@@ -200,7 +197,7 @@ func reviewedHostDocumentInputsForTurn(rootTaskID, turnID, principalID string, a
 		inputs = append(inputs, reviewedHostDocumentInput{
 			Payload:  payload,
 			Format:   format,
-			Suffix:   reviewedHostDocumentTempSuffix(attachment.FileName, format),
+			Suffix:   agent.DocumentAttachmentTempSuffix(attachment.FileName, format),
 			FileName: filepath.Base(strings.TrimSpace(attachment.FileName)),
 		})
 	}
@@ -224,24 +221,18 @@ func applyReviewedHostDocumentInputs(needs []coretool.CapabilityNeed, inputs []r
 	resolved := append([]coretool.CapabilityNeed(nil), needs...)
 	requiresExact := false
 	for _, need := range resolved {
-		if need.Capability == CapabilityDocumentRead || reviewedHostAttachmentDeliverNeed(need) {
+		if coretool.IsDocumentRead(need.Capability) || reviewedHostAttachmentDeliverNeed(need) {
 			requiresExact = true
 			break
 		}
 	}
 	if requiresExact {
-		if len(inputs) == 0 {
-			return nil, fmt.Errorf("trusted_document_input_missing")
+		if err := coretool.UniqueTrustedInputCount(len(inputs)); err != nil {
+			return nil, err
 		}
-		if len(inputs) != 1 {
-			return nil, fmt.Errorf("trusted_document_input_ambiguous")
+		for index := range resolved {
+			resolved[index] = coretool.BindDocumentReadFormat(resolved[index], inputs[0].Format)
 		}
-	}
-	for index := range resolved {
-		if resolved[index].Capability != CapabilityDocumentRead {
-			continue
-		}
-		resolved[index].Qualifiers = map[string]string{QualifierDocumentFormat: inputs[0].Format}
 	}
 	return resolved, nil
 }
@@ -267,7 +258,7 @@ func reviewedHostDocumentFacts(inputs []reviewedHostDocumentInput) []coretool.Ro
 
 func reviewedHostDocumentNeedPresent(needs []coretool.CapabilityNeed) bool {
 	for _, need := range needs {
-		if need.Capability == CapabilityDocumentRead || reviewedHostAttachmentDeliverNeed(need) {
+		if coretool.IsDocumentRead(need.Capability) || reviewedHostAttachmentDeliverNeed(need) {
 			return true
 		}
 	}
@@ -275,67 +266,14 @@ func reviewedHostDocumentNeedPresent(needs []coretool.CapabilityNeed) bool {
 }
 
 func reviewedHostAttachmentDeliverNeed(need coretool.CapabilityNeed) bool {
-	if need.Capability != CapabilityArtifactDeliverCurrent {
-		return false
-	}
-	format := need.Qualifiers[QualifierArtifactFormat]
-	return format == ArtifactFormatFile || format == ArtifactFormatImage || format == ArtifactFormatVoice || format == ""
+	return coretool.CurrentChannelDeliverAccepts(need, ArtifactFormatFile, ArtifactFormatImage, ArtifactFormatVoice, "")
 }
 
 // ReviewedHostTrustedDocumentMIME reports whether a host attachment is in the
 // closed document-read allowlist and returns the canonical MIME.
 func ReviewedHostTrustedDocumentMIME(fileName, mimeType string) (string, bool) {
-	_, mime, ok := reviewedHostDocumentFormat(fileName, mimeType)
+	_, mime, ok := agent.DocumentAttachmentFormat(fileName, mimeType)
 	return mime, ok
-}
-
-func reviewedHostDocumentFormat(fileName, mimeType string) (format, canonicalMIME string, ok bool) {
-	switch strings.ToLower(filepath.Ext(strings.TrimSpace(fileName))) {
-	case ".pdf":
-		return DocumentFormatPDF, "application/pdf", true
-	case ".doc", ".docx":
-		return DocumentFormatWord, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", true
-	case ".xls", ".xlsx", ".csv":
-		return DocumentFormatSpreadsheet, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", true
-	case ".ppt", ".pptx":
-		return DocumentFormatPresentation, "application/vnd.openxmlformats-officedocument.presentationml.presentation", true
-	case ".txt", ".md", ".markdown", ".json", ".xml", ".yaml", ".yml", ".log":
-		return DocumentFormatText, "text/plain", true
-	}
-	switch strings.ToLower(strings.TrimSpace(strings.SplitN(mimeType, ";", 2)[0])) {
-	case "application/pdf":
-		return DocumentFormatPDF, "application/pdf", true
-	case "application/msword", "application/vnd.openxmlformats-officedocument.wordprocessingml.document":
-		return DocumentFormatWord, "application/vnd.openxmlformats-officedocument.wordprocessingml.document", true
-	case "application/vnd.ms-excel", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", "text/csv":
-		return DocumentFormatSpreadsheet, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", true
-	case "application/vnd.ms-powerpoint", "application/vnd.openxmlformats-officedocument.presentationml.presentation":
-		return DocumentFormatPresentation, "application/vnd.openxmlformats-officedocument.presentationml.presentation", true
-	case "text/plain", "text/markdown", "application/json", "application/xml", "text/xml", "application/yaml", "text/yaml":
-		return DocumentFormatText, "text/plain", true
-	default:
-		return "", "", false
-	}
-}
-
-func reviewedHostDocumentTempSuffix(fileName, format string) string {
-	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(fileName)))
-	switch ext {
-	case ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".csv", ".ppt", ".pptx", ".txt", ".md", ".markdown", ".json", ".xml", ".yaml", ".yml", ".log":
-		return ext
-	}
-	switch format {
-	case DocumentFormatPDF:
-		return ".pdf"
-	case DocumentFormatWord:
-		return ".docx"
-	case DocumentFormatSpreadsheet:
-		return ".xlsx"
-	case DocumentFormatPresentation:
-		return ".pptx"
-	default:
-		return ".txt"
-	}
 }
 
 func (c *coreAgentCallbacks) ReadReviewedHostDocument(ctx context.Context, principal Principal, args map[string]interface{}) (string, error) {

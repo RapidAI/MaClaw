@@ -1,0 +1,159 @@
+# maclaw-gui:2: full XFCE desktop for desktopd (CPU only, software rendering).
+# It keeps the contract desktop_supervisor.py and desktopd rely on:
+#   /desktop_supervisor.py, Xvfb, x11vnc, websockify, xdotool, chromium, python3,
+#   noVNC web root /usr/share/novnc (vnc.html), USER root, VOLUME /desktops,
+#   ImageMagick `import` / scrot for /v1/desktops/screenshot.
+# It does not build on maclaw-gui:1. Do not install anything into /opt or
+# /usr/local: desktopd mounts per-user volumes there and they hide image files.
+#
+# Build from the repository root (the build context is desktopd/image):
+#   docker build -f desktopd/image/Dockerfile.v2 -t maclaw-gui:2 desktopd/image
+# Hosts without Docker Hub access (Tencent Cloud, as in production):
+#   docker build -f desktopd/image/Dockerfile.v2 \
+#     --build-arg BASE_IMAGE=mirror.ccs.tencentyun.com/library/debian:bookworm \
+#     --build-arg APT_MIRROR=mirrors.tencentyun.com \
+#     -t maclaw-gui:2 desktopd/image
+# APT_MIRROR replaces deb.debian.org in the apt sources for the build only;
+# empty keeps Debian's. The finished image always ships deb.debian.org: an
+# intranet mirror such as mirrors.tencentyun.com is unreachable from other
+# hosts and through desktopd's egress proxy (apt then fails with "502 Bad
+# Gateway"). At desktop start the supervisor measures deb.debian.org and
+# mirrors.tencent.com (direct and through HTTP(S)_PROXY), writes the faster to
+# debian.sources plus /etc/apt/apt.conf.d/90maclaw-proxy, and makes sudo keep
+# the proxy variables. MACLAW_APT_MIRROR on the container overrides it
+# (a mirror host/URL, or "off"); see apt-mirror in desktop_supervisor.py.
+# No "# syntax=" line on purpose: Docker 20.10's legacy builder works and the
+# frontend image would need Docker Hub.
+ARG BASE_IMAGE=debian:bookworm
+ARG APT_MIRROR=
+# Proxy build args (--build-arg HTTP_PROXY=...) are Docker predefined args:
+# they reach the RUN steps without an ARG declaration and stay out of docker
+# history (an explicit ARG declaration would put the proxy URL in it).
+
+# Tiny LD_PRELOAD shim, see close_range_shim.c.
+FROM ${BASE_IMAGE} AS shim
+ARG APT_MIRROR
+COPY close_range_shim.c /src/close_range_shim.c
+RUN set -eux; \
+    if [ -n "$APT_MIRROR" ]; then sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; fi; \
+    apt-get update; apt-get install -y --no-install-recommends gcc libc6-dev; \
+    gcc -O2 -shared -fPIC -o /src/libclose_range_shim.so /src/close_range_shim.c
+
+FROM ${BASE_IMAGE}
+ARG APT_MIRROR
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Asia/Shanghai \
+    LANG=zh_CN.UTF-8 \
+    LANGUAGE=zh_CN:zh:en_US:en \
+    GTK_IM_MODULE=fcitx \
+    QT_IM_MODULE=fcitx \
+    XMODIFIERS=@im=fcitx \
+    SDL_IM_MODULE=fcitx \
+    APPIMAGE_EXTRACT_AND_RUN=1
+
+RUN set -eux; \
+    if [ -n "$APT_MIRROR" ]; then \
+      sed -i "s|deb.debian.org|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+      xvfb fluxbox xdotool x11vnc novnc python3 python3-websockify chromium \
+      dbus-x11 xfce4-session xfwm4 xfce4-panel xfdesktop4 xfce4-settings xfconf \
+      thunar xfce4-terminal xfce4-whiskermenu-plugin xfce4-taskmanager xfce4-notifyd \
+      xfce4-appfinder mousepad ristretto xarchiver adwaita-icon-theme xdg-utils \
+      locales tzdata fonts-noto-cjk fonts-noto-color-emoji \
+      fcitx5 fcitx5-chinese-addons fcitx5-frontend-gtk3 fcitx5-frontend-gtk4 fcitx5-frontend-qt5 \
+      sudo ca-certificates curl wget gnupg git unzip xz-utils less nano procps psmisc iproute2 \
+      xauth x11-utils x11-xserver-utils xclip xsel libfuse2 file xxd \
+      scrot imagemagick at-spi2-core python3-pyatspi wmctrl \
+      plank picom feh arc-theme papirus-icon-theme dconf-cli dconf-gsettings-backend \
+      libreoffice-writer libreoffice-calc libreoffice-impress libreoffice-gtk3 libreoffice-l10n-zh-cn libreoffice-style-breeze fonts-noto-core; \
+    sed -i 's/^# *\(zh_CN.UTF-8\)/\1/; s/^# *\(en_US.UTF-8\)/\1/' /etc/locale.gen; \
+    locale-gen; \
+    ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime; echo Asia/Shanghai > /etc/timezone; \
+    useradd -m -u 1000 -s /bin/bash desktop; \
+    echo 'desktop ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/desktop; chmod 440 /etc/sudoers.d/desktop; \
+    mkdir -p /etc/xdg/xfce4/xfconf/xfce-perchannel-xml; \
+    cp /etc/xdg/xfce4/panel/default.xml /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml; \
+    printf '%s\n' '<?xml version="1.0" encoding="UTF-8"?>' \
+      '<channel name="xfwm4" version="1.0"><property name="general" type="empty">' \
+      '<property name="use_compositing" type="bool" value="false"/></property></channel>' \
+      > /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfwm4.xml; \
+    if [ -n "$APT_MIRROR" ]; then \
+      sed -i "s|${APT_MIRROR}|deb.debian.org|g" /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
+
+COPY --from=shim /src/libclose_range_shim.so /usr/lib/x86_64-linux-gnu/libclose_range_shim.so
+RUN echo /usr/lib/x86_64-linux-gnu/libclose_range_shim.so > /etc/ld.so.preload
+COPY fcitx5-profile /etc/xdg/fcitx5/profile
+# Clean desktop theme: xfwm4 (Arc) + picom (xrender, shadows/fades) + bottom
+# Plank dock, no xfce4-panel/xfdesktop, gray gradient wallpaper, Papirus icons,
+# Noto Sans CJK SC. Plank keeps a strut (hide-mode none) so maximized windows
+# stop above it, and it lists running apps for switching windows.
+COPY theme/xfce4-session.xml theme/xfwm4.xml theme/xsettings.xml /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/
+COPY theme/picom.conf /etc/xdg/picom.conf
+COPY theme/maclaw-theme.sh /usr/bin/maclaw-theme
+COPY theme/plank.dconf /etc/dconf/db/local.d/10-maclaw-plank
+# Theme variants (maclaw-theme-variant clean|dark|colorful|topbar; default in
+# /etc/maclaw/theme). Wallpapers are generated by theme/gen_wallpapers.py.
+COPY theme/maclaw-theme-variant.sh /usr/bin/maclaw-theme-variant
+COPY theme/wallpapers/ /usr/share/backgrounds/maclaw/
+COPY theme/plank-themes/ /usr/share/plank/themes/
+COPY theme/panel-top.xml /etc/xdg/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml
+COPY theme/gtk-panel.css /etc/maclaw/gtk-panel.css
+COPY theme/maclaw-icon-64.png /usr/share/icons/hicolor/64x64/apps/maclaw.png
+RUN set -eux; \
+    mkdir -p /etc/dconf/profile; printf 'user-db:user\nsystem-db:local\n' > /etc/dconf/profile/user; dconf update; \
+    mkdir -p /usr/share/backgrounds/maclaw /etc/maclaw; echo soft25 > /etc/maclaw/theme; gtk-update-icon-cache -f /usr/share/icons/hicolor || true; \
+    convert -size 1920x1200 radial-gradient:'#f1f3f5-#bfc4cb' -depth 8 /usr/share/backgrounds/maclaw/gray-gradient.png; \
+    printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=MaClaw theme (wallpaper, picom, Plank)' \
+      'Exec=/usr/bin/maclaw-theme' 'OnlyShowIn=XFCE;' 'X-GNOME-Autostart-Phase=Panel' > /etc/xdg/autostart/maclaw-theme.desktop; \
+    for d in /etc/skel /home/desktop; do \
+      mkdir -p $d/.config/plank/dock1/launchers $d/.config/gtk-3.0; cp /etc/maclaw/gtk-panel.css $d/.config/gtk-3.0/gtk.css; \
+      for a in thunar xfce4-terminal libreoffice-writer org.xfce.mousepad; do \
+        test -f /usr/share/applications/$a.desktop; \
+        printf '[PlankDockItemPreferences]\nLauncher=file:///usr/share/applications/%s.desktop\n' $a > $d/.config/plank/dock1/launchers/$a.dockitem; \
+      done; \
+      printf '[PlankDockItemPreferences]\nLauncher=file:///home/desktop/.local/share/applications/maclaw-browser.desktop\n' > $d/.config/plank/dock1/launchers/maclaw-browser.dockitem; \
+    done; \
+    chown -R desktop:desktop /home/desktop/.config; \
+    printf '%s\n' '<?xml version="1.0"?>' '<!DOCTYPE fontconfig SYSTEM "fonts.dtd">' '<fontconfig>' \
+      '<alias><family>sans-serif</family><prefer><family>Noto Sans CJK SC</family></prefer></alias>' \
+      '<alias><family>monospace</family><prefer><family>Noto Sans Mono CJK SC</family></prefer></alias>' \
+      '</fontconfig>' > /etc/fonts/local.conf; fc-cache -f >/dev/null
+# Debian ships no fcitx5 autostart (it relies on im-config); start it with the XFCE session.
+# Drop xscreensaver's autostart if a later package adds it. Xvfb's own saver
+# still blanks the framebuffer after ten idle minutes; keep_screen_awake turns that off.
+RUN printf '%s\n' '[Desktop Entry]' 'Type=Application' 'Name=Fcitx 5' 'Exec=fcitx5' \
+      'X-GNOME-Autostart-Phase=Applications' > /etc/xdg/autostart/org.fcitx.Fcitx5.desktop \
+ && rm -f /etc/xdg/autostart/xscreensaver.desktop
+COPY desktop_supervisor.py /desktop_supervisor.py
+# Public apt sources (never the build mirror) and sudo keeping the proxy env.
+RUN python3 /desktop_supervisor.py apt-mirror --default \
+ && grep -q '^URIs: http://deb.debian.org/debian$' /etc/apt/sources.list.d/debian.sources \
+ && ! grep -rq tencentyun /etc/apt/ \
+ && test -f /etc/sudoers.d/maclaw-proxy-env && visudo -c >/dev/null
+# One browser per desktop: the panel's Web Browser launcher, the menu entry,
+# xdg-open and x-www-browser all join the supervised Chromium the agent uses
+# (same profile and login) instead of starting a root Chromium that exits.
+# The supervisor writes the same files again on every ensure, so containers
+# made from an older image pick them up with a supervisor update.
+# It also writes the agent browser policies (no translate/password/autofill
+# bubbles, downloads to ~/Downloads without a prompt, notifications blocked)
+# and keeps xfce4-notifyd popups off (autostart hidden, do-not-disturb).
+RUN python3 /desktop_supervisor.py install-browser \
+ && test -x /usr/bin/maclaw-browser && test -f /etc/chromium.d/zz-maclaw-shared-browser \
+ && grep -qx 'WebBrowser=chromium' /etc/xdg/xfce4/helpers.rc \
+ && test -f /etc/chromium/policies/managed/maclaw-agent.json \
+ && grep -qx 'Hidden=true' /home/desktop/.config/autostart/xfce4-notifyd.desktop \
+ && python3 -c 'import pyatspi'
+# Programs other than the browser expose their UI tree over AT-SPI
+# (desktop_supervisor.py a11y). Qt apps do so only when asked.
+ENV QT_ACCESSIBILITY=1 QT_LINUX_ACCESSIBILITY_ALWAYS_ON=1
+# New desktops: 1280x800 (the size computer-use models are tuned for). A
+# container keeps the value it was created with; desktopd can override it.
+ENV MACLAW_DESKTOP_GEOMETRY=1280x800x24
+USER root
+VOLUME ["/desktops"]
+EXPOSE 6080 19020

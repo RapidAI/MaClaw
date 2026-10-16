@@ -59,7 +59,7 @@ func TestLLMSafeBrowserErrorStripsSelector(t *testing.T) {
 	if strings.Contains(got, "#buy") {
 		t.Fatalf("leaked selector in stale wrap: %q", got)
 	}
-	if !strings.Contains(got, "@e1") {
+	if !strings.Contains(got, "@e1") || !strings.Contains(got, "run probe again") {
 		t.Fatalf("dropped ref: %q", got)
 	}
 	raw := marshalActionResult(nil, nil, fmt.Errorf("element not found: #checkout form button"), ExpectSpec{})

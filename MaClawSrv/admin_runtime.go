@@ -15,6 +15,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 )
 
@@ -63,15 +65,15 @@ type adminMemoryStatus struct {
 }
 
 type adminSchedulerStatus struct {
-	Enabled     bool                      `json:"enabled"`
-	Path        string                    `json:"path"`
-	Exists      bool                      `json:"exists"`
-	TaskCount   int                       `json:"task_count"`
-	ByStatus    map[string]int            `json:"by_status"`
+	Enabled   bool           `json:"enabled"`
+	Path      string         `json:"path"`
+	Exists    bool           `json:"exists"`
+	TaskCount int            `json:"task_count"`
+	ByStatus  map[string]int `json:"by_status"`
 	// DeliveryEnabled counts tasks with active IM push config.
 	DeliveryEnabled int `json:"delivery_enabled"`
 	// DeliveryWarnings counts tasks whose LastResult has a soft delivery warning.
-	DeliveryWarnings int `json:"delivery_warnings"`
+	DeliveryWarnings int                       `json:"delivery_warnings"`
 	NextRunAt        *time.Time                `json:"next_run_at,omitempty"`
 	LastErrorAt      *time.Time                `json:"last_error_at,omitempty"`
 	LastError        string                    `json:"last_error,omitempty"`
@@ -260,6 +262,37 @@ func (s *HTTPServer) handleAdminJob(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "job not found"})
 		return
 	}
+	// Admin polling must observe the same evidence-backed terminal projection
+	// as user polling. Reconciliation is read-only and scoped to the Job's
+	// tenant/user; it never re-invokes the worker closure.
+	if job.Status == asyncJobStatusUnknown {
+		principal := agentservice.Principal{TenantID: job.TenantID, UserID: job.UserID}
+		if job.Kind == "migration.export" || job.Kind == "migration.import" {
+			var localReconciler agentruntime.JobReconciler = migrationExportJobReconciler{server: s}
+			if job.Kind == "migration.import" {
+				localReconciler = migrationImportJobReconciler{server: s}
+			}
+			if reconciled, found, reconcileErr := s.jobs.reconcileUserJob(r.Context(), job.ID, principal, localReconciler); reconcileErr == nil && found {
+				job = reconciled
+			}
+			if job.Status == asyncJobStatusUnknown {
+				if cfg, configErr := s.migrationConfig(r.Context(), principal); configErr == nil {
+					var remoteReconciler agentruntime.JobReconciler = migrationExportJobReconciler{server: s, cfg: cfg}
+					if job.Kind == "migration.import" {
+						remoteReconciler = migrationImportJobReconciler{server: s, cfg: cfg}
+					}
+					if reconciled, found, reconcileErr := s.jobs.reconcileUserJob(r.Context(), job.ID, principal, remoteReconciler); reconcileErr == nil && found {
+						job = reconciled
+					}
+				}
+			}
+		}
+		if reconciler := domainJobReconcilerFor(s, job.Kind); reconciler != nil {
+			if reconciled, found, reconcileErr := s.jobs.reconcileUserJob(r.Context(), job.ID, principal, reconciler); reconcileErr == nil && found {
+				job = reconciled
+			}
+		}
+	}
 	writeJSON(w, http.StatusOK, job)
 }
 
@@ -325,7 +358,7 @@ func buildAdminRuntimeStatus(s *HTTPServer) adminRuntimeStatus {
 		},
 		Memory: readAdminMemoryStatus(),
 
-		Readiness:         buildReadinessReport(s.svc.DataRoot(), s.jobs.filePath),
+		Readiness:         buildReadinessReport(s.svc.DataRoot(), s.jobs.repositoryPath),
 		Jobs:              s.jobs.snapshotCounts(),
 		Scheduler:         buildAdminSchedulerStatus(s.svc.DataRoot(), false),
 		Sandbox:           buildSandboxStatus(s.svc.DataRoot(), false),

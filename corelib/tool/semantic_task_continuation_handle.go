@@ -164,16 +164,17 @@ func (c *SQLiteSemanticExecutionCoordinator) ConsumeTaskContinuationHandle(handl
 func currentTaskContinuationRouteTx(tx *sql.Tx, tenantID, principalID, sessionID, rootTaskID string) (TaskContinuationHandle, error) {
 	lineageKey := routeLineageKey(InvocationScope{RootTaskID: rootTaskID, SessionID: sessionID, PrincipalID: principalID})
 	var record TaskContinuationHandle
-	err := tx.QueryRow(`SELECT rs.tenant_id, rl.root_task_id, rl.session_id, rl.principal_id, rl.current_revision, rl.current_plan_id, rl.current_plan_digest, rl.fencing_token
+	var lineageTenantID string
+	err := tx.QueryRow(`SELECT rs.tenant_id, rl.tenant_id, rl.root_task_id, rl.session_id, rl.principal_id, rl.current_revision, rl.current_plan_id, rl.current_plan_digest, rl.fencing_token
 		FROM semantic_route_lineages rl JOIN semantic_route_states rs ON rs.route_key=rl.current_route_key
-		WHERE rl.lineage_key=?`, lineageKey).Scan(&record.TenantID, &record.RootTaskID, &record.SessionID, &record.PrincipalID, &record.Revision, &record.PlanID, &record.PlanDigest, &record.FencingToken)
+		WHERE rl.lineage_key=?`, lineageKey).Scan(&record.TenantID, &lineageTenantID, &record.RootTaskID, &record.SessionID, &record.PrincipalID, &record.Revision, &record.PlanID, &record.PlanDigest, &record.FencingToken)
 	if err == sql.ErrNoRows {
 		return TaskContinuationHandle{}, fmt.Errorf("task_continuation_handle_route_not_found")
 	}
 	if err != nil {
 		return TaskContinuationHandle{}, err
 	}
-	if record.TenantID != tenantID || record.PrincipalID != principalID || record.SessionID != sessionID || record.RootTaskID != rootTaskID || record.Revision == 0 || record.PlanID == "" || record.PlanDigest == "" || record.FencingToken == 0 {
+	if record.TenantID != tenantID || lineageTenantID != tenantID || lineageTenantID != record.TenantID || record.PrincipalID != principalID || record.SessionID != sessionID || record.RootTaskID != rootTaskID || record.Revision == 0 || record.PlanID == "" || record.PlanDigest == "" || record.FencingToken == 0 {
 		return TaskContinuationHandle{}, fmt.Errorf("task_continuation_handle_route_invalid")
 	}
 	return record, nil

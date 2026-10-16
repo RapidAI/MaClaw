@@ -15,17 +15,21 @@ type HostStatusCatRow struct {
 
 // HostStatusData is the structured memory status used by GUI/TUI/server hosts.
 type HostStatusData struct {
-	TotalEntries    int                `json:"total_entries"`
-	MaxCapacity     int                `json:"max_capacity"`
-	CapacityPercent float64            `json:"capacity_percent"`
-	ArchivedEntries int                `json:"archived_entries"`
-	StaleEntries    int                `json:"stale_entries"`
-	PinnedEntries   int                `json:"pinned_entries"`
-	EmbedderActive  bool               `json:"embedder_active"`
-	NoEmbedding     int                `json:"no_embedding"`
-	OldestEntry     string             `json:"oldest_entry,omitempty"`
-	NewestEntry     string             `json:"newest_entry,omitempty"`
-	Categories      []HostStatusCatRow `json:"categories"`
+	TotalEntries      int                `json:"total_entries"`
+	MaxCapacity       int                `json:"max_capacity"`
+	CapacityPercent   float64            `json:"capacity_percent"`
+	RecallableEntries int                `json:"recallable_entries"`
+	DormantEntries    int                `json:"dormant_entries"`
+	SupersededEntries int                `json:"superseded_entries"`
+	InvalidEntries    int                `json:"invalid_entries"`
+	ArchivedEntries   int                `json:"archived_entries"`
+	StaleEntries      int                `json:"stale_entries"`
+	PinnedEntries     int                `json:"pinned_entries"`
+	EmbedderActive    bool               `json:"embedder_active"`
+	NoEmbedding       int                `json:"no_embedding"`
+	OldestEntry       string             `json:"oldest_entry,omitempty"`
+	NewestEntry       string             `json:"newest_entry,omitempty"`
+	Categories        []HostStatusCatRow `json:"categories"`
 }
 
 // ListEntriesForHost returns active memory entries for host management UIs.
@@ -33,7 +37,39 @@ func (s *Store) ListEntriesForHost(category Category, keyword string) []Entry {
 	if s == nil {
 		return nil
 	}
-	return s.List(category, keyword)
+	return s.ListActiveForOwner(category, keyword, "", false)
+}
+
+// ListActiveForOwner returns active entries matching category and keyword.
+// An empty ownerID keeps every owner. A named owner in strict mode must match
+// exactly. Otherwise legacy empty-owner rows stay visible and other named
+// owners stay out.
+func (s *Store) ListActiveForOwner(category Category, keyword, ownerID string, strictOwner bool) []Entry {
+	if s == nil {
+		return nil
+	}
+	listed := s.List(category, keyword)
+	ownerID = strings.TrimSpace(ownerID)
+	out := make([]Entry, 0, len(listed))
+	for _, entry := range listed {
+		if !entry.IsActive() {
+			continue
+		}
+		if ownerID != "" {
+			if strictOwner {
+				if !memoryOwnersEqual(entry.OwnerID, ownerID) {
+					continue
+				}
+			} else if !namedOwnerVisible(entry.OwnerID, ownerID) {
+				continue
+			}
+			if entry.Boundary != nil && strings.TrimSpace(entry.Boundary.OwnerID) != "" && !memoryOwnersEqual(entry.Boundary.OwnerID, ownerID) {
+				continue
+			}
+		}
+		out = append(out, entry)
+	}
+	return out
 }
 
 // ListArchiveEntriesForHost returns archived memory entries for host management UIs.
@@ -125,23 +161,27 @@ func (s *Store) StatusForHost() *HostStatusData {
 	}
 	hr := s.HealthReport()
 	data := &HostStatusData{
-		TotalEntries:    hr.ActiveEntries,
-		MaxCapacity:     hr.MaxCapacity,
-		CapacityPercent: hr.CapacityPercent,
-		ArchivedEntries: hr.ArchivedEntries,
-		StaleEntries:    hr.StaleEntries,
-		PinnedEntries:   hr.PinnedEntries,
-		EmbedderActive:  hr.EmbedderActive,
-		NoEmbedding:     hr.NoEmbedding,
-		OldestEntry:     hr.OldestEntry,
-		NewestEntry:     hr.NewestEntry,
-		Categories:      []HostStatusCatRow{},
+		TotalEntries:      hr.ActiveEntries,
+		MaxCapacity:       hr.MaxCapacity,
+		CapacityPercent:   hr.CapacityPercent,
+		RecallableEntries: hr.RecallableEntries,
+		DormantEntries:    hr.DormantEntries,
+		SupersededEntries: hr.SupersededEntries,
+		InvalidEntries:    hr.InvalidEntries,
+		ArchivedEntries:   hr.ArchivedEntries,
+		StaleEntries:      hr.StaleEntries,
+		PinnedEntries:     hr.PinnedEntries,
+		EmbedderActive:    hr.EmbedderActive,
+		NoEmbedding:       hr.NoEmbedding,
+		OldestEntry:       hr.OldestEntry,
+		NewestEntry:       hr.NewestEntry,
+		Categories:        []HostStatusCatRow{},
 	}
-	total := hr.ActiveEntries
+	total := hr.RecallableEntries
 	if total == 0 {
 		total = 1
 	}
-	for category, count := range hr.CategoryCounts {
+	for category, count := range hr.RecallableCategoryCounts {
 		data.Categories = append(data.Categories, HostStatusCatRow{
 			Category: category,
 			Count:    count,

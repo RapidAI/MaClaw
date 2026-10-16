@@ -22,11 +22,11 @@ FIRMWARE_ASSETS = (
 
 
 # These are product trust roots, not deployment-time preferences.  The desktop
-# flasher ships the same two HTTPS origins in its allow-list; accepting a
-# different public bucket URL in CI would create a release that looks healthy
-# in the workflow but that no released desktop client can safely download.
+# flasher ships the same HTTPS origin in its allow-list; accepting a different
+# public bucket URL in CI would create a release that looks healthy in the
+# workflow but that no released desktop client can safely download. The Tencent
+# COS mirror was retired (2026-10-08); R2 is the only object-storage mirror.
 R2_PUBLIC_BASE_URL = "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev"
-COS_PUBLIC_BASE_URL = "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com"
 
 
 def validate_public_mirror_base(label, value, expected):
@@ -55,19 +55,17 @@ def validate_manifest_asset_urls(manifest, release_channel="stable"):
 
     Metadata equality alone is insufficient: a compromised or misconfigured
     publisher could place a correct hash beside links that the desktop client
-    will reject.  Each firmware entry must advertise both independent mirrors
-    in a deterministic R2-then-COS order and the path must match its asset
-    name and channel prefix exactly.
+    will reject.  Each firmware entry must advertise the R2 mirror at the exact
+    immutable path for its asset name and channel.
     """
     if not isinstance(manifest, dict) or not isinstance(manifest.get("assets"), dict):
         raise RuntimeError("manifest has no assets map")
     prefix = "beta" if (release_channel or "stable").strip() == "beta" else "latest"
-    roots = (R2_PUBLIC_BASE_URL, COS_PUBLIC_BASE_URL)
     for name in FIRMWARE_ASSETS:
         entry = manifest["assets"].get(name)
         if not isinstance(entry, dict):
             raise RuntimeError(f"{name}: manifest entry is missing")
-        expected_urls = [f"{root}/{prefix}/{name}" for root in roots]
+        expected_urls = [f"{R2_PUBLIC_BASE_URL}/{prefix}/{name}"]
         urls = entry.get("urls")
         if urls != expected_urls or entry.get("url") != expected_urls[-1]:
             raise RuntimeError(f"{name}: manifest mirror URLs do not match the approved {prefix} topology")

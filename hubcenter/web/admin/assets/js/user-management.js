@@ -15,7 +15,7 @@ document.addEventListener('DOMContentLoaded',function(){
           btn.innerHTML='<span class="nav-icon" aria-hidden="true">'+userMgmtIcon+'</span><span data-user-mgmt-i18n="nav"></span><small data-user-mgmt-i18n="navDesc"></small>';
           const hubs = document.querySelector('.nav button[data-tab="hubs"]');
           const group = hubs && hubs.closest('.nav-group');
-          if (group) group.insertBefore(btn, hubs.nextSibling);
+          if (group) group.appendChild(btn);
           else {
             const nav = document.querySelector('.nav');
             if (nav) nav.insertBefore(btn, hubs ? hubs.nextSibling : null);

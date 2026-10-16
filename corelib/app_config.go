@@ -3,6 +3,8 @@ package corelib
 // AppConfig is the complete application configuration for MaClaw.
 import (
 	"encoding/json"
+	"github.com/RapidAI/CodeClaw/corelib/database"
+	"github.com/RapidAI/CodeClaw/corelib/mailbox"
 	"net"
 	"net/url"
 	"os"
@@ -15,6 +17,18 @@ import (
 const DefaultMaclawRoleDescription = "你的全能数智伴侣MaClaw"
 
 type AppConfig struct {
+	// DatabaseProfiles contains non-secret data-source profiles. Credentials
+	// are referenced through secret_ref and resolved by the host at runtime.
+	DatabaseProfiles []database.Profile `json:"database_profiles,omitempty"`
+	// MailboxAccounts are named IMAP/SMTP accounts. Passwords stay in the
+	// host secret store; only keyring locators are persisted here.
+	MailboxAccounts []mailbox.Account `json:"mailbox_accounts,omitempty"`
+	// MailboxSignatures are shared email signatures. A mailbox may point at
+	// one by id; an empty id uses the signature marked default.
+	MailboxSignatures []mailbox.Signature `json:"mailbox_signatures,omitempty"`
+	// DatabaseToolEnabled is the master kill switch for the shared database
+	// tool. Nil means enabled (backward compatible).
+	DatabaseToolEnabled  *bool           `json:"database_tool_enabled,omitempty"`
 	Claude               ToolConfig      `json:"claude"`
 	Codex                ToolConfig      `json:"codex"`
 	Opencode             ToolConfig      `json:"opencode"`
@@ -56,27 +70,31 @@ type AppConfig struct {
 	DefaultProxyScopeCodingTools bool   `json:"default_proxy_scope_coding_tools,omitempty"` // coding tools (macOS/Linux only)
 	DefaultProxyScopeAgent       bool   `json:"default_proxy_scope_agent,omitempty"`        // web_search / web_fetch
 	// Terminal settings (Windows only)
-	UseWindowsTerminal      bool     `json:"use_windows_terminal"`
-	RemoteEnabled           bool     `json:"remote_enabled"`
-	RemoteHubID             string   `json:"remote_hub_id,omitempty"`
-	RemoteHubURL            string   `json:"remote_hub_url"`
-	RemoteHubCenterURL      string   `json:"remote_hubcenter_url"`
-	RemoteHubCenterURLs     []string `json:"remote_hubcenter_urls,omitempty"`
-	RemoteEmail             string   `json:"remote_email"`
-	RemoteMobile            string   `json:"remote_mobile"`
-	RemoteSN                string   `json:"remote_sn"`
-	RemoteUserID            string   `json:"remote_user_id"`
-	RemoteTenantID          string   `json:"remote_tenant_id,omitempty"`
-	RemoteTenantName        string   `json:"remote_tenant_name,omitempty"`
-	RemoteMachineID         string   `json:"remote_machine_id"`
-	RemoteMachineName       string   `json:"remote_machine_name,omitempty"`
-	RemoteMachineToken      string   `json:"remote_machine_token"`
-	RemoteViewerToken       string   `json:"remote_viewer_token,omitempty"`
-	SkillMarketSessionToken string   `json:"skill_market_session_token,omitempty"`
-	RemoteHeartbeatSec      int      `json:"remote_heartbeat_sec"`
-	RemoteNickname          string   `json:"remote_nickname,omitempty"`
-	RemoteClientID          string   `json:"remote_client_id"`
-	DefaultLaunchMode       string   `json:"default_launch_mode"`
+	UseWindowsTerminal  bool     `json:"use_windows_terminal"`
+	RemoteEnabled       bool     `json:"remote_enabled"`
+	RemoteHubID         string   `json:"remote_hub_id,omitempty"`
+	RemoteHubURL        string   `json:"remote_hub_url"`
+	RemoteHubCenterURL  string   `json:"remote_hubcenter_url"`
+	RemoteHubCenterURLs []string `json:"remote_hubcenter_urls,omitempty"`
+	RemoteEmail         string   `json:"remote_email"`
+	RemoteMobile        string   `json:"remote_mobile"`
+	RemoteSN            string   `json:"remote_sn"`
+	RemoteUserID        string   `json:"remote_user_id"`
+	RemoteTenantID      string   `json:"remote_tenant_id,omitempty"`
+	RemoteTenantName    string   `json:"remote_tenant_name,omitempty"`
+	// CloudWorkspaceCacheEncryption keeps writer caches encrypted while they
+	// are not mounted for task execution. The zero value is deliberately
+	// disabled for backwards compatibility.
+	CloudWorkspaceCacheEncryption bool   `json:"cloud_workspace_cache_encryption,omitempty"`
+	RemoteMachineID               string `json:"remote_machine_id"`
+	RemoteMachineName             string `json:"remote_machine_name,omitempty"`
+	RemoteMachineToken            string `json:"remote_machine_token"`
+	RemoteViewerToken             string `json:"remote_viewer_token,omitempty"`
+	SkillMarketSessionToken       string `json:"skill_market_session_token,omitempty"`
+	RemoteHeartbeatSec            int    `json:"remote_heartbeat_sec"`
+	RemoteNickname                string `json:"remote_nickname,omitempty"`
+	RemoteClientID                string `json:"remote_client_id"`
+	DefaultLaunchMode             string `json:"default_launch_mode"`
 	// MaClaw LLM configuration
 	MaclawLLMUrl             string              `json:"maclaw_llm_url"`
 	MaclawLLMKey             string              `json:"maclaw_llm_key"`
@@ -88,10 +106,6 @@ type AppConfig struct {
 	SkillRunnerTimeoutSec    int                 `json:"skill_runner_timeout_sec,omitempty"`
 	MaclawLLMProviders       []MaclawLLMProvider `json:"maclaw_llm_providers,omitempty"`
 	MaclawLLMCurrentProvider string              `json:"maclaw_llm_current_provider,omitempty"`
-	// ExternalAgentImportAttempted is set after the first automatic scan of
-	// local Codex / Claude Code / OpenCode configs. Manual "Import other
-	// agents" does not consult this flag.
-	ExternalAgentImportAttempted bool `json:"external_agent_import_attempted,omitempty"`
 	// MaclawLLMProfiles separates model selection for general assistance from
 	// coding work and an optional Computer Use caption model. A nil value means
 	// this is a legacy single-profile config and must be resolved lazily without
@@ -129,7 +143,7 @@ type AppConfig struct {
 	// self-repair LLM attempts for the same skill. 0 = default (1 hour).
 	SkillEvolutionRepairCooldownHours int `json:"skill_evolution_repair_cooldown_hours,omitempty"`
 	// SkillEvolutionEnabled controls whether automatic post-run self-repair /
-	// optimize / promote is active. Nil means default true. Env kill switch
+	// optimize / promote is active. Nil means disabled. Env kill switch
 	// MACLAW_DISABLE_SKILL_EVOLUTION still overrides when set. Manual
 	// manage_skill trigger_repair/trigger_optimize remain available.
 	SkillEvolutionEnabled *bool `json:"skill_evolution_enabled,omitempty"`
@@ -150,7 +164,7 @@ type AppConfig struct {
 	EmbedHWAccel *bool `json:"embed_hw_accel,omitempty"`
 	// SkillAutoUploadEnabled controls whether skills are automatically uploaded
 	// to SkillMarket once they reach the success-run threshold. Nil means
-	// default true. Independent of SkillEvolutionEnabled.
+	// disabled. Independent of SkillEvolutionEnabled.
 	SkillAutoUploadEnabled *bool `json:"skill_auto_upload_enabled,omitempty"`
 	// SkillAutoUploadMinSuccesses is the minimum number of successful runs a
 	// skill must accumulate before it is auto-uploaded to SkillMarket.
@@ -180,16 +194,20 @@ type AppConfig struct {
 	ComputerUseLogMaxAgeDays *int `json:"computer_use_log_max_age_days,omitempty"`
 	// ComputerUseLogAutoPrune runs prune on GUI startup using keep/max-age policy.
 	// Nil/false means off (default).
-	ComputerUseLogAutoPrune            *bool                  `json:"computer_use_log_auto_prune,omitempty"`
-	SmartRouteEnabled                  bool                   `json:"smart_route_enabled"`             // default true (Hub smart routing allowed)
-	GossipEnabled                      bool                   `json:"gossip_enabled"`                  // default true (local preference, overridden by Hub)
-	FileOutboundEnabled                bool                   `json:"file_outbound_enabled"`           // default true
-	ImageOutboundEnabled               bool                   `json:"image_outbound_enabled"`          // default true
-	SkillSourcesAllowed                []string               `json:"skill_sources_allowed,omitempty"` // nil/empty = all; "__none__" = block all; values: "skillhub","clawhub","github","enterprise_hub","local"
-	TrustedSkillPackageKeyFingerprints []string               `json:"trusted_skill_package_key_fingerprints,omitempty"`
-	CapabilityMarketPolicy             CapabilityMarketPolicy `json:"capability_market_policy,omitempty"`
-	MaclawDebugToolCalls               bool                   `json:"maclaw_debug_tool_calls,omitempty"`
-	ShowAITraceEntry                   bool                   `json:"show_ai_trace_entry,omitempty"`
+	ComputerUseLogAutoPrune *bool `json:"computer_use_log_auto_prune,omitempty"`
+	SmartRouteEnabled       bool  `json:"smart_route_enabled"` // default true (Hub smart routing allowed)
+	// SemanticToolScopeRouting controls task-scoped semantic tool planning.
+	// It is independent from SmartRouteEnabled, which governs Hub message
+	// routing. The zero/default policy is disabled (fail-closed).
+	SemanticToolScopeRouting           SemanticToolScopeRoutingConfig `json:"semantic_tool_scope_routing,omitempty"`
+	GossipEnabled                      bool                           `json:"gossip_enabled"`                  // default true (local preference, overridden by Hub)
+	FileOutboundEnabled                bool                           `json:"file_outbound_enabled"`           // default true
+	ImageOutboundEnabled               bool                           `json:"image_outbound_enabled"`          // default true
+	SkillSourcesAllowed                []string                       `json:"skill_sources_allowed,omitempty"` // nil/empty = all; "__none__" = block all; values: "skillhub","clawhub","github","enterprise_hub","local"
+	TrustedSkillPackageKeyFingerprints []string                       `json:"trusted_skill_package_key_fingerprints,omitempty"`
+	CapabilityMarketPolicy             CapabilityMarketPolicy         `json:"capability_market_policy,omitempty"`
+	MaclawDebugToolCalls               bool                           `json:"maclaw_debug_tool_calls,omitempty"`
+	ShowAITraceEntry                   bool                           `json:"show_ai_trace_entry,omitempty"`
 	// ShowAppEntry controls the MaClaw Apps sidebar entry. Nil means on
 	// (same default-on contract as show_workflow_entry / show_utilities_entry).
 	ShowAppEntry         *bool  `json:"show_app_entry,omitempty"`
@@ -331,6 +349,11 @@ type AppConfig struct {
 	// own pet. It is deliberately opt-in: the default behavior is to mirror the
 	// pet chosen in the desktop's system pet settings on every device.
 	HardwareAllowCustomPets bool `json:"hardware_allow_custom_pets,omitempty"`
+	// CodingQualityGateEnabled is the programming-settings quality gate.
+	// Nil or false means off: a finished coding turn is not failed for missing
+	// exploration, verification-shell shape, diff self-check, or similar audits.
+	// Opt in to restore those checks.
+	CodingQualityGateEnabled *bool `json:"coding_quality_gate_enabled,omitempty"`
 	// ACP Mode B: GUI hosts industry ACP so VS Code programming agents use the
 	// desktop AI assistant. Nil means default enabled. Port 0 = ephemeral bind.
 	AcpHostEnabled *bool `json:"acp_host_enabled,omitempty"`
@@ -394,6 +417,11 @@ type AppConfig struct {
 	// final request model. LLMTokenUsage remains untouched as a read-only
 	// legacy/provider aggregate for older clients and historical data.
 	LLMProfileTokenUsage map[string]*TokenUsageStat `json:"llm_profile_token_usage,omitempty"`
+	// LLMTokenUsageByDay keeps calendar-day counters so the sidebar can show
+	// today, this week, and this month. The outer key is a local YYYY-MM-DD.
+	// Inner keys match LLMTokenUsage, or LLMProfileTokenUsage when prefixed
+	// with "profile:". Rows older than the retention window are dropped.
+	LLMTokenUsageByDay map[string]map[string]*TokenUsageStat `json:"llm_token_usage_by_day,omitempty"`
 	// Onboarding completion flag. Must NOT use omitempty — a false value must
 	// be explicitly serialized so that full-config SaveConfig writes do not
 	// accidentally drop the field, causing the wizard to reappear on restart.
@@ -429,6 +457,9 @@ type AppConfig struct {
 	// OCRModelTier selects the PP-OCRv6 model size: "tiny", "small" or
 	// "medium". Empty means the default tier (see NormalizeOCRModelTier).
 	OCRModelTier string `json:"ocr_model_tier,omitempty"`
+	// LatexTinyTeXEnabled installs the official TinyTeX-0 bootstrap and then
+	// TeX Live scheme-small in the background. Absent values stay enabled.
+	LatexTinyTeXEnabled bool `json:"latex_tinytex_enabled"`
 	// Diarization toggle. When enabled, the CAM++ speaker embedding model is
 	// downloaded in the background and made available for meeting transcription.
 	DiarizationEnabled bool `json:"diarization_enabled"`
@@ -763,11 +794,24 @@ type MaclawLLMProfile struct {
 // Coding defaults to following Assistant when this struct is first created.
 // Caption is optional: empty provider/model means Computer Use stays on
 // heuristic/OCR/a11y labels when the chat model cannot see images.
+// Horizon is optional: empty fields keep every long-horizon role on the
+// coding profile (docs/design/longhorizon-harness-plan-zh.md P5).
 type MaclawLLMProfiles struct {
-	Version   int              `json:"version"`
-	Assistant MaclawLLMProfile `json:"assistant"`
-	Coding    MaclawLLMProfile `json:"coding"`
-	Caption   MaclawLLMProfile `json:"caption,omitempty"`
+	Version   int                      `json:"version"`
+	Assistant MaclawLLMProfile         `json:"assistant"`
+	Coding    MaclawLLMProfile         `json:"coding"`
+	Caption   MaclawLLMProfile         `json:"caption,omitempty"`
+	Horizon   MaclawLLMHorizonProfiles `json:"horizon,omitempty"`
+}
+
+// MaclawLLMHorizonProfiles holds optional per-role model overrides for the
+// long-horizon supervisor. Manager and Auditor are meant for a strong model,
+// Executor for a cheaper one; each empty field falls back to the coding
+// profile at resolution time.
+type MaclawLLMHorizonProfiles struct {
+	Manager  MaclawLLMProfile `json:"manager,omitempty"`
+	Auditor  MaclawLLMProfile `json:"auditor,omitempty"`
+	Executor MaclawLLMProfile `json:"executor,omitempty"`
 }
 
 const (
@@ -994,6 +1038,12 @@ func (c AppConfig) IsShowAppEntryEnabled() bool {
 	return c.ShowAppEntry == nil || *c.ShowAppEntry
 }
 
+// DatabaseToolIsEnabled is the master kill switch for the shared database
+// tool. Default true when the field has never been set (nil).
+func (c AppConfig) DatabaseToolIsEnabled() bool {
+	return c.DatabaseToolEnabled == nil || *c.DatabaseToolEnabled
+}
+
 func (c AppConfig) IsIMProgressNudgeEnabled() bool {
 	return c.IMProgressNudgeEnabled == nil || *c.IMProgressNudgeEnabled
 }
@@ -1016,11 +1066,11 @@ func (c AppConfig) EffectiveKnowledgeAutoRecallMinScore() float64 {
 }
 
 // IsSkillEvolutionEnabled returns whether automatic skill evolution after runs
-// is allowed. Default true when the field has never been set (nil).
+// is allowed. It is opt-in: a missing field is disabled.
 // Does not consult the env kill switch — callers should also check
 // skill.EvolutionEnvDisabled() when applicable.
 func (c AppConfig) IsSkillEvolutionEnabled() bool {
-	return c.SkillEvolutionEnabled == nil || *c.SkillEvolutionEnabled
+	return c.SkillEvolutionEnabled != nil && *c.SkillEvolutionEnabled
 }
 
 // SetSkillEvolutionEnabled sets the SkillEvolutionEnabled pointer field.
@@ -1090,10 +1140,10 @@ func (c *AppConfig) SetEmbedHWAccel(v bool) {
 }
 
 // IsSkillAutoUploadEnabled returns whether automatic SkillMarket upload is
-// allowed once a skill reaches the success-run threshold. Default true when
-// the field has never been set (nil).
+// allowed once a skill reaches the success-run threshold. It is opt-in: a
+// missing field is disabled.
 func (c AppConfig) IsSkillAutoUploadEnabled() bool {
-	return c.SkillAutoUploadEnabled == nil || *c.SkillAutoUploadEnabled
+	return c.SkillAutoUploadEnabled != nil && *c.SkillAutoUploadEnabled
 }
 
 // SetSkillAutoUploadEnabled sets the SkillAutoUploadEnabled pointer field.
@@ -1459,23 +1509,24 @@ func AppConfigDefaults() AppConfig {
 		// Keep configuration defaults independent of the TTS runtime package;
 		// corelib/tts already depends on corelib model packages and importing it
 		// here would create a package cycle. This is the stable Kokoro voice ID.
-		HardwareWelcomeVoiceID: "af_heart",
-		HardwareVolume:         70,
-		HardwareBrightness:     70,
-		ShowOpenCode:           true,
-		ShowCodeBuddy:          true,
-		ShowIFlow:              true,
-		ShowKilo:               true,
-		PowerOptimization:      true,
-		YoloModeAllowed:        true,
-		SmartRouteEnabled:      true,
-		GossipEnabled:          true,
-		GossipAutoPublish:      true,
-		FileOutboundEnabled:    true,
-		ImageOutboundEnabled:   true,
-		CheckUpdateOnStartup:   true,
-		UseWindowsTerminal:     true,
-		VectorSearchEnabled:    true,
+		HardwareWelcomeVoiceID:   "af_heart",
+		HardwareVolume:           70,
+		HardwareBrightness:       70,
+		ShowOpenCode:             true,
+		ShowCodeBuddy:            true,
+		ShowIFlow:                true,
+		ShowKilo:                 true,
+		PowerOptimization:        true,
+		YoloModeAllowed:          true,
+		SmartRouteEnabled:        true,
+		SemanticToolScopeRouting: DefaultSemanticToolScopeRoutingConfig(),
+		GossipEnabled:            true,
+		GossipAutoPublish:        true,
+		FileOutboundEnabled:      true,
+		ImageOutboundEnabled:     true,
+		CheckUpdateOnStartup:     true,
+		UseWindowsTerminal:       true,
+		VectorSearchEnabled:      true,
 		// OfficeRead is the default text extractor for every supported Office
 		// format. The legacy engine and the per-format allowlist remain available
 		// for an immediate global or narrow rollback.
@@ -1487,6 +1538,7 @@ func AppConfigDefaults() AppConfig {
 		ASREnabled:                 true,
 		OCREnabled:                 true,
 		OCRModelTier:               DefaultOCRModelTier,
+		LatexTinyTeXEnabled:        true,
 		DiarizationEnabled:         true,
 		ASRVoiceCorrectionEnabled:  true,
 		TTSEnabled:                 true,
@@ -1494,6 +1546,11 @@ func AppConfigDefaults() AppConfig {
 		ComputerUseEnabled:         boolPtrValue(true),
 		IMProgressNudgeEnabled:     boolPtrValue(true),
 		KnowledgeAutoRecallEnabled: boolPtrValue(true),
+		// Definition mutation and remote publication are opt-in. Seed explicit
+		// false values so a new config cannot become permissive merely because a
+		// client or an older decoder treats an absent pointer as enabled.
+		SkillEvolutionEnabled:  boolPtrValue(false),
+		SkillAutoUploadEnabled: boolPtrValue(false),
 		// Shared agent loop: new installs divert eligible chat/background turns
 		// to corelib/agent.RunLoop. Existing installs are migrated once via
 		// ApplySharedAgentLoopMigration (sets SharedAgentLoopMigrated).
@@ -2003,6 +2060,20 @@ func (c *AppConfig) IsThirdPartyGatewayLocalMode() bool {
 // SetThirdPartyGatewayLocal sets the ThirdPartyGatewayLocalMode pointer field.
 func (c *AppConfig) SetThirdPartyGatewayLocal(v bool) {
 	c.ThirdPartyGatewayLocalMode = &v
+}
+
+// IsCodingQualityGateEnabled reports whether coding tasks should be failed
+// by the post-run quality audit. The product default is off.
+func (c *AppConfig) IsCodingQualityGateEnabled() bool {
+	if c == nil || c.CodingQualityGateEnabled == nil {
+		return false
+	}
+	return *c.CodingQualityGateEnabled
+}
+
+// SetCodingQualityGateEnabled sets the CodingQualityGateEnabled pointer field.
+func (c *AppConfig) SetCodingQualityGateEnabled(v bool) {
+	c.CodingQualityGateEnabled = &v
 }
 
 // IsAcpHostEnabled returns whether Mode B ACP host should run.

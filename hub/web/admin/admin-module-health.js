@@ -15,12 +15,12 @@
     { name: 'ImTab', ok: function() { return typeof global.openImSub === 'function'; } },
     { name: 'FeishuTab', ok: function() { return typeof global.loadFeishuConfig === 'function'; } },
     { name: 'InvitationTab', ok: function() { return typeof global.loadInvitationCodes === 'function'; } },
-    { name: 'PwaTab', ok: function() { return typeof global.loadPwaEnrollments === 'function'; } },
     { name: 'SystemTab', ok: function() { return typeof global.loadMailConfig === 'function' && typeof global.loadTlsConfig === 'function'; } },
     { name: 'ComputeTab', ok: function() { return typeof global.openComputePane === 'function'; } },
     { name: 'LlmProviderTab', ok: function() { return (typeof global.openLlmProviderTab === 'function' && typeof global.loadLlmProviders === 'function' && typeof global.saveLLMProviders === 'function') || typeof global.loadAdminLazyModule === 'function'; } },
     { name: 'LlmServiceTabs', ok: function() { return (typeof global.openLlmServiceGroupTab === 'function' && typeof global.loadLlmServiceGroups === 'function' && typeof global.saveLLMServiceAdmin === 'function') || typeof global.loadAdminLazyModule === 'function'; } },
-    { name: 'UsageStatsTab', ok: function() { return typeof global.loadUsageStats === 'function' || typeof global.renderUsageStatsCharts === 'function'; } }
+    { name: 'UsageStatsTab', ok: function() { return typeof global.loadUsageStats === 'function' || typeof global.renderUsageStatsCharts === 'function'; } },
+    { name: 'LinkHealthTab', ok: function() { return typeof global.loadLinkHealth === 'function'; } }
   ];
 
   function runChecks() {

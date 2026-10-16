@@ -7,7 +7,7 @@
 | 日期 | 2026-08-08 |
 | 状态 | Implemented（v1 已落地：Hub Admin 数字资产、ACL、GUI 企业知识库 Tab + 用户同步开关、MaClawSrv/agentservice 同步与自动召回/检索合并、OpenAPI 路由；v1.1 个人业务/技术经验投稿+审批已接通；**v1.2 设计修订**见 `docs/digital-assets-experience-contribution-design-zh.md`：审阅预览、配额限流、PII/信任分级） |
 | 范围 | Hub 租户侧企业知识库管理、ACL、Admin UI、maclaw GUI / 数字员工（VE）企业知识库本地存储、Hub→客户端单向增量同步 |
-| 关联文档 | `docs/maclaw-knowledge-brain-design-zh.md`、`docs/knowledge-export-share-and-hub-import-design-zh.md`、`docs/maclaw-hub-multitenancy-design-zh.md`、`docs/maclaw-hub-enterprise-management-design-zh.md`、`docs/knowledge-auto-recall-design.md`、`docs/iworker/iworker-memory-sync-and-offline-architecture-v1.md` |
+| 关联文档 | `docs/maclaw-knowledge-brain-design-zh.md`、`docs/knowledge-export-share-and-hub-import-design-zh.md`、`docs/maclaw-hub-multitenancy-design-zh.md`、`docs/maclaw-hub-enterprise-management-design-zh.md`、`docs/knowledge-auto-recall-design.md` |
 
 ---
 

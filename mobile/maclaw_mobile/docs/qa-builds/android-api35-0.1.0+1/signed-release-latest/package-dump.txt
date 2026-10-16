@@ -1,0 +1,478 @@
+﻿Activity Resolver Table:
+  Full MIME Types:
+      application/pdf:
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 76d19fc
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/pdf"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter e5cac94
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/pdf"
+      application/vnd.openxmlformats-officedocument.wordprocessingml.document:
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter ab556da
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 557e732
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+      text/csv:
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter d74a801
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "text/csv"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter f5d5639
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "text/csv"
+      application/vnd.ms-excel:
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 648970b
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/vnd.ms-excel"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 18adc83
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/vnd.ms-excel"
+      text/plain:
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter e1c4bce
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "text/plain"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 7a206a6
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "text/plain"
+      application/msword:
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter c470885
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/msword"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 882c33d
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/msword"
+      image/*:
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 793aef
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "image"
+          mPriority=0, mOrder=0, mHasStaticPartialTypes=true, mHasDynamicPartialTypes=false
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 86798e7
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "image"
+          mPriority=0, mOrder=0, mHasStaticPartialTypes=true, mHasDynamicPartialTypes=false
+      application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 86fd9e8
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 7a1fe00
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+  Base MIME Types:
+      text:
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter e1c4bce
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "text/plain"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter d74a801
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "text/csv"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 7a206a6
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "text/plain"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter f5d5639
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "text/csv"
+      application:
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 76d19fc
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/pdf"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter c470885
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/msword"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter ab556da
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 648970b
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/vnd.ms-excel"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 86fd9e8
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter e5cac94
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/pdf"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 882c33d
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/msword"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 557e732
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 18adc83
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/vnd.ms-excel"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 7a1fe00
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+  Wild MIME Types:
+      image:
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 793aef
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "image"
+          mPriority=0, mOrder=0, mHasStaticPartialTypes=true, mHasDynamicPartialTypes=false
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 86798e7
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "image"
+          mPriority=0, mOrder=0, mHasStaticPartialTypes=true, mHasDynamicPartialTypes=false
+
+  Schemes:
+      maclaw:
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 315a8c9
+          Action: "android.intent.action.VIEW"
+          Category: "android.intent.category.DEFAULT"
+          Category: "android.intent.category.BROWSABLE"
+          Scheme: "maclaw"
+
+  Non-Data Actions:
+      android.intent.action.MAIN:
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter d34c0d0
+          Action: "android.intent.action.MAIN"
+          Category: "android.intent.category.LAUNCHER"
+
+  MIME Typed Actions:
+      android.intent.action.SEND:
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter e1c4bce
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "text/plain"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 793aef
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "image"
+          mPriority=0, mOrder=0, mHasStaticPartialTypes=true, mHasDynamicPartialTypes=false
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 76d19fc
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/pdf"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter c470885
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/msword"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter ab556da
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 648970b
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/vnd.ms-excel"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 86fd9e8
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter d74a801
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "text/csv"
+      android.intent.action.SEND_MULTIPLE:
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 7a206a6
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "text/plain"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 86798e7
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "image"
+          mPriority=0, mOrder=0, mHasStaticPartialTypes=true, mHasDynamicPartialTypes=false
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter e5cac94
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/pdf"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 882c33d
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/msword"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 557e732
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 18adc83
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/vnd.ms-excel"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter 7a1fe00
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        596a893 top.mypapers.maclaw.mobile/.MainActivity filter f5d5639
+          Action: "android.intent.action.SEND_MULTIPLE"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "text/csv"
+
+Receiver Resolver Table:
+  Non-Data Actions:
+      androidx.profileinstaller.action.SAVE_PROFILE:
+        928fa2c top.mypapers.maclaw.mobile/androidx.profileinstaller.ProfileInstallReceiver filter 3158fb
+          Action: "androidx.profileinstaller.action.SAVE_PROFILE"
+      EXTRA_CHOSEN_COMPONENT:
+        419447e top.mypapers.maclaw.mobile/dev.fluttercommunity.plus.share.SharePlusPendingIntent filter 914bddf
+          Action: "EXTRA_CHOSEN_COMPONENT"
+      androidx.profileinstaller.action.INSTALL_PROFILE:
+        928fa2c top.mypapers.maclaw.mobile/androidx.profileinstaller.ProfileInstallReceiver filter cb41cf5
+          Action: "androidx.profileinstaller.action.INSTALL_PROFILE"
+      androidx.profileinstaller.action.SKIP_FILE:
+        928fa2c top.mypapers.maclaw.mobile/androidx.profileinstaller.ProfileInstallReceiver filter 4012a8a
+          Action: "androidx.profileinstaller.action.SKIP_FILE"
+      androidx.profileinstaller.action.BENCHMARK_OPERATION:
+        928fa2c top.mypapers.maclaw.mobile/androidx.profileinstaller.ProfileInstallReceiver filter b418d18
+          Action: "androidx.profileinstaller.action.BENCHMARK_OPERATION"
+
+Service Resolver Table:
+  Non-Data Actions:
+      com.google.android.gms.metadata.MODULE_DEPENDENCIES:
+        c769371 top.mypapers.maclaw.mobile/com.google.android.gms.metadata.ModuleDependencies filter 9cf6556
+          Action: "com.google.android.gms.metadata.MODULE_DEPENDENCIES"
+
+Preferred Activities User 0:
+  Full MIME Types:
+      text/plain:
+        6dc3f57 top.mypapers.maclaw.mobile/.MainActivity
+         mMatch=0x600000 mAlways=false
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "text/plain"
+        43b6069 top.mypapers.maclaw.mobile/.MainActivity
+         mMatch=0x600000 mAlways=false
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "text/plain"
+        97282c5 top.mypapers.maclaw.mobile/.MainActivity
+         mMatch=0x600000 mAlways=false
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "text/plain"
+
+  Base MIME Types:
+      text:
+        6dc3f57 top.mypapers.maclaw.mobile/.MainActivity
+         mMatch=0x600000 mAlways=false
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "text/plain"
+        43b6069 top.mypapers.maclaw.mobile/.MainActivity
+         mMatch=0x600000 mAlways=false
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "text/plain"
+        97282c5 top.mypapers.maclaw.mobile/.MainActivity
+         mMatch=0x600000 mAlways=false
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "text/plain"
+
+  MIME Typed Actions:
+      android.intent.action.SEND:
+        6dc3f57 top.mypapers.maclaw.mobile/.MainActivity
+         mMatch=0x600000 mAlways=false
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "text/plain"
+        43b6069 top.mypapers.maclaw.mobile/.MainActivity
+         mMatch=0x600000 mAlways=false
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "text/plain"
+        97282c5 top.mypapers.maclaw.mobile/.MainActivity
+         mMatch=0x600000 mAlways=false
+          Action: "android.intent.action.SEND"
+          Category: "android.intent.category.DEFAULT"
+          StaticType: "text/plain"
+
+Domain verification status:
+
+Permissions:
+  Permission [top.mypapers.maclaw.mobile.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION] (e089156):
+    sourcePackage=top.mypapers.maclaw.mobile
+    uid=10209 gids=[] type=0 prot=signature
+    perm=PermissionInfo{47245d7 top.mypapers.maclaw.mobile.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION}
+    flags=0x0
+
+Registered ContentProviders:
+  top.mypapers.maclaw.mobile/com.google.mlkit.common.internal.MlKitInitProvider:
+    Provider{1396ec4 top.mypapers.maclaw.mobile/com.google.mlkit.common.internal.MlKitInitProvider}
+  top.mypapers.maclaw.mobile/androidx.startup.InitializationProvider:
+    Provider{4cc11ad top.mypapers.maclaw.mobile/androidx.startup.InitializationProvider}
+  top.mypapers.maclaw.mobile/dev.fluttercommunity.plus.share.ShareFileProvider:
+    Provider{1146ce2 top.mypapers.maclaw.mobile/dev.fluttercommunity.plus.share.ShareFileProvider}
+  top.mypapers.maclaw.mobile/io.flutter.plugins.imagepicker.ImagePickerFileProvider:
+    Provider{7ab6873 top.mypapers.maclaw.mobile/io.flutter.plugins.imagepicker.ImagePickerFileProvider}
+
+ContentProvider Authorities:
+  [top.mypapers.maclaw.mobile.flutter.image_provider]:
+    Provider{7ab6873 top.mypapers.maclaw.mobile/io.flutter.plugins.imagepicker.ImagePickerFileProvider}
+      applicationInfo=ApplicationInfo{9c0b330 top.mypapers.maclaw.mobile}
+  [top.mypapers.maclaw.mobile.flutter.share_provider]:
+    Provider{1146ce2 top.mypapers.maclaw.mobile/dev.fluttercommunity.plus.share.ShareFileProvider}
+      applicationInfo=ApplicationInfo{4c51ba9 top.mypapers.maclaw.mobile}
+  [top.mypapers.maclaw.mobile.mlkitinitprovider]:
+    Provider{1396ec4 top.mypapers.maclaw.mobile/com.google.mlkit.common.internal.MlKitInitProvider}
+      applicationInfo=ApplicationInfo{410752e top.mypapers.maclaw.mobile}
+  [top.mypapers.maclaw.mobile.androidx-startup]:
+    Provider{4cc11ad top.mypapers.maclaw.mobile/androidx.startup.InitializationProvider}
+      applicationInfo=ApplicationInfo{e4a18cf top.mypapers.maclaw.mobile}
+
+Key Set Manager:
+  [top.mypapers.maclaw.mobile]
+      Signing KeySets: 59
+
+Packages:
+  Package [top.mypapers.maclaw.mobile] (86115f2):
+    appId=10209
+    pkg=Package{835d25c top.mypapers.maclaw.mobile}
+    codePath=/data/app/~~Kudu9qQd1G3I1bgiiC4b5Q==/top.mypapers.maclaw.mobile-q_EmY3n-AbnEBCGMfheGXA==
+    resourcePath=/data/app/~~Kudu9qQd1G3I1bgiiC4b5Q==/top.mypapers.maclaw.mobile-q_EmY3n-AbnEBCGMfheGXA==
+    legacyNativeLibraryDir=/data/app/~~Kudu9qQd1G3I1bgiiC4b5Q==/top.mypapers.maclaw.mobile-q_EmY3n-AbnEBCGMfheGXA==/lib
+    extractNativeLibs=false
+    primaryCpuAbi=x86_64
+    secondaryCpuAbi=null
+    cpuAbiOverride=null
+    versionCode=1 minSdk=24 targetSdk=36
+    minExtensionVersions=[]
+    versionName=0.1.0
+    hiddenApiEnforcementPolicy=2
+    usesNonSdkApi=false
+    splits=[base]
+    apkSigningVersion=2
+    flags=[ HAS_CODE ALLOW_CLEAR_USER_DATA ALLOW_BACKUP ]
+    privateFlags=[ PRIVATE_FLAG_ACTIVITIES_RESIZE_MODE_RESIZEABLE_VIA_SDK_VERSION ALLOW_AUDIO_PLAYBACK_CAPTURE PARTIALLY_DIRECT_BOOT_AWARE PRIVATE_FLAG_ALLOW_NATIVE_HEAP_POINTER_TAGGING ]
+    forceQueryable=false
+    queriesIntents=[Intent { act=android.intent.action.PROCESS_TEXT dat=content://*/... typ=text/plain }, Intent { act=android.intent.action.GET_CONTENT dat=content://*/... typ=*/* }]
+    scannedAsStoppedSystemApp=false
+    supportsScreens=[small, medium, large, xlarge, resizeable, anyDensity]
+    usesOptionalLibraries:
+      androidx.window.extensions
+      androidx.window.sidecar
+    usesLibraryFiles:
+      /system_ext/framework/androidx.window.extensions.jar
+      /system_ext/framework/androidx.window.sidecar.jar
+    timeStamp=2026-07-10 10:23:44
+    lastUpdateTime=2026-07-10 10:23:44
+    installerPackageName=null
+    installerPackageUid=-1
+    initiatingPackageName=com.android.shell
+    originatingPackageName=null
+    packageSource=1
+    appMetadataFilePath=null
+    appMetadataSource=0
+    signatures=PackageSignatures{87a6e16 version:2, signatures:[17e97cd8], past signatures:[]}
+    installPermissionsFixed=false
+    pkgFlags=[ HAS_CODE ALLOW_CLEAR_USER_DATA ALLOW_BACKUP ]
+    privatePkgFlags=[ PRIVATE_FLAG_ACTIVITIES_RESIZE_MODE_RESIZEABLE_VIA_SDK_VERSION ALLOW_AUDIO_PLAYBACK_CAPTURE PARTIALLY_DIRECT_BOOT_AWARE PRIVATE_FLAG_ALLOW_NATIVE_HEAP_POINTER_TAGGING ]
+    apexModuleName=null
+    declared permissions:
+      top.mypapers.maclaw.mobile.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION: prot=signature
+    requested permissions:
+      android.permission.POST_NOTIFICATIONS
+      top.mypapers.maclaw.mobile.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION
+      android.permission.READ_MEDIA_VISUAL_USER_SELECTED
+      android.permission.INTERNET
+      android.permission.READ_MEDIA_IMAGES
+      android.permission.ACCESS_NETWORK_STATE
+      android.permission.CAMERA
+      android.permission.READ_MEDIA_VIDEO
+      android.permission.VIBRATE
+      android.permission.RECORD_AUDIO
+    install permissions:
+      top.mypapers.maclaw.mobile.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION: granted=true
+      android.permission.INTERNET: granted=true
+      android.permission.ACCESS_NETWORK_STATE: granted=true
+      android.permission.VIBRATE: granted=true
+    User 0: ceDataInode=352562 deDataInode=98530 installed=true hidden=false suspended=false distractionFlags=0 stopped=false notLaunched=false enabled=0 instant=false virtual=false quarantined=false
+      installReason=0
+      dataDir=/data/user/0/top.mypapers.maclaw.mobile
+      firstInstallTime=2026-07-10 04:56:21
+      uninstallReason=0
+      overlay paths:
+        /product/overlay/EmulationPixel6/EmulationPixel6Overlay.apk
+        /product/overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk
+        /data/resource-cache/com.android.systemui-neutral-YLJR.frro
+        /data/resource-cache/com.android.systemui-accent-Qtnb.frro
+        /data/resource-cache/com.android.systemui-dynamic-GEHO.frro
+      legacy overlay paths:
+        /product/overlay/EmulationPixel6/EmulationPixel6Overlay.apk
+        /product/overlay/NavigationBarModeGestural/NavigationBarModeGesturalOverlay.apk
+      gids=[3003]
+      runtime permissions:
+        android.permission.POST_NOTIFICATIONS: granted=false, flags=[ USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]
+        android.permission.READ_MEDIA_VISUAL_USER_SELECTED: granted=false, flags=[ USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]
+        android.permission.READ_MEDIA_IMAGES: granted=false, flags=[ USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]
+        android.permission.CAMERA: granted=false, flags=[ USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]
+        android.permission.READ_MEDIA_VIDEO: granted=false, flags=[ USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]
+        android.permission.RECORD_AUDIO: granted=false, flags=[ USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]
+
+Queries:
+  system apps queryable: false
+  queries via forceQueryable:
+  queries via package name:
+  queries via component:
+    com.google.android.as:
+      top.mypapers.maclaw.mobile
+    com.google.android.apps.messaging:
+      top.mypapers.maclaw.mobile
+    com.google.android.settings.intelligence:
+      top.mypapers.maclaw.mobile
+    com.google.android.apps.maps:
+      top.mypapers.maclaw.mobile
+    com.google.android.apps.youtube.music:
+      top.mypapers.maclaw.mobile
+    com.google.android.youtube:
+      top.mypapers.maclaw.mobile
+    com.google.android.apps.photos:
+      top.mypapers.maclaw.mobile
+    top.mypapers.maclaw.mobile:
+      com.google.android.documentsui
+      com.google.android.apps.docs
+      com.google.android.contacts
+      com.google.android.apps.photos
+  queryable via interaction:
+    User 0:
+      [com.android.inputdevices,com.android.dynsystem,com.android.localtransport,com.android.keychain,com.android.DeviceAsWebcam,com.android.settings,com.android.emulator.multidisplay,android,com.android.server.telecom,com.android.providers.settings,com.android.location.fused]:
+        top.mypapers.maclaw.mobile
+      [com.google.android.gsf,com.google.android.gms]:
+        top.mypapers.maclaw.mobile
+      com.google.android.inputmethod.latin:
+        top.mypapers.maclaw.mobile
+  queryable via uses-library:
+
+Dexopt state:
+  [top.mypapers.maclaw.mobile]
+    path: /data/app/~~Kudu9qQd1G3I1bgiiC4b5Q==/top.mypapers.maclaw.mobile-q_EmY3n-AbnEBCGMfheGXA==/base.apk
+      x86_64: [status=verify] [reason=install] [primary-abi]
+        [location is /data/app/~~Kudu9qQd1G3I1bgiiC4b5Q==/top.mypapers.maclaw.mobile-q_EmY3n-AbnEBCGMfheGXA==/oat/x86_64/base.odex]
+
+Compiler stats:
+  [top.mypapers.maclaw.mobile]
+     base.apk - 650

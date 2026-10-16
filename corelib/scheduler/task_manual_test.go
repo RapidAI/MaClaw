@@ -169,6 +169,53 @@ func TestDeleteRunningTaskCancelsBeforeRemoval(t *testing.T) {
 	}
 }
 
+func TestForceDeleteRemovesARunningTask(t *testing.T) {
+	manager, err := NewManager(filepath.Join(t.TempDir(), "scheduled_tasks.json"))
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	t.Cleanup(manager.Stop)
+
+	started := make(chan struct{}, 1)
+	cancelled := make(chan struct{}, 1)
+	manager.SetExecutor(func(ctx context.Context, _ *ScheduledTask) (string, error) {
+		started <- struct{}{}
+		<-ctx.Done()
+		cancelled <- struct{}{}
+		return "", ctx.Err()
+	})
+	id, err := manager.Add(ScheduledTask{
+		Name:       "running report",
+		Action:     "send report",
+		Hour:       9,
+		Minute:     0,
+		DayOfWeek:  -1,
+		DayOfMonth: -1,
+	})
+	if err != nil {
+		t.Fatalf("Add() error = %v", err)
+	}
+	if err := manager.TriggerNow(id); err != nil {
+		t.Fatalf("TriggerNow() error = %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("manual run did not start")
+	}
+	if err := manager.ForceDelete(id); err != nil {
+		t.Fatalf("ForceDelete() error = %v", err)
+	}
+	if task := manager.Get(id); task != nil {
+		t.Fatalf("ForceDelete() left %#v", task)
+	}
+	select {
+	case <-cancelled:
+	case <-time.After(time.Second):
+		t.Fatal("ForceDelete() did not cancel the running task")
+	}
+}
+
 func TestStopKeepsExecutionLeaseUntilRunFinishes(t *testing.T) {
 	manager, err := NewManager(filepath.Join(t.TempDir(), "scheduled_tasks.json"))
 	if err != nil {

@@ -184,3 +184,56 @@ func TestPutCloudWorkspaceSettingsZeroQuotaClampsToOne(t *testing.T) {
 		t.Fatalf("mode=%q", got.Mode)
 	}
 }
+
+func TestPutCloudWorkspaceSettingsBandwidthFieldsRoundTrip(t *testing.T) {
+	svc := newCloudWorkspaceTestService()
+	body, _ := json.Marshal(map[string]any{
+		"mode":                            "all_users",
+		"quota":                           5,
+		"bandwidth_user_bytes_per_hour":   1024,
+		"bandwidth_tenant_bytes_per_hour": 4096,
+	})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPut, "/api/admin/cloud-workspaces/settings", bytes.NewReader(body))
+	PutCloudWorkspaceSettingsAdminHandler(svc, nil)(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("put status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var putView cloudworkspace.SettingsView
+	if err := json.Unmarshal(rec.Body.Bytes(), &putView); err != nil {
+		t.Fatal(err)
+	}
+	if putView.BandwidthUserBytesPerHour != 1024 || putView.BandwidthTenantBytesPerHour != 4096 {
+		t.Fatalf("put echo bandwidth=%d/%d", putView.BandwidthUserBytesPerHour, putView.BandwidthTenantBytesPerHour)
+	}
+	get := httptest.NewRecorder()
+	GetCloudWorkspaceSettingsAdminHandler(svc)(get, httptest.NewRequest(http.MethodGet, "/api/admin/cloud-workspaces/settings", nil))
+	if get.Code != http.StatusOK {
+		t.Fatalf("get status=%d body=%s", get.Code, get.Body.String())
+	}
+	var getView cloudworkspace.SettingsView
+	if err := json.Unmarshal(get.Body.Bytes(), &getView); err != nil {
+		t.Fatal(err)
+	}
+	if getView.BandwidthUserBytesPerHour != 1024 || getView.BandwidthTenantBytesPerHour != 4096 {
+		t.Fatalf("get persisted bandwidth=%d/%d", getView.BandwidthUserBytesPerHour, getView.BandwidthTenantBytesPerHour)
+	}
+	// An absurd value clamps to the ceiling; a missing field stays unlimited.
+	clampBody, _ := json.Marshal(map[string]any{
+		"mode":                          "all_users",
+		"quota":                         5,
+		"bandwidth_user_bytes_per_hour": int64(1) << 50,
+	})
+	clampRec := httptest.NewRecorder()
+	PutCloudWorkspaceSettingsAdminHandler(svc, nil)(clampRec, httptest.NewRequest(http.MethodPut, "/api/admin/cloud-workspaces/settings", bytes.NewReader(clampBody)))
+	var clampView cloudworkspace.SettingsView
+	if err := json.Unmarshal(clampRec.Body.Bytes(), &clampView); err != nil {
+		t.Fatal(err)
+	}
+	if clampView.BandwidthUserBytesPerHour != int64(1)<<40 {
+		t.Fatalf("clamped user limit=%d want %d", clampView.BandwidthUserBytesPerHour, int64(1)<<40)
+	}
+	if clampView.BandwidthTenantBytesPerHour != 0 {
+		t.Fatalf("omitted tenant limit=%d want 0 (unlimited)", clampView.BandwidthTenantBytesPerHour)
+	}
+}

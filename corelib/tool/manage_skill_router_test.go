@@ -35,12 +35,20 @@ func TestBuiltinToolNames_ContainsManageSkill(t *testing.T) {
 	}
 }
 
-func TestManageSkillIsNotLegacyModelCapability(t *testing.T) {
+func TestManageSkillIsHostBoundBaselineNotProviderPicker(t *testing.T) {
+	// Ranking still skips it so a BM25 hit cannot spend a retrieval slot.
+	// The closed plan can render it because the desktop executor binds the
+	// call to the local skill registry; a full surface pins that definition
+	// as an execution baseline.
 	if !IsLegacyModelDynamicGateway("manage_skill") {
-		t.Fatal("manage_skill must require a managed dynamic binding")
+		t.Fatal("manage_skill must stay out of retrieval ranking")
 	}
-	if _, ok := LegacyAdapterProvisionForTool("manage_skill", time.Now()); ok {
-		t.Fatal("manage_skill must not have a static legacy adapter provision")
+	provision, ok := LegacyAdapterProvisionForTool("manage_skill", time.Now())
+	if !ok {
+		t.Fatal("manage_skill must have a live provision so a full surface can render it")
+	}
+	if provision.Capability != "skill.run.local" || provision.AdapterContract != "legacy-skill-run-v1" {
+		t.Fatalf("manage_skill provision = %#v", provision)
 	}
 }
 

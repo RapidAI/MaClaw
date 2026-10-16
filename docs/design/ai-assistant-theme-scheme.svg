@@ -1,0 +1,240 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1680" height="1020" viewBox="0 0 1680 1020" font-family="Microsoft YaHei, PingFang SC, Segoe UI, sans-serif">
+  <rect width="1680" height="1020" fill="#eef1f5"/>
+
+  <!-- 标题 -->
+  <text x="24" y="38" font-size="22" font-weight="700" fill="#17263c">MaClaw AI 助手 · 界面配色风格示意图</text>
+  <text x="24" y="60" font-size="13" fill="#56677c">原则：大面积内容画布 = 白色；品牌蓝只用于导航轨、标题栏、选中态、边框与强调元素</text>
+
+  <!-- ===== 导航轨 #f0f6ff ===== -->
+  <rect x="24" y="76" width="64" height="760" fill="#f0f6ff" stroke="#c9ddf6"/>
+  <circle cx="56" cy="116" r="19" fill="#1769e8"/>
+  <text x="56" y="122" font-size="16" font-weight="700" fill="#ffffff" text-anchor="middle">M</text>
+  <!-- 选中项：工作台 -->
+  <rect x="32" y="156" width="48" height="46" rx="10" fill="#eef5ff"/>
+  <rect x="50" y="166" width="12" height="12" rx="2" fill="none" stroke="#1e6bc5" stroke-width="2"/>
+  <text x="56" y="196" font-size="10" fill="#1e6bc5" text-anchor="middle">工作台</text>
+  <rect x="44" y="198" width="24" height="3" rx="1.5" fill="#2f78d0"/>
+  <!-- 其它导航项 -->
+  <g fill="none" stroke="#56677c" stroke-width="2">
+    <rect x="50" y="222" width="12" height="12" rx="2"/>
+    <rect x="50" y="282" width="12" height="12" rx="2"/>
+    <rect x="50" y="342" width="12" height="12" rx="2"/>
+    <rect x="50" y="402" width="12" height="12" rx="2"/>
+    <rect x="50" y="462" width="12" height="12" rx="2"/>
+  </g>
+  <g font-size="10" fill="#56677c" text-anchor="middle">
+    <text x="56" y="252">任务</text>
+    <text x="56" y="312">小程序</text>
+    <text x="56" y="372">AI 专家</text>
+    <text x="56" y="432">工具</text>
+    <text x="56" y="492">日程</text>
+  </g>
+  <circle cx="56" cy="760" r="14" fill="#c9ddf6"/>
+  <circle cx="56" cy="806" r="14" fill="none" stroke="#56677c" stroke-width="2"/>
+
+  <!-- ===== 任务列表（白底） ===== -->
+  <rect x="88" y="76" width="300" height="760" fill="#ffffff" stroke="#dde9fa"/>
+  <text x="104" y="108" font-size="15" font-weight="700" fill="#17263c">我的任务</text>
+  <circle cx="356" cy="102" r="11" fill="#ffffff" stroke="#c9ddf6"/>
+  <text x="356" y="107" font-size="13" fill="#2f78d0" text-anchor="middle">+</text>
+  <!-- 当前任务卡 -->
+  <rect x="100" y="122" width="276" height="54" rx="10" fill="#ffffff" stroke="#c9ddf6"/>
+  <text x="114" y="144" font-size="12" fill="#17263c">新建任务</text>
+  <text x="114" y="162" font-size="10" fill="#56677c">当前任务</text>
+  <rect x="316" y="136" width="48" height="20" rx="10" fill="#eef5ff"/>
+  <text x="340" y="150" font-size="10" fill="#1e6bc5" text-anchor="middle">进行中</text>
+
+  <text x="104" y="216" font-size="13" font-weight="700" fill="#17263c">我的任务列表</text>
+  <!-- 筛选 pills -->
+  <rect x="100" y="228" width="56" height="22" rx="11" fill="#eef5ff" stroke="#c9ddf6"/>
+  <text x="128" y="243" font-size="10" fill="#1e6bc5" text-anchor="middle">全部 3</text>
+  <text x="176" y="243" font-size="10" fill="#56677c">进行中 0</text>
+  <text x="240" y="243" font-size="10" fill="#56677c">待处理 0</text>
+  <text x="306" y="243" font-size="10" fill="#56677c">已完成 3</text>
+
+  <!-- 任务卡 1 -->
+  <rect x="100" y="264" width="276" height="66" rx="10" fill="#ffffff" stroke="#dde9fa"/>
+  <circle cx="116" cy="282" r="4" fill="#2f78d0"/>
+  <rect x="128" y="272" width="58" height="16" rx="8" fill="#eef5ff"/>
+  <text x="157" y="284" font-size="9" fill="#1e6bc5" text-anchor="middle">云端工作区</text>
+  <text x="128" y="308" font-size="12" font-weight="600" fill="#17263c">长江学者申请</text>
+  <text x="364" y="284" font-size="10" fill="#56677c" text-anchor="end">13:55</text>
+
+  <!-- 任务卡 2（选中） -->
+  <rect x="100" y="342" width="276" height="66" rx="10" fill="#ffffff" stroke="#c9ddf6"/>
+  <rect x="100" y="352" width="4" height="46" rx="2" fill="#1769e8"/>
+  <circle cx="118" cy="360" r="4" fill="#2f78d0"/>
+  <rect x="130" y="350" width="58" height="16" rx="8" fill="#eef5ff"/>
+  <text x="159" y="362" font-size="9" fill="#1e6bc5" text-anchor="middle">云端工作区</text>
+  <text x="130" y="386" font-size="12" font-weight="600" fill="#17263c">新建任务</text>
+  <text x="364" y="362" font-size="10" fill="#56677c" text-anchor="end">13:55</text>
+
+  <!-- 任务卡 3 -->
+  <rect x="100" y="420" width="276" height="66" rx="10" fill="#ffffff" stroke="#dde9fa"/>
+  <circle cx="116" cy="438" r="4" fill="#2f78d0"/>
+  <rect x="128" y="428" width="58" height="16" rx="8" fill="#eef5ff"/>
+  <text x="157" y="440" font-size="9" fill="#1e6bc5" text-anchor="middle">云端工作区</text>
+  <text x="128" y="464" font-size="12" font-weight="600" fill="#17263c">人工智能数学基础</text>
+  <text x="364" y="440" font-size="10" fill="#56677c" text-anchor="end">13:55</text>
+
+  <!-- 状态卡 -->
+  <rect x="100" y="680" width="276" height="140" rx="12" fill="#f4f8fe" stroke="#dde9fa"/>
+  <text x="116" y="706" font-size="12" font-weight="700" fill="#17263c">状态</text>
+  <circle cx="330" cy="702" r="4" fill="#22c55e"/>
+  <text x="342" y="706" font-size="11" fill="#56677c">在线</text>
+  <text x="116" y="732" font-size="11" fill="#56677c">当前模型</text>
+  <text x="364" y="732" font-size="11" fill="#1e6bc5" text-anchor="end">智谱编程：glm-5.3</text>
+  <text x="116" y="756" font-size="11" fill="#56677c">累计 Token</text>
+  <text x="364" y="756" font-size="11" fill="#17263c" text-anchor="end">62K</text>
+  <text x="116" y="792" font-size="11" fill="#17263c">5小时限额 1,000/1,000</text>
+
+  <!-- ===== AI 助手聊天区（白底 + 淡蓝标题栏） ===== -->
+  <rect x="388" y="76" width="780" height="760" fill="#ffffff" stroke="#dde9fa"/>
+  <rect x="388" y="76" width="780" height="64" fill="#eef5ff"/>
+  <line x1="388" y1="140" x2="1168" y2="140" stroke="#c9ddf6"/>
+  <text x="408" y="108" font-size="16" font-weight="700" fill="#17263c">新建任务</text>
+  <rect x="490" y="90" width="56" height="20" rx="10" fill="#e7f6ec"/>
+  <circle cx="502" cy="100" r="3" fill="#16a34a"/>
+  <text x="522" y="104" font-size="10" fill="#16a34a" text-anchor="middle">已完成</text>
+  <text x="408" y="128" font-size="10" fill="#56677c">由你创建 · 云端工作区</text>
+  <!-- 标题栏按钮 -->
+  <g font-size="11" fill="#46586f" text-anchor="middle">
+    <rect x="900" y="90" width="64" height="28" rx="14" fill="#ffffff" stroke="#c9ddf6"/>
+    <text x="932" y="108">任务 (7)</text>
+    <rect x="972" y="90" width="72" height="28" rx="14" fill="#ffffff" stroke="#c9ddf6"/>
+    <text x="1008" y="108">暂停任务</text>
+    <rect x="1052" y="90" width="52" height="28" rx="14" fill="#ffffff" stroke="#c9ddf6"/>
+    <text x="1078" y="108">分享</text>
+    <rect x="1112" y="90" width="36" height="28" rx="14" fill="#ffffff" stroke="#c9ddf6"/>
+    <text x="1130" y="108">×</text>
+  </g>
+
+  <!-- 用户气泡 -->
+  <rect x="884" y="176" width="260" height="44" rx="14" fill="#2f78d0"/>
+  <text x="1014" y="203" font-size="12" fill="#ffffff" text-anchor="middle">继续细化内容，修复其它错误</text>
+  <text x="1144" y="166" font-size="10" fill="#56677c" text-anchor="end">我</text>
+
+  <!-- 助手卡片 -->
+  <text x="408" y="252" font-size="11" fill="#56677c">AI 助手</text>
+  <rect x="408" y="262" width="640" height="150" rx="12" fill="#ffffff" stroke="#c9ddf6"/>
+  <rect x="424" y="278" width="608" height="30" rx="8" fill="#f4f8fe"/>
+  <text x="438" y="297" font-size="11" fill="#2f78d0">▸ 思考过程...</text>
+  <text x="1018" y="297" font-size="10" fill="#1e6bc5" text-anchor="end">展开</text>
+  <rect x="424" y="320" width="420" height="10" rx="5" fill="#dde9fa"/>
+  <rect x="424" y="340" width="520" height="10" rx="5" fill="#dde9fa"/>
+  <rect x="424" y="368" width="180" height="24" rx="6" fill="#eef5ff"/>
+  <text x="514" y="384" font-size="10" fill="#1e6bc5" text-anchor="middle">Turn: reasoning · primary · auto</text>
+
+  <!-- 步骤条 -->
+  <text x="408" y="452" font-size="11" fill="#56677c">步骤  1/1</text>
+  <rect x="408" y="464" width="640" height="56" rx="10" fill="#ffffff" stroke="#dde9fa"/>
+  <text x="424" y="486" font-size="12" font-weight="600" fill="#17263c">需求理解</text>
+  <text x="424" y="506" font-size="11" fill="#56677c">在已有工作上继续你这次提出的改动，先对齐现有实现再动手。</text>
+
+  <!-- 输入框 -->
+  <rect x="408" y="700" width="736" height="110" rx="16" fill="#ffffff" stroke="#c9ddf6"/>
+  <text x="430" y="736" font-size="13" fill="#96a3b5">输入任务或指令...</text>
+  <g font-size="10" fill="#56677c" text-anchor="middle">
+    <rect x="424" y="770" width="28" height="24" rx="8" fill="#f4f8fe"/>
+    <text x="438" y="786">＋</text>
+    <rect x="460" y="770" width="28" height="24" rx="8" fill="#f4f8fe"/>
+    <text x="474" y="786">✎</text>
+    <rect x="496" y="770" width="64" height="24" rx="8" fill="#f4f8fe"/>
+    <text x="528" y="786">⚠ 完全控制</text>
+    <rect x="568" y="770" width="96" height="24" rx="8" fill="#f4f8fe"/>
+    <text x="616" y="786">☁ 云端工作区</text>
+  </g>
+  <circle cx="1112" cy="782" r="14" fill="#1769e8"/>
+  <text x="1112" y="787" font-size="12" fill="#ffffff" text-anchor="middle">➤</text>
+  <text x="1078" y="786" font-size="10" fill="#96a3b5" text-anchor="end">Enter 发送 · Ctrl+Enter 换行</text>
+
+  <!-- ===== 预览区（白底 + 淡蓝标题栏） ===== -->
+  <rect x="1168" y="76" width="488" height="760" fill="#ffffff" stroke="#dde9fa"/>
+  <rect x="1168" y="76" width="488" height="64" fill="#eef5ff"/>
+  <line x1="1168" y1="140" x2="1656" y2="140" stroke="#c9ddf6"/>
+  <text x="1188" y="108" font-size="13" font-weight="600" fill="#17263c">☁ 云端工作区 · AI Native 组织的驱动系统</text>
+  <text x="1636" y="108" font-size="13" fill="#56677c" text-anchor="end">×</text>
+  <!-- tabs -->
+  <text x="1188" y="168" font-size="12" font-weight="600" fill="#1e6bc5">云端工作区</text>
+  <rect x="1188" y="176" width="60" height="3" rx="1.5" fill="#2f78d0"/>
+  <text x="1264" y="168" font-size="12" fill="#56677c">云端文件</text>
+  <text x="1636" y="168" font-size="11" fill="#1e6bc5" text-anchor="end">刷新</text>
+
+  <!-- 文件行 -->
+  <g font-size="12" fill="#2f78d0">
+    <rect x="1188" y="196" width="448" height="40" rx="8" fill="#f4f8fe"/>
+    <rect x="1200" y="208" width="16" height="16" rx="3" fill="#c9ddf6"/>
+    <text x="1228" y="221">apply_theme.py</text>
+
+    <rect x="1200" y="248" width="16" height="16" rx="3" fill="#c9ddf6"/>
+    <text x="1228" y="261">gen_ppt.py</text>
+
+    <rect x="1200" y="288" width="16" height="16" rx="3" fill="#c9ddf6"/>
+    <text x="1228" y="301">maclaw-ai-native-org-outline.md</text>
+
+    <rect x="1200" y="328" width="16" height="16" rx="3" fill="#c9ddf6"/>
+    <text x="1228" y="341">maclaw-ai-native-org-v3-themed.pptx</text>
+
+    <rect x="1200" y="368" width="16" height="16" rx="3" fill="#c9ddf6"/>
+    <text x="1228" y="381">MaClaw-AI-Native-Organization-Keynote.pptx</text>
+  </g>
+
+  <!-- ===== 区域标注 ===== -->
+  <g font-size="12" text-anchor="middle">
+    <text x="56" y="856" fill="#17263c" transform="rotate(0)">导航轨</text>
+    <text x="238" y="856" fill="#17263c">任务列表</text>
+    <text x="778" y="856" fill="#17263c">AI 助手聊天区</text>
+    <text x="1412" y="856" fill="#17263c">预览区（工作目录 / 云端工作区）</text>
+  </g>
+  <g font-size="11" text-anchor="middle" fill="#56677c">
+    <text x="56" y="874">#f0f6ff</text>
+    <text x="238" y="874">白底 #ffffff</text>
+    <text x="778" y="874">白底 #ffffff ＋ 标题栏 #eef5ff</text>
+    <text x="1412" y="874">白底 #ffffff ＋ 标题栏 #eef5ff</text>
+  </g>
+
+  <!-- ===== 色板图例 ===== -->
+  <rect x="24" y="896" width="1632" height="104" rx="12" fill="#ffffff" stroke="#dde9fa"/>
+  <g font-size="11">
+    <!-- row 1 -->
+    <rect x="48" y="916" width="30" height="22" rx="4" fill="#f0f6ff" stroke="#c9ddf6"/>
+    <text x="86" y="931" fill="#17263c" font-weight="700">#f0f6ff</text><text x="86" y="945" fill="#56677c" font-size="10">导航轨底色</text>
+
+    <rect x="228" y="916" width="30" height="22" rx="4" fill="#eef5ff" stroke="#c9ddf6"/>
+    <text x="266" y="931" fill="#17263c" font-weight="700">#eef5ff</text><text x="266" y="945" fill="#56677c" font-size="10">标题栏 / 选中态</text>
+
+    <rect x="428" y="916" width="30" height="22" rx="4" fill="#ffffff" stroke="#c9ddf6"/>
+    <text x="466" y="931" fill="#17263c" font-weight="700">#ffffff</text><text x="466" y="945" fill="#56677c" font-size="10">内容画布（聊天/预览/列表）</text>
+
+    <rect x="708" y="916" width="30" height="22" rx="4" fill="#f4f8fe" stroke="#c9ddf6"/>
+    <text x="746" y="931" fill="#17263c" font-weight="700">#f4f8fe</text><text x="746" y="945" fill="#56677c" font-size="10">层次层 / hover</text>
+
+    <rect x="908" y="916" width="30" height="22" rx="4" fill="#c9ddf6"/>
+    <text x="946" y="931" fill="#17263c" font-weight="700">#c9ddf6</text><text x="946" y="945" fill="#56677c" font-size="10">边框</text>
+
+    <rect x="1064" y="916" width="30" height="22" rx="4" fill="#dde9fa"/>
+    <text x="1102" y="931" fill="#17263c" font-weight="700">#dde9fa</text><text x="1102" y="945" fill="#56677c" font-size="10">分割线</text>
+
+    <rect x="1228" y="916" width="30" height="22" rx="4" fill="#2f78d0"/>
+    <text x="1266" y="931" fill="#17263c" font-weight="700">#2f78d0</text><text x="1266" y="945" fill="#56677c" font-size="10">主强调 / 链接 / 用户气泡</text>
+
+    <rect x="1492" y="916" width="30" height="22" rx="4" fill="#1e6bc5"/>
+    <text x="1530" y="931" fill="#17263c" font-weight="700">#1e6bc5</text><text x="1530" y="945" fill="#56677c" font-size="10">选中文字</text>
+
+    <!-- row 2 -->
+    <rect x="48" y="960" width="30" height="22" rx="4" fill="#1769e8"/>
+    <text x="86" y="975" fill="#17263c" font-weight="700">#1769e8</text><text x="86" y="989" fill="#56677c" font-size="10">品牌蓝 / 发送键 / logo</text>
+
+    <rect x="300" y="960" width="30" height="22" rx="4" fill="#17263c"/>
+    <text x="338" y="975" fill="#17263c" font-weight="700">#17263c</text><text x="338" y="989" fill="#56677c" font-size="10">主文字</text>
+
+    <rect x="472" y="960" width="30" height="22" rx="4" fill="#56677c"/>
+    <text x="510" y="975" fill="#17263c" font-weight="700">#56677c</text><text x="510" y="989" fill="#56677c" font-size="10">次要文字</text>
+
+    <rect x="648" y="960" width="30" height="22" rx="4" fill="#e2edfc"/>
+    <text x="686" y="975" fill="#17263c" font-weight="700">#e2edfc</text><text x="686" y="989" fill="#56677c" font-size="10">行内代码底</text>
+
+    <rect x="848" y="960" width="30" height="22" rx="4" fill="#a9c8f0"/>
+    <text x="886" y="975" fill="#17263c" font-weight="700">#a9c8f0</text><text x="886" y="989" fill="#56677c" font-size="10">引用条 / 回复左边条</text>
+  </g>
+</svg>

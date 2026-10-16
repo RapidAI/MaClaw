@@ -24,7 +24,12 @@ func reviewedHostBrowserInvocationSchema() map[string]interface{} {
 	return map[string]interface{}{
 		"type": "object",
 		"properties": map[string]interface{}{
-			"action": map[string]interface{}{"type": "string"},
+			// The enum is what stops the model inventing an action name: as a
+			// bare string it guessed "open" and got action_rejected with no
+			// hint about which name would have worked (2026-10-10). The
+			// canonicalizer does not read enum, so the check in ArgsAllowed
+			// stays the boundary and this is documentation for the model.
+			"action": map[string]interface{}{"type": "string", "enum": coretool.BrowserControlActions()},
 			"url":    map[string]interface{}{"type": "string"},
 		},
 		"required":             []string{"action"},
@@ -136,12 +141,15 @@ func reviewedHostBrowserArgsAllowed(args map[string]interface{}) (action, url st
 	if !hasAction {
 		return "", "", fmt.Errorf("host_browser_action_required")
 	}
-	switch action {
-	case "navigate", "snapshot":
-	default:
-		return "", "", fmt.Errorf("host_browser_action_rejected")
+	// Re-checked against the enum the model was shown, because a boundary that
+	// only exists in a rendered document is not a boundary. The set is the
+	// shared browser contract, not a host copy: this host and the GUI surface
+	// both serve browser.control.web, and two copies of "which action names are
+	// allowed" would drift.
+	if !coretool.BrowserControlActionAllowed(action) {
+		return "", "", fmt.Errorf("host_browser_action_rejected (%s)", coretool.BrowserControlActionHint())
 	}
-	if action == "navigate" && url == "" {
+	if coretool.BrowserControlNeedsURL(action) && url == "" {
 		return "", "", fmt.Errorf("host_browser_url_required")
 	}
 	if strings.Contains(strings.ToLower(url), "cookie") || strings.Contains(action, "cookie") {

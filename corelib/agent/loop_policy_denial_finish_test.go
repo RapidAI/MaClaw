@@ -87,6 +87,65 @@ func TestRunLoop_PolicyDenialDoesNotOpenOrBlockFinish(t *testing.T) {
 	}
 }
 
+// An in-tool guard rejection is the same class as a host policy denial. The
+// 2026-09-27 video turn recorded the bash rejection as a diagnosable failure,
+// then injected "诊断 bash 失败原因并改范围", which sent the model after a
+// browser provider the route does not have.
+func TestHostGuardRejectionIsTheResultPrefix(t *testing.T) {
+	if !hostGuardRejection("  [system rejected] Direct authenticated browser-side HTTP side effects through bash are disabled.") {
+		t.Fatal("guard text must count")
+	}
+	if hostGuardRejection("curl: (22) not found\nsee [system rejected] in the log") {
+		t.Fatal("a command that merely prints the marker is a real failure")
+	}
+}
+
+func TestRunLoop_HostGuardRejectionDoesNotOpenOrBlockFinish(t *testing.T) {
+	callCount := 0
+	var bodies [][]byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		body, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, body)
+		var resp map[string]interface{}
+		switch callCount {
+		case 1:
+			resp = toolCallResponse("bash", `{"command":"curl -X POST https://example.com/publish -H \"cookie: a=b\""}`)
+		default:
+			resp = textResponse("asked the user instead of retrying")
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(resp)
+	}))
+	defer server.Close()
+	cb := &mockCallbacks{
+		config:      corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:     6,
+		sysPrompt:   "sys",
+		tools:       []map[string]interface{}{tooldef.BuildToolDef("bash", "Shell", map[string]interface{}{"type": "object"})},
+		toolResult:  "[system rejected] Direct authenticated browser-side HTTP side effects through bash are disabled. Use the browser tool with the logged-in page only, then verify once before retrying.",
+		toolOutcome: ToolExecutionOutcomeError,
+	}
+	result := RunLoop(cb, "publish the draft", nil, nil)
+	if result.Error != "" {
+		t.Fatal(result.Error)
+	}
+	if !strings.Contains(result.Text, "asked the user") {
+		t.Fatalf("text=%q", result.Text)
+	}
+	if result.WorkingState != nil && UnclosedOpenCount(result.WorkingState) != 0 {
+		t.Fatalf("guard rejection must not open items: %+v", result.WorkingState.Open)
+	}
+	for i, body := range bodies {
+		if strings.Contains(string(body), "还有未关闭问题") || strings.Contains(string(body), "诊断 bash") {
+			t.Fatalf("request %d carried a diagnose nudge", i+1)
+		}
+	}
+	if callCount != 2 {
+		t.Fatalf("callCount=%d, want 2 (no nudge iteration)", callCount)
+	}
+}
+
 // A malformed content tool-markup interception is a transport artifact, not a
 // user-meaningful answer. The loop must re-ask once for a plain-text reply
 // instead of shipping the interception notice as the final text.

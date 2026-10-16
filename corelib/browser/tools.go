@@ -110,6 +110,29 @@ func RegisterTools(registry *tool.Registry) {
 			},
 		},
 		{
+			Name:        "browser_probe",
+			Description: "Lightweight page probe: interactive refs in the page and child frames, for planning one script or task_run. No page-text excerpt, vision, or console log.",
+			Category:    tool.CategoryBuiltin,
+			Tags:        []string{"browser", "probe", "snapshot", "浏览器", "探测"},
+			Priority:    6,
+			Required:    []string{"session_id"},
+			InputSchema: map[string]interface{}{
+				"session_id": map[string]interface{}{"type": "string", "description": "browser session id"},
+				"query":      map[string]interface{}{"type": "string", "description": "可选：只保留 name/text/role 匹配该词的 refs"},
+			},
+			Handler: func(args map[string]interface{}) string {
+				agentSession, err := GetAgentSession(strArg(args, "session_id", ""))
+				if err != nil {
+					return marshalBrowserResult(false, err.Error(), nil)
+				}
+				obs, err := agentSession.Probe(strArg(args, "query", ""))
+				if err != nil {
+					return marshalBrowserResult(false, err.Error(), nil)
+				}
+				return marshalBrowserResult(true, obs.Display, obs.Data)
+			},
+		},
+		{
 			Name:        "browser_navigate",
 			Description: "在 browser session 内导航到指定 URL，成功后自动 observe。",
 			Category:    tool.CategoryBuiltin,
@@ -566,6 +589,45 @@ func RegisterTools(registry *tool.Registry) {
 				return string(result)
 			},
 		},
+		{
+			Name:        "browser_script",
+			Description: "Run one page script after probe. click, type, select, press, scroll, and waitFor run in that script. Optional name stores it for skill_run.",
+			Category:    tool.CategoryBuiltin,
+			Tags:        []string{"browser", "script", "batch", "浏览器", "脚本"},
+			Priority:    6,
+			Required:    []string{"session_id", "script"},
+			InputSchema: map[string]interface{}{
+				"session_id": map[string]interface{}{"type": "string", "description": "browser session id"},
+				"script":     map[string]interface{}{"type": "string", "description": "Statements: click(\"保存\"), type(\"#q\", \"weather\"), select(\"状态\", \"完成\"), press(\"Enter\"), scroll(600), waitFor(\"下一步\", 3000). Do not read cookies, storage, or passwords."},
+				"name":       map[string]interface{}{"type": "string", "description": "Optional kebab-case name, such as save-draft. A script that finishes is stored under this name."},
+			},
+			Handler: browserScriptTool,
+		},
+		{
+			Name:        "browser_skill_list",
+			Description: "List page scripts saved for this browser owner.",
+			Category:    tool.CategoryBuiltin,
+			Tags:        []string{"browser", "script", "skill", "浏览器"},
+			Priority:    4,
+			Required:    []string{"session_id"},
+			InputSchema: map[string]interface{}{
+				"session_id": map[string]interface{}{"type": "string", "description": "browser session id"},
+			},
+			Handler: browserSkillListTool,
+		},
+		{
+			Name:        "browser_skill_run",
+			Description: "Run a saved page script on the website it was stored for. No second probe.",
+			Category:    tool.CategoryBuiltin,
+			Tags:        []string{"browser", "script", "skill", "浏览器"},
+			Priority:    5,
+			Required:    []string{"session_id", "name"},
+			InputSchema: map[string]interface{}{
+				"session_id": map[string]interface{}{"type": "string", "description": "browser session id"},
+				"name":       map[string]interface{}{"type": "string", "description": "kebab-case name from script or skill_list"},
+			},
+			Handler: browserSkillRunTool,
+		},
 	}
 
 	for _, t := range tools {
@@ -641,7 +703,7 @@ func llmSafeBrowserError(err error) string {
 	msg := err.Error()
 	stalePrefix := func() string {
 		if i := strings.Index(msg, " is stale"); i > 0 && (strings.HasPrefix(msg, "ref ") || strings.HasPrefix(msg, "text ")) {
-			return msg[:i+len(" is stale")] + "; run observe again to get fresh refs"
+			return msg[:i+len(" is stale")] + "; run probe again to get fresh refs"
 		}
 		return ""
 	}
@@ -650,16 +712,16 @@ func llmSafeBrowserError(err error) string {
 		if prefix := stalePrefix(); prefix != "" {
 			return prefix
 		}
-		return "element not found; run observe again and click by ref"
+		return "element not found; run probe again and click by ref"
 	case strings.Contains(msg, "wait for selector timed out"):
 		if prefix := stalePrefix(); prefix != "" {
 			return prefix
 		}
-		return "wait timed out; run observe again"
+		return "wait timed out; run probe again"
 	case strings.Contains(msg, "option not found"):
-		return "option not found; use the option's visible label or value from observe"
+		return "option not found; use the option's visible label or value from probe"
 	case strings.Contains(msg, "element occluded"):
-		return "element occluded; run observe again and click by ref"
+		return "element occluded; run probe again and click by ref"
 	}
 	return msg
 }

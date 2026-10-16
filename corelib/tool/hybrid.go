@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -79,6 +80,11 @@ type diskCacheEnvelope struct {
 	Entries map[string][]float32 // sha256(text) → embedding vector
 }
 
+// toolEmbeddingCachePathFn resolves the disk cache path; tests redirect it to
+// a temp dir so SaveToDisk never touches the real user cache (and never races
+// a running app that owns it).
+var toolEmbeddingCachePathFn = toolEmbeddingCachePath
+
 // toolEmbeddingCachePath returns <MaclawBaseDir>/cache/tool_embeddings.gob.
 func toolEmbeddingCachePath() string {
 	base := maclawBaseDirFallback()
@@ -98,11 +104,56 @@ func modelFingerprint(modelPath string) string {
 	return fmt.Sprintf("%d_%d", fi.ModTime().UnixNano(), fi.Size())
 }
 
+// toolEmbeddingCacheModelID keys the disk cache on the embedder actually in
+// use. Embedders that report a ModelID (Gemma, Qwen3: model name + dim +
+// prompt recipe) use it, so a Qwen3-only install (no Gemma GGUF on disk) can
+// restore its cache and a Gemma<->Qwen3 switch never mixes vectors. Others
+// fall back to the legacy Gemma model-file fingerprint.
+func toolEmbeddingCacheModelID(emb embedding.Embedder) string {
+	if m, ok := emb.(interface{ ModelID() string }); ok && m != nil {
+		if id := strings.TrimSpace(m.ModelID()); id != "" {
+			if r := toolDocRole(emb); r != embedding.RoleNone {
+				id += "|tooldoc-role=classification"
+			}
+			return "embedder:" + id
+		}
+	}
+	return modelFingerprint(embedding.DefaultModelPath())
+}
+
+// ToolDocRoleEnv: "none" rolls tool-description embedding back to plain
+// Embed() for Qwen3 (default: RoleClassification, see toolDocRole).
+const ToolDocRoleEnv = "MACLAW_TOOL_DOC_ROLE"
+
+// toolDocRole is the role Track A embeds tool descriptions with. For Qwen3
+// the query side already reuses the intent L2 RoleClassification vector;
+// embedding the descriptions with the same instruct (symmetric) lifted the
+// Qwen3 Track A R@20 from 0.901 to 0.935 (alpha 0.6) on old 262, 0.840 to
+// 0.893 on the independent 644, with the config chosen on tool_eval train 668
+// only (replacement audit, REPORT §20). Gemma keeps plain Embed(): on the
+// same dev set its best doc role was none.
+func toolDocRole(emb embedding.Embedder) embedding.Role {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv(ToolDocRoleEnv)), "none") {
+		return embedding.RoleNone
+	}
+	if embedding.EmbedderFamily(emb) == embedding.FamilyQwen3 {
+		return embedding.RoleClassification
+	}
+	return embedding.RoleNone
+}
+
+// embedDoc embeds one tool description with toolDocRole.
+func (c *ToolEmbeddingCache) embedDoc(text string) ([]float32, error) {
+	if r := toolDocRole(c.embedder); r != embedding.RoleNone {
+		return embedding.EmbedAs(c.embedder, text, r)
+	}
+	return c.embedder.Embed(text)
+}
+
 // NewToolEmbeddingCache creates a new ToolEmbeddingCache and attempts to
 // restore previously persisted embeddings from disk.
 func NewToolEmbeddingCache(emb embedding.Embedder) *ToolEmbeddingCache {
-	modelPath := embedding.DefaultModelPath()
-	mid := modelFingerprint(modelPath)
+	mid := toolEmbeddingCacheModelID(emb)
 
 	c := &ToolEmbeddingCache{
 		embedder: emb,
@@ -141,7 +192,7 @@ func (c *ToolEmbeddingCache) WarmUpAsync(toolTexts map[string]string) {
 // loadFromDisk restores cached embeddings from the gob file.
 // If the model fingerprint doesn't match, the disk cache is ignored.
 func (c *ToolEmbeddingCache) loadFromDisk() {
-	p := toolEmbeddingCachePath()
+	p := toolEmbeddingCachePathFn()
 	if p == "" {
 		return
 	}
@@ -180,9 +231,45 @@ func (c *ToolEmbeddingCache) loadFromDisk() {
 	log.Printf("[ToolEmbeddingCache] restored %d embeddings from disk cache", len(c.cache))
 }
 
+// toolEmbeddingDiskMu serializes read-modify-write across ToolEmbeddingCache
+// instances. Every retriever embeds a different tool subset but they all share
+// one on-disk file: with only the per-instance saveMu, two instances saving
+// concurrently each wrote just their own entries and the second rename
+// clobbered the first — observed in production as a ~7-entry save overwriting
+// a 126-entry cache, forcing a full recompute on the next start.
+// The lock is process-wide: two PROCESSES sharing the file (GUI + CLI) can
+// still interleave read-modify-write, but the atomic .tmp+rename keeps the
+// file itself consistent and the worst outcome is a lost warm entry —
+// recompute, never corruption.
+var toolEmbeddingDiskMu sync.Mutex
+
+// readDiskEnvelopeQuietly decodes the on-disk cache without logging; ok=false
+// covers a missing file, decode failure, and model-fingerprint/dim mismatch
+// (the same validation loadFromDisk applies).
+func readDiskEnvelopeQuietly(p, modelID string, embDim int) (*diskCacheEnvelope, bool) {
+	f, err := os.Open(p)
+	if err != nil {
+		return nil, false
+	}
+	defer f.Close()
+	var env diskCacheEnvelope
+	if err := gob.NewDecoder(f).Decode(&env); err != nil {
+		return nil, false
+	}
+	if env.ModelID != modelID || modelID == "" {
+		return nil, false
+	}
+	if embDim > 0 && env.EmbDim > 0 && env.EmbDim != embDim {
+		return nil, false
+	}
+	return &env, true
+}
+
 // SaveToDisk persists the current in-memory cache to disk.
 // Safe to call from any goroutine. No-op if nothing changed since last save.
-// Serialized via saveMu to prevent concurrent writes.
+// Serialized via saveMu to prevent concurrent writes; the file write is a
+// read-modify-write merged under toolEmbeddingDiskMu so concurrent
+// retrievers cannot drop each other's entries.
 func (c *ToolEmbeddingCache) SaveToDisk() {
 	c.saveMu.Lock()
 	defer c.saveMu.Unlock()
@@ -202,13 +289,29 @@ func (c *ToolEmbeddingCache) SaveToDisk() {
 
 	embDim := c.embedder.Dim()
 
-	p := toolEmbeddingCachePath()
+	p := toolEmbeddingCachePathFn()
 	if p == "" {
 		return
 	}
 	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
 		log.Printf("[ToolEmbeddingCache] mkdir error: %v", err)
 		return
+	}
+
+	toolEmbeddingDiskMu.Lock()
+	defer toolEmbeddingDiskMu.Unlock()
+
+	// Merge over whatever is on disk: this instance only knows its own tool
+	// texts, and a smaller instance's save must not drop entries other
+	// retrievers computed (they hash the same texts to the same keys, so the
+	// union is exactly the warm-up the next process start wants).
+	own := len(entries)
+	if existing, ok := readDiskEnvelopeQuietly(p, modelID, embDim); ok {
+		for k, v := range existing.Entries {
+			if _, have := entries[k]; !have && len(v) > 0 {
+				entries[k] = v
+			}
+		}
 	}
 
 	env := diskCacheEnvelope{
@@ -241,7 +344,7 @@ func (c *ToolEmbeddingCache) SaveToDisk() {
 	c.dirty = false
 	c.mu.Unlock()
 
-	log.Printf("[ToolEmbeddingCache] saved %d embeddings to disk cache", len(entries))
+	log.Printf("[ToolEmbeddingCache] saved %d embeddings to disk cache (%d from this cache)", len(entries), own)
 }
 
 // scheduleSave triggers an async disk save with proper debounce.
@@ -306,7 +409,7 @@ func (c *ToolEmbeddingCache) Get(text string) ([]float32, error) {
 	}
 	c.mu.RUnlock()
 
-	vec, err := c.embedder.Embed(text)
+	vec, err := c.embedDoc(text)
 	if err != nil {
 		return nil, err
 	}
@@ -356,6 +459,7 @@ func (c *ToolEmbeddingCache) GetBatch(texts map[string]string) (map[string][]flo
 
 	// Try concurrent path if embedder supports it and there are multiple items.
 	ce, hasConcurrent := c.embedder.(ConcurrentEmbedder)
+	hasConcurrent = hasConcurrent && toolDocRole(c.embedder) == embedding.RoleNone
 	log.Printf("[ToolEmbeddingCache] GetBatch: total=%d cached=%d missing=%d hasConcurrent=%v", len(texts), len(texts)-len(missing), len(missing), hasConcurrent)
 	if hasConcurrent && len(missing) > 1 {
 		type embedResult struct {
@@ -412,7 +516,7 @@ func (c *ToolEmbeddingCache) GetBatch(texts map[string]string) (map[string][]flo
 	// Sequential fallback.
 	computed := false
 	for _, m := range missing {
-		vec, err := c.embedder.Embed(m.text)
+		vec, err := c.embedDoc(m.text)
 		if err != nil {
 			result[m.toolID] = nil
 			continue
@@ -487,8 +591,11 @@ func (c *QueryEmbeddingCache) Get(query string) ([]float32, error) {
 	}
 	c.mu.Unlock()
 
-	// Compute embedding outside the lock to avoid blocking other callers.
-	vec, err := c.embedder.Embed(query)
+	// Prefer RoleClassification so Track A shares the intent L2/L3 query
+	// space (and PutQuery of the L2 vector is a cache hit). Tool descriptions
+	// stay on Embed() (RoleNone); measured Qwen3 Track A used this asymmetric
+	// protocol (ZZ_QROLE=classification).
+	vec, err := embedding.EmbedAs(c.embedder, query, embedding.RoleClassification)
 	if err != nil {
 		return nil, err
 	}
@@ -564,14 +671,29 @@ func (h *HybridRetriever) FuseScores(
 	bm25Scores map[string]float64,
 	toolTexts map[string]string,
 ) map[string]float64 {
+	return h.FuseScoresWithQueryVec(query, nil, bm25Scores, toolTexts)
+}
+
+// FuseScoresWithQueryVec is FuseScores with an optional precomputed query
+// vector (intent L2 RoleClassification). A non-empty queryVec is used as-is
+// and also seeded into the query cache; nil falls back to Put/Get.
+func (h *HybridRetriever) FuseScoresWithQueryVec(
+	query string,
+	queryVec []float32,
+	bm25Scores map[string]float64,
+	toolTexts map[string]string,
+) map[string]float64 {
 	if embedding.IsNoop(h.embedder) {
 		return bm25Scores
 	}
-
-	// Get query embedding.
-	queryVec, err := h.queryCache.Get(query)
-	if err != nil || queryVec == nil {
-		return bm25Scores
+	if len(queryVec) == 0 {
+		var err error
+		queryVec, err = h.queryCache.Get(query)
+		if err != nil || queryVec == nil {
+			return bm25Scores
+		}
+	} else {
+		h.PutQuery(query, queryVec)
 	}
 
 	// Get tool embeddings in batch.
@@ -639,4 +761,36 @@ func normalizeRetrievalScores(scores map[string]float64) map[string]float64 {
 		result[k] = s / maxVal
 	}
 	return result
+}
+
+// PutQuery seeds the query cache with a precomputed vector (e.g. the intent
+// L2 RoleClassification vector). FuseScores then reuses it instead of calling
+// Embed again. The vector is copied.
+func (h *HybridRetriever) PutQuery(query string, vec []float32) {
+	if h == nil || h.queryCache == nil || strings.TrimSpace(query) == "" || len(vec) == 0 {
+		return
+	}
+	h.queryCache.Put(query, append([]float32(nil), vec...))
+}
+
+// Put stores a precomputed embedding for query (copied). Used to hand the
+// intent L2 classification vector to Track A without a second forward pass.
+func (c *QueryEmbeddingCache) Put(query string, vec []float32) {
+	if c == nil || query == "" || len(vec) == 0 {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if elem, ok := c.items[query]; ok {
+		c.order.Remove(elem)
+		delete(c.items, query)
+	}
+	if len(c.items) >= c.maxSize {
+		if front := c.order.Front(); front != nil {
+			evicted := c.order.Remove(front).(*queryEntry)
+			delete(c.items, evicted.query)
+		}
+	}
+	entry := &queryEntry{vec: append([]float32(nil), vec...), createdAt: time.Now(), query: query}
+	c.items[query] = c.order.PushBack(entry)
 }

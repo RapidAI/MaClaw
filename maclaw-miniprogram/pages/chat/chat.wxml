@@ -1,0 +1,67 @@
+<view class="chat-page">
+  <view class="status-bar">
+    <view class="status-dot {{statusTone}}"></view>
+    <view class="status-text">{{statusText}}</view>
+    <text class="text-link" bindtap="goPair">{{binding ? '重新绑定' : '去绑定'}}</text>
+  </view>
+
+  <scroll-view
+    class="message-list"
+    scroll-y="{{true}}"
+    scroll-into-view="{{toView}}"
+    scroll-with-animation="{{true}}"
+    enhanced="{{true}}"
+    show-scrollbar="{{false}}"
+  >
+    <block wx:if="{{!messages.length}}">
+      <view class="empty">
+        <view class="empty-title">连接已就绪</view>
+        <view class="hint">发一条消息给你的码卡龙吧。提示语：“帮我列一下今天的工作”。</view>
+      </view>
+    </block>
+
+    <view
+      wx:for="{{messages}}"
+      wx:key="id"
+      id="msg-{{item.id}}"
+      class="msg-row {{item.role === 'me' ? 'msg-row-me' : ''}}"
+    >
+      <view class="bubble {{item.role === 'me' ? 'bubble-me' : ''}}">
+        <block wx:if="{{item.kind === 'tool'}}">
+          <view class="tool-card">
+            <view class="tool-title">工具调用</view>
+            <view class="tool-name">{{item.text}}</view>
+          </view>
+        </block>
+        <block wx:elif="{{item.kind === 'system'}}">
+          <view class="system-text">{{item.text}}</view>
+        </block>
+        <block wx:else>
+          <text class="bubble-text" user-select="{{true}}">{{item.text}}</text>
+        </block>
+        <view class="bubble-meta">
+          <text>{{item.time}}</text>
+          <block wx:if="{{item.role === 'me'}}">
+            <text class="meta-state {{item.state === 'failed' ? 'meta-failed' : ''}}"> · {{item.state === 'sent' ? '已送达' : (item.state === 'failed' ? '发送失败' : '发送中')}}</text>
+          </block>
+        </view>
+      </view>
+    </view>
+    <view class="list-tail" id="msg-tail"></view>
+  </scroll-view>
+
+  <view class="composer">
+    <input
+      class="composer-input"
+      value="{{draft}}"
+      placeholder="说点什么…"
+      placeholder-class="composer-placeholder"
+      bindinput="onDraftInput"
+      bindconfirm="send"
+      confirm-type="send"
+      adjust-position="{{true}}"
+      cursor-spacing="16"
+    />
+    <view class="send-btn {{canSend ? '' : 'send-btn-disabled'}}" bindtap="send">发送</view>
+  </view>
+</view>

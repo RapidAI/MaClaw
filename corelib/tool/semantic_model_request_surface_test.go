@@ -1,6 +1,7 @@
 package tool
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -134,6 +135,177 @@ func TestRecoverBoundModelRequestSurfaceSurvivesCoordinatorRestartWithoutRevivin
 		t.Fatalf("terminal surface recovered: %v", err)
 	}
 	_ = plan // fixture also proves recovery never needs a process-local plan copy.
+}
+
+func TestRecoverBoundModelRequestSurfacePreservesToolSnapshotIdentity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "semantic-execution-snapshot.db")
+	coordinator, err := NewSQLiteSemanticExecutionCoordinator(path, WithCoordinatorContinuityTenant("tenant-snapshot"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := semanticRegistry(t)
+	provider := semanticProvider("snapshot_adapter", "visual.capture.desktop", map[string]string{"display": "primary"}, EffectReadOnly)
+	plan, err := NewToolPlanner(registry).Plan(RouteRequest{
+		RootTaskID: "request-snapshot", SessionID: "session", TurnID: "turn",
+		Snapshot: semanticSnapshot(t, registry, []ProviderSpec{provider}),
+		Needs:    []CapabilityNeed{{ID: "capture", Capability: "visual.capture.desktop", Qualifiers: map[string]string{"display": "primary"}, Required: true}},
+	})
+	if err != nil {
+		coordinator.Close()
+		t.Fatal(err)
+	}
+	scope := InvocationScope{RootTaskID: plan.RootTaskID, PlanID: plan.ID, SessionID: "session", TurnID: "turn", PrincipalID: "principal", ToolSnapshotID: "toolsnap:surface-v1"}
+	issuer, err := NewInvocationIssuerWithStore([]byte(strings.Repeat("s", 32)), coordinator.Grants)
+	if err != nil {
+		coordinator.Close()
+		t.Fatal(err)
+	}
+	_, grants, err := coordinator.PublishSurface(SurfacePublishRequest{
+		Revision: RouteRevisionPublishRequest{Scope: scope, Plan: plan, SnapshotDigest: plan.SnapshotDigest},
+		TenantID: "tenant-snapshot", Issuer: issuer, GrantTTL: time.Minute, Now: time.Now().UTC(),
+	})
+	if err != nil || len(grants) != 1 {
+		coordinator.Close()
+		t.Fatalf("publish grants=%+v err=%v", grants, err)
+	}
+	if _, err := coordinator.PublishModelRequestSurface(ModelRequestSurfacePublish{
+		Scope: scope, Protocol: "provider/v1", ConnectionID: "connection-snapshot", Epoch: "epoch-snapshot",
+		Aliases: map[string]InvocationGrant{"opaque": grants[0]}, Now: time.Now().UTC(),
+	}); err != nil {
+		coordinator.Close()
+		t.Fatal(err)
+	}
+	if err := coordinator.BindModelRequestResponse("epoch-snapshot", "provider/v1", "connection-snapshot", "response-snapshot", time.Now().UTC()); err != nil {
+		coordinator.Close()
+		t.Fatal(err)
+	}
+	coordinator.Close()
+	reopened, err := NewSQLiteSemanticExecutionCoordinator(path, WithCoordinatorContinuityTenant("tenant-snapshot"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	recovered, err := reopened.RecoverBoundModelRequestSurface(ModelRequestSurfaceRecovery{TenantID: "tenant-snapshot", Protocol: "provider/v1", ConnectionID: "connection-snapshot", Epoch: "epoch-snapshot"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered.Scope.ToolSnapshotID != scope.ToolSnapshotID {
+		t.Fatalf("recovered snapshot=%q, want %q", recovered.Scope.ToolSnapshotID, scope.ToolSnapshotID)
+	}
+	var persisted string
+	if err := reopened.db.QueryRow(`SELECT tool_snapshot_id FROM semantic_model_request_surfaces WHERE epoch=?`, "epoch-snapshot").Scan(&persisted); err != nil {
+		t.Fatal(err)
+	}
+	if persisted != scope.ToolSnapshotID {
+		t.Fatalf("persisted surface snapshot=%q, want %q", persisted, scope.ToolSnapshotID)
+	}
+	if _, err := reopened.db.Exec(`UPDATE semantic_model_request_surfaces SET tool_snapshot_id=? WHERE epoch=?`, "toolsnap:surface-other", "epoch-snapshot"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := reopened.ResolveModelRequestAlias("epoch-snapshot", "provider/v1", "connection-snapshot", "response-snapshot", "opaque"); err == nil || err.Error() != "stale_surface" {
+		t.Fatalf("mismatched concrete surface snapshot was accepted: %v", err)
+	}
+	// Simulate a pre-migration request-surface row. The signed grant JSON still
+	// carries the concrete scope, so recovery must hydrate the legacy blank
+	// column rather than silently dropping the snapshot identity.
+	if _, err := reopened.db.Exec(`UPDATE semantic_model_request_surfaces SET tool_snapshot_id='' WHERE epoch=?`, "epoch-snapshot"); err != nil {
+		t.Fatal(err)
+	}
+	legacyRecovered, err := reopened.RecoverBoundModelRequestSurface(ModelRequestSurfaceRecovery{TenantID: "tenant-snapshot", Protocol: "provider/v1", ConnectionID: "connection-snapshot", Epoch: "epoch-snapshot"})
+	if err != nil || legacyRecovered.Scope.ToolSnapshotID != scope.ToolSnapshotID {
+		t.Fatalf("legacy recovery snapshot=%q err=%v", legacyRecovered.Scope.ToolSnapshotID, err)
+	}
+	if _, resolvedScope, err := reopened.ResolveModelRequestAlias("epoch-snapshot", "provider/v1", "connection-snapshot", "response-snapshot", "opaque"); err != nil || resolvedScope.ToolSnapshotID != scope.ToolSnapshotID {
+		t.Fatalf("resolved scope=%+v err=%v", resolvedScope, err)
+	}
+}
+
+// A pre-snapshot surface may contain a legacy grant whose signed scope has no
+// ToolSnapshotID, while the durable route/surface row has since been
+// canonicalized to a concrete snapshot. Recovery must retain that old grant
+// and let the explicit canonical validation path verify it; arbitrary direct
+// Validate calls remain strict.
+func TestModelRequestSurfaceRecoversLegacyGrantAgainstCanonicalScope(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy-surface.db")
+	coordinator, err := NewSQLiteSemanticExecutionCoordinator(path, WithCoordinatorContinuityTenant("tenant-legacy-surface"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	registry := semanticRegistry(t)
+	provider := semanticProvider("legacy_surface_adapter", "visual.capture.desktop", map[string]string{"display": "primary"}, EffectReadOnly)
+	plan, err := NewToolPlanner(registry).Plan(RouteRequest{RootTaskID: "legacy-surface", SessionID: "session", TurnID: "turn", Snapshot: semanticSnapshot(t, registry, []ProviderSpec{provider}), Needs: []CapabilityNeed{{ID: "capture", Capability: "visual.capture.desktop", Qualifiers: map[string]string{"display": "primary"}, Required: true}}})
+	if err != nil || len(plan.Selections) != 1 {
+		coordinator.Close()
+		t.Fatalf("plan=%+v err=%v", plan, err)
+	}
+	scope := InvocationScope{RootTaskID: plan.RootTaskID, PlanID: plan.ID, SessionID: "session", TurnID: "turn", PrincipalID: "principal", ToolSnapshotID: plan.SnapshotDigest}
+	key := []byte(strings.Repeat("u", 32))
+	issuer, err := NewInvocationIssuerWithStore(key, coordinator.Grants)
+	if err != nil {
+		coordinator.Close()
+		t.Fatal(err)
+	}
+	_, grants, err := coordinator.PublishSurface(SurfacePublishRequest{Revision: RouteRevisionPublishRequest{Scope: scope, Plan: plan, SnapshotDigest: plan.SnapshotDigest}, TenantID: "tenant-legacy-surface", Issuer: issuer, GrantTTL: time.Minute, Now: time.Now().UTC()})
+	if err != nil || len(grants) != 1 {
+		coordinator.Close()
+		t.Fatalf("publish grants=%+v err=%v", grants, err)
+	}
+	legacy := grants[0]
+	legacy.CatalogDigest = ""
+	legacy.Scope.ToolSnapshotID = ""
+	legacy.Token = invocationTokenForVersion(legacy, invocationGrantPayloadLegacy)
+	legacy.Signature = invocationGrantSignatureForVersion(key, legacy, invocationGrantPayloadLegacy)
+	legacyJSON, err := json.Marshal(legacy)
+	if err != nil {
+		coordinator.Close()
+		t.Fatal(err)
+	}
+	if _, err := coordinator.db.Exec(`UPDATE invocation_grants SET fingerprint=? WHERE nonce=?`, invocationGrantFingerprintForVersion(legacy, invocationGrantPayloadLegacy), legacy.Nonce); err != nil {
+		coordinator.Close()
+		t.Fatal(err)
+	}
+	if _, err := coordinator.db.Exec(`UPDATE semantic_route_materializations SET function_name=?, grant_json=? WHERE route_key=? AND function_name=?`, legacy.Token, legacyJSON, routeStateKey(scope), grants[0].Token); err != nil {
+		coordinator.Close()
+		t.Fatal(err)
+	}
+	if _, err := coordinator.PublishModelRequestSurface(ModelRequestSurfacePublish{Scope: scope, Protocol: "provider/v1", ConnectionID: "legacy-connection", Epoch: "legacy-epoch", Aliases: map[string]InvocationGrant{"opaque": legacy}, Now: time.Now().UTC()}); err != nil {
+		coordinator.Close()
+		t.Fatalf("publish legacy surface: %v", err)
+	}
+	if err := coordinator.BindModelRequestResponse("legacy-epoch", "provider/v1", "legacy-connection", "legacy-response", time.Now().UTC()); err != nil {
+		coordinator.Close()
+		t.Fatal(err)
+	}
+	if err := coordinator.Close(); err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := NewSQLiteSemanticExecutionCoordinator(path, WithCoordinatorContinuityTenant("tenant-legacy-surface"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	restarted, err := NewInvocationIssuerWithStore(key, reopened.Grants)
+	if err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := reopened.RecoverBoundModelRequestSurface(ModelRequestSurfaceRecovery{TenantID: "tenant-legacy-surface", Protocol: "provider/v1", ConnectionID: "legacy-connection", Epoch: "legacy-epoch"})
+	if err != nil {
+		t.Fatalf("recover legacy surface: %v", err)
+	}
+	recoveredGrant := recovered.Aliases["opaque"]
+	if recovered.Scope.ToolSnapshotID != scope.ToolSnapshotID || recoveredGrant.Scope.ToolSnapshotID != "" {
+		t.Fatalf("recovered scope=%+v grant scope=%+v", recovered.Scope, recoveredGrant.Scope)
+	}
+	if _, err := restarted.Validate(recoveredGrant, recovered.Scope, plan); err == nil || err.Error() != "invocation_grant_scope_mismatch" {
+		t.Fatalf("strict validation unexpectedly accepted legacy snapshot: %v", err)
+	}
+	if _, err := restarted.ValidateWithCanonicalScope(recoveredGrant, recovered.Scope, plan); err != nil {
+		t.Fatalf("canonical legacy validation failed: %v", err)
+	}
+	resolved, resolvedScope, err := reopened.ResolveModelRequestAlias("legacy-epoch", "provider/v1", "legacy-connection", "legacy-response", "opaque")
+	if err != nil || resolved.Scope.ToolSnapshotID != "" || resolvedScope.ToolSnapshotID != scope.ToolSnapshotID {
+		t.Fatalf("resolved grant=%+v scope=%+v err=%v", resolved, resolvedScope, err)
+	}
 }
 
 func TestRetireModelRequestSurfaceCannotWriteFinishedState(t *testing.T) {

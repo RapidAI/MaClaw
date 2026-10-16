@@ -95,7 +95,7 @@ func (r *RetryStrategy) decideElementNotFound(step StepSpec, count int, ps *Page
 			Reason:      "element not found, one more short retry",
 		}
 	default:
-		return &RetryDecision{ShouldRetry: false, Reason: "element not found after short retries; observe again for fresh refs"}
+		return &RetryDecision{ShouldRetry: false, Reason: "element not found after short retries; probe again for fresh refs"}
 	}
 }
 

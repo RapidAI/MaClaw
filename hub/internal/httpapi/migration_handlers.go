@@ -87,6 +87,7 @@ func (api *migrationAPI) RegisterRoutes(mux *http.ServeMux, requireTenantAdmin f
 	}
 	mux.HandleFunc("GET /api/v1/migration/instances", api.handleInstances)
 	mux.HandleFunc("GET /api/v1/migration/exports/current", api.handleCurrentExport)
+	mux.HandleFunc("GET /api/v1/migration/exports/{exportID}", api.handleGetExport)
 	mux.HandleFunc("POST /api/v1/migration/exports", api.handleCreateExport)
 	mux.HandleFunc("GET /api/v1/migration/exports/{exportID}/chunks/{index}/status", api.handleChunkStatus)
 	mux.HandleFunc("PUT /api/v1/migration/exports/{exportID}/chunks/{index}", api.handlePutChunk)
@@ -186,6 +187,27 @@ func (api *migrationAPI) handleCurrentExport(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"export": exportDTO(api.currentExport(r.Context(), p.TenantID, p.UserID)), "max_package_bytes": api.maxPackageBytes(r.Context(), p.TenantID)})
+}
+
+// handleGetExport is the read-only receipt probe used by durable Job
+// reconciliation. It is principal-scoped and never claims, replaces, uploads,
+// completes, or deletes an export.
+func (api *migrationAPI) handleGetExport(w http.ResponseWriter, r *http.Request) {
+	p, ok := api.principalFromRequest(w, r)
+	if !ok {
+		return
+	}
+	exportID := strings.TrimSpace(r.PathValue("exportID"))
+	row, err := api.getExport(r.Context(), p.TenantID, p.UserID, exportID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "LOOKUP_FAILED", err.Error())
+		return
+	}
+	if row == nil {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "migration export not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"export": exportDTO(row)})
 }
 
 func (api *migrationAPI) handleCreateExport(w http.ResponseWriter, r *http.Request) {

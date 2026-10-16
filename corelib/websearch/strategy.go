@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 )
@@ -133,10 +134,11 @@ func NormalizeWebSearchStrategy(strategy corelib.WebSearchStrategy) (corelib.Web
 	strategy.Version = corelib.WebSearchStrategyVersion
 	strategy.Preset = normalizePreset(strategy.Preset)
 	strategy.Mode = strings.ToLower(strings.TrimSpace(strategy.Mode))
-	// Smart and aggregate are reserved schema values for a later release. Until
-	// their schedulers exist, normalize them to the behavior we actually run so
-	// persisted or externally supplied configuration never over-promises.
-	if strategy.Mode != corelib.WebSearchModePriority {
+	// Unknown or empty modes fall back to priority so persisted or externally
+	// supplied configuration never over-promises.
+	switch strategy.Mode {
+	case corelib.WebSearchModePriority, corelib.WebSearchModeSmart, corelib.WebSearchModeAggregate:
+	default:
 		strategy.Mode = corelib.WebSearchModePriority
 	}
 	if strategy.HedgingDelayMS <= 0 || strategy.HedgingDelayMS > 5000 {
@@ -441,6 +443,48 @@ func SearchWithStrategyCtx(parent context.Context, query string, maxResults int,
 	var failures []string
 	attemptedBrowserEngines := make(map[string]bool)
 	hint := searchQuerySiteHint(query)
+	// finalizeResults applies the aggregate-mode rerank (host diversity cap and
+	// truncation) while leaving priority/smart order untouched.
+	finalizeResults := func(in []SearchResult) []SearchResult { return in }
+	if strategy.Mode == corelib.WebSearchModeAggregate {
+		finalizeResults = func(in []SearchResult) []SearchResult { return rerankAggregateResults(in, maxResults) }
+		candidates, failures = runAggregateEngines(ctx, query, maxResults, strategy, &response, candidates, failures, hint)
+		// Browser engines stay sequential in aggregate mode: two concurrent
+		// managed tabs would fight over a single browser profile. Drain them one
+		// at a time while the result set remains sparse.
+		for _, engine := range strategy.Engines {
+			enough := len(candidates) >= minInt(maxResults, strategy.MinResultsBeforeHedge) &&
+				(resultsCoverSiteHint(candidates, hint) || !stillNeedsBrowserAttempt(strategy, attemptedBrowserEngines, hint))
+			if enough || ctx.Err() != nil {
+				break
+			}
+			if !engine.Enabled || engine.Transport != corelib.WebSearchTransportBrowser {
+				continue
+			}
+			attemptedBrowserEngines[engine.ID] = true
+			results, attemptErr, elapsed, retryCount := searchStrategyEngine(ctx, query, maxResults, engine, strategy.BrowserHumanAssistEnabled)
+			validResults := mergeSearchResultsPrefer(nil, results, maxResults, hint)
+			attempt := SearchAttempt{EngineID: engine.ID, Transport: engine.Transport, DurationMS: elapsed.Milliseconds(), ResultCount: len(validResults), RetryCount: retryCount}
+			if attemptErr != nil {
+				attempt.Outcome = classifySearchError(attemptErr)
+				attempt.Detail = safeSearchErrorDetail(attemptErr)
+				failures = append(failures, fmt.Sprintf("%s: %s", engine.ID, attempt.Detail))
+			} else if len(validResults) == 0 {
+				attempt.Outcome = "no_results"
+				failures = append(failures, engine.ID+": no results")
+			} else {
+				attempt.Outcome = "success"
+				candidates = mergeSearchResultsPrefer(candidates, validResults, 0, hint)
+			}
+			response.Diagnostics = append(response.Diagnostics, attempt)
+			logSearchAttempt(query, attempt)
+		}
+		if len(candidates) >= minInt(maxResults, strategy.MinResultsBeforeHedge) && (resultsCoverSiteHint(candidates, hint) || !stillNeedsBrowserAttempt(strategy, attemptedBrowserEngines, hint)) {
+			response.Results = finalizeResults(candidates)
+			response.Degraded = len(response.Diagnostics) > 1
+			return response, nil
+		}
+	} else {
 	htmlUnavailable := 0
 	for _, engine := range strategy.Engines {
 		if !engine.Enabled {
@@ -448,6 +492,14 @@ func SearchWithStrategyCtx(parent context.Context, query string, maxResults int,
 		}
 		if builtinWebSearchEngines[engine.ID].NeedsKey && engine.APIKey == "" {
 			response.Diagnostics = append(response.Diagnostics, SearchAttempt{EngineID: engine.ID, Transport: engine.Transport, Outcome: "skipped", Detail: "missing API key"})
+			continue
+		}
+		if strategy.Mode == corelib.WebSearchModeSmart && webSearchCircuitOpen(engine.ID) {
+			// The smart scheduler honors the user's order but skips engines whose
+			// recent window shows nothing but failures, timeouts or empty results.
+			attempt := SearchAttempt{EngineID: engine.ID, Transport: engine.Transport, Outcome: "skipped", Detail: "circuit open: no successful attempts in the recent window"}
+			response.Diagnostics = append(response.Diagnostics, attempt)
+			logSearchAttempt(query, attempt)
 			continue
 		}
 		if shouldSkipToPreserveBrowserBudget(ctx, engine, strategy, attemptedBrowserEngines, hint) {
@@ -513,6 +565,7 @@ func SearchWithStrategyCtx(parent context.Context, query string, maxResults int,
 			break
 		}
 	}
+	}
 
 	if getBrowserSearchProvider() != nil {
 		for _, fallbackID := range remainingBrowserFallbackIDs(strategy, attemptedBrowserEngines, hint) {
@@ -531,7 +584,7 @@ func SearchWithStrategyCtx(parent context.Context, query string, maxResults int,
 				response.Diagnostics = append(response.Diagnostics, attempt)
 				logSearchAttempt(query, attempt)
 				if hint == "" || resultsCoverSiteHint(candidates, hint) {
-					response.Results = candidates
+					response.Results = finalizeResults(candidates)
 					response.Degraded = true
 					return response, nil
 				}
@@ -554,7 +607,7 @@ func SearchWithStrategyCtx(parent context.Context, query string, maxResults int,
 		}
 	}
 	if len(candidates) > 0 {
-		response.Results = candidates
+		response.Results = finalizeResults(candidates)
 		response.Degraded = true
 		return response, nil
 	}
@@ -568,6 +621,166 @@ func SearchWithStrategyCtx(parent context.Context, query string, maxResults int,
 		return response, fmt.Errorf("web search interrupted: %w", ctx.Err())
 	}
 	return response, fmt.Errorf("no enabled web search engines are available")
+}
+
+// Aggregate-mode limits: at most two hedged requests in flight and at most
+// three engines per query, so a slow engine can never fan out into a burst.
+const (
+	aggregateMaxConcurrentEngines = 2
+	aggregateMaxEngines           = 3
+	aggregateMaxResultsPerHost    = 2
+)
+
+type aggregateEngineOutcome struct {
+	engine  corelib.WebSearchEngineConfig
+	results []SearchResult
+	err     error
+	attempt SearchAttempt
+}
+
+// runAggregateEngines implements the aggregate scheduler: the first engine
+// starts immediately; after HedgingDelayMS without at least
+// MinResultsBeforeHedge usable results the next engine is hedged in, bounded
+// by aggregateMaxConcurrentEngines in-flight requests and aggregateMaxEngines
+// total. Remaining requests are cancelled once enough candidates arrive or
+// the shared budget (ctx) is exhausted. Browser engines are excluded here and
+// drained sequentially by the caller.
+func runAggregateEngines(ctx context.Context, query string, maxResults int, strategy corelib.WebSearchStrategy, response *SearchResponse, candidates []SearchResult, failures []string, hint string) ([]SearchResult, []string) {
+	var engines []corelib.WebSearchEngineConfig
+	for _, engine := range strategy.Engines {
+		if len(engines) >= aggregateMaxEngines {
+			break
+		}
+		if !engine.Enabled || engine.Transport == corelib.WebSearchTransportBrowser {
+			continue
+		}
+		if builtinWebSearchEngines[engine.ID].NeedsKey && engine.APIKey == "" {
+			response.Diagnostics = append(response.Diagnostics, SearchAttempt{EngineID: engine.ID, Transport: engine.Transport, Outcome: "skipped", Detail: "missing API key"})
+			continue
+		}
+		engines = append(engines, engine)
+	}
+	if len(engines) == 0 {
+		return candidates, failures
+	}
+	sparseThreshold := minInt(maxResults, strategy.MinResultsBeforeHedge)
+	hedgeDelay := time.Duration(strategy.HedgingDelayMS) * time.Millisecond
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	outcomes := make(chan aggregateEngineOutcome, len(engines))
+	launched, inFlight := 0, 0
+	launch := func() {
+		engine := engines[launched]
+		launched++
+		inFlight++
+		go func() {
+			results, attemptErr, elapsed, retryCount := searchStrategyEngine(runCtx, query, maxResults, engine, strategy.BrowserHumanAssistEnabled)
+			valid := mergeSearchResultsPrefer(nil, results, maxResults, hint)
+			outcomes <- aggregateEngineOutcome{engine: engine, results: valid, err: attemptErr, attempt: SearchAttempt{
+				EngineID: engine.ID, Transport: engine.Transport, DurationMS: elapsed.Milliseconds(),
+				ResultCount: len(valid), RetryCount: retryCount,
+			}}
+		}()
+	}
+	shouldHedge := func() bool {
+		return runCtx.Err() == nil && len(candidates) < sparseThreshold && launched < len(engines) && inFlight < aggregateMaxConcurrentEngines
+	}
+	launch()
+	hedge := time.NewTimer(hedgeDelay)
+	defer hedge.Stop()
+	hedgeC := hedge.C
+	for inFlight > 0 {
+		if runCtx.Err() == nil && len(candidates) >= maxResults {
+			// Enough candidates: stop hedging and drain the in-flight requests,
+			// which settle quickly once their context is cancelled.
+			cancel()
+			hedgeC = nil
+		}
+		select {
+		case outcome := <-outcomes:
+			inFlight--
+			attempt := outcome.attempt
+			if outcome.err != nil {
+				attempt.Outcome = classifySearchError(outcome.err)
+				attempt.Detail = safeSearchErrorDetail(outcome.err)
+				failures = append(failures, fmt.Sprintf("%s: %s", outcome.engine.ID, attempt.Detail))
+			} else if len(outcome.results) == 0 {
+				attempt.Outcome = "no_results"
+				failures = append(failures, outcome.engine.ID+": no results")
+			} else {
+				attempt.Outcome = "success"
+				candidates = mergeSearchResultsPrefer(candidates, outcome.results, 0, hint)
+			}
+			response.Diagnostics = append(response.Diagnostics, attempt)
+			logSearchAttempt(query, attempt)
+			// A settled engine that left the result set sparse hedges the next
+			// engine immediately instead of waiting out the remaining delay.
+			if shouldHedge() {
+				launch()
+			}
+		case <-hedgeC:
+			hedgeC = nil
+			if shouldHedge() {
+				launch()
+				if launched < len(engines) {
+					hedge.Reset(hedgeDelay)
+					hedgeC = hedge.C
+				}
+			}
+		case <-runCtx.Done():
+			hedgeC = nil
+		}
+	}
+	return candidates, failures
+}
+
+// rerankAggregateResults applies the aggregate-mode result policy on the
+// stably merged candidate list. Merge order already encodes the priority
+// bucket and the per-source rank, so this first version only enforces host
+// diversity — at most two results per host — before truncating to the limit.
+func rerankAggregateResults(results []SearchResult, limit int) []SearchResult {
+	counts := make(map[string]int, len(results))
+	out := make([]SearchResult, 0, len(results))
+	for _, result := range results {
+		host := ""
+		if u, err := url.Parse(canonicalSearchResultURL(result.URL)); err == nil && u != nil {
+			host = u.Host
+		}
+		if host != "" {
+			if counts[host] >= aggregateMaxResultsPerHost {
+				continue
+			}
+			counts[host]++
+		}
+		out = append(out, result)
+		if limit > 0 && len(out) >= limit {
+			break
+		}
+	}
+	return out
+}
+
+// SuggestWebSearchPreset recommends a preset from the query language. It only
+// suggests; callers never switch presets automatically. It returns an empty
+// string when the query carries no language signal.
+func SuggestWebSearchPreset(query string) string {
+	hasHan := false
+	hasLatin := false
+	for _, r := range query {
+		switch {
+		case unicode.Is(unicode.Han, r):
+			hasHan = true
+		case unicode.IsLetter(r):
+			hasLatin = true
+		}
+	}
+	if hasHan {
+		return corelib.WebSearchPresetMainland
+	}
+	if hasLatin {
+		return corelib.WebSearchPresetInternational
+	}
+	return ""
 }
 
 // ProbeWebSearchEngineCtx validates one engine with a cold-start-friendly
@@ -636,6 +849,7 @@ func ProbeWebSearchEngineCtx(parent context.Context, query string, maxResults in
 }
 
 func logSearchAttempt(query string, attempt SearchAttempt) {
+	recordWebSearchAttempt(attempt)
 	// Log only a short irreversible query fingerprint. Never log query text,
 	// credentials, cookies, result URLs, snippets, or browser page content.
 	log.Printf("[web-search] query_hash=%s engine_id=%s transport=%s elapsed_ms=%d result_count=%d retry_count=%d outcome=%s",

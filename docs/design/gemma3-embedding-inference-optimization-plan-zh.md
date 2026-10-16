@@ -28,7 +28,7 @@ UIC、工具路由、Hub / HubCenter class head、知识库向量化、TTS `Embe
 
 包头注释（`corelib/embedding/gemma.go`）写明架构：
 
-- Gemma2-style transformer：GQA（3 heads / 1 KV head）、QK-norm、post-attn RMSNorm、post-FFN RMSNorm、SiLU-gated FFN、RoPE
+- Gemma 3 embedding：双向 GQA（3 heads / 1 KV head）、QK-norm、post-attn RMSNorm、post-FFN RMSNorm、GeGLU（gelu_pytorch_tanh）、对称滑窗（周期 6，半窗 256）与双 RoPE（局部 10000 / 全局 1e6）。下文融合图里的 SiLUMul 在数值上已是 GELUMul，融合边界不变。
 - 输出：mean-pool → L2 normalize；MRL 截断 768 → 512 / 256 / 128
 - 权重量化：大矩阵保持 Q8_0 mmap，按 block 在 MatMul 内反量化；norm 向量解到 float32
 
@@ -46,6 +46,9 @@ UIC、工具路由、Hub / HubCenter class head、知识库向量化、TTS `Embe
 | `MaxSeqLen` | `*.context_length` | 2048 |
 | `RMSNormEps` | `*.attention.layer_norm_rms_epsilon` | 1e-6 |
 | `RopeTheta` | `*.rope.freq_base` | 1e6 |
+| `RopeThetaLocal` | `*.rope.freq_base_swa`，缺省 10000 | 10000 |
+| `SlidingWindow` | `*.attention.sliding_window`，缺省 512 | 512 |
+| `SWAPeriod` | `*.attention.sliding_window_pattern`，缺省 6 | 6 |
 | 输出维 | `NewGemmaEmbedder(path, dim)` | UIC 默认 256；TTS 传 768 |
 
 Early-exit（`gemma.go` `NewGemmaEmbedder`）：`dim<=128` → `NLayers*2/3`（24→16）；`dim<=256` → `NLayers*3/4`（24→18）；`dim>256`（TTS 768）关闭。
@@ -1069,7 +1072,7 @@ PR5（8745HS，无后端）：开关灰掉，无徽章。PR6 在有 NPU 的机�
 
 ```text
 corelib/embedding/
-  gemma.go                 加载、PrepareScales、静态 cache 预乘 sqrt(dim)、early exit
+  gemma.go                 加载、PrepareScales、静态 cache 预乘 sqrt(dim)、可选 SetEarlyExit
   gemma_infer.go           layerLoop；fusion 开关；maxWorkers 下传
   gemma_scratch.go         新建（2a 分桶；2b arena）
   testdata/embed_gate_zh.txt
@@ -1448,6 +1451,11 @@ PR2b 加 `TestScratchOverlayPoison`（C.3 每一对 alias）。
 
 | 日期 | 说明 |
 |---|---|
+| 2026-10-02 | MADDWD 第三轮（AVX2 内核微架构优化，纯 AVX2、未引入 AVX-512）：①M8 内核 k 循环展开 ×2（24/36 block 均为偶数），循环控制开销减半；②`VPMOVSXBW` 用内存操作数形式（去掉 2 条 VMOVDQU）；③**每行 a16 两半各被 block 消费一次** → 两条 `VPMADDWD` 直接带内存操作数（再去掉 16 条 VMOVDQU/块），每块指令 61→48（−21%），Zen4 FP0/FP1 乘法口（16 VPMADDWD + 8 VFMADD231PS = 12 周期/块）成为唯一瓶颈；④epilogue 改 shuffle 树归约（256→128 fold + 两级 VSHUFPS/VADDPS）+ aS[0..7] 两次向量乘 + `VEXTRACTPS` 跨步行存储，每列 ~95→~55 指令；⑤M4 内核同步改 mem 操作数 VPMOVSXBW（A 被双列复用，保持寄存器加载）。同进程交错 A/B（~1ms 粒度成对采样，5×2000 对）：N24 M=48 形状内核 **−17~21%**。预取距离 A/B（256/1024/2048/4096）端到端无差异，保持 256/324。长稳态 profile：maddwd 内核 flat 73.4%（扣除 GGUF 载入噪声后 ~85%），确认 GEMM 是 AVX2 路径几乎唯一杠杆，注意力仅 ~4%。门：`TestGemmaMaddwdM8*`、tensor 全量、`MACLAW_EMBED_NO_VNNI=1` embedding 全量（含 `TestFusionOffVsOnCosine` 与 `embed_gate_zh.txt` 数值门）、arm64 编译烟测，全绿。注意：本机后台负载（IDE/webview）干扰大，端到端绝对值波动 ±20%，内核级交错 A/B 为准。 |
+| 2026-09-23 | 注意力 QK/AV 批处理（第四轮）：①Q·K 由逐 query `tensor.Dot` 改为 staging 连续 q 面板后 `MultiDot4/8`——K 行每 tile 只流一次（微基准 512×4×256：multiDot4 25µs vs 4×dot256AVX2 37µs / 4×dot256AVX512 33µs）；②query tile nQ 4→8（K/V 摊薄翻倍），新增 `weightedSumBatchedContig256n8`（8-query AV，dim=256 两半复用 wsumBatched8*128 内核），gqaHead 剩余 4-7 query 走 nQ=4 tile 再落单 query；③score tile 改 `gqaTilePool` 8×seq。同窗口 A/B（AVX2 配置）：~900 token 354-502ms → 299-302ms（+15-18%），~50 token 21.1→19.6ms（+5-7%）；修复后 profile：GEMM 61%（已达 maddwd 发射上限，内核已带 PREFETCHT0）、注意力 14%。s16 QK 内核经评估放弃（QK 占比仅 5.6%，上限 ~3% e2e）。 |
+| 2026-09-23 | 注意力长尾修复（收益与 ISA 无关，在 AVX2 配置下实测）：`gqaAttention` 原 `seq<=512` 上限之外（MaxSeqLen=2048）的每个 query 都跌入单 query strided 慢路径（未向量化的 `weightedSumContigN` + 标量 softmax），~900 token 文本中该路径占 29%、注意力合计 ~90%。修复：①移除 512 上限，batched nQ=4 tile 改用 pooled 4×seq score tile（`gqaTilePool`）；②seq≥64 时 6 个头并行 goroutine（头间 out 列不相交、每 goroutine 自有 tile）。~900 token Embed：2068ms → 288ms（**7.2×**）；medium/short/batch 无回退。长文本（~300 token）行已加入 `embed_gate_zh.txt` 数值门（cosine=1.000000）。新增 `BenchmarkEmbed_Long`。顺带实验：M4-2col vs M8-1col 内核形状对比（`BenchmarkGemmaM4VsM8Shape`），M4 指令/MAC 少 ~40% 但权重加载摊薄减半，三形状均 M8 快 15-25% → seq≥5 保持 M8 分派。 |
+| 2026-09-23 | MADDWD 第二轮：①**修复隐患**——M8 尾块原复用 `gemmaGemmM3/M4*`（AVX-512 内核，无门控），AVX2-only 机器上 seq 非 8 倍数会 SIGILL；现改为零填充 pad 行的 M8 内核写 8×N scratch 后按行拷贝（`gemmaMaddwdTailPool`）。②**M4 双列内核** `gemmaMaddwdRowM4N{24,36}AVX2`（4 行×2 列/迭代，16 YMM 全分配），覆盖 seq 3-4（pad 到 4），同时接管 M8 尾块中 3-4 行的场景（免 pad 浪费）。③入口门槛 seq≥8→seq≥3（seq 3-4 走 M4Range，≥5 走 M8Range+ M4 尾）。注意：8 字节的 3-token 短文本在本机（AVX-512）仍被 `*GemmaShort` 路径截获，A/B 需看层级基准；层级基准（seq4，4 worker）：M4 maddwd（纯 AVX2）比本机 AVX-512 f32 泛型快 ~18%，目标 AVX2 机器上泛型更慢（dotQ8RowScaledAVX2 ~28 指令/32MAC），优势 ~45%+。端到端 Embed ~50 token：20.0ms vs f32 28-29ms（干净 A/B，−30%）。全量测试两种配置通过。文件：新增 `gemma_maddwd_m4_amd64.s`。 |
+| 2026-09-23 | 已落地（VNNI M8 之后）：AVX2 MADDWD M8 路径。为 AVX2-only 机器镜像 VNNI M8 架构——激活预量化 s16（每行 absmax→16383 缩放，`gemmaQuantizeS16AVX2`）+ `VPMADDWD` int8 dot（`gemmaMaddwdRowM8N{24,36}AVX2`，直接读 Q8_0 Data+Scales，无需 Packed）。接入 `MatMulQ8PackedQKV` / `MatMulQ8DualOut` / `MatMulQ8RMSResidual`（VNNI 之后，seq≥8，K∈{768,1152}）。门：`TestGemmaMaddwdM8*` 交叉验证 + `MACLAW_EMBED_NO_VNNI=1` 下 `TestFusionOffVsOnCosine`；kill-switch `MACLAW_EMBED_NO_MADDWD=1`。8745HS 实测（16 线程）：M8 内核 tile 419µs vs f32 797µs（+47%）；端到端 Embed ~50 token 24.0ms vs 38.4ms（**−37%**，超过 −20% 目标）。文件：`gemma_maddwd_m8_amd64.{go,s}`、`gemma_maddwd_m8_other.go`、测试/基准同名。 |
 | 2026-08-19 | 初稿。基于 `gemma.go` / `gemma_infer.go` / `tensor` / SenseVoice 融合先例核对。 |
 | 2026-08-19 | 评审修订：PR1 同步 per-call GEMM cap；拆 2a/2b/2c 与 3a/3b；F2/F3b/F4 签名与 384 tile；arena 布局表；TTS 类型断言；N24 vs dequant-once；PR6 附录；T_exact/T_gemm；`CurrentAccelInfo`。 |
 | 2026-08-19 | 用户决定：关于页产品名后「硬件加速」徽章仅 `Backend==amd-npu` 且开关开；系统设置探测门控开关（有 NPU 默认开，无 NPU 灰掉未勾选）；`embed_hw_accel` 缺省 true、无 NPU 不写 false；PR5 含真开关与徽章骨架，PR6 才点亮徽章。8745HS 无 NPU，其它机器有 NPU，探测失败仍是一等公民。 |

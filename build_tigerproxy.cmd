@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableDelayedExpansion
 
-echo [INFO] Building TigerProxy...
+echo [INFO] Building CodexProxy...
 
 set "ROOT=%~dp0"
 
@@ -18,7 +18,7 @@ if !errorlevel! neq 0 (
     exit /b 1
   )
 )
-set "APP_NAME=TigerProxy"
+set "APP_NAME=CodexProxy"
 set "OUTPUT_DIR=%ROOT%dist"
 set "TIGER_DIR=%ROOT%TigerProxy"
 set "ICON_PATH=%TIGER_DIR%\assets\maclaw.ico"
@@ -34,7 +34,7 @@ if not exist "%GOVERSIONINFO_PATH%" (
 )
 
 echo [Step 1/3] Preparing Windows resources...
-"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "$version='0.1.0.1'; $manifest = Get-Content '%ROOT%build\windows\wails.exe.manifest' -Raw; $manifest = $manifest.Replace('{{.Name}}','TigerProxy').Replace('{{.Info.ProductVersion}}',$version); [System.IO.File]::WriteAllText('%TIGER_DIR%\wails.exe.manifest.tmp', $manifest, [System.Text.UTF8Encoding]::new($false)); $versionInfo = @{ FixedFileInfo = @{ FileVersion = @{ Major = 0; Minor = 1; Patch = 0; Build = 1 }; ProductVersion = @{ Major = 0; Minor = 1; Patch = 0; Build = 1 } }; StringFileInfo = @{ Comments = 'TigerProxy: CodeGen protocol proxy'; CompanyName = 'QianXin'; FileDescription = 'TigerProxy'; FileVersion = $version; InternalName = 'TigerProxy'; LegalCopyright = 'Copyright (C) 2026 QianXin'; OriginalFilename = 'TigerProxy.exe'; ProductName = 'TigerProxy'; ProductVersion = $version }; VarFileInfo = @{ Translation = @{ LangID = '0409'; CharsetID = '04B0' } } } | ConvertTo-Json -Depth 6; [System.IO.File]::WriteAllText('%TIGER_DIR%\versioninfo.json.tmp', $versionInfo, [System.Text.UTF8Encoding]::new($false))"
+"%SystemRoot%\System32\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -Command "$version='0.1.0.1'; $manifest = Get-Content '%ROOT%build\windows\wails.exe.manifest' -Raw; $manifest = $manifest.Replace('{{.Name}}','CodexProxy').Replace('{{.Info.ProductVersion}}',$version); [System.IO.File]::WriteAllText('%TIGER_DIR%\wails.exe.manifest.tmp', $manifest, [System.Text.UTF8Encoding]::new($false)); $versionInfo = @{ FixedFileInfo = @{ FileVersion = @{ Major = 0; Minor = 1; Patch = 0; Build = 1 }; ProductVersion = @{ Major = 0; Minor = 1; Patch = 0; Build = 1 } }; StringFileInfo = @{ Comments = 'CodexProxy: local protocol proxy for Codex'; CompanyName = 'QianXin'; FileDescription = 'CodexProxy'; FileVersion = $version; InternalName = 'CodexProxy'; LegalCopyright = 'Copyright (C) 2026 QianXin'; OriginalFilename = 'CodexProxy.exe'; ProductName = 'CodexProxy'; ProductVersion = $version }; VarFileInfo = @{ Translation = @{ LangID = '0409'; CharsetID = '04B0' } } } | ConvertTo-Json -Depth 6; [System.IO.File]::WriteAllText('%TIGER_DIR%\versioninfo.json.tmp', $versionInfo, [System.Text.UTF8Encoding]::new($false))"
 if !errorlevel! neq 0 goto :error
 
 echo [Step 2/3] Generating resource syso...
@@ -42,7 +42,7 @@ del /q "%TIGER_DIR%\resource_windows_*.syso" 2>nul
 "%GOVERSIONINFO_PATH%" -64 -icon "%ICON_PATH%" -manifest "%TIGER_DIR%\wails.exe.manifest.tmp" -o "%TIGER_DIR%\resource_windows_amd64.syso" "%TIGER_DIR%\versioninfo.json.tmp"
 if !errorlevel! neq 0 goto :error
 
-echo [Step 3/3] Compiling TigerProxy...
+echo [Step 3/3] Compiling CodexProxy...
 pushd "%TIGER_DIR%"
 set "GOOS=windows"
 set "GOARCH=amd64"
@@ -56,14 +56,14 @@ popd
 
 del /q "%TIGER_DIR%\resource_windows_amd64.syso" "%TIGER_DIR%\wails.exe.manifest.tmp" "%TIGER_DIR%\versioninfo.json.tmp" 2>nul
 
-echo [SUCCESS] TigerProxy built: %OUTPUT_DIR%\%APP_NAME%.exe
+echo [SUCCESS] CodexProxy built: %OUTPUT_DIR%\%APP_NAME%.exe
 echo.
 pause
 endlocal
 goto :eof
 
 :error
-echo [FAILED] TigerProxy build failed.
+echo [FAILED] CodexProxy build failed.
 echo.
 pause
 endlocal

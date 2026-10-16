@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/fileutil"
 )
 
 // EnsureSkillIDBeforeUpload guarantees that a skill has a valid SkillID
@@ -46,7 +47,9 @@ func EnsureSkillIDBeforeUpload(entry *corelib.NLSkillEntry, uploaderEmail string
 		return "", fmt.Errorf("auto-generated skill id %q is invalid (this is a bug)", skillID)
 	}
 
-	// Assign to entry
+	// Assign to entry, but retain the pre-image so a persistence failure does
+	// not leave callers with an identity that was never written to disk.
+	originalSkillID, originalPublisher := entry.SkillID, entry.Publisher
 	entry.SkillID = skillID
 	if dot := strings.IndexByte(skillID, '.'); dot > 0 {
 		entry.Publisher = skillID[:dot]
@@ -55,8 +58,12 @@ func EnsureSkillIDBeforeUpload(entry *corelib.NLSkillEntry, uploaderEmail string
 	// Persist to skill.yaml on disk (if directory-backed skill)
 	if entry.SkillDir != "" {
 		if err := insertSkillIDIntoYAML(entry.SkillDir, skillID); err != nil {
-			log.Printf("[skill-id] warning: could not persist id %q to skill.yaml: %v", skillID, err)
-			// Non-fatal: the ID is still in memory for this upload
+			entry.SkillID = originalSkillID
+			entry.Publisher = originalPublisher
+			// The generated identity is part of the durable upload contract. Do
+			// not continue with an in-memory-only id: a retry or another process
+			// would observe a different identity and could publish a second skill.
+			return "", fmt.Errorf("persist skill id %q: %w", skillID, err)
 		}
 	}
 
@@ -114,7 +121,7 @@ func insertSkillIDIntoYAML(skillDir, skillID string) error {
 		}
 	}
 
-	return os.WriteFile(yamlPath, []byte(newContent), 0o644)
+	return fileutil.AtomicWriteFile(yamlPath, []byte(newContent), 0o644)
 }
 
 // maskEmail masks an email for logging: "zhangsan@gmail.com" → "zha***@gmail.com"

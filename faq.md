@@ -133,6 +133,8 @@ server {
 | Hub Go 代码 | MaClawProviderClient.TimeoutSec | 600（默认） | Hub → HubCenter 的 HTTP 超时 |
 | HubCenter Go 代码 | proxyStreamingHTTPClient | ResponseHeaderTimeout=600s | HubCenter → 后端 API 首字节超时 |
 
+桌面 Bot 的同步 `/messages` 不使用这张 SSE 表。那条请求在响应头写出之前没有字节，Hub 客户端、`hub.mypapers.top` 的 `location /`、`maclawsrv.mypapers.top` 的 `location /`，以及 maclawsrv 的单次写超时要一起加长。当前共享预算是 30 分钟，改法和生产 nginx 的文件位置见 [docs/bot-message-timeout-ops-zh.md](docs/bot-message-timeout-ops-zh.md)。同一台 Hub 上的 `/api/llm/` 仍按上表保持 600 秒。
+
 **4. 验证方法**：
 
 在 HubCenter 服务器上直接测试后端 API 是否正常响应长输出请求：

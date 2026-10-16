@@ -134,7 +134,8 @@ Rules:
 - workflow_type: copy from the tree annotation if the intent has one; use "" if none
 - Score guide: very confident 0.85-0.95, fairly confident 0.65-0.84, uncertain 0.40-0.64
 - Focus on the ACTION (what the user wants to do) and the OBJECT (what they want to do it to)
-- Key test: does the output require DESIGN DECISIONS (audience, structure, style)? If yes → workflow. If the output is deterministic from the input (translate, summarize, convert) → no workflow.
+- workflow_task only when the user is asking to START one of that label's panel projects (PRD, business plan, research report, paper, bid, patent, event plan, and the other listed types). The object merely resembling a paper, report, or plan is not enough. Continuing a document this conversation already has is file_write, not workflow_task. A video, animation, image, audio clip, or story the user wants produced in this conversation is non_coding, even if it asks for style, plot, or several scenes. Leave workflow_type empty. Design latitude alone is not a workflow.
+- "生成一段动画/视频" / "make a cartoon" → non_coding, not workflow_task
 - "基于文档" does NOT mean "content processing" — "基于文档做PPT" still needs audience targeting + content architecture + visual design → office (workflow_type="presentation_design")
 - Short action phrases (≤5 chars) like "继续"/"开工"/"go ahead" → continuation
 - "生成/制作/设计 PPT" or "基于X做PPT" = needs design decisions → office (workflow_type="presentation_design")
@@ -143,6 +144,8 @@ Rules:
 - web_fetch requires a concrete URL in the user message. Never use web_fetch for a city, weather, price, or other open-ended request without a URL; those current facts are live_data.
 - A composite request may keep a lookup label (search / live_data) together with document_generate when the user wants current facts rendered as a PDF. Same-domain exclusivity still applies (document_generate vs opening an existing file; document_generate vs workflow_task).
 - Current externally acquired facts rendered as a PDF → live_data + document_generate, workflow_type=""
+- Drawing current facts as a trend chart, line chart, candlestick, or infographic (股价趋势图、走势图、折线图) → live_data_visual, never document_generate. document_generate is a PDF file only.
+- Searching the web for a photo and placing it in a new deck (网上搜索一张照片做成PPT) → office primary with search as the next candidate, workflow_type="presentation_design". Do not drop the search half.
 - "帮我写一份研究报告" → workflow_task (multi-phase research), not document_generate
 - When a message is genuinely ambiguous without context, give the top candidate a lower score (0.50-0.65) rather than forcing high confidence`
 
@@ -229,8 +232,18 @@ func TreeResponseFormat() map[string]interface{} {
 }
 
 // ParseTreeResponse parses the LLM response into TreeCandidate list.
-// Handles: <think>...</think> + JSON, plain JSON, JSON in prose.
+// Handles: <think>...</think> + JSON, plain JSON, fenced JSON, and JSON
+// buried in prose (including chain-of-thought that quotes other braces
+// before the final answer).
 func ParseTreeResponse(text string) []TreeCandidate {
+	candidates := parseTreeResponseQuiet(text)
+	if len(candidates) == 0 {
+		log.Printf("[intent-tree] failed to parse LLM response: len=%d snippet=%q", len(text), RedactTreeSnippet(text, 120))
+	}
+	return candidates
+}
+
+func parseTreeResponseQuiet(text string) []TreeCandidate {
 	// Strip <think> block if present.
 	if idx := strings.LastIndex(text, "</think>"); idx >= 0 {
 		text = text[idx+len("</think>"):]
@@ -241,29 +254,101 @@ func ParseTreeResponse(text string) []TreeCandidate {
 	if candidates := tryParseTreeJSON(text); len(candidates) > 0 {
 		return candidates
 	}
+	// Scan every balanced JSON object (string-aware) and prefer the last
+	// one that parses: reasoning models usually put the answer at the end.
+	objs := balancedJSONObjects(text)
+	for i := len(objs) - 1; i >= 0; i-- {
+		if candidates := tryParseTreeJSON(objs[i]); len(candidates) > 0 {
+			return candidates
+		}
+	}
+	return nil
+}
 
-	// Try extracting JSON object from prose.
-	if start := strings.Index(text, "{"); start >= 0 {
-		// Find matching closing brace.
-		depth := 0
-		for i := start; i < len(text); i++ {
-			switch text[i] {
-			case '{':
-				depth++
-			case '}':
+// balancedJSONObjects returns top-level {...} spans, ignoring braces inside
+// JSON string literals.
+func balancedJSONObjects(text string) []string {
+	var out []string
+	depth, start := 0, -1
+	inStr, esc := false, false
+	for i := 0; i < len(text); i++ {
+		c := text[i]
+		if inStr {
+			switch {
+			case esc:
+				esc = false
+			case c == '\\':
+				esc = true
+			case c == '"':
+				inStr = false
+			}
+			continue
+		}
+		switch c {
+		case '"':
+			if depth > 0 {
+				inStr = true
+			}
+		case '{':
+			if depth == 0 {
+				start = i
+			}
+			depth++
+		case '}':
+			if depth > 0 {
 				depth--
-				if depth == 0 {
-					if candidates := tryParseTreeJSON(text[start : i+1]); len(candidates) > 0 {
-						return candidates
-					}
+				if depth == 0 && start >= 0 {
+					out = append(out, text[start:i+1])
+					start = -1
 				}
 			}
 		}
 	}
-
-	log.Printf("[intent-tree] failed to parse LLM response: %.200s", text)
-	return nil
+	return out
 }
+
+// RedactTreeSnippet shortens a model reply for logs and blanks quoted
+// spans, which is where models echo the user's message.
+func RedactTreeSnippet(text string, max int) string {
+	var b, q strings.Builder
+	inQuote := false
+	for _, r := range text {
+		switch r {
+		case '"', '\u201c', '\u201d', '\u300c', '\u300d':
+			if inQuote {
+				// Keep short quoted tokens (JSON keys, labels); blank long
+				// ones, which is where models echo the user's message.
+				if len([]rune(q.String())) <= 24 {
+					b.WriteString(q.String())
+				} else {
+					b.WriteString("…")
+				}
+				q.Reset()
+			}
+			b.WriteRune('"')
+			inQuote = !inQuote
+			continue
+		}
+		if inQuote {
+			q.WriteRune(r)
+		} else {
+			b.WriteRune(r)
+		}
+	}
+	if inQuote {
+		b.WriteString("…")
+	}
+	out := []rune(strings.Join(strings.Fields(b.String()), " "))
+	if len(out) > max {
+		out = append(out[:max], '…')
+	}
+	return string(out)
+}
+
+// treeJSONRetryInstruction is appended on the single retry after a reply
+// without a parseable answer (seen with hub "auto" models that ignore
+// response_format and answer with chain-of-thought prose).
+const treeJSONRetryInstruction = "\n\nIMPORTANT: Your previous reply contained no JSON. Do not explain or reason in the output. Reply with ONLY one JSON object of the form {\"top\":[{\"skill\":\"<label>\",\"score\":0.0,\"workflow_type\":\"\"}]} and nothing else."
 
 // tryParseTreeJSON attempts to parse a JSON string into TreeCandidate list.
 func tryParseTreeJSON(s string) []TreeCandidate {
@@ -330,12 +415,15 @@ func workflowTypeAllowed(label IntentLabel, workflowType string) bool {
 // The treeText parameter should be pre-built via BuildIntentTreeText
 // to avoid rebuilding on every call.
 func ClassifyByTree(llmFunc LLMClassifyFunc, treeText, message string) ([]TreeCandidate, error) {
-	return ClassifyByTreeContext(context.Background(), nil, llmFunc, treeText, message)
+	return ClassifyByTreeContext(context.Background(), context.Background(), nil, llmFunc, treeText, message)
 }
 
 // ClassifyByTreeContext runs tree reasoning with a caller-owned cancellation
-// context. The original callback remains supported for compatibility.
-func ClassifyByTreeContext(ctx context.Context, llmContextFunc LLMClassifyContextFunc, llmFunc LLMClassifyFunc, treeText, message string) ([]TreeCandidate, error) {
+// context. The original callback remains supported for compatibility. ctx
+// carries the classification budget; parentCtx is the caller's user/turn
+// context passed through to the context-aware callback (see
+// LLMClassifyContextFunc).
+func ClassifyByTreeContext(ctx context.Context, parentCtx context.Context, llmContextFunc LLMClassifyContextFunc, llmFunc LLMClassifyFunc, treeText, message string) ([]TreeCandidate, error) {
 	if llmContextFunc == nil && llmFunc == nil {
 		return nil, fmt.Errorf("LLM classify function is nil")
 	}
@@ -350,7 +438,7 @@ func ClassifyByTreeContext(ctx context.Context, llmContextFunc LLMClassifyContex
 	var response string
 	var err error
 	if llmContextFunc != nil {
-		response, err = llmContextFunc(ctx, prompt, message)
+		response, err = llmContextFunc(ctx, parentCtx, prompt, message)
 	} else {
 		response, err = llmFunc(prompt, message)
 	}
@@ -358,9 +446,24 @@ func ClassifyByTreeContext(ctx context.Context, llmContextFunc LLMClassifyContex
 		return nil, fmt.Errorf("tree reasoning LLM call failed: %w", err)
 	}
 
-	candidates := ParseTreeResponse(response)
+	candidates := parseTreeResponseQuiet(response)
 	if len(candidates) == 0 {
-		return nil, &TreeResponseProtocolError{}
+		log.Printf("[intent-tree] unparseable reply, retrying once: len=%d snippet=%q", len(response), RedactTreeSnippet(response, 120))
+		if ctx != nil && ctx.Err() != nil {
+			return nil, &TreeResponseProtocolError{}
+		}
+		retryPrompt := prompt + treeJSONRetryInstruction
+		if llmContextFunc != nil {
+			response, err = llmContextFunc(ctx, parentCtx, retryPrompt, message)
+		} else {
+			response, err = llmFunc(retryPrompt, message)
+		}
+		if err == nil {
+			candidates = ParseTreeResponse(response)
+		}
+		if len(candidates) == 0 {
+			return nil, &TreeResponseProtocolError{}
+		}
 	}
 
 	return candidates, nil

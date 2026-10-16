@@ -15,7 +15,7 @@ func WorkloadHintHeaderValues(cfg corelib.MaclawLLMConfig) map[string]string {
 	if !cfg.ShouldSendWorkloadHints() {
 		return nil
 	}
-	out := make(map[string]string, 4)
+	out := make(map[string]string, 5)
 	setHint := func(key, value string) {
 		value = strings.TrimSpace(value)
 		if value == "" {
@@ -27,6 +27,9 @@ func WorkloadHintHeaderValues(cfg corelib.MaclawLLMConfig) map[string]string {
 	setHint(llmpool.WorkflowTypeHeader, cfg.WorkflowTypeHint)
 	setHint(llmpool.PhaseKindHeader, cfg.PhaseKindHint)
 	setHint(llmpool.TaskTypeHeader, cfg.TaskTypeHint)
+	// Service group is optional. Empty leaves Hub on the viewer's entitlements,
+	// which is how the GUI bills. A set value is a pin to that one group.
+	setHint(llmpool.ServiceGroupIDHeader, cfg.ServiceGroupID)
 	if len(out) == 0 {
 		return nil
 	}

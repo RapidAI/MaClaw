@@ -1,0 +1,164 @@
+.chat-page {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  background: var(--bg);
+}
+
+.status-bar {
+  display: flex;
+  align-items: center;
+  padding: 16rpx 32rpx;
+  background: #ffffff;
+  border-bottom: 2rpx solid var(--line);
+  font-size: 24rpx;
+  color: var(--ink-2);
+}
+
+.status-dot {
+  width: 16rpx;
+  height: 16rpx;
+  border-radius: 50%;
+  background: #c9ccd2;
+  margin-right: 12rpx;
+}
+
+.status-dot.online {
+  background: #34a853;
+}
+
+.status-dot.waiting {
+  background: #f2b21e;
+}
+
+.status-dot.error {
+  background: #e5484d;
+}
+
+.status-text {
+  flex: 1;
+}
+
+.message-list {
+  flex: 1;
+  padding: 24rpx 32rpx 8rpx;
+  overflow: hidden;
+}
+
+.empty {
+  margin-top: 120rpx;
+  text-align: center;
+}
+
+.empty-title {
+  font-size: 34rpx;
+  font-weight: 600;
+  margin-bottom: 12rpx;
+}
+
+.msg-row {
+  display: flex;
+  justify-content: flex-start;
+  margin-bottom: 28rpx;
+}
+
+.msg-row-me {
+  justify-content: flex-end;
+}
+
+.bubble {
+  max-width: 78%;
+  background: #ffffff;
+  border-radius: 8rpx 24rpx 24rpx 24rpx;
+  padding: 24rpx 28rpx;
+  box-shadow: 0 4rpx 20rpx rgba(22, 22, 26, 0.05);
+}
+
+.bubble-me {
+  background: var(--brand);
+  border-radius: 24rpx 8rpx 24rpx 24rpx;
+  color: #ffffff;
+}
+
+.bubble-text {
+  font-size: 30rpx;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.tool-card {
+  border-left: 6rpx solid var(--brand);
+  padding-left: 16rpx;
+}
+
+.tool-title {
+  font-size: 22rpx;
+  color: var(--ink-3);
+}
+
+.tool-name {
+  font-size: 28rpx;
+  margin-top: 4rpx;
+}
+
+.system-text {
+  font-size: 26rpx;
+  color: var(--ink-3);
+  font-style: italic;
+}
+
+.bubble-meta {
+  margin-top: 12rpx;
+  font-size: 22rpx;
+  color: var(--ink-3);
+  text-align: right;
+}
+
+.bubble-me .bubble-meta {
+  color: rgba(255, 255, 255, 0.78);
+}
+
+.meta-failed {
+  color: #ffd0cc;
+}
+
+.list-tail {
+  height: 8rpx;
+}
+
+.composer {
+  display: flex;
+  align-items: center;
+  padding: 20rpx 32rpx calc(20rpx + env(safe-area-inset-bottom));
+  background: #ffffff;
+  border-top: 2rpx solid var(--line);
+}
+
+.composer-input {
+  flex: 1;
+  height: 84rpx;
+  padding: 0 28rpx;
+  background: #f1f2f4;
+  border-radius: 999rpx;
+  font-size: 30rpx;
+}
+
+.composer-placeholder {
+  color: var(--ink-3);
+}
+
+.send-btn {
+  margin-left: 20rpx;
+  padding: 0 32rpx;
+  height: 84rpx;
+  line-height: 84rpx;
+  border-radius: 999rpx;
+  background: var(--brand);
+  color: #ffffff;
+  font-size: 30rpx;
+}
+
+.send-btn-disabled {
+  background: #f0b6a1;
+}

@@ -1,6 +1,7 @@
 package kokoro
 
 import (
+	"github.com/viterin/vek/vek32"
 	"math"
 	"sync"
 )
@@ -122,11 +123,28 @@ func istft(mag, phase []float32, frames, nFFT, hop int) []float32 {
 	den := make([]float32, outLen)
 	win := hannWindow(nFFT)
 	spec := make([]Complex64, bins)
+	// Polar to rectangular over the whole arrays at once: the trig is
+	// elementwise, so vector passes replace per-sample math.Sin/math.Cos.
+	var reFull, imFull []float32
+	if useKokoroSIMD() && optRound2 && len(phase) >= 64 {
+		cosBuf := make([]float32, len(phase))
+		sinBuf := make([]float32, len(phase))
+		vek32.Cos_Into(cosBuf, phase)
+		vek32.Sin_Into(sinBuf, phase)
+		reFull = make([]float32, len(phase))
+		imFull = make([]float32, len(phase))
+		vek32.Mul_Into(reFull, mag, cosBuf)
+		vek32.Mul_Into(imFull, mag, sinBuf)
+	}
 	for t := 0; t < frames; t++ {
 		for b := 0; b < bins; b++ {
-			m := mag[b*frames+t]
-			p := phase[b*frames+t]
-			spec[b] = Complex64{m * float32(math.Cos(float64(p))), m * float32(math.Sin(float64(p)))}
+			if reFull != nil {
+				spec[b] = Complex64{reFull[b*frames+t], imFull[b*frames+t]}
+			} else {
+				m := mag[b*frames+t]
+				p := phase[b*frames+t]
+				spec[b] = Complex64{m * float32(math.Cos(float64(p))), m * float32(math.Sin(float64(p)))}
+			}
 		}
 		frame := idftFrame(spec, nFFT)
 		start := t * hop

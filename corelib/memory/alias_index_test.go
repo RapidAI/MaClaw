@@ -116,11 +116,11 @@ func TestAliasIndex_FIFO_Eviction(t *testing.T) {
 	}
 	// Add exactly 5 keys by using single-direction adds.
 	ai2.mu.Lock()
-	ai2.addMappingLocked("term1", "alias1")
-	ai2.addMappingLocked("term2", "alias2")
-	ai2.addMappingLocked("term3", "alias3")
-	ai2.addMappingLocked("term4", "alias4")
-	ai2.addMappingLocked("term5", "alias5")
+	ai2.addMappingLocked(aliasIndexKey("", "term1"), "alias1")
+	ai2.addMappingLocked(aliasIndexKey("", "term2"), "alias2")
+	ai2.addMappingLocked(aliasIndexKey("", "term3"), "alias3")
+	ai2.addMappingLocked(aliasIndexKey("", "term4"), "alias4")
+	ai2.addMappingLocked(aliasIndexKey("", "term5"), "alias5")
 	ai2.mu.Unlock()
 
 	if ai2.Len() != 5 {
@@ -129,7 +129,7 @@ func TestAliasIndex_FIFO_Eviction(t *testing.T) {
 
 	// Adding one more should evict term1 (FIFO).
 	ai2.mu.Lock()
-	ai2.addMappingLocked("term6", "alias6")
+	ai2.addMappingLocked(aliasIndexKey("", "term6"), "alias6")
 	ai2.mu.Unlock()
 
 	if ai2.Len() != 5 {
@@ -149,48 +149,48 @@ func TestAliasIndex_FIFO_Eviction(t *testing.T) {
 	}
 }
 
-func TestAliasIndex_Rebuild_FromEntries(t *testing.T) {
+func TestAliasIndex_Rebuild_FromExplicitTagsOnly(t *testing.T) {
 	ai := NewAliasIndex()
 
 	entries := []Entry{
 		{
-			Tags:   []string{"4090服务器", "api.rapidai.tech", "ssh"},
-			Status: StatusActive,
+			OwnerID: "user-a",
+			Tags:    []string{"4090服务器", "api.rapidai.tech", "ssh", ExplicitAliasTag("4090服务器", "api.rapidai.tech")},
+			Status:  StatusActive,
 		},
 		{
-			Tags:   []string{"deepseek", "llm-provider"},
-			Status: StatusActive,
+			OwnerID: "user-b",
+			Tags:    []string{ExplicitAliasTag("deepseek", "llm-provider")},
+			Status:  StatusActive,
 		},
 		{
-			// Inactive entry should be skipped.
-			Tags:   []string{"old-server", "deprecated.host"},
+			Tags:   []string{"old-server", "deprecated.host", ExplicitAliasTag("old-server", "deprecated.host")},
 			Status: StatusSuperseded,
 		},
 		{
-			// Single tag: no pairs to form aliases.
-			Tags:   []string{"single-tag"},
+			Tags:   []string{"single-tag", "session_checkpoint", "D:/repo"},
 			Status: StatusActive,
 		},
 	}
 
 	ai.Rebuild(entries)
 
-	// Entry 1 has 3 tags: 3 pairs → 6 bidirectional mappings.
-	// 4090服务器 ↔ api.rapidai.tech
-	// 4090服务器 ↔ ssh
-	// api.rapidai.tech ↔ ssh
-	aliases := ai.Expand([]string{"4090服务器"})
-	if len(aliases) != 2 {
-		t.Errorf("expected 2 aliases for 4090服务器, got %d: %v", len(aliases), aliases)
+	aliases := ai.ExpandForOwner([]string{"4090服务器"}, "user-a")
+	if len(aliases) != 1 || aliases[0] != "api.rapidai.tech" {
+		t.Errorf("expected explicit alias for user-a, got %v", aliases)
+	}
+	if got := ai.ExpandForOwner([]string{"4090服务器"}, "user-b"); len(got) != 0 {
+		t.Errorf("user-b must not see user-a aliases, got %v", got)
+	}
+	if got := ai.Expand([]string{"ssh"}); len(got) != 0 {
+		t.Errorf("co-occurring tags must not become aliases, got %v", got)
 	}
 
-	// Entry 2: deepseek ↔ llm-provider
-	aliases = ai.Expand([]string{"deepseek"})
+	aliases = ai.ExpandForOwner([]string{"deepseek"}, "user-b")
 	if len(aliases) != 1 || aliases[0] != "llm-provider" {
 		t.Errorf("expected [llm-provider] for deepseek, got %v", aliases)
 	}
 
-	// Entry 3 (inactive): should not be indexed.
 	aliases = ai.Expand([]string{"old-server"})
 	if len(aliases) != 0 {
 		t.Errorf("expected no aliases for inactive entry, got %v", aliases)

@@ -1,0 +1,5982 @@
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { createPortal } from 'react-dom';
+import { AbortCloudWorkspaceTaskProvision, CloudWorkspaceCacheDir, CloudWorkspaceEntitlement, CompleteCloudWorkspaceTaskProvision, CopyCloudWorkspaceTaskFilesToLocal, CopyTaskFilesToCloudWorkspace, CreateCloudWorkspace, DeleteCloudWorkspace, DuplicateTask, ForceDeleteCloudWorkspace, GetProjectScene, GetRemoteCodingTaskMeta, ListExperts, ListManagedIndustryExperts, OpenProjectDirectory, PrepareCloudWorkspace, ProvisionCloudWorkspaceTask, RenameCloudWorkspace, RestoreCloudWorkspace, ResumeCloudWorkspaceTask, SelectWorkingDir, ShowFileCompanion, TestRemoteSSHConnection, UpdateRemoteCodingTaskMeta } from '../../../wailsjs/go/main/App';
+import { EventsEmit } from '../../../wailsjs/runtime';
+import { EVENT_OPEN_CLOUD_DRIVE, EVENT_OPEN_CREATE_CODING_TASK, EVENT_NEW_TASK_WIZARD_BLOCKED, EVENT_OPEN_NEW_TASK_WIZARD, EVENT_PROJECT_TASK_CLOSED, type OpenCreateCodingTaskDetail } from '../../constants/events';
+import { localizeText } from '../../i18n';
+import { openSettingsTab } from '../../utils/settingsNavigation';
+import { restoreCloudWorkspaceTasksShared, invalidateCloudWorkspaceTaskRestore } from '../../utils/cloudWorkspaceTaskRestore';
+import { ProjectSearchIcon } from '../ai/ProjectSearchIcon';
+import type { ProjectSceneDetail } from '../ai/ProjectSceneDetailPanel';
+import { listedTaskTitle } from '../ai/describeTaskTitle';
+import { agentModeFromTaskTags, cloudSafePathLabel, cloudWorkspaceIdFromPath, isCloudWorkspacePath, cloudWorkspaceIdFromTags, cloudWorkspaceIdFromTaskFields, cloudWorkspaceSharePermissionFromTags, cloudWorkspaceSharedFromFromTags, CODING_TASK_COMMAND_MAX_LEN, isCloudWorkspaceTask, isExplicitTaskCopy, isOwnedCloudWorkspaceTask, isPureCodingTaskTags, isRemoteMaintenanceTaskTags, isTaskManagementTaskRow, lookupCloudWorkspaceDisplayName, rememberCloudWorkspaceDisplayNames, REVEAL_CLOUD_WORKSPACE_FILES_EVENT, remoteCodingMetaFromTaskTags, remoteHostFromTaskTags, remoteWorkspaceLocationLabel, scrubCloudWorkspaceError, visibleTaskRows, type PureCodingAgentMode } from '../ai/codingTaskMode';
+import { CloudWorkspaceFilesDialog } from './CloudWorkspaceFilesDialog';
+import { CloudWorkspaceShareDialog } from './CloudWorkspaceShareDialog';
+import { TaskWorkspaceTransferDialog, type TaskTransferCloudWorkspace, type TaskTransferDirection, type TaskTransferTarget } from './TaskWorkspaceTransferDialog';
+import './cloudOverview.css';
+import { coerceActiveAssistantTask, expertIDFromTaskTags, normalizeProjectSessionPath, type ActiveAssistantTaskIdentity } from '../ai/aiAssistantPanelSessionUtils';
+
+import { extractErrorMessage } from '../ai/participantAddError';
+
+import { DEFAULT_EXPERT_ICON, parseExpertListJSON, parseInstalledManagedIndustryExpertsJSON, type ExpertDefinition } from '../ai/expertTypes';
+import {
+    LATEX_BLANK_TEMPLATE_ID,
+    isBlankLatexTemplate,
+    isLatexExpertId,
+    latexBlankTemplateName,
+    latexTemplateText,
+    parseLatexTemplateLibrary,
+    type LatexExpertTaskOptions,
+    type LatexTemplate,
+} from '../../utils/latexTemplates';
+import { getWailsAppModule } from '../../utils/wailsAppModule';
+import { normalizeWorkflowStatus, WorkflowStatus } from '../ai/workflowStatus';
+import { useDialog } from '../CustomDialog';
+import { WorkspaceTypeBadge } from '../ai/task-config/WorkspaceTypeBadge';
+import { SidebarTaskEvidencePanel } from './SidebarTaskEvidencePanel';
+
+export type TaskManagementItem = {
+    id?: string;
+    name?: string;
+    project_path: string;
+    workflow_type?: string;
+    active_workflow?: {
+        id?: string;
+        type?: string;
+        phase?: string;
+        status?: string;
+        project_path?: string;
+        pending_review?: boolean;
+    };
+    preview?: string;
+    tags?: string[];
+    working_dir?: string;
+    /** Actual tool execution directory for managed tasks (working_dir tag or the workspace/ sandbox). */
+    execution_dir?: string;
+    created_at?: string;
+    last_activity?: string;
+    pinned?: boolean;
+    has_output?: boolean;
+};
+
+export type TaskContextMenu = {
+    x: number;
+    y: number;
+    projectPath: string;
+    name: string;
+    pinned: boolean;
+    /** True when this task is a remote pure-coding environment. */
+    isRemoteCoding?: boolean;
+    tags?: string[];
+    workingDir?: string;
+} | null;
+
+/** Re-export for task sidebar consumers that already import from this module. */
+export { expertIDFromTaskTags };
+
+type TaskIconKind = 'pin' | 'reference' | 'coding' | 'remote_coding' | 'cloud_workspace' | 'task';
+
+type TaskWorkflowStatusTone = 'info' | 'warning' | 'danger' | 'success' | 'neutral';
+
+type TaskWorkflowStatus = {
+    label: string;
+    detail?: string;
+    tone: TaskWorkflowStatusTone;
+};
+
+const TASK_WORKFLOW_STATUS_COLORS: Record<TaskWorkflowStatusTone, { border: string; color: string; background: string }> = {
+    info: { border: 'color-mix(in srgb, var(--theme-primary) 42%, transparent)', color: 'var(--theme-primary)', background: 'color-mix(in srgb, var(--theme-primary) 8%, transparent)' },
+    warning: { border: 'color-mix(in srgb, var(--theme-warning, #d97706) 48%, transparent)', color: 'color-mix(in srgb, var(--theme-warning, #d97706) 82%, var(--theme-text-primary))', background: 'color-mix(in srgb, var(--theme-warning, #d97706) 12%, transparent)' },
+    danger: { border: 'color-mix(in srgb, var(--theme-danger, #dc2626) 46%, transparent)', color: 'color-mix(in srgb, var(--theme-danger, #dc2626) 82%, var(--theme-text-primary))', background: 'color-mix(in srgb, var(--theme-danger, #dc2626) 10%, transparent)' },
+    // Settled tasks use the shared neutral blue-gray (--mc-done) instead of the
+    // old standalone green: it matches the shell's primary-tinted surface language.
+    success: { border: 'color-mix(in srgb, var(--theme-primary) 26%, transparent)', color: 'var(--mc-done, color-mix(in srgb, var(--theme-primary) 20%, var(--theme-text-secondary)))', background: 'var(--mc-done-bg, color-mix(in srgb, var(--theme-primary) 7%, transparent))' },
+    neutral: { border: 'color-mix(in srgb, var(--theme-text-muted) 42%, transparent)', color: 'var(--theme-text-muted)', background: 'color-mix(in srgb, var(--theme-text-muted) 9%, transparent)' },
+};
+
+const TASK_ICON_PROPS = {
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.7,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+};
+
+const CREATE_TASK_ICON_PROPS = {
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.9,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+};
+
+const TASK_HEADER_ACTION_BUTTON_STYLE: CSSProperties = {
+    width: '22px',
+    height: '22px',
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexShrink: 0,
+    border: '1px solid color-mix(in srgb, var(--theme-primary) 44%, var(--theme-border))',
+    borderRadius: '6px',
+    background: 'color-mix(in srgb, var(--theme-primary) 13%, var(--theme-surface))',
+    color: 'var(--theme-primary)',
+    lineHeight: 1,
+    padding: 0,
+    boxShadow: 'inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 10%, transparent)',
+};
+
+const taskHeaderActionButtonStyle = (busy = false): CSSProperties => ({
+    ...TASK_HEADER_ACTION_BUTTON_STYLE,
+    cursor: busy ? 'default' : 'pointer',
+    opacity: busy ? 0.55 : 1,
+});
+
+const TASK_HEADER_ICON_STYLE: CSSProperties = { display: 'block', flexShrink: 0 };
+
+/** Primary list icon: cloud workspaces take priority so the environment stays visible. */
+const taskIconKindForProject = (proj: TaskManagementItem): TaskIconKind => {
+    // Cloud workspace tasks get a dedicated marker so they remain obvious in
+    // the list even when they also carry coding/remote tags.
+    if (isCloudWorkspaceTask(proj)) return 'cloud_workspace';
+    const mode = agentModeFromTaskTags(proj.tags);
+    if (mode === 'remote_coding_dev') return 'remote_coding';
+    if (mode === 'coding_dev') return 'coding';
+    if (proj.pinned) return 'pin';
+    if (proj.tags?.includes('forked_task')) return 'reference';
+    return 'task';
+};
+
+const isPureCodingTask = (proj: TaskManagementItem): boolean => isPureCodingTaskTags(proj.tags);
+
+const isRemoteCodingTask = (proj: TaskManagementItem): boolean =>
+    agentModeFromTaskTags(proj.tags) === 'remote_coding_dev';
+
+const isRemoteMaintenanceTask = (proj: TaskManagementItem): boolean =>
+    isRemoteCodingTask(proj) && isRemoteMaintenanceTaskTags(proj.tags);
+
+/** 工作空间三种类型（设计 §5）：本地文件夹 / 云端工作区 / 远程服务器目录。 */
+export type TaskWorkspaceKind = 'local' | 'cloud' | 'remote';
+
+/** 工作空间类型推导：云端工作区 > 远程编程 > 本地。 */
+const workspaceKindForTask = (proj: TaskManagementItem): TaskWorkspaceKind => {
+    if (isCloudWorkspaceTask(proj)) return 'cloud';
+    if (isRemoteCodingTask(proj)) return 'remote';
+    return 'local';
+};
+
+const workspaceKindLabel = (kind: TaskWorkspaceKind, lang: string) =>
+    kind === 'cloud'
+        ? textForLang(lang, 'Cloud', '云端', '雲端')
+        : kind === 'remote'
+            ? textForLang(lang, 'Remote', '远程', '遠端')
+            : textForLang(lang, 'Local', '本地', '本地');
+
+const workspaceSectionLabel = (lang: string) =>
+    textForLang(lang, 'Workspace', '工作空间', '工作空間');
+
+const taskIconLabel = (kind: TaskIconKind, lang: string, maintenance = false) => {
+    if (kind === 'pin') return textForLang(lang, 'Pinned task', '\u7f6e\u9876\u4efb\u52a1', '\u7f6e\u9802\u4efb\u52d9');
+    if (kind === 'reference') return textForLang(lang, 'Referenced task', '\u5f15\u7528\u4efb\u52a1', '\u5f15\u7528\u4efb\u52d9');
+    if (kind === 'remote_coding') return maintenance
+        ? textForLang(lang, 'Remote maintenance', '\u8fdc\u7a0b\u7ef4\u62a4', '\u9060\u7aef\u7dad\u8b77')
+        : textForLang(lang, 'Remote pure coding environment', '\u8fdc\u7a0b\u7eaf\u7f16\u7a0b\u73af\u5883', '\u9060\u7aef\u7d14\u7a0b\u5f0f\u74b0\u5883');
+    if (kind === 'cloud_workspace') return textForLang(lang, 'Cloud workspace task', '\u4e91\u7aef\u5de5\u4f5c\u533a\u4efb\u52a1', '\u96f2\u7aef\u5de5\u4f5c\u5340\u4efb\u52d9');
+    if (kind === 'coding') return textForLang(lang, 'Local pure coding environment', '\u672c\u5730\u7eaf\u7f16\u7a0b\u73af\u5883', '\u672c\u6a5f\u7d14\u7a0b\u5f0f\u74b0\u5883');
+    return textForLang(lang, 'Task', '\u4efb\u52a1', '\u4efb\u52d9');
+};
+
+const pureCodingBadgeLabel = (proj: TaskManagementItem, lang: string) => {
+    if (isRemoteCodingTask(proj)) {
+        const host = remoteHostFromTaskTags(proj.tags);
+        const base = isRemoteMaintenanceTask(proj)
+            ? textForLang(lang, 'Remote maintenance', '\u8fdc\u7a0b\u7ef4\u62a4', '\u9060\u7aef\u7dad\u8b77')
+            : textForLang(lang, 'Remote coding', '\u8fdc\u7a0b\u7f16\u7a0b', '\u9060\u7aef\u7a0b\u5f0f');
+        return host ? `${base} · ${host}` : base;
+    }
+    if (agentModeFromTaskTags(proj.tags) === 'coding_dev') {
+        return textForLang(lang, 'Pure coding', '\u7eaf\u7f16\u7a0b', '\u7d14\u7a0b\u5f0f');
+    }
+    return '';
+};
+
+/** Title fallback when a cloud row has no task name and no Hub workspace name. */
+const cloudWorkspaceFallbackLabel = (lang: string) =>
+    textForLang(lang, 'Cloud workspace', '\u4e91\u7aef\u5de5\u4f5c\u533a', '\u96f2\u7aef\u5de5\u4f5c\u5340');
+
+/** Same paused signal for the filter bucket and the row glyph. */
+function workflowLooksPaused(workflow: { status?: string; phase?: string } | null | undefined): boolean {
+    if (!workflow) return false;
+    return /(paused|pause|已暂停|暂停)/.test(`${workflow.status || ''} ${workflow.phase || ''}`.toLowerCase());
+}
+
+function readableWorkflowPhase(phase?: string): string {
+    const value = (phase || '').trim();
+    if (!value) return '';
+    return value
+        .replace(/[_-]+/g, ' ')
+        .replace(/\s+/g, ' ')
+        .replace(/\b\w/g, (letter) => letter.toUpperCase());
+}
+
+/** The sidebar has workflow snapshots, not live agent runtime data. */
+export function workflowStatusForTask(
+    workflow: TaskManagementItem['active_workflow'],
+    lang: string,
+): TaskWorkflowStatus | null {
+    if (!workflow) return null;
+    const phase = readableWorkflowPhase(workflow.phase);
+    const status = normalizeWorkflowStatus(workflow.status);
+    const detail = phase || undefined;
+    // Terminal status wins over any stale pending-review bit persisted by an
+    // earlier phase update.
+    if (status === WorkflowStatus.Cancelled) {
+        return { label: textForLang(lang, 'Cancelled', '已取消', '已取消'), detail, tone: 'neutral' };
+    }
+    if (status === WorkflowStatus.Completed) {
+        return { label: textForLang(lang, 'Completed', '已完成', '已完成'), detail, tone: 'success' };
+    }
+    // A coding-runtime gate failure is terminal. It is not a request for the
+    // user to confirm or repair anything.
+    if (String(workflow.status || '').trim().toLowerCase() === 'failed') {
+        return { label: textForLang(lang, 'Failed', '失败', '失敗'), detail, tone: 'danger' };
+    }
+    if (String(workflow.status || '').trim().toLowerCase() === 'interrupted') {
+        return { label: textForLang(lang, 'Interrupted', '已中断', '已中斷'), detail, tone: 'warning' };
+    }
+    // Paused must not fall through to "in progress" and start the spinner.
+    if (workflowLooksPaused(workflow)) {
+        return { label: textForLang(lang, 'Paused', '已暂停', '已暫停'), detail, tone: 'warning' };
+    }
+    if (workflow.pending_review) {
+        return { label: textForLang(lang, 'Review needed', '待审核', '待審核'), detail, tone: 'warning' };
+    }
+    if (/(fail|error|blocked)/.test(String(workflow.status || '').trim().toLowerCase())) {
+        return { label: textForLang(lang, 'Needs attention', '需要处理', '需要處理'), detail, tone: 'danger' };
+    }
+    return { label: textForLang(lang, 'In progress', '进行中', '進行中'), detail, tone: 'info' };
+}
+
+/** Row/card status with an output-based completion fallback: a finished
+ * run often leaves no active workflow snapshot, so trust the same bucket
+ * the status filters use instead of falling through to "in progress". */
+export function workflowStatusForTaskRow(
+    task: Pick<TaskManagementItem, 'active_workflow' | 'has_output'> | null | undefined,
+    lang: string,
+    bucket?: ReturnType<typeof taskStatusBucketFor>,
+): TaskWorkflowStatus | null {
+    if (!task) return null;
+    const snapshot = workflowStatusForTask(task.active_workflow, lang);
+    const statusBucket = bucket ?? taskStatusBucketFor(task);
+    if ((!snapshot || snapshot.tone === 'info') && statusBucket === 'completed') {
+        return { label: textForLang(lang, 'Completed', '已完成', '已完成'), tone: 'success' };
+    }
+    return snapshot;
+}
+
+/** Task-list local paths show only the last folder. The row hover still
+ * carries the full path. A MaClaw task sandbox is exactly `tasks/<slug>/workspace`,
+ * so that leaf is the same word on every row; show the slug. Any other folder
+ * named `workspace` stays as itself. */
+export function localWorkspaceFolderName(path: string): string {
+    const trimmed = path.trim().replace(/[\\/]+$/, '');
+    if (!trimmed) return '';
+    const parts = trimmed.split(/[\\/]/).filter(part => part && part !== '.');
+    let last = parts[parts.length - 1] || '';
+    const taskSandbox = last.toLowerCase() === 'workspace'
+        && parts.length >= 3
+        && parts[parts.length - 3].toLowerCase() === 'tasks';
+    if (taskSandbox) last = parts[parts.length - 2];
+    if (!last || /^[A-Za-z]:$/.test(last)) return trimmed;
+    return last;
+}
+
+/** Stable, explicit creation timestamp for a user-managed task. */
+export function taskCreationLabel(value: string | undefined, lang: string): string {
+    const timestamp = Date.parse(value || '');
+    if (!Number.isFinite(timestamp)) return '';
+    const date = new Date(timestamp);
+    const pad = (part: number) => String(part).padStart(2, '0');
+    const dateText = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    return textForLang(lang, `Created ${dateText}`, `创建于 ${dateText}`, `建立於 ${dateText}`);
+}
+
+/** Compact timestamp used by the reference task list while the full creation
+ * timestamp remains available in the row tooltip. */
+function taskRecentTimeLabel(value: string | undefined, lang: string): string {
+    const timestamp = Date.parse(value || '');
+    if (!Number.isFinite(timestamp)) return '';
+    const date = new Date(timestamp);
+    const now = new Date();
+    const pad = (part: number) => String(part).padStart(2, '0');
+    const sameDay = date.getFullYear() === now.getFullYear()
+        && date.getMonth() === now.getMonth()
+        && date.getDate() === now.getDate();
+    if (sameDay) return `${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    const yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+    if (date.getFullYear() === yesterday.getFullYear()
+        && date.getMonth() === yesterday.getMonth()
+        && date.getDate() === yesterday.getDate()) {
+        return textForLang(lang, 'Yesterday', '昨天', '昨天');
+    }
+    return `${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
+const STATUS_MARK_STROKE = {
+    fill: 'none',
+    stroke: 'currentColor',
+    strokeWidth: 1.8,
+    strokeLinecap: 'round' as const,
+    strokeLinejoin: 'round' as const,
+};
+
+/** Row status glyph. In progress is a spinning ring; the other states keep
+ * the same outer size but a different mark, so they stay distinct from the
+ * task-type icon beside them. The svg is 16px on a 16-unit viewBox so one
+ * user unit equals one CSS pixel — the previous 14px viewport scaled every
+ * stroke to ~1.5 physical px at 100% DPI and the ring read as a smear.
+ * No title here: the row tooltip already carries the status plus the path. */
+const TaskStatusMark = ({ kind, label }: { kind: TaskListStatusKind; label: string }) => (
+    <span
+        className="mc-task-status"
+        data-status={kind}
+        data-testid="task-status-mark"
+        role="img"
+        aria-label={label}
+    >
+        {kind === 'running' ? <span className="mc-task-status__spin" /> : kind === 'idle' ? <span className="mc-task-status__idle" /> : (
+            <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+                {kind === 'completed' && (
+                    <>
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M4.85 8.2 7.05 10.35 11.2 5.75" />
+                    </>
+                )}
+                {kind === 'pending' && (
+                    <>
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M8 4.35V8.15l2.45 1.5" />
+                    </>
+                )}
+                {kind === 'failed' && (
+                    <>
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M8 4.55v3.85" />
+                        <circle cx="8" cy="11.15" r="0.9" fill="currentColor" stroke="none" />
+                    </>
+                )}
+                {kind === 'paused' && (
+                    <>
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="M6.45 5.35v5.3M9.55 5.35v5.3" />
+                    </>
+                )}
+                {kind === 'cancelled' && (
+                    <>
+                        <circle {...STATUS_MARK_STROKE} cx="8" cy="8" r="6.3" />
+                        <path {...STATUS_MARK_STROKE} strokeWidth={2.05} d="m4.15 11.85 7.7-7.7" />
+                    </>
+                )}
+            </svg>
+        )}
+    </span>
+);
+
+const TaskFolderChevron = () => (
+    <svg className="stsm-task-folder__chevron" width="12" height="12" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" d="m9 6 6 6-6 6" />
+    </svg>
+);
+
+const TaskFolderIcon = ({ open }: { open: boolean }) => (
+    <svg className="stsm-task-folder__icon" width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        {open ? (
+            <>
+                <path {...TASK_ICON_PROPS} d="M3 8.2V6.8A1.8 1.8 0 0 1 4.8 5h3.9l1.5 1.5H19.2A1.8 1.8 0 0 1 21 8.3V9" />
+                <path {...TASK_ICON_PROPS} d="M3 9.2h18l-1.55 8.15a1.8 1.8 0 0 1-1.77 1.45H6.32a1.8 1.8 0 0 1-1.77-1.45L3 9.2z" />
+            </>
+        ) : (
+            <path {...TASK_ICON_PROPS} d="M4 7.2A1.8 1.8 0 0 1 5.8 5.4h3.7l1.5 1.6h7.2A1.8 1.8 0 0 1 20 8.8v8.4a1.8 1.8 0 0 1-1.8 1.8H5.8A1.8 1.8 0 0 1 4 17.2V7.2z" />
+        )}
+    </svg>
+);
+
+const TaskTypeIcon = ({ kind, lang, maintenance = false }: { kind: TaskIconKind; lang: string; maintenance?: boolean }) => {
+    const label = taskIconLabel(kind, lang, maintenance);
+    const iconColor = kind === 'cloud_workspace'
+        ? 'color-mix(in srgb, var(--theme-primary-strong) 78%, var(--theme-text-primary))'
+        : 'var(--theme-text-muted)';
+
+    return (
+        <span
+            // A bare <span> has no accessible name: ARIA ignores aria-label on
+            // generic elements, so the task type would be invisible to a screen
+            // reader now that the glyph trails the title instead of introducing
+            // it. role="img" makes the label actually announced.
+            role="img"
+            aria-label={label}
+            title={label}
+            data-testid={kind === 'cloud_workspace' ? 'task-cloud-workspace-icon' : undefined}
+            style={{ flexShrink: 0, width: '16px', height: '16px', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', color: iconColor, opacity: 0.92, alignSelf: 'center' }}
+        >
+            <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false" className="stsm-svg-block">
+                {kind === 'pin' && (
+                    <>
+                        <path {...TASK_ICON_PROPS} d="M15 4 20 9" />
+                        <path {...TASK_ICON_PROPS} d="M14 10 8 16" />
+                        <path {...TASK_ICON_PROPS} d="M5 19 8 16" />
+                        <path {...TASK_ICON_PROPS} d="M8.5 5.5 18.5 15.5" />
+                        <path {...TASK_ICON_PROPS} d="M10 4 20 14" />
+                    </>
+                )}
+                {kind === 'reference' && (
+                    <>
+                        <path {...TASK_ICON_PROPS} d="M7 4h8l4 4v12H7a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z" />
+                        <path {...TASK_ICON_PROPS} d="M15 4v5h5" />
+                        <path {...TASK_ICON_PROPS} d="M9 13h6" />
+                        <path {...TASK_ICON_PROPS} d="M9 17h4" />
+                    </>
+                )}
+                {kind === 'coding' && (
+                    <>
+                        <path {...TASK_ICON_PROPS} d="M8 8 4.5 12 8 16" />
+                        <path {...TASK_ICON_PROPS} d="m16 8 3.5 4L16 16" />
+                        <path {...TASK_ICON_PROPS} d="m13 7-2 10" />
+                    </>
+                )}
+                {kind === 'remote_coding' && (
+                    <>
+                        <rect {...TASK_ICON_PROPS} x="3" y="5" width="18" height="12" rx="2" />
+                        <path {...TASK_ICON_PROPS} d="M8 9h3M8 12h5" />
+                        <path {...TASK_ICON_PROPS} d="m15 9 2 1.5L15 12" />
+                    </>
+                )}
+                {kind === 'cloud_workspace' && (
+                    <>
+                        <path {...TASK_ICON_PROPS} d="M7.5 18.5h10a4 4 0 1 0-.35-7.98A6 6 0 1 0 7.5 18.5z" />
+                        <path {...TASK_ICON_PROPS} d="M12 13v5" />
+                        <path {...TASK_ICON_PROPS} d="m9.5 15.5 2.5 2.5 2.5-2.5" />
+                    </>
+                )}
+                {kind === 'task' && (
+                    <>
+                        <path {...TASK_ICON_PROPS} d="M8 6h11" />
+                        <path {...TASK_ICON_PROPS} d="M8 12h11" />
+                        <path {...TASK_ICON_PROPS} d="M8 18h11" />
+                        <path {...TASK_ICON_PROPS} d="m3.5 6 1 1 2-2" />
+                        <path {...TASK_ICON_PROPS} d="m3.5 12 1 1 2-2" />
+                        <path {...TASK_ICON_PROPS} d="m3.5 18 1 1 2-2" />
+                    </>
+                )}
+            </svg>
+        </span>
+    );
+};
+
+const CloudComputingIcon = ({ size = 16 }: { size?: number } = {}) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={TASK_HEADER_ICON_STYLE}>
+        <path {...CREATE_TASK_ICON_PROPS} d="M17.5 19H9a7 7 0 1 1 6.71-9h1.79a4.5 4.5 0 1 1 0 9z" />
+    </svg>
+);
+
+/** Companion: a document being read, with a small mark for the AI reading. */
+const FileCompanionIcon = ({ size = 16 }: { size?: number } = {}) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={TASK_HEADER_ICON_STYLE}>
+        <path {...CREATE_TASK_ICON_PROPS} d="M6 3.5h8.2L19 8.2V20.5H6z" />
+        <path {...CREATE_TASK_ICON_PROPS} d="M14 3.6V8.2H19" />
+        <path {...CREATE_TASK_ICON_PROPS} d="M8.5 12.5h5M8.5 16h3.2" />
+        <path {...CREATE_TASK_ICON_PROPS} d="M16.1 11.2l.4 1 .95.4-.95.4-.4 1-.4-1-.95-.4.95-.4z" />
+    </svg>
+);
+
+/** Knowledge base: an open book, the same mark as the library menu entry. */
+const KnowledgeEntryIcon = ({ size = 16 }: { size?: number } = {}) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={TASK_HEADER_ICON_STYLE}>
+        <path {...CREATE_TASK_ICON_PROPS} d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+        <path {...CREATE_TASK_ICON_PROPS} d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+    </svg>
+);
+
+/** Cloud drive: a cloud sitting on a disk. The disk keeps it from reading as the workspace cloud. */
+const CloudDriveIcon = ({ size = 16 }: { size?: number } = {}) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={TASK_HEADER_ICON_STYLE}>
+        <path {...CREATE_TASK_ICON_PROPS} d="M7.6 11.2h8.6a2.2 2.2 0 0 0 .2-4.4 3.5 3.5 0 0 0-6.7 1.05A2.05 2.05 0 0 0 7.6 11.2z" />
+        <ellipse {...CREATE_TASK_ICON_PROPS} cx="12" cy="16.2" rx="7" ry="2.4" />
+        <path {...CREATE_TASK_ICON_PROPS} d="M5 16.2v3.2a7 2.4 0 0 0 14 0v-3.2" />
+    </svg>
+);
+
+const SaveTaskIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" aria-hidden="true" focusable="false" style={TASK_HEADER_ICON_STYLE}>
+        <path {...CREATE_TASK_ICON_PROPS} d="M6 4h10l2 2v14H6z" />
+        <path {...CREATE_TASK_ICON_PROPS} d="M9 4v6h6V4" />
+        <path {...CREATE_TASK_ICON_PROPS} d="M9 16h6" />
+    </svg>
+);
+
+function emitProjectTaskClosed(projectPath: string) {
+    try {
+        EventsEmit(EVENT_PROJECT_TASK_CLOSED, projectPath);
+    } catch (error) {
+        console.warn('[SidebarTaskManagement] project close event emit failed:', error);
+    }
+}
+
+function requestSaveCurrentChatAsTask() {
+    window.dispatchEvent(new CustomEvent('ai-save-current-chat-as-task'));
+}
+
+export type SidebarTaskManagementProps = {
+    lang: string;
+    themeMode?: 'light' | 'dark';
+    tasks: TaskManagementItem[];
+    /** True while the first ListTasks is in flight; shares the list progress bar and hides the empty state. */
+    tasksLoading?: boolean;
+    /** True while a cloud workspace restore is in flight; shares the list progress bar and does not hide local tasks. */
+    cloudTasksLoading?: boolean;
+    renamingTaskPath: string | null;
+    setRenamingTaskPath: (path: string | null) => void;
+    renameValue: string;
+    setRenameValue: (value: string) => void;
+    resumeTask: (projectPath: string, task?: TaskManagementItem) => Promise<boolean | void> | boolean | void;
+    continueWorkflowProject?: (projectPath: string) => Promise<void> | void;
+    assistantReady?: boolean;
+    onTaskSwitchBlocked?: () => void;
+    /**
+     * mode="coding_dev" | "remote_coding_dev" creates a programming task.
+     * remote is required when mode is remote_coding_dev (SSH credentials).
+     */
+    createTask: (
+        name: string,
+        workingDir?: string,
+        mode?: 'coding_dev' | 'remote_coding_dev',
+        remote?: { host: string; port: number; user: string; password: string; workDir: string; safety?: 'diagnosis' },
+        workspaceId?: string,
+    ) => Promise<void> | void;
+    /** Expert-task creation path for the chat task type; falls back to createTask when absent. */
+    onCreateExpertTask?: (expert: ExpertDefinition, options?: LatexExpertTaskOptions) => Promise<void> | void;
+    refreshTasks: () => void;
+    taskContextMenu: TaskContextMenu;
+    setTaskContextMenu: (menu: TaskContextMenu) => void;
+    renameTask: (projectPath: string, name: string) => Promise<unknown>;
+    pinTask: (projectPath: string, pinned: boolean) => Promise<unknown>;
+    hideTask: (projectPath: string, tags?: string[], force?: boolean) => Promise<unknown>;
+    /** Focus-only activation for a task whose assistant tab is already open. */
+    activateTask?: (projectPath: string, task?: TaskManagementItem) => void;
+    /**
+     * Project paths that currently have an open assistant tab.
+     * Drives the remove-confirm dialog wording; deletion itself is allowed
+     * after confirmation even while the tab is open (force).
+     */
+    openProjectTabPaths?: string[];
+    openProjectTabIdentities?: Array<{ projectPath: string; cloudWorkspaceId?: string }>;
+    /** Expert IDs currently open in the assistant; drives row highlight, activation and remove wording. */
+    openExpertTabIDs?: string[];
+    /** Currently visible assistant tab. Null/empty means no task-list row is selected. */
+    activeAssistantTask?: ActiveAssistantTaskIdentity | null;
+    /**
+     * Live "executing" signal for that tab. The durable task row of a pure
+     * agent loop run carries no running snapshot (has_output stays true from
+     * earlier runs), so status stats merge this signal with the snapshot to
+     * keep the in-progress task out of the completed bucket.
+     */
+    activeAssistantTaskRunning?: boolean;
+    /**
+     * Live busy identities across ALL assistant tabs: normalized project
+     * paths plus expert IDs with an in-flight run. Concurrent runs keep
+     * executing as detached rounds after the user switches away, and each
+     * busy identity marks its durable row as live-running so every
+     * in-progress task lands in the 进行中 bucket.
+     */
+    busyTaskRuns?: { projectPaths: string[]; expertIds: string[] };
+    /** False while the sidebar is showing employees/history so scroll waits until the list is shown. */
+    taskListVisible?: boolean;
+    /** Keep cloud workspace/project controls available for external coding surfaces. */
+    showCloudWorkspaceManagement?: boolean;
+    /** Show the cloud workspace task type without exposing project management controls. */
+    showCloudWorkspaceCreation?: boolean;
+    /** Restore durable cloud task rows while keeping project controls hidden. */
+    restoreCloudWorkspaceTasks?: boolean;
+};
+
+/** True when projectPath matches an open project tab (path-normalized). Exported for tests. */
+export function isProjectTabOpen(
+    projectPath: string,
+    openProjectTabPaths?: Iterable<string> | null,
+    cloudWorkspaceId?: string,
+    openProjectTabIdentities?: Array<{ projectPath: string; cloudWorkspaceId?: string }>,
+): boolean {
+    const target = normalizeProjectSessionPath(projectPath);
+    if (!target && !cloudWorkspaceId) return false;
+    if (cloudWorkspaceId && openProjectTabIdentities?.some((item) => item.cloudWorkspaceId === cloudWorkspaceId)) return true;
+    if (!target || !openProjectTabPaths) return false;
+    // openProjectTabPaths is already normalized when published by AIAssistantPanel,
+    // but re-normalize for callers that pass raw/mixed separators (tests, future callers).
+    for (const p of openProjectTabPaths) {
+        if (normalizeProjectSessionPath(p) === target) return true;
+    }
+    return false;
+}
+
+/** Stable ordering used by the task sidebar and its persisted-list tests. */
+export function sortTaskManagementItems(items: TaskManagementItem[]): TaskManagementItem[] {
+    return [...items].sort((a, b) => {
+        if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+        // Keep the list anchored to creation order. Opening an older task may
+        // update last_activity, but should not make that task jump above newer
+        // work. Rows without created_at use their stable id instead of the
+        // mutable activity timestamp.
+        const aTime = Date.parse(a.created_at || '');
+        const bTime = Date.parse(b.created_at || '');
+        if (Number.isFinite(aTime) && Number.isFinite(bTime) && aTime !== bTime) return bTime - aTime;
+        if (Number.isFinite(aTime) !== Number.isFinite(bTime)) return Number.isFinite(aTime) ? -1 : 1;
+        return String(a.id || a.project_path || a.name || '').localeCompare(String(b.id || b.project_path || b.name || ''));
+    });
+}
+
+export const TASK_LIST_ORDER_STORAGE_KEY = 'maclaw.sidebar-task-order.v1';
+
+/** Identity that stays put when opening a task rewrites its path or activity time. */
+export function taskOrderKey(task: Pick<TaskManagementItem, 'id' | 'name' | 'project_path' | 'tags' | 'working_dir' | 'preview'>): string {
+    // Copies share a cloud workspace or expert with the source. Keying them
+    // the same way drops one row once the user has a saved list order.
+    if (isExplicitTaskCopy(task.tags)) {
+        const copyPath = normalizeProjectSessionPath(task.project_path || '');
+        if (copyPath) return `path:${copyPath}`;
+    }
+    const cloud = cloudWorkspaceIdFromTaskFields(task);
+    if (cloud) return `cloud:${cloud}`;
+    const expert = expertIDFromTaskTags(task.tags);
+    if (expert) return `expert:${expert}`;
+    const path = normalizeProjectSessionPath(task.project_path || '');
+    if (path) return `path:${path}`;
+    return `id:${task.id || task.name || ''}`;
+}
+
+export function readTaskListOrder(): string[] {
+    if (typeof localStorage === 'undefined') return [];
+    try {
+        const parsed = JSON.parse(localStorage.getItem(TASK_LIST_ORDER_STORAGE_KEY) || '[]');
+        return Array.isArray(parsed) ? parsed.filter((key): key is string => typeof key === 'string' && key.length > 0) : [];
+    } catch {
+        return [];
+    }
+}
+
+export function writeTaskListOrder(keys: string[]) {
+    try {
+        localStorage.setItem(TASK_LIST_ORDER_STORAGE_KEY, JSON.stringify(keys));
+    } catch {
+        // Private mode or a full quota should not block the in-memory order.
+    }
+}
+
+/** User drag order wins. Tasks the user has not placed yet keep the default sort. */
+export function applyTaskListOrder<T extends TaskManagementItem>(items: T[], order: string[]): T[] {
+    if (!order.length) return items;
+    const byKey = new Map<string, T>();
+    for (const item of items) {
+        const key = taskOrderKey(item);
+        if (!byKey.has(key)) byKey.set(key, item);
+    }
+    const used = new Set<string>();
+    const placed: T[] = [];
+    for (const key of order) {
+        const item = byKey.get(key);
+        if (!item || used.has(key)) continue;
+        used.add(key);
+        placed.push(item);
+    }
+    // A task created after the user arranged the list has no saved slot.
+    // Keep it at the top, in the default sort, instead of shoving it into
+    // the middle of the arrangement.
+    const fresh = items.filter(item => !used.has(taskOrderKey(item)));
+    // Pin stays a "keep at top" action after the user has dragged. Relative
+    // order inside each group is the saved drag order.
+    const ordered = [...fresh, ...placed];
+    const pins = ordered.filter(item => item.pinned);
+    const rest = ordered.filter(item => !item.pinned);
+    return [...pins, ...rest];
+}
+
+/** Move a pinned row to the front of a saved order, or an unpinned row to just after the pins. */
+export function placeTaskOrderKey(order: string[], key: string, pinned: boolean, pinnedKeys: ReadonlySet<string>): string[] {
+    const without = order.filter(item => item !== key);
+    if (pinned) return [key, ...without];
+    let insertAt = 0;
+    while (insertAt < without.length && pinnedKeys.has(without[insertAt])) insertAt += 1;
+    return [...without.slice(0, insertAt), key, ...without.slice(insertAt)];
+}
+
+/** Move fromKey to toKey inside the visible sequence, leaving hidden rows where they are.
+ * Dragging downward lands after the target; dragging upward lands before it. */
+export function reorderTaskList(order: string[], visibleKeys: string[], fromKey: string, toKey: string): string[] {
+    const base = order.length ? [...order] : [];
+    const known = new Set(base);
+    for (const key of visibleKeys) {
+        if (!known.has(key)) {
+            known.add(key);
+            base.push(key);
+        }
+    }
+    const visibleSet = new Set(visibleKeys);
+    const currentVisible = base.filter(key => visibleSet.has(key));
+    const fromVis = currentVisible.indexOf(fromKey);
+    const toVis = currentVisible.indexOf(toKey);
+    if (fromVis < 0 || toVis < 0 || fromVis === toVis) return base;
+    const nextVisible = currentVisible.slice();
+    const [moved] = nextVisible.splice(fromVis, 1);
+    nextVisible.splice(toVis, 0, moved);
+    const queue = [...nextVisible];
+    return base.map(key => (visibleSet.has(key) ? queue.shift() || key : key));
+}
+
+/** Move a whole working-directory block with the same before/after rule as one row.
+ * `fromBlock` and `toBlock` are visible order keys. Hidden rows stay in place. */
+export function reorderTaskBlocks(
+    order: string[],
+    visibleKeys: string[],
+    fromBlock: readonly string[],
+    toBlock: readonly string[],
+): string[] {
+    if (!fromBlock.length || !toBlock.length) return order.length ? [...order] : [];
+    const base = order.length ? [...order] : [];
+    const known = new Set(base);
+    for (const key of visibleKeys) {
+        if (!known.has(key)) {
+            known.add(key);
+            base.push(key);
+        }
+    }
+    const visibleSet = new Set(visibleKeys);
+    const currentVisible = base.filter(key => visibleSet.has(key));
+    const fromIndex = currentVisible.indexOf(fromBlock[0]);
+    const toIndex = currentVisible.indexOf(toBlock[0]);
+    if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return base;
+    const present = new Set(currentVisible);
+    const moving = new Set(fromBlock);
+    const rest = currentVisible.filter(key => !moving.has(key));
+    const placeBefore = fromIndex > toIndex;
+    const anchor = placeBefore ? toBlock[0] : toBlock[toBlock.length - 1];
+    let index = rest.indexOf(anchor);
+    if (index < 0) return base;
+    if (!placeBefore) index += 1;
+    const nextVisible = [
+        ...rest.slice(0, index),
+        ...fromBlock.filter(key => present.has(key)),
+        ...rest.slice(index),
+    ];
+    const queue = [...nextVisible];
+    return base.map(key => (visibleSet.has(key) ? queue.shift() || key : key));
+}
+
+/** Status filters offered above the task list. 'shared' is tag-driven, the
+ * rest come from taskStatusBucketFor. */
+export type TaskStatusFilter = 'all' | 'running' | 'pending' | 'completed' | 'paused' | 'shared';
+
+type TaskStatusBucket = Exclude<TaskStatusFilter, 'all' | 'shared'> | 'other';
+
+/** Bucket a durable task row into one status filter. A paused status is
+ * checked before phase keywords, so a paused run never counts as in progress. */
+export function taskStatusBucketFor(task: Pick<TaskManagementItem, 'active_workflow' | 'has_output'>): TaskStatusBucket {
+    const raw = `${task.active_workflow?.status || ''} ${task.active_workflow?.phase || ''}`.toLowerCase();
+    const status = String(task.active_workflow?.status || '').trim().toLowerCase();
+    if (/^(paused|pause|已暂停|暂停)$/.test(status)) return 'paused';
+    // Judge the status word before the phase text. A phase named review,
+    // execute, or pause must not file a finished run as pending or in progress.
+    if (/^(complete|completed|finish|finished|success|succeeded|done|passed)$/.test(status)) return 'completed';
+    if (status === 'cancelled' || status === 'canceled') return 'other';
+    if (status === 'interrupted') return 'pending';
+    if (/(fail|error|blocked|失败|错误|阻塞)/.test(status)) return 'other';
+    if (workflowLooksPaused(task.active_workflow)) return 'paused';
+    if (/(running|execut|active|processing)/.test(raw)) return 'running';
+    if (task.active_workflow?.pending_review || /(review|confirm|approval|pending|待)/.test(raw)) return 'pending';
+    // A fatal gate or runtime failure is not a finished success, even when an
+    // earlier turn already produced output.
+    if (/(fail|error|blocked|失败|错误|阻塞)/.test(raw)) return 'other';
+    if (/(complete|finish|success|done)/.test(raw) || task.has_output === true) return 'completed';
+    return 'other';
+}
+
+/** Glyph shown beside a task-list row. Live execution wins over a stale
+ * snapshot; a paused or pending bucket wins over a generic "in progress" tone. */
+export type TaskListStatusKind = 'running' | 'completed' | 'pending' | 'failed' | 'paused' | 'cancelled' | 'idle';
+
+export function taskListStatusKind(input: {
+    liveRunning?: boolean;
+    bucket: TaskStatusBucket;
+    tone?: TaskWorkflowStatusTone | null;
+}): TaskListStatusKind {
+    if (input.liveRunning) return 'running';
+    // A finished workflow stays completed even when its phase name contains
+    // "review" or "pause" and the bucket was filed from that phase.
+    if (input.tone === 'success' || input.bucket === 'completed') return 'completed';
+    if (input.bucket === 'paused') return 'paused';
+    if (input.bucket === 'pending' || input.tone === 'warning') return 'pending';
+    if (input.tone === 'danger') return 'failed';
+    if (input.tone === 'neutral') return 'cancelled';
+    if (input.tone === 'info' || input.bucket === 'running') return 'running';
+    return 'idle';
+}
+
+function taskListStatusLabel(kind: TaskListStatusKind, lang: string): string {
+    switch (kind) {
+        case 'running': return localizeText(lang, 'In progress', '进行中', '進行中');
+        case 'completed': return localizeText(lang, 'Completed', '已完成', '已完成');
+        case 'pending': return localizeText(lang, 'Needs action', '待处理', '待處理');
+        case 'failed': return localizeText(lang, 'Needs attention', '需要处理', '需要處理');
+        case 'paused': return localizeText(lang, 'Paused', '已暂停', '已暫停');
+        case 'cancelled': return localizeText(lang, 'Cancelled', '已取消', '已取消');
+        default: return localizeText(lang, 'Not started', '未开始', '未開始');
+    }
+}
+
+/** Words that match the glyph. A paused row must not keep the generic
+ * "in progress" snapshot label, and a pending bucket without a review
+ * snapshot should say "needs action" rather than "in progress". */
+function taskListStatusMarkLabel(
+    kind: TaskListStatusKind,
+    workflow: Pick<TaskWorkflowStatus, 'label' | 'tone'> | null | undefined,
+    lang: string,
+): string {
+    if (kind === 'paused') return taskListStatusLabel('paused', lang);
+    if (kind === 'pending' && workflow?.tone !== 'warning') return taskListStatusLabel('pending', lang);
+    return workflow?.label || taskListStatusLabel(kind, lang);
+}
+
+/** Shared-with-me rows carry a share tag from the hub. */
+export function isSharedTaskRow(task: Pick<TaskManagementItem, 'tags'>): boolean {
+    return (task.tags || []).some(tag => /(shared|share|invite|共享|分享)/i.test(String(tag)));
+}
+
+/**
+ * Precomputed match context for the currently visible AI assistant tab.
+ * Building it once per identity change avoids re-coercing and re-deriving
+ * the cloud workspace id for every task row on every classification pass.
+ */
+export type ActiveTaskRowMatchContext = {
+    expertId: string;
+    activePath: string;
+    activeWorkspaceId: string;
+};
+
+function activeTaskRowMatchContext(active?: ActiveAssistantTaskIdentity | null): ActiveTaskRowMatchContext | null {
+    const canonical = coerceActiveAssistantTask(active);
+    if (!canonical) return null;
+    const activePath = canonical.projectPath || '';
+    return {
+        expertId: canonical.expertId || '',
+        activePath,
+        activeWorkspaceId: canonical.cloudWorkspaceId || cloudWorkspaceIdFromPath(activePath),
+    };
+}
+
+function matchesActiveTaskRowContext(
+    proj: Pick<TaskManagementItem, 'project_path' | 'tags' | 'working_dir' | 'preview' | 'name'>,
+    ctx: ActiveTaskRowMatchContext,
+): boolean {
+    const copied = isExplicitTaskCopy(proj.tags);
+    const expertID = expertIDFromTaskTags(proj.tags);
+    if (!copied && ctx.expertId) {
+        if (expertID !== ctx.expertId) return false;
+        if (ctx.activePath && isLatexExpertId(ctx.expertId)) {
+            return normalizeProjectSessionPath(proj.project_path) === ctx.activePath;
+        }
+        return true;
+    }
+    // Expert rows stay bound to expert tabs even if a project tab shares a path.
+    // A copy keeps the expert tag but owns an empty project chat, so it must
+    // not light up with the original expert tab.
+    if (!copied && expertID) return false;
+    const target = normalizeProjectSessionPath(proj.project_path);
+    if (target && target === ctx.activePath) return true;
+    // A copy shares the source working directory. Matching that directory
+    // would light up the copy while the source chat is the open tab.
+    if (copied) return false;
+    const workDir = normalizeProjectSessionPath(proj.working_dir);
+    if (workDir && workDir === ctx.activePath) return true;
+    // Cloud resume rebinds the tab onto a cache path that may differ from the
+    // durable list row; match by workspace id so the highlight still lands.
+    const rowWorkspaceId = cloudWorkspaceIdFromTaskFields(proj);
+    return !!rowWorkspaceId && !!ctx.activeWorkspaceId && rowWorkspaceId === ctx.activeWorkspaceId;
+}
+
+/** True when this durable task row is the currently visible AI assistant tab. */
+export function isActiveTaskRow(
+    proj: Pick<TaskManagementItem, 'project_path' | 'tags' | 'working_dir' | 'preview' | 'name'>,
+    active?: ActiveAssistantTaskIdentity | null,
+): boolean {
+    const ctx = activeTaskRowMatchContext(active);
+    if (!ctx) return false;
+    return matchesActiveTaskRowContext(proj, ctx);
+}
+
+/** Signals the live-running matcher needs, in the shape App already holds.
+ * Shared between the sidebar classification pass and countRunningTaskRows so
+ * both count exactly the same rows as in progress. */
+export type LiveRunningRowSignals = {
+    busyTaskRuns?: { projectPaths: string[]; expertIds: string[] } | null;
+    activeAssistantTaskRunning?: boolean;
+    activeAssistantTask?: ActiveAssistantTaskIdentity | null;
+};
+
+export type LiveRunningRowContext = {
+    busyPathSet: Set<string>;
+    busyExpertSet: Set<string>;
+    busyWorkspaceIdSet: Set<string>;
+    activeRowContext: ActiveTaskRowMatchContext | null;
+    activeAssistantTaskRunning: boolean;
+};
+
+export function liveRunningRowContext(signals?: LiveRunningRowSignals | null): LiveRunningRowContext {
+    const busyTaskRuns = signals?.busyTaskRuns;
+    const busyWorkspaceIdSet = new Set<string>();
+    for (const path of busyTaskRuns?.projectPaths || []) {
+        const id = cloudWorkspaceIdFromPath(path);
+        if (id) busyWorkspaceIdSet.add(id);
+    }
+    return {
+        busyPathSet: new Set(busyTaskRuns?.projectPaths || []),
+        busyExpertSet: new Set(busyTaskRuns?.expertIds || []),
+        busyWorkspaceIdSet,
+        activeRowContext: activeTaskRowMatchContext(signals?.activeAssistantTask),
+        activeAssistantTaskRunning: signals?.activeAssistantTaskRunning === true,
+    };
+}
+
+/** Live execution match for one durable row: the visible assistant tab's run
+ * plus every detached busy run, matched by expert id, project/working path,
+ * or cloud workspace id (mirrors isActiveTaskRow's binding rules). */
+export function isLiveRunningTaskRow(task: TaskManagementItem, ctx: LiveRunningRowContext): boolean {
+    if (ctx.activeAssistantTaskRunning && ctx.activeRowContext && matchesActiveTaskRowContext(task, ctx.activeRowContext)) return true;
+    const copied = isExplicitTaskCopy(task.tags);
+    if (!copied && ctx.busyExpertSet.size > 0) {
+        const expertID = expertIDFromTaskTags(task.tags);
+        if (expertID && ctx.busyExpertSet.has(expertID)) return true;
+    }
+    if (ctx.busyPathSet.size > 0) {
+        const target = normalizeProjectSessionPath(task.project_path);
+        if (target && ctx.busyPathSet.has(target)) return true;
+        if (!copied) {
+            const workDir = normalizeProjectSessionPath(task.working_dir);
+            if (workDir && ctx.busyPathSet.has(workDir)) return true;
+        }
+    }
+    if (!copied && ctx.busyWorkspaceIdSet.size > 0) {
+        const rowWorkspaceId = cloudWorkspaceIdFromTaskFields(task);
+        if (rowWorkspaceId && ctx.busyWorkspaceIdSet.has(rowWorkspaceId)) return true;
+    }
+    return false;
+}
+
+/** Number of task rows that count as in progress: live-running rows plus
+ * rows whose durable workflow snapshot still buckets as running. Counted
+ * over the same visible rows the task list renders. The Windows taskbar
+ * overlay includes this count. */
+export function countRunningTaskRows(tasks: TaskManagementItem[], signals?: LiveRunningRowSignals | null): number {
+    const ctx = liveRunningRowContext(signals);
+    return visibleTaskRows(tasks).filter(task => isLiveRunningTaskRow(task, ctx) || taskStatusBucketFor(task) === 'running').length;
+}
+
+const textForLang = localizeText;
+
+/** Task-list folders: ordinary chats stay in 会话, pure-coding environments in 编程. */
+export type TaskListFolderKind = 'session' | 'coding';
+
+export const TASK_FOLDER_COLLAPSE_STORAGE_KEY = 'maclaw.sidebar-task-folders.v1';
+export const TASK_FOLDER_ORDER_STORAGE_KEY = 'maclaw.sidebar-task-folder-order.v1';
+
+const TASK_LIST_FOLDER_KINDS: readonly TaskListFolderKind[] = ['session', 'coding'];
+
+const isTaskListFolderKind = (kind: unknown): kind is TaskListFolderKind =>
+    kind === 'session' || kind === 'coding';
+
+/** Saved order first, then any folder the save omitted, without duplicates. */
+export function normalizeTaskFolderOrder(order: readonly unknown[]): TaskListFolderKind[] {
+    const next: TaskListFolderKind[] = [];
+    const seen = new Set<TaskListFolderKind>();
+    for (const kind of order) {
+        if (!isTaskListFolderKind(kind) || seen.has(kind)) continue;
+        seen.add(kind);
+        next.push(kind);
+    }
+    for (const kind of TASK_LIST_FOLDER_KINDS) {
+        if (!seen.has(kind)) next.push(kind);
+    }
+    return next;
+}
+
+/** Move one folder onto another. Hidden folders keep their saved slot. */
+export function reorderTaskListFolders(
+    order: readonly TaskListFolderKind[],
+    from: TaskListFolderKind,
+    to: TaskListFolderKind,
+): TaskListFolderKind[] {
+    const base = normalizeTaskFolderOrder(order);
+    const fromIndex = base.indexOf(from);
+    const toIndex = base.indexOf(to);
+    if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return base;
+    const next = base.slice();
+    next.splice(fromIndex, 1);
+    next.splice(toIndex, 0, from);
+    return next;
+}
+
+export function readTaskFolderOrder(): TaskListFolderKind[] {
+    if (typeof localStorage === 'undefined') return [...TASK_LIST_FOLDER_KINDS];
+    try {
+        const parsed = JSON.parse(localStorage.getItem(TASK_FOLDER_ORDER_STORAGE_KEY) || '[]');
+        return normalizeTaskFolderOrder(Array.isArray(parsed) ? parsed : []);
+    } catch {
+        return [...TASK_LIST_FOLDER_KINDS];
+    }
+}
+
+export function writeTaskFolderOrder(order: readonly TaskListFolderKind[]) {
+    try {
+        localStorage.setItem(TASK_FOLDER_ORDER_STORAGE_KEY, JSON.stringify(normalizeTaskFolderOrder(order)));
+    } catch {
+        // Private mode or a full quota should not block the in-memory order.
+    }
+}
+
+export function taskListFolderKind(task: Pick<TaskManagementItem, 'tags'>): TaskListFolderKind {
+    return isPureCodingTaskTags(task.tags) ? 'coding' : 'session';
+}
+
+export type TaskListFolderGroup<T> = { kind: TaskListFolderKind; tasks: T[] };
+
+/** Preserve task order inside each folder. Empty folders are omitted. */
+export function groupTasksIntoFolders<T extends Pick<TaskManagementItem, 'tags'>>(
+    tasks: T[],
+    order: readonly TaskListFolderKind[] = TASK_LIST_FOLDER_KINDS,
+): TaskListFolderGroup<T>[] {
+    const buckets: Record<TaskListFolderKind, T[]> = { session: [], coding: [] };
+    for (const task of tasks) buckets[taskListFolderKind(task)].push(task);
+    return normalizeTaskFolderOrder(order)
+        .filter(kind => buckets[kind].length > 0)
+        .map(kind => ({ kind, tasks: buckets[kind] }));
+}
+
+/** Sidebar folder names stay on one line. A parent/name label keeps the directory itself. */
+export const TASK_WORKDIR_FOLDER_LABEL_MAX = 18;
+
+export function abbreviateTaskFolderLabel(name: string, max = TASK_WORKDIR_FOLDER_LABEL_MAX): string {
+    const text = String(name || '').trim();
+    const chars = Array.from(text);
+    if (chars.length <= max) return text;
+    if (max <= 1) return '…';
+    const slash = text.lastIndexOf('/');
+    if (slash > 0) {
+        const leaf = Array.from(text.slice(slash));
+        const headRoom = max - leaf.length - 1;
+        if (headRoom > 0) return `${chars.slice(0, headRoom).join('')}…${leaf.join('')}`;
+    }
+    return `${chars.slice(0, max - 1).join('')}…`;
+}
+
+type TaskDirectorySource = Pick<TaskManagementItem, 'tags' | 'working_dir' | 'execution_dir' | 'project_path'>;
+
+export type TaskWorkingDirectoryIdentity = {
+    key: string;
+    label: string;
+    title: string;
+};
+
+const foldDirectoryKey = (path: string): string => normalizeProjectSessionPath(path).toLowerCase();
+
+/** Shared working directory. The task record path is unique per row, so it
+ * must not join copies that only share a project folder. */
+function taskDirectoryPath(task: TaskDirectorySource): string {
+    return String(task.working_dir || task.execution_dir || '').trim();
+}
+
+/** Ancestors plus the visible leaf. A `tasks/<slug>/workspace` row shows the slug,
+ * so the chain must not treat `workspace` as that name. */
+function directoryNameChain(path: string, leaf: string): string[] {
+    const parts = path.trim().replace(/[\\/]+$/, '').split(/[\\/]/).filter(part => part && part !== '.');
+    let ancestors = parts.slice(0, -1);
+    if (parts.length >= 2 && parts[parts.length - 1].toLowerCase() !== leaf.toLowerCase()
+        && parts[parts.length - 2].toLowerCase() === leaf.toLowerCase()) {
+        ancestors = parts.slice(0, -2);
+    }
+    const body = ancestors.filter(part => part.toLowerCase() !== leaf.toLowerCase());
+    return [...body, leaf];
+}
+
+/** Keep prepending path segments until folder names in this band are distinct. */
+function disambiguateFolderLabels<T>(entries: TaskWorkdirEntry<T>[]): void {
+    const folders: Array<{ folder: TaskWorkdirFolder<T>; chain: string[] }> = [];
+    for (const entry of entries) {
+        if (entry.kind !== 'folder') continue;
+        folders.push({ folder: entry.folder, chain: directoryNameChain(entry.folder.title, entry.folder.label) });
+    }
+    if (folders.length < 2) return;
+    const labels = folders.map(item => item.chain[item.chain.length - 1] || item.folder.label);
+    const maxDepth = folders.reduce((depth, item) => Math.max(depth, item.chain.length), 1);
+    for (let depth = 2; depth <= maxDepth; depth += 1) {
+        const counts = new Map<string, number>();
+        for (const label of labels) counts.set(label.toLowerCase(), (counts.get(label.toLowerCase()) || 0) + 1);
+        let changed = false;
+        folders.forEach((item, index) => {
+            if ((counts.get(labels[index].toLowerCase()) || 0) < 2) return;
+            if (item.chain.length < depth) return;
+            const next = item.chain.slice(item.chain.length - depth).join('/');
+            if (next === labels[index]) return;
+            labels[index] = next;
+            changed = true;
+        });
+        if (!changed) break;
+    }
+    folders.forEach((item, index) => {
+        item.folder.label = labels[index];
+    });
+}
+
+/** Identity of the working directory used to nest rows inside a type folder.
+ * Session and coding stay apart because grouping runs on one type at a time.
+ * Returns null when there is no directory to share. */
+export function taskWorkingDirectoryIdentity(task: TaskDirectorySource): TaskWorkingDirectoryIdentity | null {
+    if (isCloudWorkspaceTask(task)) {
+        const id = cloudWorkspaceIdFromTaskFields(task);
+        if (!id) return null;
+        const path = String(task.working_dir || task.execution_dir || '').trim();
+        const leaf = localWorkspaceFolderName(path) || id;
+        return { key: `cloud:${id}`, label: leaf, title: path || id };
+    }
+    if (agentModeFromTaskTags(task.tags) === 'remote_coding_dev') {
+        const meta = remoteCodingMetaFromTaskTags(task.tags);
+        const dir = String(meta.workDir || '').trim();
+        const host = String(meta.host || '').trim();
+        if (!dir || !host) return null;
+        const leaf = localWorkspaceFolderName(dir);
+        if (!leaf) return null;
+        return {
+            key: `remote:${host.toLowerCase()}:${meta.port}:${foldDirectoryKey(dir)}`,
+            label: leaf,
+            title: remoteWorkspaceLocationLabel(host, dir, meta.port) || dir,
+        };
+    }
+    const path = taskDirectoryPath(task);
+    if (!path) return null;
+    const folded = foldDirectoryKey(path);
+    if (!folded) return null;
+    const leaf = localWorkspaceFolderName(path);
+    if (!leaf) return null;
+    return { key: `local:${folded}`, label: leaf, title: path };
+}
+
+export type TaskWorkdirFolder<T> = {
+    key: string;
+    label: string;
+    title: string;
+    tasks: T[];
+};
+
+export type TaskWorkdirEntry<T> =
+    | { kind: 'task'; task: T }
+    | { kind: 'folder'; folder: TaskWorkdirFolder<T> };
+
+function groupDirectoryBand<T extends TaskDirectorySource>(tasks: T[]): TaskWorkdirEntry<T>[] {
+    const identities = tasks.map(task => taskWorkingDirectoryIdentity(task));
+    const counts = new Map<string, number>();
+    for (const identity of identities) {
+        if (!identity) continue;
+        counts.set(identity.key, (counts.get(identity.key) || 0) + 1);
+    }
+    const grouped = new Map<string, T[]>();
+    const entries: TaskWorkdirEntry<T>[] = [];
+    tasks.forEach((task, index) => {
+        const identity = identities[index];
+        if (!identity || (counts.get(identity.key) || 0) < 2) {
+            entries.push({ kind: 'task', task });
+            return;
+        }
+        let bucket = grouped.get(identity.key);
+        if (!bucket) {
+            bucket = [];
+            grouped.set(identity.key, bucket);
+            entries.push({
+                kind: 'folder',
+                folder: { key: identity.key, label: identity.label, title: identity.title, tasks: bucket },
+            });
+        }
+        bucket.push(task);
+    });
+    disambiguateFolderLabels(entries);
+    return entries;
+}
+
+/** Pull tasks that share a working directory into one folder, placed where
+ * the first of them already sits. A directory with a single task stays a row.
+ * Pinned and unpinned rows stay in separate bands, matching the list order. */
+export function groupTasksByWorkingDirectory<T extends TaskDirectorySource & { pinned?: boolean }>(tasks: T[]): TaskWorkdirEntry<T>[] {
+    const entries: TaskWorkdirEntry<T>[] = [];
+    let band: T[] = [];
+    let bandPinned = false;
+    const flush = () => {
+        if (band.length) entries.push(...groupDirectoryBand(band));
+        band = [];
+    };
+    for (const task of tasks) {
+        const pinned = !!task.pinned;
+        if (band.length && pinned !== bandPinned) flush();
+        bandPinned = pinned;
+        band.push(task);
+    }
+    flush();
+    return entries;
+}
+
+/** Collapse storage distinguishes type and pin, so two folders with the same
+ * directory do not open and close as one. */
+export function taskWorkdirCollapseKey(kind: TaskListFolderKind, pinned: boolean, directoryKey: string): string {
+    return `${kind}:${pinned ? '1' : '0'}:${directoryKey}`;
+}
+
+export function taskWorkdirFolderLabel(
+    folder: Pick<TaskWorkdirFolder<unknown>, 'key' | 'label'>,
+    workspaceNameById?: Map<string, string>,
+): string {
+    let name = folder.label;
+    if (folder.key.startsWith('cloud:')) {
+        const id = folder.key.slice('cloud:'.length);
+        const named = (workspaceNameById?.get(id) || lookupCloudWorkspaceDisplayName(id) || '').trim();
+        if (named) name = named;
+    }
+    return abbreviateTaskFolderLabel(name);
+}
+
+export const TASK_WORKDIR_COLLAPSE_STORAGE_KEY = 'maclaw.sidebar-task-workdir-folders.v1';
+
+export function readCollapsedWorkdirFolders(): Set<string> {
+    if (typeof localStorage === 'undefined') return new Set();
+    try {
+        const parsed = JSON.parse(localStorage.getItem(TASK_WORKDIR_COLLAPSE_STORAGE_KEY) || '[]');
+        if (!Array.isArray(parsed)) return new Set();
+        return new Set(parsed.filter((item): item is string => typeof item === 'string' && item.length > 0));
+    } catch {
+        return new Set();
+    }
+}
+
+export function writeCollapsedWorkdirFolders(keys: ReadonlySet<string>) {
+    try {
+        localStorage.setItem(TASK_WORKDIR_COLLAPSE_STORAGE_KEY, JSON.stringify([...keys]));
+    } catch {
+        // Private mode or a full quota should not block the in-memory collapse.
+    }
+}
+
+export function taskListFolderLabel(kind: TaskListFolderKind, lang: string): string {
+    if (kind === 'coding') return textForLang(lang, 'Coding', '编程', '程式');
+    return textForLang(lang, 'Sessions', '会话', '工作階段');
+}
+
+export function readCollapsedTaskFolders(): Set<TaskListFolderKind> {
+    if (typeof localStorage === 'undefined') return new Set();
+    try {
+        const parsed = JSON.parse(localStorage.getItem(TASK_FOLDER_COLLAPSE_STORAGE_KEY) || '[]');
+        if (!Array.isArray(parsed)) return new Set();
+        return new Set(parsed.filter(isTaskListFolderKind));
+    } catch {
+        return new Set();
+    }
+}
+
+export function writeCollapsedTaskFolders(kinds: ReadonlySet<TaskListFolderKind>) {
+    try {
+        localStorage.setItem(TASK_FOLDER_COLLAPSE_STORAGE_KEY, JSON.stringify([...kinds]));
+    } catch {
+        // Private mode or a full quota should not block the in-memory collapse.
+    }
+}
+
+const newCloudWorkspaceActionLabel = (lang: string, creating: boolean) => (
+    creating
+        ? textForLang(lang, 'Creating…', '正在创建…', '正在建立…')
+        : textForLang(lang, 'New cloud workspace', '新建云端工作区', '新建雲端工作區')
+);
+
+type TaskContextMenuIconName = 'rename' | 'copy' | 'browse' | 'share' | 'ssh' | 'cloud' | 'local' | 'pin' | 'remove';
+
+type TaskContextMenuItem = {
+    label: string;
+    icon: TaskContextMenuIconName;
+    action: () => void | Promise<void>;
+    disabled?: boolean;
+    title?: string;
+    testId?: string;
+    danger?: boolean;
+};
+
+const TaskContextMenuIcon = ({ name }: { name: TaskContextMenuIconName }) => (
+    <svg width="15" height="15" viewBox="0 0 24 24" aria-hidden="true" focusable="false" className="stsm-svg-block">
+        {name === 'rename' && (
+            <>
+                <path {...TASK_ICON_PROPS} d="M4 20h4L19.5 8.5 15.5 4.5 4 16v4z" />
+                <path {...TASK_ICON_PROPS} d="m13.2 6.8 4 4" />
+            </>
+        )}
+        {name === 'copy' && (
+            <>
+                <rect {...TASK_ICON_PROPS} x="8" y="8" width="11" height="12" rx="1.6" />
+                <path {...TASK_ICON_PROPS} d="M6 15.5V5.6A1.6 1.6 0 0 1 7.6 4H16" />
+            </>
+        )}
+        {name === 'browse' && (
+            <>
+                <path {...TASK_ICON_PROPS} d="M3.5 8.2V18a1.6 1.6 0 0 0 1.6 1.6h13.8a1.6 1.6 0 0 0 1.6-1.6V9.4a1.6 1.6 0 0 0-1.6-1.6h-6.8L10.2 5.6H5.1a1.6 1.6 0 0 0-1.6 1.6z" />
+                <path {...TASK_ICON_PROPS} d="M5.6 10.6h12.8" />
+            </>
+        )}
+        {name === 'share' && (
+            <>
+                <circle {...TASK_ICON_PROPS} cx="18" cy="5.5" r="2.15" />
+                <circle {...TASK_ICON_PROPS} cx="6" cy="12" r="2.15" />
+                <circle {...TASK_ICON_PROPS} cx="18" cy="18.5" r="2.15" />
+                <path {...TASK_ICON_PROPS} d="M8.05 10.95 15.9 6.7" />
+                <path {...TASK_ICON_PROPS} d="M8.05 13.05 15.9 17.3" />
+            </>
+        )}
+        {name === 'ssh' && (
+            <>
+                <rect {...TASK_ICON_PROPS} x="3" y="4.5" width="18" height="15" rx="2" />
+                <path {...TASK_ICON_PROPS} d="m7.5 9.5 3 2.5-3 2.5" />
+                <path {...TASK_ICON_PROPS} d="M13 14.5h4" />
+            </>
+        )}
+        {name === 'cloud' && (
+            <>
+                <path {...TASK_ICON_PROPS} d="M8 13.6h8.4a2.9 2.9 0 0 0 .25-5.8 4.4 4.4 0 0 0-8.4 1.3 2.6 2.6 0 0 0-.25 4.5z" />
+                <path {...TASK_ICON_PROPS} d="M12 16.2v5" />
+                <path {...TASK_ICON_PROPS} d="m9.2 18.6 2.8-2.8 2.8 2.8" />
+            </>
+        )}
+        {name === 'local' && (
+            <>
+                <rect {...TASK_ICON_PROPS} x="3" y="4" width="18" height="12" rx="2" />
+                <path {...TASK_ICON_PROPS} d="M8 20h8" />
+                <path {...TASK_ICON_PROPS} d="M12 16v4" />
+            </>
+        )}
+        {name === 'pin' && (
+            <>
+                <path {...TASK_ICON_PROPS} d="M15 4 20 9" />
+                <path {...TASK_ICON_PROPS} d="M14 10 8 16" />
+                <path {...TASK_ICON_PROPS} d="M5 19 8 16" />
+                <path {...TASK_ICON_PROPS} d="M8.5 5.5 18.5 15.5" />
+                <path {...TASK_ICON_PROPS} d="M10 4 20 14" />
+            </>
+        )}
+        {name === 'remove' && (
+            <>
+                <path {...TASK_ICON_PROPS} d="M4.5 7h15" />
+                <path {...TASK_ICON_PROPS} d="M9.2 7V4.8h5.6V7" />
+                <path {...TASK_ICON_PROPS} d="M7.4 7.2 8.4 19.2h7.2l1-12" />
+                <path {...TASK_ICON_PROPS} d="M10.2 10.6v5.2" />
+                <path {...TASK_ICON_PROPS} d="M13.8 10.6v5.2" />
+            </>
+        )}
+    </svg>
+);
+
+const contextMenuPosition = (x: number, y: number): { left: number; top: number } => {
+    const viewportWidth = typeof window === 'undefined' ? 1280 : Math.max(0, window.innerWidth || 1280);
+    const viewportHeight = typeof window === 'undefined' ? 720 : Math.max(0, window.innerHeight || 720);
+    // Keep a small safe margin while reserving enough room for the menu's
+    // compact action list. The browser can still reposition it naturally when
+    // a future menu grows beyond this estimate.
+    return {
+        left: Math.max(8, Math.min(Number(x) || 8, Math.max(8, viewportWidth - 184))),
+        top: Math.max(8, Math.min(Number(y) || 8, Math.max(8, viewportHeight - 320))),
+    };
+};
+
+function buildTaskContextMenuItems(opts: {
+    lang: string;
+    menu: NonNullable<TaskContextMenu>;
+    setRenamingTaskPath: (path: string | null) => void;
+    setRenameValue: (value: string) => void;
+    setTaskContextMenu: (menu: TaskContextMenu) => void;
+    pinTask: (projectPath: string, pinned: boolean) => Promise<unknown>;
+    onDuplicateTask?: (menu: NonNullable<TaskContextMenu>) => void | Promise<void>;
+    confirmRemoveTask: (menu: NonNullable<TaskContextMenu>) => void | Promise<void>;
+    refreshTasks: () => void;
+    openEditRemoteDialog: (projectPath: string, name: string, tags?: string[]) => void | Promise<void>;
+    browseCloudWorkspace?: (workspaceId: string, projectPath?: string, tags?: string[], workingDir?: string) => void | Promise<void>;
+    allowCloudWorkspaceBrowse?: boolean;
+    onShareCloudWorkspace?: (workspaceId: string, name: string) => void;
+    /**
+     * Starts a "转移到云端 / 转移到本地" move. Local rows move into a cloud
+     * workspace, cloud workspace rows move onto this computer.
+     */
+    onTransferTask?: (menu: NonNullable<TaskContextMenu>, direction: TaskTransferDirection) => void;
+}): TaskContextMenuItem[] {
+    const {
+        lang, menu, setRenamingTaskPath, setRenameValue,
+        setTaskContextMenu, pinTask, onDuplicateTask, confirmRemoveTask, refreshTasks, openEditRemoteDialog, browseCloudWorkspace, allowCloudWorkspaceBrowse, onShareCloudWorkspace, onTransferTask,
+    } = opts;
+    const items: TaskContextMenuItem[] = [
+        {
+            label: textForLang(lang, 'Rename', '重命名', '重命名'),
+            icon: 'rename',
+            action: () => {
+                setRenamingTaskPath(menu.projectPath);
+                setRenameValue(menu.name);
+                setTaskContextMenu(null);
+            },
+        },
+        {
+            label: textForLang(lang, 'Copy', '复制', '複製'),
+            icon: 'copy',
+            testId: 'task-context-copy',
+            title: textForLang(lang, 'New task with the same settings and no chat history', '复制为新任务：配置相同，没有聊天记录', '複製為新任務：設定相同，沒有聊天記錄'),
+            action: () => {
+                setTaskContextMenu(null);
+                void onDuplicateTask?.(menu);
+            },
+        },
+    ];
+    // A persisted cloud tag is the durable identity.  Prefer it over a stale
+    // working-dir suffix so Browse can resolve the current cache when a task
+    // was restored from an old local mount.
+    const cloudWorkspaceId = cloudWorkspaceIdFromTags(menu.tags)
+        || cloudWorkspaceIdFromTaskFields({
+        tags: menu.tags,
+        project_path: menu.projectPath,
+        working_dir: menu.workingDir,
+    });
+    if (cloudWorkspaceId && allowCloudWorkspaceBrowse !== false) {
+        items.push({
+            label: textForLang(lang, 'Browse', '浏览', '瀏覽'),
+            icon: 'browse',
+            testId: 'task-context-browse-cloud',
+            title: textForLang(lang, 'Pull remote files and open the in-app cloud file browser', '拉取远程文件并在右侧浏览区打开', '拉取遠端檔案並在右側瀏覽區開啟'),
+            action: () => {
+                setTaskContextMenu(null);
+                void browseCloudWorkspace?.(cloudWorkspaceId, menu.projectPath, menu.tags, menu.workingDir);
+            },
+        });
+        if (onShareCloudWorkspace && !cloudWorkspaceSharePermissionFromTags(menu.tags)) {
+            items.push({
+                label: textForLang(lang, 'Share…', '分享…', '分享…'),
+                icon: 'share',
+                testId: 'task-context-share-cloud',
+                title: textForLang(lang, 'Create a share link for this cloud workspace', '为该云端工作区生成分享链接', '為該雲端工作區產生分享連結'),
+                action: () => {
+                    setTaskContextMenu(null);
+                    onShareCloudWorkspace(cloudWorkspaceId, menu.name);
+                },
+            });
+        }
+    }
+    if (menu.isRemoteCoding) {
+        items.push({
+            label: textForLang(lang, 'Edit remote SSH…', '编辑远程 SSH…', '編輯遠端 SSH…'),
+            icon: 'ssh',
+            testId: 'task-context-edit-remote-ssh',
+            action: () => { setTaskContextMenu(null); void openEditRemoteDialog(menu.projectPath, menu.name, menu.tags); },
+        });
+    }
+    // A workspace move swaps the task's environment, so it is offered exactly
+    // where the counterpart environment exists: local rows can go to the cloud,
+    // cloud workspace rows can come back to this computer.
+    if (onTransferTask && (cloudWorkspaceId || !menu.isRemoteCoding)) {
+        const toCloud = !cloudWorkspaceId;
+        items.push({
+            label: toCloud
+                ? textForLang(lang, 'Move to cloud…', '转移到云端…', '轉移到雲端…')
+                : textForLang(lang, 'Move to this computer…', '转移到本地…', '轉移到本機…'),
+            icon: toCloud ? 'cloud' : 'local',
+            testId: toCloud ? 'task-context-move-to-cloud' : 'task-context-move-to-local',
+            title: toCloud
+                ? textForLang(lang, 'Copy this task and its files into a cloud workspace', '把该任务及其文件复制到一个云端工作区', '把該任務及其檔案複製到一個雲端工作區')
+                : textForLang(lang, 'Copy this cloud task and its files into a local folder', '把该云端任务及其文件复制到一个本地目录', '把該雲端任務及其檔案複製到一個本機目錄'),
+            action: () => onTransferTask(menu, toCloud ? 'to-cloud' : 'to-local'),
+        });
+    }
+    items.push({
+        label: menu.pinned
+            ? textForLang(lang, 'Unpin', '取消置顶', '取消置頂')
+            : textForLang(lang, 'Pin', '置顶', '置頂'),
+        icon: 'pin',
+        action: async () => {
+            await pinTask(menu.projectPath, !menu.pinned);
+            refreshTasks();
+            setTaskContextMenu(null);
+        },
+    });
+    items.push({
+        label: textForLang(lang, 'Remove', '删除', '刪除'),
+        icon: 'remove',
+        danger: true,
+        testId: 'task-context-remove',
+        action: () => {
+            // The confirm dialog (and menu close) lives in confirmRemoveTask so
+            // deletion stays available even while the task's tab is open.
+            void confirmRemoveTask(menu);
+        },
+    });
+    return items;
+}
+// Must sit above existing fixed dropdowns/overlays that use z-index 99999.
+const TASK_CREATE_DIALOG_Z_INDEX = 100000;
+
+const getPortalThemeMode = (themeMode?: 'light' | 'dark') => (
+    themeMode || document.getElementById('App')?.getAttribute('data-ai-theme') || undefined
+);
+
+const getPortalDarkScheme = () => (
+    document.getElementById('App')?.getAttribute('data-ai-dark-scheme') || undefined
+);
+
+const getPortalLightScheme = () => (
+    document.getElementById('App')?.getAttribute('data-ai-light-scheme') || undefined
+);
+
+const normalizeTaskCommandInput = (value?: string | null) => {
+    // Preserve newlines (multi-line task commands), only collapse horizontal whitespace per line
+    const lines = (value || '').split('\n').map(line => line.trim().replace(/[ \t]+/g, ' '));
+    // Remove leading/trailing empty lines, collapse 3+ consecutive empty lines to 2
+    const trimmed = lines.join('\n').trim().replace(/\n{3,}/g, '\n\n');
+    // Limit characters (UTF-16 code units, consistent with HTML maxLength)
+    return trimmed.slice(0, CODING_TASK_COMMAND_MAX_LEN);
+};
+
+/** An empty port means the conventional SSH port; malformed input must not silently become 22. */
+const parseRemotePort = (value: string): number | null => {
+    const trimmed = value.trim();
+    if (!trimmed) return 22;
+    if (!/^\d+$/.test(trimmed)) return null;
+    const port = Number(trimmed);
+    return Number.isInteger(port) && port > 0 && port < 65536 ? port : null;
+};
+
+const generatedTaskTitle = (lang: string, mode: '' | 'coding_dev' | 'remote_coding_dev', cloud = false) => {
+    if (cloud) return textForLang(lang, 'New cloud workspace task', '新建云端工作区任务', '新建雲端工作區任務');
+    if (mode === 'coding_dev') return textForLang(lang, 'New local coding task', '新建本地编程任务', '新建本機程式任務');
+    if (mode === 'remote_coding_dev') return textForLang(lang, 'New remote coding task', '新建远程编程任务', '新建遠端程式任務');
+    return textForLang(lang, 'New task', '新建任务', '新建任務');
+};
+
+type CloudWorkspaceLease = {
+    held?: boolean;
+    machine_id?: string;
+    machine_name?: string;
+    is_self?: boolean;
+    expires_at?: string;
+};
+
+type CloudWorkspaceRow = {
+    id?: string;
+    name?: string;
+    used_bytes?: number;
+    logical_bytes?: number;
+    retained_bytes?: number;
+    snapshot_retained_bytes?: number;
+    updated_at?: string;
+    lease_in_use?: boolean;
+    lease_holder?: string;
+    reconcile_required?: boolean;
+    reconcile_reason?: string;
+    lease?: CloudWorkspaceLease;
+};
+
+type CloudWorkspaceDeletedRow = {
+    id?: string;
+    name?: string;
+    used_bytes?: number;
+    updated_at?: string;
+    deleted_at?: string;
+    purge_after?: string;
+};
+
+type CloudEntitlementState = {
+    enabled?: boolean;
+    hub_unavailable?: boolean;
+    banner?: string;
+    reason?: string;
+    quota?: number;
+    used?: number;
+    workspaces?: CloudWorkspaceRow[];
+    deleted?: CloudWorkspaceDeletedRow[];
+};
+
+const cloudWorkspaceText = (value: unknown, ...keys: string[]): string => {
+    if (!value || typeof value !== 'object') return '';
+    const row = value as Record<string, unknown>;
+    for (const key of keys) {
+        const item = row[key];
+        if (typeof item === 'string' && item.trim()) return item;
+    }
+    return '';
+};
+
+const cloudWorkspaceNumber = (value: unknown, ...keys: string[]): number => {
+    if (!value || typeof value !== 'object') return 0;
+    const row = value as Record<string, unknown>;
+    for (const key of keys) {
+        const item = row[key];
+        if (typeof item === 'number' && Number.isFinite(item)) return item;
+        if (typeof item === 'string' && item.trim()) {
+            const parsed = Number(item);
+            if (Number.isFinite(parsed)) return parsed;
+        }
+    }
+    return 0;
+};
+
+const cloudWorkspaceFlag = (value: unknown, ...keys: string[]): boolean => {
+    if (!value || typeof value !== 'object') return false;
+    const row = value as Record<string, unknown>;
+    return keys.some(key => row[key] === true);
+};
+
+const cloudWorkspaceList = (value: unknown, ...keys: string[]): unknown[] => {
+    if (!value || typeof value !== 'object') return [];
+    const row = value as Record<string, unknown>;
+    for (const key of keys) {
+        const item = row[key];
+        if (Array.isArray(item)) return item;
+    }
+    return [];
+};
+
+const asCloudWorkspaceRow = (value: unknown): CloudWorkspaceRow | null => {
+    if (!value || typeof value !== 'object') return null;
+    const row = value as CloudWorkspaceRow;
+    const id = cloudWorkspaceText(row, 'id', 'ID').trim();
+    if (!id) return null;
+    let leaseInUse = cloudWorkspaceFlag(row, 'lease_in_use', 'LeaseInUse');
+    let leaseHolder = cloudWorkspaceText(row, 'lease_holder', 'LeaseHolder');
+    const nested = (row.lease && typeof row.lease === 'object' ? row.lease : undefined)
+        || ((value as { Lease?: CloudWorkspaceRow['lease'] }).Lease && typeof (value as { Lease?: CloudWorkspaceRow['lease'] }).Lease === 'object'
+            ? (value as { Lease?: CloudWorkspaceRow['lease'] }).Lease
+            : undefined);
+    if (!leaseInUse && !leaseHolder && cloudWorkspaceFlag(nested, 'held', 'Held') && !cloudWorkspaceFlag(nested, 'is_self', 'IsSelf')) {
+        leaseInUse = true;
+        leaseHolder = cloudWorkspaceText(nested, 'machine_name', 'MachineName', 'machine_id', 'MachineID');
+    }
+    return {
+        id,
+        name: cloudWorkspaceText(row, 'name', 'Name'),
+        used_bytes: cloudWorkspaceNumber(row, 'used_bytes', 'UsedBytes'),
+        logical_bytes: cloudWorkspaceNumber(row, 'logical_bytes', 'LogicalBytes'),
+        retained_bytes: cloudWorkspaceNumber(row, 'retained_bytes', 'RetainedBytes'),
+        snapshot_retained_bytes: cloudWorkspaceNumber(row, 'snapshot_retained_bytes', 'SnapshotBytes', 'SnapshotRetainedBytes'),
+        updated_at: cloudWorkspaceText(row, 'updated_at', 'UpdatedAt'),
+        lease_in_use: leaseInUse,
+        lease_holder: leaseHolder,
+        reconcile_required: cloudWorkspaceFlag(row, 'reconcile_required', 'ReconcileRequired'),
+        reconcile_reason: cloudWorkspaceText(row, 'reconcile_reason', 'ReconcileReason'),
+    };
+};
+
+const deletedWorkspaceId = (row: { id?: string } | null | undefined): string => (row?.id || '').trim();
+
+function SidebarTaskStatusBanner({ testId, label }: { testId: string; label: string }) {
+    return (
+        <div role="status" data-testid={testId} className="sidebar-task-status-banner">
+            <span>{label}</span>
+            <span className="sidebar-task-progress__track">
+                <span className="sidebar-task-progress__bar" />
+            </span>
+        </div>
+    );
+}
+
+type TaskFilterChip<K extends string> = { key: K; label: string; count: number };
+
+function TaskFilterBtn({
+    testId,
+    selected,
+    count,
+    label,
+    onClick,
+    title,
+}: {
+    testId: string;
+    selected: boolean;
+    count: number;
+    label: string;
+    onClick: () => void;
+    title?: string;
+}) {
+    return (
+        <button
+            type="button"
+            className="mc-task-filter-btn"
+            data-testid={testId}
+            aria-pressed={selected}
+            aria-label={`${label} ${count}`}
+            data-count={count}
+            title={title}
+            onClick={onClick}
+        >
+            <span className="mc-task-filter-btn__label">{label}</span><b>{count}</b>
+        </button>
+    );
+}
+
+function TaskFilterRow<K extends string>({
+    ariaLabel,
+    chips,
+    value,
+    onChange,
+    testIdPrefix,
+    titleFor,
+    layout = 'flow',
+}: {
+    ariaLabel: string;
+    chips: readonly TaskFilterChip<K>[];
+    value: K;
+    onChange: (key: K) => void;
+    testIdPrefix: string;
+    titleFor?: (chip: TaskFilterChip<K>) => string | undefined;
+    /** `line` keeps chips on one compact single-line row; `grid` stacks them in two equal columns. */
+    layout?: 'flow' | 'grid' | 'line';
+}) {
+    const layoutClass = layout === 'grid' ? ' mc-task-filter-row--grid' : layout === 'line' ? ' mc-task-filter-row--line' : '';
+    return (
+        <div className={`mc-task-filter-row${layoutClass}`} role="group" aria-label={ariaLabel}>
+            {chips.map(chip => (
+                <TaskFilterBtn
+                    key={chip.key}
+                    testId={`${testIdPrefix}${chip.key}`}
+                    selected={value === chip.key}
+                    count={chip.count}
+                    label={chip.label}
+                    title={titleFor?.(chip)}
+                    onClick={() => onChange(chip.key)}
+                />
+            ))}
+        </div>
+    );
+}
+
+const CloudDeletedWorkspaceRow = ({
+    row,
+    lang,
+    testIdPrefix,
+    busy,
+    quotaReached,
+    forceDeleting,
+    onRestore,
+    onForceDelete,
+}: {
+    row: CloudWorkspaceDeletedRow;
+    lang: string;
+    testIdPrefix: 'task-cloud-overview';
+    busy: boolean;
+    quotaReached: boolean;
+    forceDeleting: boolean;
+    onRestore: (id: string) => void;
+    onForceDelete: (id: string) => void;
+}) => {
+    const id = deletedWorkspaceId(row);
+    const name = (row.name || '').trim();
+    const restoreDisabled = !id || busy || quotaReached;
+    const forceDeleteDisabled = !id || busy;
+    return (
+        <div data-workspace-id={id || undefined} className="mc-cloud-overview__deleted-row">
+            <span className="mc-cloud-overview__deleted-copy">
+                <span className="mc-cloud-overview__deleted-name">{row.name || row.id}</span>
+                <span className="mc-cloud-overview__deleted-hint">
+                    {textForLang(lang, 'Restorable for 7 days', '7 天内可恢复', '7 天內可恢復')}
+                </span>
+                {forceDeleting && (
+                    <span
+                        data-testid={`${testIdPrefix}-force-delete-progress`}
+                        role="status"
+                        aria-label={textForLang(lang, 'Permanently deleting workspace and remote files', '正在永久删除工作区及远程文件', '正在永久刪除工作區及遠端檔案')}
+                        className="mc-cloud-overview__deleted-progress"
+                    >
+                        <span />
+                    </span>
+                )}
+            </span>
+            <span className="mc-cloud-overview__deleted-actions">
+                <button
+                    type="button"
+                    data-testid={`${testIdPrefix}-restore`}
+                    disabled={restoreDisabled}
+                    title={quotaReached
+                        ? textForLang(lang, 'Cloud workspace quota reached', '已达云端工作区配额', '已達雲端工作區配額')
+                        : textForLang(lang, 'Restore', '恢复', '恢復')}
+                    onClick={() => { if (id) onRestore(id); }}
+                    className="mc-cloud-overview__action mc-cloud-overview__action--primary"
+                >
+                    {textForLang(lang, 'Restore', '恢复', '恢復')}
+                </button>
+                <button
+                    type="button"
+                    data-testid={`${testIdPrefix}-force-delete`}
+                    aria-label={name
+                        ? textForLang(lang, `Delete “${name}” permanently`, `强制删除「${name}」`, `強制刪除「${name}」`)
+                        : textForLang(lang, 'Delete permanently', '强制删除', '強制刪除')}
+                    disabled={forceDeleteDisabled}
+                    onClick={() => { if (id) onForceDelete(id); }}
+                    className="mc-cloud-overview__action mc-cloud-overview__action--danger"
+                >
+                    {textForLang(lang, 'Delete permanently', '强制删除', '強制刪除')}
+                </button>
+            </span>
+        </div>
+    );
+};
+
+const CloudWorkspaceLeaseNote = ({ row, lang }: { row: CloudWorkspaceRow; lang: string }) => {
+    if (!row.lease_in_use && !row.reconcile_required) return null;
+    return (
+        <>
+            {row.lease_in_use && (
+                <span data-testid="task-cloud-workspace-lease" className="stsm-lease-note">
+                    {row.lease_holder
+                        ? textForLang(lang, `In use on another device (${row.lease_holder})`, `占用中（其他设备：${row.lease_holder}）`, `佔用中（其他裝置：${row.lease_holder}）`)
+                        : textForLang(lang, 'In use on another device', '占用中（其他设备）', '佔用中（其他裝置）')}
+                </span>
+            )}
+            {row.reconcile_required && (
+                <span data-testid="task-cloud-workspace-reconcile" role="status" className="stsm-lease-note" title={row.reconcile_reason || undefined}>
+                    {textForLang(lang, 'Full scan required', '需要完整扫描', '需要完整掃描')}
+                    {row.reconcile_reason ? ` · ${row.reconcile_reason}` : ''}
+                </span>
+            )}
+        </>
+    );
+};
+
+const asCloudWorkspaceDeletedRow = (value: unknown): CloudWorkspaceDeletedRow | null => {
+    if (!value || typeof value !== 'object') return null;
+    const id = cloudWorkspaceText(value, 'id', 'ID').trim();
+    if (!id) return null;
+    return {
+        id,
+        name: cloudWorkspaceText(value, 'name', 'Name'),
+        used_bytes: cloudWorkspaceNumber(value, 'used_bytes', 'UsedBytes'),
+        updated_at: cloudWorkspaceText(value, 'updated_at', 'UpdatedAt'),
+        deleted_at: cloudWorkspaceText(value, 'deleted_at', 'DeletedAt'),
+        purge_after: cloudWorkspaceText(value, 'purge_after', 'PurgeAfter'),
+    };
+};
+
+const dropCloudWorkspaceFromEntitlement = (
+    prev: CloudEntitlementState | null | undefined,
+    workspaceId: string,
+    deleted?: CloudWorkspaceDeletedRow | null,
+): CloudEntitlementState | null => {
+    if (!prev) return prev ?? null;
+    const id = workspaceId.trim();
+    if (!id) return prev;
+    const current = (prev.workspaces || []).find(row => deletedWorkspaceId(row) === id);
+    const workspaces = (prev.workspaces || []).filter(row => deletedWorkspaceId(row) !== id);
+    const rest = (prev.deleted || []).filter(row => deletedWorkspaceId(row) !== id);
+    const nextDeleted = deleted || (current
+        ? { id, name: current.name, used_bytes: current.used_bytes, deleted_at: new Date().toISOString() }
+        : null);
+    return {
+        ...prev,
+        used: workspaces.length,
+        workspaces,
+        deleted: nextDeleted ? [nextDeleted, ...rest] : rest,
+    };
+};
+
+const forceDeleteCloudWorkspaceMessage = (lang: string, name: string, taskNames: string[] = []): string => {
+    const trimmed = name.trim();
+    const base = trimmed
+        ? textForLang(
+            lang,
+            `Permanently delete “${trimmed}” and all remote files? This cannot be undone.`,
+            `永久删除「${trimmed}」及全部远程文件？此操作不可撤销。`,
+            `永久刪除「${trimmed}」及全部遠端檔案？此操作不可復原。`,
+        )
+        : textForLang(
+            lang,
+            'Permanently delete this workspace and all remote files? This cannot be undone.',
+            '永久删除此工作区及全部远程文件？此操作不可撤销。',
+            '永久刪除此工作區及全部遠端檔案？此操作不可復原。',
+        );
+    const names = taskNames.map(item => item.trim()).filter(Boolean);
+    if (names.length === 0) return base;
+    const list = names.map(item => `· ${item}`).join('\n');
+    return textForLang(
+        lang,
+        `${base}\nThe following linked tasks will also be deleted:\n${list}`,
+        `${base}\n同时将删除以下关联任务：\n${list}`,
+        `${base}\n同時將刪除以下關聯任務：\n${list}`,
+    );
+};
+
+const cloudOverviewSummary = (lang: string, current: number, quota: number, bound: number, blank: number): { text: string; hint: string } => {
+    const quotaLimit = Number(quota) || 0;
+    if (quotaLimit > 0) {
+        return {
+            text: textForLang(
+                lang,
+                `${current} of ${quotaLimit} workspaces · ${bound} linked to a task · ${blank} unlinked`,
+                `现有 ${current} 个工作区 / 最多 ${quotaLimit} 个 · ${bound} 个已关联任务 · ${blank} 个未关联`,
+                `現有 ${current} 個工作區 / 最多 ${quotaLimit} 個 · ${bound} 個已關聯任務 · ${blank} 個未關聯`,
+            ),
+            hint: textForLang(
+                lang,
+                `Hub allows up to ${quotaLimit} cloud workspaces`,
+                `Hub 管理员最多允许 ${quotaLimit} 个云端工作区`,
+                `Hub 管理員最多允許 ${quotaLimit} 個雲端工作區`,
+            ),
+        };
+    }
+    return {
+        text: textForLang(
+            lang,
+            `${current} workspaces · ${bound} linked to a task · ${blank} unlinked`,
+            `共 ${current} 个工作区 · ${bound} 个已关联任务 · ${blank} 个未关联`,
+            `共 ${current} 個工作區 · ${bound} 個已關聯任務 · ${blank} 個未關聯`,
+        ),
+        hint: '',
+    };
+};
+
+const normalizeCloudEntitlement = (ent: CloudEntitlementState | null | undefined): CloudEntitlementState => ({
+    enabled: cloudWorkspaceFlag(ent, 'enabled', 'Enabled'),
+    hub_unavailable: cloudWorkspaceFlag(ent, 'hub_unavailable', 'HubUnavailable'),
+    banner: cloudWorkspaceText(ent, 'banner', 'Banner'),
+    reason: cloudWorkspaceText(ent, 'reason', 'Reason'),
+    quota: cloudWorkspaceNumber(ent, 'quota', 'Quota'),
+    used: cloudWorkspaceNumber(ent, 'used', 'Used'),
+    workspaces: cloudWorkspaceList(ent, 'workspaces', 'Workspaces')
+        .map(asCloudWorkspaceRow)
+        .filter((row): row is CloudWorkspaceRow => !!row),
+    deleted: cloudWorkspaceList(ent, 'deleted', 'Deleted')
+        .map(asCloudWorkspaceDeletedRow)
+        .filter((row): row is CloudWorkspaceDeletedRow => !!row),
+});
+
+const CLOUD_RESTORE_LIST_WAIT_MS = 8000;
+
+const cloudWorkspaceIdFromTask = (task: unknown): string => {
+    if (!task || typeof task !== 'object') return '';
+    const rec = task as Record<string, unknown>;
+    const tagsRaw = rec.tags ?? rec.Tags;
+    const tags = Array.isArray(tagsRaw) ? tagsRaw.map(item => String(item)) : undefined;
+    const projectPath = String(rec.project_path ?? rec.ProjectPath ?? rec.projectPath ?? '');
+    const workingDir = String(rec.working_dir ?? rec.WorkingDir ?? rec.workingDir ?? '');
+    return cloudWorkspaceIdFromTaskFields({
+        tags,
+        project_path: projectPath,
+        working_dir: workingDir,
+    });
+};
+
+/** Hub workspace names keyed by id. Live rows overwrite recently deleted aliases. */
+export function cloudWorkspaceNameMapFromEntitlement(
+    ent: Pick<CloudEntitlementState, 'workspaces' | 'deleted'> | null | undefined,
+): Map<string, string> {
+    const names = new Map<string, string>();
+    if (!ent) return names;
+    for (const list of [ent.deleted, ent.workspaces]) {
+        if (!Array.isArray(list)) continue;
+        for (const row of list) {
+            const id = String(row?.id || '').trim();
+            const name = String(row?.name || '').trim();
+            if (id && name) names.set(id, name);
+        }
+    }
+    return names;
+}
+
+/** Secondary line under the task title. Cloud rows show the Hub workspace name only. */
+export function taskSecondaryLabelFor(
+    proj: Pick<TaskManagementItem, 'preview' | 'project_path' | 'tags' | 'working_dir' | 'name'>,
+    workspaceNameById?: Map<string, string>,
+): string {
+    const workspaceId = cloudWorkspaceIdFromTask(proj);
+    if (workspaceId) {
+        return (
+            workspaceNameById?.get(workspaceId)
+            || lookupCloudWorkspaceDisplayName(workspaceId)
+            || ''
+        ).trim();
+    }
+    if (isCloudWorkspaceTask(proj)) return '';
+    return String(proj.preview || '').trim() || String(proj.project_path || '');
+}
+
+/** Compact secondary copy used by the reference task rows. Keep it separate
+ * from the hover title so the row can show context without exposing a path. */
+export function taskSidebarSummaryFor(
+    proj: Pick<TaskManagementItem, 'preview' | 'project_path' | 'tags' | 'working_dir' | 'name'>,
+    workspaceNameById?: Map<string, string>,
+): string {
+    const secondary = taskSecondaryLabelFor(proj, workspaceNameById);
+    if (secondary && secondary !== String(proj.name || '').trim()) return secondary;
+    const preview = String(proj.preview || '').trim();
+    return preview && preview !== String(proj.name || '').trim() ? preview : '';
+}
+
+const joinHoverLines = (...lines: Array<string | false | null | undefined>): string => {
+    const seen = new Set<string>();
+    const parts: string[] = [];
+    for (const line of lines) {
+        const text = String(line || '').trim();
+        if (!text || seen.has(text)) continue;
+        seen.add(text);
+        parts.push(text);
+    }
+    return parts.join('\n');
+};
+
+const taskForCloudWorkspace = (taskList: TaskManagementItem[], workspaceId: string): TaskManagementItem | undefined => {
+    const id = workspaceId.trim();
+    if (!id) return undefined;
+    return taskList.find(task => cloudWorkspaceIdFromTask(task) === id);
+};
+
+const tasksForCloudWorkspace = (taskList: TaskManagementItem[], workspaceId: string): TaskManagementItem[] => {
+    const id = workspaceId.trim();
+    if (!id) return [];
+    return taskList.filter(task => cloudWorkspaceIdFromTask(task) === id);
+};
+
+const CloudShareIcon = () => (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false">
+        <circle cx="18" cy="5" r="3" />
+        <circle cx="6" cy="12" r="3" />
+        <circle cx="18" cy="19" r="3" />
+        <path d="M8.6 13.5 15.4 17.5M15.4 6.5 8.6 10.5" />
+    </svg>
+);
+
+const cloudWorkspaceIdsFromTaskRows = (rows: unknown): Set<string> => {
+    const ids = new Set<string>();
+    if (!Array.isArray(rows)) return ids;
+    for (const row of rows) {
+        const id = cloudWorkspaceIdFromTask(row);
+        if (id) ids.add(id);
+    }
+    return ids;
+};
+
+const pickDefaultCloudWorkspaceId = (rows: CloudWorkspaceRow[] | undefined, skipIds?: Set<string>): string => {
+    const list = rows || [];
+    const unusedFree = list.find(row => {
+        const id = (row.id || '').trim();
+        return id && !row.lease_in_use && !skipIds?.has(id);
+    });
+    const unusedAny = list.find(row => {
+        const id = (row.id || '').trim();
+        return id && !skipIds?.has(id);
+    });
+    const free = list.find(row => !!(row.id || '').trim() && !row.lease_in_use);
+    const any = list.find(row => !!(row.id || '').trim());
+    return ((unusedFree || unusedAny || free || any)?.id || '').trim();
+};
+
+const disabledCloudEntitlement = (): CloudEntitlementState => ({
+    enabled: false,
+    hub_unavailable: false,
+    banner: '',
+    reason: '',
+    workspaces: [],
+    deleted: [],
+});
+
+const formatCloudWorkspaceBytes = (bytes: number, _lang: string): string => {
+    const value = Number.isFinite(bytes) ? Math.max(0, bytes) : 0;
+    if (value < 1024) return `${value} B`;
+    if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+    if (value < 1024 * 1024 * 1024) return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+    return `${(value / (1024 * 1024 * 1024)).toFixed(1)} GB`;
+};
+
+const formatCloudWorkspaceLastUsed = (value: string | undefined, lang: string): string => {
+    const timestamp = Date.parse(value || '');
+    if (!Number.isFinite(timestamp)) return '';
+    const date = new Date(timestamp);
+    const pad = (part: number) => String(part).padStart(2, '0');
+    const dateText = `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+    return textForLang(lang, `Last used ${dateText}`, `上次使用 ${dateText}`, `上次使用 ${dateText}`);
+};
+
+const cloudWorkspaceDeniedReason = (lang: string, ent: CloudEntitlementState | null): string => {
+    if (ent?.enabled === true) return '';
+    if (ent?.hub_unavailable) {
+        return ent.banner?.trim()
+            || textForLang(lang, 'Hub is unavailable; cloud workspaces are temporarily unavailable.', 'Hub 不可用，云端工作区暂不可用', 'Hub 不可用，雲端工作區暫不可用');
+    }
+    if (ent == null) {
+        return textForLang(lang, 'Checking cloud workspace access…', '正在检查云端工作区权限…', '正在檢查雲端工作區權限…');
+    }
+    if (ent.reason === 'machine_unbound') {
+        return textForLang(lang, 'This PC is not bound to a Hub user. Bind it, then create a cloud workspace task.', '本机尚未绑定 Hub 用户。请先绑定后再创建云端任务。', '本機尚未綁定 Hub 使用者。請先綁定後再建立雲端任務。');
+    }
+    if (ent.reason === 'not_granted') {
+        return textForLang(lang, 'An admin has not enabled cloud workspaces for you.', '管理员尚未向你开放云端工作区。', '管理員尚未向你開放雲端工作區。');
+    }
+    return textForLang(
+        lang,
+        'Cloud workspace is not enabled for this device. Bind this PC to a Hub user, and ask an admin to turn it on.',
+        '当前设备未开放云端工作区。请确认本机已绑定 Hub 用户，且管理员已全员或按部门开通。',
+        '目前裝置未開放雲端工作區。請確認本機已綁定 Hub 使用者，且管理員已全員或按部門開通。',
+    );
+};
+
+type CreateTaskTypeId = 'chat' | 'coding_dev' | 'remote_coding_dev' | 'cloud';
+
+type CloudWorkspaceProvisionResult = {
+    operation_id?: string;
+    operationId?: string;
+    OperationID?: string;
+    workspace_id?: string;
+    workspaceId?: string;
+    WorkspaceID?: string;
+};
+
+const cloudProvisionText = (value: unknown, ...keys: string[]): string => {
+    if (!value || typeof value !== 'object') return '';
+    const row = value as Record<string, unknown>;
+    for (const key of keys) {
+        const item = row[key];
+        if (typeof item === 'string' && item.trim()) return item.trim();
+    }
+    return '';
+};
+
+export const SidebarTaskManagement = ({
+    lang,
+    themeMode,
+    tasks,
+    tasksLoading = false,
+    cloudTasksLoading = false,
+    renamingTaskPath,
+    setRenamingTaskPath,
+    renameValue,
+    setRenameValue,
+    resumeTask,
+    continueWorkflowProject = () => {},
+    assistantReady = true,
+    onTaskSwitchBlocked,
+    createTask,
+    onCreateExpertTask,
+    refreshTasks,
+    taskContextMenu,
+    setTaskContextMenu,
+    renameTask,
+    pinTask,
+    hideTask,
+    activateTask,
+    openProjectTabPaths,
+    openProjectTabIdentities,
+    openExpertTabIDs,
+    activeAssistantTask,
+    activeAssistantTaskRunning = false,
+    busyTaskRuns,
+    taskListVisible = true,
+    showCloudWorkspaceManagement = true,
+    showCloudWorkspaceCreation = showCloudWorkspaceManagement,
+    restoreCloudWorkspaceTasks = false,
+}: SidebarTaskManagementProps) => {
+    const { showConfirm } = useDialog();
+    const [creatingTask, setCreatingTask] = useState(false);
+    const [creatingTaskMode, setCreatingTaskMode] = useState<'' | PureCodingAgentMode>('');
+    const [createDialogOpen, setCreateDialogOpen] = useState(false);
+    const [newTaskName, setNewTaskName] = useState('');
+    const [newTaskWorkingDir, setNewTaskWorkingDir] = useState('');
+    /** '' | coding_dev | remote_coding_dev */
+    const [newTaskMode, setNewTaskMode] = useState<'' | 'coding_dev' | 'remote_coding_dev'>('');
+    /** AI experts offered by the chat task type; '' keeps the general assistant path. */
+    const [createExperts, setCreateExperts] = useState<ExpertDefinition[]>([]);
+    const [createExpertId, setCreateExpertId] = useState('');
+    const [expertPickerOpen, setExpertPickerOpen] = useState(false);
+    const [expertFilter, setExpertFilter] = useState('');
+    /** LaTeX paper templates offered when the LaTeX expert is selected. The
+     * default is the blank option: a template is an explicit choice. */
+    const [createLatexTemplates, setCreateLatexTemplates] = useState<LatexTemplate[]>([]);
+    const [createLatexTemplateId, setCreateLatexTemplateId] = useState('');
+    const [latexTemplatePickerOpen, setLatexTemplatePickerOpen] = useState(false);
+    const [remoteHost, setRemoteHost] = useState('');
+    const [remotePort, setRemotePort] = useState('22');
+    const [remoteUser, setRemoteUser] = useState('');
+    const [remotePassword, setRemotePassword] = useState('');
+    const [remoteWorkDir, setRemoteWorkDir] = useState('');
+    /** Preserve the welcome incident posture if SSH setup needs a manual retry. */
+    const [remoteSafety, setRemoteSafety] = useState<OpenCreateCodingTaskDetail['remoteSafety']>();
+    const [createError, setCreateError] = useState('');
+    const [taskListNotice, setTaskListNotice] = useState('');
+    const duplicatingTaskRef = useRef(false);
+    /** Last Hub entitlement for this process session. Null means still loading. */
+    const [cloudEntitlement, setCloudEntitlement] = useState<CloudEntitlementState | null>(null);
+    const [workspaceKind, setWorkspaceKind] = useState<'local' | 'cloud'>('local');
+    const [selectedCloudWorkspaceId, setSelectedCloudWorkspaceId] = useState('');
+    const [renamingCloudWorkspaceId, setRenamingCloudWorkspaceId] = useState('');
+    const [renameCloudWorkspaceValue, setRenameCloudWorkspaceValue] = useState('');
+    const [deleteConfirmCloudWorkspaceId, setDeleteConfirmCloudWorkspaceId] = useState('');
+    const [cloudWorkspaceBusy, setCloudWorkspaceBusy] = useState(false);
+    const [cloudOverviewOpen, setCloudOverviewOpen] = useState(false);
+    const [cloudFilesWorkspace, setCloudFilesWorkspace] = useState<{ id: string; name: string } | null>(null);
+    const [manageWorkspaceId, setManageWorkspaceId] = useState('');
+    const [shareTask, setShareTask] = useState<{ name: string; workspaceId: string } | null>(null);
+    const [cloudRestorePending, setCloudRestorePending] = useState(false);
+    const [forceDeletingCloudWorkspaceId, setForceDeletingCloudWorkspaceId] = useState('');
+    const pendingRestoreWorkspaceIdsRef = useRef<Set<string> | null>(null);
+    const releasedCloudWorkspaceIdsRef = useRef<Set<string>>(new Set());
+    const restoreWaitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const tasksRef = useRef(tasks);
+    tasksRef.current = tasks;
+    const cloudOverviewBackdropMouseDownRef = useRef(false);
+    const overviewFetchGenRef = useRef(0);
+    const cloudOverviewDialogRef = useRef<HTMLDivElement | null>(null);
+    const cloudOverviewEditorRef = useRef({ renaming: '', confirming: '' });
+    cloudOverviewEditorRef.current.renaming = renamingCloudWorkspaceId;
+    cloudOverviewEditorRef.current.confirming = deleteConfirmCloudWorkspaceId;
+    const forceDeleteConfirmOpenRef = useRef(false);
+    const cloudFilesWorkspaceRef = useRef(cloudFilesWorkspace);
+    cloudFilesWorkspaceRef.current = cloudFilesWorkspace;
+    const cloudWorkspaceBusyRef = useRef(false);
+    const cloudEntitlementRef = useRef(cloudEntitlement);
+    cloudEntitlementRef.current = cloudEntitlement;
+    const closeCloudOverview = () => {
+        overviewFetchGenRef.current += 1;
+        setRenamingCloudWorkspaceId('');
+        setRenameCloudWorkspaceValue('');
+        setDeleteConfirmCloudWorkspaceId('');
+        setCreateError('');
+        setCloudFilesWorkspace(null);
+        setCloudOverviewOpen(false);
+    };
+    const [selectingWorkingDir, setSelectingWorkingDir] = useState(false);
+    /** In-flight "转移到云端 / 转移到本地" request; non-null while its dialog is open. */
+    const [transferRequest, setTransferRequest] = useState<{
+        direction: TaskTransferDirection;
+        projectPath: string;
+        name: string;
+        tags?: string[];
+        /** Execution mode carried over to the task created at the target. */
+        mode?: 'coding_dev';
+    } | null>(null);
+    const [transferBusy, setTransferBusy] = useState(false);
+    const [transferError, setTransferError] = useState('');
+    const [transferLocalDir, setTransferLocalDir] = useState('');
+    const [sceneDetailPath, setSceneDetailPath] = useState<string | null>(null);
+    const [sceneDetail, setSceneDetail] = useState<ProjectSceneDetail | null>(null);
+    const [sceneDetailLoading, setSceneDetailLoading] = useState(false);
+    const [sceneDetailError, setSceneDetailError] = useState('');
+    /** Invalidates an older evidence request when a row is closed or another row opens. */
+    const sceneDetailRequestGenRef = useRef(0);
+    const [openingTaskPath, setOpeningTaskPath] = useState<string | null>(null);
+    // State updates too late to collapse the click+click+dblclick of one gesture.
+    // The timestamp also covers a resume that finishes before the second click.
+    const openingTaskPathRef = useRef<string | null>(null);
+    const recentTaskOpenRef = useRef<{ path: string; at: number } | null>(null);
+    /** Cloud Browse may need to hydrate a missing local cache before opening it. */
+    const [cloudBrowseProgress, setCloudBrowseProgress] = useState<string | null>(null);
+    const cloudBrowseGenerationRef = useRef(0);
+    const cloudBrowseTaskPathRef = useRef<string | null>(null);
+    /** Task rows currently being removed from the durable task list. */
+    const [removingTaskPaths, setRemovingTaskPaths] = useState<Set<string>>(() => new Set());
+    /** Keep errors per task so concurrent removal failures remain actionable. */
+    const [removeErrors, setRemoveErrors] = useState<Map<string, string>>(() => new Map());
+    // State updates are asynchronous; keep the authoritative in-flight set in
+    // a ref so a rapid second click cannot start a duplicate backend deletion.
+    const removingTaskPathsRef = useRef<Set<string>>(new Set());
+    /** Guards against stacking a second remove-confirm dialog on a rapid re-click. */
+    const removeTaskConfirmOpenRef = useRef(false);
+    const creatingTaskRef = useRef(false);
+    /** Invalidates completion UI from a create whose form was superseded by a newer request. */
+    const createTaskGenRef = useRef(0);
+    const createBackdropMouseDownRef = useRef(false);
+    /** Cancels stale placeholder-selection timers when dialog re-opens or unmounts. */
+    const selectPlaceholderTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const selectPlaceholderGenRef = useRef(0);
+    /** Edit remote SSH settings dialog (from task list context menu). */
+    const [editRemoteOpen, setEditRemoteOpen] = useState(false);
+    const [editRemotePath, setEditRemotePath] = useState('');
+    const [editRemoteName, setEditRemoteName] = useState('');
+    const [editHost, setEditHost] = useState('');
+    const [editPort, setEditPort] = useState('22');
+    const [editUser, setEditUser] = useState('');
+    const [editPassword, setEditPassword] = useState('');
+    const [editWorkDir, setEditWorkDir] = useState('');
+    const [editError, setEditError] = useState('');
+    const [editInfo, setEditInfo] = useState('');
+    const [editSaving, setEditSaving] = useState(false);
+    const [editTesting, setEditTesting] = useState(false);
+    const editBackdropMouseDownRef = useRef(false);
+    /** Bumps on each open so a stale GetRemoteCodingTaskMeta cannot overwrite a newer dialog. */
+    const editRemoteFetchGenRef = useRef(0);
+    /** Drops stale CloudWorkspaceEntitlement results when the dialog is reopened. */
+    const entitlementFetchGenRef = useRef(0);
+    const mountedRef = useRef(true);
+    const beginCloudWorkspaceBusy = () => {
+        if (cloudWorkspaceBusyRef.current || creatingTaskRef.current) return false;
+        cloudWorkspaceBusyRef.current = true;
+        setCloudWorkspaceBusy(true);
+        return true;
+    };
+    const endCloudWorkspaceBusy = () => {
+        cloudWorkspaceBusyRef.current = false;
+        if (mountedRef.current) setCloudWorkspaceBusy(false);
+    };
+    const createSelectedExpert = createExperts.find(e => e.id === createExpertId) || null;
+    const expertFilterQuery = expertFilter.trim().toLowerCase();
+    const filteredCreateExperts = createExperts.filter(e =>
+        !expertFilterQuery
+        || e.name.toLowerCase().includes(expertFilterQuery)
+        || e.description.toLowerCase().includes(expertFilterQuery));
+    // Refresh the expert catalog whenever the create dialog opens so the picker
+    // never shows a stale list after experts were added or edited elsewhere.
+    useEffect(() => {
+        if (!createDialogOpen) return;
+        let cancelled = false;
+        void (async () => {
+            try {
+                const raw = typeof ListExperts === 'function' ? await ListExperts() : '';
+                // Installed managed-industry experts are excluded from ListExperts
+                // (the backend keeps them off the ordinary LWW surface); merge
+                // them in so the picker matches the AI-experts page catalog.
+                let managedRaw = '';
+                try {
+                    managedRaw = typeof ListManagedIndustryExperts === 'function' ? await ListManagedIndustryExperts() : '';
+                } catch {
+                    managedRaw = '';
+                }
+                if (cancelled || !mountedRef.current) return;
+                const personal = parseExpertListJSON(raw);
+                const seen = new Set(personal.map(e => e.id));
+                const managed = parseInstalledManagedIndustryExpertsJSON(managedRaw).filter(e => !seen.has(e.id));
+                setCreateExperts([...personal, ...managed]);
+            } catch {
+                if (cancelled || !mountedRef.current) return;
+                setCreateExperts([]);
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [createDialogOpen]);
+    const createSelectedExpertIsLatex = isLatexExpertId(createExpertId);
+    // Blank is not a catalogue row. Keep it first so a picked pack can be undone.
+    const latexTemplateChoices = useMemo(() => {
+        const blankFromList = createLatexTemplates.find(template => isBlankLatexTemplate(template));
+        const blank: LatexTemplate = blankFromList || {
+            id: LATEX_BLANK_TEMPLATE_ID,
+            name: latexBlankTemplateName(lang),
+            description: latexTemplateText(lang, 'Minimal article skeleton', '从最小骨架开始', '從最小骨架開始'),
+        };
+        return [blank, ...createLatexTemplates.filter(template => !isBlankLatexTemplate(template))];
+    }, [createLatexTemplates, lang]);
+    const selectedLatexTemplateId = createLatexTemplateId || LATEX_BLANK_TEMPLATE_ID;
+    const selectedLatexTemplate = latexTemplateChoices.find(template => template.id === selectedLatexTemplateId) || latexTemplateChoices[0];
+    // Load the template library only when it is actually needed: the dialog opens
+    // for every task type, and reading the index for a non-LaTeX expert is waste.
+    useEffect(() => {
+        if (!createDialogOpen || !createSelectedExpertIsLatex) return;
+        let cancelled = false;
+        void (async () => {
+            try {
+                const app = await getWailsAppModule();
+                if (typeof app.ListLatexTemplates !== 'function') return;
+                const library = parseLatexTemplateLibrary(await app.ListLatexTemplates());
+                if (cancelled || !mountedRef.current) return;
+                setCreateLatexTemplates(library.templates);
+            } catch {
+                // A missing catalogue only costs the template chooser; the LaTeX
+                // expert still starts from the blank document.
+                if (cancelled || !mountedRef.current) return;
+                setCreateLatexTemplates([]);
+            }
+        })();
+        return () => { cancelled = true; };
+    }, [createDialogOpen, createSelectedExpertIsLatex]);
+    const finishCloudRestoreWait = () => {
+        pendingRestoreWorkspaceIdsRef.current = null;
+        if (restoreWaitTimerRef.current != null) {
+            clearTimeout(restoreWaitTimerRef.current);
+            restoreWaitTimerRef.current = null;
+        }
+        if (mountedRef.current) setCloudRestorePending(false);
+    };
+    useEffect(() => {
+        if (cloudEntitlement) rememberCloudWorkspaceDisplayNames(cloudEntitlement);
+    }, [cloudEntitlement]);
+    useEffect(() => {
+        if (!taskListNotice) return;
+        const timer = window.setTimeout(() => setTaskListNotice(''), 8000);
+        return () => window.clearTimeout(timer);
+    }, [taskListNotice]);
+    // A running turn no longer blocks "新建任务" (the welcome page covers it).
+    // This notice is only for an explicit hard block from the wizard wiring.
+    useEffect(() => {
+        const handler = () => setTaskListNotice(textForLang(
+            lang,
+            'The current task is still running. Stop it or wait for it to finish, then create a new task.',
+            '当前任务正在执行中，请停止当前任务或等待其完成后再新建任务。',
+            '目前任務正在執行中，請停止目前任務或等待其完成後再新建任務。',
+        ));
+        window.addEventListener(EVENT_NEW_TASK_WIZARD_BLOCKED, handler);
+        return () => window.removeEventListener(EVENT_NEW_TASK_WIZARD_BLOCKED, handler);
+    }, [lang]);
+    useEffect(() => {
+        mountedRef.current = true;
+        const entitlementGen = ++entitlementFetchGenRef.current;
+        // The assistant workbench hides project/cloud workspace management, but
+        // durable cloud task rows still need to be restored into the shared
+        // task list. Keep the data restore decision separate from the controls.
+        const shouldSyncCloudTasks = showCloudWorkspaceManagement || showCloudWorkspaceCreation || restoreCloudWorkspaceTasks;
+        if (shouldSyncCloudTasks && typeof CloudWorkspaceEntitlement === 'function') {
+            void (async () => {
+                try {
+                    const ent = await CloudWorkspaceEntitlement() as CloudEntitlementState | null;
+                    if (!mountedRef.current) return;
+                    const next = normalizeCloudEntitlement(ent);
+                    // Opening the create dialog or overview must not cancel Hub →
+                    // sidebar restore: those paths bump their own fetch gens.
+                    if (entitlementFetchGenRef.current === entitlementGen) {
+                        setCloudEntitlement(next);
+                    }
+                    if (next.enabled && !next.hub_unavailable) {
+                        setCloudRestorePending(true);
+                        let restored: unknown = [];
+                        try {
+                            restored = await restoreCloudWorkspaceTasksShared();
+                        } catch {
+                            // Keep the local task list if Hub restore fails.
+                        }
+                        if (!mountedRef.current) return;
+                        refreshTasks();
+                        const ids = cloudWorkspaceIdsFromTaskRows(restored);
+                        for (const id of releasedCloudWorkspaceIdsRef.current) ids.delete(id);
+                        if (ids.size === 0) {
+                            finishCloudRestoreWait();
+                            return;
+                        }
+                        const alreadyVisible = visibleTaskRows(tasksRef.current);
+                        let missing = false;
+                        for (const id of ids) {
+                            if (!taskForCloudWorkspace(alreadyVisible, id)) {
+                                missing = true;
+                                break;
+                            }
+                        }
+                        if (!missing) {
+                            finishCloudRestoreWait();
+                            return;
+                        }
+                        pendingRestoreWorkspaceIdsRef.current = ids;
+                        if (restoreWaitTimerRef.current != null) clearTimeout(restoreWaitTimerRef.current);
+                        restoreWaitTimerRef.current = setTimeout(() => {
+                            finishCloudRestoreWait();
+                        }, CLOUD_RESTORE_LIST_WAIT_MS);
+                    }
+                } catch {
+                    if (!mountedRef.current || entitlementFetchGenRef.current !== entitlementGen) return;
+                    setCloudEntitlement(prev => {
+                        if (prev == null) {
+                            return { enabled: false, hub_unavailable: true, banner: '', workspaces: [], deleted: [] };
+                        }
+                        if (prev.hub_unavailable) return prev;
+                        return { ...prev, hub_unavailable: true };
+                    });
+                }
+            })();
+        } else {
+            setCloudEntitlement(disabledCloudEntitlement());
+        }
+        return () => {
+            mountedRef.current = false;
+            cloudBrowseGenerationRef.current += 1;
+            cloudBrowseTaskPathRef.current = null;
+            removingTaskPathsRef.current.clear();
+            pendingRestoreWorkspaceIdsRef.current = null;
+            if (restoreWaitTimerRef.current != null) {
+                clearTimeout(restoreWaitTimerRef.current);
+                restoreWaitTimerRef.current = null;
+            }
+            if (selectPlaceholderTimerRef.current != null) {
+                clearTimeout(selectPlaceholderTimerRef.current);
+                selectPlaceholderTimerRef.current = null;
+            }
+            selectPlaceholderGenRef.current += 1;
+        };
+    }, [restoreCloudWorkspaceTasks, showCloudWorkspaceCreation, showCloudWorkspaceManagement]);
+    // Management controls stay hidden on the assistant workbench, but durable
+    // cloud-workspace task rows remain part of the shared task list. The cloud
+    // marker and task identity must stay visible even when project-management
+    // actions are disabled for this surface.
+    const [taskListOrder, setTaskListOrder] = useState<string[]>(readTaskListOrder);
+    const [collapsedTaskFolders, setCollapsedTaskFolders] = useState<ReadonlySet<TaskListFolderKind>>(readCollapsedTaskFolders);
+    const [collapsedWorkdirFolders, setCollapsedWorkdirFolders] = useState<ReadonlySet<string>>(readCollapsedWorkdirFolders);
+    const [taskFolderOrder, setTaskFolderOrder] = useState<TaskListFolderKind[]>(readTaskFolderOrder);
+    const toggleWorkdirFolder = (key: string) => {
+        if (!key) return;
+        setCollapsedWorkdirFolders(prev => {
+            const next = new Set(prev);
+            if (next.has(key)) next.delete(key);
+            else next.add(key);
+            writeCollapsedWorkdirFolders(next);
+            return next;
+        });
+    };
+    const toggleTaskFolder = (kind: TaskListFolderKind) => {
+        setCollapsedTaskFolders(prev => {
+            const next = new Set(prev);
+            if (next.has(kind)) next.delete(kind);
+            else next.add(kind);
+            writeCollapsedTaskFolders(next);
+            return next;
+        });
+    };
+    const visibleTasks = useMemo(
+        // The backend list is recency-ordered. Opening a task rewrites
+        // last_activity and would otherwise move that row. Default order is
+        // pin, then creation time. A drag order, once saved, replaces that.
+        () => applyTaskListOrder(sortTaskManagementItems(visibleTaskRows(tasks)), taskListOrder),
+        [tasks, taskListOrder],
+    );
+    // A pure agent loop run leaves no running snapshot on the durable row
+    // (has_output stays true from earlier runs), so while the assistant panel
+    // reports the matching task as actively executing, the live signal wins
+    // over the stale snapshot in the status stats below. Concurrent runs keep
+    // executing after the user switches away (detached rounds), so the busy
+    // identity set — not just the visible tab's boolean — marks every live
+    // row. Cloud resume can rebind a tab onto a cache path that differs from
+    // the durable row, so busy paths also match by cloud workspace id, and
+    // expert rows match by expert id (mirrors isActiveTaskRow).
+    const busyPathSet = useMemo(() => new Set(busyTaskRuns?.projectPaths || []), [busyTaskRuns]);
+    const busyExpertSet = useMemo(() => new Set(busyTaskRuns?.expertIds || []), [busyTaskRuns]);
+    const busyWorkspaceIdSet = useMemo(() => {
+        const ids = new Set<string>();
+        for (const path of busyTaskRuns?.projectPaths || []) {
+            const id = cloudWorkspaceIdFromPath(path);
+            if (id) ids.add(id);
+        }
+        return ids;
+    }, [busyTaskRuns]);
+    // Built once per identity change; the hot loops below match rows against
+    // this context instead of re-coercing the identity per row per pass.
+    const activeRowContext = useMemo(() => activeTaskRowMatchContext(activeAssistantTask), [activeAssistantTask]);
+    const matchesLiveRunningRow = useCallback((task: TaskManagementItem): boolean => isLiveRunningTaskRow(task, {
+        busyPathSet,
+        busyExpertSet,
+        busyWorkspaceIdSet,
+        activeRowContext,
+        activeAssistantTaskRunning,
+    }), [activeAssistantTaskRunning, activeRowContext, busyPathSet, busyExpertSet, busyWorkspaceIdSet]);
+    // One classification pass over the visible rows: chip counts, filters,
+    // the row pill and the current-task card all consult this key set
+    // instead of re-running the matcher for every row on each render.
+    const liveRunningRowKeys = useMemo(() => {
+        const keys = new Set<string>();
+        for (const task of visibleTasks) {
+            const key = String(task.id || task.project_path || task.working_dir || '');
+            if (key && matchesLiveRunningRow(task)) keys.add(key);
+        }
+        return keys;
+    }, [visibleTasks, matchesLiveRunningRow]);
+    const isLiveRunningRow = useCallback((task: TaskManagementItem): boolean => {
+        const key = String(task.id || task.project_path || task.working_dir || '');
+        if (!key) return matchesLiveRunningRow(task);
+        return liveRunningRowKeys.has(key);
+    }, [liveRunningRowKeys, matchesLiveRunningRow]);
+    // Two restore trigger paths feed this hint: the mount effect above sets
+    // cloudRestorePending, App's assistant-ready path passes cloudTasksLoading.
+    // Both go through restoreCloudWorkspaceTasksShared, so a single Hub restore
+    // backs the two triggers. OR-ing the states means neither path can clear
+    // the other's in-flight state.
+    const cloudSyncInProgress = cloudRestorePending || cloudTasksLoading;
+    const [taskSearchQuery, setTaskSearchQuery] = useState('');
+    const [taskSearchOpen, setTaskSearchOpen] = useState(false);
+    const taskSearchComposingRef = useRef(false);
+    const taskSearchInputRef = useRef<HTMLInputElement>(null);
+    const taskSearchEpochRef = useRef(0);
+    const lastPublishedQueryRef = useRef<string | null>(null);
+    const publishTaskSearch = useCallback((value: string) => {
+        if (typeof window === 'undefined') return;
+        const query = value.trim();
+        if (query === lastPublishedQueryRef.current) return;
+        lastPublishedQueryRef.current = query;
+        if (!query) {
+            setTaskSearchOpen(false);
+            window.dispatchEvent(new CustomEvent('maclaw:close-task-search'));
+            return;
+        }
+        setTaskSearchOpen(true);
+        taskSearchEpochRef.current += 1;
+        window.dispatchEvent(new CustomEvent('maclaw:open-task-search', { detail: { query, epoch: taskSearchEpochRef.current } }));
+    }, []);
+    useEffect(() => {
+        const onClosed = (event: Event) => {
+            const epoch = (event as CustomEvent<{ epoch?: number }>).detail?.epoch;
+            if (typeof epoch === 'number' && epoch !== taskSearchEpochRef.current) return;
+            lastPublishedQueryRef.current = '';
+            setTaskSearchOpen(false);
+            setTaskSearchQuery('');
+        };
+        window.addEventListener('maclaw:task-search-closed', onClosed);
+        return () => window.removeEventListener('maclaw:task-search-closed', onClosed);
+    }, []);
+    const [taskFilter, setTaskFilter] = useState<TaskStatusFilter>('all');
+    const [workspaceFilter, setWorkspaceFilter] = useState<'all' | TaskWorkspaceKind>('all');
+    const workspaceFilterCounts = useMemo(() => {
+        const counts: Record<TaskWorkspaceKind, number> = { local: 0, cloud: 0, remote: 0 };
+        for (const task of visibleTasks) counts[workspaceKindForTask(task)] += 1;
+        return counts;
+    }, [visibleTasks]);
+    const taskFilterCounts = useMemo(() => {
+        const counts: Record<Exclude<TaskStatusFilter, 'all'>, number> = { running: 0, pending: 0, completed: 0, paused: 0, shared: 0 };
+        for (const task of visibleTasks) {
+            const bucket = isLiveRunningRow(task) ? 'running' : taskStatusBucketFor(task);
+            if (bucket !== 'other') counts[bucket] += 1;
+            if (isSharedTaskRow(task)) counts.shared += 1;
+        }
+        return counts;
+    }, [visibleTasks, isLiveRunningRow]);
+    const filteredTasks = useMemo(() => {
+        const base = workspaceFilter === 'all'
+            ? visibleTasks
+            : visibleTasks.filter(task => workspaceKindForTask(task) === workspaceFilter);
+        if (taskFilter === 'all') return base;
+        if (taskFilter === 'shared') return base.filter(isSharedTaskRow);
+        // Live-running rows follow the running bucket exclusively so the
+        // filtered list never disagrees with the chip counts.
+        if (taskFilter === 'running') {
+            return base.filter(task => isLiveRunningRow(task) || taskStatusBucketFor(task) === 'running');
+        }
+        return base.filter(task => !isLiveRunningRow(task) && taskStatusBucketFor(task) === taskFilter);
+    }, [visibleTasks, taskFilter, workspaceFilter, isLiveRunningRow]);
+    const taskFolders = useMemo(
+        () => groupTasksIntoFolders(filteredTasks, taskFolderOrder).map(folder => ({
+            ...folder,
+            entries: groupTasksByWorkingDirectory(folder.tasks),
+        })),
+        [filteredTasks, taskFolderOrder],
+    );
+    const workdirGroupIdByTaskKey = useMemo(() => {
+        const map = new Map<string, string>();
+        for (const folder of taskFolders) {
+            for (const entry of folder.entries) {
+                const groupedTasks = entry.kind === 'folder' ? entry.folder.tasks : [entry.task];
+                const groupId = entry.kind === 'folder'
+                    ? taskWorkdirCollapseKey(folder.kind, !!groupedTasks[0]?.pinned, entry.folder.key)
+                    : '';
+                for (const task of groupedTasks) map.set(taskOrderKey(task), groupId);
+            }
+        }
+        return map;
+    }, [taskFolders]);
+    const taskDragKeyRef = useRef<string | null>(null);
+    const taskDragFolderRef = useRef<TaskListFolderKind | null>(null);
+    const taskDragPinnedRef = useRef<boolean | null>(null);
+    const taskDropTargetRef = useRef<HTMLElement | null>(null);
+    const folderDragKindRef = useRef<TaskListFolderKind | null>(null);
+    const folderDidDragRef = useRef(false);
+    // Set once a row drag starts, so the click that follows a drop does not open a task.
+    const taskRowDidDragRef = useRef(false);
+    const taskDragFromControlRef = useRef(false);
+    const clearTaskDropMarks = () => {
+        taskDropTargetRef.current?.removeAttribute('data-task-drop-target');
+        taskDropTargetRef.current = null;
+    };
+    const markTaskDropTarget = (row: HTMLElement) => {
+        if (taskDropTargetRef.current === row && row.hasAttribute('data-task-drop-target')) return;
+        taskDropTargetRef.current?.removeAttribute('data-task-drop-target');
+        row.setAttribute('data-task-drop-target', 'true');
+        taskDropTargetRef.current = row;
+    };
+    const rememberTaskDrag = (proj: TaskManagementItem) => {
+        taskDragKeyRef.current = taskOrderKey(proj);
+        taskDragFolderRef.current = taskListFolderKind(proj);
+        taskDragPinnedRef.current = !!proj.pinned;
+    };
+    const forgetTaskDrag = () => {
+        taskDragKeyRef.current = null;
+        taskDragFolderRef.current = null;
+        taskDragPinnedRef.current = null;
+    };
+    // A highlighted row must be a drop that commitTaskDrag will keep.
+    // Cross-folder and pin-boundary drops are rejected there, so they must
+    // not advertise a target while the pointer is still moving.
+    const canDropTaskOn = (target: TaskManagementItem) => {
+        if (!taskDragKeyRef.current || taskDragKeyRef.current === taskOrderKey(target)) return false;
+        if (taskDragFolderRef.current !== taskListFolderKind(target)) return false;
+        if (taskDragPinnedRef.current !== !!target.pinned) return false;
+        return true;
+    };
+    const folderDropTargetRef = useRef<HTMLElement | null>(null);
+    const clearFolderDropMarks = () => {
+        folderDropTargetRef.current?.removeAttribute('data-folder-drop-target');
+        folderDropTargetRef.current = null;
+    };
+    const markFolderDropTarget = (section: HTMLElement, edge: 'before' | 'after') => {
+        if (folderDropTargetRef.current === section && section.getAttribute('data-folder-drop-target') === edge) return;
+        folderDropTargetRef.current?.removeAttribute('data-folder-drop-target');
+        section.setAttribute('data-folder-drop-target', edge);
+        folderDropTargetRef.current = section;
+    };
+    const commitFolderDrag = (from: TaskListFolderKind, to: TaskListFolderKind) => {
+        if (from === to) return;
+        setTaskFolderOrder(prev => {
+            const next = reorderTaskListFolders(prev, from, to);
+            writeTaskFolderOrder(next);
+            return next;
+        });
+    };
+    const commitTaskDrag = (fromKey: string, toKey: string) => {
+        if (!fromKey || fromKey === toKey) return;
+        const fromTask = filteredTasks.find(task => taskOrderKey(task) === fromKey);
+        const toTask = filteredTasks.find(task => taskOrderKey(task) === toKey);
+        // Pinned rows stay above the rest, so a drop across that boundary
+        // would snap back. Ignore it instead of saving an order that cannot stick.
+        if (!fromTask || !toTask || !!fromTask.pinned !== !!toTask.pinned) return;
+        // A drop cannot change a task's folder. Session and coding rows stay
+        // in the folder their tags decide, so a cross-folder drop is ignored.
+        if (taskListFolderKind(fromTask) !== taskListFolderKind(toTask)) return;
+        const visibleKeys = filteredTasks.map(taskOrderKey);
+        // Start from the list the user is looking at. A task created after the
+        // last drag is shown at the top but is not in the saved keys yet;
+        // appending it here would throw it to the bottom on this drop.
+        const visualKeys = visibleTasks.map(taskOrderKey);
+        const fromGroup = workdirGroupIdByTaskKey.get(fromKey) || '';
+        const toGroup = workdirGroupIdByTaskKey.get(toKey) || '';
+        const blockFor = (key: string) => {
+            const groupId = workdirGroupIdByTaskKey.get(key) || '';
+            if (!groupId) return [key];
+            return visibleKeys.filter(item => (workdirGroupIdByTaskKey.get(item) || '') === groupId);
+        };
+        setTaskListOrder(prev => {
+            const seen = new Set(visualKeys);
+            const seeded = [...visualKeys, ...prev.filter(key => !seen.has(key))];
+            // A directory folder is one block. Moving any of its rows past
+            // another row moves the whole folder, so the drop does not snap back.
+            const next = fromGroup && fromGroup === toGroup
+                ? reorderTaskList(seeded, visibleKeys, fromKey, toKey)
+                : reorderTaskBlocks(seeded, visibleKeys, blockFor(fromKey), blockFor(toKey));
+            writeTaskListOrder(next);
+            return next;
+        });
+    };
+    const placePinnedTaskOrder = (key: string, pinned: boolean) => {
+        if (!key) return;
+        setTaskListOrder(prev => {
+            if (!prev.length) return prev;
+            const pinnedKeys = new Set(tasks.filter(item => item.pinned && taskOrderKey(item) !== key).map(taskOrderKey));
+            const next = placeTaskOrderKey(prev, key, pinned, pinnedKeys);
+            writeTaskListOrder(next);
+            return next;
+        });
+    };
+    // One bar for first ListTasks and Hub restore. Unfiltered emptiness so an
+    // empty status chip is not a full-list load, and "No tasks" cannot flash
+    // while cloud restore can still add rows.
+    const localTasksLoading = tasksLoading && visibleTasks.length === 0;
+    const showTaskListProgress = cloudSyncInProgress || localTasksLoading;
+    const suppressEmptyState = visibleTasks.length === 0 && showTaskListProgress;
+    const taskListProgressLabel = localTasksLoading
+        ? textForLang(lang, 'Loading tasks…', '任务加载中…', '任務載入中…')
+        : textForLang(lang, 'Syncing cloud tasks…', '正在同步云端任务…', '正在同步雲端任務…');
+    // Conditional chips (paused/shared) disappear when their count reaches
+    // zero; fall back to the full list instead of trapping the user on an
+    // empty view whose chip is no longer rendered.
+    useEffect(() => {
+        if (taskFilter === 'paused' && taskFilterCounts.paused === 0) setTaskFilter('all');
+        if (taskFilter === 'shared' && taskFilterCounts.shared === 0) setTaskFilter('all');
+    }, [taskFilter, taskFilterCounts]);
+    // Dock theme toggle mirrors the quick-settings theme chip; fall back to the
+    // App root attribute when the caller does not pass themeMode explicitly.
+    const headerThemeMode: 'light' | 'dark' = getPortalThemeMode(themeMode) === 'dark' ? 'dark' : 'light';
+    const themeToggleLabel = headerThemeMode === 'dark'
+        ? textForLang(lang, 'Switch to light mode', '切换到普通模式', '切換到普通模式')
+        : textForLang(lang, 'Switch to dark mode', '切换到暗黑模式', '切換到暗黑模式');
+    const taskFilterChips = useMemo(() => {
+        const chips: { key: TaskStatusFilter; label: string; count: number }[] = [
+            { key: 'all', label: textForLang(lang, 'All', '全部', '全部'), count: visibleTasks.length },
+            { key: 'running', label: textForLang(lang, 'In progress', '进行中', '進行中'), count: taskFilterCounts.running },
+            { key: 'pending', label: textForLang(lang, 'Pending', '待处理', '待處理'), count: taskFilterCounts.pending },
+            { key: 'completed', label: textForLang(lang, 'Completed', '已完成', '已完成'), count: taskFilterCounts.completed },
+        ];
+        // Low-frequency filters only appear when they actually have tasks;
+        // 'created by me' is dropped because it always equals 'all' here.
+        if (taskFilterCounts.paused > 0 || taskFilter === 'paused') chips.push({ key: 'paused', label: textForLang(lang, 'Paused', '已暂停', '已暫停'), count: taskFilterCounts.paused });
+        if (taskFilterCounts.shared > 0 || taskFilter === 'shared') chips.push({ key: 'shared', label: textForLang(lang, 'Shared with me', '分享给我的', '分享給我的'), count: taskFilterCounts.shared });
+        return chips;
+    }, [lang, taskFilter, visibleTasks.length, taskFilterCounts]);
+    const workspaceFilterChips = useMemo(() => {
+        // No "all" chip here: the status row's 全部 already shows the total, and
+        // a selected workspace chip toggles back off to "all" on a second click.
+        const chips: { key: 'all' | TaskWorkspaceKind; label: string; count: number }[] = [
+            { key: 'local', label: workspaceKindLabel('local', lang), count: workspaceFilterCounts.local },
+            { key: 'cloud', label: workspaceKindLabel('cloud', lang), count: workspaceFilterCounts.cloud },
+            { key: 'remote', label: workspaceKindLabel('remote', lang), count: workspaceFilterCounts.remote },
+        ];
+        return chips;
+    }, [lang, visibleTasks.length, workspaceFilterCounts]);
+    const taskListRef = useRef<HTMLDivElement | null>(null);
+    const activeListedTask = useMemo(() => {
+        if (!activeRowContext) return null;
+        return visibleTasks.find(proj => matchesActiveTaskRowContext(proj, activeRowContext)) ?? null;
+    }, [visibleTasks, activeRowContext]);
+    const activeFolderKind = activeListedTask ? taskListFolderKind(activeListedTask) : null;
+    const activeRowPresent = activeListedTask != null;
+    // Identity of the task whose folder we already revealed. A fresh object for
+    // the same task must not pop a folder the user just collapsed back open.
+    const activeFolderExpandKey = activeFolderKind && activeRowContext
+        ? `${activeFolderKind}\0${activeRowContext.expertId}\0${activeRowContext.activePath}\0${activeRowContext.activeWorkspaceId}`
+        : '';
+    const revealedFolderTaskKeyRef = useRef('');
+    useEffect(() => {
+        if (!activeFolderExpandKey || !activeFolderKind) return;
+        if (revealedFolderTaskKeyRef.current === activeFolderExpandKey) return;
+        revealedFolderTaskKeyRef.current = activeFolderExpandKey;
+        setCollapsedTaskFolders(prev => {
+            if (!prev.has(activeFolderKind)) return prev;
+            const next = new Set(prev);
+            next.delete(activeFolderKind);
+            writeCollapsedTaskFolders(next);
+            return next;
+        });
+    }, [activeFolderExpandKey, activeFolderKind]);
+    // Only a row that is actually inside a directory folder. A lone task, or a
+    // partner hidden by the current filter, must not clear that folder's collapse.
+    const activeWorkdirKey = activeListedTask
+        ? (workdirGroupIdByTaskKey.get(taskOrderKey(activeListedTask)) || '')
+        : '';
+    const activeWorkdirExpandKey = activeWorkdirKey && activeRowContext
+        ? `${activeWorkdirKey}\0${activeRowContext.expertId}\0${activeRowContext.activePath}\0${activeRowContext.activeWorkspaceId}`
+        : '';
+    const revealedWorkdirTaskKeyRef = useRef('');
+    useEffect(() => {
+        if (!activeWorkdirExpandKey || !activeWorkdirKey) return;
+        if (revealedWorkdirTaskKeyRef.current === activeWorkdirExpandKey) return;
+        revealedWorkdirTaskKeyRef.current = activeWorkdirExpandKey;
+        setCollapsedWorkdirFolders(prev => {
+            if (!prev.has(activeWorkdirKey)) return prev;
+            const next = new Set(prev);
+            next.delete(activeWorkdirKey);
+            writeCollapsedWorkdirFolders(next);
+            return next;
+        });
+    }, [activeWorkdirExpandKey, activeWorkdirKey]);
+    // Only the active folder's own expand state. Collapsing the other folder
+    // must not scroll the list back to the current task.
+    const activeFolderExpanded = !activeFolderKind || !collapsedTaskFolders.has(activeFolderKind);
+    const activeWorkdirExpanded = !activeWorkdirKey || !collapsedWorkdirFolders.has(activeWorkdirKey);
+    useEffect(() => {
+        if (!taskListVisible || !activeRowPresent || !activeFolderExpanded || !activeWorkdirExpanded) return;
+        const el = taskListRef.current?.querySelector('[data-active="true"]') as HTMLElement | null;
+        if (!el || typeof el.scrollIntoView !== 'function') return;
+        el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }, [taskListVisible, activeRowPresent, activeAssistantTask, activeFolderExpanded, activeWorkdirExpanded]);
+    useEffect(() => {
+        const ids = pendingRestoreWorkspaceIdsRef.current;
+        if (!ids || ids.size === 0) return;
+        const released = releasedCloudWorkspaceIdsRef.current;
+        for (const id of ids) {
+            if (released.has(id)) continue;
+            if (!taskForCloudWorkspace(visibleTasks, id)) return;
+        }
+        finishCloudRestoreWait();
+    }, [tasks]);
+
+    const resetEditRemoteFields = () => {
+        setEditRemotePath('');
+        setEditRemoteName('');
+        setEditHost('');
+        setEditPort('22');
+        setEditUser('');
+        setEditPassword('');
+        setEditWorkDir('');
+        setEditError('');
+        setEditInfo('');
+    };
+
+    const lastLocalCodingWorkDir = () => (
+        tasks.find(t => agentModeFromTaskTags(t.tags) === 'coding_dev' && t.working_dir && !isCloudWorkspaceTask(t))?.working_dir
+        || tasks.find(t => t.working_dir && !isCloudWorkspaceTask(t))?.working_dir
+        || ''
+    );
+
+    const lastRemoteCodingMeta = () => {
+        const lastRemote = tasks.find(t => agentModeFromTaskTags(t.tags) === 'remote_coding_dev');
+        return remoteCodingMetaFromTaskTags(lastRemote?.tags);
+    };
+
+    /** Apply env defaults for a task mode. force=true overwrites (dialog open); false only fills blanks (mode toggle). */
+    const applyEnvDefaultsForMode = (mode: '' | PureCodingAgentMode, force: boolean) => {
+        if (mode === 'remote_coding_dev') {
+            if (force) setNewTaskWorkingDir('');
+            const meta = lastRemoteCodingMeta();
+            if (force) {
+                setRemoteHost(meta.host || '');
+                setRemotePort(String(meta.port || 22));
+                setRemoteUser(meta.user || '');
+                setRemotePassword('');
+                setRemoteWorkDir(meta.workDir || '');
+            } else {
+                // Keep any values the user already typed; never auto-fill password.
+                setRemoteHost(prev => prev.trim() || meta.host || '');
+                setRemoteUser(prev => prev.trim() || meta.user || '');
+                setRemoteWorkDir(prev => prev.trim() || meta.workDir || '');
+                setRemotePort(prev => {
+                    const cur = prev.trim();
+                    if (cur && cur !== '22') return prev;
+                    return String(meta.port || 22);
+                });
+            }
+            return;
+        }
+        // Local coding / ordinary chat: workdir defaults.
+        if (force) {
+            setNewTaskWorkingDir(lastLocalCodingWorkDir());
+            setRemoteHost('');
+            setRemotePort('22');
+            setRemoteUser('');
+            setRemotePassword('');
+            setRemoteWorkDir('');
+        } else {
+            setNewTaskWorkingDir(prev => prev.trim() || lastLocalCodingWorkDir());
+            // Drop password when leaving remote mode so it does not linger in form state.
+            setRemotePassword('');
+        }
+    };
+
+    const cancelSelectPlaceholderTimer = () => {
+        if (selectPlaceholderTimerRef.current != null) {
+            clearTimeout(selectPlaceholderTimerRef.current);
+            selectPlaceholderTimerRef.current = null;
+        }
+        selectPlaceholderGenRef.current += 1;
+    };
+
+    const schedulePostOpenFocus = (mode: '' | PureCodingAgentMode, preferredFieldId?: string) => {
+        cancelSelectPlaceholderTimer();
+        const gen = selectPlaceholderGenRef.current;
+        // After portaled dialog commits (setTimeout > rAF under React 18 batching).
+        selectPlaceholderTimerRef.current = setTimeout(() => {
+            selectPlaceholderTimerRef.current = null;
+            if (!mountedRef.current || selectPlaceholderGenRef.current !== gen) return;
+            if (preferredFieldId) {
+                const preferred = document.getElementById(preferredFieldId) as HTMLInputElement | HTMLTextAreaElement | null;
+                if (preferred && !preferred.disabled) {
+                    preferred.focus();
+                    if ('select' in preferred) preferred.select();
+                    return;
+                }
+            }
+            // Welcome param dialog fills the command before open; jump to empty env fields.
+            if (mode === 'remote_coding_dev') {
+                const ids = ['task-remote-host', 'task-remote-user', 'task-remote-password', 'task-remote-workdir'] as const;
+                for (const id of ids) {
+                    const el = document.getElementById(id) as HTMLInputElement | null;
+                    if (el && !el.value.trim()) {
+                        el.focus();
+                        return;
+                    }
+                }
+                (document.getElementById('task-remote-host') as HTMLInputElement | null)?.focus();
+                return;
+            }
+            (document.getElementById('task-working-directory') as HTMLButtonElement | null)?.focus();
+        }, 0);
+    };
+
+    const openCreateDialog = (prefill?: {
+        mode?: '' | PureCodingAgentMode;
+        name?: string;
+        workingDir?: string;
+        remote?: OpenCreateCodingTaskDetail['remote'];
+        remoteSafety?: OpenCreateCodingTaskDetail['remoteSafety'];
+        cloud?: boolean;
+        cloudWorkspaceId?: string;
+    }, opts?: { force?: boolean }) => {
+        // The in-flight create guard applies to the manual "+" path. Event-driven
+        // fallbacks pass force so a request is never dropped silently; dialog
+        // controls stay disabled by `creatingTask` until the in-flight create settles.
+        if (editSaving || editTesting) return;
+        if (!opts?.force && creatingTaskRef.current) return;
+        if ((prefill?.cloud || prefill?.cloudWorkspaceId) && !showCloudWorkspaceCreation) return;
+        if (taskContextMenu) setTaskContextMenu(null);
+        closeCloudOverview();
+        // Avoid stacking create + edit modals.
+        if (editRemoteOpen) {
+            editRemoteFetchGenRef.current += 1;
+            setEditRemoteOpen(false);
+            resetEditRemoteFields();
+        }
+        const openAsCloud = !!(prefill?.cloud || prefill?.cloudWorkspaceId);
+        const mode = openAsCloud ? '' : (prefill?.mode ?? '');
+        // Welcome templates: normalize whitespace + clamp to textarea maxLength.
+        const name = typeof prefill?.name === 'string'
+            ? normalizeTaskCommandInput(prefill.name)
+            : '';
+        setNewTaskName(name);
+        setNewTaskMode(mode);
+        setRemoteSafety(mode === 'remote_coding_dev' ? prefill?.remoteSafety : undefined);
+        applyEnvDefaultsForMode(mode, true);
+        // Welcome param dialog may already collect env — prefer those over defaults.
+        if (mode === 'coding_dev' && typeof prefill?.workingDir === 'string' && prefill.workingDir.trim()) {
+            setNewTaskWorkingDir(prefill.workingDir.trim());
+        }
+        if (mode === 'remote_coding_dev' && prefill?.remote) {
+            const r = prefill.remote;
+            if (r.host?.trim()) setRemoteHost(r.host.trim());
+            if (r.user?.trim()) setRemoteUser(r.user.trim());
+            if (r.workDir?.trim()) setRemoteWorkDir(r.workDir.trim());
+            if (r.port > 0) setRemotePort(String(r.port));
+            if (r.password) setRemotePassword(r.password);
+        }
+        setCreateError('');
+        setTaskListNotice('');
+        setWorkspaceKind(openAsCloud ? 'cloud' : 'local');
+        setSelectedCloudWorkspaceId((prefill?.cloudWorkspaceId || '').trim());
+        setRenamingCloudWorkspaceId('');
+        setRenameCloudWorkspaceValue('');
+        setDeleteConfirmCloudWorkspaceId('');
+        setCreateDialogOpen(true);
+        // A forced welcome event may replace the form while another create is
+        // still in flight. Its eventual completion must not close or overwrite
+        // this newer dialog.
+        createTaskGenRef.current += 1;
+        schedulePostOpenFocus(mode, openAsCloud ? 'task-management-cloud-workspace-mode' : undefined);
+        const entitlementGen = ++entitlementFetchGenRef.current;
+        void (async () => {
+            const applyEntitlement = (next: CloudEntitlementState) => {
+                if (!mountedRef.current || entitlementFetchGenRef.current !== entitlementGen) return;
+                setCloudEntitlement(next);
+            };
+            if (typeof CloudWorkspaceEntitlement !== 'function') {
+                applyEntitlement(disabledCloudEntitlement());
+                return;
+            }
+            try {
+                const ent = await CloudWorkspaceEntitlement() as CloudEntitlementState | null;
+                applyEntitlement(normalizeCloudEntitlement(ent));
+            } catch {
+                // Binding throw: keep last successful enabled; never fake a grant revocation.
+                if (!mountedRef.current || entitlementFetchGenRef.current !== entitlementGen) return;
+                setCloudEntitlement(prev => {
+                    if (prev == null) {
+                        return { enabled: false, hub_unavailable: true, banner: '', workspaces: [], deleted: [] };
+                    }
+                    if (prev.hub_unavailable) return prev;
+                    return { ...prev, hub_unavailable: true };
+                });
+            }
+        })();
+    };
+    const openCreateDialogRef = useRef(openCreateDialog);
+    openCreateDialogRef.current = openCreateDialog;
+
+    // Welcome software-dev cards: open create-task or auto-create when env is complete.
+    useEffect(() => {
+        const handler = (event: Event) => {
+            const detail = (event as CustomEvent<OpenCreateCodingTaskDetail>).detail || {};
+            const mode = detail.mode === 'remote_coding_dev' || detail.mode === 'coding_dev'
+                ? detail.mode
+                : undefined;
+            if (!mode) return;
+            const name = typeof detail.name === 'string' ? detail.name : '';
+            const workingDir = typeof detail.workingDir === 'string' ? detail.workingDir : undefined;
+            const remote = detail.remote;
+            const remoteSafety = detail.remoteSafety;
+
+            if (detail.autoCreate) {
+                const taskName = normalizeTaskCommandInput(name);
+                // Another create in flight: fall back to prefilled dialog instead of dropping the request.
+                if (taskName && !creatingTaskRef.current) {
+                    void (async () => {
+                        const createGen = ++createTaskGenRef.current;
+                        creatingTaskRef.current = true;
+                        setCreatingTask(true);
+                        setCreatingTaskMode(mode);
+                        setCreateError('');
+                        try {
+                            if (mode === 'remote_coding_dev') {
+                                if (!remote?.host?.trim() || !remote?.user?.trim() || !remote?.password || !remote?.workDir?.trim()) {
+                                    throw new Error('remote env incomplete');
+                                }
+                                const portNum = remote.port == null
+                                    ? 22
+                                    : Number.isInteger(remote.port) && remote.port > 0 && remote.port < 65536
+                                        ? remote.port
+                                        : null;
+                                if (portNum == null) {
+                                    throw new Error(textForLang(lang, 'Port must be a whole number from 1 to 65535.', '端口必须是 1 到 65535 之间的整数。', '連接埠必須是 1 到 65535 之間的整數。'));
+                                }
+                                await createTask(taskName, undefined, 'remote_coding_dev', {
+                                    host: remote.host.trim(),
+                                    port: portNum,
+                                    user: remote.user.trim(),
+                                    password: remote.password,
+                                    workDir: remote.workDir.trim(),
+                                    safety: remoteSafety,
+                                });
+                            } else {
+                                const dir = (workingDir || '').trim();
+                                if (dir) await createTask(taskName, dir, 'coding_dev');
+                                else await createTask(taskName, undefined, 'coding_dev');
+                            }
+                        } catch (err) {
+                            console.error('[SidebarTaskManagement] autoCreate coding task failed:', err);
+                            // Release the in-flight flag first: openCreateDialog refuses to
+                            // open while creatingTaskRef is set, which would silently swallow
+                            // the failure (the welcome param dialog is already closed).
+                            creatingTaskRef.current = false;
+                            if (mountedRef.current) {
+                                setCreatingTask(false);
+                                setCreatingTaskMode('');
+                            }
+                            // Fall back to dialog with prefilled fields so user can fix and retry.
+                            if (mountedRef.current && createTaskGenRef.current === createGen) {
+                                openCreateDialogRef.current({
+                                    mode,
+                                    name: taskName,
+                                    workingDir,
+                                    remote,
+                                    remoteSafety,
+                                });
+                                const msg = extractErrorMessage(err);
+                                if (msg) setCreateError(msg);
+                                if (mode === 'remote_coding_dev') {
+                                    schedulePostOpenFocus(mode, 'task-remote-password');
+                                }
+                            }
+                        } finally {
+                            creatingTaskRef.current = false;
+                            if (mountedRef.current) {
+                                setCreatingTask(false);
+                                setCreatingTaskMode('');
+                            }
+                        }
+                    })();
+                    return;
+                }
+            }
+
+            // Fall back to the prefilled dialog (force: a create may still be in
+            // flight — the dialog shows it as busy instead of dropping the request).
+            openCreateDialogRef.current(
+                {
+                    mode,
+                    name,
+                    workingDir,
+                    remote,
+                    remoteSafety,
+                },
+                { force: true },
+            );
+        };
+        window.addEventListener(EVENT_OPEN_CREATE_CODING_TASK, handler);
+        return () => window.removeEventListener(EVENT_OPEN_CREATE_CODING_TASK, handler);
+    }, [createTask]);
+
+    const closeCreateDialog = () => {
+        if (creatingTaskRef.current) return;
+        cancelSelectPlaceholderTimer();
+        setCreateDialogOpen(false);
+        setNewTaskName('');
+        setNewTaskWorkingDir('');
+        setNewTaskMode('');
+        setCreateExpertId('');
+        setExpertPickerOpen(false);
+        setExpertFilter('');
+        setCreateLatexTemplateId('');
+        setLatexTemplatePickerOpen(false);
+        setRemoteHost('');
+        setRemotePort('22');
+        setRemoteUser('');
+        setRemotePassword('');
+        setRemoteWorkDir('');
+        setRemoteSafety(undefined);
+        setCreateError('');
+        setWorkspaceKind('local');
+        setSelectedCloudWorkspaceId('');
+        setRenamingCloudWorkspaceId('');
+        setRenameCloudWorkspaceValue('');
+        setDeleteConfirmCloudWorkspaceId('');
+        setCloudWorkspaceBusy(false);
+    };
+
+    const closeEditRemoteDialog = () => {
+        if (editSaving || editTesting) return;
+        editRemoteFetchGenRef.current += 1; // invalidate in-flight meta fetch
+        setEditRemoteOpen(false);
+        resetEditRemoteFields();
+    };
+
+    const openEditRemoteDialog = async (projectPath: string, name: string, tags?: string[]) => {
+        if (editSaving || editTesting) return;
+        setTaskContextMenu(null);
+        // Avoid stacking create + edit modals.
+        setCreateDialogOpen(false);
+        setEditError('');
+        setEditInfo('');
+        setEditPassword('');
+        setEditRemotePath(projectPath);
+        setEditRemoteName(name);
+        // Prefill from tags immediately, then refresh from backend.
+        const fromTags = remoteCodingMetaFromTaskTags(tags);
+        setEditHost(fromTags.host);
+        setEditUser(fromTags.user);
+        setEditPort(String(fromTags.port || 22));
+        setEditWorkDir(fromTags.workDir);
+        setEditRemoteOpen(true);
+        const fetchGen = ++editRemoteFetchGenRef.current;
+        try {
+            const meta = await GetRemoteCodingTaskMeta(projectPath);
+            if (!mountedRef.current || fetchGen !== editRemoteFetchGenRef.current) return;
+            // Prefer backend meta when present; keep tag prefill when fields are empty.
+            if (meta?.host != null && String(meta.host).trim()) setEditHost(String(meta.host).trim());
+            if (meta?.user != null && String(meta.user).trim()) setEditUser(String(meta.user).trim());
+            if (meta?.port != null && Number(meta.port) > 0) setEditPort(String(meta.port));
+            if (meta?.work_dir != null && String(meta.work_dir).trim()) setEditWorkDir(String(meta.work_dir).trim());
+        } catch {
+            /* tags prefill is enough */
+        }
+    };
+
+    const parseEditPort = () => {
+        const portNum = Number.parseInt(editPort.trim() || '22', 10);
+        return Number.isFinite(portNum) && portNum > 0 && portNum < 65536 ? portNum : 22;
+    };
+
+    const submitEditRemote = async () => {
+        if (editSaving || editTesting || !editRemotePath) return;
+        const pathAtSave = editRemotePath;
+        const host = editHost.trim();
+        const user = editUser.trim();
+        const workDir = editWorkDir.trim();
+        const port = parseEditPort();
+        if (!host || !user || !workDir) {
+            setEditError(textForLang(lang, 'Please fill host, username, and remote work directory.', '请填写主机、用户名和远程工作目录。', '請填寫主機、使用者名稱和遠端工作目錄。'));
+            return;
+        }
+        const genAtSave = editRemoteFetchGenRef.current;
+        setEditSaving(true);
+        setEditError('');
+        setEditInfo('');
+        try {
+            await UpdateRemoteCodingTaskMeta(pathAtSave, host, user, workDir, port);
+            if (!mountedRef.current) return;
+            refreshTasks();
+            // Dialog stays open for optional Test SSH; only show status if still on this task.
+            if (editRemotePath === pathAtSave && editRemoteFetchGenRef.current === genAtSave) {
+                setEditInfo(textForLang(lang, 'Remote settings saved. Password is not stored — reconnect with the password when needed.', '远程设置已保存。密码不会落盘，下次连接时请重新输入。', '遠端設定已儲存。密碼不會落盤，下次連線時請重新輸入。'));
+            }
+        } catch (error) {
+            if (mountedRef.current && editRemotePath === pathAtSave && editRemoteFetchGenRef.current === genAtSave) {
+                setEditError(extractErrorMessage(error) || textForLang(lang, 'Failed to save remote settings', '保存远程设置失败', '儲存遠端設定失敗'));
+            }
+        } finally {
+            if (mountedRef.current) setEditSaving(false);
+        }
+    };
+
+    const testEditRemoteSSH = async () => {
+        if (editSaving || editTesting) return;
+        const pathAtTest = editRemotePath;
+        const genAtTest = editRemoteFetchGenRef.current;
+        const host = editHost.trim();
+        const user = editUser.trim();
+        const password = editPassword;
+        const workDir = editWorkDir.trim();
+        const port = parseEditPort();
+        if (!host || !user || !password || !workDir) {
+            setEditError(textForLang(lang, 'Please fill host, username, password, and remote work directory to test.', '测试连接需填写主机、用户名、密码和远程工作目录。', '測試連線需填寫主機、使用者名稱、密碼和遠端工作目錄。'));
+            return;
+        }
+        setEditTesting(true);
+        setEditError('');
+        setEditInfo('');
+        try {
+            const msg = await TestRemoteSSHConnection(host, user, password, workDir, port);
+            // In-dialog status only — avoid a second modal on top of the edit dialog.
+            if (mountedRef.current && editRemotePath === pathAtTest && editRemoteFetchGenRef.current === genAtTest) {
+                setEditInfo(msg || textForLang(lang, 'SSH connection OK', 'SSH 连接成功', 'SSH 連線成功'));
+            }
+        } catch (error) {
+            if (mountedRef.current && editRemotePath === pathAtTest && editRemoteFetchGenRef.current === genAtTest) {
+                setEditError(extractErrorMessage(error) || textForLang(lang, 'SSH connection failed', 'SSH 连接失败', 'SSH 連線失敗'));
+            }
+        } finally {
+            if (mountedRef.current) setEditTesting(false);
+        }
+    };
+
+    const selectWorkingDir = async () => {
+        if (creatingTaskRef.current || selectingWorkingDir) return;
+        setSelectingWorkingDir(true);
+        try {
+            const dir = await SelectWorkingDir();
+            if (!dir) return;
+            if (isCloudWorkspacePath(dir)) {
+                setCreateError(textForLang(lang, 'That folder is a cloud workspace cache. Pick another folder, or use a Cloud workspace task instead.', '\u8be5\u76ee\u5f55\u662f\u4e91\u7aef\u5de5\u4f5c\u533a\u7f13\u5b58\u76ee\u5f55\uff0c\u8bf7\u9009\u62e9\u5176\u4ed6\u76ee\u5f55\uff0c\u6216\u6539\u7528\u4e91\u7aef\u5de5\u4f5c\u533a\u4efb\u52a1\u3002', '\u8a72\u76ee\u9304\u662f\u96f2\u7aef\u5de5\u4f5c\u5340\u5feb\u53d6\u76ee\u9304\uff0c\u8acb\u9078\u64c7\u5176\u4ed6\u76ee\u9304\uff0c\u6216\u6539\u7528\u96f2\u7aef\u5de5\u4f5c\u5340\u4efb\u52d9\u3002'));
+                return;
+            }
+            setCreateError('');
+            setNewTaskWorkingDir(dir);
+        } catch (error) {
+            console.error('[SidebarTaskManagement] SelectWorkingDir failed:', error);
+        } finally {
+            setSelectingWorkingDir(false);
+        }
+    };
+
+    const browseCloudWorkspace = async (workspaceId: string, projectPath?: string, tags?: string[], workingDir?: string) => {
+        const id = workspaceId.trim();
+        const path = (projectPath || '').trim();
+        if (!id || !path) return;
+        const generation = ++cloudBrowseGenerationRef.current;
+        cloudBrowseTaskPathRef.current = path;
+        const knownWorkingDir = (workingDir || '').trim();
+        let cacheDirFn: typeof CloudWorkspaceCacheDir | null = null;
+        let prepareCloudFn: typeof PrepareCloudWorkspace | null = null;
+        try { cacheDirFn = typeof CloudWorkspaceCacheDir === 'function' ? CloudWorkspaceCacheDir : null; } catch { cacheDirFn = null; }
+        try { prepareCloudFn = typeof PrepareCloudWorkspace === 'function' ? PrepareCloudWorkspace : null; } catch { prepareCloudFn = null; }
+        const browseTask = (resolvedWorkingDir: string): TaskManagementItem => ({
+            project_path: path,
+            working_dir: resolvedWorkingDir || undefined,
+            tags,
+        });
+        const isCurrent = () => mountedRef.current
+            && cloudBrowseGenerationRef.current === generation
+            && cloudBrowseTaskPathRef.current === path;
+        const clearProgress = () => {
+            if (cloudBrowseTaskPathRef.current === path) {
+                cloudBrowseTaskPathRef.current = null;
+                if (mountedRef.current) setCloudBrowseProgress(null);
+            }
+        };
+        const openNative = async (resolvedWorkingDir: string): Promise<boolean | null> => {
+            const resolved = resolvedWorkingDir.trim();
+            if (!resolved) return false;
+            let openProjectDirectory: typeof OpenProjectDirectory | null = null;
+            try { openProjectDirectory = typeof OpenProjectDirectory === 'function' ? OpenProjectDirectory : null; } catch { openProjectDirectory = null; }
+            if (!openProjectDirectory) return null;
+            // Wails normally resolves immediately, but a native shell can
+            // leave the Promise pending. Continue in-app after a short bound;
+            // explicit rejection remains a hard failure for cache fallback.
+            return await new Promise<boolean | null>((resolve) => {
+                let settled = false;
+                let timeoutId: number | undefined;
+                const finish = (result: boolean | null) => {
+                    if (settled) return;
+                    settled = true;
+                    if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+                    resolve(result);
+                };
+                timeoutId = window.setTimeout(() => finish(null), 500);
+                try {
+                    Promise.resolve(openProjectDirectory!(resolved)).then(
+                        () => finish(true),
+                        () => finish(false),
+                    );
+                } catch {
+                    finish(false);
+                }
+            });
+        };
+        const reveal = async (resolvedWorkingDir: string) => {
+            const resolved = resolvedWorkingDir.trim();
+            if (!resolved) return false;
+            // A pending or rejected native opener must not block the in-app
+            // reveal. The task rebind and event below are the reliable
+            // cross-platform path.
+            await openNative(resolved);
+            if (!isCurrent()) return true;
+            try {
+                const resumed = resumeTask(path, browseTask(resolved));
+                if (resumed && typeof (resumed as Promise<unknown>).then === 'function') await resumed;
+            } catch {
+                return false;
+            }
+            if (!isCurrent()) return true;
+            window.dispatchEvent(new CustomEvent(REVEAL_CLOUD_WORKSPACE_FILES_EVENT, {
+                detail: { projectPath: path, workingDir: resolved },
+            }));
+            return true;
+        };
+        const showBrowseError = (error: unknown, fallback = textForLang(lang, 'Unable to open the local cache folder.', '无法打开本地缓存文件夹', '無法開啟本機快取資料夾')) => {
+            if (!isCurrent()) return;
+            const raw = extractErrorMessage(error);
+            const scrubbed = scrubCloudWorkspaceError(raw, fallback);
+            const genericNativeFailure = /^(not a directory|the system cannot find the path specified|path not found)$/i.test(raw.trim());
+            setTaskListNotice(genericNativeFailure ? fallback : (scrubbed || fallback));
+        };
+        setTaskListNotice('');
+        setCloudBrowseProgress(textForLang(lang, 'Opening cloud workspace…', '正在打开云端工作区…', '正在開啟雲端工作區…'));
+        try {
+            // A known cache path is local and should be opened immediately. If it
+            // fails, keep the task resumable but do not trigger a Hub round-trip.
+            const knownWorkspaceId = cloudWorkspaceIdFromPath(knownWorkingDir);
+            let knownCacheAttempted = false;
+            const canResolveCloudCache = !!cacheDirFn;
+            // A path with a different workspace suffix is stale, but probe its
+            // native opener first for compatibility with older hosts. Never
+            // reveal that stale path in-app; resolve the durable workspace id
+            // to a current cache before committing the tab.
+            if (knownWorkingDir && knownWorkspaceId && knownWorkspaceId !== id && cacheDirFn) {
+                knownCacheAttempted = true;
+                await openNative(knownWorkingDir);
+                try {
+                    const cached = await cacheDirFn(id) as { local_path?: string; LocalPath?: string };
+                    const cachedPath = cloudProvisionText(cached, 'local_path', 'LocalPath');
+                    if (cachedPath && cachedPath !== knownWorkingDir) {
+                        const recovered = await reveal(cachedPath);
+                        if (recovered || !isCurrent()) return;
+                    }
+                } catch { /* continue with preparation */ }
+            } else if (knownWorkingDir && (knownWorkspaceId === id || !canResolveCloudCache)) {
+                const opened = await reveal(knownWorkingDir);
+                if (!opened && isCurrent()) {
+                    try { await resumeTask(path, browseTask(knownWorkingDir)); } catch { /* keep the local error visible */ }
+                    showBrowseError(new Error('not a directory'));
+                    return;
+                }
+                if (opened || !isCurrent()) return;
+            }
+
+            // Resolve an existing on-disk cache before acquiring a lease. This
+            // keeps Browse fast and offline when a prior session already exists.
+            let cachedPath = '';
+            if (!knownCacheAttempted && cacheDirFn) {
+                try {
+                    const cached = await cacheDirFn(id) as { local_path?: string; LocalPath?: string };
+                    cachedPath = cloudProvisionText(cached, 'local_path', 'LocalPath');
+                } catch {
+                    cachedPath = '';
+                }
+            }
+            if (cachedPath) {
+                const opened = await reveal(cachedPath);
+                if (opened || !isCurrent()) return;
+                // A stale cache path is not a reason to contact Hub if it was
+                // explicitly returned as the local cache; surface the error and
+                // keep the durable task row available for retry.
+                try { await resumeTask(path, browseTask(cachedPath)); } catch { /* keep the local error visible */ }
+                showBrowseError(new Error('not a directory'));
+                return;
+            }
+
+            if (!prepareCloudFn && !isExplicitTaskCopy(tags) && cloudWorkspaceSharePermissionFromTags(tags) !== 'read') {
+                throw new Error(textForLang(lang, 'Cloud workspace preparation is unavailable.', '云端工作区准备功能不可用', '雲端工作區準備功能不可用'));
+            }
+            // A copy or a read-only share must not take a writer lease. Prepare
+            // also replaces the pending transcript bundle; Resume keeps that
+            // bundle for the canonical task.
+            let preparedPath = '';
+            if (isExplicitTaskCopy(tags) || cloudWorkspaceSharePermissionFromTags(tags) === 'read') {
+                const bound = await ResumeCloudWorkspaceTask(id, path);
+                preparedPath = cloudProvisionText(bound, 'working_dir', 'WorkingDir');
+            } else {
+                const prepared = await prepareCloudFn!(id) as { local_path?: string; LocalPath?: string };
+                preparedPath = cloudProvisionText(prepared, 'local_path', 'LocalPath');
+            }
+            if (!preparedPath) throw new Error(textForLang(lang, 'Cloud workspace folder is not available.', '云端工作区目录不可用', '雲端工作區目錄不可用'));
+            const opened = await reveal(preparedPath);
+            if (!opened && isCurrent()) {
+                try { await resumeTask(path, browseTask(preparedPath)); } catch { /* keep the local error visible */ }
+                showBrowseError(new Error('not a directory'));
+            }
+        } catch (error) {
+            try { if (isCurrent()) await resumeTask(path, browseTask(knownWorkingDir)); } catch { /* keep the preparation error visible */ }
+            showBrowseError(error);
+        } finally {
+            clearProgress();
+        }
+    };
+
+    const cloudGranted = showCloudWorkspaceCreation && cloudEntitlement?.enabled === true;
+    const cloudQuota = Number(cloudEntitlement?.quota) || 0;
+    const cloudCreateSelected = cloudGranted && workspaceKind === 'cloud' && newTaskMode !== 'remote_coding_dev';
+    const cloudWorkspaces = cloudEntitlement?.workspaces || [];
+    // Task rows can share the same workspace; build the lookup once per
+    // entitlement update instead of scanning the Hub list for every row.
+    const cloudWorkspaceNames = useMemo(
+        () => cloudWorkspaceNameMapFromEntitlement(cloudEntitlement),
+        [cloudEntitlement],
+    );
+    // A workspace hosts at most one cloud task, so a move can only target a
+    // free workspace. Bound workspaces stay listed but disabled in the dialog:
+    // hiding them would make the destination list change shape between moves.
+    const transferCloudWorkspaceOptions = useMemo<TaskTransferCloudWorkspace[]>(
+        () => cloudWorkspaces
+            .map(row => {
+                const id = String(row.id || '').trim();
+                // Scans every task rather than the sidebar rows so occupancy
+                // matches `boundCloudWorkspaceIds`, the check the create dialog
+                // and the quota guard use. Cloud rows stay visible even without
+                // output, so this is consistency, not a behaviour fix: the
+                // destination list must not depend on list-filtering rules.
+                const bound = id ? taskForCloudWorkspace(tasks, id) : undefined;
+                return {
+                    id,
+                    name: String(row.name || '').trim() || cloudWorkspaceFallbackLabel(lang),
+                    boundTaskTitle: bound ? String(bound.name || '').trim() || listedTaskTitle(bound) : undefined,
+                };
+            })
+            .filter(row => !!row.id),
+        [cloudWorkspaces, lang, tasks],
+    );
+    const cloudUsed = Math.max(Number(cloudEntitlement?.used) || 0, cloudWorkspaces.length);
+    const cloudQuotaReached = cloudGranted && cloudQuota > 0 && cloudUsed >= cloudQuota;
+    const cloudDeletedRowBusy = creatingTask || cloudWorkspaceBusy || cloudRestorePending;
+    const cloudDeleted = cloudEntitlement?.deleted || [];
+    const cloudDeniedReason = cloudWorkspaceDeniedReason(lang, cloudEntitlement);
+    const boundCloudWorkspaceIds = useMemo(() => {
+        const ids = new Set<string>();
+        for (const task of tasks) {
+            const id = cloudWorkspaceIdFromTask(task);
+            if (id) ids.add(id);
+        }
+        return ids;
+    }, [tasks]);
+    const boundCloudWorkspaces = useMemo(
+        () => cloudWorkspaces.filter(row => !!taskForCloudWorkspace(visibleTasks, row.id || '')),
+        [cloudWorkspaces, visibleTasks],
+    );
+    const blankCloudWorkspaces = useMemo(
+        () => cloudWorkspaces.filter(row => !taskForCloudWorkspace(visibleTasks, row.id || '')),
+        [cloudWorkspaces, visibleTasks],
+    );
+    const overviewSummary = cloudOverviewSummary(
+        lang,
+        cloudWorkspaces.length,
+        cloudQuota,
+        boundCloudWorkspaces.length,
+        blankCloudWorkspaces.length,
+    );
+    // A deleted or refreshed workspace must not leave the detail pane blank
+    // while other workspaces are still listed.
+    const overviewSelectionId = cloudWorkspaces.some(row => (row.id || '').trim() === manageWorkspaceId.trim())
+        ? manageWorkspaceId.trim()
+        : (cloudWorkspaces[0]?.id || '').trim();
+
+    const reloadCloudEntitlement = async () => {
+        if (typeof CloudWorkspaceEntitlement !== 'function') return;
+        const overviewGen = ++overviewFetchGenRef.current;
+        try {
+            const ent = await CloudWorkspaceEntitlement() as CloudEntitlementState | null;
+            if (!mountedRef.current || overviewFetchGenRef.current !== overviewGen) return;
+            setCloudEntitlement(normalizeCloudEntitlement(ent));
+        } catch {
+            if (!mountedRef.current || overviewFetchGenRef.current !== overviewGen) return;
+            setCloudEntitlement(prev => {
+                if (prev == null) {
+                    return { enabled: false, hub_unavailable: true, banner: '', workspaces: [], deleted: [] };
+                }
+                if (prev.hub_unavailable) return prev;
+                return { ...prev, hub_unavailable: true };
+            });
+        }
+    };
+
+    const openCloudOverview = () => {
+        if (creatingTaskRef.current) return;
+        if (taskContextMenu) setTaskContextMenu(null);
+        if (createDialogOpen) closeCreateDialog();
+        if (editRemoteOpen) closeEditRemoteDialog();
+        setCreateError('');
+        setManageWorkspaceId('');
+        setCloudOverviewOpen(true);
+        // Invalidate an in-flight create-dialog entitlement apply without
+        // cancelling Hub → sidebar restore (restore no longer keys off this gen).
+        entitlementFetchGenRef.current += 1;
+        void reloadCloudEntitlement();
+    };
+
+    const openBoundCloudWorkspace = (workspaceId: string) => {
+        const task = taskForCloudWorkspace(visibleTasks, workspaceId);
+        if (!task) {
+            if (cloudRestorePending) return;
+            openCreateDialog({ cloud: true, cloudWorkspaceId: workspaceId });
+            return;
+        }
+        if (!assistantReady) {
+            onTaskSwitchBlocked?.();
+            return;
+        }
+        closeCloudOverview();
+        void handleTaskDoubleClick(task);
+    };
+
+    const openBlankCloudWorkspace = (workspaceId?: string) => {
+        if (cloudRestorePending) return;
+        openCreateDialog({ cloud: true, cloudWorkspaceId: workspaceId });
+    };
+
+    useEffect(() => {
+        if (!cloudOverviewOpen) return;
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== 'Escape') return;
+            // Escape while an IME candidate list is open belongs to the input method.
+            if (event.isComposing || event.keyCode === 229) return;
+            // This capture listener is registered before CustomDialog's, so skip while a confirm owns Escape.
+            if (forceDeleteConfirmOpenRef.current || document.querySelector('.custom-dialog')) return;
+            // The file tree's own menu listener closes the context menu. Leave both dialogs up.
+            if (document.querySelector('[data-testid="code-preview-workspace-context-menu"]')) return;
+            // Properties sit inside the file dialog. Its listener closes that panel first.
+            if (cloudFilesWorkspaceRef.current && document.querySelector('[data-testid="task-cloud-overview-files-dialog"] [data-testid="code-preview-workspace-properties"]')) return;
+            if (cloudFilesWorkspaceRef.current) {
+                event.preventDefault();
+                event.stopPropagation();
+                setCloudFilesWorkspace(null);
+                return;
+            }
+            event.preventDefault();
+            // Leave the dialog up while a rename or delete prompt is open; the next Escape closes it.
+            if (cloudOverviewEditorRef.current.renaming || cloudOverviewEditorRef.current.confirming) {
+                event.stopPropagation();
+                setRenamingCloudWorkspaceId('');
+                setRenameCloudWorkspaceValue('');
+                setDeleteConfirmCloudWorkspaceId('');
+                return;
+            }
+            closeCloudOverview();
+        };
+        window.addEventListener('keydown', onKeyDown, true);
+        const focusTimer = window.setTimeout(() => {
+            cloudOverviewDialogRef.current?.focus();
+        }, 0);
+        return () => {
+            window.removeEventListener('keydown', onKeyDown, true);
+            window.clearTimeout(focusTimer);
+        };
+    }, [cloudOverviewOpen]);
+
+    useEffect(() => {
+        if (!taskContextMenu) return;
+        const close = () => setTaskContextMenu(null);
+        const onKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== 'Escape' || event.isComposing || event.keyCode === 229) return;
+            event.preventDefault();
+            event.stopPropagation();
+            close();
+        };
+        window.addEventListener('keydown', onKeyDown, true);
+        // The menu is position:fixed to the click point. Scrolling the task
+        // list or resizing the window would leave it floating off the row.
+        window.addEventListener('scroll', close, true);
+        window.addEventListener('resize', close);
+        return () => {
+            window.removeEventListener('keydown', onKeyDown, true);
+            window.removeEventListener('scroll', close, true);
+            window.removeEventListener('resize', close);
+        };
+    }, [setTaskContextMenu, taskContextMenu]);
+
+    useEffect(() => {
+        if (!cloudCreateSelected) return;
+        const rows = cloudEntitlement?.workspaces || [];
+        if (selectedCloudWorkspaceId && rows.some(row => row.id === selectedCloudWorkspaceId)) return;
+        const firstId = pickDefaultCloudWorkspaceId(rows, boundCloudWorkspaceIds);
+        if (firstId) setSelectedCloudWorkspaceId(firstId);
+    }, [boundCloudWorkspaceIds, cloudCreateSelected, cloudEntitlement, selectedCloudWorkspaceId]);
+
+    const resetCloudWorkspaceEditors = () => {
+        setRenamingCloudWorkspaceId('');
+        setRenameCloudWorkspaceValue('');
+        setDeleteConfirmCloudWorkspaceId('');
+    };
+
+    const selectCreateTaskType = (id: CreateTaskTypeId) => {
+        if (creatingTask || cloudWorkspaceBusy) return;
+        if (id === 'cloud') {
+            if (!cloudGranted) return;
+            if (workspaceKind === 'cloud') return;
+            setWorkspaceKind('cloud');
+            if (newTaskMode !== '') {
+                setNewTaskMode('');
+                setRemoteSafety(undefined);
+                applyEnvDefaultsForMode('', false);
+            }
+            setCreateError('');
+            resetCloudWorkspaceEditors();
+            if (!selectedCloudWorkspaceId) {
+                const firstId = pickDefaultCloudWorkspaceId(cloudWorkspaces, boundCloudWorkspaceIds);
+                if (firstId) setSelectedCloudWorkspaceId(firstId);
+            }
+            return;
+        }
+        const nextMode: '' | 'coding_dev' | 'remote_coding_dev' = id === 'coding_dev'
+            ? 'coding_dev'
+            : id === 'remote_coding_dev'
+                ? 'remote_coding_dev'
+                : '';
+        if (newTaskMode === nextMode && workspaceKind !== 'cloud') return;
+        setNewTaskMode(nextMode);
+        if (nextMode !== '') {
+            // Expert selection only applies to the chat task type.
+            setCreateExpertId('');
+            setExpertPickerOpen(false);
+            setExpertFilter('');
+            setCreateLatexTemplateId('');
+            setLatexTemplatePickerOpen(false);
+        }
+        setWorkspaceKind('local');
+        if (nextMode === 'remote_coding_dev') {
+            setSelectedCloudWorkspaceId('');
+            resetCloudWorkspaceEditors();
+        } else {
+            setRemoteSafety(undefined);
+        }
+        setCreateError('');
+        applyEnvDefaultsForMode(nextMode, false);
+    };
+
+    const provisionNewCloudWorkspace = async (name = ''): Promise<string> => {
+        if (typeof CreateCloudWorkspace !== 'function') {
+            throw new Error(textForLang(lang, 'Failed to create cloud workspace', '新建云端工作区失败', '新建雲端工作區失敗'));
+        }
+        const created = asCloudWorkspaceRow(await CreateCloudWorkspace(name));
+        const id = (created?.id || '').trim();
+        if (!id) throw new Error(textForLang(lang, 'Failed to create cloud workspace', '新建云端工作区失败', '新建雲端工作區失敗'));
+        entitlementFetchGenRef.current += 1;
+        overviewFetchGenRef.current += 1;
+        invalidateCloudWorkspaceTaskRestore();
+        setCloudEntitlement(prev => {
+            const workspaces = [...(prev?.workspaces || []).filter(row => row.id !== id), created!];
+            const deleted = (prev?.deleted || []).filter(row => row.id !== id);
+            return {
+                ...(prev || {}),
+                enabled: true,
+                used: workspaces.length,
+                workspaces,
+                deleted,
+            };
+        });
+        setSelectedCloudWorkspaceId(id);
+        setManageWorkspaceId(id);
+        resetCloudWorkspaceEditors();
+        return id;
+    };
+
+    const createNewCloudWorkspace = async () => {
+        if (!cloudGranted || cloudQuotaReached || !beginCloudWorkspaceBusy()) return;
+        setCreateError('');
+        try {
+            await provisionNewCloudWorkspace();
+        } catch (error) {
+            setCreateError(extractErrorMessage(error) || textForLang(lang, 'Failed to create cloud workspace', '新建云端工作区失败', '新建雲端工作區失敗'));
+        } finally {
+            endCloudWorkspaceBusy();
+        }
+    };
+
+    const renameSelectedCloudWorkspace = async (id: string) => {
+        const workspaceId = id.trim();
+        const name = renameCloudWorkspaceValue.trim();
+        if (!workspaceId || !name || typeof RenameCloudWorkspace !== 'function') {
+            resetCloudWorkspaceEditors();
+            return;
+        }
+        if (!beginCloudWorkspaceBusy()) return;
+        setCreateError('');
+        try {
+            const renamed = asCloudWorkspaceRow(await RenameCloudWorkspace(workspaceId, name)) || { id: workspaceId, name };
+            entitlementFetchGenRef.current += 1;
+            setCloudEntitlement(prev => ({
+                ...(prev || {}),
+                workspaces: (prev?.workspaces || []).map(row => row.id === workspaceId ? { ...row, ...renamed, id: workspaceId } : row),
+            }));
+            resetCloudWorkspaceEditors();
+        } catch (error) {
+            setCreateError(extractErrorMessage(error) || textForLang(lang, 'Failed to rename cloud workspace', '重命名云端工作区失败', '重命名雲端工作區失敗'));
+        } finally {
+            endCloudWorkspaceBusy();
+        }
+    };
+
+    const deleteSelectedCloudWorkspace = async (id: string) => {
+        const workspaceId = id.trim();
+        if (!workspaceId || typeof DeleteCloudWorkspace !== 'function') return;
+        if (!beginCloudWorkspaceBusy()) return;
+        setCreateError('');
+        try {
+            const deletedRaw = await DeleteCloudWorkspace(workspaceId);
+            entitlementFetchGenRef.current += 1;
+            overviewFetchGenRef.current += 1;
+            invalidateCloudWorkspaceTaskRestore();
+            const current = cloudWorkspaces.find(row => row.id === workspaceId);
+            const deleted = asCloudWorkspaceDeletedRow(deletedRaw) || {
+                id: workspaceId,
+                name: current?.name || '',
+                used_bytes: current?.used_bytes || 0,
+                deleted_at: new Date().toISOString(),
+            };
+            setCloudEntitlement(prev => dropCloudWorkspaceFromEntitlement(prev, workspaceId, deleted));
+            if (selectedCloudWorkspaceId === workspaceId) setSelectedCloudWorkspaceId('');
+            resetCloudWorkspaceEditors();
+            refreshTasks();
+        } catch (error) {
+            setCreateError(extractErrorMessage(error) || textForLang(lang, 'Failed to delete cloud workspace', '删除云端工作区失败', '刪除雲端工作區失敗'));
+        } finally {
+            endCloudWorkspaceBusy();
+        }
+    };
+
+    const forceDeleteCloudWorkspace = async (id: string) => {
+        const workspaceId = id.trim();
+        if (!workspaceId || typeof ForceDeleteCloudWorkspace !== 'function') return;
+        if (!beginCloudWorkspaceBusy()) return;
+        setForceDeletingCloudWorkspaceId(workspaceId);
+        setCreateError('');
+        entitlementFetchGenRef.current += 1;
+        overviewFetchGenRef.current += 1;
+        try {
+            await ForceDeleteCloudWorkspace(workspaceId);
+            invalidateCloudWorkspaceTaskRestore();
+            setCloudEntitlement(prev => {
+                if (!prev) return prev;
+                const workspaces = (prev.workspaces || []).filter(row => deletedWorkspaceId(row) !== workspaceId);
+                const deleted = (prev.deleted || []).filter(row => deletedWorkspaceId(row) !== workspaceId);
+                return { ...prev, workspaces, deleted, used: workspaces.length };
+            });
+            refreshTasks();
+        } catch (error) {
+            if (mountedRef.current) {
+                setCreateError(extractErrorMessage(error) || textForLang(lang, 'Failed to permanently delete cloud workspace', '强制删除云端工作区失败', '強制刪除雲端工作區失敗'));
+            }
+        } finally {
+            endCloudWorkspaceBusy();
+            if (mountedRef.current) setForceDeletingCloudWorkspaceId('');
+        }
+    };
+
+    const confirmForceDeleteCloudWorkspace = async (id: string) => {
+        const workspaceId = id.trim();
+        if (!workspaceId || cloudWorkspaceBusyRef.current || creatingTaskRef.current || cloudRestorePending) return;
+        if (typeof ForceDeleteCloudWorkspace !== 'function') return;
+        if (forceDeleteConfirmOpenRef.current) return;
+        const name = (cloudDeleted.find(row => deletedWorkspaceId(row) === workspaceId)?.name || '').trim();
+        forceDeleteConfirmOpenRef.current = true;
+        let confirmed = false;
+        try {
+            confirmed = await showConfirm(
+                forceDeleteCloudWorkspaceMessage(lang, name, tasksForCloudWorkspace(tasks, workspaceId).map(item => String(item.name || '').trim()).filter(Boolean)),
+                textForLang(lang, 'Delete permanently', '强制删除', '強制刪除'),
+                {
+                    confirmText: textForLang(lang, 'OK', '确定', '確定'),
+                    cancelText: textForLang(lang, 'Cancel', '取消', '取消'),
+                    confirmVariant: 'danger',
+                },
+            );
+        } finally {
+            forceDeleteConfirmOpenRef.current = false;
+        }
+        if (!confirmed || !mountedRef.current || creatingTaskRef.current || cloudWorkspaceBusyRef.current) return;
+        const stillDeleted = (cloudEntitlementRef.current?.deleted || []).some(row => deletedWorkspaceId(row) === workspaceId);
+        if (!stillDeleted) {
+            setCreateError(textForLang(lang, 'This workspace is no longer in Recently deleted.', '该工作区已不在「最近删除」中。', '該工作區已不在「最近刪除」中。'));
+            return;
+        }
+        await forceDeleteCloudWorkspace(workspaceId);
+    };
+
+    const restoreDeletedCloudWorkspace = async (id: string) => {
+        const workspaceId = id.trim();
+        if (!workspaceId || typeof RestoreCloudWorkspace !== 'function') return;
+        if (cloudQuotaReached || !beginCloudWorkspaceBusy()) return;
+        setCreateError('');
+        try {
+            const restored = asCloudWorkspaceRow(await RestoreCloudWorkspace(workspaceId));
+            entitlementFetchGenRef.current += 1;
+            overviewFetchGenRef.current += 1;
+            const fallback = cloudDeleted.find(row => row.id === workspaceId);
+            const next = restored || {
+                id: workspaceId,
+                name: fallback?.name || '',
+                used_bytes: fallback?.used_bytes || 0,
+            };
+            setCloudEntitlement(prev => {
+                const workspaces = [...(prev?.workspaces || []).filter(row => row.id !== workspaceId), next];
+                const deleted = (prev?.deleted || []).filter(row => row.id !== workspaceId);
+                return {
+                    ...(prev || {}),
+                    used: workspaces.length,
+                    workspaces,
+                    deleted,
+                };
+            });
+            setSelectedCloudWorkspaceId(workspaceId);
+            releasedCloudWorkspaceIdsRef.current.delete(workspaceId);
+            resetCloudWorkspaceEditors();
+            // The restore mutates the workspace set: drop any settled shared
+            // restore result, then go through the shared restore so a mount
+            // effect racing this path shares one Hub call.
+            invalidateCloudWorkspaceTaskRestore();
+            try {
+                await restoreCloudWorkspaceTasksShared();
+            } catch {
+                // Workspace is restored; the task list can catch up on the next refresh.
+            }
+            refreshTasks();
+        } catch (error) {
+            setCreateError(extractErrorMessage(error) || textForLang(lang, 'Failed to restore cloud workspace', '恢复云端工作区失败', '恢復雲端工作區失敗'));
+        } finally {
+            endCloudWorkspaceBusy();
+        }
+    };
+
+    const submitCreateTask = async (opts?: { resumeExisting?: boolean }) => {
+        if (creatingTaskRef.current) return;
+        // Older Wails hosts (and older test harnesses) may not expose the
+        // transactional provisioning binding yet. Read optional bindings
+        // through a guarded accessor so a missing generated export falls back
+        // to the legacy create endpoint instead of aborting the task flow.
+        let provisionCloudTaskFn: typeof ProvisionCloudWorkspaceTask | null = null;
+        try { provisionCloudTaskFn = typeof ProvisionCloudWorkspaceTask === 'function' ? ProvisionCloudWorkspaceTask : null; } catch { provisionCloudTaskFn = null; }
+        // A task-management creation establishes an environment, not an agent
+        // instruction. Welcome flows may still supply a title, otherwise use a
+        // localized generated title for the durable task record.
+        const taskName = normalizeTaskCommandInput(newTaskName) || generatedTaskTitle(lang, newTaskMode, cloudCreateSelected);
+        const isRemoteCreate = newTaskMode === 'remote_coding_dev';
+        const resumeExisting = opts?.resumeExisting === true;
+        if (isRemoteCreate) {
+            if (!remoteHost.trim() || !remoteUser.trim() || !remotePassword || !remoteWorkDir.trim()) {
+                setCreateError(textForLang(lang, 'Please fill host, username, password, and remote work directory.', '请填写主机、用户名、密码和远程工作目录。', '請填寫主機、使用者名稱、密碼和遠端工作目錄。'));
+                return;
+            }
+            if (parseRemotePort(remotePort) == null) {
+                setCreateError(textForLang(lang, 'Port must be a whole number from 1 to 65535.', '端口必须是 1 到 65535 之间的整数。', '連接埠必須是 1 到 65535 之間的整數。'));
+                return;
+            }
+        }
+        const selectedCloudId = selectedCloudWorkspaceId.trim();
+        if (!isRemoteCreate && cloudCreateSelected) {
+            if (!selectedCloudId) {
+                setCreateError(textForLang(lang, 'Select a cloud workspace first.', '请先选择一个云端工作区。', '請先選擇一個雲端工作區。'));
+                return;
+            }
+            if (!resumeExisting && boundCloudWorkspaceIds.has(selectedCloudId) && cloudQuotaReached) {
+                setCreateError(textForLang(lang, 'Cloud workspace quota reached. Open the existing task, or delete a workspace first.', '已达云端工作区配额。可打开现有任务，或先删除一个工作区。', '已達雲端工作區配額。可打開現有任務，或先刪除一個工作區。'));
+                return;
+            }
+        }
+        creatingTaskRef.current = true;
+        const createGen = createTaskGenRef.current;
+        setCreatingTask(true);
+        setCreatingTaskMode(newTaskMode);
+        setCreateError('');
+        let provisionedCloudId = '';
+        let provisionedCloudOperationId = '';
+        // SSH / cloud-workspace prepare can take several seconds. Leave the
+        // modal immediately so the task-list progress stays visible. Keep form
+        // state until success so a failed attempt can reopen with fields intact.
+        if (isRemoteCreate || cloudCreateSelected) {
+            cancelSelectPlaceholderTimer();
+            setCreateDialogOpen(false);
+        }
+        try {
+            const workingDir = newTaskWorkingDir.trim();
+            const selectedExpert = (!isRemoteCreate && !cloudCreateSelected && newTaskMode === '') ? createSelectedExpert : null;
+            // The expert path ignores the working directory entirely, so a
+            // stale picked folder must not trip the cloud-cache guard below.
+            if (!selectedExpert && !isRemoteCreate && !cloudCreateSelected && isCloudWorkspacePath(workingDir)) {
+                setCreateError(textForLang(lang, 'That folder is a cloud workspace cache. Pick another folder, or use a Cloud workspace task instead.', '\u8be5\u76ee\u5f55\u662f\u4e91\u7aef\u5de5\u4f5c\u533a\u7f13\u5b58\u76ee\u5f55\uff0c\u8bf7\u9009\u62e9\u5176\u4ed6\u76ee\u5f55\uff0c\u6216\u6539\u7528\u4e91\u7aef\u5de5\u4f5c\u533a\u4efb\u52a1\u3002', '\u8a72\u76ee\u9304\u662f\u96f2\u7aef\u5de5\u4f5c\u5340\u5feb\u53d6\u76ee\u9304\uff0c\u8acb\u9078\u64c7\u5176\u4ed6\u76ee\u9304\uff0c\u6216\u6539\u7528\u96f2\u7aef\u5de5\u4f5c\u5340\u4efb\u52d9\u3002'));
+                return;
+            }
+            if (selectedExpert && onCreateExpertTask) {
+                // Expert path: the caller opens the new-task page. The dialog name
+                // and folder are not the task yet; the page collects the folder
+                // and the first message. LaTeX keeps the template the user picked.
+                if (isLatexExpertId(selectedExpert.id)) {
+                    // An empty id is the documented default and means "no
+                    // template": the document starts as a blank skeleton.
+                    await onCreateExpertTask(selectedExpert, {
+                        latexTemplateId: isBlankLatexTemplate(selectedLatexTemplate) ? LATEX_BLANK_TEMPLATE_ID : selectedLatexTemplate.id,
+                        ...(isBlankLatexTemplate(selectedLatexTemplate) || !selectedLatexTemplate.name
+                            ? {}
+                            : { latexTemplateName: selectedLatexTemplate.name }),
+                    });
+                } else {
+                    await onCreateExpertTask(selectedExpert);
+                }
+            } else if (isRemoteCreate) {
+                const portNum = parseRemotePort(remotePort);
+                if (portNum == null) return;
+                await createTask(taskName, undefined, 'remote_coding_dev', {
+                    host: remoteHost.trim(),
+                    port: portNum,
+                    user: remoteUser.trim(),
+                    password: remotePassword,
+                    workDir: remoteWorkDir.trim(),
+                    safety: remoteSafety,
+                });
+            } else if (cloudCreateSelected) {
+                let cloudId = selectedCloudId;
+                if (!resumeExisting && boundCloudWorkspaceIds.has(selectedCloudId)) {
+                    if (provisionCloudTaskFn) {
+                        const provisioned = await provisionCloudTaskFn(taskName, '', '', '') as CloudWorkspaceProvisionResult;
+                        cloudId = cloudProvisionText(provisioned, 'workspace_id', 'workspaceId', 'WorkspaceID');
+                        provisionedCloudOperationId = cloudProvisionText(provisioned, 'operation_id', 'operationId', 'OperationID');
+                        if (!cloudId || !provisionedCloudOperationId) {
+                            throw new Error(textForLang(lang, 'Failed to prepare cloud workspace', '准备云端工作区失败', '準備雲端工作區失敗'));
+                        }
+                        provisionedCloudId = cloudId;
+                    } else if (typeof CreateCloudWorkspace === 'function') {
+                        // Keep the task flow usable with an older Wails host
+                        // whose generated bindings predate transactional
+                        // provisioning.  The legacy endpoint creates the new
+                        // workspace directly; compensation below still removes
+                        // it if opening the task fails.
+                        const created = await CreateCloudWorkspace('') as CloudWorkspaceProvisionResult;
+                        cloudId = cloudProvisionText(created, 'workspace_id', 'workspaceId', 'WorkspaceID', 'id', 'ID');
+                        if (!cloudId) {
+                            throw new Error(textForLang(lang, 'Failed to prepare cloud workspace', '准备云端工作区失败', '準備雲端工作區失敗'));
+                        }
+                        provisionedCloudId = cloudId;
+                    } else {
+                        throw new Error(textForLang(lang, 'Failed to prepare cloud workspace', '准备云端工作区失败', '準備雲端工作區失敗'));
+                    }
+                }
+                if (newTaskMode === 'coding_dev') {
+                    await createTask(taskName, undefined, 'coding_dev', undefined, cloudId);
+                } else {
+                await createTask(taskName, undefined, undefined, undefined, cloudId);
+            }
+            if (provisionedCloudOperationId && typeof CompleteCloudWorkspaceTaskProvision === 'function') {
+                await CompleteCloudWorkspaceTaskProvision(provisionedCloudOperationId);
+            }
+            } else if (newTaskMode === 'coding_dev') {
+                if (workingDir) await createTask(taskName, workingDir, 'coding_dev');
+                else await createTask(taskName, undefined, 'coding_dev');
+            } else if (workingDir) {
+                await createTask(taskName, workingDir);
+            } else {
+                await createTask(taskName);
+            }
+            if (mountedRef.current && createTaskGenRef.current === createGen) {
+                setCreateDialogOpen(false);
+                setNewTaskName('');
+                setNewTaskWorkingDir('');
+                setNewTaskMode('');
+                setCreateExpertId('');
+                setExpertPickerOpen(false);
+                setExpertFilter('');
+                setCreateLatexTemplateId('');
+                setLatexTemplatePickerOpen(false);
+                setRemoteHost('');
+                setRemotePort('22');
+                setRemoteUser('');
+                setRemotePassword('');
+                setRemoteWorkDir('');
+                setRemoteSafety(undefined);
+                setCreateError('');
+                setWorkspaceKind('local');
+                setSelectedCloudWorkspaceId('');
+                resetCloudWorkspaceEditors();
+                if (resumeExisting) {
+                    setTaskListNotice(textForLang(
+                        lang,
+                        'Opened the existing cloud-workspace task.',
+                        '已打开该云端工作区的现有任务。',
+                        '已打開該雲端工作區的現有任務。',
+                    ));
+                }
+            }
+        } catch (error) {
+            if (provisionedCloudOperationId && typeof AbortCloudWorkspaceTaskProvision === 'function') {
+                try {
+                    await AbortCloudWorkspaceTaskProvision(provisionedCloudOperationId, extractErrorMessage(error) || 'create task failed');
+                } catch {
+                    // Keep the original create error visible if compensation fails.
+                }
+            } else if (provisionedCloudId && typeof DeleteCloudWorkspace === 'function') {
+                try {
+                    await DeleteCloudWorkspace(provisionedCloudId);
+                    if (mountedRef.current) {
+                        setCloudEntitlement(prev => dropCloudWorkspaceFromEntitlement(prev, provisionedCloudId));
+                        if (selectedCloudWorkspaceId === provisionedCloudId) setSelectedCloudWorkspaceId('');
+                    }
+                } catch {
+                    // Keep the original create error; the leftover slot can be deleted from the overview.
+                }
+            }
+            if (mountedRef.current && createTaskGenRef.current === createGen) {
+                setCreateError(extractErrorMessage(error) || textForLang(lang, 'Failed to create task', '创建任务失败', '建立任務失敗'));
+                if (isRemoteCreate) {
+                    setCreateDialogOpen(true);
+                    schedulePostOpenFocus('remote_coding_dev', 'task-remote-password');
+                } else if (cloudCreateSelected) {
+                    setCreateDialogOpen(true);
+                }
+            }
+        } finally {
+            creatingTaskRef.current = false;
+            if (mountedRef.current) {
+                setCreatingTask(false);
+                setCreatingTaskMode('');
+            }
+        }
+    };
+
+    const openSceneDetail = async (projectPath: string, fallbackName?: string, reload = false) => {
+        if (sceneDetailPath === projectPath && !reload) {
+            sceneDetailRequestGenRef.current += 1;
+            setSceneDetailPath(null);
+            setSceneDetail(null);
+            setSceneDetailLoading(false);
+            setSceneDetailError('');
+            return;
+        }
+        const requestGen = ++sceneDetailRequestGenRef.current;
+        setSceneDetailPath(projectPath);
+        // Never leave evidence from the previously expanded task visible while
+        // the replacement request is still resolving.
+        setSceneDetail(null);
+        setSceneDetailError('');
+        setSceneDetailLoading(true);
+        try {
+            const detail = await GetProjectScene(projectPath);
+            if (mountedRef.current && sceneDetailRequestGenRef.current === requestGen) {
+                setSceneDetail((detail || null) as ProjectSceneDetail | null);
+            }
+        } catch (error) {
+            console.error('[SidebarTaskManagement] GetProjectScene failed:', error);
+            if (mountedRef.current && sceneDetailRequestGenRef.current === requestGen) {
+                setSceneDetail({ project_path: projectPath, name: fallbackName || projectPath, recent_artifacts: [] });
+                setSceneDetailError(textForLang(lang, 'Could not load evidence', '无法加载证据', '無法載入證據'));
+            }
+        } finally {
+            if (mountedRef.current && sceneDetailRequestGenRef.current === requestGen) {
+                setSceneDetailLoading(false);
+            }
+        }
+    };
+
+    /** True when this row's assistant tab is currently open (running instance). */
+    const isTaskInstanceOpen = (task: TaskManagementItem): boolean => {
+        const expertID = expertIDFromTaskTags(task.tags);
+        // A copy has its own project tab. The source expert or cloud tab must
+        // not count as this row already being open.
+        if (isExplicitTaskCopy(task.tags)) {
+            return isProjectTabOpen(task.project_path, openProjectTabPaths);
+        }
+        if (expertID && isLatexExpertId(expertID)) {
+            const livePath = activeAssistantTask?.expertId === expertID
+                ? normalizeProjectSessionPath(activeAssistantTask.projectPath)
+                : "";
+            if (livePath) return livePath === normalizeProjectSessionPath(task.project_path);
+        }
+        if (expertID) return (openExpertTabIDs || []).includes(expertID);
+        return isProjectTabOpen(
+            task.project_path,
+            openProjectTabPaths,
+            cloudWorkspaceIdFromTaskFields({ tags: task.tags, project_path: task.project_path, working_dir: task.working_dir }),
+            openProjectTabIdentities,
+        );
+    };
+
+    /**
+     * A closed row opens on a single click. At startup no assistant tab exists,
+     * so returning early here left the first click (and a double-click whose
+     * first press was swallowed) doing nothing. An already-open instance only
+     * focuses; double-click still re-restores it.
+     */
+    const handleTaskRowClick = (task: TaskManagementItem) => {
+        if (renamingTaskPath || removingTaskPaths.has(task.project_path)) return;
+        if (isTaskInstanceOpen(task)) {
+            activateTask?.(task.project_path, task);
+            return;
+        }
+        void handleTaskDoubleClick(task);
+    };
+
+    const handleTaskDoubleClick = async (task: TaskManagementItem) => {
+        const projectPath = task.project_path;
+        if (renamingTaskPath || removingTaskPaths.has(projectPath)) return;
+        if (openingTaskPathRef.current === projectPath) return;
+        const recentOpen = recentTaskOpenRef.current;
+        if (recentOpen?.path === projectPath && Date.now() - recentOpen.at < 500) return;
+        // A deliberate double-click supersedes an in-flight Browse hydration;
+        // the row open should be the single resume operation.
+        if (cloudBrowseTaskPathRef.current === projectPath) {
+            cloudBrowseGenerationRef.current += 1;
+            cloudBrowseTaskPathRef.current = null;
+            setCloudBrowseProgress(null);
+        }
+        if (!assistantReady) {
+            onTaskSwitchBlocked?.();
+            return;
+        }
+        openingTaskPathRef.current = projectPath;
+        recentTaskOpenRef.current = { path: projectPath, at: Date.now() };
+        setOpeningTaskPath(projectPath);
+        let opened: boolean | void = false;
+        try {
+            // Pass the rendered row too. It is the authoritative identity at the
+            // moment of interaction, avoiding a stale parent list cache from
+            // misrouting an expert row as a generic project task.
+            opened = await resumeTask(projectPath, task);
+            if (opened !== false && isCloudWorkspaceTask(task)) {
+                window.dispatchEvent(new CustomEvent(REVEAL_CLOUD_WORKSPACE_FILES_EVENT, {
+                    detail: { projectPath, workingDir: task.working_dir || '' },
+                }));
+            }
+        } finally {
+            // A failed open must accept another click immediately. A successful
+            // one keeps the short stamp so the rest of a double-click does not
+            // resume again.
+            if (opened === false && recentTaskOpenRef.current?.path === projectPath) {
+                recentTaskOpenRef.current = null;
+            }
+            if (openingTaskPathRef.current === projectPath) openingTaskPathRef.current = null;
+            setOpeningTaskPath(current => current === projectPath ? null : current);
+        }
+    };
+
+    const handleRemoveTask = async (projectPath: string, tags?: string[]) => {
+        if (removingTaskPathsRef.current.has(projectPath)) return;
+        removingTaskPathsRef.current.add(projectPath);
+        setRemovingTaskPaths(new Set(removingTaskPathsRef.current));
+        setRemoveErrors(current => {
+            if (!current.has(projectPath)) return current;
+            const next = new Map(current);
+            next.delete(projectPath);
+            return next;
+        });
+        try {
+            // The user already confirmed in the context-menu dialog, so force
+            // the deletion even while the task's tab is open. Expert rows pass
+            // their tags so the backend can drop the expert tab caches too.
+            const removed = await hideTask(projectPath, tags, true);
+            if (removed === false) {
+                return;
+            }
+            emitProjectTaskClosed(projectPath);
+            refreshTasks();
+            const targetPath = normalizeProjectSessionPath(projectPath);
+            const listed = tasks.find(item => normalizeProjectSessionPath(item.project_path) === targetPath);
+            const workspaceId = cloudWorkspaceIdFromTaskFields({
+                tags,
+                project_path: projectPath,
+                working_dir: listed?.working_dir,
+            }) || cloudWorkspaceIdFromTask(listed);
+            if (workspaceId) {
+                entitlementFetchGenRef.current += 1;
+                void reloadCloudEntitlement();
+                const pending = pendingRestoreWorkspaceIdsRef.current;
+                if (pending?.has(workspaceId)) {
+                    pending.delete(workspaceId);
+                    if (pending.size === 0) finishCloudRestoreWait();
+                }
+            }
+        } catch (error) {
+            console.error('[SidebarTaskManagement] Remove task failed:', error);
+            if (mountedRef.current) {
+                setRemoveErrors(current => {
+                    const next = new Map(current);
+                    next.set(projectPath, extractErrorMessage(error) || textForLang(lang, 'Failed to remove task', '删除任务失败', '刪除任務失敗'));
+                    return next;
+                });
+            }
+        } finally {
+            removingTaskPathsRef.current.delete(projectPath);
+            if (mountedRef.current) setRemovingTaskPaths(new Set(removingTaskPathsRef.current));
+        }
+    };
+
+    const confirmRemoveTask = async (menu: NonNullable<TaskContextMenu>) => {
+        if (removeTaskConfirmOpenRef.current) return;
+        const projectPath = menu.projectPath;
+        if (!projectPath) return;
+        const copied = isExplicitTaskCopy(menu.tags);
+        const expertID = copied ? '' : expertIDFromTaskTags(menu.tags);
+        // A copy's open tab is its own project path. The source expert or cloud
+        // tab must not make the delete dialog say this copy is in use.
+        const cloudWorkspaceId = copied ? '' : cloudWorkspaceIdFromTaskFields({ tags: menu.tags, project_path: projectPath, working_dir: menu.workingDir });
+        const tabOpen = isProjectTabOpen(projectPath, openProjectTabPaths, cloudWorkspaceId, openProjectTabIdentities)
+            || (!!expertID && (openExpertTabIDs || []).includes(expertID));
+        const name = String(menu.name || '').trim();
+        // Close the menu first so the confirm dialog owns the overlay layer.
+        setTaskContextMenu(null);
+        removeTaskConfirmOpenRef.current = true;
+        let confirmed = false;
+        try {
+            confirmed = await showConfirm(
+                tabOpen
+                    ? textForLang(
+                        lang,
+                        `Task "${name}" is currently open. Removing it closes its tab and removes it from the list. This cannot be undone.`,
+                        `任务「${name}」正在使用中。删除将关闭其标签页并从列表移除，此操作不可撤销。`,
+                        `任務「${name}」正在使用中。刪除將關閉其標籤頁並從列表移除，此操作不可撤銷。`,
+                    )
+                    : textForLang(
+                        lang,
+                        `Remove task "${name}" from the list? This cannot be undone.`,
+                        `确定从列表删除任务「${name}」？此操作不可撤销。`,
+                        `確定從列表刪除任務「${name}」？此操作不可撤銷。`,
+                    ),
+                textForLang(lang, 'Remove task', '删除任务', '刪除任務'),
+                {
+                    confirmText: textForLang(lang, 'Remove', '删除', '刪除'),
+                    cancelText: textForLang(lang, 'Cancel', '取消', '取消'),
+                    confirmVariant: 'danger',
+                },
+            );
+        } finally {
+            removeTaskConfirmOpenRef.current = false;
+        }
+        if (!confirmed || !mountedRef.current) return;
+        await handleRemoveTask(projectPath, expertID ? menu.tags : undefined);
+    };
+
+    /** Copies a task's settings into a new empty task and opens it. */
+    const duplicateTask = async (menu: NonNullable<TaskContextMenu>) => {
+        if (duplicatingTaskRef.current) return;
+        duplicatingTaskRef.current = true;
+        setTaskListNotice(textForLang(lang, 'Copying…', '正在复制…', '正在複製…'));
+        try {
+            const created = await DuplicateTask(menu.projectPath);
+            refreshTasks();
+            setTaskListNotice('');
+            const projectPath = String(created?.project_path || '').trim();
+            if (!projectPath) {
+                setTaskListNotice(textForLang(lang, 'Could not copy the task', '复制任务失败', '複製任務失敗'));
+                return;
+            }
+            if (!assistantReady) {
+                onTaskSwitchBlocked?.();
+                return;
+            }
+            await resumeTask(projectPath, {
+                project_path: projectPath,
+                name: created?.name,
+                tags: created?.tags,
+                working_dir: created?.working_dir,
+            });
+        } catch (error) {
+            setTaskListNotice(extractErrorMessage(error) || textForLang(lang, 'Could not copy the task', '复制任务失败', '複製任務失敗'));
+        } finally {
+            duplicatingTaskRef.current = false;
+        }
+    };
+
+    /** Opens the move dialog for a task row. */
+    const openTaskTransfer = (menu: NonNullable<TaskContextMenu>, direction: TaskTransferDirection) => {
+        // The dialog owns the overlay layer, so the menu goes first.
+        setTaskContextMenu(null);
+        setTransferError('');
+        setTransferLocalDir('');
+        const mode = agentModeFromTaskTags(menu.tags);
+        setTransferRequest({
+            direction,
+            projectPath: menu.projectPath,
+            name: String(menu.name || '').trim(),
+            tags: menu.tags,
+            mode: mode === 'coding_dev' ? 'coding_dev' : undefined,
+        });
+    };
+
+    /**
+     * Abandons a "move to this computer" that has no destination folder.
+     * Dismissing the folder picker means there is nowhere to copy into, so the
+     * dialog closes and the user is told the move did not happen rather than
+     * being left in front of a dialog that cannot be completed.
+     */
+    const cancelTransferWithoutLocalDir = () => {
+        setTransferRequest(null);
+        setTransferError('');
+        setTransferLocalDir('');
+        setTaskListNotice(textForLang(
+            lang,
+            'No target folder was chosen, so the move to this computer was cancelled.',
+            '未选择目标目录，已取消转移到本地。',
+            '未選擇目標目錄，已取消轉移到本機。',
+        ));
+    };
+
+    const pickTransferLocalDir = async () => {
+        if (typeof SelectWorkingDir !== 'function') return;
+        let picked = '';
+        try {
+            picked = String((await SelectWorkingDir()) || '').trim();
+        } catch (error) {
+            setTransferError(extractErrorMessage(error) || textForLang(lang, 'Failed to open the folder picker', '打开目录选择失败', '開啟目錄選擇失敗'));
+            return;
+        }
+        if (!mountedRef.current) return;
+        // An empty result is the picker being dismissed. Without a destination
+        // there is nothing to copy into, so abort instead of silently waiting.
+        if (!picked) {
+            if (!transferLocalDir) cancelTransferWithoutLocalDir();
+            return;
+        }
+        if (isCloudWorkspacePath(picked)) {
+            setTransferError(textForLang(
+                lang,
+                'That folder is a cloud workspace cache. Pick another folder.',
+                '该目录是云端工作区缓存目录，请选择其他目录。',
+                '該目錄是雲端工作區快取目錄，請選擇其他目錄。',
+            ));
+            return;
+        }
+        setTransferError('');
+        setTransferLocalDir(picked);
+    };
+
+    /** Creates a cloud workspace for a move and returns it as a dialog row. */
+    const createCloudWorkspaceForTransfer = async (name: string): Promise<TaskTransferCloudWorkspace | null> => {
+        if (!cloudGranted) {
+            throw new Error(textForLang(lang, 'Cloud workspaces are not available for this account.', '当前账号不可用云端工作区。', '目前帳號不可用雲端工作區。'));
+        }
+        if (cloudQuotaReached) {
+            throw new Error(textForLang(lang, 'Cloud workspace quota reached. Delete a workspace first.', '已达云端工作区配额，请先删除一个工作区。', '已達雲端工作區配額，請先刪除一個工作區。'));
+        }
+        if (!beginCloudWorkspaceBusy()) return null;
+        try {
+            const id = await provisionNewCloudWorkspace(name);
+            const created = (cloudEntitlementRef.current?.workspaces || []).find(row => (row.id || '').trim() === id);
+            return { id, name: String(created?.name || '').trim() || name };
+        } finally {
+            endCloudWorkspaceBusy();
+        }
+    };
+
+    /** Asks whether the copied source task should be removed from the list. */
+    const confirmRemoveTransferSource = async (request: { direction: TaskTransferDirection; projectPath: string; name: string; tags?: string[] }) => {
+        const name = String(request.name || '').trim();
+        // Removing a task only hides it, so the files survive either way — but
+        // a cloud source keeps them in its workspace, not on this disk.
+        const fromCloud = request.direction === 'to-local';
+        const confirmed = await showConfirm(
+            textForLang(
+                lang,
+                fromCloud
+                    ? `The copy is in place. Delete the source task "${name}" from the list now? Its files stay in the cloud workspace.`
+                    : `The copy is in place. Delete the source task "${name}" from the list now? Its files stay on disk.`,
+                fromCloud
+                    ? `已生成副本。现在删除源任务「${name}」吗？该任务的文件仍保留在云端工作区中。`
+                    : `已生成副本。现在删除源任务「${name}」吗？该任务的文件仍保留在磁盘上。`,
+                fromCloud
+                    ? `已建立副本。現在刪除源任務「${name}」嗎？該任務的檔案仍保留在雲端工作區中。`
+                    : `已建立副本。現在刪除源任務「${name}」嗎？該任務的檔案仍保留在磁碟上。`,
+            ),
+            textForLang(lang, 'Delete the source task?', '是否删除源任务？', '是否刪除源任務？'),
+            {
+                confirmText: textForLang(lang, 'Delete', '删除', '刪除'),
+                cancelText: textForLang(lang, 'Keep it', '保留', '保留'),
+                confirmVariant: 'danger',
+            },
+        );
+        if (!confirmed || !mountedRef.current) return;
+        await handleRemoveTask(request.projectPath, expertIDFromTaskTags(request.tags) ? request.tags : undefined);
+    };
+
+    const confirmTaskTransfer = async (target: TaskTransferTarget) => {
+        const request = transferRequest;
+        if (!request || transferBusy || !mountedRef.current) return;
+        const taskName = String(request.name || '').trim();
+        // The target task is created with the source title, so an unnamed
+        // source cannot be moved without inventing a name.
+        if (!taskName) {
+            setTransferError(textForLang(lang, 'This task has no title to carry over.', '该任务没有可用标题，无法转移。', '該任務沒有可用標題，無法轉移。'));
+            return;
+        }
+        setTransferBusy(true);
+        setTransferError('');
+        try {
+            if (target.kind === 'cloud') {
+                // Creating the cloud task first is what mounts the workspace
+                // cache and takes the writer lease the file copy needs.
+                await createTask(taskName, undefined, request.mode, undefined, target.workspaceId);
+                let fileCount = 0;
+                try {
+                    const moved = await CopyTaskFilesToCloudWorkspace(request.projectPath, target.workspaceId);
+                    fileCount = Number(moved?.files) || 0;
+                } catch (copyError) {
+                    throw new Error(textForLang(
+                        lang,
+                        `The cloud task was created but its files were not copied: ${extractErrorMessage(copyError) || 'copy failed'}`,
+                        `云端任务已创建，但文件未复制成功：${extractErrorMessage(copyError) || '复制失败'}`,
+                        `雲端任務已建立，但檔案未複製成功：${extractErrorMessage(copyError) || '複製失敗'}`,
+                    ));
+                }
+                if (!mountedRef.current) return;
+                setTransferRequest(null);
+                refreshTasks();
+                setTaskListNotice(textForLang(
+                    lang,
+                    `Moved "${taskName}" to cloud workspace "${target.workspaceName}" (${fileCount} files).`,
+                    `已将「${taskName}」转移到云端工作区「${target.workspaceName}」（${fileCount} 个文件）。`,
+                    `已將「${taskName}」轉移到雲端工作區「${target.workspaceName}」（${fileCount} 個檔案）。`,
+                ));
+                await confirmRemoveTransferSource(request);
+                return;
+            }
+
+            // Local target: copy the cloud files down first so a failed copy
+            // cannot leave an empty task behind, then create the local task.
+            const moved = await CopyCloudWorkspaceTaskFilesToLocal(request.projectPath, target.dir);
+            const fileCount = Number(moved?.files) || 0;
+            if (!mountedRef.current) return;
+            await createTask(taskName, target.dir, request.mode);
+            if (!mountedRef.current) return;
+            setTransferRequest(null);
+            refreshTasks();
+            setTaskListNotice(textForLang(
+                lang,
+                `Moved "${taskName}" to ${target.dir} (${fileCount} files).`,
+                `已将「${taskName}」转移到 ${target.dir}（${fileCount} 个文件）。`,
+                `已將「${taskName}」轉移到 ${target.dir}（${fileCount} 個檔案）。`,
+            ));
+            await confirmRemoveTransferSource(request);
+        } catch (error) {
+            if (mountedRef.current) {
+                setTransferError(extractErrorMessage(error) || textForLang(lang, 'Failed to move the task', '转移任务失败', '轉移任務失敗'));
+            }
+        } finally {
+            if (mountedRef.current) setTransferBusy(false);
+        }
+    };
+
+    const taskSearchFieldLabel = textForLang(lang, 'Search tasks, cloud, knowledge…', '搜索任务、云盘、知识库等', '搜尋任務、雲端硬碟、知識庫等');
+
+    return (
+    <div className="mc-task-pane stsm-pane" data-execution-sidebar={activeAssistantTask ? 'true' : 'false'} data-sidebar-mode={activeAssistantTask ? 'execution' : 'home'}>
+        {!activeAssistantTask && (
+            <div className="mc-task-pane__title" data-testid="task-pane-title" role="heading" aria-level={2}>
+                {textForLang(lang, 'My tasks', '我的任务', '我的任務')}
+            </div>
+        )}
+        <div className="mc-task-pane__header stsm-pane-header">
+            <label className="mc-task-pane__search">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true" focusable="false"><circle cx="11" cy="11" r="7" /><path d="M20 20l-3.2-3.2" /></svg>
+                <input
+                    ref={taskSearchInputRef}
+                    data-testid="task-pane-search"
+                    type="text"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={taskSearchQuery}
+                    placeholder={taskSearchFieldLabel}
+                    role="combobox"
+                    aria-autocomplete="list"
+                    aria-label={taskSearchFieldLabel}
+                    aria-controls="project-search-panel"
+                    aria-expanded={taskSearchOpen}
+                    onChange={(event) => {
+                        const value = event.target.value;
+                        setTaskSearchQuery(value);
+                        if (!taskSearchComposingRef.current) publishTaskSearch(value);
+                    }}
+                    onCompositionStart={() => { taskSearchComposingRef.current = true; }}
+                    onCompositionEnd={(event) => {
+                        taskSearchComposingRef.current = false;
+                        const value = event.currentTarget.value;
+                        setTaskSearchQuery(value);
+                        publishTaskSearch(value);
+                    }}
+                    onKeyDown={(event) => {
+                        if (event.nativeEvent.isComposing || taskSearchComposingRef.current) return;
+                        if (event.key === 'ArrowDown') {
+                            const first = document.querySelector<HTMLElement>("#project-search-panel .psp-row, #project-search-panel .pslr-row");
+                            if (!first) return;
+                            event.preventDefault();
+                            first.focus();
+                            first.scrollIntoView?.({ block: "nearest" });
+                            return;
+                        }
+                        if (event.key !== 'Escape') return;
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setTaskSearchQuery('');
+                        publishTaskSearch('');
+                    }}
+                />
+                {taskSearchQuery ? (
+                    <button
+                        type="button"
+                        className="mc-task-pane__search-clear"
+                        aria-label={textForLang(lang, 'Clear search', '清除搜索', '清除搜尋')}
+                        onMouseDown={(event) => event.preventDefault()}
+                        onClick={() => {
+                            setTaskSearchQuery('');
+                            publishTaskSearch('');
+                            taskSearchInputRef.current?.focus();
+                        }}
+                    >
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true" focusable="false"><path d="M6 6l12 12M18 6L6 18" /></svg>
+                    </button>
+                ) : null}
+            </label>
+            <div className="mc-task-pane__toolbar">
+            <button
+                type="button"
+                className="mc-task-pane__create-group"
+                data-testid="task-pane-new-task-wizard"
+                onClick={() => window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD))}
+                disabled={creatingTask}
+                title={textForLang(lang, 'New task (configure on the welcome page)', '新建任务（在引导页配置后发送创建）', '新建任務（在引導頁配置後傳送建立）')}
+            >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" aria-hidden="true" focusable="false"><path d="M12 5v14M5 12h14" /></svg>
+                <span>{textForLang(lang, 'New task', '新建任务', '新建任務')}</span>
+            </button>
+            <span className="mc-task-pane__toolbar-end">
+                <span className="mc-task-pane__tool-group">
+                    <button
+                        type="button"
+                        data-testid="task-pane-file-companion"
+                        onClick={() => { void ShowFileCompanion(); }}
+                        aria-label={textForLang(lang, 'Companion', '伴读', '伴讀')}
+                        title={textForLang(lang, 'Open the companion', '打开伴读', '開啟伴讀')}
+                    >
+                        <FileCompanionIcon />
+                    </button>
+                    <button
+                        type="button"
+                        className="mc-task-pane__knowledge"
+                        data-testid="task-knowledge"
+                        onClick={() => openSettingsTab('knowledge', { hideSettingsNav: true })}
+                        aria-label={textForLang(lang, 'Knowledge base', '知识库', '知識庫')}
+                        title={textForLang(lang, 'Open knowledge base', '打开知识库', '開啟知識庫')}
+                    >
+                        <KnowledgeEntryIcon />
+                    </button>
+                </span>
+                <span className="mc-task-pane__toolbar-divider" aria-hidden="true" />
+            <span className="mc-task-pane__tool-group">
+                <button
+                    type="button"
+                    data-testid="task-cloud-drive"
+                    onClick={() => window.dispatchEvent(new CustomEvent(EVENT_OPEN_CLOUD_DRIVE))}
+                    aria-label={textForLang(lang, 'Cloud drive', '云盘', '雲端硬碟')}
+                    title={textForLang(lang, 'Cloud drive, shared with the phone', '云盘，与手机端共享', '雲端硬碟，與手機端共享')}
+                >
+                    <CloudDriveIcon />
+                </button>
+                {(showCloudWorkspaceManagement || showCloudWorkspaceCreation) && (
+                    <button
+                        type="button"
+                        data-testid={showCloudWorkspaceManagement ? 'task-cloud-overview' : 'task-cloud-create'}
+                        onClick={showCloudWorkspaceManagement ? openCloudOverview : () => openCreateDialog({ cloud: true })}
+                        disabled={creatingTask}
+                        {...(showCloudWorkspaceManagement ? {
+                            'aria-expanded': cloudOverviewOpen,
+                            'aria-haspopup': 'dialog' as const,
+                            'aria-controls': 'task-cloud-overview-panel',
+                        } : {})}
+                        aria-label={showCloudWorkspaceManagement
+                            ? textForLang(lang, 'Cloud workspaces', '云端工作区', '雲端工作區')
+                            : textForLang(lang, 'Create cloud workspace task', '创建云端工作区任务', '建立雲端工作區任務')}
+                        title={showCloudWorkspaceManagement
+                            ? textForLang(lang, 'Cloud workspaces — continue on another PC', '云端工作区，换电脑也能继续', '雲端工作區，換電腦繼續')
+                            : textForLang(lang, 'Create cloud workspace task', '创建云端工作区任务', '建立雲端工作區任務')}
+                    >
+                        <CloudComputingIcon />
+                    </button>
+                )}
+                <button
+                    type="button"
+                    data-testid="sidebar-theme-toggle"
+                    onClick={() => window.dispatchEvent(new CustomEvent('maclaw:toggle-ai-theme'))}
+                    aria-label={themeToggleLabel}
+                    title={themeToggleLabel}
+                >
+                    {headerThemeMode === 'dark' ? (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="4" /><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" /></svg>
+                    ) : (
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" focusable="false"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z" /></svg>
+                    )}
+                </button>
+            </span>
+            </span>
+            </div>
+            <span className="mc-task-pane__save-group stsm-header-group stsm-header-group--save">
+                <span>{textForLang(lang, 'Save as Task', '保存为任务', '保存為任務')}</span>
+                <button
+                    type="button"
+                    onClick={requestSaveCurrentChatAsTask}
+                    aria-label={textForLang(lang, 'Save current chat as task', '保存当前对话为任务', '保存目前對話為任務')}
+                    title={textForLang(lang, 'Save current chat as task', '保存当前对话为任务', '保存目前對話為任務')}
+                    style={taskHeaderActionButtonStyle()}
+                >
+                    <SaveTaskIcon />
+                </button>
+            </span>
+        </div>
+
+        {creatingTask && !createDialogOpen && (
+            <SidebarTaskStatusBanner
+                testId="task-autocreate-progress"
+                label={creatingTaskMode === 'remote_coding_dev'
+                    ? textForLang(lang, 'Connecting SSH and creating the remote task…', '正在连接 SSH 并创建远程任务…', '正在連線 SSH 並建立遠端任務…')
+                    : workspaceKind === 'cloud'
+                        ? textForLang(lang, 'Opening cloud workspace…', '正在打开云端工作区…', '正在打開雲端工作區…')
+                        : textForLang(lang, 'Creating task…', '正在创建任务…', '正在建立任務…')}
+            />
+        )}
+        <div className="mc-task-filter-stack">
+            <div className="mc-task-filter-panel__title">{textForLang(lang, activeAssistantTask ? 'My task list' : 'Recent tasks', activeAssistantTask ? '我的任务列表' : '最近任务', activeAssistantTask ? '我的任務列表' : '最近任務')}</div>
+            <TaskFilterRow
+                ariaLabel={textForLang(lang, 'Filter tasks by status', '按状态筛选任务', '按狀態篩選任務')}
+                chips={taskFilterChips}
+                value={taskFilter}
+                onChange={setTaskFilter}
+                testIdPrefix="task-filter-"
+                layout="line"
+            />
+            <TaskFilterRow
+                ariaLabel={textForLang(lang, 'Filter tasks by workspace', '按工作空间筛选任务', '按工作空間篩選任務')}
+                chips={workspaceFilterChips}
+                value={workspaceFilter}
+                onChange={key => setWorkspaceFilter(key === workspaceFilter ? 'all' : key)}
+                testIdPrefix="task-workspace-filter-"
+                titleFor={chip => `${workspaceSectionLabel(lang)} · ${chip.label}`}
+                layout="line"
+            />
+        </div>
+        <div ref={taskListRef} className="mc-task-list stsm-task-list" data-testid="sidebar-task-list">
+        {showTaskListProgress ? (
+            <SidebarTaskStatusBanner
+                testId={localTasksLoading ? 'task-list-loading' : 'task-cloud-sync-progress'}
+                label={taskListProgressLabel}
+            />
+        ) : null}
+        {taskListNotice ? (
+            <div role="status" data-testid="task-list-notice" className="stsm-list-notice">
+                {taskListNotice}
+            </div>
+        ) : null}
+        {cloudBrowseProgress ? (
+            <SidebarTaskStatusBanner
+                testId="task-browse-cloud-progress"
+                label={textForLang(lang, 'Opening local cache folder…', '正在打开本地缓存文件夹…', '正在開啟本機快取資料夾…')}
+            />
+        ) : null}
+        {filteredTasks.length === 0 && !suppressEmptyState ? (
+            <div className="stsm-empty">
+                {taskFilter === 'all' && workspaceFilter === 'all'
+                    ? textForLang(lang, 'No tasks', '\u6682\u65e0\u4efb\u52a1', '\u66ab\u7121\u4efb\u52d9')
+                    : textForLang(lang, 'No tasks in this group', '\u8be5\u5206\u7ec4\u6682\u65e0\u4efb\u52a1', '\u8a72\u5206\u7d44\u66ab\u7121\u4efb\u52d9')}
+            </div>
+        ) : taskFolders.map(folder => {
+            const folderExpanded = !collapsedTaskFolders.has(folder.kind);
+            const folderLabel = taskListFolderLabel(folder.kind, lang);
+            const folderToggleLabel = folderExpanded
+                ? textForLang(lang, `Collapse ${folderLabel}`, `折叠${folderLabel}`, `摺疊${folderLabel}`)
+                : textForLang(lang, `Expand ${folderLabel}`, `展开${folderLabel}`, `展開${folderLabel}`);
+            const foldersDraggable = taskFolders.length > 1;
+            const folderDragLabel = textForLang(lang, 'Drag to reorder folders', '拖动调整文件夹顺序', '拖動調整資料夾順序');
+            const folderTitle = foldersDraggable ? `${folderDragLabel} · ${folderToggleLabel}` : folderToggleLabel;
+            return (
+            <section
+                key={folder.kind}
+                className="stsm-task-folder"
+                data-testid={`task-folder-${folder.kind}`}
+                data-expanded={folderExpanded ? 'true' : 'false'}
+                aria-label={folderLabel}
+                onDragOver={e => {
+                    const from = folderDragKindRef.current;
+                    if (!from || from === folder.kind) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (e.dataTransfer) e.dataTransfer.dropEffect = 'move';
+                    const edge = taskFolderOrder.indexOf(from) < taskFolderOrder.indexOf(folder.kind) ? 'after' : 'before';
+                    markFolderDropTarget(e.currentTarget, edge);
+                }}
+                onDragLeave={e => {
+                    if (e.currentTarget.contains(e.relatedTarget as Node | null)) return;
+                    if (folderDropTargetRef.current === e.currentTarget) clearFolderDropMarks();
+                }}
+                onDrop={e => {
+                    const from = folderDragKindRef.current;
+                    if (!from) return;
+                    e.preventDefault();
+                    e.stopPropagation();
+                    folderDragKindRef.current = null;
+                    clearFolderDropMarks();
+                    commitFolderDrag(from, folder.kind);
+                }}
+            >
+            <div
+                role="button"
+                tabIndex={0}
+                className={`stsm-task-folder__head stsm-task-folder__toggle${foldersDraggable ? ' is-draggable' : ''}`}
+                data-testid={`task-folder-toggle-${folder.kind}`}
+                draggable={foldersDraggable}
+                aria-expanded={folderExpanded}
+                aria-controls={`task-folder-items-${folder.kind}`}
+                title={folderTitle}
+                onDragStart={e => {
+                    if (!foldersDraggable || taskDragKeyRef.current) { e.preventDefault(); return; }
+                    e.stopPropagation();
+                    folderDidDragRef.current = true;
+                    folderDragKindRef.current = folder.kind;
+                    if (e.dataTransfer) {
+                        e.dataTransfer.effectAllowed = 'move';
+                        try { e.dataTransfer.setData('text/plain', `folder:${folder.kind}`); } catch { /* Some hosts reject custom payloads. */ }
+                    }
+                }}
+                onDragEnd={() => {
+                    folderDragKindRef.current = null;
+                    clearFolderDropMarks();
+                    window.setTimeout(() => { folderDidDragRef.current = false; }, 0);
+                }}
+                onClick={() => { if (folderDidDragRef.current) return; toggleTaskFolder(folder.kind); }}
+                onKeyDown={e => {
+                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                    e.preventDefault();
+                    if (folderDidDragRef.current) return;
+                    toggleTaskFolder(folder.kind);
+                }}
+            >
+                <TaskFolderChevron />
+                <TaskFolderIcon open={folderExpanded} />
+                <span className="stsm-task-folder__label">{folderLabel}</span>
+                <span className="stsm-task-folder__count">{folder.tasks.length}</span>
+            </div>
+            {folderExpanded ? (
+            <div id={`task-folder-items-${folder.kind}`} className="stsm-task-folder__items">
+            {folder.entries.map(entry => {
+            const workdirCollapseKey = entry.kind === 'folder'
+                ? taskWorkdirCollapseKey(folder.kind, !!entry.folder.tasks[0]?.pinned, entry.folder.key)
+                : '';
+            const workdirExpanded = entry.kind !== 'folder' || !collapsedWorkdirFolders.has(workdirCollapseKey);
+            const rowTasks = entry.kind === 'folder'
+                ? (workdirExpanded ? entry.folder.tasks : [])
+                : [entry.task];
+            const rows = rowTasks.map(proj => {
+            const taskIconKind = taskIconKindForProject(proj);
+            const remoteMaintenance = isRemoteMaintenanceTask(proj);
+            const cloudWorkspace = isCloudWorkspaceTask(proj);
+            // Cloud identity lives on the workspace line ("云端"/"Cloud") and
+            // the row icon. Do not restack a type chip or a coding/remote badge.
+            const codingBadge = cloudWorkspace ? '' : pureCodingBadgeLabel(proj, lang);
+            const shareFrom = cloudWorkspaceSharedFromFromTags(proj.tags);
+            const sharePermission = cloudWorkspaceSharePermissionFromTags(proj.tags);
+            const shareFromLabel = shareFrom
+                ? (sharePermission === 'write'
+                    ? textForLang(lang, `From ${shareFrom} · editable`, `来自 ${shareFrom} · 可读写`, `來自 ${shareFrom} · 可讀寫`)
+                    : sharePermission === 'read'
+                        ? textForLang(lang, `From ${shareFrom} · read-only`, `来自 ${shareFrom} · 只读`, `來自 ${shareFrom} · 唯讀`)
+                        : textForLang(lang, `From ${shareFrom}`, `来自 ${shareFrom}`, `來自 ${shareFrom}`))
+                : '';
+            const cloudFallback = cloudWorkspace ? cloudWorkspaceFallbackLabel(lang) : '';
+            const taskSecondaryLabel = taskSecondaryLabelFor(proj, cloudWorkspaceNames);
+            const taskSidebarSummary = taskSidebarSummaryFor(proj, cloudWorkspaceNames);
+            // Cloud workspace tasks may carry legacy coding tags from the
+            // server, but they are not pure-coding tasks in this sidebar.
+            // Keep the row metadata aligned with the visible task type.
+            const pureCoding = !cloudWorkspace && isPureCodingTask(proj);
+            const isRemoving = removingTaskPaths.has(proj.project_path);
+            const removalError = removeErrors.get(proj.project_path) || '';
+            const isActive = activeRowContext ? matchesActiveTaskRowContext(proj, activeRowContext) : false;
+            const isOpen = isTaskInstanceOpen(proj);
+            const isBusy = openingTaskPath === proj.project_path || isRemoving;
+            const liveRunning = isLiveRunningRow(proj);
+            const statusBucket = taskStatusBucketFor(proj);
+            const workflowStatus = liveRunning
+                ? { label: textForLang(lang, 'In progress', '进行中', '進行中'), tone: 'info' as const }
+                : workflowStatusForTaskRow(proj, lang, statusBucket);
+            const durableKind = taskListStatusKind({
+                liveRunning,
+                bucket: statusBucket,
+                tone: workflowStatus?.tone,
+            });
+            // Opening or removing is its own in-progress moment. The row's
+            // durable status stays put so the list color does not flicker.
+            const statusKind: TaskListStatusKind = isBusy ? 'running' : durableKind;
+            const createdAtLabel = taskCreationLabel(proj.created_at, lang);
+            const recentTimeLabel = taskRecentTimeLabel(proj.last_activity || proj.created_at, lang);
+            const secondaryStatusLabel = isRemoving
+                ? textForLang(lang, 'Removing task...', '正在删除任务...', '正在刪除任務...')
+                : openingTaskPath === proj.project_path
+                    ? textForLang(lang, pureCoding ? 'Restoring pure coding environment...' : 'Restoring...', pureCoding ? '正在恢复纯编程环境...' : '恢复中...', pureCoding ? '正在恢復純程式環境...' : '恢復中...')
+                    : '';
+            const statusMarkLabel = secondaryStatusLabel || taskListStatusMarkLabel(durableKind, workflowStatus, lang);
+            const statusHover = secondaryStatusLabel
+                ? secondaryStatusLabel
+                : [statusMarkLabel, workflowStatus?.detail].filter(Boolean).join(' · ');
+            // Workspace row line (设计 §5): badge (📁 local / ☁ cloud / 🖧 remote)
+            // plus the matching value — local working dir, cloud workspace name,
+            // or remote host[:port]/dir. Remote host/port/workDir come from the
+            // durable task tags; without a host the row falls back to a generic label.
+            const workspaceKind = workspaceKindForTask(proj);
+            const remoteMeta = workspaceKind === 'remote' ? remoteCodingMetaFromTaskTags(proj.tags) : null;
+            const remoteLocation = remoteMeta?.host
+                ? remoteWorkspaceLocationLabel(remoteMeta.host, remoteMeta.workDir, remoteMeta.port)
+                : '';
+            const rowPathHint = cloudWorkspace
+                ? cloudSafePathLabel(proj.working_dir || proj.project_path, taskSecondaryLabel || 'cloud')
+                : (remoteLocation || proj.working_dir || proj.execution_dir || proj.project_path);
+            const taskTitleText = listedTaskTitle(proj)
+                || (cloudWorkspace ? (taskSecondaryLabel || cloudFallback || rowPathHint) : proj.project_path);
+            const storedTaskName = String(proj.name || '').trim();
+            const identitySubtitle = taskSecondaryLabel && taskSecondaryLabel !== taskTitleText && taskSecondaryLabel !== storedTaskName ? taskSecondaryLabel : '';
+            // Local tasks surface their working directory under the subtitle;
+            // cloud workspace rows keep the existing compact layout.
+            const localWorkingDir = cloudWorkspace ? '' : String(proj.working_dir || proj.execution_dir || proj.project_path || '').trim();
+            const workspaceValue = workspaceKind === 'cloud'
+                ? taskSecondaryLabel
+                : workspaceKind === 'remote'
+                    ? (remoteLocation || textForLang(lang, 'Remote server', '远程服务器', '遠端伺服器'))
+                    : localWorkingDir;
+            const workspaceValueText = workspaceKind === 'local'
+                ? localWorkspaceFolderName(workspaceValue)
+                : workspaceValue;
+            // Cloud rows always keep the type badge, even before Hub names load.
+            const showWorkspaceLine = workspaceKind === 'cloud' || !!workspaceValue;
+            // When the workspace line already carries the identity text (cloud
+            // workspace name), keep the muted subtitle from repeating it.
+            // A third summary line repeats the title or the workspace path.
+            // Keep it only while a row is restoring or being removed.
+            const secondaryText = secondaryStatusLabel;
+            const rowStyle: CSSProperties = {
+                display: 'flex',
+                flexDirection: 'row',
+                alignItems: 'flex-start',
+                gap: '6px',
+                padding: '4px 6px 4px 8px',
+                borderRadius: '8px',
+                cursor: isBusy ? 'progress' : 'grab',
+                opacity: isBusy ? 0.78 : 1,
+                // Only the active row keeps a selection highlight; open-but-inactive
+                // and plain rows stay transparent (hover comes from CSS).
+                ...(isActive ? {
+                    background: 'var(--theme-surface)',
+                    boxShadow: 'inset 3px 0 0 var(--theme-primary), inset 0 0 0 1px color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border))',
+                } : {}),
+            };
+            return <div key={proj.id || proj.project_path} data-task-kind={taskIconKind} data-pure-coding={pureCoding ? 'true' : 'false'} data-status={durableKind === 'idle' ? undefined : durableKind} data-testid="sidebar-task-row" data-active={isActive ? 'true' : 'false'} data-open={isOpen ? 'true' : 'false'} data-task-path={proj.project_path}>
+                <div className={`sidebar-task-row${isActive ? ' is-active' : ''}${isOpen ? ' is-open' : ''}${isBusy ? ' is-busy' : ''}`} role="button" tabIndex={isBusy ? -1 : 0} draggable={!isBusy} onMouseDown={e => { taskDragFromControlRef.current = !!(e.target as HTMLElement | null)?.closest('button, a, input, textarea'); }} onDragStart={e => { if (isBusy || taskDragFromControlRef.current) { e.preventDefault(); return; } taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); taskDragFromControlRef.current = false; clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }} onDragOver={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'; markTaskDropTarget(e.currentTarget); }} onDrop={e => { if (!canDropTaskOn(proj)) return; e.preventDefault(); const fromKey = taskDragKeyRef.current; forgetTaskDrag(); clearTaskDropMarks(); if (fromKey) commitTaskDrag(fromKey, taskOrderKey(proj)); }} onDragLeave={e => { if (e.currentTarget.contains(e.relatedTarget as Node | null)) return; if (taskDropTargetRef.current === e.currentTarget) taskDropTargetRef.current = null; e.currentTarget.removeAttribute('data-task-drop-target'); }} onClick={(e) => { if (e.detail > 1 || taskRowDidDragRef.current) return; handleTaskRowClick(proj); }} onDoubleClick={() => { void handleTaskDoubleClick(proj); }} onKeyDown={e => { if (isBusy || (e.key !== 'Enter' && e.key !== ' ')) return; e.preventDefault(); if (isTaskInstanceOpen(proj)) { activateTask?.(proj.project_path, proj); return; } void handleTaskDoubleClick(proj); }} onContextMenu={e => { e.preventDefault(); if (isRemoving) return; setTaskContextMenu({ x: e.clientX, y: e.clientY, projectPath: proj.project_path, name: taskTitleText, pinned: !!proj.pinned, isRemoteCoding: isRemoteCodingTask(proj), tags: proj.tags, workingDir: proj.working_dir }); }} style={rowStyle} title={joinHoverLines(taskTitleText, rowPathHint, statusHover, codingBadge, createdAtLabel, identitySubtitle, textForLang(lang, 'Click to open. Drag to reorder.', '单击打开，拖动排序', '單擊開啟，拖動排序'))} aria-current={isActive ? 'true' : undefined}>
+                    <TaskStatusMark kind={statusKind} label={statusMarkLabel} />
+                    <span className="stsm-drag-handle-wrap"><span role="button" className="stsm-drag-handle" data-testid="task-drag-handle" aria-label={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} title={textForLang(lang, 'Drag to reorder', '拖动调整顺序', '拖動調整順序')} onClick={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()} onMouseDown={e => { taskDragFromControlRef.current = false; e.stopPropagation(); }} onDragStart={e => { e.stopPropagation(); taskRowDidDragRef.current = true; rememberTaskDrag(proj); const key = taskDragKeyRef.current || ''; if (e.dataTransfer) { e.dataTransfer.effectAllowed = 'move'; e.dataTransfer.setData('text/plain', key); } }} onDragEnd={() => { forgetTaskDrag(); clearTaskDropMarks(); window.setTimeout(() => { taskRowDidDragRef.current = false; }, 0); }}>⋮⋮</span></span>
+                    <span className="stsm-row-body">
+                        {(workflowStatus || codingBadge || proj.pinned || shareFromLabel) && (
+                            <span className="stsm-badge-row">
+                                {shareFromLabel ? (
+                                    <span
+                                        data-testid="task-cloud-shared-from"
+                                        title={shareFromLabel}
+                                        className="stsm-badge-share"
+                                    >{shareFromLabel}</span>
+                                ) : null}
+
+                                {codingBadge && (
+                                    <span
+                                        data-testid={isRemoteCodingTask(proj) ? 'task-remote-coding-badge' : 'task-coding-badge'}
+                                        title={taskIconLabel(taskIconKind, lang, remoteMaintenance)}
+                                        style={{
+                                            display: 'inline-flex',
+                                            maxWidth: '100%',
+                                            padding: '1px 5px',
+                                            borderRadius: '999px',
+                                            border: isRemoteCodingTask(proj)
+                                                ? '1px solid color-mix(in srgb, var(--theme-primary) 48%, transparent)'
+                                                : '1px solid color-mix(in srgb, var(--theme-primary) 26%, transparent)',
+                                            color: isRemoteCodingTask(proj) ? 'var(--theme-primary-strong)' : 'var(--mc-done, color-mix(in srgb, var(--theme-primary) 20%, var(--theme-text-secondary)))',
+                                            background: isRemoteCodingTask(proj)
+                                                ? 'color-mix(in srgb, var(--theme-primary) 12%, transparent)'
+                                                : 'color-mix(in srgb, var(--theme-primary) 7%, transparent)',
+                                            fontSize: '0.58rem',
+                                            fontWeight: 700,
+                                            lineHeight: 1.35,
+                                            whiteSpace: 'nowrap',
+                                            overflow: 'hidden',
+                                            textOverflow: 'ellipsis',
+                                        }}
+                                    >{codingBadge}</span>
+                                )}
+                                {workflowStatus && <span data-testid="task-workflow-status" aria-label={`${textForLang(lang, 'Task status', '任务状态', '任務狀態')}: ${workflowStatus.label}${workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}`} title={`${proj.active_workflow?.type || 'workflow'}${workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}`} style={{ display: 'inline-flex', maxWidth: '100%', padding: '1px 5px', borderRadius: '999px', border: `1px solid ${TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].border}`, color: TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].color, background: TASK_WORKFLOW_STATUS_COLORS[workflowStatus.tone].background, fontSize: '0.58rem', fontWeight: 700, lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{workflowStatus.label}{workflowStatus.detail ? ` · ${workflowStatus.detail}` : ''}</span>}
+                            </span>
+                        )}
+                        {renamingTaskPath === proj.project_path ? <input autoFocus value={renameValue} onChange={e => setRenameValue(e.target.value)} onBlur={async () => { const trimmed = renameValue.trim(); if (trimmed && trimmed !== proj.name && trimmed !== taskTitleText) { await renameTask(proj.project_path, trimmed); refreshTasks(); } setRenamingTaskPath(null); }} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); if (e.key === 'Escape') setRenamingTaskPath(null); }} onClick={e => e.stopPropagation()} style={{ width: '100%', fontSize: '0.74rem', fontWeight: 700, color: 'var(--theme-text-primary)', background: 'var(--theme-surface)', border: '1px solid var(--theme-primary)', borderRadius: '4px', padding: '2px 4px', outline: 'none' }} /> : <span className="mc-sidebar-task-title-row"><span className="stsm-row-title">{taskTitleText}</span><TaskTypeIcon kind={taskIconKind} lang={lang} maintenance={remoteMaintenance} />{proj.pinned && !pureCoding && <span data-testid="task-pinned-badge" className="stsm-badge-pinned" title={textForLang(lang, 'Pinned', '置顶', '置頂')}>{textForLang(lang, 'Pinned', '置顶', '置頂')}</span>}{recentTimeLabel && <time className="mc-sidebar-task-time" dateTime={proj.last_activity || proj.created_at}>{recentTimeLabel}</time>}</span>}
+                        {secondaryText ? <span data-testid="task-secondary-label" className="stsm-row-secondary">{secondaryText}</span> : null}
+                        {showWorkspaceLine ? (
+                            <span
+                                data-testid="task-working-dir"
+                                className="mc-task-working-dir"
+                                style={{ display: 'flex', alignItems: 'center', gap: '6px', marginTop: '2px', color: 'var(--theme-text-secondary)', fontSize: '12px', lineHeight: 1.35, whiteSpace: 'nowrap', overflow: 'hidden', textAlign: 'left', cursor: 'inherit' }}
+                            >
+                                <WorkspaceTypeBadge kind={workspaceKind} label={workspaceKindLabel(workspaceKind, lang)} style={{ flexShrink: 0 }} />
+                                {workspaceValueText ? (
+                                    <span className="stsm-workspace-value" title={workspaceKind === 'remote' ? workspaceValueText : undefined}>{workspaceValueText}</span>
+                                ) : null}
+                            </span>
+                        ) : null}
+                        {!isRemoving && openingTaskPath !== proj.project_path && createdAtLabel && <span data-testid="task-created-at" className="stsm-row-created">{createdAtLabel}</span>}
+                        {(openingTaskPath === proj.project_path || isRemoving) && <span data-testid={isRemoving ? 'task-remove-progress' : undefined} role={isRemoving ? 'status' : undefined} aria-label={isRemoving ? textForLang(lang, 'Removing task', '正在删除任务', '正在刪除任務') : textForLang(lang, pureCoding ? 'Restoring pure coding environment' : 'Restoring task', pureCoding ? '正在恢复纯编程环境' : '正在恢复任务', pureCoding ? '正在恢復純程式環境' : '正在恢復任務')} className="sidebar-task-progress__track stsm-row-progress"><span className="sidebar-task-progress__bar" /></span>}
+                        {removalError && <span data-testid="task-remove-error" role="alert" className="stsm-row-error">{removalError}</span>}
+                    </span>
+                    <span className="stsm-row-actions">
+                    {isOwnedCloudWorkspaceTask(proj) && (
+                        <button
+                            type="button"
+                            data-testid="task-cloud-share"
+                            aria-label={textForLang(lang, 'Share cloud task', '分享', '分享')}
+                            title={textForLang(lang, 'Share cloud workspace', '分享云端工作区', '分享雲端工作區')}
+                            onClick={e => {
+                                e.stopPropagation();
+                                if (isRemoving) return;
+                                const workspaceId = cloudWorkspaceIdFromTask(proj);
+                                if (!workspaceId) return;
+                                setShareTask({ name: taskTitleText, workspaceId });
+                            }}
+                            disabled={isBusy}
+                            style={{ border: 'none', background: 'color-mix(in srgb, var(--theme-primary) 12%, transparent)', color: 'var(--theme-primary)', opacity: isBusy ? 0.4 : 1, cursor: isBusy ? 'progress' : 'pointer', width: '22px', height: '22px', padding: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, borderRadius: '6px' }}
+                        >
+                            <CloudShareIcon />
+                        </button>
+                    )}
+                    <button type="button" aria-label={textForLang(lang, 'Scene details', '\u4efb\u52a1\u8bc1\u636e\u8be6\u60c5', '\u4efb\u52d9\u8b49\u64da\u8a73\u60c5')} title={textForLang(lang, 'Scene details', '\u4efb\u52a1\u8bc1\u636e\u8be6\u60c5', '\u4efb\u52d9\u8b49\u64da\u8a73\u60c5')} onClick={e => { e.stopPropagation(); if (!isRemoving) void openSceneDetail(proj.project_path, proj.name); }} disabled={isRemoving || (sceneDetailLoading && sceneDetailPath === proj.project_path)} style={{ border: 'none', background: 'transparent', color: 'var(--theme-primary)', opacity: isRemoving || (sceneDetailLoading && sceneDetailPath === proj.project_path) ? 0.4 : 0.78, cursor: isRemoving ? 'progress' : 'pointer', width: '20px', height: '20px', padding: 0, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><ProjectSearchIcon name="info" size={13} /></button>
+                    </span>
+                </div>
+                {sceneDetailPath === proj.project_path && <SidebarTaskEvidencePanel detail={sceneDetail} loading={sceneDetailLoading} lang={lang} onContinueWorkflow={continueWorkflowProject} error={sceneDetailError} onRetry={() => { void openSceneDetail(proj.project_path, proj.name, true); }} />}
+            </div>
+            });
+            if (entry.kind !== 'folder') return rows;
+            const workdirLabel = taskWorkdirFolderLabel(entry.folder, cloudWorkspaceNames);
+            const workdirTitle = entry.folder.title || workdirLabel;
+            const workdirToggleLabel = workdirExpanded
+                ? textForLang(lang, `Collapse ${entry.folder.label}`, `折叠${entry.folder.label}`, `摺疊${entry.folder.label}`)
+                : textForLang(lang, `Expand ${entry.folder.label}`, `展开${entry.folder.label}`, `展開${entry.folder.label}`);
+            return (
+            <section
+                key={workdirCollapseKey}
+                className="stsm-task-workdir"
+                data-testid="task-workdir-folder"
+                data-workdir-key={entry.folder.key}
+                data-expanded={workdirExpanded ? 'true' : 'false'}
+                aria-label={workdirTitle}
+            >
+            <div className="stsm-task-workdir__head" onClick={() => toggleWorkdirFolder(workdirCollapseKey)}>
+            <div
+                role="button"
+                tabIndex={0}
+                className="stsm-task-folder__toggle"
+                data-testid="task-workdir-toggle"
+                aria-expanded={workdirExpanded}
+                title={joinHoverLines(workdirTitle, workdirToggleLabel)}
+                onKeyDown={e => {
+                    if (e.key !== 'Enter' && e.key !== ' ') return;
+                    e.preventDefault();
+                    toggleWorkdirFolder(workdirCollapseKey);
+                }}
+            >
+                <TaskFolderChevron />
+                <TaskFolderIcon open={workdirExpanded} />
+                <span className="stsm-task-folder__label">{workdirLabel}</span>
+                <span className="stsm-task-folder__count">{entry.folder.tasks.length}</span>
+            </div>
+            </div>
+            {workdirExpanded ? <div className="stsm-task-workdir__items">{rows}</div> : null}
+            </section>
+            );
+            })}
+            </div>
+            ) : null}
+            </section>
+            );
+        })}
+        </div>
+
+        <CloudWorkspaceShareDialog
+            open={!!shareTask}
+            lang={lang}
+            themeMode={themeMode}
+            task={shareTask}
+            onClose={() => setShareTask(null)}
+        />
+
+        <TaskWorkspaceTransferDialog
+            open={!!transferRequest}
+            lang={lang}
+            themeMode={themeMode}
+            direction={transferRequest?.direction || 'to-cloud'}
+            taskName={transferRequest?.name || ''}
+            cloudWorkspaces={transferRequest?.direction === 'to-cloud' ? transferCloudWorkspaceOptions : undefined}
+            localDir={transferLocalDir}
+            busy={transferBusy}
+            error={transferError}
+            createDisabledReason={transferRequest?.direction === 'to-cloud' && !showCloudWorkspaceCreation && !showCloudWorkspaceManagement
+                ? textForLang(lang, 'Cloud workspace creation is unavailable on this surface.', '当前界面不可新建云端工作区。', '目前介面不可新建雲端工作區。')
+                : transferRequest?.direction === 'to-cloud' && cloudQuotaReached
+                    ? textForLang(lang, 'Cloud workspace quota reached. Delete a workspace first.', '已达云端工作区配额，请先删除一个工作区。', '已達雲端工作區配額，請先刪除一個工作區。')
+                    : ''}
+            onCreateCloudWorkspace={transferRequest?.direction === 'to-cloud' ? createCloudWorkspaceForTransfer : undefined}
+            onPickLocalDir={transferRequest?.direction === 'to-local' ? pickTransferLocalDir : undefined}
+            onConfirm={confirmTaskTransfer}
+            onClose={() => {
+                if (transferBusy) return;
+                setTransferRequest(null);
+                setTransferError('');
+                setTransferLocalDir('');
+            }}
+        />
+
+        {showCloudWorkspaceManagement && cloudOverviewOpen && createPortal(
+            <div
+                className="modal-backdrop"
+                data-testid="task-cloud-overview-dialog"
+                data-ai-theme={getPortalThemeMode(themeMode)}
+                data-ai-dark-scheme={getPortalDarkScheme()}
+                data-ai-light-scheme={getPortalLightScheme()}
+                style={{ zIndex: TASK_CREATE_DIALOG_Z_INDEX }}
+                onMouseDown={e => { cloudOverviewBackdropMouseDownRef.current = e.target === e.currentTarget; }}
+                onClick={e => {
+                    if (e.target === e.currentTarget && cloudOverviewBackdropMouseDownRef.current) closeCloudOverview();
+                    cloudOverviewBackdropMouseDownRef.current = false;
+                }}
+            >
+                <div
+                    ref={cloudOverviewDialogRef}
+                    id="task-cloud-overview-panel"
+                    className="modal-content mc-cloud-overview stsm-cloud-overview-dialog"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="task-cloud-overview-title"
+                    aria-busy={cloudRestorePending || undefined}
+                    tabIndex={-1}
+                    onMouseDown={e => e.stopPropagation()}
+                    onClick={e => e.stopPropagation()}
+                >
+                    <div className="modal-header">
+                        <h3 id="task-cloud-overview-title">
+                            {textForLang(lang, 'Cloud workspaces', '云端工作区', '雲端工作區')}
+                        </h3>
+                        <button
+                            type="button"
+                            className="btn-close"
+                            data-testid="task-cloud-overview-close"
+                            aria-label={textForLang(lang, 'Close', '关闭', '關閉')}
+                            title={textForLang(lang, 'Close', '关闭', '關閉')}
+                            onClick={closeCloudOverview}
+                        >X</button>
+                    </div>
+                    <div className="modal-body mc-cloud-overview__body">
+                        {cloudEntitlement?.hub_unavailable ? (
+                            <div
+                                role="status"
+                                data-testid="task-cloud-overview-hub-banner"
+                                className="mc-cloud-overview__banner"
+                            >
+                                {cloudEntitlement.banner?.trim()
+                                    || textForLang(lang, 'Hub is unavailable; showing the last known workspaces.', 'Hub 不可用，正在显示上次已知的工作区。', 'Hub 不可用，正在顯示上次已知的工作區。')}
+                            </div>
+                        ) : !cloudGranted && cloudEntitlement ? (
+                            <div
+                                role="status"
+                                data-testid="task-cloud-overview-denied"
+                                className="mc-cloud-overview__banner"
+                            >
+                                {cloudDeniedReason}
+                            </div>
+                        ) : null}
+                        {cloudRestorePending ? (
+                            <div role="status" data-testid="task-cloud-overview-syncing" className="mc-cloud-overview__status">
+                                {textForLang(lang, 'Syncing cloud tasks…', '正在同步云端任务…', '正在同步雲端任務…')}
+                            </div>
+                        ) : null}
+                        {createError ? (
+                            <div role="alert" data-testid="task-cloud-overview-error" className="mc-cloud-overview__error">
+                                {createError}
+                            </div>
+                        ) : null}
+                        {cloudEntitlement == null ? null : <div
+                            data-testid="task-cloud-overview-summary"
+                            title={overviewSummary.hint || undefined}
+                            className="mc-cloud-overview__summary"
+                        >
+                            {overviewSummary.text.split(' · ').map((part, index) => (
+                                <span key={`cloud-overview-stat-${index}`} className="mc-cloud-overview__stat">
+                                    {index > 0 ? <span className="mc-cloud-overview__stat-sep" aria-hidden="true"> · </span> : null}
+                                    {part}
+                                </span>
+                            ))}
+                            {cloudQuota > 0 ? (
+                                <span className="mc-cloud-overview__quota" aria-hidden="true">
+                                    <span style={{ width: `${cloudUsed > 0 ? Math.max(8, Math.min(100, Math.round((cloudUsed / cloudQuota) * 100))) : 0}%` }} />
+                                </span>
+                            ) : null}
+                        </div>}
+                        <div className="mc-cloud-overview__split">
+                            <div className="mc-cloud-overview__list">
+                                <button
+                                    type="button"
+                                    data-testid="task-cloud-overview-new"
+                                    disabled={creatingTask || cloudWorkspaceBusy || cloudRestorePending || cloudQuotaReached || !cloudGranted}
+                                    title={!cloudGranted
+                                        ? cloudDeniedReason
+                                        : cloudQuotaReached
+                                            ? textForLang(lang, 'Cloud workspace quota reached', '已达云端工作区配额', '已達雲端工作區配額')
+                                            : undefined}
+                                    onClick={() => { void createNewCloudWorkspace(); }}
+                                    className="mc-cloud-overview__new"
+                                >
+                                    {cloudWorkspaceBusy ? null : <span className="mc-cloud-overview__new-mark" aria-hidden="true">+</span>}
+                                    {newCloudWorkspaceActionLabel(lang, cloudWorkspaceBusy)}
+                                </button>
+                                <div className="mc-cloud-overview__list-scroll">
+                                {cloudWorkspaces.length === 0 ? (
+                                    <div className="mc-cloud-overview__empty-list" data-testid={cloudEntitlement == null ? 'task-cloud-overview-checking' : undefined}>
+                                        {cloudEntitlement == null
+                                            ? cloudDeniedReason
+                                            : textForLang(lang, 'No cloud workspace yet.', '暂无云端工作区。', '暫無雲端工作區。')}
+                                    </div>
+                                ) : (
+                                    <div className="mc-cloud-overview__rows">
+                                        {cloudWorkspaces.map(row => {
+                                            const id = (row.id || '').trim();
+                                            const linked = tasksForCloudWorkspace(visibleTasks, id);
+                                            const selected = id === overviewSelectionId;
+                                            const bound = linked.length > 0;
+                                            return (
+                                                <button
+                                                    key={`manage-${id}`}
+                                                    type="button"
+                                                    data-testid={bound ? 'task-cloud-overview-bound' : 'task-cloud-overview-blank'}
+                                                    data-workspace-id={id}
+                                                    aria-pressed={selected}
+                                                    title={row.name || id}
+                                                    disabled={creatingTask || cloudWorkspaceBusy}
+                                                    onClick={() => { setManageWorkspaceId(id); resetCloudWorkspaceEditors(); }}
+                                                    className="mc-cloud-overview__row"
+                                                >
+                                                    <span className="mc-cloud-overview__row-name">{row.name || id}</span>
+                                                    <span className="mc-cloud-overview__row-meta">
+                                                        {bound
+                                                            ? textForLang(lang, `${linked.length} linked task${linked.length === 1 ? '' : 's'}`, `${linked.length} 个关联任务`, `${linked.length} 個關聯任務`)
+                                                            : textForLang(lang, 'No linked tasks', '无关联任务', '無關聯任務')}
+                                                    </span>
+                                                    <CloudWorkspaceLeaseNote row={row} lang={lang} />
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                                {cloudDeleted.length > 0 && (
+                                    <div data-testid="task-cloud-overview-deleted" className="mc-cloud-overview__deleted">
+                                        <div className="mc-cloud-overview__section-label">
+                                            {textForLang(lang, 'Recently deleted', '最近删除', '最近刪除')}
+                                        </div>
+                                        {cloudDeleted.map(row => (
+                                            <CloudDeletedWorkspaceRow
+                                                key={`overview-deleted-${row.id}`}
+                                                row={row}
+                                                lang={lang}
+                                                testIdPrefix="task-cloud-overview"
+                                                busy={cloudDeletedRowBusy}
+                                                quotaReached={cloudQuotaReached}
+                                                forceDeleting={forceDeletingCloudWorkspaceId === row.id}
+                                                onRestore={restoreDeletedCloudWorkspace}
+                                                onForceDelete={confirmForceDeleteCloudWorkspace}
+                                            />
+                                        ))}
+                                    </div>
+                                )}
+                                </div>
+                            </div>
+                            <div data-testid="task-cloud-overview-selected" className="mc-cloud-overview__detail">
+                                {(() => {
+                                    const selected = cloudWorkspaces.find(row => (row.id || '').trim() === overviewSelectionId);
+                                    if (!selected) {
+                                        return <div className="mc-cloud-overview__placeholder">{cloudEntitlement == null
+                                            ? cloudDeniedReason
+                                            : textForLang(lang, 'Select a workspace to manage it.', '选择一个工作区进行管理。', '選擇一個工作區進行管理。')}</div>;
+                                    }
+                                    const id = (selected.id || '').trim();
+                                    const linked = tasksForCloudWorkspace(visibleTasks, id);
+                                    const renaming = renamingCloudWorkspaceId === id;
+                                    const confirmingDelete = deleteConfirmCloudWorkspaceId === id;
+                                    const busy = creatingTask || cloudWorkspaceBusy || cloudRestorePending;
+                                    const lastUsed = formatCloudWorkspaceLastUsed(selected.updated_at, lang);
+                                    const sizeText = formatCloudWorkspaceBytes(Number(selected.retained_bytes) || Number(selected.used_bytes) || 0, lang);
+                                    return (
+                                        <>
+                                            <div className="mc-cloud-overview__detail-head">
+                                                <div className="mc-cloud-overview__detail-title">{selected.name || id}</div>
+                                                <div className="mc-cloud-overview__detail-meta">{[lastUsed, sizeText].filter(Boolean).join(' · ')}</div>
+                                                <CloudWorkspaceLeaseNote row={selected} lang={lang} />
+                                                {renaming ? (
+                                                    <div className="mc-cloud-overview__rename">
+                                                        <input autoFocus className="mc-cloud-overview__rename-input" value={renameCloudWorkspaceValue} onChange={e => setRenameCloudWorkspaceValue(e.target.value)} disabled={cloudWorkspaceBusy} aria-label={textForLang(lang, 'Workspace name', '工作区名称', '工作區名稱')} onKeyDown={e => { if (e.key !== 'Enter' || e.nativeEvent.isComposing || e.keyCode === 229) return; e.preventDefault(); if (!cloudWorkspaceBusy && renameCloudWorkspaceValue.trim()) void renameSelectedCloudWorkspace(id); }} />
+                                                        <button type="button" className="btn-primary" disabled={cloudWorkspaceBusy || !renameCloudWorkspaceValue.trim()} onClick={() => { void renameSelectedCloudWorkspace(id); }}>{textForLang(lang, 'Save', '保存', '儲存')}</button>
+                                                        <button type="button" className="btn-secondary" disabled={cloudWorkspaceBusy} onClick={resetCloudWorkspaceEditors}>{textForLang(lang, 'Cancel', '取消', '取消')}</button>
+                                                    </div>
+                                                ) : (
+                                                    <div className="mc-cloud-overview__actions">
+                                                        <button type="button" className="mc-cloud-overview__action" data-testid="task-cloud-overview-rename" disabled={busy} onClick={() => { setRenamingCloudWorkspaceId(id); setRenameCloudWorkspaceValue(selected.name || ''); setDeleteConfirmCloudWorkspaceId(''); }}>{textForLang(lang, 'Rename', '重命名', '重命名')}</button>
+                                                        <button type="button" className="mc-cloud-overview__action mc-cloud-overview__action--danger" data-testid={linked.length ? 'task-cloud-overview-delete-blocked' : 'task-cloud-overview-blank-delete'} disabled={busy} onClick={() => { setRenamingCloudWorkspaceId(''); setDeleteConfirmCloudWorkspaceId(prev => prev === id ? '' : id); }}>{textForLang(lang, 'Delete', '删除', '刪除')}</button>
+                                                        <button type="button" className="mc-cloud-overview__action" data-testid="task-cloud-overview-files" disabled={busy} onClick={() => { resetCloudWorkspaceEditors(); setCloudFilesWorkspace({ id, name: selected.name || id }); }}>{textForLang(lang, 'View', '查看', '檢視')}</button>
+                                                    </div>
+                                                )}
+                                                {confirmingDelete ? (
+                                                    <div data-testid="task-cloud-overview-blank-delete-confirm" className={linked.length > 0 ? 'mc-cloud-overview__confirm mc-cloud-overview__confirm--note' : 'mc-cloud-overview__confirm'}>
+                                                        {linked.length > 0 ? (
+                                                            <span>
+                                                                {textForLang(lang, `This workspace still has ${linked.length} linked task(s). Delete those tasks first.`, `该工作区仍关联 ${linked.length} 个任务，请先删除这些任务后再删除工作区。`, `該工作區仍關聯 ${linked.length} 個任務，請先刪除這些任務後再刪除工作區。`)}
+                                                            </span>
+                                                        ) : (
+                                                            <>
+                                                                <span>
+                                                                    {textForLang(lang, 'Deleted workspaces can be restored from Recently deleted within 7 days.', '删除后 7 天内可从「最近删除」恢复。', '刪除後 7 天內可從「最近刪除」恢復。')}
+                                                                </span>
+                                                                <div className="mc-cloud-overview__confirm-actions">
+                                                                    <button type="button" className="btn-primary" disabled={busy} onClick={() => { void deleteSelectedCloudWorkspace(id); }}>{textForLang(lang, 'Delete', '确认删除', '確認刪除')}</button>
+                                                                    <button type="button" className="btn-secondary" disabled={busy} onClick={resetCloudWorkspaceEditors}>{textForLang(lang, 'Cancel', '取消', '取消')}</button>
+                                                                </div>
+                                                            </>
+                                                        )}
+                                                    </div>
+                                                ) : null}
+                                            </div>
+                                            <div className="mc-cloud-overview__tasks">
+                                                <div className="mc-cloud-overview__section-label">
+                                                    {textForLang(lang, `Linked tasks (${linked.length})`, `关联任务 (${linked.length})`, `關聯任務 (${linked.length})`)}
+                                                </div>
+                                                {linked.length === 0 ? (
+                                                    <div className="mc-cloud-overview__tasks-empty">
+                                                        {textForLang(lang, 'No linked tasks. Use New Task and choose this workspace.', '暂无关联任务。可用「新建任务」选择此工作区。', '暫無關聯任務。可用「新建任務」選擇此工作區。')}
+                                                    </div>
+                                                ) : linked.map(task => {
+                                                    const linkedTitle = listedTaskTitle(task) || task.name || task.project_path;
+                                                    return (
+                                                    <div key={task.project_path} data-testid="task-cloud-overview-task" className="mc-cloud-overview__task">
+                                                        <span className="mc-cloud-overview__task-name" title={linkedTitle}>{linkedTitle}</span>
+                                                        <button
+                                                            type="button"
+                                                            className="mc-cloud-overview__task-delete"
+                                                            data-testid="task-cloud-overview-task-delete"
+                                                            disabled={busy}
+                                                            onClick={() => {
+                                                                void confirmRemoveTask({
+                                                                    x: 0,
+                                                                    y: 0,
+                                                                    projectPath: task.project_path,
+                                                                    name: linkedTitle,
+                                                                    pinned: !!task.pinned,
+                                                                    tags: task.tags,
+                                                                    workingDir: task.working_dir,
+                                                                });
+                                                            }}
+                                                        >{textForLang(lang, 'Delete', '删除', '刪除')}</button>
+                                                    </div>
+                                                    );
+                                                })}
+                                            </div>
+                                        </>
+                                    );
+                                })()}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>,
+            document.body,
+        )}
+
+        {showCloudWorkspaceManagement && cloudOverviewOpen && cloudFilesWorkspace && (
+            <CloudWorkspaceFilesDialog
+                lang={lang}
+                themeMode={themeMode}
+                workspaceId={cloudFilesWorkspace.id}
+                workspaceName={cloudFilesWorkspace.name}
+                onClose={() => setCloudFilesWorkspace(null)}
+            />
+        )}
+
+        {createDialogOpen && createPortal(
+            <div
+                className="modal-backdrop"
+                data-ai-theme={getPortalThemeMode(themeMode)}
+                data-ai-dark-scheme={getPortalDarkScheme()}
+                data-ai-light-scheme={getPortalLightScheme()}
+                style={{ zIndex: TASK_CREATE_DIALOG_Z_INDEX }}
+                onMouseDown={e => { createBackdropMouseDownRef.current = e.target === e.currentTarget; }}
+                onClick={e => { if (e.target === e.currentTarget && createBackdropMouseDownRef.current) closeCreateDialog(); createBackdropMouseDownRef.current = false; }}
+            >
+                <form
+                    className="modal-content stsm-dialog stsm-dialog--create"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="task-management-dialog-title"
+                    onMouseDown={e => e.stopPropagation()}
+                    onClick={e => e.stopPropagation()}
+                    onKeyDown={e => { if (e.key === 'Escape') closeCreateDialog(); }}
+                    onSubmit={e => { e.preventDefault(); void submitCreateTask(); }}
+                >
+                    <div className="modal-header">
+                        <h3 id="task-management-dialog-title" className="stsm-dialog-title">
+                            {cloudCreateSelected
+                                ? textForLang(lang, 'Create cloud workspace task', '创建云端工作区任务', '建立雲端工作區任務')
+                                : newTaskMode === 'coding_dev'
+                                    ? textForLang(lang, 'Create local coding task', '创建本地编程任务', '建立本機程式任務')
+                                    : newTaskMode === 'remote_coding_dev'
+                                        ? textForLang(lang, 'Create remote coding task', '创建远程编程任务', '建立遠端程式任務')
+                                        : textForLang(lang, 'Create task', '创建任务', '建立任務')}
+                        </h3>
+                        <button type="button" className="btn-close" onClick={closeCreateDialog} disabled={creatingTask}>X</button>
+                    </div>
+                    <div className="modal-body stsm-form-body">
+                        <div data-testid="task-create-guidance" className="stsm-guidance">
+                            {showCloudWorkspaceCreation
+                                ? textForLang(lang, 'Choose a task type, including Cloud workspace. After it opens, enter your request in the AI assistant.', '先选择任务类型（含云端工作区）；创建后请直接在 AI 助手中输入任务命令。', '先選擇任務類型（含雲端工作區）；建立後請直接在 AI 助手中輸入任務命令。')
+                                : textForLang(lang, 'Choose a task type, then enter your request in the AI assistant.', '选择任务类型后，直接在 AI 助手中输入任务命令。', '選擇任務類型後，直接在 AI 助手中輸入任務命令。')}
+                        </div>
+                        {showCloudWorkspaceCreation && cloudEntitlement?.hub_unavailable && (
+                            <div
+                                role="status"
+                                data-testid="task-cloud-workspace-hub-banner"
+                                className="stsm-hub-banner"
+                            >
+                                {cloudEntitlement.banner?.trim()
+                                    || textForLang(lang, 'Hub is unavailable; cloud workspaces are temporarily unavailable.', 'Hub 不可用，云端工作区暂不可用', 'Hub 不可用，雲端工作區暫不可用')}
+                            </div>
+                        )}
+                        <div>
+                            <div className="stsm-field-label">{textForLang(lang, 'Task type', '任务类型', '任務類型')}</div>
+                            <div role="group" data-testid="task-workspace-kind" aria-label={textForLang(lang, 'Task type', '任务类型', '任務類型')} className="stsm-kind-grid">
+                                {([
+                                    { id: 'chat' as const, testId: 'task-workspace-kind-local', label: textForLang(lang, 'Chat', '对话', '對話'), detail: textForLang(lang, 'General assistant', '通用助手', '通用助手') },
+                                    { id: 'coding_dev' as const, label: textForLang(lang, 'Coding', '本地编程', '本機程式'), detail: textForLang(lang, 'Local workspace', '本地工作目录', '本機工作目錄') },
+                                    { id: 'remote_coding_dev' as const, label: textForLang(lang, 'Remote', '远程编程', '遠端程式'), detail: textForLang(lang, 'SSH workspace', 'SSH 工作目录', 'SSH 工作目錄') },
+                                    ...(showCloudWorkspaceCreation ? [{ id: 'cloud' as const, testId: 'task-workspace-kind-cloud', label: textForLang(lang, 'Cloud workspace', '云端工作区', '雲端工作區'), detail: textForLang(lang, 'Hub sync, continue on another PC', 'Hub 同步，换电脑继续', 'Hub 同步，換電腦繼續') }] : []),
+                                ] satisfies Array<{ id: CreateTaskTypeId; testId?: string; label: string; detail: string }>).map(opt => {
+                                    const isCloud = opt.id === 'cloud';
+                                    const nextMode: '' | 'coding_dev' | 'remote_coding_dev' = opt.id === 'coding_dev'
+                                        ? 'coding_dev'
+                                        : opt.id === 'remote_coding_dev'
+                                            ? 'remote_coding_dev'
+                                            : '';
+                                    const active = isCloud
+                                        ? workspaceKind === 'cloud'
+                                        : workspaceKind !== 'cloud' && newTaskMode === nextMode;
+                                    const cloudLocked = isCloud && !cloudGranted;
+                                    const disabled = creatingTask || cloudWorkspaceBusy || cloudLocked;
+                                    const buttonId = opt.id === 'coding_dev'
+                                        ? 'task-management-coding-mode'
+                                        : opt.id === 'remote_coding_dev'
+                                            ? 'task-management-remote-coding-mode'
+                                            : isCloud
+                                                ? 'task-management-cloud-workspace-mode'
+                                                : 'task-management-chat-mode';
+                                    return (
+                                        <button
+                                            key={`create-type-${opt.id}`}
+                                            type="button"
+                                            id={buttonId}
+                                            data-testid={opt.testId}
+                                            aria-pressed={active}
+                                            aria-label={opt.label}
+                                            title={cloudLocked ? cloudDeniedReason : opt.detail}
+                                            disabled={disabled}
+                                            onClick={() => selectCreateTaskType(opt.id)}
+                                            style={{ minWidth: 0, minHeight: '58px', border: active ? '1px solid var(--theme-primary)' : '1px solid var(--theme-border)', boxShadow: active ? '0 0 0 1px var(--theme-primary)' : 'none', borderRadius: '8px', padding: '7px 8px', textAlign: 'left', cursor: disabled ? 'default' : 'pointer', color: active ? 'var(--theme-primary)' : 'var(--theme-text-primary)', background: active ? 'color-mix(in srgb, var(--theme-primary) 16%, var(--theme-surface))' : 'var(--theme-surface-muted)', opacity: disabled ? 0.55 : 1 }}
+                                        >
+                                            <span className="stsm-kind-label-row">
+                                                <span className="stsm-ellipsis">{opt.label}</span>
+                                                {active && (
+                                                    <span aria-hidden="true" className="stsm-kind-check">✓</span>
+                                                )}
+                                            </span>
+                                            <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', marginTop: '3px', color: active ? 'var(--theme-primary)' : 'var(--theme-text-muted)', fontSize: '0.64rem', opacity: active ? 0.88 : 1 }}>{opt.detail}</span>
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                            {showCloudWorkspaceCreation && !cloudGranted && !cloudEntitlement?.hub_unavailable && (
+                                <div data-testid="task-cloud-workspace-denied" className="stsm-denied">
+                                    {cloudDeniedReason}
+                                </div>
+                            )}
+                        </div>
+                        {newTaskMode === '' && !cloudCreateSelected && (
+                            <div data-testid="task-expert-type" className="stsm-field-box">
+                                <div className="stsm-field-row">
+                                    <span className="stsm-field-caption">
+                                        <ProjectSearchIcon name="book" size={14} />
+                                        {textForLang(lang, 'Expert type', '专家类型', '專家類型')}
+                                    </span>
+                                    <button
+                                        type="button"
+                                        data-testid="task-expert-picker-toggle"
+                                        onClick={() => { setExpertPickerOpen(prev => !prev); setExpertFilter(''); }}
+                                        disabled={creatingTask}
+                                        aria-label={textForLang(lang, 'Choose expert type', '选择专家类型', '選擇專家類型')}
+                                        aria-expanded={expertPickerOpen}
+                                        title={createSelectedExpert ? createSelectedExpert.name : textForLang(lang, 'General expert', '通用专家', '通用專家')}
+                                        style={{ maxWidth: '250px', minWidth: 0, display: 'inline-flex', alignItems: 'center', gap: '5px', border: '1px solid color-mix(in srgb, var(--theme-primary) 22%, transparent)', borderRadius: '6px', background: 'color-mix(in srgb, var(--theme-primary) 9%, transparent)', color: 'var(--theme-primary)', cursor: creatingTask ? 'default' : 'pointer', padding: '5px 8px', fontSize: '0.72rem', lineHeight: 1.2, opacity: creatingTask ? 0.58 : 1 }}
+                                    >
+                                        <span aria-hidden="true">{createSelectedExpert ? (createSelectedExpert.icon || DEFAULT_EXPERT_ICON) : DEFAULT_EXPERT_ICON}</span>
+                                        <span className="stsm-ellipsis">
+                                            {createSelectedExpert ? createSelectedExpert.name : textForLang(lang, 'General expert', '通用专家', '通用專家')}
+                                        </span>
+                                        <span aria-hidden="true" className="stsm-no-shrink">▾</span>
+                                    </button>
+                                </div>
+                                {expertPickerOpen && (
+                                    <div
+                                        data-testid="task-expert-picker"
+                                        className="stsm-picker"
+                                        onKeyDown={e => {
+                                            // Collapse the picker first; the form-level Escape
+                                            // handler would otherwise close the whole dialog.
+                                            if (e.key === 'Escape') {
+                                                e.stopPropagation();
+                                                setExpertPickerOpen(false);
+                                            }
+                                        }}
+                                    >
+                                        <input
+                                            data-testid="task-expert-filter"
+                                            value={expertFilter}
+                                            onChange={e => setExpertFilter(e.target.value)}
+                                            disabled={creatingTask}
+                                            placeholder={textForLang(lang, 'Search experts', '搜索专家', '搜尋專家')}
+                                            autoComplete="off"
+                                            // Focus moves straight into filtering when the picker opens.
+                                            autoFocus
+                                            className="stsm-input"
+                                        />
+                                        <div className="stsm-picker-list">
+                                            <button
+                                                type="button"
+                                                data-testid="task-expert-option"
+                                                data-expert-id=""
+                                                onClick={() => { setCreateExpertId(''); setExpertPickerOpen(false); }}
+                                                style={{ textAlign: 'left', border: createExpertId ? '1px solid var(--theme-border)' : '1px solid color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border))', borderRadius: '7px', background: createExpertId ? 'var(--theme-surface)' : 'color-mix(in srgb, var(--theme-primary) 7%, var(--theme-surface))', color: 'var(--theme-text-primary)', cursor: 'pointer', padding: '6px 8px' }}
+                                            >
+                                                <span aria-hidden="true" className="stsm-option-icon">{DEFAULT_EXPERT_ICON}</span>
+                                                <span className="stsm-option-name">{textForLang(lang, 'General expert', '通用专家', '通用專家')}</span>
+                                                <span className="stsm-option-desc">
+                                                    {textForLang(lang, 'No expert; use the general assistant', '不指定专家，使用通用助手', '不指定專家，使用通用助手')}
+                                                </span>
+                                            </button>
+                                            {filteredCreateExperts.map(expert => {
+                                                const selected = createExpertId === expert.id;
+                                                return (
+                                                    <button
+                                                        key={`create-expert-${expert.id}`}
+                                                        type="button"
+                                                        data-testid="task-expert-option"
+                                                        data-expert-id={expert.id}
+                                                        onClick={() => { setCreateExpertId(expert.id); setNewTaskWorkingDir(''); setExpertPickerOpen(false); }}
+                                                        style={{ textAlign: 'left', border: selected ? '1px solid color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border))' : '1px solid var(--theme-border)', borderRadius: '7px', background: selected ? 'color-mix(in srgb, var(--theme-primary) 7%, var(--theme-surface))' : 'var(--theme-surface)', color: 'var(--theme-text-primary)', cursor: 'pointer', padding: '6px 8px' }}
+                                                    >
+                                                        <span aria-hidden="true" className="stsm-option-icon">{expert.icon || DEFAULT_EXPERT_ICON}</span>
+                                                        <span className="stsm-option-name">{expert.name}</span>
+                                                        <span className="stsm-option-desc">
+                                                            {expert.description}
+                                                        </span>
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                        {createSelectedExpertIsLatex && (
+                            <div data-testid="task-latex-template-type" className="stsm-field-box">
+                                <div className="stsm-field-row">
+                                    <span className="stsm-field-caption">
+                                        <ProjectSearchIcon name="book" size={14} />
+                                        {latexTemplateText(lang, 'LaTeX template', 'Latex模板', 'Latex 模板')}
+                                    </span>
+                                    <button
+                                        type="button"
+                                        data-testid="task-latex-template-picker-toggle"
+                                        onClick={() => setLatexTemplatePickerOpen(prev => !prev)}
+                                        disabled={creatingTask}
+                                        aria-expanded={latexTemplatePickerOpen}
+                                        title={selectedLatexTemplate.name}
+                                        style={{ maxWidth: '250px', minWidth: 0, display: 'inline-flex', alignItems: 'center', gap: '5px', border: '1px solid color-mix(in srgb, var(--theme-primary) 22%, transparent)', borderRadius: '6px', background: 'color-mix(in srgb, var(--theme-primary) 9%, transparent)', color: 'var(--theme-primary)', cursor: creatingTask ? 'default' : 'pointer', padding: '5px 8px', fontSize: '0.72rem', lineHeight: 1.2, opacity: creatingTask ? 0.58 : 1 }}
+                                    >
+                                        <span className="stsm-ellipsis">
+                                            {selectedLatexTemplate.name}
+                                        </span>
+                                        <span aria-hidden="true" className="stsm-no-shrink">▾</span>
+                                    </button>
+                                </div>
+                                <div className="stsm-field-hint">
+                                    {latexTemplateText(lang, 'Defaults to a blank LaTeX document. Pick a template to keep its preamble.', '默认使用空白 LaTeX 文档；选择模板后会保留模板原有的导言区设置。', '預設使用空白 LaTeX 文件；選擇模板後會保留模板原有的前言區設定。')}
+                                </div>
+                                {latexTemplatePickerOpen && (
+                                    <div
+                                        data-testid="task-latex-template-picker"
+                                        className="stsm-picker"
+                                        onKeyDown={e => {
+                                            // Collapse the picker first; the form-level Escape
+                                            // handler would otherwise close the whole dialog.
+                                            if (e.key === 'Escape') {
+                                                e.stopPropagation();
+                                                setLatexTemplatePickerOpen(false);
+                                            }
+                                        }}
+                                    >
+                                        <div className="stsm-picker-list">
+                                            {latexTemplateChoices.map(template => {
+                                                const templateSelected = template.id === selectedLatexTemplateId;
+                                                return (
+                                                    <button
+                                                        key={`create-latex-template-${template.id}`}
+                                                        type="button"
+                                                        data-testid="task-latex-template-option"
+                                                        data-template-id={template.id}
+                                                        onClick={() => { setCreateLatexTemplateId(template.id); setLatexTemplatePickerOpen(false); }}
+                                                        style={{ textAlign: 'left', border: templateSelected ? '1px solid color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border))' : '1px solid var(--theme-border)', borderRadius: '7px', background: templateSelected ? 'color-mix(in srgb, var(--theme-primary) 7%, var(--theme-surface))' : 'var(--theme-surface)', color: 'var(--theme-text-primary)', cursor: 'pointer', padding: '6px 8px' }}
+                                                    >
+                                                        <span className="stsm-option-name">{template.name}</span>
+                                                        {template.description ? <span className="stsm-option-desc">{template.description}</span> : null}
+                                                    </button>
+                                                );
+                                            })}
+                                            {latexTemplateChoices.length === 1 && (
+                                                <div className="stsm-option-desc">
+                                                    {latexTemplateText(lang, 'No template available yet. Import one from Library > LaTeX templates.', '还没有可用模板。可在「资料库 > Latex模板」中导入。', '尚無可用模板。可在「資料庫 > Latex 模板」中匯入。')}
+                                                </div>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                        {newTaskMode !== 'remote_coding_dev' && !cloudCreateSelected && !(newTaskMode === '' && !!createSelectedExpert) && (
+                        <div className="stsm-field-box">
+                            <div className="stsm-field-row">
+                                <span className="stsm-field-caption">
+                                    <ProjectSearchIcon name="desktop" size={14} />
+                                    {textForLang(lang, 'Working directory', '\u5de5\u4f5c\u76ee\u5f55', '\u5de5\u4f5c\u76ee\u9304')}
+                                </span>
+                                <button
+                                    type="button"
+                                    id="task-working-directory"
+                                    onClick={() => { void selectWorkingDir(); }}
+                                    disabled={creatingTask || selectingWorkingDir}
+                                    aria-label={textForLang(lang, 'Choose working folder', '\u9009\u62e9\u5de5\u4f5c\u6587\u4ef6\u5939', '\u9078\u64c7\u5de5\u4f5c\u8cc7\u6599\u593e')}
+                                    title={newTaskWorkingDir || textForLang(lang, 'Choose working folder', '\u9009\u62e9\u5de5\u4f5c\u6587\u4ef6\u5939', '\u9078\u64c7\u5de5\u4f5c\u8cc7\u6599\u593e')}
+                                    style={{ maxWidth: '250px', minWidth: 0, display: 'inline-flex', alignItems: 'center', gap: '5px', border: '1px solid color-mix(in srgb, var(--theme-primary) 22%, transparent)', borderRadius: '6px', background: 'color-mix(in srgb, var(--theme-primary) 9%, transparent)', color: 'var(--theme-primary)', cursor: creatingTask || selectingWorkingDir ? 'default' : 'pointer', padding: '5px 8px', fontSize: '0.72rem', lineHeight: 1.2, opacity: creatingTask || selectingWorkingDir ? 0.58 : 1 }}
+                                >
+                                    <ProjectSearchIcon name="folder" size={14} />
+                                    <span className="stsm-ellipsis">
+                                        {newTaskWorkingDir || (selectingWorkingDir ? textForLang(lang, 'Choosing...', '\u9009\u62e9\u4e2d...', '\u9078\u64c7\u4e2d...') : textForLang(lang, 'Choose folder', '\u9009\u62e9\u6587\u4ef6\u5939', '\u9078\u64c7\u8cc7\u6599\u593e'))}
+                                    </span>
+                                </button>
+                                {newTaskWorkingDir && !creatingTask && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setNewTaskWorkingDir('')}
+                                        aria-label={textForLang(lang, 'Clear directory', '\u6e05\u9664\u76ee\u5f55', '\u6e05\u9664\u76ee\u9304')}
+                                        title={textForLang(lang, 'Clear directory', '\u6e05\u9664\u76ee\u5f55', '\u6e05\u9664\u76ee\u9304')}
+                                        className="stsm-clear-dir-btn"
+                                    >×</button>
+                                )}
+                            </div>
+                        </div>
+                        )}
+                        {cloudCreateSelected && (
+                            <div data-testid="task-cloud-workspace-list" className="stsm-field-box stsm-field-box--gap8">
+                                <div className="stsm-cloud-box-head">
+                                    <span className="stsm-cloud-box-label">
+                                        {textForLang(lang, 'Cloud workspaces', '云端工作区', '雲端工作區')}
+                                        {cloudQuota > 0 ? ` (${cloudWorkspaces.length}/${cloudQuota})` : ''}
+                                    </span>
+                                    <button
+                                        type="button"
+                                        data-testid="task-cloud-workspace-create"
+                                        disabled={creatingTask || cloudWorkspaceBusy || cloudQuotaReached}
+                                        title={cloudQuotaReached
+                                            ? textForLang(lang, 'Cloud workspace quota reached', '已达云端工作区配额', '已達雲端工作區配額')
+                                            : textForLang(lang, 'New cloud workspace', '新建云端工作区', '新建雲端工作區')}
+                                        onClick={() => { void createNewCloudWorkspace(); }}
+                                        style={{ border: '1px solid color-mix(in srgb, var(--theme-primary) 28%, var(--theme-border))', borderRadius: '6px', background: 'color-mix(in srgb, var(--theme-primary) 9%, transparent)', color: 'var(--theme-primary)', cursor: creatingTask || cloudWorkspaceBusy || cloudQuotaReached ? 'default' : 'pointer', padding: '4px 8px', fontSize: '0.68rem', fontWeight: 700, opacity: creatingTask || cloudWorkspaceBusy || cloudQuotaReached ? 0.5 : 1 }}
+                                    >
+                                        {newCloudWorkspaceActionLabel(lang, cloudWorkspaceBusy)}
+                                    </button>
+                                </div>
+                                {cloudWorkspaces.length === 0 && (
+                                    <div className="stsm-cloud-empty">
+                                        {textForLang(lang, 'No cloud workspace yet. Create one to continue.', '暂无云端工作区，请先新建。', '暫無雲端工作區，請先新建。')}
+                                    </div>
+                                )}
+                                {cloudWorkspaces.map(row => {
+                                    const selected = selectedCloudWorkspaceId === row.id;
+                                    const lastUsed = formatCloudWorkspaceLastUsed(row.updated_at, lang);
+                                    const sizeText = formatCloudWorkspaceBytes(Number(row.retained_bytes) || Number(row.used_bytes) || 0, lang);
+                                    return (
+                                        <button
+                                            key={row.id}
+                                            type="button"
+                                            data-testid="task-cloud-workspace-row"
+                                            data-workspace-id={row.id}
+                                            disabled={creatingTask || cloudWorkspaceBusy}
+                                            onClick={() => { setSelectedCloudWorkspaceId(row.id || ''); setCreateError(''); }}
+                                            style={{ display: 'flex', flexDirection: 'column', gap: '4px', padding: '7px 8px', borderRadius: '7px', border: selected ? '1px solid color-mix(in srgb, var(--theme-primary) 58%, var(--theme-border))' : '1px solid var(--theme-border)', background: selected ? 'color-mix(in srgb, var(--theme-primary) 8%, var(--theme-surface))' : 'var(--theme-surface)', textAlign: 'left', cursor: creatingTask || cloudWorkspaceBusy ? 'default' : 'pointer', color: 'inherit' }}
+                                        >
+                                            <span className="stsm-cloud-row-name">{row.name || row.id}</span>
+                                            <span className="stsm-cloud-row-meta">
+                                                {[lastUsed, sizeText].filter(Boolean).join(' · ')}
+                                            </span>
+                                            {boundCloudWorkspaceIds.has(row.id || '') && (
+                                                <span data-testid="task-cloud-workspace-bound" className="stsm-cloud-row-bound">
+                                                    {textForLang(lang, 'Already has a task. Create & open makes a new workspace and a new panel.', '已有任务。「创建并打开」会再建一个工作区并打开新面板。', '已有任務。「建立並開啟」會再建一個工作區並開啟新面板。')}
+                                                </span>
+                                            )}
+                                            <CloudWorkspaceLeaseNote row={row} lang={lang} />
+                                        </button>
+                                    );
+                                })}
+                            </div>
+                        )}
+                        {newTaskMode === 'remote_coding_dev' && (
+                            <div data-testid="remote-coding-fields" className="stsm-field-box stsm-field-box--remote">
+                                <div className="stsm-remote-title">
+                                    {textForLang(lang, 'Remote SSH connection', '远程 SSH 连接', '遠端 SSH 連線')}
+                                </div>
+                                <div className="stsm-grid-host">
+                                    <div>
+                                        <label htmlFor="task-remote-host" className="stsm-label">{textForLang(lang, 'Host / domain', '主机 IP / 域名', '主機 IP / 網域')}</label>
+                                        <input id="task-remote-host" value={remoteHost} onChange={e => setRemoteHost(e.target.value)} disabled={creatingTask} placeholder="192.168.1.10" autoComplete="off" className="stsm-remote-input" />
+                                    </div>
+                                    <div>
+                                        <label htmlFor="task-remote-port" className="stsm-label">{textForLang(lang, 'Port', '端口', '連接埠')}</label>
+                                        <input id="task-remote-port" value={remotePort} onChange={e => setRemotePort(e.target.value)} disabled={creatingTask} inputMode="numeric" placeholder="22" className="stsm-remote-input" />
+                                    </div>
+                                </div>
+                                <div className="stsm-grid-2">
+                                    <div>
+                                        <label htmlFor="task-remote-user" className="stsm-label">{textForLang(lang, 'Username', '用户名', '使用者名稱')}</label>
+                                        <input id="task-remote-user" value={remoteUser} onChange={e => setRemoteUser(e.target.value)} disabled={creatingTask} placeholder="root" autoComplete="username" className="stsm-remote-input" />
+                                    </div>
+                                    <div>
+                                        <label htmlFor="task-remote-password" className="stsm-label">{textForLang(lang, 'Password', '密码', '密碼')}</label>
+                                        <input id="task-remote-password" type="password" value={remotePassword} onChange={e => setRemotePassword(e.target.value)} disabled={creatingTask} autoComplete="current-password" className="stsm-remote-input" />
+                                    </div>
+                                </div>
+                                <div>
+                                    <label htmlFor="task-remote-workdir" className="stsm-label">{textForLang(lang, 'Remote work directory', '远程工作目录', '遠端工作目錄')}</label>
+                                    <input id="task-remote-workdir" value={remoteWorkDir} onChange={e => setRemoteWorkDir(e.target.value)} disabled={creatingTask} placeholder="/home/user/project" className="stsm-remote-input" />
+                                </div>
+                                <div className="stsm-hint">
+                                    {textForLang(lang, 'Password is remembered only on this device for reconnect; it is never saved to the task or uploaded. Source preview opens on the right like local coding.', '密码仅保存在本机用于断线重连，不会写入任务或上传。执行时右侧会像本地编程一样显示源码预览。', '密碼僅儲存在本機用於斷線重連，不會寫入任務或上傳。執行時右側會像本機程式開發一樣顯示原始碼預覽。')}
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                    {createError && (
+                        <div role="alert" data-testid="create-task-error" className="stsm-alert stsm-alert--error stsm-alert--spaced">
+                            {createError}
+                        </div>
+                    )}
+                    <div className="modal-footer stsm-footer">
+                        <div className="stsm-footer-actions">
+                            <button type="button" className="btn-secondary stsm-footer-btn" onClick={closeCreateDialog} disabled={creatingTask}>
+                                {textForLang(lang, 'Cancel', '取消', '取消')}
+                            </button>
+                            {cloudCreateSelected && boundCloudWorkspaceIds.has(selectedCloudWorkspaceId.trim()) ? (
+                                <button
+                                    type="button"
+                                    className="btn-secondary stsm-footer-btn"
+                                    data-testid="task-cloud-open-existing"
+                                    disabled={creatingTask || cloudWorkspaceBusy}
+                                    onClick={() => { void submitCreateTask({ resumeExisting: true }); }}
+                                >
+                                    {textForLang(lang, 'Open existing', '打开现有任务', '打開現有任務')}
+                                </button>
+                            ) : null}
+                            <button
+                                type="submit"
+                                className="btn-primary stsm-footer-btn"
+                                disabled={
+                                    creatingTask
+                                    || cloudWorkspaceBusy
+                                    || (newTaskMode === 'remote_coding_dev' && (!remoteHost.trim() || !remoteUser.trim() || !remotePassword || !remoteWorkDir.trim()))
+                                    || (cloudCreateSelected && !selectedCloudWorkspaceId.trim())
+                                    || (cloudCreateSelected && boundCloudWorkspaceIds.has(selectedCloudWorkspaceId.trim()) && cloudQuotaReached)
+                                }
+                            >
+                                {newTaskMode === '' && !cloudCreateSelected && createSelectedExpert
+                                    ? textForLang(lang, 'Continue', '继续', '繼續')
+                                    : textForLang(lang, 'Create & open', '创建并打开', '建立並開啟')}
+                            </button>
+                        </div>
+                    </div>
+                </form>
+            </div>,
+            document.body,
+        )}
+
+        {taskContextMenu && (<>
+            <div
+                className="stsm-menu-scrim"
+                onClick={() => setTaskContextMenu(null)}
+                onContextMenu={event => { event.preventDefault(); setTaskContextMenu(null); }}
+            />
+            <div
+                data-testid="task-context-menu"
+                role="menu"
+                onContextMenu={event => event.preventDefault()}
+                style={{ position: 'fixed', ...contextMenuPosition(taskContextMenu.x, taskContextMenu.y), zIndex: 9999, background: 'var(--theme-page-bg)', border: '1px solid var(--theme-border)', borderRadius: '6px', boxShadow: '0 4px 12px rgba(0,0,0,0.18)', padding: '4px 0', minWidth: '168px', userSelect: 'none' }}
+            >
+                {buildTaskContextMenuItems({
+                    lang,
+                    menu: taskContextMenu,
+                    setRenamingTaskPath,
+                    setRenameValue,
+                    setTaskContextMenu,
+                    onDuplicateTask: duplicateTask,
+                    pinTask: async (projectPath, pinned) => {
+                        await pinTask(projectPath, pinned);
+                        const menu = taskContextMenu;
+                        placePinnedTaskOrder(menu ? taskOrderKey({
+                            project_path: menu.projectPath,
+                            name: menu.name,
+                            tags: menu.tags,
+                            working_dir: menu.workingDir,
+                        }) : '', pinned);
+                    },
+                    confirmRemoveTask,
+                    refreshTasks,
+                    openEditRemoteDialog,
+                    browseCloudWorkspace,
+                    allowCloudWorkspaceBrowse: showCloudWorkspaceManagement || showCloudWorkspaceCreation,
+                    onShareCloudWorkspace: (workspaceId, name) => {
+                        setShareTask({ name, workspaceId });
+                    },
+                    onTransferTask: openTaskTransfer,
+                }).map(item => (
+                    <div
+                        key={item.label}
+                        data-testid={item.testId}
+                        data-disabled={item.disabled ? 'true' : undefined}
+                        role="menuitem"
+                        aria-disabled={item.disabled || undefined}
+                        title={item.title}
+                        onClick={() => {
+                            if (item.disabled) return;
+                            void item.action();
+                        }}
+                        style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: '8px',
+                            padding: '7px 12px',
+                            cursor: item.disabled ? 'not-allowed' : 'pointer',
+                            fontSize: '0.78rem',
+                            color: item.disabled
+                                ? 'var(--theme-text-muted)'
+                                : item.danger
+                                    ? 'var(--theme-danger, #c43d34)'
+                                    : 'var(--theme-text-primary)',
+                            opacity: item.disabled ? 0.55 : 1,
+                        }}
+                        onMouseEnter={e => {
+                            if (item.disabled) return;
+                            e.currentTarget.style.background = item.danger
+                                ? 'color-mix(in srgb, var(--theme-danger, #c43d34) 10%, transparent)'
+                                : 'color-mix(in srgb, var(--theme-text-primary) 8%, transparent)';
+                        }}
+                        onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; }}
+                    >
+                        <span className="stsm-menu-icon" data-danger={item.danger ? 'true' : undefined} aria-hidden="true"><TaskContextMenuIcon name={item.icon} /></span>
+                        <span>{item.label}</span>
+                    </div>
+                ))}
+            </div>
+        </>)}
+
+        {editRemoteOpen && createPortal(
+            <div
+                className="modal-backdrop"
+                data-testid="edit-remote-ssh-dialog"
+                data-ai-theme={getPortalThemeMode(themeMode)}
+                data-ai-dark-scheme={getPortalDarkScheme()}
+                data-ai-light-scheme={getPortalLightScheme()}
+                style={{ zIndex: TASK_CREATE_DIALOG_Z_INDEX }}
+                onMouseDown={e => { editBackdropMouseDownRef.current = e.target === e.currentTarget; }}
+                onClick={e => { if (e.target === e.currentTarget && editBackdropMouseDownRef.current) closeEditRemoteDialog(); editBackdropMouseDownRef.current = false; }}
+            >
+                <form
+                    className="modal-content stsm-dialog stsm-dialog--edit"
+                    role="dialog"
+                    aria-modal="true"
+                    aria-labelledby="edit-remote-ssh-title"
+                    onClick={e => e.stopPropagation()}
+                    onKeyDown={e => { if (e.key === 'Escape') closeEditRemoteDialog(); }}
+                    onSubmit={e => { e.preventDefault(); void submitEditRemote(); }}
+                >
+                    <div className="modal-header">
+                        <h3 id="edit-remote-ssh-title" className="stsm-dialog-title">
+                            {textForLang(lang, 'Edit remote SSH', '编辑远程 SSH', '編輯遠端 SSH')}
+                        </h3>
+                        <button type="button" className="btn-close" onClick={closeEditRemoteDialog} disabled={editSaving || editTesting}>×</button>
+                    </div>
+                    <div className="modal-body stsm-form-body stsm-form-body--edit">
+                        <div className="stsm-dialog-subtext">
+                            {editRemoteName || editRemotePath}
+                        </div>
+                        <div data-testid="edit-remote-coding-fields" className="stsm-field-box stsm-field-box--remote">
+                            <div className="stsm-grid-host">
+                                <div>
+                                    <label htmlFor="edit-remote-host" className="stsm-label">{textForLang(lang, 'Host / domain', '主机 IP / 域名', '主機 IP / 網域')}</label>
+                                    <input id="edit-remote-host" data-testid="edit-remote-host" value={editHost} onChange={e => setEditHost(e.target.value)} disabled={editSaving || editTesting} placeholder="192.168.1.10" autoComplete="off" autoFocus className="stsm-remote-input" />
+                                </div>
+                                <div>
+                                    <label htmlFor="edit-remote-port" className="stsm-label">{textForLang(lang, 'Port', '端口', '連接埠')}</label>
+                                    <input id="edit-remote-port" data-testid="edit-remote-port" value={editPort} onChange={e => setEditPort(e.target.value)} disabled={editSaving || editTesting} inputMode="numeric" placeholder="22" className="stsm-remote-input" />
+                                </div>
+                            </div>
+                            <div className="stsm-grid-2">
+                                <div>
+                                    <label htmlFor="edit-remote-user" className="stsm-label">{textForLang(lang, 'Username', '用户名', '使用者名稱')}</label>
+                                    <input id="edit-remote-user" data-testid="edit-remote-user" value={editUser} onChange={e => setEditUser(e.target.value)} disabled={editSaving || editTesting} placeholder="root" autoComplete="username" className="stsm-remote-input" />
+                                </div>
+                                <div>
+                                    <label htmlFor="edit-remote-password" className="stsm-label">{textForLang(lang, 'Password', '密码', '密碼')}</label>
+                                    <input id="edit-remote-password" data-testid="edit-remote-password" type="password" value={editPassword} onChange={e => setEditPassword(e.target.value)} disabled={editSaving || editTesting} autoComplete="off" placeholder={textForLang(lang, 'Not saved', '不落盘', '不落盤')} className="stsm-remote-input" />
+                                </div>
+                            </div>
+                            <div>
+                                <label htmlFor="edit-remote-workdir" className="stsm-label">{textForLang(lang, 'Remote work directory', '远程工作目录', '遠端工作目錄')}</label>
+                                <input id="edit-remote-workdir" data-testid="edit-remote-workdir" value={editWorkDir} onChange={e => setEditWorkDir(e.target.value)} disabled={editSaving || editTesting} placeholder="/home/user/project" className="stsm-remote-input" />
+                            </div>
+                            <div className="stsm-hint">
+                                {textForLang(lang, 'Host / user / port / workdir are saved on the task. Password is only used for Test / reconnect and is never stored.', '主机、用户、端口、工作目录会保存到任务；密码仅用于测试/重连，永不落盘。', '主機、使用者、連接埠、工作目錄會儲存到任務；密碼僅用於測試/重連，永不落盤。')}
+                            </div>
+                        </div>
+                        {editError && (
+                            <div role="alert" data-testid="edit-remote-error" className="stsm-alert stsm-alert--error">
+                                {editError}
+                            </div>
+                        )}
+                        {editInfo && !editError && (
+                            <div role="status" data-testid="edit-remote-info" className="stsm-alert stsm-alert--success">
+                                {editInfo}
+                            </div>
+                        )}
+                    </div>
+                    <div className="modal-footer stsm-footer">
+                        <button
+                            type="button"
+                            data-testid="edit-remote-test-ssh"
+                            className="btn-secondary stsm-footer-btn"
+                            disabled={editSaving || editTesting || !editHost.trim() || !editUser.trim() || !editPassword || !editWorkDir.trim()}
+                            onClick={() => { void testEditRemoteSSH(); }}
+                        >
+                            {editTesting
+                                ? textForLang(lang, 'Testing…', '测试中…', '測試中…')
+                                : textForLang(lang, 'Test SSH', '测试连接', '測試連線')}
+                        </button>
+                        <div className="stsm-footer-actions">
+                            <button type="button" className="btn-secondary stsm-footer-btn" onClick={closeEditRemoteDialog} disabled={editSaving || editTesting}>
+                                {textForLang(lang, 'Close', '关闭', '關閉')}
+                            </button>
+                            <button
+                                type="submit"
+                                data-testid="edit-remote-save"
+                                className="btn-primary stsm-footer-btn"
+                                disabled={editSaving || editTesting || !editHost.trim() || !editUser.trim() || !editWorkDir.trim()}
+                            >
+                                {editSaving
+                                    ? textForLang(lang, 'Saving…', '保存中…', '儲存中…')
+                                    : textForLang(lang, 'Save', '保存', '儲存')}
+                            </button>
+                        </div>
+                    </div>
+                </form>
+            </div>,
+            document.body,
+        )}
+    </div>
+    );
+};

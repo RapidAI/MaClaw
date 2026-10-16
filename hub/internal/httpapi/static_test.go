@@ -28,68 +28,6 @@ func TestResolveStaticDirFromBasesPrefersExistingBase(t *testing.T) {
 	}
 }
 
-func TestRegisterPWAStaticRoutesServesIndexAndAssets(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "index.html"), []byte("index-page"), 0644); err != nil {
-		t.Fatalf("write index: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "app.js"), []byte("console.log('ok');"), 0644); err != nil {
-		t.Fatalf("write asset: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Join(dir, "icons"), 0755); err != nil {
-		t.Fatalf("mkdir icons: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(dir, "icons", "favicon-32x32.png"), []byte("png-bytes"), 0644); err != nil {
-		t.Fatalf("write favicon: %v", err)
-	}
-
-	mux := http.NewServeMux()
-	registerPWAStaticRoutes(mux, dir, "/app")
-
-	indexReq := httptest.NewRequest(http.MethodGet, "/app", nil)
-	indexRec := httptest.NewRecorder()
-	mux.ServeHTTP(indexRec, indexReq)
-	if indexRec.Code != http.StatusOK {
-		t.Fatalf("index status = %d", indexRec.Code)
-	}
-	if body := indexRec.Body.String(); body != "index-page" {
-		t.Fatalf("index body = %q", body)
-	}
-
-	assetReq := httptest.NewRequest(http.MethodGet, "/app/app.js", nil)
-	assetRec := httptest.NewRecorder()
-	mux.ServeHTTP(assetRec, assetReq)
-	if assetRec.Code != http.StatusOK {
-		t.Fatalf("asset status = %d", assetRec.Code)
-	}
-	if body := assetRec.Body.String(); body != "console.log('ok');" {
-		t.Fatalf("asset body = %q", body)
-	}
-
-	spaReq := httptest.NewRequest(http.MethodGet, "/app/session/123", nil)
-	spaRec := httptest.NewRecorder()
-	mux.ServeHTTP(spaRec, spaReq)
-	if spaRec.Code != http.StatusOK {
-		t.Fatalf("spa fallback status = %d", spaRec.Code)
-	}
-	if body := spaRec.Body.String(); body != "index-page" {
-		t.Fatalf("spa fallback body = %q", body)
-	}
-
-	faviconReq := httptest.NewRequest(http.MethodGet, "/favicon.ico", nil)
-	faviconRec := httptest.NewRecorder()
-	mux.ServeHTTP(faviconRec, faviconReq)
-	if faviconRec.Code != http.StatusOK {
-		t.Fatalf("favicon status = %d", faviconRec.Code)
-	}
-	if body := faviconRec.Body.String(); body != "png-bytes" {
-		t.Fatalf("favicon body = %q", body)
-	}
-	if got := faviconRec.Header().Get("Content-Type"); !strings.Contains(got, "image/png") {
-		t.Fatalf("favicon content-type = %q", got)
-	}
-}
-
 func TestRegisterAdminStaticRoutesServesIndexAndAssets(t *testing.T) {
 	dir := t.TempDir()
 	// Admin is served as external script assets (not inlined into index).
@@ -333,7 +271,10 @@ func TestHubAdminPageIncludesFailureLogsUI(t *testing.T) {
 		`id="centerAcceptPublicSignup"`,
 		`id="centerCorporateEmailDomainsHero"`,
 		`id="centerAcceptPublicSignupHero"`,
-		`id="subtab-workflows" type="button" onclick="switchMarketplaceSubtab('workflows')" data-i18n="marketplaceSubtabWorkflowReviews"`,
+		// The subtab button also carries class and data-icon attributes now,
+		// so the contract anchors on the id and the behaviour it wires up.
+		`id="subtab-workflows"`,
+		`onclick="switchMarketplaceSubtab('workflows')" data-i18n="marketplaceSubtabWorkflowReviews"`,
 		`id="marketplace-subtab-workflows"`,
 		`id="marketplaceWorkflowReviewsList"`,
 		`id="marketplaceWorkflowReviewDetail"`,
@@ -535,7 +476,7 @@ func TestMaClawComputeStoreKeepsUserActivationForFirstClick(t *testing.T) {
 		"window.location.assign(url);",
 	} {
 		if !strings.Contains(handler, want) {
-			 t.Fatalf("MaClaw compute store is missing first-click fallback %s", want)
+			t.Fatalf("MaClaw compute store is missing first-click fallback %s", want)
 		}
 	}
 	if strings.Contains(handler, "if (storeWindow.closed) return;") {
@@ -1315,7 +1256,9 @@ func TestHubStaticPagesKeepAccessibilityContracts(t *testing.T) {
 		`button.setAttribute('aria-pressed', button.classList.contains('active') ? 'true' : 'false')`,
 		`function enhanceAdminNavigation(root)`,
 		`button.setAttribute('aria-current', active ? 'page' : 'false')`,
-		`button.tabIndex = active ? 0 : -1`,
+		// The roving tabindex skips hidden buttons as well; the contract is
+		// that exactly the active, visible button is tabbable.
+		`button.tabIndex = (active && !hidden) ? 0 : -1`,
 		`function bindAdminNavigationKeyboard()`,
 		`event.target.closest('.nav')`,
 		`buttons[next].click()`,

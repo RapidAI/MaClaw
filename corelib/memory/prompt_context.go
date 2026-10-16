@@ -2,7 +2,9 @@ package memory
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+	"time"
 )
 
 // FormatMemoryIndexForPrompt renders a compact store table-of-contents for
@@ -71,6 +73,18 @@ type UserFactSummaryPromptOptions struct {
 	StrictOwner bool
 }
 
+// UserPreferenceSummaryPromptOptions controls the extraction and rendering of
+// long-term user preferences and instructions (CategoryPreference, CategoryInstruction).
+type UserPreferenceSummaryPromptOptions struct {
+	Template    string
+	Header      string
+	Prefix      string
+	Suffix      string
+	MaxRunes    int
+	OwnerID     string
+	StrictOwner bool
+}
+
 // UserFactSummaryForPrompt builds the shared user profile prompt section used
 // by GUI, TUI, VE, and server prompts.
 func (s *Store) UserFactSummaryForPrompt(opts UserFactSummaryPromptOptions) string {
@@ -84,31 +98,153 @@ func (s *Store) UserFactSummaryForPrompt(opts UserFactSummaryPromptOptions) stri
 	return FormatUserFactSummaryForPrompt(s.userFactSummaryForPrompt(maxRunes, opts.OwnerID, opts.StrictOwner), opts)
 }
 
-func (s *Store) userFactSummaryForPrompt(maxRunes int, ownerID string, strictOwner bool) string {
+// UserPreferenceSummaryForPrompt builds the shared user preference/style prompt
+// section used to proactively guide the bot's behavior (e.g. diagrams, formatting).
+func (s *Store) UserPreferenceSummaryForPrompt(opts UserPreferenceSummaryPromptOptions) string {
+	if s == nil {
+		return ""
+	}
+	maxRunes := opts.MaxRunes
+	if maxRunes <= 0 {
+		maxRunes = 600
+	}
+	return FormatUserPreferenceSummaryForPrompt(s.userPreferenceSummaryForPrompt(maxRunes, opts.OwnerID, opts.StrictOwner), opts)
+}
+
+func (s *Store) userPreferenceSummaryForPrompt(maxRunes int, ownerID string, strictOwner bool) string {
 	ownerID = strings.TrimSpace(ownerID)
-	if ownerID == "" {
-		return s.UserFactSummary(maxRunes)
+	if maxRunes <= 0 {
+		maxRunes = 600
 	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	parts := make([]string, 0)
+	type prefText struct {
+		text string
+		at   time.Time
+	}
+	prefs := make([]prefText, 0)
+	now := time.Now()
 	for _, entry := range s.entries {
-		if entry.Category != CategoryUserFact {
+		cat := MapToCanonical(entry.Category)
+		if (cat != CategoryPreference && cat != CategoryInstruction && entry.Category != "feedback") || !entry.IsActive() {
 			continue
 		}
-		if strictOwner && entry.OwnerID != ownerID {
+		if entryExpiredAt(entry.InvalidAt, now) {
 			continue
 		}
-		if !strictOwner && entry.OwnerID != "" && entry.OwnerID != ownerID {
+		if ownerID != "" {
+			if strictOwner && !memoryOwnersEqual(entry.OwnerID, ownerID) {
+				continue
+			}
+			if !strictOwner && !namedOwnerVisible(entry.OwnerID, ownerID) {
+				continue
+			}
+			if entry.Boundary != nil && strings.TrimSpace(entry.Boundary.OwnerID) != "" && !memoryOwnersEqual(entry.Boundary.OwnerID, ownerID) {
+				continue
+			}
+		}
+		text := strings.TrimSpace(firstNonEmptyString(entry.CompactForm, entry.Content))
+		if text == "" {
 			continue
 		}
-		if entry.Boundary != nil && entry.Boundary.OwnerID != "" && entry.Boundary.OwnerID != ownerID {
-			continue
+		at := entry.UpdatedAt
+		if at.IsZero() {
+			at = entry.CreatedAt
 		}
-		parts = append(parts, firstNonEmptyString(entry.CompactForm, entry.Content))
+		prefs = append(prefs, prefText{text: text, at: at})
+	}
+	s.mu.RUnlock()
+	sort.SliceStable(prefs, func(i, j int) bool {
+		return prefs[i].at.After(prefs[j].at)
+	})
+	parts := make([]string, 0, len(prefs))
+	for _, pref := range prefs {
+		parts = append(parts, pref.text)
 	}
 	summary := strings.Join(parts, " | ")
-	if runes := []rune(summary); maxRunes > 0 && len(runes) > maxRunes {
+	if runes := []rune(summary); len(runes) > maxRunes {
+		return string(runes[:maxRunes]) + "..."
+	}
+	return summary
+}
+
+// FormatUserPreferenceSummaryForPrompt renders an already-computed preference summary.
+func FormatUserPreferenceSummaryForPrompt(summary string, opts UserPreferenceSummaryPromptOptions) string {
+	summary = strings.TrimSpace(summary)
+	if summary == "" {
+		return ""
+	}
+	if opts.Template != "" {
+		return fmt.Sprintf(opts.Template, summary)
+	}
+	var b strings.Builder
+	if opts.Header != "" {
+		b.WriteString(opts.Header)
+		if !strings.HasSuffix(opts.Header, "\n") {
+			b.WriteString("\n")
+		}
+	}
+	if opts.Prefix != "" {
+		b.WriteString(opts.Prefix)
+	}
+	b.WriteString(summary)
+	if opts.Suffix != "" {
+		b.WriteString(opts.Suffix)
+	} else if !strings.HasSuffix(summary, "\n") {
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func (s *Store) userFactSummaryForPrompt(maxRunes int, ownerID string, strictOwner bool) string {
+	ownerID = strings.TrimSpace(ownerID)
+	if maxRunes <= 0 {
+		maxRunes = 400
+	}
+	s.mu.RLock()
+	type factText struct {
+		text string
+		at   time.Time
+	}
+	facts := make([]factText, 0)
+	now := time.Now()
+	for _, entry := range s.entries {
+		if MapToCanonical(entry.Category) != CategoryUserFact || !entry.IsActive() {
+			continue
+		}
+		if entryExpiredAt(entry.InvalidAt, now) {
+			continue
+		}
+		if ownerID != "" {
+			if strictOwner && !memoryOwnersEqual(entry.OwnerID, ownerID) {
+				continue
+			}
+			if !strictOwner && !namedOwnerVisible(entry.OwnerID, ownerID) {
+				continue
+			}
+			if entry.Boundary != nil && strings.TrimSpace(entry.Boundary.OwnerID) != "" && !memoryOwnersEqual(entry.Boundary.OwnerID, ownerID) {
+				continue
+			}
+		}
+		text := strings.TrimSpace(firstNonEmptyString(entry.CompactForm, entry.Content))
+		if text == "" {
+			continue
+		}
+		at := entry.UpdatedAt
+		if at.IsZero() {
+			at = entry.CreatedAt
+		}
+		facts = append(facts, factText{text: text, at: at})
+	}
+	s.mu.RUnlock()
+	sort.SliceStable(facts, func(i, j int) bool {
+		return facts[i].at.After(facts[j].at)
+	})
+	parts := make([]string, 0, len(facts))
+	for _, fact := range facts {
+		parts = append(parts, fact.text)
+	}
+	summary := strings.Join(parts, " | ")
+	if runes := []rune(summary); len(runes) > maxRunes {
 		return string(runes[:maxRunes]) + "..."
 	}
 	return summary
@@ -145,9 +281,10 @@ func FormatUserFactSummaryForPrompt(summary string, opts UserFactSummaryPromptOp
 }
 
 // StaticMemoryPromptOptions controls the stable memory section that can be
-// cached across a session: user facts, recall hint, and optional save guide.
+// cached across a session: user facts, user preferences, recall hint, and optional save guide.
 type StaticMemoryPromptOptions struct {
 	UserFacts         UserFactSummaryPromptOptions
+	UserPreferences   UserPreferenceSummaryPromptOptions
 	IncludeRecallHint bool
 	RecallHint        string
 	IncludeGuide      bool
@@ -172,6 +309,13 @@ func (s *Store) StaticMemorySectionForPrompt(opts StaticMemoryPromptOptions) str
 			if !strings.HasSuffix(opts.UserFacts.Header, "\n") {
 				b.WriteByte('\n')
 			}
+		}
+	}
+
+	if opts.UserPreferences != (UserPreferenceSummaryPromptOptions{}) {
+		prefs := s.UserPreferenceSummaryForPrompt(opts.UserPreferences)
+		if prefs != "" {
+			b.WriteString(prefs)
 		}
 	}
 

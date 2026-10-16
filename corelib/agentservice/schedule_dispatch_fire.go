@@ -175,6 +175,15 @@ func reviewedHostScheduleDispatchFireChannel(channelScope string) (string, bool)
 		return scheduler.DeliveryChannelTelegram, true
 	case scheduler.DeliveryChannelQQ, "qqbot", "qq_bot":
 		return scheduler.DeliveryChannelQQ, true
+	// Companion hardware terminals. Listed explicitly so a device-bound dispatch
+	// is not silently dropped: this function returning false makes the whole
+	// fire a no-op, with no error and no delivery record.
+	//
+	// "maclaw" is deliberately NOT remapped here. It is the desktop's own
+	// gateway mode and already resolves to lansenger; moving it to device would
+	// silently re-route existing desktop-originated bindings.
+	case scheduler.DeliveryChannelDevice, "device_local", "hardware", "esp32", "companion":
+		return scheduler.DeliveryChannelDevice, true
 	default:
 		return "", false
 	}

@@ -32,6 +32,21 @@ func TestApplyWorkloadHintHeaders_HubManagedSendsHints(t *testing.T) {
 	}
 }
 
+func TestApplyWorkloadHintHeaders_HubBotPinsServiceGroup(t *testing.T) {
+	req, _ := http.NewRequest(http.MethodPost, "https://hub.example.com/api/llm/v1/chat/completions", nil)
+	cfg := corelib.MaclawLLMConfig{
+		URL:            "https://hub.example.com/api/llm/v1",
+		Model:          "auto",
+		ServiceGroupID: "system-free",
+	}
+
+	ApplyWorkloadHintHeaders(req, cfg)
+
+	if got := req.Header.Get(llmpool.ServiceGroupIDHeader); got != "system-free" {
+		t.Fatalf("service group = %q", got)
+	}
+}
+
 func TestApplyWorkloadHintHeaders_ThirdPartyNeverSends(t *testing.T) {
 	req, _ := http.NewRequest(http.MethodPost, "https://api.openai.com/v1/chat/completions", nil)
 	cfg := corelib.MaclawLLMConfig{
@@ -40,12 +55,16 @@ func TestApplyWorkloadHintHeaders_ThirdPartyNeverSends(t *testing.T) {
 		TaskTypeHint:     "fast",
 		WorkflowTypeHint: "coding",
 		PhaseKindHint:    "implementation",
+		ServiceGroupID:   "system-free",
 	}
 
 	ApplyWorkloadHintHeaders(req, cfg)
 
 	if got := req.Header.Get(llmpool.TaskTypeHeader); got != "" {
 		t.Fatalf("third-party sent task hint %q", got)
+	}
+	if got := req.Header.Get(llmpool.ServiceGroupIDHeader); got != "" {
+		t.Fatalf("third-party sent service group %q", got)
 	}
 	if got := req.Header.Get(llmpool.WorkflowTypeHeader); got != "" {
 		t.Fatalf("third-party sent workflow hint %q", got)

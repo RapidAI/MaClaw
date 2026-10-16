@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Hub Center · MaClaw 部署中枢与控制平面</title>
+<meta name="description" content="Hub Center 是 MaClaw 的中枢控制平面：节点注册与发现、智能路由、策略与安全治理、能力市场、积分计费与高可用集群，把分散的 MaClaw 客户端组织成可治理、可运营的企业级网络。" />
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="MaClaw Hub Center" />
+<meta property="og:title" content="Hub Center · MaClaw 部署中枢与控制平面" />
+<meta property="og:description" content="节点注册与发现、智能路由、策略与安全治理、能力市场、积分计费与高可用集群——把分散的 MaClaw 客户端组织成可治理、可运营的企业级网络。" />
+<meta name="twitter:card" content="summary" />
+<meta name="twitter:title" content="Hub Center · MaClaw 部署中枢与控制平面" />
+<meta name="twitter:description" content="节点注册与发现、智能路由、策略与安全治理、能力市场、积分计费与高可用集群——把分散的 MaClaw 客户端组织成可治理、可运营的企业级网络。" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231d4ed8'/%3E%3Ccircle cx='16' cy='16' r='4' fill='white'/%3E%3Ccircle cx='16' cy='5' r='2.4' fill='white'/%3E%3Ccircle cx='25.3' cy='21.5' r='2.4' fill='white'/%3E%3Ccircle cx='6.7' cy='21.5' r='2.4' fill='white'/%3E%3Cpath d='M16 9v3M20.5 19.2l-2.6-1.5M11.5 19.2l2.6-1.5' stroke='white' stroke-width='1.8'/%3E%3C/svg%3E" />
+<style>
+  :root{
+    --bg:#0b1020; --ink:#0f172a; --muted:#5b6478; --muted2:#8a91a8;
+    --brand:#1d4ed8; --brand2:#1e40af; --brand-soft:#eff6ff;
+    --line:#e7e9f2; --card:#ffffff;
+    --shadow-sm:0 1px 2px rgba(15,23,42,.06);
+    --shadow:0 12px 30px rgba(15,23,42,.08);
+    --shadow-lg:0 22px 48px rgba(49,46,129,.14);
+    --radius:16px; --radius-sm:12px;
+    --maxw:1120px;
+    --grad:linear-gradient(135deg,#1e40af,#2563eb);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  section[id],header[id]{scroll-margin-top:74px}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    color:var(--ink); background:#f7f8fc; line-height:1.65; -webkit-font-smoothing:antialiased;
+  }
+  a{color:inherit;text-decoration:none}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+  /* Nav */
+  .nav{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.82);backdrop-filter:saturate(160%) blur(12px);-webkit-backdrop-filter:saturate(160%) blur(12px);border-bottom:1px solid rgba(15,23,42,.07)}
+  .nav .wrap{display:flex;align-items:center;justify-content:space-between;height:62px}
+  .nav .brand{display:flex;align-items:center;gap:10px;color:var(--ink);font-weight:800;font-size:17px;letter-spacing:.2px}
+  .nav .brand svg{width:28px;height:28px;display:block}
+  .nav .links{display:flex;gap:2px;align-items:center}
+  .nav .links a{color:#475569;font-size:14px;padding:8px 13px;border-radius:9px;transition:.15s}
+  .nav .links a:hover{color:var(--ink);background:#eff6ff}
+  .nav .links a.nav-cta{background:var(--brand2);color:#fff;padding:9px 17px;border-radius:8px;font-weight:700;font-size:14px;letter-spacing:.2px;transition:.16s;box-shadow:0 6px 16px rgba(30,64,175,.28)}
+  .nav .links a.nav-cta:hover{color:#fff;background:#1e3a8a;transform:translateY(-1px);box-shadow:0 10px 22px rgba(30,64,175,.34)}
+  @media(max-width:780px){.nav .links a:not(.nav-cta){display:none}}
+
+  /* Hero */
+  .hero{position:relative;overflow:hidden;color:var(--ink);padding:74px 0 88px;
+    background:radial-gradient(900px 480px at 85% -12%,rgba(37,99,235,.10),transparent 60%),
+              radial-gradient(820px 460px at 2% -8%,rgba(29,78,216,.12),transparent 55%),
+              radial-gradient(640px 320px at 58% 112%,rgba(37,99,235,.06),transparent 62%),
+              linear-gradient(180deg,#fcfdff,#f4f6fd)}
+  .hero-bg{position:absolute;inset:0;z-index:0;pointer-events:none;
+    background-image:linear-gradient(rgba(15,23,42,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(15,23,42,.045) 1px,transparent 1px);
+    background-size:46px 46px;
+    -webkit-mask-image:radial-gradient(120% 78% at 50% -4%,#000,transparent 72%);
+    mask-image:radial-gradient(120% 78% at 50% -4%,#000,transparent 72%)}
+  .hero .wrap{position:relative;z-index:1;display:grid;grid-template-columns:1.08fr .92fr;gap:40px;align-items:center}
+  @media(max-width:920px){.hero .wrap{grid-template-columns:1fr;gap:30px}}
+  .badge{display:inline-flex;align-items:center;gap:8px;font-size:13px;letter-spacing:.3px;background:#fff;border:1px solid var(--line);color:#475569;padding:6px 13px;border-radius:999px;box-shadow:var(--shadow-sm)}
+  .badge .dot{width:8px;height:8px;border-radius:50%;background:#34d399;box-shadow:0 0 0 4px rgba(52,211,153,.25);animation:pulse 2.4s infinite}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 4px rgba(52,211,153,.25)}50%{box-shadow:0 0 0 7px rgba(52,211,153,.10)}}
+  .os-tag{display:inline-block;margin:16px 0 6px;font-size:15px;font-weight:700;letter-spacing:.4px;color:#1e40af;background:var(--brand-soft);border:1px solid #bfdbfe;padding:7px 16px;border-radius:6px}
+  h1{font-size:46px;line-height:1.15;margin:8px 0 12px;font-weight:800;letter-spacing:-.5px}
+  h1 .grad{color:var(--brand2)}
+  .lede{font-size:18px;color:#4b5563;max-width:620px;margin:0 0 26px}
+  .cta{display:flex;gap:14px;flex-wrap:wrap}
+  .btn{display:inline-flex;align-items:center;gap:8px;font-weight:600;font-size:15px;padding:13px 22px;border-radius:8px;transition:.18s;cursor:pointer}
+  .btn-primary{background:var(--brand);color:#fff;box-shadow:0 8px 20px rgba(29,78,216,.25)}
+  .btn-primary:hover{transform:translateY(-2px);box-shadow:0 14px 28px rgba(29,78,216,.32)}
+  .btn-ghost{background:#fff;color:#334155;border:1px solid var(--line)}
+  .btn-ghost:hover{background:#f8faff;border-color:#bfdbfe}
+  .btn svg{width:16px;height:16px;display:block}
+  .hero-meta{margin-top:32px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 22px;max-width:560px}
+  .stat{border-left:2px solid rgba(29,78,216,.30);padding-left:14px}
+  .stat b{color:var(--ink);font-size:19px;display:block;font-weight:700;line-height:1.2}
+  .stat span{color:var(--muted);font-size:13px}
+  .hero-art{display:flex;justify-content:center}
+  .hero-art svg{width:100%;max-width:430px;height:auto;display:block}
+  @media(max-width:920px){.hero-art{order:-1;margin-bottom:6px}.hero-art svg{max-width:340px}}
+  .art-panel{background:#fff;border:1px solid var(--line);border-radius:20px;padding:26px 22px 14px;box-shadow:0 30px 70px rgba(29,78,216,.10),0 2px 6px rgba(15,23,42,.05)}
+  .art-cap{text-align:center;color:#8a91a8;font-size:12.5px;letter-spacing:.4px;margin:10px 0 4px}
+
+  /* Sections */
+  section{padding:74px 0}
+  .sec-head{text-align:center;max-width:780px;margin:0 auto 44px}
+  .sec-head .kicker{display:inline-block;color:var(--brand);font-weight:700;letter-spacing:1.6px;font-size:12.5px;text-transform:uppercase;padding:5px 12px;border-radius:999px;background:var(--brand-soft);margin-bottom:6px}
+  .sec-head h2{font-size:31px;margin:12px 0 12px;font-weight:800;letter-spacing:-.4px}
+  .sec-head p{color:var(--muted);font-size:16px;margin:0}
+
+  .grid{display:grid;gap:20px}
+  .g2{grid-template-columns:repeat(2,1fr)}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g4{grid-template-columns:repeat(4,1fr)}
+  @media(max-width:920px){.g3,.g4{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:620px){.g2,.g3,.g4{grid-template-columns:1fr}h1{font-size:34px}.sec-head h2{font-size:26px}}
+
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;box-shadow:var(--shadow-sm);position:relative;overflow:hidden;transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease}
+  .card::before{content:"";position:absolute;inset:0 0 auto 0;height:3px;background:var(--grad);opacity:0;transition:opacity .2s}
+  .card:hover{transform:translateY(-5px);box-shadow:var(--shadow-lg);border-color:#bfdbfe}
+  .card:hover::before{opacity:1}
+  .card .ic{width:46px;height:46px;border-radius:12px;display:grid;place-items:center;background:var(--brand-soft);color:var(--brand);margin-bottom:16px;border:1px solid #bfdbfe}
+  .card .ic svg{width:24px;height:24px;display:block}
+  .card h3{margin:0 0 8px;font-size:18px;font-weight:700}
+  .card p{margin:0;color:var(--muted);font-size:14.5px}
+
+  /* MaClaw intro */
+  .twocol{display:grid;grid-template-columns:1.05fr .95fr;gap:34px;align-items:center}
+  @media(max-width:880px){.twocol{grid-template-columns:1fr}}
+  .pillars{display:grid;gap:16px}
+  .pillar{display:flex;gap:14px;align-items:flex-start;background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:var(--shadow-sm);transition:transform .2s,border-color .2s}
+  .pillar:hover{transform:translateY(-3px);border-color:#bfdbfe}
+  .pillar .em{line-height:1;color:var(--brand);flex:0 0 auto;width:46px;height:46px;border-radius:13px;display:grid;place-items:center;background:var(--brand-soft)}
+  .pillar .em svg{width:26px;height:26px;display:block}
+  .pillar h4{margin:0 0 4px;font-size:16px}
+  .pillar p{margin:0;color:var(--muted);font-size:14px}
+  .quote{font-size:19px;color:#374151;border-left:4px solid var(--brand);padding:6px 0 6px 18px;margin:0 0 18px;font-weight:600}
+
+  /* quick links */
+  .qlink{display:flex;flex-direction:column;gap:6px}
+  .qlink .go{margin-top:10px;display:inline-flex;align-items:center;gap:6px;color:var(--brand);font-weight:600;font-size:14px}
+  .qlink .go svg{width:15px;height:15px;display:block}
+
+  /* footer */
+  footer{background:#fbfcfe;color:#64748b;padding:34px 0;font-size:13.5px;border-top:1px solid var(--line)}
+  footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:14px;align-items:center}
+  footer a{color:#475569}
+  footer a:hover{color:var(--brand)}
+  footer .links{display:flex;gap:18px;flex-wrap:wrap}
+  footer .fbrand{display:flex;align-items:center;gap:10px;color:var(--ink);font-weight:800;font-size:16px;margin-bottom:6px}
+  footer .fbrand svg{width:24px;height:24px;display:block}
+  footer .fmeta{font-size:12.5px;color:#8a91a8}
+
+  /* polish */
+  ::selection{background:#1d4ed8;color:#fff}
+  a:focus-visible,button:focus-visible{outline:2px solid #6366f1;outline-offset:2px;border-radius:6px}
+  section+section{border-top:1px solid rgba(15,23,42,.055)}
+  .nav.scrolled{box-shadow:0 10px 28px rgba(15,23,42,.10)}
+
+  /* scroll reveal */
+  .js .rv{opacity:0;transform:translateY(16px);transition:opacity .6s ease,transform .6s ease}
+  .js .rv.on{opacity:1;transform:none}
+  @media(prefers-reduced-motion:reduce){.js .rv{opacity:1;transform:none;transition:none}}
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="wrap">
+    <a class="brand" href="#top">
+      <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="8" fill="#1d4ed8"/><circle cx="16" cy="16" r="4" fill="#fff"/><circle cx="16" cy="5.5" r="2.4" fill="#fff"/><circle cx="25.5" cy="21.5" r="2.4" fill="#fff"/><circle cx="6.5" cy="21.5" r="2.4" fill="#fff"/><path d="M16 9.5v2.5M21 20.2l-2.2-1.2M11 20.2l2.2-1.2" stroke="#fff" stroke-width="1.8"/></svg>
+      Hub Center
+    </a>
+    <div class="links">
+      <a href="#features">平台能力</a>
+      <a href="#maclaw">MaClaw 简介</a>
+      <a href="#links">快速入口</a>
+      <a class="nav-cta" href="/admin">进入管理后台</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="hero-bg"></div>
+  <div class="wrap">
+    <div class="hero-copy">
+      <span class="badge"><span class="dot"></span> 自托管 · 控制平面 · 高可用集群</span>
+      <h1>Hub <span class="grad">Center</span></h1>
+      <div class="os-tag">MaClaw 部署中枢 · 控制平面</div>
+      <p class="lede">Hub Center 是 MaClaw 生态的<strong>中枢控制平面</strong>：负责节点注册与发现、路由解析、策略与安全治理、能力市场与积分计费。它把分散在各处的 MaClaw 客户端与 Hub 节点组织成一张<strong>可治理、可运营、可扩展</strong>的企业级网络。</p>
+      <div class="cta">
+        <a class="btn btn-primary" href="/admin"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3"/></svg> 进入管理后台</a>
+        <a class="btn btn-ghost" href="#features">了解平台能力<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+      </div>
+      <div class="hero-meta">
+        <div class="stat"><b>多节点</b><span>高可用集群与状态同步</span></div>
+        <div class="stat"><b>全链路</b><span>路由解析与策略治理</span></div>
+        <div class="stat"><b>双市场</b><span>能力市场与专家市场</span></div>
+        <div class="stat"><b>实时</b><span>积分账务与计费体系</span></div>
+      </div>
+    </div>
+    <div class="hero-art" aria-hidden="true">
+      <div class="art-panel">
+      <svg viewBox="0 0 440 360" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#1d4ed8"/><stop offset="1" stop-color="#3b82f6"/>
+          </linearGradient>
+          <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+            <stop offset="0" stop-color="#1d4ed8" stop-opacity=".16"/>
+            <stop offset="1" stop-color="#1d4ed8" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+        <circle cx="220" cy="180" r="140" stroke="rgba(15,23,42,.16)" stroke-width="1.5" stroke-dasharray="3 7"/>
+        <circle cx="220" cy="180" r="124" fill="url(#halo)"/>
+        <g stroke="rgba(15,23,42,.14)" stroke-width="1.6">
+          <path d="M220 180 L220 50"/><path d="M220 180 L338 122"/><path d="M220 180 L338 238"/>
+          <path d="M220 180 L220 310"/><path d="M220 180 L102 238"/><path d="M220 180 L102 122"/>
+        </g>
+        <circle cx="220" cy="180" r="40" fill="url(#g1)"/>
+        <circle cx="220" cy="180" r="40" fill="none" stroke="#fff" stroke-width="1.5"/>
+        <text x="220" y="188" text-anchor="middle" font-size="20" font-weight="800" fill="#fff" font-family="-apple-system,Segoe UI,Roboto,sans-serif">HC</text>
+        <g font-size="13" font-weight="700" fill="#334155" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+          <circle cx="220" cy="50" r="26" fill="#fff" stroke="rgba(15,23,42,.16)"/><text x="220" y="55" text-anchor="middle">客户端</text>
+          <circle cx="338" cy="122" r="26" fill="#eff6ff" stroke="#bfdbfe"/><text x="338" y="127" text-anchor="middle" fill="#1e40af">Hub 节点</text>
+          <circle cx="338" cy="238" r="26" fill="#fff" stroke="rgba(15,23,42,.16)"/><text x="338" y="243" text-anchor="middle">数据服务</text>
+          <circle cx="220" cy="310" r="26" fill="#fff" stroke="rgba(15,23,42,.16)"/><text x="220" y="315" text-anchor="middle">设备</text>
+          <circle cx="102" cy="238" r="26" fill="#fff" stroke="rgba(15,23,42,.16)"/><text x="102" y="243" text-anchor="middle">市场</text>
+          <circle cx="102" cy="122" r="26" fill="#fff" stroke="rgba(15,23,42,.16)"/><text x="102" y="127" text-anchor="middle">策略</text>
+        </g>
+      </svg>
+      <div class="art-cap">控制平面运行时 · 一个中枢连接客户端、节点与市场</div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- HubCenter 功能描述 -->
+<section id="features">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">Hub Center Features</div>
+      <h2>Hub Center 功能描述</h2>
+      <p>从节点接入到能力分发、从策略治理到积分计费，Hub Center 为整个 MaClaw 网络提供统一的中枢服务。</p>
+    </div>
+    <div class="grid g3">
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="2"/><rect x="3" y="13" width="18" height="7" rx="2"/><path d="M7 7.5h.01M7 16.5h.01"/></svg></div><h3>节点注册与发现</h3><p>Hub 节点向 Hub Center 注册并保持心跳，管理员在后台统一查看节点运行时状态、版本与容量，新节点接入即被自动发现。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4 4"/><path d="M8.5 11h5M11 8.5v5"/></svg></div><h3>智能路由解析</h3><p>集中维护「客户端 → Hub 节点」的路由表，邀请码与账号归属实时可查；节点扩缩容、迁移与故障切换对客户端透明。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3Z"/><path d="m9 12 2 2 4-4"/></svg></div><h3>策略与安全治理</h3><p>封禁邮箱 / IP、消息与评论审核、LLM 内容策略集中配置；管理动作全程留痕，治理策略即时下发到全网节点。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16l-1-4H5L4 9Z"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M9 20v-5h6v5"/></svg></div><h3>能力与专家市场</h3><p>运营 SkillHub 能力市场与专家市场：能力包上架审核、付费分发、专家入驻与订单交付，形成完整的能力生态。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="4" y="6" width="16" height="12" rx="2"/><path d="M4 10h16"/><path d="M8 15h4"/></svg></div><h3>积分与计费</h3><p>统一积分账务：充值、消费、分成、提现与退款负债全流程记账；Token 银行与流水可审计，支撑商业闭环。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8.5h14"/><path d="M5 15.5h14"/><circle cx="5" cy="8.5" r="2"/><circle cx="19" cy="15.5" r="2"/></svg></div><h3>高可用与运维</h3><p>多节点 HA 集群数据实时同步，单节点故障不影响服务；消息公告、故障日志、路由诊断等运维工具开箱即用。</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- MaClaw 简介 -->
+<section id="maclaw" style="background:linear-gradient(180deg,#fff,#f7f8fc)">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">About MaClaw</div>
+      <h2>MaClaw 简介</h2>
+      <p>Hub Center 治理之下的终端，是一个真正懂你业务的 AI 助手客户端。</p>
+    </div>
+    <div class="twocol">
+      <div>
+        <p class="quote">"AI 不应只是一问一答的助手，而应成为真正懂你业务、守你规则、记得你过往的数字员工。"</p>
+        <p style="color:var(--muted)">MaClaw 是跨平台的 AI 助手客户端，把<strong>对话、技能（Skill）、MCP 工具、记忆与知识</strong>放进同一个工作台。它既可以是企业统一推送能力的「数字员工」，也可以是数据主权完全属于个人的私有 AI 伙伴——所有能力可治理、可审计、可撤销。</p>
+      </div>
+      <div class="pillars">
+        <div class="pillar"><div class="em"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></div><div><h4>跨平台客户端</h4><p>Windows / macOS / Linux 桌面端与命令行、移动端全覆盖，一套体验随处可用。</p></div></div>
+        <div class="pillar"><div class="em"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/></svg></div><div><h4>一体化工作台</h4><p>对话、任务、技能与 MCP 工具、组织记忆与知识库在同一界面内协同。</p></div></div>
+        <div class="pillar"><div class="em"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="5" width="18" height="14" rx="2"/><circle cx="9" cy="11" r="2"/><path d="m5 19 5.5-5 3 3L17 14l4 4"/><path d="M15 8h4"/></svg></div><div><h4>多模态能力</h4><p>语音、图像、文档与长上下文原生支持，从会议纪要到产线巡检都能承接。</p></div></div>
+        <div class="pillar"><div class="em"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3Z"/></svg></div><div><h4>企业级治理</h4><p>能力包可推送、可编排、可撤销；策略贯穿每一次调用，数据留在自有节点。</p></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 快速入口 -->
+<section id="links">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">Quick Links</div>
+      <h2>快速入口</h2>
+      <p>本站点提供的核心服务入口，点击直达。</p>
+    </div>
+    <div class="grid g4">
+      <a class="card qlink" href="/admin"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="14" rx="2"/><path d="M8 21h8M12 18v3"/></svg></div><h3>管理后台</h3><p>节点、路由、策略、市场与计费的统一管理控制台。</p><span class="go">打开 /admin <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></a>
+      <a class="card qlink" href="/skillhub"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16l-1-4H5L4 9Z"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M9 20v-5h6v5"/></svg></div><h3>能力市场</h3><p>发现与安装 Skill / MCP 能力包，免费与付费能力一键获取。</p><span class="go">打开 /skillhub <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></a>
+      <a class="card qlink" href="/expert-market"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2"/><path d="M3.5 19a5.5 5.5 0 0 1 11 0"/><path d="M16 4.5a3.2 3.2 0 0 1 0 7M17.5 13.6a5.5 5.5 0 0 1 3 5.4"/></svg></div><h3>专家市场</h3><p>领域专家与专家团队，为复杂业务提供方法论与经验包。</p><span class="go">打开 /expert-market <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></a>
+      <a class="card qlink" href="/gossip"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 12a8 8 0 0 1-8 8H4l2-3a8 8 0 1 1 15-5Z"/><path d="M9 11h.01M13 11h.01M17 11h.01"/></svg></div><h3>社区广场</h3><p>用户交流与反馈的公共空间，问题报告直达运营团队。</p><span class="go">打开 /gossip <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></span></a>
+    </div>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div>
+      <div class="fbrand"><svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="8" fill="#1d4ed8"/><circle cx="16" cy="16" r="4" fill="#fff"/><circle cx="16" cy="5.5" r="2.4" fill="#fff"/><circle cx="25.5" cy="21.5" r="2.4" fill="#fff"/><circle cx="6.5" cy="21.5" r="2.4" fill="#fff"/><path d="M16 9.5v2.5M21 20.2l-2.2-1.2M11 20.2l2.2-1.2" stroke="#fff" stroke-width="1.8"/></svg>Hub Center</div>
+      <div class="fmeta">© MaClaw · 自托管部署中枢 · AI Native 组织操作系统</div>
+    </div>
+    <div class="links">
+      <a href="/admin">管理后台</a>
+      <a href="/skillhub">能力市场</a>
+      <a href="https://www.maclaw.top" target="_blank" rel="noopener">MaClaw 官网</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+  (function(){
+    var nav=document.querySelector('.nav');
+    var onScroll=function(){if(nav)nav.classList.toggle('scrolled',window.scrollY>8)};
+    window.addEventListener('scroll',onScroll,{passive:true});onScroll();
+
+    document.documentElement.classList.add('js');
+    var els=document.querySelectorAll('.sec-head,.grid>.card,.pillar,.twocol>div');
+    els.forEach(function(el,i){el.classList.add('rv');el.style.transitionDelay=(Math.min(i%8,6)*45)+'ms';});
+    if('IntersectionObserver' in window){
+      var io=new IntersectionObserver(function(es){
+        es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('on');io.unobserve(e.target);}});
+      },{threshold:.12,rootMargin:'0px 0px -40px 0px'});
+      els.forEach(function(el){io.observe(el)});
+    }else{els.forEach(function(el){el.classList.add('on')});}
+  })();
+</script>
+</body>
+</html>

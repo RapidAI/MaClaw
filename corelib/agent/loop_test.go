@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -104,12 +105,15 @@ func (m *fallbackLifecycleFailureCallbacks) BuildToolsForModelRequest(string, in
 	if m.calls == 1 {
 		return []map[string]interface{}{tooldef.BuildToolDef("first_tool", "first", map[string]interface{}{"type": "object"})}
 	}
+	// The wire projection coerces or drops malformed scalar fields (e.g. a
+	// non-string description), so it can no longer fail the successor manifest.
+	// A value that cannot survive the freeze's JSON snapshot still can.
 	return []map[string]interface{}{{
 		"type": "function",
 		"function": map[string]interface{}{
 			"name":        "invalid_successor",
-			"description": 42,
-			"parameters":  map[string]interface{}{"type": "object"},
+			"description": "successor",
+			"parameters":  map[string]interface{}{"type": "object", "unserializable": make(chan int)},
 		},
 	}}
 }
@@ -380,7 +384,7 @@ func (m *rotatingBreakdownMutatingCallbacks) OnLoopInputBreakdown(LoopInputBreak
 
 func (m *retryFreezeFailureCallbacks) BuildToolsForModelRequest(string, int) []map[string]interface{} {
 	m.calls++
-	if m.calls <= 2 {
+	if m.calls == 1 {
 		return []map[string]interface{}{tooldef.BuildToolDef("first_attempt", "first", map[string]interface{}{"type": "object"})}
 	}
 	return []map[string]interface{}{{
@@ -2003,7 +2007,7 @@ func TestRunLoopInputBreakdownUsesActualRequestToolSurface(t *testing.T) {
 	if len(cb.breakdown) != 1 {
 		t.Fatalf("breakdowns=%#v", cb.breakdown)
 	}
-	want := EstimateLoopInputBreakdown([]interface{}{map[string]string{"role": "system", "content": "sys"}, map[string]interface{}{"role": "user", "content": "test"}}, []map[string]interface{}{actualTool})
+	want := EstimateLoopInputBreakdown([]interface{}{map[string]string{"role": "system", "content": "sys"}, map[string]interface{}{"role": "user", "content": "test"}}, prepareToolsForToolSurfaceReceipt(cb.GetLLMConfig(), []map[string]interface{}{actualTool}))
 	if cb.breakdown[0].ToolDefinitionTokens != want.ToolDefinitionTokens {
 		t.Fatalf("tool definition tokens=%d want actual rendered=%d (wide=%d)", cb.breakdown[0].ToolDefinitionTokens, want.ToolDefinitionTokens, EstimateLoopInputBreakdown(nil, []map[string]interface{}{wideTool}).ToolDefinitionTokens)
 	}
@@ -2040,6 +2044,7 @@ func TestRunLoopBindsResponsesStreamProviderResponseID(t *testing.T) {
 }
 
 func TestRunLoopInputBreakdownRecordsEveryActualRequestAttempt(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if requests.Add(1) == 1 {
@@ -2060,12 +2065,12 @@ func TestRunLoopInputBreakdownRecordsEveryActualRequestAttempt(t *testing.T) {
 		t.Fatalf("result=%+v", result)
 	}
 	if got := requests.Load(); got != 2 {
-		t.Fatalf("requests=%d, want stream attempt plus fallback", got)
+		t.Fatalf("requests=%d, want stream attempt plus outer retry", got)
 	}
 	if len(cb.breakdown) != 2 {
 		t.Fatalf("breakdowns=%#v, want one record per actual request", cb.breakdown)
 	}
-	want := EstimateLoopInputBreakdown([]interface{}{map[string]string{"role": "system", "content": "sys"}, map[string]interface{}{"role": "user", "content": "test"}}, []map[string]interface{}{actualTool})
+	want := EstimateLoopInputBreakdown([]interface{}{map[string]string{"role": "system", "content": "sys"}, map[string]interface{}{"role": "user", "content": "test"}}, prepareToolsForToolSurfaceReceipt(cb.GetLLMConfig(), []map[string]interface{}{actualTool}))
 	for i, breakdown := range cb.breakdown {
 		if breakdown.ToolDefinitionTokens != want.ToolDefinitionTokens {
 			t.Fatalf("attempt %d tool definition tokens=%d, want %d", i+1, breakdown.ToolDefinitionTokens, want.ToolDefinitionTokens)
@@ -2083,6 +2088,27 @@ func TestRunLoopInputBreakdownRecordsEveryActualRequestAttempt(t *testing.T) {
 	if want := []ToolSurfaceDisposition{ToolSurfaceTransportFailure, ToolSurfaceResponseSettled}; !slices.Equal(terminals, want) {
 		t.Fatalf("terminal events=%v, want %v (one per wire attempt)", terminals, want)
 	}
+}
+
+func useLLMRetryBackoff(t *testing.T, initial time.Duration) {
+	t.Helper()
+	previousInitial := initialLLMRetryBackoff
+	previousMax := maxLLMRetryBackoff
+	initialLLMRetryBackoff = initial
+	if maxLLMRetryBackoff < initial {
+		maxLLMRetryBackoff = initial
+	}
+	t.Cleanup(func() {
+		initialLLMRetryBackoff = previousInitial
+		maxLLMRetryBackoff = previousMax
+	})
+}
+
+func useLLMRouteTimeout(t *testing.T, timeout time.Duration) {
+	t.Helper()
+	previous := llmRouteTimeoutOverride
+	llmRouteTimeoutOverride = timeout
+	t.Cleanup(func() { llmRouteTimeoutOverride = previous })
 }
 
 func TestLLMRetryBackoff(t *testing.T) {
@@ -2107,6 +2133,7 @@ func TestLLMRetryBackoff(t *testing.T) {
 }
 
 func TestRunLoopInputBreakdownRecordsOuterRetryRequest(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if requests.Add(1) == 1 {
@@ -2132,7 +2159,7 @@ func TestRunLoopInputBreakdownRecordsOuterRetryRequest(t *testing.T) {
 	if len(cb.breakdown) != 2 {
 		t.Fatalf("breakdowns=%#v, want one record per actual request", cb.breakdown)
 	}
-	want := EstimateLoopInputBreakdown([]interface{}{map[string]string{"role": "system", "content": "sys"}, map[string]interface{}{"role": "user", "content": "test"}}, []map[string]interface{}{actualTool})
+	want := EstimateLoopInputBreakdown([]interface{}{map[string]string{"role": "system", "content": "sys"}, map[string]interface{}{"role": "user", "content": "test"}}, prepareToolsForToolSurfaceReceipt(cb.GetLLMConfig(), []map[string]interface{}{actualTool}))
 	for i, breakdown := range cb.breakdown {
 		if breakdown.ToolDefinitionTokens != want.ToolDefinitionTokens {
 			t.Fatalf("attempt %d tool definition tokens=%d, want %d", i+1, breakdown.ToolDefinitionTokens, want.ToolDefinitionTokens)
@@ -2152,7 +2179,442 @@ func TestRunLoopInputBreakdownRecordsOuterRetryRequest(t *testing.T) {
 	}
 }
 
+func TestRunLoopOuterRetryRetiresEveryFailedSend(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) < 3 {
+			http.Error(w, "temporarily unavailable", http.StatusBadGateway)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	actualTool := tooldef.BuildToolDef("actual_request_tool", "small", map[string]interface{}{"type": "object"})
+	cb := &requestSurfaceBreakdownCallbacks{mockCallbacks: mockCallbacks{
+		config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+	}, rendered: []map[string]interface{}{actualTool}}
+
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v", result)
+	}
+	if got := requests.Load(); got != 3 {
+		t.Fatalf("requests=%d, want the stream plus two outer retries", got)
+	}
+	if len(cb.breakdown) != 3 {
+		t.Fatalf("breakdowns=%d, want one record per actual request", len(cb.breakdown))
+	}
+	var lifecycle []ToolSurfaceEvent
+	for _, event := range cb.events {
+		if event.Kind == ToolSurfaceEventManifestCreated || event.Kind == ToolSurfaceEventTerminalReason {
+			lifecycle = append(lifecycle, event)
+		}
+	}
+	if len(lifecycle) != 6 {
+		t.Fatalf("manifest/terminal events=%d, want one pair per wire attempt: %+v", len(lifecycle), lifecycle)
+	}
+	wantReasons := []ToolSurfaceDisposition{ToolSurfaceTransportFailure, ToolSurfaceTransportFailure, ToolSurfaceResponseSettled}
+	for i := 0; i < len(wantReasons); i++ {
+		manifest := lifecycle[i*2]
+		terminal := lifecycle[i*2+1]
+		if manifest.Kind != ToolSurfaceEventManifestCreated || terminal.Kind != ToolSurfaceEventTerminalReason {
+			t.Fatalf("attempt %d lifecycle=%+v / %+v, want manifest then terminal", i+1, manifest, terminal)
+		}
+		if terminal.TerminalReason != wantReasons[i] || terminal.PayloadDigest == "" || terminal.PayloadDigest != manifest.PayloadDigest || terminal.AuditDigest != manifest.AuditDigest || terminal.ExpectedToolCount != manifest.ExpectedToolCount || terminal.ReplacementMode != manifest.ReplacementMode {
+			t.Fatalf("attempt %d terminal=%+v manifest=%+v", i+1, terminal, manifest)
+		}
+	}
+}
+
+type hostDeadlineCallbacks struct {
+	mockCallbacks
+	ctx context.Context
+}
+
+func (m *hostDeadlineCallbacks) LLMRequestContext(int) (context.Context, func(error), error) {
+	return m.ctx, func(error) {}, nil
+}
+
+func TestRunLoopOuterRetryReplacesExpiredRouteDeadline(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	useLLMRouteTimeout(t, 200*time.Millisecond)
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			// The client aborts on its own deadline. The server context does not
+			// fire until this handler reads or writes again, so leave on a timer
+			// that outlives that deadline and then return.
+			select {
+			case <-r.Context().Done():
+			case <-time.After(500 * time.Millisecond):
+			}
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
+	}))
+	defer func() {
+		server.CloseClientConnections()
+		server.Close()
+	}()
+
+	cb := &mockCallbacks{
+		config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+	}
+	started := time.Now()
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v", result)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("requests=%d, want the timed-out attempt plus one fresh-deadline retry", got)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("elapsed=%s, want the shortened route deadline rather than the 240s floor", elapsed)
+	}
+}
+
+func TestRunLoopResponsesPartialReadTimeoutRetries(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	useLLMRouteTimeout(t, 200*time.Millisecond)
+	var requests atomic.Int64
+	const success = `{"id":"resp_partial","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"steered retry"}]}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch requests.Add(1) {
+		case 1:
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		case 2:
+			// Flush a prefix before blocking. An empty body already kept the
+			// read error; this prefix used to be parsed as broken JSON, which
+			// is not retried, so the fresh route deadline never ran.
+			w.WriteHeader(http.StatusOK)
+			_, _ = io.WriteString(w, `{"output":[`)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			select {
+			case <-r.Context().Done():
+			case <-time.After(500 * time.Millisecond):
+			}
+		default:
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, success)
+		}
+	}))
+	defer func() {
+		server.CloseClientConnections()
+		server.Close()
+	}()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", WireAPI: "responses"},
+		maxIter: 1, sysPrompt: "sys",
+	}
+	started := time.Now()
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "" || result.Text != "steered retry" {
+		t.Fatalf("result=%+v", result)
+	}
+	if got := requests.Load(); got != 3 {
+		t.Fatalf("requests=%d, want the 503 stream, the partial non-stream read, and one fresh-deadline retry", got)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("elapsed=%s, want the shortened route deadline rather than the 240s floor", elapsed)
+	}
+}
+
+func TestRunLoopPartialStreamTimeoutDoesNotRetry(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	useLLMRouteTimeout(t, 200*time.Millisecond)
+	previousIdle := llm.SSEIdleTimeout
+	llm.SSEIdleTimeout = 40 * time.Millisecond
+	t.Cleanup(func() { llm.SSEIdleTimeout = previousIdle })
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"hello\"}}]}\n\n")
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	}))
+	defer func() {
+		server.CloseClientConnections()
+		server.Close()
+	}()
+
+	cb := &mockCallbacks{
+		config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+	}
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error == "" {
+		t.Fatalf("result=%+v, want the partial stream to fail closed", result)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests=%d, want no retry after visible stream output", got)
+	}
+	if !strings.Contains(strings.Join(cb.tokens, ""), "hello") {
+		t.Fatalf("tokens=%q, want the partial delta that blocks the retry", cb.tokens)
+	}
+}
+
+type cancelOnRetryProgressCallbacks struct {
+	hostDeadlineCallbacks
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (m *cancelOnRetryProgressCallbacks) OnProgress(text string) {
+	if strings.Contains(text, "秒后重试") {
+		m.once.Do(func() { m.cancel() })
+	}
+}
+
+type retryProgressCallbacks struct {
+	hostDeadlineCallbacks
+	progress []string
+}
+
+func (m *retryProgressCallbacks) OnProgress(text string) {
+	m.progress = append(m.progress, text)
+}
+
+func TestRunLoopHostCancelDuringInFlightRetryDoesNotAnnounceAnother(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := requests.Add(1)
+		if n >= 2 {
+			cancel()
+		}
+		http.Error(w, "temporarily unavailable", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	cb := &retryProgressCallbacks{hostDeadlineCallbacks: hostDeadlineCallbacks{mockCallbacks: mockCallbacks{
+		config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+	}, ctx: ctx}}
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "cancelled during LLM retry" {
+		t.Fatalf("result=%+v progress=%q", result, cb.progress)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("requests=%d, want the failed attempt plus one in-flight retry", got)
+	}
+	announced := 0
+	for _, text := range cb.progress {
+		if strings.Contains(text, "秒后重试") {
+			announced++
+		}
+	}
+	if announced != 1 {
+		t.Fatalf("retry announcements=%d (%q), want one countdown and no successor toast", announced, cb.progress)
+	}
+}
+
+func TestRunLoopHostCancelDuringRetryBackoffDoesNotSendSuccessor(t *testing.T) {
+	useLLMRetryBackoff(t, 2*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Error(w, "temporarily unavailable", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	cb := &cancelOnRetryProgressCallbacks{
+		hostDeadlineCallbacks: hostDeadlineCallbacks{mockCallbacks: mockCallbacks{
+			config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+		}, ctx: ctx},
+		cancel: cancel,
+	}
+	started := time.Now()
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "cancelled during LLM retry" {
+		t.Fatalf("result=%+v", result)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests=%d, want the failed attempt and no successor after host cancel", got)
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("host cancel waited out the retry backoff: %s", elapsed)
+	}
+}
+
+func TestRunLoopHostDeadlineDoesNotRetry(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	useLLMRouteTimeout(t, 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+	defer cancel()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-r.Context().Done():
+		case <-time.After(500 * time.Millisecond):
+		}
+	}))
+	defer func() {
+		server.CloseClientConnections()
+		server.Close()
+	}()
+
+	client := server.Client()
+	base := client.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	var roundTrips atomic.Int64
+	client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		roundTrips.Add(1)
+		return base.RoundTrip(req)
+	})
+	cb := &hostDeadlineCallbacks{mockCallbacks: mockCallbacks{
+		config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+	}, ctx: ctx}
+
+	started := time.Now()
+	result := RunLoop(cb, "test", nil, client)
+	if result.Error == "" {
+		t.Fatalf("result=%+v, want host deadline failure", result)
+	}
+	if got := roundTrips.Load(); got != 1 {
+		t.Fatalf("round trips=%d, want the host deadline to stop the retry", got)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("elapsed=%s, want the host deadline rather than another route timeout", elapsed)
+	}
+}
+
+func TestRunLoopDoesNotRetryTerminalHubDenial(t *testing.T) {
+	cases := []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{name: "period limit", status: http.StatusTooManyRequests, body: `{"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted"}`, want: "当前周期额度已用尽"},
+		{name: "rate wait canceled", status: http.StatusRequestTimeout, body: `{"code":"LLM_ENDPOINT_USER_RATE_LIMIT_WAIT_CANCELED","message":"request canceled while waiting in Hub user rate-limit queue"}`, want: "限流排队等待时被取消"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			useLLMRetryBackoff(t, time.Millisecond)
+			var requests atomic.Int64
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				requests.Add(1)
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = io.WriteString(w, tc.body)
+			}))
+			defer server.Close()
+
+			cb := &mockCallbacks{
+				config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+			}
+			result := RunLoop(cb, "test", nil, server.Client())
+			if !strings.Contains(result.Error, tc.want) {
+				t.Fatalf("error=%q, want it to contain %q", result.Error, tc.want)
+			}
+			if got := requests.Load(); got != 1 {
+				t.Fatalf("requests=%d, want one request and no retry or immediate fallback", got)
+			}
+		})
+	}
+}
+
+func TestRunLoopPeriodLimitContinuesTheTask(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	previous := periodLimitWaitOverride
+	periodLimitWaitOverride = time.Millisecond
+	t.Cleanup(func() { periodLimitWaitOverride = previous })
+
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"code":"LLM_SERVICE_PERIOD_LIMITED","message":"current period credit limit is exhausted","retry_after_seconds":1860}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"笔记已发布"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+	}
+	result := RunLoop(cb, "继续发布", nil, server.Client())
+	if result.Error != "" || result.Text != "笔记已发布" {
+		t.Fatalf("result=%+v", result)
+	}
+	if got := requests.Load(); got < 2 {
+		t.Fatalf("requests=%d, want the quota refusal and a continuation", got)
+	}
+}
+
+func TestRunLoopSSEIdleTimeoutUsesOuterRetry(t *testing.T) {
+	useLLMRetryBackoff(t, 200*time.Millisecond)
+	previousIdle := llm.SSEIdleTimeout
+	llm.SSEIdleTimeout = 40 * time.Millisecond
+	t.Cleanup(func() { llm.SSEIdleTimeout = previousIdle })
+
+	var mu sync.Mutex
+	var arrivals []time.Time
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		arrivals = append(arrivals, time.Now())
+		n := len(arrivals)
+		mu.Unlock()
+		if n == 1 {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.WriteHeader(http.StatusOK)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
+			select {
+			case <-r.Context().Done():
+			case <-time.After(2 * time.Second):
+			}
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
+	}))
+	defer func() {
+		server.CloseClientConnections()
+		server.Close()
+	}()
+
+	cb := &mockCallbacks{
+		config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+	}
+	started := time.Now()
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v", result)
+	}
+	mu.Lock()
+	got := append([]time.Time(nil), arrivals...)
+	mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("requests=%d, want the stalled stream plus one outer retry", len(got))
+	}
+	if gap := got[1].Sub(got[0]); gap < 150*time.Millisecond {
+		t.Fatalf("retry gap %s, want the outer backoff rather than an immediate fallback", gap)
+	}
+	if elapsed := time.Since(started); elapsed > 2*time.Second {
+		t.Fatalf("elapsed %s, want the idle abort plus one backoff", elapsed)
+	}
+}
+
 func TestRunLoopOuterRetryUsesFrozenSurfaceBeforeInputBreakdownObserver(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
 	var requests atomic.Int64
 	wireDescriptions := make([]string, 0, 2)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2189,6 +2651,7 @@ func TestRunLoopOuterRetryUsesFrozenSurfaceBeforeInputBreakdownObserver(t *testi
 }
 
 func TestRunLoopOuterRetryFreezeFailureHasOneUncorrelatedIntegrityTerminal(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
@@ -2203,8 +2666,8 @@ func TestRunLoopOuterRetryFreezeFailureHasOneUncorrelatedIntegrityTerminal(t *te
 	if !strings.Contains(result.Error, "surface_integrity_failure") {
 		t.Fatalf("result=%+v", result)
 	}
-	if requests.Load() != 2 || cb.calls != 3 {
-		t.Fatalf("requests=%d renders=%d, want stream/fallback predecessor sends and one failed retry render", requests.Load(), cb.calls)
+	if requests.Load() != 1 || cb.calls != 2 {
+		t.Fatalf("requests=%d renders=%d, want the stream send and one failed retry render", requests.Load(), cb.calls)
 	}
 	var terminals []ToolSurfaceEvent
 	for _, event := range cb.events {
@@ -2212,20 +2675,19 @@ func TestRunLoopOuterRetryFreezeFailureHasOneUncorrelatedIntegrityTerminal(t *te
 			terminals = append(terminals, event)
 		}
 	}
-	if len(terminals) != 3 {
-		t.Fatalf("terminal events=%+v, want stream/fallback predecessors plus failed successor", terminals)
+	if len(terminals) != 2 {
+		t.Fatalf("terminal events=%+v, want the stream predecessor plus the failed retry", terminals)
 	}
-	for _, predecessor := range terminals[:2] {
-		if predecessor.TerminalReason != ToolSurfaceTransportFailure || predecessor.PayloadDigest == "" {
-			t.Fatalf("predecessor terminal=%+v", predecessor)
-		}
+	if predecessor := terminals[0]; predecessor.TerminalReason != ToolSurfaceTransportFailure || predecessor.PayloadDigest == "" {
+		t.Fatalf("predecessor terminal=%+v", predecessor)
 	}
-	if terminal := terminals[2]; terminal.TerminalReason != ToolSurfaceIntegrityFailure || terminal.PayloadDigest != "" || terminal.AuditDigest != "" || terminal.ExpectedToolCount != 0 || terminal.ReplacementMode != "" || terminal.FailureKind != ToolSurfaceFailureIntegrity {
+	if terminal := terminals[1]; terminal.TerminalReason != ToolSurfaceIntegrityFailure || terminal.PayloadDigest != "" || terminal.AuditDigest != "" || terminal.ExpectedToolCount != 0 || terminal.ReplacementMode != "" || terminal.FailureKind != ToolSurfaceFailureIntegrity {
 		t.Fatalf("retry freeze-failure terminal=%+v", terminal)
 	}
 }
 
 func TestRunLoopOuterRetryRebuildsToolSurfaceInsteadOfReusingPredecessor(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
 	var requests atomic.Int64
 	var surfaces [][]string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2276,6 +2738,7 @@ func TestRunLoopOuterRetryRebuildsToolSurfaceInsteadOfReusingPredecessor(t *test
 }
 
 func TestRunLoopIssuesSuccessorEpochBeforeReplacementRender(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
 	var requests atomic.Int64
 	var surfaces [][]string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -2507,11 +2970,248 @@ func TestRunLoopEmptyAssistantTurnRetiresSurfaceBeforeRecovery(t *testing.T) {
 	}
 }
 
-func TestRunLoopAmbiguousDeliveryContainmentBlocksFallbackAndRetry(t *testing.T) {
+func TestRunLoopAmbiguousDeliveryContainmentRetriesGatewayFailure(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			http.Error(w, "upstream unavailable", http.StatusBadGateway)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &deliveryObserverCallbacks{
+		containment: true,
+		mockCallbacks: mockCallbacks{
+			config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+		},
+	}
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v, want the 502 to recover after backoff", result)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("requests=%d, want the gateway rejection plus one backoff retry", requests.Load())
+	}
+	if len(cb.finishes) != 2 || cb.finishes[0] != ToolSurfaceTransportRejected || cb.finishes[1] != ToolSurfaceResponseConsumed {
+		t.Fatalf("finishes=%#v, want transport rejection then a consumed retry", cb.finishes)
+	}
+}
+
+type retryLeaseParkingCallbacks struct {
+	deliveryObserverCallbacks
+	mu     sync.Mutex
+	events []string
+}
+
+func (m *retryLeaseParkingCallbacks) ParkLLMRetry() {
+	m.mu.Lock()
+	m.events = append(m.events, "park")
+	m.mu.Unlock()
+}
+
+func (m *retryLeaseParkingCallbacks) ResumeLLMRetry(context.Context) error {
+	m.mu.Lock()
+	m.events = append(m.events, "resume")
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *retryLeaseParkingCallbacks) snapshot() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.events...)
+}
+
+func TestRunLoopParksRetryLeaseOnlyDuringBackoff(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			http.Error(w, "upstream unavailable", http.StatusBadGateway)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &retryLeaseParkingCallbacks{deliveryObserverCallbacks: deliveryObserverCallbacks{
+		containment: true,
+		mockCallbacks: mockCallbacks{
+			config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+		},
+	}}
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v", result)
+	}
+	if got, want := cb.snapshot(), []string{"park", "resume"}; !slices.Equal(got, want) {
+		t.Fatalf("lease events=%v, want park then resume around the single backoff", got)
+	}
+}
+
+type cancelDuringRetryParkingCallbacks struct {
+	retryLeaseParkingCallbacks
+	ctx    context.Context
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (m *cancelDuringRetryParkingCallbacks) LLMRequestContext(int) (context.Context, func(error), error) {
+	return m.ctx, func(error) {}, nil
+}
+
+func (m *cancelDuringRetryParkingCallbacks) OnProgress(text string) {
+	if strings.Contains(text, "秒后重试") {
+		m.once.Do(func() { m.cancel() })
+	}
+}
+
+func TestRunLoopCancelDuringRetryBackoffDoesNotResumeLease(t *testing.T) {
+	useLLMRetryBackoff(t, 2*time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requests.Add(1)
-		http.Error(w, "upstream failure", http.StatusInternalServerError)
+		http.Error(w, "upstream unavailable", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	cb := &cancelDuringRetryParkingCallbacks{
+		retryLeaseParkingCallbacks: retryLeaseParkingCallbacks{deliveryObserverCallbacks: deliveryObserverCallbacks{
+			containment: true,
+			mockCallbacks: mockCallbacks{
+				config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+			},
+		}},
+		ctx:    ctx,
+		cancel: cancel,
+	}
+	started := time.Now()
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "cancelled during LLM retry" {
+		t.Fatalf("result=%+v", result)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests=%d, want no send after the parked backoff was cancelled", got)
+	}
+	if got, want := cb.snapshot(), []string{"park"}; !slices.Equal(got, want) {
+		t.Fatalf("lease events=%v, want the slot parked and not resumed after cancel", got)
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("cancel waited out the backoff: %s", elapsed)
+	}
+}
+
+// steerDuringRetryResumeCallbacks raises a replan while the parked slot is
+// being taken back, and cancels the operation the way LoopContext.RequestReplan
+// does. The retry must continue the turn instead of reporting a user stop.
+type steerDuringRetryResumeCallbacks struct {
+	retryLeaseParkingCallbacks
+	ctx      context.Context
+	cancel   context.CancelFunc
+	armed    atomic.Bool
+	reports  atomic.Int32
+	contexts atomic.Int32
+}
+
+func (m *steerDuringRetryResumeCallbacks) LLMRequestContext(int) (context.Context, func(error), error) {
+	if m.contexts.Add(1) == 1 {
+		return m.ctx, func(error) {}, nil
+	}
+	return context.Background(), func(error) {}, nil
+}
+
+func (m *steerDuringRetryResumeCallbacks) LLMReplanRequested() bool {
+	if !m.armed.Load() {
+		return false
+	}
+	return m.reports.Add(1) <= 2
+}
+
+func (m *steerDuringRetryResumeCallbacks) ResumeLLMRetry(context.Context) error {
+	if m.armed.CompareAndSwap(false, true) {
+		m.cancel()
+		return context.Canceled
+	}
+	return nil
+}
+
+func TestRunLoopSteerDuringRetryResumeContinuesTheTurn(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if requests.Add(1) == 1 {
+			http.Error(w, "upstream unavailable", http.StatusBadGateway)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &steerDuringRetryResumeCallbacks{
+		retryLeaseParkingCallbacks: retryLeaseParkingCallbacks{deliveryObserverCallbacks: deliveryObserverCallbacks{
+			containment: true,
+			mockCallbacks: mockCallbacks{
+				config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+			},
+		}},
+		ctx:    ctx,
+		cancel: cancel,
+	}
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error != "" || result.Text != "done" {
+		t.Fatalf("result=%+v, want the steer to continue the turn", result)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("requests=%d, want the failed attempt plus the steered continuation", got)
+	}
+}
+
+func TestRunLoopAmbiguousDeliveryContainmentStopsAfterExponentialBudget(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Error(w, "upstream unavailable", http.StatusBadGateway)
+	}))
+	defer server.Close()
+
+	cb := &deliveryObserverCallbacks{
+		containment: true,
+		mockCallbacks: mockCallbacks{
+			config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 1, sysPrompt: "sys",
+		},
+	}
+	result := RunLoop(cb, "test", nil, server.Client())
+	if result.Error == "" || !strings.Contains(result.Error, "502") {
+		t.Fatalf("result=%+v, want the gateway error after the exponential budget", result)
+	}
+	// The first send plus one retry per exponential step. The flat tail
+	// must not keep resending this prompt.
+	if got, want := requests.Load(), int64(maxLLMRetries+1); got != want {
+		t.Fatalf("requests=%d, want %d", got, want)
+	}
+	if len(cb.finishes) != maxLLMRetries+1 {
+		t.Fatalf("finishes=%#v", cb.finishes)
+	}
+	for i, finish := range cb.finishes {
+		if finish != ToolSurfaceTransportRejected {
+			t.Fatalf("finish %d = %s, want transport rejection", i, finish)
+		}
+	}
+}
+
+func TestRunLoopAmbiguousDeliveryContainmentStillBlocksClientErrors(t *testing.T) {
+	var requests atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		http.Error(w, "missing", http.StatusNotFound)
 	}))
 	defer server.Close()
 
@@ -2523,17 +3223,18 @@ func TestRunLoopAmbiguousDeliveryContainmentBlocksFallbackAndRetry(t *testing.T)
 	}
 	result := RunLoop(cb, "test", nil, server.Client())
 	if result.Error == "" {
-		t.Fatalf("result=%+v, want terminal ambiguous-delivery failure", result)
+		t.Fatalf("result=%+v, want a terminal client error", result)
 	}
 	if requests.Load() != 1 {
-		t.Fatalf("requests=%d, containment must block non-stream fallback/retry", requests.Load())
+		t.Fatalf("requests=%d, containment must not retry a non-transient client error", requests.Load())
 	}
-	if len(cb.starts) != 1 || len(cb.finishes) != 1 || cb.finishes[0] != ToolSurfaceAmbiguousDelivery {
-		t.Fatalf("starts=%#v finishes=%#v", cb.starts, cb.finishes)
+	if len(cb.finishes) != 1 || cb.finishes[0] != ToolSurfaceAmbiguousDelivery {
+		t.Fatalf("finishes=%#v", cb.finishes)
 	}
 }
 
 func TestRunLoopReportsAmbiguousPredecessorBeforeGenericFallback(t *testing.T) {
+	useLLMRetryBackoff(t, time.Millisecond)
 	var requests atomic.Int64
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if requests.Add(1) == 1 {
@@ -2552,7 +3253,7 @@ func TestRunLoopReportsAmbiguousPredecessorBeforeGenericFallback(t *testing.T) {
 		t.Fatalf("result=%+v", result)
 	}
 	if requests.Load() != 2 {
-		t.Fatalf("requests=%d, want streaming predecessor plus fallback", requests.Load())
+		t.Fatalf("requests=%d, want streaming predecessor plus outer retry", requests.Load())
 	}
 	if len(cb.starts) != 2 || len(cb.finishes) != 2 || cb.finishes[0] != ToolSurfaceAmbiguousDelivery || cb.finishes[1] != ToolSurfaceResponseConsumed {
 		t.Fatalf("starts=%#v finishes=%#v", cb.starts, cb.finishes)
@@ -2613,6 +3314,19 @@ type retryBackoffReplanCallbacks struct {
 	contexts        atomic.Int32
 }
 
+// operationCancelReplanCallbacks matches the desktop steer path: RequestReplan
+// both advances the revision and cancels the current LLM operation context.
+type operationCancelReplanCallbacks struct {
+	*mockCallbacks
+	DefaultLoopHooks
+	revision        atomic.Int64
+	requestRevision atomic.Int64
+	steerPending    atomic.Bool
+	contexts        atomic.Int32
+	mu              sync.Mutex
+	cancel          context.CancelFunc
+}
+
 type retryBackoffStopCallbacks struct {
 	*deliveryObserverCallbacks
 	requests atomic.Int32
@@ -2660,6 +3374,39 @@ func (m *retryBackoffReplanCallbacks) TransformConversation(conversation []inter
 	}
 	next := append([]interface{}(nil), conversation...)
 	return append(next, map[string]string{"role": "user", "content": "steer during retry backoff"})
+}
+
+func (m *operationCancelReplanCallbacks) LLMRequestContext(int) (context.Context, func(error), error) {
+	m.requestRevision.Store(m.revision.Load())
+	m.contexts.Add(1)
+	ctx, cancel := context.WithCancel(context.Background())
+	m.mu.Lock()
+	m.cancel = cancel
+	m.mu.Unlock()
+	return ctx, func(error) { cancel() }, nil
+}
+
+func (m *operationCancelReplanCallbacks) LLMReplanRequested() bool {
+	return m.revision.Load() > m.requestRevision.Load()
+}
+
+func (m *operationCancelReplanCallbacks) TransformConversation(conversation []interface{}) []interface{} {
+	if !m.steerPending.CompareAndSwap(true, false) {
+		return nil
+	}
+	next := append([]interface{}(nil), conversation...)
+	return append(next, map[string]string{"role": "user", "content": "steer during operation cancel"})
+}
+
+func (m *operationCancelReplanCallbacks) steer() {
+	m.steerPending.Store(true)
+	m.revision.Add(1)
+	m.mu.Lock()
+	cancel := m.cancel
+	m.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 func (m *retryBackoffStopCallbacks) ShouldStop() bool {
@@ -3084,6 +3831,106 @@ func TestRunLoop_ReplanInterruptsTransientRetryBackoff(t *testing.T) {
 	}
 }
 
+func TestRunLoop_ReplanCancelDuringRetryBackoffStillSteers(t *testing.T) {
+	var requests atomic.Int32
+	var sawSteer atomic.Bool
+	cb := &operationCancelReplanCallbacks{mockCallbacks: &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter: 1, sysPrompt: "sys",
+	}}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		n := requests.Add(1)
+		if n == 1 {
+			go func() {
+				time.Sleep(100 * time.Millisecond)
+				cb.steer()
+			}()
+			return nil, newLLMHTTPError(http.StatusServiceUnavailable, "temporary")
+		}
+		var req struct {
+			Messages []map[string]interface{} `json:"messages"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			return nil, err
+		}
+		for _, msg := range req.Messages {
+			if strings.Contains(fmt.Sprint(msg["content"]), "steer during operation cancel") {
+				sawSteer.Store(true)
+			}
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"steered after cancel"}}]}`))}, nil
+	})}
+	started := time.Now()
+	result := RunLoop(cb, "start", nil, client, cb)
+	if result.Error != "" || result.Text != "steered after cancel" || !sawSteer.Load() {
+		t.Fatalf("RunLoop result=%+v sawSteer=%v", result, sawSteer.Load())
+	}
+	if elapsed := time.Since(started); elapsed >= time.Second {
+		t.Fatalf("operation-cancel replan waited through retry backoff: %v", elapsed)
+	}
+	if requests.Load() != 2 || cb.contexts.Load() != 2 {
+		t.Fatalf("requests=%d contexts=%d, want 2/2", requests.Load(), cb.contexts.Load())
+	}
+}
+
+func TestRunLoopEmptyResponseSurvivesOperationFinishCancel(t *testing.T) {
+	var requests atomic.Int32
+	cb := &operationCancelReplanCallbacks{mockCallbacks: &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter: 2, sysPrompt: "sys",
+	}}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		n := requests.Add(1)
+		body := `{"choices":[{"message":{"role":"assistant","content":""}}]}`
+		if n > 1 {
+			body = `{"choices":[{"message":{"role":"assistant","content":"recovered"}}]}`
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	started := time.Now()
+	result := RunLoop(cb, "start", nil, client, cb)
+	if result.Error != "" || result.Text != "recovered" {
+		t.Fatalf("RunLoop result=%+v", result)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("requests=%d, want the empty reply plus one recovery", requests.Load())
+	}
+	elapsed := time.Since(started)
+	if elapsed < 500*time.Millisecond || elapsed >= 3*time.Second {
+		t.Fatalf("elapsed=%s, want the 1s empty backoff rather than an immediate cancel", elapsed)
+	}
+}
+
+func TestRunLoop_ReplanCancelDuringEmptyBackoffStillSteers(t *testing.T) {
+	var requests atomic.Int32
+	cb := &operationCancelReplanCallbacks{mockCallbacks: &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"},
+		maxIter: 1, sysPrompt: "sys",
+	}}
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		n := requests.Add(1)
+		if n == 1 {
+			go func() {
+				time.Sleep(100 * time.Millisecond)
+				cb.steer()
+			}()
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":""}}]}`))}, nil
+		}
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{"choices":[{"message":{"role":"assistant","content":"steered after empty cancel"}}]}`))}, nil
+	})}
+	started := time.Now()
+	result := RunLoop(cb, "start", nil, client, cb)
+	if result.Error != "" || result.Text != "steered after empty cancel" {
+		t.Fatalf("RunLoop result=%+v", result)
+	}
+	if elapsed := time.Since(started); elapsed >= 800*time.Millisecond {
+		t.Fatalf("operation-cancel replan waited through empty-response backoff: %v", elapsed)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("requests=%d, want the empty reply plus the steered replacement", requests.Load())
+	}
+}
+
 func TestRunLoop_StopDuringRetryBackoffDoesNotCreateSuccessorSurface(t *testing.T) {
 	cb := &retryBackoffStopCallbacks{deliveryObserverCallbacks: &deliveryObserverCallbacks{mockCallbacks: mockCallbacks{
 		config:  corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key", WireAPI: "responses"},
@@ -3135,6 +3982,35 @@ func TestRunLoop_ReplanBeforeToolCommitPreventsStaleSideEffect(t *testing.T) {
 	}
 	if len(cb.toolCalls) != 0 {
 		t.Fatalf("stale tool executed despite steering: %v", cb.toolCalls)
+	}
+}
+
+func TestRunLoopHostCancelDuringEmptyResponseBackoffDoesNotSendSuccessor(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var requests atomic.Int64
+	client := &http.Client{Transport: roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		go func() {
+			time.Sleep(100 * time.Millisecond)
+			cancel()
+		}()
+		body := `{"choices":[{"message":{"role":"assistant","content":""}}]}`
+		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(body))}, nil
+	})}
+	cb := &hostDeadlineCallbacks{mockCallbacks: mockCallbacks{
+		config: corelib.MaclawLLMConfig{URL: "https://llm.test", Model: "test", Key: "test-key"}, maxIter: 2, sysPrompt: "sys",
+	}, ctx: ctx}
+	started := time.Now()
+	result := RunLoop(cb, "start", nil, client)
+	if result.Error != "cancelled" {
+		t.Fatalf("result=%+v", result)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests=%d, want no recovery request after host cancel", got)
+	}
+	if elapsed := time.Since(started); elapsed >= 800*time.Millisecond {
+		t.Fatalf("host cancel waited through empty-response backoff: %s", elapsed)
 	}
 }
 
@@ -3512,9 +4388,9 @@ func TestRunLoopToolEscalationUpdatesProjectionAndNextRequestBudget(t *testing.T
 	client := server.Client()
 	baseTransport := client.Transport
 	client.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
-		deadline, ok := req.Context().Deadline()
+		deadline, ok := llm.OwnedRouteDeadline(req.Context())
 		if !ok {
-			return nil, fmt.Errorf("LLM request missing deadline")
+			return nil, fmt.Errorf("LLM request missing route deadline")
 		}
 		requestTimeouts = append(requestTimeouts, time.Until(deadline))
 		return baseTransport.RoundTrip(req)
@@ -3863,6 +4739,7 @@ func TestRunLoopFailedExecutionRefreshesSurfaceWithoutEscalation(t *testing.T) {
 		sysPrompt:   "sys",
 		toolResult:  "Error: write failed",
 		toolOutcome: ToolExecutionOutcomeError,
+		tools:       []map[string]interface{}{tooldef.BuildToolDef("write_file", "Write", map[string]interface{}{"type": "object"})},
 	}}
 	result := RunLoop(cb, "write", nil, server.Client(), cb)
 	if result.Error != "" || result.Text != "reported failure" {
@@ -3980,7 +4857,7 @@ func TestRunLoopStopsWhenToolBatchCheckpointFails(t *testing.T) {
 		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"","tool_calls":[{"id":"a","type":"function","function":{"name":"write_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
 	}))
 	defer server.Close()
-	cb := &mockCallbacks{config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 3, sysPrompt: "sys", toolResult: "ok"}
+	cb := &mockCallbacks{config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 3, sysPrompt: "sys", toolResult: "ok", tools: []map[string]interface{}{tooldef.BuildToolDef("write_file", "Write", map[string]interface{}{"type": "object"})}}
 	hooks := &toolBatchCommitCallbacks{fail: true}
 	result := RunLoop(cb, "task", nil, server.Client(), hooks)
 	if result.Error != "recovery_checkpoint_failed" || !result.HardExit || len(cb.toolCalls) != 1 || len(hooks.batches) != 1 {
@@ -4008,7 +4885,10 @@ func TestRunLoopAbandonsPreExecutionCheckpointForInteractivePause(t *testing.T) 
 		_, _ = io.WriteString(w, `{"choices":[{"message":{"content":"","tool_calls":[{"id":"ask","type":"function","function":{"name":"ask_user","arguments":"{}"}},{"id":"sibling","type":"function","function":{"name":"write_file","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
 	}))
 	defer server.Close()
-	cb := &mockCallbacks{config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 3, sysPrompt: "sys", toolResult: ToolAskUser(map[string]interface{}{"question": "continue?"})}
+	cb := &mockCallbacks{config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test"}, maxIter: 3, sysPrompt: "sys", toolResult: ToolAskUser(map[string]interface{}{"question": "continue?"}), tools: []map[string]interface{}{
+		tooldef.BuildToolDef("ask_user", "Ask the user", map[string]interface{}{"type": "object"}),
+		tooldef.BuildToolDef("write_file", "Write", map[string]interface{}{"type": "object"}),
+	}}
 	hooks := &toolBatchCommitCallbacks{}
 	result := RunLoop(cb, "task", nil, server.Client(), hooks)
 	if result.AskUser == nil || len(hooks.starts) != 1 || len(hooks.abandons) != 1 || len(hooks.batches) != 0 {
@@ -4019,6 +4899,26 @@ func TestRunLoopAbandonsPreExecutionCheckpointForInteractivePause(t *testing.T) 
 	}
 }
 
+func TestPreToolCheckpointNamesExternalSend(t *testing.T) {
+	calls := []llm.ToolCall{
+		{Function: llm.ToolCallFunction{Name: "bash"}},
+		{Function: llm.ToolCallFunction{Name: "im_message"}},
+	}
+	if got := preToolCheckpointToolName(calls); got != "im_message" {
+		t.Fatalf("preToolCheckpointToolName = %q, want im_message", got)
+	}
+	if got := preToolSideEffectState(calls); got != "external_uncertain" {
+		t.Fatalf("preToolSideEffectState = %q", got)
+	}
+	readThenWrite := []llm.ToolCall{
+		{Function: llm.ToolCallFunction{Name: "read_file"}},
+		{Function: llm.ToolCallFunction{Name: "write_file"}},
+	}
+	if got := preToolCheckpointToolName(readThenWrite); got != "read_file" {
+		t.Fatalf("preToolCheckpointToolName = %q, want read_file", got)
+	}
+}
+
 func TestSideEffectStateForToolBatchFailsClosedForUnknownTools(t *testing.T) {
 	tests := []struct {
 		name  string
@@ -4026,7 +4926,11 @@ func TestSideEffectStateForToolBatchFailsClosedForUnknownTools(t *testing.T) {
 		want  string
 	}{
 		{name: "local reads", tools: []string{"read_file", "ripgrep"}, want: "none"},
+		{name: "document read", tools: []string{"read_document"}, want: "none"},
+		{name: "catalog search", tools: []string{"tools_search"}, want: "none"},
+		{name: "catalog search before mutation", tools: []string{"tools_search", "write_file"}, want: "local_committed"},
 		{name: "local mutation", tools: []string{"read_file", "apply_patch"}, want: "local_committed"},
+		{name: "local mutation with unknown sibling", tools: []string{"write_file", "alarm_set"}, want: "local_committed"},
 		{name: "known external", tools: []string{"web_search"}, want: "external_uncertain"},
 		{name: "dynamic client tool", tools: []string{"alarm_set"}, want: "external_uncertain"},
 		{name: "empty name", tools: []string{""}, want: "external_uncertain"},
@@ -4039,6 +4943,13 @@ func TestSideEffectStateForToolBatchFailsClosedForUnknownTools(t *testing.T) {
 			}
 			if got := sideEffectStateForToolBatch(calls); got != tt.want {
 				t.Fatalf("sideEffectStateForToolBatch(%v) = %q, want %q", tt.tools, got, tt.want)
+			}
+			pre := "external_uncertain"
+			if tt.want == "none" {
+				pre = "none"
+			}
+			if got := preToolSideEffectState(calls); got != pre {
+				t.Fatalf("preToolSideEffectState(%v) = %q, want %q", tt.tools, got, pre)
 			}
 		})
 	}
@@ -4162,6 +5073,7 @@ func TestRunLoop_WithToolCall_ExecutesAndContinues(t *testing.T) {
 		maxIter:    10,
 		sysPrompt:  "You are a helpful assistant.",
 		toolResult: "hello\n",
+		tools:      []map[string]interface{}{tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"})},
 	}
 
 	result := RunLoop(cb, "run echo hello", nil, nil)
@@ -4180,6 +5092,45 @@ func TestRunLoop_WithToolCall_ExecutesAndContinues(t *testing.T) {
 	}
 	if len(cb.toolCalls) != 1 || cb.toolCalls[0] != "bash" {
 		t.Fatalf("unexpected tool calls: %v", cb.toolCalls)
+	}
+}
+
+type unsettledEffectCallbacks struct {
+	*mockCallbacks
+}
+
+func (u *unsettledEffectCallbacks) RequiredEffectUnsettled() bool { return true }
+
+func TestRunLoopToolLessStopIsNotSuccessWhileRequiredEffectIsUnsettled(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		body, _ := io.ReadAll(r.Body)
+		if strings.Contains(string(body), "required_effect") || strings.Contains(string(body), "[系统]") {
+			t.Errorf("unsettled stop inserted a user message: %s", body)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"choices": []map[string]interface{}{{
+				"message":       map[string]interface{}{"role": "assistant", "content": "还没发出去"},
+				"finish_reason": "stop",
+			}},
+		})
+	}))
+	defer server.Close()
+	cb := &unsettledEffectCallbacks{mockCallbacks: &mockCallbacks{
+		config:    corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter:   8,
+		sysPrompt: "sys",
+	}}
+	result := RunLoop(cb, "向 znsoft@163.com 发邮件报告系统状态", nil, nil)
+	if result.Error != "required_effect_unsettled" || !result.HardExit {
+		t.Fatalf("result=%+v", result)
+	}
+	if result.Text != "还没发出去" {
+		t.Fatalf("text=%q", result.Text)
+	}
+	if callCount != 2 {
+		t.Fatalf("calls=%d", callCount)
 	}
 }
 
@@ -4623,6 +5574,13 @@ func TestAuthorizeLoopTool_LightProfileDeniesBash(t *testing.T) {
 	if denied2 {
 		t.Fatalf("web_search should not be light-denied: %+v", res2)
 	}
+	if _, denied := authorizeLoopTool(cb, "database", `{"action":"query","sql":"select 1"}`); denied {
+		t.Fatal("database query should be allowed on light")
+	}
+	writeRes, writeDenied := authorizeLoopTool(cb, "database", `{"action":"execute","sql":"delete from t"}`)
+	if !writeDenied || !strings.Contains(writeRes.Result, "light prompt profile") {
+		t.Fatalf("database execute should be light-denied: denied=%v result=%q", writeDenied, writeRes.Result)
+	}
 }
 
 func TestAuthorizeLoopTool_LightProfileUsesHostCapabilityBoundaryForOpaqueNames(t *testing.T) {
@@ -4885,6 +5843,7 @@ func TestRunLoop_AskUserReturnsEarly(t *testing.T) {
 		maxIter:    10,
 		sysPrompt:  "You are a helpful assistant.",
 		toolResult: `__ASK_USER__{"question":"Choose one","options":["A","B"],"input_type":"choice"}`,
+		tools:      []map[string]interface{}{tooldef.BuildToolDef("ask_user", "Ask the user", map[string]interface{}{"type": "object"})},
 	}
 
 	result := RunLoop(cb, "need help", nil, nil)
@@ -4942,6 +5901,7 @@ func TestRunLoop_RecordAudioReturnsEarly(t *testing.T) {
 		maxIter:    10,
 		sysPrompt:  "You are a helpful assistant.",
 		toolResult: marker,
+		tools:      []map[string]interface{}{tooldef.BuildToolDef("record_audio", "Record audio", map[string]interface{}{"type": "object"})},
 	}
 
 	result := RunLoop(cb, "开始会议录音", nil, nil)
@@ -5015,6 +5975,10 @@ func TestRunLoop_RecordAudioPauseUsesCurrentToolCallIDInBatch(t *testing.T) {
 		maxIter:    10,
 		sysPrompt:  "You are a helpful assistant.",
 		toolResult: ToolRecordAudio(map[string]interface{}{"title": "A"}),
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("record_audio", "Record audio", map[string]interface{}{"type": "object"}),
+			tooldef.BuildToolDef("bash", "Run a command", map[string]interface{}{"type": "object"}),
+		},
 	}
 
 	result := RunLoop(cb, "录音", nil, nil)
@@ -5103,6 +6067,10 @@ func TestRunLoop_CancelBetweenToolCallsSkipsRemainingTools(t *testing.T) {
 		maxIter:    3,
 		sysPrompt:  "test",
 		toolResult: "ok",
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("first", "first tool", map[string]interface{}{"type": "object"}),
+			tooldef.BuildToolDef("second", "second tool", map[string]interface{}{"type": "object"}),
+		},
 	}}
 
 	hooks := &toolBatchCommitCallbacks{}
@@ -5522,6 +6490,32 @@ func TestBuildEmptyResponseRecovery_Error(t *testing.T) {
 	}
 }
 
+func TestBuildEmptyResponseRecovery_HostDirectiveKeepsNextStep(t *testing.T) {
+	outcome := toolOutcome{
+		kind:      toolOutcomeError,
+		snippet:   "工具 generate_pdf 已由主机授权并加入当前工具面，请立即重新发起对 generate_pdf 的调用（参数不变）。",
+		directive: true,
+	}
+	prompt := buildEmptyResponseRecovery(1, "generate_pdf", outcome, "继续完成 兰州天气")
+	if strings.Contains(prompt, "返回了错误") || strings.Contains(prompt, "尝试其他方法") {
+		t.Fatalf("a host directive must not be described as a failed tool: %q", prompt)
+	}
+	if !strings.Contains(prompt, "generate_pdf") || !strings.Contains(prompt, "不要改用其他方法") || !strings.Contains(prompt, "上一条工具结果") {
+		t.Fatalf("recovery must keep the host next step: %q", prompt)
+	}
+	later := buildEmptyResponseRecovery(2, "generate_pdf", outcome, "继续完成 兰州天气")
+	if strings.Contains(later, "或者告诉用户") || strings.Contains(later, "返回了错误") || strings.Contains(later, "尝试其他方法") {
+		t.Fatalf("a later empty must not offer abandoning the host step: %q", later)
+	}
+	if !strings.Contains(later, "继续完成 兰州天气") || !strings.Contains(later, "上一条工具结果") || !strings.Contains(later, "只做上一条工具结果里写明的下一步") {
+		t.Fatalf("a later empty must keep the goal and the named next step: %q", later)
+	}
+	urgent := buildEmptyResponseRecovery(3, "generate_pdf", outcome, "继续完成 兰州天气")
+	if strings.Contains(urgent, "回复内容或调用工具") || strings.Contains(urgent, "或者告诉用户") {
+		t.Fatalf("an urgent directive must not offer a different next step: %q", urgent)
+	}
+}
+
 func TestBuildEmptyResponseRecovery_NoFalsePositiveError(t *testing.T) {
 	// Normal output that contains "error" as a substring should NOT trigger
 	// the error branch — classifyToolResult checks structured prefixes only.
@@ -5693,7 +6687,7 @@ func TestRunLoop_NoProgressCircuitBreakerStopsDithering(t *testing.T) {
 	// Render no tools: every call is fence-denied, alternating names defeat the
 	// same-tool failure counter.
 	cb := &mockCallbacks{
-		config: corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
 		maxIter: 20, sysPrompt: "sys",
 	}
 	result := RunLoop(cb, "find images and build a deck", nil, nil)
@@ -5705,5 +6699,853 @@ func TestRunLoop_NoProgressCircuitBreakerStopsDithering(t *testing.T) {
 	}
 	if !strings.Contains(result.Text, "still trying to find the images") {
 		t.Fatalf("breaker must surface the last assistant text: %q", result.Text)
+	}
+}
+
+// TestRunLoop_NoProgressHardStopCommitsPairedBatch locks the recovery
+// contract: the breaker fires only after each denied call is already paired
+// in history. Committing that batch clears the pre-tool checkpoint so the
+// next user message is not offered as an interrupted-task recovery.
+func TestRunLoop_NoProgressHardStopCommitsPairedBatch(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = fmt.Fprintf(w, `{"choices":[{"message":{"role":"assistant","content":"still looking","tool_calls":[{"id":"call_%d","type":"function","function":{"name":"web_search","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`, callCount)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 20, sysPrompt: "sys",
+	}
+	hooks := &toolBatchCommitCallbacks{}
+	result := RunLoop(cb, "查询北京天气", nil, server.Client(), hooks)
+	if callCount != 5 || !result.HardExit {
+		t.Fatalf("calls=%d hard_exit=%v result=%#v", callCount, result.HardExit, result)
+	}
+	if len(hooks.starts) != 5 || len(hooks.batches) != 5 || len(hooks.abandons) != 0 {
+		t.Fatalf("starts=%d commits=%d abandons=%d", len(hooks.starts), len(hooks.batches), len(hooks.abandons))
+	}
+	last := hooks.batches[len(hooks.batches)-1]
+	if len(last) != 2 || last[0].Role != "assistant" || last[1].Role != "tool" || last[1].ToolName != "web_search" {
+		t.Fatalf("last committed batch was not a paired denial: %#v", last)
+	}
+	if !strings.Contains(result.Text, "still looking") {
+		t.Fatalf("hard stop must return the assistant text, got %q", result.Text)
+	}
+}
+
+func TestRunLoop_EmptyNameToolCallWithTextIsAnAnswer(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"北京今天小雨，23/18°C。","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":""}}]},"finish_reason":"tool_calls"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 3, sysPrompt: "sys",
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{"type": "object"}),
+		},
+	}
+	hooks := &toolBatchCommitCallbacks{}
+	result := RunLoop(cb, "查询北京天气", nil, server.Client(), hooks)
+	if serverCalls != 1 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if result.Text != "北京今天小雨，23/18°C。" {
+		t.Fatalf("Text = %q", result.Text)
+	}
+	if len(cb.toolCalls) != 0 || len(hooks.starts) != 0 || len(hooks.batches) != 0 || len(hooks.abandons) != 0 {
+		t.Fatalf("empty-name call was executed or checkpointed: tools=%#v starts=%d batches=%d abandons=%d", cb.toolCalls, len(hooks.starts), len(hooks.batches), len(hooks.abandons))
+	}
+}
+
+func TestDropUnnamedToolCallsKeepsOriginalSliceWhenNamed(t *testing.T) {
+	calls := []llm.ToolCall{{ID: "real", Function: llm.ToolCallFunction{Name: "web_search", Arguments: `{"query":"北京"}`}}}
+	kept, dropped := dropUnnamedToolCalls(calls)
+	if dropped != 0 || len(kept) != 1 || &kept[0] != &calls[0] {
+		t.Fatalf("named calls must keep the original slice: dropped=%d kept=%#v", dropped, kept)
+	}
+	kept, dropped = dropUnnamedToolCalls([]llm.ToolCall{
+		{ID: "blank", Function: llm.ToolCallFunction{Name: "  "}},
+		{ID: "real", Function: llm.ToolCallFunction{Name: "web_search"}},
+	})
+	if dropped != 1 || len(kept) != 1 || kept[0].ID != "real" {
+		t.Fatalf("dropped=%d kept=%#v", dropped, kept)
+	}
+}
+
+func TestRunLoop_EmptyNameToolCallDoesNotPublishReasoningAsAnswer(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if serverCalls == 1 {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"思维链不应展示给用户","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"北京今天小雨，23/18°C。"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 4, sysPrompt: "sys",
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{"type": "object"}),
+		},
+	}
+	hooks := &toolBatchCommitCallbacks{}
+	result := RunLoop(cb, "查询北京天气", nil, server.Client(), hooks)
+	if serverCalls != 2 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if result.Text != "北京今天小雨，23/18°C。" || strings.Contains(result.Text, "思维链") {
+		t.Fatalf("Text = %q", result.Text)
+	}
+	if len(cb.toolCalls) != 0 || len(hooks.starts) != 0 || len(hooks.batches) != 0 {
+		t.Fatalf("reasoning-only nameless call was executed: tools=%#v starts=%d batches=%d", cb.toolCalls, len(hooks.starts), len(hooks.batches))
+	}
+}
+
+func TestRunLoop_EmptyNameToolCallWithoutTextUsesEmptyRecovery(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if serverCalls == 1 {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"北京今天小雨，23/18°C。"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 4, sysPrompt: "sys",
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{"type": "object"}),
+		},
+	}
+	hooks := &toolBatchCommitCallbacks{}
+	result := RunLoop(cb, "查询北京天气", nil, server.Client(), hooks)
+	if serverCalls != 2 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if result.Text != "北京今天小雨，23/18°C。" {
+		t.Fatalf("Text = %q", result.Text)
+	}
+	if result.ToolCalls != 0 || len(cb.toolCalls) != 0 || len(hooks.starts) != 0 || len(hooks.batches) != 0 || len(hooks.abandons) != 0 {
+		t.Fatalf("blank tool call entered the tool batch: result_tools=%d executed=%#v starts=%d batches=%d abandons=%d", result.ToolCalls, cb.toolCalls, len(hooks.starts), len(hooks.batches), len(hooks.abandons))
+	}
+}
+
+func TestRunLoop_RepeatedNamelessToolCallStopsWithoutEmptyBackoff(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if serverCalls == 1 {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"search","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"北京天气\"}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 8, sysPrompt: "sys", toolResult: "北京今天小雨，23/18°C",
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{"type": "object"}),
+		},
+	}
+	hooks := &toolBatchCommitCallbacks{}
+	started := time.Now()
+	result := RunLoop(cb, "查询北京天气", nil, server.Client(), hooks)
+	if serverCalls != 3 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if time.Since(started) > 2*time.Second {
+		t.Fatalf("nameless retries slept %s", time.Since(started))
+	}
+	if result.Text != "北京今天小雨，23/18°C" {
+		t.Fatalf("Text = %q", result.Text)
+	}
+	if len(cb.toolCalls) != 1 || cb.toolCalls[0] != "web_search" || len(hooks.batches) != 1 || len(hooks.abandons) != 0 {
+		t.Fatalf("tools=%#v batches=%d abandons=%d", cb.toolCalls, len(hooks.batches), len(hooks.abandons))
+	}
+}
+
+func TestCompactPublicWebResultsStaysOutOfTheToolTranscript(t *testing.T) {
+	raw := "Public web results for \"北京今天天气 实时\" (2):\n\n1. 北京市天气预报\n   https://www.msn.com/zh-cn/weather\n   今天小雨，23/18°C，夜间有弱降水，空气质量一般。\n\n2. 北京雷达图\n   https://www.weather.com.cn/weather/101010100.shtml\n   24日（今天）小雨 23/18°C，明天多云 26/14°C。\n"
+	got, ok := compactPublicWebResults(raw)
+	if !ok {
+		t.Fatal("expected a digest")
+	}
+	if strings.Contains(got, "Public web results") || strings.Contains(got, "https://") {
+		t.Fatalf("digest still looks like the tool transcript: %q", got)
+	}
+	if !strings.Contains(got, "今天小雨，23/18°C，夜间有弱降水") || !strings.Contains(got, "1. 北京市天气预报") {
+		t.Fatalf("digest = %q", got)
+	}
+	if len([]rune(got)) < 80 {
+		t.Fatalf("digest is short enough for the thinking panel to be promoted into the bubble: %q", got)
+	}
+	if userFacingToolAnswer(raw) != got {
+		t.Fatal("user-facing answer diverged from the digest")
+	}
+	reordered, ok := compactPublicWebResults("Public web results for \"北京天气\" (3):\n\n1. 城市介绍\n   https://example.com/about\n   北京市是中国的首都，介绍页面没有具体预报。\n\n2. 北京雷达图\n   https://www.weather.com.cn/weather/101010100.shtml\n   24日（今天）小雨 23/18°C，明天多云。\n\n3. 另一篇简介\n   https://example.com/more\n   更多城市资料。\n")
+	if !ok || !strings.HasPrefix(reordered, "根据公开检索，相关信息如下：\n\n1. 北京雷达图\n") {
+		t.Fatalf("forecast snippet was not preferred: %q", reordered)
+	}
+	if strings.Contains(reordered, "https://") || strings.Contains(reordered, "Public web results") {
+		t.Fatalf("reordered digest leaked the transcript: %q", reordered)
+	}
+	if got := userFacingToolAnswer(strings.Repeat("log line\n", 80)); got != "" {
+		t.Fatalf("long non-search transcript leaked: %q", got)
+	}
+}
+
+func TestRunLoop_NamelessCallUsesSoleWebSearch(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if serverCalls == 1 {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"北京今天小雨，23/18°C。"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 4, sysPrompt: "sys", toolResult: "北京今天小雨，23/18°C",
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{"type": "string"},
+				},
+				"required": []string{"query"},
+			}),
+		},
+	}
+	result := RunLoop(cb, "北京天气", nil, server.Client())
+	if serverCalls != 2 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if result.Text != "北京今天小雨，23/18°C。" {
+		t.Fatalf("Text = %q", result.Text)
+	}
+	if len(cb.toolCalls) != 1 || cb.toolCalls[0] != "web_search" || !strings.Contains(cb.toolArgs[0], "北京天气") {
+		t.Fatalf("tools=%#v args=%#v", cb.toolCalls, cb.toolArgs)
+	}
+}
+
+func TestRecoveredQueryCallIDsAreUnique(t *testing.T) {
+	tools := []map[string]interface{}{
+		tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"query"},
+		}),
+	}
+	first, ok := recoverSoleQueryToolCall(tools, []llm.ToolCall{{Function: llm.ToolCallFunction{Arguments: "{}"}}}, "北京天气")
+	second, ok2 := recoverSoleQueryToolCall(tools, []llm.ToolCall{{Function: llm.ToolCallFunction{Arguments: "{}"}}}, "北京天气")
+	if !ok || !ok2 || first.ID == "" || first.ID == second.ID {
+		t.Fatalf("ids = %q %q", first.ID, second.ID)
+	}
+}
+
+func TestQueryToolAlreadySucceededSkipsAnotherSearch(t *testing.T) {
+	tools := []map[string]interface{}{
+		tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"query"},
+		}),
+	}
+	history := []ConversationEntry{{
+		Role:        "tool",
+		ToolName:    "web_search",
+		ToolOutcome: string(ToolExecutionOutcomeOK),
+		Content:     "Public web results for \"北京天气\" (1):\n\n1. 预报\n   今天小雨 23/18°C。",
+	}}
+	if !queryToolAlreadySucceeded(history, tools) {
+		t.Fatal("expected an existing successful search")
+	}
+	if queryToolAlreadySucceeded(nil, tools) {
+		t.Fatal("empty history must still allow the first search")
+	}
+}
+
+func TestRecoverSoleQueryToolCallKeepsModelQueryOnly(t *testing.T) {
+	tools := []map[string]interface{}{
+		tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"query"},
+		}),
+	}
+	call, ok := recoverSoleQueryToolCall(tools, []llm.ToolCall{{
+		Function: llm.ToolCallFunction{Arguments: `{"query":"北京今天天气","count":3}`},
+	}}, "北京天气")
+	if !ok || call.Function.Name != "web_search" || call.Function.Arguments != `{"query":"北京今天天气"}` {
+		t.Fatalf("recovered = %#v ok=%v", call, ok)
+	}
+	bothRequired := []map[string]interface{}{
+		tooldef.BuildToolDef("lookup", "Lookup", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+				"city":  map[string]interface{}{"type": "string"},
+			},
+			"required": []interface{}{"query", "city"},
+		}),
+	}
+	if _, ok := recoverSoleQueryToolCall(bothRequired, []llm.ToolCall{{Function: llm.ToolCallFunction{Arguments: "{}"}}}, "北京天气"); ok {
+		t.Fatal("a tool that requires more than query must not be recovered")
+	}
+}
+
+func TestRecoverSoleQueryToolCallBesideToolsSearch(t *testing.T) {
+	tools := []map[string]interface{}{
+		tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"query"},
+		}),
+		tooldef.BuildToolDef("tools_search", "Discover", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+				"needs": map[string]interface{}{"type": "array"},
+			},
+			"required": []string{},
+		}),
+	}
+	call, ok := recoverSoleQueryToolCall(tools, []llm.ToolCall{{
+		Function: llm.ToolCallFunction{Arguments: "{}"},
+	}}, "成都天气")
+	if !ok || call.Function.Name != "web_search" || !strings.Contains(call.Function.Arguments, "成都天气") {
+		t.Fatalf("recovered = %#v ok=%v", call, ok)
+	}
+}
+
+func TestRunLoop_NamelessCallUsesWebSearchBesideToolsSearch(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if serverCalls == 1 {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"成都今天多云，26/18°C。"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 4, sysPrompt: "sys", toolResult: "成都今天多云，26/18°C",
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{"type": "string"},
+				},
+				"required": []string{"query"},
+			}),
+			tooldef.BuildToolDef("tools_search", "Discover", map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{"type": "string"},
+				},
+				"required": []string{},
+			}),
+		},
+	}
+	result := RunLoop(cb, "成都天气", nil, server.Client())
+	if serverCalls != 2 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if result.Text != "成都今天多云，26/18°C。" {
+		t.Fatalf("Text = %q", result.Text)
+	}
+	if len(cb.toolCalls) != 1 || cb.toolCalls[0] != "web_search" || !strings.Contains(cb.toolArgs[0], "成都天气") {
+		t.Fatalf("tools=%#v args=%#v", cb.toolCalls, cb.toolArgs)
+	}
+}
+
+func TestRunLoop_NamelessAfterSearchFinishesFromToolBody(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if serverCalls == 1 {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-search","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"成都天气\"}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 4, sysPrompt: "sys", toolResult: "成都今天多云，26/18°C",
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{"type": "string"},
+				},
+				"required": []string{"query"},
+			}),
+			tooldef.BuildToolDef("tools_search", "Discover", map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{"query": map[string]interface{}{"type": "string"}},
+				"required":   []string{},
+			}),
+		},
+	}
+	result := RunLoop(cb, "成都天气", nil, server.Client())
+	if serverCalls != 3 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if result.Text != "成都今天多云，26/18°C" || strings.Contains(result.Text, "多次尝试均未取得进展") {
+		t.Fatalf("Text = %q", result.Text)
+	}
+	if len(cb.toolCalls) != 1 || cb.toolCalls[0] != "web_search" {
+		t.Fatalf("tools=%#v", cb.toolCalls)
+	}
+}
+
+type retireSearchAfterCallCallbacks struct {
+	mockCallbacks
+	search []map[string]interface{}
+	later  []map[string]interface{}
+}
+
+func (m *retireSearchAfterCallCallbacks) BuildToolsForModelRequest(string, int) []map[string]interface{} {
+	if len(m.toolCalls) > 0 {
+		return m.later
+	}
+	return m.search
+}
+
+func TestRunLoop_NamelessAfterRetiredSearchFinishesFromResults(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if serverCalls == 1 {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-search","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"成都天气\"}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+	}))
+	defer server.Close()
+
+	search := []map[string]interface{}{
+		tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"query"},
+		}),
+		tooldef.BuildToolDef("tools_search", "Discover", map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{"query": map[string]interface{}{"type": "string"}},
+			"required":   []string{},
+		}),
+	}
+	cb := &retireSearchAfterCallCallbacks{
+		mockCallbacks: mockCallbacks{
+			config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:    4,
+			sysPrompt:  "sys",
+			toolResult: "Public web results for \"成都天气\" (1):\n\n1. 成都天气预报\n   https://example.com/cd\n   今天多云 26/18°C。\n",
+		},
+		search: search,
+		later: []map[string]interface{}{
+			tooldef.BuildToolDef("tools_search", "Discover", map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{"query": map[string]interface{}{"type": "string"}},
+				"required":   []string{},
+			}),
+		},
+	}
+	result := RunLoop(cb, "成都天气", nil, server.Client())
+	if serverCalls != 3 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if !strings.Contains(result.Text, "成都天气预报") || strings.Contains(result.Text, "多次尝试均未取得进展") || strings.Contains(result.Text, "https://") {
+		t.Fatalf("Text = %q", result.Text)
+	}
+}
+
+func TestRunLoop_NamelessAfterSearchKeepsTheLaterAnswer(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		switch serverCalls {
+		case 1:
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-search","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"成都天气\"}"}}]},"finish_reason":"tool_calls"}]}`)
+		case 2:
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"先核对检索摘录，不要把摘录本身交给用户。","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+		default:
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"成都今天多云，26/18°C，建议带伞。"},"finish_reason":"stop"}]}`)
+		}
+	}))
+	defer server.Close()
+
+	search := []map[string]interface{}{
+		tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"query"},
+		}),
+	}
+	cb := &retireSearchAfterCallCallbacks{
+		mockCallbacks: mockCallbacks{
+			config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:    4,
+			sysPrompt:  "sys",
+			toolResult: "Public web results for \"成都天气\" (1):\n\n1. 成都天气预报\n   https://example.com/cd\n   今天多云 26/18°C。\n",
+		},
+		search: search,
+		later:  search,
+	}
+	result := RunLoop(cb, "成都天气", nil, server.Client())
+	if serverCalls != 3 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if result.Text != "成都今天多云，26/18°C，建议带伞。" || strings.Contains(result.Text, "根据公开检索") || strings.Contains(result.Text, "先核对检索摘录") {
+		t.Fatalf("Text = %q", result.Text)
+	}
+}
+
+func TestRunLoop_ToolCallMonologueDoesNotReplaceTheLaterAnswer(t *testing.T) {
+	monologue := "User asks for the forecast. Check the snippets, then answer. Do not show this planning text."
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		switch serverCalls {
+		case 1:
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"`+monologue+`","reasoning_content":"`+monologue+`","tool_calls":[{"id":"call-search","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"成都天气\"}"}}]},"finish_reason":"tool_calls"}]}`)
+		case 2:
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"`+monologue+`","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+		default:
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"成都今天多云，26/18°C，建议带伞。"},"finish_reason":"stop"}]}`)
+		}
+	}))
+	defer server.Close()
+
+	search := []map[string]interface{}{
+		tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"query"},
+		}),
+	}
+	cb := &retireSearchAfterCallCallbacks{
+		mockCallbacks: mockCallbacks{
+			config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:    4,
+			sysPrompt:  "sys",
+			toolResult: "Public web results for \"成都天气\" (1):\n\n1. 成都天气预报\n   https://example.com/cd\n   今天多云 26/18°C。\n",
+		},
+		search: search,
+		later:  search,
+	}
+	result := RunLoop(cb, "成都天气", nil, server.Client())
+	if serverCalls != 3 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if result.Text != "成都今天多云，26/18°C，建议带伞。" || strings.Contains(result.Text, monologue) || strings.Contains(result.Text, "根据公开检索") {
+		t.Fatalf("Text = %q", result.Text)
+	}
+}
+
+func TestRunLoop_ToolCallMonologueDoesNotBecomeTheSearchFallback(t *testing.T) {
+	monologue := "User asks for the forecast. Check the snippets, then answer. Do not show this planning text."
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if serverCalls == 1 {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"`+monologue+`","reasoning_content":"`+monologue+`","tool_calls":[{"id":"call-search","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"成都天气\"}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","reasoning_content":"`+monologue+`","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+	}))
+	defer server.Close()
+
+	search := []map[string]interface{}{
+		tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"query"},
+		}),
+	}
+	cb := &retireSearchAfterCallCallbacks{
+		mockCallbacks: mockCallbacks{
+			config:     corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+			maxIter:    4,
+			sysPrompt:  "sys",
+			toolResult: "Public web results for \"成都天气\" (1):\n\n1. 成都天气预报\n   https://example.com/cd\n   今天多云 26/18°C。\n",
+		},
+		search: search,
+		later:  search,
+	}
+	result := RunLoop(cb, "成都天气", nil, server.Client())
+	if serverCalls != 3 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if !strings.Contains(result.Text, "根据公开检索") || !strings.Contains(result.Text, "成都天气预报") || strings.Contains(result.Text, monologue) {
+		t.Fatalf("Text = %q", result.Text)
+	}
+}
+
+func TestStreamedVisibleAnswerKeepsForecastOutsideDetails(t *testing.T) {
+	forecast := "北京今天小雨，18~23℃，东风微风。明天周五多云，19~25℃。周六有小雨，建议带伞，早晚偏凉。"
+	got := streamedVisibleAnswer(forecast + "\n<details><summary>思考过程</summary>internal</details>")
+	if !strings.Contains(got, "北京今天小雨") || strings.Contains(got, "internal") || strings.Contains(got, "details") || strings.Contains(got, "思考过程") {
+		t.Fatalf("got %q", got)
+	}
+	if streamedVisibleAnswer("太短") != "" || streamedVisibleAnswer("18°C") != "" {
+		t.Fatal("short fragment must not replace a later reply")
+	}
+	if got := streamedVisibleAnswer("成都今天多云，26/18°C，建议带伞。"); !strings.Contains(got, "建议带伞") {
+		t.Fatalf("short forecast dropped: %q", got)
+	}
+	denial := "我理解你想查北京天气，但这一轮我这边没有可用的实时天气查询工具，拿不到准确数据，不能凭空报给你。"
+	history := []ConversationEntry{{Role: "tool", ToolName: "web_search", ToolOutcome: string(ToolExecutionOutcomeOK), Content: "Public web results for \"北京天气\" (1):\n\n1. 预报\n   今天小雨。\n"}}
+	if !streamedDenialAfterSearch(denial, history) {
+		t.Fatal("denial after a successful search was kept")
+	}
+	if streamedDenialAfterSearch("成都今天多云，26/18°C，建议带伞。", history) {
+		t.Fatal("forecast treated as a tool denial")
+	}
+	if streamedDenialAfterSearch("逐小时数据拿不到准确值，当前气温 19.7℃，东北风。", history) {
+		t.Fatal("forecast that mentions a missing hourly series was discarded")
+	}
+	if streamedDenialAfterSearch(denial, nil) {
+		t.Fatal("denial without a search was discarded")
+	}
+	if streamedVisibleAnswer("根据公开检索，相关信息如下：\n\n1. 北京-天气预报\n今天小雨 18/23°C。") != "" {
+		t.Fatal("search digest must not be treated as the streamed answer")
+	}
+	if streamedVisibleAnswer("1. 北京-天气预报\nhttps://www.nmc.cn/publish/forecast\n周四小雨 23°C 18°C") != "" {
+		t.Fatal("search snippet with a result URL must not be treated as the streamed answer")
+	}
+	cited := streamedVisibleAnswer("北京今天小雨，18~23℃，东风微风。详见 https://weather.com.cn/beijing")
+	if !strings.Contains(cited, "北京今天小雨") || strings.Contains(cited, "://") {
+		t.Fatalf("cited forecast dropped: %q", cited)
+	}
+	glued := streamedVisibleAnswer("详见https://weather.com.cn/beijing。北京今天小雨，18~23℃，东风微风。")
+	if !strings.Contains(glued, "北京今天小雨") || strings.Contains(glued, "://") {
+		t.Fatalf("forecast after a URL was swallowed: %q", glued)
+	}
+	numbered := streamedVisibleAnswer("1. 气温约 19.7℃\n2. 东北风约 3 m/s\n详见 https://weather.cma.cn/beijing")
+	if !strings.Contains(numbered, "19.7") || strings.Contains(numbered, "://") {
+		t.Fatalf("numbered forecast dropped: %q", numbered)
+	}
+	lead := streamedVisibleAnswer("1. 北京今天\n小雨，18~23℃，东风微风。\n详见 https://weather.com.cn/beijing")
+	if !strings.Contains(lead, "小雨") || strings.Contains(lead, "://") {
+		t.Fatalf("forecast under a numbered lead-in was dropped: %q", lead)
+	}
+	above := streamedVisibleAnswer("北京今天小雨，18~23℃，东风微风。\n1. 北京-天气预报\nhttps://www.nmc.cn/publish/forecast\n周四小雨 23°C")
+	if !strings.Contains(above, "北京今天小雨") || strings.Contains(above, "nmc.cn") || strings.Contains(above, "周四小雨") {
+		t.Fatalf("forecast above a search hit was dropped: %q", above)
+	}
+	if streamedVisibleAnswer("1. 北京-天气预报 https://www.nmc.cn/publish/forecast\n周四小雨 23°C") != "" {
+		t.Fatal("title and URL on one line were kept")
+	}
+	sameLine := streamedVisibleAnswer("北京今天小雨，18~23℃。\n1. 北京-天气预报 https://www.nmc.cn/a")
+	if !strings.Contains(sameLine, "北京今天小雨") || strings.Contains(sameLine, "nmc.cn") {
+		t.Fatalf("forecast above a same-line hit was dropped: %q", sameLine)
+	}
+	below := streamedVisibleAnswer("1. 北京-天气预报\nhttps://www.nmc.cn/publish/forecast\n周四小雨 23°C\n\n北京今天小雨，18~23℃，东风微风。")
+	if !strings.Contains(below, "北京今天小雨") || strings.Contains(below, "nmc.cn") || strings.Contains(below, "周四小雨") {
+		t.Fatalf("forecast under a search hit was dropped: %q", below)
+	}
+	tight := streamedVisibleAnswer("1. 北京-天气预报\nhttps://www.nmc.cn/publish/forecast\n周四小雨 23°C\n北京今天小雨，18~23℃，东风微风。")
+	if !strings.Contains(tight, "北京今天小雨") || strings.Contains(tight, "nmc.cn") || strings.Contains(tight, "周四小雨") {
+		t.Fatalf("forecast tight under a search hit was dropped: %q", tight)
+	}
+	two := streamedVisibleAnswer("1. 北京-天气预报\nhttps://www.nmc.cn/a\n周四小雨 23°C\n\n2. 雷达图\nhttps://www.nmc.cn/b\n回波\n\n北京今天小雨，18~23℃，东风微风。")
+	if !strings.Contains(two, "北京今天小雨") || strings.Contains(two, "雷达图") || strings.Contains(two, "nmc.cn") {
+		t.Fatalf("later search hit was kept: %q", two)
+	}
+	after := streamedVisibleAnswer("北京今天小雨，18~23℃，东风微风。\n2. 雷达图\nhttps://www.nmc.cn/b\n回波")
+	if !strings.Contains(after, "北京今天小雨") || strings.Contains(after, "雷达图") || strings.Contains(after, "nmc.cn") {
+		t.Fatalf("hit after the forecast was kept: %q", after)
+	}
+}
+
+func TestRunLoop_NamelessAfterSearchKeepsStreamedAnswer(t *testing.T) {
+	forecast := "北京今天小雨，18~23℃，东风微风。明天周五多云，19~25℃。周六有小雨，建议带伞，早晚偏凉。"
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		if serverCalls == 1 {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"call-search","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"北京天气\"}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		// The forecast is inside a details block, which the stored message
+		// drops, and is followed by a nameless tool call. The bubble already
+		// received the forecast text.
+		body := forecast + "\n<details><summary>思考过程</summary>internal</details>"
+		wrapped, _ := json.Marshal(body)
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":"+string(wrapped)+"}}]}\n\n")
+		_, _ = io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"\",\"type\":\"function\",\"function\":{\"name\":\"\",\"arguments\":\"{}\"}}]},\"finish_reason\":\"tool_calls\"}]}\n\n")
+		_, _ = io.WriteString(w, "data: [DONE]\n\n")
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 4, sysPrompt: "sys",
+		toolResult: "Public web results for \"北京天气\" (1):\n\n1. 北京-天气预报\n   https://example.com/bj\n   今天小雨 18/23°C。\n",
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+				"type": "object",
+				"properties": map[string]interface{}{
+					"query": map[string]interface{}{"type": "string"},
+				},
+				"required": []string{"query"},
+			}),
+		},
+	}
+	result := RunLoop(cb, "北京天气", nil, server.Client())
+	if serverCalls != 2 || result.HardExit || result.Error != "" {
+		t.Fatalf("calls=%d tokens=%q result=%#v", serverCalls, cb.tokens, result)
+	}
+	if !strings.Contains(result.Text, "北京今天小雨") || strings.Contains(result.Text, "根据公开检索") || strings.Contains(result.Text, "<details") {
+		t.Fatalf("Text = %q", result.Text)
+	}
+	if n := len(result.HistoryDelta); n == 0 || result.HistoryDelta[n-1].Role != "assistant" || !strings.Contains(fmt.Sprint(result.HistoryDelta[n-1].Content), "北京今天小雨") {
+		t.Fatalf("history lost the forecast: %#v", result.HistoryDelta)
+	}
+}
+
+func TestRecoverSoleQueryToolCallIgnoresAmbiguousSurface(t *testing.T) {
+	tools := []map[string]interface{}{
+		tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{
+			"type": "object",
+			"properties": map[string]interface{}{
+				"query": map[string]interface{}{"type": "string"},
+			},
+			"required": []string{"query"},
+		}),
+		tooldef.BuildToolDef("write_file", "Write", map[string]interface{}{"type": "object"}),
+	}
+	if _, ok := recoverSoleQueryToolCall(tools, []llm.ToolCall{{Function: llm.ToolCallFunction{Arguments: "{}"}}}, "北京天气"); ok {
+		t.Fatal("two tools must not guess a nameless call")
+	}
+	writeOnly := []map[string]interface{}{
+		tooldef.BuildToolDef("write_file", "Write", map[string]interface{}{
+			"type":       "object",
+			"properties": map[string]interface{}{"path": map[string]interface{}{"type": "string"}},
+			"required":   []string{"path"},
+		}),
+	}
+	if _, ok := recoverSoleQueryToolCall(writeOnly, []llm.ToolCall{{Function: llm.ToolCallFunction{Arguments: "{}"}}}, "北京天气"); ok {
+		t.Fatal("write_file must not inherit a nameless call")
+	}
+}
+
+func TestRunLoop_NamelessToolCallWithoutSuccessUsesStopText(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"","type":"function","function":{"name":"","arguments":"{}"}}]},"finish_reason":"tool_calls"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 6, sysPrompt: "sys",
+	}
+	result := RunLoop(cb, "你好", nil, server.Client())
+	if serverCalls != 2 || !result.HardExit {
+		t.Fatalf("calls=%d result=%#v", serverCalls, result)
+	}
+	if !strings.Contains(result.Text, "多次尝试均未取得进展") {
+		t.Fatalf("Text = %q", result.Text)
+	}
+	if len(cb.toolCalls) != 0 {
+		t.Fatalf("executed %#v", cb.toolCalls)
+	}
+}
+
+func TestRunLoop_DropsEmptyNameButExecutesNamedSibling(t *testing.T) {
+	serverCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalls++
+		w.Header().Set("Content-Type", "application/json")
+		if serverCalls == 1 {
+			_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"","tool_calls":[{"id":"blank","type":"function","function":{"name":"","arguments":"{}"}},{"id":"real","type":"function","function":{"name":"web_search","arguments":"{\"query\":\"北京天气\"}"}}]},"finish_reason":"tool_calls"}]}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"choices":[{"message":{"role":"assistant","content":"北京今天小雨。"},"finish_reason":"stop"}]}`)
+	}))
+	defer server.Close()
+
+	cb := &mockCallbacks{
+		config:  corelib.MaclawLLMConfig{URL: server.URL, Model: "test", Key: "test-key"},
+		maxIter: 3, sysPrompt: "sys", toolResult: "北京今天小雨",
+		tools: []map[string]interface{}{
+			tooldef.BuildToolDef("web_search", "Search", map[string]interface{}{"type": "object"}),
+		},
+	}
+	hooks := &toolBatchCommitCallbacks{}
+	result := RunLoop(cb, "查询北京天气", nil, server.Client(), hooks)
+	if result.Error != "" || result.HardExit || result.Text != "北京今天小雨。" {
+		t.Fatalf("result=%#v", result)
+	}
+	if len(cb.toolCalls) != 1 || cb.toolCalls[0] != "web_search" {
+		t.Fatalf("executed %#v, want only web_search", cb.toolCalls)
+	}
+	if len(hooks.starts) != 1 || len(hooks.batches) != 1 || len(hooks.abandons) != 0 {
+		t.Fatalf("starts=%d batches=%d abandons=%d", len(hooks.starts), len(hooks.batches), len(hooks.abandons))
+	}
+	batch := hooks.batches[0]
+	if len(batch) != 2 || batch[1].ToolName != "web_search" {
+		t.Fatalf("committed batch = %#v", batch)
+	}
+	calls, ok := batch[0].ToolCalls.([]llm.ToolCall)
+	if !ok || len(calls) != 1 || calls[0].Function.Name != "web_search" {
+		t.Fatalf("assistant declaration still contains the empty call: %#v", batch[0].ToolCalls)
 	}
 }

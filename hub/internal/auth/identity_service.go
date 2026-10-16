@@ -32,6 +32,7 @@ var (
 	ErrTenantNotFound             = errors.New("tenant not found")
 	ErrTenantInactive             = errors.New("tenant is inactive")
 	ErrUserAlreadyRegistered      = errors.New("user is already registered")
+	ErrReservedSystemAccount      = errors.New("sys_user is a reserved system account")
 	ErrRoutedToAnotherHub         = errors.New("email is routed to another hub")
 	identitySNCounter             atomic.Uint64
 	tenantEmailDomainPattern      = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$`)
@@ -267,9 +268,14 @@ func normalizeTenantIDValue(tenantID string) string {
 }
 
 type MachinePrincipal struct {
-	TenantID  string
-	UserID    string
-	MachineID string
+	TenantID         string
+	UserID           string
+	MachineID        string
+	ClientInstanceID string
+	// FencingToken is supplied only on cloud-workspace write requests. It is
+	// intentionally not part of the machine credential: the Hub issues it
+	// when a writer lease is acquired and validates it against that lease.
+	FencingToken int64
 }
 
 type MachineMetadata struct {
@@ -281,10 +287,19 @@ type MachineMetadata struct {
 	HeartbeatIntervalSec int
 }
 
+const ViewerKindLLMEndpointAPIKey = "llm_endpoint_api_key"
+
 type ViewerPrincipal struct {
-	TenantID string
-	UserID   string
-	Email    string
+	TenantID       string
+	UserID         string
+	Email          string
+	Kind           string
+	ServiceGroupID string
+	APIKeyID       string
+}
+
+func (p *ViewerPrincipal) IsLLMEndpointAPIKey() bool {
+	return p != nil && p.Kind == ViewerKindLLMEndpointAPIKey
 }
 
 type IdentityService struct {
@@ -439,6 +454,9 @@ func (s *IdentityService) StartEnrollment(ctx context.Context, email, machineNam
 	}
 	if email == "" {
 		return nil, ErrInvalidEmail
+	}
+	if err := rejectReservedSystemAccount(email); err != nil {
+		return nil, err
 	}
 	if err := s.ensureTenantActive(ctx, tenantID); err != nil {
 		return nil, err
@@ -601,6 +619,9 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 	if email == "" {
 		return nil, ErrInvalidEmail
 	}
+	if err := rejectReservedSystemAccount(email); err != nil {
+		return nil, err
+	}
 	if err := s.ensureTenantActive(ctx, tenantID); err != nil {
 		return nil, err
 	}
@@ -642,7 +663,7 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 			if err != nil {
 				return nil, err
 			}
-			// Create a login token with a long expiry so the PWA can poll for approval.
+			// Create a login token with a long expiry so the login client can poll for approval.
 			// When the admin approves the enrollment, the token will be consumed
 			// and the poll will return "confirmed".
 			pollResult, err := s.createLoginTokenForPoll(ctx, email, 24*time.Hour)
@@ -687,11 +708,11 @@ func (s *IdentityService) RequestEmailLogin(ctx context.Context, email string) (
 
 	// User exists and is active. Try to send a login email, but if the mailer
 	// fails (network issues, misconfiguration, etc.) fall back to creating a
-	// pre-consumed poll token so the PWA can still auto-login via polling.
+	// pre-consumed poll token so the login client can still auto-login via polling.
 	result, err := s.createLoginTokenAndNotify(ctx, email)
 	if err != nil && user.Status == "active" {
 		// Email delivery failed, but the user is already approved.
-		// Create a poll token and immediately consume it so the PWA
+		// Create a poll token and immediately consume it so the login client
 		// poll returns "confirmed" right away.
 		pollResult, pollErr := s.createLoginTokenForPoll(ctx, email, 15*time.Minute)
 		if pollErr != nil {
@@ -838,7 +859,7 @@ func (s *IdentityService) sendRegistrationVerification(ctx context.Context, emai
 	}
 
 	// Use a direct GET endpoint for email verification — user clicks the link
-	// and gets a success page immediately, no PWA frontend required.
+	// and gets a success page immediately, no client frontend required.
 	confirmURL := s.buildVerifyEmailURL(rawToken)
 	verificationCode := registrationVerificationCode(rawToken)
 
@@ -891,7 +912,7 @@ func (s *IdentityService) consumePendingRegistrationVerificationTokens(ctx conte
 
 // createLoginTokenForPoll creates (or refreshes) a login token for the given
 // email with a custom expiry, without sending a confirmation email. This is
-// used for approval-mode enrollments where the PWA needs to poll until the
+// used for approval-mode enrollments where the login client needs to poll until the
 // admin approves.
 func (s *IdentityService) createLoginTokenForPoll(ctx context.Context, email string, expiry time.Duration) (*EmailLoginRequestResult, error) {
 	tenantID := tenantIDFromContext(ctx)
@@ -1033,7 +1054,7 @@ func (s *IdentityService) ConfirmRegistrationVerification(ctx context.Context, r
 
 // PollEmailLogin checks if the login token identified by rawPollToken has been
 // consumed (i.e. the user clicked the email confirmation link). If consumed,
-// it creates a new viewer token and returns it so the original PWA tab can
+// it creates a new viewer token and returns it so the original login tab can
 // automatically sign in.
 func (s *IdentityService) PollEmailLogin(ctx context.Context, rawPollToken string) (*EmailPollResult, error) {
 	loginToken, err := s.loginTok.GetByPollTokenHash(ctx, hashToken(rawPollToken))
@@ -1177,6 +1198,13 @@ func (s *IdentityService) currentLoginHubPayload() *EmailLoginHub {
 		BaseURL: hubURL,
 		URL:     hubURL,
 	}
+}
+
+// CurrentLoginHubPayload reports the Hub that served the request so clients can
+// pin later traffic (gateway, session, media) to the same node. It is the
+// exported form of currentLoginHubPayload for callers outside this package.
+func (s *IdentityService) CurrentLoginHubPayload() *EmailLoginHub {
+	return s.currentLoginHubPayload()
 }
 
 func (s *IdentityService) currentHubID() string {
@@ -1894,18 +1922,6 @@ func (s *IdentityService) IsEmailBlocked(ctx context.Context, email string) (boo
 	return item != nil, nil
 }
 
-func (s *IdentityService) BuildPWAEntryURL(email string) string {
-	base := s.publicBaseURL
-	if base == "" {
-		base = "http://127.0.0.1:9399"
-	}
-	return fmt.Sprintf(
-		"%s/app?email=%s&entry=app&autologin=1",
-		base,
-		url.QueryEscape(normalizeEmail(email)),
-	)
-}
-
 func (s *IdentityService) ListUsers(ctx context.Context) ([]*store.User, error) {
 	return s.users.List(ctx)
 }
@@ -2139,6 +2155,9 @@ func (s *IdentityService) grantInvitationCodeLLMServiceForUser(ctx context.Conte
 func (s *IdentityService) RegisterReferralUser(ctx context.Context, email string, phoneNumber string, phoneVerified bool) (*store.User, error) {
 	tenantID := tenantIDFromContext(ctx)
 	email = normalizeEmail(email)
+	if err := rejectReservedSystemAccount(email); err != nil {
+		return nil, err
+	}
 	phoneNumber = normalizePhoneIdentityValue(phoneNumber)
 	if email == "" && phoneNumber == "" {
 		return nil, ErrInvalidEmail
@@ -2358,7 +2377,7 @@ func (s *IdentityService) ApproveEnrollment(ctx context.Context, id string) (*st
 		if err := s.grantInvitationCodeLLMServiceForUser(ctx, tenantID, existing.ID, target.Email); err != nil {
 			return nil, nil, err
 		}
-		// Consume any pending login token so the PWA poll returns "confirmed".
+		// Consume any pending login token so the login poll returns "confirmed".
 		s.consumePendingLoginToken(ctx, target.Email)
 		s.syncUserRoute(ctx, target.Email)
 		return existing, target, nil
@@ -2370,7 +2389,7 @@ func (s *IdentityService) ApproveEnrollment(ctx context.Context, id string) (*st
 	if err != nil {
 		return nil, nil, err
 	}
-	// Consume any pending login token so the PWA poll returns "confirmed".
+	// Consume any pending login token so the login poll returns "confirmed".
 	s.consumePendingLoginToken(ctx, target.Email)
 	s.syncUserRoute(ctx, target.Email)
 	return user, target, nil
@@ -2402,12 +2421,15 @@ func (s *IdentityService) ListPendingLoginTokens(ctx context.Context) ([]*store.
 }
 
 // AdminConfirmLoginByEmail consumes the pending login token for the given email
-// so that the PWA poll will see it as confirmed. If the user does not exist yet,
+// so that the login poll will see it as confirmed. If the user does not exist yet,
 // it creates an approved user first.
 func (s *IdentityService) AdminConfirmLoginByEmail(ctx context.Context, email string) (*store.User, error) {
 	email = normalizeEmail(email)
 	if email == "" {
 		return nil, ErrInvalidEmail
+	}
+	if err := rejectReservedSystemAccount(email); err != nil {
+		return nil, err
 	}
 
 	// Ensure the user exists (create if needed).
@@ -2434,7 +2456,7 @@ func (s *IdentityService) AdminConfirmLoginByEmail(ctx context.Context, email st
 		_ = s.enrollments.Approve(ctx, pendingEnr.ID, time.Now())
 	}
 
-	// Consume the pending login token so the PWA poll returns "confirmed".
+	// Consume the pending login token so the login poll returns "confirmed".
 	s.consumePendingLoginToken(ctx, email)
 	s.syncUserRoute(ctx, email)
 
@@ -2442,7 +2464,7 @@ func (s *IdentityService) AdminConfirmLoginByEmail(ctx context.Context, email st
 }
 
 // consumePendingLoginToken consumes the pending login token for the given email
-// (best-effort, errors are ignored). This allows the PWA poll to see the token
+// (best-effort, errors are ignored). This allows the login poll to see the token
 // as consumed and return "confirmed" with an access token.
 func (s *IdentityService) consumePendingLoginToken(ctx context.Context, email string) {
 	pending, err := s.loginTok.GetPendingByTenantEmail(ctx, tenantIDFromContext(ctx), email)
@@ -2582,6 +2604,13 @@ func generateSN() string {
 func hashToken(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
+}
+
+func rejectReservedSystemAccount(email string) error {
+	if llmservice.IsSystemLLMUser("", email) {
+		return ErrReservedSystemAccount
+	}
+	return nil
 }
 
 func defaultIfEmpty(v, fallback string) string {

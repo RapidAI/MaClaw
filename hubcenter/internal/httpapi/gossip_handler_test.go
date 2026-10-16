@@ -196,6 +196,9 @@ func TestGossipCacheRefreshAsyncCoalescesConcurrentRequests(t *testing.T) {
 	defer ticker.Stop()
 	for {
 		if calls := repo.calls(); calls == 2 {
+			// The second refresh is still writing the snapshot file at this
+			// point; returning now would race t.TempDir's RemoveAll cleanup.
+			cache.waitAsyncIdle()
 			return
 		} else if calls > 2 {
 			t.Fatalf("refresh calls = %d, want coalesced to 2", calls)

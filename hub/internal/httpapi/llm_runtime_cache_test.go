@@ -165,3 +165,36 @@ func TestSaveHubLLMPromptCacheConfigInvalidatesRuntimeCache(t *testing.T) {
 		t.Fatalf("prompt cache config Get count after invalidated reload = %d, want 2", got)
 	}
 }
+
+func TestTokenBankGrantInvalidatesServiceRegistryCache(t *testing.T) {
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	invalidateLLMRuntimeCaches(system)
+	if err := llmservice.SaveRegistry(ctx, system, &llmservice.Registry{
+		ModelServiceGroups: []llmservice.ModelServiceGroup{{ID: "paid", Name: "Paid"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := loadCachedLLMServiceRegistry(ctx, system); err != nil {
+		t.Fatal(err)
+	}
+	if _, created, err := llmservice.IssueTokenBankGrant(ctx, system, "user-1", "owner@example.com", "paid", "req-cache", 1_000_000); err != nil || !created {
+		t.Fatalf("issue grant created=%v err=%v", created, err)
+	}
+	reg, err := loadCachedLLMServiceRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, grant := range reg.Grants {
+		if grant.Source == llmservice.TokenBankGrantSource && grant.CardID == "tbk:req-cache" {
+			found = true
+			if grant.CreditsTotal != 1 {
+				t.Fatalf("credits = %v, want 1", grant.CreditsTotal)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("cached registry missing token-bank grant: %+v", reg.Grants)
+	}
+}

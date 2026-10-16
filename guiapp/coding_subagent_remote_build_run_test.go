@@ -1,0 +1,475 @@
+package guiapp
+
+import (
+	"strings"
+	"testing"
+)
+
+// Regression from ~/.maclaw workbench: T3 ran successfully
+//
+//	mkdir && cmake && make && /home/.../build/sysinfo12
+//
+// but quality gate said "failure-suppressing shell syntax" because the absolute
+// build binary after && was not treated as verification/acceptance.
+func TestRemoteBuildAndRunAbsoluteBinaryIsVerification(t *testing.T) {
+	cmd := "cd /home/sysinfo12/build && cmake .. 2>&1 && make 2>&1 && /home/sysinfo12/build/sysinfo12"
+	if suppressesVerificationFailure(cmd) {
+		t.Fatalf("build+run absolute binary must not be failure-suppressing: %q", cmd)
+	}
+	if isUnsafeSubAgentVerificationCommand(cmd) {
+		t.Fatalf("build+run absolute binary must not be unsafe verification: %q", cmd)
+	}
+	if !isSubAgentVerificationCommand(cmd) {
+		t.Fatalf("build+run absolute binary must count as verification: %q", cmd)
+	}
+	if !isSubAgentVerificationCommand("/home/sysinfo12/build/sysinfo12") {
+		t.Fatal("absolute project build binary alone must count as verification")
+	}
+	status, summary := summarizeSubAgentVerification(
+		[]string{"/home/sysinfo12/src/sysinfo.cpp"},
+		[]CodingSubAgentCommandResult{
+			{Command: cmd, Succeeded: true, Summary: "系统信息\nCPU\n内存\nEXIT: 0", seq: 5},
+		},
+		3,
+	)
+	if status != codingSubAgentQualityPassed {
+		t.Fatalf("T3 build+run should pass verification, got (%q, %q)", status, summary)
+	}
+
+	// System binaries still must not count.
+	if isSubAgentVerificationCommand("/bin/rm") || isSubAgentVerificationCommand("/usr/bin/ls") {
+		t.Fatal("system absolute binaries must not count as project verification")
+	}
+	if isSubAgentVerificationCommand("/tmp/evil") || isSubAgentVerificationCommand("/home/user/random") {
+		t.Fatal("arbitrary absolute paths without a build/dist/out/bin tree must not count")
+	}
+	if isSubAgentVerificationCommand(`C:\Windows\System32\cmd.exe`) {
+		t.Fatal("Windows system executables must not count as project verification")
+	}
+	// make ; run is still extra-command style; we only green-light && chains via
+	// verification segments. Absolute build binary alone is fine.
+	if !isSubAgentVerificationCommand("/opt/myapp/build/app") {
+		t.Fatal("opt project build binary should count")
+	}
+}
+
+// Live local hello-world (2026-08-20): g++ compiled and printed Hello, World!,
+// but quality said "verification not run" + "2 command(s) failed" because the
+// PATH-prefixed compile+run was treated as failure-suppressing and the
+// where.exe inventory (clang++ missing) stayed unresolved.
+func TestLocalMinGWHelloWorldCompileRunPassesVerification(t *testing.T) {
+	probe := `where.exe g++ 2>$null; where.exe gcc 2>$null; where.exe clang++ 2>$null; $env:PATH -split ';' | Select-String -Pattern '(gcc|clang|g\+\+|bin)' | Select-Object -First 10`
+	compile := `$env:PATH = 'C:\Users\ma139\AppData\Local\Microsoft\WinGet\Packages\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\mingw64\bin;' + $env:PATH; g++ -std=c++17 -o hello.exe hello.cpp && ./hello.exe`
+	if suppressesVerificationFailure(compile) {
+		t.Fatalf("PATH-prefixed g++ && ./hello.exe must not be failure-suppressing: %q", compile)
+	}
+	if isUnsafeSubAgentVerificationCommand(compile) {
+		t.Fatalf("PATH-prefixed g++ && ./hello.exe must not be unsafe: %q", compile)
+	}
+	if !isSubAgentVerificationCommand(compile) {
+		t.Fatalf("PATH-prefixed g++ && ./hello.exe must count as verification: %q", compile)
+	}
+
+	commands := []CodingSubAgentCommandResult{
+		{
+			Command:   `cmd /c 'call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" && cl /utf-8 /EHsc /Fe:hello.exe hello.cpp && hello.exe'`,
+			Succeeded: false,
+			Summary:   `'\"C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat\"' is not recognized as an internal or external command`,
+			seq:       2,
+		},
+		{
+			Command:   `Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Recurse -Filter "cl.exe" -ErrorAction SilentlyContinue | Select-Object -First 5 FullName`,
+			Succeeded: true,
+			seq:       3,
+		},
+		{
+			Command:   probe,
+			Succeeded: false,
+			Summary:   "C:\\Users\\ma139\\AppData\\Local\\Microsoft\\WinGet\\Packages\\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\\mingw64\\bin\\g++.exe\r\nC:\\Users\\ma139\\AppData\\Local\\Microsoft\\WinGet\\Packages\\BrechtSanders.WinLibs.POSIX.UCRT_Microsoft.Winget.Source_8wekyb3d8bbwe\\mingw64\\bin\\gcc.exe\r\n[stderr] Last error: INFO: Could not find files for the given pattern(s).\ncommand exited with code 1",
+			seq:       4,
+		},
+		{
+			Command:   compile,
+			Succeeded: true,
+			Summary:   "Hello, World!\n",
+			seq:       5,
+		},
+	}
+	if unresolved := unresolvedFailedSubAgentCommands(commands); len(unresolved) != 0 {
+		t.Fatalf("later successful g++ compile must resolve probe failures, got %#v", unresolved)
+	}
+	status, summary := summarizeSubAgentVerification([]string{"hello.cpp"}, commands, 1)
+	if status != codingSubAgentQualityPassed {
+		t.Fatalf("live MinGW hello-world should pass verification, got (%q, %q)", status, summary)
+	}
+	quality, qualitySummary, issues := summarizeSubAgentQuality(
+		codingSubAgentQualityNotNeeded, status, true,
+		[]string{"hello.cpp"}, []string{"hello.cpp"},
+		commands, 1, nil, nil,
+	)
+	if quality != codingSubAgentQualityPassed {
+		t.Fatalf("live MinGW hello-world quality should pass, got (%q, %q, %d)", quality, qualitySummary, issues)
+	}
+}
+
+func TestCompileThenRunIsOneVerification(t *testing.T) {
+	for _, cmd := range []string{
+		`cl /utf-8 /EHsc /Fe:hello.exe hello.cpp && hello.exe`,
+		`cl /utf-8 /EHsc /Fe:hello.exe hello.cpp ; .\hello.exe`,
+		`g++ -std=c++17 -o hello.exe hello.cpp && ./hello.exe`,
+		`g++ -std=c++17 -o hello.exe hello.cpp ; .\hello.exe`,
+	} {
+		if suppressesVerificationFailure(cmd) {
+			t.Fatalf("compile+run must not be failure-suppressing: %q", cmd)
+		}
+		if !isSubAgentVerificationCommand(cmd) {
+			t.Fatalf("compile+run must count as verification: %q", cmd)
+		}
+	}
+	if !suppressesVerificationFailure(`go test ./... && echo done`) {
+		t.Fatal("echo after go test must stay unsafe")
+	}
+	if !suppressesVerificationFailure(`go test ./... ; echo done`) {
+		t.Fatal("echo after go test via semicolon must stay unsafe")
+	}
+	if out := cCompilerOutputBinary([]string{"g++", "-og", "-ofast", "-o", "hello.exe", "hello.cpp"}); out != "hello.exe" {
+		t.Fatalf("optimizer flags must not be compile outputs, got %q", out)
+	}
+	if out := cCompilerOutputBinary([]string{"g++", "-ohello", "hello.cpp"}); out != "hello" {
+		t.Fatalf("glued -ohello must be output hello, got %q", out)
+	}
+	if suppressesVerificationFailure(`g++ -og -o hello.exe hello.cpp && ./hello.exe`) {
+		t.Fatal("g++ -og -o hello.exe && ./hello.exe must stay a compile+run")
+	}
+	if suppressesVerificationFailure(`g++ -ohello hello.cpp && hello`) {
+		t.Fatal("g++ -ohello && hello must stay a compile+run")
+	}
+}
+
+func TestRecoverableSubAgentVerificationCommandRemovesDisplayWrapper(t *testing.T) {
+	wrapped := `g++ -std=c++11 -o snake.exe snake.cpp 2>&1; echo "Exit code: $?"`
+	if !isUnsafeSubAgentVerificationCommand(wrapped) {
+		t.Fatalf("fixture must be classified as unsafe before recovery: %q", wrapped)
+	}
+	if got := recoverSubAgentVerificationCommand(wrapped); got != `g++ -std=c++11 -o snake.exe snake.cpp` {
+		t.Fatalf("recovered verifier = %q", got)
+	}
+	commands := []CodingSubAgentCommandResult{{Command: wrapped, WorkingDir: `C:\repo\cmd`, Succeeded: true, seq: 4}}
+	if got := recoverableSubAgentVerificationCommand(commands, 3); got != `g++ -std=c++11 -o snake.exe snake.cpp` {
+		t.Fatalf("fresh successful wrapper should produce a clean verifier, got %q", got)
+	}
+	if got, workingDir := recoverableSubAgentVerification(commands, 3); got != `g++ -std=c++11 -o snake.exe snake.cpp` || workingDir != `C:\repo\cmd` {
+		t.Fatalf("recovered verifier must retain its original working directory, got (%q, %q)", got, workingDir)
+	}
+	if got := recoverableSubAgentVerificationCommand(commands, 5); got != "" {
+		t.Fatalf("stale wrapper must not be recovered, got %q", got)
+	}
+	if got := recoverableSubAgentVerificationCommand([]CodingSubAgentCommandResult{{Command: wrapped, Succeeded: true}}, 1); got != "" {
+		t.Fatalf("unsequenced wrapper must not be recovered after a tracked edit, got %q", got)
+	}
+	commands = append(commands, CodingSubAgentCommandResult{Command: `g++ -std=c++11 -o snake.exe snake.cpp`, Succeeded: true, Summary: "build succeeded", seq: 5})
+	status, summary := summarizeSubAgentVerification([]string{"snake.cpp"}, commands, 3)
+	if status != codingSubAgentQualityPassed {
+		t.Fatalf("clean rerun must supersede the recovered display wrapper, got (%q, %q)", status, summary)
+	}
+	for _, command := range []string{
+		`g++ -o snake.exe snake.cpp 2>&1 | tee build.log`,
+		`g++ -o snake.exe snake.cpp || true`,
+		`g++ -o snake.exe snake.cpp; Remove-Item snake.exe`,
+		`g++ -o snake.exe snake.cpp; echo build complete`,
+		`g++ -o snake.exe snake.cpp; echo "Exit code: $?"; Remove-Item snake.exe`,
+		`g++ -o snake.exe snake.cpp && printf 'exit code: %s' "$?" && touch build-ran`,
+		`g++ -o snake.exe snake.cpp; echo "Exit code: $(Remove-Item snake.exe)"`,
+		`g++ -o snake.exe snake.cpp; echo "Exit code: $?" > build.log`,
+	} {
+		if got := recoverSubAgentVerificationCommand(command); got != "" {
+			t.Fatalf("unsafe non-display wrapper must not be recovered: %q -> %q", command, got)
+		}
+	}
+}
+
+// Live local T2 (2026-09-13, ~/.maclaw): cmake --build and
+// `.\build\snake.exe --selftest` both succeeded, but the model printed the
+// PowerShell exit code with `; "exit=$LASTEXITCODE"`. Quality treated that as
+// failure-suppressing shell syntax and failed the task with "verification not run".
+func TestPowerShellLastExitCodeDisplayWrapperIsRecoverable(t *testing.T) {
+	cases := []struct {
+		wrapped, want string
+	}{
+		{`.\build\snake.exe --selftest; "exit=$LASTEXITCODE"`, `.\build\snake.exe --selftest`},
+		{`.\build\snake.exe --tonecheck; "tonecheck exit=$LASTEXITCODE"`, `.\build\snake.exe --tonecheck`},
+		{`.\build\snake.exe --selftest; "selftest exit=$LASTEXITCODE"`, `.\build\snake.exe --selftest`},
+		{`.\build\snake.exe --selftest; Write-Output "exit=$LASTEXITCODE"`, `.\build\snake.exe --selftest`},
+		{`cmake --build build; echo "exit=$LASTEXITCODE"`, `cmake --build build`},
+		{`cmake --build build; Write-Host "exit=$LASTEXITCODE"`, `cmake --build build`},
+	}
+	for _, tc := range cases {
+		if !isUnsafeSubAgentVerificationCommand(tc.wrapped) {
+			t.Fatalf("fixture must be unsafe before recovery: %q", tc.wrapped)
+		}
+		if got := recoverSubAgentVerificationCommand(tc.wrapped); got != tc.want {
+			t.Fatalf("recovered verifier for %q = %q, want %q", tc.wrapped, got, tc.want)
+		}
+		if got := normalizeSubAgentVerificationCommandForExecution(tc.wrapped); got != tc.want {
+			t.Fatalf("execution-time strip for %q = %q, want %q", tc.wrapped, got, tc.want)
+		}
+		if !isSubAgentVerificationCommand(tc.want) {
+			t.Fatalf("stripped command must count as verification: %q", tc.want)
+		}
+	}
+
+	commands := []CodingSubAgentCommandResult{
+		{Command: `cmake --build build`, Succeeded: true, Summary: "[2/2] Linking CXX executable snake.exe", seq: 19, WorkingDir: `F:\test-prog`},
+		{Command: `.\build\snake.exe --tonecheck; "tonecheck exit=$LASTEXITCODE"`, Succeeded: true, Summary: "tonecheck exit=0\r\ntonecheck: Beep() -> TRUE", seq: 20, WorkingDir: `F:\test-prog`},
+		{Command: `.\build\snake.exe --selftest; "selftest exit=$LASTEXITCODE"`, Succeeded: true, Summary: "selftest exit=0\r\nselftest: logic checks passed", seq: 21, WorkingDir: `F:\test-prog`},
+	}
+	got := recoverableSubAgentVerifications(commands, 18)
+	if len(got) != 2 {
+		t.Fatalf("unique recovered verifiers = %#v, want 2", got)
+	}
+	if got[0].command != `.\build\snake.exe --selftest` || got[1].command != `.\build\snake.exe --tonecheck` {
+		t.Fatalf("recovered verifiers = %#v", got)
+	}
+
+	// After the host replays each recovered verifier, the wrappers are no longer
+	// allowed to poison a successful cmake --build + acceptance run.
+	commands = append(commands,
+		CodingSubAgentCommandResult{Command: `.\build\snake.exe --selftest`, Succeeded: true, Summary: "selftest: logic checks passed", seq: 22, WorkingDir: `F:\test-prog`},
+		CodingSubAgentCommandResult{Command: `.\build\snake.exe --tonecheck`, Succeeded: true, Summary: "tonecheck: Beep() -> TRUE", seq: 23, WorkingDir: `F:\test-prog`},
+	)
+	status, summary := summarizeSubAgentVerification([]string{`F:\test-prog\snake.cpp`}, commands, 18)
+	if status != codingSubAgentQualityPassed {
+		t.Fatalf("live T2 cmake+selftest+tonecheck should pass after recovered reruns, got (%q, %q)", status, summary)
+	}
+
+	for _, command := range []string{
+		`.\build\snake.exe --selftest; foo $LASTEXITCODE`,
+		`.\build\snake.exe --selftest; echo done`,
+		`.\build\snake.exe --selftest; echo "exit=success"`,
+		`.\build\snake.exe --selftest; exit $LASTEXITCODE`,
+	} {
+		if got := recoverSubAgentVerificationCommand(command); got != "" {
+			t.Fatalf("non-display tail must not be recovered: %q -> %q", command, got)
+		}
+	}
+}
+
+// Live local T1 (2026-09-15, ~/.maclaw trajectory 2026-09-15_15-49-00.625,
+// F:\test-prog): after the final edit the model verified with
+// `cmake --build build --config Release && .\build\snake.exe --selftest;
+// echo "exit=$LASTEXITCODE"` (run twice) plus the direct c++ compile+run
+// equivalent. Every wrapper succeeded and the host's generic post-loop
+// `cmake --build build` passed, but the && chains had no recovery, so the
+// quality audit failed the task with "verification command used
+// failure-suppressing shell syntax (3 command(s))" despite the change being
+// complete and verified.
+func TestCompileThenRunDisplayWrapperChainIsRecoverable(t *testing.T) {
+	cases := []struct {
+		wrapped, want string
+	}{
+		{
+			`cmake --build build --config Release && .\build\snake.exe --selftest; echo "exit=$LASTEXITCODE"`,
+			`cmake --build build --config Release && .\build\snake.exe --selftest`,
+		},
+		{
+			`c++ -std=c++11 -O2 -mwindows -o snake.exe snake.cpp -luser32 -lgdi32 && .\snake.exe --selftest; "exit=$LASTEXITCODE"`,
+			`c++ -std=c++11 -O2 -mwindows -o snake.exe snake.cpp -luser32 -lgdi32 && .\snake.exe --selftest`,
+		},
+	}
+	for _, tc := range cases {
+		if !isUnsafeSubAgentVerificationCommand(tc.wrapped) {
+			t.Fatalf("fixture must be unsafe before recovery: %q", tc.wrapped)
+		}
+		if got := recoverSubAgentVerificationCommand(tc.wrapped); got != tc.want {
+			t.Fatalf("recovered verifier for %q = %q, want %q", tc.wrapped, got, tc.want)
+		}
+		if !isSubAgentVerificationCommand(tc.want) {
+			t.Fatalf("recovered chain must count as clean verification: %q", tc.want)
+		}
+	}
+
+	commands := []CodingSubAgentCommandResult{
+		{Command: `cmake --build build --config Release && .\build\snake.exe --selftest; echo "exit=$LASTEXITCODE"`, Succeeded: true, Summary: "selftest exit=0\r\nselftest: [ok] glyph coverage", seq: 20, WorkingDir: `F:\test-prog`},
+		{Command: `cmake --build build --config Release && .\build\snake.exe --selftest; echo "exit=$LASTEXITCODE"`, Succeeded: true, Summary: "selftest exit=0\r\nselftest: [ok] glyph coverage", seq: 21, WorkingDir: `F:\test-prog`},
+		{Command: `c++ -std=c++11 -O2 -mwindows -o snake.exe snake.cpp -luser32 -lgdi32 && .\snake.exe --selftest; "exit=$LASTEXITCODE"`, Succeeded: true, Summary: "exit=0\r\nselftest: [ok] glyph coverage", seq: 22, WorkingDir: `F:\test-prog`},
+		{Command: `cmake --build build`, Succeeded: true, Summary: "ninja: no work to do.", seq: 23, WorkingDir: `F:\test-prog`},
+	}
+	got := recoverableSubAgentVerifications(commands, 19)
+	if len(got) != 2 {
+		t.Fatalf("unique recovered verifiers = %#v, want 2", got)
+	}
+	if got[0].command != cases[1].want || got[1].command != cases[0].want {
+		t.Fatalf("recovered verifiers = %#v", got)
+	}
+
+	// Before the host replays the recovered chains, the wrappers must still
+	// poison the audit (recovery is not a free pass).
+	status, summary := summarizeSubAgentVerification([]string{`F:\test-prog\snake.cpp`}, commands, 19)
+	if status != codingSubAgentQualityMissing || !strings.Contains(summary, "failure-suppressing shell syntax (3 command(s))") {
+		t.Fatalf("unrecovered wrappers must still poison the gate, got (%q, %q)", status, summary)
+	}
+
+	// After the host replays each recovered verifier, the audit must pass.
+	commands = append(commands,
+		CodingSubAgentCommandResult{Command: cases[0].want, Succeeded: true, Summary: "selftest: [ok] glyph coverage", seq: 24, WorkingDir: `F:\test-prog`},
+		CodingSubAgentCommandResult{Command: cases[1].want, Succeeded: true, Summary: "selftest: [ok] glyph coverage", seq: 25, WorkingDir: `F:\test-prog`},
+	)
+	status, summary = summarizeSubAgentVerification([]string{`F:\test-prog\snake.cpp`}, commands, 19)
+	if status != codingSubAgentQualityPassed {
+		t.Fatalf("live T1 cmake/c++ compile+run wrappers should pass after recovered reruns, got (%q, %q)", status, summary)
+	}
+
+	for _, command := range []string{
+		`go test ./... && echo done; echo "exit=$?"`,
+		`g++ -o snake.exe snake.cpp && rm -rf build; echo "exit=$?"`,
+		`cmake --build build && .\build\snake.exe --selftest | tee log; echo "exit=$?"`,
+	} {
+		if got := recoverSubAgentVerificationCommand(command); got != "" {
+			t.Fatalf("unsafe non-display chain must not be recovered: %q -> %q", command, got)
+		}
+	}
+
+	// Benign verifier chains without a display tail are not masking wrappers:
+	// recovery must leave them alone. (On Windows the separate
+	// rewriteWindowsCompileThenRunSemicolon may still join them with && at
+	// execution time; that conversion predates recovery and is unrelated.)
+	for _, command := range []string{
+		`go build ./... ; go vet ./...`,
+		`go build ./... && go vet ./...`,
+		`cmake -S . -B build; cmake --build build --config Release`,
+	} {
+		if got := recoverSubAgentVerificationCommand(command); got != "" {
+			t.Fatalf("non-masking verifier chain must not be recovered: %q -> %q", command, got)
+		}
+	}
+}
+
+// Live local T1 follow-up (2026-09-15, ~/.maclaw): the syntax-check wrapper
+// `c++ --version; c++ -std=c++11 -Wall -Wextra -fsyntax-only snake.cpp;
+// "lint_exit=$LASTEXITCODE"` was unsafe and its leading version probe blocked
+// recovery entirely, so a genuinely green lint could not neutralize the
+// poisoned audit. Audit-time recovery may skip leading benign probes; the
+// execution-time normalization stays strict so non-unsafe commands always run
+// exactly what the model wrote.
+func TestUnsafeRecoverySkipsLeadingBenignProbes(t *testing.T) {
+	wrapped := `c++ --version; c++ -std=c++11 -Wall -Wextra -fsyntax-only snake.cpp; "lint_exit=$LASTEXITCODE"`
+	if !isUnsafeSubAgentVerificationCommand(wrapped) {
+		t.Fatalf("fixture must be unsafe before recovery: %q", wrapped)
+	}
+	want := `c++ -std=c++11 -Wall -Wextra -fsyntax-only snake.cpp`
+	if got := recoverUnsafeSubAgentVerificationCommand(wrapped); got != want {
+		t.Fatalf("audit-time recovery = %q, want %q", got, want)
+	}
+	if got := recoverSubAgentVerificationCommand(wrapped); got != "" {
+		t.Fatalf("execution-time recovery must stay strict for probe-prefixed wrappers: %q", got)
+	}
+
+	for _, command := range []string{
+		`c++ --version; c++ -std=c++11 -Wall -Wextra -fsyntax-only snake.cpp | tee lint.log`,
+		`$(uname -a); c++ -std=c++11 -fsyntax-only snake.cpp; "lint_exit=$LASTEXITCODE"`,
+		`c++ --version 2>&1; c++ -std=c++11 -fsyntax-only snake.cpp; "lint_exit=$LASTEXITCODE"`,
+		`echo "${PROJ:=x}"; c++ -std=c++11 -fsyntax-only snake.cpp; "lint_exit=$LASTEXITCODE"`,
+	} {
+		if got := recoverUnsafeSubAgentVerificationCommand(command); got != "" {
+			t.Fatalf("unsafe wrapper must not be recovered: %q -> %q", command, got)
+		}
+	}
+
+	// Plain variable expansion in a probe is harmless (the probe is dropped
+	// from the replay), and a mid-line display echo must not block recovery.
+	// Every verification segment lands in the recovered chain: replaying only
+	// the last verifier would hide an earlier masked failure (false green).
+	for wrapped, want := range map[string]string{
+		`echo "proj=$PROJ"; go test ./...; echo "exit=$?"`:                                    `go test ./...`,
+		`go build ./... ; echo "exit=$?" ; go test ./...`:                                     `go build ./... && go test ./...`,
+		`Write-Output "env=$ENVIRONMENT"; .\build\snake.exe --selftest; "exit=$LASTEXITCODE"`: `.\build\snake.exe --selftest`,
+		`go vet ./... ; echo "vet exit=$?" ; go test ./...`:                                   `go vet ./... && go test ./...`,
+		`c++ --version; c++ -std=c++11 -Wall -Wextra -fsyntax-only snake.cpp; echo done`:      `c++ -std=c++11 -Wall -Wextra -fsyntax-only snake.cpp`,
+		`go build ./... ; echo "exit=$?" ; go test ./... ; echo "test exit=$?"`:               `go build ./... && go test ./...`,
+		`go test ./... ; echo "test exit=$?" ; go build ./... ; echo "build exit=$?"`:         `go test ./... && go build ./...`,
+	} {
+		if got := recoverUnsafeSubAgentVerificationCommand(wrapped); got != want {
+			t.Fatalf("audit-time recovery for %q = %q, want %q", wrapped, got, want)
+		}
+	}
+
+	commands := []CodingSubAgentCommandResult{
+		{Command: wrapped, Succeeded: true, Summary: "0 errors and 0 warnings", seq: 20, WorkingDir: `F:\test-prog`},
+		{Command: want, Succeeded: true, Summary: "0 errors and 0 warnings", seq: 21, WorkingDir: `F:\test-prog`},
+	}
+	status, summary := summarizeSubAgentVerification([]string{`F:\test-prog\snake.cpp`}, commands, 19)
+	if status != codingSubAgentQualityPassed {
+		t.Fatalf("probe-prefixed lint wrapper should pass after recovered rerun, got (%q, %q)", status, summary)
+	}
+}
+
+func TestRewriteWindowsCompileThenRunSemicolon(t *testing.T) {
+	got := rewriteWindowsCompileThenRunSemicolon(`cl /utf-8 /EHsc /Fe:hello.exe hello.cpp ; .\hello.exe`)
+	if !strings.Contains(got, "&&") || strings.Contains(got, ";") {
+		t.Fatalf("compile then run semicolon must become &&, got %q", got)
+	}
+	got = rewriteWindowsCompileThenRunSemicolon(`g++ -std=c++17 -o hello.exe hello.cpp ; .\hello.exe`)
+	if !strings.Contains(got, "&&") {
+		t.Fatalf("g++ compile then run semicolon must become &&, got %q", got)
+	}
+	kept := rewriteWindowsCompileThenRunSemicolon(`where.exe g++ ; where.exe gcc ; where.exe clang++`)
+	if strings.Contains(kept, "&&") {
+		t.Fatalf("inventory probes must keep semicolons, got %q", kept)
+	}
+	kept = rewriteWindowsCompileThenRunSemicolon(`go test ./... ; echo done`)
+	if strings.Contains(kept, "&&") {
+		t.Fatalf("echo after go test must stay semicolon, got %q", kept)
+	}
+	got = rewriteWindowsCompileThenRunSemicolon(`Write-Output "a ; b" ; g++ -o hello.exe hello.cpp ; .\hello.exe`)
+	if strings.Count(got, "&&") != 1 || !strings.Contains(got, `"a ; b"`) {
+		t.Fatalf("quoted semicolon must stay, compile tail must convert, got %q", got)
+	}
+	got = rewriteWindowsCompileThenRunSemicolon(`cmd /c "cl /utf-8 /EHsc /Fe:hello.exe hello.cpp ; .\hello.exe"`)
+	if !strings.Contains(got, `cmd /c "`) || !strings.Contains(got, "&&") || strings.Contains(got, ";") {
+		t.Fatalf("cmd /c quoted compile+run must unwrap and convert, got %q", got)
+	}
+	got = rewriteWindowsCompileThenRunSemicolon(`powershell -NoProfile -Command "g++ -o hello.exe hello.cpp ; .\hello.exe"`)
+	if !strings.Contains(got, "-Command") || !strings.Contains(got, "&&") || strings.Contains(got, ";") {
+		t.Fatalf("powershell -Command quoted compile+run must convert, got %q", got)
+	}
+	kept = rewriteWindowsCompileThenRunSemicolon(`cmd /c "where.exe g++ ; where.exe gcc"`)
+	if strings.Contains(kept, "&&") {
+		t.Fatalf("cmd /c inventory must keep semicolons, got %q", kept)
+	}
+}
+
+func TestRemoteDocumentationEditDoesNotInvalidatePriorBuildVerification(t *testing.T) {
+	cb := &remoteCodingCallbacks{
+		fileEdits: []remoteCodingFileAuditEvent{
+			{Path: "/home/sysinfo17/README.md", Seq: 4},
+		},
+	}
+	verificationFiles, verificationLastEditSeq := cb.remoteVerificationRelevantEdits([]string{"/home/sysinfo17/README.md"})
+	if len(verificationFiles) != 0 {
+		t.Fatalf("documentation-only files must not require build verification: %#v", verificationFiles)
+	}
+	if got := verificationLastEditSeq; got != 0 {
+		t.Fatalf("documentation-only edit sequence = %d, want 0", got)
+	}
+	status, summary := summarizeSubAgentVerification(
+		verificationFiles,
+		[]CodingSubAgentCommandResult{
+			{Command: "cd build && cmake .. && make", Succeeded: true, Summary: "[100%] Built target sysinfo", seq: 2},
+			{Command: "/home/sysinfo17/build/sysinfo", Succeeded: true, Summary: "system information", seq: 3},
+			{Command: `cd /home/sysinfo17 && git status --short; echo "=== EXIT: $? ==="`, Succeeded: true, seq: 5},
+		},
+		verificationLastEditSeq,
+	)
+	if status != codingSubAgentQualityNotNeeded {
+		t.Fatalf("README wrap-up must not require a stale rebuild, got (%q, %q)", status, summary)
+	}
+
+	cb.fileEdits = append(cb.fileEdits, remoteCodingFileAuditEvent{Path: "/home/sysinfo17/CMakeLists.txt", Seq: 6})
+	verificationFiles, verificationLastEditSeq = cb.remoteVerificationRelevantEdits([]string{"/home/sysinfo17/README.md", "/home/sysinfo17/CMakeLists.txt"})
+	if len(verificationFiles) != 1 || verificationFiles[0] != "/home/sysinfo17/CMakeLists.txt" {
+		t.Fatalf("build-config file must require verification: %#v", verificationFiles)
+	}
+	if got := verificationLastEditSeq; got != 6 {
+		t.Fatalf("build-config edit sequence = %d, want 6", got)
+	}
+}

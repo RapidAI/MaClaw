@@ -82,6 +82,13 @@ func AtomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	return nil
 }
 
+// RenameAtomicFile moves a staged file onto its target with the same
+// Windows-aware retry semantics as AtomicWriteFile. The caller is responsible
+// for writing and fsync'ing the staged file first.
+func RenameAtomicFile(stagedPath, targetPath string) error {
+	return renameAtomicFile(stagedPath, targetPath)
+}
+
 func renameAtomicFile(tmpPath, targetPath string) error {
 	if runtime.GOOS != "windows" {
 		return os.Rename(tmpPath, targetPath)

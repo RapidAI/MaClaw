@@ -979,6 +979,57 @@ func TestListSourcesIncludeEmptyOwner(t *testing.T) {
 	}
 }
 
+func TestSearchOwnerLineageIncludesSessionOwnersAndEmpty(t *testing.T) {
+	ctx := context.Background()
+	store, err := NewSQLiteStore(filepath.Join(t.TempDir(), "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	saved := []TextSaveRequest{
+		{Text: "ownerlinetest api2host", OwnerID: "desktop-user:C:\\tasks\\api2"},
+		{Text: "ownerlinetest stabledesktop", OwnerID: "desktop-user"},
+		{Text: "ownerlinetest hostlocal"},
+		{Text: "ownerlinetest lookalike", OwnerID: "desktop-user-extra"},
+		{Text: "ownerlinetest foreign", OwnerID: "user-2"},
+	}
+	for _, req := range saved {
+		if _, err := store.SaveText(ctx, req); err != nil {
+			t.Fatal(err)
+		}
+	}
+	hits, err := store.Search(ctx, SearchOptions{
+		Query:             "ownerlinetest",
+		OwnerID:           "desktop-user",
+		OwnerLineage:      true,
+		IncludeEmptyOwner: true,
+		Limit:             20,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]bool{}
+	for _, hit := range hits {
+		got[hit.Source.OwnerID] = true
+		blob := hit.Claim + " " + hit.Summary + " " + hit.Snippet
+		if strings.Contains(blob, "lookalike") || strings.Contains(blob, "foreign") {
+			t.Fatalf("lineage leaked %q from owner %q", blob, hit.Source.OwnerID)
+		}
+	}
+	for _, owner := range []string{"desktop-user:C:\\tasks\\api2", "desktop-user", ""} {
+		if !got[owner] {
+			t.Fatalf("missing owner %q in %#v", owner, hits)
+		}
+	}
+	exact, err := store.Search(ctx, SearchOptions{Query: "ownerlinetest", OwnerID: "desktop-user", Limit: 20})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(exact) != 1 || exact[0].Source.OwnerID != "desktop-user" {
+		t.Fatalf("exact owner=%#v", exact)
+	}
+}
+
 func TestListSourcesIncludeDisabledOption(t *testing.T) {
 	ctx := context.Background()
 	root := t.TempDir()

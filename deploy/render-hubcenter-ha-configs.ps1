@@ -7,6 +7,59 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
+function ConvertFrom-Psd1Ast {
+    param([System.Management.Automation.Language.Ast]$Ast)
+    if ($null -eq $Ast) { return $null }
+    if ($Ast -is [System.Management.Automation.Language.ScriptBlockAst]) {
+        return ConvertFrom-Psd1Ast $Ast.EndBlock
+    }
+    if ($Ast -is [System.Management.Automation.Language.NamedBlockAst]) {
+        $statements = @($Ast.Statements)
+        if ($statements.Count -eq 0) { return $null }
+        if ($statements.Count -ne 1) { throw "Inventory data file must contain a single hashtable" }
+        return ConvertFrom-Psd1Ast $statements[0]
+    }
+    if ($Ast -is [System.Management.Automation.Language.PipelineAst]) {
+        return ConvertFrom-Psd1Ast ($Ast.PipelineElements | Select-Object -Last 1)
+    }
+    if ($Ast -is [System.Management.Automation.Language.CommandExpressionAst]) {
+        return ConvertFrom-Psd1Ast $Ast.Expression
+    }
+    if ($Ast -is [System.Management.Automation.Language.HashtableAst]) {
+        $result = [ordered]@{}
+        foreach ($pair in $Ast.KeyValuePairs) {
+            $key = $pair.Item1.Extent.Text.Trim('"', "'")
+            $result[$key] = ConvertFrom-Psd1Ast $pair.Item2
+        }
+        return $result
+    }
+    if ($Ast -is [System.Management.Automation.Language.ArrayExpressionAst]) {
+        $sub = $Ast.SubExpression
+        if ($sub -is [System.Management.Automation.Language.StatementBlockAst] -and $sub.Statements.Count -eq 0) {
+            return @()
+        }
+        if ($sub -is [System.Management.Automation.Language.StatementBlockAst] -and $sub.Statements.Count -gt 0) {
+            return ConvertFrom-Psd1Ast $sub.Statements[0]
+        }
+        return @()
+    }
+    if ($Ast -is [System.Management.Automation.Language.ArrayLiteralAst]) {
+        return @($Ast.Elements | ForEach-Object { ConvertFrom-Psd1Ast $_ })
+    }
+    if ($Ast -is [System.Management.Automation.Language.VariableExpressionAst]) {
+        switch ($Ast.VariablePath.UserPath) {
+            'true'  { return $true }
+            'false' { return $false }
+            'null'  { return $null }
+            default { throw "Unsupported variable '$($Ast.VariablePath.UserPath)' in inventory data file" }
+        }
+    }
+    if ($Ast -is [System.Management.Automation.Language.ConstantExpressionAst]) {
+        return $Ast.SafeGetValue()
+    }
+    throw "Unsupported expression in inventory data file at line $($Ast.Extent.StartLineNumber): '$($Ast.Extent.Text)'"
+}
+
 function Import-InventoryDataFile {
     param([string]$Path)
 
@@ -16,12 +69,20 @@ function Import-InventoryDataFile {
     }
 
     # Windows PowerShell 5.1 lacks Import-PowerShellDataFile; generated
-    # deployment inventories are local PSD1 hashtables.
+    # deployment inventories are local PSD1 hashtables. Parse the file and
+    # convert only literal hashtable/array/scalar nodes — never Invoke-Expression.
     $resolvedPath = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
-    return & {
-        param([string]$InventoryFile)
-        Invoke-Expression ([System.IO.File]::ReadAllText($InventoryFile))
-    } $resolvedPath
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($resolvedPath, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors -and $parseErrors.Count -gt 0) {
+        throw "Failed to parse inventory data file '$Path': $($parseErrors[0].Message)"
+    }
+    $value = ConvertFrom-Psd1Ast $ast
+    if ($null -eq $value) {
+        throw "Inventory data file '$Path' is empty"
+    }
+    return $value
 }
 
 function Normalize-Url {
@@ -102,10 +163,16 @@ ha:
   cluster_secret: $ClusterSecret
   sync_interval_seconds: 5
   push_debounce_seconds: 5
-  pull_batch_size: 1000
+  # 2026-09-25: 1000 ops can exceed the 128MiB pullOpsResponseBodyLimit
+  # (syncer.go) once the backlog piles up; the LimitReader then truncates the
+  # JSON mid-stream and every retry fails with "unexpected EOF" — a permanent
+  # replication lock. 100 ops (~15-25MB worst case) stays far below the cap.
+  pull_batch_size: 100
   heartbeat_sync_min_interval_seconds: 600
   history_retention_days: 0.5
-  history_max_retained_ops: 50000
+  # 2026-09-27: 50000 -> 20000; lower retained-op cap cuts per-prune CPU/IO and
+  # keeps ha_sync_ops churn from bloating the main SQLite file.
+  history_max_retained_ops: 20000
   history_prune_interval_minutes: 10
   history_prune_batch_size: 20000
   nodes:
@@ -115,6 +182,7 @@ database:
   driver: sqlite
   dsn: $(Quote-YamlString $Center.DatabaseDSN)
   wal: true
+  auto_vacuum: incremental
   busy_timeout_ms: 10000
   max_read_open_conns: 4
   max_read_idle_conns: 4
@@ -189,10 +257,6 @@ database:
 identity:
   enrollment_mode: open
   allow_self_enroll: true
-
-pwa:
-  static_dir: ./web/dist
-  route_prefix: /app
 
 center:
   enabled: true

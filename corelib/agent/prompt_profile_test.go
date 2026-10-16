@@ -221,4 +221,22 @@ func TestPromptCorePrinciplesLookupDoesNotMandateWarehouseFirst(t *testing.T) {
 	if !strings.Contains(PromptCorePrinciples, "查找类问题") || !strings.Contains(PromptCorePrinciples, "不要先搜知识库") {
 		t.Fatal("full principles should keep lookup evidence order")
 	}
+	if !strings.Contains(PromptCorePrinciples, "先查记忆再查知识库") || !strings.Contains(PromptCorePrinciples, "两边冲突才向用户确认") {
+		t.Fatal("full principles should resolve connection facts from memory then knowledge")
+	}
+	if !strings.Contains(PromptSSHRules, "先 memory 再 knowledge_search") {
+		t.Fatal("SSH rules should look up connection facts before asking the user")
+	}
+}
+
+func TestPromptCorePrinciplesTreatsMissingToolsAsRoutingSubset(t *testing.T) {
+	if !strings.Contains(PromptCorePrinciples, "本轮工具列表是路由子集") {
+		t.Fatal("full principles should explain that the listed tools are a routing subset")
+	}
+	if !strings.Contains(PromptCorePrinciples, "discover_tool") || !strings.Contains(PromptCorePrinciples, "不要对用户说「工具不可用」") {
+		t.Fatal("full principles should recover a routed-out tool instead of claiming it is missing")
+	}
+	if !strings.Contains(PromptCorePrinciplesLight, "不要对用户说工具不存在") {
+		t.Fatal("light principles must not treat a routed-out history tool as unavailable")
+	}
 }

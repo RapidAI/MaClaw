@@ -2,6 +2,7 @@ package intent
 
 import (
 	"context"
+	"math"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -180,7 +181,7 @@ func TestFusionTreeDeadlineCancelsContextAwareLLM(t *testing.T) {
 	canceled := make(chan struct{})
 	uic := New(Config{
 		Embedder: emb,
-		LLMContextFunc: func(ctx context.Context, _, _ string) (string, error) {
+		LLMContextFunc: func(ctx context.Context, _ context.Context, _, _ string) (string, error) {
 			<-ctx.Done()
 			close(canceled)
 			return "", ctx.Err()
@@ -260,6 +261,59 @@ func TestClassifyEscalatesAmbiguousEmbeddingToLLM(t *testing.T) {
 	}
 }
 
+func TestMatchingAnchorIdentitySkipsShortCues(t *testing.T) {
+	anchors := []intentAnchor{{Label: LabelContinuation, Texts: []string{"继续", "开工", "continue"}}}
+	if _, ok := matchingAnchorIdentity(anchors, "继续"); ok {
+		t.Fatal("short continuation cue was locked to its exemplar")
+	}
+	if _, ok := matchingAnchorIdentity(anchors, "continue"); ok {
+		t.Fatal("eight-letter continuation cue was locked to its exemplar")
+	}
+	if _, ok := matchingAnchorIdentity(anchors, "截图"); ok {
+		t.Fatal("short screenshot cue was locked to its exemplar")
+	}
+}
+
+func TestClassifyByEmbeddingAnchorIdentityBeatsRemoteCosine(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelSSH, Texts: []string{"登录服务器查看日志"}, Vecs: [][]float32{{0.95, 0.3122}}},
+		{Label: LabelFileDelete, Texts: []string{"删除刚才的markdown文件"}, Vecs: [][]float32{{0.20, 0.9798}}},
+	}, "删除刚才的 markdown 文件")
+	if !confident || result.Primary != LabelFileDelete {
+		t.Fatalf("spaced result=%+v confident=%v, want the file_delete exemplar", result, confident)
+	}
+	result, confident = classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelSSH, Texts: []string{"登录服务器查看日志"}, Vecs: [][]float32{{0.95, 0.3122}}},
+		{Label: LabelFileDelete, Texts: []string{"删除刚才的markdown文件"}, Vecs: [][]float32{{0.20, 0.9798}}},
+	}, "删除刚才的markdown文件。")
+	if !confident || result.Primary != LabelFileDelete {
+		t.Fatalf("punctuated result=%+v confident=%v, want the file_delete exemplar", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingRemoteHostEscalatesBesideLocalDelete(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelSSH, Vecs: [][]float32{{0.85, 0.526782}}},
+		{Label: LabelFileDelete, Vecs: [][]float32{{0.74, 0.672606}}},
+	}, "把刚才生成的说明删掉")
+	if confident || result.Primary != LabelSSH || len(result.Secondary) != 1 || result.Secondary[0] != LabelFileDelete {
+		t.Fatalf("result=%+v confident=%v, want tree escalation with file_delete", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingRemoteHostStaysWithoutLocalNeighbor(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelSSH, Vecs: [][]float32{{0.90, 0.435890}}},
+		{Label: LabelCoding, Vecs: [][]float32{{0.40, 0.916515}}},
+	}, "登录服务器查看日志")
+	if !confident || result.Primary != LabelSSH {
+		t.Fatalf("result=%+v confident=%v, want confident ssh", result, confident)
+	}
+}
+
 func TestClassifyByEmbeddingLiveDataLookupSkipsLayer3(t *testing.T) {
 	emb := &staticEmbedder{vec: []float32{1, 0}}
 	result, confident := classifyByEmbedding(emb, []intentAnchor{
@@ -333,6 +387,510 @@ func TestClassifyByEmbeddingSearchPdfCompositeDoesNotCollapseToPlainLookup(t *te
 	}
 	if !strings.Contains(result.Reason, "ambiguous composite") {
 		t.Fatalf("reason=%q, want ambiguous composite escalation", result.Reason)
+	}
+}
+
+func TestClassifyByEmbeddingCompetingVisualEscalatesWithoutPDFToken(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	anchors := []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{{0.90, 0.4358898943540673}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.74, 0.6726065725724457}}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.86, 0.5102938362773704}}},
+	}
+	// Same competing scores. Chart words, paraphrases, and unrelated wording
+	// all escalate; none of them is a local chart grant.
+	for _, text := range []string{
+		"画出近一月股价趋势图",
+		"画一张股价柱状图",
+		"画个天气图",
+		"看看这个柱状物",
+		"最近情况如何",
+	} {
+		result, confident := classifyByEmbedding(emb, anchors, text)
+		if confident || result.Primary != LabelLiveData || len(result.Secondary) != 0 {
+			t.Fatalf("%q result=%+v confident=%v, want escalation without a local artifact", text, result, confident)
+		}
+		if result.RunnerUp == LabelLiveDataVisual || result.RunnerUp == LabelDocumentGenerate {
+			t.Fatalf("%q runner-up %s must not reattach the cosine winner", text, result.RunnerUp)
+		}
+		if !strings.Contains(result.Reason, "ambiguous composite") {
+			t.Fatalf("%q reason=%q, want ambiguous composite escalation", text, result.Reason)
+		}
+	}
+}
+
+func TestClassifyByEmbeddingNamedPDFSurvivesStrongerVisualScore(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	// Same scores as the chart replacement above. The utterance names a PDF
+	// and does not name a chart, so the visual margin must not drop generate.
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{{0.90, 0.4358898943540673}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.74, 0.6726065725724457}}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.86, 0.5102938362773704}}},
+	}, "崇州天气，生成格式化pdf")
+	if !confident || result.Layer != 2 || result.Primary != LabelLiveData || len(result.Secondary) != 1 || result.Secondary[0] != LabelDocumentGenerate {
+		t.Fatalf("result=%+v confident=%v, want the verified PDF composite", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingChartAndPDFKeepsPDFComposite(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	// Both artifacts are named. The visual score still outranks PDF, but a
+	// tree round-trip is not required to keep the file the user named, and a
+	// timeout must not be able to drop it.
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{{0.90, 0.4358898943540673}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.74, 0.6726065725724457}}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.86, 0.5102938362773704}}},
+	}, "画出股价趋势图并生成pdf")
+	if !confident || result.Primary != LabelLiveData || len(result.Secondary) != 1 || result.Secondary[0] != LabelDocumentGenerate {
+		t.Fatalf("result=%+v confident=%v, want the verified PDF composite", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingVisualAboveFloorButBelowPDFEscalates(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	// Visual clears 0.73 but loses the cosine comparison. That margin used
+	// to keep the PDF pair and miss a chart the user did not spell with the
+	// chart word list.
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{{0.90, 0.4358898943540673}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.85, 0.5267826876426364}}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.74, 0.6726065725724457}}},
+	}, "画个天气图")
+	if confident || result.Primary != LabelLiveData || len(result.Secondary) != 0 {
+		t.Fatalf("result=%+v confident=%v, want escalation", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingVisualLeaderStaysVisual(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.92, 0.39191835884530846}}},
+		{Label: LabelLiveData, Vecs: [][]float32{{0.80, 0.6}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.75, 0.6614378277661477}}},
+	}, "画出近一月股价趋势图")
+	if !confident || result.Primary != LabelLiveDataVisual || len(result.Secondary) != 0 {
+		t.Fatalf("result=%+v confident=%v, want a plain live_data_visual grant", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingVisualLeaderYieldsToNamedPDF(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.92, 0.39191835884530846}}},
+		{Label: LabelLiveData, Vecs: [][]float32{{0.85, 0.5267826876426364}}},
+		{Label: LabelSearch, Vecs: [][]float32{{0.90, 0.4358898943540673}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.75, 0.6614378277661477}}},
+	}, "画出趋势并生成pdf")
+	if !confident || result.Primary != LabelLiveData || len(result.Secondary) != 1 || result.Secondary[0] != LabelDocumentGenerate {
+		t.Fatalf("result=%+v confident=%v, want live_data + PDF, not the higher search or chart score", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingVisualLeaderNamedPDFFallsBackToSearchNotWebFetch(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	// live_data is below the hint floor. web_fetch scores higher than search,
+	// but a tree timeout keeps search and collapses web_fetch to unknown.
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.92, 0.39191835884530846}}},
+		{Label: LabelLiveData, Vecs: [][]float32{{0.50, 0.8660254}}},
+		{Label: LabelWebFetch, Vecs: [][]float32{{0.90, 0.4358898943540673}}},
+		{Label: LabelSearch, Vecs: [][]float32{{0.75, 0.6614378277661477}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.50, 0.8660254}}},
+	}, "画出趋势并生成pdf")
+	if confident || result.Primary != LabelSearch || len(result.Secondary) != 0 {
+		t.Fatalf("result=%+v confident=%v, want a search hint, not web_fetch", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingVisualLeaderNamedPDFBelowLiveDataFloorEscalates(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	// live_data 0.80 sits under the 0.82 companion floor. A chart leader must
+	// not mint the PDF pair from that score.
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.92, 0.39191835884530846}}},
+		{Label: LabelLiveData, Vecs: [][]float32{{0.80, 0.6}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.75, 0.6614378277661477}}},
+	}, "画出趋势并生成pdf")
+	if confident || result.Primary != LabelLiveData || len(result.Secondary) != 0 {
+		t.Fatalf("result=%+v confident=%v, want a lookup escalation", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingVisualLeaderNamedPDFWithoutSupportEscalates(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.92, 0.39191835884530846}}},
+		{Label: LabelLiveData, Vecs: [][]float32{{0.80, 0.6}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.50, 0.8660254}}},
+	}, "画出趋势并生成pdf")
+	if confident || result.Primary != LabelLiveData || len(result.Secondary) != 0 {
+		t.Fatalf("result=%+v confident=%v, want a lookup escalation, not a chart grant", result, confident)
+	}
+}
+
+func TestUtteranceNamesPDFRequiresTokenBoundary(t *testing.T) {
+	if !utteranceNamesPDF("崇州天气，生成格式化pdf") || !utteranceNamesPDF("生成PDF报告") || !utteranceNamesPDF("生成pdf，图在 a.pdf") || !utteranceNamesPDF("生成ＰＤＦ报告") || !utteranceNamesPDF("查完了。pdf") || !utteranceNamesPDF("不要pdf，还是生成pdf") {
+		t.Fatal("pdf format token must match")
+	}
+	if utteranceNamesPDF("用 pdfium 渲染") || utteranceNamesPDF("画出近一月股价趋势图") || utteranceNamesPDF("画出趋势图，参见 a.pdf") || utteranceNamesPDF(`C:\data\report.PDF`) || utteranceNamesPDF("参见报告．pdf") || utteranceNamesPDF("不要pdf，画出股价趋势图") || utteranceNamesPDF("不要　pdf") || utteranceNamesPDF("不要生成pdf") || utteranceNamesPDF("不要  生成  pdf") || utteranceNamesPDF("不要ＰＤＦ") || utteranceNamesPDF("no pdf, draw a chart") {
+		t.Fatal("pdf inside another word, a file extension, or a negation is not a generate request")
+	}
+}
+
+func TestClassifyByEmbeddingNegatedPDFDoesNotOverrideVisualLeader(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.92, 0.39191835884530846}}},
+		{Label: LabelLiveData, Vecs: [][]float32{{0.80, 0.6}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.75, 0.6614378277661477}}},
+	}, "不要pdf，画出近一月股价趋势图")
+	if !confident || result.Primary != LabelLiveDataVisual || result.HasLabel(LabelDocumentGenerate) {
+		t.Fatalf("result=%+v confident=%v, want the chart leader; a negated pdf is not a generate request", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingFileExtensionDoesNotOverrideVisualLeader(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.92, 0.39191835884530846}}},
+		{Label: LabelLiveData, Vecs: [][]float32{{0.80, 0.6}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.75, 0.6614378277661477}}},
+	}, "画出近一月股价趋势图，参见 a.pdf")
+	if !confident || result.Primary != LabelLiveDataVisual || len(result.Secondary) != 0 {
+		t.Fatalf("result=%+v confident=%v, want the chart leader; a .pdf path is not a generate request", result, confident)
+	}
+}
+
+func TestClassifyByEmbeddingWeakerVisualDoesNotDisturbPDFComposite(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	result, confident := classifyByEmbedding(emb, []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{{0.90, 0.4358898943540673}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.85, 0.5267826876426364}}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.60, 0.8}}},
+	}, "北京天气，输出格式化pdf报告")
+	if !confident || result.Primary != LabelLiveData || len(result.Secondary) != 1 || result.Secondary[0] != LabelDocumentGenerate {
+		t.Fatalf("result=%+v confident=%v, want the verified PDF composite", result, confident)
+	}
+}
+
+func competingVisualAnchors() []intentAnchor {
+	return []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{{0.90, 0.4358898943540673}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.74, 0.6726065725724457}}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{{0.86, 0.5102938362773704}}},
+	}
+}
+
+func TestClassifyTreeReadsCompetingVisualParaphrase(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"live_data_visual","score":0.91}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = competingVisualAnchors()
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "画个天气图"})
+	if result.Layer != 3 || result.Primary != LabelLiveDataVisual || len(result.Secondary) != 1 || result.Secondary[0] != LabelLiveData {
+		t.Fatalf("result=%+v, want the tree's chart reading with the lookup half", result)
+	}
+}
+
+func TestClassifyTreeReadsCompetingPDFParaphrase(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"document_generate","score":0.91}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = competingVisualAnchors()
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "把天气整理成一份报告文件"})
+	if result.Layer != 3 || result.Primary != LabelLiveData || len(result.Secondary) != 1 || result.Secondary[0] != LabelDocumentGenerate {
+		t.Fatalf("result=%+v, want the tree's PDF reading", result)
+	}
+}
+
+func anchorVec(cos float64) []float32 {
+	return []float32{float32(cos), float32(math.Sqrt(1 - cos*cos))}
+}
+
+// 2026-09-28 WeChat 「北京天气」: live_data 0.73 beside live_data_visual 0.646
+// left the lookup shortcut, the tree said live_data 0.95, and synthesis
+// crowned the chart. The reply then attached a placeholder bar image.
+func TestClassifyPlainWeatherDoesNotBecomeVisualCard(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	anchors := []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{anchorVec(0.73)}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{anchorVec(0.646)}},
+	}
+	l2, confident := classifyByEmbedding(emb, anchors, "北京天气")
+	if !confident || l2.Primary != LabelLiveData || l2.HasLabel(LabelLiveDataVisual) || l2.RunnerUp == LabelLiveDataVisual {
+		t.Fatalf("l2=%+v confident=%v, a sub-floor chart resemblance must stay a plain lookup", l2, confident)
+	}
+
+	llmCalls := 0
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			llmCalls++
+			return `{"top":[{"skill":"live_data_visual","score":0.95}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = anchors
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "北京天气"})
+	if llmCalls != 0 {
+		t.Fatalf("llmCalls=%d, plain weather must not escalate", llmCalls)
+	}
+	if result.Primary != LabelLiveData || result.HasLabel(LabelLiveDataVisual) {
+		t.Fatalf("result=%+v, want live_data without a visual card", result)
+	}
+}
+
+func TestClassifyTreeLookupDoesNotCrownStrongVisualResemblance(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	anchors := []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{anchorVec(0.92)}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{anchorVec(0.80)}},
+	}
+	l2, confident := classifyByEmbedding(emb, anchors, "北京天气")
+	if confident || l2.Primary != LabelLiveData || len(l2.Secondary) != 1 || l2.Secondary[0] != LabelLiveDataVisual {
+		t.Fatalf("l2=%+v confident=%v, a reviewed chart companion must escalate", l2, confident)
+	}
+
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"live_data","score":0.95}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = anchors
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "北京天气"})
+	if result.Primary != LabelLiveData || result.HasLabel(LabelLiveDataVisual) {
+		t.Fatalf("result=%+v, tree lookup must not be rewritten into a visual card", result)
+	}
+}
+
+func TestSecondaryTreeLabelsUsesChartFloor(t *testing.T) {
+	weak := secondaryTreeLabels([]TreeCandidate{
+		{Label: LabelLiveData, Score: 0.95},
+		{Label: LabelLiveDataVisual, Score: 0.60},
+	})
+	if len(weak) != 0 {
+		t.Fatalf("secondary=%v, a sub-floor chart guess must not ride on a lookup", weak)
+	}
+	kept := secondaryTreeLabels([]TreeCandidate{
+		{Label: LabelLiveData, Score: 0.95},
+		{Label: LabelLiveDataVisual, Score: 0.80},
+	})
+	if len(kept) != 1 || kept[0] != LabelLiveDataVisual {
+		t.Fatalf("secondary=%v, a reviewed chart half must stay", kept)
+	}
+	lookup := secondaryTreeLabels([]TreeCandidate{
+		{Label: LabelLiveDataVisual, Score: 0.91},
+		{Label: LabelLiveData, Score: 0.60},
+	})
+	if len(lookup) != 1 || lookup[0] != LabelLiveData {
+		t.Fatalf("secondary=%v, the lookup half of a chart verdict must stay", lookup)
+	}
+	pdf := secondaryTreeLabels([]TreeCandidate{
+		{Label: LabelLiveData, Score: 0.95},
+		{Label: LabelDocumentGenerate, Score: 0.55},
+	})
+	if len(pdf) != 1 || pdf[0] != LabelDocumentGenerate {
+		t.Fatalf("secondary=%v, lookup+PDF must keep the 0.50 composite floor", pdf)
+	}
+}
+
+func TestClassifyWeakTreeVisualDoesNotAttachWeatherCard(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"live_data","score":0.95},{"skill":"live_data_visual","score":0.60}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	// Gap under the lookup shortcut, chart under the companion floor, so
+	// this turn still asks the tree. The weak visual candidate must not
+	// come back as a card.
+	uic.anchors = []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{anchorVec(0.72)}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{anchorVec(0.70)}},
+	}
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "北京天气"})
+	if result.Primary != LabelLiveData || result.HasLabel(LabelLiveDataVisual) {
+		t.Fatalf("result=%+v, weak tree visual must not attach a card", result)
+	}
+}
+
+func TestClassifyWeakTreeRetainsLookupWithoutChart(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"live_data_visual","score":0.40}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{anchorVec(0.92)}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{anchorVec(0.80)}},
+	}
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "北京天气"})
+	if result.Primary != LabelLiveData || result.HasLabel(LabelLiveDataVisual) {
+		t.Fatalf("result=%+v, a weak tree must not keep the chart half that only escalated the lookup", result)
+	}
+}
+
+func TestClassifyChartCompanionTimeoutStaysWeatherLookup(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	uic := New(Config{
+		Embedder:           emb,
+		LLMFunc:            hangLLM,
+		LLMTimeout:         30 * time.Second,
+		FusionTreeDeadline: 30 * time.Millisecond,
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{anchorVec(0.92)}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{anchorVec(0.80)}},
+	}
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "北京天气"})
+	if !result.Degraded || result.Primary != LabelLiveData || result.HasLabel(LabelLiveDataVisual) {
+		t.Fatalf("result=%+v, a chart companion must not fail the lookup or grant a card when the tree times out", result)
+	}
+}
+
+func TestClassifySubFloorVisualDoesNotReplaceWeakerLookup(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"live_data_visual","score":0.60}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{anchorVec(0.66)}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{anchorVec(0.64)}},
+	}
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "今天北京天气怎么样"})
+	if result.Primary != LabelLiveData || result.HasLabel(LabelLiveDataVisual) {
+		t.Fatalf("result=%+v, a sub-floor chart verdict must not replace a weaker lookup", result)
+	}
+}
+
+func TestClassifyWeakTreeVisualPrimaryStaysLookup(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"live_data_visual","score":0.60}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{anchorVec(0.72)}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{anchorVec(0.70)}},
+	}
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "北京天气"})
+	if result.Primary != LabelLiveData || result.HasLabel(LabelLiveDataVisual) {
+		t.Fatalf("result=%+v, an uncertain chart verdict must not replace a lookup", result)
+	}
+}
+
+func TestClassifyTreeConfirmedVisualKeepsTheChart(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	anchors := []intentAnchor{
+		{Label: LabelLiveData, Vecs: [][]float32{anchorVec(0.92)}},
+		{Label: LabelLiveDataVisual, Vecs: [][]float32{anchorVec(0.80)}},
+	}
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"live_data_visual","score":0.91}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = anchors
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "画一张北京天气实况图"})
+	if result.Primary != LabelLiveDataVisual || len(result.Secondary) != 1 || result.Secondary[0] != LabelLiveData {
+		t.Fatalf("result=%+v, a tree-confirmed chart must keep the lookup half", result)
+	}
+}
+
+func TestClassifyTreePlainLookupDoesNotReattachCompetingArtifact(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"live_data","score":0.91}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = competingVisualAnchors()
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "画个天气图"})
+	if result.Primary != LabelLiveData || len(result.Secondary) != 0 || result.HasLabel(LabelLiveDataVisual) || result.HasLabel(LabelDocumentGenerate) {
+		t.Fatalf("result=%+v, cosine winner must not survive a plain lookup verdict", result)
+	}
+}
+
+func TestClassifyCompetingVisualTimeoutStaysLookup(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	uic := New(Config{
+		Embedder:           emb,
+		LLMFunc:            hangLLM,
+		LLMTimeout:         30 * time.Second,
+		FusionTreeDeadline: 30 * time.Millisecond,
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = competingVisualAnchors()
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "画个天气图"})
+	if !result.Degraded || result.Primary != LabelLiveData || len(result.Secondary) != 0 {
+		t.Fatalf("result=%+v, timeout must stay a lookup hint and must not pick an artifact", result)
 	}
 }
 
@@ -615,6 +1173,22 @@ func TestLookupHintOrUnknownFromL2KeepsOnlySearchFamilies(t *testing.T) {
 		t.Fatalf("non-lookup = %+v, want unknown", other)
 	}
 
+	// 2026-09-18: the collapsed result must preserve the L2 primary as
+	// RunnerUp escalation evidence. A tree-timeout collapse used to destroy
+	// non-lookup signals entirely (production: ssh at 0.83 collapsed to bare
+	// unknown and every ssh availability layer stayed dark). RunnerUp is not
+	// an authorized intent — surfaces that honor it apply their own policy.
+	ssh := lookupHintOrUnknownFromL2(ClassificationResult{Primary: LabelSSH, Confidence: 0.83}, false)
+	if ssh.RunnerUp != LabelSSH || ssh.RunnerUpScore != 0.83 {
+		t.Fatalf("collapsed ssh must survive as RunnerUp evidence: %+v", ssh)
+	}
+	if ssh.HasLabel(LabelSSH) {
+		t.Fatalf("RunnerUp must not leak into declared labels: %+v", ssh.Labels())
+	}
+	if other.RunnerUp != LabelFileRead || other.RunnerUpScore != 0.66 {
+		t.Fatalf("file_read collapse must also preserve evidence: %+v", other)
+	}
+
 	// An office guess at the lookup floor keeps a governed hint: it plans
 	// through the office capability surface instead of stripping document
 	// tools off the turn when the tree times out.
@@ -668,7 +1242,7 @@ func TestLateTreeVerdictCachesForRepeatedRequest(t *testing.T) {
 	var calls atomic.Int32
 	uic := New(Config{
 		Embedder: emb,
-		LLMContextFunc: func(ctx context.Context, _, _ string) (string, error) {
+		LLMContextFunc: func(ctx context.Context, _ context.Context, _, _ string) (string, error) {
 			n := calls.Add(1)
 			if n == 1 {
 				// The synchronous attempt loses to the fusion deadline.
@@ -730,7 +1304,7 @@ func TestLateTreeVerdictContradictedByLocalIsNotCached(t *testing.T) {
 	var calls atomic.Int32
 	uic := New(Config{
 		Embedder: emb,
-		LLMContextFunc: func(ctx context.Context, _, _ string) (string, error) {
+		LLMContextFunc: func(ctx context.Context, _ context.Context, _, _ string) (string, error) {
 			n := calls.Add(1)
 			if n == 1 {
 				// The synchronous attempt loses to the fusion deadline.
@@ -799,7 +1373,7 @@ func TestSyncTreeVerdictContradictedByLocalFallsBackToL2Hint(t *testing.T) {
 	var calls atomic.Int32
 	uic := New(Config{
 		Embedder: emb,
-		LLMContextFunc: func(ctx context.Context, _, _ string) (string, error) {
+		LLMContextFunc: func(ctx context.Context, _ context.Context, _, _ string) (string, error) {
 			n := calls.Add(1)
 			if n == 1 {
 				// The live tree ruling is confident and grossly wrong.
@@ -835,3 +1409,157 @@ func TestSyncTreeVerdictContradictedByLocalFallsBackToL2Hint(t *testing.T) {
 		}
 	}
 }
+
+// A budget-fired tree timeout must not make every other ambiguous turn in the
+// burst pay the full fusion deadline again: escalations for a DIFFERENT scope
+// fail fast into the L2 fallback while the failure is still fresh, a repeat of
+// the SAME scope still escalates (its detached read may be adoptable — the
+// resend-recovery path), and a successful late verdict lifts the suppression
+// for everything that follows.
+func TestBudgetFiredTreeTimeoutSkipsOtherScopesOnly(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0, 0}}
+	var calls atomic.Int32
+	releaseLate := make(chan struct{})
+	uic := New(Config{
+		Embedder: emb,
+		LLMContextFunc: func(ctx context.Context, _ context.Context, _, _ string) (string, error) {
+			n := calls.Add(1)
+			if n == 1 {
+				// The first turn's tree call loses to the fusion deadline.
+				<-ctx.Done()
+				return "", ctx.Err()
+			}
+			if n == 2 {
+				// The scheduled late verdict: gate it so the suppression
+				// window is observed while the failure is still unresolved.
+				<-releaseLate
+			}
+			return `{"top":[{"skill":"office","score":0.92}]}`, nil
+		},
+		FusionTreeDeadline: 30 * time.Millisecond,
+		LLMTimeout:         5 * time.Second,
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelOffice, Vecs: [][]float32{{1, 0, 0}}},
+		// A second non-pair label tied with office keeps L2 ambiguous so the
+		// turn escalates to the tree; either leader discards a coding verdict.
+		{Label: LabelDocumentRead, Vecs: [][]float32{{1, 0, 0}}},
+		{Label: LabelCoding, Vecs: [][]float32{{0, 1, 0}}},
+	}
+	uic.mu.Unlock()
+
+	first := uic.ClassifyContext(context.Background(), MessageContext{Text: "生成庆祝生日会的PPT"})
+	if !first.Degraded {
+		t.Fatalf("first = %+v, want degraded hint after fusion timeout", first)
+	}
+	// The timeout schedules a background late verdict; wait until it has
+	// claimed the scope and is blocked on the gate, so its pending success
+	// cannot leak into the suppression assertions below.
+	deadline := time.Now().Add(2 * time.Second)
+	for calls.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if calls.Load() < 2 {
+		t.Fatalf("background late verdict never started; calls=%d", calls.Load())
+	}
+	before := calls.Load()
+
+	// A different ambiguous scope while the failure is still fresh must not
+	// pay another tree call: it lands straight in the L2 fallback.
+	other := uic.ClassifyContext(context.Background(), MessageContext{Text: "请同事看看这份项目进度说明"})
+	if !other.Degraded {
+		t.Fatalf("other = %+v, want degraded L2 fallback without a tree call", other)
+	}
+	if calls.Load() != before {
+		t.Fatalf("other scope paid a tree call despite the fresh endpoint failure: calls=%d", calls.Load())
+	}
+
+	// Let the late verdict land: it recovers the failed scope (cache-warmed)
+	// and lifts the suppression for everything after.
+	close(releaseLate)
+	deadline = time.Now().Add(3 * time.Second)
+	for calls.Load() < 3 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	again := uic.ClassifyContext(context.Background(), MessageContext{Text: "生成庆祝生日会的PPT"})
+	if again.Primary != LabelOffice || again.Degraded {
+		t.Fatalf("repeat = %+v, want office route for the failed scope", again)
+	}
+	recovered := uic.ClassifyContext(context.Background(), MessageContext{Text: "整理会议纪要并群发"})
+	if recovered.Primary != LabelOffice || recovered.Degraded {
+		t.Fatalf("post-recovery scope = %+v, want probing to resume after the late verdict lifted suppression", recovered)
+	}
+}
+
+// A 5xx from the tree endpoint (e.g. an HTTP 502 upstream failure) is the same
+// health evidence as a budget-fired timeout: escalations for OTHER scopes fail
+// fast into the L2 fallback while the failure is still fresh, and the failed
+// scope itself still escalates on repeat.
+func TestTree5xxFailureSkipsOtherScopesOnly(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0, 0}}
+	var calls atomic.Int32
+	releaseLate := make(chan struct{})
+	uic := New(Config{
+		Embedder: emb,
+		LLMContextFunc: func(ctx context.Context, _ context.Context, _, _ string) (string, error) {
+			n := calls.Add(1)
+			if n == 1 {
+				return "", &httpStatusError{status: 502}
+			}
+			if n == 2 {
+				<-releaseLate
+			}
+			return `{"top":[{"skill":"office","score":0.92}]}`, nil
+		},
+		FusionTreeDeadline: 30 * time.Millisecond,
+		LLMTimeout:         5 * time.Second,
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelOffice, Vecs: [][]float32{{1, 0, 0}}},
+		{Label: LabelDocumentRead, Vecs: [][]float32{{1, 0, 0}}},
+		{Label: LabelCoding, Vecs: [][]float32{{0, 1, 0}}},
+	}
+	uic.mu.Unlock()
+
+	first := uic.ClassifyContext(context.Background(), MessageContext{Text: "生成庆祝生日会的PPT"})
+	if !first.Degraded {
+		t.Fatalf("first = %+v, want degraded hint after 5xx", first)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for calls.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if calls.Load() < 2 {
+		t.Fatalf("background late verdict never started; calls=%d", calls.Load())
+	}
+	before := calls.Load()
+
+	other := uic.ClassifyContext(context.Background(), MessageContext{Text: "请同事看看这份项目进度说明"})
+	if !other.Degraded {
+		t.Fatalf("other = %+v, want degraded L2 fallback without a tree call", other)
+	}
+	if calls.Load() != before {
+		t.Fatalf("other scope paid a tree call despite the fresh 5xx: calls=%d", calls.Load())
+	}
+
+	close(releaseLate)
+	deadline = time.Now().Add(3 * time.Second)
+	for calls.Load() < 3 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	again := uic.ClassifyContext(context.Background(), MessageContext{Text: "生成庆祝生日会的PPT"})
+	if again.Primary != LabelOffice || again.Degraded {
+		t.Fatalf("repeat = %+v, want office route for the failed scope", again)
+	}
+}
+
+// httpStatusError mimics corelib/llm.HTTPStatusError for tests in this
+// package (which cannot import llm without an import cycle).
+type httpStatusError struct{ status int }
+
+func (e *httpStatusError) Error() string       { return "HTTP 502: body_len=434" }
+func (e *httpStatusError) HTTPStatusCode() int { return e.status }

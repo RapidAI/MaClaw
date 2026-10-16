@@ -31,6 +31,7 @@ type Config struct {
 		CacheSizeKB           int    `yaml:"cache_size_kb"`
 		MmapSizeBytes         int64  `yaml:"mmap_size_bytes"`
 		CheckpointIntervalSec int    `yaml:"checkpoint_interval_sec"`
+		AutoVacuum            string `yaml:"auto_vacuum"`
 	} `yaml:"database"`
 
 	Mail struct {
@@ -109,7 +110,11 @@ func Default() *Config {
 	cfg.HA.PullBatchSize = 200
 	cfg.HA.HeartbeatSyncMinIntervalSeconds = 600
 	cfg.HA.HistoryRetentionDays = 0.5
-	cfg.HA.HistoryMaxRetainedOps = 50000
+	// 2026-09-27: lowered from 50000 — ha_sync_ops churn (heartbeat/batch ops)
+	// was the main driver of main-database file bloat; 20000 ops is plenty of
+	// pull window for the 5s pollers (100 ops/batch) and reduces per-cycle
+	// prune CPU/IO. Lagging peers still converge via newest-op-per-entity.
+	cfg.HA.HistoryMaxRetainedOps = 20000
 	cfg.HA.HistoryPruneIntervalMinutes = 10
 	cfg.HA.HistoryPruneBatchSize = 20000
 	cfg.Database.Driver = "sqlite"
@@ -118,6 +123,9 @@ func Default() *Config {
 	cfg.Database.BusyTimeoutMS = 10000
 	cfg.Database.MaxReadOpenConns = 8
 	cfg.Database.MaxReadIdleConns = 4
+	// 1 is not just a default: Validate rejects any other value. The token
+	// bank's deferred-BeginTx money paths need a single serialized writer
+	// (F3, see the Validate comment).
 	cfg.Database.MaxWriteOpenConns = 1
 	cfg.Database.MaxWriteIdleConns = 1
 	cfg.Database.BatchFlushMS = 100
@@ -126,6 +134,13 @@ func Default() *Config {
 	cfg.Database.CacheSizeKB = 16384
 	cfg.Database.MmapSizeBytes = 134217728
 	cfg.Database.CheckpointIntervalSec = 60
+	// Incremental auto-vacuum lets the background checkpointer hand freed pages
+	// back to the OS without ever taking an exclusive lock (the alternative to
+	// the main database file re-bloating after churny delete/insert cycles).
+	// Takes effect immediately on an empty database; on an existing one it
+	// persists after the next VACUUM rebuild (`maintenance vacuum` / ha-prune
+	// --vacuum). See provider.applyPragmas and sqlite.Vacuum.
+	cfg.Database.AutoVacuum = "incremental"
 	cfg.Mail.Provider = "smtp"
 	cfg.Mail.FromName = "MaClaw Hub Center"
 	cfg.Logging.Level = "info"
@@ -136,6 +151,24 @@ func Default() *Config {
 func (c *Config) Validate() error {
 	if c == nil {
 		return fmt.Errorf("config is required")
+	}
+	switch mode := strings.ToLower(strings.TrimSpace(c.Database.AutoVacuum)); mode {
+	case "", "none", "off", "full", "incremental":
+	default:
+		return fmt.Errorf("database.auto_vacuum must be one of: none, full, incremental")
+	}
+	// F3 (docs/design/token-bank-design-zh.md §18.4): the token bank's money
+	// paths use deferred BEGIN and re-read the balance inside the transaction
+	// (ledgerBalance → debit). That pattern is single-node safe only while at
+	// most one write transaction can be open at a time; with a wider write
+	// pool, two interleaved transactions can both pass the same balance check
+	// and both debit — the single-node twin of the F1 cross-node overdraw.
+	// Skillmarket's money paths use BeginImmediate and would tolerate a wider
+	// pool, but the token bank does not. If write throughput ever demands
+	// more, migrate the token bank paths to BeginImmediate first — do not
+	// widen this pool.
+	if c.Database.MaxWriteOpenConns != 1 {
+		return fmt.Errorf("database.max_write_open_conns must be 1 (got %d): token bank money paths require a single serialized writer; see docs/design/token-bank-design-zh.md §18.4 F3", c.Database.MaxWriteOpenConns)
 	}
 	if !c.HA.Enabled {
 		return nil

@@ -24,15 +24,17 @@ const expectedScripts = [
   'feishu-tab.js',
   'invitation-tab.js',
 	'user-referrals-tab.js',
-  'pwa-tab.js',
   'system-tab.js',
   'cloud-workspace-tab.js',
+  'bot-tab.js',
+  'desktop-tab.js',
   'compute-tab.js',
   'llm-provider-tab.js',
   'llm-service-tabs.js',
   'card-store-tab.js',
   'usage-stats-tab.js',
   'failure-logs-tab.js',
+  'link-health-tab.js',
   'knowledge-management-tab.js',
   'digital-assets-tab.js',
   'notification-tab.js',
@@ -312,20 +314,43 @@ function assertTenantAdminUIHooks() {
       fail('system-tab.js must guard ' + name + ' to tenant admins.');
     }
   });
+  ['id="tenantCheckinSettingsCard"', 'tenantCheckinEnabledToggle', 'tenantCheckinCredits', 'tenantCheckinDurationDays', 'id="checkinRecordsModalOverlay"', 'checkinRecordsGrid', 'openCheckinRecordsModal'].forEach(function(marker) {
+    if (!html.includes(marker)) {
+      fail('index.html is missing tenant check-in settings marker: ' + marker);
+    }
+  });
+  ['loadTenantCheckinSettings', 'saveTenantCheckinSettings', 'updateTenantCheckinEnabledHint', '/api/admin/settings/checkin', 'TENANT_CHECKIN_SETTINGS_I18N', 'tenantCheckinDurationDays', 'duration_days', '/api/admin/checkin/records', 'CHECKIN_RECORDS_PAGE_SIZE', 'loadCheckinRecords'].forEach(function(marker) {
+    if (!system.includes(marker)) {
+      fail('system-tab.js is missing tenant check-in settings marker: ' + marker);
+    }
+  });
+  if (!system.includes('function canManageTenantCheckin()')) {
+    fail('system-tab.js must define the tenant check-in scope guard.');
+  }
+  ['loadTenantCheckinSettings', 'saveTenantCheckinSettings'].forEach(function(name) {
+    const handler = extractNamedFunction(system, name);
+    if (!handler.includes('if (!canManageTenantCheckin()) return null;')) {
+      fail('system-tab.js must guard ' + name + ' to tenant admins.');
+    }
+  });
   const cloudWorkspace = read('cloud-workspace-tab.js');
   ['loadTenantCloudWorkspaceSettings', 'saveTenantCloudWorkspaceSettings', '/api/admin/cloud-workspaces/settings', 'CWS_I18N', 'canManageTenantCloudWorkspace'].forEach(function(marker) {
     if (!cloudWorkspace.includes(marker)) {
       fail('cloud-workspace-tab.js is missing tenant cloud workspace settings marker: ' + marker);
     }
   });
+  const cloudWorkspaceGuard = extractNamedFunction(cloudWorkspace, 'canManageTenantCloudWorkspace');
+  if (!cloudWorkspaceGuard.includes("String(profile.scope || '').toLowerCase() === 'tenant'")) {
+    fail('cloud-workspace-tab.js must restrict cloud workspace settings to tenant admins.');
+  }
   ['loadTenantCloudWorkspaceSettings', 'saveTenantCloudWorkspaceSettings'].forEach(function(name) {
     const handler = extractNamedFunction(cloudWorkspace, name);
     if (!handler.includes('if (!canManageTenantCloudWorkspace()) return null;')) {
-      fail('cloud-workspace-tab.js must guard ' + name + ' behind a signed-in admin profile.');
+      fail('cloud-workspace-tab.js must guard ' + name + ' behind a tenant admin profile.');
     }
   });
-  if (!tenant.includes("tenantCloudWorkspaceCard.classList.toggle('hidden', !hasProfile)")) {
-    fail('tenant-tab.js must show cloud workspace settings to signed-in admins.');
+  if (!tenant.includes("tenantCloudWorkspaceCard.classList.toggle('hidden', !(hasProfile && tenantAdmin))")) {
+    fail('tenant-tab.js must show cloud workspace settings only to tenant admins.');
   }
   if (!admin.includes('loadTenantCloudWorkspaceSettings')) {
     fail('admin.js must load tenant cloud workspace settings in the tenant system scope.');
@@ -686,11 +711,6 @@ function assertScopedRefreshHooks() {
       fail('LLM service/provider tabs must keep provider options in sync: ' + marker);
     }
   });
-  const pwa = read('pwa-tab.js');
-  const legacyPendingLoginsPath = '/api/' + 'admin/' + 'enrollments/' + 'pending-logins';
-  if (!pwa.includes('/api/admin/pending-logins') || pwa.includes(legacyPendingLoginsPath)) {
-    fail('pwa-tab.js must use the registered pending-logins admin endpoint.');
-  }
 }
 
 function assertMaclawAppEvidenceReviewMarkers() {
@@ -780,7 +800,7 @@ function assertUsageStatsSubtabState() {
   });
 }
 
-function assertUsageStatsRMBEstimate() {
+function assertUsageStatsRMBBreakdown() {
   const source = read('usage-stats-tab.js');
   const fnSource = extractNamedFunction(source, 'rmbCostDetails');
   const sandbox = {
@@ -792,33 +812,72 @@ function assertUsageStatsRMBEstimate() {
     rmbCoverageDetails: function(usage) { return { available: Number(usage && usage.rmb_pricing_snapshot_requests || 0) > 0, text: 'coverage' }; }
   };
   vm.runInNewContext(fnSource + '\nthis.rmbCostDetails = rmbCostDetails;', sandbox, { filename: 'usage-stats-tab.js:rmbCostDetails' });
-  const estimated = sandbox.rmbCostDetails({
-    input_tokens: 5_757_253,
-    output_tokens: 89_002,
+  const actual = sandbox.rmbCostDetails({
     input_cost_rmb: 0.1048,
     output_cost_rmb: 0.0402,
-    total_cost_rmb: 0.145,
-    rmb_priced_input_tokens: 104_775,
-    rmb_priced_output_tokens: 20,
+    cache_read_cost_rmb: 0.006,
+    cache_write_cost_rmb: 0.009,
+    // The total field may be stale in older persisted reports. The display
+    // must always derive it from the four directional components instead.
+    total_cost_rmb: 999,
     rmb_pricing_snapshot_requests: 1,
-    // These mixed prices are deliberately not used as a fallback: legacy
-    // Tokens lack a route attribution, so selecting one would fabricate a
-    // precision the report does not have.
-    provider_pricing: [
-      { input_rmb_per_10k: 0.1, output_rmb_per_10k: 0.2 },
-      { input_rmb_per_10k: 2, output_rmb_per_10k: 10 }
-    ]
   });
-  if (!estimated.estimated || !estimated.lowerBound || estimated.total < 5.7 || estimated.total > 5.9 || estimated.outputRatePerM !== null || estimated.unestimatedTokens !== 88_982) {
-    fail('usage-stats-tab.js must use only representative directional frozen-price samples for the RMB lower-bound estimate; got ' + JSON.stringify(estimated));
+  if (!actual.available || Math.abs(actual.total - 0.16) > 0.000000001 || actual.input !== 0.1048 || actual.cacheRead !== 0.006 || actual.cacheWrite !== 0.009 || actual.output !== 0.0402) {
+    fail('usage-stats-tab.js must display an RMB total calculated from the four directional components; got ' + JSON.stringify(actual));
   }
   const unavailable = sandbox.rmbCostDetails({ input_tokens: 1_000 });
-  if (unavailable.available || unavailable.estimated) {
-    fail('usage-stats-tab.js must not invent an RMB estimate without a frozen-price sample.');
+  if (unavailable.available) {
+    fail('usage-stats-tab.js must not invent an RMB amount without a frozen-price snapshot.');
   }
   const tooltipSource = extractNamedFunction(source, 'creditCalculationDetails');
-  if (!tooltipSource.includes("creditsTooltipRMBRateUnavailable") || !tooltipSource.includes('rmbCost.lowerBound && ratePerM === null')) {
-    fail('usage-stats-tab.js must not present an insufficient RMB directional sample as a zero effective rate.');
+  const rmbRateSource = extractNamedFunction(source, 'effectiveRMBRateLabel');
+  const rmbBreakdownSource = extractNamedFunction(source, 'rmbRateBreakdownLines');
+  if (!rmbRateSource.includes("creditsTooltipRMBRateUnavailable") || !rmbBreakdownSource.includes('cacheRead: fmtRMB(rmbCost.cacheRead)') || !rmbBreakdownSource.includes('total: fmtRMB(rmbCost.total)')) {
+    fail('usage-stats-tab.js must show the four RMB components and their summed total.');
+  }
+  if (!rmbBreakdownSource.includes('effectiveRMBRateLabel')) {
+    fail('usage-stats-tab.js must derive effective RMB rates through the shared effectiveRMBRateLabel helper.');
+  }
+  if (!tooltipSource.includes('rmbRateBreakdownLines')) {
+    fail('usage-stats-tab.js must render the credits tooltip RMB breakdown through the shared rmbRateBreakdownLines helper.');
+  }
+  const rmbDetailsSource = extractNamedFunction(source, 'usageRMBDetails');
+  if (!rmbDetailsSource.includes('rmbRateBreakdownLines')) {
+    fail('usage-stats-tab.js must render the RMB summary tooltip through the shared rmbRateBreakdownLines helper.');
+  }
+  if (!tooltipSource.includes('unitemizedCacheRead') || !tooltipSource.includes('unitemizedCacheWrite') || !tooltipSource.includes('unitemizedRequests')) {
+    fail('usage-stats-tab.js must reconcile legacy unitemized cache legs and request scope.');
+  }
+  if (!tooltipSource.includes('unitemizedDirectionalCreditEstimate')) {
+    fail('usage-stats-tab.js must show the directional unit-price estimate for unitemized cache-aware Tokens.');
+  }
+  const estimateSource = extractNamedFunction(source, 'usageOptionalCreditRate') + '\n' + extractNamedFunction(source, 'unitemizedDirectionalCreditEstimate');
+  const estimateSandbox = {};
+  vm.runInNewContext(estimateSource + '\nthis.unitemizedDirectionalCreditEstimate = unitemizedDirectionalCreditEstimate;', estimateSandbox, { filename: 'usage-stats-tab.js:unitemizedDirectionalCreditEstimate' });
+  const zeroCache = estimateSandbox.unitemizedDirectionalCreditEstimate({
+    provider_pricing: [{ input_credits_per_10k: 1, output_credits_per_10k: 2, cache_read_credits_per_10k: 0, cache_write_credits_per_10k: 1 }]
+  }, 10000, 10000, 0, 0);
+  if (!zeroCache || Math.abs(zeroCache.credits - 1) > 1e-9 || Math.abs(zeroCache.cacheRead) > 1e-9) {
+    fail('explicit zero cache-read price must not fall back to 10% of input; got ' + JSON.stringify(zeroCache));
+  }
+  const multiplied = estimateSandbox.unitemizedDirectionalCreditEstimate({
+    provider_pricing: [{ provider_id: 'agnes', input_credits_per_10k: 1, output_credits_per_10k: 2, cache_read_credits_per_10k: 0.1 }],
+    provider_multipliers: [
+      { provider_id: 'agnes', multiplier_source: 'provider', multiplier: 2 },
+      { provider_id: 'agnes', multiplier_source: 'service_group', multiplier: 3 }
+    ]
+  }, 10000, 0, 0, 0);
+  if (!multiplied || Math.abs(multiplied.credits - 6) > 1e-9) {
+    fail('unitemized directional estimate must apply frozen provider and service-group multipliers; got ' + JSON.stringify(multiplied));
+  }
+  const mixed = estimateSandbox.unitemizedDirectionalCreditEstimate({
+    provider_pricing: [
+      { input_credits_per_10k: 1, output_credits_per_10k: 2 },
+      { input_credits_per_10k: 9, output_credits_per_10k: 2 }
+    ]
+  }, 10000, 0, 0, 0);
+  if (mixed) {
+    fail('mixed provider prices must not invent a directional estimate; got ' + JSON.stringify(mixed));
   }
 }
 
@@ -1259,7 +1318,11 @@ function assertLLMProviderPricingHooks() {
     'llm-provider-price-chip',
     'pricePerMShort',
     'input_cost_rmb',
-    'output_cost_rmb'
+    'output_cost_rmb',
+    'cache_read_cost_rmb',
+    'cache_write_cost_rmb',
+    'cache_read_credits_per_10k',
+    'cache_write_credits_per_10k'
   ].forEach(function(marker) {
     if (!content.includes(marker)) {
       fail('llm-provider-tab.js is missing pricing marker: ' + marker);
@@ -1506,7 +1569,7 @@ assertUserReferralNavigationI18nLifecycle();
 // Legacy modules may still contain pre-existing localized source. Keep the
 // invitation module in the same ASCII-only contract as the other modern admin
 // modules (Chinese copy must be expressed with \u escapes).
-['user-referrals-tab.js', 'MODULES.md', 'validate-admin-modules.js', 'check-admin.ps1', 'cloud-workspace-tab.js'].forEach(assertAscii);
+['user-referrals-tab.js', 'MODULES.md', 'validate-admin-modules.js', 'check-admin.ps1', 'cloud-workspace-tab.js', 'bot-tab.js', 'desktop-tab.js'].forEach(assertAscii);
 removedLegacyFiles.forEach(assertMissing);
 assertScriptOrder();
 assertHealthHook();
@@ -1524,7 +1587,7 @@ assertScopedRefreshHooks();
 assertMaclawAppEvidenceReviewMarkers();
 assertUsageRankingEmailFilter();
 assertUsageStatsSubtabState();
-assertUsageStatsRMBEstimate();
+assertUsageStatsRMBBreakdown();
 assertDigitalAssetDepartmentTreeRender();
 assertCloudWorkspaceDepartmentTreeRender();
 assertDigitalAssetRoutesTenantScoped();

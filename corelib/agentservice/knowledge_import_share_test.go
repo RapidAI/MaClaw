@@ -34,7 +34,7 @@ func TestDownloadSharePackageRejectsOversizedPackage(t *testing.T) {
 	}))
 	defer server.Close()
 
-	_, err := downloadSharePackage(context.Background(), server.URL, "")
+	_, err := downloadSharePackage(context.Background(), server.URL, "", server.URL)
 	if err == nil || !strings.Contains(err.Error(), "knowledge package is too large") {
 		t.Fatalf("expected oversized package error, got %v", err)
 	}

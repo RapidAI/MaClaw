@@ -42,6 +42,18 @@ type StoredCredential struct {
 	BaseURL string `json:"base_url,omitempty"`
 	Email   string `json:"email,omitempty"`
 	ModelID string `json:"model_id,omitempty"`
+	// WorkBuddy / CodeBuddy account context required by the upstream chat API.
+	UserID       string `json:"user_id,omitempty"`
+	EnterpriseID string `json:"enterprise_id,omitempty"`
+	Domain       string `json:"domain,omitempty"`
+	// LobsterAI login identity: the desktop install uuid and the first
+	// keyfrom timestamp the refresh call has to echo back.
+	UUID         string `json:"uuid,omitempty"`
+	FirstKeyfrom string `json:"first_keyfrom,omitempty"`
+	// Trae device pair: the login-page machine/device ids the refresh token
+	// was minted against; the chat headers reuse the same pair.
+	MachineID string `json:"machine_id,omitempty"`
+	DeviceID  string `json:"device_id,omitempty"`
 }
 
 // IsExpired 检查 credential 是否已过期或即将过期（含 5 分钟 margin）。

@@ -195,6 +195,7 @@ func TestReviewedHostShellAppliesEveryLocalShellGuard(t *testing.T) {
 		guard   func(string) (string, bool)
 	}{
 		{"remote host hop", "ssh user@host uptime", coretool.RejectRawSSHCommand},
+		{"mysql client bypass", `mysql -h db -u root -psecret -e "SHOW DATABASES;"`, coretool.RejectShellDatabaseCLI},
 		{"whole browser process tree", "taskkill /im chrome.exe", coretool.RejectBroadBrowserKillCommand},
 		{"authenticated side effect", `curl -X POST https://example.com/publish -H "cookie: a=b"`, coretool.RejectBrowserSideEffectHTTPCommand},
 		{"second browser control plane", "npx playwright screenshot https://example.com out.png", coretool.RejectShellBrowserAutomationCommand},

@@ -25,7 +25,7 @@ ha:
   pull_batch_size: 200
   heartbeat_sync_min_interval_seconds: 600
   history_retention_days: 0.5
-  history_max_retained_ops: 50000
+  history_max_retained_ops: 20000
   history_prune_interval_minutes: 10
   history_prune_batch_size: 20000
   nodes:

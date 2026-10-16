@@ -8,6 +8,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
 // ToolEnrichment holds pre-computed synthetic queries for a tool.
@@ -49,30 +51,37 @@ func DefaultEnrichmentStorePath() string {
 // Format: "name description tag1 tag2 | query1 | query2 | ..."
 // Falls back to base text when no enrichment exists.
 func (s *EnrichmentStore) GetSearchText(t RegisteredTool) string {
-	base := t.Name + " " + t.Description
-	for _, tag := range t.Tags {
-		base += " " + tag
-	}
-	if isInternalBrowserDispatchToolName(t.Name) {
+	base := baseToolSearchText(t.Name, t.Description, t.Tags)
+	if s == nil || isInternalBrowserDispatchToolName(t.Name) {
 		return base
 	}
-
-	// Check builtin enrichments first.
-	if queries, ok := BuiltinEnrichments[t.Name]; ok {
-		for _, q := range queries {
-			base += " | " + q
-		}
-		return base
-	}
-
-	// Check stored enrichments.
 	s.mu.RLock()
 	e, ok := s.enrichments[t.Name]
 	s.mu.RUnlock()
-	if ok && len(e.SyntheticQueries) > 0 {
-		for _, q := range e.SyntheticQueries {
-			base += " | " + q
+	if ok {
+		base = appendSearchQueries(base, e.SyntheticQueries)
+	}
+	return base
+}
+
+func baseToolSearchText(name, description string, tags []string) string {
+	base := name + " " + description
+	for _, tag := range tags {
+		base += " " + tag
+	}
+	if isInternalBrowserDispatchToolName(name) {
+		return base
+	}
+	return appendSearchQueries(base, BuiltinEnrichments[name])
+}
+
+func appendSearchQueries(base string, queries []string) string {
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if query == "" {
+			continue
 		}
+		base += " | " + query
 	}
 	return base
 }
@@ -205,11 +214,11 @@ Typical usage: Run shell commands, check system status, install packages`,
 - encoding (string, optional): File encoding, default utf-8
 Typical usage: Read source code, config files, logs`,
 
-	"read_tool_result": `Parameters:
+	"read_tool_result": fmt.Sprintf(`Parameters:
 - id (string): Handle id from a prior [tool_result_handle] footer
 - offset (int, optional): 0-based byte offset, default 0
-- limit (int, optional): Max bytes to return, default 6000, max 32768
-How to use: When a tool result was truncated and shows [tool_result_handle], call read_tool_result(id=..., offset=0, limit=6000) for a slice; if truncated=true, continue with next_offset.`,
+- limit (int, optional): Max bytes to return, default %d, max %d
+How to use: When a tool result was truncated and shows [tool_result_handle], call read_tool_result(id=..., offset=0, limit=%d) for a slice; if truncated=true, continue with next_offset.`, toolresult.DefaultReadLimit, toolresult.MaxReadLimit, toolresult.DefaultReadLimit),
 
 	"FileRead": `Parameters:
 - path (string, required): 要读取的文件路径，可为绝对路径或相对当前项目目录的路径
@@ -291,10 +300,10 @@ Typical usage: Capture screen state, verify UI changes, document visual output`,
 Typical usage: Invoke external tools via MCP protocol`,
 
 	"browser": `Parameters:
-- action (string, required): session_start/connect/observe/navigate/click/type/wait/extract/scroll/select/list_pages/switch_page/close/set_files/info/task_run/task_status/task_verify/list_flows
+- action (string, required): session_start/connect/observe/probe/navigate/click/type/wait/extract/scroll/select/list_pages/switch_page/close/set_files/info/script/skill_list/skill_run/task_run/task_status/task_verify/list_flows
 - session_id (string, required for page actions): Browser agent session ID returned by session_start/connect
-- start_url/url/ref/selector/text/value/task_id/steps (optional): Action-specific arguments
-Typical usage: Use one stable BrowserAgentSession workflow. First call action=session_start or connect to get browser-session-*, then use observe refs for page actions. For rich editors, click the editable field then action=type may omit ref/selector to type into the focused element; set content_format=markdown when Markdown should render as rich content. No screenshot fallback, eval, raw HTTP, coordinate clicks, or broad browser process kills`,
+- start_url/url/ref/selector/text/value/task_id/steps/script/name (optional): Action-specific arguments
+Typical usage: Use one stable BrowserAgentSession workflow. First call action=session_start or connect to get browser-session-*, then probe once and action=script to click, type, select, press, scroll, and wait in one call. Optional name stores that script; skill_run repeats it on the same site. task_run remains for a short ref sequence. For rich editors, click the editable field then action=type may omit ref/selector to type into the focused element; set content_format=markdown when Markdown should render as rich content. No screenshot fallback, eval, raw HTTP, coordinate clicks, or broad browser process kills`,
 
 	"list_skills": `Parameters:
 - filter (string, optional): Filter skills by name or tag
@@ -320,10 +329,6 @@ Typical usage: Generate and execute a single local script for data processing, A
 
 	"parallel_execute": `Disabled for external coding sessions. Split or route coding work through the internal CodingSubAgent instead.`,
 
-	"recommend_tool": `Parameters:
-- task (string, required): Description of the task to accomplish
-Typical usage: Get a recommendation for which coding tool fits a task best`,
-
 	"send_file": `Parameters:
 - path (string, required): Local file path to show in the current chat
 - destination / forward_to_im (optional): set only if also forwarding to IM
@@ -337,7 +342,7 @@ Typical usage: User asked to send a file to WeChat or other IM`,
 	"im_message": `Parameters:
 - action (string, required): list_targets | send
 - text (string, required for send): Message body
-- channel (string, optional): lansenger|weixin|telegram|qq (default lansenger)
+- channel (string, optional): lansenger|weixin|telegram|qq|device (default lansenger)
 - group_name / group_id / user_id: Destination shorthand
 Typical usage: Immediately send text to a Lansenger group or other IM channel (not scheduled)`,
 
@@ -418,6 +423,10 @@ var BuiltinEnrichments = map[string][]string{
 		"update file contents",
 		"append text to file",
 		"追加写入文件",
+		"生成markdown",
+		"保存为 markdown",
+		"create a markdown file",
+		"write a .md file",
 	},
 	"edit_file": {
 		"edit an existing file",
@@ -425,6 +434,16 @@ var BuiltinEnrichments = map[string][]string{
 		"局部编辑文件内容",
 		"update a snippet in a file",
 		"find and replace in file",
+		"生成markdown",
+		"写成 markdown",
+	},
+	"generate_pdf": {
+		"生成 PDF",
+		"导出 pdf 报告",
+		"render as PDF",
+		"export formatted PDF",
+		"把内容导出为 PDF 文件",
+		"generate a PDF document",
 	},
 	"list_directory": {
 		"list files in a directory",
@@ -446,6 +465,11 @@ var BuiltinEnrichments = map[string][]string{
 		"搜索网页",
 		"find documentation for",
 		"google this topic",
+		"查一下 release notes 和新特性",
+		"最新版本有哪些更新",
+		"网上查资料",
+		"search release notes for new features",
+		"look up what's new",
 	},
 	"web_fetch": {
 		"fetch a webpage",
@@ -453,6 +477,32 @@ var BuiltinEnrichments = map[string][]string{
 		"获取网页内容",
 		"read this URL",
 		"get the content from this link",
+		"抓下这个网页提炼要点",
+		"打开链接阅读全文",
+		"read this article and summarize",
+		"fetch documentation page",
+	},
+	"knowledge_search": {
+		"查一下知识库里存过的内容",
+		"搜索保存过的资料和笔记",
+		"find saved notes and records",
+		"look up what I stored before",
+		"search my knowledge base",
+		"检索以前保存的信息",
+	},
+	"glob": {
+		"find files by name pattern",
+		"查找匹配的文件",
+		"按文件名查找配置文件",
+		"locate config files by name",
+		"找项目里叫某个名字的文件",
+	},
+	"grep": {
+		"search file contents with regex",
+		"在文件内容里搜索文本",
+		"查找文件里的字符串",
+		"find text in project files",
+		"搜索匹配的文本行",
 	},
 	"screenshot": {
 		"take a screenshot",
@@ -518,13 +568,6 @@ var BuiltinEnrichments = map[string][]string{
 		"use internal CodingSubAgent instead",
 		"external queued coding execution is disabled",
 	},
-	"recommend_tool": {
-		"which coding tool is best for this",
-		"recommend a tool for this task",
-		"推荐编程工具",
-		"suggest the right tool",
-		"help me pick a coding tool",
-	},
 	"send_file": {
 		"send a file to the user",
 		"share a file",
@@ -584,5 +627,24 @@ var BuiltinEnrichments = map[string][]string{
 		"查找更多工具",
 		"I need a capability not in the current list",
 		"discover matching tools from MCP or SkillHub",
+	},
+	"database": {
+		"修改数据库数据",
+		"写入或删除数据库记录",
+		"执行数据库变更操作",
+		"查看 mysql 库",
+		"列出库和表",
+		"查看表结构",
+		"query mysql postgres sqlserver",
+		"update rows",
+		"delete records",
+		"insert new rows",
+	},
+	"database_query": {
+		"查看库",
+		"查看数据库",
+		"只读查询数据库",
+		"inspect schema",
+		"list tables in the database",
 	},
 }

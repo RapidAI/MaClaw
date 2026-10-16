@@ -1,0 +1,714 @@
+import { useEffect, useId, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { localizeText } from "./aiAssistantI18n";
+import { resolvePrimaryFilledColors, type Theme } from "./aiAssistantPanelTheme";
+import { isFormFieldTarget, isVisibleCodingConflictPanelPresent } from "./codingUiGuards";
+import {
+    codingStepIsActive,
+    codingStepIsDone,
+    codingStepIsFailed,
+    codingStepIsSkipped,
+} from "./codingStepStatus";
+
+export { isFormFieldTarget } from "./codingUiGuards";
+// Step-state predicates live in their own leaf module so non-UI helpers
+// (e.g. assistantTaskExecutionChrome) can share the vocabulary without
+// importing this component. Re-exported to keep existing imports working.
+export {
+    codingStepIsActive,
+    codingStepIsDone,
+    codingStepIsFailed,
+    codingStepIsSettled,
+    codingStepIsSkipped,
+} from "./codingStepStatus";
+
+/** Chrome tokens for coding workbench floating control (light/dark + remote/local). */
+export type CodingBannerChrome = {
+    accent: string;
+    accentStrong: string;
+    surface: string;
+    border: string;
+    chipActiveBg: string;
+    chipIdleBg: string;
+    chipIdleBorder: string;
+    iconWellBg: string;
+    insetBg: string;
+    muted: string;
+    /** Finished plan-step foreground — derived from the panel accent, never a
+     *  standalone green (a green checklist clashed with the blue app shell). */
+    stepDoneFg: string;
+    /** Failed plan-step foreground — mirrors the theme danger token. */
+    stepFailedFg: string;
+    btnPrimaryBg: string;
+    btnPrimaryFg: string;
+};
+
+/** Dark local accent — muted sage (not neon #4ade80 / #86efac). */
+export const CODING_BANNER_LOCAL_DARK_ACCENT = "#5a9074";
+export const CODING_BANNER_LOCAL_DARK_ACCENT_STRONG = "#9db8a8";
+
+type BuildCodingBannerChromeOpts = {
+    isDark: boolean;
+    remote: boolean;
+    theme: Pick<Theme, "btnColor" | "sendBtnBg" | "sendBtnColor" | "titleBarBg" | "bg" | "titleBarBorder" | "fieldBorder" | "fieldBg" | "textMuted" | "promptColor" | "fieldLabel" | "text"> & Partial<Pick<Theme, "inputBarBg" | "titleText">>;
+};
+
+/**
+ * Build float-panel chrome for local/remote × light/dark.
+ * Dark local deliberately avoids bright greens so the panel does not cast green over dark UI.
+ *
+ * Primary filled buttons MUST use sendBtnBg/sendBtnColor — dark `btnColor` is a light
+ * accent (foreground), not a fill. White-on-btnColor fails WCAG badly on graphite/etc.
+ */
+export function buildCodingBannerChrome({ isDark, remote, theme: t }: BuildCodingBannerChromeOpts): CodingBannerChrome {
+    const accentFallback = isDark ? "#5f89b8" : "#2e75cb";
+    const productAccent = t.btnColor || accentFallback;
+    // Remote uses the same product accent as the main shell. A separate sky-blue
+    // palette made the float panel look like a different product.
+    const accent = !remote && isDark ? CODING_BANNER_LOCAL_DARK_ACCENT : productAccent;
+    const accentStrong = !remote && isDark
+        ? CODING_BANNER_LOCAL_DARK_ACCENT_STRONG
+        : (t.titleText || t.text || (isDark ? "#dbe7f5" : "#526277"));
+    const surface = isDark
+        ? `color-mix(in srgb, ${accent} 6%, ${t.titleBarBg || t.bg})`
+        : (t.bg || t.titleBarBg);
+    const border = isDark
+        ? `color-mix(in srgb, ${accent} 16%, ${t.titleBarBorder})`
+        : (t.titleBarBorder || t.fieldBorder);
+    const chipActiveBg = `color-mix(in srgb, ${accent} 14%, transparent)`;
+    const chipIdleBg = isDark ? "transparent" : (t.bg || t.inputBarBg || "#ffffff");
+    // Stronger idle border on dark so chip outlines remain visible
+    const chipIdleBorder = t.fieldBorder || (isDark ? "rgba(180,190,205,0.42)" : t.titleBarBorder);
+    const iconWellBg = `color-mix(in srgb, ${accent} 14%, transparent)`;
+    const insetBg = isDark ? (t.fieldBg || "transparent") : (t.bg || "#ffffff");
+    // Labels / secondary text: prefer fieldLabel, keep ≥ readable slate (not washed gray)
+    const muted = t.fieldLabel || t.textMuted || t.promptColor || (isDark ? "#c4cdd8" : "#64748b");
+    // Checklist step colors. Finished steps ride the panel accent — softened so a
+    // long finished list recedes — instead of a standalone green that clashed with
+    // the blue shell; failures mirror the theme danger token.
+    const stepDoneFg = `color-mix(in srgb, ${accent} 85%, ${muted})`;
+    // --theme-danger is the scheme's WCAG-AA-fixed danger token (light #dc1f25,
+    // dark #f47067…). Theme.errorText is the undecorated brand red (#e5484d),
+    // which is only 3.9:1 on white — do not use it for step text.
+    const stepFailedFg = "var(--theme-danger, #dc2626)";
+    // Filled CTA pair: sendBtn* with luminance-safe ink (graphite light fill → dark text)
+    const filled = resolvePrimaryFilledColors(t);
+    return {
+        accent,
+        accentStrong,
+        surface,
+        border,
+        chipActiveBg,
+        chipIdleBg,
+        chipIdleBorder,
+        iconWellBg,
+        insetBg,
+        muted,
+        stepDoneFg,
+        stepFailedFg,
+        btnPrimaryBg: filled.bg,
+        btnPrimaryFg: filled.fg,
+    };
+}
+
+/** Codex-style checklist mark for a workbench / agent step. */
+export function codingStepGlyph(status: string): string {
+    if (codingStepIsDone(status)) return "☑";
+    if (codingStepIsFailed(status)) return "✗";
+    if (codingStepIsActive(status)) return "…";
+    if (codingStepIsSkipped(status)) return "–";
+    return "☐";
+}
+
+/** Step row color for the control-panel checklist / plan panel.
+ *  Finished → panel accent (no standalone green: it fought the blue shell);
+ *  running → accentStrong; failed → theme danger; everything else → muted. */
+export function codingStepStatusColor(
+    status: string,
+    chrome: Pick<CodingBannerChrome, "accentStrong" | "muted" | "stepDoneFg" | "stepFailedFg">,
+): string {
+    if (codingStepIsDone(status)) return chrome.stepDoneFg;
+    if (codingStepIsFailed(status)) return chrome.stepFailedFg;
+    if (codingStepIsActive(status)) return chrome.accentStrong;
+    return chrome.muted;
+}
+
+/** Human-facing status text for the execution timeline. Keep transport/status
+ * values in the data model while presenting the same localized labels used by
+ * the task reference cards. */
+export function codingStepStatusLabel(lang: string | undefined, status: string): string {
+    const s = (status || "").toLowerCase();
+    if (codingStepIsDone(s)) {
+        return localizeText(lang, "Completed", "已完成", "已完成");
+    }
+    if (codingStepIsFailed(s)) {
+        return localizeText(lang, "Failed", "失败", "失敗");
+    }
+    if (codingStepIsActive(s)) {
+        return localizeText(lang, "In progress", "进行中", "進行中");
+    }
+    if (s === "pending" || s === "queued" || s === "waiting" || s === "needs_review" || s === "blocked") {
+        return localizeText(lang, "Pending", "待确认", "待確認");
+    }
+    if (codingStepIsSkipped(s)) {
+        return localizeText(lang, "Skipped", "已跳过", "已跳過");
+    }
+    return status || localizeText(lang, "Pending", "待确认", "待確認");
+}
+
+export type CodingStepStatus = {
+    index: number;
+    title?: string;
+    status: string;
+    summary?: string;
+    verify_cmd?: string;
+    verify_ok?: boolean;
+};
+
+export type CodingWorkbenchControlPanelProps = {
+    lang?: string;
+    theme: Theme;
+    chrome: CodingBannerChrome;
+    remote: boolean;
+    /** The user-facing intent can differ from the remote execution engine. */
+    intent?: "remote_maintenance";
+    remoteHost?: string;
+    preparing?: boolean;
+    prepareMode?: string;
+    stepStatuses: CodingStepStatus[];
+    pendingApproval: boolean;
+    conflictCount: number;
+    /** When true, click-outside / Escape will not collapse (e.g. SSH reconnect). */
+    lockExpanded?: boolean;
+    expanded: boolean;
+    onExpandedChange: (next: boolean) => void;
+    /** Optional tooltip / title describing the full environment (long copy). */
+    envDescription?: string;
+    /** Resting top offset (px) within the relatively-positioned parent.
+     * Pass the height of any header bar above the chat area so the chip
+     * floats over the client area instead of overlapping header actions. */
+    defaultTop?: number;
+    children: ReactNode;
+};
+
+/** Pure helper — exported for unit tests. */
+export function deriveChipStatus(
+    lang: string | undefined,
+    steps: CodingStepStatus[],
+    pendingApproval: boolean,
+    preparing?: boolean,
+    prepareMode?: string,
+    needsAttention?: boolean,
+): string {
+    if (preparing && prepareMode === "new-agent") {
+        return localizeText(lang, "Starting…", "启动中…", "啟動中…");
+    }
+    const failed = steps.find((s) => codingStepIsFailed(s.status));
+    if (failed) {
+        return `T${failed.index} ✗`;
+    }
+    const running = steps.find((s) => codingStepIsActive(s.status));
+    if (running) {
+        return `T${running.index}…`;
+    }
+    if (pendingApproval) {
+        return localizeText(lang, "Pending", "待批", "待批");
+    }
+    if (needsAttention) {
+        return localizeText(lang, "Attention", "需处理", "需處理");
+    }
+    if (steps.length > 0) {
+        const last = steps[steps.length - 1];
+        if (codingStepIsDone(last.status)) {
+            return localizeText(lang, "Done", "完成", "完成");
+        }
+        return `T${last.index}`;
+    }
+    return localizeText(lang, "Ready", "就绪", "就緒");
+}
+
+/** Visually hidden but announced — shared with the plan checklist so step rows
+ *  expose their status to screen readers (color + glyph alone are not enough). */
+export const srOnlyStyle: CSSProperties = {
+    position: "absolute",
+    width: 1,
+    height: 1,
+    padding: 0,
+    margin: -1,
+    overflow: "hidden",
+    clipPath: "inset(50%)",
+    whiteSpace: "nowrap",
+    border: 0,
+};
+
+/**
+ * Floating coding-workbench control: collapsed chip (zero document-flow cost)
+ * + optional popover with full controls as children.
+ *
+ * Layout: the chip rests at the top-right of the client area (below the task
+ * header) and can be dragged vertically/horizontally within the parent; the
+ * popover drops below the chip.
+ */
+
+/** Pointer movement (px) before a chip press becomes a drag instead of a click. */
+const CHIP_DRAG_THRESHOLD = 4;
+/** Margin (px) kept between the dragged chip and the parent edges. */
+const CHIP_DRAG_MARGIN = 4;
+export function CodingWorkbenchControlPanel({
+    lang,
+    theme: t,
+    chrome,
+    remote,
+    intent,
+    remoteHost,
+    preparing,
+    prepareMode,
+    stepStatuses,
+    pendingApproval,
+    conflictCount,
+    lockExpanded = false,
+    expanded,
+    onExpandedChange,
+    envDescription,
+    defaultTop = 8,
+    children,
+}: CodingWorkbenchControlPanelProps) {
+    const rootRef = useRef<HTMLDivElement | null>(null);
+    // Keep latest callback without re-binding document listeners every render.
+    const onExpandedChangeRef = useRef(onExpandedChange);
+    onExpandedChangeRef.current = onExpandedChange;
+    const lockExpandedRef = useRef(lockExpanded);
+    lockExpandedRef.current = lockExpanded;
+
+    // Drag offset (px) applied to the resting top-right anchor.
+    const [dragDelta, setDragDelta] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+    const dragSessionRef = useRef<{
+        pointerId: number;
+        startX: number;
+        startY: number;
+        baseX: number;
+        baseY: number;
+        dragging: boolean;
+    } | null>(null);
+    // Swallow the click that follows a drag so the chip does not toggle open.
+    const suppressClickRef = useRef(false);
+    const dragDeltaRef = useRef(dragDelta);
+    dragDeltaRef.current = dragDelta;
+
+    const reactId = useId();
+    const popoverId = `coding-control-popover-${reactId.replace(/:/g, "")}`;
+
+    // Dismiss on Escape / outside click (unless locked for a blocking interrupt).
+    useEffect(() => {
+        if (!expanded) return;
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key !== "Escape" || lockExpandedRef.current) return;
+            // Let text fields own Escape (cancel edit / leave field) without discarding the panel.
+            if (isFormFieldTarget(e.target)) return;
+            // Visible CF tab owns Escape (hidden CF slot under SRC/WF must not block float Esc).
+            if (isVisibleCodingConflictPanelPresent()) return;
+            e.stopPropagation();
+            onExpandedChangeRef.current(false);
+        };
+        const onPointer = (e: PointerEvent) => {
+            if (lockExpandedRef.current) return;
+            // Only primary button dismisses (ignore right-click / pen barrel).
+            if (typeof e.button === "number" && e.button !== 0) return;
+            const el = rootRef.current;
+            if (!el) return;
+            const target = e.target;
+            // Sibling chrome (e.g. reconnect success toast) can opt out of outside-dismiss.
+            if (target instanceof Element && target.closest("[data-coding-float-ignore-outside]")) return;
+            if (target instanceof Node && !el.contains(target)) {
+                onExpandedChangeRef.current(false);
+            }
+        };
+        document.addEventListener("keydown", onKey, true);
+        document.addEventListener("pointerdown", onPointer, true);
+        return () => {
+            document.removeEventListener("keydown", onKey, true);
+            document.removeEventListener("pointerdown", onPointer, true);
+        };
+    }, [expanded]);
+
+    const label = useMemo(() => (
+        intent === "remote_maintenance"
+            ? (remoteHost
+                ? localizeText(lang, `Remote maintenance · ${remoteHost}`, `远程维护 · ${remoteHost}`, `遠端維護 · ${remoteHost}`)
+                : localizeText(lang, "Remote maintenance", "远程维护", "遠端維護"))
+            : remote
+            ? (remoteHost
+                ? localizeText(lang, `Remote · ${remoteHost}`, `远程 · ${remoteHost}`, `遠端 · ${remoteHost}`)
+                : localizeText(lang, "Remote coding", "远程编程", "遠端程式"))
+            : localizeText(lang, "Coding", "编程", "程式")
+    ), [intent, lang, remote, remoteHost]);
+
+    // Keep test-friendly long names available via title + sr-only text.
+    const longTitle = useMemo(() => (
+        intent === "remote_maintenance"
+            ? (remoteHost
+                ? localizeText(lang, `Remote maintenance task · ${remoteHost}`, `远程维护任务 · ${remoteHost}`, `遠端維護任務 · ${remoteHost}`)
+                : localizeText(lang, "Remote maintenance task", "远程维护任务", "遠端維護任務"))
+            : remote
+            ? (remoteHost
+                ? localizeText(lang, `Remote coding environment · ${remoteHost}`, `远程编程环境 · ${remoteHost}`, `遠端程式開發環境 · ${remoteHost}`)
+                : localizeText(lang, "Remote coding environment", "远程编程环境", "遠端程式開發環境"))
+            : localizeText(lang, "Coding environment", "编程环境", "程式環境")
+    ), [intent, lang, remote, remoteHost]);
+
+    // Prefer step progress on the chip; pending/conflict badges carry those states.
+    const status = useMemo(
+        () => deriveChipStatus(lang, stepStatuses, false, preparing, prepareMode, false),
+        [lang, stepStatuses, preparing, prepareMode],
+    );
+    // Hide idle "Ready" to keep the chip compact when nothing is happening.
+    const showStatusText = useMemo(() => {
+        if (preparing && prepareMode === "new-agent") return true;
+        if (stepStatuses.length > 0) return true;
+        return false;
+    }, [preparing, prepareMode, stepStatuses.length]);
+
+    const bannerTestId = remote ? "remote-coding-env-banner" : "coding-env-banner";
+    const chipTitle = useMemo(
+        () => [longTitle, envDescription].filter(Boolean).join("\n\n"),
+        [longTitle, envDescription],
+    );
+    const ariaLabel = useMemo(() => {
+        const parts = [longTitle];
+        if (showStatusText) parts.push(status);
+        if (pendingApproval) parts.push(localizeText(lang, "plan pending approval", "计划待批准", "計畫待批准"));
+        if (conflictCount > 0) {
+            parts.push(localizeText(lang, `${conflictCount} conflicts`, `${conflictCount} 个冲突`, `${conflictCount} 個衝突`));
+        }
+        if (expanded) parts.push(localizeText(lang, "expanded", "已展开", "已展開"));
+        else parts.push(localizeText(lang, "collapsed", "已收起", "已收起"));
+        return parts.filter(Boolean).join(" · ");
+    }, [longTitle, showStatusText, status, pendingApproval, conflictCount, expanded, lang]);
+
+    const toggle = () => {
+        if (suppressClickRef.current) {
+            suppressClickRef.current = false;
+            return;
+        }
+        if (lockExpanded && expanded) return;
+        onExpandedChange(!expanded);
+    };
+
+    // Clamp a candidate delta so the collapsed chip stays inside the parent box.
+    const clampDragDelta = (x: number, y: number): { x: number; y: number } => {
+        const root = rootRef.current;
+        const parent = root?.parentElement;
+        if (!root || !parent) return { x, y };
+        const pr = parent.getBoundingClientRect();
+        // Unmeasured layout (e.g. jsdom): skip clamping rather than pinning to 0.
+        if (pr.width <= 0 || pr.height <= 0) return { x, y };
+        const rr = root.getBoundingClientRect();
+        // Chip rest position: right edge 10px from parent right, top at defaultTop.
+        const restLeft = pr.right - 10 - rr.width;
+        const minX = pr.left + CHIP_DRAG_MARGIN - restLeft;
+        const maxX = 0;
+        const minY = CHIP_DRAG_MARGIN - defaultTop;
+        const maxY = pr.height - CHIP_DRAG_MARGIN - defaultTop - rr.height;
+        return {
+            x: Math.min(maxX, Math.max(minX, x)),
+            y: Math.min(maxY, Math.max(minY, y)),
+        };
+    };
+
+    const onChipPointerDown = (e: React.PointerEvent<HTMLButtonElement>) => {
+        // Drag only the collapsed chip; the expanded popover stays put.
+        if (e.button !== 0 || expanded) return;
+        suppressClickRef.current = false;
+        dragSessionRef.current = {
+            pointerId: e.pointerId,
+            startX: e.clientX,
+            startY: e.clientY,
+            baseX: dragDeltaRef.current.x,
+            baseY: dragDeltaRef.current.y,
+            dragging: false,
+        };
+        const onMove = (ev: PointerEvent) => {
+            const session = dragSessionRef.current;
+            if (!session || ev.pointerId !== session.pointerId) return;
+            const dx = ev.clientX - session.startX;
+            const dy = ev.clientY - session.startY;
+            if (!session.dragging && Math.hypot(dx, dy) < CHIP_DRAG_THRESHOLD) return;
+            session.dragging = true;
+            setDragDelta(clampDragDelta(session.baseX + dx, session.baseY + dy));
+        };
+        const onUp = (ev: PointerEvent) => {
+            const session = dragSessionRef.current;
+            if (!session || ev.pointerId !== session.pointerId) return;
+            if (session.dragging) suppressClickRef.current = true;
+            dragSessionRef.current = null;
+            document.removeEventListener("pointermove", onMove, true);
+            document.removeEventListener("pointerup", onUp, true);
+            document.removeEventListener("pointercancel", onUp, true);
+        };
+        document.addEventListener("pointermove", onMove, true);
+        document.addEventListener("pointerup", onUp, true);
+        document.addEventListener("pointercancel", onUp, true);
+    };
+
+    const rootStyle = useMemo((): CSSProperties => ({
+        position: "absolute",
+        top: defaultTop,
+        right: 10,
+        // Only pin bottom while expanded so the collapsed chip is not a full-height overlay.
+        ...(expanded ? { bottom: 8 } : null),
+        ...(dragDelta.x !== 0 || dragDelta.y !== 0
+            ? { transform: `translate(${dragDelta.x}px, ${dragDelta.y}px)` }
+            : null),
+        zIndex: 40,
+        display: "flex",
+        flexDirection: "column",
+        alignItems: "flex-end",
+        gap: 6,
+        maxWidth: "min(360px, calc(100% - 16px))",
+        // Let chat scroll/select under the empty area of this root.
+        pointerEvents: "none",
+    }), [expanded, defaultTop, dragDelta]);
+
+    const chipStyle = useMemo((): CSSProperties => ({
+        pointerEvents: "auto",
+        position: "relative",
+        display: "inline-flex",
+        alignItems: "center",
+        gap: 6,
+        maxWidth: "min(320px, calc(100vw - 24px))",
+        minHeight: 36,
+        padding: "0 10px 0 6px",
+        borderRadius: 10,
+        border: `1px solid ${expanded ? chrome.accent : chrome.border}`,
+        background: chrome.surface,
+        color: t.text,
+        boxShadow: t.isDark
+            ? "0 4px 14px rgba(0,0,0,0.35)"
+            : "0 4px 14px rgba(15,23,42,0.10)",
+        cursor: lockExpanded && expanded ? "default" : "pointer",
+        // Let pointermove drive chip dragging on touch instead of scrolling.
+        touchAction: expanded ? "auto" : "none",
+        fontSize: 11,
+        lineHeight: 1,
+        fontFamily: "inherit",
+        flexShrink: 0,
+    }), [expanded, chrome.accent, chrome.border, chrome.surface, t.text, t.isDark, lockExpanded]);
+
+    const popoverStyle = useMemo((): CSSProperties => ({
+        pointerEvents: "auto",
+        width: "min(360px, calc(100vw - 32px))",
+        // 100% is the top/bottom-pinned root; reserve room for the chip + gap.
+        maxHeight: "min(520px, calc(100% - 40px))",
+        minHeight: 0,
+        flex: "0 1 auto",
+        overflow: "auto",
+        overscrollBehavior: "contain",
+        padding: "10px 12px",
+        borderRadius: 14,
+        border: `1px solid ${chrome.border}`,
+        background: chrome.surface,
+        color: t.text,
+        boxShadow: t.isDark
+            ? "0 16px 40px rgba(0,0,0,0.45), 0 0 0 1px rgba(148,163,184,0.12)"
+            : "0 12px 30px rgba(27, 56, 93, 0.12)",
+        fontSize: 12,
+        lineHeight: 1.4,
+    }), [chrome.border, chrome.surface, t.text, t.isDark]);
+
+    return (
+        <div
+            ref={rootRef}
+            data-testid="coding-control-float-root"
+            data-expanded={expanded ? "true" : "false"}
+            style={rootStyle}
+        >
+            {/* Chip first so it stays pinned at the top-right while the popover drops below. */}
+            <button
+                type="button"
+                data-testid={bannerTestId}
+                aria-label={ariaLabel}
+                aria-expanded={expanded}
+                aria-haspopup="dialog"
+                aria-controls={expanded ? popoverId : undefined}
+                title={chipTitle}
+                data-env-description={envDescription || ""}
+                onClick={toggle}
+                onPointerDown={onChipPointerDown}
+                style={chipStyle}
+            >
+                <span
+                    aria-hidden="true"
+                    style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        justifyContent: "center",
+                        width: 18,
+                        height: 18,
+                        borderRadius: 5,
+                        flexShrink: 0,
+                        background: chrome.iconWellBg,
+                        color: chrome.accentStrong,
+                        border: `1px solid ${chrome.border}`,
+                        boxSizing: "border-box",
+                    }}
+                >
+                    {remote ? (
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                            <rect x="2.5" y="4" width="11" height="8" rx="1.5" stroke="currentColor" strokeWidth="1.4" />
+                            <path d="M5 7h3M5 9.5h5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+                            <path d="m10.5 7 1.5 1.2L10.5 9.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+                        </svg>
+                    ) : (
+                        <svg width="12" height="12" viewBox="0 0 16 16" fill="none">
+                            <path d="M5.5 4.5 2.5 8l3 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                            <path d="m10.5 4.5 3 3.5-3 3.5" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                            <path d="m9 3.5-2 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                        </svg>
+                    )}
+                </span>
+                <span style={{ fontWeight: 700, color: chrome.accentStrong, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{label}</span>
+                {showStatusText && (
+                    <span
+                        aria-live="polite"
+                        style={{ color: chrome.muted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", maxWidth: 96 }}
+                    >
+                        {status}
+                    </span>
+                )}
+                {pendingApproval && (
+                    <span
+                        data-testid="coding-control-chip-pending"
+                        style={{
+                            fontSize: 10,
+                            fontWeight: 700,
+                            color: chrome.accentStrong,
+                            background: chrome.chipActiveBg,
+                            borderRadius: 999,
+                            padding: "2px 6px",
+                            whiteSpace: "nowrap",
+                        }}
+                    >
+                        {localizeText(lang, "Pending", "待批", "待批")}
+                    </span>
+                )}
+                {conflictCount > 0 && (
+                    <span
+                        data-testid="coding-control-chip-conflicts"
+                        className="cwcp-conflict-chip"
+                    >
+                        {localizeText(lang, `Conflict ${conflictCount}`, `冲突 ${conflictCount}`, `衝突 ${conflictCount}`)}
+                    </span>
+                )}
+                <span
+                    aria-hidden="true"
+                    style={{
+                        color: chrome.muted,
+                        fontSize: 10,
+                        transform: expanded ? "rotate(180deg)" : "none",
+                        transition: "transform 0.12s ease",
+                        flexShrink: 0,
+                    }}
+                >
+                    ▾
+                </span>
+                {/* Hidden long title for legacy tests that scan textContent. */}
+                <span style={srOnlyStyle}>{longTitle}</span>
+            </button>
+
+            {expanded && (
+                <div
+                    id={popoverId}
+                    data-testid="coding-control-popover"
+                    role="dialog"
+                    aria-label={longTitle}
+                    aria-modal="false"
+                    style={popoverStyle}
+                >
+                    <div
+                        style={{
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            gap: 8,
+                            marginBottom: 8,
+                            paddingBottom: 6,
+                            borderBottom: `1px solid ${chrome.border}`,
+                            position: "sticky",
+                            top: 0,
+                            marginTop: -10,
+                            marginLeft: -12,
+                            marginRight: -12,
+                            paddingTop: 10,
+                            paddingLeft: 12,
+                            paddingRight: 12,
+                            background: "var(--theme-surface)",
+                            zIndex: 1,
+                        }}
+                    >
+                        <strong
+                            style={{
+                                fontWeight: 700,
+                                color: chrome.accentStrong,
+                                fontSize: 12,
+                                minWidth: 0,
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                                whiteSpace: "nowrap",
+                            }}
+                        >
+                            {longTitle}
+                        </strong>
+                        {!lockExpanded && (
+                            <button
+                                type="button"
+                                data-testid="coding-control-popover-close"
+                                onClick={() => onExpandedChange(false)}
+                                style={{
+                                    border: "none",
+                                    background: "transparent",
+                                    color: chrome.muted,
+                                    cursor: "pointer",
+                                    fontSize: 11,
+                                    padding: "2px 4px",
+                                    flexShrink: 0,
+                                }}
+                            >
+                                {localizeText(lang, "Close", "收起", "收起")}
+                            </button>
+                        )}
+                    </div>
+                    {children}
+                </div>
+            )}
+        </div>
+    );
+}
+
+/** Section header used inside the coding control popover. */
+export function CodingControlSection({
+    title,
+    chrome,
+    children,
+    testId,
+}: {
+    title: string;
+    chrome: CodingBannerChrome;
+    children: ReactNode;
+    testId?: string;
+}) {
+    return (
+        <div data-testid={testId} className="cwcp-section">
+            <div
+                style={{
+                    fontSize: 12,
+                    fontWeight: 650,
+                    letterSpacing: "normal",
+                    color: chrome.muted,
+                    marginBottom: 6,
+                }}
+            >
+                {title}
+            </div>
+            {children}
+        </div>
+    );
+}

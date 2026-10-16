@@ -29,6 +29,9 @@ func TestLegacyAdapterProvisionFailsClosedForUnknownOrExpiredName(t *testing.T) 
 	if !LegacyAdapterCatalogIncomplete("bash", now) {
 		t.Fatal("expired legacy candidate must become catalog_incomplete")
 	}
+	if !LegacyAdapterCatalogIncomplete("not_a_real_tool", now) {
+		t.Fatal("unknown tool must be catalog_incomplete, not an implicit grant")
+	}
 }
 
 func TestLegacyAdapterProvisionCopiesAreImmutable(t *testing.T) {
@@ -41,6 +44,33 @@ func TestLegacyAdapterProvisionCopiesAreImmutable(t *testing.T) {
 	second, ok := LegacyAdapterProvisionForTool("bash", now)
 	if !ok || second.Effects[0] != EffectLocalMutation {
 		t.Fatalf("provision mutation leaked: %+v", second)
+	}
+}
+
+func TestDatabaseToolsHaveReviewedLegacyProvisions(t *testing.T) {
+	now := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
+	cases := []struct {
+		name       string
+		capability CapabilityID
+		effect     EffectClass
+	}{
+		{name: "database", capability: CapabilityBusinessDataMIS, effect: EffectSensitive},
+		{name: "database_query", capability: CapabilityBusinessDataRead, effect: EffectReadOnly},
+	}
+	for _, tc := range cases {
+		provision, ok := LegacyAdapterProvisionForTool(tc.name, now)
+		if !ok {
+			t.Fatalf("%s provision missing", tc.name)
+		}
+		if provision.Capability != tc.capability {
+			t.Fatalf("%s capability = %q, want %q", tc.name, provision.Capability, tc.capability)
+		}
+		if len(provision.Effects) != 1 || provision.Effects[0] != tc.effect {
+			t.Fatalf("%s effects = %#v, want [%s]", tc.name, provision.Effects, tc.effect)
+		}
+		if provision.Owner == "" || provision.AdapterContract == "" {
+			t.Fatalf("%s provision is incomplete: %+v", tc.name, provision)
+		}
 	}
 }
 
@@ -82,6 +112,83 @@ func TestRouterRecordsOnlyReviewedCapabilityRecommendations(t *testing.T) {
 	}
 	if !foundRead {
 		t.Fatalf("reviewed read_file capability evidence missing: %+v", recommendation)
+	}
+}
+
+func TestLowercaseGlobGrepResolveToReviewedProvisions(t *testing.T) {
+	now := time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)
+	aliases := map[string]string{"glob": "Glob", "grep": "ripgrep"}
+	for alias, exact := range aliases {
+		aliasP, ok := LegacyAdapterProvisionForTool(alias, now)
+		if !ok {
+			t.Fatalf("lowercase %q has no live reviewed provision", alias)
+		}
+		exactP, ok := LegacyAdapterProvisionForTool(exact, now)
+		if !ok {
+			t.Fatalf("exact-case %q provision missing", exact)
+		}
+		// The alias resolves to the SAME reviewed migration contract, not a
+		// new capability: capability, owner, contract and effects must match.
+		if aliasP.Capability != exactP.Capability || aliasP.Owner != exactP.Owner ||
+			aliasP.AdapterContract != exactP.AdapterContract ||
+			len(aliasP.Effects) != len(exactP.Effects) || aliasP.DeleteAfter != exactP.DeleteAfter {
+			t.Fatalf("alias %q provision %+v diverges from %q provision %+v", alias, aliasP, exact, exactP)
+		}
+		// Unknown spellings still miss: the alias table is not a prefix/case
+		// fold, only reviewed alternate spellings resolve.
+		if _, ok := LegacyAdapterProvisionForTool(alias+"_tool", now); ok {
+			t.Fatalf("unreviewed spelling %q received a provision", alias+"_tool")
+		}
+		if _, ok := LegacyAdapterProvisionForTool("GLOB", now); ok {
+			t.Fatal("case-folding beyond the reviewed alias set must not grant a provision")
+		}
+	}
+	if _, ok := LegacyAdapterProvisionForTool("not_a_real_tool", now); ok {
+		t.Fatal("unknown tool received a legacy adapter provision")
+	}
+	if LegacyAdapterCatalogIncomplete("glob", now) {
+		t.Fatal("lowercase glob must not be catalog_incomplete")
+	}
+}
+
+func TestRouterSelectsLowercaseGlobAlias(t *testing.T) {
+	router := NewRouter(NewDefinitionGenerator(nil, nil))
+	tools := []map[string]interface{}{
+		makeToolDef("bash", "run a shell command"),
+		makeToolDef("read_file", "read a local file"),
+		makeToolDef("glob", "按照文件名模式在工作区内查找匹配的文件"),
+	}
+	routed := router.Route("帮我找所有叫 config.yaml 的配置文件", tools)
+	found := false
+	for _, definition := range routed {
+		if ExtractToolName(definition) == "glob" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("lowercase glob must be selectable via the reviewed alias: %#v", routed)
+	}
+}
+
+func TestSearchAndInstallSkillHintHasLiveLegacyProvision(t *testing.T) {
+	hint := SearchAndInstallSkillHint()
+	name := ExtractToolName(hint)
+	if _, ok := LegacyAdapterProvisionForTool(name, time.Date(2026, 8, 22, 0, 0, 0, 0, time.UTC)); !ok {
+		t.Fatalf("recommendation hint %q has no live reviewed provision; injecting it would evict a provisioned tool", name)
+	}
+}
+
+func TestRouterDoesNotSelectUnprovisionedHostTools(t *testing.T) {
+	router := NewRouter(NewDefinitionGenerator(nil, nil))
+	tools := []map[string]interface{}{
+		makeToolDef("read_file", "read a local file"),
+		makeToolDef("unprovisioned_mysql_cli", "connect mysql database SHOW DATABASES query sql postgres"),
+	}
+	routed := router.Route("查看 mysql 数据库 SHOW DATABASES", tools)
+	for _, definition := range routed {
+		if ExtractToolName(definition) == "unprovisioned_mysql_cli" {
+			t.Fatalf("unprovisioned host tool must not be a routing candidate: %#v", routed)
+		}
 	}
 }
 

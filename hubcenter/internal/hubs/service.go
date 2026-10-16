@@ -42,6 +42,8 @@ var ErrDigitalEmployeeYearsRequired = errors.New("digital employee authorization
 var ErrDigitalEmployeeTenantRequired = errors.New("tenant id is required for digital employee authorization")
 var ErrDigitalEmployeeAuthorizationStoreUnavailable = errors.New("digital employee authorization store is unavailable")
 
+var skillMarketAuthHTTPClient = &http.Client{Timeout: 10 * time.Second}
+
 const hubConfirmationPrefix = "hub_registration_confirm:"
 const (
 	systemKeyPublicBaseURL                       = "server_public_base_url"
@@ -73,7 +75,7 @@ type confirmationTokenState struct {
 }
 
 type syncRecorder interface {
-	SyncHubHeartbeat(ctx context.Context, hubID string)
+	SyncHubHeartbeat(ctx context.Context, hub *store.HubInstance)
 	AppendBlockedEmail(ctx context.Context, item *store.BlockedEmail)
 	DeleteBlockedEmail(ctx context.Context, email string)
 	AppendBlockedIP(ctx context.Context, item *store.BlockedIP)
@@ -84,6 +86,8 @@ type syncRecorder interface {
 	DeleteHubDomainRoute(ctx context.Context, routeID string)
 	AppendHubUserLink(ctx context.Context, item *store.HubUserLink)
 	DeleteHubUserLink(ctx context.Context, linkID string)
+	AppendInvitationCodeRoute(ctx context.Context, item *store.InvitationCodeRoute)
+	DeleteInvitationCodeRoute(ctx context.Context, code string)
 }
 
 type hubUserLinkScopedDeleter interface {
@@ -417,7 +421,12 @@ func (s *Service) verifyHubSecret(ctx context.Context, hubID, rawSecret string) 
 	if hub == nil {
 		return ErrHubUnauthorized
 	}
-	if hub.HubSecretHash != hashToken(rawSecret) {
+	// P0 (2026-09-09 review): an empty secret must never satisfy the check.
+	// The previous `hub.HubSecretHash != hashToken(rawSecret)` alone also
+	// rejects empty, but only because no hub is registered with an empty
+	// hash; making the empty case explicit keeps the guard correct even if a
+	// record is ever created without a secret.
+	if rawSecret == "" || hub.HubSecretHash != hashToken(rawSecret) {
 		return ErrHubUnauthorized
 	}
 	if hub.IsDisabled || hub.Status == "disabled" {
@@ -510,8 +519,33 @@ func (s *Service) SyncInvitationCodes(ctx context.Context, hubID, hubSecret stri
 		if code == "" {
 			continue
 		}
+		existing, err := s.invitationCodeRoutes.GetByCode(ctx, code)
+		if err != nil {
+			return fmt.Errorf("load invitation code route: %w", err)
+		}
+		// A consumed route must stay consumed. Heartbeat reconciliation resends
+		// every unused hub code, and reopening a used code would let a second
+		// identity register with it.
+		if existing != nil && strings.TrimSpace(existing.UsedByEmail) != "" {
+			continue
+		}
 		if err := s.invitationCodeRoutes.Upsert(ctx, code, hubID, tenantID); err != nil {
 			return fmt.Errorf("upsert invitation code route: %w", err)
+		}
+		changed := existing == nil ||
+			strings.TrimSpace(existing.HubID) != strings.TrimSpace(hubID) ||
+			normalizeHubSyncTenantID(existing.TenantID) != tenantID
+		if changed && s.sync != nil {
+			createdAt := time.Now().UTC()
+			if existing != nil && !existing.CreatedAt.IsZero() {
+				createdAt = existing.CreatedAt
+			}
+			s.sync.AppendInvitationCodeRoute(ctx, &store.InvitationCodeRoute{
+				Code:      code,
+				HubID:     strings.TrimSpace(hubID),
+				TenantID:  tenantID,
+				CreatedAt: createdAt,
+			})
 		}
 	}
 	if s.refresher != nil {
@@ -541,12 +575,30 @@ func (s *Service) DeleteInvitationCodes(ctx context.Context, hubID, hubSecret st
 		if usedByEmail != "" {
 			// Mark as used instead of deleting — preserves the route for
 			// subsequent lookups and shows the bound email in admin panel.
+			existing, err := s.invitationCodeRoutes.GetByCode(ctx, code)
+			if err != nil {
+				return fmt.Errorf("load invitation code route: %w", err)
+			}
 			if err := s.invitationCodeRoutes.MarkUsedByEmail(ctx, code, usedByEmail); err != nil {
 				return fmt.Errorf("mark invitation code used: %w", err)
+			}
+			if s.sync != nil {
+				item := &store.InvitationCodeRoute{Code: code, HubID: strings.TrimSpace(hubID), UsedByEmail: usedByEmail, CreatedAt: time.Now().UTC()}
+				if existing != nil {
+					item.HubID = strings.TrimSpace(existing.HubID)
+					item.TenantID = normalizeHubSyncTenantID(existing.TenantID)
+					if !existing.CreatedAt.IsZero() {
+						item.CreatedAt = existing.CreatedAt
+					}
+				}
+				s.sync.AppendInvitationCodeRoute(ctx, item)
 			}
 		} else {
 			if err := s.invitationCodeRoutes.DeleteByCode(ctx, code); err != nil {
 				return fmt.Errorf("delete invitation code route: %w", err)
+			}
+			if s.sync != nil {
+				s.sync.DeleteInvitationCodeRoute(ctx, code)
 			}
 		}
 	}
@@ -894,7 +946,7 @@ func (s *Service) AuthenticateViewerMachine(ctx context.Context, hubID, viewerTo
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+viewerToken)
 	req.Header.Set("X-HubCenter-Verify", hub.HubSecretHash)
-	resp, err := (&http.Client{Timeout: 10 * time.Second}).Do(req)
+	resp, err := skillMarketAuthHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -914,23 +966,49 @@ func (s *Service) AuthenticateViewerMachine(ctx context.Context, hubID, viewerTo
 }
 
 func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret string, invitationCodeRequired *bool, update *HeartbeatHubUpdate) error {
+	hub, err := s.registerHeartbeatHub(ctx, hubID, rawSecret, invitationCodeRequired, update)
+	if err != nil {
+		return err
+	}
+	if hub.IsDisabled || hub.Status == "disabled" {
+		return ErrHubDisabled
+	}
+	if s.sync != nil {
+		s.sync.SyncHubHeartbeat(ctx, hub)
+	}
+	s.refreshRoutes(ctx)
+	return nil
+}
+
+// registerHeartbeatHub authenticates the hub and folds the heartbeat update
+// into storage. tenantAdminInventoryMu serializes the capabilities
+// read-modify-write and the inventory reconciliation with direct administrator
+// updates (see SyncHubTenantAdminLink); HA replication and route refresh run
+// outside the lock in HeartbeatHubWithSecret.
+func (s *Service) registerHeartbeatHub(ctx context.Context, hubID, rawSecret string, invitationCodeRequired *bool, update *HeartbeatHubUpdate) (*store.HubInstance, error) {
 	s.tenantAdminInventoryMu.Lock()
 	defer s.tenantAdminInventoryMu.Unlock()
 	hub, err := s.hubs.GetByID(ctx, hubID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if hub == nil {
 		if s.sync != nil {
-			return ErrHubNotReadyOnNode
+			return nil, ErrHubNotReadyOnNode
 		}
-		return ErrHubUnauthorized
+		return nil, ErrHubUnauthorized
 	}
-	if rawSecret != "" && hub.HubSecretHash != hashToken(rawSecret) {
-		return ErrHubUnauthorized
+	// P0 (2026-09-09 review): the previous guard short-circuited on an empty
+	// secret, so a heartbeat that simply omitted `hub_secret` was treated as
+	// authenticated. That let an unauthenticated caller rewrite the hub
+	// registration (base_url/host/port/visibility) and have the real hub's
+	// viewer tokens POSTed to an attacker-controlled URL. Align with the
+	// other call sites: an empty secret is always unauthorized.
+	if rawSecret == "" || hub.HubSecretHash != hashToken(rawSecret) {
+		return nil, ErrHubUnauthorized
 	}
 	if hub.Status == "pending_confirmation" {
-		return ErrHubPendingConfirmation
+		return nil, ErrHubPendingConfirmation
 	}
 
 	now := time.Now()
@@ -959,13 +1037,14 @@ func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret s
 		applyTenantAdminInventory := false
 		if update.Capabilities != nil {
 			capabilities = capabilitiesWithCorporateEmailDomains(update.Capabilities, corporateEmailDomains, corporateEmailDomain)
-			applyTenantAdminInventory = shouldApplyTenantAdminInventory(hubCapabilities(hub), capabilities)
+			existingCapabilities := hubCapabilities(hub)
+			applyTenantAdminInventory = shouldApplyTenantAdminInventory(existingCapabilities, capabilities)
 			if !applyTenantAdminInventory {
-				preserveTenantAdminInventoryCapabilities(capabilities, hubCapabilities(hub))
+				preserveTenantAdminInventoryCapabilities(capabilities, existingCapabilities)
 			}
 			capJSON, err := json.Marshal(capabilities)
 			if err != nil {
-				return err
+				return nil, err
 			}
 			hub.CapabilitiesJSON = string(capJSON)
 		}
@@ -977,19 +1056,19 @@ func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret s
 			hub.Status = "online"
 		}
 		if err := s.hubs.UpdateRegistration(ctx, hub); err != nil {
-			return err
+			return nil, err
 		}
 		s.recordHubInstance(ctx, hub)
 		if err := s.syncDomainRoutes(ctx, hub, corporateEmailDomains, now); err != nil {
-			return err
+			return nil, err
 		}
 		if update.Capabilities != nil {
 			if applyTenantAdminInventory {
 				if err := s.syncHubUserInventoriesFromCapabilities(ctx, hub.ID, capabilities, now); err != nil {
-					return err
+					return nil, err
 				}
 			} else if err := s.syncHubTenantUserEmailInventory(ctx, hub.ID, tenantUserEmailCapabilityMap(capabilities), now); err != nil {
-				return err
+				return nil, err
 			}
 		}
 	}
@@ -999,8 +1078,9 @@ func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret s
 	// so the next update==nil heartbeat won't write again immediately.
 	if update == nil && s.shouldWriteHeartbeat(hubID) {
 		if err := s.hubs.UpdateHeartbeat(ctx, hubID, now); err != nil {
-			return err
+			return nil, err
 		}
+		hub.LastSeenAt = &now
 	} else if update != nil {
 		// UpdateRegistration already wrote last_seen_at. Record the write time
 		// in the throttle so subsequent simple heartbeats are suppressed.
@@ -1008,20 +1088,13 @@ func (s *Service) HeartbeatHubWithSecret(ctx context.Context, hubID, rawSecret s
 	}
 	if invitationCodeRequired != nil {
 		if err := s.hubs.UpdateInvitationCodeRequired(ctx, hubID, *invitationCodeRequired, now); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	if err := s.ensureDefaultHubRegistrationPolicy(ctx, hubID); err != nil {
-		return err
+		return nil, err
 	}
-	if hub.IsDisabled || hub.Status == "disabled" {
-		return ErrHubDisabled
-	}
-	if s.sync != nil {
-		s.sync.SyncHubHeartbeat(ctx, hubID)
-	}
-	s.refreshRoutes(ctx)
-	return nil
+	return hub, nil
 }
 
 func (s *Service) ConfirmRegistration(ctx context.Context, token string) error {
@@ -3046,7 +3119,15 @@ func (s *Service) DeleteHub(ctx context.Context, hubID string) error {
 		return err
 	}
 	// Clean up invitation code routes associated with this hub.
+	var invitationRoutes []*store.InvitationCodeRoute
 	if s.invitationCodeRoutes != nil {
+		if items, err := s.invitationCodeRoutes.ListAll(ctx); err == nil {
+			for _, item := range items {
+				if item != nil && strings.TrimSpace(item.HubID) == hubID {
+					invitationRoutes = append(invitationRoutes, item)
+				}
+			}
+		}
 		_ = s.invitationCodeRoutes.DeleteByHubID(ctx, hubID)
 	}
 	if err := s.deleteHubRegistrationPolicy(ctx, hubID); err != nil {
@@ -3071,6 +3152,12 @@ func (s *Service) DeleteHub(ctx context.Context, hubID string) error {
 			s.sync.DeleteHubDomainRoute(ctx, route.ID)
 		}
 		s.sync.DeleteHubInstance(ctx, hubID)
+		for _, item := range invitationRoutes {
+			if item == nil {
+				continue
+			}
+			s.sync.DeleteInvitationCodeRoute(ctx, item.Code)
+		}
 	}
 	s.refreshRoutesForce(ctx)
 	return nil

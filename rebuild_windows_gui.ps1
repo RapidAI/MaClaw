@@ -31,8 +31,8 @@ if ($buildNumber -notmatch '^\d+$') {
 $version = "$($versionParts[0]).$($versionParts[1]).$($versionParts[2]).$buildNumber"
 $parts = $version.Split('.')
 
-Remove-Item (Join-Path $root 'gui\resource_windows_amd64.syso') -ErrorAction SilentlyContinue
-Remove-Item (Join-Path $root 'gui\resource_windows_arm64.syso') -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $root 'guiapp\resource_windows_amd64.syso') -ErrorAction SilentlyContinue
+Remove-Item (Join-Path $root 'guiapp\resource_windows_arm64.syso') -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $root 'build\windows\wails.exe.manifest.tmp') -ErrorAction SilentlyContinue
 Remove-Item (Join-Path $root 'build\windows\versioninfo.json.tmp') -ErrorAction SilentlyContinue
 
@@ -62,7 +62,7 @@ $versionInfo = @{
 } | ConvertTo-Json -Depth 6
 [System.IO.File]::WriteAllText((Join-Path $root 'build\windows\versioninfo.json.tmp'), $versionInfo, [System.Text.UTF8Encoding]::new($false))
 
-& $goversioninfo -64 -icon (Join-Path $root 'build\windows\icon.ico') -manifest (Join-Path $root 'build\windows\wails.exe.manifest.tmp') -o (Join-Path $root 'gui\resource_windows_amd64.syso') (Join-Path $root 'build\windows\versioninfo.json.tmp')
+& $goversioninfo -64 -icon (Join-Path $root 'build\windows\icon.ico') -manifest (Join-Path $root 'build\windows\wails.exe.manifest.tmp') -o (Join-Path $root 'guiapp\resource_windows_amd64.syso') (Join-Path $root 'build\windows\versioninfo.json.tmp')
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 Push-Location $root
@@ -70,19 +70,32 @@ $env:GOOS = 'windows'
 $env:GOARCH = 'amd64'
 $env:CGO_ENABLED = '1'
 $env:CC = 'gcc'
-& go build -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=$version" -o (Join-Path $root 'dist\MaClaw_amd64.exe') ./gui/
+& go build -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=$version" -o (Join-Path $root 'dist\MaClaw_amd64.exe') ./cmd/maclaw-gui/
 if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
 
-& $goversioninfo -64 -arm -icon (Join-Path $root 'build\windows\icon.ico') -manifest (Join-Path $root 'build\windows\wails.exe.manifest.tmp') -o (Join-Path $root 'gui\resource_windows_arm64.syso') (Join-Path $root 'build\windows\versioninfo.json.tmp')
+& $goversioninfo -64 -arm -icon (Join-Path $root 'build\windows\icon.ico') -manifest (Join-Path $root 'build\windows\wails.exe.manifest.tmp') -o (Join-Path $root 'guiapp\resource_windows_arm64.syso') (Join-Path $root 'build\windows\versioninfo.json.tmp')
 if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
 
 $env:GOARCH = 'arm64'
 $env:CGO_ENABLED = '0'
 Remove-Item Env:CC -ErrorAction SilentlyContinue
-& go build -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=$version" -o (Join-Path $root 'dist\MaClaw_arm64.exe') ./gui/
+& go build -tags desktop,production -ldflags "-s -w -H windowsgui -X main.version=$version" -o (Join-Path $root 'dist\MaClaw_arm64.exe') ./cmd/maclaw-gui/
 if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
 
 Copy-Item (Join-Path $root 'dist\MaClaw_amd64.exe') (Join-Path $root 'dist\MaClaw.exe') -Force
+
+# Keep the legacy launch locations in sync as well.  Several local shortcuts
+# still point at guiapp\gui.exe (or the older frontend copy); leaving those
+# binaries stale makes a fresh build appear to have no UI changes.
+foreach ($legacyGuiPath in @('guiapp\gui.exe', 'guiapp\frontend\gui.exe', 'build\bin\MaClaw.exe')) {
+  $legacyGui = Join-Path $root $legacyGuiPath
+  if (Test-Path (Split-Path -Parent $legacyGui)) {
+    Copy-Item (Join-Path $root 'dist\MaClaw.exe') $legacyGui -Force
+  }
+}
+if (Test-Path (Join-Path $root 'build\bin')) {
+  Copy-Item (Join-Path $root 'dist\MaClaw_arm64.exe') (Join-Path $root 'build\bin\MaClaw_arm64.exe') -Force
+}
 
 # ACP bridge ships next to MaClaw for VS Code integration (production closed loop).
 $env:GOARCH = 'amd64'

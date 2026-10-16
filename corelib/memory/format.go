@@ -129,6 +129,9 @@ func FormatRecallTraceForTool(trace RecallTrace) string {
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "Recall trace: query=%q", trace.Query)
+	if trace.LockTimedOut {
+		b.WriteString(" lock_timed_out=true")
+	}
 	if trace.Category != "" {
 		fmt.Fprintf(&b, " category=%s", trace.Category)
 	}

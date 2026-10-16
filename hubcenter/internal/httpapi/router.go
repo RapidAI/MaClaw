@@ -32,15 +32,19 @@ type EntryResolveRequest struct {
 }
 
 // LLMRouteHook is called during router setup to register LLM service routes.
-// Set by the application layer after constructing LLM dependencies.
-var llmRouteHook func(mux *http.ServeMux, adminService *auth.AdminService, hubService *hubs.Service)
+// Set by the application layer after constructing LLM dependencies. It receives
+// the SkillMarket handler set so the LLM admin surface can host the Token Bank
+// automation endpoints (§6.3): those live under /api/admin/llm/* (and therefore
+// want the LLM module's hck_ key scopes) but their implementation sits on
+// SkillMarketHandlers, which owns the Token Bank repository.
+var llmRouteHook func(mux *http.ServeMux, adminService *auth.AdminService, hubService *hubs.Service, smHandlers *SkillMarketHandlers)
 var llmAuthorizationSyncMu sync.RWMutex
 var llmAuthorizationSyncChecker *llmservice.AuthorizationChecker
 
 const heartbeatAuthorizationKeyLLMCompute = "llm_compute"
 
 // SetLLMRouteHook sets the hook for registering LLM routes.
-func SetLLMRouteHook(hook func(mux *http.ServeMux, adminService *auth.AdminService, hubService *hubs.Service)) {
+func SetLLMRouteHook(hook func(mux *http.ServeMux, adminService *auth.AdminService, hubService *hubs.Service, smHandlers *SkillMarketHandlers)) {
 	llmRouteHook = hook
 }
 
@@ -649,14 +653,12 @@ func filterResolveResultByTenant(resp *entry.ResolveResult, tenantID string) {
 	if len(filtered) == 0 {
 		resp.Mode = "none"
 		resp.DefaultHubID = ""
-		resp.DefaultPWA = ""
 		resp.Hubs = nil
 		resp.Message = "No domain route found"
 		return
 	}
 	resp.Hubs = filtered
 	resp.DefaultHubID = filtered[0].HubID
-	resp.DefaultPWA = filtered[0].PWAURL
 	resp.Message = ""
 	if len(filtered) == 1 {
 		resp.Mode = "single"
@@ -856,6 +858,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("POST /api/admin/ha/config", RequireAdmin(adminService, UpdateHAConfigHandler(haConfigSvc, haSvc)))
 	mux.HandleFunc("POST /api/admin/ha/skillhub/broadcast", RequireAdmin(adminService, AdminHABroadcastSkillHubHandler(haSvc)))
 	mux.HandleFunc("POST /api/admin/ha/skillmarket/broadcast", RequireAdmin(adminService, AdminHABroadcastSkillMarketHandler(haSvc)))
+	mux.HandleFunc("POST /api/admin/ha/latex-templates/broadcast", RequireAdmin(adminService, AdminHABroadcastLatexTemplateHandler(haSvc)))
 	mux.HandleFunc("GET /api/admin/ha/public-key", RequireAdmin(adminService, HAKeyMaterialHandler(haConfigSvc, haSvc)))
 	mux.HandleFunc("GET /api/admin/ha/public-keys", RequireAdmin(adminService, HACollectedPublicKeysHandler(haConfigSvc, haSvc, haSvc)))
 	mux.HandleFunc("GET /api/admin/mail/config", RequireAdmin(adminService, GetMailConfigHandler(mailer)))
@@ -900,6 +903,15 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("DELETE /api/hubs/{id}/user-links/sync", HubUserLinkDeleteHandler(hubService))
 	mux.HandleFunc("POST /api/hubs/{id}/invitation-codes/sync", HubInvitationCodeSyncHandler(hubService))
 	mux.HandleFunc("DELETE /api/hubs/{id}/invitation-codes/sync", HubInvitationCodeDeleteHandler(hubService))
+	if smHandlers != nil {
+		var hubAuth hubSecretVerifier
+		if hubService != nil {
+			hubAuth = hubService
+		}
+		mux.HandleFunc("POST /api/hubs/{id}/token-bank/withdraw", smHandlers.TokenBankHubWithdraw(hubAuth))
+		mux.HandleFunc("POST /api/hubs/{id}/token-bank/grants", smHandlers.TokenBankHubBindGrant(hubAuth))
+		mux.HandleFunc("POST /api/hubs/{id}/token-bank/reconcile", smHandlers.TokenBankHubReconcile(hubAuth))
+	}
 	mux.HandleFunc("GET /hub-registration/confirm", ConfirmHubRegistrationHandler(hubService))
 	mux.HandleFunc("POST /api/entry/resolve", EntryResolveHandler(entryService))
 	mux.HandleFunc("POST /api/entry/resolve-domain", EntryResolveDomainHandler(entryService))
@@ -928,11 +940,36 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		searchRemover = smHandlers.SearchService()
 		skillAuthSvc = smHandlers.authSvc
 	}
-	skillHandlers := NewSkillHandlers(skillStore, searchRemover, skillAuthSvc)
+	var marketStore *skillmarket.Store
+	if smHandlers != nil {
+		marketStore = smHandlers.store
+	}
+	skillHandlers := NewSkillHandlers(skillStore, searchRemover, skillAuthSvc, marketStore)
 	mux.HandleFunc("GET /api/v1/skills/search", skillHandlers.SearchSkills)
 	mux.HandleFunc("GET /api/v1/skills/{id}", skillHandlers.GetSkill)
 	mux.HandleFunc("GET /api/v1/skills/{id}/download", skillHandlers.DownloadSkill)
 	mux.HandleFunc("GET /api/v1/skills/by-skill-id/{skill_id}/download", skillHandlers.DownloadBySkillID)
+	mux.HandleFunc("GET /api/v1/skill-suites", skillHandlers.ListSuites)
+	mux.HandleFunc("GET /api/v1/skillmarket/suites/search", skillHandlers.SearchSuites)
+	mux.HandleFunc("GET /api/v1/skill-suites/{id}", skillHandlers.GetSuite)
+	mux.HandleFunc("GET /api/v1/skill-suites/{id}/download", skillHandlers.DownloadSuite)
+	mux.HandleFunc("GET /api/v1/skillmarket/suites/{id}/download", skillHandlers.DownloadSuite)
+	mux.HandleFunc("GET /api/v1/skill-suites/{id}/versions", skillHandlers.ListSuiteVersions)
+	mux.HandleFunc("GET /api/v1/skillmarket/suites/{id}/versions", skillHandlers.ListSuiteVersions)
+	mux.HandleFunc("POST /api/v1/skill-suites/{id}/versions", RequireAdmin(adminService, skillHandlers.PublishSuiteVersion))
+	mux.HandleFunc("POST /api/v1/skill-suites/{id}/rollback", RequireAdmin(adminService, skillHandlers.RollbackSuite))
+	mux.HandleFunc("POST /api/v1/skillmarket/suites/{id}/versions", RequireAdmin(adminService, skillHandlers.PublishSuiteVersion))
+	mux.HandleFunc("POST /api/v1/skillmarket/suites/{id}/rollback", RequireAdmin(adminService, skillHandlers.RollbackSuite))
+	mux.HandleFunc("POST /api/v1/admin/skill-suites/{id}/visibility", RequireAdmin(adminService, skillHandlers.SetSuiteVisibility))
+	if smHandlers != nil {
+		mux.HandleFunc("GET /api/v1/skillmarket/suites/{id}/purchases", smHandlers.ListSuitePurchases)
+		mux.HandleFunc("GET /api/v1/skillmarket/suites/{id}/purchase", smHandlers.ListSuitePurchases)
+		mux.HandleFunc("GET /api/v1/skillmarket/suite-purchases/{purchase_id}", smHandlers.GetSuitePurchase)
+		mux.HandleFunc("GET /api/v1/admin/skillmarket/suite-purchases/{purchase_id}", RequireAdmin(adminService, smHandlers.GetSuitePurchase))
+		mux.HandleFunc("GET /api/v1/admin/skillmarket/suites/{id}/audit", RequireAdmin(adminService, smHandlers.ListSuiteAuditEvents))
+		mux.HandleFunc("GET /api/v1/admin/skillmarket/suites/{id}/purchases", RequireAdmin(adminService, smHandlers.ListSuitePurchases))
+		mux.HandleFunc("POST /api/v1/admin/skillmarket/suites/{id}/refund", RequireAdmin(adminService, smHandlers.RefundSuite))
+	}
 	mux.HandleFunc("GET /api/v1/skills/popular", skillHandlers.PopularSkills)
 	mux.HandleFunc("POST /api/v1/skills", skillHandlers.PublishSkill)
 	mux.HandleFunc("POST /api/v1/skills/{id}/rate", skillHandlers.RateSkill)
@@ -966,11 +1003,14 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("POST /api/admin/moderation/config", RequireAdmin(adminService, UpdateModerationConfigHandler(systemSettings)))
 	mux.HandleFunc("POST /api/admin/moderation/test", RequireAdmin(adminService, TestModerationHandler(systemSettings)))
 	registerSharedStaticAssets(mux, "./web")
+	registerHomeStaticRoutes(mux, "./web/home", "/")
 	registerAdminStaticRoutes(mux, "./web/admin", "/admin")
 	registerStaticRoutes(mux, "./web/skillhub", "/skillhub")
 	registerStaticRoutes(mux, "./web/skillmarket", "/skillmarket")
 	registerStaticRoutes(mux, "./web/skillmarket", "/marketplace")
 	registerStaticRoutes(mux, "./web/skillmarket", "/capabilitymarket")
+	registerStaticRoutes(mux, "./web/developer", "/developer")
+	registerStaticRoutes(mux, "./web/expertmarket", "/expert-market")
 	// Pet packs are a distinct, buy-once product surface. It deliberately
 	// shares the Skill Market account and Credits wallet, but not its skill
 	// discovery page or package format.
@@ -1006,6 +1046,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	}
 	// SkillMarket API
 	if smHandlers != nil {
+		mux.HandleFunc("POST /api/v1/skillmarket/suites/{id}/purchase", smHandlers.PurchaseSkillSuite)
 		// Auth rate limiters
 		authLoginRL := newGossipRateLimiter(10, 5*time.Minute)    // 10 login attempts per 5 min per IP
 		authRegisterRL := newGossipRateLimiter(5, 10*time.Minute) // 5 registrations per 10 min per IP
@@ -1051,6 +1092,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("POST /api/v1/auth/reset-password", smHandlers.ResetPassword)
 		// Existing endpoints
 		mux.HandleFunc("POST /api/v1/skills/submit", smHandlers.SubmitSkill)
+		mux.HandleFunc("POST /api/v1/skill-suites/submit", smHandlers.SubmitSkillSuite)
 		mux.HandleFunc("GET /api/v1/skill-submissions/{id}", smHandlers.GetSubmissionStatus)
 		mux.HandleFunc("POST /api/v1/account/ensure", smHandlers.EnsureAccount)
 		mux.HandleFunc("GET /api/v1/account/{email}", smHandlers.GetAccount)
@@ -1067,15 +1109,82 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("POST /api/v1/credits/account/withdraw", smHandlers.CreditWithdraw)
 		mux.HandleFunc("POST /api/v1/credits/redeem", smHandlers.RedeemCreditCard)
 		mux.HandleFunc("GET /api/v1/crypto/pubkey", smHandlers.GetPublicKey)
-		mux.HandleFunc("GET /api/v1/skillmarket/{id}/download", smHandlers.DownloadSkillMarket)
+		// Token Bank client API (§6.1). Identity always comes from the session;
+		// see token_bank_handlers.go. The read-only endpoints are open to any
+		// signed-in account so an unverified user can still see their balance;
+		// the two that move money (withdraw, claim) do their own account checks.
+		mux.HandleFunc("GET /api/v1/token-bank/summary", smHandlers.TokenBankSummary)
+		mux.HandleFunc("GET /api/v1/token-bank/audiences", smHandlers.TokenBankListShareAudiences)
+		mux.HandleFunc("POST /api/v1/token-bank/shares", smHandlers.TokenBankCreateShare)
+		mux.HandleFunc("GET /api/v1/token-bank/shares", smHandlers.TokenBankListShares)
+		mux.HandleFunc("GET /api/v1/token-bank/shares/{id}/models", smHandlers.TokenBankListShareModels)
+		mux.HandleFunc("PUT /api/v1/token-bank/shares/{id}/models", smHandlers.TokenBankSyncShareModels)
+		mux.HandleFunc("PUT /api/v1/token-bank/shares/{id}/paused", smHandlers.TokenBankSetSharePaused)
+		mux.HandleFunc("PUT /api/v1/token-bank/shares/{id}/key", smHandlers.TokenBankRotateShareKey)
+		mux.HandleFunc("PUT /api/v1/token-bank/shares/{id}/visibility", smHandlers.TokenBankSetShareVisibility)
+		mux.HandleFunc("POST /api/v1/token-bank/shares/{id}/keys", smHandlers.TokenBankAddShareKey)
+		mux.HandleFunc("DELETE /api/v1/token-bank/shares/{id}/keys/{fingerprint}", smHandlers.TokenBankRemoveShareKey)
+		mux.HandleFunc("DELETE /api/v1/token-bank/shares/{id}", smHandlers.TokenBankTakeOutShare)
+		mux.HandleFunc("POST /api/v1/token-bank/credits/withdraw", smHandlers.TokenBankWithdrawCredits)
+		mux.HandleFunc("GET /api/v1/token-bank/credits/withdrawals", smHandlers.TokenBankListWithdrawals)
+		mux.HandleFunc("GET /api/v1/token-bank/usage/daily", smHandlers.TokenBankUsageDaily)
+		mux.HandleFunc("GET /api/v1/token-bank/usage.csv", smHandlers.TokenBankUsageCSV)
+		mux.HandleFunc("POST /api/v1/credits/share-links", smHandlers.TokenBankCreateGiftLink)
+		mux.HandleFunc("GET /api/v1/credits/share-links", smHandlers.TokenBankListGiftLinks)
+		mux.HandleFunc("POST /api/v1/credits/share-links/{id}/revoke", smHandlers.TokenBankRevokeGiftLink)
+		mux.HandleFunc("GET /c/{code}", gossipRateLimitMiddleware(tokenBankGiftPublicRL, smHandlers.TokenBankGiftLanding))
+		mux.HandleFunc("GET /api/v1/credits/share-links/{code}/preview", gossipRateLimitMiddleware(tokenBankGiftPublicRL, smHandlers.TokenBankPreviewGiftLink))
+		mux.HandleFunc("POST /api/v1/credits/share-links/{code}/claim", smHandlers.TokenBankClaimGiftLink)
+		// Token Bank admin API (§6.2). RequireAdmin only: the store methods they
+		// call take an optional owner scope, and these pass "" to mean "every
+		// owner". Nothing here derives identity from the body — an admin acts on
+		// the platform, not as a user.
+		mux.HandleFunc("GET /api/admin/token-bank/settings", RequireAdmin(adminService, smHandlers.TokenBankGetSettings))
+		mux.HandleFunc("PUT /api/admin/token-bank/settings", RequireAdmin(adminService, smHandlers.TokenBankPutSettings))
+		mux.HandleFunc("GET /api/admin/token-bank/overview", RequireAdmin(adminService, smHandlers.TokenBankAdminOverview))
+		mux.HandleFunc("GET /api/admin/token-bank/margins", RequireAdmin(adminService, smHandlers.TokenBankAdminMargins))
+		mux.HandleFunc("GET /api/admin/token-bank/leaderboard", RequireAdmin(adminService, smHandlers.TokenBankAdminLeaderboard))
+		mux.HandleFunc("GET /api/admin/token-bank/users", RequireAdmin(adminService, smHandlers.TokenBankAdminUsers))
+		mux.HandleFunc("GET /api/admin/token-bank/shares", RequireAdmin(adminService, smHandlers.TokenBankAdminShares))
+		mux.HandleFunc("PUT /api/admin/token-bank/shares/{id}/paused", RequireAdmin(adminService, smHandlers.TokenBankAdminSetSharePaused))
+		mux.HandleFunc("DELETE /api/admin/token-bank/shares/{id}", RequireAdmin(adminService, smHandlers.TokenBankAdminTakeOutShare))
+		mux.HandleFunc("PUT /api/admin/token-bank/shares/{id}/models/{model}/tier", RequireAdmin(adminService, smHandlers.TokenBankAdminSetModelTier))
+		mux.HandleFunc("GET /api/admin/token-bank/price-book", RequireAdmin(adminService, smHandlers.TokenBankAdminListPriceBook))
+		mux.HandleFunc("POST /api/admin/token-bank/price-book", RequireAdmin(adminService, smHandlers.TokenBankAdminUpsertPriceRule))
+		mux.HandleFunc("PUT /api/admin/token-bank/price-book", RequireAdmin(adminService, smHandlers.TokenBankAdminUpsertPriceRule))
+		mux.HandleFunc("DELETE /api/admin/token-bank/price-book/{id}", RequireAdmin(adminService, smHandlers.TokenBankAdminDeletePriceRule))
+		mux.HandleFunc("GET /api/admin/token-bank/credit-shares", RequireAdmin(adminService, smHandlers.TokenBankAdminListCreditShares))
+		mux.HandleFunc("POST /api/admin/token-bank/credit-shares/{id}/revoke", RequireAdmin(adminService, smHandlers.TokenBankAdminRevokeCreditShare))
+		// The legacy single-Skill download URL is /skillmarket/{id}/download.
+		// Register it through the subtree fallback instead of a wildcard pattern:
+		// the latter conflicts with the more specific Suite purchase route
+		// /skillmarket/suite-purchases/{purchase_id} under Go's ServeMux rules.
+		mux.HandleFunc("/api/v1/skillmarket/", func(w http.ResponseWriter, r *http.Request) {
+			const prefix = "/api/v1/skillmarket/"
+			rel := strings.TrimPrefix(r.URL.Path, prefix)
+			parts := strings.Split(strings.Trim(rel, "/"), "/")
+			if len(parts) == 2 && parts[0] != "" {
+				r.SetPathValue("id", parts[0])
+				switch {
+				case (r.Method == http.MethodGet || r.Method == http.MethodHead) && parts[1] == "download":
+					smHandlers.DownloadSkillMarket(w, r)
+					return
+				case r.Method == http.MethodPost && parts[1] == "rate":
+					smHandlers.RateSkill(w, r)
+					return
+				case (r.Method == http.MethodGet || r.Method == http.MethodHead) && parts[1] == "ratings":
+					smHandlers.GetRatingStats(w, r)
+					return
+				}
+			}
+			http.NotFound(w, r)
+		})
 		mux.HandleFunc("GET /api/capability-market/capabilities/{id}/download", smHandlers.DownloadSkillMarket)
 		// Rating & Trial API
 		mux.HandleFunc("GET /api/v1/skillmarket/search", smHandlers.SearchSkillMarket)
 		mux.HandleFunc("GET /api/capability-market/search", smHandlers.SearchSkillMarket)
 		mux.HandleFunc("GET /api/v1/skillmarket/my-skills", smHandlers.ListMySkills)
 		mux.HandleFunc("GET /api/v1/skillmarket/top", smHandlers.GetLeaderboard)
-		mux.HandleFunc("POST /api/v1/skillmarket/{id}/rate", smHandlers.RateSkill)
-		mux.HandleFunc("GET /api/v1/skillmarket/{id}/ratings", smHandlers.GetRatingStats)
 		// Admin review & config
 		mux.HandleFunc("GET /api/v1/admin/skillmarket/review", RequireAdmin(adminService, smHandlers.AdminReviewQueue))
 		mux.HandleFunc("POST /api/v1/admin/credits/redeem-cards", RequireAdmin(adminService, smHandlers.AdminIssueCreditRedeemCards))
@@ -1156,6 +1265,32 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 		mux.HandleFunc("PUT /api/admin/hubs/{hubId}/tenants/{tenantId}/industries", RequireAdmin(adminService, industryHandlers.replaceTenantIndustries))
 		mux.HandleFunc("GET /api/admin/hubs/{hubId}/tenants/{tenantId}/industry-expert-status", RequireAdmin(adminService, industryHandlers.tenantIndustryStatus))
 		mux.HandleFunc("GET /api/hubs/{hubId}/tenants/{tenantId}/industry-expert-catalog", industryHandlers.getHubCatalogue)
+		// LaTeX paper templates live next to the Capability Market but are not
+		// a purchasable product: users share a packaged template, an
+		// administrator reviews it, and only approved packages reach the
+		// catalogue the desktop app browses.
+		latexTemplateHandlers := NewLatexTemplateHandlers(smHandlers)
+		if haSvc != nil {
+			latexTemplateHandlers.SetSyncRecorder(haSvc)
+			haSvc.SetLatexTemplateSnapshotApplier(latexTemplateHandlers.ApplySnapshot)
+			haSvc.SetLatexTemplateSnapshotDumper(latexTemplateHandlers.DumpHASnapshot)
+			haSvc.SetLatexTemplateRecordCounter(latexTemplateHandlers.CountSnapshotRecords)
+			go latexTemplateHandlers.seedHASnapshot(context.Background(), haSvc)
+		}
+		mux.HandleFunc("GET /api/v1/latex-templates", latexTemplateHandlers.listApprovedTemplates)
+		mux.HandleFunc("POST /api/v1/latex-templates", latexTemplateHandlers.shareTemplate)
+		mux.HandleFunc("GET /api/v1/latex-templates/categories", latexTemplateHandlers.listCategories)
+		mux.HandleFunc("GET /api/v1/latex-templates/submissions", latexTemplateHandlers.listMySubmissions)
+		mux.HandleFunc("GET /api/v1/latex-templates/{id}/download", latexTemplateHandlers.downloadTemplate)
+		mux.HandleFunc("GET /api/admin/latex-templates", RequireAdmin(adminService, latexTemplateHandlers.adminListTemplates))
+		mux.HandleFunc("POST /api/admin/latex-templates", RequireAdmin(adminService, latexTemplateHandlers.adminUploadTemplate))
+		mux.HandleFunc("PATCH /api/admin/latex-templates/{id}", RequireAdmin(adminService, latexTemplateHandlers.adminPatchTemplate))
+		mux.HandleFunc("DELETE /api/admin/latex-templates/{id}", RequireAdmin(adminService, latexTemplateHandlers.adminDeleteTemplate))
+		mux.HandleFunc("POST /api/admin/latex-templates/{id}/review", RequireAdmin(adminService, latexTemplateHandlers.adminReviewTemplate))
+		mux.HandleFunc("GET /api/admin/latex-template-events", RequireAdmin(adminService, latexTemplateHandlers.adminListEvents))
+		mux.HandleFunc("POST /api/admin/latex-template-categories", RequireAdmin(adminService, latexTemplateHandlers.createCategory))
+		mux.HandleFunc("PATCH /api/admin/latex-template-categories/{id}", RequireAdmin(adminService, latexTemplateHandlers.patchCategory))
+		mux.HandleFunc("DELETE /api/admin/latex-template-categories/{id}", RequireAdmin(adminService, latexTemplateHandlers.deleteCategory))
 		mux.HandleFunc("GET /api/v1/account/{email}/tier", smHandlers.GetAccountTier)
 		// Admin refund & purchases
 		mux.HandleFunc("POST /api/v1/admin/refund", RequireAdmin(adminService, smHandlers.AdminRefund))
@@ -1171,10 +1306,10 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	// if the LLM service module is initialized. We expose the mux via a hook here
 	// so the application layer can register LLM routes after constructing dependencies.
 	if llmRouteHook != nil {
-		llmRouteHook(mux, adminService, hubService)
+		llmRouteHook(mux, adminService, hubService, smHandlers)
 	}
 
-	return adminOpaqueHubIDCompat(mux, adminService, hubService)
+	return withInboundTraceParent(adminOpaqueHubIDCompat(mux, adminService, hubService))
 }
 
 func adminOpaqueHubIDCompat(next http.Handler, adminService *auth.AdminService, hubService *hubs.Service) http.Handler {

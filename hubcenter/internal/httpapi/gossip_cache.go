@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
@@ -24,6 +26,12 @@ type GossipCache struct {
 	asyncMu      sync.Mutex
 	asyncRunning bool
 	asyncPending bool
+	snapshot     atomic.Pointer[gossipCachedSnapshot]
+}
+
+type gossipCachedSnapshot struct {
+	data []byte
+	etag string
 }
 
 // snapshotMaxPosts is the upper bound for posts loaded into the snapshot cache.
@@ -59,7 +67,18 @@ func (gc *GossipCache) Refresh(ctx context.Context) error {
 		return err
 	}
 	gc.failureCount = 0
+	gc.cacheSnapshotLocked()
 	return nil
+}
+
+// cacheSnapshotLocked reloads the freshly written snapshot file into memory so
+// the HTTP handler can serve it without touching disk. Caller holds gc.mu.
+func (gc *GossipCache) cacheSnapshotLocked() {
+	data, err := os.ReadFile(gc.filePath)
+	if err != nil {
+		return
+	}
+	gc.snapshot.Store(&gossipCachedSnapshot{data: data, etag: computeETag(data)})
 }
 
 func (gc *GossipCache) RefreshAsync(ctx context.Context) {
@@ -96,6 +115,23 @@ func (gc *GossipCache) runAsyncRefresh(ctx context.Context) {
 		gc.asyncRunning = false
 		gc.asyncMu.Unlock()
 		return
+	}
+}
+
+// waitAsyncIdle blocks until no async refresh is running or pending. It exists
+// for tests: a test that ends while an async refresh is still writing the
+// snapshot file races t.TempDir's RemoveAll cleanup, and on Windows that race
+// surfaces as "The directory is not empty" instead of a real assertion
+// failure. Production code never needs it — the goroutine is self-retiring.
+func (gc *GossipCache) waitAsyncIdle() {
+	for {
+		gc.asyncMu.Lock()
+		idle := !gc.asyncRunning && !gc.asyncPending
+		gc.asyncMu.Unlock()
+		if idle {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
@@ -219,7 +255,7 @@ func GossipSnapshotHandler(gc *GossipCache) http.HandlerFunc {
 			return
 		}
 
-		data, err := os.ReadFile(gc.filePath)
+		data, etag, err := gc.loadSnapshot()
 		if err != nil {
 			if os.IsNotExist(err) {
 				writeError(w, http.StatusServiceUnavailable, "NOT_READY", "Gossip cache not yet generated")
@@ -229,7 +265,6 @@ func GossipSnapshotHandler(gc *GossipCache) http.HandlerFunc {
 			return
 		}
 
-		etag := computeETag(data)
 		if match := r.Header.Get("If-None-Match"); match == etag {
 			w.WriteHeader(http.StatusNotModified)
 			return
@@ -242,4 +277,25 @@ func GossipSnapshotHandler(gc *GossipCache) http.HandlerFunc {
 		w.WriteHeader(http.StatusOK)
 		w.Write(data)
 	}
+}
+
+// loadSnapshot serves the cached in-memory snapshot when available and falls
+// back to reading (and caching) the snapshot file from disk, e.g. right after
+// a restart before the first refresh has run.
+func (gc *GossipCache) loadSnapshot() ([]byte, string, error) {
+	if cached := gc.snapshot.Load(); cached != nil {
+		return cached.data, cached.etag, nil
+	}
+	gc.mu.Lock()
+	defer gc.mu.Unlock()
+	if cached := gc.snapshot.Load(); cached != nil {
+		return cached.data, cached.etag, nil
+	}
+	data, err := os.ReadFile(gc.filePath)
+	if err != nil {
+		return nil, "", err
+	}
+	cached := &gossipCachedSnapshot{data: data, etag: computeETag(data)}
+	gc.snapshot.Store(cached)
+	return cached.data, cached.etag, nil
 }

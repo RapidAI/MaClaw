@@ -1,0 +1,8008 @@
+package guiapp
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"os"
+	"path"
+	"path/filepath"
+	"sort"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
+	"unicode"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
+	"github.com/RapidAI/CodeClaw/corelib/memory"
+	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
+)
+
+var (
+	recentTaskForkMu   sync.Mutex
+	remoteCodingTaskMu sync.Mutex
+	// expertTaskMu makes the expert source tag an idempotency key even when two
+	// launchers request the same expert at the same time.
+	expertTaskMu       sync.Mutex
+	assistantTabTaskMu sync.Mutex
+	// taskAsyncFlushWG tracks fire-and-forget task flush goroutines so tests
+	// can drain them before stopping the memory store and removing temporary
+	// config directories (Windows TempDir cleanup fails on in-flight writes).
+	taskAsyncFlushWG sync.WaitGroup
+)
+
+const (
+	taskManagementTag        = "task_management"
+	taskUserCreatedTag       = "task_user_created"
+	taskUserSavedTag         = "task_user_saved"
+	taskForkedTag            = "forked_task"
+	taskLegacyManualTag      = "manual_task"
+	taskLegacyRecentTag      = "recent_task"
+	taskSourceTagPrefix      = "source:"
+	taskSavedConversationTag = "saved_conversation"
+	// taskSourceExpertPrefix marks a durable task-management entry that opens a
+	// named AI expert rather than a generic project conversation.
+	taskSourceExpertPrefix = taskSourceTagPrefix + "expert:"
+	// taskSourceAssistantTabPrefix marks a durable task-management entry created
+	// for a secondary assistant tab (VE, group discussion, ACP, etc.). The
+	// suffix is a stable hash of the tab identity, never user-provided text.
+	taskSourceAssistantTabPrefix = taskSourceTagPrefix + "assistant_tab:"
+	// assistantTabACPType is the tabType used for VS Code Mode B connections.
+	assistantTabACPType = "acp"
+	// assistantTabVEType is a digital-employee chat. It stays a VE tab and must
+	// not become a local chat row in the task list.
+	assistantTabVEType = "ve"
+	// assistantTabACPIdentity is the stable ACP tab identity. Session ids change
+	// on every VS Code reconnect; hashing those created a new vs-code-acp-*
+	// sidebar row each time the GUI restarted.
+	assistantTabACPIdentity = "acp"
+	// assistantTabACPDismissSentinel is a durable ProjectIndex hidden pref. A
+	// user who deleted the VS Code / ACP sidebar row must not see it come back
+	// from EnsureAssistantTabTask or leftover-directory recovery.
+	assistantTabACPDismissSentinel = "assistant-tab:acp"
+	// taskCodingDevTag marks tasks created with the "programming / coding" option.
+	// Used by the GUI to open the task in coding-agent mode.
+	taskCodingDevTag = "coding_dev"
+	// taskRemoteCodingDevTag marks pure remote (SSH) coding environments.
+	taskRemoteCodingDevTag     = "remote_coding_dev"
+	taskRemoteHostTagPrefix    = "remote_host:"
+	taskRemoteUserTagPrefix    = "remote_user:"
+	taskRemotePortTagPrefix    = "remote_port:"
+	taskRemoteWorkDirTagPrefix = "remote_workdir:"
+	// taskSourceCodingWorkflowTag marks remote/local tasks created from the multi-phase coding workflow form.
+	taskSourceCodingWorkflowTag = taskSourceTagPrefix + "coding_workflow"
+	// taskSourceRemoteOpsDiagnosisTag marks a task that was launched from the
+	// incident-diagnosis entry point. Its first SSH turn is forced read-only.
+	taskSourceRemoteOpsDiagnosisTag = taskSourceTagPrefix + "remote_ops_diagnosis"
+)
+
+// NormalizeCreateTaskMode maps free-form mode strings from the UI/API to a
+// canonical create-task mode. Empty / unknown values mean ordinary chat task.
+func NormalizeCreateTaskMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "coding_dev", "coding", "programming", "code":
+		return taskCodingDevTag
+	case "remote_coding_dev", "remote_coding", "remote_programming", "remote_code":
+		return taskRemoteCodingDevTag
+	default:
+		return ""
+	}
+}
+
+// normalizeCloudWorkspaceTaskMode is the identity mode stored on a cloud
+// workspace task row. Cloud is a mutually exclusive environment: coding_dev
+// and remote_coding_dev belong to local/SSH rows and must not share this
+// identity, or the sidebar stacks 纯编程/远程编程 onto 云端工作区.
+func normalizeCloudWorkspaceTaskMode(mode string) string {
+	_ = mode
+	return ""
+}
+
+func cloudWorkspaceIdentityDropPrefixes() []string {
+	return []string{
+		taskCodingDevTag,
+		taskRemoteCodingDevTag,
+		taskRemoteHostTagPrefix,
+		taskRemoteUserTagPrefix,
+		taskRemotePortTagPrefix,
+		taskRemoteWorkDirTagPrefix,
+	}
+}
+
+func isCloudWorkspaceIdentityOverlapTag(tag string) bool {
+	tag = strings.TrimSpace(tag)
+	if tag == "" {
+		return false
+	}
+	if tag == taskCodingDevTag || tag == taskRemoteCodingDevTag {
+		return true
+	}
+	return isRemoteCodingMetaTag(tag)
+}
+
+func cloudWorkspaceTagsHaveEnvironmentOverlap(tags []string) bool {
+	for _, tag := range tags {
+		if isCloudWorkspaceIdentityOverlapTag(tag) {
+			return true
+		}
+	}
+	return false
+}
+
+func scrubCloudWorkspaceIdentityTags(tags []string) []string {
+	if len(tags) == 0 {
+		return tags
+	}
+	out := make([]string, 0, len(tags))
+	seen := make(map[string]struct{}, len(tags))
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || isCloudWorkspaceIdentityOverlapTag(tag) {
+			continue
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		out = append(out, tag)
+	}
+	return out
+}
+
+// codingModeForProjectRecord is the durable workbench kind for a task row.
+// A cloud workspace is its own environment: leftover coding/remote tags must
+// not arm SSH or present as 纯编程 on that row.
+func codingModeForProjectRecord(rec memory.ProjectRecord) string {
+	if primaryCloudWorkspaceID(rec) != "" {
+		return ""
+	}
+	if projectRecordHasTag(rec, taskRemoteCodingDevTag) {
+		return taskRemoteCodingDevTag
+	}
+	if projectRecordHasTag(rec, taskCodingDevTag) {
+		return taskCodingDevTag
+	}
+	return ""
+}
+
+func normalizeProjectSessionPath(projectPath string) string {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" {
+		return ""
+	}
+	if strings.HasPrefix(projectPath, "/") {
+		return path.Clean(projectPath)
+	}
+	cleaned := filepath.Clean(projectPath)
+	if strings.HasSuffix(cleaned, string(filepath.Separator)+".") {
+		cleaned = filepath.Clean(cleaned[:len(cleaned)-2])
+	}
+	if len(cleaned) >= 2 && cleaned[1] == ':' {
+		cleaned = strings.ToUpper(cleaned[:1]) + cleaned[1:]
+	}
+	return cleaned
+}
+
+func projectSessionOwnerID(projectPath string) string {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return desktopUserID
+	}
+	return fmt.Sprintf("desktop-user:%s", projectPath)
+}
+
+func projectPathFromSessionOwnerID(ownerID string) string {
+	ownerID = strings.TrimSpace(ownerID)
+	if ownerID == "" || ownerID == desktopUserID || !strings.HasPrefix(ownerID, desktopUserID+":") {
+		return ""
+	}
+	rest := strings.TrimPrefix(ownerID, desktopUserID+":")
+	// Expert sessions ("desktop-user:expert:<id>") carry an expert id, not a
+	// project path — never let downstream code treat it as a directory.
+	if strings.HasPrefix(rest, "expert:") || strings.HasPrefix(rest, "acp:") {
+		return ""
+	}
+	return normalizeProjectSessionPath(rest)
+}
+
+// ProjectSearchResult is the frontend-facing search result type.
+// Exported as a Wails binding return type.
+type ProjectSearchResult struct {
+	ID          string `json:"id"`           // ProjectPath as stable ID
+	Name        string `json:"name"`         // Human-readable project name
+	ProjectPath string `json:"project_path"` // Canonical absolute path
+	WorkingDir  string `json:"working_dir,omitempty"`
+	// ExecutionDir is the directory tools actually run in for a managed task
+	// (the working_dir tag, else the workspace/ sandbox). Empty when execution
+	// happens in the project path itself, and for cloud workspace rows.
+	ExecutionDir    string                  `json:"execution_dir,omitempty"`
+	WorkflowType    string                  `json:"workflow_type"` // e.g. "coding", "product_design"
+	ActiveWorkflow  *ProjectWorkflowState   `json:"active_workflow,omitempty"`
+	Preview         string                  `json:"preview"`       // Short content preview (~150 chars)
+	Tags            []string                `json:"tags"`          // Union of all entry tags
+	CreatedAt       string                  `json:"created_at"`    // RFC3339 task creation timestamp
+	LastActivity    string                  `json:"last_activity"` // RFC3339 formatted timestamp
+	EntryCount      int                     `json:"entry_count"`   // Number of memory entries
+	HasOutput       bool                    `json:"has_output"`    // Whether the task has tangible output
+	Pinned          bool                    `json:"pinned"`        // Whether the task is pinned to top
+	Archived        bool                    `json:"archived"`      // Whether the task is archived
+	SourceURLs      []string                `json:"source_urls,omitempty"`
+	RecentArtifacts []ProjectSearchArtifact `json:"recent_artifacts,omitempty"`
+}
+
+type ProjectConversationHistoryItem struct {
+	Role             string `json:"role"`
+	Content          string `json:"content"`
+	ReasoningContent string `json:"reasoning_content,omitempty"`
+}
+
+// ProjectWorkflowState is a compact workflow snapshot attached to a
+// task-management artifact. Active snapshots can be continued with ProjectPath;
+// terminal snapshots preserve the outcome of recent work.
+type ProjectWorkflowState struct {
+	ID            string `json:"id,omitempty"`
+	Type          string `json:"type,omitempty"`
+	Phase         string `json:"phase,omitempty"`
+	Status        string `json:"status,omitempty"`
+	ProjectPath   string `json:"project_path,omitempty"`
+	PendingReview bool   `json:"pending_review,omitempty"`
+}
+
+// ProjectSearchArtifact is the small source-backed artifact summary attached
+// to task search results. Full content stays in SourceURL-backed refs.
+type ProjectSearchArtifact struct {
+	Title      string `json:"title,omitempty"`
+	SourceType string `json:"source_type,omitempty"`
+	SourceURL  string `json:"source_url,omitempty"`
+	SourceHint string `json:"source_hint,omitempty"`
+	Preview    string `json:"preview,omitempty"`
+	UpdatedAt  string `json:"updated_at,omitempty"`
+}
+
+// ProjectSceneDetail exposes the scene/task navigation data for one project.
+// It is intentionally compact: sources are pointers for drill-down, not bodies.
+type ProjectSceneDetail struct {
+	ProjectPath     string                  `json:"project_path"`
+	Name            string                  `json:"name,omitempty"`
+	ActiveWorkflow  *ProjectWorkflowState   `json:"active_workflow,omitempty"`
+	WorkflowTypes   []string                `json:"workflow_types,omitempty"`
+	Tags            []string                `json:"tags,omitempty"`
+	SourceURLs      []string                `json:"source_urls,omitempty"`
+	RecentArtifacts []ProjectSearchArtifact `json:"recent_artifacts,omitempty"`
+	EntryCount      int                     `json:"entry_count"`
+	LastActivity    string                  `json:"last_activity,omitempty"`
+	Preview         string                  `json:"preview,omitempty"`
+}
+
+// GetProjectScene returns source-backed navigation details for one project.
+// This is a Wails binding for task detail and evidence drill-down UIs.
+func (a *App) GetProjectScene(projectPath string) (*ProjectSceneDetail, error) {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" {
+		return nil, fmt.Errorf("projectPath is required")
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return nil, fmt.Errorf("memory store not initialized")
+	}
+
+	scene, ok := a.sceneRecordForProjectPath(projectPath, projectSceneMap(a.memoryStore.SceneIndex(100)))
+	if !ok {
+		return &ProjectSceneDetail{ProjectPath: projectPath, Name: stripTaskDirTimestampSuffix(lastPathComponent(projectPath)), ActiveWorkflow: a.activeWorkflowForRecentTaskPath(projectPath)}, nil
+	}
+	detail := projectSceneDetailFromRecord(scene)
+	detail.ActiveWorkflow = a.activeWorkflowForRecentTaskPath(projectPath)
+	return detail, nil
+}
+
+// SearchProjects searches the project index for projects matching the query.
+// Returns up to `limit` results sorted by relevance (or recency if query is empty).
+// This is a Wails binding method called from the frontend search box.
+func (a *App) SearchProjects(query string, limit int) []ProjectSearchResult {
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return nil
+	}
+
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return nil
+	}
+
+	if limit <= 0 {
+		limit = 10
+	}
+	// Digital-employee chats and ACP mirrors are dropped below. Read past the
+	// caller's limit first so those rows cannot push a real project out of the
+	// window.
+	fetchLimit := limit
+	if limit <= maxTaskSearchLimit/2 {
+		fetchLimit = limit * 2
+	}
+
+	var records []memory.ProjectRecord
+	if query == "" {
+		records = pi.ListRecent(fetchLimit)
+	} else {
+		records = pi.Search(query, fetchLimit)
+	}
+	records = collapseRecentTaskForkRecords(records)
+
+	scenesByPath := projectSceneMap(a.memoryStore.SceneIndex(fetchLimit))
+	// One workflow load for the widened window. A per-row store read would run
+	// twice as often now that omitted digital-employee rows are read past.
+	var v2WorkflowStates map[string]*v2.WorkflowState
+	if len(records) > 0 {
+		v2WorkflowStates = a.v2WorkflowStatesByOwner()
+	}
+	codingActiveByRef := a.activeCodingRuntimeStatusesByRef()
+	sharedRefs := codingRuntimeRefShareCounts(records, func(rec memory.ProjectRecord) bool {
+		return !omittedFromTaskSidebar(rec)
+	})
+	ledgerOwners := codingLedgerOwnersForSharedRefs(sharedRefs)
+
+	results := make([]ProjectSearchResult, 0, len(records))
+	for _, rec := range records {
+		if omittedFromTaskSidebar(rec) {
+			continue
+		}
+		result := a.projectRecordToSearchResult(pi, rec)
+		if scene, ok := a.sceneRecordForProjectPath(rec.ProjectPath, scenesByPath); ok {
+			enrichProjectSearchResultWithScene(&result, scene)
+		}
+		a.applyTaskListWorkflow(&result, projectWorkflowProjectPathForRecord(rec), v2WorkflowStates, codingActiveByRef, sharedRefs, ledgerOwners)
+		results = append(results, result)
+		if len(results) == limit {
+			break
+		}
+	}
+
+	return results
+}
+
+// sceneIndexForTaskList returns the memory scene index, cached by the store's
+// dirty generation. SearchTasks runs on every sidebar refresh (and refresh
+// bursts are common during cloud restore), while BuildSceneIndex iterates
+// every memory entry — caching turns repeat refreshes into a map lookup.
+func (a *App) sceneIndexForTaskList(limit int) []memory.SceneRecord {
+	ms := a.memoryStore
+	if ms == nil {
+		return nil
+	}
+	genBefore := ms.DirtyGen()
+	a.sceneIndexCacheMu.Lock()
+	defer a.sceneIndexCacheMu.Unlock()
+	// TTL backstop: DirtyGen covers the known mutation paths, but a bounded
+	// cache age guarantees any missed mutation path self-heals.
+	if a.sceneIndexCacheGen == genBefore && a.sceneIndexCacheLimit >= limit && a.sceneIndexCache != nil && time.Since(a.sceneIndexCacheAt) < sceneIndexCacheTTL {
+		out := a.sceneIndexCache
+		if len(out) > limit {
+			out = out[:limit]
+		}
+		return out
+	}
+	scenes := ms.SceneIndex(limit)
+	if scenes == nil {
+		// Normalize so a fresh install (zero project scenes) caches too —
+		// otherwise the nil-cache guard rebuilds on every sidebar refresh.
+		scenes = []memory.SceneRecord{}
+	}
+	// A save racing the rebuild leaves the snapshot older than the generation
+	// it would be cached under; skip caching in that case so the next call
+	// rebuilds instead of serving a stale index indefinitely.
+	if ms.DirtyGen() == genBefore {
+		a.sceneIndexCacheGen = genBefore
+		a.sceneIndexCacheLimit = limit
+		a.sceneIndexCache = scenes
+		a.sceneIndexCacheAt = time.Now()
+	}
+	return scenes
+}
+
+// v2WorkflowStatesByOwner preloads every persisted V2 workflow state keyed by
+// owner ID. SearchTasks otherwise pays one SQLite round-trip per listed task
+// in activeWorkflowForProject; workflow rows are few, so one batch is cheaper.
+func (a *App) v2WorkflowStatesByOwner() map[string]*v2.WorkflowState {
+	if a.workflowV2 == nil || a.workflowV2.store == nil {
+		return nil
+	}
+	ids, err := a.workflowV2.store.ListAllUserIDs()
+	if err != nil {
+		return nil
+	}
+	states := make(map[string]*v2.WorkflowState, len(ids))
+	for _, id := range ids {
+		if state, err := a.workflowV2.store.Load(id); err == nil && state != nil {
+			states[id] = state
+		}
+	}
+	return states
+}
+
+// sceneIndexCacheTTL bounds how long a generation-keyed scene index may be
+// served before it is rebuilt even without an observed mutation.
+const sceneIndexCacheTTL = 60 * time.Second
+
+// ListTasks returns the user-visible task management list. Unlike SearchProjects,
+// this intentionally excludes automatic project/memory sediment and fork rows.
+func (a *App) ListTasks(limit int) []ProjectSearchResult {
+	return a.SearchTasks("", limit)
+}
+
+// SearchTasks searches only explicit task-management records.
+func (a *App) SearchTasks(query string, limit int) []ProjectSearchResult {
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return nil
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return nil
+	}
+	if limit <= 0 {
+		limit = 50
+	}
+	searchLimit := taskSearchLimit(limit)
+	var records []memory.ProjectRecord
+	var shareRecords []memory.ProjectRecord
+	if strings.TrimSpace(query) == "" {
+		// Filter before limiting so recent automatic memory entries cannot crowd
+		// explicit tasks out of the sidebar while keeping the list work bounded.
+		records = pi.ListRecentMatching(searchLimit, isTaskManagementRecord)
+		// Hub cloud workspaces are 1:1 durable task identities. Recency windows
+		// must not hide an older workspace just because newer local chats filled
+		// the sidebar quota. Search queries stay filtered: do not inject every
+		// cloud row into an unrelated lookup.
+		//
+		// ListAllMatching includes hidden/archived rows (restore identity).
+		// Merging those into the sidebar lets collapse pick a hidden leftover
+		// over the visible row, then the hidden filter drops the winner.
+		// When the recency window was not full, every visible task-management
+		// row is already present; skip the extra index scan. When it is full,
+		// the same scan also sees an older sibling that shares a working
+		// directory with a row still inside the window.
+		if len(records) >= searchLimit {
+			shareRecords = pi.ListAllMatching(isTaskManagementRecord)
+			cloud := make([]memory.ProjectRecord, 0)
+			for _, rec := range shareRecords {
+				if localCloudWorkspaceID(rec) != "" {
+					cloud = append(cloud, rec)
+				}
+			}
+			records = mergeProjectRecordsByPath(records, visibleProjectRecords(pi, cloud))
+		}
+	} else {
+		records = pi.SearchMatching(query, searchLimit, isTaskManagementRecord)
+		// Hits are a subset. A sibling that does not match the query still
+		// shares the directory, so a coding hit has to be counted against
+		// every task, not just this page. Non-coding searches skip the scan.
+		if len(records) >= searchLimit || recordsContainCodingRuntimeRef(records) {
+			shareRecords = pi.ListAllMatching(isTaskManagementRecord)
+		}
+	}
+	if shareRecords == nil {
+		shareRecords = records
+	}
+	// ProjectIndex stores user renames separately from the extracted record
+	// name. Copy that display name into the temporary records before cloud
+	// deduplication; otherwise a renamed workspace task still looks like the
+	// generic placeholder and may lose to the legacy row.
+	for i := range records {
+		if custom := strings.TrimSpace(pi.CustomName(records[i].ProjectPath)); custom != "" {
+			records[i].Name = custom
+		}
+	}
+	// A cloud workspace is a 1:1 durable task identity. Older versions could
+	// leave a generic "新建云端工作区任务" row alongside the later renamed row
+	// for the same workspace. Collapse those rows before applying the visible
+	// limit so the sidebar never shows the same cloud task twice.
+	records = collapseDuplicateCloudWorkspaceRecords(records)
+	scenesByPath := projectSceneMap(a.sceneIndexForTaskList(searchLimit * 2))
+	v2WorkflowStates := a.v2WorkflowStatesByOwner()
+	codingActiveByRef := a.activeCodingRuntimeStatusesByRef()
+	sharedRefs := codingRuntimeRefShareCounts(shareRecords, func(rec memory.ProjectRecord) bool {
+		if !isTaskManagementRecord(rec) || pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) || omittedFromTaskSidebar(rec) {
+			return false
+		}
+		// Cloud rows drop coding tags before the ledger match, so they must
+		// not make a local task look like it shares a directory.
+		return localCloudWorkspaceID(rec) == ""
+	})
+	ledgerOwners := codingLedgerOwnersForSharedRefs(sharedRefs)
+	results := make([]ProjectSearchResult, 0, len(records))
+	for _, rec := range records {
+		if !isTaskManagementRecord(rec) {
+			continue
+		}
+		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
+			continue
+		}
+		if omittedFromTaskSidebar(rec) {
+			continue
+		}
+		result := a.projectRecordToSearchResult(pi, rec)
+		if localCloudWorkspaceID(rec) != "" || cloudWorkspaceIDFromPathString(result.WorkingDir) != "" {
+			result.Tags = scrubCloudWorkspaceIdentityTags(result.Tags)
+		}
+		if scene, ok := a.sceneRecordForProjectPath(rec.ProjectPath, scenesByPath); ok {
+			enrichProjectSearchResultWithScene(&result, scene)
+		}
+		a.applyTaskListWorkflow(&result, projectWorkflowProjectPathForRecord(rec), v2WorkflowStates, codingActiveByRef, sharedRefs, ledgerOwners)
+		results = append(results, result)
+	}
+	if strings.TrimSpace(query) == "" {
+		return capTaskSearchResultsKeepingCloudWorkspaces(results, limit)
+	}
+	if len(results) > limit {
+		return results[:limit]
+	}
+	return results
+}
+
+func visibleProjectRecords(pi *memory.ProjectIndex, records []memory.ProjectRecord) []memory.ProjectRecord {
+	if pi == nil || len(records) == 0 {
+		return records
+	}
+	out := make([]memory.ProjectRecord, 0, len(records))
+	for _, rec := range records {
+		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
+			continue
+		}
+		if omittedFromTaskSidebar(rec) {
+			continue
+		}
+		out = append(out, rec)
+	}
+	return out
+}
+
+const maxTaskSearchLimit = 2000
+
+// taskSearchLimit broadens the index query enough to survive filtering and
+// cloud-workspace deduplication without allowing a caller-controlled integer
+// overflow (the result is also used for the scene-index lookup below).
+func taskSearchLimit(limit int) int {
+	if limit <= 0 {
+		limit = 50
+	}
+	if limit < 13 { // preserve the historical minimum of 50 after multiplying
+		return 50
+	}
+	if limit > maxTaskSearchLimit/4 {
+		return maxTaskSearchLimit
+	}
+	return limit * 4
+}
+
+// collapseDuplicateCloudWorkspaceRecords keeps at most one task record for
+// each cloud workspace ID. Prefer a meaningful user-facing name over the
+// generic creator title; otherwise keep the most recently active record.
+// Non-cloud task records are left untouched.
+func collapseDuplicateCloudWorkspaceRecords(records []memory.ProjectRecord) []memory.ProjectRecord {
+	if len(records) <= 1 {
+		return records
+	}
+	byWorkspace := make(map[string]int)
+	meaningfulWorkspace := make(map[string]bool)
+	for _, rec := range records {
+		if cloudWorkspaceTaskNameScore(rec.Name) == 0 {
+			continue
+		}
+		if id := primaryCloudWorkspaceID(rec); id != "" {
+			meaningfulWorkspace[id] = true
+		}
+	}
+	out := make([]memory.ProjectRecord, 0, len(records))
+	for _, rec := range records {
+		workspaceID := primaryCloudWorkspaceID(rec)
+		if workspaceID == "" {
+			out = append(out, rec)
+			continue
+		}
+		// An explicit copy is a second chat on the same workspace, not a
+		// leftover duplicate of the canonical row.
+		if projectRecordHasTag(rec, taskCopyTag) {
+			out = append(out, rec)
+			continue
+		}
+		if cloudWorkspaceTaskNameScore(rec.Name) == 0 {
+			// A legacy row can contain tags from several workspaces. Its
+			// working_dir (and therefore primary ID) identifies the row it
+			// actually represents; a named row for an unrelated accumulated tag
+			// must not make this fallback disappear.
+			if meaningfulWorkspace[workspaceID] {
+				continue
+			}
+		}
+		if idx, ok := byWorkspace[workspaceID]; ok {
+			if preferCloudWorkspaceTaskRecord(rec, out[idx]) {
+				out[idx] = rec
+			}
+			continue
+		}
+		byWorkspace[workspaceID] = len(out)
+		out = append(out, rec)
+	}
+	return out
+}
+
+func mergeProjectRecordsByPath(base, extra []memory.ProjectRecord) []memory.ProjectRecord {
+	if len(extra) == 0 {
+		return base
+	}
+	seen := make(map[string]struct{}, len(base)+len(extra))
+	out := make([]memory.ProjectRecord, 0, len(base)+len(extra))
+	for _, rec := range base {
+		path := normalizeProjectSessionPath(rec.ProjectPath)
+		if path == "" {
+			out = append(out, rec)
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		out = append(out, rec)
+	}
+	for _, rec := range extra {
+		path := normalizeProjectSessionPath(rec.ProjectPath)
+		if path == "" {
+			continue
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		out = append(out, rec)
+	}
+	return out
+}
+
+func taskSearchResultIsCloudWorkspace(result ProjectSearchResult) bool {
+	return localCloudWorkspaceID(memory.ProjectRecord{
+		ProjectPath: result.ProjectPath,
+		Tags:        result.Tags,
+	}) != "" || cloudWorkspaceIDFromPathString(result.WorkingDir) != ""
+}
+
+// capTaskSearchResultsKeepingCloudWorkspaces keeps Hub workspace rows visible
+// when the recency window is full of newer local tasks. Cloud rows still share
+// the caller's limit; extras drop local chats first.
+func capTaskSearchResultsKeepingCloudWorkspaces(results []ProjectSearchResult, limit int) []ProjectSearchResult {
+	if limit <= 0 || len(results) <= limit {
+		return results
+	}
+	cloudIdx := make([]int, 0, len(results))
+	otherIdx := make([]int, 0, len(results))
+	for i, result := range results {
+		if taskSearchResultIsCloudWorkspace(result) {
+			cloudIdx = append(cloudIdx, i)
+		} else {
+			otherIdx = append(otherIdx, i)
+		}
+	}
+	if len(cloudIdx) >= limit {
+		cloudIdx = cloudIdx[:limit]
+		otherIdx = otherIdx[:0]
+	} else if remain := limit - len(cloudIdx); remain < len(otherIdx) {
+		otherIdx = otherIdx[:remain]
+	}
+	keep := make([]bool, len(results))
+	for _, i := range cloudIdx {
+		keep[i] = true
+	}
+	for _, i := range otherIdx {
+		keep[i] = true
+	}
+	out := make([]ProjectSearchResult, 0, limit)
+	for i, result := range results {
+		if keep[i] {
+			out = append(out, result)
+		}
+	}
+	return out
+}
+
+func cloudWorkspaceIDsFromTags(tags []string) []string {
+	seen := map[string]bool{}
+	ids := make([]string, 0, 1)
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if !strings.HasPrefix(tag, cloudWorkspaceTagPrefix) {
+			continue
+		}
+		id := strings.TrimSpace(strings.TrimPrefix(tag, cloudWorkspaceTagPrefix))
+		if id != "" && !seen[id] {
+			seen[id] = true
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func cloudWorkspaceTaskNameScore(name string) int {
+	name = strings.TrimSpace(strings.ToLower(name))
+	if name == "" || name == "新建云端工作区任务" || name == "新建雲端工作區任務" || name == "new cloud workspace task" {
+		return 0
+	}
+	return 1
+}
+
+// primaryCloudWorkspaceID handles legacy rows whose tag union accidentally
+// accumulated several workspace IDs. The working_dir tag is authoritative for
+// that row; project path is next. A remote SSH coding task without a cloud
+// cache path must not inherit a stray cloud_workspace: tag, or collapse would
+// hide the real Hub workspace behind that SSH row.
+func primaryCloudWorkspaceID(rec memory.ProjectRecord) string {
+	workingDir := recentTaskWorkingDirFromTags(rec.Tags)
+	if id := cloudWorkspaceIDFromPathString(workingDir); id != "" {
+		return id
+	}
+	if id := cloudWorkspaceIDFromPathString(rec.ProjectPath); id != "" {
+		return id
+	}
+	if projectRecordHasTag(rec, taskRemoteCodingDevTag) {
+		return ""
+	}
+	return cloudWorkspaceIDFromTags(rec.Tags)
+}
+
+func cloudWorkspacePathParts(pathValue string) (prefix, tenant, id string, ok bool) {
+	normalized := strings.ReplaceAll(strings.TrimSpace(pathValue), "\\", "/")
+	marker := "/cloud-workspaces/"
+	idx := strings.Index(strings.ToLower(normalized), marker)
+	if idx < 0 {
+		return "", "", "", false
+	}
+	parts := strings.Split(strings.Trim(normalized[idx+len(marker):], "/"), "/")
+	if len(parts) < 2 {
+		return "", "", "", false
+	}
+	tenant, id = strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1])
+	if tenant == "" || id == "" {
+		return "", "", "", false
+	}
+	return normalized[:idx+len(marker)], tenant, id, true
+}
+
+func cloudWorkspaceIDFromPathString(pathValue string) string {
+	_, _, id, ok := cloudWorkspacePathParts(pathValue)
+	if !ok {
+		return ""
+	}
+	return id
+}
+
+func cloudWorkspaceReadOnlyCacheParts(pathValue string) (prefix string, parts []string, ok bool) {
+	normalized := strings.ReplaceAll(strings.TrimSpace(pathValue), "\\", "/")
+	marker := "/cloud-workspaces-readonly/"
+	idx := strings.Index(strings.ToLower(normalized), marker)
+	if idx < 0 {
+		return "", nil, false
+	}
+	rest := strings.Trim(normalized[idx+len(marker):], "/")
+	if rest == "" {
+		return "", nil, false
+	}
+	return normalized[:idx+len(marker)], strings.Split(rest, "/"), true
+}
+
+func cloudWorkspaceIDFromReadOnlyCachePath(pathValue string) string {
+	_, parts, ok := cloudWorkspaceReadOnlyCacheParts(pathValue)
+	if !ok || len(parts) < 2 || !validCloudWorkspaceCacheID(parts[1]) {
+		return ""
+	}
+	return parts[1]
+}
+
+// cloudWorkspaceReadOnlyInstanceDir is the hydrated read-only cache root:
+// .../cloud-workspaces-readonly/{tenant}/{workspace}/{instance}.
+func cloudWorkspaceReadOnlyInstanceDir(pathValue string) string {
+	prefix, parts, ok := cloudWorkspaceReadOnlyCacheParts(pathValue)
+	if !ok || len(parts) < 3 {
+		return ""
+	}
+	if !validCloudWorkspaceCacheID(parts[0]) || !validCloudWorkspaceCacheID(parts[1]) || !validCloudWorkspaceCacheID(parts[2]) {
+		return ""
+	}
+	return normalizeProjectSessionPath(filepath.FromSlash(prefix + parts[0] + "/" + parts[1] + "/" + parts[2]))
+}
+
+// explicitCloudWorkspaceListingDir is set when the caller already named a cloud
+// cache root. Nested folders and task project paths stay on the canonical
+// writer resolution so a task browser does not shrink to one subdirectory.
+func explicitCloudWorkspaceListingDir(pathValue string) (string, bool) {
+	pathValue = normalizeProjectSessionPath(pathValue)
+	if pathValue == "" {
+		return "", false
+	}
+	if root := cloudWorkspaceCacheRootFromPath(pathValue); root != "" && root == pathValue {
+		return pathValue, true
+	}
+	if root := cloudWorkspaceReadOnlyInstanceDir(pathValue); root != "" && root == pathValue {
+		return pathValue, true
+	}
+	return "", false
+}
+
+func cloudWorkspaceCacheRootFromPath(pathValue string) string {
+	prefix, tenant, id, ok := cloudWorkspacePathParts(pathValue)
+	if !ok {
+		return ""
+	}
+	return normalizeProjectSessionPath(filepath.FromSlash(prefix + tenant + "/" + id))
+}
+
+func preferCloudWorkspaceTaskRecord(candidate, current memory.ProjectRecord) bool {
+	if candidateScore, currentScore := cloudWorkspaceTaskNameScore(candidate.Name), cloudWorkspaceTaskNameScore(current.Name); candidateScore != currentScore {
+		return candidateScore > currentScore
+	}
+	return candidate.LastActivity.After(current.LastActivity)
+}
+
+func collapseRecentTaskForkRecords(records []memory.ProjectRecord) []memory.ProjectRecord {
+	if len(records) <= 1 {
+		return records
+	}
+	bySource := make(map[string]memory.ProjectRecord, len(records))
+	order := make([]string, 0, len(records))
+	for _, rec := range records {
+		key := recentTaskLineageKey(rec)
+		if key == "" {
+			key = normalizeRecentTaskPathKey(rec.ProjectPath)
+		}
+		if key == "" {
+			key = rec.ProjectPath
+		}
+		current, exists := bySource[key]
+		if !exists {
+			bySource[key] = rec
+			order = append(order, key)
+			continue
+		}
+		if preferRecentTaskRecord(rec, current) {
+			bySource[key] = rec
+		}
+	}
+	out := make([]memory.ProjectRecord, 0, len(order))
+	for _, key := range order {
+		out = append(out, bySource[key])
+	}
+	return out
+}
+
+func recentTaskLineageKey(rec memory.ProjectRecord) string {
+	if !projectRecordHasTag(rec, taskForkedTag) {
+		return normalizeRecentTaskPathKey(rec.ProjectPath)
+	}
+	for _, tag := range rec.Tags {
+		if strings.HasPrefix(tag, taskSourceTagPrefix) {
+			return normalizeRecentTaskPathKey(strings.TrimPrefix(tag, taskSourceTagPrefix))
+		}
+	}
+	return normalizeRecentTaskPathKey(rec.ProjectPath)
+}
+
+func preferRecentTaskRecord(candidate, current memory.ProjectRecord) bool {
+	candidateFork := projectRecordHasTag(candidate, taskForkedTag)
+	currentFork := projectRecordHasTag(current, taskForkedTag)
+	if candidateFork != currentFork {
+		return candidateFork
+	}
+	return candidate.LastActivity.After(current.LastActivity)
+}
+
+func (a *App) projectRecordToSearchResult(pi *memory.ProjectIndex, rec memory.ProjectRecord) ProjectSearchResult {
+	r := ProjectSearchResult{
+		ID:           rec.ProjectPath,
+		Name:         rec.Name,
+		ProjectPath:  rec.ProjectPath,
+		WorkingDir:   recentTaskWorkingDirFromTags(rec.Tags),
+		WorkflowType: rec.WorkflowType,
+		Preview:      rec.Preview,
+		Tags:         rec.Tags,
+		CreatedAt:    rec.CreatedAt.Format(time.RFC3339),
+		LastActivity: rec.LastActivity.Format(time.RFC3339),
+		EntryCount:   rec.EntryCount,
+		HasOutput:    rec.HasOutput,
+		Pinned:       pi.IsPinned(rec.ProjectPath),
+		Archived:     pi.IsArchived(rec.ProjectPath),
+	}
+
+	// Generate a human-readable name when the index couldn't extract one.
+	// Priority: user custom name > extracted name > preview-based summary > directory name.
+	if custom := pi.CustomName(rec.ProjectPath); custom != "" {
+		r.Name = custom
+	} else if r.Name == "" {
+		r.Name = deriveTaskName(rec)
+	}
+	r.ExecutionDir = a.managedTaskExecutionDirForDisplay(rec.ProjectPath)
+	return r
+}
+
+func projectSceneMap(scenes []memory.SceneRecord) map[string]memory.SceneRecord {
+	if len(scenes) == 0 {
+		return nil
+	}
+	byPath := make(map[string]memory.SceneRecord, len(scenes))
+	for _, scene := range scenes {
+		if scene.ProjectPath == "" {
+			continue
+		}
+		byPath[scene.ProjectPath] = scene
+	}
+	return byPath
+}
+
+func mergeProjectSceneRecords(targetPath string, primary, secondary memory.SceneRecord) memory.SceneRecord {
+	merged := primary
+	merged.ProjectPath = targetPath
+	if strings.TrimSpace(merged.Name) == "" {
+		merged.Name = secondary.Name
+	}
+	if merged.EntryCount < secondary.EntryCount {
+		merged.EntryCount = secondary.EntryCount
+	}
+	if merged.LastActivity.Before(secondary.LastActivity) {
+		merged.LastActivity = secondary.LastActivity
+	}
+	if strings.TrimSpace(merged.Preview) == "" {
+		merged.Preview = secondary.Preview
+	}
+
+	appendUniqueStrings := func(dst []string, src []string) []string {
+		seen := make(map[string]struct{}, len(dst))
+		for _, item := range dst {
+			seen[item] = struct{}{}
+		}
+		for _, item := range src {
+			if _, ok := seen[item]; ok {
+				continue
+			}
+			seen[item] = struct{}{}
+			dst = append(dst, item)
+		}
+		return dst
+	}
+	merged.WorkflowTypes = appendUniqueStrings(append([]string(nil), merged.WorkflowTypes...), secondary.WorkflowTypes)
+	merged.Tags = appendUniqueStrings(append([]string(nil), merged.Tags...), secondary.Tags)
+	merged.SourceURLs = appendUniqueStrings(append([]string(nil), merged.SourceURLs...), secondary.SourceURLs)
+
+	seenArtifacts := make(map[string]struct{}, len(merged.RecentArtifacts))
+	artifactKey := func(artifact memory.SceneArtifact) string {
+		return strings.TrimSpace(artifact.SourceURL) + "\x00" + strings.TrimSpace(artifact.Title)
+	}
+	artifacts := append([]memory.SceneArtifact(nil), merged.RecentArtifacts...)
+	for _, artifact := range artifacts {
+		seenArtifacts[artifactKey(artifact)] = struct{}{}
+	}
+	for _, artifact := range secondary.RecentArtifacts {
+		key := artifactKey(artifact)
+		if _, ok := seenArtifacts[key]; ok {
+			continue
+		}
+		seenArtifacts[key] = struct{}{}
+		artifacts = append(artifacts, artifact)
+	}
+	sort.SliceStable(artifacts, func(i, j int) bool {
+		return artifacts[i].UpdatedAt.After(artifacts[j].UpdatedAt)
+	})
+	if len(artifacts) > 5 {
+		artifacts = artifacts[:5]
+	}
+	merged.RecentArtifacts = artifacts
+	return merged
+}
+
+func (a *App) sceneRecordForProjectPath(projectPath string, scenesByPath map[string]memory.SceneRecord) (memory.SceneRecord, bool) {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" || len(scenesByPath) == 0 {
+		return memory.SceneRecord{}, false
+	}
+	taskScene, hasTaskScene := scenesByPath[projectPath]
+	executionProjectPath := a.recentTaskExecutionProjectPath(projectPath)
+	if executionProjectPath == "" || executionProjectPath == projectPath {
+		if hasTaskScene {
+			return taskScene, true
+		}
+		return memory.SceneRecord{}, false
+	}
+	executionScene, hasExecutionScene := scenesByPath[executionProjectPath]
+	switch {
+	case hasExecutionScene && hasTaskScene:
+		return mergeProjectSceneRecords(projectPath, executionScene, taskScene), true
+	case hasExecutionScene:
+		executionScene.ProjectPath = projectPath
+		return executionScene, true
+	case hasTaskScene:
+		taskScene.ProjectPath = projectPath
+		return taskScene, true
+	default:
+		return memory.SceneRecord{}, false
+	}
+}
+
+func projectSceneDetailFromRecord(scene memory.SceneRecord) *ProjectSceneDetail {
+	detail := &ProjectSceneDetail{
+		ProjectPath:   scene.ProjectPath,
+		Name:          scene.Name,
+		WorkflowTypes: append([]string(nil), scene.WorkflowTypes...),
+		Tags:          append([]string(nil), scene.Tags...),
+		SourceURLs:    append([]string(nil), scene.SourceURLs...),
+		EntryCount:    scene.EntryCount,
+		Preview:       scene.Preview,
+	}
+	if !scene.LastActivity.IsZero() {
+		detail.LastActivity = scene.LastActivity.Format(time.RFC3339)
+	}
+	for _, artifact := range scene.RecentArtifacts {
+		item := ProjectSearchArtifact{
+			Title:      artifact.Title,
+			SourceType: artifact.SourceType,
+			SourceURL:  artifact.SourceURL,
+			SourceHint: projectTabSourceHint(artifact.SourceURL),
+			Preview:    artifact.Preview,
+		}
+		if !artifact.UpdatedAt.IsZero() {
+			item.UpdatedAt = artifact.UpdatedAt.Format(time.RFC3339)
+		}
+		detail.RecentArtifacts = append(detail.RecentArtifacts, item)
+	}
+	return detail
+}
+
+func enrichProjectSearchResultWithScene(result *ProjectSearchResult, scene memory.SceneRecord) {
+	if result == nil || scene.ProjectPath == "" {
+		return
+	}
+	result.SourceURLs = append([]string(nil), scene.SourceURLs...)
+	for _, artifact := range scene.RecentArtifacts {
+		item := ProjectSearchArtifact{
+			Title:      artifact.Title,
+			SourceType: artifact.SourceType,
+			SourceURL:  artifact.SourceURL,
+			SourceHint: projectTabSourceHint(artifact.SourceURL),
+			Preview:    artifact.Preview,
+		}
+		if !artifact.UpdatedAt.IsZero() {
+			item.UpdatedAt = artifact.UpdatedAt.Format(time.RFC3339)
+		}
+		result.RecentArtifacts = append(result.RecentArtifacts, item)
+	}
+}
+
+// CreateRecentTask creates a lightweight standalone task record so it appears
+// in task management immediately and after restart.
+func (a *App) CreateRecentTask(name string) ProjectSearchResult {
+	return a.CreateRecentTaskWithWorkingDir(name, "")
+}
+
+// CreateTask creates a user-visible task-management record.
+func (a *App) CreateTask(name, workingDir string) ProjectSearchResult {
+	return a.CreateTaskWithMode(name, workingDir, "")
+}
+
+// CreateTaskWithMode creates a user-visible task-management record with an
+// optional execution mode. mode="coding_dev" / "remote_coding_dev" (or aliases)
+// tags the task for coding-agent routing when the GUI reopens it.
+func (a *App) CreateTaskWithMode(name, workingDir, mode string) ProjectSearchResult {
+	result := a.createTaskWithMode(name, workingDir, mode, false)
+	if result.ProjectPath != "" {
+		a.scheduleTaskTitleSummarization(result.ProjectPath, taskNameForCreate(name, false))
+	}
+	return result
+}
+
+// createTaskWithMode keeps a non-empty explicit title when keepExplicit is set.
+// Automatic callers still drop generic phrases such as "继续" or "ok".
+func (a *App) createTaskWithMode(name, workingDir, mode string, keepExplicit bool) ProjectSearchResult {
+	taskName := taskNameForCreate(name, keepExplicit)
+	if taskName == "" {
+		return ProjectSearchResult{}
+	}
+	tags := []string{taskManagementTag, taskUserCreatedTag}
+	normalized := NormalizeCreateTaskMode(mode)
+	if normalized != "" {
+		tags = append(tags, normalized)
+	}
+	normalizedWorkingDir := normalizeRecentTaskWorkingDir(workingDir)
+	// Local coding tasks inherit the current working directory. Users treat the
+	// top-bar directory as the programming workspace; a hidden task sandbox
+	// would make the two paths diverge.
+	if normalizedWorkingDir == "" && normalized == taskCodingDevTag {
+		normalizedWorkingDir = a.currentTaskManagementWorkingDir()
+	}
+	return a.createTaskRecordWithWorkingDir(taskName, "", tags, normalizedWorkingDir, false)
+}
+
+// CreateExpertTask creates (or returns) the durable task-management entry for
+// an AI expert. Expert tabs are otherwise lightweight conversations, but an
+// explicit record lets the task sidebar reopen the expert after a restart.
+//
+// expertName is passed by the launcher as a display fallback. The id remains
+// the stable routing key, so renaming an expert never breaks an existing task.
+func (a *App) CreateExpertTask(expertID, expertName string) ProjectSearchResult {
+	result, _ := a.createExpertTask(expertID, expertName, "")
+	return result
+}
+
+func (a *App) createExpertTask(expertID, expertName, workingDir string) (ProjectSearchResult, error) {
+	expertID = strings.TrimSpace(expertID)
+	workingDir = normalizeRecentTaskWorkingDir(workingDir)
+	if expertID == "" || !expertIDPattern.MatchString(expertID) {
+		return ProjectSearchResult{}, nil
+	}
+
+	// Keep the lookup and creation in one critical section. Expert launch can be
+	// requested by multiple UI entry points, so a lookup-only dedupe leaves a
+	// window where two task folders could be created for one expert.
+	// The working-directory write is deferred until after the lock: it flushes
+	// the index, and doing that while the mutex is held stalls every other launch.
+	result, retargetPath := func() (ProjectSearchResult, string) {
+		expertTaskMu.Lock()
+		defer expertTaskMu.Unlock()
+		return a.lookupOrCreateExpertTask(expertID, expertName, workingDir)
+	}()
+	if retargetPath != "" {
+		if err := a.persistTaskWorkingDir(retargetPath, workingDir); err != nil {
+			log.Printf("[project_search] expert task working dir update failed expert=%s err=%v", expertID, err)
+			return ProjectSearchResult{}, err
+		}
+		// The lookup result was built before the tag write, so its directory
+		// fields still name the previous folder.
+		result.WorkingDir = workingDir
+		result.ExecutionDir = workingDir
+	}
+	return result, nil
+}
+
+// lookupOrCreateExpertTask runs while expertTaskMu is held.
+// The second return is an existing task path whose working directory should be
+// updated after the lock is released. A new record already stores workingDir.
+func (a *App) lookupOrCreateExpertTask(expertID, expertName, workingDir string) (ProjectSearchResult, string) {
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ProjectSearchResult{}, ""
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return ProjectSearchResult{}, ""
+	}
+
+	sourceTag := taskSourceExpertPrefix + expertID
+	// An expert has one active resumable task entry. A hidden entry represents a
+	// user-removed task and must not be resurrected; opening the expert again
+	// starts a fresh visible task just like other task launchers do.
+	// The LaTeX paper expert is the exception: each wizard launch is a new paper,
+	// so several visible records can exist and resume must open the newest one.
+	if rec, ok := a.newestVisibleExpertTask(pi, sourceTag, expertID == builtinLatexExpertID); ok {
+		retarget := ""
+		if workingDir != "" && a.recentTaskWorkingDir(rec.ProjectPath) != workingDir {
+			retarget = rec.ProjectPath
+		}
+		return a.projectRecordToSearchResult(pi, rec), retarget
+	}
+
+	return a.insertExpertTaskRecord(expertID, expertName, workingDir), ""
+}
+
+// createFreshLatexExpertTask always allocates a new paper task. The wizard
+// uses it so a second LaTeX template does not continue the previous paper's
+// workspace. The shared expert transcript is cleared afterwards; the UI
+// archives that transcript onto the previous task before showing the new one.
+func (a *App) createFreshLatexExpertTask(expertName, workingDir string) (ProjectSearchResult, error) {
+	expertTaskMu.Lock()
+	previous := ""
+	if a.memoryStore != nil {
+		if pi := a.memoryStore.ProjectIndex(); pi != nil {
+			if rec, ok := a.newestVisibleExpertTask(pi, taskSourceExpertPrefix+builtinLatexExpertID, true); ok {
+				previous = rec.ProjectPath
+			}
+		}
+	}
+	result := a.insertExpertTaskRecord(builtinLatexExpertID, expertName, workingDir)
+	expertTaskMu.Unlock()
+	if strings.TrimSpace(result.ProjectPath) == "" {
+		return ProjectSearchResult{}, fmt.Errorf("latex expert task creation failed")
+	}
+	// The expert tab is one shared session. Copy its transcript onto the paper
+	// being left, then clear the shared session. The copy is saved after the
+	// clear so an empty expert file with the same project path cannot outrank it.
+	conversation, createdAt := a.readBuiltinLatexExpertConversation()
+	a.resetBuiltinLatexExpertConversation()
+	a.saveLatexPaperArchive(previous, conversation, createdAt)
+	return result, nil
+}
+
+func (a *App) readBuiltinLatexExpertConversation() ([]interface{}, string) {
+	if a == nil {
+		return nil, ""
+	}
+	session, err := a.ensureProjectTabSessionPersist().LoadSession(expertTabSessionID(builtinLatexExpertID))
+	if err != nil {
+		log.Printf("[latex] read expert transcript for archive: %v", err)
+		return nil, ""
+	}
+	if session == nil || !latexSessionHasUserTurn(session.Conversation) {
+		return nil, ""
+	}
+	return append([]interface{}(nil), session.Conversation...), session.CreatedAt
+}
+
+// saveLatexPaperArchive stores a LaTeX expert transcript on the paper it
+// belongs to. LoadProjectConversationHistory recovers it by project path.
+func (a *App) saveLatexPaperArchive(projectPath string, conversation []interface{}, createdAt string) {
+	if a == nil || !latexSessionHasUserTurn(conversation) {
+		return
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return
+	}
+	if strings.TrimSpace(createdAt) == "" {
+		createdAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	if err := a.ensureProjectTabSessionPersist().SaveSession(&TabSessionData{
+		TabID:        latexPaperArchiveTabID(projectPath),
+		ProjectPath:  projectPath,
+		Conversation: conversation,
+		CreatedAt:    createdAt,
+	}); err != nil {
+		log.Printf("[latex] archive expert transcript project=%q err=%v", projectPath, err)
+	}
+}
+
+func latexPaperArchiveTabID(projectPath string) string {
+	base := filepath.Base(normalizeProjectSessionPath(projectPath))
+	base = strings.Map(func(r rune) rune {
+		switch r {
+		case '/', '\\', ':', ' ':
+			return '-'
+		default:
+			return r
+		}
+	}, base)
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		base = "paper"
+	}
+	return "latex-paper-" + base
+}
+
+func latexSessionHasUserTurn(conversation []interface{}) bool {
+	for _, raw := range conversation {
+		data, err := json.Marshal(raw)
+		if err != nil {
+			continue
+		}
+		var entry struct {
+			Role string `json:"role"`
+		}
+		if json.Unmarshal(data, &entry) != nil {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(entry.Role), "user") {
+			return true
+		}
+	}
+	return false
+}
+
+// resetBuiltinLatexExpertConversation drops the shared LaTeX expert transcript
+// and the directory the previous paper's tools were bound to. A new paper
+// then starts empty and gets pinned to its own workspace.
+func (a *App) resetBuiltinLatexExpertConversation() {
+	if a == nil {
+		return
+	}
+	tabID := expertTabSessionID(builtinLatexExpertID)
+	persist := a.ensureProjectTabSessionPersist()
+	if err := persist.ClearSessionConversation(tabID); err != nil {
+		log.Printf("[latex] clear expert transcript: %v", err)
+	}
+	// The shared expert file must not keep the previous paper's path. An empty
+	// snapshot with that path would outrank the archived transcript.
+	if session, err := persist.LoadSession(tabID); err == nil && session != nil && strings.TrimSpace(session.ProjectPath) != "" {
+		session.ProjectPath = ""
+		if err := persist.SaveSession(session); err != nil {
+			log.Printf("[latex] detach expert session path: %v", err)
+		}
+	}
+	owner := expertSessionUserID(builtinLatexExpertID)
+	a.assistantSessionWorkingDirs.Delete(owner)
+	a.tabWorkingDirOverrides.Delete(tabID)
+	var handler *IMMessageHandler
+	if hub := a.hubClient(); hub != nil {
+		handler = hub.currentIMHandler()
+	}
+	if handler == nil {
+		handler = a.imHandler
+	}
+	if handler == nil || handler.memory == nil {
+		return
+	}
+	_, _ = handler.CancelSessionForUser(owner)
+	handler.memory.Clear(owner)
+	handler.clearPerUserSessionState(owner)
+}
+
+// AbandonUnopenedFreshLatexTask removes a LaTeX paper whose template was never
+// opened. Creating the record already archived and cleared the shared expert
+// transcript; if the document step fails, that clear must not stick and the
+// empty row must not become the live paper.
+func (a *App) AbandonUnopenedFreshLatexTask(projectPath string) error {
+	if a == nil {
+		return fmt.Errorf("app unavailable")
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return fmt.Errorf("project path is required")
+	}
+	previous, err := a.claimUnopenedFreshLatexTask(projectPath)
+	if err != nil {
+		return err
+	}
+	a.restoreBuiltinLatexExpertConversationFrom(previous)
+	owner := expertSessionUserID(builtinLatexExpertID)
+	tabID := expertTabSessionID(builtinLatexExpertID)
+	a.assistantSessionWorkingDirs.Delete(owner)
+	a.tabWorkingDirOverrides.Delete(tabID)
+	if previous != "" {
+		a.bindExpertTaskWorkspace(owner, tabID, previous)
+	}
+	if err := a.removeFreshLatexTaskRecord(projectPath); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (a *App) claimUnopenedFreshLatexTask(projectPath string) (string, error) {
+	expertTaskMu.Lock()
+	defer expertTaskMu.Unlock()
+	tasks := a.orderedVisibleLatexExpertTasks()
+	if len(tasks) == 0 || normalizeProjectSessionPath(tasks[0].ProjectPath) != projectPath {
+		return "", fmt.Errorf("latex task is no longer the unopened paper")
+	}
+	// A paper the user is already talking in owns the expert transcript.
+	// Only the just-created row, whose open never finished, has an empty one.
+	if session, err := a.ensureProjectTabSessionPersist().LoadSession(expertTabSessionID(builtinLatexExpertID)); err == nil && session != nil && latexSessionHasUserTurn(session.Conversation) {
+		return "", fmt.Errorf("latex expert transcript is already in use")
+	}
+	if len(tasks) < 2 {
+		return "", nil
+	}
+	return normalizeProjectSessionPath(tasks[1].ProjectPath), nil
+}
+
+func (a *App) orderedVisibleLatexExpertTasks() []memory.ProjectRecord {
+	if a == nil || a.memoryStore == nil {
+		return nil
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return nil
+	}
+	sourceTag := taskSourceExpertPrefix + builtinLatexExpertID
+	var found []memory.ProjectRecord
+	for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
+		return projectRecordHasTag(candidate, taskManagementTag) && projectRecordHasTag(candidate, sourceTag)
+	}) {
+		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
+			continue
+		}
+		found = append(found, rec)
+	}
+	sort.Slice(found, func(i, j int) bool {
+		return latexExpertRecordIsNewer(found[i], found[j])
+	})
+	return found
+}
+
+func (a *App) restoreBuiltinLatexExpertConversationFrom(projectPath string) {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || projectPath == "" {
+		return
+	}
+	persist := a.ensureProjectTabSessionPersist()
+	archived, err := persist.LoadLatestSessionForProject(projectPath)
+	if err != nil || archived == nil || !latexSessionHasUserTurn(archived.Conversation) {
+		return
+	}
+	tabID := expertTabSessionID(builtinLatexExpertID)
+	current, err := persist.LoadSession(tabID)
+	if err != nil {
+		log.Printf("[latex] restore expert transcript: %v", err)
+		return
+	}
+	if current != nil && latexSessionHasUserTurn(current.Conversation) {
+		return
+	}
+	createdAt := archived.CreatedAt
+	if current != nil && strings.TrimSpace(current.CreatedAt) != "" {
+		createdAt = current.CreatedAt
+	}
+	conversation := append([]interface{}(nil), archived.Conversation...)
+	if err := persist.SaveSession(&TabSessionData{
+		TabID:        tabID,
+		ProjectPath:  "",
+		Conversation: conversation,
+		CreatedAt:    createdAt,
+	}); err != nil {
+		log.Printf("[latex] restore expert transcript project=%q err=%v", projectPath, err)
+		return
+	}
+	a.restoreBuiltinLatexExpertMemory(conversation)
+}
+
+func (a *App) restoreBuiltinLatexExpertMemory(conversation []interface{}) {
+	if a == nil {
+		return
+	}
+	entries := conversationEntriesFromTabSnapshot(conversation)
+	if len(entries) == 0 {
+		return
+	}
+	var handler *IMMessageHandler
+	if hub := a.hubClient(); hub != nil {
+		handler = hub.currentIMHandler()
+	}
+	if handler == nil {
+		handler = a.imHandler
+	}
+	if handler == nil || handler.memory == nil {
+		return
+	}
+	owner := expertSessionUserID(builtinLatexExpertID)
+	handler.memory.Save(owner, entries)
+}
+
+func conversationEntriesFromTabSnapshot(conversation []interface{}) []agent.ConversationEntry {
+	if len(conversation) == 0 {
+		return nil
+	}
+	entries := make([]agent.ConversationEntry, 0, len(conversation))
+	for _, raw := range conversation {
+		data, err := json.Marshal(raw)
+		if err != nil {
+			continue
+		}
+		var entry agent.ConversationEntry
+		if json.Unmarshal(data, &entry) != nil {
+			continue
+		}
+		role := strings.ToLower(strings.TrimSpace(entry.Role))
+		switch role {
+		case "user", "assistant", "system", "tool":
+		default:
+			continue
+		}
+		if strings.TrimSpace(stringifyProjectConversationContent(entry.Content)) == "" &&
+			strings.TrimSpace(entry.ReasoningContent) == "" && entry.ToolCalls == nil {
+			continue
+		}
+		entry.Role = role
+		entries = append(entries, entry)
+	}
+	return entries
+}
+
+func (a *App) removeFreshLatexTaskRecord(projectPath string) error {
+	// The new row was flushed asynchronously. Wait until that copy is on disk,
+	// then delete and flush again so a late write cannot resurrect it.
+	taskAsyncFlushWG.Wait()
+	expertTaskMu.Lock()
+	tasks := a.orderedVisibleLatexExpertTasks()
+	if len(tasks) == 0 || normalizeProjectSessionPath(tasks[0].ProjectPath) != projectPath {
+		expertTaskMu.Unlock()
+		return fmt.Errorf("latex task is no longer the unopened paper")
+	}
+	expertTaskMu.Unlock()
+	a.ensureMemoryStore()
+	if a.memoryStore != nil {
+		if _, err := a.memoryStore.DeleteProjectEntries(projectPath); err != nil {
+			return err
+		}
+		if err := a.memoryStore.Flush(); err != nil {
+			log.Printf("[latex] flush abandoned paper deletion project=%q err=%v", projectPath, err)
+		}
+	}
+	if _, err := a.ensureProjectTabSessionPersist().DeleteProjectSessions(projectPath); err != nil {
+		log.Printf("[latex] drop abandoned paper sessions project=%q err=%v", projectPath, err)
+	}
+	if a.isManagedRecentTaskWorkspacePath(projectPath) {
+		if err := os.RemoveAll(projectPath); err != nil {
+			return err
+		}
+	}
+	a.emitProjectIndexChanged(projectPath)
+	a.emitProjectTaskDeleted(projectPath)
+	return nil
+}
+
+// newestVisibleExpertTask returns the resumable expert row. Non-LaTeX experts
+// keep the historical first match (there is only one). LaTeX returns the
+// newest paper so a later wizard launch stays the live session.
+func (a *App) newestVisibleExpertTask(pi *memory.ProjectIndex, sourceTag string, pickNewest bool) (memory.ProjectRecord, bool) {
+	if a == nil || pi == nil {
+		return memory.ProjectRecord{}, false
+	}
+	var best memory.ProjectRecord
+	found := false
+	var copyFallback memory.ProjectRecord
+	haveCopy := false
+	for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
+		return projectRecordHasTag(candidate, taskManagementTag) && projectRecordHasTag(candidate, sourceTag)
+	}) {
+		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
+			continue
+		}
+		// A copy must not replace the expert row the launcher resumes.
+		// Fall back to it only when the original row is gone.
+		if projectRecordHasTag(rec, taskCopyTag) {
+			if !haveCopy || (pickNewest && latexExpertRecordIsNewer(rec, copyFallback)) {
+				copyFallback = rec
+				haveCopy = true
+			}
+			continue
+		}
+		if !pickNewest {
+			return rec, true
+		}
+		if !found || latexExpertRecordIsNewer(rec, best) {
+			best = rec
+			found = true
+		}
+	}
+	if found {
+		return best, true
+	}
+	if haveCopy {
+		return copyFallback, true
+	}
+	return memory.ProjectRecord{}, false
+}
+
+func latexExpertRecordIsNewer(candidate, current memory.ProjectRecord) bool {
+	if candidate.CreatedAt.After(current.CreatedAt) {
+		return true
+	}
+	if current.CreatedAt.After(candidate.CreatedAt) {
+		return false
+	}
+	return expertTaskPathSeq(candidate.ProjectPath) > expertTaskPathSeq(current.ProjectPath)
+}
+
+func expertTaskPathSeq(path string) int64 {
+	base := filepath.Base(strings.TrimSpace(path))
+	i := strings.LastIndex(base, "-")
+	if i < 0 || i+1 >= len(base) {
+		return 0
+	}
+	n, err := strconv.ParseInt(base[i+1:], 10, 64)
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func (a *App) insertExpertTaskRecord(expertID, expertName, workingDir string) ProjectSearchResult {
+	title := strings.TrimSpace(expertName)
+	if title == "" {
+		if def := loadExpertDefByID(expertID); def != nil {
+			title = strings.TrimSpace(def.Name)
+		}
+	}
+	if title == "" {
+		title = expertID
+	}
+	content := fmt.Sprintf("# %s\n\nAI expert task. Reopen this task to continue working with expert: %s.", recentTaskDisplayTitle(title), expertID)
+	sourceTag := taskSourceExpertPrefix + expertID
+	return a.createTaskRecordWithWorkingDir(title, content, []string{
+		taskManagementTag,
+		taskUserCreatedTag,
+		sourceTag,
+	}, workingDir, false)
+}
+
+// EnsureAssistantTabTask creates (or returns) the task-management entry for a
+// non-main AI assistant tab. It is deliberately the backend authority for this
+// invariant so every UI entry point can use the same idempotent registration.
+//
+// If projectPath already identifies a visible task, that task is reused for
+// ordinary project/coding tabs. Group discussions keep their own durable
+// sidebar entry. A digital-employee chat does not: opening or messaging a VE
+// must not mint a same-named local chat task. ACP connections are not a
+// task-list identity either: the editor cwd is not reused, and after the user
+// deletes the VS Code / ACP row this method returns empty so a reconnect
+// cannot resurrect it.
+func (a *App) EnsureAssistantTabTask(tabType, tabIdentity, title, projectPath string) ProjectSearchResult {
+	tabType = strings.ToLower(strings.TrimSpace(tabType))
+	tabIdentity = canonicalAssistantTabIdentity(tabType, tabIdentity)
+	if tabType == "" || tabIdentity == "" || tabType == assistantTabVEType {
+		return ProjectSearchResult{}
+	}
+	for _, r := range tabType {
+		if !(r >= 'a' && r <= 'z') && !(r >= '0' && r <= '9') && r != '-' && r != '_' {
+			return ProjectSearchResult{}
+		}
+	}
+
+	projectPath = normalizeProjectSessionPath(projectPath)
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ProjectSearchResult{}
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return ProjectSearchResult{}
+	}
+	if assistantTabTypeDismissed(pi, tabType) {
+		return ProjectSearchResult{}
+	}
+	if tabType != assistantTabACPType && projectPath != "" {
+		if rec := pi.Get(projectPath); rec != nil && isTaskManagementRecord(*rec) && !pi.IsHidden(projectPath) && !pi.IsArchived(projectPath) {
+			return a.projectRecordToSearchResult(pi, *rec)
+		}
+	}
+
+	// One lock covers lookup and creation, preventing duplicate records when
+	// simultaneous UI events ask to open the same secondary assistant tab.
+	assistantTabTaskMu.Lock()
+	defer assistantTabTaskMu.Unlock()
+	if assistantTabTypeDismissed(pi, tabType) {
+		return ProjectSearchResult{}
+	}
+	sourceTag := assistantTabSourceTag(tabType, tabIdentity)
+	for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
+		return projectRecordHasTag(candidate, taskManagementTag) && isAssistantTabSourceTagMatch(candidate.Tags, tabType, sourceTag)
+	}) {
+		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
+			continue
+		}
+		return a.projectRecordToSearchResult(pi, rec)
+	}
+
+	title = normalizeRecentTaskName(title)
+	if title == "" {
+		title = "AI assistant"
+	}
+	// Do not persist the raw external tab identity in task.md: it may originate
+	// from a remote client and the durable source tag above already provides the
+	// opaque idempotency key we need.
+	content := fmt.Sprintf("# %s\n\nSecondary AI assistant tab.\nType: %s", recentTaskDisplayTitle(title), tabType)
+	return a.createTaskRecordWithWorkingDir(title, content, []string{
+		taskManagementTag,
+		taskUserCreatedTag,
+		sourceTag,
+	}, "", false)
+}
+
+func canonicalAssistantTabIdentity(tabType, tabIdentity string) string {
+	tabIdentity = strings.TrimSpace(tabIdentity)
+	if tabType == assistantTabACPType {
+		return assistantTabACPIdentity
+	}
+	return tabIdentity
+}
+
+func assistantTabSourceTag(tabType, tabIdentity string) string {
+	tabIdentity = canonicalAssistantTabIdentity(tabType, tabIdentity)
+	digest := sha256.Sum256([]byte(tabType + "\x00" + tabIdentity))
+	return fmt.Sprintf("%s%s:%x", taskSourceAssistantTabPrefix, tabType, digest[:12])
+}
+
+func assistantTabTypeFromTags(tags []string) string {
+	prefix := taskSourceAssistantTabPrefix
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if !strings.HasPrefix(tag, prefix) {
+			continue
+		}
+		rest := strings.TrimPrefix(tag, prefix)
+		if i := strings.IndexByte(rest, ':'); i > 0 {
+			return strings.ToLower(strings.TrimSpace(rest[:i]))
+		}
+	}
+	return ""
+}
+
+func isAssistantTabSourceTagMatch(tags []string, tabType, sourceTag string) bool {
+	if projectRecordHasTag(memory.ProjectRecord{Tags: tags}, sourceTag) {
+		return true
+	}
+	// Pre-stable ACP rows hashed a per-session id. Treat any assistant_tab:acp:*
+	// tag as the same sidebar identity so a reconnect reuses (or honors delete
+	// of) the existing VS Code / ACP row instead of minting another clone.
+	if tabType == assistantTabACPType {
+		return assistantTabTypeFromTags(tags) == assistantTabACPType
+	}
+	return false
+}
+
+func assistantTabDismissSentinel(tabType string) string {
+	if tabType == assistantTabACPType {
+		return assistantTabACPDismissSentinel
+	}
+	return ""
+}
+
+func assistantTabTypeDismissed(pi *memory.ProjectIndex, tabType string) bool {
+	if pi == nil {
+		return false
+	}
+	sentinel := assistantTabDismissSentinel(tabType)
+	return sentinel != "" && pi.IsHidden(sentinel)
+}
+
+func (a *App) dismissAssistantTabType(tabType string) {
+	sentinel := assistantTabDismissSentinel(tabType)
+	if sentinel == "" {
+		return
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return
+	}
+	pi.SetHidden(sentinel, true)
+}
+
+func isAutoACPAssistantTabDirName(projectPath string) bool {
+	return strings.EqualFold(stripTaskDirTimestampSuffix(lastPathComponent(projectPath)), "vs-code-acp")
+}
+
+func isAutoACPAssistantTabContent(content string) bool {
+	lower := strings.ToLower(content)
+	if !strings.Contains(lower, "secondary ai assistant tab.") {
+		return false
+	}
+	for _, line := range strings.Split(lower, "\n") {
+		if strings.TrimSpace(line) == "type: acp" {
+			return true
+		}
+	}
+	return false
+}
+
+func isAutoACPAssistantTabTask(projectPath, content string) bool {
+	if strings.TrimSpace(content) != "" {
+		return isAutoACPAssistantTabContent(content)
+	}
+	return isAutoACPAssistantTabDirName(projectPath)
+}
+
+func isAutoACPAssistantTabRecord(rec memory.ProjectRecord) bool {
+	if assistantTabTypeFromTags(rec.Tags) == assistantTabACPType {
+		return true
+	}
+	if !isAutoACPAssistantTabDirName(rec.ProjectPath) {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(rec.Name), "VS Code / ACP")
+}
+
+func isVEAssistantTabContent(content string) bool {
+	lower := strings.ToLower(content)
+	if !strings.Contains(lower, "secondary ai assistant tab.") {
+		return false
+	}
+	for _, line := range strings.Split(lower, "\n") {
+		if strings.TrimSpace(line) == "type: ve" {
+			return true
+		}
+	}
+	return false
+}
+
+func isVEAssistantTabRecord(rec memory.ProjectRecord) bool {
+	return assistantTabTypeFromTags(rec.Tags) == assistantTabVEType
+}
+
+// omittedFromTaskSidebar reports rows that must not appear as local tasks:
+// VS Code / ACP mirrors and digital-employee chats.
+func omittedFromTaskSidebar(rec memory.ProjectRecord) bool {
+	return isAutoACPAssistantTabRecord(rec) || isVEAssistantTabRecord(rec)
+}
+
+// reconcileDismissedACPAssistantTabTasks drops leftover VS Code / ACP rows so a
+// later GUI start cannot list a clone that was never dismissed by DeleteTask.
+func (a *App) reconcileDismissedACPAssistantTabTasks() {
+	if a == nil || a.memoryStore == nil {
+		return
+	}
+	a.purgeAutoACPAssistantTabTasks("")
+}
+
+// sanitizeTaskMetadataTagValue strips characters that break multi-line or
+// control-bearing tag values. Colons are kept: remote_* tags are parsed via
+// fixed prefixes (TrimPrefix), so IPv6 hosts and Windows-style paths remain valid.
+func sanitizeTaskMetadataTagValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	value = strings.ReplaceAll(value, "\n", " ")
+	value = strings.ReplaceAll(value, "\r", " ")
+	value = strings.Map(func(r rune) rune {
+		if r < 32 {
+			return -1
+		}
+		return r
+	}, value)
+	return strings.TrimSpace(value)
+}
+
+// normalizeSSHHostInput trims/sanitizes host and unwraps [IPv6] bracket form
+// so tags and SSH connect share the same host string.
+func normalizeSSHHostInput(host string) string {
+	host = sanitizeTaskMetadataTagValue(host)
+	if len(host) >= 2 && host[0] == '[' && host[len(host)-1] == ']' {
+		return strings.TrimSpace(host[1 : len(host)-1])
+	}
+	return host
+}
+
+// looksLikeAbsoluteProjectPathTag reports local absolute paths used as task-dir
+// identity tags (not remote_host:/remote_workdir: meta).
+func looksLikeAbsoluteProjectPathTag(tag string) bool {
+	tag = strings.TrimSpace(tag)
+	if tag == "" || isRemoteCodingMetaTag(tag) {
+		return false
+	}
+	if strings.HasPrefix(tag, "/") {
+		return true
+	}
+	// Windows drive path: D:\… or D:/…
+	if len(tag) >= 3 && tag[1] == ':' && (tag[2] == '\\' || tag[2] == '/') {
+		return true
+	}
+	return false
+}
+
+// shouldKeepTaskTagOnRemoteMetaUpdate limits which project-index tags are copied
+// onto the task artifact during SSH meta edit. Index tags are a union across
+// entries; copying everything would pollute the task row with sediment/output tags.
+func shouldKeepTaskTagOnRemoteMetaUpdate(tag string) bool {
+	tag = strings.TrimSpace(tag)
+	if tag == "" || isRemoteCodingMetaTag(tag) {
+		return false
+	}
+	switch tag {
+	case taskLegacyManualTag, taskLegacyRecentTag,
+		taskManagementTag, taskUserCreatedTag, taskUserSavedTag,
+		taskRemoteCodingDevTag, taskCodingDevTag, taskSavedConversationTag:
+		return true
+	}
+	if strings.HasPrefix(tag, recentTaskWorkingDirTagPrefix) ||
+		strings.HasPrefix(tag, taskSourceTagPrefix) {
+		return true
+	}
+	return looksLikeAbsoluteProjectPathTag(tag)
+}
+
+// RemoteCodingTaskMeta is non-sensitive SSH metadata for a remote pure-coding task.
+// Password is never stored or returned.
+type RemoteCodingTaskMeta struct {
+	Host    string `json:"host"`
+	User    string `json:"user"`
+	Port    int    `json:"port"`
+	WorkDir string `json:"work_dir"`
+}
+
+// GetRemoteCodingTaskMeta returns host/user/port/workdir tags for a remote coding task.
+func (a *App) GetRemoteCodingTaskMeta(projectPath string) (RemoteCodingTaskMeta, error) {
+	meta := RemoteCodingTaskMeta{Port: 22}
+	if a == nil {
+		return meta, fmt.Errorf("app unavailable")
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return meta, fmt.Errorf("project path is required")
+	}
+	a.ensureMemoryStore()
+	host, user, workDir, port := a.remoteCodingMetaFromTaskTags(projectPath)
+	// Sticky fallback only when index tags are entirely missing (e.g. race before
+	// index rebuild). Use existing hub only — do not cold-init for a read.
+	if host == "" && user == "" && workDir == "" {
+		if hub := a.hubClient(); hub != nil {
+			if handler := hub.ensureIMHandler(); handler != nil {
+				mem := handler.getStickyCodingWorkbenchMemory(projectSessionOwnerID(projectPath))
+				host = strings.TrimSpace(mem.RemoteHost)
+				user = strings.TrimSpace(mem.RemoteUser)
+				workDir = strings.TrimSpace(mem.RemoteWorkDir)
+				if workDir == "" {
+					workDir = strings.TrimSpace(mem.RemoteProjectDir)
+				}
+				if port <= 0 && mem.RemotePort > 0 {
+					port = mem.RemotePort
+				}
+			}
+		}
+	}
+	if port <= 0 {
+		port = 22
+	}
+	meta.Host = host
+	meta.User = user
+	meta.Port = port
+	meta.WorkDir = workDir
+	return meta, nil
+}
+
+// remoteCodingMetaTagPrefixes are SSH metadata tags that must be replaced (not
+// unioned) when updating a remote coding task.
+var remoteCodingMetaTagPrefixes = []string{
+	taskRemoteHostTagPrefix,
+	taskRemoteUserTagPrefix,
+	taskRemotePortTagPrefix,
+	taskRemoteWorkDirTagPrefix,
+}
+
+func isRemoteCodingMetaTag(tag string) bool {
+	for _, p := range remoteCodingMetaTagPrefixes {
+		if p != "" && strings.HasPrefix(tag, p) {
+			return true
+		}
+	}
+	return false
+}
+
+func buildRemoteCodingMetaTags(host, user, workDir string, port int) []string {
+	if port <= 0 || port >= 65536 {
+		port = 22
+	}
+	return []string{
+		taskRemoteHostTagPrefix + host,
+		taskRemoteUserTagPrefix + user,
+		fmt.Sprintf("%s%d", taskRemotePortTagPrefix, port),
+		taskRemoteWorkDirTagPrefix + workDir,
+	}
+}
+
+// taskArtifactIdentityPath picks the exact path tag form stored on the record
+// so Upsert identity tags match the original createTaskRecord tags even when
+// callers pass a slash-normalized project path.
+func taskArtifactIdentityPath(projectPath string, tags []string) string {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return projectPath
+	}
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if !looksLikeAbsoluteProjectPathTag(tag) {
+			continue
+		}
+		if normalizeProjectSessionPath(tag) == projectPath {
+			return tag
+		}
+	}
+	return projectPath
+}
+
+// mergeTagsReplacePrefixed returns desired tags first, then any existing tags
+// that are not already present and do not match dropPrefixes. Used so remote
+// meta keys (remote_host:/remote_workdir:…) are replaced instead of unioned —
+// default mergeTags would keep both and alphabetical order can surface stale values.
+func mergeTagsReplacePrefixed(existing, desired []string, dropPrefixes []string) []string {
+	isDropped := func(tag string) bool {
+		for _, p := range dropPrefixes {
+			if p != "" && strings.HasPrefix(tag, p) {
+				return true
+			}
+		}
+		return false
+	}
+	out := make([]string, 0, len(desired)+len(existing))
+	seen := make(map[string]struct{}, len(desired)+len(existing))
+	for _, t := range desired {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	for _, t := range existing {
+		t = strings.TrimSpace(t)
+		if t == "" || isDropped(t) {
+			continue
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	return out
+}
+
+// upsertRemoteWorkDirContentLine updates or appends "Remote work directory: …"
+// without wiping the rest of task.md / artifact content.
+func upsertRemoteWorkDirContentLine(content, workDir string) string {
+	workDir = strings.TrimSpace(workDir)
+	const prefix = "Remote work directory:"
+	if content == "" {
+		if workDir == "" {
+			return ""
+		}
+		return prefix + " " + workDir + "\n"
+	}
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), prefix) {
+			lines[i] = prefix + " " + workDir
+			return strings.Join(lines, "\n")
+		}
+	}
+	trimmed := strings.TrimRight(content, "\n")
+	return trimmed + "\n\n" + prefix + " " + workDir + "\n"
+}
+
+// UpdateRemoteCodingTaskMeta updates non-sensitive SSH metadata tags on a remote
+// coding task. Password is never persisted; use TestRemoteSSHConnection / PrepareRemoteCodingEnvironment.
+func (a *App) UpdateRemoteCodingTaskMeta(projectPath, sshHost, sshUser, workDir string, sshPort int) error {
+	// Coordinate direct metadata edits with create/reuse so a task cannot be
+	// retargeted while another request is resolving the same remote project.
+	remoteCodingTaskMu.Lock()
+	defer remoteCodingTaskMu.Unlock()
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if existing := a.FindRemoteCodingTaskByMeta(sshHost, sshUser, workDir); strings.TrimSpace(existing.ProjectPath) != "" && normalizeProjectSessionPath(existing.ProjectPath) != projectPath {
+		return fmt.Errorf("remote project is already assigned to task: %s", existing.ProjectPath)
+	}
+	return a.updateRemoteCodingTaskMeta(projectPath, sshHost, sshUser, workDir, sshPort)
+}
+
+func (a *App) updateRemoteCodingTaskMeta(projectPath, sshHost, sshUser, workDir string, sshPort int, extraTags ...string) error {
+	if a == nil {
+		return fmt.Errorf("app unavailable")
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return fmt.Errorf("project path is required")
+	}
+	host := normalizeSSHHostInput(sshHost)
+	user := sanitizeTaskMetadataTagValue(sshUser)
+	// Workdir keeps path separators and colons; strip control/newlines only.
+	remoteWorkDir := sanitizeTaskMetadataTagValue(workDir)
+	if host == "" || user == "" || remoteWorkDir == "" {
+		return fmt.Errorf("主机、用户名和远程工作目录均为必填")
+	}
+	if sshPort <= 0 || sshPort >= 65536 {
+		sshPort = 22
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return fmt.Errorf("memory store unavailable")
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return fmt.Errorf("project index unavailable")
+	}
+	rec := pi.Get(projectPath)
+	if rec == nil {
+		return fmt.Errorf("task not found: %s", projectPath)
+	}
+	if codingModeForProjectRecord(*rec) != taskRemoteCodingDevTag {
+		return fmt.Errorf("not a remote coding task")
+	}
+
+	// Identity must match createTaskRecordWithWorkingDir: manual + recent + taskDir.
+	// Prefer the exact path tag form already on the record (slash variants).
+	identityPath := taskArtifactIdentityPath(projectPath, rec.Tags)
+	identity := []string{taskLegacyManualTag, taskLegacyRecentTag, identityPath}
+	newRemoteTags := buildRemoteCodingMetaTags(host, user, remoteWorkDir, sshPort)
+	updatedTags := append([]string(nil), identity...)
+	seen := map[string]struct{}{identity[0]: {}, identity[1]: {}, identity[2]: {}}
+	for _, tag := range rec.Tags {
+		tag = strings.TrimSpace(tag)
+		if !shouldKeepTaskTagOnRemoteMetaUpdate(tag) {
+			continue
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		updatedTags = append(updatedTags, tag)
+	}
+	if _, ok := seen[taskRemoteCodingDevTag]; !ok {
+		updatedTags = append(updatedTags, taskRemoteCodingDevTag)
+		seen[taskRemoteCodingDevTag] = struct{}{}
+	}
+	for _, tag := range extraTags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || !shouldKeepTaskTagOnRemoteMetaUpdate(tag) {
+			continue
+		}
+		if _, ok := seen[tag]; ok {
+			continue
+		}
+		seen[tag] = struct{}{}
+		updatedTags = append(updatedTags, tag)
+	}
+	for _, t := range newRemoteTags {
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		updatedTags = append(updatedTags, t)
+	}
+
+	// Preserve existing task.md body; only refresh the remote workdir line.
+	taskFile := filepath.Join(projectPath, "task.md")
+	content := ""
+	if data, err := os.ReadFile(taskFile); err == nil {
+		content = string(data)
+	}
+	if strings.TrimSpace(content) == "" {
+		title := strings.TrimSpace(rec.Name)
+		if title == "" {
+			title = "remote coding task"
+		}
+		content = fmt.Sprintf("# %s\n\nCreated from task management.\n", title)
+	}
+	content = upsertRemoteWorkDirContentLine(content, remoteWorkDir)
+	sourceURL := taskFile
+	if _, err := os.Stat(sourceURL); err != nil {
+		sourceURL = projectPath
+	}
+	title := strings.TrimSpace(rec.Name)
+	if title == "" {
+		title = "remote coding task"
+	}
+	_, err := a.memoryStore.UpsertTaskArtifact(memory.TaskArtifactUpsertOptions{
+		Title:            title,
+		Content:          content,
+		Tags:             updatedTags,
+		IdentityTagCount: 3,
+		SourceURL:        sourceURL,
+		SourceType:       "manual",
+		MergeExistingTags: func(existing, desired []string) []string {
+			// Desired tags already contain the preserved task-origin tags plus any
+			// supplied origin marker (for example remote_ops_diagnosis). Keep the
+			// desired set authoritative while only replacing remote meta prefixes.
+			return mergeTagsReplacePrefixed(existing, desired, remoteCodingMetaTagPrefixes)
+		},
+	})
+	if err != nil {
+		return err
+	}
+	// Persist task.md only after the memory index accepted the update, so a
+	// failed Upsert cannot leave disk ahead of the task record.
+	if err := os.WriteFile(taskFile, []byte(content), 0o644); err != nil {
+		log.Printf("[project_search] UpdateRemoteCodingTaskMeta write task.md failed: %v", err)
+	}
+	flushErr := a.memoryStore.Flush()
+	// ProjectIndex.IndexEntry only merge-appends tags, and store updates rebuild it
+	// asynchronously. Apply the complete task tag set now so an immediate reopen
+	// sees both updated SSH metadata and any added diagnosis-origin marker.
+	pi.ReplacePrefixedTags(projectPath, remoteCodingMetaTagPrefixes, updatedTags)
+	a.emitProjectIndexChanged(projectPath)
+	// Best-effort sticky mirror for open sessions — do not cold-init hub for a
+	// metadata edit when no assistant session is loaded. Drop RemoteSessionID
+	// when coordinates change so reconnect uses the new host/user/port/workdir.
+	if hubClient := a.hubClient(); hubClient != nil {
+		if handler := hubClient.ensureIMHandler(); handler != nil {
+			userID := projectSessionOwnerID(projectPath)
+			handler.updateStickyCodingWorkbenchMemory(userID, func(mem *stickyCodingWorkbenchMemory) {
+				if mem.Kind != "" && mem.Kind != "remote" {
+					return
+				}
+				// Invalidate live SSH session only when known sticky coords change.
+				if sid := strings.TrimSpace(mem.RemoteSessionID); sid != "" {
+					if (mem.RemoteHost != "" && mem.RemoteHost != host) ||
+						(mem.RemoteUser != "" && mem.RemoteUser != user) ||
+						(mem.RemotePort > 0 && mem.RemotePort != sshPort) ||
+						(mem.RemoteWorkDir != "" && mem.RemoteWorkDir != remoteWorkDir) {
+						mem.RemoteSessionID = ""
+					}
+				}
+				mem.Kind = "remote"
+				mem.RemoteHost = host
+				mem.RemoteUser = user
+				mem.RemotePort = sshPort
+				mem.RemoteWorkDir = remoteWorkDir
+				mem.RemoteProjectDir = remoteWorkDir
+			})
+		}
+	}
+	return flushErr
+}
+
+// TestRemoteSSHConnection verifies SSH credentials and that workDir exists on the host.
+// Password is used only for this call and is not persisted.
+// Returns a short success message or an error.
+func (a *App) TestRemoteSSHConnection(sshHost, sshUser, sshPassword, workDir string, sshPort int) (string, error) {
+	if a == nil {
+		return "", fmt.Errorf("app unavailable")
+	}
+	host := normalizeSSHHostInput(sshHost)
+	user := sanitizeTaskMetadataTagValue(sshUser)
+	password := strings.TrimSpace(sshPassword)
+	remoteWorkDir := sanitizeTaskMetadataTagValue(workDir)
+	if host == "" || user == "" || password == "" {
+		return "", fmt.Errorf("主机、用户名和密码均为必填")
+	}
+	if sshPort <= 0 || sshPort >= 65536 {
+		sshPort = 22
+	}
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		return "", fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil {
+		return "", fmt.Errorf("message handler unavailable")
+	}
+	if handler.ensureSSHManager() == nil {
+		return "", fmt.Errorf("SSH 会话管理器不可用")
+	}
+	sessionID, failReason := handler.findOrCreateSSHSessionWithAuth(user, host, sshPort, password, "", "")
+	if sessionID == "" {
+		return "", errors.New(sshConnectFailureMessage(user, host, sshPort, failReason))
+	}
+	// Optional workdir existence check (non-fatal for empty workDir).
+	if remoteWorkDir != "" {
+		cmd := fmt.Sprintf(
+			`if [ -d %s ]; then echo __MACLAW_DIR_OK__; elif [ -e %s ]; then echo __MACLAW_NOT_DIR__; else echo __MACLAW_DIR_MISS__; fi`,
+			remoteShellQuote(remoteWorkDir), remoteShellQuote(remoteWorkDir),
+		)
+		out := strings.TrimSpace(handler.sshExec(map[string]interface{}{
+			"session_id":   sessionID,
+			"command":      cmd,
+			"wait_seconds": float64(15),
+		}))
+		if strings.Contains(out, "__MACLAW_DIR_MISS__") {
+			return "", fmt.Errorf("SSH 已连通，但工作目录不存在: %s", remoteWorkDir)
+		}
+		if strings.Contains(out, "__MACLAW_NOT_DIR__") {
+			return "", fmt.Errorf("SSH 已连通，但路径不是目录: %s", remoteWorkDir)
+		}
+		if !strings.Contains(out, "__MACLAW_DIR_OK__") {
+			// Soft-warn: connection works but dir check inconclusive.
+			return fmt.Sprintf("SSH 已连通 %s@%s:%d（工作目录检查未确认）", user, host, sshPort), nil
+		}
+	}
+	return fmt.Sprintf("SSH 连接成功：%s@%s:%d", user, host, sshPort), nil
+}
+
+// normalizeRemoteWorkDirKey normalizes remote workdirs for equality checks.
+func normalizeRemoteWorkDirKey(workDir string) string {
+	workDir = sanitizeTaskMetadataTagValue(workDir)
+	if workDir == "" {
+		return ""
+	}
+	// Remote workdirs are POSIX paths. Normalize redundant separators and dot
+	// segments so /srv/app, /srv//app/, and /srv/app/./ cannot create separate
+	// task records for one remote project. Keep relative paths intact rather
+	// than applying filepath.Clean, which would use the desktop OS semantics.
+	if strings.HasPrefix(workDir, "/") {
+		workDir = path.Clean(workDir)
+		if workDir == "." {
+			return "/"
+		}
+		return workDir
+	}
+	// A legacy Windows-style remote path is normalized conservatively: only
+	// trailing separators are irrelevant to the task identity.
+	workDir = strings.TrimRight(workDir, "/\\")
+	return workDir
+}
+
+// FindRemoteCodingTaskByMeta returns the most recent active remote_coding_dev
+// task whose non-secret SSH tags match host+user+workdir. Port is ignored for
+// matching so reconnects after port changes still merge. Empty result if none.
+func (a *App) FindRemoteCodingTaskByMeta(sshHost, sshUser, workDir string) ProjectSearchResult {
+	if a == nil {
+		return ProjectSearchResult{}
+	}
+	host := normalizeSSHHostInput(sshHost)
+	user := sanitizeTaskMetadataTagValue(sshUser)
+	wantWD := normalizeRemoteWorkDirKey(workDir)
+	if host == "" || user == "" || wantWD == "" {
+		return ProjectSearchResult{}
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ProjectSearchResult{}
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return ProjectSearchResult{}
+	}
+	// Hidden and archived records are closed tasks. In particular, older builds
+	// implemented Remove as HideTask, so ignoring those records lets a shortcut
+	// start a fresh task instead of reopening a closed one.
+	// NOTE: the predicate runs under the index read lock, so it must not call
+	// pi.IsHidden/IsArchived (a pending writer would deadlock the nested
+	// RLock). Filter visibility after the locked scan instead.
+	records := pi.ListAllMatching(func(rec memory.ProjectRecord) bool {
+		return projectRecordHasTagLike(rec.Tags, taskRemoteCodingDevTag) &&
+			remoteCodingMetaMatchesTags(rec.Tags, host, user, wantWD)
+	})
+	for _, rec := range records {
+		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
+			continue
+		}
+		return a.projectRecordToSearchResult(pi, rec)
+	}
+	return ProjectSearchResult{}
+}
+
+func remoteCodingMetaMatchesTags(tags []string, wantHost, wantUser, wantWorkDir string) bool {
+	var host, user, workDir string
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		switch {
+		case strings.HasPrefix(tag, taskRemoteHostTagPrefix):
+			host = strings.TrimSpace(strings.TrimPrefix(tag, taskRemoteHostTagPrefix))
+		case strings.HasPrefix(tag, taskRemoteUserTagPrefix):
+			user = strings.TrimSpace(strings.TrimPrefix(tag, taskRemoteUserTagPrefix))
+		case strings.HasPrefix(tag, taskRemoteWorkDirTagPrefix):
+			workDir = strings.TrimSpace(strings.TrimPrefix(tag, taskRemoteWorkDirTagPrefix))
+		}
+	}
+	return strings.EqualFold(normalizeSSHHostInput(host), wantHost) &&
+		// SSH usernames are case-sensitive on Unix-like servers. Treating them
+		// case-insensitively can merge distinct accounts with different project
+		// permissions into one task/tab.
+		sanitizeTaskMetadataTagValue(user) == wantUser &&
+		normalizeRemoteWorkDirKey(workDir) == wantWorkDir
+}
+
+// projectRecordHasTagLike reports whether tags contain exact tag (trimmed).
+func projectRecordHasTagLike(tags []string, want string) bool {
+	want = strings.TrimSpace(want)
+	for _, tag := range tags {
+		if strings.TrimSpace(tag) == want {
+			return true
+		}
+	}
+	return false
+}
+
+// CreateRemoteCodingTask creates a remote-coding task record with non-sensitive
+// SSH metadata tags (host/user/port/workdir). The password is never persisted;
+// call PrepareRemoteCodingEnvironment to connect and arm one-shot execution.
+// Note: keep this signature fixed-arity — Wails cannot bind variadic methods.
+func (a *App) CreateRemoteCodingTask(name, sshHost, sshUser, workDir string, sshPort int) ProjectSearchResult {
+	return a.createRemoteCodingTaskWithTags(name, sshHost, sshUser, workDir, sshPort)
+}
+
+// CreateRemoteOpsDiagnosisTask creates the same SSH-backed task record as
+// remote coding, while retaining its incident-diagnosis origin for auditing.
+func (a *App) CreateRemoteOpsDiagnosisTask(name, sshHost, sshUser, workDir string, sshPort int) ProjectSearchResult {
+	return a.createRemoteCodingTaskWithTags(name, sshHost, sshUser, workDir, sshPort, taskSourceRemoteOpsDiagnosisTag)
+}
+
+// findOrCreateRemoteCodingTask returns one task record per SSH target. The
+// caller must hold remoteCodingTaskMu. The boolean reports whether the record
+// was reused, which keeps protocol clients from doing an unlocked preflight
+// lookup just to produce UI feedback.
+func (a *App) findOrCreateRemoteCodingTask(name, sshHost, sshUser, workDir string, sshPort int, extraTags ...string) (ProjectSearchResult, bool) {
+	return a.findOrCreateRemoteCodingTaskKeepingName(name, sshHost, sshUser, workDir, sshPort, false, extraTags...)
+}
+
+// findOrCreateRemoteCodingTaskKeepingName is findOrCreateRemoteCodingTask.
+// keepExplicit retains a short user-typed title such as "继续". The caller
+// must hold remoteCodingTaskMu.
+func (a *App) findOrCreateRemoteCodingTaskKeepingName(name, sshHost, sshUser, workDir string, sshPort int, keepExplicit bool, extraTags ...string) (ProjectSearchResult, bool) {
+	taskName := taskNameForCreate(name, keepExplicit)
+	if taskName == "" {
+		return ProjectSearchResult{}, false
+	}
+	host := normalizeSSHHostInput(sshHost)
+	user := sanitizeTaskMetadataTagValue(sshUser)
+	remoteWorkDir := sanitizeTaskMetadataTagValue(workDir)
+	if host == "" || user == "" || remoteWorkDir == "" {
+		return ProjectSearchResult{}, false
+	}
+	if sshPort <= 0 || sshPort >= 65536 {
+		sshPort = 22
+	}
+
+	if existing := a.FindRemoteCodingTaskByMeta(host, user, remoteWorkDir); strings.TrimSpace(existing.ProjectPath) != "" {
+		if err := a.updateRemoteCodingTaskMeta(existing.ProjectPath, host, user, remoteWorkDir, sshPort, extraTags...); err != nil {
+			log.Printf("[remote-coding-task] refresh existing task metadata failed project=%s: %v", existing.ProjectPath, err)
+		}
+		return existing, true
+	}
+
+	tags := []string{
+		taskManagementTag,
+		taskUserCreatedTag,
+		taskRemoteCodingDevTag,
+	}
+	tags = append(tags, buildRemoteCodingMetaTags(host, user, remoteWorkDir, sshPort)...)
+	for _, t := range extraTags {
+		t = strings.TrimSpace(t)
+		if t != "" {
+			tags = append(tags, t)
+		}
+	}
+	return a.createTaskRecordWithWorkingDir(taskName, "", tags, "", false), false
+}
+
+// reconcileRemoteCodingTask keeps a workflow's preferred task when it can be
+// safely retargeted, but always favors a task that already owns the requested
+// SSH target. The caller must hold remoteCodingTaskMu.
+func (a *App) reconcileRemoteCodingTask(preferredProjectPath, name, sshHost, sshUser, workDir string, sshPort int, extraTags ...string) (ProjectSearchResult, bool) {
+	host := normalizeSSHHostInput(sshHost)
+	user := sanitizeTaskMetadataTagValue(sshUser)
+	remoteWorkDir := sanitizeTaskMetadataTagValue(workDir)
+	if host == "" || user == "" || remoteWorkDir == "" {
+		return ProjectSearchResult{}, false
+	}
+	if sshPort <= 0 || sshPort >= 65536 {
+		sshPort = 22
+	}
+
+	// Check the destination before retargeting the preferred record. Otherwise
+	// changing workflow A to an already-owned target B would leave A and B with
+	// identical remote metadata.
+	if target := a.FindRemoteCodingTaskByMeta(host, user, remoteWorkDir); strings.TrimSpace(target.ProjectPath) != "" {
+		if err := a.updateRemoteCodingTaskMeta(target.ProjectPath, host, user, remoteWorkDir, sshPort, extraTags...); err != nil {
+			log.Printf("[remote-coding-task] refresh target task metadata failed project=%s: %v", target.ProjectPath, err)
+		}
+		return target, true
+	}
+
+	preferredProjectPath = normalizeProjectSessionPath(preferredProjectPath)
+	if preferredProjectPath != "" {
+		if err := a.updateRemoteCodingTaskMeta(preferredProjectPath, host, user, remoteWorkDir, sshPort, extraTags...); err == nil {
+			return ProjectSearchResult{ID: preferredProjectPath, ProjectPath: preferredProjectPath}, false
+		}
+	}
+	return a.findOrCreateRemoteCodingTask(name, host, user, remoteWorkDir, sshPort, extraTags...)
+}
+
+// createRemoteCodingTaskWithTags is the internal variadic form; extraTags may
+// include origin markers such as source:coding_workflow.
+func (a *App) createRemoteCodingTaskWithTags(name, sshHost, sshUser, workDir string, sshPort int, extraTags ...string) ProjectSearchResult {
+	return a.createRemoteCodingTaskWithTagsKeepingName(name, sshHost, sshUser, workDir, sshPort, false, extraTags...)
+}
+
+func (a *App) createRemoteCodingTaskWithTagsKeepingName(name, sshHost, sshUser, workDir string, sshPort int, keepExplicit bool, extraTags ...string) ProjectSearchResult {
+	// Keep lookup + metadata refresh/create as one critical section. This helper
+	// is shared by desktop, workflow, Hub, and virtual-repository entry points,
+	// so guarding only the public Wails method would still leave duplicate paths.
+	remoteCodingTaskMu.Lock()
+	defer remoteCodingTaskMu.Unlock()
+	task, _ := a.findOrCreateRemoteCodingTaskKeepingName(name, sshHost, sshUser, workDir, sshPort, keepExplicit, extraTags...)
+	return task
+}
+
+// CreateRecentTaskWithWorkingDir creates a standalone task record with an
+// optional execution working directory.
+func (a *App) CreateRecentTaskWithWorkingDir(name, workingDir string) ProjectSearchResult {
+	return a.CreateTaskWithMode(name, workingDir, "")
+}
+
+// PrepareLocalCodingEnvironment arms a one-shot local CodingSubAgent execution
+// for the task project session. The next AI message on that project session
+// runs pure-coding SubAgent execution (with source preview file events).
+// executionDir is the directory tools should operate in; when empty, the
+// current working directory (top-bar / task working dir) is used.
+func (a *App) PrepareLocalCodingEnvironment(projectPath, executionDir string) error {
+	if a == nil {
+		return fmt.Errorf("app unavailable")
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return fmt.Errorf("project path is required")
+	}
+	execDir := normalizeRecentTaskWorkingDir(executionDir)
+	if execDir == "" || isLocalCodingIdentityOrSandbox(projectPath, execDir) {
+		execDir = a.codingWorkbenchLocalExecDirOrDesktop(projectPath)
+	}
+	if execDir == "" {
+		return fmt.Errorf("working directory is unavailable")
+	}
+
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		return fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil {
+		return fmt.Errorf("message handler unavailable")
+	}
+
+	userID := projectSessionOwnerID(projectPath)
+	handler.pendingTemplateRemoteCoding.Delete(userID)
+	handler.pendingV2SubAgentExecution.Store(userID, true)
+	handler.pendingTemplateCodingProjectPath.Store(userID, execDir)
+	handler.workflowAgentLoopMarker.Store(userID, true)
+	// Create-task pure coding: default workspace trust (path auto-allow; high-risk still prompts).
+	// Does not persist subagent_full_access to config.
+	handler.setStickyCodingSessionPermissionMode(userID, "workspace", "local", execDir)
+	// If input-box already has global full control, upgrade sticky to full.
+	handler.syncStickyCodingFullAccessFromGlobal(userID, "local", execDir, a.isSubAgentFullAccessGranted())
+	log.Printf("[local-coding-env] prepared project=%s execDir=%s session_full_access=true", projectPath, execDir)
+	return nil
+}
+
+// PrepareRemoteCodingEnvironment connects to the remote host over SSH and arms
+// a one-shot RemoteCodingSubAgent execution for the given task project path.
+// The next AI assistant message on that project session will run remote coding
+// with the right-hand source preview enabled (pure remote coding workbench).
+// A successful non-diagnosis connect also stores the password in the OS keyring
+// so the next reopen can reconnect without asking again. Diagnosis passwords
+// are not stored.
+func (a *App) PrepareRemoteCodingEnvironment(projectPath, sshHost, sshUser, sshPassword, workDir string, sshPort int) error {
+	return a.prepareRemoteCodingEnvironment(projectPath, sshHost, sshUser, sshPassword, workDir, sshPort, "")
+}
+
+// PrepareRemoteOpsDiagnosisEnvironment connects and arms a remote incident
+// investigation. The initial prompt is forced to an inquiry so a classifier
+// outage cannot grant write-capable tooling or bootstrap a directory.
+func (a *App) PrepareRemoteOpsDiagnosisEnvironment(projectPath, sshHost, sshUser, sshPassword, workDir string, sshPort int) error {
+	return a.prepareRemoteCodingEnvironmentWithRequestKind(projectPath, sshHost, sshUser, sshPassword, workDir, sshPort, "", codingRequestInquiry)
+}
+
+func (a *App) prepareRemoteCodingEnvironment(projectPath, sshHost, sshUser, sshPassword, workDir string, sshPort int, hostKeyFingerprint string) error {
+	return a.prepareRemoteCodingEnvironmentWithRequestKind(projectPath, sshHost, sshUser, sshPassword, workDir, sshPort, hostKeyFingerprint, "")
+}
+
+func (a *App) prepareRemoteCodingEnvironmentWithRequestKind(projectPath, sshHost, sshUser, sshPassword, workDir string, sshPort int, hostKeyFingerprint string, requestKind codingRequestKind) error {
+	if a == nil {
+		return fmt.Errorf("app unavailable")
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return fmt.Errorf("project path is required")
+	}
+	host := normalizeSSHHostInput(sshHost)
+	user := sanitizeTaskMetadataTagValue(sshUser)
+	password := strings.TrimSpace(sshPassword)
+	remoteWorkDir := sanitizeTaskMetadataTagValue(workDir)
+	if host == "" || user == "" || password == "" || remoteWorkDir == "" {
+		return fmt.Errorf("主机、用户名、密码和远程工作目录均为必填")
+	}
+	if sshPort <= 0 || sshPort >= 65536 {
+		sshPort = 22
+	}
+
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		return fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil {
+		return fmt.Errorf("message handler unavailable")
+	}
+	if handler.ensureSSHManager() == nil {
+		return fmt.Errorf("SSH 会话管理器不可用")
+	}
+
+	sessionID, failReason := handler.findOrCreateSSHSessionWithPinnedAuth(user, host, sshPort, password, "", "", strings.TrimSpace(hostKeyFingerprint))
+	if sessionID == "" {
+		return errors.New(sshConnectFailureMessage(user, host, sshPort, failReason))
+	}
+
+	userID := projectSessionOwnerID(projectPath)
+	handler.pendingTemplateCodingProjectPath.Delete(userID)
+	handler.pendingV2SubAgentExecution.Store(userID, true)
+	handler.pendingTemplateRemoteCoding.Store(userID, remoteCodingTemplateContext{
+		SessionID:           sessionID,
+		WorkDir:             remoteWorkDir,
+		ProjectDir:          remoteWorkDir,
+		RequestKind:         requestKind,
+		Maintenance:         requestKind == codingRequestInquiry,
+		ForceInitialInquiry: requestKind == codingRequestInquiry,
+	})
+	handler.workflowAgentLoopMarker.Store(userID, true)
+	// Same default workspace posture as local pure coding.
+	handler.setStickyCodingSessionPermissionMode(userID, "workspace", "remote", remoteWorkDir)
+	handler.syncStickyCodingFullAccessFromGlobal(userID, "remote", remoteWorkDir, a.isSubAgentFullAccessGranted())
+	handler.bindStickyRemoteCodingContext(userID, remoteCodingTemplateContext{
+		SessionID:   sessionID,
+		WorkDir:     remoteWorkDir,
+		ProjectDir:  remoteWorkDir,
+		RequestKind: requestKind,
+		Maintenance: requestKind == codingRequestInquiry,
+	}, host, user, sshPort)
+	// Remember the password that just authenticated. Diagnosis stays explicit.
+	// A keyring failure must not undo a live SSH session.
+	if shouldRememberRemoteSSHPassword(requestKind) {
+		if err := rememberRemoteSSHPassword(host, user, password, sshPort); err != nil {
+			log.Printf("[remote-coding-env] remember ssh password failed host=%s user=%s: %v", host, user, err)
+		}
+	}
+	log.Printf("[remote-coding-env] prepared project=%s session=%s host=%s@%s:%d workdir=%s session_full_access=true", projectPath, sessionID, user, host, sshPort, remoteWorkDir)
+	return nil
+}
+
+// CodingWorkbenchStatus describes pure-coding workbench arm/reconnect state for a task tab.
+type CodingWorkbenchStatus struct {
+	Kind                  string `json:"kind"` // "local" | "remote" | ""
+	Armed                 bool   `json:"armed"`
+	NeedsReconnect        bool   `json:"needs_reconnect"`
+	TurnCount             int    `json:"turn_count"`
+	SessionFullAccess     bool   `json:"session_full_access"`
+	SessionHighRiskAccess bool   `json:"session_high_risk_access"`
+	// PermissionMode is the effective input tier: request, workspace, or full.
+	// The command-grant hint needs it from the same snapshot as SessionHighRiskAccess.
+	PermissionMode string `json:"permission_mode"`
+	SessionPlan    string `json:"session_plan,omitempty"`
+	// ExecutionPlan is the latest multi-step auto plan (markdown T1/T2…).
+	ExecutionPlan string `json:"execution_plan,omitempty"`
+	// RequirementRestatement is the host-owned paraphrase of the current ask.
+	RequirementRestatement string `json:"requirement_restatement,omitempty"`
+	// PlanMode: auto | approve | off
+	PlanMode string `json:"plan_mode,omitempty"`
+	// PendingApproval is true when a multi-step plan awaits /plan approve.
+	PendingApproval bool `json:"pending_approval,omitempty"`
+	// StepStatuses is live Todo status for the active plan.
+	StepStatuses []codingWorkbenchStepStatus `json:"step_statuses,omitempty"`
+	// ProjectInstructions sources (AGENTS.md etc.).
+	ProjectInstructionSources []string `json:"project_instruction_sources,omitempty"`
+	// CheckpointLabel is the last saved checkpoint name.
+	CheckpointLabel string `json:"checkpoint_label,omitempty"`
+	// Session token/cost observability.
+	SessionInputTokens   int     `json:"session_input_tokens,omitempty"`
+	SessionOutputTokens  int     `json:"session_output_tokens,omitempty"`
+	SessionEstCostRMB    float64 `json:"session_est_cost_rmb,omitempty"`
+	LastTurnInputTokens  int     `json:"last_turn_input_tokens,omitempty"`
+	LastTurnOutputTokens int     `json:"last_turn_output_tokens,omitempty"`
+	LastTurnEstCostRMB   float64 `json:"last_turn_est_cost_rmb,omitempty"`
+	// BackgroundVerify holds last async /bg test result summary.
+	BackgroundVerify string `json:"background_verify,omitempty"`
+	// WorktreeMode: auto | always | off
+	WorktreeMode string `json:"worktree_mode,omitempty"`
+	// WorktreeNotes recent isolation/merge lines.
+	WorktreeNotes []string `json:"worktree_notes,omitempty"`
+	// ConflictCount is number of kept isolation trees after failed merges.
+	ConflictCount int `json:"conflict_count,omitempty"`
+	// Conflicts brief list for UI (id + step + path).
+	Conflicts []codingWorkbenchConflict `json:"conflicts,omitempty"`
+	// ConflictActiveID / ConflictSelected / ConflictFocusFile restore conflict panel UI.
+	ConflictActiveID  string   `json:"conflict_active_id,omitempty"`
+	ConflictSelected  []string `json:"conflict_selected,omitempty"`
+	ConflictFocusFile string   `json:"conflict_focus_file,omitempty"`
+	// ConflictLog recent adopt/keep/base/discard lines for UI/slash.
+	ConflictLog []string `json:"conflict_log,omitempty"`
+	// Last model route for pure-coding observability.
+	RouteModel  string `json:"route_model,omitempty"`
+	RouteSource string `json:"route_source,omitempty"`
+	RouteTask   string `json:"route_task,omitempty"`
+	RouteReason string `json:"route_reason,omitempty"`
+	// RoutePref: auto | primary | reasoning | vision
+	RoutePref string `json:"route_pref,omitempty"`
+	// RouteCapabilities maps each route pref to ModelRouter availability / model.
+	RouteCapabilities []codingRouteCapability `json:"route_capabilities,omitempty"`
+	// CheckpointFiles are paths recorded at the last checkpoint (for UI).
+	CheckpointFiles []string `json:"checkpoint_files,omitempty"`
+	// CheckpointSnapshots is count of restorable file content snapshots.
+	CheckpointSnapshots int `json:"checkpoint_snapshots,omitempty"`
+	// CheckpointHistory is current + prior checkpoints (current first).
+	CheckpointHistory []codingCheckpointListEntry `json:"checkpoint_history,omitempty"`
+	// HooksActive is true when .maclaw/hooks.json defines at least one command.
+	HooksActive bool `json:"hooks_active,omitempty"`
+	// HooksPhases lists lifecycle phases that have commands (pre_step, post_turn, …).
+	HooksPhases []string `json:"hooks_phases,omitempty"`
+	// HooksCommandCount is total non-empty hook commands across phases.
+	HooksCommandCount int `json:"hooks_command_count,omitempty"`
+	// HooksFailOnError mirrors hooks.json fail_on_error.
+	HooksFailOnError bool   `json:"hooks_fail_on_error,omitempty"`
+	LastSummary      string `json:"last_summary,omitempty"`
+	RemoteHost       string `json:"remote_host,omitempty"`
+	RemoteUser       string `json:"remote_user,omitempty"`
+	RemotePort       int    `json:"remote_port,omitempty"`
+	RemoteWorkDir    string `json:"remote_work_dir,omitempty"`
+	// RemoteSafety is retained by the task's durable origin tag so reconnects
+	// preserve the incident diagnosis's evidence-only first turn.
+	RemoteSafety    string `json:"remote_safety,omitempty"`
+	RemoteSessionID string `json:"remote_session_id,omitempty"`
+	Message         string `json:"message,omitempty"`
+}
+
+func (a *App) remoteCodingMetaFromTaskTags(projectPath string) (host, user, workDir string, port int) {
+	// Do not cold-init the memory store here: status/reconnect prefill can call
+	// this on every tab focus. Callers that need index tags (Ensure) already
+	// ensure the store before classification.
+	if a == nil || a.memoryStore == nil {
+		return "", "", "", 0
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return "", "", "", 0
+	}
+	rec := pi.Get(projectPath)
+	if rec == nil {
+		return "", "", "", 0
+	}
+	port = 22
+	for _, tag := range rec.Tags {
+		tag = strings.TrimSpace(tag)
+		switch {
+		case strings.HasPrefix(tag, taskRemoteHostTagPrefix):
+			host = strings.TrimSpace(strings.TrimPrefix(tag, taskRemoteHostTagPrefix))
+		case strings.HasPrefix(tag, taskRemoteUserTagPrefix):
+			user = strings.TrimSpace(strings.TrimPrefix(tag, taskRemoteUserTagPrefix))
+		case strings.HasPrefix(tag, taskRemoteWorkDirTagPrefix):
+			// workdir tags are sanitized (colons→_); store best-effort display value.
+			workDir = strings.TrimSpace(strings.TrimPrefix(tag, taskRemoteWorkDirTagPrefix))
+		case strings.HasPrefix(tag, taskRemotePortTagPrefix):
+			if p, err := strconv.Atoi(strings.TrimPrefix(tag, taskRemotePortTagPrefix)); err == nil && p > 0 && p < 65536 {
+				port = p
+			}
+		}
+	}
+	return host, user, workDir, port
+}
+
+func (a *App) codingWorkbenchStatusFromHandler(projectPath string, handler *IMMessageHandler) CodingWorkbenchStatus {
+	st := CodingWorkbenchStatus{}
+	if handler == nil {
+		st.Message = "message handler unavailable"
+		return st
+	}
+	userID := projectSessionOwnerID(projectPath)
+	// Read live in-memory sticky only. Do NOT force-flush debounced step-status
+	// writes on every status poll — that defeats coalescing during multi-step runs.
+	// Durability is covered by the 450ms debounce timer and shutdown flush.
+	mem := handler.getStickyCodingWorkbenchMemory(userID)
+	st.Kind = strings.TrimSpace(mem.Kind)
+	st.TurnCount = mem.TurnCount
+	st.SessionFullAccess = mem.SessionFullAccess
+	st.SessionHighRiskAccess = mem.SessionHighRiskAccess
+	globalFull := handler.app != nil && handler.app.isSubAgentFullAccessGranted()
+	st.PermissionMode = handler.codingWorkbenchPermissionMode(userID, globalFull)
+	st.SessionPlan = strings.TrimSpace(mem.SessionPlan)
+	st.ExecutionPlan = strings.TrimSpace(mem.ExecutionPlan)
+	st.RequirementRestatement = strings.TrimSpace(mem.RequirementRestatement)
+	st.PlanMode = normalizeCodingPlanMode(mem.PlanMode)
+	st.PendingApproval = strings.TrimSpace(mem.PendingPlanJSON) != ""
+	if len(mem.StepStatuses) > 0 {
+		st.StepStatuses = append([]codingWorkbenchStepStatus(nil), mem.StepStatuses...)
+	}
+	if len(mem.ProjectInstructionSources) > 0 {
+		st.ProjectInstructionSources = append([]string(nil), mem.ProjectInstructionSources...)
+	}
+	st.CheckpointLabel = strings.TrimSpace(mem.CheckpointLabel)
+	st.SessionInputTokens = mem.SessionInputTokens
+	st.SessionOutputTokens = mem.SessionOutputTokens
+	st.SessionEstCostRMB = mem.SessionEstCostRMB
+	st.LastTurnInputTokens = mem.LastTurnInputTokens
+	st.LastTurnOutputTokens = mem.LastTurnOutputTokens
+	st.LastTurnEstCostRMB = mem.LastTurnEstCostRMB
+	st.BackgroundVerify = strings.TrimSpace(mem.BackgroundVerifySummary)
+	st.WorktreeMode = normalizeCodingWorktreeMode(mem.WorktreeMode)
+	if len(mem.WorktreeNotes) > 0 {
+		st.WorktreeNotes = append([]string(nil), mem.WorktreeNotes...)
+	}
+	// Drop local conflict records whose worktree dirs vanished (cheap Stat).
+	// Throttled: status polls often; Ensure/List still force full prune.
+	// Remote isolate probe is deferred to Ensure / List (needs live SSH).
+	if len(mem.WorktreeConflicts) > 0 {
+		if n := handler.pruneDeadStickyCodingConflictsThrottled(userID, false, stickyConflictPruneStatusInterval); n > 0 {
+			mem = handler.getStickyCodingWorkbenchMemory(userID)
+		}
+	}
+	if n := len(mem.WorktreeConflicts); n > 0 {
+		st.ConflictCount = n
+		st.Conflicts = append([]codingWorkbenchConflict(nil), mem.WorktreeConflicts...)
+	}
+	st.ConflictActiveID = strings.TrimSpace(mem.ConflictActiveID)
+	if len(mem.ConflictSelected) > 0 {
+		st.ConflictSelected = append([]string(nil), mem.ConflictSelected...)
+	}
+	st.ConflictFocusFile = strings.TrimSpace(mem.ConflictFocusFile)
+	if len(mem.ConflictLog) > 0 {
+		st.ConflictLog = append([]string(nil), mem.ConflictLog...)
+	}
+	// Drop stale active id if conflict list no longer contains it (response + sticky).
+	if st.ConflictActiveID != "" {
+		found := false
+		for _, c := range st.Conflicts {
+			if c.ID == st.ConflictActiveID {
+				found = true
+				break
+			}
+		}
+		if !found {
+			st.ConflictActiveID = ""
+			st.ConflictSelected = nil
+			st.ConflictFocusFile = ""
+			handler.setStickyCodingConflictUIState(userID, "", "", nil)
+		} else if len(st.ConflictSelected) > 0 {
+			// Filter multi-select to paths still present on the active conflict.
+			var remain []string
+			for _, c := range st.Conflicts {
+				if c.ID == st.ConflictActiveID {
+					remain = c.Files
+					break
+				}
+			}
+			if len(remain) > 0 {
+				keep := map[string]struct{}{}
+				for _, f := range remain {
+					keep[filepath.ToSlash(strings.TrimSpace(f))] = struct{}{}
+				}
+				filtered := st.ConflictSelected[:0]
+				for _, s := range st.ConflictSelected {
+					if _, ok := keep[s]; ok {
+						filtered = append(filtered, s)
+					}
+				}
+				if len(filtered) != len(st.ConflictSelected) {
+					st.ConflictSelected = append([]string(nil), filtered...)
+					handler.setStickyCodingConflictUIState(userID, st.ConflictActiveID, st.ConflictFocusFile, st.ConflictSelected)
+				}
+			}
+		}
+	}
+	st.RouteModel = strings.TrimSpace(mem.LastRouteModel)
+	st.RouteSource = strings.TrimSpace(mem.LastRouteSource)
+	st.RouteTask = strings.TrimSpace(mem.LastRouteTask)
+	st.RouteReason = strings.TrimSpace(mem.LastRouteReason)
+	st.RoutePref = normalizeCodingRoutePref(mem.RoutePref)
+	if caps := handler.codingRouteCapabilities(); len(caps) > 0 {
+		st.RouteCapabilities = caps
+	}
+	// Checkpoint list from the same sticky snapshot already loaded (one parse).
+	if cur, hasCur, histRaw := stickyCodingCheckpointsFromMem(mem); hasCur || len(histRaw) > 0 {
+		var hist []codingCheckpointListEntry
+		if hasCur {
+			hist = append(hist, codingCheckpointToListEntry(cur, true))
+			if st.CheckpointLabel == "" {
+				st.CheckpointLabel = cur.Label
+			}
+			if len(cur.Files) > 0 {
+				st.CheckpointFiles = append([]string(nil), cur.Files...)
+			}
+			st.CheckpointSnapshots = codingCheckpointSnapshotCount(cur)
+		}
+		for i := len(histRaw) - 1; i >= 0; i-- {
+			hist = append(hist, codingCheckpointToListEntry(histRaw[i], false))
+		}
+		st.CheckpointHistory = hist
+	}
+	// Project-local lifecycle hooks (.maclaw/hooks.json) — single load + one summary pass.
+	hooks := loadCodingWorkbenchHooks(projectPath)
+	if phases, n := codingWorkbenchHooksSummary(hooks); n > 0 {
+		st.HooksActive = true
+		st.HooksPhases = phases
+		st.HooksCommandCount = n
+		st.HooksFailOnError = hooks.FailOnError
+	}
+	st.LastSummary = strings.TrimSpace(mem.LastSummary)
+	st.RemoteHost = strings.TrimSpace(mem.RemoteHost)
+	st.RemoteUser = strings.TrimSpace(mem.RemoteUser)
+	st.RemotePort = mem.RemotePort
+	st.RemoteWorkDir = strings.TrimSpace(mem.RemoteWorkDir)
+	if st.RemoteWorkDir == "" {
+		st.RemoteWorkDir = strings.TrimSpace(mem.RemoteProjectDir)
+	}
+	st.RemoteSessionID = strings.TrimSpace(mem.RemoteSessionID)
+
+	// Task tags are the durable pure-coding marker (history list restore).
+	// When a record exists without coding tags, force Kind empty even if sticky
+	// still claims local/remote (sticky pollution guard).
+	// Use an already-open store only; status polls must not cold-init memory
+	// (ensureMemoryStore -> LoadConfig can re-enter path-bound locks).
+	if a != nil && a.memoryStore != nil {
+		if pi := a.memoryStore.ProjectIndex(); pi != nil {
+			if rec := pi.Get(projectPath); rec != nil {
+				if projectRecordHasTag(*rec, taskSourceRemoteOpsDiagnosisTag) {
+					st.RemoteSafety = "diagnosis"
+				}
+				switch codingModeForProjectRecord(*rec) {
+				case taskRemoteCodingDevTag:
+					st.Kind = "remote"
+				case taskCodingDevTag:
+					st.Kind = "local"
+				default:
+					st.Kind = ""
+				}
+			}
+		}
+	}
+
+	// Fill non-secret remote meta from task tags when sticky is incomplete.
+	if st.Kind == "remote" || st.Kind == "" {
+		th, tu, tw, tp := a.remoteCodingMetaFromTaskTags(projectPath)
+		if st.RemoteHost == "" {
+			st.RemoteHost = th
+		}
+		if st.RemoteUser == "" {
+			st.RemoteUser = tu
+		}
+		if st.RemoteWorkDir == "" {
+			st.RemoteWorkDir = tw
+		}
+		if st.RemotePort <= 0 {
+			st.RemotePort = tp
+		}
+	}
+
+	switch st.Kind {
+	case "remote":
+		st.Armed = handler.hasPendingTemplateSubAgentExecution(userID)
+		if _, ok := handler.pendingTemplateRemoteCoding.Load(userID); ok {
+			st.Armed = true
+		}
+		sessionID := st.RemoteSessionID
+		alive := sessionID != "" && handler.sshSessionAlive(sessionID)
+		if !alive {
+			st.Armed = false
+			st.NeedsReconnect = true
+			if sessionID == "" {
+				st.Message = "SSH session not connected; reconnect required"
+			} else {
+				st.Message = "SSH session expired; reconnect required"
+			}
+		}
+	case "local":
+		st.Armed = handler.hasPendingTemplateSubAgentExecution(userID)
+		if _, ok := handler.pendingTemplateCodingProjectPath.Load(userID); ok {
+			st.Armed = true
+		}
+	}
+	return st
+}
+
+// GetCodingWorkbenchStatus returns arm/reconnect state for a pure coding task without changing it.
+func (a *App) GetCodingWorkbenchStatus(projectPath string) CodingWorkbenchStatus {
+	st := CodingWorkbenchStatus{}
+	if a == nil {
+		st.Message = "app unavailable"
+		return st
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		st.Message = "project path is required"
+		return st
+	}
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		st.Message = "AI assistant not initialized"
+		return st
+	}
+	handler := hubClient.ensureIMHandler()
+	return a.codingWorkbenchStatusFromHandler(projectPath, handler)
+}
+
+// EnsureCodingWorkbenchArmed reloads sticky coding memory and re-arms local/remote
+// SubAgent routing when the user reopens a pure coding task (after restart or
+// tab close). For remote tasks, SSH session must still be alive; otherwise the
+// status reports NeedsReconnect so the UI can collect a password and call
+// PrepareRemoteCodingEnvironment.
+func (a *App) EnsureCodingWorkbenchArmed(projectPath string) (CodingWorkbenchStatus, error) {
+	st := CodingWorkbenchStatus{}
+	if a == nil {
+		return st, fmt.Errorf("app unavailable")
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return st, fmt.Errorf("project path is required")
+	}
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		return st, fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil {
+		return st, fmt.Errorf("message handler unavailable")
+	}
+
+	userID := projectSessionOwnerID(projectPath)
+	// Force disk cold-load into the in-memory map.
+	mem := handler.getStickyCodingWorkbenchMemory(userID)
+
+	// Classification policy for history restore:
+	// 1) When a project index record exists, task tags are authoritative
+	//    (prevents sticky kind pollution from arming ordinary chat tasks).
+	// 2) When the index misses (async flush lag), sticky kind is a soft fallback.
+	kind := ""
+	taskTitle := ""
+	foundRecord := false
+	// Port is taken only from a port tag. remoteCodingMetaFromTaskTags
+	// defaults a missing tag to 22, and persisting that default would
+	// overwrite a host whose real port is not 22.
+	portFromTag := 0
+	a.ensureMemoryStore()
+	if a.memoryStore != nil {
+		if pi := a.memoryStore.ProjectIndex(); pi != nil {
+			if rec := pi.Get(projectPath); rec != nil {
+				foundRecord = true
+				taskTitle = strings.TrimSpace(rec.Name)
+				switch codingModeForProjectRecord(*rec) {
+				case taskRemoteCodingDevTag:
+					kind = "remote"
+				case taskCodingDevTag:
+					kind = "local"
+				}
+				for _, tag := range rec.Tags {
+					tag = strings.TrimSpace(tag)
+					if !strings.HasPrefix(tag, taskRemotePortTagPrefix) {
+						continue
+					}
+					if p, err := strconv.Atoi(strings.TrimPrefix(tag, taskRemotePortTagPrefix)); err == nil && p > 0 && p < 65536 {
+						portFromTag = p
+					}
+				}
+			}
+		}
+	}
+	if !foundRecord {
+		kind = strings.TrimSpace(mem.Kind)
+	}
+
+	// Not a pure coding workbench: do not arm CodingSubAgent (avoids hijacking
+	// ordinary chat tasks opened from the history list). Clear any leftover
+	// sticky/pending coding bindings from prior pollution or mis-classification.
+	if kind != "local" && kind != "remote" {
+		handler.clearStickyCodingEnvironment(userID)
+		st = a.codingWorkbenchStatusFromHandler(projectPath, handler)
+		st.Kind = ""
+		st.Armed = false
+		st.NeedsReconnect = false
+		st.Message = "not a pure coding workbench task"
+		return st, nil
+	}
+
+	// Compaction/restart recovery: seed session plan from last request or task
+	// title when empty so multi-turn continuity still has an overall goal.
+	if strings.TrimSpace(mem.SessionPlan) == "" {
+		seed := strings.TrimSpace(mem.LastUserText)
+		if seed == "" {
+			seed = taskTitle
+		}
+		if seed != "" && !codingSessionContextLooksGeneric(seed) {
+			handler.setStickyCodingSessionPlan(userID, seed)
+			mem = handler.getStickyCodingWorkbenchMemory(userID)
+		}
+	}
+
+	// Persist kind + remote meta into the live sticky record. Merge under the
+	// per-user lock. Replacing the whole snapshot taken at function entry
+	// clobbers a session id that PrepareRemoteCodingEnvironment just bound.
+	th, tu, tw := "", "", ""
+	if kind == "remote" {
+		th, tu, tw, _ = a.remoteCodingMetaFromTaskTags(projectPath)
+	}
+	routePref := ""
+	if strings.TrimSpace(mem.RoutePref) == "" {
+		if cfg, err := a.LoadConfig(); err == nil {
+			if raw := strings.TrimSpace(cfg.CodingRoutePref); raw != "" {
+				routePref = normalizeCodingRoutePref(raw)
+			}
+		}
+	}
+	stickyDirty := mem.Kind != kind || routePref != ""
+	if kind == "remote" {
+		if strings.TrimSpace(mem.RemoteHost) == "" && th != "" {
+			stickyDirty = true
+		}
+		if strings.TrimSpace(mem.RemoteUser) == "" && tu != "" {
+			stickyDirty = true
+		}
+		if strings.TrimSpace(mem.RemoteWorkDir) == "" && tw != "" {
+			stickyDirty = true
+		}
+		if mem.RemotePort <= 0 && portFromTag > 0 {
+			stickyDirty = true
+		}
+	}
+	if stickyDirty {
+		handler.updateStickyCodingWorkbenchMemory(userID, func(live *stickyCodingWorkbenchMemory) {
+			live.Kind = kind
+			if kind == "remote" {
+				if strings.TrimSpace(live.RemoteHost) == "" && th != "" {
+					live.RemoteHost = th
+				}
+				if strings.TrimSpace(live.RemoteUser) == "" && tu != "" {
+					live.RemoteUser = tu
+				}
+				if strings.TrimSpace(live.RemoteWorkDir) == "" && tw != "" {
+					live.RemoteWorkDir = tw
+					if strings.TrimSpace(live.RemoteProjectDir) == "" {
+						live.RemoteProjectDir = tw
+					}
+				}
+				if live.RemotePort <= 0 && portFromTag > 0 {
+					live.RemotePort = portFromTag
+				}
+			}
+			if strings.TrimSpace(live.RoutePref) == "" && routePref != "" {
+				live.RoutePref = routePref
+			}
+		})
+	}
+	// Arming reads the live binding. The snapshot from function entry does
+	// not include a session id stored while this call was classifying.
+	mem = handler.getStickyCodingWorkbenchMemory(userID)
+
+	switch kind {
+	case "remote":
+		sessionID := strings.TrimSpace(mem.RemoteSessionID)
+		workDir := strings.TrimSpace(mem.RemoteWorkDir)
+		projectDir := strings.TrimSpace(mem.RemoteProjectDir)
+		if workDir == "" {
+			workDir = projectDir
+		}
+		if projectDir == "" {
+			projectDir = workDir
+		}
+		if sessionID == "" || (handler.ensureSSHManager() != nil && !handler.sshSessionAlive(sessionID)) {
+			log.Printf("[coding-env] ensure armed: remote reconnect required project=%s session=%q", projectPath, sessionID)
+			st = a.codingWorkbenchStatusFromHandler(projectPath, handler)
+			st.Kind = "remote"
+			st.Armed = false
+			st.NeedsReconnect = true
+			if st.Message == "" {
+				st.Message = "SSH session not connected; reconnect required"
+			}
+			return st, nil
+		}
+		if workDir == "" {
+			st = a.codingWorkbenchStatusFromHandler(projectPath, handler)
+			st.Kind = "remote"
+			st.NeedsReconnect = true
+			st.Message = "remote work directory missing; reconnect required"
+			return st, nil
+		}
+		remoteCtx := remoteCodingTemplateContext{
+			SessionID:   sessionID,
+			WorkDir:     workDir,
+			ProjectDir:  projectDir,
+			Maintenance: st.RemoteSafety == "diagnosis",
+		}
+		// A diagnosis task can be restored before its first turn is sent. Preserve
+		// the evidence-only first-turn lock through restart/reopen; once a turn is
+		// recorded, regular explicit follow-ups use normal remote coding routing.
+		if st.RemoteSafety == "diagnosis" && mem.TurnCount == 0 {
+			remoteCtx.ForceInitialInquiry = true
+		}
+		handler.rearmStickyRemoteCodingEnvironment(userID, remoteCtx)
+		// Do not re-seed path trust when the user explicitly chose "请求授权".
+		if !mem.SessionFullAccess && !stickyCodingPermissionIsRequest(mem.SessionPermissionMode) {
+			handler.setStickyCodingSessionPermissionMode(userID, "workspace", "remote", projectDir)
+		}
+		// Align sticky with input-box global full control when already granted
+		// (no-op when session mode is explicit request).
+		handler.syncStickyCodingFullAccessFromGlobal(userID, "remote", projectDir, a.isSubAgentFullAccessGranted())
+		// Drop remote isolate records whose dirs no longer exist on the host.
+		if n := handler.pruneDeadStickyCodingConflicts(userID, true); n > 0 {
+			log.Printf("[coding-env] ensure armed: pruned %d dead isolation conflicts project=%s", n, projectPath)
+		}
+		log.Printf("[coding-env] ensure armed remote project=%s session=%s turns=%d plan=%q",
+			projectPath, sessionID, mem.TurnCount, truncateRunesV2(mem.SessionPlan, 60))
+		st = a.codingWorkbenchStatusFromHandler(projectPath, handler)
+		st.Kind = "remote"
+		st.Armed = true
+		st.NeedsReconnect = false
+		return st, nil
+	case "local":
+		execDir := a.codingWorkbenchLocalExecDirOrDesktop(projectPath)
+		handler.rearmStickyLocalCodingEnvironment(userID, execDir)
+		if !mem.SessionFullAccess && !stickyCodingPermissionIsRequest(mem.SessionPermissionMode) {
+			handler.setStickyCodingSessionPermissionMode(userID, "workspace", "local", execDir)
+		}
+		handler.syncStickyCodingFullAccessFromGlobal(userID, "local", execDir, a.isSubAgentFullAccessGranted())
+		if n := handler.pruneDeadStickyCodingConflicts(userID, false); n > 0 {
+			log.Printf("[coding-env] ensure armed: pruned %d dead isolation conflicts project=%s", n, projectPath)
+		}
+		// Re-open an existing pure-coding task: refill tabs from files a previous
+		// turn created or modified. Do not walk the tree, and do not open the pane.
+		mem = handler.getStickyCodingWorkbenchMemory(userID)
+		stickyFiles := uniqueSortedSubAgentStrings(append(append([]string{}, mem.FilesModified...), mem.FilesCreated...))
+		// Sticky-only on arm, emitted as reads. End-of-turn force-open also
+		// refuses a directory scan. A history refill must not pop the pane.
+		if len(stickyFiles) > 0 {
+			// Route with tab projectPath (managed task dir), read files from execDir.
+			emitCodingWorkbenchSourcePreview(
+				a,
+				codingWorkbenchPreviewRestoreSessionID(userID),
+				execDir,
+				nil,
+				nil,
+				stickyFiles,
+				false, // allowScan: never walk the tree on tab focus
+				false, // forceOpen: do not hijack an active coding-workbench session
+				projectPath,
+			)
+		}
+		log.Printf("[coding-env] ensure armed local project=%s execDir=%s turns=%d plan=%q",
+			projectPath, execDir, mem.TurnCount, truncateRunesV2(mem.SessionPlan, 60))
+		st = a.codingWorkbenchStatusFromHandler(projectPath, handler)
+		st.Kind = "local"
+		st.Armed = true
+		st.NeedsReconnect = false
+		return st, nil
+	default:
+		return a.codingWorkbenchStatusFromHandler(projectPath, handler), nil
+	}
+}
+
+// GetCodingWorkbenchPermission returns the effective permission tier for a pure
+// coding task tab: "request" | "workspace" | "full".
+func (a *App) GetCodingWorkbenchPermission(projectPath string) string {
+	if a == nil {
+		return "request"
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return "request"
+	}
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		return "request"
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil {
+		return "request"
+	}
+	return handler.codingWorkbenchPermissionMode(projectSessionOwnerID(projectPath), a.isSubAgentFullAccessGranted())
+}
+
+// SetCodingWorkbenchPermission sets the pure-coding permission tier for a task.
+// Modes: "request" (interactive), "workspace" (session path trust), "full" (global full access).
+func (a *App) SetCodingWorkbenchPermission(projectPath, mode string) error {
+	if a == nil {
+		return fmt.Errorf("app unavailable")
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return fmt.Errorf("project path is required")
+	}
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	switch mode {
+	case "request", "workspace", "full", "ask":
+	default:
+		return fmt.Errorf("unknown permission mode %q (want request|workspace|full)", mode)
+	}
+	if mode == "ask" {
+		mode = "request"
+	}
+
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		return fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil {
+		return fmt.Errorf("message handler unavailable")
+	}
+	userID := projectSessionOwnerID(projectPath)
+
+	// Permission UI must not overwrite sticky ProjectPath (often the execution
+	// workspace dir for local pure coding). Empty projectPath keeps existing value.
+	switch mode {
+	case "full":
+		// Path + high-risk session trust (one sticky write), and persist global full-access.
+		handler.setStickyCodingSessionPermissionMode(userID, "full", "", "")
+		a.persistSubAgentFullAccess()
+	case "workspace":
+		// Path trust. Repeat workspace writes keep 以后允许; leaving 完全控制 drops it.
+		if a.isSubAgentFullAccessGranted() {
+			if err := a.clearSubAgentFullAccess(); err != nil {
+				log.Printf("[coding-env] clear global full access failed: %v", err)
+			}
+		}
+		handler.setStickyCodingSessionPermissionMode(userID, "workspace", "", "")
+	case "request":
+		if a.isSubAgentFullAccessGranted() {
+			if err := a.clearSubAgentFullAccess(); err != nil {
+				log.Printf("[coding-env] clear global full access failed: %v", err)
+			}
+		}
+		// Explicit request mode so Ensure does not re-seed workspace path trust.
+		handler.setStickyCodingSessionPermissionMode(userID, "request", "", "")
+	}
+	return nil
+}
+
+// SetCodingWorkbenchSessionPlan updates the durable multi-turn plan/goal for a
+// pure coding task. Empty plan clears the stored goal.
+func (a *App) SetCodingWorkbenchSessionPlan(projectPath, plan string) error {
+	if a == nil {
+		return fmt.Errorf("app unavailable")
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return fmt.Errorf("project path is required")
+	}
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		return fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil {
+		return fmt.Errorf("message handler unavailable")
+	}
+	userID := projectSessionOwnerID(projectPath)
+	handler.setStickyCodingSessionPlan(userID, plan)
+	return nil
+}
+
+// GetCodingWorkbenchPlanMode returns auto | approve | off for a pure-coding task.
+func (a *App) GetCodingWorkbenchPlanMode(projectPath string) string {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil || handler == nil {
+		return codingPlanModeAuto
+	}
+	return handler.getStickyCodingPlanMode(userID)
+}
+
+// SetCodingWorkbenchPlanMode sets multi-step plan policy: auto | approve | off.
+func (a *App) SetCodingWorkbenchPlanMode(projectPath, mode string) error {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return err
+	}
+	handler.setStickyCodingPlanMode(userID, mode)
+	return nil
+}
+
+// ApproveCodingWorkbenchPlan promotes a pending multi-step plan for the next
+// coding turn. Prefer sending `/plan approve` in the chat (executes immediately).
+// This binding only marks the plan approved so the next message can pick it up.
+func (a *App) ApproveCodingWorkbenchPlan(projectPath string) error {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return err
+	}
+	if _, ok := handler.promotePendingToApprovedCodingPlan(userID); !ok {
+		return fmt.Errorf("no pending plan to approve")
+	}
+	return nil
+}
+
+// RejectCodingWorkbenchPlan clears a pending multi-step plan.
+func (a *App) RejectCodingWorkbenchPlan(projectPath string) error {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return err
+	}
+	handler.clearStickyPendingCodingPlan(userID)
+	handler.clearStickyCodingExecutionPlan(userID)
+	handler.clearStickyCodingStepStatuses(userID)
+	return nil
+}
+
+// codingWorkbenchPendingPlanDTO is UI-safe pending plan payload.
+type codingWorkbenchPendingPlanDTO struct {
+	UserText  string `json:"user_text,omitempty"`
+	Markdown  string `json:"markdown,omitempty"`
+	StepCount int    `json:"step_count,omitempty"`
+	CreatedAt int64  `json:"created_at,omitempty"`
+}
+
+// GetCodingWorkbenchPendingPlan returns the awaiting-approval multi-step plan.
+func (a *App) GetCodingWorkbenchPendingPlan(projectPath string) (codingWorkbenchPendingPlanDTO, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return codingWorkbenchPendingPlanDTO{}, err
+	}
+	pending, ok := handler.loadStickyPendingCodingPlan(userID)
+	if !ok {
+		return codingWorkbenchPendingPlanDTO{}, fmt.Errorf("no pending plan")
+	}
+	return codingWorkbenchPendingPlanDTO{
+		UserText:  pending.UserText,
+		Markdown:  pending.Markdown,
+		StepCount: len(pending.Tasks),
+		CreatedAt: pending.CreatedAt,
+	}, nil
+}
+
+// UpdateCodingWorkbenchPendingPlan rewrites the pending plan from edited markdown.
+// Does not execute; user still needs /plan approve (or UI Approve).
+func (a *App) UpdateCodingWorkbenchPendingPlan(projectPath, markdown string) (codingWorkbenchPendingPlanDTO, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return codingWorkbenchPendingPlanDTO{}, err
+	}
+	updated, err := handler.replaceStickyPendingCodingPlanMarkdown(userID, markdown)
+	if err != nil {
+		return codingWorkbenchPendingPlanDTO{}, err
+	}
+	return codingWorkbenchPendingPlanDTO{
+		UserText:  updated.UserText,
+		Markdown:  updated.Markdown,
+		StepCount: len(updated.Tasks),
+		CreatedAt: updated.CreatedAt,
+	}, nil
+}
+
+// SaveCodingWorkbenchCheckpoint stores a pure-coding session checkpoint.
+func (a *App) SaveCodingWorkbenchCheckpoint(projectPath, label string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	cp := handler.saveStickyCodingCheckpoint(userID, label)
+	return cp.Label, nil
+}
+
+// RestoreCodingWorkbenchCheckpoint restores session/execution plan from the last checkpoint.
+// When restoreFiles is true, also writes back snapshotted text file content.
+func (a *App) RestoreCodingWorkbenchCheckpoint(projectPath string) (string, error) {
+	return a.RestoreCodingWorkbenchCheckpointEx(projectPath, false)
+}
+
+// RestoreCodingWorkbenchCheckpointEx restores plan, and optionally file snapshots.
+func (a *App) RestoreCodingWorkbenchCheckpointEx(projectPath string, restoreFiles bool) (string, error) {
+	return a.RestoreCodingWorkbenchCheckpointByLabel(projectPath, "", restoreFiles)
+}
+
+// RestoreCodingWorkbenchCheckpointByLabel restores a named checkpoint (or current when label empty).
+func (a *App) RestoreCodingWorkbenchCheckpointByLabel(projectPath, label string, restoreFiles bool) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	cp, ok := handler.restoreStickyCodingCheckpointByLabel(userID, label, false)
+	if !ok {
+		if strings.TrimSpace(label) != "" {
+			return "", fmt.Errorf("checkpoint not found: %s", label)
+		}
+		return "", fmt.Errorf("no checkpoint to restore")
+	}
+	if !restoreFiles {
+		return cp.Label, nil
+	}
+	restored, skipped, ferr := handler.applyCodingCheckpointFileSnapshots(userID, cp, nil)
+	if ferr != nil {
+		return "", fmt.Errorf("plan restored (%s); files: %w", cp.Label, ferr)
+	}
+	return fmt.Sprintf("%s (files restored=%d skipped=%d)", cp.Label, restored, skipped), nil
+}
+
+// ListCodingWorkbenchCheckpoints returns current + history checkpoint summaries.
+func (a *App) ListCodingWorkbenchCheckpoints(projectPath string) []codingCheckpointListEntry {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return nil
+	}
+	return handler.listStickyCodingCheckpoints(userID)
+}
+
+// KeepMainCodingWorkbenchConflict keeps main-tree versions for selected conflict files.
+// filesCSV empty means keep main for all (discard isolation).
+func (a *App) KeepMainCodingWorkbenchConflict(projectPath, conflictID, filesCSV string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	var files []string
+	for _, f := range strings.Split(filesCSV, ",") {
+		f = strings.TrimSpace(f)
+		if f != "" {
+			files = append(files, f)
+		}
+	}
+	return handler.keepMainCodingConflictFiles(userID, conflictID, files)
+}
+
+// AdoptBaseCodingWorkbenchConflict writes merge-base content for selected files onto main.
+// filesCSV empty means all remaining conflict files.
+func (a *App) AdoptBaseCodingWorkbenchConflict(projectPath, conflictID, filesCSV string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	var files []string
+	for _, f := range strings.Split(filesCSV, ",") {
+		f = strings.TrimSpace(f)
+		if f != "" {
+			files = append(files, f)
+		}
+	}
+	return handler.adoptBaseCodingConflictFiles(userID, conflictID, files)
+}
+
+// codingConflictResolveCSV splits optional comma-separated paths.
+func codingConflictResolveCSV(filesCSV string) []string {
+	var files []string
+	for _, f := range strings.Split(filesCSV, ",") {
+		f = strings.TrimSpace(f)
+		if f != "" {
+			files = append(files, f)
+		}
+	}
+	return files
+}
+
+// ResolveCodingWorkbenchConflict applies a batch resolve action to a conflict.
+// action: "adopt" | "keep" | "base" — filesCSV empty means all remaining files.
+func (a *App) ResolveCodingWorkbenchConflict(projectPath, conflictID, action, filesCSV string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	files := codingConflictResolveCSV(filesCSV)
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "adopt", "theirs":
+		if len(files) == 0 {
+			return handler.adoptCodingWorkbenchConflict(userID, conflictID)
+		}
+		return handler.adoptCodingWorkbenchConflictFiles(userID, conflictID, files)
+	case "keep", "main", "ours":
+		return handler.keepMainCodingConflictFiles(userID, conflictID, files)
+	case "base", "adopt-base", "take-base":
+		return handler.adoptBaseCodingConflictFiles(userID, conflictID, files)
+	default:
+		return "", fmt.Errorf("unknown resolve action %q (use adopt|keep|base)", action)
+	}
+}
+
+// mapConflictPreviewSideToAction maps preview pane side → resolve action.
+func mapConflictPreviewSideToAction(side string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(side)) {
+	case "main", "ours", "keep":
+		return "keep", nil
+	case "theirs", "isolate", "worktree", "wt", "adopt":
+		return "adopt", nil
+	case "base", "adopt-base", "take-base":
+		return "base", nil
+	default:
+		return "", fmt.Errorf("unknown preview side %q (use main|theirs|base)", side)
+	}
+}
+
+// ApplyCodingWorkbenchConflictPreviewSide writes the previewed side for one file
+// onto the main tree: main→keep, theirs→adopt, base→adopt-base.
+func (a *App) ApplyCodingWorkbenchConflictPreviewSide(projectPath, conflictID, relPath, side string) (string, error) {
+	relPath = strings.TrimSpace(relPath)
+	if relPath == "" {
+		return "", fmt.Errorf("file path required")
+	}
+	action, err := mapConflictPreviewSideToAction(side)
+	if err != nil {
+		return "", err
+	}
+	return a.ResolveCodingWorkbenchConflict(projectPath, conflictID, action, relPath)
+}
+
+// WriteCodingWorkbenchConflictFileContent writes edited text to the main tree for one
+// conflict path and removes it from remaining conflict files (manual merge).
+func (a *App) WriteCodingWorkbenchConflictFileContent(projectPath, conflictID, relPath, content string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	return handler.writeCodingConflictFileContent(userID, conflictID, relPath, content)
+}
+
+// GetCodingWorkbenchRouteMap returns ModelRouter capability table for pure-coding UI/settings.
+// projectPath may be empty — then capabilities come from the global App ModelRouter.
+func (a *App) GetCodingWorkbenchRouteMap(projectPath string) []codingRouteCapability {
+	if strings.TrimSpace(projectPath) != "" {
+		handler, _, err := a.codingWorkbenchHandlerForProject(projectPath)
+		if err == nil && handler != nil {
+			return handler.codingRouteCapabilities()
+		}
+	}
+	// Settings panel / no active task: still resolve against live App router.
+	h := &IMMessageHandler{app: a}
+	return h.codingRouteCapabilities()
+}
+
+// PruneCodingWorkbenchCheckpoints drops non-current checkpoint sidecars for the task user.
+func (a *App) PruneCodingWorkbenchCheckpoints(projectPath string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	userN, orphanN := handler.pruneStickyCodingCheckpointSidecars(userID)
+	st := collectCodingCheckpointSidecarStats(userID, "")
+	if cp, ok := handler.loadStickyCodingCheckpoint(userID); ok {
+		st = collectCodingCheckpointSidecarStats(userID, cp.Label)
+	}
+	return fmt.Sprintf("pruned user=%d orphan=%d · %s", userN, orphanN, formatCodingCheckpointSidecarStatsLine(st)), nil
+}
+
+// GetCodingWorkbenchCheckpointSidecarStats returns disk usage of checkpoint sidecars.
+// projectPath may be empty for global-only stats.
+func (a *App) GetCodingWorkbenchCheckpointSidecarStats(projectPath string) codingCheckpointSidecarStats {
+	userID := ""
+	keep := ""
+	if strings.TrimSpace(projectPath) != "" {
+		if handler, uid, err := a.codingWorkbenchHandlerForProject(projectPath); err == nil && handler != nil {
+			userID = uid
+			if cp, ok := handler.loadStickyCodingCheckpoint(userID); ok {
+				keep = cp.Label
+			}
+		}
+	}
+	return collectCodingCheckpointSidecarStats(userID, keep)
+}
+
+// SetCodingWorkbenchConflictUIState remembers active conflict + multi-select for the task tab.
+func (a *App) SetCodingWorkbenchConflictUIState(projectPath, activeID, focusFile, selectedCSV string) error {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return err
+	}
+	handler.setStickyCodingConflictUIState(userID, activeID, focusFile, codingConflictResolveCSV(selectedCSV))
+	return nil
+}
+
+// GetCodingWorkbenchConflictFilePreview returns a longer content peek for one conflict file side.
+// side: main | theirs | base
+func (a *App) GetCodingWorkbenchConflictFilePreview(projectPath, conflictID, relPath, side string) (codingConflictFilePreview, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return codingConflictFilePreview{}, err
+	}
+	return handler.getCodingConflictFilePreview(userID, conflictID, relPath, side, codingConflictPreviewMaxBytes)
+}
+
+// GetCodingWorkbenchConflictFileTriple returns main/theirs/base peeks for side-by-side UI.
+func (a *App) GetCodingWorkbenchConflictFileTriple(projectPath, conflictID, relPath string) (codingConflictFileTriple, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return codingConflictFileTriple{}, err
+	}
+	return handler.getCodingConflictFileTriple(userID, conflictID, relPath, codingConflictPreviewMaxBytes)
+}
+
+// ClearCodingWorkbenchConflictLog clears the conflict resolve audit trail.
+func (a *App) ClearCodingWorkbenchConflictLog(projectPath string) error {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return err
+	}
+	handler.clearStickyCodingConflictLog(userID)
+	return nil
+}
+
+// ExportCodingWorkbenchConflictLog exports the audit trail as markdown and folds
+// a summary into worktree notes. Returns the markdown body.
+func (a *App) ExportCodingWorkbenchConflictLog(projectPath string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	md, n := handler.exportStickyCodingConflictLog(userID)
+	if n == 0 {
+		return "", fmt.Errorf("no conflict log entries")
+	}
+	return md, nil
+}
+
+// OpenCodingWorkbenchConflictFile opens main or isolate-side file in the OS default app / explorer.
+// side: "main" | "theirs" (default main).
+func (a *App) OpenCodingWorkbenchConflictFile(projectPath, conflictID, relPath, side string) error {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return err
+	}
+	c, ok := handler.findStickyCodingConflict(userID, conflictID)
+	if !ok {
+		return fmt.Errorf("conflict not found: %s", conflictID)
+	}
+	relPath = filepath.ToSlash(strings.TrimSpace(strings.TrimPrefix(relPath, "./")))
+	if relPath == "" || strings.Contains(relPath, "..") {
+		return fmt.Errorf("invalid file path")
+	}
+	side = strings.ToLower(strings.TrimSpace(side))
+	var root string
+	switch side {
+	case "theirs", "isolate", "worktree", "wt":
+		root = strings.TrimSpace(c.Path)
+	default:
+		root = resolveConflictGitRoot(c, userID, handler)
+		if root == "" {
+			root = strings.TrimSpace(c.MainProject)
+		}
+		if root == "" {
+			root = strings.TrimSpace(handler.getStickyCodingWorkbenchMemory(userID).ProjectPath)
+		}
+	}
+	if root == "" {
+		return fmt.Errorf("cannot resolve root for side %q", side)
+	}
+	abs := filepath.Clean(filepath.Join(root, filepath.FromSlash(relPath)))
+	if !isPathInsideRoot(root, abs) {
+		return fmt.Errorf("path escapes conflict root")
+	}
+	if _, err := os.Stat(abs); err != nil {
+		return fmt.Errorf("file not found: %s", relPath)
+	}
+	return a.OpenFileOrShowInFolder(abs)
+}
+
+// RunCodingWorkbenchBackgroundVerify starts async /bg test for the pure-coding task.
+func (a *App) RunCodingWorkbenchBackgroundVerify(projectPath string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	return handler.startCodingWorkbenchBackgroundVerify(userID, a.codingWorkbenchLocalExecDirOrDesktop(projectPath))
+}
+
+// GetCodingWorkbenchWorktreeMode returns auto | always | off.
+func (a *App) GetCodingWorkbenchWorktreeMode(projectPath string) string {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil || handler == nil {
+		return codingWorktreeModeAuto
+	}
+	return handler.getStickyCodingWorktreeMode(userID)
+}
+
+// SetCodingWorkbenchWorktreeMode sets git worktree isolation policy.
+func (a *App) SetCodingWorkbenchWorktreeMode(projectPath, mode string) error {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return err
+	}
+	handler.setStickyCodingWorktreeMode(userID, mode)
+	return nil
+}
+
+// GetCodingWorkbenchRoutePref returns auto | primary | reasoning | vision.
+func (a *App) GetCodingWorkbenchRoutePref(projectPath string) string {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil || handler == nil {
+		return codingRoutePrefAuto
+	}
+	return handler.getStickyCodingRoutePref(userID)
+}
+
+// SetCodingWorkbenchRoutePref sets pure-coding model preference.
+// When CodingRoutePrefMirror is enabled in AppConfig, also updates the global
+// default so new sessions inherit the last session choice.
+func (a *App) SetCodingWorkbenchRoutePref(projectPath, pref string) error {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return err
+	}
+	pref = normalizeCodingRoutePref(pref)
+	handler.setStickyCodingRoutePref(userID, pref)
+	// Optional reverse sync: session → global default.
+	// Avoid PatchConfigFields when unchanged (prevents extra disk + router churn).
+	if cfg, lerr := a.LoadConfig(); lerr == nil && cfg.CodingRoutePrefMirror {
+		if normalizeCodingRoutePref(cfg.CodingRoutePref) != pref {
+			if _, perr := a.PatchConfigFields(map[string]interface{}{
+				"coding_route_pref": pref,
+			}); perr != nil {
+				log.Printf("[coding-env] mirror route pref to config: %v", perr)
+			}
+		}
+	}
+	return nil
+}
+
+// ListCodingWorkbenchConflicts returns kept isolation conflicts for UI.
+// Prunes dead local worktrees and (when SSH is live) dead remote isolates.
+func (a *App) ListCodingWorkbenchConflicts(projectPath string) []codingWorkbenchConflict {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil || handler == nil {
+		return nil
+	}
+	// probeRemote=true: drop vanished remote isolate dirs when session alive.
+	_ = handler.pruneDeadStickyCodingConflicts(userID, true)
+	return handler.listStickyCodingConflicts(userID)
+}
+
+// GetCodingWorkbenchConflictDiffs returns per-file main vs isolate previews.
+func (a *App) GetCodingWorkbenchConflictDiffs(projectPath, conflictID string) []codingConflictFileDiff {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil || handler == nil {
+		return nil
+	}
+	diffs, _, derr := handler.getCodingConflictFileDiffs(userID, conflictID, 30)
+	if derr != nil {
+		return nil
+	}
+	return diffs
+}
+
+// AdoptCodingWorkbenchConflict adopts all or selected files from a conflict.
+// filesCSV is comma-separated relative paths; empty means all files.
+func (a *App) AdoptCodingWorkbenchConflict(projectPath, conflictID, filesCSV string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	var files []string
+	for _, f := range strings.Split(filesCSV, ",") {
+		f = strings.TrimSpace(f)
+		if f != "" {
+			files = append(files, f)
+		}
+	}
+	if len(files) == 0 {
+		return handler.adoptCodingWorkbenchConflict(userID, conflictID)
+	}
+	return handler.adoptCodingWorkbenchConflictFiles(userID, conflictID, files)
+}
+
+// DiscardCodingWorkbenchConflict drops a kept isolation conflict.
+func (a *App) DiscardCodingWorkbenchConflict(projectPath, conflictID string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	return handler.discardCodingWorkbenchConflict(userID, conflictID)
+}
+
+// DiscardAllCodingWorkbenchConflicts drops every kept isolation conflict for the task.
+func (a *App) DiscardAllCodingWorkbenchConflicts(projectPath string) (string, error) {
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil {
+		return "", err
+	}
+	return handler.discardAllStickyCodingConflicts(userID)
+}
+
+// codingWorkbenchHandlerForProject returns the IM handler + session owner for a task path.
+func (a *App) codingWorkbenchHandlerForProject(projectPath string) (*IMMessageHandler, string, error) {
+	if a == nil {
+		return nil, "", fmt.Errorf("app unavailable")
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return nil, "", fmt.Errorf("project path is required")
+	}
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		return nil, "", fmt.Errorf("AI assistant not initialized")
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil {
+		return nil, "", fmt.Errorf("message handler unavailable")
+	}
+	return handler, projectSessionOwnerID(projectPath), nil
+}
+
+// SaveCurrentChatAsTask saves the current main assistant conversation as a
+// task-management entry that can be reopened in a project tab later.
+func (a *App) SaveCurrentChatAsTask(name string) ProjectSearchResult {
+	taskName := normalizeRecentTaskName(name)
+	if taskName == "" {
+		taskName = a.SuggestCurrentTaskName()
+	}
+	if taskName == "" {
+		taskName = "Saved task"
+	}
+	content := fmt.Sprintf("# %s\n\nSaved from current main assistant conversation.\nSaved at: %s", recentTaskDisplayTitle(taskName), time.Now().Format(time.RFC3339))
+	workingDir := a.currentTaskManagementWorkingDir()
+	created := a.createTaskRecordWithWorkingDir(taskName, content, []string{taskManagementTag, taskUserSavedTag, taskSavedConversationTag}, workingDir, false)
+	if created.ProjectPath == "" {
+		return created
+	}
+	// The default name is the first user message (SuggestCurrentTaskName); let
+	// the async pass condense it when it is still a raw command.
+	a.scheduleTaskTitleSummarization(created.ProjectPath, taskName)
+	a.saveCurrentConversationForTask(created.ProjectPath, workingDir)
+	return created
+}
+
+func (a *App) saveCurrentConversationForTask(taskProjectPath, executionProjectPath string) {
+	taskProjectPath = normalizeProjectSessionPath(taskProjectPath)
+	executionProjectPath = normalizeProjectSessionPath(executionProjectPath)
+	if taskProjectPath == "" {
+		return
+	}
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		return
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil || handler.memory == nil {
+		return
+	}
+	sourceEntries := handler.memory.Load(desktopUserID)
+	if len(sourceEntries) == 0 {
+		return
+	}
+	handler.memory.Save(projectSessionOwnerID(taskProjectPath), sourceEntries)
+	log.Printf("[project_search] SaveCurrentChatAsTask copied entries=%d task=%q execution_project=%q", len(sourceEntries), taskProjectPath, executionProjectPath)
+}
+
+// SuggestCurrentTaskName derives a short default name from the current main
+// assistant conversation. The frontend lets the user edit this before saving.
+func (a *App) SuggestCurrentTaskName() string {
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		return "Saved task"
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil || handler.memory == nil {
+		return "Saved task"
+	}
+	entries := handler.memory.Load(desktopUserID)
+	for _, entry := range entries {
+		role := strings.TrimSpace(strings.ToLower(entry.Role))
+		if role != "user" {
+			continue
+		}
+		content := stringifyProjectConversationContent(entry.Content)
+		if content == "" {
+			continue
+		}
+		return recentTaskDisplayTitle(content)
+	}
+	return "Saved task"
+}
+
+// ResumeTask keeps a task-management named API for callers that should not
+// depend on the older project-search terminology.
+func (a *App) ResumeTask(taskPath string) string {
+	if id := a.lookupCloudWorkspaceIDForProject(taskPath); id != "" {
+		if _, err := a.PrepareCloudWorkspace(id); err != nil {
+			log.Printf("[cloud_workspace] ResumeTask prepare failed path=%q id=%s err=%v", taskPath, id, err)
+			return ""
+		}
+	}
+	return a.ResumeProject(taskPath)
+}
+
+func (a *App) currentTaskManagementWorkingDir() string {
+	if a == nil {
+		return ""
+	}
+	if workflowDir := normalizeRecentTaskWorkingDir(a.GetWorkflowWorkingDir()); workflowDir != "" {
+		return workflowDir
+	}
+	// Prefer an explicit top-bar working_directory when the user customized it.
+	// If still on the system default workspace, fall back to CurrentProject so
+	// Projects-list users keep a meaningful task working dir without having set
+	// working_directory. Agent/workflow "项目路径" still uses EffectiveWorkingDirForOwner.
+	desktopDir := normalizeRecentTaskWorkingDir(a.EffectiveDesktopWorkingDir())
+	defaultWS := normalizeRecentTaskWorkingDir(corelib.WorkspaceDir())
+	if desktopDir != "" && !strings.EqualFold(desktopDir, defaultWS) {
+		return desktopDir
+	}
+	if projectPath := normalizeRecentTaskWorkingDir(a.GetCurrentProjectPath()); projectPath != "" {
+		return projectPath
+	}
+	return desktopDir
+}
+
+// ForkRecentTask returns the independent task/session for a managed task. The
+// first open creates that session; later opens of the same source return the
+// same visible fork instead of creating duplicate task rows.
+func (a *App) ForkRecentTask(sourceProjectPath string) ProjectSearchResult {
+	started := time.Now()
+	sourceProjectPath = strings.TrimSpace(sourceProjectPath)
+	if sourceProjectPath == "" {
+		return ProjectSearchResult{}
+	}
+
+	result := func() ProjectSearchResult {
+		recentTaskForkMu.Lock()
+		defer recentTaskForkMu.Unlock()
+		lockStarted := time.Now()
+		log.Printf("[project_search] ForkRecentTask requested source=%q", sourceProjectPath)
+
+		a.ensureMemoryStore()
+		if a.memoryStore == nil {
+			log.Printf("[project_search] ForkRecentTask skipped source=%q reason=memory_store_unavailable elapsed=%s", sourceProjectPath, time.Since(started).Round(time.Millisecond))
+			return ProjectSearchResult{}
+		}
+		if pi := a.memoryStore.ProjectIndex(); pi != nil {
+			if rec := pi.Get(sourceProjectPath); rec != nil && strings.TrimSpace(rec.ProjectPath) != "" {
+				sourceProjectPath = rec.ProjectPath
+			}
+		}
+		pi := a.memoryStore.ProjectIndex()
+		if pi != nil && (pi.IsHidden(sourceProjectPath) || pi.IsArchived(sourceProjectPath)) {
+			log.Printf("[project_search] ForkRecentTask skipped source=%q reason=closed_task elapsed=%s", sourceProjectPath, time.Since(started).Round(time.Millisecond))
+			return ProjectSearchResult{}
+		}
+		if pi != nil {
+			if rec := pi.Get(sourceProjectPath); rec != nil && projectRecordHasTag(*rec, taskForkedTag) {
+				a.ensureRecentTaskWorkspace(rec.ProjectPath, rec.Name)
+				log.Printf("[project_search] ForkRecentTask reuse existing fork source=%q fork=%q reason=source_is_fork elapsed=%s", sourceProjectPath, rec.ProjectPath, time.Since(started).Round(time.Millisecond))
+				return a.projectRecordToSearchResult(pi, *rec)
+			}
+			if existing := findVisibleForkForSource(pi, sourceProjectPath); existing != nil {
+				a.ensureRecentTaskWorkspace(existing.ProjectPath, existing.Name)
+				log.Printf("[project_search] ForkRecentTask reuse existing fork source=%q fork=%q elapsed=%s", sourceProjectPath, existing.ProjectPath, time.Since(started).Round(time.Millisecond))
+				return a.projectRecordToSearchResult(pi, *existing)
+			}
+		}
+
+		taskName := ""
+		if pi != nil {
+			taskName = pi.GetDisplayName(sourceProjectPath)
+		}
+		if taskName == "" {
+			taskName = stripTaskDirTimestampSuffix(lastPathComponent(sourceProjectPath))
+		}
+		taskName = normalizeRecentTaskName(taskName)
+		if taskName == "" {
+			taskName = "Forked task"
+		}
+
+		workingDir := a.recentTaskWorkingDir(sourceProjectPath)
+		content := fmt.Sprintf("# %s\n\nOpened from task management.\nSource task: %s\nFork ID: %d", taskName, sourceProjectPath, time.Now().UnixNano())
+		created := a.createTaskRecordWithWorkingDir(taskName, content, []string{taskForkedTag, taskSourceTagPrefix + sourceProjectPath}, workingDir, false)
+		if created.ProjectPath == "" {
+			log.Printf("[project_search] ForkRecentTask create failed source=%q elapsed=%s", sourceProjectPath, time.Since(started).Round(time.Millisecond))
+			return created
+		}
+		copyStarted := time.Now()
+		func(source, target string) {
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[project_search] ForkRecentTask sync copy panic source=%q fork=%q panic=%v elapsed=%s", source, target, r, time.Since(copyStarted).Round(time.Millisecond))
+				}
+			}()
+			a.copyProjectConversation(source, target)
+			log.Printf("[project_search] ForkRecentTask sync copy complete source=%q fork=%q elapsed=%s", source, target, time.Since(copyStarted).Round(time.Millisecond))
+		}(sourceProjectPath, created.ProjectPath)
+		a.emitProjectIndexChanged(sourceProjectPath)
+		a.emitProjectIndexChanged(created.ProjectPath)
+		log.Printf("[project_search] ForkRecentTask created independent fork source=%q fork=%q critical_elapsed=%s lock_elapsed=%s", sourceProjectPath, created.ProjectPath, time.Since(started).Round(time.Millisecond), time.Since(lockStarted).Round(time.Millisecond))
+		return created
+	}()
+	return result
+}
+
+func findVisibleForkForSource(pi *memory.ProjectIndex, sourceProjectPath string) *memory.ProjectRecord {
+	if pi == nil || strings.TrimSpace(sourceProjectPath) == "" {
+		return nil
+	}
+	sourceKey := normalizeRecentTaskPathKey(sourceProjectPath)
+	for _, rec := range pi.ListRecent(1000) {
+		if rec.ProjectPath == sourceProjectPath {
+			continue
+		}
+		if !projectRecordHasTag(rec, taskForkedTag) {
+			continue
+		}
+		if pi.IsHidden(rec.ProjectPath) || pi.IsArchived(rec.ProjectPath) {
+			continue
+		}
+		for _, tag := range rec.Tags {
+			if strings.HasPrefix(tag, taskSourceTagPrefix) && normalizeRecentTaskPathKey(strings.TrimPrefix(tag, taskSourceTagPrefix)) == sourceKey {
+				clone := rec
+				return &clone
+			}
+		}
+	}
+	return nil
+}
+
+const recentTaskWorkingDirTagPrefix = "working_dir:"
+
+func normalizeRecentTaskWorkingDir(workingDir string) string {
+	workingDir = strings.TrimSpace(workingDir)
+	if workingDir == "" {
+		return ""
+	}
+	normalized, _, err := normalizeWorkflowProjectPath(workingDir)
+	if err != nil {
+		log.Printf("[project_search] invalid task working directory %q: %v", workingDir, err)
+		return ""
+	}
+	if !filepath.IsAbs(normalized) {
+		log.Printf("[project_search] invalid task working directory %q: path must be absolute", workingDir)
+		return ""
+	}
+	return normalizeProjectSessionPath(normalized)
+}
+
+func recentTaskWorkingDirTag(workingDir string) string {
+	workingDir = normalizeRecentTaskWorkingDir(workingDir)
+	if workingDir == "" {
+		return ""
+	}
+	return recentTaskWorkingDirTagPrefix + workingDir
+}
+
+func recentTaskWorkingDirFromTags(tags []string) string {
+	for _, tag := range tags {
+		if value := strings.TrimSpace(strings.TrimPrefix(tag, recentTaskWorkingDirTagPrefix)); value != tag {
+			return normalizeRecentTaskWorkingDir(value)
+		}
+	}
+	return ""
+}
+
+func (a *App) recentTaskWorkingDir(projectPath string) string {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return ""
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ""
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return ""
+	}
+	rec := pi.Get(projectPath)
+	if rec == nil {
+		return ""
+	}
+	return recentTaskWorkingDirFromTags(rec.Tags)
+}
+
+// codingTaskTaggedWorkRoot is the local coding workspace stored on the task
+// record. Empty until a working_dir tag exists, and never a task sandbox.
+func (a *App) codingTaskTaggedWorkRoot(projectPath string) string {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || projectPath == "" || !looksLikeManagedTaskIdentity(projectPath) {
+		return ""
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ""
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return ""
+	}
+	rec := pi.Get(projectPath)
+	if rec == nil || codingModeForProjectRecord(*rec) != taskCodingDevTag {
+		return ""
+	}
+	wd := normalizeProjectSessionPath(recentTaskWorkingDirFromTags(rec.Tags))
+	if wd == "" || isLocalCodingIdentityOrSandbox(projectPath, wd) {
+		return ""
+	}
+	return wd
+}
+
+// codingWorkbenchLocalExecDir is the live work root for a local coding tab.
+//
+// Path model:
+//   - identity  = managed task dir (~/.maclaw/data/tasks/...) — tab, conversation, event routing
+//   - work root = EffectiveWorkingDirForOwner                 — tools, preview, agent cwd
+//
+// These are not interchangeable. recentTaskExecutionProjectPath may fall back
+// to taskDir/workspace for ordinary-task isolation; that sandbox is never the
+// coding work root. The top-bar current working directory is.
+func isLocalCodingIdentityOrSandbox(identity, dir string) bool {
+	identity = normalizeProjectSessionPath(identity)
+	dir = normalizeProjectSessionPath(dir)
+	if identity == "" || dir == "" {
+		return false
+	}
+	if dir == identity || dir == filepath.Join(identity, "workspace") {
+		return true
+	}
+	// A managed task folder is identity, not a project. Paths under
+	// …/data/tasks/<slug> (conversation, workspace/src, …) are not a work root.
+	if !looksLikeManagedTaskIdentity(identity) {
+		return false
+	}
+	rel, err := filepath.Rel(identity, dir)
+	if err != nil || rel == "." {
+		return err == nil
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
+func looksLikeManagedTaskIdentity(identity string) bool {
+	n := filepath.ToSlash(strings.ToLower(normalizeProjectSessionPath(identity)))
+	return strings.Contains(n, "/data/tasks/")
+}
+
+func (a *App) liveWorkingDirForCodingOwner(ownerID string) string {
+	if a == nil {
+		return ""
+	}
+	ownerID = strings.TrimSpace(ownerID)
+	dir := a.EffectiveWorkingDirForOwner(ownerID)
+	identity := projectPathFromSessionOwnerID(ownerID)
+	if isLocalCodingIdentityOrSandbox(identity, dir) {
+		dir = a.EffectiveDesktopWorkingDir()
+	}
+	if isLocalCodingIdentityOrSandbox(identity, dir) {
+		return ""
+	}
+	return dir
+}
+
+func (a *App) codingWorkbenchLocalExecDir(projectPath string) string {
+	if a == nil {
+		return ""
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return ""
+	}
+	return a.liveWorkingDirForCodingOwner(projectSessionOwnerID(projectPath))
+}
+
+func (a *App) codingWorkbenchLocalExecDirOrDesktop(projectPath string) string {
+	if dir := a.codingWorkbenchLocalExecDir(projectPath); dir != "" {
+		return dir
+	}
+	if a == nil {
+		return ""
+	}
+	dir := normalizeProjectSessionPath(a.EffectiveDesktopWorkingDir())
+	if isLocalCodingIdentityOrSandbox(normalizeProjectSessionPath(projectPath), dir) {
+		return ""
+	}
+	return dir
+}
+
+// syncCodingWorkbenchWorkingDir keeps an armed local coding session on the
+// same directory the user just chose in the top-bar picker.
+func (a *App) syncCodingWorkbenchWorkingDir(projectPath, newDir string) {
+	if a == nil {
+		return
+	}
+	mode, _, _ := a.projectTabIndexCodingMetadata(projectPath)
+	if mode != taskCodingDevTag {
+		return
+	}
+	newDir = normalizeProjectSessionPath(newDir)
+	if newDir == "" || isLocalCodingIdentityOrSandbox(projectPath, newDir) {
+		return
+	}
+	handler, userID, err := a.codingWorkbenchHandlerForProject(projectPath)
+	if err != nil || handler == nil {
+		return
+	}
+	if existing, ok := handler.pendingTemplateCodingProjectPath.Load(userID); ok {
+		if p, _ := existing.(string); normalizeProjectSessionPath(p) == newDir {
+			mem := handler.getStickyCodingWorkbenchMemory(userID)
+			if mem.Kind == "local" && normalizeProjectSessionPath(mem.ProjectPath) == newDir {
+				return
+			}
+		}
+	}
+	handler.rearmStickyLocalCodingEnvironment(userID, newDir)
+}
+
+// managedTaskExecutionDirForDisplay is the directory tools actually run in
+// for a managed task record: the persistent working_dir tag, else the
+// workspace/ sandbox beside the task metadata. Local coding workbenches keep
+// their own exec-dir resolution (tagged work root or the desktop default),
+// and non-managed records execute in their project path, so both return "".
+func (a *App) managedTaskExecutionDirForDisplay(projectPath string) string {
+	if a == nil || !a.isManagedRecentTaskWorkspacePath(projectPath) {
+		return ""
+	}
+	if a.projectPathIsLocalCodingWorkbench(projectPath) {
+		return ""
+	}
+	return a.recentTaskExecutionProjectPath(projectPath)
+}
+
+func (a *App) recentTaskExecutionProjectPath(projectPath string) string {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	// Tab-local overrides are resolved by EffectiveWorkingDirForOwner. This task
+	// metadata helper must never leak a directory between independent tabs.
+	// Priority 1: persistent workingDir tag from memory store.
+	if workingDir := a.recentTaskWorkingDir(projectPath); workingDir != "" {
+		return workingDir
+	}
+	// Priority 3: for managed task directories, use workspace/ subdirectory
+	// to isolate tool outputs from task metadata (task.md, conversation).
+	// No custom working_dir here (priority 2 already returned if set).
+	// Read path stays pure: the workspace dir is created at task creation and
+	// on task open/resume; listing tasks must not pay per-record disk syscalls.
+	if a.isManagedRecentTaskWorkspacePath(projectPath) {
+		return filepath.Join(projectPath, "workspace")
+	}
+	return projectPath
+}
+
+func (a *App) ensureRecentTaskExecutionWorkingDir(taskProjectPath, executionProjectPath string) error {
+	taskProjectPath = normalizeProjectSessionPath(taskProjectPath)
+	executionProjectPath, created, err := ensureAbsoluteDirectoryPath(executionProjectPath, "task working directory")
+	if err != nil {
+		return err
+	}
+	if taskProjectPath == "" || executionProjectPath == "" || taskProjectPath == executionProjectPath {
+		return nil
+	}
+	if created {
+		log.Printf("[project_search] created task working directory task=%q working_dir=%q", taskProjectPath, executionProjectPath)
+	}
+	return nil
+}
+
+func projectRecordHasTag(rec memory.ProjectRecord, target string) bool {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return false
+	}
+	for _, tag := range rec.Tags {
+		if strings.TrimSpace(tag) == target {
+			return true
+		}
+	}
+	return false
+}
+
+func isTaskManagementRecord(rec memory.ProjectRecord) bool {
+	if projectRecordHasTag(rec, taskForkedTag) {
+		return false
+	}
+	if projectRecordHasTag(rec, taskManagementTag) ||
+		projectRecordHasTag(rec, taskUserCreatedTag) ||
+		projectRecordHasTag(rec, taskUserSavedTag) {
+		return true
+	}
+	// Backward-compatible display for tasks the user explicitly created before
+	// task-management tags existed.
+	return projectRecordHasTag(rec, taskLegacyManualTag) && projectRecordHasTag(rec, taskLegacyRecentTag)
+}
+
+// recoverManagedTaskRecordsFromDisk rebuilds sidebar task rows from
+// ~/.maclaw/data/tasks directories that still have task.md but are missing
+// from the memory ProjectIndex. Hide/archive prefs and fork workspaces stay
+// excluded. Returns the number of records written.
+func (a *App) recoverManagedTaskRecordsFromDisk() int {
+	if a == nil || a.memoryStore == nil {
+		return 0
+	}
+	pi := a.memoryStore.ProjectIndex()
+	var restoreOnChanged func(string)
+	if pi != nil {
+		restoreOnChanged = pi.OnChanged
+		pi.OnChanged = nil
+		defer func() { pi.OnChanged = restoreOnChanged }()
+	}
+
+	tasksRoot := filepath.Join(a.GetDataDir(), "tasks")
+	entries, err := os.ReadDir(tasksRoot)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			log.Printf("[project_search] recover managed tasks: read %s: %v", tasksRoot, err)
+		}
+		return 0
+	}
+	recovered := 0
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		taskDir := normalizeProjectSessionPath(filepath.Join(tasksRoot, entry.Name()))
+		if a.recoverOneManagedTaskFromDisk(pi, taskDir) {
+			recovered++
+		}
+	}
+	if recovered == 0 {
+		return 0
+	}
+	if err := a.memoryStore.Flush(); err != nil {
+		log.Printf("[project_search] recover managed tasks flush failed: %v", err)
+	}
+	a.emitProjectIndexChanged("")
+	return recovered
+}
+
+func (a *App) recoverOneManagedTaskFromDisk(pi *memory.ProjectIndex, taskDir string) bool {
+	if !a.isManagedRecentTaskWorkspacePath(taskDir) {
+		return false
+	}
+	if pi != nil {
+		if pi.IsHidden(taskDir) || pi.IsArchived(taskDir) {
+			return false
+		}
+		if rec := pi.Get(taskDir); rec != nil && isTaskManagementRecord(*rec) && rec.HasOutput {
+			return false
+		}
+	}
+	taskFile := filepath.Join(taskDir, "task.md")
+	contentBytes, err := os.ReadFile(taskFile)
+	if err != nil {
+		return false
+	}
+	content := string(contentBytes)
+	if strings.TrimSpace(content) == "" || isRecoveredForkedTaskContent(content) {
+		return false
+	}
+	// VS Code / ACP rows are session-cloned leftovers. Recovering them after
+	// DeleteTask is what made the sidebar task reappear on every GUI restart.
+	// Digital-employee chats are not local tasks; recovering their task.md
+	// would put a same-named local chat back on the sidebar.
+	if isAutoACPAssistantTabTask(taskDir, content) || isVEAssistantTabContent(content) {
+		return false
+	}
+	title, extraTags := inferRecoveredTaskMetadata(taskDir, content)
+	if title == "" {
+		title = stripTaskDirTimestampSuffix(lastPathComponent(taskDir))
+	}
+	tags := append([]string{taskLegacyManualTag, taskLegacyRecentTag, taskDir}, extraTags...)
+	createdAt, updatedAt := recoveredTaskTimes(content, taskFile)
+	result, upsertErr := a.memoryStore.UpsertTaskArtifact(memory.TaskArtifactUpsertOptions{
+		Title:            title,
+		Content:          content,
+		Tags:             tags,
+		IdentityTagCount: 3,
+		SourceURL:        taskFile,
+		SourceType:       "manual",
+		CreatedAt:        createdAt,
+		UpdatedAt:        updatedAt,
+		MergeExistingTags: func(existing, desired []string) []string {
+			return mergeRecoveredTaskTags(existing, desired)
+		},
+	})
+	if upsertErr != nil {
+		log.Printf("[project_search] recover managed task failed project=%q err=%v", taskDir, upsertErr)
+		return false
+	}
+	return result.Created || result.Updated
+}
+
+// repairMergedTaskIdentityEntries undoes compressor/semantic-dedup merges that
+// unioned many managed task identities into one task_artifact entry. Such a
+// merged entry carries dozens of task-dir tags but backs only ONE sidebar
+// record, hiding every other absorbed task — and because it matches every
+// managed task's identity upsert, disk recovery keeps rewriting it instead of
+// recreating per-task entries. Strip the absorbed task-dir tags so each
+// managed task can recover its own identity entry; the entry keeps the task
+// its SourceURL points to (fallback: first managed-dir tag, matching
+// inferProjectPath's first-path-tag rule).
+func (a *App) repairMergedTaskIdentityEntries() int {
+	if a == nil || a.memoryStore == nil {
+		return 0
+	}
+	tasksRoot := normalizeProjectSessionPath(filepath.Join(a.GetDataDir(), "tasks"))
+	if tasksRoot == "" {
+		return 0
+	}
+	managedDirFromTag := func(tag string) string {
+		p := normalizeProjectSessionPath(tag)
+		if p != "" && p != tasksRoot && strings.HasPrefix(p, tasksRoot+string(filepath.Separator)) {
+			return p
+		}
+		return ""
+	}
+	ownDirFromSourceURL := func(sourceURL string) string {
+		p := normalizeProjectSessionPath(filepath.Dir(strings.TrimSpace(sourceURL)))
+		if p != "" && p != tasksRoot && strings.HasPrefix(p, tasksRoot+string(filepath.Separator)) {
+			return p
+		}
+		return ""
+	}
+	repaired := 0
+	for _, entry := range a.memoryStore.List(memory.CategoryTaskArtifact, "") {
+		if !memory.IsDurableTaskManagementEntry(&entry) {
+			continue
+		}
+		ownDir := ownDirFromSourceURL(entry.SourceURL)
+		var managedDirs []string
+		for _, tag := range entry.Tags {
+			if dir := managedDirFromTag(tag); dir != "" {
+				managedDirs = append(managedDirs, dir)
+			}
+		}
+		if len(managedDirs) < 2 {
+			continue
+		}
+		if ownDir == "" {
+			ownDir = managedDirs[0]
+		}
+		keep := make([]string, 0, len(entry.Tags))
+		for _, tag := range entry.Tags {
+			if dir := managedDirFromTag(tag); dir != "" && dir != ownDir {
+				continue
+			}
+			keep = append(keep, tag)
+		}
+		updated := entry
+		updated.Tags = keep
+		updated.UpdatedAt = time.Now()
+		if err := a.memoryStore.UpdateEntriesByID([]memory.Entry{updated}); err != nil {
+			log.Printf("[project_search] repair merged task entry %s: %v", entry.ID, err)
+			continue
+		}
+		log.Printf("[project_search] repair merged task entry %s: kept %s, released %d absorbed task dirs", entry.ID, ownDir, len(managedDirs)-1)
+		repaired++
+	}
+	return repaired
+}
+
+func mergeRecoveredTaskTags(existing, desired []string) []string {
+	out := append([]string{}, desired...)
+	seen := make(map[string]bool, len(desired)+len(existing))
+	for _, tag := range out {
+		seen[tag] = true
+	}
+	for _, tag := range existing {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || seen[tag] || tag == taskForkedTag {
+			continue
+		}
+		if isRemoteCodingMetaTag(tag) || shouldKeepTaskTagOnRemoteMetaUpdate(tag) {
+			out = append(out, tag)
+			seen[tag] = true
+		}
+	}
+	return out
+}
+
+func isRecoveredForkedTaskContent(content string) bool {
+	hasForkID := false
+	hasSource := false
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Fork ID:") {
+			hasForkID = true
+		}
+		if strings.HasPrefix(line, "Source task:") {
+			hasSource = true
+		}
+		if hasForkID && hasSource {
+			return true
+		}
+	}
+	return false
+}
+
+func recoveredTaskCreatedAt(content, taskFile string) time.Time {
+	created, _ := recoveredTaskTimes(content, taskFile)
+	return created
+}
+
+func recoveredTaskTimes(content, taskFile string) (created, updated time.Time) {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		value, ok := strings.CutPrefix(line, "Task ID:")
+		if !ok {
+			continue
+		}
+		n, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64)
+		if err != nil || n <= 0 {
+			continue
+		}
+		parsed := time.Unix(0, n)
+		if parsed.After(time.Date(2020, 1, 1, 0, 0, 0, 0, time.UTC)) && parsed.Before(time.Now().Add(24*time.Hour)) {
+			created = parsed
+			break
+		}
+	}
+	updated = created
+	if info, err := os.Stat(taskFile); err == nil && !info.ModTime().IsZero() {
+		modTime := info.ModTime()
+		if created.IsZero() {
+			created = modTime
+		}
+		if updated.IsZero() || modTime.After(updated) {
+			updated = modTime
+		}
+	}
+	return created, updated
+}
+
+func inferRecoveredTaskMetadata(taskDir, content string) (string, []string) {
+	title := recoveredTaskTitle(taskDir, content)
+	tags := []string{taskManagementTag, taskUserCreatedTag}
+	if expertID := recoveredExpertIDFromTaskContent(content); expertID != "" {
+		tags = append(tags, taskSourceExpertPrefix+expertID)
+	}
+	workbench := loadRecoveredCodingWorkbench(taskDir)
+	workingDir := recoveredWorkingDirFromTaskContent(content)
+	if workingDir == "" && workbench.kind == "local" {
+		workingDir = workbench.projectPath
+	}
+	if tag := recentTaskWorkingDirTag(workingDir); tag != "" {
+		tags = append(tags, tag)
+	}
+	switch recoveredCodingMode(taskDir, workbench.kind) {
+	case taskRemoteCodingDevTag:
+		tags = append(tags, taskRemoteCodingDevTag)
+	case taskCodingDevTag:
+		tags = append(tags, taskCodingDevTag)
+	}
+	return title, tags
+}
+
+func recoveredTaskTitle(taskDir, content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "# ") {
+			if title := normalizeRecentTaskName(strings.TrimSpace(strings.TrimPrefix(line, "# "))); title != "" {
+				return title
+			}
+			break
+		}
+	}
+	name := stripTaskDirTimestampSuffix(lastPathComponent(taskDir))
+	return normalizeRecentTaskName(name)
+}
+
+// stripTaskDirTimestampSuffix removes the "-<UnixNano>" suffix that task
+// directories get at creation time (tasks/<slug>-<UnixNano>).
+func stripTaskDirTimestampSuffix(name string) string {
+	if i := strings.LastIndex(name, "-"); i > 0 {
+		suffix := name[i+1:]
+		if len(suffix) >= 10 && isAllDecimalDigits(suffix) {
+			return name[:i]
+		}
+	}
+	return name
+}
+
+func recoveredExpertIDFromTaskContent(content string) string {
+	const marker = "working with expert:"
+	lower := strings.ToLower(content)
+	idx := strings.Index(lower, marker)
+	if idx < 0 {
+		return ""
+	}
+	rest := strings.TrimSpace(content[idx+len(marker):])
+	rest = strings.TrimRight(rest, ".\n\r\t ")
+	if i := strings.IndexAny(rest, " \t\r\n"); i >= 0 {
+		rest = rest[:i]
+	}
+	rest = strings.TrimSpace(rest)
+	if !expertIDPattern.MatchString(rest) {
+		return ""
+	}
+	return rest
+}
+
+func recoveredWorkingDirFromTaskContent(content string) string {
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.TrimSpace(line)
+		if value, ok := strings.CutPrefix(line, "Working directory:"); ok {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+type recoveredCodingWorkbench struct {
+	kind        string
+	projectPath string
+}
+
+func loadRecoveredCodingWorkbench(taskDir string) recoveredCodingWorkbench {
+	data, err := os.ReadFile(filepath.Join(taskDir, stickyCodingMemoryFileName))
+	if err != nil {
+		return recoveredCodingWorkbench{}
+	}
+	var meta struct {
+		Kind        string `json:"kind"`
+		ProjectPath string `json:"project_path"`
+	}
+	if json.Unmarshal(data, &meta) != nil {
+		return recoveredCodingWorkbench{}
+	}
+	return recoveredCodingWorkbench{
+		kind:        strings.ToLower(strings.TrimSpace(meta.Kind)),
+		projectPath: strings.TrimSpace(meta.ProjectPath),
+	}
+}
+
+func recoveredCodingMode(taskDir, workbenchKind string) string {
+	switch workbenchKind {
+	case "remote":
+		return taskRemoteCodingDevTag
+	case "local":
+		return taskCodingDevTag
+	}
+	name := lastPathComponent(taskDir)
+	switch {
+	case strings.Contains(name, "远程编程"):
+		return taskRemoteCodingDevTag
+	case strings.Contains(name, "本地编程"):
+		return taskCodingDevTag
+	default:
+		return ""
+	}
+}
+
+func isAllDecimalDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func projectWorkflowProjectPathForRecord(rec memory.ProjectRecord) string {
+	if !projectRecordHasTag(rec, taskForkedTag) {
+		return rec.ProjectPath
+	}
+	for _, tag := range rec.Tags {
+		if strings.HasPrefix(tag, taskSourceTagPrefix) {
+			if source := strings.TrimSpace(strings.TrimPrefix(tag, taskSourceTagPrefix)); source != "" {
+				return source
+			}
+		}
+	}
+	return rec.ProjectPath
+}
+
+func (a *App) activeWorkflowForRecentTaskPath(projectPath string) *ProjectWorkflowState {
+	if a == nil {
+		return nil
+	}
+	if a.memoryStore != nil {
+		if pi := a.memoryStore.ProjectIndex(); pi != nil {
+			if rec := pi.Get(projectPath); rec != nil {
+				return a.activeWorkflowForProject(projectWorkflowProjectPathForRecord(*rec))
+			}
+		}
+	}
+	return a.activeWorkflowForProject(projectPath)
+}
+
+func (a *App) activeWorkflowForProject(projectPath string) *ProjectWorkflowState {
+	return a.activeWorkflowForProjectFromCache(projectPath, nil)
+}
+
+// activeWorkflowForProjectFromCache behaves like activeWorkflowForProject but,
+// when v2Cache is non-nil, resolves V2 workflow states from the preloaded map
+// instead of hitting the store once per record.
+func (a *App) activeWorkflowForProjectFromCache(projectPath string, v2Cache map[string]*v2.WorkflowState) *ProjectWorkflowState {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || projectPath == "" {
+		return nil
+	}
+	if state := a.workflowSnapshotForPath(projectPath, v2Cache); state != nil {
+		return state
+	}
+	if executionProjectPath := a.recentTaskExecutionProjectPath(projectPath); executionProjectPath != "" && executionProjectPath != projectPath {
+		return a.workflowSnapshotForExecutionPath(executionProjectPath, v2Cache)
+	}
+	return nil
+}
+
+// workflowSnapshotForPath loads the workflow stored for this path's own session.
+func (a *App) workflowSnapshotForPath(projectPath string, v2Cache map[string]*v2.WorkflowState) *ProjectWorkflowState {
+	if a == nil {
+		return nil
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return nil
+	}
+	ownerID := projectSessionOwnerID(projectPath)
+	var terminalV2 *ProjectWorkflowState
+	var v2State *v2.WorkflowState
+	if v2Cache != nil {
+		v2State = v2Cache[ownerID]
+	} else if a.workflowV2 != nil && a.workflowV2.store != nil {
+		// The task list is a recent-work snapshot, so terminal V2 workflows
+		// belong here too. GetActive intentionally hides them from runtime
+		// routing, whereas the store keeps the latest state for this task.
+		if state, err := a.workflowV2.store.Load(ownerID); err == nil {
+			v2State = state
+		}
+	}
+	if v2State != nil {
+		snapshot := projectWorkflowStateFromV2(v2State)
+		if v2State.Status == v2.StatusActive {
+			return snapshot
+		}
+		terminalV2 = snapshot
+	}
+	if a.workflowEngine != nil {
+		if state := a.workflowEngine.GetActiveWorkflow(ownerID); state != nil {
+			return &ProjectWorkflowState{
+				ID:            state.ID,
+				Type:          string(state.Type),
+				Phase:         state.CurrentPhase,
+				Status:        string(state.Status),
+				ProjectPath:   strings.TrimSpace(state.ProjectPath),
+				PendingReview: strings.TrimSpace(state.PendingReviewPhaseID) != "",
+			}
+		}
+	}
+	return terminalV2
+}
+
+// workflowSnapshotForExecutionPath loads a workflow stored on a working
+// directory. An empty project path is filled with that directory so callers
+// can see where the snapshot came from.
+func (a *App) workflowSnapshotForExecutionPath(executionProjectPath string, v2Cache map[string]*v2.WorkflowState) *ProjectWorkflowState {
+	state := a.workflowSnapshotForPath(executionProjectPath, v2Cache)
+	if state != nil && strings.TrimSpace(state.ProjectPath) == "" {
+		state.ProjectPath = executionProjectPath
+	}
+	return state
+}
+
+// applyTaskListWorkflow attaches one task's status. The task's own snapshot
+// stays with it even when its project path is the shared working directory.
+// A snapshot or ledger row found only on that directory is kept for the tasks
+// whose sessions are executing there.
+func (a *App) applyTaskListWorkflow(result *ProjectSearchResult, workflowPath string, v2Cache map[string]*v2.WorkflowState, activeByRef map[string]string, shared map[string]struct{}, owners map[string]struct{}) {
+	if a == nil || result == nil {
+		return
+	}
+	state := a.workflowSnapshotForPath(workflowPath, v2Cache)
+	if state == nil {
+		if executionProjectPath := a.recentTaskExecutionProjectPath(workflowPath); executionProjectPath != "" && executionProjectPath != normalizeProjectSessionPath(workflowPath) && taskMayUseSharedDirectoryStatus(result.ProjectPath, executionProjectPath, shared, owners) {
+			state = a.workflowSnapshotForExecutionPath(executionProjectPath, v2Cache)
+		}
+	}
+	result.ActiveWorkflow = state
+	if projectWorkflowSnapshotActive(result.ActiveWorkflow) {
+		return
+	}
+	if runtimeState := codingLedgerStatusForTask(result.ProjectPath, result.Tags, activeByRef, shared, owners); runtimeState != nil {
+		result.ActiveWorkflow = runtimeState
+	}
+}
+
+// projectWorkflowSnapshotActive reports a workflow the task list should keep
+// ahead of the coding-runtime ledger. A finished, failed, or cancelled status
+// is not live, even when its phase name contains "execute" or "active".
+// Paused and interrupted stay on the keyword check so a phase that is still
+// in progress is not replaced by an older ledger row.
+func projectWorkflowSnapshotActive(state *ProjectWorkflowState) bool {
+	if state == nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(state.Status)) {
+	case "completed", "complete", "success", "succeeded", "done", "passed",
+		"failed", "failure", "error", "blocked",
+		"cancelled", "canceled":
+		return false
+	}
+	raw := strings.ToLower(strings.TrimSpace(state.Status) + " " + strings.TrimSpace(state.Phase))
+	for _, keyword := range []string{"running", "execut", "active", "processing"} {
+		if strings.Contains(raw, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+// normalizeCodingRuntimeRef folds a coding runtime project_ref for map
+// lookups: local dirs differ in drive-letter case and slash style between
+// the ledger row and the task tag.
+func normalizeCodingRuntimeRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	ref = strings.ReplaceAll(ref, `\`, "/")
+	ref = strings.TrimRight(ref, "/")
+	return strings.ToLower(ref)
+}
+
+// codingRuntimeRefForTaskTags resolves the coding runtime ledger key for a
+// task row: remote coding tasks key by remote workdir, local coding tasks by
+// their working directory. Rows without a coding mode tag never match a
+// runtime row, so ordinary chat tasks are unaffected. Remote wins over local
+// because remote task rows may also carry legacy local coding tags.
+func codingRuntimeRefForTaskTags(tags []string) string {
+	isRemote := false
+	isCoding := false
+	remoteWorkDir := ""
+	localWorkDir := ""
+	for _, tag := range tags {
+		switch {
+		case tag == "remote_coding_dev":
+			isRemote = true
+		case tag == "coding_dev":
+			isCoding = true
+		case strings.HasPrefix(tag, taskRemoteWorkDirTagPrefix):
+			if workDir := strings.TrimSpace(strings.TrimPrefix(tag, taskRemoteWorkDirTagPrefix)); workDir != "" && remoteWorkDir == "" {
+				remoteWorkDir = workDir
+			}
+		case strings.HasPrefix(tag, recentTaskWorkingDirTagPrefix):
+			if workDir := strings.TrimSpace(strings.TrimPrefix(tag, recentTaskWorkingDirTagPrefix)); workDir != "" && localWorkDir == "" {
+				localWorkDir = workDir
+			}
+		}
+	}
+	if isRemote && remoteWorkDir != "" {
+		return remoteWorkDir
+	}
+	if isCoding && localWorkDir != "" {
+		return localWorkDir
+	}
+	return ""
+}
+
+// activeCodingRuntimeStatusesByRef loads the non-terminal coding runtime
+// statuses keyed by normalized project_ref. It deliberately reuses an already
+// opened store instead of ensuring one: SearchTasks runs on every task list
+// refresh, and apps that never run coding work should not create the ledger
+// database as a side effect of opening the sidebar.
+func (a *App) activeCodingRuntimeStatusesByRef() map[string]string {
+	if a == nil {
+		return nil
+	}
+	a.codingRuntimeStoreMu.Lock()
+	store := a.codingRuntimeStore
+	a.codingRuntimeStoreMu.Unlock()
+	if store == nil {
+		return nil
+	}
+	byRef, err := store.ListActiveTaskStatusesByProjectRef()
+	if err != nil {
+		log.Printf("[task-search] coding runtime status load failed: %v", err)
+		return nil
+	}
+	out := make(map[string]string, len(byRef))
+	for ref, status := range byRef {
+		out[normalizeCodingRuntimeRef(ref)] = status
+	}
+	return out
+}
+
+// recordsContainCodingRuntimeRef reports that a search page includes a coding
+// task. Those rows need the full task index to see a sibling outside the page.
+func recordsContainCodingRuntimeRef(records []memory.ProjectRecord) bool {
+	for i := range records {
+		if codingRuntimeRefForTaskTags(records[i].Tags) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+// codingRuntimeRefShareCounts returns working directories used by at least
+// two visible coding rows. Unique directories are omitted so later checks
+// stay a map lookup.
+func codingRuntimeRefShareCounts(records []memory.ProjectRecord, include func(memory.ProjectRecord) bool) map[string]struct{} {
+	seen := make(map[string]struct{})
+	shared := make(map[string]struct{})
+	for i := range records {
+		if include != nil && !include(records[i]) {
+			continue
+		}
+		ref := normalizeCodingRuntimeRef(codingRuntimeRefForTaskTags(records[i].Tags))
+		if ref == "" {
+			continue
+		}
+		if _, ok := seen[ref]; ok {
+			shared[ref] = struct{}{}
+			continue
+		}
+		seen[ref] = struct{}{}
+	}
+	return shared
+}
+
+// codingLedgerOwnersForSharedRefs reads the live task sessions only when at
+// least one directory is shared. A unique directory does not need them.
+func codingLedgerOwnersForSharedRefs(shared map[string]struct{}) map[string]struct{} {
+	if len(shared) == 0 {
+		return nil
+	}
+	return activeForegroundTaskPathKeys()
+}
+
+// activeForegroundTaskPathKeys lists task directories that currently have a
+// foreground agent loop.
+func activeForegroundTaskPathKeys() map[string]struct{} {
+	foregroundAgentOwners.mu.Lock()
+	defer foregroundAgentOwners.mu.Unlock()
+	out := make(map[string]struct{}, len(foregroundAgentOwners.counts))
+	for owner, count := range foregroundAgentOwners.counts {
+		if count <= 0 {
+			continue
+		}
+		key := normalizeRecentTaskPathKey(projectPathFromSessionOwnerID(owner))
+		if key == "" {
+			continue
+		}
+		out[key] = struct{}{}
+	}
+	return out
+}
+
+// taskOwnsSharedDirectory reports that this task's session is executing.
+// An empty owner set means no session is executing in the shared directory.
+func taskOwnsSharedDirectory(projectPath string, owners map[string]struct{}) bool {
+	if len(owners) == 0 {
+		return false
+	}
+	_, ok := owners[normalizeRecentTaskPathKey(projectPath)]
+	return ok
+}
+
+// taskMayUseSharedDirectoryStatus reports whether a directory-level snapshot
+// or ledger row may be copied onto this task. A directory used by one task
+// keeps the previous behavior. A shared directory contributes only to the
+// tasks that are executing.
+func taskMayUseSharedDirectoryStatus(projectPath, directory string, shared map[string]struct{}, owners map[string]struct{}) bool {
+	ref := normalizeCodingRuntimeRef(directory)
+	if ref == "" {
+		return false
+	}
+	if _, ok := shared[ref]; !ok {
+		return true
+	}
+	return taskOwnsSharedDirectory(projectPath, owners)
+}
+
+// codingLedgerStatusForTask returns the directory ledger status for one task.
+// Several tasks may share a directory and edit different parts, so that
+// status is applied only to the tasks whose own session is executing. Every
+// other task keeps the workflow snapshot it already has.
+func codingLedgerStatusForTask(projectPath string, tags []string, activeByRef map[string]string, shared map[string]struct{}, owners map[string]struct{}) *ProjectWorkflowState {
+	ref := normalizeCodingRuntimeRef(codingRuntimeRefForTaskTags(tags))
+	if ref == "" || len(activeByRef) == 0 {
+		return nil
+	}
+	if _, ok := shared[ref]; ok && !taskOwnsSharedDirectory(projectPath, owners) {
+		return nil
+	}
+	return activeCodingRuntimeWorkflowForTags(tags, activeByRef)
+}
+
+// activeCodingRuntimeWorkflowForTags merges the durable coding runtime ledger
+// into a task row's status snapshot. Pure coding runs (local and remote) never
+// create a workflow snapshot, so without this merge an in-progress run is
+// filed as completed (has_output stays true from earlier runs).
+func activeCodingRuntimeWorkflowForTags(tags []string, activeByRef map[string]string) *ProjectWorkflowState {
+	ref := codingRuntimeRefForTaskTags(tags)
+	if ref == "" || len(activeByRef) == 0 {
+		return nil
+	}
+	status, ok := activeByRef[normalizeCodingRuntimeRef(ref)]
+	if !ok {
+		return nil
+	}
+	switch codingruntime.TaskStatus(status) {
+	case codingruntime.TaskRunning, codingruntime.TaskQueued, codingruntime.TaskWaitingChild:
+		return &ProjectWorkflowState{Status: string(codingruntime.TaskRunning)}
+	case codingruntime.TaskCompleted:
+		// A finished write that an older ledger still marks non-terminal is
+		// projected here so the task list can show 已完成.
+		return &ProjectWorkflowState{Status: string(codingruntime.TaskCompleted)}
+	case codingruntime.TaskWaitingApproval:
+		// Only an approval is waiting on the user. There is a concrete decision.
+		return &ProjectWorkflowState{Status: "waiting_review", PendingReview: true}
+	case codingruntime.TaskBlocked:
+		// A gate block is not something the user can confirm. Surface it as a
+		// failure. "failed" (not "blocked") matches the header and the sidebar
+		// danger tone without the header's broader "blocked" substring.
+		return &ProjectWorkflowState{Status: string(codingruntime.TaskFailed)}
+	case codingruntime.TaskInterrupted:
+		return &ProjectWorkflowState{Status: string(codingruntime.TaskInterrupted), PendingReview: true}
+	default:
+		return nil
+	}
+}
+
+func projectWorkflowStateFromV2(state *v2.WorkflowState) *ProjectWorkflowState {
+	if state == nil {
+		return nil
+	}
+	phaseID := ""
+	if phase := state.ActivePhase(); phase != nil {
+		phaseID = phase.ID
+	} else if len(state.Phases) > 0 && state.Status != v2.StatusActive {
+		// Terminal workflows advance beyond their final phase, so ActivePhase is
+		// nil. Preserve that last phase as useful context in the recent task list.
+		phaseID = state.Phases[len(state.Phases)-1].ID
+	}
+	return &ProjectWorkflowState{
+		ID:          state.ID,
+		Type:        state.Type,
+		ProjectPath: state.ProjectPath,
+		Phase:       phaseID,
+		Status:      string(state.Status),
+		// A cancelled workflow can retain its phase's waiting-confirm status in
+		// storage. Terminal status takes precedence over a stale review marker.
+		PendingReview: state.Status == v2.StatusActive && state.IsWaitingConfirm(),
+	}
+}
+
+func normalizeRecentTaskPathKey(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	return strings.ToLower(filepath.ToSlash(filepath.Clean(path)))
+}
+
+func (a *App) isManagedRecentTaskWorkspacePath(projectPath string) bool {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" {
+		return false
+	}
+	pathKey := normalizeRecentTaskPathKey(projectPath)
+	if pathKey == "" {
+		return false
+	}
+	dataTaskRoot := normalizeRecentTaskPathKey(filepath.Join(a.GetDataDir(), "tasks"))
+	if dataTaskRoot != "" && (pathKey == dataTaskRoot || strings.HasPrefix(pathKey, dataTaskRoot+"/")) {
+		return true
+	}
+	defaultTaskRoot := normalizeRecentTaskPathKey(filepath.Join(corelib.MaclawDefaultBaseDir(), "data", "tasks"))
+	return defaultTaskRoot != "" && (pathKey == defaultTaskRoot || strings.HasPrefix(pathKey, defaultTaskRoot+"/"))
+}
+
+// removeManagedTaskDir deletes a synthetic task directory. When another task
+// still executes inside it (a copy of an unconfigured task uses workspace/),
+// only the task metadata is removed and that shared directory is left in place.
+func (a *App) removeManagedTaskDir(projectPath string) error {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return nil
+	}
+	if !a.anotherTaskExecutesWithin(projectPath, projectPath) {
+		return os.RemoveAll(projectPath)
+	}
+	entries, err := os.ReadDir(projectPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var errs []error
+	for _, entry := range entries {
+		if a.taskDirEntryStillInUse(projectPath, entry.Name()) {
+			continue
+		}
+		if err := os.RemoveAll(filepath.Join(projectPath, entry.Name())); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// managedTaskRootContaining returns the tasks/<slug> directory that holds dir.
+// A path outside the managed task roots returns empty.
+func (a *App) managedTaskRootContaining(dir string) string {
+	dir = normalizeProjectSessionPath(dir)
+	if a == nil || dir == "" {
+		return ""
+	}
+	roots := []string{
+		normalizeProjectSessionPath(filepath.Join(a.GetDataDir(), "tasks")),
+		normalizeProjectSessionPath(filepath.Join(corelib.MaclawDefaultBaseDir(), "data", "tasks")),
+	}
+	dirKey := normalizeRecentTaskPathKey(dir)
+	for _, root := range roots {
+		rootKey := normalizeRecentTaskPathKey(root)
+		if root == "" || rootKey == "" || dirKey == rootKey || !strings.HasPrefix(dirKey, rootKey+"/") {
+			continue
+		}
+		rel, err := filepath.Rel(root, dir)
+		if err != nil {
+			continue
+		}
+		rel = filepath.ToSlash(filepath.Clean(rel))
+		if rel == "." || rel == "" || rel == ".." || strings.HasPrefix(rel, "../") {
+			continue
+		}
+		slug, _, _ := strings.Cut(rel, "/")
+		if slug == "" || slug == "." || slug == ".." {
+			continue
+		}
+		return normalizeProjectSessionPath(filepath.Join(root, slug))
+	}
+	return ""
+}
+
+// removeOrphanManagedTaskDir deletes the leftover tasks/<slug>-<id> folder of
+// an unconfigured task after its copy was the last user of workspace/. A
+// directory the user picked, including one that happens to sit under the
+// tasks folder, is left alone.
+func (a *App) removeOrphanManagedTaskDir(dir string) error {
+	root := a.managedTaskRootContaining(dir)
+	if root == "" || !a.isManagedRecentTaskWorkspacePath(root) {
+		return nil
+	}
+	if !looksLikeManagedTaskDirName(lastPathComponent(root)) {
+		return nil
+	}
+	sandbox := normalizeProjectSessionPath(filepath.Join(root, "workspace"))
+	if !pathWithinDir(sandbox, dir) {
+		return nil
+	}
+	if _, err := os.Stat(filepath.Join(root, "task.md")); err == nil || !os.IsNotExist(err) {
+		return nil
+	}
+	if a.memoryStore != nil {
+		if pi := a.memoryStore.ProjectIndex(); pi != nil && pi.Get(root) != nil {
+			return nil
+		}
+	}
+	if a.anotherTaskExecutesWithin(root, "") {
+		return nil
+	}
+	return os.RemoveAll(root)
+}
+
+// looksLikeManagedTaskDirName reports the tasks/<slug>-<unixnano> layout used
+// when a task record is created. Short numeric suffixes such as a year are
+// not enough: those folders can be a directory the user chose.
+func looksLikeManagedTaskDirName(name string) bool {
+	name = strings.TrimSpace(name)
+	i := strings.LastIndex(name, "-")
+	if i <= 0 {
+		return false
+	}
+	suffix := name[i+1:]
+	if len(suffix) < 16 {
+		return false
+	}
+	return isAllDecimalDigits(suffix)
+}
+
+func (a *App) taskDirEntryStillInUse(projectPath, name string) bool {
+	return a.anotherTaskExecutesWithin(filepath.Join(projectPath, name), projectPath)
+}
+
+// anotherTaskExecutesWithin reports whether a task other than exceptPath runs
+// in dir or in a directory inside it.
+func (a *App) anotherTaskExecutesWithin(dir, exceptPath string) bool {
+	dir = normalizeProjectSessionPath(dir)
+	exceptPath = normalizeProjectSessionPath(exceptPath)
+	if a == nil || dir == "" || a.memoryStore == nil {
+		return false
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return false
+	}
+	for _, rec := range pi.ListAllMatching(func(memory.ProjectRecord) bool { return true }) {
+		path := normalizeProjectSessionPath(rec.ProjectPath)
+		if path == "" || path == exceptPath || pi.IsArchived(path) {
+			continue
+		}
+		execDir := a.recentTaskWorkingDir(path)
+		if execDir == "" {
+			execDir = a.managedTaskExecutionDirForDisplay(path)
+		}
+		execDir = normalizeProjectSessionPath(execDir)
+		if execDir != "" && pathWithinDir(dir, execDir) {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) ensureRecentTaskWorkspace(projectPath, taskName string) bool {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" || !a.isManagedRecentTaskWorkspacePath(projectPath) {
+		return false
+	}
+	if info, err := os.Stat(projectPath); err == nil && info.IsDir() {
+		return true
+	}
+	if err := os.MkdirAll(projectPath, 0o755); err != nil {
+		log.Printf("[project_search] repair managed task workspace failed project=%q err=%v", projectPath, err)
+		return false
+	}
+	name := normalizeRecentTaskName(taskName)
+	if name == "" {
+		name = stripTaskDirTimestampSuffix(lastPathComponent(projectPath))
+	}
+	taskFile := filepath.Join(projectPath, "task.md")
+	if _, err := os.Stat(taskFile); os.IsNotExist(err) {
+		content := fmt.Sprintf("# %s\n\nRecovered task workspace.\nProject path: %s\n", name, projectPath)
+		if writeErr := os.WriteFile(taskFile, []byte(content), 0o644); writeErr != nil {
+			log.Printf("[project_search] repair managed task task.md failed project=%q err=%v", projectPath, writeErr)
+		}
+	}
+	log.Printf("[project_search] repaired managed task workspace project=%q", projectPath)
+	return true
+}
+
+func (a *App) createTaskRecord(taskName, taskContent string, extraTags []string, flushSync ...bool) ProjectSearchResult {
+	return a.createTaskRecordWithWorkingDir(taskName, taskContent, extraTags, "", flushSync...)
+}
+
+func (a *App) createTaskRecordWithWorkingDir(taskName, taskContent string, extraTags []string, workingDir string, flushSync ...bool) ProjectSearchResult {
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ProjectSearchResult{}
+	}
+
+	displayTitle := recentTaskDisplayTitle(taskName)
+	now := time.Now()
+	taskDir := filepath.Join(a.GetDataDir(), "tasks", fmt.Sprintf("%s-%d", recentTaskSlug(displayTitle), now.UnixNano()))
+	if err := os.MkdirAll(taskDir, 0o755); err != nil {
+		log.Printf("[project_search] CreateRecentTask mkdir failed: %v", err)
+		return ProjectSearchResult{}
+	}
+	// Prepare workspace/ at create-time so the path bar shows a real execution
+	// directory immediately (and default sandbox is self-explanatory when empty).
+	if err := ensureManagedTaskWorkspaceDir(taskDir, displayTitle, workingDir); err != nil {
+		log.Printf("[project_search] CreateRecentTask workspace prepare failed task=%q err=%v", taskDir, err)
+	}
+	taskFile := filepath.Join(taskDir, "task.md")
+	if strings.TrimSpace(taskContent) == "" {
+		taskContent = fmt.Sprintf("# %s\n\n%s\n\nCreated from task management.\nTask ID: %d", displayTitle, taskName, now.UnixNano())
+	}
+	if workingDir != "" && !strings.Contains(taskContent, "\nWorking directory:") {
+		taskContent += "\nWorking directory: " + workingDir
+	}
+	if err := os.WriteFile(taskFile, []byte(taskContent), 0o644); err != nil {
+		log.Printf("[project_search] CreateRecentTask write task file failed: %v", err)
+		return ProjectSearchResult{}
+	}
+	tags := append([]string{taskLegacyManualTag, taskLegacyRecentTag, taskDir}, extraTags...)
+	if workingDir != "" {
+		tags = append(tags, recentTaskWorkingDirTag(workingDir))
+	}
+
+	_, err := a.memoryStore.UpsertTaskArtifact(memory.TaskArtifactUpsertOptions{
+		Title:            displayTitle,
+		Content:          taskContent,
+		Tags:             tags,
+		IdentityTagCount: 3,
+		SourceURL:        taskFile,
+		SourceType:       "manual",
+	})
+	if err != nil {
+		log.Printf("[project_search] CreateRecentTask save failed: %v", err)
+		return ProjectSearchResult{}
+	}
+	a.triggerMemoryPipelineSoon(45 * time.Second)
+	shouldFlushSync := true
+	if len(flushSync) > 0 {
+		shouldFlushSync = flushSync[0]
+	}
+	if shouldFlushSync {
+		if err := a.memoryStore.Flush(); err != nil {
+			log.Printf("[project_search] CreateRecentTask flush failed: %v", err)
+		}
+	} else {
+		store := a.memoryStore
+		taskAsyncFlushWG.Add(1)
+		go func(projectPath string) {
+			defer taskAsyncFlushWG.Done()
+			started := time.Now()
+			if err := store.Flush(); err != nil {
+				log.Printf("[project_search] async task flush failed project=%q err=%v elapsed=%s", projectPath, err, time.Since(started).Round(time.Millisecond))
+				return
+			}
+			log.Printf("[project_search] async task flush complete project=%q elapsed=%s", projectPath, time.Since(started).Round(time.Millisecond))
+		}(taskDir)
+	}
+	a.emitProjectIndexChanged(taskDir)
+
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return ProjectSearchResult{ID: taskDir, Name: displayTitle, ProjectPath: taskDir, WorkingDir: workingDir, CreatedAt: now.Format(time.RFC3339), LastActivity: now.Format(time.RFC3339), EntryCount: 1, HasOutput: true}
+	}
+	if rec := pi.Get(taskDir); rec != nil {
+		return a.projectRecordToSearchResult(pi, *rec)
+	}
+	return ProjectSearchResult{ID: taskDir, Name: displayTitle, ProjectPath: taskDir, WorkingDir: workingDir, CreatedAt: now.Format(time.RFC3339), LastActivity: now.Format(time.RFC3339), EntryCount: 1, HasOutput: true}
+}
+
+func (a *App) copyProjectConversation(sourceProjectPath, targetProjectPath string) {
+	started := time.Now()
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		log.Printf("[project_search] ForkRecentTask copy skipped source=%q fork=%q reason=hub_client_unavailable elapsed=%s", sourceProjectPath, targetProjectPath, time.Since(started).Round(time.Millisecond))
+		return
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil || handler.memory == nil {
+		log.Printf("[project_search] ForkRecentTask copy skipped source=%q fork=%q reason=memory_unavailable elapsed=%s", sourceProjectPath, targetProjectPath, time.Since(started).Round(time.Millisecond))
+		return
+	}
+	sourceUserID := projectSessionOwnerID(sourceProjectPath)
+	targetUserID := projectSessionOwnerID(targetProjectPath)
+	sourceEntries := handler.memory.Load(sourceUserID)
+	if len(sourceEntries) == 0 {
+		log.Printf("[project_search] ForkRecentTask copy skipped source=%q fork=%q reason=no_entries elapsed=%s", sourceProjectPath, targetProjectPath, time.Since(started).Round(time.Millisecond))
+		return
+	}
+	handler.memory.Save(targetUserID, sourceEntries)
+	log.Printf("[project_search] ForkRecentTask copied entries=%d source_user=%q target_user=%q elapsed=%s", len(sourceEntries), sourceUserID, targetUserID, time.Since(started).Round(time.Millisecond))
+}
+
+func stringifyProjectConversationContent(value interface{}) string {
+	switch v := value.(type) {
+	case nil:
+		return ""
+	case string:
+		return strings.TrimSpace(v)
+	case []byte:
+		return strings.TrimSpace(string(v))
+	default:
+		data, err := json.Marshal(v)
+		if err != nil {
+			return strings.TrimSpace(fmt.Sprint(v))
+		}
+		return strings.TrimSpace(string(data))
+	}
+}
+
+// LoadProjectConversationHistory returns the visible conversation history for a
+// project-scoped task session. This is used by the frontend when reopening a
+// managed task fork so the chat transcript can be restored from the backend
+// conversation memory that ForkRecentTask already copied.
+func (a *App) LoadProjectConversationHistory(projectPath string) []ProjectConversationHistoryItem {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return []ProjectConversationHistoryItem{}
+	}
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	var entries []agent.ConversationEntry
+	if hubClient != nil {
+		if handler := hubClient.ensureIMHandler(); handler != nil && handler.memory != nil {
+			entries = handler.memory.Load(projectSessionOwnerID(projectPath))
+		}
+	}
+	items := make([]ProjectConversationHistoryItem, 0, len(entries))
+	for _, entry := range entries {
+		role := strings.TrimSpace(strings.ToLower(entry.Role))
+		switch role {
+		case "user", "assistant", "system", "error":
+		default:
+			continue
+		}
+		content := stringifyProjectConversationContent(entry.Content)
+		reasoning := strings.TrimSpace(entry.ReasoningContent)
+		if content == "" && reasoning == "" {
+			continue
+		}
+		items = append(items, ProjectConversationHistoryItem{
+			Role:             role,
+			Content:          content,
+			ReasoningContent: reasoning,
+		})
+	}
+	if projectConversationHistoryHasTurns(items) {
+		return items
+	}
+
+	if pending := peekCloudWorkspacePendingSession(projectPath); pending != nil {
+		pendingItems := projectConversationHistoryFromTabSession(pending.Conversation)
+		if projectConversationHistoryHasTurns(pendingItems) {
+			return pendingItems
+		}
+	}
+
+	// The tab session is the durable transcript snapshot. In particular, a task
+	// reopened after a process restart can have an empty in-memory project
+	// session while its last tab's conversation is intact on disk. Prefer the
+	// live project memory when it has actual turns, then fall back to that
+	// snapshot so task-list history opens do not render the welcome page.
+	persist := a.ensureProjectTabSessionPersist()
+	session, err := persist.LoadLatestSessionForProject(projectPath)
+	if err != nil {
+		log.Printf("[project_search] load persisted conversation fallback failed project=%q err=%v", projectPath, err)
+		return items
+	}
+	if session != nil {
+		persisted := projectConversationHistoryFromTabSession(session.Conversation)
+		if projectConversationHistoryHasTurns(persisted) {
+			return persisted
+		}
+	}
+	if snap := loadCloudWorkspaceRestoreSnapshot(persist, projectPath, ""); snap != nil {
+		if persisted := projectConversationHistoryFromTabSession(snap.Conversation); projectConversationHistoryHasTurns(persisted) {
+			return persisted
+		}
+	}
+	// A restored task may have been materialized from entitlement metadata
+	// without pulling sidecars. Fetch the cloud transcript lazily when the task
+	// is actually opened, avoiding unnecessary network calls for every row.
+	if workspaceID := a.lookupCloudWorkspaceIDForProject(projectPath); workspaceID != "" {
+		a.refreshCloudWorkspaceSessionSidecar(workspaceID, projectPath)
+		if snap := loadCloudWorkspaceRestoreSnapshot(persist, projectPath, ""); snap != nil {
+			if persisted := projectConversationHistoryFromTabSession(snap.Conversation); projectConversationHistoryHasTurns(persisted) {
+				return persisted
+			}
+		}
+	}
+	return items
+}
+
+func projectConversationHistoryHasTurns(items []ProjectConversationHistoryItem) bool {
+	for _, item := range items {
+		if item.Role == "user" || item.Role == "assistant" {
+			return true
+		}
+	}
+	return false
+}
+
+func projectConversationHistoryFromTabSession(conversation []interface{}) []ProjectConversationHistoryItem {
+	items := make([]ProjectConversationHistoryItem, 0, len(conversation))
+	for _, raw := range conversation {
+		// Tab snapshots are JSON and normally decode as map[string]interface{}.
+		// Re-marshal here also accepts any future typed message value without
+		// coupling the backend persistence layer to frontend message structs.
+		data, err := json.Marshal(raw)
+		if err != nil {
+			continue
+		}
+		var entry struct {
+			Role             string      `json:"role"`
+			Content          interface{} `json:"content"`
+			ReasoningContent interface{} `json:"reasoning_content"`
+			Reasoning        interface{} `json:"reasoning"`
+		}
+		if json.Unmarshal(data, &entry) != nil {
+			continue
+		}
+		role := strings.TrimSpace(strings.ToLower(entry.Role))
+		switch role {
+		case "user", "assistant", "system", "error":
+		default:
+			continue
+		}
+		content := stringifyProjectConversationContent(entry.Content)
+		reasoning := stringifyProjectConversationContent(entry.ReasoningContent)
+		if reasoning == "" {
+			reasoning = stringifyProjectConversationContent(entry.Reasoning)
+		}
+		if content == "" && reasoning == "" {
+			continue
+		}
+		items = append(items, ProjectConversationHistoryItem{
+			Role:             role,
+			Content:          content,
+			ReasoningContent: reasoning,
+		})
+	}
+	return items
+}
+
+func (a *App) emitProjectIndexChanged(projectPath string) {
+	if a.ctx == nil {
+		return
+	}
+	a.emitEvent(EventProjectIndexChanged, projectPath)
+	a.emitEvent(EventTasksChanged, nil)
+}
+
+func (a *App) emitProjectTaskClosed(projectPath string) {
+	if a.ctx == nil {
+		return
+	}
+	a.emitEvent(EventProjectTaskClosed, projectPath)
+}
+
+func (a *App) emitProjectTaskDeleted(projectPath string) {
+	if a.ctx == nil {
+		return
+	}
+	a.emitEvent(EventProjectTaskDeleted, projectPath)
+}
+
+func (a *App) emitExpertTaskDeleted(expertID string) {
+	expertID = strings.TrimSpace(expertID)
+	if a.ctx == nil || expertID == "" {
+		return
+	}
+	a.emitEvent(EventExpertTaskDeleted, expertID)
+}
+
+func (a *App) cancelProjectTaskLoop(projectPath string) {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" {
+		return
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	ownerID := projectSessionOwnerID(projectPath)
+	// Closing, hiding, deleting or archiving a project all pass through this
+	// helper. Revoke the semantic Coding task relation before the asynchronous
+	// loop cancellation so a queued runtime attempt cannot bind after the task
+	// lifecycle has closed.
+	a.revokeDesktopCodingTaskRelation(ownerID)
+	if a.localMCPManager != nil {
+		a.localMCPManager.StopOwner(ownerID)
+	}
+	// Hide/delete must not cold-start Hub just to look for a loop. If the
+	// assistant is not already running, there is no live task loop to cancel.
+	handler := a.imHandler
+	if handler == nil {
+		if hub := a.hubClient(); hub != nil {
+			handler = hub.currentIMHandler()
+		}
+	}
+	if cancelProjectTaskLoopForHandler(handler, projectPath) {
+		log.Printf("[project_search] cancel project task loop requested project=%q", projectPath)
+	} else {
+		log.Printf("[project_search] cancel project task loop skipped project=%q reason=no_active_loop", projectPath)
+	}
+}
+
+func cancelProjectTaskLoopForHandler(handler *IMMessageHandler, projectPath string) bool {
+	projectPath = strings.TrimSpace(projectPath)
+	if handler == nil || projectPath == "" {
+		return false
+	}
+	userID := projectSessionOwnerID(projectPath)
+	if !handler.hasActiveLoopForUser(userID) {
+		return false
+	}
+	go func() {
+		taskText, err := handler.CancelSessionForUser(userID)
+		if err != nil {
+			log.Printf("[project_search] cancel project task loop failed user=%q err=%v", userID, err)
+			return
+		}
+		log.Printf("[project_search] cancel project task loop done user=%q task=%q", userID, truncateForLog(taskText, 120))
+	}()
+	return true
+}
+
+// ForkConversationToProject copies the current local tab's conversation history
+// into a new project-scoped session. This enables the "fork current chat" feature:
+// the user's existing conversation becomes the starting context for the new project tab.
+//
+// This is a Wails binding method called from the frontend after CreateRecentTask.
+func (a *App) ForkConversationToProject(projectPath string) {
+	if projectPath == "" {
+		return
+	}
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient == nil {
+		return
+	}
+	handler := hubClient.ensureIMHandler()
+	if handler == nil {
+		return
+	}
+
+	// Load current local tab conversation.
+	sourceEntries := handler.memory.Load(desktopUserID)
+	if len(sourceEntries) == 0 {
+		return
+	}
+
+	// Save to the project-scoped session.
+	targetUserID := projectSessionOwnerID(projectPath)
+	handler.memory.Save(targetUserID, sourceEntries)
+	log.Printf("[project_search] ForkConversationToProject: copied %d entries from %s to %s",
+		len(sourceEntries), desktopUserID, targetUserID)
+}
+
+func normalizeRecentTaskName(name string) string {
+	return taskNameForCreate(name, false)
+}
+
+// taskNameForCreate collapses whitespace and caps length. keepExplicit retains
+// a short user-typed title ("继续", "ok") that automatic naming would discard.
+func taskNameForCreate(name string, keepExplicit bool) string {
+	normalized := strings.Join(strings.Fields(name), " ")
+	if isGenericSedimentRequest(normalized) && !keepExplicit {
+		return ""
+	}
+	runes := []rune(normalized)
+	if len(runes) > 120 {
+		normalized = string(runes[:120])
+	}
+	return strings.TrimSpace(normalized)
+}
+
+// recentTaskDisplayTitle extracts a short display title from a multi-line task command.
+// Uses the first non-empty line, truncated to 80 rune for sidebar display.
+func recentTaskDisplayTitle(fullCommand string) string {
+	for _, line := range strings.Split(fullCommand, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed != "" {
+			runes := []rune(trimmed)
+			if len(runes) > 80 {
+				return string(runes[:80]) + "…"
+			}
+			return trimmed
+		}
+	}
+	return fullCommand
+}
+
+// recentTaskSlug builds a filesystem-safe directory slug from a task title.
+// Keeps ASCII letters/digits and Unicode letters/numbers (so Chinese titles stay
+// recognizable). Maps whitespace/punctuation to '-' and strips Windows-invalid
+// path characters. Caps length by runes (not bytes) so CJK is not over-truncated.
+func recentTaskSlug(name string) string {
+	const maxRunes = 40
+	var b strings.Builder
+	lastWasSeparator := false
+	runeCount := 0
+	for _, r := range strings.TrimSpace(name) {
+		// Normalize ASCII case only; keep CJK and other letters as-is.
+		if r >= 'A' && r <= 'Z' {
+			r = r - 'A' + 'a'
+		}
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9', unicode.IsLetter(r), unicode.IsNumber(r):
+			// Reject Windows-illegal filename characters even if classified oddly.
+			if r == '<' || r == '>' || r == ':' || r == '"' || r == '/' || r == '\\' || r == '|' || r == '?' || r == '*' {
+				if b.Len() > 0 && !lastWasSeparator {
+					b.WriteByte('-')
+					lastWasSeparator = true
+				}
+				continue
+			}
+			b.WriteRune(r)
+			runeCount++
+			lastWasSeparator = false
+		case r == '-' || r == '_':
+			if b.Len() > 0 && !lastWasSeparator {
+				b.WriteRune(r)
+				lastWasSeparator = true
+			}
+		case b.Len() > 0 && !lastWasSeparator:
+			b.WriteByte('-')
+			lastWasSeparator = true
+		}
+		if runeCount >= maxRunes {
+			break
+		}
+	}
+	slug := strings.Trim(b.String(), "-_")
+	if slug == "" {
+		return "task"
+	}
+	// Windows device names cannot be directory names (CON, PRN, AUX, NUL, COMn, LPTn).
+	if isWindowsReservedDeviceName(slug) {
+		return slug + "-task"
+	}
+	return slug
+}
+
+func isWindowsReservedDeviceName(name string) bool {
+	base := strings.ToUpper(strings.TrimSpace(name))
+	// Allow "com1-foo" style; only exact reserved tokens (optionally with extension).
+	if i := strings.IndexByte(base, '.'); i >= 0 {
+		base = base[:i]
+	}
+	switch base {
+	case "CON", "PRN", "AUX", "NUL",
+		"COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9",
+		"LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
+		return true
+	default:
+		return false
+	}
+}
+
+// ensureManagedTaskWorkspaceDir creates taskDir/workspace and, when no custom
+// working directory was chosen, seeds a short README so the empty sandbox is
+// obvious in Explorer and to the agent.
+func ensureManagedTaskWorkspaceDir(taskDir, displayTitle, customWorkingDir string) error {
+	wsDir := filepath.Join(taskDir, "workspace")
+	if err := os.MkdirAll(wsDir, 0o755); err != nil {
+		return err
+	}
+	if strings.TrimSpace(customWorkingDir) != "" {
+		return nil
+	}
+	readme := filepath.Join(wsDir, "README.md")
+	if _, err := os.Stat(readme); err == nil {
+		return nil
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	title := strings.TrimSpace(displayTitle)
+	if title == "" {
+		title = "task"
+	}
+	content := fmt.Sprintf(`# %s — 任务工作区
+
+这是托管任务的**默认执行目录**（空沙箱）。
+
+- 工具相对路径、本目录下的搜索都只看到这里的内容。
+- 若要处理本机已有项目/标书材料，请在创建任务时选择「任务目录」，或使用**绝对路径**调用 office(read_document) 等工具。
+- 任务元数据在上一级目录的 task.md。
+
+Task folder: %s
+`, title, taskDir)
+	return os.WriteFile(readme, []byte(content), 0o644)
+}
+
+// ResumeProject switches the current context to the specified project.
+// It clears the current conversation and cancels any active workflow,
+// preparing a clean slate for the target project.
+//
+// The next prompt writes a catalog pointer via appendProactiveRecall
+// (CatalogOnly). Warehouse project_knowledge / task_artifact stay in tools.
+//
+// Returns a human-readable summary for the frontend to display.
+func (a *App) ResumeProject(projectPath string) string {
+	if projectPath == "" {
+		return ""
+	}
+
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return "记忆系统未初始化"
+	}
+
+	userID := desktopUserID
+
+	// 0. Update config.CurrentProject so that GetCurrentProjectPath() returns
+	//    the target project. Without this, all downstream consumers
+	//    (appendProactiveRecall catalog, workflow adapter, tool
+	//    execution, etc.) would still resolve to the OLD project path,
+	//    causing cross-project context contamination.
+	//
+	// Also notify frontend of the config change so its cached
+	// config.current_project stays in sync. Without this, a subsequent full
+	// frontend save could overwrite the backend's correct current_project
+	// with a stale value (same race pattern as #11/#23).
+	if updatedCfg := a.switchCurrentProjectByPath(projectPath); updatedCfg != nil && a.ctx != nil {
+		a.emitEvent("config-changed", *updatedCfg)
+	}
+
+	// 1. Cancel any active V2 workflow (user is switching projects).
+	if a.workflowV2 != nil {
+		if state := a.workflowV2.machine.GetActive(userID); state != nil {
+			a.workflowV2.machine.Cancel(userID)
+		}
+	}
+
+	// 2. Clear conversation memory AND per-user session state (drift detector,
+	//    orchestrator, steering context, etc.). This mirrors what /new does.
+	//    We do this on the backend so the frontend's subsequent clearHistory()
+	//    is a no-op (idempotent Clear on already-empty memory).
+	a.ensureInteractionInfra()
+	hubClient := a.ensureHubClient()
+	if hubClient != nil {
+		handler := hubClient.ensureIMHandler()
+		if handler != nil {
+			handler.memory.Clear(userID)
+			handler.clearPerUserSessionState(userID)
+		}
+	}
+
+	// 3. Resolve project name for the display message.
+	//    GetDisplayName returns the custom name if the user renamed the task,
+	//    otherwise the auto-generated name from entry content.
+	pi := a.memoryStore.ProjectIndex()
+	var projectName string
+	if pi != nil {
+		projectName = pi.GetDisplayName(projectPath)
+	}
+	if projectName == "" {
+		projectName = stripTaskDirTimestampSuffix(lastPathComponent(projectPath))
+	}
+
+	log.Printf("[project_search] ResumeProject: path=%q, name=%q", projectPath, projectName)
+
+	// Note: the frontend also calls clearHistory() which invokes
+	// ClearAIAssistantHistory. That's a second Clear on already-empty memory —
+	// idempotent, no harm done.
+
+	msg := "已切换到任务：" + projectName
+	// Only show the path line if it looks like a real user project path.
+	// Suppress for:
+	//   - Inferred paths like "\path.dirname" from tag fragments
+	//   - Synthetic standalone task paths under {dataDir}/tasks/ (hash-based,
+	//     meaningless to the user)
+	showPath := memory.LooksLikeFilePath(projectPath)
+	if showPath {
+		dataDir := a.GetDataDir()
+		if dataDir != "" && strings.HasPrefix(strings.ToLower(filepath.Clean(projectPath)), strings.ToLower(filepath.Clean(dataDir))) {
+			showPath = false
+		}
+	}
+	if showPath {
+		msg += "\n" + projectPath
+	}
+	return msg
+}
+
+// RenameTask sets a user-defined display name for a task-management item.
+// Pass empty name to revert to the auto-generated name.
+// This is a Wails binding method called from the frontend inline editor.
+func (a *App) RenameTask(projectPath, newName string) string {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	newName = strings.TrimSpace(newName)
+	if projectPath == "" {
+		return ""
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ""
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return ""
+	}
+	pi.SetCustomName(projectPath, newName)
+	displayName := pi.GetDisplayName(projectPath)
+	if workspaceID := a.lookupCloudWorkspaceIDForProject(projectPath); workspaceID != "" {
+		// Only the row being renamed may change the cached workspace title.
+		// A copy shares the workspace id, so writing its name here retitles
+		// the original task and, while the lease is held, the Hub task too.
+		if result, ok := lookupCloudWorkspaceTask(workspaceID); ok && normalizeProjectSessionPath(result.ProjectPath) == projectPath {
+			result.Name = displayName
+			rememberCloudWorkspaceTask(workspaceID, result)
+		}
+		if !a.projectHasTaskCopyTag(projectPath) && lookupHeldCloudWorkspace(workspaceID) != nil {
+			a.flushCloudWorkspaceTaskSidecarBestEffort(workspaceID)
+		}
+	}
+	a.emitEvent(EventProjectTaskRenamed, map[string]string{
+		"project_path": projectPath,
+		"name":         displayName,
+	})
+	a.emitProjectIndexChanged(projectPath)
+	return displayName
+}
+
+// PinTask pins or unpins a task-management item.
+// Pinned tasks appear at the top of the list.
+func (a *App) PinTask(projectPath string, pinned bool) {
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return
+	}
+	pi.SetPinned(projectPath, pinned)
+}
+
+// HideTask removes a task from task management (soft delete).
+// The underlying memory entries are preserved — only the list visibility is affected.
+// Cloud workspaces stay on Hub: this path is the failed-create rollback so a retry
+// can bind a replacement task to the same workspace. User-facing sidebar delete
+// goes through DeleteTask, which also soft-deletes the workspace.
+func (a *App) HideTask(projectPath string) {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		log.Printf("[project_search] HideTask skipped reason=empty_path")
+		return
+	}
+	log.Printf("[project_search] HideTask requested path=%q", projectPath)
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		log.Printf("[project_search] HideTask skipped path=%q reason=memory_store_unavailable", projectPath)
+		return
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		log.Printf("[project_search] HideTask skipped path=%q reason=project_index_unavailable", projectPath)
+		return
+	}
+	// A copy shares the workspace with its source. Tombstone and release the
+	// lease only when this row is the last visible one, so hiding the copy
+	// cannot unmount the original.
+	a.releaseCloudWorkspaceIfLastRow(projectPath)
+	pi.SetHidden(projectPath, true)
+	// Soft-hide would leave ResumeCloudWorkspaceTask pointing at this path
+	// (the task dir still exists). Drop the 1:1 bind so a later open can create a replacement.
+	forgetCloudWorkspaceTaskByPath(projectPath)
+	log.Printf("[project_search] HideTask hidden path=%q", projectPath)
+	a.cancelProjectTaskLoop(projectPath)
+	a.emitProjectIndexChanged(projectPath)
+	// The deleted signal must precede the close signal: it tells the frontend
+	// to remove transient tab/history state without recreating an archived
+	// backend session through its ordinary close handler.
+	a.emitProjectTaskDeleted(projectPath)
+	a.emitProjectTaskClosed(projectPath)
+}
+
+// DeleteTask permanently removes a task and all state scoped to it. Unlike
+// HideTask (used for recoverable rollback), this makes a later launch through
+// onboarding or a shortcut a genuinely new task. Cloud workspaces stay on Hub
+// until the user deletes the workspace itself from the management dialog.
+func (a *App) DeleteTask(projectPath string) error {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return fmt.Errorf("project path is required")
+	}
+	log.Printf("[project_search] DeleteTask requested path=%q", projectPath)
+	// Captured before the record is removed. A copy shares the expert tag and
+	// the cloud workspace, but its chat is a separate project session.
+	taskCopy := a.projectHasTaskCopyTag(projectPath)
+	// A copy of an unconfigured task executes in the source workspace/, which
+	// lives outside the copy's own task directory. Remember it so the last
+	// remaining user can remove that leftover folder.
+	sharedExecDir := normalizeProjectSessionPath(a.recentTaskWorkingDir(projectPath))
+	if sharedExecDir == "" {
+		sharedExecDir = normalizeProjectSessionPath(a.managedTaskExecutionDirForDisplay(projectPath))
+	}
+	a.releaseCloudWorkspaceIfLastRow(projectPath)
+	forgetCloudWorkspaceTaskByPath(projectPath)
+	// Directory updates and task deletion both mutate the same tab session files
+	// and runtime maps. Hold the lifecycle mutex so a picker completion cannot
+	// recreate a deleted tab's directory override halfway through this cleanup.
+	a.tabWorkingDirMu.Lock()
+	defer a.tabWorkingDirMu.Unlock()
+
+	// First stop anything that could write task state back while it is removed.
+	a.cancelProjectTaskLoop(projectPath)
+	ownerID := projectSessionOwnerID(projectPath)
+	// Expert tasks keep their agent session under "desktop-user:expert:<id>"
+	// rather than the task's project path. Resolve the expert id BEFORE the
+	// record is deleted below, so the expert session can be purged too.
+	expertID := ""
+	if !taskCopy {
+		expertID = a.expertIDForTaskPath(projectPath)
+	}
+	assistantTabType := a.assistantTabTypeForTaskPath(projectPath)
+	// Dismiss before dropping the record so a concurrent EnsureAssistantTabTask
+	// cannot mint a replacement VS Code / ACP row in the gap.
+	if assistantTabType == assistantTabACPType {
+		a.dismissAssistantTabType(assistantTabACPType)
+	}
+	var errs []error
+	handler := a.imHandler
+	if handler == nil {
+		if hub := a.hubClient(); hub != nil {
+			handler = hub.currentIMHandler()
+		}
+	}
+	if handler != nil {
+		_, _ = handler.CancelSessionForUser(ownerID)
+		if handler.memory != nil {
+			handler.memory.Clear(ownerID)
+		}
+		handler.clearPerUserSessionState(ownerID)
+		handler.clearCodingWorkflowRemoteCreds(ownerID)
+		// Adapters retain project-scoped document bridge state independently of
+		// the workflow store, so a deleted task must not keep one alive.
+		handler.workflowV2Adapters.Delete(ownerID)
+	}
+	// The project owner is also the key for frozen prompt snapshots, event
+	// routing, and other process-local state. Clear it even if the IM handler
+	// has not been initialized, so a newly-created task at the same path cannot
+	// inherit a deleted task's transient context.
+	if handler != nil {
+		handler.frozenMemorySnapshots.Delete(ownerID)
+		handler.snapshotInitialized.Delete(ownerID)
+		handler.snapshotWarmInflight.Delete(ownerID)
+		handler.snapshotEpoch.Delete(ownerID)
+	}
+	// clearPerUserSessionState only cancels workflows and is unavailable when
+	// the message handler has not been initialized. Delete the durable workflow
+	// state here as well: a removed task must not leave a terminal workflow row
+	// that can surface in a later task list or shortcut launch.
+	if a.workflowEngine != nil {
+		if err := a.workflowEngine.CancelWorkflow(ownerID); err != nil {
+			errs = append(errs, fmt.Errorf("delete task legacy workflow: %w", err))
+		}
+	}
+	if a.workflowV2 != nil && a.workflowV2.machine != nil {
+		if err := a.workflowV2.machine.DeleteState(ownerID); err != nil {
+			errs = append(errs, fmt.Errorf("delete task workflow: %w", err))
+		}
+	}
+	// Expert task sessions live outside the project-path cleanup above: the
+	// conversation memory is keyed by the expert owner id and the tab session
+	// file carries no project path. Without this, recreating the expert would
+	// resurrect the deleted task's memory.
+	if expertID != "" {
+		expertOwner := expertSessionUserID(expertID)
+		if handler != nil {
+			_, _ = handler.CancelSessionForUser(expertOwner)
+			if handler.memory != nil {
+				handler.memory.Clear(expertOwner)
+			}
+			handler.clearPerUserSessionState(expertOwner)
+			handler.clearCodingWorkflowRemoteCreds(expertOwner)
+			handler.workflowV2Adapters.Delete(expertOwner)
+			handler.frozenMemorySnapshots.Delete(expertOwner)
+			handler.snapshotInitialized.Delete(expertOwner)
+			handler.snapshotWarmInflight.Delete(expertOwner)
+			handler.snapshotEpoch.Delete(expertOwner)
+		}
+		if a.workflowV2 != nil && a.workflowV2.machine != nil {
+			if err := a.workflowV2.machine.DeleteState(expertOwner); err != nil {
+				errs = append(errs, fmt.Errorf("delete expert task workflow: %w", err))
+			}
+		}
+		if err := a.ensureProjectTabSessionPersist().DeleteSession(expertTabSessionID(expertID)); err != nil {
+			errs = append(errs, fmt.Errorf("delete expert tab session: %w", err))
+		}
+		// The expert owner and its tab id are unrelated to the task path. Clear
+		// both runtime directory maps here so recreating an expert never inherits
+		// a deleted expert's private workdir in this process.
+		a.sessionEventScopeIDs.Delete(expertOwner)
+		a.assistantSessionWorkingDirs.Delete(expertOwner)
+		a.tabWorkingDirOverrides.Delete(expertTabSessionID(expertID))
+	}
+	a.sessionEventScopeIDs.Delete(ownerID)
+	a.assistantSessionWorkingDirs.Delete(ownerID)
+	a.tabProjectPaths.Range(func(tabID, value any) bool {
+		if path, _ := value.(string); normalizeProjectSessionPath(path) == projectPath {
+			a.tabProjectPaths.Delete(tabID)
+			a.tabWorkingDirOverrides.Delete(tabID)
+		}
+		return true
+	})
+
+	a.ensureMemoryStore()
+	if a.memoryStore != nil {
+		if _, err := a.memoryStore.DeleteProjectEntries(projectPath); err != nil {
+			errs = append(errs, fmt.Errorf("delete task memory: %w", err))
+		}
+		if pi := a.memoryStore.ProjectIndex(); pi != nil {
+			pi.ClearTaskPrefs(projectPath)
+		}
+	}
+	// Clear tab persistence after task memory. The frontend will close tabs only
+	// after this method emits EventProjectTaskClosed, so no close callback can
+	// recreate an archived session entry during deletion.
+	if _, err := a.ensureProjectTabSessionPersist().DeleteProjectSessions(projectPath); err != nil {
+		errs = append(errs, err)
+	}
+	// Synthetic task directories are app-owned state. Never delete a user
+	// project or a remote working directory. A copy of an unconfigured task
+	// keeps using this task's workspace/ folder, so that directory stays.
+	if a.isManagedRecentTaskWorkspacePath(projectPath) {
+		root := normalizeRecentTaskPathKey(filepath.Join(a.GetDataDir(), "tasks"))
+		key := normalizeRecentTaskPathKey(projectPath)
+		if root != "" && strings.HasPrefix(key, root+"/") {
+			if err := a.removeManagedTaskDir(projectPath); err != nil {
+				errs = append(errs, fmt.Errorf("delete task workspace: %w", err))
+			}
+		}
+	}
+	// The shared sandbox is not inside this task directory. Once no record and
+	// no other task still use the managed folder that contains it, remove it.
+	if sharedExecDir != "" && !pathWithinDir(projectPath, sharedExecDir) {
+		if err := a.removeOrphanManagedTaskDir(sharedExecDir); err != nil {
+			errs = append(errs, fmt.Errorf("delete shared task workspace: %w", err))
+		}
+	}
+	if assistantTabType == assistantTabACPType {
+		a.purgeAutoACPAssistantTabTasks(projectPath)
+	}
+	a.emitProjectIndexChanged(projectPath)
+	// Match HideTask's ordering: the deleted signal must precede the close
+	// signal so AI panel listeners discard the project's tabs and local caches
+	// instead of persisting an archived session for a permanently removed task.
+	a.emitProjectTaskDeleted(projectPath)
+	// Expert history is not path-keyed; tell the UI to drop expert tab caches too.
+	a.emitExpertTaskDeleted(expertID)
+	a.emitProjectTaskClosed(projectPath)
+	return errors.Join(errs...)
+}
+
+// assistantTabTypeForTaskPath returns the secondary-tab type (e.g. "acp") when
+// the task was created by EnsureAssistantTabTask, else "".
+func (a *App) assistantTabTypeForTaskPath(projectPath string) string {
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ""
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return ""
+	}
+	rec := pi.Get(projectPath)
+	if rec != nil {
+		if tabType := assistantTabTypeFromTags(rec.Tags); tabType != "" {
+			return tabType
+		}
+		if isAutoACPAssistantTabRecord(*rec) {
+			return assistantTabACPType
+		}
+	}
+	taskFile := filepath.Join(projectPath, "task.md")
+	content, err := os.ReadFile(taskFile)
+	if err == nil && isAutoACPAssistantTabContent(string(content)) {
+		return assistantTabACPType
+	}
+	if (err != nil || strings.TrimSpace(string(content)) == "") && isAutoACPAssistantTabDirName(projectPath) {
+		return assistantTabACPType
+	}
+	return ""
+}
+
+// purgeAutoACPAssistantTabTasks removes leftover VS Code / ACP clones so a
+// later GUI restart cannot recover a deleted sidebar row from disk or from a
+// compressor-merged identity entry that still carries another vs-code-acp dir.
+func (a *App) purgeAutoACPAssistantTabTasks(alreadyDeleted string) {
+	if a == nil {
+		return
+	}
+	alreadyDeleted = normalizeProjectSessionPath(alreadyDeleted)
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return
+	}
+	pi := a.memoryStore.ProjectIndex()
+	seen := map[string]bool{}
+	if alreadyDeleted != "" {
+		seen[alreadyDeleted] = true
+	}
+	var purged []string
+	purgePath := func(path string) {
+		path = normalizeProjectSessionPath(path)
+		if path == "" || seen[path] {
+			return
+		}
+		seen[path] = true
+		_, _ = a.memoryStore.DeleteProjectEntries(path)
+		if pi != nil {
+			pi.ClearTaskPrefs(path)
+		}
+		if a.isManagedRecentTaskWorkspacePath(path) {
+			_ = os.RemoveAll(path)
+		}
+		_, _ = a.ensureProjectTabSessionPersist().DeleteProjectSessions(path)
+		purged = append(purged, path)
+	}
+	if pi != nil {
+		for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
+			return isAutoACPAssistantTabRecord(candidate)
+		}) {
+			purgePath(rec.ProjectPath)
+		}
+	}
+	tasksRoot := filepath.Join(a.GetDataDir(), "tasks")
+	if entries, err := os.ReadDir(tasksRoot); err == nil {
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			taskDir := normalizeProjectSessionPath(filepath.Join(tasksRoot, entry.Name()))
+			if seen[taskDir] || !isAutoACPAssistantTabDirName(taskDir) {
+				continue
+			}
+			content, readErr := os.ReadFile(filepath.Join(taskDir, "task.md"))
+			if readErr != nil && !os.IsNotExist(readErr) {
+				continue
+			}
+			if len(content) > 0 && !isAutoACPAssistantTabTask(taskDir, string(content)) {
+				continue
+			}
+			purgePath(taskDir)
+		}
+	}
+	for _, path := range purged {
+		a.emitProjectTaskDeleted(path)
+		a.emitProjectTaskClosed(path)
+	}
+}
+
+// expertIDForTaskPath returns the expert id when the task record at
+// projectPath is an expert task (tagged with taskSourceExpertPrefix), else "".
+func (a *App) expertIDForTaskPath(projectPath string) string {
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ""
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return ""
+	}
+	rec := pi.Get(projectPath)
+	if rec == nil {
+		return ""
+	}
+	for _, tag := range rec.Tags {
+		tag = strings.TrimSpace(tag)
+		if strings.HasPrefix(tag, taskSourceExpertPrefix) {
+			return strings.TrimSpace(strings.TrimPrefix(tag, taskSourceExpertPrefix))
+		}
+	}
+	return ""
+}
+
+// switchCurrentProjectByPath updates config.CurrentProject to match the
+// given project path. If the path matches an existing ProjectConfig entry,
+// that entry's ID becomes CurrentProject. If no match is found (e.g. the
+// project was discovered from memory but not in the config list), the
+// config is not modified — GetCurrentProjectPath() will fall back to the
+// first project in the list, which is acceptable.
+//
+// Returns the updated config on success (for event emission), or nil if
+// no change was needed or an error occurred.
+//
+// This patches only current_project so concurrent config changes are preserved.
+func (a *App) switchCurrentProjectByPath(projectPath string) *corelib.AppConfig {
+	if projectPath == "" {
+		return nil
+	}
+	cfg, err := a.LoadConfig()
+	if err != nil {
+		log.Printf("[project_search] switchCurrentProjectByPath: LoadConfig failed: %v", err)
+		return nil
+	}
+
+	cleanTarget := filepath.Clean(projectPath)
+	for _, p := range cfg.Projects {
+		if strings.EqualFold(filepath.Clean(p.Path), cleanTarget) {
+			if cfg.CurrentProject == p.Id {
+				return nil // already current, no-op
+			}
+			patched, err := a.PatchConfigFields(map[string]interface{}{"current_project": p.Id})
+			if err != nil {
+				log.Printf("[project_search] switchCurrentProjectByPath: PatchConfigFields failed: %v", err)
+				return nil
+			}
+			log.Printf("[project_search] switchCurrentProjectByPath: switched to project %q (id=%s)", p.Name, p.Id)
+			return &patched
+		}
+	}
+	log.Printf("[project_search] switchCurrentProjectByPath: no matching project config for path %q", projectPath)
+	return nil
+}
+
+// lastPathComponent returns the last directory component of a path.
+func lastPathComponent(p string) string {
+	for i := len(p) - 1; i >= 0; i-- {
+		if p[i] == '/' || p[i] == '\\' {
+			if i < len(p)-1 {
+				return p[i+1:]
+			}
+		}
+	}
+	return p
+}
+
+// ---------------------------------------------------------------------------
+// ArchiveProject triggers the full archive flow for a project:
+//  1. Collect project entries from memory
+//  2. LLM summarize into experience
+//  3. Save experience as globally-recallable project_knowledge
+//  4. Mark project as archived in ProjectIndex
+//
+// This is a Wails binding method called from the frontend context menu.
+func (a *App) ArchiveProject(projectPath string) (*ArchiveResult, error) {
+	if projectPath == "" {
+		return nil, fmt.Errorf("project path is required")
+	}
+
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return nil, fmt.Errorf("记忆系统未初始化")
+	}
+
+	pi := a.memoryStore.ProjectIndex()
+
+	// Get the LLM caller from the IMMessageHandler (may be nil if not ready).
+	var llmCaller archiveLLMCaller
+	handler := a.ensureLocalIMHandler()
+	if handler != nil {
+		llmCaller = handler
+	}
+
+	svc := NewArchiveService(a.memoryStore, llmCaller, pi)
+	result, err := svc.Archive(context.Background(), ArchiveRequest{
+		ProjectPath: projectPath,
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	// Flush memory store to persist the archived state and experience entry.
+	if flushErr := a.memoryStore.Flush(); flushErr != nil {
+		log.Printf("[ArchiveProject] flush failed: %v", flushErr)
+	}
+
+	log.Printf("[ArchiveProject] path=%q archived=%v experience=%v",
+		projectPath, result.Archived, result.ExperienceExtracted)
+	a.emitProjectIndexChanged(projectPath)
+	if result.Archived {
+		a.cancelProjectTaskLoop(projectPath)
+		a.emitProjectTaskClosed(projectPath)
+		log.Printf("[ArchiveProject] emitted task close path=%q", projectPath)
+	}
+
+	return result, nil
+}
+
+// GetArchivedExperience retrieves the archived experience summary for a project.
+// Returns the experience text if found, or an empty string if no archived
+// experience exists for the given project path.
+// This is a Wails binding method called from the frontend read-only panel.
+func (a *App) GetArchivedExperience(projectPath string) (string, error) {
+	if projectPath == "" {
+		return "", fmt.Errorf("project path is required")
+	}
+
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return "", fmt.Errorf("记忆系统未初始化")
+	}
+
+	// Search for the archived_experience entry matching this project path.
+	a.memoryStore.RLock()
+	defer a.memoryStore.RUnlock()
+
+	normalizedPath := strings.ToLower(strings.ReplaceAll(projectPath, "\\", "/"))
+
+	for _, e := range a.memoryStore.Entries() {
+		cat := memory.MapToCanonical(e.Category)
+		if cat != memory.CategoryProjectKnowledge {
+			continue
+		}
+		// Check for "archived_experience" tag + matching project path in tags.
+		hasArchiveTag := false
+		hasPathTag := false
+		for _, tag := range e.Tags {
+			if tag == "archived_experience" {
+				hasArchiveTag = true
+			}
+			normalizedTag := strings.ToLower(strings.ReplaceAll(tag, "\\", "/"))
+			if normalizedTag == normalizedPath {
+				hasPathTag = true
+			}
+		}
+		if hasArchiveTag && hasPathTag {
+			return e.Content, nil
+		}
+	}
+
+	return "", nil
+}
+
+// ---------------------------------------------------------------------------
+// Project Tab Session Wails Bindings
+// ---------------------------------------------------------------------------
+
+// CreateProjectTabSession creates a new project tab session entry in the index
+// and returns a short open notice. The frontend ignores this string; warehouse
+// recall for the resume card is LoadProjectContext, not this binding.
+func (a *App) CreateProjectTabSession(tabID, projectPath string) string {
+	tabID = strings.TrimSpace(tabID)
+	rawProjectPath := strings.TrimSpace(projectPath)
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if tabID == "" || projectPath == "" {
+		return ""
+	}
+	if rawProjectPath != projectPath {
+		log.Printf("[CreateProjectTabSession] normalized project path tab=%q raw=%q normalized=%q", tabID, rawProjectPath, projectPath)
+	}
+	if a.isProjectTaskClosed(projectPath) {
+		log.Printf("[CreateProjectTabSession] skipped closed task tab=%q project=%q", tabID, projectPath)
+		return ""
+	}
+	// Session creation, close, deletion and directory updates mutate the same
+	// session file and runtime maps. Keep them as one lifecycle transaction.
+	a.tabWorkingDirMu.Lock()
+	defer a.tabWorkingDirMu.Unlock()
+	persist := a.ensureProjectTabSessionPersist()
+
+	// Cache the tabID → projectPath mapping in memory for fast lookup.
+	a.tabProjectPaths.Store(tabID, projectPath)
+	projectName := a.projectTabDisplayName(projectPath)
+	a.ensureRecentTaskWorkspace(projectPath, projectName)
+
+	// Check if session already exists on disk — if so, just return a welcome-back message.
+	existing, err := persist.LoadSession(tabID)
+	if err == nil && existing != nil {
+		adopted := adoptCloudWorkspaceSessionSnapshot(persist, existing, projectPath)
+		if a.seedCloudWorkspaceTabWorkingDir(existing, projectPath) || adopted {
+			if saveErr := persist.SaveSession(existing); saveErr != nil {
+				log.Printf("[CreateProjectTabSession] restore sidecar session failed: %v", saveErr)
+				return ""
+			}
+		}
+		dropCloudWorkspaceRestoreSnapshot(persist, tabID, projectPath)
+		// An existing session owns its tab-local override. Restore it before the
+		// tab can render or dispatch a message.
+		a.bindAssistantTabWorkingDirLocked(tabID, projectSessionOwnerID(projectPath))
+		a.upsertProjectTabIndexEntry(persist, tabID, projectPath, time.Now())
+		return fmt.Sprintf("已恢复项目会话：%s", projectName)
+	}
+
+	// Create new session entry in the index.
+	now := time.Now()
+	agentMode, remoteHost, remoteSafety := a.projectTabIndexCodingMetadata(projectPath)
+	index, err := persist.LoadIndex()
+	if err != nil {
+		log.Printf("[CreateProjectTabSession] LoadIndex failed: %v", err)
+		index = &TabIndex{Tabs: []TabIndexEntry{}}
+	}
+
+	// Dedup: don't add if tabID already in index. Un-archive if previously closed.
+	found := false
+	for i, entry := range index.Tabs {
+		if entry.ID == tabID {
+			index.Tabs[i].Title = projectName
+			index.Tabs[i].ProjectPath = projectPath
+			index.Tabs[i].AgentMode = agentMode
+			index.Tabs[i].RemoteHost = remoteHost
+			index.Tabs[i].RemoteSafety = remoteSafety
+			index.Tabs[i].LastActiveAt = now.Unix()
+			index.Tabs[i].Archived = false // Un-archive: tab is being re-opened
+			found = true
+			break
+		}
+	}
+	if !found {
+		index.Tabs = append(index.Tabs, TabIndexEntry{
+			ID:           tabID,
+			Type:         "project",
+			Title:        projectName,
+			ProjectPath:  projectPath,
+			AgentMode:    agentMode,
+			RemoteHost:   remoteHost,
+			RemoteSafety: remoteSafety,
+			LastActiveAt: now.Unix(),
+			Archived:     false,
+		})
+	}
+
+	if err := persist.SaveIndex(index); err != nil {
+		log.Printf("[CreateProjectTabSession] SaveIndex failed: %v", err)
+	}
+
+	// An existing session returned above owns its private override. For this new
+	// session, seed the tab from the task's configured working directory rather
+	// than falling back to the main assistant workspace. A coding tab with no
+	// stored directory inherits the current working directory and binds it, so
+	// identity (task dir) cannot become a hidden work root.
+	workingDir := a.recentTaskWorkingDir(projectPath)
+	if workingDir == "" && agentMode == taskCodingDevTag {
+		// Bind only. Live exec follows EffectiveWorkingDirForOwner; do not Flush
+		// the project index while tabWorkingDirMu is held.
+		workingDir = a.currentTaskManagementWorkingDir()
+	}
+	if cloudDir := a.cloudWorkspaceExecutionDir(projectPath); cloudDir != "" && (workingDir == "" || !cloudWorkspacePathInsideRoot(cloudDir, workingDir)) {
+		workingDir = cloudDir
+	}
+	session := &TabSessionData{
+		TabID:        tabID,
+		ProjectPath:  projectPath,
+		WorkingDir:   workingDir,
+		Conversation: []interface{}{},
+		ScrollTop:    0,
+		InputText:    "",
+		CreatedAt:    now.UTC().Format(time.RFC3339),
+		LastActiveAt: now.UTC().Format(time.RFC3339),
+	}
+	adoptCloudWorkspaceSessionSnapshot(persist, session, projectPath)
+	if err := persist.SaveSession(session); err != nil {
+		log.Printf("[CreateProjectTabSession] SaveSession failed: %v", err)
+		return ""
+	}
+	dropCloudWorkspaceRestoreSnapshot(persist, tabID, projectPath)
+	// Publish the task-provided directory only after it is durable, so the
+	// ProjectDirBar and the first assistant message resolve the same directory.
+	a.bindAssistantTabWorkingDirLocked(tabID, projectSessionOwnerID(projectPath))
+
+	return fmt.Sprintf("已打开项目：%s\n%s\n\n请问需要我做什么？", projectName, projectPath)
+}
+
+func (a *App) projectTabDisplayName(projectPath string) string {
+	projectPath = strings.TrimSpace(projectPath)
+	if projectPath == "" {
+		return "Task"
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore != nil {
+		if pi := a.memoryStore.ProjectIndex(); pi != nil {
+			if name := strings.TrimSpace(pi.GetDisplayName(projectPath)); name != "" {
+				return normalizeRecentTaskName(name)
+			}
+		}
+	}
+	if name := normalizeRecentTaskName(stripTaskDirTimestampSuffix(lastPathComponent(projectPath))); name != "" {
+		return name
+	}
+	return "Task"
+}
+
+func (a *App) upsertProjectTabIndexEntry(persist *ProjectTabSessionPersist, tabID, projectPath string, now time.Time) {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if persist == nil || strings.TrimSpace(tabID) == "" || projectPath == "" {
+		return
+	}
+	index, err := persist.LoadIndex()
+	if err != nil {
+		log.Printf("[CreateProjectTabSession] LoadIndex failed: %v", err)
+		index = &TabIndex{Tabs: []TabIndexEntry{}}
+	}
+	projectName := a.projectTabDisplayName(projectPath)
+	agentMode, remoteHost, remoteSafety := a.projectTabIndexCodingMetadata(projectPath)
+	for i, entry := range index.Tabs {
+		if entry.ID == tabID {
+			index.Tabs[i].Title = projectName
+			index.Tabs[i].ProjectPath = projectPath
+			index.Tabs[i].AgentMode = agentMode
+			index.Tabs[i].RemoteHost = remoteHost
+			index.Tabs[i].RemoteSafety = remoteSafety
+			index.Tabs[i].LastActiveAt = now.Unix()
+			index.Tabs[i].Archived = false
+			if err := persist.SaveIndex(index); err != nil {
+				log.Printf("[CreateProjectTabSession] SaveIndex failed: %v", err)
+			}
+			return
+		}
+	}
+	index.Tabs = append(index.Tabs, TabIndexEntry{
+		ID:           tabID,
+		Type:         "project",
+		Title:        projectName,
+		ProjectPath:  projectPath,
+		AgentMode:    agentMode,
+		RemoteHost:   remoteHost,
+		RemoteSafety: remoteSafety,
+		LastActiveAt: now.Unix(),
+		Archived:     false,
+	})
+	if err := persist.SaveIndex(index); err != nil {
+		log.Printf("[CreateProjectTabSession] SaveIndex failed: %v", err)
+	}
+}
+
+// projectTabIndexCodingMetadata returns presentation metadata for a persisted
+// tab. The task record remains authoritative; the index only prevents a
+// restored remote diagnosis tab from briefly behaving like ordinary chat while
+// its first status refresh is still in flight.
+func (a *App) projectTabIndexCodingMetadata(projectPath string) (agentMode, remoteHost, remoteSafety string) {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return "", "", ""
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil || a.memoryStore.ProjectIndex() == nil {
+		return "", "", ""
+	}
+	rec := a.memoryStore.ProjectIndex().Get(projectPath)
+	if rec == nil {
+		return "", "", ""
+	}
+	switch codingModeForProjectRecord(*rec) {
+	case taskRemoteCodingDevTag:
+		remoteHost, _, _, _ = a.remoteCodingMetaFromTaskTags(projectPath)
+		if projectRecordHasTag(*rec, taskSourceRemoteOpsDiagnosisTag) {
+			remoteSafety = "diagnosis"
+		}
+		return taskRemoteCodingDevTag, remoteHost, remoteSafety
+	case taskCodingDevTag:
+		return taskCodingDevTag, "", ""
+	default:
+		return "", "", ""
+	}
+}
+
+// lookupProjectCodingMode reads the open project index without initializing it.
+// found is false when the store or the row is not visible yet. An ordinary
+// chat row is found with an empty mode; that is not the same as a missing row.
+func (a *App) lookupProjectCodingMode(projectPath string) (mode string, found bool) {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || projectPath == "" {
+		return "", false
+	}
+	// Read the already-open store only. The send path must not call
+	// ensureMemoryStore — that takes memoryStoreMu and can init on a miss.
+	a.memoryStoreMu.Lock()
+	ms := a.memoryStore
+	a.memoryStoreMu.Unlock()
+	if ms == nil || ms.ProjectIndex() == nil {
+		return "", false
+	}
+	rec := ms.ProjectIndex().Get(projectPath)
+	if rec == nil {
+		return "", false
+	}
+	return codingModeForProjectRecord(*rec), true
+}
+
+func (a *App) projectRecordCodingMode(projectPath string) string {
+	mode, found := a.lookupProjectCodingMode(projectPath)
+	if !found {
+		return ""
+	}
+	return mode
+}
+
+func (a *App) projectPathIsCodingWorkbench(projectPath string) bool {
+	return a.projectRecordCodingMode(projectPath) != ""
+}
+
+func (a *App) projectPathIsLocalCodingWorkbench(projectPath string) bool {
+	return a.projectRecordCodingMode(projectPath) == taskCodingDevTag
+}
+
+func (a *App) isDesktopCodingWorkbenchSession(userID, projectPath string) bool {
+	if a == nil {
+		return false
+	}
+	if a.imHandler != nil && a.imHandler.isPureCodingWorkbenchSession(userID) {
+		return true
+	}
+	return a.projectPathIsCodingWorkbench(projectPath)
+}
+
+// buildProjectTabContextMessage writes a catalog pointer for a project tab:
+// titles and source paths only. Warehouse bodies stay in tools.
+func (a *App) buildProjectTabContextMessage(projectPath string) string {
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return ""
+	}
+
+	projectName := stripTaskDirTimestampSuffix(lastPathComponent(projectPath))
+
+	contextPath := a.recentTaskExecutionProjectPath(projectPath)
+	if contextPath == "" {
+		contextPath = projectPath
+	}
+	contextData := a.memoryStore.ProjectContextForHost(contextPath, 1)
+	artifacts := contextData.TaskArtifacts
+	knowledge := contextData.ProjectKnowledge
+
+	// Merge and deduplicate by ID.
+	seen := make(map[string]bool, len(artifacts)+len(knowledge))
+	var entries []memory.Entry
+	for _, e := range artifacts {
+		if !seen[e.ID] {
+			seen[e.ID] = true
+			entries = append(entries, e)
+		}
+	}
+	for _, e := range knowledge {
+		if !seen[e.ID] {
+			seen[e.ID] = true
+			entries = append(entries, e)
+		}
+	}
+
+	if len(entries) == 0 {
+		return ""
+	}
+
+	scene := contextData.Scene
+
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("项目：%s\n路径：%s\n\n", projectName, projectPath))
+
+	// --- Section: Recent Progress (from task_artifact entries) ---
+	if len(artifacts) > 0 {
+		sb.WriteString("**最近进展：**\n")
+		limit := 5
+		if len(artifacts) < limit {
+			limit = len(artifacts)
+		}
+		for i := 0; i < limit; i++ {
+			e := artifacts[i]
+			label := projectTabCatalogLabel(e.Title, e.SourceURL)
+			if label == "" {
+				continue
+			}
+			sb.WriteString(fmt.Sprintf("- %s\n", label))
+		}
+		sb.WriteString("\n")
+	}
+
+	// --- Section: Key Artifact Paths ---
+	artifactPaths := projectTabExtractPaths(entries)
+	artifactPaths = projectTabAppendUniquePaths(artifactPaths, scene.SourceURLs)
+	if len(artifactPaths) > 0 {
+		sb.WriteString("**关键产出物：**\n")
+		limit := 8
+		if len(artifactPaths) < limit {
+			limit = len(artifactPaths)
+		}
+		for i := 0; i < limit; i++ {
+			sb.WriteString(fmt.Sprintf("- `%s`\n", artifactPaths[i]))
+		}
+		sb.WriteString("\n")
+	}
+
+	// --- Section: Recent Artifact Sources ---
+	if len(scene.RecentArtifacts) > 0 {
+		sb.WriteString("**最近产物来源：**\n")
+		limit := 5
+		if len(scene.RecentArtifacts) < limit {
+			limit = len(scene.RecentArtifacts)
+		}
+		for i := 0; i < limit; i++ {
+			artifact := scene.RecentArtifacts[i]
+			label := projectTabCatalogLabel(artifact.Title, artifact.SourceURL)
+			if label == "" {
+				continue
+			}
+			if artifact.SourceURL != "" {
+				sb.WriteString(fmt.Sprintf("- %s (%s)\n", label, projectTabSourceRefHint(artifact.SourceURL)))
+			} else {
+				sb.WriteString(fmt.Sprintf("- %s\n", label))
+			}
+		}
+		sb.WriteString("\n")
+	}
+
+	// --- Section: Project Knowledge ---
+	if len(knowledge) > 0 {
+		sb.WriteString("**项目知识：**\n")
+		limit := 3
+		if len(knowledge) < limit {
+			limit = len(knowledge)
+		}
+		for i := 0; i < limit; i++ {
+			e := knowledge[i]
+			label := projectTabCatalogLabel(e.Title, e.SourceURL)
+			if label == "" {
+				continue
+			}
+			sb.WriteString(fmt.Sprintf("- %s\n", label))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("请问需要我继续做什么？")
+	return sb.String()
+}
+
+func projectTabCatalogLabel(title, sourceURL string) string {
+	if label := strings.TrimSpace(title); label != "" {
+		return label
+	}
+	return strings.TrimSpace(sourceURL)
+}
+
+// projectTabExtractPaths extracts file paths from entry SourceURL fields and tags.
+func projectTabExtractPaths(entries []memory.Entry) []string {
+	seen := make(map[string]bool)
+	var paths []string
+
+	for _, e := range entries {
+		// Check SourceURL first (most reliable source of artifact paths).
+		if e.SourceURL != "" && looksLikeFilePathForContext(e.SourceURL) {
+			if !seen[e.SourceURL] {
+				seen[e.SourceURL] = true
+				paths = append(paths, e.SourceURL)
+			}
+		}
+		// Check tags for file paths (excluding the project path itself).
+		for _, tag := range e.Tags {
+			if looksLikeFilePathForContext(tag) && !seen[tag] {
+				// Skip tags that are just the project root path.
+				if strings.Contains(tag, ".") || strings.Count(tag, string([]rune{filepath.Separator})) > 3 {
+					seen[tag] = true
+					paths = append(paths, tag)
+				}
+			}
+		}
+	}
+
+	return paths
+}
+
+func projectTabSourceHint(sourceURL string) string {
+	if sourceURL != "" && memory.LooksLikeFilePath(sourceURL) {
+		return "full: read_file"
+	}
+	return ""
+}
+
+func projectTabSourceRefHint(sourceURL string) string {
+	if sourceURL == "" {
+		return ""
+	}
+	hint := projectTabSourceHint(sourceURL)
+	if hint != "" {
+		return fmt.Sprintf("`%s`; %s", sourceURL, hint)
+	}
+	return fmt.Sprintf("`%s`", sourceURL)
+}
+
+func projectTabAppendUniquePaths(paths []string, candidates []string) []string {
+	seen := make(map[string]bool, len(paths))
+	for _, path := range paths {
+		seen[path] = true
+	}
+	for _, candidate := range candidates {
+		if candidate == "" || !looksLikeFilePathForContext(candidate) || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		paths = append(paths, candidate)
+	}
+	return paths
+}
+
+// CloseProjectTabSession persists the current session state for a project tab
+// and updates the index. Called when the user closes a Project Tab.
+// Marks the tab as archived so it won't be restored on next startup.
+// This is a Wails binding method.
+func (a *App) CloseProjectTabSession(tabID string) {
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return
+	}
+	// Serialize lifecycle cleanup with SetTabWorkingDir. A late directory-picker
+	// completion must not publish a live owner override after this tab closed.
+	a.tabWorkingDirMu.Lock()
+	defer a.tabWorkingDirMu.Unlock()
+
+	persist := a.ensureProjectTabSessionPersist()
+	var projectPath string
+	if cached, ok := a.tabProjectPaths.Load(tabID); ok {
+		projectPath, _ = cached.(string)
+	}
+
+	// Mark the tab as archived in the index so it won't be restored on startup.
+	index, err := persist.LoadIndex()
+	if err != nil {
+		log.Printf("[CloseProjectTabSession] LoadIndex failed: %v", err)
+	} else if index != nil {
+		found := false
+		for i, entry := range index.Tabs {
+			if entry.ID == tabID {
+				found = true
+				if strings.TrimSpace(projectPath) == "" {
+					projectPath = entry.ProjectPath
+				}
+				index.Tabs[i].LastActiveAt = time.Now().Unix()
+				index.Tabs[i].Archived = true
+				break
+			}
+		}
+
+		if err := persist.SaveIndex(index); err != nil {
+			log.Printf("[CloseProjectTabSession] SaveIndex failed: %v", err)
+		}
+		log.Printf("[CloseProjectTabSession] tab=%s archived found=%v project=%q", tabID, found, projectPath)
+	}
+
+	if strings.TrimSpace(projectPath) == "" {
+		if session, err := persist.LoadSession(tabID); err == nil && session != nil {
+			projectPath = session.ProjectPath
+		} else if err != nil {
+			log.Printf("[CloseProjectTabSession] LoadSession failed tab=%s err=%v", tabID, err)
+		}
+	}
+
+	a.tabProjectPaths.Delete(tabID)
+	a.tabWorkingDirOverrides.Delete(tabID)
+	if strings.TrimSpace(projectPath) != "" {
+		a.assistantSessionWorkingDirs.Delete(projectSessionOwnerID(normalizeProjectSessionPath(projectPath)))
+	}
+	if strings.TrimSpace(projectPath) != "" {
+		// Clean up working directory override — prevents stale overrides from
+		// leaking into future sessions that reuse the same projectPath.
+		a.cancelProjectTaskLoop(projectPath)
+		// A copy shares the source cache. Cancelling that directory would stop
+		// the original task when this copy's tab closes.
+		if workingDir := a.recentTaskWorkingDir(projectPath); workingDir != "" && !strings.EqualFold(workingDir, projectPath) && !a.anotherVisibleTaskUsesWorkingDir(projectPath, workingDir) {
+			a.cancelProjectTaskLoop(workingDir)
+		}
+	}
+	log.Printf("[CloseProjectTabSession] tab=%s closed project=%q", tabID, projectPath)
+	if path := normalizeProjectSessionPath(projectPath); path != "" {
+		if id := a.lookupCloudWorkspaceIDForProject(path); id != "" && !a.anotherOpenTabUsesCloudWorkspace(id, path) {
+			a.releaseCloudWorkspaceForProjectPath(path)
+		}
+	}
+}
+
+// anotherVisibleTaskUsesWorkingDir is true when a different visible task still
+// runs in workingDir. Closing either the source or a copy must not cancel that
+// shared directory.
+func (a *App) anotherVisibleTaskUsesWorkingDir(projectPath, workingDir string) bool {
+	workingDir = normalizeProjectSessionPath(workingDir)
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if a == nil || workingDir == "" || a.memoryStore == nil {
+		return false
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return false
+	}
+	for _, rec := range pi.ListAllMatching(func(candidate memory.ProjectRecord) bool {
+		return true
+	}) {
+		path := normalizeProjectSessionPath(rec.ProjectPath)
+		if path == "" || path == projectPath || pi.IsHidden(path) || pi.IsArchived(path) {
+			continue
+		}
+		// A task with no working_dir tag still runs in its workspace/ sandbox.
+		// A copy of that task stores the same path explicitly.
+		execDir := a.recentTaskWorkingDir(path)
+		if execDir == "" {
+			execDir = a.managedTaskExecutionDirForDisplay(path)
+		}
+		if path == workingDir || normalizeProjectSessionPath(execDir) == workingDir {
+			return true
+		}
+	}
+	return false
+}
+
+// CloseAssistantTabSession releases the runtime-only directory binding for any
+// non-main assistant tab. Project tabs additionally archive their entry through
+// CloseProjectTabSession; expert tabs have no project index entry, but still
+// need this cleanup so a closed expert cannot keep a private tool directory
+// alive until the process exits.
+func (a *App) CloseAssistantTabSession(tabID string) {
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return
+	}
+	if strings.HasPrefix(tabID, "expert-") {
+		a.tabWorkingDirMu.Lock()
+		defer a.tabWorkingDirMu.Unlock()
+		ownerID, _ := a.assistantOwnerForTab(tabID)
+		if ownerID != "" {
+			a.assistantSessionWorkingDirs.Delete(ownerID)
+		}
+		a.tabWorkingDirOverrides.Delete(tabID)
+		return
+	}
+	a.CloseProjectTabSession(tabID)
+}
+
+// SetTabWorkingDir changes the effective working directory for exactly one AI
+// assistant tab. Empty tabID means the main assistant and updates its desktop
+// default. Any other supported tab receives a private override; without one,
+// it dynamically follows the main assistant directory.
+func (a *App) SetTabWorkingDir(tabID, newDir string) error {
+	newDir = strings.TrimSpace(newDir)
+	if newDir == "" {
+		return fmt.Errorf("directory path is empty")
+	}
+	newDir = filepath.Clean(newDir)
+
+	// Validate: must be an absolute path.
+	if !filepath.IsAbs(newDir) {
+		return fmt.Errorf("directory path must be absolute: %s", newDir)
+	}
+
+	tabID = strings.TrimSpace(tabID)
+
+	// Local Tab: update global config.
+	if tabID == "" {
+		if err := os.MkdirAll(newDir, 0o755); err != nil {
+			return fmt.Errorf("cannot create directory %s: %w", newDir, err)
+		}
+		corelib.SetWorkspaceDir(newDir)
+		_, _ = a.PatchConfigFields(map[string]interface{}{"working_directory": newDir})
+		a.syncActiveWorkflowWorkingDir(desktopUserID, newDir)
+		log.Printf("[SetTabWorkingDir] local tab working dir updated to %q", newDir)
+		return nil
+	}
+
+	a.tabWorkingDirMu.Lock()
+	ownerID, projectPath := a.assistantOwnerForTab(tabID)
+	if ownerID == "" {
+		a.tabWorkingDirMu.Unlock()
+		return fmt.Errorf("tab %s has no associated assistant session", tabID)
+	}
+	if a.projectPathIsLocalCodingWorkbench(projectPath) && isLocalCodingIdentityOrSandbox(projectPath, newDir) {
+		replacement := normalizeProjectSessionPath(a.EffectiveDesktopWorkingDir())
+		if replacement == "" || isLocalCodingIdentityOrSandbox(projectPath, replacement) {
+			a.tabWorkingDirMu.Unlock()
+			return fmt.Errorf("coding work root cannot be the task identity directory")
+		}
+		newDir = replacement
+	}
+	if cloudDir := a.cloudWorkspaceExecutionDir(projectPath); cloudDir != "" {
+		cleaned := normalizeProjectSessionPath(newDir)
+		if !cloudWorkspacePathInsideRoot(cloudDir, cleaned) {
+			newDir = cloudDir
+		} else {
+			newDir = cleaned
+		}
+	}
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		a.tabWorkingDirMu.Unlock()
+		return fmt.Errorf("cannot create directory %s: %w", newDir, err)
+	}
+	// Commit the durable source of truth before publishing the in-memory value.
+	// If the write fails, returning an error must leave this tab's active tools
+	// on its previous directory rather than creating a hidden transient override.
+	if err := a.persistAssistantTabWorkingDir(tabID, projectPath, newDir); err != nil {
+		a.tabWorkingDirMu.Unlock()
+		return err
+	}
+	// Tools resolve by owner while the UI and persistence resolve by tab ID, so
+	// publish both mappings as soon as the durable update has succeeded.
+	a.tabWorkingDirOverrides.Store(tabID, newDir)
+	a.assistantSessionWorkingDirs.Store(ownerID, newDir)
+	a.syncActiveWorkflowWorkingDir(ownerID, newDir)
+	a.tabWorkingDirMu.Unlock()
+	if projectPath != "" {
+		if err := a.persistTaskWorkingDir(projectPath, newDir); err != nil {
+			log.Printf("[SetTabWorkingDir] persist task working dir tab=%s project=%q err=%v", tabID, projectPath, err)
+		}
+		a.syncCodingWorkbenchWorkingDir(projectPath, newDir)
+	}
+	log.Printf("[SetTabWorkingDir] tab=%s owner=%q dir=%q", tabID, ownerID, newDir)
+	return nil
+}
+
+// assistantOwnerForTab resolves the runtime owner and optional task path for a
+// directory-bearing tab. Expert tabs have a session owner but no task path.
+func (a *App) assistantOwnerForTab(tabID string) (ownerID, projectPath string) {
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return desktopUserID, ""
+	}
+	if strings.HasPrefix(tabID, "expert-") {
+		expertID := strings.TrimSpace(strings.TrimPrefix(tabID, "expert-"))
+		if expertIDPattern.MatchString(expertID) {
+			return expertSessionUserID(expertID), ""
+		}
+	}
+	if cached, ok := a.tabProjectPaths.Load(tabID); ok {
+		projectPath, _ = cached.(string)
+		projectPath = normalizeProjectSessionPath(projectPath)
+		if projectPath != "" {
+			return projectSessionOwnerID(projectPath), projectPath
+		}
+	}
+	// Restored project tabs are created from the persisted index and do not call
+	// CreateProjectTabSession again. Resolve their owner from the session file so
+	// GetTabWorkingDir and a direct send restore the private directory before
+	// any tab-local cache has been populated in this process. An archived session
+	// is closed, however, and must not accept a late picker completion.
+	persist := a.ensureProjectTabSessionPersist()
+	index, indexErr := persist.LoadIndex()
+	if indexErr != nil || index == nil || !projectTabIndexContainsActiveID(index, tabID) {
+		return "", ""
+	}
+	if session, err := persist.LoadSession(tabID); err == nil && session != nil {
+		projectPath = normalizeProjectSessionPath(session.ProjectPath)
+		if projectPath != "" {
+			a.tabProjectPaths.Store(tabID, projectPath)
+			return projectSessionOwnerID(projectPath), projectPath
+		}
+	}
+	return "", ""
+}
+
+func projectTabIndexContainsActiveID(index *TabIndex, tabID string) bool {
+	if index == nil {
+		return false
+	}
+	for _, entry := range index.Tabs {
+		if entry.ID == tabID {
+			return !entry.Archived
+		}
+	}
+	return false
+}
+
+// assistantTabWorkingDir returns an explicit tab override. Empty is
+// significant: the tab has not been customized and must follow the main tab.
+func (a *App) assistantTabWorkingDir(tabID string) string {
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return ""
+	}
+	if value, ok := a.tabWorkingDirOverrides.Load(tabID); ok {
+		if dir, ok := value.(string); ok {
+			return normalizeProjectSessionPath(dir)
+		}
+	}
+	session, err := a.ensureProjectTabSessionPersist().LoadSession(tabID)
+	if err != nil || session == nil {
+		return ""
+	}
+	dir := normalizeProjectSessionPath(session.WorkingDir)
+	projectPath := normalizeProjectSessionPath(session.ProjectPath)
+	if projectPath != "" && a.projectPathIsLocalCodingWorkbench(projectPath) && isLocalCodingIdentityOrSandbox(projectPath, dir) {
+		return ""
+	}
+	return dir
+}
+
+func (a *App) persistAssistantTabWorkingDir(tabID, projectPath, dir string) error {
+	persist := a.ensureProjectTabSessionPersist()
+	session, err := persist.LoadSession(tabID)
+	if err != nil {
+		return fmt.Errorf("load tab working directory: %w", err)
+	}
+	if session == nil {
+		session = &TabSessionData{TabID: tabID, CreatedAt: time.Now().UTC().Format(time.RFC3339)}
+		// The shared expert file must stay unbound. A path on that file makes
+		// an empty snapshot look like the paper's newest transcript.
+		if !strings.HasPrefix(tabID, "expert-") {
+			session.ProjectPath = projectPath
+		}
+	}
+	dir = normalizeProjectSessionPath(dir)
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath != "" && a.projectPathIsLocalCodingWorkbench(projectPath) && isLocalCodingIdentityOrSandbox(projectPath, dir) {
+		dir = ""
+	}
+	session.WorkingDir = dir
+	if err := persist.SaveSession(session); err != nil {
+		return fmt.Errorf("save tab working directory: %w", err)
+	}
+	return nil
+}
+
+// resolveLatexExpertProjectPath returns the durable task directory for the
+// built-in LaTeX paper expert. A restored tab can send with an empty project
+// path; other experts are left unchanged so they do not gain a task folder
+// just because a message omitted the path.
+func (a *App) resolveLatexExpertProjectPath(expertID string) string {
+	if a == nil || strings.TrimSpace(expertID) != builtinLatexExpertID {
+		return ""
+	}
+	created := a.CreateExpertTask(expertID, "")
+	return normalizeProjectSessionPath(created.ProjectPath)
+}
+
+// bindExpertTaskWorkspace points an expert session at the task workspace that
+// holds its files. Expert owners do not encode a project path, so without this
+// their tools inherit the desktop directory while the preview reads the task
+// workspace. A directory the user already chose for this expert is left alone.
+func (a *App) bindExpertTaskWorkspace(userID, tabID, projectPath string) {
+	if a == nil {
+		return
+	}
+	userID = strings.TrimSpace(userID)
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if userID == "" || projectPath == "" || expertIDFromUserID(userID) == "" {
+		return
+	}
+	if a.BoundWorkingDirForOwner(userID) != "" {
+		return
+	}
+	dir := normalizeProjectSessionPath(a.recentTaskExecutionProjectPath(projectPath))
+	if dir == "" {
+		return
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Printf("[expert] task workspace mkdir owner=%s dir=%q err=%v", userID, dir, err)
+		return
+	}
+	tabID = strings.TrimSpace(tabID)
+	a.tabWorkingDirMu.Lock()
+	defer a.tabWorkingDirMu.Unlock()
+	if a.BoundWorkingDirForOwner(userID) != "" {
+		return
+	}
+	if tabID != "" {
+		if err := a.persistAssistantTabWorkingDir(tabID, projectPath, dir); err != nil {
+			log.Printf("[expert] task workspace persist tab=%s dir=%q err=%v", tabID, dir, err)
+		} else {
+			a.tabWorkingDirOverrides.Store(tabID, dir)
+		}
+	}
+	a.assistantSessionWorkingDirs.Store(userID, dir)
+}
+
+// bindAssistantTabWorkingDir restores the tab override before a turn starts.
+// It is idempotent and may safely run before every dispatch.
+func (a *App) bindAssistantTabWorkingDir(tabID, ownerID string) {
+	tabID = strings.TrimSpace(tabID)
+	ownerID = strings.TrimSpace(ownerID)
+	if tabID == "" || ownerID == "" {
+		return
+	}
+	a.tabWorkingDirMu.Lock()
+	defer a.tabWorkingDirMu.Unlock()
+	a.bindAssistantTabWorkingDirLocked(tabID, ownerID)
+}
+
+// bindAssistantTabWorkingDirLocked is bindAssistantTabWorkingDir's internal
+// form for callers that already hold tabWorkingDirMu.
+func (a *App) bindAssistantTabWorkingDirLocked(tabID, ownerID string) {
+	dir := a.assistantTabWorkingDir(tabID)
+	if cloudDir := a.cloudWorkspaceExecutionDir(projectPathFromSessionOwnerID(ownerID)); cloudDir != "" {
+		if dir == "" || !cloudWorkspacePathInsideRoot(cloudDir, dir) {
+			dir = cloudDir
+		}
+	}
+	if dir != "" {
+		a.tabWorkingDirOverrides.Store(tabID, dir)
+		a.assistantSessionWorkingDirs.Store(ownerID, dir)
+		return
+	}
+	// No override means dynamic inheritance, so never leave a stale owner value.
+	a.assistantSessionWorkingDirs.Delete(ownerID)
+}
+
+// syncActiveWorkflowWorkingDir updates the ProjectPath of an active workflow for
+// ownerID so workflow phase prompts match the top-bar / tool working directory.
+// No-op when there is no active workflow for that owner.
+// Emits at most one workflow:workdir_set event per call.
+func (a *App) syncActiveWorkflowWorkingDir(ownerID, dir string) {
+	if a == nil {
+		return
+	}
+	ownerID = strings.TrimSpace(ownerID)
+	dir = normalizeProjectSessionPath(dir)
+	if ownerID == "" || dir == "" {
+		return
+	}
+
+	updated := false
+	now := time.Now()
+
+	if a.workflowV2 != nil && a.workflowV2.machine != nil {
+		if state := a.workflowV2.machine.GetActive(ownerID); state != nil {
+			if normalizeProjectSessionPath(state.ProjectPath) != dir {
+				state.ProjectPath = dir
+				state.UpdatedAt = now
+				updated = true
+				if a.workflowV2.store != nil {
+					if err := a.workflowV2.store.Save(state); err != nil {
+						log.Printf("[syncActiveWorkflowWorkingDir] persist v2 project path owner=%s dir=%q err=%v", ownerID, dir, err)
+					}
+				}
+			}
+		}
+	}
+	if a.workflowEngine != nil {
+		if state := a.workflowEngine.GetActiveWorkflow(ownerID); state != nil {
+			if normalizeProjectSessionPath(state.ProjectPath) != dir {
+				state.ProjectPath = dir
+				state.UpdatedAt = now
+				updated = true
+			}
+		}
+		// Keep adapter cache in sync without double-emitting workflow:workdir_set.
+		if adapter, ok := a.workflowEngine.GetCallbacks().(*GUIWorkflowAdapter); ok && adapter != nil {
+			if normalizeProjectSessionPath(adapter.GetWorkingDir()) != dir {
+				if updated {
+					adapter.setWorkingDirCache(dir)
+				} else {
+					adapter.SetWorkingDir(ownerID, dir)
+				}
+			}
+		}
+	}
+
+	if updated && a.ctx != nil {
+		a.emitEvent("workflow:workdir_set", map[string]string{
+			"user_id": ownerID,
+			"path":    dir,
+		})
+	}
+}
+
+// BoundWorkingDirForOwner returns the working directory bound to this owner,
+// or empty if none is set. It does not fall back to the process workspace.
+func (a *App) BoundWorkingDirForOwner(ownerID string) string {
+	if isACPAssistantSessionUserID(ownerID) && a != nil {
+		if dir, ok := a.acpSessionWorkingDirs.Load(ownerID); ok {
+			if workingDir, ok := dir.(string); ok && strings.TrimSpace(workingDir) != "" {
+				return normalizeProjectSessionPath(workingDir)
+			}
+		}
+	}
+	if a != nil {
+		if value, ok := a.assistantSessionWorkingDirs.Load(strings.TrimSpace(ownerID)); ok {
+			if dir, ok := value.(string); ok && strings.TrimSpace(dir) != "" {
+				return normalizeProjectSessionPath(dir)
+			}
+		}
+	}
+	return ""
+}
+
+// EffectiveWorkingDirForOwner returns the directory tools, prompts, workflows
+// and the ProjectDirBar share for one runtime conversation owner. A configured
+// tab override wins; a local coding task without an override uses its
+// working_dir tag; a project-session owner otherwise stays in the project
+// named by its owner id; an unconfigured managed task runs in its workspace
+// sandbox; every other unconfigured owner follows the main tab.
+func (a *App) EffectiveWorkingDirForOwner(ownerID string) string {
+	projectPath := projectPathFromSessionOwnerID(ownerID)
+	cloudDir := ""
+	if a != nil && projectPath != "" {
+		cloudDir = a.cloudWorkspaceExecutionDir(projectPath)
+	}
+	if dir := a.BoundWorkingDirForOwner(ownerID); dir != "" {
+		if cloudDir == "" || cloudWorkspacePathInsideRoot(cloudDir, dir) {
+			return dir
+		}
+		return cloudDir
+	}
+	if cloudDir != "" {
+		return cloudDir
+	}
+	if projectPath != "" && !looksLikeManagedTaskIdentity(projectPath) {
+		return projectPath
+	}
+	if wd := a.codingTaskTaggedWorkRoot(projectPath); wd != "" {
+		return wd
+	}
+	if execDir := a.managedTaskExecutionDirForDisplay(projectPath); execDir != "" {
+		// An unconfigured managed task executes in its workspace/ sandbox
+		// (see im_tools_local.go), never the desktop default. Return the same
+		// directory so the tab chip, header and prompts agree with execution.
+		return execDir
+	}
+	return normalizeProjectSessionPath(corelib.EffectiveWorkspaceDir())
+}
+
+// EffectiveDesktopWorkingDir is the local-tab working directory shown in
+// ProjectDirBar and used as tool cwd when the session owner has no project path.
+func (a *App) EffectiveDesktopWorkingDir() string {
+	return a.EffectiveWorkingDirForOwner(desktopUserID)
+}
+
+// GetTabWorkingDir returns the current effective working directory for a tab.
+// Returns the directory path and whether it is a system default (not user-specified).
+// This is a Wails binding method.
+func (a *App) GetTabWorkingDir(tabID string) map[string]interface{} {
+	tabID = strings.TrimSpace(tabID)
+
+	var dir string
+	isDefault := true
+
+	if tabID == "" {
+		// Local Tab: use global EffectiveWorkspaceDir.
+		dir = a.EffectiveDesktopWorkingDir()
+		// Normalize both sides so Windows drive-letter casing does not flip the badge.
+		isDefault = normalizeProjectSessionPath(dir) == normalizeProjectSessionPath(corelib.WorkspaceDir())
+	} else {
+		ownerID, _ := a.assistantOwnerForTab(tabID)
+		if ownerID != "" {
+			a.bindAssistantTabWorkingDir(tabID, ownerID)
+			dir = a.EffectiveWorkingDirForOwner(ownerID)
+			isDefault = a.assistantTabWorkingDir(tabID) == ""
+		}
+	}
+
+	if dir == "" {
+		dir = a.EffectiveDesktopWorkingDir()
+	}
+
+	return map[string]interface{}{
+		"path":       dir,
+		"is_default": isDefault,
+	}
+}
+
+// persistTaskWorkingDir updates the persistent workingDir tag for a task.
+func (a *App) persistTaskWorkingDir(projectPath, newDir string) error {
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return fmt.Errorf("memory store unavailable")
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return fmt.Errorf("project index unavailable")
+	}
+	if rec := pi.Get(projectPath); rec == nil {
+		return fmt.Errorf("project record not found for %s", projectPath)
+	}
+	newDir = normalizeRecentTaskWorkingDir(newDir)
+	if newDir == "" {
+		return fmt.Errorf("invalid working directory")
+	}
+	if a.projectPathIsLocalCodingWorkbench(projectPath) && isLocalCodingIdentityOrSandbox(projectPath, newDir) {
+		return fmt.Errorf("coding work root cannot be the task identity directory")
+	}
+	if a.recentTaskWorkingDir(projectPath) == newDir {
+		return nil
+	}
+	newTag := recentTaskWorkingDirTag(newDir)
+	if newTag == "" {
+		return fmt.Errorf("invalid working directory %s", newDir)
+	}
+	// ReplacePrefixedTags is the project-index write path. UpsertTaskArtifact
+	// merges tags and would keep the previous working_dir: value first.
+	pi.ReplacePrefixedTags(projectPath, []string{recentTaskWorkingDirTagPrefix}, []string{newTag})
+	a.emitProjectIndexChanged(projectPath)
+	return a.memoryStore.Flush()
+}
+
+// resolveProjectPathForTab resolves the project path backing a project tab:
+// in-memory cache first, then the tab session file, then the persisted tab
+// index. If all lookups fail but the frontend provided a hint, the mapping is
+// self-healed and cached. Returns "" when nothing resolves.
+func (a *App) resolveProjectPathForTab(tabID, projectPathHint string) string {
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return ""
+	}
+	projectPathHint = normalizeProjectSessionPath(projectPathHint)
+
+	var projectPath string
+	if cached, ok := a.tabProjectPaths.Load(tabID); ok {
+		projectPath = normalizeProjectSessionPath(cached.(string))
+	}
+
+	if projectPath == "" {
+		persist := a.ensureProjectTabSessionPersist()
+		session, err := persist.LoadSession(tabID)
+		if err == nil && session != nil {
+			projectPath = normalizeProjectSessionPath(session.ProjectPath)
+		}
+
+		if projectPath == "" {
+			// Fallback: look up from index.
+			index, err := persist.LoadIndex()
+			if err == nil && index != nil {
+				for _, entry := range index.Tabs {
+					if entry.ID == tabID {
+						projectPath = normalizeProjectSessionPath(entry.ProjectPath)
+						break
+					}
+				}
+			}
+		}
+
+		// Populate cache for future calls.
+		if projectPath != "" {
+			a.tabProjectPaths.Store(tabID, projectPath)
+		}
+	}
+
+	// Self-healing: if all lookups failed but the frontend provided a hint,
+	// use it and register the mapping so future calls succeed without the hint.
+	if projectPath == "" && projectPathHint != "" {
+		projectPath = projectPathHint
+		a.tabProjectPaths.Store(tabID, projectPath)
+		log.Printf("[resolveProjectPathForTab] self-healed tab %s → %s (from hint)", tabID, projectPath)
+	}
+	return projectPath
+}
+
+// SendMessageForTab routes a message to the project-specific session identified
+// by tabID. It delegates to the existing SendAIAssistantMessage with the
+// project_path from the tab's session, enabling per-project isolation.
+//
+// projectPathHint is an optional fallback: if the tab session hasn't been
+// registered yet (race between CreateProjectTabSession and this call), the
+// hint allows self-healing — the mapping is established on-the-fly and cached
+// for future calls.
+//
+// This is a Wails binding method.
+func (a *App) SendMessageForTab(tabID, text, projectPathHint string) (*IMAgentResponse, error) {
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return nil, fmt.Errorf("tabID is required")
+	}
+	trimmedText := strings.TrimSpace(text)
+	if trimmedText == "" {
+		return nil, fmt.Errorf("message text is required")
+	}
+	rawProjectPathHint := strings.TrimSpace(projectPathHint)
+	projectPathHint = normalizeProjectSessionPath(projectPathHint)
+	if rawProjectPathHint != "" && rawProjectPathHint != projectPathHint {
+		log.Printf("[SendMessageForTab] normalized hint tab=%q raw=%q normalized=%q", tabID, rawProjectPathHint, projectPathHint)
+	}
+	log.Printf("[SendMessageForTab] send requested tab=%q hint=%q text_len=%d", tabID, projectPathHint, len(trimmedText))
+
+	// Look up the project path — first from in-memory cache, then fall back to disk.
+	projectPath := a.resolveProjectPathForTab(tabID, projectPathHint)
+
+	if projectPath == "" {
+		log.Printf("[SendMessageForTab] send rejected tab=%q reason=no_project_path", tabID)
+		return nil, fmt.Errorf("no project path found for tab %s", tabID)
+	}
+	if a.isProjectTaskClosed(projectPath) {
+		log.Printf("[SendMessageForTab] send rejected tab=%q project=%q reason=closed_task", tabID, projectPath)
+		a.cancelProjectTaskLoop(projectPath)
+		return nil, fmt.Errorf("project task is closed: %s", projectPath)
+	}
+	// Bind the tab before resolving the execution directory. This preserves a
+	// tab-local override even when multiple tabs share the same task path.
+	a.bindAssistantTabWorkingDir(tabID, projectSessionOwnerID(projectPath))
+	executionProjectPath := a.EffectiveWorkingDirForOwner(projectSessionOwnerID(projectPath))
+	log.Printf("[SendMessageForTab] route tab=%q project=%q execution_project=%q text_len=%d", tabID, projectPath, executionProjectPath, len(trimmedText))
+
+	// Delegate to the existing SendAIAssistantMessage with project_path set.
+	// This auto-synthesizes per-project userID (desktop-user:{projectPath})
+	// and all downstream components isolate by userID.
+	return a.SendAIAssistantMessage(AIAssistantSendRequest{
+		Text:         text,
+		ProjectPath:  projectPath,
+		EventScopeID: tabID,
+	})
+}
+
+func (a *App) isProjectTaskClosed(projectPath string) bool {
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return false
+	}
+	a.ensureMemoryStore()
+	if a.memoryStore == nil {
+		return false
+	}
+	pi := a.memoryStore.ProjectIndex()
+	if pi == nil {
+		return false
+	}
+	if rec := pi.Get(projectPath); rec != nil && strings.TrimSpace(rec.ProjectPath) != "" {
+		projectPath = rec.ProjectPath
+	}
+	return pi.IsHidden(projectPath) || pi.IsArchived(projectPath)
+}
+
+// maxRestoredTabs is the maximum number of project tabs restored on startup.
+// Only the most recently active tabs are returned to prevent tab bar overflow.
+const maxRestoredTabs = 5
+
+// LoadProjectTabIndex returns the saved tab index for frontend restoration
+// on app startup. Returns at most maxRestoredTabs non-archived entries,
+// in their persisted creation order. Activity timestamps are retained for
+// cleanup only and must never change the order shown in the tab bar.
+// This is a Wails binding method.
+func (a *App) LoadProjectTabIndex() []TabIndexEntry {
+	persist := a.ensureProjectTabSessionPersist()
+	index, err := persist.LoadIndex()
+	if err != nil {
+		log.Printf("[LoadProjectTabIndex] LoadIndex failed: %v", err)
+		return []TabIndexEntry{}
+	}
+	if index == nil || len(index.Tabs) == 0 {
+		return []TabIndexEntry{}
+	}
+
+	// Filter non-archived entries while retaining the persisted index order.
+	var active []TabIndexEntry
+	var projectIndex *memory.ProjectIndex
+	a.ensureMemoryStore()
+	if a.memoryStore != nil {
+		projectIndex = a.memoryStore.ProjectIndex()
+	}
+	for _, entry := range index.Tabs {
+		if entry.Archived {
+			continue
+		}
+		if entry.ProjectPath != "" {
+			entry.Title = a.projectTabDisplayName(entry.ProjectPath)
+			entry.AgentMode, entry.RemoteHost, entry.RemoteSafety = a.projectTabIndexCodingMetadata(entry.ProjectPath)
+		}
+		if projectIndex != nil && entry.ProjectPath != "" {
+			if projectIndex.IsHidden(entry.ProjectPath) || projectIndex.IsArchived(entry.ProjectPath) {
+				log.Printf("[LoadProjectTabIndex] skip closed task tab=%q project=%q", entry.ID, entry.ProjectPath)
+				continue
+			}
+			if rec := projectIndex.Get(entry.ProjectPath); rec != nil && omittedFromTaskSidebar(*rec) {
+				log.Printf("[LoadProjectTabIndex] skip assistant tab=%q project=%q", entry.ID, entry.ProjectPath)
+				continue
+			} else if rec == nil && isAutoACPAssistantTabDirName(entry.ProjectPath) {
+				log.Printf("[LoadProjectTabIndex] skip leftover ACP tab=%q project=%q", entry.ID, entry.ProjectPath)
+				continue
+			}
+		}
+		active = append(active, entry)
+	}
+	if len(active) == 0 {
+		return []TabIndexEntry{}
+	}
+
+	// Return at most maxRestoredTabs.
+	if len(active) > maxRestoredTabs {
+		active = active[:maxRestoredTabs]
+	}
+	return active
+}
+
+// SaveProjectTabConversation persists the conversation history for a project tab
+// to the backend session file. Called from frontend on debounced history changes.
+// Pass an empty slice to clear persisted conversation.
+// This is a Wails binding method.
+func (a *App) SaveProjectTabConversation(tabID string, conversation []interface{}) {
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return
+	}
+	// A debounced frontend history flush can race with task deletion. Serialize
+	// it with the tab lifecycle so it cannot recreate a deleted session file.
+	a.tabWorkingDirMu.Lock()
+	persist := a.ensureProjectTabSessionPersist()
+	var cloudProjectPath string
+	defer func() {
+		a.tabWorkingDirMu.Unlock()
+		if cloudProjectPath != "" {
+			go a.flushCloudWorkspaceSessionBestEffort(cloudProjectPath)
+		}
+	}()
+	// An explicit empty history is a clear request, not a normal save. Do not
+	// create a file for an unknown tab: task-level clearing already removes all
+	// owned snapshots, and an unowned late debounce must not revive history.
+	if len(conversation) == 0 {
+		if err := persist.ClearSessionConversation(tabID); err != nil {
+			log.Printf("[SaveProjectTabConversation] clear tab=%s err=%v", tabID, err)
+		}
+		if cached, ok := a.tabProjectPaths.Load(tabID); ok {
+			cloudProjectPath, _ = cached.(string)
+		}
+		return
+	}
+	session, err := persist.LoadSession(tabID)
+	if err != nil || session == nil {
+		// Session file doesn't exist yet — create it with conversation.
+		session = &TabSessionData{
+			TabID:        tabID,
+			Conversation: conversation,
+			CreatedAt:    time.Now().UTC().Format(time.RFC3339),
+		}
+		if cached, ok := a.tabProjectPaths.Load(tabID); ok {
+			session.ProjectPath, _ = cached.(string)
+		}
+	} else {
+		if !tabConversationPassesClearFence(session, conversation) {
+			log.Printf("[SaveProjectTabConversation] ignored stale tab=%s clear_at=%d", tabID, session.ConversationClearedAt)
+			return
+		}
+		session.Conversation = conversation
+	}
+	// A stashed expert transcript is rewritten onto the paper's session key.
+	// Record that path so reopening the paper finds this copy, not only an
+	// older snapshot saved before the latest turns were flushed.
+	if strings.TrimSpace(session.ProjectPath) == "" {
+		session.ProjectPath = projectPathFromConversation(conversation)
+	}
+	// The UI stash is saved after the expert-file snapshot and is therefore
+	// newer, but the snapshot can still hold turns the UI had not flushed.
+	// Keep both, or reopening the paper drops whichever side lost the race.
+	session.Conversation = mergeConversationWithLatexArchive(persist, tabID, session.ProjectPath, session.Conversation, session.ConversationClearedAt)
+	if err := persist.SaveSession(session); err != nil {
+		log.Printf("[SaveProjectTabConversation] tab=%s err=%v", tabID, err)
+	}
+	cloudProjectPath = session.ProjectPath
+}
+
+func projectPathFromConversation(conversation []interface{}) string {
+	for _, raw := range conversation {
+		data, err := json.Marshal(raw)
+		if err != nil {
+			continue
+		}
+		var entry struct {
+			SessionKey string `json:"sessionKey"`
+		}
+		if json.Unmarshal(data, &entry) != nil {
+			continue
+		}
+		if path := projectPathFromSessionOwnerID(entry.SessionKey); path != "" {
+			return path
+		}
+	}
+	return ""
+}
+
+func mergeConversationWithLatexArchive(persist *ProjectTabSessionPersist, tabID, projectPath string, conversation []interface{}, clearedAt int64) []interface{} {
+	if persist == nil || strings.HasPrefix(strings.TrimSpace(tabID), "expert-") {
+		return conversation
+	}
+	projectPath = normalizeProjectSessionPath(projectPath)
+	if projectPath == "" {
+		return conversation
+	}
+	archiveID := latexPaperArchiveTabID(projectPath)
+	if strings.TrimSpace(tabID) == archiveID {
+		return conversation
+	}
+	archived, err := persist.LoadSession(archiveID)
+	if err != nil || archived == nil || normalizeProjectSessionPath(archived.ProjectPath) != projectPath {
+		return conversation
+	}
+	if !latexSessionHasUserTurn(archived.Conversation) {
+		return conversation
+	}
+	if clearedAt > 0 && !tabConversationPassesClearFence(&TabSessionData{ConversationClearedAt: clearedAt}, archived.Conversation) {
+		return conversation
+	}
+	return mergeConversationSnapshots(archived.Conversation, conversation)
+}
+
+func mergeConversationSnapshots(older, newer []interface{}) []interface{} {
+	newerIDs := map[string]struct{}{}
+	newerLoose := map[string]struct{}{}
+	for _, raw := range newer {
+		if id := conversationMessageID(raw); id != "" {
+			newerIDs[id] = struct{}{}
+		}
+		if key := conversationLooseKey(raw); key != "" {
+			newerLoose[key] = struct{}{}
+		}
+	}
+	merged := make([]interface{}, 0, len(older)+len(newer))
+	for _, raw := range older {
+		// Same words with different ids are different turns. Only an id-less
+		// copy is folded into a message the UI already has.
+		if id := conversationMessageID(raw); id != "" {
+			if _, ok := newerIDs[id]; ok {
+				continue
+			}
+			merged = append(merged, raw)
+			continue
+		}
+		if key := conversationLooseKey(raw); key != "" {
+			if _, ok := newerLoose[key]; ok {
+				continue
+			}
+		}
+		merged = append(merged, raw)
+	}
+	return append(merged, newer...)
+}
+
+func conversationMessageID(raw interface{}) string {
+	entry, ok := conversationMessageFields(raw)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(entry.ID)
+}
+
+func conversationLooseKey(raw interface{}) string {
+	entry, ok := conversationMessageFields(raw)
+	if !ok || entry.Role == "" || len(entry.Content) == 0 {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(entry.Role)) + ":" + string(entry.Content)
+}
+
+func conversationMessageFields(raw interface{}) (struct {
+	ID      string          `json:"id"`
+	Role    string          `json:"role"`
+	Content json.RawMessage `json:"content"`
+}, bool) {
+	var entry struct {
+		ID      string          `json:"id"`
+		Role    string          `json:"role"`
+		Content json.RawMessage `json:"content"`
+	}
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return entry, false
+	}
+	if json.Unmarshal(data, &entry) != nil {
+		return entry, false
+	}
+	return entry, true
+}
+
+// tabConversationPassesClearFence rejects snapshots created before the most
+// recent clear. Browser save calls are asynchronous, so a request dispatched
+// before a clear can otherwise arrive afterwards and revive old history.
+func tabConversationPassesClearFence(session *TabSessionData, conversation []interface{}) bool {
+	if session == nil || session.ConversationClearedAt <= 0 {
+		return true
+	}
+	var newest int64
+	for _, raw := range conversation {
+		data, err := json.Marshal(raw)
+		if err != nil {
+			continue
+		}
+		var entry struct {
+			Timestamp interface{} `json:"timestamp"`
+		}
+		if json.Unmarshal(data, &entry) != nil {
+			continue
+		}
+		var timestamp int64
+		switch value := entry.Timestamp.(type) {
+		case float64:
+			timestamp = int64(value)
+		case string:
+			if parsed, parseErr := strconv.ParseInt(strings.TrimSpace(value), 10, 64); parseErr == nil {
+				timestamp = parsed
+			}
+		}
+		if timestamp > newest {
+			newest = timestamp
+		}
+	}
+	// Legacy/invalid snapshots cannot prove they were created after a clear;
+	// retaining the empty conversation is safer than restoring stale history.
+	return newest >= session.ConversationClearedAt
+}
+
+// LoadProjectTabConversation loads persisted conversation history for a tab
+// from the backend session file. Returns nil if no data exists.
+// This is a Wails binding method.
+func (a *App) LoadProjectTabConversation(tabID string) []interface{} {
+	tabID = strings.TrimSpace(tabID)
+	if tabID == "" {
+		return nil
+	}
+	persist := a.ensureProjectTabSessionPersist()
+	session, err := persist.LoadSession(tabID)
+	if err != nil || session == nil {
+		return nil
+	}
+	if len(session.Conversation) == 0 {
+		return nil
+	}
+	return session.Conversation
+}
+
+// ---------------------------------------------------------------------------
+
+// ensureProjectTabSessionPersist returns the shared ProjectTabSessionPersist
+// instance from the App struct, lazily initializing it if nil.
+func (a *App) ensureProjectTabSessionPersist() *ProjectTabSessionPersist {
+	if a.projectTabSessionPersist == nil {
+		a.projectTabSessionPersist = NewProjectTabSessionPersistForBaseDir(a.getMaclawBaseDir())
+	}
+	return a.projectTabSessionPersist
+}
+
+// deriveTaskName generates a human-readable task name from a ProjectRecord
+// when extractTitle couldn't find a good name from entry content.
+// Uses preview text + workflow type + directory name as fallback layers.
+func deriveTaskName(rec memory.ProjectRecord) string {
+	// Layer 1: use preview if it's meaningful (not just a path or metadata).
+	if rec.Preview != "" && !memory.LooksLikeFilePath(rec.Preview) {
+		// Truncate to a reasonable display length.
+		name := rec.Preview
+		if runes := []rune(name); len(runes) > 40 {
+			name = string(runes[:40]) + "..."
+		}
+		return name
+	}
+
+	// Layer 2: workflow type + directory name (e.g. "编码: steave2").
+	dir := stripTaskDirTimestampSuffix(lastPathComponent(rec.ProjectPath))
+	if rec.WorkflowType != "" {
+		label := workflowTypeLabel(rec.WorkflowType)
+		if label != "" {
+			return label + ": " + dir
+		}
+	}
+
+	// Layer 3: bare directory name.
+	return dir
+}
+
+// workflowTypeLabel returns a short Chinese label for a workflow type.
+func workflowTypeLabel(wfType string) string {
+	switch normalizeWorkflowType(wfType) {
+	case v2.WorkflowCoding:
+		return "编码"
+	case v2.WorkflowProductDesign:
+		return "产品设计"
+	case v2.WorkflowPresentationDesign:
+		return "PPT 设计"
+	case v2.WorkflowInnovation:
+		return "创新"
+	case v2.WorkflowBusinessPlan:
+		return "商业计划"
+	case v2.WorkflowTesting:
+		return "测试"
+	case v2.WorkflowLiteratureReview:
+		return "文献综述"
+	case v2.WorkflowResearchReport:
+		return "研究报告"
+	case v2.WorkflowExperimentDesign:
+		return "实验设计"
+	case v2.WorkflowGrantProposal:
+		return "基金申请"
+	case v2.WorkflowPaperWriting:
+		return "论文写作"
+	case v2.WorkflowProjectProposal:
+		return "项目提案"
+	case v2.WorkflowEventPlanning:
+		return "活动策划"
+	case v2.WorkflowCompetitiveAnalysis:
+		return "竞品分析"
+	case v2.WorkflowBidResponse:
+		return "招投标"
+	case v2.WorkflowBidReview:
+		return "标书检查"
+	case v2.WorkflowContractReview:
+		return "合同审查"
+	case v2.WorkflowDueDiligence:
+		return "尽职调查"
+	case v2.WorkflowComplianceAudit:
+		return "合规审计"
+	case v2.WorkflowPatentAnalysis:
+		return "专利分析"
+	case v2.WorkflowPatentApplication:
+		return "中国专利申请"
+	case v2.WorkflowUSPatentApplication:
+		return "美国专利申请"
+	case v2.WorkflowGaokaoApplication:
+		return "高考志愿填报"
+	case v2.WorkflowPaperReproduction:
+		return "论文复现"
+	case v2.WorkflowMaintenance:
+		return "运维"
+	case v2.WorkflowChangjiangScholar:
+		return "长江学者申报"
+	case v2.WorkflowChangjiangScholarReview:
+		return "长江学者评审"
+	case v2.WorkflowNSFCDistinguishedYouth:
+		return "杰青"
+	case v2.WorkflowNSFCExcellentYouth:
+		return "优青"
+	case v2.WorkflowNSFCYouth:
+		return "青基"
+	case v2.WorkflowNSFCGeneral:
+		return "面上"
+	case v2.WorkflowNSFCKey:
+		return "重点"
+	default:
+		return wfType
+	}
+}

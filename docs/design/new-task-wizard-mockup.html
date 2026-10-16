@@ -1,0 +1,499 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>新任务引导页 · 界面示意图</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; font-family: "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif; }
+  body { background: #eef2f9; min-height: 100vh; }
+
+  /* ===== 顶部窗口栏（示意） ===== */
+  .titlebar { height: 52px; background: #f7f9fd; border-bottom: 1px solid #dde5f0; display: flex; align-items: center; padding: 0 20px; gap: 16px; }
+  .logo { font-size: 17px; font-weight: 700; color: #1a2333; }
+  .global-search { flex: 0 0 380px; height: 34px; background: #fff; border: 1px solid #dde5f0; border-radius: 10px; display: flex; align-items: center; padding: 0 12px; gap: 8px; color: #8a94a6; font-size: 13px; }
+  .ready { display: flex; align-items: center; gap: 6px; font-size: 13px; color: #4a5568; }
+  .ready .dot { width: 8px; height: 8px; border-radius: 50%; background: #22c55e; }
+  .win-btns { margin-left: auto; color: #6b7688; display: flex; gap: 18px; font-size: 14px; }
+
+  /* ===== 页面 ===== */
+  .page { max-width: 1080px; margin-left: 266px; margin-right: auto; padding: 84px 24px 60px; }
+  h1.title { text-align: center; font-size: 34px; color: #1a2333; margin-bottom: 28px; letter-spacing: 1px; }
+
+  /* ===== 输入卡片 ===== */
+  .composer { background: #fff; border: 1px solid #c9ddf6; border-radius: 18px; padding: 18px 18px 14px; box-shadow: 0 2px 10px rgba(23,105,232,.06); }
+  .composer textarea-like { display: block; }
+  .input-text { min-height: 64px; font-size: 15px; color: #1a2333; line-height: 1.6; }
+  .input-text .caret { display: inline-block; width: 2px; height: 18px; background: #1769e8; vertical-align: -3px; animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  .composer-footer { display: flex; align-items: center; margin-top: 14px; gap: 10px; flex-wrap: wrap; }
+  .icon-btn { width: 34px; height: 34px; border-radius: 10px; border: 1px solid #dde5f0; background: #f6f9fe; color: #4a6fa5; display: flex; align-items: center; justify-content: center; font-size: 15px; cursor: default; }
+  .spacer { flex: 1; }
+  .hint { font-size: 12px; color: #8a94a6; margin-right: 6px; }
+  .send-btn { width: 44px; height: 38px; border-radius: 12px; background: #1769e8; color: #fff; display: flex; align-items: center; justify-content: center; font-size: 18px; }
+
+  /* ===== 配置条 ===== */
+  .config-wrap { position: relative; }
+  .config-collapsed { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: 15px; border: 1px dashed #c2d4ee; background: #f6f9fe; color: #4a6fa5; font-size: 13px; cursor: pointer; user-select: none; }
+  .config-collapsed:hover { background: #ecf3fd; border-color: #9cc0f0; }
+
+  .config-bar { display: none; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .config-wrap.open .config-bar { display: flex; }
+  .config-wrap.open .config-collapsed { display: none; }
+
+  .chip { display: inline-flex; align-items: center; gap: 6px; height: 30px; padding: 0 12px; border-radius: 15px; border: 1px solid #dde5f0; background: #fff; font-size: 13px; color: #4a5568; cursor: pointer; user-select: none; }
+  .chip:hover { border-color: #9cc0f0; background: #f6f9fe; }
+  .chip.active { border-color: #1769e8; background: #eaf2fe; color: #1769e8; font-weight: 600; }
+  .chip .k { color: #8a94a6; font-weight: 400; }
+  .chip .arrow { font-size: 10px; color: #9aa5b5; }
+  .chip.active .arrow { color: #1769e8; }
+
+  /* ===== 弹层 ===== */
+  .popover { display: none; position: absolute; left: 0; top: 38px; width: 460px; background: #fff; border: 1px solid #dde5f0; border-radius: 14px; box-shadow: 0 10px 32px rgba(26,35,51,.14); z-index: 50; overflow: hidden; }
+  .popover.show { display: block; }
+  .pop-head { padding: 12px 14px 8px; }
+  .pop-search { height: 32px; border: 1px solid #dde5f0; border-radius: 9px; display: flex; align-items: center; padding: 0 10px; gap: 7px; color: #8a94a6; font-size: 13px; background: #f8fafd; }
+  .pop-list { max-height: 260px; overflow-y: auto; padding: 4px 8px 10px; }
+  .pop-item { display: flex; align-items: center; gap: 10px; padding: 9px 10px; border-radius: 10px; cursor: pointer; font-size: 13.5px; color: #2a3444; }
+  .pop-item:hover { background: #f2f7fe; }
+  .pop-item.disabled { opacity: .45; cursor: not-allowed; }
+  .pop-item.disabled:hover { background: none; }
+  .pane { display: none; }
+  .pane.show { display: block; }
+  .pop-item.selected { background: #eaf2fe; color: #1769e8; font-weight: 600; }
+  .pop-item .ic { width: 28px; height: 28px; border-radius: 8px; background: #eef4fd; display: flex; align-items: center; justify-content: center; font-size: 14px; flex: 0 0 28px; }
+  .pop-item .meta { flex: 1; min-width: 0; }
+  .pop-item .meta .desc { font-size: 12px; color: #8a94a6; font-weight: 400; margin-top: 1px; }
+  .pop-item.selected .meta .desc { color: #6b9be8; }
+  .pop-item .badge { font-size: 11px; color: #8a94a6; background: #f2f5fa; border-radius: 6px; padding: 2px 7px; white-space: nowrap; }
+  .pop-item .check { color: #1769e8; font-weight: 700; }
+  .pop-sep { height: 1px; background: #eef1f6; margin: 4px 6px; }
+
+  /* ===== 左侧任务列表（工作空间示意） ===== */
+  .tasklist { position: fixed; left: 0; top: 52px; bottom: 0; width: 252px; background: #f7f9fd; border-right: 1px solid #dde5f0; padding: 14px 10px; overflow-y: auto; z-index: 10; }
+  .tl-head { font-size: 14px; font-weight: 700; color: #1a2333; padding: 2px 8px 10px; }
+  .tl-filter { display: flex; gap: 6px; padding: 0 8px 12px; flex-wrap: wrap; }
+  .tl-filter span { font-size: 12px; padding: 3px 10px; border-radius: 8px; border: 1px solid #dde5f0; background: #fff; color: #4a5568; }
+  .tl-filter span.on { background: #eaf2fe; border-color: #1769e8; color: #1769e8; font-weight: 600; }
+  .tl-item { padding: 9px 10px; border-radius: 10px; margin-bottom: 2px; }
+  .tl-item:hover { background: #eef4fd; }
+  .tl-item.active { background: #eaf2fe; }
+  .tl-name { font-size: 13.5px; font-weight: 600; color: #1a2333; }
+  .tl-ws { font-size: 12px; color: #8a94a6; margin-top: 4px; display: flex; align-items: center; gap: 6px; }
+  .ws-tag { font-size: 11px; border-radius: 6px; padding: 1px 6px; flex: 0 0 auto; }
+  .ws-tag.local { background: #eef4fd; color: #2f78d0; }
+  .ws-tag.cloud { background: #ecfdf3; color: #16a34a; }
+  .ws-tag.remote { background: #f3eefe; color: #7c3aed; }
+
+  /* ===== 服务器表单 ===== */
+  .form-row { display: flex; align-items: center; gap: 8px; padding: 5px 10px; }
+  .form-row label { width: 60px; font-size: 12.5px; color: #8a94a6; flex: 0 0 60px; text-align: right; }
+  .form-row input { flex: 1; height: 30px; border: 1px solid #dde5f0; border-radius: 8px; padding: 0 10px; font-size: 13px; color: #2a3444; background: #f8fafd; outline: none; }
+  .form-row input:focus { border-color: #1769e8; background: #fff; }
+  .pop-foot { padding: 10px 14px; border-top: 1px solid #eef1f6; display: flex; justify-content: flex-end; gap: 8px; }
+  .mini-btn { height: 30px; padding: 0 14px; border-radius: 8px; border: 1px solid #dde5f0; background: #fff; color: #4a5568; font-size: 12.5px; cursor: pointer; }
+  .mini-btn.primary { background: #1769e8; border-color: #1769e8; color: #fff; }
+
+  /* ===== 快捷任务 / 分类 / 卡片 ===== */
+  .section-title { font-size: 16px; font-weight: 700; color: #1a2333; margin: 26px 4px 12px; }
+  .quick-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  .quick-card { background: #fff; border: 1px solid #dde5f0; border-radius: 12px; height: 48px; display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 14px; color: #2a3444; }
+  .cat-row { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 14px; }
+  .cat { padding: 7px 15px; border-radius: 10px; border: 1px solid #dde5f0; background: #fff; font-size: 13px; color: #4a5568; cursor: default; }
+  .cat.on { border-color: #1769e8; color: #1769e8; background: #eaf2fe; font-weight: 600; }
+  .tpl-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
+  .tpl-card { background: #fff; border: 1px solid #dde5f0; border-radius: 14px; padding: 14px 16px; display: flex; align-items: center; gap: 12px; }
+  .tpl-card .ic { width: 36px; height: 36px; border-radius: 10px; background: #eef4fd; color: #2f78d0; display: flex; align-items: center; justify-content: center; font-size: 16px; }
+  .tpl-card .t { font-size: 14.5px; font-weight: 600; color: #1a2333; }
+  .tpl-card .d { font-size: 12.5px; color: #8a94a6; margin-top: 2px; }
+  .tpl-card .go { margin-left: auto; color: #b6c0cf; }
+
+  /* ===== 演示控制 ===== */
+  @keyframes pulseRing { 0% { box-shadow: 0 0 0 0 rgba(23,105,232,.35); } 70% { box-shadow: 0 0 0 9px rgba(23,105,232,0); } 100% { box-shadow: 0 0 0 0 rgba(23,105,232,0); } }
+  .config-collapsed.pulse { animation: pulseRing 1.6s infinite; border-style: solid; border-color: #1769e8; color: #1769e8; }
+  .guide { position: fixed; left: 266px; bottom: 18px; background: #fff; border: 1px solid #dde5f0; border-radius: 12px; padding: 12px 16px; font-size: 12.5px; color: #4a5568; box-shadow: 0 4px 16px rgba(26,35,51,.08); z-index: 98; line-height: 2; }
+  .guide b { color: #1769e8; }
+  .demo-bar button.on { background: #1769e8; color: #fff; border-color: #1769e8; }
+  .demo-bar { position: fixed; right: 18px; bottom: 18px; background: #1a2333; color: #fff; border-radius: 12px; padding: 10px 14px; font-size: 12.5px; display: flex; gap: 8px; align-items: center; box-shadow: 0 6px 20px rgba(0,0,0,.25); z-index: 99; }
+  .demo-bar button { border: 1px solid #3a4658; background: #232d3d; color: #cfd8e6; border-radius: 8px; padding: 5px 10px; font-size: 12.5px; cursor: pointer; }
+  .demo-bar button:hover { background: #2f3b4f; }
+  .note { text-align: center; color: #8a94a6; font-size: 12px; margin-top: 34px; }
+</style>
+</head>
+<body>
+
+<div class="titlebar">
+  <div class="logo">MaClaw</div>
+  <div class="global-search">🔍 搜索任务、文件、知识、专家…</div>
+  <div class="ready"><span class="dot"></span>准备就绪</div>
+  <div class="win-btns">🔔&nbsp;&nbsp;&nbsp;✕&nbsp;&nbsp;&nbsp;🗖</div>
+</div>
+
+<!-- 左侧任务列表（示意：目录 → 工作空间） -->
+<div class="tasklist">
+  <div class="tl-head">任务</div>
+  <div class="tl-filter"><span class="on">全部</span><span>本地</span><span>云端</span><span>远程</span></div>
+  <div class="tl-item active">
+    <div class="tl-name">管理看板设计</div>
+    <div class="tl-ws"><span class="ws-tag local">📁 本地</span>D:\workprj\aicoder</div>
+  </div>
+  <div class="tl-item">
+    <div class="tl-name">周报生成</div>
+    <div class="tl-ws"><span class="ws-tag cloud">☁️ 云端</span>数据分析环境</div>
+  </div>
+  <div class="tl-item">
+    <div class="tl-name">线上故障诊断</div>
+    <div class="tl-ws"><span class="ws-tag remote">🖧 远程</span>192.168.1.10:/opt/app</div>
+  </div>
+  <div class="tl-item">
+    <div class="tl-name">客户邮件回复</div>
+    <div class="tl-ws"><span class="ws-tag local">📁 本地</span>默认工作目录</div>
+  </div>
+</div>
+
+<div class="page">
+  <h1 class="title">今天要完成什么？</h1>
+
+  <!-- 输入卡片 -->
+  <div class="composer">
+    <div class="input-text">设计一页管理看板，突出核心指标、趋势和预警。<span class="caret"></span></div>
+    <div class="composer-footer">
+      <div class="icon-btn">📎</div>
+      <div class="icon-btn">🎤</div>
+
+      <!-- ===== 配置条（核心新增）===== -->
+      <div class="config-wrap" id="configWrap">
+        <!-- 态 A：默认折叠 -->
+        <div class="config-collapsed" id="collapsedChip" title="默认 — 会话 · 通用专家 · 无工作流 · 本地">
+          ⚙ 默认 <span style="color:#9aa5b5">▾</span>
+        </div>
+
+        <!-- 态 B：展开为四枚 chip -->
+        <div class="config-bar">
+          <div class="chip" data-pop="pop-type"><span class="k">类型</span><span class="v" id="vType">会话</span><span class="arrow">▾</span></div>
+          <div class="chip" data-pop="pop-expert"><span class="k">专家</span><span class="v" id="vExpert">通用专家</span><span class="arrow">▾</span></div>
+          <div class="chip" data-pop="pop-flow"><span class="k">工作流</span><span class="v" id="vFlow">无</span><span class="arrow">▾</span></div>
+          <div class="chip" id="wsChip" data-pop="pop-dir"><span class="k" id="kWs">工作空间</span><span class="v" id="vDir">默认</span><span class="arrow">▾</span></div>
+        </div>
+
+        <!-- 弹层：任务类型 -->
+        <div class="popover" id="pop-type">
+          <div class="pop-head"><div class="pop-search">🔍 搜索任务类型</div></div>
+          <div class="pop-list">
+            <div class="pop-item selected" data-chip="vType" data-val="会话"><div class="ic">💬</div><div class="meta">会话<div class="desc">直接对话完成任务；工作空间可选本地 / 云端 / 远程</div></div><span class="check">✓</span></div>
+            <div class="pop-item" data-chip="vType" data-val="编程"><div class="ic">💻</div><div class="meta">编程<div class="desc">在代码仓库中开发；工作空间可选本地 / 远程</div></div></div>
+          </div>
+        </div>
+
+        <!-- 弹层：专家选择 -->
+        <div class="popover" id="pop-expert">
+          <div class="pop-head"><div class="pop-search">🔍 搜索专家（名称 / 领域）</div></div>
+          <div class="pop-list">
+            <div class="pop-item selected" data-chip="vExpert" data-val="通用专家"><div class="ic">🤖</div><div class="meta">通用专家<div class="desc">默认；由系统通用能力处理，不指定领域专家</div></div><span class="check">✓</span></div>
+            <div class="pop-sep"></div>
+            <div class="pop-item" data-chip="vExpert" data-val="数据分析专家"><div class="ic">📊</div><div class="meta">数据分析专家<div class="desc">经营分析 · 报表 · 指标口径</div></div></div>
+            <div class="pop-item" data-chip="vExpert" data-val="科研写作专家"><div class="ic">📝</div><div class="meta">科研写作专家<div class="desc">论文 · 申报书 · 文献综述</div></div></div>
+            <div class="pop-item" data-chip="vExpert" data-val="运营排障专家"><div class="ic">🛠️</div><div class="meta">运营排障专家<div class="desc">故障诊断 · 只读诊断模式</div></div></div>
+            <div class="pop-item" data-chip="vExpert" data-val="客户沟通专家"><div class="ic">✉️</div><div class="meta">客户沟通专家<div class="desc">邮件 · 会议纪要 · 商务写作</div></div></div>
+            <div class="pop-sep"></div>
+            <div class="pop-item" style="color:#1769e8"><div class="ic">＋</div><div class="meta">专家市场…<div class="desc">浏览并安装更多专家</div></div></div>
+          </div>
+        </div>
+
+        <!-- 弹层：工作流指定 -->
+        <div class="popover" id="pop-flow" style="width:520px">
+          <div class="pop-head"><div class="pop-search">🔍 搜索工作流模板</div></div>
+          <div class="pop-list">
+            <div class="pop-item selected" data-chip="vFlow" data-val="无"><div class="ic">🚫</div><div class="meta">无<div class="desc">默认，不执行工作流（普通会话）</div></div><span class="check">✓</span></div>
+            <div class="pop-item" data-chip="vFlow" data-val="自动判断"><div class="ic">✨</div><div class="meta">自动判断<div class="desc">发送后由系统识别意图并匹配工作流</div></div></div>
+            <div class="pop-sep"></div>
+            <div class="pop-item" data-chip="vFlow" data-val="数据表格整理"><div class="ic">📋</div><div class="meta">数据表格整理<div class="desc">字段梳理 · 口径统一 · 异常标注 · 结论</div></div><span class="badge">4 个阶段</span></div>
+            <div class="pop-item" data-chip="vFlow" data-val="一页管理看板"><div class="ic">📈</div><div class="meta">一页管理看板<div class="desc">核心指标 · 趋势 · 预警</div></div><span class="badge">3 个阶段</span></div>
+            <div class="pop-item" data-chip="vFlow" data-val="周报生成"><div class="ic">📅</div><div class="meta">周报生成<div class="desc">汇总本周任务与产出，生成可读周报</div></div><span class="badge">3 个阶段</span></div>
+            <div class="pop-item" data-chip="vFlow" data-val="文献综述"><div class="ic">📚</div><div class="meta">文献综述<div class="desc">检索 · 筛选 · 综合 · 写作</div></div><span class="badge">5 个阶段</span></div>
+            <div class="pop-item" data-chip="vFlow" data-val="基金申报书"><div class="ic">🏛️</div><div class="meta">基金申报书（NSFC）<div class="desc">选题论证 · 本子撰写 · 形式审查</div></div><span class="badge">6 个阶段</span></div>
+            <div class="pop-sep"></div>
+            <div class="pop-item" style="color:#1769e8"><div class="ic">⋯</div><div class="meta">全部 35 个工作流…</div></div>
+          </div>
+        </div>
+
+        <!-- 弹层：工作空间设置 = 位置选择（本地 / 云端 / 远程） -->
+        <div class="popover" id="pop-dir">
+          <!-- 主面板：位置 -->
+          <div class="pane show" data-pane="main">
+            <div class="pop-head"><div class="pop-search">🔍 搜索工作空间</div></div>
+            <div class="pop-list">
+              <div class="pop-item" data-ws="local" data-goto="local"><div class="ic">📁</div><div class="meta">本地目录<div class="desc">默认目录 / 最近目录 / 浏览</div></div><span class="badge" id="badgeLocal">默认</span></div>
+              <div class="pop-item" data-ws="cloud" data-goto="cloud"><div class="ic">☁️</div><div class="meta">云端工作区<div class="desc">选择或新建云端工作区</div></div><span class="badge" id="badgeCloud"></span></div>
+              <div class="pop-item" data-ws="remote" data-goto="server"><div class="ic">🖧</div><div class="meta">远程服务器<div class="desc">SSH 连接，指定主机与工作目录</div></div><span class="badge" id="badgeRemote"></span></div>
+            </div>
+          </div>
+          <!-- 面板：本地目录 -->
+          <div class="pane" data-pane="local">
+            <div class="pop-head"><div class="pop-search">🔍 搜索或输入路径</div></div>
+            <div class="pop-list">
+              <div class="pop-item" data-chip="vDir" data-val="默认工作目录" data-loc="本地"><div class="ic">🏠</div><div class="meta">默认工作目录<div class="desc">使用当前会话默认目录</div></div><span class="check">✓</span></div>
+              <div class="pop-sep"></div>
+              <div class="pop-item" data-chip="vDir" data-val="D:\workprj\aicoder" data-loc="本地"><div class="ic">📁</div><div class="meta">D:\workprj\aicoder<div class="desc">最近使用</div></div></div>
+              <div class="pop-item" data-chip="vDir" data-val="D:\workprj\reports" data-loc="本地"><div class="ic">📁</div><div class="meta">D:\workprj\reports<div class="desc">最近使用</div></div></div>
+              <div class="pop-item" style="color:#1769e8"><div class="ic">📂</div><div class="meta">浏览本地目录…</div></div>
+              <div class="pop-sep"></div>
+              <div class="pop-item" data-goto="main"><div class="ic">‹</div><div class="meta">返回</div></div>
+            </div>
+          </div>
+          <!-- 面板：云端工作区 -->
+          <div class="pane" data-pane="cloud">
+            <div class="pop-head"><div class="pop-search">🔍 搜索云端工作区</div></div>
+            <div class="pop-list">
+              <div class="pop-item" data-chip="vDir" data-val="云端 · 数据分析环境" data-loc="云端"><div class="ic">☁️</div><div class="meta">数据分析环境<div class="desc">4 核 8G · 运行中</div></div></div>
+              <div class="pop-item" data-chip="vDir" data-val="云端 · 研发环境" data-loc="云端"><div class="ic">☁️</div><div class="meta">研发环境<div class="desc">8 核 16G · 已停止</div></div></div>
+              <div class="pop-item" style="color:#1769e8"><div class="ic">＋</div><div class="meta">新建云端工作区…</div></div>
+              <div class="pop-sep"></div>
+              <div class="pop-item" data-goto="main"><div class="ic">‹</div><div class="meta">返回</div></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 弹层：远程服务器（工作空间 › 远程服务器 进入） -->
+        <div class="popover" id="pop-server">
+          <div class="pop-head" style="padding-bottom:2px"><b style="font-size:13.5px;color:#1a2333">远程服务器（SSH）</b><div style="font-size:12px;color:#8a94a6;margin-top:2px">通过「工作空间 › 远程服务器」进入，在此指定 SSH 服务器信息</div></div>
+          <div style="padding:2px 8px 8px">
+            <div class="form-row"><label>主机</label><input id="sshHost" placeholder="例如 192.168.1.10"></div>
+            <div class="form-row"><label>端口</label><input value="22" style="max-width:90px"></div>
+            <div class="form-row"><label>用户名</label><input placeholder="root"></div>
+            <div class="form-row"><label>密码</label><input type="password" placeholder="••••••••"></div>
+            <div class="form-row"><label>工作目录</label><input placeholder="/opt/project"></div>
+          </div>
+          <div class="pop-foot">
+            <button class="mini-btn" id="btnTestConn" type="button">测试连接</button>
+            <button class="mini-btn primary" id="btnSaveServer" type="button">确定</button>
+          </div>
+        </div>
+      </div>
+      <!-- ===== /配置条 ===== -->
+
+      <div class="spacer"></div>
+      <span class="hint">Enter 发送 · Ctrl/⌘+Enter 换行</span>
+      <div class="send-btn">↵</div>
+    </div>
+  </div>
+
+  <!-- 快捷任务 -->
+  <div class="section-title" style="margin-top:24px">快捷任务</div>
+  <div class="quick-row">
+    <div class="quick-card">📋 整理会议纪要</div>
+    <div class="quick-card">✉️ 回复客户邮件</div>
+    <div class="quick-card">📊 制作周报</div>
+    <div class="quick-card">🗓️ 安排会议</div>
+  </div>
+
+  <!-- 分类 -->
+  <div class="cat-row">
+    <div class="cat">经营分析</div><div class="cat">运营排障</div><div class="cat">科研资料</div>
+    <div class="cat">科研申报</div><div class="cat">写作/沟通</div><div class="cat">知识文档</div>
+    <div class="cat">自动化流程</div><div class="cat on">数据表格</div>
+  </div>
+
+  <!-- 模板卡片 -->
+  <div class="tpl-row">
+    <div class="tpl-card"><div class="ic">📊</div><div><div class="t">把数据整理成可读表格</div><div class="d">字段、口径、异常、结论</div></div><span class="go">›</span></div>
+    <div class="tpl-card"><div class="ic">📈</div><div><div class="t">设计一页管理看板</div><div class="d">核心指标、趋势、预警</div></div><span class="go">›</span></div>
+  </div>
+
+  <div class="note">界面示意图 · 点击「⚙ 默认」展开配置条，点击各 chip 切换弹层 · 右下角可切换演示状态 · 左侧任务列表为「目录 → 工作空间」改造示意（类型徽标：📁 本地 / ☁️ 云端 / 🖧 远程）</div>
+</div>
+
+<div class="guide">
+  <b>交互流程</b><br>
+  <b>①</b> 点击「⚙ 默认」→ 展开四枚配置 chip<br>
+  <b>②</b> 点击任意 chip → 下方弹出选择器<br>
+  <b>③</b> 点选一项 → 自动回填并高亮，Enter 发送<br>
+  <b>互斥</b>：专家（默认通用）× 工作流，指定其一另一个锁定置灰；指定专家时云端/远程工作空间亦置灰（专家任务不携带工作空间，已选自动退回本地）<br>
+  默认为「通用专家 / 无」= 普通会话（不执行工作流）；「自动判断」为可选项
+</div>
+
+<div class="demo-bar">
+  演示：
+  <button id="btnDefault">① 默认态（折叠）</button>
+  <button id="btnExpanded">② 配置条展开</button>
+  <button id="btnConfigured">③ 已配置示例</button>
+  <button id="btnFlow">④ 选工作流弹层</button>
+  <button id="btnExpert">⑤ 选专家弹层</button>
+  <button id="btnServer">⑥ 远程服务器弹层</button>
+</div>
+
+<script>
+  const wrap = document.getElementById('configWrap');
+  const collapsed = document.getElementById('collapsedChip');
+  const pops = ['pop-type','pop-expert','pop-flow','pop-dir','pop-server'].map(id => document.getElementById(id));
+  const demoBtns = ['btnDefault','btnExpanded','btnConfigured','btnFlow','btnExpert','btnServer'].map(id => document.getElementById(id));
+
+  collapsed.onclick = () => { wrap.classList.add('open'); closePops(); setActive(null); };
+
+  document.querySelectorAll('.chip').forEach(chip => {
+    chip.onclick = e => {
+      e.stopPropagation();
+      const pop = document.getElementById(chip.dataset.pop);
+      const wasOpen = pop.classList.contains('show');
+      closePops();
+      if (!wasOpen) pop.classList.add('show');
+      if (pop.id === 'pop-dir') showPane('main');
+    };
+  });
+
+  pops.forEach(p => p.onclick = e => e.stopPropagation());
+  document.addEventListener('click', () => closePops());
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') closePops(); });
+
+  function closePops() { pops.forEach(p => p.classList.remove('show')); }
+  function setActive(id) { demoBtns.forEach(b => b.classList.toggle('on', b.id === id)); }
+
+  // 选择回填
+  document.querySelectorAll('.pop-item[data-chip]').forEach(item => {
+    item.onclick = () => {
+      if (item.classList.contains('disabled')) return;
+      const goto = item.dataset.goto;
+      if (goto === 'server') { closePops(); document.getElementById('pop-server').classList.add('show'); return; }
+      if (goto) { showPane(goto); return; }
+      const target = document.getElementById(item.dataset.chip);
+      target.textContent = item.dataset.val;
+      if (item.dataset.loc === '本地') { document.getElementById('badgeLocal').textContent = item.dataset.val; document.getElementById('badgeCloud').textContent = ''; document.getElementById('badgeRemote').textContent = ''; }
+      if (item.dataset.loc === '云端') { document.getElementById('badgeCloud').textContent = item.dataset.val.replace('云端 · ', ''); document.getElementById('badgeLocal').textContent = ''; document.getElementById('badgeRemote').textContent = ''; }
+      item.parentElement.querySelectorAll('.pop-item').forEach(i => { i.classList.remove('selected'); const c = i.querySelector('.check'); if (c) c.remove(); });
+      item.classList.add('selected');
+      item.insertAdjacentHTML('beforeend', '<span class="check">✓</span>');
+      closePops();
+      refreshChips();
+      // 联动：任务类型（会话/编程）→ 工作空间可选位置
+      if (item.dataset.chip === 'vType') {
+        const d = document.getElementById('vDir');
+        if (item.dataset.val === '编程') {
+          if (d.textContent.startsWith('云端')) { d.textContent = '默认'; clearWsBadges(); document.getElementById('badgeLocal').textContent = '默认'; }
+          if (d.textContent === '默认') d.textContent = '请选择目录';
+        } else if (d.textContent === '请选择目录') d.textContent = '默认';
+      }
+      // 互斥：专家 × 工作流（指定其一，另一个锁定）
+      if (item.dataset.chip === 'vExpert' && item.dataset.val !== '通用专家') {
+        document.getElementById('vFlow').textContent = '由专家决定';
+        // 专家任务不携带工作空间：已选云端/远程归约为本地默认（§7）
+        const d = document.getElementById('vDir');
+        if (d.textContent.startsWith('云端') || document.getElementById('badgeRemote').textContent) {
+          d.textContent = '默认'; clearWsBadges(); document.getElementById('badgeLocal').textContent = '默认';
+        }
+      } else if (item.dataset.chip === 'vExpert' && document.getElementById('vFlow').textContent === '由专家决定') {
+        document.getElementById('vFlow').textContent = '无';
+      }
+      if (item.dataset.chip === 'vFlow' && item.dataset.val !== '无') {
+        document.getElementById('vExpert').textContent = '通用专家';
+      }
+      syncMutex();
+    };
+  });
+
+  function refreshChips() {
+    document.querySelectorAll('.chip').forEach(chip => {
+      const v = chip.querySelector('.v').textContent;
+      const isAuto = ['无','通用专家','默认','默认工作目录','由专家决定'].includes(v);
+      const isPlaceholder = v === '请选择目录';
+      chip.classList.toggle('active', !isAuto || isPlaceholder);
+    });
+    syncWorkspacePopover();
+    syncMutex();
+  }
+
+  function syncMutex() {
+    const exp = document.getElementById('vExpert').textContent;
+    const flow = document.getElementById('vFlow').textContent;
+    document.querySelectorAll('#pop-flow .pop-item[data-chip]').forEach(it => {
+      it.classList.toggle('disabled', exp !== '通用专家');
+    });
+    document.querySelectorAll('#pop-expert .pop-item[data-chip]').forEach(it => {
+      it.classList.toggle('disabled', flow !== '无' && it.dataset.val !== '通用专家');
+    });
+    document.querySelector('[data-pop="pop-flow"]').style.opacity = exp !== '通用专家' ? .55 : 1;
+    document.querySelector('[data-pop="pop-expert"]').style.opacity = flow !== '无' ? .55 : 1;
+  }
+
+  function syncWorkspacePopover() {
+    const type = document.getElementById('vType').textContent;
+    const expertLocked = document.getElementById('vExpert').textContent !== '通用专家';
+    document.querySelectorAll('#pop-dir .pop-item[data-ws]').forEach(it => {
+      const disabled = (type === '编程' && it.dataset.ws === 'cloud') || (expertLocked && it.dataset.ws !== 'local');
+      it.classList.toggle('disabled', disabled);
+      it.title = expertLocked && it.dataset.ws !== 'local' ? '专家任务不携带工作空间' : '';
+    });
+    document.getElementById('wsChip').title = expertLocked ? '专家任务不携带工作空间' : '';
+  }
+
+  function showPane(name) {
+    document.querySelectorAll('#pop-dir .pane').forEach(p => p.classList.toggle('show', p.dataset.pane === name));
+  }
+  function clearWsBadges() {
+    document.getElementById('badgeLocal').textContent = '';
+    document.getElementById('badgeCloud').textContent = '';
+    document.getElementById('badgeRemote').textContent = '';
+  }
+
+  // 演示按钮
+  const S = (id, txt) => { const el = document.getElementById(id); if (txt !== undefined) el.textContent = txt; return el; };
+  function resetAll() {
+    closePops();
+    S('vType','会话'); S('vExpert','通用专家'); S('vFlow','无'); S('vDir','默认');
+    document.querySelector('[data-pop="pop-flow"]').style.opacity = 1;
+    refreshChips();
+    showPane('main');
+    document.getElementById('badgeLocal').textContent = '默认';
+    document.getElementById('badgeCloud').textContent = '';
+    document.getElementById('badgeRemote').textContent = '';
+  }
+  document.getElementById('btnDefault').onclick = () => { resetAll(); wrap.classList.remove('open'); collapsed.classList.add('pulse'); setActive('btnDefault'); };
+  document.getElementById('btnExpanded').onclick = () => { resetAll(); wrap.classList.add('open'); collapsed.classList.remove('pulse'); setActive('btnExpanded'); };
+  document.getElementById('btnConfigured').onclick = () => {
+    resetAll(); wrap.classList.add('open'); collapsed.classList.remove('pulse');
+    S('vType','编程'); S('vDir','D:\\workprj\\aicoder');
+    refreshChips();
+    setActive('btnConfigured');
+  };
+  document.getElementById('btnFlow').onclick = () => {
+    resetAll(); wrap.classList.add('open'); collapsed.classList.remove('pulse');
+    document.getElementById('pop-flow').classList.add('show');
+    setActive('btnFlow');
+  };
+  document.getElementById('btnExpert').onclick = () => {
+    resetAll(); wrap.classList.add('open'); collapsed.classList.remove('pulse');
+    document.getElementById('pop-expert').classList.add('show');
+    setActive('btnExpert');
+  };
+
+  document.getElementById('btnServer').onclick = () => {
+    resetAll(); wrap.classList.add('open'); collapsed.classList.remove('pulse');
+    S('vType','编程');
+    S('vDir','未指定');
+    refreshChips();
+    document.getElementById('pop-server').classList.add('show');
+    setActive('btnServer');
+  };
+  document.getElementById('btnTestConn').onclick = e => {
+    e.stopPropagation();
+    const b = e.currentTarget;
+    b.textContent = '✓ 连接成功（演示）';
+    b.style.color = '#16a34a'; b.style.borderColor = '#16a34a';
+    setTimeout(() => { b.textContent = '测试连接'; b.style.color = ''; b.style.borderColor = ''; }, 1800);
+  };
+  document.getElementById('btnSaveServer').onclick = e => {
+    e.stopPropagation();
+    const host = document.getElementById('sshHost').value.trim();
+    document.getElementById('vDir').textContent = host ? host : '未指定';
+    document.getElementById('badgeRemote').textContent = host;
+    document.getElementById('badgeLocal').textContent = '';
+    document.getElementById('badgeCloud').textContent = '';
+    closePops(); refreshChips();
+  };
+
+  // 初始进入最直观的演示态：配置条展开 + 工作流选择器打开
+  document.getElementById('btnFlow').onclick();
+  refreshChips();
+</script>
+</body>
+</html>

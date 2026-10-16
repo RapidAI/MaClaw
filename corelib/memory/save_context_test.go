@@ -3,6 +3,7 @@ package memory
 import (
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -71,6 +72,142 @@ func TestSaveWithContext_EmptyContextBehavesLikeSave(t *testing.T) {
 	}
 	if !hasEditor {
 		t.Errorf("expected 'editor' tag to be preserved, got: %v", entries[0].Tags)
+	}
+}
+
+// recordingCompactFormGenerator implements CompactFormGenerator for tests.
+type recordingCompactFormGenerator struct {
+	mu      sync.Mutex
+	calls   []string
+	compact string
+	err     error
+}
+
+func (g *recordingCompactFormGenerator) Generate(content string, _ Category) (string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.calls = append(g.calls, content)
+	return g.compact, g.err
+}
+
+func (g *recordingCompactFormGenerator) callCount() int {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return len(g.calls)
+}
+
+func waitForCompactForm(t *testing.T, ms *Store, cat Category) string {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		entries := ms.List(cat, "")
+		if len(entries) == 1 && entries[0].CompactForm != "" {
+			return entries[0].CompactForm
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return ""
+}
+
+func TestSaveWithContext_AsyncCompactFormBackfill(t *testing.T) {
+	ms := newCtxTestStore(t)
+	gen := &recordingCompactFormGenerator{compact: "compact: server runs tmux"}
+	ms.SetCompactFormGenerator(gen)
+
+	longContent := "remember that the server uses tmux for long jobs " + strings.Repeat("with detailed session notes ", 20)
+	err := ms.SaveWithContext(Entry{
+		Content:  longContent,
+		Category: CategoryProjectKnowledge,
+	}, "")
+	if err != nil {
+		t.Fatalf("SaveWithContext failed: %v", err)
+	}
+
+	// Save must return before the generator is consulted (async, non-blocking).
+	if got := waitForCompactForm(t, ms, CategoryProjectKnowledge); got != "compact: server runs tmux" {
+		t.Fatalf("expected async compact form to be applied, got %q", got)
+	}
+	if gen.callCount() != 1 {
+		t.Fatalf("expected exactly 1 generator call, got %d", gen.callCount())
+	}
+}
+
+func TestSaveWithContext_AsyncCompactFormSkipsShortContent(t *testing.T) {
+	ms := newCtxTestStore(t)
+	gen := &recordingCompactFormGenerator{compact: "compact"}
+	ms.SetCompactFormGenerator(gen)
+
+	err := ms.SaveWithContext(Entry{
+		Content:  "short note, no compact form needed",
+		Category: CategoryProjectKnowledge,
+	}, "")
+	if err != nil {
+		t.Fatalf("SaveWithContext failed: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if gen.callCount() != 0 {
+		t.Fatalf("expected no generator call for short content, got %d", gen.callCount())
+	}
+}
+
+func TestSaveWithContext_AsyncCompactFormSkipsExistingCompactForm(t *testing.T) {
+	ms := newCtxTestStore(t)
+	gen := &recordingCompactFormGenerator{compact: "compact"}
+	ms.SetCompactFormGenerator(gen)
+
+	err := ms.SaveWithContext(Entry{
+		Content:     "long entry that already carries a compact form " + strings.Repeat("extra detail ", 30),
+		Category:    CategoryProjectKnowledge,
+		CompactForm: "precomputed compact form",
+	}, "")
+	if err != nil {
+		t.Fatalf("SaveWithContext failed: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if gen.callCount() != 0 {
+		t.Fatalf("expected no generator call when CompactForm is preset, got %d", gen.callCount())
+	}
+}
+
+func TestSaveWithContext_AsyncCompactFormRejectsNonShorterResult(t *testing.T) {
+	ms := newCtxTestStore(t)
+	longContent := "remember that the server uses tmux for long jobs " + strings.Repeat("with detailed session notes ", 20)
+	gen := &recordingCompactFormGenerator{compact: longContent + " even longer"}
+	ms.SetCompactFormGenerator(gen)
+
+	err := ms.SaveWithContext(Entry{
+		Content:  longContent,
+		Category: CategoryProjectKnowledge,
+	}, "")
+	if err != nil {
+		t.Fatalf("SaveWithContext failed: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && gen.callCount() == 0 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if gen.callCount() != 1 {
+		t.Fatalf("expected 1 generator call, got %d", gen.callCount())
+	}
+	time.Sleep(50 * time.Millisecond)
+	entries := ms.List(CategoryProjectKnowledge, "")
+	if len(entries) != 1 || entries[0].CompactForm != "" {
+		t.Fatalf("non-shorter compact form must not be applied, got %+v", entries)
+	}
+}
+
+func TestNewLLMCompactFormGenerator(t *testing.T) {
+	if got := NewLLMCompactFormGenerator(nil); got != nil {
+		t.Fatalf("expected nil generator for nil LLM, got %T", got)
+	}
+	llm := &mockLLMForExtraction{extractResponse: "compact fact"}
+	gen := NewLLMCompactFormGenerator(llm)
+	if gen == nil {
+		t.Fatal("expected non-nil generator")
+	}
+	compact, err := gen.Generate("some long memory content about a server", CategoryProjectKnowledge)
+	if err != nil || compact != "compact fact" {
+		t.Fatalf("Generate = %q, %v", compact, err)
 	}
 }
 

@@ -60,6 +60,28 @@ func TestProjectMCPDynamicProviderUsesVerifiedBindingAndClosedSchema(t *testing.
 	if strings.Contains(fmt.Sprint(params), "Ignore") || strings.Contains(fmt.Sprint(params), "default") {
 		t.Fatalf("untrusted schema annotations entered renderer source: %#v", params)
 	}
+	if !provider.Ready {
+		t.Fatal("zero RuntimeBlocked was projected as not ready")
+	}
+	entry.RuntimeBlocked = true
+	blocked, _, _, err := ProjectMCPDynamicProvider(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if blocked.Ready {
+		t.Fatal("finished negative observation stayed selectable")
+	}
+	skill, _, _, err := ProjectSkillDynamicProvider(SkillToolEntry{
+		StableID: "acme.report", Name: "report", Version: "1", ContentDigest: "content-v1",
+		Params:   []corelib.NLSkillParam{{Name: "query", Type: "string", Required: true}},
+		Contract: testDynamicCapabilityContract(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !skill.Ready {
+		t.Fatal("skill projection borrowed the MCP readiness bit")
+	}
 }
 
 func TestProjectSkillDynamicProviderBindsContentAndContractDrift(t *testing.T) {
@@ -140,7 +162,7 @@ func TestProjectedDynamicProvidersUseCommonPlannerAndRenderer(t *testing.T) {
 		t.Fatalf("renderer leaked dynamic provider identity: %#v", function)
 	}
 	description, _ := function["description"].(string)
-	if !strings.HasPrefix(description, "Execute the approved dynamic capability. One-time grant this turn. After it succeeds this name may leave the list and later reappear for the next authorized step.") {
+	if !strings.HasPrefix(description, "Execute the approved dynamic capability. Call it whenever it is listed; after a successful call this name may briefly leave the list and later reappear for the next authorized step.") {
 		t.Fatalf("renderer did not derive capability description: %#v", function)
 	}
 	// The projected adapter has a closed empty schema, so the renderer must

@@ -34,6 +34,26 @@ func TestMatchAdapterFamilies(t *testing.T) {
 	if h := MatchAdapter([]string{"File Explorer"}, ""); h.Kind != AdapterShell {
 		t.Fatalf("shell: %+v", h)
 	}
+	// The focused crop wins over a background Office window.
+	if h := MatchAdapter([]string{"Document.docx - Word"}, "微信"); h.Kind != AdapterIM {
+		t.Fatalf("crop must beat background office: %+v", h)
+	}
+	// Two different families and no crop: do not pick whichever was listed first.
+	if h := MatchAdapter([]string{"Document.docx - Word", "微信"}, ""); h.Kind != "" {
+		t.Fatalf("mixed desktop must not emit an adapter: %+v", h)
+	}
+	if h := MatchAdapter([]string{"无标题 - 记事本"}, ""); h.Kind != AdapterEditor {
+		t.Fatalf("notepad: %+v", h)
+	}
+	if h := MatchAdapter([]string{"文件资源管理器"}, ""); h.Kind != AdapterShell {
+		t.Fatalf("explorer: %+v", h)
+	}
+	if h := MatchAdapter(nil, "report.docx - Google Chrome"); h.Kind != AdapterBrowser {
+		t.Fatalf("docx in chrome: %+v", h)
+	}
+	if h := MatchAdapter(nil, "QQ浏览器"); h.Kind != AdapterBrowser {
+		t.Fatalf("qq browser: %+v", h)
+	}
 }
 
 func TestNeedsCaptionAndParseApply(t *testing.T) {

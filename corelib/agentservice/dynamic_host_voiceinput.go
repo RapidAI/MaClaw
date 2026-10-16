@@ -35,7 +35,7 @@ func reviewedHostVoiceInputsForTurn(rootTaskID, turnID, principalID string, atta
 	}
 	inputScope := coretool.InvocationScope{
 		RootTaskID:  strings.TrimSpace(rootTaskID),
-		PlanID:      "input:" + strings.TrimSpace(turnID),
+		PlanID:      coretool.TrustedInputPlanID(turnID),
 		SessionID:   strings.TrimSpace(principalID),
 		TurnID:      strings.TrimSpace(turnID),
 		PrincipalID: strings.TrimSpace(principalID),
@@ -43,7 +43,7 @@ func reviewedHostVoiceInputsForTurn(rootTaskID, turnID, principalID string, atta
 	attachments = CanonicalizeReviewedHostMessageAttachments(attachments)
 	inputs := make([]reviewedHostVoiceInput, 0, len(attachments))
 	for index, attachment := range attachments {
-		if _, _, ok := reviewedHostDocumentFormat(attachment.FileName, attachment.MimeType); ok {
+		if _, _, ok := agent.DocumentAttachmentFormat(attachment.FileName, attachment.MimeType); ok {
 			continue
 		}
 		if _, ok := reviewedHostImageFormat(attachment.FileName, attachment.MimeType); ok {
@@ -61,10 +61,7 @@ func reviewedHostVoiceInputsForTurn(rootTaskID, turnID, principalID string, atta
 			return nil, fmt.Errorf("trusted_audio_attachment_too_large")
 		}
 		encoded := base64.StdEncoding.EncodeToString(raw)
-		sourceID := strings.TrimSpace(attachment.SourceMediaID)
-		if sourceID == "" {
-			sourceID = fmt.Sprintf("attachment:%d:%s:%s", index, filepath.Base(attachment.FileName), mimeType)
-		}
+		sourceID := coretool.TrustedAttachmentSourceID(index, attachment.FileName, mimeType, attachment.SourceMediaID)
 		producer := "trusted-input:host-voice:" + coretool.SchemaDigest([]byte(sourceID))[:24]
 		payload, err := coretool.NewArtifactPayload(inputScope, producer, "voice", mimeType, encoded, time.Now().UTC())
 		if err != nil {
@@ -80,11 +77,8 @@ func reviewedHostVoiceInputsForTurn(rootTaskID, turnID, principalID string, atta
 }
 
 func applyReviewedHostVoiceDeliverInputs(needs []coretool.CapabilityNeed, inputs []reviewedHostVoiceInput) ([]coretool.CapabilityNeed, error) {
-	if len(inputs) != 1 {
-		if len(inputs) == 0 {
-			return nil, fmt.Errorf("trusted_document_input_missing")
-		}
-		return nil, fmt.Errorf("trusted_document_input_ambiguous")
+	if err := coretool.UniqueTrustedInputCount(len(inputs)); err != nil {
+		return nil, err
 	}
 	resolved := append([]coretool.CapabilityNeed(nil), needs...)
 	for index := range resolved {

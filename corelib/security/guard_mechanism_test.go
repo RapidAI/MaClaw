@@ -9,6 +9,22 @@ import (
 // ThreatPattern Guard mechanism tests
 // ---------------------------------------------------------------------------
 
+func TestRiskAnalyzer_FFmpegConcatIsNotNetcat(t *testing.T) {
+	a := NewRiskAnalyzer()
+	concat := a.Assess("bash", map[string]interface{}{
+		"command": `ffmpeg -f concat -safe 0 -i concat.txt -c copy "out.mp4"`,
+	}, nil)
+	if concat.Level != RiskLow {
+		t.Fatalf("ffmpeg concat level = %s, want low", concat.Level)
+	}
+	if ncat := a.Assess("bash", map[string]interface{}{"command": "ncat -l 4444"}, nil); ncat.Level != RiskHigh {
+		t.Fatalf("ncat level = %s, want high", ncat.Level)
+	}
+	if nc := a.Assess("bash", map[string]interface{}{"command": "nc.exe -l 4444"}, nil); nc.Level != RiskHigh {
+		t.Fatalf("nc.exe level = %s, want high", nc.Level)
+	}
+}
+
 func TestMatchPattern_GuardSuppressesFalsePositive(t *testing.T) {
 	// Pattern matches $(date), guard recognizes it as safe → no match.
 	cp := &compiledPattern{

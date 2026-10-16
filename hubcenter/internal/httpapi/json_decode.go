@@ -10,6 +10,10 @@ import (
 const (
 	defaultJSONBodyLimit = 64 << 10
 	largeJSONBodyLimit   = 1 << 20
+	// userUsageSyncBodyLimit bounds hub → hubcenter user usage sync bodies,
+	// which legitimately exceed the default 64 KiB when many daily rows sync
+	// in one request.
+	userUsageSyncBodyLimit = 32 << 20
 )
 
 var errRequestBodyTooLarge = errors.New("request body too large")

@@ -517,3 +517,26 @@ func TestPrepareSkillForUpload_EmptyDir(t *testing.T) {
 		t.Fatal("expected error for empty skill directory")
 	}
 }
+
+func TestIsSkillCredentialFile(t *testing.T) {
+	blocked := []string{
+		".env", ".env.local", ".env.production",
+		"id_rsa", "id_ed25519", "id_ed25519.pub",
+		"server.pem", "api.key", "keystore.p12", "truststore.jks",
+		".git-credentials", ".npmrc", "credentials.json", "service_account.json",
+	}
+	for _, name := range blocked {
+		if !IsSkillCredentialFile(name) {
+			t.Errorf("IsSkillCredentialFile(%q) = false, want true", name)
+		}
+	}
+	allowed := []string{
+		".env.example", ".env.sample", ".env.template",
+		"skill.yaml", "SKILL.md", "run.py", "README.md",
+	}
+	for _, name := range allowed {
+		if IsSkillCredentialFile(name) {
+			t.Errorf("IsSkillCredentialFile(%q) = true, want false", name)
+		}
+	}
+}

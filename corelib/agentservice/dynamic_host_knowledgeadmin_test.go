@@ -184,3 +184,46 @@ func TestReviewedHostKnowledgeAdminUsesTrustedPrincipalAndStore(t *testing.T) {
 		t.Fatal("host without a knowledge store must not attach knowledge.admin.maintenance")
 	}
 }
+
+// TestReviewedHostKnowledgeAdminStatusVocabulary pins the vocabulary at this
+// host, the same shape the GUI surface pins: schema advertised set equals the
+// parser's closed set, aliases still reach their canonical names, and the
+// refusal hint names the canonical vocabulary.
+func TestReviewedHostKnowledgeAdminStatusVocabulary(t *testing.T) {
+	schema := reviewedHostKnowledgeAdminInvocationSchema()
+	properties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("knowledge-admin schema has no properties: %#v", schema)
+	}
+	status, ok := properties["status"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("knowledge-admin schema has no status property: %#v", properties)
+	}
+	enum, ok := status["enum"].([]string)
+	if !ok || len(enum) != 3 {
+		t.Fatalf("status must advertise the canonical set, got %#v", status["enum"])
+	}
+	for _, name := range enum {
+		canonical, ok := reviewedHostKnowledgeAdminStatus(name)
+		if !ok || canonical != name {
+			t.Fatalf("schema advertises status %q, but the parser maps it to (%q, %v)", name, canonical, ok)
+		}
+	}
+	for sent, want := range map[string]string{"disable": "disabled", "active": "enabled", "delete": "deleted"} {
+		canonical, ok := reviewedHostKnowledgeAdminStatus(sent)
+		if !ok || canonical != want {
+			t.Fatalf("alias %q maps to (%q, %v), want %q", sent, canonical, ok, want)
+		}
+	}
+	if _, ok := reviewedHostKnowledgeAdminStatus(""); !ok {
+		t.Fatal("empty status must stay accepted-as-unset")
+	}
+	for _, invented := range []string{"archived", "paused", "purged"} {
+		if _, ok := reviewedHostKnowledgeAdminStatus(invented); ok {
+			t.Fatalf("invented status %q must not be accepted", invented)
+		}
+	}
+	if hint := coretool.KnowledgeAdminStatusHint(); !strings.Contains(hint, "disabled") || !strings.Contains(hint, "deleted") {
+		t.Fatalf("hint %q does not name the canonical set", hint)
+	}
+}

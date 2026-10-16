@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
 	"strings"
 	"time"
@@ -15,6 +16,7 @@ import (
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/ha"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/httpapi"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/hubs"
+	"github.com/RapidAI/CodeClaw/hubcenter/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/mail"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/notification"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/skill"
@@ -37,6 +39,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		CacheSizeKB:           cfg.Database.CacheSizeKB,
 		MmapSizeBytes:         cfg.Database.MmapSizeBytes,
 		CheckpointIntervalSec: cfg.Database.CheckpointIntervalSec,
+		AutoVacuum:            cfg.Database.AutoVacuum,
 	})
 	if err != nil {
 		return nil, err
@@ -56,6 +59,18 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	}
 	log.Printf("[hubcenter] sqlite migrations complete for %s", cfg.Database.DSN)
 
+	// Rewrite legacy occurred_at values that carry a numeric timezone offset
+	// into canonical UTC strings. Offset-formatted values sort after
+	// same-instant UTC strings, so they escape the lexical time cutoff used by
+	// HA history pruning and pile up forever (observed: multi-GB ha_sync_ops).
+	// Best-effort: a failure must not block startup, the prune just stays
+	// partially effective until the next boot.
+	if fixed, err := sqlite.NormalizeHAOccuredAtUTC(context.Background(), provider.Write, 500); err != nil {
+		log.Printf("[hubcenter] normalize ha occurred_at: %v", err)
+	} else if fixed > 0 {
+		log.Printf("[hubcenter] normalized %d ha occurred_at values to UTC", fixed)
+	}
+
 	st := sqlite.NewStore(provider)
 	failureRecorder := diagnostics.NewFailureEventRecorder(st.FailureLogs)
 	dataDir := filepath.Dir(cfg.Database.DSN)
@@ -72,19 +87,7 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 		if err != nil {
 			return nil, err
 		}
-		peers := make([]ha.StaticPeer, 0, len(cfg.HA.Peers))
-		for _, peer := range cfg.HA.Peers {
-			if !peer.Enabled || strings.TrimSpace(peer.NodeID) == "" || strings.TrimSpace(peer.BaseURL) == "" {
-				continue
-			}
-			peers = append(peers, ha.StaticPeer{
-				NodeID:       peer.NodeID,
-				NodeName:     peer.Name,
-				BaseURL:      peer.BaseURL,
-				PublicURL:    peer.PublicURL,
-				PublicKeyPEM: peer.PublicKeyPEM,
-			})
-		}
+		peers := ha.StaticPeersFromConfig(cfg.HA)
 		haSvc = ha.NewService(cfg.HA.NodeID, cfg.HA.NodeName, cfg.HA.AdvertiseURL, cfg.HA.ClusterSecret, peers)
 		haSvc.SetPublicURL(cfg.Server.PublicBaseURL)
 		haSvc.SetNodeKeyMaterial(keyMaterial)
@@ -264,9 +267,135 @@ func Bootstrap(cfg *config.Config) (*App, error) {
 	} else {
 		nodeID = "single"
 	}
-	if _, err := InitLLMModule(provider, systemSettings, nodeID, entryService, haSvc, dataDir); err != nil {
+	llmModule, err := InitLLMModule(provider, systemSettings, nodeID, entryService, haSvc, dataDir)
+	if err != nil {
 		return nil, fmt.Errorf("initialize LLM module: %w", err)
 	}
+	// The Token Bank client API lives on the SkillMarket handler set (it shares
+	// its session), but the repository is created by the LLM module. Wire the
+	// two together here rather than reordering construction: smHandlers is built
+	// before the LLM module because SkillMarket must exist even when LLM
+	// persistence fails to initialise.
+	if llmModule != nil && llmModule.TokenBank != nil {
+		smHandlers.SetTokenBankRepo(llmModule.TokenBank, nodeID)
+		if haSvc != nil {
+			smHandlers.SetTokenBankOrigin(haSvc)
+		}
+		bank := llmModule.TokenBank
+		app.goBackground(func(ctx context.Context) {
+			httpapi.RunTokenBankGiftExpiry(ctx, bank, time.Minute)
+		})
+	}
+	// The registry half of Token Bank (§3.2). A share row alone is not
+	// reachable: publishing turns each shared model into a registry member that
+	// dispatch can select. Wired separately from the repository because it is
+	// the LLM service, not the SQLite provider.
+	if llmModule != nil && llmModule.Service != nil {
+		smHandlers.SetTokenBankPublisher(llmModule.Service)
+	}
+	// The settlement half of Token Bank (§5, P0-3). The proxy knows a provider
+	// id, not a share, so this adapter is what lets a completed call credit the
+	// owner. It is installed on the proxy config here because app is the only
+	// package that knows both the SQLite repository and the LLM service; a nil
+	// adapter (no Token Bank repo) leaves settlement a no-op.
+	if llmModule != nil && llmModule.ProxyCfg != nil {
+		settler := newTokenBankProxySettler(llmModule.TokenBank, systemSettings)
+		if concrete, ok := settler.(*tokenBankProxySettler); ok {
+			concrete.llm = llmModule.Service
+		}
+		llmModule.ProxyCfg.SetTokenBankSettler(settler)
+	}
+	if llmModule != nil && llmModule.TokenBank != nil {
+		bank := llmModule.TokenBank
+		svc := llmModule.Service
+		if haSvc != nil && svc != nil {
+			// A peer can still be writing the registry from a snapshot that
+			// has these members paused. Applying that snapshot pauses them
+			// again; the spike note left on the row is what this pass matches.
+			haSvc.SetLLMRegistryCacheInvalidator(func() {
+				svc.InvalidateCache()
+				scheduleUsageSpikeResume(app.ctx, bank, svc)
+			})
+		}
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		resumeSharesPausedForUsageSpike(releaseCtx, bank, svc)
+		releaseCancel()
+		llmservice.ConfigureTokenBankAutoPause(func() int {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			raw, err := systemSettings.Get(ctx, sqlite.TokenBankSettingsKey)
+			if err != nil {
+				return sqlite.DefaultTokenBankSettings().AutoPauseConsecutiveFailures
+			}
+			return sqlite.ParseTokenBankSettings(raw).AutoPauseConsecutiveFailures
+		}, func(shareID, model, reason string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			now := time.Now().UTC()
+			// Both writes share the route lock with resume and republish. A
+			// resume that lands between them would leave the row active and
+			// the member paused, and a later republish keeps that pause.
+			// A failure here must stay visible: the counter only resets on
+			// success, so the retry path is the next failure past the
+			// threshold (see noteTokenBankAutoPause). Losing the log loses
+			// the only trace of why a failing share was never paused.
+			if err := llmservice.WithTokenBankRouteLock(func() error {
+				if err := bank.SetSharePaused(ctx, shareID, "", reason, true, now); err != nil {
+					return err
+				}
+				_ = bank.NoteShareModelError(ctx, shareID, model, reason)
+				if svc == nil {
+					return nil
+				}
+				_, err := svc.SetTokenBankSharePaused(ctx, shareID, true)
+				return err
+			}); err != nil {
+				log.Printf("[token-bank] auto-pause share %s model %s failed: %v (retries on the next failure)", shareID, model, err)
+			}
+		})
+	}
+	httpapi.SetLLMProviderMonitorMailer(mailer)
+	// Every node starts the monitor loop; in HA the nodes self-elect a single
+	// runner through a lease in the replicated system settings. Guarantee:
+	// one runner under normal operation — a duplicate cycle is possible only
+	// inside failover/split-brain windows and is bounded by the lease TTL.
+	hostname, hostErr := os.Hostname()
+	if hostErr != nil || strings.TrimSpace(hostname) == "" {
+		hostname = "node"
+	}
+	// Non-HA uses a stable node ID (hostname only): a single node has no
+	// peers to fence against, and a stable ID avoids self-lockout after a
+	// restart while the previous lease is still fresh.
+	monitorNodeID := hostname
+	leaseTTL := 3 * time.Minute
+	if cfg.HA.Enabled {
+		monitorNodeID = strings.TrimSpace(cfg.HA.NodeID)
+		if monitorNodeID == "" {
+			// Multiple nodes can share a hostname; disambiguate by pid.
+			monitorNodeID = fmt.Sprintf("%s-%d", hostname, os.Getpid())
+		}
+		// The holder renews the lease every 1-minute tick, but renewals reach
+		// peers only after the system-setting replication lag (sync interval
+		// + push debounce). The TTL must cover that lag with margin — 3x the
+		// worst lag also absorbs modest clock skew (peers are assumed to be
+		// NTP-disciplined). A 10-minute floor covers tiny custom intervals.
+		syncSec := cfg.HA.SyncIntervalSeconds
+		if syncSec <= 0 {
+			syncSec = 180
+		}
+		debounceSec := cfg.HA.PushDebounceSeconds
+		if debounceSec <= 0 {
+			debounceSec = 180
+		}
+		leaseTTL = time.Duration((syncSec+debounceSec)*3) * time.Second
+		if leaseTTL < 10*time.Minute {
+			leaseTTL = 10 * time.Minute
+		}
+		log.Printf("[llm-monitor] HA enabled; provider monitor self-elects a single runner via lease (node=%s, lease_ttl=%s)", monitorNodeID, leaseTTL)
+	}
+	app.goBackground(func(ctx context.Context) {
+		httpapi.RunLLMProviderMonitor(ctx, llmModule.Service, mailer, monitorNodeID, leaseTTL, llmModule.ProxyCfg)
+	})
 	if haSvc != nil {
 		// The HA syncer may apply compute-market operations as soon as it starts.
 		// Initialize and attach the LLM repositories first; otherwise a pulled
@@ -335,7 +464,7 @@ func runHAHistoryPruner(ctx context.Context, haSvc *ha.Service, retentionDays fl
 		retentionDays = 0.5
 	}
 	if maxRetainedOps <= 0 {
-		maxRetainedOps = 50000
+		maxRetainedOps = 20000
 	}
 	if intervalMinutes <= 0 {
 		intervalMinutes = 10

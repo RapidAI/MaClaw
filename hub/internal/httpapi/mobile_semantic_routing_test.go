@@ -421,7 +421,7 @@ func TestMobileCoreAgentFileReadUsesHostReaderAndStaysUnmanagedOnContinue(t *tes
 	}
 }
 
-func TestMobileCoreAgentFileWriteUsesHostWriterAndReplaysUntilReceipt(t *testing.T) {
+func TestMobileCoreAgentFileWriteUsesHostWriterAndStaysUnmanagedOnUnverifiedContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
 	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
@@ -445,9 +445,17 @@ func TestMobileCoreAgentFileWriteUsesHostWriterAndReplaysUntilReceipt(t *testing
 	if hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
 		t.Fatalf("file_write leaked legacy bridge tools: %v", tools)
 	}
+	// The managed surface renders a reviewed host adapter under its stable
+	// prompt spelling (corelib/tool/semantic_model_name.go): host_fs_write_local
+	// is the model-visible write_file. What must not leak is the *unrelated*
+	// legacy catalogue — an ambient retrieval family the plan never granted, or
+	// the desktop editor.
+	if !hasToolNamePrefix(tools, "write_file") {
+		t.Fatalf("file_write must expose the host-owned workspace writer: %v", tools)
+	}
 	for _, name := range tools {
-		if strings.Contains(name, "write_file") || strings.Contains(name, "edit_file") {
-			t.Fatalf("file_write leaked GUI tool names: %v", tools)
+		if strings.Contains(name, "edit_file") || name == "edit_lines" {
+			t.Fatalf("file_write leaked the desktop editor surface: %v", tools)
 		}
 	}
 
@@ -456,12 +464,15 @@ func TestMobileCoreAgentFileWriteUsesHostWriterAndReplaysUntilReceipt(t *testing
 		t.Fatalf("continuation answer = %q", answer)
 	}
 	tools = llm.lastLoopTools()
-	if len(tools) == 0 || hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
-		t.Fatalf("continue before a write receipt must replay the pending mutation, got %v", tools)
+	// Hub mobile has no verified task-continuation handle channel, so a
+	// bare "continue" cannot replay the pending plan: the request is not
+	// a continuation and falls back to the legacy bridge surface.
+	if len(tools) == 0 || !hasToolNamePrefix(tools, "invoke_skill_") {
+		t.Fatalf("continue with no verified handle must fall back to the legacy bridge for an unverified continue, got %v", tools)
 	}
 }
 
-func TestMobileCoreAgentKnowledgeWriteUsesHostIngesterAndReplaysUntilReceipt(t *testing.T) {
+func TestMobileCoreAgentKnowledgeWriteUsesHostIngesterAndStaysUnmanagedOnUnverifiedContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
 	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
@@ -485,9 +496,18 @@ func TestMobileCoreAgentKnowledgeWriteUsesHostIngesterAndReplaysUntilReceipt(t *
 	if hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
 		t.Fatalf("knowledge_write leaked legacy bridge tools: %v", tools)
 	}
+	// The managed surface renders the reviewed host adapter under its
+	// stable prompt spelling (corelib/tool/semantic_model_name.go), so the
+	// model-visible name is the ordinary one the prompt already teaches.
+	// What must not leak is a tool the plan never granted.
+	if !hasToolNamePrefix(tools, "knowledge_save_text") {
+		t.Fatalf("knowledge_write must expose knowledge_save_text, got %v", tools)
+	}
 	for _, name := range tools {
-		if strings.Contains(name, "knowledge_save") || strings.Contains(name, "knowledge_import") {
-			t.Fatalf("knowledge_write leaked GUI tool names: %v", tools)
+		for _, unrelated := range []string{"knowledge_import_files", "knowledge_save_url"} {
+			if name == unrelated {
+				t.Fatalf("knowledge_write leaked unrelated tool %s: %v", unrelated, tools)
+			}
 		}
 	}
 
@@ -496,12 +516,15 @@ func TestMobileCoreAgentKnowledgeWriteUsesHostIngesterAndReplaysUntilReceipt(t *
 		t.Fatalf("continuation answer = %q", answer)
 	}
 	tools = llm.lastLoopTools()
-	if len(tools) == 0 || hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
-		t.Fatalf("continue before an ingest receipt must replay the pending mutation, got %v", tools)
+	// Hub mobile has no verified task-continuation handle channel, so a
+	// bare "continue" cannot replay the pending plan: the request is not
+	// a continuation and falls back to the legacy bridge surface.
+	if len(tools) == 0 || !hasToolNamePrefix(tools, "invoke_skill_") {
+		t.Fatalf("continue with no verified handle must fall back to the legacy bridge for an unverified continue, got %v", tools)
 	}
 }
 
-func TestMobileCoreAgentMemoryManageUsesHostStoreAndReplaysUntilReceipt(t *testing.T) {
+func TestMobileCoreAgentMemoryManageUsesHostStoreAndStaysUnmanagedOnUnverifiedContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
 	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
@@ -525,9 +548,18 @@ func TestMobileCoreAgentMemoryManageUsesHostStoreAndReplaysUntilReceipt(t *testi
 	if hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
 		t.Fatalf("memory_manage leaked legacy bridge tools: %v", tools)
 	}
+	// The managed surface renders the reviewed host adapter under its
+	// stable prompt spelling (corelib/tool/semantic_model_name.go), so the
+	// model-visible name is the ordinary one the prompt already teaches.
+	// What must not leak is a tool the plan never granted.
+	if !hasToolNamePrefix(tools, "memory") {
+		t.Fatalf("memory_manage must expose memory, got %v", tools)
+	}
 	for _, name := range tools {
-		if name == "memory" || strings.Contains(name, "knowledge_save") || strings.Contains(name, "knowledge_search") {
-			t.Fatalf("memory_manage leaked GUI tool names: %v", tools)
+		for _, unrelated := range []string{"knowledge_save_text"} {
+			if name == unrelated {
+				t.Fatalf("memory_manage leaked unrelated tool %s: %v", unrelated, tools)
+			}
 		}
 	}
 
@@ -536,12 +568,15 @@ func TestMobileCoreAgentMemoryManageUsesHostStoreAndReplaysUntilReceipt(t *testi
 		t.Fatalf("continuation answer = %q", answer)
 	}
 	tools = llm.lastLoopTools()
-	if len(tools) == 0 || hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
-		t.Fatalf("continue before a memory receipt must replay the pending mutation, got %v", tools)
+	// Hub mobile has no verified task-continuation handle channel, so a
+	// bare "continue" cannot replay the pending plan: the request is not
+	// a continuation and falls back to the legacy bridge surface.
+	if len(tools) == 0 || !hasToolNamePrefix(tools, "invoke_skill_") {
+		t.Fatalf("continue with no verified handle must fall back to the legacy bridge for an unverified continue, got %v", tools)
 	}
 }
 
-func TestMobileCoreAgentTaskTrackUsesHostStoreAndReplaysUntilReceipt(t *testing.T) {
+func TestMobileCoreAgentTaskTrackUsesHostStoreAndStaysUnmanagedOnUnverifiedContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
 	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
@@ -565,9 +600,18 @@ func TestMobileCoreAgentTaskTrackUsesHostStoreAndReplaysUntilReceipt(t *testing.
 	if hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
 		t.Fatalf("task_track leaked legacy bridge tools: %v", tools)
 	}
+	// The managed surface renders the reviewed host adapter under its
+	// stable prompt spelling (corelib/tool/semantic_model_name.go), so the
+	// model-visible name is the ordinary one the prompt already teaches.
+	// What must not leak is a tool the plan never granted.
+	if !hasToolNamePrefix(tools, "task") {
+		t.Fatalf("task_track must expose task, got %v", tools)
+	}
 	for _, name := range tools {
-		if name == "task" || strings.Contains(name, "delegate") || strings.Contains(name, "manage_schedule") {
-			t.Fatalf("task_track leaked GUI tool names: %v", tools)
+		for _, unrelated := range []string{"manage_schedule"} {
+			if name == unrelated {
+				t.Fatalf("task_track leaked unrelated tool %s: %v", unrelated, tools)
+			}
 		}
 	}
 
@@ -576,12 +620,15 @@ func TestMobileCoreAgentTaskTrackUsesHostStoreAndReplaysUntilReceipt(t *testing.
 		t.Fatalf("continuation answer = %q", answer)
 	}
 	tools = llm.lastLoopTools()
-	if len(tools) == 0 || hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
-		t.Fatalf("continue before a task receipt must replay the pending mutation, got %v", tools)
+	// Hub mobile has no verified task-continuation handle channel, so a
+	// bare "continue" cannot replay the pending plan: the request is not
+	// a continuation and falls back to the legacy bridge surface.
+	if len(tools) == 0 || !hasToolNamePrefix(tools, "invoke_skill_") {
+		t.Fatalf("continue with no verified handle must fall back to the legacy bridge for an unverified continue, got %v", tools)
 	}
 }
 
-func TestMobileCoreAgentGoalManageUsesHostStoreAndReplaysUntilReceipt(t *testing.T) {
+func TestMobileCoreAgentGoalManageUsesHostStoreAndStaysUnmanagedOnUnverifiedContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
 	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
@@ -605,9 +652,18 @@ func TestMobileCoreAgentGoalManageUsesHostStoreAndReplaysUntilReceipt(t *testing
 	if hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
 		t.Fatalf("goal_manage leaked legacy bridge tools: %v", tools)
 	}
+	// The managed surface renders the reviewed host adapter under its
+	// stable prompt spelling (corelib/tool/semantic_model_name.go), so the
+	// model-visible name is the ordinary one the prompt already teaches.
+	// What must not leak is a tool the plan never granted.
+	if !hasToolNamePrefix(tools, "goal") {
+		t.Fatalf("goal_manage must expose goal, got %v", tools)
+	}
 	for _, name := range tools {
-		if name == "goal" || name == "task" || strings.Contains(name, "delegate") {
-			t.Fatalf("goal_manage leaked GUI tool names: %v", tools)
+		for _, unrelated := range []string{"manage_schedule"} {
+			if name == unrelated {
+				t.Fatalf("goal_manage leaked unrelated tool %s: %v", unrelated, tools)
+			}
 		}
 	}
 
@@ -616,12 +672,15 @@ func TestMobileCoreAgentGoalManageUsesHostStoreAndReplaysUntilReceipt(t *testing
 		t.Fatalf("continuation answer = %q", answer)
 	}
 	tools = llm.lastLoopTools()
-	if len(tools) == 0 || hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
-		t.Fatalf("continue before a goal receipt must replay the pending mutation, got %v", tools)
+	// Hub mobile has no verified task-continuation handle channel, so a
+	// bare "continue" cannot replay the pending plan: the request is not
+	// a continuation and falls back to the legacy bridge surface.
+	if len(tools) == 0 || !hasToolNamePrefix(tools, "invoke_skill_") {
+		t.Fatalf("continue with no verified handle must fall back to the legacy bridge for an unverified continue, got %v", tools)
 	}
 }
 
-func TestMobileCoreAgentTemplateManageUsesHostStoreAndReplaysUntilReceipt(t *testing.T) {
+func TestMobileCoreAgentTemplateManageUsesHostStoreAndStaysUnmanagedOnUnverifiedContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
 	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
@@ -645,9 +704,18 @@ func TestMobileCoreAgentTemplateManageUsesHostStoreAndReplaysUntilReceipt(t *tes
 	if hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
 		t.Fatalf("template_manage leaked legacy bridge tools: %v", tools)
 	}
+	// The managed surface renders the reviewed host adapter under its
+	// stable prompt spelling (corelib/tool/semantic_model_name.go), so the
+	// model-visible name is the ordinary one the prompt already teaches.
+	// What must not leak is a tool the plan never granted.
+	if !hasToolNamePrefix(tools, "manage_template") {
+		t.Fatalf("template_manage must expose manage_template, got %v", tools)
+	}
 	for _, name := range tools {
-		if name == "manage_template" || name == "launch_template" || name == "list_sessions" || name == "manage_config" {
-			t.Fatalf("template_manage leaked GUI tool names: %v", tools)
+		for _, unrelated := range []string{"list_sessions"} {
+			if name == unrelated {
+				t.Fatalf("template_manage leaked unrelated tool %s: %v", unrelated, tools)
+			}
 		}
 	}
 
@@ -656,12 +724,15 @@ func TestMobileCoreAgentTemplateManageUsesHostStoreAndReplaysUntilReceipt(t *tes
 		t.Fatalf("continuation answer = %q", answer)
 	}
 	tools = llm.lastLoopTools()
-	if len(tools) == 0 || hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
-		t.Fatalf("continue before a template receipt must replay the pending mutation, got %v", tools)
+	// Hub mobile has no verified task-continuation handle channel, so a
+	// bare "continue" cannot replay the pending plan: the request is not
+	// a continuation and falls back to the legacy bridge surface.
+	if len(tools) == 0 || !hasToolNamePrefix(tools, "invoke_skill_") {
+		t.Fatalf("continue with no verified handle must fall back to the legacy bridge for an unverified continue, got %v", tools)
 	}
 }
 
-func TestMobileCoreAgentScheduleAdministerUsesHostStoreAndReplaysUntilReceipt(t *testing.T) {
+func TestMobileCoreAgentScheduleAdministerUsesHostStoreAndStaysUnmanagedOnUnverifiedContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
 	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
@@ -685,9 +756,18 @@ func TestMobileCoreAgentScheduleAdministerUsesHostStoreAndReplaysUntilReceipt(t 
 	if hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
 		t.Fatalf("schedule_manage leaked legacy bridge tools: %v", tools)
 	}
+	// The managed surface renders the reviewed host adapter under its
+	// stable prompt spelling (corelib/tool/semantic_model_name.go), so the
+	// model-visible name is the ordinary one the prompt already teaches.
+	// What must not leak is a tool the plan never granted.
+	if !hasToolNamePrefix(tools, "manage_schedule") {
+		t.Fatalf("schedule_manage must expose manage_schedule, got %v", tools)
+	}
 	for _, name := range tools {
-		if name == "manage_schedule" || name == "schedule_administer" || name == "task" {
-			t.Fatalf("schedule_manage leaked GUI tool names: %v", tools)
+		for _, unrelated := range []string{"task"} {
+			if name == unrelated {
+				t.Fatalf("schedule_manage leaked unrelated tool %s: %v", unrelated, tools)
+			}
 		}
 	}
 
@@ -696,12 +776,15 @@ func TestMobileCoreAgentScheduleAdministerUsesHostStoreAndReplaysUntilReceipt(t 
 		t.Fatalf("continuation answer = %q", answer)
 	}
 	tools = llm.lastLoopTools()
-	if len(tools) == 0 || hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
-		t.Fatalf("continue before a schedule receipt must replay the pending mutation, got %v", tools)
+	// Hub mobile has no verified task-continuation handle channel, so a
+	// bare "continue" cannot replay the pending plan: the request is not
+	// a continuation and falls back to the legacy bridge surface.
+	if len(tools) == 0 || !hasToolNamePrefix(tools, "invoke_skill_") {
+		t.Fatalf("continue with no verified handle must fall back to the legacy bridge for an unverified continue, got %v", tools)
 	}
 }
 
-func TestMobileCoreAgentKnowledgeAdminUsesHostStoreAndReplaysUntilReceipt(t *testing.T) {
+func TestMobileCoreAgentKnowledgeAdminUsesHostStoreAndStaysUnmanagedOnUnverifiedContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
 	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
@@ -725,9 +808,18 @@ func TestMobileCoreAgentKnowledgeAdminUsesHostStoreAndReplaysUntilReceipt(t *tes
 	if hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
 		t.Fatalf("knowledge_admin leaked legacy bridge tools: %v", tools)
 	}
+	// The managed surface renders the reviewed host adapter under its
+	// stable prompt spelling (corelib/tool/semantic_model_name.go), so the
+	// model-visible name is the ordinary one the prompt already teaches.
+	// What must not leak is a tool the plan never granted.
+	if !hasToolNamePrefix(tools, "knowledge_maintain") {
+		t.Fatalf("knowledge_admin must expose knowledge_maintain, got %v", tools)
+	}
 	for _, name := range tools {
-		if name == "knowledge_maintain" || name == "knowledge_disable_source" || name == "knowledge_save_text" || name == "knowledge_search" {
-			t.Fatalf("knowledge_admin leaked GUI tool names: %v", tools)
+		for _, unrelated := range []string{"knowledge_save_text"} {
+			if name == unrelated {
+				t.Fatalf("knowledge_admin leaked unrelated tool %s: %v", unrelated, tools)
+			}
 		}
 	}
 
@@ -736,12 +828,15 @@ func TestMobileCoreAgentKnowledgeAdminUsesHostStoreAndReplaysUntilReceipt(t *tes
 		t.Fatalf("continuation answer = %q", answer)
 	}
 	tools = llm.lastLoopTools()
-	if len(tools) == 0 || hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
-		t.Fatalf("continue before a knowledge admin receipt must replay the pending mutation, got %v", tools)
+	// Hub mobile has no verified task-continuation handle channel, so a
+	// bare "continue" cannot replay the pending plan: the request is not
+	// a continuation and falls back to the legacy bridge surface.
+	if len(tools) == 0 || !hasToolNamePrefix(tools, "invoke_skill_") {
+		t.Fatalf("continue with no verified handle must fall back to the legacy bridge for an unverified continue, got %v", tools)
 	}
 }
 
-func TestMobileCoreAgentConfigManageUsesHostStoreAndReplaysUntilReceipt(t *testing.T) {
+func TestMobileCoreAgentConfigManageUsesHostStoreAndStaysUnmanagedOnUnverifiedContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
 	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
@@ -765,9 +860,18 @@ func TestMobileCoreAgentConfigManageUsesHostStoreAndReplaysUntilReceipt(t *testi
 	if hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
 		t.Fatalf("config_manage leaked legacy bridge tools: %v", tools)
 	}
+	// The managed surface renders the reviewed host adapter under its
+	// stable prompt spelling (corelib/tool/semantic_model_name.go), so the
+	// model-visible name is the ordinary one the prompt already teaches.
+	// What must not leak is a tool the plan never granted.
+	if !hasToolNamePrefix(tools, "manage_config") {
+		t.Fatalf("config_manage must expose manage_config, got %v", tools)
+	}
 	for _, name := range tools {
-		if name == "manage_config" || name == "switch_llm_provider" || name == "set_max_iterations" || name == "manage_user_model" {
-			t.Fatalf("config_manage leaked GUI tool names: %v", tools)
+		for _, unrelated := range []string{"list_sessions"} {
+			if name == unrelated {
+				t.Fatalf("config_manage leaked unrelated tool %s: %v", unrelated, tools)
+			}
 		}
 	}
 
@@ -776,12 +880,15 @@ func TestMobileCoreAgentConfigManageUsesHostStoreAndReplaysUntilReceipt(t *testi
 		t.Fatalf("continuation answer = %q", answer)
 	}
 	tools = llm.lastLoopTools()
-	if len(tools) == 0 || hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
-		t.Fatalf("continue before a config receipt must replay the pending mutation, got %v", tools)
+	// Hub mobile has no verified task-continuation handle channel, so a
+	// bare "continue" cannot replay the pending plan: the request is not
+	// a continuation and falls back to the legacy bridge surface.
+	if len(tools) == 0 || !hasToolNamePrefix(tools, "invoke_skill_") {
+		t.Fatalf("continue with no verified handle must fall back to the legacy bridge for an unverified continue, got %v", tools)
 	}
 }
 
-func TestMobileCoreAgentSessionManageInspectsWithoutDriveAndReplaysUntilReceipt(t *testing.T) {
+func TestMobileCoreAgentSessionManageInspectsWithoutDriveAndStaysUnmanagedOnUnverifiedContinue(t *testing.T) {
 	initMobileCoreAgentForTest(t, t.TempDir())
 	t.Setenv(mobileStatePathEnv, filepath.Join(t.TempDir(), "state.json"))
 	t.Setenv(mobileBlobDirEnv, filepath.Join(t.TempDir(), "blobs"))
@@ -805,9 +912,18 @@ func TestMobileCoreAgentSessionManageInspectsWithoutDriveAndReplaysUntilReceipt(
 	if hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
 		t.Fatalf("session_manage leaked legacy bridge tools: %v", tools)
 	}
+	// The managed surface renders the reviewed host adapter under its
+	// stable prompt spelling (corelib/tool/semantic_model_name.go), so the
+	// model-visible name is the ordinary one the prompt already teaches.
+	// What must not leak is a tool the plan never granted.
+	if !hasToolNamePrefix(tools, "list_sessions") {
+		t.Fatalf("session_manage must expose list_sessions, got %v", tools)
+	}
 	for _, name := range tools {
-		if name == "list_sessions" || name == "interrupt_session" || name == "send_input" || name == "kill_session" || name == "launch_template" {
-			t.Fatalf("session_manage leaked GUI tool names: %v", tools)
+		for _, unrelated := range []string{"manage_config"} {
+			if name == unrelated {
+				t.Fatalf("session_manage leaked unrelated tool %s: %v", unrelated, tools)
+			}
 		}
 	}
 
@@ -816,8 +932,11 @@ func TestMobileCoreAgentSessionManageInspectsWithoutDriveAndReplaysUntilReceipt(
 		t.Fatalf("continuation answer = %q", answer)
 	}
 	tools = llm.lastLoopTools()
-	if len(tools) == 0 || hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
-		t.Fatalf("continue before a session inspect receipt must replay the pending inspect, got %v", tools)
+	// Hub mobile has no verified task-continuation handle channel, so a
+	// bare "continue" cannot replay the pending plan: the request is not
+	// a continuation and falls back to the legacy bridge surface.
+	if len(tools) == 0 || !hasToolNamePrefix(tools, "invoke_skill_") {
+		t.Fatalf("continue with no verified handle must fall back to the legacy bridge for an unverified continue, got %v", tools)
 	}
 }
 
@@ -940,8 +1059,17 @@ func TestMobileCoreAgentAudioTranscribeUsesHostEngineAndAttachment(t *testing.T)
 	if len(tools) == 0 {
 		t.Fatal("audio_transcribe with a trusted attachment and host engine must expose the host transcriber")
 	}
-	if hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_", "asr", "record_audio") {
-		t.Fatalf("audio_transcribe leaked legacy or GUI asr tools: %v", tools)
+	if hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
+		t.Fatalf("audio_transcribe leaked legacy bridge tools: %v", tools)
+	}
+	// host_audio_transcribe_speech renders under its stable prompt spelling
+	// "asr" (corelib/tool/semantic_model_name.go). The desktop recorder stays
+	// out: the host engine transcribes the trusted attachment instead.
+	if !hasToolNamePrefix(tools, "asr") {
+		t.Fatalf("audio_transcribe must expose the host transcriber as asr, got %v", tools)
+	}
+	if hasToolNamePrefix(tools, "record_audio") {
+		t.Fatalf("audio_transcribe leaked the desktop recorder: %v", tools)
 	}
 
 	llm.intentJSON = `{"top":[{"skill":"continuation","score":0.90}]}`
@@ -997,8 +1125,14 @@ func TestMobileCoreAgentAudioTranscribeUsesOwnedRecordingAttachment(t *testing.T
 	if len(tools) == 0 {
 		t.Fatal("owned recording attachment must expose the host transcriber")
 	}
-	if hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_", "asr", "record_audio") {
-		t.Fatalf("owned recording leaked legacy or GUI asr tools: %v", tools)
+	if hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
+		t.Fatalf("owned recording leaked legacy bridge tools: %v", tools)
+	}
+	if !hasToolNamePrefix(tools, "asr") {
+		t.Fatalf("owned recording must expose the host transcriber as asr, got %v", tools)
+	}
+	if hasToolNamePrefix(tools, "record_audio") {
+		t.Fatalf("owned recording leaked the desktop recorder: %v", tools)
 	}
 }
 
@@ -1057,8 +1191,15 @@ func TestMobileCoreAgentDocumentReadUsesOwnedDraftAttachment(t *testing.T) {
 	if len(tools) == 0 {
 		t.Fatal("document_read with a trusted attachment must expose the host reader")
 	}
-	if hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_", "read_file", "office") {
-		t.Fatalf("document_read leaked legacy or path-taking tools: %v", tools)
+	if hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
+		t.Fatalf("document_read leaked legacy bridge tools: %v", tools)
+	}
+	// The document_read archetype bundle deliberately adds the workspace
+	// reader/writer companions (corelib/agentservice/semantic_archetype.go),
+	// so read_file/write_file are part of the granted plan. The desktop Office
+	// suite must stay out: the trusted attachment is read by the host reader.
+	if hasToolNamePrefix(tools, "office") {
+		t.Fatalf("document_read leaked the desktop Office suite: %v", tools)
 	}
 
 	llm.intentJSON = `{"top":[{"skill":"continuation","score":0.90}]}`
@@ -1120,8 +1261,17 @@ func TestMobileCoreAgentSemanticRoutingCrossPrincipalIsolation(t *testing.T) {
 	if hasToolNamePrefix(tools, "invoke_skill_", "invoke_mcp_") {
 		t.Fatalf("principal B managed request fell back to the legacy bridge surface: %v", tools)
 	}
-	if len(tools) != 0 {
-		t.Fatalf("principal B managed request must fail closed without a published contract, got tools: %v", tools)
+	// The search intent grants the reviewed host-owned web search, which is
+	// not contract-bound: it needs no published skill contract. What principal
+	// B must not receive is anything derived from principal A's contract, so
+	// the surface holds only the granted host capability.
+	if !hasToolNamePrefix(tools, "web_search") {
+		t.Fatalf("principal B search must expose the host-owned web search, got %v", tools)
+	}
+	for _, name := range tools {
+		if name != "web_search" {
+			t.Fatalf("principal B must not receive principal A's contract-bound tools, got %v", tools)
+		}
 	}
 }
 

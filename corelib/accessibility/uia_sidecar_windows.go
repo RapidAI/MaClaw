@@ -102,6 +102,48 @@ function Get-UITree {
     return $node
 }
 
+function Score-WindowTitle([string]$hint, [string]$title) {
+    $h = Norm-WindowTitle $hint
+    $t = Norm-WindowTitle $title
+    if ([string]::IsNullOrEmpty($h) -or [string]::IsNullOrEmpty($t)) { return 0 }
+    if ($h -eq $t) { return 1000 }
+    if ($h.Length -lt 2) { return 0 }
+    $suf = $t
+    $pre = $t
+    $split = $false
+    foreach ($sep in @(' - ', ' — ', ' – ', ' | ')) {
+        $i = $t.LastIndexOf($sep)
+        if ($i -ge 0) {
+            $pre = $t.Substring(0, $i).Trim()
+            $suf = $t.Substring($i + $sep.Length).Trim()
+            $split = $true
+            break
+        }
+    }
+    if ($h -eq $suf) { return 920 }
+    if ($split -and $h -eq $pre) { return 880 }
+    return 0
+}
+
+function Norm-WindowTitle([string]$s) {
+    if ([string]::IsNullOrEmpty($s)) { return '' }
+    $s = $s.Replace([char]0x200b, '').Replace([char]0x200c, '').Replace([char]0x200d, '').Replace([char]0xfeff, '')
+    $s = $s.Trim().TrimStart('*').Trim().ToLower()
+    return (($s -split '\s+') | Where-Object { $_ -ne '' }) -join ' '
+}
+
+function Select-BestWindow($wins, [string]$hint) {
+    $best = $null
+    $bestScore = 0
+    foreach ($w in $wins) {
+        $name = ''
+        try { $name = $w.Current.Name } catch {}
+        $score = Score-WindowTitle $hint $name
+        if ($score -gt $bestScore) { $bestScore = $score; $best = $w }
+    }
+    return $best
+}
+
 function Enum-Windows {
     param($window, $depth)
     if ($depth -lt 1) { $depth = 1 }
@@ -125,10 +167,7 @@ function Enum-Windows {
     }
     $all = $root.FindAll([System.Windows.Automation.TreeScope]::Children,
         [System.Windows.Automation.Condition]::TrueCondition)
-    $win = $null
-    foreach ($w in $all) {
-        if ($w.Current.Name -like ("*" + $window + "*")) { $win = $w; break }
-    }
+    $win = Select-BestWindow $all $window
     if (-not $win) { return @() }
     $tree = Get-UITree $win $depth
     if ($tree) { return @($tree) }
@@ -140,10 +179,7 @@ function Find-El {
     $root = [System.Windows.Automation.AutomationElement]::RootElement
     $all = $root.FindAll([System.Windows.Automation.TreeScope]::Children,
         [System.Windows.Automation.Condition]::TrueCondition)
-    $win = $null
-    foreach ($w in $all) {
-        if ($w.Current.Name -like ("*" + $window + "*")) { $win = $w; break }
-    }
+    $win = Select-BestWindow $all $window
     if (-not $win) { return $null }
     $ctMap = @{
         'button'=[System.Windows.Automation.ControlType]::Button

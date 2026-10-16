@@ -85,7 +85,7 @@ func BuildLightMemRecallPlan(query string, category Category, projectPath string
 		routes = append(routes, route)
 	}
 
-	if containsAny(lq, []string{"prefer", "preference", "like", "habit", "my ", "me ", "user", "profile", "我", "偏好", "习惯"}) {
+	if containsAny(lq, []string{"prefer", "preference", "like", "habit", "my ", "me ", "user", "profile", "我", "偏好", "习惯", "图", "多图", "排版", "格式", "风格", "style", "format", "diagram", "chart"}) {
 		add(LightMemRoute{Name: "user_preference", Query: q, Category: CategoryPreference, Budget: 3, Reason: "query may depend on user preferences"})
 		add(LightMemRoute{Name: "user_fact", Query: q, Category: CategoryUserFact, Budget: 3, Reason: "query may depend on user facts"})
 	}

@@ -2,9 +2,13 @@ package docgen
 
 import (
 	"fmt"
+	"image"
+	_ "image/jpeg"
+	_ "image/png"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -12,13 +16,48 @@ var markdownHorizontalRuleDashRe = regexp.MustCompile(`^-{3,}$`)
 var markdownHorizontalRuleStarRe = regexp.MustCompile(`^\*{3,}$`)
 var markdownOrderedListRe = regexp.MustCompile(`^\d+\.\s`)
 var markdownImageRe = regexp.MustCompile(`^!\[(.*?)\]\((.*?)\)$`)
+var markdownBareURLRe = regexp.MustCompile(`https?://[^\s<>\]（）)]+`)
+
+// colorfulH2Colors are inline colors InsertHTMLBox paints. They rotate by
+// section so a paper interpretation is not one near-black heading color.
+var colorfulH2Colors = []string{
+	"#1d4ed8",
+	"#0f766e",
+	"#7c3aed",
+	"#c2410c",
+	"#15803d",
+	"#be123c",
+	"#b45309",
+	"#0369a1",
+}
 var inlineMathSegmentRe = regexp.MustCompile(`\$(.+?)\$`)
 var inlineCodeRe = regexp.MustCompile("`([^`]+)`")
-var inlineBoldRe = regexp.MustCompile(`\*\*(.+?)\*\*`)
+var inlineStarBoldRe = regexp.MustCompile(`\*\*(.+?)\*\*`)
+var inlineUnderscoreBoldRe = regexp.MustCompile(`__(.+?)__`)
 var inlineItalicRe = regexp.MustCompile(`\*(.+?)\*`)
+var inlineLinkRe = regexp.MustCompile(`(^|[^!])\[([^\]\n]+)\]\(([^)\s]+)\)`)
 var sanitizeFileNameRe = regexp.MustCompile(`[<>:"/\\|?*\s]+`)
 
-var latexSymbolReplacer = strings.NewReplacer(
+// newLongestReplacer lists longer commands first. strings.NewReplacer keeps the
+// first pair that matches at a position, so \le listed before \leftarrow turns
+// the arrow into ≤ftarrow, and \to listed before \top turns it into →p.
+func newLongestReplacer(pairs ...string) *strings.Replacer {
+	type pair struct{ old, new string }
+	items := make([]pair, 0, len(pairs)/2)
+	for i := 0; i+1 < len(pairs); i += 2 {
+		items = append(items, pair{pairs[i], pairs[i+1]})
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		return len(items[i].old) > len(items[j].old)
+	})
+	ordered := make([]string, 0, len(pairs))
+	for _, item := range items {
+		ordered = append(ordered, item.old, item.new)
+	}
+	return strings.NewReplacer(ordered...)
+}
+
+var latexSymbolReplacer = newLongestReplacer(
 	`\alpha`, "α",
 	`\beta`, "β",
 	`\gamma`, "γ",
@@ -30,6 +69,16 @@ var latexSymbolReplacer = strings.NewReplacer(
 	`\sigma`, "σ",
 	`\phi`, "φ",
 	`\omega`, "ω",
+	`\epsilon`, "ε",
+	`\varepsilon`, "ϵ",
+	`\rho`, "ρ",
+	`\eta`, "η",
+	`\xi`, "ξ",
+	`\zeta`, "ζ",
+	`\psi`, "ψ",
+	`\nu`, "ν",
+	`\kappa`, "κ",
+	`\tau`, "τ",
 	`\Gamma`, "Γ",
 	`\Delta`, "Δ",
 	`\Theta`, "Θ",
@@ -275,9 +324,19 @@ var latexFunctionReplacer = strings.NewReplacer(
 )
 
 func markdownToHTML(md string) string {
+	return markdownToHTMLWithScratch(nil, md, false)
+}
+
+// markdownToHTMLWithScratch renders Markdown for one render. scratch carries
+// that render's home for decoded data-URL images, and may be nil for callers
+// that have none (in-package HTML assertions), where a data-URL image then
+// resolves to nothing rather than being written somewhere unmanaged.
+func markdownToHTMLWithScratch(scratch *dataURLScratch, md string, colorful bool) string {
 	lines := strings.Split(md, "\n")
 	var sb strings.Builder
 	listType := ""
+	h2 := 0
+	sectionBody := ""
 	closeList := func() {
 		switch listType {
 		case "ul":
@@ -314,57 +373,56 @@ func markdownToHTML(md string) string {
 			sb.WriteString("<hr/>")
 			continue
 		}
-		if strings.HasPrefix(trimmed, "##### ") {
-			if listType != "" { closeList() }
-			sb.WriteString(fmt.Sprintf(`<p style="font-size:8.5pt; color:#4b5563"><b>%s</b></p>`, renderInlineHTML(strings.TrimPrefix(trimmed, "##### "))))
+		if prefix, ok := markdownHeadingPrefix(trimmed); ok {
+			if listType != "" {
+				closeList()
+			}
+			size, color := markdownHeadingPresentation(prefix, colorful, h2)
+			if prefix == "## " {
+				if colorful {
+					sectionBody = paperSectionBodyColor(strings.TrimSpace(strings.TrimPrefix(trimmed, prefix)))
+				}
+				h2++
+			}
+			sb.WriteString(fmt.Sprintf(`<p style="font-size:%s; color:%s"><b>%s</b></p>`, size, color, renderInlineHTMLMode(strings.TrimPrefix(trimmed, prefix), colorful)))
 			continue
 		}
-		if strings.HasPrefix(trimmed, "#### ") {
-			if listType != "" { closeList() }
-			sb.WriteString(fmt.Sprintf(`<p style="font-size:9.5pt; color:#374151"><b>%s</b></p>`, renderInlineHTML(strings.TrimPrefix(trimmed, "#### "))))
-			continue
-		}
-		if strings.HasPrefix(trimmed, "### ") {
-			if listType != "" { closeList() }
-			sb.WriteString(fmt.Sprintf(`<p style="font-size:11pt; color:#2c3e50"><b>%s</b></p>`, renderInlineHTML(strings.TrimPrefix(trimmed, "### "))))
-			continue
-		}
-		if strings.HasPrefix(trimmed, "## ") {
-			if listType != "" { closeList() }
-			sb.WriteString(fmt.Sprintf(`<p style="font-size:13pt; color:#1a1a2e"><b>%s</b></p>`, renderInlineHTML(strings.TrimPrefix(trimmed, "## "))))
-			continue
-		}
-		if strings.HasPrefix(trimmed, "# ") {
-			if listType != "" { closeList() }
-			sb.WriteString(fmt.Sprintf(`<p style="font-size:15pt; color:#0f3460"><b>%s</b></p>`, renderInlineHTML(strings.TrimPrefix(trimmed, "# "))))
-			continue
-		}
-		if imageHTML, ok := markdownImageToHTML(trimmed); ok {
-			if listType != "" { closeList() }
+		if imageHTML, ok := markdownImageToHTML(scratch, trimmed, colorful); ok {
+			if listType != "" {
+				closeList()
+			}
 			sb.WriteString(imageHTML)
 			continue
 		}
 		if tableHTML, nextIdx, ok := markdownTableToHTML(lines, i); ok {
-			if listType != "" { closeList() }
+			if listType != "" {
+				closeList()
+			}
 			sb.WriteString(tableHTML)
 			i = nextIdx - 1
 			continue
 		}
-		if text, nextIdx, ok := markdownDisplayMathToHTML(lines, i); ok {
-			if listType != "" { closeList() }
-			sb.WriteString(fmt.Sprintf(`<p style="text-align:center">%s</p>`, text))
-			i = nextIdx
-			continue
-		}
-		if strings.HasPrefix(trimmed, "```") {
+		if text, nextIdx, ok := markdownDisplayMathToHTML(lines, i, colorful); ok {
 			if listType != "" {
 				closeList()
 			}
-			// Fenced code block — collect lines until closing ```
+			if colorful {
+				sb.WriteString(fmt.Sprintf(`<p style="text-align:center; font-size:12pt; color:#6d28d9">%s</p>`, text))
+			} else {
+				sb.WriteString(fmt.Sprintf(`<p style="text-align:center">%s</p>`, text))
+			}
+			i = nextIdx
+			continue
+		}
+		if marker, ok := markdownFenceMarker(trimmed); ok {
+			if listType != "" {
+				closeList()
+			}
+			// Fenced code block — ``` or ~~~, closed by a matching fence.
 			var codeLines []string
-			i++ // skip the opening ``` line
+			i++ // skip the opening fence line
 			for i < len(lines) {
-				if strings.TrimSpace(lines[i]) == "```" {
+				if isClosingFence(lines[i], marker) {
 					break
 				}
 				codeLines = append(codeLines, lines[i])
@@ -420,7 +478,7 @@ func markdownToHTML(md string) string {
 				if bqHTML.Len() > 0 {
 					bqHTML.WriteString("<br/>")
 				}
-				bqHTML.WriteString(renderInlineHTML(line))
+				bqHTML.WriteString(renderInlineHTMLMode(line, colorful))
 			}
 			sb.WriteString(fmt.Sprintf(`<p style="border-left:3px solid #d1d5db; padding-left:10px; color:#4b5563; margin-left:6px">%s</p>`, bqHTML.String()))
 			continue
@@ -428,7 +486,7 @@ func markdownToHTML(md string) string {
 		if strings.HasPrefix(trimmed, "- ") || strings.HasPrefix(trimmed, "* ") {
 			ensureList("ul")
 			text := strings.TrimPrefix(strings.TrimPrefix(trimmed, "- "), "* ")
-			sb.WriteString(fmt.Sprintf("<li>%s</li>", renderInlineHTML(text)))
+			sb.WriteString(fmt.Sprintf("<li%s>%s</li>", paperBodyStyle(colorful, sectionBody), renderInlineHTMLMode(text, colorful)))
 			continue
 		}
 		if markdownOrderedListRe.MatchString(trimmed) {
@@ -437,13 +495,23 @@ func markdownToHTML(md string) string {
 			if idx := strings.Index(text, ". "); idx > 0 {
 				text = text[idx+2:]
 			}
-			sb.WriteString(fmt.Sprintf("<li>%s</li>", renderInlineHTML(text)))
+			sb.WriteString(fmt.Sprintf("<li%s>%s</li>", paperBodyStyle(colorful, sectionBody), renderInlineHTMLMode(text, colorful)))
 			continue
 		}
 		if listType != "" {
 			closeList()
 		}
-		sb.WriteString(fmt.Sprintf("<p>%s</p>", renderInlineHTML(trimmed)))
+		if colorful && paperCaptionLine(trimmed) {
+			sb.WriteString(fmt.Sprintf(`<p style="font-size:10pt; color:#0f766e"><i>%s</i></p>`, renderInlineHTMLMode(trimmed, true)))
+			continue
+		}
+		if colorful {
+			if mixed, ok := renderColorfulFormulaLine(trimmed, sectionBody); ok {
+				sb.WriteString(mixed)
+				continue
+			}
+		}
+		sb.WriteString(fmt.Sprintf("<p%s>%s</p>", paperBodyStyle(colorful, sectionBody), renderInlineHTMLMode(trimmed, colorful)))
 	}
 	if listType != "" {
 		closeList()
@@ -451,20 +519,25 @@ func markdownToHTML(md string) string {
 	return sb.String()
 }
 
-func markdownImageToHTML(line string) (string, bool) {
+func markdownImageToHTML(scratch *dataURLScratch, line string, colorful bool) (string, bool) {
 	matches := markdownImageRe.FindStringSubmatch(strings.TrimSpace(line))
 	if len(matches) != 3 {
 		return "", false
 	}
 	alt := strings.TrimSpace(matches[1])
 	rawPath := strings.TrimSpace(matches[2])
-	imagePath, ok := resolveMarkdownImagePath(rawPath)
+	imagePath, ok := resolveMarkdownImagePath(scratch, rawPath)
+	captionColor := "#666"
+	if colorful {
+		captionColor = "#0f766e"
+	}
 	if ok {
 		caption := ""
 		if alt != "" {
-			caption = fmt.Sprintf(`<p style="font-size:9pt; color:#666"><i>%s</i></p>`, inlineMD(escapeHTML(alt)))
+			caption = fmt.Sprintf(`<p style="font-size:9pt; color:%s"><i>%s</i></p>`, captionColor, inlineMD(escapeHTML(alt)))
 		}
-		return fmt.Sprintf(`<p><img src="%s" width="480"/></p>%s`, escapeHTMLAttr(imagePath), caption), true
+		width, height := fittedMarkdownImageSize(imagePath)
+		return fmt.Sprintf(`<p><img src="%s" width="%d" height="%d"/></p>%s`, escapeHTMLAttr(imagePath), width, height, caption), true
 	}
 	if isRemoteURL(rawPath) {
 		return fmt.Sprintf(`<p><b>图片：</b>%s</p><p style="font-size:9pt; color:#666"><i>暂不支持远程图片：%s</i></p>`, inlineMD(escapeHTML(fallbackText(alt, "未命名图片"))), inlineMD(escapeHTML(rawPath))), true
@@ -472,10 +545,97 @@ func markdownImageToHTML(line string) (string, bool) {
 	return fmt.Sprintf(`<p><b>图片：</b>%s</p><p style="font-size:9pt; color:#666"><i>图片未找到：%s</i></p>`, inlineMD(escapeHTML(fallbackText(alt, "未命名图片"))), inlineMD(escapeHTML(rawPath))), true
 }
 
-func resolveMarkdownImagePath(rawPath string) (string, bool) {
+// fittedMarkdownImageSize keeps a chart inside the area above the footer on
+// both A4 and B5. Width stays at most 480pt. Height stays at most 600pt.
+//
+// Results are cached per render: pagination measures each candidate split,
+// so a 12-image document used to decode the same files over 100 times. File
+// identity is part of the cache key (see imageSizeCacheKey), so a file that
+// changes between renders is re-read instead of served stale.
+func fittedMarkdownImageSize(path string) (int, int) {
+	cached := decodeMarkdownImageSizeWithCache(path, globalMarkdownImageSizeCache)
+	return cached.w, cached.h
+}
+
+// markdownImageSize is the fitted size of one image, in points.
+type markdownImageSize struct {
+	w, h int
+}
+
+// globalMarkdownImageSizeCache is shared by the render helpers that call
+// fittedMarkdownImageSize directly without a per-render map. It is keyed by
+// file identity (see imageSizeCacheKey) so a replaced file invalidates itself.
+var globalMarkdownImageSizeCache = newMarkdownImageSizeCache()
+
+// decodeMarkdownImageSizeWithCache reads image dimensions through the given
+// cache, falling back to the maximum chart size when the file cannot be read
+// or decoded.
+func decodeMarkdownImageSizeWithCache(path string, cache *markdownImageSizeCache) markdownImageSize {
+	const maxW = 480.0
+	const maxH = 600.0
+	fallback := markdownImageSize{w: int(maxW), h: int(maxH)}
+
+	key, ok := imageSizeCacheKey(path)
+	if !ok {
+		return fallback
+	}
+	if got, ok := cache.get(key); ok {
+		return got
+	}
+
+	got := fallback
+	if cfg, ok := decodeImageSize(path); ok {
+		w := maxW
+		h := float64(cfg.height) * w / float64(cfg.width)
+		if h > maxH {
+			h = maxH
+			w = float64(cfg.width) * h / float64(cfg.height)
+		}
+		if w < 1 {
+			w = 1
+		}
+		if h < 1 {
+			h = 1
+		}
+		got = markdownImageSize{w: int(w + 0.5), h: int(h + 0.5)}
+	}
+	cache.put(key, got)
+	return got
+}
+
+// imageSize is the natural pixel size of an image file.
+type imageSize struct {
+	width, height int
+}
+
+func decodeImageSize(path string) (imageSize, bool) {
+	f, err := os.Open(path)
+	if err != nil {
+		return imageSize{}, false
+	}
+	defer f.Close()
+	cfg, _, err := image.DecodeConfig(f)
+	if err != nil || cfg.Width <= 0 || cfg.Height <= 0 {
+		return imageSize{}, false
+	}
+	return imageSize{width: cfg.Width, height: cfg.Height}, true
+}
+
+// resolveMarkdownImagePath turns one Markdown target into a file the renderer
+// can open. scratch supplies the render-scoped directory for images that
+// arrive as bytes; without it, only real filesystem paths can resolve.
+func resolveMarkdownImagePath(scratch *dataURLScratch, rawPath string) (string, bool) {
 	path := strings.TrimSpace(rawPath)
 	if path == "" || isRemoteURL(path) {
 		return "", false
+	}
+	// A data URL carries the image itself. Decoding it to a file lets every
+	// later stage — measuring, embedding — stay exactly as it is for a path.
+	if isDataURLImage(path) {
+		if scratch == nil {
+			return "", false
+		}
+		return scratch.resolve(path)
 	}
 	if strings.HasPrefix(strings.ToLower(path), "file://") {
 		path = strings.TrimPrefix(path, "file://")
@@ -608,14 +768,20 @@ func isMarkdownTableBlock(block string) bool {
 	return true
 }
 
-func markdownDisplayMathToHTML(lines []string, idx int) (string, int, bool) {
+func markdownDisplayMathToHTML(lines []string, idx int, colorful bool) (string, int, bool) {
+	render := func(text string) string {
+		if colorful {
+			text = paperPrepareMath(text)
+		}
+		return transformMathText(text)
+	}
 	trimmed := strings.TrimSpace(lines[idx])
 	if !strings.HasPrefix(trimmed, "$$") {
 		return "", idx, false
 	}
 	if strings.Count(trimmed, "$$") >= 2 && strings.HasSuffix(trimmed, "$$") && len(trimmed) > 4 {
 		inner := strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(trimmed, "$$"), "$$"))
-		return transformMathText(inner), idx, true
+		return render(inner), idx, true
 	}
 	var block []string
 	first := strings.TrimSpace(strings.TrimPrefix(trimmed, "$$"))
@@ -629,14 +795,18 @@ func markdownDisplayMathToHTML(lines []string, idx int) (string, int, bool) {
 			if part != "" {
 				block = append(block, part)
 			}
-			return transformMathText(strings.Join(block, " ")), next, true
+			return render(strings.Join(block, " ")), next, true
 		}
 		block = append(block, part)
 	}
-	return transformMathText(strings.TrimSpace(strings.TrimPrefix(trimmed, "$$"))), idx, true
+	return render(strings.TrimSpace(strings.TrimPrefix(trimmed, "$$"))), idx, true
 }
 
 func renderInlineHTML(text string) string {
+	return renderInlineHTMLMode(text, false)
+}
+
+func renderInlineHTMLMode(text string, colorful bool) string {
 	// Step 1: Extract inline code spans before any other processing.
 	// This prevents math ($...$) and bold/italic from parsing inside code.
 	var codePlaceholders []string
@@ -646,33 +816,318 @@ func renderInlineHTML(text string) string {
 		// Pre-render the code span with its content HTML-escaped
 		rendered := fmt.Sprintf(`<span style="font-family:monospace; background-color:#f3f4f6; padding:1px 3px; font-size:9pt">%s</span>`, escapeHTML(inner))
 		codePlaceholders = append(codePlaceholders, rendered)
-		return fmt.Sprintf("\x1aCODE_%d\x1a", idx) // Use SUB character as sentinel
+		return fmt.Sprintf("\x1aCODE%d\x1a", idx) // Use SUB character as sentinel
 	})
 
+	var urlPlaceholders []string
+	if colorful {
+		text = paperNormalizeLatexLine(text)
+		text = markdownBareURLRe.ReplaceAllStringFunc(text, func(match string) string {
+			target := strings.TrimRight(match, ".,);，。")
+			if target == "" {
+				return match
+			}
+			idx := len(urlPlaceholders)
+			urlPlaceholders = append(urlPlaceholders, fmt.Sprintf(`<a href="%s">%s</a>`, escapeHTMLAttr(target), escapeHTML(target)))
+			return fmt.Sprintf("\x1aURL%d\x1a%s", idx, match[len(target):])
+		})
+	}
+
 	// Step 2: Process math segments on the remaining text (no code spans)
-	text = renderMathSegments(text)
+	text = renderMathSegments(text, colorful)
 
 	// Step 3: HTML-escape the text (protects against injection)
 	text = escapeHTML(text)
+	if colorful {
+		text = paperPrepareMath(text)
+	}
 
 	// Step 4: Restore math-generated HTML tags (<sub>, <sup>, <span>)
 	text = restoreMathHTML(text)
 
 	// Step 5: Process bold and italic
-	text = inlineBoldRe.ReplaceAllString(text, "<b>$1</b>")
-	text = inlineItalicRe.ReplaceAllString(text, "<i>$1</i>")
+	text = applyInlineEmphasis(text)
 
 	// Step 6: Restore code span placeholders
 	for idx, rendered := range codePlaceholders {
-		text = strings.Replace(text, fmt.Sprintf("\x1aCODE_%d\x1a", idx), rendered, 1)
+		text = strings.Replace(text, fmt.Sprintf("\x1aCODE%d\x1a", idx), rendered, 1)
+	}
+	for idx, rendered := range urlPlaceholders {
+		text = strings.Replace(text, fmt.Sprintf("\x1aURL%d\x1a", idx), rendered, 1)
+	}
+	if colorful {
+		text = strings.ReplaceAll(text, "（可能）", `<span style="color:#c2410c"><b>（可能）</b></span>`)
 	}
 
 	return text
 }
 
-func renderMathSegments(text string) string {
+func paperBodyStyle(colorful bool, color string) string {
+	if !colorful || color == "" {
+		return ""
+	}
+	return ` style="color:` + color + `"`
+}
+
+func paperSectionBodyColor(title string) string {
+	switch {
+	case strings.Contains(title, "方法本质"):
+		return "#0f766e"
+	case strings.Contains(title, "原理图"):
+		return "#5b21b6"
+	case strings.Contains(title, "实验"):
+		return "#9a3412"
+	case strings.Contains(title, "数据集"):
+		return "#166534"
+	case strings.Contains(title, "开源"):
+		return "#075985"
+	case strings.Contains(title, "质量"):
+		return "#9f1239"
+	case strings.Contains(title, "网上核对"):
+		return "#b45309"
+	case strings.Contains(title, "方法原理"):
+		return "#1e40af"
+	default:
+		return "#1e3a5f"
+	}
+}
+
+func paperCaptionLine(line string) bool {
+	line = strings.TrimLeft(line, "*_ ")
+	lower := strings.ToLower(line)
+	if strings.HasPrefix(lower, "figure") || strings.HasPrefix(lower, "fig.") || strings.HasPrefix(lower, "fig ") {
+		return true
+	}
+	if !strings.HasPrefix(line, "图") {
+		return false
+	}
+	rest := strings.TrimLeft(strings.TrimPrefix(line, "图"), " ")
+	if rest == "" {
+		return false
+	}
+	r := []rune(rest)[0]
+	return (r >= '0' && r <= '9') || (r >= 'A' && r <= 'Z') || r == '：' || r == ':'
+}
+
+// The base is the whole token. A tail match would turn softmax_i into s + oftmax_i.
+// memory_ehr stays plain because the mark after the underscore is more than one letter.
+var paperWordSubRe = regexp.MustCompile(`(^|[^A-Za-z0-9α-ωΑ-Ω])([A-Za-zα-ωΑ-Ω]{1,12})_([A-Za-zα-ωΑ-Ω])([^A-Za-z0-9α-ωΑ-Ω]|$)`)
+var paperDigitSubRe = regexp.MustCompile(`(^|[^A-Za-z0-9α-ωΑ-Ω])([A-Za-zα-ωΑ-Ω]{1,12})_([0-9]{1,2})([^0-9]|$)`)
+var paperBraceSubRe = regexp.MustCompile(`(^|[^A-Za-z0-9α-ωΑ-Ω])([A-Za-zα-ωΑ-Ω]{1,12})_\{([^{}]+)\}`)
+
+func paperInlineSubscript(text string) string {
+	text = paperWordSubRe.ReplaceAllString(text, `$1$2<sub>$3</sub>$4`)
+	return paperDigitSubRe.ReplaceAllString(text, `$1$2<sub>$3</sub>$4`)
+}
+
+func paperPrepareMath(text string) string {
+	text = paperBraceSubRe.ReplaceAllString(text, `$1$2<sub>$3</sub>`)
+	return paperInlineSubscript(text)
+}
+
+func renderColorfulFormulaLine(line, bodyColor string) (string, bool) {
+	// Recognition looks for → and ≠. A line written with \to or \neq stays
+	// ordinary prose unless those commands are glyphs first.
+	line = paperNormalizeLatexLine(line)
+	parts := attachPaperFormulaPunct(splitPaperFormula(line))
+	found := false
+	for _, part := range parts {
+		if part.formula {
+			found = true
+			break
+		}
+	}
+	if !found {
+		return "", false
+	}
+	var b strings.Builder
+	for _, part := range parts {
+		text := strings.TrimSpace(part.text)
+		if text == "" {
+			continue
+		}
+		if part.formula {
+			b.WriteString(fmt.Sprintf(`<p style="text-align:center; font-size:12pt; color:#6d28d9">%s</p>`, renderInlineHTMLMode(text, true)))
+			continue
+		}
+		b.WriteString(fmt.Sprintf("<p%s>%s</p>", paperBodyStyle(true, bodyColor), renderInlineHTMLMode(text, true)))
+	}
+	return b.String(), true
+}
+
+type paperFormulaPart struct {
+	text    string
+	formula bool
+}
+
+func splitPaperFormula(line string) []paperFormulaPart {
+	rs := []rune(line)
+	var parts []paperFormulaPart
+	var text strings.Builder
+	flush := func() {
+		if text.Len() == 0 {
+			return
+		}
+		parts = append(parts, paperFormulaPart{text: text.String()})
+		text.Reset()
+	}
+	i := 0
+	for i < len(rs) {
+		if !paperFormulaRune(rs[i]) {
+			text.WriteRune(rs[i])
+			i++
+			continue
+		}
+		j := i + 1
+		for j < len(rs) && paperFormulaRune(rs[j]) {
+			j++
+		}
+		chunk := string(rs[i:j])
+		trimmed := strings.TrimLeft(chunk, " \t:")
+		lead := chunk[:len(chunk)-len(trimmed)]
+		span := strings.TrimRight(trimmed, " \t:")
+		trail := trimmed[len(span):]
+		if paperFormulaSpanOK(span) {
+			text.WriteString(lead)
+			flush()
+			parts = append(parts, paperFormulaPart{text: span, formula: true})
+			text.WriteString(trail)
+		} else {
+			text.WriteString(chunk)
+		}
+		i = j
+	}
+	flush()
+	return parts
+}
+
+func attachPaperFormulaPunct(parts []paperFormulaPart) []paperFormulaPart {
+	for i := 1; i < len(parts); i++ {
+		if !parts[i-1].formula || parts[i].formula {
+			continue
+		}
+		punct, rest := peelPaperLeadPunct(parts[i].text)
+		if punct == "" {
+			continue
+		}
+		parts[i-1].text += punct
+		parts[i].text = rest
+	}
+	return parts
+}
+
+func peelPaperLeadPunct(s string) (string, string) {
+	rs := []rune(s)
+	i := 0
+	for i < len(rs) && (rs[i] == ' ' || rs[i] == '\t') {
+		i++
+	}
+	start := i
+	for i < len(rs) && strings.ContainsRune("。；！？", rs[i]) {
+		i++
+	}
+	if i == start {
+		return "", s
+	}
+	return string(rs[start:i]), string(rs[i:])
+}
+
+func paperFormulaRune(r rune) bool {
+	if r >= 0x4E00 && r <= 0x9FFF {
+		return false
+	}
+	switch r {
+	case '。', '；', '！', '？', '，', '、', '（', '）', '：', '「', '」', '“', '”':
+		return false
+	default:
+		return true
+	}
+}
+
+func paperFormulaSpanOK(span string) bool {
+	span = strings.TrimSpace(span)
+	if len([]rune(span)) < 8 {
+		return false
+	}
+	if strings.Contains(span, "http://") || strings.Contains(span, "https://") {
+		return false
+	}
+	if !strings.Contains(span, "=") && !strings.Contains(span, "→") && !strings.Contains(span, "≠") {
+		return false
+	}
+	// _{...} is a subscript mark. Counting only q_j left W_{\theta}(x_{t}) inline.
+	marks := len(paperWordSubRe.FindAllString(span, -1)) + len(paperDigitSubRe.FindAllString(span, -1)) + len(paperBraceSubRe.FindAllString(span, -1))
+	return marks >= 2
+}
+
+func paperNormalizeLatexLine(text string) string {
+	text = stripLatexDelimiters(text)
+	text = strings.ReplaceAll(text, `\{`, `{`)
+	text = strings.ReplaceAll(text, `\}`, `}`)
+	return latexSymbolReplacer.Replace(text)
+}
+
+func stripLatexDelimiters(text string) string {
+	// Longer forms first. \left| is a prefix of \left\|.
+	for _, pair := range []struct{ old, new string }{
+		{`\left\|`, `|`}, {`\right\|`, `|`},
+		{`\left\{`, `{`}, {`\left\}`, `}`}, {`\right\{`, `{`}, {`\right\}`, `}`},
+		{`\left\[`, `[`}, {`\left\]`, `]`}, {`\right\[`, `[`}, {`\right\]`, `]`},
+		{`\left(`, `(`}, {`\left[`, `[`}, {`\left|`, `|`}, {`\left.`, ``},
+		{`\right)`, `)`}, {`\right]`, `]`}, {`\right|`, `|`}, {`\right.`, ``},
+	} {
+		text = strings.ReplaceAll(text, pair.old, pair.new)
+	}
+	return text
+}
+
+func markdownHeadingPrefix(trimmed string) (string, bool) {
+	for _, prefix := range []string{"##### ", "#### ", "### ", "## ", "# "} {
+		if strings.HasPrefix(trimmed, prefix) {
+			return prefix, true
+		}
+	}
+	return "", false
+}
+
+func markdownHeadingPresentation(prefix string, colorful bool, h2Index int) (size, color string) {
+	switch prefix {
+	case "##### ":
+		size, color = "8.5pt", "#4b5563"
+		if colorful {
+			color = "#c2410c"
+		}
+	case "#### ":
+		size, color = "9.5pt", "#374151"
+		if colorful {
+			color = "#7c3aed"
+		}
+	case "### ":
+		size, color = "11pt", "#2c3e50"
+		if colorful {
+			color = "#0f766e"
+		}
+	case "## ":
+		size, color = "13pt", "#1a1a2e"
+		if colorful {
+			size = "14pt"
+			color = colorfulH2Colors[h2Index%len(colorfulH2Colors)]
+		}
+	default:
+		size, color = "15pt", "#0f3460"
+		if colorful {
+			color = "#1d4ed8"
+		}
+	}
+	return size, color
+}
+
+func renderMathSegments(text string, colorful bool) string {
 	return inlineMathSegmentRe.ReplaceAllStringFunc(text, func(segment string) string {
 		inner := strings.TrimSuffix(strings.TrimPrefix(segment, "$"), "$")
+		if colorful {
+			inner = paperPrepareMath(inner)
+		}
 		return transformMathText(inner)
 	})
 }
@@ -682,24 +1137,7 @@ func transformMathText(text string) string {
 	if text == "" {
 		return ""
 	}
-	text = strings.ReplaceAll(text, `\left(`, `(`)
-	text = strings.ReplaceAll(text, `\left[`, `[`)
-	text = strings.ReplaceAll(text, `\left|`, `|`)
-	text = strings.ReplaceAll(text, `\left.`, ``)
-	text = strings.ReplaceAll(text, `\left\{`, `{`)
-	text = strings.ReplaceAll(text, `\left\}`, `}`)
-	text = strings.ReplaceAll(text, `\left\[`, `[`)
-	text = strings.ReplaceAll(text, `\left\]`, `]`)
-	text = strings.ReplaceAll(text, `\left\|`, `|`)
-	text = strings.ReplaceAll(text, `\right)`, `)`)
-	text = strings.ReplaceAll(text, `\right]`, `]`)
-	text = strings.ReplaceAll(text, `\right|`, `|`)
-	text = strings.ReplaceAll(text, `\right.`, ``)
-	text = strings.ReplaceAll(text, `\right\{`, `{`)
-	text = strings.ReplaceAll(text, `\right\}`, `}`)
-	text = strings.ReplaceAll(text, `\right\[`, `[`)
-	text = strings.ReplaceAll(text, `\right\]`, `]`)
-	text = strings.ReplaceAll(text, `\right\|`, `|`)
+	text = stripLatexDelimiters(text)
 	text = strings.ReplaceAll(text, `\{`, `{`)
 	text = strings.ReplaceAll(text, `\}`, `}`)
 	text = strings.ReplaceAll(text, `\[`, `[`)
@@ -748,7 +1186,10 @@ func transformMathText(text string) string {
 	} {
 		text = regexp.MustCompile(re.pattern).ReplaceAllString(text, re.repl)
 	}
-	for _, env := range []struct{ pattern string; fn func(string) string }{
+	for _, env := range []struct {
+		pattern string
+		fn      func(string) string
+	}{
 		{`\\begin\{cases\}([\s\S]*?)\\end\{cases\}`, transformCasesEnvironment},
 		{`\\begin\{aligned\}([\s\S]*?)\\end\{aligned\}`, transformAlignedEnvironment},
 		{`\\begin\{align\*?\}([\s\S]*?)\\end\{align\*?\}`, transformAlignedEnvironment},
@@ -818,13 +1259,27 @@ func replaceFractions(text string) string {
 	}
 }
 
-func transformMatrixEnvironment(expr string) string { return formatMatrixRows(stripMathEnvironment(expr, "bmatrix", "pmatrix"), "[", "]") }
-func transformPlainMatrixEnvironment(expr string) string { return "matrix" + formatMatrixRows(stripMathEnvironment(expr, "matrix"), "[", "]") }
-func transformSmallMatrixEnvironment(expr string) string { return "smallmatrix" + formatMatrixRows(stripMathEnvironment(expr, "smallmatrix"), "[", "]") }
-func transformParenMatrixEnvironment(expr string) string { return formatMatrixRows(stripMathEnvironment(expr, "pmatrix"), "(", ")") }
-func transformBraceMatrixEnvironment(expr string) string { return "brace" + formatMatrixRows(stripMathEnvironment(expr, "Bmatrix"), "[", "]") }
-func transformDeterminantEnvironment(expr string) string { return "det" + formatMatrixRows(stripMathEnvironment(expr, "vmatrix"), "[", "]") }
-func transformNormEnvironment(expr string) string { return "norm" + formatMatrixRows(stripMathEnvironment(expr, "Vmatrix"), "[", "]") }
+func transformMatrixEnvironment(expr string) string {
+	return formatMatrixRows(stripMathEnvironment(expr, "bmatrix", "pmatrix"), "[", "]")
+}
+func transformPlainMatrixEnvironment(expr string) string {
+	return "matrix" + formatMatrixRows(stripMathEnvironment(expr, "matrix"), "[", "]")
+}
+func transformSmallMatrixEnvironment(expr string) string {
+	return "smallmatrix" + formatMatrixRows(stripMathEnvironment(expr, "smallmatrix"), "[", "]")
+}
+func transformParenMatrixEnvironment(expr string) string {
+	return formatMatrixRows(stripMathEnvironment(expr, "pmatrix"), "(", ")")
+}
+func transformBraceMatrixEnvironment(expr string) string {
+	return "brace" + formatMatrixRows(stripMathEnvironment(expr, "Bmatrix"), "[", "]")
+}
+func transformDeterminantEnvironment(expr string) string {
+	return "det" + formatMatrixRows(stripMathEnvironment(expr, "vmatrix"), "[", "]")
+}
+func transformNormEnvironment(expr string) string {
+	return "norm" + formatMatrixRows(stripMathEnvironment(expr, "Vmatrix"), "[", "]")
+}
 
 func transformArrayEnvironment(expr string) string {
 	content := stripMathEnvironmentWithSpec(expr, "array")
@@ -946,14 +1401,37 @@ func restoreMathHTML(text string) string {
 }
 
 func inlineMD(text string) string {
-	// Inline code must be processed first to protect its content from bold/italic
+	// Code is taken out before emphasis. Otherwise ** inside `code` is seen
+	// as bold and the span tag gets cut in half.
+	var codes []string
 	text = inlineCodeRe.ReplaceAllStringFunc(text, func(match string) string {
-		inner := match[1 : len(match)-1] // strip backticks
-		return fmt.Sprintf(`<span style="font-family:monospace; background-color:#f3f4f6; padding:1px 3px; font-size:9pt">%s</span>`, inner)
+		inner := match[1 : len(match)-1]
+		codes = append(codes, fmt.Sprintf(`<span style="font-family:monospace; background-color:#f3f4f6; padding:1px 3px; font-size:9pt">%s</span>`, inner))
+		return fmt.Sprintf("\x1aC%d\x1a", len(codes)-1)
 	})
-	text = inlineBoldRe.ReplaceAllString(text, "<b>$1</b>")
-	text = inlineItalicRe.ReplaceAllString(text, "<i>$1</i>")
+	text = applyInlineEmphasis(text)
+	for i, rendered := range codes {
+		text = strings.Replace(text, fmt.Sprintf("\x1aC%d\x1a", i), rendered, 1)
+	}
 	return text
+}
+
+// applyInlineEmphasis turns **bold**, __bold__, and *italic* into tags.
+//
+// Star bold runs before underscore bold, so __**粗**__ does not keep the
+// stars. A single "_" is left alone: file_name and Qwen2.5 are not emphasis.
+func applyInlineEmphasis(text string) string {
+	text = inlineStarBoldRe.ReplaceAllString(text, "<b>$1</b>")
+	text = inlineUnderscoreBoldRe.ReplaceAllString(text, "<b>$1</b>")
+	text = inlineItalicRe.ReplaceAllString(text, "<i>$1</i>")
+	return inlineLinkRe.ReplaceAllStringFunc(text, func(match string) string {
+		parts := inlineLinkRe.FindStringSubmatch(match)
+		if len(parts) != 4 {
+			return match
+		}
+		href := strings.ReplaceAll(parts[3], `"`, "&quot;")
+		return parts[1] + `<a href="` + href + `">` + parts[2] + `</a>`
+	})
 }
 
 func escapeHTML(s string) string {

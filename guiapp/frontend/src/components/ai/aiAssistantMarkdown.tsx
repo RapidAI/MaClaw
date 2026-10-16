@@ -1,0 +1,1919 @@
+import React from "react";
+import katex from "katex";
+import "katex/dist/katex.min.css";
+import { OpenFileOrShowInFolder, ShowItemInFolder } from "../../../wailsjs/go/main/App";
+import { BrowserOpenURL } from "../../../wailsjs/runtime";
+import type { ChatAction, ChatConfirmation, ChatMessage, ChatRecoverableSession, ChatUnfinishedSlot } from "./useAIAssistant";
+import { renderCodingAgentProgressStatus } from "./CodingAgentProgressStatus";
+import { attachBareHeadingMarkers, normalizeInlineListMarkers } from "./aiAssistantMarkdownNormalize";
+import { buildMarkdownTableModel, isMarkdownTableRow, isMarkdownTableSeparatorRow, normalizeMarkdownTableLine, parseMarkdownTableCells, repairMixedNarrativeTable } from "./aiAssistantMarkdownTable";
+import { assistantSpeakerLabel, localizeAIAssistantError, describeAIAssistantError, localizeText } from "./aiAssistantI18n";
+import { renderConfirmationCard, type ConfirmationCardDeps } from "./confirmationCard";
+import { cloudSafePathLabel, cloudWorkspaceRootFromPath, isCloudWorkspaceFilePath, isCloudWorkspacePath, REVEAL_CLOUD_WORKSPACE_FILES_EVENT } from "./codingTaskMode";
+import { baseInputBtnStyle, type Theme } from "./aiAssistantPanelTheme";
+import { ChatBubbleFrame, CHAT_SPEAKER_LABEL_GAP, userChatBubbleBackground } from "./ChatBubbleFrame";
+import { renderScreenshotPreview } from "./aiAssistantMarkdownMedia";
+import { userTurnDisplayView } from "./userTurnDisplay";
+import { getWailsAppModule } from "../../utils/wailsAppModule";
+import { isBrowserEchoFieldLabel, stripRolePrefixForDisplay } from "./rolePrefixDisplay";
+import { stripCodingAgentAuditSections } from "./codingAgentUserFinish";
+import { cleanReasoningTrailForBody, visibleAssistantReplyForMessage } from "./assistantReasoningBody";
+import { completedAssistantSummary, assistantTaskSettledIncomplete, isProgressOnlyToolAction, parseAssistantToolStatus, stripAssistantToolCallMarkers } from "./assistantToolCall";
+import { AssistantToolCallRow, renderAssistantBodyWithToolCalls } from "./assistantToolCallRow";
+import { TaskResultArtifacts } from "./assistantTaskArtifacts";
+import {
+    prepareChatBodyForDisplay,
+    prepareChatBodyLines,
+    splitTextByPictographClusters,
+    textMayContainPictograph,
+    type InlineMarkVisual,
+} from "./aiAssistantProgressUtils";
+import {
+    leadingIndentColumns,
+    orderedListIndentPadding,
+    orderedListMarkerLayoutStyle,
+    parseOrderedListLine,
+} from "./orderedListMarkdown";
+import { AssistantReplyCopyButton } from "./AssistantReplyCopyButton";
+import { IconBolt, IconSearch, IconStar, StatusGlyph } from "./WorkbenchIcons";
+import {
+    RecordingSessionCard,
+    type RecordingCompleteResult,
+} from "./RecordingSessionCard";
+import { AssistantMermaidDiagram, isMermaidCodeFence } from "./AssistantMermaidDiagram";
+import {
+    CODE_FENCE_FONT,
+    chatCodeLangStyle,
+    chatCodeWellStyle,
+    codeFenceInnerStyle,
+    codeFenceScrollStyle,
+    codeFenceScrollUnderLangStyle,
+    reasoningCodeBlockStyle,
+    reasoningCodeLangStyle,
+} from "./assistantCodeFence";
+import { UserAttachmentChip } from "./UserAttachmentChip";
+import { AssistantReasoningPanel } from "./AssistantReasoningPanel";
+import { isSafeKBImageDataURL, KB_IMAGE_MARKER_RE } from "./kbImageValidation";
+
+import { assistantLiveActivityLabel } from "./assistantLiveActivity";
+
+export type { Theme } from "./aiAssistantPanelTheme";
+export type { RecordingCompleteResult } from "./RecordingSessionCard";
+export { AssistantReplyCopyButton, copyTextToClipboard } from "./AssistantReplyCopyButton";
+
+/**
+ * Build the plain-text payload for "copy reply": same body the user sees,
+ * without decorative role prefixes. Does not include collapsed "thinking" text.
+ */
+export function buildAssistantReplyCopyText(
+    content: string | undefined,
+    unfinishedSlot?: ChatUnfinishedSlot,
+    lang = "en",
+): string {
+    const raw = stripCodingAgentAuditSections(prepareChatBodyForDisplay(
+        formatUnfinishedSlotNotice(stripAssistantToolCallMarkers(content || ""), unfinishedSlot, lang),
+    ));
+    return stripRolePrefixForDisplay(raw || "").replace(/\s+$/u, "");
+}
+
+/* Themed inline markdown rendering */
+const pathQuoteCharsPattern = /[`'"\u2018\u2019\u201c\u201d]/;
+const pathLeadingWrappingPattern = /^[`'"\u2018\u2019\u201c\u201d]+/;
+const pathTrailingPunctuationPattern = /[\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]+$/;
+const pathTrailingWrappingPattern = /[`'"\u2018\u2019\u201c\u201d]+$/;
+const pathTrailingWrapperPunctuationPattern = /([`'"\u2018\u2019\u201c\u201d])[\s.,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]+$/;
+const inlineWrapStyle: React.CSSProperties = { overflowWrap: "break-word" };
+const blockWrapStyle: React.CSSProperties = { minWidth: 0, ...inlineWrapStyle };
+/** Inline SVG status/star marks sit on the text baseline without looking like chat emoji. */
+const inlineGlyphWrapStyle: React.CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    verticalAlign: "text-bottom",
+    margin: "0 2px",
+    lineHeight: 0,
+};
+
+function renderInlineMarkGlyph(visual: InlineMarkVisual, key: React.Key): React.ReactNode {
+    if (visual.kind === "star") {
+        return (
+            <span key={key} data-testid="inline-star-glyph" style={inlineGlyphWrapStyle} aria-hidden>
+                <IconStar size={13} color="var(--theme-warning, #d97706)" filled />
+            </span>
+        );
+    }
+    if (visual.kind === "bolt") {
+        return (
+            <span key={key} data-testid="inline-bolt-glyph" style={inlineGlyphWrapStyle} aria-hidden>
+                <IconBolt size={13} color="var(--theme-success, #16a34a)" />
+            </span>
+        );
+    }
+    return (
+        <span key={key} data-testid="inline-status-glyph" data-status={visual.status} style={inlineGlyphWrapStyle} aria-hidden>
+            <StatusGlyph kind={visual.status} size={14} />
+        </span>
+    );
+}
+
+/**
+ * Expand plain text: semantic pictographs → SVG glyphs; residual decorative clusters omitted.
+ * Used for prose, table cells, bold/italic inners (not fenced code / inline code).
+ */
+function expandPlainTextWithIcons(text: string, keyPrefix: string): React.ReactNode[] {
+    if (!text) return [];
+    if (!textMayContainPictograph(text)) return [text];
+    const segments = splitTextByPictographClusters(text);
+    const out: React.ReactNode[] = [];
+    let i = 0;
+    for (const seg of segments) {
+        if (typeof seg === "string") {
+            if (seg) out.push(seg);
+            continue;
+        }
+        out.push(renderInlineMarkGlyph(seg.visual, `${keyPrefix}-mk-${i++}`));
+    }
+    return out;
+}
+
+/** Push plain text into parts, expanding status/star marks to SVG. */
+function pushPlainText(parts: React.ReactNode[], text: string, keyPrefix: string, keyRef: { n: number }): void {
+    if (!text) return;
+    if (!textMayContainPictograph(text)) {
+        parts.push(text);
+        return;
+    }
+    for (const node of expandPlainTextWithIcons(text, `${keyPrefix}-${keyRef.n++}`)) {
+        parts.push(node);
+    }
+}
+
+function stripPathWrapping(s: string): string {
+    let value = s.trim();
+    let previous = "";
+    while (value !== previous) {
+        previous = value;
+        value = value.replace(pathLeadingWrappingPattern, "");
+        value = value.replace(pathTrailingWrapperPunctuationPattern, "$1");
+        value = value.replace(pathTrailingPunctuationPattern, "");
+        value = value.replace(pathTrailingWrappingPattern, "");
+    }
+    return value;
+}
+
+function isPathQuoteChar(value: string): boolean {
+    return value.length === 1 && pathQuoteCharsPattern.test(value);
+}
+
+function looksLikeFilePath(s: string): boolean {
+    const value = stripPathWrapping(s);
+    if (/^[A-Za-z]:\\/.test(value)) return true;
+    if (/^(~|\/(?:Users|home|tmp|var|opt|etc|usr))[/\\]/.test(value)) return true;
+    return false;
+}
+/**
+ * Extract a file path from a string that may contain a path with surrounding noise.
+ * Uses the same patterns as the inline regex path groups to find the path substring.
+ */
+function extractPathFromContent(s: string): string | null {
+    // Home paths accept both ~/… and ~\… (Windows-style portable paths).
+    const m = s.match(/([A-Za-z]:\\[^\n\r*?"<>|,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|:,\u3000-\u303f\uff00-\uffef]+\.\w+)|([A-Za-z]:\\[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef\\])|((~[/\\]|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:,\u3000-\u303f\uff00-\uffef]+\.\w+)|((~[/\\]|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-\\]+)/);
+    return m ? m[0] : null;
+}
+
+function renderPathLink(filePath: string, key: number, t: Theme): React.ReactNode {
+    const display = stripPathWrapping(filePath);
+    const label = cloudSafePathLabel(display);
+    const style: React.CSSProperties = {
+        color: t.pathColor,
+        textDecoration: "underline",
+        textDecorationStyle: "dotted",
+        textUnderlineOffset: "2px",
+        cursor: "pointer",
+        ...inlineWrapStyle,
+    };
+    return (
+        <a key={key}
+           href="#"
+           onClick={(event) => openFileInFolder(event, display)}
+           style={style}
+           title={label}
+        >{label}</a>
+    );
+}
+// CJK exclusion ranges used in path-detection regexes below:
+//   \u3000-\u303f  CJK symbols & punctuation (、。「」【】)
+//   \u4e00-\u9fff  CJK unified ideographs (common Chinese/Japanese/Korean characters)
+//   \uff00-\uffef  fullwidth forms (，。（）：！etc)
+// These prevent path regexes from greedily matching through Chinese text.
+//
+// EXCEPTION: Groups anchored by a file extension (`.ext` at the end) ALLOW CJK ideographs
+// (\u4e00-\u9fff) in the path, but still exclude CJK punctuation (\u3000-\u303f) and
+// fullwidth forms (\uff00-\uffef). The extension provides a reliable termination point,
+// and CJK punctuation serves as natural sentence delimiters in Chinese text.
+// Only directory groups (ending with `\`) and bare groups (no anchor) exclude ALL CJK.
+// Windows paths + home/Unix paths (with extension OR bare dir like ~/.maclaw/workspace/).
+const codeBlockPathPattern = /([A-Za-z]:\\[^\n\r*?"<>|,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|:,\u3000-\u303f\uff00-\uffef]+\.\w+)|((~[/\\]|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:,\u3000-\u303f\uff00-\uffef]+\.\w+)|((~[/\\]|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-\\]+)/g;
+function renderCodePathLink(filePath: string, key: string, t: Theme): React.ReactNode {
+    const display = stripPathWrapping(filePath);
+    const label = cloudSafePathLabel(display);
+    return <a key={key} href="#" onClick={(event) => openFileInFolder(event, display)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer" }} title={label}>{label}</a>;
+}
+/** Unix path groups are `/Users/` `/home/` `/tmp/` `/var/` `/opt/` `/etc/` `/usr/`. */
+function textHasUnixAbsPathPrefix(text: string): boolean {
+    return text.includes("/Users/")
+        || text.includes("/home/")
+        || text.includes("/tmp/")
+        || text.includes("/var/")
+        || text.includes("/opt/")
+        || text.includes("/etc/")
+        || text.includes("/usr/");
+}
+
+/**
+ * Path regexes match a backslash, `~/` / `~\`, or a Unix abs prefix.
+ * A bare `/` (as in `a/b`) is not enough. Inline markup adds backticks,
+ * `*emphasis*`, and `[label](url)`.
+ */
+function textHasMarkdownTrigger(text: string, includeInlineMarkup: boolean): boolean {
+    let slash = false;
+    for (let i = 0; i < text.length; i++) {
+        const c = text.charCodeAt(i);
+        if (c === 0x5c || (includeInlineMarkup && (c === 0x60 || c === 0x2a || c === 0x5b))) return true;
+        if (c === 0x7e) {
+            const next = text.charCodeAt(i + 1);
+            if (next === 0x2f || next === 0x5c) return true;
+        } else if (c === 0x2f) {
+            slash = true;
+        }
+    }
+    return slash && textHasUnixAbsPathPrefix(text);
+}
+
+function renderCodeBlockText(text: string, t: Theme): React.ReactNode[] {
+    if (!text) return [];
+    if (!textHasMarkdownTrigger(text, false)) return [text];
+    const parts: React.ReactNode[] = [];
+    let lastIndex = 0;
+    let idx = 0;
+    const removeTrailingQuoteFromPreviousText = () => {
+        const last = parts[parts.length - 1];
+        if (typeof last !== "string") return;
+        parts[parts.length - 1] = last.replace(pathTrailingWrappingPattern, "");
+    };
+    codeBlockPathPattern.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = codeBlockPathPattern.exec(text)) !== null) {
+        if (match.index > lastIndex) parts.push(text.slice(lastIndex, match.index));
+        const raw = match[0];
+        const nextChar = text[codeBlockPathPattern.lastIndex] || "";
+        if (isPathQuoteChar(text[match.index - 1] || "") && isPathQuoteChar(nextChar)) {
+            removeTrailingQuoteFromPreviousText();
+            codeBlockPathPattern.lastIndex += 1;
+        }
+        const display = stripPathWrapping(raw);
+        if (display.length !== raw.length) codeBlockPathPattern.lastIndex -= raw.length - display.length;
+        parts.push(renderCodePathLink(display, "code-path-" + idx++, t));
+        lastIndex = codeBlockPathPattern.lastIndex;
+    }
+    if (lastIndex < text.length) parts.push(text.slice(lastIndex));
+    return parts;
+}
+function renderInlineMarkdownRestored(text: string, t: Theme, quietCode = false): React.ReactNode[] {
+    if (!text) return ["\u00A0"];
+    if (!textHasMarkdownTrigger(text, true)) {
+        // Same shape as a regex miss: pictographs still expand, clean prose stays one string.
+        const plain: React.ReactNode[] = [];
+        pushPlainText(plain, text, "t", { n: 0 });
+        return plain.length > 0 ? plain : ["\u00A0"];
+    }
+    const parts: React.ReactNode[] = [];
+    // Priority order matters:
+    // 1. Backtick-wrapped content containing a file path (detected via path pattern inside backticks)
+    // 2. Generic backtick inline code
+    // 3. Bold, italic, links
+    // 4. Bare file paths
+    //
+    // Mechanism: Instead of matching all backtick content with one group then guessing if it's a path,
+    // we match "backtick containing a path" as a SEPARATE higher-priority group. The regex engine
+    // guarantees alternation order = priority. This eliminates the need for post-match heuristics.
+    //
+    // Bare path groups (7-12):
+    //   Group 7: Windows dir — ends with \ (e.g. C:\Users\test\)     — allows internal spaces, excludes CJK
+    //   Group 8: Windows file — ends with .ext (e.g. C:\file.txt)    — allows CJK ideographs, excludes CJK punctuation/fullwidth
+    //   Group 9: Windows bare — no \ or .ext anchor (e.g. D:\game2)  — NO spaces, excludes CJK
+    //   Group 10-11: Home/Unix file — ends with .ext (e.g. ~/file.txt or ~\file.txt)
+    //   Group 12-13: Home/Unix bare — e.g. ~/projects or ~\.maclaw\workspace
+    const re = /(`[^`]*[A-Za-z]:\\[^`]+`)|(`[^`]*(?:~[/\\]|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^`]+`)|(`[^`]+`)|(\*\*[^*]+\*\*)|(\*[^\s*][^*]*?\*)|(\[[^\]]+\]\([^)]+\))|([A-Za-z]:\\[^\n\r*?"<>|,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+\\)(?=[`'"\u2018\u2019\u201c\u201d\s,;:!?\u3002\uff0c\uff1b\uff1a\uff01\uff1f\uff09\]]|$)|([A-Za-z]:\\[^\n\r*?"<>|:,\u3000-\u303f\uff00-\uffef]+\.\w+)|([A-Za-z]:\\[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef]+[^\n\r\s*?"<>|:,\u3000-\u303f\u4e00-\u9fff\uff00-\uffef\\])(?=[\s,;:!?\u3000-\u303f\u4e00-\u9fff\uff00-\uffef`'"\u2018\u2019\u201c\u201d()\[\]]|$)|((~[/\\]|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[^\n\r*?"<>|:,\u3000-\u303f\uff00-\uffef]+\.\w+)|((~[/\\]|\/(?:Users|home|tmp|var|opt|etc|usr)\/)[\w/.\-\\]+)/g;
+    let lastIndex = 0;
+    let idx = 0;
+    const keyRef = { n: 0 };
+    const removeTrailingQuoteFromPreviousText = () => {
+        const last = parts[parts.length - 1];
+        if (typeof last !== "string") return;
+        parts[parts.length - 1] = last.replace(pathTrailingWrappingPattern, "");
+    };
+    while (true) {
+        const match = re.exec(text);
+        if (!match) break;
+        if (match.index > lastIndex) pushPlainText(parts, text.slice(lastIndex, match.index), "t", keyRef);
+        const m = match[0];
+        if (match[1] || match[2]) {
+            // Backtick-wrapped content that contains a file path pattern.
+            // Distinguish "content IS a path" from "content CONTAINS a path as a substring".
+            // If the extracted path covers at least 70% of the inner content, the content's primary
+            // purpose is to denote a file path. Otherwise it's code that happens to mention a path.
+            const inner = m.slice(1, -1);
+            const path = extractPathFromContent(inner);
+            if (path && path.length >= inner.trimStart().length * 0.7) {
+                parts.push(renderPathLink(path, idx++, t));
+            } else {
+                // Path is a minor substring; render as inline code (keep raw; no emoji swap in code).
+                parts.push(<code key={idx++} style={inlineCodeChipStyle(t, quietCode)}>{inner}</code>);
+            }
+        } else if (match[3]) {
+            // Generic inline code (no path inside) — preserve source glyphs inside code.
+            const inner = m.slice(1, -1);
+            parts.push(<code key={idx++} style={inlineCodeChipStyle(t, quietCode)}>{inner}</code>);
+        } else if (match[4]) {
+            // Bold
+            const inner = m.slice(2, -2);
+            if (looksLikeFilePath(inner)) {
+                parts.push(renderPathLink(inner, idx++, t));
+            } else if (inner.startsWith("`") && inner.endsWith("`") && inner.length > 2) {
+                // Bold-wrapped inline code: **`code`** → render as bold code (strip backticks)
+                const codeContent = inner.slice(1, -1);
+                parts.push(<code key={idx++} style={inlineCodeChipStyle(t, quietCode, { fontWeight: 700 })}>{codeContent}</code>);
+            } else {
+                parts.push(
+                    <strong key={idx++} style={{ color: t.boldColor, fontWeight: 700, ...inlineWrapStyle }}>
+                        {expandPlainTextWithIcons(inner, `b-${keyRef.n++}`)}
+                    </strong>,
+                );
+            }
+        } else if (match[5]) {
+            const inner = m.slice(1, -1);
+            if (inner.startsWith("`") && inner.endsWith("`") && inner.length > 2) {
+                // Italic-wrapped inline code: *`code`* → render as italic code (strip backticks)
+                const codeContent = inner.slice(1, -1);
+                parts.push(<code key={idx++} style={inlineCodeChipStyle(t, quietCode, { fontStyle: "italic" })}>{codeContent}</code>);
+            } else {
+                parts.push(
+                    <em key={idx++} style={{ color: t.italicColor, ...inlineWrapStyle }}>
+                        {expandPlainTextWithIcons(inner, `i-${keyRef.n++}`)}
+                    </em>,
+                );
+            }
+        } else if (match[6]) {
+            const lm = m.match(/^\[([^\]]+)\]\(([^)]+)\)$/);
+            if (lm) {
+                const href = lm[2];
+                const label = expandPlainTextWithIcons(lm[1], `a-${keyRef.n++}`);
+                if (/^https?:\/\//i.test(href)) {
+                    parts.push(<a key={idx++} href="#" onClick={(e) => { e.preventDefault(); BrowserOpenURL(href); }} style={{ color: t.linkColor, textDecoration: "underline", cursor: "pointer", ...inlineWrapStyle }}>{label}</a>);
+                } else if (looksLikeFilePath(href)) {
+                    const filePath = stripPathWrapping(href);
+                    parts.push(<a key={idx++} href="#" onClick={(event) => openFileInFolder(event, filePath)} style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer", ...inlineWrapStyle }} title={cloudSafePathLabel(filePath)}>{label}</a>);
+                } else {
+                    parts.push(<span key={idx++} style={{ color: t.linkColor, ...inlineWrapStyle }}>{label}</span>);
+                }
+            } else {
+                pushPlainText(parts, m, "t", keyRef);
+            }
+        } else if (match[7] || match[8] || match[9] || match[10] || match[12]) {
+            const nextChar = text[re.lastIndex] || "";
+            if (isPathQuoteChar(text[match.index - 1] || "") && isPathQuoteChar(nextChar)) {
+                removeTrailingQuoteFromPreviousText();
+                re.lastIndex += 1;
+            }
+            const filePath = stripPathWrapping(m);
+            if (filePath.length !== m.length) re.lastIndex -= (m.length - filePath.length);
+            parts.push(renderPathLink(filePath, idx++, t));
+        }
+        lastIndex = re.lastIndex;
+    }
+    if (lastIndex < text.length) pushPlainText(parts, text.slice(lastIndex), "t", keyRef);
+    return parts.length > 0 ? parts : ["\u00A0"];
+}
+
+type InlineMathSegment =
+    | { kind: "text"; value: string }
+    | { kind: "math"; value: string };
+
+function isEscapedAt(text: string, index: number): boolean {
+    let slashCount = 0;
+    for (let cursor = index - 1; cursor >= 0 && text[cursor] === "\\"; cursor--) slashCount++;
+    return slashCount % 2 === 1;
+}
+
+function isInlineMathBoundaryBefore(text: string, index: number): boolean {
+    const previous = text[index - 1] || "";
+    // TeX delimiters do not begin in the middle of identifiers, prices, or a
+    // word such as `US$`. This also prevents a lone closing dollar in prose from
+    // swallowing a later formula.
+    // Chinese prose commonly omits the space before a formula ("令$x$...").
+    // Treat Han characters as natural prose boundaries while keeping `$` inside
+    // Latin identifiers (for example `price$USD`) untouched.
+    return !previous || !/[\p{L}\p{N}_]/u.test(previous) || /\p{Script=Han}/u.test(previous);
+}
+
+function isInlineMathBoundaryAfter(text: string, index: number): boolean {
+    const next = text[index + 1] || "";
+    return !next || !/[\p{L}\p{N}_]/u.test(next) || /\p{Script=Han}/u.test(next);
+}
+
+function findUnescapedDelimiter(text: string, delimiter: string, from: number): number {
+    let index = text.indexOf(delimiter, from);
+    while (index !== -1 && isEscapedAt(text, index)) index = text.indexOf(delimiter, index + delimiter.length);
+    return index;
+}
+
+/**
+ * Split only the two inline LaTex forms we support. Backtick code spans remain
+ * opaque here so `$...$` in source code is never interpreted as mathematics.
+ */
+function splitInlineMath(text: string): InlineMathSegment[] {
+    const segments: InlineMathSegment[] = [];
+    let plainStart = 0;
+    let index = 0;
+
+    const pushMath = (end: number, value: string) => {
+        if (plainStart < index) segments.push({ kind: "text", value: text.slice(plainStart, index) });
+        segments.push({ kind: "math", value });
+        index = end;
+        plainStart = end;
+    };
+
+    while (index < text.length) {
+        if (text[index] === "`") {
+            let fenceLength = 1;
+            while (text[index + fenceLength] === "`") fenceLength++;
+            const close = text.indexOf("`".repeat(fenceLength), index + fenceLength);
+            index = close === -1 ? text.length : close + fenceLength;
+            continue;
+        }
+
+        if (text.startsWith("\\(", index) && !isEscapedAt(text, index)) {
+            const close = findUnescapedDelimiter(text, "\\)", index + 2);
+            if (close !== -1 && close > index + 2) {
+                pushMath(close + 2, text.slice(index + 2, close));
+                continue;
+            }
+        }
+
+        if (
+            text[index] === "$"
+            && !isEscapedAt(text, index)
+            && text[index + 1] !== "$"
+            && !/\s/u.test(text[index + 1] || "")
+            && isInlineMathBoundaryBefore(text, index)
+            // A dollar amount ("$5" / "$1,200") is prose, not TeX. Requiring
+            // an explicit closing delimiter already avoids most false positives;
+            // this keeps currency with a trailing "$" legible as well.
+            && !/\d/u.test(text[index + 1] || "")
+        ) {
+            let close = index + 1;
+            while (close < text.length) {
+                if (
+                    text[close] === "$"
+                    && !isEscapedAt(text, close)
+                    && text[close + 1] !== "$"
+                    && isInlineMathBoundaryAfter(text, close)
+                ) break;
+                close++;
+            }
+            if (close < text.length && close > index + 1 && !/\s/u.test(text[close - 1])) {
+                pushMath(close + 1, text.slice(index + 1, close));
+                continue;
+            }
+        }
+
+        index++;
+    }
+
+    if (segments.length === 0) return [{ kind: "text", value: text }];
+    if (plainStart < text.length) segments.push({ kind: "text", value: text.slice(plainStart) });
+    return segments;
+}
+
+function renderMath(latex: string, displayMode: boolean, key: React.Key): React.ReactNode {
+    let html: string;
+    try {
+        html = katex.renderToString(latex, {
+            displayMode,
+            throwOnError: false,
+            strict: "ignore",
+            trust: false,
+            output: "htmlAndMathml",
+        });
+    } catch {
+        // Keep malformed streaming content legible rather than losing the reply.
+        return displayMode
+            ? <div key={key} data-testid="assistant-display-math" style={{ margin: "6px 0", ...blockWrapStyle }}>{`$$${latex}$$`}</div>
+            : <span key={key} data-testid="assistant-inline-math" className="aamd-math-inline">{`$${latex}$`}</span>;
+    }
+
+    const style: React.CSSProperties = displayMode
+        ? { margin: "6px 0", maxWidth: "100%", overflowX: "auto", overflowY: "hidden", ...blockWrapStyle }
+        // An inline expression is part of a prose line, not an independent
+        // scroll area. On Windows, the latter reserves a scrollbar that can
+        // obscure short formulas even when they otherwise fit.
+        : { verticalAlign: "middle" };
+    return displayMode
+        ? <div key={key} data-testid="assistant-display-math" style={style} dangerouslySetInnerHTML={{ __html: html }} />
+        : <span key={key} data-testid="assistant-inline-math" style={style} dangerouslySetInnerHTML={{ __html: html }} />;
+}
+
+export function renderInlineMarkdown(text: string, t: Theme, quietCode = false): React.ReactNode[] {
+    // `$` and `\(` are the only inline-math openers. Backticks only hide those
+    // openers, so a line with neither sequence is one text segment.
+    if (!text.includes("$") && !text.includes("\\(")) {
+        return renderInlineMarkdownRestored(text, t, quietCode);
+    }
+    const segments = splitInlineMath(text);
+    if (segments.length === 1 && segments[0].kind === "text") return renderInlineMarkdownRestored(text, t, quietCode);
+    return segments.flatMap((segment, index) => (
+        segment.kind === "math"
+            ? [renderMath(segment.value, false, `math-${index}`)]
+            : renderInlineMarkdownRestored(segment.value, t, quietCode)
+    ));
+}
+
+// Shared across every chat body line (streaming-friendly: no per-call recompile).
+// GFM unordered markers (-/*/+ ) plus digital-employee bullets (U+2022 •, U+00B7 ·).
+const HEADING_LINE_RE = /^(#{1,6})\s+(.+)$/;
+const BLOCKQUOTE_LINE_RE = /^>\s/;
+const HR_LINE_RE = /^[-*_]{3,}\s*$/;
+const UNORDERED_LIST_LINE_RE = /^(?:[-*+]|\u2022|\u00b7)\s+(.*)$/;
+
+function KBImageThumbnail({ assetId, dataUrl, theme: t }: { assetId: string; dataUrl: string; theme: Theme }) {
+    const [decoded, setDecoded] = React.useState(false);
+    const [failed, setFailed] = React.useState(false);
+    if (failed) return null;
+    return (
+        <div className="aamd-kb-thumb-wrap">
+            <img
+                src={dataUrl}
+                alt={assetId}
+                title={`Click to open: ${assetId}`}
+                loading="lazy"
+                style={{
+                    width: "120px",
+                    maxWidth: "100%",
+                    maxHeight: "120px",
+                    borderRadius: "6px",
+                    border: `1px solid ${t.divider}`,
+                    boxSizing: "border-box",
+                    display: "block",
+                    cursor: decoded ? "pointer" : "default",
+                    transition: "transform 0.15s",
+                }}
+                onLoad={() => setDecoded(true)}
+                onError={() => setFailed(true)}
+                onClick={() => {
+                    // Model-authored text may name a syntactically safe asset
+                    // ID, but it cannot trigger a local asset open until the
+                    // displayed bytes have completed browser JPEG decoding.
+                    if (!decoded) return;
+                    getWailsAppModule().then(mod => {
+                        mod.KnowledgeOpenImageAsset(assetId).catch(() => {});
+                    });
+                }}
+                onMouseEnter={(e) => { if (decoded) (e.target as HTMLElement).style.transform = "scale(1.05)"; }}
+                onMouseLeave={(e) => { (e.target as HTMLElement).style.transform = ""; }}
+            />
+        </div>
+    );
+}
+
+function renderMarkdownLine(text: string, key: string | number, t: Theme, quietCode = false): React.ReactNode {
+    const trimmed = text.trimStart();
+    // Structure regexes are line-start anchored, so the first character decides
+    // which of them can match. Prose skips the rest.
+    const lead = trimmed.charCodeAt(0);
+
+    // KB_IMAGE marker: render an inline thumbnail. The marker contains an
+    // opaque asset ID, never a local path, so agent-authored content cannot
+    // cause arbitrary files to be opened.
+    // Match the exact, current two-field protocol only. In particular, do not
+    // revive the deprecated third path field even if it is ignored locally:
+    // model output must never normalize a legacy path-carrying marker into a
+    // renderable image.
+    if (lead === 0x5b && trimmed.startsWith("[KB_IMAGE:")) {
+        const kbImageMatch = trimmed.match(KB_IMAGE_MARKER_RE);
+        if (kbImageMatch && isSafeKBImageDataURL(kbImageMatch[2])) {
+            const [, assetId, dataUrl] = kbImageMatch;
+            return <KBImageThumbnail key={key} assetId={assetId} dataUrl={dataUrl} theme={t} />;
+        }
+    }
+
+    if (lead === 0x23) {
+        const headingMatch = trimmed.match(HEADING_LINE_RE);
+        if (headingMatch) {
+            const level = headingMatch[1].length;
+            const sizes: Record<number, string> = { 1: "1.25em", 2: "1.12em", 3: "1.0em", 4: "0.92em", 5: "0.9em", 6: "0.88em" };
+            const weights: Record<number, number> = { 1: 700, 2: 700, 3: 600, 4: 600, 5: 600, 6: 600 };
+            const margins: Record<number, string> = { 1: "0.6em 0 0.3em", 2: "0.5em 0 0.25em", 3: "0.4em 0 0.2em", 4: "0.3em 0 0.15em", 5: "0.25em 0 0.12em", 6: "0.2em 0 0.1em" };
+            return (
+                <div key={key} style={{
+                    fontSize: sizes[level] || "1em",
+                    fontWeight: weights[level] || 600,
+                    color: t.headingColor,
+                    margin: margins[level] || "0.4em 0 0.2em",
+                    letterSpacing: level === 1 ? "0.01em" : undefined,
+                    ...blockWrapStyle,
+                }}>
+                    {renderInlineMarkdown(headingMatch[2], t, quietCode)}
+                </div>
+            );
+        }
+    }
+
+    if (lead === 0x3e && BLOCKQUOTE_LINE_RE.test(trimmed)) {
+        return (
+            <div key={key} style={{
+                borderLeft: `1px solid ${t.quoteBorder}`,
+                paddingLeft: "10px",
+                color: t.quoteText,
+                fontStyle: "italic",
+                minHeight: "1.4em",
+                margin: "2px 0",
+                ...blockWrapStyle,
+            }}>
+                {renderInlineMarkdown(trimmed.slice(2), t, quietCode)}
+            </div>
+        );
+    }
+
+    if ((lead === 0x2d || lead === 0x2a || lead === 0x5f) && HR_LINE_RE.test(trimmed)) {
+        return <hr key={key} style={{ border: "none", borderTop: `1px solid ${t.divider}`, margin: "8px 0" }} />;
+    }
+
+    if (lead === 0x2d || lead === 0x2a || lead === 0x2b || lead === 0x2022 || lead === 0x00b7) {
+        const unorderedListMatch = trimmed.match(UNORDERED_LIST_LINE_RE);
+        if (unorderedListMatch) {
+            const indentPad = orderedListIndentPadding(leadingIndentColumns(text));
+            return (
+                <div key={key} style={{
+                    paddingLeft: indentPad ? `calc(1em + ${indentPad})` : "1em",
+                    textIndent: "-0.7em",
+                    minHeight: "1.4em",
+                    ...blockWrapStyle,
+                }}>
+                    <span style={{ color: t.bulletColor }}>{"\u2022"}</span>{" "}
+                    {renderInlineMarkdown(unorderedListMatch[1], t, quietCode)}
+                </div>
+            );
+        }
+    }
+
+    if (lead >= 0x30 && lead <= 0x39) {
+        const ordered = parseOrderedListLine(text);
+        if (ordered) {
+            // Keep wrap styles off the marker span (and off the flex row) so indices never
+            // inherit word-break from prose and reflow mid-number. Preserve "." vs ")".
+            const indentPad = orderedListIndentPadding(ordered.indentCols);
+            return (
+                <div key={key} style={{
+                    display: "flex",
+                    minHeight: "1.4em",
+                    minWidth: 0,
+                    paddingLeft: indentPad,
+                }}>
+                    <span style={{ color: t.bulletColor, ...orderedListMarkerLayoutStyle }}>{ordered.marker}</span>
+                    <span style={{ flex: 1, ...blockWrapStyle }}>{renderInlineMarkdown(ordered.body, t, quietCode)}</span>
+                </div>
+            );
+        }
+    }
+
+    return (
+        <div key={key} style={{ minHeight: "1.4em", ...blockWrapStyle }}>
+            {renderInlineMarkdown(text, t, quietCode) || "\u00A0"}
+        </div>
+    );
+}
+
+/* Structured response rendering */
+
+// A streamed table can leave its row label as the only cell on a line.  Keep
+// that line in the current table so the table-model repair can join it with the
+// following N-1 cells.
+function isSplitTableRowLabel(line: string): boolean {
+    const normalized = normalizeMarkdownTableLine(line);
+    const cells = parseMarkdownTableCells(normalized);
+    return normalized.includes("|") && cells.length === 1 && Boolean(cells[0]);
+}
+
+function renderTable(tableLines: string[], key: string, t: Theme, reasoningSurface = false): React.ReactNode {
+    const model = buildMarkdownTableModel(tableLines);
+    if (!model) return null;
+    const repaired = repairMixedNarrativeTable(model);
+    const { headerCells, bodyRows, columnAlignments, minTableWidth, prefix, notes } = repaired;
+    const lastCol = headerCells.length - 1;
+    // Inner grid lines only — the rounded shell draws the outer edge, so cells
+    // skip their outer-side borders to avoid doubled 2px seams.
+    const cellStyle: React.CSSProperties = { boxSizing: "border-box", overflowWrap: "break-word", padding: "6px 10px", textAlign: "left", verticalAlign: "top", fontSize: "0.9em", lineHeight: 1.5 };
+    const rowHoverBg = `color-mix(in srgb, ${t.btnColor} 7%, transparent)`;
+    return (
+        <div key={key} className="aamd-table-wrap">
+            {prefix && <div data-testid="markdown-table-prefix" style={{ marginBottom: 6, ...blockWrapStyle }}>{renderInlineMarkdown(prefix, t, reasoningSurface)}</div>}
+            {/* Rounded, bordered shell; the scrollport clips the table corners. */}
+            <div data-testid="markdown-table-block" style={{ width: "100%", maxWidth: "100%", minWidth: 0, boxSizing: "border-box", overflowX: "auto", overscrollBehaviorX: "contain", border: `1px solid ${t.fieldBorder}`, borderRadius: "10px" }}>
+                <table data-testid="markdown-table" style={{ borderCollapse: "collapse", minWidth: minTableWidth, tableLayout: "fixed", width: "100%", color: t.text, whiteSpace: "normal", wordBreak: "normal" }}>
+                    <thead><tr>{headerCells.map((cell, ci) => <th key={ci} style={{ ...cellStyle, textAlign: columnAlignments[ci], fontWeight: 600, background: t.codeBlockBg, color: t.headingColor, fontSize: "0.88em", letterSpacing: "0.02em", borderBottom: bodyRows.length > 0 ? `1px solid ${t.fieldBorder}` : undefined, borderRight: ci < lastCol ? `1px solid ${t.fieldBorder}` : undefined }}>{renderInlineMarkdown(cell, t, reasoningSurface)}</th>)}</tr></thead>
+                    {bodyRows.length > 0 && <tbody>{bodyRows.map((row, ri) => { const cells = parseMarkdownTableCells(row); const zebraBg = ri % 2 === 1 ? t.fieldBg : ""; return <tr key={ri} style={{ background: zebraBg || undefined, transition: "background-color 140ms cubic-bezier(0.22, 1, 0.36, 1)" }} onMouseEnter={(e) => { e.currentTarget.style.background = rowHoverBg; }} onMouseLeave={(e) => { e.currentTarget.style.background = zebraBg; }}>{headerCells.map((_, ci) => <td key={ci} style={{ ...cellStyle, textAlign: columnAlignments[ci], borderBottom: ri < bodyRows.length - 1 ? `1px solid ${t.fieldBorder}` : undefined, borderRight: ci < lastCol ? `1px solid ${t.fieldBorder}` : undefined }}>{renderInlineMarkdown(cells[ci] || "", t, reasoningSurface)}</td>)}</tr>; })}</tbody>}
+                </table>
+            </div>
+            {notes.map((note, index) => <div key={`note-${index}`} data-testid="markdown-table-note" style={{ marginTop: 6, ...blockWrapStyle }}>{renderInlineMarkdown(note, t, reasoningSurface)}</div>)}
+        </div>
+    );
+}
+
+export type ChatMarkdownRenderOptions = {
+    /** Thinking trails skip the 1.4em paragraph spacer. The source keeps its blank lines. */
+    omitBlankSpacers?: boolean;
+    /** Fenced code in the thinking panel: dark monospace on a solid well, not scheme-blue on a pale wash. */
+    reasoningSurface?: boolean;
+};
+
+/** Shared by the thinking panel and the coding-timeline thought node. */
+export const reasoningTrailMarkdownOptions: ChatMarkdownRenderOptions = {
+    omitBlankSpacers: true,
+    reasoningSurface: true,
+};
+
+function inlineCodeChipStyle(t: Theme, quiet: boolean, extra?: React.CSSProperties): React.CSSProperties {
+    if (!quiet) {
+        return { background: t.codeBg, color: t.codeText, padding: "1px 4px", borderRadius: "3px", fontSize: "0.92em", ...inlineWrapStyle, ...extra };
+    }
+    // Same ink as the sentence. Only a light wash marks the command, so it
+    // does not turn into a blue link chip or a second, grayer text color.
+    return {
+        background: `color-mix(in srgb, ${t.text} 6%, ${t.bg})`,
+        color: t.text,
+        border: "none",
+        padding: "0 4px",
+        borderRadius: "4px",
+        fontSize: "0.92em",
+        fontFamily: CODE_FENCE_FONT,
+        fontWeight: 500,
+        ...inlineWrapStyle,
+        ...extra,
+    };
+}
+
+function lineHasMarkdownFenceRun(line: string): boolean {
+    return line.includes("```") || line.includes("~~~");
+}
+
+export function renderContentWithCodeBlocks(
+    content: string,
+    t: Theme,
+    options?: ChatMarkdownRenderOptions,
+    lang?: string,
+): React.ReactNode[] {
+    const omitBlankSpacers = options?.omitBlankSpacers === true;
+    const reasoningSurface = options?.reasoningSurface === true;
+    // Built on the first fence. Prose-only streams never pay for the color mixes.
+    let fenceStyle: React.CSSProperties | null = null;
+    let fenceLangStyle: React.CSSProperties | null = null;
+    const ensureFenceStyles = (): { fence: React.CSSProperties; lang: React.CSSProperties } => {
+        if (!fenceStyle || !fenceLangStyle) {
+            if (reasoningSurface) {
+                fenceStyle = reasoningCodeBlockStyle(t);
+                fenceLangStyle = reasoningCodeLangStyle(t);
+            } else {
+                fenceStyle = chatCodeWellStyle(t);
+                fenceLangStyle = chatCodeLangStyle(t);
+            }
+        }
+        return { fence: fenceStyle, lang: fenceLangStyle };
+    };
+    const elements: React.ReactNode[] = [];
+    // Normalize compact LLM output outside fenced code blocks.
+    const normalized = normalizeInlineListMarkers(content);
+    const rawLines = normalized.split("\n");
+    // Compact-heading / bare-marker attach can introduce line-leading pictographs
+    // after a markdown prefix (e.g. "### <pictograph> Title"); strip them for display.
+    // Use line-array form to avoid an extra join/split on long streaming messages.
+    // attachBareHeadingMarkers tracks code fences and display-math blocks, so
+    // ordinary headings after a formula still receive the streamed repair.
+    const structureLines = normalized.includes("#")
+        ? attachBareHeadingMarkers(rawLines)
+        : rawLines;
+    const lines = prepareChatBodyLines(structureLines);
+    let inCodeBlock = false;
+    let codeFenceMarker = "";
+    let codeBlockLines: string[] = [];
+    let codeBlockLang = "";
+    let tableLines: string[] = [];
+    let displayMathDelimiter: "$$" | "\\[" | "" = "";
+    let displayMathLines: string[] = [];
+    let lineIdx = 0;
+    // Blank lines render as 1.4em spacer divs; a run of N blanks otherwise
+    // stacks N spacers into a tall void (multi-round agent streams often carry
+    // trailing newlines per round). Collapse runs to a single spacer outside
+    // code fences and display math.
+    let lastWasBlankLine = false;
+
+    const flushDisplayMath = () => {
+        elements.push(renderMath(displayMathLines.join("\n"), true, `math-${elements.length}`));
+        displayMathDelimiter = "";
+        displayMathLines = [];
+    };
+
+    const flushCodeBlock = (allowMermaidRender = true) => {
+        if (inCodeBlock || codeBlockLines.length > 0) {
+            // A streaming response may expose an unfinished Mermaid fence for
+            // several frames. Keep it as source until the closing fence arrives
+            // instead of repeatedly invoking Mermaid on partial syntax.
+            if (allowMermaidRender && isMermaidCodeFence(codeBlockLang)) {
+                elements.push(
+                    <AssistantMermaidDiagram
+                        key={`mermaid-${elements.length}`}
+                        code={codeBlockLines.join("\n")}
+                        theme={t}
+                        lang={lang}
+                    />,
+                );
+                codeBlockLines = [];
+                codeBlockLang = "";
+                return;
+            }
+            const source = codeBlockLines.length > 0 ? renderCodeBlockText(codeBlockLines.join("\n"), t) : "\u00A0";
+            const { fence, lang: langStyle } = ensureFenceStyles();
+            const langBadge = codeBlockLang ? <div style={langStyle}>{codeBlockLang}</div> : null;
+            elements.push(reasoningSurface ? (
+                <pre
+                    key={`code-${elements.length}`}
+                    data-reasoning-code=""
+                    style={fence}
+                >
+                    {langBadge}
+                    <code style={codeFenceInnerStyle}>{source}</code>
+                </pre>
+            ) : (
+                <div key={`code-${elements.length}`} data-assistant-code="" style={fence}>
+                    {langBadge}
+                    <pre style={codeBlockLang ? codeFenceScrollUnderLangStyle : codeFenceScrollStyle}>
+                        <code style={codeFenceInnerStyle}>{source}</code>
+                    </pre>
+                </div>
+            ));
+        }
+        codeBlockLines = [];
+        codeBlockLang = "";
+        codeFenceMarker = "";
+    };
+
+    const flushTable = () => {
+        if (tableLines.length === 0) return;
+        // Orphan GFM separator rows (common noise before a real table) should not
+        // fall through as raw "|---|---|" text in the chat bubble.
+        if (tableLines.every((line) => isMarkdownTableSeparatorRow(line) || !line.trim())) {
+            tableLines = [];
+            return;
+        }
+        const rendered = renderTable(tableLines, `tbl-${elements.length}`, t, reasoningSurface);
+        if (rendered) {
+            elements.push(rendered);
+        } else {
+            for (const tableLine of tableLines) {
+                if (isMarkdownTableSeparatorRow(tableLine)) continue;
+                elements.push(renderMarkdownLine(tableLine, `md-fallback-${elements.length}`, t, reasoningSurface));
+            }
+        }
+        tableLines = [];
+    };
+
+    for (const line of lines) {
+        if (displayMathDelimiter) {
+            const trimmed = line.trim();
+            const closeDelimiter = displayMathDelimiter === "$$" ? "$$" : "\\]";
+            if (trimmed === closeDelimiter) {
+                flushDisplayMath();
+            } else if (trimmed.endsWith(closeDelimiter)) {
+                // TeX generators often put the final expression and its
+                // delimiter on one line (for example `\\end{aligned}$$`).
+                // Keep the expression, remove only the terminal delimiter,
+                // then render the complete display block.
+                displayMathLines.push(line.slice(0, line.lastIndexOf(closeDelimiter)));
+                flushDisplayMath();
+            } else {
+                displayMathLines.push(line);
+            }
+            lineIdx++;
+            continue;
+        }
+        if (inCodeBlock) {
+            const fenceMatch = lineHasMarkdownFenceRun(line)
+                ? line.trimStart().match(/^(`{3,}|~{3,})(.*)$/)
+                : null;
+            if (fenceMatch) {
+                const marker = fenceMatch[1];
+                // A closing fence must use the same character and be at least
+                // as long as its opener. Otherwise it belongs to the code body.
+                if (marker[0] === codeFenceMarker[0] && marker.length >= codeFenceMarker.length && !fenceMatch[2].trim()) {
+                    flushCodeBlock();
+                    inCodeBlock = false;
+                } else {
+                    codeBlockLines.push(line);
+                }
+            } else {
+                codeBlockLines.push(line);
+            }
+            lineIdx++;
+            continue;
+        }
+        const trimmed = line.trim();
+        if (/^\|+$/.test(trimmed)) {
+            continue;
+        }
+        // Any non-blank line outside a code fence ends a blank run (code and
+        // display-math bodies keep their blank lines verbatim).
+        if (trimmed !== "") lastWasBlankLine = false;
+        const fenceMatch = lineHasMarkdownFenceRun(line)
+            ? line.trimStart().match(/^(`{3,}|~{3,})(.*)$/)
+            : null;
+        if (fenceMatch) {
+            flushTable();
+            inCodeBlock = true;
+            codeFenceMarker = fenceMatch[1];
+            codeBlockLang = fenceMatch[2].trim();
+        } else if (trimmed.startsWith("$$") || trimmed.startsWith("\\[")) {
+            if (trimmed.startsWith("$$") && trimmed.endsWith("$$") && trimmed.length > 4) {
+                flushTable();
+                elements.push(renderMath(trimmed.slice(2, -2), true, `math-${elements.length}`));
+            } else if (trimmed.startsWith("$$") && trimmed.length > 2) {
+                flushTable();
+                displayMathDelimiter = "$$";
+                displayMathLines = [trimmed.slice(2)];
+            } else if (trimmed.startsWith("\\[") && trimmed.endsWith("\\]") && trimmed.length > 4) {
+                flushTable();
+                elements.push(renderMath(trimmed.slice(2, -2), true, `math-${elements.length}`));
+            } else if (trimmed.startsWith("\\[") && trimmed.length > 2) {
+                flushTable();
+                displayMathDelimiter = "\\[";
+                displayMathLines = [trimmed.slice(2)];
+            } else if (trimmed === "$$" || trimmed === "\\[") {
+                flushTable();
+                displayMathDelimiter = trimmed;
+                displayMathLines = [];
+            }
+        } else if ((line.includes("|") && isMarkdownTableRow(line)) || (tableLines.length > 0 && isSplitTableRowLabel(line))) {
+            // Strip list markers so "- | a | b |" stays inside the table model.
+            // buildMarkdownTableModel also normalizes; doing it here keeps the
+            // in-progress buffer consistent while streaming.
+            tableLines.push(normalizeMarkdownTableLine(line));
+        } else {
+            flushTable();
+            if (trimmed === "") {
+                // Reasoning display omits the spacer entirely. Chat answers
+                // still collapse a run of blank lines to one spacer. Fences
+                // and display math never reach this branch.
+                if (omitBlankSpacers || lastWasBlankLine) {
+                    lineIdx++;
+                    continue;
+                }
+                lastWasBlankLine = true;
+            }
+            elements.push(renderMarkdownLine(line, `md-${lineIdx}`, t, reasoningSurface));
+        }
+        lineIdx++;
+    }
+    if (displayMathDelimiter) {
+        // The response is still streaming or malformed. Preserve the source instead
+        // of attempting KaTeX on a partial block. Blank lines in that source view
+        // are still spacer divs, so a thinking trail must skip them here too.
+        elements.push(renderMarkdownLine(displayMathDelimiter, `md-${lineIdx++}`, t, reasoningSurface));
+        for (const line of displayMathLines) {
+            if (omitBlankSpacers && line.trim() === "") continue;
+            elements.push(renderMarkdownLine(line, `md-${lineIdx++}`, t, reasoningSurface));
+        }
+    }
+    if (inCodeBlock) flushCodeBlock(false);
+    flushTable();
+    return elements;
+}
+
+function renderFields(fields: Array<{ label: string; value: string }>, t: Theme): React.ReactNode {
+    return (
+        <div className="aamd-chip-row">
+            {fields.map((f, i) => {
+                const isRecovery = f.label === "Recovery";
+                const isTurn = f.label === "Turn";
+                const recoveryTone = String(f.value || '').toLowerCase();
+                const recoveryStyle: React.CSSProperties = isRecovery
+                    ? {
+                        display: "inline-flex",
+                        alignItems: "center",
+                        padding: "2px 8px",
+                        borderRadius: "999px",
+                        fontWeight: 700,
+                        background: recoveryTone.includes('failed')
+                            ? "rgba(180, 35, 24, 0.10)"
+                            : recoveryTone.includes('partial')
+                                ? "rgba(100, 116, 139, 0.10)"
+                                : "rgba(79, 127, 111, 0.12)",
+                        color: recoveryTone.includes('failed')
+                            ? "#b42318"
+                            : recoveryTone.includes('partial')
+                                ? (t.isDark ? "#8a9ab0" : "#64748b")
+                                : "#4f7f6f",
+                    }
+                    : { color: t.text };
+                const turnChipStyle: React.CSSProperties = isTurn
+                    ? {
+                        background: t.isDark ? "rgba(52, 152, 219, 0.14)" : "rgba(52, 152, 219, 0.10)",
+                        border: `1px solid ${t.isDark ? "rgba(52, 152, 219, 0.35)" : "rgba(52, 152, 219, 0.28)"}`,
+                        borderRadius: "999px",
+                        padding: "3px 10px",
+                        fontSize: "11px",
+                        fontFamily: "ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+                    }
+                    : {
+                        background: t.fieldBg,
+                        border: `1px solid ${t.fieldBorder}`,
+                        borderRadius: "4px",
+                        padding: "4px 8px",
+                        fontSize: "12px",
+                    };
+                return (
+                    <div key={`field-${i}`} data-testid={isTurn ? "turn-meta-chip" : "field-card"} style={turnChipStyle}>
+                        <span style={{ color: t.fieldLabel, marginRight: "6px" }}>{f.label}:</span>
+                        <span data-testid={isRecovery ? 'recovery-badge' : undefined} style={recoveryStyle}>{f.value}</span>
+                    </div>
+                );
+            })}
+        </div>
+    );
+}
+
+function ActionButtons({ actions, executeAction, theme, lang = "en" }: {
+    actions: ChatAction[];
+    executeAction: (command: string) => void;
+    theme: Theme;
+    lang?: string;
+}): React.ReactElement {
+    const [firedIndex, setFiredIndex] = React.useState<number | null>(null);
+    const t = theme;
+    return (
+        <div className="aamd-chip-row">
+            {actions.map((a, i) => {
+                const isPrimary = a.style === "primary";
+                const fired = firedIndex !== null;
+                const isThis = firedIndex === i;
+                return (
+                    <button
+                        key={`action-${i}`}
+                        data-testid="action-button"
+                        disabled={fired}
+                        onClick={() => {
+                            if (firedIndex !== null) return;
+                            setFiredIndex(i);
+                            executeAction(a.command);
+                        }}
+                        style={{
+                            ...baseInputBtnStyle,
+                            background: isPrimary ? t.sendBtnBg : "transparent",
+                            color: isPrimary ? t.sendBtnColor : (a.style === "danger" ? t.errorText : t.btnColor),
+                            borderColor: a.style === "danger" ? t.errorText : (isPrimary ? t.sendBtnBg : t.btnBorder),
+                            fontSize: "12px",
+                            padding: "4px 10px",
+                            width: "auto",
+                            height: "auto",
+                            maxWidth: "100%",
+                            minWidth: "36px",
+                            minHeight: "28px",
+                            lineHeight: 1.35,
+                            overflowWrap: "anywhere",
+                            textAlign: "center",
+                            whiteSpace: "normal",
+                            opacity: fired ? (isThis ? 0.7 : 0.4) : 1,
+                            cursor: fired ? "default" : "pointer",
+                        }}
+                    >
+                        {formatActionLabel(a, lang)}
+                    </button>
+                );
+            })}
+        </div>
+    );
+}
+
+function renderActions(
+    actions: ChatAction[],
+    executeAction: (command: string) => void,
+    t: Theme,
+    lang = "en",
+): React.ReactNode {
+    return <ActionButtons actions={actions} executeAction={executeAction} theme={t} lang={lang} />;
+}
+
+function formatActionLabel(action: ChatAction, lang: string): string {
+    const normalizedLabel = (action.label || '').trim().toLowerCase();
+    if (/^__resume_unfinished__\s+\S+$/.test(action.command)) {
+        return localizeText(lang, "Resume previous task", "\u7ee7\u7eed\u4e0a\u6b21\u4efb\u52a1", "\u7e7c\u7e8c\u4e0a\u6b21\u4efb\u52d9");
+    }
+    if (/^__dismiss_unfinished__\s+\S+$/.test(action.command) || action.command === "__start_new_task__") {
+        return localizeText(lang, "Start new task", "\u5f00\u59cb\u65b0\u4efb\u52a1", "\u958b\u59cb\u65b0\u4efb\u52d9");
+    }
+    if (/^__resume_session__\s+\S+$/.test(action.command)) {
+        return localizeText(lang, "Resume session", "\u6062\u590d\u4f1a\u8bdd", "\u6062\u5fa9\u6703\u8a71");
+    }
+    if (/^__dismiss_recoverable_session__\s+\S+$/.test(action.command)) {
+        return localizeText(lang, "Dismiss session", "\u5ffd\u7565\u4f1a\u8bdd", "\u5ffd\u7565\u6703\u8a71");
+    }
+    if (/^__confirm_execution__\s+\S+$/.test(action.command) && (!normalizedLabel || normalizedLabel === 'confirm and start')) {
+        return localizeText(lang, "Confirm and start", "\u786e\u8ba4\u5e76\u5f00\u59cb", "\u78ba\u8a8d\u4e26\u958b\u59cb");
+    }
+    if (/^__cancel_execution__\s+\S+$/.test(action.command) && (!normalizedLabel || normalizedLabel === 'cancel')) {
+        return localizeText(lang, "Cancel", "\u53d6\u6d88", "\u53d6\u6d88");
+    }
+    if (action.command === "confirm" && (!normalizedLabel || normalizedLabel === "confirm")) {
+        return localizeText(lang, "Confirm", "\u786e\u8ba4", "\u78ba\u8a8d");
+    }
+    if (action.command === "cancel" && (!normalizedLabel || normalizedLabel === "cancel")) {
+        return localizeText(lang, "Cancel", "\u53d6\u6d88", "\u53d6\u6d88");
+    }
+    return action.label;
+}
+
+
+function formatUnfinishedSlotStatus(status: string, lang: string) {
+    const key = status.trim().toLowerCase();
+    const normalized = key.replace(/_/g, " ");
+    if (!lang.trim().toLowerCase().startsWith("zh")) return `Status: ${normalized}`;
+    const labels: Record<string, string> = {
+        pending_resume: localizeText(lang, "Pending resume", "\u5f85\u7ee7\u7eed", "\u5f85\u7e7c\u7e8c"),
+        interrupted: localizeText(lang, "Interrupted", "\u5df2\u4e2d\u65ad", "\u5df2\u4e2d\u65b7"),
+        max_rounds_reached: localizeText(lang, "Max rounds reached", "\u8fbe\u5230\u6700\u5927\u8f6e\u6b21", "\u9054\u5230\u6700\u5927\u8f2a\u6b21"),
+        resumed: localizeText(lang, "Resumed", "\u5df2\u6062\u590d", "\u5df2\u6062\u5fa9"),
+        dismissed: localizeText(lang, "Dismissed", "\u5df2\u5ffd\u7565", "\u5df2\u5ffd\u7565"),
+        completed: localizeText(lang, "Completed", "\u5df2\u5b8c\u6210", "\u5df2\u5b8c\u6210"),
+        failed: localizeText(lang, "Failed", "\u5df2\u5931\u8d25", "\u5df2\u5931\u6557"),
+        cancelled: localizeText(lang, "Cancelled", "\u5df2\u53d6\u6d88", "\u5df2\u53d6\u6d88"),
+        canceled: localizeText(lang, "Cancelled", "\u5df2\u53d6\u6d88", "\u5df2\u53d6\u6d88"),
+    };
+    return `\u72b6\u6001\uff1a${labels[key] || localizeText(lang, "Unknown", "\u672a\u77e5", "\u672a\u77e5")}`;
+}
+
+function formatUnfinishedSlotSummary(summary: string, lang: string): string {
+    const normalized = summary.trim();
+    if (/^Previous task stopped making progress and was moved to recovery\.?$/i.test(normalized)) {
+        return localizeText(
+            lang,
+            "Previous task stopped making progress and was moved to recovery.",
+            "\u4e0a\u6b21\u4efb\u52a1\u505c\u6b62\u63a8\u8fdb\uff0c\u5df2\u79fb\u5165\u6062\u590d\u72b6\u6001\u3002",
+            "\u4e0a\u6b21\u4efb\u52d9\u505c\u6b62\u63a8\u9032\uff0c\u5df2\u79fb\u5165\u6062\u5fa9\u72c0\u614b\u3002",
+        );
+    }
+    if (/^The previous task stopped before completion\.?$/i.test(normalized)) {
+        return localizeText(
+            lang,
+            "The previous task stopped before completion.",
+            "\u4e0a\u6b21\u4efb\u52a1\u5c1a\u672a\u5b8c\u6210\u5c31\u5df2\u505c\u6b62\u3002",
+            "\u4e0a\u6b21\u4efb\u52d9\u5c1a\u672a\u5b8c\u6210\u5c31\u5df2\u505c\u6b62\u3002",
+        );
+    }
+    if (/^Previous task was interrupted after a durable tool-progress checkpoint\.?$/i.test(normalized)) {
+        return localizeText(
+            lang,
+            "Previous task was interrupted after a durable tool-progress checkpoint.",
+            "\u4e0a\u6b21\u4efb\u52a1\u5728\u4fdd\u5b58\u5de5\u5177\u8fdb\u5ea6\u540e\u4e2d\u65ad\u3002",
+            "\u4e0a\u6b21\u4efb\u52d9\u5728\u4fdd\u5b58\u5de5\u5177\u9032\u5ea6\u5f8c\u4e2d\u65b7\u3002",
+        );
+    }
+    return summary;
+}
+
+function formatUnfinishedSlotNotice(content: string, slot: ChatUnfinishedSlot | undefined, lang: string): string {
+    if (!slot) return content;
+    const status = slot.status?.trim().toLowerCase();
+    const settled = status === "resumed" || status === "completed" || status === "dismissed";
+    const normalized = content.trim();
+    const isUnfinishedNotice = /^Detected an unfinished task:/i.test(normalized)
+        || /^\u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u4efb\u52a1/.test(normalized)
+        || /^\u5075\u6e2c\u5230\u672a\u5b8c\u6210\u4efb\u52d9/.test(normalized);
+    if (!isUnfinishedNotice) return content;
+    if (settled) return "";
+    const rawTitle = (slot.title || slot.summary || slot.projectPath || localizeText(lang, "Previous unfinished task", "\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52a1", "\u4e0a\u6b21\u672a\u5b8c\u6210\u4efb\u52d9")).trim();
+    const title = (slot.title ? rawTitle : formatUnfinishedSlotSummary(rawTitle, lang)).replace(/[.\u3002]+$/u, "");
+    return localizeText(
+        lang,
+        `Detected an unfinished task: ${title}. Choose resume to continue it.`,
+        `\u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u4efb\u52a1\uff1a${title}\u3002\u9009\u62e9\u201c\u7ee7\u7eed\u4e0a\u6b21\u4efb\u52a1\u201d\u53ef\u7ee7\u7eed\u3002`,
+        `\u5075\u6e2c\u5230\u672a\u5b8c\u6210\u4efb\u52d9\uff1a${title}\u3002\u9078\u64c7\u300c\u7e7c\u7e8c\u4e0a\u6b21\u4efb\u52d9\u300d\u53ef\u7e7c\u7e8c\u3002`,
+    );
+}
+
+function renderUnfinishedSlotCard(
+    slot: ChatUnfinishedSlot,
+    executeAction: (command: string) => void,
+    t: Theme,
+    lang: string,
+): React.ReactNode {
+    const actions = slot.actions || [];
+    const status = slot.status?.trim().toLowerCase();
+    const settled = status === 'resumed' || status === 'completed' || status === 'dismissed';
+    const cardTitle = status === 'resumed'
+        ? localizeText(lang, "Task resumed", "\u4efb\u52a1\u5df2\u7ee7\u7eed", "\u4efb\u52d9\u5df2\u7e7c\u7e8c")
+        : status === 'completed'
+            ? localizeText(lang, "Task completed", "\u4efb\u52a1\u5df2\u5b8c\u6210", "\u4efb\u52d9\u5df2\u5b8c\u6210")
+            : status === 'dismissed'
+                ? localizeText(lang, "Task dismissed", "\u4efb\u52a1\u5df2\u5ffd\u7565", "\u4efb\u52d9\u5df2\u5ffd\u7565")
+                : localizeText(lang, "Unfinished item", "\u672a\u5b8c\u6210\u9879", "\u672a\u5b8c\u6210\u9805");
+    return (
+        <div
+            data-testid="unfinished-slot-card"
+            style={{
+                marginTop: "8px",
+                padding: "10px 12px",
+                borderRadius: "8px",
+                border: `1px solid ${t.inputBarBorder}`,
+                background: t.fieldBg,
+            }}
+        >
+            <div style={{ color: t.headingColor, fontWeight: 700, marginBottom: "6px" }}>
+                {cardTitle}
+            </div>
+            {slot.status && !settled && (
+                <div data-testid="unfinished-slot-status" style={{ color: t.fieldLabel, fontSize: "11px", marginBottom: "6px" }}>
+                    {formatUnfinishedSlotStatus(slot.status, lang)}
+                </div>
+            )}
+            {slot.title && (
+                <div data-testid="unfinished-slot-title" style={{ color: t.text, fontWeight: 600, marginBottom: "4px" }}>
+                    {slot.title}
+                </div>
+            )}
+            {slot.summary && !settled && (
+                <div data-testid="unfinished-slot-summary" style={{ color: t.text, whiteSpace: "pre-wrap", overflowWrap: "break-word" }}>
+                    {renderContentWithCodeBlocks(formatUnfinishedSlotSummary(slot.summary, lang), t)}
+                </div>
+            )}
+            {!settled && slot.recoveryMode === 'resume_context' && (
+                <div data-testid="unfinished-slot-read-only" style={{ color: t.fieldLabel, marginTop: "6px", whiteSpace: "pre-wrap" }}>
+                    {localizeText(lang, "This checkpoint only inspected state and did not change the workspace. Continuing picks the original task up from that check.", "\u8fd9\u6b21\u4e2d\u65ad\u524d\u53ea\u505a\u4e86\u68c0\u67e5\uff0c\u6ca1\u6709\u4fee\u6539\u5de5\u4f5c\u533a\u3002\u7ee7\u7eed\u4f1a\u4ece\u8fd9\u6b21\u68c0\u67e5\u63a5\u7740\u505a\u3002", "\u9019\u6b21\u4e2d\u65b7\u524d\u53ea\u505a\u4e86\u6aa2\u67e5\uff0c\u6c92\u6709\u4fee\u6539\u5de5\u4f5c\u5340\u3002\u7e7c\u7e8c\u6703\u5f9e\u9019\u6b21\u6aa2\u67e5\u63a5\u8457\u505a\u3002")}
+                </div>
+            )}
+            {!settled && slot.recoveryMode === 'requires_review' && (
+                <div data-testid="unfinished-slot-review-required" style={{ color: t.fieldLabel, marginTop: "6px", whiteSpace: "pre-wrap" }}>
+                    {localizeText(lang, "Review required: the previous task may have changed the workspace or caused an external side effect. Continuing restores context only; it does not retry that action.", "需要审阅：上次任务可能已修改工作区或产生外部副作用。继续只恢复上下文，不会重试该操作。", "需要審閱：上次任務可能已修改工作區或產生外部副作用。繼續只恢復上下文，不會重試該操作。")}
+                </div>
+            )}
+            {!settled && slot.recoveryMode === 'requires_review' && slot.sideEffectState === 'local_committed' && (
+                <div data-testid="unfinished-slot-workspace-review" style={{ color: t.fieldLabel, marginTop: "6px", whiteSpace: "pre-wrap" }}>
+                    {localizeText(lang, "Local changes may already exist; review the workspace before continuing.", "本地修改可能已存在；继续前请检查工作区。", "本機修改可能已存在；繼續前請檢查工作區。")}
+                </div>
+            )}
+            {slot.projectPath && (
+                <div data-testid="unfinished-slot-project" style={{ color: t.pathColor, marginTop: "6px", wordBreak: "break-all" }}>
+                    <a
+                        href="#"
+                        onClick={(event) => openFileInFolder(event, slot.projectPath!)}
+                        style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer", wordBreak: "break-all" }}
+                        title={cloudSafePathLabel(slot.projectPath, localizeText(lang, "Cloud workspace", "云端工作区"))}
+                    >
+                        {cloudSafePathLabel(slot.projectPath, localizeText(lang, "Cloud workspace", "云端工作区"))}
+                    </a>
+                </div>
+            )}
+            {actions.length > 0 && renderActions(actions, executeAction, t, lang)}
+        </div>
+    );
+}
+
+function formatSessionStatus(status: string, lang: string): string {
+    const key = status.trim().toLowerCase();
+    const normalized = key.replace(/_/g, " ");
+    const labels: Record<string, string> = {
+        starting: localizeText(lang, "Starting", "\u542f\u52a8\u4e2d", "\u555f\u52d5\u4e2d"),
+        running: localizeText(lang, "Running", "\u8fd0\u884c\u4e2d", "\u57f7\u884c\u4e2d"),
+        busy: localizeText(lang, "Busy", "\u5fd9\u788c", "\u5fd9\u788c"),
+        waiting_input: localizeText(lang, "Waiting for input", "\u7b49\u5f85\u8f93\u5165", "\u7b49\u5f85\u8f38\u5165"),
+        exited: localizeText(lang, "Exited", "\u5df2\u9000\u51fa", "\u5df2\u9000\u51fa"),
+        error: localizeText(lang, "Error", "\u51fa\u9519", "\u51fa\u932f"),
+        stopped: localizeText(lang, "Stopped", "\u5df2\u505c\u6b62", "\u5df2\u505c\u6b62"),
+        completed: localizeText(lang, "Completed", "\u5df2\u5b8c\u6210", "\u5df2\u5b8c\u6210"),
+        failed: localizeText(lang, "Failed", "\u5df2\u5931\u8d25", "\u5df2\u5931\u6557"),
+        cancelled: localizeText(lang, "Cancelled", "\u5df2\u53d6\u6d88", "\u5df2\u53d6\u6d88"),
+        canceled: localizeText(lang, "Cancelled", "\u5df2\u53d6\u6d88", "\u5df2\u53d6\u6d88"),
+    };
+    if (!lang.trim().toLowerCase().startsWith("zh")) return normalized;
+    return labels[key] || localizeText(lang, "Unknown", "\u672a\u77e5", "\u672a\u77e5");
+}
+
+function labelSeparator(lang: string): string {
+    return lang.trim().toLowerCase().startsWith("zh") ? "\uff1a" : ": ";
+}
+
+function renderRecoverableSessionCard(
+    session: ChatRecoverableSession,
+    executeAction: (command: string) => void,
+    t: Theme,
+    lang: string,
+): React.ReactNode {
+    const actions = session.actions || [];
+    const progress = session.summary || session.lastProgress;
+    return (
+        <div
+            data-testid="recoverable-session-card"
+            style={{
+                marginTop: "8px",
+                padding: "10px 12px",
+                borderRadius: "8px",
+                border: `1px solid ${t.inputBarBorder}`,
+                background: t.fieldBg,
+            }}
+        >
+            <div style={{ color: t.headingColor, fontWeight: 700, marginBottom: "6px" }}>
+                {localizeText(lang, "Recoverable session", "\u53ef\u6062\u590d\u4f1a\u8bdd", "\u53ef\u6062\u5fa9\u6703\u8a71")}
+            </div>
+            {session.status && (
+                <div data-testid="recoverable-session-status" style={{ color: t.fieldLabel, fontSize: "11px", marginBottom: "6px" }}>
+                    {localizeText(lang, "Status", "\u72b6\u6001", "\u72c0\u614b")}{labelSeparator(lang)}{formatSessionStatus(session.status, lang)}
+                </div>
+            )}
+            {session.title && (
+                <div data-testid="recoverable-session-title" style={{ color: t.text, fontWeight: 600, marginBottom: "4px" }}>
+                    {session.title}
+                </div>
+            )}
+            {progress && (
+                <div data-testid="recoverable-session-summary" style={{ color: t.text, whiteSpace: "pre-wrap", overflowWrap: "break-word" }}>
+                    {renderContentWithCodeBlocks(formatUnfinishedSlotSummary(progress, lang), t)}
+                </div>
+            )}
+            {session.projectPath && (
+                <div data-testid="recoverable-session-project" style={{ color: t.pathColor, marginTop: "6px", wordBreak: "break-all" }}>
+                    <a
+                        href="#"
+                        onClick={(event) => openFileInFolder(event, session.projectPath!)}
+                        style={{ color: t.pathColor, textDecoration: "underline", textDecorationStyle: "dotted", textUnderlineOffset: "2px", cursor: "pointer", wordBreak: "break-all" }}
+                        title={cloudSafePathLabel(session.projectPath, localizeText(lang, "Cloud workspace", "云端工作区"))}
+                    >
+                        {cloudSafePathLabel(session.projectPath, localizeText(lang, "Cloud workspace", "云端工作区"))}
+                    </a>
+                </div>
+            )}
+            {actions.length > 0 && renderActions(actions, executeAction, t, lang)}
+        </div>
+    );
+}
+
+function revealCloudWorkspaceTree(filePath: string) {
+    const root = cloudWorkspaceRootFromPath(filePath) || filePath;
+    window.dispatchEvent(new CustomEvent(REVEAL_CLOUD_WORKSPACE_FILES_EVENT, { detail: { projectPath: root } }));
+}
+
+function openFileInFolder(event: React.MouseEvent, filePath: string) {
+    event.preventDefault();
+    event.stopPropagation();
+    if (isCloudWorkspaceFilePath(filePath)) {
+        void OpenFileOrShowInFolder(filePath).catch(() => revealCloudWorkspaceTree(filePath));
+        return;
+    }
+    if (isCloudWorkspacePath(filePath)) {
+        revealCloudWorkspaceTree(filePath);
+        return;
+    }
+    void OpenFileOrShowInFolder(filePath).catch(() => ShowItemInFolder(filePath));
+}
+
+/*function parseGuideReceiptContent(content: string): { title: string; detail: string; quote: string } {
+    const lines = content.split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+    const titleIndex = lines.findIndex(line => !line.startsWith('>'));
+    const title = titleIndex >= 0 ? lines[titleIndex].replace(/[:：]\s*$/, '') : '';
+    const detail = titleIndex >= 0
+        ? (lines.slice(titleIndex + 1).find(line => !line.startsWith('>')) || '')
+        : '';
+    const quote = lines
+        .filter(line => line.startsWith('>'))
+        .map(line => line.replace(/^>\s?/, ''))
+        .join('\n');
+    return { title, detail, quote };
+}
+
+const GUIDE_RECEIPT_QUOTE_PREVIEW_MAX_CHARS = 96;
+
+function compactGuideReceiptQuotePreview(quote: string): string {
+    const preview = quote
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(Boolean)
+        .join(" ");
+    if (preview.length <= GUIDE_RECEIPT_QUOTE_PREVIEW_MAX_CHARS) return preview;
+    return `${preview.slice(0, GUIDE_RECEIPT_QUOTE_PREVIEW_MAX_CHARS - 1).trimEnd()}…`;
+}
+
+function renderGuideReceipt(msg: ChatMessage, t: Theme): React.ReactNode {
+    const { title, detail, quote } = parseGuideReceiptContent(msg.content);
+    const quotePreview = quote ? compactGuideReceiptQuotePreview(quote) : "";
+    return (
+        <div
+            key={msg.id}
+            data-testid="guide-receipt"
+            role="status"
+            aria-live="polite"
+            style={{
+                margin: "2px 0 6px",
+                padding: "2px 2px",
+                color: t.textMuted,
+                fontSize: "12px",
+                lineHeight: 1.45,
+            }}
+        >
+            {title && <span style={{ color: t.fieldLabel, fontWeight: 600 }}>{title}</span>}
+            {detail && <span>{` · ${detail}`}</span>}
+            {quotePreview && (
+                <div
+                    style={{
+                        marginTop: "2px",
+                        color: t.text,
+                        whiteSpace: "nowrap",
+                        textOverflow: "ellipsis",
+                        overflow: "hidden",
+                    }}
+                    aria-label={quotePreview}
+                >
+                    {quotePreview}
+                </div>
+            )}
+        </div>
+    );
+}*/
+
+/* Render a single ChatMessage */
+
+/** 1-based thought index in an interleaved coding timeline, or undefined. */
+export function codingTimelineThoughtStep(timeline: Array<{ kind: string }>, index: number): number | undefined {
+    if (timeline[index]?.kind !== "thinking") return undefined;
+    let step = 0;
+    for (let i = 0; i <= index; i++) {
+        if (timeline[i]?.kind === "thinking") step += 1;
+    }
+    return step;
+}
+
+export { CodingAgentThinkingTimelineItem, renderCodingAgentThinkingTimelineItem } from "./CodingAgentThinkingTimelineItem";
+
+function visibleChatFields(fields: ChatMessage["fields"] | undefined): Array<{ label: string; value: string }> {
+    return (fields || []).filter((field) => {
+        const label = String(field?.label || "").trim().toLowerCase();
+        // recording_* stays on the message for the recorder card; it is only hidden here.
+        return label !== "recording_title" && label !== "recording_purpose" && !isBrowserEchoFieldLabel(String(field?.label || ""));
+    });
+}
+
+/** Visible assistant chrome: prose, thinking, cards, or attachments. */
+export function assistantMessageHasVisibleBody(msg: ChatMessage): boolean {
+    const savedPaths = msg.localFilePaths && msg.localFilePaths.length > 0
+        ? msg.localFilePaths
+        : (msg.localFilePath ? [msg.localFilePath] : []);
+    const visibleFields = visibleChatFields(msg.fields);
+    // In the coding workbench reasoning is rendered as ordered timeline nodes.
+    // Do not leave an empty assistant bubble at the original placeholder.
+    const reasoningVisibleHere = !msg.codingTimeline?.length
+        && cleanReasoningTrailForBody(msg.reasoning || "").trim();
+    const hasRenderableScreenshot = hasRenderableAssistantScreenshot(msg, visibleFields.length > 0);
+    return !!(
+        stripCodingAgentAuditSections((msg.content || "").trim())
+        || reasoningVisibleHere
+        || visibleFields.length
+        || hasRenderableScreenshot
+        || savedPaths.length
+        || msg.actions?.length
+        || msg.confirmation
+        || msg.unfinishedSlot
+        || msg.recoverableSession
+        || msg.recordingSession
+    );
+}
+
+function hasRenderableAssistantScreenshot(msg: ChatMessage, hasVisibleFields = false): boolean {
+    if (!(msg.thumbnailBase64 || msg.imageKey)) return false;
+    const hasSavedArtifact = !!(msg.localFilePath || msg.localFilePaths?.length);
+    const hasTextualBody = !!(String(msg.content || '').trim() || String(msg.reasoning || '').trim() || hasVisibleFields);
+    return hasSavedArtifact || !hasTextualBody;
+}
+
+export function renderMessage(
+    msg: ChatMessage,
+    executeAction: (cmd: string) => void,
+    t: Theme,
+    isLastAssistant: boolean,
+    savedFileLabel: string,
+    lang = "en",
+    isStreaming = false,
+    incrementalContentRenderer?: (formattedContent: string) => React.ReactNode[],
+    onRecordingComplete?: (result: RecordingCompleteResult, messageId: string) => void,
+    collapseReasoningByDefault = false,
+    // Same incremental treatment as incrementalContentRenderer, but for the
+    // thinking panel: reasoning streams token-by-token too and a full re-parse
+    // every 33ms flush stalls the main thread once the trail grows long.
+    incrementalReasoningRenderer?: (formattedReasoning: string) => React.ReactNode[],
+    /** Live status for the last in-flight assistant (any current activity title). */
+    liveReasoningLabel?: string,
+    /** Plain object after the live action (model or tool). Sheen stays on the action. */
+    liveReasoningObject?: string,
+    /** Last assistant while the task is still running. Settled replies hide call rows. */
+    taskRunning = false,
+    /** Paper expert: export the sources beside the PDF as one zip. */
+    latexSourceBundle = false,
+): React.ReactNode {
+    // The confirmation card lives in its own module to keep this file under the
+    // 2000-line UI guard cap; it receives its renderers by injection so that
+    // module stays a leaf (importing back would be a cycle).
+    const confirmationCardDeps: ConfirmationCardDeps = {
+        renderContentWithCodeBlocks,
+        renderInlineMarkdown,
+        renderActions,
+    };
+    switch (msg.role) {
+        case "user":
+            const isGuideInjection = msg.kind === "guideInjection";
+            // Some turns are stored with the composer's outgoing text, which
+            // carries the file-picker marker block and the host's vision/OCR
+            // notes. Those are prompt machinery, never something the user said,
+            // so they are peeled off for display — and the file paths they
+            // carry become the attachment previews shown beside the bubble.
+            const userTurn = userTurnDisplayView(msg.content || "", msg.attachments);
+            const userTurnText = userTurn.text;
+            return (
+                <div key={msg.id} role="group" data-testid={`assistant-chat-user-${msg.id}`} aria-label={isGuideInjection ? (lang === "en" ? "Your injected guidance" : "我已注入的引导") : (lang === "en" ? "Your message" : "我的消息")} className="aamd-msg-user">
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, margin: `0 4px ${CHAT_SPEAKER_LABEL_GAP}px`, color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}>
+                        <span className="mc-message-avatar mc-message-avatar--user" aria-hidden="true">{lang === "en" ? "U" : "我"}</span>
+                        <span>{lang === "en" ? "You" : "我"}</span>
+                        {isGuideInjection && (
+                            <span
+                                data-testid="guide-injection-badge"
+                                style={{
+                                    padding: "1px 5px",
+                                    borderRadius: 999,
+                                    background: `color-mix(in srgb, ${t.sendBtnBg} 14%, transparent)`,
+                                    color: t.text,
+                                    fontSize: 10,
+                                    fontWeight: 600,
+                                    lineHeight: 1.4,
+                                }}
+                            >
+                                {lang === "en" ? "Injected" : "已注入"}
+                            </span>
+                        )}
+                    </span>
+                    <ChatBubbleFrame
+                        side="right"
+                        tailPlacement="side"
+                        background={userChatBubbleBackground(t.sendBtnBg, t.fieldBg)}
+                        borderColor={t.sendBtnBorder}
+                        data-testid={`assistant-chat-user-bubble-${msg.id}`}
+                        tailTestId={`assistant-chat-tail-user-${msg.id}`}
+                        style={{
+                            maxWidth: "76%",
+                            color: t.text,
+                            fontWeight: 400,
+                            lineHeight: 1.55,
+                            overflowWrap: "break-word",
+                            whiteSpace: "pre-wrap",
+                            borderRadius: 16,
+                        }}
+                    >
+                        {userTurnText && <div>{userTurnText}</div>}
+                        {!!userTurn.attachments.length && (
+                            <div aria-label={lang === "en" ? "Attached files" : "已附加文件"} style={{ display: "flex", flexWrap: "wrap", alignItems: "flex-end", gap: 6, marginTop: userTurnText ? 7 : 0 }}>
+                                {userTurn.attachments.map((attachment, index) => <UserAttachmentChip key={`${attachment.filePath}-${index}`} attachment={attachment} theme={t} lang={lang} />)}
+                            </div>
+                        )}
+                    </ChatBubbleFrame>
+                </div>
+            );
+        case "assistant": {
+            const savedPaths = msg.localFilePaths && msg.localFilePaths.length > 0
+                ? msg.localFilePaths
+                : (msg.localFilePath ? [msg.localFilePath] : []);
+            // Inline captures are valid for image-only replies. Once a reply
+            // has ordinary text, only a capture tied to a saved artifact is
+            // user-addressable; otherwise tool chrome can leak into the reply.
+            const screenshotBase64 = (msg.thumbnailBase64 || msg.imageKey)
+                && hasRenderableAssistantScreenshot(msg, !!msg.fields?.length)
+                ? (msg.thumbnailBase64 || msg.imageKey)
+                : undefined;
+            // Coding workbench: empty placeholder is the trail's job (· Working),
+            // not a chat bubble that says 处理中 / 思考中.
+            if (collapseReasoningByDefault && !assistantMessageHasVisibleBody(msg)) {
+                return null;
+            }
+            const codingAnswerStarted = collapseReasoningByDefault && (msg.reasoningLive === false || (msg.reasoningLive !== true && !!String(msg.content || "").trim()));
+            // Streaming marks the round host only. The panel does not pass
+            // it for any other assistant message, so this cannot draw a
+            // second live title beside the standalone bar.
+            const liveForReasoning = isLastAssistant && (!!liveReasoningLabel || (isStreaming && !codingAnswerStarted));
+
+            const cleanedReasoning = cleanReasoningTrailForBody(msg.reasoning || "");
+            // After the stream ends, peel CoT out of a mixed body. Ordinary chat
+            // may still lift a hidden non-monologue deliverable; coding workbench
+            // only separates, so thoughts stay on the timeline.
+            const visibleReply = visibleAssistantReplyForMessage(msg.content || "", cleanedReasoning, {
+                live: liveForReasoning,
+                coding: !!(msg.codingTimeline?.length || collapseReasoningByDefault),
+                toolCalls: !!msg.toolCalls?.length,
+            });
+            const taskSettled = !taskRunning && !!msg.toolCalls?.length;
+            const summaryText = taskSettled ? completedAssistantSummary(visibleReply.content, msg.resultText) : visibleReply.content;
+            return (
+                <div key={msg.id} role="group" data-testid={`assistant-chat-ai-${msg.id}`} aria-label={localizeText(lang, "AI assistant message", "AI 助手消息")} className="aamd-msg-ai">
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: 6, margin: `0 4px ${CHAT_SPEAKER_LABEL_GAP}px`, color: t.textMuted, fontSize: 11, lineHeight: 1.2 }}><span className="mc-message-avatar mc-message-avatar--assistant" aria-hidden="true">M</span><span>{assistantSpeakerLabel(lang)}</span></span>
+                    {(() => {
+                        const copyPayload = buildAssistantReplyCopyText(summaryText, msg.unfinishedSlot, lang);
+                        const showCopy = copyPayload.trim().length > 0;
+                        return (
+                    <ChatBubbleFrame
+                        side="left"
+                        tailPlacement="side"
+                        background={t.fieldBg}
+                        borderColor={t.fieldBorder}
+                        data-testid={`assistant-chat-ai-bubble-${msg.id}`}
+                        tailTestId={`assistant-chat-tail-ai-${msg.id}`}
+                        topRight={showCopy ? (
+                            <AssistantReplyCopyButton
+                                text={copyPayload}
+                                theme={t}
+                                lang={lang}
+                                messageId={msg.id}
+                            />
+                        ) : undefined}
+                        style={{
+                            // Settled replies and saved files already take the column.
+                            // A diagram does too, but that width lives in the stylesheet:
+                            // an inline width here would beat it, and fit-content is an
+                            // indefinite width the diagram's percentage cannot resolve.
+                            ...(taskSettled || savedPaths.length > 0 ? { width: "100%" } : {}),
+                            maxWidth: "84%",
+                            minWidth: 0,
+                            // Extra right padding so the compact top-right copy control
+                            // sits in the bubble corner instead of over the first line.
+                            padding: showCopy ? "9px 28px 9px 12px" : "9px 12px",
+                            color: t.text,
+                            lineHeight: 1.55,
+                            overflowWrap: "break-word",
+                            borderRadius: 16,
+                        }}
+                    >
+                        {/* Ordinary chat only: coding workbench uses the · Working trail. */}
+                        {isLastAssistant && !collapseReasoningByDefault && !summaryText.trim() && !visibleReply.content && !msg.fields && !screenshotBase64 && savedPaths.length === 0 && !visibleReply.reasoning && !liveReasoningLabel && (
+                            <span
+                                className="assistant-reasoning-live-label"
+                                data-testid="assistant-processing-label"
+                                style={{
+                                    color: t.textMuted,
+                                    fontSize: "12px",
+                                    fontStyle: "italic",
+                                    opacity: 0.8,
+                                }}
+                            >
+                                {lang === "en" ? "Working..." : "\u5904\u7406\u4e2d\u2026"}
+                            </span>
+                        )}
+                        {screenshotBase64 && renderScreenshotPreview(screenshotBase64, msg.localFilePath, t, lang)}
+                        {/* The thinking panel follows the token stream — open while a
+                            round is actively streaming, folded when the stream ends
+                            (stream-done fires per LLM round). Live tool steps reuse
+                            this header and stay folded when no tokens are arriving.
+                            Programming agents use the same rule until the coding
+                            timeline owns the thought. */}
+                        {!msg.codingTimeline?.length && (visibleReply.reasoning || (isLastAssistant && liveReasoningLabel)) && (() => {
+                            const live = liveForReasoning;
+                            const reasoningLabel = live
+                                ? (liveReasoningLabel || assistantLiveActivityLabel("thinking", lang))
+                                : (lang === "en" ? "Thinking process..." : "思考过程...");
+                            // Open while reasoning tokens are still arriving. Fold when that
+                            // stream ends, or when a coding answer has already started.
+                            // A live tool label with no stream stays folded.
+                            const shouldOpen = isStreaming && isLastAssistant && !codingAnswerStarted;
+                            const displayReasoning = stripAssistantToolCallMarkers(visibleReply.reasoning);
+                            if (!displayReasoning.trim() && !live) return null;
+                            return (
+                                <AssistantReasoningPanel
+                                    key="reasoning"
+                                    defaultOpen={shouldOpen}
+                                    label={reasoningLabel}
+                                    objectLabel={live ? liveReasoningObject : undefined}
+                                    lang={lang}
+                                    theme={t}
+                                    contentKey={displayReasoning}
+                                    live={live}
+                                >
+                                    {displayReasoning.trim()
+                                        ? (incrementalReasoningRenderer
+                                            ? incrementalReasoningRenderer(displayReasoning)
+                                            : renderContentWithCodeBlocks(displayReasoning, t, reasoningTrailMarkdownOptions))
+                                        : null}
+                                </AssistantReasoningPanel>
+                            );
+                        })()}
+                        {(() => {
+                            // Strip line-leading pictographs once up front so /btw heading match
+                            // works on legacy history that still prefixes decorative marks.
+                            // renderContentWithCodeBlocks re-strips after compact-heading normalize
+                            // (idempotent; that second pass catches "### <pictograph> …").
+                            const rawFormattedContent = stripCodingAgentAuditSections(prepareChatBodyForDisplay(
+                                formatUnfinishedSlotNotice(summaryText, msg.unfinishedSlot, lang),
+                            ));
+                            // /btw side query results are collapsible to reduce space.
+                            // Detection: requestId starts with "btw-" (set by sendBtwMessage)
+                            // OR content starts with the backend prefix (fallback for history reload).
+                            // Prefer requestId; content may still carry a legacy "/btw result" heading from history.
+                            const btwHeadingMatch = rawFormattedContent?.match(
+                                /^\*\*\/btw (?:查询结果|query result)\*\*\n\n/u,
+                            );
+                            const matchedBtwPrefix = btwHeadingMatch?.[0];
+                            const isBtwResult = msg.requestId?.startsWith("btw-") || !!matchedBtwPrefix;
+                            if (isBtwResult && rawFormattedContent) {
+                                const rawBtwBody = matchedBtwPrefix ? rawFormattedContent.slice(matchedBtwPrefix.length) : rawFormattedContent;
+                                const btwBody = stripRolePrefixForDisplay(rawBtwBody);
+                                // Extract first non-empty line as preview in the collapsed summary.
+                                const firstLine = btwBody.split('\n').find(l => l.trim()) || '';
+                                // Strip markdown formatting for plain-text summary display.
+                                const plainFirstLine = firstLine.replace(/\*\*/g, '').replace(/[*_`#]/g, '');
+                                const preview = plainFirstLine.length > 60 ? plainFirstLine.slice(0, 60) + '…' : plainFirstLine;
+                                return (
+                                    <details open className="aamd-btw-details">
+                                        <summary style={{ cursor: "pointer", color: t.textMuted, fontSize: "12px", userSelect: "none", display: "inline-flex", alignItems: "center", gap: 6 }}>
+                                            <IconSearch size={12} color="currentColor" /> <strong>/btw</strong>{preview ? ` — ${preview}` : ""}
+                                        </summary>
+                                        <div className="aamd-btw-body">
+                                            {renderContentWithCodeBlocks(btwBody, t)}
+                                        </div>
+                                    </details>
+                                );
+                            }
+                            const formattedContent = stripRolePrefixForDisplay(rawFormattedContent);
+                            // Use incremental renderer when provided (streaming long messages)
+                            // to avoid O(content.length) full re-parse every 33ms token flush.
+                            // A tool row splits the body, so that shared cache stays unused
+                            // until the reply has no calls. A finished task drops the rows
+                            // and keeps the result summary.
+                            const toolCalls = taskSettled ? undefined : msg.toolCalls;
+                            return (
+                            <>
+                            {taskSettled && (
+                                <div
+                                    className="mc-task-summary-status"
+                                    data-status={assistantTaskSettledIncomplete(msg.resultStatus, formattedContent) ? "incomplete" : "completed"}
+                                    data-testid="assistant-task-summary-status"
+                                >
+                                    {assistantTaskSettledIncomplete(msg.resultStatus, formattedContent)
+                                        ? localizeText(lang, "Not completed", "未完成", "未完成")
+                                        : localizeText(lang, "Completed", "已完成", "已完成")}
+                                </div>
+                            )}
+                            {renderAssistantBodyWithToolCalls(formattedContent, toolCalls, t, (segment, isTail) => {
+                                // The incremental cache is keyed to one growing string. A tool
+                                // row splits that string, so a slice would reuse frozen paragraphs
+                                // from the wrong half of the reply.
+                                if (isTail && incrementalContentRenderer && !toolCalls?.length && segment) {
+                                    return incrementalContentRenderer(segment);
+                                }
+                                return renderContentWithCodeBlocks(segment, t);
+                            })}
+                            </>
+                            );
+                        })()}
+                        {msg.confirmation && renderConfirmationCard(confirmationCardDeps, msg.confirmation, msg.actions, executeAction, t, lang)}
+                        {msg.unfinishedSlot && renderUnfinishedSlotCard(msg.unfinishedSlot, executeAction, t, lang)}
+                        {msg.recoverableSession && renderRecoverableSessionCard(msg.recoverableSession, executeAction, t, lang)}
+                        {msg.recordingSession && (
+                            <RecordingSessionCard
+                                title={msg.recordingSession.title}
+                                purpose={msg.recordingSession.purpose}
+                                theme={t}
+                                lang={lang}
+                                active={!!msg.recordingSession.active && isLastAssistant && !isStreaming}
+                                onComplete={(result) => {
+                                    if (onRecordingComplete) {
+                                        onRecordingComplete(result, msg.id);
+                                    }
+                                }}
+                            />
+                        )}
+                        {savedPaths.length > 0 && (
+                            <TaskResultArtifacts paths={savedPaths} messageId={msg.id} lang={lang} onOpen={openFileInFolder} latexSourceBundle={latexSourceBundle} />
+                        )}
+                        {(() => {
+                            const visibleFields = visibleChatFields(msg.fields);
+                            return visibleFields.length > 0 ? renderFields(visibleFields, t) : null;
+                        })()}
+                        {!msg.confirmation && !msg.recordingSession && msg.actions && msg.actions.length > 0 && renderActions(msg.actions, executeAction, t, lang)}
+                    </ChatBubbleFrame>
+                        );
+                    })()}
+                </div>
+            );
+        }
+        case "progress":
+            {
+                const codingAgentProgress = renderCodingAgentProgressStatus(msg, t, lang);
+                if (codingAgentProgress) return codingAgentProgress;
+                const toolCall = parseAssistantToolStatus(msg.content || "");
+                if (toolCall && !isProgressOnlyToolAction(toolCall.action)) {
+                    return (
+                        <div key={msg.id} className="aamd-progress-row" data-testid={`assistant-chat-progress-${msg.id}`}>
+                            <AssistantToolCallRow call={{ id: msg.id, ...toolCall }} theme={t} />
+                        </div>
+                    );
+                }
+            }
+            return (
+                <div key={msg.id} role="status" aria-live="polite" data-testid={`assistant-chat-progress-${msg.id}`} className="aamd-progress-row">
+                    <span className="assistant-chat-progress-line" style={{
+                        maxWidth: "84%",
+                        minWidth: 0,
+                        display: "inline-flex",
+                        alignItems: "baseline",
+                        gap: 7,
+                        color: t.textMuted,
+                        fontSize: "11px",
+                        lineHeight: 1.45,
+                        overflow: "hidden",
+                    }}>
+                        <span aria-hidden="true" style={{ width: 5, height: 5, flex: "0 0 auto", borderRadius: "50%", background: t.headingColor, opacity: 0.72 }} />
+                        <span className="aamd-ellipsis" title={msg.content}>
+                            {prepareChatBodyForDisplay(msg.content)}
+                        </span>
+                    </span>
+                </div>
+            );
+        case "system":
+            if (msg.kind === "taskContext") {
+                return (
+                    <div key={msg.id} role="status" data-testid={`assistant-task-context-${msg.id}`} className="aamd-msg-row">
+                        <div style={{ maxWidth: "84%", boxSizing: "border-box", padding: "9px 12px", borderRadius: "8px", background: `color-mix(in srgb, ${t.sendBtnBg} 8%, ${t.fieldBg})`, border: `1px solid color-mix(in srgb, ${t.sendBtnBorder} 44%, ${t.fieldBorder})`, color: t.text, fontSize: "12px", lineHeight: "1.6", overflowWrap: "break-word" }}>
+                            <div style={{ marginBottom: 3, color: t.textMuted, fontSize: 11, fontWeight: 700 }}>{lang === "en" ? "CURRENT TASK" : lang === "zh-Hant" ? "目前任務資訊" : "当前任务信息"}</div>
+                            {renderContentWithCodeBlocks(msg.content, t, undefined, lang)}
+                        </div>
+                    </div>
+                );
+            }
+            const traceFields = msg.kind === "trace" ? visibleChatFields(msg.fields) : [];
+            return (
+                <div key={msg.id} role="status" data-testid={`assistant-chat-system-${msg.id}`} className="aamd-msg-row">
+                    <div style={{ maxWidth: "84%", boxSizing: "border-box", padding: "8px 12px", borderRadius: "8px", background: t.fieldBg, border: `1px solid ${t.fieldBorder}`, color: t.text, fontSize: "12px", lineHeight: "1.6", overflowWrap: "break-word" }}>
+                        {traceFields.length > 0 && renderFields(traceFields, t)}
+                        {renderContentWithCodeBlocks(msg.content, t, undefined, lang)}
+                    </div>
+                </div>
+            );
+        case "error":
+            {
+                const description = describeAIAssistantError(localizeAIAssistantError(msg.content, lang), lang);
+                if (!description.title) return null;
+                return (
+                    // role="alert" lives on the content bubble, not this full-width flex
+                    // wrapper: App.css gives every [role='alert'] a background+border, which
+                    // would paint a full-width pink strip behind the compact bubble.
+                    <div key={msg.id} data-testid={`assistant-chat-error-${msg.id}`} className="aamd-msg-row">
+                        <div role="alert" data-testid={`assistant-error-bubble-${msg.id}`} style={{
+                            maxWidth: "84%",
+                            width: "fit-content",
+                            boxSizing: "border-box",
+                            display: "flex",
+                            alignItems: "flex-start",
+                            gap: 8,
+                            color: t.errorText,
+                            background: t.errorBg,
+                            border: `1px solid ${t.errorBorder}`,
+                            padding: "8px 12px",
+                            borderRadius: 10,
+                            fontSize: "12px",
+                            lineHeight: 1.55,
+                            overflowWrap: "break-word",
+                        }}>
+                            <span aria-hidden="true" className="aamd-err-icon">
+                                <StatusGlyph kind="error" size={13} color={t.errorText} />
+                            </span>
+                            {/* Inner testids must not start with "assistant-chat-error-": App.css scopes
+                                margin rules to that prefix and would override the compact inner layout. */}
+                            <span className="aamd-err-body">
+                                <span data-testid={`assistant-error-title-${msg.id}`} style={{ fontWeight: 600, color: t.errorText }}>
+                                    {prepareChatBodyForDisplay(description.title)}
+                                </span>
+                                {description.detail && (
+                                    <span data-testid={`assistant-error-detail-${msg.id}`} style={{ color: t.text }}>
+                                        {prepareChatBodyForDisplay(description.detail)}
+                                    </span>
+                                )}
+                                {description.hint && (
+                                    <span data-testid={`assistant-error-hint-${msg.id}`} style={{ color: t.textMuted, fontSize: 11 }}>
+                                        {description.hint}
+                                    </span>
+                                )}
+                            </span>
+                        </div>
+                    </div>
+                );
+            }
+        default:
+            return null;
+    }
+}

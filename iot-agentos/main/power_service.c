@@ -435,10 +435,13 @@ static void handle_display_off_deadline(uint32_t generation) {
          * screen.  Releasing the final lease does not have to know which UI
          * timer originally armed this deadline, and a schedule-owned window
          * still converges to DISPLAY_OFF without an unrelated repaint. */
+        esp_timer_handle_t retry_timer = NULL;
         taskENTER_CRITICAL(&s_power_lock);
         bool can_rearm = s_initialized && !s_stopping &&
+                         !s_system_sleep_display_off_scheduler_preparing &&
                          s_display_off_timer != NULL &&
                          s_display_off_generation == generation;
+        retry_timer = s_display_off_timer;
         s_display_off_armed = can_rearm;
         s_display_off_retry_pending = false;
         if (can_rearm) {
@@ -447,14 +450,38 @@ static void handle_display_off_deadline(uint32_t generation) {
             s_display_off_due_us = 0;
         }
         taskEXIT_CRITICAL(&s_power_lock);
-        if (!can_rearm || esp_timer_start_once(s_display_off_timer, 1000000) != ESP_OK) {
+        if (!can_rearm || !retry_timer ||
+            esp_timer_start_once(retry_timer, 1000000) != ESP_OK) {
             taskENTER_CRITICAL(&s_power_lock);
-            s_display_off_armed = false;
-            s_display_off_due_us = 0;
+            if (s_display_off_timer != NULL &&
+                s_display_off_generation == generation) {
+                s_display_off_armed = false;
+                s_display_off_retry_pending = false;
+                s_display_off_due_us = 0;
+            }
             taskEXIT_CRITICAL(&s_power_lock);
             ESP_LOGW(TAG, "cannot defer idle deadline while power lease is active");
         } else {
-            ESP_LOGD(TAG, "idle deadline deferred: foreground power lease active");
+            /* The lifecycle owner may have published its fence after the
+             * pre-start check.  Stop a late rearm and clear only this exact
+             * generation; a successor must remain untouched. */
+            taskENTER_CRITICAL(&s_power_lock);
+            const bool still_current = s_initialized && !s_stopping &&
+                                       !s_system_sleep_display_off_scheduler_preparing &&
+                                       s_display_off_timer == retry_timer &&
+                                       s_display_off_generation == generation &&
+                                       s_display_off_armed;
+            if (!still_current && s_display_off_generation == generation) {
+                s_display_off_armed = false;
+                s_display_off_retry_pending = false;
+                s_display_off_due_us = 0;
+            }
+            taskEXIT_CRITICAL(&s_power_lock);
+            if (!still_current) {
+                (void)esp_timer_stop(retry_timer);
+            } else {
+                ESP_LOGD(TAG, "idle deadline deferred: foreground power lease active");
+            }
         }
         xSemaphoreGive(s_transition_mutex);
         return;
@@ -1113,22 +1140,51 @@ device_status_t power_service_schedule_display_off(uint32_t idle_after_ms) {
     }
 
     (void)esp_timer_stop(timer);
+    uint32_t scheduled_generation = 0;
     taskENTER_CRITICAL(&s_power_lock);
     s_display_off_armed = true;
     s_display_off_retry_pending = false;
     ++s_display_off_generation;
     if (!s_display_off_generation) s_display_off_generation = 1;
+    scheduled_generation = s_display_off_generation;
     s_display_off_due_us = esp_timer_get_time() + (int64_t)idle_after_ms * 1000;
     taskEXIT_CRITICAL(&s_power_lock);
     esp_err_t err = esp_timer_start_once(timer,
                                          (uint64_t)idle_after_ms * 1000u);
     if (err != ESP_OK) {
         taskENTER_CRITICAL(&s_power_lock);
-        s_display_off_armed = false;
-        s_display_off_due_us = 0;
+        if (s_display_off_timer == timer &&
+            s_display_off_generation == scheduled_generation) {
+            s_display_off_armed = false;
+            s_display_off_retry_pending = false;
+            s_display_off_due_us = 0;
+        }
         taskEXIT_CRITICAL(&s_power_lock);
         xSemaphoreGive(transition_mutex);
         return status_from_esp_err(err);
+    }
+    /* Deinit or System-Sleep PREPARE may close admission after the state
+     * publication but before ESP timer start.  A stop performed by that
+     * owner cannot retract a start which races after it; revalidate now and
+     * retire the just-armed generation instead of leaving a callback behind
+     * on a closed Power service. */
+    taskENTER_CRITICAL(&s_power_lock);
+    const bool still_current = s_initialized && !s_stopping &&
+                               !s_system_sleep_display_off_scheduler_preparing &&
+                               s_display_off_timer == timer &&
+                               s_display_off_generation == scheduled_generation &&
+                               s_display_off_armed;
+    if (!still_current && s_display_off_timer == timer &&
+        s_display_off_generation == scheduled_generation) {
+        s_display_off_armed = false;
+        s_display_off_retry_pending = false;
+        s_display_off_due_us = 0;
+    }
+    taskEXIT_CRITICAL(&s_power_lock);
+    if (!still_current) {
+        (void)esp_timer_stop(timer);
+        xSemaphoreGive(transition_mutex);
+        return DEVICE_STATUS_BUSY;
     }
     xSemaphoreGive(transition_mutex);
     taskENTER_CRITICAL(&s_power_lock);

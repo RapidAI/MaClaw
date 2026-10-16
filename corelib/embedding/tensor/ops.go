@@ -196,10 +196,11 @@ func matMulRangeDual(out, a, b, bias []float32, M, N, K, ns, ne int) {
 	var dDual0, dDual1 [8]float32
 	var dTri0, dTri1 [12]float32
 	// PP-OCR pointwise projections repeatedly use these feature widths. The
-	// AVX2 triple-B kernel amortizes each A-panel load over three output
+	// triple-B kernel amortizes each A-panel load over three output
 	// channels; for the 8-row main tile this avoids the extra A pass that a
-	// dual-B pair plus singleton column requires.
-	useTriple := K == 96 || K == 120 || K == 192 || K == 384
+	// dual-B pair plus singleton column requires. 48 and 768 are the det
+	// model's SE/entry widths; 120 is the rec model's SVTR width.
+	useTriple := K == 48 || K == 96 || K == 120 || K == 192 || K == 384 || K == 768
 	m := 0
 	for ; m+7 < M; m += 8 {
 		aPanel := a[m*K : (m+8)*K]
@@ -531,6 +532,9 @@ func RMSNormRoPESeq(x, weight, cosTable, sinTable []float32, seq, nHeads, headDi
 }
 
 func RMSNorm(out, x, weight []float32, eps float32) {
+	if rmsNormAsm(out, x, weight, eps) {
+		return
+	}
 	n := len(x)
 	ss := vek32.Dot(x, x) // sum of squares via SIMD dot product
 	scale := 1.0 / float32(math.Sqrt(float64(ss/float32(n)+eps)))
@@ -601,6 +605,45 @@ func siluMulScalar(gate, up []float32) {
 	for ; i < n; i++ {
 		v := gate[i]
 		gate[i] = (v / (1.0 + fastExp(-v))) * up[i]
+	}
+}
+
+// GeluMul computes gelu(gate) * up in-place into gate, fusing two operations.
+//
+// This is the EmbeddingGemma FFN epilogue, and it is GELU, not SiLU. The formula
+// is ggml's ggml_gelu_f32 (ggml/src/ggml-cpu/vec.h), the tanh-approximation GELU
+// that every Gemma generation declares as `hidden_activation:
+// "gelu_pytorch_tanh"` in its HF config:
+//
+//	0.5 * x * (1 + tanh(sqrt(2/pi) * x * (1 + 0.044715 * x^2)))
+//
+// llama.cpp builds this model's FFN with LLM_FFN_GELU
+// (src/models/gemma-embedding.cpp:150), so this is what the reference
+// implementation computes. The embedding path used SiLU here, which was the
+// single largest remaining deviation: reproducing it is worth cos 0.93 -> 0.9998
+// against the port on a 794-token text (tools/go_vs_port.py --sweep).
+//
+// SiLUMul is deliberately left alone. The ASR decoder uses it
+// (corelib/asr/decoder.go:319) and those weights were trained for SwiGLU, so the
+// two activations now have to be kept apart rather than shared.
+//
+// Scalar, and float32 throughout, to match the port's scalar tail
+// (src/tensor.cpp geluMul) which keeps the exact tanhf expression. The fused
+// call sites apply this per N-range and GELU is elementwise, so a vectorised
+// version can drop in without touching them; the port has one to copy.
+func GeluMul(gate, up []float32) {
+	const (
+		sqrt2OverPi = 0.79788456080286535588
+		geluCoefA   = 0.044715
+	)
+	n := len(gate)
+	if len(up) < n {
+		n = len(up)
+	}
+	for i := 0; i < n; i++ {
+		x := gate[i]
+		t := float32(math.Tanh(float64(sqrt2OverPi * x * (1.0 + geluCoefA*x*x))))
+		gate[i] = 0.5 * x * (1.0 + t) * up[i]
 	}
 }
 
@@ -784,24 +827,115 @@ func Tanh(x []float32) {
 	}
 }
 
-// GELU applies GELU activation in-place (approximate).
+// geluPyTorchC is √(2/π), the constant in gelu_pytorch_tanh.
+const geluPyTorchC = 0.7978845608
+
+func geluPyTorchTanh(v float64) float32 {
+	return float32(0.5 * v * (1.0 + math.Tanh(geluPyTorchC*(v+0.044715*v*v*v))))
+}
+
+// expF32 is the Cephes / sse_mathfun float32 exp. Relative error stays near 1 ulp
+// on the range GELU feeds it, which is enough for gelu_pytorch_tanh.
+func expF32(x float32) float32 {
+	const (
+		maxX  float32 = 88.37626
+		minX  float32 = -88.37626
+		log2e float32 = 1.442695
+		c1    float32 = 0.693359375
+		c2    float32 = -2.1219444e-4
+		p0    float32 = 1.98756915e-4
+		p1    float32 = 1.39819995e-3
+		p2    float32 = 8.3334519e-3
+		p3    float32 = 4.1665796e-2
+		p4    float32 = 1.6666665e-1
+		p5    float32 = 5.0000001e-1
+	)
+	if x > maxX {
+		x = maxX
+	} else if x < minX {
+		x = minX
+	}
+	fx := x*log2e + 0.5
+	n := float32(int32(fx))
+	if n > fx {
+		n--
+	}
+	g := x - n*c1 - n*c2
+	z := g * g
+	y := (((((p0*g+p1)*g+p2)*g+p3)*g+p4)*g+p5)*z + g + 1
+	bits := uint32(int32(n)+127) << 23
+	return y * math.Float32frombits(bits)
+}
+
+// tanhF32 matches math.Tanh narrowed to float32. The |z| < 0.625 arm is the
+// Cody-Waite rational used by math.Tanh. The other arm is 1 - 2/(exp(2z)+1).
+func tanhF32(x float32) float32 {
+	z := x
+	if z < 0 {
+		z = -z
+	}
+	if z >= 9 {
+		if x < 0 {
+			return -1
+		}
+		return 1
+	}
+	if z >= 0.625 {
+		e := expF32(2 * z)
+		y := float32(1 - 2/(float64(e)+1))
+		if x < 0 {
+			return -y
+		}
+		return y
+	}
+	if x == 0 {
+		return x
+	}
+	xd := float64(x)
+	s := xd * xd
+	y := xd + xd*s*((tanhP0*s+tanhP1)*s+tanhP2)/(((s+tanhQ0)*s+tanhQ1)*s+tanhQ2)
+	return float32(y)
+}
+
+const (
+	tanhP0 = -9.64399179425052238628e-1
+	tanhP1 = -9.92877231001918586564e1
+	tanhP2 = -1.61468768441708447952e3
+	tanhQ0 = 1.12811678491632931402e2
+	tanhQ1 = 2.23548839060100448583e3
+	tanhQ2 = 4.84406305325125486048e3
+)
+
+func geluPyTorchTanhFast(v float32) float32 {
+	inner := float32(geluPyTorchC) * (v + 0.044715*v*v*v)
+	return 0.5 * v * (1 + tanhF32(inner))
+}
+
+// GELU applies GELU activation in-place (gelu_pytorch_tanh).
 func GELU(x []float32) {
-	const c = 0.7978845608 // sqrt(2/pi)
 	for i := range x {
-		v := float64(x[i])
-		x[i] = float32(0.5 * v * (1.0 + math.Tanh(c*(v+0.044715*v*v*v))))
+		x[i] = geluPyTorchTanhFast(x[i])
+	}
+}
+
+// GELUMul computes GELU(gate) * up in-place into gate.
+// EmbeddingGemma's FFN is GeGLU with gelu_pytorch_tanh, not SiLU.
+// The AVX2 body uses 1-2/(exp(2|z|)+1) and saturates at |z|>=9. The tail
+// stays on geluPyTorchTanhFast, which keeps the small-argument rational.
+func GELUMul(gate, up []float32) {
+	n := geluMulBody(gate, up)
+	for i := n; i < len(gate); i++ {
+		gate[i] = geluPyTorchTanhFast(gate[i]) * up[i]
 	}
 }
 
 // AddBiasGELU fuses row-wise bias addition with GELU activation.
 func AddBiasGELU(data []float32, rows, dim int, bias []float32) {
-	const c = 0.7978845608 // sqrt(2/pi)
 	for r := 0; r < rows; r++ {
 		off := r * dim
 		row := data[off : off+dim]
 		for i := 0; i < dim; i++ {
-			v := float64(row[i] + bias[i])
-			row[i] = float32(0.5 * v * (1.0 + math.Tanh(c*(v+0.044715*v*v*v))))
+			row[i] = geluPyTorchTanhFast(row[i] + bias[i])
 		}
 	}
 }
@@ -935,6 +1069,50 @@ func softmaxInplaceInvScalar(scores []float32) float32 {
 	return 1.0 / sum
 }
 
+// weightedSumBatched256 accumulates exponentiated scores against contiguous
+// V rows of length 256. scores is [nQ][rows]. nQ is 4 or 8. invs[t] is 1/sum
+// for query t, so a zero score stays a zero weight.
+func weightedSumBatched256(out, scores, values []float32, nQ, rows, outStride, hOff, qf int, invs [8]float32) {
+	switch nQ {
+	case 8:
+		weightedSumBatchedContig256n8(out, scores, values, rows, outStride, hOff, qf, invs)
+	case 4, 3:
+		weightedSumBatchedContig256n4(out, scores, values, nQ, rows, outStride, hOff, qf, invs)
+	}
+}
+
+// SoftmaxWeightedSumWindow256 softmaxes each query over its own key span and
+// accumulates the union with one batched V load. scores is [nQ][seq] with a
+// logit at [t*seq+k]. lo and hi are half-open spans, one per query, and lo is
+// non-decreasing. V rows are contiguous [seq][256]. Keys outside a query's
+// span get weight 0 after that query's softmax, so they do not enter it.
+// Returns false without writing when the union does not fit the scratch band.
+func SoftmaxWeightedSumWindow256(out, scores, values []float32, nQ, seq, outStride, hOff, qf int, lo, hi []int) bool {
+	if nQ <= 0 || seq <= 0 || len(lo) < nQ || len(hi) < nQ {
+		return false
+	}
+	ulo, uhi := lo[0], hi[nQ-1]
+	if ulo < 0 || uhi > seq || uhi <= ulo {
+		return false
+	}
+	uLen := uhi - ulo
+	// Official EmbeddingGemma window: 8 queries span at most 2*256+8 keys.
+	var band [8 * (2*256 + 8)]float32
+	if nQ > 8 || nQ*uLen > len(band) {
+		return false
+	}
+	var invs [8]float32
+	for t := 0; t < nQ; t++ {
+		span := scores[t*seq+lo[t] : t*seq+hi[t]]
+		invs[t] = softmaxInplaceInv(span)
+		dst := band[t*uLen : (t+1)*uLen]
+		clear(dst)
+		copy(dst[lo[t]-ulo:hi[t]-ulo], span)
+	}
+	weightedSumBatched256(out, band[:nQ*uLen], values[ulo*256:(ulo+uLen)*256], nQ, uLen, outStride, hOff, qf, invs)
+	return true
+}
+
 // SoftmaxWeightedSumBatched writes nQ attention outputs sharing one V stream.
 // scores: [nQ][rows] row-major; values: strided rows of length dim starting at values[0].
 // Each query t writes out[(qf+t)*outStride+hOff : +dim].
@@ -980,6 +1158,12 @@ func SoftmaxWeightedSumBatched(out, scores, values []float32, nQ, rows, vStride,
 	// 256-vector is loaded once per query tile. nQ=3 is short Embed (seq=3).
 	if dim == 256 && vStride == 256 && (nQ == 4 || nQ == 3) {
 		weightedSumBatchedContig256n4(out, scores, values, nQ, rows, outStride, hOff, qf, invs)
+		return
+	}
+	// headDim=256, nQ=8: 8-query 128 kernels on V halves — each V row is
+	// loaded once per 8 queries (two n4 passes would load it twice).
+	if dim == 256 && vStride == 256 && nQ == 8 {
+		weightedSumBatchedContig256n8(out, scores, values, rows, outStride, hOff, qf, invs)
 		return
 	}
 	// Generic fallback: fold inv per query via scaled weighted sum.
@@ -1164,6 +1348,84 @@ func weightedSumBatchedContig256n4(out, scores, values []float32, nQ, rows, outS
 			o0[half:], o1[half:], o2[half:], o3[half:], vrow[half:],
 			scores[0*rows+r]*inv0, scores[1*rows+r]*inv1, scores[2*rows+r]*inv2, scores[3*rows+r]*inv3,
 		)
+	}
+}
+
+// weightedSumBatchedContig256n8: nQ=8 queries × contiguous V [rows][256].
+// Splits each V row into 128-wide halves and reuses the 8-query AVX kernels,
+// so each V element feeds all 8 queries with a single load per half pass.
+func weightedSumBatchedContig256n8(out, scores, values []float32, rows, outStride, hOff, qf int, invs [8]float32) {
+	const dim, half = 256, 128
+	if rows <= 0 {
+		return
+	}
+	o := [8][]float32{
+		out[(qf+0)*outStride+hOff : (qf+0)*outStride+hOff+dim],
+		out[(qf+1)*outStride+hOff : (qf+1)*outStride+hOff+dim],
+		out[(qf+2)*outStride+hOff : (qf+2)*outStride+hOff+dim],
+		out[(qf+3)*outStride+hOff : (qf+3)*outStride+hOff+dim],
+		out[(qf+4)*outStride+hOff : (qf+4)*outStride+hOff+dim],
+		out[(qf+5)*outStride+hOff : (qf+5)*outStride+hOff+dim],
+		out[(qf+6)*outStride+hOff : (qf+6)*outStride+hOff+dim],
+		out[(qf+7)*outStride+hOff : (qf+7)*outStride+hOff+dim],
+	}
+	inv := [8]float32{invs[0], invs[1], invs[2], invs[3], invs[4], invs[5], invs[6], invs[7]}
+	r := 0
+	if rows >= 2 {
+		va, vb := values[:dim], values[dim:2*dim]
+		var wa, wb [8]float32
+		for t := 0; t < 8; t++ {
+			wa[t] = scores[t*rows] * inv[t]
+			wb[t] = scores[t*rows+1] * inv[t]
+		}
+		wsumBatched8SetAdd128Dual(
+			o[0][:half], o[1][:half], o[2][:half], o[3][:half], o[4][:half], o[5][:half], o[6][:half], o[7][:half],
+			va[:half], vb[:half], &wa, &wb)
+		wsumBatched8SetAdd128Dual(
+			o[0][half:], o[1][half:], o[2][half:], o[3][half:], o[4][half:], o[5][half:], o[6][half:], o[7][half:],
+			va[half:], vb[half:], &wa, &wb)
+		r = 2
+	} else if rows == 1 {
+		v := values[:dim]
+		wsumBatched8Set128(
+			o[0][:half], o[1][:half], o[2][:half], o[3][:half], o[4][:half], o[5][:half], o[6][:half], o[7][:half],
+			v[:half],
+			scores[0]*inv[0], scores[rows]*inv[1], scores[2*rows]*inv[2], scores[3*rows]*inv[3],
+			scores[4*rows]*inv[4], scores[5*rows]*inv[5], scores[6*rows]*inv[6], scores[7*rows]*inv[7])
+		wsumBatched8Set128(
+			o[0][half:], o[1][half:], o[2][half:], o[3][half:], o[4][half:], o[5][half:], o[6][half:], o[7][half:],
+			v[half:],
+			scores[0]*inv[0], scores[rows]*inv[1], scores[2*rows]*inv[2], scores[3*rows]*inv[3],
+			scores[4*rows]*inv[4], scores[5*rows]*inv[5], scores[6*rows]*inv[6], scores[7*rows]*inv[7])
+		return
+	}
+	for ; r+1 < rows; r += 2 {
+		va := values[r*dim : (r+1)*dim]
+		vb := values[(r+1)*dim : (r+2)*dim]
+		var wa, wb [8]float32
+		for t := 0; t < 8; t++ {
+			wa[t] = scores[t*rows+r] * inv[t]
+			wb[t] = scores[t*rows+r+1] * inv[t]
+		}
+		wsumBatched8Add128Dual(
+			o[0][:half], o[1][:half], o[2][:half], o[3][:half], o[4][:half], o[5][:half], o[6][:half], o[7][:half],
+			va[:half], vb[:half], &wa, &wb)
+		wsumBatched8Add128Dual(
+			o[0][half:], o[1][half:], o[2][half:], o[3][half:], o[4][half:], o[5][half:], o[6][half:], o[7][half:],
+			va[half:], vb[half:], &wa, &wb)
+	}
+	for ; r < rows; r++ {
+		vrow := values[r*dim : (r+1)*dim]
+		wsumBatched8Add128(
+			o[0][:half], o[1][:half], o[2][:half], o[3][:half], o[4][:half], o[5][:half], o[6][:half], o[7][:half],
+			vrow[:half],
+			scores[0*rows+r]*inv[0], scores[1*rows+r]*inv[1], scores[2*rows+r]*inv[2], scores[3*rows+r]*inv[3],
+			scores[4*rows+r]*inv[4], scores[5*rows+r]*inv[5], scores[6*rows+r]*inv[6], scores[7*rows+r]*inv[7])
+		wsumBatched8Add128(
+			o[0][half:], o[1][half:], o[2][half:], o[3][half:], o[4][half:], o[5][half:], o[6][half:], o[7][half:],
+			vrow[half:],
+			scores[0*rows+r]*inv[0], scores[1*rows+r]*inv[1], scores[2*rows+r]*inv[2], scores[3*rows+r]*inv[3],
+			scores[4*rows+r]*inv[4], scores[5*rows+r]*inv[5], scores[6*rows+r]*inv[6], scores[7*rows+r]*inv[7])
 	}
 }
 

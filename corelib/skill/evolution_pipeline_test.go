@@ -2,11 +2,13 @@ package skill
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -14,6 +16,66 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
+
+type observingMutationLocker struct {
+	mu     sync.Mutex
+	locked atomic.Bool
+}
+
+func (l *observingMutationLocker) Lock() {
+	l.mu.Lock()
+	l.locked.Store(true)
+}
+
+func (l *observingMutationLocker) Unlock() {
+	l.locked.Store(false)
+	l.mu.Unlock()
+}
+
+func (l *observingMutationLocker) IsLocked() bool { return l.locked.Load() }
+
+func TestEvolutionPipelineMutationBoundaryRechecksAdmission(t *testing.T) {
+	locker := &observingMutationLocker{}
+	var admissionCalls atomic.Int32
+	var callbacksOutsideLock atomic.Int32
+	old := corelib.NLSkillEntry{Name: "mutation-boundary", Description: "old"}
+	after := &corelib.NLSkillEntry{Name: old.Name, Description: "new"}
+	p := NewEvolutionPipeline()
+	p.MutationMutex = locker
+	p.MutationAdmission = func(string) error {
+		admissionCalls.Add(1)
+		return nil
+	}
+	p.SkillLoader = func() []corelib.NLSkillEntry { return []corelib.NLSkillEntry{old} }
+	p.SkillSaver = func([]corelib.NLSkillEntry) error {
+		if !locker.IsLocked() {
+			callbacksOutsideLock.Add(1)
+		}
+		return nil
+	}
+	p.IndexRefresher = func() error {
+		if !locker.IsLocked() {
+			callbacksOutsideLock.Add(1)
+		}
+		return nil
+	}
+	p.FinalAuditor = func(string, map[string]string) error {
+		if !locker.IsLocked() {
+			callbacksOutsideLock.Add(1)
+		}
+		return nil
+	}
+	result := p.persistDefinitionChangeWithAudit(context.Background(), old.Name, after, "skill:test_commit", map[string]string{"action": "repair"})
+	if result.State != "committed" {
+		t.Fatalf("result = %+v, want committed", result)
+	}
+	if got := admissionCalls.Load(); got != 2 {
+		t.Fatalf("admission calls = %d, want pre-lock and post-lock checks", got)
+	}
+	if got := callbacksOutsideLock.Load(); got != 0 {
+		t.Fatalf("callbacks observed outside mutation lock: %d", got)
+	}
+}
 
 func TestRepairCooldownFromHours(t *testing.T) {
 	if got := RepairCooldownFromHours(0); got != DefaultRepairCooldown {
@@ -40,6 +102,205 @@ func TestEvolutionPipeline_Status(t *testing.T) {
 	}
 }
 
+func TestSummarizeEvolutionCompensationErrorRedactsPaths(t *testing.T) {
+	err := fmt.Errorf("decode compensation record %s: invalid snapshot at %s", `C:\Users\alice\.maclaw\skill_evolution\audit_pending.jsonl`, `/srv/private/secret.yaml`)
+	got := SummarizeEvolutionCompensationError(err)
+	if strings.Contains(got, "alice") || strings.Contains(got, "secret.yaml") || strings.Contains(got, "C:\\") || strings.Contains(got, "/srv/") {
+		t.Fatalf("summary leaked path details: %q", got)
+	}
+	if got == "" {
+		t.Fatal("summary is empty")
+	}
+}
+
+func TestRetryEvolutionCompensationByIdentityCleansCommittedRecord(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	artifact := filepath.Join(base, "staging", "retry-me.tmp")
+	if err := os.MkdirAll(filepath.Dir(artifact), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(artifact, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	record := NewEvolutionCompensationRecord("manual-retry", "retry-skill", "repair", "", nil, false, nil, "cleanup retry exhausted")
+	record.TransactionState = "committed"
+	record.CleanupStatus = "needs_review"
+	record.Status = "needs_review"
+	record.SetPostCommitCleanupPaths([]string{artifact})
+	if err := PersistEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	got, recovered, err := RetryEvolutionCompensation("manual-retry", "retry-skill", "repair", NewEvolutionPipeline())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !recovered || got.RequestID != "manual-retry" {
+		t.Fatalf("retry result=%+v recovered=%v", got, recovered)
+	}
+	if got.CleanupStatus != "clear" || got.TransactionState != "committed" || got.FailureReason != "recovered" {
+		t.Fatalf("retry result summary = %+v, want explicit committed/clear recovered terminal state", got)
+	}
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Fatalf("cleanup artifact still exists, err=%v", err)
+	}
+	if records, err := readEvolutionCompensations(); err != nil || len(records) != 0 {
+		t.Fatalf("queue after manual retry: records=%v err=%v", records, err)
+	}
+	events, err := ListEvolutionAudit(DefaultEvolutionAuditPath(), EvolutionAuditMaxKeep)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Kind == "compensation_manual_retry" && event.RequestID == "manual-retry" && event.Decision == "requested" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("manual retry audit event missing: %+v", events)
+	}
+}
+
+func TestRetryEvolutionCompensationByIdentityLeavesSiblingRecordPending(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	firstArtifact := filepath.Join(base, "first.tmp")
+	secondArtifact := filepath.Join(base, "second.tmp")
+	if err := os.WriteFile(firstArtifact, []byte("first"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(secondArtifact, []byte("second"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	first := NewEvolutionCompensationRecord("exact-first", "same-skill", "repair", "", nil, false, nil, "pending")
+	first.TransactionState = "committed"
+	first.SetPostCommitCleanupPaths([]string{firstArtifact})
+	second := NewEvolutionCompensationRecord("exact-second", "sibling-skill", "repair", "", nil, false, nil, "pending")
+	second.TransactionState = "committed"
+	second.SetPostCommitCleanupPaths([]string{secondArtifact})
+	if err := PersistEvolutionCompensation(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := PersistEvolutionCompensation(second); err != nil {
+		t.Fatal(err)
+	}
+	if _, recovered, err := RetryEvolutionCompensation("exact-first", "same-skill", "repair", NewEvolutionPipeline()); err != nil || !recovered {
+		t.Fatalf("retry target: recovered=%v err=%v", recovered, err)
+	}
+	records, err := readEvolutionCompensations()
+	if err != nil || len(records) != 1 || records[0].RequestID != "exact-second" {
+		t.Fatalf("sibling queue record lost: records=%v err=%v", records, err)
+	}
+	if _, err := os.Stat(secondArtifact); err != nil {
+		t.Fatalf("sibling artifact unexpectedly removed: %v", err)
+	}
+}
+
+func TestRetryEvolutionCompensationReturnsUpdatedPendingSummary(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	record := NewEvolutionCompensationRecord("manual-retry-failed", "retry-failed", "repair", "", nil, false, nil, "cleanup pending")
+	record.TransactionState = "committed"
+	record.CleanupStatus = "pending"
+	if err := PersistEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	pipeline := NewEvolutionPipeline()
+	pipeline.CommittedCleanup = func(EvolutionCompensationRecord) error { return fmt.Errorf("cleanup unavailable") }
+	got, recovered, err := RetryEvolutionCompensation("manual-retry-failed", "retry-failed", "repair", pipeline)
+	if err != nil {
+		t.Fatalf("RetryEvolutionCompensation() error = %v", err)
+	}
+	if recovered {
+		t.Fatal("failed cleanup was reported as recovered")
+	}
+	if got.Attempts != 1 || got.TransactionState != "committed" || got.CleanupStatus != "pending" {
+		t.Fatalf("retry summary = %+v, want committed/pending with attempts=1", got)
+	}
+	if got.LastError == "" {
+		t.Fatal("retry summary omitted durable cleanup error")
+	}
+}
+
+func TestClearEvolutionCompensationManuallyRejectsUncommittedRecord(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	record := NewEvolutionCompensationRecord("manual-clear", "clear-skill", "install", "", nil, false, nil, "rollback pending")
+	record.TransactionState = "audit_pending"
+	record.Status = "needs_review"
+	if err := PersistEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ClearEvolutionCompensationManually("manual-clear", "clear-skill", "install"); err == nil {
+		t.Fatal("manual clear accepted uncommitted record")
+	}
+	records, err := readEvolutionCompensations()
+	if err != nil || len(records) != 1 {
+		t.Fatalf("queue after rejected clear: records=%v err=%v", records, err)
+	}
+}
+
+func TestClearEvolutionCompensationManuallyRequiresArtifactsAbsent(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	artifact := filepath.Join(base, "staging", "leftover.tmp")
+	if err := os.MkdirAll(filepath.Dir(artifact), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(artifact, []byte("leftover"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	record := NewEvolutionCompensationRecord("manual-clear-artifact", "clear-artifact", "install", "", nil, false, nil, "cleanup pending")
+	record.TransactionState = "committed"
+	record.CleanupStatus = "needs_review"
+	record.SetPostCommitCleanupPaths([]string{artifact})
+	if err := PersistEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ClearEvolutionCompensationManually("manual-clear-artifact", "clear-artifact", "install"); err == nil {
+		t.Fatal("manual clear removed record while cleanup artifact exists")
+	}
+	if records, err := readEvolutionCompensations(); err != nil || len(records) != 1 {
+		t.Fatalf("queue after unsafe clear: records=%v err=%v", records, err)
+	}
+}
+
+func TestClearEvolutionCompensationManuallyReturnsClearedTerminalSummary(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	record := NewEvolutionCompensationRecord("manual-clear-ok", "clear-ok", "install", "", nil, false, nil, "cleanup pending")
+	record.TransactionState = "committed"
+	record.CleanupStatus = "needs_review"
+	record.Status = "needs_review"
+	if err := PersistEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	got, err := ClearEvolutionCompensationManually("manual-clear-ok", "clear-ok", "install")
+	if err != nil {
+		t.Fatalf("ClearEvolutionCompensationManually() error = %v", err)
+	}
+	if got.TransactionState != "committed" || got.CleanupStatus != "clear" || got.FailureReason != "cleared_manually" || got.Status != "" {
+		t.Fatalf("clear summary = %+v, want committed/clear terminal state", got)
+	}
+	if records, err := readEvolutionCompensations(); err != nil || len(records) != 0 {
+		t.Fatalf("queue after manual clear: records=%v err=%v", records, err)
+	}
+}
+
 func TestEvolutionPipeline_StatusIncludesFailureSummary(t *testing.T) {
 	p := NewEvolutionPipeline()
 	p.recordFailure(evolutionRequest{
@@ -61,6 +322,54 @@ func TestEvolutionPipeline_StatusIncludesFailureSummary(t *testing.T) {
 	}
 	if summary.LastArgsDigest == "" || strings.Contains(summary.LastArgsDigest, "secret-value") {
 		t.Fatalf("arguments were not redacted: %+v", summary)
+	}
+}
+
+func TestEvolutionCompensationReadModifyWriteIsSerialized(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	const workers = 24
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			record := NewEvolutionCompensationRecord(
+				fmt.Sprintf("concurrent-%d", i), fmt.Sprintf("skill-%d", i),
+				"concurrent_test", "", nil, false, nil, "test")
+			if err := PersistEvolutionCompensation(record); err != nil {
+				errs <- err
+				return
+			}
+			record.TransactionState = "committed"
+			record.CleanupStatus = "pending"
+			if err := ReplaceEvolutionCompensation(record); err != nil {
+				errs <- err
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatal(err)
+	}
+
+	records, err := readEvolutionCompensations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := make(map[string]bool, len(records))
+	for _, record := range records {
+		seen[record.RequestID] = true
+	}
+	for i := 0; i < workers; i++ {
+		if !seen[fmt.Sprintf("concurrent-%d", i)] {
+			t.Fatalf("concurrent replacement lost request concurrent-%d; got %d records", i, len(records))
+		}
 	}
 }
 
@@ -689,6 +998,84 @@ func TestEvolutionPipeline_tryRepair_CancelledCtxSkipsCooldown(t *testing.T) {
 	}
 }
 
+func TestEvolutionPipeline_tryRepair_DisableUsesDurableCommitter(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	stored := corelib.NLSkillEntry{
+		Name: "unfixable", Source: "hub", Status: "active", UsageCount: 1,
+		LastError: "[class: command_not_found] missing binary",
+		Steps:     []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "missing"}}},
+	}
+	p := NewEvolutionPipeline()
+	p.LLM = &stubRepairLLM{respond: `{"repaired":false,"should_disable":true,"explanation":"dependency permanently removed"}`}
+	p.SkillLoader = func() []corelib.NLSkillEntry { return []corelib.NLSkillEntry{stored} }
+	p.SkillSaver = func(skills []corelib.NLSkillEntry) error {
+		if len(skills) != 1 {
+			return fmt.Errorf("unexpected skill count %d", len(skills))
+		}
+		stored = skills[0]
+		return nil
+	}
+	p.FinalAuditor = func(string, map[string]string) error { return nil }
+	var disabled atomic.Int32
+	p.EventEmitter = func(event string, _ map[string]string) {
+		if event == EventSkillRepairDisabled {
+			disabled.Add(1)
+		}
+	}
+	entry := CloneNLSkillEntry(&stored)
+	p.tryRepair(context.Background(), evolutionRequest{
+		RequestID: "req-disable", SkillName: entry.Name, Entry: entry,
+		ExecResult: &SkillExecutionResultCompat{Success: false},
+	})
+	if stored.Status != "needs_review" || disabled.Load() != 1 {
+		t.Fatalf("stored=%#v disabled_events=%d, want durable needs_review + one event", stored, disabled.Load())
+	}
+	if records, err := readEvolutionCompensations(); err != nil || len(records) != 0 {
+		t.Fatalf("disable compensation records = %+v, err=%v; want cleared", records, err)
+	}
+}
+
+func TestEvolutionPipeline_tryRepair_DisablePersistenceFailureDoesNotReportSuccess(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	entry := &corelib.NLSkillEntry{
+		Name: "unfixable-failure", Source: "hub", Status: "active", UsageCount: 1,
+		LastError: "[class: command_not_found] missing binary",
+		Steps:     []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "missing"}}},
+	}
+	p := NewEvolutionPipeline()
+	p.LLM = &stubRepairLLM{respond: `{"repaired":false,"should_disable":true,"explanation":"dependency permanently removed"}`}
+	p.SkillLoader = func() []corelib.NLSkillEntry { return []corelib.NLSkillEntry{*entry} }
+	p.SkillSaver = func([]corelib.NLSkillEntry) error { return fmt.Errorf("injected persistence outage") }
+	p.FinalAuditor = func(string, map[string]string) error { return nil }
+	var successEvents atomic.Int32
+	p.EventEmitter = func(event string, _ map[string]string) {
+		if event == EventSkillRepairDisabled {
+			successEvents.Add(1)
+		}
+	}
+	p.tryRepair(context.Background(), evolutionRequest{
+		RequestID: "req-disable-failure", SkillName: entry.Name, Entry: entry,
+		ExecResult: &SkillExecutionResultCompat{Success: false},
+	})
+	if entry.Status != "active" {
+		t.Fatalf("failed disable mutated in-memory entry to %q", entry.Status)
+	}
+	if successEvents.Load() != 0 {
+		t.Fatalf("disable success event emitted after persistence failure: %d", successEvents.Load())
+	}
+	if records, err := readEvolutionCompensations(); err != nil || len(records) != 1 || records[0].TransactionState != "audit_pending" || records[0].Attempts == 0 {
+		t.Fatalf("disable persistence failure compensation = %+v, err=%v; want durable blocker", records, err)
+	}
+}
+
 func TestRunOptimize_NotPersistedSkipsEventAndUpload(t *testing.T) {
 	newPipeline := func(t *testing.T, withSaver bool) (*EvolutionPipeline, *atomic.Int32, *atomic.Int32, *atomic.Int32) {
 		tracker, err := tool.NewUsageTracker("")
@@ -885,6 +1272,42 @@ func TestSkillCommitter_CommitsOnlyAfterAuditAndCleansCompensation(t *testing.T)
 	}
 }
 
+func TestSkillCommitter_CleansDurablePostCommitArtifactsBeforeClearingQueue(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	artifact := filepath.Join(base, "staging", "post-commit-artifact")
+	if err := os.MkdirAll(filepath.Dir(artifact), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(artifact, []byte("temporary"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := corelib.NLSkillEntry{Name: "post-commit-cleanup", Description: "old"}
+	after := &corelib.NLSkillEntry{Name: old.Name, Description: "new"}
+	committer := &SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry { return []corelib.NLSkillEntry{old} },
+		SkillSaver:  func([]corelib.NLSkillEntry) error { return nil },
+		CompensationMutator: func(record *EvolutionCompensationRecord) {
+			record.SetPostCommitCleanupPaths([]string{artifact})
+		},
+		SkipDefinitionBackup: true,
+		FinalAuditor:         func(string, map[string]string) error { return nil },
+	}
+	result := committer.Commit(context.Background(), old.Name, after, "skill:test_post_commit_cleanup", map[string]string{"skill": old.Name, "action": "test"})
+	if result.State != "committed" || result.CleanupStatus != "clear" {
+		t.Fatalf("commit result = %+v, want committed/clear", result)
+	}
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Fatalf("post-commit artifact remains after queue clear: %v", err)
+	}
+	if records, err := readEvolutionCompensations(); err != nil || len(records) != 0 {
+		t.Fatalf("compensation records = %+v, err=%v; want cleaned", records, err)
+	}
+}
+
 func TestSkillCommitter_NoChangeSkipsPersistenceAndAudit(t *testing.T) {
 	base := t.TempDir()
 	oldBase := corelib.MaclawBaseDir()
@@ -920,6 +1343,64 @@ func TestSkillCommitter_NoChangeSkipsPersistenceAndAudit(t *testing.T) {
 	}
 	if records, err := readEvolutionCompensations(); err != nil || len(records) != 0 {
 		t.Fatalf("no-op compensation records = %+v, err=%v", records, err)
+	}
+}
+
+func TestSkillCommitter_RejectsNilMutatorResultForNonEmptyRegistry(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	entry := corelib.NLSkillEntry{Name: "mutator-guard", Status: "active"}
+	saveCalls := 0
+	committer := &SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry { return []corelib.NLSkillEntry{entry} },
+		SkillSaver: func([]corelib.NLSkillEntry) error {
+			saveCalls++
+			return nil
+		},
+		EntriesMutator: func([]corelib.NLSkillEntry) ([]corelib.NLSkillEntry, error) {
+			// A buggy planner must not be able to turn a maintenance request into
+			// an implicit "delete every Skill" write.
+			return nil, nil
+		},
+		SkipDefinitionBackup: true,
+	}
+	result := committer.Commit(context.Background(), entry.Name, &entry, "skill:test_nil_mutator", map[string]string{"action": "maintenance"})
+	if result.State != "rolled_back" || result.FailureReason != "candidate_mutation_failed" {
+		t.Fatalf("result = %+v, want candidate_mutation_failed", result)
+	}
+	if saveCalls != 0 {
+		t.Fatalf("nil mutator result reached saver %d times", saveCalls)
+	}
+	if records, err := readEvolutionCompensations(); err != nil || len(records) != 0 {
+		t.Fatalf("nil mutator result created compensation records = %+v, err=%v", records, err)
+	}
+}
+
+func TestSkillCommitter_RejectsCreateIdentityMismatch(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	saveCalls := 0
+	committer := &SkillCommitter{
+		SkillLoader: func() []corelib.NLSkillEntry { return nil },
+		SkillSaver: func([]corelib.NLSkillEntry) error {
+			saveCalls++
+			return nil
+		},
+		AllowCreate:          true,
+		SkipDefinitionBackup: true,
+	}
+	result := committer.Commit(context.Background(), "requested-name", &corelib.NLSkillEntry{Name: "other-name"}, "skill:test_identity", map[string]string{"action": "install"})
+	if result.State != "rolled_back" || result.FailureReason != "candidate_identity_mismatch" {
+		t.Fatalf("result = %+v, want candidate_identity_mismatch", result)
+	}
+	if saveCalls != 0 {
+		t.Fatalf("identity mismatch reached saver %d times", saveCalls)
 	}
 }
 
@@ -988,6 +1469,53 @@ func TestSkillCommitter_FinalAuditFailureRestoresAndClearsCompensation(t *testin
 	}
 }
 
+func TestSkillCommitter_RollbackCleanupFailureUsesBoundedRetryState(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dir := filepath.Join(base, "skills", "committer-rollback-cleanup")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	original := []byte("name: committer-rollback-cleanup\ndescription: old\nsteps: []\n")
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := corelib.NLSkillEntry{Name: "committer-rollback-cleanup", SkillDir: dir, Description: "old"}
+	committer := &SkillCommitter{
+		SkillLoader:      func() []corelib.NLSkillEntry { return []corelib.NLSkillEntry{old} },
+		SkillSaver:       func([]corelib.NLSkillEntry) error { return nil },
+		DefinitionWriter: WriteBackOptimizedSteps,
+		IndexRefresher:   func() error { return nil },
+		FinalAuditor:     func(string, map[string]string) error { return fmt.Errorf("injected final audit failure") },
+		CompensationClear: func(string, string, string) error {
+			return fmt.Errorf("injected compensation clear failure")
+		},
+	}
+	result := committer.Commit(
+		WithEvolutionRequestMetadata(context.Background(), "req-rollback-cleanup", 1),
+		old.Name,
+		&corelib.NLSkillEntry{Name: old.Name, SkillDir: dir, Description: "new"},
+		"skill:test_rollback_cleanup",
+		map[string]string{"action": "repair"},
+	)
+	if result.State != "rolled_back" || !result.RollbackComplete || result.CleanupStatus != "pending" {
+		t.Fatalf("result=%+v, want rolled_back/pending", result)
+	}
+	records, err := readEvolutionCompensations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].Attempts != 1 || records[0].TransactionState != "rolled_back" {
+		t.Fatalf("compensation records=%+v, want one rolled_back attempt=1", records)
+	}
+	if records[0].FailureReason != "rollback_cleanup_failed" {
+		t.Fatalf("failure reason=%q, want rollback_cleanup_failed", records[0].FailureReason)
+	}
+}
+
 func TestSkillCommitter_RollbackRemovesTransactionBackupOnly(t *testing.T) {
 	base := t.TempDir()
 	oldBase := corelib.MaclawBaseDir()
@@ -1045,6 +1573,131 @@ func TestSkillCommitter_RollbackRemovesTransactionBackupOnly(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join(dir, "skill.yaml"))
 	if err != nil || string(data) != string(original) {
 		t.Fatalf("YAML after rollback = %q, err=%v", data, err)
+	}
+}
+
+func TestRestoreEvolutionCompensationRemovesAllNewMultiPackageDirectories(t *testing.T) {
+	root := t.TempDir()
+	first := filepath.Join(root, "skills", "first")
+	second := filepath.Join(root, "skills", "second")
+	for _, path := range []string{first, second} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(path, "skill.yaml"), []byte("name: test\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record := NewEvolutionCompensationRecord("multi-new", "first", "agentservice_install", "", nil, false, nil, "rollback")
+	record.SetDirectoryMoves([]EvolutionDirectoryMove{
+		{OriginalPath: first, HadPrevious: false, Published: true},
+		{OriginalPath: second, HadPrevious: false, Published: true},
+	})
+	record.SetCreatedDirectories([]string{first, second})
+	if err := restoreEvolutionCompensation(record, nil, nil); err != nil {
+		t.Fatalf("restoreEvolutionCompensation() error = %v", err)
+	}
+	for _, path := range []string{first, second} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("new package directory %s remains: %v", path, err)
+		}
+	}
+}
+
+func TestRestoreEvolutionCompensationMixedExistingAndNewMultiPackageDirectories(t *testing.T) {
+	root := t.TempDir()
+	existing := filepath.Join(root, "skills", "existing")
+	backup := existing + ".prev"
+	newDir := filepath.Join(root, "skills", "new")
+	if err := os.MkdirAll(existing, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(existing, "skill.yaml"), []byte("name: replacement\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(backup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backup, "skill.yaml"), []byte("name: original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(newDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	record := NewEvolutionCompensationRecord("mixed", "existing", "agentservice_install", "", nil, false, nil, "rollback")
+	record.SetDirectoryMoves([]EvolutionDirectoryMove{
+		{OriginalPath: existing, BackupPath: backup, HadPrevious: true, Moved: true, Published: true},
+		{OriginalPath: newDir, HadPrevious: false, Published: true},
+	})
+	record.SetCreatedDirectories([]string{existing, newDir})
+	if err := restoreEvolutionCompensation(record, nil, nil); err != nil {
+		t.Fatalf("restoreEvolutionCompensation() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(existing, "skill.yaml"))
+	if err != nil || string(data) != "name: original\n" {
+		t.Fatalf("existing package after restore = %q, err=%v", data, err)
+	}
+	if _, err := os.Stat(backup); !os.IsNotExist(err) {
+		t.Fatalf("existing backup remains: %v", err)
+	}
+	if _, err := os.Stat(newDir); !os.IsNotExist(err) {
+		t.Fatalf("new package directory remains: %v", err)
+	}
+}
+
+func TestRestoreEvolutionCompensationProtectsExistingPathInCreatedDirs(t *testing.T) {
+	root := t.TempDir()
+	original := filepath.Join(root, "skills", "existing")
+	backup := original + ".prev"
+	if err := os.MkdirAll(original, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(original, "skill.yaml"), []byte("name: replacement\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(backup, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backup, "skill.yaml"), []byte("name: original\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	record := NewEvolutionCompensationRecord("protect-existing", "existing", "install", "", nil, false, nil, "rollback")
+	record.SetDirectoryMoves([]EvolutionDirectoryMove{{OriginalPath: original, BackupPath: backup, HadPrevious: true, Moved: true, Published: true}})
+	record.SetCreatedDirectories([]string{original})
+	if err := restoreEvolutionCompensation(record, nil, nil); err != nil {
+		t.Fatalf("restoreEvolutionCompensation() error = %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(original, "skill.yaml"))
+	if err != nil || string(data) != "name: original\n" {
+		t.Fatalf("protected existing package after restore = %q, err=%v", data, err)
+	}
+}
+
+func TestRestoreEvolutionCompensationDoesNotDeleteUnpublishedIntentTarget(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "skills", "concurrent")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(target, "skill.yaml"), []byte("name: concurrent\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	record := NewEvolutionCompensationRecord("intent-only", "concurrent", "install", "", nil, false, nil, "rollback")
+	record.SetDirectoryMoves([]EvolutionDirectoryMove{{OriginalPath: target, HadPrevious: false, Moved: false, Published: false}})
+	record.SetCreatedDirectories([]string{target})
+	if err := restoreEvolutionCompensation(record, nil, nil); err != nil {
+		t.Fatalf("restoreEvolutionCompensation() error = %v", err)
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("unpublished intent target was removed: %v", err)
+	}
+}
+
+func TestRestoreEvolutionCompensationRejectsRelativeDurablePaths(t *testing.T) {
+	record := NewEvolutionCompensationRecord("relative-path", "relative", "install", "", nil, false, nil, "rollback")
+	record.SetCreatedDirectories([]string{"relative-target"})
+	if err := RestoreEvolutionCompensation(record, nil, nil); err == nil {
+		t.Fatal("RestoreEvolutionCompensation() accepted relative durable path")
 	}
 }
 
@@ -1352,6 +2005,277 @@ func TestRecoverPendingCompensationsWithExternalSnapshotFailsClosedWithoutRestor
 	}
 }
 
+func TestRecoverExternalCompensationExhaustionAuditsNeedsReview(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	scope := filepath.Join(base, "service")
+	created := filepath.Join(scope, "skills", "external-review")
+	if err := os.MkdirAll(created, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	record := NewEvolutionCompensationRecord("external-review-request", "external-review", "agentservice_install", "", nil, false, nil, "external state pending")
+	record.TransactionState = "audit_pending"
+	record.CleanupStatus = "pending"
+	record.SetRecoveryScope(scope)
+	record.SetCreatedDirectories([]string{created})
+	record.SetExternalSnapshot("opaque_external_state", "{}")
+	record.MarkExternalApplied("opaque_external_state", true)
+	if err := PersistEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	restarted := &EvolutionPipeline{}
+	for i := 0; i < evolutionCompensationMaxAttempts; i++ {
+		if _, _, err := restarted.RecoverPendingCompensationsForActionPrefixAndScopeWithExternalRecovery("agentservice_install", scope, func(EvolutionCompensationRecord) error {
+			return fmt.Errorf("external restore unavailable")
+		}); err != nil {
+			t.Fatalf("recovery attempt %d: %v", i+1, err)
+		}
+	}
+	records, err := readEvolutionCompensations()
+	if err != nil || len(records) != 1 {
+		t.Fatalf("records=%#v err=%v", records, err)
+	}
+	if records[0].Status != "needs_review" || records[0].Attempts != evolutionCompensationMaxAttempts {
+		t.Fatalf("record=%+v, want bounded needs_review", records[0])
+	}
+	events, err := ListEvolutionAudit(DefaultEvolutionAuditPath(), 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Kind == "compensation_needs_review" && event.RequestID == record.RequestID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("missing strict needs_review audit for external recovery: %#v", events)
+	}
+}
+
+// Recovery retry state must be durable before the pass reaches the final
+// compaction write.  Simulate a process crash after the first failed external
+// restore and verify that both the updated row and an unrelated queue tail
+// survive the crash window.
+func TestRecoverPersistsFailureBeforeProcessingQueueTail(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	first := NewEvolutionCompensationRecord("recovery-tail-first", "tail-first", "agentservice_install", "", nil, false, nil, "pending")
+	first.SetExternalSnapshot("opaque-first", "{}")
+	first.MarkExternalApplied("opaque-first", true)
+	second := NewEvolutionCompensationRecord("recovery-tail-second", "tail-second", "agentservice_install", "", nil, false, nil, "pending")
+	second.SetExternalSnapshot("opaque-second", "{}")
+	second.MarkExternalApplied("opaque-second", true)
+	if err := PersistEvolutionCompensation(first); err != nil {
+		t.Fatal(err)
+	}
+	if err := PersistEvolutionCompensation(second); err != nil {
+		t.Fatal(err)
+	}
+
+	panicked := false
+	func() {
+		defer func() {
+			if recover() != nil {
+				panicked = true
+			}
+		}()
+		calls := 0
+		_, _, _ = NewEvolutionPipeline().RecoverPendingCompensationsForActionPrefixAndScopeWithExternalRecovery(
+			"agentservice_install", "", func(EvolutionCompensationRecord) error {
+				calls++
+				if calls == 1 {
+					return fmt.Errorf("external restore unavailable")
+				}
+				panic("simulated process crash")
+			})
+	}()
+	if !panicked {
+		t.Fatal("expected simulated process crash")
+	}
+	records, err := readEvolutionCompensations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 2 {
+		t.Fatalf("queue records=%d, want failed row plus untouched tail: %#v", len(records), records)
+	}
+	var gotFirst, gotSecond *EvolutionCompensationRecord
+	for i := range records {
+		switch records[i].RequestID {
+		case first.RequestID:
+			gotFirst = &records[i]
+		case second.RequestID:
+			gotSecond = &records[i]
+		}
+	}
+	if gotFirst == nil || gotFirst.Attempts != 1 {
+		t.Fatalf("first recovery state was not persisted before crash: %#v", gotFirst)
+	}
+	if gotSecond == nil || gotSecond.Attempts != 0 {
+		t.Fatalf("queue tail was lost or mutated: %#v", gotSecond)
+	}
+}
+
+func TestRestoreEvolutionCompensationPreflightsCorruptFileSnapshots(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	first, second := filepath.Join(base, "first.json"), filepath.Join(base, "second.json")
+	if err := os.WriteFile(first, []byte("new-first"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(second, []byte("new-second"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	record := NewEvolutionCompensationRecord("corrupt-file-snapshot", "legacy", "legacy_gui_skill_install", "", nil, false, nil, "restore")
+	record.SetFileSnapshots([]EvolutionFileSnapshot{
+		{Path: first, Exists: true, BackupB64: base64.StdEncoding.EncodeToString([]byte("old-first"))},
+		{Path: second, Exists: true, BackupB64: "%%%not-base64%%%"},
+	})
+	err := RestoreEvolutionCompensation(record, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "decode file snapshot") {
+		t.Fatalf("restore corrupt snapshots error = %v, want decode failure", err)
+	}
+	got, readErr := os.ReadFile(first)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(got) != "new-first" {
+		t.Fatalf("first snapshot was partially restored after preflight failure: %q", got)
+	}
+}
+
+func TestRestoreEvolutionCompensationPreflightsCorruptYAMLBeforeDirectoryMutation(t *testing.T) {
+	base := t.TempDir()
+	createdDir := filepath.Join(base, "created-skill")
+	if err := os.MkdirAll(createdDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yamlPath := filepath.Join(base, "skill.yaml")
+	record := NewEvolutionCompensationRecord("corrupt-yaml-before-dir", "legacy", "legacy_gui_skill_install", yamlPath, nil, true, nil, "restore")
+	record.SetCreatedDirectories([]string{createdDir})
+	record.YAMLBackup = "%%%not-base64%%%"
+	err := RestoreEvolutionCompensation(record, nil, nil)
+	if err == nil || !strings.Contains(err.Error(), "decode YAML backup") {
+		t.Fatalf("restore corrupt YAML error = %v, want decode failure", err)
+	}
+	if _, statErr := os.Stat(createdDir); statErr != nil {
+		t.Fatalf("created directory was mutated before YAML preflight completed: %v", statErr)
+	}
+	parentFile := filepath.Join(base, "parent-file")
+	if err := os.WriteFile(parentFile, []byte("not-a-directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	directoryRecord := NewEvolutionCompensationRecord("invalid-directory-parent", "legacy", "legacy_gui_skill_install", "", nil, false, nil, "restore")
+	directoryRecord.DirPath = filepath.Join(parentFile, "target")
+	directoryRecord.DirBackupPath = filepath.Join(parentFile, "target.prev")
+	directoryRecord.DirMoved = true
+	directoryRecord.SetCreatedDirectories([]string{createdDir})
+	if err := RestoreEvolutionCompensation(directoryRecord, nil, nil); err == nil || !strings.Contains(err.Error(), "parent is not a directory") {
+		t.Fatalf("restore invalid directory parent error = %v, want parent-shape failure", err)
+	}
+	if _, statErr := os.Stat(createdDir); statErr != nil {
+		t.Fatalf("created directory was mutated before directory preflight completed: %v", statErr)
+	}
+}
+
+func TestRestoreEvolutionCompensationPostImageFence(t *testing.T) {
+	base := t.TempDir()
+	path := filepath.Join(base, "config.json")
+	oldData := []byte(`{"version":1}`)
+	postData := []byte(`{"version":2}`)
+	if err := os.WriteFile(path, postData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	record := NewEvolutionCompensationRecord("post-image-match", "mcp", "capability_mcp_config", "", nil, false, nil, "restore")
+	record.SetFileSnapshots([]EvolutionFileSnapshot{{Path: path, Exists: true, BackupB64: base64.StdEncoding.EncodeToString(oldData)}})
+	if err := record.SetFileSnapshotPostImage(path, postData, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := RestoreEvolutionCompensation(record, nil, nil); err != nil {
+		t.Fatalf("matching post-image should restore: %v", err)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != string(oldData) {
+		t.Fatalf("restored data=%q err=%v, want old image", got, err)
+	}
+
+	if err := os.WriteFile(path, postData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A previous rollback may have restored the pre-image successfully before
+	// failing on a later index step. Retrying must be idempotent rather than
+	// treating the already-restored bytes as an unrelated concurrent write.
+	if err := os.WriteFile(path, oldData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	record.RequestID = "post-image-already-restored"
+	if err := RestoreEvolutionCompensation(record, nil, nil); err != nil {
+		t.Fatalf("already-restored pre-image should be accepted: %v", err)
+	}
+	if err := os.WriteFile(path, postData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"version":3}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	record.RequestID = "post-image-mismatch"
+	if err := RestoreEvolutionCompensation(record, nil, nil); err == nil || !strings.Contains(err.Error(), "post-image digest changed") {
+		t.Fatalf("mismatched post-image error=%v, want fence rejection", err)
+	}
+	got, err = os.ReadFile(path)
+	if err != nil || string(got) != `{"version":3}` {
+		t.Fatalf("mismatch path was mutated: %q err=%v", got, err)
+	}
+
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	record.RequestID = "post-image-missing"
+	if err := RestoreEvolutionCompensation(record, nil, nil); err == nil || !strings.Contains(err.Error(), "post-image changed") {
+		t.Fatalf("missing post-image error=%v, want fence rejection", err)
+	}
+}
+
+func TestReadEvolutionCompensationsRejectsExternalAppliedWithoutSnapshot(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	record := NewEvolutionCompensationRecord("external-marker-without-snapshot", "legacy", "agentservice_install", "", nil, false, nil, "invalid")
+	record.ExternalApplied = map[string]bool{"contract": true}
+	if err := PersistEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readEvolutionCompensations(); err == nil || !strings.Contains(err.Error(), "no snapshots") {
+		t.Fatalf("read invalid external transition error = %v, want fail-closed schema error", err)
+	}
+}
+
+func TestReadEvolutionCompensationsRejectsDuplicateFileSnapshotPaths(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	path := filepath.Join(base, "metadata.json")
+	record := NewEvolutionCompensationRecord("duplicate-file-snapshot", "legacy", "legacy_gui_skill_install", "", nil, false, nil, "invalid")
+	encoded := base64.StdEncoding.EncodeToString([]byte("{}"))
+	record.SetFileSnapshots([]EvolutionFileSnapshot{{Path: path, Exists: true, BackupB64: encoded}, {Path: path, Exists: true, BackupB64: encoded}})
+	if err := PersistEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readEvolutionCompensations(); err == nil || !strings.Contains(err.Error(), "duplicate file snapshot") {
+		t.Fatalf("read duplicate snapshot error = %v, want fail-closed schema error", err)
+	}
+}
+
 func TestSkillCommitter_ExternalPublishPersistsRecoveryIntentBeforeIndex(t *testing.T) {
 	base := t.TempDir()
 	oldBase := corelib.MaclawBaseDir()
@@ -1505,6 +2429,278 @@ func TestRecoverPendingCompensationsEventuallyNeedsReview(t *testing.T) {
 	}
 }
 
+func TestRecoverPendingCommittedCleanupNeedsReviewRemainsBlocked(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	record := newEvolutionCompensationRecord("req-cleanup-review", "cleanup-review-skill", "agentservice_install", "", nil, false, nil, "post_commit_cleanup_failed")
+	record.TransactionState = "committed"
+	record.CleanupStatus = "needs_review"
+	record.Status = "needs_review"
+	record.Attempts = evolutionCompensationMaxAttempts
+	if err := appendEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	p := NewEvolutionPipeline()
+	recovered, pending, err := p.RecoverPendingCompensations()
+	if err != nil || recovered != 0 || pending != 1 {
+		t.Fatalf("recovery = recovered:%d pending:%d err:%v", recovered, pending, err)
+	}
+	records, err := readEvolutionCompensations()
+	if err != nil || len(records) != 1 {
+		t.Fatalf("records = %d, err=%v; want retained review record", len(records), err)
+	}
+	if records[0].TransactionState != "committed" || records[0].CleanupStatus != "needs_review" || records[0].Attempts != evolutionCompensationMaxAttempts {
+		t.Fatalf("record mutated during review hold: %+v", records[0])
+	}
+}
+
+func TestRecoverPendingCommittedCleanupFailureEscalatesWithoutRollback(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	root := t.TempDir()
+	backup := filepath.Join(root, "skill.prev")
+	if err := os.WriteFile(backup, []byte("old"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	record := newEvolutionCompensationRecord("req-cleanup-escalate", "cleanup-escalate", "agentservice_install", "", nil, false, nil, "post_commit_cleanup_failed")
+	record.TransactionState = "committed"
+	record.CleanupStatus = "pending"
+	record.DirectoryMoves = []EvolutionDirectoryMove{{BackupPath: backup, Moved: true}}
+	if err := appendEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	var cleanupCalls int
+	p := NewEvolutionPipeline()
+	p.CommittedCleanup = func(EvolutionCompensationRecord) error {
+		cleanupCalls++
+		return fmt.Errorf("cleanup unavailable")
+	}
+	for i := 0; i < evolutionCompensationMaxAttempts; i++ {
+		if _, _, err := p.RecoverPendingCompensations(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if cleanupCalls != evolutionCompensationMaxAttempts {
+		t.Fatalf("cleanup calls = %d, want %d", cleanupCalls, evolutionCompensationMaxAttempts)
+	}
+	if _, err := os.Stat(backup); err != nil {
+		t.Fatalf("committed backup was altered on cleanup failure: %v", err)
+	}
+	records, err := readEvolutionCompensations()
+	if err != nil || len(records) != 1 {
+		t.Fatalf("records = %d, err=%v", len(records), err)
+	}
+	if records[0].TransactionState != "committed" || records[0].CleanupStatus != "needs_review" || records[0].Status != "needs_review" {
+		t.Fatalf("record = %+v, want committed/needs_review", records[0])
+	}
+	if _, _, err := p.RecoverPendingCompensations(); err != nil {
+		t.Fatal(err)
+	}
+	if cleanupCalls != evolutionCompensationMaxAttempts {
+		t.Fatalf("needs_review record was retried after escalation: %d calls", cleanupCalls)
+	}
+}
+
+func TestRecoverPendingCommittedCleanupRunsDeclaredTargetsAfterCustomHook(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	artifact := filepath.Join(base, "staging", "custom-hook-artifact")
+	if err := os.MkdirAll(filepath.Dir(artifact), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(artifact, []byte("temporary"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	record := newEvolutionCompensationRecord("req-custom-hook-cleanup", "custom-hook-cleanup", "agentservice_install", "", nil, false, nil, "post_commit_cleanup_pending")
+	record.TransactionState = "committed"
+	record.CleanupStatus = "pending"
+	record.SetPostCommitCleanupPaths([]string{artifact})
+	if err := appendEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	p := NewEvolutionPipeline()
+	callbackCalls := 0
+	p.CommittedCleanup = func(EvolutionCompensationRecord) error {
+		callbackCalls++
+		return nil
+	}
+	recovered, pending, err := p.RecoverPendingCompensations()
+	if err != nil || recovered != 1 || pending != 0 || callbackCalls != 1 {
+		t.Fatalf("recovery = recovered:%d pending:%d callback_calls:%d err:%v", recovered, pending, callbackCalls, err)
+	}
+	if _, err := os.Stat(artifact); !os.IsNotExist(err) {
+		t.Fatalf("declared artifact remains after custom cleanup recovery: %v", err)
+	}
+}
+
+func TestMarkCompensationNeedsReviewDemotesAllAffectedSkills(t *testing.T) {
+	skills := []corelib.NLSkillEntry{
+		{Name: "batch-primary", Status: "active"},
+		{Name: "batch-secondary", Status: "active"},
+		{Name: "unrelated", Status: "active"},
+	}
+	record := NewEvolutionCompensationRecord("batch-review", "batch-primary", "agentservice_install", "", nil, false, nil, "rollback exhausted")
+	record.SetAffectedSkills([]string{"batch-primary", "batch-secondary"})
+	record.LastError = "rollback unavailable"
+	var saved []corelib.NLSkillEntry
+	p := &EvolutionPipeline{
+		SkillLoader: func() []corelib.NLSkillEntry { return cloneSkillEntries(skills) },
+		SkillSaver: func(updated []corelib.NLSkillEntry) error {
+			saved = cloneSkillEntries(updated)
+			return nil
+		},
+	}
+	if err := p.markCompensationNeedsReview(record); err != nil {
+		t.Fatalf("markCompensationNeedsReview() error = %v", err)
+	}
+	if len(saved) != len(skills) {
+		t.Fatalf("saved skills = %#v, want %d entries", saved, len(skills))
+	}
+	for _, name := range []string{"batch-primary", "batch-secondary"} {
+		var found *corelib.NLSkillEntry
+		for i := range saved {
+			if saved[i].Name == name {
+				found = &saved[i]
+				break
+			}
+		}
+		if found == nil || found.Status != "needs_review" {
+			t.Fatalf("affected skill %q was not demoted: %#v", name, saved)
+		}
+	}
+	if saved[2].Status != "active" {
+		t.Fatalf("unrelated skill was changed: %#v", saved[2])
+	}
+}
+
+func TestMarkEvolutionCompensationCleanupFailurePersistsBoundedState(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	record := newEvolutionCompensationRecord("req-helper", "helper-skill", "install", "", nil, false, nil, "prepared")
+	if err := appendEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= evolutionCompensationMaxAttempts; i++ {
+		records, err := readEvolutionCompensations()
+		if err != nil || len(records) != 1 {
+			t.Fatalf("before attempt %d records=%d err=%v", i, len(records), err)
+		}
+		record = records[0]
+		if err := MarkEvolutionCompensationCleanupFailure(&record, fmt.Errorf("cleanup-%d", i)); err != nil {
+			t.Fatalf("attempt %d: %v", i, err)
+		}
+		if record.TransactionState != "committed" || record.Attempts != i {
+			t.Fatalf("attempt %d state = %+v", i, record)
+		}
+		if i < evolutionCompensationMaxAttempts && record.CleanupStatus != "pending" {
+			t.Fatalf("attempt %d cleanup status = %q, want pending", i, record.CleanupStatus)
+		}
+	}
+	records, err := readEvolutionCompensations()
+	if err != nil || len(records) != 1 {
+		t.Fatalf("records=%d err=%v", len(records), err)
+	}
+	got := records[0]
+	if got.TransactionState != "committed" || got.CleanupStatus != "needs_review" || got.Status != "needs_review" || got.Attempts != evolutionCompensationMaxAttempts {
+		t.Fatalf("unexpected helper state: %+v", got)
+	}
+	if got.FailureReason != "post_commit_cleanup_failed" || got.LastError != "cleanup-3" {
+		t.Fatalf("unexpected failure metadata: %+v", got)
+	}
+	audit, err := ListEvolutionAudit(DefaultEvolutionAuditPath(), 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, event := range audit {
+		if event.Kind == "compensation_needs_review" && event.RequestID == "req-helper" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("missing needs_review audit event: %+v", audit)
+	}
+	// Re-reporting an already escalated artifact is idempotent: manual review
+	// must remain the only operation that can move it out of the terminal hold.
+	if err := MarkEvolutionCompensationCleanupFailure(&got, fmt.Errorf("cleanup-after-review")); err != nil {
+		t.Fatalf("re-report needs_review: %v", err)
+	}
+	if got.Attempts != evolutionCompensationMaxAttempts || got.CleanupStatus != "needs_review" {
+		t.Fatalf("needs_review state changed on duplicate report: %+v", got)
+	}
+}
+
+func TestMarkEvolutionCompensationCleanupFailurePersistenceErrorIsReturned(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	record := newEvolutionCompensationRecord("req-helper-persist", "helper-persist", "install", "", nil, false, nil, "prepared")
+	if err := appendEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	// Point the queue root at a regular file so replacement cannot persist.
+	badRoot := filepath.Join(base, "not-a-directory")
+	if err := os.WriteFile(badRoot, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	corelib.SetMaclawBaseDir(badRoot)
+	err := MarkEvolutionCompensationCleanupFailure(&record, fmt.Errorf("cleanup unavailable"))
+	if err == nil {
+		t.Fatal("expected persistence error")
+	}
+	if record.TransactionState != "committed" || record.CleanupStatus != "pending" || record.Attempts != 1 {
+		t.Fatalf("helper mutated in-memory state unexpectedly: %+v", record)
+	}
+}
+
+func TestMarkEvolutionCompensationRollbackFailurePreservesUncommittedState(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	record := newEvolutionCompensationRecord("req-rollback-helper", "rollback-skill", "capability_mcp_config", "", nil, false, nil, "prepared")
+	if err := appendEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= evolutionCompensationMaxAttempts; i++ {
+		records, err := readEvolutionCompensations()
+		if err != nil || len(records) != 1 {
+			t.Fatalf("before attempt %d records=%d err=%v", i, len(records), err)
+		}
+		record = records[0]
+		if err := MarkEvolutionCompensationRollbackFailure(&record, fmt.Errorf("rollback-cleanup-%d", i)); err != nil {
+			t.Fatalf("attempt %d: %v", i, err)
+		}
+		if record.TransactionState == "committed" || record.Attempts != i {
+			t.Fatalf("attempt %d crossed commit boundary: %+v", i, record)
+		}
+		if i < evolutionCompensationMaxAttempts && record.Status == "needs_review" {
+			t.Fatalf("attempt %d escalated too early: %+v", i, record)
+		}
+	}
+	records, err := readEvolutionCompensations()
+	if err != nil || len(records) != 1 {
+		t.Fatalf("records=%d err=%v", len(records), err)
+	}
+	got := records[0]
+	if got.TransactionState != "audit_pending" || got.CleanupStatus != "pending" || got.Status != "needs_review" || got.Attempts != evolutionCompensationMaxAttempts {
+		t.Fatalf("unexpected rollback failure state: %+v", got)
+	}
+	if got.FailureReason != "rollback_cleanup_failed" || got.LastError != "rollback-cleanup-3" {
+		t.Fatalf("unexpected rollback failure metadata: %+v", got)
+	}
+}
+
 func TestRecoverPendingCompensationsSerializesConcurrentCalls(t *testing.T) {
 	base := t.TempDir()
 	oldBase := corelib.MaclawBaseDir()
@@ -1536,6 +2732,36 @@ func TestRecoverPendingCompensationsSerializesConcurrentCalls(t *testing.T) {
 	}
 	if records, err := readEvolutionCompensations(); err != nil || len(records) != 0 {
 		t.Fatalf("queue after concurrent recovery = %d, err=%v; want empty", len(records), err)
+	}
+}
+
+func TestRestoreEvolutionCompensationCanSkipIndexForConfigOnlyRecord(t *testing.T) {
+	base := t.TempDir()
+	path := filepath.Join(base, "settings.json")
+	oldData := []byte(`{"enabled":false}`)
+	postData := []byte(`{"enabled":true}`)
+	if err := os.WriteFile(path, postData, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	record := NewEvolutionCompensationRecord("config-only-skip-index", "config", "legacy_gui_marketplace", "", nil, false, nil, "restore")
+	record.SetFileSnapshots([]EvolutionFileSnapshot{{Path: path, Exists: true, BackupB64: base64.StdEncoding.EncodeToString(oldData)}})
+	record.SetSkipIndexRefresh(true)
+	if err := record.SetFileSnapshotPostImage(path, postData, true); err != nil {
+		t.Fatal(err)
+	}
+	indexCalls := 0
+	if err := RestoreEvolutionCompensation(record, nil, func() error {
+		indexCalls++
+		return fmt.Errorf("index refresh should not run for config-only restore")
+	}); err != nil {
+		t.Fatalf("config-only restore error = %v", err)
+	}
+	if indexCalls != 0 {
+		t.Fatalf("index refresher calls = %d, want 0", indexCalls)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != string(oldData) {
+		t.Fatalf("restored settings = %q err=%v, want old image", got, err)
 	}
 }
 
@@ -1594,6 +2820,8 @@ func TestReadEvolutionCompensationsRejectsUnsupportedSchemaAndCorruptRecords(t *
 		`{"schema_version":"1","skill":"demo","attempts":-1}`,
 		`{"schema_version":"1","skill":"demo","status":"mystery"}`,
 		`{"schema_version":"1","attempts":0}`,
+		`{"schema_version":"1","skill":"demo","created_dirs":["."]}`,
+		`{"schema_version":"1","skill":"demo","directory_moves":[{"original_path":"relative","backup_path":"relative.prev"}]}`,
 	}
 	for _, line := range cases {
 		if err := os.WriteFile(path, []byte(line+"\n"), 0o600); err != nil {
@@ -1602,6 +2830,49 @@ func TestReadEvolutionCompensationsRejectsUnsupportedSchemaAndCorruptRecords(t *
 		if _, err := readEvolutionCompensations(); err == nil {
 			t.Fatalf("readEvolutionCompensations() accepted invalid record %s", line)
 		}
+	}
+}
+
+func TestReadEvolutionCompensationsQuarantinesCorruptQueueCopy(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	path := DefaultEvolutionCompensationPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	corrupt := []byte(`{"schema_version":"1","skill":"broken","attempts":` + "\n")
+	if err := os.WriteFile(path, corrupt, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readEvolutionCompensations(); err == nil {
+		t.Fatal("readEvolutionCompensations() accepted malformed queue")
+	}
+	// The canonical queue remains present so admission stays fail-closed, while
+	// a timestamped forensic copy and bounded reason file preserve evidence.
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("canonical corrupt queue was removed: %v", err)
+	}
+	copies, err := filepath.Glob(path + ".corrupt-*.jsonl")
+	if err != nil || len(copies) != 1 {
+		t.Fatalf("quarantine copies = %#v err=%v, want exactly one", copies, err)
+	}
+	copyData, err := os.ReadFile(copies[0])
+	if err != nil || string(copyData) != string(corrupt) {
+		t.Fatalf("quarantine copy = %q err=%v, want original bytes", copyData, err)
+	}
+	if _, err := os.Stat(copies[0] + ".reason"); err != nil {
+		t.Fatalf("quarantine reason file missing: %v", err)
+	}
+	// Repeated admission checks for the unchanged corrupt file are rate-limited
+	// and must not create another forensic copy.
+	if _, err := readEvolutionCompensations(); err == nil {
+		t.Fatal("second read accepted malformed queue")
+	}
+	copies, _ = filepath.Glob(path + ".corrupt-*.jsonl")
+	if len(copies) != 1 {
+		t.Fatalf("repeated read created duplicate quarantine copies: %#v", copies)
 	}
 }
 
@@ -1620,6 +2891,68 @@ func TestReadEvolutionCompensationsAcceptsLegacyMissingSchema(t *testing.T) {
 	records, err := readEvolutionCompensations()
 	if err != nil || len(records) != 1 || records[0].SchemaVersion != evolutionCompensationSchemaVersion {
 		t.Fatalf("legacy records=%+v err=%v", records, err)
+	}
+}
+
+func TestMigrateEvolutionCompensationQueuePersistsCurrentSchema(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	path := DefaultEvolutionCompensationPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := []byte(`{"skill":"legacy-migrate","action":"repair","attempts":0}` + "\n")
+	if err := os.WriteFile(path, legacy, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := MigrateEvolutionCompensationQueue(); err != nil {
+		t.Fatalf("MigrateEvolutionCompensationQueue() error = %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"schema_version":"1"`) {
+		t.Fatalf("migrated queue missing current schema: %s", data)
+	}
+	if !strings.Contains(string(data), `"transaction_state":"audit_pending"`) || !strings.Contains(string(data), `"cleanup_status":"pending"`) {
+		t.Fatalf("migrated queue missing conservative state defaults: %s", data)
+	}
+	if records, err := readEvolutionCompensations(); err != nil || len(records) != 1 {
+		t.Fatalf("migrated records=%+v err=%v", records, err)
+	}
+}
+
+func TestMigrateEvolutionCompensationQueueNormalizesEmptySchemaValues(t *testing.T) {
+	for _, tc := range []struct {
+		name, rawVersion string
+	}{{"empty-string", `""`}, {"null", `null`}} {
+		t.Run(tc.name, func(t *testing.T) {
+			base := t.TempDir()
+			oldBase := corelib.MaclawBaseDir()
+			corelib.SetMaclawBaseDir(base)
+			t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+			path := DefaultEvolutionCompensationPath()
+			if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			legacy := []byte(fmt.Sprintf(`{"skill":"empty-schema","action":"repair","schema_version":%s}`+"\n", tc.rawVersion))
+			if err := os.WriteFile(path, legacy, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := MigrateEvolutionCompensationQueue(); err != nil {
+				t.Fatalf("migration error = %v", err)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), `"schema_version":"1"`) {
+				t.Fatalf("normalized queue missing current schema: %s", data)
+			}
+		})
 	}
 }
 
@@ -1642,6 +2975,29 @@ func TestWriteEvolutionCompensationsReplacesExistingQueueWithoutBackupResidue(t 
 	}
 	if _, err := os.Stat(DefaultEvolutionCompensationPath() + ".replace-backup"); !os.IsNotExist(err) {
 		t.Fatalf("replace backup residue exists, stat err=%v", err)
+	}
+}
+
+func TestReplaceEvolutionCompensationKeepsOneAuthoritativeSnapshot(t *testing.T) {
+	base := t.TempDir()
+	oldBase := corelib.MaclawBaseDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	record := newEvolutionCompensationRecord("req-authoritative", "replace-skill", "install", "", nil, false, nil, "prepared")
+	if err := PersistEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	record.TransactionState = "audit_pending"
+	record.LastError = "rollback failed"
+	if err := ReplaceEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	records, err := readEvolutionCompensations()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(records) != 1 || records[0].RequestID != record.RequestID || records[0].TransactionState != "audit_pending" || records[0].LastError != "rollback failed" {
+		t.Fatalf("records=%+v, want one replaced authoritative snapshot", records)
 	}
 }
 

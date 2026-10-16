@@ -58,6 +58,8 @@ func sanitizeLoopResultVisible(r *LoopResult) {
 		return
 	}
 	r.Text = StripWorkingStateFromVisible(r.Text)
+	r.Text = StripSessionFactsFromVisible(r.Text)
+	r.Text = StripMemoryRetractionFromVisible(r.Text)
 	for i := range r.HistoryDelta {
 		// Tool payloads can be file bodies that mention the heading.
 		// Cutting them at the last line-start marker drops the rest of
@@ -66,7 +68,13 @@ func sanitizeLoopResultVisible(r *LoopResult) {
 			continue
 		}
 		r.HistoryDelta[i].Content = stripWorkingStateContent(r.HistoryDelta[i].Content)
+		if s, ok := r.HistoryDelta[i].Content.(string); ok {
+			s = StripSessionFactsFromVisible(s)
+			r.HistoryDelta[i].Content = StripMemoryRetractionFromVisible(s)
+		}
 		r.HistoryDelta[i].ReasoningContent = StripWorkingStateFromVisible(r.HistoryDelta[i].ReasoningContent)
+		r.HistoryDelta[i].ReasoningContent = StripSessionFactsFromVisible(r.HistoryDelta[i].ReasoningContent)
+		r.HistoryDelta[i].ReasoningContent = StripMemoryRetractionFromVisible(r.HistoryDelta[i].ReasoningContent)
 	}
 }
 

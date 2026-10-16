@@ -1,0 +1,266 @@
+{
+  "category": "coding_family",
+  "category_id": 41,
+  "title": "CodingSubAgent planner-correctness samples (remediation slice 9 skeleton)",
+  "design_ref": "semantic-tool-routing-coding-subagent-remediation-zh.md slice 9",
+  "format_note": "Slice-9 skeleton of the CodingSubAgent remediation: coding-family planner samples covering posture constraints, required/optional selections, repeat siblings, budgets, no-fallback, and remote-read binding. Category id 41 sits above the design-10.1 range (1-40); the harness requires 1-40 present exactly once and allows unique ids above 40 for remediation slices. Live catalog_incomplete/policy_denied rates (remediation doc section 9.4) stay pending until slice 2 produces live data — these samples assert planner behavior only, not production metrics.",
+  "samples": [
+    {
+      "id": "coding-readonly-posture-selections",
+      "title": "Read-only coding needs select fs.read.local and repo.inspect.vcs and nothing else",
+      "notes": "The two S1-A shadow capabilities plan to their reviewed providers. A build.verify.local provider exists in the catalog but is NOT selected: the mis-exposure check (every planned selection must be expected) fails the sample if an unneeded capability leaks into the plan.",
+      "needs": [
+        { "id": "code-read", "capability": "fs.read.local" },
+        { "id": "code-repo", "capability": "repo.inspect.vcs" }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "file_read_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{ "capability": "fs.read.local" }]
+          },
+          {
+            "adapter": "repo_inspect_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{ "capability": "repo.inspect.vcs" }]
+          },
+          {
+            "adapter": "build_verify_adapter",
+            "effects": ["sensitive"],
+            "capabilities": [{ "capability": "build.verify.local", "qualifiers": { "task": "test" } }]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          { "need_id": "code-read", "capability": "fs.read.local", "adapter": "file_read_adapter", "phase": "execution" },
+          { "need_id": "code-repo", "capability": "repo.inspect.vcs", "adapter": "repo_inspect_adapter", "phase": "execution" }
+        ]
+      }
+    },
+    {
+      "id": "coding-inquiry-posture-denies-write-and-shell",
+      "title": "Inquiry posture constraints deny write and shell while reads still plan",
+      "notes": "Mirrors codingStaticPostureConstraints: an inquiry/operational posture injects policy deny constraints; the read need still plans, the write need is policy_denied — the planner reports the constraint, it does not silently drop the need.",
+      "needs": [
+        { "id": "code-read", "capability": "fs.read.local" },
+        { "id": "code-write", "capability": "fs.write.local" }
+      ],
+      "constraints": [
+        { "id": "coding-static:deny-write", "capability": "fs.write.local", "effect": "deny", "authority": "policy" },
+        { "id": "coding-static:deny-shell", "capability": "shell.execute.local", "effect": "deny", "authority": "policy" }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "file_read_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{ "capability": "fs.read.local" }]
+          },
+          {
+            "adapter": "file_write_adapter",
+            "effects": ["sensitive"],
+            "capabilities": [{ "capability": "fs.write.local" }]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          { "need_id": "code-read", "capability": "fs.read.local", "adapter": "file_read_adapter", "phase": "execution" }
+        ],
+        "unmet": [
+          { "need_id": "code-write", "reason": "policy_denied" }
+        ]
+      }
+    },
+    {
+      "id": "coding-optional-capability-lands-in-omitted",
+      "title": "An unservable optional coding capability is omitted, never unmet and never silent",
+      "notes": "required:false mirrors the coding optional tool expectations: the plan must not fail, and the gap must remain visible to audit. plan.Omitted is the exact channel (asserted via the omitted expectation); Unmet stays empty.",
+      "needs": [
+        { "id": "code-read", "capability": "fs.read.local" },
+        { "id": "code-repo", "capability": "repo.inspect.vcs", "required": false }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "file_read_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{ "capability": "fs.read.local" }]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          { "need_id": "code-read", "capability": "fs.read.local", "adapter": "file_read_adapter", "phase": "execution" }
+        ],
+        "unmet": [],
+        "omitted": [
+          { "need_id": "code-repo", "reason": "no_feasible_provider" }
+        ]
+      }
+    },
+    {
+      "id": "coding-repeat-sibling-selections",
+      "title": "A repeat-exposure read family plans as sibling selections",
+      "notes": "Mirrors the budget_phase coding sample from the coding family's perspective: max_invocations expands into sibling need IDs (code-read, code-read#02, code-read#03), each an ordinary planned selection under no budget. Grantability and replay identity are executor-level and covered by the semantic_* unit tests; here we assert the planner-level node structure those contracts presuppose.",
+      "needs": [
+        { "id": "code-read", "capability": "fs.read.local", "max_invocations": 3 }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "file_read_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{ "capability": "fs.read.local" }]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          { "need_id": "code-read", "capability": "fs.read.local", "adapter": "file_read_adapter", "phase": "execution" },
+          { "need_id": "code-read#02", "capability": "fs.read.local", "adapter": "file_read_adapter", "phase": "execution" },
+          { "need_id": "code-read#03", "capability": "fs.read.local", "adapter": "file_read_adapter", "phase": "execution" }
+        ]
+      }
+    },
+    {
+      "id": "coding-schema-token-budget-bounds-unmet",
+      "title": "A schema token budget keeps the first wave and reports the rest as budget_exceeded",
+      "notes": "Capability-neutral exhaustion: each selection costs 28 schema tokens (24 base + 4 digest for the eval providers' closed empty schemas), so a 29-token budget admits exactly one selection. The artifact chain puts the read in wave 1 alone and the two dependents in wave 2; the closed required-wave prefix keeps wave 1 and reports wave 2 as budget_exceeded rather than failing the plan or naming a capability — tight TUI budgets degrade breadth, not correctness.",
+      "context": { "max_schema_tokens": 29 },
+      "needs": [
+        { "id": "code-read", "capability": "fs.read.local" },
+        { "id": "code-repo", "capability": "repo.inspect.vcs" },
+        { "id": "code-verify", "capability": "build.verify.local", "qualifiers": { "task": "test" } }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "file_read_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{ "capability": "fs.read.local" }],
+            "produces": [{ "kind": "file_context", "mime_type": "text/plain", "required": true }]
+          },
+          {
+            "adapter": "repo_inspect_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{ "capability": "repo.inspect.vcs" }],
+            "consumes": [{ "kind": "file_context", "required": true }]
+          },
+          {
+            "adapter": "build_verify_adapter",
+            "effects": ["sensitive"],
+            "capabilities": [{ "capability": "build.verify.local", "qualifiers": { "task": "test" } }],
+            "consumes": [{ "kind": "file_context", "required": true }]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          { "need_id": "code-read", "capability": "fs.read.local", "adapter": "file_read_adapter", "phase": "execution" }
+        ],
+        "unmet": [
+          { "need_id": "code-repo", "reason": "budget_exceeded" },
+          { "need_id": "code-verify", "reason": "budget_exceeded" }
+        ]
+      }
+    },
+    {
+      "id": "coding-no-fallback-need-is-recorded",
+      "title": "A coding need nothing satisfies is recorded as unmet, not silently dropped",
+      "notes": "No-fallback posture: fs.read.local has no provider (a name-similar fs.write.local provider is the decoy). The planner reports no_feasible_provider; it does not fall back to the decoy, and the unmet expectation pins the exact set so a silent drop fails the sample.",
+      "needs": [
+        { "id": "code-read", "capability": "fs.read.local" }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "file_write_adapter",
+            "effects": ["sensitive"],
+            "capabilities": [{ "capability": "fs.write.local" }]
+          }
+        ]
+      },
+      "expected": {
+        "no_selections": true,
+        "unmet": [
+          { "need_id": "code-read", "reason": "no_feasible_provider" }
+        ]
+      }
+    },
+    {
+      "id": "coding-remote-read-selects-only-with-session-binding",
+      "title": "fs.read.remote selects only the provider bound to the verified session",
+      "notes": "Remote-read binding requirement at the planner layer: the provider's identity encodes the verified SSH session handle (coding-remote-session:ssh-1), and the selection assertion checks the binding is carried into the plan. Selection-grant binding and cross-handle invalidation are executor/binding-layer contracts proven hermetically in guiapp (coding_static_remote_binding_conformance_test.go).",
+      "needs": [
+        { "id": "code-remote-read", "capability": "fs.read.remote" }
+      ],
+      "catalog": {
+        "providers": [
+          {
+            "adapter": "remote_read_adapter",
+            "provider_id": "coding-remote-session:ssh-1",
+            "implementation_id": "coding-static-remote-workspace-read-v1",
+            "effects": ["read_only"],
+            "capabilities": [{ "capability": "fs.read.remote" }]
+          }
+        ]
+      },
+      "expected": {
+        "selections": [
+          {
+            "need_id": "code-remote-read",
+            "capability": "fs.read.remote",
+            "adapter": "remote_read_adapter",
+            "phase": "execution",
+            "provider_binding_contains": "coding-remote-session:ssh-1"
+          }
+        ]
+      }
+    },
+    {
+      "id": "coding-remote-read-absent-binding-degrades-catalog-incomplete",
+      "title": "Absent session binding degrades the remote read need to catalog_incomplete",
+      "notes": "Q1 degradation at the planner layer: coverage incomplete (reason catalog_incomplete) with no providers turns the remote read need into catalog_incomplete — the same shape the guiapp observation records. The remote legacy band keeps serving via its legacy path in that state; the unmet expectation pins that the need is recorded, not dropped.",
+      "needs": [
+        { "id": "code-remote-read", "capability": "fs.read.remote" }
+      ],
+      "catalog": {
+        "coverage": { "state": "incomplete", "reason_code": "catalog_incomplete" },
+        "providers": []
+      },
+      "expected": {
+        "no_selections": true,
+        "unmet": [
+          { "need_id": "code-remote-read", "reason": "catalog_incomplete" }
+        ]
+      }
+    },
+    {
+      "id": "coding-local-and-remote-read-are-not-interchangeable",
+      "title": "A remote read need never falls back to a local read provider",
+      "notes": "Planner-level pin of the local/remote binding separation (guiapp codingStaticRemoteSessionBinding is a different type with hard-coded host kind): fs.read.remote is not satisfied by an fs.read.local provider even when it is the only read provider in the catalog. no_feasible_provider, not a silent cross-locality selection.",
+      "needs": [
+        { "id": "code-remote-read", "capability": "fs.read.remote" }
+      ],
+      "catalog": {
+        "coverage": { "state": "complete" },
+        "providers": [
+          {
+            "adapter": "file_read_adapter",
+            "effects": ["read_only"],
+            "capabilities": [{ "capability": "fs.read.local" }]
+          }
+        ]
+      },
+      "expected": {
+        "no_selections": true,
+        "unmet": [
+          { "need_id": "code-remote-read", "reason": "no_feasible_provider" }
+        ]
+      }
+    }
+  ]
+}

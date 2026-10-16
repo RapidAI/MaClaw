@@ -30,6 +30,13 @@ func StructuredPreview(toolName, content string, limit int) string {
 		return previewWebFetch(content, limit)
 	case tool == "computer_observe":
 		return previewComputerObserve(content, limit)
+	case tool == "desktop":
+		// One tool carries file bytes and command transcripts. A command's
+		// exit line is the last line; a file's beginning is what an edit matches.
+		if desktopProgramTail(content) {
+			return previewTerminal(content, limit)
+		}
+		return previewHeadTail(content, limit, 0.8, 0.2)
 	case strings.HasPrefix(tool, "browser"):
 		return previewHeadTail(content, limit, 0.45, 0.55)
 	case looksLikeDiff(content):
@@ -42,16 +49,95 @@ func StructuredPreview(toolName, content string, limit int) string {
 	return DefaultPreview(content, limit)
 }
 
+// desktopProgramTail reports a container command result. ProgramOutput puts
+// the exit or the timeout on the last line, after the transcript.
+func desktopProgramTail(content string) bool {
+	line := content
+	if i := strings.LastIndex(content, "\n"); i >= 0 {
+		line = content[i+1:]
+	}
+	line = strings.TrimSpace(line)
+	if line == "(command timed out)" {
+		return true
+	}
+	return strings.HasPrefix(line, "(exit ") && strings.HasSuffix(line, ")")
+}
+
+// CommandOutputMarker separates a session preamble (login banner, MOTD) from
+// the command the model asked to run. Hosts that concatenate both into one
+// tool result should use this exact line so the preview can keep the command
+// when the combined blob exceeds the budget.
+const CommandOutputMarker = "--- 命令输出 ---"
+
 // previewTerminal keeps a short head and a long tail (recent log lines matter).
+// When a command section is present, the login banner is not allowed to occupy
+// the head: that is what hid uptime, memory, and disk behind a MOTD.
 func previewTerminal(s string, limit int) string {
+	if strings.Contains(s, CommandOutputMarker) {
+		return previewTerminalCommandSection(s, limit)
+	}
 	return previewHeadTail(s, limit, 0.25, 0.75)
 }
 
+func previewTerminalCommandSection(s string, limit int) string {
+	idx := strings.Index(s, CommandOutputMarker)
+	if idx < 0 {
+		return previewHeadTail(s, limit, 0.25, 0.75)
+	}
+	headerBudget := limit / 5
+	if headerBudget > 512 {
+		headerBudget = 512
+	}
+	if headerBudget < 64 && limit > 64 {
+		headerBudget = 64
+	}
+	if headerBudget > limit {
+		headerBudget = limit
+	}
+	header := s[:idx]
+	if len(header) > headerBudget {
+		header = utf8Prefix(header, headerBudget)
+	}
+	body := s[idx:]
+	joined := header + body
+	if len(joined) <= limit {
+		return joined
+	}
+	remain := limit - len(header)
+	if remain < 64 {
+		return previewHeadTailCited(body, limit, 0.45, 0.55, len(s))
+	}
+	if header == "" {
+		return previewHeadTailCited(body, remain, 0.45, 0.55, len(s))
+	}
+	// A newline between a truncated header and the command marker is only
+	// needed when the header does not already end at a line boundary.
+	glue := ""
+	if !strings.HasSuffix(header, "\n") {
+		glue = "\n"
+	}
+	if len(glue) >= remain {
+		return previewHeadTailCited(body, limit, 0.45, 0.55, len(s))
+	}
+	return header + glue + previewHeadTailCited(body, remain-len(glue), 0.45, 0.55, len(s))
+}
+
 func previewHeadTail(s string, limit int, headFrac, tailFrac float64) string {
+	return previewHeadTailCited(s, limit, headFrac, tailFrac, len(s))
+}
+
+// previewHeadTailCited is previewHeadTail with an explicit size in the
+// truncation marker. Command-section previews cut the body only, but the
+// marker must cite the original payload so the model does not treat the
+// shorter body as the full result.
+func previewHeadTailCited(s string, limit int, headFrac, tailFrac float64, citedBytes int) string {
 	if len(s) <= limit {
 		return s
 	}
-	sep := fmt.Sprintf("\n\n... (已截断，共 %d 字节) ...\n\n", len(s))
+	if citedBytes <= 0 {
+		citedBytes = len(s)
+	}
+	sep := fmt.Sprintf("\n\n... (已截断，共 %d 字节) ...\n\n", citedBytes)
 	budget := limit - len(sep)
 	if budget < 64 {
 		return utf8Prefix(s, limit)

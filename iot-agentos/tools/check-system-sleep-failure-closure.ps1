@@ -86,6 +86,11 @@ $mainCompositionParticipants = @(
     @{ Prepare = 'prepare_wake_restart_system_sleep'; Abort = 'abort_wake_restart_system_sleep_prepare'; Marker = 'wake_restart_worker_service_prepare_system_sleep' },
     @{ Prepare = 'prepare_deferred_setup_system_sleep'; Abort = 'abort_deferred_setup_system_sleep_prepare'; Marker = 'deferred_setup_worker_service_prepare_system_sleep' }
 )
+$mediaTransferParticipant = @{
+    Prepare = 'media_transfer_service_prepare_system_sleep';
+    Abort = 'media_transfer_service_abort_system_sleep_prepare';
+    Marker = 's_system_sleep_preparing'
+}
 $failures = @()
 
 # Startup-pet sleep composes four independently owned participants below the
@@ -477,6 +482,20 @@ if (-not (Test-Path -LiteralPath $powerPath)) {
             $failures += 'main/power_service.c: DISPLAY_OFF scheduler PREPARE failure must remain parked until Power reverse rollback'
         }
     }
+    # Timer start happens outside the state critical section.  Require a
+    # generation/active-admission recheck after that call so deinit/PREPARE
+    # cannot stop a timer and then have a queued scheduler rearm it again.
+    if ($powerText -notmatch 'scheduled_generation\s*=\s*s_display_off_generation' -or
+        $powerText -notmatch 'const\s+bool\s+still_current\s*=\s*s_initialized\s*&&\s*!s_stopping' -or
+        $powerText -notmatch 's_display_off_generation\s*==\s*scheduled_generation' -or
+        $powerText -notmatch 'esp_timer_stop\(timer\)') {
+        $failures += 'main/power_service.c: DISPLAY_OFF schedule must revalidate and retire a late timer start'
+    }
+    if ($powerText -notmatch 'esp_timer_handle_t\s+retry_timer\s*=\s*NULL' -or
+        $powerText -notmatch 's_display_off_timer\s*==\s*retry_timer' -or
+        $powerText -notmatch 'esp_timer_stop\(retry_timer\)') {
+        $failures += 'main/power_service.c: DISPLAY_OFF contention retry must retain and revalidate its timer owner'
+    }
 }
 
 $compositionRootPath = Join-Path $projectRoot 'main\main.c'
@@ -545,6 +564,17 @@ if (-not (Test-Path -LiteralPath $compositionRootPath)) {
         if ($count -lt 2) {
             $failures += "main/main.c: insufficient cancellation/resumer rollback coverage for $($participant.Abort)"
         }
+    }
+    $mediaPrepareCount = [regex]::Matches($rootCoordinatorText,
+        [regex]::Escape($mediaTransferParticipant.Prepare) + '\s*\(').Count
+    $mediaAbortCount = [regex]::Matches($rootCoordinatorText,
+        [regex]::Escape($mediaTransferParticipant.Abort) + '\s*\(').Count
+    if ($mediaPrepareCount -lt 1 -or $mediaAbortCount -lt 1) {
+        $failures += 'main/main.c: media transfer must be paired through System Sleep PREPARE/ABORT'
+    }
+    if ($rootCoordinatorText -notmatch 'media_transfer_service_prepare_system_sleep\s*\(remaining_ms\)' -or
+        $rootCoordinatorText -notmatch 'media_transfer_service_abort_system_sleep_prepare\s*\(\)') {
+        $failures += 'main/main.c: media transfer System Sleep lifecycle wiring is incomplete'
     }
 }
 

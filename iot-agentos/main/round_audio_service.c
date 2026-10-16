@@ -1,6 +1,7 @@
 #include "round_audio_service.h"
 #include "round_audio_lifecycle.h"
 
+#include <limits.h>
 #include <math.h>
 
 #include "esp_check.h"
@@ -71,6 +72,7 @@ static void round_audio_service_wake_pcm_process(int16_t *mono, size_t frames,
                                                   round_audio_wake_pcm_stats_t *out_stats);
 static esp_err_t round_audio_service_initialize(unsigned output_volume);
 static esp_err_t round_audio_service_acquire(uint32_t timeout_ms);
+static esp_err_t round_audio_service_acquire_until(uint64_t deadline_us);
 static void round_audio_service_release_ownership(void);
 static esp_err_t round_audio_service_set_output_volume(unsigned percent);
 static esp_err_t round_audio_service_restore_input_gain(void);
@@ -86,7 +88,7 @@ static esp_err_t round_audio_service_playback_finish(const int16_t *silence,
                                                      size_t silence_frames,
                                                      size_t *written,
                                                      TickType_t timeout);
-static void round_audio_service_release(void);
+static esp_err_t round_audio_service_release(void);
 static void round_audio_service_capture_pcm_reset(const char *diagnostic_label);
 static int32_t round_audio_service_capture_pcm_process(const int16_t *input_mono,
                                                        size_t frames,
@@ -362,8 +364,37 @@ esp_err_t round_audio_lifecycle_shared_bus_begin_teardown(bool *out_active) {
         round_audio_lifecycle_shared_bus_unlock();
         return ESP_OK;
     }
-    if (snapshot.domain.phase != FAULT_DOMAIN_READY &&
-        snapshot.domain.phase != FAULT_DOMAIN_UNKNOWN_OUTCOME) {
+    /* Ordinary release is allowed to own teardown only for a positively
+     * observed READY generation.  UNKNOWN_OUTCOME is reserved for the
+     * explicit recovery transaction: converting it here to QUIESCING would
+     * let a retrying release guess that a previously uncertain physical
+     * cleanup is safe, potentially racing a recovery owner or reusing stale
+     * handles.  Keep admission closed and fail closed until recovery proves
+     * the bus state again. */
+    if (snapshot.domain.phase == FAULT_DOMAIN_UNKNOWN_OUTCOME) {
+        round_audio_lifecycle_shared_bus_unlock();
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* QUIESCING belongs to an already-admitted explicit recovery owner.  A
+     * normal adapter release must never convert that in-flight transaction
+     * into a second teardown attempt (even though the shared mutex normally
+     * serializes callers); keep the admission fence fail-closed if lifecycle
+     * evidence ever disagrees with the lock state. */
+    if (snapshot.domain.phase == FAULT_DOMAIN_QUIESCING) {
+        round_audio_lifecycle_shared_bus_unlock();
+        return ESP_ERR_INVALID_STATE;
+    }
+    /* Do not transition a live READY generation to QUIESCING while another
+     * shared-bus borrower is still active.  A normal release has no drain
+     * transaction to complete that transition; poisoning the lifecycle here
+     * would strand the borrower and force every later retry into a closed
+     * phase.  The explicit recovery owner performs the lock/drain sequence
+     * when a physical rebuild is actually requested. */
+    if (snapshot.active_lease_count != 0u) {
+        round_audio_lifecycle_shared_bus_unlock();
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (snapshot.domain.phase != FAULT_DOMAIN_READY) {
         (void)shared_bus_lifecycle_mark_unknown(&s_round_shared_bus_lifecycle);
     }
     const shared_bus_lifecycle_result_t result =
@@ -394,9 +425,16 @@ void round_audio_lifecycle_shared_bus_finish_teardown(esp_err_t cleanup_result) 
 }
 
 typedef struct {
-    int64_t deadline_us;
+    uint64_t deadline_us;
     unsigned output_volume;
 } round_audio_shared_bus_recovery_context_t;
+
+static uint64_t round_audio_lifecycle_deadline_us(uint32_t timeout_ms) {
+    const int64_t now = esp_timer_get_time();
+    const uint64_t base = now > 0 ? (uint64_t)now : 0u;
+    const uint64_t delta = (uint64_t)timeout_ms * 1000u;
+    return UINT64_MAX - base < delta ? UINT64_MAX : base + delta;
+}
 
 static shared_bus_recovery_status_t round_audio_lifecycle_recovery_status(esp_err_t err) {
     if (err == ESP_OK) return SHARED_BUS_RECOVERY_STATUS_OK;
@@ -446,9 +484,12 @@ static shared_bus_recovery_step_result_t round_audio_lifecycle_recovery_result(
 static uint32_t round_audio_lifecycle_recovery_remaining_timeout(void *context) {
     const round_audio_shared_bus_recovery_context_t *recovery = context;
     if (!recovery) return 0u;
-    const int64_t remaining_us = recovery->deadline_us - esp_timer_get_time();
-    if (remaining_us <= 0) return 0u;
-    const uint64_t remaining_ms = ((uint64_t)remaining_us + 999u) / 1000u;
+    const int64_t now = esp_timer_get_time();
+    const uint64_t current = now > 0 ? (uint64_t)now : 0u;
+    if (current >= recovery->deadline_us) return 0u;
+    const uint64_t remaining_us = recovery->deadline_us - current;
+    uint64_t remaining_ms = remaining_us / 1000u;
+    if ((remaining_us % 1000u) != 0u && remaining_ms != UINT64_MAX) ++remaining_ms;
     return remaining_ms > UINT32_MAX ? UINT32_MAX : (uint32_t)remaining_ms;
 }
 
@@ -564,10 +605,10 @@ esp_err_t round_audio_lifecycle_recover_shared_bus(unsigned output_volume,
      * before the physical transaction can make a nominally bounded recovery
      * run for almost twice its advertised timeout. */
     round_audio_shared_bus_recovery_context_t context = {
-        .deadline_us = esp_timer_get_time() + (int64_t)timeout_ms * 1000,
+        .deadline_us = round_audio_lifecycle_deadline_us(timeout_ms),
         .output_volume = output_volume,
     };
-    ESP_RETURN_ON_ERROR(round_audio_service_acquire(timeout_ms), "round_audio",
+    ESP_RETURN_ON_ERROR(round_audio_service_acquire_until(context.deadline_us), "round_audio",
                         "shared-bus recovery audio ownership timeout");
     const uint32_t remaining_after_audio_lock =
         round_audio_lifecycle_recovery_remaining_timeout(&context);
@@ -612,12 +653,24 @@ esp_err_t round_audio_lifecycle_recover_shared_bus(unsigned output_volume,
 
 static esp_err_t round_audio_service_acquire(uint32_t timeout_ms) {
     if (timeout_ms == 0) return ESP_ERR_INVALID_ARG;
+    return round_audio_service_acquire_until(round_audio_lifecycle_deadline_us(timeout_ms));
+}
+
+static esp_err_t round_audio_service_acquire_until(uint64_t deadline_us) {
     if (!s_round_audio_ownership_mutex) {
         s_round_audio_ownership_mutex = xSemaphoreCreateMutex();
         if (!s_round_audio_ownership_mutex) return ESP_ERR_NO_MEM;
     }
-    return xSemaphoreTake(s_round_audio_ownership_mutex,
-                          pdMS_TO_TICKS(timeout_ms)) == pdTRUE
+    const int64_t now = esp_timer_get_time();
+    const uint64_t current = now > 0 ? (uint64_t)now : 0u;
+    if (current >= deadline_us) return ESP_ERR_TIMEOUT;
+    const uint64_t remaining_us = deadline_us - current;
+    uint64_t remaining_ms = remaining_us / 1000u;
+    if ((remaining_us % 1000u) != 0u && remaining_ms != UINT64_MAX) ++remaining_ms;
+    if (remaining_ms > UINT32_MAX) remaining_ms = UINT32_MAX;
+    TickType_t timeout = pdMS_TO_TICKS((uint32_t)remaining_ms);
+    if (timeout == 0 && remaining_ms != 0u) timeout = 1;
+    return xSemaphoreTake(s_round_audio_ownership_mutex, timeout) == pdTRUE
                ? ESP_OK : ESP_ERR_TIMEOUT;
 }
 
@@ -1124,9 +1177,10 @@ void round_audio_service_wake_capture_end(round_audio_wake_capture_t *capture) {
     memset(capture, 0, sizeof(*capture));
 }
 
-static void round_audio_service_release(void) {
-    (void)round_audio_adapter_release_impl();
+static esp_err_t round_audio_service_release(void) {
+    const esp_err_t err = round_audio_adapter_release_impl();
     s_round_audio_ready = false;
+    return err;
 }
 
 static esp_err_t round_audio_service_initialize(unsigned output_volume) {
@@ -1134,13 +1188,18 @@ static esp_err_t round_audio_service_initialize(unsigned output_volume) {
     /* A failed initialisation may have attached a codec or opened I2S before
      * returning its error.  Release first so retry cannot inherit a stale
      * controller handle or a partially-owned shared I2C bus. */
-    round_audio_service_release();
+    const esp_err_t release_err = round_audio_service_release();
+    if (release_err != ESP_OK) return release_err;
     const esp_err_t err = round_audio_adapter_initialize_impl(output_volume);
     if (err == ESP_OK) {
         s_round_audio_ready = true;
         return ESP_OK;
     }
-    round_audio_service_release();
+    /* Keep the failed generation closed.  A cleanup error is stronger than
+     * the original initialization error: the caller must not retry against a
+     * physically uncertain bus until the explicit recovery owner proves it. */
+    const esp_err_t cleanup_err = round_audio_service_release();
+    if (cleanup_err != ESP_OK) return cleanup_err;
     return err;
 }
 

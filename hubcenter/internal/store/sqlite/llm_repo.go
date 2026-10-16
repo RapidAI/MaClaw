@@ -46,10 +46,16 @@ func EnsureLLMTables(db *sql.DB) error {
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			hub_id TEXT NOT NULL,
 			tenant_id TEXT NOT NULL,
+			request_id TEXT NOT NULL DEFAULT '',
 			model TEXT NOT NULL,
 			provider_id TEXT NOT NULL,
 			input_tokens INTEGER NOT NULL DEFAULT 0,
 			output_tokens INTEGER NOT NULL DEFAULT 0,
+			cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+			cache_usage_source TEXT NOT NULL DEFAULT '',
+			usage_anomaly TEXT NOT NULL DEFAULT '',
+			pricing_source TEXT NOT NULL DEFAULT '',
 			credits_deducted REAL NOT NULL DEFAULT 0,
 			cache_hit INTEGER NOT NULL DEFAULT 0,
 			auth_id TEXT NOT NULL DEFAULT '',
@@ -57,6 +63,15 @@ func EnsureLLMTables(db *sql.DB) error {
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_llm_usage_hub_tenant_time ON llm_usage_records(hub_id, tenant_id, created_at)`,
 		`CREATE INDEX IF NOT EXISTS idx_llm_usage_created_at ON llm_usage_records(created_at)`,
+
+		// Idempotency ledger for HA-replicated usage batches: a batch is applied
+		// at most once per node even if the op log redelivers it.
+		`CREATE TABLE IF NOT EXISTS llm_usage_sync_batches (
+			batch_id TEXT PRIMARY KEY,
+			source_node_id TEXT NOT NULL DEFAULT '',
+			record_count INTEGER NOT NULL DEFAULT 0,
+			applied_at TEXT NOT NULL
+		)`,
 
 		`CREATE TABLE IF NOT EXISTS llm_card_types (
 			id TEXT PRIMARY KEY,
@@ -125,6 +140,214 @@ func EnsureLLMTables(db *sql.DB) error {
 			PRIMARY KEY (hub_id, tenant_id, request_id)
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_llm_proxy_billing_attempts_completed_at ON llm_proxy_billing_attempts(completed_at)`,
+
+		// -------------------------------------------------------------------
+		// Token Bank (model sharing). All monetary columns are INTEGER
+		// microcredits (1 credit = 1e6) so hubcenter-side arithmetic never
+		// drifts; the only float conversion happens when a hub Grant is minted.
+		// -------------------------------------------------------------------
+
+		// The shared upstream: one row per provider a user hands to the pool.
+		`CREATE TABLE IF NOT EXISTS token_bank_shares (
+			id                    TEXT PRIMARY KEY,
+			owner_user_id         TEXT NOT NULL,
+			owner_email           TEXT NOT NULL,
+			client_instance_id    TEXT NOT NULL DEFAULT '',
+			member_id_prefix      TEXT NOT NULL DEFAULT '',
+			display_name          TEXT NOT NULL,
+			api_url               TEXT NOT NULL,
+			protocol              TEXT NOT NULL DEFAULT 'openai',
+			encrypted_api_key     TEXT NOT NULL,
+			key_fingerprint       TEXT NOT NULL DEFAULT '',
+			status                TEXT NOT NULL DEFAULT 'active',
+			visibility            TEXT NOT NULL DEFAULT 'public',
+			service_group_id      TEXT NOT NULL DEFAULT '',
+			max_input_tokens_per_request  INTEGER NOT NULL DEFAULT 0,
+			max_output_tokens_per_request INTEGER NOT NULL DEFAULT 0,
+			daily_token_cap       INTEGER NOT NULL DEFAULT 0,
+			monthly_token_cap     INTEGER NOT NULL DEFAULT 0,
+			total_earned_micro    INTEGER NOT NULL DEFAULT 0,
+			last_error            TEXT NOT NULL DEFAULT '',
+			paused_reason         TEXT NOT NULL DEFAULT '',
+			created_at            TEXT NOT NULL,
+			updated_at            TEXT NOT NULL,
+			audience_json         TEXT NOT NULL DEFAULT '[]',
+			extra_keys_json       TEXT NOT NULL DEFAULT '[]'
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_shares_owner ON token_bank_shares(owner_user_id, status)`,
+		// One key must not be shared twice by the same user. Withdrawal is a hard
+		// delete, so the row simply disappears and stops conflicting.
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_tbk_shares_dedup ON token_bank_shares(owner_user_id, key_fingerprint)`,
+
+		// One row per shared model. tier/tier_multiplier are the source of truth
+		// for the settlement rate; array_id only says which dispatch group the
+		// member sits in and its multiplier is deliberately neutral.
+		`CREATE TABLE IF NOT EXISTS token_bank_models (
+			id                  TEXT PRIMARY KEY,
+			share_id            TEXT NOT NULL,
+			model_name          TEXT NOT NULL,
+			member_id           TEXT NOT NULL DEFAULT '',
+			array_id            TEXT NOT NULL DEFAULT 'token_bank_mid',
+			tier                TEXT NOT NULL DEFAULT 'mid',
+			tier_multiplier     REAL NOT NULL DEFAULT 1,
+			enabled             INTEGER NOT NULL DEFAULT 1,
+			available           INTEGER NOT NULL DEFAULT 0,
+			last_probe_at       TEXT NOT NULL DEFAULT '',
+			last_probe_error    TEXT NOT NULL DEFAULT '',
+			used_input_tokens   INTEGER NOT NULL DEFAULT 0,
+			used_output_tokens  INTEGER NOT NULL DEFAULT 0,
+			earned_micro        INTEGER NOT NULL DEFAULT 0,
+			canary_until        TEXT NOT NULL DEFAULT '',
+			share_window        TEXT NOT NULL DEFAULT '',
+			UNIQUE(share_id, model_name)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_models_share ON token_bank_models(share_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_models_array ON token_bank_models(array_id)`,
+
+		// Per-call settlement detail. owner_user_id and share_display_name are
+		// snapshots: withdrawal deletes the share row, and without them the
+		// history would be orphaned records with no owner and no name.
+		`CREATE TABLE IF NOT EXISTS token_bank_usage (
+			id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+			request_id              TEXT NOT NULL,
+			share_id                TEXT NOT NULL,
+			owner_user_id           TEXT NOT NULL DEFAULT '',
+			share_display_name      TEXT NOT NULL DEFAULT '',
+			model_name              TEXT NOT NULL,
+			consumer_hub_id         TEXT NOT NULL DEFAULT '',
+			consumer_tenant_id      TEXT NOT NULL DEFAULT '',
+			input_tokens            INTEGER NOT NULL DEFAULT 0,
+			output_tokens           INTEGER NOT NULL DEFAULT 0,
+			cached_input_tokens     INTEGER NOT NULL DEFAULT 0,
+			cache_write_tokens      INTEGER NOT NULL DEFAULT 0,
+			unit_in_credits_per_10k  REAL NOT NULL DEFAULT 0,
+			unit_out_credits_per_10k REAL NOT NULL DEFAULT 0,
+			price_book_id           TEXT NOT NULL DEFAULT '',
+			tier                    TEXT NOT NULL DEFAULT 'mid',
+			tier_multiplier         REAL NOT NULL DEFAULT 1,
+			fee_rate                REAL NOT NULL DEFAULT 0.1,
+			gross_micro             INTEGER NOT NULL DEFAULT 0,
+			fee_micro               INTEGER NOT NULL DEFAULT 0,
+			net_micro               INTEGER NOT NULL DEFAULT 0,
+			charged_micro           INTEGER NOT NULL DEFAULT 0,
+			net_clamped             INTEGER NOT NULL DEFAULT 0,
+			self_use                INTEGER NOT NULL DEFAULT 0,
+			formula_json            TEXT NOT NULL DEFAULT '',
+			created_at              TEXT NOT NULL,
+			UNIQUE(request_id, share_id, model_name)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_usage_share_time ON token_bank_usage(share_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_usage_owner_time ON token_bank_usage(owner_user_id, created_at)`,
+
+		// Platform price book: exact model name wins, then longest prefix glob.
+		`CREATE TABLE IF NOT EXISTS token_bank_price_book (
+			id                            TEXT PRIMARY KEY,
+			model_pattern                 TEXT NOT NULL,
+			unit_input_credits_per_10k    REAL NOT NULL DEFAULT 0,
+			unit_output_credits_per_10k   REAL NOT NULL DEFAULT 0,
+			unit_cached_read_credits_per_10k REAL NOT NULL DEFAULT 0,
+			unit_cache_write_credits_per_10k REAL NOT NULL DEFAULT 0,
+			updated_at                    TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_price_pattern ON token_bank_price_book(model_pattern)`,
+
+		// 24h idempotency for share submission: a double-click must not create
+		// a second share for the same key.
+		`CREATE TABLE IF NOT EXISTS token_bank_share_requests (
+			idempotency_key TEXT PRIMARY KEY,
+			owner_user_id   TEXT NOT NULL,
+			share_id        TEXT NOT NULL,
+			response_json   TEXT NOT NULL DEFAULT '',
+			created_at      TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_share_req_owner ON token_bank_share_requests(owner_user_id, created_at)`,
+
+		// Ledger is the source of truth for every balance (append-only). Rows are
+		// never updated, so HA replay via INSERT OR REPLACE is naturally idempotent,
+		// unlike a balance column that two nodes can both read-modify-write.
+		`CREATE TABLE IF NOT EXISTS token_bank_ledger (
+			id           TEXT PRIMARY KEY,
+			user_id      TEXT NOT NULL,
+			bucket       TEXT NOT NULL,
+			amount_micro INTEGER NOT NULL,
+			biz_key      TEXT NOT NULL DEFAULT '',
+			ref_type     TEXT NOT NULL DEFAULT '',
+			ref_id       TEXT NOT NULL DEFAULT '',
+			note         TEXT NOT NULL DEFAULT '',
+			created_at   TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_ledger_user_bucket ON token_bank_ledger(user_id, bucket)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_tbk_ledger_bizkey ON token_bank_ledger(biz_key) WHERE biz_key <> ''`,
+
+		// Batch-level dedup for HA replication of the ledger. Row-level INSERT OR
+		// IGNORE already makes redelivery safe; this table exists so a whole
+		// batch is applied once even when it arrives under a different op id, and
+		// so an operator can see whether replication is actually flowing.
+		`CREATE TABLE IF NOT EXISTS token_bank_ledger_batches (
+			batch_id       TEXT PRIMARY KEY,
+			source_node_id TEXT NOT NULL,
+			record_count   INTEGER NOT NULL DEFAULT 0,
+			applied_at     TEXT NOT NULL
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_ledger_batch_source ON token_bank_ledger_batches(source_node_id, applied_at)`,
+
+		// Materialized cache of SUM(ledger). Wrong values are recoverable by
+		// rebuild; never treat this as authoritative.
+		`CREATE TABLE IF NOT EXISTS token_bank_accounts (
+			user_id         TEXT PRIMARY KEY,
+			earned_micro    INTEGER NOT NULL DEFAULT 0,
+			received_micro  INTEGER NOT NULL DEFAULT 0,
+			withdrawn_micro INTEGER NOT NULL DEFAULT 0,
+			granted_micro   INTEGER NOT NULL DEFAULT 0,
+			frozen_micro    INTEGER NOT NULL DEFAULT 0,
+			updated_at      TEXT NOT NULL
+		)`,
+
+		// Withdrawal records double as the replay credential: a hub that lost its
+		// registry can be re-issued with the same request_id without a second debit.
+		`CREATE TABLE IF NOT EXISTS token_bank_withdrawals (
+			id           TEXT PRIMARY KEY,
+			request_id   TEXT NOT NULL,
+			user_id      TEXT NOT NULL,
+			hub_id       TEXT NOT NULL DEFAULT '',
+			amount_micro INTEGER NOT NULL,
+			grant_id     TEXT NOT NULL DEFAULT '',
+			kind         TEXT NOT NULL DEFAULT 'self',
+			link_id      TEXT NOT NULL DEFAULT '',
+			status       TEXT NOT NULL DEFAULT 'issued',
+			created_at   TEXT NOT NULL
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_tbk_withdraw_req ON token_bank_withdrawals(request_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_withdraw_user_time ON token_bank_withdrawals(user_id, created_at)`,
+		`CREATE INDEX IF NOT EXISTS idx_tbk_withdraw_hub ON token_bank_withdrawals(hub_id)`,
+		// One gift link can debit the claimer once. A second request id would
+		// take the rest of that account after settle has already run.
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_tbk_withdraw_gift_link ON token_bank_withdrawals(link_id) WHERE kind = 'gift' AND link_id <> ''`,
+
+		// Credit gifting: one link, first claimer wins, single settlement on claim.
+		`CREATE TABLE IF NOT EXISTS credit_share_links (
+			id                 TEXT PRIMARY KEY,
+			code               TEXT NOT NULL,
+			sender_user_id     TEXT NOT NULL,
+			sender_email       TEXT NOT NULL DEFAULT '',
+			credits_micro      INTEGER NOT NULL,
+			status             TEXT NOT NULL DEFAULT 'active',
+			claimed_by_user_id TEXT NOT NULL DEFAULT '',
+			claimed_by_email   TEXT NOT NULL DEFAULT '',
+			origin_node_id     TEXT NOT NULL DEFAULT '',
+			expires_at         TEXT NOT NULL DEFAULT '',
+			created_at         TEXT NOT NULL,
+			claimed_at         TEXT NOT NULL DEFAULT '',
+			revoked_at         TEXT NOT NULL DEFAULT '',
+			revoked_by         TEXT NOT NULL DEFAULT '',
+			revoke_reason      TEXT NOT NULL DEFAULT ''
+		)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_credit_share_code ON credit_share_links(code)`,
+		`CREATE INDEX IF NOT EXISTS idx_credit_share_sender_status ON credit_share_links(sender_user_id, status)`,
+		// The audit list is ordered by created_at, then id. Without this index
+		// every page sorts the whole table. id is the tie-break that keeps a
+		// row from appearing on two pages when two links share a timestamp.
+		`CREATE INDEX IF NOT EXISTS idx_credit_share_created ON credit_share_links(created_at, id)`,
 	}
 	for _, stmt := range stmts {
 		if _, err := db.Exec(stmt); err != nil {
@@ -152,6 +375,117 @@ func EnsureLLMTables(db *sql.DB) error {
 	if err := ensureLLMUsageClassColumns(db); err != nil {
 		return err
 	}
+	if err := ensureLLMUsageSyncColumns(db); err != nil {
+		return err
+	}
+	if err := ensureTokenBankUsageSelfUseColumn(db); err != nil {
+		return err
+	}
+	if err := ensureTokenBankP2Columns(db); err != nil {
+		return err
+	}
+	if err := ensureCreditShareRevokeReasonColumns(db); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ensureCreditShareRevokeReasonColumns records who froze a transfer link and
+// the note they typed. CREATE TABLE covers a new database. A database created
+// before the audit showed a reason has the table and not the columns, so the
+// list query would fail closed and the page would render empty.
+func ensureCreditShareRevokeReasonColumns(db *sql.DB) error {
+	columns, err := tableColumns(db, "credit_share_links")
+	if err != nil {
+		return err
+	}
+	if !columns["revoked_by"] {
+		if _, err := db.Exec(`ALTER TABLE credit_share_links ADD COLUMN revoked_by TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure credit_share_links.revoked_by: %w", err)
+		}
+	}
+	if !columns["revoke_reason"] {
+		if _, err := db.Exec(`ALTER TABLE credit_share_links ADD COLUMN revoke_reason TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure credit_share_links.revoke_reason: %w", err)
+		}
+	}
+	return nil
+}
+
+// ensureTokenBankP2Columns adds the private-share audience, extra upstream
+// keys, and per-model canary deadline. CREATE TABLE covers a new database;
+// this covers a database created before those columns existed.
+func ensureTokenBankP2Columns(db *sql.DB) error {
+	shareCols, err := tableColumns(db, "token_bank_shares")
+	if err != nil {
+		return err
+	}
+	if !shareCols["audience_json"] {
+		if _, err := db.Exec(`ALTER TABLE token_bank_shares ADD COLUMN audience_json TEXT NOT NULL DEFAULT '[]'`); err != nil {
+			return fmt.Errorf("ensure token_bank_shares.audience_json: %w", err)
+		}
+	}
+	if !shareCols["extra_keys_json"] {
+		if _, err := db.Exec(`ALTER TABLE token_bank_shares ADD COLUMN extra_keys_json TEXT NOT NULL DEFAULT '[]'`); err != nil {
+			return fmt.Errorf("ensure token_bank_shares.extra_keys_json: %w", err)
+		}
+	}
+	modelCols, err := tableColumns(db, "token_bank_models")
+	if err != nil {
+		return err
+	}
+	if !modelCols["canary_until"] {
+		if _, err := db.Exec(`ALTER TABLE token_bank_models ADD COLUMN canary_until TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure token_bank_models.canary_until: %w", err)
+		}
+	}
+	if !modelCols["share_window"] {
+		if _, err := db.Exec(`ALTER TABLE token_bank_models ADD COLUMN share_window TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure token_bank_models.share_window: %w", err)
+		}
+	}
+	return nil
+}
+
+// ensureTokenBankUsageSelfUseColumn marks a settled call whose consumer hub
+// is linked to the share owner. Older databases settle without the column;
+// CREATE TABLE covers a new one. Self-use still credits the owner, so the
+// column is a label, not a gate.
+func ensureTokenBankUsageSelfUseColumn(db *sql.DB) error {
+	columns, err := tableColumns(db, "token_bank_usage")
+	if err != nil {
+		return err
+	}
+	if columns["self_use"] {
+		return nil
+	}
+	if _, err := db.Exec(`ALTER TABLE token_bank_usage ADD COLUMN self_use INTEGER NOT NULL DEFAULT 0`); err != nil {
+		return fmt.Errorf("ensure token_bank_usage.self_use: %w", err)
+	}
+	return nil
+}
+
+func ensureLLMUsageSyncColumns(db *sql.DB) error {
+	columns, err := tableColumns(db, "llm_usage_records")
+	if err != nil {
+		return err
+	}
+	if !columns["origin_node_id"] {
+		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN origin_node_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure llm_usage_records.origin_node_id: %w", err)
+		}
+	}
+	if !columns["sync_id"] {
+		// Nullable on purpose: legacy local rows stay NULL, and the partial
+		// unique index below only constrains replicated rows (which always
+		// carry an ID), letting INSERT OR IGNORE deduplicate them.
+		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN sync_id TEXT`); err != nil {
+			return fmt.Errorf("ensure llm_usage_records.sync_id: %w", err)
+		}
+	}
+	if _, err := db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_llm_usage_sync_id ON llm_usage_records(sync_id) WHERE sync_id IS NOT NULL`); err != nil {
+		return fmt.Errorf("ensure llm usage sync id index: %w", err)
+	}
 	return nil
 }
 
@@ -163,6 +497,11 @@ func ensureLLMUsageClassColumns(db *sql.DB) error {
 	if !columns["service_group_id"] {
 		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN service_group_id TEXT NOT NULL DEFAULT ''`); err != nil {
 			return fmt.Errorf("ensure llm_usage_records.service_group_id: %w", err)
+		}
+	}
+	if !columns["request_id"] {
+		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN request_id TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure llm_usage_records.request_id: %w", err)
 		}
 	}
 	if !columns["workload_class"] {
@@ -180,11 +519,39 @@ func ensureLLMUsageClassColumns(db *sql.DB) error {
 			return fmt.Errorf("ensure llm_usage_records.request_preview: %w", err)
 		}
 	}
+	if !columns["cached_input_tokens"] {
+		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN cached_input_tokens INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("ensure llm_usage_records.cached_input_tokens: %w", err)
+		}
+	}
+	if !columns["cache_write_tokens"] {
+		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN cache_write_tokens INTEGER NOT NULL DEFAULT 0`); err != nil {
+			return fmt.Errorf("ensure llm_usage_records.cache_write_tokens: %w", err)
+		}
+	}
+	if !columns["cache_usage_source"] {
+		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN cache_usage_source TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure llm_usage_records.cache_usage_source: %w", err)
+		}
+	}
+	if !columns["usage_anomaly"] {
+		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN usage_anomaly TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure llm_usage_records.usage_anomaly: %w", err)
+		}
+	}
+	if !columns["pricing_source"] {
+		if _, err := db.Exec(`ALTER TABLE llm_usage_records ADD COLUMN pricing_source TEXT NOT NULL DEFAULT ''`); err != nil {
+			return fmt.Errorf("ensure llm_usage_records.pricing_source: %w", err)
+		}
+	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_llm_usage_group_class_time ON llm_usage_records(service_group_id, workload_class, created_at)`); err != nil {
 		return fmt.Errorf("ensure llm usage group/class index: %w", err)
 	}
 	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_llm_usage_time_group ON llm_usage_records(created_at, service_group_id)`); err != nil {
 		return fmt.Errorf("ensure llm usage time/group index: %w", err)
+	}
+	if _, err := db.Exec(`CREATE INDEX IF NOT EXISTS idx_llm_usage_hub_tenant_request ON llm_usage_records(hub_id, tenant_id, request_id)`); err != nil {
+		return fmt.Errorf("ensure llm usage hub/tenant/request index: %w", err)
 	}
 	return nil
 }
@@ -508,7 +875,7 @@ func (r *llmAuthRepo) DeductCredits(ctx context.Context, id string, credits floa
 	committed := false
 	defer func() {
 		if !committed {
-			_, _ = conn.ExecContext(context.Background(), `ROLLBACK`)
+			rollbackRawTx(conn)
 		}
 	}()
 
@@ -632,6 +999,16 @@ func NewLLMUsageRepo(p *Provider) *llmUsageRepo {
 }
 
 func (r *llmUsageRepo) Insert(ctx context.Context, record *llmservice.TenantUsageRecord) error {
+	return r.insert(ctx, record, "")
+}
+
+// InsertLocal persists a usage record originated by this HA node so a later
+// sync seed pass can tell locally-originated rows apart from replicated ones.
+func (r *llmUsageRepo) InsertLocal(ctx context.Context, record *llmservice.TenantUsageRecord, nodeID string) error {
+	return r.insert(ctx, record, strings.TrimSpace(nodeID))
+}
+
+func (r *llmUsageRepo) insert(ctx context.Context, record *llmservice.TenantUsageRecord, originNodeID string) error {
 	if record == nil {
 		return nil
 	}
@@ -640,16 +1017,141 @@ func (r *llmUsageRepo) Insert(ctx context.Context, record *llmservice.TenantUsag
 		createdAt = time.Now()
 	}
 	_, err := r.write.ExecContext(ctx,
-		`INSERT INTO llm_usage_records (hub_id, tenant_id, model, provider_id, service_group_id, workload_class, class_source, request_preview, input_tokens, output_tokens, credits_deducted, cache_hit, auth_id, created_at)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		`INSERT INTO llm_usage_records (hub_id, tenant_id, request_id, model, provider_id, service_group_id, workload_class, class_source, request_preview, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, cache_usage_source, usage_anomaly, pricing_source, credits_deducted, cache_hit, auth_id, created_at, origin_node_id, sync_id)
+			 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		strings.TrimSpace(record.HubID), strings.TrimSpace(record.TenantID),
+		strings.TrimSpace(record.RequestID),
 		strings.TrimSpace(record.Model), strings.TrimSpace(record.ProviderID),
 		strings.TrimSpace(record.ServiceGroupID), strings.TrimSpace(record.WorkloadClass),
 		strings.TrimSpace(record.ClassSource), record.Preview,
-		record.InputTokens, record.OutputTokens, record.Credits,
+		record.InputTokens, record.OutputTokens, record.CachedInputTokens, record.CacheWriteTokens, strings.TrimSpace(record.CacheUsageSource), strings.TrimSpace(record.UsageAnomaly), strings.TrimSpace(record.PricingSource), record.Credits,
 		boolToInt(record.CacheHit), strings.TrimSpace(record.AuthID), createdAt.UTC().Format(time.RFC3339),
+		strings.TrimSpace(originNodeID), usageSyncIDValue(record.SyncID),
 	)
 	return err
+}
+
+// usageSyncIDValue stores an empty sync ID as NULL so the partial unique
+// index on sync_id only constrains rows that actually carry one.
+func usageSyncIDValue(syncID string) any {
+	if s := strings.TrimSpace(syncID); s != "" {
+		return s
+	}
+	return nil
+}
+
+// InsertBatch applies one HA-replicated usage batch. The batch ledger makes
+// the apply idempotent: a redelivered batch ID is acknowledged without
+// inserting the records a second time. applied reports whether the records
+// were actually inserted by this call.
+func (r *llmUsageRepo) InsertBatch(ctx context.Context, batchID, sourceNodeID string, records []*llmservice.TenantUsageRecord) (applied bool, err error) {
+	batchID = strings.TrimSpace(batchID)
+	if batchID == "" || len(records) == 0 {
+		return false, nil
+	}
+	tx, err := r.write.BeginTx(ctx, nil)
+	if err != nil {
+		return false, fmt.Errorf("begin llm usage batch apply: %w", err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tx.Rollback()
+		}
+	}()
+	res, err := tx.ExecContext(ctx,
+		`INSERT OR IGNORE INTO llm_usage_sync_batches (batch_id, source_node_id, record_count, applied_at) VALUES (?, ?, ?, ?)`,
+		batchID, strings.TrimSpace(sourceNodeID), len(records), time.Now().UTC().Format(time.RFC3339),
+	)
+	if err != nil {
+		return false, fmt.Errorf("record llm usage sync batch: %w", err)
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		_ = tx.Rollback()
+		return false, nil
+	}
+	for _, record := range records {
+		if record == nil {
+			continue
+		}
+		createdAt := record.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = time.Now()
+		}
+		// OR IGNORE plus the partial unique index on sync_id deduplicates at
+		// record level: a row republished under a different batch ID (e.g. a
+		// seed pass after an origin-node restart) is skipped, not counted.
+		if _, err = tx.ExecContext(ctx,
+			`INSERT OR IGNORE INTO llm_usage_records (hub_id, tenant_id, request_id, model, provider_id, service_group_id, workload_class, class_source, request_preview, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, cache_usage_source, usage_anomaly, pricing_source, credits_deducted, cache_hit, auth_id, created_at, origin_node_id, sync_id)
+				 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			strings.TrimSpace(record.HubID), strings.TrimSpace(record.TenantID),
+			strings.TrimSpace(record.RequestID),
+			strings.TrimSpace(record.Model), strings.TrimSpace(record.ProviderID),
+			strings.TrimSpace(record.ServiceGroupID), strings.TrimSpace(record.WorkloadClass),
+			strings.TrimSpace(record.ClassSource), record.Preview,
+			record.InputTokens, record.OutputTokens, record.CachedInputTokens, record.CacheWriteTokens, strings.TrimSpace(record.CacheUsageSource), strings.TrimSpace(record.UsageAnomaly), strings.TrimSpace(record.PricingSource), record.Credits,
+			boolToInt(record.CacheHit), strings.TrimSpace(record.AuthID), createdAt.UTC().Format(time.RFC3339),
+			strings.TrimSpace(sourceNodeID), usageSyncIDValue(record.SyncID),
+		); err != nil {
+			return false, fmt.Errorf("insert replicated llm usage record: %w", err)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return false, fmt.Errorf("commit llm usage batch apply: %w", err)
+	}
+	return true, nil
+}
+
+// MaxUsageID returns the largest llm_usage_records primary key, or 0 on an
+// empty table. The HA sync seed uses it as an upper bound so rows recorded
+// after the live replicator started are not published twice.
+func (r *llmUsageRepo) MaxUsageID(ctx context.Context) (int64, error) {
+	var id int64
+	if err := r.read.QueryRowContext(ctx, `SELECT COALESCE(MAX(id), 0) FROM llm_usage_records`).Scan(&id); err != nil {
+		return 0, err
+	}
+	return id, nil
+}
+
+// ListLocalForSync pages locally-originated usage records by primary key for
+// the HA sync seed pass. Rows with an empty origin predate the origin_node_id
+// column and are necessarily local; replicated rows always carry a non-empty
+// origin and are never echoed back. maxID bounds the scan (<= 0 means no
+// bound): rows above it belong to the live replicator and must not be
+// published a second time by the seed.
+func (r *llmUsageRepo) ListLocalForSync(ctx context.Context, nodeID string, afterID, maxID int64, limit int) ([]*llmservice.TenantUsageRecord, error) {
+	if limit <= 0 {
+		limit = 300
+	}
+	query := `SELECT id, hub_id, tenant_id, request_id, model, provider_id, service_group_id, workload_class, class_source, request_preview, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, cache_usage_source, usage_anomaly, pricing_source, credits_deducted, cache_hit, auth_id, created_at, sync_id
+	   FROM llm_usage_records
+	  WHERE id > ? AND (origin_node_id = '' OR origin_node_id = ?)`
+	args := []any{afterID, strings.TrimSpace(nodeID)}
+	if maxID > 0 {
+		query += ` AND id <= ?`
+		args = append(args, maxID)
+	}
+	query += ` ORDER BY id ASC LIMIT ?`
+	args = append(args, limit)
+	rows, err := r.read.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	records := make([]*llmservice.TenantUsageRecord, 0)
+	for rows.Next() {
+		var rec llmservice.TenantUsageRecord
+		var cacheHit int
+		var createdAt string
+		var syncID sql.NullString
+		if err := rows.Scan(&rec.ID, &rec.HubID, &rec.TenantID, &rec.RequestID, &rec.Model, &rec.ProviderID, &rec.ServiceGroupID, &rec.WorkloadClass, &rec.ClassSource, &rec.Preview, &rec.InputTokens, &rec.OutputTokens, &rec.CachedInputTokens, &rec.CacheWriteTokens, &rec.CacheUsageSource, &rec.UsageAnomaly, &rec.PricingSource, &rec.Credits, &cacheHit, &rec.AuthID, &createdAt, &syncID); err != nil {
+			return nil, err
+		}
+		rec.CacheHit = cacheHit == 1
+		rec.CreatedAt, _ = parseStoredUsageTime(createdAt)
+		rec.SyncID = syncID.String
+		records = append(records, &rec)
+	}
+	return records, rows.Err()
 }
 
 func (r *llmUsageRepo) QuerySummary(ctx context.Context, filter llmservice.UsageFilter) ([]llmservice.TenantUsageSummary, error) {
@@ -662,7 +1164,14 @@ func (r *llmUsageRepo) QuerySummary(ctx context.Context, filter llmservice.Usage
 	}
 	periodExpr, periodLabel := usagePeriodSQL(filter.Period, loc, offsetAt)
 
-	query := `SELECT TRIM(hub_id), TRIM(tenant_id), ` + periodExpr + ` as period_start, SUM(input_tokens), SUM(output_tokens), SUM(credits_deducted), COUNT(*), SUM(CASE WHEN cache_hit=1 THEN 1 ELSE 0 END) FROM llm_usage_records WHERE 1=1`
+	aggs := periodExpr + ` as period_start, SUM(input_tokens), SUM(output_tokens), SUM(cached_input_tokens), SUM(cache_write_tokens), SUM(credits_deducted), COUNT(*), SUM(CASE WHEN cache_hit=1 THEN 1 ELSE 0 END)`
+	selectCols := `TRIM(hub_id), TRIM(tenant_id), ` + aggs
+	groupBy := `TRIM(hub_id), TRIM(tenant_id), ` + periodExpr
+	if filter.GroupByServiceGroup {
+		selectCols = `TRIM(hub_id), TRIM(tenant_id), TRIM(service_group_id), ` + aggs
+		groupBy += `, TRIM(service_group_id)`
+	}
+	query := `SELECT ` + selectCols + ` FROM llm_usage_records WHERE 1=1`
 	var args []any
 	if hubID := strings.TrimSpace(filter.HubID); hubID != "" {
 		query += ` AND hub_id = ?`
@@ -686,14 +1195,20 @@ func (r *llmUsageRepo) QuerySummary(ctx context.Context, filter llmservice.Usage
 	}
 	if hasStart {
 		query += ` AND ` + usageCreatedAtWindowPred
-		args = append(args, usageCreatedAtScanBound(start), sqliteUTCDateTime(start))
+		args = append(args,
+			usageCreatedAtScanBound(start),
+			sqliteUTCDateTime(start.UTC().Add(-24*time.Hour)),
+			sqliteUTCDateTime(start),
+		)
 	}
 	if hasEnd {
 		endExclusive := end.AddDate(0, 0, 1)
-		query += ` AND created_at < ? AND datetime(created_at) < ?`
-		args = append(args, endExclusive.UTC().Add(24*time.Hour).Format(time.RFC3339), sqliteUTCDateTime(endExclusive))
+		// Compare the normalized value so legacy space-separated timestamps are
+		// included alongside the current RFC3339 representation.
+		query += ` AND datetime(created_at) < ?`
+		args = append(args, sqliteUTCDateTime(endExclusive))
 	}
-	query += ` GROUP BY TRIM(hub_id), TRIM(tenant_id), ` + periodExpr + ` ORDER BY period_start DESC`
+	query += ` GROUP BY ` + groupBy + ` ORDER BY period_start DESC`
 	if filter.Limit > 0 {
 		query += ` LIMIT ?`
 		args = append(args, filter.Limit)
@@ -709,7 +1224,13 @@ func (r *llmUsageRepo) QuerySummary(ctx context.Context, filter llmservice.Usage
 	for rows.Next() {
 		var s llmservice.TenantUsageSummary
 		var cacheHits int64
-		if err := rows.Scan(&s.HubID, &s.TenantID, &s.PeriodStart, &s.InputTokens, &s.OutputTokens, &s.TotalCredits, &s.TotalRequests, &cacheHits); err != nil {
+		var err error
+		if filter.GroupByServiceGroup {
+			err = rows.Scan(&s.HubID, &s.TenantID, &s.ServiceGroupID, &s.PeriodStart, &s.InputTokens, &s.OutputTokens, &s.CachedInputTokens, &s.CacheWriteTokens, &s.TotalCredits, &s.TotalRequests, &cacheHits)
+		} else {
+			err = rows.Scan(&s.HubID, &s.TenantID, &s.PeriodStart, &s.InputTokens, &s.OutputTokens, &s.CachedInputTokens, &s.CacheWriteTokens, &s.TotalCredits, &s.TotalRequests, &cacheHits)
+		}
+		if err != nil {
 			return nil, err
 		}
 		s.Period = periodLabel
@@ -726,7 +1247,7 @@ func (r *llmUsageRepo) QueryRecent(ctx context.Context, hubID, tenantID string, 
 	if limit <= 0 {
 		limit = 50
 	}
-	rows, err := r.read.QueryContext(ctx, `SELECT id, hub_id, tenant_id, model, provider_id, input_tokens, output_tokens, credits_deducted, cache_hit, auth_id, created_at FROM llm_usage_records WHERE hub_id=? AND tenant_id=? ORDER BY datetime(created_at) DESC, id DESC LIMIT ?`, strings.TrimSpace(hubID), strings.TrimSpace(tenantID), limit)
+	rows, err := r.read.QueryContext(ctx, `SELECT id, hub_id, tenant_id, request_id, model, provider_id, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, cache_usage_source, usage_anomaly, pricing_source, credits_deducted, cache_hit, auth_id, created_at FROM llm_usage_records WHERE hub_id=? AND tenant_id=? ORDER BY datetime(created_at) DESC, id DESC LIMIT ?`, strings.TrimSpace(hubID), strings.TrimSpace(tenantID), limit)
 	if err != nil {
 		return nil, err
 	}
@@ -736,11 +1257,11 @@ func (r *llmUsageRepo) QueryRecent(ctx context.Context, hubID, tenantID string, 
 		var rec llmservice.TenantUsageRecord
 		var cacheHit int
 		var createdAt string
-		if err := rows.Scan(&rec.ID, &rec.HubID, &rec.TenantID, &rec.Model, &rec.ProviderID, &rec.InputTokens, &rec.OutputTokens, &rec.Credits, &cacheHit, &rec.AuthID, &createdAt); err != nil {
+		if err := rows.Scan(&rec.ID, &rec.HubID, &rec.TenantID, &rec.RequestID, &rec.Model, &rec.ProviderID, &rec.InputTokens, &rec.OutputTokens, &rec.CachedInputTokens, &rec.CacheWriteTokens, &rec.CacheUsageSource, &rec.UsageAnomaly, &rec.PricingSource, &rec.Credits, &cacheHit, &rec.AuthID, &createdAt); err != nil {
 			return nil, err
 		}
 		rec.CacheHit = cacheHit == 1
-		rec.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		rec.CreatedAt, _ = parseStoredUsageTime(createdAt)
 		records = append(records, &rec)
 	}
 	return records, rows.Err()
@@ -762,10 +1283,33 @@ func addTokenTraffic(a, b llmservice.TokenTraffic) llmservice.TokenTraffic {
 	}
 }
 
-const usageCreatedAtWindowPred = `created_at >= ? AND datetime(created_at) >= ?`
+// usageCreatedAtWindowPred keeps the indexed lexical lower bound for current
+// RFC3339 rows while also admitting legacy space-separated timestamps. The
+// normalized datetime check remains authoritative for the actual window.
+const usageCreatedAtWindowPred = `(created_at >= ? OR datetime(created_at) >= ?) AND datetime(created_at) >= ?`
 
 func sqliteUTCDateTime(t time.Time) string {
 	return t.UTC().Format("2006-01-02 15:04:05")
+}
+
+// parseStoredUsageTime accepts both the current RFC3339 representation and
+// the space-separated SQLite datetime format emitted by older installations.
+// Legacy values without an explicit offset are interpreted as UTC, matching
+// the normalized storage contract used for new records.
+func parseStoredUsageTime(value string) (time.Time, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, fmt.Errorf("empty usage timestamp")
+	}
+	if t, err := time.Parse(time.RFC3339Nano, value); err == nil {
+		return t.UTC(), nil
+	}
+	for _, layout := range []string{"2006-01-02 15:04:05.999999999", "2006-01-02 15:04:05"} {
+		if t, err := time.ParseInLocation(layout, value, time.UTC); err == nil {
+			return t, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("unsupported usage timestamp %q", value)
 }
 
 func usageCreatedAtScanBound(since time.Time) string {
@@ -848,8 +1392,12 @@ func (r *llmUsageRepo) queryTokenPeriodTraffic(ctx context.Context, keyExpr stri
 	weekBound := sqliteUTCDateTime(weekStart)
 	monthBound := sqliteUTCDateTime(monthStart)
 	// Widen the indexed scan by a day so offset-formatted legacy rows still enter the
-	// datetime() filter. New writes are UTC RFC3339 and compare directly.
+	// datetime() filter. Some older databases also contain SQLite's
+	// space-separated timestamp form ("YYYY-MM-DD HH:MM:SS"). A lexical
+	// comparison against RFC3339 would exclude those rows before datetime() can
+	// normalize them, which made provider traffic appear to be permanently zero.
 	scanBound := usageCreatedAtScanBound(monthStart)
+	scanDateTimeBound := sqliteUTCDateTime(monthStart.UTC().Add(-24 * time.Hour))
 	rows, err := r.read.QueryContext(ctx, `
 		SELECT traffic_key,
 		       SUM(CASE WHEN ts >= ? THEN input_tokens ELSE 0 END),
@@ -861,10 +1409,10 @@ func (r *llmUsageRepo) queryTokenPeriodTraffic(ctx context.Context, keyExpr stri
 		  FROM (
 		        SELECT `+keyExpr+` AS traffic_key, input_tokens, output_tokens, datetime(created_at) AS ts
 		          FROM llm_usage_records
-		         WHERE created_at >= ?`+extraWhere+`
+		         WHERE (created_at >= ? OR datetime(created_at) >= ?)`+extraWhere+`
 		       ) AS usage
 		 GROUP BY traffic_key`,
-		dayBound, dayBound, weekBound, weekBound, monthBound, monthBound, scanBound,
+		dayBound, dayBound, weekBound, weekBound, monthBound, monthBound, scanBound, scanDateTimeBound,
 	)
 	if err != nil {
 		return nil, err
@@ -902,7 +1450,7 @@ func (r *llmUsageRepo) QueryClassTraffic(ctx context.Context, serviceGroupID str
 		 WHERE `+usageCreatedAtWindowPred+`
 		   AND TRIM(service_group_id) = ?
 		 GROUP BY TRIM(workload_class), TRIM(class_source)`,
-		usageCreatedAtScanBound(since), sqliteUTCDateTime(since), groupID,
+		usageCreatedAtScanBound(since), sqliteUTCDateTime(since.UTC().Add(-24*time.Hour)), sqliteUTCDateTime(since), groupID,
 	)
 	if err != nil {
 		return nil, nil, nil, err
@@ -958,7 +1506,7 @@ func (r *llmUsageRepo) queryClassTrafficSamples(ctx context.Context, serviceGrou
 		   AND TRIM(request_preview) != ''
 		 ORDER BY datetime(created_at) DESC, id DESC
 		 LIMIT 20`,
-		usageCreatedAtScanBound(since), sqliteUTCDateTime(since), strings.TrimSpace(serviceGroupID), "hint",
+		usageCreatedAtScanBound(since), sqliteUTCDateTime(since.UTC().Add(-24*time.Hour)), sqliteUTCDateTime(since), strings.TrimSpace(serviceGroupID), "hint",
 	)
 	if err != nil {
 		return nil, err
@@ -973,7 +1521,7 @@ func (r *llmUsageRepo) queryClassTrafficSamples(ctx context.Context, serviceGrou
 		if class == "" {
 			class = "unclassified"
 		}
-		at, _ := time.Parse(time.RFC3339, createdAt)
+		at, _ := parseStoredUsageTime(createdAt)
 		samples = append(samples, llmservice.ClassTrafficSample{
 			At:      at,
 			Class:   class,

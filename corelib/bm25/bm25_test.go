@@ -32,6 +32,23 @@ func containsToken(tokens []string, want string) bool {
 	return false
 }
 
+func TestScoreDoesNotBindSharedHanFragments(t *testing.T) {
+	idx := New()
+	idx.Add(Doc{ID: "bio", Text: "马勇是中国人，就职于奇安信，北京理工大学。"})
+	idx.Add(Doc{ID: "note", Text: "中国人奇强只是一个测试称呼。"})
+
+	scores := idx.Score("中国人奇强")
+	if scores["bio"] > 0 {
+		t.Fatalf("fragment biography scored %v for 中国人奇强", scores["bio"])
+	}
+	if scores["note"] <= 0 {
+		t.Fatalf("the note that contains the name was not scored: %v", scores)
+	}
+	if idx.Score("马勇")["bio"] <= 0 {
+		t.Fatal("a real name should still match its biography")
+	}
+}
+
 func TestScoreSubsetMatchesScoreForAllowedIDs(t *testing.T) {
 	idx := New()
 	idx.Rebuild([]Doc{

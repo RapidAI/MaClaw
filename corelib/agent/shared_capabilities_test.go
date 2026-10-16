@@ -2,26 +2,26 @@ package agent
 
 import "testing"
 
-func TestSharedCoreCapabilityNamesComeFromRegistry(t *testing.T) {
+func TestExtraSharedHostCapabilityNamesStaysEmpty(t *testing.T) {
+	if names := ExtraSharedHostCapabilityNames(); len(names) != 0 {
+		t.Fatalf("ExtraSharedHost must stay empty after RegisterCoreTools migration, got %v", names)
+	}
+}
+
+func TestHostPrivateCapabilityNamesDoNotOverlapCore(t *testing.T) {
 	r := NewCoreToolRegistry()
 	RegisterCoreTools(r, CoreToolDeps{})
-	desktop := DesktopOnlyCapabilityNames()
-	shared := map[string]bool{}
-	for _, name := range SharedCoreCapabilityNames() {
-		shared[name] = true
-		if desktop[name] {
-			t.Fatalf("desktop-only %s leaked into shared catalog", name)
-		}
-		if !r.Has(name) {
-			t.Fatalf("shared name %s is not registered by RegisterCoreTools", name)
-		}
-	}
+	core := map[string]bool{}
 	for _, name := range r.Names() {
-		if desktop[name] {
-			continue
+		core[name] = true
+	}
+	desktop := DesktopOnlyCapabilityNames()
+	for name := range HostPrivateCapabilityNames() {
+		if core[name] {
+			t.Errorf("host-private %q leaked into RegisterCoreTools", name)
 		}
-		if !shared[name] {
-			t.Fatalf("RegisterCoreTools name %s missing from SharedCoreCapabilityNames", name)
+		if desktop[name] {
+			t.Errorf("host-private %q is already DesktopOnly; keep one list", name)
 		}
 	}
 }

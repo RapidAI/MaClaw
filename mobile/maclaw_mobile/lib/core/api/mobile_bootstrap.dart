@@ -376,6 +376,11 @@ class MobileFeatures {
   final bool pushNotifications;
   /// Offline completion queue (GET pending on resume); always preferred on.
   final bool pushPendingSync;
+  /// Hub Bot surface (`/api/v1/bots`): list, create, and chat with bots.
+  ///
+  /// Whether a given user may actually use bots is a tenant grant the Bot page
+  /// asks Hub about itself, so this only controls whether the tab is offered.
+  final bool bots;
 
   const MobileFeatures({
     bool? assistant,
@@ -387,10 +392,12 @@ class MobileFeatures {
     required this.digitalEmployees,
     required this.pushNotifications,
     bool? pushPendingSync,
+    bool? bots,
   })  : assistant = assistant ?? true,
         tasks = tasks ?? true,
         backendSshSessions = backendSshSessions ?? localSsh ?? true,
-        pushPendingSync = pushPendingSync ?? true;
+        pushPendingSync = pushPendingSync ?? true,
+        bots = bots ?? true;
 
   /// Backward-compatible alias for older Hub bootstrap payloads that used
   /// `local_ssh`. The mobile feature is GUI/agent-managed backend SSH sessions.
@@ -411,6 +418,7 @@ class MobileFeatures {
       digitalEmployees: json['digital_employees'] as bool? ?? true,
       pushNotifications: json['push_notifications'] as bool? ?? false,
       pushPendingSync: json['push_pending_sync'] as bool? ?? true,
+      bots: json['bots'] as bool? ?? true,
     );
   }
 }

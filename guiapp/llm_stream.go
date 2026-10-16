@@ -1,0 +1,1210 @@
+package guiapp
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"regexp"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
+)
+
+// rejectedRoundContentToken drops the answer draft already streamed in this
+// round. \x01 is the reasoning lane. This byte is the content-lane reset.
+const rejectedRoundContentToken = "\x02"
+
+type tokenStreamFilter struct {
+	writeFn    func(string)
+	flushFn    func()
+	suppressed func() bool
+}
+
+func (f tokenStreamFilter) Suppressed() bool {
+	return f.suppressed != nil && f.suppressed()
+}
+
+var guiFuncCallBlock = regexp.MustCompile(`(?s)<\|FunctionCallBegin\|>.*?<\|FunctionCallEnd\|>\s*`)
+var openAICompatibleHTTPStatusRe = regexp.MustCompile(`HTTP\s+(\d+)`)
+
+const (
+	guiThinkOpen          = "<think>"
+	guiThinkClose         = "</think>"
+	guiFuncCallOpen       = "<|FunctionCallBegin|>"
+	guiFuncCallClose      = "<|FunctionCallEnd|>"
+	guiToolCallOpen       = "<tool_call>"
+	guiToolCallClose      = "</tool_call>"
+	guiCodexToolCallOpen  = "<turn: tool_call>"
+	guiCodexToolCallClose = "</turn>"
+	// Keep the stream watchdog conservative: remote LLM gateways can stay
+	// silent for minutes during long reasoning/tool-planning phases while the
+	// upstream request is still healthy. A short 90s idle window caused false
+	// "upstream is slow" failures for otherwise usable providers.
+	guiSSEIdleTimeout        = 4 * time.Minute
+	guiMaxToolArgumentsBytes = 180 * 1024
+)
+
+// filterTruncatedToolCalls applies the shared truncation rule. Chat and
+// responses streams both land here after a provider finishes, and the GUI
+// wrapper runs again when the core parser kept the call. A second copy of
+// the rule would drop that finished write_file on the way out.
+func filterTruncatedToolCalls(msg *llm.Message, finishReason string) (string, []string, map[string]string) {
+	return llm.FilterStreamTruncatedToolCalls(msg, finishReason)
+}
+
+func llmProviderDisplayName(providerName string) string {
+	providerName = strings.TrimSpace(providerName)
+	if providerName != "" {
+		return providerName
+	}
+	return "模型服务"
+}
+
+func classifyHubErrorBody(body []byte) string {
+	// Classification lives in corelib; GUI only appends request_id / upstream diagnostics.
+	friendly := llm.ClassifyHubErrorBody(body)
+	if friendly == "" {
+		return ""
+	}
+	var hubErr map[string]any
+	if json.Unmarshal(body, &hubErr) != nil {
+		return friendly
+	}
+	return appendHubErrorDiagnostics(friendly, hubErr)
+}
+
+func appendHubErrorDiagnostics(message string, hubErr map[string]any) string {
+	parts := make([]string, 0, 8)
+	for _, key := range []string{"request_id", "failure_stage", "provider_id", "upstream_host"} {
+		if value := hubErrorDiagnosticString(hubErr[key]); value != "" {
+			parts = append(parts, key+"="+value)
+		}
+	}
+	for _, key := range []string{"upstream_status", "hub_status", "elapsed_ms"} {
+		if value := hubErrorNumberString(hubErr[key]); value != "" {
+			parts = append(parts, key+"="+value)
+		}
+	}
+	if len(parts) == 0 {
+		return message
+	}
+	return message + " [" + strings.Join(parts, " ") + "]"
+}
+
+func hubErrorDiagnosticString(value any) string {
+	trimmed := strings.Join(strings.Fields(strings.TrimSpace(fmt.Sprint(value))), " ")
+	if trimmed == "" || trimmed == "<nil>" {
+		return ""
+	}
+	const maxLen = 120
+	if len(trimmed) > maxLen {
+		return trimmed[:maxLen] + "..."
+	}
+	return trimmed
+}
+
+func hubErrorNumberString(value any) string {
+	switch v := value.(type) {
+	case float64:
+		if v <= 0 {
+			return ""
+		}
+		return strconv.FormatInt(int64(v), 10)
+	case int64:
+		if v <= 0 {
+			return ""
+		}
+		return strconv.FormatInt(v, 10)
+	case int:
+		if v <= 0 {
+			return ""
+		}
+		return strconv.Itoa(v)
+	case string:
+		trimmed := strings.TrimSpace(v)
+		if trimmed == "" || trimmed == "0" {
+			return ""
+		}
+		return trimmed
+	default:
+		return ""
+	}
+}
+
+// classifyOpenAIHTTPError parses OpenAI-compatible API error responses and
+// returns a user-friendly message that names the configured provider, not the
+// wire protocol. Core classification is shared with the agent loop; GUI only
+// appends Hub diagnostics (request_id / upstream_host / …).
+func classifyOpenAIHTTPError(statusCode int, body []byte, providerName string) string {
+	msg := llm.UserFacingHTTPStatusWithProvider(statusCode, body, llmProviderDisplayName(providerName))
+	// Only parse again when Hub diagnostic keys might be present.
+	if len(body) > 0 && (bytes.Contains(body, []byte(`"request_id"`)) ||
+		bytes.Contains(body, []byte(`"upstream_host"`)) ||
+		bytes.Contains(body, []byte(`"failure_stage"`))) {
+		var hubErr map[string]any
+		if json.Unmarshal(body, &hubErr) == nil {
+			msg = appendHubErrorDiagnostics(msg, hubErr)
+		}
+	}
+	return msg
+}
+
+func summarizeProviderHTTPErrorMessage(msg string) string {
+	msg = strings.Join(strings.Fields(msg), " ")
+	const limit = 300
+	runes := []rune(msg)
+	if len(runes) <= limit {
+		return msg
+	}
+	return string(runes[:limit]) + "..."
+}
+
+func classifyOpenAICompatibleHTTPError(err error, providerName string) (string, bool) {
+	if err == nil {
+		return "", false
+	}
+	var httpErr *llm.HTTPStatusError
+	if errors.As(err, &httpErr) && httpErr != nil && httpErr.StatusCode > 0 {
+		return classifyOpenAIHTTPError(httpErr.StatusCode, httpErr.Body, providerName), true
+	}
+	msg := err.Error()
+	match := openAICompatibleHTTPStatusRe.FindStringSubmatchIndex(msg)
+	if len(match) < 4 {
+		return "", false
+	}
+	statusCode, parseErr := strconv.Atoi(msg[match[2]:match[3]])
+	if parseErr != nil || statusCode <= 0 {
+		return "", false
+	}
+	body := ""
+	if colon := strings.Index(msg[match[1]:], ":"); colon >= 0 {
+		body = strings.TrimSpace(msg[match[1]+colon+1:])
+	}
+	// Legacy Error() embeds "body_len=N" then may append SDK text + JSON.
+	// Strip the length prefix; if a JSON object follows, keep it for classification.
+	if strings.HasPrefix(body, "body_len=") {
+		if i := strings.Index(body, "{"); i >= 0 {
+			body = body[i:]
+		} else {
+			body = ""
+		}
+	}
+	return classifyOpenAIHTTPError(statusCode, []byte(body), providerName), true
+}
+
+// truncateLLMBody trims an error body for logs and UI messages.
+func truncateLLMBody(body []byte, maxLen int) string {
+	s := string(body)
+	if looksLikeHTML(s) {
+		s = htmlTagStripRe.ReplaceAllString(s, " ")
+		s = strings.Join(strings.Fields(s), " ") // collapse whitespace
+		s = strings.TrimSpace(s)
+	}
+	if len(s) > maxLen {
+		return s[:maxLen] + "..."
+	}
+	return s
+}
+
+var htmlTagStripRe = regexp.MustCompile(`<[^>]*>`)
+
+// looksLikeHTML returns true if the string appears to contain HTML markup.
+func looksLikeHTML(s string) bool {
+	lower := strings.ToLower(s)
+	return strings.Contains(lower, "<html") ||
+		strings.Contains(lower, "<!doctype") ||
+		strings.Contains(lower, "<center>") ||
+		strings.Contains(lower, "<head>")
+}
+
+func partialSuffixLen(s, tag string) int {
+	for i := 1; i < len(tag); i++ {
+		if strings.HasSuffix(s, tag[:i]) {
+			return i
+		}
+	}
+	return 0
+}
+
+func consumeTagOpen(s, openTag string) (prefix string, remainder string, found bool) {
+	idx := strings.Index(s, openTag)
+	if idx < 0 {
+		return "", s, false
+	}
+	return s[:idx], s[idx+len(openTag):], true
+}
+
+func consumeTagClose(s, closeTag string) (remainder string, found bool) {
+	idx := strings.Index(s, closeTag)
+	if idx < 0 {
+		return s, false
+	}
+	return s[idx+len(closeTag):], true
+}
+
+func (f tokenStreamFilter) Callback() llm.TokenCallback {
+	return f.Write
+}
+
+func (f tokenStreamFilter) Write(delta string) {
+	if f.writeFn != nil {
+		f.writeFn(delta)
+	}
+}
+
+func (f tokenStreamFilter) Flush() {
+	if f.flushFn != nil {
+		f.flushFn()
+	}
+}
+
+type flushableThinkFilter struct {
+	downstream  llm.TokenCallback
+	reasoningCb llm.TokenCallback // optional: receives thinking content (forwarded to frontend as reasoning)
+	inside      bool
+	trimNext    bool
+	pending     strings.Builder
+	emitted     bool
+}
+
+func newFlushableThinkFilter(downstream llm.TokenCallback) *flushableThinkFilter {
+	return &flushableThinkFilter{downstream: downstream}
+}
+
+// SetReasoningCallback sets a callback that receives thinking content
+// (text inside <think>...</think> tags) instead of discarding it.
+// The callback is typically used to forward thinking tokens to the frontend
+// with a \x01 prefix so they display in the reasoning/thinking UI.
+func (f *flushableThinkFilter) SetReasoningCallback(cb llm.TokenCallback) {
+	f.reasoningCb = cb
+}
+
+func (f *flushableThinkFilter) Write(delta string) {
+	f.pending.WriteString(delta)
+	f.drain(false)
+}
+
+func (f *flushableThinkFilter) Flush() {
+	f.drain(true)
+}
+
+func (f *flushableThinkFilter) drain(force bool) {
+	for {
+		s := f.pending.String()
+		if s == "" {
+			return
+		}
+
+		if (f.trimNext || !f.emitted) && !f.inside {
+			trimmed := strings.TrimLeft(s, " \t\r\n")
+			if trimmed == "" {
+				f.pending.Reset()
+				return
+			}
+			if trimmed != s {
+				f.pending.Reset()
+				f.pending.WriteString(trimmed)
+				f.trimNext = false
+				continue
+			}
+			f.trimNext = false
+		}
+
+		if !f.inside {
+			if prefix, remainder, found := consumeTagOpen(s, guiThinkOpen); found {
+				if prefix != "" {
+					f.downstream(prefix)
+					f.emitted = true
+				}
+				f.inside = true
+				f.pending.Reset()
+				f.pending.WriteString(remainder)
+				continue
+			}
+
+			if partialLen := partialSuffixLen(s, guiThinkOpen); partialLen > 0 {
+				if force {
+					f.downstream(s)
+					f.emitted = true
+					f.pending.Reset()
+					return
+				}
+				if len(s) > partialLen {
+					f.downstream(s[:len(s)-partialLen])
+					f.emitted = true
+					f.pending.Reset()
+					f.pending.WriteString(guiThinkOpen[:partialLen])
+				}
+				return
+			}
+
+			f.downstream(s)
+			f.emitted = true
+			f.pending.Reset()
+			return
+		}
+
+		if remainder, found := consumeTagClose(s, guiThinkClose); found {
+			// Forward thinking content before the close tag to reasoning callback.
+			if f.reasoningCb != nil {
+				closeIdx := len(s) - len(remainder) - len(guiThinkClose)
+				if closeIdx > 0 {
+					f.reasoningCb(s[:closeIdx])
+				}
+			}
+			f.inside = false
+			f.trimNext = true
+			f.pending.Reset()
+			f.pending.WriteString(remainder)
+			continue
+		}
+
+		// Inside <think> block: forward content to reasoning callback if set.
+		if f.reasoningCb != nil {
+			// Emit everything except possible partial close tag at the end.
+			partLen := partialSuffixLen(s, guiThinkClose)
+			if partLen > 0 {
+				if len(s) > partLen {
+					f.reasoningCb(s[:len(s)-partLen])
+					f.pending.Reset()
+					f.pending.WriteString(s[len(s)-partLen:])
+				}
+				if force {
+					// Partial tag at end of stream — emit as reasoning too.
+					f.reasoningCb(f.pending.String())
+					f.pending.Reset()
+				}
+				return
+			}
+			// No partial close tag — emit all accumulated content as reasoning.
+			f.reasoningCb(s)
+			f.pending.Reset()
+			return
+		}
+
+		if force {
+			f.pending.Reset()
+			return
+		}
+		if partialSuffixLen(s, guiThinkClose) == 0 {
+			f.pending.Reset()
+		}
+		return
+	}
+}
+
+type flushableDetailsFilter struct {
+	downstream llm.TokenCallback
+	inside     bool
+	pending    strings.Builder
+}
+
+func newFlushableDetailsFilter(downstream llm.TokenCallback) *flushableDetailsFilter {
+	return &flushableDetailsFilter{downstream: downstream}
+}
+
+func (f *flushableDetailsFilter) Write(delta string) {
+	if f == nil || f.downstream == nil {
+		return
+	}
+	f.pending.WriteString(delta)
+	f.drain(false)
+}
+
+func (f *flushableDetailsFilter) Flush() {
+	if f == nil || f.downstream == nil {
+		return
+	}
+	f.drain(true)
+}
+
+func (f *flushableDetailsFilter) drain(force bool) {
+	for {
+		s := f.pending.String()
+		if s == "" {
+			return
+		}
+		lower := strings.ToLower(s)
+		if !f.inside {
+			if idx := strings.Index(lower, "<details"); idx >= 0 {
+				if idx > 0 {
+					f.downstream(s[:idx])
+				}
+				end := strings.IndexByte(s[idx:], '>')
+				if end < 0 {
+					f.pending.Reset()
+					f.pending.WriteString(s[idx:])
+					return
+				}
+				f.inside = true
+				f.pending.Reset()
+				f.pending.WriteString(s[idx+end+1:])
+				continue
+			}
+			if partial := detailsOpenSuffixLen(lower); partial > 0 && !force {
+				if len(s) > partial {
+					f.downstream(s[:len(s)-partial])
+					f.pending.Reset()
+					f.pending.WriteString(s[len(s)-partial:])
+				}
+				return
+			}
+			f.downstream(s)
+			f.pending.Reset()
+			return
+		}
+		if idx := strings.Index(lower, "</details>"); idx >= 0 {
+			f.inside = false
+			f.pending.Reset()
+			f.pending.WriteString(s[idx+len("</details>"):])
+			continue
+		}
+		if partial := detailsCloseSuffixLen(lower); partial > 0 && !force {
+			if len(s) > partial {
+				f.pending.Reset()
+				f.pending.WriteString(s[len(s)-partial:])
+			}
+			return
+		}
+		f.pending.Reset()
+		return
+	}
+}
+
+func detailsOpenSuffixLen(lower string) int {
+	marker := "<details"
+	max := len(marker) - 1
+	if len(lower) < max {
+		max = len(lower)
+	}
+	for i := max; i > 0; i-- {
+		if strings.HasSuffix(lower, marker[:i]) {
+			return i
+		}
+	}
+	return 0
+}
+
+func detailsCloseSuffixLen(lower string) int {
+	marker := "</details>"
+	max := len(marker) - 1
+	if len(lower) < max {
+		max = len(lower)
+	}
+	for i := max; i > 0; i-- {
+		if strings.HasSuffix(lower, marker[:i]) {
+			return i
+		}
+	}
+	return 0
+}
+
+type flushableTagFilter struct {
+	downstream llm.TokenCallback
+	openTag    string
+	closeTag   string
+	inside     bool
+	pending    strings.Builder
+}
+
+func newFlushableTagFilter(downstream llm.TokenCallback, open, close string) *flushableTagFilter {
+	return &flushableTagFilter{downstream: downstream, openTag: open, closeTag: close}
+}
+
+func (f *flushableTagFilter) Write(delta string) {
+	f.pending.WriteString(delta)
+	f.drain(false)
+}
+
+func (f *flushableTagFilter) Flush() {
+	f.drain(true)
+}
+
+func (f *flushableTagFilter) drain(force bool) {
+	for {
+		s := f.pending.String()
+		if s == "" {
+			return
+		}
+
+		if !f.inside {
+			if prefix, remainder, found := consumeTagOpen(s, f.openTag); found {
+				if prefix != "" {
+					f.downstream(prefix)
+				}
+				f.inside = true
+				f.pending.Reset()
+				f.pending.WriteString(remainder)
+				continue
+			}
+			if partialLen := partialSuffixLen(s, f.openTag); partialLen > 0 {
+				if force {
+					f.downstream(s)
+					f.pending.Reset()
+					return
+				}
+				if len(s) > partialLen {
+					f.downstream(s[:len(s)-partialLen])
+					f.pending.Reset()
+					f.pending.WriteString(f.openTag[:partialLen])
+				}
+				return
+			}
+			f.downstream(s)
+			f.pending.Reset()
+			return
+		}
+
+		if remainder, found := consumeTagClose(s, f.closeTag); found {
+			f.inside = false
+			f.pending.Reset()
+			f.pending.WriteString(remainder)
+			continue
+		}
+
+		if force {
+			f.pending.Reset()
+			return
+		}
+		if partialSuffixLen(s, f.closeTag) == 0 {
+			f.pending.Reset()
+		}
+		return
+	}
+}
+
+// NewRoundCallback is called when a new agent loop iteration starts LLM generation.
+type NewRoundCallback func()
+
+// StreamDoneCallback is called when a single LLM streaming round finishes,
+// allowing the frontend to hide the "thinking" indicator before the full
+// agent loop completes (tool execution may still be in progress).
+type StreamDoneCallback func()
+
+func stripThinkTags(s string) string {
+	return llm.StripDetailsBlocks(llm.StripThinkTags(s))
+}
+
+func stripFunctionCalls(s string) string {
+	return strings.TrimSpace(guiFuncCallBlock.ReplaceAllString(s, ""))
+}
+
+func stripXMLToolCalls(s string) string {
+	return llm.StripXMLToolCalls(s)
+}
+
+// ---------------------------------------------------------------------------
+// Filter factory functions using corelib/llm
+// ---------------------------------------------------------------------------
+
+func newThinkFilter(downstream llm.TokenCallback) tokenStreamFilter {
+	return newThinkFilterWithReasoning(downstream, nil)
+}
+
+// newThinkFilterWithReasoning creates a think filter that optionally forwards
+// thinking content (inside <think> tags) to the reasoningCb callback.
+// This allows the frontend to display the model's thinking process in a
+// collapsible UI section.
+func newThinkFilterWithReasoning(downstream llm.TokenCallback, reasoningCb llm.TokenCallback) tokenStreamFilter {
+	detailsFilter := newFlushableDetailsFilter(downstream)
+	thinkFilter := newFlushableThinkFilter(detailsFilter.Write)
+	if reasoningCb != nil {
+		thinkFilter.SetReasoningCallback(reasoningCb)
+	}
+	return tokenStreamFilter{
+		writeFn: thinkFilter.Write,
+		flushFn: func() {
+			thinkFilter.Flush()
+			detailsFilter.Flush()
+		},
+	}
+}
+
+func newFuncCallFilter(downstream llm.TokenCallback) tokenStreamFilter {
+	f := newFlushableTagFilter(downstream, guiFuncCallOpen, guiFuncCallClose)
+	return tokenStreamFilter{writeFn: f.Write, flushFn: f.Flush}
+}
+
+func newToolCallFilter(downstream llm.TokenCallback) tokenStreamFilter {
+	plainFilter := newPlainToolCallStreamFilter(downstream)
+	xmlFilter := newFlushableTagFilter(plainFilter.Write, guiToolCallOpen, guiToolCallClose)
+	codexFilter := newFlushableTagFilter(xmlFilter.Write, guiCodexToolCallOpen, guiCodexToolCallClose)
+	return tokenStreamFilter{
+		writeFn: codexFilter.Write,
+		flushFn: func() {
+			codexFilter.Flush()
+			xmlFilter.Flush()
+			plainFilter.Flush()
+		},
+		suppressed: func() bool { return plainFilter.suppressed },
+	}
+}
+
+type plainToolCallStreamFilter struct {
+	downstream llm.TokenCallback
+	pending    strings.Builder
+	suppressed bool
+}
+
+func newPlainToolCallStreamFilter(downstream llm.TokenCallback) *plainToolCallStreamFilter {
+	return &plainToolCallStreamFilter{downstream: downstream}
+}
+
+func (f *plainToolCallStreamFilter) Write(delta string) {
+	if f.suppressed {
+		return
+	}
+	f.pending.WriteString(delta)
+	f.drain(false)
+}
+
+func (f *plainToolCallStreamFilter) Flush() {
+	f.drain(true)
+}
+
+func (f *plainToolCallStreamFilter) drain(force bool) {
+	if f.suppressed {
+		f.pending.Reset()
+		return
+	}
+	s := f.pending.String()
+	if s == "" {
+		return
+	}
+	if looksLikeBareJSONToolCallStreamPrefix(s) {
+		if !force {
+			return
+		}
+		if calls, malformed := llm.ParseContentToolCallsDetailed(s); len(calls) > 0 || malformed || bareJSONToolCallTextLooksLikely(s) {
+			f.suppressed = true
+			f.pending.Reset()
+			return
+		}
+	}
+	visible, hold, suppress := llm.HoldContentToolCallStream(s, force)
+	if visible != "" {
+		f.downstream(visible)
+	}
+	if suppress {
+		f.suppressed = true
+		f.pending.Reset()
+		return
+	}
+	f.pending.Reset()
+	if hold != "" {
+		f.pending.WriteString(hold)
+	}
+}
+
+func bareJSONToolCallTextLooksLikely(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	if strings.HasPrefix(trimmed, "```") {
+		lines := strings.Split(trimmed, "\n")
+		if len(lines) >= 2 {
+			trimmed = strings.TrimSpace(strings.Join(lines[1:], "\n"))
+		}
+	}
+	if !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "[") {
+		return false
+	}
+	lower := strings.ToLower(trimmed)
+	return strings.Contains(lower, `"tool_calls"`) ||
+		strings.Contains(lower, `"function_call"`) ||
+		(strings.Contains(lower, `"function"`) && strings.Contains(lower, `"arguments"`)) ||
+		(strings.Contains(lower, `"name"`) && strings.Contains(lower, `"arguments"`))
+}
+
+func looksLikeBareJSONToolCallStreamPrefix(content string) bool {
+	trimmed := strings.TrimLeft(content, " \t\r\n")
+	if trimmed == "" {
+		return true
+	}
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix("```json", lower) || strings.HasPrefix(lower, "```json") {
+		return true
+	}
+	return strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[")
+}
+
+type llmStreamMetrics struct {
+	RequestBuildNanos     int64
+	HTTPDoNanos           int64
+	FirstSSEWaitNanos     int64
+	FirstTokenAt          time.Time
+	IdleTimeoutCount      int
+	IdleTimeoutAfterToken bool
+	MaxTokenGapNanos      int64
+}
+
+// transactionalTokenBuffer manages streaming text tokens during an LLM call.
+//
+// Design: When the LLM produces both text and tool_calls in the same response,
+// the text is often just a trivial preamble ("好的，让我搜索一下"). We want to
+// suppress such filler so the user doesn't see flickering short text between
+// tool executions. However, some models (DeepSeek, GLM 5.1) produce substantive
+// reasoning text before tool calls — the user needs to see this to understand
+// what the agent is doing and whether it's heading in the right direction.
+//
+// Strategy:
+//   - Tokens are buffered until total accumulated length reaches a threshold.
+//   - Once the threshold is crossed, all buffered tokens are flushed and
+//     subsequent tokens pass through immediately (streaming mode).
+//   - On Flush(): any remaining buffered tokens are forwarded.
+//   - On Discard(): if still in buffered mode (below threshold), tokens are
+//     dropped (trivial preamble). If already in streaming mode, nothing to
+//     discard — tokens were already sent.
+//
+// This ensures:
+//   - Short filler text ("好的") before tool calls → user never sees it.
+//   - Substantive reasoning text → user sees it in real-time.
+//   - Final text-only responses → always visible (Flush is called).
+const tokenBufferFlushThreshold = 40 // runes; ~20 CJK chars or ~40 ASCII chars
+
+type transactionalTokenBuffer struct {
+	onToken   llm.TokenCallback
+	deltas    []string
+	runeCount int
+	streaming bool // true once threshold crossed — tokens pass through directly
+}
+
+func newTransactionalTokenBuffer(onToken llm.TokenCallback) *transactionalTokenBuffer {
+	if onToken == nil {
+		onToken = func(string) {}
+	}
+	return &transactionalTokenBuffer{onToken: onToken}
+}
+
+func (b *transactionalTokenBuffer) Write(delta string) {
+	if delta == "" {
+		return
+	}
+	// Reasoning tokens (prefixed with \x01) always pass through immediately —
+	// the user should always see the model's thinking process. They don't count
+	// toward the content threshold that controls preamble suppression.
+	if len(delta) > 0 && delta[0] == '\x01' {
+		b.onToken(delta)
+		return
+	}
+	if b.streaming {
+		// Already past threshold — pass through immediately.
+		b.onToken(delta)
+		return
+	}
+	b.deltas = append(b.deltas, delta)
+	b.runeCount += len([]rune(delta))
+	if b.runeCount >= tokenBufferFlushThreshold {
+		// Threshold crossed — flush all buffered tokens and switch to streaming.
+		b.streaming = true
+		for _, d := range b.deltas {
+			b.onToken(d)
+		}
+		b.deltas = nil
+	}
+}
+
+func (b *transactionalTokenBuffer) Flush() {
+	// Forward any remaining buffered tokens (below threshold).
+	for _, delta := range b.deltas {
+		b.onToken(delta)
+	}
+	b.deltas = nil
+	b.streaming = true
+}
+
+func (b *transactionalTokenBuffer) Discard() {
+	// Only discard if we haven't already streamed tokens to the frontend.
+	// If streaming=true, tokens were already sent — nothing to take back.
+	if !b.streaming {
+		b.deltas = nil
+	}
+}
+
+func responseHasToolCalls(resp *llm.Response) bool {
+	if resp == nil || len(resp.Choices) == 0 {
+		return false
+	}
+	return len(resp.Choices[0].Message.ToolCalls) > 0
+}
+
+func llmResponseHasVisibleOutput(resp *llm.Response) bool {
+	if resp == nil || len(resp.Choices) == 0 {
+		return false
+	}
+	msg := resp.Choices[0].Message
+	return strings.TrimSpace(msg.Content) != "" ||
+		strings.TrimSpace(msg.ReasoningContent) != "" ||
+		len(msg.ToolCalls) > 0
+}
+
+func withFirstTokenMetrics(onToken llm.TokenCallback, metrics *llmStreamMetrics) llm.TokenCallback {
+	if onToken == nil {
+		onToken = func(string) {}
+	}
+	var lastTokenAt time.Time
+	return func(delta string) {
+		now := time.Now()
+		if metrics != nil && delta != "" {
+			if metrics.FirstTokenAt.IsZero() {
+				metrics.FirstTokenAt = now
+			}
+			if !lastTokenAt.IsZero() {
+				gap := now.Sub(lastTokenAt).Nanoseconds()
+				if gap > metrics.MaxTokenGapNanos {
+					metrics.MaxTokenGapNanos = gap
+				}
+			}
+			lastTokenAt = now
+		}
+		onToken(delta)
+	}
+}
+
+// The ctx parameter carries cancellation from the LoopContext so that
+// in-flight HTTP requests are aborted promptly when the user cancels.
+// category identifies the call class for the endpoint failure gate
+// (main-stream vs lightweight-classify); budgetFired is derived from
+// reqCtx.Err() at the observe point so caller-side deadlines and user
+// cancellation never count as endpoint failure evidence.
+func (h *IMMessageHandler) doLLMRequestStream(
+	reqCtx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	category string,
+	messages []interface{},
+	tools []map[string]interface{},
+	httpClient *http.Client,
+	onToken llm.TokenCallback,
+	metrics *llmStreamMetrics,
+) (*llm.Response, error) {
+	reqCtx = llm.WithRequestTraceIfMissing(reqCtx, "im_stream")
+	// Always use the streaming path even when onToken is nil (e.g. WeChat IM
+	// standalone mode). The non-streaming DoOpenAIRequest path uses io.ReadAll
+	// which blocks until the entire SSE stream finishes  - causing multi-minute
+	// delays when the API returns SSE despite stream:false. A noop callback
+	// lets us stream incrementally and discard tokens we don't need to display.
+	tokenBuffer := newTransactionalTokenBuffer(onToken)
+	meteredOnToken := withFirstTokenMetrics(tokenBuffer.Write, metrics)
+	if h.app != nil {
+		if cachedResp, ok := h.app.cachedStreamHit(reqCtx, cfg, messages, tools, meteredOnToken); ok {
+			if responseHasToolCalls(cachedResp) {
+				tokenBuffer.Discard()
+			} else {
+				tokenBuffer.Flush()
+				// A cache entry only exists after a successful upstream response,
+				// so it is valid health evidence just like a fresh completion.
+				h.app.markMaclawLLMProfileHealthyIfCurrent(cfg)
+			}
+			return cachedResp, nil
+		}
+	}
+	lease, trace, acquireErr := acquireLLMSchedulerLease(reqCtx)
+	if acquireErr != nil {
+		return nil, acquireErr
+	}
+	defer lease.Release()
+	scheduledCtx, scheduledCancel := context.WithCancel(reqCtx)
+	lease.SetCancel(scheduledCancel)
+	defer scheduledCancel()
+	var resp *llm.Response
+	var err error
+	if cfg.IsResponsesWebSocket() {
+		resp, err = h.doResponsesWSLLMRequestStream(scheduledCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
+	} else if cfg.IsResponsesAPI() {
+		resp, err = h.doResponsesAPILLMRequestStream(scheduledCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
+	} else if cfg.Protocol == "anthropic" {
+		resp, err = h.doAnthropicLLMRequestStream(scheduledCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
+	} else {
+		resp, err = h.doOpenAILLMRequestStream(scheduledCtx, cfg, messages, tools, httpClient, meteredOnToken, metrics)
+	}
+	globalLLMScheduler.ObserveResult(trace, err)
+	if h.app != nil {
+		h.app.observeLLMEndpointResult(cfg, category, reqCtx.Err() != nil, err)
+	}
+	if err != nil || responseHasToolCalls(resp) {
+		tokenBuffer.Discard()
+	} else {
+		tokenBuffer.Flush()
+		if h.app != nil {
+			h.app.storeStreamResponse(cfg, messages, tools, resp)
+			// A completed real chat request is definitive evidence that this
+			// exact profile route is available. This also corrects providers
+			// which reject the optional health-probe endpoint.
+			h.app.markMaclawLLMProfileHealthyIfCurrent(cfg)
+		}
+	}
+	return resp, err
+}
+
+// ---------------------------------------------------------------------------
+// OpenAI SSE streaming
+// ---------------------------------------------------------------------------
+
+type openAIStreamDelta struct {
+	Content          string                  `json:"content,omitempty"`
+	ReasoningContent string                  `json:"reasoning_content,omitempty"`
+	ToolCalls        []openAIStreamToolDelta `json:"tool_calls,omitempty"`
+}
+
+type openAIStreamToolDelta struct {
+	Index    int    `json:"index"`
+	ID       string `json:"id,omitempty"`
+	Type     string `json:"type,omitempty"`
+	Function struct {
+		Name      string `json:"name,omitempty"`
+		Arguments string `json:"arguments,omitempty"`
+	} `json:"function,omitempty"`
+}
+
+type openAIStreamChunk struct {
+	Choices []struct {
+		Delta        openAIStreamDelta `json:"delta"`
+		FinishReason *string           `json:"finish_reason"`
+	} `json:"choices"`
+	Usage *llm.Usage `json:"usage,omitempty"`
+}
+
+func (h *IMMessageHandler) doOpenAILLMRequestStream(
+	reqCtx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	tools []map[string]interface{},
+	httpClient *http.Client,
+	onToken llm.TokenCallback,
+	metrics *llmStreamMetrics,
+) (*llm.Response, error) {
+	return h.doOpenAILLMRequestStreamSDK(reqCtx, cfg, messages, tools, httpClient, onToken, metrics)
+}
+
+func (h *IMMessageHandler) doOpenAILLMRequestStreamSDK(
+	reqCtx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	tools []map[string]interface{},
+	httpClient *http.Client,
+	onToken llm.TokenCallback,
+	metrics *llmStreamMetrics,
+) (*llm.Response, error) {
+	requestBuildStartedAt := time.Now()
+	endpoint, reqBody, err := llm.BuildOpenAIChatRequestData(cfg, messages, llm.OpenAIChatRequestOptions{
+		Stream: true,
+		Tools:  tools,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if metrics != nil {
+		metrics.RequestBuildNanos += time.Since(requestBuildStartedAt).Nanoseconds()
+	}
+	upstreamModel := cfg.UpstreamModel()
+	log.Printf("[LLM Stream] POST %s model=%s configured_model=%s protocol=%s sdk=openai-go %s", endpoint, upstreamModel, cfg.Model, cfg.Protocol, llm.RequestTraceLogFields(reqCtx))
+
+	var filteredBuf strings.Builder
+	filteredOnToken := func(delta string) {
+		filteredBuf.WriteString(delta)
+		if onToken != nil {
+			onToken(delta)
+		}
+	}
+	rpf := newRolePrefixStreamFilter(filteredOnToken)
+	repf := newRepetitionFilter(rpf.Write)
+	tcf := newToolCallFilter(repf.Write)
+	fcf := newFuncCallFilter(tcf.Callback())
+	streamCtx, cancelStream := context.WithCancel(reqCtx)
+	defer cancelStream()
+	reasoningDisplay := newReasoningDisplayStream(onToken, cancelStream)
+	tf := newThinkFilterWithReasoning(fcf.Callback(), reasoningDisplay.ThinkCallback())
+
+	httpDoStartedAt := time.Now()
+	resp, err := llm.DoOpenAIRequestStreamWithReasoning(streamCtx, cfg, messages, tools, httpClient, func(delta string) {
+		tf.Write(delta)
+	}, func(delta string) {
+		reasoningDisplay.Write(delta)
+	})
+	if metrics != nil {
+		metrics.HTTPDoNanos += time.Since(httpDoStartedAt).Nanoseconds()
+	}
+
+	tf.Flush()
+	reasoningDisplay.Flush()
+	fcf.Flush()
+	tcf.Flush()
+	repf.Flush()
+	rpf.Flush()
+	if recovered, ok := recoverReasoningStutter(resp, reqCtx.Err(), reasoningDisplay.Halted()); ok {
+		resp, err = recovered, nil
+		log.Printf("[LLM Stream] reasoning stutter halted the completion")
+	}
+	if repf.Halted() {
+		log.Printf("[LLM Stream] repetition filter halted: suppressed %d runes", repf.SuppressedRunes())
+	}
+	if rpf.Halted() {
+		log.Printf("[LLM Stream] role prefix filter halted: suppressed %d runes", rpf.SuppressedRunes())
+	}
+	if resp == nil || len(resp.Choices) == 0 {
+		if err != nil {
+			return nil, wrapOpenAILLMStreamError(err, cfg.ProviderName, endpoint, upstreamModel, reqBody)
+		}
+		return resp, nil
+	}
+
+	choice := resp.Choices[0]
+	msg := choice.Message
+	rawContent := msg.Content
+	content := stripXMLToolCalls(stripFunctionCalls(stripThinkTags(rawContent)))
+	filteredStr := filteredBuf.String()
+	// A Hy3 call recovered from reasoning clears the premature forecast.
+	// A call that the content stream itself suppressed keeps its preface.
+	if filteredStr != "" && (strings.TrimSpace(rawContent) != "" || len(msg.ToolCalls) == 0 || tcf.Suppressed()) {
+		content = stripXMLToolCalls(filteredStr)
+	}
+	BrowserDiagCP5_StreamFilter(
+		rpf.Halted(), rpf.SuppressedRunes(),
+		repf.Halted(), repf.SuppressedRunes(),
+		rpf.Halted(),
+		browserDiagHasBrowserRolePrefix(filteredStr),
+		filteredStr,
+	)
+	reasoning := stripXMLToolCalls(stripRolePrefixReasoningForDisplay(msg.ReasoningContent))
+	if content == "" && reasoning != "" && len(msg.ToolCalls) == 0 {
+		content = stripXMLToolCalls(stripFunctionCalls(stripThinkTags(reasoning)))
+	}
+	msg.Content = content
+	msg.ReasoningContent = reasoning
+	finishReason := choice.FinishReason
+	truncatedTools := append([]string(nil), choice.TruncatedToolNames...)
+	if len(msg.ToolCalls) == 0 {
+		if xmlCalls, malformed := parseXMLContentToolCallsDetailed(rawContent); len(xmlCalls) > 0 {
+			msg.ToolCalls = append(msg.ToolCalls, xmlCalls...)
+			finishReason = llmFinishReasonToolCalls.String()
+			msg.Content = ""
+		} else if malformed {
+			msg.Content = llm.MalformedContentToolCallErrorMsg
+			finishReason = llmFinishReasonStop.String()
+		}
+	}
+	if finishReason == "" {
+		finishReason = llmFinishReasonStop.String()
+	}
+	var truncatedToolArgs map[string]string
+	if len(truncatedTools) == 0 {
+		finishReason, truncatedTools, truncatedToolArgs = filterTruncatedToolCalls(&msg, finishReason)
+	}
+	// Hy3 can stream a finished answer in content while the tool call arrives
+	// in reasoning. The parser drops that answer. The tokens already sent
+	// have to leave the bubble, or the next round keeps them as prose.
+	if onToken != nil && strings.TrimSpace(filteredStr) != "" && strings.TrimSpace(msg.Content) == "" && len(msg.ToolCalls) > 0 && !tcf.Suppressed() {
+		onToken(rejectedRoundContentToken)
+	}
+	// Enhanced diagnostic when truncation is detected via GUI path
+	if len(truncatedTools) > 0 && resp != nil && resp.Usage != nil {
+		u := resp.Usage
+		log.Printf("[LLM-stream-diag] GUI truncation detected: truncated=%v input=%d output=%d total=%d reasoning_content=%d chars",
+			truncatedTools, u.InputTokens, u.OutputTokens, u.TotalTokens, len(msg.ReasoningContent))
+	}
+	out := &llm.Response{
+		Choices: []llm.Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
+		Usage:   resp.Usage,
+	}
+	if err != nil {
+		return out, wrapOpenAILLMStreamError(err, cfg.ProviderName, endpoint, upstreamModel, reqBody)
+	}
+	return out, nil
+}
+
+func wrapOpenAILLMStreamError(err error, providerName, endpoint, upstreamModel string, reqBody []byte) error {
+	if friendly, ok := classifyOpenAICompatibleHTTPError(err, providerName); ok {
+		log.Printf("[LLM Stream] SDK error endpoint=%s request=%s err=%v", endpoint, llm.SummarizeOpenAIChatRequestBody(reqBody), err)
+		return fmt.Errorf("%s [url=%s model=%s]", friendly, endpoint, upstreamModel)
+	}
+	return fmt.Errorf("[%s] %w", endpoint, err)
+}
+
+func parseNonStreamOpenAIResponse(resp *http.Response) (*llm.Response, error) {
+	return llm.ParseNonStreamOpenAIResponse(resp)
+}
+
+// ---------------------------------------------------------------------------
+// Anthropic SSE streaming
+// ---------------------------------------------------------------------------
+
+func (h *IMMessageHandler) doAnthropicLLMRequestStream(
+	reqCtx context.Context,
+	cfg corelib.MaclawLLMConfig,
+	messages []interface{},
+	tools []map[string]interface{},
+	httpClient *http.Client,
+	onToken llm.TokenCallback,
+	metrics *llmStreamMetrics,
+) (*llm.Response, error) {
+	requestBuildStartedAt := time.Now()
+	if _, _, err := llm.BuildAnthropicMessagesRequestData(cfg, messages, llm.AnthropicMessagesRequestOptions{Stream: true, Tools: tools}); err != nil {
+		return nil, err
+	}
+	if metrics != nil {
+		metrics.RequestBuildNanos += time.Since(requestBuildStartedAt).Nanoseconds()
+	}
+
+	// Apply the same filter chain as the OpenAI path: role-prefix, repetition.
+	// Without this, Anthropic-protocol responses (via OpenRouter, etc.) are
+	// vulnerable to Browser: hallucinations and repetition degeneration.
+	var filteredBuf strings.Builder
+	filteredOnToken := func(delta string) {
+		filteredBuf.WriteString(delta)
+		if onToken != nil {
+			onToken(delta)
+		}
+	}
+	rpf := newRolePrefixStreamFilter(filteredOnToken)
+	repf := newRepetitionFilter(rpf.Write)
+	streamCtx, cancelStream := context.WithCancel(reqCtx)
+	defer cancelStream()
+	reasoningDisplay := newReasoningDisplayStream(onToken, cancelStream)
+
+	httpDoStartedAt := time.Now()
+	resp, err := llm.DoAnthropicRequestStreamWithReasoning(streamCtx, cfg, messages, tools, httpClient, repf.Write, reasoningDisplay.Write)
+	if metrics != nil {
+		metrics.HTTPDoNanos += time.Since(httpDoStartedAt).Nanoseconds()
+		if metrics.FirstSSEWaitNanos == 0 {
+			metrics.FirstSSEWaitNanos = metrics.HTTPDoNanos
+		}
+	}
+
+	reasoningDisplay.Flush()
+	repf.Flush()
+	rpf.Flush()
+	if recovered, ok := recoverReasoningStutter(resp, reqCtx.Err(), reasoningDisplay.Halted()); ok {
+		resp, err = recovered, nil
+		log.Printf("[LLM Stream] anthropic reasoning stutter halted the completion")
+	}
+	if repf.Halted() {
+		log.Printf("[LLM Stream] anthropic repetition filter halted: suppressed %d runes", repf.SuppressedRunes())
+	}
+	if rpf.Halted() {
+		log.Printf("[LLM Stream] anthropic role prefix filter halted: suppressed %d runes", rpf.SuppressedRunes())
+	}
+
+	// Apply filtered text and sanitize thinking even on a partial stream so
+	// a disconnect does not wipe a thinking panel that already had tokens.
+	if resp != nil && len(resp.Choices) > 0 {
+		msg := resp.Choices[0].Message
+		if filtered := filteredBuf.String(); filtered != "" && (msg.Content == "" || len(filtered) <= len(msg.Content)) {
+			msg.Content = filtered
+		}
+		msg.ReasoningContent = stripRolePrefixReasoningForDisplay(msg.ReasoningContent)
+		resp.Choices[0].Message = msg
+	}
+
+	return resp, err
+}
+
+// parseNonStreamAnthropicResponse handles the fallback case where the provider
+// returned a normal JSON response instead of SSE for Anthropic protocol.
+func parseNonStreamAnthropicResponse(resp *http.Response, requestBody []byte) (*llm.Response, error) {
+	return llm.ParseNonStreamAnthropicResponse(resp)
+}

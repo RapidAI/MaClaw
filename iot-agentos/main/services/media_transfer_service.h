@@ -28,6 +28,12 @@ typedef struct {
 device_status_t media_transfer_service_init(
     const media_transfer_service_host_t *host);
 
+/* Reversible System Sleep participant. PREPARE closes new media admission
+ * and waits for a pre-existing lane/wake-lease owner to leave. A timeout
+ * leaves admission closed until the Power-owned ABORT counterpart runs. */
+device_status_t media_transfer_service_prepare_system_sleep(uint32_t timeout_ms);
+void media_transfer_service_abort_system_sleep_prepare(void);
+
 /* Server audio is a message-scoped, singleton lease. `true` means this call
  * acquired it; a duplicate call leaves the existing lease intact and returns
  * false.  Both cases retain foreground priority over optional artwork. */
@@ -36,8 +42,11 @@ bool media_transfer_service_finish_server_audio_wake_lease(void);
 
 /* Optional callers may nest leases. The final release schedules the normal
  * asynchronous wake restart, never starts recognizer work inline. */
-void media_transfer_service_begin_optional_wake_lease(const char *source);
-void media_transfer_service_finish_optional_wake_lease(void);
+/* Returns true only when this call acquired an optional lease. Callers must
+ * pass the result to finish; a rejected begin must never release another
+ * transaction's lease. */
+bool media_transfer_service_begin_optional_wake_lease(const char *source);
+bool media_transfer_service_finish_optional_wake_lease(void);
 
 bool media_transfer_service_server_audio_wake_lease_active(void);
 void media_transfer_service_set_audio_download_active(bool active);

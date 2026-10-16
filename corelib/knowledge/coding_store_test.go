@@ -189,6 +189,92 @@ func TestCodingKnowledgeStore_SearchByLanguage(t *testing.T) {
 	}
 }
 
+func TestCodingKnowledgeStore_SearchHydratesFullContent(t *testing.T) {
+	store := openTestCodingStore(t)
+	ctx := context.Background()
+	uniqueTail := "HYDRATE_TAIL_MARKER_Z9"
+	content := strings.Repeat("reusable timeout guidance for http clients. ", 40) + uniqueTail
+	saved, err := store.SaveExperience(ctx, CodingExperience{
+		Title:            "Always set HTTP client timeouts",
+		Category:         CodingCategoryPattern,
+		Scope:            CodingScopeUniversal,
+		TriggerCondition: "http timeout client",
+		Content:          content,
+		Status:           CodingStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("SaveExperience: %v", err)
+	}
+	got, err := store.GetExperience(ctx, saved.ID)
+	if err != nil {
+		t.Fatalf("GetExperience: %v", err)
+	}
+	results, err := store.SearchExperiences(ctx, CodingSearchOptions{
+		Query:  "http timeout client",
+		Status: []string{CodingStatusActive},
+		Limit:  5,
+	})
+	if err != nil {
+		t.Fatalf("SearchExperiences: %v", err)
+	}
+	if len(results) == 0 {
+		t.Fatal("expected search hit")
+	}
+	var found CodingExperience
+	for _, exp := range results {
+		if exp.ID == saved.ID {
+			found = exp
+			break
+		}
+	}
+	if found.ID == "" {
+		t.Fatalf("saved experience missing from search results: %+v", results)
+	}
+	if found.Content != got.Content {
+		t.Fatalf("search content != GetExperience content\nsearch=%q\nget=%q", found.Content, got.Content)
+	}
+	if !strings.Contains(found.Content, uniqueTail) {
+		t.Fatalf("search dropped stored content tail: %q", found.Content)
+	}
+	listed, err := store.ListExperiences(ctx, CodingListFilter{Limit: 10})
+	if err != nil {
+		t.Fatalf("ListExperiences: %v", err)
+	}
+	var listedHit CodingExperience
+	for _, exp := range listed {
+		if exp.ID == saved.ID {
+			listedHit = exp
+			break
+		}
+	}
+	if listedHit.ID == "" || !strings.Contains(listedHit.Content, uniqueTail) {
+		t.Fatalf("store list must keep full content for export/contribute, got %q", listedHit.Content)
+	}
+	summaries, err := store.ListExperiences(ctx, CodingListFilter{Limit: 10, OmitContent: true})
+	if err != nil {
+		t.Fatalf("ListExperiences OmitContent: %v", err)
+	}
+	for _, exp := range summaries {
+		if exp.ID == saved.ID && (exp.Content != "" || exp.CodeSnippet != "") {
+			t.Fatalf("OmitContent list should skip bodies, got content=%q", exp.Content)
+		}
+	}
+	listing, err := store.SearchExperiences(ctx, CodingSearchOptions{
+		Query:       "http timeout client",
+		Status:      []string{CodingStatusActive},
+		Limit:       5,
+		OmitContent: true,
+	})
+	if err != nil {
+		t.Fatalf("OmitContent search: %v", err)
+	}
+	for _, exp := range listing {
+		if exp.ID == saved.ID && exp.Content != "" {
+			t.Fatalf("OmitContent search should skip bodies, got %q", exp.Content)
+		}
+	}
+}
+
 func TestCodingKnowledgeStore_ConfidenceUpdate(t *testing.T) {
 	store := openTestCodingStore(t)
 	ctx := context.Background()
@@ -1022,6 +1108,54 @@ func TestCodingKnowledgeStore_UpdateExperienceCannotForgeLifecycleEvidence(t *te
 	edited.LastRecalledAt = time.Time{}
 	if err := store.UpdateExperience(ctx, edited); err != nil {
 		t.Fatalf("ordinary content edit with omitted stats: %v", err)
+	}
+}
+
+func TestCodingKnowledgeStore_UpdateExperienceHydratesOmittedProjectIdentity(t *testing.T) {
+	store := openTestCodingStore(t)
+	ctx := context.Background()
+	saved, err := store.SaveExperience(ctx, CodingExperience{
+		Title:             "project timeout guidance",
+		Category:          CodingCategoryPattern,
+		Scope:             CodingScopeProject,
+		ProjectPath:       "D:/work/timeout-project",
+		Language:          "go",
+		Frameworks:        []string{"net/http"},
+		TriggerCondition:  "http timeout",
+		Content:           "Always set client timeouts.",
+		FailedAttempts:    []string{"http.Get without context"},
+		Contraindications: []string{"do not apply to in-process calls"},
+		SourceTaskTitle:   "fix client timeouts",
+		Status:            CodingStatusActive,
+	})
+	if err != nil {
+		t.Fatalf("SaveExperience: %v", err)
+	}
+	if err := store.UpdateExperience(ctx, CodingExperience{
+		ID:               saved.ID,
+		Title:            "project timeout guidance v2",
+		Category:         CodingCategoryPattern,
+		Scope:            CodingScopeProject,
+		TriggerCondition: "http timeout",
+		Content:          "Always set client timeouts and cancel contexts.",
+	}); err != nil {
+		t.Fatalf("thin UI update should hydrate omitted identity, err=%v", err)
+	}
+	got, err := store.GetExperience(ctx, saved.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ProjectPath != saved.ProjectPath {
+		t.Fatalf("project path = %q, want %q", got.ProjectPath, saved.ProjectPath)
+	}
+	if got.Title != "project timeout guidance v2" || !strings.Contains(got.Content, "cancel contexts") {
+		t.Fatalf("edited fields not saved: %+v", got)
+	}
+	if len(got.FailedAttempts) != 1 || got.FailedAttempts[0] != "http.Get without context" {
+		t.Fatalf("failed attempts lost: %+v", got.FailedAttempts)
+	}
+	if len(got.Contraindications) != 1 || got.Frameworks[0] != "net/http" || got.SourceTaskTitle != "fix client timeouts" || got.Language != "go" {
+		t.Fatalf("omitted identity fields lost: %+v", got)
 	}
 }
 

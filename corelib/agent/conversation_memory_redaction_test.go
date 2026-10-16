@@ -146,6 +146,8 @@ func TestStripPlainToolCallPersistenceLeakKeepsBareMentions(t *testing.T) {
 		{"bare word with period kept", "the tool_call failed. retrying now", "the tool_call failed. retrying now"},
 		{"plural bare word kept", "check the tool_calls field later", "check the tool_calls field later"},
 		{"xml tag truncated", "visible\n<tool_call>{\"name\":\"ssh\"}</tool_call>", "visible"},
+		{"longcat xml truncated", "visible\n<longcat_tool_call>ssh_read_file</longcat_tool_call>", "visible"},
+		{"bare longcat word kept", "LongCat writes longcat_tool_call in its prompt", "LongCat writes longcat_tool_call in its prompt"},
 		{"bare word followed by json truncated", "先执行远程检查\nTOOL_CALL\n{\"function\":\"ssh\"}", "先执行远程检查"},
 		{"json key truncated", "result\n{\"tool_call\": {\"name\": \"ssh\"}}", "result\n{"},
 		{"sentinel truncated", "answer\n<|tool_call_begin|>x", "answer"},

@@ -1,0 +1,853 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { CreateGroupTabOptions, CreateProjectTabOptions, CreateVETabOptions } from "./useAITabManager";
+import type { AITab, AITabState } from "./AITabTypes";
+import type { VirtualEmployeeEntry } from "./VirtualEmployeeTab";
+import type { ExpertDefinition } from "./expertTypes";
+import { expertTabId, expertWelcomeMessageText } from "./expertTypes";
+import { expertSessionKey } from "./aiAssistantPanelSessionUtils";
+import { dispatchOpenLatexDocument, latexRelativePathForProject } from "./latexDocumentOpen";
+import { createLatexDocumentForTask, isLatexExpertId, LATEX_BLANK_TEMPLATE_ID } from "../../utils/latexTemplates";
+import { AbandonUnopenedFreshLatexTask, StartWorkflowTemplateInTab } from "../../../wailsjs/go/main/App";
+import { isHistoryDiscussionReadOnly } from "./historyDiscussionUtils";
+import { isLocalHumanParticipantId } from "./localAIIdentity";
+import { addParticipantIdentityKeys } from "./participantIdentity";
+import type { CodingTaskLaunch } from "./codingTaskLaunch";
+import { userTurnDisplayOptions } from "./userTurnDisplay";
+
+/** Pending project tab open request from external (e.g. sidebar "create task") */
+export type PendingProjectTabOpen = CodingTaskLaunch;
+
+/** Pending expert tab open request (e.g. clicking an expert card on the utilities page). */
+export interface PendingExpertOpen {
+    expert: ExpertDefinition;
+    /** Wizard first message: sent through the expert tab once it opens. */
+    initialMessage?: string;
+    /**
+     * Set when the launcher already wrote the paper. The task registration must
+     * reopen that file instead of creating a second blank main.tex beside it.
+     */
+    latexDocument?: { relativePath?: string };
+    /**
+     * Directory of a LaTeX paper created for this launch. Present only when
+     * the wizard already cleared the shared transcript. If the tab never
+     * opens, that paper is abandoned.
+     */
+    projectPath?: string;
+}
+
+/** Task directory created for an expert. LaTeX experts also name the source file. */
+export interface EnsuredExpertTask {
+    projectPath?: string;
+    relativePath?: string;
+}
+
+/** Receipt returned after a queued project-tab request has been handled. */
+export interface PendingProjectTabOpenResult {
+    outcome: "opened" | "rejected";
+    launchId?: string;
+}
+
+export interface PendingHistoryDiscussionOpen {
+    id?: string;
+    topic?: string;
+    question?: string;
+    local_relation?: string;
+    role?: string;
+    readonly?: boolean;
+    status?: string;
+    participant_ids?: string[];
+}
+
+function singlePendingParticipantId(discussion: PendingHistoryDiscussionOpen): string {
+    const seen = new Set<string>();
+    const ids: string[] = [];
+    for (const rawId of discussion?.participant_ids || []) {
+        const id = String(rawId || "").trim();
+        if (!id || isLocalHumanParticipantId(id)) continue;
+        const before = seen.size;
+        addParticipantIdentityKeys(seen, id);
+        if (seen.size !== before) ids.push(id);
+    }
+    if (ids.length === 1) return ids[0];
+    // When participant_ids contains both local machine ID (m_xxx) and remote VE
+    // (ve_emp_xxx / ve-xxx / ve_xxx), identify VE participants by prefix.
+    if (ids.length > 1) {
+        const veIds = ids.filter(id => {
+            const lower = id.toLowerCase();
+            return lower.startsWith("ve_emp_") || lower.startsWith("ve-") || lower.startsWith("ve_");
+        });
+        if (veIds.length === 1) return veIds[0];
+    }
+    return "";
+}
+
+function isConversationMessage(value: unknown): value is { role?: unknown } {
+    return !!value && typeof value === "object";
+}
+
+const textForPendingTabLang = (lang: string | undefined, en: string, zhHans: string, zhHant = zhHans): string => (
+    lang === "zh-Hant" ? zhHant : lang?.startsWith("zh") || !lang ? zhHans : en
+);
+
+function newTaskContextMessage(
+    launch: Pick<CodingTaskLaunch, "agentMode" | "remoteHost" | "newTaskContext">,
+    lang?: string,
+) {
+    const context = launch.newTaskContext;
+    if (!context || context.kind !== "new-task") return null;
+    const t = (en: string, zhHans: string, zhHant = zhHans) => textForPendingTabLang(lang, en, zhHans, zhHant);
+    const type = launch.agentMode === "remote_coding_dev"
+        ? t("Remote coding", "\u8fdc\u7a0b\u7f16\u7a0b", "\u9060\u7aef\u7a0b\u5f0f")
+        : launch.agentMode === "coding_dev"
+            ? t("Local coding", "\u672c\u5730\u7f16\u7a0b", "\u672c\u6a5f\u7a0b\u5f0f")
+            : t("Chat", "\u5bf9\u8bdd", "\u5c0d\u8a71");
+    const lines = [
+        `${t("Type", "\u7c7b\u578b", "\u985e\u578b")}\uff1a${type}`,
+        launch.agentMode === "remote_coding_dev" && launch.remoteHost
+            ? `${t("Remote host", "\u8fdc\u7a0b\u4e3b\u673a", "\u9060\u7aef\u4e3b\u6a5f")}\uff1a${launch.remoteHost}`
+            : "",
+        launch.agentMode === "remote_coding_dev" && context.remoteUser
+            ? `${t("User", "\u7528\u6237", "\u4f7f\u7528\u8005")}\uff1a${context.remoteUser}`
+            : "",
+        launch.agentMode === "remote_coding_dev" && context.remotePort
+            ? `${t("Port", "\u7aef\u53e3", "\u9023\u63a5\u57e0")}\uff1a${context.remotePort}`
+            : "",
+        launch.agentMode === "remote_coding_dev" && context.remoteWorkDir
+            ? `${t("Remote working directory", "\u8fdc\u7a0b\u5de5\u4f5c\u76ee\u5f55", "\u9060\u7aef\u5de5\u4f5c\u76ee\u9304")}\uff1a${context.remoteWorkDir}`
+            : context.workingDir
+                ? `${t("Working directory", "\u5de5\u4f5c\u76ee\u5f55", "\u5de5\u4f5c\u76ee\u9304")}\uff1a${context.workingDir}`
+                : `${t("Working directory", "\u5de5\u4f5c\u76ee\u5f55", "\u5de5\u4f5c\u76ee\u9304")}\uff1a${t("Default workspace", "\u9ed8\u8ba4\u5de5\u4f5c\u533a", "\u9810\u8a2d\u5de5\u4f5c\u5340")}`,
+        t(
+            "Task is ready. Enter your request below; this information is not sent to AI.",
+            "\u4efb\u52a1\u5df2\u5c31\u7eea\uff0c\u8bf7\u5728\u4e0b\u65b9\u8f93\u5165\u4efb\u52a1\u547d\u4ee4\u3002\u6b64\u4fe1\u606f\u4e0d\u4f1a\u53d1\u9001\u7ed9 AI\u3002",
+            "\u4efb\u52d9\u5df2\u5c31\u7dd2\uff0c\u8acb\u5728\u4e0b\u65b9\u8f38\u5165\u4efb\u52d9\u547d\u4ee4\u3002\u6b64\u8cc7\u8a0a\u4e0d\u6703\u50b3\u9001\u7d66 AI\u3002",
+        ),
+    ].filter(Boolean);
+    return {
+        id: `task-context-${Date.now()}`,
+        role: "system" as const,
+        kind: "taskContext" as const,
+        content: lines.join("\n"),
+        timestamp: Date.now(),
+    };
+}
+
+function workflowStartFailureMessage(lang?: string) {
+    return {
+        id: `workflow-start-error-${Date.now()}`,
+        role: "assistant" as const,
+        content: textForPendingTabLang(
+            lang,
+            "This workflow could not be started. Please try again.",
+            "暂时无法启动此工作流，请重试。",
+            "暫時無法啟動此工作流，請重試。",
+        ),
+        timestamp: Date.now(),
+    };
+}
+
+/** Degradation note from CreateTaskUnified (workflow start / remote prepare failed). */
+function launchWarningMessage(warning: string) {
+    return {
+        id: `launch-warning-${Date.now()}`,
+        role: "system" as const,
+        content: warning,
+        timestamp: Date.now(),
+    };
+}
+
+function looksLikeRawDiscussionTitle(value: string): boolean {
+    return /^(disc|discussion|consultation|session)[-_][A-Za-z0-9-]+$|^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value);
+}
+
+function readableHistoryDiscussionTitle(discussion: PendingHistoryDiscussionOpen, discussionId: string, lang?: string): string {
+    const candidate = String(discussion?.topic || discussion?.question || "").trim();
+    if (candidate && candidate !== discussionId && !looksLikeRawDiscussionTitle(candidate)) return candidate;
+    return textForPendingTabLang(lang, "Group discussion", "\u7fa4\u7ec4\u8ba8\u8bba", "\u7fa4\u7ec4\u8ba8\u8bba");
+}
+
+interface PendingAssistantTabOpenOptions {
+    lang?: string;
+    createVETab: (veId: string, veName: string, sessionId?: string, onlineStatus?: "online" | "offline", avatarDataURL?: string, veSkillDescription?: string, options?: CreateVETabOptions) => AITab | null;
+    createGroupTab: (id: string, title: string, participants: string[], options?: CreateGroupTabOptions) => AITab | null;
+    createProjectTab: (projectPath: string, taskTitle: string, options?: CreateProjectTabOptions) => AITab | null;
+    createExpertTab?: (expert: ExpertDefinition, task?: { projectPath?: string; relativePath?: string }) => AITab | null;
+    activateTab?: (tabId: string) => void;
+    getTabState?: (tabId: string) => AITabState | undefined;
+    saveTabState?: (tabId: string, state: Partial<AITabState>) => void;
+    getTabList?: () => AITab[];
+    hasProjectTab?: (projectPath: string, cloudWorkspaceId?: string) => boolean;
+    sendMessage?: (text: string, options?: Record<string, unknown>) => Promise<boolean>;
+    pendingVEOpen?: VirtualEmployeeEntry | null;
+    onPendingVEOpenHandled?: () => void;
+    pendingHistoryDiscussionOpen?: PendingHistoryDiscussionOpen | null;
+    onPendingHistoryDiscussionOpenHandled?: () => void;
+    pendingProjectTabOpen?: PendingProjectTabOpen | null;
+    onPendingProjectTabOpenHandled?: (result: PendingProjectTabOpenResult) => void;
+    pendingExpertOpen?: PendingExpertOpen | null;
+    onPendingExpertOpenHandled?: () => void;
+    /** Send the wizard's first message through the freshly opened expert tab. */
+    sendExpertMessage?: (text: string, expertId: string) => void | Promise<unknown>;
+    /** Persist the expert in task management before its tab is opened. */
+    onEnsureExpertTask?: (expert: ExpertDefinition, existing?: { relativePath?: string }) => Promise<EnsuredExpertTask | void> | EnsuredExpertTask | void;
+    /** Persist a non-main assistant tab before it is opened. */
+    onEnsureAssistantTabTask?: (tabType: string, tabIdentity: string, title: string, projectPath?: string) => Promise<void> | void;
+    /** Write the task's LaTeX entry onto its tab without focusing that tab. */
+    setLatexRelativePath?: (tabId: string, relativePath: string) => void;
+    /** User is about to open or focus a project task. Caller may close the idle tab being left. */
+    beforeUserProjectOpen?: (projectPath: string, cloudWorkspaceId?: string) => void;
+    /** User is about to open or focus an expert task. */
+    beforeUserExpertOpen?: (expertId: string) => void;
+    /**
+     * LaTeX wizard launch: archive the previous paper's transcript and clear
+     * the shared expert conversation before the new first message is sent.
+     */
+    resetExpertConversation?: (expertId: string, previousProjectPath?: string) => Promise<void> | void;
+    /** Apply the floor recorded by resetExpertConversation once the tab exists. */
+    markExpertSessionFloor?: (expertId: string) => void;
+}
+
+/** Whether a restored LaTeX tab is still asking the workspace for its entry.
+ * The editor waits for that answer so a cached main.tex is not opened and
+ * then deleted. */
+export type LatexEntryWatch = {
+    epoch: number;
+    pending: (projectPath: string) => boolean;
+};
+
+export function usePendingAssistantTabOpen({
+    lang,
+    createVETab,
+    createGroupTab,
+    createProjectTab,
+    createExpertTab,
+    activateTab,
+    getTabState,
+    saveTabState,
+    getTabList,
+    hasProjectTab,
+    sendMessage,
+    pendingVEOpen,
+    onPendingVEOpenHandled,
+    pendingHistoryDiscussionOpen,
+    onPendingHistoryDiscussionOpenHandled,
+    pendingProjectTabOpen,
+    onPendingProjectTabOpenHandled,
+    pendingExpertOpen,
+    onPendingExpertOpenHandled,
+    sendExpertMessage,
+    onEnsureExpertTask,
+    onEnsureAssistantTabTask,
+    setLatexRelativePath,
+    beforeUserProjectOpen,
+    beforeUserExpertOpen,
+    resetExpertConversation,
+    markExpertSessionFloor,
+}: PendingAssistantTabOpenOptions): LatexEntryWatch {
+    const openHistoryDiscussion = useCallback(async (discussion: PendingHistoryDiscussionOpen) => {
+        const discussionId = String(discussion?.id || "").trim();
+        if (!discussionId) return;
+
+        const readOnly = isHistoryDiscussionReadOnly(discussion);
+
+        const bindHistoryStateToTab = (tabId: string) => {
+            if (!saveTabState) return;
+            const current = getTabState?.(tabId);
+            saveTabState(tabId, {
+                history: current?.history || [],
+                scrollTop: current?.scrollTop || 0,
+                inputText: current?.inputText || "",
+                ...current,
+                sessionId: current?.sessionId || discussionId,
+                discussionId,
+                readOnly,
+                lastActiveAt: Date.now(),
+            });
+        };
+
+        // First prefer any already-open tab for this discussion/session. A tab
+        // that already exists was previously registered, so do not wait for a
+        // redundant task-store call before focusing it.
+        // History
+        // rows can represent active, read-only, or invited conversations, but a
+        // double-click should focus the live tab when it is already present.
+        if (activateTab && getTabList) {
+            const tabs = getTabList();
+            // Match by session/discussion ID: VE tabs store their A2A session ID
+            // in tabState.sessionId, which equals the discussion ID from Hub.
+            const existingSessionTab = getTabState ? tabs.find(t => {
+                if (t.type !== "ve" && t.type !== "group") return false;
+                const state = getTabState(t.id);
+                return String(state?.sessionId || state?.discussionId || "").trim() === discussionId;
+            }) : undefined;
+            if (existingSessionTab) {
+                bindHistoryStateToTab(existingSessionTab.id);
+                activateTab(existingSessionTab.id);
+                return;
+            }
+            // Also check if there's already a group tab for this discussion.
+            const existingGroupTab = tabs.find(t => t.type === "group" && t.discussionId === discussionId);
+            if (existingGroupTab) {
+                bindHistoryStateToTab(existingGroupTab.id);
+                activateTab(existingGroupTab.id);
+                return;
+            }
+
+            // Participant identity is not enough to identify a historical row:
+            // the same VE can have several discussions, each with a distinct ID.
+        }
+
+        const title = readableHistoryDiscussionTitle(discussion, discussionId, lang);
+        const role = discussion?.local_relation || discussion?.role;
+        // A continuable 1:1 discussion is a digital-employee chat. Open that tab
+        // directly and do not mint a local task. A group (or a 1:1 that cannot
+        // open a VE tab) still gets a discussion row.
+        const singleVE = !readOnly ? singlePendingParticipantId(discussion) : "";
+        if (singleVE) {
+            const veTab = createVETab(singleVE, title, discussionId, undefined, undefined, undefined, { allowIdentityReuse: false });
+            if (veTab) return;
+        }
+
+        try {
+            await Promise.resolve(onEnsureAssistantTabTask?.("discussion", discussionId, title));
+        } catch (error) {
+            console.error("[task_management] create discussion assistant task failed:", error);
+            return;
+        }
+
+        createGroupTab(`history-${discussionId}`, title, discussion?.participant_ids || [], { discussionId, readOnly, role, groupTitle: title });
+    }, [activateTab, createGroupTab, createVETab, getTabList, getTabState, lang, onEnsureAssistantTabTask, saveTabState]);
+
+    useEffect(() => {
+        if (!pendingVEOpen) return;
+        const participantId = String(pendingVEOpen.machine_id || pendingVEOpen.id || '').trim();
+        if (!participantId) {
+            onPendingVEOpenHandled?.();
+            return;
+        }
+        createVETab(
+            participantId,
+            pendingVEOpen.name,
+            undefined,
+            pendingVEOpen.online_status,
+            pendingVEOpen.avatar_data_url,
+            pendingVEOpen.skill_description,
+        );
+        onPendingVEOpenHandled?.();
+    }, [createVETab, onPendingVEOpenHandled, pendingVEOpen]);
+
+    // Focus a secondary tab when its durable task-list alias is opened. These
+    // rows must never be treated as project tasks by the shell.
+    useEffect(() => {
+        const onFocusAssistantTask = (event: Event) => {
+            const detail = (event as CustomEvent)?.detail || {};
+            const tabType = String(detail.tabType || '').trim().toLowerCase();
+            const title = String(detail.title || '').trim().toLocaleLowerCase();
+            if (tabType !== 've' && tabType !== 'group') return;
+            const identity = String(detail.veId || '').trim();
+            const sessionId = String(detail.sessionId || '').trim();
+            const tabs = getTabList?.() || [];
+            // Prefer durable identity/session metadata over the display title:
+            // users can rename a tab, and task rows may carry an older title.
+            const match = tabs.find(tab => {
+                if (tab.type !== tabType) return false;
+                const state = getTabState?.(tab.id);
+                const tabSession = String(state?.sessionId || state?.discussionId || tab.discussionId || '').trim();
+                if (sessionId && tabSession === sessionId) return true;
+                if (tabType === 've' && identity && String(tab.veId || '').trim() === identity) return true;
+                if (tabType === 'group' && identity && String(tab.discussionId || '').trim() === identity) return true;
+                return !!title && String(tab.title || '').trim().toLocaleLowerCase() === title;
+            });
+            if (match) {
+                activateTab?.(match.id);
+                return;
+            }
+            // A task row can outlive a tab (for example, the tab was closed
+            // before restart). The binding cache lets us reconstruct the
+            // correct VE/group tab and, when available, resume its Hub session.
+            if (tabType === 've' && identity) {
+                createVETab(identity, title || identity, sessionId || undefined);
+            } else if (tabType === 'group' && sessionId) {
+                createGroupTab(`history-${sessionId}`, title || 'Group discussion', [], { discussionId: sessionId });
+            }
+        };
+        window.addEventListener('ai-focus-assistant-tab-task', onFocusAssistantTask);
+        return () => window.removeEventListener('ai-focus-assistant-tab-task', onFocusAssistantTask);
+    }, [activateTab, createGroupTab, createVETab, getTabList, getTabState]);
+
+    useEffect(() => {
+        if (!pendingHistoryDiscussionOpen) return;
+        let cancelled = false;
+        void openHistoryDiscussion(pendingHistoryDiscussionOpen).finally(() => {
+            if (!cancelled) onPendingHistoryDiscussionOpenHandled?.();
+        });
+        return () => { cancelled = true; };
+    }, [onPendingHistoryDiscussionOpenHandled, openHistoryDiscussion, pendingHistoryDiscussionOpen]);
+
+    // --- Project Tab: use refs to avoid stale closures in async operations ---
+    // The effect only triggers on `pendingProjectTabOpen` changes (the signal).
+    // All other dependencies are accessed via refs to ensure the async operation
+    // always uses the latest values without causing effect re-runs.
+    const createProjectTabRef = useRef(createProjectTab);
+    createProjectTabRef.current = createProjectTab;
+    const beforeUserProjectOpenRef = useRef(beforeUserProjectOpen);
+    beforeUserProjectOpenRef.current = beforeUserProjectOpen;
+    const sendMessageRef = useRef(sendMessage);
+    sendMessageRef.current = sendMessage;
+    const onProjectTabHandledRef = useRef(onPendingProjectTabOpenHandled);
+    onProjectTabHandledRef.current = onPendingProjectTabOpenHandled;
+    const getTabStateRef = useRef(getTabState);
+    getTabStateRef.current = getTabState;
+    const saveTabStateRef = useRef(saveTabState);
+    saveTabStateRef.current = saveTabState;
+    const hasProjectTabRef = useRef(hasProjectTab);
+    hasProjectTabRef.current = hasProjectTab;
+
+    useEffect(() => {
+        if (!pendingProjectTabOpen) return;
+
+        // Capture request data synchronously. The parent clears the one-shot
+        // pending state through the receipt callback below.
+        const { launchId, projectPath, taskTitle, initialMessage, autoSend, prepareMode, openIntent, cloudWorkspaceId, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect, workflowType, imPlatform, imTargetUID, imIsGroup, newTaskContext, noWorkflowInterception, warning, deliverInitialMessage } = pendingProjectTabOpen;
+        // Check if the tab already exists in the tab list BEFORE creating it.
+        // This is a synchronous read of tabStateRef — reliable for tabs that were
+        // restored from localStorage (synchronous on mount) or from the backend
+        // index merge (async, but completes before user interaction in practice).
+        // Combined with the post-creation history check, this provides two-layer
+        // protection against duplicate autoSend.
+        const tabExistedInList = hasProjectTabRef.current?.(projectPath, cloudWorkspaceId) ?? false;
+        beforeUserProjectOpenRef.current?.(projectPath, cloudWorkspaceId);
+
+        const tab = createProjectTabRef.current(projectPath, taskTitle, { prepareMode, openIntent, cloudWorkspaceId, agentMode, remoteHost, remoteSafety, remoteNeedsReconnect });
+        if (!tab) {
+            onProjectTabHandledRef.current?.({ outcome: "rejected", launchId });
+            return;
+        }
+        // Report the synchronous tab-creation outcome before optional async send
+        // work, so callers can safely release their next queued launch.
+        onProjectTabHandledRef.current?.({ outcome: "opened", launchId });
+        const initialState = getTabStateRef.current?.(tab.id);
+        const existingHistory = Array.isArray(initialState?.history) ? initialState.history : [];
+        const hasExistingConversation = existingHistory.some((m) => isConversationMessage(m) && (m.role === "user" || m.role === "assistant"));
+        // A just-closed tab can retain its local state until persistence catches
+        // up. Keep the creation receipt one-shot when that tab is reopened.
+        const hasExistingTaskContext = existingHistory.some((m) => (
+            isConversationMessage(m) && (m as { kind?: unknown }).kind === "taskContext"
+        ));
+        const taskContext = newTaskContextMessage({ agentMode, remoteHost, newTaskContext }, lang);
+        // A task-management creation opens a prepared workspace for the user's
+        // next deliberate prompt. Keep that invariant even if an upstream event
+        // accidentally carries autoSend: true alongside its local task receipt.
+        const shouldAutoSend = autoSend === true && !newTaskContext;
+        const shouldAddTaskContext = !tabExistedInList && !hasExistingConversation && !hasExistingTaskContext && !!taskContext;
+        // Degradation from CreateTaskUnified (workflow start / remote prepare
+        // failed): the task is still openable, so show why it degraded. Only a
+        // genuinely new tab gets the card; a reused tab keeps its history.
+        const launchWarning = String(warning || "").trim() && !tabExistedInList && !hasExistingConversation
+            ? launchWarningMessage(String(warning || "").trim())
+            : null;
+        const stateAfterTaskContext = (shouldAddTaskContext && taskContext) || launchWarning
+            ? {
+                ...initialState,
+                history: [
+                    ...(Array.isArray(initialState?.history) ? initialState.history : []),
+                    ...(shouldAddTaskContext && taskContext ? [taskContext] : []),
+                    ...(launchWarning ? [launchWarning] : []),
+                ],
+                scrollTop: 0,
+                inputText: "",
+                lastActiveAt: Date.now(),
+            }
+            : initialState;
+        if (shouldAddTaskContext || launchWarning) {
+            saveTabStateRef.current?.(tab.id, stateAfterTaskContext || {});
+        }
+        // A duplicate/stale event can focus a pre-existing task tab. Do not
+        // attach its original IM completion route to that tab: the next manual
+        // message would otherwise send an unrelated result back to IM.
+        // IM launches can defer their initial prompt until reconnect. A newly
+        // created task never carries a hidden initial prompt to send later.
+        const shouldDeferRemoteInitialSend = shouldAutoSend && agentMode === "remote_coding_dev" && !!remoteNeedsReconnect;
+        const wizardDelivery = deliverInitialMessage === true && !!(String(initialMessage || taskTitle || "").trim());
+        if (!newTaskContext && (wizardDelivery || (!tabExistedInList && !hasExistingConversation)) && (imPlatform && imTargetUID || shouldDeferRemoteInitialSend)) {
+            saveTabStateRef.current?.(tab.id, {
+                ...stateAfterTaskContext,
+                ...(imPlatform && imTargetUID ? {
+                    pendingIMCompletion: {
+                        platform: imPlatform,
+                        targetUID: imTargetUID,
+						isGroup: !!imIsGroup,
+                        taskTitle,
+                    },
+                } : {}),
+                ...(shouldDeferRemoteInitialSend ? { pendingRemoteInitialMessage: { text: initialMessage || taskTitle } } : {}),
+            });
+        }
+        console.info("[usePendingAssistantTabOpen] project tab opened", {
+            projectPath,
+            tabId: tab.id,
+            taskTitle,
+            autoSend: shouldAutoSend,
+            agentMode: agentMode || null,
+            remoteHost: remoteHost || null,
+            remoteNeedsReconnect: !!remoteNeedsReconnect,
+            tabExistedInList,
+            openIntent: openIntent || "restore",
+        });
+
+        // Async operations use refs — no stale closure, no dependency churn.
+        if (workflowType) {
+            // A stale/replayed launch may focus a project tab that already
+            // exists. Starting its template again would duplicate a workflow
+            // inside the same session, so only start when this effect created
+            // a genuinely new tab.
+            if (tabExistedInList || hasExistingConversation) return;
+            // Scope all workflow events to this newly-created project tab.
+            void StartWorkflowTemplateInTab(workflowType, tab.projectPath || projectPath, tab.id)
+                .catch((error) => {
+                    console.warn("[usePendingAssistantTabOpen] workflow start failed", { workflowType, tabId: tab.id, error });
+                    const current = getTabStateRef.current?.(tab.id);
+                    if (!current) return;
+                    const history = Array.isArray(current?.history) ? current.history : [];
+                    saveTabStateRef.current?.(tab.id, {
+                        ...current,
+                        history: [...history, workflowStartFailureMessage(lang)],
+                        lastActiveAt: Date.now(),
+                    });
+                });
+            return;
+        }
+
+        (async () => {
+            if (!shouldAutoSend) return;
+            const send = sendMessageRef.current;
+            if (!send) return;
+
+            // Determine whether this is a reused tab by two complementary signals:
+            //
+            // Signal 1: The tab already has conversation history in tabStatesRef.
+            // This catches tabs that were actively used in this session.
+            //
+            // Signal 2: The tab existed in the tab list BEFORE createProjectTab was
+            // called (hasProjectTab check done synchronously before createProjectTab).
+            // This catches tabs restored from localStorage/backend that don't have
+            // state in tabStatesRef yet (restoration only adds to tabs array, not
+            // to the state map).
+            //
+            // A reused tab normally skips autoSend so a replay cannot duplicate
+            // the original prompt. The new-task page opts in: its text is a new
+            // instruction, including when the remote or cloud task already exists.
+            if ((hasExistingConversation || tabExistedInList) && !deliverInitialMessage) return;
+
+            // The remote panel flushes this prompt only after its SSH workbench
+            // has reconnected successfully.
+            if (shouldDeferRemoteInitialSend) return;
+
+            const msg = initialMessage || taskTitle;
+            // Task creation carries only the outgoing text, which includes the
+            // composer's file-picker marker block and its vision routing note.
+            // Show the user's prose and previews, never that prompt machinery.
+            await send(msg, {
+                tabId: tab.id,
+                project_path: tab.projectPath,
+                im_platform: imPlatform,
+                im_target_uid: imTargetUID,
+                im_is_group: !!imIsGroup,
+                im_task_title: taskTitle,
+                // Wizard「无工作流」：首条消息跳过工作流语义拦截。
+                ...(noWorkflowInterception ? { no_workflow_interception: true } : {}),
+                ...userTurnDisplayOptions(msg),
+            }).catch(() => {});
+        })();
+    }, [pendingProjectTabOpen]);
+    // ↑ ONLY pendingProjectTabOpen in deps. All callbacks accessed via refs.
+    // This ensures the effect fires exactly once per non-null pendingProjectTabOpen,
+    // regardless of how often the parent re-renders.
+
+    // --- Expert Tab: open (or focus) an expert conversation tab ---
+    // First creation seeds a local welcome message (no LLM call); re-opening an
+    // existing tab only activates it and never re-seeds.
+    const createExpertTabRef = useRef(createExpertTab);
+    createExpertTabRef.current = createExpertTab;
+    const saveTabStateForExpertRef = useRef(saveTabState);
+    saveTabStateForExpertRef.current = saveTabState;
+    const getTabListForExpertRef = useRef(getTabList);
+    getTabListForExpertRef.current = getTabList;
+    const onExpertHandledRef = useRef(onPendingExpertOpenHandled);
+    onExpertHandledRef.current = onPendingExpertOpenHandled;
+    const ensureExpertTaskRef = useRef(onEnsureExpertTask);
+    ensureExpertTaskRef.current = onEnsureExpertTask;
+    const setLatexRelativePathRef = useRef(setLatexRelativePath);
+    setLatexRelativePathRef.current = setLatexRelativePath;
+    const beforeUserExpertOpenRef = useRef(beforeUserExpertOpen);
+    beforeUserExpertOpenRef.current = beforeUserExpertOpen;
+    const sendExpertMessageRef = useRef(sendExpertMessage);
+    sendExpertMessageRef.current = sendExpertMessage;
+    const resetExpertConversationRef = useRef(resetExpertConversation);
+    resetExpertConversationRef.current = resetExpertConversation;
+    const markExpertSessionFloorRef = useRef(markExpertSessionFloor);
+    markExpertSessionFloorRef.current = markExpertSessionFloor;
+    /** Reject a stale async registration when a newer expert launch wins. */
+    const expertOpenRequestRef = useRef(0);
+    const expertLangRef = useRef(lang);
+    expertLangRef.current = lang;
+    /** One in-flight recovery per expert, so a restored tab is not registered twice. */
+    const latexTaskAttachRef = useRef<Set<string>>(new Set());
+    const latexTabsMissingPath = (getTabList?.() || [])
+        .filter(tab => tab.type === "expert" && isLatexExpertId(tab.expertId) && !String(tab.projectPath || "").trim())
+        .map(tab => `${tab.id}\0${tab.latexRelativePath || ""}`)
+        .join("\n");
+    // A tab restored from before the task path was persisted still has an expert
+    // id and no projectPath. Sends then omit project_path, so tools write on the
+    // desktop while the editor reads the task workspace. Reattach the durable task.
+    useEffect(() => {
+        if (!latexTabsMissingPath) return;
+        const ensure = ensureExpertTaskRef.current;
+        const create = createExpertTabRef.current;
+        const list = getTabListForExpertRef.current?.() || [];
+        if (!ensure || !create) return;
+        for (const tab of list) {
+            if (tab.type !== "expert" || !isLatexExpertId(tab.expertId)) continue;
+            if (String(tab.projectPath || "").trim()) continue;
+            const expertId = String(tab.expertId || "").trim();
+            if (!expertId || latexTaskAttachRef.current.has(expertId)) continue;
+            latexTaskAttachRef.current.add(expertId);
+            const relativePath = String(tab.latexRelativePath || "").trim();
+            const expert: ExpertDefinition = {
+                id: expertId,
+                name: String(tab.title || expertId),
+                description: String(tab.expertDescription || ""),
+                icon: String(tab.expertIcon || ""),
+                system_prompt: "",
+                tools: [],
+                skills: [],
+                builtin: true,
+                // Timestamps are unknown for a tab restored from storage;
+                // empty strings match the managed-industry rebuild pattern.
+                created_at: "",
+                updated_at: "",
+            };
+            void Promise.resolve(relativePath ? ensure(expert, { relativePath }) : ensure(expert)).then((prepared) => {
+                const projectPath = String(prepared?.projectPath || "").trim();
+                if (!projectPath) {
+                    latexTaskAttachRef.current.delete(expertId);
+                    return;
+                }
+                const stillMissing = (getTabListForExpertRef.current?.() || []).some(item =>
+                    item.type === "expert" && item.expertId === expertId && !String(item.projectPath || "").trim());
+                if (!stillMissing) return;
+                create(expert, {
+                    projectPath,
+                    relativePath: String(prepared?.relativePath || relativePath).trim(),
+                });
+            }).catch((error) => {
+                latexTaskAttachRef.current.delete(expertId);
+                console.error("[task_management] latex expert task path recover failed:", error);
+            });
+        }
+    }, [latexTabsMissingPath]);
+
+    // The tab field is a cache of the task entry. Re-opening used to call the
+    // blank-document path with no path at all, and that path assumed the paper
+    // was root main.tex. Bind whatever the workspace actually resolves to,
+    // without focusing the tab. A path opened earlier in this session already
+    // came from that call, so it is not asked again.
+    const latexEntryBindRef = useRef<Map<string, string>>(new Map());
+    const latexEntryPendingRef = useRef<Set<string>>(new Set());
+    const [latexEntryEpoch, setLatexEntryEpoch] = useState(0);
+    const releaseLatexEntryPending = (projectPath: string) => {
+        if (!latexEntryPendingRef.current.delete(projectPath)) return;
+        setLatexEntryEpoch(value => value + 1);
+    };
+    const latexEntryBindKey = (getTabList?.() || [])
+        .filter(tab => tab.type === "expert" && isLatexExpertId(tab.expertId) && String(tab.projectPath || "").trim())
+        .map(tab => `${tab.id}\0${tab.projectPath || ""}\0${tab.latexRelativePath || ""}`)
+        .join("\n");
+    useEffect(() => {
+        if (!latexEntryBindKey || !setLatexRelativePathRef.current) return;
+        const list = getTabListForExpertRef.current?.() || [];
+        for (const tab of list) {
+            if (tab.type !== "expert" || !isLatexExpertId(tab.expertId)) continue;
+            const projectPath = String(tab.projectPath || "").trim();
+            const tabId = String(tab.id || "").trim();
+            if (!projectPath || !tabId) continue;
+            const current = String(tab.latexRelativePath || "").trim();
+            const bound = latexEntryBindRef.current.get(projectPath);
+            if (bound === "\0pending" || (bound && bound === current)) continue;
+            const sessionPath = latexRelativePathForProject(projectPath);
+            if (sessionPath && sessionPath === current) {
+                latexEntryBindRef.current.set(projectPath, sessionPath);
+                continue;
+            }
+            latexEntryBindRef.current.set(projectPath, "\0pending");
+            latexEntryPendingRef.current.add(projectPath);
+            void createLatexDocumentForTask(projectPath, LATEX_BLANK_TEMPLATE_ID, "", expertLangRef.current || "zh-Hans").then((document) => {
+                const entry = String(document?.relative_path || "").trim();
+                const live = (getTabListForExpertRef.current?.() || []).find(item => item.id === tabId);
+                const liveProject = String(live?.projectPath || "").trim();
+                const livePath = String(live?.latexRelativePath || "").trim();
+                if (!entry) {
+                    latexEntryBindRef.current.delete(projectPath);
+                    releaseLatexEntryPending(projectPath);
+                    return;
+                }
+                // Resume or the wizard can select a path while this read is still
+                // out. That selection is newer than the cache this read started
+                // from, so a late answer must not move the editor back.
+                if (!live || liveProject !== projectPath || livePath !== current) {
+                    if (live && liveProject === projectPath && livePath) {
+                        latexEntryBindRef.current.set(projectPath, livePath);
+                    } else {
+                        latexEntryBindRef.current.delete(projectPath);
+                    }
+                    releaseLatexEntryPending(projectPath);
+                    return;
+                }
+                latexEntryBindRef.current.set(projectPath, entry);
+                if (livePath !== entry) {
+                    setLatexRelativePathRef.current?.(tabId, entry);
+                }
+                releaseLatexEntryPending(projectPath);
+            }).catch((error) => {
+                latexEntryBindRef.current.delete(projectPath);
+                releaseLatexEntryPending(projectPath);
+                console.error("[task_management] latex entry bind failed:", error);
+            });
+        }
+    }, [latexEntryBindKey]);
+
+    useEffect(() => {
+        if (!pendingExpertOpen) return;
+        const expert = pendingExpertOpen.expert;
+        // Release the slot only after this open finishes. Releasing at the
+        // start lets the next queued expert bump the request id and cancel
+        // the task registration that is still in flight.
+        const releaseExpertOpen = () => onExpertHandledRef.current?.();
+        const expertId = String(expert?.id || "").trim();
+        if (!expertId) {
+            releaseExpertOpen();
+            return;
+        }
+        const initialMessage = String(pendingExpertOpen.initialMessage || "").trim();
+        const requestID = ++expertOpenRequestRef.current;
+
+        const openExpertTab = (prepared?: EnsuredExpertTask | void) => {
+            if (requestID !== expertOpenRequestRef.current) return;
+            const create = createExpertTabRef.current;
+            if (!create) {
+                releaseExpertOpen();
+                return;
+            }
+
+            // Wizard handoff: the backend expert branch relies on this first
+            // user message to trigger its flow, so it is sent even when the tab
+            // already existed (a repeated wizard launch is a new request).
+            const sendInitialMessage = () => {
+                if (!initialMessage) return;
+                void Promise.resolve(sendExpertMessageRef.current?.(initialMessage, expertId))
+                    .catch((error) => {
+                        console.warn("[task_management] expert initial message send failed:", error);
+                    });
+            };
+
+            // Check existence BEFORE creating so the welcome seed only happens on
+            // first creation (dedupe-activation must not re-seed).
+            const tabId = expertTabId(expertId);
+            const existedBefore = (getTabListForExpertRef.current?.() || [])
+                .some(t => t.id === tabId || (t.type === "expert" && t.expertId === expertId));
+            beforeUserExpertOpenRef.current?.(expertId);
+
+            const projectPath = String(prepared?.projectPath || "").trim();
+            const relativePath = String(prepared?.relativePath || "").trim();
+            const expertTask = (projectPath || relativePath) ? { projectPath, relativePath } : undefined;
+            // Call with a single argument when no task path exists: callers
+            // (and tests) treat create(expert) and create(expert, undefined)
+            // as the same invocation, so the arity must stay honest.
+            const tab = expertTask ? create(expert, expertTask) : create(expert);
+            if (!tab) {
+                releaseExpertOpen();
+                return;
+            }
+            if (isLatexExpertId(expertId) && initialMessage) {
+                markExpertSessionFloorRef.current?.(expertId);
+            }
+            if (projectPath && relativePath) {
+                dispatchOpenLatexDocument({ projectPath, relativePath });
+            }
+            if (existedBefore) {
+                sendInitialMessage();
+                releaseExpertOpen();
+                return;
+            }
+
+            const existing = getTabStateRef.current?.(tab.id);
+            const hasConversation = Array.isArray(existing?.history)
+                && existing.history.some((m) => isConversationMessage(m) && (m.role === "user" || m.role === "assistant"));
+            if (hasConversation) {
+                sendInitialMessage();
+                releaseExpertOpen();
+                return;
+            }
+
+            const sessionKey = expertSessionKey(expertId) || undefined;
+            saveTabStateForExpertRef.current?.(tab.id, {
+                history: [{
+                    id: `expert-welcome-${expertId}`,
+                    role: "assistant",
+                    content: expertWelcomeMessageText(expert, expertLangRef.current),
+                    sessionKey,
+                    timestamp: Date.now(),
+                }],
+                scrollTop: 0,
+                inputText: "",
+                lastActiveAt: Date.now(),
+            });
+            sendInitialMessage();
+            releaseExpertOpen();
+        };
+        const ensureTask = ensureExpertTaskRef.current;
+        const startFreshLatex = isLatexExpertId(expertId) && !!initialMessage;
+        // Snapshot before ensureTask. That await can attach the new paper's
+        // path to this same tab, and the old transcript must not follow it.
+        const previousLatexPath = startFreshLatex
+            ? String((getTabListForExpertRef.current?.() || []).find(tab => tab.type === "expert" && tab.expertId === expertId)?.projectPath || "").trim()
+            : "";
+        const openAfterReset = (prepared?: EnsuredExpertTask | void) => {
+            const run = () => {
+                if (requestID !== expertOpenRequestRef.current) return;
+                openExpertTab(prepared);
+            };
+            if (!startFreshLatex) {
+                run();
+                return;
+            }
+            void Promise.resolve(resetExpertConversationRef.current?.(expertId, previousLatexPath)).then(run, (error) => {
+                console.warn("[task_management] latex fresh session reset failed:", error);
+                run();
+            });
+        };
+        if (!ensureTask) {
+            openAfterReset();
+            return;
+        }
+        const existingDocument = pendingExpertOpen.latexDocument;
+        // Same arity discipline as create: omit the second argument when there
+        // is no LaTeX document so single-argument observers stay consistent.
+        const freshLatexPath = startFreshLatex ? String(pendingExpertOpen.projectPath || "").trim() : "";
+        void Promise.resolve(existingDocument ? ensureTask(expert, existingDocument) : ensureTask(expert)).then((prepared) => openAfterReset(prepared)).catch((error) => {
+            // Task management is the durable entry point for experts. Do not
+            // open a tab that cannot be reached again from the sidebar.
+            console.error("[task_management] create expert task failed:", error);
+            releaseExpertOpen();
+            if (!freshLatexPath) return;
+            void AbandonUnopenedFreshLatexTask(freshLatexPath).catch((abandonError) => {
+                console.warn("[task_management] abandon unopened latex paper failed:", abandonError);
+            });
+        });
+    }, [pendingExpertOpen]);
+    // ↑ ONLY pendingExpertOpen in deps. All callbacks accessed via refs.
+    return {
+        epoch: latexEntryEpoch,
+        pending: (projectPath: string) => latexEntryPendingRef.current.has(String(projectPath || "").trim()),
+    };
+}

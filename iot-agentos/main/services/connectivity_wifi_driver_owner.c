@@ -5,6 +5,7 @@
 #include "esp_event.h"
 #include "esp_eap_client.h"
 #include "esp_heap_caps.h"
+#include "esp_idf_version.h"
 #include "esp_log.h"
 #include "esp_mac.h"
 #include "esp_wifi.h"
@@ -134,8 +135,12 @@ device_status_t connectivity_wifi_driver_owner_initialize(
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     /* ESP-IDF 6.0.2 S3 stability workaround: command traffic does not need
      * AMPDU, while the affected RX timer path can reset the device. */
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0) && ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(6, 1, 0)
     init.ampdu_rx_enable = 0;
     init.ampdu_tx_enable = 0;
+#else
+    ESP_LOGI(TAG, "ESP-IDF is not 6.0.x; leaving Wi-Fi AMPDU at the driver default");
+#endif
     esp_err_t err = esp_wifi_init(&init);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "Wi-Fi driver initialization failed: %s", esp_err_to_name(err));
@@ -252,8 +257,12 @@ device_status_t connectivity_wifi_driver_owner_configure_station(
     if (err != ESP_OK) return status_from_esp_err(err);
     /* ESP-IDF 6.0.2 S3 stability workaround: 802.11n management traffic can
      * double-fault after DHCP, so use legacy b/g station negotiation. */
+#if ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(6, 0, 0) && ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(6, 1, 0)
     err = esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_11B | WIFI_PROTOCOL_11G);
     if (err != ESP_OK) return status_from_esp_err(err);
+#else
+    ESP_LOGI(TAG, "ESP-IDF is not 6.0.x; leaving station protocol negotiation at the driver default");
+#endif
     err = esp_wifi_set_config(WIFI_IF_STA, &station);
     if (err != ESP_OK) return status_from_esp_err(err);
     /* ESP-IDF 6.0.2 modem sleep can tear down the PHY timer while its ISR is

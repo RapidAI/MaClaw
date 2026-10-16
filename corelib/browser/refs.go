@@ -65,7 +65,7 @@ func selectorCandidatesFromResolvedRef(resolved *BrowserElementRef) ([]string, *
 		if resolved.BackendNodeID != 0 {
 			return nil, resolved, nil
 		}
-		return nil, resolved, fmt.Errorf("ref %s has no selector candidates; run observe again", resolved.Ref)
+		return nil, resolved, fmt.Errorf("ref %s has no selector candidates; run probe again", resolved.Ref)
 	}
 	return candidates, resolved, nil
 }
@@ -87,7 +87,7 @@ func (s *BrowserAgentSession) selectorForAction(snapshotID, ref, selector string
 				return candidate, resolved, nil
 			}
 		}
-		return "", resolved, fmt.Errorf("ref %s is stale; run observe again to get fresh refs", ref)
+		return "", resolved, fmt.Errorf("ref %s is stale; run probe again to get fresh refs", ref)
 	}
 	if selector == "" {
 		return "", nil, fmt.Errorf("missing ref or selector")

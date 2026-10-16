@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 )
 
-const desktopFileName = "tigerproxy.desktop"
+const desktopFileName = "codexproxy.desktop"
 
 func autoStartSupported() bool {
 	return true
@@ -45,12 +45,12 @@ func setAutoStartEnabled(enabled bool) error {
 
 	content := fmt.Sprintf(`[Desktop Entry]
 Type=Application
-Name=TigerProxy
+Name=CodexProxy
 Exec=%s --hidden
-Icon=tigerproxy
+Icon=codexproxy
 Terminal=false
 X-GNOME-Autostart-enabled=true
-Comment=CodeGen protocol proxy
+Comment=Local protocol proxy for Codex
 `, exe)
 
 	dir := filepath.Dir(path)

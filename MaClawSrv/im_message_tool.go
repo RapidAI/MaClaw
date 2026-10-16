@@ -32,7 +32,9 @@ func newSrvIMMessageHandlerContext(svc *agentservice.Service) func(context.Conte
 				return text
 			},
 			func(a map[string]interface{}) string { return srvToolIMMessageSendForPrincipal(ctx, svc, principal, a) },
-			func(a map[string]interface{}) string { return srvToolIMMessageSendFileForPrincipal(ctx, svc, principal, a) },
+			func(a map[string]interface{}) string {
+				return srvToolIMMessageSendFileForPrincipal(ctx, svc, principal, a)
+			},
 		)
 	}
 }

@@ -656,14 +656,15 @@ authenticated principal + trusted session + active task UI selection
 
 因此该 builder 的职责必须明确为**静态 legacy definition renderer**，而不是 registry 的无差别投影：
 
-- `BuildAll` 与 `Build` 均过滤 `IsLegacyModelDynamicGateway`；模型面不可因为 registry compatibility entry 存在而出现 `manage_skill` 或 `call_mcp_tool`；
+- `BuildAll` 与 `Build` 均过滤 provider-picking 网关（当前为 `omittedFromHostToolCatalog`，仅 `call_mcp_tool`）；模型面不可因为 registry compatibility entry 存在而出现它；
+  > **2026-10-06 修订**：谓词由 `IsLegacyModelDynamicGateway` 收窄为 `omittedFromHostToolCatalog`，`manage_skill` 从此改为 **host-bound baseline**——builder 会 emit 它（全量面固定本地 skill runtime，desktop executor 将调用绑定到本地 skill registry，非任意 provider），但仍被 `IsLegacyModelDynamicGateway` 挡在*检索排序*之外。原「不得出现 `manage_skill`」的表述自该日起失效；见 `TestManageSkillIsHostBoundBaselineNotProviderPicker`。
 - Skill 匹配只可形成受管 planner 的 recommendation evidence；不得在 generic builder 内扩写 gateway 参数说明、增加评分或把 gateway 排到前面；
 - GUI wrapper 对同一谓词做第二次过滤。这样 core builder 的回归、部分升级或替代实现均不能把 registry entry 变回 legacy authority；
 - host/VE/expert 若只是展示能力目录，可以保留**非模型可调用**的 catalog item，但不得把 `Build(All)` 的返回值当作动态 gateway 的权限证明或直接交给模型；目录展示与 invocation surface 必须是不同的类型/接口。
 
 本项关闭了“registry → generic builder → model definitions”的旁路，但不把 builder 误当成 dynamic provider renderer。动态 Skill/MCP 仍只能由 managed materialization 生成 alias 和 binding；若某入口没有该能力，应显式返回 `catalog_incomplete` 或请求 replan，而不是退回 generic gateway。
 
-新增回归要求：无论 registry 是否同时登记静态工具、`manage_skill` 与 `call_mcp_tool`，`BuildAll()`、`Build()` 以及 GUI wrapper 的输出均不得包含后二者；有/无匹配 Skill、低分匹配、超过 direct-tool 阈值和 `BuildAll` 四种情形都应保持该性质。
+新增回归要求：无论 registry 是否同时登记静态工具、`manage_skill` 与 `call_mcp_tool`，`BuildAll()`、`Build()` 以及 GUI wrapper 的输出均不得包含 `call_mcp_tool`，且必须包含 `manage_skill` 基线（2026-10-06 修订，见上）；有/无匹配 Skill、低分匹配、超过 direct-tool 阈值和 `BuildAll` 四种情形都应保持该性质。
 
 #### 8.3.17 CodingSubAgent 的 matched-set transport 迁为 request-local binding（2026-08，第一阶段已实施，非最终授权闭环）
 

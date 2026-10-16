@@ -9,6 +9,24 @@ const zh = {
   "tenantList": "租户",
   "accounts": "管理员",
   "knowledge": "知识与技能来源",
+  "database": "数据源",
+  "databaseHint": "按租户用户管理 database profile、kill switch 与指标。密钥不会出现在本页。",
+  "databaseKillSwitch": "立即禁用工具",
+  "databaseEnable": "启用工具",
+  "databaseTest": "测试连接",
+  "databaseRotateSecret": "轮换 secret_ref",
+  "databaseReceipt": "回执",
+  "databaseReceiptHint": "按 receipt_id 查询 metadata-only mutation receipt。",
+  "databaseSecretRef": "secret_ref",
+  "databaseSecretRefHint": "不填则保留已绑定的凭据。本表单不接受明文密码。",
+  "databaseFilePath": "文件路径",
+  "databaseSheet": "工作表",
+  "databaseTLS": "TLS",
+  "databaseClass": "数据分类",
+  "databasePublic": "允许公网主机",
+  "databaseDDL": "允许 DDL",
+  "databaseDeleteConfirm": "删除该数据源 profile？已绑定的 secret_ref 不会显示。",
+  "databaseNew": "新建",
   "ops": "运维",
   "setup": "初始化管理员",
   "login": "管理员登录",
@@ -119,6 +137,44 @@ const zh = {
   "redactions": "脱敏项",
   "dataRoot": "数据根目录",
   "overviewHint": "运行状态、就绪状态、调度器和异步任务",
+  "guideTitle": "快速操作手册",
+  "guideIntro": "MaClawSrv 是多用户的数据与能力服务后台。管理员通常按“建账号 - 配默认能力 - 导入知识 - 验证运行”的顺序使用。",
+  "guideBadgeAdmin": "管理员",
+  "guideBadgeService": "数据服务",
+  "guideFlowAccount": "账号",
+  "guideFlowConfig": "配置",
+  "guideFlowKnowledge": "知识",
+  "guideFlowVerify": "验证",
+  "guideCoreConcepts": "核心概念",
+  "guideRecommendedSteps": "推荐步骤",
+  "guideConceptTenant": "租户",
+  "guideConceptTenantDesc": "一组用户、知识和策略的隔离边界。先建租户，再在租户下建用户。",
+  "guideConceptUser": "用户",
+  "guideConceptUserDesc": "真实使用 MaClawSrv 的账号。用户会拥有自己的会话、知识、凭据和客户端默认配置。",
+  "guideConceptAPI": "API 凭据",
+  "guideConceptAPIDesc": "给外部程序调用 MaClawSrv API 的密钥。普通后台管理不需要创建。",
+  "guideConceptKnowledge": "知识",
+  "guideConceptKnowledgeDesc": "用户或公用知识库中可检索的资料。权限决定某个用户能读到哪些知识范围。",
+  "guideConceptSkill": "技能来源",
+  "guideConceptSkillDesc": "助手查找和安装技能的渠道，不是知识库。优先级是用户策略 > 租户策略 > 全局默认。",
+  "guideConceptClient": "客户端配置",
+  "guideConceptClientDesc": "所有用户共用的搜索、代理、MCP、SSH、技能市场和界面默认值，保存后按运行时配置生效。",
+  "guideConceptService": "服务配置",
+  "guideConceptServiceDesc": "服务进程自己的配置。保存草稿后通常还要校验、导出方案、应用到 .env/systemd 并重启。",
+  "guideConceptSandbox": "沙箱",
+  "guideConceptSandboxDesc": "限制工具运行权限的安全边界。用于减少文件、网络和进程操作风险。",
+  "guideStep1": "先看总览",
+  "guideStep1Desc": "确认运行时、就绪状态、任务和安全风险是否正常。",
+  "guideStep2": "创建租户和用户",
+  "guideStep2Desc": "进入租户与用户，先创建租户，再创建普通用户；需要外部调用时再创建 API 凭据。",
+  "guideStep3": "配置用户侧默认值",
+  "guideStep3Desc": "进入客户端配置，设置联网搜索、代理、MCP/SSH、SkillHub 和界面默认值。",
+  "guideStep4": "导入或挂载知识",
+  "guideStep4Desc": "进入知识与技能来源，创建公用知识库、导入资料，并把知识范围挂到目标用户。",
+  "guideStep5": "调整技能来源",
+  "guideStep5Desc": "按全局、租户、用户三个层级设置技能市场来源；只在需要覆盖时启用租户或用户策略。",
+  "guideStep6": "做一次验证",
+  "guideStep6Desc": "回到总览看任务是否完成；到日志或运维里查错误、导出支持包或审计风险事件。",
   "sandboxHint": "检测、切换、诊断和安装指引",
   "logsHint": "已脱敏的服务日志尾部，支持来源和文本过滤",
   "runtimeLabel": "运行时",
@@ -268,6 +324,14 @@ const zh = {
   "latestSourceAt": "最近来源时间",
   "kind": "类型",
   "nextRunAt": "下次运行",
+  "tasks": "任务",
+  "push": "推送",
+  "pushWarn": "推送告警",
+  "query": "查询条件",
+  "listTargets": "目标列表",
+  "deliveryAudit": "投递审计",
+  "pause": "暂停",
+  "resume": "恢复",
   "lastError": "最近错误",
   "reportID": "报告 ID",
   "effectiveBackend": "生效后端",
@@ -444,6 +508,24 @@ const en = {
   "tenantList": "Tenants",
   "accounts": "Admins",
   "knowledge": "Knowledge & Skill Sources",
+  "database": "Data sources",
+  "databaseHint": "Manage database profiles, the kill switch, and metrics per tenant user. Secrets never appear on this page.",
+  "databaseKillSwitch": "Disable tool now",
+  "databaseEnable": "Enable tool",
+  "databaseTest": "Test connection",
+  "databaseRotateSecret": "Rotate secret_ref",
+  "databaseReceipt": "Receipt",
+  "databaseReceiptHint": "Look up a metadata-only mutation receipt by receipt_id.",
+  "databaseSecretRef": "secret_ref",
+  "databaseSecretRefHint": "Leave blank to keep the bound credential. This form never accepts a plaintext password.",
+  "databaseFilePath": "File path",
+  "databaseSheet": "Sheet",
+  "databaseTLS": "TLS",
+  "databaseClass": "Classification",
+  "databasePublic": "Allow public host",
+  "databaseDDL": "Allow DDL",
+  "databaseDeleteConfirm": "Delete this database profile? The bound secret_ref is never shown.",
+  "databaseNew": "New",
   "ops": "Ops",
   "setup": "Initialize Admin",
   "login": "Admin Login",
@@ -557,6 +639,44 @@ const en = {
   "redactions": "Redactions",
   "dataRoot": "Data Root",
   "overviewHint": "Runtime, readiness, scheduler and async jobs",
+  "guideTitle": "Quick Start Manual",
+  "guideIntro": "MaClawSrv is a multi-user data and capability service. Admins usually follow: create accounts, configure shared capabilities, import knowledge, then verify runtime health.",
+  "guideBadgeAdmin": "Admin",
+  "guideBadgeService": "Data Server",
+  "guideFlowAccount": "Account",
+  "guideFlowConfig": "Config",
+  "guideFlowKnowledge": "Knowledge",
+  "guideFlowVerify": "Verify",
+  "guideCoreConcepts": "Core Concepts",
+  "guideRecommendedSteps": "Recommended Steps",
+  "guideConceptTenant": "Tenant",
+  "guideConceptTenantDesc": "An isolation boundary for users, knowledge, and policy. Create a tenant first, then create users under it.",
+  "guideConceptUser": "User",
+  "guideConceptUserDesc": "The account that actually uses MaClawSrv. A user has sessions, knowledge, credentials, and client defaults.",
+  "guideConceptAPI": "API Credential",
+  "guideConceptAPIDesc": "A key for external programs calling MaClawSrv APIs. Normal admin console work does not require one.",
+  "guideConceptKnowledge": "Knowledge",
+  "guideConceptKnowledgeDesc": "Retrievable material from user-owned or public knowledge bases. Permissions decide what a user can read.",
+  "guideConceptSkill": "Skill Sources",
+  "guideConceptSkillDesc": "Channels for finding and installing skills, not knowledge bases. Priority is user policy > tenant policy > global default.",
+  "guideConceptClient": "Client Config",
+  "guideConceptClientDesc": "Shared defaults for search, proxy, MCP, SSH, skill markets, and UI behavior. Saved values apply through runtime config.",
+  "guideConceptService": "Service Config",
+  "guideConceptServiceDesc": "Server-process configuration. After saving a draft, validate, export a plan, apply .env/systemd changes, and restart when required.",
+  "guideConceptSandbox": "Sandbox",
+  "guideConceptSandboxDesc": "A safety boundary for tool execution that reduces file, network, and process-operation risk.",
+  "guideStep1": "Check Overview first",
+  "guideStep1Desc": "Check runtime, readiness, jobs, and security risks.",
+  "guideStep2": "Create a tenant and users",
+  "guideStep2Desc": "Go to Tenants & Users. Create a tenant, then users. Create API credentials only for external callers.",
+  "guideStep3": "Configure user-side defaults",
+  "guideStep3Desc": "Open Client Config to set search, proxy, MCP/SSH, SkillHub, and UI defaults.",
+  "guideStep4": "Import or attach knowledge",
+  "guideStep4Desc": "Open Knowledge & Skill Sources, create public knowledge bases, import material, and attach scopes to users.",
+  "guideStep5": "Adjust skill sources",
+  "guideStep5Desc": "Configure skill sources at global, tenant, and user levels. Enable overrides only when needed.",
+  "guideStep6": "Do a verification pass",
+  "guideStep6Desc": "Return to Overview for job status. Use Logs or Ops for errors, support bundles, and risk-event audit.",
   "sandboxHint": "Detect, switch, diagnose and install guidance",
   "logsHint": "Redacted service log tail with source and text filters",
   "runtimeLabel": "Runtime",
@@ -705,6 +825,14 @@ const en = {
   "latestSourceAt": "Latest source",
   "kind": "Kind",
   "nextRunAt": "Next run",
+  "tasks": "Tasks",
+  "push": "Push",
+  "pushWarn": "Push warnings",
+  "query": "Query",
+  "listTargets": "List targets",
+  "deliveryAudit": "Delivery audit",
+  "pause": "Pause",
+  "resume": "Resume",
   "lastError": "Last error",
   "reportID": "Report ID",
   "effectiveBackend": "Effective backend",
@@ -877,7 +1005,7 @@ Object.assign(fallbackLabels, {
   aiModels: "\u0041\u0049\u6a21\u578b",
   aiModelsHint: "\u670d\u52a1\u5668\u5168\u5c40\u5171\u4eab\u7684\u672c\u5730\u0020\u0041\u0049\u0020\u6a21\u578b\u72b6\u6001\u4e0e\u80fd\u529b",
   sharedAIModels: "\u5171\u4eab\u0020\u0041\u0049\u0020\u6a21\u578b",
-  sharedAIModelsHint: "\u6574\u4e2a\u0020\u004d\u0061\u0043\u006c\u0061\u0077\u0053\u0072\u0076\u0020\u53ea\u8fd0\u884c\u4e00\u4efd\u0020\u0041\u0049\u0020\u6a21\u578b\u914d\u7f6e\uff0c\u6240\u6709\u7528\u6237\u5171\u7528\u3002\u6b64\u5904\u4e0d\u63d0\u4f9b\u0020\u004f\u006d\u0069\u006e\u0069\u0050\u0061\u0072\u0073\u0065\u0072\u0020\u002f\u0020\u5c4f\u5e55\u89e3\u6790\u6a21\u578b\u3002",
+  sharedAIModelsHint: "整个 MaClawSrv 只运行一份 AI 模型配置，所有用户共用。OCR 与 OmniParser 随其他共享模型下载，供桌面机器人识别屏幕文字和可点击区域。",
   localAICapabilities: "\u672c\u5730\u0020\u0041\u0049\u0020\u80fd\u529b",
   ttsVoice: "\u0054\u0054\u0053\u0020\u97f3\u8272",
   knowledgeIncludeImages: "\u5bfc\u5165\u77e5\u8bc6\u65f6\u5305\u542b\u56fe\u7247",
@@ -919,12 +1047,12 @@ Object.assign(zh, {
 });
 Object.assign(en, { experienceDefaults: "User Interface" });
 Object.assign(zh, { experienceDefaults: "用户界面" });
-Object.assign(en, { adminRole: "Admin", hostLabel: "Host", portLabel: "Port", usernameLabel: "Username", passwordLabel: "Password", bypassLabel: "Bypass", scopeMaclaw: "MaClaw", scopeAgent: "Agent", scopeCodingTools: "Coding tools", hubManaged: "Hub managed", embeddingLabel: "Embedding", asrLabel: "ASR", ttsLabel: "TTS" });
-Object.assign(fallbackLabels, { adminRole: "\u7ba1\u7406\u5458", hostLabel: "\u4e3b\u673a", portLabel: "\u7aef\u53e3", usernameLabel: "\u7528\u6237\u540d", passwordLabel: "\u5bc6\u7801", bypassLabel: "\u7ed5\u8fc7\u5217\u8868", scopeMaclaw: "MaClaw", scopeAgent: "Agent", scopeCodingTools: "\u7f16\u7801\u5de5\u5177", hubManaged: "Hub \u7edf\u4e00\u7ba1\u7406", embeddingLabel: "\u5411\u91cf\u5d4c\u5165", asrLabel: "\u8bed\u97f3\u8bc6\u522b", ttsLabel: "\u6587\u672c\u8f6c\u8bed\u97f3", runningCount: "\u6b63\u5728\u8fd0\u884c {count} \u9879", bytesUnit: "\u5b57\u8282", networkFull: "\u5168\u7f51\u7edc", networkIntranet: "\u5185\u7f51" });
+Object.assign(en, { adminRole: "Admin", hostLabel: "Host", portLabel: "Port", usernameLabel: "Username", passwordLabel: "Password", bypassLabel: "Bypass", scopeMaclaw: "MaClaw", scopeAgent: "Agent", scopeCodingTools: "Coding tools", hubManaged: "Hub managed", embeddingLabel: "Embedding", asrLabel: "ASR", ttsLabel: "TTS", ocrLabel: "OCR", omniparserLabel: "OmniParser" });
+Object.assign(fallbackLabels, { adminRole: "\u7ba1\u7406\u5458", hostLabel: "\u4e3b\u673a", portLabel: "\u7aef\u53e3", usernameLabel: "\u7528\u6237\u540d", passwordLabel: "\u5bc6\u7801", bypassLabel: "\u7ed5\u8fc7\u5217\u8868", scopeMaclaw: "MaClaw", scopeAgent: "Agent", scopeCodingTools: "\u7f16\u7801\u5de5\u5177", hubManaged: "Hub \u7edf\u4e00\u7ba1\u7406", embeddingLabel: "\u5411\u91cf\u5d4c\u5165", asrLabel: "\u8bed\u97f3\u8bc6\u522b", ttsLabel: "\u6587\u672c\u8f6c\u8bed\u97f3", ocrLabel: "\u6587\u5b57\u8bc6\u522b", omniparserLabel: "OmniParser", runningCount: "\u6b63\u5728\u8fd0\u884c {count} \u9879", bytesUnit: "\u5b57\u8282", networkFull: "\u5168\u7f51\u7edc", networkIntranet: "\u5185\u7f51" });
 Object.assign(en, { runningCount: "{count} running", bytesUnit: "bytes", networkFull: "Full network", networkIntranet: "Intranet" });
-Object.assign(en, { modelTest: "Model test", localAICapabilitiesHint: "Embedding, ASR, and TTS stay auto-enabled for every user. Only voice reply behavior and default TTS voice are configurable here.", embeddingTestText: "Embedding text", embeddingTestPlaceholder: "Enter text to generate vector", embeddingTestDefault: "Test vector generation", runEmbeddingTest: "Generate vector", asrTestAudio: "ASR audio", asrTestHint: "WAV/OGG/OPUS/SILK/MP3 use Go native decoders. AAC/M4A return a clear error until a native decoder is wired.", runASRTest: "Transcribe", ttsTestText: "TTS text", ttsTestPlaceholder: "Enter text to generate WAV", ttsTestDefault: "Hello, MaClawSrv voice test.", runTTSTest: "Generate and download WAV", running: "Running...", selectAudioFile: "Select an audio file", wavGenerated: "WAV generated" });
-Object.assign(zh, { modelTest: "\u6a21\u578b\u6d4b\u8bd5", localAICapabilitiesHint: "\u5411\u91cf\u5d4c\u5165\u3001ASR \u548c TTS \u5bf9\u6240\u6709\u7528\u6237\u81ea\u52a8\u542f\u7528\u3002\u6b64\u5904\u53ea\u914d\u7f6e\u8bed\u97f3\u56de\u590d\u884c\u4e3a\u548c\u9ed8\u8ba4 TTS \u97f3\u8272\u3002", embeddingTestText: "Embedding \u6587\u672c", embeddingTestPlaceholder: "\u8f93\u5165\u6587\u5b57\u751f\u6210\u5411\u91cf", embeddingTestDefault: "\u6d4b\u8bd5\u5411\u91cf\u751f\u6210", runEmbeddingTest: "\u751f\u6210\u5411\u91cf", asrTestAudio: "ASR \u97f3\u9891", asrTestHint: "WAV/OGG/OPUS/SILK/MP3 \u4f7f\u7528 Go native decoder\uff1bAAC/M4A \u5728 native decoder \u63a5\u5165\u524d\u4f1a\u8fd4\u56de\u660e\u786e\u9519\u8bef\u3002", runASRTest: "\u8bc6\u522b\u6587\u5b57", ttsTestText: "TTS \u6587\u672c", ttsTestPlaceholder: "\u8f93\u5165\u6587\u5b57\u751f\u6210 WAV", ttsTestDefault: "\u4f60\u597d\uff0cMaClawSrv \u8bed\u97f3\u6d4b\u8bd5\u3002", runTTSTest: "\u751f\u6210\u5e76\u4e0b\u8f7d WAV", running: "\u8fd0\u884c\u4e2d...", selectAudioFile: "\u8bf7\u9009\u62e9\u97f3\u9891\u6587\u4ef6", wavGenerated: "WAV \u5df2\u751f\u6210" });
-Object.assign(fallbackLabels, { modelTest: "\u6a21\u578b\u6d4b\u8bd5", localAICapabilitiesHint: "\u5411\u91cf\u5d4c\u5165\u3001ASR \u548c TTS \u5bf9\u6240\u6709\u7528\u6237\u81ea\u52a8\u542f\u7528\u3002\u6b64\u5904\u53ea\u914d\u7f6e\u8bed\u97f3\u56de\u590d\u884c\u4e3a\u548c\u9ed8\u8ba4 TTS \u97f3\u8272\u3002", embeddingTestText: "Embedding \u6587\u672c", embeddingTestPlaceholder: "\u8f93\u5165\u6587\u5b57\u751f\u6210\u5411\u91cf", embeddingTestDefault: "\u6d4b\u8bd5\u5411\u91cf\u751f\u6210", runEmbeddingTest: "\u751f\u6210\u5411\u91cf", asrTestAudio: "ASR \u97f3\u9891", asrTestHint: "WAV/OGG/OPUS/SILK/MP3 \u4f7f\u7528 Go native decoder\uff1bAAC/M4A \u5728 native decoder \u63a5\u5165\u524d\u4f1a\u8fd4\u56de\u660e\u786e\u9519\u8bef\u3002", runASRTest: "\u8bc6\u522b\u6587\u5b57", ttsTestText: "TTS \u6587\u672c", ttsTestPlaceholder: "\u8f93\u5165\u6587\u5b57\u751f\u6210 WAV", ttsTestDefault: "\u4f60\u597d\uff0cMaClawSrv \u8bed\u97f3\u6d4b\u8bd5\u3002", runTTSTest: "\u751f\u6210\u5e76\u4e0b\u8f7d WAV", running: "\u8fd0\u884c\u4e2d...", selectAudioFile: "\u8bf7\u9009\u62e9\u97f3\u9891\u6587\u4ef6", wavGenerated: "WAV \u5df2\u751f\u6210" });
+Object.assign(en, { modelTest: "Model test", localAICapabilitiesHint: "Embedding, ASR, TTS, OCR, and OmniParser stay auto-enabled. OCR and OmniParser describe desktop screenshots for the desktop bot. Only voice reply behavior and default TTS voice are configurable here.", embeddingTestText: "Embedding text", embeddingTestPlaceholder: "Enter text to generate vector", embeddingTestDefault: "Test vector generation", runEmbeddingTest: "Generate vector", asrTestAudio: "ASR audio", asrTestHint: "WAV/OGG/OPUS/SILK/MP3 use Go native decoders. AAC/M4A return a clear error until a native decoder is wired.", runASRTest: "Transcribe", ttsTestText: "TTS text", ttsTestPlaceholder: "Enter text to generate WAV", ttsTestDefault: "Hello, MaClawSrv voice test.", runTTSTest: "Generate and download WAV", running: "Running...", selectAudioFile: "Select an audio file", wavGenerated: "WAV generated" });
+Object.assign(zh, { modelTest: "\u6a21\u578b\u6d4b\u8bd5", localAICapabilitiesHint: "向量嵌入、ASR、TTS、OCR 和 OmniParser 对所有用户自动启用。OCR 与 OmniParser 为桌面机器人识别截图中的文字和可点击区域。此处只配置语音回复行为和默认 TTS 音色。", embeddingTestText: "Embedding \u6587\u672c", embeddingTestPlaceholder: "\u8f93\u5165\u6587\u5b57\u751f\u6210\u5411\u91cf", embeddingTestDefault: "\u6d4b\u8bd5\u5411\u91cf\u751f\u6210", runEmbeddingTest: "\u751f\u6210\u5411\u91cf", asrTestAudio: "ASR \u97f3\u9891", asrTestHint: "WAV/OGG/OPUS/SILK/MP3 \u4f7f\u7528 Go native decoder\uff1bAAC/M4A \u5728 native decoder \u63a5\u5165\u524d\u4f1a\u8fd4\u56de\u660e\u786e\u9519\u8bef\u3002", runASRTest: "\u8bc6\u522b\u6587\u5b57", ttsTestText: "TTS \u6587\u672c", ttsTestPlaceholder: "\u8f93\u5165\u6587\u5b57\u751f\u6210 WAV", ttsTestDefault: "\u4f60\u597d\uff0cMaClawSrv \u8bed\u97f3\u6d4b\u8bd5\u3002", runTTSTest: "\u751f\u6210\u5e76\u4e0b\u8f7d WAV", running: "\u8fd0\u884c\u4e2d...", selectAudioFile: "\u8bf7\u9009\u62e9\u97f3\u9891\u6587\u4ef6", wavGenerated: "WAV \u5df2\u751f\u6210" });
+Object.assign(fallbackLabels, { modelTest: "\u6a21\u578b\u6d4b\u8bd5", localAICapabilitiesHint: "向量嵌入、ASR、TTS、OCR 和 OmniParser 对所有用户自动启用。OCR 与 OmniParser 为桌面机器人识别截图中的文字和可点击区域。此处只配置语音回复行为和默认 TTS 音色。", embeddingTestText: "Embedding \u6587\u672c", embeddingTestPlaceholder: "\u8f93\u5165\u6587\u5b57\u751f\u6210\u5411\u91cf", embeddingTestDefault: "\u6d4b\u8bd5\u5411\u91cf\u751f\u6210", runEmbeddingTest: "\u751f\u6210\u5411\u91cf", asrTestAudio: "ASR \u97f3\u9891", asrTestHint: "WAV/OGG/OPUS/SILK/MP3 \u4f7f\u7528 Go native decoder\uff1bAAC/M4A \u5728 native decoder \u63a5\u5165\u524d\u4f1a\u8fd4\u56de\u660e\u786e\u9519\u8bef\u3002", runASRTest: "\u8bc6\u522b\u6587\u5b57", ttsTestText: "TTS \u6587\u672c", ttsTestPlaceholder: "\u8f93\u5165\u6587\u5b57\u751f\u6210 WAV", ttsTestDefault: "\u4f60\u597d\uff0cMaClawSrv \u8bed\u97f3\u6d4b\u8bd5\u3002", runTTSTest: "\u751f\u6210\u5e76\u4e0b\u8f7d WAV", running: "\u8fd0\u884c\u4e2d...", selectAudioFile: "\u8bf7\u9009\u62e9\u97f3\u9891\u6587\u4ef6", wavGenerated: "WAV \u5df2\u751f\u6210" });
 Object.assign(en, { moreOptions: "More settings", manualRules: "Custom rules", sandboxSecondaryHint: "Advanced sandbox diagnostics and install actions.", snapshotsHint: "Create, restore, prune, or inspect server snapshots.", importPreviewHint: "Paste an exported state bundle and preview it with dry-run before importing." });
 Object.assign(zh, { moreOptions: "\u66f4\u591a\u8bbe\u7f6e", manualRules: "\u81ea\u5b9a\u4e49\u89c4\u5219", sandboxSecondaryHint: "\u6c99\u7bb1\u8bca\u65ad\u3001\u56de\u6eda\u548c\u5b89\u88c5\u7b49\u4f4e\u9891\u64cd\u4f5c\u3002", snapshotsHint: "\u521b\u5efa\u3001\u6062\u590d\u3001\u6e05\u7406\u6216\u67e5\u770b\u670d\u52a1\u5668\u5feb\u7167\u3002", importPreviewHint: "\u7c98\u8d34\u5bfc\u51fa\u6570\u636e\uff0c\u5148\u7528 dry-run \u9884\u89c8\u518d\u5bfc\u5165\u3002" });
 Object.assign(en, {
@@ -939,7 +1067,7 @@ Object.assign(en, {
   aiModels: "AI Models",
   aiModelsHint: "Server-wide shared local AI model status and capabilities",
   sharedAIModels: "Shared AI models",
-  sharedAIModelsHint: "MaClawSrv runs one shared AI model configuration for all users. OminiParser / screen parsing is intentionally excluded here.",
+  sharedAIModelsHint: "MaClawSrv runs one shared AI model configuration for all users. OCR and OmniParser download with the other shared models and describe desktop screenshots.",
   localAICapabilities: "Local AI capabilities",
   ttsVoice: "TTS voice",
   ttsAutoVoiceSummary: "Auto voice reply in IM",
@@ -949,7 +1077,7 @@ Object.assign(en, {
   knowledgeImportDefaultsSaved: "Knowledge import defaults saved",
   serverWideAIApplied: "Shared AI model configuration saved",
   modelRuntimeStatus: "Model runtime status",
-  modelRuntimeStatusHint: "Shows server-side shared model readiness and full local model paths for admin verification. OminiParser is not available here.",
+  modelRuntimeStatusHint: "Shows server-side shared model readiness and full local model paths for admin verification, including OCR and OmniParser.",
   downloadModel: "Download",
   downloading: "Downloading",
   downloadNow: "Download now",
@@ -963,7 +1091,7 @@ Object.assign(en, {
   autoEnabled: "(auto enabled)",
   ttsVoiceHint: "Voice controls the default TTS speaker and matches the maclaw gui options."
 });
-Object.assign(zh, { ttsAutoVoiceSummary: "\u0049\u004d \u4e2d\u81ea\u52a8\u8bed\u97f3\u56de\u590d", modelRuntimeStatus: "\u6a21\u578b\u8fd0\u884c\u72b6\u6001", modelRuntimeStatusHint: "\u663e\u793a\u670d\u52a1\u5668\u7aef\u5171\u4eab\u6a21\u578b\u5c31\u7eea\u72b6\u6001\uff0c\u5e76\u4e3a\u7ba1\u7406\u5458\u663e\u793a\u5b8c\u6574\u672c\u5730\u6a21\u578b\u8def\u5f84\uff0c\u65b9\u4fbf\u6821\u9a8c\u3002\u6b64\u5904\u4e0d\u63d0\u4f9b OminiParser\u3002", downloadModel: "\u4e0b\u8f7d", downloading: "\u4e0b\u8f7d\u4e2d", downloadNow: "\u7acb\u5373\u4e0b\u8f7d", backgroundDownloading: "\u540e\u53f0\u4e0b\u8f7d\u4e2d", downloadQueued: "\u5df2\u53d1\u8d77\u540e\u53f0\u4e0b\u8f7d", downloadPendingHint: "\u6a21\u578b\u5728\u670d\u52a1\u5668\u540e\u53f0\u4e0b\u8f7d\uff0c\u53ef\u7a0d\u540e\u5237\u65b0\u72b6\u6001\u3002", ready: "\u5df2\u5c31\u7eea", missing: "\u672a\u4e0b\u8f7d", disabledState: "\u672a\u542f\u7528", modelStatusRefreshed: "\u6a21\u578b\u72b6\u6001\u5df2\u5237\u65b0", autoEnabled: "\uff08\u81ea\u52a8\u542f\u7528\uff09", knowledgeImportDefaults: "\u77e5\u8bc6\u5bfc\u5165\u9ed8\u8ba4\u9879", knowledgeImportDefaultsHint: "\u63a7\u5236\u5bfc\u5165\u5668\u662f\u5426\u989d\u5916\u89e3\u6790\u6587\u6863\u6216\u622a\u56fe\u4e2d\u7684\u56fe\u50cf\u5185\u5bb9\u3002\u53ea\u6709\u914d\u7f6e\u4e86 Vision \u6a21\u578b\u6216 OCR \u80fd\u529b\u65f6\u624d\u4f1a\u771f\u6b63\u751f\u6548\u3002", knowledgeImportDefaultsSaved: "\u77e5\u8bc6\u5bfc\u5165\u9ed8\u8ba4\u9879\u5df2\u4fdd\u5b58", ttsVoiceHint: "\u97f3\u8272\u4f1a\u5f71\u54cd TTS \u64ad\u62a5\u7684\u9ed8\u8ba4\u58f0\u7ebf\uff0c\u4e0e maclaw gui \u4fdd\u6301\u4e00\u81f4\u3002" });
+Object.assign(zh, { ttsAutoVoiceSummary: "\u0049\u004d \u4e2d\u81ea\u52a8\u8bed\u97f3\u56de\u590d", modelRuntimeStatus: "\u6a21\u578b\u8fd0\u884c\u72b6\u6001", modelRuntimeStatusHint: "\u663e\u793a\u670d\u52a1\u5668\u7aef\u5171\u4eab\u6a21\u578b\u5c31\u7eea\u72b6\u6001\uff0c\u5e76\u4e3a\u7ba1\u7406\u5458\u663e\u793a\u5b8c\u6574\u672c\u5730\u6a21\u578b\u8def\u5f84\uff0c\u65b9\u4fbf\u6821\u9a8c\u3002\u5305\u62ec OCR \u4e0e OmniParser\u3002", downloadModel: "\u4e0b\u8f7d", downloading: "\u4e0b\u8f7d\u4e2d", downloadNow: "\u7acb\u5373\u4e0b\u8f7d", backgroundDownloading: "\u540e\u53f0\u4e0b\u8f7d\u4e2d", downloadQueued: "\u5df2\u53d1\u8d77\u540e\u53f0\u4e0b\u8f7d", downloadPendingHint: "\u6a21\u578b\u5728\u670d\u52a1\u5668\u540e\u53f0\u4e0b\u8f7d\uff0c\u53ef\u7a0d\u540e\u5237\u65b0\u72b6\u6001\u3002", ready: "\u5df2\u5c31\u7eea", missing: "\u672a\u4e0b\u8f7d", disabledState: "\u672a\u542f\u7528", modelStatusRefreshed: "\u6a21\u578b\u72b6\u6001\u5df2\u5237\u65b0", autoEnabled: "\uff08\u81ea\u52a8\u542f\u7528\uff09", knowledgeImportDefaults: "\u77e5\u8bc6\u5bfc\u5165\u9ed8\u8ba4\u9879", knowledgeImportDefaultsHint: "\u63a7\u5236\u5bfc\u5165\u5668\u662f\u5426\u989d\u5916\u89e3\u6790\u6587\u6863\u6216\u622a\u56fe\u4e2d\u7684\u56fe\u50cf\u5185\u5bb9\u3002\u53ea\u6709\u914d\u7f6e\u4e86 Vision \u6a21\u578b\u6216 OCR \u80fd\u529b\u65f6\u624d\u4f1a\u771f\u6b63\u751f\u6548\u3002", knowledgeImportDefaultsSaved: "\u77e5\u8bc6\u5bfc\u5165\u9ed8\u8ba4\u9879\u5df2\u4fdd\u5b58", ttsVoiceHint: "\u97f3\u8272\u4f1a\u5f71\u54cd TTS \u64ad\u62a5\u7684\u9ed8\u8ba4\u58f0\u7ebf\uff0c\u4e0e maclaw gui \u4fdd\u6301\u4e00\u81f4\u3002" });
 Object.assign(zh, {
   securityGuardrails: "安全护栏",
   securityModeDefault: "默认",
@@ -1005,7 +1133,7 @@ Object.assign(zh, {
   providerBaseURL: "\u63a5\u5165\u5730\u5740",
   networkLevel: "\u7f51\u7edc\u7ea7\u522b",
   sharedAIModels: "\u5171\u4eab AI \u6a21\u578b",
-  sharedAIModelsHint: "\u670d\u52a1\u5668\u7ef4\u5ea6\u5171\u7528\u4e00\u5957\u672c\u5730 AI \u6a21\u578b\u80fd\u529b\uff0c\u6240\u6709\u7528\u6237\u5171\u7528\u540c\u4e00\u4efd\u8fd0\u884c\u72b6\u6001\u3002",
+  sharedAIModelsHint: "服务器维度共用一套本地 AI 模型能力，所有用户共用同一份运行状态。OCR 与 OmniParser 随其他共享模型下载，供桌面机器人识别屏幕。",
   localAICapabilities: "\u672c\u5730 AI \u80fd\u529b",
   ttsVoice: "TTS \u97f3\u8272",
   protocolHTTP: "HTTP",
@@ -1019,7 +1147,7 @@ Object.assign(zh, {
   profileJSONInvalid: "Profile \u914d\u7f6e JSON \u683c\u5f0f\u65e0\u6548",
   importUrls: "URL \u6570\u91cf"
 });
-const sections = ["overview","sandbox","logs","config","clientConfig","aiModels","tenants","accounts","knowledge","ops"];
+const sections = ["overview","sandbox","logs","config","clientConfig","aiModels","tenants","accounts","knowledge","database","ops"];
 const navIcons = {
   overview: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4.75A1.75 1.75 0 0 1 4.75 3h3.5A1.75 1.75 0 0 1 10 4.75v3.5A1.75 1.75 0 0 1 8.25 10h-3.5A1.75 1.75 0 0 1 3 8.25zm7 0A1.75 1.75 0 0 1 11.75 3h3.5A1.75 1.75 0 0 1 17 4.75v3.5A1.75 1.75 0 0 1 15.25 10h-3.5A1.75 1.75 0 0 1 10 8.25zm-7 7A1.75 1.75 0 0 1 4.75 10h3.5A1.75 1.75 0 0 1 10 11.75v3.5A1.75 1.75 0 0 1 8.25 17h-3.5A1.75 1.75 0 0 1 3 15.25zm7 1.5a.75.75 0 0 1 .75-.75h6.5a.75.75 0 0 1 0 1.5h-6.5a.75.75 0 0 1-.75-.75m.75-3.25a.75.75 0 0 0 0 1.5h6.5a.75.75 0 0 0 0-1.5z" fill="currentColor"/></svg>',
   sandbox: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5 4 4.75v4.1c0 3.72 2.36 7.16 6 8.65 3.64-1.49 6-4.93 6-8.65v-4.1zm0 1.6 4.5 1.7v3.05c0 2.92-1.77 5.67-4.5 6.98C7.27 14.52 5.5 11.77 5.5 8.85V5.8zm-1 3.15a.75.75 0 0 0-1.06 1.06l1.5 1.5a.75.75 0 0 0 1.06 0l3.5-3.5a.75.75 0 0 0-1.06-1.06l-2.97 2.97z" fill="currentColor"/></svg>',
@@ -1030,7 +1158,8 @@ const navIcons = {
   tenants: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.75 3.25A1.75 1.75 0 0 0 3 5v10.25c0 .97.78 1.75 1.75 1.75h10.5A1.75 1.75 0 0 0 17 15.25V8.88a1.75 1.75 0 0 0-.51-1.24l-3.13-3.13A1.75 1.75 0 0 0 12.12 4zm-.25 2A.25.25 0 0 1 4.75 5h6v2.25c0 .97.78 1.75 1.75 1.75h2v6.25a.25.25 0 0 1-.25.25h-2.5v-2.25A1.75 1.75 0 0 0 10 11.5H8a1.75 1.75 0 0 0-1.75 1.75v2.25h-1.5a.25.25 0 0 1-.25-.25zm3.25 10.25v-2a.25.25 0 0 1 .25-.25h2a.25.25 0 0 1 .25.25v2z" fill="currentColor"/></svg>',
   accounts: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 3.25a2.75 2.75 0 1 0 0 5.5 2.75 2.75 0 0 0 0-5.5M6 14a3.5 3.5 0 0 1 7 0v1.25a.75.75 0 0 0 1.5 0V14a5 5 0 1 0-10 0v1.25a.75.75 0 0 0 1.5 0zm8.75-7.5a2 2 0 1 0 0 4 2 2 0 0 0 0-4m-.75 6.25a.75.75 0 0 0 0 1.5h2.25a.75.75 0 0 0 0-1.5z" fill="currentColor"/></svg>',
   knowledge: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4.75 3.25A1.75 1.75 0 0 0 3 5v10a1.75 1.75 0 0 0 1.75 1.75H15a.75.75 0 0 0 0-1.5H4.75a.25.25 0 0 1-.25-.25v-1.25h9.75A1.75 1.75 0 0 0 16 12V5a1.75 1.75 0 0 0-1.75-1.75zm.25 1.5h9.25a.25.25 0 0 1 .25.25v7a.25.25 0 0 1-.25.25H5zM6.75 7a.75.75 0 0 0 0 1.5h6.5a.75.75 0 0 0 0-1.5m-1 3a.75.75 0 0 0 0 1.5h4.5a.75.75 0 0 0 0-1.5z" fill="currentColor"/></svg>',
-  ops: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M11.8 3.52a.75.75 0 0 0-.92.53l-.45 1.67a4.8 4.8 0 0 0-1.52.45L7.7 5.04a.75.75 0 0 0-1.03.03L5.1 6.64a.75.75 0 0 0-.03 1.03l1.13 1.2a4.8 4.8 0 0 0-.45 1.52l-1.67.45a.75.75 0 0 0-.53.92l.43 1.64a.75.75 0 0 0 .92.53l1.67-.45c.36.54.82 1 1.36 1.36l-.45 1.67a.75.75 0 0 0 .53.92l1.64.43a.75.75 0 0 0 .92-.53l.45-1.67a4.8 4.8 0 0 0 1.52-.45l1.2 1.13a.75.75 0 0 0 1.03-.03l1.57-1.57a.75.75 0 0 0 .03-1.03l-1.13-1.2c.2-.48.35-.98.45-1.52l1.67-.45a.75.75 0 0 0 .53-.92l-.43-1.64a.75.75 0 0 0-.92-.53l-1.67.45a4.8 4.8 0 0 0-1.36-1.36l.45-1.67a.75.75 0 0 0-.53-.92zM10 8a2 2 0 1 1 0 4 2 2 0 0 1 0-4" fill="currentColor"/></svg>'
+  ops: '<svg viewBox="0 0 20 20" aria-hidden="true"><path d="M11.8 3.52a.75.75 0 0 0-.92.53l-.45 1.67a4.8 4.8 0 0 0-1.52.45L7.7 5.04a.75.75 0 0 0-1.03.03L5.1 6.64a.75.75 0 0 0-.03 1.03l1.13 1.2a4.8 4.8 0 0 0-.45 1.52l-1.67.45a.75.75 0 0 0-.53.92l.43 1.64a.75.75 0 0 0 .92.53l1.67-.45c.36.54.82 1 1.36 1.36l-.45 1.67a.75.75 0 0 0 .53.92l1.64.43a.75.75 0 0 0 .92-.53l.45-1.67a4.8 4.8 0 0 0 1.52-.45l1.2 1.13a.75.75 0 0 0 1.03-.03l1.57-1.57a.75.75 0 0 0 .03-1.03l-1.13-1.2c.2-.48.35-.98.45-1.52l1.67-.45a.75.75 0 0 0 .53-.92l-.43-1.64a.75.75 0 0 0-.92-.53l-1.67.45a4.8 4.8 0 0 0-1.36-1.36l.45-1.67a.75.75 0 0 0-.53-.92zM10 8a2 2 0 1 1 0 4 2 2 0 0 1 0-4" fill="currentColor"/></svg>',
+  database: '<svg viewBox="0 0 20 20" aria-hidden="true"><ellipse cx="10" cy="5" rx="6" ry="2.2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4 5v10c0 1.2 2.7 2.2 6 2.2s6-1 6-2.2V5" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M4 10c0 1.2 2.7 2.2 6 2.2s6-1 6-2.2" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>'
 };
 const initialSection = sections.includes(location.hash.slice(1)) ? location.hash.slice(1) : (sections.includes(localStorage.getItem("maclaw.admin.section")) ? localStorage.getItem("maclaw.admin.section") : "overview");
 const state = { locale: localStorage.getItem("maclaw.admin.locale") || "zh-CN", token: localStorage.getItem("maclaw.admin.token") || "", section: initialSection, sectionChanged: false, me: null, pendingRiskFilter: null, pendingRequests: 0, knowledgeTenantNames: {}, knowledgeUserNames: {}, locales: [{locale:"zh-CN",label:"zh-CN"},{locale:"en-US",label:"English"}] };
@@ -1061,35 +1190,35 @@ const guideIcons={
 };
 function guideIcon(name){ return guideIcons[name] || guideIcons.overview; }
 const quickGuideConcepts=[
-  ["tenant","租户 Tenant","一组用户、知识和策略的隔离边界。先建租户，再在租户下建用户。","An isolation boundary for users, knowledge, and policy. Create a tenant first, then create users under it."],
-  ["user","用户 User","真实使用 MaClawSrv 的账号。用户会拥有自己的会话、知识、凭据和客户端默认配置。","The account that actually uses MaClawSrv. A user has sessions, knowledge, credentials, and client defaults."],
-  ["key","API 凭据 API Credential","给外部程序调用 MaClawSrv API 的密钥。普通后台管理不需要创建。","A key for external programs calling MaClawSrv APIs. Normal admin console work does not require one."],
-  ["knowledge","知识 Knowledge","用户或公用知识库中可检索的资料。权限决定某个用户能读到哪些知识范围。","Retrievable material from user-owned or public knowledge bases. Permissions decide what a user can read."],
-  ["skill","技能来源 Skill Sources","助手查找和安装技能的渠道，不是知识库。优先级是用户策略 > 租户策略 > 全局默认。","Channels for finding and installing skills, not knowledge bases. Priority is user policy > tenant policy > global default."],
-  ["client","客户端配置 Client Config","所有用户共用的搜索、代理、MCP、SSH、技能市场和界面默认值，保存后按运行时配置生效。","Shared defaults for search, proxy, MCP, SSH, skill markets, and UI behavior. Saved values apply through runtime config."],
-  ["service","服务配置 Service Config","服务进程自己的配置。保存草稿后通常还要校验、导出方案、应用到 .env/systemd 并重启。","Server-process configuration. After saving a draft, validate, export a plan, apply .env/systemd changes, and restart when required."],
-  ["sandbox","沙箱 Sandbox","限制工具运行权限的安全边界。用于减少文件、网络和进程操作风险。","A safety boundary for tool execution that reduces file, network, and process-operation risk."]
+  ["tenant","guideConceptTenant","guideConceptTenantDesc"],
+  ["user","guideConceptUser","guideConceptUserDesc"],
+  ["key","guideConceptAPI","guideConceptAPIDesc"],
+  ["knowledge","guideConceptKnowledge","guideConceptKnowledgeDesc"],
+  ["skill","guideConceptSkill","guideConceptSkillDesc"],
+  ["client","guideConceptClient","guideConceptClientDesc"],
+  ["service","guideConceptService","guideConceptServiceDesc"],
+  ["sandbox","guideConceptSandbox","guideConceptSandboxDesc"]
 ];
 const quickGuideSteps=[
-  ["overview","先看总览","确认运行时、就绪状态、任务和安全风险是否正常。","Check Overview first: runtime, readiness, jobs, and security risks.", "overview"],
-  ["tenant","创建租户和用户","进入租户与用户，先创建租户，再创建普通用户；需要外部调用时再创建 API 凭据。","Go to Tenants & Users. Create a tenant, then users. Create API credentials only for external callers.", "tenants"],
-  ["client","配置用户侧默认值","进入客户端配置，设置联网搜索、代理、MCP/SSH、SkillHub 和界面默认值。","Open Client Config to set search, proxy, MCP/SSH, SkillHub, and UI defaults.", "clientConfig"],
-  ["knowledge","导入或挂载知识","进入知识与技能来源，创建公用知识库、导入资料，并把知识范围挂到目标用户。","Open Knowledge & Skill Sources, create public knowledge bases, import material, and attach scopes to users.", "knowledge"],
-  ["skill","调整技能来源","按全局、租户、用户三个层级设置技能市场来源；只在需要覆盖时启用租户或用户策略。","Configure skill sources at global, tenant, and user levels. Enable overrides only when needed.", "knowledge"],
-  ["logs","做一次验证","回到总览看任务是否完成；到日志或运维里查错误、导出支持包或审计风险事件。","Return to Overview for job status. Use Logs or Ops for errors, support bundles, and risk-event audit.", "logs"]
+  ["overview","guideStep1","guideStep1Desc","overview"],
+  ["tenant","guideStep2","guideStep2Desc","tenants"],
+  ["client","guideStep3","guideStep3Desc","clientConfig"],
+  ["knowledge","guideStep4","guideStep4Desc","knowledge"],
+  ["skill","guideStep5","guideStep5Desc","knowledge"],
+  ["logs","guideStep6","guideStep6Desc","logs"]
 ];
-const quickGuideHeaderHTML=`<div class="quick-guide__head"><div class="quick-guide__title-wrap"><div class="quick-guide__hero-icon">${guideIcon("service")}</div><div><h2 id="quickGuideTitle">快速操作手册 / Quick Start Manual</h2><p>MaClawSrv 是多用户的数据与能力服务后台。管理员通常按“建账号 - 配默认能力 - 导入知识 - 验证运行”的顺序使用。</p><p>MaClawSrv is a multi-user data and capability service. Admins usually follow: create accounts, configure shared capabilities, import knowledge, then verify runtime health.</p></div></div><div class="quick-guide__status"><span>Admin</span><strong>Data Server</strong></div></div>`;
-const quickGuideFlowHTML=`<div class="quick-guide__flow" aria-hidden="true"><span>${guideIcon("tenant")}Account</span><i></i><span>${guideIcon("client")}Config</span><i></i><span>${guideIcon("knowledge")}Knowledge</span><i></i><span>${guideIcon("check")}Verify</span></div>`;
-const quickGuideConceptsHTML=quickGuideConcepts.map(([icon,term,cn,en])=>`<div><dt><span class="guide-mini-icon">${guideIcon(icon)}</span>${esc(term)}</dt><dd>${esc(cn)}<span>${esc(en)}</span></dd></div>`).join("");
+function quickGuideHeaderHTML(){ return `<div class="quick-guide__head"><div class="quick-guide__title-wrap"><div class="quick-guide__hero-icon">${guideIcon("service")}</div><div><h2 id="quickGuideTitle">${esc(t("guideTitle"))}</h2><p>${esc(t("guideIntro"))}</p></div></div><div class="quick-guide__status"><span>${esc(t("guideBadgeAdmin"))}</span><strong>${esc(t("guideBadgeService"))}</strong></div></div>`; }
+function quickGuideFlowHTML(){ return `<div class="quick-guide__flow" aria-hidden="true"><span>${guideIcon("tenant")}${esc(t("guideFlowAccount"))}</span><i></i><span>${guideIcon("client")}${esc(t("guideFlowConfig"))}</span><i></i><span>${guideIcon("knowledge")}${esc(t("guideFlowKnowledge"))}</span><i></i><span>${guideIcon("check")}${esc(t("guideFlowVerify"))}</span></div>`; }
+function quickGuideConceptsHTML(){ return quickGuideConcepts.map(([icon,term,desc])=>`<div><dt><span class="guide-mini-icon">${guideIcon(icon)}</span>${esc(t(term))}</dt><dd>${esc(t(desc))}</dd></div>`).join(""); }
 const quickGuideStepsHTMLCache=Object.create(null);
 function quickGuideStepsHTML(){
   const locale=String(state.locale || "zh-CN");
   if(locale in quickGuideStepsHTMLCache) return quickGuideStepsHTMLCache[locale];
-  quickGuideStepsHTMLCache[locale]=quickGuideSteps.map(([icon,title,cn,en,target],i)=>`<li><span class="step-index">${guideIcon(icon)}<b>${i+1}</b></span><div><strong>${esc(title)}</strong><p>${esc(cn)}</p><p>${esc(en)}</p><button type="button" class="secondary guide-link" data-guide-section="${esc(target)}">${esc(t(target))}</button></div></li>`).join("");
+  quickGuideStepsHTMLCache[locale]=quickGuideSteps.map(([icon,title,desc,target],i)=>`<li><span class="step-index">${guideIcon(icon)}<b>${i+1}</b></span><div><strong>${esc(t(title))}</strong><p>${esc(t(desc))}</p><button type="button" class="secondary guide-link" data-guide-section="${esc(target)}">${esc(t(target))}</button></div></li>`).join("");
   return quickGuideStepsHTMLCache[locale];
 }
 function quickStartGuide(){
-  return `<section class="quick-guide" aria-labelledby="quickGuideTitle">${quickGuideHeaderHTML}${quickGuideFlowHTML}<div class="quick-guide__grid"><div class="quick-guide__block"><h3>核心概念 / Core Concepts</h3><dl class="concept-list">${quickGuideConceptsHTML}</dl></div><div class="quick-guide__block"><h3>推荐步骤 / Recommended Steps</h3><ol class="step-list">${quickGuideStepsHTML()}</ol></div></div></section>`;
+  return `<section class="quick-guide" aria-labelledby="quickGuideTitle">${quickGuideHeaderHTML()}${quickGuideFlowHTML()}<div class="quick-guide__grid"><div class="quick-guide__block"><h3>${esc(t("guideCoreConcepts"))}</h3><dl class="concept-list">${quickGuideConceptsHTML()}</dl></div><div class="quick-guide__block"><h3>${esc(t("guideRecommendedSteps"))}</h3><ol class="step-list">${quickGuideStepsHTML()}</ol></div></div></section>`;
 }
 function optionText(parts){ return parts.filter(Boolean).join(" / "); }
 function displayWithID(label,id){ const text=String(label||"").trim(); const raw=String(id||"").trim(); if(!text||text===raw) return raw||"-"; return `${text} (${raw})`; }
@@ -1130,7 +1259,7 @@ async function loadLocales(){ if(!state.token) return; const out=await api("/api
 async function startup(){ renderShell(); try{ const bs=await api("/api/v1/admin/bootstrap/status",{headers:{}}); applyLocaleMetadata(bs); if(!bs.initialized){ hideMain(true); renderBootstrap(bs); return; } }catch(e){} if(state.token){ await loadMe().catch(()=>{state.me=null; state.token=""; localStorage.removeItem("maclaw.admin.token");}); await loadLocales().catch(()=>{}); } render(); }
 function hideMain(authOnly=false){ setAuthShell(authOnly); $("content").innerHTML=""; $("content").className="content"; $("loginPanel").classList.add("hidden"); $("bootstrapPanel").classList.add("hidden"); renderShell(); }
 function clearTransientAdminModals(){ document.querySelectorAll("#credentialModalBackdrop,.tenant-users-modal,.admin-result-modal").forEach(el=>{ const backdrop=el.id==="credentialModalBackdrop"?el:el.closest(".modal-backdrop"); backdrop?.remove(); }); }
-async function render(){ clearTransientAdminModals(); hideMain(!state.token); if(!state.token){ renderLogin(); return; } renderShell(); $("content").setAttribute("aria-busy","true"); $("content").innerHTML=`<div class="card loading-card"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line short"></div></div>`; const f={overview,sandbox,logs,config,clientConfig,aiModels,tenants,accounts,knowledge,ops}[state.section] || overview; try{ await f(); applyOwnerGuards(); enhanceA11y(); if(state.sectionChanged){ $("main")?.focus({preventScroll:true}); state.sectionChanged=false; } }catch(e){ if(e.status===401){state.token="";localStorage.removeItem("maclaw.admin.token");hideMain(true);renderLogin();return;} $("content").innerHTML=`<div class="panel error-panel"><h2>${t("failed")}</h2><pre class="code">${esc(e.message)}\n${esc(pretty(e.body||{}))}</pre></div>`; enhanceA11y(); if(state.sectionChanged){ $("main")?.focus({preventScroll:true}); state.sectionChanged=false; } } }
+async function render(){ clearTransientAdminModals(); hideMain(!state.token); if(!state.token){ renderLogin(); return; } renderShell(); $("content").setAttribute("aria-busy","true"); $("content").innerHTML=`<div class="card loading-card"><div class="skeleton skeleton-title"></div><div class="skeleton skeleton-line"></div><div class="skeleton skeleton-line short"></div></div>`; const f={overview,sandbox,logs,config,clientConfig,aiModels,tenants,accounts,knowledge,database,ops}[state.section] || overview; try{ await f(); applyOwnerGuards(); enhanceA11y(); if(state.sectionChanged){ $("main")?.focus({preventScroll:true}); state.sectionChanged=false; } }catch(e){ if(e.status===401){state.token="";localStorage.removeItem("maclaw.admin.token");hideMain(true);renderLogin();return;} $("content").innerHTML=`<div class="panel error-panel"><h2>${t("failed")}</h2><pre class="code">${esc(e.message)}\n${esc(pretty(e.body||{}))}</pre></div>`; enhanceA11y(); if(state.sectionChanged){ $("main")?.focus({preventScroll:true}); state.sectionChanged=false; } } }
 async function overview(){ setTitle(t("overview"), t("overviewHint")); const [rt,dash,ready,scheduler,jobs,security,tenantsResp,usersResp]=await Promise.all([api("/api/v1/admin/runtime/status"),api("/api/v1/admin/dashboard").catch(e=>({error:e.message})),api("/api/v1/admin/system/readiness"),api("/api/v1/admin/scheduler/status").catch(e=>({error:e.message,recent_tasks:[]})),api("/api/v1/admin/jobs?limit=50").catch(e=>({error:e.message,items:[]})),api("/api/v1/admin/security/summary").catch(e=>({error:e.message,status:"unknown",counts:{},recent:[]})),api("/api/v1/admin/tenants?limit=500").catch(e=>({error:e.message,items:[]})),api("/api/v1/admin/users?limit=500").catch(e=>({error:e.message,items:[]}))]); const tenantItems=tenantsResp.items||[]; const userItems=usersResp.items||[]; $("content").innerHTML=pageShell("dashboard-page",`<div class="grid dashboard-hero-grid"><div class="card metric"><span>${t("runtimeLabel")}</span><b class="${rt.readiness?.status==='ok'||rt.ready?"status-ok":"status-warn"}">${esc(cellText("status",rt.readiness?.status||rt.status||rt.ready))}</b><span>${esc(ready.summary||ready.status||"")}</span></div><div class="card metric"><span>${t("sandbox")}</span><b>${esc(rt.sandbox?.effective_backend||rt.sandbox?.mode||"-")}</b><span>${esc(cellText("status",rt.last_sandbox_report?.status||t("noReport")))}</span></div><div class="card metric"><span>${t("jobs")}</span><b>${esc(Object.values(rt.jobs||{}).reduce((a,b)=>a+b,0))}</b><span>${esc(t("runningCount",{count:(jobs.items||[]).filter(x=>x.status==="running").length}))}</span></div><div class="card metric"><span>${t("security")}</span><b class="${security.status==='ok'?'status-ok':'status-warn'}">${esc(cellText("status",security.status||t("unknown")))}</b><span>${esc(t("highMedium",{high:security.counts?.high||0,medium:security.counts?.medium||0}))}</span></div></div><div class="card stack">${sectionHead(t("securityRisks"), t("overviewHint"))}${riskFilterSummary(security)}<h3>${t("bySeverity")}</h3>${riskCountChips(security.counts,"severity")}<h3>${t("byKind")}</h3>${riskCountChips(security.kind_counts)}${riskEventsTable(security.recent||[])}</div><div class="split dashboard-detail-split"><div class="card stack">${sectionHead(t("asyncJobs"), t("jobs"))}<div class="row"><select id="jobStatus"><option value="">${t("allOption")}</option>${localizedOptions(["pending","running","succeeded","failed","canceled"])}</select><input id="jobKind" placeholder="${t("kindPlaceholder")}">${tenantSelect("jobTenant",tenantItems)}${userSelect("jobUser",userItems,"","tenantUser")}<button id="loadJobs">${t("refresh")}</button></div><div id="jobsTable">${jobTable(jobs.items||[])}</div></div><div class="card stack">${sectionHead(t("scheduler"), t("nextRunAt"))}<div class="row muted"><span>${t("tasks")||"tasks"}: <b>${esc(scheduler.task_count??0)}</b></span><span>${t("push")||"push"}: <b>${esc(scheduler.delivery_enabled??0)}</b></span><span class="${(scheduler.delivery_warnings||0)>0?'status-warn':''}">${t("pushWarn")||"push warn"}: <b>${esc(scheduler.delivery_warnings??0)}</b></span><select id="deliveryTargetChannel"><option value="lansenger">lansenger</option><option value="weixin">weixin</option><option value="telegram">telegram</option><option value="qq">qq</option></select><input id="deliveryTargetQuery" placeholder="${t("query")||"query"}"><button class="secondary" id="loadDeliveryTargets" type="button">${t("listTargets")||"list targets"}</button><button class="secondary" id="loadDeliveryAudit" type="button">${t("deliveryAudit")||"delivery audit"}</button><button class="secondary" id="refreshSchedulerTasks" type="button">${t("refresh")||"refresh"}</button></div><div id="deliveryTargetsOut" class="panel stack hidden"></div><div id="deliveryAuditOut" class="panel stack hidden"></div><div id="schedulerTasksTable">${schedulerTaskTable(scheduler.recent_tasks||[])}</div></div></div><div class="card stack">${sectionHead(t("serviceSupportBundle"), t("opsHint"),`<div class="row section-actions"><button class="secondary" id="runRuntimeGC">${t("runGC")}</button><button class="secondary" id="viewGoroutines">${t("goroutines")}</button><button class="secondary" id="downloadGoroutines">${t("downloadGoroutines")}</button><button class="secondary" id="viewHeapProfile">${t("heapProfile")}</button><button class="secondary" id="downloadHeapProfile">${t("downloadHeapProfile")}</button><button class="secondary" id="serviceSupportBundle">${t("serviceSupportBundle")}</button><button class="secondary" id="serviceSupportBundleDownload">${t("download")}</button></div>`)}<p class="muted">${t("serviceSupportBundle")}</p></div>`); syncTenantFromUser("jobUser","jobTenant"); bindJobActions(); bindRiskCountChips(); bindRiskEventActions(security.recent||[]); $("runRuntimeGC").onclick=async()=>{await api("/api/v1/admin/runtime/gc",{method:"POST"}); toast(t("loaded"));}; $("viewGoroutines").onclick=()=>downloadAdmin("/api/v1/admin/runtime/goroutines?debug=2&download=true","goroutines.txt").catch(e=>toast(`${t("failed")}: ${e.message}`)); $("downloadGoroutines").onclick=()=>downloadAdmin("/api/v1/admin/runtime/goroutines?debug=2&download=true","goroutines.txt").catch(e=>toast(`${t("failed")}: ${e.message}`)); $("viewHeapProfile").onclick=()=>downloadAdmin("/api/v1/admin/runtime/profiles/heap?debug=1&gc=true&download=true","heap.txt").catch(e=>toast(`${t("failed")}: ${e.message}`)); $("downloadHeapProfile").onclick=()=>downloadAdmin("/api/v1/admin/runtime/profiles/heap?debug=1&gc=true&download=true","heap.txt").catch(e=>toast(`${t("failed")}: ${e.message}`)); $("serviceSupportBundle").onclick=async()=>showAdminResult(t("serviceSupportBundle"),await api("/api/v1/admin/support-bundle")); $("serviceSupportBundleDownload").onclick=()=>downloadAdmin("/api/v1/admin/support-bundle?download=true","maclaw-support-bundle.json").catch(e=>toast(`${t("failed")}: ${e.message}`)); $("loadJobs").onclick=async()=>{const q=new URLSearchParams({limit:"50"}); if($("jobStatus").value) q.set("status",$("jobStatus").value); if($("jobKind").value) q.set("kind",$("jobKind").value); const ids=tenantUserValue("jobTenant","jobUser"); if(ids.tenant) q.set("tenant_id",ids.tenant); if(ids.user) q.set("user_id",ids.user); const out=await api(`/api/v1/admin/jobs?${q}`); $("jobsTable").innerHTML=jobTable(out.items||[]); bindJobActions(); applyOwnerGuards(); toast(`${t("loaded")}: ${out.items?.length||0} ${t("jobs")}`);}; if($("loadDeliveryTargets")) $("loadDeliveryTargets").onclick=async()=>{const ch=($("deliveryTargetChannel")?.value||"lansenger").trim(); const q=($("deliveryTargetQuery")?.value||"").trim(); const qs=new URLSearchParams({channel:ch}); if(q) qs.set("query",q); const out=await api(`/api/v1/admin/scheduler/delivery-targets?${qs}`).catch(e=>({error:e.message,text:String(e.message||e)})); const el=$("deliveryTargetsOut"); if(!el) return; el.classList.remove("hidden"); el.innerHTML=`<pre class="code">${esc(out.text||pretty(out))}</pre>`;}; if($("loadDeliveryAudit")) $("loadDeliveryAudit").onclick=async()=>{const out=await api("/api/v1/admin/scheduler/delivery-audit?limit=50").catch(e=>({error:e.message,items:[]})); const el=$("deliveryAuditOut"); if(!el) return; el.classList.remove("hidden"); el.innerHTML=table(out.items||[],["time","task_name","channel","ok","peer","error"],null);}; if($("refreshSchedulerTasks")) $("refreshSchedulerTasks").onclick=async()=>{const out=await api("/api/v1/admin/scheduler/tasks").catch(e=>({error:e.message,items:[]})); const box=$("schedulerTasksTable"); if(box){ box.innerHTML=schedulerTaskTable(out.items||[]); bindSchedulerTaskActions(); applyOwnerGuards(); toast(`${t("loaded")}: ${out.items?.length||0}`); }}; bindSchedulerTaskActions(); }
 function summarizeTaskPush(t){ if(!t||!t.delivery||!t.delivery.enabled) return "-"; const ch=t.delivery.channel||"lansenger"; const n=(t.delivery.targets||[]).length; let st="pending"; if(String(t.last_result||"").includes("[投递警告]")) st="warn"; else if(t.run_count>0&&!t.last_error) st="ok"; else if(t.last_error) st="err"; return `${ch}×${n} ${st}`; }
 function schedulerTaskTable(items){ const rows=(items||[]).map(t=>({id:t.id,name:t.name,status:t.status,push:summarizeTaskPush(t),next_run_at:t.next_run_at,last_error:t.last_error,_raw:t})); return table(rows,["id","name","status","push","next_run_at","last_error"],x=>{ const st=String(x.status||""); const pauseLabel=st==="active"?(t("pause")||"pause"):(t("resume")||"resume"); const pauseAttr=st==="active"?"data-sch-pause":"data-sch-resume"; return `<button class="secondary" data-sch-trigger="${esc(x.id)}">${t("run")||"run"}</button> <button class="secondary" ${pauseAttr}="${esc(x.id)}">${pauseLabel}</button> <button class="danger" data-sch-del="${esc(x.id)}">${t("delete")||"del"}</button>`; }); }
@@ -1517,6 +1646,163 @@ function bindKnowledgeActions(sources,publicLibraries,sharedCfg){
   $('resolveSkillUser').onclick=run(async()=>{ const ids=requireSkillUserIds(); if(!ids) return; show(await api(`/api/v1/admin/skill-sources/tenants/${encodeURIComponent(ids.tenant)}/users/${encodeURIComponent(ids.user)}/resolve`)); });
   $('deleteSkillUser').onclick=run(async()=>{ const ids=requireSkillUserIds(); if(!ids) return; if(await confirmDanger(t("deleteSkillUserConfirm"))) saveOK(await api(`/api/v1/admin/skill-sources/tenants/${encodeURIComponent(ids.tenant)}/users/${encodeURIComponent(ids.user)}`,{method:'DELETE'})); });
 }
+async function database(){
+  setTitle(t("database"), t("databaseHint"));
+  const [tenantsResp, usersResp] = await Promise.all([
+    api("/api/v1/admin/tenants?limit=500").catch(e=>({error:e.message,items:[]})),
+    api("/api/v1/admin/users?limit=500").catch(e=>({error:e.message,items:[]}))
+  ]);
+  const tenantItems=tenantsResp.items||[];
+  const userItems=usersResp.items||[];
+  const types=["mysql","postgres","sqlserver","access","excel"];
+  const tlsModes=["","disable","require","verify-full"];
+  const classes=["","public","internal","confidential","restricted"];
+  $("content").innerHTML=pageShell("database-page", `${sectionHead(t("database"), t("databaseHint"))}<div class="card stack"><div class="row">${tenantSelect("dbTenant",tenantItems)}${userSelect("dbUser",userItems,"","tenantUser")}<button id="loadDbProfiles">${t("refresh")}</button><button class="secondary" id="dbDisable">${t("databaseKillSwitch")}</button><button class="secondary" id="dbEnable">${t("databaseEnable")}</button></div><div id="dbMetrics" class="muted"></div><div id="dbProfiles">${emptyState(t("loaded"))}</div></div><div class="card stack">${sectionHead(t("databaseNew"), t("databaseSecretRefHint"), `<div class="row section-actions"><button id="dbProfileNew">${t("databaseNew")}</button><button id="dbProfileSave">${t("save")}</button><button class="secondary" id="dbProfileRotate">${t("databaseRotateSecret")}</button></div>`)}<div class="form-grid"><input id="dbId" placeholder="id"><input id="dbName" placeholder="${t("name")}"><select id="dbType">${types.map(x=>`<option value="${x}">${x}</option>`).join("")}</select><input id="dbHost" placeholder="${t("hostLabel")}"><input id="dbPort" placeholder="${t("portLabel")}" inputmode="numeric"><input id="dbDatabase" placeholder="database"><input id="dbUsername" placeholder="${t("usernameLabel")}"><input id="dbSSHSession" placeholder="ssh_session_id"><input id="dbReplicaHost" placeholder="replica_host"><input id="dbReplicaPort" placeholder="replica_port" inputmode="numeric"><input id="dbReplicaSSH" placeholder="replica_ssh_session_id"><input id="dbSecretRef" placeholder="${t("databaseSecretRef")}"><input id="dbFilePath" placeholder="${t("databaseFilePath")}"><input id="dbSheet" placeholder="${t("databaseSheet")}"><select id="dbTls">${tlsModes.map(x=>`<option value="${x}">${x||t("databaseTLS")}</option>`).join("")}</select><select id="dbClass">${classes.map(x=>`<option value="${x}">${x||t("databaseClass")}</option>`).join("")}</select><label class="row"><input id="dbRO" type="checkbox" class="w-auto" checked> RO</label><label class="row"><input id="dbRW" type="checkbox" class="w-auto"> RW</label><label class="row"><input id="dbPublic" type="checkbox" class="w-auto"> ${t("databasePublic")}</label><label class="row"><input id="dbDDL" type="checkbox" class="w-auto"> ${t("databaseDDL")}</label><label class="row"><input id="dbDisabled" type="checkbox" class="w-auto"> ${t("disabledState")}</label></div></div><div class="card stack">${sectionHead(t("databaseReceipt"), t("databaseReceiptHint"), `<div class="row section-actions"><button id="dbReceiptLookup">${t("databaseReceipt")}</button></div>`)}<div class="row"><input id="dbReceiptId" placeholder="receipt_id"></div></div>`);
+  let loadedProfiles=[];
+  const scopeQuery=()=>{
+    const ids=tenantUserValue("dbTenant","dbUser");
+    if(!ids.tenant||!ids.user) return "";
+    return new URLSearchParams({tenant_id:ids.tenant,user_id:ids.user}).toString();
+  };
+  const clearForm=()=>{
+    ["dbId","dbName","dbHost","dbPort","dbDatabase","dbUsername","dbSSHSession","dbReplicaHost","dbReplicaPort","dbReplicaSSH","dbSecretRef","dbFilePath","dbSheet"].forEach(id=>{ if($(id)) $(id).value=""; });
+    if($("dbId")) $("dbId").readOnly=false;
+    if($("dbType")) $("dbType").value="mysql";
+    if($("dbTls")) $("dbTls").value="";
+    if($("dbClass")) $("dbClass").value="";
+    if($("dbRO")) $("dbRO").checked=true;
+    if($("dbRW")) $("dbRW").checked=false;
+    if($("dbPublic")) $("dbPublic").checked=false;
+    if($("dbDDL")) $("dbDDL").checked=false;
+    if($("dbDisabled")) $("dbDisabled").checked=false;
+  };
+  const fillForm=(p)=>{
+    $("dbId").value=p.id||"";
+    $("dbId").readOnly=true;
+    $("dbName").value=p.name||"";
+    $("dbType").value=p.type||"mysql";
+    $("dbHost").value=p.host||"";
+    $("dbPort").value=p.port||"";
+    $("dbDatabase").value=p.database||"";
+    $("dbUsername").value=p.username||"";
+    if($("dbSSHSession")) $("dbSSHSession").value=p.ssh_session_id||"";
+    if($("dbReplicaHost")) $("dbReplicaHost").value=p.replica_host||"";
+    if($("dbReplicaPort")) $("dbReplicaPort").value=p.replica_port||"";
+    if($("dbReplicaSSH")) $("dbReplicaSSH").value=p.replica_ssh_session_id||"";
+    $("dbSecretRef").value="";
+    $("dbFilePath").value="";
+    $("dbSheet").value=p.sheet||"";
+    $("dbTls").value=p.tls_mode||"";
+    $("dbClass").value=p.data_classification||"";
+    $("dbRO").checked=p.read_only!==false;
+    $("dbRW").checked=!!p.write_enabled;
+    $("dbPublic").checked=!!p.allow_external_host;
+    $("dbDDL").checked=!!p.allow_ddl;
+    $("dbDisabled").checked=!!p.disabled;
+  };
+  const readForm=()=>{
+    const body={
+      id:($("dbId").value||"").trim(),
+      name:($("dbName").value||"").trim(),
+      type:$("dbType").value||"mysql",
+      host:($("dbHost").value||"").trim(),
+      database:($("dbDatabase").value||"").trim(),
+      username:($("dbUsername").value||"").trim(),
+      ssh_session_id:(($("dbSSHSession")||{}).value||"").trim(),
+      replica_host:(($("dbReplicaHost")||{}).value||"").trim(),
+      replica_ssh_session_id:(($("dbReplicaSSH")||{}).value||"").trim(),
+      sheet:($("dbSheet").value||"").trim(),
+      file_path:($("dbFilePath").value||"").trim(),
+      read_only:!!$("dbRO").checked,
+      write_enabled:!!$("dbRW").checked,
+      allow_external_host:!!$("dbPublic").checked,
+      allow_ddl:!!$("dbDDL").checked,
+      disabled:!!$("dbDisabled").checked
+    };
+    const port=Number(($("dbPort").value||"").trim());
+    if(port>0) body.port=port;
+    const replicaPort=Number((($("dbReplicaPort")||{}).value||"").trim());
+    if(replicaPort>0) body.replica_port=replicaPort;
+    const secret=($("dbSecretRef").value||"").trim();
+    if(secret) body.secret_ref=secret;
+    const tls=($("dbTls").value||"").trim();
+    if(tls) body.tls={mode:tls};
+    const klass=($("dbClass").value||"").trim();
+    if(klass) body.data_classification=klass;
+    Object.keys(body).forEach(k=>{ if(body[k]==="" ) delete body[k]; });
+    return body;
+  };
+  const bindProfileActions=()=>{
+    document.querySelectorAll("[data-db-edit]").forEach(b=>b.onclick=()=>{
+      const p=loadedProfiles.find(x=>x.id===b.dataset.dbEdit);
+      if(p) fillForm(p);
+    });
+    document.querySelectorAll("[data-db-test]").forEach(b=>b.onclick=async()=>{
+      const qs=scopeQuery(); if(!qs){ toast(t("requiredField")); return; }
+      showAdminResult(t("databaseTest"), await api(`/api/v1/admin/database/profiles/${encodeURIComponent(b.dataset.dbTest)}/test?${qs}`,{method:"POST",body:"{}"}));
+    });
+    document.querySelectorAll("[data-db-del]").forEach(b=>b.onclick=async()=>{
+      if(!await confirmDanger(t("databaseDeleteConfirm"))) return;
+      const qs=scopeQuery(); if(!qs){ toast(t("requiredField")); return; }
+      await api(`/api/v1/admin/database/profiles/${encodeURIComponent(b.dataset.dbDel)}?${qs}&confirm=true`,{method:"DELETE"});
+      toast(t("saved"));
+      await load();
+    });
+  };
+  const load=async()=>{
+    const qs=scopeQuery();
+    if(!qs){ toast(t("requiredField")); return; }
+    const [profiles, metrics]=await Promise.all([
+      api(`/api/v1/admin/database/profiles?${qs}`),
+      api(`/api/v1/admin/database/metrics?${qs}`).catch(()=>({metrics:{}}))
+    ]);
+    loadedProfiles=profiles.items||[];
+    $("dbMetrics").textContent=pretty(metrics.metrics||metrics);
+    $("dbProfiles").innerHTML=table(loadedProfiles, ["id","name","type","status","host","database","read_only","write_enabled","disabled"], x=>`<button class="secondary" data-db-edit="${esc(x.id)}">${t("view")}</button> <button class="secondary" data-db-test="${esc(x.id)}">${t("databaseTest")}</button> <button class="danger" data-db-del="${esc(x.id)}">${t("delete")}</button>`);
+    bindProfileActions();
+  };
+  $("loadDbProfiles").onclick=()=>load().catch(e=>toast(`${t("failed")}: ${e.message}`));
+  $("dbProfileNew").onclick=()=>clearForm();
+  $("dbProfileSave").onclick=async()=>{
+    try{
+      const qs=scopeQuery(); if(!qs){ toast(t("requiredField")); return; }
+      const body=readForm();
+      if(!body.id){ toast(t("requiredField")); return; }
+      await api(`/api/v1/admin/database/profiles?${qs}`,{method:"POST",body:JSON.stringify(body)});
+      toast(t("saved"));
+      $("dbSecretRef").value="";
+      await load();
+    }catch(e){ toast(`${t("failed")}: ${e.message}`); }
+  };
+  $("dbProfileRotate").onclick=async()=>{
+    try{
+      const qs=scopeQuery(); if(!qs){ toast(t("requiredField")); return; }
+      const id=($("dbId").value||"").trim();
+      const secret=($("dbSecretRef").value||"").trim();
+      if(!id||!secret){ toast(t("requiredField")); return; }
+      await api(`/api/v1/admin/database/profiles/${encodeURIComponent(id)}/rotate-secret?${qs}`,{method:"POST",body:JSON.stringify({secret_ref:secret})});
+      toast(t("saved"));
+      $("dbSecretRef").value="";
+      await load();
+    }catch(e){ toast(`${t("failed")}: ${e.message}`); }
+  };
+  $("dbReceiptLookup").onclick=async()=>{
+    try{
+      const qs=scopeQuery(); if(!qs){ toast(t("requiredField")); return; }
+      const id=($("dbReceiptId").value||"").trim();
+      if(!id){ toast(t("requiredField")); return; }
+      showAdminResult(t("databaseReceipt"), await api(`/api/v1/admin/database/receipts/${encodeURIComponent(id)}?${qs}`));
+    }catch(e){ toast(`${t("failed")}: ${e.message}`); }
+  };
+  const setEnabled=async(enabled)=>{
+    const qs=scopeQuery(); if(!qs){ toast(t("requiredField")); return; }
+    await api(`/api/v1/admin/database/runtime?${qs}`,{method:"POST",body:JSON.stringify({enabled})});
+    toast(t("saved"));
+    await load();
+  };
+  $("dbDisable").onclick=()=>setEnabled(false).catch(e=>toast(`${t("failed")}: ${e.message}`));
+  $("dbEnable").onclick=()=>setEnabled(true).catch(e=>toast(`${t("failed")}: ${e.message}`));
+}
 async function ops(){ setTitle(t("ops"), t("opsHint")); const [audit,snaps,risks,tenantsResp,usersResp,adminsResp]=await Promise.all([api("/api/v1/admin/audit-events?limit=50").catch(e=>({error:e.message,items:[]})),api("/api/v1/admin/snapshots?limit=50").catch(e=>({error:e.message,items:[]})),api("/api/v1/admin/security/risk-events?limit=50").catch(e=>({error:e.message,items:[]})),api("/api/v1/admin/tenants?limit=500").catch(e=>({error:e.message,items:[]})),api("/api/v1/admin/users?limit=500").catch(e=>({error:e.message,items:[]})),api("/api/v1/admin/auth/users").catch(e=>({error:e.message,items:[]}))]); const tenantItems=tenantsResp.items||[]; const userItems=usersResp.items||[]; const adminItems=adminsResp.items||[]; $("content").innerHTML=pageShell("ops-page",`<div class="ops-main-grid"><div class="card stack ops-risk-card">${sectionHead(t("riskEvents"), t("securityRisks"), `<div class="row section-actions"><button class="secondary" id="loadRisks">${t("refresh")}</button><button class="secondary" id="clearRiskFilters">${t("clear")}</button></div>`)}<div class="row ops-risk-filters"><select id="riskSeverity"><option value="">${t("all")}</option>${localizedOptions(["high","medium","low"],"severity")}</select><input id="riskKind" placeholder="${t("kindPlaceholder")}" list="riskKindOptions"><datalist id="riskKindOptions">${riskKindOptions(risks.kind_counts)}</datalist><input id="riskSince" type="datetime-local"><input id="riskUntil" type="datetime-local"><input id="riskLimit" type="number" min="1" max="500" value="50" class="w-narrow"></div><div class="row section-actions ops-risk-presets"><button class="secondary" data-risk-preset="1">1h</button><button class="secondary" data-risk-preset="24">24h</button><button class="secondary" data-risk-preset="168">7d</button><button class="secondary" data-risk-preset="all">${t("all")}</button></div><div id="riskFilterStatus" class="ops-risk-summary">${riskFilterSummary(risks)}</div><div class="ops-risk-meta"><div><h3>${t("bySeverity")}</h3><div id="riskSeverityCounts">${riskCountChips(risks.counts,"severity")}</div></div><div><h3>${t("byKind")}</h3><div id="riskKindCounts">${riskCountChips(risks.kind_counts)}</div></div></div><div id="riskEventsList" class="ops-risk-table">${riskEventsTable(risks.items||[])}</div></div><div class="card stack ops-snapshot-card">${sectionHead(t("snapshots"), t("restore"))}<div class="ops-snapshot-table">${snapshotTable(snaps.items||[])}</div></div></div><div class="ops-control-grid"><div class="card stack">${sectionHead(t("snapshots"), t("snapshotsHint"), `<div class="row section-actions"><button id="createSnapshot">${t("create")}</button><button class="secondary" id="refreshSnapshots">${t("refresh")}</button></div>`)}<div class="form-grid"><input id="snapshotName" placeholder="${t("name")}">${tenantSelect("snapshotTenant",tenantItems)}${userSelect("snapshotUser",userItems,"","tenantUser")}<label class="row"><input id="snapshotMessages" type="checkbox" checked class="w-auto"> ${t("messages")}</label><label class="row"><input id="snapshotRuns" type="checkbox" checked class="w-auto"> ${t("runs")}</label><label class="row"><input id="snapshotAudit" type="checkbox" checked class="w-auto"> ${t("audit")}</label><label class="row"><input id="snapshotSecrets" type="checkbox" class="w-auto"> ${t("secrets")}</label></div><details class="advanced-disclosure action-disclosure"><summary>${t("moreOptions")}</summary><p class="helper-text">${t("snapshotSecretPrompt")}</p><div class="row disclosure-actions"><input id="pruneKeep" type="number" value="10" class="w-narrow"><button class="warn" id="pruneSnapshots">${t("dryRun")}</button></div></details></div><div class="card stack">${sectionHead(t("audit"), t("opsHint"), `<div class="row section-actions"><button class="secondary" id="loadAudit">${t("refresh")}</button></div>`)}<div class="form-grid"><input id="auditAction" placeholder="${t("actionName")}">${tenantSelect("auditTenant",tenantItems)}${userSelect("auditUser",userItems,"","tenantUser")}${adminSelect("auditActorUser",adminItems)}<input id="auditLimit" type="number" value="50"></div></div><div class="card stack">${sectionHead(t("export"), t("messages"), `<div class="row section-actions"><button id="runExport">${t("export")}</button></div>`)}<div class="form-grid">${tenantSelect("exportTenant",tenantItems)}${userSelect("exportUser",userItems,"","tenantUser")}<label class="row"><input id="exportMessages" type="checkbox" checked class="w-auto"> ${t("messages")}</label><label class="row"><input id="exportRuns" type="checkbox" checked class="w-auto"> ${t("runs")}</label><label class="row"><input id="exportAudit" type="checkbox" checked class="w-auto"> ${t("audit")}</label><label class="row"><input id="exportSecrets" type="checkbox" class="w-auto"> ${t("secrets")}</label></div></div><div class="card stack subtle-card">${sectionHead(t("import"), t("importPreviewHint"), `<div class="row section-actions"><button id="runImport">${t("import")}</button></div>`)}<details class="advanced-disclosure technical-panel"><summary>${t("pasteData")}</summary><p class="helper-text">${t("importPayloadHint")}</p><textarea id="importText" class="quiet-editor" placeholder="${t("pasteExportedJSON")}"></textarea></details><div class="row info-strip"><label class="row"><input id="importOverwrite" type="checkbox" class="w-auto"> ${t("overwrite")}</label><label class="row"><input id="importDryRun" type="checkbox" checked class="w-auto"> ${t("dryRun")}</label></div></div></div>`); bindOpsSnapshotActions(); bindRiskEventActions(risks.items||[]); bindRiskCountChips(); $("loadRisks").onclick=loadRiskEventsFromFilters; $("clearRiskFilters").onclick=clearRiskFilters; document.querySelectorAll("[data-risk-preset]").forEach(btn=>btn.onclick=()=>setRiskTimePreset(btn.dataset.riskPreset==="all"?0:Number(btn.dataset.riskPreset))); syncTenantFromUser("auditUser","auditTenant"); syncTenantFromUser("exportUser","exportTenant"); syncTenantFromUser("snapshotUser","snapshotTenant"); applyPendingRiskFilter(); $("loadAudit").onclick=async()=>{const q=new URLSearchParams(); if($("auditAction").value) q.set("action",$("auditAction").value); const ids=tenantUserValue("auditTenant","auditUser"); if(ids.tenant) q.set("tenant_id",ids.tenant); if(ids.user) q.set("user_id",ids.user); if($("auditActorUser").value) q.set("actor_user_id",$("auditActorUser").value); let auditLimit; try{auditLimit=numberInRange("auditLimit",50,1,500);}catch{return;} q.set("limit",String(auditLimit)); showAdminResult(t("audit"),await api(`/api/v1/admin/audit-events?${q}`));}; $("runExport").onclick=async()=>{const q=exportParams("export"); if($("exportSecrets").checked){if(!await confirmPhrase(t("exportSecretPrompt"),"EXPORT SECRETS")) return; q.set("confirm","true");} showAdminResult(t("export"),await api(`/api/v1/admin/export?${q}`));}; $("runImport").onclick=async()=>{let data; try{data=parseJSONField("importText","{}");}catch{return;} const q=new URLSearchParams({overwrite:String($("importOverwrite").checked),dry_run:String($("importDryRun").checked)}); if(!$("importDryRun").checked){if(!await confirmPhrase(t("importRunPrompt"),"IMPORT STATE")) return; q.set("confirm","true");} showAdminResult(t("import"),await api(`/api/v1/admin/import?${q}`,{method:"POST",body:JSON.stringify({data,overwrite:$("importOverwrite").checked,dry_run:$("importDryRun").checked})}));}; $("createSnapshot").onclick=async()=>{const ids=tenantUserValue("snapshotTenant","snapshotUser"); const body={name:$("snapshotName").value,tenant_id:ids.tenant,user_id:ids.user,include_messages:$("snapshotMessages").checked,include_runs:$("snapshotRuns").checked,include_audit:$("snapshotAudit").checked,include_secrets:$("snapshotSecrets").checked}; let path="/api/v1/admin/snapshots"; if(body.include_secrets){if(!await confirmPhrase(t("snapshotSecretPrompt"),"SNAPSHOT SECRETS")) return; path+="?confirm=true";} showAdminResult(t("snapshots"),await api(path,{method:"POST",body:JSON.stringify(body)})); render();}; $("refreshSnapshots").onclick=()=>render(); $("pruneSnapshots").onclick=async()=>showAdminResult(t("snapshots"),await api("/api/v1/admin/snapshots/prune",{method:"POST",body:JSON.stringify({keep_latest:numberInRange("pruneKeep",10,1,1000),dry_run:true})})); }
 function exportParams(prefix){ const q=new URLSearchParams(); const ids=tenantUserValue(prefix+"Tenant",prefix+"User"); if(ids.tenant) q.set("tenant_id",ids.tenant); if(ids.user) q.set("user_id",ids.user); q.set("include_messages",String($(prefix+"Messages").checked)); q.set("include_runs",String($(prefix+"Runs").checked)); q.set("include_audit",String($(prefix+"Audit").checked)); q.set("include_secrets",String($(prefix+"Secrets").checked)); return q; }
 function snapshotTable(items){ return table(items,["id","name","scope","tenant_id","user_id","size_bytes","created_at"],x=>`<button class="secondary" data-snapshot-get="${esc(x.id)}">${t("view")}</button> <button class="warn" data-snapshot-restore="${esc(x.id)}">${t("restore")} ${t("dryRun")}</button> <button class="warn" data-snapshot-restore-run="${esc(x.id)}">${t("restore")}</button> <button class="danger" data-snapshot-delete="${esc(x.id)}">${t("delete")}</button>`); }
@@ -1571,7 +1857,7 @@ function renderTTSVoiceOptions(current){
   return options.map(option=>`<option value="${esc(option.id)}" ${option.id===value?"selected":""}>${esc(option.label)}</option>`).join("");
 }
 function aiModelRuntimeState(model){ if(model?.ready) return {key:"ready",cls:"ok"}; if(model?.downloading) return {key:"downloading",cls:"warn"}; return {key:"missing",cls:"bad"}; }
-function renderAIModelStatusPanel(models){ const names=["embedding","asr","tts"]; return `<section class="panel stack" id="aiModelStatusPanel"><div class="split"><div><h2>${t("modelRuntimeStatus")}</h2><p class="helper-text">${t("modelRuntimeStatusHint")}</p></div><button class="secondary" id="refreshAIModelStatus">${t("refresh")}</button></div><div class="ai-model-status-grid">${names.map(name=>{ const model=models?.[name]||{name}; const state=aiModelRuntimeState(model); const enabled=model.enabled!==false; const enabledText=enabled?`${t("enabledState")} ${t("autoEnabled")}`:t("disabledState"); const decoder=model.decoder?`<p class="muted">${esc(model.decoder)}: ${esc(model.decoder_ready===true?t("ready"):t("missing"))}</p>`:""; const encoder=model.encoder?`<p class="muted">${esc(model.encoder)}: ${esc(model.mp3_encoder_ready===true?t("ready"):t("missing"))}</p>`:""; const path=model.path?`<p class="model-path" title="${esc(model.path)}">${esc(model.path)}</p>`:""; const voicePath=model.voice_path?`<p class="model-path" title="${esc(model.voice_path)}">${esc(model.voice_path)}</p>`:""; const action=model.ready?`<button class="secondary" type="button" disabled>${esc(t("ready"))}</button>`:model.downloading?`<button class="secondary" type="button" disabled>${esc(t("backgroundDownloading"))}</button>`:`<button class="secondary" type="button" data-ai-model-download="${esc(name)}">${esc(t("downloadNow"))}</button>`; return `<article class="ai-model-status-card"><div class="split"><h3>${esc(name.toUpperCase())}</h3><span class="state-pill state-${state.cls}">${esc(t(state.key))}</span></div><p><span class="state-pill state-${enabled?"ok":"muted"}">${esc(enabledText)}</span></p><p class="helper-text">${esc(model.filename||"")}${model.voice_id?` · ${esc(model.voice_id)}`:""}</p>${path}${voicePath}${decoder}${encoder}${model.size_bytes?`<p class="muted">${esc(String(model.size_bytes))} ${esc(t("bytesUnit"))}</p>`:""}${model.last_error?`<p class="error-text">${esc(model.last_error)}</p>`:""}${action}</article>`; }).join("")}</div></section>`; }
+function renderAIModelStatusPanel(models){ const names=["embedding","asr","tts","ocr","omniparser"]; return `<section class="panel stack" id="aiModelStatusPanel"><div class="split"><div><h2>${t("modelRuntimeStatus")}</h2><p class="helper-text">${t("modelRuntimeStatusHint")}</p></div><button class="secondary" id="refreshAIModelStatus">${t("refresh")}</button></div><div class="ai-model-status-grid">${names.map(name=>{ const model=models?.[name]||{name}; const state=aiModelRuntimeState(model); const enabled=model.enabled!==false; const enabledText=enabled?`${t("enabledState")} ${t("autoEnabled")}`:t("disabledState"); const decoder=model.decoder?`<p class="muted">${esc(model.decoder)}: ${esc(model.decoder_ready===true?t("ready"):t("missing"))}</p>`:""; const encoder=model.encoder?`<p class="muted">${esc(model.encoder)}: ${esc(model.mp3_encoder_ready===true?t("ready"):t("missing"))}</p>`:""; const path=model.path?`<p class="model-path" title="${esc(model.path)}">${esc(model.path)}</p>`:""; const voicePath=model.voice_path?`<p class="model-path" title="${esc(model.voice_path)}">${esc(model.voice_path)}</p>`:""; const action=model.ready?`<button class="secondary" type="button" disabled>${esc(t("ready"))}</button>`:model.downloading?`<button class="secondary" type="button" disabled>${esc(t("backgroundDownloading"))}</button>`:`<button class="secondary" type="button" data-ai-model-download="${esc(name)}">${esc(t("downloadNow"))}</button>`; return `<article class="ai-model-status-card"><div class="split"><h3>${esc(name.toUpperCase())}</h3><span class="state-pill state-${state.cls}">${esc(t(state.key))}</span></div><p><span class="state-pill state-${enabled?"ok":"muted"}">${esc(enabledText)}</span></p><p class="helper-text">${esc(model.filename||"")}${model.voice_id?` · ${esc(model.voice_id)}`:""}</p>${path}${voicePath}${decoder}${encoder}${model.size_bytes?`<p class="muted">${esc(String(model.size_bytes))} ${esc(t("bytesUnit"))}</p>`:""}${model.last_error?`<p class="error-text">${esc(model.last_error)}</p>`:""}${action}</article>`; }).join("")}</div></section>`; }
 async function refreshAIModelStatus(silent=false){ const out=await api("/api/v1/admin/ai-models/status"); $("aiModelStatusPanel").outerHTML=renderAIModelStatusPanel(out.models||{}); bindAIModelStatusActions(); applyOwnerGuards(); enhanceA11y(); if(!silent) toast(t("modelStatusRefreshed")); return out; }
 function bindAIModelStatusActions(){ if($("refreshAIModelStatus")) $("refreshAIModelStatus").onclick=async()=>withBusyButton($("refreshAIModelStatus"),t("running"),async()=>{ try{ await refreshAIModelStatus(); }catch(e){ toast(`${t("failed")}: ${e.message}`); } }); document.querySelectorAll("[data-ai-model-download]").forEach(btn=>btn.onclick=async()=>{ const model=btn.dataset.aiModelDownload; btn.disabled=true; btn.textContent=t("backgroundDownloading"); try{ await api(`/api/v1/admin/ai-models/${encodeURIComponent(model)}/download`,{method:"POST"}); toast(t("downloadQueued")); await refreshAIModelStatus(true); }catch(e){ toast(`${t("failed")}: ${e.message}`); btn.disabled=false; btn.textContent=t("downloadNow"); } }); }
 function renderAIModelTestPanel(cfg){ return `<div class="ai-model-test-panel stack"><h3>${t("modelTest")}</h3><div class="ai-model-test-grid"><div class="field"><label for="aiEmbeddingTestText">${t("embeddingTestText")}</label><textarea id="aiEmbeddingTestText" rows="3" placeholder="${esc(t("embeddingTestPlaceholder"))}">${esc(t("embeddingTestDefault"))}</textarea><button class="secondary" id="runAIEmbeddingTest" type="button">${t("runEmbeddingTest")}</button><pre class="code ai-test-output" id="aiEmbeddingTestOut"></pre></div><div class="field"><label for="aiASRTestFile">${t("asrTestAudio")}</label><input id="aiASRTestFile" type="file" accept="audio/wav,audio/ogg,audio/opus,audio/mpeg,audio/aac,audio/mp4,.wav,.ogg,.opus,.oga,.silk,.mp3,.aac,.m4a"><p class="helper-text">${t("asrTestHint")}</p><button class="secondary" id="runAIASRTest" type="button">${t("runASRTest")}</button><pre class="code ai-test-output" id="aiASRTestOut"></pre></div><div class="field"><label for="aiTTSTestText">${t("ttsTestText")}</label><textarea id="aiTTSTestText" rows="3" placeholder="${esc(t("ttsTestPlaceholder"))}">${esc(t("ttsTestDefault"))}</textarea><button class="secondary" id="runAITTSTest" type="button">${t("runTTSTest")}</button><pre class="code ai-test-output" id="aiTTSTestOut"></pre></div></div></div>`; }
@@ -1581,7 +1867,7 @@ async function aiModels(){
   setTitle(t("aiModels"), t("aiModelsHint"));
   const [cfgResp,statusResp]=await Promise.all([api("/api/v1/admin/client-config/default"),api("/api/v1/admin/ai-models/status").catch(e=>({error:e.message,models:{}}))]);
   const cfg=cfgResp.app_config||{};
-  $("content").innerHTML=pageShell("ai-models-page",`${renderAIModelStatusPanel(statusResp.models||{})}<section class="panel stack" id="aiLocalCapabilitiesPanel">${sectionHead(t("localAICapabilities"), t("localAICapabilitiesHint"), `<div class="row section-actions"><button id="saveAIModels">${t("save")}</button></div>`)}<div class="form-grid"><label class="row"><input id="aiEmbeddingEnabled" type="checkbox" class="w-auto" checked disabled> ${t("embeddingLabel")} ${t("autoEnabled")}</label><label class="row"><input id="aiASREnabled" type="checkbox" class="w-auto" checked disabled> ${t("asrLabel")} ${t("autoEnabled")}</label><label class="row"><input id="aiTTSEnabled" type="checkbox" class="w-auto" checked disabled> ${t("ttsLabel")} ${t("autoEnabled")}</label><label class="row"><input id="aiTTSAutoVoiceSummary" type="checkbox" class="w-auto" ${cfg.tts_auto_voice_summary?"checked":""}> ${t("ttsAutoVoiceSummary")}</label><div class="field"><label for="aiTTSVoice">${t("ttsVoice")}</label><select id="aiTTSVoice">${renderTTSVoiceOptions(cfg.tts_voice_id||"zf_xiaoyi")}</select><p class="helper-text">${t("ttsVoiceHint")}</p></div></div>${renderAIModelTestPanel(cfg)}</section>`);
+  $("content").innerHTML=pageShell("ai-models-page",`${renderAIModelStatusPanel(statusResp.models||{})}<section class="panel stack" id="aiLocalCapabilitiesPanel">${sectionHead(t("localAICapabilities"), t("localAICapabilitiesHint"), `<div class="row section-actions"><button id="saveAIModels">${t("save")}</button></div>`)}<div class="form-grid"><label class="row"><input id="aiEmbeddingEnabled" type="checkbox" class="w-auto" checked disabled> ${t("embeddingLabel")} ${t("autoEnabled")}</label><label class="row"><input id="aiASREnabled" type="checkbox" class="w-auto" checked disabled> ${t("asrLabel")} ${t("autoEnabled")}</label><label class="row"><input id="aiTTSEnabled" type="checkbox" class="w-auto" checked disabled> ${t("ttsLabel")} ${t("autoEnabled")}</label><label class="row"><input id="aiOCREnabled" type="checkbox" class="w-auto" checked disabled> ${t("ocrLabel")} ${t("autoEnabled")}</label><label class="row"><input id="aiOmniParserEnabled" type="checkbox" class="w-auto" checked disabled> ${t("omniparserLabel")} ${t("autoEnabled")}</label><label class="row"><input id="aiTTSAutoVoiceSummary" type="checkbox" class="w-auto" ${cfg.tts_auto_voice_summary?"checked":""}> ${t("ttsAutoVoiceSummary")}</label><div class="field"><label for="aiTTSVoice">${t("ttsVoice")}</label><select id="aiTTSVoice">${renderTTSVoiceOptions(cfg.tts_voice_id||"zf_xiaoyi")}</select><p class="helper-text">${t("ttsVoiceHint")}</p></div></div>${renderAIModelTestPanel(cfg)}</section>`);
   bindAIModelStatusActions();
   bindAIModelTestActions();
   $("saveAIModels").onclick=async()=>{ try{ await saveDefaultClientConfig(base=>readAIModelsForm(base)); await refreshAIModelStatus(true); toast(t("serverWideAIApplied")); }catch(e){ toast(`${t("failed")}: ${e.message}`); } };
@@ -1591,6 +1877,7 @@ function readAIModelsForm(base){
   cfg.vector_search_enabled=true;
   cfg.asr_enabled=true;
   cfg.tts_enabled=true;
+  cfg.ocr_enabled=true;
   cfg.tts_auto_voice_summary=$("aiTTSAutoVoiceSummary")?.checked===true;
   cfg.tts_voice_id=$("aiTTSVoice").value.trim();
   return cfg;

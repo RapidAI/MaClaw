@@ -101,7 +101,7 @@ Hub 生成的六码短码完成绑定，避免把旧 Hub 的持久 Token 发往�
 
 ## 构建与安全刷写
 
-本机已经使用 ESP-IDF v6.0.2 成功构建。推荐从普通 PowerShell 调用 IDF 环境：
+本机已经使用 ESP-IDF v6.0.2 成功构建。`main/idf_component.yml` 将 IDF 版本约束为 `>=6.0,<7.0`；使用其他版本时组件管理器会直接报错，顶层 CMake 也会对 sdkconfig.defaults 中的 6.0.2 专属稳定性规避（COEX 关闭、mbedtls MPI/AES 同步路径、Wi-Fi AMPDU/802.11n 限制）给出未验证警告。推荐从普通 PowerShell 调用 IDF 环境：
 
 ```powershell
 cd D:\workprj\aicoder\iot-agentos

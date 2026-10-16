@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/netip"
@@ -20,11 +21,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/codegenproxy"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
+	"github.com/RapidAI/CodeClaw/corelib/kimicode"
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 	"github.com/RapidAI/CodeClaw/corelib/oauth"
+	"github.com/RapidAI/CodeClaw/corelib/qoder"
+	"github.com/RapidAI/CodeClaw/corelib/windsurf"
 	"github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
@@ -33,6 +36,26 @@ var runtimeGOOS = goruntime.GOOS
 const (
 	defaultListenAddress = "0.0.0.0:18086"
 	defaultProxyAPIKey   = "tigerproxy-local-key"
+
+	AuthModeSSO             = "sso"
+	AuthModeCustomOpenAI    = "custom_openai"
+	AuthModeOpenAIOAuth     = "openai_oauth"
+	AuthModeXAIOAuth        = "xai_oauth"
+	AuthModeAnthropicOAuth  = "anthropic_oauth"
+	AuthModeZhipuCoding     = "zhipu_coding"
+	AuthModeKimiWeb         = "kimi_web"
+	AuthModeDevin           = "devin"
+	AuthModeQoderCN         = "qoder_cn"
+	AuthModeQoderGlobal     = "qoder_global"
+	AuthModeWorkBuddyCN     = "workbuddy_cn"
+	AuthModeWorkBuddyGlobal = "workbuddy_global"
+	AuthModeOpenCode        = "opencode"
+
+	zhipuCodingDefaultURL   = "https://open.bigmodel.cn/api/coding/paas/v4"
+	zhipuCodingDefaultModel = "glm-5.3"
+	openaiOfficialURL       = "https://api.openai.com/v1"
+	xaiOfficialURL          = "https://api.x.ai/v1"
+	anthropicOfficialURL    = "https://api.anthropic.com/v1"
 )
 
 type App struct {
@@ -45,10 +68,29 @@ type App struct {
 	lastError       string
 	mu              sync.Mutex
 	settingsMu      sync.Mutex
+	vendorRefreshMu sync.Mutex
 	shown           bool
 	codexInstalling bool
 	promptCache     *llmpool.Cache
 	usageStore      *UsageStore
+
+	anthropicOAuth    *oauth.AnthropicOAuthParams
+	xaiSession        *oauth.XAIAuthSession
+	xaiCtx            context.Context
+	xaiCancel         context.CancelFunc
+	xaiDone           bool
+	openaiServer      *oauth.CallbackServer
+	openaiParams      *oauth.HeadlessOAuthParams
+	openaiCfg         oauth.Config
+	openaiCtx         context.Context
+	openaiCancel      context.CancelFunc
+	openaiDone        bool
+	kimiLogin         *kimiDeviceLogin
+	devinLogin        *devinLoginFlow
+	devinSaveMu       sync.Mutex
+	qoderLogin        *qoderLoginFlow
+	workbuddyLogin    *workbuddyLoginFlow
+	relaunchAfterAuth bool
 
 	// Cumulative token counters (atomic, updated via usage callback).
 	totalPromptTokens     int64
@@ -61,16 +103,40 @@ type App struct {
 }
 
 type Settings struct {
-	ListenAddress              string        `json:"listen_address"`
-	APIKey                     string        `json:"api_key"`
-	AccessToken                string        `json:"access_token,omitempty"`
-	BaseURL                    string        `json:"base_url"`
-	ModelID                    string        `json:"model_id,omitempty"`
-	CodexContextWindow         int           `json:"codex_context_window,omitempty"`
-	CodexAutoCompactTokenLimit int           `json:"codex_auto_compact_token_limit,omitempty"`
-	Email                      string        `json:"email,omitempty"`
-	UpdatedAt                  string        `json:"updated_at,omitempty"`
-	Models                     []ModelOption `json:"models,omitempty"`
+	ListenAddress string `json:"listen_address"`
+	APIKey        string `json:"api_key"`
+	AccessToken   string `json:"access_token,omitempty"`
+	BaseURL       string `json:"base_url"`
+	ModelID       string `json:"model_id,omitempty"`
+	// AgentType is the User-Agent sent upstream. Empty keeps the QAgent default.
+	// A value that is not one of the built-in tool names is sent as typed.
+	AgentType                  string                 `json:"agent_type,omitempty"`
+	CodexContextWindow         int                    `json:"codex_context_window,omitempty"`
+	CodexAutoCompactTokenLimit int                    `json:"codex_auto_compact_token_limit,omitempty"`
+	Email                      string                 `json:"email,omitempty"`
+	UpdatedAt                  string                 `json:"updated_at,omitempty"`
+	Models                     []ModelOption          `json:"models,omitempty"`
+	ActiveAuthMode             string                 `json:"active_auth_mode,omitempty"`
+	AuthProfiles               map[string]AuthProfile `json:"auth_profiles,omitempty"`
+	// UpstreamAPIKey is write-only from the UI. When non-empty it replaces the
+	// active profile's upstream credential. It is never persisted under this name.
+	UpstreamAPIKey string `json:"upstream_api_key,omitempty"`
+}
+
+// AuthProfile is the saved upstream credential for one login method.
+type AuthProfile struct {
+	AccessToken  string        `json:"access_token,omitempty"`
+	RefreshToken string        `json:"refresh_token,omitempty"`
+	APIKey       string        `json:"api_key,omitempty"`
+	BaseURL      string        `json:"base_url,omitempty"`
+	Email        string        `json:"email,omitempty"`
+	ModelID      string        `json:"model_id,omitempty"`
+	Models       []ModelOption `json:"models,omitempty"`
+	// Account fields used by Qoder signing and WorkBuddy account headers.
+	UserID       string `json:"user_id,omitempty"`
+	EnterpriseID string `json:"enterprise_id,omitempty"`
+	Domain       string `json:"domain,omitempty"`
+	ExpiresAt    int64  `json:"expires_at,omitempty"`
 }
 
 type ModelOption struct {
@@ -103,6 +169,12 @@ type Status struct {
 	LastCacheReason     string                     `json:"last_cache_reason,omitempty"`
 	LastCacheStreaming  bool                       `json:"last_cache_streaming,omitempty"`
 	CodexCredentialSync *CodexCredentialSyncStatus `json:"codex_credential_sync,omitempty"`
+	ActiveAuthMode      string                     `json:"active_auth_mode,omitempty"`
+	NeedsOnboarding     bool                       `json:"needs_onboarding"`
+	AuthModeLabel       string                     `json:"auth_mode_label,omitempty"`
+	UpstreamKeySet      bool                       `json:"upstream_key_set"`
+	ReadyModes          []string                   `json:"ready_modes,omitempty"`
+	RelaunchScheduled   bool                       `json:"relaunch_scheduled,omitempty"`
 }
 
 // CodexCredentialSyncStatus reports the best-effort synchronization performed
@@ -151,7 +223,7 @@ func (a *App) startup(ctx context.Context) {
 // After updating, it emits an event so the frontend can refresh the UI.
 func (a *App) refreshModelsIfLoggedIn() {
 	s, err := loadSettings()
-	if err != nil || strings.TrimSpace(s.AccessToken) == "" {
+	if err != nil || strings.TrimSpace(s.AccessToken) == "" || s.ActiveAuthMode != AuthModeSSO {
 		return
 	}
 	models, _, err := oauth.FetchCodeGenModels(s.AccessToken)
@@ -199,7 +271,7 @@ func modelsEqual(a, b []ModelOption) bool {
 
 func (a *App) shutdown(ctx context.Context) {
 	_ = ctx
-	a.cancelSSOLogin()
+	a.logout()
 	a.stopProxy()
 	if a.usageStore != nil {
 		a.usageStore.Stop()
@@ -241,7 +313,21 @@ func (a *App) SaveSettings(s Settings) (Status, error) {
 	if len(s.Models) == 0 {
 		s.Models = cur.Models
 	}
+	if strings.TrimSpace(s.ActiveAuthMode) == "" {
+		s.ActiveAuthMode = cur.ActiveAuthMode
+	}
+	// An omitted agent type keeps the saved identity. The UI sends "QAgent"
+	// when that preset is selected, so an empty value means "not provided".
+	if strings.TrimSpace(s.AgentType) == "" {
+		s.AgentType = cur.AgentType
+	}
+	if len(s.AuthProfiles) == 0 {
+		s.AuthProfiles = cur.AuthProfiles
+	}
 	s = normalizeSettings(s)
+	if !printableAgentType(s.AgentType) {
+		return Status{}, fmt.Errorf("User-Agent 只能包含英文、数字和常见符号")
+	}
 	if s.CodexAutoCompactTokenLimit >= s.CodexContextWindow {
 		return Status{}, fmt.Errorf("Codex 压缩启动长度必须小于上下文长度")
 	}
@@ -250,7 +336,8 @@ func (a *App) SaveSettings(s Settings) (Status, error) {
 	// Model name, email, API key etc. are just persisted metadata or can be hot-updated.
 	needsRestart := s.ListenAddress != cur.ListenAddress ||
 		s.AccessToken != cur.AccessToken ||
-		s.BaseURL != cur.BaseURL
+		s.BaseURL != cur.BaseURL ||
+		s.ActiveAuthMode != cur.ActiveAuthMode
 
 	if needsRestart {
 		if err := a.applySettingsWithRestart(s); err != nil {
@@ -276,17 +363,20 @@ func (a *App) SaveSettings(s Settings) (Status, error) {
 			return Status{}, err
 		}
 	}
+	if !needsRestart && proxyClientName(s) != proxyClientName(cur) {
+		a.applyUpstreamClientName(s)
+	}
 
 	if s.APIKey != cur.APIKey {
 		syncStatus := a.syncConfiguredCodexAPIKey(s.APIKey)
-		status, err := a.Status()
+		status, err := a.statusMaybeRelaunch()
 		if err != nil {
 			return Status{}, err
 		}
 		status.CodexCredentialSync = &syncStatus
 		return status, nil
 	}
-	return a.Status()
+	return a.statusMaybeRelaunch()
 }
 
 // applySettingsWithRestart persists settings after the new listener has bound.
@@ -296,6 +386,16 @@ func (a *App) applySettingsWithRestart(s Settings) error {
 	previous, err := loadSettings()
 	if err != nil {
 		return fmt.Errorf("load settings: %w", err)
+	}
+	// Refresh a Kimi token that is about to expire before the proxy is pointed
+	// at it, and persist the rotated credential together with the new settings.
+	if refreshed, changed := a.refreshKimiTokenIfLoggedIn(s); changed {
+		s = refreshed
+	}
+	if refreshed, changed, refreshErr := refreshVendorCredential(s); changed {
+		s = refreshed
+	} else if refreshErr != nil {
+		log.Printf("[codexproxy] vendor token refresh failed")
 	}
 	wasRunning := a.isRunning()
 	if err := a.restartProxy(s); err != nil {
@@ -333,6 +433,7 @@ func (a *App) LoginSSO() (Status, error) {
 	if err != nil {
 		return Status{}, fmt.Errorf("load settings: %w", err)
 	}
+	s.ActiveAuthMode = AuthModeSSO
 	s.AccessToken = result.AccessToken
 	s.BaseURL = result.BaseURL
 	s.Email = result.Email
@@ -348,7 +449,7 @@ func (a *App) LoginSSO() (Status, error) {
 	if err := a.applySettingsWithRestart(s); err != nil {
 		return Status{}, err
 	}
-	return a.Status()
+	return a.statusMaybeRelaunch()
 }
 
 func (a *App) StartSSOLogin() (LoginStartResult, error) {
@@ -364,8 +465,9 @@ func (a *App) StartSSOLogin() (LoginStartResult, error) {
 		a.cancelSSOLogin()
 		return LoginStartResult{}, err
 	}
-	if a.ctx != nil {
-		runtime.BrowserOpenURL(a.ctx, loginURL)
+	if err := openExternalURL(a.ctx, loginURL); err != nil {
+		a.cancelSSOLogin()
+		return LoginStartResult{}, err
 	}
 	return LoginStartResult{LoginURL: loginURL, CallbackURL: callbackURL}, nil
 }
@@ -388,6 +490,7 @@ func (a *App) CompleteSSOLogin() (Status, error) {
 	if err != nil {
 		return Status{}, fmt.Errorf("load settings: %w", err)
 	}
+	s.ActiveAuthMode = AuthModeSSO
 	s.AccessToken = result.AccessToken
 	s.BaseURL = result.BaseURL
 	s.Email = result.Email
@@ -400,7 +503,7 @@ func (a *App) CompleteSSOLogin() (Status, error) {
 	if err := a.applySettingsWithRestart(s); err != nil {
 		return Status{}, err
 	}
-	return a.Status()
+	return a.statusMaybeRelaunch()
 }
 
 func (a *App) cancelSSOLogin() {
@@ -414,7 +517,18 @@ func (a *App) cancelSSOLogin() {
 	}
 }
 
+func (a *App) logout() {
+	a.cancelSSOLogin()
+	a.cancelXAILogin()
+	a.cancelOpenAILogin()
+	a.cancelKimiLogin()
+	a.cancelDevinLogin()
+	a.cancelQoderLogin()
+	a.cancelWorkBuddyLogin()
+}
+
 func (a *App) Logout() (Status, error) {
+	a.logout()
 	a.settingsMu.Lock()
 	defer a.settingsMu.Unlock()
 	s, err := loadSettings()
@@ -425,6 +539,9 @@ func (a *App) Logout() (Status, error) {
 	s.Email = ""
 	s.ModelID = ""
 	s.Models = nil
+	if s.ActiveAuthMode != "" && s.AuthProfiles != nil {
+		delete(s.AuthProfiles, s.ActiveAuthMode)
+	}
 	s = normalizeSettings(s)
 	if err := a.applySettingsWithRestart(s); err != nil {
 		return Status{}, err
@@ -473,7 +590,12 @@ func (a *App) Status() (Status, error) {
 		HealthURL:          hostURL + "/health",
 		BindAddress:        s.ListenAddress,
 		LANURLs:            lanURLs(s.ListenAddress),
-		LoggedIn:           strings.TrimSpace(s.AccessToken) != "",
+		LoggedIn:           authProfileReady(s),
+		ActiveAuthMode:     s.ActiveAuthMode,
+		NeedsOnboarding:    needsOnboarding(s),
+		AuthModeLabel:      authModeLabel(s.ActiveAuthMode),
+		UpstreamKeySet:     strings.TrimSpace(s.AccessToken) != "",
+		ReadyModes:         readyAuthModes(s),
 		AutoStartSupported: supported,
 		AutoStartEnabled:   autoStartEnabled,
 		PromptTokens:       prompt,
@@ -557,8 +679,9 @@ func (a *App) GenerateAPIKey() (APIKeyGenerationResult, error) {
 
 	// If this TigerProxy instance has already configured Codex, keep Codex's
 	// credential in lockstep. Previously, rotating the key only changed the
-	// proxy and settings.json; Codex continued sending the old auth.json key and
-	// every /v1/responses request failed with "invalid proxy api key".
+	// proxy and settings.json; Codex continued sending the old config.toml
+	// Authorization header and every /v1/responses request failed with
+	// "invalid proxy api key".
 	syncStatus := a.syncConfiguredCodexAPIKey(newKey)
 
 	return APIKeyGenerationResult{APIKey: newKey, CodexCredentialSync: syncStatus}, nil
@@ -571,10 +694,10 @@ func (a *App) syncConfiguredCodexAPIKey(apiKey string) CodexCredentialSyncStatus
 		// The new key remains valid for TigerProxy even if the optional Codex
 		// sync cannot be written. Preserve a diagnostic rather than masking the
 		// successful key rotation from the caller.
-		fmt.Fprintf(os.Stderr, "[tigerproxy] API key changed but could not sync Codex credential: %v\n", err)
+		fmt.Fprintf(os.Stderr, "[codexproxy] API key changed but could not sync Codex credential: %v\n", err)
 		status.Error = err.Error()
 	} else if result.Updated {
-		fmt.Fprintln(os.Stderr, "[tigerproxy] API key synchronized to configured Codex")
+		fmt.Fprintln(os.Stderr, "[codexproxy] API key synchronized to configured Codex")
 	}
 	return status
 }
@@ -588,8 +711,9 @@ func (a *App) OpenURL(url string) error {
 }
 
 // ConfigureCodex writes the TigerProxy local forwarding address, API key, and
-// selected model into ~/.codex/auth.json and ~/.codex/config.toml so Codex
-// can use TigerProxy as its LLM backend.
+// selected model into ~/.codex/config.toml so Codex can use TigerProxy as its
+// LLM backend. The API key is stored as [model_providers.tigerproxy]
+// http_headers.Authorization; ~/.codex/auth.json is not modified.
 // Returns a success message including a warning if Codex binary is not detected.
 func (a *App) ConfigureCodex() (string, error) {
 	s, err := loadSettings()
@@ -1020,6 +1144,25 @@ func (a *App) startProxyFromDisk() {
 	if err != nil {
 		return
 	}
+	// The proxy is not up yet, so refreshKimiTokenIfLoggedIn would skip the
+	// refresh. A token saved near its expiry is refreshed before first use so
+	// the startup traffic is not rejected.
+	if s.ActiveAuthMode == AuthModeKimiWeb {
+		if refreshed := a.refreshKimiToken(s); refreshed.AccessToken != s.AccessToken {
+			s = refreshed
+			if err := writeSettings(s); err != nil {
+				log.Printf("[codexproxy] kimi startup refresh not persisted: %v", err)
+			}
+		}
+	}
+	if refreshed, changed, refreshErr := refreshVendorCredential(s); changed {
+		s = refreshed
+		if err := writeSettings(s); err != nil {
+			log.Printf("[codexproxy] vendor startup refresh not persisted")
+		}
+	} else if refreshErr != nil {
+		log.Printf("[codexproxy] vendor startup refresh failed")
+	}
 	_ = a.restartProxy(s)
 }
 
@@ -1103,7 +1246,36 @@ func (a *App) restartProxy(s Settings) error {
 		}
 	})
 	if strings.TrimSpace(s.AccessToken) != "" && strings.TrimSpace(s.BaseURL) != "" {
-		server.SetUpstreamWithClientName(s.BaseURL, s.AccessToken, corelib.CodeGenClientName)
+		server.SetUpstreamWithClientName(s.BaseURL, s.AccessToken, proxyClientName(s))
+		switch s.ActiveAuthMode {
+		case AuthModeXAIOAuth:
+			server.SetUpstreamExtraHeaders(map[string]string{"X-XAI-Token-Auth": "xai-grok-cli"})
+		case AuthModeAnthropicOAuth:
+			server.SetUpstreamExtraHeaders(map[string]string{
+				"x-api-key":         s.AccessToken,
+				"anthropic-version": "2023-06-01",
+			})
+		case AuthModeKimiWeb:
+			// Kimi Code identifies the host behind the OAuth device flow with
+			// the X-Msh-* headers, the same ones the login requests carried.
+			kimiHeaders := http.Header{}
+			kimicode.ApplyHTTPHeaders(kimiHeaders)
+			headers := make(map[string]string, len(kimiHeaders))
+			for key := range kimiHeaders {
+				headers[key] = kimiHeaders.Get(key)
+			}
+			server.SetUpstreamExtraHeaders(headers)
+		case AuthModeDevin:
+			server.SetUpstreamExtraHeaders(nil)
+			server.SetOpenAIUpstreamClient(windsurf.Upstream{})
+		case AuthModeQoderCN, AuthModeQoderGlobal, AuthModeWorkBuddyCN, AuthModeWorkBuddyGlobal:
+			configureVendorUpstream(a, server, s)
+		case AuthModeOpenCode:
+			server.SetUpstreamExtraHeaders(nil)
+			server.SetOpenAIUpstreamClient(newOpenCodeUpstream())
+		default:
+			server.SetUpstreamExtraHeaders(nil)
+		}
 	}
 	listener, err := net.Listen("tcp", s.ListenAddress)
 	if err != nil {
@@ -1126,7 +1298,7 @@ func (a *App) restartProxy(s Settings) error {
 
 	go func() {
 		if err := server.Serve(ctx, listener); err != nil && ctx.Err() == nil {
-			msg := fmt.Sprintf("TigerProxy server stopped: %v", err)
+			msg := fmt.Sprintf("CodexProxy server stopped: %v", err)
 			fmt.Fprintln(os.Stderr, msg)
 			a.mu.Lock()
 			if a.server == server {
@@ -1187,7 +1359,71 @@ func configDir() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(home, ".tigerproxy"), nil
+	dir := filepath.Join(home, ".codexproxy")
+	if err := migrateLegacyConfigDir(home, dir); err != nil {
+		return "", err
+	}
+	if err := migrateLegacyLogs(home, dir); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+func migrateLegacyConfigDir(home, newDir string) error {
+	newSettings := filepath.Join(newDir, "settings.json")
+	if _, err := os.Stat(newSettings); err == nil {
+		return nil
+	}
+	legacySettings := filepath.Join(home, ".tigerproxy", "settings.json")
+	data, err := os.ReadFile(legacySettings)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	if err := os.MkdirAll(newDir, 0o700); err != nil {
+		return err
+	}
+	if err := os.WriteFile(newSettings, data, 0o600); err != nil {
+		return err
+	}
+	legacyUsage := filepath.Join(home, ".tigerproxy", "usage_stats.json")
+	if usage, err := os.ReadFile(legacyUsage); err == nil {
+		_ = os.WriteFile(filepath.Join(newDir, "usage_stats.json"), usage, 0o600)
+	}
+	return nil
+}
+
+func migrateLegacyLogs(home, newDir string) error {
+	legacyLogs := filepath.Join(home, ".tigerproxy", "logs")
+	entries, err := os.ReadDir(legacyLogs)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	newLogs := filepath.Join(newDir, "logs")
+	if err := os.MkdirAll(newLogs, 0o755); err != nil {
+		return err
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		src := filepath.Join(legacyLogs, entry.Name())
+		dst := filepath.Join(newLogs, entry.Name())
+		if _, err := os.Stat(dst); err == nil {
+			continue
+		}
+		data, err := os.ReadFile(src)
+		if err != nil {
+			continue
+		}
+		_ = os.WriteFile(dst, data, 0o644)
+	}
+	return nil
 }
 
 func settingsPath() (string, error) {
@@ -1267,9 +1503,6 @@ func normalizeSettings(s Settings) Settings {
 	if strings.TrimSpace(s.APIKey) == "" {
 		s.APIKey = defaultProxyAPIKey
 	}
-	if strings.TrimSpace(s.BaseURL) == "" {
-		s.BaseURL = oauth.CodeGenBaseURL
-	}
 	if normalized, err := normalizeListenAddress(s.ListenAddress); err == nil {
 		s.ListenAddress = normalized
 	}
@@ -1285,8 +1518,62 @@ func normalizeSettings(s Settings) Settings {
 		s.CodexAutoCompactTokenLimit = defaultAutoCompactTokenLimit
 	}
 	s.Email = strings.TrimSpace(s.Email)
+	s.AgentType = normalizeAgentType(s.AgentType)
 	s.Models = normalizeModelOptions(s.Models)
+	s.ActiveAuthMode = strings.TrimSpace(s.ActiveAuthMode)
+	if s.AuthProfiles == nil {
+		s.AuthProfiles = map[string]AuthProfile{}
+	}
+	if s.ActiveAuthMode == "" && strings.TrimSpace(s.AccessToken) != "" && looksLikeCodeGenBaseURL(s.BaseURL) {
+		s.ActiveAuthMode = AuthModeSSO
+	}
+	if strings.TrimSpace(s.UpstreamAPIKey) != "" {
+		s.AccessToken = strings.TrimSpace(s.UpstreamAPIKey)
+	}
+	s.UpstreamAPIKey = ""
+	if s.ActiveAuthMode != "" {
+		if canon := canonicalAuthBaseURL(s.ActiveAuthMode); canon != "" {
+			s.BaseURL = canon
+		} else if s.BaseURL == "" {
+			s.BaseURL = strings.TrimRight(defaultAuthBaseURL(s.ActiveAuthMode), "/")
+		}
+		if s.ActiveAuthMode == AuthModeKimiWeb {
+			// Fold anything that is not a Kimi Code coding endpoint back to the
+			// hosted one, keeping the international endpoint the login chose.
+			s.BaseURL = kimicode.CanonicalBaseURL(s.BaseURL)
+		}
+		if s.ActiveAuthMode == AuthModeDevin {
+			s.BaseURL = windsurf.CanonicalAPIServer(s.AccessToken, s.BaseURL)
+		}
+		if s.ActiveAuthMode == AuthModeQoderCN || s.ActiveAuthMode == AuthModeQoderGlobal {
+			s.BaseURL = qoder.ChatBase
+		}
+		if profile, ok := workbuddyProfileForMode(s.ActiveAuthMode); ok {
+			s.BaseURL = strings.TrimRight(profile.ChatURL, "/")
+		}
+		if s.ActiveAuthMode == AuthModeOpenCode {
+			s.BaseURL = openCodeBaseURL()
+		}
+		snapshotActiveProfile(&s)
+	} else if strings.TrimSpace(s.BaseURL) == "" {
+		s.BaseURL = oauth.CodeGenBaseURL
+	}
 	return s
+}
+
+// applyUpstreamClientName points the running proxy at the saved User-Agent
+// without rebinding the listener. Callers must not hold a.mu.
+func (a *App) applyUpstreamClientName(s Settings) {
+	if a == nil || strings.TrimSpace(s.AccessToken) == "" || strings.TrimSpace(s.BaseURL) == "" {
+		return
+	}
+	a.mu.Lock()
+	server := a.server
+	a.mu.Unlock()
+	if server == nil {
+		return
+	}
+	server.SetUpstreamWithClientName(s.BaseURL, s.AccessToken, proxyClientName(s))
 }
 
 func normalizeListenAddress(addr string) (string, error) {
@@ -1318,6 +1605,21 @@ func normalizeListenAddress(addr string) (string, error) {
 func scrubSettings(s Settings) Settings {
 	if s.AccessToken != "" {
 		s.AccessToken = "已保存"
+	}
+	s.UpstreamAPIKey = ""
+	if len(s.AuthProfiles) > 0 {
+		scrubbed := make(map[string]AuthProfile, len(s.AuthProfiles))
+		for mode, profile := range s.AuthProfiles {
+			if profile.AccessToken != "" {
+				profile.AccessToken = "已保存"
+			}
+			if profile.APIKey != "" {
+				profile.APIKey = "已保存"
+			}
+			profile.RefreshToken = ""
+			scrubbed[mode] = profile
+		}
+		s.AuthProfiles = scrubbed
 	}
 	return s
 }

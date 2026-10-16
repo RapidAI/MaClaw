@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,6 +22,9 @@ import (
 )
 
 type testLLMServiceSystemSettings struct {
+	// mu guards both maps: concurrent handler flows (daily check-in race
+	// regression) touch Set/Get from several goroutines at once.
+	mu        sync.Mutex
 	data      map[string]string
 	getCounts map[string]*atomic.Int32
 }
@@ -30,20 +34,28 @@ func newTestLLMServiceSystemSettings() *testLLMServiceSystemSettings {
 }
 
 func (s *testLLMServiceSystemSettings) Set(_ context.Context, key, valueJSON string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.data[key] = valueJSON
 	return nil
 }
 
 func (s *testLLMServiceSystemSettings) Get(_ context.Context, key string) (string, error) {
-	s.counterForKey(key).Add(1)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.counterForKeyLocked(key).Add(1)
 	return s.data[key], nil
 }
 
 func (s *testLLMServiceSystemSettings) GetCount(key string) int {
-	return int(s.counterForKey(key).Load())
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return int(s.counterForKeyLocked(key).Load())
 }
 
 func (s *testLLMServiceSystemSettings) ResetGetCounts() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	for _, counter := range s.getCounts {
 		if counter != nil {
 			counter.Store(0)
@@ -51,7 +63,7 @@ func (s *testLLMServiceSystemSettings) ResetGetCounts() {
 	}
 }
 
-func (s *testLLMServiceSystemSettings) counterForKey(key string) *atomic.Int32 {
+func (s *testLLMServiceSystemSettings) counterForKeyLocked(key string) *atomic.Int32 {
 	counter := s.getCounts[key]
 	if counter == nil {
 		counter = &atomic.Int32{}
@@ -139,6 +151,32 @@ func TestCreateLLMServiceCardHandlerGeneratesBatchCodes(t *testing.T) {
 	}
 	if audit.logs[0].AdminUserID != "adm-1" {
 		t.Fatalf("unexpected audit admin user id: %s", audit.logs[0].AdminUserID)
+	}
+}
+
+func TestResetLLMServiceNewUserLimitUsageHandler(t *testing.T) {
+	ctx := context.Background()
+	system := newTestLLMServiceSystemSettings()
+	now := time.Now().UTC()
+	reg := &llmservice.Registry{Grants: []llmservice.Grant{
+		{ID: "g-limit", Email: "user@example.com", Source: "new_user_limit_card", UsageEvents: []llmservice.CreditUsageEvent{{OccurredAt: now, CreditsUsed: 10}}, PeriodUsage: llmservice.CreditPeriodUsage{Daily: llmservice.GrantUsageWindow{CreditsUsed: 10}}},
+	}}
+	if err := llmservice.SaveRegistry(ctx, system, reg); err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/admin/llm/services/reset-limit-usage", strings.NewReader(`{}`))
+	req = req.WithContext(context.WithValue(req.Context(), adminUserContextKey, &store.AdminUser{ID: "adm-1"}))
+	rec := httptest.NewRecorder()
+	ResetLLMServiceNewUserLimitUsageHandler(system).ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	saved, err := llmservice.LoadRegistry(ctx, system)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(saved.Grants[0].UsageEvents) != 0 || saved.Grants[0].PeriodUsage.Daily.CreditsUsed != 0 {
+		t.Fatalf("usage was not reset: %#v", saved.Grants[0])
 	}
 }
 
@@ -591,11 +629,8 @@ func TestUpdateLLMServicesAdminHandlerValidatesNewUserLimitCardGroups(t *testing
 	req := httptest.NewRequest(http.MethodPut, "/api/admin/llm/services", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	UpdateLLMServicesAdminHandler(system, nil).ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
-	}
-	if !strings.Contains(rec.Body.String(), "LLM_NEW_USER_LIMIT_CARD_GROUP_INVALID") {
-		t.Fatalf("unexpected body: %s", rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("grant-required group should be accepted for welcome cards: status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 
 	body = []byte(`{

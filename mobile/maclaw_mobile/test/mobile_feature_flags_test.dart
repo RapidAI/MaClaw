@@ -11,11 +11,12 @@ const _twinTab = '数字分身';
 const _documentsTab = '文档';
 const _tasksTab = '后台';
 const _employeesTab = '数字员工';
+const _botsTab = 'Bot';
 const _accountTab = '我的';
 
 void main() {
   test(
-      'mobile app tabs follow hybrid IA: assistant, documents, tasks, employees, account',
+      'mobile app tabs follow hybrid IA: assistant, documents, tasks, employees, bots, account',
       () {
     final tabs = mobileAppTabsForFeatures(defaultMobileFeatures);
 
@@ -24,6 +25,7 @@ void main() {
       '/documents',
       '/tasks',
       '/employees',
+      '/bots',
       '/account',
     ]);
     expect(tabs.map((tab) => tab.label), [
@@ -31,6 +33,7 @@ void main() {
       _documentsTab,
       _tasksTab,
       _employeesTab,
+      _botsTab,
       _accountTab,
     ]);
     expect(tabs.map((tab) => tab.label), isNot(contains('查信息')));
@@ -45,8 +48,30 @@ void main() {
       'Docs',
       'Tasks',
       'Employees',
+      'Bots',
       'Me',
     ]);
+  });
+
+  test('the bots tab follows the tenant gate the bootstrap reports', () {
+    const withoutBots = MobileFeatures(
+      search: true,
+      documents: true,
+      backendSshSessions: true,
+      digitalEmployees: true,
+      pushNotifications: false,
+      bots: false,
+    );
+
+    expect(
+      mobileAppTabsForFeatures(withoutBots).map((tab) => tab.path),
+      isNot(contains('/bots')),
+    );
+    expect(mobilePathEnabledForFeatures('/bots', withoutBots), isFalse);
+    expect(
+      mobilePathEnabledForFeatures('/bots', defaultMobileFeatures),
+      isTrue,
+    );
   });
 
   test('mobile app presents the GUI-like AI assistant as the first tab', () {
@@ -103,6 +128,7 @@ void main() {
       backendSshSessions: false,
       digitalEmployees: false,
       pushNotifications: false,
+      bots: false,
     );
 
     final tabs = mobileAppTabsForFeatures(features);
@@ -130,6 +156,7 @@ void main() {
       '/documents',
       '/tasks',
       '/employees',
+      '/bots',
       '/account',
     ]);
     expect(mobilePathEnabledForFeatures('/documents', features), isTrue);

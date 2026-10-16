@@ -2,7 +2,6 @@ package im
 
 import (
 	"context"
-	"encoding/base64"
 	"fmt"
 	"log"
 	"strings"
@@ -61,11 +60,7 @@ type PendingIMRequest struct {
 	// LastActivity tracks the most recent progress or creation time.
 	// Used by cleanupExpired to avoid premature reaping of requests
 	// that are being kept alive by progress updates.
-	lastActivity    time.Time
-	voiceParts      map[int]VoicePart
-	voicePartsTotal int
-	voicePartsBytes int
-	voicePartsBad   bool
+	lastActivity time.Time
 }
 
 // defaultAgentTimeout is the maximum time to wait for an Agent response.
@@ -1027,23 +1022,6 @@ func (r *MessageRouter) routeToMultiple(ctx context.Context, userID, platformNam
 func (r *MessageRouter) HandleAgentResponse(requestID string, resp *AgentResponse) {
 	r.mu.Lock()
 	pending, ok := r.pendingReqs[requestID]
-	if ok && resp != nil && len(resp.VoiceParts) == 0 && pending.voicePartsTotal > 0 {
-		if !pending.voicePartsBad && len(pending.voiceParts) == pending.voicePartsTotal {
-			resp.VoiceParts = make([]VoicePart, pending.voicePartsTotal)
-			for index := range resp.VoiceParts {
-				part, exists := pending.voiceParts[index]
-				if !exists {
-					resp.VoiceParts = nil
-					break
-				}
-				resp.VoiceParts[index] = part
-			}
-		}
-	}
-	if ok && resp != nil && pending.voicePartsBad {
-		resp.VoiceParts = nil
-		resp.VoiceData, resp.VoiceFileName, resp.VoiceMimeType = "", "", ""
-	}
 	r.mu.Unlock()
 
 	if !ok {
@@ -1056,48 +1034,6 @@ func (r *MessageRouter) HandleAgentResponse(requestID string, resp *AgentRespons
 	case pending.ResponseCh <- resp:
 	default:
 		log.Printf("[MessageRouter] response channel full for request_id=%s, dropping", requestID)
-	}
-}
-
-func (r *MessageRouter) HandleAgentVoicePart(requestID string, frame AgentVoicePart) {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	pending, ok := r.pendingReqs[requestID]
-	if !ok {
-		return
-	}
-	pending.lastActivity = time.Now()
-	data := strings.TrimSpace(frame.Part.Data)
-	decoded, err := base64.StdEncoding.DecodeString(data)
-	if frame.Total <= 0 || frame.Total > 512 || frame.Index < 0 || frame.Index >= frame.Total ||
-		data == "" || strings.TrimSpace(frame.Part.FileName) == "" || strings.TrimSpace(frame.Part.MimeType) == "" ||
-		err != nil || len(decoded) == 0 || len(decoded) > 256*1024 {
-		pending.voicePartsBad = true
-		return
-	}
-	if pending.voicePartsTotal != 0 && pending.voicePartsTotal != frame.Total {
-		pending.voicePartsBad = true
-		return
-	}
-	if pending.voiceParts == nil {
-		pending.voiceParts = make(map[int]VoicePart, frame.Total)
-		pending.voicePartsTotal = frame.Total
-	}
-	if previous, duplicate := pending.voiceParts[frame.Index]; duplicate {
-		if previous != frame.Part {
-			pending.voicePartsBad = true
-		}
-		return
-	}
-	if pending.voicePartsBytes+len(decoded) > 64*1024*1024 {
-		pending.voicePartsBad = true
-		return
-	}
-	pending.voiceParts[frame.Index] = frame.Part
-	pending.voicePartsBytes += len(decoded)
-	select {
-	case pending.ProgressCh <- progressHeartbeat:
-	default:
 	}
 }
 

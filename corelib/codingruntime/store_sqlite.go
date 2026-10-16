@@ -22,6 +22,11 @@ func NewSQLiteStore(dbPath string) (*SQLiteStore, error) {
 	if err != nil {
 		return nil, err
 	}
+	// SQLite here is one writer. A second pooled connection can still hold an
+	// earlier transaction, so the semantic-anchor insert misses the attempt
+	// row this process just committed and the implementation turn loses its
+	// writable surface. One connection keeps that insert behind the commit.
+	db.SetMaxOpenConns(1)
 	s := &SQLiteStore{db: db}
 	if err := s.migrate(); err != nil {
 		_ = db.Close()
@@ -113,6 +118,128 @@ func (s *SQLiteStore) GetTask(taskID string) (*Task, error) {
 	return s.getTask(s.db, taskID)
 }
 
+// activeCodingRuntimeStatusPriority ranks live statuses so a ref with several
+// in-flight runs surfaces under its strongest state.
+func activeCodingRuntimeStatusPriority(status TaskStatus) int {
+	switch status {
+	case TaskRunning:
+		return 4
+	case TaskWaitingApproval, TaskBlocked:
+		return 3
+	case TaskInterrupted:
+		return 2
+	case TaskQueued, TaskWaitingChild:
+		return 1
+	default:
+		return 0
+	}
+}
+
+// activeCodingRuntimeStatusIsLive is a run the user can still see moving or
+// still has to decide. Those outrank an older or newer finished outcome.
+// Queued is not live: a row that never started must not keep a later write
+// looking in progress.
+func activeCodingRuntimeStatusIsLive(status TaskStatus) bool {
+	switch status {
+	case TaskRunning, TaskWaitingChild, TaskWaitingApproval:
+		return true
+	default:
+		return false
+	}
+}
+
+type activeCodingRuntimeRefChoice struct {
+	status    string
+	rawStatus string
+	updatedAt int64
+	live      bool
+}
+
+// preferActiveCodingRuntimeStatus keeps a live run ahead of any finished
+// outcome. Two finished outcomes follow the newer ledger row, so an old probe
+// failure does not hide a later write that already completed.
+func preferActiveCodingRuntimeStatus(cur activeCodingRuntimeRefChoice, next activeCodingRuntimeRefChoice) bool {
+	if next.live != cur.live {
+		return next.live
+	}
+	if next.live {
+		nextRank := activeCodingRuntimeStatusPriority(TaskStatus(next.status))
+		curRank := activeCodingRuntimeStatusPriority(TaskStatus(cur.status))
+		if nextRank != curRank {
+			return nextRank > curRank
+		}
+	}
+	if next.updatedAt != cur.updatedAt {
+		return next.updatedAt > cur.updatedAt
+	}
+	return activeCodingRuntimeStatusPriority(TaskStatus(next.status)) > activeCodingRuntimeStatusPriority(TaskStatus(cur.status))
+}
+
+// ListActiveTaskStatusesByProjectRef returns one coding runtime status per
+// project_ref. Pure agent loop coding runs (local and remote) never create a
+// workflow snapshot, so the task list merges this ledger status into its
+// status stats; refs whose newest row reached a terminal state are omitted.
+// A live run or an approval still needs the user and outranks any sibling,
+// older or newer. Otherwise the newest row wins, so a later completed run
+// suppresses an older interrupted row instead of letting that stale recovery
+// reminder surface forever. A gate block is a failure, except a
+// final_workspace_unchanged row that already recorded host file activity:
+// that write is complete and is reported as completed.
+func (s *SQLiteStore) ListActiveTaskStatusesByProjectRef() (map[string]string, error) {
+	if s == nil || s.db == nil {
+		return nil, nil
+	}
+	rows, err := s.db.Query(`SELECT t.project_ref, t.status, t.updated_at,
+		COALESCE(a.error_code, ''),
+		EXISTS(SELECT 1 FROM coding_runtime_events e WHERE e.attempt_id = a.attempt_id AND e.type IN ('file_activity', 'remote_file_activity'))
+		FROM coding_runtime_tasks t
+		LEFT JOIN coding_runtime_attempts a ON a.task_id = t.task_id
+			AND a.attempt_no = (SELECT MAX(attempt_no) FROM coding_runtime_attempts WHERE task_id = t.task_id)`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	choices := map[string]activeCodingRuntimeRefChoice{}
+	for rows.Next() {
+		var ref, status, errorCode string
+		var updatedAt int64
+		var hasFileActivity int
+		if err := rows.Scan(&ref, &status, &updatedAt, &errorCode, &hasFileActivity); err != nil {
+			return nil, err
+		}
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			continue
+		}
+		// Only the latest attempt counts. An earlier write must not turn a later
+		// unchanged-workspace block into a completed run.
+		rawStatus := status
+		if TaskStatus(status) == TaskBlocked && errorCode == "final_workspace_unchanged" && hasFileActivity != 0 {
+			status = string(TaskCompleted)
+		}
+		next := activeCodingRuntimeRefChoice{status: status, rawStatus: rawStatus, updatedAt: updatedAt, live: activeCodingRuntimeStatusIsLive(TaskStatus(status))}
+		if cur, ok := choices[ref]; !ok || preferActiveCodingRuntimeStatus(cur, next) {
+			choices[ref] = next
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	byRef := make(map[string]string, len(choices))
+	for ref, choice := range choices {
+		// A row born terminal carries no correction for the task list: the
+		// ref's registry row already shows that outcome. A blocked row rewritten
+		// to completed is kept — the ledger still says blocked, and this
+		// projection is what lets the task list show the finished write.
+		switch TaskStatus(choice.rawStatus) {
+		case TaskCompleted, TaskFailed, TaskCancelled:
+			continue
+		}
+		byRef[ref] = choice.status
+	}
+	return byRef, nil
+}
+
 func (s *SQLiteStore) ListChildTasks(parentTaskID string) ([]*Task, error) {
 	if _, err := s.GetTask(parentTaskID); err != nil {
 		return nil, err
@@ -121,20 +248,32 @@ func (s *SQLiteStore) ListChildTasks(parentTaskID string) ([]*Task, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []*Task
+	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
+			rows.Close()
 			return nil, err
 		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	// The ledger keeps one connection. Loading each task while this cursor is
+	// open waits for that connection and never returns.
+	out := make([]*Task, 0, len(ids))
+	for _, id := range ids {
 		task, err := s.getTask(s.db, id)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, task)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *SQLiteStore) getTask(q rowQuerier, taskID string) (*Task, error) {
@@ -176,20 +315,30 @@ func (s *SQLiteStore) ListAttempts(taskID string) ([]*Attempt, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []*Attempt
+	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
+			rows.Close()
 			return nil, err
 		}
+		ids = append(ids, id)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]*Attempt, 0, len(ids))
+	for _, id := range ids {
 		attempt, err := s.getAttempt(s.db, id)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, attempt)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *SQLiteStore) MarkTaskWaitingApproval(taskID string, now time.Time) (*Task, error) {
@@ -263,36 +412,53 @@ func (s *SQLiteStore) StartAttempt(taskID, leaseOwner string, leaseFor time.Dura
 	if _, err = tx.Exec(`UPDATE coding_runtime_writer_admission_guard SET revision=revision+1 WHERE guard_id=1`); err != nil {
 		return nil, err
 	}
-	rows, err := tx.Query(`SELECT a.attempt_id,a.policy_json,a.task_id FROM coding_runtime_attempts a WHERE a.status=? AND a.lease_until>?`, TaskRunning, unixNanos(now))
+	rows, err := tx.Query(`SELECT a.attempt_id,a.policy_json,a.task_id,a.lease_until FROM coding_runtime_attempts a WHERE a.status=?`, TaskRunning)
 	if err != nil {
 		return nil, err
 	}
+	type runningAttempt struct {
+		attemptID  string
+		policyJSON string
+		taskID     string
+		leaseUntil int64
+	}
+	var running []runningAttempt
 	for rows.Next() {
-		var attemptID, policyJSON, otherTaskID string
-		if err = rows.Scan(&attemptID, &policyJSON, &otherTaskID); err != nil {
+		var row runningAttempt
+		if err = rows.Scan(&row.attemptID, &row.policyJSON, &row.taskID, &row.leaseUntil); err != nil {
 			rows.Close()
 			return nil, err
 		}
-		if otherTaskID == taskID {
-			continue
-		}
-		var otherPolicy PolicySnapshot
-		if err = json.Unmarshal([]byte(policyJSON), &otherPolicy); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		otherTask, getErr := s.getTask(tx, otherTaskID)
-		if getErr != nil {
-			rows.Close()
-			return nil, getErr
-		}
-		if conflict := WriterAdmissionConflict(*task, policy, *otherTask, otherPolicy); conflict.Conflicts {
-			rows.Close()
-			return nil, WriterAdmissionError{Conflict: conflict}
-		}
+		running = append(running, row)
 	}
 	if err = rows.Close(); err != nil {
 		return nil, err
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	// One ledger connection. The task lookup has to wait until this cursor is
+	// closed, or admission blocks and a second writer never sees the conflict.
+	for _, row := range running {
+		if row.taskID == taskID {
+			continue
+		}
+		// Same rule as MemoryStore: an expired lease does not block another
+		// task unless this process is still executing that attempt.
+		if row.leaseUntil <= unixNanos(now) && !localWriterLive(row.attemptID) {
+			continue
+		}
+		var otherPolicy PolicySnapshot
+		if err = json.Unmarshal([]byte(row.policyJSON), &otherPolicy); err != nil {
+			return nil, err
+		}
+		otherTask, getErr := s.getTask(tx, row.taskID)
+		if getErr != nil {
+			return nil, getErr
+		}
+		if conflict := WriterAdmissionConflict(*task, policy, *otherTask, otherPolicy); conflict.Conflicts {
+			return nil, WriterAdmissionError{Conflict: conflict}
+		}
 	}
 	var no int
 	if err := tx.QueryRow(`SELECT COALESCE(MAX(attempt_no),0)+1 FROM coding_runtime_attempts WHERE task_id=?`, taskID).Scan(&no); err != nil {
@@ -314,6 +480,34 @@ func (s *SQLiteStore) StartAttempt(taskID, leaseOwner string, leaseFor time.Dura
 		return nil, err
 	}
 	return cloneAttempt(attempt), nil
+}
+
+func (s *SQLiteStore) RenewAttemptLease(attemptID, leaseOwner string, leaseFor time.Duration, now time.Time) error {
+	if leaseOwner == "" || leaseFor <= 0 {
+		return fmt.Errorf("%w: renew attempt lease", ErrInvalidTransition)
+	}
+	res, err := s.db.Exec(`UPDATE coding_runtime_attempts SET lease_until=? WHERE attempt_id=? AND lease_owner=? AND status=?`, unixNanos(now.Add(leaseFor)), attemptID, leaseOwner, TaskRunning)
+	if err != nil {
+		return err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 1 {
+		return nil
+	}
+	attempt, getErr := s.GetAttempt(attemptID)
+	if getErr != nil {
+		return getErr
+	}
+	if attempt.LeaseOwner != leaseOwner {
+		return ErrLeaseOwnerMismatch
+	}
+	if attempt.Status != TaskRunning {
+		return ErrAttemptNotRunning
+	}
+	return ErrNotFound
 }
 
 func (s *SQLiteStore) ConsumeParentContinuation(taskID, parentAttemptID, reviewAttemptID string, now time.Time) error {
@@ -698,6 +892,9 @@ func (s *SQLiteStore) CancelTask(taskID string, now time.Time) ([]*Attempt, erro
 	if err = rows.Close(); err != nil {
 		return nil, err
 	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
 	sort.Strings(ids)
 	var cancelled []*Attempt
 	for _, id := range ids {
@@ -715,6 +912,9 @@ func (s *SQLiteStore) CancelTask(taskID string, now time.Time) ([]*Attempt, erro
 			attemptIDs = append(attemptIDs, id)
 		}
 		if queryErr = attemptRows.Close(); queryErr != nil {
+			return nil, queryErr
+		}
+		if queryErr = attemptRows.Err(); queryErr != nil {
 			return nil, queryErr
 		}
 		for _, attemptID := range attemptIDs {
@@ -765,6 +965,9 @@ func (s *SQLiteStore) ExpireLeases(now time.Time) ([]*Attempt, error) {
 		ids = append(ids, id)
 	}
 	if err = rows.Close(); err != nil {
+		return nil, err
+	}
+	if err = rows.Err(); err != nil {
 		return nil, err
 	}
 	var out []*Attempt
@@ -829,6 +1032,9 @@ func (s *SQLiteStore) InterruptUnstartedChildren(now time.Time) ([]*Attempt, err
 	if err := rows.Close(); err != nil {
 		return nil, err
 	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
 	parents := map[string]bool{}
 	for _, child := range children {
 		if _, err := tx.Exec(`UPDATE coding_runtime_tasks SET status=?,updated_at=? WHERE task_id=? AND status=?`, TaskInterrupted, unixNanos(now), child.childID, TaskQueued); err != nil {
@@ -890,24 +1096,39 @@ func (s *SQLiteStore) interruptWaitingParentTx(tx *sql.Tx, parentTaskID string, 
 }
 
 func (s *SQLiteStore) ListRecoveryCandidates() ([]*Attempt, error) {
-	rows, err := s.db.Query(`SELECT attempt_id FROM coding_runtime_attempts WHERE status=? OR side_effect_state=? ORDER BY started_at`, TaskInterrupted, SideEffectUncertain)
+	// A candidate whose logical task already ended (completed, failed, or
+	// cancelled — e.g. a declined recovery) is history, not a recovery offer.
+	rows, err := s.db.Query(`SELECT a.attempt_id FROM coding_runtime_attempts a
+		JOIN coding_runtime_tasks t ON t.task_id = a.task_id
+		WHERE (a.status = ? OR a.side_effect_state = ?) AND t.status NOT IN (?, ?, ?)
+		ORDER BY a.started_at`, TaskInterrupted, SideEffectUncertain, TaskCompleted, TaskFailed, TaskCancelled)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	var out []*Attempt
+	var ids []string
 	for rows.Next() {
 		var id string
 		if err = rows.Scan(&id); err != nil {
+			rows.Close()
 			return nil, err
 		}
+		ids = append(ids, id)
+	}
+	if err = rows.Close(); err != nil {
+		return nil, err
+	}
+	if err = rows.Err(); err != nil {
+		return nil, err
+	}
+	out := make([]*Attempt, 0, len(ids))
+	for _, id := range ids {
 		a, err := s.getAttempt(s.db, id)
 		if err != nil {
 			return nil, err
 		}
 		out = append(out, a)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 func (s *SQLiteStore) RegisterSemanticTaskAnchor(anchor SemanticTaskAnchor) (*SemanticTaskAnchor, error) {

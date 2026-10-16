@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
@@ -145,7 +146,9 @@ func TestRunLoopOpenAICompatReceiptSurvivesStreamFallback(t *testing.T) {
 }
 
 func TestRunLoopOpenAICompatReceiptSurvivesOuterRetry(t *testing.T) {
+	useLLMRetryBackoff(t, 200*time.Millisecond)
 	requests := 0
+	var first, second time.Time
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, request *http.Request) {
 		requests++
 		var payload map[string]interface{}
@@ -158,9 +161,11 @@ func TestRunLoopOpenAICompatReceiptSurvivesOuterRetry(t *testing.T) {
 			t.Fatalf("request %d retained incompatible schema: %#v", requests, params)
 		}
 		if requests == 1 {
-			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+			first = time.Now()
+			http.Error(w, "upstream unavailable", http.StatusBadGateway)
 			return
 		}
+		second = time.Now()
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}]}`))
 	}))
@@ -174,7 +179,10 @@ func TestRunLoopOpenAICompatReceiptSurvivesOuterRetry(t *testing.T) {
 		t.Fatalf("RunLoop error: %s", result.Error)
 	}
 	if requests != 2 {
-		t.Fatalf("requests = %d, want initial attempt plus outer retry", requests)
+		t.Fatalf("requests = %d, want one stream failure and one outer retry", requests)
+	}
+	if gap := second.Sub(first); gap < 150*time.Millisecond {
+		t.Fatalf("retry gap = %s, want the outer backoff rather than an immediate non-stream fallback", gap)
 	}
 	if result.Text != "ok" {
 		t.Fatalf("result text = %q, want ok", result.Text)

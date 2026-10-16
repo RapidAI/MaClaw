@@ -23,6 +23,7 @@ import (
 	securitypkg "github.com/RapidAI/CodeClaw/hub/internal/security"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
 	"github.com/RapidAI/CodeClaw/hub/internal/store/sqlite"
+	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -33,6 +34,9 @@ func tenantAdminContext(ctx context.Context, tenantID string) context.Context {
 type fakeVEMachineAuth struct {
 	principals map[string]*auth.MachinePrincipal
 	token      string
+	// viewer is the single user a viewer token resolves to. It stays nil unless
+	// a test opts in, so machine-auth tests keep failing a viewer-only request.
+	viewer *auth.ViewerPrincipal
 }
 
 type fakeVEOwnerLookup struct {
@@ -99,6 +103,16 @@ func (f fakeVEMachineAuth) AuthenticateMachine(ctx context.Context, machineID, r
 		return nil, errors.New("bad machine")
 	}
 	return principal, nil
+}
+
+// AuthenticateViewer mirrors IdentityService: the same bearer token that is a
+// machine token can also be the owner's viewer token, and a request without a
+// machine ID must still authenticate.
+func (f fakeVEMachineAuth) AuthenticateViewer(_ context.Context, rawToken string) (*auth.ViewerPrincipal, error) {
+	if rawToken != f.token || f.viewer == nil {
+		return nil, errors.New("bad viewer token")
+	}
+	return f.viewer, nil
 }
 
 func (f fakeVEMachinePresence) GetMachineInfo(ctx context.Context, machineID string) (*device.MachineRuntimeInfo, error) {
@@ -4672,5 +4686,27 @@ func TestLoadVERegistryNormalizesLegacyPlatformOnlineStatusOffline(t *testing.T)
 	}
 	if strings.Contains(raw, `"online_status":"platform"`) {
 		t.Fatalf("legacy online status was not repaired in storage: %s", raw)
+	}
+}
+
+func TestMacLawSrvRuntimeReportKeepsUpstreamReason(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"error":"unauthorized"}`))
+	}))
+	defer srv.Close()
+
+	_, err := fetchMacLawSrvRuntimeReport(context.Background(), macLawSrvRuntimeEntry{
+		BaseURL:     srv.URL,
+		AdminSecret: "wrong-secret",
+	}, "tenant-a")
+	if err == nil {
+		t.Fatal("expected the failed report to return an error")
+	}
+	if !strings.Contains(err.Error(), "401") || !strings.Contains(err.Error(), "unauthorized") {
+		t.Fatalf("error = %q want status and body", err.Error())
+	}
+	if !strings.Contains(upstream.Message(err, "report failed"), "HTTP 401") {
+		t.Fatalf("message = %q", upstream.Message(err, "report failed"))
 	}
 }

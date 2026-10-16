@@ -40,4 +40,7 @@ func TestIsLightTurnToolAllowed(t *testing.T) {
 	if IsLightTurnToolAllowed("") {
 		t.Fatal("empty should not be allowed")
 	}
+	if !IsLightTurnToolAllowed("database") {
+		t.Fatal("database query surface should be on the light allowlist")
+	}
 }

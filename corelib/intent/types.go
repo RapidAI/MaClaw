@@ -42,6 +42,10 @@ const (
 	// and not launching an unrelated application, URL, or folder (app_launch).
 	LabelDocumentOpen IntentLabel = "document_open"
 	LabelBusinessData IntentLabel = "business_data"
+	// LabelDatabase is a SQL/data-source inspect or query against MySQL,
+	// PostgreSQL, SQL Server, Access, or Excel. It is not a Git 仓库, not
+	// the knowledge 库, and not MIS business-form entry (business_data).
+	LabelDatabase     IntentLabel = "database"
 	LabelBugFix       IntentLabel = "bug_fix"
 	LabelContinuation IntentLabel = "continuation"
 	LabelMaintenance  IntentLabel = "maintenance"
@@ -62,6 +66,8 @@ const (
 	//   - file_read/file_write are bounded local file outcomes, not coding
 	//     (building or modifying software) and not document_read (a trusted
 	//     channel attachment rather than a local path).
+	//   - file_delete removes one existing workspace file. It is not a write
+	//     (no content is authored) and not shell_command (no command is chosen).
 	//   - shell_command is a local host command; ssh remains the remote label.
 	//   - git_inspect is read-only VCS inspection; git_mutate commits or
 	//     publishes the bound repository and is the only label that reaches
@@ -75,6 +81,7 @@ const (
 	//     knowledge_write remains the ingestion label.
 	LabelFileRead        IntentLabel = "file_read"
 	LabelFileWrite       IntentLabel = "file_write"
+	LabelFileDelete      IntentLabel = "file_delete"
 	LabelShellCommand    IntentLabel = "shell_command"
 	LabelGitInspect      IntentLabel = "git_inspect"
 	LabelGitMutate       IntentLabel = "git_mutate"
@@ -127,6 +134,18 @@ const (
 	LabelSessionManage    IntentLabel = "session_manage"
 	LabelDelegateTask     IntentLabel = "delegate_task"
 	LabelKnowledgeAdmin   IntentLabel = "knowledge_admin"
+	// LabelWorklogRead and LabelWorklogUpdate maintain an external time-block
+	// work record. They are not task_track (local todos) and not business_data
+	// (MIS forms). A completion percent on a morning/afternoon block is an
+	// update of that record; "add it to the todo list" stays task_track.
+	LabelWorklogRead   IntentLabel = "worklog_read"
+	LabelWorklogUpdate IntentLabel = "worklog_update"
+	// LabelMailboxRead, LabelMailboxSend, and LabelMailboxConfigure use a
+	// configured IMAP/SMTP mailbox. They are not IM channel sends and not a
+	// browser session on a webmail site. Saving an account is not sending.
+	LabelMailboxRead      IntentLabel = "mailbox_read"
+	LabelMailboxSend      IntentLabel = "mailbox_send"
+	LabelMailboxConfigure IntentLabel = "mailbox_configure"
 
 	LabelAmbiguous IntentLabel = "ambiguous"
 	LabelUnknown   IntentLabel = "unknown"
@@ -148,6 +167,7 @@ func AllLabels() []IntentLabel {
 		LabelDocumentRead,
 		LabelDocumentOpen,
 		LabelBusinessData,
+		LabelDatabase,
 		LabelBugFix,
 		LabelContinuation,
 		LabelMaintenance,
@@ -159,6 +179,7 @@ func AllLabels() []IntentLabel {
 		LabelWorkflowTask,
 		LabelFileRead,
 		LabelFileWrite,
+		LabelFileDelete,
 		LabelShellCommand,
 		LabelGitInspect,
 		LabelGitMutate,
@@ -181,6 +202,11 @@ func AllLabels() []IntentLabel {
 		LabelSessionManage,
 		LabelDelegateTask,
 		LabelKnowledgeAdmin,
+		LabelWorklogRead,
+		LabelWorklogUpdate,
+		LabelMailboxRead,
+		LabelMailboxSend,
+		LabelMailboxConfigure,
 		LabelAmbiguous,
 		LabelUnknown,
 	}
@@ -208,6 +234,20 @@ func (l IntentLabel) IsValid() bool {
 func (l IntentLabel) IsNonCapabilityLabel() bool {
 	switch l {
 	case "", LabelNonCoding, LabelContinuation, LabelAmbiguous, LabelUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// IsGenericContinuationPrimary reports a classifier primary that may replay a
+// previously granted plan instead of starting a new capability family.
+// Continuation, unknown, and ambiguous are the closed set; non_coding is not
+// included because it is a real Q&A surface, not a "continue the last task"
+// signal.
+func (r ClassificationResult) IsGenericContinuationPrimary() bool {
+	switch r.Primary {
+	case LabelContinuation, LabelUnknown, LabelAmbiguous:
 		return true
 	default:
 		return false
@@ -266,6 +306,18 @@ type ClassificationResult struct {
 	// declared composite after the tree supplies the complementary half.
 	RunnerUp      IntentLabel `json:"-"`
 	RunnerUpScore float64     `json:"-"`
+
+	// QueryVec is the Layer 2 query vector used for this turn (RoleClassification
+	// space of the live embedder). Not serialised. Tool routing reuses it for
+	// the first-party tool head and for Track A (same vector, no second embed).
+	QueryVec []float32 `json:"-"`
+
+	// EmbeddingEarlyExit is set only by ClassifyEmbeddingOnly. It is Layer 2's
+	// confident return: the embedding separated this utterance, so the tree was
+	// not required. An abstention (ambiguous composite, a lone document
+	// generation, a narrow gap, or no embedder) leaves it false. The bit is
+	// not a capability grant; it only says the local reading is complete.
+	EmbeddingEarlyExit bool `json:"-"`
 }
 
 // Labels returns the primary label followed by any secondary labels.
@@ -281,6 +333,18 @@ func (r ClassificationResult) Labels() []IntentLabel {
 	return append(labels, r.Secondary...)
 }
 
+// HasLabel reports whether primary or any secondary equals label. GUI IM
+// routing and headless archetype bundle selection share this so a composite
+// cannot be read as two different label sets.
+func (r ClassificationResult) HasLabel(label IntentLabel) bool {
+	for _, candidate := range r.Labels() {
+		if candidate == label {
+			return true
+		}
+	}
+	return false
+}
+
 // MessageContext is the input to the classifier.
 type MessageContext struct {
 	Text          string   // current user message text
@@ -294,5 +358,9 @@ type MessageContext struct {
 type LLMClassifyFunc func(systemPrompt, userText string) (string, error)
 
 // LLMClassifyContextFunc lets latency-sensitive callers cancel the underlying
-// LLM transport when a classification deadline has expired.
-type LLMClassifyContextFunc func(ctx context.Context, systemPrompt, userText string) (string, error)
+// LLM transport when a classification deadline has expired. ctx carries the
+// classification budget and may be cancelled at the scheduling deadline;
+// parentCtx is the caller's (turn/user) context, which outlives that budget.
+// A detached slow-response read MUST derive from parentCtx, not ctx, so that
+// a user cancellation still aborts the in-flight read after the budget fired.
+type LLMClassifyContextFunc func(ctx context.Context, parentCtx context.Context, systemPrompt, userText string) (string, error)

@@ -801,6 +801,9 @@ func (s *HTTPServer) handleCreateDatasetFromTemplate(w http.ResponseWriter, r *h
 }
 
 func (s *HTTPServer) handleListBackups(w http.ResponseWriter, r *http.Request, p Principal) {
+	if !requireAdmin(w, p) {
+		return
+	}
 	limit := parseLimit(r.URL.Query().Get("limit"))
 	in := QueryBackupsInput{Limit: limit, Before: strings.TrimSpace(r.URL.Query().Get("before")), BeforeID: strings.TrimSpace(r.URL.Query().Get("before_id"))}
 	out, err := s.svc.ListBackups(r.Context(), p, in)
@@ -808,6 +811,9 @@ func (s *HTTPServer) handleListBackups(w http.ResponseWriter, r *http.Request, p
 }
 
 func (s *HTTPServer) handleCreateBackup(w http.ResponseWriter, r *http.Request, p Principal) {
+	if !requireAdmin(w, p) {
+		return
+	}
 	var in CreateBackupInput
 	if !decodeJSON(w, r, &in) {
 		return
@@ -817,6 +823,9 @@ func (s *HTTPServer) handleCreateBackup(w http.ResponseWriter, r *http.Request, 
 }
 
 func (s *HTTPServer) handleGetBackup(w http.ResponseWriter, r *http.Request, p Principal) {
+	if !requireAdmin(w, p) {
+		return
+	}
 	out, err := s.svc.GetBackup(r.Context(), p, r.PathValue("backupId"))
 	writeResult(w, http.StatusOK, out, err)
 }
@@ -1876,6 +1885,9 @@ func (s *HTTPServer) handleRestoreRecord(w http.ResponseWriter, r *http.Request,
 }
 
 func (s *HTTPServer) handleDeleteRecord(w http.ResponseWriter, r *http.Request, p Principal) {
+	if !requireAdmin(w, p) {
+		return
+	}
 	err := s.svc.DeleteRecord(r.Context(), p, r.PathValue("datasetId"), r.PathValue("recordId"))
 	writeResult(w, http.StatusOK, map[string]string{"status": "deleted"}, err)
 }
@@ -2557,10 +2569,10 @@ func writeRecordsCSV(w io.Writer, fields []FieldDefinition, records []Record) er
 	}
 	for _, record := range records {
 		row := []string{
-			record.ID,
-			record.Title,
-			strings.Join(record.Tags, "|"),
-			record.SourceID,
+			sanitizeCSVCell(record.ID),
+			sanitizeCSVCell(record.Title),
+			sanitizeCSVCell(strings.Join(record.Tags, "|")),
+			sanitizeCSVCell(record.SourceID),
 			record.CreatedAt.Format(time.RFC3339Nano),
 			record.UpdatedAt.Format(time.RFC3339Nano),
 		}
@@ -2638,16 +2650,31 @@ func csvCell(value any) string {
 	}
 	switch v := value.(type) {
 	case string:
-		return v
+		return sanitizeCSVCell(v)
 	case fmt.Stringer:
-		return v.String()
+		return sanitizeCSVCell(v.String())
 	default:
 		data, err := json.Marshal(value)
 		if err != nil {
-			return fmt.Sprint(value)
+			return sanitizeCSVCell(fmt.Sprint(value))
 		}
-		return string(data)
+		return sanitizeCSVCell(string(data))
 	}
+}
+
+// sanitizeCSVCell neutralizes spreadsheet formula injection. When a cell value
+// starts with a formula/control prefix (=, +, -, @, tab, CR), Excel/WPS will
+// interpret it as a formula on open. Prefixing a single quote keeps the value
+// literal while remaining visually identical in the cell.
+func sanitizeCSVCell(value string) string {
+	if value == "" {
+		return ""
+	}
+	switch value[0] {
+	case '=', '+', '-', '@', '\t', '\r':
+		return "'" + value
+	}
+	return value
 }
 
 func safeFilename(value string) string {

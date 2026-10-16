@@ -220,7 +220,7 @@ func legacyArtifactRefID(integrityDigest string) string {
 }
 
 func artifactMatchesContract(ref ArtifactRef, contract ArtifactContract) bool {
-	return strings.EqualFold(strings.TrimSpace(ref.Kind), strings.TrimSpace(contract.Kind)) && (strings.TrimSpace(contract.MIMEType) == "" || strings.EqualFold(strings.TrimSpace(ref.MIMEType), strings.TrimSpace(contract.MIMEType)))
+	return ArtifactContractMatches(ArtifactContract{Kind: ref.Kind, MIMEType: ref.MIMEType}, contract)
 }
 
 func validateDeliveryRecord(record DeliveryRecord) error {
@@ -336,8 +336,14 @@ func (s *memoryArtifactStore) PublishedArtifacts(scope InvocationScope, producer
 	defer s.mu.Unlock()
 	refs := make([]ArtifactRef, 0)
 	for _, payload := range s.artifacts {
-		if payload.Ref.Scope == scope && payload.Ref.ProducerSelection == producerSelection {
-			refs = append(refs, payload.Ref)
+		if invocationScopesCompatible(payload.Ref.Scope, scope) && payload.Ref.ProducerSelection == producerSelection {
+			ref := payload.Ref
+			// The caller owns the canonical route scope.  Return it on legacy
+			// rows whose persisted artifact metadata predates ToolSnapshotID.
+			if hydrated, err := canonicalInvocationScope(ref.Scope, scope); err == nil {
+				ref.Scope = hydrated
+			}
+			refs = append(refs, ref)
 		}
 	}
 	sort.Slice(refs, func(i, j int) bool {
@@ -359,7 +365,7 @@ func (s *memoryArtifactStore) ConsumeAccessGrant(grant ArtifactAccessGrant, cont
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	stored, ok := s.accessGrants[grant.Token]
-	if !ok || stored != grant {
+	if !ok || !sameArtifactAccessGrant(stored, grant) {
 		return ArtifactPayload{}, ErrArtifactAccessNotFound
 	}
 	if !time.Now().UTC().Before(stored.ExpiresAt) {
@@ -411,7 +417,7 @@ func (s *memoryArtifactStore) PrepareDelivery(record DeliveryRecord) (DeliveryRe
 	record.OperationKey = deliveryOperationKey(record, artifact.Ref)
 	key := deliveryStoreKey(record.Scope, record.SelectionID)
 	if existing, ok := s.deliveries[key]; ok {
-		if existing.ArtifactID != record.ArtifactID || existing.ArtifactSourceScope != record.ArtifactSourceScope || existing.ChannelScope != record.ChannelScope || existing.DestinationID != record.DestinationID || existing.OperationKey != record.OperationKey {
+		if existing.ArtifactID != record.ArtifactID || !invocationScopesCompatible(existing.Scope, record.Scope) || !invocationScopesCompatible(existing.ArtifactSourceScope, record.ArtifactSourceScope) || existing.ChannelScope != record.ChannelScope || existing.DestinationID != record.DestinationID || existing.OperationKey != record.OperationKey {
 			return DeliveryRecord{}, fmt.Errorf("delivery_conflict")
 		}
 		return existing, nil
@@ -1051,7 +1057,7 @@ func (s *SQLiteArtifactStore) PrepareDelivery(record DeliveryRecord) (DeliveryRe
 	if err != nil {
 		return DeliveryRecord{}, err
 	}
-	if existing.ArtifactID != record.ArtifactID || existing.ArtifactSourceScope != record.ArtifactSourceScope || existing.ChannelScope != record.ChannelScope || existing.DestinationID != record.DestinationID || existing.OperationKey != record.OperationKey {
+	if existing.ArtifactID != record.ArtifactID || !invocationScopesCompatible(existing.Scope, record.Scope) || !invocationScopesCompatible(existing.ArtifactSourceScope, record.ArtifactSourceScope) || existing.ChannelScope != record.ChannelScope || existing.DestinationID != record.DestinationID || existing.OperationKey != record.OperationKey {
 		return DeliveryRecord{}, fmt.Errorf("delivery_conflict")
 	}
 	return existing, nil
@@ -1074,6 +1080,12 @@ func (s *SQLiteArtifactStore) Delivery(scope InvocationScope, selectionID string
 		return DeliveryRecord{}, err
 	}
 	record.Scope, record.SelectionID = scope, strings.TrimSpace(selectionID)
+	// Delivery rows predate ToolSnapshotID on ArtifactSourceScope.  Hydrate a
+	// same-route source from the trusted caller scope; a projected parent source
+	// remains legacy-empty because its canonical snapshot is not in this row.
+	if hydrated, hydrateErr := canonicalInvocationScope(record.ArtifactSourceScope, record.Scope); hydrateErr == nil {
+		record.ArtifactSourceScope = hydrated
+	}
 	record.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	record.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
 	return record, nil
@@ -1116,6 +1128,9 @@ func (s *SQLiteArtifactStore) deliveryByOperationKey(operationKey string) (Deliv
 	}
 	if err != nil {
 		return DeliveryRecord{}, err
+	}
+	if hydrated, hydrateErr := canonicalInvocationScope(record.ArtifactSourceScope, record.Scope); hydrateErr == nil {
+		record.ArtifactSourceScope = hydrated
 	}
 	record.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
 	record.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
@@ -1222,7 +1237,11 @@ func newArtifactAccessToken(scope InvocationScope, consumerSelectionID, artifact
 }
 
 func sameArtifactIdentity(left, right ArtifactRef) bool {
-	return left.ID == right.ID && left.Kind == right.Kind && left.MIMEType == right.MIMEType && left.IntegrityDigest == right.IntegrityDigest && left.ProducerSelection == right.ProducerSelection && left.Scope == right.Scope
+	return left.ID == right.ID && left.Kind == right.Kind && left.MIMEType == right.MIMEType && left.IntegrityDigest == right.IntegrityDigest && left.ProducerSelection == right.ProducerSelection && invocationScopesCompatible(left.Scope, right.Scope)
+}
+
+func sameArtifactAccessGrant(left, right ArtifactAccessGrant) bool {
+	return left.Token == right.Token && left.ArtifactID == right.ArtifactID && left.ConsumerSelectionID == right.ConsumerSelectionID && left.ContractDigest == right.ContractDigest && invocationScopesCompatible(left.Scope, right.Scope) && invocationScopesCompatible(left.SourceScope, right.SourceScope) && left.IssuedAt.Equal(right.IssuedAt) && left.ExpiresAt.Equal(right.ExpiresAt)
 }
 
 func deliveryStoreKey(scope InvocationScope, selectionID string) string {

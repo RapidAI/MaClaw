@@ -24,7 +24,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-if (-not (Test-Path (Join-Path $root "gui"))) {
+if (-not (Test-Path (Join-Path $root "guiapp"))) {
     # Fallback: script may live at repo root
     $root = Split-Path -Parent $MyInvocation.MyCommand.Path
     if (-not (Test-Path (Join-Path $root "dist"))) {
@@ -40,7 +40,7 @@ $alias = Join-Path $root "dist\MaClaw.exe"
 $backup = Join-Path $root ("dist\MaClaw_amd64.exe.bak_{0:yyyyMMdd_HHmmss}" -f (Get-Date))
 
 if (-not (Test-Path $Source)) {
-    throw "Source binary not found: $Source`nBuild first (e.g. go build -tags desktop,production -o dist\MaClaw_amd64.new.exe ./gui/)"
+    throw "Source binary not found: $Source`nBuild first (e.g. go build -tags desktop,production -o dist\MaClaw_amd64.new.exe ./cmd/maclaw-gui/)"
 }
 
 Write-Host "Source : $Source"

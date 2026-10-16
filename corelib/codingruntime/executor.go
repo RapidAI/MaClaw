@@ -2,8 +2,10 @@ package codingruntime
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -77,6 +79,10 @@ type Runner struct {
 	// WorkspaceProber is optional and must be read-only. When present it
 	// captures the baseline for recovery before the host invokes a model/tool.
 	WorkspaceProber WorkspaceProber
+	// OnAdmissionWait is notified once when this run cannot start because
+	// another live writer holds an overlapping claim. The runner then waits
+	// and retries. Hosts use it to say the task is queued, not failed.
+	OnAdmissionWait func(WriteSetConflict)
 }
 
 // ContinuationReview carries the opaque parent Attempt identity selected by
@@ -199,10 +205,15 @@ func (r Runner) RunWithContinuation(ctx context.Context, task Task, policy Polic
 			return created, nil, err
 		}
 	}
-	attempt, err := r.Store.StartAttempt(created.TaskID, r.LeaseOwner, leaseFor, policy, now)
+	attempt, err := r.acquireAttempt(ctx, created.TaskID, leaseFor, policy, now)
 	if err != nil {
 		return created, nil, err
 	}
+	// The lease has to stay visible until FinishAttempt, including the final
+	// workspace probe. Stopping it when the model returns lets the next task
+	// on this directory start while this attempt is still running.
+	stopLease := r.keepAttemptLease(attempt.AttemptID, leaseFor)
+	defer stopLease()
 	if parentAttemptID != "" {
 		if err := r.Store.ConsumeParentContinuation(created.TaskID, parentAttemptID, attempt.AttemptID, r.now()); err != nil {
 			// StartAttempt acquired the lease first. Close only this new attempt;
@@ -221,23 +232,53 @@ func (r Runner) RunWithContinuation(ctx context.Context, task Task, policy Polic
 	// snapshot so adapter-visible ExecutionRequest and final-diff enforcement
 	// cannot drift from the ledger fact.
 	policy = attempt.Policy
-	_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "attempt_started", policy.Digest, now)
+	_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "attempt_started", policy.Digest, attempt.StartedAt)
+	// A final-workspace gate is an execution precondition, not merely a
+	// completion check.  Before this guard, a writer could advertise
+	// FinalWorkspaceGateRequired while the host forgot to provide a prober (or
+	// the baseline probe failed), then still invoke the model and mutating
+	// tools.  That is precisely the unsafe shape observed in the runtime audit:
+	// an unknown write set had no trustworthy workspace baseline but the attempt
+	// was allowed to run.  Keep the attempt in the ledger as blocked so callers
+	// receive a durable, reviewable decision and no executor is started.
+	requiresWorkspaceGate := attempt.Policy.FinalWorkspaceGateRequired && !attempt.Policy.ReadOnly
+	// A cancelled context cannot reach the model or any mutating tool, so the
+	// pre-execution workspace gate has nothing to authorize: its probe is
+	// guaranteed to fail under a dead context, and blocking here would
+	// misreport a cancelled attempt as blocked-before-probe instead of the
+	// ordinary interrupted/uncertain terminal state produced by the
+	// cancellation mapping after Execute. Keep the probe's audit events;
+	// skip only the block decisions.
+	ctxLive := ctx == nil || ctx.Err() == nil
+	if requiresWorkspaceGate && ctxLive && r.WorkspaceProber == nil {
+		return r.blockBeforeExecution(created, attempt, "workspace_probe_unavailable", "writer completion requires a read-only workspace probe before execution")
+	}
 	if r.WorkspaceProber != nil {
 		probe, probeErr := r.WorkspaceProber.ProbeWorkspace(ctx, *created, *attempt)
 		if probeErr != nil || probe == nil {
-			// Baseline capture is diagnostic, not authorization. A host may lack
-			// git/SSH reachability at this instant; retain the failure as bounded
-			// evidence while never inventing a baseline.
+			// A failed baseline remains useful bounded evidence for recovery, but
+			// it cannot authorize a mutating attempt when the final workspace gate
+			// is enabled.  Read-only and legacy non-gated callers retain the old
+			// diagnostic-only behavior.
 			digest := "workspace_before_probe_failed"
 			if probeErr != nil {
 				digest = codingRuntimeErrorDigest(probeErr.Error())
 			}
 			_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "workspace_before_probe_failed", digest, r.now())
+			if requiresWorkspaceGate && ctxLive {
+				return r.blockBeforeExecution(created, attempt, "workspace_before_probe_failed", "writer execution requires a successful read-only workspace baseline")
+			}
 		} else if updatedAttempt, recordErr := r.Store.RecordWorkspaceBefore(attempt.AttemptID, r.LeaseOwner, probe, r.now()); recordErr == nil {
 			attempt = updatedAttempt
 			_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "workspace_before_probed", workspaceProbeDigest(*probe), r.now())
+			// A probe that was returned but could not be durably recorded is not a
+			// usable baseline for a gated writer.  Do not let a transient ledger
+			// write failure turn into an untracked mutation.
 		} else {
 			_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "workspace_before_probe_record_failed", codingRuntimeErrorDigest(recordErr.Error()), r.now())
+			if requiresWorkspaceGate && ctxLive {
+				return r.blockBeforeExecution(created, attempt, "workspace_before_probe_record_failed", "writer execution requires a durably recorded workspace baseline")
+			}
 		}
 	}
 
@@ -318,6 +359,12 @@ func (r Runner) RunWithContinuation(ctx context.Context, task Task, policy Polic
 						// implementation was already satisfied. Record only its digest;
 						// never persist the model explanation or raw tool output.
 						_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "final_workspace_no_change_accepted", strings.TrimSpace(result.NoWorkspaceChangeEvidenceDigest), r.now())
+					} else if digest, ok := hostFileActivityEvidence(result); ok {
+						// git status does not change when an already-untracked file is
+						// edited, and the host forbids an unsolicited commit. The
+						// adapter's file-activity digest is the write evidence. Do not
+						// turn that into a confirmation the user cannot answer.
+						_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "final_workspace_file_activity_accepted", digest, r.now())
 					} else if strings.TrimSpace(result.NoWorkspaceChangeEvidenceDigest) != "" {
 						result.Status = TaskBlocked
 						result.SideEffectState = SideEffectObserved
@@ -364,6 +411,163 @@ func (r Runner) RunWithContinuation(ctx context.Context, task Task, policy Polic
 		return created, finished, err
 	}
 	return updated, finished, nil
+}
+
+// acquireAttempt is the single-writer gate for one directory. StartAttempt
+// denies an overlapping live claim. Two desktop tasks on the same project
+// both reach this gate; failing the second task's plan is the wrong outcome.
+// The second waits until the holder finishes or the caller cancels, then
+// takes the directory itself.
+func (r Runner) acquireAttempt(ctx context.Context, taskID string, leaseFor time.Duration, policy PolicySnapshot, now time.Time) (*Attempt, error) {
+	notified := false
+	for {
+		attempt, err := r.Store.StartAttempt(taskID, r.LeaseOwner, leaseFor, policy, now)
+		if err == nil {
+			return attempt, nil
+		}
+		var admission WriterAdmissionError
+		if !errors.As(err, &admission) {
+			return nil, err
+		}
+		if ctx != nil && ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+		if !notified {
+			notified = true
+			if r.OnAdmissionWait != nil {
+				r.OnAdmissionWait(admission.Conflict)
+			}
+		}
+		if !waitCodingWriterTurn(ctx, time.Second) {
+			if ctx != nil && ctx.Err() != nil {
+				return nil, ctx.Err()
+			}
+			return nil, err
+		}
+		now = r.now()
+	}
+}
+
+func waitCodingWriterTurn(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	if ctx == nil {
+		<-timer.C
+		return true
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
+
+// localLiveWriters records attempts whose executor is still on this
+// process's stack. Admission treats those as holders even when the stored
+// lease clock has passed (the process was suspended). A dead process cannot
+// be in this set, so its expired row does not lock the directory.
+var localLiveWriters sync.Map
+
+func markLocalLiveWriter(attemptID string) {
+	if attemptID != "" {
+		localLiveWriters.Store(attemptID, struct{}{})
+	}
+}
+
+func unmarkLocalLiveWriter(attemptID string) {
+	localLiveWriters.Delete(attemptID)
+}
+
+func localWriterLive(attemptID string) bool {
+	_, ok := localLiveWriters.Load(attemptID)
+	return ok
+}
+
+// keepAttemptLease renews the admission lease until stop is called. The
+// interval stays inside the lease so a long step never becomes invisible to
+// the next task's admission check.
+func (r Runner) keepAttemptLease(attemptID string, leaseFor time.Duration) func() {
+	if leaseFor <= 0 {
+		leaseFor = 10 * time.Minute
+	}
+	interval := leaseFor / 3
+	if interval < time.Second {
+		interval = time.Second
+	}
+	if interval > time.Minute {
+		interval = time.Minute
+	}
+	markLocalLiveWriter(attemptID)
+	stop := make(chan struct{})
+	var once sync.Once
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				err := r.Store.RenewAttemptLease(attemptID, r.LeaseOwner, leaseFor, r.now())
+				if err == nil {
+					continue
+				}
+				// A locked ledger is transient. Dropping the goroutine here
+				// expires the claim while the step is still writing.
+				if errors.Is(err, ErrAttemptNotRunning) || errors.Is(err, ErrNotFound) || errors.Is(err, ErrLeaseOwnerMismatch) {
+					return
+				}
+			}
+		}
+	}()
+	return func() {
+		once.Do(func() {
+			unmarkLocalLiveWriter(attemptID)
+			close(stop)
+		})
+	}
+}
+
+// blockBeforeExecution closes a just-started Attempt without invoking its
+// executor.  It is used for safety-critical preconditions which are known
+// before a model/tool call (for example, a missing or failed workspace
+// baseline).  Keeping the transition in Runner makes MemoryStore and
+// SQLiteStore callers observe the same durable blocked state.
+func (r Runner) blockBeforeExecution(created *Task, attempt *Attempt, code, summary string) (*Task, *Attempt, error) {
+	if attempt == nil {
+		return created, nil, fmt.Errorf("coding runtime pre-execution block requires an attempt")
+	}
+	code = boundedLedgerText(code, maxErrorCodeRunes)
+	summary = boundedLedgerText(summary, maxErrorSummaryRunes)
+	_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "workspace_gate_blocked", codingRuntimeErrorDigest(code), r.now())
+	_, _ = r.Store.AppendEvent(attempt.AttemptID, r.LeaseOwner, "attempt_terminal_"+string(TaskBlocked), code, r.now())
+	finished, err := r.Store.FinishAttempt(attempt.AttemptID, r.LeaseOwner, FinishInput{
+		Status: TaskBlocked, SideEffectState: SideEffectNone, ErrorCode: code, ErrorSummary: summary,
+	}, r.now())
+	if err != nil {
+		return created, attempt, err
+	}
+	updated, err := r.Store.GetTask(created.TaskID)
+	if err != nil {
+		return created, finished, err
+	}
+	return updated, finished, nil
+}
+
+// hostFileActivityEvidence is the adapter's record that this attempt wrote
+// or created files. Porcelain status cannot see a content edit inside a file
+// that was already untracked, so that digest is the change evidence.
+func hostFileActivityEvidence(result ExecutionResult) (string, bool) {
+	for _, evidence := range result.Evidence {
+		switch strings.TrimSpace(evidence.Type) {
+		case "file_activity", "remote_file_activity":
+			if digest := strings.TrimSpace(evidence.Digest); digest != "" {
+				return digest, true
+			}
+		}
+	}
+	return "", false
 }
 
 // noChangeEvidenceAccepted checks the paired host-quality assertion required

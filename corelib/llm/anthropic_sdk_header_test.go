@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/llmpool"
 )
 
 type anthropicSDKHeaderRoundTripFunc func(*http.Request) (*http.Response, error)
@@ -69,13 +70,17 @@ func TestAnthropicSDKSendsHubWorkloadHints(t *testing.T) {
 		if got := req.Header.Get("X-MaClaw-Workload-Class"); got != "" {
 			t.Fatalf("desktop must not invent P0 class, got %q", got)
 		}
+		if got := req.Header.Get(llmpool.ServiceGroupIDHeader); got != "system-free" {
+			t.Fatalf("service group = %q", got)
+		}
 		return anthropicSDKHeaderErrorResponse(req), nil
 	})}
 
 	cfg := corelib.MaclawLLMConfig{
-		URL:      "https://hub.example.com/api/llm/v1",
-		Model:    "auto",
-		Protocol: "anthropic",
+		URL:            "https://hub.example.com/api/llm/v1",
+		Model:          "auto",
+		Protocol:       "anthropic",
+		ServiceGroupID: "system-free",
 	}.WithHubWorkloadHints("fast", "coding", "execution")
 	_, err := DoAnthropicRequest(context.Background(), cfg,
 		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}}, nil, client)
@@ -89,14 +94,18 @@ func TestAnthropicSDKDoesNotSendHintsToThirdParty(t *testing.T) {
 		if got := req.Header.Get("X-MaClaw-Task-Type"); got != "" {
 			t.Fatalf("third-party sent task hint %q", got)
 		}
+		if got := req.Header.Get(llmpool.ServiceGroupIDHeader); got != "" {
+			t.Fatalf("third-party sent service group %q", got)
+		}
 		return anthropicSDKHeaderErrorResponse(req), nil
 	})}
 
 	cfg := corelib.MaclawLLMConfig{
-		URL:          "https://api.anthropic.com",
-		Model:        "claude-sonnet-4",
-		Protocol:     "anthropic",
-		TaskTypeHint: "fast",
+		URL:            "https://api.anthropic.com",
+		Model:          "claude-sonnet-4",
+		Protocol:       "anthropic",
+		TaskTypeHint:   "fast",
+		ServiceGroupID: "system-free",
 	}
 	_, err := DoAnthropicRequest(context.Background(), cfg,
 		[]interface{}{map[string]interface{}{"role": "user", "content": "hi"}}, nil, client)

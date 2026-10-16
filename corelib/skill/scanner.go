@@ -221,7 +221,10 @@ type SkillYAMLFile struct {
 	GlobalTimeout    int                  `yaml:"global_timeout,omitempty"`    // per-skill global timeout in seconds
 	RequiredArgs     []string             `yaml:"required_args,omitempty"`     // required template variables
 	RequiredEnv      []string             `yaml:"required_env,omitempty"`      // required environment variables
-	PreferredShell   string               `yaml:"shell,omitempty"`             // "bash" or "cmd"; empty = auto-detect
+	// NoLLMAPI declares a pure-local skill that never calls an OpenAI-compatible
+	// LLM API, so the runner skips starting the local OpenAI proxy.
+	NoLLMAPI       bool                 `yaml:"no_llm_api,omitempty"`
+	PreferredShell string               `yaml:"shell,omitempty"`             // "bash" or "cmd"; empty = auto-detect
 	Operations       []SkillYAMLOperation `yaml:"operations,omitempty"`        // named operations for api_workflow mode
 	Params           []SkillYAMLParam     `yaml:"params,omitempty"`            // parameter schema (aliases, CLI flags, defaults)
 	Type             string               `yaml:"type,omitempty"`              // "executable" (default) | "knowledge"
@@ -407,6 +410,7 @@ func parseSkillDefinitionRaw(raw map[string]any, label string) (*SkillYAMLFile, 
 		"id": true, "name": true, "version": true, "description": true, "triggers": true, "steps": true,
 		"status": true, "source": true, "platforms": true, "requires_gui": true,
 		"produces_artifact": true, "required_args": true, "required_env": true,
+		"no_llm_api": true,
 		"shell": true, "mode": true, "operations": true, "params": true,
 		"type": true, "content": true, "capabilities": true,
 		"requires_tools": true, "fallback_for_tools": true,
@@ -1538,6 +1542,7 @@ func loadSkillFromDir(skillDir, fallbackName string) (*corelib.NLSkillEntry, str
 			Params:                  skillParams,
 			RequiredArgs:            sf.RequiredArgs,
 			RequiredEnv:             sf.RequiredEnv,
+			NoLLMAPI:                sf.NoLLMAPI,
 			PreferredShell:          sf.PreferredShell,
 			Capabilities:            sf.Capabilities,
 			RequiresTools:           sf.RequiresTools,

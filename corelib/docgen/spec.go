@@ -13,6 +13,11 @@ type Spec struct {
 	FileNamePrefix string
 	Timestamp      time.Time
 	PaperSize      string
+	// Colorful paints this document through InsertHTMLBox: distinct heading
+	// colors, linked addresses, and a colored （可能） mark. Left false, the
+	// muted HTML used by every other document stays as it is. Background
+	// colors are not used, because InsertHTMLBox does not paint them.
+	Colorful bool
 }
 
 // GenerateOptions configures PDF generation.

@@ -150,13 +150,13 @@ func buildMaclawAppHubCenterSkillYAML(name, description string) ([]byte, error) 
 
 func buildMaclawAppHubCenterPackageManifest(item *capability.CapabilitySummary, version *capability.VersionSummary, metadata map[string]any, skillName, appID, appName, description string) map[string]any {
 	manifest := map[string]any{
-		"package_kind":   "maclaw-skill-market",
-		"product_kind":   "maclaw_app_skill",
-		"is_maclaw_app":  true,
-		"maclaw_app_count": 1,
-		"maclaw_app_entry": "maclaw.app.json",
-		"maclaw_app_id":    appID,
-		"maclaw_app_name":  appName,
+		"package_kind":           "maclaw-skill-market",
+		"product_kind":           "maclaw_app_skill",
+		"is_maclaw_app":          true,
+		"maclaw_app_count":       1,
+		"maclaw_app_entry":       "maclaw.app.json",
+		"maclaw_app_id":          appID,
+		"maclaw_app_name":        appName,
 		"maclaw_app_description": description,
 		"maclaw_app_definition_sha256": firstNonEmpty(
 			stringFromAny(metadata["maclaw_app_definition_sha256"]),

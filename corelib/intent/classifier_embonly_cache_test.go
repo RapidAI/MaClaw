@@ -76,10 +76,29 @@ func TestClassifyEmbeddingOnlyCachesPerText(t *testing.T) {
 	}
 }
 
+func TestClassifyEmbeddingOnlyReportsEarlyExit(t *testing.T) {
+	emb := &embOnlyTestEmbedder{hit: "桌面"}
+	uic := New(Config{Embedder: emb})
+	waitUICReadyForTest(t, uic)
+	uic.mu.RLock()
+	anchors := append([]intentAnchor(nil), uic.anchors...)
+	uic.mu.RUnlock()
+
+	text := "打开桌面上的记事本"
+	_, confident := classifyByEmbedding(emb, anchors, text)
+	got := uic.ClassifyEmbeddingOnly(MessageContext{Text: text})
+	if got.EmbeddingEarlyExit != confident {
+		t.Fatalf("early exit=%v confident=%v primary=%s", got.EmbeddingEarlyExit, confident, got.Primary)
+	}
+	if again := uic.ClassifyEmbeddingOnly(MessageContext{Text: text}); again.EmbeddingEarlyExit != confident {
+		t.Fatal("cache dropped the early-exit bit")
+	}
+}
+
 func TestClassifyEmbeddingOnlyDoesNotCacheDegraded(t *testing.T) {
 	uic := New(Config{Embedder: embedding.NoopEmbedder{}})
 	for i := 0; i < 3; i++ {
-		if res := uic.ClassifyEmbeddingOnly(MessageContext{Text: "anything"}); !res.Degraded {
+		if res := uic.ClassifyEmbeddingOnly(MessageContext{Text: "anything"}); !res.Degraded || res.EmbeddingEarlyExit {
 			t.Fatal("expected degraded result with noop embedder")
 		}
 	}

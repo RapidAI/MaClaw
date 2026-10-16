@@ -6,12 +6,64 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 )
 
-func registerPWAStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix string) {
-	registerStaticRoutes(mux, staticDir, routePrefix)
+// staticContentCache memoizes brand-processed admin static responses
+// (index.html and JS bundles) so repeat requests skip disk reads and string
+// replacement. Failed reads are not cached.
+type staticContentCache struct {
+	mu          sync.Mutex
+	index       []byte
+	indexLoaded bool
+	files       map[string][]byte
+}
+
+func newStaticContentCache() *staticContentCache {
+	return &staticContentCache{files: map[string][]byte{}}
+}
+
+func (c *staticContentCache) adminIndex(indexPath, brandName string) ([]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.indexLoaded {
+		return c.index, true
+	}
+	data, err := os.ReadFile(indexPath)
+	if err != nil {
+		return nil, false
+	}
+	html := string(data)
+	// Inject brand name as a runtime JS variable instead of string-replacing
+	// inside admin.js. This avoids the fragile escapeInlineScript path that
+	// causes "Unexpected end of input" when the 107KB admin.js is inlined.
+	if brandName != "" && brandName != "MaClaw" {
+		html = strings.ReplaceAll(html, "MaClaw", brandName)
+		brandInjection := `<script>window.__MACLAW_BRAND__=` + strconv.Quote(brandName) + `;</script>`
+		if idx := strings.Index(html, "<script"); idx >= 0 {
+			html = html[:idx] + brandInjection + "\n" + html[idx:]
+		}
+	}
+	c.index = []byte(html)
+	c.indexLoaded = true
+	return c.index, true
+}
+
+func (c *staticContentCache) brandedJS(path, brandName string) ([]byte, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if data, ok := c.files[path]; ok {
+		return data, true
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false
+	}
+	replaced := []byte(strings.ReplaceAll(string(data), "MaClaw", brandName))
+	c.files[path] = replaced
+	return replaced, true
 }
 
 func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix string) {
@@ -29,6 +81,7 @@ func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix
 	routePrefix = strings.TrimRight(routePrefix, "/")
 
 	brandName := brand.Current().DisplayName
+	cache := newStaticContentCache()
 
 	serve := func(w http.ResponseWriter, r *http.Request) {
 		// The admin console's role-based navigation is client-side. Never allow a
@@ -51,14 +104,13 @@ func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix
 					w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
 				}
 				if ext == ".js" && brandName != "" && brandName != "MaClaw" {
-					data, err := os.ReadFile(candidate)
-					if err != nil {
+					data, ok := cache.brandedJS(candidate, brandName)
+					if !ok {
 						http.NotFound(w, r)
 						return
 					}
-					replaced := strings.ReplaceAll(string(data), "MaClaw", brandName)
 					w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
-					_, _ = w.Write([]byte(replaced))
+					_, _ = w.Write(data)
 					return
 				}
 				http.ServeFile(w, r, candidate)
@@ -72,33 +124,73 @@ func registerAdminStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix
 		}
 
 		indexPath := filepath.Join(staticDir, "index.html")
-		htmlData, err := os.ReadFile(indexPath)
-		if err != nil {
+		htmlData, ok := cache.adminIndex(indexPath, brandName)
+		if !ok {
 			http.NotFound(w, r)
 			return
-		}
-		html := string(htmlData)
-
-		// Inject brand name as a runtime JS variable instead of string-replacing
-		// inside admin.js. This avoids the fragile escapeInlineScript path that
-		// causes "Unexpected end of input" when the 107KB admin.js is inlined.
-		if brandName != "" && brandName != "MaClaw" {
-			html = strings.ReplaceAll(html, "MaClaw", brandName)
-			brandInjection := `<script>window.__MACLAW_BRAND__=` + strconv.Quote(brandName) + `;</script>`
-			if idx := strings.Index(html, "<script"); idx >= 0 {
-				html = html[:idx] + brandInjection + "\n" + html[idx:]
-			}
 		}
 
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-		_, _ = w.Write([]byte(html))
+		_, _ = w.Write(htmlData)
 	}
 
 	for _, method := range []string{http.MethodGet, http.MethodHead} {
 		mux.HandleFunc(method+" "+routePrefix, serve)
 		mux.HandleFunc(method+" "+routePrefix+"/{rest...}", serve)
 	}
+}
+
+// registerHomeStaticRoutes serves the public default landing page at the site
+// root "/". It is a single self-contained index.html (inline CSS/JS, no local
+// assets) so only the exact root path is handled; everything else keeps
+// matching its own API/static route or falls through to 404. Brand name is
+// injected the same way as the admin console so rebranded builds stay
+// consistent.
+func registerHomeStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix string) {
+	staticDir = resolveStaticDir(staticDir)
+	staticDir = strings.TrimSpace(staticDir)
+	if staticDir == "" {
+		return
+	}
+	indexPath := filepath.Join(staticDir, "index.html")
+	brandName := brand.Current().DisplayName
+
+	serve := func(w http.ResponseWriter, r *http.Request) {
+		// GET / is a method catch-all in Go 1.22's ServeMux, so only serve the
+		// landing page at the exact root path; everything else keeps its own
+		// specific route or falls through to a real 404 (we must not mask API
+		// 404s with the home page).
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+		data, err := os.ReadFile(indexPath)
+		if err != nil {
+			http.NotFound(w, r)
+			return
+		}
+		html := string(data)
+		if brandName != "" && brandName != "MaClaw" {
+			html = strings.ReplaceAll(html, "MaClaw", brandName)
+		}
+		_, _ = w.Write([]byte(html))
+	}
+
+	// Register the methodless "/" catch-all. A method-qualified "GET /"
+	// conflicts with existing methodless subtree patterns such as
+	// "/api/a2a/consultations/" (Go 1.22 mux panics on that conflict), while
+	// the methodless "/" is the legitimate fallback and lets more specific
+	// routes win. The exact-path guard below keeps 404 semantics for any
+	// path other than "/".
+	mux.HandleFunc("/", serve)
 }
 
 func escapeInlineScript(js string) string {
@@ -210,9 +302,6 @@ func registerStaticRoutes(mux *http.ServeMux, staticDir string, routePrefix stri
 	}
 	routePrefix = strings.TrimRight(routePrefix, "/")
 	indexPath := filepath.Join(staticDir, "index.html")
-	if routePrefix == "/app" {
-		registerRootFaviconRoute(mux, staticDir)
-	}
 
 	serve := func(w http.ResponseWriter, r *http.Request) {
 		if routePrefix == "/connector" {
@@ -286,27 +375,6 @@ var staticAssetExtensions = map[string]bool{
 	".woff": true, ".woff2": true, ".ttf": true, ".eot": true, ".otf": true,
 	".json": true, ".xml": true, ".txt": true, ".webmanifest": true,
 	".wasm": true, ".mp4": true, ".webm": true, ".mp3": true, ".ogg": true, ".pdf": true,
-}
-
-func registerRootFaviconRoute(mux *http.ServeMux, staticDir string) {
-	faviconPath := filepath.Join(staticDir, "icons", "favicon-32x32.png")
-	mux.HandleFunc("GET /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
-		if info, err := os.Stat(faviconPath); err == nil && !info.IsDir() {
-			w.Header().Set("Cache-Control", "public, max-age=3600")
-			w.Header().Set("Content-Type", "image/png")
-			http.ServeFile(w, r, faviconPath)
-			return
-		}
-		http.NotFound(w, r)
-	})
-	mux.HandleFunc("HEAD /favicon.ico", func(w http.ResponseWriter, r *http.Request) {
-		if info, err := os.Stat(faviconPath); err == nil && !info.IsDir() {
-			w.Header().Set("Cache-Control", "public, max-age=3600")
-			w.Header().Set("Content-Type", "image/png")
-			return
-		}
-		http.NotFound(w, r)
-	})
 }
 
 func serveStaticIndexFallback(w http.ResponseWriter, r *http.Request, staticDir string, indexPath string, routePrefix string) {

@@ -147,12 +147,7 @@ func reviewedHostDocumentGenerateArgsAllowed(args map[string]interface{}) (strin
 }
 
 func reviewedHostGenerateNeedPresent(needs []coretool.CapabilityNeed) bool {
-	for _, need := range needs {
-		if need.Capability == CapabilityDocumentGenerate {
-			return true
-		}
-	}
-	return false
+	return coretool.CapabilityNeedsContain(needs, CapabilityDocumentGenerate)
 }
 
 func (c *coreAgentCallbacks) GenerateReviewedHostDocument(ctx context.Context, principal Principal, content string) (string, error) {

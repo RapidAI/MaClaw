@@ -380,6 +380,19 @@ func TestExecuteSkillMaintenancePlanSkipsMergeDuplicateWhenRelatedMissing(t *tes
 	}
 }
 
+func TestExecuteSkillMaintenancePlanSkipsMergeDuplicateWhenSameSkill(t *testing.T) {
+	plan := SkillMaintenancePlan{Actions: []SkillMaintenanceAction{{Action: MaintenanceActionMergeDuplicate, Skill: "alias", RelatedSkill: "alias"}}}
+	skills := []corelib.NLSkillEntry{{Name: "alias", Source: "learned", Status: "active"}}
+
+	updated, result := ExecuteSkillMaintenancePlan(skills, plan, SkillMaintenanceExecutionOptions{DryRun: false, ApprovedActions: []string{MaintenanceActionMergeDuplicate}, AllowDuplicateRetire: true})
+	if len(updated) != 1 || updated[0].Status != "active" {
+		t.Fatalf("same-skill merge mutated entry: %#v", updated)
+	}
+	if result.SkippedCount != 1 || result.Actions[0].Reason != "merge_duplicate requires two distinct skills" {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+}
+
 func TestExecuteSkillMaintenancePlanRefreshIndexRequestsCallerRefresh(t *testing.T) {
 	plan := SkillMaintenancePlan{Actions: []SkillMaintenanceAction{{Action: MaintenanceActionRefreshIndex, Skill: "fixed"}}}
 

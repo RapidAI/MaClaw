@@ -271,3 +271,95 @@ func TestPlanExecutorProjectsSucceededDependencyToCompatibleRevision(t *testing.
 		t.Fatalf("projected completion=%#v err=%v", projected, err)
 	}
 }
+
+func TestPlanExecutionStateFromResultClearsSuccessOnNonSuccess(t *testing.T) {
+	state, result := PlanExecutionStateFromResult(SelectionExecutionResult{Succeeded: true, Unknown: true, Result: "maybe"})
+	if state != PlanExecutionUnknown || result.Succeeded {
+		t.Fatalf("unknown state=%q result=%#v", state, result)
+	}
+	state, result = PlanExecutionStateFromResult(SelectionExecutionResult{Succeeded: true, AwaitingReceipt: true})
+	if state != PlanExecutionAwaitingReceipt || result.Succeeded {
+		t.Fatalf("awaiting state=%q result=%#v", state, result)
+	}
+	state, result = PlanExecutionStateFromResult(SelectionExecutionResult{})
+	if state != PlanExecutionFailed || result.Succeeded {
+		t.Fatalf("failed state=%q result=%#v", state, result)
+	}
+	state, result = PlanExecutionStateFromResult(SelectionExecutionResult{Succeeded: true, Result: "ok"})
+	if state != PlanExecutionSucceeded || !result.Succeeded {
+		t.Fatalf("success state=%q result=%#v", state, result)
+	}
+}
+
+func TestReplayedSelectionResultPrefersExecutionRowOverText(t *testing.T) {
+	store := NewMemoryPlanExecutionStore()
+	scope := InvocationScope{RootTaskID: "root", PlanID: "plan", SessionID: "session", TurnID: "turn", PrincipalID: "principal"}
+	if _, acquired, err := store.Acquire(PlanExecutionRecord{Scope: scope, SelectionID: "sel", StartedAt: time.Now().UTC()}); err != nil || !acquired {
+		t.Fatalf("acquire=%v err=%v", acquired, err)
+	}
+	if _, err := store.Complete(scope, "sel", PlanExecutionAwaitingReceipt, "digest", "awaiting", time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	got := ReplayedSelectionResult(store, scope, "sel", "delivery accepted for dispatch")
+	if got.Succeeded || !got.AwaitingReceipt {
+		t.Fatalf("pending replay=%#v", got)
+	}
+	fallback := RecordedSelectionResultFallback("[system unknown] lost")
+	if fallback.Succeeded || !fallback.Unknown {
+		t.Fatalf("unknown fallback=%#v", fallback)
+	}
+	if RecordedSelectionResultFallback("Error: provider refused").Succeeded {
+		t.Fatal("error prefix must not replay as success")
+	}
+	if !RecordedSelectionResultFallback("lookup result").Succeeded {
+		t.Fatal("plain text fallback must stay success")
+	}
+	if _, ok := SelectionResultFromExecution(PlanExecutionRunning, "x", ""); ok {
+		t.Fatal("running must not invent a replay verdict")
+	}
+}
+
+// A paused selection ran nothing: the executor must leave its record Running
+// so the same selection can be re-issued after the interaction settles. Any
+// terminal write here would make re-issue replay the pause as a failure.
+func TestPlanExecutorPausedResultLeavesSelectionRunning(t *testing.T) {
+	execStore := NewMemoryPlanExecutionStore()
+	issuer, err := NewInvocationIssuer([]byte(strings.Repeat("p", 32)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor, err := NewPlanExecutor(issuer, execStore)
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := InvocationScope{RootTaskID: "task", PlanID: "plan", SessionID: "session", TurnID: "turn", PrincipalID: "user"}
+	selection := PlannedSelection{ID: "selection:paused", AdapterName: "dynamic_mcp", Provider: ProviderBinding{Kind: "mcp", ProviderID: "srv", ImplementationID: "write_thing"}}
+	if _, acquired, err := execStore.Acquire(PlanExecutionRecord{Scope: scope, SelectionID: selection.ID}); err != nil || !acquired {
+		t.Fatalf("acquire=%v err=%v", acquired, err)
+	}
+	calls := 0
+	result, _, err := executor.ExecuteAdmitted(selection, scope, ToolPlan{}, func(PlannedSelection) SelectionExecutionResult {
+		calls++
+		return SelectionExecutionResult{Result: "__ASK_USER__{}", Paused: true, ReasonCode: "mcp_server_write_awaiting_confirmation"}
+	})
+	if err != nil || !result.Paused || calls != 1 {
+		t.Fatalf("paused result=%#v calls=%d err=%v", result, calls, err)
+	}
+	record, err := execStore.Execution(scope, selection.ID)
+	if err != nil || record.State != PlanExecutionRunning {
+		t.Fatalf("paused selection settled: record=%#v err=%v", record, err)
+	}
+	if _, _, err := executor.ExecuteAdmitted(selection, scope, ToolPlan{}, func(PlannedSelection) SelectionExecutionResult {
+		calls++
+		return SelectionExecutionResult{Result: "done", Succeeded: true}
+	}); err != nil || calls != 2 {
+		t.Fatalf("reissue calls=%d err=%v", calls, err)
+	}
+	// The record is still Running: ExecuteAdmitted only admits and invokes —
+	// the coordinated caller writes the terminal state. What matters here is
+	// that the pause never produced a replayable terminal record.
+	record, err = execStore.Execution(scope, selection.ID)
+	if err != nil || record.State != PlanExecutionRunning {
+		t.Fatalf("admitted record=%#v err=%v", record, err)
+	}
+}

@@ -36,7 +36,7 @@ func TestAdaptivePromptCheck_WithDenyAndUpgrade(t *testing.T) {
 	agent.ResetPromptProfileStatsForTest()
 	agent.RecordPromptProfileDecision(agent.PromptProfileDecision{
 		Profile: agent.PromptProfileLight,
-		Task:   "fast",
+		Task:    "fast",
 	})
 	agent.RecordLightToolDeny("bash")
 	agent.RecordLightToolDeny("bash")

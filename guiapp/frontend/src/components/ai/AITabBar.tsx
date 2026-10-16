@@ -1,0 +1,344 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import type { AITab } from "./AITabTypes";
+import type { Theme } from "./aiAssistantPanelTheme";
+import { AITabItem, getAITabDisplayTitle } from "./AITabItem";
+import { DEFAULT_EXPERT_ICON } from "./expertTypes";
+import { hasLocalAIParticipant } from "./localAIIdentity";
+
+export interface AITabBarProps {
+    tabs: AITab[];
+    activeTabId: string;
+    theme: Theme;
+    onActivate: (tabId: string) => void;
+    onClose: (tabId: string) => void;
+    /** Called when user wants to invite a VE to a tab's session (upgrade to group) */
+    onInviteToTab?: (tab: AITab) => void;
+    /** Called when user wants to add local AI to a tab's session */
+    onAddLocalMaclawToTab?: (tab: AITab) => void;
+    /** Called when user wants to rename a group tab */
+    onRenameGroupTab?: (tab: AITab) => void;
+    /** Called when user renames the fixed local AI assistant tab. */
+    onRenameLocalTab?: (title: string) => void;
+    /** Called when user renames a task-backed project tab. */
+    onRenameProjectTab?: (tab: AITab, title: string) => void;
+    lang?: string;
+    /** Tab ID that is currently recording a skill (if any) */
+    recordingTabId?: string | null;
+}
+
+/** Minimum width per tab in pixels. Used to calculate how many tabs fit. */
+const MIN_TAB_WIDTH = 110;
+/** Extra space reserved for the overflow button. */
+const OVERFLOW_BUTTON_WIDTH = 50;
+
+
+/**
+ * Horizontal tab bar for the AI Assistant Panel.
+ * Shows as many tabs as fit in the available width; overflow tabs are
+ * accessible via a more-tabs dropdown.
+ */
+export function AITabBar({ tabs, activeTabId, theme, onActivate, onClose, onInviteToTab, onAddLocalMaclawToTab, onRenameGroupTab, onRenameLocalTab, onRenameProjectTab, lang, recordingTabId }: AITabBarProps) {
+    // The local page is the new-task guide, not a task tab.
+    const taskTabs = tabs.filter(tab => tab.type !== "local");
+    const containerRef = useRef<HTMLDivElement>(null);
+    const [visibleCount, setVisibleCount] = useState(taskTabs.length);
+    const [dropdownOpen, setDropdownOpen] = useState(false);
+    const [tabContextMenu, setTabContextMenu] = useState<{ x: number; y: number; tab: AITab } | null>(null);
+
+    // Recalculate visible tab count when container width or tab count changes.
+    useEffect(() => {
+        const el = containerRef.current;
+        if (!el) return;
+
+        const applyWidth = (width: number) => {
+            const maxTabs = Math.max(1, Math.floor((width - OVERFLOW_BUTTON_WIDTH) / MIN_TAB_WIDTH));
+            setVisibleCount(maxTabs >= taskTabs.length ? taskTabs.length : maxTabs);
+        };
+
+        if (typeof ResizeObserver === "undefined") {
+            const recalculate = () => applyWidth(el.getBoundingClientRect().width);
+            recalculate();
+            window.addEventListener("resize", recalculate);
+            return () => window.removeEventListener("resize", recalculate);
+        }
+
+        const observer = new ResizeObserver((entries) => {
+            for (const entry of entries) {
+                applyWidth(entry.contentRect.width);
+            }
+        });
+        observer.observe(el);
+        return () => observer.disconnect();
+    }, [taskTabs.length]);
+    // Close dropdown on outside click.
+    useEffect(() => {
+        if (!dropdownOpen && !tabContextMenu) return;
+        const handler = (e: MouseEvent) => {
+            if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+                setDropdownOpen(false);
+                setTabContextMenu(null);
+            }
+        };
+        document.addEventListener("mousedown", handler);
+        return () => document.removeEventListener("mousedown", handler);
+    }, [dropdownOpen, tabContextMenu]);
+
+    const handleOverflowActivate = useCallback((tabId: string) => {
+        setDropdownOpen(false);
+        onActivate(tabId);
+    }, [onActivate]);
+
+    const handleOverflowClose = useCallback((tabId: string) => {
+        onClose(tabId);
+    }, [onClose]);
+
+    const handleTabContextMenu = useCallback((e: React.MouseEvent, tab: AITab) => {
+        // Only show context menu for VE and group tabs (not local or project)
+        if (tab.type !== "ve" && tab.type !== "group") return;
+        if (tab.readOnly) return;
+        setTabContextMenu({ x: e.clientX, y: e.clientY, tab });
+    }, []);
+
+    const isZh = !lang || lang?.startsWith("zh");
+
+    if (taskTabs.length === 0) {
+        return null;
+    }
+
+    const hasOverflow = visibleCount < taskTabs.length;
+    const visibleTabs = computeVisibleTabs(taskTabs, activeTabId, visibleCount);
+    // Preserve the tab list's creation order in the overflow menu too.
+    // Selecting a tab should never make its perceived position change.
+    const overflowTabs = taskTabs.filter(t => !visibleTabs.includes(t));
+
+    return (
+        <div
+            ref={containerRef}
+            data-testid="ai-tab-bar"
+            className="mc-tab-bar"
+            role="tablist"
+            aria-label="AI conversation tabs"
+            style={{
+                display: "flex",
+                alignItems: "flex-end",
+                gap: 0,
+                borderBottom: `1px solid ${theme.divider}`,
+                background: theme.titleBarBg,
+                overflowX: "visible",
+                overflowY: "visible",
+                flexShrink: 0,
+                minHeight: 30,
+                paddingLeft: 4,
+                position: "relative",
+            }}
+        >
+            {visibleTabs.map((tab) => (
+                <AITabItem
+                    key={tab.id}
+                    tab={tab}
+                    active={tab.id === activeTabId}
+                    theme={theme}
+                    onActivate={onActivate}
+                    onClose={tab.closable ? onClose : undefined}
+                    onContextMenu={handleTabContextMenu}
+                    onRename={tab.type === "local" && onRenameLocalTab
+                        ? (_tabId, title) => onRenameLocalTab(title)
+                        : tab.type === "project" && onRenameProjectTab
+                            ? (_tabId, title) => onRenameProjectTab(tab, title)
+                            : undefined}
+                    lang={lang}
+                    recording={recordingTabId === tab.id}
+                />
+            ))}
+            {hasOverflow && (
+                <button
+                    data-testid="ai-tab-overflow-btn"
+                    type="button"
+                    onClick={() => setDropdownOpen(v => !v)}
+                    style={{
+                        border: "none",
+                        background: dropdownOpen ? theme.codeBlockBg : "transparent",
+                        color: theme.textMuted,
+                        fontSize: 11,
+                        padding: "4px 8px",
+                        cursor: "pointer",
+                        flexShrink: 0,
+                        borderBottom: "2px solid transparent",
+                        whiteSpace: "nowrap",
+                        transition: "background 0.15s",
+                    }}
+                    title={lang === "en" ? `${overflowTabs.length} more tabs` : `还有 ${overflowTabs.length} 个标签`}
+                >
+                    MORE {overflowTabs.length}
+                </button>
+            )}
+            {dropdownOpen && overflowTabs.length > 0 && (
+                <div
+                    data-testid="ai-tab-overflow-dropdown"
+                    style={{
+                        position: "absolute",
+                        top: "100%",
+                        right: 0,
+                        zIndex: 9999,
+                        background: theme.titleBarBg,
+                        border: `1px solid ${theme.divider}`,
+                        borderRadius: 6,
+                        boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+                        padding: "4px 0",
+                        minWidth: 160,
+                        maxHeight: 300,
+                        overflowY: "auto",
+                    }}
+                >
+                    {overflowTabs.map((tab) => (
+                        <div
+                            key={tab.id}
+                            style={{
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 6,
+                                padding: "6px 12px",
+                                cursor: "pointer",
+                                fontSize: 12,
+                                color: tab.id === activeTabId ? theme.text : theme.textMuted,
+                                fontWeight: tab.id === activeTabId ? 600 : 400,
+                                transition: "background 0.1s",
+                            }}
+                            onClick={() => handleOverflowActivate(tab.id)}
+                            onMouseEnter={e => (e.currentTarget.style.background = theme.codeBlockBg)}
+                            onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                        >
+                            <span className="aitb-type-badge">
+                                {tab.type === "project" ? (tab.archived ? "P" : "D") : tab.type === "ve" ? "VE" : tab.type === "expert" ? (tab.expertIcon || DEFAULT_EXPERT_ICON) : "AI"}
+                            </span>
+                            <span className="aitb-tab-title">
+                                {getAITabDisplayTitle(tab, lang)}
+                            </span>
+                            {tab.readOnly && (
+                                <span style={{ flexShrink: 0, fontSize: 10, lineHeight: 1, padding: "2px 4px", borderRadius: 4, border: `1px solid ${theme.divider}`, color: theme.textMuted }}>
+                                    {lang === "en" ? "Read-only" : lang === "zh-Hant" ? "\u552f\u8b80" : "\u53ea\u8bfb"}
+                                </span>
+                            )}
+                            {tab.closable && (
+                                <span
+                                    role="button"
+                                    onClick={(e) => { e.stopPropagation(); handleOverflowClose(tab.id); }}
+                                    style={{ fontSize: 14, color: theme.textMuted, cursor: "pointer", flexShrink: 0, padding: "0 2px" }}
+                                    title="Close"
+                                >{"\u00d7"}</span>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            )}
+            {/* Tab right-click context menu */}
+            {tabContextMenu && (
+                <div
+                    data-testid="ai-tab-context-menu"
+                    role="menu"
+                    style={{
+                        position: "fixed",
+                        left: tabContextMenu.x,
+                        top: tabContextMenu.y,
+                        background: theme.bg,
+                        border: `1px solid ${theme.divider}`,
+                        borderRadius: 6,
+                        boxShadow: "0 4px 12px rgba(0,0,0,0.15)",
+                        zIndex: 9999,
+                        minWidth: 160,
+                        padding: "4px 0",
+                    }}
+                >
+                    {onInviteToTab && !tabContextMenu.tab.readOnly && (tabContextMenu.tab.type === "ve" || (tabContextMenu.tab.type === "group" && (!!tabContextMenu.tab.veId || !!tabContextMenu.tab.discussionId))) && (
+                        <div
+                            data-testid="tab-menu-invite-ve"
+                            role="menuitem"
+                            onClick={() => { onInviteToTab(tabContextMenu.tab); setTabContextMenu(null); }}
+                            style={{ padding: "6px 14px", cursor: "pointer", fontSize: 13, color: theme.text }}
+                            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
+                            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
+                        >
+                            {isZh ? "\u9080\u8bf7\u6570\u5b57\u5458\u5de5" : "Invite digital employee"}
+                        </div>
+                    )}
+                    {onAddLocalMaclawToTab && !tabContextMenu.tab.readOnly && !!tabContextMenu.tab.veId && !hasLocalAIParticipant(tabContextMenu.tab) && (
+                        <div
+                            data-testid="tab-menu-add-local"
+                            role="menuitem"
+                            onClick={() => { onAddLocalMaclawToTab(tabContextMenu.tab); setTabContextMenu(null); }}
+                            style={{ padding: "6px 14px", cursor: "pointer", fontSize: 13, color: theme.text }}
+                            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
+                            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
+                        >
+                            {isZh ? "\u6dfb\u52a0\u672c\u673a AI \u52a9\u624b" : "Add local AI assistant"}
+                        </div>
+                    )}
+                    {onRenameGroupTab && !tabContextMenu.tab.readOnly && tabContextMenu.tab.type === "group" && (
+                        <div
+                            data-testid="tab-menu-rename-group"
+                            role="menuitem"
+                            onClick={() => { onRenameGroupTab(tabContextMenu.tab); setTabContextMenu(null); }}
+                            style={{ padding: "6px 14px", cursor: "pointer", fontSize: 13, color: theme.text }}
+                            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
+                            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
+                        >
+                            {isZh ? "\u4fee\u6539\u7fa4\u540d" : "Rename group"}
+                        </div>
+                    )}
+                    {tabContextMenu.tab.closable && (
+                        <div
+                            data-testid="tab-menu-close"
+                            role="menuitem"
+                            onClick={() => { onClose(tabContextMenu.tab.id); setTabContextMenu(null); }}
+                            style={{ padding: "6px 14px", cursor: "pointer", fontSize: 13, color: theme.text, borderTop: `1px solid ${theme.divider}`, marginTop: 2 }}
+                            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = theme.fieldBg; }}
+                            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = ""; }}
+                        >
+                            {isZh ? "\u5173\u95ed" : "Close"}
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+/**
+ * Compute which tabs should be visible in the tab bar.
+ * Rules:
+ * - The new-task guide is always visible when the list still carries it.
+ * - Active tab is always visible.
+ * - Remaining slots filled in order.
+ */
+function computeVisibleTabs(tabs: AITab[], activeTabId: string, maxVisible: number): AITab[] {
+    if (maxVisible >= tabs.length) return tabs;
+
+    const result: AITab[] = [];
+    const used = new Set<string>();
+
+    // The guide is no longer pinned by index: callers pass task tabs only, so
+    // the active task tab simply takes the first slot on a narrow bar.
+    const guideTab = tabs.find(t => t.type === "local");
+    if (guideTab) {
+        result.push(guideTab);
+        used.add(guideTab.id);
+    }
+
+    // Always include active tab.
+    const activeTab = tabs.find(t => t.id === activeTabId);
+    if (activeTab && !used.has(activeTab.id)) {
+        result.push(activeTab);
+        used.add(activeTab.id);
+    }
+
+    // Fill remaining slots in order.
+    for (const tab of tabs) {
+        if (result.length >= maxVisible) break;
+        if (!used.has(tab.id)) {
+            result.push(tab);
+            used.add(tab.id);
+        }
+    }
+
+    return result;
+}

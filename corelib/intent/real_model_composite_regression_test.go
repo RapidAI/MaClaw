@@ -25,7 +25,7 @@ func TestRealModelLiveDataDocumentCompositeRegression(t *testing.T) {
 	if _, err := os.Stat(modelPath); err != nil {
 		t.Skipf("embedding model not installed: %v", err)
 	}
-	emb, err := embedding.NewGemmaEmbedder(modelPath, embedding.DefaultEmbeddingDim)
+	emb, err := embedding.NewEmbedderFromFile(modelPath, embedding.DefaultEmbeddingDim)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,6 +42,7 @@ func TestRealModelLiveDataDocumentCompositeRegression(t *testing.T) {
 
 	for _, text := range []string{
 		"北京天气，输出格式化pdf报告",
+		"崇州天气，生成格式化pdf",
 		"天津天气，输出格式化pdf报告",
 		"东莞天气，输出 格式化pdf报告",
 		"输出东莞天气PDF报告",

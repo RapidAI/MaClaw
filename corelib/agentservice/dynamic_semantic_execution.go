@@ -2,11 +2,13 @@ package agentservice
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 
+	mcphttp "github.com/RapidAI/CodeClaw/corelib/mcp"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -334,7 +336,7 @@ func (c *DynamicSemanticCatalog) ExecuteSelectionWithEffects(ctx context.Context
 			return binding.host.execute(ctx, principal, canonical.Values)
 		}
 		if binding.mcp != nil {
-			return callBoundMCPTool(ctx, mcpProvider, principal, *binding.mcp, canonical.Values)
+			return callBoundMCPTool(ctx, mcpProvider, principal, *binding.mcp, reviewedMCPInvocationArguments(canonical.Values, binding.mcp.ArgumentFields))
 		}
 		if binding.skill != nil {
 			bound, ok := skillProvider.(boundSkillToolCaller)
@@ -357,23 +359,30 @@ func (c *DynamicSemanticCatalog) ExecuteSelectionWithEffects(ctx context.Context
 	return coretool.SelectionExecutionResult{Result: result, Succeeded: true}
 }
 
+func reviewedMCPInvocationArguments(args map[string]interface{}, fields map[string]string) map[string]interface{} {
+	if len(fields) == 0 || len(args) == 0 {
+		return args
+	}
+	out := make(map[string]interface{}, len(args))
+	for key, value := range args {
+		if target := strings.TrimSpace(fields[key]); target != "" {
+			out[target] = value
+			continue
+		}
+		out[key] = value
+	}
+	return out
+}
+
 func dynamicSemanticExecutionCancelledResult() coretool.SelectionExecutionResult {
 	return coretool.SelectionExecutionResult{Result: "[system rejected] dynamic_execution_cancelled", ReasonCode: "dynamic_execution_cancelled"}
 }
 
 func dynamicSelectionRequiresReceipt(selection coretool.PlannedSelection) bool {
-	if dynamicHostLocalMutationSelection(selection) {
+	if dynamicHostLocalMutationSelection(selection) || dynamicHostObservedExternalSelection(selection) {
 		return false
 	}
-	if dynamicHostObservedExternalSelection(selection) {
-		return false
-	}
-	for _, effect := range selection.Effects {
-		if effect == coretool.EffectExternalEffect || effect == coretool.EffectSensitive {
-			return true
-		}
-	}
-	return false
+	return coretool.SelectionRequiresExternalReceipt(selection)
 }
 
 // dynamicHostObservedExternalSelection identifies a host-owned ssh / browser /
@@ -382,24 +391,9 @@ func dynamicSelectionRequiresReceipt(selection coretool.PlannedSelection) bool {
 // not a channel send and must not enter the IM delivery coordinator.
 // Schedule dispatch and message.send.im stay on the coordinator path.
 func dynamicHostObservedExternalSelection(selection coretool.PlannedSelection) bool {
-	if !strings.EqualFold(strings.TrimSpace(selection.Provider.Kind), reviewedHostProviderKind) {
-		return false
-	}
-	external := false
-	for _, effect := range selection.Effects {
-		if effect == coretool.EffectExternalEffect {
-			external = true
-		}
-	}
-	if !external {
-		return false
-	}
-	switch strings.TrimSpace(selection.AdapterName) {
-	case reviewedHostSSHAdapterName, reviewedHostBrowserAdapterName, reviewedHostComputerUseAdapterName, reviewedHostRepoMutateAdapterName:
-		return true
-	default:
-		return false
-	}
+	return coretool.HostObservedExternalSelection(selection, reviewedHostProviderKind,
+		reviewedHostSSHAdapterName, reviewedHostBrowserAdapterName,
+		reviewedHostComputerUseAdapterName, reviewedHostRepoMutateAdapterName)
 }
 
 // dynamicHostLocalMutationSelection identifies a host-owned provider whose
@@ -408,19 +402,7 @@ func dynamicHostObservedExternalSelection(selection coretool.PlannedSelection) b
 // authoritative local completion receipt. This boundary is unavailable to
 // Skill/MCP or any selection that also declares EffectExternalEffect.
 func dynamicHostLocalMutationSelection(selection coretool.PlannedSelection) bool {
-	if !strings.EqualFold(strings.TrimSpace(selection.Provider.Kind), reviewedHostProviderKind) {
-		return false
-	}
-	local := false
-	for _, effect := range selection.Effects {
-		switch effect {
-		case coretool.EffectSensitive, coretool.EffectLocalMutation:
-			local = true
-		case coretool.EffectExternalEffect:
-			return false
-		}
-	}
-	return local
+	return coretool.HostLocalMutationSelection(selection, reviewedHostProviderKind)
 }
 
 func executeDynamicExternalEffect(ctx context.Context, coordinator DynamicExternalEffectCoordinator, invocation DynamicExternalEffectInvocation, dispatch func() (string, error)) coretool.SelectionExecutionResult {
@@ -545,6 +527,12 @@ func dynamicSemanticDispatchError(binding dynamicSemanticRuntimeBinding, err err
 		return coretool.SelectionExecutionResult{Result: "[system rejected] " + code, ReasonCode: code}
 	}
 	if binding.mcp != nil {
+		// A parsed tools/call error reached the tool and came back. That is a
+		// completed failure, not an unobserved transport.
+		var toolErr *mcphttp.ToolCallError
+		if errors.As(err, &toolErr) {
+			return coretool.SelectionExecutionResult{Result: "Error: " + toolErr.Error(), ReasonCode: "mcp_tool_error"}
+		}
 		return dynamicSemanticExecutionError("mcp", err)
 	}
 	if binding.skill != nil {

@@ -512,3 +512,31 @@ func TestParameterAuthorizationClosesTargetArtifactReferences(t *testing.T) {
 		t.Fatal("constraint drift was treated as the same authorization")
 	}
 }
+
+func TestPrepareDeliveryRejectsSupersededRevision(t *testing.T) {
+	coordinator, err := NewSQLiteSemanticExecutionCoordinator(filepath.Join(t.TempDir(), "semantic-execution.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.Close()
+	scope, plan, _ := outboxAdmittedFixture(t, coordinator, "root-prepare-superseded")
+	payload, err := NewArtifactPayload(scope, "selection:producer", "document", "text/plain", "cGF5bG9hZA==", time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := coordinator.Artifacts.Publish(payload); err != nil {
+		t.Fatal(err)
+	}
+	_ = publishChildRevision(t, coordinator, scope, plan)
+	record := DeliveryRecord{
+		Scope: scope, SelectionID: plan.Selections[0].ID, ArtifactID: payload.Ref.ID,
+		ArtifactSourceScope: scope, ChannelScope: "test-channel",
+		DestinationID: "group:one", State: DeliveryPrepared,
+	}
+	if _, err := coordinator.PrepareDelivery(record, time.Now().UTC()); err == nil || err.Error() != "route_revision_superseded" {
+		t.Fatalf("stale PrepareDelivery err=%v", err)
+	}
+	if _, err := coordinator.Artifacts.Delivery(scope, plan.Selections[0].ID); !errors.Is(err, ErrDeliveryNotFound) {
+		t.Fatalf("stale PrepareDelivery created outbox row: err=%v", err)
+	}
+}

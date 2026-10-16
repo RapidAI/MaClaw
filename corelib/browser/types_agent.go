@@ -105,17 +105,21 @@ type CompactElementRef struct {
 	Enabled bool   `json:"enabled"`
 	Checked *bool  `json:"checked,omitempty"`
 	FrameID string `json:"frame_id,omitempty"`
+	Value   string `json:"value,omitempty"`
 }
 
 // BrowserPageFlags captures observe-time page conditions that should stop
 // blind clicking.
 type BrowserPageFlags struct {
-	CaptchaWidget bool `json:"captcha_widget,omitempty"`
-	Captcha       bool `json:"captcha,omitempty"`
-	LoginWall     bool `json:"login_wall,omitempty"`
-	MFA           bool `json:"mfa,omitempty"`
-	Canvas        bool `json:"canvas,omitempty"`
-	VisionUsed    bool `json:"vision_used,omitempty"`
+	CaptchaWidget  bool `json:"captcha_widget,omitempty"`
+	Captcha        bool `json:"captcha,omitempty"`
+	LoginWall      bool `json:"login_wall,omitempty"`
+	LoginQR        bool `json:"login_qr,omitempty"`
+	MFA            bool `json:"mfa,omitempty"`
+	Canvas         bool `json:"canvas,omitempty"`
+	PaymentConfirm bool `json:"payment_confirm,omitempty"`
+	ConsentDialog  bool `json:"consent_dialog,omitempty"`
+	VisionUsed     bool `json:"vision_used,omitempty"`
 }
 
 // ExpectSpec is an optional post-condition for navigate/click/type/select.
@@ -145,6 +149,7 @@ type BrowserSnapshot struct {
 	PageFlags       BrowserPageFlags       `json:"page_flags,omitempty"`
 	RefsTruncated   bool                   `json:"refs_truncated,omitempty"`
 	VisionExcerpt   string                 `json:"vision_excerpt,omitempty"`
+	Probe           bool                   `json:"probe,omitempty"`
 }
 
 // BrowserObservation is the structured result of browser_observe.
@@ -167,6 +172,11 @@ type BrowserActionResult struct {
 	AskUser           *agent.AskUserRequest  `json:"-"`
 	GoalClass         bool                   `json:"-"`
 	submitRememberKey string
+	// batchStop tells a fast task_run to return this step's observation and
+	// not run later steps. Set only while a fast batch is active.
+	batchStop       bool
+	batchStopReason string
+	batchObserveErr string
 }
 
 // BrowserTraceEvent is a browser-specific trace projection.
@@ -247,10 +257,27 @@ type BrowserAgentSession struct {
 	activityLog          []string
 	recentSubmitClicks   map[string]time.Time
 
+	// blockModelPasswordTyping refuses a model Type into a focused password
+	// field. Desktop sessions set it. Secret fill uses InsertPasswordText.
+	blockModelPasswordTyping bool
+
 	snapshots       map[string]*BrowserSnapshot
 	lastSnapshotID  string
 	lastFingerprint string
+	// probeFlagsStale is set when a page script runs. The probe still has
+	// refs, but its flags describe the page from before that script.
+	probeFlagsStale bool
 	lastExpect      ExpectSpec
 	lastMissingKey  string
 	missingExpectN  int
+
+	// peekFlags overrides the CDP flag peek in tests.
+	peekFlags func() (BrowserPageFlags, error)
+
+	// fastBatch skips per-step settle and full observe for task_run.
+	fastBatch        bool
+	fastBatchURL     string
+	fastBatchTitle   string
+	fastBatchMark    string
+	fastBatchLoading bool
 }

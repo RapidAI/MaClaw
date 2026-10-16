@@ -60,14 +60,14 @@ func TestSharedEvolutionStatusShape(t *testing.T) {
 	t.Setenv("MACLAW_DATA_DIR", dataDir)
 
 	st := SharedEvolutionStatus()
-	if st["disabled"] != false {
-		t.Fatalf("disabled = %v, want false", st["disabled"])
+	if st["disabled"] != true {
+		t.Fatalf("disabled = %v, want true", st["disabled"])
 	}
-	if st["config_enabled"] != true {
-		t.Fatalf("config_enabled = %v, want true (default)", st["config_enabled"])
+	if st["config_enabled"] != false {
+		t.Fatalf("config_enabled = %v, want false (opt-in)", st["config_enabled"])
 	}
-	if st["config_disabled"] != false {
-		t.Fatalf("config_disabled = %v, want false", st["config_disabled"])
+	if st["config_disabled"] != true {
+		t.Fatalf("config_disabled = %v, want true", st["config_disabled"])
 	}
 	if _, ok := st["pipeline_started"]; !ok {
 		t.Fatal("missing pipeline_started")
@@ -149,15 +149,16 @@ func TestNotifySharedSkillEvolution_DoesNotPanic(t *testing.T) {
 	// We just verify Notify is non-blocking and queues work.
 	store := &memConfigStore{cfg: corelib.AppConfig{
 		NLSkills: []corelib.NLSkillEntry{{
-			Name:        "cli-skill",
-			Source:      "hub",
-			Status:      "active",
-			UsageCount:  1,
-			LastError:   "[class: command_not_found] foo",
-			Steps:       []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "foo"}}},
+			Name:       "cli-skill",
+			Source:     "hub",
+			Status:     "active",
+			UsageCount: 1,
+			LastError:  "[class: command_not_found] foo",
+			Steps:      []corelib.NLSkillStep{{Action: "bash", Params: map[string]interface{}{"command": "foo"}}},
 		}},
 		SkillEvolutionRepairCooldownHours: 1,
 	}}
+	store.cfg.SetSkillEvolutionEnabled(true)
 	entry := store.cfg.NLSkills[0]
 	// First notify starts the pipeline; no LLM configured so repair hook may no-op.
 	NotifySharedSkillEvolution(store.cfg, store, &entry, false, map[string]string{"input": "x"})

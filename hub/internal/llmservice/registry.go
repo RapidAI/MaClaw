@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
@@ -57,9 +58,11 @@ type Registry struct {
 	DefaultNewUserCredits       float64           `json:"default_new_user_credits,omitempty"`
 	DefaultNewUserBenefitMode   string            `json:"default_new_user_benefit_mode"`
 	// DefaultNewUserLimitCard is a separate, unmetered entitlement for new
-	// users. Unlike DefaultNewUserCredits, it grants access to a binding-active
-	// service group and constrains consumption only through period limits.
+	// users. Unlike DefaultNewUserCredits, it grants access to a configured
+	// model service group (free or grant-required) and constrains consumption
+	// only through period limits.
 	DefaultNewUserLimitCard NewUserLimitCard `json:"default_new_user_limit_card,omitempty"`
+	ResetVouchers           []ResetVoucher   `json:"reset_vouchers,omitempty"`
 	TokensPerCredit         int              `json:"tokens_per_credit,omitempty"`
 	// BillingLedger is append-only request settlement evidence. Keeping it in
 	// the same settings document as grants makes the debit and the idempotency
@@ -69,6 +72,18 @@ type Registry struct {
 	// to grants so admission, settlement, and recovery use one durable balance
 	// authority while the SQL ledger remains an audit mirror.
 	BillingReservations []BillingReservation `json:"billing_reservations,omitempty"`
+}
+
+// ResetVoucher is a one-time entitlement that clears the holder's current
+// five-hour and daily limit-card usage. It is intentionally separate from
+// credits and never contributes to billing balances.
+type ResetVoucher struct {
+	ID         string     `json:"id"`
+	UserID     string     `json:"user_id,omitempty"`
+	Email      string     `json:"email"`
+	IssuedAt   time.Time  `json:"issued_at"`
+	ExpiresAt  time.Time  `json:"expires_at"`
+	RedeemedAt *time.Time `json:"redeemed_at,omitempty"`
 }
 
 type BillingReservation struct {
@@ -90,7 +105,29 @@ type BillingReservation struct {
 	SentAt    time.Time `json:"sent_at,omitempty"`
 	ExpiresAt time.Time `json:"expires_at"`
 	CreatedAt time.Time `json:"created_at"`
+	// Status is empty while the hold is live. BillingReservationUsageUnresolved
+	// marks a sent local reservation whose response was lost past the recovery
+	// window: the hold no longer counts against the balance, but the row is
+	// retained as audit evidence instead of being silently deleted.
+	Status string `json:"status,omitempty"`
 }
+
+const (
+	// BillingReservationUsageUnresolved marks a settled-impossible reservation:
+	// the request was sent upstream but no usage fact ever came back (design §8
+	// requires keeping this state rather than guessing a cache-discounted
+	// settlement).
+	BillingReservationUsageUnresolved = "usage_unresolved"
+	// SentLocalBillingReservationMaxAge bounds how long a sent non-official
+	// reservation may hold Credits without a settlement. Official reservations
+	// are excluded: they keep waiting for HubCenter's authenticated
+	// reconciliation, which can still prove the real usage later.
+	SentLocalBillingReservationMaxAge = 30 * time.Minute
+	// BillingReservationTerminalRetention bounds how long a terminal
+	// (usage_unresolved) reservation row is kept as audit evidence before
+	// pruning drops it, keeping the registry JSON bounded.
+	BillingReservationTerminalRetention = 30 * 24 * time.Hour
+)
 
 // BillingLedgerEntry is the immutable settlement fact for one Hub request.
 // Prices are snapshots, never looked up again when reviewing historical usage.
@@ -104,6 +141,32 @@ type BillingLedgerEntry struct {
 	OutputTokens     int64    `json:"output_tokens,omitempty"`
 	RequestedCredits float64  `json:"requested_credits"`
 	DeductedCredits  float64  `json:"deducted_credits"`
+	// CachedInputTokens/CacheWriteTokens freeze the cache-direction usage legs.
+	// Without them a replayed request would rebuild its report from input/output
+	// only and silently lose the Cache Read/Write provenance of the original
+	// debit. Older entries predate the fields and simply decode as zero.
+	CachedInputTokens int64 `json:"cached_input_tokens,omitempty"`
+	CacheWriteTokens  int64 `json:"cache_write_tokens,omitempty"`
+	// The four directional amounts are the already-computed settlement facts
+	// (design: history must never be recalculated from a later price). They are
+	// expressed on the requested-amount scale: when a balance cap truncates the
+	// final debit, their sum matches RequestedCredits, not DeductedMicrocredits.
+	// An explicit zero direction is indistinguishable from a legacy entry in
+	// JSON because of omitempty; the presence signal for "this entry carries a
+	// directional price snapshot" is Pricing != nil. Legacy token-count debits
+	// keep all eight fields empty.
+	NormalInputCredits float64 `json:"normal_input_credits,omitempty"`
+	CacheReadCredits   float64 `json:"cache_read_credits,omitempty"`
+	CacheWriteCredits  float64 `json:"cache_write_credits,omitempty"`
+	OutputCredits      float64 `json:"output_credits,omitempty"`
+	NormalInputCostRMB float64 `json:"normal_input_cost_rmb,omitempty"`
+	CacheReadCostRMB   float64 `json:"cache_read_cost_rmb,omitempty"`
+	CacheWriteCostRMB  float64 `json:"cache_write_cost_rmb,omitempty"`
+	OutputCostRMB      float64 `json:"output_cost_rmb,omitempty"`
+	// PricingSource is the audit label of the frozen price's configuration
+	// owner ("provider" or "service_group_override"), frozen so a replayed
+	// request reports the same source as the original debit.
+	PricingSource string `json:"pricing_source,omitempty"`
 	// Requested/DeductedMicrocredits are the authoritative fixed-point amounts.
 	// Float fields remain for compatibility with existing JSON consumers.
 	RequestedMicrocredits int64 `json:"requested_microcredits,omitempty"`
@@ -143,25 +206,27 @@ type ModelServiceGroup struct {
 }
 
 type ModelServiceModel struct {
-	Name             string                       `json:"name"`
-	Description      string                       `json:"description,omitempty"`
-	ProviderIDs      []string                     `json:"provider_ids,omitempty"`
-	ProviderConfigs  []ModelServiceProviderConfig `json:"provider_configs,omitempty"`
-	CapabilityTags   []string                     `json:"capability_tags,omitempty"`
-	Priority         int                          `json:"priority,omitempty"`
-	ResolutionTier   int                          `json:"resolution_tier,omitempty"`
-	CreditMultiplier float64                      `json:"credit_multiplier,omitempty"`
+	Name              string                       `json:"name"`
+	Description       string                       `json:"description,omitempty"`
+	ProviderIDs       []string                     `json:"provider_ids,omitempty"`
+	ProviderConfigs   []ModelServiceProviderConfig `json:"provider_configs,omitempty"`
+	CapabilityTags    []string                     `json:"capability_tags,omitempty"`
+	Priority          int                          `json:"priority,omitempty"`
+	ResolutionTier    int                          `json:"resolution_tier,omitempty"`
+	CreditMultiplier  float64                      `json:"credit_multiplier,omitempty"`
+	BillingMultiplier float64                      `json:"billing_multiplier,omitempty"`
 }
 
 type ModelServiceProviderConfig struct {
-	ProviderID       string               `json:"provider_id"`
-	Model            string               `json:"model,omitempty"`
-	BillingMode      string               `json:"billing_mode,omitempty"`
-	CapabilityTags   []string             `json:"capability_tags,omitempty"`
-	Priority         int                  `json:"priority,omitempty"`
-	ResolutionTier   int                  `json:"resolution_tier,omitempty"`
-	CreditMultiplier float64              `json:"credit_multiplier,omitempty"`
-	TokenPricing     llmpool.TokenPricing `json:"token_pricing,omitempty"`
+	ProviderID           string               `json:"provider_id"`
+	Model                string               `json:"model,omitempty"`
+	BillingMode          string               `json:"billing_mode,omitempty"`
+	CapabilityTags       []string             `json:"capability_tags,omitempty"`
+	Priority             int                  `json:"priority,omitempty"`
+	ResolutionTier       int                  `json:"resolution_tier,omitempty"`
+	CreditMultiplier     float64              `json:"credit_multiplier,omitempty"`
+	TokenPricingOverride bool                 `json:"token_pricing_override,omitempty"`
+	TokenPricing         llmpool.TokenPricing `json:"token_pricing,omitempty"`
 }
 
 type GroupBinding struct {
@@ -236,8 +301,12 @@ type Grant struct {
 	CreatedAt       time.Time `json:"created_at"`
 	Permanent       bool      `json:"permanent,omitempty"`
 	RollingFiveHour bool      `json:"rolling_five_hour,omitempty"`
-	CreditsTotal    float64   `json:"credits_total,omitempty"`
-	CreditsUsed     float64   `json:"credits_used,omitempty"`
+	// AnchoredFiveHour uses the first-use timestamp as the start of recurring
+	// five-hour windows. It is materialized only in the effective new-user
+	// limit-card view and is cleared from the stored qualification snapshot.
+	AnchoredFiveHour bool    `json:"anchored_five_hour,omitempty"`
+	CreditsTotal     float64 `json:"credits_total,omitempty"`
+	CreditsUsed      float64 `json:"credits_used,omitempty"`
 	// Frozen grants are retained for audit but never participate in billing.
 	// Referral revocation uses this rather than deleting already-issued grants.
 	Frozen       bool               `json:"frozen,omitempty"`
@@ -257,6 +326,7 @@ type AuthorizedModel struct {
 	Priority                      int                             `json:"priority,omitempty"`
 	ResolutionTier                int                             `json:"resolution_tier,omitempty"`
 	CreditMultiplier              float64                         `json:"credit_multiplier,omitempty"`
+	BillingMultiplier             float64                         `json:"billing_multiplier,omitempty"`
 	ProviderCapabilityTags        map[string][]string             `json:"provider_capability_tags,omitempty"`
 	ProviderPriorities            map[string]int                  `json:"provider_priorities,omitempty"`
 	ProviderResolutionTiers       map[string]int                  `json:"provider_resolution_tiers,omitempty"`
@@ -271,32 +341,41 @@ type AuthorizedModel struct {
 	// upstream model. ProviderTokenPricing is retained as a compatibility
 	// projection for callers that only know the provider ID.
 	ProviderRouteBilling map[string]map[string]ProviderRouteBilling `json:"provider_route_billing,omitempty"`
+	// AvailabilityFallbacks are same-group high/mid/low siblings to try when
+	// this model's providers cannot serve the request. Not persisted.
+	AvailabilityFallbacks []AuthorizedModel `json:"-"`
 }
 
 // ProviderRouteBilling is the provider-owned billing configuration for one
 // logical-model / upstream-model route after group aggregation.
 type ProviderRouteBilling struct {
-	BillingMode  string               `json:"billing_mode,omitempty"`
-	TokenPricing llmpool.TokenPricing `json:"token_pricing,omitempty"`
+	BillingMode          string               `json:"billing_mode,omitempty"`
+	TokenPricingOverride bool                 `json:"token_pricing_override,omitempty"`
+	TokenPricing         llmpool.TokenPricing `json:"token_pricing,omitempty"`
 }
 
 type ActiveGrant struct {
-	ID                string                  `json:"id,omitempty"`
-	ServiceGroupID    string                  `json:"service_group_id"`
-	Source            string                  `json:"source"`
-	CardID            string                  `json:"card_id,omitempty"`
-	CardOrderID       string                  `json:"card_order_id,omitempty"`
-	StartsAt          time.Time               `json:"starts_at"`
-	ExpiresAt         time.Time               `json:"expires_at"`
-	Permanent         bool                    `json:"permanent,omitempty"`
-	RollingFiveHour   bool                    `json:"rolling_five_hour,omitempty"`
-	Active            bool                    `json:"active"`
-	Effective         bool                    `json:"effective"`
-	Status            string                  `json:"status,omitempty"`
-	StatusReason      string                  `json:"status_reason,omitempty"`
-	CreditsTotal      float64                 `json:"credits_total,omitempty"`
-	CreditsUsed       float64                 `json:"credits_used,omitempty"`
-	CreditsAvailable  float64                 `json:"credits_available,omitempty"`
+	ID               string    `json:"id,omitempty"`
+	ServiceGroupID   string    `json:"service_group_id"`
+	Source           string    `json:"source"`
+	CardID           string    `json:"card_id,omitempty"`
+	CardOrderID      string    `json:"card_order_id,omitempty"`
+	StartsAt         time.Time `json:"starts_at"`
+	ExpiresAt        time.Time `json:"expires_at"`
+	Permanent        bool      `json:"permanent,omitempty"`
+	RollingFiveHour  bool      `json:"rolling_five_hour,omitempty"`
+	Active           bool      `json:"active"`
+	Effective        bool      `json:"effective"`
+	Status           string    `json:"status,omitempty"`
+	StatusReason     string    `json:"status_reason,omitempty"`
+	CreditsTotal     float64   `json:"credits_total,omitempty"`
+	CreditsUsed      float64   `json:"credits_used,omitempty"`
+	CreditsAvailable float64   `json:"credits_available,omitempty"`
+	// HeldCredits is the owner-scoped share of this grant's service group that
+	// is currently held by in-flight billing reservations. Admission subtracts
+	// the same amount, so the UI can show why spendable credit is lower than
+	// the raw period window remaining.
+	HeldCredits       float64                 `json:"held_credits,omitempty"`
 	RetryAfterSeconds int64                   `json:"retry_after_seconds,omitempty"`
 	RetryAfterAt      string                  `json:"retry_after_at,omitempty"`
 	CreditsRemaining  float64                 `json:"credits_remaining,omitempty"`
@@ -340,6 +419,7 @@ type ServiceStatus struct {
 	CreditsRemaining   float64           `json:"credits_remaining"`
 	CreditsAvailable   float64           `json:"credits_available"`
 	TokensPerCredit    int               `json:"tokens_per_credit,omitempty"`
+	ResetVouchers      []ResetVoucher    `json:"reset_vouchers,omitempty"`
 }
 
 func LoadRegistry(ctx context.Context, system SystemSettingsRepository) (*Registry, error) {
@@ -357,16 +437,120 @@ func LoadRegistry(ctx context.Context, system SystemSettingsRepository) (*Regist
 	return &reg, nil
 }
 
+// serviceRegistryMu serializes read-modify-write of the service registry.
+// Token-bank pulls and credit billing both store their result in this one JSON
+// document. Without a shared lock, a billing flush that loaded a snapshot from
+// before the pull saves over the new grant, and the HubCenter debit has no
+// local quota left.
+//
+// Lock order is llmCreditChargeMu, then this mutex. IssueTokenBankGrant takes
+// tokenBankGrantMu, then this mutex. Admission pulls take their account stripe
+// before tokenBankGrantMu. Do not take any of those while holding this mutex,
+// and do not call the public registry loader from a caller that already holds
+// it: that loader locks this mutex inside singleflight.
+var serviceRegistryMu sync.Mutex
+
+// LockServiceRegistryMutation guards one registry read-modify-write. Callers
+// that already hold it must use the locked loader rather than taking it again.
+func LockServiceRegistryMutation() { serviceRegistryMu.Lock() }
+
+// UnlockServiceRegistryMutation releases LockServiceRegistryMutation.
+func UnlockServiceRegistryMutation() { serviceRegistryMu.Unlock() }
+
+// WithServiceRegistryMutation runs fn while holding the registry write lock.
+func WithServiceRegistryMutation(fn func() error) error {
+	if fn == nil {
+		return nil
+	}
+	serviceRegistryMu.Lock()
+	defer serviceRegistryMu.Unlock()
+	return fn()
+}
+
+var afterServiceRegistrySave func(SystemSettingsRepository)
+
+// SetAfterServiceRegistrySave registers a hook invoked after every successful
+// registry write. The hub uses it to drop the runtime cache; a stale cache is
+// what the next flush would save back over a token-bank grant.
+func SetAfterServiceRegistrySave(fn func(SystemSettingsRepository)) {
+	afterServiceRegistrySave = fn
+}
+
+func notifyServiceRegistrySave(system SystemSettingsRepository) {
+	if afterServiceRegistrySave != nil && system != nil {
+		afterServiceRegistrySave(system)
+	}
+}
+
 func SaveRegistry(ctx context.Context, system SystemSettingsRepository, reg *Registry) error {
 	if reg == nil {
 		reg = &Registry{}
+	}
+	if err := mergeStoredTokenBankGrants(ctx, system, reg); err != nil {
+		return err
 	}
 	reg.Normalize()
 	data, err := json.Marshal(reg)
 	if err != nil {
 		return err
 	}
-	return system.Set(ctx, RegistryKey, string(data))
+	if err := system.Set(ctx, RegistryKey, string(data)); err != nil {
+		return err
+	}
+	notifyServiceRegistrySave(system)
+	return nil
+}
+
+// mergeStoredTokenBankGrants keeps token-bank grants that the caller never
+// loaded. A pull writes the grant into the store, then a saver holding an
+// older snapshot would otherwise delete it. When both copies have the grant,
+// the higher CreditsUsed wins so a debit that already landed is not refunded.
+func mergeStoredTokenBankGrants(ctx context.Context, system SystemSettingsRepository, reg *Registry) error {
+	if system == nil || reg == nil {
+		return nil
+	}
+	fresh, err := LoadRegistry(ctx, system)
+	if err != nil {
+		return err
+	}
+	if fresh == nil {
+		return nil
+	}
+	index := make(map[string]int)
+	for i := range reg.Grants {
+		if key, ok := tokenBankGrantMergeKey(reg.Grants[i]); ok {
+			index[key] = i
+		}
+	}
+	for _, grant := range fresh.Grants {
+		key, ok := tokenBankGrantMergeKey(grant)
+		if !ok {
+			continue
+		}
+		pos, found := index[key]
+		if !found {
+			reg.Grants = append(reg.Grants, grant)
+			index[key] = len(reg.Grants) - 1
+			continue
+		}
+		if grant.CreditsUsed > reg.Grants[pos].CreditsUsed {
+			reg.Grants[pos].CreditsUsed = grant.CreditsUsed
+		}
+	}
+	return nil
+}
+
+func tokenBankGrantMergeKey(grant Grant) (string, bool) {
+	if strings.TrimSpace(grant.Source) != TokenBankGrantSource {
+		return "", false
+	}
+	if card := strings.TrimSpace(grant.CardID); card != "" {
+		return "card:" + card, true
+	}
+	if id := strings.TrimSpace(grant.ID); id != "" {
+		return "id:" + id, true
+	}
+	return "", false
 }
 
 // BackfillRegistryUserIDs fills user_id on legacy LLM grants, bindings, and
@@ -517,6 +701,18 @@ func purgeUserFromRegistryForUser(ctx context.Context, system SystemSettingsRepo
 	}
 	reg.Cards = filteredCards
 
+	// Reset vouchers are user-owned entitlements as well; remove them when the
+	// account is purged so a later account cannot inherit stale vouchers.
+	filteredVouchers := reg.ResetVouchers[:0]
+	for _, voucher := range reg.ResetVouchers {
+		if resetVoucherMatchesOwner(voucher, owner) {
+			changed = true
+		} else {
+			filteredVouchers = append(filteredVouchers, voucher)
+		}
+	}
+	reg.ResetVouchers = filteredVouchers
+
 	if !changed {
 		return nil
 	}
@@ -648,7 +844,7 @@ func (r *Registry) Normalize() {
 		r.DefaultNewUserLimitCard.DurationDays = 0
 	}
 	r.DefaultNewUserLimitCard.PeriodLimits = normalizeCreditPeriodLimits(r.DefaultNewUserLimitCard.PeriodLimits)
-	// The welcome limit card deliberately exposes only rolling five-hour and
+	// The welcome limit card deliberately exposes only anchored five-hour and
 	// daily caps. Do not retain hidden weekly/monthly values supplied through a
 	// direct API payload: they would be enforced without being configurable or
 	// visible in the tenant System Settings UI.
@@ -660,13 +856,14 @@ func (r *Registry) Normalize() {
 	// belong to a user grant. Clear legacy snapshots while normalizing so a
 	// later settings change cannot leave two sources of truth in storage.
 	for i := range r.Grants {
-		if !strings.EqualFold(strings.TrimSpace(r.Grants[i].Source), "new_user_limit_card") {
+		if !isNewUserLimitCardSource(r.Grants[i].Source) {
 			continue
 		}
 		r.Grants[i].ExpiresAt = time.Time{}
 		r.Grants[i].Permanent = false
 		r.Grants[i].PeriodLimits = CreditPeriodLimits{}
 		r.Grants[i].RollingFiveHour = false
+		r.Grants[i].AnchoredFiveHour = false
 	}
 	if r.TokensPerCredit <= 0 {
 		r.TokensPerCredit = DefaultTokensPerCredit
@@ -991,6 +1188,9 @@ func mergeModelServiceProviderConfig(dst ModelServiceProviderConfig, src ModelSe
 	if src.TokenPricing.HasCreditPricing() {
 		dst.TokenPricing = src.TokenPricing
 	}
+	if src.TokenPricingOverride {
+		dst.TokenPricingOverride = true
+	}
 	return dst
 }
 func containsNormalizedString(items []string, target string) bool {
@@ -1159,6 +1359,84 @@ func (r *Registry) PurgeOrphanedServiceGroupReferences() bool {
 	r.Grants = r.Grants[:n]
 
 	return changed
+}
+
+// PruneProviders removes the given provider IDs from every model service
+// group: each model's ProviderIDs and ProviderConfigs entries that reference
+// a removed provider are dropped, and the per-model derived fields are
+// rebuilt from the surviving provider configs. Models left without any
+// provider are kept (empty models are retained and groups are never
+// deleted), matching the HubCenter-side convention. Returns true when any
+// group configuration changed.
+func (r *Registry) PruneProviders(providerIDs []string) bool {
+	if r == nil || len(providerIDs) == 0 {
+		return false
+	}
+	remove := make(map[string]struct{}, len(providerIDs))
+	for _, id := range providerIDs {
+		key := strings.ToLower(strings.TrimSpace(id))
+		if key != "" {
+			remove[key] = struct{}{}
+		}
+	}
+	if len(remove) == 0 {
+		return false
+	}
+	changed := false
+	for i := range r.ModelServiceGroups {
+		g := &r.ModelServiceGroups[i]
+		for j := range g.Models {
+			if g.Models[j].pruneProviders(remove) {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+func (m *ModelServiceModel) pruneProviders(remove map[string]struct{}) bool {
+	changed := false
+	ids := make([]string, 0, len(m.ProviderIDs))
+	for _, id := range m.ProviderIDs {
+		if _, ok := remove[strings.ToLower(strings.TrimSpace(id))]; ok {
+			changed = true
+			continue
+		}
+		ids = append(ids, id)
+	}
+	configs := make([]ModelServiceProviderConfig, 0, len(m.ProviderConfigs))
+	for _, cfg := range m.ProviderConfigs {
+		if _, ok := remove[strings.ToLower(strings.TrimSpace(cfg.ProviderID))]; ok {
+			changed = true
+			continue
+		}
+		configs = append(configs, cfg)
+	}
+	if !changed {
+		return false
+	}
+	m.ProviderIDs = ids
+	m.ProviderConfigs = configs
+	m.normalizeProviderConfigs()
+	return true
+}
+
+// PruneProvidersFromGroups loads the LLM service registry, drops the given
+// provider IDs from all model service groups, and persists the registry only
+// when something changed. Callers pass a tenant-scoped settings repository so
+// only that tenant's service groups are pruned.
+func PruneProvidersFromGroups(ctx context.Context, system SystemSettingsRepository, providerIDs []string) (bool, error) {
+	if system == nil || len(providerIDs) == 0 {
+		return false, nil
+	}
+	reg, err := LoadRegistry(ctx, system)
+	if err != nil {
+		return false, err
+	}
+	if !reg.PruneProviders(providerIDs) {
+		return false, nil
+	}
+	return true, SaveRegistry(ctx, system, reg)
 }
 
 func (r *Registry) FindCardByCode(code string) (*RechargeCard, int) {

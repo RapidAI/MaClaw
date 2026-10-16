@@ -128,6 +128,116 @@ func TestWaitForOutput_TimeoutInterruptsWithoutSignal(t *testing.T) {
 // the runtime-child path. A cancelled reader must stop waiting quickly, but
 // must not turn its local cancellation into the timeout/Ctrl+C behavior that
 // could interrupt another caller sharing the same SSH session.
+func TestShellPromptReturnedSinceAcceptsASinglePromptLine(t *testing.T) {
+	s := &SSHManagedSession{
+		PreviewLines: []string{"root@host:~#"},
+	}
+	if !s.shellPromptReturnedSince(0) {
+		t.Fatal("a single prompt line is the shell coming back")
+	}
+	s.PreviewLines = []string{"still running"}
+	if s.shellPromptReturnedSince(0) {
+		t.Fatal("command output was treated as a prompt")
+	}
+	s.PreviewLines = []string{"still running"}
+	s.pendingLine = "root@host:~#"
+	if !s.shellPromptReturnedSince(1) {
+		t.Fatal("pending prompt after the command was ignored")
+	}
+	s.pendingLine = ""
+	s.PreviewLines = []string{"user@host:~# leaked-from-command", "still running"}
+	if s.shellPromptReturnedSince(0) {
+		t.Fatal("an earlier prompt-shaped line counted after later output")
+	}
+	s.PreviewLines = []string{"still running", "root@host:~#"}
+	if !s.shellPromptReturnedSince(1) {
+		t.Fatal("prompt after the mark was ignored")
+	}
+	if s.shellPromptReturnedSince(2) {
+		t.Fatal("prompt before the mark counted as the shell coming back")
+	}
+}
+
+func TestPromptAppearedAfterIgnoresTheSamePendingLine(t *testing.T) {
+	s := &SSHManagedSession{pendingLine: "root@host:~#"}
+	if s.promptAppearedAfter(0, "root@host:~#") {
+		t.Fatal("the prompt already on screen counted as coming back")
+	}
+	s.pendingLine = "root@host:~# "
+	if s.promptAppearedAfter(0, "root@host:~#") {
+		t.Fatal("a cursor space on the same prompt counted as coming back")
+	}
+	s.pendingLine = "\x1b[32mroot@host:~#\x1b[0m"
+	if s.promptAppearedAfter(0, "root@host:~#") {
+		t.Fatal("the same prompt with color codes counted as coming back")
+	}
+	s.pendingLine = "root@other:~#"
+	if !s.promptAppearedAfter(0, "root@host:~#") {
+		t.Fatal("a different pending prompt was ignored")
+	}
+	s.pendingLine = ""
+	s.PreviewLines = []string{"root@host:~#"}
+	if s.promptAppearedAfter(0, "root@host:~#") {
+		t.Fatal("committing the pending prompt counted as coming back")
+	}
+	s.PreviewLines = []string{"^C", "root@host:~#"}
+	if !s.promptAppearedAfter(0, "root@host:~#") {
+		t.Fatal("prompt printed after interrupt output was ignored")
+	}
+	s.PreviewLines = []string{"user@host:~# leaked"}
+	if s.promptAppearedAfter(0, "") {
+		t.Fatal("command output was treated as a new prompt")
+	}
+}
+
+func TestWaitForOutputContextDeadlineKeepsFinishedPrompt(t *testing.T) {
+	mgr := NewSSHSessionManager(nil)
+	s := &SSHManagedSession{
+		ID:           "sess-deadline-done",
+		Status:       SessionRunning,
+		PreviewLines: []string{"ok", "root@host:~#"},
+		CreatedAt:    time.Now(),
+	}
+	mgr.mu.Lock()
+	mgr.sessions[s.ID] = s
+	mgr.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	lines, _ := mgr.WaitForOutputContext(ctx, s.ID, 0, 10*time.Second)
+	joined := strings.Join(lines, "\n")
+	if strings.Contains(joined, "命令执行超时") || strings.Contains(joined, SSHWaitTimeoutShellBusyNotice) {
+		t.Fatalf("finished command was reported as a timeout: %q", joined)
+	}
+	if !strings.Contains(joined, "ok") || !strings.Contains(joined, "root@host:~#") {
+		t.Fatalf("finished output was dropped: %q", joined)
+	}
+}
+
+func TestWaitForOutputContextDeadlineReportsTimeout(t *testing.T) {
+	mgr := NewSSHSessionManager(nil)
+	s := &SSHManagedSession{
+		ID:           "sess-deadline",
+		Status:       SessionRunning,
+		PreviewLines: []string{"still running"},
+		CreatedAt:    time.Now(),
+	}
+	mgr.mu.Lock()
+	mgr.sessions[s.ID] = s
+	mgr.mu.Unlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	start := time.Now()
+	lines, _ := mgr.WaitForOutputContext(ctx, s.ID, 0, 10*time.Second)
+	if elapsed := time.Since(start); elapsed > time.Second {
+		t.Fatalf("deadline did not stop the wait promptly: %v", elapsed)
+	}
+	if joined := strings.Join(lines, "\n"); !strings.Contains(joined, SSHWaitTimeoutShellBusyNotice) {
+		t.Fatalf("deadline without a recovered prompt = %q, want the shell-busy notice", joined)
+	}
+}
+
 func TestWaitForOutputContextCancellationReturnsWithoutTimeoutSideEffect(t *testing.T) {
 	mgr := NewSSHSessionManager(nil)
 	s := &SSHManagedSession{
@@ -302,4 +412,69 @@ func TestNewLinesSinceClampsDroppedPrefix(t *testing.T) {
 	if len(lines) != 2 || lines[0] != "b" {
 		t.Fatalf("got %v", lines)
 	}
+}
+
+// TestProbeFrameSurvivesRingResize pins the durable-runtime recovery probe's
+// availability floor: the probe frames its read-only git status between
+// markers inside this preview ring, and a git status larger than the
+// historical 2000-line ring evicted the begin marker, failing the whole task
+// closed on an otherwise healthy workspace. Frames above the historical cap
+// but below the current cap must survive intact (markers + HEAD line).
+// The residual limit (frames larger than sshPreviewMaxLines itself) must
+// stay fail-closed: eviction of the begin marker, never a wrong frame.
+func TestProbeFrameSurvivesRingResize(t *testing.T) {
+	const (
+		markerStart = "PROBE-BEGIN-9f3a"
+		markerEnd   = "PROBE-END-9f3a"
+		headLine    = "9f3aeadc1234567890abcdef1234567890abcdef12"
+	)
+	buildFrame := func(statusLines int) []string {
+		frame := make([]string, 0, statusLines+3)
+		frame = append(frame, markerStart)
+		for i := 0; i < statusLines; i++ {
+			frame = append(frame, " M internal/pkg/file_0001.go")
+		}
+		frame = append(frame, markerEnd, headLine)
+		return frame
+	}
+	appendFrame := func(s *SSHManagedSession, frame []string) int {
+		absBefore := s.droppedLines + len(s.PreviewLines)
+		s.PreviewLines = append(s.PreviewLines, frame...)
+		s.trimPreviewLocked()
+		return absBefore
+	}
+
+	t.Run("frame above historical 2000-line cap survives", func(t *testing.T) {
+		s := &SSHManagedSession{}
+		frame := buildFrame(15000)
+		s.mu.Lock()
+		absBefore := appendFrame(s, frame)
+		s.mu.Unlock()
+
+		lines, _ := s.NewLinesSince(absBefore)
+		joined := strings.Join(lines, "\n")
+		if !strings.Contains(joined, markerStart) {
+			t.Fatalf("begin marker evicted; ring=%d dropped=%d", len(s.PreviewLines), s.droppedLines)
+		}
+		if !strings.Contains(joined, markerEnd) {
+			t.Fatal("end marker missing from capture")
+		}
+		if !strings.Contains(joined, headLine) {
+			t.Fatal("HEAD line missing from capture")
+		}
+	})
+
+	t.Run("frame larger than the new cap still fails closed", func(t *testing.T) {
+		s := &SSHManagedSession{}
+		frame := buildFrame(sshPreviewMaxLines + 500)
+		s.mu.Lock()
+		absBefore := appendFrame(s, frame)
+		s.mu.Unlock()
+
+		lines, _ := s.NewLinesSince(absBefore)
+		joined := strings.Join(lines, "\n")
+		if strings.Contains(joined, markerStart) {
+			t.Fatal("begin marker unexpectedly survived: eviction floor regressed")
+		}
+	})
 }

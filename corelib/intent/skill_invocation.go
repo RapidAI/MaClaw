@@ -306,10 +306,5 @@ func NamedSkillInterceptCandidate(result ClassificationResult) bool {
 	if wt := strings.TrimSpace(result.WorkflowType); wt != "" && wt != "coding" {
 		return true
 	}
-	for _, label := range result.Labels() {
-		if label == LabelWorkflowTask || label == LabelDocumentGenerate {
-			return true
-		}
-	}
-	return false
+	return result.HasLabel(LabelWorkflowTask) || result.HasLabel(LabelDocumentGenerate)
 }

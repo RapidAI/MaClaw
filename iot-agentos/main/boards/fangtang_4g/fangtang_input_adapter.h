@@ -20,6 +20,7 @@
 
 #include "driver/gpio.h"
 #include "esp_err.h"
+#include "boards/board_gpio_check.h"
 
 #define FANGTANG_INPUT_ACTIVATE_GPIO GPIO_NUM_0
 #define FANGTANG_INPUT_RELEASED_LEVEL 1
@@ -39,6 +40,10 @@ static inline bool fangtang_input_activate_is_released(int level) {
 }
 
 static inline esp_err_t fangtang_input_init(void) {
+    /* Hardcoded pin: fail fast at the adapter boundary. */
+    esp_err_t err = board_check_gpio(FANGTANG_INPUT_ACTIVATE_GPIO, "fangtang_input",
+                                     "activate key");
+    if (err != ESP_OK) return err;
     const gpio_config_t key = {
         .pin_bit_mask = 1ULL << FANGTANG_INPUT_ACTIVATE_GPIO,
         .mode = GPIO_MODE_INPUT,

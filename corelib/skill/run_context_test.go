@@ -721,7 +721,7 @@ func TestRequiredArgsForRunnerPrecheckScopesLegacyArgsToActiveSteps(t *testing.T
 	}
 }
 
-func TestBuildRunCheckContextForRunnerSkipsInactiveOpenAIProxyProbe(t *testing.T) {
+func TestBuildRunCheckContextForRunnerDefaultOnOpenAIProxy(t *testing.T) {
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("OPENAI_BASE_URL", "")
 	entry := &corelib.NLSkillEntry{
@@ -742,9 +742,23 @@ func TestBuildRunCheckContextForRunnerSkipsInactiveOpenAIProxyProbe(t *testing.T
 	}
 
 	guiCtx := BuildRunCheckContextForRunner(entry, nil, RunnerBackendGUI)
+	tuiCtx := BuildRunCheckContextForRunner(entry, nil, RunnerBackendTUI)
 
-	if guiCtx.ProvidedEnvVars["OPENAI_API_KEY"] || guiCtx.ProvidedEnvVars["OPENAI_BASE_URL"] {
-		t.Fatalf("inactive OpenAI step should not mark proxy env provided: %#v", guiCtx.ProvidedEnvVars)
+	// Default-on: the GUI runner starts the local proxy unless the skill
+	// declares no_llm_api, even when the OpenAI-referencing step is inactive.
+	if !guiCtx.ProvidedEnvVars["OPENAI_API_KEY"] || !guiCtx.ProvidedEnvVars["OPENAI_BASE_URL"] {
+		t.Fatalf("GUI context should mark proxy env provided (default-on): %#v", guiCtx.ProvidedEnvVars)
+	}
+	if tuiCtx.ProvidedEnvVars["OPENAI_API_KEY"] || tuiCtx.ProvidedEnvVars["OPENAI_BASE_URL"] {
+		t.Fatalf("TUI context should not mark GUI proxy env provided: %#v", tuiCtx.ProvidedEnvVars)
+	}
+
+	// A skill that declares no_llm_api opts out of the proxy.
+	optOut := *entry
+	optOut.NoLLMAPI = true
+	optOutCtx := BuildRunCheckContextForRunner(&optOut, nil, RunnerBackendGUI)
+	if optOutCtx.ProvidedEnvVars["OPENAI_API_KEY"] || optOutCtx.ProvidedEnvVars["OPENAI_BASE_URL"] {
+		t.Fatalf("no_llm_api skill should not mark proxy env provided: %#v", optOutCtx.ProvidedEnvVars)
 	}
 }
 

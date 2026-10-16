@@ -6,6 +6,28 @@ import (
 	"testing"
 )
 
+func TestStructuredPreview_SSHKeepsCommandSection(t *testing.T) {
+	banner := "SSH 连接成功\n会话 ID: ssh_1\n\n--- 初始输出 ---\nBANNER_START\n" + strings.Repeat("MOTD line\n", 400) + "BANNER_END\n"
+	command := CommandOutputMarker + "\n=== UPTIME ===\nup 18 min\n" + strings.Repeat("tcp LISTEN nginx\n", 80) + "TAIL_PROMPT\n"
+	raw := banner + command
+	preview := StructuredPreview("ssh", raw, 700)
+	if !strings.Contains(preview, "UPTIME") || !strings.Contains(preview, "TAIL_PROMPT") {
+		t.Fatalf("command metrics were dropped:\n%s", preview)
+	}
+	if strings.Contains(preview, "BANNER_END") {
+		t.Fatalf("login banner occupied the preview:\n%s", preview)
+	}
+	if len(preview) > 700 {
+		t.Fatalf("preview len=%d exceeds 700", len(preview))
+	}
+	if strings.Count(preview, "已截断") != 1 {
+		t.Fatalf("truncation markers=%d, want 1", strings.Count(preview, "已截断"))
+	}
+	if !strings.Contains(preview, fmt.Sprintf("共 %d 字节", len(raw))) {
+		t.Fatalf("marker should cite the original payload (%d bytes):\n%s", len(raw), preview)
+	}
+}
+
 func TestStructuredPreview_TerminalTailHeavy(t *testing.T) {
 	raw := "HEAD" + strings.Repeat("x", 8000) + "TAIL_END"
 	p := StructuredPreview("bash", raw, 200)

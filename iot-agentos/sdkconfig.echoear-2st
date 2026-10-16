@@ -986,6 +986,8 @@ CONFIG_MACLAW_BOARD_ECHOEAR_2ST=y
 # default:
 # CONFIG_MACLAW_BOARD_WAVESHARE_S3_TOUCH_AMOLED_1_75C is not set
 # default:
+# CONFIG_MACLAW_BOARD_REFERENCE_FAKE is not set
+# default:
 CONFIG_MACLAW_PRODUCT_ID="maclaw-clawmate"
 # default:
 CONFIG_MACLAW_BOARD_ID="echoear-2st-r8"

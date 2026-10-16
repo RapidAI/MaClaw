@@ -25,7 +25,12 @@ device_status_t pet_asset_runtime_service_apply(
     uint8_t *frames[PET_ASSET_SERVICE_MAX_FRAMES] = {0};
     uint8_t *cache_frames[PET_ASSET_SERVICE_MAX_FRAMES] = {0};
     device_status_t status = DEVICE_STATUS_OK;
-    host->begin_optional_media_work(host->context);
+    bool optional_media_work_held = false;
+    optional_media_work_held = host->begin_optional_media_work(host->context);
+    if (!optional_media_work_held) {
+        status = DEVICE_STATUS_BUSY;
+        goto done;
+    }
 
     /* Optional-media admission is a separate ownership boundary from the
      * initial Gateway lease capture.  A concurrent Connectivity restart may
@@ -93,6 +98,8 @@ device_status_t pet_asset_runtime_service_apply(
 done:
     host->release_frames(frames, host->context);
     host->release_frames(cache_frames, host->context);
-    host->finish_optional_media_work(host->context);
+    if (optional_media_work_held) {
+        host->finish_optional_media_work(host->context);
+    }
     return status;
 }

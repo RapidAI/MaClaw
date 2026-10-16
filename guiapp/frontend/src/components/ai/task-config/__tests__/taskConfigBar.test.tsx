@@ -1,0 +1,1060 @@
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { useState } from 'react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import {
+    canSpecifyExpert,
+    canSpecifyWorkflow,
+    defaultTaskDraft,
+    isDraftDefault,
+    isExpertSpecified,
+    isWorkflowChosen,
+    needsLocalPath,
+    normalizeDraftForTaskType,
+    withCloudWorkspace,
+    draftFromWizardSeed,
+    expertNeedsSetup,
+    withExpert,
+    withLatexTemplate,
+    withLocalWorkspace,
+    withRemoteWorkspace,
+    withWorkflow,
+    workspaceKindsForExpert,
+    workspaceSummaryLabel,
+    WORKFLOW_AUTO,
+    type TaskDraft,
+} from '../taskDraft';
+import { TaskConfigBar, type ExpertOption, type WorkflowOption } from '../TaskConfigBar';
+import { LATEX_BLANK_TEMPLATE_ID, LATEX_EXPERT_ID } from '../../../../utils/latexTemplates';
+import { nextDefaultCloudWorkspaceName } from '../WorkspacePickerPopover';
+import { RemoteServerForm } from '../RemoteServerPopover';
+
+const testRemoteSSHConnection = vi.fn();
+vi.mock('../../../../../wailsjs/go/main/App', () => ({
+    TestRemoteSSHConnection: (...args: unknown[]) => testRemoteSSHConnection(...args),
+}));
+
+const theme = {
+    bg: '#ffffff',
+    text: '#1a2333',
+    textMuted: '#8a94a6',
+    fieldBg: '#f8fafd',
+    fieldBorder: '#dde5f0',
+    divider: '#eef1f6',
+    btnColor: '#1769e8',
+    sendBtnBg: '#1769e8',
+    sendBtnColor: '#ffffff',
+    errorText: '#ef4444',
+} as any;
+
+const experts: ExpertOption[] = [
+    { id: 'exp-data', name: '数据分析专家', description: '经营分析 · 报表', icon: '📊' },
+    { id: 'exp-writer', name: '科研写作专家', description: '论文 · 申报书' },
+];
+
+const workflows: WorkflowOption[] = [
+    { id: 'wf-table', title: '数据表格整理', category: '数据表格', phaseCount: 4, requiresWorkingDir: true, hasParamSlots: true },
+    { id: 'wf-board', title: '一页管理看板', category: '经营分析', phaseCount: 3, requiresWorkingDir: true, hasParamSlots: false },
+];
+
+function renderBar(draft: TaskDraft, onChange: (d: TaskDraft) => void, extra?: Partial<Parameters<typeof TaskConfigBar>[0]>) {
+    return render(
+        <TaskConfigBar
+            draft={draft}
+            onChange={onChange}
+            experts={experts}
+            workflows={workflows}
+            theme={theme}
+            lang="zh"
+            {...extra}
+        />,
+    );
+}
+
+afterEach(() => {
+    cleanup();
+    testRemoteSSHConnection.mockReset();
+});
+
+// Stateful harness for round-trip UI flows (mock-onChange renderBar cannot
+// feed the emitted draft back into the controlled component).
+function renderStatefulBar(initialDraft?: TaskDraft, extra?: Partial<Parameters<typeof TaskConfigBar>[0]>) {
+    function Stateful() {
+        const [draft, setDraft] = useState(initialDraft ?? defaultTaskDraft());
+        return (
+            <TaskConfigBar
+                draft={draft}
+                onChange={setDraft}
+                experts={experts}
+                workflows={workflows}
+                theme={theme}
+                lang="zh"
+                {...extra}
+            />
+        );
+    }
+    return render(<Stateful />);
+}
+
+describe('taskDraft', () => {
+    it('starts fully default (chat / no expert / no workflow / local default dir)', () => {
+        const draft = defaultTaskDraft();
+        expect(draft.taskType).toBe('chat');
+        expect(draft.expertId).toBeNull();
+        // 默认工作流 = 无（不执行工作流）
+        expect(draft.workflowTemplateId).toBeNull();
+        expect(draft.workspace).toEqual({ kind: 'local' });
+        expect(isDraftDefault(draft)).toBe(true);
+    });
+
+    it('workflow "none" vs "auto": null = 无, WORKFLOW_AUTO = 自动判断', () => {
+        // 「自动判断」仍是对工作流行为的选择（chip 高亮）
+        expect(isWorkflowChosen(defaultTaskDraft())).toBe(false);
+        expect(isWorkflowChosen(withWorkflow(defaultTaskDraft(), WORKFLOW_AUTO))).toBe(true);
+        // 「自动判断」是显式选择 → 不再算全默认（发送时建任务，模板 id 仍为空、语义拦截不变）
+        expect(isDraftDefault(withWorkflow(defaultTaskDraft(), WORKFLOW_AUTO))).toBe(false);
+        expect(isDraftDefault(withWorkflow(defaultTaskDraft(), 'wf-table'))).toBe(false);
+    });
+
+    it('auto-detect counts as choosing a workflow and locks the expert (§7)', () => {
+        // 未选工作流（= 无）才可指定专家
+        expect(canSpecifyExpert(defaultTaskDraft())).toBe(true);
+        // 选了「自动判断」也锁定专家
+        const autoDraft = withWorkflow(defaultTaskDraft(), WORKFLOW_AUTO);
+        expect(canSpecifyExpert(autoDraft)).toBe(false);
+        // 指定专家把工作流回到「无」（不是「自动判断」）
+        const expertDraft = withExpert(autoDraft, 'exp-data', '数据分析专家');
+        expect(expertDraft.workflowTemplateId).toBeNull();
+        expect(canSpecifyExpert(expertDraft)).toBe(true);
+        expect(canSpecifyWorkflow(expertDraft)).toBe(false);
+    });
+
+    it('specifying an expert clears the workflow (mutual exclusion)', () => {
+        let draft = withWorkflow(defaultTaskDraft(), 'wf-table');
+        expect(draft.workflowTemplateId).toBe('wf-table');
+        draft = withExpert(draft, 'exp-data', '数据分析专家');
+        expect(isExpertSpecified(draft)).toBe(true);
+        expect(draft.workflowTemplateId).toBeNull();
+        expect(canSpecifyWorkflow(draft)).toBe(false);
+    });
+
+    it('specifying an expert reduces a cloud/remote workspace to local default (§7)', () => {
+        const cloud = withExpert(withCloudWorkspace(defaultTaskDraft(), 'c1', '研发环境'), 'exp-data', '数据分析专家');
+        expect(cloud.workspace).toEqual({ kind: 'local' });
+        const remote = withExpert(
+            withRemoteWorkspace(defaultTaskDraft(), { host: '192.168.1.10', port: 22, user: 'root', password: '', workDir: '/opt/app' }),
+            'exp-data', '数据分析专家',
+        );
+        expect(remote.workspace).toEqual({ kind: 'local' });
+        // 回到通用专家：workspace 保持本地默认，位置恢复完全可选
+        const back = withExpert(cloud, null, null);
+        expect(back.workspace).toEqual({ kind: 'local' });
+        expect(workspaceKindsForExpert(back)).toEqual(['local', 'cloud', 'remote']);
+    });
+
+    it('workspaceKindsForExpert locks non-local kinds only while an expert is specified', () => {
+        expect(workspaceKindsForExpert(defaultTaskDraft())).toEqual(['local', 'cloud', 'remote']);
+        expect(workspaceKindsForExpert(withExpert(defaultTaskDraft(), 'exp-data', '数据分析专家'))).toEqual(['local']);
+    });
+
+    it('specifying a workflow resets the expert to general (mutual exclusion)', () => {
+        let draft = withExpert(defaultTaskDraft(), 'exp-data', '数据分析专家');
+        draft = withWorkflow(draft, 'wf-table');
+        expect(draft.workflowTemplateId).toBe('wf-table');
+        expect(draft.expertId).toBeNull();
+        expect(draft.expertName).toBeNull();
+        expect(canSpecifyExpert(draft)).toBe(false);
+    });
+
+    it('clears stale workflow params when the template changes or is reset', () => {
+        let draft = withWorkflow(defaultTaskDraft(), 'wf-table');
+        draft = { ...draft, workflowParams: { sheet: 'Q1' } };
+        draft = withWorkflow(draft, 'wf-board');
+        expect(draft.workflowParams).toEqual({});
+        draft = { ...draft, workflowParams: { board: '1' } };
+        draft = withWorkflow(draft, null);
+        expect(draft.workflowParams).toEqual({});
+        // 重新选回同一模板时也清空（参数需重新通过参数弹窗收集）
+        draft = withWorkflow(draft, 'wf-board');
+        draft = { ...draft, workflowParams: { board: '2' } };
+        draft = withWorkflow(draft, 'wf-board');
+        expect(draft.workflowParams).toEqual({});
+    });
+
+    it('coding tasks drop the cloud workspace and require a local path', () => {
+        let draft = withCloudWorkspace(defaultTaskDraft(), 'cws-1', '研发环境');
+        draft = normalizeDraftForTaskType({ ...draft, taskType: 'coding' });
+        expect(draft.workspace.kind).toBe('local');
+        expect(needsLocalPath(draft)).toBe(true);
+        draft = withLocalWorkspace(draft, 'D:/work/app');
+        expect(needsLocalPath(draft)).toBe(false);
+        expect(isDraftDefault(draft)).toBe(false);
+    });
+
+    it('summarizes workspace labels for chips', () => {
+        expect(workspaceSummaryLabel(defaultTaskDraft())).toBe('默认');
+        const coding = { ...defaultTaskDraft(), taskType: 'coding' as const };
+        expect(workspaceSummaryLabel(coding)).toBe('请选择目录');
+        expect(workspaceSummaryLabel(withCloudWorkspace(defaultTaskDraft(), 'c1', '数据分析环境'))).toBe('数据分析环境');
+        expect(workspaceSummaryLabel(withRemoteWorkspace(defaultTaskDraft(), { host: '192.168.1.10', port: 22, user: 'root', password: '', workDir: '/opt/app' }))).toBe('192.168.1.10');
+    });
+
+    it('defaults a LaTeX expert to the blank template and hides workflow setup', () => {
+        const draft = withExpert(defaultTaskDraft(), LATEX_EXPERT_ID, 'LaTeX 论文专家');
+        expect(expertNeedsSetup(draft)).toBe(true);
+        expect(draft.latexTemplateId).toBe(LATEX_BLANK_TEMPLATE_ID);
+        expect(draft.workflowTemplateId).toBeNull();
+        expect(expertNeedsSetup(withExpert(defaultTaskDraft(), 'exp-data', '数据分析专家'))).toBe(false);
+    });
+
+    it('keeps a chosen LaTeX template when the same expert is reselected', () => {
+        let draft = withLatexTemplate(withExpert(defaultTaskDraft(), LATEX_EXPERT_ID, 'LaTeX 论文专家'), 'tpl-ieee', 'IEEE');
+        draft = withExpert(draft, LATEX_EXPERT_ID, 'LaTeX 论文专家');
+        expect(draft.latexTemplateId).toBe('tpl-ieee');
+        expect(draft.latexTemplateName).toBe('IEEE');
+        draft = withExpert(draft, 'exp-data', '数据分析专家');
+        expect(draft.latexTemplateId).toBeNull();
+    });
+
+    it('seeds the new-task draft from a template, workflow, or expert', () => {
+        const latex = draftFromWizardSeed({
+            expertId: LATEX_EXPERT_ID,
+            expertName: 'LaTeX 论文专家',
+            latexTemplateId: 'tpl-ieee',
+            latexTemplateName: 'IEEE',
+        });
+        expect(latex.expertId).toBe(LATEX_EXPERT_ID);
+        expect(latex.latexTemplateId).toBe('tpl-ieee');
+        expect(latex.workflowTemplateId).toBeNull();
+        const workflow = draftFromWizardSeed({ workflowTemplateId: 'wf-table' });
+        expect(workflow.workflowTemplateId).toBe('wf-table');
+        expect(workflow.expertId).toBeNull();
+        const blank = draftFromWizardSeed({ expertId: LATEX_EXPERT_ID, expertName: 'LaTeX' });
+        expect(blank.latexTemplateId).toBe(LATEX_BLANK_TEMPLATE_ID);
+    });
+
+    it('summarizes workspace labels in English for en lang', () => {
+        expect(workspaceSummaryLabel(defaultTaskDraft(), false)).toBe('Default');
+        const coding = { ...defaultTaskDraft(), taskType: 'coding' as const };
+        expect(workspaceSummaryLabel(coding, false)).toBe('Select directory');
+        expect(workspaceSummaryLabel(withCloudWorkspace(defaultTaskDraft(), 'c1', ''), false)).toBe('Cloud workspace');
+        expect(workspaceSummaryLabel({ ...defaultTaskDraft(), workspace: { kind: 'remote' } }, false)).toBe('Remote server');
+    });
+});
+
+describe('TaskConfigBar', () => {
+    it('shows a single collapsed chip when the draft is all-default', () => {
+        renderBar(defaultTaskDraft(), vi.fn());
+        const collapsed = screen.getByTestId('task-config-collapsed');
+        expect(collapsed).toBeTruthy();
+        expect(collapsed.textContent).toContain('默认');
+        expect(collapsed.getAttribute('title')).toContain('无工作流');
+        expect(screen.queryByTestId('task-config-chip-type')).toBeNull();
+    });
+
+    it('collapsed chip shows English copy for en lang', () => {
+        renderBar(defaultTaskDraft(), vi.fn(), { lang: 'en' });
+        const collapsed = screen.getByTestId('task-config-collapsed');
+        expect(collapsed.textContent).toContain('Default');
+        expect(collapsed.getAttribute('title')).toContain('No workflow');
+    });
+
+    it('expands into the task chips, including the run window, after clicking the collapsed chip', () => {
+        renderBar(defaultTaskDraft(), vi.fn());
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        expect(screen.getByTestId('task-config-chip-type')).toBeTruthy();
+        expect(screen.getByTestId('task-config-chip-expert')).toBeTruthy();
+        expect(screen.getByTestId('task-config-chip-workflow')).toBeTruthy();
+        expect(screen.getByTestId('task-config-chip-workspace')).toBeTruthy();
+        expect(screen.getByTestId('task-config-chip-window').textContent).toContain('运行时段');
+        expect(screen.getByTestId('task-config-chip-window').textContent).toContain('立即');
+    });
+
+    it('lets a new task stay immediate or pick a start and optional end', () => {
+        renderStatefulBar(defaultTaskDraft(), { defaultExpanded: true });
+        fireEvent.click(screen.getByTestId('task-config-chip-window'));
+        fireEvent.click(screen.getByTestId('run-window-scheduled'));
+        expect(screen.getByTestId('run-window-start')).toBeTruthy();
+        expect(screen.getByTestId('run-window-end')).toBeTruthy();
+        const start = screen.getByTestId('run-window-start') as HTMLInputElement;
+        expect(start.style.colorScheme).toBe('light');
+        expect(start.labels?.[0]?.textContent).toContain('开始');
+        expect(screen.getByTestId('run-window-start-picker').closest('label')).toBeNull();
+        const showPicker = vi.fn();
+        start.showPicker = showPicker;
+        const startPicker = screen.getByTestId('run-window-start-picker');
+        expect(fireEvent.mouseDown(startPicker)).toBe(false);
+        fireEvent.click(startPicker);
+        expect(showPicker).toHaveBeenCalledTimes(1);
+        expect(startPicker.querySelector('[data-icon="calendar"]')).toBeTruthy();
+        const end = screen.getByTestId('run-window-end') as HTMLInputElement;
+        const showEndPicker = vi.fn();
+        end.showPicker = showEndPicker;
+        fireEvent.click(screen.getByTestId('run-window-end-picker'));
+        expect(showEndPicker).toHaveBeenCalledTimes(1);
+        fireEvent.change(screen.getByTestId('run-window-start'), { target: { value: '2099-03-01T02:00' } });
+        fireEvent.change(screen.getByTestId('run-window-end'), { target: { value: '2099-03-01T06:00' } });
+        expect(screen.getByTestId('task-config-chip-window').textContent).toContain('03-01 02:00–06:00');
+        fireEvent.click(screen.getByTestId('run-window-immediate'));
+        expect(screen.getByTestId('task-config-chip-window').textContent).toContain('立即');
+    });
+
+    it('uses a dark native picker when the task bar is dark', () => {
+        renderStatefulBar(defaultTaskDraft(), { defaultExpanded: true, theme: { ...theme, isDark: true } });
+        fireEvent.click(screen.getByTestId('task-config-chip-window'));
+        fireEvent.click(screen.getByTestId('run-window-scheduled'));
+        expect((screen.getByTestId('run-window-start') as HTMLInputElement).style.colorScheme).toBe('dark');
+    });
+
+    it('auto-expands when any non-default value is set', () => {
+        renderBar(withExpert(defaultTaskDraft(), 'exp-data', '数据分析专家'), vi.fn());
+        expect(screen.queryByTestId('task-config-collapsed')).toBeNull();
+        expect(screen.getByTestId('task-config-chip-expert').textContent).toContain('数据分析专家');
+    });
+
+    it('shows 无 as the default workflow chip value', () => {
+        renderBar(defaultTaskDraft(), vi.fn());
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        expect(screen.getByTestId('task-config-chip-workflow').textContent).toContain('无');
+    });
+
+    it('workflow popover lists 无 (default selected) and 自动判断 on top', () => {
+        const onChange = vi.fn();
+        renderBar(defaultTaskDraft(), onChange);
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workflow'));
+        const noneItem = screen.getByTestId('workflow-item-none');
+        const autoItem = screen.getByTestId('workflow-item-auto');
+        expect(noneItem.textContent).toContain('无');
+        expect(autoItem.textContent).toContain('自动判断');
+        // 选中「自动判断」→ draft.workflowTemplateId = 'auto'
+        fireEvent.click(autoItem);
+        expect((onChange.mock.calls[0][0] as TaskDraft).workflowTemplateId).toBe(WORKFLOW_AUTO);
+    });
+
+    it('auto-detect locks the expert picker (mutual exclusion, §7)', () => {
+        // 「自动判断」是显式选择 → 配置条直接展开（无需先点折叠 chip）
+        renderBar(withWorkflow(defaultTaskDraft(), WORKFLOW_AUTO), vi.fn());
+        expect(screen.queryByTestId('task-config-collapsed')).toBeNull();
+        fireEvent.click(screen.getByTestId('task-config-chip-expert'));
+        expect(screen.getByTestId('expert-item-exp-data').getAttribute('role')).toBeNull();
+        expect(screen.getByTestId('expert-item-generic').getAttribute('role')).toBe('button');
+    });
+
+    it('restores expert pickability after resetting the workflow to 无', () => {
+        const onChange = vi.fn();
+        renderBar(withWorkflow(defaultTaskDraft(), 'wf-table'), onChange);
+        fireEvent.click(screen.getByTestId('task-config-chip-workflow'));
+        fireEvent.click(screen.getByTestId('workflow-item-none'));
+        const draft = onChange.mock.calls[0][0] as TaskDraft;
+        expect(draft.workflowTemplateId).toBeNull();
+        expect(canSpecifyExpert(draft)).toBe(true);
+        expect(draft.expertId).toBeNull();
+    });
+
+    it('replaces the workflow chip with a LaTeX template picker defaulting to blank', () => {
+        const onChange = vi.fn();
+        const onPrepareLatexTemplates = vi.fn();
+        renderBar(withExpert(defaultTaskDraft(), LATEX_EXPERT_ID, 'LaTeX 论文专家'), onChange, {
+            latexTemplates: [
+                { id: 'blank', name: '空白模板', description: '从最小骨架开始' },
+                { id: 'tpl-ieee', name: 'IEEE 会议模板', description: '会议论文' },
+            ],
+            onPrepareLatexTemplates,
+        });
+        expect(screen.queryByTestId('task-config-chip-workflow')).toBeNull();
+        const chip = screen.getByTestId('task-config-chip-latex-template');
+        expect(chip.textContent).toContain('空白模板');
+        fireEvent.click(chip);
+        expect(onPrepareLatexTemplates).toHaveBeenCalled();
+        expect(screen.getByTestId('latex-template-item-blank')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('latex-template-item-tpl-ieee'));
+        const draft = onChange.mock.calls[0][0] as TaskDraft;
+        expect(draft.latexTemplateId).toBe('tpl-ieee');
+        expect(draft.latexTemplateName).toBe('IEEE 会议模板');
+    });
+
+    it('loads the catalogue once when the template menu opens', () => {
+        const prepare = vi.fn();
+        const draft = withExpert(defaultTaskDraft(), LATEX_EXPERT_ID, 'LaTeX 论文专家');
+        function Host({ onPrepare }: { onPrepare: () => void }) {
+            return (
+                <TaskConfigBar
+                    draft={draft}
+                    onChange={vi.fn()}
+                    experts={experts}
+                    workflows={workflows}
+                    theme={theme}
+                    lang="zh"
+                    onPrepareLatexTemplates={onPrepare}
+                />
+            );
+        }
+        const view = render(<Host onPrepare={prepare} />);
+        fireEvent.click(screen.getByTestId('task-config-chip-latex-template'));
+        expect(prepare).toHaveBeenCalledTimes(1);
+        const next = vi.fn();
+        view.rerender(<Host onPrepare={next} />);
+        expect(prepare).toHaveBeenCalledTimes(1);
+        expect(next).not.toHaveBeenCalled();
+    });
+
+    it('keeps a selected template id visible before its display name loads', () => {
+        const draft = withLatexTemplate(withExpert(defaultTaskDraft(), LATEX_EXPERT_ID, 'LaTeX 论文专家'), 'tpl-ieee', null);
+        renderBar(draft, vi.fn(), { latexTemplates: [] });
+        const chip = screen.getByTestId('task-config-chip-latex-template');
+        expect(chip.textContent).toContain('tpl-ieee');
+        expect(chip.textContent).not.toContain('空白模板');
+    });
+
+    it('locks the workflow chip when an expert is specified', () => {
+        renderBar(withExpert(defaultTaskDraft(), 'exp-data', '数据分析专家'), vi.fn());
+        const workflowChip = screen.getByTestId('task-config-chip-workflow');
+        expect(workflowChip.textContent).toContain('由专家决定');
+        fireEvent.click(workflowChip);
+        const autoItem = screen.getByTestId('workflow-item-auto');
+        expect(autoItem.getAttribute('role')).toBeNull();
+        expect(screen.getByTestId('workflow-item-wf-table').getAttribute('role')).toBeNull();
+    });
+
+    it('resets the expert to general when a workflow is picked and disables expert items', () => {
+        const onChange = vi.fn();
+        renderBar(defaultTaskDraft(), onChange, { onPickTemplateParams: vi.fn() });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workflow'));
+        fireEvent.click(screen.getByTestId('workflow-item-wf-table'));
+        const draft = onChange.mock.calls[0][0] as TaskDraft;
+        expect(draft.workflowTemplateId).toBe('wf-table');
+        expect(draft.expertId).toBeNull();
+    });
+
+    it('triggers onPickTemplateParams for templates with param slots', () => {
+        const onPickTemplateParams = vi.fn();
+        const onChange = vi.fn();
+        renderBar(defaultTaskDraft(), onChange, { onPickTemplateParams });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workflow'));
+        fireEvent.click(screen.getByTestId('workflow-item-wf-table'));
+        expect(onPickTemplateParams).toHaveBeenCalledWith(expect.objectContaining({ id: 'wf-table' }));
+    });
+
+    it('highlights the workspace chip with 请选择目录 for coding without a local path', () => {
+        renderBar({ ...defaultTaskDraft(), taskType: 'coding' }, vi.fn());
+        expect(screen.getByTestId('task-config-chip-workspace').textContent).toContain('请选择目录');
+    });
+
+    it('disables the cloud workspace row for coding tasks', () => {
+        renderBar({ ...defaultTaskDraft(), taskType: 'coding' }, vi.fn());
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        expect(screen.getByTestId('workspace-row-cloud').getAttribute('role')).toBeNull();
+        expect(screen.getByTestId('workspace-row-local').getAttribute('role')).toBe('button');
+    });
+
+    it('picks a recent local directory from the workspace popover', () => {
+        const onChange = vi.fn();
+        renderBar(defaultTaskDraft(), onChange, { recentLocalPaths: ['D:/work/app'] });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-local'));
+        fireEvent.click(screen.getByTestId('workspace-local-recent-D:/work/app'));
+        const draft = onChange.mock.calls[0][0] as TaskDraft;
+        expect(draft.workspace).toEqual({ kind: 'local', localPath: 'D:/work/app' });
+    });
+
+    it('lists cloud workspaces and picks one into the draft', () => {
+        const onChange = vi.fn();
+        renderBar(defaultTaskDraft(), onChange, {
+            cloudWorkspaces: [
+                { id: 'cws-1', name: '研发环境', spec: '1.2 GB', state: '运行中' },
+                { id: 'cws-2', name: '数据分析环境', spec: '800 MB', state: '已停止' },
+            ],
+        });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        const row = screen.getByTestId('workspace-cloud-cws-1');
+        expect(row.textContent).toContain('研发环境');
+        expect(row.textContent).toContain('1.2 GB · 运行中');
+        fireEvent.click(row);
+        const draft = onChange.mock.calls[0][0] as TaskDraft;
+        expect(draft.workspace).toEqual({ kind: 'cloud', cloudWorkspaceId: 'cws-1', cloudName: '研发环境' });
+    });
+
+    it('opens an editable default name for a new cloud workspace and creates it on Enter', async () => {
+        const onCreateCloud = vi.fn().mockResolvedValue(undefined);
+        renderBar(defaultTaskDraft(), vi.fn(), { onCreateCloud });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        expect(screen.getByTestId('workspace-cloud-search').getAttribute('placeholder')).toBe('搜索云端工作区');
+        expect(screen.getByText('暂无云端工作区')).toBeTruthy();
+        fireEvent.click(screen.getByTestId('workspace-cloud-create'));
+        expect(onCreateCloud).not.toHaveBeenCalled();
+        const input = screen.getByTestId('workspace-cloud-create-name') as HTMLInputElement;
+        expect(input.value).toBe('工作区 1');
+        expect(input.getAttribute('placeholder')).toBe('工作区名称');
+        const renameButton = screen.getByTestId('workspace-cloud-create-rename');
+        expect(renameButton.textContent).toBe('改名');
+        // The button shares the input's row. The hint sits underneath, so it cannot pull the button down.
+        expect(renameButton.parentElement).toBe(input.parentElement);
+        expect(input.parentElement?.textContent).not.toContain('输入名称');
+        fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 });
+        expect(onCreateCloud).not.toHaveBeenCalled();
+        fireEvent.change(input, { target: { value: '  标书项目  ' } });
+        await act(async () => {
+            fireEvent.keyDown(input, { key: 'Enter' });
+        });
+        expect(onCreateCloud).toHaveBeenCalledTimes(1);
+        expect(onCreateCloud).toHaveBeenCalledWith('标书项目');
+    });
+
+    it('numbers default cloud workspace names the way Hub does, including 工作区1', () => {
+        expect(nextDefaultCloudWorkspaceName([])).toBe('工作区 1');
+        expect(nextDefaultCloudWorkspaceName(['工作区 1', '工作区 3', 'other'])).toBe('工作区 2');
+        expect(nextDefaultCloudWorkspaceName(['工作区 1 extra', '工作区 01'])).toBe('工作区 1');
+        expect(nextDefaultCloudWorkspaceName(['工作区1'])).toBe('工作区 2');
+    });
+
+    it('moves a taken default name to the next 工作区 N and keeps a custom name', async () => {
+        const onCreateCloud = vi.fn()
+            .mockRejectedValueOnce(new Error('云端工作区名称已存在'))
+            .mockRejectedValueOnce(new Error('云端工作区名称已存在'))
+            .mockRejectedValueOnce(new Error('云端工作区名称已存在'));
+        renderBar(defaultTaskDraft(), vi.fn(), { onCreateCloud });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        fireEvent.click(screen.getByTestId('workspace-cloud-create'));
+        await act(async () => {
+            fireEvent.keyDown(screen.getByTestId('workspace-cloud-create-name'), { key: 'Enter' });
+        });
+        const advanced = screen.getByTestId('workspace-cloud-create-name') as HTMLInputElement;
+        expect(advanced.value).toBe('工作区 2');
+        expect(advanced.readOnly).toBe(false);
+        expect(document.activeElement).toBe(advanced);
+        expect(screen.getByTestId('workspace-cloud-error').textContent).toContain('名称已存在');
+        await act(async () => {
+            fireEvent.keyDown(screen.getByTestId('workspace-cloud-create-name'), { key: 'Enter' });
+        });
+        expect((screen.getByTestId('workspace-cloud-create-name') as HTMLInputElement).value).toBe('工作区 3');
+        fireEvent.change(screen.getByTestId('workspace-cloud-create-name'), { target: { value: '标书项目' } });
+        await act(async () => {
+            fireEvent.keyDown(screen.getByTestId('workspace-cloud-create-name'), { key: 'Enter' });
+        });
+        expect((screen.getByTestId('workspace-cloud-create-name') as HTMLInputElement).value).toBe('标书项目');
+    });
+
+    it('moves an untouched default name when the workspace list arrives', () => {
+        const view = renderBar(defaultTaskDraft(), vi.fn(), { onCreateCloud: vi.fn(), cloudWorkspaces: [] });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        fireEvent.click(screen.getByTestId('workspace-cloud-create'));
+        expect((screen.getByTestId('workspace-cloud-create-name') as HTMLInputElement).value).toBe('工作区 1');
+        view.rerender(
+            <TaskConfigBar
+                draft={defaultTaskDraft()}
+                onChange={vi.fn()}
+                experts={experts}
+                workflows={workflows}
+                theme={theme}
+                lang="zh"
+                onCreateCloud={vi.fn()}
+                cloudWorkspaces={[{ id: 'cws-1', name: '工作区 1', spec: '0 B', state: '可用' }]}
+            />,
+        );
+        const advanced = screen.getByTestId('workspace-cloud-create-name') as HTMLInputElement;
+        expect(advanced.value).toBe('工作区 2');
+        expect(document.activeElement).toBe(advanced);
+        expect(advanced.selectionStart).toBe(0);
+        expect(advanced.selectionEnd).toBe(advanced.value.length);
+        fireEvent.change(advanced, { target: { value: '标书项目' } });
+        view.rerender(
+            <TaskConfigBar
+                draft={defaultTaskDraft()}
+                onChange={vi.fn()}
+                experts={experts}
+                workflows={workflows}
+                theme={theme}
+                lang="zh"
+                onCreateCloud={vi.fn()}
+                cloudWorkspaces={[
+                    { id: 'cws-1', name: '工作区 1', spec: '0 B', state: '可用' },
+                    { id: 'cws-2', name: '工作区 2', spec: '0 B', state: '可用' },
+                ]}
+            />,
+        );
+        expect((screen.getByTestId('workspace-cloud-create-name') as HTMLInputElement).value).toBe('标书项目');
+    });
+
+    it('fills the next 工作区 N and creates that default name on Enter', async () => {
+        const onCreateCloud = vi.fn().mockResolvedValue(undefined);
+        renderBar(defaultTaskDraft(), vi.fn(), {
+            onCreateCloud,
+            cloudWorkspaces: [
+                { id: 'cws-1', name: '工作区 1', spec: '0 B', state: '可用' },
+                { id: 'cws-3', name: '工作区 3', spec: '0 B', state: '可用' },
+                { id: 'cws-x', name: '标书项目', spec: '1 B', state: '可用' },
+            ],
+        });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        fireEvent.click(screen.getByTestId('workspace-cloud-create'));
+        const input = screen.getByTestId('workspace-cloud-create-name') as HTMLInputElement;
+        expect(input.value).toBe('工作区 2');
+        await act(async () => {
+            fireEvent.keyDown(input, { key: 'Enter' });
+        });
+        expect(onCreateCloud).toHaveBeenCalledWith('工作区 2');
+    });
+
+    it('creates the named workspace when the new row rename button is clicked', async () => {
+        const onCreateCloud = vi.fn().mockResolvedValue(undefined);
+        renderBar(defaultTaskDraft(), vi.fn(), { onCreateCloud });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        fireEvent.click(screen.getByTestId('workspace-cloud-create'));
+        fireEvent.change(screen.getByTestId('workspace-cloud-create-name'), { target: { value: '标书项目' } });
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('workspace-cloud-create-rename'));
+        });
+        expect(onCreateCloud).toHaveBeenCalledWith('标书项目');
+    });
+
+    it('keeps the rename button at regular weight on the selected workspace name line', () => {
+        renderBar(withCloudWorkspace(defaultTaskDraft(), 'cws-1', '工作区 1'), vi.fn(), {
+            onRenameCloud: vi.fn(),
+            cloudWorkspaces: [{ id: 'cws-1', name: '工作区 1', spec: '0 B', state: '可用' }],
+        });
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        const button = screen.getByTestId('workspace-cloud-rename-cws-1') as HTMLButtonElement;
+        expect(button.style.fontWeight).toBe('400');
+        expect(button.style.height).toBe('28px');
+        expect(button.parentElement?.textContent).toContain('工作区 1');
+        expect(button.parentElement?.textContent).not.toContain('0 B');
+    });
+
+    it('renames a cloud workspace from the right-side button without selecting the row', async () => {
+        const onChange = vi.fn();
+        const onRenameCloud = vi.fn().mockResolvedValue(undefined);
+        renderBar(defaultTaskDraft(), onChange, {
+            onRenameCloud,
+            cloudWorkspaces: [
+                { id: 'cws-1', name: '工作区 1', spec: '0 B', state: 'active' },
+            ],
+        });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        const idleRename = screen.getByTestId('workspace-cloud-rename-cws-1');
+        expect(idleRename.parentElement?.textContent).toContain('工作区 1');
+        expect(idleRename.parentElement?.textContent).not.toContain('0 B');
+        fireEvent.click(idleRename);
+        expect(onChange).not.toHaveBeenCalled();
+        const input = screen.getByTestId('workspace-cloud-rename-input-cws-1') as HTMLInputElement;
+        expect(input.value).toBe('工作区 1');
+        fireEvent.keyDown(input, { key: 'Enter' });
+        expect(onRenameCloud).not.toHaveBeenCalled();
+        expect(screen.queryByTestId('workspace-cloud-rename-input-cws-1')).toBeNull();
+        fireEvent.click(screen.getByTestId('workspace-cloud-rename-cws-1'));
+        fireEvent.change(screen.getByTestId('workspace-cloud-rename-input-cws-1'), { target: { value: '标书项目' } });
+        await act(async () => {
+            fireEvent.keyDown(screen.getByTestId('workspace-cloud-rename-input-cws-1'), { key: 'Enter' });
+        });
+        expect(onRenameCloud).toHaveBeenCalledWith('cws-1', '标书项目');
+        expect(onChange).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByTestId('workspace-cloud-cws-1'));
+        expect((onChange.mock.calls[0][0] as TaskDraft).workspace).toEqual({
+            kind: 'cloud',
+            cloudWorkspaceId: 'cws-1',
+            cloudName: '工作区 1',
+        });
+    });
+
+    it('saves a rename from the button that stays visible while editing', async () => {
+        const onRenameCloud = vi.fn().mockResolvedValue(undefined);
+        renderBar(defaultTaskDraft(), vi.fn(), {
+            onRenameCloud,
+            cloudWorkspaces: [{ id: 'cws-1', name: '工作区 1', spec: '0 B', state: '可用' }],
+        });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        fireEvent.click(screen.getByTestId('workspace-cloud-rename-cws-1'));
+        expect(screen.getByTestId('workspace-cloud-rename-cws-1').textContent).toBe('改名');
+        fireEvent.change(screen.getByTestId('workspace-cloud-rename-input-cws-1'), { target: { value: '标书项目' } });
+        await act(async () => {
+            fireEvent.click(screen.getByTestId('workspace-cloud-rename-cws-1'));
+        });
+        expect(onRenameCloud).toHaveBeenCalledWith('cws-1', '标书项目');
+    });
+
+    it('drops a blank rename without saving', () => {
+        const onRenameCloud = vi.fn();
+        renderBar(defaultTaskDraft(), vi.fn(), {
+            onRenameCloud,
+            cloudWorkspaces: [{ id: 'cws-1', name: '工作区 1', spec: '0 B', state: '可用' }],
+        });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        fireEvent.click(screen.getByTestId('workspace-cloud-rename-cws-1'));
+        fireEvent.change(screen.getByTestId('workspace-cloud-rename-input-cws-1'), { target: { value: '   ' } });
+        fireEvent.keyDown(screen.getByTestId('workspace-cloud-rename-input-cws-1'), { key: 'Enter' });
+        expect(onRenameCloud).not.toHaveBeenCalled();
+        expect(screen.queryByTestId('workspace-cloud-rename-input-cws-1')).toBeNull();
+        expect(screen.getByTestId('workspace-cloud-cws-1').textContent).toContain('工作区 1');
+    });
+
+    it('lets Escape leave the name editor before closing the popover, and ignores IME Escape', () => {
+        renderBar(defaultTaskDraft(), vi.fn(), { onCreateCloud: vi.fn() });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        fireEvent.click(screen.getByTestId('workspace-cloud-create'));
+        fireEvent.change(screen.getByTestId('workspace-cloud-create-name'), { target: { value: '标书' } });
+        fireEvent.keyDown(document, { key: 'Escape', keyCode: 229 });
+        expect(screen.getByTestId('workspace-cloud-create-name')).toBeTruthy();
+        fireEvent.keyDown(document, { key: 'Escape' });
+        expect(screen.queryByTestId('workspace-cloud-create-editor')).toBeNull();
+        expect(screen.getByTestId('workspace-cloud-create')).toBeTruthy();
+        expect(screen.getByTestId('task-config-popover-workspace')).toBeTruthy();
+        fireEvent.keyDown(document, { key: 'Escape' });
+        expect(screen.queryByTestId('task-config-popover-workspace')).toBeNull();
+    });
+
+    it('shows a create failure inside the cloud pane and keeps the typed name', async () => {
+        const onCreateCloud = vi.fn().mockRejectedValue(new Error('hub down'));
+        renderBar(defaultTaskDraft(), vi.fn(), { onCreateCloud });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        fireEvent.click(screen.getByTestId('workspace-cloud-create'));
+        fireEvent.change(screen.getByTestId('workspace-cloud-create-name'), { target: { value: '标书项目' } });
+        await act(async () => {
+            fireEvent.keyDown(screen.getByTestId('workspace-cloud-create-name'), { key: 'Enter' });
+        });
+        expect(screen.getByTestId('workspace-cloud-error').textContent).toContain('hub down');
+        expect((screen.getByTestId('workspace-cloud-create-name') as HTMLInputElement).value).toBe('标书项目');
+    });
+
+    it('does not select another workspace while a create is in flight', async () => {
+        let release: () => void = () => {};
+        const onCreateCloud = vi.fn().mockImplementation(() => new Promise<void>((resolve) => { release = resolve; }));
+        const onChange = vi.fn();
+        renderBar(defaultTaskDraft(), onChange, {
+            onCreateCloud,
+            cloudWorkspaces: [{ id: 'cws-1', name: '工作区 1', spec: '0 B', state: '可用' }],
+        });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-cloud'));
+        fireEvent.click(screen.getByTestId('workspace-cloud-create'));
+        fireEvent.change(screen.getByTestId('workspace-cloud-create-name'), { target: { value: '标书项目' } });
+        fireEvent.keyDown(screen.getByTestId('workspace-cloud-create-name'), { key: 'Enter' });
+        fireEvent.click(screen.getByTestId('workspace-cloud-cws-1'));
+        expect(onChange).not.toHaveBeenCalled();
+        await act(async () => { release(); });
+    });
+
+    it('selects the directory returned by onBrowseLocal and closes the popover', async () => {
+        const onChange = vi.fn();
+        renderBar(defaultTaskDraft(), onChange, { onBrowseLocal: async () => 'D:/picked/dir' });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-local'));
+        fireEvent.click(screen.getByTestId('workspace-local-browse'));
+        await waitFor(() => {
+            expect(onChange).toHaveBeenCalledTimes(1);
+        });
+        expect((onChange.mock.calls[0][0] as TaskDraft).workspace).toEqual({ kind: 'local', localPath: 'D:/picked/dir' });
+        expect(screen.queryByTestId('task-config-popover-workspace')).toBeNull();
+    });
+
+    it('keeps the draft untouched when onBrowseLocal resolves empty (cancel)', async () => {
+        const onChange = vi.fn();
+        renderBar(defaultTaskDraft(), onChange, { onBrowseLocal: async () => '' });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-local'));
+        fireEvent.click(screen.getByTestId('workspace-local-browse'));
+        await waitFor(() => {
+            expect(screen.getByTestId('workspace-local-browse')).toBeTruthy();
+        });
+        expect(onChange).not.toHaveBeenCalled();
+        // 弹层保持打开，可继续选择
+        expect(screen.getByTestId('task-config-popover-workspace')).toBeTruthy();
+    });
+
+    it('submits a manually typed local path on Enter', () => {
+        const onChange = vi.fn();
+        renderBar(defaultTaskDraft(), onChange);
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-local'));
+        const search = screen.getByTestId('workspace-local-search');
+        fireEvent.change(search, { target: { value: 'D:/typed/path' } });
+        fireEvent.keyDown(search, { key: 'Enter' });
+        expect((onChange.mock.calls[0][0] as TaskDraft).workspace).toEqual({ kind: 'local', localPath: 'D:/typed/path' });
+        expect(screen.queryByTestId('task-config-popover-workspace')).toBeNull();
+    });
+
+    it('submits a manually typed local path via the manual row', () => {
+        const onChange = vi.fn();
+        renderBar(defaultTaskDraft(), onChange);
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        fireEvent.click(screen.getByTestId('workspace-row-local'));
+        const search = screen.getByTestId('workspace-local-search');
+        fireEvent.change(search, { target: { value: '  D:/typed/other  ' } });
+        fireEvent.click(screen.getByTestId('workspace-local-manual'));
+        expect((onChange.mock.calls[0][0] as TaskDraft).workspace).toEqual({ kind: 'local', localPath: 'D:/typed/other' });
+    });
+
+    it('closes the popover on Escape and returns focus to the chip', () => {
+        renderBar(defaultTaskDraft(), vi.fn());
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        const typeChip = screen.getByTestId('task-config-chip-type');
+        fireEvent.click(typeChip);
+        expect(screen.getByTestId('task-config-popover-type')).toBeTruthy();
+        fireEvent.keyDown(document, { key: 'Escape' });
+        expect(screen.queryByTestId('task-config-popover-type')).toBeNull();
+    });
+
+    it('activates popover items with Enter via keyboard', () => {
+        const onChange = vi.fn();
+        renderBar(defaultTaskDraft(), onChange);
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-type'));
+        const codingItem = screen.getByTestId('type-item-coding');
+        expect(codingItem.getAttribute('tabindex')).toBe('0');
+        fireEvent.keyDown(codingItem, { key: 'Enter' });
+        expect((onChange.mock.calls[0][0] as TaskDraft).taskType).toBe('coding');
+    });
+
+    it('switches to coding via UI and drops a cloud workspace back to local', () => {
+        const onChange = vi.fn();
+        renderBar(withCloudWorkspace(defaultTaskDraft(), 'cws-1', '研发环境'), onChange);
+        fireEvent.click(screen.getByTestId('task-config-chip-type'));
+        fireEvent.click(screen.getByTestId('type-item-coding'));
+        const draft = onChange.mock.calls[0][0] as TaskDraft;
+        expect(draft.taskType).toBe('coding');
+        expect(draft.workspace.kind).toBe('local');
+        expect(draft.workspace.cloudWorkspaceId).toBeUndefined();
+    });
+
+    it('lists the general expert, experts, and a disabled market row without onOpenMarket', () => {
+        renderBar(defaultTaskDraft(), vi.fn(), { onOpenMarket: vi.fn() });
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-expert'));
+        expect(screen.getByTestId('expert-item-generic')).toBeTruthy();
+        expect(screen.getByTestId('expert-item-exp-data').textContent).toContain('数据分析专家');
+        fireEvent.click(screen.getByTestId('expert-item-exp-data'));
+        // selecting closes the popover and reflects the expert chip
+        expect(screen.queryByTestId('task-config-popover-expert')).toBeNull();
+    });
+
+    it('renders each expert own emoji icon and falls back to the robot for none', () => {
+        renderBar(defaultTaskDraft(), vi.fn());
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        fireEvent.click(screen.getByTestId('task-config-chip-expert'));
+        expect(screen.getByTestId('expert-item-exp-data').textContent).toContain('📊');
+        expect(screen.getByTestId('expert-item-exp-writer').textContent).toContain('🤖');
+        // 通用专家仍是系统机器人 SVG 图标位
+        expect(screen.getByTestId('expert-item-generic').textContent).not.toContain('🤖');
+    });
+
+    it('shows the selected expert emoji on the expert chip', () => {
+        renderBar(withExpert(defaultTaskDraft(), 'exp-data', '数据分析专家'), vi.fn());
+        expect(screen.getByTestId('task-config-chip-expert').textContent).toContain('📊');
+    });
+
+    it('shows no icon on the expert chip for the default general expert', () => {
+        renderBar(defaultTaskDraft(), vi.fn());
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        const chip = screen.getByTestId('task-config-chip-expert');
+        expect(chip.textContent).toContain('通用专家');
+        expect(chip.textContent).not.toContain('🤖');
+    });
+
+    it('locks cloud/remote workspace rows while an expert is specified and restores them for general (§7)', () => {
+        renderStatefulBar();
+        fireEvent.click(screen.getByTestId('task-config-collapsed'));
+        // 指定具体专家
+        fireEvent.click(screen.getByTestId('task-config-chip-expert'));
+        fireEvent.click(screen.getByTestId('expert-item-exp-data'));
+        // 工作空间 chip 说明本地目录仍可选；云端/远程在弹层里锁定
+        expect(screen.getByTestId('task-config-chip-workspace').getAttribute('title')).toContain('可选择本地工作目录');
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        const cloudRow = screen.getByTestId('workspace-row-cloud');
+        const remoteRow = screen.getByTestId('workspace-row-remote');
+        expect(cloudRow.getAttribute('role')).toBeNull();
+        expect(cloudRow.getAttribute('title')).toBe('专家任务不携带工作空间');
+        expect(remoteRow.getAttribute('role')).toBeNull();
+        expect(remoteRow.getAttribute('title')).toBe('专家任务不携带工作空间');
+        expect(screen.getByTestId('workspace-row-local').getAttribute('role')).toBe('button');
+        fireEvent.keyDown(document, { key: 'Escape' });
+        // 切回通用专家 → 云端/远程恢复可选
+        fireEvent.click(screen.getByTestId('task-config-chip-expert'));
+        fireEvent.click(screen.getByTestId('expert-item-generic'));
+        expect(screen.getByTestId('task-config-chip-workspace').getAttribute('title')).toBeNull();
+        fireEvent.click(screen.getByTestId('task-config-chip-workspace'));
+        expect(screen.getByTestId('workspace-row-cloud').getAttribute('role')).toBe('button');
+        expect(screen.getByTestId('workspace-row-remote').getAttribute('role')).toBe('button');
+    });
+
+    it('reduces the workspace chip back to local default when an expert is picked over a cloud workspace', () => {
+        renderStatefulBar(withCloudWorkspace(defaultTaskDraft(), 'cws-1', '研发环境'));
+        // 云端已选：chip 显示云端徽标 + 工作区名
+        expect(screen.getByTestId('task-config-chip-workspace').textContent).toContain('研发环境');
+        fireEvent.click(screen.getByTestId('task-config-chip-expert'));
+        fireEvent.click(screen.getByTestId('expert-item-exp-data'));
+        // 指定专家 → 云端选择被归约为本地默认（chip 不再显示云端）
+        const chip = screen.getByTestId('task-config-chip-workspace');
+        expect(chip.textContent).not.toContain('研发环境');
+        expect(chip.textContent).toContain('默认');
+    });
+});
+
+describe('RemoteServerForm', () => {
+    function renderRemoteForm(onConfirm: (r: unknown) => void, extra?: Record<string, unknown>) {
+        return render(<RemoteServerForm theme={theme} lang="zh" onConfirm={onConfirm} {...extra} />);
+    }
+
+    function fillRemote(fields: Partial<Record<'remote-host' | 'remote-port' | 'remote-user' | 'remote-password' | 'remote-workdir', string>>) {
+        for (const [testId, value] of Object.entries(fields)) {
+            fireEvent.change(screen.getByTestId(testId), { target: { value } });
+        }
+    }
+
+    it('rejects an empty form without calling onConfirm or the SSH binding', () => {
+        const onConfirm = vi.fn();
+        renderRemoteForm(onConfirm);
+        fireEvent.click(screen.getByTestId('remote-confirm'));
+        expect(screen.getByTestId('remote-form-status').textContent).toContain('请填写主机');
+        expect(onConfirm).not.toHaveBeenCalled();
+        fireEvent.click(screen.getByTestId('remote-test-connection'));
+        expect(testRemoteSSHConnection).not.toHaveBeenCalled();
+    });
+
+    it('rejects an invalid port without calling onConfirm', () => {
+        const onConfirm = vi.fn();
+        renderRemoteForm(onConfirm);
+        fillRemote({
+            'remote-host': '192.168.1.10',
+            'remote-port': 'abc',
+            'remote-user': 'root',
+            'remote-workdir': '/opt/app',
+        });
+        fireEvent.click(screen.getByTestId('remote-confirm'));
+        expect(screen.getByTestId('remote-form-status').textContent).toContain('端口');
+        expect(onConfirm).not.toHaveBeenCalled();
+    });
+
+    it('confirms a valid form with the full RemoteTarget including port', () => {
+        const onConfirm = vi.fn();
+        renderRemoteForm(onConfirm);
+        fillRemote({
+            'remote-host': ' 192.168.1.10 ',
+            'remote-port': '2222',
+            'remote-user': 'root',
+            'remote-password': 'secret',
+            'remote-workdir': '/opt/app',
+        });
+        fireEvent.click(screen.getByTestId('remote-confirm'));
+        expect(onConfirm).toHaveBeenCalledWith({
+            host: '192.168.1.10',
+            port: 2222,
+            user: 'root',
+            password: 'secret',
+            workDir: '/opt/app',
+        });
+    });
+
+    it('calls TestRemoteSSHConnection with (host, user, password, workDir, port) order', async () => {
+        testRemoteSSHConnection.mockResolvedValueOnce('连接成功');
+        renderRemoteForm(vi.fn());
+        fillRemote({
+            'remote-host': '192.168.1.10',
+            'remote-port': '2222',
+            'remote-user': 'root',
+            'remote-password': 'secret',
+            'remote-workdir': '/opt/app',
+        });
+        fireEvent.click(screen.getByTestId('remote-test-connection'));
+        await screen.findByText('连接成功');
+        expect(testRemoteSSHConnection).toHaveBeenCalledWith('192.168.1.10', 'root', 'secret', '/opt/app', 2222);
+    });
+});
+
+describe('TaskConfigBar lead icons', () => {
+    it('puts a representative svg before each default dimension, including the default directory', () => {
+        renderBar(defaultTaskDraft(), vi.fn(), { defaultExpanded: true });
+        expect(screen.getByTestId('task-config-chip-type-label').querySelector('[data-icon="chat"]')).toBeTruthy();
+        expect(screen.getByTestId('task-config-chip-window-label').querySelector('[data-icon="clock"]')).toBeTruthy();
+        expect(screen.getByTestId('task-config-chip-expert-label').querySelector('[data-icon="robot"]')).toBeTruthy();
+        expect(screen.getByTestId('task-config-chip-workflow-label').querySelector('[data-icon="ban"]')).toBeTruthy();
+        expect(screen.getByTestId('task-config-chip-workspace-label').querySelector('[data-icon="monitor"]')).toBeTruthy();
+        expect(screen.getByTestId('task-config-chip-workspace-value').querySelector('[data-icon="home"]')).toBeTruthy();
+        expect(screen.getByTestId('workspace-badge-local')).toBeTruthy();
+        expect(screen.getByTestId('task-config-chip-workspace').textContent).toContain('默认');
+    });
+
+    it('uses spark once a workflow is chosen', () => {
+        renderBar(withWorkflow(defaultTaskDraft(), 'wf-table'), vi.fn());
+        expect(screen.getByTestId('task-config-chip-workflow-label').querySelector('[data-icon="spark"]')).toBeTruthy();
+    });
+
+    it('switches the type mark to code and drops the home mark when a directory is required', () => {
+        const draft = { ...defaultTaskDraft(), taskType: 'coding' as const };
+        renderBar(draft, vi.fn(), { defaultExpanded: true });
+        expect(screen.getByTestId('task-config-chip-type-label').querySelector('[data-icon="code"]')).toBeTruthy();
+        expect(screen.getByTestId('task-config-chip-workspace-value').querySelector('[data-icon="home"]')).toBeNull();
+    });
+
+    it('keeps the workspace dimension mark distinct from the kind badge', () => {
+        renderBar(withCloudWorkspace(defaultTaskDraft(), 'c1', '数据分析环境'), vi.fn());
+        expect(screen.getByTestId('task-config-chip-workspace-label').querySelector('[data-icon="monitor"]')).toBeTruthy();
+        expect(screen.getByTestId('workspace-badge-cloud')).toBeTruthy();
+        expect(screen.getByTestId('task-config-chip-workspace-value').querySelector('[data-icon="home"]')).toBeNull();
+    });
+});
+
+describe('TaskConfigBar variant', () => {
+    it('chip variant (default) renders bordered chips with pill radius', () => {
+        renderBar(defaultTaskDraft(), vi.fn(), { defaultExpanded: true });
+        const chip = screen.getByTestId('task-config-chip-type');
+        expect(chip.style.border).toContain('1px');
+        expect(chip.style.borderRadius).toBe('15px');
+        expect(chip.style.height).toBe('30px');
+        expect(chip.style.background).not.toBe('transparent');
+    });
+
+    it('bare variant renders borderless transparent chips for the below-card strip', () => {
+        renderBar(defaultTaskDraft(), vi.fn(), { defaultExpanded: true, variant: 'bare' });
+        for (const testId of ['task-config-chip-type', 'task-config-chip-expert', 'task-config-chip-workflow', 'task-config-chip-workspace', 'task-config-chip-window']) {
+            const chip = screen.getByTestId(testId);
+            expect(chip.style.borderStyle).toBe('none');
+            expect(chip.style.background).toBe('transparent');
+            expect(chip.style.height).toBe('26px');
+        }
+    });
+
+    it('bare variant keeps active-state and warning-state coloring', () => {
+        // 编程类型 → 类型 chip 激活；编程任务缺少本地路径 → 工作空间值红色告警。
+        const draft = { ...defaultTaskDraft(), taskType: 'coding' as const };
+        renderBar(draft, vi.fn(), { variant: 'bare' });
+        const typeChip = screen.getByTestId('task-config-chip-type');
+        // jsdom 将十六进制颜色规范化为 rgb()。
+        expect(typeChip.style.color).toBe('rgb(23, 105, 232)');
+        const workspaceChip = screen.getByTestId('task-config-chip-workspace');
+        expect(screen.getByTestId('task-config-chip-workspace-value').style.color).toBe('rgb(239, 68, 68)');
+        const labelIcon = workspaceChip.querySelector('[data-testid="task-config-chip-workspace-label"] [data-icon="monitor"]') as SVGElement;
+        expect(labelIcon).toBeTruthy();
+        expect(labelIcon.style.color).toBe('rgb(138, 148, 166)');
+        const typeIcon = typeChip.querySelector('[data-icon="code"]') as SVGElement;
+        expect(typeIcon.style.color).toBe('rgb(138, 148, 166)');
+    });
+});

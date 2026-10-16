@@ -8,7 +8,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 )
 
-const captchaAskQuestion = "页面出现人机验证（滑块/reCAPTCHA）。请在浏览器中完成验证后继续。继续之后必须先 observe，再 click/type。"
+const captchaAskQuestion = "页面出现人机验证（滑块/reCAPTCHA）。请在浏览器中完成验证后继续。继续之后必须先 probe，再 click/type。"
 
 // browserPageFlagsCollectJS assumes pageText/anyIframeSrc/anySelector exist.
 const browserPageFlagsCollectJS = `
@@ -20,12 +20,19 @@ const browserPageFlagsCollectJS = `
   const classCaptcha = anySelector('[class*="captcha"], [id*="captcha"]');
   const genericCaptchaIframe = anyIframeSrc('captcha');
   const captchaWidget = widgetIframe || slider || (classCaptcha && genericCaptchaIframe);
+  const qrLogin = /扫码登录|扫描二维码|扫一扫登录|请用.{0,8}扫码|scan (the )?qr code|qr code to (log in|sign in)/i.test(fullText);
+  const signedInChrome = /退出登录|已登录/.test(fullText);
+  const phoneEntry = anySelector('input[type=tel], input[autocomplete="tel"], input[name*="phone" i], input[name*="mobile" i], input[id*="phone" i], input[id*="mobile" i]');
+  const typeableLogin = (anySelector('input[type=password]') && /login|sign in|登录|密码/.test(lower)) || (phoneEntry && /登录|login|sign in|手机/.test(lower));
   const pageFlags = {
     captcha_widget: captchaWidget,
     captcha: /captcha|verify you are human|unusual traffic|安全验证|人机验证/.test(lower) || genericCaptchaIframe || classCaptcha,
-    login_wall: anySelector('input[type=password]') && /login|sign in|登录|密码/.test(lower),
+    login_wall: !signedInChrome && typeableLogin,
+    login_qr: !signedInChrome && qrLogin && !typeableLogin,
     mfa: /verification code|2fa|one-time|otp|authenticator|验证码/.test(lower),
-    canvas: anySelector('canvas')
+    canvas: anySelector('canvas'),
+    payment_confirm: anySelector('input[autocomplete="cc-number"], input[name*="cardnumber" i], input[id*="cardnumber" i], input[autocomplete="cc-exp"]') || anyIframeSrc('checkout') || anyIframeSrc('js.stripe.com') || anyIframeSrc('paypal.com'),
+    consent_dialog: anySelector('[role="dialog"], [aria-modal="true"]') && /consent|隐私政策|privacy policy|同意并继续/.test(fullText) && !(anySelector('[class*="cookie"], [id*="cookie"]') && /accept cookies|接受.*cookie|同意.*cookie/.test(lower))
   };
 `
 
@@ -115,7 +122,7 @@ const browserPageFlagsScript = `(function () {
 
 func isCaptchaMutatingAction(action string) bool {
 	switch strings.ToLower(strings.TrimSpace(action)) {
-	case "click", "type", "press", "select", "set_files", "dialog":
+	case "click", "type", "press", "select", "set_files", "dialog", "script":
 		return true
 	default:
 		return false
@@ -154,6 +161,21 @@ func captchaWidgetFromSignals(iframeSrcs []string, pageText string, classOrIDCap
 	return classOrIDCaptcha && genericCaptchaIframe
 }
 
+// paymentConfirmFromSignals is true only for a card field or an external
+// checkout frame. A pay button, a price, or the word 支付 is not enough.
+func paymentConfirmFromSignals(hasCard, checkoutIframe bool) bool {
+	return hasCard || checkoutIframe
+}
+
+// consentDialogFromSignals ignores a cookie accept. A separate consent
+// dialog still counts.
+func consentDialogFromSignals(cookieAccept, consentDialog bool) bool {
+	if cookieAccept {
+		return false
+	}
+	return consentDialog
+}
+
 func (s *BrowserAgentSession) lastSnapshotFlags() (BrowserPageFlags, bool) {
 	if s == nil {
 		return BrowserPageFlags{}, false
@@ -171,6 +193,9 @@ func (s *BrowserAgentSession) lastSnapshotFlags() (BrowserPageFlags, bool) {
 }
 
 func (s *BrowserAgentSession) peekPageFlags() (BrowserPageFlags, error) {
+	if s != nil && s.peekFlags != nil {
+		return s.peekFlags()
+	}
 	if s == nil || s.session == nil {
 		return BrowserPageFlags{}, fmt.Errorf("browser session not connected")
 	}
@@ -239,7 +264,7 @@ func (s *BrowserAgentSession) captchaAskResult(action string) *BrowserActionResu
 		SessionID: sessionID,
 		Action:    "browser_" + strings.TrimPrefix(action, "browser_"),
 		Status:    "ask",
-		Display:   "page has a captcha challenge; solve it in the browser, then observe before clicking",
+		Display:   "page has a captcha challenge; solve it in the browser, then probe before clicking",
 		Detail:    "captcha_widget",
 		AskUser:   captchaAskUserRequest(ctx),
 		Data: map[string]interface{}{
@@ -252,7 +277,12 @@ func (s *BrowserAgentSession) captchaAskResult(action string) *BrowserActionResu
 }
 
 func (s *BrowserAgentSession) rememberSubmitClickIfOK(key string, result *BrowserActionResult) {
-	if s == nil || result == nil || result.Status != "ok" {
+	if s == nil || result == nil || key == "" {
+		return
+	}
+	// "unchanged" still means the click was sent. Remember it so a fast batch
+	// stop does not turn into an immediate second submit.
+	if result.Status != "ok" && result.Status != "unchanged" {
 		return
 	}
 	s.rememberSubmitClick(key)

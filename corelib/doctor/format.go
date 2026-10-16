@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
 // FormatReport renders a compact human-readable doctor report for TUI/chat.
@@ -27,6 +28,14 @@ func FormatReport(r Report) string {
 	}
 	// Adaptive prompt hit rate + estimated system-prompt token savings.
 	if line := agent.FormatPromptProfileLine(); line != "" {
+		fmt.Fprintf(&b, "%s\n", line)
+	}
+	// Legacy routing baseline counters (Phase 0 instrumentation).
+	if line := tool.FormatRoutingLine(); line != "" {
+		fmt.Fprintf(&b, "%s\n", line)
+	}
+	// Permission dual-run divergence counters (flip-gate measurement base).
+	if line := tool.FormatPermissionDualEvalLine(); line != "" {
 		fmt.Fprintf(&b, "%s\n", line)
 	}
 	b.WriteString("\n")

@@ -26,6 +26,13 @@ type mobileSSHQuickConnectResult struct {
 	Message       string
 }
 
+var (
+	mobileQuickSSHUserAtHostRe = regexp.MustCompile(`(?i)\b([a-zA-Z0-9._-]+)@([a-zA-Z0-9._-]+(?:\.[a-zA-Z0-9._-]+)*)(?::(\d{1,5}))?\s+(\S{4,})`)
+	mobileLabeledSSHHostRe     = regexp.MustCompile(`(?i)(?:主机|服务器|地址|host|ip|hostname)\s*[:：=]?\s*([a-zA-Z0-9._:-]+)`)
+	mobileLabeledSSHUserRe     = regexp.MustCompile(`(?i)(?:用户名?|账号|帐户|user(?:name)?|login)\s*[:：=]?\s*([a-zA-Z0-9._-]+)`)
+	mobileLabeledSSHPassRe     = regexp.MustCompile(`(?i)(?:密码|口令|password|passwd|pwd)\s*[:：=]?\s*(\S{4,})`)
+)
+
 // MobileSSHQuickConnectHandler is the zero-management path for Mobile AI:
 // user only provides host / username / password; Hub stores profile + vault
 // so the assistant can enable the ssh tool without any further management UI.
@@ -191,8 +198,7 @@ func mobileParseQuickSSHFromText(text string) (host, user, pass string, port int
 	}
 	// Prefer explicit user@host password
 	// e.g. root@10.0.0.1 mypass  or root@host:22 pass
-	reAt := regexp.MustCompile(`(?i)\b([a-zA-Z0-9._-]+)@([a-zA-Z0-9._-]+(?:\.[a-zA-Z0-9._-]+)*)(?::(\d{1,5}))?\s+(\S{4,})`)
-	if m := reAt.FindStringSubmatch(text); len(m) == 5 {
+	if m := mobileQuickSSHUserAtHostRe.FindStringSubmatch(text); len(m) == 5 {
 		user = m[1]
 		host = m[2]
 		pass = m[4]
@@ -258,12 +264,9 @@ func mobileParseQuickSSHFromText(text string) (host, user, pass string, port int
 // mobileParseLabeledSSHCreds handles "IP/主机 … 用户/user … 密码/pass …" free text.
 func mobileParseLabeledSSHCreds(text string) (host, user, pass string, port int, ok bool) {
 	// Capture host after 主机/服务器/host/ip keywords.
-	reHost := regexp.MustCompile(`(?i)(?:主机|服务器|地址|host|ip|hostname)\s*[:：=]?\s*([a-zA-Z0-9._:-]+)`)
-	reUser := regexp.MustCompile(`(?i)(?:用户名?|账号|帐户|user(?:name)?|login)\s*[:：=]?\s*([a-zA-Z0-9._-]+)`)
-	rePass := regexp.MustCompile(`(?i)(?:密码|口令|password|passwd|pwd)\s*[:：=]?\s*(\S{4,})`)
-	hm := reHost.FindStringSubmatch(text)
-	um := reUser.FindStringSubmatch(text)
-	pm := rePass.FindStringSubmatch(text)
+	hm := mobileLabeledSSHHostRe.FindStringSubmatch(text)
+	um := mobileLabeledSSHUserRe.FindStringSubmatch(text)
+	pm := mobileLabeledSSHPassRe.FindStringSubmatch(text)
 	if len(hm) < 2 || len(um) < 2 || len(pm) < 2 {
 		return "", "", "", 0, false
 	}

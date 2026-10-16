@@ -186,6 +186,9 @@ func TestBuildTreePrompt(t *testing.T) {
 	treeText := "── Coding ──\n  coding: create software"
 	prompt := BuildTreePrompt(treeText, "开发一个游戏")
 
+	if !strings.Contains(prompt, "Continuing a document this conversation already has is file_write, not workflow_task") {
+		t.Fatal("tree prompt must keep an in-conversation document edit off workflow_task")
+	}
 	if !strings.Contains(prompt, treeText) {
 		t.Error("prompt should contain tree text")
 	}
@@ -205,9 +208,16 @@ func TestBuildTreePromptKeepsCompositeAndWebFetchBoundariesConsistent(t *testing
 	for _, want := range []string{
 		"web_fetch requires a concrete URL",
 		"Current externally acquired facts rendered as a PDF → live_data + document_generate",
+		"live_data_visual, never document_generate",
+		"office primary with search as the next candidate",
+		"生成一段动画/视频",
+		"Design latitude alone is not a workflow",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing semantic boundary %q", want)
 		}
+	}
+	if strings.Contains(prompt, "If yes → workflow") {
+		t.Fatal("design latitude must not be sufficient to select a workflow")
 	}
 }

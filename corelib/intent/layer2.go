@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
 )
@@ -132,6 +134,8 @@ func defaultAnchors() []intentAnchor {
 				// Chinese
 				"登录服务器查看日志",
 				"连接远程服务器",
+				"用ssh访问",
+				"用ssh登录查看服务器状态",
 				"SSH到生产环境检查状态",
 				"帮我登录服务器重启服务",
 				"查看服务器上的GPU占用率",
@@ -258,32 +262,34 @@ func defaultAnchors() []intentAnchor {
 const (
 	EmbeddingConfidentMinScore = 0.78
 	EmbeddingConfidentMinGap   = 0.10
-	// The companion floor is calibrated against the installed production Gemma
-	// model.  It is intentionally separate from a single-label grant: the
-	// leading label must still meet EmbeddingCompositePrimaryMinScore and the
-	// pair must be explicitly declared by the taxonomy.
+	// The companion floor is calibrated against the installed production
+	// Qwen3 embedding model.  It is intentionally separate from a
+	// single-label grant: the leading label must still meet
+	// EmbeddingCompositePrimaryMinScore and the pair must be explicitly
+	// declared by the taxonomy.
 	// The floor is calibrated with generic live-data-to-PDF requests against
-	// PDF-only negative controls, and it is dimension-sensitive: absolute
-	// cosines rise with the embedding width, so the value must be re-measured
-	// whenever DefaultEmbeddingDim or the model changes. At 768 dimensions
-	// (2026-08-24) the strongest observed PDF-only live_data score is 0.715
-	// ("将附件里的内容排版并导出为PDF报告") and the weakest genuine weather+PDF
-	// companion is 0.744 ("天津天气…"); 0.73 sits between them. (At 256 the
-	// same negatives peaked at 0.643 and the floor was 0.67.)
+	// PDF-only negative controls, and it is model-sensitive: absolute
+	// cosines depend on the embedding family and width, so the value must
+	// be re-measured whenever the model changes. Measured on Qwen3-0.6B at
+	// full width (2026-10-15): the document_generate half of genuine
+	// live-data+PDF queries scores 0.775-0.890, well clear of the floor.
 	EmbeddingCompositeSecondaryMinScore = 0.73
 	// EmbeddingCompositeLiveDataMinScore is the companion floor specific to a
 	// live_data half.  PDF-only negatives ("将附件里的内容排版并导出为PDF报告"
 	// family) embed close to the generic live_data anchors, so once the
 	// composite anchors ("查询某城市天气并输出格式化PDF报告",
-	// "查询比特币价格并输出格式化PDF报告") lifted genuine live-data+PDF
-	// queries, the negatives rose with them and the generic 0.73 floor
-	// stopped separating the two groups.  Measured at 768 dimensions with
-	// those anchors installed (2026-08-24): genuine live-data+PDF queries
-	// score live_data 0.841-0.957 across 19 phrasings (weather-first and
-	// PDF-first, 10 city names, FX/stock/news/flight/crypto); PDF-only
-	// negatives peak at 0.802.  0.82 leaves margin on both sides
-	// (+0.021 / -0.018).  Re-measure whenever DefaultEmbeddingDim, the
-	// model, or the live_data anchor set changes.
+	// "查询比特币价格并输出格式化PDF报告", and the per-subdomain news/FX/
+	// stock/flight companions) lift genuine live-data+PDF queries, the
+	// negatives rise with them and the generic 0.73 floor stops separating
+	// the two groups.  Measured on Qwen3-0.6B at full width with those
+	// anchors installed (2026-10-15): genuine live-data+PDF queries score
+	// live_data 0.891-0.942 across 14 phrasings (weather-first and
+	// PDF-first, city names, FX/stock/news/flight/crypto); PDF-only
+	// negatives peak at 0.804.  0.82 leaves margin on both sides
+	// (+0.071 / -0.016).  Every live_data subdomain needs its own composite
+	// anchor on this model — an unanchored subdomain (e.g. 股市行情 before
+	// its anchor was added) scores ~0.81, just under the floor. Re-measure
+	// whenever the model or the live_data anchor set changes.
 	EmbeddingCompositeLiveDataMinScore = 0.82
 	// EmbeddingCompositePrimaryMinScore is the minimum score for the leading
 	// half of a declared composite to stand on its own.  A compound result is
@@ -324,6 +330,286 @@ func retainEmbeddingOverWeakTree(l2 ClassificationResult, treeScore float64) boo
 	return l2.Confidence > treeScore
 }
 
+// competingVisualHalf reports a live_data_visual score that clears the
+// companion floor beside a verified lookup+PDF pair. The lookup stays the
+// dependency root. A below-floor resemblance is not a second artifact.
+// Clearing the floor does not choose the artifact: cosine margins are not
+// on one scale, and a chart word list cannot see paraphrases.
+func competingVisualHalf(scores []labelScore, top1, companion labelScore) (visual, lookup labelScore, ok bool) {
+	lookup, artifact := top1, companion
+	if isLookupIntentLabel(artifact.label) {
+		lookup, artifact = artifact, lookup
+	}
+	if artifact.label != LabelDocumentGenerate || !isLookupIntentLabel(lookup.label) {
+		return labelScore{}, labelScore{}, false
+	}
+	for _, s := range scores {
+		if s.label != LabelLiveDataVisual {
+			continue
+		}
+		if s.score < EmbeddingCompositeSecondaryMinScore {
+			continue
+		}
+		return s, lookup, true
+	}
+	return labelScore{}, labelScore{}, false
+}
+
+// utteranceNamesPDF reports a request for a PDF file. The letters must be
+// their own token, so "pdfium" does not count, and a dotted extension
+// ("report.pdf", "报告．pdf") does not count: that names an existing file,
+// not a deliverable to generate. The ideographic full stop "。" is a
+// sentence break, so "查完了。pdf" still counts. Fullwidth letters fold
+// first, so "ＰＤＦ" is the same token. Chart wording is not scanned.
+func utteranceNamesPDF(text string) bool {
+	folded := foldPDFScan(stripPDFNegations(text))
+	for i := 0; i+3 <= len(folded); {
+		if folded[i:i+3] != "pdf" {
+			i++
+			continue
+		}
+		extension := i > 0 && folded[i-1] == '.'
+		bounded := (i == 0 || !isASCIIAlphaNum(folded[i-1])) &&
+			(i+3 == len(folded) || !isASCIIAlphaNum(folded[i+3]))
+		if bounded && !extension {
+			return true
+		}
+		i += 3
+	}
+	return false
+}
+
+// foldPDFScan maps the characters the PDF token cares about onto ASCII and
+// turns everything else into a boundary. Fullwidth letters and the
+// fullwidth filename dot survive. The ideographic full stop stays a boundary.
+func foldPDFScan(text string) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	for _, r := range text {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			b.WriteByte(byte(r - 'A' + 'a'))
+		case r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '.':
+			b.WriteByte(byte(r))
+		case r >= 'Ａ' && r <= 'Ｚ':
+			b.WriteByte(byte(r - 'Ａ' + 'a'))
+		case r >= 'ａ' && r <= 'ｚ':
+			b.WriteByte(byte(r - 'ａ' + 'a'))
+		case r >= '０' && r <= '９':
+			b.WriteByte(byte(r - '０' + '0'))
+		case r == '．':
+			b.WriteByte('.')
+		default:
+			b.WriteByte(' ')
+		}
+	}
+	return b.String()
+}
+
+func isASCIIAlphaNum(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9')
+}
+
+// stripPDFNegations removes a rejected PDF mention before the token scan.
+// Fullwidth letters are folded first so "不要ＰＤＦ" is the same phrase as
+// "不要pdf", and ideographic spaces collapse so "不要　pdf" matches too.
+// A later positive token ("不要pdf，还是生成pdf") still counts.
+// The phrase list matches corelib/tool.stripMarkdownPDFNegations, plus
+// "不要生成pdf", which that helper does not yet strip.
+func stripPDFNegations(text string) string {
+	q := collapsePDFSpaces(foldPDFLetters(text))
+	for _, phrase := range []string{
+		"不要 生成 pdf", "不要 生成pdf",
+		"不要生成 pdf", "不要生成pdf",
+		"不要 pdf", "不要pdf",
+		"别生成 pdf", "别生成pdf",
+		"不是 pdf", "不是pdf",
+		"非 pdf", "非pdf",
+		"not pdf", "no pdf",
+	} {
+		q = strings.ReplaceAll(q, phrase, " ")
+	}
+	return q
+}
+
+func collapsePDFSpaces(text string) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	prevSpace := false
+	for _, r := range text {
+		if isPDFNegationSpace(r) {
+			if !prevSpace {
+				b.WriteByte(' ')
+			}
+			prevSpace = true
+			continue
+		}
+		prevSpace = false
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func isPDFNegationSpace(r rune) bool {
+	switch r {
+	case ' ', '\t', '\n', '\r', '\v', '\f', '\u00a0', '\u3000':
+		return true
+	default:
+		return false
+	}
+}
+
+// foldPDFLetters lowercases ASCII and fullwidth letters and maps the
+// fullwidth filename dot, leaving every other character in place so a
+// Chinese negation phrase can still be matched.
+func foldPDFLetters(text string) string {
+	var b strings.Builder
+	b.Grow(len(text))
+	for _, r := range text {
+		switch {
+		case r >= 'A' && r <= 'Z':
+			b.WriteByte(byte(r - 'A' + 'a'))
+		case r >= 'Ａ' && r <= 'Ｚ':
+			b.WriteByte(byte(r - 'Ａ' + 'a'))
+		case r >= 'ａ' && r <= 'ｚ':
+			b.WriteByte(byte(r - 'ａ' + 'a'))
+		case r >= '０' && r <= '９':
+			b.WriteByte(byte(r - '０' + '0'))
+		case r == '．':
+			b.WriteByte('.')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// namedPDFHalves returns the PDF score, the live_data score, and the search
+// score. Only live_data may anchor a local PDF grant. Search is only a
+// timeout hint: web_fetch is not, because a tree timeout collapses every
+// primary except search, live_data, and office.
+func namedPDFHalves(scores []labelScore) (pdf, live, search labelScore) {
+	for _, s := range scores {
+		switch s.label {
+		case LabelDocumentGenerate:
+			if s.score > pdf.score {
+				pdf = s
+			}
+		case LabelLiveData:
+			if s.score > live.score {
+				live = s
+			}
+		case LabelSearch:
+			if s.score > search.score {
+				search = s
+			}
+		}
+	}
+	return pdf, live, search
+}
+
+// embeddingAnchorIdentityMinRunes keeps short control cues ("继续", "截图",
+// "continue") on the cosine and tree path. Identity is for a whole exemplar
+// sentence, such as the file_delete line that production spaced out.
+const embeddingAnchorIdentityMinRunes = 9
+
+func matchingAnchorIdentity(anchors []intentAnchor, text string) (IntentLabel, bool) {
+	folded := foldEmbeddingIdentity(text)
+	if utf8.RuneCountInString(folded) < embeddingAnchorIdentityMinRunes {
+		return "", false
+	}
+	var found IntentLabel
+	for _, anchor := range anchors {
+		for _, sample := range anchor.Texts {
+			if foldEmbeddingIdentity(sample) != folded {
+				continue
+			}
+			if found != "" && found != anchor.Label {
+				return "", false
+			}
+			found = anchor.Label
+		}
+	}
+	return found, found != ""
+}
+
+func foldEmbeddingIdentity(s string) string {
+	s = strings.TrimSpace(s)
+	for len(s) > 0 {
+		r, size := utf8.DecodeLastRuneInString(s)
+		if !trailingIdentityPunct(r) {
+			break
+		}
+		s = s[:len(s)-size]
+		s = strings.TrimSpace(s)
+	}
+	var b strings.Builder
+	for _, r := range s {
+		switch r {
+		case ' ', '\t', '\n', '\r', '\u3000', '\u00a0':
+			continue
+		}
+		if r >= 'A' && r <= 'Z' {
+			r += 'a' - 'A'
+		}
+		b.WriteRune(r)
+	}
+	return b.String()
+}
+
+func trailingIdentityPunct(r rune) bool {
+	switch r {
+	case '。', '！', '？', '!', '?', '；', ';', '，', ',', '、', '…':
+		return true
+	default:
+		return false
+	}
+}
+
+func competingLocalHostLabel(scores []labelScore, floor float64) (labelScore, bool) {
+	var best labelScore
+	for _, s := range scores {
+		if !localHostMutationLabel(s.label) || s.score < floor {
+			continue
+		}
+		if s.score > best.score {
+			best = s
+		}
+	}
+	return best, best.label != ""
+}
+
+func localHostMutationLabel(label IntentLabel) bool {
+	switch label {
+	case LabelFileDelete, LabelFileWrite, LabelShellCommand:
+		return true
+	default:
+		return false
+	}
+}
+
+func clearArtifactRunnerUp(result *ClassificationResult) {
+	if result.RunnerUp == LabelLiveDataVisual || result.RunnerUp == LabelDocumentGenerate {
+		result.RunnerUp = ""
+		result.RunnerUpScore = 0
+	}
+}
+
+// lookupArtifactCompanionRequiresTree reports an artifact half that must not
+// ship as a plain lookup. Document and office halves keep the 0.60 floor.
+// A chart resemblance has to clear the 0.73 companion floor: below that,
+// a weather question sits close to "生成天气实况图" and used to leave the
+// lookup shortcut.
+func lookupArtifactCompanionRequiresTree(companion labelScore) bool {
+	if companion.label == "" || companion.score < EmbeddingLookupCompositeFloor {
+		return false
+	}
+	if companion.label == LabelLiveDataVisual && companion.score < EmbeddingCompositeSecondaryMinScore {
+		return false
+	}
+	return true
+}
+
 // classifyByEmbedding performs Layer 2 embedding-based classification using
 // cosine similarity between the user message embedding and pre-computed anchor
 // vectors for each intent label category.
@@ -336,35 +622,59 @@ func retainEmbeddingOverWeakTree(l2 ClassificationResult, treeScore float64) boo
 // Caching is handled one level up: UnifiedIntentClassifier memoizes results
 // per message (full Classify cache and the ClassifyEmbeddingOnly cache).
 func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, text string) (ClassificationResult, bool) {
-	// 1. Get query embedding.
-	queryVec, err := embedder.Embed(text)
-	if err != nil || queryVec == nil {
-		return ClassificationResult{}, false
+	result, confident, _ := classifyByEmbeddingVec(embedder, anchors, text)
+	return result, confident
+}
+
+// classifyByEmbeddingVec is classifyByEmbedding that also returns the query
+// vector it computed (nil on the anchor-identity shortcut or an embed error),
+// so ClassifyContext can hand it to a local Layer 3 (see query_embedding.go).
+func classifyByEmbeddingVec(embedder embedding.Embedder, anchors []intentAnchor, text string) (ClassificationResult, bool, []float32) {
+	result, confident, vec, _ := classifyByEmbeddingVecScores(embedder, anchors, text)
+	return result, confident, vec
+}
+
+// classifyByEmbeddingVecScores is classifyByEmbeddingVec that also returns the
+// raw (uncalibrated) per-label max anchor cosine computed in the same pass, for
+// local heads trained with L2 anchor features (LocalHead.AnchorFeatureLabels).
+// nil on the anchor-identity shortcut or an embed error.
+func classifyByEmbeddingVecScores(embedder embedding.Embedder, anchors []intentAnchor, text string) (ClassificationResult, bool, []float32, map[string]float64) {
+	// An utterance that is one of a label's own exemplars is that label.
+	// Cosine can still crown a different host: "删除刚才的 markdown 文件"
+	// differs from the file_delete exemplar only by spaces, and production
+	// 2026-09-26 crowned ssh 0.839 (gap 0.107) so the local delete never loaded.
+	if label, ok := matchingAnchorIdentity(anchors, text); ok {
+		return ClassificationResult{
+			Primary:    label,
+			Confidence: 1,
+			Layer:      2,
+			Reason:     "embedding anchor identity: " + string(label),
+		}, true, nil, nil
 	}
 
-	// 2. Compute max cosine similarity for each anchor set.
-	type labelScore struct {
-		label IntentLabel
-		score float64
+	// 1. Get query embedding.
+	queryVec, err := embedIntentQuery(embedder, text)
+	if err != nil || queryVec == nil {
+		return ClassificationResult{}, false, nil, nil
 	}
+
+	// 2. Compute max cosine similarity for each anchor set, mapped onto the
+	// raw-text scale the thresholds below were calibrated on.
+	cal := intentScoreCalibrationFor(embedder)
 	scores := make([]labelScore, 0, len(anchors))
 
+	raw := make(map[string]float64, len(anchors))
 	for _, anchor := range anchors {
-		if len(anchor.Vecs) == 0 {
+		maxSim, rawMax, ok := maxAnchorScoreRaw(queryVec, anchor, cal)
+		if !ok {
 			continue // anchor not yet warmed up
 		}
-		maxSim := 0.0
-		for _, vec := range anchor.Vecs {
-			sim := cosineSimilarity(queryVec, vec)
-			if sim > maxSim {
-				maxSim = sim
-			}
-		}
+		raw[string(anchor.Label)] = rawMax
 		scores = append(scores, labelScore{label: anchor.Label, score: maxSim})
 	}
 
 	if len(scores) == 0 {
-		return ClassificationResult{}, false
+		return ClassificationResult{}, false, nil, nil
 	}
 
 	// 3. Find top-1 and top-2 categories, plus the strongest declared
@@ -422,13 +732,30 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 		companionFloor = EmbeddingCompositeLiveDataMinScore
 	}
 	if composite.label != "" && composite.score >= companionFloor {
+		// The verified pair is lookup + PDF. A visual score that also clears
+		// the floor is a second artifact reading ("画出近一月股价趋势图"
+		// scored document_generate 0.739 beside a stronger chart, and
+		// "崇州天气，生成格式化pdf" scored the chart 0.759 beside PDF 0.735).
+		// The margin does not decide. The letters "pdf" keep the verified
+		// pair locally, so a tree timeout cannot drop a named file. Every
+		// other wording goes to the tree, which reads the sentence. The
+		// artifact halves are removed from runner-up evidence so synthesis
+		// cannot crown the cosine winner after the tree returns a plain lookup.
+		if visual, lookup, ok := competingVisualHalf(scores, top1, composite); ok && lookup.score >= EmbeddingCompositePrimaryMinScore && !utteranceNamesPDF(text) {
+			result.Primary = lookup.label
+			result.Confidence = lookup.score
+			result.Secondary = nil
+			clearArtifactRunnerUp(&result)
+			result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), visual=%s (%.3f), gap=%.3f", lookup.label, lookup.score, composite.label, composite.score, visual.label, visual.score, gap)
+			return result, false, queryVec, raw
+		}
 		result.Secondary = []IntentLabel{composite.label}
 		if top1.score >= EmbeddingCompositePrimaryMinScore {
 			result.Reason = fmt.Sprintf("embedding declared composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, composite.label, composite.score, gap)
-			return result, true
+			return result, true, queryVec, raw
 		}
 		result.Reason = fmt.Sprintf("embedding semantic composite requires tree: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, composite.label, composite.score, gap)
-		return result, false
+		return result, false, queryVec, raw
 	}
 
 	// A document-generation candidate without a declared lookup companion
@@ -437,35 +764,77 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 	// be acquired.
 	if top1.label == LabelDocumentGenerate {
 		result.Reason = fmt.Sprintf("embedding document generation requires tree: top=%s (%.3f), gap=%.3f", top1.label, top1.score, gap)
-		return result, false
+		return result, false, queryVec, raw
+	}
+
+	// A chart can lead by a wide or a narrow margin while the user still
+	// named a PDF file. This runs before the gap check: a close search score
+	// must not skip the named file and fall through as an ordinary ambiguous
+	// chart. live_data must clear its companion floor. A weaker pair escalates
+	// from a lookup hint, so a timeout does not become a chart grant or an
+	// unreviewed search+PDF pair.
+	if top1.label == LabelLiveDataVisual && utteranceNamesPDF(text) {
+		pdf, live, search := namedPDFHalves(scores)
+		if pdf.label == LabelDocumentGenerate && pdf.score >= EmbeddingCompositeSecondaryMinScore && live.score >= EmbeddingCompositeLiveDataMinScore {
+			result.Primary = live.label
+			result.Confidence = live.score
+			result.Secondary = []IntentLabel{LabelDocumentGenerate}
+			result.Reason = fmt.Sprintf("embedding declared composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", live.label, live.score, pdf.label, pdf.score, gap)
+			return result, true, queryVec, raw
+		}
+		fallback := live
+		if fallback.score < EmbeddingLookupMinScore {
+			fallback = search
+		}
+		if fallback.score >= EmbeddingLookupMinScore && fallback.label != "" {
+			result.Primary = fallback.label
+			result.Confidence = fallback.score
+			result.Secondary = nil
+			clearArtifactRunnerUp(&result)
+		}
+		result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", result.Primary, result.Confidence, LabelDocumentGenerate, pdf.score, gap)
+		return result, false, queryVec, raw
 	}
 
 	if top1.score >= EmbeddingConfidentMinScore && gap >= EmbeddingConfidentMinGap {
+		// Remote shell and a local file action are different hosts. The cosine
+		// margin does not choose the machine. Production 2026-09-26: a local
+		// markdown delete crowned ssh and the turn had no fs.delete.local.
+		if top1.label == LabelSSH {
+			if local, ok := competingLocalHostLabel(scores, EmbeddingCompositeSecondaryMinScore); ok {
+				result.Secondary = []IntentLabel{local.label}
+				result.Reason = fmt.Sprintf("embedding remote host requires tree: top=%s (%.3f), local=%s (%.3f), gap=%.3f", top1.label, top1.score, local.label, local.score, gap)
+				return result, false, queryVec, raw
+			}
+		}
 		// A confident lookup with a material declared artifact half is a
 		// composite request, not a plain lookup: shipping it as confident
 		// lookup-only silently drops the generate capability without ever
 		// consulting the tree.  Escalate with the half as evidence.
-		if isLookupIntentLabel(top1.label) && declaredCompanion.label != "" && declaredCompanion.score >= EmbeddingLookupCompositeFloor {
+		if isLookupIntentLabel(top1.label) && lookupArtifactCompanionRequiresTree(declaredCompanion) {
 			result.Secondary = []IntentLabel{declaredCompanion.label}
 			result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, declaredCompanion.label, declaredCompanion.score, gap)
-			return result, false
+			return result, false, queryVec, raw
 		}
 		// Mirror guard for a confident office/deck request whose companion is a
 		// lookup ("网上找几张照片做成生日PPT").  The deck half is settled, but
 		// the search boundary is not locally separable: on the installed
-		// 768-dim model (2026-08-25) office-only negatives score the lookup
-		// labels up to 0.740 while the genuine find-images phrasings score
-		// 0.65, so any local floor would mis-grant search on plain Excel/PPT
-		// requests.  Attach the half and let the tree read the request;
-		// shipping confident office-only dropped web_search in production and
-		// the turn reported the search tool as unavailable.
+		// Qwen3 model (2026-10-15) office-only controls score the lookup
+		// labels up to ~0.71 while the genuine find-images phrasings score
+		// 0.685-0.732, so any local floor would mis-grant search on plain
+		// Excel/PPT requests.  Attach the half and let the tree read the
+		// request; shipping confident office-only dropped web_search in
+		// production and the turn reported the search tool as unavailable.
 		if top1.label == LabelOffice && isLookupIntentLabel(declaredCompanion.label) && declaredCompanion.score >= EmbeddingLookupCompositeFloor {
 			result.Secondary = []IntentLabel{declaredCompanion.label}
 			result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, declaredCompanion.label, declaredCompanion.score, gap)
-			return result, false
+			return result, false, queryVec, raw
+		}
+		if isLookupIntentLabel(top1.label) {
+			clearArtifactRunnerUp(&result)
 		}
 		result.Reason = fmt.Sprintf("embedding: top=%s (%.3f), gap=%.3f", top1.label, top1.score, gap)
-		return result, true
+		return result, true, queryVec, raw
 	}
 
 	// Read-only lookup: a slightly weaker live_data/search hit is still a
@@ -478,7 +847,7 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 		if composite.label != "" && composite.score >= EmbeddingLookupCompositeFloor {
 			result.Secondary = []IntentLabel{composite.label}
 			result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, composite.label, composite.score, gap)
-			return result, false
+			return result, false, queryVec, raw
 		}
 		// A declared-but-not-locally-verified composite half (search +
 		// document_generate / live_data_visual) must escalate too: the
@@ -487,13 +856,14 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 		// capability is never routed, and the loop later reports the
 		// generate tool as unavailable ("本轮未授权").  Escalation lets the
 		// tree verdict plus the L2 runner-up synthesize the composite.
-		if declaredCompanion.label != "" && declaredCompanion.score >= EmbeddingLookupCompositeFloor {
+		if lookupArtifactCompanionRequiresTree(declaredCompanion) {
 			result.Secondary = []IntentLabel{declaredCompanion.label}
 			result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, declaredCompanion.label, declaredCompanion.score, gap)
-			return result, false
+			return result, false, queryVec, raw
 		}
+		clearArtifactRunnerUp(&result)
 		result.Reason = fmt.Sprintf("embedding lookup: top=%s (%.3f), gap=%.3f", top1.label, top1.score, gap)
-		return result, true
+		return result, true, queryVec, raw
 	}
 
 	// Ambiguous — escalate to Layer 3. Keep a declared lookup companion of an
@@ -504,8 +874,18 @@ func classifyByEmbedding(embedder embedding.Embedder, anchors []intentAnchor, te
 	if top1.label == LabelOffice && isLookupIntentLabel(declaredCompanion.label) && declaredCompanion.score >= EmbeddingLookupCompositeFloor {
 		result.Secondary = []IntentLabel{declaredCompanion.label}
 	}
+	// A below-floor chart resemblance is not synthesis evidence. Leaving it
+	// in RunnerUp let a later merge crown the weather card.
+	if result.RunnerUp == LabelLiveDataVisual && result.RunnerUpScore < EmbeddingCompositeSecondaryMinScore {
+		result.RunnerUp = ""
+		result.RunnerUpScore = 0
+	}
+	if len(result.Secondary) == 1 && top1.label == LabelOffice {
+		result.Reason = fmt.Sprintf("embedding ambiguous composite: top=%s (%.3f), companion=%s (%.3f), gap=%.3f", top1.label, top1.score, declaredCompanion.label, declaredCompanion.score, gap)
+		return result, false, queryVec, raw
+	}
 	result.Reason = fmt.Sprintf("embedding ambiguous: top=%s (%.3f), gap=%.3f", top1.label, top1.score, gap)
-	return result, false
+	return result, false, queryVec, raw
 }
 
 // warmupAnchors pre-computes embeddings for all anchor texts using the
@@ -519,13 +899,23 @@ func warmupAnchors(embedder embedding.Embedder, anchors []intentAnchor) ([]inten
 	if embedder == nil || embedding.IsNoop(embedder) {
 		return nil, fmt.Errorf("embedding unavailable for anchor warmup")
 	}
+	cacheDir, cacheKey := intentAnchorCacheDir(), ""
+	if cacheDir != "" {
+		cacheKey = intentAnchorCacheKey(embedder, anchors)
+		if cacheKey != "" {
+			if warmed, ok := loadIntentAnchorCache(cacheDir, cacheKey, embedder, anchors); ok {
+				log.Printf("[UnifiedIntentClassifier] anchor warmup complete (%d labels, disk cache)", len(warmed))
+				return warmed, nil
+			}
+		}
+	}
 	warmed := make([]intentAnchor, len(anchors))
 	for i, anchor := range anchors {
 		warmed[i] = intentAnchor{Label: anchor.Label, Texts: append([]string(nil), anchor.Texts...)}
 		if len(anchor.Texts) == 0 {
 			continue
 		}
-		vecs, err := embedder.EmbedBatch(anchor.Texts)
+		vecs, err := embedIntentAnchors(embedder, anchor.Texts)
 		if err != nil {
 			log.Printf("[UnifiedIntentClassifier] warmup failed for %s: %v", anchor.Label, err)
 			return nil, fmt.Errorf("warm %s anchors: %w", anchor.Label, err)
@@ -539,6 +929,9 @@ func warmupAnchors(embedder embedding.Embedder, anchors []intentAnchor) ([]inten
 			}
 		}
 		warmed[i].Vecs = vecs
+	}
+	if cacheDir != "" && cacheKey != "" {
+		saveIntentAnchorCache(cacheDir, cacheKey, embedder, warmed)
 	}
 	log.Printf("[UnifiedIntentClassifier] anchor warmup complete (%d labels)", len(warmed))
 	return warmed, nil

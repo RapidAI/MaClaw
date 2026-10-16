@@ -50,10 +50,12 @@ func (m *testMailer) SendHubRegistrationConfirmation(ctx context.Context, to str
 var _ mail.Mailer = (*testMailer)(nil)
 
 type fakeSyncRecorder struct {
-	deletedHubInstances []string
-	deletedHubLinks     []string
-	deletedHubRoutes    []string
-	appendedHubRoutes   []*store.HubDomainRoute
+	deletedHubInstances     []string
+	deletedHubLinks         []string
+	deletedHubRoutes        []string
+	appendedHubRoutes       []*store.HubDomainRoute
+	appendedInvitationCodes []*store.InvitationCodeRoute
+	deletedInvitationCodes  []string
 }
 
 type countingHubRepo struct {
@@ -227,7 +229,7 @@ func (r *countingHubDomainRouteRepo) ListEnabledDomainCalls() int {
 	return r.listEnabledDomainCalls
 }
 
-func (f *fakeSyncRecorder) SyncHubHeartbeat(context.Context, string)                {}
+func (f *fakeSyncRecorder) SyncHubHeartbeat(context.Context, *store.HubInstance)    {}
 func (f *fakeSyncRecorder) AppendBlockedEmail(context.Context, *store.BlockedEmail) {}
 func (f *fakeSyncRecorder) DeleteBlockedEmail(context.Context, string)              {}
 func (f *fakeSyncRecorder) AppendBlockedIP(context.Context, *store.BlockedIP)       {}
@@ -245,6 +247,12 @@ func (f *fakeSyncRecorder) DeleteHubDomainRoute(_ context.Context, routeID strin
 func (f *fakeSyncRecorder) AppendHubUserLink(context.Context, *store.HubUserLink) {}
 func (f *fakeSyncRecorder) DeleteHubUserLink(_ context.Context, linkID string) {
 	f.deletedHubLinks = append(f.deletedHubLinks, linkID)
+}
+func (f *fakeSyncRecorder) AppendInvitationCodeRoute(_ context.Context, item *store.InvitationCodeRoute) {
+	f.appendedInvitationCodes = append(f.appendedInvitationCodes, item)
+}
+func (f *fakeSyncRecorder) DeleteInvitationCodeRoute(_ context.Context, code string) {
+	f.deletedInvitationCodes = append(f.deletedInvitationCodes, code)
 }
 
 func newTestStore(t *testing.T) *sqlite.Provider {
@@ -4376,5 +4384,50 @@ func TestReconcileStaleUserRoutesKeepsRoutesWhenProbeFails(t *testing.T) {
 	items, err := st.HubUserLinks.ListByEmail(ctx, "keep@example.com")
 	if err != nil || len(items) != 1 {
 		t.Fatalf("failed probe must preserve route, links=%+v err=%v", items, err)
+	}
+}
+
+func TestSyncInvitationCodesReplicatesTenantRoute(t *testing.T) {
+	provider := newTestStore(t)
+	st := sqlite.NewStore(provider)
+	ctx := context.Background()
+	now := time.Now()
+	hub := &store.HubInstance{
+		ID:            "hub_tenant_invite",
+		OwnerEmail:    "owner@example.com",
+		Name:          "Tenant Hub",
+		BaseURL:       "https://tenant.example.com",
+		Status:        "online",
+		HubSecretHash: hashToken("secret"),
+		CreatedAt:     now,
+		UpdatedAt:     now,
+	}
+	if err := st.Hubs.Create(ctx, hub); err != nil {
+		t.Fatalf("create hub: %v", err)
+	}
+	svc := NewService(st.Hubs, st.HubUserLinks, st.HubDomainRoutes, st.BlockedEmails, st.BlockedIPs, st.System, &testMailer{}, "http://127.0.0.1:9388")
+	svc.SetInvitationCodeRoutes(st.InvitationCodeRoutes)
+	syncer := &fakeSyncRecorder{}
+	svc.SetSyncRecorder(syncer)
+
+	if err := svc.SyncInvitationCodes(ctx, hub.ID, "secret", []string{"pnzpes758f"}, "vantagics"); err != nil {
+		t.Fatalf("sync: %v", err)
+	}
+	got, err := st.InvitationCodeRoutes.GetByCode(ctx, "PNZPES758F")
+	if err != nil {
+		t.Fatalf("get route: %v", err)
+	}
+	if got == nil || got.HubID != hub.ID || got.TenantID != "vantagics" {
+		t.Fatalf("stored route = %+v", got)
+	}
+	if len(syncer.appendedInvitationCodes) != 1 || syncer.appendedInvitationCodes[0].TenantID != "vantagics" || syncer.appendedInvitationCodes[0].Code != "PNZPES758F" {
+		t.Fatalf("ha append = %+v", syncer.appendedInvitationCodes)
+	}
+
+	if err := svc.SyncInvitationCodes(ctx, hub.ID, "secret", []string{"PNZPES758F"}, "vantagics"); err != nil {
+		t.Fatalf("resync: %v", err)
+	}
+	if len(syncer.appendedInvitationCodes) != 1 {
+		t.Fatalf("unchanged route was replicated again: %+v", syncer.appendedInvitationCodes)
 	}
 }

@@ -29,16 +29,17 @@ This folder now uses a thin-shell structure.
 - security-tab.js: security management and org tree
 - machines-tab.js: machine list and session inspection
 - group-discussion-tab.js: current-Hub MaClaw expert list, discussions, and results
-- im-tab.js: IM sub-pane routing and bridge integrations
+- im-tab.js: IM sub-pane routing and IM integrations
 - feishu-tab.js: Feishu settings and bindings
 - invitation-tab.js: recharge/invitation code management
-- pwa-tab.js: PWA approvals and pending logins
 - system-tab.js: mail, TLS, admin profile/password
 - cloud-workspace-tab.js: tenant cloud-workspace settings card and org-tree picker
 - compute-tab.js: compute placeholders
 - llm-provider-tab.js: provider management
 - llm-service-tabs.js: model service groups/cards/defaults
 - usage-stats-tab.js: usage reporting
+- failure-logs-tab.js: failure log search and paging
+- link-health-tab.js: device<->brain link health (GUI online ratio, gui_offline rejections, event delivery)
 
 ## Maintenance rule
 

@@ -28,6 +28,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent/sshtool"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
 	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/database"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/llm" // RouteTurn ClassifyHints + CostTracker
 	"github.com/RapidAI/CodeClaw/corelib/memory"
@@ -80,6 +81,7 @@ func runPrompt(promptText string) {
 		fmt.Fprintln(os.Stderr, "error: prompt cannot be empty")
 		os.Exit(commands.ExitUsage)
 	}
+	runTUIStartupRecovery(commands.ResolveDataDir())
 
 	// --- Initialize infrastructure (same as runTUIWithOptions but no UI) ---
 	dataDir := commands.ResolveDataDir()
@@ -147,6 +149,16 @@ func runPrompt(promptText string) {
 		}
 		return sshtool.ToolSSH(deps, args)
 	}
+	pipeDBManager := database.NewManager(appCfg.DatabaseProfiles, tuiDatabaseSecret)
+	pipeDBManager.SetEnabled(appCfg.DatabaseToolIsEnabled())
+	pipeDBManager.SetTunnelDialer(remote.SSHTunnelDialer(func() *remote.SSHSessionManager { return sshMgr }))
+	if favStore, err := database.NewFavoriteStore(filepath.Join(dataSubDir, "database_favorites.json")); err == nil {
+		pipeDBManager.SetFavoriteStore(favStore)
+	}
+	if pendingStore, err := database.NewPendingStore(filepath.Join(dataSubDir, "database_pending.json")); err == nil {
+		pipeDBManager.SetPendingStore(pendingStore)
+	}
+	pipeDB := newTUIDatabaseRuntime(pipeDBManager, func() corelib.AppConfig { return app.appConfig }, func() string { return "" }, "tui:pipe", "tui:pipe", false)
 	agent.RegisterCoreTools(app.toolRegistry, agent.CoreToolDeps{
 		MemoryStore: memStore,
 		TaskStore:   app.taskStore,
@@ -155,6 +167,9 @@ func runPrompt(promptText string) {
 			return app.appConfig
 		}),
 		SSHHandler: sshHandler,
+		ExtraHandlersCtx: map[string]agent.ToolHandlerCtx{
+			"database": pipeDB.handlerCtx(),
+		},
 		WebSearchHandlerCtx: func(ctx context.Context, args map[string]interface{}) string {
 			var provider corelib.WebSearchProvider
 			if len(app.appConfig.WebSearchProviders) > 0 {
@@ -253,6 +268,8 @@ func stdinHasData() bool {
 // ---------------------------------------------------------------------------
 
 type pipeCallbacks struct {
+	usageTrackerFeed
+
 	app       *TUIApp
 	cancelCh  chan struct{}
 	stopped   bool
@@ -318,7 +335,18 @@ func (c *pipeCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) str
 }
 
 func (c *pipeCallbacks) BuildTools(userText string) []map[string]interface{} {
-	return c.app.toolRegistry.BuildDefinitions()
+	defs := c.app.toolRegistry.BuildDefinitions()
+	// Policy consistency with tuiCallbacks (phase0 baseline §1.2/§1.3 finding #2):
+	// this variant never classifies text or reports a profile itself, so the
+	// light filter applies ONLY when MACLAW_PROMPT_PROFILE forces light globally
+	// — a provable no-op in the default state, and under a forced-light env the
+	// surface now matches the light system prompt instead of staying full.
+	// Read-only-child filtering is intentionally absent: this struct has no
+	// runtimeReadOnlyChild state, so that filter could never fire.
+	if profile, ok := agent.EnvPromptProfileOverride(); ok && profile.IsLight() {
+		return agent.FilterToolDefsForLightTurn(defs)
+	}
+	return defs
 }
 
 func (c *pipeCallbacks) ExecuteTool(name, argsJSON string) string {

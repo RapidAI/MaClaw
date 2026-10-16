@@ -6,6 +6,7 @@ package task
 
 import (
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -20,6 +21,38 @@ const (
 	StatusFailed     Status = "failed"
 	StatusBlocked    Status = "blocked"
 )
+
+// StatusOptions is the closed set of statuses a managed turn may set on a
+// task, and the enum both hosts render into the invocation schema. It lives
+// with the type for the reason the goal vocabulary does: both semantic hosts
+// render it and parse it, and a set owned by either one alone would drift.
+// Empty is accepted-as-unset (a task's status is optional to name) and lives
+// in StatusCanonical, not here.
+func StatusOptions() []string {
+	return []string{string(StatusPending), string(StatusInProgress), string(StatusCompleted), string(StatusFailed), string(StatusBlocked)}
+}
+
+// StatusCanonical maps a model-supplied status to the lifecycle value it
+// records. Exact match on the lowercase-trimmed name: unlike the schedule and
+// goal vocabularies the task store never had community spelling aliases, so
+// inventing some now would teach spellings the store has never spelled back.
+func StatusCanonical(raw string) (Status, bool) {
+	switch Status(strings.ToLower(strings.TrimSpace(raw))) {
+	case StatusPending, StatusInProgress, StatusCompleted, StatusFailed, StatusBlocked:
+		return Status(strings.ToLower(strings.TrimSpace(raw))), true
+	case "":
+		return "", true
+	default:
+		return "", false
+	}
+}
+
+// StatusHint renders the canonical vocabulary for a rejection message, so a
+// model that ignored the enum still learns the valid names from its first
+// failure and can retry inside the turn.
+func StatusHint() string {
+	return "allowed: " + strings.Join(StatusOptions(), ", ")
+}
 
 // Task represents a single work item managed by the agent.
 type Task struct {

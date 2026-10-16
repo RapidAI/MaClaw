@@ -88,7 +88,77 @@ func looksLikeMultiStep(lower string) bool {
 
 func containsAny(haystack string, needles ...string) bool {
 	for _, n := range needles {
-		if n != "" && strings.Contains(haystack, n) {
+		if cueMatches(haystack, n) {
+			return true
+		}
+	}
+	return false
+}
+
+// cueMatches keeps short ASCII cues from firing inside a longer token.
+// "api" is the sharp case: substring matching treated https://api.example
+// and apikey as a coding task (production 2026-09-27) and routed a
+// knowledge-save turn onto the reasoning workload.
+func cueMatches(haystack, needle string) bool {
+	if needle == "" {
+		return false
+	}
+	if needle == "api" {
+		return matchAPICue(haystack)
+	}
+	return strings.Contains(haystack, needle)
+}
+
+func matchAPICue(lower string) bool {
+	const needle = "api"
+	start := 0
+	for {
+		idx := strings.Index(lower[start:], needle)
+		if idx < 0 {
+			return false
+		}
+		idx += start
+		if apiCueAt(lower, idx) {
+			return true
+		}
+		start = idx + len(needle)
+	}
+}
+
+func apiCueAt(lower string, idx int) bool {
+	if idx > 0 && apiCuePrefixContinues(lower[idx-1]) {
+		return false
+	}
+	after := idx + len("api")
+	if after < len(lower) && apiCueSuffixContinues(lower[after]) {
+		return false
+	}
+	return !apiCueInsideURL(lower, idx)
+}
+
+// A letter before "api" still counts: "openapi" is a coding word. Digits and
+// "_-." are glue, so ".api" is a hostname label rather than the cue.
+func apiCuePrefixContinues(b byte) bool {
+	return (b >= '0' && b <= '9') || b == '_' || b == '-' || b == '.'
+}
+
+// Anything after "api" that continues the token is a different word:
+// apikey, api_key, api-key, api.example.
+func apiCueSuffixContinues(b byte) bool {
+	return (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_' || b == '-' || b == '.'
+}
+
+func apiCueInsideURL(lower string, idx int) bool {
+	lineStart := strings.LastIndexAny(lower[:idx], " \t\n") + 1
+	token := lower[lineStart:]
+	if end := strings.IndexAny(token, " \t\n"); end >= 0 {
+		token = token[:end]
+	}
+	// Wrapping punctuation, "(https://…/api)", hides a strict prefix check.
+	// The cue is inside the URL when a scheme appears earlier in the token.
+	rel := idx - lineStart
+	for _, scheme := range []string{"https://", "http://"} {
+		if at := strings.Index(token, scheme); at >= 0 && at < rel {
 			return true
 		}
 	}

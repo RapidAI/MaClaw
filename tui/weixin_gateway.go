@@ -306,7 +306,8 @@ func (g *tuiWeixinGateway) processMessage(userID, contextToken, text string) {
 	result := agent.RunLoop(cb, text, history, nil)
 
 	// Save conversation history with trim to prevent unbounded growth.
-	// WeChat sessions can run 24/7, so we apply the same trim as TrimHistory.
+	// WeChat sessions can run 24/7. TrimHistory keeps a deterministic handoff
+	// of the dropped prefix so the next turn still sees user requests and file paths.
 	history = append(history, agent.ConversationEntry{Role: "user", Content: text})
 	if result.Text != "" {
 		history = append(history, agent.ConversationEntry{Role: "assistant", Content: result.Text})
@@ -423,6 +424,8 @@ func (g *tuiWeixinGateway) SendProactiveText(text string) error {
 // It reuses the TUIApp's infrastructure (tools, memory, steering) but runs
 // independently of the Bubble Tea UI (no streaming to terminal).
 type tuiWeixinCallbacks struct {
+	usageTrackerFeed
+
 	app        *TUIApp
 	onProgress func(string)
 	stopCh     <-chan struct{} // closed when gateway is stopping
@@ -454,7 +457,17 @@ func (c *tuiWeixinCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 }
 
 func (c *tuiWeixinCallbacks) BuildTools(userText string) []map[string]interface{} {
-	return c.app.toolRegistry.BuildDefinitions()
+	defs := c.app.toolRegistry.BuildDefinitions()
+	// Policy consistency with tuiCallbacks (phase0 baseline §1.2/§1.3 finding #2):
+	// the gateway never classifies text or reports a profile itself, so the
+	// light filter applies ONLY when MACLAW_PROMPT_PROFILE forces light globally
+	// — a provable no-op in the default state; under a forced-light env the
+	// surface matches the light system prompt. Read-only-child filtering is
+	// intentionally absent: this struct has no runtimeReadOnlyChild state.
+	if profile, ok := agent.EnvPromptProfileOverride(); ok && profile.IsLight() {
+		return agent.FilterToolDefsForLightTurn(defs)
+	}
+	return defs
 }
 
 func (c *tuiWeixinCallbacks) ExecuteTool(name, argsJSON string) string {
@@ -524,6 +537,13 @@ func (c *tuiWeixinCallbacks) ShouldStop() bool {
 	default:
 		return false
 	}
+}
+
+func (c *tuiWeixinCallbacks) OnVerifiedSessionFact(fact agent.SessionFact) {
+	if c == nil || c.app == nil {
+		return
+	}
+	c.app.syncVerifiedFactToStores(fact)
 }
 
 func (c *tuiWeixinCallbacks) EarlyStop() (bool, string, string) {

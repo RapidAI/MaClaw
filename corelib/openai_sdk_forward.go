@@ -50,12 +50,15 @@ func openAICompatSDKOptions(cfg MaclawLLMConfig, client *http.Client) []option.R
 		option.WithBaseURL(openAICompatSDKBaseURL(cfg)),
 		option.WithAPIKey(cfg.Key),
 		option.WithHTTPClient(client),
-		option.WithHeader("User-Agent", cfg.UserAgent()),
+		option.WithHeader("User-Agent", OpenCodeWireUserAgent(cfg.URL, cfg.UserAgent())),
 		option.WithHeader("Cache-Control", "no-cache"),
 		option.WithMaxRetries(0),
 	}
 	if IsCodeGenURL(cfg.URL) {
 		opts = append(opts, option.WithHeader(CodeGenClientNameHeader, NormalizeCodeGenClientName(cfg.UserAgent())))
+	}
+	if name, value, ok := OpenCodeSessionHeaderForConfig(cfg); ok {
+		opts = append(opts, option.WithHeader(name, value))
 	}
 	if timeout := cfg.EffectiveTimeoutSec(); timeout > 0 {
 		opts = append(opts, option.WithRequestTimeout(time.Duration(timeout)*time.Second))

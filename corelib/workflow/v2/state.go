@@ -34,11 +34,25 @@ const (
 // ToolPolicy controls which tools are available during a phase.
 type ToolPolicy string
 
+// ToolPolicyNone is a sentinel, not a policy that a phase selects. It is
+// returned by GetActivePhaseToolFilter when no workflow applies, while a
+// review is pending, or no template matches. Every built-in phase sets one of
+// the four explicit policies below, so this value never reaches a
+// Phase.ToolPolicy field; it always means "no workflow decision available" in
+// the filter layer. agentservice toolPolicyFromMetadata deliberately defaults
+// to ToolFilterFull — not to this sentinel — when a message declares no
+// tool_policy, so unspecified headless turns do not borrow the sentinel.
+// See ToolPolicyFull for the wide policy that phases do select.
+//
+// ToolPolicyFull is genuinely wide at name level: FilterToolDefinitions passes
+// the host surface through unchanged for "full" and "none" alike. The
+// capability-level ceiling for a full phase is not defined here, see
+// RequiredToolNamesForPolicy(ToolPolicyFull) below.
 const (
-	ToolPolicyNone          ToolPolicy = "none"           // no tool restrictions
+	ToolPolicyNone          ToolPolicy = "none"           // sentinel: no workflow decision available
 	ToolPolicyDocOnly       ToolPolicy = "doc_only"       // read/search/memory only
 	ToolPolicyPlanning      ToolPolicy = "planning"       // repository inspection for reviewable planning phases
-	ToolPolicyFull          ToolPolicy = "full"           // all tools (execution phase)
+	ToolPolicyFull          ToolPolicy = "full"           // all tools (execution phase); ceiling: RequiredToolNamesForPolicy below
 	ToolPolicyOpsControlled ToolPolicy = "ops_controlled" // controlled operational execution tools
 )
 

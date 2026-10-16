@@ -1,0 +1,758 @@
+package botmgmt
+
+import (
+	"bytes"
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	"github.com/RapidAI/CodeClaw/hub/internal/upstream"
+)
+
+const SettingsKey = "bot_management"
+
+var (
+	ErrInvalidInput        = errors.New("invalid bot settings")
+	ErrSettingsUnavailable = errors.New("bot settings store is unavailable")
+	ErrNotConfigured       = errors.New("maclawsrv connection is not configured")
+	ErrNotFound            = errors.New("bot not found")
+	ErrSrv                 = errors.New("maclawsrv request failed")
+	// ErrSrvNotFound is a 404 from MaClawSrv: the instance, or the endpoint
+	// itself, is not there. It is not wrapped in ErrSrv, because callers such
+	// as bot deletion treat a missing instance as success.
+	ErrSrvNotFound = errors.New("maclawsrv instance not found")
+	ErrDisabled    = errors.New("bot feature is disabled")
+	// ErrDesktopBusy is one cloud desktop already running a command for this
+	// user. A second execute is refused. The same client message is not a
+	// second execute: MaClawSrv replays that key.
+	ErrDesktopBusy = errors.New("这台云桌面还有一件在做。")
+	// ErrNotPrimary is a bot other than this account's primary trying to
+	// notify or hand work to another bot.
+	ErrNotPrimary = errors.New("我不能去叫别的 Bot。你跟主 Bot 说，或者直接打开那个 Bot。")
+	// ErrNoSuchBot is a cross-talk target that is not one of this user's bots.
+	ErrNoSuchBot = errors.New("没有这个 Bot。")
+	// ErrAdminSecretMissing is ErrNotConfigured for the MaClawSrv admin secret.
+	// It is a separate sentinel so callers do not have to match on the message
+	// text to explain what is missing.
+	ErrAdminSecretMissing = fmt.Errorf("%w: maclawsrv admin secret missing", ErrNotConfigured)
+)
+
+// SrvRejectionMessage turns a MaClawSrv failure into a message an admin can
+// act on, instead of the generic "rejected the instance request".
+func SrvRejectionMessage(err error) string {
+	base := "MaClawSrv rejected the instance request"
+	switch {
+	case err == nil:
+		return base
+	case errors.Is(err, ErrSrvNotFound):
+		return base + ": instance or endpoint not found, check the MaClawSrv URL"
+	case errors.Is(err, ErrSrv) && err.Error() == ErrSrv.Error():
+		return base
+	}
+	return upstream.Message(err, base)
+}
+
+// Bot is one Hub bot. It is one MaClawSrv agent instance of OwnerUserID.
+type Bot struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description,omitempty"`
+	InstanceID  string `json:"instance_id"`
+	OwnerUserID string `json:"owner_user_id,omitempty"`
+	CreatedAt   string `json:"created_at"`
+	// DesktopMode is "isolated" when this bot drives its own virtual display
+	// in the owner's desktop container; empty or "shared" is the owner's
+	// desktop, as before.
+	DesktopMode string `json:"desktop_mode,omitempty"`
+}
+
+type record struct {
+	BaseURL        string                `json:"base_url"`
+	AccessToken    string                `json:"access_token,omitempty"`
+	AdminSecret    string                `json:"admin_secret,omitempty"`
+	MaClawTenantID string                `json:"maclaw_tenant_id,omitempty"`
+	Connection     *connectionCredential `json:"connection,omitempty"`
+	Principals     []ownerPrincipal      `json:"principals,omitempty"`
+	Bots           []Bot                 `json:"bots"`
+	Grants         []Grant               `json:"grants,omitempty"`
+	Desktop        *desktopStateRecord   `json:"desktop,omitempty"`
+	LLM            llmSettings           `json:"llm,omitempty"`
+	// SystemFreeCreditsUsed is the credits each bot owner has spent on
+	// system-free, keyed by hub user id. It is independent of new-user benefits.
+	SystemFreeCreditsUsed map[string]float64 `json:"system_free_credits_used,omitempty"`
+	// SystemFreeCreditDebits remembers request ids already added to
+	// SystemFreeCreditsUsed so a billing retry does not charge twice.
+	SystemFreeCreditDebits []systemFreeCreditDebit `json:"system_free_credit_debits,omitempty"`
+	// OwnerLLMOverrides is the provider each bot owner picked for their own
+	// bots, keyed by hub user id. It lives on the record rather than on the
+	// principal so the choice survives a principal that has not been
+	// provisioned yet; it is applied on that owner's first bot open.
+	OwnerLLMOverrides map[string]*ownerLLMOverride `json:"owner_llm_overrides,omitempty"`
+	// OwnerDesktopModeDefaults is the desktop_mode a new bot of that owner
+	// starts with, keyed by hub user id. Absent means shared, as before; it
+	// does not change existing bots or other owners.
+	OwnerDesktopModeDefaults map[string]string `json:"owner_desktop_mode_defaults,omitempty"`
+	// PrimaryBot maps a hub user id to that account's one primary bot id.
+	// Empty means the client-visible primary is the earliest CreatedAt.
+	PrimaryBot map[string]string `json:"primary_bot,omitempty"`
+	// CrossNotes are messages one bot left for another. They are not runs.
+	CrossNotes []BotCrossNote `json:"cross_notes,omitempty"`
+}
+
+// SettingsView is the admin payload. The access token is never returned.
+type SettingsView struct {
+	BaseURL        string          `json:"base_url"`
+	TokenSet       bool            `json:"token_set"`
+	AdminSecretSet bool            `json:"admin_secret_set"`
+	Bots           []Bot           `json:"bots"`
+	Grants         []Grant         `json:"grants"`
+	LLM            LLMSettingsView `json:"llm"`
+}
+
+// Service stores the tenant MaClawSrv connection and the bots created there.
+type Service struct {
+	System    store.SystemSettingsRepository
+	Directory Directory
+	Desktop   DesktopControl
+	HTTP      *http.Client
+	Now       func() time.Time
+	// messageTimeout overrides the wait for one bot command. Tests use it.
+	// A timed-out command must not stop the desktop: the instance may already
+	// have handed that browser to the person.
+	messageTimeout time.Duration
+	// OwnerLLM mints the Hub viewer token used as this bot user's model key.
+	// Nil keeps older tests on the MaClawSrv connection alone.
+	OwnerLLM OwnerLLMIssuer
+
+	mu       sync.Mutex
+	bearerMu sync.Mutex
+	// ownerBearers keeps a MaClaw access token for an owner API key. Issuing
+	// one verifies the API secret with scrypt and is rate-limited, so a bot
+	// command reuses the token until shortly before it expires.
+	ownerBearers map[string]cachedBearer
+	// llmRepairTried records a viewer token whose rewrite still left the
+	// instance unable to validate. The same token is not pushed again.
+	llmRepairTried map[string]string
+	// llmRepairEpoch advances when a command succeeds. A rewrite that
+	// started before that success does not record a block afterwards.
+	llmRepairEpoch map[string]uint64
+	handoff        map[string]handoffView
+	desktopView    map[string]desktopWatch
+	// desktopHeld maps a user to the bot that handed the desktop over.
+	// A later failed message, or another bot finishing, must not stop it.
+	desktopHeld map[string]string
+	// desktopAttention is why that bot handed the screen over. It is not
+	// persisted. Polls keep reporting it until that handoff is cleared.
+	desktopAttention map[string]string
+	// desktopAwaiting is true only while that person still has the keyboard.
+	// The continuation takes the keyboard back as soon as it starts, but the
+	// desktop stays up until that bot finishes.
+	desktopAwaiting map[string]bool
+	// desktopKeyboardTaken is the bot whose continuation just took the
+	// keyboard. A failure gives it back only to that bot. A view-only
+	// timeout pin is not a login, so a later failure must not hand the
+	// keyboard over and let the person type on a page the agent still owns.
+	desktopKeyboardTaken map[string]string
+	// desktopAdminView is when an admin last opened this user's desktop in
+	// the admin console. While that hold is fresh, a bot command finishing
+	// must leave the desktop up, or the picture the admin is watching goes
+	// black halfway through the check.
+	desktopAdminView map[string]time.Time
+	// desktopUserView is when this user last watched or took over a desktop
+	// from the Bot page. The hold keeps that live picture up after a run
+	// finishes; without it the VNC frame goes black mid-watch.
+	desktopUserView map[string]time.Time
+	// desktopWatchGen is the newest watch generation a poll has noted.
+	// desktopWatchClosed is the newest generation whose panel has released.
+	// A release only drops a view that is still that generation, so a page
+	// that opened again is not stopped by the release of the page before it.
+	// Both stay in memory; a restart just starts the next generation fresh.
+	desktopWatchGen    map[string]int64
+	desktopWatchClosed map[string]int64
+	// desktopOpening counts bot commands that have this user's desktop open.
+	// One command failing must not stop the desktop another command is using.
+	desktopOpening map[string]int
+	// desktopOpenInstance is the MaClaw instance that opened the desktop.
+	// Another instance finishing must not stop the browser this command is using.
+	desktopOpenInstance map[string]map[string]int
+	// desktopGates serializes one user's desktop open and stop. The count is
+	// raised before Open returns, and a stop checks it again under the same
+	// gate, so a failure cannot shut a desktop the next command just opened.
+	desktopGates sync.Map
+	// desktopHydrated marks tenants whose persisted desktop pins/views have
+	// been restored into the maps above after (re)construction.
+	desktopHydrated map[string]bool
+	// beforeDesktopStop is a test hook. It runs after a command drops its
+	// count and before that stop takes the user's gate.
+	beforeDesktopStop func()
+	// admitPollInterval and admitReadyGrace shorten the background run
+	// follow-up in tests. Production waits one second between reads and
+	// gives the result a few seconds to land after the run becomes terminal.
+	admitPollInterval time.Duration
+	admitReadyGrace   time.Duration
+	// desktopAdmits is the reply of a run that was accepted and is still
+	// executing, or has finished, after the admitting call returned.
+	desktopAdmits map[string]*desktopAdmitState
+}
+
+// asyncPreferKey marks one MaClawSrv call as Prefer: respond-async.
+type asyncPreferKey struct{}
+
+func preferAsync(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, asyncPreferKey{}, true)
+}
+
+// desktopWatch is the noVNC page for a user's running desktop.
+// The gated path stays the same while that desktop stays up, so the chat
+// picture does not reconnect on every poll.
+type desktopWatch struct {
+	raw   string
+	gated string
+}
+
+func NewService(system store.SystemSettingsRepository) *Service {
+	return &Service{System: system, Now: time.Now}
+}
+
+func (s *Service) View(ctx context.Context, tenantID string) (SettingsView, error) {
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return SettingsView{}, err
+	}
+	return viewOf(rec), nil
+}
+
+func (s *Service) SaveConnection(ctx context.Context, tenantID, baseURL, token string, tokenProvided bool) (SettingsView, error) {
+	baseURL = strings.TrimSpace(baseURL)
+	if baseURL != "" {
+		if err := validateBaseURL(baseURL); err != nil {
+			return SettingsView{}, err
+		}
+		baseURL = strings.TrimRight(baseURL, "/")
+	}
+	s.mu.Lock()
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		s.mu.Unlock()
+		return SettingsView{}, err
+	}
+	urlChanged := rec.BaseURL != baseURL
+	rec.BaseURL = baseURL
+	if tokenProvided {
+		rec.AccessToken = strings.TrimSpace(token)
+	}
+	// A connection credential was minted for the previous URL's server and
+	// the previous token's user, so a change to either retires it. Re-saving
+	// the same token keeps it: there is nothing to re-provision. Retiring for
+	// a changed principal orphans the credential on the MaClawSrv side — by
+	// then it answers for an account this connection no longer uses, and
+	// revoking it there is the other system's admin job.
+	if urlChanged || (tokenProvided && !connectionMatchesToken(rec)) {
+		rec.Connection = nil
+	}
+	if err := s.save(ctx, tenantID, rec); err != nil {
+		s.mu.Unlock()
+		return SettingsView{}, err
+	}
+	s.mu.Unlock()
+	// With the admin secret on file this provisions the durable connection
+	// credential, so the just-saved token never has to be re-pasted.
+	s.bootstrapConnection(ctx, tenantID)
+	return viewOf(rec), nil
+}
+
+// SaveAdminSecret stores the MaClawSrv admin secret used to create one
+// MaClawSrv user per Hub user. The secret is never returned.
+func (s *Service) SaveAdminSecret(ctx context.Context, tenantID, secret string) (SettingsView, error) {
+	s.mu.Lock()
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		s.mu.Unlock()
+		return SettingsView{}, err
+	}
+	rec.AdminSecret = strings.TrimSpace(secret)
+	if err := s.save(ctx, tenantID, rec); err != nil {
+		s.mu.Unlock()
+		return SettingsView{}, err
+	}
+	s.mu.Unlock()
+	// With an access token on file this provisions the durable connection
+	// credential, so the expiring token stops being load-bearing.
+	s.bootstrapConnection(ctx, tenantID)
+	return viewOf(rec), nil
+}
+
+func (s *Service) TestConnection(ctx context.Context, tenantID string) (int, error) {
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return 0, err
+	}
+	if err := configured(rec); err != nil {
+		return 0, err
+	}
+	count, err := s.countInstances(ctx, rec, s.sharedBearer(ctx, rec))
+	if err == nil {
+		return count, nil
+	}
+	if !upstreamUnauthorized(err) {
+		return 0, err
+	}
+	// MaClawSrv access tokens expire with the server-side TTL, so a stored
+	// connection eventually 401s. With the admin secret the hub re-issues
+	// the connection credential and retries once; without it the honest 401
+	// is all there is. A renewal failure only replaces the 401 when
+	// MaClawSrv named a concrete problem (say, a revoked connection user) —
+	// anything else, like an undecodable token, is less actionable than the
+	// token-rejected message the admin already sees.
+	cred, renewErr := s.provisionConnectionCredential(ctx, tenantID)
+	if renewErr != nil {
+		var statusErr *upstream.StatusError
+		if !errors.Is(renewErr, ErrAdminSecretMissing) && errors.As(renewErr, &statusErr) {
+			return 0, renewErr
+		}
+		return 0, err
+	}
+	bearer, _, err := s.exchangeToken(ctx, rec, cred.APIKey, cred.APISecret, cred.UserID)
+	if err != nil {
+		return 0, err
+	}
+	return s.countInstances(ctx, rec, bearer)
+}
+
+// instancePage is the paged shape the instance list returns; only the item
+// count matters here.
+type instancePage struct {
+	Items []json.RawMessage `json:"items"`
+}
+
+func (s *Service) countInstances(ctx context.Context, rec record, bearer string) (int, error) {
+	var page instancePage
+	if err := s.call(ctx, rec, bearer, "", http.MethodGet, "/api/v1/instances", nil, &page); err != nil {
+		return 0, err
+	}
+	return len(page.Items), nil
+}
+
+func (s *Service) CreateBot(ctx context.Context, tenantID, name, description string) (Bot, error) {
+	return s.createBot(ctx, tenantID, "", name, description, false)
+}
+
+func (s *Service) UpdateBot(ctx context.Context, tenantID, botID, name, description string) (Bot, error) {
+	name = strings.TrimSpace(name)
+	description = strings.TrimSpace(description)
+	if name == "" || len([]rune(name)) > 80 {
+		return Bot{}, fmt.Errorf("%w: name is required", ErrInvalidInput)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return Bot{}, err
+	}
+	index := indexOf(rec.Bots, botID)
+	if index < 0 {
+		return Bot{}, ErrNotFound
+	}
+	if err := configured(rec); err != nil {
+		return Bot{}, err
+	}
+	bot := rec.Bots[index]
+	token, err := s.ensureOwnerToken(ctx, tenantID, &rec, bot.OwnerUserID)
+	if err != nil {
+		return Bot{}, err
+	}
+	body := map[string]any{"name": name, "description": description}
+	if err := s.doAuth(ctx, rec, token, http.MethodPatch, "/api/v1/instances/"+url.PathEscape(bot.InstanceID), body, nil); err != nil {
+		return Bot{}, err
+	}
+	bot.Name = name
+	bot.Description = description
+	rec.Bots[index] = bot
+	if err := s.save(ctx, tenantID, rec); err != nil {
+		return Bot{}, err
+	}
+	return bot, nil
+}
+
+func (s *Service) DeleteBot(ctx context.Context, tenantID, botID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	rec, err := s.load(ctx, tenantID)
+	if err != nil {
+		return err
+	}
+	index := indexOf(rec.Bots, botID)
+	if index < 0 {
+		return ErrNotFound
+	}
+	bot := rec.Bots[index]
+	if err := configured(rec); err != nil {
+		return err
+	}
+	token, err := s.ensureOwnerToken(ctx, tenantID, &rec, bot.OwnerUserID)
+	if err != nil {
+		return err
+	}
+	if err := s.doAuth(ctx, rec, token, http.MethodDelete, "/api/v1/instances/"+url.PathEscape(bot.InstanceID), nil, nil); err != nil && !errors.Is(err, ErrSrvNotFound) {
+		return err
+	}
+	rec.Bots = append(rec.Bots[:index], rec.Bots[index+1:]...)
+	// The slot is cleared in this same save. The next earliest remaining bot
+	// becomes primary by the read rule. The next id is not written here.
+	if rec.PrimaryBot != nil && strings.TrimSpace(rec.PrimaryBot[bot.OwnerUserID]) == bot.ID {
+		delete(rec.PrimaryBot, bot.OwnerUserID)
+	}
+	key := desktopViewKey(tenantID, bot.OwnerUserID)
+	stopHeld := false
+	s.ensureDesktopHydrated(tenantID)
+	if holder, ok := s.desktopHeld[key]; ok && holder == bot.ID {
+		delete(s.desktopHeld, key)
+		delete(s.desktopAwaiting, key)
+		delete(s.desktopKeyboardTaken, key)
+		delete(s.desktopView, key)
+		stopHeld = true
+	}
+	s.persistDesktopState(tenantID)
+	// The desktop belongs to the user, not this bot. Another bot of the same
+	// user may still be logged in there. MaClawSrv stops it when no run is left.
+	shared := false
+	for _, item := range rec.Bots {
+		if item.OwnerUserID != "" && item.OwnerUserID == bot.OwnerUserID {
+			shared = true
+			break
+		}
+	}
+	if err := s.save(ctx, tenantID, rec); err != nil {
+		return err
+	}
+	if stopHeld && !shared && s.Desktop != nil {
+		_ = s.Desktop.Stop(ctx, tenantID, bot.OwnerUserID)
+	}
+	return nil
+}
+
+func (s *Service) load(ctx context.Context, tenantID string) (record, error) {
+	out := record{Bots: []Bot{}}
+	if s == nil || s.System == nil {
+		return out, ErrSettingsUnavailable
+	}
+	raw, err := s.System.Get(ctx, storageKey(tenantID))
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return out, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &out); err != nil {
+		return record{Bots: []Bot{}}, nil
+	}
+	if out.Bots == nil {
+		out.Bots = []Bot{}
+	}
+	if out.Grants == nil {
+		out.Grants = []Grant{}
+	}
+	return out, nil
+}
+
+func (s *Service) save(ctx context.Context, tenantID string, rec record) error {
+	if s == nil || s.System == nil {
+		return ErrSettingsUnavailable
+	}
+	if rec.Bots == nil {
+		rec.Bots = []Bot{}
+	}
+	if rec.Grants == nil {
+		rec.Grants = []Grant{}
+	}
+	raw, err := json.Marshal(rec)
+	if err != nil {
+		return err
+	}
+	return s.System.Set(ctx, storageKey(tenantID), string(raw))
+}
+
+func (s *Service) do(ctx context.Context, rec record, method, path string, body any, dest any) error {
+	return s.call(ctx, rec, s.sharedBearer(ctx, rec), "", method, path, body, dest)
+}
+
+func (s *Service) doAuth(ctx context.Context, rec record, bearer, method, path string, body any, dest any) error {
+	err := s.call(ctx, rec, bearer, "", method, path, body, dest)
+	// The cached owner bearer is no longer accepted. The next command
+	// exchanges a new one instead of repeating this rejection.
+	if upstreamUnauthorized(err) {
+		s.dropOwnerBearer(bearer)
+	}
+	return err
+}
+
+// authAsOwner sends one request as the bot owner. MaClaw checks the bearer
+// before the handler runs, so a 401 did not start the command. Drop the
+// cached bearer and try one freshly exchanged token before surfacing it.
+func (s *Service) authAsOwner(ctx context.Context, tenantID, owner string, rec *record, token *string, method, path string, body, dest any) error {
+	if s == nil || rec == nil || token == nil {
+		return fmt.Errorf("%w: owner auth is unavailable", ErrSrv)
+	}
+	err := s.doAuth(ctx, *rec, *token, method, path, body, dest)
+	if !upstreamUnauthorized(err) {
+		return err
+	}
+	fresh, next, tokenErr := s.ownerToken(ctx, tenantID, owner)
+	if tokenErr != nil {
+		return err
+	}
+	*rec = fresh
+	*token = next
+	return s.doAuth(ctx, *rec, *token, method, path, body, dest)
+}
+
+func (s *Service) doAdmin(ctx context.Context, rec record, method, path string, body any, dest any) error {
+	return s.call(ctx, rec, "", rec.AdminSecret, method, path, body, dest)
+}
+
+// responseBodyLimit is how much of a MaClawSrv response this client reads.
+// A message reply carries one desktop screenshot. MaClawSrv caps that
+// screenshot at 1_200_000 base64 characters, and the extra mebibyte is the
+// session, the run, and the text. A shorter read cuts the JSON in half, so
+// the chat loses both the words and the picture. Other responses stay at
+// one mebibyte.
+func responseBodyLimit(path string) int64 {
+	// A finished desktop run is read back from /runs and carries the same
+	// screenshot the synchronous /messages body used to carry.
+	if strings.Contains(path, "/messages") || strings.Contains(path, "/runs/") {
+		return 1<<20 + 1_200_000
+	}
+	return 1 << 20
+}
+
+// botmgmtIdempotentAttempts is how many times one read-only call to
+// MaClawSrv is tried. The admit pipeline reads the instance and mints a
+// bearer before it sends anything; a proxy blink on one of those reads used
+// to fail a command that had not been sent yet.
+const botmgmtIdempotentAttempts = 3
+
+// botmgmtIdempotentRetryWait is the gap before the next try of a read-only
+// call. Short, because the caller is a person waiting for a desktop.
+const botmgmtIdempotentRetryWait = 200 * time.Millisecond
+
+// botmgmtCallWorthRetry reports whether one MaClawSrv call failed without
+// MaClawSrv deciding anything: a transport error, or a 5xx from a proxy in
+// front of it. Both leave the requested state unchanged, which is what makes
+// another try safe for a read.
+func botmgmtCallWorthRetry(err error) bool {
+	if err == nil {
+		return false
+	}
+	var statusErr *upstream.StatusError
+	if errors.As(err, &statusErr) {
+		return statusErr.Status >= 500
+	}
+	return true
+}
+
+// botmgmtCallIsIdempotent reports whether one call may be repeated without
+// changing what MaClawSrv does. Reads always may. The one POST that may is
+// the token exchange: it mints a bearer and has no other effect, so a second
+// exchange after a lost answer costs one unused token.
+func botmgmtCallIsIdempotent(method, path string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead:
+		return true
+	case http.MethodPost:
+		return strings.TrimSpace(path) == "/api/v1/auth/token"
+	default:
+		return false
+	}
+}
+
+func (s *Service) call(ctx context.Context, rec record, bearer, adminSecret, method, path string, body any, dest any) error {
+	var raw []byte
+	if body != nil {
+		encoded, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		raw = encoded
+	}
+	attempts := 1
+	if botmgmtCallIsIdempotent(method, path) {
+		attempts = botmgmtIdempotentAttempts
+	}
+	var err error
+	for attempt := 1; attempt <= attempts; attempt++ {
+		var reader io.Reader
+		if raw != nil {
+			reader = bytes.NewReader(raw)
+		}
+		req, reqErr := http.NewRequestWithContext(ctx, method, rec.BaseURL+path, reader)
+		if reqErr != nil {
+			return fmt.Errorf("%w: %s", ErrSrv, reqErr.Error())
+		}
+		if strings.TrimSpace(bearer) != "" {
+			req.Header.Set("Authorization", "Bearer "+bearer)
+		}
+		if strings.TrimSpace(adminSecret) != "" {
+			req.Header.Set("X-MaClaw-Admin-Secret", adminSecret)
+		}
+		if body != nil {
+			req.Header.Set("Content-Type", "application/json")
+		}
+		if ctx != nil {
+			if prefer, _ := ctx.Value(asyncPreferKey{}).(bool); prefer {
+				req.Header.Set("Prefer", "respond-async")
+			}
+		}
+		var resp *http.Response
+		resp, err = s.httpClient(path).Do(req)
+		if err != nil {
+			err = fmt.Errorf("%w: %s", ErrSrv, err.Error())
+		} else {
+			payload, _ := io.ReadAll(io.LimitReader(resp.Body, responseBodyLimit(path)))
+			resp.Body.Close()
+			switch {
+			case resp.StatusCode == http.StatusNotFound:
+				err = ErrSrvNotFound
+			case resp.StatusCode < 200 || resp.StatusCode >= 300:
+				err = upstream.NewStatusError(ErrSrv, resp.StatusCode, payload)
+			case dest == nil || len(bytes.TrimSpace(payload)) == 0:
+				err = nil
+			default:
+				err = json.Unmarshal(payload, dest)
+				if err != nil {
+					err = fmt.Errorf("%w: %s", ErrSrv, err.Error())
+				}
+			}
+		}
+		if err == nil || !botmgmtCallWorthRetry(err) || attempt == attempts {
+			return err
+		}
+		wait := time.NewTimer(botmgmtIdempotentRetryWait * time.Duration(attempt))
+		select {
+		case <-ctx.Done():
+			wait.Stop()
+			return err
+		case <-wait.C:
+		}
+	}
+	return err
+}
+
+func (s *Service) client() *http.Client {
+	if s != nil && s.HTTP != nil {
+		return s.HTTP
+	}
+	return &http.Client{Timeout: 15 * time.Second, CheckRedirect: refuseCrossHostRedirect}
+}
+
+func (s *Service) httpClient(path string) *http.Client {
+	base := s.client()
+	if !strings.Contains(path, "/messages") {
+		return base
+	}
+	// One desktop-bot command can drive the browser for a long time.
+	// maclawsrv's message write deadline and the maclawsrv proxy use the
+	// same 30 minutes, so this client is not a shorter cliff.
+	timeout := 30 * time.Minute
+	if s != nil && s.messageTimeout > 0 {
+		timeout = s.messageTimeout
+	}
+	return &http.Client{Timeout: timeout, Transport: base.Transport, CheckRedirect: base.CheckRedirect}
+}
+
+func desktopCallTimedOut(err error) bool {
+	if err == nil {
+		return false
+	}
+	text := strings.ToLower(err.Error())
+	return strings.Contains(text, "timeout") || strings.Contains(text, "deadline exceeded")
+}
+
+func (s *Service) now() time.Time {
+	if s != nil && s.Now != nil {
+		return s.Now()
+	}
+	return time.Now()
+}
+
+func configured(rec record) error {
+	if strings.TrimSpace(rec.BaseURL) == "" || strings.TrimSpace(rec.AccessToken) == "" {
+		return ErrNotConfigured
+	}
+	return nil
+}
+
+func viewOf(rec record) SettingsView {
+	bots := rec.Bots
+	if bots == nil {
+		bots = []Bot{}
+	}
+	grants := rec.Grants
+	if grants == nil {
+		grants = []Grant{}
+	}
+	return SettingsView{
+		BaseURL:        rec.BaseURL,
+		TokenSet:       strings.TrimSpace(rec.AccessToken) != "",
+		AdminSecretSet: strings.TrimSpace(rec.AdminSecret) != "",
+		Bots:           bots,
+		Grants:         grants,
+		LLM:            llmView(rec.LLM),
+	}
+}
+
+func storageKey(tenantID string) string {
+	tenantID = store.NormalizeTenantID(tenantID)
+	if tenantID == "" || tenantID == store.DefaultTenantID {
+		return SettingsKey
+	}
+	return "tenant:" + tenantID + ":" + SettingsKey
+}
+
+func validateBaseURL(raw string) error {
+	parsed, err := url.Parse(raw)
+	if err != nil || parsed.Host == "" || parsed.User != nil {
+		return fmt.Errorf("%w: base_url is invalid", ErrInvalidInput)
+	}
+	if parsed.Scheme != "http" && parsed.Scheme != "https" {
+		return fmt.Errorf("%w: base_url must be http or https", ErrInvalidInput)
+	}
+	return nil
+}
+
+func indexOf(bots []Bot, id string) int {
+	id = strings.TrimSpace(id)
+	for i := range bots {
+		if bots[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func newBotID() string {
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return "bot_" + hex.EncodeToString([]byte(time.Now().UTC().Format(time.RFC3339Nano)))
+	}
+	return "bot_" + hex.EncodeToString(buf[:])
+}
+
+func refuseCrossHostRedirect(req *http.Request, via []*http.Request) error {
+	if len(via) > 0 && req.URL.Host != via[0].URL.Host {
+		return http.ErrUseLastResponse
+	}
+	if len(via) >= 3 {
+		return http.ErrUseLastResponse
+	}
+	return nil
+}

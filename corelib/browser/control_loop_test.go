@@ -226,7 +226,7 @@ func TestPageFlagsScriptIsFlagsOnly(t *testing.T) {
 	if strings.Contains(browserPageFlagsScript, "collectFromRoot") {
 		t.Fatal("flags peek must not collect refs")
 	}
-	for _, marker := range []string{"recaptcha", "hcaptcha", "funcaptcha", "拖动滑块", "captcha_widget"} {
+	for _, marker := range []string{"recaptcha", "hcaptcha", "funcaptcha", "拖动滑块", "captcha_widget", "扫码登录"} {
 		if !strings.Contains(browserPageFlagsCollectJS, marker) {
 			t.Fatalf("shared flags collect JS missing %q", marker)
 		}

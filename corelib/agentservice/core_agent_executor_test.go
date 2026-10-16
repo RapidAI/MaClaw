@@ -25,6 +25,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	coreim "github.com/RapidAI/CodeClaw/corelib/im"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
@@ -114,7 +115,12 @@ func (e *blockingRuntimeCancelExecutor) runtimeIDs() (string, string) {
 
 func setupCaptureAgentService(t *testing.T, executor Executor) (*Service, Principal, Instance) {
 	t.Helper()
-	svc, err := NewService(Config{DataRoot: t.TempDir(), TokenSecret: "01234567890123456789012345678901", TokenTTL: time.Hour}, NewMemoryStore(), executor)
+	return setupCaptureAgentServiceWithDataRoot(t, executor, t.TempDir())
+}
+
+func setupCaptureAgentServiceWithDataRoot(t *testing.T, executor Executor, dataRoot string) (*Service, Principal, Instance) {
+	t.Helper()
+	svc, err := NewService(Config{DataRoot: dataRoot, TokenSecret: "01234567890123456789012345678901", TokenTTL: time.Hour}, NewMemoryStore(), executor)
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
@@ -704,7 +710,15 @@ func TestCoreAgentExecutorExplicitCodingRuntimeUsesLedgerAndLeavesRegularRequest
 	}))
 	defer server.Close()
 	executor := &CoreAgentExecutor{HTTPClient: server.Client()}
-	svc, principal, inst := setupCaptureAgentService(t, executor)
+	// Keep the workspace path short: the gated writer auto-initializes a Git
+	// baseline, and Git for Windows cannot operate past the MAX_PATH limit of a
+	// deeply nested t.TempDir() workspace.
+	dataRoot, err := os.MkdirTemp("", "maclaw-agt-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dataRoot) })
+	svc, principal, inst := setupCaptureAgentServiceWithDataRoot(t, executor, dataRoot)
 	if _, err := svc.UpdateUserConfig(context.Background(), principal, corelib.AppConfig{MaclawLLMUrl: server.URL, MaclawLLMKey: "test-key", MaclawLLMModel: "test-model"}); err != nil {
 		t.Fatalf("UpdateUserConfig: %v", err)
 	}
@@ -729,9 +743,10 @@ func TestCoreAgentExecutorExplicitCodingRuntimeUsesLedgerAndLeavesRegularRequest
 	if err != nil {
 		t.Fatalf("explicit coding runtime PostMessage: %v", err)
 	}
-	// The mock model reports completion but does not call a mutating tool. An
-	// implementation workflow must therefore be blocked by the final
-	// read-only workspace gate rather than recorded as a false success.
+	// The mock model reports completion but does not call a mutating tool. The
+	// executor initializes a local Git baseline for the gated writer, so the
+	// attempt runs and the final read-only workspace gate blocks the unchanged
+	// workspace rather than recording a false success.
 	if msg == nil || msg.Metadata[metaCodingRuntimeTaskStatus] != string(codingruntime.TaskBlocked) || msg.Metadata[metaCodingRuntimeTaskID] == "" || msg.Metadata[metaCodingRuntimeAttemptID] == "" {
 		t.Fatalf("missing runtime projection: %#v", msg)
 	}
@@ -739,7 +754,7 @@ func TestCoreAgentExecutorExplicitCodingRuntimeUsesLedgerAndLeavesRegularRequest
 	if err != nil || task.Status != codingruntime.TaskBlocked || task.WorkflowID != workflowID || task.PhaseID != phaseID {
 		t.Fatalf("runtime task=%#v err=%v", task, err)
 	}
-	if attempts, err := ledger.ListAttempts(task.TaskID); err != nil || len(attempts) != 1 || attempts[0].Status != codingruntime.TaskBlocked || attempts[0].ErrorCode != "final_workspace_probe_failed" {
+	if attempts, err := ledger.ListAttempts(task.TaskID); err != nil || len(attempts) != 1 || attempts[0].Status != codingruntime.TaskBlocked || attempts[0].ErrorCode != "final_workspace_unchanged" {
 		t.Fatalf("runtime attempts=%#v err=%v", attempts, err)
 	}
 
@@ -896,6 +911,19 @@ func TestServiceCancelRunClosesCodingRuntimeSubtreeBeforeRequestCancellation(t *
 	if attempts, listErr := ledger.ListAttempts(child.TaskID); listErr != nil || len(attempts) != 1 || attempts[0].Status != codingruntime.TaskCancelled {
 		t.Fatalf("child attempts=%#v err=%v", attempts, listErr)
 	}
+	events, eventErr := svc.ListRunEventsForInstance(context.Background(), principal, inst.ID, running[0].ID, 0, 100)
+	if eventErr != nil {
+		t.Fatalf("ListRunEventsForInstance: %v", eventErr)
+	}
+	cancelledEvents := 0
+	for _, event := range events {
+		if event.Type == "run.cancelled" {
+			cancelledEvents++
+		}
+	}
+	if cancelledEvents != 1 {
+		t.Fatalf("run.cancelled events=%d; want exactly one: %#v", cancelledEvents, events)
+	}
 }
 
 func TestRemoteCodingRuntimeRejectsUnpinnedOrUnboundTargetBeforeModelCall(t *testing.T) {
@@ -969,6 +997,26 @@ func TestRemoteCodingRuntimeRestrictsToolsToBoundSession(t *testing.T) {
 	if len(tools) != 1 || tooldef.Name(tools[0]) != "ssh" {
 		t.Fatalf("remote runtime tool surface = %#v", tools)
 	}
+	fn, _ := tools[0]["function"].(map[string]interface{})
+	if fn == nil {
+		t.Fatal("remote runtime ssh definition lost its function envelope")
+	}
+	params, _ := fn["parameters"].(map[string]interface{})
+	props, _ := params["properties"].(map[string]interface{})
+	if len(props) != 4 {
+		t.Fatalf("remote runtime ssh definition must expose exactly action/command/session_id/wait_seconds, got %v", props)
+	}
+	for _, key := range []string{"host", "user", "port", "auth_method", "key_path", "password", "label", "initial_command", "timeout", "task_id", "tail_lines", "local_path", "remote_path"} {
+		if _, ok := props[key]; ok {
+			t.Fatalf("remote runtime ssh definition advertises an argument the gate rejects: %q", key)
+		}
+	}
+	if enum, _ := props["action"].(map[string]interface{})["enum"].([]string); len(enum) != 1 || enum[0] != "exec" {
+		t.Fatalf("remote runtime ssh action enum = %v", props["action"])
+	}
+	if note := cb.remoteRuntimeSessionContextNote(); !strings.Contains(note, "ssh-bound") {
+		t.Fatalf("remote runtime session context note must publish the bound id: %q", note)
+	}
 	for _, denied := range []string{"bash", "read_file", "write_file", "edit_file", "spawn_coding_agent"} {
 		if cb.IsToolAllowed(denied) || func() bool { ok, _ := cb.IsToolCallAllowed(denied, `{}`); return ok }() {
 			t.Fatalf("remote runtime allowed %q", denied)
@@ -1006,6 +1054,16 @@ func TestRemoteCodingRecoveryRequiresSamePinnedConfiguredLiveTarget(t *testing.T
 	}
 	if _, err := executor.CodingRuntimeRemoteRecoveryProber(p, corelib.AppConfig{SSHHosts: []corelib.SSHHostEntry{{Label: "build", Host: target.Host, User: target.User, HostKeyFingerprint: target.HostKeyFingerprint}}}, task, policy); err == nil || !strings.Contains(err.Error(), "already verified live SSH session") {
 		t.Fatalf("recovery attempted to proceed/reconnect without live session: %v", err)
+	}
+}
+
+func TestServiceEnsureRemoteGitBaselineRejectsIncompleteBinding(t *testing.T) {
+	target := codingruntime.RemoteTarget{Host: "build.example.test", User: "deploy", WorkDir: "/srv/app", HostKeyFingerprint: "SHA256:pin"}
+	if _, err := serviceEnsureRemoteGitBaseline(context.Background(), nil, remoteCodingRuntimeBinding{Target: target, SessionID: "ssh-1"}); err == nil {
+		t.Fatal("nil resources should fail")
+	}
+	if _, err := serviceEnsureRemoteGitBaseline(context.Background(), &coreAgentSSHResources{}, remoteCodingRuntimeBinding{Target: target}); err == nil {
+		t.Fatal("empty session should fail")
 	}
 }
 
@@ -4042,5 +4100,194 @@ func writeAgentServiceMinimalDOCX(t *testing.T, path, text string) {
 	}
 	if err := file.Close(); err != nil {
 		t.Fatalf("close docx: %v", err)
+	}
+}
+
+func TestLightTurnKeepsTheCloudDesktopTool(t *testing.T) {
+	withDesktop := &coreAgentCallbacks{runtimeTools: []agentruntime.ToolDefinition{{Name: "desktop"}}}
+	if !withDesktop.IsToolAllowedForPromptProfile("desktop", agent.PromptProfileLight) {
+		t.Fatal("light bot turn hid the cloud desktop")
+	}
+	if withDesktop.IsToolAllowedForPromptProfile("bash", agent.PromptProfileLight) {
+		t.Fatal("light turn allowed bash")
+	}
+	withoutDesktop := &coreAgentCallbacks{}
+	if withoutDesktop.IsToolAllowedForPromptProfile("desktop", agent.PromptProfileLight) {
+		t.Fatal("desktop is not a light tool unless the runtime module provides it")
+	}
+	blocked := &coreAgentCallbacks{
+		dynamicSemanticManaged: true,
+		dynamicSemanticSurface: &coreDynamicSemanticSurface{
+			plan: coretool.ToolPlan{Selections: []coretool.PlannedSelection{{
+				ID:      "sel-desktop",
+				Effects: []coretool.EffectClass{coretool.EffectLocalMutation},
+			}}},
+			grants: map[string]coretool.InvocationGrant{
+				"desktop": {SelectionID: "sel-desktop"},
+			},
+		},
+		runtimeTools: []agentruntime.ToolDefinition{{Name: "desktop"}},
+	}
+	if !blocked.IsToolAllowedForPromptProfile("desktop", agent.PromptProfileLight) {
+		t.Fatal("a semantic grant hid the cloud desktop on a short bot command")
+	}
+	if blocked.IsToolAllowedForPromptProfile("bash", agent.PromptProfileLight) {
+		t.Fatal("light turn allowed bash")
+	}
+}
+
+type stubRuntimeInvoker struct{}
+
+func (stubRuntimeInvoker) InvokeRuntimeTool(context.Context, string, map[string]any) (string, bool, error) {
+	return "", true, nil
+}
+
+func TestHubBotUsesTheLoggedInDesktopBrowser(t *testing.T) {
+	hubBot := &coreAgentCallbacks{
+		runtimeToolInvoker: stubRuntimeInvoker{},
+		runtimeTools:       []agentruntime.ToolDefinition{{Name: "desktop", Description: "cloud desktop"}},
+		urlLauncher:        &fakeHostURLOpener{},
+		runtimeRequest: ExecuteRequest{Instance: Instance{Metadata: map[string]string{
+			"hub_bot": "1",
+		}}},
+	}
+	seen := map[string]bool{}
+	for _, tool := range hubBot.BuildTools("继续操作刚才登录的网站") {
+		seen[tooldef.Name(tool)] = true
+	}
+	if !seen["desktop"] || !seen["web_search"] || !seen["web_fetch"] {
+		t.Fatalf("hub bot lost the desktop or its network tools: %#v", seen)
+	}
+	if seen["download_file"] || seen["open"] || seen["read_file"] || seen["bash"] || seen["craft_tool"] || seen["browser"] || seen["computer_use"] {
+		t.Fatalf("hub bot can use the host system: %#v", seen)
+	}
+	if allowed, reason := hubBot.IsToolCallAllowed("web_fetch", `{"url":"https://example.com"}`); !allowed {
+		t.Fatalf("web_fetch was rejected on a hub bot: %s", reason)
+	}
+	if allowed, _ := hubBot.IsToolCallAllowed("download_file", `{"url":"https://example.com"}`); allowed {
+		t.Fatal("download_file was allowed on a hub bot")
+	}
+	if allowed, _ := hubBot.IsToolCallAllowed("read_file", `{"path":"C:\\\\host\\\\a.txt"}`); allowed {
+		t.Fatal("read_file was allowed on a hub bot")
+	}
+	other := &coreAgentCallbacks{
+		runtimeToolInvoker: stubRuntimeInvoker{},
+		runtimeTools:       []agentruntime.ToolDefinition{{Name: "desktop", Description: "cloud desktop"}},
+	}
+	seen = map[string]bool{}
+	for _, tool := range other.BuildTools("搜索天气") {
+		seen[tooldef.Name(tool)] = true
+	}
+	if !seen["web_search"] || !seen["web_fetch"] {
+		t.Fatalf("non-bot turn lost web tools: %#v", seen)
+	}
+}
+
+func TestHubBotDocumentOrderLeavesTheLightBan(t *testing.T) {
+	hubBot := &coreAgentCallbacks{
+		runtimeTools:  []agentruntime.ToolDefinition{{Name: "desktop", Description: "cloud desktop"}},
+		runtimePrompt: "When the user asked for a document, action=deliver with name and content. Do not paste the document into the chat, and do not tell the user to copy it into Word.",
+		runtimeRequest: ExecuteRequest{Instance: Instance{Metadata: map[string]string{
+			"hub_bot": "1",
+		}}},
+	}
+	prompt := hubBot.BuildSystemPrompt("生成一份word文档，内容为你的自述，发我。", false)
+	if strings.Contains(prompt, "不要生成文档") {
+		t.Fatal("a document order stayed under the light ban")
+	}
+	if !strings.Contains(prompt, "action=deliver") || !strings.Contains(prompt, "copy it into Word") {
+		t.Fatal("a document order lost the deliver instruction")
+	}
+	if hubBot.CurrentPromptProfile().IsLight() {
+		t.Fatal("a document order stayed on the light profile")
+	}
+}
+
+func TestHubBotContinuationUsesTheLoggedInDesktop(t *testing.T) {
+	hubBot := &coreAgentCallbacks{
+		runtimeTools:  []agentruntime.ToolDefinition{{Name: "desktop", Description: "cloud desktop"}},
+		runtimePrompt: "The person and this agent share that desktop's browser window, so a login or verification finished by the person stays in this browser.",
+		runtimeRequest: ExecuteRequest{Instance: Instance{Metadata: map[string]string{
+			"hub_bot": "1",
+		}}},
+	}
+	prompt := hubBot.BuildSystemPrompt("登录完成，继续", false)
+	if strings.Contains(prompt, "Prompt profile: light") {
+		t.Fatal("the continuation was treated as a chat that should not touch the desktop")
+	}
+	if !strings.Contains(prompt, "stays in this browser") {
+		t.Fatal("the continuation lost the logged-in browser instruction")
+	}
+	if hubBot.CurrentPromptProfile().IsLight() {
+		t.Fatal("the continuation stayed on the light profile")
+	}
+	chat := &coreAgentCallbacks{}
+	chatPrompt := chat.BuildSystemPrompt("你好", false)
+	if !strings.Contains(chatPrompt, "Prompt profile: light") {
+		t.Fatal("an ordinary short message was no longer a light turn")
+	}
+}
+
+func TestHubBotDropsASemanticWebGrant(t *testing.T) {
+	cb := &coreAgentCallbacks{
+		runtimeTools: []agentruntime.ToolDefinition{{Name: "desktop"}},
+		runtimeRequest: ExecuteRequest{Instance: Instance{Metadata: map[string]string{
+			"hub_bot": "1",
+		}}},
+		dynamicSemanticSurface: &coreDynamicSemanticSurface{
+			grants: map[string]coretool.InvocationGrant{
+				"invoke_web_search": {AdapterName: "web_search", SelectionID: "sel-web"},
+				"invoke_open":       {AdapterName: "open", SelectionID: "sel-open"},
+			},
+		},
+	}
+	kept := map[string]bool{}
+	for _, tool := range cb.finishToolSurface([]map[string]interface{}{
+		functionToolDefinition("invoke_web_search", "search the web", nil),
+		functionToolDefinition("invoke_open", "open a url", nil),
+		functionToolDefinition("desktop", "cloud desktop", nil),
+	}) {
+		kept[tooldef.Name(tool)] = true
+	}
+	if kept["invoke_web_search"] || kept["invoke_open"] || !kept["desktop"] {
+		t.Fatalf("semantic web grant stayed on the hub bot: %#v", kept)
+	}
+	if allowed, _ := cb.IsToolCallAllowed("invoke_web_search", `{}`); allowed {
+		t.Fatal("semantic web grant was allowed on a hub bot")
+	}
+	if allowed, _ := cb.IsToolCallAllowed("open", `{"target":"https://example.com"}`); allowed {
+		t.Fatal("host open was allowed on a hub bot")
+	}
+}
+
+func TestHubBotCannotUseAnotherBrowser(t *testing.T) {
+	cb := &coreAgentCallbacks{
+		runtimeTools: []agentruntime.ToolDefinition{{Name: "desktop"}},
+		runtimeRequest: ExecuteRequest{Instance: Instance{Metadata: map[string]string{
+			"hub_bot": "1",
+		}}},
+		dynamicSemanticSurface: &coreDynamicSemanticSurface{
+			grants: map[string]coretool.InvocationGrant{
+				"invoke_host_search":  {AdapterName: "host_information_search_web", SelectionID: "sel-host"},
+				"invoke_host_browser": {AdapterName: "host_browser_control_web", SelectionID: "sel-browser"},
+			},
+		},
+	}
+	kept := map[string]bool{}
+	for _, tool := range cb.finishToolSurface([]map[string]interface{}{
+		functionToolDefinition("invoke_host_search", "search the web", nil),
+		functionToolDefinition("invoke_host_browser", "control a browser", nil),
+		functionToolDefinition("desktop", "cloud desktop", nil),
+	}) {
+		kept[tooldef.Name(tool)] = true
+	}
+	if kept["invoke_host_search"] || kept["invoke_host_browser"] || !kept["desktop"] {
+		t.Fatalf("another browser stayed on the hub bot: %#v", kept)
+	}
+	if allowed, _ := cb.IsToolCallAllowed("invoke_host_search", `{}`); allowed {
+		t.Fatal("host web search was allowed on a hub bot")
+	}
+	if allowed, _ := cb.IsToolCallAllowed("host_information_fetch_web", `{"url":"https://example.com"}`); allowed {
+		t.Fatal("host web fetch was allowed on a hub bot")
 	}
 }

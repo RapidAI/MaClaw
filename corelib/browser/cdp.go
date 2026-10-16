@@ -12,7 +12,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -90,11 +92,13 @@ func DiscoverTargetsContext(ctx context.Context, cdpHTTP string) ([]TargetInfo, 
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	client := &http.Client{Timeout: 5 * time.Second}
+	client := cdpHTTPClient(5 * time.Second)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cdpHTTP+"/json", nil)
 	if err != nil {
 		return nil, fmt.Errorf("discover targets: %w", err)
 	}
+	setCDPGateAuth(req)
+	useCDPChromeHost(req)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("discover targets: %w", err)
@@ -111,7 +115,140 @@ func DiscoverTargetsContext(ctx context.Context, cdpHTTP string) ([]TargetInfo, 
 	if err := json.Unmarshal(body, &targets); err != nil {
 		return nil, fmt.Errorf("parse targets: %w body_len=%d", err, len(body))
 	}
+	for i := range targets {
+		targets[i].WebSocketDebugURL = cdpSocketOnEndpoint(cdpHTTP, targets[i].WebSocketDebugURL)
+	}
 	return targets, nil
+}
+
+// cdpSocketOnEndpoint points Chrome's debugger socket at the address we
+// actually reached. Inside the desktop container Chrome advertises
+// 127.0.0.1. Dialing that address opens a different browser, and the website
+// login stays in the one the person just used. The desktop gate token in the
+// endpoint's userinfo is copied onto this URL so the dial can authorize.
+func cdpSocketOnEndpoint(cdpHTTP, wsURL string) string {
+	wsURL = strings.TrimSpace(wsURL)
+	if wsURL == "" {
+		return ""
+	}
+	base, err := url.Parse(strings.TrimSpace(cdpHTTP))
+	if err != nil || base.Host == "" {
+		return wsURL
+	}
+	parsed, err := url.Parse(wsURL)
+	if err != nil || parsed.Host == "" || parsed.Path == "" {
+		return wsURL
+	}
+	switch strings.ToLower(base.Scheme) {
+	case "https", "wss":
+		parsed.Scheme = "wss"
+	default:
+		parsed.Scheme = "ws"
+	}
+	parsed.Host = base.Host
+	parsed.User = base.User
+	return parsed.String()
+}
+
+// gateToken is the desktop gate secret stored as URL userinfo password.
+func gateToken(user *url.Userinfo) string {
+	if user == nil {
+		return ""
+	}
+	token, _ := user.Password()
+	return token
+}
+
+// bearerFromEndpoint extracts the gate token stored as URL userinfo.
+func bearerFromEndpoint(endpoint string) string {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil {
+		return ""
+	}
+	return gateToken(parsed.User)
+}
+
+// setCDPGateAuth copies the endpoint userinfo into the Bearer header the
+// desktop gate checks. net/http would otherwise send that userinfo as Basic,
+// and the gate rejects it.
+func setCDPGateAuth(req *http.Request) {
+	if req == nil || req.URL == nil {
+		return
+	}
+	if token := gateToken(req.URL.User); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+}
+
+// cdpDialContext overrides the TCP dial for CDP HTTP and the debugger
+// websocket. Production leaves it nil. Tests point a named desktop host at
+// a local listener.
+var cdpDialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+
+func cdpHTTPClient(timeout time.Duration) *http.Client {
+	client := &http.Client{Timeout: timeout}
+	if cdpDialContext != nil {
+		client.Transport = &http.Transport{DialContext: cdpDialContext}
+	}
+	return client
+}
+
+// useCDPChromeHost makes Chromium accept this request. Its DevTools server
+// returns HTTP 500 when Host is a DNS name, with the body "Host header is
+// specified and is not an IP address or localhost." The desktop publishes
+// that name. The TCP dial stays on it. Only the header becomes 127.0.0.1
+// with the same port, which is the form Chromium copies into
+// webSocketDebuggerUrl. cdpSocketOnEndpoint puts the published host back
+// before the next dial.
+func useCDPChromeHost(req *http.Request) {
+	if req == nil || req.URL == nil {
+		return
+	}
+	if host := cdpChromeHost(req.URL.String()); host != "" {
+		req.Host = host
+	}
+}
+
+// cdpChromeHost is the Host value Chromium accepts for a named endpoint.
+// An IP address or localhost is already accepted, so the result is empty
+// and the caller keeps the header Go would send.
+func cdpChromeHost(endpoint string) string {
+	parsed, err := url.Parse(strings.TrimSpace(endpoint))
+	if err != nil || parsed.Hostname() == "" || cdpHostIsLocal(parsed.Hostname()) {
+		return ""
+	}
+	port := parsed.Port()
+	if port == "" {
+		switch strings.ToLower(parsed.Scheme) {
+		case "https", "wss":
+			port = "443"
+		default:
+			port = "80"
+		}
+	}
+	return "127.0.0.1:" + port
+}
+
+func cdpHostIsLocal(hostname string) bool {
+	switch strings.ToLower(hostname) {
+	case "localhost", "localhost.localdomain", "localhost6", "localhost6.localdomain6":
+		return true
+	}
+	return net.ParseIP(hostname) != nil
+}
+
+// cdpDialTarget splits a debugger socket into the URL gorilla can dial and
+// the gate token for the Authorization header. A ws URL that still has
+// userinfo never leaves this process: gorilla returns "malformed ws or wss URL".
+func cdpDialTarget(wsURL string) (dialURL, token string) {
+	trimmed := strings.TrimSpace(wsURL)
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.User == nil {
+		return trimmed, ""
+	}
+	token = gateToken(parsed.User)
+	parsed.User = nil
+	return parsed.String(), token
 }
 
 // TargetInfo describes a browser target (page, worker, etc.).
@@ -129,10 +266,28 @@ var cdpEventBufferSize = 256
 
 // ConnectCDP connects to a CDP WebSocket endpoint.
 func ConnectCDP(wsURL string) (*CDPClient, error) {
-	dialer := websocket.Dialer{
-		HandshakeTimeout: 10 * time.Second,
+	return connectCDP(wsURL, 10*time.Second)
+}
+
+func connectCDP(wsURL string, handshake time.Duration) (*CDPClient, error) {
+	if handshake <= 0 {
+		handshake = 10 * time.Second
 	}
-	conn, _, err := dialer.Dial(wsURL, nil)
+	dialer := websocket.Dialer{HandshakeTimeout: handshake}
+	if cdpDialContext != nil {
+		dialer.NetDialContext = cdpDialContext
+	}
+	dialURL, token := cdpDialTarget(wsURL)
+	headers := http.Header{}
+	if token != "" {
+		headers.Set("Authorization", "Bearer "+token)
+	}
+	// Same Host rule as discovery. A DNS name on the upgrade is the same
+	// HTTP 500, so the page socket never opens.
+	if host := cdpChromeHost(wsURL); host != "" {
+		headers["Host"] = []string{host}
+	}
+	conn, _, err := dialer.Dial(dialURL, headers)
 	if err != nil {
 		return nil, fmt.Errorf("cdp dial: %w", err)
 	}

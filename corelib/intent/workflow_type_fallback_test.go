@@ -122,8 +122,8 @@ func TestFusionToClassification_TreeActiveEmptyWorkflowType_NoOverride(t *testin
 			Label:        LabelCoding,
 			FinalScore:   0.85,
 			InEmb:        true,
-			InTree:       true,        // tree was active
-			WorkflowType: "",          // tree deliberately returned empty
+			InTree:       true, // tree was active
+			WorkflowType: "",   // tree deliberately returned empty
 		},
 		Degraded:       false,
 		ActiveChannels: []string{"embedding", "tree"},
@@ -219,6 +219,12 @@ func TestBuildWorkflowTypeMap(t *testing.T) {
 	// bug_fix has no WorkflowTypes
 	if _, ok := m[LabelBugFix]; ok {
 		t.Error("LabelBugFix should not be in WorkflowTypeMap")
+	}
+
+	// workflow_task lists many panel projects. The first entry is not a
+	// default for a research report, a bid, or a patent.
+	if _, ok := m[LabelWorkflowTask]; ok {
+		t.Fatal("LabelWorkflowTask must not take a degraded default type")
 	}
 }
 

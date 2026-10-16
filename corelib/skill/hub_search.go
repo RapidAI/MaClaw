@@ -481,6 +481,18 @@ type HubDownloadOptions struct {
 // Bundled files are extracted so TUI/agentservice install paths match GUI.
 // Dependency installation is intentionally deferred until after security scan.
 func (c *HubClient) DownloadSkillHub(ctx context.Context, hubURL, skillID string) (*corelib.NLSkillEntry, error) {
+	return c.DownloadSkillHubWithOptions(ctx, hubURL, skillID, HubDownloadOptions{
+		HubURL: hubURL, SkillID: skillID, Source: "hub",
+	})
+}
+
+// DownloadSkillHubWithOptions is the staging-aware variant of
+// DownloadSkillHub. Callers that own a transaction can set TargetDir to an
+// isolated directory so a failed config/index/audit step never leaves a
+// partially published package under the live Skills root. SkipExtract is
+// useful for metadata-only callers that want to validate/materialise the
+// entry themselves.
+func (c *HubClient) DownloadSkillHubWithOptions(ctx context.Context, hubURL, skillID string, opts HubDownloadOptions) (*corelib.NLSkillEntry, error) {
 	endpoint := fmt.Sprintf("%s/api/v1/skills/%s/download",
 		strings.TrimRight(strings.TrimSpace(hubURL), "/"), url.PathEscape(skillID))
 
@@ -488,11 +500,16 @@ func (c *HubClient) DownloadSkillHub(ctx context.Context, hubURL, skillID string
 	if err := c.getJSON(ctx, endpoint, &full); err != nil {
 		return nil, fmt.Errorf("下载 Skill 失败: %w", err)
 	}
-	return entryFromSkillHubDownload(full, HubDownloadOptions{
-		HubURL:  hubURL,
-		SkillID: skillID,
-		Source:  "hub",
-	})
+	if strings.TrimSpace(opts.HubURL) == "" {
+		opts.HubURL = hubURL
+	}
+	if strings.TrimSpace(opts.SkillID) == "" {
+		opts.SkillID = skillID
+	}
+	if strings.TrimSpace(opts.Source) == "" {
+		opts.Source = "hub"
+	}
+	return entryFromSkillHubDownload(full, opts)
 }
 
 // ParseSkillHubDownloadJSON converts a raw SkillHub/SkillMarket download JSON

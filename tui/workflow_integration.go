@@ -253,22 +253,22 @@ func (app *TUIApp) handleWorkflowReviewTUI(userID, text string) string {
 		raw, err := app.classifyWorkflowReviewIntentTUI(userID, text)
 		if err != nil {
 			log.Printf("[TUI-workflow] review intent classification failed: %v", err)
-			// Fall back to keyword classification when the LLM is unreachable.
-			if kw := v2.ClassifyConfirmIntentKeyword(text); kw != "" && kw != "unrelated" {
-				intent = mapConfirmKeywordToReviewIntent(kw)
-				rawIntent = intent
-			}
-		} else {
-			rawIntent = raw
-			intent = raw
+			return app.workflowReviewBarrierText(userID)
 		}
-	} else if kw := v2.ClassifyConfirmIntentKeyword(text); kw != "" && kw != "unrelated" {
-		// Offline / no-LLM: use the same keyword fallback as confirm classifier.
-		intent = mapConfirmKeywordToReviewIntent(kw)
-		rawIntent = intent
+		rawIntent = raw
+		intent = raw
+	} else {
+		return app.workflowReviewBarrierText(userID)
 	}
 
-	// V2 ApplyReviewIntent accepts string intents: "confirm", "skip", "cancel", "switch_task", "supplement", "other"
+	parsed := v2.ParseReviewIntent(intent)
+	if parsed == v2.ReviewIntentOther {
+		app.logNeedleWorkflowReviewEvent(userID, text, rawIntent, needlePrediction, string(parsed), false, "unrecognized review category")
+		return app.workflowReviewBarrierText(userID)
+	}
+	intent = string(parsed)
+
+	// V2 ApplyReviewIntent accepts confirm, skip, cancel, switch_task, and supplement.
 	hr, err := wf.machine.ApplyReviewIntent(userID, intent, text)
 	if err != nil {
 		log.Printf("[TUI-workflow] V2 ApplyReviewIntent error: intent=%s err=%v", intent, err)
@@ -553,22 +553,6 @@ func isTUIWorkflowStartConfirmCommand(text string) bool {
 	}
 }
 
-// mapConfirmKeywordToReviewIntent maps StateMachine confirm-keyword labels onto
-// ApplyReviewIntent categories used by the review barrier.
-func mapConfirmKeywordToReviewIntent(kw string) string {
-	switch strings.ToLower(strings.TrimSpace(kw)) {
-	case "confirm":
-		return "confirm"
-	case "modify":
-		return "supplement"
-	case "cancel":
-		return "cancel"
-	case "cancel_execute":
-		return "switch_task"
-	default:
-		return "other"
-	}
-}
 func tuiWorkflowProjectPath() string {
 	cwd, err := os.Getwd()
 	if err != nil {

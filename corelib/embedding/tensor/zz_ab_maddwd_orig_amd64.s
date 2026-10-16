@@ -1,0 +1,223 @@
+//go:build amd64
+
+#include "textflag.h"
+
+// func gemmaMaddwdRowM8N24AVX2Orig(out *float32, aQ *int16, aS *float32, bData *byte, bS *float32, N, ns, ne int)
+// K=768 (24 blocks). B row stride 816 bytes; bS row stride 96 bytes.
+TEXT ·gemmaMaddwdRowM8N24AVX2Orig(SB), NOSPLIT, $64-64
+	MOVQ out+0(FP), AX
+	MOVQ AX, 0(SP)
+	MOVQ aQ+8(FP), AX
+	MOVQ AX, 8(SP)
+	MOVQ aS+16(FP), AX
+	MOVQ AX, 16(SP)
+	MOVQ bData+24(FP), AX
+	MOVQ AX, 24(SP)
+	MOVQ bS+32(FP), AX
+	MOVQ AX, 32(SP)
+	MOVQ N+40(FP), AX
+	MOVQ AX, 40(SP)
+	MOVQ ne+56(FP), AX
+	MOVQ AX, 48(SP)
+	MOVQ ns+48(FP), AX
+	MOVQ AX, 56(SP)
+
+	MOVQ 24(SP), DI
+	MOVQ AX, R12
+	IMULQ $816, R12
+	ADDQ R12, DI
+	MOVQ 32(SP), R13
+	MOVQ AX, R12
+	IMULQ $96, R12
+	ADDQ R12, R13
+	MOVQ 8(SP), SI
+	MOVQ 16(SP), R8
+
+r8m24on:
+	MOVQ 56(SP), R12
+	MOVQ 48(SP), CX
+	CMPQ R12, CX
+	JGE  r8m24odone
+
+	VXORPS Y0, Y0, Y0
+	VXORPS Y1, Y1, Y1
+	VXORPS Y2, Y2, Y2
+	VXORPS Y3, Y3, Y3
+	VXORPS Y4, Y4, Y4
+	VXORPS Y5, Y5, Y5
+	VXORPS Y6, Y6, Y6
+	VXORPS Y7, Y7, Y7
+	MOVQ   $24, CX
+
+r8m24ok:
+	PREFETCHT0 256(DI)
+	VMOVDQU     2(DI), X8  // w8 block payload, low 16 bytes
+	VPMOVSXBW   X8, Y8     // w16 elements 0-15
+	VMOVDQU     18(DI), X9 // w8 block payload, high 16 bytes
+	VPMOVSXBW   X9, Y9     // w16 elements 16-31
+	VBROADCASTSS (R13), Y10 // block scale bS[n][blk]
+	// row 0
+	VMOVDQU     (SI), Y11
+	VMOVDQU     32(SI), Y12
+	VPMADDWD    Y11, Y8, Y13
+	VPMADDWD    Y12, Y9, Y14
+	VPADDD      Y14, Y13, Y15
+	VCVTDQ2PS   Y15, Y15
+	VFMADD231PS Y15, Y10, Y0
+	// row 1
+	VMOVDQU     1536(SI), Y11
+	VMOVDQU     1568(SI), Y12
+	VPMADDWD    Y11, Y8, Y13
+	VPMADDWD    Y12, Y9, Y14
+	VPADDD      Y14, Y13, Y15
+	VCVTDQ2PS   Y15, Y15
+	VFMADD231PS Y15, Y10, Y1
+	// row 2
+	VMOVDQU     3072(SI), Y11
+	VMOVDQU     3104(SI), Y12
+	VPMADDWD    Y11, Y8, Y13
+	VPMADDWD    Y12, Y9, Y14
+	VPADDD      Y14, Y13, Y15
+	VCVTDQ2PS   Y15, Y15
+	VFMADD231PS Y15, Y10, Y2
+	// row 3
+	VMOVDQU     4608(SI), Y11
+	VMOVDQU     4640(SI), Y12
+	VPMADDWD    Y11, Y8, Y13
+	VPMADDWD    Y12, Y9, Y14
+	VPADDD      Y14, Y13, Y15
+	VCVTDQ2PS   Y15, Y15
+	VFMADD231PS Y15, Y10, Y3
+	// row 4
+	VMOVDQU     6144(SI), Y11
+	VMOVDQU     6176(SI), Y12
+	VPMADDWD    Y11, Y8, Y13
+	VPMADDWD    Y12, Y9, Y14
+	VPADDD      Y14, Y13, Y15
+	VCVTDQ2PS   Y15, Y15
+	VFMADD231PS Y15, Y10, Y4
+	// row 5
+	VMOVDQU     7680(SI), Y11
+	VMOVDQU     7712(SI), Y12
+	VPMADDWD    Y11, Y8, Y13
+	VPMADDWD    Y12, Y9, Y14
+	VPADDD      Y14, Y13, Y15
+	VCVTDQ2PS   Y15, Y15
+	VFMADD231PS Y15, Y10, Y5
+	// row 6
+	VMOVDQU     9216(SI), Y11
+	VMOVDQU     9248(SI), Y12
+	VPMADDWD    Y11, Y8, Y13
+	VPMADDWD    Y12, Y9, Y14
+	VPADDD      Y14, Y13, Y15
+	VCVTDQ2PS   Y15, Y15
+	VFMADD231PS Y15, Y10, Y6
+	// row 7
+	VMOVDQU     10752(SI), Y11
+	VMOVDQU     10784(SI), Y12
+	VPMADDWD    Y11, Y8, Y13
+	VPMADDWD    Y12, Y9, Y14
+	VPADDD      Y14, Y13, Y15
+	VCVTDQ2PS   Y15, Y15
+	VFMADD231PS Y15, Y10, Y7
+
+	ADDQ $64, SI
+	ADDQ $34, DI
+	ADDQ $4, R13
+	DECQ CX
+	JNZ  r8m24ok
+
+	// finish 8 rows: hsum(acc) → ×aS[r] → store out[r*N+n]
+	MOVQ 0(SP), BX
+	MOVQ 56(SP), AX
+	MOVQ 40(SP), DX
+	MOVQ AX, R12
+	SHLQ $2, R12
+	ADDQ BX, R12
+
+	VEXTRACTF128 $1, Y0, X8
+	VADDPS       X8, X0, X0
+	VSHUFPD      $1, X0, X0, X8
+	VADDPS       X8, X0, X0
+	VMOVSHDUP    X0, X8
+	VADDSS       X8, X0, X0
+	VMULSS       (R8), X0, X0
+	VMOVSS       X0, (R12)
+	LEAQ         (R12)(DX*4), R12
+
+	VEXTRACTF128 $1, Y1, X8
+	VADDPS       X8, X1, X1
+	VSHUFPD      $1, X1, X1, X8
+	VADDPS       X8, X1, X1
+	VMOVSHDUP    X1, X8
+	VADDSS       X8, X1, X1
+	VMULSS       4(R8), X1, X1
+	VMOVSS       X1, (R12)
+	LEAQ         (R12)(DX*4), R12
+
+	VEXTRACTF128 $1, Y2, X8
+	VADDPS       X8, X2, X2
+	VSHUFPD      $1, X2, X2, X8
+	VADDPS       X8, X2, X2
+	VMOVSHDUP    X2, X8
+	VADDSS       X8, X2, X2
+	VMULSS       8(R8), X2, X2
+	VMOVSS       X2, (R12)
+	LEAQ         (R12)(DX*4), R12
+
+	VEXTRACTF128 $1, Y3, X8
+	VADDPS       X8, X3, X3
+	VSHUFPD      $1, X3, X3, X8
+	VADDPS       X8, X3, X3
+	VMOVSHDUP    X3, X8
+	VADDSS       X8, X3, X3
+	VMULSS       12(R8), X3, X3
+	VMOVSS       X3, (R12)
+	LEAQ         (R12)(DX*4), R12
+
+	VEXTRACTF128 $1, Y4, X8
+	VADDPS       X8, X4, X4
+	VSHUFPD      $1, X4, X4, X8
+	VADDPS       X8, X4, X4
+	VMOVSHDUP    X4, X8
+	VADDSS       X8, X4, X4
+	VMULSS       16(R8), X4, X4
+	VMOVSS       X4, (R12)
+	LEAQ         (R12)(DX*4), R12
+
+	VEXTRACTF128 $1, Y5, X8
+	VADDPS       X8, X5, X5
+	VSHUFPD      $1, X5, X5, X8
+	VADDPS       X8, X5, X5
+	VMOVSHDUP    X5, X8
+	VADDSS       X8, X5, X5
+	VMULSS       20(R8), X5, X5
+	VMOVSS       X5, (R12)
+	LEAQ         (R12)(DX*4), R12
+
+	VEXTRACTF128 $1, Y6, X8
+	VADDPS       X8, X6, X6
+	VSHUFPD      $1, X6, X6, X8
+	VADDPS       X8, X6, X6
+	VMOVSHDUP    X6, X8
+	VADDSS       X8, X6, X6
+	VMULSS       24(R8), X6, X6
+	VMOVSS       X6, (R12)
+	LEAQ         (R12)(DX*4), R12
+
+	VEXTRACTF128 $1, Y7, X8
+	VADDPS       X8, X7, X7
+	VSHUFPD      $1, X7, X7, X8
+	VADDPS       X8, X7, X7
+	VMOVSHDUP    X7, X8
+	VADDSS       X8, X7, X7
+	VMULSS       28(R8), X7, X7
+	VMOVSS       X7, (R12)
+
+	ADDQ $1, 56(SP)
+	SUBQ $1536, SI
+	JMP  r8m24on
+
+r8m24odone:
+	VZEROUPPER
+	RET

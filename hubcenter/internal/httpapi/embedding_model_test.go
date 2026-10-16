@@ -19,8 +19,8 @@ func setupEmbeddingModelTest(t *testing.T) (dataDir, homeDir string) {
 	t.Helper()
 	ResetEmbeddingModelDownloadForTest()
 	t.Cleanup(ResetEmbeddingModelDownloadForTest)
-	embedding.ResetSharedGemmaForTest()
-	t.Cleanup(embedding.ResetSharedGemmaForTest)
+	embedding.ResetSharedEmbedderForTest()
+	t.Cleanup(embedding.ResetSharedEmbedderForTest)
 
 	dataDir = t.TempDir()
 	homeDir = t.TempDir()
@@ -91,7 +91,7 @@ func TestEmbeddingModelStatusReportsExistingCache(t *testing.T) {
 	if !got.Ready || got.Status != "partial" || got.EmbedderReady {
 		t.Fatalf("unloadable cache should be partial, got %+v", got)
 	}
-	if embeddingWarmStarted.Load() || embedding.SharedGemmaReady() {
+	if embeddingWarmStarted.Load() || embedding.SharedEmbedderReady() {
 		t.Fatal("status must peek embedder readiness, not load Gemma")
 	}
 	serving := filepath.Join(homeDir, "models", embedding.DefaultModelFilename)
@@ -616,7 +616,7 @@ func TestEmbeddingModelSourceURLsIncludeGitHubMirror(t *testing.T) {
 	if !strings.HasPrefix(urls[1], "https://ghfast.top/https://github.com/") {
 		t.Fatalf("mirror = %s", urls[1])
 	}
-	t.Setenv(embeddingModelDownloadEnv, "https://mirror.example/model.gguf, https://github.com/RapidAI/MaClaw/releases/download/Model_Release/embeddinggemma-300M-Q8_0.gguf")
+	t.Setenv(embeddingModelDownloadEnv, "https://mirror.example/model.gguf, "+embedding.DefaultModelDownloadURL)
 	urls = embeddingModelSourceURLs()
 	if urls[0] != "https://mirror.example/model.gguf" {
 		t.Fatalf("env override should be first: %v", urls)

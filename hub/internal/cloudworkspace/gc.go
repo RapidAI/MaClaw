@@ -5,6 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"log"
+	"os"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -21,16 +24,40 @@ const (
 	UnreferencedGrace = time.Hour
 	// StagingGrace drops incomplete objects/{sha256}.part and staging dirs.
 	StagingGrace = time.Hour
+	// SnapshotRetentionCount bounds immutable manifest roots per workspace. The
+	// newest roots remain recoverable; older roots no longer pin objects forever.
+	SnapshotRetentionCount = 20
 
 	manifestDirName = "manifest"
 )
 
 // SweepResult is the hourly GC accounting snapshot.
 type SweepResult struct {
-	PurgedWorkspaces int
-	PurgedObjects    int
-	PurgedParts      int
-	RecalcWorkspaces int
+	PurgedWorkspaces     int
+	PurgedObjects        int
+	ReconciledOrphanObjs int
+	RemovedOrphanDirs    int
+	PurgedParts          int
+	PurgedSnapshots      int
+	RecalcWorkspaces     int
+	ReconciledStaging    int
+	ReconciledProvisions int
+}
+
+// StagingReconcileResult describes repairs between durable reservations and
+// on-disk objects/{sha}.part/{index} files.
+type StagingReconcileResult struct {
+	AdoptedFiles   int
+	ResizedRows    int
+	RemovedRows    int
+	SkippedInvalid int
+}
+
+const stagingMissingGrace = 5 * time.Minute
+
+type stagingChunkKey struct {
+	sha   string
+	index int
 }
 
 type unreferencedObject struct {
@@ -41,6 +68,9 @@ type unreferencedObject struct {
 }
 
 func (s *Service) recordFailure(ctx context.Context, tenantID, entityID, eventCode, message string, details map[string]any) {
+	if eventCode == EventGCFailed {
+		metricGCFailures.Add(1)
+	}
 	if s == nil || s.Failures == nil {
 		return
 	}
@@ -115,16 +145,49 @@ func (s *Service) Sweep(ctx context.Context, now time.Time) (SweepResult, error)
 		return out, ErrUnavailable
 	}
 	now = now.UTC()
-	n, err := s.purgeExpiredDeleted(ctx, now)
+	var n int
+	var err error
+	// A service without a BlobStore is still useful for metadata-only health
+	// checks. Preserve the previous behavior (per-item cleanup failures are
+	// recorded and retried later) instead of failing the entire sweep before it
+	// can recalculate usage.
+	if s.Blobs != nil {
+		n, err = s.reconcileOrphanWorkspaces(ctx, now)
+		if err != nil {
+			return out, err
+		}
+		out.RemovedOrphanDirs = n
+	}
+	n, err = s.purgeExpiredDeleted(ctx, now)
 	if err != nil {
 		return out, err
 	}
-	out.PurgedWorkspaces = n
+	out.PurgedWorkspaces += n
+	if n, err := s.Workspaces.ReconcileStaleWorkspaceTaskProvisions(ctx, now, ProvisioningGrace); err != nil {
+		return out, err
+	} else {
+		out.ReconciledProvisions = n
+	}
+	n, err = s.Workspaces.PurgeOldSnapshots(ctx, SnapshotRetentionCount)
+	if err != nil {
+		return out, err
+	}
+	out.PurgedSnapshots = n
 	n, err = s.purgeUnreferenced(ctx, now)
 	if err != nil {
 		return out, err
 	}
 	out.PurgedObjects = n
+	reconciled, err := s.reconcileStaging(ctx, now)
+	if err != nil {
+		return out, err
+	}
+	out.ReconciledStaging = reconciled.AdoptedFiles + reconciled.ResizedRows + reconciled.RemovedRows
+	if n, err := s.reconcileOrphanObjects(ctx, now); err != nil {
+		return out, err
+	} else {
+		out.ReconciledOrphanObjs = n
+	}
 	n, err = s.purgeStaleParts(now)
 	if err != nil {
 		return out, err
@@ -137,6 +200,252 @@ func (s *Service) Sweep(ctx context.Context, now time.Time) (SweepResult, error)
 	}
 	out.RecalcWorkspaces = n
 	return out, nil
+}
+
+// reconcileOrphanObjects removes old encrypted object files that have no
+// corresponding metadata row. A crash can leave a fully written .enc file
+// immediately before recordObjectMeta commits; such a file is intentionally
+// invisible to BlobStore.Get/Has and must eventually be reclaimed so it cannot
+// accumulate outside the quota ledger. Recent files are left alone for one
+// grace window to let an in-flight uploader finish its metadata transaction.
+func (s *Service) reconcileOrphanObjects(ctx context.Context, now time.Time) (int, error) {
+	if s == nil || s.Workspaces == nil || s.Blobs == nil || s.Workspaces.db == nil {
+		return 0, nil
+	}
+	rows, err := s.Workspaces.db.QueryContext(ctx, `SELECT id, tenant_id, user_id FROM cloud_workspaces`)
+	if err != nil {
+		return 0, err
+	}
+	type workspaceRef struct{ id, tenant, user string }
+	workspaces := make([]workspaceRef, 0)
+	for rows.Next() {
+		var ref workspaceRef
+		if err := rows.Scan(&ref.id, &ref.tenant, &ref.user); err != nil {
+			rows.Close()
+			return 0, err
+		}
+		workspaces = append(workspaces, ref)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return 0, err
+	}
+	rows.Close()
+	removed := 0
+	for _, ref := range workspaces {
+		dir, err := s.Blobs.ObjectsDir(ref.tenant, ref.user, ref.id)
+		if err != nil {
+			continue
+		}
+		entries, err := os.ReadDir(dir)
+		if os.IsNotExist(err) {
+			continue
+		}
+		if err != nil {
+			return removed, err
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || !strings.HasSuffix(entry.Name(), objectFileExt) {
+				continue
+			}
+			sha := strings.TrimSuffix(entry.Name(), objectFileExt)
+			if !ValidSHA256Hex(sha) {
+				// Object names are content-addressed; an old malformed file in
+				// this directory cannot be referenced by a manifest.
+				if info, statErr := entry.Info(); statErr == nil && !now.After(info.ModTime().UTC().Add(stagingMissingGrace)) {
+					continue
+				}
+				if removeErr := os.Remove(filepath.Join(dir, entry.Name())); removeErr == nil || os.IsNotExist(removeErr) {
+					removed++
+				}
+				continue
+			}
+			info, statErr := entry.Info()
+			if statErr != nil || !now.After(info.ModTime().UTC().Add(stagingMissingGrace)) {
+				continue
+			}
+			var exists int
+			qErr := s.Workspaces.db.QueryRowContext(ctx, `SELECT 1 FROM cloud_workspace_objects WHERE workspace_id = ? AND sha256 = ? LIMIT 1`, ref.id, sha).Scan(&exists)
+			if qErr == nil {
+				continue
+			}
+			if !errors.Is(qErr, sql.ErrNoRows) {
+				return removed, qErr
+			}
+			if removeErr := os.Remove(filepath.Join(dir, entry.Name())); removeErr == nil || os.IsNotExist(removeErr) {
+				removed++
+			}
+		}
+	}
+	return removed, nil
+}
+
+// reconcileStaging makes the reservation table and on-disk chunk directories
+// converge after crashes, manual cleanup, or a Hub process restart. It is
+// idempotent and safe to run on every GC sweep.
+func (s *Service) reconcileStaging(ctx context.Context, now time.Time) (StagingReconcileResult, error) {
+	var result StagingReconcileResult
+	if s == nil || s.Workspaces == nil || s.Blobs == nil || s.Workspaces.db == nil {
+		return result, nil
+	}
+	rows, err := s.Workspaces.db.QueryContext(ctx, `SELECT id, tenant_id, user_id FROM cloud_workspaces`)
+	if err != nil {
+		return result, err
+	}
+	type workspaceRef struct{ id, tenant, user string }
+	workspaces := make([]workspaceRef, 0)
+	for rows.Next() {
+		var ref workspaceRef
+		if err := rows.Scan(&ref.id, &ref.tenant, &ref.user); err != nil {
+			rows.Close()
+			return result, err
+		}
+		workspaces = append(workspaces, ref)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return result, err
+	}
+	rows.Close()
+	for _, ref := range workspaces {
+		adopted, resized, removed, invalid, err := s.reconcileWorkspaceStaging(ctx, ref.id, ref.tenant, ref.user, now)
+		if err != nil {
+			return result, err
+		}
+		result.AdoptedFiles += adopted
+		result.ResizedRows += resized
+		result.RemovedRows += removed
+		result.SkippedInvalid += invalid
+	}
+	return result, nil
+}
+
+func (s *Service) reconcileWorkspaceStaging(ctx context.Context, workspaceID, tenantID, userID string, now time.Time) (adopted, resized, removed, invalid int, err error) {
+	objectsDir, dirErr := s.Blobs.ObjectsDir(tenantID, userID, workspaceID)
+	if dirErr != nil {
+		return 0, 0, 0, 0, nil // malformed legacy ownership rows are ignored
+	}
+	physical := map[stagingChunkKey]int64{}
+	physicalUpdated := map[stagingChunkKey]string{}
+	entries, readErr := os.ReadDir(objectsDir)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		return 0, 0, 0, 0, readErr
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() || !strings.HasSuffix(entry.Name(), objectPartExt) {
+			continue
+		}
+		sha := strings.TrimSuffix(entry.Name(), objectPartExt)
+		if !ValidSHA256Hex(sha) {
+			invalid++
+			continue
+		}
+		partDir := filepath.Join(objectsDir, entry.Name())
+		parts, partErr := os.ReadDir(partDir)
+		if partErr != nil {
+			if os.IsNotExist(partErr) {
+				continue
+			}
+			return adopted, resized, removed, invalid, partErr
+		}
+		for _, part := range parts {
+			if part.IsDir() {
+				continue
+			}
+			index, convErr := strconv.Atoi(part.Name())
+			if convErr != nil || index < 0 || index >= maxChunkCount || strconv.Itoa(index) != part.Name() {
+				invalid++
+				continue
+			}
+			info, statErr := part.Info()
+			if statErr != nil {
+				continue
+			}
+			size := info.Size()
+			if size <= 0 || size > MaxChunkBytes {
+				invalid++
+				continue
+			}
+			key := stagingChunkKey{sha: sha, index: index}
+			physical[key] = size
+			physicalUpdated[key] = info.ModTime().UTC().Format(time.RFC3339)
+		}
+	}
+
+	err = s.Workspaces.withImmediate(ctx, func(q queryer) error {
+		rows, queryErr := q.QueryContext(ctx, `SELECT sha256, chunk_index, size_bytes, updated_at FROM cloud_workspace_staging_chunks WHERE workspace_id = ?`, workspaceID)
+		if queryErr != nil {
+			return queryErr
+		}
+		dbRows := map[stagingChunkKey]struct {
+			size    int64
+			updated string
+		}{}
+		for rows.Next() {
+			var sha, updated string
+			var index, size int64
+			if scanErr := rows.Scan(&sha, &index, &size, &updated); scanErr != nil {
+				rows.Close()
+				return scanErr
+			}
+			key := stagingChunkKey{sha: sha, index: int(index)}
+			dbRows[key] = struct {
+				size    int64
+				updated string
+			}{size: size, updated: updated}
+		}
+		if rowsErr := rows.Err(); rowsErr != nil {
+			rows.Close()
+			return rowsErr
+		}
+		rows.Close()
+
+		cutoff := now.Add(-stagingMissingGrace)
+		for key, dbRow := range dbRows {
+			size, exists := physical[key]
+			if !exists {
+				updatedAt, parseErr := time.Parse(time.RFC3339, strings.TrimSpace(dbRow.updated))
+				if parseErr == nil && updatedAt.After(cutoff) {
+					continue
+				}
+				if _, execErr := q.ExecContext(ctx, `DELETE FROM cloud_workspace_staging_chunks WHERE workspace_id = ? AND sha256 = ? AND chunk_index = ?`, workspaceID, key.sha, key.index); execErr != nil {
+					return execErr
+				}
+				removed++
+				continue
+			}
+			if dbRow.size != size {
+				if _, execErr := q.ExecContext(ctx, `UPDATE cloud_workspace_staging_chunks SET size_bytes = ?, updated_at = ? WHERE workspace_id = ? AND sha256 = ? AND chunk_index = ?`, size, now.UTC().Format(time.RFC3339), workspaceID, key.sha, key.index); execErr != nil {
+					return execErr
+				}
+				resized++
+			}
+		}
+
+		knownHashes := map[string]struct{}{}
+		for key := range dbRows {
+			knownHashes[key.sha] = struct{}{}
+		}
+		for key, size := range physical {
+			if _, exists := dbRows[key]; exists {
+				continue
+			}
+			if len(knownHashes) >= MaxStagingHashes {
+				continue
+			}
+			updated := physicalUpdated[key]
+			if updatedAt, parseErr := time.Parse(time.RFC3339, updated); parseErr == nil && !updatedAt.After(now.Add(-StagingGrace)) {
+				continue
+			}
+			if _, execErr := q.ExecContext(ctx, `INSERT OR IGNORE INTO cloud_workspace_staging_chunks (workspace_id, sha256, chunk_index, size_bytes, updated_at) VALUES (?, ?, ?, ?, ?)`, workspaceID, key.sha, key.index, size, now.UTC().Format(time.RFC3339)); execErr != nil {
+				return execErr
+			}
+			knownHashes[key.sha] = struct{}{}
+			adopted++
+		}
+		return nil
+	})
+	return adopted, resized, removed, invalid, err
 }
 
 func (s *Service) purgeExpiredDeleted(ctx context.Context, now time.Time) (int, error) {
@@ -176,11 +485,92 @@ func (s *Service) purgeOneDeleted(ctx context.Context, ws *Workspace, now time.T
 	if !ok {
 		return nil
 	}
-	// Files first so a blob failure leaves the row for the next hourly retry.
+	// Files first so a blob failure leaves the row for the next hourly retry. A
+	// crash between unlink and the metadata commit is reclaimed by the sweep's
+	// orphan-directory reconciliation.
 	if err := s.Blobs.RemoveWorkspace(ws.TenantID, ws.UserID, ws.ID); err != nil {
 		return err
 	}
 	return s.Workspaces.HardDeleteExpired(ctx, ws.ID, now)
+}
+
+// reconcileOrphanWorkspaces removes on-disk workspace directories whose
+// metadata row is already gone. The workspace row is always created before any
+// blob directory exists, so a directory without a row is crash residue from a
+// purge that died between filesystem cleanup and the final SQLite commit. A
+// modtime grace window keeps freshly created directories out of the sweep.
+func (s *Service) reconcileOrphanWorkspaces(ctx context.Context, now time.Time) (int, error) {
+	if s == nil || s.Workspaces == nil || s.Blobs == nil || s.Workspaces.db == nil {
+		return 0, nil
+	}
+	root := strings.TrimSpace(s.Blobs.Root)
+	if root == "" {
+		return 0, nil
+	}
+	keyDir := strings.TrimSpace(s.Blobs.KeyDir)
+	if keyDir != "" {
+		if abs, absErr := filepath.Abs(keyDir); absErr == nil {
+			keyDir = abs
+		}
+	}
+	tenantEntries, err := os.ReadDir(root)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	removed := 0
+	for _, tenantEntry := range tenantEntries {
+		if !tenantEntry.IsDir() || !validPathSegment(tenantEntry.Name()) {
+			continue
+		}
+		tenantDir := filepath.Join(root, tenantEntry.Name())
+		if keyDir != "" {
+			if abs, absErr := filepath.Abs(tenantDir); absErr == nil && abs == keyDir {
+				continue
+			}
+		}
+		userEntries, readErr := os.ReadDir(tenantDir)
+		if readErr != nil {
+			continue
+		}
+		for _, userEntry := range userEntries {
+			if !userEntry.IsDir() || !validPathSegment(userEntry.Name()) {
+				continue
+			}
+			wsEntries, wsErr := os.ReadDir(filepath.Join(tenantDir, userEntry.Name()))
+			if wsErr != nil {
+				continue
+			}
+			for _, wsEntry := range wsEntries {
+				// Only directories shaped like a workspace ID are candidates;
+				// KeyDir may point at the blob root in production, so anything
+				// else (key backups, manual folders) must never be walked into.
+				if !wsEntry.IsDir() || !strings.HasPrefix(wsEntry.Name(), idPrefix) || !validPathSegment(wsEntry.Name()) {
+					continue
+				}
+				info, infoErr := wsEntry.Info()
+				if infoErr != nil || !now.After(info.ModTime().UTC().Add(stagingMissingGrace)) {
+					continue
+				}
+				var exists int
+				qErr := s.Workspaces.db.QueryRowContext(ctx, `SELECT 1 FROM cloud_workspaces WHERE id = ?`, wsEntry.Name()).Scan(&exists)
+				if qErr == nil {
+					continue
+				}
+				if !errors.Is(qErr, sql.ErrNoRows) {
+					return removed, qErr
+				}
+				if removeErr := s.Blobs.RemoveWorkspace(tenantEntry.Name(), userEntry.Name(), wsEntry.Name()); removeErr == nil || os.IsNotExist(removeErr) {
+					removed++
+				} else {
+					s.recordFailure(ctx, tenantEntry.Name(), wsEntry.Name(), EventGCFailed, removeErr.Error(), map[string]any{"step": "orphan_workspace_dir"})
+				}
+			}
+		}
+	}
+	return removed, nil
 }
 
 func (s *Service) purgeUnreferenced(ctx context.Context, now time.Time) (int, error) {
@@ -210,21 +600,29 @@ func (s *Service) purgeUnreferenced(ctx context.Context, now time.Time) (int, er
 }
 
 func (s *Service) purgeOneUnreferenced(ctx context.Context, obj unreferencedObject) (bool, error) {
-	deleted, err := s.Workspaces.DeleteUnreferencedRow(ctx, obj)
+	// Mark first, unlink second, and delete metadata last. A crash or
+	// permission failure during unlink therefore leaves a durable `deleting`
+	// row that the next sweep can retry instead of losing the only pointer to
+	// an orphaned file.
+	marked, err := s.Workspaces.MarkUnreferencedDeleting(ctx, obj)
 	if err != nil {
 		return false, err
 	}
-	if !deleted {
+	if !marked {
 		return false, nil
 	}
 	if s.Blobs == nil {
-		return true, nil
+		return false, ErrUnavailable
 	}
 	if err := s.Blobs.RemoveObjectFile(obj.TenantID, obj.UserID, obj.WorkspaceID, obj.SHA256); err != nil {
 		s.recordFailure(ctx, obj.TenantID, obj.WorkspaceID, EventGCFailed, err.Error(), map[string]any{
 			"step": "unlink_unreferenced", "sha256": obj.SHA256,
 		})
 		log.Printf("[cloud-workspace] gc_failed unlink workspace_id=%s sha256=%s err=%v", obj.WorkspaceID, obj.SHA256, err)
+		return false, err
+	}
+	if err := s.Workspaces.FinalizeDeletingObject(ctx, obj); err != nil {
+		return false, err
 	}
 	return true, nil
 }
@@ -237,6 +635,17 @@ func (s *Service) purgeStaleParts(now time.Time) (int, error) {
 	if err != nil {
 		s.recordFailure(context.Background(), "", "", EventGCFailed, err.Error(), map[string]any{"step": "purge_staging"})
 		return n, err
+	}
+	// Remove durable reservations whose staging directories were reclaimed (or
+	// whose process crashed before creating one). Leaving these rows behind
+	// would permanently charge quota and block a retry for the same digest.
+	if s.Workspaces != nil {
+		if _, dbErr := s.Workspaces.PurgeStaleObjectReservations(context.Background(), now.Add(-StagingGrace)); dbErr != nil {
+			return n, dbErr
+		}
+		if _, dbErr := s.Workspaces.PurgeStaleStagingChunks(context.Background(), now.Add(-StagingGrace)); dbErr != nil {
+			return n, dbErr
+		}
 	}
 	return n, nil
 }
@@ -314,6 +723,27 @@ func (s *Store) HardDeleteExpired(ctx context.Context, id string, now time.Time)
 		if _, err := q.ExecContext(ctx, `DELETE FROM cloud_workspace_manifest_entries WHERE workspace_id = ?`, id); err != nil {
 			return err
 		}
+		if _, err := q.ExecContext(ctx, `DELETE FROM cloud_workspace_staging_chunks WHERE workspace_id = ?`, id); err != nil {
+			return err
+		}
+		if _, err := q.ExecContext(ctx, `DELETE FROM cloud_workspace_task_bindings WHERE workspace_id = ?`, id); err != nil {
+			return err
+		}
+		if _, err := q.ExecContext(ctx, `DELETE FROM cloud_workspace_task_provisions WHERE workspace_id = ?`, id); err != nil {
+			return err
+		}
+		if _, err := q.ExecContext(ctx, `DELETE FROM cloud_workspace_snapshot_entries WHERE snapshot_id IN (SELECT snapshot_id FROM cloud_workspace_snapshots WHERE workspace_id = ?)`, id); err != nil {
+			return err
+		}
+		if _, err := q.ExecContext(ctx, `DELETE FROM cloud_workspace_snapshots WHERE workspace_id = ?`, id); err != nil {
+			return err
+		}
+		if _, err := q.ExecContext(ctx, `DELETE FROM cloud_workspace_sidecars WHERE workspace_id = ?`, id); err != nil {
+			return err
+		}
+		if _, err := q.ExecContext(ctx, `DELETE FROM cloud_workspace_idempotency WHERE workspace_id = ?`, id); err != nil {
+			return err
+		}
 		if _, err := q.ExecContext(ctx, `DELETE FROM cloud_workspace_objects WHERE workspace_id = ?`, id); err != nil {
 			return err
 		}
@@ -336,7 +766,12 @@ func (s *Store) ListUnreferenced(ctx context.Context, cutoff time.Time) ([]unref
 		SELECT o.workspace_id, o.sha256, w.tenant_id, w.user_id
 		FROM cloud_workspace_objects o
 		JOIN cloud_workspaces w ON w.id = o.workspace_id
-		WHERE o.ref_count = 0 AND o.created_at < ? AND w.status != ?`,
+		WHERE o.ref_count = 0 AND COALESCE(o.object_state, 'ready') IN ('ready', 'deleting') AND o.created_at < ? AND w.status != ?
+		  AND NOT EXISTS (
+			SELECT 1 FROM cloud_workspace_snapshot_entries se
+			JOIN cloud_workspace_snapshots ss ON ss.snapshot_id = se.snapshot_id
+			WHERE ss.workspace_id = o.workspace_id AND se.sha256 = o.sha256
+		  )`,
 		cutoff.UTC().Format(time.RFC3339), StatusDeleted,
 	)
 	if err != nil {
@@ -365,7 +800,13 @@ func (s *Store) DeleteUnreferencedRow(ctx context.Context, obj unreferencedObjec
 		err := q.QueryRowContext(ctx, `
 			SELECT o.ref_count, w.status FROM cloud_workspace_objects o
 			JOIN cloud_workspaces w ON w.id = o.workspace_id
-			WHERE o.workspace_id = ? AND o.sha256 = ?`,
+			WHERE o.workspace_id = ? AND o.sha256 = ?
+			  AND COALESCE(o.object_state, 'ready') = 'ready'
+			  AND NOT EXISTS (
+				SELECT 1 FROM cloud_workspace_snapshot_entries se
+				JOIN cloud_workspace_snapshots ss ON ss.snapshot_id = se.snapshot_id
+				WHERE ss.workspace_id = o.workspace_id AND se.sha256 = o.sha256
+			  )`,
 			obj.WorkspaceID, obj.SHA256,
 		).Scan(&ref, &status)
 		if errors.Is(err, sql.ErrNoRows) {
@@ -391,6 +832,65 @@ func (s *Store) DeleteUnreferencedRow(ctx context.Context, obj unreferencedObjec
 	return deleted, err
 }
 
+// MarkUnreferencedDeleting atomically fences an unreferenced ready object for
+// deletion. The row remains present until FinalizeDeletingObject succeeds.
+func (s *Store) MarkUnreferencedDeleting(ctx context.Context, obj unreferencedObject) (bool, error) {
+	if s == nil || s.db == nil {
+		return false, ErrUnavailable
+	}
+	marked := false
+	err := s.withImmediate(ctx, func(q queryer) error {
+		var ref int
+		var status, objectState string
+		err := q.QueryRowContext(ctx, `
+			SELECT o.ref_count, w.status, COALESCE(o.object_state, 'ready')
+			FROM cloud_workspace_objects o JOIN cloud_workspaces w ON w.id = o.workspace_id
+			WHERE o.workspace_id = ? AND o.sha256 = ?
+			  AND NOT EXISTS (
+				SELECT 1 FROM cloud_workspace_manifest_entries me WHERE me.workspace_id = o.workspace_id AND me.sha256 = o.sha256
+			  )
+			  AND NOT EXISTS (
+				SELECT 1 FROM cloud_workspace_snapshot_entries se
+				JOIN cloud_workspace_snapshots ss ON ss.snapshot_id = se.snapshot_id
+				WHERE ss.workspace_id = o.workspace_id AND se.sha256 = o.sha256
+			  )`, obj.WorkspaceID, obj.SHA256).Scan(&ref, &status, &objectState)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		if ref != 0 || status == StatusDeleted {
+			return nil
+		}
+		if strings.EqualFold(strings.TrimSpace(objectState), "deleting") {
+			marked = true
+			return nil
+		}
+		if !strings.EqualFold(strings.TrimSpace(objectState), "ready") {
+			return nil
+		}
+		res, err := q.ExecContext(ctx, `UPDATE cloud_workspace_objects SET object_state = 'deleting' WHERE workspace_id = ? AND sha256 = ? AND ref_count = 0 AND COALESCE(object_state, 'ready') = 'ready'`, obj.WorkspaceID, obj.SHA256)
+		if err != nil {
+			return err
+		}
+		n, _ := res.RowsAffected()
+		marked = n > 0
+		return nil
+	})
+	return marked, err
+}
+
+// FinalizeDeletingObject drops metadata only after its physical file has been
+// unlinked. It is safe to retry after a process crash.
+func (s *Store) FinalizeDeletingObject(ctx context.Context, obj unreferencedObject) error {
+	if s == nil || s.db == nil {
+		return ErrUnavailable
+	}
+	_, err := s.db.ExecContext(ctx, `DELETE FROM cloud_workspace_objects WHERE workspace_id = ? AND sha256 = ? AND ref_count = 0 AND COALESCE(object_state, 'ready') = 'deleting'`, obj.WorkspaceID, obj.SHA256)
+	return err
+}
+
 func (s *Store) RecalcUsage(ctx context.Context) (int, error) {
 	if s == nil || s.db == nil {
 		return 0, ErrUnavailable
@@ -406,6 +906,73 @@ func (s *Store) RecalcUsage(ctx context.Context) (int, error) {
 	return int(n), nil
 }
 
+// PurgeOldSnapshots keeps only the newest retain snapshots for each workspace
+// and removes their entry rows in the same transaction. Snapshot deletion does
+// not touch object rows; the subsequent unreferenced-object sweep decides when
+// bytes are safe to reclaim.
+func (s *Store) PurgeOldSnapshots(ctx context.Context, retain int) (int, error) {
+	if s == nil || s.db == nil {
+		return 0, ErrUnavailable
+	}
+	if retain < 1 {
+		retain = 1
+	}
+	var purged int
+	err := s.withImmediate(ctx, func(q queryer) error {
+		rows, err := q.QueryContext(ctx, `SELECT DISTINCT workspace_id FROM cloud_workspace_snapshots`)
+		if err != nil {
+			return err
+		}
+		var workspaceIDs []string
+		for rows.Next() {
+			var id string
+			if err := rows.Scan(&id); err != nil {
+				rows.Close()
+				return err
+			}
+			workspaceIDs = append(workspaceIDs, id)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			return err
+		}
+		rows.Close()
+		for _, workspaceID := range workspaceIDs {
+			oldIDs := []string{}
+			oldRows, err := q.QueryContext(ctx, `SELECT snapshot_id FROM cloud_workspace_snapshots WHERE workspace_id = ? ORDER BY created_at DESC, snapshot_id DESC LIMIT -1 OFFSET ?`, workspaceID, retain)
+			if err != nil {
+				return err
+			}
+			for oldRows.Next() {
+				var id string
+				if err := oldRows.Scan(&id); err != nil {
+					oldRows.Close()
+					return err
+				}
+				oldIDs = append(oldIDs, id)
+			}
+			if err := oldRows.Err(); err != nil {
+				oldRows.Close()
+				return err
+			}
+			oldRows.Close()
+			for _, snapshotID := range oldIDs {
+				if _, err := q.ExecContext(ctx, `DELETE FROM cloud_workspace_snapshot_entries WHERE snapshot_id = ?`, snapshotID); err != nil {
+					return err
+				}
+				res, err := q.ExecContext(ctx, `DELETE FROM cloud_workspace_snapshots WHERE snapshot_id = ?`, snapshotID)
+				if err != nil {
+					return err
+				}
+				n, _ := res.RowsAffected()
+				purged += int(n)
+			}
+		}
+		return nil
+	})
+	return purged, err
+}
+
 func (s *Store) CountOpenLeases(ctx context.Context, now time.Time) (int64, error) {
 	if s == nil || s.db == nil {
 		return 0, ErrUnavailable
@@ -415,6 +982,19 @@ func (s *Store) CountOpenLeases(ctx context.Context, now time.Time) (int64, erro
 		`SELECT COUNT(*) FROM cloud_workspace_leases WHERE released_at IS NULL AND expires_at > ?`,
 		now.UTC().Format(time.RFC3339),
 	).Scan(&n)
+	return n, err
+}
+
+func (s *Store) CountOpenLeasesForTenant(ctx context.Context, tenantID string, now time.Time) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, ErrUnavailable
+	}
+	var n int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM cloud_workspace_leases l
+		  JOIN cloud_workspaces w ON w.id = l.workspace_id
+		 WHERE l.released_at IS NULL AND l.expires_at > ? AND w.tenant_id = ?`,
+		now.UTC().Format(time.RFC3339), store.NormalizeTenantID(tenantID)).Scan(&n)
 	return n, err
 }
 
@@ -431,6 +1011,46 @@ func (s *Store) SumUsedBytes(ctx context.Context) (int64, error) {
 		return n.Int64, nil
 	}
 	return 0, nil
+}
+
+func (s *Store) SumUsedBytesForTenant(ctx context.Context, tenantID string) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, ErrUnavailable
+	}
+	var n sql.NullInt64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(used_bytes), 0) FROM cloud_workspaces WHERE tenant_id = ?`,
+		store.NormalizeTenantID(tenantID)).Scan(&n)
+	if err != nil {
+		return 0, err
+	}
+	if n.Valid {
+		return n.Int64, nil
+	}
+	return 0, nil
+}
+
+func (s *Store) CountAuditRows(ctx context.Context, tenantID string) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, ErrUnavailable
+	}
+	if strings.TrimSpace(tenantID) == "" {
+		return 0, ErrInvalidAuditEvent
+	}
+	var n int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM cloud_workspace_audit_events WHERE tenant_id = ?`,
+		store.NormalizeTenantID(tenantID)).Scan(&n)
+	return n, err
+}
+
+func (s *Store) CountAuditRowsAll(ctx context.Context) (int64, error) {
+	if s == nil || s.db == nil {
+		return 0, ErrUnavailable
+	}
+	var n int64
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM cloud_workspace_audit_events`).Scan(&n)
+	return n, err
 }
 
 func (s *Store) ListSettingTenantIDs(ctx context.Context) ([]string, error) {

@@ -176,10 +176,19 @@ print("hello world")
 		extraEnv    map[string]string
 		steps       []NLSkillStep
 		skillDir    string
+		noLLMAPI    bool
 		want        bool
 	}{
 		{
-			name:        "explicit RequiredEnv still works",
+			name:        "default-on: no env and no declaration starts proxy",
+			requiredEnv: nil,
+			extraEnv:    map[string]string{},
+			steps:       nil,
+			skillDir:    "",
+			want:        true,
+		},
+		{
+			name:        "explicit RequiredEnv starts proxy",
 			requiredEnv: []string{"OPENAI_API_KEY"},
 			extraEnv:    map[string]string{},
 			steps:       nil,
@@ -187,15 +196,7 @@ print("hello world")
 			want:        true,
 		},
 		{
-			name:        "explicit RequiredEnv is case-insensitive",
-			requiredEnv: []string{"openai_api_key"},
-			extraEnv:    map[string]string{},
-			steps:       nil,
-			skillDir:    "",
-			want:        true,
-		},
-		{
-			name:        "explicit OPENAI_BASE_URL uses proxy when missing",
+			name:        "explicit OPENAI_BASE_URL starts proxy",
 			requiredEnv: []string{"OPENAI_BASE_URL"},
 			extraEnv:    map[string]string{},
 			steps:       nil,
@@ -203,7 +204,50 @@ print("hello world")
 			want:        true,
 		},
 		{
-			name:        "provided OPENAI_BASE_URL satisfies base-url-only requirement",
+			name:        "no_llm_api skips proxy",
+			requiredEnv: nil,
+			extraEnv:    map[string]string{},
+			steps:       nil,
+			skillDir:    "",
+			noLLMAPI:    true,
+			want:        false,
+		},
+		{
+			name:        "no_llm_api skips proxy even with explicit RequiredEnv",
+			requiredEnv: []string{"OPENAI_API_KEY"},
+			extraEnv:    map[string]string{},
+			steps:       nil,
+			skillDir:    "",
+			noLLMAPI:    true,
+			want:        false,
+		},
+		{
+			name:        "no_llm_api skips proxy even when scripts reference OpenAI",
+			requiredEnv: nil,
+			extraEnv:    map[string]string{},
+			steps:       nil,
+			skillDir:    tmpDir,
+			noLLMAPI:    true,
+			want:        false,
+		},
+		{
+			name:        "user provided api key skips proxy",
+			requiredEnv: []string{"OPENAI_API_KEY"},
+			extraEnv:    map[string]string{"OPENAI_API_KEY": "sk-user"},
+			steps:       nil,
+			skillDir:    "",
+			want:        false,
+		},
+		{
+			name:        "user provided key skip is case-insensitive",
+			requiredEnv: []string{"OPENAI_API_KEY"},
+			extraEnv:    map[string]string{"openai_api_key": "sk-user"},
+			steps:       nil,
+			skillDir:    "",
+			want:        false,
+		},
+		{
+			name:        "user provided base url skips proxy",
 			requiredEnv: []string{"OPENAI_BASE_URL"},
 			extraEnv:    map[string]string{"OPENAI_BASE_URL": "https://api.example.com/v1"},
 			steps:       nil,
@@ -211,16 +255,8 @@ print("hello world")
 			want:        false,
 		},
 		{
-			name:        "api key alone does not satisfy explicit base url requirement",
-			requiredEnv: []string{"OPENAI_API_KEY", "OPENAI_BASE_URL"},
-			extraEnv:    map[string]string{"OPENAI_API_KEY": "sk-user"},
-			steps:       nil,
-			skillDir:    "",
-			want:        true,
-		},
-		{
-			name:        "both explicit OpenAI env vars are satisfied",
-			requiredEnv: []string{"OPENAI_API_KEY", "OPENAI_BASE_URL"},
+			name:        "user provided credentials win over no_llm_api absence",
+			requiredEnv: nil,
 			extraEnv: map[string]string{
 				"OPENAI_API_KEY":  "sk-user",
 				"OPENAI_BASE_URL": "https://api.example.com/v1",
@@ -230,7 +266,7 @@ print("hello world")
 			want:     false,
 		},
 		{
-			name:        "step-level required_env triggers proxy",
+			name:        "step-level required_env starts proxy",
 			requiredEnv: nil,
 			extraEnv:    map[string]string{},
 			steps: []NLSkillStep{{
@@ -241,34 +277,7 @@ print("hello world")
 			want:     true,
 		},
 		{
-			name:        "step-level requires_env alias is case-insensitive",
-			requiredEnv: nil,
-			extraEnv:    map[string]string{},
-			steps: []NLSkillStep{{
-				Action: "run",
-				Params: map[string]interface{}{"requires_env": []interface{}{"openai_api_key"}},
-			}},
-			skillDir: "",
-			want:     true,
-		},
-		{
-			name:        "user provided key overrides explicit RequiredEnv",
-			requiredEnv: []string{"OPENAI_API_KEY"},
-			extraEnv:    map[string]string{"OPENAI_API_KEY": "sk-user"},
-			steps:       nil,
-			skillDir:    "",
-			want:        false,
-		},
-		{
-			name:        "user provided key override is case-insensitive",
-			requiredEnv: []string{"OPENAI_API_KEY"},
-			extraEnv:    map[string]string{"openai_api_key": "sk-user"},
-			steps:       nil,
-			skillDir:    "",
-			want:        false,
-		},
-		{
-			name:        "auto-detect from step command",
+			name:        "step command reference starts proxy",
 			requiredEnv: nil,
 			extraEnv:    map[string]string{},
 			steps: []NLSkillStep{
@@ -278,47 +287,17 @@ print("hello world")
 			want:     true,
 		},
 		{
-			name:        "auto-detect from lowercase step command",
-			requiredEnv: nil,
-			extraEnv:    map[string]string{},
-			steps: []NLSkillStep{
-				{Action: "bash", Params: map[string]interface{}{"command": `python translate.py --key "$openai_api_key"`}},
-			},
-			skillDir: "",
-			want:     true,
-		},
-		{
-			name:        "auto-detect from node code",
-			requiredEnv: nil,
-			extraEnv:    map[string]string{},
-			steps: []NLSkillStep{
-				{Action: "node", Params: map[string]interface{}{"code": `console.log(process.env.OPENAI_API_KEY)`}},
-			},
-			skillDir: "",
-			want:     true,
-		},
-		{
-			name:        "auto-detect from step command with OPENAI_BASE_URL",
-			requiredEnv: nil,
-			extraEnv:    map[string]string{},
-			steps: []NLSkillStep{
-				{Action: "bash", Params: map[string]interface{}{"command": `curl $OPENAI_BASE_URL/chat/completions`}},
-			},
-			skillDir: "",
-			want:     true,
-		},
-		{
-			name:        "no detection from non-bash step",
+			name:        "non-bash step without reference still starts proxy (default-on)",
 			requiredEnv: nil,
 			extraEnv:    map[string]string{},
 			steps: []NLSkillStep{
 				{Action: "craft_tool", Params: map[string]interface{}{"command": `OPENAI_API_KEY is needed`}},
 			},
 			skillDir: "",
-			want:     false,
+			want:     true,
 		},
 		{
-			name:        "auto-detect from script files in skillDir",
+			name:        "script files referencing OpenAI start proxy",
 			requiredEnv: nil,
 			extraEnv:    map[string]string{},
 			steps:       nil,
@@ -326,15 +305,23 @@ print("hello world")
 			want:        true,
 		},
 		{
-			name:        "no detection when scripts don't reference OpenAI",
+			name:        "scripts without OpenAI reference still start proxy (default-on)",
 			requiredEnv: nil,
 			extraEnv:    map[string]string{},
 			steps:       nil,
 			skillDir:    tmpDirNoRef,
-			want:        false,
+			want:        true,
 		},
 		{
-			name:        "user provided key overrides auto-detection from scripts",
+			name:        "nonexistent skillDir still starts proxy (default-on)",
+			requiredEnv: nil,
+			extraEnv:    map[string]string{},
+			steps:       nil,
+			skillDir:    "/nonexistent/path/12345",
+			want:        true,
+		},
+		{
+			name:        "user provided key skips proxy despite script references",
 			requiredEnv: nil,
 			extraEnv:    map[string]string{"OPENAI_API_KEY": "sk-user"},
 			steps:       nil,
@@ -342,37 +329,11 @@ print("hello world")
 			want:        false,
 		},
 		{
-			name:        "user provided base_url overrides passive auto-detection",
+			name:        "user provided base url skips proxy despite script references",
 			requiredEnv: nil,
 			extraEnv:    map[string]string{"OPENAI_BASE_URL": "https://api.example.com"},
 			steps:       nil,
 			skillDir:    tmpDir,
-			want:        false,
-		},
-		{
-			name:        "base url satisfies base-url-only auto-detection",
-			requiredEnv: nil,
-			extraEnv:    map[string]string{"OPENAI_BASE_URL": "https://api.example.com"},
-			steps: []NLSkillStep{
-				{Action: "bash", Params: map[string]interface{}{"command": `curl $OPENAI_BASE_URL/chat/completions`}},
-			},
-			skillDir: "",
-			want:     false,
-		},
-		{
-			name:        "empty everything returns false",
-			requiredEnv: nil,
-			extraEnv:    map[string]string{},
-			steps:       nil,
-			skillDir:    "",
-			want:        false,
-		},
-		{
-			name:        "nonexistent skillDir returns false",
-			requiredEnv: nil,
-			extraEnv:    map[string]string{},
-			steps:       nil,
-			skillDir:    "/nonexistent/path/12345",
 			want:        false,
 		},
 	}
@@ -393,7 +354,7 @@ print("hello world")
 				}
 			}()
 
-			got := NeedsOpenAIProxyAuto(tt.requiredEnv, tt.extraEnv, tt.steps, tt.skillDir)
+			got := NeedsOpenAIProxyAuto(tt.requiredEnv, tt.extraEnv, tt.steps, tt.skillDir, tt.noLLMAPI)
 			if got != tt.want {
 				t.Errorf("NeedsOpenAIProxyAuto() = %v, want %v", got, tt.want)
 			}
@@ -402,7 +363,8 @@ print("hello world")
 }
 
 func TestNeedsOpenAIProxyAuto_ProcessEnvOverride(t *testing.T) {
-	// When OPENAI_API_KEY is set in process env, auto-detection should return false
+	// When OPENAI_API_KEY is set in process env, the proxy should not start
+	// (user key wins) even though the default is on.
 	tmpDir := t.TempDir()
 	os.WriteFile(filepath.Join(tmpDir, "script.py"), []byte(`os.environ["OPENAI_API_KEY"]`), 0644)
 
@@ -416,14 +378,16 @@ func TestNeedsOpenAIProxyAuto_ProcessEnvOverride(t *testing.T) {
 		}
 	}()
 
-	got := NeedsOpenAIProxyAuto(nil, map[string]string{}, nil, tmpDir)
+	got := NeedsOpenAIProxyAuto(nil, map[string]string{}, nil, tmpDir, false)
 	if got != false {
 		t.Errorf("NeedsOpenAIProxyAuto() = true, want false when OPENAI_API_KEY is in process env")
 	}
 }
 
 func TestNeedsOpenAIProxyAuto_SubdirScan(t *testing.T) {
-	// Script in scripts/ subdirectory should be detected
+	// Script in scripts/ subdirectory references OPENAI_API_KEY. Under the
+	// default-on policy the proxy starts regardless of scan results; this
+	// case pins the behavior for hub-style skills without declarations.
 	tmpDir := t.TempDir()
 	scriptsDir := filepath.Join(tmpDir, "scripts")
 	os.Mkdir(scriptsDir, 0755)
@@ -439,9 +403,9 @@ api_key = os.environ.get("OPENAI_API_KEY")
 		}
 	}()
 
-	got := NeedsOpenAIProxyAuto(nil, map[string]string{}, nil, tmpDir)
+	got := NeedsOpenAIProxyAuto(nil, map[string]string{}, nil, tmpDir, false)
 	if got != true {
-		t.Errorf("NeedsOpenAIProxyAuto() = false, want true for script in scripts/ subdir")
+		t.Errorf("NeedsOpenAIProxyAuto() = false, want true for hub-style skill without declaration")
 	}
 }
 
@@ -455,7 +419,7 @@ func TestNeedsOpenAIProxyAuto_NilExtraEnv(t *testing.T) {
 		}
 	}()
 
-	got := NeedsOpenAIProxyAuto([]string{"OPENAI_API_KEY"}, nil, nil, "")
+	got := NeedsOpenAIProxyAuto([]string{"OPENAI_API_KEY"}, nil, nil, "", false)
 	if got != true {
 		t.Errorf("NeedsOpenAIProxyAuto() = false, want true with nil extraEnv and explicit RequiredEnv")
 	}
@@ -478,7 +442,7 @@ func TestNeedsOpenAIProxyAuto_StaleProxyKey(t *testing.T) {
 	}()
 
 	// Explicit RequiredEnv + stale proxy key → should start proxy
-	got := NeedsOpenAIProxyAuto([]string{"OPENAI_API_KEY"}, map[string]string{}, nil, "")
+	got := NeedsOpenAIProxyAuto([]string{"OPENAI_API_KEY"}, map[string]string{}, nil, "", false)
 	if got != true {
 		t.Errorf("NeedsOpenAIProxyAuto() = false, want true when process env has stale proxy key and skill explicitly requires OPENAI_API_KEY")
 	}
@@ -486,8 +450,7 @@ func TestNeedsOpenAIProxyAuto_StaleProxyKey(t *testing.T) {
 
 func TestNeedsOpenAIProxyAuto_StaleProxyKeyAutoDetect(t *testing.T) {
 	// When process env has the stale proxy key and the skill doesn't
-	// explicitly declare RequiredEnv but scripts reference OPENAI_API_KEY,
-	// the proxy should still start.
+	// explicitly declare RequiredEnv, the proxy should still start.
 	tmpDir := t.TempDir()
 	os.WriteFile(filepath.Join(tmpDir, "script.py"), []byte(`os.environ["OPENAI_API_KEY"]`), 0644)
 
@@ -501,9 +464,28 @@ func TestNeedsOpenAIProxyAuto_StaleProxyKeyAutoDetect(t *testing.T) {
 		}
 	}()
 
-	got := NeedsOpenAIProxyAuto(nil, map[string]string{}, nil, tmpDir)
+	got := NeedsOpenAIProxyAuto(nil, map[string]string{}, nil, tmpDir, false)
 	if got != true {
-		t.Errorf("NeedsOpenAIProxyAuto() = false, want true when process env has stale proxy key and scripts reference OPENAI_API_KEY")
+		t.Errorf("NeedsOpenAIProxyAuto() = false, want true when process env has stale proxy key and no credentials are provided")
+	}
+}
+
+func TestNeedsOpenAIProxyAuto_NoLLMAPIWithStaleProxyKey(t *testing.T) {
+	// no_llm_api still skips the proxy when the process env only carries the
+	// stale sentinel key.
+	prev, had := os.LookupEnv("OPENAI_API_KEY")
+	os.Setenv("OPENAI_API_KEY", "sk-maclaw-local-proxy")
+	defer func() {
+		if had {
+			os.Setenv("OPENAI_API_KEY", prev)
+		} else {
+			os.Unsetenv("OPENAI_API_KEY")
+		}
+	}()
+
+	got := NeedsOpenAIProxyAuto(nil, map[string]string{}, nil, "", true)
+	if got != false {
+		t.Errorf("NeedsOpenAIProxyAuto() = true, want false when skill declares no_llm_api")
 	}
 }
 
@@ -520,7 +502,7 @@ func TestNeedsOpenAIProxyAuto_RealKeyInProcessEnv(t *testing.T) {
 		}
 	}()
 
-	got := NeedsOpenAIProxyAuto([]string{"OPENAI_API_KEY"}, map[string]string{}, nil, "")
+	got := NeedsOpenAIProxyAuto([]string{"OPENAI_API_KEY"}, map[string]string{}, nil, "", false)
 	if got != false {
 		t.Errorf("NeedsOpenAIProxyAuto() = true, want false when process env has real OPENAI_API_KEY")
 	}
@@ -762,6 +744,16 @@ func TestOpenAIProxyFlattenText_FallsBackToJSONForSchemas(t *testing.T) {
 	})
 	if !strings.Contains(text, "properties") || !strings.Contains(text, "city") {
 		t.Fatalf("flattened schema = %q", text)
+	}
+}
+
+func TestOpenAIProxyUsageFromResponse_FoldsSeparateReasoningTokens(t *testing.T) {
+	got := openAIProxyUsageFromResponse(
+		map[string]interface{}{"messages": []interface{}{map[string]interface{}{"role": "user", "content": "hello"}}},
+		[]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":100,"completion_tokens":50,"total_tokens":550,"completion_tokens_details":{"reasoning_tokens":400}}}`),
+	)
+	if got.InputTokens != 100 || got.OutputTokens != 450 || got.Estimated {
+		t.Fatalf("usage = %#v, want 100/450 without estimate", got)
 	}
 }
 
@@ -2096,6 +2088,20 @@ func TestResponsesToOpenAIPreservesPromptCacheUsage(t *testing.T) {
 	stat := parseOpenAIUsageJSON(mustMarshalForTest(t, result))
 	if stat.CachedInputTokens != 384 || stat.CacheWriteTokens != 64 || stat.CachedRequests != 1 {
 		t.Fatalf("parsed stat = %+v", stat)
+	}
+}
+
+func TestParseOpenAIUsageRejectsInvalidCacheCounts(t *testing.T) {
+	stat := parseOpenAIUsageJSON(mustMarshalForTest(t, map[string]interface{}{
+		"usage": map[string]interface{}{
+			"prompt_tokens":           float64(10),
+			"completion_tokens":       float64(2),
+			"cache_read_input_tokens": "not-a-number",
+			"cache_write_tokens":      float64(-1),
+		},
+	}))
+	if stat.CachedInputTokens != 0 || stat.CacheWriteTokens != 0 || stat.CacheUsageSource != "unavailable" {
+		t.Fatalf("invalid cache usage = %+v, want zero and unavailable source", stat)
 	}
 }
 

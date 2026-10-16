@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>大模型配置面板布局预览（设置 → 大模型配置）</title>
+<link rel="stylesheet" href="./src/App.css">
+<style>
+    * { box-sizing: border-box; }
+    body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
+        font-size: 16px;
+        background: var(--theme-page-bg);
+        color: var(--theme-text-primary);
+    }
+    /* Mirrors the settings rail wrapper that hosts the LLM tab body. */
+    .settings-content.settings-panel { max-width: 900px; margin: 40px auto; }
+    .field-hint { font-size: 0.68rem; color: var(--theme-text-muted); margin: 4px 0 0 0; line-height: 1.4; }
+</style>
+</head>
+<body>
+
+<script>
+    // ?theme=dark 同步暗色令牌（与 App [data-ai-theme] 开关一致，便于双主题验收）。
+    if (new URLSearchParams(location.search).get("theme") === "dark") {
+        document.documentElement.setAttribute("data-ai-theme", "dark");
+    }
+</script>
+
+<div class="settings-content settings-panel">
+  <div class="llm-config-panel">
+
+    <!-- Header: intent + current provider state, panel-level actions at right -->
+    <header class="llm-config-header">
+      <div class="llm-config-header__copy">
+        <p class="llm-config-header__desc">选择大模型服务商（支持 OpenAI / Anthropic 协议）</p>
+        <p class="llm-config-header__status">
+          <span class="llm-config-header__status-label">助手服务商</span>
+          <span class="llm-config-header__status-value">DeepSeek</span>
+        </p>
+      </div>
+      <div class="llm-config-header__actions">
+        <button class="llm-config-qr-action" type="button">移动端二维码</button>
+        <button class="llm-config-primary-action" type="button">服务商管理</button>
+      </div>
+    </header>
+
+    <!-- Model assignments -->
+    <div class="llm-config-card llm-profile-assignments" role="region" aria-label="模型分配">
+      <div class="llm-profile-assignments__head">
+        <h3 id="pTitle" class="llm-profile-assignments__title">模型分配</h3>
+        <div class="llm-profile-assignments__lede">
+          <span>此处显示已通过连接测试的服务商，以及当前正在使用的服务商；连接与凭据在服务商管理中维护。</span>
+          <span class="llm-profile-assignments__lede-action"><button class="llm-config-import-action" type="button">导入其它 Agent</button></span>
+        </div>
+      </div>
+
+      <div style="display: grid; gap: 14px;">
+        <div>
+          <strong class="llm-tuning-row__title">普通 AI 助手</strong>
+          <p class="field-hint">聊天、IM 与工作流</p>
+          <div class="llm-profile-probe">
+            <div class="llm-profile-probe__row">
+              <button class="llm-profile-probe-btn" type="button">测试连接与图片能力</button>
+              <span class="llm-profile-probe-status is-ok">连接正常 · deepseek-chat</span>
+            </div>
+            <span class="llm-profile-probe-status is-ok">图片理解：支持</span>
+          </div>
+        </div>
+        <div class="llm-profile-probe" style="border-top: 1px solid var(--theme-border-subtle); margin-top: 0; padding-top: 14px;">
+          <strong class="llm-tuning-row__title">编程 Agent</strong>
+          <p class="field-hint">编程工作台与编程任务 · 跟随普通 AI 助手</p>
+        </div>
+        <div class="llm-profile-probe" style="border-top: 1px solid var(--theme-border-subtle); margin-top: 0; padding-top: 14px;">
+          <strong class="llm-tuning-row__title">Caption 模型</strong>
+          <p class="field-hint">仅在聊天模型不支持视觉时，为未标注控件补标签</p>
+        </div>
+      </div>
+
+      <div class="llm-profile-footer">
+        <span class="llm-profile-footer__unsaved">有未保存更改</span>
+        <button type="button" class="llm-config-btn">放弃更改</button>
+        <button type="button" class="llm-config-btn llm-config-btn--primary">保存更改</button>
+      </div>
+    </div>
+
+    <!-- Runtime tuning: one card, divider rows -->
+    <section class="llm-config-card llm-tuning-stack">
+      <h3 class="llm-tuning-stack__title">Agent 运行调优</h3>
+
+      <div class="llm-tuning-row">
+        <div class="llm-tuning-row__head">
+          <span class="llm-tuning-row__title">Agent 最大推理轮数</span>
+          <span class="llm-tuning-row__hint">0=不限制，默认 300</span>
+        </div>
+        <div class="llm-tuning-row__controls">
+          <input class="llm-tuning-slider" type="range" min="0" max="300" value="120">
+          <input class="llm-tuning-number" type="number" value="120">
+          <span class="llm-tuning-meta">120 轮</span>
+        </div>
+      </div>
+
+      <div class="llm-tuning-row">
+        <div class="llm-tuning-row__head">
+          <span class="llm-tuning-row__title">CodingSubAgent 并发数</span>
+          <span class="llm-tuning-row__hint">无依赖任务并行数，默认 2</span>
+        </div>
+        <div class="llm-tuning-row__controls">
+          <input class="llm-tuning-slider" type="range" min="1" max="10" value="2">
+          <input class="llm-tuning-number" type="number" value="2">
+          <span class="llm-tuning-meta">2 路并行</span>
+        </div>
+      </div>
+
+      <div class="llm-tuning-row">
+        <div class="llm-tuning-row__head">
+          <span class="llm-tuning-row__title">推理（思考过程）</span>
+          <span class="llm-tuning-row__hint">全局设置；会按服务商支持的参数转换</span>
+        </div>
+        <div class="llm-config-option-group" role="group" aria-label="推理模式">
+          <button type="button" class="llm-config-option-btn is-active" aria-pressed="true">开启</button>
+          <button type="button" class="llm-config-option-btn" aria-pressed="false">关闭</button>
+        </div>
+        <p class="llm-tuning-row__note">已在后续请求中按服务商原生参数开启；仅当服务商返回推理内容时，助手面板才会显示"思考过程"。</p>
+      </div>
+    </section>
+
+    <!-- Usage data cards inherit the new 12px corner rhythm -->
+    <div class="usage-display">
+      <div class="usage-display__header"><span class="usage-display__title">OpenAI 组织用量</span><button type="button" class="usage-display__button">刷新</button></div>
+      <div class="field-hint">示例数据卡：圆角与 llm-config-card 对齐</div>
+    </div>
+
+    <!-- MoA uses the same card + head pattern -->
+    <div class="llm-config-card moa-config-section" data-testid="moa-config-section">
+      <div class="moa-config-section__head">
+        <div style="min-width: 0;">
+          <span class="llm-tuning-row__title" style="display:block;">先问多个模型再回答</span>
+          <span class="llm-tuning-row__hint">遇到难题时，可先让其他模型各说一遍看法，再由你当前主模型综合写出最终答案。</span>
+        </div>
+        <label style="display:flex; align-items:center; gap:6px; font-size:0.78rem;"><input type="checkbox" checked> 开启</label>
+      </div>
+    </div>
+
+    <!-- Missing-provider alert keeps the danger language -->
+    <div class="llm-config-alert llm-config-alert--danger">
+      提示 未配置服务商时，MaClaw 远程能力将不可用。
+    </div>
+
+    <div class="llm-config-alert llm-config-alert--danger llm-config-retry-row">
+      <span>无法读取大模型服务商，可点击重试。</span>
+      <button type="button" class="llm-config-retry-row__btn">重试</button>
+    </div>
+
+  </div>
+</div>
+
+</body>
+</html>

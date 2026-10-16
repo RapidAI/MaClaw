@@ -20,6 +20,48 @@ func NewConfigService(fallback config.HAConfig, settings store.SystemSettingsRep
 	return &ConfigService{fallback: normalizeHAConfig(config.Default().HA, fallback), settings: settings}
 }
 
+// StaticPeersFromConfig builds HA transport peers. Explicit Peers win for a
+// node ID; any catalog Nodes not already listed are appended so a stored
+// ha_config that only names some peers cannot hide the rest from hops.
+func StaticPeersFromConfig(cfg config.HAConfig) []StaticPeer {
+	self := strings.TrimSpace(cfg.NodeID)
+	out := make([]StaticPeer, 0, len(cfg.Peers)+len(cfg.Nodes))
+	seen := map[string]struct{}{}
+	appendPeer := func(id, name, base, public, keyPEM string) {
+		id = strings.TrimSpace(id)
+		base = strings.TrimRight(strings.TrimSpace(base), "/")
+		if id == "" || base == "" || strings.EqualFold(id, self) {
+			return
+		}
+		key := strings.ToLower(id)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, StaticPeer{
+			NodeID:       id,
+			NodeName:     strings.TrimSpace(name),
+			BaseURL:      base,
+			PublicURL:    strings.TrimRight(strings.TrimSpace(public), "/"),
+			PublicKeyPEM: strings.TrimSpace(keyPEM),
+		})
+	}
+	for _, peer := range cfg.Peers {
+		if !peer.Enabled {
+			continue
+		}
+		appendPeer(peer.NodeID, peer.Name, peer.BaseURL, peer.PublicURL, peer.PublicKeyPEM)
+	}
+	for _, node := range cfg.Nodes {
+		base := strings.TrimSpace(node.AdvertiseURL)
+		if base == "" {
+			base = strings.TrimSpace(node.PublicURL)
+		}
+		appendPeer(node.NodeID, node.NodeName, base, node.ClientFacingURL(), node.PublicKeyPEM)
+	}
+	return out
+}
+
 func (s *ConfigService) CurrentConfig(ctx context.Context) (config.HAConfig, error) {
 	if s == nil {
 		return config.Default().HA, nil

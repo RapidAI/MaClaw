@@ -1,0 +1,7888 @@
+package guiapp
+
+// Shared agent-loop strangler (phase 3):
+//
+// When enabled, eligible chat AND background turns run through
+// corelib/agent.RunLoop instead of the full IM iteration machinery.
+//
+// Modes (env MACLAW_SHARED_AGENT_LOOP):
+//   - 1/true/on  → use shared path when eligible
+//   - 0/false/off → force legacy
+//   - shadow     → always legacy, but log when shared would have been used
+//
+// Also: AppConfig.SharedAgentLoopEnabled (defaults true on new installs).
+// Canary: MACLAW_SHARED_AGENT_LOOP_PERCENT=0..100 (sticky by userID, default 100).
+// Workflow pilot (non-doc): MACLAW_SHARED_AGENT_LOOP_WORKFLOW=1
+//
+// Still excluded by default: workflow agent loops and all workflow doc phases.
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"path/filepath"
+	"reflect"
+	"runtime/debug"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/doctor"
+	"github.com/RapidAI/CodeClaw/corelib/llm"
+	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
+	"github.com/RapidAI/CodeClaw/corelib/toolresult"
+)
+
+// sharedAgentLoopMode is the effective strangler mode.
+type sharedAgentLoopMode int
+
+const (
+	sharedAgentLoopOff sharedAgentLoopMode = iota
+	sharedAgentLoopOn
+	sharedAgentLoopShadow // log-only; never divert
+)
+
+// shouldUseSharedAgentLoop reports whether this turn should EXECUTE on the shared RunLoop.
+// Shadow mode returns false (legacy executes) but logs eligibility separately.
+func (h *IMMessageHandler) shouldUseSharedAgentLoop(ctx *LoopContext, userID string, attachments []MessageAttachment) bool {
+	mode := resolveSharedAgentLoopMode(h)
+	eligible, reason := h.sharedAgentLoopEligibility(ctx, attachments)
+	switch mode {
+	case sharedAgentLoopOff:
+		return false
+	case sharedAgentLoopShadow:
+		// Log only eligible turns to avoid drowning logs on workflow traffic.
+		if eligible {
+			inCanary := sharedLoopCanaryAllowsFor(h, userID)
+			recordSharedLoopSkip("shadow", reason)
+			log.Printf("[agent-loop] shadow eligible kind=%s reason=%q attachments=%d canary=%v percent=%d (legacy path kept)",
+				ctxKindLabel(ctx), reason, len(attachments), inCanary, sharedLoopPercentFor(h))
+		}
+		return false
+	case sharedAgentLoopOn:
+		if !eligible {
+			recordSharedLoopSkip("ineligible", reason)
+			return false
+		}
+		if !sharedLoopCanaryAllowsFor(h, userID) {
+			recordSharedLoopSkip("canary", "canary")
+			log.Printf("[agent-loop] shared canary skip owner=%q percent=%d kind=%s",
+				userID, sharedLoopPercentFor(h), ctxKindLabel(ctx))
+			return false
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+// sharedAgentLoopEligibility returns whether the turn shape is allowed on shared RunLoop.
+func (h *IMMessageHandler) sharedAgentLoopEligibility(ctx *LoopContext, attachments []MessageAttachment) (ok bool, reason string) {
+	if h == nil {
+		return false, "nil handler"
+	}
+	if ctx == nil {
+		return false, "nil context"
+	}
+	// Phase 3: chat + background.
+	if ctx.Kind != LoopKindChat && ctx.Kind != LoopKindBackground {
+		return false, "unsupported loop kind"
+	}
+	// Doc-capture / AG-UI document phases always stay on the legacy loop.
+	if ctx.WorkflowDocPhase {
+		return false, "workflow doc phase"
+	}
+	// Full workflow agent loops: legacy by default; opt-in via config/env pilot.
+	if ctx.WorkflowAgentLoop {
+		if !sharedLoopWorkflowPilotEnabledFor(h) {
+			return false, "workflow phase"
+		}
+		return true, "workflow-pilot"
+	}
+	// Light attachments are supported; reject oversized batches.
+	if !sharedLoopAttachmentsAllowed(attachments) {
+		return false, "attachment batch too large"
+	}
+	if ctx.Kind == LoopKindBackground {
+		return true, "background"
+	}
+	return true, "chat"
+}
+
+func ctxKindLabel(ctx *LoopContext) string {
+	if ctx == nil {
+		return "nil"
+	}
+	switch ctx.Kind {
+	case LoopKindChat:
+		return "chat"
+	case LoopKindBackground:
+		return "background"
+	default:
+		return fmt.Sprintf("kind=%d", int(ctx.Kind))
+	}
+}
+
+// sharedLoopAttachmentsAllowed gates attachment shape for the shared path.
+// Images/files/voice are OK; reject empty data spam or huge batches.
+func sharedLoopAttachmentsAllowed(attachments []MessageAttachment) bool {
+	return agentruntime.AttachmentsWithinRuntimeLimit(attachments)
+}
+
+func sharedAgentLoopEnabled(h *IMMessageHandler) bool {
+	return resolveSharedAgentLoopMode(h) == sharedAgentLoopOn
+}
+
+func resolveSharedAgentLoopMode(h *IMMessageHandler) sharedAgentLoopMode {
+	// Package tests intentionally stay on the legacy IM loop: shared-loop unit
+	// tests exercise resolveSharedAgentLoopModeLive / eligibility helpers, while
+	// RunAgentLoop* assertions still target legacy recover/trial/trace behavior.
+	// Parallel t.Setenv races must not divert those suites onto the shared path.
+	if testing.Testing() {
+		return sharedAgentLoopOff
+	}
+	return resolveSharedAgentLoopModeLive(h)
+}
+
+// resolveSharedAgentLoopModeLive is the production resolver (env > config > defaults).
+// Unit tests call it directly so they are not affected by the testing.Testing() gate.
+func resolveSharedAgentLoopModeLive(h *IMMessageHandler) sharedAgentLoopMode {
+	if v := strings.TrimSpace(os.Getenv("MACLAW_SHARED_AGENT_LOOP")); v != "" {
+		switch strings.ToLower(v) {
+		case "1", "true", "yes", "on":
+			return sharedAgentLoopOn
+		case "shadow", "observe", "dry-run", "dryrun":
+			return sharedAgentLoopShadow
+		case "0", "false", "no", "off":
+			return sharedAgentLoopOff
+		}
+	}
+	// Secondary shadow flag (can combine with config enabled for dual control).
+	if shadowEnvTrue() {
+		return sharedAgentLoopShadow
+	}
+	if h != nil && h.app != nil {
+		if cfg, err := h.app.LoadConfig(); err == nil && cfg.SharedAgentLoopEnabled {
+			return sharedAgentLoopOn
+		}
+	}
+	// No env, no loaded app config: use product default (new-install posture).
+	if h == nil || h.app == nil {
+		return sharedAgentLoopModeFromDefaultConfig()
+	}
+	return sharedAgentLoopOff
+}
+
+func sharedAgentLoopModeFromDefaultConfig() sharedAgentLoopMode {
+	if corelib.AppConfigDefaults().SharedAgentLoopEnabled {
+		return sharedAgentLoopOn
+	}
+	return sharedAgentLoopOff
+}
+
+// sharedLoopPercent returns 0..100 canary percentage (env > config > 100).
+func sharedLoopPercent() int {
+	return sharedLoopPercentFor(nil)
+}
+
+func sharedLoopPercentFor(h *IMMessageHandler) int {
+	cfg := corelib.AppConfig{}
+	if h != nil && h.app != nil {
+		if loaded, err := h.app.LoadConfig(); err == nil {
+			cfg = loaded
+		}
+	}
+	n, _ := doctor.ResolveSharedLoopPercent(cfg)
+	return n
+}
+
+// sharedLoopCanaryAllows is sticky by userID (FNV-1a bucket). Empty userID always allows.
+// Delegates to doctor.SharedLoopCanaryAllows so CLI preview and runtime stay aligned.
+func sharedLoopCanaryAllows(userID string) bool {
+	return doctor.SharedLoopCanaryAllows(userID, sharedLoopPercent())
+}
+
+func sharedLoopCanaryAllowsFor(h *IMMessageHandler, userID string) bool {
+	return doctor.SharedLoopCanaryAllows(userID, sharedLoopPercentFor(h))
+}
+
+func shadowEnvTrue() bool {
+	v := strings.TrimSpace(os.Getenv("MACLAW_SHARED_AGENT_LOOP_SHADOW"))
+	switch strings.ToLower(v) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+// sharedLoopWorkflowPilotEnabled allows non-doc WorkflowAgentLoop on shared path
+// (env MACLAW_SHARED_AGENT_LOOP_WORKFLOW > config shared_agent_loop_workflow).
+func sharedLoopWorkflowPilotEnabled() bool {
+	return sharedLoopWorkflowPilotEnabledFor(nil)
+}
+
+func sharedLoopWorkflowPilotEnabledFor(h *IMMessageHandler) bool {
+	cfg := corelib.AppConfig{}
+	if h != nil && h.app != nil {
+		if loaded, err := h.app.LoadConfig(); err == nil {
+			cfg = loaded
+		}
+	}
+	on, _ := doctor.ResolveSharedLoopWorkflowPilot(cfg)
+	return on
+}
+
+// sharedAgentLoopModeName is for doctor / debug.
+func sharedAgentLoopModeName(h *IMMessageHandler) string {
+	switch resolveSharedAgentLoopMode(h) {
+	case sharedAgentLoopOn:
+		return "on"
+	case sharedAgentLoopShadow:
+		return "shadow"
+	default:
+		return "off"
+	}
+}
+
+// runAgentLoopShared is the GUI transport adapter for the shared Runtime.
+// Keeping this method as the stable call-site preserves existing Wails/IM
+// callers while routing execution through the transport-neutral contract.
+func (h *IMMessageHandler) runAgentLoopShared(
+	ctx *LoopContext,
+	userID, systemPrompt string,
+	history []agent.ConversationEntry,
+	userText string,
+	attachments []MessageAttachment,
+	onProgress tool.ProgressCallback,
+	onToken llm.TokenCallback,
+	onNewRound NewRoundCallback,
+	onStreamDone StreamDoneCallback,
+	minIterations int,
+	platform string,
+) *IMAgentResponse {
+	if ctx != nil && ctx.IsCancelled() {
+		return &IMAgentResponse{Error: "cancelled"}
+	}
+	runtime := h.sharedAgentRuntime()
+	events := runtimeEventSinkForLoop(ctx)
+	if shouldProjectRuntimeCallbacks(onToken, nil, onNewRound) {
+		events = agentruntime.FanoutEventSink{Sinks: []agentruntime.EventSink{
+			events,
+			runtimeEventProjectionSink{onToken: onToken, onNewRound: onNewRound},
+		}}
+	}
+	hostCaps := agentruntime.HostCapabilities(guiHostCapabilities{})
+	if ctx != nil && ctx.Host != nil {
+		hostCaps = ctx.Host
+	}
+	result, err := runtime.Execute(context.Background(), agentruntime.TurnRequest{
+		Scope: runtimeScopeForLoop(ctx, userID, func() string {
+			if ctx != nil {
+				return ctx.ID
+			}
+			return ""
+		}()),
+		Host:   hostCaps,
+		Events: events,
+		Input: agentruntime.TurnInput{
+			SystemPrompt:  systemPrompt,
+			UserText:      userText,
+			History:       history,
+			Attachments:   attachments,
+			Platform:      platform,
+			MinIterations: minIterations,
+			Callbacks: &agentruntime.TurnCallbacks{
+				OnStreamDone: onStreamDone,
+			},
+			HostPayload: guiRuntimeContext{ctx: ctx, userID: userID, events: events, onProgress: onProgress},
+		},
+	})
+	if err != nil {
+		return &IMAgentResponse{Error: err.Error()}
+	}
+	if response, ok := result.Output.(*IMAgentResponse); ok {
+		return response
+	}
+	return &IMAgentResponse{Error: "shared runtime returned an unexpected response"}
+}
+
+// executeSharedTurn contains the existing GUI-hosted implementation. It is
+// deliberately kept behind sharedAgentRuntime so the transport can be
+// replaced by the core Runtime without changing call sites again.
+func runtimeEventSinkForLoop(ctx *LoopContext) agentruntime.EventSink {
+	if ctx == nil {
+		return nil
+	}
+	return ctx.RuntimeEventSink
+}
+
+func runtimeEventScopeForLoop(ctx *LoopContext, userID, runID string) agentruntime.Scope {
+	scope := agentruntime.Scope{UserID: strings.TrimSpace(userID), RunID: strings.TrimSpace(runID)}
+	if ctx == nil {
+		return scope
+	}
+	scope.SessionID = strings.TrimSpace(ctx.SessionID)
+	// GUI does not always have an authenticated tenant at this layer; leave it
+	// empty rather than deriving one from user-controlled display identifiers.
+	return scope
+}
+
+func (h *IMMessageHandler) executeSharedTurn(
+	ctx *LoopContext,
+	userID, systemPrompt string,
+	history []agent.ConversationEntry,
+	userText string,
+	attachments []MessageAttachment,
+	events agentruntime.EventSink,
+	onProgress tool.ProgressCallback,
+	onStreamDone StreamDoneCallback,
+	minIterations int,
+	platform string,
+) (result *IMAgentResponse) {
+	startedAt := time.Now()
+	requestID, loopID := "", ""
+	if ctx != nil {
+		requestID = ctx.Runtime.RequestID
+		loopID = ctx.ID
+	}
+	if strings.TrimSpace(loopID) == "" {
+		loopID = fmt.Sprintf("shared-%d", time.Now().UnixNano())
+		log.Printf("[InFlightTask] generated missing shared loop id user=%q loop=%q", userID, loopID)
+	}
+	// Recovery identity is per turn. loopID stays the context kind for logs
+	// and event scope; reusing it as the checkpoint run id made every chat
+	// turn share in_flight_run:chat.
+	recoveryRunID := newInFlightRecoveryRunID()
+	// Closed when this turn returns. The refresh goroutine starts only after a
+	// checkpoint exists; a turn that never commits recoverable work does not
+	// spawn one.
+	leaseStop := make(chan struct{})
+	defer close(leaseStop)
+	runtimeSink := events
+	if runtimeSink == nil {
+		runtimeSink = runtimeEventSinkForLoop(ctx)
+	}
+	runtimeScope := runtimeEventScopeForLoop(ctx, userID, loopID)
+	var eventSequence atomic.Uint64
+	startupEventErr := emitRuntimeEventToSink(runtimeSink, runtimeScope, agentruntime.EventRunStarted, map[string]any{"platform": platform}, &eventSequence)
+	kind := ctxKindLabel(ctx)
+	var loopStats struct {
+		tools, iters int
+	}
+	log.Printf("[agent-loop] shared start owner=%q request_id=%q loop=%q recovery_run=%q kind=%s platform=%q text_len=%d attachments=%d",
+		userID, requestID, loopID, recoveryRunID, kind, platform, len([]rune(userText)), len(attachments))
+	// Trajectory cleanup after recover so panic turns stamp error status before Flush.
+	var (
+		trajRecorder  *TrajectoryRecorder
+		trajCleanup   func()
+		trajTelemetry *agentLoopTelemetry
+	)
+	defer func() {
+		if r := recover(); r != nil {
+			result = &IMAgentResponse{Error: fmt.Sprintf("Shared agent loop panicked: %v", r)}
+			log.Printf("[agent-loop] shared panic owner=%q request_id=%q loop=%q panic=%v\n%s", userID, requestID, loopID, r, debug.Stack())
+		}
+		status, _ := classifyIMAgentResponseOutcome(result)
+		terminalEvent := agentruntime.EventRunCompleted
+		if status == "cancelled" {
+			terminalEvent = agentruntime.EventRunCancelled
+		} else if status == "error" {
+			terminalEvent = agentruntime.EventRunFailed
+		}
+		emitRuntimeEventToSink(runtimeSink, runtimeScope, terminalEvent, map[string]any{"status": status}, &eventSequence)
+		if result != nil {
+			result.ToolCallsInTurn = loopStats.tools
+			if result.RequestID == "" {
+				result.RequestID = requestID
+			}
+			if result.ResponseSource == "" {
+				result.ResponseSource = "shared_agent_loop"
+			}
+		}
+		inTok, outTok := 0, 0
+		routeTask, routeSrc, routeModel := "", "", ""
+		if result != nil {
+			inTok, outTok = result.InputTokens, result.OutputTokens
+			routeTask, routeSrc, routeModel = result.RouteTask, result.RouteSource, result.RouteModel
+		}
+		// Greppable metrics line for shadow/cost analysis.
+		log.Printf("[agent-loop] shared end owner=%q request_id=%q loop=%q kind=%s status=%s elapsed=%s tools=%d iters=%d tokens_in=%d tokens_out=%d route=%s/%s model=%s path=shared",
+			userID, requestID, loopID, kind, status, time.Since(startedAt).Round(time.Millisecond),
+			loopStats.tools, loopStats.iters, inTok, outTok, routeTask, routeSrc, routeModel)
+		// Process-local counters for GetSharedAgentLoopStatus / doctor.
+		cancelled := status == "cancelled"
+		errored := status == "error"
+		recordSharedAgentLoopTurn(status == "success", cancelled, errored)
+		// Stamp outcome only when RecordLoopResult did not already finalize it.
+		// Re-applying from a sparse IM response would clobber cancel/paused status
+		// and wipe LoopResult token usage (cancel uses Text, not Error).
+		// Panic / unexpected early return also lands here — close orphans first.
+		if trajRecorder != nil && !trajRecorder.HasOutcome() {
+			if reason := unpairedCloseReasonFromIMResponse(result); reason != "" {
+				trajRecorder.CloseUnpairedToolCalls(reason)
+			}
+			trajRecorder.SetOutcomeFromIMResponse(result, trajTelemetry, loopStats.iters, loopStats.tools)
+		}
+		if trajCleanup != nil {
+			trajCleanup()
+		}
+	}()
+
+	telemetry := newAgentLoopTelemetry()
+	trajTelemetry = telemetry
+	if ctx != nil {
+		if pp := strings.TrimSpace(ctx.Runtime.Execution.PromptProfile); pp != "" {
+			telemetry.PromptProfile = pp
+		} else if ctx.Runtime.Execution.IsLight() {
+			telemetry.PromptProfile = "light"
+		}
+		telemetry.PromptFullTokens = ctx.Runtime.PromptFullTokens
+		telemetry.PromptLightTokens = ctx.Runtime.PromptLightTokens
+		telemetry.PromptABSample = ctx.Runtime.PromptABSample
+		telemetry.PromptSoftFull = ctx.Runtime.PromptSoftFull
+	}
+	runtimeState := h.beginAgentLoopRuntimeState(ctx, userID, userText, onProgress, onStreamDone, telemetry)
+	defer runtimeState.Cleanup()
+	projectPath := h.effectiveWorkingDirForUser(userID)
+	if projectPath == "" {
+		projectPath = projectPathFromUserID(userID)
+	}
+
+	startState := h.prepareAgentLoopStartState(agentLoopStartOptions{
+		Context:          ctx,
+		UserID:           userID,
+		UserText:         userText,
+		SystemPrompt:     systemPrompt,
+		Platform:         platform,
+		Attachments:      attachments,
+		History:          history,
+		MinIterations:    minIterations,
+		PriorReplanCount: runtimeState.PriorReplanCount,
+		AdaptiveRetry:    runtimeState.AdaptiveRetry,
+		MilestoneTracker: runtimeState.MilestoneTracker,
+		Telemetry:        telemetry,
+		SendProgress:     runtimeState.SendProgress,
+	})
+	if startState.HostReject != nil {
+		if startState.Cleanup != nil {
+			startState.Cleanup()
+		}
+		return startState.HostReject
+	}
+	trajRecorder = startState.Recorder
+	trajCleanup = startState.Cleanup
+
+	cfg := startState.Config
+	telemetry.Route = startState.RouteDecision
+
+	// prepareAgentLoopStartState has already staged attachments and completed
+	// local voice ASR. Reuse that exact payload: rebuilding it here used to run
+	// WAV conversion, ASR and optional remote transcript correction a second
+	// time before the first Agent request.
+	progressOut := runtimeState.SendProgress
+	userContent := startState.UserContent
+
+	cb := &sharedAgentLoopCallbacks{
+		handler:           h,
+		loopCtx:           ctx,
+		userID:            userID,
+		userText:          userText,
+		checkpointHistory: append(append([]agent.ConversationEntry(nil), history...), agent.ConversationEntry{Role: "user", Content: userContent}),
+		checkpointRunID:   recoveryRunID,
+		checkpointProject: projectPath,
+		hasLocalFileWork:  len(attachments) > 0 || hasCurrentLocalFileWork(userText),
+		platform:          platform, // pin turn platform for tool rewrites (not only loopCtx)
+		systemPrompt:      startState.SystemPrompt,
+		taskAnchor:        startState.TaskAnchor,
+		tools:             startState.Tools,
+		semanticSurface:   startState.SemanticSurface,
+		legacySurface:     newLegacyToolSurfaceWithClientTools(startState.Tools, startState.ClientToolNames),
+		llmCfg:            cfg,
+		route:             startState.RouteDecision,
+		phase:             startState.Phase,
+		onProgress:        progressOut,
+		onToken:           nil,
+		onNewRound:        nil,
+		events:            runtimeSink,
+		eventScope:        runtimeScope,
+		maxIter:           startState.EffectiveMax,
+		httpClient:        startState.HTTPClient,
+		eventSequence:     &eventSequence,
+	}
+	cb.leaseStop = leaseStop
+	if startupEventErr != nil {
+		cb.recordRuntimeEventError(startupEventErr)
+	}
+	if cb.maxIter <= 0 {
+		cb.maxIter = startState.MaxIterations
+	}
+	// Cancellation must revoke the durable surface before an in-flight provider
+	// response can reach the callback. The hook is scoped to this loop and is
+	// removed after RunLoop returns, so a completed turn cannot cancel a later
+	// surface on a reused LoopContext.
+	removeSemanticCancelHook := func() {}
+	if ctx != nil && cb.semanticSurface != nil {
+		removeSemanticCancelHook = ctx.RegisterCancelHook(cb.cancelManagedSemanticSurface)
+	}
+	defer removeSemanticCancelHook()
+	// The replacement fence belongs to the inbound turn rather than the loop
+	// lifetime. A normal completed turn must unregister it so a later fresh
+	// request does not attempt to cancel an already-settled historical surface.
+	// On replacement/cancellation the owner drains it before this defer runs.
+	defer func() {
+		if cb.semanticSurface != nil && cb.semanticSurface.removeTurnFence != nil {
+			cb.semanticSurface.removeTurnFence()
+			cb.semanticSurface.removeTurnFence = nil
+		}
+	}()
+	// Seed from the context so a leftover pre-loop revision is not treated as
+	// mid-task steer (which would clear Live/Open on a resumed workspace).
+	if ctx != nil {
+		cb.llmReplanRevision.Store(ctx.ReplanRevision())
+	}
+	cb.noteWorkspaceDocumentBaseline()
+
+	// cb also implements ToolBatchCommitter. The durable checkpoint hook runs
+	// only after all results in a tool batch have been paired in HistoryDelta.
+	// History kept for persistence still has leftover invoke_* names. The
+	// model-facing copy only rewrites leftover previous_turn_tool onto
+	// web_search when that grant is live. A sole PDF/write grant must not
+	// inherit last turn's search placeholder.
+	loopHistory := history
+	if cb.semanticSurface != nil {
+		loopHistory = rewriteExpiredSemanticGrantNames(history, cb.semanticSurface.liveGrantNames())
+	}
+	loopResult := agentruntime.RunAgentTurnWithUserContent(cb, userText, userContent, loopHistory, startState.HTTPClient, cb)
+	// A durable/shared event sink is part of the Runtime contract. If it
+	// rejected any lifecycle, token, or tool event, do not report a successful
+	// turn: callers must retry/reconcile the run instead of believing the
+	// event stream is complete.
+	if eventErr := cb.runtimeEventError(); eventErr != nil && loopResult.Error == "" {
+		loopResult.Error = "runtime_event_sink_failed"
+		if strings.TrimSpace(loopResult.Text) == "" {
+			loopResult.Text = "本轮事件无法可靠保存，已停止；请重试。"
+		}
+		log.Printf("[agent-loop] shared event sink failure owner=%q run=%q err=%v", userID, loopID, eventErr)
+	}
+	loopStats.tools = loopResult.ToolCalls
+	loopStats.iters = loopResult.Iterations
+	if h.app != nil {
+		accumulateLoopResultUsage(h.app, cb.llmCfg, loopResult)
+	}
+	// Merge history delta for multi-turn continuity (includes multimodal user content).
+	outHistory := history
+	if len(loopResult.HistoryDelta) > 0 {
+		outHistory = append(append([]agent.ConversationEntry(nil), history...), loopResult.HistoryDelta...)
+	}
+
+	// Cancel path: align with legacy cancelledExitResponse.
+	if loopResult.Error == "cancelled" || loopResult.Error == "cancelled during LLM retry" ||
+		(ctx != nil && ctx.IsCancelled() && strings.TrimSpace(loopResult.Text) == "") {
+		// Still stamp trajectory so cancel turns are not missing from session logs.
+		if startState.Recorder != nil {
+			startState.Recorder.SetKind("shared")
+			startState.Recorder.RecordLoopResult(loopResult)
+		}
+		// A crash never reaches this branch. User stop drops the marker here;
+		// every other cancel keeps it.
+		return h.sharedLoopCancelResponse(ctx, userID, recoveryRunID, outHistory, userText, cb.hasPendingToolBatch)
+	}
+	// ask_user intentionally pauses before the core loop can append its tool
+	// result. Reuse the legacy pause finalizer to atomically persist the paired
+	// history and pending-user state, but do not treat this interactive pause as
+	// a durable side-effect checkpoint. An earlier successful checkpoint, if
+	// any, intentionally remains available for crash recovery.
+	if loopResult.AskUser != nil {
+		cb.skipHostAutoFileDelivery = true
+		askUserOutcome := h.handleAgentLoopAskUserToolResult(
+			userID,
+			platform,
+			userText,
+			agent.AskUserResultMarker(loopResult.AskUser),
+			false,
+			loopResult.PauseToolCallID,
+			nil,
+			outHistory,
+			nil,
+			nil,
+			false,
+		)
+		// Persist the paired interactive history and retire the temporary pre-tool
+		// marker in one write. A split save/clear can leave an old marker on disk
+		// and incorrectly show crash recovery after a normal interactive pause.
+		if err := h.persistSharedInteractivePause(userID, recoveryRunID, askUserOutcome.History); err != nil {
+			cb.semanticDurabilityBlocked = true
+			log.Printf("[InFlightTask] shared ask-user finalization flush failed user=%q run=%q err=%v", userID, recoveryRunID, err)
+			// The paired question only becomes resumable state after its history and
+			// marker transition reach disk together. Do not leave an in-memory
+			// pending answer that can disappear on restart while the old pre-tool
+			// checkpoint is still the durable truth.
+			h.pendingAskUser.Delete(userID)
+			return h.sharedInteractivePausePersistenceFailureResponse(
+				userID, requestID, telemetry, onStreamDone, cb,
+			)
+		} else {
+			cb.checkpointCommitted = false
+			cb.hasPendingToolBatch = false
+			// The interactive assistant/tool pair is now durable and the pre-tool
+			// recovery marker has been retired in the same write. Only at this
+			// boundary may a held dependant semantic capability be issued.
+			cb.releaseSemanticDependantIssue()
+		}
+		if askUserOutcome.Response != nil {
+			// handleAgentLoopAskUserToolResult deferred this local state mutation
+			// while the paired history waited for its atomic checkpoint transition.
+			h.commitPendingAskUser(userID, &AskUserRequest{
+				Question:  loopResult.AskUser.Question,
+				Options:   append([]string(nil), loopResult.AskUser.Options...),
+				Context:   loopResult.AskUser.Context,
+				InputType: loopResult.AskUser.InputType,
+			}, askUserOutcome.History, loopResult.WorkingState)
+		}
+		if askUserOutcome.Response != nil {
+			return h.finalizeSharedLoopAskUser(userID, loopResult, requestID, telemetry, onStreamDone, cb, startState.Recorder, askUserOutcome.Response)
+		}
+		if len(loopResult.HistoryDelta) > 0 {
+			h.saveConversationHistoryTimed(userID, outHistory, &IMAgentResponse{})
+		}
+		return h.finalizeSharedLoopAskUser(userID, loopResult, requestID, telemetry, onStreamDone, cb, startState.Recorder, nil)
+	}
+
+	// Interactive record_audio pause: open desktop waveform card and stop the loop
+	// (parity with legacy handleAgentLoopRecordAudioToolResult). Must run before the
+	// generic history save so pending state binds to history that includes the tool result.
+	// Trajectory is completed inside finalize so the opened-session tool result is included.
+	if loopResult.RecordAudio != nil {
+		cb.skipHostAutoFileDelivery = true
+		return h.finalizeSharedLoopRecordAudio(
+			userID, platform, userText, outHistory, loopResult, requestID, telemetry, onStreamDone, cb, startState.Recorder,
+		)
+	}
+
+	// Complete trajectory for shared path: start recorded system/history/user;
+	// replay HistoryDelta (assistant + tools) and outcome before Cleanup Flush.
+	if startState.Recorder != nil {
+		startState.Recorder.SetKind("shared")
+		startState.Recorder.RecordLoopResult(loopResult)
+	}
+
+	// When the synchronous batch checkpoint failed, do not fall back to the
+	// generic asynchronous history save: doing so could later flush a tool batch
+	// which was explicitly rejected as unsafe to recover. Preserve only the last
+	// successfully checkpointed context and stop the loop instead.
+	if shouldSaveSharedLoopTerminalHistory(loopResult, cb) {
+		h.saveConversationHistoryTimed(userID, outHistory, &IMAgentResponse{})
+	}
+	if cb.hasPendingToolBatch {
+		return h.interruptedSharedLoopResultResponse(userText, loopResult, requestID, telemetry, onStreamDone, cb)
+	}
+	// A marker represents incomplete work only. Clear it after a normal shared
+	// loop completion, and only when this exact run owns it. Errors keep the
+	// latest successful checkpoint for crash recovery. User cancel already
+	// retired its marker above.
+	if cb.checkpointCommitted && loopResult.Error == "" && loopResult.AskUser == nil && loopResult.RecordAudio == nil {
+		if err := h.memory.CompleteInFlightCheckpointForRun(userID, recoveryRunID); err != nil {
+			log.Printf("[InFlightTask] shared normal cleanup flush failed user=%q run=%q err=%v", userID, recoveryRunID, err)
+		}
+	}
+
+	// Budget mid-loop / entry stop (EarlyStopper) — keep user-facing text.
+	if loopResult.Error == "daily_llm_budget_exceeded" {
+		text := strings.TrimSpace(sharedLoopUserFacingText(loopResult.Text))
+		if text == "" {
+			if blocked, msg := h.checkDailyBudgetGate(); blocked {
+				text = msg
+			} else {
+				text = "今日 LLM 预算已用尽。"
+			}
+		}
+		return &IMAgentResponse{
+			Text:           text,
+			Error:          "daily_llm_budget_exceeded",
+			HardExit:       true,
+			RequestID:      requestID,
+			SessionKey:     userID,
+			ResponseSource: "budget_gate",
+		}
+	}
+
+	// P0-1 (0b-i): widen the late-verdict adoption window once more before the
+	// turn finalizes. A tree verdict that landed while the loop was running
+	// (but after planning) is adopted here for post-loop consumers; the
+	// existing read-only whitelist guards in adoptLateTreeSemanticIntent are
+	// unchanged, and write-class labels stay non-adoptable by design.
+	if ctx != nil {
+		h.adoptLateTreeSemanticIntent(ctx, userID, userText, history)
+	}
+
+	resp := &IMAgentResponse{
+		Text:           sharedLoopUserFacingText(loopResult.Text),
+		Reasoning:      sharedLoopDisplayReasoning(loopResult),
+		Error:          loopResult.Error,
+		HardExit:       loopResult.HardExit,
+		RequestID:      requestID,
+		SessionKey:     userID,
+		ResponseSource: "shared_agent_loop",
+	}
+	attachSharedLoopArtifacts(resp, cb)
+	if loopResult.AskUser != nil {
+		resp.Text = sharedLoopUserFacingText(loopResult.Text)
+		// Mark interactive pause for UI/telemetry (parity with record_audio + legacy ask_user).
+		resp.ResponseSource = imResponseSourceAskUser.String()
+	}
+	if loopResult.Usage.InputTokens > 0 || loopResult.Usage.OutputTokens > 0 {
+		resp.InputTokens = loopResult.Usage.InputTokens
+		resp.OutputTokens = loopResult.Usage.OutputTokens
+		resp.TotalTokens = loopResult.Usage.TotalTokens()
+		resp.CacheReadTokens = loopResult.Usage.CachedTokens
+		resp.CacheWriteTokens = loopResult.Usage.CacheWriteTokens
+		resp.EstCostRMB = loopResult.Usage.EstCostRMB
+		telemetry.LastLLMInputTokens = loopResult.Usage.InputTokens
+		telemetry.LastLLMOutputTokens = loopResult.Usage.OutputTokens
+		telemetry.LastLLMCacheReadTokens = loopResult.Usage.CachedTokens
+		telemetry.LastLLMCacheWriteTokens = loopResult.Usage.CacheWriteTokens
+	}
+	// Prefer live route on callbacks (may have escalated after tools).
+	liveRoute := cb.currentRouteDecision()
+	if liveRoute.Task != "" || liveRoute.Model != "" {
+		telemetry.Route = liveRoute
+	} else if loopResult.Route.TaskType != "" || loopResult.Route.Model != "" {
+		telemetry.Route = modelRouteDecision{
+			Task:             loopResult.Route.TaskType,
+			Source:           loopResult.Route.Source,
+			Model:            loopResult.Route.Model,
+			Provider:         loopResult.Route.Provider,
+			Reason:           loopResult.Route.Reason,
+			Escalated:        loopResult.Route.Source == "escalate",
+			CostTier:         loopResult.Route.CostTier,
+			CostRouteMode:    loopResult.Route.CostRouteMode,
+			CostRouteApplied: loopResult.Route.CostRouteApplied,
+			ThinkingPolicy:   loopResult.Route.ThinkingPolicy,
+		}
+	} else {
+		telemetry.Route = startState.RouteDecision
+	}
+	if h.app != nil {
+		h.app.recordLastModelRoute(telemetry.Route)
+	}
+	// Surface mid-loop light→full recovery on Turn chip + response JSON.
+	if loopResult.LightUpgraded {
+		telemetry.PromptUpgraded = true
+		telemetry.PromptProfile = string(agent.PromptProfileFull)
+	} else if cb != nil {
+		// Reflect final profile (may have been upgraded via soft path before loop).
+		if pp := cb.CurrentPromptProfile(); pp != "" {
+			telemetry.PromptProfile = string(pp)
+		}
+	}
+	telemetry.InputBreakdown = cb.inputBreakdown
+	attachSharedLoopTurn(telemetry, cb, loopResult.Usage, resp)
+	if onStreamDone != nil {
+		onStreamDone()
+	}
+	// P0-1 (0b-i): a degraded turn that silently lost its write tools gets a
+	// chance to self-recover (tombstone + async reclassification + model
+	// re-decision continuation, or an explicit notice).
+	if loopResult.Error == "" {
+		h.maybeRecoverDegradedTurn(ctx, userID, userText, requestID, cb.tools, platform, "")
+	}
+	_ = loopID
+	return resp
+}
+
+// sharedLoopDisplayReasoning returns all provider-supplied display-safe
+// summaries from a shared loop. Multi-step tool work has multiple assistant
+// rounds, so using only the final HistoryDelta entry made the visible record
+// look incomplete.
+func sharedLoopDisplayReasoning(result agent.LoopResult) string {
+	return agentruntime.DisplayReasoning(result)
+}
+
+// attachSharedLoopArtifacts projects artifacts recorded while executing the
+// shared agent loop into the final gateway response. Gateway implementations
+// use ImageKey to upload an image reply (including Lansenger), while local file
+// paths are delivered as regular attachment messages.
+func attachSharedLoopArtifacts(resp *IMAgentResponse, cb *sharedAgentLoopCallbacks) {
+	if resp == nil || cb == nil {
+		return
+	}
+	cb.releaseSemanticDependantIssue()
+	// Do not let terminal artifact projection turn an in-memory, uncommitted
+	// batch into externally visible work.  In particular, the host-owned PDF
+	// and current-channel delivery fallbacks below can materialize a successor
+	// grant directly from an assistant report, bypassing the delayed-release
+	// helper.  A pending pre-tool checkpoint is the durable source of truth, so
+	// this entire projection must wait for the batch commit (or the interactive
+	// paired-state commit) that clears the marker.
+	if cb.hasPendingToolBatch || cb.semanticDurabilityBlocked {
+		return
+	}
+	// Document generate is host-owned for the same reason as file delivery:
+	// after search unlocks generate_pdf, a model may stop without calling the
+	// newly listed grant. A repeat weather+PDF turn can skip search entirely
+	// and reuse history; host still issues generate from the assistant report
+	// so the PDF is not lost behind an unused lookup edge.
+	cb.flushHostOwnedDocumentGenerate(resp)
+	cb.flushHostOwnedLiveDataVisual(resp)
+	// Specified-target runs before current-channel. Both can be live for one
+	// bound document. Current-channel would attach the local card first and
+	// set the file payload, and the IM sender would then no-op. A generate
+	// turn has no specified-target grant, so this flush no-ops and
+	// current-channel still delivers the new PDF.
+	cb.flushHostOwnedSpecifiedTargetDelivery(resp)
+	// Current-channel file delivery is host-owned and has an empty schema. The
+	// model often writes "PDF delivered" after generate_pdf and never calls the
+	// follow-up grant, which left desktop chat with text and no attachment.
+	cb.flushHostOwnedCurrentChannelFileDelivery(resp)
+	cb.attachProducedWorkspaceDocuments()
+	// Attach files materialized during send_file/send_to_im so the desktop UI
+	// can show the local path and diagnostics report file_materialize > 0.
+	if len(cb.deliveredPaths) > 0 {
+		resp.LocalFilePaths = append([]string(nil), cb.deliveredPaths...)
+		resp.LocalFilePath = cb.deliveredPaths[0]
+		resp.FileMaterializeNanos = cb.fileMaterializeNanos
+		if cb.filesForwarded > 0 {
+			resp.ResponseSource = imResponseSourceFileDelivery.String()
+		}
+	}
+	if cb.semanticDeliveryImageKey != "" {
+		resp.ImageKey = cb.semanticDeliveryImageKey
+		resp.SemanticDelivery = cb.semanticDelivery
+		resp.ResponseSource = imResponseSourceScreenshot.String()
+	} else if cb.semanticDeliveryFileData != "" {
+		resp.FileData = cb.semanticDeliveryFileData
+		resp.FileName = cb.semanticDeliveryFileName
+		resp.FileMimeType = cb.semanticDeliveryFileMIME
+		resp.SemanticDelivery = cb.semanticDelivery
+		resp.ResponseSource = imResponseSourceFileDelivery.String()
+		materializeSemanticDeliveryFileForLocalChat(resp, cb)
+	} else if cb.semanticDeliveryVoiceData != "" {
+		resp.VoiceData = cb.semanticDeliveryVoiceData
+		resp.VoiceFileName = cb.semanticDeliveryVoiceName
+		resp.VoiceMimeType = cb.semanticDeliveryVoiceMIME
+		resp.SemanticDelivery = cb.semanticDelivery
+	} else if cb.screenshotImageKey != "" {
+		resp.ImageKey = cb.screenshotImageKey
+		resp.ResponseSource = imResponseSourceScreenshot.String()
+	}
+	finalizeHostOwnedFileResponse(resp, cb)
+}
+
+// materializeSemanticDeliveryFileForLocalChat writes a desktop/TUI PDF (or
+// other file) to the user-facing delivery location: the bound workspace when
+// one exists (the current channel IS the local conversation, so delivered
+// files belong next to the user's own files — 2026-08-27 weather-PDF turns
+// landed in the hidden artifact store and read as "not delivered"), the
+// handler-owned artifact directory otherwise. The desktop panel only renders
+// LocalFilePath; FileData is for IM SendMedia and must stay off the
+// Wails event after a successful local save. Weixin/Lansenger keep FileData
+// and must not also get a path here, or the gateway would send the file twice.
+func materializeSemanticDeliveryFileForLocalChat(resp *IMAgentResponse, cb *sharedAgentLoopCallbacks) {
+	if resp == nil || cb == nil || cb.handler == nil || strings.TrimSpace(resp.FileData) == "" {
+		return
+	}
+	switch normalizeIMMessagePlatformKind(cb.effectivePlatform()) {
+	case imMessagePlatformDesktop, imMessagePlatformTUI:
+	default:
+		return
+	}
+	started := time.Now()
+	path, err := cb.handler.saveFileDataForLocalDelivery(cb.userID, resp.FileName, resp.FileData)
+	if err != nil {
+		log.Printf("[semantic-delivery] local chat file materialize failed: %v", err)
+		return
+	}
+	attachLocalPreview(resp, path, "")
+	resp.FileData = ""
+	if resp.FileMaterializeNanos == 0 {
+		resp.FileMaterializeNanos = time.Since(started).Nanoseconds()
+	}
+}
+
+func (c *sharedAgentLoopCallbacks) flushHostOwnedDocumentGenerate(resp *IMAgentResponse) {
+	if c == nil || c.skipHostAutoFileDelivery || c.semanticSurface == nil {
+		return
+	}
+	if hostOwnedPDFBlockedByResponse(resp) {
+		return
+	}
+	// A document already bound for this turn is the file being delivered.
+	// The host flush exists to fill a generate grant the model never called.
+	// Running it after that delivery publishes a second PDF, and the
+	// publication receipt then names the turn from the utterance.
+	if strings.TrimSpace(c.semanticDeliveryFileData) != "" {
+		return
+	}
+	if err := c.issueHostOwnedGenerateFromAvailableEvidence(resp); err != nil {
+		log.Printf("[semantic] host generate issue from available evidence failed: %v", err)
+	}
+	name, grant := soleLiveSemanticGrantByAdapter(c.semanticSurface, "generate_pdf")
+	if name == "" {
+		return
+	}
+	selection, ok := semanticSelectionByID(c.semanticSurface.plan, grant.SelectionID)
+	if !ok || selection.FitProof.MatchedCapability != "document.generate.file" {
+		return
+	}
+	assistant := ""
+	if resp != nil {
+		assistant = resp.Text
+	}
+	title := hostOwnedPDFReportTitle(c.userText)
+	content := hostOwnedPDFReportContent(assistant, c.semanticLookupEvidence, title)
+	if strings.TrimSpace(content) == "" {
+		return
+	}
+	payload, err := json.Marshal(map[string]string{"content": content, "title": title})
+	if err != nil {
+		log.Printf("[semantic] host auto generate_pdf marshal failed: %v", err)
+		return
+	}
+	got := c.ExecuteToolCall(name, string(payload), "host-auto-generate-pdf").Result
+	if !hostOwnedGeneratePDFSucceeded(got) {
+		log.Printf("[semantic] host auto generate_pdf failed: %s", got)
+		return
+	}
+}
+
+// flushHostOwnedLiveDataVisual closes the same model-stop gap as PDF
+// generation: after search, a small model may describe the requested image
+// and stop instead of invoking the newly unlocked renderer/delivery grants.
+func (c *sharedAgentLoopCallbacks) flushHostOwnedLiveDataVisual(resp *IMAgentResponse) {
+	if c == nil || c.skipHostAutoFileDelivery || c.semanticSurface == nil || strings.TrimSpace(c.semanticDeliveryImageKey) != "" {
+		return
+	}
+	if resp != nil && keepVisibleErrorAfterHostFileAttach(resp.Error) {
+		return
+	}
+	if strings.TrimSpace(trustedHostLookupEvidence(c.semanticLookupEvidence)) == "" || !planHasOpenLiveVisual(c.semanticSurface) {
+		return
+	}
+	// Search can finish and record evidence while the renderer grant is still
+	// unissued: the lookup edge is held until the batch refreshes, and a light
+	// turn never shows this local-mutation tool to the model. Issue it from
+	// the evidence the way host-owned PDF generation does, instead of leaving
+	// the turn as a raw search listing. A plain search plan has no renderer,
+	// so this must not refresh that surface.
+	if err := c.issueHostOwnedLiveVisualGrant(); err != nil {
+		log.Printf("[semantic] host live-data grant issue failed: %v", err)
+	}
+	name, grant := soleLiveSemanticGrantByAdapter(c.semanticSurface, semanticTrustedLiveDataVisualAdapter)
+	if name == "" || grant.Token == "" {
+		log.Printf("[semantic] host live-data render grant not live")
+		return
+	}
+	if got := c.ExecuteToolCall(name, `{}`, "host-auto-render-live-data").Result; strings.Contains(got, "[system rejected]") {
+		log.Printf("[semantic] host auto live-data render failed: %s", got)
+		return
+	}
+	deliverName, deliverGrant := soleLiveSemanticGrantByAdapter(c.semanticSurface, "semantic_deliver_current_image")
+	if deliverName == "" || !currentChannelImageDeliveryReady(c.semanticSurface, deliverGrant) {
+		log.Printf("[semantic] host live-data image deliver not ready")
+		return
+	}
+	if got := c.ExecuteToolCall(deliverName, `{}`, "host-auto-deliver-live-data-image").Result; strings.Contains(got, "[system rejected]") {
+		log.Printf("[semantic] host auto live-data image deliver failed: %s", got)
+	}
+}
+
+// finalizeHostOwnedFileResponse is the last attach step: a delivered file is a
+// successful-enough turn. Desktop resolveSendResult treats any Error as a failed
+// round and drops LocalFilePath, so a later LLM timeout after search would hide
+// the PDF. Once the PDF is attached, chat keeps the assistant answer. The
+// 已生成 receipt is the fallback only when this turn published that PDF and
+// the projected answer is empty. A delivery of an already-produced document
+// keeps the delivery outcome and the original file name.
+func finalizeHostOwnedFileResponse(resp *IMAgentResponse, cb *sharedAgentLoopCallbacks) {
+	if resp == nil {
+		return
+	}
+	if strings.TrimSpace(resp.LocalFilePath) == "" && strings.TrimSpace(resp.FileData) == "" {
+		return
+	}
+	if hostResponseHasPDF(resp) && hostTurnPublishedPDF(cb) {
+		title := ""
+		if cb != nil {
+			title = hostOwnedPDFReportTitle(cb.userText)
+		}
+		projected := agentruntime.ProjectHostPublishedPDFChat(resp.Text)
+		switch {
+		case projected != "":
+			resp.Text = projected
+		case title != "":
+			resp.Text = "已生成「" + title + "」PDF。"
+		case strings.TrimSpace(resp.Text) != "":
+			resp.Text = "已生成 PDF。"
+		}
+	}
+	// A desktop forward with no assistant sentence still has to name the
+	// file that left. The caption is the same one the IM sender used, taken
+	// from the artifact file name. It is not a report title from the utterance.
+	if !hostTurnPublishedPDF(cb) && cb != nil && cb.filesForwarded > 0 && strings.TrimSpace(resp.Text) == "" {
+		name := strings.TrimSpace(resp.FileName)
+		if name == "" {
+			name = filepath.Base(strings.TrimSpace(resp.LocalFilePath))
+		}
+		lang := "zh"
+		if cb.handler != nil {
+			lang = cb.handler.imUILangOrZh()
+		}
+		if caption := localizeIMProactiveCaption(lang, name, resp.FileMimeType); caption != "" {
+			resp.Text = caption
+		}
+	}
+	if !shouldClearStaleErrorAfterHostFileAttach(resp.Error) {
+		return
+	}
+	log.Printf("[semantic] host file attach recovered turn; clearing stale error %q", resp.Error)
+	resp.Error = ""
+}
+
+func hostResponseHasPDF(resp *IMAgentResponse) bool {
+	if resp == nil {
+		return false
+	}
+	return agentruntime.ResponseHasPDF(resp.FileName, resp.LocalFilePath, resp.FileMimeType)
+}
+
+func hostTurnPublishedPDF(cb *sharedAgentLoopCallbacks) bool {
+	return cb != nil && cb.turnPublishedPDF
+}
+
+func hostOwnedPDFBlockedByResponse(resp *IMAgentResponse) bool {
+	if resp == nil {
+		return false
+	}
+	return keepVisibleErrorAfterHostFileAttach(resp.Error)
+}
+
+func shouldClearStaleErrorAfterHostFileAttach(err string) bool {
+	return agentruntime.ShouldClearStaleErrorAfterArtifactAttach(err)
+}
+
+func keepVisibleErrorAfterHostFileAttach(err string) bool {
+	return agentruntime.KeepVisibleErrorAfterArtifactAttach(err)
+}
+
+func hostOwnedGeneratePDFSucceeded(result string) bool {
+	return agentruntime.HostOwnedGeneratePDFSucceeded(result)
+}
+
+func (c *sharedAgentLoopCallbacks) issueHostOwnedGenerateFromAvailableEvidence(resp *IMAgentResponse) error {
+	if c == nil || c.semanticSurface == nil {
+		return nil
+	}
+	if name, _ := soleLiveSemanticGrantByAdapter(c.semanticSurface, "generate_pdf"); name != "" {
+		return nil
+	}
+	if semanticRetiredGeneratePDF(c.semanticSurface) {
+		return nil
+	}
+	assistant := ""
+	if resp != nil {
+		assistant = resp.Text
+	}
+	title := hostOwnedPDFReportTitle(c.userText)
+	if strings.TrimSpace(hostOwnedPDFReportContent(assistant, c.semanticLookupEvidence, title)) == "" {
+		return nil
+	}
+	if err := completeHostSatisfiedLookupForGenerate(c.semanticSurface); err != nil {
+		return err
+	}
+	if _, err := refreshSemanticCallSurface(c.semanticSurface); err != nil {
+		return err
+	}
+	if err := c.syncSemanticToolSurface(); err != nil {
+		log.Printf("[semantic] host generate evidence sync failed: %v", err)
+	}
+	return nil
+}
+
+func planHasOpenLiveVisual(surface *semanticCallSurface) bool {
+	if surface == nil {
+		return false
+	}
+	for _, selection := range surface.plan.Selections {
+		if selection.FitProof.MatchedCapability == "visual.render.live_data" && !surface.completed[selection.ID] {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *sharedAgentLoopCallbacks) issueHostOwnedLiveVisualGrant() error {
+	if c == nil || c.semanticSurface == nil || !planHasOpenLiveVisual(c.semanticSurface) {
+		return nil
+	}
+	if name, grant := soleLiveSemanticGrantByAdapter(c.semanticSurface, semanticTrustedLiveDataVisualAdapter); name != "" && grant.Token != "" {
+		return nil
+	}
+	if err := completeHostSatisfiedLookupForLiveVisual(c.semanticSurface); err != nil {
+		return err
+	}
+	if _, err := refreshSemanticCallSurface(c.semanticSurface); err != nil {
+		return err
+	}
+	if err := c.syncSemanticToolSurface(); err != nil {
+		log.Printf("[semantic] host live-data evidence sync failed: %v", err)
+	}
+	return nil
+}
+
+func completeHostSatisfiedLookupForLiveVisual(surface *semanticCallSurface) error {
+	if surface == nil {
+		return nil
+	}
+	for _, selection := range surface.plan.Selections {
+		if selection.FitProof.MatchedCapability != "visual.render.live_data" || surface.completed[selection.ID] {
+			continue
+		}
+		for _, requirement := range selection.Requires {
+			if surface.completed[requirement] || strings.HasPrefix(requirement, "confirmation:") {
+				continue
+			}
+			lookup, ok := tool.PlanSelectionByID(surface.plan, requirement)
+			if !ok || !tool.IsLookupSelection(lookup) {
+				continue
+			}
+			if err := completeSemanticCallSurfaceSelection(surface, requirement); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+func completeHostSatisfiedLookupForGenerate(surface *semanticCallSurface) error {
+	if surface == nil {
+		return nil
+	}
+	return tool.ForEachHostSatisfiedLookupForGenerate(surface.plan, surface.completed, func(lookupID string) error {
+		return completeSemanticCallSurfaceSelection(surface, lookupID)
+	})
+}
+
+func semanticLookupSelection(selection tool.PlannedSelection) bool {
+	return tool.IsLookupSelection(selection)
+}
+
+func hostOwnedPDFReportTitle(userText string) string {
+	return agentruntime.HostOwnedPDFReportTitle(semanticUserIntentText(userText))
+}
+
+func hostLookupEvidenceUntrusted(evidence string) bool {
+	return agentruntime.LookupEvidenceUntrusted(evidence)
+}
+
+func trustedHostLookupEvidence(evidence string) string {
+	return agentruntime.TrustedLookupEvidence(evidence)
+}
+
+// hostOwnedPDFReportContent delegates to the shared agentruntime report-body
+// synthesizer so GUI and headless hosts emit identical PDF content.
+func hostOwnedPDFReportContent(assistantText, searchEvidence, title string) string {
+	return agentruntime.HostOwnedPDFReportContent(assistantText, searchEvidence, title)
+}
+
+func substantialHostPDFReportText(text string) bool {
+	return agentruntime.SubstantialPDFReportText(text)
+}
+
+func (c *sharedAgentLoopCallbacks) recordSemanticLookupEvidence(selection tool.PlannedSelection, result string) {
+	if c == nil {
+		return
+	}
+	result = strings.TrimSpace(result)
+	if result == "" || selection.FitProof.MatchedCapability != "information.search.web" {
+		return
+	}
+	if hostLookupEvidenceUntrusted(result) {
+		return
+	}
+	c.semanticLookupEvidence = result
+}
+
+// recordCompletedSemanticLookupEvidence stores a finished web-search body.
+// Builtin, MCP, and Skill selections all complete through
+// executeBoundSemanticSelectionCanonicalWithContext, but only a terminal
+// success is evidence. A failure, an unknown transport, or a receipt that
+// has not landed must not replace the last trusted body.
+func (c *sharedAgentLoopCallbacks) recordCompletedSemanticLookupEvidence(selection tool.PlannedSelection, result tool.SelectionExecutionResult) {
+	if !result.Succeeded || result.Unknown || result.AwaitingReceipt {
+		return
+	}
+	c.recordSemanticLookupEvidence(selection, result.Result)
+}
+
+func (c *sharedAgentLoopCallbacks) flushHostOwnedCurrentChannelFileDelivery(resp *IMAgentResponse) {
+	if c == nil || c.skipHostAutoFileDelivery || c.semanticSurface == nil || strings.TrimSpace(c.semanticDeliveryFileData) != "" {
+		return
+	}
+	if resp != nil && keepVisibleErrorAfterHostFileAttach(resp.Error) {
+		return
+	}
+	name, grant := soleLiveSemanticGrantByAdapter(c.semanticSurface, "semantic_deliver_current_file")
+	if name == "" || !currentChannelFileDeliveryReady(c.semanticSurface, grant) {
+		return
+	}
+	target := trustedLoopDeliveryTarget(c.loopCtx)
+	if target == nil {
+		return
+	}
+	selection, ok := semanticSelectionByID(c.semanticSurface.plan, grant.SelectionID)
+	if !ok || !strings.EqualFold(strings.TrimSpace(selection.Provider.ProviderID), strings.TrimSpace(target.ChannelScope)) {
+		return
+	}
+	got := c.ExecuteToolCall(name, `{}`, "host-auto-current-file").Result
+	if strings.Contains(got, "[system rejected]") {
+		log.Printf("[semantic] host auto current-channel file deliver failed: %s", got)
+	}
+}
+
+// flushHostOwnedSpecifiedTargetDelivery closes the model-stop gap for a
+// document this task already produced. The grant is live when planning bound
+// that artifact, and its schema is empty. This flush runs before
+// current-channel delivery: that adapter would attach the local card and set
+// the file payload, and this sender would then no-op. Bytes already attached
+// are not sent again.
+func (c *sharedAgentLoopCallbacks) flushHostOwnedSpecifiedTargetDelivery(resp *IMAgentResponse) {
+	if c == nil || c.skipHostAutoFileDelivery || c.semanticSurface == nil || strings.TrimSpace(c.semanticDeliveryFileData) != "" || c.filesForwarded > 0 {
+		return
+	}
+	if resp != nil && keepVisibleErrorAfterHostFileAttach(resp.Error) {
+		return
+	}
+	name, grant := soleLiveSemanticGrantByAdapter(c.semanticSurface, semanticSpecifiedTargetDeliveryAdapter)
+	if name == "" || !specifiedTargetDeliveryReady(c.semanticSurface, grant) {
+		return
+	}
+	target := trustedLoopDeliveryTarget(c.loopCtx)
+	if target == nil {
+		return
+	}
+	selection, ok := semanticSelectionByID(c.semanticSurface.plan, grant.SelectionID)
+	if !ok || !strings.EqualFold(strings.TrimSpace(selection.Provider.ProviderID), strings.TrimSpace(target.ChannelScope)) {
+		return
+	}
+	got := c.ExecuteToolCall(name, `{}`, "host-auto-specified-target").Result
+	if strings.Contains(got, "[system rejected]") {
+		log.Printf("[semantic] host auto specified-target deliver failed: %s", got)
+	}
+}
+
+func specifiedTargetDeliveryReady(surface *semanticCallSurface, grant tool.InvocationGrant) bool {
+	if surface == nil || strings.TrimSpace(grant.SelectionID) == "" {
+		return false
+	}
+	selection, ok := semanticSelectionByID(surface.plan, grant.SelectionID)
+	if !ok || !semanticSpecifiedTargetArtifactDelivery(selection) || len(selection.ArtifactDependencies) != 1 {
+		return false
+	}
+	dependency := selection.ArtifactDependencies[0]
+	switch strings.ToLower(strings.TrimSpace(tool.ArtifactDependencyKind(dependency))) {
+	case "document", "image", "audio":
+	default:
+		return false
+	}
+	if strings.TrimSpace(dependency.ArtifactID) != "" {
+		return true
+	}
+	return currentChannelProducerArtifactPublished(surface, dependency.ProducerSelection, dependency.Contract)
+}
+
+func currentChannelFileDeliveryReady(surface *semanticCallSurface, grant tool.InvocationGrant) bool {
+	return currentChannelKindDeliveryReady(surface, grant, "document")
+}
+
+func currentChannelImageDeliveryReady(surface *semanticCallSurface, grant tool.InvocationGrant) bool {
+	return currentChannelKindDeliveryReady(surface, grant, "image")
+}
+
+func currentChannelKindDeliveryReady(surface *semanticCallSurface, grant tool.InvocationGrant, kind string) bool {
+	if surface == nil {
+		return false
+	}
+	dependency, ok := tool.CurrentChannelDeliveryDependency(surface.plan, grant)
+	if !ok || !strings.EqualFold(tool.ArtifactDependencyKind(dependency), kind) {
+		return false
+	}
+	if strings.TrimSpace(dependency.ArtifactID) != "" {
+		return true
+	}
+	return currentChannelProducerArtifactPublished(surface, dependency.ProducerSelection, dependency.Contract)
+}
+
+func currentChannelProducerArtifactPublished(surface *semanticCallSurface, producerSelection string, contract tool.ArtifactContract) bool {
+	producerSelection = strings.TrimSpace(producerSelection)
+	if producerSelection == "" || surface == nil || surface.artifacts == nil || surface.artifacts.routes == nil {
+		return false
+	}
+	refs, err := surface.artifacts.routes.ArtifactRefs(surface.scope)
+	if err != nil {
+		return false
+	}
+	return tool.ProducerArtifactPublished(refs, producerSelection, contract)
+}
+
+func soleLiveSemanticGrantByAdapter(surface *semanticCallSurface, adapter string) (string, tool.InvocationGrant) {
+	if surface == nil {
+		return "", tool.InvocationGrant{}
+	}
+	return tool.SoleLiveGrantByAdapter(surface.grants, adapter)
+}
+
+// sharedAgentLoopCallbacks adapts IMMessageHandler to agent.LoopCallbacks.
+type sharedAgentLoopCallbacks struct {
+	handler  *IMMessageHandler
+	loopCtx  *LoopContext
+	userID   string
+	userText string
+	// checkpointHistory contains only provider-valid history: a valid prefix plus
+	// full, durable tool batches. It is never updated from OnToolExecuted
+	// because that callback runs before history commit and would create
+	// marker-only recovery states. In particular, a pre-tool checkpoint does
+	// not append an unpaired assistant tool-call declaration: strict providers
+	// reject that shape on the next request. The pending tool is recorded in
+	// checkpoint metadata as diagnostic recovery evidence instead.
+	checkpointHistory   []agent.ConversationEntry
+	checkpointRunID     string
+	checkpointProject   string
+	checkpointCommitted bool
+	// leaseStop ends the background lease refresh started after the first
+	// durable checkpoint. Token callbacks must not refresh the lease themselves:
+	// that takes the conversation lock on the stream path.
+	leaseStop <-chan struct{}
+	leaseOnce sync.Once
+	// contextCheckpointReader is set when this request's conversation contains
+	// a checkpoint handle. The handle is a user message, not a tool result, so
+	// the spill overlay cannot see it in checkpointHistory. The reader has to
+	// be on this same request: a follow-up often ends before a later round.
+	contextCheckpointReader bool
+	// hasPendingToolBatch is true from a successful pre-tool checkpoint until
+	// its complete assistant/tool-result batch is durably committed (or an
+	// interactive pause atomically pairs its result). Terminal paths must not
+	// asynchronously save HistoryDelta while this is true: it can contain an
+	// assistant tool-call declaration with missing results.
+	hasPendingToolBatch bool
+	// semanticDurabilityBlocked closes semantic successor publication after a
+	// checkpoint write has failed. Unlike hasPendingToolBatch, this also covers
+	// a failed pre-tool checkpoint, where no durable marker was established and
+	// the core loop must stop before executing the batch. Terminal projection
+	// must not interpret callback-local state from either failure mode as a
+	// source of new grants or host-owned effects.
+	semanticDurabilityBlocked bool
+	// hasLocalFileWork survives the light-to-full upgrade, which occurs after
+	// attachment staging and otherwise only has the raw user text to inspect.
+	hasLocalFileWork bool
+	platform         string // turn platform from runAgentLoopShared (desktop/weixin/…)
+	systemPrompt     string
+	// taskAnchor is the immutable identity/source snapshot captured before
+	// history compaction. Prompt rebuilds must reuse it rather than reload the
+	// mutable per-user anchor map, which may already point at a later turn.
+	taskAnchor      *taskIdentityAnchor
+	tools           []map[string]interface{}
+	semanticSurface *semanticCallSurface
+	// legacyPetitionTools are host tool names admitted onto the visible
+	// surface through a governed overlay: live SQL database adapters after a
+	// semantic petition for database / database_query could not expand a
+	// governed MIS candidate, the legacy ssh rescue on surface-less turns,
+	// continuation readers, and vision-fallthrough petitions.
+	legacyPetitionTools map[string]bool
+	// legacyContinuationReaders marks the subset of legacyPetitionTools that
+	// were installed to page a truncated auto_extract or a spilled tool
+	// result. Only those overlay entries render the narrowed reader contract
+	// (e.g. office restricted to read_document); an explicitly petitioned
+	// name keeps its full host definition.
+	legacyContinuationReaders map[string]bool
+	// legacySurface is refreshed only when a complete replacement list is sent
+	// to the model. It is never rebuilt from the registry, history, pins or
+	// BaseTools, so a stale legacy response cannot execute a hidden function.
+	legacySurface legacyToolSurface
+	// skipHostAutoFileDelivery is set for ask_user / record_audio pauses so a
+	// published PDF is not sent while the turn is still waiting on the user.
+	skipHostAutoFileDelivery bool
+	// semanticLookupEvidence is the last successful web-search body in this
+	// turn. Host-owned generate_pdf uses it when the model stops after search.
+	semanticLookupEvidence string
+	// turnPublishedPDF is set only when document.generate.file publishes a
+	// PDF artifact this turn, whether the model called it or the host flush
+	// did. The 已生成 receipt describes that publication. Attaching a document
+	// this task already produced is a delivery and must not set this flag.
+	turnPublishedPDF bool
+	llmCfg           corelib.MaclawLLMConfig
+	route            modelRouteDecision
+	// phase is the inbound-turn routing posture. Legacy compatibility surfaces
+	// are rebuilt at every actual model-request boundary using this same
+	// host-owned posture; a predecessor's rendered definitions are never a
+	// successor input.
+	phase         agentLoopPhase
+	onProgress    tool.ProgressCallback
+	onToken       llm.TokenCallback
+	onNewRound    NewRoundCallback
+	events        agentruntime.EventSink
+	eventScope    agentruntime.Scope
+	eventOrdinal  atomic.Uint64
+	eventSequence *atomic.Uint64
+	eventErrMu    sync.Mutex
+	eventErr      error
+	maxIter       int
+	httpClient    *http.Client
+	escalated     bool
+	// surfaceRefreshPending is set when the tool-driven route escalation changes
+	// the model-visible prompt/tool policy and consumed by the core loop before
+	// its following request.
+	surfaceRefreshPending bool
+	// petitionPromptReady is set when a petition rewrote the system prompt
+	// because the child plan can no longer run under the light fence. The core
+	// loop copies it into the conversation before the next request; an executed
+	// tool later refreshes through surfaceRefreshPending as well.
+	petitionPromptReady bool
+	// semanticPetitionConsumed enforces the one-petition-per-class-per-turn
+	// budget: the first admitted expansion of each class consumes it so a model
+	// cannot ping-pong the host planner into repeated surface revisions. Lookup
+	// (read-only retrieval legs) and effectful (shell/delegate problem-solving
+	// legs) carry separate budgets — a PPT turn legitimately needs both a
+	// photo lookup and a script runner, and one must not starve the other.
+	semanticPetitionConsumed          bool
+	semanticEffectfulPetitionConsumed bool
+	// semanticPetitionDenied names that already failed expansion this turn.
+	// An authority mismatch refunds the class budget so a different tool can
+	// still petition, but the same name must not re-enter the planner.
+	semanticPetitionDenied map[string]struct{}
+	// semanticToolsSearchCalls counts discovery meta-tool invocations this
+	// turn. Discovery is unbudgeted by design only up to the point where it
+	// demonstrably cannot change the surface: a burned-grant spiral on
+	// 2026-08-26 ran 8+ tools_search calls without recovering, so the turn
+	// budget caps it and the exhaustion text tells the model to move on.
+	semanticToolsSearchCalls int
+	// semanticToolsSearchShown records directory rows already returned this
+	// turn. A later lookup whose rows are all in this set cannot change the
+	// surface, so discovery closes instead of spending another model round.
+	semanticToolsSearchShown map[string]struct{}
+	// semanticToolsSearchClosed is set when the turn budget is spent. A
+	// repeated directory does not set it: that call returns a short redirect,
+	// and a later lookup that names a new row still answers.
+	semanticToolsSearchClosed bool
+	// semanticToolsSearchDirectives records each "call this listed name"
+	// sentence already returned. A repeat of the same sentence closes
+	// discovery. A different listed name is still delivered once, even when
+	// its row was already inside an earlier unmatched-needs dump.
+	semanticToolsSearchDirectives map[string]struct{}
+	toolCalls                     int
+	// moaPreset is set for the duration of one agent loop after /moa or auto arming.
+	moaPreset *moa.ResolvedPreset
+	moaAuto   bool
+	// File delivery from send_file / send_to_im materialize (shared path only).
+	deliveredPaths       []string
+	fileMaterializeNanos int64
+	filesForwarded       int
+	// workspaceDocBaseline is the bound workspace's documents at turn start.
+	// A file a later tool writes (PowerPoint export, slide render) is not the
+	// generate_pdf registry artifact, so delivery never saw it.
+	workspaceDocRoot              string
+	workspaceDocBaseline          map[string]workspaceDocumentStamp
+	workspaceDocBaselineAt        time.Time
+	workspaceDocBaselineTruncated bool
+	// screenshotImageKey holds the latest screenshot produced by the shared
+	// loop. Unlike the legacy loop, the shared loop has no post-tool artifact
+	// branch, so it must explicitly carry the image into the final IM response.
+	screenshotImageKey string
+	// semanticDeliveryImageKey is set only by the planned delivery selection
+	// after a scoped ArtifactRef has been consumed by the artifact broker.
+	semanticDeliveryImageKey string
+	// semanticDeliveryFile* mirrors the image projection but carries a
+	// broker-consumed document artifact. It is never model-supplied.
+	semanticDeliveryFileData  string
+	semanticDeliveryFileName  string
+	semanticDeliveryFileMIME  string
+	semanticDeliveryVoiceData string
+	semanticDeliveryVoiceName string
+	semanticDeliveryVoiceMIME string
+	// semanticPreparedDelivery is populated only by the adapter from a trusted
+	// artifact binding. Coordinated execution commits it through
+	// PrepareDeliveryAndComplete so a host-call result can never be durable
+	// without its prepared delivery (or vice versa).
+	semanticPreparedDelivery *tool.DeliveryRecord
+	// semanticDelivery is the trusted durable record identity paired with the
+	// ImageKey projection. A gateway must record accepted/unknown after its
+	// actual transport attempt; the prepared ToolPlan selection cannot do so.
+	semanticDelivery *semanticDeliveryProjection
+	// semanticCapturedImageKey is a short-lived handoff from the legacy handler
+	// projection to its already-admitted semantic capture adapter. It is not
+	// exposed to the model or attached to the gateway response.
+	semanticCapturedImageKey string
+	// semanticDeferFileMaterialize keeps a generate selection's [file_base64]
+	// payload intact so the capability adapter can publish an ArtifactRef.
+	// Delivery, not generate, is the only path that may attach file bytes to
+	// the conversation response.
+	semanticDeferFileMaterialize bool
+	inputBreakdown               agent.LoopInputBreakdown
+	// firstRequestBudgetApplied prevents a latency-oriented history cap from
+	// constraining later tool rounds, which may legitimately need more context.
+	firstRequestBudgetApplied bool
+	// semanticHoldDependantIssue keeps generate_pdf from being issued in the
+	// same assistant batch that just finished search. Same-family repeats are
+	// still issued. Flash models call generate_pdf in parallel with web_search;
+	// unlocking mid-batch lets the invented {query} payload reach Admission
+	// and burn the one-shot grant.
+	semanticHoldDependantIssue bool
+	// semanticNeedDependantIssue is set when a selection completed during a
+	// held batch and dependants still need IssueReady. Kept true across a
+	// failed refresh so host flush can retry.
+	semanticNeedDependantIssue bool
+	// Revision last incorporated by TransformConversation. Keeping this at the
+	// conversation boundary (rather than the later HTTP-start boundary) closes
+	// the race where steering arrives between transform and request creation.
+	llmReplanRevision atomic.Int64
+	// dispatcherOnce builds the Phase 2 pilot ToolDispatcher at most once per
+	// callback; dispatcher stays nil unless MACLAW_TOOL_DISPATCHER=on.
+	dispatcherOnce sync.Once
+	dispatcher     *agent.NameDispatcher
+}
+
+func sharedLoopUserFacingText(text string) string {
+	return agentruntime.UserFacingText(text)
+}
+
+func (c *sharedAgentLoopCallbacks) OnLoopInputBreakdown(b agent.LoopInputBreakdown) {
+	if c != nil {
+		c.inputBreakdown = b
+	}
+}
+
+func (c *sharedAgentLoopCallbacks) LoadWorkingState() *agent.WorkingState {
+	if c == nil || c.loopCtx == nil {
+		return nil
+	}
+	return agent.CloneWorkingState(c.loopCtx.ResumeWorkingState)
+}
+
+func (c *sharedAgentLoopCallbacks) SaveWorkingState(_ *agent.WorkingState) {
+	// Carrier is pendingAskUser / pendingRecordAudio plus LoopContext.ResumeWorkingState.
+}
+
+func (c *sharedAgentLoopCallbacks) LoadSessionFacts() *agent.SessionFactOverlay {
+	if c == nil {
+		return nil
+	}
+	if c.loopCtx != nil && c.loopCtx.SessionFacts != nil {
+		return agent.CloneSessionFactOverlay(c.loopCtx.SessionFacts)
+	}
+	if c.handler != nil {
+		return c.handler.loadSessionFacts(c.userID)
+	}
+	return nil
+}
+
+func (c *sharedAgentLoopCallbacks) SaveSessionFacts(overlay *agent.SessionFactOverlay) {
+	if c == nil {
+		return
+	}
+	cloned := agent.CloneSessionFactOverlay(overlay)
+	if c.loopCtx != nil {
+		c.loopCtx.SessionFacts = cloned
+	}
+	if c.handler != nil {
+		c.handler.storeSessionFacts(c.userID, cloned)
+	}
+}
+
+func (c *sharedAgentLoopCallbacks) OnVerifiedSessionFact(fact agent.SessionFact) {
+	if c == nil || c.handler == nil {
+		return
+	}
+	c.handler.syncVerifiedFactToStores(c.userID, fact)
+}
+
+func (c *sharedAgentLoopCallbacks) LoadMemoryRetractions() *agent.MemoryRetraction {
+	if c == nil || c.handler == nil {
+		return nil
+	}
+	return c.handler.LoadMemoryRetractions()
+}
+
+// ActiveWorkingStateGoal projects only a this-turn-active horizon or
+// goal-continuation objective. Leftover store/session goals stay hidden.
+func (c *sharedAgentLoopCallbacks) ActiveWorkingStateGoal() string {
+	if c == nil || c.handler == nil {
+		return ""
+	}
+	if c.loopCtx != nil && strings.TrimSpace(c.loopCtx.HorizonRole) != "" {
+		if g := c.handler.activeHorizonWorkingStateGoal(c.userID); g != "" {
+			return g
+		}
+	}
+	if c.effectivePlatform() == "goal-continuation" {
+		return c.handler.activeContinuationWorkingStateGoal(c.userID)
+	}
+	return ""
+}
+
+// effectivePlatform prefers the pinned turn platform, then loop context.
+func (c *sharedAgentLoopCallbacks) effectivePlatform() string {
+	if c == nil {
+		return ""
+	}
+	if p := strings.TrimSpace(c.platform); p != "" {
+		return p
+	}
+	if c.loopCtx != nil {
+		return runtimePlatformFromLoopContext(c.loopCtx)
+	}
+	return ""
+}
+
+func (c *sharedAgentLoopCallbacks) GetLLMConfig() corelib.MaclawLLMConfig {
+	return c.llmCfg
+}
+
+// UsageTracker implements agent.UsageTrackerProvider: feeds genuine tool
+// executions from the shared RunLoop into the host's usage tracker, closing
+// the routing quality loop. The legacy IM loop records outcomes in its own
+// machinery; the shared loop has no such layer and would otherwise stay silent.
+func (c *sharedAgentLoopCallbacks) UsageTracker() *tool.UsageTracker {
+	if c == nil || c.handler == nil {
+		return nil
+	}
+	return c.handler.UsageTracker()
+}
+
+func (c *sharedAgentLoopCallbacks) RefreshLLMAuth(ctx context.Context) (corelib.MaclawLLMConfig, bool) {
+	if c == nil || c.handler == nil {
+		return corelib.MaclawLLMConfig{}, false
+	}
+	prev := c.llmCfg
+	next := c.handler.refreshLLMConfigAfterTokenErrorCtx(ctx, c.llmCfg)
+	c.llmCfg = applyLLMAuthKey(c.llmCfg, next)
+	return c.llmCfg, llmAuthKeyRotated(prev, c.llmCfg)
+}
+
+// AllowMoAFanOut implements agent.MoABudgetGate when the app tracks daily LLM budget.
+func (c *sharedAgentLoopCallbacks) AllowMoAFanOut(nRefs int) (ok bool, reason string) {
+	if c == nil || c.handler == nil || c.handler.app == nil {
+		return true, ""
+	}
+	ct := c.handler.app.ohModules.costTracker
+	if ct == nil || ct.BudgetLimit() <= 0 {
+		return true, ""
+	}
+	need := moa.EstimateWaveMinUSD(nRefs)
+	if ct.CanAfford(need) {
+		return true, ""
+	}
+	lang := c.handler.imCommandResponseLang("")
+	if normalizeAppLanguageKind(lang).IsChinese() {
+		return false, fmt.Sprintf("今日预算不足，已跳过其他模型会诊（约需 $%.4f；%s）", need, ct.DailySummary())
+	}
+	return false, fmt.Sprintf("moa advisors skipped (daily budget low; need ~$%.4f, %s)", need, ct.DailySummary())
+}
+
+// PrepareMoA implements agent.MoAHost for one-shot / sticky / allow_auto council turns.
+func (c *sharedAgentLoopCallbacks) PrepareMoA(iteration int, toolsSeen bool, fanoutsRan int) (active bool, preset moa.ResolvedPreset, progress string) {
+	if c == nil || c.handler == nil {
+		return false, moa.ResolvedPreset{}, ""
+	}
+	// K9: kill switch must disable even if sticky was armed earlier in-session.
+	if !moa.EnvAllows() {
+		return false, moa.ResolvedPreset{}, ""
+	}
+	// First prepare of this loop: resolve arming source once and pin on callbacks.
+	if c.moaPreset == nil {
+		if c.handler.moaSessions != nil {
+			if sess := c.handler.moaSessions.peek(c.userID); sess != nil && (sess.OneShot || sess.Sticky) {
+				p := sess.Resolved
+				c.moaPreset = &p
+				if sess.OneShot && !sess.Sticky {
+					c.handler.moaSessions.clearOneShot(c.userID)
+				}
+			}
+		}
+		// allow_auto: hard turns only (K13), when not already armed.
+		if c.moaPreset == nil {
+			if auto, ok := c.handler.tryPrepareMoAAuto(c.userText, c.route); ok {
+				c.moaPreset = &auto
+				c.moaAuto = true
+			}
+		}
+	}
+	if c.moaPreset == nil || !c.moaPreset.Enabled {
+		return false, moa.ResolvedPreset{}, ""
+	}
+	// K16: MoA implies full prompt profile (no light).
+	if c.CurrentPromptProfile().IsLight() {
+		c.UpgradeLightPromptToFull("moa council")
+	}
+	n := len(c.moaPreset.References)
+	progress = fmt.Sprintf("consulting %d models…", n)
+	lang := ""
+	if c.handler != nil {
+		lang = c.handler.imCommandResponseLang("")
+	}
+	if normalizeAppLanguageKind(lang).IsChinese() {
+		progress = fmt.Sprintf("正在征询 %d 个其他模型…", n)
+	}
+	if c.moaAuto && iteration == 0 && fanoutsRan == 0 {
+		if normalizeAppLanguageKind(lang).IsChinese() {
+			progress = "难题自动多模型会诊：" + progress
+		} else {
+			progress = "auto multi-model: " + progress
+		}
+	}
+	_ = toolsSeen
+	return true, *c.moaPreset, progress
+}
+
+// CurrentPromptProfile implements agent.PromptProfileProvider for light-tool deny.
+func (c *sharedAgentLoopCallbacks) CurrentPromptProfile() agent.PromptProfile {
+	if c == nil || c.loopCtx == nil {
+		return agent.PromptProfileFull
+	}
+	if c.loopCtx.Runtime.Execution.PromptIsLight() {
+		return agent.PromptProfileLight
+	}
+	return agent.NormalizePromptProfile(c.loopCtx.Runtime.Execution.PromptProfile)
+}
+
+// IsToolAllowedForPromptProfile resolves live semantic grants to their
+// immutable planned selections. The model-visible name is a transport lookup
+// only: light-profile admission is made from the capability plan's effect and
+// confirmation contract, so a name's spelling cannot create a policy hole.
+func sessionCeilingSpentMessage() string {
+	return "[system] This call did not run. The previous task's planned steps are already finished, and this turn did not open a new tool plan. Answer from results already in the conversation. Ask what to do next in this same chat. Do not hand the user a command. Do not claim this call succeeded."
+}
+
+// sessionCeilingTurnPrompt is the instruction for a turn that closed before
+// any tool was listed. It must not name the refusal the model otherwise copies
+// back to the user.
+func sessionCeilingTurnPrompt() string {
+	return "[system] This turn has no tools. The previous plan's steps are already finished, and this message did not open a new plan. Answer from results already in the conversation. Ask what to do next in this same chat. Do not hand the user a command."
+}
+
+func sessionTurnAnswerOnlyMessage() string {
+	return "[system] This turn does not use tools. Answer the user directly. The open task is unchanged."
+}
+
+func (c *sharedAgentLoopCallbacks) sessionCeilingSpent() bool {
+	return c != nil && c.loopCtx != nil && c.loopCtx.semanticSessionCeilingSpent
+}
+
+func (c *sharedAgentLoopCallbacks) sessionTurnAnswerOnly() bool {
+	return c != nil && c.loopCtx != nil && c.loopCtx.semanticTurnAnswerOnly
+}
+
+func (c *sharedAgentLoopCallbacks) sessionTurnDeniesTools() bool {
+	return c.sessionCeilingSpent() || c.sessionTurnAnswerOnly()
+}
+
+func (c *sharedAgentLoopCallbacks) sessionToolClosedMessage() string {
+	if c.sessionCeilingSpent() {
+		return sessionCeilingSpentMessage()
+	}
+	return sessionTurnAnswerOnlyMessage()
+}
+
+func (c *sharedAgentLoopCallbacks) IsToolAllowedForPromptProfile(name string, profile agent.PromptProfile) bool {
+	if c.sessionTurnDeniesTools() {
+		return false
+	}
+	// The companion's closed surface is decided here too, not only at
+	// exposure: a companion question is often short enough to be routed onto
+	// the light prompt, and the light allowlist knows nothing about these
+	// host-owned names. Without this the model is shown pdf_render_page and
+	// then told the tool is unavailable on this profile - promised, then
+	// refused, which is exactly what the companion did before it had tools.
+	if fileCompanionToolsDisabled(c.userID) {
+		return isFileCompanionHostTool(name)
+	}
+	if c != nil && c.semanticSurface != nil {
+		resolved := c.semanticSurface.resolveFunctionName(name)
+		if resolved == semanticToolsSearchName {
+			// The discovery meta-tool is host-executed and read-only; it has no
+			// grant by design, so the grant lookup below can never admit it.
+			return true
+		}
+		if c.legacyPetitionAllows(resolved) {
+			// Host-owned overlays (SQL inspect, truncated auto_extract continuation)
+			// are not semantic grants but are admitted on this turn.
+			return true
+		}
+		if _, ok := c.semanticSurface.grants[resolved]; !ok {
+			// A semantic surface is closed: retired and invented names cannot
+			// fall through to a legacy light-safe tool with a similar name,
+			// including after a light→full prompt-budget upgrade.
+			return false
+		}
+		if !profile.IsLight() {
+			return true
+		}
+		// A project-task lookup stays on the light prompt, but the tools the
+		// parent turn already rendered are part of this question. Denying them
+		// here is how bash disappears after a restart even though it is listed.
+		if c.loopCtx != nil && c.handler != nil && lookupContinuationCarriedGrant(c.loopCtx.Runtime.Execution, c.handler.parentExecutionTools(c.userID), resolved) {
+			return true
+		}
+		return tool.GrantSelectionIsLightPromptSafe(c.semanticSurface.plan, c.semanticSurface.grants, resolved)
+	}
+	if !profile.IsLight() {
+		return true
+	}
+	return agent.IsLightTurnToolAllowed(name)
+}
+
+func (c *sharedAgentLoopCallbacks) lookupContinuationMayRepeat(name string) bool {
+	if c == nil || c.loopCtx == nil {
+		return false
+	}
+	var carried []string
+	if c.handler != nil {
+		carried = c.handler.parentExecutionTools(c.userID)
+	}
+	return lookupContinuationRepeatAllowed(c.loopCtx.Runtime.Execution, carried, name)
+}
+
+func (c *sharedAgentLoopCallbacks) semanticLightLookup() bool {
+	return c != nil && c.semanticSurface != nil && c.CurrentPromptProfile().IsLight()
+}
+
+// IsToolAllowed keeps a governed semantic turn on its signed grants even after
+// the execution profile is no longer light. Without this, light→full retry
+// authorizes web_fetch/write_file by name, then ExecuteTool still rejects them.
+// On a light profile, a grant is not enough: a mutating selection would pass
+// this authorizer and then hit the core light deny ("set PROFILE=full"), which
+// is the text that made the model ask the user to re-authorize tools.
+func (c *sharedAgentLoopCallbacks) IsToolAllowed(name string) bool {
+	if c.sessionTurnDeniesTools() {
+		return false
+	}
+	// Same closed surface as IsToolAllowedForPromptProfile: what is published
+	// and what may run are decided by one predicate, so a companion turn can
+	// never be shown a tool the authorizer would then reject.
+	if fileCompanionToolsDisabled(c.userID) {
+		return isFileCompanionHostTool(name)
+	}
+	if c == nil || c.semanticSurface == nil {
+		return true
+	}
+	name = c.semanticSurface.resolveFunctionName(name)
+	if name == semanticToolsSearchName {
+		return true
+	}
+	if c.legacyPetitionAllows(name) {
+		return true
+	}
+	if _, ok := c.semanticSurface.grants[name]; !ok {
+		// A light turn cannot run the download, so do not publish a sibling
+		// that this check would then reject. authorizeLoopTool hits this
+		// before IsToolCallAllowed; opening the next sibling here is what
+		// lets the call the model just made run past the published wave.
+		if c.loopCtx != nil && c.loopCtx.Runtime.Execution.PromptIsLight() && !c.lookupContinuationMayRepeat(name) {
+			return false
+		}
+		if !c.openNextRepeatSibling(name) {
+			return false
+		}
+		if _, ok := c.semanticSurface.grants[name]; !ok {
+			return false
+		}
+	}
+	if c.loopCtx != nil && c.loopCtx.Runtime.Execution.PromptIsLight() {
+		return c.IsToolAllowedForPromptProfile(name, agent.PromptProfileLight)
+	}
+	return true
+}
+
+// openNextRepeatSibling publishes one more invocation when a repeatable
+// tool's current wave is spent and the model asks for another call. The
+// user does not have to send a new message. One-shot tools and a family
+// that is already at the turn cap stay denied.
+func (c *sharedAgentLoopCallbacks) openNextRepeatSibling(name string) bool {
+	if c == nil || c.semanticSurface == nil {
+		return false
+	}
+	retired, ok := c.semanticSurface.retiredGrants[name]
+	// A successful call marks the selection completed. A settled failure, such
+	// as the host stopping its wait, spends the attempt without that mark.
+	// Either way the command is finished and the task may still need another.
+	// An unknown outcome does not: the command may still be running.
+	if !ok || !repeatSelectionSpent(c.semanticSurface, retired.SelectionID) {
+		return false
+	}
+	selection, found := semanticSelectionByID(c.semanticSurface.plan, retired.SelectionID)
+	if !found {
+		return false
+	}
+	// A previous attempt may already have stored the next sibling and then
+	// failed to issue it. Appending again would pile unused nodes up to the
+	// turn cap while the call still fails. AppendRepeatSibling itself rejects
+	// one-shot families and a family already at the turn cap.
+	if _, pending := pendingDownloadSibling(c.semanticSurface, selection); !pending {
+		var updated tool.ToolPlan
+		var err error
+		if c.semanticSurface.coordinator != nil {
+			updated, err = c.semanticSurface.coordinator.AppendRepeatSibling(c.semanticSurface.scope, retired.SelectionID, time.Now().UTC())
+		} else {
+			var opened bool
+			updated, _, opened = tool.AppendRepeatSibling(c.semanticSurface.plan, retired.SelectionID)
+			if !opened {
+				err = fmt.Errorf("repeat sibling unavailable")
+			}
+		}
+		if err != nil {
+			return false
+		}
+		c.semanticSurface.plan = updated
+	}
+	if _, err := refreshSemanticCallSurface(c.semanticSurface); err != nil {
+		log.Printf("[semantic] repeat wave issue failed: %v", err)
+		return false
+	}
+	_, live := c.semanticSurface.grants[name]
+	return live
+}
+
+// OpenNextRepeatWave implements agent.RepeatWaveOpener. A remote command
+// whose published wave is spent is still the same user task; the next call
+// is listed instead of ending the turn.
+func (c *sharedAgentLoopCallbacks) OpenNextRepeatWave(name string) bool {
+	return c.openNextRepeatSibling(name)
+}
+
+func repeatSelectionSpent(surface *semanticCallSurface, selectionID string) bool {
+	if surface == nil || strings.TrimSpace(selectionID) == "" {
+		return false
+	}
+	if surface.completed[selectionID] {
+		return true
+	}
+	if surface.executor == nil {
+		return false
+	}
+	record, err := surface.executor.Execution(surface.scope, selectionID)
+	if err != nil {
+		return false
+	}
+	return record.State == tool.PlanExecutionFailed
+}
+
+func pendingDownloadSibling(surface *semanticCallSurface, prototype tool.PlannedSelection) (string, bool) {
+	if surface == nil {
+		return "", false
+	}
+	family := tool.SelectionRepeatFamily(prototype)
+	if family == "" {
+		return "", false
+	}
+	for _, selection := range surface.plan.Selections {
+		if !tool.SelectionInRepeatFamily(selection, family) {
+			continue
+		}
+		if surface.completed[selection.ID] || surface.materialized[selection.ID] {
+			continue
+		}
+		if !pendingRepeatSelectionReady(surface, selection) {
+			continue
+		}
+		return selection.ID, true
+	}
+	return "", false
+}
+
+func pendingRepeatSelectionReady(surface *semanticCallSurface, selection tool.PlannedSelection) bool {
+	for _, requirement := range selection.Requires {
+		if !surface.completed[requirement] {
+			return false
+		}
+	}
+	return true
+}
+
+// IsToolCallAllowed performs only current-surface intake checks. Historical
+// invoke_* names are rejected by IsToolAllowed; no payload shape can translate
+// one into a grant from this request.
+func (c *sharedAgentLoopCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
+	if c.sessionTurnDeniesTools() {
+		return false, c.sessionToolClosedMessage()
+	}
+	if c == nil || c.semanticSurface == nil {
+		return true, ""
+	}
+	resolved := c.semanticSurface.resolveFunctionName(name)
+	if resolved == semanticToolsSearchName {
+		return true, ""
+	}
+	if c.legacyPetitionAllows(resolved) {
+		return true, ""
+	}
+	if _, ok := c.semanticSurface.grants[resolved]; !ok {
+		reason := strings.TrimSpace(c.ToolDenialMessage(name))
+		return false, strings.TrimPrefix(reason, "Error: ")
+	}
+	if reason := c.semanticIntakeRejectReason(resolved, argsJSON); reason != "" {
+		return false, reason
+	}
+	return true, ""
+}
+
+// semanticIntakeRejectReason is Intake, not Admission. Placeholder download
+// URLs and thin generate_pdf args must not reach Coordinator.Reject and burn
+// the grant the rest of the face still needs.
+func (c *sharedAgentLoopCallbacks) semanticIntakeRejectReason(name, argsJSON string) string {
+	if c == nil || c.semanticSurface == nil {
+		return ""
+	}
+	if reason := c.invalidHostOwnedGenerateArgsReason(name, argsJSON); reason != "" {
+		return reason
+	}
+	if reason := c.fileDeleteIntakeReason(name, argsJSON); reason != "" {
+		return reason
+	}
+	if reason := c.mailboxIntakeRejectReasonForName(name, argsJSON); reason != "" {
+		return reason
+	}
+	grant, ok := c.semanticSurface.grants[name]
+	if !ok {
+		return ""
+	}
+	selection, found := semanticSelectionByID(c.semanticSurface.plan, grant.SelectionID)
+	if !found || !semanticOptionalURLSelection(selection, grant.AdapterName) {
+		return ""
+	}
+	return semanticPlaceholderRemoteURLIntakeReason(name, argsJSON)
+}
+
+// invalidHostOwnedGenerateArgsReason is Intake, not Admission. A parallel
+// generate_pdf {query} must not reach Coordinator.Reject and burn the grant
+// the host tail still needs after search.
+func (c *sharedAgentLoopCallbacks) invalidHostOwnedGenerateArgsReason(name, argsJSON string) string {
+	if c == nil || c.semanticSurface == nil {
+		return ""
+	}
+	grant, ok := c.semanticSurface.grants[name]
+	if !ok {
+		return ""
+	}
+	selection, ok := semanticSelectionByID(c.semanticSurface.plan, grant.SelectionID)
+	if !ok {
+		return ""
+	}
+	if grant.AdapterName != "generate_pdf" && !hostOwnedGenerateSelection(selection) {
+		return ""
+	}
+	if semanticGeneratePDFArgsTooThin(argsJSON) {
+		return hostOwnedGeneratePDFInvalidArgsReason
+	}
+	if _, err := c.semanticCanonicalArguments(selection, argsJSON); err == nil {
+		return ""
+	}
+	return hostOwnedGeneratePDFInvalidArgsReason
+}
+
+const hostOwnedGeneratePDFInvalidArgsReason = "generate_pdf arguments are invalid. Call generate_pdf once with Markdown content and optional title only; do not pass query/path/output and do not ask the user to re-authorize tools."
+
+// fileDeleteIntakeReason is Intake, not Admission. A missing path, a directory,
+// or a path that leaves the workspace must not reach the executor and retire
+// the one-shot delete_file grant. The model can correct the path and call again.
+func (c *sharedAgentLoopCallbacks) fileDeleteIntakeReason(name, argsJSON string) string {
+	if c == nil || c.handler == nil || c.semanticSurface == nil {
+		return ""
+	}
+	grant, ok := c.semanticSurface.grants[name]
+	if !ok {
+		return ""
+	}
+	selection, ok := semanticSelectionByID(c.semanticSurface.plan, grant.SelectionID)
+	if !ok || selection.FitProof.MatchedCapability != tool.CapabilityFSDeleteLocal {
+		return ""
+	}
+	canonical, err := c.semanticCanonicalArguments(selection, argsJSON)
+	if err != nil {
+		return err.Error()
+	}
+	var args map[string]interface{}
+	if json.Unmarshal(canonical.CanonicalJSON, &args) != nil {
+		return "trusted_file_delete_arguments_rejected"
+	}
+	path, err := semanticTrustedFileDeleteArgsAllowed(args)
+	if err != nil {
+		return err.Error()
+	}
+	if _, err := fileDeleteTargetReady(trustedPrincipalBoundWorkspace(c.handler, c.semanticPrincipalID()), path); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+func semanticUnissuedGeneratePDFDenial(c *sharedAgentLoopCallbacks, name string) string {
+	if c == nil || c.semanticSurface == nil || strings.TrimSpace(name) != "generate_pdf" {
+		return ""
+	}
+	surface := c.semanticSurface
+	if _, grant := soleLiveSemanticGrantByAdapter(surface, "generate_pdf"); grant.Token != "" {
+		return ""
+	}
+	if semanticRetiredGeneratePDF(surface) {
+		return "Error: generate_pdf was already used this turn. Answer from the published artifact; do not retry generate_pdf and do not ask the user to re-authorize tools."
+	}
+	return c.plannedSuccessorDenial("generate_pdf", tool.CapabilityID("document.generate.file"))
+}
+
+// plannedToolNotYetListedMessage is for a successor whose unfinished
+// requirements are selections that are ready now. predecessors are the
+// model-facing names of those listed steps. Without one, the sentence stays
+// generic: several tools can be listed, and only the predecessor unlocks this
+// name.
+func plannedToolNotYetListedMessage(name string, predecessors []string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "(unknown)"
+	}
+	step := "Call a tool that is listed now."
+	if joined := joinListedNames(predecessors); joined != "" {
+		step = "Call " + joined + " now."
+	}
+	return fmt.Sprintf("Error: tool %q is planned for this turn but is not listed yet. %s After that succeeds, %q appears on the next request in this same reply; call it then. Do not tell the user the tool is missing and do not ask the user to re-authorize tools.", name, step, name)
+}
+
+// plannedToolHeldForNextRequestMessage is for a document generate grant whose
+// predecessor already finished, withheld only until this tool batch commits.
+// Telling the model to call another listed tool here starts a second lookup.
+func plannedToolHeldForNextRequestMessage(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "(unknown)"
+	}
+	return fmt.Sprintf("Error: tool %q is planned for this turn but is held until this response's other tool calls finish. It appears on the next request in this same reply; call it then. Do not call it again before it is listed, do not tell the user the tool is missing, and do not ask the user to re-authorize tools.", name)
+}
+
+// plannedToolListedAfterEarlierStepsMessage is for a successor still behind a
+// selection that is itself not ready. Promising it on the next request would
+// name the wrong step: delivery waits on generate, and generate is still
+// waiting on lookup.
+func plannedToolListedAfterEarlierStepsMessage(name string, callNow, nextRequest []string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		name = "(unknown)"
+	}
+	quoted := fmt.Sprintf("%q", name)
+	// Name the successor explicitly. "After that name is listed" is read as the
+	// predecessor, and web_search is already listed, so the model calls send_file
+	// immediately.
+	var step string
+	switch {
+	case len(callNow) > 0 && len(nextRequest) > 0:
+		step = "Call " + joinListedNames(callNow) + " now. After that succeeds, " + joinListedNames(nextRequest) + " appears on the next request. Call " + quoted + " only after " + quoted + " is listed."
+	case len(callNow) > 0:
+		step = "Call " + joinListedNames(callNow) + " now. Call " + quoted + " only after " + quoted + " is listed."
+	case len(nextRequest) > 0:
+		step = joinListedNames(nextRequest) + " appears on the next request; call it then. Call " + quoted + " only after " + quoted + " is listed."
+	default:
+		step = "Call a tool that is listed now. Call " + quoted + " only after " + quoted + " is listed."
+	}
+	return fmt.Sprintf("Error: tool %q is planned for this turn but is not listed yet. Earlier planned steps are still unfinished. %s Do not tell the user the tool is missing and do not ask the user to re-authorize tools.", name, step)
+}
+
+func joinListedNames(names []string) string {
+	switch len(names) {
+	case 0:
+		return ""
+	case 1:
+		return fmt.Sprintf("%q", names[0])
+	default:
+		quoted := make([]string, len(names))
+		for i, name := range names {
+			quoted[i] = fmt.Sprintf("%q", name)
+		}
+		return strings.Join(quoted[:len(quoted)-1], ", ") + " and " + quoted[len(quoted)-1]
+	}
+}
+
+type predecessorNames struct {
+	callNow     []string
+	nextRequest []string
+}
+
+// predecessorNamesFor splits blockers into tools the model can call on this
+// request and tools that are ready in the plan but not listed yet. A held
+// generate_pdf is the second kind: delivery must not be told that send_file
+// itself appears on the next request.
+func (c *sharedAgentLoopCallbacks) predecessorNamesFor(capability tool.CapabilityID) predecessorNames {
+	var out predecessorNames
+	if c == nil || c.semanticSurface == nil || capability == "" {
+		return out
+	}
+	surface := c.semanticSurface
+	ready := map[string]struct{}{}
+	for _, selection := range surface.plan.ReadySelections(surface.completed) {
+		ready[selection.ID] = struct{}{}
+	}
+	byID := map[string]tool.PlannedSelection{}
+	for _, selection := range surface.plan.Selections {
+		if selection.ID != "" {
+			byID[selection.ID] = selection
+		}
+	}
+	seenNow := map[string]struct{}{}
+	seenNext := map[string]struct{}{}
+	self := stablePetitionName(capability)
+	noteNext := func(name string) {
+		if name == "" || name == self {
+			return
+		}
+		if _, dup := seenNext[name]; dup {
+			return
+		}
+		seenNext[name] = struct{}{}
+		out.nextRequest = append(out.nextRequest, name)
+	}
+	var walk func(selection tool.PlannedSelection, depth int)
+	walk = func(selection tool.PlannedSelection, depth int) {
+		if depth > 8 {
+			return
+		}
+		for _, requirement := range selection.Requires {
+			requirement = strings.TrimSpace(requirement)
+			if requirement == "" || surface.completed[requirement] {
+				continue
+			}
+			if _, ok := ready[requirement]; ok && c.selectionIsListed(requirement) {
+				if name := grantNameForSelection(surface, requirement); name != "" {
+					if _, dup := seenNow[name]; !dup {
+						seenNow[name] = struct{}{}
+						out.callNow = append(out.callNow, name)
+					}
+				}
+				continue
+			}
+			next, ok := byID[requirement]
+			if !ok {
+				continue
+			}
+			if _, isReady := ready[requirement]; isReady && c.semanticHoldDependantIssue && tool.DocumentGenerateSelection(next) {
+				noteNext(stablePetitionName(next.FitProof.MatchedCapability))
+			}
+			if c.selectionUnlocksAfterListed(next, ready) {
+				noteNext(stablePetitionName(next.FitProof.MatchedCapability))
+			}
+			walk(next, depth+1)
+		}
+	}
+	for _, selection := range surface.plan.Selections {
+		if selection.FitProof.MatchedCapability != capability || surface.completed[selection.ID] {
+			continue
+		}
+		walk(selection, 0)
+	}
+	sort.Strings(out.callNow)
+	sort.Strings(out.nextRequest)
+	return out
+}
+
+// selectionUnlocksAfterListed reports a selection whose unfinished
+// requirements are all tools already on this request. That selection is what
+// the next request can list; the caller's own name stays out of that set.
+func (c *sharedAgentLoopCallbacks) selectionUnlocksAfterListed(selection tool.PlannedSelection, ready map[string]struct{}) bool {
+	if c == nil || c.semanticSurface == nil {
+		return false
+	}
+	completed := c.semanticSurface.completed
+	sawListed := false
+	for _, requirement := range selection.Requires {
+		requirement = strings.TrimSpace(requirement)
+		if requirement == "" || completed[requirement] {
+			continue
+		}
+		if _, ok := ready[requirement]; ok && c.selectionIsListed(requirement) {
+			sawListed = true
+			continue
+		}
+		return false
+	}
+	return sawListed
+}
+
+func (c *sharedAgentLoopCallbacks) selectionIsListed(selectionID string) bool {
+	if c == nil || c.semanticSurface == nil {
+		return false
+	}
+	name := grantNameForSelection(c.semanticSurface, selectionID)
+	if name == "" {
+		return false
+	}
+	if rendered := c.semanticSurface.rendered; rendered != nil && !rendered[name] {
+		return false
+	}
+	return true
+}
+
+func stablePetitionName(capability tool.CapabilityID) string {
+	found := ""
+	for name, id := range semanticPetitionableCapabilities {
+		if id != capability {
+			continue
+		}
+		if found == "" || len(name) < len(found) || (len(name) == len(found) && name < found) {
+			found = name
+		}
+	}
+	return found
+}
+
+func grantNameForSelection(surface *semanticCallSurface, selectionID string) string {
+	if surface == nil {
+		return ""
+	}
+	for name, grant := range surface.grants {
+		if grant.SelectionID == selectionID && strings.TrimSpace(grant.Token) != "" && strings.TrimSpace(name) != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+type successorWait int
+
+const (
+	successorWaitNone successorWait = iota
+	successorWaitLater
+	successorWaitImmediate
+	successorWaitHeld
+)
+
+func (c *sharedAgentLoopCallbacks) plannedSuccessorDenial(name string, capability tool.CapabilityID) string {
+	switch c.plannedSuccessorWait(capability) {
+	case successorWaitHeld:
+		return plannedToolHeldForNextRequestMessage(name)
+	case successorWaitImmediate:
+		return plannedToolNotYetListedMessage(name, c.predecessorNamesFor(capability).callNow)
+	case successorWaitLater:
+		names := c.predecessorNamesFor(capability)
+		return plannedToolListedAfterEarlierStepsMessage(name, names.callNow, names.nextRequest)
+	default:
+		return ""
+	}
+}
+
+// plannedSuccessorWait distinguishes a successor the next request can list
+// from one still behind another unfinished selection. Confirmation and any
+// other non-selection requirement keep the generic absence denial.
+func (c *sharedAgentLoopCallbacks) plannedSuccessorWait(capability tool.CapabilityID) successorWait {
+	if c == nil || c.semanticSurface == nil || capability == "" {
+		return successorWaitNone
+	}
+	surface := c.semanticSurface
+	ready := map[string]struct{}{}
+	for _, selection := range surface.plan.ReadySelections(surface.completed) {
+		ready[selection.ID] = struct{}{}
+	}
+	known := map[string]struct{}{}
+	for _, selection := range surface.plan.Selections {
+		if selection.ID != "" {
+			known[selection.ID] = struct{}{}
+		}
+	}
+	wait := successorWaitNone
+	for _, selection := range surface.plan.Selections {
+		if selection.FitProof.MatchedCapability != capability || surface.completed[selection.ID] {
+			continue
+		}
+		next := successorWaitNone
+		if _, isReady := ready[selection.ID]; isReady {
+			if c.semanticHoldDependantIssue && tool.DocumentGenerateSelection(selection) {
+				next = successorWaitHeld
+			}
+		} else {
+			next = c.selectionWait(known, ready, selection.Requires)
+		}
+		if next > wait {
+			wait = next
+		}
+	}
+	return wait
+}
+
+func (c *sharedAgentLoopCallbacks) selectionWait(known, ready map[string]struct{}, requires []string) successorWait {
+	completed := map[string]bool(nil)
+	if c != nil && c.semanticSurface != nil {
+		completed = c.semanticSurface.completed
+	}
+	sawReady := false
+	sawUnready := false
+	for _, requirement := range requires {
+		requirement = strings.TrimSpace(requirement)
+		if requirement == "" || completed[requirement] {
+			continue
+		}
+		if _, ok := known[requirement]; !ok {
+			return successorWaitNone
+		}
+		// Ready in the plan is not enough. A held generate_pdf is ready and
+		// still absent from this request, so delivery must not treat it as the
+		// step the model can finish right now.
+		if _, ok := ready[requirement]; ok && c.selectionIsListed(requirement) {
+			sawReady = true
+			continue
+		}
+		sawUnready = true
+	}
+	if sawUnready {
+		return successorWaitLater
+	}
+	if sawReady {
+		return successorWaitImmediate
+	}
+	return successorWaitNone
+}
+
+// ToolDenialMessage implements agent.ToolDenialPresenter. Only a light
+// governed lookup should tell the model to stop and answer from evidence;
+// coding/workflow policy denials keep the generic execution-policy text.
+func (c *sharedAgentLoopCallbacks) ToolDenialMessage(name string) string {
+	if msg := semanticUnissuedGeneratePDFDenial(c, name); msg != "" {
+		return msg
+	}
+	if c.semanticSurface != nil {
+		resolved := c.semanticSurface.resolveFunctionName(name)
+		if retired, retiredFromSurface := c.semanticSurface.retiredGrants[resolved]; retiredFromSurface {
+			if awaiting, reason := semanticRetiredAwaitingReceipt(c.semanticSurface, retired.SelectionID); awaiting {
+				if reason == mailboxSendAwaitingConfirmation {
+					return fmt.Sprintf(
+						"Error: tool %q froze a draft and is waiting for the user to confirm before any mail is sent. Do not call %q again, do not report the send as failed, and do not use another tool to send it.",
+						resolved, resolved,
+					)
+				}
+				return fmt.Sprintf(
+					"Error: tool %q is waiting for its prepared action to settle. Do not call %q again and do not report that action as failed.",
+					resolved, resolved,
+				)
+			}
+			if !c.semanticSurface.completed[retired.SelectionID] {
+				// A grant retired without a trusted completion failed. Receipt
+				// waits are handled above. Telling the model the tool "already
+				// ran successfully" orders it to treat a failed call as valid
+				// evidence — production 2026-08-28 PPT turn burned three
+				// download_file attempts on HTTP 404/403 and the denial then
+				// reported a standing success that never happened.
+				return fmt.Sprintf(
+					"Error: tool %q was already used earlier in this turn and did not complete successfully; its budget is spent or it is not currently listed. Do not report that action as succeeded, and do not retry %q unless the name is listed again later. Continue from what you already have and state plainly what remains unfinished.",
+					resolved, resolved,
+				)
+			}
+			// A consumed grant is not a missing tool. The model reads the
+			// generic policy denial as "the capability is unavailable this
+			// turn" and discounts the result it already holds (production
+			// 2026-08-26: the second web_search in one batch was denied and
+			// the model dropped the user's photo requirement, declaring
+			// search unavailable with 8 fresh results in context).
+			return fmt.Sprintf(
+				"Error: tool %q already ran successfully earlier in this turn and has reached this turn's usage limit. That earlier result still stands and remains valid evidence; do not retry %q, do not report that capability as failed, consumed, or unavailable, and continue from the result you already have. If the name is listed again later, it may be used again.",
+				resolved, resolved,
+			)
+		}
+	}
+	if !c.semanticLightLookup() {
+		return ""
+	}
+	n := strings.TrimSpace(name)
+	if n == "" {
+		n = "(unknown)"
+	}
+	if live := c.semanticSurface.soleLiveLookupGrantName(); live != "" && n != live && isSemanticInvocationGrantName(n) {
+		return fmt.Sprintf(
+			"Error: tool %q is not the current lookup grant. Call %q from this turn's tool list with the new query. Do not reuse earlier invoke_* names and do not ask the user to re-authorize tools.",
+			n, live,
+		)
+	}
+	return fmt.Sprintf(
+		"Error: tool %q is not available in this turn. If a lookup already returned evidence, answer from that evidence. Do not ask the user to re-authorize tools or switch modes.",
+		n,
+	)
+}
+
+// ManagedSemanticTurn reports whether this shared loop is on a signed
+// catalog plan. Phase C forbids light→full BuildTools rebuild on that surface.
+func (c *sharedAgentLoopCallbacks) ManagedSemanticTurn() bool {
+	return c != nil && c.semanticSurface != nil
+}
+
+// UpgradeLightPromptToFull implements agent.LightProfileUpgrader. A governed
+// semantic family must not upgrade from a light-tool deny: the catalog plan is
+// immutable, and a fake full profile makes the model retry unauthorized tools
+// until grant expiry. A petition whose child plan contains a selection the
+// light prompt cannot run leaves light through leaveLightProfileForUnsafePetition
+// instead, because that selection is already signed. A leftover miss must not
+// upgrade either: full would widen the leftover surface after the miss already
+// paid a light bound.
+func (c *sharedAgentLoopCallbacks) UpgradeLightPromptToFull(reason string) bool {
+	if c == nil || !c.CurrentPromptProfile().IsLight() {
+		return false
+	}
+	if c.semanticSurface != nil {
+		return false
+	}
+	// A leftover miss is already a bounded surface. Light→full would re-merge
+	// CoreToolNames under a full profile and undo the leftover width cut.
+	if loopContextHasRoutingMissFallback(c.loopCtx) {
+		return false
+	}
+	if c.loopCtx != nil {
+		c.loopCtx.Runtime.Execution = fullExecutionProfile("light tool deny → full: " + reason)
+	}
+	// Attachment/file work is an explicit non-CU posture for this turn. The
+	// former eager tool render happened to clear the sticky Computer Use state
+	// through prepareAgentLoopTools; retain that independent routing-state
+	// transition without using a definition render as its trigger.
+	if c.hasLocalFileWork && !hasExplicitComputerUseRequest(c.userText) {
+		clearComputerUseSessionActive()
+	}
+	if c.handler != nil {
+		// Refresh policy posture now, but do not render definitions here. This
+		// method runs while handling a response for an already-sent request;
+		// replacing c.tools or legacySurface would construct an unowned surface
+		// without the successor request's epoch, manifest, receipt, or handoff.
+		// BuildToolsForModelRequest derives the new phase and complete replacement
+		// only after RunLoop opens the next real request boundary.
+		c.systemPrompt = c.systemPromptWithTaskAnchor(c.handler.buildSystemPromptWithMemory(agent.CompactQueryForEmbedding(semanticUserIntentText(c.userText)), false, c.loopCtx))
+	}
+	log.Printf("[shared-loop] light→full prompt upgrade reason=%s", reason)
+	// A full execution profile can still use a light prompt profile as an
+	// adaptive optimization. The upgrade contract is about execution layer and
+	// tool re-authorization, so report success once the light layer is gone.
+	return c.loopCtx != nil && !c.loopCtx.Runtime.Execution.IsLight()
+}
+
+func (c *sharedAgentLoopCallbacks) RouteTurn(userText string) (corelib.MaclawLLMConfig, agent.RouteDecision, bool) {
+	if c == nil {
+		return corelib.MaclawLLMConfig{}, agent.RouteDecision{}, false
+	}
+	// Routing already applied in prepareAgentLoopStartState; expose it.
+	return c.llmCfg, agent.RouteDecision{
+		TaskType:         c.route.Task,
+		Model:            c.route.Model,
+		Provider:         c.route.Provider,
+		Source:           c.route.Source,
+		Reason:           c.route.Reason + " (shared loop)",
+		Applied:          true,
+		CostTier:         c.route.CostTier,
+		CostRouteMode:    c.route.CostRouteMode,
+		CostRouteApplied: c.route.CostRouteApplied,
+		ThinkingPolicy:   c.route.ThinkingPolicy,
+	}, true
+}
+
+func (c *sharedAgentLoopCallbacks) GetMaxIterations() int {
+	return config.EffectiveMaxIterations(c.maxIter)
+}
+
+func (c *sharedAgentLoopCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) string {
+	_ = userText
+	_ = isFirstTurn
+	return c.systemPrompt
+}
+
+func (c *sharedAgentLoopCallbacks) BuildTools(userText string) []map[string]interface{} {
+	_ = userText
+	return c.tools
+}
+
+// BuildToolsForModelRequest makes the shared legacy path obey the same
+// request-bound replacement rule as every other RunLoop callback. startState
+// computes the inbound turn's routing decision, but the resulting definitions
+// are only a preparation snapshot for prompt/trajectory diagnostics. The
+// executable surface is rebuilt here, immediately after RunLoop has created
+// the request epoch and immediately before the final wire receipt is made.
+//
+// A managed semantic surface remains closed over its durable grants: this
+// method reads only its current visible closure and never refreshes, issues, or
+// revives a grant. A legacy surface is rerouted from the current host registry
+// under the fixed inbound posture, then atomically replaces the callback's
+// execution snapshot with the exact definitions that will be serialized.
+func (c *sharedAgentLoopCallbacks) BuildToolsForModelRequest(userText string, iteration int) []map[string]interface{} {
+	_ = iteration
+	if c == nil {
+		return nil
+	}
+	if fileCompanionToolsDisabled(c.userID) {
+		c.semanticSurface = nil
+		// The companion surface is closed by construction: only the read-only
+		// document definitions may reach the wire, always bound to the open
+		// document by the executor rather than by call arguments. Anything
+		// else found on the callback — a rejected legacy provision, a
+		// semantic grant, a forged definition — is dropped here, so a
+		// companion request can never render a tool the executor would
+		// refuse or one that writes.
+		closed := make([]map[string]interface{}, 0, len(c.tools))
+		for _, tool := range c.tools {
+			fn, _ := tool["function"].(map[string]interface{})
+			name, _ := fn["name"].(string)
+			if !isFileCompanionHostTool(name) {
+				continue
+			}
+			closed = append(closed, tool)
+		}
+		if len(closed) == 0 {
+			c.setVisibleToolDefinitions(nil)
+			return nil
+		}
+		c.setVisibleToolDefinitions(closed)
+		return closed
+	}
+	if petCompanionToolsDisabled(c.userID) {
+		c.semanticSurface = nil
+		c.setVisibleToolDefinitions(nil)
+		return nil
+	}
+	if c.semanticSurface != nil {
+		c.maybeOverlaySQLDatabaseForTurn(userText)
+		c.maybeOverlayDocumentContinuationForTurn(userText)
+		c.maybeOverlaySpilledToolResultReader()
+		definitions, err := visibleSemanticCallSurfaceDefinitions(c.semanticSurface)
+		if err != nil {
+			log.Printf("[semantic-routing] request-bound surface render failed: %v", err)
+			return nil
+		}
+		// The discovery meta-tool is always rendered on a governed surface: it
+		// is the deterministic path from "the tool I need is not listed" to the
+		// exact petitionable name, and it carries no grant of its own.
+		definitions = append(definitions, semanticToolsSearchDefinition())
+		c.setVisibleToolDefinitions(definitions)
+		return c.tools
+	}
+	if c.handler == nil {
+		return c.tools
+	}
+	// The inbound phase is policy posture, not a tool-surface receipt. Recompute
+	// it at the request boundary so a preceding light→full policy upgrade is
+	// reflected in this replacement without manufacturing an intermediate
+	// callback-local tool inventory.
+	c.phase = c.handler.initialAgentLoopPhase(c.userText, c.loopCtx)
+	routingText := computerUseRoutingTextForLocalFileWork(c.userText, c.hasLocalFileWork)
+	toolSet := c.handler.prepareAgentLoopTools(c.userID, routingText, c.loopCtx, c.phase)
+	// Re-apply petition overlays (e.g. the legacy ssh rescue granted on a
+	// surface-less fallback turn): the rebuild above starts from the policy
+	// surface, and without this the re-issued call after a granted petition
+	// would be denied again on the successor request.
+	c.setVisibleToolDefinitions(toolSet.Tools)
+	c.legacySurface = c.legacySurface.replaceDefinitions(c.tools, toolSet.ClientToolNames)
+	return c.tools
+}
+
+// PetitionToolCall implements agent.ToolCallPetitioner for the governed
+// semantic surface. A classification that under-rendered the turn (LLM
+// variance, a timed-out tree verdict) otherwise strands the whole turn on the
+// unrendered-call fence. Any capability the planner could have rendered on
+// this channel is petitionable by name; the harness keeps only deterministic
+// safety policy: two petition classes (read-only and effectful) budgeted once
+// each per turn, the group-policy gate that denies effectful petitions in
+// group-restricted contexts, and the strict-superset expansion validator.
+// Everything else keeps the hard denial.
+func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) {
+	if c == nil || c.handler == nil {
+		return false, ""
+	}
+	if c.sessionTurnDeniesTools() {
+		return false, c.sessionToolClosedMessage()
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false, ""
+	}
+	// A spilled tool result names this reader in its footer. It is a host
+	// builtin, not a semantic grant. Returning here also stops the generic
+	// "do not retry" denial from burning the turn when the overlay missed
+	// the previous request.
+	if strings.EqualFold(name, "read_tool_result") {
+		return c.grantSpilledToolResultReader()
+	}
+	// A closed gate already decided this turn is not desktop control. Granting
+	// computer_use here would reopen it from a model petition.
+	if computerUseGateClosed(c.loopCtx) && isRefComputerUseToolName(name) {
+		return false, ""
+	}
+	if c.semanticSurface == nil {
+		// Fallback/legacy-router turns carry no managed surface, so the
+		// expansion path below is unreachable. ssh still gets a rescue: the
+		// live legacy ssh tool is the same surface leftover would have
+		// exposed on a non-degraded LabelSSH turn, and it is the only
+		// connect-capable tool (production 2026-09-18 11:04: a degraded
+		// fallback turn answered "SSH 工具不在可用工具列表" because this
+		// branch used to return bare false). A closed vision-fallthrough
+		// surface gets the same governed petition inventory.
+		if granted, message := c.grantLegacySQLDatabasePetition(name); granted {
+			return true, message
+		}
+		if granted, message := c.grantLegacySSHPetition(name); granted {
+			return true, message
+		}
+		return c.grantVisionFallthroughPetition(name)
+	}
+	surface := c.semanticSurface
+	// Rendered or already-consumed names are not petitions; the core loop owns
+	// the consumed-grant text. A retired stable name must not re-issue the
+	// next sibling through the already-planned path (office#02 would otherwise
+	// resurrect as a fresh "office" grant).
+	if _, ok := surface.grants[name]; ok {
+		return false, ""
+	}
+	if retired, ok := surface.retiredGrants[name]; ok {
+		// The name has left this request. A frozen mailbox draft is not a
+		// missing tool and not a spent budget: the generic absence text tells
+		// the model to continue with whatever else is listed, which is how a
+		// waiting send gets carried out by another tool.
+		if awaiting, reason := semanticRetiredAwaitingReceipt(surface, retired.SelectionID); awaiting && reason == mailboxSendAwaitingConfirmation {
+			return false, c.ToolDenialMessage(name)
+		}
+		return false, ""
+	}
+	if legacySQLDatabaseToolName(name) && unsupportedExternalDatabaseUserText(c.userText) {
+		return false, ""
+	}
+	if surface.replan == nil {
+		return c.grantLegacySQLDatabasePetition(name)
+	}
+	capability, ok := semanticPetitionableCapabilities[name]
+	if !ok {
+		return false, ""
+	}
+	label, ok := semanticPetitionLabelForCapability(capability)
+	if !ok {
+		return false, ""
+	}
+	// A name already in the plan is not an expansion — including baseline
+	// workspace tools (bash, read_file, write_file) that stay listed for the
+	// whole turn. Re-planning it fails the strict-superset validator and used
+	// to burn the turn's one effectful rescue when memory or another lookup
+	// had already spent that budget. If the selection is ready, issue it;
+	// if not, deny without spending the expansion budget.
+	if semanticPlanHasCapability(surface.plan, capability) {
+		// Already signed, including a weather card's render step. That step is
+		// not light-safe on purpose: the light profile keeps the model on the
+		// lookup while the host issues the card. Leaving light here would turn
+		// a premature send_file into a full agent.
+		granted, message := c.exposeAlreadyPlannedPetition(name, capability)
+		if granted && c.semanticGrantNamed(name) {
+			return true, message
+		}
+		if overlayGranted, overlayMessage := c.grantLegacySQLDatabasePetition(name); overlayGranted {
+			return true, overlayMessage
+		}
+		if granted {
+			return true, message
+		}
+		log.Printf("[semantic-routing] tool petition %q already planned, not yet exposable", name)
+		if msg := c.plannedSuccessorDenial(name, capability); msg != "" {
+			return false, msg
+		}
+		return false, ""
+	}
+	// The specified-target grant is already live, so this turn's file is bound.
+	// send_file adds a second consumer and the local card then wins the flush.
+	// generate_pdf and office add a producer, so the host writes a new file
+	// from the utterance and the IM sender never runs. Point the model at the
+	// grant that is already on the surface. Do not spend the effectful
+	// petition budget: nothing was added. A grant that is planned but not yet
+	// issued stays on the normal expansion path.
+	if semanticPetitionLabelRewritesBoundFileDelivery(label) {
+		if resolved := semanticLiveGrantNameForCapability(surface, semanticSpecifiedTargetDeliveryCapability); resolved != "" {
+			return true, semanticPetitionUseLiveGrantMessage(resolved)
+		}
+	}
+	effectful := semanticPetitionIsEffectful(name)
+	if _, denied := c.semanticPetitionDenied[name]; denied {
+		return false, ""
+	}
+	if effectful {
+		if c.semanticEffectfulPetitionConsumed {
+			return false, ""
+		}
+		// A group-restricted context denies local administration at execution
+		// time; granting the capability first would surface a tool that can only
+		// fail. Deny the petition instead so the model gets one clean refusal.
+		if c.groupPolicy() != nil {
+			return false, ""
+		}
+	} else if c.semanticPetitionConsumed {
+		return false, ""
+	}
+	// The budget is consumed once the gate has admitted a true expansion,
+	// even if the re-plan then denies it (e.g. a restrictive policy).
+	if effectful {
+		c.semanticEffectfulPetitionConsumed = true
+	} else {
+		c.semanticPetitionConsumed = true
+	}
+	requestCtx, cancel := semanticRoutingContext(c.loopCtx)
+	defer cancel()
+	child, definitions, err := c.handler.petitionExpandSemanticCallSurface(requestCtx, surface, label)
+	if err != nil {
+		if granted, message := c.grantLegacySQLDatabasePetition(name); granted {
+			return true, message
+		}
+		if !semanticPetitionFailureConsumesBudget(err) {
+			// Authority mismatch closes this name only. The class budget stays
+			// open so send_file can still be petitioned after download_file.
+			c.notePetitionAuthorityMiss(name, effectful)
+		}
+		log.Printf("[semantic-routing] tool petition %q (%s) expansion failed: %v", name, label, err)
+		return false, ""
+	}
+	c.semanticSurface = child
+	c.setVisibleToolDefinitions(definitions)
+	// The child is installed even when the new selection is not yet issuable.
+	// A light authorizer would otherwise keep stripping an added mutating
+	// step after the lookup commits. Selections the parent already signed
+	// (a weather card's renderer) do not count: this petition did not add them.
+	c.leaveLightProfileForUnsafePetition(surface.plan)
+	if legacySQLDatabaseToolName(name) && !c.semanticGrantNamed(name) {
+		if granted, message := c.grantLegacySQLDatabasePetition(name); granted {
+			return true, message
+		}
+	}
+	// Expansion can add the capability while a required predecessor still
+	// withholds its grant. Saying the tool is already on the surface makes
+	// the model re-call a name the next request does not list.
+	if exposed, message := c.exposedPetitionGrant(name, capability); exposed {
+		if capability == tool.CapabilityShellExecuteRemoteHost {
+			// §B4 observability: the trajectory records this model-visible message;
+			// the [ssh-rescue:...] token makes the rescuing layer machine-readable.
+			logSSHAvailabilityEvent("rescue", "layer=petition_expand", "mode="+sshAvailabilityMode(c.handler))
+			return true, message + " [ssh-rescue:petition_expand]"
+		}
+		return true, message
+	}
+	log.Printf("[semantic-routing] tool petition %q expanded into the plan, not yet exposable", name)
+	if msg := c.plannedSuccessorDenial(name, capability); msg != "" {
+		return false, msg
+	}
+	return false, ""
+}
+
+// exposedPetitionGrant reports whether this request's surface actually carries
+// the petitioned name. A live alias for the same capability counts: the model
+// must re-call the name that will be listed, not a spelling that stayed off.
+func (c *sharedAgentLoopCallbacks) exposedPetitionGrant(name string, capability tool.CapabilityID) (bool, string) {
+	if c.semanticGrantNamed(name) {
+		return true, semanticPetitionGrantedMessage(name)
+	}
+	if resolved := semanticLiveGrantNameForCapability(c.semanticSurface, capability); resolved != "" {
+		return true, semanticPetitionGrantedMessage(resolved)
+	}
+	return false, ""
+}
+
+func semanticPlanHasCapability(plan tool.ToolPlan, capability tool.CapabilityID) bool {
+	return tool.PlanHasCapability(plan, capability)
+}
+
+func semanticPetitionGrantedMessage(name string) string {
+	return agentruntime.PetitionGrantedMessage(name)
+}
+
+// semanticPetitionUseLiveGrantMessage names a grant that is already on the
+// surface. PetitionGrantedMessage says to repeat the rejected call with the
+// same arguments. That is wrong here: generate_pdf's body is not a legal
+// send_to_im request, and the empty schema is the whole contract.
+func semanticPetitionUseLiveGrantMessage(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	return "当前工具面已有 " + name + "。请立即调用 " + name + "，参数为 {}。"
+}
+
+// executionReasonPetitionLeftLight pins the prompt builder. A short lookup
+// utterance is otherwise reclassified as a light prompt, which writes
+// PromptProfile back to light and the authorizer strips the selection the
+// petition just signed.
+const executionReasonPetitionLeftLight = "petition admitted a selection the light prompt cannot run"
+
+// leaveLightProfileForUnsafePetition moves a light turn onto the full
+// execution contract when this petition added a selection the light
+// authorizer would drop. Read-only additions stay on the light fence, and so
+// does a pre-existing weather-card renderer the parent had already signed.
+// The running loop's iteration ceiling is unchanged: GetMaxIterations floors
+// a light budget at the host minimum, which already covers the generate
+// pipeline. This only stops the light authorizer and the "do not generate
+// documents" fence from contradicting the step this petition added.
+func (c *sharedAgentLoopCallbacks) leaveLightProfileForUnsafePetition(parent tool.ToolPlan) {
+	if c == nil || c.loopCtx == nil || c.semanticSurface == nil {
+		return
+	}
+	if !c.loopCtx.Runtime.Execution.PromptIsLight() {
+		return
+	}
+	if !semanticPetitionAddedUnsafeSelection(parent, c.semanticSurface.plan) {
+		return
+	}
+	exec := c.loopCtx.Runtime.Execution
+	full := fullExecutionProfile(executionReasonPetitionLeftLight)
+	exec.Layer = full.Layer
+	exec.TaskType = full.TaskType
+	exec.PromptProfile = full.PromptProfile
+	// ToolBudget 0 and IterationBudget 0 are the full profile's unlimited
+	// budgets. A positive cap here would re-apply the light selection limit
+	// and drop the file step. The running loop's iteration ceiling is
+	// GetMaxIterations, which floors a small light budget at the host minimum.
+	exec.ToolBudget = full.ToolBudget
+	exec.IterationBudget = full.IterationBudget
+	exec.Reason = full.Reason
+	// The light lookup recorded only information.search.web. Profile filters
+	// (catalog refresh, native PDF recovery) match contracts against that
+	// list and would drop the file step this petition just signed. The full
+	// profile matches any contract.
+	exec.RequiredCapabilities = nil
+	exec.DirectToolName = ""
+	c.loopCtx.Runtime.Execution = exec
+	c.surfaceRefreshPending = true
+	if c.handler == nil {
+		return
+	}
+	intentText := semanticUserIntentText(c.userText)
+	c.systemPrompt = ensureSemanticGrantPromptFence(c.systemPromptWithTaskAnchor(c.handler.buildSystemPromptWithMemory(agent.CompactQueryForEmbedding(intentText), false, c.loopCtx)))
+	c.petitionPromptReady = true
+	log.Printf("[semantic-routing] petition left the light prompt: plan has a selection the light authorizer would drop")
+}
+
+func semanticPetitionAddedUnsafeSelection(parent, child tool.ToolPlan) bool {
+	kept := make(map[string]struct{}, len(parent.Selections))
+	for _, selection := range parent.Selections {
+		if id := semanticSelectionIdentity(selection); id != "" {
+			kept[id] = struct{}{}
+		}
+	}
+	for _, selection := range child.Selections {
+		id := semanticSelectionIdentity(selection)
+		if id == "" {
+			continue
+		}
+		if _, ok := kept[id]; ok {
+			continue
+		}
+		if !tool.IsLightPromptSafeSelection(selection) {
+			return true
+		}
+	}
+	return false
+}
+
+func semanticSelectionIdentity(selection tool.PlannedSelection) string {
+	if id := strings.TrimSpace(selection.NeedID); id != "" {
+		return id
+	}
+	return strings.TrimSpace(selection.ID)
+}
+
+// PetitionSystemPrompt implements the core loop's optional prompt copy. The
+// petition itself does not execute a tool, so the post-batch refresher does
+// not run; without this copy the next request would still show the light fence.
+func (c *sharedAgentLoopCallbacks) PetitionSystemPrompt() string {
+	if c == nil || !c.petitionPromptReady {
+		return ""
+	}
+	c.petitionPromptReady = false
+	return c.systemPrompt
+}
+
+// semanticPetitionFailureConsumesBudget reports whether a failed expansion
+// spends the class budget. A policy or coverage rejection does. An authority
+// mismatch does not: the class stays open for a different name, and the
+// failed name is recorded so it cannot re-enter the planner.
+func semanticPetitionFailureConsumesBudget(err error) bool {
+	if err == nil {
+		return false
+	}
+	return !strings.Contains(err.Error(), "alters parent authority")
+}
+
+func (c *sharedAgentLoopCallbacks) notePetitionAuthorityMiss(name string, effectful bool) {
+	if c == nil {
+		return
+	}
+	if c.semanticPetitionDenied == nil {
+		c.semanticPetitionDenied = map[string]struct{}{}
+	}
+	c.semanticPetitionDenied[name] = struct{}{}
+	if effectful {
+		c.semanticEffectfulPetitionConsumed = false
+	} else {
+		c.semanticPetitionConsumed = false
+	}
+}
+
+func legacySQLDatabaseToolName(name string) bool {
+	n := strings.ToLower(strings.TrimSpace(name))
+	return n == "database" || n == "database_query"
+}
+
+func (c *sharedAgentLoopCallbacks) legacyPetitionAllows(name string) bool {
+	if c == nil || len(c.legacyPetitionTools) == 0 {
+		return false
+	}
+	name = strings.TrimSpace(name)
+	if c.legacyPetitionTools[name] {
+		return true
+	}
+	for stored := range c.legacyPetitionTools {
+		if strings.EqualFold(stored, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *sharedAgentLoopCallbacks) maybeOverlaySQLDatabaseForTurn(userText string) {
+	if c == nil || c.semanticSurface == nil {
+		return
+	}
+	if strings.TrimSpace(userText) == "" {
+		userText = c.userText
+	}
+	if unsupportedExternalDatabaseUserText(userText) || !sqlDatabaseFollowUpUserText(userText) {
+		return
+	}
+	if c.semanticGrantNamed("database") || c.legacyPetitionAllows("database") {
+		return
+	}
+	_, _ = c.grantLegacySQLDatabasePetition("database")
+}
+
+func (c *sharedAgentLoopCallbacks) maybeOverlayDocumentContinuationForTurn(userText string) {
+	if c == nil || c.semanticSurface == nil {
+		return
+	}
+	userText = c.autoExtractContinuationText(userText)
+	if !agent.AutoExtractNeedsContinuation(userText) {
+		return
+	}
+	// A bound document.read grant already pages this file with no path
+	// parameter. Overlaying write-capable office would be extra privilege.
+	if semanticLiveGrantNameForCapability(c.semanticSurface, "document.read.local") != "" {
+		return
+	}
+	for _, name := range agent.AutoExtractContinuationToolNames() {
+		if c.semanticGrantNamed(name) || c.legacyPetitionAllows(name) {
+			return
+		}
+	}
+	if c.legacyPetitionTools == nil {
+		c.legacyPetitionTools = map[string]bool{}
+	}
+	var added []string
+	if c.legacyContinuationReaders == nil {
+		c.legacyContinuationReaders = map[string]bool{}
+	}
+	for _, name := range agent.AutoExtractContinuationToolNames() {
+		if c.continuationOverlayDefinitionByName(name) == nil {
+			continue
+		}
+		c.legacyPetitionTools[name] = true
+		c.legacyContinuationReaders[name] = true
+		added = append(added, name)
+		// One host-owned continuation reader is enough; prefer read_document
+		// (listed first) over write-capable office.
+		break
+	}
+	if len(added) > 0 {
+		log.Printf("[doc-extract] continuation overlay truncated=true tools=%v", added)
+	}
+}
+
+// maybeOverlaySpilledToolResultReader lists read_tool_result on the next
+// request after a tool preview was spilled. The handle footer tells the model
+// to page the full payload with that tool; a closed semantic surface otherwise
+// rejects the call as unrendered, so the spill cannot be read back.
+func (c *sharedAgentLoopCallbacks) maybeOverlaySpilledToolResultReader() {
+	if c == nil || c.semanticSurface == nil {
+		return
+	}
+	const name = "read_tool_result"
+	if c.semanticGrantNamed(name) || c.legacyPetitionAllows(name) {
+		return
+	}
+	if !c.activateSpilledToolResultReader() {
+		return
+	}
+	log.Printf("[tool-result] overlay %s because a spilled handle is in this turn", name)
+}
+
+// grantSpilledToolResultReader admits read_tool_result when the model calls
+// it after a spill but the name was not on the frozen request surface.
+// The call itself does not run; the next request lists the reader.
+func (c *sharedAgentLoopCallbacks) grantSpilledToolResultReader() (bool, string) {
+	if !c.activateSpilledToolResultReader() {
+		return false, ""
+	}
+	log.Printf("[tool-result] petition granted read_tool_result for spilled handle")
+	return true, agentruntime.PetitionGrantedMessage("read_tool_result")
+}
+
+func (c *sharedAgentLoopCallbacks) noteContextCheckpointReader(conversation []interface{}) {
+	if c == nil || c.contextCheckpointReader || !conversationHasToolResultHandle(conversation) {
+		return
+	}
+	c.contextCheckpointReader = true
+}
+
+func conversationHasToolResultHandle(msgs []interface{}) bool {
+	for _, msg := range msgs {
+		_, content := agent.ExtractRoleContent(msg)
+		if strings.Contains(content, toolresult.HandleFooterMarker) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *sharedAgentLoopCallbacks) activateSpilledToolResultReader() bool {
+	if c == nil || c.handler == nil {
+		return false
+	}
+	// A context checkpoint is a user message with the same handle footer.
+	// checkpointHistory still holds the pre-spill transcript on this request.
+	if !c.contextCheckpointReader && !historyHasToolResultHandle(c.checkpointHistory) {
+		return false
+	}
+	const name = "read_tool_result"
+	if c.loopCtx != nil && c.loopCtx.LansengerGroupPermissions != nil && !c.loopCtx.LansengerGroupPermissions.allowsTool(name) {
+		return false
+	}
+	policyOwner := c.handler.workflowPolicyOwnerID(c.userID, c.loopCtx)
+	if !c.handler.isWorkflowToolAllowedForOwner(policyOwner, name) {
+		return false
+	}
+	if c.liveLegacyPetitionDefinitionByName(name) == nil {
+		return false
+	}
+	if c.legacyPetitionTools == nil {
+		c.legacyPetitionTools = map[string]bool{}
+	}
+	if c.legacyContinuationReaders == nil {
+		c.legacyContinuationReaders = map[string]bool{}
+	}
+	c.legacyPetitionTools[name] = true
+	c.legacyContinuationReaders[name] = true
+	// Do not rewrite c.tools here. BuildToolsForModelRequest appends this name
+	// when it renders the next request. Attaching it to the previous snapshot
+	// would publish a reader the current receipt did not list.
+	return true
+}
+
+func historyHasToolResultHandle(entries []agent.ConversationEntry) bool {
+	for i := len(entries) - 1; i >= 0; i-- {
+		if entries[i].Role != "tool" {
+			continue
+		}
+		if strings.Contains(conversationEntryText(entries[i].Content), toolresult.HandleFooterMarker) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *sharedAgentLoopCallbacks) autoExtractContinuationText(userText string) string {
+	if agent.AutoExtractNeedsContinuation(userText) {
+		return userText
+	}
+	if c == nil {
+		return userText
+	}
+	if strings.TrimSpace(userText) == "" && agent.AutoExtractNeedsContinuation(c.userText) {
+		return c.userText
+	}
+	// Expansion happens when preparing user content, after routing. The raw
+	// picker prompt never contains truncated=true; the injected extract does.
+	for i := len(c.checkpointHistory) - 1; i >= 0; i-- {
+		if c.checkpointHistory[i].Role != "user" {
+			continue
+		}
+		text := conversationEntryText(c.checkpointHistory[i].Content)
+		if agent.AutoExtractNeedsContinuation(text) {
+			return text
+		}
+		break
+	}
+	return userText
+}
+
+func (c *sharedAgentLoopCallbacks) continuationOverlayDefinitionByName(name string) map[string]interface{} {
+	def := c.liveLegacyPetitionDefinitionByName(name)
+	if def == nil {
+		return nil
+	}
+	if strings.EqualFold(strings.TrimSpace(name), "office") {
+		return restrictOfficeDefinitionToContinuationRead(def)
+	}
+	return cloneMISInterfaceMap(def)
+}
+
+func restrictOfficeDefinitionToContinuationRead(def map[string]interface{}) map[string]interface{} {
+	out := cloneMISInterfaceMap(def)
+	fn, _ := out["function"].(map[string]interface{})
+	if fn == nil {
+		return out
+	}
+	fn["description"] = "Read a local document to page a truncated auto_extract. action: read_document (preferred), read_excel, read_pptx. Use offset=next_offset when truncated=true. Write and generate actions are not available."
+	params, _ := fn["parameters"].(map[string]interface{})
+	props, _ := params["properties"].(map[string]interface{})
+	if props != nil {
+		if action, ok := props["action"].(map[string]interface{}); ok {
+			action["description"] = "read_document/read_doc/read_docx/read_pdf/read_excel/read_pptx"
+			action["enum"] = []interface{}{"read_document", "read_doc", "read_docx", "read_pdf", "read_excel", "read_pptx"}
+		}
+		for _, writeKey := range []string{"content", "title", "data", "preview", "doc_type"} {
+			delete(props, writeKey)
+		}
+	}
+	return out
+}
+
+func officeContinuationReadAction(action string) bool {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "read_document", "read", "read_doc", "read_docx", "read_pdf", "read_word", "read_excel", "read_pptx":
+		return true
+	default:
+		return false
+	}
+}
+
+func officeActionFromArgsJSON(argsJSON string) string {
+	var args map[string]interface{}
+	if json.Unmarshal([]byte(argsJSON), &args) != nil {
+		return ""
+	}
+	action, _ := args["action"].(string)
+	return action
+}
+
+func (c *sharedAgentLoopCallbacks) continuationOverlayDenial(name, argsJSON string) string {
+	if c == nil || !c.legacyPetitionAllows(name) || !strings.EqualFold(strings.TrimSpace(name), "office") {
+		return ""
+	}
+	action := officeActionFromArgsJSON(argsJSON)
+	if strings.TrimSpace(action) == "" || officeContinuationReadAction(action) {
+		return ""
+	}
+	return fmt.Sprintf("[system rejected] continuation overlay office action %q is read-only; call read_document with offset=next_offset", action)
+}
+
+func (c *sharedAgentLoopCallbacks) continuationOverlayArgsJSON(name, argsJSON string) string {
+	if c == nil || !c.legacyPetitionAllows(name) || !strings.EqualFold(strings.TrimSpace(name), "office") {
+		return argsJSON
+	}
+	if strings.TrimSpace(officeActionFromArgsJSON(argsJSON)) != "" {
+		return argsJSON
+	}
+	var args map[string]interface{}
+	if json.Unmarshal([]byte(argsJSON), &args) != nil || args == nil {
+		args = map[string]interface{}{}
+	}
+	args["action"] = "read_document"
+	encoded, err := json.Marshal(args)
+	if err != nil {
+		return argsJSON
+	}
+	return string(encoded)
+}
+
+func (c *sharedAgentLoopCallbacks) semanticGrantNamed(name string) bool {
+	if c == nil || c.semanticSurface == nil || c.semanticSurface.grants == nil {
+		return false
+	}
+	grant, ok := c.semanticSurface.grants[strings.TrimSpace(name)]
+	return ok && strings.TrimSpace(grant.Token) != ""
+}
+
+func (c *sharedAgentLoopCallbacks) setVisibleToolDefinitions(definitions []map[string]interface{}) {
+	if c == nil {
+		return
+	}
+	c.tools = c.appendLegacyPetitionedDatabaseTools(definitions)
+	// surface.rendered is the host record of names emitted on this surface.
+	// A coordinator publish leaves that map empty, so a live grant looks
+	// unlisted and a successor denial cannot name it. Record only when the
+	// map exists: a nil map means the caller is not tracking emission.
+	// Callers pass the full adopted list, not a delta. Replacing the set in
+	// place (same map pointer) drops a name that left the list, so a later
+	// denial cannot call it listed and an incremental refresh can issue it
+	// again. A sticky union left the old name true forever.
+	if c.semanticSurface == nil || c.semanticSurface.rendered == nil {
+		return
+	}
+	rendered := c.semanticSurface.rendered
+	for name := range rendered {
+		delete(rendered, name)
+	}
+	for _, def := range c.tools {
+		name := strings.TrimSpace(extractToolName(def))
+		if name == "" {
+			continue
+		}
+		rendered[name] = true
+	}
+}
+
+// grantLegacySSHPetition rescues a direct ssh call on a turn without a
+// managed surface (routing-miss fallback or legacy-router turns). The live
+// legacy ssh tool is connect-capable and is the exact surface leftover
+// exposes for a non-degraded LabelSSH miss, so petitioning for it costs no
+// authority the turn would not otherwise have had. The same effectful-petition
+// budget and group-policy gate as managed petitions apply.
+func (c *sharedAgentLoopCallbacks) grantLegacySSHPetition(name string) (bool, string) {
+	name = strings.TrimSpace(name)
+	if name != "ssh" {
+		return false, ""
+	}
+	if c == nil || c.handler == nil || c.handler.registry == nil {
+		return false, ""
+	}
+	if c.groupPolicy() != nil {
+		return false, ""
+	}
+	if c.semanticEffectfulPetitionConsumed {
+		return false, ""
+	}
+	if _, ok := c.handler.registry.Get("ssh"); !ok {
+		return false, ""
+	}
+	c.semanticEffectfulPetitionConsumed = true
+	if c.legacyPetitionTools == nil {
+		c.legacyPetitionTools = map[string]bool{}
+	}
+	c.legacyPetitionTools[name] = true
+	c.tools = c.appendLegacyPetitionedDatabaseTools(c.tools)
+	logSSHAvailabilityEvent("rescue", "layer=legacy_overlay")
+	log.Printf("[semantic-routing] tool petition %q granted via live legacy ssh tool (no managed surface)", name)
+	// The generic message says "re-issue with unchanged arguments", but the
+	// legacy ssh schema requires action=connect/exec/... — name the shape so
+	// the model does not burn an iteration discovering it (production
+	// 2026-09-18 14:41: the re-issued connect-shaped call was refused for a
+	// missing action parameter). The [ssh-rescue:...] token is the
+	// §B4 trajectory marker for the rescuing layer.
+	return true, fmt.Sprintf("工具 ssh 已由主机授权并加入当前工具面，请立即重新发起调用：这是完整的 ssh 工具，必须带 action 参数（如 {\"action\":\"connect\",\"host\":...,\"user\":...,\"password\":...}，或 action=exec 加 session_id 和 command）。[ssh-rescue:legacy_overlay]")
+}
+
+// grantVisionFallthroughPetition admits one governed tool on a closed
+// vision-fallthrough surface. A fallthrough turn's planner verdict is "the
+// staged image answers this", so it renders no name-router surface and may
+// render nothing at all — yet it is still an agentic turn whose model sees
+// the full assistant prompt and can honestly conclude the picture alone is
+// not enough (a geolocation question needs web_search, an EXIF read needs
+// bash). It carries no managed surface the expansion path above could
+// widen, so without this rescue the only recoverable names were ssh and the
+// SQL adapters: every other petition stranded the loop on an empty surface
+// (production 2026-10-15 06:40: 「这是哪？」 with a staged photo had
+// manage_skill, bash, discover_tool, web_search and image_search denied
+// five iterations in a row, then hard-exited).
+//
+// The admission contract is the managed petition's, applied to the legacy
+// overlay channel: the closed name→capability inventory, one read-only and
+// one effectful grant per turn, the group-policy gate for effectful names,
+// and no grant for a name the live host cannot render. Granting a name does
+// not weaken the turn's vision-only intent — it converts an impossible
+// request into the governed retry the core loop already models.
+func (c *sharedAgentLoopCallbacks) grantVisionFallthroughPetition(name string) (bool, string) {
+	if !loopContextIsVisionFallthrough(c.loopCtx) || c.handler == nil {
+		return false, ""
+	}
+	name = strings.TrimSpace(name)
+	_, petitionable := semanticPetitionableCapabilities[name]
+	// manage_skill sits outside the managed petition inventory because a
+	// governed turn must bind a skill through a managed selection. This path
+	// is unmanaged: the adapter catalog already sanctions it as the
+	// host-bound local skill runtime, and the action gate only executes
+	// list/info/run on an installed skill — the same contract an unmanaged
+	// full surface renders it under. It is effectful: run starts a process.
+	if !petitionable && name != "manage_skill" {
+		return false, ""
+	}
+	effectful := name == "manage_skill" || semanticPetitionIsEffectful(name)
+	if _, denied := c.semanticPetitionDenied[name]; denied {
+		return false, ""
+	}
+	if effectful {
+		if c.semanticEffectfulPetitionConsumed || c.groupPolicy() != nil {
+			return false, ""
+		}
+	} else if c.semanticPetitionConsumed {
+		return false, ""
+	}
+	// Resolve with the overlay's own renderer before spending the budget: a
+	// petitionable name the live host cannot render (no provision or no host
+	// definition on this build) is an authority miss, not a consumed
+	// petition.
+	if c.liveLegacyPetitionDefinitionByName(name) == nil {
+		c.notePetitionAuthorityMiss(name, effectful)
+		return false, ""
+	}
+	if effectful {
+		c.semanticEffectfulPetitionConsumed = true
+	} else {
+		c.semanticPetitionConsumed = true
+	}
+	if c.legacyPetitionTools == nil {
+		c.legacyPetitionTools = map[string]bool{}
+	}
+	c.legacyPetitionTools[name] = true
+	c.tools = c.appendLegacyPetitionedDatabaseTools(c.tools)
+	log.Printf("[semantic-routing] vision-fallthrough tool petition %q granted via legacy overlay", name)
+	return true, semanticPetitionGrantedMessage(name)
+}
+
+// liveLegacyPetitionDefinitionByName resolves an overlaid petitioned tool's
+// definition. SQL database names go through the reviewed adapter lookup; ssh
+// resolves from the builtin registry (its legacy definition is unpublished
+// from managed catalogs, not from the registry).
+func (c *sharedAgentLoopCallbacks) liveLegacyPetitionDefinitionByName(name string) map[string]interface{} {
+	if c == nil || c.handler == nil {
+		return nil
+	}
+	if def := c.handler.liveLegacyDefinitionByName(name); def != nil {
+		return def
+	}
+	// Continuation readers may exist on the host registry without a reviewed
+	// adapter provision (read_document is a core reader, not a petitionable
+	// write adapter). Overlay must still be able to render them.
+	for _, continuation := range agent.AutoExtractContinuationToolNames() {
+		if strings.EqualFold(continuation, name) {
+			return c.handler.continuationHostDefinitionByName(name)
+		}
+	}
+	// The spill footer names this reader. It is a host builtin, not a semantic
+	// grant, and the managed catalog does not publish it on an ssh-only turn.
+	if strings.EqualFold(strings.TrimSpace(name), "read_tool_result") {
+		return c.handler.continuationHostDefinitionByName(name)
+	}
+	if strings.TrimSpace(name) != "ssh" || c.handler.registry == nil {
+		return nil
+	}
+	registered, ok := c.handler.registry.Get("ssh")
+	if !ok || registered == nil || registered.Status != RegToolAvailable {
+		return nil
+	}
+	return registeredToolToDef(*registered)
+}
+
+func (c *sharedAgentLoopCallbacks) grantLegacySQLDatabasePetition(name string) (bool, string) {
+	name = strings.TrimSpace(name)
+	if !legacySQLDatabaseToolName(name) {
+		return false, ""
+	}
+	if c == nil || c.handler == nil {
+		return false, ""
+	}
+	if unsupportedExternalDatabaseUserText(c.userText) {
+		return false, ""
+	}
+	def := c.handler.liveLegacyDefinitionByName(name)
+	if def == nil {
+		return false, ""
+	}
+	if c.legacyPetitionTools == nil {
+		c.legacyPetitionTools = map[string]bool{}
+	}
+	c.legacyPetitionTools[name] = true
+	c.tools = c.appendLegacyPetitionedDatabaseTools(c.tools)
+	log.Printf("[semantic-routing] tool petition %q granted via live SQL database adapter", name)
+	return true, semanticPetitionGrantedMessage(name)
+}
+
+func (c *sharedAgentLoopCallbacks) appendLegacyPetitionedDatabaseTools(definitions []map[string]interface{}) []map[string]interface{} {
+	if c == nil || c.handler == nil || len(c.legacyPetitionTools) == 0 {
+		return definitions
+	}
+	present := map[string]bool{}
+	for _, def := range definitions {
+		if name := extractToolName(def); name != "" {
+			present[name] = true
+		}
+	}
+	for name := range c.legacyPetitionTools {
+		if present[name] {
+			continue
+		}
+		// Continuation readers render the narrowed read-only contract; an
+		// explicitly petitioned name keeps its full host definition (a
+		// petitioned office is for document write, not extract paging).
+		if c.legacyContinuationReaders[name] {
+			if def := c.continuationOverlayDefinitionByName(name); def != nil {
+				definitions = append(definitions, def)
+			}
+			continue
+		}
+		if def := c.liveLegacyPetitionDefinitionByName(name); def != nil {
+			definitions = append(definitions, cloneMISInterfaceMap(def))
+		}
+	}
+	// The registry manage_skill schema advertises install and governance
+	// actions this path rejects at execution; publish the same narrowed
+	// contract an unmanaged full surface does (list/info/run only).
+	return narrowLegacyManageSkillSurface(definitions)
+}
+
+func (h *IMMessageHandler) liveLegacyDefinitionByName(name string) map[string]interface{} {
+	name = strings.TrimSpace(name)
+	if h == nil || name == "" {
+		return nil
+	}
+	if _, ok := tool.LegacyAdapterProvisionForTool(name, time.Now().UTC()); !ok {
+		return nil
+	}
+	live, _ := h.unmanagedLegacyHostDefinitions()
+	for _, def := range live {
+		if extractToolName(def) == name {
+			return def
+		}
+	}
+	if h.registry != nil {
+		for _, def := range NewDynamicToolBuilder(h.registry).BuildAll() {
+			if extractToolName(def) == name {
+				return def
+			}
+		}
+	}
+	return nil
+}
+
+// continuationHostDefinitionByName looks up a host-owned tool definition
+// without requiring a reviewed adapter provision. Used for truncated
+// auto_extract continuation readers such as read_document.
+func (h *IMMessageHandler) continuationHostDefinitionByName(name string) map[string]interface{} {
+	name = strings.TrimSpace(name)
+	if h == nil || name == "" {
+		return nil
+	}
+	if h.registry != nil {
+		if registered, ok := h.registry.Get(name); ok && registered != nil && registered.Status == RegToolAvailable {
+			return registeredToolToDef(*registered)
+		}
+		for _, def := range NewDynamicToolBuilder(h.registry).BuildAll() {
+			if extractToolName(def) == name {
+				return def
+			}
+		}
+	}
+	live, _ := h.unmanagedLegacyHostDefinitions()
+	for _, def := range live {
+		if extractToolName(def) == name {
+			return def
+		}
+	}
+	return nil
+}
+
+// exposeAlreadyPlannedPetition issues a selection that is already in the plan
+// but not on the current surface. A held search batch still skips host-owned
+// generate so flash models cannot run it in the same assistant message.
+func (c *sharedAgentLoopCallbacks) exposeAlreadyPlannedPetition(name string, capability tool.CapabilityID) (bool, string) {
+	if c == nil || c.semanticSurface == nil || capability == "" {
+		return false, ""
+	}
+	var err error
+	if c.semanticHoldDependantIssue {
+		_, err = refreshSemanticCallSurfaceSkipping(c.semanticSurface, hostOwnedGenerateSelection)
+	} else {
+		_, err = refreshSemanticCallSurface(c.semanticSurface)
+	}
+	if err != nil {
+		return false, ""
+	}
+	if err := c.syncSemanticToolSurface(); err != nil {
+		return false, ""
+	}
+	if _, ok := c.semanticSurface.grants[name]; ok {
+		return true, semanticPetitionGrantedMessage(name)
+	}
+	if resolved := semanticLiveGrantNameForCapability(c.semanticSurface, capability); resolved != "" {
+		return true, semanticPetitionGrantedMessage(resolved)
+	}
+	return false, ""
+}
+
+func semanticLiveGrantNameForCapability(surface *semanticCallSurface, capability tool.CapabilityID) string {
+	if surface == nil {
+		return ""
+	}
+	return tool.LiveGrantNameForCapability(surface.plan, surface.grants, capability)
+}
+
+func (c *sharedAgentLoopCallbacks) ExecuteTool(name, argsJSON string) string {
+	if c == nil || c.handler == nil {
+		return "handler unavailable"
+	}
+	if c.sessionTurnDeniesTools() {
+		return c.sessionToolClosedMessage()
+	}
+	// Companion document tools are host-owned and bound to the open file.
+	// They execute before the legacy snapshot checks: their names are not in
+	// the reviewed adapter catalog and must not need to be.
+	if isFileCompanionHostTool(name) && fileCompanionToolsDisabled(c.userID) {
+		// Same progress as the structured path: a render is the slowest thing
+		// a companion turn does, and both entry points must say so.
+		if c.onProgress != nil {
+			c.onProgress(fileCompanionToolProgressText(name, argsJSON))
+		}
+		text, _ := c.handler.executeFileCompanionHostTool(c.userID, name, argsJSON)
+		return text
+	}
+	if c.legacyPetitionAllows(name) {
+		if denied := c.continuationOverlayDenial(name, argsJSON); denied != "" {
+			return denied
+		}
+		return c.executeToolWithoutSemanticSurface(name, c.continuationOverlayArgsJSON(name, argsJSON))
+	}
+	if c.semanticSurface != nil {
+		return c.executeSemanticTool(name, argsJSON)
+	}
+	if c.legacySurface.HasSnapshot() && !c.legacySurface.Allows(name) {
+		return legacyToolSurfaceDeniedText(name)
+	}
+	// Absolute gateway policy rejects legacy-model MCP/skill selection before
+	// catalog/provision and argument checks: without a live reviewed adapter
+	// provision the catalog check below would mask this more specific signal
+	// with catalog_incomplete.
+	if isLegacyModelMCPGateway(name) {
+		return legacyModelMCPGatewayDeniedText()
+	}
+	if legacyModelManageSkillCallDenied(c.handler, name, argsJSON) {
+		return legacyModelManageSkillGatewayDeniedText()
+	}
+	if c.legacySurface.HasSnapshot() && !c.legacySurface.AllowsLiveProvision(name) {
+		return legacyAdapterCatalogDeniedText(name)
+	}
+	if c.legacySurface.HasSnapshot() {
+		if err := c.legacySurface.AllowsArguments(name, argsJSON); err != nil {
+			return legacyToolArgumentDeniedText(name, err)
+		}
+	}
+	if c.legacySurface.IsClientTool(name) {
+		clientTool, ok := clientToolForLoop(c.loopCtx, name)
+		if !ok {
+			return "[system rejected] client tool binding is unavailable"
+		}
+		return c.handler.dispatchClientToolCall(c.loopCtx, clientTool, "", argsJSON).Text
+	}
+	return c.executeToolWithoutSemanticSurface(name, argsJSON)
+}
+
+// ExecuteToolCall receives the model/provider tool-call identifier from the
+// core loop. Semantic calls require it: synthesizing identity from a function
+// name would merge unrelated calls and could replay the wrong effect.
+func (c *sharedAgentLoopCallbacks) ExecuteToolCall(name, argsJSON, callID string) agent.ToolExecutionResult {
+	return c.executeToolCallWithExecutionContext(name, argsJSON, callID, agent.ToolCallExecutionContext{})
+}
+
+func (c *sharedAgentLoopCallbacks) executeToolCallWithExecutionContext(name, argsJSON, callID string, execution agent.ToolCallExecutionContext) agent.ToolExecutionResult {
+	if c != nil {
+		setComputerUseTurnVision(c.llmCfg.SupportsVision)
+		setComputerUseOwner(computerUseOwnerFromLoop(c.loopCtx, c.userID))
+	}
+	var result agent.ToolExecutionResult
+	if c != nil && c.sessionTurnDeniesTools() {
+		result = agent.ToolExecutionResult{Result: c.sessionToolClosedMessage(), Outcome: agent.ToolExecutionOutcomeError}
+	} else if c != nil && isFileCompanionHostTool(name) && fileCompanionToolsDisabled(c.userID) {
+		// The companion surface's executor. Handled before the legacy chain:
+		// these host-owned names are not in the reviewed adapter catalog.
+		if c.onProgress != nil {
+			c.onProgress(fileCompanionToolProgressText(name, argsJSON))
+		}
+		text, ok := c.handler.executeFileCompanionHostTool(c.userID, name, argsJSON)
+		outcome := agent.ToolExecutionOutcomeOK
+		if !ok {
+			outcome = agent.ToolExecutionOutcomeError
+		}
+		result = agent.ToolExecutionResult{Result: text, Outcome: outcome}
+	} else if c != nil && c.legacyPetitionAllows(name) {
+		result = c.ExecuteToolStructured(name, argsJSON)
+	} else if c != nil && c.semanticSurface != nil {
+		result = semanticAgentToolExecutionResult(c.executeSemanticToolCallWithEpoch(name, argsJSON, callID, execution.SurfaceEpoch))
+	} else {
+		if c != nil && c.legacySurface.HasSnapshot() && !c.legacySurface.Allows(name) {
+			result = agent.ToolExecutionResult{Result: legacyToolSurfaceDeniedText(name), Outcome: agent.ToolExecutionOutcomeError}
+		} else if c != nil && isLegacyModelMCPGateway(name) {
+			result = agent.ToolExecutionResult{Result: legacyModelMCPGatewayDeniedText(), Outcome: agent.ToolExecutionOutcomeError}
+		} else if c != nil && legacyModelManageSkillCallDenied(c.handler, name, argsJSON) {
+			result = agent.ToolExecutionResult{Result: legacyModelManageSkillGatewayDeniedText(), Outcome: agent.ToolExecutionOutcomeError}
+		} else if c != nil && c.legacySurface.HasSnapshot() && !c.legacySurface.AllowsLiveProvision(name) {
+			result = agent.ToolExecutionResult{Result: legacyAdapterCatalogDeniedText(name), Outcome: agent.ToolExecutionOutcomeError}
+		} else if c != nil && c.legacySurface.HasSnapshot() {
+			if err := c.legacySurface.AllowsArguments(name, argsJSON); err != nil {
+				result = agent.ToolExecutionResult{Result: legacyToolArgumentDeniedText(name, err), Outcome: agent.ToolExecutionOutcomeError}
+			} else if c.legacySurface.IsClientTool(name) {
+				clientTool, ok := clientToolForLoop(c.loopCtx, name)
+				if !ok {
+					result = agent.ToolExecutionResult{Result: "[system rejected] client tool binding is unavailable", Outcome: agent.ToolExecutionOutcomeError}
+				} else {
+					dispatched := c.handler.dispatchClientToolCall(c.loopCtx, clientTool, callID, argsJSON)
+					outcome := agent.ToolExecutionOutcomeOK
+					if dispatched.Outcome != toolOutcomeSucceeded {
+						outcome = agent.ToolExecutionOutcomeError
+					}
+					result = agent.ToolExecutionResult{Result: dispatched.Text, Outcome: outcome}
+				}
+			} else {
+				result = c.ExecuteToolStructured(name, argsJSON)
+			}
+		} else if isLegacyModelMCPGateway(name) {
+			result = agent.ToolExecutionResult{Result: legacyModelMCPGatewayDeniedText(), Outcome: agent.ToolExecutionOutcomeError}
+		} else if legacyModelManageSkillCallDenied(c.handler, name, argsJSON) {
+			result = agent.ToolExecutionResult{Result: legacyModelManageSkillGatewayDeniedText(), Outcome: agent.ToolExecutionOutcomeError}
+		} else {
+			result = c.ExecuteToolStructured(name, argsJSON)
+		}
+	}
+	return attachPendingComputerUseModelImage(result)
+}
+
+// BeginToolSurfaceEpoch is invoked by the shared core loop immediately before
+// it sends one model request. The returned value never enters tool schemas or
+// model arguments; it is retained by the loop and paired with tool calls from
+// that response only.
+func (c *sharedAgentLoopCallbacks) BeginToolSurfaceEpoch(iteration int) string {
+	_ = iteration
+	if c == nil {
+		return ""
+	}
+	if c.semanticSurface != nil {
+		return c.semanticSurface.beginEpoch()
+	}
+	return c.legacySurface.beginEpoch()
+}
+
+// cancelManagedSemanticSurface is the single lifecycle fence for an IM
+// managed surface. It never edits the transient definition list as a
+// substitute for durable revocation: coordinator cancellation retires model
+// request surfaces, materializations and outstanding grants atomically.
+func (c *sharedAgentLoopCallbacks) cancelManagedSemanticSurface() {
+	if c == nil || c.semanticSurface == nil {
+		return
+	}
+	cancelSemanticCallSurface(c.semanticSurface)
+}
+
+// cancelSemanticCallSurface is shared by terminal loop cancellation and fresh
+// ingress replacement. Both must close the same durable authority boundary;
+// merely clearing the LoopContext's ephemeral identity leaves issued grants
+// usable to a late provider response.
+func cancelSemanticCallSurface(surface *semanticCallSurface) {
+	if surface == nil {
+		return
+	}
+	surface.invalidateEpoch()
+	surface.retireEpochSnapshots()
+	if surface.coordinator == nil {
+		return
+	}
+	if err := surface.coordinator.CancelRouteSurface(surface.scope, time.Now().UTC()); err != nil {
+		log.Printf("[semantic-routing] cancel managed surface scope=%+v err=%v", surface.scope, err)
+	}
+}
+
+// ExecuteToolCallWithContext is the model-response dispatch boundary. A
+// response whose epoch was superseded by a new request or a child plan cannot
+// resolve its function name against the current surface, even when both
+// revisions expose the same stable adapter name (for example web_search).
+// The single exception is the same-family batch continuation: one model
+// response may carry several calls of one repeat family, drained sequentially
+// by the core loop, and an earlier sibling's success retires the epoch while
+// issuing the next sibling under the same stable name. That late call
+// re-proves its binding (same epoch snapshot, same revision, same family,
+// name still live) and runs against the grant the surface itself just issued;
+// every other stale shape stays rejected. tools_search is exempt by
+// construction: the discovery meta-tool holds no grant and consumes no
+// authority (its budget is a callback counter), so a stale epoch is
+// meaningless for it — rejecting it (production 2026-08-28 PPT turn batched
+// send_file + tools_search) is pure churn.
+func (c *sharedAgentLoopCallbacks) ExecuteToolCallWithContext(name, argsJSON, callID string, execution agent.ToolCallExecutionContext) agent.ToolExecutionResult {
+	if c != nil {
+		if c.semanticSurface != nil && !c.semanticSurface.epochIsCurrent(execution.SurfaceEpoch) {
+			if name != semanticToolsSearchName && !c.legacyPetitionAllows(name) && !c.semanticSurface.staleEpochSameFamilyContinuation(execution.SurfaceEpoch, name) {
+				return semanticAgentToolExecutionResult(semanticGrantRejectMessage("stale_surface"))
+			}
+		}
+		if c.semanticSurface == nil && c.legacySurface.HasSnapshot() && !c.legacySurface.epochIsCurrent(execution.SurfaceEpoch) {
+			return agent.ToolExecutionResult{Result: semanticGrantRejectMessage("stale_surface"), Outcome: agent.ToolExecutionOutcomeError}
+		}
+	}
+	return c.executeToolCallWithExecutionContext(name, argsJSON, callID, execution)
+}
+
+func semanticAgentToolExecutionResult(text string) agent.ToolExecutionResult {
+	return agentruntime.SemanticToolExecutionResult(text)
+}
+
+// executeToolWithoutSemanticSurface is the legacy execution projection used
+// only after a bound semantic adapter has admitted the selection, or by turns
+// that have not migrated to a declared capability family yet.
+func (c *sharedAgentLoopCallbacks) executeToolWithoutSemanticSurface(name, argsJSON string) string {
+	if c == nil || c.handler == nil {
+		return "handler unavailable"
+	}
+	if rejection := computerUseExecutionRejection(c.loopCtx, c.userText, name); rejection != "" {
+		return rejection
+	}
+	// Defense-in-depth: never execute oversized payloads even if a caller bypasses RunLoop.
+	if argSize := len(argsJSON); argSize > guiMaxToolArgumentsBytes {
+		toolName := strings.TrimSpace(name)
+		if toolName == "" {
+			toolName = "unknown"
+		}
+		return fmt.Sprintf("tool arguments too large for %s: %d bytes exceeds limit %d", toolName, argSize, guiMaxToolArgumentsBytes)
+	}
+	requestID := ""
+	if c.loopCtx != nil {
+		requestID = c.loopCtx.Runtime.RequestID
+	}
+	// Keep permission wait and the actual handler under one operation. A steer
+	// arriving anywhere in that window cancels context-aware tools and prevents
+	// a newly-created post-permission context from accidentally reviving the
+	// stale call.
+	execCtx := context.Background()
+	if c.loopCtx != nil {
+		var end context.CancelFunc
+		execCtx, end, _ = c.loopCtx.BeginReplannableOperation(context.Background())
+		if end != nil {
+			defer end()
+		}
+	}
+	// Close the check/start race in core RunLoop: steering may have landed after
+	// its last batch check but before this operation was installed. In that case
+	// no cancel function existed for TryRequestReplan to call, so reject the stale
+	// tool explicitly before permission UI, progress, or handler side effects.
+	if c.LLMReplanRequested() {
+		return sharedToolInterruptedText(execCtx)
+	}
+	c.noteWorkspaceDocumentBaseline()
+	toolCallID := newACPToolCallID(name)
+	if isACPProgrammingRequestID(requestID) {
+		allowed, reason := globalACPPermission.check(execCtx, requestID, name, argsJSON)
+		// Dual-run observation (Phase 1, R3): compares the client-negotiated
+		// decision with host policy; never changes the check outcome.
+		acpPermissionDualEval(c.handler.acpPermissionDualEvalSnapshot(), name, argsJSON, allowed)
+		if !allowed {
+			msg := "[system rejected] " + reason
+			if strings.TrimSpace(reason) == "" {
+				msg = "[system rejected] tool not permitted"
+			}
+			emitACPToolEventForRequest(requestID, ACPToolEvent{
+				Phase: "end", ToolCallID: toolCallID, Name: name, ArgsJSON: argsJSON,
+				Result: msg, OK: false, Kind: acpToolKind(name), Title: acpToolTitle(name, argsJSON),
+				Paths: acpPathsFromToolArgs(name, argsJSON),
+			})
+			return msg
+		}
+		emitACPToolEventForRequest(requestID, ACPToolEvent{
+			Phase:      "start",
+			ToolCallID: toolCallID,
+			Name:       name,
+			ArgsJSON:   argsJSON,
+			Kind:       acpToolKind(name),
+			Paths:      acpPathsFromToolArgs(name, argsJSON),
+			Title:      acpToolTitle(name, argsJSON),
+		})
+	}
+	// IM channels need concrete tool details (path/command/pattern), not bare tool names.
+	// Emit here where argsJSON is available; OnToolCall only receives the name.
+	// Language follows GUI interface language (App.CurrentLanguage).
+	lang := c.handler.imUILang()
+	if c.onProgress != nil {
+		c.onProgress(userFacingToolProgressTextWithArgs(lang, name, argsJSON))
+	}
+	// Filter internal tool chatter the same way as the legacy agent-loop path so
+	// unstyled bash/skill logs never leak into WeChat/QQ as normal chat bubbles.
+	toolProgress := filteredToolProgressCallback(lang, name, c.onProgress, false)
+	platform := c.effectivePlatform()
+	if c.loopCtx != nil && c.loopCtx.LansengerGroupPermissions != nil {
+		if !c.loopCtx.LansengerGroupPermissions.allowsTool(name) {
+			return "[system rejected] 群聊权限未授权该工具访问本地资源或知识库"
+		}
+	}
+	policyUserID := c.handler.workflowPolicyOwnerID(c.userID, c.loopCtx)
+	exec := c.handler.executeToolDetailedWithRuntimeContextAndContextTokens(
+		withMailboxOwner(withTrustedAuditPrincipal(execCtx, c.semanticPrincipalID()), c.userID),
+		policyUserID,
+		loopContextHasExplicitRuntimeOwner(c.loopCtx),
+		platform,
+		c.llmCfg.EffectiveContextTokens(),
+		name,
+		argsJSON,
+		c.userText,
+		toolProgress,
+	)
+	// A non-context-aware handler cannot be forcibly stopped once entered, but a
+	// steer that arrived before it returned must still suppress downstream side
+	// effects such as file materialization/forwarding and interactive UI opening.
+	if c.LLMReplanRequested() || execCtx.Err() != nil {
+		exec.Text = sharedToolInterruptedText(execCtx)
+		exec.Outcome = toolOutcomeFailed
+		exec.FailureKind = toolFailureHandlerReported
+	}
+	// A screenshot is an outbound artifact, not model context. Preserve it for
+	// the final gateway response and replace the base64 body with the same small
+	// observation used by the legacy loop. Without this, Lansenger receives only
+	// the model's text claiming the screenshot was sent.
+	screenshot := parseToolPayloadResultForPlatformLang(exec.Text, platform, c.handler.imUILangOrZh())
+	if screenshot.ImageKey != "" {
+		// A semantic capture selection must publish an ArtifactRef before any
+		// channel delivery can happen. Return the opaque transport payload to the
+		// bound adapter, which immediately consumes it into the broker; do not
+		// populate the final response here.
+		if c.semanticSurface != nil {
+			c.semanticCapturedImageKey = screenshot.ImageKey
+			return c.finishSharedToolExecution(requestID, toolCallID, name, argsJSON, screenshot.ToolContent, true, nil)
+		}
+		c.screenshotImageKey = screenshot.ImageKey
+		return c.finishSharedToolExecution(requestID, toolCallID, name, argsJSON, screenshot.ToolContent, true, nil)
+	}
+
+	if c.semanticDeferFileMaterialize {
+		return c.finishSharedToolExecution(requestID, toolCallID, name, argsJSON, exec.Text, true, nil)
+	}
+	// Materialize [file_base64|…|im] before truncating: shared RunLoop has no
+	// post-tool artifact branch, so this is the only place desktop→WeChat runs.
+	// Pass originating platform so WeChat/Feishu channel turns report channel
+	// delivery success (LocalFilePaths) instead of false "sender unconfigured".
+	mat := c.handler.materializeToolFilePayloadForPlatform(exec.Text, platform)
+	outText := ""
+	ok := !exec.IsFailure() && exec.FailureKind != toolFailureApprovalRequired
+	if mat.Handled {
+		c.deliveredPaths = appendUniqueStrings(c.deliveredPaths, mat.LocalPaths...)
+		c.fileMaterializeNanos += mat.MaterializeNanos
+		if mat.Forwarded {
+			c.filesForwarded++
+		}
+		// Status is short; skip spill of the original multi-MB base64 blob.
+		outText = mat.Text
+	} else if agent.IsRecordAudioResult(mat.Text) {
+		// Keep interactive markers intact: never run size/semantic compression on them
+		// (core early-stops only when the prefix survives into RunLoop).
+		// Background has no desktop waveform host — match bonus-round policy.
+		if c.loopCtx != nil && c.loopCtx.Kind == LoopKindBackground {
+			outText = "record_audio is unavailable in background tasks; choose the next action directly."
+			ok = false
+		} else if rewritten := c.handler.rewriteRecordAudioMarkerForSharedLoop(c.userID, platform, mat.Text); rewritten != "" {
+			outText = rewritten
+			ok = false
+		} else {
+			outText = mat.Text
+		}
+	} else if agent.IsAskUserResult(mat.Text) {
+		outText = mat.Text
+	} else {
+		// Keep raw output through UI/ACP reporting, hooks and drift detection.
+		// RunLoop invokes ProjectToolResult exactly once before model commit.
+		outText = mat.Text
+	}
+	return c.finishSharedToolExecution(requestID, toolCallID, name, argsJSON, outText, ok, mat.LocalPaths)
+}
+
+// semanticToolsSearchMaxPerTurn bounds discovery invocations in one turn. One
+// or two lookups are legitimate; beyond that the model is spiraling on a
+// surface that discovery cannot change (production 2026-08-26: 8+ calls after
+// a burned send_file grant), so the budget ends the loop deterministically
+// with text that redirects to the tools already listed.
+const semanticToolsSearchMaxPerTurn = 4
+
+// semanticToolsSearchRepeatExhausted is the redirect for a lookup that adds
+// no directory row. It deliberately does not repeat tool names: the model
+// already has them, and echoing the catalog invites another search.
+const semanticToolsSearchRepeatExhausted = "[system] tools_search already returned this directory. Call a listed tool now, or call a petitionable name once. Do not repeat this lookup."
+
+// semanticToolsSearchDirectedExhausted is the same close after the result
+// already named a listed tool. Offering a petition again is what sent the
+// save turn back to web_fetch.
+const semanticToolsSearchDirectedExhausted = "[system] tools_search already returned this directory. Call the listed tool named in the previous result. Do not repeat this lookup."
+
+// runSemanticToolsSearch executes the discovery meta-tool under its turn
+// budget. The budget is a callback counter, not a grant: tools_search carries
+// no authority, so overspending it must never consume or alter the surface.
+// A result whose rows were all returned earlier is refused for that call.
+// The turn stays open for a different name. The 2026-09-27 knowledge-save
+// turn spent five searches re-reading the same "可请愿" line.
+func (c *sharedAgentLoopCallbacks) runSemanticToolsSearch(argsJSON string) string {
+	if c.semanticToolsSearchClosed {
+		return semanticToolsSearchBudgetExhausted()
+	}
+	c.semanticToolsSearchCalls++
+	if c.semanticToolsSearchCalls > semanticToolsSearchMaxPerTurn {
+		c.semanticToolsSearchClosed = true
+		return semanticToolsSearchBudgetExhausted()
+	}
+	result := semanticToolsSearchRun(c, argsJSON)
+	lines := semanticToolsSearchDirectoryLines(result)
+	if len(lines) == 0 {
+		return result
+	}
+	directive, hasDirective := semanticToolsSearchDirectiveKey(result)
+	_, directiveSeen := c.semanticToolsSearchDirectives[directive]
+	// Refuse this duplicate only. Closing the rest of the turn here blocked a
+	// later lookup for a different tool after one repeated search.
+	if semanticToolsSearchLinesSeen(c.semanticToolsSearchShown, lines) && (!hasDirective || directiveSeen) {
+		return c.semanticToolsSearchClosedMessage()
+	}
+	if hasDirective {
+		if c.semanticToolsSearchDirectives == nil {
+			c.semanticToolsSearchDirectives = map[string]struct{}{}
+		}
+		c.semanticToolsSearchDirectives[directive] = struct{}{}
+	}
+	if c.semanticToolsSearchShown == nil {
+		c.semanticToolsSearchShown = make(map[string]struct{}, len(lines))
+	}
+	for _, line := range lines {
+		c.semanticToolsSearchShown[line] = struct{}{}
+	}
+	return result
+}
+
+func semanticToolsSearchBudgetExhausted() string {
+	return fmt.Sprintf("[system] %s reached its limit of %d calls for this turn and is no longer available. Discovery cannot change this turn's tool surface; finish with the tools already listed, and state plainly what remains unfinished.", semanticToolsSearchName, semanticToolsSearchMaxPerTurn)
+}
+
+func (c *sharedAgentLoopCallbacks) semanticToolsSearchClosedMessage() string {
+	if c != nil && len(c.semanticToolsSearchDirectives) > 0 {
+		return semanticToolsSearchDirectedExhausted
+	}
+	return semanticToolsSearchRepeatExhausted
+}
+
+func semanticToolsSearchDirectiveKey(result string) (string, bool) {
+	idx := strings.Index(result, semanticToolsSearchListedDirectivePrefix)
+	if idx < 0 {
+		return "", false
+	}
+	line := result[idx:]
+	if end := strings.IndexByte(line, '\n'); end >= 0 {
+		line = line[:end]
+	}
+	return line, true
+}
+
+func semanticToolsSearchDirectoryLines(result string) []string {
+	var lines []string
+	for _, line := range strings.Split(result, "\n") {
+		if key, ok := semanticToolsSearchRowKey(line); ok {
+			lines = append(lines, key)
+		}
+	}
+	return lines
+}
+
+// semanticToolsSearchRowKey identifies a directory row by name and status.
+// Summary text is not part of the key: a wording change is not new
+// information, and a status change (可请愿 to 已在当前工具面) is.
+func semanticToolsSearchRowKey(line string) (string, bool) {
+	if !strings.HasPrefix(line, "- ") {
+		return "", false
+	}
+	body := strings.TrimPrefix(line, "- ")
+	name, rest, ok := strings.Cut(body, " — ")
+	name = strings.TrimSpace(name)
+	if !ok || name == "" {
+		return line, true
+	}
+	status := ""
+	if i := strings.LastIndex(rest, "["); i >= 0 {
+		status = rest[i:]
+	}
+	return name + "\x00" + status, true
+}
+
+func semanticToolsSearchLinesSeen(shown map[string]struct{}, lines []string) bool {
+	if len(shown) == 0 || len(lines) == 0 {
+		return false
+	}
+	for _, line := range lines {
+		if _, ok := shown[line]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// executeSemanticTool resolves the opaque function name only through this
+// turn's signed grant. In particular, it does not accept provider, skill, MCP
+// server, implementation, or selection identity from model arguments.
+func (c *sharedAgentLoopCallbacks) executeSemanticTool(functionName, argsJSON string) string {
+	if c == nil || c.handler == nil || c.semanticSurface == nil || c.semanticSurface.issuer == nil || c.semanticSurface.executor == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	functionName = c.bindSemanticFunctionName(functionName, argsJSON)
+	if functionName == semanticToolsSearchName {
+		return c.runSemanticToolsSearch(argsJSON)
+	}
+	grant, ok := c.semanticSurface.grants[functionName]
+	if !ok {
+		grant, ok = c.semanticSurface.retiredGrants[functionName]
+	}
+	if !ok {
+		return semanticGrantRejectMessage("selection_not_authorized")
+	}
+	if reason := c.semanticIntakeRejectReason(functionName, argsJSON); reason != "" {
+		return "[system rejected] " + reason
+	}
+	if reason := c.semanticReceiptIntakeRejection(functionName); reason != "" {
+		return reason
+	}
+	// Knowledge ingest's source check used to run inside the adapter, after
+	// the one-shot grant was admitted, so a correctable text+path call closed
+	// the tool. Refuse it here, before admission, matching the coordinated path.
+	if selection, ok := semanticSelectionByID(c.semanticSurface.plan, grant.SelectionID); ok && selection.FitProof.MatchedCapability == tool.CapabilityKnowledgeIngestLocal {
+		if _, err := c.semanticCanonicalArguments(selection, argsJSON); err != nil {
+			return semanticModelParameterRejection(semanticCanonicalRejectionText(err))
+		}
+	}
+	// The executor admits the signed grant, loads durable predecessor facts,
+	// acquires a conditional selection run record, then invokes the immutable
+	// adapter. No callback-local completion map may manufacture DAG progress.
+	invoke := func(active tool.InvocationGrant) (tool.SelectionExecutionResult, tool.PlannedSelection, error) {
+		return c.semanticSurface.executor.Execute(active, semanticGrantValidateScope(c.semanticSurface.scope, active.Scope), c.semanticSurface.plan, c.semanticSurface.completed, func(selection tool.PlannedSelection) tool.SelectionExecutionResult {
+			return c.executeBoundSemanticSelection(selection, argsJSON)
+		})
+	}
+	if renewed, renewErr := c.renewExpiredGrantIfClock(functionName, grant); renewErr != nil {
+		return semanticGrantRejectMessage(renewErr.Error())
+	} else {
+		grant = renewed
+	}
+	execResult, selection, err := invoke(grant)
+	if invocationGrantExpired(err) {
+		renewed, renewErr := c.renewExpiredLiveGrant(functionName, grant)
+		if renewErr != nil {
+			log.Printf("[semantic-routing] expired grant for tool %s selection %s stayed expired: %v", functionName, grant.SelectionID, renewErr)
+			return semanticGrantRejectMessage(err.Error())
+		}
+		execResult, selection, err = invoke(renewed)
+	}
+	if err != nil {
+		return semanticGrantRejectMessage(err.Error())
+	}
+	result := execResult.Result
+	// A paused user interaction is not an outcome: the gate that emitted the
+	// ask marker (e.g. the unreviewed-MCP write confirmation) executed
+	// nothing, so the one-shot grant must survive for the model to re-issue
+	// the paused call after the user's answer. Retiring here would strand
+	// every approved call behind a token the surface no longer carries.
+	// Paused is the signal — an __ASK_USER__ payload alone is not: a mailbox
+	// send confirmation DID execute (it froze a draft) and its grant must
+	// retire so a second call cannot freeze another message.
+	if execResult.Paused {
+		return result
+	}
+	// An awaiting-receipt selection has consumed its one-time grant and must
+	// immediately disappear from the model surface.  It has not completed its
+	// effect, however, so it must not be passed to advanceSemanticCallSurface:
+	// that function records DAG completion and could expose dependants before a
+	// trusted transport receipt settles the operation.
+	if execResult.AwaitingReceipt {
+		if err := c.retireSemanticToolSurface(functionName, selection.ID); err != nil {
+			return "[system rejected] semantic_plan_retire_failed"
+		}
+		return result
+	}
+	if !execResult.Succeeded || semanticSelectionFailed(result) {
+		delete(c.semanticSurface.pendingArtifacts, selection.ID)
+		return c.retireRejectedSemanticTool(functionName, selection.ID, result, execResult.ReasonCode)
+	}
+	if err := c.registerSemanticArtifacts(selection.ID); err != nil {
+		return "[system rejected] artifact_route_state_record_failed"
+	}
+	note, err := c.advanceSemanticToolSurface(selection.ID)
+	if err != nil {
+		return semanticAdvanceAfterSuccess(withSemanticSelectionProvenance(result, selection), err)
+	}
+	return withSemanticSelectionProvenance(result, selection) + note
+}
+
+// executeSemanticToolCall persists the model call identity before grant
+// consumption. The journal is deliberately in front of PlanExecutor: retrying
+// the same host call returns its terminal projection rather than consuming a
+// fresh grant or invoking the adapter twice.
+func (c *sharedAgentLoopCallbacks) executeSemanticToolCall(functionName, argsJSON, callID string) string {
+	return c.executeSemanticToolCallWithEpoch(functionName, argsJSON, callID, "")
+}
+
+func hostCallAcquireModelText(result tool.SelectionExecutionResult) string {
+	if result.Unknown && result.ReasonCode == "host_call_unknown" {
+		return "[system unknown] host_call_unknown"
+	}
+	if strings.TrimSpace(result.Result) != "" {
+		return result.Result
+	}
+	if reason := strings.TrimSpace(result.ReasonCode); reason != "" {
+		return "[system rejected] " + reason
+	}
+	return "[system rejected] host_call_unavailable"
+}
+
+func (c *sharedAgentLoopCallbacks) executeSemanticToolCallWithEpoch(functionName, argsJSON, callID, surfaceEpoch string) string {
+	if c == nil || c.handler == nil || c.semanticSurface == nil || c.semanticSurface.issuer == nil || c.semanticSurface.executor == nil || c.semanticSurface.hostCalls == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	functionName = c.bindSemanticFunctionName(functionName, argsJSON)
+	if functionName == semanticToolsSearchName {
+		return c.runSemanticToolsSearch(argsJSON)
+	}
+	grant, ok := c.semanticSurface.grants[functionName]
+	if !ok {
+		grant, ok = c.semanticSurface.retiredGrants[functionName]
+	}
+	if !ok {
+		return semanticGrantRejectMessage("selection_not_authorized")
+	}
+	if reason := c.semanticIntakeRejectReason(functionName, argsJSON); reason != "" {
+		return "[system rejected] " + reason
+	}
+	if reason := c.semanticReceiptIntakeRejection(functionName); reason != "" {
+		return reason
+	}
+	if c.semanticSurface.coordinator != nil {
+		return c.executeCoordinatedSemanticToolCall(functionName, argsJSON, callID, surfaceEpoch, grant)
+	}
+	selection, ok := semanticSelectionByID(c.semanticSurface.plan, grant.SelectionID)
+	if !ok {
+		return semanticGrantRejectMessage("invocation_grant_selection_not_found")
+	}
+	canonicalArgs, err := c.semanticCanonicalArguments(selection, argsJSON)
+	requestDigest := "invalid:" + tool.SchemaDigest([]byte(argsJSON))
+	if err == nil {
+		requestDigest = canonicalArgs.Digest
+		// Bind the journal to the successor. Renewing after MarkAdmitted
+		// would record the revoked nonce while the executor consumes the new one.
+		renewed, renewErr := c.renewExpiredGrantIfClock(functionName, grant)
+		if renewErr != nil {
+			return semanticGrantRejectMessage(renewErr.Error())
+		}
+		grant = renewed
+	}
+	identity := tool.HostCallIdentity{Protocol: "agent-loop/v1", ConnectionID: c.semanticHostConnectionID(), CallID: strings.TrimSpace(callID), SurfaceEpoch: strings.TrimSpace(surfaceEpoch)}
+	fingerprint := c.semanticSurface.issuer.Fingerprint(grant)
+	record, action, journalErr := c.semanticSurface.hostCalls.Acquire(identity, fingerprint, requestDigest, time.Now().UTC())
+	if journalErr != nil {
+		return semanticGrantRejectMessage(journalErr.Error())
+	}
+	acquired := action
+	action = tool.ResolveHostCallAcquireAction(action, record, requestDigest)
+	if result, done := tool.HostCallAcquireTerminal(acquired, action, record, nil, c.semanticSurface.scope, grant.SelectionID); done {
+		return hostCallAcquireModelText(result)
+	}
+	if _, journalErr := c.semanticSurface.hostCalls.MarkAdmitted(identity, fingerprint, requestDigest, time.Now().UTC()); journalErr != nil {
+		return "[system rejected] " + journalErr.Error()
+	}
+	// Parameter refusal happens BEFORE the adapter runs, so it consumes no
+	// grant — identical to the coordinated path (see
+	// executeCoordinatedSemanticToolCall). The journal still records the
+	// terminal projection, keeping same-call replay stable without turning a
+	// correctable slip into a burned one-shot grant. The fail-closed raw
+	// digest keeps an invalid body distinguishable from any valid canonical
+	// request under the same host call ID.
+	result := ""
+	if err != nil {
+		result = semanticModelParameterRejection(semanticCanonicalRejectionText(err))
+	} else {
+		result = c.executeSemanticToolWithCanonical(functionName, grant, canonicalArgs)
+	}
+	if _, journalErr := c.semanticSurface.hostCalls.Complete(identity, fingerprint, requestDigest, result, time.Now().UTC()); journalErr != nil {
+		// The adapter may have run, but a host cannot safely report a result that
+		// it failed to durably correlate with the original model call.
+		return "[system rejected] " + journalErr.Error()
+	}
+	return result
+}
+
+// executeCoordinatedSemanticToolCall is the App-hosted execution path. It
+// makes host-call state and one-time grant consumption one atomic commit for
+// both valid and invalid requests. The adapter runs only after valid admission
+// and completion is persisted with the route projection in a second
+// transaction.
+func (c *sharedAgentLoopCallbacks) executeCoordinatedSemanticToolCall(functionName, argsJSON, callID, surfaceEpoch string, grant tool.InvocationGrant) string {
+	if c == nil || c.semanticSurface == nil || c.semanticSurface.coordinator == nil || c.semanticSurface.issuer == nil || c.semanticSurface.executor == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	selection, ok := semanticSelectionByID(c.semanticSurface.plan, grant.SelectionID)
+	if !ok {
+		return semanticGrantRejectMessage("invocation_grant_selection_not_found")
+	}
+	identity := tool.HostCallIdentity{Protocol: "agent-loop/v1", ConnectionID: c.semanticHostConnectionID(), CallID: strings.TrimSpace(callID), SurfaceEpoch: strings.TrimSpace(surfaceEpoch)}
+	canonical, err := c.semanticCanonicalArguments(selection, argsJSON)
+	if err != nil {
+		// Validation refused admission BEFORE anything executed: no adapter ran,
+		// no effect is possible, so there is nothing to journal or recover.
+		// Consuming the one-shot grant here bought nothing — the model already
+		// sees the full rendered schema, so rejection detail is no oracle — and
+		// in production it burned grants on correctable slips faster than the
+		// wash layer could absorb them (stringified slides with malformed inner
+		// JSON, 2026-08-26 birthday-deck turn, the fourth incident of its
+		// class). The grant therefore stays live and the tool stays rendered;
+		// the model corrects the arguments and calls again. Identical arguments
+		// fail validation deterministically, so same-call replay needs no
+		// durable record. Blind retry storms stay bounded by the loop's
+		// same-tool failure counter and the no-progress breaker.
+		return semanticModelParameterRejection(semanticCanonicalRejectionText(err))
+	}
+	if _, err := c.semanticSurface.issuer.ValidateWithCanonicalScope(grant, semanticGrantValidateScope(c.semanticSurface.scope, grant.Scope), c.semanticSurface.plan, c.semanticSurface.completed); err != nil {
+		if !invocationGrantExpired(err) {
+			return semanticGrantRejectMessage(err.Error())
+		}
+		renewed, renewErr := c.renewExpiredLiveGrant(functionName, grant)
+		if renewErr != nil {
+			log.Printf("[semantic-routing] expired grant for tool %s selection %s stayed expired: %v", functionName, grant.SelectionID, renewErr)
+			return semanticGrantRejectMessage(err.Error())
+		}
+		grant = renewed
+	}
+	// A prepared delivery intent is scoped to exactly one adapter invocation.
+	// Never let a prior selection's transient projection influence a later
+	// receipt-bound external effect in the same callback instance.
+	c.semanticPreparedDelivery = nil
+	admission := tool.SemanticExecutionAdmission{Identity: identity, Grant: grant, RequestDigest: canonical.Digest, Scope: c.semanticSurface.scope, Selection: selection, Now: time.Now().UTC()}
+	record, action, err := c.semanticSurface.coordinator.Admit(admission)
+	if err != nil {
+		return semanticGrantRejectMessage(err.Error())
+	}
+	acquired := action
+	action = tool.ResolveHostCallAcquireAction(action, record, admission.RequestDigest)
+	var store tool.PlanExecutionStore
+	if c.semanticSurface.coordinator != nil {
+		store = c.semanticSurface.coordinator.Executions
+	}
+	if result, done := tool.HostCallAcquireTerminal(acquired, action, record, store, c.semanticSurface.scope, grant.SelectionID); done {
+		return hostCallAcquireModelText(result)
+	}
+	result, selected, err := c.semanticSurface.executor.ExecuteAdmitted(selection, c.semanticSurface.scope, c.semanticSurface.plan, func(selection tool.PlannedSelection) tool.SelectionExecutionResult {
+		ctx, cancel := c.semanticDynamicExecutionContext()
+		defer cancel()
+		return c.executeBoundSemanticSelectionCanonicalWithContext(agentservice.WithDynamicSemanticAdmission(ctx, admission), selection, canonical, true)
+	})
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	if result.Paused {
+		// A paused interaction ran no adapter and no effect: the admission
+		// must stay open so the model can re-issue the call after the user's
+		// answer. Completing it here — even as failed — would burn the
+		// one-shot admission on a question. The ask marker text alone is not
+		// the signal: a confirmation that already executed an effect (a
+		// frozen mailbox draft) settles through the ordinary outcome path.
+		return result.Result
+	}
+	if c.usesUnifiedDynamicEffectCoordinator(selected) && (result.AwaitingReceipt || result.Unknown || result.Succeeded || result.ReasonCode == "dynamic_binding_stale" || strings.HasSuffix(result.ReasonCode, "_binding_stale") || strings.HasSuffix(result.ReasonCode, "_bound_execution_unavailable")) {
+		// The dynamic external-effect coordinator committed the host call and
+		// plan execution atomically with the operation state. Completing it
+		// again through the generic path would corrupt the one-way state
+		// transition or turn an awaiting receipt into a false success.
+		delete(c.semanticSurface.pendingArtifacts, selected.ID)
+		if c.replanAfterSemanticLifecycleFailure(result.ReasonCode) {
+			return result.Result
+		}
+		if err := c.retireSemanticToolSurface(functionName, selected.ID); err != nil {
+			return "[system rejected] semantic_plan_retire_failed"
+		}
+		return result.Result
+	}
+	state, result := tool.PlanExecutionStateFromResult(result)
+	if strings.TrimSpace(result.ReasonCode) == "" {
+		switch state {
+		case tool.PlanExecutionUnknown:
+			result.ReasonCode = "selection_execution_unknown"
+		case tool.PlanExecutionAwaitingReceipt:
+			result.ReasonCode = "selection_awaiting_receipt"
+		case tool.PlanExecutionFailed:
+			result.ReasonCode = "selection_execution_failed"
+		}
+	}
+	artifacts := []tool.ArtifactRef(nil)
+	payloads := []tool.ArtifactPayload(nil)
+	if state == tool.PlanExecutionSucceeded {
+		payloads = append(payloads, c.semanticSurface.pendingArtifacts[selected.ID]...)
+		for _, payload := range payloads {
+			artifacts = append(artifacts, payload.Ref)
+		}
+	}
+	if state == tool.PlanExecutionAwaitingReceipt && c.semanticPreparedDelivery != nil {
+		record, _, err := c.semanticSurface.coordinator.PrepareDeliveryAndComplete(admission, *c.semanticPreparedDelivery, result.Result, result.ReasonCode, time.Now().UTC())
+		if err != nil {
+			return "[system rejected] " + err.Error()
+		}
+		if c.semanticDelivery != nil {
+			c.semanticDelivery.Scope = record.Scope
+			c.semanticDelivery.SelectionID = record.SelectionID
+			c.semanticDelivery.ChannelScope = record.ChannelScope
+			c.semanticDelivery.DestinationID = record.DestinationID
+		}
+	} else if len(payloads) > 0 {
+		if _, err := c.semanticSurface.coordinator.CompleteWithArtifactPayloads(admission, state, result.Result, result.ReasonCode, payloads, time.Now().UTC()); err != nil {
+			return "[system rejected] " + err.Error()
+		}
+	} else if _, err := c.semanticSurface.coordinator.CompleteWithArtifacts(admission, state, result.Result, result.ReasonCode, artifacts, time.Now().UTC()); err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	if result.AwaitingReceipt {
+		if err := c.retireSemanticToolSurface(functionName, selected.ID); err != nil {
+			return "[system rejected] semantic_plan_retire_failed"
+		}
+		return result.Result
+	}
+	if !result.Succeeded || semanticSelectionFailed(result.Result) {
+		delete(c.semanticSurface.pendingArtifacts, selected.ID)
+		// Read-only dynamic bindings use the generic completion transaction,
+		// unlike receipt-bound dynamic effects above. Once that terminal failure
+		// is durable, a confirmed binding invalidation may publish one constrained
+		// child revision. Do not apply this to builtin/channel failures: only a
+		// selected dynamic binding can be refreshed without changing the need.
+		if semanticSelectionIsDynamic(selected) && semanticReplanFailureEligible(result.ReasonCode) && c.replanAfterSemanticLifecycleFailure(result.ReasonCode) {
+			return result.Result
+		}
+		return c.retireRejectedSemanticTool(functionName, selected.ID, result.Result, result.ReasonCode)
+	}
+	// CompleteWithArtifacts made the immutable route projection visible in the
+	// same transaction as selection success. The callback-local list is now
+	// merely transient bookkeeping and must not write a second store.
+	delete(c.semanticSurface.pendingArtifacts, selected.ID)
+	note, err := c.advanceSemanticToolSurface(selected.ID)
+	if err != nil {
+		return semanticAdvanceAfterSuccess(result.Result, err)
+	}
+	return result.Result + note
+}
+
+// replanAfterSemanticLifecycleFailure advances only a binding-invalidated
+// dynamic selection to one child revision. The child is built exclusively
+// from trusted route input captured before the original plan was materialized;
+// old grants, host calls and model arguments never enter the new surface.
+//
+// Unknown and awaiting-receipt outcomes are intentionally ineligible: their
+// recovery path is receipt reconciliation, never a second dispatch.
+func (c *sharedAgentLoopCallbacks) replanAfterSemanticLifecycleFailure(reasonCode string) bool {
+	if c == nil || c.handler == nil || c.semanticSurface == nil || !semanticReplanFailureEligible(reasonCode) {
+		return false
+	}
+	ctx, cancel := c.semanticDynamicExecutionContext()
+	defer cancel()
+	child, definitions, err := c.handler.replanSemanticCallSurfaceWithContext(ctx, c.semanticSurface, reasonCode)
+	if err != nil {
+		return false
+	}
+	c.semanticSurface = child
+	c.setVisibleToolDefinitions(definitions)
+	return true
+}
+
+// semanticModelParameterRejection appends recovery guidance to parameter
+// refusals at the model-host protocol boundary. It deliberately leaves direct
+// local adapter execution unchanged for operator diagnostics and tests; those
+// calls do not carry a host call ID and are never replayed as model tool calls.
+//
+// A refusal that already localizes the failure (unknown field path, type
+// mismatch, missing required key — all against the fully rendered schema, so
+// no oracle) keeps its detail and only gains the guidance; withholding the
+// path forced the model to guess which field offended and burned the turn's
+// failure budget on blind retries (2026-08-27 birthday-deck turn: three
+// rejections on a slide-level subtitle the model never suspected). Only the
+// bare generic code — authorization-closure or internal failures — is
+// replaced by the fixed text. Blindly replaying identical arguments stays
+// bounded by the loop's same-tool failure counter.
+func semanticModelParameterRejection(result string) string {
+	return agentruntime.ParameterRejectionGuidance(result)
+}
+
+func (c *sharedAgentLoopCallbacks) semanticHostConnectionID() string {
+	if c != nil && c.semanticSurface != nil {
+		return strings.TrimSpace(c.semanticSurface.hostConnectionID)
+	}
+	return ""
+}
+
+func (c *sharedAgentLoopCallbacks) bindSemanticFunctionName(functionName, argsJSON string) string {
+	if c == nil || c.semanticSurface == nil {
+		return strings.TrimSpace(functionName)
+	}
+	resolved := c.semanticSurface.resolveFunctionName(functionName)
+	_ = argsJSON
+	if resolved == strings.TrimSpace(functionName) {
+		return resolved
+	}
+	return resolved
+}
+
+func semanticSelectionByID(plan tool.ToolPlan, selectionID string) (tool.PlannedSelection, bool) {
+	return tool.PlanSelectionByID(plan, selectionID)
+}
+
+func (c *sharedAgentLoopCallbacks) executeSemanticToolWithCanonical(functionName string, grant tool.InvocationGrant, canonicalArgs tool.CanonicalRequest) string {
+	invoke := func(active tool.InvocationGrant) (tool.SelectionExecutionResult, tool.PlannedSelection, error) {
+		return c.semanticSurface.executor.Execute(active, semanticGrantValidateScope(c.semanticSurface.scope, active.Scope), c.semanticSurface.plan, c.semanticSurface.completed, func(selection tool.PlannedSelection) tool.SelectionExecutionResult {
+			return c.executeBoundSemanticSelectionCanonical(selection, canonicalArgs)
+		})
+	}
+	// The journal path renews before Acquire. A second renewal here would
+	// consume a successor the host-call row does not name.
+	execResult, selection, err := invoke(grant)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	result := execResult.Result
+	// See executeSemanticTool.  The canonical/journalled path has identical
+	// receipt semantics: retire the current opaque function without projecting
+	// a successful plan dependency.
+	if execResult.AwaitingReceipt {
+		if err := c.retireSemanticToolSurface(functionName, selection.ID); err != nil {
+			return "[system rejected] semantic_plan_retire_failed"
+		}
+		return result
+	}
+	if !execResult.Succeeded || semanticSelectionFailed(result) {
+		delete(c.semanticSurface.pendingArtifacts, selection.ID)
+		return c.retireRejectedSemanticTool(functionName, selection.ID, result, execResult.ReasonCode)
+	}
+	if err := c.registerSemanticArtifacts(selection.ID); err != nil {
+		return "[system rejected] artifact_route_state_record_failed"
+	}
+	note, err := c.advanceSemanticToolSurface(selection.ID)
+	if err != nil {
+		return semanticAdvanceAfterSuccess(withSemanticSelectionProvenance(result, selection), err)
+	}
+	return withSemanticSelectionProvenance(result, selection) + note
+}
+
+func removeToolDefinitionByName(definitions []map[string]interface{}, functionName string) []map[string]interface{} {
+	return agentruntime.FilterToolDefinitionsByName(definitions, functionName)
+}
+
+// retireRejectedSemanticTool closes a terminal model invocation without
+// projecting plan success. It serves adapter-failure paths only: the grant
+// was admitted and the adapter ran, so the attempt had observable I/O and
+// must own exactly one durable execution record. Pre-execution validation
+// refusals never reach here — they leave the grant live for a corrected
+// retry (see executeCoordinatedSemanticToolCall). The retired lookup remains
+// solely for durable same-host-call replay.
+func (c *sharedAgentLoopCallbacks) retireRejectedSemanticTool(functionName, selectionID, result, reasonCode string) string {
+	if c == nil || c.semanticSurface == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	// A settled file write or remote command spent its node. List the next
+	// call before the refresh below, so the following request still has it.
+	// An unsettled attempt must not grow the plan: the command may still be
+	// running. Binding recovery and cancellation are not a finished command.
+	// noteSpentRemoteCommand must not list again. Refresh marks the new
+	// node issued, and a second ensure would append another call that no
+	// grant has been given yet.
+	if repeatSelectionSpent(c.semanticSurface, selectionID) && tool.SettledIterativeListingAllowed(tool.SelectionExecutionResult{ReasonCode: reasonCode}) {
+		c.ensureNextObligationFileWrite(selectionID)
+		c.ensureNextIterativeRemoteCommand(selectionID)
+	}
+	if err := c.retireSemanticToolSurface(functionName, selectionID); err != nil {
+		return "[system rejected] semantic_plan_retire_failed"
+	}
+	return c.noteSpentRemoteCommand(selectionID, result)
+}
+
+// noteSpentRemoteCommand keeps a settled remote failure from narrating a
+// turn limit. The next command was listed once, before refresh. This
+// function does not append another node: after refresh that node is
+// issued, and appending here would queue a second unissued command.
+// An unsettled attempt stays silent so the same command is not run twice.
+func (c *sharedAgentLoopCallbacks) noteSpentRemoteCommand(selectionID, result string) string {
+	if c == nil || c.semanticSurface == nil || strings.Contains(result, tool.RepeatWaveListedMarker) {
+		return result
+	}
+	selection, ok := semanticSelectionByID(c.semanticSurface.plan, selectionID)
+	if !ok || selection.FitProof.MatchedCapability != tool.CapabilityShellExecuteRemoteHost {
+		return result
+	}
+	if !repeatSelectionSpent(c.semanticSurface, selectionID) {
+		return result
+	}
+	// The next command is a plan node. A prose promise here is what the model
+	// repeated as "稍后自动继续" after the host then refused the call.
+	note := semanticSpentBudgetNote(c.semanticSurface, selectionID)
+	if note == "" {
+		return result
+	}
+	return result + note
+}
+
+// retireSemanticToolSurface removes one consumed adapter from the transient
+// host list, durably retires its materialization, then replaces the entire
+// model-visible list from the remaining active grants. The last step prevents
+// branch-local append/remove code from accidentally retaining a stale opaque
+// function or omitting another still-ready selection.
+func (c *sharedAgentLoopCallbacks) retireSemanticToolSurface(functionName, selectionID string) error {
+	if c == nil || c.semanticSurface == nil {
+		return fmt.Errorf("semantic tool surface is unavailable")
+	}
+	// Hide immediately even if the durable write fails. The grant has already
+	// been consumed, so re-exposure would create a stale retry authority.
+	// A retired attempt spends one session invocation, including failures and
+	// awaiting-receipt calls. Success is counted on advance instead.
+	if c.loopCtx != nil {
+		if selection, ok := semanticSelectionByID(c.semanticSurface.plan, selectionID); ok {
+			c.loopCtx.noteSemanticResidueUse(selection.FitProof.MatchedCapability)
+		}
+	}
+	c.tools = removeToolDefinitionByName(c.tools, functionName)
+	if _, err := retireSemanticCallSurfaceSelection(c.semanticSurface, selectionID); err != nil {
+		log.Printf("[semantic-routing] retire selection %q failed: %v", selectionID, err)
+		return err
+	}
+	return c.syncSemanticToolSurface()
+}
+
+// advanceSemanticToolSurface commits trusted selection completion and derives
+// the next complete exposure closure. It intentionally does not union a
+// branch-local set of newly rendered tools with the old callback list.
+// It returns the note, if any, that the caller must append to the result of
+// the call it just completed. Returning it rather than exposing a separate
+// lookup keeps a future execution path from silently omitting it.
+func (c *sharedAgentLoopCallbacks) advanceSemanticToolSurface(selectionID string) (string, error) {
+	if c == nil || c.semanticSurface == nil {
+		return "", fmt.Errorf("semantic tool surface is unavailable")
+	}
+	// A successful file edit leaves the next write on the following request.
+	// A settled remote command leaves the next call the same way. Waiting for
+	// the model to call a name that has already left the surface is the
+	// usage-limit denial: the tool vanished, the model called it, and the
+	// reply said this turn was finished.
+	c.ensureNextObligationFileWrite(selectionID)
+	c.ensureNextIterativeRemoteCommand(selectionID)
+	var err error
+	if c.semanticHoldDependantIssue {
+		// Hold only the host-owned generate unlock. Same-family repeats
+		// (second web_search / next edit) must still issue in this batch.
+		err = completeSemanticCallSurfaceSelection(c.semanticSurface, selectionID)
+		if err == nil {
+			_, err = refreshSemanticCallSurfaceSkipping(c.semanticSurface, hostOwnedGenerateSelection)
+			if semanticHasUnissuedReadyGenerate(c.semanticSurface) {
+				c.semanticNeedDependantIssue = true
+			}
+		}
+	} else {
+		_, err = advanceSemanticCallSurface(c.semanticSurface, selectionID)
+	}
+	if err != nil {
+		log.Printf("[semantic] plan advance failed selection=%q err=%v", selectionID, err)
+		return "", err
+	}
+	if err := c.syncSemanticToolSurface(); err != nil {
+		log.Printf("[semantic] plan surface sync failed selection=%q err=%v", selectionID, err)
+		return "", err
+	}
+	if selection, ok := semanticSelectionByID(c.semanticSurface.plan, selectionID); ok && c.loopCtx != nil {
+		c.loopCtx.noteSemanticResidueUse(selection.FitProof.MatchedCapability)
+	}
+	return semanticSpentBudgetNote(c.semanticSurface, selectionID), nil
+}
+
+// ensureNextObligationFileWrite appends one fs.write.local sibling when the
+// call that just succeeded spent the published wave. The following refresh
+// lists it. A baseline or archetype companion stays at the wave it was given.
+// An unissued sibling already in the plan is left to that refresh.
+func (c *sharedAgentLoopCallbacks) ensureNextObligationFileWrite(selectionID string) {
+	c.ensureNextIterativeSibling(selectionID, obligationLocalFileWrite, "file write")
+}
+
+// ensureNextIterativeRemoteCommand appends one shell.execute.remote_host
+// sibling when the call that just settled spent the published wave. The
+// following refresh lists it. Stopping after one extra call and reporting a
+// turn usage limit is what ended the unfinished file-cn install.
+func (c *sharedAgentLoopCallbacks) ensureNextIterativeRemoteCommand(selectionID string) {
+	c.ensureNextIterativeSibling(selectionID, obligationRemoteCommand, "remote command")
+}
+
+func (c *sharedAgentLoopCallbacks) ensureNextIterativeSibling(selectionID string, owns func(tool.ToolPlan, tool.PlannedSelection) bool, kind string) {
+	if c == nil || c.semanticSurface == nil || owns == nil {
+		return
+	}
+	selection, found := semanticSelectionByID(c.semanticSurface.plan, selectionID)
+	if !found || !owns(c.semanticSurface.plan, selection) {
+		return
+	}
+	if familyHasUnissuedSibling(c.semanticSurface, selection, selectionID) {
+		return
+	}
+	var updated tool.ToolPlan
+	var err error
+	if c.semanticSurface.coordinator != nil {
+		updated, err = c.semanticSurface.coordinator.AppendRepeatSibling(c.semanticSurface.scope, selectionID, time.Now().UTC())
+	} else {
+		var opened bool
+		updated, _, opened = tool.AppendRepeatSibling(c.semanticSurface.plan, selectionID)
+		if !opened {
+			err = fmt.Errorf("repeat sibling unavailable")
+		}
+	}
+	if err != nil {
+		log.Printf("[semantic] next %s was not listed: %v", kind, err)
+		return
+	}
+	c.semanticSurface.plan = updated
+}
+
+func obligationLocalFileWrite(plan tool.ToolPlan, selection tool.PlannedSelection) bool {
+	return obligationIterativeFamily(plan, selection, tool.IterativeLocalFileWrite(selection))
+}
+
+func obligationRemoteCommand(plan tool.ToolPlan, selection tool.PlannedSelection) bool {
+	return obligationIterativeFamily(plan, selection, tool.IterativeRemoteCommand(selection))
+}
+
+// obligationIterativeFamily is true when selection is the iterative capability
+// and the family still contains the task's own need. A family made only of
+// baseline or archetype companions keeps the wave it was given.
+func obligationIterativeFamily(plan tool.ToolPlan, selection tool.PlannedSelection, iterative bool) bool {
+	if !iterative {
+		return false
+	}
+	family := tool.SelectionRepeatFamily(selection)
+	if family == "" {
+		return false
+	}
+	for _, other := range plan.Selections {
+		if !tool.SelectionInRepeatFamily(other, family) {
+			continue
+		}
+		if !companionPlannedSelection(other) {
+			return true
+		}
+	}
+	return false
+}
+
+func companionPlannedSelection(selection tool.PlannedSelection) bool {
+	return tool.RepeatSelectionIsCompanion(selection)
+}
+
+func familyHasUnissuedSibling(surface *semanticCallSurface, prototype tool.PlannedSelection, exceptID string) bool {
+	if surface == nil {
+		return false
+	}
+	return tool.RepeatFamilyHasUnissuedSibling(surface.plan, prototype, exceptID, func(id string) bool {
+		return surface.completed[id] || surface.materialized[id]
+	})
+}
+
+func hostOwnedGenerateSelection(selection tool.PlannedSelection) bool {
+	return tool.DocumentGenerateSelection(selection)
+}
+
+func semanticHasUnissuedReadyGenerate(surface *semanticCallSurface) bool {
+	if surface == nil {
+		return false
+	}
+	return tool.HasUnissuedReadyDocumentGenerate(surface.plan, surface.completed, surface.materialized)
+}
+
+func (c *sharedAgentLoopCallbacks) releaseSemanticDependantIssue() {
+	if c == nil {
+		return
+	}
+	// A complete tool batch may already have advanced the in-memory semantic
+	// plan before its paired history reaches durable storage.  Final-response
+	// projection is deliberately allowed to retry a previously failed release,
+	// but it must never turn an outstanding pre-tool checkpoint into a new
+	// authority boundary.  In particular, attachment flushing can run on
+	// terminal/error paths, so keep the dependant held until the batch is
+	// committed (or an interactive pause has atomically paired it).
+	if c.hasPendingToolBatch || c.semanticDurabilityBlocked {
+		return
+	}
+	c.semanticHoldDependantIssue = false
+	if c.semanticSurface == nil || !c.semanticNeedDependantIssue {
+		return
+	}
+	if _, err := refreshSemanticCallSurface(c.semanticSurface); err != nil {
+		log.Printf("[semantic] delayed dependant issue failed: %v", err)
+		return
+	}
+	if semanticHasUnissuedReadyGenerate(c.semanticSurface) {
+		log.Printf("[semantic] delayed generate still unissued after refresh")
+		return
+	}
+	c.semanticNeedDependantIssue = false
+	if err := c.syncSemanticToolSurface(); err != nil {
+		log.Printf("[semantic] delayed dependant sync failed: %v", err)
+	}
+}
+
+func semanticRetiredGeneratePDF(surface *semanticCallSurface) bool {
+	if surface == nil {
+		return false
+	}
+	return tool.HasRetiredGrantByAdapter(surface.retiredGrants, "generate_pdf") ||
+		tool.HasRetiredGrantByAdapter(surface.retiredGrants, "host_document_generate_file")
+}
+
+// semanticAdvanceAfterSuccess keeps a trusted adapter result when the next
+// exposure closure cannot be derived. Replacing success with a generic reject
+// made the model treat a published PDF as unauthorized and retry the spent
+// grant. The host still logs the real advance error for operators.
+func semanticAdvanceAfterSuccess(result string, err error) string {
+	if err != nil {
+		log.Printf("[semantic] keep successful result after plan advance failure err=%v", err)
+	}
+	return agentruntime.AdvanceAfterSuccess(result)
+}
+
+func (c *sharedAgentLoopCallbacks) syncSemanticToolSurface() error {
+	if c == nil || c.semanticSurface == nil {
+		return fmt.Errorf("semantic tool surface is unavailable")
+	}
+	definitions, err := visibleSemanticCallSurfaceDefinitions(c.semanticSurface)
+	if err != nil {
+		return err
+	}
+	c.setVisibleToolDefinitions(definitions)
+	return nil
+}
+
+func semanticSelectionFailed(result string) bool {
+	return agentruntime.SelectionFailed(result)
+}
+
+// semanticSelectionOutcomeUnknown recognises the marker a trusted host adapter
+// emits when its effect may or may not have landed: an SSH session that
+// vanished after the command was written, a browser or desktop host that
+// vanished, a delegate whose child receipt never arrived, a push whose remote
+// could not be read back. A wait timeout is not in this set: the session is
+// still bound, and the next command in the same turn must stay available.
+//
+// This is deliberately not a failure. A failure says the effect did not happen
+// and may be retried; an unknown says nobody can tell, so the plan must record
+// PlanExecutionUnknown and consume the grant rather than invite a retry that
+// could commit the same effect twice.
+func semanticSelectionOutcomeUnknown(result string) bool {
+	return agentruntime.SelectionOutcomeUnknown(result)
+}
+
+// semanticGrantRejectMessage keeps the machine-readable grant code so tests and
+// telemetry still match, but tells the model to answer instead of asking the
+// user to re-authorize tools that this turn cannot run.
+func semanticGrantRejectMessage(code string) string {
+	return agentruntime.GrantRejectMessage(code)
+}
+
+// invocationGrantExpired reports the wall-clock failure exactly. A longer code
+// such as invocation_grant_not_expired must not take the renewal path.
+func invocationGrantExpired(err error) bool {
+	return err != nil && err.Error() == "invocation_grant_expired"
+}
+
+// semanticGrantWindowPassed reports that the wall clock is at or past the
+// signed expiry. A zero expiry stays on the admission path.
+func semanticGrantWindowPassed(expiresAt time.Time) bool {
+	expiresAt = expiresAt.UTC()
+	return !expiresAt.IsZero() && !time.Now().UTC().Before(expiresAt)
+}
+
+// semanticGrantValidateScope is the scope a signed grant is checked against.
+// Compatibility already binds the turn. The signed scope is then used so a
+// route snapshot filled in at renewal still matches the signature. Two
+// different turns keep the host scope and fail that check.
+func semanticGrantValidateScope(host, signed tool.InvocationScope) tool.InvocationScope {
+	if tool.InvocationScopesCompatible(host, signed) {
+		return signed
+	}
+	return host
+}
+
+// renewExpiredGrantIfClock renews a live grant once its signed window has
+// passed, before a host-call journal is bound to the fingerprint. A grant
+// still inside its window is returned unchanged. Any other validation
+// failure is left for admission.
+func (c *sharedAgentLoopCallbacks) renewExpiredGrantIfClock(functionName string, grant tool.InvocationGrant) (tool.InvocationGrant, error) {
+	if c == nil || c.semanticSurface == nil || c.semanticSurface.issuer == nil || !semanticGrantWindowPassed(grant.ExpiresAt) {
+		return grant, nil
+	}
+	_, err := c.semanticSurface.issuer.ValidateWithCanonicalScope(grant, semanticGrantValidateScope(c.semanticSurface.scope, grant.Scope), c.semanticSurface.plan, c.semanticSurface.completed)
+	if err == nil || !invocationGrantExpired(err) {
+		return grant, nil
+	}
+	renewed, renewErr := c.renewExpiredLiveGrant(functionName, grant)
+	if renewErr != nil {
+		log.Printf("[semantic-routing] expired grant for tool %s selection %s stayed expired: %v", functionName, grant.SelectionID, renewErr)
+		return tool.InvocationGrant{}, err
+	}
+	return renewed, nil
+}
+
+// renewExpiredLiveGrant mints a successor for the live map's current unconsumed
+// grant after its signed window has passed, then continues this same call.
+// A retired, consumed, revoked, completed, or cancelled turn is left unchanged.
+// One attempt: the caller does not loop.
+func (c *sharedAgentLoopCallbacks) renewExpiredLiveGrant(functionName string, previous tool.InvocationGrant) (tool.InvocationGrant, error) {
+	if c == nil || c.semanticSurface == nil || c.semanticSurface.issuer == nil {
+		return tool.InvocationGrant{}, fmt.Errorf("invocation_grant_expired")
+	}
+	if c.loopCtx != nil && c.loopCtx.IsCancelled() {
+		return tool.InvocationGrant{}, fmt.Errorf("invocation_grant_expired")
+	}
+	surface := c.semanticSurface
+	live, ok := surface.grants[functionName]
+	if !ok || live.Nonce != previous.Nonce || live.Token != previous.Token {
+		return tool.InvocationGrant{}, fmt.Errorf("invocation_grant_not_live")
+	}
+	if surface.completed[previous.SelectionID] {
+		return tool.InvocationGrant{}, fmt.Errorf("invocation_grant_replayed")
+	}
+	now := time.Now().UTC()
+	var successor tool.InvocationGrant
+	var err error
+	if surface.coordinator != nil {
+		successor, err = surface.coordinator.CommitExpiredRenewal(surface.issuer, surface.scope, previous, semanticInvocationGrantTTL, now, surface.completed)
+	} else {
+		successor, err = surface.issuer.RenewExpired(previous, surface.scope, surface.plan, semanticInvocationGrantTTL, now, surface.completed)
+		if err == nil && surface.routeState != nil {
+			if _, retireErr := surface.routeState.RetireMaterialization(surface.scope, surface.plan.ID, previous.Token, now); retireErr != nil {
+				log.Printf("[semantic-routing] retire expired materialization for %s selection %s: %v", functionName, previous.SelectionID, retireErr)
+			}
+			if _, recordErr := surface.routeState.RecordMaterialization(surface.scope, surface.plan.ID, tool.RouteMaterialization{
+				FunctionName: successor.Token, Grant: successor, State: tool.RouteMaterializationExposed,
+			}, now); recordErr != nil {
+				log.Printf("[semantic-routing] record renewed materialization for %s selection %s: %v", functionName, previous.SelectionID, recordErr)
+			}
+		}
+	}
+	if err != nil {
+		return tool.InvocationGrant{}, err
+	}
+	if !tool.InvocationScopesCompatible(surface.scope, successor.Scope) {
+		return tool.InvocationGrant{}, fmt.Errorf("invocation_grant_scope_mismatch")
+	}
+	if err := tool.InstallRenewedGrant(surface.grants, functionName, previous, successor); err != nil {
+		return tool.InvocationGrant{}, err
+	}
+	if _, err := surface.issuer.ValidateWithCanonicalScope(successor, successor.Scope, surface.plan, surface.completed); err != nil {
+		return tool.InvocationGrant{}, err
+	}
+	// Stable names (bash, read_file, write_file, build_verify) keep the same
+	// model function. Re-rendering the catalog would only repeat the list
+	// the current request already holds. A token-named tool changes key.
+	if tool.RenderedSemanticFunctionName(successor.AdapterName, successor.Token) != functionName {
+		if syncErr := c.syncSemanticToolSurface(); syncErr != nil {
+			log.Printf("[semantic-routing] sync after grant renewal for %s selection %s: %v", functionName, previous.SelectionID, syncErr)
+		}
+	}
+	log.Printf("[semantic-routing] renewed unconsumed grant for tool %s selection %s", functionName, previous.SelectionID)
+	return successor, nil
+}
+
+// semanticSelectionRequiresReceipt is derived from the immutable planned
+// effect class, not a provider/tool name. An adapter that cannot supply the
+// appropriate trusted receipt boundary is not executable for such a selection.
+func semanticSelectionRequiresReceipt(selection tool.PlannedSelection) bool {
+	return tool.SelectionRequiresReceipt(selection)
+}
+
+// semanticBuiltinLocalMutationSelection identifies a host-owned builtin
+// provider whose declared effects are local mutations with no external effect.
+// The mutation is performed by the same host process that observes the
+// outcome, so the legacy handler result classified by semanticSelectionFailed
+// is the authoritative local completion receipt: a rejected/error projection
+// is a failure, anything else is a committed local mutation. This boundary is
+// deliberately unavailable to external effects, whose transport outcome the
+// host cannot authoritatively observe from a synchronous text return.
+func semanticBuiltinLocalMutationSelection(selection tool.PlannedSelection) bool {
+	return tool.HostLocalMutationSelection(selection, "builtin")
+}
+
+// semanticHostObservedExternalSelection identifies a host-owned trusted adapter
+// whose external effect this same process observes before it returns: the SSH,
+// browser, or desktop session it waits on, or the git ref it reads back after a
+// commit or push. The handler result is therefore the observation receipt, in
+// the same sense that a builtin local mutation's result is one.
+//
+// This is deliberately an allow-list of adapters rather than a test on the
+// effect class. "External effect" alone says nothing about whether anyone
+// watched the outcome, so a selection that merely declares it must keep failing
+// closed; only these four carry a host that did the watching.
+//
+// Unlike a channel send, none of these hand work to a transport whose outcome
+// arrives later, so they must not enter the delivery coordinator. Schedule
+// dispatch and message.send.im stay on that path.
+func semanticHostObservedExternalSelection(selection tool.PlannedSelection) bool {
+	return tool.HostObservedExternalSelection(selection, "builtin",
+		semanticTrustedSSHAdapter, semanticTrustedBrowserAdapter,
+		semanticTrustedComputerUseAdapter, semanticTrustedRepoMutateAdapter)
+}
+
+// semanticReceiptBoundaryMissing reports an external or sensitive selection
+// whose outcome nobody observes. Mailbox send has its own receipt: the
+// confirmation is not completion, and Approve settles the SMTP result.
+// semanticReceiptIntakeRejection refuses an unexecutable external selection
+// before PlanExecutor admits the grant. The inner gate remains for callers
+// that invoke the adapter directly.
+func (c *sharedAgentLoopCallbacks) semanticReceiptIntakeRejection(functionName string) string {
+	if c == nil || c.semanticSurface == nil {
+		return ""
+	}
+	grant, ok := c.semanticSurface.grants[functionName]
+	if !ok {
+		return ""
+	}
+	selection, found := semanticSelectionByID(c.semanticSurface.plan, grant.SelectionID)
+	if !found || !semanticReceiptBoundaryMissing(selection) {
+		return ""
+	}
+	return "[system rejected] external_effect_receipt_boundary_missing"
+}
+
+func semanticReceiptBoundaryMissing(selection tool.PlannedSelection) bool {
+	return semanticSelectionRequiresReceipt(selection) &&
+		!semanticCurrentChannelArtifactDelivery(selection) &&
+		!semanticScheduleChannelDispatch(selection) &&
+		!semanticSpecifiedTargetArtifactDelivery(selection) &&
+		!semanticBuiltinLocalMutationSelection(selection) &&
+		!semanticHostObservedExternalSelection(selection) &&
+		!semanticMailboxSendReceiptSelection(selection)
+}
+
+// semanticSelectionAwaitsReceipt identifies a local, host-owned receipt-aware
+// adapter that has prepared an operation but whose trusted transport outcome
+// is still pending. It keeps the generic PlanExecutor state machine
+// independent of IM text, while ensuring that a prepared external hand-off can
+// never be mistaken for a successful selection merely because the adapter
+// returned a friendly status string.
+func semanticSelectionAwaitsReceipt(selection tool.PlannedSelection) bool {
+	return semanticSelectionRequiresReceipt(selection) && (semanticCurrentChannelArtifactDelivery(selection) || semanticScheduleChannelDispatch(selection))
+}
+
+// executeBoundSemanticSelection is the one host projection from an immutable
+// adapter outcome to PlanExecutor state. Dynamic providers already return a
+// structured, receipt-aware result from their common catalog: reducing that to
+// text here would incorrectly mark awaiting/unknown effects as selection
+// success. Builtin/channel adapters retain the legacy text projection until
+// their own execution families move to the same typed boundary.
+func (c *sharedAgentLoopCallbacks) executeBoundSemanticSelection(selection tool.PlannedSelection, argsJSON string) tool.SelectionExecutionResult {
+	if c == nil || c.semanticSurface == nil {
+		return tool.SelectionExecutionResult{Result: "[system rejected] semantic tool surface is unavailable", ReasonCode: "semantic_surface_unavailable"}
+	}
+	canonicalArgs, err := c.semanticCanonicalArguments(selection, argsJSON)
+	if err != nil {
+		return tool.SelectionExecutionResult{Result: "[system rejected] " + err.Error(), ReasonCode: err.Error()}
+	}
+	return c.executeBoundSemanticSelectionCanonical(selection, canonicalArgs)
+}
+
+func (c *sharedAgentLoopCallbacks) executeBoundSemanticSelectionCanonical(selection tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) tool.SelectionExecutionResult {
+	return c.executeBoundSemanticSelectionCanonicalWithContext(context.Background(), selection, canonicalArgs, false)
+}
+
+// executeBoundSemanticSelectionCanonicalWithContext carries the already
+// admitted host call only across the trusted dynamic execution boundary. It
+// is never derived from a model argument or forwarded to a provider.
+func (c *sharedAgentLoopCallbacks) executeBoundSemanticSelectionCanonicalWithContext(ctx context.Context, selection tool.PlannedSelection, canonicalArgs tool.CanonicalRequest, coordinated bool) tool.SelectionExecutionResult {
+	if c == nil || c.semanticSurface == nil {
+		return tool.SelectionExecutionResult{Result: "[system rejected] semantic tool surface is unavailable", ReasonCode: "semantic_surface_unavailable"}
+	}
+	if result, handled := c.executeSemanticDynamicProviderWithContext(ctx, selection, string(canonicalArgs.CanonicalJSON)); handled {
+		c.recordCompletedSemanticLookupEvidence(selection, result)
+		return result
+	}
+	// Mailbox send and configure return a typed result. A confirmation card
+	// and a class error must not fall through to the plain-string success
+	// projection.
+	if semanticMailboxSendReceiptSelection(selection) {
+		return c.executeTrustedMailboxSend(ctx, canonicalArgs)
+	}
+	if semanticMailboxConfigureSelection(selection) {
+		return c.executeTrustedMailboxConfigure(ctx, canonicalArgs)
+	}
+	// An external/sensitive selection may never pass through the legacy text
+	// dispatcher unless its provider family exposes a trusted receipt boundary.
+	// Otherwise a friendly local return could be mistaken for delivery, write,
+	// or publication success. Dynamic providers have already taken their typed
+	// coordinator path above; current-channel delivery is the host-owned
+	// receipt-aware channel adapter below; a builtin sensitive-only selection is
+	// a host-local mutation whose host-owned handler outcome is the
+	// authoritative local completion receipt; a host-observed external adapter
+	// watched its own effect land before returning. Every other such selection
+	// fails closed before its legacy handler can produce an untracked side
+	// effect.
+	if semanticReceiptBoundaryMissing(selection) {
+		return tool.SelectionExecutionResult{Result: "[system rejected] external_effect_receipt_boundary_missing", ReasonCode: "external_effect_receipt_boundary_missing"}
+	}
+	// A legacy multiplexer reached through a managed grant is bounded by the
+	// capability, not by the breadth of its own schema. This refuses before the
+	// adapter runs, so an out-of-bound action never becomes an effect.
+	if reason, refused := semanticManagedInvocationRefusal(selection, canonicalArgs); refused {
+		return tool.SelectionExecutionResult{Result: semanticManagedMISRefusalText(selection.AdapterName, reason), Succeeded: false, ReasonCode: reason}
+	}
+	result := c.executeBoundSemanticAdapterCanonical(selection, canonicalArgs, coordinated)
+	if semanticSelectionFailed(result) {
+		return tool.SelectionExecutionResult{Result: result, Succeeded: false, ReasonCode: "selection_execution_failed"}
+	}
+	// Checked before the awaiting-receipt branch on purpose: an adapter that
+	// reports an indeterminate outcome must not have that answer upgraded into
+	// "a receipt is still coming", which would leave the plan waiting for
+	// evidence no one is going to produce.
+	if semanticSelectionOutcomeUnknown(result) {
+		return tool.SelectionExecutionResult{Result: result, Succeeded: false, Unknown: true, ReasonCode: "selection_execution_unknown"}
+	}
+	if semanticSelectionAwaitsReceipt(selection) || semanticSpecifiedTargetAwaitsGateway(selection, c.effectivePlatform()) {
+		return tool.SelectionExecutionResult{Result: result, AwaitingReceipt: true, ReasonCode: "selection_awaiting_receipt"}
+	}
+	completed := tool.SelectionExecutionResult{Result: result, Succeeded: true}
+	c.recordCompletedSemanticLookupEvidence(selection, completed)
+	return completed
+}
+
+func (c *sharedAgentLoopCallbacks) usesUnifiedDynamicEffectCoordinator(selection tool.PlannedSelection) bool {
+	if c == nil || c.handler == nil || !semanticSelectionIsDynamic(selection) || !semanticDynamicSelectionRequiresReceipt(selection) {
+		return false
+	}
+	kind := strings.ToLower(strings.TrimSpace(selection.Provider.Kind))
+	if kind != "mcp" && kind != "skill" {
+		return false
+	}
+	coordinator, err := c.handler.semanticDynamicEffectCoordinator()
+	if err != nil {
+		return false
+	}
+	unified, ok := coordinator.(agentservice.UnifiedSemanticEffectCoordinator)
+	return ok && unified.UsesSemanticExecutionCoordinator()
+}
+
+func semanticSelectionIsDynamic(selection tool.PlannedSelection) bool {
+	return tool.SelectionIsDynamic(selection)
+}
+
+func (c *sharedAgentLoopCallbacks) executeBoundSemanticAdapter(selection tool.PlannedSelection, argsJSON string) string {
+	if c == nil || c.semanticSurface == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	canonicalArgs, err := c.semanticCanonicalArguments(selection, argsJSON)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return c.executeBoundSemanticAdapterCanonical(selection, canonicalArgs, false)
+}
+
+func (c *sharedAgentLoopCallbacks) executeBoundSemanticAdapterCanonical(selection tool.PlannedSelection, canonicalArgs tool.CanonicalRequest, coordinated bool) string {
+	if c == nil || c.semanticSurface == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	// Dynamic providers are never sent through the legacy registry dispatcher:
+	// that dispatcher resolves mutable names and would turn a semantic selection
+	// back into a free gateway. The bound catalog revalidates the immutable
+	// Skill/MCP identity immediately before transport.
+	// Dynamic MCP/Skill execution is dispatched by
+	// executeBoundSemanticSelectionCanonical so its structured unknown/receipt
+	// state reaches PlanExecutor intact. Never re-enter the legacy text path.
+	if kind := strings.ToLower(strings.TrimSpace(selection.Provider.Kind)); kind == "mcp" || kind == "skill" {
+		return "[system rejected] dynamic_selection_dispatch_boundary_missing"
+	}
+	if semanticScheduleChannelDispatch(selection) {
+		target := trustedLoopDeliveryTarget(c.loopCtx)
+		if target == nil {
+			return "[system rejected] trusted_delivery_target_missing"
+		}
+		if !strings.EqualFold(strings.TrimSpace(selection.Provider.ProviderID), strings.TrimSpace(target.ChannelScope)) {
+			return "[system rejected] trusted_delivery_channel_mismatch"
+		}
+		record, err := c.semanticSurface.artifacts.prepareScheduleDispatchIntent(selection, target.ChannelScope, target.DestinationID)
+		if err != nil {
+			return "[system rejected] " + err.Error()
+		}
+		if c.handler != nil {
+			if taskID := c.handler.takeAdministeredTaskID(); taskID != "" {
+				principal := c.userID
+				if c.semanticSurface != nil {
+					principal = c.semanticSurface.scope.PrincipalID
+				}
+				if bindErr := c.handler.bindScheduleDispatch(taskID, target.ChannelScope, target.DestinationID, principal); bindErr != nil {
+					return "[system rejected] " + bindErr.Error()
+				}
+			}
+		}
+		c.semanticDelivery = &semanticDeliveryProjection{Scope: record.Scope, SelectionID: record.SelectionID, Store: c.semanticSurface.artifacts.store, Executor: c.semanticSurface.executor, Coordinator: c.semanticSurface.coordinator, ChannelScope: record.ChannelScope, DestinationID: record.DestinationID}
+		if c.semanticSurface.coordinator != nil {
+			c.semanticPreparedDelivery = &tool.DeliveryRecord{Scope: c.semanticSurface.scope, SelectionID: selection.ID, ArtifactID: record.ArtifactID, ArtifactSourceScope: record.ArtifactSourceScope, ChannelScope: target.ChannelScope, DestinationID: target.DestinationID, State: tool.DeliveryPrepared}
+		}
+		return "Scheduled channel dispatch prepared (delivery record " + record.SelectionID + "). This is not a send."
+	}
+	if semanticMessageSendIM(selection) {
+		target := trustedLoopDeliveryTarget(c.loopCtx)
+		if target == nil {
+			return "[system rejected] trusted_delivery_target_missing"
+		}
+		if !strings.EqualFold(strings.TrimSpace(selection.Provider.ProviderID), strings.TrimSpace(target.ChannelScope)) {
+			return "[system rejected] trusted_delivery_channel_mismatch"
+		}
+		var args map[string]interface{}
+		if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+			return "[system rejected] canonical_message_send_arguments_invalid"
+		}
+		text, err := semanticTrustedMessageSendArgsAllowed(args)
+		if err != nil {
+			return "[system rejected] " + err.Error()
+		}
+		record, err := c.semanticSurface.artifacts.prepareTrustedMessageSend(selection, target.ChannelScope, target.DestinationID, text)
+		if err != nil {
+			return "[system rejected] " + err.Error()
+		}
+		c.semanticDelivery = &semanticDeliveryProjection{Scope: record.Scope, SelectionID: record.SelectionID, Store: c.semanticSurface.artifacts.store, Executor: c.semanticSurface.executor, Coordinator: c.semanticSurface.coordinator, ChannelScope: record.ChannelScope, DestinationID: record.DestinationID}
+		if c.semanticSurface.coordinator != nil {
+			c.semanticPreparedDelivery = &tool.DeliveryRecord{Scope: c.semanticSurface.scope, SelectionID: selection.ID, ArtifactID: record.ArtifactID, ArtifactSourceScope: record.ArtifactSourceScope, ChannelScope: target.ChannelScope, DestinationID: target.DestinationID, State: tool.DeliveryPrepared}
+		}
+		return "IM message prepared for the trusted destination (delivery record " + record.SelectionID + "). This is not a send."
+	}
+	if semanticCurrentChannelArtifactDelivery(selection) || semanticSpecifiedTargetArtifactDelivery(selection) {
+		target := trustedLoopDeliveryTarget(c.loopCtx)
+		if target == nil {
+			return "[system rejected] trusted_delivery_target_missing"
+		}
+		if !strings.EqualFold(strings.TrimSpace(selection.Provider.ProviderID), strings.TrimSpace(target.ChannelScope)) {
+			return "[system rejected] trusted_delivery_channel_mismatch"
+		}
+		artifact, record, err := c.semanticSurface.artifacts.prepareCurrentChannelDelivery(selection, target.ChannelScope, target.DestinationID, firstRequiredArtifactContract(selection.Consumes))
+		if err != nil {
+			return "[system rejected] " + err.Error()
+		}
+		// Accept the kind before any desktop send. An unsupported kind must
+		// not already have left through imFileSender, and a failed send must
+		// not leave the bytes attached to this reply.
+		var attachKind func()
+		switch strings.ToLower(strings.TrimSpace(artifact.Ref.Kind)) {
+		case "image":
+			attachKind = func() { c.semanticDeliveryImageKey = artifact.Base64 }
+		case "document":
+			attachKind = func() {
+				c.semanticDeliveryFileData = artifact.Base64
+				c.semanticDeliveryFileMIME = artifact.Ref.MIMEType
+				c.semanticDeliveryFileName = semanticArtifactFileName(artifact.Ref)
+			}
+		case "audio":
+			attachKind = func() {
+				c.semanticDeliveryVoiceData = artifact.Base64
+				c.semanticDeliveryVoiceMIME = artifact.Ref.MIMEType
+				c.semanticDeliveryVoiceName = semanticArtifactFileName(artifact.Ref)
+			}
+		default:
+			return "[system rejected] current_channel_artifact_kind_unsupported"
+		}
+		// Specified-target on desktop/TUI is a send through the host IM
+		// sender. Current-channel stays a local chat card. An IM channel
+		// gateway delivers the reply attachment itself, so the sender must
+		// not run again. A missing sender is a rejection, not a local save
+		// described as a send.
+		desktopForward := semanticSpecifiedTargetArtifactDelivery(selection) && semanticDesktopForwardsBoundFile(c.effectivePlatform())
+		if desktopForward {
+			// The send leaves before the durable complete. A later complete or
+			// surface-advance error is a retryable rejection, and the model's
+			// next call would deliver the same file again. One turn sends once.
+			if c.filesForwarded == 0 {
+				if err := c.forwardSpecifiedTargetArtifact(artifact); err != nil {
+					return "[system rejected] " + err.Error()
+				}
+				c.filesForwarded++
+			}
+		}
+		attachKind()
+		// A logical delivery may already have been prepared by a prior revision
+		// of the same root task. Keep the record's immutable scope rather than
+		// pretending that the current selection owns the prior external effect.
+		c.semanticDelivery = &semanticDeliveryProjection{Scope: record.Scope, SelectionID: record.SelectionID, Store: c.semanticSurface.artifacts.store, Executor: c.semanticSurface.executor, Coordinator: c.semanticSurface.coordinator, ChannelScope: record.ChannelScope, DestinationID: record.DestinationID, OnSettled: func(outcome tool.DeliveryState) {
+			if c.handler == nil {
+				return
+			}
+			switch outcome {
+			case tool.DeliveryAccepted:
+				c.handler.markSessionGovernedTaskStatus(c.userID, c.platform, sessionGovernedDestination(c.loopCtx), sessionGovernedSucceeded)
+			case tool.DeliveryFailed:
+				c.handler.markSessionGovernedTaskStatus(c.userID, c.platform, sessionGovernedDestination(c.loopCtx), sessionGovernedFailedExec)
+			}
+		}}
+		if c.semanticSurface.coordinator != nil {
+			// App hosts defer durable outbox creation until it can be committed
+			// with the host-call terminal projection.
+			c.semanticPreparedDelivery = &tool.DeliveryRecord{Scope: c.semanticSurface.scope, SelectionID: selection.ID, ArtifactID: artifact.Ref.ID, ArtifactSourceScope: artifact.Ref.Scope, ChannelScope: target.ChannelScope, DestinationID: target.DestinationID, State: tool.DeliveryPrepared}
+		}
+		if desktopForward {
+			return "Delivered the bound document through the desktop IM sender (delivery record " + record.SelectionID + "). The file is also attached to this reply. This result is the delivery confirmation. Do not generate another document."
+		}
+		return "Delivery committed to the current channel (delivery record " + record.SelectionID + "). The artifact is attached to this turn's reply — this result IS the delivery confirmation, the step is complete. Report the file as sent; no further tool or confirmation step exists. Do not say the file was only prepared or is pending."
+	}
+	// Apply the Hub network gate to the trusted host adapters that perform
+	// silent network egress into the model context. The legacy tool path gates
+	// these at im_tool_execution.go, but the semantic surface used to dispatch
+	// them straight to the host without ever consulting EnforceConfig — so a
+	// network_level of allowlist/intranet/none shut web_fetch while leaving the
+	// trusted browser (whose snapshot streams page content back into the model)
+	// wide open. That was the inverse of the risk the gate exists to bound.
+	// Local desktop control adapters (document read, file, repo, shell, audio,
+	// memory, …) are intentionally absent from the map, so the gate never
+	// reaches them; EnforceConfig already leaves non-network tools alone, and
+	// at the default level ("full") the gate returns allowed, which changes
+	// nothing for an unmanaged or fully-open client.
+	if toolName := semanticTrustedAdapterNetworkToolName(selection.AdapterName); toolName != "" {
+		var gateArgs map[string]interface{}
+		if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &gateArgs); err != nil {
+			gateArgs = map[string]interface{}{}
+		}
+		if allowed, reason := c.enforceHubSecurityForTool(toolName, gateArgs); !allowed {
+			return "[system rejected] " + reason
+		}
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == "semantic_read_trusted_document" {
+		return c.executeTrustedDocumentRead(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedAudioTranscribeAdapter {
+		return c.executeTrustedAudioTranscribe(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedAuditReadAdapter {
+		return c.executeTrustedAuditRead(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedKnowledgeAdminAdapter {
+		return c.executeTrustedKnowledgeAdmin(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedKnowledgeIngestAdapter {
+		return c.executeTrustedKnowledgeIngest(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedKnowledgeReadAdapter {
+		return c.executeTrustedKnowledgeRead(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedFileWriteAdapter {
+		return c.executeTrustedFileWrite(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedFileDeleteAdapter {
+		return c.executeTrustedFileDelete(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedFileReadAdapter {
+		return c.executeTrustedFileRead(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedRepoInspectAdapter {
+		return c.executeTrustedRepoInspect(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedWebFetchAdapter {
+		return c.executeTrustedWebFetch(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedWebSearchAdapter {
+		return c.executeTrustedWebSearch(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedLiveDataVisualAdapter {
+		return c.publishRenderedLiveDataVisualArtifact(selection, c.executeTrustedLiveDataVisual(), coordinated)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedClockAdapter {
+		return c.executeTrustedClock(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedConfigAdapter {
+		return c.executeTrustedConfig(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedMemoryAdapter {
+		return c.executeTrustedMemory(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedMemoryRecallAdapter {
+		return c.executeTrustedMemoryRecall(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedTaskAdapter {
+		return c.executeTrustedTask(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedGoalAdapter {
+		return c.executeTrustedGoal(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedTemplateAdapter {
+		return c.executeTrustedTemplate(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedSessionAdapter {
+		return c.executeTrustedSession(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedScheduleAdapter {
+		return c.executeTrustedSchedule(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedOfficeWriteAdapter {
+		return c.executeTrustedOfficeWrite(selection, canonicalArgs, coordinated)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedAcquireRemoteAdapter {
+		return c.executeTrustedAcquireRemote(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedShellAdapter {
+		return c.executeTrustedShell(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedBuildVerifyAdapter {
+		return c.executeTrustedBuildVerify(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedDelegateAdapter {
+		return c.executeTrustedDelegate(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedSSHAdapter {
+		return c.executeTrustedSSH(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedBrowserAdapter {
+		return c.executeTrustedBrowser(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedComputerUseAdapter {
+		return c.executeTrustedComputerUse(selection, canonicalArgs)
+	}
+	if selection.Provider.Kind == "builtin" && selection.AdapterName == semanticTrustedRepoMutateAdapter {
+		return c.executeTrustedRepoMutate(selection, canonicalArgs)
+	}
+	c.semanticCapturedImageKey = ""
+	if strings.EqualFold(strings.TrimSpace(string(selection.FitProof.MatchedCapability)), "document.generate.file") {
+		c.semanticDeferFileMaterialize = true
+		result := c.executeLegacyBoundAdapter(selection.AdapterName, string(canonicalArgs.CanonicalJSON))
+		c.semanticDeferFileMaterialize = false
+		return c.publishGeneratedDocumentArtifact(selection, result, coordinated)
+	}
+	if strings.EqualFold(strings.TrimSpace(string(selection.FitProof.MatchedCapability)), string(tool.CapabilityAudioRenderSpeech)) {
+		result := c.executeLegacyBoundAdapter(selection.AdapterName, string(canonicalArgs.CanonicalJSON))
+		return c.publishRenderedSpeechArtifact(selection, result, coordinated)
+	}
+	result := c.executeLegacyBoundAdapter(selection.AdapterName, string(canonicalArgs.CanonicalJSON))
+	if strings.TrimSpace(selection.AdapterName) != "screenshot" {
+		return result
+	}
+	imageKey := strings.TrimSpace(c.semanticCapturedImageKey)
+	if imageKey == "" {
+		return result
+	}
+	if coordinated && c.semanticSurface.coordinator != nil {
+		payload, err := c.semanticSurface.artifacts.newPNGPayload(selection.ID, imageKey)
+		if err != nil {
+			return "[system rejected] artifact_publish_failed"
+		}
+		c.semanticSurface.pendingArtifacts[selection.ID] = append(c.semanticSurface.pendingArtifacts[selection.ID], payload)
+	} else {
+		ref, err := c.semanticSurface.artifacts.publishPNG(selection.ID, imageKey)
+		if err != nil {
+			return "[system rejected] artifact_publish_failed"
+		}
+		// Non-coordinated unit hosts preserve their historical publish-before-
+		// projection sequence; only production owns the unified transaction.
+		c.semanticSurface.pendingArtifacts[selection.ID] = append(c.semanticSurface.pendingArtifacts[selection.ID], tool.ArtifactPayload{Ref: ref})
+	}
+	// Capture merely publishes a broker artifact. It cannot place a payload on a
+	// gateway response; only the dependent delivery selection may do that.
+	c.screenshotImageKey = ""
+	return result
+}
+
+func (c *sharedAgentLoopCallbacks) publishGeneratedDocumentArtifact(selection tool.PlannedSelection, result string, coordinated bool) string {
+	if c == nil || c.semanticSurface == nil || c.semanticSurface.artifacts == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	obs := parseToolPayloadResult(result)
+	if obs.File == nil || strings.TrimSpace(obs.File.data) == "" {
+		return strings.TrimSpace(obs.ToolContent)
+	}
+	// The file marker name is the title-derived delivery name (for example
+	// "南京天气报告.pdf"); keep it on the artifact so host materialization and
+	// channel delivery use it instead of the MIME-synthesized fallback.
+	name := filepath.Base(strings.ReplaceAll(strings.TrimSpace(obs.File.name), "\\", "/"))
+	if coordinated && c.semanticSurface.coordinator != nil {
+		payload, err := c.semanticSurface.artifacts.newPDFPayload(selection.ID, obs.File.data, name)
+		if err != nil {
+			return "[system rejected] artifact_publish_failed"
+		}
+		c.semanticSurface.pendingArtifacts[selection.ID] = append(c.semanticSurface.pendingArtifacts[selection.ID], payload)
+	} else {
+		ref, err := c.semanticSurface.artifacts.publishPDF(selection.ID, obs.File.data, name)
+		if err != nil {
+			return "[system rejected] artifact_publish_failed"
+		}
+		c.semanticSurface.pendingArtifacts[selection.ID] = append(c.semanticSurface.pendingArtifacts[selection.ID], tool.ArtifactPayload{Ref: ref})
+	}
+	c.turnPublishedPDF = true
+	return "PDF artifact published; deliver it through the current-channel file adapter."
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedLiveDataVisual() string {
+	if c == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	imageBase64, err := renderTrustedLiveDataVisual(c.userText, c.semanticLookupEvidence)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return "[png_base64]" + imageBase64
+}
+
+func (c *sharedAgentLoopCallbacks) publishRenderedLiveDataVisualArtifact(selection tool.PlannedSelection, result string, coordinated bool) string {
+	if c == nil || c.semanticSurface == nil || c.semanticSurface.artifacts == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	if strings.HasPrefix(strings.TrimSpace(result), "[system rejected]") {
+		return strings.TrimSpace(result)
+	}
+	imageBase64 := strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(result), "[png_base64]"))
+	if imageBase64 == "" {
+		return "[system rejected] trusted_live_data_visual_invalid_png"
+	}
+	if _, err := base64.StdEncoding.DecodeString(imageBase64); err != nil {
+		return "[system rejected] trusted_live_data_visual_invalid_png"
+	}
+	if coordinated && c.semanticSurface.coordinator != nil {
+		payload, err := c.semanticSurface.artifacts.newPNGPayload(selection.ID, imageBase64)
+		if err != nil {
+			return "[system rejected] artifact_publish_failed"
+		}
+		c.semanticSurface.pendingArtifacts[selection.ID] = append(c.semanticSurface.pendingArtifacts[selection.ID], payload)
+	} else {
+		ref, err := c.semanticSurface.artifacts.publishPNG(selection.ID, imageBase64)
+		if err != nil {
+			return "[system rejected] artifact_publish_failed"
+		}
+		c.semanticSurface.pendingArtifacts[selection.ID] = append(c.semanticSurface.pendingArtifacts[selection.ID], tool.ArtifactPayload{Ref: ref})
+	}
+	return "Live-data PNG artifact published; deliver it through the current-channel image adapter."
+}
+
+func (c *sharedAgentLoopCallbacks) publishRenderedSpeechArtifact(selection tool.PlannedSelection, result string, coordinated bool) string {
+	if c == nil || c.semanticSurface == nil || c.semanticSurface.artifacts == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	wavBase64 := strings.TrimSpace(result)
+	if strings.HasPrefix(wavBase64, toolPayloadSpeechArtifactPrefix) {
+		wavBase64 = strings.TrimPrefix(wavBase64, toolPayloadSpeechArtifactPrefix)
+	} else {
+		return strings.TrimSpace(result)
+	}
+	if coordinated && c.semanticSurface.coordinator != nil {
+		payload, err := c.semanticSurface.artifacts.newWAVPayload(selection.ID, wavBase64)
+		if err != nil {
+			return "[system rejected] artifact_publish_failed"
+		}
+		c.semanticSurface.pendingArtifacts[selection.ID] = append(c.semanticSurface.pendingArtifacts[selection.ID], payload)
+	} else {
+		ref, err := c.semanticSurface.artifacts.publishWAV(selection.ID, wavBase64)
+		if err != nil {
+			return "[system rejected] artifact_publish_failed"
+		}
+		c.semanticSurface.pendingArtifacts[selection.ID] = append(c.semanticSurface.pendingArtifacts[selection.ID], tool.ArtifactPayload{Ref: ref})
+	}
+	return "Speech artifact published; deliver it through the current-channel voice adapter. This is not a send."
+}
+
+// semanticCurrentChannelArtifactDelivery recognizes the capability contract,
+// not an implementation adapter name. New receipt-aware current-channel
+// providers can therefore participate without adding a name-triggered branch
+// to the semantic execution path.
+func semanticCurrentChannelArtifactDelivery(selection tool.PlannedSelection) bool {
+	return tool.CurrentChannelArtifactDeliverySelection(selection)
+}
+
+// forwardSpecifiedTargetArtifact pushes the bound document through the desktop
+// IM sender. The destination is the host-bound sender, never a field parsed
+// from the utterance. No sender, or a sender error, is a rejection.
+func (c *sharedAgentLoopCallbacks) forwardSpecifiedTargetArtifact(artifact tool.ArtifactPayload) error {
+	if c == nil || c.handler == nil || (c.handler.structuredIMFileSender == nil && c.handler.imFileSender == nil) {
+		return fmt.Errorf("im_file_sender_not_configured")
+	}
+	name := semanticArtifactFileName(artifact.Ref)
+	if strings.TrimSpace(artifact.Base64) == "" || name == "" {
+		return fmt.Errorf("specified_target_artifact_missing")
+	}
+	caption := resolveIMProactiveCaption(c.handler.imUILangOrZh(), "", name, artifact.Ref.MIMEType)
+	req := agent.IMFileDeliveryRequest{Data: artifact.Base64, FileName: name, MIMEType: artifact.Ref.MIMEType, Message: caption}
+	var sendErr error
+	if c.handler.structuredIMFileSender != nil {
+		sendErr = c.handler.structuredIMFileSender(req)
+	} else {
+		sendErr = c.handler.imFileSender(req.Data, req.FileName, req.MIMEType, req.Message)
+	}
+	if sendErr != nil {
+		log.Printf("[semantic-delivery] specified-target forward failed name=%q: %v", name, sendErr)
+		return fmt.Errorf("specified_target_forward_failed")
+	}
+	log.Printf("[semantic-delivery] specified-target forward ok name=%q mime=%q", name, artifact.Ref.MIMEType)
+	return nil
+}
+
+func semanticScheduleChannelDispatch(selection tool.PlannedSelection) bool {
+	return tool.ScheduleChannelDispatchSelection(selection)
+}
+
+func semanticArtifactFileName(ref tool.ArtifactRef) string {
+	return tool.ArtifactFileName(ref)
+}
+
+func (c *sharedAgentLoopCallbacks) groupPolicy() *lansengerGroupPermissionPolicy {
+	if c == nil || c.loopCtx == nil {
+		return nil
+	}
+	return c.loopCtx.LansengerGroupPermissions
+}
+
+func groupPermissionRejected() string {
+	return "[system rejected] 群聊权限未授权该工具访问本地资源或知识库"
+}
+
+func (c *sharedAgentLoopCallbacks) rejectGroupWeb() string {
+	if policy := c.groupPolicy(); policy != nil && !policy.AllowWebSearch {
+		return groupPermissionRejected()
+	}
+	return ""
+}
+
+func (c *sharedAgentLoopCallbacks) rejectGroupFileRead() string {
+	if policy := c.groupPolicy(); policy != nil && !policy.AllowAllDirectories && len(policy.AllowedDirectories) == 0 {
+		return groupPermissionRejected()
+	}
+	return ""
+}
+
+func (c *sharedAgentLoopCallbacks) rejectGroupLocalAdmin() string {
+	if c.groupPolicy() != nil {
+		return groupPermissionRejected()
+	}
+	return ""
+}
+
+func (c *sharedAgentLoopCallbacks) rejectGroupKnowledgeRead() string {
+	if policy := c.groupPolicy(); policy != nil && !policy.allowsKnowledge() {
+		return groupPermissionRejected()
+	}
+	return ""
+}
+
+// executeTrustedDocumentRead is the semantic-only adapter for local document
+// input. The model schema deliberately has no file_path/path/action field;
+// all three are injected after an exact ArtifactRef dependency has been
+// checked and consumed by the scoped broker.
+func (c *sharedAgentLoopCallbacks) executeTrustedDocumentRead(selection tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if c == nil || c.semanticSurface == nil || c.semanticSurface.artifacts == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	contract := firstRequiredArtifactContract(selection.Consumes)
+	payload, err := c.semanticSurface.artifacts.consumeTrustedInput(selection, contract)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	path, cleanup, err := materializeTrustedDocument(payload, semanticDocumentTempSuffixForSelection(selection))
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	defer cleanup()
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_document_arguments_invalid"
+	}
+	args["file_path"] = path
+	// ToolReadDocument includes its resolved source path in the legacy result
+	// envelope. That private temp path must not become model context, so the
+	// semantic adapter returns a stable, path-free projection instead.
+	result := agent.ToolReadDocumentWithContext(args, c.handler.getMaclawLLMConfig().EffectiveContextTokens())
+	// A read that failed still comes back as a formatted body, so without
+	// asking the envelope the turn records the failure notice as the document.
+	if class, failed := agent.DocumentReadFailure(result); failed {
+		return fmt.Sprintf("[system rejected] trusted_document_read_failed_%s", class)
+	}
+	return semanticDocumentReadResultProjection(result)
+}
+
+func semanticDocumentTempSuffixForSelection(selection tool.PlannedSelection) string {
+	return tool.DocumentTempSuffixForSelection(selection)
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedAudioTranscribe(selection tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.semanticSurface == nil || c.semanticSurface.artifacts == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_audio_arguments_invalid"
+	}
+	if err := semanticTrustedAudioArgsAllowed(args); err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	contract := firstRequiredArtifactContract(selection.Consumes)
+	payload, err := c.semanticSurface.artifacts.consumeTrustedInput(selection, contract)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	raw, err := decodeSemanticAttachmentBytes(payload.Base64)
+	if err != nil || len(raw) == 0 {
+		return "[system rejected] trusted_audio_payload_invalid"
+	}
+	text, err := c.handler.transcribeTrustedAudioBytes(payload.Ref.MIMEType, raw)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedAudioResultProjection(text)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) semanticPrincipalID() string {
+	if c == nil {
+		return ""
+	}
+	if c.semanticSurface != nil {
+		if id := strings.TrimSpace(c.semanticSurface.scope.PrincipalID); id != "" {
+			return id
+		}
+	}
+	return strings.TrimSpace(c.userID)
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedAuditRead(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_audit_arguments_invalid"
+	}
+	query, err := semanticTrustedAuditArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	principalID := c.semanticPrincipalID()
+	text, err := c.handler.readTrustedAudit(principalID, query)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedAuditResultProjection(text)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedKnowledgeAdmin(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_knowledge_admin_arguments_invalid"
+	}
+	id, status, refresh, hasRefresh, err := semanticTrustedKnowledgeAdminArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	principalID := c.semanticPrincipalID()
+	text, err := c.handler.administerTrustedKnowledge(principalID, id, status, refresh, hasRefresh)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedKnowledgeAdminResultProjection(text)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedKnowledgeIngest(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_knowledge_ingest_arguments_invalid"
+	}
+	text, url, path, err := semanticTrustedKnowledgeIngestArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	// P0-4 credential gate: the semantic ingest adapter bypasses the registry
+	// tool executor, so the fence is applied here (identical card/timeout/
+	// cancel semantics via credentialGateBlock).
+	if proceed, gateText := c.handler.credentialGateSemanticIngest(c.loopCtx, c.semanticPrincipalID(), c.userText, text, url, path); !proceed {
+		return gateText
+	}
+	result, err := c.handler.ingestTrustedKnowledge(c.semanticPrincipalID(), text, url, path)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedKnowledgeIngestResultProjection(result)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedKnowledgeRead(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupKnowledgeRead(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_knowledge_read_arguments_invalid"
+	}
+	query, err := semanticTrustedKnowledgeReadArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	text, err := c.handler.readTrustedKnowledge(c.semanticPrincipalID(), query)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedKnowledgeReadResultProjection(text)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedFileWrite(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_file_write_arguments_invalid"
+	}
+	req, err := semanticTrustedFileWriteArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	var result string
+	if req.edit {
+		result, err = c.handler.editTrustedFile(c.semanticPrincipalID(), req.path, req.oldString, req.newString)
+	} else {
+		result, err = c.handler.writeTrustedFile(c.semanticPrincipalID(), req.path, req.content, req.mode)
+	}
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedFileWriteResultProjection(result)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedFileDelete(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_file_delete_arguments_invalid"
+	}
+	path, err := semanticTrustedFileDeleteArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	result, err := c.handler.deleteTrustedFile(c.semanticPrincipalID(), path)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return result
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedFileRead(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupFileRead(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_file_read_arguments_invalid"
+	}
+	path, query, filePattern, startLine, err := semanticTrustedFileReadArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	result, err := c.handler.readTrustedFile(c.semanticPrincipalID(), path, query, filePattern, startLine)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedFileReadResultProjection(result)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedRepoInspect(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_repo_inspect_arguments_invalid"
+	}
+	if err := semanticTrustedRepoInspectArgsAllowed(args); err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	result, err := c.handler.inspectTrustedRepo(c.semanticPrincipalID())
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedRepoInspectResultProjection(result)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedWebFetch(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	if reason := c.rejectGroupWeb(); reason != "" {
+		return reason
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_web_fetch_arguments_invalid"
+	}
+	rawURL, err := semanticTrustedWebFetchArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	publicNetworkOnly := c.loopCtx != nil && c.loopCtx.LansengerGroupPermissions != nil
+	result, err := c.handler.fetchTrustedWeb(c.semanticPrincipalID(), rawURL, publicNetworkOnly)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedWebFetchResultProjection(result)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedWebSearch(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	if reason := c.rejectGroupWeb(); reason != "" {
+		return reason
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_web_search_arguments_invalid"
+	}
+	query, err := semanticTrustedWebSearchArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	publicNetworkOnly := c.loopCtx != nil && c.loopCtx.LansengerGroupPermissions != nil
+	result, err := c.handler.searchTrustedWeb(c.semanticPrincipalID(), query, publicNetworkOnly)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedWebSearchResultProjection(result)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedClock(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_clock_arguments_invalid"
+	}
+	if err := semanticTrustedClockArgsAllowed(args); err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	result, err := c.handler.readTrustedClock(c.semanticPrincipalID())
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedClockResultProjection(result)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedConfig(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_config_arguments_invalid"
+	}
+	maxIterations, hasMax, thinkingMode, hasThinking, err := semanticTrustedConfigArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	principalID := c.semanticPrincipalID()
+	text, err := c.handler.administerTrustedConfig(principalID, maxIterations, hasMax, thinkingMode, hasThinking)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedConfigResultProjection(text)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedMemory(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_memory_arguments_invalid"
+	}
+	content, query, id, err := semanticTrustedMemoryArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	text, err := c.handler.administerTrustedMemory(c.semanticPrincipalID(), content, query, id)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedMemoryResultProjection(text)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedMemoryRecall(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_memory_recall_arguments_invalid"
+	}
+	if len(args) != 1 {
+		return "[system rejected] trusted_memory_recall_arguments_rejected"
+	}
+	raw, ok := args["query"]
+	if !ok {
+		return "[system rejected] trusted_memory_recall_arguments_rejected"
+	}
+	query, ok := raw.(string)
+	if !ok {
+		return "[system rejected] trusted_memory_recall_arguments_rejected"
+	}
+	text, err := c.handler.recallTrustedMemory(c.semanticPrincipalID(), query)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedMemoryResultProjection(text)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedTask(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_task_arguments_invalid"
+	}
+	title, description, id, status, note, err := semanticTrustedTaskArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	text, err := c.handler.administerTrustedTask(c.semanticPrincipalID(), title, description, id, status, note)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedTaskResultProjection(text)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedGoal(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_goal_arguments_invalid"
+	}
+	objective, status, note, err := semanticTrustedGoalArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	text, err := c.handler.administerTrustedGoal(c.semanticPrincipalID(), objective, status, note)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedGoalResultProjection(text)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedTemplate(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_template_arguments_invalid"
+	}
+	name, codingTool, err := semanticTrustedTemplateArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	text, err := c.handler.administerTrustedTemplate(c.semanticPrincipalID(), name, codingTool)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedTemplateResultProjection(text)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedSession(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_session_arguments_invalid"
+	}
+	id, err := semanticTrustedSessionArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	text, err := c.handler.inspectTrustedSessions(c.semanticPrincipalID(), id)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedSessionResultProjection(text)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedSchedule(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_schedule_arguments_invalid"
+	}
+	parsed, err := semanticTrustedScheduleArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	text, err := c.handler.administerTrustedSchedule(c.semanticPrincipalID(), parsed)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedScheduleResultProjection(text)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedOfficeWrite(selection tool.PlannedSelection, canonicalArgs tool.CanonicalRequest, coordinated bool) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_office_write_arguments_invalid"
+	}
+	path, data, err := semanticTrustedOfficeWriteArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	text, err := c.handler.writeTrustedOffice(c.semanticPrincipalID(), path, data)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedOfficeWriteResultProjection(text)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	// A managed office write produces a real workspace artifact but returns no
+	// [file_base64] marker, so the materialize step never surfaces it and the
+	// user is left hunting the workspace for the deck/sheet the assistant just
+	// announced. Record the produced file as a delivered path so the response
+	// finalizer attaches the artifact card. Resolution failure keeps the write
+	// result as-is; it never turns a successful write into an error.
+	absPath := ""
+	if workspace := trustedPrincipalBoundWorkspace(c.handler, c.semanticPrincipalID()); workspace != "" {
+		if resolved, resolveErr := trustedFileWriteResolvePath(workspace, path); resolveErr == nil {
+			if _, statErr := os.Stat(resolved); statErr == nil {
+				absPath = resolved
+				c.deliveredPaths = appendUniqueStrings(c.deliveredPaths, absPath)
+			}
+		}
+	}
+	// The office plan also carries a current-channel file delivery leg, which
+	// can only consume a broker artifact. Register the written bytes under this
+	// selection so the dependent send_file grant has something to consume.
+	// Any registration failure falls back to the plain write result above; it
+	// never turns a successful write into an error.
+	if published := c.publishOfficeWriteArtifact(selection, absPath, coordinated); published != "" {
+		return published
+	}
+	return out
+}
+
+// publishOfficeWriteArtifact reads back the just-written office document and
+// registers it as this selection's produced artifact. It returns "" whenever
+// registration is impossible (unresolved path, unknown extension, oversized or
+// unreadable file, broker failure); the caller then keeps the write result.
+func (c *sharedAgentLoopCallbacks) publishOfficeWriteArtifact(selection tool.PlannedSelection, absPath string, coordinated bool) string {
+	if c == nil || c.semanticSurface == nil || c.semanticSurface.artifacts == nil {
+		return ""
+	}
+	absPath = strings.TrimSpace(absPath)
+	if absPath == "" {
+		return ""
+	}
+	mimeType, ok := semanticOfficeArtifactMIME(absPath)
+	if !ok {
+		return ""
+	}
+	info, err := os.Stat(absPath)
+	if err != nil || info.IsDir() || info.Size() <= 0 || info.Size() > semanticOfficeArtifactMaxBytes {
+		return ""
+	}
+	data, err := os.ReadFile(absPath)
+	if err != nil {
+		return ""
+	}
+	encoded := base64.StdEncoding.EncodeToString(data)
+	name := filepath.Base(absPath)
+	if coordinated && c.semanticSurface.coordinator != nil {
+		payload, err := c.semanticSurface.artifacts.newOfficeDocumentPayload(selection.ID, encoded, mimeType, name)
+		if err != nil {
+			return ""
+		}
+		c.semanticSurface.pendingArtifacts[selection.ID] = append(c.semanticSurface.pendingArtifacts[selection.ID], payload)
+	} else {
+		ref, err := c.semanticSurface.artifacts.publishOfficeDocument(selection.ID, encoded, mimeType, name)
+		if err != nil {
+			return ""
+		}
+		c.semanticSurface.pendingArtifacts[selection.ID] = append(c.semanticSurface.pendingArtifacts[selection.ID], tool.ArtifactPayload{Ref: ref})
+	}
+	return "Office document artifact published; deliver it through the current-channel file adapter."
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedAcquireRemote(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	if reason := c.rejectGroupWeb(); reason != "" {
+		return reason
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_artifact_acquire_arguments_invalid"
+	}
+	rawURL, err := semanticTrustedAcquireRemoteArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	publicNetworkOnly := c.loopCtx != nil && c.loopCtx.LansengerGroupPermissions != nil
+	text, err := c.handler.acquireTrustedRemote(c.semanticPrincipalID(), rawURL, publicNetworkOnly)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedAcquireRemoteResultProjection(text)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedShell(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_shell_arguments_invalid"
+	}
+	command, timeout, err := semanticTrustedShellArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	text, err := c.handler.executeTrustedShell(c.semanticPrincipalID(), command, timeout)
+	if err != nil {
+		return withSystemRejectedPrefix(err.Error())
+	}
+	out, err := semanticTrustedShellResultProjection(text)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+// withSystemRejectedPrefix adds the host-guard marker once. Shell guards
+// already return it; wrapping again produced "[system rejected] [system rejected]"
+// and the model treated one policy as two nested bans.
+func withSystemRejectedPrefix(msg string) string {
+	msg = strings.TrimSpace(msg)
+	if strings.HasPrefix(msg, "[system rejected]") {
+		return msg
+	}
+	return "[system rejected] " + msg
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedBuildVerify(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_build_verify_arguments_invalid"
+	}
+	task, target, err := semanticTrustedBuildVerifyArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	text, err := c.handler.runTrustedBuildVerify(c.semanticPrincipalID(), task, target)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedBuildVerifyResultProjection(text)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedDelegate(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_delegate_arguments_invalid"
+	}
+	task, err := semanticTrustedDelegateArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	text, err := c.handler.runTrustedDelegate(c.semanticPrincipalID(), task)
+	if err != nil {
+		if strings.Contains(err.Error(), "unavailable") {
+			return "[system unknown] trusted_delegate_child_receipt_missing"
+		}
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedDelegateResultProjection(text)
+	if err != nil {
+		return "[system unknown] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedSSH(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_ssh_arguments_invalid"
+	}
+	// Connect mode (session-less catalog): the same adapter name carries a
+	// host/user/password schema and opens (or reuses) a session via the legacy
+	// connect path. A failed connect stays a rejection so the grant survives
+	// for a corrected retry within the turn's sibling budget. An optional
+	// command runs on the session right after connecting — the catalog is
+	// bound for the whole turn, so this is the only way to execute within the
+	// same turn as the connect.
+	if _, isConnect := args["host"]; isConnect {
+		connectArgs, err := semanticTrustedSSHConnectArgsAllowed(args)
+		if err != nil {
+			return "[system rejected] " + err.Error()
+		}
+		result := c.handler.sshConnect(connectArgs)
+		if strings.HasPrefix(result, "SSH 连接成功") || strings.HasPrefix(result, "复用已有 SSH 会话") {
+			if command, _ := args["command"].(string); strings.TrimSpace(command) != "" {
+				out, err := c.handler.executeTrustedSSH(c.semanticPrincipalID(), command, semanticTrustedSSHCommandTimeout)
+				if err != nil {
+					msg := err.Error()
+					if strings.Contains(msg, "trusted_ssh_timeout") {
+						msg += remoteSSHTimeoutHint(semanticTrustedSSHCommandTimeout)
+					}
+					// A failed follow-up still should not spend the reply on
+					// the login banner or the orphan-scan echo.
+					return sshConnectResultForFollowUpCommand(result) + "\n\n[命令执行失败] " + msg
+				}
+				// The login banner and orphan-scan echo are not the command
+				// result. Leaving them in front of a status dump pushed a 6KB
+				// reply over the preview cap and hid uptime, memory, and disk.
+				return sshConnectResultForFollowUpCommand(result) + "\n\n" + toolresult.CommandOutputMarker + "\n" + out
+			}
+			return result
+		}
+		return "[system rejected] " + result
+	}
+	command, timeout, err := semanticTrustedSSHArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	text, err := c.handler.executeTrustedSSH(c.semanticPrincipalID(), command, timeout)
+	if err != nil {
+		// A timeout means the host stopped waiting and interrupted the
+		// command. The session is still there, so the attempt is a settled
+		// failure and the next remote command in this turn stays available.
+		// A dropped session or an unobserved outcome stays unknown: the
+		// command may already have run, and another call would not be a
+		// continuation of the same task.
+		if strings.Contains(err.Error(), "trusted_ssh_timeout") {
+			return "[system rejected] " + err.Error() + remoteSSHTimeoutHint(timeout)
+		}
+		if strings.Contains(err.Error(), "unavailable") || strings.Contains(err.Error(), "disconnect") || strings.Contains(err.Error(), "outcome_unobserved") {
+			return "[system unknown] " + err.Error()
+		}
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedSSHResultProjection(text)
+	if err != nil {
+		return "[system unknown] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedBrowser(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_browser_arguments_invalid"
+	}
+	action, url, err := semanticTrustedBrowserArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	text, err := c.handler.controlTrustedBrowser(c.semanticPrincipalID(), action, url)
+	if err != nil {
+		// Only a dispatched request whose answer was lost may be reported as
+		// unknown. A session that was never available or already dead did not
+		// carry the request, and calling that unknown would claim an effect
+		// might hold when none can.
+		if strings.Contains(err.Error(), "unavailable") || strings.Contains(err.Error(), "outcome_unobserved") {
+			return "[system unknown] " + err.Error()
+		}
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedBrowserResultProjection(text)
+	if err != nil {
+		return "[system unknown] " + err.Error()
+	}
+	return out
+}
+
+// enforceHubSecurityForTool routes a trusted-adapter execution through the Hub
+// network gate. It returns allowed when no security context is wired up, which
+// matches the legacy tool path's behavior: an unmanaged client enforces nothing.
+func (c *sharedAgentLoopCallbacks) enforceHubSecurityForTool(name string, args map[string]interface{}) (bool, string) {
+	if c == nil || c.handler == nil || c.handler.app == nil {
+		return true, ""
+	}
+	return c.handler.app.enforceHubSecurityAppPolicy(name, args)
+}
+
+// semanticTrustedAdapterNetworkToolName maps a trusted host adapter to the
+// canonical tool name EnforceConfig classifies for network scope. Only adapters
+// that fetch remote content into the model context are listed; local desktop
+// control adapters are deliberately absent so the gate never reaches them.
+func semanticTrustedAdapterNetworkToolName(adapter string) string {
+	switch adapter {
+	case semanticTrustedBrowserAdapter:
+		return "browser"
+	case semanticTrustedWebFetchAdapter:
+		return "web_fetch"
+	case semanticTrustedWebSearchAdapter:
+		return "web_search"
+	default:
+		return ""
+	}
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedComputerUse(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	userText := ""
+	var loopCtx *LoopContext
+	if c != nil {
+		userText = c.userText
+		loopCtx = c.loopCtx
+	}
+	if rejection := computerUseExecutionRejection(loopCtx, userText, semanticTrustedComputerUseAdapter); rejection != "" {
+		return rejection
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_computer_use_arguments_invalid"
+	}
+	action, err := semanticTrustedComputerUseArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	text, err := c.handler.controlTrustedDesktop(c.semanticPrincipalID(), action)
+	if err != nil {
+		if strings.Contains(err.Error(), "unavailable") {
+			return "[system unknown] " + err.Error()
+		}
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedComputerUseResultProjection(text)
+	if err != nil {
+		return "[system unknown] " + err.Error()
+	}
+	return out
+}
+
+func (c *sharedAgentLoopCallbacks) executeTrustedRepoMutate(_ tool.PlannedSelection, canonicalArgs tool.CanonicalRequest) string {
+	if reason := c.rejectGroupLocalAdmin(); reason != "" {
+		return reason
+	}
+	if c == nil || c.handler == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	var args map[string]interface{}
+	if err := json.Unmarshal(canonicalArgs.CanonicalJSON, &args); err != nil {
+		return "[system rejected] canonical_repo_mutate_arguments_invalid"
+	}
+	action, message, err := semanticTrustedRepoMutateArgsAllowed(args)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	text, err := c.handler.mutateTrustedRepo(c.semanticPrincipalID(), action, message)
+	if err != nil {
+		if strings.Contains(err.Error(), "unknown") || strings.Contains(err.Error(), "receipt") {
+			return "[system unknown] " + err.Error()
+		}
+		return "[system rejected] " + err.Error()
+	}
+	out, err := semanticTrustedRepoMutateResultProjection(text)
+	if err != nil {
+		return "[system rejected] " + err.Error()
+	}
+	return out
+}
+
+func semanticDocumentReadResultProjection(result string) string {
+	return agentruntime.DocumentReadResultProjection(result)
+}
+
+func (c *sharedAgentLoopCallbacks) registerSemanticArtifacts(selectionID string) error {
+	if c == nil || c.semanticSurface == nil || c.semanticSurface.artifacts == nil {
+		return fmt.Errorf("semantic artifact surface unavailable")
+	}
+	for _, payload := range c.semanticSurface.pendingArtifacts[selectionID] {
+		if err := c.semanticSurface.artifacts.registerPublished(payload.Ref); err != nil {
+			return err
+		}
+	}
+	delete(c.semanticSurface.pendingArtifacts, selectionID)
+	return nil
+}
+
+// semanticCanonicalArguments is the migration boundary between opaque semantic
+// adapters and legacy handlers. It closes the model input object before the
+// legacy dispatcher can add trusted runtime-only metadata.
+// semanticDeliveryInvocationArgs washes model-supplied delivery arguments.
+// The adapter takes no input; the observed correctable shape is the empty
+// envelope {"arguments": "{}"} — a serialization slip carrying no intent
+// (2026-08-26: it burned the one-shot send_file grant on
+// parameter_schema_invalid and stranded two delivered-but-unsent turns in a
+// tools_search spiral). Only that empty envelope washes away. Anything
+// contentful — a forged artifact_id, a path, even a non-empty envelope —
+// passes through unchanged so admission rejects it as an unknown field: the
+// model must learn it cannot steer delivery by argument.
+func semanticDeliveryInvocationArgs(argsJSON string) string {
+	return agentruntime.DeliveryInvocationArgs(argsJSON)
+}
+
+func (c *sharedAgentLoopCallbacks) semanticCanonicalArguments(selection tool.PlannedSelection, argsJSON string) (tool.CanonicalRequest, error) {
+	if c == nil || c.semanticSurface == nil {
+		return tool.CanonicalRequest{}, fmt.Errorf("semantic tool surface is unavailable")
+	}
+	schema, ok := c.semanticSurface.parameterSchemas[selection.AdapterName]
+	if !ok {
+		return tool.CanonicalRequest{}, fmt.Errorf("parameter_schema_missing")
+	}
+	if hostOwnedGenerateSelection(selection) {
+		argsJSON = semanticGeneratePDFInvocationArgs(argsJSON)
+	}
+	switch selection.FitProof.MatchedCapability {
+	case "artifact.deliver.current_channel":
+		argsJSON = semanticDeliveryInvocationArgs(argsJSON)
+	case tool.CapabilityDocumentWriteOffice:
+		argsJSON = semanticOfficeWriteInvocationArgs(argsJSON)
+	case tool.CapabilityShellExecuteLocal:
+		argsJSON = semanticShellInvocationArgs(argsJSON)
+	case tool.CapabilityShellExecuteRemoteHost:
+		var err error
+		argsJSON, err = semanticSSHInvocationArgs(argsJSON, semanticSSHSchemaIsConnectMode(schema))
+		if err != nil {
+			return tool.CanonicalRequest{}, err
+		}
+	case tool.CapabilityFSWriteLocal:
+		argsJSON = semanticFileWriteInvocationArgs(argsJSON)
+	case tool.CapabilityFSDeleteLocal:
+		argsJSON = semanticFileDeleteInvocationArgs(argsJSON)
+	case tool.CapabilityArtifactAcquireRemote:
+		argsJSON = semanticAcquireRemoteInvocationArgs(argsJSON)
+	}
+	canonical, err := tool.CanonicalizeAuthorizedInvocationArguments(argsJSON, schema, selection.ParameterAuthorization)
+	if err != nil {
+		return tool.CanonicalRequest{}, err
+	}
+	if selection.FitProof.MatchedCapability == tool.CapabilityKnowledgeIngestLocal {
+		if err := semanticKnowledgeIngestExclusiveCanonical(canonical.CanonicalJSON); err != nil {
+			return tool.CanonicalRequest{}, err
+		}
+	}
+	// Pre-execution argument checks that must not burn the one-shot grant.
+	// The office slide-image paths are the model's own workspace-relative
+	// references; a missing file is a correctable argument mistake, so it is
+	// rejected here (grant unconsumed) rather than inside the adapter.
+	if selection.FitProof.MatchedCapability == tool.CapabilityDocumentWriteOffice {
+		if c.handler != nil {
+			if workspace := trustedPrincipalBoundWorkspace(c.handler, c.userID); workspace != "" {
+				if err := semanticOfficeSlideImageCheck(workspace, argsJSON); err != nil {
+					return tool.CanonicalRequest{}, err
+				}
+			}
+		}
+		// Charts do not need a workspace; validate the canonical payload that
+		// the adapter will write so a bad chart cannot consume the office grant.
+		if err := semanticOfficeSlideChartCheck(string(canonical.CanonicalJSON)); err != nil {
+			return tool.CanonicalRequest{}, err
+		}
+	}
+	return canonical, nil
+}
+
+// semanticGeneratePDFInvocationArgs keeps the closed schema fields when the
+// model already supplied Markdown. content is the only required field; title
+// and doc_type stay if they are strings. Decorative extras such as
+// date/path/query must not fail-close a one-shot grant. A calendar date is
+// folded into content; other typed or query-shaped values are dropped.
+func semanticGeneratePDFInvocationArgs(argsJSON string) string {
+	return agentruntime.NormalizePDFInvocationArgs(argsJSON)
+}
+
+func semanticGeneratePDFArgsTooThin(argsJSON string) bool {
+	return agentruntime.PDFArgsTooThin(argsJSON)
+}
+
+func semanticGeneratePDFTitleLine(content string) (string, bool) {
+	return agentruntime.PDFTitleLine(content)
+}
+
+func semanticGeneratePDFLooksLikeTitleOnly(content string) bool {
+	return agentruntime.PDFLooksLikeTitleOnly(content)
+}
+
+func semanticGeneratePDFHasReportBodySignal(content string) bool {
+	return agentruntime.PDFHasReportBodySignal(content)
+}
+
+func firstRequiredArtifactContract(contracts []tool.ArtifactContract) tool.ArtifactContract {
+	return tool.FirstRequiredArtifactContract(contracts)
+}
+
+func (c *sharedAgentLoopCallbacks) executeLegacyBoundAdapter(name, argsJSON string) string {
+	return c.executeToolWithoutSemanticSurface(name, argsJSON)
+}
+
+// finishSharedToolExecution emits the ACP end event for every post-execution
+// return path. Keeping this centralized prevents artifact shortcuts (notably
+// screenshots) from leaving ACP tool chips permanently in progress.
+func (c *sharedAgentLoopCallbacks) finishSharedToolExecution(requestID, toolCallID, name, argsJSON, result string, ok bool, artifactPaths []string) string {
+	trimmed := strings.TrimSpace(result)
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(trimmed, "[system rejected]") || strings.HasPrefix(lower, "error:") || strings.HasPrefix(lower, "[mcp error]") {
+		ok = false
+	}
+	if !isACPProgrammingRequestID(requestID) {
+		return result
+	}
+	paths := append([]string(nil), acpPathsFromToolArgs(name, argsJSON)...)
+	paths = appendUniqueStrings(paths, artifactPaths...)
+	emitACPToolEventForRequest(requestID, ACPToolEvent{
+		Phase:      "end",
+		ToolCallID: toolCallID,
+		Name:       name,
+		ArgsJSON:   argsJSON,
+		Result:     result,
+		OK:         ok,
+		Kind:       acpToolKind(name),
+		Paths:      paths,
+		Title:      acpToolTitle(name, argsJSON),
+	})
+	return result
+}
+
+func sharedToolInterruptedText(ctx context.Context) string {
+	reason := context.Canceled.Error()
+	if ctx != nil && ctx.Err() != nil {
+		reason = ctx.Err().Error()
+	}
+	return "tool execution interrupted: " + reason
+}
+
+// rewriteRecordAudioMarkerForSharedLoop returns a non-empty rejection string when
+// the host must not open the interactive recording UI (IM channels, concurrent
+// session). Empty string means the marker is valid for core early-stop.
+func (h *IMMessageHandler) rewriteRecordAudioMarkerForSharedLoop(userID, platform, marker string) string {
+	if h == nil || !agent.IsRecordAudioResult(marker) {
+		return ""
+	}
+	req, ok := agent.ParseRecordAudioResult(marker)
+	if !ok {
+		return ""
+	}
+	if !normalizeIMMessagePlatformKind(platform).IsDesktop() {
+		log.Printf("[record-audio] shared: rejected on non-desktop platform user=%s platform=%s title=%q", userID, platform, req.Title)
+		return recordAudioDesktopOnlyRejection()
+	}
+	if rawPending, loaded := h.pendingRecordAudio.Load(userID); loaded {
+		var history []agent.ConversationEntry
+		if h.memory != nil {
+			history = h.memory.Load(userID)
+		}
+		if pending, fresh := pendingRecordAudioForCurrentHistory(rawPending, history); fresh && pending != nil {
+			log.Printf("[record-audio] shared: rejected concurrent session user=%s active_title=%q new_title=%q", userID, pending.Title, req.Title)
+			return recordAudioConcurrentRejection(pending.Title)
+		}
+	}
+	return ""
+}
+
+// finalizeSharedLoopRecordAudio opens the desktop recording session after the
+// shared RunLoop early-stopped on a record_audio marker (ResponseSource=record_audio).
+func (h *IMMessageHandler) finalizeSharedLoopRecordAudio(
+	userID, platform, userText string,
+	outHistory []agent.ConversationEntry,
+	loopResult agent.LoopResult,
+	requestID string,
+	telemetry *agentLoopTelemetry,
+	onStreamDone StreamDoneCallback,
+	cb *sharedAgentLoopCallbacks,
+	recorder *TrajectoryRecorder,
+) *IMAgentResponse {
+	req := loopResult.RecordAudio
+	if req == nil {
+		if recorder != nil {
+			recorder.SetKind("shared")
+			recorder.RecordLoopResult(loopResult)
+		}
+		return &IMAgentResponse{
+			Text:           sharedLoopUserFacingText(loopResult.Text),
+			RequestID:      requestID,
+			SessionKey:     userID,
+			ResponseSource: "shared_agent_loop",
+		}
+	}
+	raw := agent.FormatRecordAudioMarker(req)
+	// Prefer the id of the tool that triggered the pause (multi-tool batch safe).
+	tcID := strings.TrimSpace(loopResult.PauseToolCallID)
+	if tcID == "" {
+		// Fallback: name-match record_audio in the assistant batch (not merely last id).
+		tcID = toolCallIDFromHistoryDeltaByName(loopResult.HistoryDelta, "record_audio")
+	}
+	if tcID == "" {
+		tcID = "record_audio_shared"
+	}
+	out := h.handleAgentLoopRecordAudioToolResult(
+		userID, platform, userText, raw, false, tcID,
+		nil, outHistory, nil, nil, false,
+	)
+	pairedHistory := out.History
+	if out.Response == nil && tcID != "" && strings.TrimSpace(out.Result) != "" {
+		pairedHistory = append(append([]agent.ConversationEntry(nil), outHistory...), agent.ConversationEntry{
+			Role:        "tool",
+			Content:     out.Result,
+			ToolCallID:  tcID,
+			ToolName:    "record_audio",
+			ToolOutcome: toolOutcomeUncertain.String(),
+		})
+	}
+	// Like ask_user, record_audio replaces autonomous execution with a paired
+	// interactive state. Persist it and retire the temporary marker together.
+	var pausePersistErr error
+	if cb != nil {
+		if err := h.persistSharedInteractivePause(userID, cb.checkpointRunID, pairedHistory); err != nil {
+			cb.semanticDurabilityBlocked = true
+			log.Printf("[InFlightTask] shared record-audio finalization flush failed user=%q run=%q err=%v", userID, cb.checkpointRunID, err)
+			// Mirror ask_user: pending recording UI is only valid after the paired
+			// transcript has been committed. Otherwise a restart loses the UI state
+			// but retains the earlier recovery marker.
+			h.pendingRecordAudio.Delete(userID)
+			pausePersistErr = err
+		} else {
+			cb.checkpointCommitted = false
+			cb.hasPendingToolBatch = false
+			// Match ask_user: release a held dependant only after the paired
+			// interactive record state and recovery-marker transition are durable.
+			cb.releaseSemanticDependantIssue()
+		}
+	}
+	if pausePersistErr == nil && out.Response != nil {
+		// The handler intentionally deferred this local state mutation while the
+		// paired history was waiting for its atomic checkpoint transition.
+		h.commitPendingRecordAudio(userID, req, pairedHistory, loopResult.WorkingState)
+	}
+
+	// Trajectory: HistoryDelta lacks the tool result (core early-stops before append);
+	// record delta then the friendly/rejection tool result so sessions stay paired.
+	if recorder != nil {
+		recorder.SetKind("shared")
+		recorder.RecordLoopResult(loopResult)
+		if out.Response != nil && pausePersistErr == nil {
+			// Interactive pause succeeded — pair the opened-session tool result.
+			recorder.RecordEarlyStopToolResult(tcID, "record_audio", out.Result)
+		} else {
+			// Host rejected after the loop already paused on the marker (IM channel,
+			// concurrent session race). Keep pairing but stamp error, not paused.
+			toolContent := strings.TrimSpace(out.Result)
+			if toolContent == "" {
+				toolContent = "record_audio rejected by host"
+			}
+			recorder.RecordEntry(TrajectoryEntry{
+				Role:        "tool_result",
+				Content:     toolContent,
+				ToolCallID:  tcID,
+				ToolName:    "record_audio",
+				ToolOutcome: "failed",
+			})
+			recorder.CloseUnpairedToolCalls("loop_paused")
+			recorder.SetOutcome("error", toolContent, loopResult.Iterations, loopResult.ToolCalls, -1, -1)
+		}
+	}
+	if pausePersistErr != nil {
+		return h.sharedInteractivePausePersistenceFailureResponse(
+			userID, requestID, telemetry, onStreamDone, cb,
+		)
+	}
+
+	if out.Response != nil {
+		resp := out.Response
+		resp.RequestID = requestID
+		resp.SessionKey = userID
+		// Preserve usage/route when the pause happened after tool rounds.
+		if loopResult.Usage.InputTokens > 0 || loopResult.Usage.OutputTokens > 0 {
+			resp.InputTokens = loopResult.Usage.InputTokens
+			resp.OutputTokens = loopResult.Usage.OutputTokens
+			resp.TotalTokens = loopResult.Usage.TotalTokens()
+			resp.CacheReadTokens = loopResult.Usage.CachedTokens
+			resp.CacheWriteTokens = loopResult.Usage.CacheWriteTokens
+			resp.EstCostRMB = loopResult.Usage.EstCostRMB
+			if telemetry != nil {
+				telemetry.LastLLMInputTokens = loopResult.Usage.InputTokens
+				telemetry.LastLLMOutputTokens = loopResult.Usage.OutputTokens
+				telemetry.LastLLMCacheReadTokens = loopResult.Usage.CachedTokens
+				telemetry.LastLLMCacheWriteTokens = loopResult.Usage.CacheWriteTokens
+			}
+		}
+		if cb != nil {
+			liveRoute := cb.currentRouteDecision()
+			if liveRoute.Task != "" || liveRoute.Model != "" {
+				if telemetry != nil {
+					telemetry.Route = liveRoute
+				}
+			}
+		}
+		if telemetry != nil {
+			attachSharedLoopTurn(telemetry, cb, loopResult.Usage, resp)
+		}
+		if onStreamDone != nil {
+			onStreamDone()
+		}
+		log.Printf("[record-audio] shared: session UI opened user=%s platform=%s title=%q tc=%s source=record_audio",
+			userID, platform, req.Title, tcID)
+		return resp
+	}
+	// Unexpected rejection after ExecuteTool precheck (race on concurrent session).
+	text := recordAudioUserFacingRejectText(out.Result, loopResult.Text)
+	// Keep tool-call/result pairing when we have a rewritten rejection.
+	if cb == nil && tcID != "" && strings.TrimSpace(out.Result) != "" {
+		h.saveConversationHistoryTimed(userID, pairedHistory, nil)
+	} else if cb == nil && len(loopResult.HistoryDelta) > 0 {
+		h.saveConversationHistoryTimed(userID, outHistory, nil)
+	}
+	resp := &IMAgentResponse{
+		Text:           text,
+		RequestID:      requestID,
+		SessionKey:     userID,
+		ResponseSource: "shared_agent_loop",
+	}
+	if telemetry != nil {
+		attachSharedLoopTurn(telemetry, cb, loopResult.Usage, resp)
+	}
+	if onStreamDone != nil {
+		onStreamDone()
+	}
+	return resp
+}
+
+// shouldSaveSharedLoopTerminalHistory rejects the generic terminal save when
+// the shared core stopped mid-batch. In that state HistoryDelta includes an
+// assistant tool-call declaration without every matching tool result; the
+// pre-tool checkpoint is the only durable provider-valid representation.
+func shouldSaveSharedLoopTerminalHistory(loopResult agent.LoopResult, cb *sharedAgentLoopCallbacks) bool {
+	if len(loopResult.HistoryDelta) == 0 || loopResult.Error == "recovery_checkpoint_failed" {
+		return false
+	}
+	return cb == nil || !cb.hasPendingToolBatch
+}
+
+// interruptedSharedLoopResultResponse keeps the UI outcome aligned with the
+// durable state for non-cancel terminal exits (argument validation, policy
+// failures, hard-stop guards, and max rounds) that happen after a pre-tool
+// checkpoint but before a complete batch commit. Returning the raw loop error
+// would suggest ordinary retry even though recovery must begin from the saved
+// provider-valid prefix and explicit review marker.
+func (h *IMMessageHandler) interruptedSharedLoopResultResponse(
+	userText string,
+	loopResult agent.LoopResult,
+	requestID string,
+	telemetry *agentLoopTelemetry,
+	onStreamDone StreamDoneCallback,
+	cb *sharedAgentLoopCallbacks,
+) *IMAgentResponse {
+	resp := h.interruptedSharedLoopExitResponse(userText)
+	resp.RequestID = requestID
+	if cb != nil {
+		resp.SessionKey = cb.userID
+	}
+	resp.ResponseSource = "shared_agent_loop"
+	resp.HardExit = true
+	if loopResult.Usage.InputTokens > 0 || loopResult.Usage.OutputTokens > 0 {
+		resp.InputTokens = loopResult.Usage.InputTokens
+		resp.OutputTokens = loopResult.Usage.OutputTokens
+		resp.TotalTokens = loopResult.Usage.TotalTokens()
+		resp.CacheReadTokens = loopResult.Usage.CachedTokens
+		resp.CacheWriteTokens = loopResult.Usage.CacheWriteTokens
+		resp.EstCostRMB = loopResult.Usage.EstCostRMB
+	}
+	if telemetry != nil {
+		if cb != nil {
+			if route := cb.currentRouteDecision(); route.Task != "" || route.Model != "" {
+				telemetry.Route = route
+			}
+		}
+		attachSharedLoopTurn(telemetry, cb, loopResult.Usage, resp)
+	}
+	if onStreamDone != nil {
+		onStreamDone()
+	}
+	return resp
+}
+
+// sharedInteractivePausePersistenceFailureResponse fails closed when the
+// paired interactive history cannot be committed with the run-owned recovery
+// marker. Showing a card here would invite a reply that the process cannot
+// safely associate with durable history after a restart.
+func (h *IMMessageHandler) sharedInteractivePausePersistenceFailureResponse(
+	userID, requestID string,
+	telemetry *agentLoopTelemetry,
+	onStreamDone StreamDoneCallback,
+	cb *sharedAgentLoopCallbacks,
+) *IMAgentResponse {
+	resp := &IMAgentResponse{
+		Text:           "无法安全保存本次交互进度，已停止打开交互卡片。请重试；若应用已退出，请重启后从恢复任务继续。",
+		Error:          "recovery_checkpoint_failed",
+		RequestID:      requestID,
+		SessionKey:     userID,
+		ResponseSource: "shared_agent_loop",
+	}
+	if cb != nil && telemetry != nil {
+		if route := cb.currentRouteDecision(); route.Task != "" || route.Model != "" {
+			telemetry.Route = route
+		}
+	}
+	if telemetry != nil {
+		telemetry.Attach(resp)
+	}
+	if onStreamDone != nil {
+		onStreamDone()
+	}
+	return resp
+}
+
+// finalizeSharedLoopAskUser records the shared loop's interactive question as
+// a terminal UI response. The core loop deliberately returns before appending
+// a synthetic tool result, so this helper must not turn the pause into a
+// recoverable in-flight task or ask the model to replay it.
+func (h *IMMessageHandler) finalizeSharedLoopAskUser(
+	userID string,
+	loopResult agent.LoopResult,
+	requestID string,
+	telemetry *agentLoopTelemetry,
+	onStreamDone StreamDoneCallback,
+	cb *sharedAgentLoopCallbacks,
+	recorder *TrajectoryRecorder,
+	baseResponse *IMAgentResponse,
+) *IMAgentResponse {
+	if recorder != nil {
+		recorder.SetKind("shared")
+		recorder.RecordLoopResult(loopResult)
+		tcID := strings.TrimSpace(loopResult.PauseToolCallID)
+		if tcID == "" {
+			tcID = toolCallIDFromHistoryDeltaByName(loopResult.HistoryDelta, "ask_user")
+		}
+		content := strings.TrimSpace(sharedLoopUserFacingText(loopResult.Text))
+		if content == "" {
+			content = agent.FormatAskUserForDisplay(loopResult.AskUser)
+		}
+		recorder.RecordEarlyStopToolResult(tcID, "ask_user", content)
+	}
+	resp := baseResponse
+	if resp == nil {
+		resp = &IMAgentResponse{Text: sharedLoopUserFacingText(loopResult.Text), ResponseSource: imResponseSourceAskUser.String()}
+	}
+	if strings.TrimSpace(resp.Text) == "" {
+		resp.Text = sharedLoopUserFacingText(loopResult.Text)
+	}
+	resp.Reasoning = sharedLoopDisplayReasoning(loopResult)
+	resp.RequestID = requestID
+	resp.SessionKey = userID
+	resp.ResponseSource = imResponseSourceAskUser.String()
+	if loopResult.Usage.InputTokens > 0 || loopResult.Usage.OutputTokens > 0 {
+		resp.InputTokens = loopResult.Usage.InputTokens
+		resp.OutputTokens = loopResult.Usage.OutputTokens
+		resp.TotalTokens = loopResult.Usage.TotalTokens()
+		resp.CacheReadTokens = loopResult.Usage.CachedTokens
+		resp.CacheWriteTokens = loopResult.Usage.CacheWriteTokens
+		resp.EstCostRMB = loopResult.Usage.EstCostRMB
+		if telemetry != nil {
+			telemetry.LastLLMInputTokens = loopResult.Usage.InputTokens
+			telemetry.LastLLMOutputTokens = loopResult.Usage.OutputTokens
+			telemetry.LastLLMCacheReadTokens = loopResult.Usage.CachedTokens
+			telemetry.LastLLMCacheWriteTokens = loopResult.Usage.CacheWriteTokens
+		}
+	}
+	if cb != nil && telemetry != nil {
+		if route := cb.currentRouteDecision(); route.Task != "" || route.Model != "" {
+			telemetry.Route = route
+		}
+	}
+	if telemetry != nil {
+		attachSharedLoopTurn(telemetry, cb, loopResult.Usage, resp)
+	}
+	if onStreamDone != nil {
+		onStreamDone()
+	}
+	return resp
+}
+
+// toolCallIDFromHistoryDeltaByName finds the last assistant tool_call whose
+// function name matches (case-insensitive). Safer multi-tool fallback than
+// "last id in batch" when PauseToolCallID is missing.
+func toolCallIDFromHistoryDeltaByName(delta []agent.ConversationEntry, toolName string) string {
+	want := strings.ToLower(strings.TrimSpace(toolName))
+	if want == "" {
+		return ""
+	}
+	for i := len(delta) - 1; i >= 0; i-- {
+		if delta[i].Role != "assistant" || delta[i].ToolCalls == nil {
+			continue
+		}
+		found := ""
+		for _, tc := range extractNamedToolCallsForShared(delta[i].ToolCalls) {
+			if strings.ToLower(tc.Name) == want && tc.ID != "" {
+				found = tc.ID // prefer last match within the batch
+			}
+		}
+		if found != "" {
+			return found
+		}
+	}
+	return ""
+}
+
+type namedToolCallID struct {
+	ID   string
+	Name string
+}
+
+// extractNamedToolCallsForShared extracts id+name pairs from assistant ToolCalls.
+func extractNamedToolCallsForShared(toolCalls interface{}) []namedToolCallID {
+	if arr, ok := toolCalls.([]interface{}); ok {
+		out := make([]namedToolCallID, 0, len(arr))
+		for _, item := range arr {
+			m, ok := item.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			id, _ := m["id"].(string)
+			name := ""
+			if fn, ok := m["function"].(map[string]interface{}); ok {
+				name, _ = fn["name"].(string)
+			}
+			if id != "" || name != "" {
+				out = append(out, namedToolCallID{ID: id, Name: name})
+			}
+		}
+		return out
+	}
+	// Typed slice (e.g. []llm.ToolCall) — JSON round-trip.
+	type fn struct {
+		Name string `json:"name"`
+	}
+	type call struct {
+		ID       string `json:"id"`
+		Function fn     `json:"function"`
+	}
+	data, err := json.Marshal(toolCalls)
+	if err != nil {
+		return nil
+	}
+	var calls []call
+	if json.Unmarshal(data, &calls) != nil {
+		return nil
+	}
+	out := make([]namedToolCallID, 0, len(calls))
+	for _, c := range calls {
+		if c.ID != "" || c.Function.Name != "" {
+			out = append(out, namedToolCallID{ID: c.ID, Name: c.Function.Name})
+		}
+	}
+	return out
+}
+
+// appendUniqueStrings appends values not already present (order-preserving).
+func appendUniqueStrings(dst []string, values ...string) []string {
+	return agentruntime.AppendUniqueStrings(dst, values...)
+}
+
+func (c *sharedAgentLoopCallbacks) ExecuteToolStructured(name, argsJSON string) agent.ToolExecutionResult {
+	if c != nil {
+		setComputerUseTurnVision(c.llmCfg.SupportsVision)
+		setComputerUseOwner(computerUseOwnerFromLoop(c.loopCtx, c.userID))
+	}
+	text := c.ExecuteTool(name, argsJSON)
+	return attachPendingComputerUseModelImage(classifySharedLoopToolText(text))
+}
+
+func classifySharedLoopToolText(text string) agent.ToolExecutionResult {
+	if isRegisteredToolApprovalWaitText(text) {
+		return agent.ToolExecutionResult{Result: text, Outcome: agent.ToolExecutionOutcomeError}
+	}
+	return agentruntime.ToolTextResult(text)
+}
+
+// ProjectToolResult implements agent.ToolResultProjector. It deliberately uses
+// the same dual-view projector as the legacy GUI loop.
+func (c *sharedAgentLoopCallbacks) ProjectToolResult(name string, result agent.ToolExecutionResult) string {
+	sessionKey := ""
+	contextTokens := 0
+	if c != nil {
+		sessionKey = c.userID
+		contextTokens = c.llmCfg.EffectiveContextTokens()
+		if c.handler != nil {
+			sessionKey = c.handler.workflowPolicyOwnerID(c.userID, c.loopCtx)
+		}
+	}
+	proj, err := agent.ProjectToolResultWithContext(name, sessionKey, result.Result, contextTokens)
+	if err != nil && proj.Preview == "" {
+		return truncateToolResultForToolWithSession(name, sessionKey, result.Result)
+	}
+	return proj.Preview
+}
+
+func (c *sharedAgentLoopCallbacks) emitRuntimeEvent(eventType string, payload map[string]any) {
+	if c == nil {
+		return
+	}
+	if c.events == nil {
+		return
+	}
+	ordinal := c.nextEventSequence()
+	event := agentruntime.Event{
+		SchemaVersion: agentruntime.ContractVersion,
+		EventID:       fmt.Sprintf("%s:%s:%d", c.eventScope.RunID, eventType, ordinal),
+		Type:          eventType,
+		Scope:         c.eventScope,
+		RunID:         c.eventScope.RunID,
+		Sequence:      ordinal,
+		Payload:       payload,
+	}
+	if err := c.events.Emit(context.Background(), event); err != nil {
+		c.recordRuntimeEventError(err)
+		log.Printf("[agent-loop] runtime event sink type=%s run=%s: %v", eventType, c.eventScope.RunID, err)
+	}
+}
+
+func (c *sharedAgentLoopCallbacks) recordRuntimeEventError(err error) {
+	if c == nil || err == nil {
+		return
+	}
+	c.eventErrMu.Lock()
+	if c.eventErr == nil {
+		c.eventErr = err
+	}
+	c.eventErrMu.Unlock()
+}
+
+func (c *sharedAgentLoopCallbacks) runtimeEventError() error {
+	if c == nil {
+		return nil
+	}
+	c.eventErrMu.Lock()
+	defer c.eventErrMu.Unlock()
+	return c.eventErr
+}
+
+func (c *sharedAgentLoopCallbacks) nextEventSequence() uint64 {
+	if c == nil {
+		return 0
+	}
+	if c.eventSequence != nil {
+		return c.eventSequence.Add(1)
+	}
+	return c.eventOrdinal.Add(1)
+}
+
+func emitRuntimeEventToSink(sink agentruntime.EventSink, scope agentruntime.Scope, eventType string, payload map[string]any, sequence ...*atomic.Uint64) error {
+	if sink == nil {
+		return nil
+	}
+	sequenceNumber := nextEventSequenceValue(sequence)
+	event := agentruntime.Event{
+		SchemaVersion: agentruntime.ContractVersion,
+		EventID:       fmt.Sprintf("%s:%s:%d", scope.RunID, eventType, sequenceNumber),
+		Type:          eventType,
+		Scope:         scope,
+		RunID:         scope.RunID,
+		Sequence:      sequenceNumber,
+		Payload:       payload,
+	}
+	if err := sink.Emit(context.Background(), event); err != nil {
+		// Legacy GUI callbacks are fire-and-forget. Preserve that contract while
+		// making sink failures visible to the host logger for diagnostics.
+		log.Printf("[agent-loop] runtime event sink type=%s run=%s: %v", eventType, scope.RunID, err)
+		return err
+	}
+	return nil
+}
+
+func nextEventSequenceValue(sequence []*atomic.Uint64) uint64 {
+	if len(sequence) == 0 || sequence[0] == nil {
+		return 0
+	}
+	return sequence[0].Add(1)
+}
+
+func (c *sharedAgentLoopCallbacks) OnToken(delta string) {
+	c.emitRuntimeEvent(agentruntime.EventAssistantDelta, map[string]any{"delta": delta})
+}
+
+// ensureInFlightLeaseRefresh starts one background refresh for this turn.
+// It runs off the token path so a long model call or a silent tool still
+// counts as the owner being alive, without taking the conversation lock on
+// every delta.
+func (c *sharedAgentLoopCallbacks) ensureInFlightLeaseRefresh() {
+	if c == nil || c.leaseStop == nil || c.handler == nil || c.handler.memory == nil {
+		return
+	}
+	runID := strings.TrimSpace(c.checkpointRunID)
+	if runID == "" {
+		return
+	}
+	memory := c.handler.memory
+	userID := c.userID
+	stop := c.leaseStop
+	c.leaseOnce.Do(func() {
+		startInFlightLeaseRefresh(stop, memory, userID, runID)
+	})
+}
+
+// OnLLMNewRound implements agent.LLMRoundNotifier. A live-steer replacement
+// uses the same stream-generation boundary as an ordinary next tool round.
+func (c *sharedAgentLoopCallbacks) OnLLMNewRound() {
+	if c == nil {
+		return
+	}
+	if c.events != nil {
+		c.emitRuntimeEvent(agentruntime.EventTurnStarted, nil)
+		return
+	}
+	if c.onNewRound != nil {
+		c.onNewRound()
+	}
+}
+
+func (c *sharedAgentLoopCallbacks) OnProgress(text string) {
+	if c != nil && c.events != nil {
+		c.emitRuntimeEvent(agentruntime.EventProgress, map[string]any{"text": text})
+		return
+	}
+	if c == nil {
+		return
+	}
+	if c.onProgress != nil {
+		c.onProgress(text)
+	}
+}
+
+func (c *sharedAgentLoopCallbacks) OnToolCall(name string) {
+	// Keep the existing UI behavior (no textual progress) while publishing the
+	// transport-neutral event for hosts that opt into the shared sink.
+	c.emitRuntimeEvent(agentruntime.EventToolCall, map[string]any{"name": name})
+}
+
+func (c *sharedAgentLoopCallbacks) OnToolResult(name string) {
+	// Result payloads are emitted from OnToolExecuted, which is the callback
+	// carrying the canonical result and success flag. Keep this hook silent to
+	// avoid duplicate events on loop implementations that invoke both hooks.
+	_ = name
+}
+
+// OnToolExecuted implements agent.LoopHooks for mid-loop model escalation.
+func (c *sharedAgentLoopCallbacks) OnToolExecuted(name, argsJSON, result string, success bool) {
+	c.emitRuntimeEvent(agentruntime.EventToolResult, map[string]any{"name": name, "result": result, "success": success})
+	if c == nil {
+		return
+	}
+	c.toolCalls++
+	c.maybeEscalateAfterTools()
+}
+
+// OnToolBatchStarting implements agent.ToolBatchStarter. It durably records
+// the last provider-valid history prefix before a tool begins. The supplied
+// delta intentionally contains an unpaired assistant declaration, so it is
+// evidence only and must not be persisted as conversation history. The core
+// loop labels a mutating or unknown batch external_uncertain because a process
+// crash may occur after the tool has changed state but before a result can be
+// paired. A batch of known read-only tools is labeled none.
+func (c *sharedAgentLoopCallbacks) OnToolBatchStarting(delta []agent.ConversationEntry, meta agent.ToolBatchMetadata) error {
+	if c != nil && len(delta) > 0 {
+		c.semanticHoldDependantIssue = true
+	}
+	if c == nil || c.handler == nil || len(delta) == 0 {
+		return nil
+	}
+	// Do not persist delta here. At this point it contains an assistant
+	// tool_calls message without matching tool results and would make the
+	// restored provider conversation invalid. LastToolName records the first
+	// possible action without granting permission to replay it.
+	entries := c.trimCheckpointHistory()
+	err := c.handler.persistRecoveryCheckpoint(
+		c.userID,
+		c.userText,
+		c.checkpointProject,
+		c.checkpointRunID,
+		entries,
+		agent.InFlightCheckpoint{
+			Sequence:        meta.Sequence,
+			LastToolName:    meta.LastToolName,
+			SideEffectState: meta.SideEffectState,
+		},
+	)
+	if err != nil {
+		c.semanticDurabilityBlocked = true
+		log.Printf("[InFlightTask] shared pre-tool checkpoint failed user=%q run=%q seq=%d err=%v", c.userID, c.checkpointRunID, meta.Sequence, err)
+		return err
+	}
+	c.checkpointCommitted = true
+	c.hasPendingToolBatch = true
+	c.ensureInFlightLeaseRefresh()
+	return nil
+}
+
+// OnToolBatchAbandoned records that execution stopped before this batch was
+// durably committed. It deliberately does not release a held semantic
+// dependant: cancellation, validation failure and hard stops retain the
+// recoverable pre-tool checkpoint, while interactive pauses release only after
+// their paired history and marker transition have committed in the host.
+func (c *sharedAgentLoopCallbacks) OnToolBatchAbandoned(meta agent.ToolBatchMetadata) {
+	_ = meta
+}
+
+// OnToolBatchCommitted implements agent.ToolBatchCommitter. RunLoop invokes it
+// after the entire assistant tool-call batch and every paired tool result have
+// been appended to HistoryDelta. A persistence error is returned to RunLoop so
+// it stops before executing a following batch with further side effects.
+func (c *sharedAgentLoopCallbacks) OnToolBatchCommitted(delta []agent.ConversationEntry, meta agent.ToolBatchMetadata) error {
+	if c == nil || c.handler == nil || len(delta) == 0 {
+		// No persisted complete batch exists on this path, so it cannot publish
+		// authority derived from the batch. The optional callback remains a no-op
+		// for compatibility, but semantic dependant issuance stays fail-closed.
+		return nil
+	}
+	c.checkpointHistory = append(c.checkpointHistory, delta...)
+	entries := c.trimCheckpointHistory()
+	err := c.handler.persistRecoveryCheckpoint(
+		c.userID,
+		c.userText,
+		c.checkpointProject,
+		c.checkpointRunID,
+		entries,
+		agent.InFlightCheckpoint{
+			Sequence:        meta.Sequence,
+			LastToolName:    meta.LastToolName,
+			SideEffectState: meta.SideEffectState,
+		},
+	)
+	if err != nil {
+		c.semanticDurabilityBlocked = true
+		log.Printf("[InFlightTask] shared checkpoint failed user=%q run=%q seq=%d err=%v", c.userID, c.checkpointRunID, meta.Sequence, err)
+		return err
+	}
+	c.checkpointCommitted = true
+	c.hasPendingToolBatch = false
+	c.ensureInFlightLeaseRefresh()
+	// A dependant becomes model-visible only after the complete paired batch is
+	// durably checkpointed. Releasing before persistRecoveryCheckpoint succeeds
+	// would expose authority derived from a batch that recovery still treats as
+	// externally uncertain.
+	c.releaseSemanticDependantIssue()
+	return nil
+}
+
+// trimCheckpointHistory bounds synchronous checkpoint files during long tool
+// loops. The kept tail is still group-aligned, and dropped work is replaced
+// with a provider-valid handoff instead of disappearing. The handoff is
+// deterministic: checkpoint writes stay on the tool path and do not call a model.
+func (c *sharedAgentLoopCallbacks) trimCheckpointHistory() []agent.ConversationEntry {
+	if c == nil {
+		return nil
+	}
+	trimmed := trimHistoryWithSummaryPrecomputed(
+		c.checkpointHistory, nil, nil,
+		agent.MaxConversationTurns, agent.MaxMemoryTokenEstimate, 0,
+	)
+	c.checkpointHistory = providerValidCheckpointHistory(trimmed)
+	return c.checkpointHistory
+}
+
+func providerValidCheckpointHistory(entries []agent.ConversationEntry) []agent.ConversationEntry {
+	if len(entries) == 0 {
+		return entries
+	}
+	out := make([]agent.ConversationEntry, 0, len(entries)+1)
+	for i, entry := range entries {
+		if !isCompactionSeparator(entry) {
+			out = append(out, entry)
+			continue
+		}
+		entry.Role = "user"
+		entry.Content = visibleCheckpointHandoff(entry)
+		out = append(out, entry)
+		nextRole := ""
+		if i+1 < len(entries) {
+			nextRole = entries[i+1].Role
+		}
+		if nextRole != "assistant" && nextRole != "tool" {
+			out = append(out, agent.ConversationEntry{
+				Role:    "assistant",
+				Content: "好的，我已了解之前的工作摘要。",
+			})
+		}
+	}
+	return out
+}
+
+func isCompactionSeparator(entry agent.ConversationEntry) bool {
+	if entry.CompactionID != "" {
+		return true
+	}
+	text, ok := entry.Content.(string)
+	return ok && entry.Role == "system" && strings.Contains(text, compactionPlaceholder)
+}
+
+func visibleCheckpointHandoff(entry agent.ConversationEntry) string {
+	text, _ := entry.Content.(string)
+	// Include the carried previous summary as well as the newly dropped
+	// section. The previous part is otherwise only in CompactionSource,
+	// which is not sent to the model. Checkpoint saves run on every tool
+	// batch, so the same source must not be appended twice.
+	extra := pendingCompactionMaterial(entry.CompactionSource)
+	if extra == "" || strings.Contains(text, extra) {
+		return text
+	}
+	if strings.TrimSpace(text) == "" {
+		return extra
+	}
+	return text + "\n\n" + extra
+}
+
+func (c *sharedAgentLoopCallbacks) OnEmptyResponse(iteration int) bool {
+	_ = iteration
+	return false
+}
+
+func (c *sharedAgentLoopCallbacks) TransformConversation(conversation []interface{}) []interface{} {
+	if c == nil || c.handler == nil {
+		return nil
+	}
+	// Snapshot before draining. If steering lands at any point after this read
+	// (including while the pending bag is being drained), its newer revision
+	// remains visible to LLMReplanRequested and cannot be mistaken for content
+	// already incorporated into this request.
+	processedRevision := int64(0)
+	if c.loopCtx != nil {
+		processedRevision = c.loopCtx.ReplanRevision()
+	}
+	next, injected, guide := c.handler.appendPendingSteerInjections(c.userID, conversation, 0)
+	if c.loopCtx != nil {
+		c.llmReplanRevision.Store(processedRevision)
+	}
+	if injected == "" {
+		next = conversation
+	} else if guide != "" {
+		// Only the user's own steer is a new classification input. A host
+		// supplement in the same drain must not widen the grant.
+		c.admitLiveSteerIntoPlan(guide)
+		if prompt := c.PetitionSystemPrompt(); prompt != "" {
+			replaceConversationSystemMessage(next, prompt)
+		}
+	}
+	effectiveLimit := c.llmCfg.EffectiveContextTokens()
+	if !c.firstRequestBudgetApplied {
+		c.firstRequestBudgetApplied = true
+		toolsTokens := agent.EstimateToolsTokens(c.tools)
+		beforeTokens := estimateConversationTokens(next) + toolsTokens
+		// The latency budget exists to keep an over-window turn's first request
+		// small. A conversation that already fits the provider window keeps the
+		// normal limit: it must not lose middle history (e.g. the user's earlier
+		// requirements) to the latency cap, and trimConversation leaves it
+		// untouched, so no checkpoint spill I/O is paid either. The estimate
+		// matches trimConversation's own arithmetic (Σ estimateSingleMsgTokens),
+		// so the guard and the trim cannot disagree.
+		limit, budgeted := firstRequestCompactionLimit(effectiveLimit, beforeTokens, next, c.tools)
+		compacted := c.handler.compactAgentLoopConversation(c.loopCtx, c.userID, next, c.tools, limit, toolsTokens)
+		c.noteContextCheckpointReader(compacted)
+		if budgeted {
+			afterTokens := estimateConversationTokens(compacted) + toolsTokens
+			if afterTokens < beforeTokens {
+				loopID := ""
+				if c.loopCtx != nil {
+					loopID = c.loopCtx.ID
+				}
+				log.Printf("[first-request-budget] loop=%q before~=%d after~=%d limit=%d normal_limit=%d tools=%d",
+					loopID, beforeTokens, afterTokens, limit, effectiveLimit, len(c.tools))
+			}
+		}
+		if injected == "" && sameConversationElements(compacted, conversation) {
+			return nil
+		}
+		return compacted
+	}
+	compacted := c.handler.compactAgentLoopConversation(c.loopCtx, c.userID, next, c.tools, effectiveLimit, agent.EstimateToolsTokens(c.tools))
+	c.noteContextCheckpointReader(compacted)
+	if injected == "" && sameConversationElements(compacted, conversation) {
+		return nil
+	}
+	return compacted
+}
+
+func sameConversationElements(a, b []interface{}) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if !sameConversationElement(a[i], b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func sameConversationElement(a, b interface{}) bool {
+	switch av := a.(type) {
+	case map[string]interface{}:
+		bv, ok := b.(map[string]interface{})
+		return ok && reflect.ValueOf(av).Pointer() == reflect.ValueOf(bv).Pointer()
+	case map[string]string:
+		bv, ok := b.(map[string]string)
+		return ok && reflect.ValueOf(av).Pointer() == reflect.ValueOf(bv).Pointer()
+	default:
+		return reflect.DeepEqual(a, b)
+	}
+}
+
+// LLMReplanRequested implements agent.LLMReplanAware. RequestReplan cancels
+// only the current model operation; corelib then starts another iteration and
+// TransformConversation injects the user's live steering.
+func (c *sharedAgentLoopCallbacks) LLMReplanRequested() bool {
+	return c != nil && c.loopCtx != nil && c.loopCtx.ReplanRequestedSince(c.llmReplanRevision.Load())
+}
+
+// TryFinalizeLLMResponse implements agent.LLMFinalizationGuard. The same lock
+// used by InjectGuideReference decides whether the final answer or the user's
+// interruption wins; accepted steering can no longer be stranded after commit.
+func (c *sharedAgentLoopCallbacks) TryFinalizeLLMResponse() bool {
+	return c == nil || c.loopCtx == nil || c.loopCtx.TrySealReplans(c.llmReplanRevision.Load())
+}
+
+func (c *sharedAgentLoopCallbacks) maybeEscalateAfterTools() {
+	if c == nil || c.escalated || c.handler == nil || c.toolCalls == 0 {
+		return
+	}
+	// A governed light lookup must stay on its grant-bound surface and light
+	// fence. Promoting to the reasoning model after web_search caused the
+	// full-agent prompt to be swapped in, and the model then asked the user
+	// to re-authorize write_file/web_fetch that this turn cannot run.
+	if c.semanticLightLookup() {
+		return
+	}
+	// Only escalate light initial routes.
+	light := c.route.Task == string(llm.TaskFast) ||
+		c.route.Task == string(llm.TaskSummary) ||
+		c.route.Task == string(llm.TaskIntent) ||
+		c.route.Source == "aux"
+	if !light {
+		return
+	}
+	before := c.llmCfg.Model
+	upgraded := c.handler.routeLLMConfig(llm.TaskReasoning)
+	if upgraded.Model == "" || (upgraded.Model == before &&
+		upgraded.URL == c.llmCfg.URL &&
+		upgraded.Key == c.llmCfg.Key &&
+		upgraded.Protocol == c.llmCfg.Protocol &&
+		upgraded.ProviderName == c.llmCfg.ProviderName &&
+		upgraded.ContextLength == c.llmCfg.ContextLength) {
+		return
+	}
+	c.llmCfg = upgraded
+	c.route.Task = string(llm.TaskReasoning)
+	c.route.Source = "escalate"
+	c.route.Model = upgraded.Model
+	c.route.Provider = upgraded.ProviderName
+	c.route.Reason = "tools requested after light turn (shared loop)"
+	c.route.Escalated = true
+	c.escalated = true
+	c.surfaceRefreshPending = true
+	if c.handler.app != nil {
+		c.handler.app.recordLastModelRoute(c.route)
+	}
+	log.Printf("[model-route] shared escalate %s→%s", before, upgraded.Model)
+}
+
+// RefreshAfterToolExecution records that the next request must observe updated
+// policy/grant state. It may update the non-executable system prompt, but never
+// renders definitions itself: BuildToolsForModelRequest is the only legacy
+// renderer and runs at a real request boundary.
+func (c *sharedAgentLoopCallbacks) RefreshAfterToolExecution(name string) bool {
+	_ = name
+	if c == nil {
+		return false
+	}
+	if c.semanticSurface != nil {
+		pending := c.surfaceRefreshPending
+		c.surfaceRefreshPending = false
+		// A semantic family owns its current exposure closure. Escalation may
+		// refresh the prompt; light lookup must keep its fence. Either way the
+		// loop must re-read BuildTools so consumed grants disappear.
+		if pending && c.handler != nil && !c.semanticLightLookup() {
+			intentText := semanticUserIntentText(c.userText)
+			c.systemPrompt = ensureSemanticGrantPromptFence(c.systemPromptWithTaskAnchor(c.handler.buildSystemPromptWithMemory(agent.CompactQueryForEmbedding(intentText), false, c.loopCtx)))
+		}
+		return true
+	}
+	if !c.surfaceRefreshPending || c.handler == nil {
+		return false
+	}
+	c.surfaceRefreshPending = false
+	c.systemPrompt = c.systemPromptWithTaskAnchor(c.handler.buildSystemPromptWithMemory(agent.CompactQueryForEmbedding(semanticUserIntentText(c.userText)), false, c.loopCtx))
+	return true
+}
+
+func (c *sharedAgentLoopCallbacks) systemPromptWithTaskAnchor(systemPrompt string) string {
+	if c == nil {
+		return systemPrompt
+	}
+	return appendTaskIdentityAnchorPrompt(systemPrompt, c.taskAnchor)
+}
+
+func (c *sharedAgentLoopCallbacks) currentRouteDecision() modelRouteDecision {
+	if c == nil {
+		return modelRouteDecision{}
+	}
+	return c.route
+}
+
+func (c *sharedAgentLoopCallbacks) ShouldStop() bool {
+	if c == nil || c.loopCtx == nil {
+		return false
+	}
+	return c.loopCtx.IsCancelled()
+}
+
+// RequiredEffectUnsettled reports a planned mailbox send that has not settled.
+// A model stop before that call is not turn success. A settled failure or an
+// uncertain SMTP result is an execution record. A frozen confirmation is not:
+// SMTP has not been observed, so a later stop must not be recorded as success.
+func (c *sharedAgentLoopCallbacks) RequiredEffectUnsettled() bool {
+	if c == nil || c.semanticSurface == nil {
+		return false
+	}
+	surface := c.semanticSurface
+	for _, selection := range surface.plan.Selections {
+		if selection.FitProof.MatchedCapability != tool.CapabilityMessageSendMailbox {
+			continue
+		}
+		if surface.completed[selection.ID] {
+			continue
+		}
+		if surface.executor == nil {
+			for _, grant := range surface.grants {
+				if grant.SelectionID == selection.ID {
+					return true
+				}
+			}
+			continue
+		}
+		record, err := surface.executor.Execution(surface.scope, selection.ID)
+		if err != nil {
+			return true
+		}
+		switch record.State {
+		case tool.PlanExecutionSucceeded:
+			continue
+		case tool.PlanExecutionFailed:
+			// A confirmation used to be stored as a failure with this reason.
+			// New drafts are awaiting_receipt. A real send failure is settled.
+			if record.ReasonCode == mailboxSendAwaitingConfirmation {
+				return true
+			}
+			continue
+		case tool.PlanExecutionAwaitingReceipt:
+			return true
+		default:
+			return true
+		}
+	}
+	return false
+}
+
+// EarlyStop implements agent.EarlyStopper. Two stop shapes: the daily LLM
+// budget is an error stop; a semantic turn whose delivery completed with the
+// plan exhausted is a clean, code-less stop that skips the closing LLM round
+// trip (its only product is summary text; production 2026-08-26 burned ~65s
+// retrying a 502 on that call after the PPT had already been delivered).
+func (c *sharedAgentLoopCallbacks) EarlyStop() (stop bool, errCode, userText string) {
+	if c == nil || c.handler == nil {
+		return false, "", ""
+	}
+	blocked, msg := c.handler.checkDailyBudgetGate()
+	if blocked {
+		return true, "daily_llm_budget_exceeded", msg
+	}
+	if semanticTurnDeliveryComplete(c.semanticSurface) {
+		return true, "", ""
+	}
+	return false, "", ""
+}
+
+// OnLLMUsage implements agent.LLMUsageRecorder so CostTracker updates each round
+// (shared path previously only accumulated tokens at loop end).
+func (c *sharedAgentLoopCallbacks) OnLLMUsage(model string, inputTokens, outputTokens int) {
+	if c == nil || c.handler == nil {
+		return
+	}
+	if model == "" {
+		model = c.llmCfg.Model
+	}
+	c.handler.recordLLMCost(model, inputTokens, outputTokens)
+}
+
+func (c *sharedAgentLoopCallbacks) LLMRequestContext(iteration int) (context.Context, func(error), error) {
+	if c != nil && c.loopCtx != nil {
+		ctx, end, _ := c.loopCtx.BeginReplannableOperation(context.Background())
+		trace := llm.RequestTrace{
+			Caller:    "shared_agent_loop",
+			OwnerID:   c.userID,
+			RequestID: c.loopCtx.Runtime.RequestID,
+			LoopID:    c.loopCtx.ID,
+			Iteration: iteration,
+		}
+		ctx = llm.WithRequestTrace(ctx, trace)
+		return ctx, func(error) { end() }, nil
+	}
+	return nil, nil, fmt.Errorf("no loop context")
+}
+
+func rewriteExpiredSemanticGrantNames(history []agent.ConversationEntry, live map[string]bool) []agent.ConversationEntry {
+	return agentruntime.RewriteExpiredSemanticGrantNames(history, live)
+}

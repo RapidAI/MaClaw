@@ -3,6 +3,7 @@ package skill
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -101,5 +102,90 @@ func TestVerifyPackageIntegrity_NilManifest(t *testing.T) {
 	// Nil manifest = legacy skill, verification passes
 	if err := VerifyPackageIntegrity("/tmp", nil); err != nil {
 		t.Errorf("nil manifest should pass: %v", err)
+	}
+}
+
+func TestVerifyPackageIntegrityRejectsTraversalAndSymlink(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "run.sh"), []byte("echo ok\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"../outside.sh", "/absolute.sh"} {
+		manifest := &PackageManifest{Files: map[string]string{name: strings.Repeat("0", 64)}}
+		if err := VerifyPackageIntegrity(root, manifest); err == nil {
+			t.Fatalf("VerifyPackageIntegrity(%q) succeeded, want invalid-path error", name)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "outside.sh"), []byte("secret\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "outside.sh"), filepath.Join(root, "link.sh")); err == nil {
+		manifest := &PackageManifest{Files: map[string]string{
+			"run.sh":  strings.Repeat("0", 64),
+			"link.sh": strings.Repeat("0", 64),
+		}}
+		if verifyErr := VerifyPackageIntegrity(root, manifest); verifyErr == nil || !strings.Contains(strings.ToLower(verifyErr.Error()), "symlink") {
+			t.Fatalf("symlink manifest error = %v, want symlink rejection", verifyErr)
+		}
+	}
+}
+
+func TestVerifyPackageIntegrityRejectsNormalizedDuplicatePath(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "run.sh"), []byte("echo ok\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	manifest := &PackageManifest{Files: map[string]string{
+		"run.sh":           strings.Repeat("0", 64),
+		"nested/../run.sh": strings.Repeat("0", 64),
+	}}
+	if err := VerifyPackageIntegrity(root, manifest); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("duplicate path verification error = %v", err)
+	}
+}
+
+func TestVerifyPackageIntegrityRejectsEmptyManifest(t *testing.T) {
+	if err := VerifyPackageIntegrity(t.TempDir(), &PackageManifest{Files: map[string]string{}}); err == nil {
+		t.Fatal("empty manifest unexpectedly accepted")
+	}
+}
+
+func TestVerifyPackageIntegrityRejectsUnexpectedFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "run.sh"), []byte("echo ok\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := GeneratePackageManifest(root, "demo.skill", "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "payload.bin"), []byte("unexpected"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyPackageIntegrity(root, manifest); err == nil || !strings.Contains(err.Error(), "unexpected file") {
+		t.Fatalf("unexpected file verification error = %v", err)
+	}
+}
+
+func TestVerifyPackageIntegrityAcceptsGeneratedManifest(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "run.sh"), []byte("echo ok\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, ".cache"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".cache", "state"), []byte("runtime"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	manifest, err := GeneratePackageManifest(root, "demo.skill", "1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WritePackageManifest(root, manifest); err != nil {
+		t.Fatal(err)
+	}
+	if err := VerifyPackageIntegrity(root, manifest); err != nil {
+		t.Fatalf("generated manifest verification failed: %v", err)
 	}
 }

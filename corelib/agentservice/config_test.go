@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	coreconfig "github.com/RapidAI/CodeClaw/corelib/config"
 )
 
 func TestDefaultParameterDefinitionsIncludeSharedUserConfig(t *testing.T) {
@@ -46,6 +47,12 @@ func TestDefaultParameterDefinitionsIncludeSharedUserConfig(t *testing.T) {
 	if def := byKey["skill_runner_timeout_sec"]; def.Type != "integer" || !strings.Contains(def.Description, "240-14400") || !strings.Contains(def.Description, "global_timeout") {
 		t.Fatalf("skill_runner_timeout_sec schema should describe bounds and override behavior, got %#v", def)
 	}
+	if def := byKey["maclaw_llm_url"]; def.Scope != "shared" || !def.Mutable || !def.HeadlessSupport || !def.UserWebVisible {
+		t.Fatalf("maclaw_llm_url metadata = %#v", def)
+	}
+	if _, exists := byKey["claude"]; exists {
+		t.Fatal("GUI-only claude config must not be exposed by the MaClawSrv parameter schema")
+	}
 }
 
 func TestDefaultParameterDefinitionsCoverTopLevelAppConfigFields(t *testing.T) {
@@ -73,6 +80,19 @@ func TestDefaultParameterDefinitionsCoverTopLevelAppConfigFields(t *testing.T) {
 		}
 		if def.Type == "" || def.Title == "" {
 			t.Fatalf("schema field %s missing type/title: %#v", key, def)
+		}
+	}
+}
+
+func TestParameterDefinitionMetadataMatchesCoreSchema(t *testing.T) {
+	metadata := coreconfig.AppConfigFieldMap()
+	for _, def := range DefaultParameterDefinitions() {
+		field, ok := metadata[def.Key]
+		if !ok {
+			continue
+		}
+		if def.Scope != string(field.Scope) || def.HeadlessSupport != field.HeadlessSupport || def.UserWebVisible != field.UserWebVisible {
+			t.Fatalf("parameter %s drifted from core schema: def=%#v field=%#v", def.Key, def, field)
 		}
 	}
 }
@@ -198,6 +218,22 @@ func TestResolveLLMConfigAppliesGlobalThinkingMode(t *testing.T) {
 	}
 	if llmCfg.ThinkingMode != "disabled" {
 		t.Fatalf("ThinkingMode = %q, want disabled", llmCfg.ThinkingMode)
+	}
+}
+
+func TestResolveLLMConfigUsesSharedThinkingModeDefault(t *testing.T) {
+	cfg := corelib.AppConfig{
+		MaclawLLMCurrentProvider: "provider",
+		MaclawLLMProviders: []corelib.MaclawLLMProvider{{
+			Name: "provider", URL: "https://api.example.test/v1", Key: "test-key", Model: "model",
+		}},
+	}
+	llmCfg, err := ResolveLLMConfig(cfg)
+	if err != nil {
+		t.Fatalf("ResolveLLMConfig() error = %v", err)
+	}
+	if llmCfg.ThinkingMode != "enabled" {
+		t.Fatalf("unset global thinking mode = %q, want enabled", llmCfg.ThinkingMode)
 	}
 }
 

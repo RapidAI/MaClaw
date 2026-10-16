@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,6 +20,8 @@ import (
 	corecardstore "github.com/RapidAI/CodeClaw/corelib/cardstore"
 	corellm "github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
+	"github.com/RapidAI/CodeClaw/corelib/lobsterai"
+	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/cardstore"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/llmservice"
 )
@@ -32,6 +35,8 @@ type llmModelListResponse struct {
 	} `json:"models"`
 }
 
+var llmProviderProbeHTTPClient = &http.Client{Timeout: 20 * time.Second}
+
 // ---------------------------------------------------------------------------
 // LLM Provider admin handlers
 // ---------------------------------------------------------------------------
@@ -40,6 +45,8 @@ func writeLLMProviderError(w http.ResponseWriter, err error) {
 	code := http.StatusBadRequest
 	if errors.Is(err, llmservice.ErrProviderNotFound) {
 		code = http.StatusNotFound
+	} else if errors.Is(err, llmservice.ErrProviderInUse) {
+		code = http.StatusConflict
 	}
 	writeJSONResp(w, code, map[string]string{"error": err.Error()})
 }
@@ -53,6 +60,51 @@ func queryTimezone(r *http.Request) string {
 		return ""
 	}
 	return timezone
+}
+
+// sameAuthKind reports whether two auth kinds name the same account family.
+// A blank kind on the incoming side means the caller is not touching the
+// login, so the stored kind is the one that must match. Empty and "api_key"
+// are the same static-key family: the editor sends "api_key" while a saved
+// row stores an empty kind, and a blank key field must keep the stored key.
+func sameAuthKind(existingKind, incomingKind string) bool {
+	existingKind = strings.TrimSpace(existingKind)
+	incomingKind = strings.TrimSpace(incomingKind)
+	if incomingKind == "" {
+		incomingKind = existingKind
+	}
+	return staticAuthKind(existingKind) == staticAuthKind(incomingKind)
+}
+
+func staticAuthKind(kind string) string {
+	if strings.TrimSpace(kind) == llmpool.ProviderAuthAPIKey {
+		return ""
+	}
+	return strings.TrimSpace(kind)
+}
+
+// forgetVendorLogin drops the in-memory logins a saved provider consumed. A
+// session whose credential was never applied stays pending: the admin may
+// still be holding its browser tab open.
+func forgetVendorLogin(svc *llmservice.Service, sessionIDs ...string) {
+	if svc == nil {
+		return
+	}
+	if len(sessionIDs) == 0 {
+		return
+	}
+	workBuddyID := strings.TrimSpace(sessionIDs[0])
+	if workBuddyID != "" {
+		svc.ForgetWorkBuddyLogin(workBuddyID)
+	}
+	for _, id := range sessionIDs[1:] {
+		if id == "" {
+			continue
+		}
+		svc.ForgetQoderLogin(id)
+		svc.ForgetTraeLogin(id)
+		svc.ForgetLobsterAILogin(id)
+	}
 }
 
 func adminListLLMProviders(svc *llmservice.Service) http.HandlerFunc {
@@ -93,6 +145,25 @@ func adminListLLMProviders(svc *llmservice.Service) http.HandlerFunc {
 				LBEligible:        ann.LBEligible,
 			}
 			safe[i].ProviderConfig.APIKey = "" // redact
+			safe[i].WorkBuddyRefreshToken = ""
+			safe[i].WorkBuddyUserID = ""
+			safe[i].WorkBuddyEnterpriseID = ""
+			safe[i].WorkBuddyDomain = ""
+			safe[i].WorkBuddySessionID = ""
+			safe[i].QoderRefreshToken = ""
+			safe[i].QoderUserID = ""
+			safe[i].QoderMachineID = ""
+			safe[i].QoderSessionID = ""
+			safe[i].TraeRefreshToken = ""
+			safe[i].TraeUserID = ""
+			safe[i].TraeMachineID = ""
+			safe[i].TraeDeviceID = ""
+			safe[i].TraeSessionID = ""
+			safe[i].LobsterAIRefreshToken = ""
+			safe[i].LobsterAIUserID = ""
+			safe[i].LobsterAISessionUUID = ""
+			safe[i].LobsterAIFirstKeyfrom = ""
+			safe[i].LobsterAISessionID = ""
 		}
 		sort.SliceStable(safe, func(i, j int) bool {
 			si := llmpool.EffectiveProviderSequence(safe[i].Sequence)
@@ -102,7 +173,27 @@ func adminListLLMProviders(svc *llmservice.Service) http.HandlerFunc {
 			}
 			return strings.ToLower(strings.TrimSpace(safe[i].ID)) < strings.ToLower(strings.TrimSpace(safe[j].ID))
 		})
-		writeJSONResp(w, http.StatusOK, map[string]any{"providers": safe})
+		writeJSONResp(w, http.StatusOK, map[string]any{
+			"providers":       safe,
+			"provider_arrays": reg.ProviderArrays,
+		})
+	}
+}
+
+func adminListLLMAccessNodes(proxyCfg *llmservice.ProxyConfig) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var nodes []llmservice.AccessNodeView
+		if proxyCfg != nil && proxyCfg.ListAccessNodes != nil {
+			nodes = proxyCfg.ListAccessNodes()
+		}
+		if len(nodes) == 0 {
+			nodeID := ""
+			if proxyCfg != nil {
+				nodeID = proxyCfg.NodeID
+			}
+			nodes = llmservice.DefaultAccessNodes(nodeID)
+		}
+		writeJSONResp(w, http.StatusOK, map[string]any{"nodes": nodes})
 	}
 }
 
@@ -116,6 +207,29 @@ func adminAddLLMProvider(svc *llmservice.Service) http.HandlerFunc {
 		provider.ID = strings.TrimSpace(provider.ID)
 		provider.Name = strings.TrimSpace(provider.Name)
 		provider.APIURL = strings.TrimSpace(provider.APIURL)
+		sessionID := strings.TrimSpace(provider.WorkBuddySessionID)
+		qoderSessionID := strings.TrimSpace(provider.QoderSessionID)
+		traeSessionID := strings.TrimSpace(provider.TraeSessionID)
+		lobsterAISessionID := strings.TrimSpace(provider.LobsterAISessionID)
+		if err := svc.ApplyWorkBuddyLogin(&provider, true); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := svc.ApplyQoderLogin(&provider, true); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := svc.ApplyTraeLogin(&provider, true); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := svc.ApplyLobsterAILogin(&provider, true); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		provider.ID = strings.TrimSpace(provider.ID)
+		provider.Name = strings.TrimSpace(provider.Name)
+		provider.APIURL = strings.TrimSpace(provider.APIURL)
 		if provider.ID == "" || provider.Name == "" || provider.APIURL == "" {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "id, name, and api_url are required"})
 			return
@@ -124,6 +238,7 @@ func adminAddLLMProvider(svc *llmservice.Service) http.HandlerFunc {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
 		}
+		forgetVendorLogin(svc, sessionID, qoderSessionID, traeSessionID, lobsterAISessionID)
 		writeJSONResp(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
 }
@@ -141,13 +256,36 @@ func adminUpdateLLMProvider(svc *llmservice.Service) http.HandlerFunc {
 			return
 		}
 		provider.ID = id
+		sessionID := strings.TrimSpace(provider.WorkBuddySessionID)
+		qoderSessionID := strings.TrimSpace(provider.QoderSessionID)
+		traeSessionID := strings.TrimSpace(provider.TraeSessionID)
+		lobsterAISessionID := strings.TrimSpace(provider.LobsterAISessionID)
+		if err := svc.ApplyWorkBuddyLogin(&provider, false); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := svc.ApplyQoderLogin(&provider, false); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := svc.ApplyTraeLogin(&provider, false); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
+		if err := svc.ApplyLobsterAILogin(&provider, false); err != nil {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+			return
+		}
 		if provider.APIKey == "" {
 			existing, err := svc.GetProvider(r.Context(), id)
 			if err != nil {
 				writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return
 			}
-			if existing != nil {
+			// Only the same auth kind may borrow the stored access token. A row
+			// switched to another vendor has a token for that vendor's upstream,
+			// and reusing it would fail every request against the new one.
+			if existing != nil && sameAuthKind(existing.AuthKind, provider.AuthKind) {
 				provider.APIKey = existing.APIKey
 			}
 		}
@@ -155,6 +293,7 @@ func adminUpdateLLMProvider(svc *llmservice.Service) http.HandlerFunc {
 			writeLLMProviderError(w, err)
 			return
 		}
+		forgetVendorLogin(svc, sessionID, qoderSessionID, traeSessionID, lobsterAISessionID)
 		writeJSONResp(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
 }
@@ -178,6 +317,31 @@ func adminSetLLMProviderPaused(svc *llmservice.Service) http.HandlerFunc {
 			return
 		}
 		writeJSONResp(w, http.StatusOK, map[string]any{"status": "ok", "paused": *req.Paused})
+	}
+}
+
+func adminCopyLLMProvider(svc *llmservice.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := strings.TrimSpace(r.PathValue("id"))
+		if id == "" {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "provider id required"})
+			return
+		}
+		copied, err := svc.CopyProvider(r.Context(), id)
+		if err != nil {
+			writeLLMProviderError(w, err)
+			return
+		}
+		if copied == nil || strings.TrimSpace(copied.ID) == "" {
+			writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": "provider was not copied"})
+			return
+		}
+		writeJSONResp(w, http.StatusOK, map[string]string{
+			"status":   "ok",
+			"id":       copied.ID,
+			"name":     copied.Name,
+			"array_id": copied.ArrayID,
+		})
 	}
 }
 
@@ -220,29 +384,50 @@ func adminSetLLMProviderSequences(svc *llmservice.Service) http.HandlerFunc {
 	}
 }
 
-func adminProbeLLMProviderModels(svc *llmservice.Service) http.HandlerFunc {
+func adminProbeLLMProviderModels(svc *llmservice.Service, proxyCfg *llmservice.ProxyConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			ProviderID string `json:"provider_id"`
 			APIURL     string `json:"api_url"`
 			APIKey     string `json:"api_key"`
 			Protocol   string `json:"protocol"`
+			AgentType  string `json:"agent_type"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
 			return
 		}
-		if req.APIKey == "" && req.ProviderID != "" && svc != nil {
-			existing, err := svc.GetProvider(r.Context(), req.ProviderID)
+		var existing *llmpool.ProviderConfig
+		if req.ProviderID != "" && svc != nil {
+			got, err := svc.GetProvider(r.Context(), req.ProviderID)
 			if err != nil {
 				writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 				return
 			}
-			if existing != nil {
-				req.APIKey = existing.APIKey
-			}
+			existing = got
 		}
-		models, err := probeLLMProviderModels(r.Context(), req.APIURL, req.APIKey, req.Protocol)
+		var (
+			models []string
+			err    error
+		)
+		agentType := strings.TrimSpace(req.AgentType)
+		if agentType == "" && existing != nil {
+			agentType = existing.AgentType
+		}
+		// A saved provider's key must not be sent to a caller-supplied URL.
+		if existing != nil && strings.TrimSpace(req.APIKey) == "" {
+			probeProvider := *existing
+			if agentType != "" {
+				probeProvider.AgentType = agentType
+			}
+			if proxyCfg != nil && !llmpool.ProviderAllowedOnNode(probeProvider, proxyCfg.NodeID) {
+				models, err = llmservice.ProbeProviderModelsWithScope(r.Context(), proxyCfg, &probeProvider, probeProvider.APIURL, probeProvider.APIKey, probeProvider.Protocol)
+			} else {
+				models, err = probeLLMProviderModels(r.Context(), probeProvider.APIURL, probeProvider.APIKey, probeProvider.Protocol, probeProvider.AgentType)
+			}
+		} else {
+			models, err = probeLLMProviderModels(r.Context(), req.APIURL, req.APIKey, req.Protocol, agentType)
+		}
 		if err != nil {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 			return
@@ -251,7 +436,7 @@ func adminProbeLLMProviderModels(svc *llmservice.Service) http.HandlerFunc {
 	}
 }
 
-func probeLLMProviderModels(ctx context.Context, apiURL, apiKey, protocol string) ([]string, error) {
+func probeLLMProviderModels(ctx context.Context, apiURL, apiKey, protocol, agentType string) ([]string, error) {
 	apiURL = strings.TrimSpace(apiURL)
 	if apiURL == "" {
 		return nil, fmt.Errorf("api_url is required")
@@ -273,8 +458,12 @@ func probeLLMProviderModels(ctx context.Context, apiURL, apiKey, protocol string
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
 	req.Header.Set("Accept", "application/json")
-	client := &http.Client{Timeout: 20 * time.Second}
-	resp, err := client.Do(req)
+	probeCfg := corelib.MaclawLLMConfig{URL: apiURL, AgentType: llmservice.RequestAgentType(agentType)}
+	if ua := probeCfg.UserAgent(); ua != "" {
+		req.Header.Set("User-Agent", ua)
+	}
+	corelib.ApplyOpenCodeSessionHeader(req, probeCfg)
+	resp, err := llmProviderProbeHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}
@@ -341,15 +530,17 @@ func llmModelsEndpoint(apiURL, protocol string) (string, error) {
 // a configured provider. Unlike probe-models (which only checks /v1/models
 // reachability), this sends an actual chat request and verifies a response is
 // returned — the same test the client would exercise.
-func adminTestLLMProviderChat(svc *llmservice.Service) http.HandlerFunc {
+func adminTestLLMProviderChat(svc *llmservice.Service, proxyCfg *llmservice.ProxyConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
-			ProviderID string `json:"provider_id"`
-			APIURL     string `json:"api_url"`
-			APIKey     string `json:"api_key"`
-			Model      string `json:"model"`
-			Protocol   string `json:"protocol"`
-			WireAPI    string `json:"wire_api"`
+			ProviderID   string `json:"provider_id"`
+			APIURL       string `json:"api_url"`
+			APIKey       string `json:"api_key"`
+			Model        string `json:"model"`
+			RouteModel   string `json:"route_model"`
+			LogicalModel string `json:"logical_model"`
+			Protocol     string `json:"protocol"`
+			WireAPI      string `json:"wire_api"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
@@ -359,18 +550,26 @@ func adminTestLLMProviderChat(svc *llmservice.Service) http.HandlerFunc {
 		// particular, never combine its stored key with a caller-supplied URL:
 		// that would allow an administrator's browser request to send a provider
 		// secret to a different endpoint. The model remains selectable so a
-		// service-group route can test its configured upstream model.
+		// service-group route can test its configured upstream model. A route
+		// id may be an array id, and auto / official-* are billing bands, not
+		// upstream model ids. Both are resolved to the member production dials.
 		timeoutSec := 0
+		var existing *llmpool.ProviderConfig
 		if providerID := strings.TrimSpace(req.ProviderID); providerID != "" {
 			if svc == nil {
 				writeJSONResp(w, http.StatusOK, map[string]any{"success": false, "error": "provider service unavailable"})
 				return
 			}
-			existing, err := svc.GetProvider(r.Context(), providerID)
+			got, model, err := svc.ProviderChatTestTarget(r.Context(), providerID, req.RouteModel, req.LogicalModel, req.Model)
+			if errors.Is(err, llmservice.ErrNoUpstreamTestModel) {
+				writeJSONResp(w, http.StatusOK, map[string]any{"success": false, "error": err.Error()})
+				return
+			}
 			if err != nil {
 				writeJSONResp(w, http.StatusOK, map[string]any{"success": false, "error": "load provider: " + err.Error()})
 				return
 			}
+			existing = got
 			if existing == nil {
 				writeJSONResp(w, http.StatusOK, map[string]any{"success": false, "error": "provider not found"})
 				return
@@ -379,9 +578,18 @@ func adminTestLLMProviderChat(svc *llmservice.Service) http.HandlerFunc {
 			req.APIURL = existing.APIURL
 			req.Protocol = existing.Protocol
 			req.WireAPI = existing.WireAPI
+			req.Model = model
 			timeoutSec = existing.UpstreamTimeoutSec
-			if req.Model == "" && len(existing.Models) > 0 {
-				req.Model = existing.Models[0]
+			if proxyCfg != nil && !llmpool.ProviderAllowedOnNode(*existing, proxyCfg.NodeID) {
+				ctx, cancel := context.WithTimeout(r.Context(), llmProviderTestTimeout(corelib.MaclawLLMConfig{TimeoutSec: timeoutSec}))
+				defer cancel()
+				reply, errMsg, latencyMs, model := llmservice.TestProviderChatWithScope(ctx, proxyCfg, existing, req.Model)
+				if errMsg != "" {
+					writeJSONResp(w, http.StatusOK, map[string]any{"success": false, "error": errMsg, "latency_ms": latencyMs})
+					return
+				}
+				writeJSONResp(w, http.StatusOK, map[string]any{"success": true, "reply": reply, "model": model, "latency_ms": latencyMs})
+				return
 			}
 		}
 		if req.APIURL == "" || req.Model == "" {
@@ -393,116 +601,25 @@ func adminTestLLMProviderChat(svc *llmservice.Service) http.HandlerFunc {
 		}
 		// Use the provider's configured protocol and wire API, so the test covers
 		// the same upstream request shape as production routing.
-		protocol := corelib.NormalizeLLMProviderProtocol(req.Protocol)
-		wireAPI := corelib.NormalizeLLMProviderWireAPI(req.WireAPI)
 		cfg := corelib.MaclawLLMConfig{
 			URL:        req.APIURL,
 			Key:        req.APIKey,
 			Model:      req.Model,
-			Protocol:   protocol,
-			WireAPI:    wireAPI,
+			Protocol:   corelib.NormalizeLLMProviderProtocol(req.Protocol),
+			WireAPI:    corelib.NormalizeLLMProviderWireAPI(req.WireAPI),
 			TimeoutSec: timeoutSec,
 		}
+		cfg = providerTestConfig(cfg, existing)
 		// An availability test must use the provider's production timeout. Slower
 		// reasoning providers can legitimately take more than 15 seconds before
 		// returning their first completion.
 		ctx, cancel := context.WithTimeout(r.Context(), llmProviderTestTimeout(cfg))
 		defer cancel()
-		httpReq, err := newLLMProviderTestRequest(ctx, cfg)
-		if err != nil {
-			writeJSONResp(w, http.StatusOK, map[string]any{"success": false, "error": err.Error()})
-			return
-		}
-		start := time.Now()
-		client := corelib.NewLLMEndpointHTTPClient(cfg)
-		resp, err := client.Do(httpReq)
-		latencyMs := time.Since(start).Milliseconds()
-		if err != nil {
+		reply, errMsg, latencyMs, _ := runLLMProviderChatTest(ctx, cfg)
+		if errMsg != "" {
 			writeJSONResp(w, http.StatusOK, map[string]any{
 				"success":    false,
-				"error":      llmProviderTestRequestError(err, cfg),
-				"latency_ms": latencyMs,
-			})
-			return
-		}
-		defer resp.Body.Close()
-		respBody, truncated, err := readLLMProviderTestResponse(resp.Body)
-		if err != nil {
-			writeJSONResp(w, http.StatusOK, map[string]any{
-				"success":    false,
-				"error":      llmProviderTestResponseReadError(err, cfg),
-				"latency_ms": latencyMs,
-			})
-			return
-		}
-		if truncated {
-			writeJSONResp(w, http.StatusOK, map[string]any{
-				"success":    false,
-				"error":      "model response exceeds the 64 KiB availability-test limit",
-				"latency_ms": latencyMs,
-			})
-			return
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			writeJSONResp(w, http.StatusOK, map[string]any{
-				"success":    false,
-				"error":      llmProviderTestHTTPError(resp.StatusCode, respBody),
-				"latency_ms": latencyMs,
-			})
-			return
-		}
-		// A successful HTTP response is not itself proof that the model is usable:
-		// some compatible gateways return an error envelope with HTTP 200. Treat
-		// those responses, malformed bodies, and empty completions as failures.
-		var envelope struct {
-			Type    string          `json:"type"`
-			Message string          `json:"message"`
-			Error   json.RawMessage `json:"error"`
-		}
-		if err := json.Unmarshal(respBody, &envelope); err != nil {
-			writeJSONResp(w, http.StatusOK, map[string]any{
-				"success":    false,
-				"error":      "invalid model response: " + err.Error(),
-				"latency_ms": latencyMs,
-			})
-			return
-		}
-		if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
-			writeJSONResp(w, http.StatusOK, map[string]any{
-				"success":    false,
-				"error":      "model returned an error: " + llmProviderTestErrorMessage(envelope.Error),
-				"latency_ms": latencyMs,
-			})
-			return
-		}
-		if strings.EqualFold(envelope.Type, "error") {
-			errMsg := strings.TrimSpace(envelope.Message)
-			if errMsg == "" {
-				errMsg = "unknown error"
-			}
-			writeJSONResp(w, http.StatusOK, map[string]any{
-				"success":    false,
-				"error":      "model returned an error: " + errMsg,
-				"latency_ms": latencyMs,
-			})
-			return
-		}
-
-		// Parse the actual completion. A model is available only after it returns
-		// non-empty content to the short test prompt.
-		reply, err := llmProviderTestReply(respBody, protocol, wireAPI)
-		if err != nil {
-			writeJSONResp(w, http.StatusOK, map[string]any{
-				"success":    false,
-				"error":      "invalid model response: " + err.Error(),
-				"latency_ms": latencyMs,
-			})
-			return
-		}
-		if strings.TrimSpace(reply) == "" {
-			writeJSONResp(w, http.StatusOK, map[string]any{
-				"success":    false,
-				"error":      "model returned no completion content",
+				"error":      errMsg,
 				"latency_ms": latencyMs,
 			})
 			return
@@ -516,13 +633,173 @@ func adminTestLLMProviderChat(svc *llmservice.Service) http.HandlerFunc {
 	}
 }
 
-func newLLMProviderTestRequest(ctx context.Context, cfg corelib.MaclawLLMConfig) (*http.Request, error) {
-	messages := []interface{}{map[string]string{"role": "user", "content": "Reply with exactly: pong"}}
+// testLLMProviderChatStatus runs the same availability test as the admin
+// "Test Status" button against a saved provider. It is used by the background
+// provider monitor; the model is the provider's first configured model, which
+// mirrors the model the admin UI picks for the manual test.
+func testLLMProviderChatStatus(ctx context.Context, svc *llmservice.Service, proxyCfg *llmservice.ProxyConfig, providerID string) (success bool, errMsg string, latencyMs int64) {
+	if svc == nil {
+		return false, "provider service unavailable", 0
+	}
+	existing, err := svc.GetProvider(ctx, providerID)
+	if err != nil {
+		return false, "load provider: " + err.Error(), 0
+	}
+	if existing == nil {
+		return false, "provider not found", 0
+	}
+	model := ""
+	if len(existing.Models) > 0 {
+		model = existing.Models[0]
+	}
+	if strings.TrimSpace(existing.APIURL) == "" || model == "" {
+		return false, "api_url and model are required", 0
+	}
+	if proxyCfg != nil && !llmpool.ProviderAllowedOnNode(*existing, proxyCfg.NodeID) {
+		_, errMsg, latencyMs, _ := llmservice.TestProviderChatWithScope(ctx, proxyCfg, existing, model)
+		return errMsg == "", errMsg, latencyMs
+	}
+	cfg := corelib.MaclawLLMConfig{
+		URL:        existing.APIURL,
+		Key:        existing.APIKey,
+		Model:      model,
+		Protocol:   corelib.NormalizeLLMProviderProtocol(existing.Protocol),
+		WireAPI:    corelib.NormalizeLLMProviderWireAPI(existing.WireAPI),
+		TimeoutSec: existing.UpstreamTimeoutSec,
+	}
+	cfg = providerTestConfig(cfg, existing)
+	testCtx, cancel := context.WithTimeout(ctx, llmProviderTestTimeout(cfg))
+	defer cancel()
+	_, errMsg, latencyMs, _ = runLLMProviderChatTest(testCtx, cfg)
+	return errMsg == "", errMsg, latencyMs
+}
+
+// providerTestConfig keeps a vendor account on that vendor's own request
+// shape. A static key keeps the provider's saved User-Agent when the vendor
+// config did not already choose one. Account logins still replace that header
+// in their own ApplyHeaders.
+func providerTestConfig(cfg corelib.MaclawLLMConfig, provider *llmpool.ProviderConfig) corelib.MaclawLLMConfig {
+	if provider == nil {
+		return cfg
+	}
+	if wb, ok := llmservice.WorkBuddyMaclawConfig(provider, cfg.Model); ok {
+		wb.TimeoutSec = cfg.TimeoutSec
+		cfg = wb
+	}
+	if qd, ok := llmservice.QoderMaclawConfig(provider, cfg.Model); ok {
+		qd.TimeoutSec = cfg.TimeoutSec
+		cfg = qd
+	}
+	if tr, ok := llmservice.TraeMaclawConfig(provider, cfg.Model); ok {
+		tr.TimeoutSec = cfg.TimeoutSec
+		cfg = tr
+	}
+	if lb, ok := llmservice.LobsterAIMaclawConfig(provider, cfg.Model); ok {
+		lb.TimeoutSec = cfg.TimeoutSec
+		cfg = lb
+	}
+	if strings.TrimSpace(cfg.AgentType) == "" {
+		cfg.AgentType = llmservice.RequestAgentType(provider.AgentType)
+	}
+	return cfg
+}
+
+// runLLMProviderChatTest executes one availability probe against cfg and
+// returns the model reply. A non-empty errMsg marks the provider unavailable.
+
+func runLLMProviderChatTest(ctx context.Context, cfg corelib.MaclawLLMConfig) (reply string, errMsg string, latencyMs int64, calls []llmservice.ProviderToolCall) {
+	return runLLMProviderChatTestBody(ctx, cfg, nil, nil)
+}
+
+func runLLMProviderChatTestBody(ctx context.Context, cfg corelib.MaclawLLMConfig, tools, toolChoice json.RawMessage) (reply string, errMsg string, latencyMs int64, calls []llmservice.ProviderToolCall) {
+	httpReq, err := newLLMProviderTestRequest(ctx, cfg, tools, toolChoice)
+	if err != nil {
+		return "", err.Error(), 0, nil
+	}
+	start := time.Now()
+	client := corelib.NewLLMEndpointHTTPClient(cfg)
+	if workbuddy.Matches(cfg) {
+		client = workbuddy.WrapClient(client)
+	}
+	// The vendor wrappers must be the same ones the chat forward path uses:
+	// Qoder signs with the provider's uid, and Trae stamps the device pair the
+	// refresh token was minted against. The bare wrappers fall back to a
+	// desktop credential store a server process does not have.
+	if llmservice.QoderMaclawConfigFromConfig(cfg) {
+		client = llmservice.QoderHTTPClient(client, cfg)
+	}
+	if llmservice.TraeMaclawConfigFromConfig(cfg) {
+		client = llmservice.TraeHTTPClient(client, cfg)
+	}
+	if lobsterai.Matches(cfg.ProviderName, cfg.URL) {
+		client = lobsterai.WrapClient(client)
+	}
+	resp, err := client.Do(httpReq)
+	latencyMs = time.Since(start).Milliseconds()
+	if err != nil {
+		return "", llmProviderTestRequestError(err, cfg), latencyMs, nil
+	}
+	defer resp.Body.Close()
+	respBody, truncated, err := readLLMProviderTestResponse(resp.Body)
+	if err != nil {
+		return "", llmProviderTestResponseReadError(err, cfg), latencyMs, nil
+	}
+	if truncated {
+		return "", "model response exceeds the 64 KiB availability-test limit", latencyMs, nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", llmProviderTestHTTPError(resp.StatusCode, respBody), latencyMs, nil
+	}
+	// A successful HTTP response is not itself proof that the model is usable:
+	// some compatible gateways return an error envelope with HTTP 200. Treat
+	// those responses, malformed bodies, and empty completions as failures.
+	var envelope struct {
+		Type    string          `json:"type"`
+		Message string          `json:"message"`
+		Error   json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(respBody, &envelope); err != nil {
+		return "", "invalid model response: " + err.Error(), latencyMs, nil
+	}
+	if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
+		return "", "model returned an error: " + llmProviderTestErrorMessage(envelope.Error), latencyMs, nil
+	}
+	if strings.EqualFold(envelope.Type, "error") {
+		errMsg := strings.TrimSpace(envelope.Message)
+		if errMsg == "" {
+			errMsg = "unknown error"
+		}
+		return "", "model returned an error: " + errMsg, latencyMs, nil
+	}
+
+	// Parse the actual completion. A model is available only after it returns
+	// non-empty content to the short test prompt, or a tool call when tools were sent.
+	reply, err = llmProviderTestReply(respBody, cfg.Protocol, cfg.WireAPI)
+	if err != nil {
+		return "", "invalid model response: " + err.Error(), latencyMs, nil
+	}
+	calls = llmservice.ParseProviderTestToolCalls(respBody)
+	if strings.TrimSpace(reply) == "" && len(calls) == 0 {
+		return "", "model returned no completion content", latencyMs, nil
+	}
+	return reply, "", latencyMs, calls
+}
+
+func newLLMProviderTestRequest(ctx context.Context, cfg corelib.MaclawLLMConfig, tools, toolChoice json.RawMessage) (*http.Request, error) {
+	prompt := "Reply with exactly: pong"
+	maxTokens := 64
+	if len(bytes.TrimSpace(tools)) > 0 && string(bytes.TrimSpace(tools)) != "null" {
+		prompt = "Call one of the available tools now."
+		maxTokens = 256
+	}
+	messages := []interface{}{map[string]string{"role": "user", "content": prompt}}
+	parsedTools, toolChoiceValue := providerTestToolValues(tools, toolChoice)
 	if cfg.Protocol == "anthropic" {
-		endpoint, body, err := corellm.BuildAnthropicMessagesRequestData(cfg, messages, corellm.AnthropicMessagesRequestOptions{MaxTokens: 64})
+		endpoint, body, err := corellm.BuildAnthropicMessagesRequestData(cfg, messages, corellm.AnthropicMessagesRequestOptions{MaxTokens: maxTokens})
 		if err != nil {
 			return nil, err
 		}
+		body = injectProviderTestTools(body, parsedTools, toolChoiceValue, true)
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, strings.NewReader(string(body)))
 		if err != nil {
 			return nil, err
@@ -532,18 +809,136 @@ func newLLMProviderTestRequest(ctx context.Context, cfg corelib.MaclawLLMConfig)
 			req.Header.Set("x-api-key", cfg.Key)
 		}
 		req.Header.Set("anthropic-version", "2023-06-01")
+		if ua := cfg.UserAgent(); ua != "" {
+			req.Header.Set("User-Agent", ua)
+		}
+		corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
+		corelib.ApplyOpenCodeSessionHeader(req, cfg)
 		return req, nil
 	}
 	if cfg.IsResponsesAPI() {
 		req, _, _, err := corellm.NewResponsesAPIRequest(ctx, cfg, messages, corellm.ResponsesAPIRequestOptions{
-			ExtraBody: map[string]interface{}{"max_output_tokens": 64},
+			Tools:      parsedTools,
+			ToolChoice: toolChoiceValue,
+			ExtraBody:  map[string]interface{}{"max_output_tokens": maxTokens},
 		})
 		return req, err
 	}
+	extra := map[string]interface{}{"max_tokens": maxTokens}
+	// Kimi Code and K2/K3 reject every explicit temperature. The probe used to
+	// send 0 and the status check failed with HTTP 400 before the model ran.
+	if !corelib.KimiRequestOmitsSampling(cfg, cfg.Model) {
+		extra["temperature"] = 0
+	}
 	req, _, _, err := corellm.NewOpenAIChatRequest(ctx, cfg, messages, corellm.OpenAIChatRequestOptions{
-		ExtraBody: map[string]interface{}{"max_tokens": 64, "temperature": 0},
+		Tools:      parsedTools,
+		ToolChoice: toolChoiceValue,
+		ExtraBody:  extra,
 	})
 	return req, err
+}
+
+func providerTestToolValues(tools, toolChoice json.RawMessage) ([]map[string]interface{}, interface{}) {
+	tools = bytes.TrimSpace(tools)
+	if len(tools) == 0 || string(tools) == "null" {
+		return nil, nil
+	}
+	var parsed []map[string]interface{}
+	if err := json.Unmarshal(tools, &parsed); err != nil || len(parsed) == 0 {
+		return nil, nil
+	}
+	toolChoice = bytes.TrimSpace(toolChoice)
+	if len(toolChoice) == 0 || string(toolChoice) == "null" {
+		return parsed, nil
+	}
+	var choice interface{}
+	if err := json.Unmarshal(toolChoice, &choice); err != nil {
+		return parsed, nil
+	}
+	return parsed, choice
+}
+
+func anthropicProbeToolChoice(choice interface{}) interface{} {
+	switch value := choice.(type) {
+	case string:
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "", "none":
+			return nil
+		case "auto":
+			return map[string]interface{}{"type": "auto"}
+		case "required", "any":
+			return map[string]interface{}{"type": "any"}
+		default:
+			name := strings.TrimSpace(value)
+			if name == "" {
+				return nil
+			}
+			return map[string]interface{}{"type": "tool", "name": name}
+		}
+	case map[string]interface{}:
+		if fn, ok := value["function"].(map[string]interface{}); ok {
+			if name, _ := fn["name"].(string); strings.TrimSpace(name) != "" {
+				return map[string]interface{}{"type": "tool", "name": strings.TrimSpace(name)}
+			}
+		}
+		switch strings.ToLower(strings.TrimSpace(fmt.Sprint(value["type"]))) {
+		case "auto":
+			return map[string]interface{}{"type": "auto"}
+		case "any", "required":
+			return map[string]interface{}{"type": "any"}
+		case "tool":
+			name, _ := value["name"].(string)
+			if strings.TrimSpace(name) == "" {
+				return nil
+			}
+			return map[string]interface{}{"type": "tool", "name": strings.TrimSpace(name)}
+		}
+	}
+	return nil
+}
+
+func injectProviderTestTools(body []byte, tools []map[string]interface{}, toolChoice interface{}, anthropic bool) []byte {
+	if len(tools) == 0 {
+		return body
+	}
+	var doc map[string]interface{}
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return body
+	}
+	if anthropic {
+		converted := make([]map[string]interface{}, 0, len(tools))
+		for _, tool := range tools {
+			fn, _ := tool["function"].(map[string]interface{})
+			if fn == nil {
+				converted = append(converted, tool)
+				continue
+			}
+			item := map[string]interface{}{"name": fn["name"]}
+			if desc, ok := fn["description"]; ok {
+				item["description"] = desc
+			}
+			if schema, ok := fn["parameters"]; ok {
+				item["input_schema"] = schema
+			} else {
+				item["input_schema"] = map[string]interface{}{"type": "object"}
+			}
+			converted = append(converted, item)
+		}
+		doc["tools"] = converted
+		if choice := anthropicProbeToolChoice(toolChoice); choice != nil {
+			doc["tool_choice"] = choice
+		}
+	} else {
+		doc["tools"] = tools
+		if toolChoice != nil {
+			doc["tool_choice"] = toolChoice
+		}
+	}
+	out, err := json.Marshal(doc)
+	if err != nil {
+		return body
+	}
+	return out
 }
 
 func llmProviderTestTimeout(cfg corelib.MaclawLLMConfig) time.Duration {
@@ -684,6 +1079,128 @@ func llmProviderTestErrorMessage(raw json.RawMessage) string {
 	return message
 }
 
+func adminAddLLMProviderArray(svc *llmservice.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			ID      string `json:"id"`
+			Name    string `json:"name"`
+			Billing struct {
+				Timezone                 string                           `json:"timezone"`
+				CreditMultiplier         float64                          `json:"credit_multiplier"`
+				CreditMultiplierSchedule []llmpool.CreditMultiplierWindow `json:"credit_multiplier_schedule"`
+				TokenPricing             llmpool.TokenPricing             `json:"token_pricing"`
+			} `json:"billing"`
+		}
+		if err := decodeLimitedJSON(w, r, &body, 64<<10); err != nil {
+			if errors.Is(err, errRequestBodyTooLarge) {
+				writeJSONResp(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "request body too large"})
+				return
+			}
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		if err := svc.AddProviderArray(r.Context(), body.ID, body.Name, llmservice.ProviderArrayBilling{
+			Timezone:                 body.Billing.Timezone,
+			CreditMultiplier:         body.Billing.CreditMultiplier,
+			CreditMultiplierSchedule: body.Billing.CreditMultiplierSchedule,
+			TokenPricing:             body.Billing.TokenPricing,
+		}); err != nil {
+			writeLLMProviderError(w, err)
+			return
+		}
+		writeJSONResp(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
+func adminRenameLLMProviderArray(svc *llmservice.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if id == "" {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "provider array id required"})
+			return
+		}
+		var body struct {
+			Name    string `json:"name"`
+			Billing *struct {
+				Timezone                 string                           `json:"timezone"`
+				CreditMultiplier         float64                          `json:"credit_multiplier"`
+				CreditMultiplierSchedule []llmpool.CreditMultiplierWindow `json:"credit_multiplier_schedule"`
+				TokenPricing             llmpool.TokenPricing             `json:"token_pricing"`
+			} `json:"billing"`
+		}
+		if err := decodeLimitedJSON(w, r, &body, 64<<10); err != nil {
+			if errors.Is(err, errRequestBodyTooLarge) {
+				writeJSONResp(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "request body too large"})
+				return
+			}
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "invalid request body"})
+			return
+		}
+		var err error
+		if body.Billing == nil {
+			err = svc.RenameProviderArray(r.Context(), id, body.Name)
+		} else {
+			err = svc.UpdateProviderArray(r.Context(), id, body.Name, llmservice.ProviderArrayBilling{
+				Timezone:                 body.Billing.Timezone,
+				CreditMultiplier:         body.Billing.CreditMultiplier,
+				CreditMultiplierSchedule: body.Billing.CreditMultiplierSchedule,
+				TokenPricing:             body.Billing.TokenPricing,
+			})
+		}
+		if err != nil {
+			writeLLMProviderError(w, err)
+			return
+		}
+		writeJSONResp(w, http.StatusOK, map[string]string{"status": "ok"})
+	}
+}
+
+func adminListLLMProviderArrayReferences(svc *llmservice.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if id == "" {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "provider array id required"})
+			return
+		}
+		groups, err := svc.ProviderArrayReferences(r.Context(), id)
+		if err != nil {
+			writeLLMProviderError(w, err)
+			return
+		}
+		type groupRef struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		refs := make([]groupRef, 0, len(groups))
+		for _, g := range groups {
+			refs = append(refs, groupRef{ID: g.ID, Name: g.Name})
+		}
+		writeJSONResp(w, http.StatusOK, map[string]any{"groups": refs})
+	}
+}
+
+func adminDeleteLLMProviderArray(svc *llmservice.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if id == "" {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "provider array id required"})
+			return
+		}
+		// prune is ignored. A referenced array is never deleted or stripped
+		// from service groups; the admin removes the route first.
+		groups, err := svc.DeleteProviderArray(r.Context(), id)
+		if err != nil {
+			if errors.Is(err, llmservice.ErrProviderInUse) {
+				writeJSONResp(w, http.StatusConflict, map[string]any{"error": "provider_in_use", "groups": groups})
+				return
+			}
+			writeLLMProviderError(w, err)
+			return
+		}
+		writeJSONResp(w, http.StatusOK, map[string]any{"status": "ok"})
+	}
+}
+
 func adminDeleteLLMProvider(svc *llmservice.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		id := r.PathValue("id")
@@ -691,11 +1208,45 @@ func adminDeleteLLMProvider(svc *llmservice.Service) http.HandlerFunc {
 			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "provider id required"})
 			return
 		}
-		if err := svc.DeleteProvider(r.Context(), id); err != nil {
+		prune := r.URL.Query().Get("prune") == "1" || strings.EqualFold(r.URL.Query().Get("prune"), "true")
+		pruned, err := svc.DeleteProvider(r.Context(), id, prune)
+		if err != nil {
+			if errors.Is(err, llmservice.ErrProviderInUse) {
+				writeJSONResp(w, http.StatusConflict, map[string]any{"error": "provider_in_use", "groups": pruned})
+				return
+			}
 			writeLLMProviderError(w, err)
 			return
 		}
-		writeJSONResp(w, http.StatusOK, map[string]string{"status": "ok"})
+		resp := map[string]any{"status": "ok"}
+		if len(pruned) > 0 {
+			resp["pruned_groups"] = pruned
+		}
+		writeJSONResp(w, http.StatusOK, resp)
+	}
+}
+
+func adminListLLMProviderReferences(svc *llmservice.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+		if id == "" {
+			writeJSONResp(w, http.StatusBadRequest, map[string]string{"error": "provider id required"})
+			return
+		}
+		groups, err := svc.ProviderReferences(r.Context(), id)
+		if err != nil {
+			writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+			return
+		}
+		type groupRef struct {
+			ID   string `json:"id"`
+			Name string `json:"name"`
+		}
+		refs := make([]groupRef, 0, len(groups))
+		for _, g := range groups {
+			refs = append(refs, groupRef{ID: g.ID, Name: g.Name})
+		}
+		writeJSONResp(w, http.StatusOK, map[string]any{"groups": refs})
 	}
 }
 
@@ -1176,10 +1727,15 @@ func newExternalComputeRevocationAuthorization(hubID, tenantID, adminEmail strin
 // Usage Statistics handler
 // ---------------------------------------------------------------------------
 
-func adminLLMProviderTrafficHandler(statsSvc *llmservice.StatsService) http.HandlerFunc {
+func adminLLMProviderTrafficHandler(statsSvc *llmservice.StatsService, proxyCfg *llmservice.ProxyConfig) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		nodes := trafficAccessNodes(proxyCfg)
 		if statsSvc == nil {
-			writeJSONResp(w, http.StatusOK, &llmservice.ProviderTrafficReport{Timezone: "Asia/Shanghai", Traffic: map[string]llmservice.ProviderPeriodTraffic{}})
+			writeJSONResp(w, http.StatusOK, &llmservice.ProviderTrafficReport{
+				Timezone:     "Asia/Shanghai",
+				Traffic:      map[string]llmservice.ProviderPeriodTraffic{},
+				MemberHealth: memberHealthTrafficOrEmpty(r.Context(), "Asia/Shanghai", nodes),
+			})
 			return
 		}
 		report, err := statsSvc.QueryProviderTraffic(r.Context(), queryTimezone(r), time.Time{})
@@ -1187,8 +1743,24 @@ func adminLLMProviderTrafficHandler(statsSvc *llmservice.StatsService) http.Hand
 			writeJSONResp(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 			return
 		}
+		report.MemberHealth = memberHealthTrafficOrEmpty(r.Context(), report.Timezone, nodes)
 		writeJSONResp(w, http.StatusOK, report)
 	}
+}
+
+func trafficAccessNodes(proxyCfg *llmservice.ProxyConfig) []llmservice.AccessNodeView {
+	if proxyCfg == nil || proxyCfg.ListAccessNodes == nil {
+		return nil
+	}
+	return proxyCfg.ListAccessNodes()
+}
+
+func memberHealthTrafficOrEmpty(ctx context.Context, timezone string, nodes []llmservice.AccessNodeView) map[string]llmservice.ProviderPeriodTraffic {
+	health := llmservice.MemberHealthPeriodTraffic(ctx, timezone, time.Time{}, nodes)
+	if health == nil {
+		return map[string]llmservice.ProviderPeriodTraffic{}
+	}
+	return health
 }
 
 func adminLLMServiceGroupTrafficHandler(statsSvc *llmservice.StatsService) http.HandlerFunc {

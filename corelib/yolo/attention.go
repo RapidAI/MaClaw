@@ -22,6 +22,14 @@ type Attention struct {
 // Forward runs attention on input [N, C, H, W].
 // C2PSA.cv1 already expanded channels. PSABlock splits: first half → attention, second half → passthrough.
 func (a *Attention) Forward(x *Tensor) *Tensor {
+	if out, ok := a.tryForwardFast(x); ok {
+		return out
+	}
+	return a.forwardSlow(x)
+}
+
+// forwardSlow is the portable per-element implementation.
+func (a *Attention) forwardSlow(x *Tensor) *Tensor {
 	N, _, H, W := x.Shape[0], x.Shape[1], x.Shape[2], x.Shape[3]
 
 	// QKV projection: x [N, halfC, H, W] → qkv [N, 2*halfC, H, W]

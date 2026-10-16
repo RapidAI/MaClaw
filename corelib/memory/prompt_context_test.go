@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMemoryIndexForPromptFormatsStats(t *testing.T) {
@@ -66,6 +67,34 @@ func TestUserFactSummaryForPrompt(t *testing.T) {
 	templated := store.UserFactSummaryForPrompt(UserFactSummaryPromptOptions{Template: "[facts] %s\n"})
 	if !strings.HasPrefix(templated, "[facts] User prefers concise Chinese updates") {
 		t.Fatalf("unexpected templated user fact prompt: %q", templated)
+	}
+}
+
+func TestUserFactSummaryForPromptPrefersNewestWithinBudget(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	if err := store.Save(Entry{Content: strings.Repeat("旧", 40), Category: CategoryUserFact, Status: StatusActive}); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if err := store.SaveForUser(Entry{Content: "新事实", Category: CategoryUserFact, Status: StatusActive}, "user-a"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * time.Millisecond)
+	if err := store.SaveForUser(Entry{Content: "别人的事实", Category: CategoryUserFact, Status: StatusActive}, "user-b"); err != nil {
+		t.Fatal(err)
+	}
+
+	out := store.UserFactSummaryForPrompt(UserFactSummaryPromptOptions{
+		OwnerID:  "user-a",
+		MaxRunes: 3,
+	})
+	if !strings.HasPrefix(out, "新事实") || strings.Contains(out, "旧") || strings.Contains(out, "别人") {
+		t.Fatalf("newest owner fact = %q", out)
 	}
 }
 

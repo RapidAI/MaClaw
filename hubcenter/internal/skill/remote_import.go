@@ -2,6 +2,7 @@ package skill
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -11,6 +12,7 @@ import (
 	"net/http"
 	"path"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -50,8 +52,35 @@ func NewRemoteImporter() *RemoteImporter {
 
 // ImportResult 表示一次导入的结果。
 type ImportResult struct {
-	Skills []HubSkillFull `json:"skills"`
-	Errors []string       `json:"errors,omitempty"`
+	Skills      []HubSkillFull  `json:"skills"`
+	Suite       *SkillSuiteFull `json:"suite,omitempty"`
+	PackageKind string          `json:"package_kind,omitempty"`
+	Errors      []string        `json:"errors,omitempty"`
+}
+
+type suiteManifest struct {
+	ID          string                `yaml:"id"`
+	Name        string                `yaml:"name"`
+	Description string                `yaml:"description"`
+	Version     string                `yaml:"version"`
+	Author      string                `yaml:"author"`
+	License     string                `yaml:"license"`
+	Tags        []string              `yaml:"tags"`
+	Members     []suiteManifestMember `yaml:"members"`
+	Skills      []suiteManifestMember `yaml:"skills"`
+}
+
+type suiteManifestMember struct {
+	ID       string `yaml:"id"`
+	Path     string `yaml:"path"`
+	Required *bool  `yaml:"required"`
+}
+
+func (m suiteManifest) entries() []suiteManifestMember {
+	if len(m.Skills) > 0 {
+		return m.Skills
+	}
+	return m.Members
 }
 
 // gitHubRepo 解析 GitHub 仓库 URL 为 owner/repo/branch/subpath。
@@ -65,12 +94,24 @@ type gitHubRepo struct {
 var ghRepoRe = regexp.MustCompile(`^https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?(?:/tree/([^/]+)(/.*)?)?/?$`)
 
 func parseGitHubURL(rawURL string) (*gitHubRepo, bool) {
+	// Remote repository imports must use GitHub's HTTPS endpoint. Reject plain
+	// HTTP to avoid credential/content tampering during server-side fetches.
+	if !strings.HasPrefix(strings.ToLower(strings.TrimSpace(rawURL)), "https://github.com/") {
+		return nil, false
+	}
 	m := ghRepoRe.FindStringSubmatch(rawURL)
 	if m == nil {
 		return nil, false
 	}
 	subPath := strings.TrimPrefix(m[4], "/")
-	return &gitHubRepo{Owner: m[1], Repo: m[2], Branch: m[3], SubPath: subPath}, true
+	cleanSub := path.Clean(strings.ReplaceAll(subPath, "\\", "/"))
+	if cleanSub == "." {
+		cleanSub = ""
+	}
+	if cleanSub == ".." || strings.HasPrefix(cleanSub, "../") || strings.Contains(cleanSub, "/../") {
+		return nil, false
+	}
+	return &gitHubRepo{Owner: m[1], Repo: m[2], Branch: m[3], SubPath: cleanSub}, true
 }
 
 // ImportFromURL 从 URL 导入 skill(s)。
@@ -81,6 +122,9 @@ func (ri *RemoteImporter) ImportFromURL(rawURL string) (*ImportResult, error) {
 	rawURL = strings.TrimSpace(rawURL)
 	if rawURL == "" {
 		return nil, fmt.Errorf("URL is empty")
+	}
+	if strings.HasPrefix(strings.ToLower(rawURL), "http://github.com/") {
+		return nil, fmt.Errorf("GitHub repository URL must use HTTPS")
 	}
 	if gh, ok := parseGitHubURL(rawURL); ok {
 		return ri.importFromGitHub(gh, rawURL)
@@ -109,11 +153,17 @@ func (ri *RemoteImporter) importFromGitHub(gh *gitHubRepo, sourceURL string) (*I
 type ghTreeEntry struct {
 	Path string `json:"path"`
 	Type string `json:"type"` // "blob" or "tree"
+	Mode string `json:"mode,omitempty"`
 }
 
 type ghTreeResponse struct {
+	SHA       string        `json:"sha"`
 	Tree      []ghTreeEntry `json:"tree"`
 	Truncated bool          `json:"truncated"`
+}
+
+type ghCommitResponse struct {
+	SHA string `json:"sha"`
 }
 
 func (ri *RemoteImporter) scanGitHubTree(owner, repo, branch, subPath, sourceURL string) (*ImportResult, error) {
@@ -126,11 +176,64 @@ func (ri *RemoteImporter) scanGitHubTree(owner, repo, branch, subPath, sourceURL
 	if err := json.Unmarshal(body, &tree); err != nil {
 		return nil, fmt.Errorf("parse tree: %w", err)
 	}
+	if tree.Truncated {
+		return nil, fmt.Errorf("GitHub repository tree is truncated; refusing partial Suite import")
+	}
+	// Git tree mode 120000 denotes a symbolic link. Following links during
+	// import would violate the archive path-safety contract, so reject them
+	// before fetching any content. GitHub may also expose an explicit symlink
+	// type in compatible API responses.
+	for _, entry := range tree.Tree {
+		if !isWithinImportSubpath(entry.Path, subPath) {
+			continue
+		}
+		if entry.Type == "symlink" || entry.Mode == "120000" {
+			return nil, fmt.Errorf("GitHub repository contains unsupported symbolic link: %s", entry.Path)
+		}
+	}
 
 	// 收集已有 skill.yaml 的目录，避免 skill.md 重复导入
 	yamlDirs := make(map[string]bool)
 
 	result := &ImportResult{}
+	skillDirs := make([]string, 0)
+	var sm *suiteManifest
+	// An explicit suite manifest is optional. It lives at the repository root
+	// (or requested subpath) and controls suite metadata while skills remain
+	// independently parsed below.
+	manifestPath := "suite.yaml"
+	if subPath != "" {
+		manifestPath = strings.TrimSuffix(subPath, "/") + "/suite.yaml"
+	}
+	legacyManifestPath := "skill-suite.yaml"
+	if subPath != "" {
+		legacyManifestPath = strings.TrimSuffix(subPath, "/") + "/skill-suite.yaml"
+	}
+	for _, entry := range tree.Tree {
+		if entry.Type == "blob" && (entry.Path == manifestPath || entry.Path == legacyManifestPath) {
+			data, fetchErr := ri.httpGet(fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", owner, repo, branch, entry.Path))
+			if fetchErr != nil {
+				return nil, fmt.Errorf("fetch suite manifest: %w", fetchErr)
+			}
+			var parsed suiteManifest
+			if err := yaml.Unmarshal(data, &parsed); err != nil {
+				return nil, fmt.Errorf("parse suite manifest: %w", err)
+			}
+			valid := true
+			for _, member := range parsed.entries() {
+				p := strings.ReplaceAll(strings.TrimSpace(member.Path), "\\", "/")
+				clean := path.Clean(p)
+				if p == "" || strings.HasPrefix(p, "/") || clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") || (len(clean) > 1 && clean[1] == ':') {
+					valid = false
+					break
+				}
+			}
+			if !valid {
+				return nil, fmt.Errorf("suite manifest contains invalid member path")
+			}
+			sm = &parsed
+		}
+	}
 
 	// 第一轮：扫描 skill.yaml（优先）
 	for _, entry := range tree.Tree {
@@ -141,7 +244,7 @@ func (ri *RemoteImporter) scanGitHubTree(owner, repo, branch, subPath, sourceURL
 		if base != "skill.yaml" {
 			continue
 		}
-		if subPath != "" && !strings.HasPrefix(entry.Path, subPath) {
+		if subPath != "" && entry.Path != subPath && !strings.HasPrefix(entry.Path, strings.TrimSuffix(subPath, "/")+"/") {
 			continue
 		}
 
@@ -160,11 +263,16 @@ func (ri *RemoteImporter) scanGitHubTree(owner, repo, branch, subPath, sourceURL
 			result.Errors = append(result.Errors, fmt.Sprintf("parse %s: %v", entry.Path, err))
 			continue
 		}
+		if sm != nil && len(sm.entries()) > 0 && !manifestIncludesSkill(*sm, skillDir, sk) {
+			continue
+		}
+		applyManifestIdentity(sm, skillDir, sk)
 
 		ri.collectFiles(sk, &tree, skillDir, owner, repo, branch)
 		// 把 skill.yaml 本身也放入 Files，客户端 scanner 需要它
 		sk.Files["skill.yaml"] = base64.StdEncoding.EncodeToString(yamlData)
 		result.Skills = append(result.Skills, *sk)
+		skillDirs = append(skillDirs, skillDir)
 	}
 
 	// 第二轮：扫描 skill.md（仅在同目录无 skill.yaml 时）
@@ -176,7 +284,7 @@ func (ri *RemoteImporter) scanGitHubTree(owner, repo, branch, subPath, sourceURL
 		if base != "skill.md" {
 			continue
 		}
-		if subPath != "" && !strings.HasPrefix(entry.Path, subPath) {
+		if subPath != "" && entry.Path != subPath && !strings.HasPrefix(entry.Path, strings.TrimSuffix(subPath, "/")+"/") {
 			continue
 		}
 
@@ -197,6 +305,10 @@ func (ri *RemoteImporter) scanGitHubTree(owner, repo, branch, subPath, sourceURL
 			result.Errors = append(result.Errors, fmt.Sprintf("parse %s: %v", entry.Path, err))
 			continue
 		}
+		if sm != nil && len(sm.entries()) > 0 && !manifestIncludesSkill(*sm, skillDir, sk) {
+			continue
+		}
+		applyManifestIdentity(sm, skillDir, sk)
 
 		ri.collectFiles(sk, &tree, skillDir, owner, repo, branch)
 		// skill.md 格式没有 skill.yaml，自动生成一个供客户端 scanner 识别
@@ -207,12 +319,185 @@ func (ri *RemoteImporter) scanGitHubTree(owner, repo, branch, subPath, sourceURL
 			sk.Files["skill.md"] = base64.StdEncoding.EncodeToString(mdData)
 		}
 		result.Skills = append(result.Skills, *sk)
+		skillDirs = append(skillDirs, skillDir)
 	}
 
 	if len(result.Skills) == 0 && len(result.Errors) == 0 {
 		return nil, fmt.Errorf("no skill.yaml or skill.md found in repo %s/%s (branch: %s, subpath: %q)", owner, repo, branch, subPath)
 	}
+	if len(result.Skills) > 32 {
+		return nil, fmt.Errorf("repository contains too many skills for one Suite (maximum 32)")
+	}
+	if len(result.Skills) > 1 {
+		result.PackageKind = "suite"
+		suiteID, name, desc, ver, author := "github."+strings.ToLower(owner)+"."+strings.ToLower(repo), repo, "", "", ""
+		var tags []string
+		license := ""
+		if sm != nil {
+			if sm.ID != "" {
+				suiteID = sm.ID
+			}
+			if sm.Name != "" {
+				name = sm.Name
+			}
+			desc, ver, author = sm.Description, sm.Version, sm.Author
+			tags = append(tags, sm.Tags...)
+			license = sm.License
+		}
+		if ver == "" {
+			ver = highestSuiteVersion(result.Skills)
+		}
+		now := time.Now().UTC().Format(time.RFC3339)
+		revision := branch
+		// Trees API returns a tree-object SHA, not the immutable commit SHA
+		// required by the Suite source_revision contract. Resolve the branch
+		// ref to its commit; retain the tree SHA only as a last-resort fallback
+		// for compatibility with unusual GitHub responses.
+		if commitBody, commitErr := ri.httpGet(fmt.Sprintf("https://api.github.com/repos/%s/%s/commits/%s", owner, repo, branch)); commitErr == nil {
+			var commit ghCommitResponse
+			if json.Unmarshal(commitBody, &commit) == nil && strings.TrimSpace(commit.SHA) != "" {
+				revision = strings.TrimSpace(commit.SHA)
+			}
+		}
+		if revision == branch && tree.SHA != "" {
+			revision = tree.SHA
+		}
+		su := &SkillSuiteFull{SkillSuiteMeta: SkillSuiteMeta{ID: suiteID, Name: name, Description: desc, Version: ver, Author: author, License: license, Tags: tags, SourceURL: sourceURL, SourceRevision: revision, CreatedAt: now, UpdatedAt: now, Visible: true, Status: "published"}, Skills: append([]HubSkillFull(nil), result.Skills...), Manifest: SuiteManifest{Format: "skill-suite.v1", GeneratedAt: now}}
+		permissionSet := map[string]bool{}
+		for _, sk := range result.Skills {
+			for _, permission := range sk.Manifest.Permissions {
+				if p := strings.TrimSpace(permission); p != "" {
+					permissionSet[p] = true
+				}
+			}
+		}
+		for permission := range permissionSet {
+			su.Permissions = append(su.Permissions, permission)
+		}
+		sort.Strings(su.Permissions)
+		for i := range result.Skills {
+			sk := &result.Skills[i]
+			memberPath := ""
+			if sk.SourceURL != "" {
+				memberPath = ""
+			}
+			required := true
+			if sm != nil {
+				for _, m := range sm.entries() {
+					manifestPath := path.Clean(strings.ReplaceAll(strings.TrimSpace(m.Path), "\\", "/"))
+					memberDir := ""
+					if i < len(skillDirs) {
+						memberDir = path.Clean(skillDirs[i])
+					}
+					if (m.ID != "" && strings.EqualFold(m.ID, sk.ID)) || (memberDir != "." && strings.EqualFold(manifestPath, memberDir)) || strings.EqualFold(path.Base(manifestPath), sk.Name) || strings.EqualFold(manifestPath, sk.Name) {
+						memberPath = m.Path
+						if m.Required != nil {
+							required = *m.Required
+						}
+						break
+					}
+				}
+			}
+			su.Members = append(su.Members, SkillSuiteMember{SkillID: sk.ID, SkillRef: sk.SkillID, Name: sk.Name, Path: memberPath, Version: sk.Version, Required: required, Order: i})
+		}
+		if raw, marshalErr := json.Marshal(su.Skills); marshalErr == nil {
+			sum := sha256.Sum256(raw)
+			su.PackageSHA256 = hex.EncodeToString(sum[:])
+		}
+		result.Suite = su
+	}
 	return result, nil
+}
+
+func isWithinImportSubpath(entryPath, subPath string) bool {
+	entryPath = strings.Trim(strings.ReplaceAll(entryPath, "\\", "/"), "/")
+	subPath = strings.Trim(strings.ReplaceAll(subPath, "\\", "/"), "/")
+	if subPath == "" {
+		return true
+	}
+	return entryPath == subPath || strings.HasPrefix(entryPath, subPath+"/")
+}
+
+func manifestIncludesSkill(manifest suiteManifest, skillDir string, sk *HubSkillFull) bool {
+	dir := path.Clean(strings.ReplaceAll(strings.TrimSpace(skillDir), "\\", "/"))
+	for _, member := range manifest.entries() {
+		memberPath := path.Clean(strings.ReplaceAll(strings.TrimSpace(member.Path), "\\", "/"))
+		if memberPath == dir || strings.EqualFold(path.Base(memberPath), sk.Name) || (member.ID != "" && strings.EqualFold(member.ID, sk.ID)) {
+			return true
+		}
+	}
+	return false
+}
+
+func applyManifestIdentity(manifest *suiteManifest, skillDir string, sk *HubSkillFull) {
+	if manifest == nil || sk == nil {
+		return
+	}
+	dir := path.Clean(strings.ReplaceAll(strings.TrimSpace(skillDir), "\\", "/"))
+	for _, member := range manifest.entries() {
+		memberPath := path.Clean(strings.ReplaceAll(strings.TrimSpace(member.Path), "\\", "/"))
+		if member.ID != "" && (memberPath == dir || strings.EqualFold(path.Base(memberPath), sk.Name)) {
+			sk.ID = strings.TrimSpace(member.ID)
+			sk.SkillID = strings.TrimSpace(member.ID)
+			return
+		}
+	}
+}
+
+func highestSuiteVersion(skills []HubSkillFull) string {
+	best := ""
+	for _, sk := range skills {
+		if strings.TrimSpace(sk.Version) == "" {
+			continue
+		}
+		if best == "" || compareSuiteVersion(sk.Version, best) > 0 {
+			best = sk.Version
+		}
+	}
+	return best
+}
+
+func compareSuiteVersion(a, b string) int {
+	parse := func(v string) []int {
+		v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+		if i := strings.IndexAny(v, "+-"); i >= 0 {
+			v = v[:i]
+		}
+		p := strings.Split(v, ".")
+		out := make([]int, 3)
+		for i := 0; i < len(p) && i < 3; i++ {
+			n := 0
+			for _, r := range p[i] {
+				if r < '0' || r > '9' {
+					return nil
+				}
+				n = n*10 + int(r-'0')
+			}
+			out[i] = n
+		}
+		if len(p) != 3 {
+			return nil
+		}
+		return out
+	}
+	pa, pb := parse(a), parse(b)
+	if pa != nil && pb != nil {
+		for i := 0; i < 3; i++ {
+			if pa[i] > pb[i] {
+				return 1
+			}
+			if pa[i] < pb[i] {
+				return -1
+			}
+		}
+	}
+	if a > b {
+		return 1
+	}
+	if a < b {
+		return -1
+	}
+	return 0
 }
 
 // collectFiles 抓取同目录下的附属文件（scripts 等），递归包含子目录。
@@ -223,6 +508,7 @@ func (ri *RemoteImporter) collectFiles(sk *HubSkillFull, tree *ghTreeResponse, s
 		dirPrefix = ""
 	}
 	skipFiles := map[string]bool{"skill.yaml": true}
+	var totalBytes int64
 	for _, f := range tree.Tree {
 		if f.Type != "blob" {
 			continue
@@ -243,13 +529,18 @@ func (ri *RemoteImporter) collectFiles(sk *HubSkillFull, tree *ghTreeResponse, s
 		if relPath == "skill.md" {
 			continue
 		}
+		cleanRel := path.Clean(strings.ReplaceAll(relPath, "\\", "/"))
+		if cleanRel == "." || cleanRel == ".." || strings.HasPrefix(cleanRel, "../") || strings.HasPrefix(cleanRel, "/") {
+			continue
+		}
 		fileURL := fmt.Sprintf("https://raw.githubusercontent.com/%s/%s/%s/%s", owner, repo, branch, f.Path)
 		fileData, err := ri.httpGet(fileURL)
 		if err != nil {
 			continue
 		}
-		if len(fileData) <= 512*1024 {
-			sk.Files[relPath] = base64.StdEncoding.EncodeToString(fileData)
+		if len(fileData) <= 512*1024 && totalBytes+int64(len(fileData)) <= 10*1024*1024 {
+			sk.Files[cleanRel] = base64.StdEncoding.EncodeToString(fileData)
+			totalBytes += int64(len(fileData))
 		}
 	}
 }

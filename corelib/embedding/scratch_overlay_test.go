@@ -7,22 +7,44 @@ import (
 
 func TestScratchArenaBounds(t *testing.T) {
 	hp := GemmaHParams{Dim: 768, KVDim: 256, FFDim: 1152, HeadDim: 256, RopeTheta: 1e6}
+	// The real model declares a second RoPE base for its SWA layers
+	// (rope.freq_base_swa = 1e4, absent from the file so the loader defaults it),
+	// which needs a second table pair.  That is a genuine 2*S*halfDim floats, so
+	// the budget is raised by exactly that much and no more -- stated as a
+	// measured quantity rather than a blanket raise, so an accidental second
+	// allocation still shows up here as a breach.
+	swa := hp
+	swa.NSwa = 512
+	swa.SwaPattern = 6
+	swa.RopeThetaSwa = 1e4
+
 	for _, seq := range []int{64, 256} {
-		s := newGemmaScratch(hp, seq)
-		miB := float64(s.bytes()) / (1024 * 1024)
-		limit := 1.3
-		if seq == 256 {
-			limit = 5.0
-		}
-		if miB > limit {
-			t.Errorf("seq=%d scratch %.3f MiB exceeds %.1f", seq, miB, limit)
-		}
 		act := seq * 4608 * 4
 		today := seq * 7680 * 4
 		if act >= today {
 			t.Errorf("activation body did not shrink")
 		}
-		t.Logf("seq=%d total=%.3f MiB activation=%.3f MiB", seq, miB, float64(act)/(1024*1024))
+		for _, tc := range []struct {
+			name        string
+			hp          GemmaHParams
+			extraFloats int
+		}{
+			{"single-base", hp, 0},
+			{"swa-base", swa, 2 * seq * (hp.HeadDim / 2)},
+		} {
+			s := newGemmaScratch(tc.hp, seq)
+			miB := float64(s.bytes()) / (1024 * 1024)
+			limit := 1.3
+			if seq == 256 {
+				limit = 5.0
+			}
+			limit += float64(tc.extraFloats*4) / (1024 * 1024)
+			if miB > limit {
+				t.Errorf("%s seq=%d scratch %.3f MiB exceeds %.3f", tc.name, seq, miB, limit)
+			}
+			t.Logf("%s seq=%d total=%.3f MiB limit=%.3f activation=%.3f MiB",
+				tc.name, seq, miB, limit, float64(act)/(1024*1024))
+		}
 	}
 }
 

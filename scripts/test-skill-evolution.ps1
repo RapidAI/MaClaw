@@ -30,7 +30,7 @@ $guiRun = "TestSetNLSkillStatus|TestGetSkillEvolutionStatus|TestListSkillEvoluti
 $tuiRun = "TestManageSkillHandler_AllCanonical|TestManageSkillHandler_Evolution|TestManageSkillHandler_SetEvolution"
 
 Invoke-GoTestPackage -Package "./corelib/skill/" -Run $coreRun -TimeoutSec 90
-Invoke-GoTestPackage -Package "./gui/" -Run $guiRun -TimeoutSec 120
+Invoke-GoTestPackage -Package "./guiapp/" -Run $guiRun -TimeoutSec 120
 Invoke-GoTestPackage -Package "./tui/" -Run $tuiRun -TimeoutSec 90
 
 Write-Host ""

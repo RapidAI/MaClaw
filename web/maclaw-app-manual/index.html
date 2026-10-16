@@ -1,0 +1,461 @@
+﻿<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="MaClaw App Studio bilingual manual with quick start, app type selection, run validation, publishing checklist, and troubleshooting guidance.">
+  <title>MaClaw App Studio Manual</title>
+  <style>
+    :root {
+      --bg: #f6f8fb;
+      --panel: #fff;
+      --panel-subtle: #f8fbff;
+      --ink: #172033;
+      --muted: #5f6f86;
+      --line: #d9e2ee;
+      --primary: #2563eb;
+      --primary-strong: #1d4ed8;
+      --primary-soft: #eef5ff;
+      --green: #147d58;
+      --green-soft: #eaf7f1;
+      --amber: #9a6700;
+      --amber-soft: #fff8ed;
+      --shadow: 0 12px 32px rgba(23, 34, 54, .07);
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: linear-gradient(180deg, #fbfcfe 0%, var(--bg) 100%);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.65;
+    }
+    .skip-link {
+      position: fixed;
+      top: 12px;
+      left: 12px;
+      z-index: 20;
+      transform: translateY(-140%);
+      min-height: 38px;
+      padding: 7px 12px;
+      border-radius: 8px;
+      background: var(--ink);
+      color: #fff;
+      font-weight: 850;
+      text-decoration: none;
+      transition: transform 160ms ease;
+    }
+    .skip-link:focus-visible { transform: translateY(0); }
+    .shell { width: min(1120px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 56px; }
+    .topbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; margin-bottom: 22px; }
+    .brand { display: flex; align-items: center; gap: 12px; color: var(--ink); text-decoration: none; }
+    .mark { display: grid; place-items: center; width: 38px; height: 38px; border-radius: 10px; background: var(--primary); color: #fff; font-weight: 900; }
+    .brand strong { display: block; font-size: 16px; }
+    .brand span:last-child { display: block; color: var(--muted); font-size: 13px; }
+    .lang { display: flex; gap: 6px; padding: 4px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+    button { min-height: 32px; padding: 0 12px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-weight: 800; cursor: pointer; }
+    button[aria-pressed="true"] { background: var(--primary); color: #fff; }
+    :focus-visible { outline: 3px solid rgba(37, 99, 235, .34); outline-offset: 2px; }
+    .lang-panel[hidden] { display: none; }
+    .hero {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 350px;
+      gap: 30px;
+      align-items: center;
+      padding: 32px 36px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+    .kicker { margin: 0 0 10px; color: var(--primary); font-size: 13px; font-weight: 850; }
+    h1 { margin: 0; font-size: 34px; line-height: 1.18; letter-spacing: 0; }
+    h2 { margin: 0 0 12px; font-size: 22px; letter-spacing: 0; }
+    h3 { margin: 18px 0 8px; font-size: 16px; }
+    p { margin: 0 0 12px; color: var(--muted); }
+    ul, ol { margin: 0; padding-left: 20px; color: var(--muted); }
+    li + li { margin-top: 6px; }
+    code { padding: 2px 5px; border: 1px solid var(--line); border-radius: 6px; background: #f8fafc; color: var(--primary-strong); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .92em; }
+    .lead { max-width: 780px; margin-top: 14px; color: var(--muted); font-size: 16px; }
+    .hero-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 22px; }
+    .button-link { display: inline-flex; align-items: center; justify-content: center; min-height: 40px; padding: 9px 13px; border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--ink); font-weight: 850; text-decoration: none; }
+    .button-link.primary { border-color: var(--primary); background: var(--primary); color: #fff; }
+    .hero-visual svg { display: block; width: 100%; height: auto; }
+    .visual-label { dominant-baseline: middle; font: 700 12px Inter, system-ui, sans-serif; fill: #41516a; }
+    .visual-muted { dominant-baseline: middle; font: 700 11px Inter, system-ui, sans-serif; fill: #6b7a91; }
+    .quick { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; margin-top: 18px; }
+    .quick a { min-height: 44px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-subtle); color: var(--ink); font-weight: 850; text-decoration: none; }
+    .grid { display: grid; grid-template-columns: 260px minmax(0, 1fr); gap: 22px; margin-top: 24px; }
+    .toc { position: sticky; top: 18px; align-self: start; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); }
+    .toc a { display: block; padding: 8px 10px; border-radius: 8px; color: var(--muted); font-weight: 760; text-decoration: none; }
+    .toc a:hover { background: var(--primary-soft); color: var(--primary); }
+    .content { display: grid; gap: 16px; }
+    .section { scroll-margin-top: 18px; padding: 24px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel); box-shadow: 0 6px 18px rgba(23, 34, 54, .045); }
+    .section:target { border-color: #bcd3ff; box-shadow: 0 0 0 3px rgba(37, 99, 235, .08), 0 6px 18px rgba(23, 34, 54, .045); }
+    .intro-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .intro-card, .path-card, .flow-card, .table-card { padding: 16px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel-subtle); }
+    .intro-card strong, .path-card strong, .flow-card strong { display: block; margin-bottom: 6px; }
+    .icon { display: block; width: 34px; height: 34px; margin-bottom: 10px; color: var(--primary); stroke: currentColor; fill: none; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+    .icon.green { color: var(--green); }
+    .flow { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; margin-top: 16px; }
+    .flow-card { position: relative; min-height: 142px; }
+    .flow-card:not(:last-child)::after { content: ""; position: absolute; right: -8px; top: 50%; width: 14px; height: 14px; border-top: 2px solid var(--primary); border-right: 2px solid var(--primary); transform: translateY(-50%) rotate(45deg); background: var(--bg); }
+    .flow-card em { display: grid; place-items: center; width: 28px; height: 28px; margin-bottom: 8px; border-radius: 999px; background: var(--primary-soft); color: var(--primary-strong); font-style: normal; font-weight: 900; }
+    .path { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; }
+    .mini-flow { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0 14px; }
+    .mini-flow span { display: inline-flex; align-items: center; min-height: 30px; padding: 5px 9px; border: 1px solid var(--line); border-radius: 999px; background: var(--panel-subtle); color: var(--muted); font-size: 13px; font-weight: 780; }
+    .mini-flow span:not(:last-child)::after { content: "→"; margin-left: 9px; color: var(--primary); }
+    .checklist { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; padding: 0; list-style: none; }
+    .checklist li { padding: 12px 13px; border: 1px solid var(--line); border-radius: 9px; background: var(--panel-subtle); color: var(--muted); }
+    .callout { padding: 14px 16px; border: 1px solid #cbe9db; border-radius: 10px; background: var(--green-soft); color: #285f49; font-weight: 760; }
+    .warning { border-color: #ead2a6; background: var(--amber-soft); color: var(--amber); }
+    .decision-table { display: grid; gap: 10px; }
+    .table-card { display: grid; grid-template-columns: 160px minmax(0, 1fr) minmax(0, 1fr); gap: 12px; align-items: start; }
+    .table-card strong { color: var(--ink); }
+    .table-card span { color: var(--muted); }
+    @media (max-width: 980px) {
+      .hero { grid-template-columns: 1fr; }
+      .hero-visual { max-width: 420px; }
+      .flow, .path, .intro-grid, .checklist, .table-card { grid-template-columns: 1fr; }
+      .flow-card:not(:last-child)::after { display: none; }
+    }
+    @media (max-width: 860px) {
+      .grid { grid-template-columns: 1fr; }
+      .toc { position: static; }
+      .quick { grid-template-columns: 1fr; }
+      .hero { padding: 26px 22px; }
+      h1 { font-size: 28px; }
+      .topbar { align-items: flex-start; flex-direction: column; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      .skip-link { transition: none; }
+    }
+    @media print {
+      body { background: #fff; }
+      .skip-link, .lang, .hero-actions, .quick, .toc { display: none; }
+      .shell { width: 100%; padding: 0; }
+      .hero, .section { box-shadow: none; break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#zh-start" data-skip-link>跳到正文 / Skip to content</a>
+  <main class="shell">
+    <header class="topbar">
+      <a class="brand" href="/maclaw-app-manual">
+        <span class="mark">M</span>
+        <span><strong>MaClaw App Studio</strong><span>Manual / 使用手册</span></span>
+      </a>
+      <div class="lang" role="group" aria-label="Language">
+        <button type="button" data-set-lang="zh" aria-pressed="true">中文</button>
+        <button type="button" data-set-lang="en" aria-pressed="false">EN</button>
+      </div>
+    </header>
+
+    <section class="lang-panel" data-lang-panel="zh">
+      <section class="hero">
+        <div>
+          <p class="kicker">快速上手</p>
+          <h1>MaClaw 应用工作室使用手册</h1>
+          <p class="lead">把 Skill、工作流、MIS/DataSrv 能力变成一个用户能点击运行的业务应用。按“选类型 → 绑定能力 → 运行验证 → 发布或自用”走，就能快速完成。</p>
+          <div class="hero-actions">
+            <a class="button-link primary" href="#zh-start">3 分钟上手</a>
+            <a class="button-link" href="#zh-map">界面地图</a>
+            <a class="button-link" href="#zh-publish">发布检查</a>
+          </div>
+          <nav class="quick" aria-label="快速导航">
+            <a href="#zh-start">上手路径</a><a href="#zh-choose">选类型</a><a href="#zh-run">运行验证</a><a href="#zh-troubleshooting">排障</a>
+          </nav>
+        </div>
+        <div class="hero-visual" aria-label="能力组装成应用的示意图">
+          <svg viewBox="0 0 360 260" role="img">
+            <title>能力组装成应用</title>
+            <rect x="8" y="8" width="344" height="244" rx="14" fill="#f8fbff" stroke="#d9e2ee"/>
+            <path d="M82 70h78M82 130h78M82 190h78M212 130h54" stroke="#9db8df" stroke-width="2.2" stroke-linecap="round"/>
+            <path d="M153 70l43 60-43 60M266 130l-12-9M266 130l-12 9" stroke="#2563eb" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            <g><rect x="34" y="48" width="96" height="44" rx="10" fill="#fff" stroke="#bfd1eb"/><path d="M58 66h14M58 73h22M91 59l12 7-12 7z" stroke="#2563eb" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><text x="82" y="86" text-anchor="middle" class="visual-label">Skill</text></g>
+            <g><rect x="34" y="108" width="96" height="44" rx="10" fill="#fff" stroke="#bfd1eb"/><path d="M57 126h16m0 0 8-8m-8 8 8 8m19-16h8a8 8 0 0 1 0 16h-8" stroke="#147d58" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><text x="82" y="146" text-anchor="middle" class="visual-label">工作流</text></g>
+            <g><rect x="34" y="168" width="96" height="44" rx="10" fill="#fff" stroke="#bfd1eb"/><ellipse cx="82" cy="182" rx="24" ry="8" fill="none" stroke="#2563eb" stroke-width="2"/><path d="M58 182v12c0 4.5 10.7 8 24 8s24-3.5 24-8v-12" stroke="#2563eb" stroke-width="2" fill="none"/><text x="82" y="206" text-anchor="middle" class="visual-label">DataSrv</text></g>
+            <g><rect x="170" y="94" width="86" height="72" rx="14" fill="#eef5ff" stroke="#8db4ef"/><path d="M192 118h42M192 132h42M192 146h28" stroke="#2563eb" stroke-width="3" stroke-linecap="round"/><text x="213" y="184" text-anchor="middle" class="visual-label">App Studio</text></g>
+            <g><rect x="272" y="94" width="58" height="72" rx="14" fill="#eaf7f1" stroke="#9bd8bc"/><path d="M291 120h20M291 134h20M301 108v38" stroke="#147d58" stroke-width="2.4" stroke-linecap="round"/><text x="301" y="184" text-anchor="middle" class="visual-label">应用</text><text x="301" y="202" text-anchor="middle" class="visual-muted">发布 / 自用</text></g>
+          </svg>
+        </div>
+      </section>
+
+      <div class="grid">
+        <nav class="toc" aria-label="目录">
+          <a href="#zh-start">3 分钟上手</a><a href="#zh-map">界面地图</a><a href="#zh-choose">选择类型</a><a href="#zh-create">创建应用</a><a href="#zh-run">运行验证</a><a href="#zh-done">完成标准</a><a href="#zh-publish">审核发布</a><a href="#zh-troubleshooting">排障</a>
+        </nav>
+        <div class="content">
+          <section id="zh-start" class="section">
+            <h2>1. 3 分钟上手</h2>
+            <div class="flow" aria-label="应用工作室主流程">
+              <div class="flow-card"><em>1</em><svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h5"/></svg><strong>进入工作室</strong><p>左侧导航「应用」→「工作室」。</p></div>
+              <div class="flow-card"><em>2</em><svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 7h16M7 4v6M17 4v6"/><path d="M7 15h10M10 12v6M14 12v6"/></svg><strong>选择类型</strong><p>不确定就先选「工具应用」。</p></div>
+              <div class="flow-card"><em>3</em><svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M7 7h10v10H7z"/><path d="M3 12h4M17 12h4M12 3v4M12 17v4"/></svg><strong>绑定能力</strong><p>选择 Skill，或填写业务对象 / DataSrv 信息。</p></div>
+              <div class="flow-card"><em>4</em><svg class="icon green" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M5 12l4 4L19 6"/><path d="M4 20h16"/></svg><strong>运行一次</strong><p>确认输入、结果、产物和审批状态正常。</p></div>
+              <div class="flow-card"><em>5</em><svg class="icon green" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="M7 8l5-5 5 5"/><path d="M5 21h14"/></svg><strong>发布或自用</strong><p>提交企业市场，或仅添加到本机面板。</p></div>
+            </div>
+          </section>
+
+          <section id="zh-map" class="section">
+            <h2>2. 界面地图</h2>
+            <div class="intro-grid">
+              <div class="intro-card"><svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h5"/></svg><strong>创建应用</strong><p>从能力生成应用入口，填写名称、说明、图标、输入输出和布局。</p></div>
+              <div class="intro-card"><svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14"/><path d="M8 5v4M16 10v4M11 15v4"/></svg><strong>应用管理</strong><p>固定、排序、复制、编辑、停用、恢复应用，并查看 Manifest。</p></div>
+              <div class="intro-card"><svg class="icon green" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M12 4l7 4v5c0 4-3 7-7 8-4-1-7-4-7-8V8z"/><path d="M9 12l2 2 4-5"/></svg><strong>审核 / 发布</strong><p>按检查清单补齐证据、依赖和治理信息，再提交企业市场。</p></div>
+            </div>
+          </section>
+
+          <section id="zh-choose" class="section">
+            <h2>3. 选择应用类型</h2>
+            <div class="decision-table">
+              <div class="table-card"><strong>工具应用</strong><span>我已有本地 Skill，要做成一个按钮入口。</span><span>文档处理、生成报告、文件转换、信息查询。</span></div>
+              <div class="table-card"><strong>自动化应用</strong><span>我要按固定规则重复运行。</span><span>定时检查、批处理、监控后触发。</span></div>
+              <div class="table-card"><strong>企业普通应用</strong><span>我要连接企业数据或业务对象。</span><span>客户、订单、库存、合同等 MIS/DataSrv 场景。</span></div>
+              <div class="table-card"><strong>企业审批应用</strong><span>我要让流程进入审批和复核。</span><span>报销、合同、变更、工单、敏感操作确认。</span></div>
+            </div>
+          </section>
+
+          <section id="zh-create" class="section">
+            <h2>4. 创建应用：最短填写法</h2>
+            <div class="mini-flow"><span>选类型</span><span>写一句说明</span><span>绑定 Skill</span><span>配置结果</span><span>保存</span></div>
+            <ol>
+              <li>名称写成用户能理解的动作，例如「合同归档」「客户活跃度报告」。</li>
+              <li>说明只写一句话：这个应用会处理什么输入，输出什么结果。</li>
+              <li>绑定 Skill 或业务对象；企业应用再补 DataSrv/MIS 字段。</li>
+              <li>结果契约里至少保留用户可复核的信息：摘要、文件、状态或记录 ID。</li>
+              <li>保存到 Skill 定义用于复用；临时自用可选择仅添加到面板。</li>
+            </ol>
+            <div class="callout">最小可用标准：用户知道它做什么，能运行一次，并能看到可复核的结果。</div>
+          </section>
+
+          <section id="zh-run" class="section">
+            <h2>5. 发布前运行验证</h2>
+            <ul class="checklist">
+              <li>输入字段命名清楚，不需要额外解释。</li>
+              <li>运行结果能复核，有摘要、记录或产物。</li>
+              <li>产物文件可以打开、下载或定位。</li>
+              <li>审批应用能产生审批状态和处理记录。</li>
+              <li>依赖 Skill 已安装，版本没有明显冲突。</li>
+              <li>DataSrv/MIS 连接、租户和权限已配置。</li>
+            </ul>
+          </section>
+
+          <section id="zh-done" class="section">
+            <h2>6. 完成标准</h2>
+            <div class="intro-grid">
+              <div class="intro-card"><svg class="icon green" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M5 12l4 4L19 6"/><path d="M4 20h16"/></svg><strong>用户看得懂</strong><p>名称和说明不依赖内部术语，用户知道该在什么场景点击它。</p></div>
+              <div class="intro-card"><svg class="icon green" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M6 4h12v16H6z"/><path d="M9 9h6M9 13h6M9 17h3"/></svg><strong>结果可复核</strong><p>输出里有摘要、记录 ID、文件路径或审批状态，方便追溯。</p></div>
+              <div class="intro-card"><svg class="icon green" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M12 4l7 4v5c0 4-3 7-7 8-4-1-7-4-7-8V8z"/><path d="M9 12l2 2 4-5"/></svg><strong>发布可审核</strong><p>运行证据、依赖、测试协议和治理信息没有阻塞项。</p></div>
+            </div>
+          </section>
+
+          <section id="zh-publish" class="section">
+            <h2>7. 审核 / 发布</h2>
+            <div class="mini-flow"><span>打开审核/发布</span><span>看检查清单</span><span>修缺项</span><span>提交企业市场</span><span>等待审核</span></div>
+            <p>发布页会提示缺少运行证据、测试协议、工作流契约、依赖声明或治理信息。逐项修复后再提交。</p>
+            <div class="callout warning">Hub 暂不可用时，提交会先进入本机待同步队列。恢复连接后再同步到企业能力市场。</div>
+          </section>
+
+          <section id="zh-troubleshooting" class="section">
+            <h2>8. 常见问题</h2>
+            <div class="callout warning">常见误区：只创建入口但没有运行证据；说明写成内部代号；结果只有“成功”但没有可复核内容；依赖 Skill 没有安装就提交。</div>
+            <h3>不知道选哪种类型</h3><p>先选「工具应用」。确认需要企业数据、审批或固定自动化后，再换对应类型。</p>
+            <h3>发布按钮不可用</h3><p>通常是缺少运行证据、测试协议、依赖声明或企业市场连接。先看「审核/发布」里的检查清单。</p>
+            <h3>依赖检查失败</h3><p>安装缺失 Skill；如果依赖来自企业市场，请联系管理员确认是否允许安装。</p>
+            <h3>DataSrv 未就绪</h3><p>进入 MIS/DataSrv 设置，检查连接、租户、权限和业务对象配置。</p>
+          </section>
+        </div>
+      </div>
+    </section>
+
+    <section class="lang-panel" data-lang-panel="en" hidden>
+      <section class="hero">
+        <div>
+          <p class="kicker">Quick Start</p>
+          <h1>MaClaw App Studio Manual</h1>
+          <p class="lead">Turn a Skill, workflow, or MIS/DataSrv capability into a clickable business app. Use the path: choose type, bind capability, run once, then publish or keep it local.</p>
+          <div class="hero-actions">
+            <a class="button-link primary" href="#en-start">3-minute start</a>
+            <a class="button-link" href="#en-map">Interface map</a>
+            <a class="button-link" href="#en-publish">Publish checklist</a>
+          </div>
+          <nav class="quick" aria-label="Quick navigation">
+            <a href="#en-start">Start path</a><a href="#en-choose">Choose type</a><a href="#en-run">Run check</a><a href="#en-troubleshooting">Troubleshooting</a>
+          </nav>
+        </div>
+        <div class="hero-visual" aria-label="Diagram showing capabilities assembled into an app">
+          <svg viewBox="0 0 360 260" role="img">
+            <title>Capabilities become an app</title>
+            <rect x="8" y="8" width="344" height="244" rx="14" fill="#f8fbff" stroke="#d9e2ee"/>
+            <path d="M82 70h78M82 130h78M82 190h78M212 130h54" stroke="#9db8df" stroke-width="2.2" stroke-linecap="round"/>
+            <path d="M153 70l43 60-43 60M266 130l-12-9M266 130l-12 9" stroke="#2563eb" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+            <g><rect x="34" y="48" width="96" height="44" rx="10" fill="#fff" stroke="#bfd1eb"/><path d="M58 66h14M58 73h22M91 59l12 7-12 7z" stroke="#2563eb" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><text x="82" y="86" text-anchor="middle" class="visual-label">Skill</text></g>
+            <g><rect x="34" y="108" width="96" height="44" rx="10" fill="#fff" stroke="#bfd1eb"/><path d="M57 126h16m0 0 8-8m-8 8 8 8m19-16h8a8 8 0 0 1 0 16h-8" stroke="#147d58" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/><text x="82" y="146" text-anchor="middle" class="visual-label">Workflow</text></g>
+            <g><rect x="34" y="168" width="96" height="44" rx="10" fill="#fff" stroke="#bfd1eb"/><ellipse cx="82" cy="182" rx="24" ry="8" fill="none" stroke="#2563eb" stroke-width="2"/><path d="M58 182v12c0 4.5 10.7 8 24 8s24-3.5 24-8v-12" stroke="#2563eb" stroke-width="2" fill="none"/><text x="82" y="206" text-anchor="middle" class="visual-label">DataSrv</text></g>
+            <g><rect x="170" y="94" width="86" height="72" rx="14" fill="#eef5ff" stroke="#8db4ef"/><path d="M192 118h42M192 132h42M192 146h28" stroke="#2563eb" stroke-width="3" stroke-linecap="round"/><text x="213" y="184" text-anchor="middle" class="visual-label">App Studio</text></g>
+            <g><rect x="272" y="94" width="58" height="72" rx="14" fill="#eaf7f1" stroke="#9bd8bc"/><path d="M291 120h20M291 134h20M301 108v38" stroke="#147d58" stroke-width="2.4" stroke-linecap="round"/><text x="301" y="184" text-anchor="middle" class="visual-label">App</text><text x="301" y="202" text-anchor="middle" class="visual-muted">Publish / Use</text></g>
+          </svg>
+        </div>
+      </section>
+
+      <div class="grid">
+        <nav class="toc" aria-label="Table of contents">
+          <a href="#en-start">3-minute start</a><a href="#en-map">Interface map</a><a href="#en-choose">Choose type</a><a href="#en-create">Create app</a><a href="#en-run">Run check</a><a href="#en-done">Done criteria</a><a href="#en-publish">Publish</a><a href="#en-troubleshooting">Troubleshoot</a>
+        </nav>
+        <div class="content">
+          <section id="en-start" class="section">
+            <h2>1. 3-Minute Start</h2>
+            <div class="flow" aria-label="App Studio main flow">
+              <div class="flow-card"><em>1</em><svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 5h16v14H4z"/><path d="M8 9h8M8 13h5"/></svg><strong>Open Studio</strong><p>Apps → Studio.</p></div>
+              <div class="flow-card"><em>2</em><svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M4 7h16M7 4v6M17 4v6"/><path d="M7 15h10M10 12v6M14 12v6"/></svg><strong>Choose type</strong><p>If unsure, start with Tool app.</p></div>
+              <div class="flow-card"><em>3</em><svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M7 7h10v10H7z"/><path d="M3 12h4M17 12h4M12 3v4M12 17v4"/></svg><strong>Bind capability</strong><p>Select a Skill or fill business object fields.</p></div>
+              <div class="flow-card"><em>4</em><svg class="icon green" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M5 12l4 4L19 6"/><path d="M4 20h16"/></svg><strong>Run once</strong><p>Check inputs, results, artifacts, and approval state.</p></div>
+              <div class="flow-card"><em>5</em><svg class="icon green" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M12 3v12"/><path d="M7 8l5-5 5 5"/><path d="M5 21h14"/></svg><strong>Publish or use</strong><p>Submit to market or keep it on the local panel.</p></div>
+            </div>
+          </section>
+
+          <section id="en-map" class="section">
+            <h2>2. Interface Map</h2>
+            <div class="intro-grid">
+              <div class="intro-card"><svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M5 4h14v16H5z"/><path d="M8 8h8M8 12h5"/></svg><strong>Create app</strong><p>Create an app entry, set name, description, icon, inputs, outputs, and layout.</p></div>
+              <div class="intro-card"><svg class="icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M5 7h14M5 12h14M5 17h14"/><path d="M8 5v4M16 10v4M11 15v4"/></svg><strong>Manage apps</strong><p>Pin, sort, duplicate, edit, disable, restore, and inspect Manifest.</p></div>
+              <div class="intro-card"><svg class="icon green" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M12 4l7 4v5c0 4-3 7-7 8-4-1-7-4-7-8V8z"/><path d="M9 12l2 2 4-5"/></svg><strong>Review / publish</strong><p>Complete evidence, dependencies, and governance checks before submission.</p></div>
+            </div>
+          </section>
+
+          <section id="en-choose" class="section">
+            <h2>3. Choose App Type</h2>
+            <div class="decision-table">
+              <div class="table-card"><strong>Tool app</strong><span>You already have a local Skill and need a button entry.</span><span>Documents, reports, file conversion, lookup.</span></div>
+              <div class="table-card"><strong>Automation app</strong><span>You need a fixed process to run repeatedly.</span><span>Scheduled checks, batch jobs, monitor-triggered work.</span></div>
+              <div class="table-card"><strong>Enterprise normal app</strong><span>You need enterprise data or business objects.</span><span>Customers, orders, inventory, contracts.</span></div>
+              <div class="table-card"><strong>Enterprise approval app</strong><span>You need review or approval before completion.</span><span>Expenses, contracts, changes, tickets, sensitive actions.</span></div>
+            </div>
+          </section>
+
+          <section id="en-create" class="section">
+            <h2>4. Create App: Shortest Fill Path</h2>
+            <div class="mini-flow"><span>Choose type</span><span>One-line description</span><span>Bind Skill</span><span>Configure result</span><span>Save</span></div>
+            <ol>
+              <li>Name it as a user action, such as Contract Filing or Customer Activity Report.</li>
+              <li>Use one sentence: what input it handles and what result it returns.</li>
+              <li>Bind the Skill or business object. For enterprise apps, fill DataSrv/MIS fields.</li>
+              <li>Keep reviewable output: summary, file, status, or record ID.</li>
+              <li>Save to Skill definition for reuse, or add to panel only for temporary local use.</li>
+            </ol>
+            <div class="callout">Minimum usable app: users know what it does, can run it once, and can review the result.</div>
+          </section>
+
+          <section id="en-run" class="section">
+            <h2>5. Run Check Before Publishing</h2>
+            <ul class="checklist">
+              <li>Input field names are clear.</li>
+              <li>Results include a reviewable summary, record, or artifact.</li>
+              <li>Artifacts can be opened, downloaded, or located.</li>
+              <li>Approval apps create approval state and records.</li>
+              <li>Required Skills are installed and versions look compatible.</li>
+              <li>DataSrv/MIS connection, tenant, and permissions are configured.</li>
+            </ul>
+          </section>
+
+          <section id="en-done" class="section">
+            <h2>6. Done Criteria</h2>
+            <div class="intro-grid">
+              <div class="intro-card"><svg class="icon green" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M5 12l4 4L19 6"/><path d="M4 20h16"/></svg><strong>Users understand it</strong><p>Name and description avoid internal jargon, and users know when to click it.</p></div>
+              <div class="intro-card"><svg class="icon green" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M6 4h12v16H6z"/><path d="M9 9h6M9 13h6M9 17h3"/></svg><strong>Results are reviewable</strong><p>Output includes a summary, record ID, file path, or approval state for traceability.</p></div>
+              <div class="intro-card"><svg class="icon green" aria-hidden="true" focusable="false" viewBox="0 0 24 24"><path d="M12 4l7 4v5c0 4-3 7-7 8-4-1-7-4-7-8V8z"/><path d="M9 12l2 2 4-5"/></svg><strong>Publishing is reviewable</strong><p>Runtime evidence, dependencies, test protocol, and governance metadata have no blockers.</p></div>
+            </div>
+          </section>
+
+          <section id="en-publish" class="section">
+            <h2>7. Review / Publish</h2>
+            <div class="mini-flow"><span>Open Review / publish</span><span>Read checklist</span><span>Fix missing items</span><span>Submit to market</span><span>Wait for review</span></div>
+            <p>The publish tab flags missing runtime evidence, test protocols, workflow contracts, dependencies, or governance metadata. Fix those items before submitting.</p>
+            <div class="callout warning">When Hub is unavailable, Studio keeps the submission in the local sync queue and syncs later.</div>
+          </section>
+
+          <section id="en-troubleshooting" class="section">
+            <h2>8. Troubleshooting</h2>
+            <div class="callout warning">Common mistakes: creating only an entry without runtime evidence; using internal code names as descriptions; returning only “success” without reviewable output; submitting before required Skills are installed.</div>
+            <h3>Not sure which type to choose</h3><p>Start with Tool app. Switch later when you need enterprise data, approval, or automation.</p>
+            <h3>Publish button is disabled</h3><p>Usually runtime evidence, test protocol, dependency declarations, or market connection is missing. Read the Review / publish checklist first.</p>
+            <h3>Dependency check fails</h3><p>Install missing Skills. For enterprise-market dependencies, ask an administrator to confirm install access.</p>
+            <h3>DataSrv is not ready</h3><p>Open MIS/DataSrv settings and check connection, tenant, permissions, and business objects.</p>
+          </section>
+        </div>
+      </div>
+    </section>
+  </main>
+  <script>
+    const panels = Array.from(document.querySelectorAll('[data-lang-panel]'));
+    const buttons = Array.from(document.querySelectorAll('[data-set-lang]'));
+    const skipLink = document.querySelector('[data-skip-link]');
+    const titles = {
+      zh: 'MaClaw 应用工作室使用手册',
+      en: 'MaClaw App Studio Manual',
+    };
+    function preferredLangFromHash() {
+      if (window.location.hash.startsWith('#en-')) return 'en';
+      if (window.location.hash.startsWith('#zh-')) return 'zh';
+      return '';
+    }
+    function storedLang() {
+      try {
+        return localStorage.getItem('maclaw_app_manual_lang') || '';
+      } catch {
+        return '';
+      }
+    }
+    function rememberLang(lang) {
+      try {
+        localStorage.setItem('maclaw_app_manual_lang', lang);
+      } catch {
+        // Storage may be unavailable in private or embedded browser contexts.
+      }
+    }
+    function pairedHashForLang(lang) {
+      const current = window.location.hash.replace(/^#/, '');
+      if (!current) return '';
+      const pair = current.replace(/^(zh|en)-/, `${lang}-`);
+      return document.getElementById(pair) ? pair : '';
+    }
+    function scrollCurrentHashIntoView() {
+      const id = window.location.hash.replace(/^#/, '');
+      if (!id) return;
+      const target = document.getElementById(id);
+      if (target) window.requestAnimationFrame(() => target.scrollIntoView({ block: 'start' }));
+    }
+    function setLang(lang, options = {}) {
+      const normalized = lang === 'en' ? 'en' : 'zh';
+      document.documentElement.lang = normalized === 'zh' ? 'zh-CN' : 'en';
+      document.title = titles[normalized];
+      if (skipLink) {
+        skipLink.setAttribute('href', normalized === 'zh' ? '#zh-start' : '#en-start');
+        skipLink.textContent = normalized === 'zh' ? '跳到正文 / Skip to content' : 'Skip to content / 跳到正文';
+      }
+      panels.forEach((panel) => { panel.hidden = panel.dataset.langPanel !== normalized; });
+      buttons.forEach((button) => { button.setAttribute('aria-pressed', String(button.dataset.setLang === normalized)); });
+      rememberLang(normalized);
+      if (options.syncHash) {
+        const nextHash = pairedHashForLang(normalized);
+        if (nextHash) window.location.hash = nextHash;
+      }
+    }
+    buttons.forEach((button) => button.addEventListener('click', () => setLang(button.dataset.setLang, { syncHash: true })));
+    const initialLang = new URLSearchParams(location.search).get('lang') || storedLang() || navigator.language;
+    setLang(preferredLangFromHash() || (String(initialLang).toLowerCase().startsWith('en') ? 'en' : 'zh'));
+    scrollCurrentHashIntoView();
+    window.addEventListener('hashchange', () => {
+      const hashLang = preferredLangFromHash();
+      if (hashLang) setLang(hashLang);
+      scrollCurrentHashIntoView();
+    });
+  </script>
+</body>
+</html>
+
+

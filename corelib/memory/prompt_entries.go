@@ -295,7 +295,7 @@ func (s *Store) ProactiveContextForPrompt(query string, opts ProactivePromptOpti
 		if limit <= 0 {
 			limit = 5
 		}
-		b.WriteString(FormatDerivedFactsForPrompt(s.LastDerivedFacts(), limit))
+		b.WriteString(FormatDerivedFactsForPrompt(s.LastDerivedFactsForOwner(opts.Recall.OwnerID), limit))
 	}
 	return b.String(), recalled
 }

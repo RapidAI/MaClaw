@@ -96,12 +96,12 @@ func TestGenerateAPIKeySynchronizesConfiguredCodexCredential(t *testing.T) {
 	if !result.CodexCredentialSync.Configured || !result.CodexCredentialSync.Updated || result.CodexCredentialSync.Error != "" {
 		t.Fatalf("Codex sync = %+v, want configured and updated without error", result.CodexCredentialSync)
 	}
-	auth, err := configfile.ReadCodexAuth()
+	content, err := configfile.ReadCodexConfigToml()
 	if err != nil {
-		t.Fatalf("read Codex auth: %v", err)
+		t.Fatalf("read Codex config: %v", err)
 	}
-	if got, _ := auth["OPENAI_API_KEY"].(string); got != key {
-		t.Fatalf("Codex key = %q, want generated key", got)
+	if !strings.Contains(content, `http_headers = { "Authorization" = "Bearer `+key+`" }`) {
+		t.Fatalf("Codex config missing generated Authorization header:\n%s", content)
 	}
 }
 
@@ -125,12 +125,12 @@ func TestSaveSettingsSynchronizesConfiguredCodexCredentialAfterManualKeyChange(t
 	if status.CodexCredentialSync == nil || !status.CodexCredentialSync.Configured || !status.CodexCredentialSync.Updated || status.CodexCredentialSync.Error != "" {
 		t.Fatalf("Codex sync = %+v, want configured and updated without error", status.CodexCredentialSync)
 	}
-	auth, err := configfile.ReadCodexAuth()
+	content, err := configfile.ReadCodexConfigToml()
 	if err != nil {
-		t.Fatalf("read Codex auth: %v", err)
+		t.Fatalf("read Codex config: %v", err)
 	}
-	if got, _ := auth["OPENAI_API_KEY"].(string); got != "manual-new-proxy-key" {
-		t.Fatalf("Codex key = %q, want manually saved key", got)
+	if !strings.Contains(content, `http_headers = { "Authorization" = "Bearer manual-new-proxy-key" }`) {
+		t.Fatalf("Codex config missing manually saved Authorization header:\n%s", content)
 	}
 }
 
@@ -324,7 +324,7 @@ func TestHasStartHiddenArg(t *testing.T) {
 	}
 }
 
-func TestTigerProxyUpstreamRequestsCarryTigerClawClientName(t *testing.T) {
+func TestTigerProxyUpstreamRequestsCarryQAgentClientName(t *testing.T) {
 	seen := make(chan http.Header, 1)
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen <- r.Header.Clone()
@@ -371,6 +371,52 @@ func TestTigerProxyUpstreamRequestsCarryTigerClawClientName(t *testing.T) {
 	}
 	if got := headers.Get(corelib.CodeGenClientNameHeader); got != corelib.CodeGenClientName {
 		t.Fatalf("upstream %s = %q, want %q", corelib.CodeGenClientNameHeader, got, corelib.CodeGenClientName)
+	}
+}
+
+func TestTigerProxyUpstreamUsesConfiguredAgentType(t *testing.T) {
+	seen := make(chan http.Header, 1)
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen <- r.Header.Clone()
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"object":"list","data":[]}`)
+	}))
+	defer upstream.Close()
+
+	app := NewApp()
+	err := app.restartProxy(Settings{
+		ListenAddress: "127.0.0.1:0",
+		APIKey:        "local-key",
+		AccessToken:   "upstream-token",
+		BaseURL:       upstream.URL,
+		AgentType:     "opencode",
+	})
+	if err != nil {
+		t.Fatalf("restartProxy: %v", err)
+	}
+	defer app.stopProxy()
+
+	req, err := http.NewRequest(http.MethodGet, tigerProxyTestBaseURL(t, app)+"/v1/models", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer local-key")
+	resp, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	if err != nil {
+		t.Fatalf("proxy request: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("proxy status = %d, want 200", resp.StatusCode)
+	}
+	var headers http.Header
+	select {
+	case headers = <-seen:
+	case <-time.After(5 * time.Second):
+		t.Fatal("upstream did not receive proxied request")
+	}
+	if got := headers.Get("User-Agent"); got != "opencode" {
+		t.Fatalf("upstream User-Agent = %q, want opencode", got)
 	}
 }
 

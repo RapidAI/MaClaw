@@ -267,7 +267,7 @@ func (s *SQLiteStore) importLightItemsBatch(
 			}
 		}
 		if len(texts) > 0 {
-			if vectors, err := emb.EmbedBatch(texts); err == nil && len(vectors) == len(texts) {
+			if vectors, err := embedding.EmbedBatchAs(emb, texts, embedding.RoleDocument); err == nil && len(vectors) == len(texts) {
 				for i, ref := range refs {
 					jobs[ref.jobIdx].cards[ref.cardIdx].card.Embedding = vectors[i]
 				}

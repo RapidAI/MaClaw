@@ -49,7 +49,7 @@ func WriteClaudeSettings(apiKey, baseURL, modelID string) error {
 // WriteCodeGenSettings writes the CodeGen SSO credentials to
 // ~/.maclaw/codegen/settings.json. 该文件专用于 TigerClaw SSO 认证结果的持久化，
 // 与 ~/.claude/settings.json 分开管理，不会干扰用户的 Claude Code 配置。
-// TigerClaw Code 启动时会优先读取此文件中的 env 字段作为认证凭证。
+// QAgent Code 启动时会优先读取此文件中的 env 字段作为认证凭证。
 func WriteCodeGenSettings(apiKey, baseURL, modelID string) error {
 	if apiKey == "" {
 		return nil

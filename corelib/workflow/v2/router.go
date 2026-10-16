@@ -89,18 +89,18 @@ func (r *WorkflowRouter) RouteWithHint(userID, text string, attachments []Attach
 	if r.machine != nil {
 		if state := r.machine.GetActive(userID); state != nil {
 			result, err := r.machine.HandleInput(userID, text)
-			if err != nil {
-				return &RouteResult{Target: RouteToAgentLoop}
-			}
-			if result == nil {
+			if err != nil || result == nil {
+				if pending := r.reviewPendingResult(userID); pending != nil {
+					return pending
+				}
 				return &RouteResult{Target: RouteToAgentLoop}
 			}
 			if result.Action == ActionPassThrough {
-				// PassThrough means the message is unrelated to the active workflow
-				// (e.g. workflow is in PhaseExecuting, or confirm classifier said "unrelated").
-				// Fall through to structured template matching below; the user may
-				// be starting a new workflow. If no template matches, the message
-				// goes to the normal agent loop.
+				// PassThrough is for a phase that is not in review, such as
+				// background execution. An open review gate stays closed.
+				if pending := r.reviewPendingResult(userID); pending != nil {
+					return pending
+				}
 			} else if result.Action == ActionRunPhase {
 				// Phase is pending/running. Check if the user's message looks like a
 				// completely new workflow task (not a continuation of the current one).
@@ -234,6 +234,20 @@ func (r *WorkflowRouter) RouteWithHint(userID, text string, attachments []Attach
 	}
 }
 
+func (r *WorkflowRouter) reviewPendingResult(userID string) *RouteResult {
+	if r == nil || r.machine == nil {
+		return nil
+	}
+	state := r.machine.GetActive(userID)
+	if state == nil || !state.IsWaitingConfirm() {
+		return nil
+	}
+	return &RouteResult{
+		Target:       RouteToWorkflow,
+		HandleResult: &HandleResult{Action: ActionReviewPending, State: state},
+	}
+}
+
 func shouldPreferCNPatentApplication(text string) bool {
 	lower := strings.ToLower(strings.TrimSpace(text))
 	if lower == "" || hasUSPatentSignal(lower) {
@@ -343,6 +357,14 @@ func isCasualChatMessage(lower string) bool {
 		}
 	}
 	return false
+}
+
+// TextHasWorkflowProjectSignal reports whether the workflow catalog, on its
+// own, recognizes text as one of its panel projects. It does not use a phrase
+// list. Software the coding router may offer ("写代码", "做游戏") is not a
+// panel project, so a workflow_task label on that text does not close chat.
+func TextHasWorkflowProjectSignal(text string) bool {
+	return CatalogCorroboratesWorkflowProject(text, "")
 }
 
 func hasWorkflowStartSignal(text string) bool {

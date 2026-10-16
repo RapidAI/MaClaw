@@ -1,11 +1,13 @@
 package gguf
 
 import (
+	"bufio"
 	"encoding/binary"
 	"fmt"
 	"io"
 	"math"
 	"os"
+	"sync"
 )
 
 // Open parses a GGUF file header, metadata, and tensor index.
@@ -67,8 +69,27 @@ func (gf *File) ReadTensorF32(name string) ([]float32, error) {
 	return out, nil
 }
 
+// countReader counts bytes pulled from the underlying reader.
+type countReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
 func (gf *File) parseHeader() error {
-	r := io.NewSectionReader(gf.f, 0, 1<<62)
+	// Tokenizer vocab is a few hundred thousand short strings. A SectionReader
+	// turns each binary.Read into its own ReadAt, which dominated model load.
+	// Buffer the header and recover the logical offset from bytes still sitting
+	// unread in the buffer, so the tensor data alignment does not move.
+	sr := io.NewSectionReader(gf.f, 0, 1<<62)
+	cr := &countReader{r: sr}
+	br := bufio.NewReaderSize(cr, 1<<20)
+	r := io.Reader(br)
 	var magic, version uint32
 	if err := binary.Read(r, binary.LittleEndian, &magic); err != nil {
 		return fmt.Errorf("gguf: read magic: %w", err)
@@ -112,11 +133,10 @@ func (gf *File) parseHeader() error {
 		gf.Tensors[ti.Name] = ti
 	}
 
-	// Data section starts at next 32-byte aligned offset
-	pos, _ := gf.f.Seek(0, io.SeekCurrent)
-	_ = pos // we used SectionReader, get position from r
-	curOff2, _ := r.Seek(0, io.SeekCurrent)
-	gf.dataOffset = align32(curOff2)
+	// Data section starts at the next 32-byte aligned offset. br has read
+	// ahead, so the file position is cr.n and the parser position is that
+	// minus the unread buffer.
+	gf.dataOffset = align32(cr.n - int64(br.Buffered()))
 	return nil
 }
 
@@ -179,11 +199,12 @@ func readMetaValue(r io.Reader) (MetaValue, error) {
 		}
 		mv.Str = s
 	case 9: // ARRAY
-		arr, err := readArray(r)
+		arr, i32s, err := readArray(r)
 		if err != nil {
 			return mv, err
 		}
 		mv.Arr = arr
+		mv.I32s = i32s
 	case 10: // UINT64
 		binary.Read(r, binary.LittleEndian, &mv.U64)
 	case 11: // INT64
@@ -200,50 +221,125 @@ func readMetaValue(r io.Reader) (MetaValue, error) {
 	return mv, nil
 }
 
-func readArray(r io.Reader) ([]string, error) {
+// readArray reads one metadata array.  It returns the string form when the
+// element type is STRING and the int32 form when it is INT32 or BOOL; a float32
+// array still goes to the package-global side channel (see lastF32Array), and
+// every other element type is skipped.
+func readArray(r io.Reader) ([]string, []int32, error) {
 	var elemType uint32
 	var count uint64
 	binary.Read(r, binary.LittleEndian, &elemType)
 	binary.Read(r, binary.LittleEndian, &count)
 	if elemType == 8 { // string array
+		if count > maxMetaStringArrayCount {
+			return nil, nil, fmt.Errorf("gguf: meta string array count %d too large (corrupt header?)", count)
+		}
 		out := make([]string, count)
 		for i := uint64(0); i < count; i++ {
 			s, err := readString(r)
 			if err != nil {
-				return nil, err
+				return nil, nil, err
 			}
 			out[i] = s
 		}
-		return out, nil
+		return out, nil, nil
 	}
 	// Float32 arrays — store for later retrieval
 	if elemType == 6 {
+		if count > maxF32ArrayCount {
+			return nil, nil, fmt.Errorf("gguf: float32 array count %d too large (corrupt header?)", count)
+		}
 		buf := make([]byte, count*4)
 		if _, err := io.ReadFull(r, buf); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		lastF32Array = make([]float32, count)
+		// Parse into a local slice and publish once: writing the package-global
+		// element-by-element let a concurrent LastF32Array (or a second parser
+		// with count=0) shrink it mid-loop and panic the whole process.
+		arr := make([]float32, count)
 		for i := uint64(0); i < count; i++ {
-			lastF32Array[i] = math.Float32frombits(binary.LittleEndian.Uint32(buf[i*4:]))
+			arr[i] = math.Float32frombits(binary.LittleEndian.Uint32(buf[i*4:]))
 		}
-		return nil, nil
+		lastF32Mu.Lock()
+		lastF32Array = arr
+		lastF32Mu.Unlock()
+		return nil, nil, nil
 	}
-	// Skip non-string arrays
-	elemSizes := map[uint32]int{0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 5: 4, 7: 1, 10: 8, 11: 8, 12: 8}
+	// Int32 arrays — materialised, because token_type is the one array the
+	// tokenizer has to consult per token rather than read once.
+	if elemType == 5 {
+		if count > maxI32ArrayCount {
+			return nil, nil, fmt.Errorf("gguf: int32 array count %d too large (corrupt header?)", count)
+		}
+		buf := make([]byte, count*4)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return nil, nil, err
+		}
+		out := make([]int32, count)
+		for i := uint64(0); i < count; i++ {
+			out[i] = int32(binary.LittleEndian.Uint32(buf[i*4:]))
+		}
+		return nil, out, nil
+	}
+	// Bool arrays — llama.cpp's get_arr reads attention.sliding_window_pattern as
+	// a std::vector<bool>, and that key is the one thing that decides which
+	// layers rotate at the SWA RoPE base and which get a window.  Skipping it
+	// (it used to fall through to the generic skip below) is not a missing
+	// answer but a wrong one: the caller silently keeps the scalar default, so
+	// every layer's RoPE base and mask width would be wrong together.  Same
+	// materialised int32 form as token_type.
+	if elemType == 7 {
+		if count > maxI32ArrayCount {
+			return nil, nil, fmt.Errorf("gguf: bool array count %d too large (corrupt header?)", count)
+		}
+		buf := make([]byte, count)
+		if _, err := io.ReadFull(r, buf); err != nil {
+			return nil, nil, err
+		}
+		out := make([]int32, count)
+		for i := uint64(0); i < count; i++ {
+			if buf[i] != 0 {
+				out[i] = 1
+			}
+		}
+		return nil, out, nil
+	}
+	// Skip any other array
+	elemSizes := map[uint32]int{0: 1, 1: 1, 2: 2, 3: 2, 4: 4, 10: 8, 11: 8, 12: 8}
 	sz, ok := elemSizes[elemType]
 	if !ok {
-		return nil, fmt.Errorf("unsupported array elem type %d", elemType)
+		return nil, nil, fmt.Errorf("unsupported array elem type %d", elemType)
+	}
+	if count > maxSkipArrayCount {
+		return nil, nil, fmt.Errorf("gguf: array count %d too large (corrupt header?)", count)
 	}
 	skip := make([]byte, int(count)*sz)
 	io.ReadFull(r, skip)
-	return nil, nil
+	return nil, nil, nil
 }
 
-// lastF32Array holds the most recently parsed float32 array.
-var lastF32Array []float32
+// Sanity caps for metadata array counts: real GGUF files stay well below
+// these, so a larger count means a corrupt or truncated header and must fail
+// as an error instead of a huge allocation.
+const (
+	maxMetaStringArrayCount = 1 << 20
+	maxF32ArrayCount        = 1 << 22
+	maxI32ArrayCount        = 1 << 22
+	maxSkipArrayCount       = 1 << 24
+)
+
+// lastF32Array holds the most recently parsed float32 array. The GGUF header
+// parser can run concurrently with consumers (memory-store warmup starts two
+// embedders at once), so every access is serialized.
+var (
+	lastF32Mu    sync.Mutex
+	lastF32Array []float32
+)
 
 // LastF32Array returns and clears the last parsed float32 array.
 func LastF32Array() []float32 {
+	lastF32Mu.Lock()
+	defer lastF32Mu.Unlock()
 	arr := lastF32Array
 	lastF32Array = nil
 	return arr

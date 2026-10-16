@@ -96,6 +96,8 @@ func DefaultDefinitions() []IntentDefinition {
 			EmbedTexts: []string{
 				"登录服务器查看日志",
 				"连接远程服务器",
+				"用ssh访问",
+				"用ssh登录查看服务器状态",
 				"SSH到生产环境检查状态",
 				"帮我登录服务器重启服务",
 				"查看服务器上的GPU占用率",
@@ -282,6 +284,10 @@ func DefaultDefinitions() []IntentDefinition {
 				"\u83b7\u53d6\u67d0\u5730\u5b9e\u65f6\u5929\u6c14\u4fe1\u606f",
 				"\u67e5\u8be2\u67d0\u57ce\u5e02\u5929\u6c14\u5e76\u8f93\u51fa\u683c\u5f0f\u5316PDF\u62a5\u544a",
 				"\u67e5\u8be2\u6bd4\u7279\u5e01\u4ef7\u683c\u5e76\u8f93\u51fa\u683c\u5f0f\u5316PDF\u62a5\u544a",
+				"\u67e5\u8be2\u4eca\u65e5\u65b0\u95fb\u70ed\u70b9\u5e76\u8f93\u51fa\u683c\u5f0f\u5316PDF\u62a5\u544a",
+				"\u67e5\u8be2\u7f8e\u5143\u5151\u4eba\u6c11\u5e01\u6c47\u7387\u5e76\u8f93\u51fa\u683c\u5f0f\u5316PDF\u62a5\u544a",
+				"\u67e5\u8be2\u4eca\u65e5\u80a1\u5e02\u884c\u60c5\u5e76\u8f93\u51fa\u683c\u5f0f\u5316PDF\u62a5\u544a",
+				"\u67e5\u8be2\u822a\u73ed\u52a8\u6001\u5e76\u8f93\u51fa\u683c\u5f0f\u5316PDF\u62a5\u544a",
 				"\u67e5\u8be2\u4eca\u65e5\u65b0\u95fb\u70ed\u70b9",
 				"\u7f8e\u5143\u5bf9\u4eba\u6c11\u5e01\u6c47\u7387",
 				"\u67e5\u6700\u65b0\u80a1\u4ef7",
@@ -292,14 +298,20 @@ func DefaultDefinitions() []IntentDefinition {
 		{
 			Label:  LabelLiveDataVisual,
 			Domain: "实时数据可视化 (Live data visualization)",
-			TreeText: "用户要求将当前实时外部事实渲染为一张图片或信息图。" +
-				"语义判据：先取得天气、汇率、行情等当前数据，再依据这些可信事实生成 PNG 并交付当前会话。" +
-				"排除：截取本机桌面 → screenshot；寻找或下载现成图片 → search/web_fetch；自由创作或文生图不是本能力。",
+			TreeText: "用户要求将当前实时外部事实渲染为一张图片、信息图或走势图。" +
+				"语义判据：先取得天气、汇率、行情等当前数据，再依据这些可信事实生成图片并交付当前会话。" +
+				"股价趋势图、走势图、折线图、K线或柱状行情图属于本标签，不是 PDF。" +
+				"排除：把已有事实排版成 PDF → document_generate；截取本机桌面 → screenshot；寻找或下载现成图片 → search/web_fetch；自由创作或文生图不是本能力。",
 			EmbedTexts: []string{
 				"生成一张实时天气实况图",
 				"把当前汇率制作成信息图",
+				"画出近一月股价趋势图",
+				"把近期股价画成走势图",
+				"画一张股价折线图",
 				"render a live weather graphic",
 				"create an infographic from the current stock price",
+				"plot the last month of closing prices",
+				"draw a stock price trend chart",
 			},
 			ToolNames: []string{},
 		},
@@ -345,7 +357,8 @@ func DefaultDefinitions() []IntentDefinition {
 			TreeText: "用户要把当前已有事实渲染成一份 PDF 文件。" +
 				"语义判据：目标是单阶段排版/导出 PDF，产出物由已收集的事实或用户给出的正文决定，不需要多阶段设计决策。" +
 				"排除：撰写商业计划、研究报告、论文、竞品分析等需要受众/结构/论证设计的多阶段任务 → workflow_task；" +
-				"打开已有本地文档 → document_open；发送到指定目标 → document_delivery；把本轮已上传附件原样发回 → attachment_delivery。",
+				"打开已有本地文档 → document_open；发送到指定目标 → document_delivery；把本轮已上传附件原样发回 → attachment_delivery；" +
+				"保存为 markdown/.md 文本文件而不是 PDF → file_write。",
 			EmbedTexts: []string{
 				"生成一份PDF文档并发给我",
 				"生成pdf报告",
@@ -442,13 +455,36 @@ func DefaultDefinitions() []IntentDefinition {
 			ToolNames: []string{"mis_data"},
 		},
 		{
+			Label:  LabelDatabase,
+			Domain: "SQL 数据源 (Database)",
+			TreeText: "用户要查看、连接或查询 MySQL、PostgreSQL、SQL Server、Access、Excel 数据源里的库、schema 或表。" +
+				"语义判据：目标是已有数据源上的库名、表结构、SQL 查询或数据预览，而不是写业务表单、也不是 Git 仓库。" +
+				"边界：「查看 Git 仓库/diff/status」→ git_inspect；「报销/审批等业务表单」→ business_data；「远程主机命令」→ ssh。",
+			EmbedTexts: []string{
+				"查看库",
+				"查看数据库",
+				"查看 mysql 库",
+				"查看 rapidbi 库",
+				"列出这个库里的表",
+				"查看表结构",
+				"inspect the mysql schema",
+				"list tables in the database",
+				"show tables in this postgres database",
+				"query the sql server catalog",
+				"connect to the mysql data source and inspect schema",
+				"查看 192.168.1.242 上的 mysql 数据库",
+			},
+			ToolNames: []string{"database", "database_query"},
+		},
+		{
 			Label:              LabelOffice,
 			Domain:             "内容处理 (Content)",
 			MayTriggerWorkflow: true, // presentation_design workflow
 			WorkflowTypes:      []string{"presentation_design"},
-			TreeText: "用户要创建需要设计决策的演示文稿（PPT/幻灯片/slide）。" +
+			TreeText: "用户要创建或改写需要设计决策的演示文稿（PPT/幻灯片/slide），包括对当前正在编辑的PPT做风格改进。" +
 				"判据：产出物是否需要受众定位、内容架构、视觉风格等设计决策。" +
 				"需要工作流：「生成/制作/设计 PPT」「基于文档做宣传PPT」「做投资人路演PPT」— 同一素材可产出截然不同的PPT，需要设计决策 → office + workflow_type。" +
+				"改已有稿：「把当前PPT改成专业会议风格」「对正在编辑的演示文稿做风格改进」— 仍是设计决策，走 office。" +
 				"不需要工作流：「打开/查看/转换/截图 PPT」— 文件操作，无设计决策 → document_delivery 或 non_coding。" +
 				"注意：「基于已有素材」不等于「内容处理」。基于文档做PPT仍需要受众定位+内容取舍+风格设计等多阶段决策。" +
 				"Excel/Word 等其他办公文档创建不需要工作流，workflow_type 留空。",
@@ -462,9 +498,19 @@ func DefaultDefinitions() []IntentDefinition {
 				"create a PowerPoint presentation",
 				"generate an Excel spreadsheet report",
 				"make a Word document for the proposal",
+				// Writing Word content is office, not a desktop-GUI task: under
+				// the Layer 2 classification prompt "帮我写一份word简历" otherwise
+				// lands nearer the computer_use exemplar "打开word程序写一份简历".
+				"写一份Word格式的个人简历",
+				"用Word文档起草一份工作总结",
+				"draft a resume as a Word document",
 				"organize the data into an Excel file",
 				"build a slide deck for the meeting",
 				"create a spreadsheet with the analysis results",
+				"对当前编辑的ppt进行风格改进",
+				"把这份演示文稿改成大型技术交流会议的专业风格",
+				"restyle the current PowerPoint professionally",
+				"edit the existing slide deck visual style",
 				// Celebration/souvenir phrasings observed in production: the
 				// deck request is wrapped in an occasion and often bundles an
 				// image-search half (「网上找图片」), which diluted the office
@@ -491,9 +537,10 @@ func DefaultDefinitions() []IntentDefinition {
 				"compliance_audit", "patent_analysis", "patent_application",
 				"us_patent_application",
 			},
-			TreeText: "用户要启动一个需要多阶段设计决策的复杂项目，并且是从工作流面板或 /workflow 发起的那种项目。" +
-				"核心判据：产出物是否需要多阶段设计决策？同一输入能否产出截然不同的结果？" +
-				"是 → workflow_task。否 → non_coding。" +
+			TreeText: "用户要启动工作流面板或 /workflow 里的一类项目。产出物必须落在下面列出的 workflow_type 里（产品设计、商业计划、研究报告、论文、标书、专利、活动策划等）。" +
+				"判据：用户是在要求新开一个多阶段项目吗？是 → workflow_task，并填写对应 workflow_type。否 → 改用该对象真正对应的标签，不要用本标签。" +
+				"对象像论文、报告或计划，并不足以使用本标签。当前对话里继续改一份已经在手上的文稿，是 file_write，不是本标签。从零开始、要交给工作流面板的项目，才是本标签。" +
+				"在当前对话里直接做出来的视频、动画、图片、音频或故事不是本标签：哪怕要求风格、情节、分镜或多段拼接，也是 non_coding，workflow_type 留空。" +
 				"在当前对话里点名使用某个 skill（使用 book-pdf skill、use X skill）不是本标签：那是当前 agent 执行该 skill。" +
 				"不是待办清单（task_track），也不是单阶段导出 PDF（document_generate）。" +
 				"workflow_type 选择指引：" +
@@ -615,20 +662,45 @@ func DefaultDefinitions() []IntentDefinition {
 			Label:  LabelFileWrite,
 			Domain: "本地文件 (Local Files)",
 			TreeText: "用户要把指定内容写入、保存到本机文件，或直接修改某个已有的本地文件。" +
-				"语义判据：用户目标是创建/覆盖/追加/编辑一个具体的本地文件，产出物就是该文件本身。" +
+				"语义判据：用户目标是创建/覆盖/追加/编辑一个具体的本地文件，产出物就是该文件本身，包括 markdown/.md 文本。" +
+				"当前对话里继续改一份已经在手上的文稿，也是本标签，不是 workflow_task。" +
 				"边界：「从零开发软件/功能」→ coding；「生成 Word/Excel/PPT 办公文档」→ office；" +
-				"「生成 PDF」→ document_generate；「把内容录入知识库」→ knowledge_write。",
+				"「生成 PDF」→ document_generate；「把内容录入知识库」→ knowledge_write；" +
+				"「删除已有的本地文件」→ file_delete，不是把文件改写为空。",
 			EmbedTexts: []string{
 				"把这段内容保存到 notes.txt",
 				"帮我在桌面创建一个文本文件",
 				"修改 hosts 文件添加一条记录",
 				"把这串配置写进 .env 文件",
 				"在这个文件末尾追加一行",
+				"生成markdown",
+				"把刚才的内容保存为 markdown",
+				"写成 md 文件",
 				"save this text to a local file",
 				"create a file called todo.md with this content",
+				"export this as a markdown file",
 				"edit the config file and change the port",
 				"append this line to the end of the file",
 				"overwrite the old notes file with this",
+			},
+			ToolNames: []string{},
+		},
+		{
+			Label:  LabelFileDelete,
+			Domain: "本地文件 (Local Files)",
+			TreeText: "用户要删掉本机工作区里已经存在的一个文件，结果是这个文件不再存在。" +
+				"语义判据：用户目标是移除一个具体的本地文件，包括刚才生成的 markdown/.md，而不是改写它的内容，也不是让用户指定一条命令。" +
+				"边界：「创建、覆盖、追加、编辑文件」→ file_write；「删除记忆条目」→ memory_manage；" +
+				"「删除知识库来源」→ knowledge_write；「删除定时任务」→ schedule_manage；" +
+				"「删除远程服务器上的文件」→ ssh；「用户给出要执行的命令」→ shell_command。",
+			EmbedTexts: []string{
+				"删除刚才的markdown文件",
+				"删掉这个本地文件",
+				"把刚才保存的 md 文件删掉",
+				"删除 notes.md",
+				"delete the markdown file I just created",
+				"remove this local file",
+				"delete notes.txt",
 			},
 			ToolNames: []string{},
 		},
@@ -638,7 +710,7 @@ func DefaultDefinitions() []IntentDefinition {
 			TreeText: "用户要在本机直接执行 shell/命令行命令、运行脚本或管理直通任务。" +
 				"语义判据：用户目标是在 MaClaw 所在设备上执行一条具体命令或脚本。" +
 				"边界：「登录/操作远程服务器」→ ssh；「命令是手段、开发软件是目的」→ coding；" +
-				"「查看 git 状态/差异」优先 → git_inspect。",
+				"「查看 git 状态/差异」优先 → git_inspect；「删除一个本地文件」→ file_delete。",
 			EmbedTexts: []string{
 				"在本机执行一下这个命令",
 				"帮我运行这个脚本",
@@ -658,7 +730,7 @@ func DefaultDefinitions() []IntentDefinition {
 			Domain: "版本控制 (VCS)",
 			TreeText: "用户要查看本地 Git 仓库的只读状态：工作区状态、未提交变更、diff 差异。" +
 				"语义判据：用户目标是只读检查版本控制状态或差异，不提交、不推送、不改历史。" +
-				"边界：「提交/推送代码」→ git_mutate；「看代码文件内容」→ file_read。",
+				"边界：「提交/推送代码」→ git_mutate；「看代码文件内容」→ file_read；「查看 MySQL/Postgres 库、schema、表结构」→ database。",
 			EmbedTexts: []string{
 				"看看当前 git 状态",
 				"这个仓库有哪些未提交的改动",
@@ -917,7 +989,7 @@ func DefaultDefinitions() []IntentDefinition {
 			TreeText: "用户要让 agent 记住、更新、查看或删除关于用户/项目的长期记忆条目。" +
 				"语义判据：用户目标是维护 agent 记忆库中的条目（偏好、事实、决定）。" +
 				"边界：「把材料录入知识库供检索」→ knowledge_write；「检索知识库」→ knowledge_read；" +
-				"「维护定时提醒」→ schedule_manage。",
+				"「维护定时提醒」→ schedule_manage；「删除本机上的文件」→ file_delete。",
 			EmbedTexts: []string{
 				"记住我偏好用中文交流",
 				"把刚才这个决定记到长期记忆里",
@@ -937,7 +1009,8 @@ func DefaultDefinitions() []IntentDefinition {
 				"语义判据：用户目标是维护一个任务/待办列表的状态本身，而不是执行某个任务。" +
 				"边界：「定时自动执行的任务」→ schedule_manage；「长期自主推进的目标」→ goal_manage；" +
 				"「从工作流面板启动的多阶段项目」→ workflow_task；「在当前对话里使用某个 skill」不是待办；「单阶段导出 PDF」→ document_generate；" +
-				"「直接动手做编码任务」→ coding。",
+				"「直接动手做编码任务」→ coding；" +
+				"「上午/下午时段加一条完成百分比」→ worklog_update，那是外部工时记录，不是本地待办。",
 			EmbedTexts: []string{
 				"帮我建一个待办清单",
 				"把修复登录问题加到任务列表里",
@@ -1045,6 +1118,97 @@ func DefaultDefinitions() []IntentDefinition {
 				"show knowledge base stats and health",
 			},
 			ToolNames: []string{},
+		},
+		{
+			Label:  LabelWorklogRead,
+			Domain: "工时记录 (Work Record)",
+			TreeText: "用户要查询已经记在外部工时/工作记录里的一条时段记录，不修改它。" +
+				"语义判据：用户目标是读取某日某时段的工作记录内容、时长或完成度。" +
+				"边界：「本地待办清单」→ task_track；「知识库检索」→ knowledge_read；「MIS 表单」→ business_data；" +
+				"「把完成百分比写进上午/下午记录」→ worklog_update。",
+			EmbedTexts: []string{
+				"查一下今天上午的工作日志",
+				"看看上午那段工时记了什么",
+				"列出今天的工时记录",
+				"工作日志里 09:30 到 12:00 那条是什么",
+				"show this morning's work log",
+				"what is recorded in today's worklog",
+				"query the afternoon time entry",
+				"read the work record for 09:30-12:00",
+			},
+			ToolNames: []string{},
+		},
+		{
+			Label:  LabelWorklogUpdate,
+			Domain: "工时记录 (Work Record)",
+			TreeText: "用户要把一条外部工时记录补上、改写或标完成百分比。典型说法是时段加事项加百分比，例如「上午添加：某项工作，100%」。" +
+				"语义判据：用户目标是修改外部时间块工作记录本身，而不是执行那项工作，也不是维护本地待办。" +
+				"边界：「加到任务列表/待办」→ task_track；「记到知识库」→ knowledge_write；「MIS 报销或请假」→ business_data；" +
+				"「只查询工时记录」→ worklog_read。",
+			EmbedTexts: []string{
+				"上午添加： windows构建服务维护与修复，100%",
+				"上午添加：OfficeRead review与优化，60%",
+				"把上午的工时补上这项，完成度 100%",
+				"修改上午工作日志，内容追加一段，时长不变",
+				"下午添加：接口联调，80%",
+				"append this morning's work log to 100%",
+				"update the 09:30-12:00 work record, keep the duration",
+				"把完成百分比写进上午的工时记录",
+			},
+			ToolNames: []string{},
+		},
+		{
+			Label:  LabelMailboxRead,
+			Domain: "邮箱 (Mailbox)",
+			TreeText: "用户要查看、搜索或读取已经配置的邮箱里的邮件，不发送。" +
+				"语义判据：用户目标是收件箱、未读邮件、某封邮件正文或附件。" +
+				"边界：「发微信、QQ 或 IM 消息」→ 既有 IM 发送；「用浏览器打开网页邮箱」→ browser；" +
+				"「把文件发到邮箱」→ document_delivery；「发邮件、回复或转发」→ mailbox_send。",
+			EmbedTexts: []string{
+				"看看我的邮件",
+				"打开收件箱看看未读",
+				"搜一下这周的邮件",
+				"读一下这封邮件",
+				"search my inbox",
+				"show unread email",
+				"read the latest message in my mailbox",
+				"find mail from yesterday",
+			},
+			ToolNames: []string{"mailbox_query"},
+		},
+		{
+			Label:  LabelMailboxSend,
+			Domain: "邮箱 (Mailbox)",
+			TreeText: "用户要通过已配置的邮箱发信、回复或转发。发送前必须由用户确认。" +
+				"语义判据：用户目标是把一封邮件送到对方邮箱。" +
+				"边界：「发到微信或 QQ」→ 既有 IM 发送；「只查看收件箱」→ mailbox_read；" +
+				"「配置或添加邮箱帐号」→ mailbox_configure；" +
+				"「用浏览器打开网页邮箱」→ browser；「把文件发到邮箱」→ document_delivery。",
+			EmbedTexts: []string{
+				"给对方发一封邮件",
+				"回复这封邮件",
+				"把这封邮件转发出去",
+				"用工作邮箱发这封信",
+				"send an email to them",
+				"reply to this email",
+				"forward this message by email",
+				"send it from the default mailbox",
+			},
+			ToolNames: []string{"mailbox_send"},
+		},
+		{
+			Label:  LabelMailboxConfigure,
+			Domain: "邮箱 (Mailbox)",
+			TreeText: "用户要保存一个邮箱帐号，提供服务器、端口、协议或密码。这个动作不发送邮件。" +
+				"语义判据：用户目标是配置、添加或修改邮箱接入信息。" +
+				"边界：「发邮件、回复或转发」→ mailbox_send；「只查看收件箱」→ mailbox_read。",
+			EmbedTexts: []string{
+				"帮我配置邮箱",
+				"添加一个邮箱帐号",
+				"把 SMTP 服务器存下来",
+				"save this mailbox account",
+			},
+			ToolNames: []string{"mailbox_configure"},
 		},
 		{
 			Label:      LabelAmbiguous,

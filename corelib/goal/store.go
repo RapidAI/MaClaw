@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -36,12 +37,7 @@ func NewStore(dataDir string) *Store {
 func (s *Store) Get(userID string) *Goal {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	g := s.goals[userID]
-	if g == nil {
-		return nil
-	}
-	cp := *g
-	return &cp
+	return cloneGoal(s.goals[userID])
 }
 
 // Set creates or replaces the goal for a user. A new goal_id is generated,
@@ -66,6 +62,7 @@ func (s *Store) Set(userID string, objective string, opts ...SetOption) (*Goal, 
 		MaxTurns:           cfg.maxTurns,
 		AcceptanceCriteria: cfg.acceptanceCriteria,
 		ProjectPath:        cfg.projectPath,
+		Phase:              PhasePlan,
 		CreatedAt:          now,
 		UpdatedAt:          now,
 	}
@@ -203,6 +200,91 @@ func (s *Store) Resume(userID, goalID string) bool {
 
 	s.persistBytes(userID, data)
 	return true
+}
+
+// SavePlan records the planning turn and switches the goal to execution.
+// The goal_id must match. Steps and criteria are copied.
+func (s *Store) SavePlan(userID, goalID, understanding string, steps []Step, criteria []string) error {
+	understanding = strings.TrimSpace(understanding)
+	steps, err := normalizeSteps(steps)
+	if err != nil {
+		return err
+	}
+	criteria = compactStrings(criteria)
+	if understanding == "" {
+		return fmt.Errorf("understanding cannot be empty")
+	}
+	if len(criteria) == 0 {
+		return fmt.Errorf("acceptance criteria cannot be empty")
+	}
+
+	s.mu.Lock()
+	g := s.goals[userID]
+	if g == nil || g.GoalID != goalID {
+		s.mu.Unlock()
+		return fmt.Errorf("goal not found")
+	}
+	if g.IsTerminal() {
+		s.mu.Unlock()
+		return fmt.Errorf("goal is terminal")
+	}
+	g.Understanding = understanding
+	g.Steps = steps
+	g.AcceptanceCriteria = append([]string(nil), criteria...)
+	g.Phase = PhaseExecute
+	g.UpdatedAt = time.Now()
+	data := s.marshalLocked(g)
+	s.mu.Unlock()
+
+	s.persistBytes(userID, data)
+	return nil
+}
+
+// UpdateStep records the outcome of one step. Index is 1-based.
+func (s *Store) UpdateStep(userID, goalID string, index int, status StepStatus, result string) error {
+	status, ok := canonicalStepStatus(string(status))
+	if !ok {
+		return fmt.Errorf("invalid step status")
+	}
+	result = strings.TrimSpace(result)
+	if result == "" {
+		return fmt.Errorf("result cannot be empty")
+	}
+
+	s.mu.Lock()
+	g := s.goals[userID]
+	if g == nil || g.GoalID != goalID {
+		s.mu.Unlock()
+		return fmt.Errorf("goal not found")
+	}
+	if g.IsTerminal() {
+		s.mu.Unlock()
+		return fmt.Errorf("goal is terminal")
+	}
+	found := false
+	for i := range g.Steps {
+		if g.Steps[i].Index != index {
+			continue
+		}
+		if g.Steps[i].Status == StepDone {
+			s.mu.Unlock()
+			return fmt.Errorf("step already done")
+		}
+		g.Steps[i].Status = status
+		g.Steps[i].Result = result
+		found = true
+		break
+	}
+	if !found {
+		s.mu.Unlock()
+		return fmt.Errorf("step not found")
+	}
+	g.UpdatedAt = time.Now()
+	data := s.marshalLocked(g)
+	s.mu.Unlock()
+
+	s.persistBytes(userID, data)
+	return nil
 }
 
 // Clear removes the goal for a user entirely. Returns true if a goal existed.

@@ -9,12 +9,41 @@ import (
 
 const ambientRetrievalEvidence = "ambient:retrieval"
 
+// ambientDynamicLookupEvidence marks the optional open-family need, kept
+// separate from the warehouse evidence above: a lookup turn must be able to
+// drop the warehouse companions without dropping an installed provider's
+// only path onto the surface.
+const ambientDynamicLookupEvidence = "ambient:dynamic-lookup"
+
 // ambientRetrievalCapabilities are read-path warehouse tools that stay on
 // managed turns that want ambient retrieval, and on unmanaged chat via a
 // retrieval Need path. knowledge.ingest and memory writes are not included.
 var ambientRetrievalCapabilities = []coretool.CapabilityID{
 	coretool.CapabilityKnowledgeReadLocal,
 	coretool.CapabilityMemoryRecallAgent,
+}
+
+// AmbientDynamicLookupNeed is the demand side of the open read-only family.
+//
+// Publishing a contract is only half of "an installed MCP is usable": the
+// planner selects a provider only for a need something actually requested, and
+// no intent rule maps any label onto information.lookup — by design, because
+// a label→capability rule is an owner-reviewed statement about user outcomes,
+// and an arbitrary vendor tool is not one. So the open family is demanded the
+// same way the warehouse companions are: an optional need attached to turns
+// that want ambient retrieval. It is optional and read-only, so it never makes
+// a turn fail, never competes with a reviewed provider for a mutation, and
+// never enters the external-effect receipt path.
+func AmbientDynamicLookupNeed() coretool.CapabilityNeed {
+	return coretool.CapabilityNeed{
+		ID:          "need:~ambient:" + string(CapabilityInformationLookup),
+		Capability:  CapabilityInformationLookup,
+		Qualifiers:  map[string]string{QualifierInformationScope: InformationScopeReference},
+		Polarity:    coretool.NeedRequire,
+		Required:    false,
+		Confidence:  1,
+		EvidenceIDs: []string{ambientDynamicLookupEvidence},
+	}
 }
 
 func applyAmbientRetrieval(registry *coretool.CapabilityRegistry, enabled bool, primary intent.IntentLabel, resolution DynamicCapabilityNeedResolution) DynamicCapabilityNeedResolution {

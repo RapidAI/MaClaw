@@ -28,6 +28,181 @@ type CapabilityNeed struct {
 	EvidenceIDs []string
 }
 
+// GrantedNeedFromSelection projects one immutable planned selection onto the
+// session-governed / continuity need record. NeedID wins; empty NeedID falls
+// back to the selection identity so a host cannot invent a later replay key.
+func GrantedNeedFromSelection(selection PlannedSelection) CapabilityNeed {
+	need := CapabilityNeed{
+		ID:          strings.TrimSpace(selection.NeedID),
+		Capability:  selection.FitProof.MatchedCapability,
+		Qualifiers:  map[string]string{},
+		Polarity:    NeedRequire,
+		Required:    true,
+		EvidenceIDs: append([]string(nil), selection.EvidenceIDs...),
+	}
+	if len(need.EvidenceIDs) == 0 {
+		need.EvidenceIDs = nil
+	}
+	for key, value := range selection.FitProof.QualifierBindings {
+		need.Qualifiers[key] = value
+	}
+	if need.ID == "" {
+		need.ID = strings.TrimSpace(selection.ID)
+	}
+	return need
+}
+
+// GrantedNeedsFromPlan projects planner-granted selections into capability
+// needs. GUI session-governed persist, headless SessionGovernedTaskStore, and
+// continuity open-need projection share this so a later continuation cannot
+// drift which NeedID or qualifier set it replays.
+func GrantedNeedsFromPlan(plan ToolPlan) []CapabilityNeed {
+	if len(plan.Selections) == 0 {
+		return nil
+	}
+	needs := make([]CapabilityNeed, 0, len(plan.Selections))
+	for _, selection := range plan.Selections {
+		needs = append(needs, GrantedNeedFromSelection(selection))
+	}
+	return needs
+}
+
+// CloneCapabilityNeed copies Qualifiers and EvidenceIDs so a persist/load
+// cycle cannot share maps with the live plan.
+func CloneCapabilityNeed(value CapabilityNeed) CapabilityNeed {
+	result := value
+	result.Qualifiers = CloneNeedQualifiers(value.Qualifiers)
+	result.EvidenceIDs = append([]string(nil), value.EvidenceIDs...)
+	return result
+}
+
+// CloneNeedQualifiers copies a qualifier map. Empty input yields nil so persist
+// and planning keys cannot share a live map.
+func CloneNeedQualifiers(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	clone := make(map[string]string, len(values))
+	for key, value := range values {
+		clone[key] = value
+	}
+	return clone
+}
+
+// NeedQualifierKey is the stable identity of a qualifier map for sibling
+// dedup. Keys are sorted; empty input yields the empty string.
+func NeedQualifierKey(values map[string]string) string {
+	if len(values) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys))
+	for _, key := range keys {
+		parts = append(parts, strings.TrimSpace(key)+"="+strings.TrimSpace(values[key]))
+	}
+	return strings.Join(parts, "\x1f")
+}
+
+// CloneCapabilityNeeds copies a need slice. Empty input yields nil.
+func CloneCapabilityNeeds(needs []CapabilityNeed) []CapabilityNeed {
+	if len(needs) == 0 {
+		return nil
+	}
+	out := make([]CapabilityNeed, 0, len(needs))
+	for _, need := range needs {
+		out = append(out, CloneCapabilityNeed(need))
+	}
+	return out
+}
+
+// CapabilityNeedsContain reports whether any granted need names capability.
+// GUI document/audio ingress and headless reviewed-host NeedPresent scans
+// share this so a host cannot miss a family the other would see.
+func CapabilityNeedsContain(needs []CapabilityNeed, capability CapabilityID) bool {
+	for _, need := range needs {
+		if need.Capability == capability {
+			return true
+		}
+	}
+	return false
+}
+
+// CapabilityNeedsContainAny reports whether any granted need names one of
+// capabilities. Empty capabilities yields false.
+func CapabilityNeedsContainAny(needs []CapabilityNeed, capabilities ...CapabilityID) bool {
+	for _, capability := range capabilities {
+		if CapabilityNeedsContain(needs, capability) {
+			return true
+		}
+	}
+	return false
+}
+
+// GrantedNeedStillCovered reports whether a persisted need may still be
+// replayed. A non-nil registry fail-closes on unknown capabilities; covered
+// is the current rule-table identity set so a retired mapping cannot revive
+// a grant.
+func GrantedNeedStillCovered(need CapabilityNeed, covered map[CapabilityID]bool, registry *CapabilityRegistry) bool {
+	if registry != nil {
+		if _, ok := registry.Lookup(need.Capability); !ok {
+			return false
+		}
+	}
+	return covered[need.Capability]
+}
+
+// FilterGrantedNeedsStillCovered keeps granted needs that are still covered
+// and clones them so replay cannot share maps with the live plan.
+func FilterGrantedNeedsStillCovered(needs []CapabilityNeed, covered map[CapabilityID]bool, registry *CapabilityRegistry) []CapabilityNeed {
+	kept := make([]CapabilityNeed, 0, len(needs))
+	for _, need := range needs {
+		if GrantedNeedStillCovered(need, covered, registry) {
+			kept = append(kept, need)
+		}
+	}
+	return CloneCapabilityNeeds(kept)
+}
+
+// CloneRoutingFact copies Attributes so policy/planning cannot share a live map.
+func CloneRoutingFact(fact RoutingFact) RoutingFact {
+	fact.Attributes = CloneNeedQualifiers(fact.Attributes)
+	return fact
+}
+
+// CloneRoutingFacts copies a fact slice. Empty input yields nil.
+func CloneRoutingFacts(facts []RoutingFact) []RoutingFact {
+	if len(facts) == 0 {
+		return nil
+	}
+	out := make([]RoutingFact, 0, len(facts))
+	for _, fact := range facts {
+		out = append(out, CloneRoutingFact(fact))
+	}
+	return out
+}
+
+// CloneRoutingConstraint copies Attributes so policy/planning cannot share a live map.
+func CloneRoutingConstraint(constraint RoutingConstraint) RoutingConstraint {
+	constraint.Attributes = CloneNeedQualifiers(constraint.Attributes)
+	return constraint
+}
+
+// CloneRoutingConstraints copies a constraint slice. Empty input yields nil.
+func CloneRoutingConstraints(constraints []RoutingConstraint) []RoutingConstraint {
+	if len(constraints) == 0 {
+		return nil
+	}
+	out := make([]RoutingConstraint, 0, len(constraints))
+	for _, constraint := range constraints {
+		out = append(out, CloneRoutingConstraint(constraint))
+	}
+	return out
+}
+
 type FactAuthority string
 
 const (
@@ -70,6 +245,18 @@ type PlanningBudget struct {
 	MaxSchemaTokens int
 }
 
+// NewPlanningBudget clamps negative limits to zero so GUI and srv do not
+// copy a second constructor. Zero still means unlimited at Plan time.
+func NewPlanningBudget(maxSelections, maxSchemaTokens int) PlanningBudget {
+	if maxSelections < 0 {
+		maxSelections = 0
+	}
+	if maxSchemaTokens < 0 {
+		maxSchemaTokens = 0
+	}
+	return PlanningBudget{MaxSelections: maxSelections, MaxSchemaTokens: maxSchemaTokens}
+}
+
 type RouteRequest struct {
 	RootTaskID   string
 	SessionID    string
@@ -79,8 +266,14 @@ type RouteRequest struct {
 	Needs        []CapabilityNeed
 	Facts        []RoutingFact
 	Constraints  []RoutingConstraint
-	Budget       PlanningBudget
-	Now          time.Time
+	// Pins narrow one capability to one installed dynamic provider the user
+	// named. They are produced by the host from the turn text and never by the
+	// model, and they relax no gate: a pinned provider that is not Ready is
+	// not selectable, which is what makes the outcome explicit instead of a
+	// silent substitution under a shared prompt name. See ProviderPin.
+	Pins   []ProviderPin
+	Budget PlanningBudget
+	Now    time.Time
 }
 
 type FitProof struct {
@@ -114,6 +307,17 @@ type PlannedSelection struct {
 	// readiness; this separate edge prevents an executor from treating "any
 	// newest matching artifact" in the invocation scope as the dependency.
 	ArtifactDependencies []ArtifactDependency
+	// EvidenceIDs is why this need was granted. The session residue is rebuilt
+	// from selections, and an archetype companion has no id prefix of its own.
+	// Dropping the evidence made that download or search the task.
+	EvidenceIDs []string
+	// Continuation is set only on the one sibling opened after a budgeted
+	// family's published wave was spent. That node is the host's single
+	// promise of another call. It is not a new budget: its result must not
+	// promise a further call, and another ask must not append a second
+	// continuation. Iterative local file writes leave this false; the next
+	// edit is a new obligation, not a promise minted by the spent-budget note.
+	Continuation bool `json:",omitempty"`
 }
 
 // IsLightPromptSafeSelection reports whether an already-planned selection may
@@ -251,7 +455,11 @@ type ToolPlan struct {
 	// SnapshotDigest freezes every planner input that can influence the
 	// decision. It is the compare-and-publish guard for RouteState revisions;
 	// CatalogGeneration alone is intentionally insufficient.
-	SnapshotDigest    string
+	SnapshotDigest string
+	// CatalogDigest identifies only the immutable provider inventory used by
+	// this plan. SnapshotDigest remains the full plan-input identity (needs,
+	// facts, constraints and budgets included).
+	CatalogDigest     string
 	CatalogGeneration uint64
 	Selections        []PlannedSelection
 	Unmet             []UnmetNeed
@@ -360,7 +568,11 @@ func (p *ToolPlanner) Plan(req RouteRequest) (ToolPlan, error) {
 	if req.Snapshot.RegistryVersion != p.registry.Version() {
 		return ToolPlan{}, fmt.Errorf("catalog registry version %q does not match planner registry %q", req.Snapshot.RegistryVersion, p.registry.Version())
 	}
-	plan := ToolPlan{RootTaskID: req.RootTaskID, CatalogGeneration: req.Snapshot.Generation}
+	catalogDigest, err := EffectiveCatalogSnapshotDigest(req.Snapshot)
+	if err != nil {
+		return ToolPlan{}, err
+	}
+	plan := ToolPlan{RootTaskID: req.RootTaskID, CatalogDigest: catalogDigest, CatalogGeneration: req.Snapshot.Generation}
 	plan.SnapshotDigest = semanticRouteSnapshotDigest(req)
 	plan.ID = "plan:" + plan.SnapshotDigest[:24]
 	needs := append([]CapabilityNeed(nil), req.Needs...)
@@ -417,6 +629,15 @@ func (p *ToolPlanner) Plan(req RouteRequest) (ToolPlan, error) {
 		}
 		candidate, proof, requiresConfirm, ok := p.bestProvider(req, descriptor, need)
 		if !ok {
+			// The turn named an implementation for this capability. Report that
+			// before any catalog-wide reason: the capability may be perfectly
+			// well covered by a sibling, and falling through to
+			// "no_feasible_provider" would tell the host to keep the turn
+			// alive on the very substitution the user ruled out.
+			if _, pinned := PinForCapability(req.Pins, need.Capability); pinned {
+				record(UnmetReasonPinnedProviderUnavailable)
+				continue
+			}
 			// No candidate from an incomplete/stale lifecycle snapshot does not
 			// prove that this capability is infeasible. Preserve the distinction
 			// so a caller can wait for its bounded refresh or ask for
@@ -424,6 +645,14 @@ func (p *ToolPlanner) Plan(req RouteRequest) (ToolPlan, error) {
 			// Skill/MCP gateway.
 			if reason := req.Snapshot.Coverage.UnavailabilityReason(); reason != "" {
 				record(reason)
+				continue
+			}
+			// A finished negative observation stays in the snapshot with
+			// Ready=false. The family can still be complete, so a healthy
+			// sibling remains selectable, while a need that only the down
+			// provider can serve is not reported as absent.
+			if matchingUnreadyProvider(req, descriptor, need) {
+				record(CatalogCoverageReasonNotReady)
 				continue
 			}
 			record("no_feasible_provider")
@@ -441,6 +670,7 @@ func (p *ToolPlanner) Plan(req RouteRequest) (ToolPlan, error) {
 			Phase:                  planPhaseForCapability(need.Capability),
 			Consumes:               append([]ArtifactContract(nil), candidate.Consumes...),
 			Produces:               append([]ArtifactContract(nil), candidate.Produces...),
+			EvidenceIDs:            append([]string(nil), need.EvidenceIDs...),
 		}
 		if requiresConfirm {
 			selection.ConfirmationID = ConfirmationRequirementID(need.ID)
@@ -477,8 +707,70 @@ func IsLookupCapability(capability CapabilityID) bool {
 	return IsWebLookupCapability(capability) || id == "information.current_time"
 }
 
-func isDocumentGenerateFile(capability CapabilityID) bool {
-	return strings.TrimSpace(string(capability)) == "document.generate.file"
+// AliasableLookupSelection reports a light-safe web-search selection whose
+// query schema can share a stable model name. Fetch wants a URL and
+// current_time takes no query; aliasing those would fail validation and
+// consume the one-shot grant.
+func AliasableLookupSelection(selection PlannedSelection) bool {
+	if !IsLightPromptSafeSelection(selection) {
+		return false
+	}
+	id := strings.TrimSpace(string(selection.FitProof.MatchedCapability))
+	return strings.HasPrefix(id, "information.search.")
+}
+
+// SoleLiveLookupGrantName returns the unique live grant when it is an
+// aliasable lookup. Zero, many, or a non-search live grant yields empty.
+func SoleLiveLookupGrantName(plan ToolPlan, grants map[string]InvocationGrant) string {
+	live := SoleLiveGrantName(grants)
+	if live == "" {
+		return ""
+	}
+	grant, ok := grants[live]
+	if !ok {
+		return ""
+	}
+	selection, ok := PlanSelectionByID(plan, grant.SelectionID)
+	if !ok || !AliasableLookupSelection(selection) {
+		return ""
+	}
+	return live
+}
+
+// IsDocumentGenerateFile reports the reviewed document-generation capability.
+// Host skip filters and planner generate-after-lookup edges both use this.
+func IsDocumentGenerateFile(capability CapabilityID) bool {
+	return strings.EqualFold(strings.TrimSpace(string(capability)), "document.generate.file")
+}
+
+// IsDocumentRead reports the reviewed local-document-read capability.
+// GUI trusted-document binding and headless reviewed document-read share this.
+func IsDocumentRead(capability CapabilityID) bool {
+	return strings.EqualFold(strings.TrimSpace(string(capability)), "document.read.local")
+}
+
+// BindDocumentReadFormat stamps the ingress format onto a document-read need.
+// Other capabilities are returned unchanged so a host can map the helper over
+// a mixed need list after UniqueTrustedInputCount.
+func BindDocumentReadFormat(need CapabilityNeed, format string) CapabilityNeed {
+	if !IsDocumentRead(need.Capability) {
+		return need
+	}
+	need.Qualifiers = map[string]string{"format": strings.TrimSpace(format)}
+	return need
+}
+
+// InTurnArtifactProducerPresent reports whether this turn already produces an
+// artifact that current-channel deliver should consume instead of ingress.
+// Document generate always counts; hosts pass extra producer capabilities
+// (office write on GUI IM, audio/visual capture on headless).
+func InTurnArtifactProducerPresent(needs []CapabilityNeed, extra ...CapabilityID) bool {
+	for _, need := range needs {
+		if IsDocumentGenerateFile(need.Capability) {
+			return true
+		}
+	}
+	return CapabilityNeedsContainAny(needs, extra...)
 }
 
 func isScheduleAdministerLocal(capability CapabilityID) bool {
@@ -534,10 +826,7 @@ func familyBaseSelectionIDs(selections []PlannedSelection, match func(PlannedSel
 		if !match(selection) {
 			continue
 		}
-		family := RepeatFamilyID(selection.NeedID)
-		if family == "" {
-			family = RepeatFamilyID(selection.ID)
-		}
+		family := SelectionRepeatFamily(selection)
 		if current, exists := best[family]; exists && current <= selection.ID {
 			continue
 		}
@@ -558,11 +847,11 @@ func requiredLookupBaseSelectionIDs(plan *ToolPlan, needs []CapabilityNeed) []st
 	requiredFamilies := make(map[string]bool, len(needs))
 	for _, need := range needs {
 		if need.Required && IsLookupCapability(need.Capability) {
-			requiredFamilies[RepeatFamilyID(need.ID)] = true
+			requiredFamilies[RepeatFamilyKey(need.ID)] = true
 		}
 	}
 	return familyBaseSelectionIDs(plan.Selections, func(selection PlannedSelection) bool {
-		return IsLookupCapability(selection.FitProof.MatchedCapability) && requiredFamilies[RepeatFamilyID(selection.NeedID)]
+		return IsLookupCapability(selection.FitProof.MatchedCapability) && requiredFamilies[SelectionRepeatFamily(selection)]
 	})
 }
 
@@ -591,7 +880,7 @@ func attachGenerateCurrentDeliverDependencies(plan *ToolPlan) {
 	requireSelectionIDs(plan, func(selection PlannedSelection) bool {
 		return isCurrentChannelFileDeliver(selection.FitProof.MatchedCapability, selection.FitProof.QualifierBindings)
 	}, familyBaseSelectionIDs(plan.Selections, func(selection PlannedSelection) bool {
-		return isDocumentGenerateFile(selection.FitProof.MatchedCapability)
+		return IsDocumentGenerateFile(selection.FitProof.MatchedCapability)
 	}))
 }
 
@@ -685,7 +974,7 @@ func appendUniqueRequirements(current, required []string) []string {
 // attached. Waiting for id#02…#05 dead-locks generate on unused refinements.
 func attachLookupGenerateDependencies(plan *ToolPlan, needs []CapabilityNeed) {
 	requireSelectionIDs(plan, func(selection PlannedSelection) bool {
-		return isDocumentGenerateFile(selection.FitProof.MatchedCapability)
+		return IsDocumentGenerateFile(selection.FitProof.MatchedCapability)
 	}, requiredLookupBaseSelectionIDs(plan, needs))
 }
 
@@ -799,13 +1088,53 @@ func omitOptionalBudgetOverflow(plan *ToolPlan, optional []PlannedSelection) {
 }
 
 func planningWaveExceedsBudget(kept, wave []PlannedSelection, budget PlanningBudget) bool {
-	if budget.MaxSelections > 0 && len(kept)+len(wave) > budget.MaxSelections {
+	if budget.MaxSelections <= 0 && budget.MaxSchemaTokens <= 0 {
+		return false
+	}
+	// Repeat-ceiling siblings share one family schema and are issued one at a
+	// time. They must not consume a selection or schema slot of their own, or
+	// a read-12 family crowds out the later required wave.
+	haveFamilies, haveTokens := budgetChargeAgainst(nil, kept)
+	addFamilies, addTokens := budgetChargeAgainst(kept, wave)
+	if budget.MaxSelections > 0 && haveFamilies+addFamilies > budget.MaxSelections {
 		return true
 	}
-	if budget.MaxSchemaTokens > 0 && selectionSchemaTokenCost(kept)+selectionSchemaTokenCost(wave) > budget.MaxSchemaTokens {
+	if budget.MaxSchemaTokens > 0 && haveTokens+addTokens > budget.MaxSchemaTokens {
 		return true
 	}
 	return false
+}
+
+func plannedFamilyKey(selection PlannedSelection) string {
+	return SelectionRepeatFamily(selection)
+}
+
+func selectionFamilySchemaTokens(selection PlannedSelection) int {
+	total := 24
+	total += 8 * len(selection.ParameterAuthorization.AllowedFields)
+	if strings.TrimSpace(selection.ParameterAuthorization.Digest) != "" {
+		total += 4
+	}
+	return total
+}
+
+// budgetChargeAgainst counts families in extra that are not already present in
+// base. The token charge is one schema per new family.
+func budgetChargeAgainst(base, extra []PlannedSelection) (families, tokens int) {
+	seen := make(map[string]struct{}, len(base)+len(extra))
+	for _, selection := range base {
+		seen[plannedFamilyKey(selection)] = struct{}{}
+	}
+	for _, selection := range extra {
+		key := plannedFamilyKey(selection)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		families++
+		tokens += selectionFamilySchemaTokens(selection)
+	}
+	return families, tokens
 }
 
 // selectionSchemaTokenCost is a conservative, deterministic estimate of the
@@ -1032,10 +1361,7 @@ func trustedArtifactDependency(facts []RoutingFact, consumed ArtifactContract, n
 			}
 			binding = &legacy
 		}
-		if !strings.EqualFold(strings.TrimSpace(binding.Kind), strings.TrimSpace(consumed.Kind)) {
-			continue
-		}
-		if mimeType := strings.TrimSpace(consumed.MIMEType); mimeType != "" && !strings.EqualFold(strings.TrimSpace(binding.MIMEType), mimeType) {
+		if !ArtifactBindingMatchesContract(*binding, consumed) {
 			continue
 		}
 		candidate := ArtifactDependency{ArtifactID: binding.ID, Artifact: *binding, Contract: consumed}
@@ -1049,10 +1375,7 @@ func trustedArtifactDependency(facts []RoutingFact, consumed ArtifactContract, n
 
 func producesArtifact(produced []ArtifactContract, consumed ArtifactContract) bool {
 	for _, candidate := range produced {
-		if !strings.EqualFold(strings.TrimSpace(candidate.Kind), strings.TrimSpace(consumed.Kind)) {
-			continue
-		}
-		if strings.TrimSpace(consumed.MIMEType) == "" || strings.EqualFold(strings.TrimSpace(candidate.MIMEType), strings.TrimSpace(consumed.MIMEType)) {
+		if ArtifactContractMatches(candidate, consumed) {
 			return true
 		}
 	}
@@ -1073,8 +1396,7 @@ func validArtifactBinding(binding ArtifactBinding) bool {
 }
 
 func artifactBindingMatchesContract(binding ArtifactBinding, contract ArtifactContract) bool {
-	return strings.EqualFold(strings.TrimSpace(binding.Kind), strings.TrimSpace(contract.Kind)) &&
-		(strings.TrimSpace(contract.MIMEType) == "" || strings.EqualFold(strings.TrimSpace(binding.MIMEType), strings.TrimSpace(contract.MIMEType)))
+	return ArtifactBindingMatchesContract(binding, contract)
 }
 
 func canonicalArtifactBinding(binding ArtifactBinding) string {
@@ -1171,6 +1493,7 @@ func clonePlannedSelection(in PlannedSelection) PlannedSelection {
 	out.Consumes = append([]ArtifactContract(nil), in.Consumes...)
 	out.Produces = append([]ArtifactContract(nil), in.Produces...)
 	out.ArtifactDependencies = append([]ArtifactDependency(nil), in.ArtifactDependencies...)
+	out.EvidenceIDs = append([]string(nil), in.EvidenceIDs...)
 	for i := range out.ArtifactDependencies {
 		out.ArtifactDependencies[i].Artifact = in.ArtifactDependencies[i].Artifact
 	}
@@ -1208,10 +1531,18 @@ func validateNeed(descriptor CapabilityDescriptor, need CapabilityNeed) error {
 func (p *ToolPlanner) bestProvider(req RouteRequest, descriptor CapabilityDescriptor, need CapabilityNeed) (ProviderSpec, FitProof, bool, bool) {
 	candidates := append([]ProviderSpec(nil), req.Snapshot.Providers...)
 	sort.Slice(candidates, func(i, j int) bool { return candidates[i].Binding.StableID() < candidates[j].Binding.StableID() })
+	pin, pinned := PinForCapability(req.Pins, need.Capability)
 	var selected ProviderSpec
 	selectedQuality := -1.0
 	found := false
 	for _, candidate := range candidates {
+		// A pin removes every other implementation from this capability's
+		// candidate set before any gate is applied. Quality is never consulted:
+		// the point of naming an implementation is that a higher- or
+		// lower-ranked sibling must not be substituted for it.
+		if pinned && !pin.Matches(candidate.Binding) {
+			continue
+		}
 		if !candidate.Classification.plannable() {
 			// Fixed control-plane and quarantined entries are catalog coverage
 			// records only; they must never become planner candidates even if a
@@ -1231,10 +1562,16 @@ func (p *ToolPlanner) bestProvider(req RouteRequest, descriptor CapabilityDescri
 			if provision.Capability != need.Capability || !qualifiersMatch(need.Qualifiers, provision.Qualifiers) {
 				continue
 			}
-			// Candidates are pre-sorted by immutable binding identity. Therefore a
-			// quality tie keeps that ordering deterministic while a better declared
-			// implementation is selected regardless of discovery order.
-			if !found || provision.Quality > selectedQuality {
+			// Selection precedence is: (1) explicit trust tier, (2) declared
+			// Quality within the same tier, (3) the pre-sorted immutable binding
+			// identity as a deterministic tie-break. A trusted (approved) provider
+			// therefore always wins over an unreviewed one even if the unreviewed
+			// tool declares a higher Quality, so a future Quality bump on an
+			// arbitrary install can never silently outrank a reviewed/host
+			// implementation of the same capability.
+			candidateRank := candidate.TrustTier.Rank()
+			selectedRank := selected.TrustTier.Rank()
+			if !found || candidateRank > selectedRank || (candidateRank == selectedRank && provision.Quality > selectedQuality) {
 				selected, selectedQuality, found = candidate, provision.Quality, true
 			}
 		}
@@ -1253,11 +1590,15 @@ func (p *ToolPlanner) bestProvider(req RouteRequest, descriptor CapabilityDescri
 	return selected, proof, constraintRequiresConfirm(req.Constraints, need.Capability, req.Now), true
 }
 
-// providerLifecycleEligible applies the same coverage policy to every provider
-// kind. A partial inventory is never a basis for executing a candidate from
-// that family. A stale catalog may retain a read-only candidate only inside its
-// explicitly published stale-while-revalidate window; external and sensitive
-// candidates always require complete, fresh coverage.
+// providerLifecycleEligible decides whether one concrete provider may execute
+// a candidate. Eligibility is per-provider, not per-kind: a partial or stale
+// family inventory fails only the mutating providers that require complete,
+// fresh coverage, never reads the whole kind down. Phase 4 removed the prior
+// kind-level fail-closed that let a single negative observation collapse every
+// sibling of the same kind. A read-only provider that observed positive
+// (Ready) may still serve on an incomplete or stale-while-revalidate inventory;
+// external and sensitive (mutating) candidates always require complete, fresh
+// coverage, so the fail-closed guarantee for state-changing work is preserved.
 func providerLifecycleEligible(req RouteRequest, candidate ProviderSpec) bool {
 	if !candidate.Ready {
 		return false
@@ -1275,6 +1616,17 @@ func providerLifecycleEligible(req RouteRequest, candidate ProviderSpec) bool {
 		// may already have elapsed; the bounded StaleUntil is the only allowed
 		// extension and is never available to mutating providers.
 		return true
+	case CatalogCoverageIncomplete:
+		// Phase 4: a partial inventory is no longer a basis for failing the
+		// whole kind. A provider that observed positive (Ready) and is
+		// read-only can still serve; a mutating provider still requires
+		// complete, fresh coverage, so it stays fail-closed. The read-only
+		// candidate is additionally bounded by its own ReadyUntil so it cannot
+		// serve on a permanently stale claim.
+		if !effectsAreReadOnly(candidate.Effects) {
+			return false
+		}
+		return candidate.ReadyUntil.IsZero() || !req.Now.After(candidate.ReadyUntil)
 	default:
 		return false
 	}
@@ -1282,6 +1634,30 @@ func providerLifecycleEligible(req RouteRequest, candidate ProviderSpec) bool {
 
 func effectsAreReadOnly(effects []EffectClass) bool {
 	return len(effects) == 1 && effects[0] == EffectReadOnly
+}
+
+// matchingUnreadyProvider reports a catalogued provider that matches the need
+// but is not executable because its own observation finished negative.
+// Incomplete family coverage is handled by UnavailabilityReason; this only
+// applies once that coverage is closed.
+func matchingUnreadyProvider(req RouteRequest, descriptor CapabilityDescriptor, need CapabilityNeed) bool {
+	for _, candidate := range req.Snapshot.Providers {
+		if candidate.Ready || !candidate.Classification.plannable() {
+			continue
+		}
+		if len(candidate.ChannelScopes) > 0 && !containsFold(candidate.ChannelScopes, req.ChannelScope) {
+			continue
+		}
+		if !effectsWithinCapability(candidate.Effects, descriptor.Effects) {
+			continue
+		}
+		for _, provision := range candidate.Provides {
+			if provision.Capability == need.Capability && qualifiersMatch(need.Qualifiers, provision.Qualifiers) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func qualifiersMatch(need, provision map[string]string) bool {
@@ -1369,36 +1745,48 @@ func semanticPlanID(req RouteRequest) string {
 // kept separate from the short plan ID so durable revision publication can
 // compare the complete digest rather than a truncated display identity.
 func semanticRouteSnapshotDigest(req RouteRequest) string {
-	parts := []string{req.RootTaskID, req.SessionID, req.ChannelScope, req.Snapshot.RegistryVersion, fmt.Sprintf("%d", req.Snapshot.Generation), req.TurnID,
-		"coverage", string(req.Snapshot.Coverage.State), req.Snapshot.Coverage.ReasonCode, req.Snapshot.Coverage.StaleUntil.UTC().Format(time.RFC3339Nano),
+	// Always derive the catalog component from immutable contents.  Plan calls
+	// validate the optional stored claim first; this helper also remains safe
+	// for diagnostic callers that construct a RouteRequest directly.
+	catalogDigest := CatalogSnapshotDigest(req.Snapshot)
+	// v3 adds the pin set. A pin changes which implementation a capability is
+	// allowed to resolve to, so a pinned plan and an otherwise identical
+	// unpinned plan are different routes and must not share an identity — the
+	// route state store keys on PlanID and treats an equal digest as the same
+	// route, which would let one of them resurrect the other's selections.
+	parts := []string{"semantic-route-snapshot-v3", req.RootTaskID, req.SessionID, req.ChannelScope, req.Snapshot.RegistryVersion, fmt.Sprintf("%d", req.Snapshot.Generation), catalogDigest, req.TurnID,
+		"coverage", string(req.Snapshot.Coverage.State), req.Snapshot.Coverage.ReasonCode, canonicalDigestTime(req.Snapshot.Coverage.StaleUntil),
 	}
 	families := append([]CatalogCoverageFamily(nil), req.Snapshot.Coverage.Families...)
-	sort.Slice(families, func(i, j int) bool { return families[i].Kind < families[j].Kind })
+	sort.Slice(families, func(i, j int) bool {
+		return canonicalCatalogCoverageFamilyDigest(families[i]) < canonicalCatalogCoverageFamilyDigest(families[j])
+	})
 	for _, family := range families {
 		// ObservedAt is intentionally excluded: it is diagnostic metadata, not
 		// a change in the route's semantic meaning. The state/reason/window are
 		// authorization-relevant and therefore part of the immutable identity.
-		parts = append(parts, "coverage_family", family.Kind, string(family.State), family.ReasonCode, family.StaleUntil.UTC().Format(time.RFC3339Nano))
+		parts = append(parts, "coverage_family", canonicalCatalogCoverageFamilyDigest(family))
 	}
 	providers := append([]ProviderSpec(nil), req.Snapshot.Providers...)
-	sort.Slice(providers, func(i, j int) bool { return providers[i].Binding.StableID() < providers[j].Binding.StableID() })
+	sort.Slice(providers, func(i, j int) bool {
+		return canonicalProviderDigest(providers[i]) < canonicalProviderDigest(providers[j])
+	})
 	for _, provider := range providers {
-		parts = append(parts,
-			"provider", provider.AdapterName, provider.Binding.StableID(), fmt.Sprintf("%t", provider.Ready),
-			provider.ReadyUntil.UTC().Format(time.RFC3339Nano), strings.Join(provider.ChannelScopes, "\x1f"),
-			provider.ParameterAuthorization.Digest, provider.ParameterAuthorization.CanonicalizerVer, strings.Join(provider.ParameterAuthorization.AllowedFields, "\x1f"),
-			canonicalEffects(provider.Effects), canonicalProvisions(provider.Provides), canonicalArtifacts(provider.Consumes), canonicalArtifacts(provider.Produces),
-		)
+		parts = append(parts, "provider", canonicalProviderDigest(provider))
 	}
 	needs := append([]CapabilityNeed(nil), req.Needs...)
-	sort.Slice(needs, func(i, j int) bool { return needs[i].ID < needs[j].ID })
+	sort.Slice(needs, func(i, j int) bool {
+		return canonicalNeedDigest(needs[i]) < canonicalNeedDigest(needs[j])
+	})
 	for _, need := range needs {
-		parts = append(parts, "need", need.ID, string(need.Capability), string(need.Polarity), fmt.Sprintf("%t", need.Required), canonicalStringMap(need.Qualifiers))
+		parts = append(parts, "need", canonicalNeedDigest(need))
 	}
 	constraints := append([]RoutingConstraint(nil), req.Constraints...)
-	sort.Slice(constraints, func(i, j int) bool { return constraints[i].ID < constraints[j].ID })
+	sort.Slice(constraints, func(i, j int) bool {
+		return canonicalConstraintDigest(constraints[i]) < canonicalConstraintDigest(constraints[j])
+	})
 	for _, constraint := range constraints {
-		parts = append(parts, "constraint", constraint.ID, string(constraint.Capability), constraint.Effect, string(constraint.Authority), constraint.ValidUntil.UTC().Format(time.RFC3339Nano), canonicalStringMap(constraint.Attributes))
+		parts = append(parts, "constraint", canonicalConstraintDigest(constraint))
 	}
 	if req.Budget.MaxSelections > 0 {
 		parts = append(parts, "budget", fmt.Sprintf("%d", req.Budget.MaxSelections))
@@ -1407,15 +1795,101 @@ func semanticRouteSnapshotDigest(req RouteRequest) string {
 		parts = append(parts, "schema_budget", fmt.Sprintf("%d", req.Budget.MaxSchemaTokens))
 	}
 	facts := append([]RoutingFact(nil), req.Facts...)
-	sort.Slice(facts, func(i, j int) bool { return facts[i].ID < facts[j].ID })
+	sort.Slice(facts, func(i, j int) bool {
+		return canonicalFactDigest(facts[i]) < canonicalFactDigest(facts[j])
+	})
 	for _, fact := range facts {
-		artifact := ""
-		if fact.Artifact != nil {
-			artifact = canonicalArtifactBinding(*fact.Artifact)
-		}
-		parts = append(parts, "fact", fact.ID, fact.Kind, string(fact.Authority), fact.ValidUntil.UTC().Format(time.RFC3339Nano), canonicalStringMap(fact.Attributes), artifact)
+		parts = append(parts, "fact", canonicalFactDigest(fact))
 	}
-	return SchemaDigest([]byte(strings.Join(parts, "\x00")))
+	// Pins are host-authored narrowing constraints, so they belong to the
+	// route's identity for the same reason constraints do. Invalid pins are
+	// skipped rather than encoded: they are inert everywhere else, and
+	// encoding one would make a typo change a plan's identity for no
+	// behavioral reason. Sorted so the digest is order-independent, and
+	// deduplicated because a repeated pin resolves exactly like a single one
+	// (PinForCapability takes the first) and must not fork identity.
+	pins := CloneProviderPins(req.Pins)
+	sort.Slice(pins, func(i, j int) bool {
+		if pins[i].Capability != pins[j].Capability {
+			return pins[i].Capability < pins[j].Capability
+		}
+		if pins[i].Kind != pins[j].Kind {
+			return pins[i].Kind < pins[j].Kind
+		}
+		return pins[i].ProviderID < pins[j].ProviderID
+	})
+	previous := ProviderPin{}
+	for i, pin := range pins {
+		if !pin.valid() {
+			continue
+		}
+		if i > 0 && pin == previous {
+			continue
+		}
+		parts = append(parts, "pin", canonicalPinDigest(pin))
+		previous = pin
+	}
+	return SchemaDigest([]byte(canonicalDigestEncode(parts...)))
+}
+
+func canonicalPinDigest(pin ProviderPin) string {
+	return canonicalDigestEncode(
+		strings.TrimSpace(string(pin.Capability)),
+		strings.TrimSpace(pin.Kind),
+		strings.TrimSpace(pin.ProviderID),
+	)
+}
+
+func canonicalNeedDigest(need CapabilityNeed) string {
+	return canonicalDigestEncode(
+		strings.TrimSpace(need.ID),
+		strings.TrimSpace(string(need.Capability)),
+		string(need.Polarity),
+		fmt.Sprintf("%t", need.Required),
+		canonicalDigestStringMap(need.Qualifiers),
+	)
+}
+
+func canonicalConstraintDigest(constraint RoutingConstraint) string {
+	return canonicalDigestEncode(
+		strings.TrimSpace(constraint.ID),
+		strings.TrimSpace(string(constraint.Capability)),
+		strings.TrimSpace(constraint.Effect),
+		string(constraint.Authority),
+		canonicalDigestTime(constraint.ValidUntil),
+		canonicalDigestStringMap(constraint.Attributes),
+	)
+}
+
+func canonicalFactDigest(fact RoutingFact) string {
+	artifact := ""
+	if fact.Artifact != nil {
+		artifact = canonicalArtifactBindingDigest(*fact.Artifact)
+	}
+	return canonicalDigestEncode(
+		strings.TrimSpace(fact.ID),
+		strings.TrimSpace(fact.Kind),
+		string(fact.Authority),
+		canonicalDigestTime(fact.ValidUntil),
+		canonicalDigestStringMap(fact.Attributes),
+		artifact,
+	)
+}
+
+func canonicalArtifactBindingDigest(binding ArtifactBinding) string {
+	return canonicalDigestEncode(
+		strings.TrimSpace(binding.ID),
+		strings.ToLower(strings.TrimSpace(binding.Kind)),
+		strings.ToLower(strings.TrimSpace(binding.MIMEType)),
+		strings.TrimSpace(binding.IntegrityDigest),
+		strings.TrimSpace(binding.ProducerSelection),
+		strings.TrimSpace(binding.Scope.RootTaskID),
+		strings.TrimSpace(binding.Scope.PlanID),
+		strings.TrimSpace(binding.Scope.SessionID),
+		strings.TrimSpace(binding.Scope.TurnID),
+		strings.TrimSpace(binding.Scope.PrincipalID),
+		strings.TrimSpace(binding.Scope.ToolSnapshotID),
+	)
 }
 
 func canonicalEffects(effects []EffectClass) string {

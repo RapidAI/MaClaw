@@ -18,8 +18,13 @@ $ecMqttC = Join-Path $projectRoot 'managed_components\78__esp-ml307\src\ec801e\e
 $ecTcpC = Join-Path $projectRoot 'managed_components\78__esp-ml307\src\ec801e\ec801e_tcp.cc'
 $ecUdpC = Join-Path $projectRoot 'managed_components\78__esp-ml307\src\ec801e\ec801e_udp.cc'
 $ecSslC = Join-Path $projectRoot 'managed_components\78__esp-ml307\src\ec801e\ec801e_ssl.cc'
+$espMqttC = Join-Path $projectRoot 'managed_components\78__esp-ml307\src\esp\esp_mqtt.cc'
+$mlAtModemC = Join-Path $projectRoot 'managed_components\78__esp-ml307\src\ml307\ml307_at_modem.cc'
+$ecAtModemC = Join-Path $projectRoot 'managed_components\78__esp-ml307\src\ec801e\ec801e_at_modem.cc'
+$webSocketC = Join-Path $projectRoot 'managed_components\78__esp-ml307\src\web_socket.cc'
+$webSocketH = Join-Path $projectRoot 'managed_components\78__esp-ml307\include\web_socket.h'
 $failures = @()
-foreach ($path in @($transportH,$transportC,$uartH,$uartC,$modemH,$modemC,$httpC,$genericHttpC,$genericHttpH,$mqttC,$tcpC,$udpC,$ecMqttC,$ecTcpC,$ecUdpC,$ecSslC)) {
+foreach ($path in @($transportH,$transportC,$uartH,$uartC,$modemH,$modemC,$httpC,$genericHttpC,$genericHttpH,$mqttC,$tcpC,$udpC,$ecMqttC,$ecTcpC,$ecUdpC,$ecSslC,$espMqttC,$mlAtModemC,$ecAtModemC,$webSocketC,$webSocketH)) {
     if (-not (Test-Path -LiteralPath $path)) { $failures += "missing $path" }
 }
 if ($failures.Count -eq 0) {
@@ -39,6 +44,11 @@ if ($failures.Count -eq 0) {
     $ecTcp = Get-Content -LiteralPath $ecTcpC -Raw
     $ecUdp = Get-Content -LiteralPath $ecUdpC -Raw
     $ecSsl = Get-Content -LiteralPath $ecSslC -Raw
+    $espMqtt = Get-Content -LiteralPath $espMqttC -Raw
+    $mlAtModem = Get-Content -LiteralPath $mlAtModemC -Raw
+    $ecAtModem = Get-Content -LiteralPath $ecAtModemC -Raw
+    $webSocket = Get-Content -LiteralPath $webSocketC -Raw
+    $webSocketHeader = Get-Content -LiteralPath $webSocketH -Raw
     foreach ($pair in @(
         @($transportHeader,'ml307_transport_deinit\s*\('),
         @($transportHeader,'ml307_transport_reinitialize\s*\('),
@@ -80,6 +90,20 @@ if ($failures.Count -eq 0) {
     if ($shutdownBody -notmatch '(?s)shutdown_requested_\.store\(true\).*?xEventGroupSetBits\(event_group_handle_') {
         $failures += 'AtUart shutdown must explicitly wake EventTask via event-group bit'
     }
+    if ($shutdownBody -notmatch '(?s)esp_timer_get_time\(\).*?remaining_us.*?xSemaphoreTake\(\s*receive_task_stopped_.*?remaining_ticks\(\).*?xSemaphoreTake\(\s*event_task_stopped_.*?remaining_ticks\(\)') {
+        $failures += 'AtUart shutdown must use one monotonic parent deadline for both worker joins'
+    }
+    if ($uart -notmatch '(?s)DmaRxCallback.*?shutdown_requested_\.load\(\).*?ReturnBuffer\(data\.buffer\)') {
+        $failures += 'AtUart DMA callback must return late buffers without touching retired queues'
+    }
+    if ($uart -notmatch '(?s)DmaOverflowCallback.*?shutdown_requested_\.load\(\).*?event_group_handle_') {
+        $failures += 'AtUart overflow ISR must not signal a retired event group during shutdown'
+    }
+    if ($uartHeader -notmatch 'recursive_mutex\s+urc_mutex_' -or
+        $uart -notmatch '(?s)void AtUart::HandleUrc.*?recursive_mutex.*?\+\+urc_dispatch_depth_.*?\(\*iterator\)\(command, arguments\)' -or
+        $uart -notmatch '(?s)void AtUart::UnregisterUrcCallback.*?\*iterator\s*=\s*UrcCallback\{\}') {
+        $failures += 'AtUart URC registry must serialize callbacks and defer removal safely during dispatch'
+    }
     if ($uart -notmatch '(?s)Shutdown\(1000\).*?xSemaphoreTake\(receive_task_stopped_.*?portMAX_DELAY') {
         $failures += 'AtUart destructor must not release resources while workers may still be alive'
     }
@@ -100,6 +124,19 @@ if ($failures.Count -eq 0) {
     }
     if ($uart -notmatch '(?s)DecodeHexAppend\s*\(.*?\(length & 1u\).*?CharToHex') {
         $failures += 'AtUart hex decoder must reject odd-length or non-hex data before decoding'
+    }
+    if ($uartHeader -notmatch 'AT_UART_RX_FRAME_MAX' -or
+        $uart -notmatch '(?s)rx_frame_overflowed_.*?AT_UART_RX_FRAME_MAX' -or
+        $uart -notmatch '(?s)rx_frame_overflowed_\.exchange') {
+        $failures += 'AtUart RX reassembly must enforce a bounded frame and explicit overflow error'
+    }
+    if ($uart -notmatch '(?s)split_at_arguments\s*\(.*?quoted.*?tokens' -or
+        $uart -notmatch '(?s)split_at_arguments\(values,\s*&tokens\)') {
+        $failures += 'AtUart URC parser must preserve quoted comma fields and reject unterminated quotes'
+    }
+    if ($uartHeader -notmatch 'AT_UART_MAX_ARGUMENTS' -or
+        $uart -notmatch '(?s)AT_UART_MAX_ARGUMENT_LENGTH.*?AT_UART_MAX_ARGUMENTS') {
+        $failures += 'AtUart URC parser must cap argument count and token length'
     }
     if ($uart -notmatch '(?s)kInd\[\].*?MHTTPURC: .*?ind' -or
         $uart -notmatch '(?s)rx_buffer_\.size\(\) == kIndLength.*?rx_buffer_\.append' -or
@@ -228,6 +265,10 @@ if ($failures.Count -eq 0) {
         $genericHttp -notmatch '(?s)http_transfer_encoding_is_chunked') {
         $failures += 'Generic EC801E HTTP client must fence body-forbidden statuses and Transfer-Encoding tokens'
     }
+    if ($genericHttpHeader -notmatch 'HTTP_RX_BUFFER_MAX' -or
+        $genericHttp -notmatch '(?s)OnTcpData\s*\([^\)]*const std::string& data[^\)]*\).*?HTTP_RX_BUFFER_MAX.*?SetError\(\)') {
+        $failures += 'Generic HTTP parser must bound undecoded TCP reassembly before append'
+    }
     if ($genericHttpHeader -notmatch '(?s)bool\s+ParseRegularBody\s*\(' -or
         $genericHttpHeader -notmatch '(?s)bool\s+AddBodyData\s*\(') {
         $failures += 'Generic EC801E HTTP body queue helpers must report backpressure failure explicitly'
@@ -243,16 +284,49 @@ if ($failures.Count -eq 0) {
     } else {
         $failures += 'Generic EC801E body queue helpers must be implemented as bool-returning functions'
     }
-    if ($genericHttp -notmatch '(?s)if\s*\(!AddBodyData\(std::move\(chunk_data\)\)\).*?SetError\s*\(' -or
-        $genericHttp -notmatch '(?s)if\s*\(!ParseRegularBody\(rx_buffer_\)\).*?SetError\s*\(') {
+    if ($genericHttp -notmatch '(?s)if\s*\(!?queued\).*?SetError\s*\(' -or
+        $genericHttp -notmatch '(?s)if\s*\(!ParseRegularBody\(rx_buffer_,\s*state_lock\).*?SetError\s*\(') {
         $failures += 'Generic EC801E body parsers must handle queue backpressure failure at the state-machine boundary'
     }
     $onTcpDataMatch = [regex]::Match($genericHttp, '(?s)void\s+HttpClient::OnTcpData\s*\([^\{]+\{(.*?)\n\}')
     if ($onTcpDataMatch.Success -and $onTcpDataMatch.Groups[1].Value -match 'lock_guard\s*<\s*std::mutex\s*>\s+lock\s*\(mutex_\)') {
         $failures += 'Generic EC801E TCP callback must not hold client mutex while applying body backpressure'
     }
+    if ($genericHttpHeader -notmatch 'parse_mutex_' -or
+        $genericHttp -notmatch '(?s)OnTcpData\s*\([^\{]+\{.*?parse_mutex_') {
+        $failures += 'Generic EC801E parser callbacks must have an independent serialization lock'
+    }
+    if ($genericHttp -notmatch '(?s)OnTcpDisconnected\s*\([^\{]+\{.*?connected_\s*=\s*false;.*?write_cv_\.notify_all') {
+        $failures += 'Generic EC801E disconnect must wake body producers before parser-lock drain'
+    }
+    if ($genericHttp -notmatch '(?s)std::string HttpClient::ReadAll\(\).*?Read\(chunk\.data\(\),\s*chunk\.size\(\)\)') {
+        $failures += 'Generic EC801E ReadAll must drain the bounded body queue incrementally'
+    }
+    if ($genericHttp -notmatch '(?s)void HttpClient::ResetRequestState\(\).*?parse_mutex_.*?mutex_') {
+        $failures += 'Generic EC801E request reset must serialize parser and response state locks'
+    }
+    if ($genericHttp -notmatch '(?s)HttpClient::~HttpClient\(\).*?parse_mutex_.*?tcp_->OnStream\(\{\}\).*?tcp_->OnDisconnected\(\{\}\)') {
+        $failures += 'Generic EC801E destructor must retire parser state before detaching TCP callbacks'
+    }
+    if ($genericHttpHeader -notmatch 'callback_admission_' -or
+        $genericHttp -notmatch '(?s)HttpClient::~HttpClient\(\).*?callback_admission_.*?store\(false' -or
+        $genericHttp -notmatch '(?s)tcp_->OnStream\(\[this[^\]]*\].*?callback_admission_.*?load') {
+        $failures += 'Generic EC801E HTTP callbacks must have an explicit retirement admission fence'
+    }
+    if ($genericHttpHeader -notmatch 'event_group_valid_' -or
+        $genericHttp -notmatch '(?s)HttpClient::HttpClient.*?event_group_valid_(?:\s*=\s*event_group_handle_ != nullptr|\.store\(event_group_handle_ != nullptr)' -or
+        $genericHttp -notmatch '(?s)Open\(const std::string& method, const std::string& url\).*?event_group_valid_') {
+        $failures += 'Generic HTTP client must fence EventGroup allocation and readiness before Open'
+    }
+    if ($genericHttp -notmatch '(?s)content_length_present_\s*&&\s*content_length_\s*==\s*0.*?Unexpected bytes after zero-length response') {
+        $failures += 'Generic EC801E zero-length responses must reject trailing payload bytes'
+    }
     if ($mqtt -notmatch 'DecodeHexAppend' -or $mqtt -notmatch 'arguments\[6\]\.type') {
         $failures += 'Ml307Mqtt publish URC must type-check and validate hex payloads'
+    }
+    if ($mqtt -notmatch '(?s)xEventGroupCreate\(\).*?Failed to allocate MQTT event group' -or
+        $mqtt -notmatch 'valid_mqtt_text' -or $mqtt -notmatch 'urc_callback_registered_') {
+        $failures += 'Ml307Mqtt must fence event-group allocation, AT text inputs, and callback retirement'
     }
     if ($tcp -notmatch 'DecodeHexAppend' -or $tcp -notmatch 'arguments\[3\]\.type') {
         $failures += 'Ml307Tcp receive URC must type-check and validate hex payloads'
@@ -266,6 +340,27 @@ if ($failures.Count -eq 0) {
         @($ecUdp,'DecodeHexAppend'), @($ecUdp,'arguments\[0\]\.type'),
         @($ecSsl,'DecodeHexAppend'), @($ecSsl,'arguments\[0\]\.type'))) {
         if ($pair[0] -notmatch $pair[1]) { $failures += "EC801E URC safety requirement missing: $($pair[1])" }
+    }
+    if ($ecMqtt -notmatch '(?s)xEventGroupCreate\(\).*?Failed to allocate MQTT event group' -or
+        $ecMqtt -notmatch 'valid_mqtt_text' -or $ecMqtt -notmatch 'urc_callback_registered_') {
+        $failures += 'Ec801EMqtt must fence event-group allocation, AT text inputs, and callback retirement'
+    }
+    if ($espMqtt -notmatch 'event_group_valid_' -or
+        $espMqtt -notmatch '(?s)esp_mqtt_client_init.*?== nullptr' -or
+        $espMqtt -notmatch '(?s)esp_mqtt_client_register_event.*?!= ESP_OK' -or
+        $espMqtt -notmatch '(?s)esp_mqtt_client_start.*?!= ESP_OK') {
+        $failures += 'ESP MQTT must fence EventGroup/client/event registration/start failures'
+    }
+    if ($mlAtModem -notmatch '(?s)CreateTcp.*?event_group_valid_.*?IsInitialized' -or
+        $ecAtModem -notmatch '(?s)CreateTcp.*?event_group_valid_.*?IsInitialized') {
+        $failures += 'Modem transport factories must reject unready UART/lifecycle owners'
+    }
+    if ($webSocket -notmatch 'handshake_event_group_valid_' -or
+        $webSocket -notmatch '(?s)Connect\(const char\* uri\).*?uri \|\| !\*uri' -or
+        $webSocket -notmatch '(?s)rfind\("HTTP/1\.1 101 ' -or
+        $webSocket -notmatch '(?s)payload_length > 125u' -or
+        $webSocket -notmatch '(?s)!connected_.*?!tcp_.*?!data') {
+        $failures += 'WebSocket must fence event-group/URI/handshake/frame and payload ownership boundaries'
     }
 }
 if ($failures.Count -gt 0) {

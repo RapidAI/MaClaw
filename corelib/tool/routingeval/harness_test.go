@@ -20,10 +20,12 @@ func TestRoutingEvalDatasets(t *testing.T) {
 	if len(files) < 5 {
 		t.Fatalf("dataset files=%d, want at least the 10.1 slice categories", len(files))
 	}
-	seen := make(map[int]string, 40)
+	seen := make(map[int]string, 48)
 	for _, dataset := range files {
-		if dataset.CategoryID < 1 || dataset.CategoryID > 40 {
-			t.Fatalf("category %q has category_id=%d, want 1-40", dataset.Category, dataset.CategoryID)
+		// Design 10.1 categories occupy ids 1-40; remediation-workbreakdown
+		// slice categories (e.g. coding_family, slice 9) take ids above 40.
+		if dataset.CategoryID < 1 {
+			t.Fatalf("category %q has category_id=%d, want a positive id", dataset.Category, dataset.CategoryID)
 		}
 		if prev, ok := seen[dataset.CategoryID]; ok {
 			t.Fatalf("duplicate category_id %d in %q and %q", dataset.CategoryID, prev, dataset.Category)

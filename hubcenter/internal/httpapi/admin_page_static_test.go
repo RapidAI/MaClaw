@@ -119,7 +119,7 @@ func TestAdminFeatureIcons(t *testing.T) {
 		`item-title" data-icon="mail" id="mailCardTitle"`,
 		`item-title" data-icon="activity" id="routingDiagnosticsTitle"`,
 		`id="llmSubTabProviders" data-icon="spark"`,
-		`admin-responsive.css?v=feature-icons-20260828-9`,
+		`admin-responsive.css?v=token-bank-margin-cards-20261004-compact2`,
 		`pro-ui.css?v=feature-icons-20260828-9`,
 	})
 	assertContainsAll(t, css, "hubcenter feature icons css", []string{
@@ -399,10 +399,12 @@ func TestAdminPageSplitScriptOrder(t *testing.T) {
 		"assets/js/industry-management-admin.js",
 		"assets/js/ha-news-admin.js",
 		"assets/js/llm-service-tab.js",
+		"assets/js/token-bank-tab.js",
 		"assets/js/compute-market-tab.js",
 		"assets/js/user-rankings-tab.js",
 		"assets/js/notification-admin.js",
 		"assets/js/problem-reports-tab.js",
+		"assets/js/latex-template-admin.js",
 	}
 	if strings.Join(got, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("admin split script order = %v, want %v", got, want)
@@ -768,6 +770,14 @@ func TestAdminPageComputeMarketArchivedDeleteContract(t *testing.T) {
 		"Math.ceil(total / CM_ORDERS_PAGE_SIZE) - 1",
 		"window.changeComputeOrdersPage = changeComputeOrdersPage",
 	})
+	for _, banned := range []string{
+		"/api/admin/cardstore/orders?limit=200",
+		"/api/admin/cardstore/orders?limit=50",
+	} {
+		if strings.Contains(js, banned) {
+			t.Fatalf("compute market must not scrape the order queue with %s", banned)
+		}
+	}
 	assertContainsAll(t, css, "compute market compact order grid", []string{
 		"#cmOrdersList.list{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px",
 		".cm-order-metrics{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px",
@@ -937,9 +947,42 @@ func TestAdminPageLLMProviderSequenceCards(t *testing.T) {
 		`font-variant-numeric:tabular-nums`,
 		`#llmProvidersList.llm-card-grid{grid-template-columns:1fr}`,
 		`#llmProvidersList .data-row{min-height:0;align-items:center;display:grid`,
-		`#llmProvidersList .data-row-actions{grid-area:actions;max-width:420px;align-items:center;flex-wrap:wrap;justify-content:flex-end}`,
+		`#llmProvidersList .data-row-actions{grid-area:actions;max-width:500px;align-items:center;flex-wrap:wrap;justify-content:flex-end}`,
 		`#llmProvidersList .data-row-meta{display:block;white-space:nowrap`,
 		`.provider-seq.is-unset`,
+	})
+}
+
+func TestAdminPageLLMProviderCopyButtonPrecedesPause(t *testing.T) {
+	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
+	rowFn := regexp.MustCompile(`function renderProviderRow\(p\)[\s\S]*?function renderProviderArray`)
+	row := rowFn.FindString(js)
+	if row == "" {
+		t.Fatal("renderProviderRow is missing")
+	}
+	copyAt := strings.Index(row, `onclick="copyLLMProvider('`)
+	pauseAt := strings.Index(row, `onclick="toggleLLMProviderPaused('`)
+	if copyAt < 0 || pauseAt < 0 || copyAt > pauseAt {
+		t.Fatalf("copy button must precede pause: copy=%d pause=%d", copyAt, pauseAt)
+	}
+	assertContainsAll(t, js, "provider copy action", []string{
+		`copyProvider: 'Copy'`,
+		`copyProvider: '\u590d\u5236'`,
+		`/api/admin/llm/providers/' + encodeURIComponent(id) + '/copy'`,
+		`window.copyLLMProvider = async function(id)`,
+		`providerArrayProtected(providerArrayByID(p.array_id || p.id))`,
+		`providerCopyInFlight[p.id] ? ' disabled' : ''`,
+		`provider-copy-btn`,
+		`class="data-row-name" title="' + esc(providerLabel) + '"`,
+		`<strong title="' + esc(arrayLabel) + '">'`,
+		`fieldKeyKept: 'Saved. Leave blank to keep the current key'`,
+		`fieldKeyKept: '\u5df2\u4fdd\u5b58\uff0c\u7559\u7a7a\u5219\u4fdd\u7559\u5f53\u524d\u5bc6\u94a5'`,
+		`function providerStoresStaticKey(p)`,
+		`function providerKeyField(p)`,
+		`function providerRowMetaText(p)`,
+		`title="' + esc(metaText) + '"`,
+		`placeholder="' + esc(t('fieldKeyKept')) + '"'`,
+		`key.placeholder = (!preset && providerStoresStaticKey(editing)) ? t('fieldKeyKept') : ''`,
 	})
 }
 
@@ -950,6 +993,7 @@ func TestAdminPageLLMProviderTrafficCards(t *testing.T) {
 
 	assertContainsAll(t, html, "llm provider traffic switch", []string{
 		`id="llmProviderTrafficSwitch" class="provider-traffic-switch" hidden`,
+		`id="llmProviderTrafficTotal" class="provider-traffic-total" hidden`,
 	})
 
 	assertContainsAll(t, js, "llm provider traffic cards", []string{
@@ -958,6 +1002,13 @@ func TestAdminPageLLMProviderTrafficCards(t *testing.T) {
 		`function formatTrafficTokens(value)`,
 		`function formatTrafficExact(value)`,
 		`function patchProviderTraffic()`,
+		`function renderAllArrayTraffic()`,
+		`function allArrayTrafficRow(arrays)`,
+		`function displayedArrayTraffic(array)`,
+		`return arrayTrafficRow(array.id)`,
+		`function providerTrafficCells(win, pending, caption)`,
+		`n < 100000000 ? 1 : 0`,
+		`providerArraysTrafficSum`,
 		`Array.isArray(data.traffic)`,
 		`providerTrafficReady`,
 		`providerTrafficLoadSeq`,
@@ -987,6 +1038,13 @@ func TestAdminPageLLMProviderTrafficCards(t *testing.T) {
 	})
 	assertContainsAll(t, css, "llm provider traffic layout", []string{
 		`#llmProvidersList .provider-traffic`,
+		`#llmProviderTrafficTotal:not([hidden])`,
+		`#llmProviderTrafficTotal .provider-traffic-col`,
+		`container-name:llm-provider-head`,
+		`@container llm-provider-head (max-width:900px)`,
+		`justify-content:safe flex-end`,
+		`#llmSubViewProviders>.head>div:first-child{flex:1 1 200px;min-width:0}`,
+		`grid-template-columns:repeat(3,max-content)`,
 		`.provider-traffic-switch{display:inline-flex`,
 		`height:36px`,
 		`.provider-traffic-col`,
@@ -997,6 +1055,9 @@ func TestAdminPageLLMProviderTrafficCards(t *testing.T) {
 		`grid-template-columns:repeat(3,minmax(0,1fr))`,
 		`font-variant-numeric:tabular-nums`,
 	})
+	if strings.Contains(css, `@media(max-width:860px){#tab-llmservice #llmSubViewProviders>.head`) {
+		t.Fatal("provider traffic total must wrap on the header container, not the viewport")
+	}
 }
 
 func TestAdminPageLLMServiceGroupTrafficCards(t *testing.T) {
@@ -1090,8 +1151,16 @@ func TestAdminPageLLMProviderAvailabilityTestUsesConfiguredModel(t *testing.T) {
 		`var model = (provider.models && provider.models[0]) || '';`,
 		`providerTestStates[id] = { status: 'error', message: 'No model configured' }`,
 		`if (!data.success) throw new Error(data.error || 'unknown');`,
-		`routeModel = pconfigs[0].model || '';`,
-		`model: routeModel || ((provider.models && provider.models.length === 1) ? provider.models[0] : firstModel.name) || ''`,
+		`routeModel: (configs[0] && configs[0].model) || ''`,
+		`logical_model: picked.logicalModel`,
+		`route_model: picked.routeModel`,
+		`provider_id: picked.providerID`,
+		`group.kind === 'dynamic'`,
+		`function sgDynamicStatusModel(group)`,
+		`routes[i].class || '').trim() !== 'balanced'`,
+		`['official-mid', 'official-low', 'official-high']`,
+		`pickRoute(routed, sgCanonicalModelName(routed.name))`,
+		`t('providerTestOK') + (data.model ? ' ' + data.model : '')`,
 		`wire_api: provider.wire_api || 'chat'`,
 	})
 	providerTest := regexp.MustCompile(`window\.testLLMProvider = async function[\s\S]*?function uniqueProviderBillingDays`).FindString(js)
@@ -1146,6 +1215,15 @@ func TestAdminPageLLMProviderBillingEditor(t *testing.T) {
 		`payload.credit_multiplier_schedule = billing.credit_multiplier_schedule`,
 		`copyProviderExtraFields(existing)`,
 		`providerBillingBadge(p)`,
+		`/api/admin/llm/access-nodes`,
+		`payload.allowed_node_ids`,
+		`function providerAccessScopeSection(`,
+		`provider-access-switch`,
+		`provider-access-node-host`,
+		`k.toLowerCase() === key && providerAccessSelected[k]`,
+		`if (seen[key]) return false`,
+		`accessScope: 'Access scope'`,
+		`accessScope: '\u63a5\u5165\u8303\u56f4'`,
 	})
 	saveFn := regexp.MustCompile(`window\.saveProvider = async function[\s\S]*?window\.deleteLLMProvider`)
 	save := saveFn.FindString(js)
@@ -1154,6 +1232,9 @@ func TestAdminPageLLMProviderBillingEditor(t *testing.T) {
 	}
 	if !strings.Contains(save, `payload.timezone = billing.timezone`) || !strings.Contains(save, `payload.credit_multiplier = billing.credit_multiplier`) {
 		t.Fatal("saveProvider must persist vendor timezone and multiplier")
+	}
+	if !strings.Contains(save, `payload.allowed_node_ids`) {
+		t.Fatal("saveProvider must persist provider access scope")
 	}
 	if !strings.Contains(save, `toast(t('billingDroppedWindows'), 'error')`) || !strings.Contains(save, `return;`) {
 		t.Fatal("saveProvider must block when a time window is empty or has identical start/end")
@@ -1171,6 +1252,8 @@ func TestAdminPageLLMProviderBillingEditor(t *testing.T) {
 		`.provider-billing-window{`,
 		`.provider-billing-fields{`,
 		`.provider-billing-empty{`,
+		`.provider-access-node{display:flex`,
+		`height:auto;min-height:58px`,
 		`.provider-billing-window.is-invalid{`,
 		`.provider-billing-title{`,
 		`.provider-day-chip`,
@@ -1478,6 +1561,267 @@ func TestAdminPageLLMServiceDoesNotExposeComputeGrant(t *testing.T) {
 	}
 }
 
+func TestAdminPageTokenBankArraysCannotBeDeleted(t *testing.T) {
+	html := readAdminPageHTML(t)
+	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
+	assertContainsAll(t, html, "token bank array protect cache", []string{
+		`/admin/assets/js/llm-service-tab.js?v=provider-array-order-20261015-8`,
+	})
+	assertContainsAll(t, js, "token bank array delete guard", []string{
+		`function providerArrayProtected(array)`,
+		`id === 'token_bank_low' || id === 'token_bank_mid' || id === 'token_bank_high'`,
+		`system: !!record.system`,
+		`system: !!array.system`,
+		`providerArrayProtected(array) ? '' : '<button class="btn-ghost" type="button" onclick="renameProviderArray('`,
+		`providerArrayProtected(array) ? '' : '<button class="btn-danger-ghost" type="button" onclick="deleteProviderArray('`,
+		`t('providerArrayRenameProtected')`,
+		`providerArrayRenameProtected: 'This array is maintained by the platform and cannot be renamed.'`,
+		`providerArrayRenameProtected: '\u8be5\u9635\u5217\u7531\u5e73\u53f0\u7ef4\u62a4\uff0c\u4e0d\u80fd\u6539\u540d\u3002'`,
+		`field('llmArrayEditName', t('providerArrayName'), name, !creating && providerArrayProtected(array))`,
+		`if (providerArrayProtected(providerArrayByID(id) || { id: id }))`,
+		`t('providerArrayProtected')`,
+		`providerArrayProtected: 'This array is maintained by the platform and cannot be deleted.'`,
+		`providerArrayProtected: '\u8be5\u9635\u5217\u7531\u5e73\u53f0\u7ef4\u62a4\uff0c\u4e0d\u80fd\u5220\u9664\u3002'`,
+		`providerArrayProtected(array) ? t('providerArrayRemoveProtected') : t('providerArrayRemove')`,
+		`providerArrayRemoveProtected: 'Remove this provider? The platform array stays. A model that no remaining provider in the array serves is taken off service groups.'`,
+		`providerArrayRemoveProtected: '\u79fb\u9664\u8be5\u670d\u52a1\u5546\uff1f\u5e73\u53f0\u9635\u5217\u4f1a\u4fdd\u7559\u3002\u8be5\u9635\u5217\u91cc\u6ca1\u6709\u5269\u4f59\u670d\u52a1\u5546\u80fd\u63a5\u7684\u6a21\u578b\u4f1a\u4ece\u670d\u52a1\u7ec4\u8def\u7531\u91cc\u62ff\u6389\u3002'`,
+		`array.members.length <= 1 && !providerArrayProtected(array)`,
+	})
+}
+
+func TestAdminPageServiceGroupArrayDrag(t *testing.T) {
+	html := readAdminPageHTML(t)
+	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
+	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
+	assertContainsAll(t, html, "service group array drag cache", []string{
+		`/admin/assets/js/llm-service-tab.js?v=provider-array-order-20261015-8`,
+		`/admin/assets/css/admin-shell.css?v=provider-array-order-20261015-8`,
+	})
+	assertContainsAll(t, js, "service group array drag", []string{
+		`sgArrayDragHint: 'Drag an array to change its place in this group'`,
+		`sgArrayDragHint: '\u62d6\u52a8\u9635\u5217\uff0c\u8c03\u6574\u5b83\u5728\u672c\u7ec4\u5185\u7684\u4f4d\u7f6e'`,
+		`sgArrayOrderHint: 'List order applies when capability, resolution tier, multiplier, and priority match.'`,
+		`sgArrayOrderHint: '\u80fd\u529b\u3001\u5206\u8fa8\u7387\u6863\u3001\u500d\u7387\u548c\u4f18\u5148\u7ea7\u76f8\u540c\u65f6\uff0c\u6309\u5217\u8868\u987a\u5e8f\u3002'`,
+		`id=configs[i]&&String(configs[i].provider_id||'').trim();`,
+		`if(ids.length) return ids;`,
+		`function sgRouteInsertAt(list, clientY)`,
+		`function sgRouteFinalIndex(from, insertAt, length)`,
+		`if(insertAt>from) insertAt-=1;`,
+		`function bindServiceGroupRouteDrag()`,
+		`list.getAttribute('data-sg-row')!==sgRouteDrag.row`,
+		`list.getAttribute('data-sg-row')===sgRouteDrag.row`,
+		`var sgRouteDropTo=null`,
+		`sgRouteDropTo=sgRouteFinalIndex(sgRouteDrag.index, sgRouteInsertAt(list, event.clientY), list.querySelectorAll('.sg-provider-card').length)`,
+		`if(drag&&to!=null&&to!==drag.index) window.sgMoveProviderTo(Number(drag.row), drag.index, to)`,
+		`if(drag) sgRouteIgnoreClickUntil=Date.now()+80`,
+		`document.addEventListener('pointerdown', function(){`,
+		`function sgRoutePressStartsDrag(node)`,
+		`return !(node&&node.closest('button, a, input, select, textarea, label, .sg-provider-meta'));`,
+		`card.setAttribute('draggable', sgRoutePressStartsDrag(node)?'true':'false')`,
+		`if(!sgRoutePressStartsDrag(node)){ event.preventDefault(); return; }`,
+		`event.stopImmediatePropagation();`,
+		`if (sgRouteDrag) { sgRouteDropTo = null; return; }`,
+		`sgRouteDragAutoScroll(event)`,
+		`focusFirst !== false`,
+		`data-sg-route-drag`,
+		`class="sg-provider-list" data-sg-row="'`,
+		`data-sg-row="'+rowIndex+'" data-sg-index="'+routeIndex+'"`,
+		`var canDrag=total>1`,
+		`class="sg-provider-grip" title="'+esc(t('sgArrayDragHint'))+'" aria-hidden="true"`,
+		`sgRouteIgnoreClickUntil=Date.now()+80`,
+		`if(Date.now()>sgRouteIgnoreClickUntil) return;`,
+		`sgRouteIgnoreClickUntil=0;`,
+		`document.addEventListener('click', function(event){`,
+		`}, true);`,
+		`if(sgProviderConfigsFromModel(routeModels[ri]).length>1){ dragHint=t('sgArrayOrderHint'); break; }`,
+		`sgSectionHead(t('sgRoutes'), dragHint)`,
+		`window.sgMoveProviderTo=function(rowIndex,fromIndex,toIndex,focusMove)`,
+		`window.sgMoveProviderTo(i, routeIndex, to, {row:Number(i), index:to, delta:Number(delta)})`,
+		`sgRenderGroupDialog({keepScroll:true, focusMove:focusMove||null})`,
+		`again.focus({preventScroll:true})`,
+		`moved.setAttribute('tabindex','-1')`,
+		`data-sg-move="-1"`,
+		`aria-label="'+esc(t('sgMoveEarlier'))+'"`,
+		`sgMoveEarlier: 'Move earlier'`,
+		`sgMoveEarlier: '\u5411\u524d\u79fb\u4e00\u4f4d'`,
+		`bindServiceGroupRouteDrag();`,
+		`onclick="sgMoveProvider('+rowIndex+','+routeIndex+',-1)"`,
+		`onclick="sgMoveProvider('+rowIndex+','+routeIndex+',1)"`,
+		`data-sg-group-id="' + esc(g.id) + '"`,
+		`tabindex="-1" data-sg-group-id="'`,
+		`function sgServiceGroupRow(id)`,
+		`function sgScrollServiceGroupRow(id)`,
+		`row.classList.add('sg-group-reveal')`,
+		`row.scrollIntoView({block:'nearest', inline:'nearest'})`,
+		`active === document.body || active === document.documentElement || active === list`,
+		`requestAnimationFrame(function(){ go(); requestAnimationFrame(go); })`,
+		`sgOpenKind === 'group' || sgOpenKind === 'provider-config'`,
+		`if (!parked && active && active.blur && o && o.contains(active)) active.blur();`,
+		`sgGroupScrollMemory[String(payload.id||'')]=sgCaptureEditingPlace()`,
+		`sgRememberSavedGroup(payload)`,
+		`function sgRememberSavedGroup(payload)`,
+		`sgPendingGroupScroll=String(payload.id||'')`,
+		`sgScrollServiceGroupRow(payload.id)`,
+		`sgGroupReturn={top:body?body.scrollTop:0,row:Number(rowIndex),index:Number(routeIndex)}`,
+		`sgRenderGroupDialog(back?{revealRoute:back}:null)`,
+		`sgRenderGroupDialog(mem?{revealRoute:mem}:null)`,
+		`if(reveal&&isFinite(Number(reveal.top))) scrollTop=Number(reveal.top)`,
+	})
+	if strings.Count(js, `sgMoveProviderTo(Number(drag.row), drag.index, to)`) != 1 {
+		t.Fatal("reorder must run once, after the drag ends")
+	}
+	if strings.Contains(js, `var dragNote=`) {
+		t.Fatal("drag hint must be on the routes section, not each band")
+	}
+	if strings.Contains(js, `querySelector('[data-sg-move]')`) {
+		t.Fatal("arrow focus must stay on the pressed direction")
+	}
+	move := strings.Index(js, `window.sgMoveProviderTo(Number(drag.row), drag.index, to)`)
+	armed := strings.Index(js, `if(drag) sgRouteIgnoreClickUntil=Date.now()+80`)
+	if move < 0 || armed < 0 || armed < move {
+		t.Fatal("post-drag click window must arm after the reorder")
+	}
+	assertContainsAll(t, css, "service group array drag style", []string{
+		`.sg-form-dialog .sg-provider-card.is-draggable{cursor:grab;user-select:none}`,
+		`.sg-form-dialog .sg-provider-card:focus{outline:2px solid #2f80ed;outline-offset:2px}`,
+		`.sg-form-dialog .sg-provider-card.is-draggable .sg-provider-meta{cursor:text;user-select:text}`,
+		`.sg-form-dialog .sg-provider-card .sg-actions{flex:0 0 auto;margin-left:auto}`,
+		`.sg-form-dialog .sg-provider-card.is-dragging{opacity:.45;cursor:grabbing}`,
+		`.sg-form-dialog .sg-provider-card.is-drop-before{box-shadow:inset 0 2px 0 #2f80ed}`,
+		`.sg-form-dialog .sg-provider-card.is-drop-after{box-shadow:inset 0 -2px 0 #2f80ed}`,
+		`.sg-form-dialog .sg-provider-grip{`,
+		`color:#3f5674`,
+		`#tab-llmservice #llmServiceGroupsList .llm-service-group-row.sg-group-reveal{content-visibility:visible}`,
+		`#tab-llmservice #llmServiceGroupsList .llm-service-group-row:focus{outline:2px solid #2f80ed;outline-offset:2px}`,
+	})
+}
+
+func TestAdminPageProviderArrayOrderDrag(t *testing.T) {
+	html := readAdminPageHTML(t)
+	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
+	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
+	assertContainsAll(t, html, "provider array order drag cache", []string{
+		`/admin/assets/js/llm-service-tab.js?v=provider-array-order-20261015-8`,
+		`/admin/assets/css/admin-shell.css?v=provider-array-order-20261015-8`,
+	})
+	assertContainsAll(t, js, "provider array order drag", []string{
+		`providerArrayOrderHint: 'Drag an array to change its place'`,
+		`providerArrayOrderHint: '\u62d6\u52a8\u9635\u5217\uff0c\u8c03\u6574\u5b83\u7684\u4f4d\u7f6e'`,
+		`function renderProviderArray(array, orderableCount)`,
+		`var canOrder = !!(array.members && array.members.length) && Number(orderableCount) > 1`,
+		`draggable="true" title="' + esc(t('providerArrayOrderHint')) + '" aria-label="' + esc(t('providerArrayOrderHint')) + '"'`,
+		`data-array-orderable="1"`,
+		`class="provider-array-grip"`,
+		`return renderProviderArray(array, orderableCount)`,
+		`function providerArrayOrderCards(root)`,
+		`node.closest('.provider-array-head')`,
+		`titleDrag.getAttribute('draggable') !== 'true'`,
+		`node.closest('button, a, input, select, textarea, label, .provider-traffic, .data-row-actions')`,
+		`scrollIntoView({ block: 'nearest' })`,
+		`function providerArrayRevealCard(arrayID)`,
+		`if (rect.bottom > 0 && rect.top < height) return;`,
+		`var providerArrayOrderOriginY = null`,
+		`Math.abs(event.clientY - providerArrayOrderOriginY) < 12`,
+		`function providerArrayOrderPointerInList(event, pad)`,
+		`function cancelProviderArrayOrderDrag()`,
+		`if (providerArrayOrderID) cancelProviderArrayOrderDrag()`,
+		`requestAnimationFrame(function() {`,
+		`orderCard.classList.add('is-order-dragging')`,
+		`function providerArrayInsertAt(cards, clientY)`,
+		`cards[i].querySelector('.provider-array-head') || cards[i]`,
+		`function providerArrayOrderHover(root, clientY)`,
+		`clearProviderArrayGap(root)`,
+		`function providerArrayFinalIndex(from, insertAt, length)`,
+		`if (insertAt > from) insertAt -= 1;`,
+		`function markProviderArrayGap(root, insertAt)`,
+		`var providerArrayOrderTo = null`,
+		`providerArrayOrderTo = providerArrayFinalIndex(providerArrayOrderFrom, providerArrayInsertAt(cards, event.clientY), cards.length)`,
+		`if (orderID && to != null && to !== from) window.moveProviderArrayOrder(orderID, to)`,
+		`if (orderID) providerArrayIgnoreClickUntil = Date.now() + 80`,
+		`window.moveProviderArrayOrder = async function(arrayID, toIndex)`,
+		`if (!before[aid]) { insertAt = k; break; }`,
+		`if (gen !== providerSequenceSaveGen) return;`,
+		`if (id && id.indexOf('array:') === 0) return;`,
+		`/api/admin/llm/providers/sequences`,
+		`if (providerArrayOrderID) {`,
+		`window.moveProviderToArray(id, target)`,
+	})
+	if strings.Contains(js, `head.setAttribute('draggable', 'true')`) {
+		t.Fatal("array reorder must drag from the title, not the whole head")
+	}
+	if strings.Count(js, `window.moveProviderArrayOrder(orderID, to)`) != 1 {
+		t.Fatal("array reorder must run once, after the drag ends")
+	}
+	move := strings.Index(js, `window.moveProviderArrayOrder(orderID, to)`)
+	armed := strings.Index(js, `if (orderID) providerArrayIgnoreClickUntil = Date.now() + 80`)
+	if move < 0 || armed < 0 || armed < move {
+		t.Fatal("post-drag click window must arm after the array reorder")
+	}
+	assertContainsAll(t, css, "provider array order drag style", []string{
+		`#tab-llmservice #llmProvidersList .provider-array[data-array-orderable="1"] .provider-array-head .data-row-actions button{cursor:pointer}`,
+		`#tab-llmservice #llmProvidersList .provider-array[data-array-orderable="1"] .provider-array-head .provider-traffic{cursor:auto;user-select:text}`,
+		`#tab-llmservice #llmProvidersList .provider-array.is-order-dragging>.data-row,#tab-llmservice #llmProvidersList .provider-array.is-order-dragging>.hint{display:none}`,
+		`#tab-llmservice #llmProvidersList .provider-array-title[draggable="true"]{cursor:grab;user-select:none}`,
+		`#tab-llmservice #llmProvidersList .provider-array.is-order-dragging{opacity:.55}`,
+		`#tab-llmservice #llmProvidersList .provider-array.is-order-dragging .provider-array-title{cursor:grabbing}`,
+		`#tab-llmservice #llmProvidersList .provider-array.is-drop-before,#tab-llmservice #llmProvidersList .provider-array.is-drop-after{position:relative;z-index:1}`,
+		`#tab-llmservice #llmProvidersList .provider-array.is-drop-before{box-shadow:0 -3px 0 #5b6cff}`,
+		`#tab-llmservice #llmProvidersList .provider-array.is-drop-after{box-shadow:0 3px 0 #5b6cff}`,
+		`#tab-llmservice #llmProvidersList .provider-array-grip{`,
+		`color:#5b6cff`,
+	})
+}
+
+func TestAdminPageProviderCanaryMark(t *testing.T) {
+	html := readAdminPageHTML(t)
+	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
+	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
+	assertContainsAll(t, html, "provider canary mark cache", []string{
+		`/admin/assets/js/llm-service-tab.js?v=provider-array-order-20261015-8`,
+		`/admin/assets/css/admin-shell.css?v=provider-array-order-20261015-8`,
+	})
+	assertContainsAll(t, js, "provider canary mark", []string{
+		`providerCanaryUntil: 'Canary until {time}'`,
+		`providerCanaryUntil: '\u91d1\u4e1d\u96c0\u65f6\u95f4\u81f3 {time}'`,
+		`function providerCanaryActive(provider, now)`,
+		`provider.token_bank_canary_until`,
+		`if ((now || new Date()).getTime() >= until.getTime()) return null;`,
+		`until.getTime() + 8 * 60 * 60 * 1000`,
+		`shifted.getUTCFullYear()`,
+		`function providerCanaryMark(provider)`,
+		`t('providerCanaryUntil').replace('{time}', formatted)`,
+		`class="provider-canary-mark"`,
+		`class="provider-canary-bird"`,
+		`'<title>' + esc(label || '') + '</title>'`,
+		`fill="#F5C542"`,
+		`providerCanaryMark(p)`,
+		`class="provider-array-title"`,
+		`function scheduleProviderCanaryRefresh()`,
+		`function refreshProviderCanaryMarks()`,
+		`if (providerCanaryTimer) clearTimeout(providerCanaryTimer);`,
+		`root.querySelectorAll('.provider-canary-mark')`,
+		`document.addEventListener('visibilitychange'`,
+		`data-provider-id="' + esc(provider && provider.id || '') + '"`,
+		`scheduleProviderCanaryRefresh();`,
+		`class="data-row-name" title="' + esc(providerLabel) + '"`,
+		`class="data-row-main" draggable="true"><div class="data-row-title"`,
+	})
+	if strings.Contains(js, `class="data-row-main" draggable="true" title="`) {
+		t.Fatal("provider row drag hint must not cover the canary mark")
+	}
+	if strings.Contains(js, `providerArrayCanaryMarks`) {
+		t.Fatal("canary bird must not be drawn after the array name")
+	}
+	assertContainsAll(t, css, "provider canary mark style", []string{
+		`#tab-llmservice #llmProvidersList .provider-canary-mark{display:inline-flex;align-items:center;flex:0 0 auto;line-height:0;cursor:help}`,
+		`#tab-llmservice #llmProvidersList .data-row-title strong{display:flex;align-items:center;gap:6px;overflow:visible}`,
+		`#tab-llmservice #llmProvidersList .provider-array-title{display:flex;align-items:center;flex-wrap:wrap;gap:6px;min-width:0}`,
+		`#tab-llmservice #llmProvidersList .provider-array-title>strong{flex:0 1 auto;min-width:2.5em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}`,
+		`#tab-llmservice #llmProvidersList .provider-array-title .data-row-meta{flex:0 1 auto;min-width:0;max-width:100%}`,
+		`#tab-llmservice #llmProvidersList .provider-canary-bird{display:block;width:16px;height:16px}`,
+	})
+}
+
 func TestAdminPageRouteQueryRendererIsSingleSource(t *testing.T) {
 	html := readAdminPageBundle(t)
 	if count := strings.Count(html, `function renderRouteQueryResult(meta,data)`); count != 1 {
@@ -1562,5 +1906,238 @@ func assertHATemplate(t *testing.T, html, nodeID, nodeName, advertiseURL string,
 		if strings.Count(html, snippet) != 1 {
 			t.Fatalf("admin page should contain exactly one %q, got %d", snippet, strings.Count(html, snippet))
 		}
+	}
+}
+
+// TestAdminPageTabMetaKeysAreDefined guards the tab -> i18n indirection. tabMeta
+// maps each tab to a [titleKey, subtitleKey] pair, and tr() falls back to the
+// raw key when a translation is missing, so a key that exists in tabMeta but not
+// in I18N renders the literal string "tbkTitle" as the page heading. Nothing
+// else in the suite notices: the tab still opens, the panel still renders.
+func TestAdminPageTabMetaKeysAreDefined(t *testing.T) {
+	// The keys may live in any bundled asset, not just admin-core.js: tabs that
+	// own their own i18n table (user-rankings-tab.js, token-bank-tab.js, ...)
+	// define their own title keys. Scanning the whole bundle is what makes this
+	// test meaningful instead of a spelling check on one file.
+	bundle := readAdminPageBundle(t)
+
+	metaRE := regexp.MustCompile(`const tabMeta=\{([^}]*)\}`)
+	metaMatch := metaRE.FindStringSubmatch(bundle)
+	if metaMatch == nil {
+		t.Fatal("tabMeta map not found in the admin bundle")
+	}
+	pairRE := regexp.MustCompile(`\[([^\[\]]+)\]`)
+	keyRE := regexp.MustCompile(`'([A-Za-z0-9_]+)'`)
+
+	keys := map[string]bool{}
+	for _, pair := range pairRE.FindAllStringSubmatch(metaMatch[1], -1) {
+		for _, key := range keyRE.FindAllStringSubmatch(pair[1], -1) {
+			keys[key[1]] = true
+		}
+	}
+	if len(keys) < 20 {
+		t.Fatalf("parsed only %d tabMeta i18n keys; the map shape likely changed", len(keys))
+	}
+
+	// Each language table is a `key: '...'` object literal. Proving the key is
+	// spelled followed by a colon somewhere in the bundle is enough to prove it
+	// is defined, and stays cheap.
+	for key := range keys {
+		if !strings.Contains(bundle, key+":") {
+			t.Fatalf("tabMeta references i18n key %q but no bundled asset defines it; the page title would render as the literal key", key)
+		}
+	}
+
+	// tbkTitle/tbkDesc are easy to reference from tabMeta and forget to define.
+	// They render as the literal strings "tbkTitle"/"tbkDesc" in the heading.
+	for _, must := range []string{"tbkTitle:", "tbkDesc:"} {
+		if !strings.Contains(bundle, must) {
+			t.Fatalf("admin bundle must define %q for the Token Bank tab title", must)
+		}
+	}
+}
+
+// TestTokenBankSubViewsLeaveHiddenClass locks the blank-tab bug: every sub-view
+// except 总览 starts with class hidden-view (display:none). Showing one by
+// clearing an inline style leaves that class on, so 共享模型 and the other tabs
+// render as an empty panel.
+func TestTokenBankSubViewsLeaveHiddenClass(t *testing.T) {
+	js := readAdminAsset(t, "admin/assets/js/token-bank-tab.js")
+	css := readAdminAsset(t, "admin/assets/css/admin-responsive.css")
+	html := readAdminPageHTML(t)
+	for _, must := range []string{
+		`view.classList.toggle('hidden-view', !active)`,
+		`'<div class="tbk-metrics">'`,
+		`'<div class="tbk-settings">'`,
+		`'<div class="tbk-price-fields">'`,
+		`class="item tbk-stat"`,
+		`class="item tbk-field"`,
+		`case 'users': return loadTokenBankUsers();`,
+		`function yesNo(v)`,
+		`yesNo(m.Available)`,
+		`tbkYes: 'Yes'`,
+		`tbkYes: '是'`,
+		`tbkNo: 'No'`,
+		`tbkNo: '否'`,
+		`state.settingsEpoch++`,
+		`epoch !== state.settingsEpoch`,
+		`giftStatusLabel(status)`,
+		`function giftFreezeReason(`,
+		`class="tbk-gift-grid"`,
+		`class="tbk-margin-grid"`,
+		`class="item tbk-margin-card"`,
+		`class="tbk-margin-stats"`,
+		`if (pages > 1) html += marginPager(page, pages);`,
+		`class="tbk-margin-hot"`,
+		`Cache read or write at 0 keeps the platform default for that direction.`,
+		`缓存读或缓存写为 0 时，沿用平台默认的缓存单价。`,
+		`function cacheUnitLabel(value)`,
+		`tbkPriceUsesDefault: '默认'`,
+		`tbkMarginShortfall: '多付'`,
+		`tbkMarginInvertedOverpay: '若无夹取，平台将多付 {shortfall} 积分。'`,
+		`tbkDefaultUnitCacheReadHint: '每 1 万缓存读 token 的积分。填 0 则这些 token 按输入单价计。'`,
+		`r.shortfall_micro`,
+		`var pageSize = 20;`,
+		`'?limit=' + (page.size + 1) + '&offset=' + (page.page * page.size)`,
+		`state.creditShares.more = raw.length > page.size`,
+		`tbkGiftReasonSender: '原因：发送方撤销，积分已退回。'`,
+		`tbkGiftReasonUnknownOpen: '原因未记录。链接未被领取即被冻结，积分已退回发送方。'`,
+		`tbkGiftReasonUnknownClaimed: '原因未记录。链接在领取后、提现前被冻结，积分已退回发送方。'`,
+		`tbkGiftReasonPrompt: '请填写冻结原因。原因会显示在这张卡片上。'`,
+		`tbkGiftReasonTooLong: '冻结原因不能超过 200 字。'`,
+		`busy('creditRevoke', true)`,
+		`Array.from(reason).length > 200`,
+		`tbkGift_revoked: '已冻结'`,
+		`tbkGift_claimed: '已领取'`,
+		`tbkGift_active: '待领取'`,
+		`if (panel.classList.contains('active') && signedIn) {`,
+		`if (!startupLoadStarted) initTokenBankTab();`,
+		`var startupLoadStarted = false;`,
+		`if (state.overview == null) showLoadError(seq, root, e);`,
+		`#tab-tokenbank [data-tbk-i18n]`,
+		`root.style.opacity = '0.55';`,
+	} {
+		if !strings.Contains(js, must) {
+			t.Fatalf("token-bank-tab.js missing %q", must)
+		}
+	}
+	if strings.Contains(js, `String(!!m.Available)`) {
+		t.Fatal("token bank model row still prints the Available boolean as true/false")
+	}
+	if strings.Contains(js, `status === 'frozen' ? 'warn'`) {
+		t.Fatal("credit-share badge still treats only frozen as the warn state; revoked links would render unstyled")
+	}
+	if strings.Contains(js, `parseFloat(inEl.value) || 0`) {
+		t.Fatal("price book still sends a blank unit as 0, which wipes the other prices on update")
+	}
+	if !strings.Contains(js, `function priceUnit(el)`) {
+		t.Fatal("price book must send a blank unit as null so an update can keep the stored price")
+	}
+	if got := strings.Count(js, `aria-pressed="' + (on ? 'true' : 'false')`); got != 3 {
+		t.Fatalf("margin days, margin group, and tier must mark the current choice with aria-pressed, got %d", got)
+	}
+	if !strings.Contains(js, `Object.assign({}, prev`) {
+		t.Fatal("settings save must start from the loaded blob; a hand-built payload blanks clearing_node_id and provider_denylist")
+	}
+	// Every read shares one generation. A slower page, filter, or settings GET
+	// must not paint over a newer one, including its error and its busy flag.
+	// Saving settings does not take that generation: it would cancel a list on
+	// another sub-tab, or let a reload paint the pre-save form. The settings
+	// epoch covers that GET instead.
+	if got := strings.Count(js, `var seq = noteLoad();`); got != 8 {
+		t.Fatalf("token bank loads must share one generation counter, got %d noteLoad calls", got)
+	}
+	if got := strings.Count(js, `if (!loadLive(seq)) return;`); got != 8 {
+		t.Fatalf("token bank loads must ignore a stale success, got %d checks", got)
+	}
+	if got := strings.Count(js, `showLoadError(seq, root, e);`); got != 8 {
+		t.Fatalf("token bank loads must ignore a stale error, got %d checks", got)
+	}
+	if got := strings.Count(js, `if (loadLive(seq)) busy(`); got != 7 {
+		t.Fatalf("token bank loads must clear busy only for the current generation, got %d checks", got)
+	}
+	if !strings.Contains(js, `if (loadLive(seq) && epoch === state.settingsEpoch) busy('settings', false);`) {
+		t.Fatal("settings load must not clear busy after a save has moved the epoch")
+	}
+	if strings.Contains(js, `view.style.display = active ? '' : 'none'`) {
+		t.Fatal("token bank sub-tabs still toggle visibility with inline display, which cannot override .hidden-view")
+	}
+	// The shell dictionary has tbkTitle and tbkDesc only. data-i18n="tbkReload"
+	// therefore prints the key. The tab dictionary already has the label.
+	if strings.Contains(html, `data-i18n="tbkReload"`) {
+		t.Fatal("token bank reload still uses the shell dictionary and renders the raw key tbkReload")
+	}
+	if !strings.Contains(html, `data-tbk-i18n="tbkReload"`) {
+		t.Fatal("token bank reload must use the tab dictionary")
+	}
+	for _, must := range []string{
+		`#tab-tokenbank .tbk-metrics{grid-template-columns:repeat(4,minmax(0,1fr))}`,
+		`#tab-tokenbank .tbk-settings{grid-template-columns:repeat(2,minmax(0,1fr))`,
+		`#tab-tokenbank .list>.item{margin:0;min-height:0;padding:8px 10px;gap:4px;border-radius:10px}`,
+		`#tab-tokenbank{--head-icon:var(--icon-library)}`,
+		`#tab-tokenbank input:not([type=checkbox]):not([type=radio]),#tab-tokenbank select{height:38px}`,
+		`#tab-tokenbank .inline-actions select{width:auto;flex:0 1 auto;min-width:9em}`,
+		`#tab-tokenbank .llm-subtabs [role="tab"][aria-selected="true"]`,
+		`#tab-tokenbank button[aria-pressed="true"]:not([role="tab"])`,
+		`#tab-tokenbank .tbk-model-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))`,
+		`#tab-tokenbank .tbk-gift-grid,#tab-tokenbank .tbk-margin-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr))`,
+		`#tab-tokenbank .tbk-margin-card.item{margin:0;min-width:0;min-height:0;padding:10px 12px;gap:4px;border-radius:12px;background:#fff!important;border:1px solid #e6e8ef;box-shadow:none!important`,
+		`#tab-tokenbank .tbk-margin-card.item .item-title{margin:0;min-width:0;font-size:13px;line-height:1.3;display:-webkit-box;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2`,
+		`#tab-tokenbank .tbk-margin-card.item .item-title::before{display:none}`,
+		`#tab-tokenbank .tbk-margin-stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))`,
+		`#tab-tokenbank .tbk-gift-card.item{margin:0;min-width:0;min-height:0;padding:10px 12px;gap:4px;border-radius:12px;background:#fff!important;border:1px solid #e6e8ef;box-shadow:none!important`,
+		`#tab-tokenbank .tbk-model-card.item .inline-actions button{height:22px;min-height:22px!important;min-width:0!important`,
+		`#tab-tokenbank .tbk-model-card.item{margin:0;min-width:0;padding:6px 8px;gap:3px;border-radius:8px;background:#f7f8fb!important`,
+		`admin/assets/js/token-bank-tab.js?v=token-bank-admin-20261004-overview-refresh`,
+	} {
+		if !strings.Contains(css, must) && !strings.Contains(html, must) {
+			t.Fatalf("token bank compact layout missing %q", must)
+		}
+	}
+	for _, must := range []string{
+		`class="tbk-model-grid"`,
+		`class="item tbk-model-card"`,
+		`tbk-model-facts`,
+		`yesNo(m.Available)`,
+	} {
+		if !strings.Contains(js, must) {
+			t.Fatalf("token bank model cards missing %q", must)
+		}
+	}
+}
+
+
+func TestAdminPageLLMProviderUserAgentField(t *testing.T) {
+	js := readAdminAsset(t, "admin/assets/js/llm-service-tab.js")
+	html := readAdminPageHTML(t)
+	assertContainsAll(t, js, "llm provider user agent", []string{
+		`id="llmPrvUserAgent"`,
+		`id="llmPrvUserAgentCustom"`,
+		`value: 'claude code 2.0', label: 'Claude Code'`,
+		`value: 'ZCode', label: 'ZCode'`,
+		`value: 'Codex', label: 'Codex'`,
+		`value: 'OpenCode', label: 'OpenCode'`,
+		`value="__custom__"`,
+		`function providerUserAgentField(`,
+		`function providerUserAgentValue()`,
+		`window.onProviderUserAgentChange`,
+		`payload.agent_type = providerUserAgentValue()`,
+		`agent_type: providerUserAgentValue()`,
+		`'agent_type'`,
+		`fieldUserAgent: 'User-Agent'`,
+		`uaCustom: 'Custom'`,
+		`uaCustom: '\u81ea\u5b9a\u4e49'`,
+		`fieldUserAgentHint: '\u4e0a\u6e38\u8bf7\u6c42\u4f1a\u5e26\u4e0a\u8fd9\u4e2a User-Agent`,
+		`maxlength="128"`,
+		`class="provider-ua-custom"`,
+		`class="provider-ua-hint"`,
+		`class="grid-span-all"><label for="llmPrvUserAgent"`,
+	})
+	css := readAdminAsset(t, "admin/assets/css/admin-shell.css")
+	if !strings.Contains(css, `.sg-form-grid .provider-ua-custom[hidden]{display:none}`) {
+		t.Fatal("custom user agent input must stay hidden until custom is selected")
+	}
+	if !strings.Contains(html, `/admin/assets/js/llm-service-tab.js?v=provider-array-order-20261015-8`) {
+		t.Fatal("admin page is still serving a stale llm-service-tab.js")
 	}
 }

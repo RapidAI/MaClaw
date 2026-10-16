@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -90,6 +91,7 @@ type OfficialClassHeadSample struct {
 	At         time.Time `json:"at"`
 	Preview    string    `json:"preview,omitempty"`
 	Embedding  []float32 `json:"embedding,omitempty"`
+	EmbedModel string    `json:"embed_model,omitempty"` // family of Embedding ("" = legacy gemma)
 	GroupID    string    `json:"group_id,omitempty"`
 	RuleClass  string    `json:"rule_class,omitempty"`
 	RuleSource string    `json:"rule_source,omitempty"`
@@ -164,6 +166,16 @@ func (s *Service) saveOfficialClassHeadLocked(ctx context.Context, groupID strin
 		return err
 	}
 	return s.system.Set(ctx, officialClassHeadSettingKey(groupID), string(raw))
+}
+
+// saveOfficialClassHeadBestEffort persists bookkeeping state whose loss must
+// not abort the caller, but whose loss must also be visible: a swallowed save
+// leaves a stale pipeline status (admin UI shows "training" for a job that
+// never recorded its outcome) with no trace anywhere else.
+func (s *Service) saveOfficialClassHeadBestEffort(ctx context.Context, groupID string, data *OfficialClassHeadStore) {
+	if err := s.saveOfficialClassHeadLocked(ctx, groupID, data); err != nil {
+		log.Printf("[llm-class-head] WARN: persist class head state group=%q failed: %v", groupID, err)
+	}
 }
 
 func (s *Service) SetOfficialHeadRoster(local string, peers []string) {
@@ -334,7 +346,18 @@ func officialHeadEmbedderAvailable() bool {
 	if officialHeadEmbedderFn != nil {
 		return true
 	}
-	return embedding.SharedGemmaReady()
+	return embedding.SharedEmbedderReady()
+}
+
+// officialHeadEmbedFamily is the family of the embedder
+// embedOfficialHeadPreview uses ("" when a test hook is installed or unknown).
+func officialHeadEmbedFamily() string { return officialHeadEmbedFamilyFn() }
+
+var officialHeadEmbedFamilyFn = func() string {
+	if officialHeadEmbedderFn != nil {
+		return ""
+	}
+	return embedding.EmbedderFamily(embedding.SharedEmbedder())
 }
 
 func embedOfficialHeadPreview(preview string) ([]float32, error) {
@@ -345,7 +368,7 @@ func embedOfficialHeadPreview(preview string) ([]float32, error) {
 	if officialHeadEmbedderFn != nil {
 		return officialHeadEmbedderFn(preview)
 	}
-	emb := embedding.SharedGemma256()
+	emb := embedding.SharedEmbedder()
 	if embedding.IsNoop(emb) {
 		return nil, errors.New("embedding model not ready")
 	}
@@ -509,7 +532,8 @@ func (s *Service) HeadRuntimeForGroup(groupID, userID string) *llmpool.HeadRunti
 		UserID: strings.TrimSpace(userID),
 		Head:   head,
 		Predict: func(preview string) llmpool.HeadPrediction {
-			if head == nil || !head.Ready() {
+			if head == nil || !head.Ready() || !llmpool.HeadEmbedCompatible(head, officialHeadEmbedFamily()) {
+				// Head trained on another embedder's vectors: rules only.
 				return llmpool.HeadPrediction{Class: llmpool.WorkloadFallbackBalanced}
 			}
 			vec, err := embedOfficialHeadPreview(preview)
@@ -521,6 +545,20 @@ func (s *Service) HeadRuntimeForGroup(groupID, userID string) *llmpool.HeadRunti
 	}
 }
 
+// RecordOfficialClassHeadSample appends or refreshes one training sample.
+//
+// This runs on every proxied LLM request (recordProxyClassHeadSample), i.e. at
+// request rate. It must therefore produce a byte-identical store for an
+// unchanged observation: the HA layer dedupes ops by payload hash (see
+// appendLocalWithVersion), and re-stamping sample.At on every call would defeat
+// that dedupe and emit one ~1MB HA op per request — historically the dominant
+// driver of HA op volume (10k+ ops/day on a busy proxy node, per peer).
+//
+// At is therefore only advanced when the sample's classification actually
+// changes, and an unchanged observation is a no-op: it neither rewrites the
+// store nor emits an HA op. Repeat observations of the same preview with the
+// same verdict are the common case at request rate, and collapsing them into
+// one op is exactly the point.
 func (s *Service) RecordOfficialClassHeadSample(preview, ruleClass, ruleSource, headClass string, headMaxP float64, groupID string, passthrough bool) {
 	if s == nil || passthrough || strings.TrimSpace(groupID) == "" {
 		return
@@ -556,28 +594,48 @@ func (s *Service) RecordOfficialClassHeadSample(preview, ruleClass, ruleSource, 
 			sample.ID = id
 		}
 		human := officialHeadHasReview(data.Reviews, id)
-		sample.At = now
+		changed := false
 		sample.Preview = preview
-		if groupID != "" {
+		if groupID != "" && sample.GroupID != groupID {
 			sample.GroupID = groupID
+			changed = true
 		}
-		if strings.TrimSpace(headClass) != "" {
+		if strings.TrimSpace(headClass) != "" && (sample.HeadClass != headClass || sample.HeadMaxP != headMaxP) {
 			sample.HeadClass = headClass
 			sample.HeadMaxP = headMaxP
+			changed = true
 		}
 		if !human {
 			if gold {
+				if !sample.Gold || sample.GoldClass != goldClass {
+					changed = true
+				}
 				sample.Gold = true
 				if goldClass != "" {
 					sample.GoldClass = goldClass
 				}
+				if sample.RuleClass != ruleClass || sample.RuleSource != ruleSource {
+					changed = true
+				}
 				sample.RuleClass = ruleClass
 				sample.RuleSource = ruleSource
-			} else if !sample.Gold {
+			} else if !sample.Gold && (sample.RuleClass != ruleClass || sample.RuleSource != ruleSource) {
 				sample.RuleClass = ruleClass
 				sample.RuleSource = ruleSource
+				changed = true
 			}
 		}
+		if !changed {
+			// Same observation as the stored one: keep the record and its At
+			// untouched so the payload hash is stable and HA dedupes this op.
+			// Note this also skips the move-to-front below, so repeat
+			// observations no longer reshuffle the sample order. That ordering
+			// only feeds pruneOfficialHeadSamples' eviction order, and treating
+			// a repeated identical observation as a non-event is the point of
+			// this change.
+			return
+		}
+		sample.At = now
 		data.Samples = append(append([]OfficialClassHeadSample{sample}, data.Samples[:idx]...), data.Samples[idx+1:]...)
 	} else {
 		data.Samples = append([]OfficialClassHeadSample{{
@@ -596,7 +654,7 @@ func (s *Service) RecordOfficialClassHeadSample(preview, ruleClass, ruleSource, 
 	if len(data.Samples) > officialClassHeadMaxSamples {
 		data.Samples = pruneOfficialHeadSamples(data.Samples, officialClassHeadMaxSamples)
 	}
-	_ = s.saveOfficialClassHeadLocked(context.Background(), "", data)
+	s.saveOfficialClassHeadBestEffort(context.Background(), "", data)
 }
 
 func pruneOfficialHeadSamples(samples []OfficialClassHeadSample, max int) []OfficialClassHeadSample {
@@ -706,10 +764,11 @@ func (s *Service) TrainOfficialClassHeadNowFor(groupID string) error {
 	data := s.loadOfficialClassHeadLocked(context.Background(), groupID)
 	if !s.officialHeadIsLocalTrainer(data) {
 		data.LastTrainError = "this node is not the designated trainer"
-		_ = s.saveOfficialClassHeadLocked(context.Background(), groupID, data)
+		s.saveOfficialClassHeadBestEffort(context.Background(), groupID, data)
 		return errors.New(data.LastTrainError)
 	}
 	labeled := make([]llmpool.LabeledEmbedding, 0, len(data.Samples))
+	fam := officialHeadEmbedFamily()
 	for i := range data.Samples {
 		sample := &data.Samples[i]
 		label := llmpool.NormalizeWorkloadClass(sample.GoldClass)
@@ -717,30 +776,32 @@ func (s *Service) TrainOfficialClassHeadNowFor(groupID string) error {
 			continue
 		}
 		vec := sample.Embedding
-		if len(vec) < llmpool.HeadDim {
+		if !llmpool.SampleEmbeddingReusable(sample.EmbedModel, len(vec), fam) {
 			got, err := embedOfficialHeadPreview(sample.Preview)
 			if err != nil {
 				data.LastTrainError = err.Error()
-				_ = s.saveOfficialClassHeadLocked(context.Background(), groupID, data)
+				s.saveOfficialClassHeadBestEffort(context.Background(), groupID, data)
 				return err
 			}
 			sample.Embedding = got
+			sample.EmbedModel = fam
 			vec = got
 		}
 		labeled = append(labeled, llmpool.LabeledEmbedding{Embedding: vec, Label: label})
 	}
 	if len(labeled) == 0 {
 		data.LastTrainError = "no gold samples to train"
-		_ = s.saveOfficialClassHeadLocked(context.Background(), groupID, data)
+		s.saveOfficialClassHeadBestEffort(context.Background(), groupID, data)
 		return errors.New(data.LastTrainError)
 	}
 	version := llmpool.NextHeadVersion(data.Current, data.Previous, data.History)
 	head, err := llmpool.TrainClassificationHead(labeled, version, llmpool.DefaultHeadTau)
 	if err != nil {
 		data.LastTrainError = err.Error()
-		_ = s.saveOfficialClassHeadLocked(context.Background(), groupID, data)
+		s.saveOfficialClassHeadBestEffort(context.Background(), groupID, data)
 		return err
 	}
+	head.EmbedModel = fam
 	rotateOfficialHead(data, &head, llmpool.HeadSourceTrain)
 	data.LastTrainAt = head.TrainedAt
 	data.LastTrainError = ""
@@ -777,7 +838,7 @@ func (s *Service) EnqueueOfficialClassHeadTrainFor(groupID string) error {
 	officialClassHeadMu.Lock()
 	data = s.loadOfficialClassHeadLocked(context.Background(), groupID)
 	data.Status = llmpool.HeadStatusTraining
-	_ = s.saveOfficialClassHeadLocked(context.Background(), groupID, data)
+	s.saveOfficialClassHeadBestEffort(context.Background(), groupID, data)
 	officialClassHeadMu.Unlock()
 	officialHeadTrainOnce.Do(func() {
 		officialHeadTrainCh = make(chan officialHeadTrainJob, 4)
@@ -814,7 +875,7 @@ func (s *Service) SetOfficialClassHeadPipelineFor(groupID, mode, override, reaso
 	if err := llmpool.AllowPipelineChange(data.Pipeline, next, officialHeadArtifactReady(data), llmpool.DistributeComplete(data.DistributeAck), gates, override, reason); err != nil {
 		if !llmpool.IsPipelineRuleBlocked(err) {
 			data.Status = llmpool.HeadStatusGatesFailed
-			_ = s.saveOfficialClassHeadLocked(context.Background(), groupID, data)
+			s.saveOfficialClassHeadBestEffort(context.Background(), groupID, data)
 		}
 		return buildOfficialClassHeadView(s, groupID, data), err
 	}
@@ -1018,7 +1079,7 @@ func (s *Service) AckOfficialClassHeadAfterRemoteApplyKey(key string) {
 	}
 	data.DistributeAck[local] = "acked"
 	s.finishOfficialHeadAckLocked(data)
-	_ = s.saveOfficialClassHeadLocked(context.Background(), "", data)
+	s.saveOfficialClassHeadBestEffort(context.Background(), "", data)
 }
 
 func (s *Service) DistributeOfficialClassHead(nodeID string) (OfficialClassHeadView, error) {
@@ -1145,6 +1206,9 @@ func (s *Service) ScoreOfficialClassHeadFor(ctx context.Context, groupID, slot s
 	preview, err := llmpool.ScoreRequestPreview(body)
 	if err != nil {
 		return llmpool.ClassHeadScoreReport{}, err
+	}
+	if fam := officialHeadEmbedFamily(); !llmpool.HeadEmbedCompatible(head, fam) {
+		return llmpool.ClassHeadScoreReport{}, errors.New("head was trained on " + head.EmbedFamily() + " vectors but the embedder is " + fam + "; retrain the head")
 	}
 	vec, err := embedOfficialHeadPreview(preview)
 	if err != nil {

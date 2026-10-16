@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/archiveutil"
 	"github.com/RapidAI/CodeClaw/corelib/fileutil"
@@ -33,8 +34,8 @@ const (
 	VolumeReserveBytes    int64 = 1 << 30
 	maxChunkCount               = 16
 	defaultMaxObjectBytes       = MaxObjectBytes
-	// AES-GCM disk blob is nonce (12) || ciphertext || tag (16).
-	gcmBlobOverhead int64 = 12 + 16
+	// v2 disk blob is envelope magic/key id (40) + AES-GCM nonce/tag (28).
+	gcmBlobOverhead int64 = int64(ciphertextEnvelopeHeaderSize + 12 + 16)
 )
 
 // BlobStore is the Hub-side content-addressed encrypted object store.
@@ -44,8 +45,18 @@ const (
 type BlobStore struct {
 	Root           string
 	KeyDir         string
+	Keys           KeyProvider
 	DB             *sql.DB
 	MaxObjectBytes int64
+}
+
+type objectFinalizeGuard struct {
+	TenantID         string
+	UserID           string
+	MachineID        string
+	ClientInstanceID string
+	FencingToken     int64
+	Now              time.Time
 }
 
 // PutResult is the identity of a stored plaintext object.
@@ -77,11 +88,29 @@ func (s *BlobStore) maxCiphertextBytes() int64 {
 }
 
 func validPathSegment(s string) bool {
-	s = strings.TrimSpace(s)
-	if s == "" || s == "." || s == ".." {
+	if s == "" || strings.TrimSpace(s) != s || s == "." || s == ".." || !utf8.ValidString(s) || len(s) > 128 {
 		return false
 	}
-	if strings.ContainsAny(s, `/\`) || strings.ContainsRune(s, 0) {
+	if strings.ContainsAny(s, `/\:`) || strings.ContainsRune(s, 0) {
+		return false
+	}
+	for _, r := range s {
+		if r < 0x20 {
+			return false
+		}
+	}
+	// Keep Hub paths portable across Windows/macOS/Linux. In particular,
+	// Windows treats trailing dots/spaces and device names specially, and a
+	// colon can denote an alternate data stream (rejected above).
+	if strings.HasSuffix(s, ".") || strings.HasSuffix(s, " ") {
+		return false
+	}
+	base := strings.TrimRight(s, " .")
+	if dot := strings.IndexByte(base, '.'); dot >= 0 {
+		base = base[:dot]
+	}
+	switch strings.ToUpper(base) {
+	case "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8", "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9":
 		return false
 	}
 	return true
@@ -170,15 +199,28 @@ func (s *BlobStore) RemoveWorkspace(tenantID, userID, workspaceID string) error 
 	if err != nil {
 		return err
 	}
-	_ = os.RemoveAll(filepath.Join(base, sidecarDirName))
-	_ = os.RemoveAll(filepath.Join(base, manifestDirName))
-	objects, err := s.ObjectsDir(tenantID, userID, workspaceID)
-	if err != nil {
-		return err
+	// Keep cleanup error-aware and re-runnable. Previously intermediate
+	// RemoveAll errors were discarded, allowing the database row to be purged
+	// while encrypted objects or sidecars remained on disk.
+	paths := []string{
+		filepath.Join(base, sidecarDirName),
+		filepath.Join(base, manifestDirName),
+		filepath.Join(base, "objects"),
+		filepath.Join(base, "staging"),
 	}
-	_ = os.RemoveAll(objects)
-	_ = os.RemoveAll(filepath.Join(base, "staging"))
-	return os.RemoveAll(base)
+	var firstErr error
+	for _, path := range paths {
+		if removeErr := os.RemoveAll(path); removeErr != nil && !os.IsNotExist(removeErr) && firstErr == nil {
+			firstErr = removeErr
+		}
+	}
+	if firstErr != nil {
+		return firstErr
+	}
+	if removeErr := os.Remove(base); removeErr != nil && !os.IsNotExist(removeErr) {
+		return removeErr
+	}
+	return nil
 }
 
 // RemoveObjectFile deletes {sha256}.enc if present.
@@ -266,6 +308,10 @@ func (s *BlobStore) RemoveStaleParts(now time.Time, maxAge time.Duration) (int, 
 
 // Put hashes plaintext, seals it with a per-workspace DEK, and writes {sha256}.enc.
 func (s *BlobStore) Put(ctx context.Context, tenantID, userID, workspaceID string, plaintext []byte) (PutResult, error) {
+	return s.put(ctx, tenantID, userID, workspaceID, plaintext, nil)
+}
+
+func (s *BlobStore) put(ctx context.Context, tenantID, userID, workspaceID string, plaintext []byte, guard *objectFinalizeGuard) (PutResult, error) {
 	if int64(len(plaintext)) > s.maxObjectBytes() {
 		return PutResult{}, ErrBlobTooLarge
 	}
@@ -274,49 +320,104 @@ func (s *BlobStore) Put(ctx context.Context, tenantID, userID, workspaceID strin
 	if err != nil {
 		return PutResult{}, err
 	}
-	if _, err := os.Stat(path); err == nil {
-		if err := s.refreshObjectMetadata(ctx, workspaceID, sum, int64(len(plaintext))); err != nil {
-			return PutResult{}, err
+	if s.DB != nil {
+		var state string
+		queryErr := s.DB.QueryRowContext(ctx, `SELECT COALESCE(object_state, 'ready') FROM cloud_workspace_objects WHERE workspace_id = ? AND sha256 = ?`, workspaceID, sum).Scan(&state)
+		if queryErr != nil && !errors.Is(queryErr, sql.ErrNoRows) {
+			return PutResult{}, queryErr
 		}
-		return PutResult{SHA256: sum, SizeBytes: int64(len(plaintext)), Existed: true}, nil
+		if strings.EqualFold(strings.TrimSpace(state), "deleting") {
+			return PutResult{}, ErrObjectDeleting
+		}
+	}
+	if _, err := os.Stat(path); err == nil {
+		ready := s.DB == nil
+		if s.DB != nil {
+			var state string
+			if queryErr := s.DB.QueryRowContext(ctx, `SELECT COALESCE(object_state, 'ready') FROM cloud_workspace_objects WHERE workspace_id = ? AND sha256 = ?`, workspaceID, sum).Scan(&state); queryErr == nil {
+				ready = strings.EqualFold(strings.TrimSpace(state), "ready")
+			} else if !errors.Is(queryErr, sql.ErrNoRows) {
+				return PutResult{}, queryErr
+			}
+		}
+		if ready {
+			result := PutResult{SHA256: sum, SizeBytes: int64(len(plaintext)), Existed: true}
+			if err := s.finalizeReadyObject(ctx, workspaceID, sum, int64(len(plaintext)), result, guard); err != nil {
+				return PutResult{}, err
+			}
+			return result, nil
+		}
+		// The file is an orphan/provisional write whose codec metadata never
+		// committed. Rewrite it from the supplied plaintext so compression and
+		// encryption metadata can be finalized deterministically.
 	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return PutResult{}, err
 	}
 	stored, compression, level := compressObject(plaintext)
-	master, err := loadMasterKey(s.keyDir())
+	sealed, encryptionVersion, err := sealWorkspace(ctx, s.keyProvider(), tenantID, userID, workspaceID, objectAAD(tenantID, userID, workspaceID), stored)
 	if err != nil {
 		return PutResult{}, err
 	}
-	dek := deriveDEK(master, tenantID, userID, workspaceID)
-	sealed, err := seal(dek, objectAAD(tenantID, userID, workspaceID), stored)
-	if err != nil {
-		return PutResult{}, err
-	}
+	// The ciphertext is a copy. Drop the compressed buffer before the disk
+	// write so it is not held next to the plaintext and the sealed bytes.
+	stored = nil
 	if avail, err := archiveutil.AvailableBytes(dir); err == nil && avail < int64(len(sealed))+4096 {
 		return PutResult{}, ErrDiskFull
 	}
 	if err := fileutil.AtomicWriteFile(path, sealed, 0o600); err != nil {
 		return PutResult{}, err
 	}
-	if err := s.recordObjectMeta(ctx, workspaceID, sum, int64(len(plaintext)), int64(len(sealed)), compression, level); err != nil {
+	result := PutResult{SHA256: sum, SizeBytes: int64(len(plaintext))}
+	if err := s.finalizeObjectMeta(ctx, workspaceID, sum, int64(len(plaintext)), int64(len(sealed)), compression, level, encryptionVersion, result, guard); err != nil {
 		return PutResult{}, err
 	}
-	return PutResult{SHA256: sum, SizeBytes: int64(len(plaintext))}, nil
+	return result, nil
 }
 
 func (s *BlobStore) refreshObjectMetadata(ctx context.Context, workspaceID, sha string, plainSize int64) error {
-	if s == nil || s.DB == nil {
-		return nil
-	}
-	_, err := s.DB.ExecContext(ctx, `UPDATE cloud_workspace_objects SET size_bytes = CASE WHEN size_bytes = 0 THEN ? ELSE size_bytes END, plain_size_bytes = CASE WHEN plain_size_bytes = 0 THEN ? ELSE plain_size_bytes END, stored_size_bytes = CASE WHEN stored_size_bytes = 0 THEN size_bytes ELSE stored_size_bytes END WHERE workspace_id = ? AND sha256 = ?`, plainSize, plainSize, workspaceID, sha)
-	return err
+	return s.finalizeReadyObject(ctx, workspaceID, sha, plainSize, PutResult{SHA256: sha, SizeBytes: plainSize, Existed: true}, nil)
 }
 
 // Get decrypts {sha256}.enc and checks the plaintext hash.
+// ObjectPlainSize returns the committed plaintext size used by download
+// admission. It applies the same ready-state gate as Get so a staging or
+// deleting row is never pre-charged; missing rows report ErrBlobNotFound.
+func (s *BlobStore) ObjectPlainSize(ctx context.Context, workspaceID, sha256hex string) (int64, error) {
+	if s == nil || s.DB == nil {
+		return 0, ErrUnavailable
+	}
+	var size int64
+	var state string
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT CASE WHEN COALESCE(plain_size_bytes, 0) > 0 THEN plain_size_bytes ELSE size_bytes END,
+		       COALESCE(object_state, 'ready')
+		  FROM cloud_workspace_objects WHERE workspace_id = ? AND sha256 = ?`, workspaceID, sha256hex).Scan(&size, &state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, ErrBlobNotFound
+	}
+	if err != nil {
+		return 0, err
+	}
+	if state != "" && !strings.EqualFold(strings.TrimSpace(state), "ready") {
+		return 0, ErrBlobNotFound
+	}
+	return size, nil
+}
+
 func (s *BlobStore) Get(ctx context.Context, tenantID, userID, workspaceID, sha256hex string) ([]byte, error) {
+	if s == nil {
+		return nil, ErrUnavailable
+	}
 	path, err := s.ObjectPath(tenantID, userID, workspaceID, sha256hex)
+	if err != nil {
+		return nil, err
+	}
+	// The encrypted file is not itself the source of truth. One ready-row read
+	// supplies the codec before any disk I/O, so an orphan left between file
+	// fsync and metadata finalize is never decrypted.
+	meta, err := s.loadReadyObjectMeta(ctx, workspaceID, sha256hex)
 	if err != nil {
 		return nil, err
 	}
@@ -330,31 +431,117 @@ func (s *BlobStore) Get(ctx context.Context, tenantID, userID, workspaceID, sha2
 		}
 		return nil, err
 	}
-	master, err := loadMasterKey(s.keyDir())
+	// statObject ran before the read. A replace between the two can make the
+	// bytes larger than the ciphertext cap; reject them before decrypt.
+	if int64(len(blob)) > s.maxCiphertextBytes() {
+		return nil, ErrBlobTooLarge
+	}
+	stored, _, err := openWorkspace(ctx, s.keyProvider(), tenantID, userID, workspaceID, objectAAD(tenantID, userID, workspaceID), blob)
 	if err != nil {
 		return nil, err
 	}
-	dek := deriveDEK(master, tenantID, userID, workspaceID)
-	stored, err := open(dek, objectAAD(tenantID, userID, workspaceID), blob)
-	if err != nil {
-		return nil, err
+	// openWorkspace copies the plaintext out. Drop the ciphertext before
+	// decompress and hashing so both buffers are not live together.
+	sealedSize := int64(len(blob))
+	blob = nil
+	plainSize := meta.plainSize
+	if plainSize <= 0 {
+		plainSize = int64(len(stored))
 	}
-	compression, plainSize := s.objectCompression(ctx, workspaceID, sha256hex, int64(len(stored)))
-	plain, err := decompressObject(stored, compression, plainSize)
+	plain, err := decompressObject(stored, meta.compression, plainSize)
 	if err != nil {
 		return nil, err
 	}
 	if plaintextSHA256(plain) != sha256hex {
+		// Older puts compressed with zstd and stored the plaintext length in
+		// size_bytes, but left compression=none and plain_size_bytes=0. The
+		// declared codec therefore returns those compressed bytes. Accept the
+		// object only when zstd expansion to size_bytes matches the content
+		// hash. Uncompressed bytes that merely start with the zstd magic still
+		// win above, because that hash already matched.
+		recovered, ok := s.recoverUnlabeledZstd(stored, meta.compression, meta.recordedSize)
+		if ok && plaintextSHA256(recovered) == sha256hex {
+			// The heal waits on the single write connection. plain aliases the
+			// compressed frame when the row said it was uncompressed.
+			plain = nil
+			stored = nil
+			s.noteLegacyZstd(ctx, workspaceID, sha256hex, int64(len(recovered)), sealedSize)
+			return recovered, nil
+		}
 		return nil, ErrBlobCorrupt
 	}
 	return plain, nil
 }
 
+// recoverUnlabeledZstd inflates a decrypted payload that still carries a zstd
+// frame while the row says it is uncompressed. recordedSize is size_bytes from
+// the same metadata read. Decompression and the caller's content hash decide
+// acceptance; a frame whose compressed length equals the recorded plaintext
+// length is still eligible.
+func (s *BlobStore) recoverUnlabeledZstd(stored []byte, declared string, recordedSize int64) ([]byte, bool) {
+	if s == nil || strings.EqualFold(strings.TrimSpace(declared), "zstd") || !hasZstdMagic(stored) {
+		return nil, false
+	}
+	if recordedSize <= 0 || recordedSize > s.maxObjectBytes() {
+		return nil, false
+	}
+	plain, err := decompressObject(stored, "zstd", recordedSize)
+	if err != nil {
+		return nil, false
+	}
+	return plain, true
+}
+
+// legacyZstdHealTimeout bounds the metadata repair. BlobStore.DB is Hub's
+// single write connection, and busy_timeout would otherwise hold this
+// download behind an unrelated writer. A timed-out repair leaves the row
+// unchanged; the next read tries again.
+const legacyZstdHealTimeout = 500 * time.Millisecond
+
+// noteLegacyZstd records a successful unlabeled-zstd recovery so the next read
+// uses the declared codec. Failure leaves the row unchanged and does not fail
+// the read that already verified the content hash.
+func (s *BlobStore) noteLegacyZstd(ctx context.Context, workspaceID, sha256hex string, plainSize, storedSize int64) {
+	if s == nil || s.DB == nil || plainSize <= 0 || storedSize <= 0 {
+		return
+	}
+	healCtx, cancel := context.WithTimeout(ctx, legacyZstdHealTimeout)
+	defer cancel()
+	// Always replace both sizes with the lengths just verified. Keeping a
+	// stale positive plain_size and then marking the row zstd makes the next
+	// read decompress to the wrong length and fail closed.
+	_, _ = s.DB.ExecContext(healCtx, `
+		UPDATE cloud_workspace_objects
+		   SET compression = 'zstd',
+		       plain_size_bytes = ?,
+		       stored_size_bytes = ?
+		 WHERE workspace_id = ? AND sha256 = ?
+		   AND COALESCE(object_state, 'ready') = 'ready'
+		   AND lower(COALESCE(compression, '')) <> 'zstd'`,
+		plainSize, storedSize, workspaceID, sha256hex)
+}
+
 // Has reports whether the encrypted object file exists.
-func (s *BlobStore) Has(_ context.Context, tenantID, userID, workspaceID, sha256hex string) (bool, error) {
+func (s *BlobStore) Has(ctx context.Context, tenantID, userID, workspaceID, sha256hex string) (bool, error) {
+	if s == nil {
+		return false, ErrUnavailable
+	}
 	path, err := s.ObjectPath(tenantID, userID, workspaceID, sha256hex)
 	if err != nil {
 		return false, err
+	}
+	if s.DB != nil {
+		var state string
+		err := s.DB.QueryRowContext(ctx, `SELECT COALESCE(object_state, 'ready') FROM cloud_workspace_objects WHERE workspace_id = ? AND sha256 = ?`, workspaceID, sha256hex).Scan(&state)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		if err != nil {
+			return false, err
+		}
+		if state != "" && !strings.EqualFold(strings.TrimSpace(state), "ready") {
+			return false, nil
+		}
 	}
 	if _, err := s.statObject(path); err != nil {
 		if errors.Is(err, ErrBlobNotFound) {
@@ -380,35 +567,131 @@ func (s *BlobStore) statObject(path string) (os.FileInfo, error) {
 }
 
 func (s *BlobStore) recordObject(ctx context.Context, workspaceID, sha256hex string, sizeBytes int64) error {
-	return s.recordObjectMeta(ctx, workspaceID, sha256hex, sizeBytes, sizeBytes, "none", 0)
+	return s.finalizeReadyObject(ctx, workspaceID, sha256hex, sizeBytes, PutResult{SHA256: sha256hex, SizeBytes: sizeBytes, Existed: true}, nil)
 }
 
 func (s *BlobStore) recordObjectMeta(ctx context.Context, workspaceID, sha256hex string, plainSize, storedSize int64, compression string, level int) error {
+	return s.finalizeObjectMeta(ctx, workspaceID, sha256hex, plainSize, storedSize, compression, level, "aes-gcm-v1", PutResult{SHA256: sha256hex, SizeBytes: plainSize}, nil)
+}
+
+func (s *BlobStore) finalizeReadyObject(ctx context.Context, workspaceID, sha256hex string, plainSize int64, result PutResult, guard *objectFinalizeGuard) error {
+	if s == nil || s.DB == nil {
+		return nil
+	}
+	workspaceStore := NewStore(s.DB)
+	return workspaceStore.withImmediate(ctx, func(q queryer) error {
+		if guard != nil {
+			if _, err := requireActiveAccess(ctx, q, guard.TenantID, guard.UserID, workspaceID, true); err != nil {
+				return err
+			}
+			if err := assertLeaseHeldForSession(ctx, q, workspaceID, guard.MachineID, guard.ClientInstanceID, guard.FencingToken, guard.Now); err != nil {
+				return err
+			}
+		}
+		res, err := q.ExecContext(ctx, `UPDATE cloud_workspace_objects SET size_bytes = CASE WHEN size_bytes = 0 THEN ? ELSE size_bytes END, plain_size_bytes = CASE WHEN plain_size_bytes = 0 THEN ? ELSE plain_size_bytes END WHERE workspace_id = ? AND sha256 = ? AND COALESCE(object_state, 'ready') = 'ready'`, plainSize, plainSize, workspaceID, sha256hex)
+		if err != nil {
+			return err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrBlobNotFound
+		}
+		if _, err := q.ExecContext(ctx, `DELETE FROM cloud_workspace_staging_chunks WHERE workspace_id = ? AND sha256 = ?`, workspaceID, sha256hex); err != nil {
+			return err
+		}
+		return stageAtomicIdempotency(ctx, q, result)
+	})
+}
+
+func (s *BlobStore) finalizeObjectMeta(ctx context.Context, workspaceID, sha256hex string, plainSize, storedSize int64, compression string, level int, encryptionVersion string, result PutResult, guard *objectFinalizeGuard) error {
 	if s == nil || s.DB == nil {
 		return nil
 	}
 	ts := time.Now().UTC().Format(time.RFC3339)
-	_, err := s.DB.ExecContext(ctx, `
-		INSERT OR IGNORE INTO cloud_workspace_objects (workspace_id, sha256, size_bytes, plain_size_bytes, stored_size_bytes, compression, compression_level, encryption_version, ref_count, created_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, 'aes-gcm-v1', 0, ?)`,
-		workspaceID, sha256hex, plainSize, plainSize, storedSize, compression, level, ts,
-	)
-	return err
+	// PrepareObjectPut creates a reservation row before bytes are sealed. Use an
+	// upsert so the final codec metadata replaces the reservation defaults;
+	// INSERT OR IGNORE would leave compression=zstd objects marked as plain.
+	workspaceStore := NewStore(s.DB)
+	return workspaceStore.withImmediate(ctx, func(q queryer) error {
+		if guard != nil {
+			if _, err := requireActiveAccess(ctx, q, guard.TenantID, guard.UserID, workspaceID, true); err != nil {
+				return err
+			}
+			if err := assertLeaseHeldForSession(ctx, q, workspaceID, guard.MachineID, guard.ClientInstanceID, guard.FencingToken, guard.Now); err != nil {
+				return err
+			}
+		}
+		var state string
+		if err := q.QueryRowContext(ctx, `SELECT COALESCE(object_state, 'ready') FROM cloud_workspace_objects WHERE workspace_id = ? AND sha256 = ?`, workspaceID, sha256hex).Scan(&state); err == nil {
+			if strings.EqualFold(strings.TrimSpace(state), "deleting") {
+				return ErrObjectDeleting
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return err
+		}
+		if _, err := q.ExecContext(ctx, `
+			INSERT INTO cloud_workspace_objects (workspace_id, sha256, size_bytes, plain_size_bytes, stored_size_bytes, compression, compression_level, encryption_version, ref_count, created_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+			ON CONFLICT(workspace_id, sha256) DO UPDATE SET
+				size_bytes = excluded.size_bytes,
+				plain_size_bytes = excluded.plain_size_bytes,
+				stored_size_bytes = excluded.stored_size_bytes,
+				compression = excluded.compression,
+				compression_level = excluded.compression_level,
+				encryption_version = excluded.encryption_version,
+				object_state = 'ready'`,
+			workspaceID, sha256hex, plainSize, plainSize, storedSize, compression, level, encryptionVersion, ts,
+		); err != nil {
+			return err
+		}
+		if _, err := q.ExecContext(ctx, `DELETE FROM cloud_workspace_staging_chunks WHERE workspace_id = ? AND sha256 = ?`, workspaceID, sha256hex); err != nil {
+			return err
+		}
+		return stageAtomicIdempotency(ctx, q, result)
+	})
 }
 
-func (s *BlobStore) objectCompression(ctx context.Context, workspaceID, sha string, fallback int64) (string, int64) {
+type readyObjectMeta struct {
+	compression  string
+	plainSize    int64
+	recordedSize int64
+}
+
+// loadReadyObjectMeta reads the codec and the ready-state gate in one query.
+// plainSize is plain_size_bytes, or size_bytes when that column was never
+// filled. recordedSize stays the raw size_bytes value so unlabeled zstd can
+// expand to the historical plaintext length. A nil DB returns an uncompressed
+// codec and leaves the length for the caller to take from the decrypted bytes.
+func (s *BlobStore) loadReadyObjectMeta(ctx context.Context, workspaceID, sha string) (readyObjectMeta, error) {
 	if s == nil || s.DB == nil {
-		return "none", fallback
+		return readyObjectMeta{compression: "none"}, nil
 	}
-	var compression string
-	var plainSize int64
-	if err := s.DB.QueryRowContext(ctx, `SELECT compression, plain_size_bytes FROM cloud_workspace_objects WHERE workspace_id = ? AND sha256 = ?`, workspaceID, sha).Scan(&compression, &plainSize); err != nil {
-		return "none", fallback
+	var compression, state string
+	var plainSize, recordedSize int64
+	err := s.DB.QueryRowContext(ctx, `
+		SELECT COALESCE(compression, 'none'),
+		       COALESCE(plain_size_bytes, 0),
+		       COALESCE(size_bytes, 0),
+		       COALESCE(object_state, 'ready')
+		  FROM cloud_workspace_objects
+		 WHERE workspace_id = ? AND sha256 = ?`,
+		workspaceID, sha).Scan(&compression, &plainSize, &recordedSize, &state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return readyObjectMeta{}, ErrBlobNotFound
+	}
+	if err != nil {
+		return readyObjectMeta{}, err
+	}
+	if strings.TrimSpace(state) != "" && !strings.EqualFold(strings.TrimSpace(state), "ready") {
+		return readyObjectMeta{}, ErrBlobNotFound
+	}
+	compression = strings.ToLower(strings.TrimSpace(compression))
+	if compression == "" {
+		compression = "none"
 	}
 	if plainSize <= 0 {
-		plainSize = fallback
+		plainSize = recordedSize
 	}
-	return compression, plainSize
+	return readyObjectMeta{compression: compression, plainSize: plainSize, recordedSize: recordedSize}, nil
 }
 
 // PartDir is {objects}/{sha256}.part for plaintext chunk staging.
@@ -425,13 +708,17 @@ func (s *BlobStore) PartDir(tenantID, userID, workspaceID, sha256hex string) (st
 
 // PutExpected seals plaintext only when sha256(body) equals expectedSHA.
 func (s *BlobStore) PutExpected(ctx context.Context, tenantID, userID, workspaceID, expectedSHA string, plaintext []byte) (PutResult, error) {
+	return s.PutExpectedWithGuard(ctx, tenantID, userID, workspaceID, expectedSHA, plaintext, nil)
+}
+
+func (s *BlobStore) PutExpectedWithGuard(ctx context.Context, tenantID, userID, workspaceID, expectedSHA string, plaintext []byte, guard *objectFinalizeGuard) (PutResult, error) {
 	if !validSHA256Hex(expectedSHA) {
 		return PutResult{}, ErrInvalidBlobKey
 	}
 	if plaintextSHA256(plaintext) != expectedSHA {
 		return PutResult{}, ErrBlobHashMismatch
 	}
-	return s.Put(ctx, tenantID, userID, workspaceID, plaintext)
+	return s.put(ctx, tenantID, userID, workspaceID, plaintext, guard)
 }
 
 // PutChunk writes one plaintext slice to objects/{sha256}.part/{index}.
@@ -458,6 +745,26 @@ func (s *BlobStore) PutChunk(_ context.Context, tenantID, userID, workspaceID, s
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
 	}
+	// Bound the complete staging set, not just each chunk. Otherwise callers can
+	// create many partial hashes and exhaust the volume before CompleteObject.
+	var staged int64
+	if parts, readErr := os.ReadDir(dir); readErr == nil {
+		for _, part := range parts {
+			if part.IsDir() {
+				continue
+			}
+			raw, statErr := os.Stat(filepath.Join(dir, part.Name()))
+			if statErr == nil {
+				staged += raw.Size()
+			}
+		}
+	}
+	if old, statErr := os.Stat(filepath.Join(dir, strconv.Itoa(index))); statErr == nil {
+		staged -= old.Size()
+	}
+	if staged+int64(len(data)) > s.maxObjectBytes() {
+		return ErrBlobTooLarge
+	}
 	if avail, err := archiveutil.AvailableBytes(dir); err == nil && avail < int64(len(data))+4096 {
 		return ErrDiskFull
 	}
@@ -470,7 +777,13 @@ func (s *BlobStore) RemovePart(tenantID, userID, workspaceID, sha256hex string) 
 	if err != nil {
 		return err
 	}
-	return os.RemoveAll(dir)
+	err = os.RemoveAll(dir)
+	if s.DB != nil {
+		if _, dbErr := s.DB.Exec(`DELETE FROM cloud_workspace_staging_chunks WHERE workspace_id = ? AND sha256 = ?`, workspaceID, sha256hex); err == nil {
+			err = dbErr
+		}
+	}
+	return err
 }
 
 // AssembleChunks concatenates contiguous staged slices and verifies the digest.
@@ -528,8 +841,9 @@ func (s *BlobStore) AssembleChunks(tenantID, userID, workspaceID, sha256hex stri
 		parts[i] = raw
 	}
 	out := make([]byte, 0, total)
-	for _, p := range parts {
+	for i, p := range parts {
 		out = append(out, p...)
+		parts[i] = nil
 	}
 	if plaintextSHA256(out) != sha256hex {
 		_ = os.RemoveAll(dir)

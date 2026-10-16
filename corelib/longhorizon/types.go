@@ -17,6 +17,13 @@ const (
 	CLIMaxIterations     = 80
 	GUIMaxIterations     = 20
 	BrowserMaxIterations = 20
+
+	// Per-role default episode timeouts in seconds, consumed through
+	// EpisodeBudget.MaxDurationS. Manager/Auditor stay short so a stalled
+	// strong-model call cannot burn an executor-sized budget (P5-c).
+	ManagerRoleTimeoutS  = 120
+	AuditorRoleTimeoutS  = 120
+	ExecutorRoleTimeoutS = 600
 	CarryoverCapRunes    = 8_000
 	CarryoverMaxItems   = 40
 	CarryoverItemCap    = 2_000
@@ -48,6 +55,23 @@ const (
 )
 
 type NextStep string
+
+// RoleTimeoutS returns the default episode timeout for one role in seconds.
+// Manager/Auditor are deliberately shorter than executors so the two cheap
+// control roles cannot outspend the worker role (P5-c). Unknown roles fail
+// short.
+func RoleTimeoutS(role string) int {
+	switch {
+	case role == RoleManager:
+		return ManagerRoleTimeoutS
+	case IsAuditorRole(role):
+		return AuditorRoleTimeoutS
+	case role == RoleCLIExecutor || role == RoleGUIExecutor || role == RoleBrowserExecutor:
+		return ExecutorRoleTimeoutS
+	default:
+		return ManagerRoleTimeoutS
+	}
+}
 
 type PolicySnapshot struct {
 	OwnerID       string `json:"owner_id"`

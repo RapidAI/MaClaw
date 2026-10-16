@@ -75,6 +75,14 @@ func ApplyReasoningControls(cfg MaclawLLMConfig, body map[string]interface{}, ap
 		return
 	}
 
+	if api == ReasoningAPIChat && IsAMDRadeonPublicChatEndpoint(cfg) {
+		// This host's chat schema wins over model-name rules. A Qwen model id
+		// on AMD must not be sent enable_thinking: the gateway drops that
+		// field and rejects thinking.
+		body["reasoning_effort"] = amdRadeonChatEffort(cfg, mode)
+		return
+	}
+
 	if api == ReasoningAPIChat && usesQwenThinkingControl(cfg) {
 		body["enable_thinking"] = mode == "enabled"
 		return
@@ -96,6 +104,53 @@ func ApplyReasoningControls(cfg MaclawLLMConfig, body map[string]interface{}, ap
 	// reasoning gateways use this object. In particular, this preserves an
 	// explicit disabled state for DeepSeek instead of later re-enabling it.
 	body["thinking"] = map[string]interface{}{"type": mode}
+	// DeepSeek keeps thinking.type as the switch and also needs
+	// reasoning_effort. Doing it here covers retarget, which would otherwise
+	// delete a caller-supplied low/max and leave a later stamp to invent high.
+	StampDeepSeekReasoningEffort(cfg, body)
+}
+
+// DeepSeekReasoningEffort maps a configured effort onto the values DeepSeek
+// V4 accepts while thinking is enabled: low, high, or max. Empty and the
+// OpenAI medium/xhigh aliases become high, which is DeepSeek's default.
+// WorkBuddy ignores thinking.type by itself and returns an empty
+// reasoning_content unless this field is present.
+func DeepSeekReasoningEffort(configured string) string {
+	switch strings.ToLower(strings.TrimSpace(configured)) {
+	case "minimal", "low", "none", "off", "false", "0":
+		return "low"
+	case "max", "ultra":
+		return "max"
+	default:
+		return "high"
+	}
+}
+
+// StampDeepSeekReasoningEffort finishes a DeepSeek chat body so gateways that
+// only honor reasoning_effort still return reasoning_content. thinking.type
+// stays the on/off switch. budget_tokens is Anthropic-only and is removed.
+// A disabled thinking block must not also carry reasoning_effort.
+func StampDeepSeekReasoningEffort(cfg MaclawLLMConfig, body map[string]interface{}) {
+	if body == nil || !IsDeepSeekThinkingModeModel(cfg) {
+		return
+	}
+	thinking, _ := body["thinking"].(map[string]interface{})
+	if thinking == nil {
+		return
+	}
+	delete(thinking, "budget_tokens")
+	typ, _ := thinking["type"].(string)
+	if !strings.EqualFold(strings.TrimSpace(typ), "enabled") {
+		delete(body, "reasoning_effort")
+		return
+	}
+	configured := cfg.ReasoningEffort
+	if strings.TrimSpace(configured) == "" {
+		if existing, _ := body["reasoning_effort"].(string); strings.TrimSpace(existing) != "" {
+			configured = existing
+		}
+	}
+	body["reasoning_effort"] = DeepSeekReasoningEffort(configured)
 }
 
 func thinkingTypeDisabled(body map[string]interface{}) bool {
@@ -116,15 +171,58 @@ func CoerceAlwaysOnThinkingMode(cfg MaclawLLMConfig) MaclawLLMConfig {
 	return cfg
 }
 
-func normalizeReasoningMode(raw string) string {
+// ParseGlobalThinkingMode normalizes the persisted application-level setting
+// shared by GUI, MaClawSrv and other hosts. The bool distinguishes the
+// explicit auto/unset value from an unknown value so reviewed config surfaces
+// can reject typos while request builders can safely fall back to auto.
+func ParseGlobalThinkingMode(raw string) (mode string, ok bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "enabled", "on", "1", "true":
-		return "enabled"
-	case "disabled", "off", "0", "false", "none":
-		return "disabled"
+	case "", "auto":
+		return "", true
+	case "enabled", "enable", "on", "1", "true":
+		return "enabled", true
+	case "disabled", "disable", "off", "0", "false", "none":
+		return "disabled", true
 	default:
-		return ""
+		return "", false
 	}
+}
+
+// GlobalThinkingModeOptions is the closed set of canonical thinking modes the
+// config capability advertises in its invocation schema, and the vocabulary
+// every host spells back. Legacy truthy/falsy aliases are accepted by
+// ParseGlobalThinkingMode but never advertised, so a host cannot drift from
+// the spelling the setting persists.
+func GlobalThinkingModeOptions() []string {
+	return []string{"enabled", "disabled"}
+}
+
+// GlobalThinkingModeHint renders the canonical vocabulary for a rejection
+// message, so a model that ignored the enum still learns the valid names from
+// its first failure and can retry inside the turn.
+func GlobalThinkingModeHint() string {
+	return "allowed: " + strings.Join(GlobalThinkingModeOptions(), ", ")
+}
+
+// NormalizeGlobalThinkingMode returns the canonical persisted spelling, or
+// the legacy auto/unset value for unknown input.
+func NormalizeGlobalThinkingMode(raw string) string {
+	mode, _ := ParseGlobalThinkingMode(raw)
+	return mode
+}
+
+// EffectiveGlobalThinkingMode resolves auto/unset and invalid legacy values to
+// the product default used by the desktop UI when materializing a request.
+func EffectiveGlobalThinkingMode(raw string) string {
+	mode, ok := ParseGlobalThinkingMode(raw)
+	if ok && mode != "" {
+		return mode
+	}
+	return "enabled"
+}
+
+func normalizeReasoningMode(raw string) string {
+	return NormalizeGlobalThinkingMode(raw)
 }
 
 // IsAutoThinkingMode reports whether a configuration leaves the provider's
@@ -294,4 +392,213 @@ func isAgnesReasoningEndpoint(cfg MaclawLLMConfig) bool {
 
 func usesQwenThinkingControl(cfg MaclawLLMConfig) bool {
 	return IsQwenOpenAICompat(cfg)
+}
+
+// IsAMDRadeonPublicChatEndpoint reports AMD's public free-model gateway
+// (https://developer.amd.com.cn/radeon/api/v1). That gateway returns HTTP 400
+// when a chat completion carries `thinking`, and only honors reasoning_effort
+// (or reasoning.effort). Dedicated instance hosts are a different gateway and
+// are not matched here.
+func IsAMDRadeonPublicChatEndpoint(cfg MaclawLLMConfig) bool {
+	switch llmEndpointHostname(cfg.URL) {
+	case "developer.amd.com.cn", "developer.amd.com":
+		return true
+	default:
+		return false
+	}
+}
+
+// llmEndpointHostname returns the lowercase host, accepting a URL that was
+// saved without a scheme. url.Parse treats a scheme-less value as a path, which
+// would hide developer.amd.com.cn and let a thinking object through.
+func llmEndpointHostname(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	switch {
+	case strings.HasPrefix(raw, "//"):
+		raw = "https:" + raw
+	case !strings.Contains(raw, "://"):
+		raw = "https://" + raw
+	}
+	endpoint, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(endpoint.Hostname()))
+}
+
+func amdDeepSeekFamily(cfg MaclawLLMConfig) bool {
+	return strings.Contains(strings.ToLower(strings.TrimSpace(cfg.Model)), "deepseek")
+}
+
+// amdRadeonChatEffort maps a thinking mode onto a tier this gateway accepts.
+// DeepSeek models on AMD accept the OpenAI set plus none/max. Other models on
+// the same host only share low and medium, so those are the portable values.
+func amdRadeonChatEffort(cfg MaclawLLMConfig, mode string) string {
+	if mode == "disabled" {
+		if amdDeepSeekFamily(cfg) {
+			return "none"
+		}
+		return "low"
+	}
+	switch strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort)) {
+	case "low", "medium":
+		return strings.ToLower(strings.TrimSpace(cfg.ReasoningEffort))
+	case "minimal":
+		if amdDeepSeekFamily(cfg) {
+			return "minimal"
+		}
+		return "low"
+	case "high":
+		if amdDeepSeekFamily(cfg) {
+			return "high"
+		}
+		return "medium"
+	case "xhigh":
+		if amdDeepSeekFamily(cfg) {
+			return "xhigh"
+		}
+		return "medium"
+	case "max", "ultra":
+		if amdDeepSeekFamily(cfg) {
+			return "max"
+		}
+		return "medium"
+	case "none", "off", "false", "0":
+		// Enabled mode only. Disabled already returned "none" or "low" above.
+		// DeepSeek's own stamp maps these aliases to low while thinking stays on.
+		return "low"
+	default:
+		return "medium"
+	}
+}
+
+// ShouldAutoStampDeepSeekThinking reports whether a chat body should gain a
+// DeepSeek thinking object when the caller left thinking on auto. AMD's public
+// gateway rejects that object for every DeepSeek model, so the stamp stays off
+// that host. An explicit thinking request is rewritten separately.
+func ShouldAutoStampDeepSeekThinking(cfg MaclawLLMConfig) bool {
+	return IsAutoThinkingMode(cfg.ThinkingMode) && IsDeepSeekThinkingModeModel(cfg) && !IsAMDRadeonPublicChatEndpoint(cfg)
+}
+
+// AddAutoDeepSeekThinkingObject stamps thinking.type=enabled for hosts that
+// still require the DeepSeek object. AMD is excluded by
+// ShouldAutoStampDeepSeekThinking. A body that already has thinking is kept.
+func AddAutoDeepSeekThinkingObject(cfg MaclawLLMConfig, body map[string]interface{}) {
+	if body == nil || !ShouldAutoStampDeepSeekThinking(cfg) {
+		return
+	}
+	if _, hasThinking := body["thinking"]; hasThinking {
+		return
+	}
+	body["thinking"] = map[string]interface{}{"type": "enabled"}
+}
+
+// FinishOpenAIChatReasoningControls is the last reasoning edit on an OpenAI
+// chat body. Official DeepSeek and WorkBuddy still get reasoning_effort beside
+// thinking.type. AMD never gets that stamp: it would leave the thinking object
+// in place, and AMD rejects the object on /v1/chat/completions.
+func FinishOpenAIChatReasoningControls(cfg MaclawLLMConfig, body map[string]interface{}) {
+	if body == nil {
+		return
+	}
+	if IsAMDRadeonPublicChatEndpoint(cfg) {
+		RewriteAMDRadeonChatReasoning(cfg, body)
+		return
+	}
+	// TokenHub chat accepts thinking.type only. budget_tokens is the Anthropic
+	// spelling and is added for tool calls on other OpenAI-compatible hosts.
+	if IsTencentTokenHubEndpoint(cfg) {
+		if thinking, _ := body["thinking"].(map[string]interface{}); thinking != nil {
+			delete(thinking, "budget_tokens")
+		}
+	}
+	StampDeepSeekReasoningEffort(cfg, body)
+}
+
+// IsTencentTokenHubEndpoint reports the Token Plan chat hosts. Guangzhou and
+// Singapore, on both the mainland and international domains, share this schema.
+func IsTencentTokenHubEndpoint(cfg MaclawLLMConfig) bool {
+	endpoint, err := url.Parse(strings.TrimSpace(cfg.URL))
+	if err != nil {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(endpoint.Hostname())) {
+	case "tokenhub.tencentmaas.com", "tokenhub-intl.tencentmaas.com",
+		"tokenhub.tencentcloudmaas.com", "tokenhub-intl.tencentcloudmaas.com":
+		return true
+	default:
+		return false
+	}
+}
+
+// RewriteAMDRadeonChatReasoning removes thinking from an AMD public chat body.
+// An explicit thinking request is kept as reasoning_effort. A body that stated
+// no reasoning control does not gain one. Non-AMD hosts are ignored.
+func RewriteAMDRadeonChatReasoning(cfg MaclawLLMConfig, body map[string]interface{}) {
+	if body == nil || !IsAMDRadeonPublicChatEndpoint(cfg) {
+		return
+	}
+	mode, effort := amdReasoningRequestedInBody(body)
+	// thinking, enable_thinking, and reasoning are removed even when the
+	// shape was not recognized. AMD returns HTTP 400 for thinking and for
+	// reasoning.enabled; a plain body must not keep either key.
+	delete(body, "thinking")
+	delete(body, "enable_thinking")
+	delete(body, "reasoning")
+	if !amdReasoningEffortValueOK(body["reasoning_effort"]) {
+		delete(body, "reasoning_effort")
+	}
+	if mode == "" {
+		return
+	}
+	next := cfg
+	next.ThinkingMode = mode
+	if strings.TrimSpace(effort) != "" {
+		next.ReasoningEffort = effort
+	}
+	body["reasoning_effort"] = amdRadeonChatEffort(next, mode)
+}
+
+// amdReasoningRequestedInBody reads the shared client spellings, then the
+// bool and string forms of thinking that the shared parser ignores. Those
+// forms still make AMD return HTTP 400.
+func amdReasoningRequestedInBody(body map[string]interface{}) (mode, effort string) {
+	mode, effort = reasoningControlsRequestedInBody(body)
+	if mode != "" || body == nil {
+		return mode, effort
+	}
+	// reasoning.enabled is rejected with HTTP 400 on this gateway. The shared
+	// parser only reads reasoning.effort, so an enabled flag would otherwise
+	// be deleted and the request would silently stop thinking.
+	if reasoning, _ := body["reasoning"].(map[string]interface{}); reasoning != nil {
+		if enabled, ok := reasoning["enabled"].(bool); ok {
+			if enabled {
+				return "enabled", ""
+			}
+			return "disabled", ""
+		}
+	}
+	switch v := body["thinking"].(type) {
+	case bool:
+		if v {
+			return "enabled", ""
+		}
+		return "disabled", ""
+	case string:
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "enabled", "on", "true", "1":
+			return "enabled", ""
+		case "disabled", "off", "false", "0", "none":
+			return "disabled", ""
+		}
+	}
+	return "", ""
+}
+
+func amdReasoningEffortValueOK(value interface{}) bool {
+	text, ok := value.(string)
+	return ok && strings.TrimSpace(text) != ""
 }

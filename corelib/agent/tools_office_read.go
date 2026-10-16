@@ -44,6 +44,8 @@ const maxOfficeReadMaxRunes = 500_000
 // call bypass the migration's memory/latency guard.
 const MaxOfficeReadFileBytes int64 = 32 << 20
 
+const pdfEmptyPageMarker = "[empty page]"
+
 // officeExtractFileVersion is the identity used by the page cache and its
 // in-flight de-duplication. mtime and size make cache inspection cheap to
 // understand, while digest is the authoritative content identity. In
@@ -471,6 +473,12 @@ func extractOfficeTextCachedVersion(filePath, key string, version officeExtractF
 	}()
 
 	text, format, err = extractOfficeTextWithSettings(filePath, settings)
+	// Chat and read_document share this cache. A retained head/tail is already
+	// inside the cap, so they can inject or page it. ExtractOfficeText itself
+	// still returns the error and does not store the partial body as a full read.
+	if errors.Is(err, errOfficeReadOutputTooLarge) && officeReadTextWithinRetention(text) {
+		err = nil
+	}
 	if err == nil {
 		text = strings.TrimSpace(text)
 	}
@@ -712,6 +720,11 @@ func extractOfficeTextWithSettings(filePath string, settings officeReadSettings)
 	if format == "unknown" || format == "" {
 		return "", format, fmt.Errorf("原生解析暂不支持文件类型 %s（内置支持: .pdf .doc .docx .xls .xlsx .csv .ppt .pptx .txt .md .markdown .json .xml .yaml .yml .log）", ext)
 	}
+	// Keep the retained head/tail with the error. Public callers that check the
+	// error still fail closed. The chat cache accepts this window and injects it.
+	if errors.Is(err, errOfficeReadOutputTooLarge) && officeReadTextWithinRetention(text) {
+		return text, kind, err
+	}
 	return "", kind, err
 }
 
@@ -921,6 +934,9 @@ func validateLegacyOfficeText(text, format string, err error) (string, string, e
 		return text, format, err
 	}
 	if err := validateOfficeReadText(text); err != nil {
+		if errors.Is(err, errOfficeReadOutputTooLarge) {
+			return officeReadRetainWindow(text), format, err
+		}
 		return "", format, err
 	}
 	return text, format, nil
@@ -1178,28 +1194,11 @@ func extractPDFText(filePath string) (text string, err error) {
 		if err := validatePDFPageCount(numPages); err != nil {
 			return "", err
 		}
-		var b strings.Builder
-		gotAny := false
-		for i := 0; i < numPages; i++ {
-			pageText, pErr := gopdf2.ExtractPageText(data, i)
-			if pErr != nil {
-				// Non-fatal: keep going; mark the gap so the agent can re-try that page.
-				fmt.Fprintf(&b, "\n\n## Page %d\n[page extract error: %v]\n", i+1, pErr)
-				continue
-			}
-			pageText = strings.TrimSpace(pageText)
-			if pageText == "" {
-				continue
-			}
-			gotAny = true
-			if b.Len() > 0 {
-				b.WriteString("\n\n")
-			}
-			fmt.Fprintf(&b, "## Page %d\n", i+1)
-			b.WriteString(pageText)
-		}
+		text, gotAny := renderPDFPageExtracts(numPages, func(pageIndex int) (string, error) {
+			return gopdf2.ExtractPageText(data, pageIndex)
+		})
 		if gotAny {
-			return b.String(), nil
+			return text, nil
 		}
 	}
 
@@ -1211,6 +1210,36 @@ func extractPDFText(filePath string) (text string, err error) {
 		return "", fmt.Errorf("PDF 中没有可读取的文本内容（可能是扫描件，需 OCR）")
 	}
 	return text, nil
+}
+
+// renderPDFPageExtracts keeps every page in document order. Empty pages and
+// per-page errors stay as markers so a later limitations/references page is
+// not silently dropped just because native text was blank.
+func renderPDFPageExtracts(numPages int, extract func(pageIndex int) (string, error)) (string, bool) {
+	if numPages <= 0 || extract == nil {
+		return "", false
+	}
+	var b strings.Builder
+	gotAny := false
+	for i := 0; i < numPages; i++ {
+		pageText, pErr := extract(i)
+		if b.Len() > 0 {
+			b.WriteString("\n\n")
+		}
+		fmt.Fprintf(&b, "## Page %d\n", i+1)
+		if pErr != nil {
+			fmt.Fprintf(&b, "[page extract error: %v]", pErr)
+			continue
+		}
+		pageText = strings.TrimSpace(pageText)
+		if pageText == "" {
+			b.WriteString(pdfEmptyPageMarker)
+			continue
+		}
+		gotAny = true
+		b.WriteString(pageText)
+	}
+	return b.String(), gotAny
 }
 
 // validatePDFPageCount keeps the agent-facing extractor within the same page

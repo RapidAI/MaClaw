@@ -52,6 +52,9 @@ func (m *Maintenance) InstallRuntime() {
 	}
 	m.store.SetOnlineExtractor(m.onlineExtractor)
 	m.store.SetRecallGating(NewRecallGating(m.llm))
+	if m.llm != nil {
+		m.store.SetCompactFormGenerator(NewLLMCompactFormGenerator(m.llm))
+	}
 }
 
 // SetLLM rewires all LLM-backed maintenance components together.
@@ -63,6 +66,7 @@ func (m *Maintenance) SetLLM(llm LLMChatCaller) {
 	if m.store != nil {
 		m.store.SetLLMDedup(llm)
 		m.store.SetRecallGating(NewRecallGating(llm))
+		m.store.SetCompactFormGenerator(NewLLMCompactFormGenerator(llm))
 	}
 	if m.compressor != nil {
 		m.compressor.SetLLM(llm)

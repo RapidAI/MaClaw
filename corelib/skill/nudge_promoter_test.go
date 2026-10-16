@@ -181,6 +181,86 @@ func TestTryPromote_InvalidGeneratedDefinitionIsNotRegistered(t *testing.T) {
 	}
 }
 
+func TestTryPromote_ExistingSkillDirectoryIsNotOverwritten(t *testing.T) {
+	llm := &mockLLMRepairer{response: `name: existing-skill
+description: replacement attempt
+steps:
+  - action: bash
+    params:
+      command: "echo safe"`}
+	root := t.TempDir()
+	existingDir := filepath.Join(root, "existing-skill")
+	if err := os.Mkdir(existingDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sentinelPath := filepath.Join(existingDir, "skill.yaml")
+	const sentinel = "name: existing-skill\ndescription: preserve me\n"
+	if err := os.WriteFile(sentinelPath, []byte(sentinel), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	registrar := &mockSkillRegistrar{}
+	promoter := NewNudgePromoter(llm, nil, registrar, root)
+	result, err := promoter.TryPromote(tool.ToolSkillNudgeCandidate{
+		Evidence: 6, SuccessRate: .95, Confidence: .8, SuggestedName: "existing-skill",
+	})
+	if err == nil || result != nil {
+		t.Fatalf("expected duplicate directory rejection, result=%#v err=%v", result, err)
+	}
+	got, err := os.ReadFile(sentinelPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != sentinel {
+		t.Fatalf("existing definition was modified: got %q, want %q", got, sentinel)
+	}
+	if registrar.registered != nil {
+		t.Fatal("existing skill directory must not be registered as a new discovery")
+	}
+}
+
+func TestTryPromote_UnsafeSuggestedNameCannotEscapeSkillsDir(t *testing.T) {
+	llm := &mockLLMRepairer{response: `name: ignored
+description: ignored
+steps:
+  - action: bash
+    params:
+      command: "echo safe"`}
+	parent := t.TempDir()
+	skillsDir := filepath.Join(parent, "skills")
+	escapedDir := filepath.Join(parent, "escaped-skill")
+	promoter := NewNudgePromoter(llm, nil, nil, skillsDir)
+
+	result, err := promoter.TryPromote(tool.ToolSkillNudgeCandidate{
+		Evidence: 6, SuccessRate: .95, Confidence: .8, SuggestedName: "../escaped-skill",
+	})
+	if err == nil || result != nil {
+		t.Fatalf("expected unsafe-name rejection, result=%#v err=%v", result, err)
+	}
+	if _, statErr := os.Stat(escapedDir); !os.IsNotExist(statErr) {
+		t.Fatalf("unsafe name wrote outside SkillsDir, stat err=%v", statErr)
+	}
+	if _, statErr := os.Stat(skillsDir); !os.IsNotExist(statErr) {
+		t.Fatalf("unsafe name should be rejected before creating SkillsDir, stat err=%v", statErr)
+	}
+}
+
+func TestTryPromote_EmptySkillsDirIsRejected(t *testing.T) {
+	llm := &mockLLMRepairer{response: `name: no-root
+description: ignored
+steps:
+  - action: bash
+    params:
+      command: "echo safe"`}
+	promoter := NewNudgePromoter(llm, nil, nil, "")
+	result, err := promoter.TryPromote(tool.ToolSkillNudgeCandidate{
+		Evidence: 6, SuccessRate: .95, Confidence: .8, SuggestedName: "no-root",
+	})
+	if err == nil || result != nil {
+		t.Fatalf("expected missing SkillsDir rejection, result=%#v err=%v", result, err)
+	}
+}
+
 func TestGeneratePromotedSkillName(t *testing.T) {
 	tests := []struct {
 		candidate tool.ToolSkillNudgeCandidate
@@ -196,6 +276,10 @@ func TestGeneratePromotedSkillName(t *testing.T) {
 		},
 		{
 			candidate: tool.ToolSkillNudgeCandidate{},
+			expected:  "auto-skill",
+		},
+		{
+			candidate: tool.ToolSkillNudgeCandidate{TaskType: "中文任务", ToolSequence: []string{"🔧", "✅"}},
 			expected:  "auto-skill",
 		},
 	}

@@ -539,8 +539,12 @@ func (r *TaskRunner) FinalReport() string {
 				parts = append(parts, title+" did not finish.")
 			}
 		case TaskSkipped:
-			if summary != "" {
+			if summary != "" && err != "" && !strings.Contains(summary, err) {
+				parts = append(parts, summary+"\n\n"+err)
+			} else if summary != "" {
 				parts = append(parts, summary)
+			} else if title != "" && err != "" {
+				parts = append(parts, "Skipped "+title+": "+err)
 			} else if title != "" {
 				parts = append(parts, "Skipped "+title+".")
 			}

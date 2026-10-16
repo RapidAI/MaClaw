@@ -6,8 +6,115 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib/database"
 	"github.com/RapidAI/CodeClaw/corelib/tool"
 )
+
+func TestRegisterCoreTools_DatabaseUsesSharedPropertySchema(t *testing.T) {
+	reg := NewCoreToolRegistry()
+	RegisterCoreTools(reg, CoreToolDeps{})
+	shared := database.ToolProperties()
+	defs := reg.BuildDefinitions()
+	for _, def := range defs {
+		fn, _ := def["function"].(map[string]interface{})
+		if fn["name"] != "database" {
+			continue
+		}
+		params, _ := fn["parameters"].(map[string]interface{})
+		if params["type"] != "object" || params["properties"] == nil {
+			t.Fatalf("invalid database parameters envelope: %#v", params)
+		}
+		properties, _ := params["properties"].(map[string]interface{})
+		if _, nested := properties["properties"]; nested {
+			t.Fatalf("database parameters contain nested properties envelope: %#v", params)
+		}
+		if len(properties) != len(shared) {
+			t.Fatalf("database property count=%d, shared=%d", len(properties), len(shared))
+		}
+		return
+	}
+	t.Fatal("database definition not found")
+}
+
+func TestRegisterCoreTools_DatabaseQueryRefusesWrites(t *testing.T) {
+	reg := NewCoreToolRegistry()
+	var seen string
+	RegisterCoreTools(reg, CoreToolDeps{
+		ExtraHandlersCtx: map[string]ToolHandlerCtx{
+			"database": func(ctx context.Context, args map[string]interface{}) string {
+				seen, _ = args["action"].(string)
+				return "ok:" + seen
+			},
+		},
+	})
+	if _, ok := reg.Lookup("database_query"); !ok {
+		t.Fatal("database_query must be registered")
+	}
+	got := reg.ExecuteCtx(context.Background(), "database_query", map[string]interface{}{"action": "query"})
+	if got != "ok:query" || seen != "query" {
+		t.Fatalf("query = %q seen=%q", got, seen)
+	}
+	got = reg.ExecuteCtx(context.Background(), "database_query", map[string]interface{}{"action": "execute"})
+	if !strings.Contains(got, "read-only") {
+		t.Fatalf("execute via database_query = %q", got)
+	}
+	got = reg.ExecuteCtx(context.Background(), "database", map[string]interface{}{"action": "execute"})
+	if got != "ok:execute" {
+		t.Fatalf("database execute = %q", got)
+	}
+}
+
+func TestCoreToolJSONSchemaMatchesRegisterCoreTools(t *testing.T) {
+	reg := NewCoreToolRegistry()
+	RegisterCoreTools(reg, CoreToolDeps{})
+	for _, name := range []string{"bash", "ssh", "ask_user", "task", "web_search", "read_file", "write_file", "edit_file", "Glob", "screenshot", "manage_skill", "im_message", "list_mcp_tools", "import_mcp_servers", "download_file", "delegate_task", "edit_lines", "tts_render", "office", "generate_pdf"} {
+		schema, ok := CoreToolJSONSchema(name)
+		if !ok {
+			t.Fatalf("CoreToolJSONSchema(%s) missing", name)
+		}
+		entry, found := reg.Lookup(name)
+		if !found {
+			t.Fatalf("registry missing %s", name)
+		}
+		props, _ := schema["properties"].(map[string]interface{})
+		if len(props) != len(entry.Properties) {
+			t.Fatalf("%s schema properties=%d registry=%d", name, len(props), len(entry.Properties))
+		}
+		for key := range entry.Properties {
+			if _, exists := props[key]; !exists {
+				t.Fatalf("%s schema missing property %s", name, key)
+			}
+		}
+	}
+	if _, ok := CoreToolJSONSchema("not_a_real_tool"); ok {
+		t.Fatal("unknown tool must not have a core schema")
+	}
+}
+
+func TestOverlayCoreToolSchemaMergesHostExtras(t *testing.T) {
+	props, _, ok := OverlayCoreToolSchema("screenshot", map[string]interface{}{
+		"session_id": map[string]string{"type": "string", "description": "Session ID"},
+	})
+	if !ok {
+		t.Fatal("screenshot core schema missing")
+	}
+	if _, exists := props["display"]; !exists {
+		t.Fatal("overlay must keep core display property")
+	}
+	if _, exists := props["session_id"]; !exists {
+		t.Fatal("overlay must add host session_id")
+	}
+	props, required, ok := OverlayCoreToolSchema("write_file", nil)
+	if !ok || len(required) != 2 {
+		t.Fatalf("write_file required=%v ok=%v", required, ok)
+	}
+	if len(props) == 0 {
+		t.Fatal("write_file overlay returned empty properties")
+	}
+	if _, _, unknown := OverlayCoreToolSchema("not_a_real_tool", nil); unknown {
+		t.Fatal("unknown tool must not overlay")
+	}
+}
 
 // TestCoreToolNames_AllRegistered verifies that every tool declared in
 // CoreToolNames (the router's "always include" set) is either:
@@ -245,6 +352,26 @@ func TestRegisterCoreToolsWebHandlersReceiveContext(t *testing.T) {
 		t.Fatalf("web_fetch ctx handler = %q, want ctx cancelled", got)
 	}
 }
+func TestRegisterCoreToolsDatabaseHandlerCtxReceivesContext(t *testing.T) {
+	reg := NewCoreToolRegistry()
+	RegisterCoreTools(reg, CoreToolDeps{
+		ExtraHandlersCtx: map[string]ToolHandlerCtx{
+			"database": func(ctx context.Context, args map[string]interface{}) string {
+				if err := ctx.Err(); err != nil {
+					return "ctx cancelled"
+				}
+				return "ctx active"
+			},
+		},
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	got := reg.ExecuteCtx(ctx, "database", map[string]interface{}{"action": "list_connections"})
+	if got != "ctx cancelled" {
+		t.Fatalf("database ctx handler = %q", got)
+	}
+}
+
 func TestRegisterCoreToolsSecurityGuardWrapsExtraHandlers(t *testing.T) {
 	reg := NewCoreToolRegistry()
 	RegisterCoreTools(reg, CoreToolDeps{

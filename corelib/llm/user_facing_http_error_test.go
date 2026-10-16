@@ -72,6 +72,37 @@ func TestUserFacingErrorOfficialOwnerUnreachable(t *testing.T) {
 	}
 }
 
+func TestUserFacingErrorOfficialGatewayTimeout(t *testing.T) {
+	err := fmt.Errorf("%w: tenant bound to node hc-2 gateway status 504", ErrOfficialGatewayTimeout)
+	got := UserFacingError(err)
+	if got != "官方模型节点 hc-2 响应超时，请稍后重试" {
+		t.Fatalf("504 got %q", got)
+	}
+	if strings.Contains(got, "http") || strings.Contains(got, "maclaw") || strings.Contains(got, "://") {
+		t.Fatalf("must not leak owner URL: %q", got)
+	}
+	err = fmt.Errorf("%w: tenant bound to node hc-2 gateway status 502", ErrOfficialGatewayTimeout)
+	if got = UserFacingError(err); got != "官方模型节点 hc-2 暂时没有返回响应，请稍后重试" {
+		t.Fatalf("502 got %q", got)
+	}
+	err = fmt.Errorf("%w: tenant bound to node unknown gateway status 504", ErrOfficialGatewayTimeout)
+	if got = UserFacingError(err); got != "官方模型响应超时，请稍后重试" {
+		t.Fatalf("unknown node got %q", got)
+	}
+	err = fmt.Errorf("%w: tenant bound to node https://hubs.maclaw.top gateway status 504", ErrOfficialGatewayTimeout)
+	got = UserFacingError(err)
+	if strings.Contains(got, "hubs") || strings.Contains(got, "http") {
+		t.Fatalf("url node id leaked: %q", got)
+	}
+	if got != "官方模型响应超时，请稍后重试" {
+		t.Fatalf("url node got %q", got)
+	}
+	plain := errors.New("tenant bound to node hc-3 but owner is unreachable")
+	if got = UserFacingError(plain); got != "官方模型当前绑定的节点不可达，请稍后重试" {
+		t.Fatalf("unreachable copy changed: %q", got)
+	}
+}
+
 func TestUserFacingHTTPStatusTenantBoundCode(t *testing.T) {
 	body := []byte(`{"code":"TENANT_BOUND_TO_NODE","error":{"message":"tenant bound to node hc-3, please redirect","code":"TENANT_BOUND_TO_NODE"}}`)
 	got := UserFacingHTTPStatus(http.StatusConflict, body)

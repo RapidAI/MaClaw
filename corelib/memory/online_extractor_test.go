@@ -310,6 +310,34 @@ func TestOnlineExtractorUpdatePersistsMergedMetadataThroughSQLiteBatch(t *testin
 	}
 }
 
+func TestExtractorTargetMutableRejectsForeignOwnerAndUnknownID(t *testing.T) {
+	similar := []Entry{
+		{ID: "own", OwnerID: "user-a", Category: CategoryUserFact, Content: "lives in beijing"},
+		{ID: "shared", OwnerID: "", Category: CategoryUserFact, Content: "shared note"},
+		{ID: "other", OwnerID: "user-b", Category: CategoryUserFact, Content: "other user"},
+		{ID: "identity", OwnerID: "user-a", Category: CategorySelfIdentity, Content: "i am maclaw"},
+	}
+	if _, ok := extractorTargetMutable(similar, "other", "user-a"); ok {
+		t.Fatal("other owner was mutable")
+	}
+	if _, ok := extractorTargetMutable(similar, "shared", "user-a"); ok {
+		t.Fatal("empty owner matched a named caller")
+	}
+	if _, ok := extractorTargetMutable(similar, "missing", "user-a"); ok {
+		t.Fatal("unknown id was mutable")
+	}
+	if _, ok := extractorTargetMutable(similar, "identity", "user-a"); ok {
+		t.Fatal("protected category was mutable")
+	}
+	got, ok := extractorTargetMutable(similar, "own", "user-a")
+	if !ok || got.ID != "own" {
+		t.Fatalf("own target = %+v ok=%v", got, ok)
+	}
+	if _, ok := extractorTargetMutable(similar, "shared", ""); !ok {
+		t.Fatal("empty owner should update an empty-owner candidate")
+	}
+}
+
 func TestBuildFactTagsUsesCanonicalEntityParser(t *testing.T) {
 	fact := ExtractedFact{
 		Content:     "Alpha host uses port 2222.",

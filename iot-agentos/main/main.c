@@ -61,6 +61,10 @@
 #include "services/gateway_lifecycle_service.h"
 #include "services/gateway_transport.h"
 #include "services/gateway_tool_result_outbox_policy.h"
+#include "services/gateway_tool_result_service.h"
+#include "services/gateway_event_ack_service.h"
+#include "services/event_ingest.h"
+#include "services/latency_trace.h"
 #include "services/cellular_recovery_service.h"
 #include "services/wifi_runtime_configuration_service.h"
 #include "services/wifi_startup_service.h"
@@ -648,8 +652,6 @@ static device_status_t startup_status_from_esp_err(esp_err_t err);
 static esp_err_t stop_network_core_transaction(uint32_t timeout_ms);
 static esp_err_t stop_connectivity_root_transaction(uint32_t timeout_ms);
 static bool hardware_audio_url_allowed(const char *url);
-static esp_err_t handle_client_tool_call(cJSON *item);
-static char s_delivered_tool_result_id[128];
 static const char *json_string(cJSON *root, const char *key);
 static bool json_number(cJSON *root, const char *key, int *value);
 static void schedule_wake_restart(void);
@@ -716,152 +718,6 @@ static void configuration_persistence_abort_system_sleep_prepare(void *context) 
     configuration_persistence_worker_service_abort_system_sleep_prepare();
 }
 
-
-static esp_err_t handle_client_tool_call(cJSON *item) {
-    cJSON *call = cJSON_GetObjectItemCaseSensitive(item, "toolCall");
-    const char *call_id = json_string(call, "id");
-    const char *name = json_string(call, "name");
-    const char *idempotency_key = json_string(call, "idempotencyKey");
-    const char *conversation_id = json_string(item, "conversationId");
-    cJSON *arguments = cJSON_GetObjectItemCaseSensitive(call, "arguments");
-    if (!cJSON_IsObject(call) || !call_id || !name) return ESP_ERR_INVALID_ARG;
-    const device_tool_definition_t *tool_definition = NULL;
-    bool known_tool = device_tool_registry_find(name, &tool_definition);
-    const bool requires_idempotency_key =
-        device_tool_registry_requires_idempotency(tool_definition);
-    bool missing_idempotency_key = !idempotency_key || !idempotency_key[0];
-    bool invalid_arguments = arguments && !cJSON_IsObject(arguments);
-    bool owned_arguments = false;
-    if (!arguments) {
-        arguments = cJSON_CreateObject();
-        owned_arguments = true;
-    }
-    cJSON *result = NULL;
-    char detail[128] = {0};
-    esp_err_t execute_err;
-    if (missing_idempotency_key && requires_idempotency_key) {
-        snprintf(detail, sizeof(detail), "idempotencyKey is required");
-        execute_err = ESP_ERR_INVALID_ARG;
-    } else if (invalid_arguments) {
-        snprintf(detail, sizeof(detail), "arguments must be an object");
-        execute_err = ESP_ERR_INVALID_ARG;
-    } else if (!arguments) {
-        snprintf(detail, sizeof(detail), "cannot allocate arguments object");
-        execute_err = ESP_ERR_NO_MEM;
-    } else if (!known_tool) {
-        snprintf(detail, sizeof(detail), "unsupported client tool: %s", name);
-        execute_err = ESP_ERR_NOT_SUPPORTED;
-    } else if (!device_tool_registry_is_ready(tool_definition)) {
-        snprintf(detail, sizeof(detail), "client tool is temporarily unavailable");
-        execute_err = ESP_ERR_INVALID_STATE;
-    } else {
-        execute_err = device_tool_registry_execute(tool_definition, arguments,
-                                                    idempotency_key, &result,
-                                                    detail, sizeof(detail));
-    }
-    if (owned_arguments) cJSON_Delete(arguments);
-    ESP_LOGI(TAG, "client tool executed: name=%s call=%s status=%s",
-             name, call_id, execute_err == ESP_OK ? "succeeded" : "failed");
-
-    cJSON *body = cJSON_CreateObject();
-    if (!body) {
-        cJSON_Delete(result);
-        factory_reset_service_reboot_if_pending(false);
-        return ESP_ERR_NO_MEM;
-    }
-    cJSON_AddStringToObject(body, "clientId", gateway_transport_device_id());
-    cJSON_AddStringToObject(body, "resultId", call_id);
-    cJSON_AddStringToObject(body, "toolCallId", call_id);
-    /* Retain the originating tool name in the durable envelope. Gateway
-     * outbox replay uses this value to distinguish factory-reset results. */
-    cJSON_AddStringToObject(body, "toolName", name);
-    cJSON_AddStringToObject(body, "conversationId", conversation_id && conversation_id[0] ? conversation_id : "default");
-    if (!missing_idempotency_key) cJSON_AddStringToObject(body, "idempotencyKey", idempotency_key);
-    if (execute_err == ESP_OK) {
-        cJSON_AddStringToObject(body, "status", "succeeded");
-        cJSON_AddItemToObject(body, "result", result);
-        result = NULL;
-    } else {
-        cJSON_AddStringToObject(body, "status", "failed");
-        cJSON *error = cJSON_AddObjectToObject(body, "error");
-        bool persistent_capacity_error = execute_err == ESP_ERR_NO_MEM &&
-                                         (strstr(detail, "alarm capacity") != NULL ||
-                                          strstr(detail, "persistent replay capacity") != NULL);
-        const char *error_code = execute_err == ESP_ERR_NOT_SUPPORTED ? "unknown_tool" :
-                                 execute_err == ESP_ERR_TIMEOUT ? "device_busy" :
-                                 persistent_capacity_error ? "capacity_exhausted" :
-                                 execute_err == ESP_ERR_NO_MEM ? "device_busy" :
-                                 execute_err == ESP_ERR_INVALID_ARG ? "invalid_arguments" :
-                                 "device_error";
-        cJSON_AddStringToObject(error, "code", error_code);
-        cJSON_AddStringToObject(error, "message", detail[0] ? detail : esp_err_to_name(execute_err));
-        cJSON_AddBoolToObject(error, "retryable",
-                              execute_err == ESP_ERR_TIMEOUT ||
-                              (execute_err == ESP_ERR_NO_MEM && !persistent_capacity_error) ||
-                              (execute_err != ESP_ERR_NOT_SUPPORTED &&
-                               execute_err != ESP_ERR_INVALID_ARG &&
-                               execute_err != ESP_ERR_NO_MEM));
-    }
-    char *payload = cJSON_PrintUnformatted(body);
-    cJSON_Delete(body);
-    cJSON_Delete(result);
-    if (!payload) {
-        factory_reset_service_reboot_if_pending(false);
-        return ESP_ERR_NO_MEM;
-    }
-    esp_err_t err = (esp_err_t)gateway_transport_post_json(
-        "/api/im-gateway/v1/tool-result", payload,
-        GATEWAY_TRANSPORT_ACCEPT_200 | GATEWAY_TRANSPORT_ACCEPT_202 |
-        GATEWAY_TRANSPORT_ACCEPT_204);
-    bool result_durable = err == ESP_OK;
-    if (err != ESP_OK) {
-        const size_t payload_bytes = strlen(payload) + 1u;
-        if (gateway_tool_result_outbox_validate_record(payload, payload_bytes,
-                                                        GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY) == DEVICE_STATUS_OK) {
-            /* A failed tool result may be close to the 64 KiB envelope bound.
-             * Keep both queue copies in PSRAM so an internal-heap pressure
-             * event cannot turn a transport failure into an undeliverable
-             * result. Persistence copies through its internal-stack worker. */
-            char *queue = heap_caps_malloc(GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY,
-                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-            size_t queue_size = GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY;
-            device_status_t read_status = queue ? persistence_service_read_blob(
-                "gateway", "tool_result_outbox", queue, &queue_size) : DEVICE_STATUS_RESOURCE_EXHAUSTED;
-            if (read_status == DEVICE_STATUS_NOT_FOUND) queue_size = 0;
-            char *updated = queue ? heap_caps_malloc(GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY,
-                                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) : NULL;
-            size_t updated_size = 0;
-            device_status_t append_status = (queue && updated &&
-                (read_status == DEVICE_STATUS_OK || read_status == DEVICE_STATUS_NOT_FOUND)) ?
-                gateway_tool_result_outbox_append(queue_size ? queue : NULL, queue_size,
-                                                  payload, payload_bytes, updated,
-                                                  GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY, &updated_size) :
-                DEVICE_STATUS_RESOURCE_EXHAUSTED;
-            const device_status_t persist_status = append_status == DEVICE_STATUS_OK ?
-                persistence_service_write_blob("gateway", "tool_result_outbox", updated, updated_size) : append_status;
-            result_durable = persist_status == DEVICE_STATUS_OK;
-            if (persist_status != DEVICE_STATUS_OK) {
-                ESP_LOGE(TAG, "cannot persist failed tool result: status=%d",
-                         (int)persist_status);
-            }
-            free(updated);
-            free(queue);
-        }
-    }
-    free(payload);
-    ESP_LOGI(TAG, "client tool result delivered: name=%s call=%s err=%s",
-             name, call_id, esp_err_to_name(err));
-    /* Factory reset marks the reboot handoff only after its durable journal is
-     * cleared.  Let this tool-result path attempt delivery/outbox persistence
-     * first, then perform the final reboot exactly once. */
-    /* Only the factory_reset envelope can authorize the pending reset
-     * handoff. A later unrelated tool-result must never accidentally satisfy
-     * the delivery gate if the reset result itself was still undelivered. */
-    factory_reset_service_reboot_if_pending(
-        strcmp(name, "factory_reset") == 0 && result_durable);
-    return err;
-}
-
 static void publish_pending_update_reminder(void) {
     char title[32] = {0};
     char detail[UPDATE_SERVICE_DETAIL_CAPACITY] = {0};
@@ -919,14 +775,25 @@ static esp_err_t download_audio(const char *url, uint8_t **out_audio, size_t *ou
     // no contiguous internal block for TLS AES.  Take the same explicit
     // memory lease used by the upload paths before opening the media TLS
     // connection; the caller restores wake after the response has been ACKed.
-    (void)media_transfer_service_begin_server_audio_wake_lease(
+    const bool lease_acquired = media_transfer_service_begin_server_audio_wake_lease(
         "server audio download");
+    /* URL downloads are the lease owner; a duplicate begin means another
+     * transaction already owns the singleton. Do not open a second media
+     * socket without its memory/recognizer fence. */
+    if (!lease_acquired) {
+        return ESP_ERR_INVALID_STATE;
+    }
     // A delivered voice reply is a foreground user outcome.  The cold-start
     // pet is decorative, so stop it before waiting for the media lane.  Its
     // worker observes this flag after the one already-running bounded request,
     // releases the lane, and cannot start another frame over the reply.
     cancel_optional_startup_pet_asset_for_audio();
     if (media_transfer_service_take_lane(35000) != DEVICE_STATUS_OK) {
+        /* Lane acquisition is after the server-audio wake lease.  If the
+         * shared lane times out, unwind this transaction's lease before
+         * returning; otherwise the singleton lease would strand wake memory,
+         * block later audio, and prevent System Sleep from draining. */
+        (void)media_transfer_service_finish_server_audio_wake_lease();
         return ESP_ERR_TIMEOUT;
     }
     // Advertise priority before starting TLS so the optional pet worker cannot
@@ -1364,8 +1231,12 @@ static device_status_t pet_asset_download_host_request_frame(
             media_transfer_service_release_lane();
             return DEVICE_STATUS_BUSY;
         }
-        media_transfer_service_begin_optional_wake_lease("optional pet asset");
-        optional_lease_held = true;
+        optional_lease_held = media_transfer_service_begin_optional_wake_lease(
+            "optional pet asset");
+        if (!optional_lease_held) {
+            media_transfer_service_release_lane();
+            return DEVICE_STATUS_BUSY;
+        }
     }
 
     uint8_t *frame = NULL;
@@ -1662,14 +1533,14 @@ static bool pet_asset_runtime_transaction_admitted(void *context) {
         GATEWAY_CAPABILITY_PET_ASSET);
 }
 
-static void pet_asset_runtime_begin_optional_media_work(void *context) {
+static bool pet_asset_runtime_begin_optional_media_work(void *context) {
     (void)context;
-    media_transfer_service_begin_optional_wake_lease("runtime pet asset");
+    return media_transfer_service_begin_optional_wake_lease("runtime pet asset");
 }
 
 static void pet_asset_runtime_finish_optional_media_work(void *context) {
     (void)context;
-    media_transfer_service_finish_optional_wake_lease();
+    (void)media_transfer_service_finish_optional_wake_lease();
 }
 
 static bool pet_asset_runtime_capacity_available(const pet_asset_ref_t *ref,
@@ -2172,13 +2043,24 @@ static esp_err_t audio_wake_word_stop_with_timeout(uint32_t timeout_ms) {
 static device_status_t server_audio_play_mp3(const uint8_t *data, uint32_t length,
                                              void *context) {
     (void)context;
-    return mp3_player_play(data, length);
+    /* The bytes are in hand and about to enter the decoder: this is the first
+     * server audio byte of the turn.  Flushing after the call keeps the
+     * rendered-frame mark inside the same latency line. */
+    latency_trace_mark(LATENCY_MARK_TTS);
+    device_status_t status = mp3_player_play(data, length);
+    latency_trace_flush();
+    return status;
 }
 
 static device_status_t server_audio_play_wav(const uint8_t *data, uint32_t length,
                                              void *context) {
     (void)context;
-    return audio_arbitration_play_wav(data, length);
+    /* WAV playback reports no separate decode step, so the first audio byte is
+     * also the best available response metric for this format. */
+    latency_trace_mark(LATENCY_MARK_TTS);
+    device_status_t status = audio_arbitration_play_wav(data, length);
+    latency_trace_flush();
+    return status;
 }
 
 static bool hardware_audio_url_allowed(const char *url) {
@@ -2337,6 +2219,35 @@ static device_status_t cancel_gateway_requests_for_system_sleep(uint32_t timeout
     uint32_t remaining_ms = 0;
     device_status_t lifecycle_status;
 
+    /* Cancel the transport owner before waiting for Media's lane.  A media
+     * download is itself a Gateway active request; waiting for its lane first
+     * would turn a cooperative abort into a guaranteed timeout.  This sweep
+     * is idempotent and remains bounded by the same parent deadline. */
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    lifecycle_status = remaining_ms
+        ? gateway_transport_cancel_active_requests(GATEWAY_TRANSPORT_CANCEL_ALL,
+                                                   remaining_ms)
+        : DEVICE_STATUS_TIMEOUT;
+    if (lifecycle_status == DEVICE_STATUS_OK &&
+        startup_rollback_remaining_timeout_ms(deadline_us) == 0) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    if (lifecycle_status != DEVICE_STATUS_OK) return lifecycle_status;
+
+    /* Media is a physical HTTP/PSRAM/I2S borrower even when the Gateway
+     * request registry is otherwise idle. Park it after transport cancel and
+     * before the remaining network-root participants; Power remains the sole
+     * rollback owner. */
+    remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
+    lifecycle_status = remaining_ms
+        ? media_transfer_service_prepare_system_sleep(remaining_ms)
+        : DEVICE_STATUS_TIMEOUT;
+    if (lifecycle_status == DEVICE_STATUS_OK &&
+        startup_rollback_remaining_timeout_ms(deadline_us) == 0) {
+        return DEVICE_STATUS_TIMEOUT;
+    }
+    if (lifecycle_status != DEVICE_STATUS_OK) return lifecycle_status;
+
     /* The startup-pet retry callback can otherwise spawn its HTTP worker after
      * the shared cancellation sweep. Preserve only its pre-PREPARE intent. */
     remaining_ms = startup_rollback_remaining_timeout_ms(deadline_us);
@@ -2444,6 +2355,10 @@ static void resume_gateway_workers_after_system_sleep_abort(void *context) {
     cellular_recovery_service_abort_system_sleep_prepare();
     clock_sync_service_abort_system_sleep_prepare();
     abort_startup_pet_asset_system_sleep_prepare();
+    /* Media PREPARE is the outermost root-owned borrower fence. Reopen it
+     * last, after every network worker and the startup-pet chain have been
+     * restored, so a late wake restart cannot race an old media owner. */
+    media_transfer_service_abort_system_sleep_prepare();
 }
 
 /* The restart coordinator remains deliberately unbound from production
@@ -2848,12 +2763,6 @@ static esp_err_t persist_hub_display_policy(bool has_brightness, unsigned bright
         }, 4000, 1000, 3000, out_revision);
 }
 
-static bool is_enterprise_wifi(void) {
-    wifi_runtime_configuration_snapshot_t runtime = {0};
-    return wifi_runtime_configuration_service_get_snapshot(&runtime) &&
-           !strcmp(runtime.security, "enterprise");
-}
-
 static void load_gateway_token(void) {
     /* Token is now loaded with the atomic configuration snapshot. Kept as a
      * compatibility call-site seam while Gateway startup is migrated. */
@@ -3041,16 +2950,6 @@ static const input_binding_host_t s_input_binding_host = {
     .start_deferred_setup = input_host_start_deferred_setup,
     .safe_mode_active = input_host_safe_mode_active,
 };
-
-/* This is deliberately an explicit transaction rather than ESP_ERROR_CHECK:
- * a failed cold network start must enter the composition root's degraded
- * rollback path, not reboot into the same partial allocation indefinitely.
- * The private network-core owner records ESP-NETIF/default-loop singleton
- * state independently, so a partial generation is never restartable. */
-static esp_err_t init_network_core(void) {
-    return device_status_to_platform_error(
-        connectivity_network_lifecycle_service_ensure_core());
-}
 
 static device_status_t network_lifecycle_initialize_logical(void *context) {
     (void)context;
@@ -4717,7 +4616,7 @@ static void gateway_host_welcome_complete(bool playback_succeeded) {
 }
 
 static int32_t gateway_host_handle_tool_call(const void *message_item) {
-    return (int32_t)handle_client_tool_call((cJSON *)message_item);
+    return gateway_tool_result_service_handle_tool_call(message_item);
 }
 
 static void gateway_host_handle_pet_profile(const void *message_item, const char *id,
@@ -4767,13 +4666,7 @@ static void gateway_host_handle_pet_profile(const void *message_item, const char
 }
 
 static bool gateway_host_tool_result_outbox_already_delivered(const void *message_item) {
-    if (!message_item || !s_delivered_tool_result_id[0]) return false;
-    cJSON *item = (cJSON *)message_item;
-    cJSON *call = cJSON_GetObjectItemCaseSensitive(item, "toolCallId");
-    if (!cJSON_IsString(call) || !call->valuestring) call = cJSON_GetObjectItemCaseSensitive(item, "id");
-    if (!cJSON_IsString(call) || !call->valuestring || strcmp(call->valuestring, s_delivered_tool_result_id) != 0) return false;
-    s_delivered_tool_result_id[0] = '\0';
-    return true;
+    return gateway_tool_result_service_outbox_already_delivered(message_item);
 }
 
 static void gateway_host_handle_hardware_config(
@@ -4944,6 +4837,165 @@ static void gateway_host_apply_ambient(const void *ambient_node) {
     ambient_service_apply_hub_ambient(ambient_node);
 }
 
+/* Session-scoped idempotency for structured events (plan section 4.1).  Bounded
+ * and deliberately not persisted: a persist=true event is meant to reappear
+ * after a reboot, so a ring that survived one would suppress exactly the replay
+ * the contract requires.  Cross-boot bookkeeping belongs with N1-6's snapshot
+ * lifecycle. */
+static event_ingest_dedupe_t s_event_dedupe;
+
+static bool event_json_bool(cJSON *node, const char *key) {
+    return cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(node, key));
+}
+
+/* Extract the wire fields into the pure-value struct the ingest policy
+ * validates.  String pointers stay borrowed from the cJSON tree, which outlives
+ * this call.  Returns false on a structurally malformed payload (a non-array
+ * actions field, a non-object entry, more entries than the contract allows) so
+ * the caller can fail closed instead of silently reading a subset. */
+static bool event_extract_fields(cJSON *event, event_ingest_fields_t *out_fields,
+                                 event_ingest_action_t *out_actions, int max_actions) {
+    if (!cJSON_IsObject(event) || !out_fields || !out_actions || max_actions <= 0) {
+        return false;
+    }
+    memset(out_fields, 0, sizeof(*out_fields));
+    out_fields->event_id = json_string(event, "eventId");
+    out_fields->category = json_string(event, "category");
+    out_fields->severity = json_string(event, "severity");
+    out_fields->title = json_string(event, "title");
+    out_fields->summary = json_string(event, "summary");
+    out_fields->dedupe_key = json_string(event, "dedupeKey");
+    out_fields->requires_ack = event_json_bool(event, "requiresAck");
+    out_fields->persist = event_json_bool(event, "persist");
+    int ttl_sec = 0;
+    out_fields->ttl_sec = json_number(event, "ttlSec", &ttl_sec) ? (long)ttl_sec : 0;
+    out_fields->actions = out_actions;
+    out_fields->action_count = 0;
+
+    cJSON *actions = cJSON_GetObjectItemCaseSensitive(event, "actions");
+    if (actions) {
+        if (!cJSON_IsArray(actions) || cJSON_GetArraySize(actions) > max_actions) return false;
+        cJSON *action = NULL;
+        cJSON_ArrayForEach(action, actions) {
+            if (!cJSON_IsObject(action)) return false;
+            event_ingest_action_t *slot = &out_actions[out_fields->action_count];
+            slot->id = json_string(action, "id");
+            slot->label = json_string(action, "label");
+            slot->kind = json_string(action, "kind");
+            slot->risk = json_string(action, "risk");
+            out_fields->action_count += 1;
+        }
+    }
+    return true;
+}
+
+/* Present a pushed structured event (plan N1-2).  The admission decision itself
+ * lives in the host-tested event_ingest / event_presentation_policy modules;
+ * what stays here is the cJSON extraction and the composition-root rendering.
+ *
+ * Two outcomes are reported back to the dispatcher rather than swallowed:
+ *   - deferred (out_handled=false) when a soft event arrives mid-turn.  The
+ *     message stays pending and the next poll presents it once the turn ends,
+ *     instead of replacing what the user is reading;
+ *   - permanently invalid (out_permanently_invalid=true) for a payload the
+ *     device cannot render faithfully.  Retrying cannot repair it, so it must
+ *     not pin the shared page cursor. */
+static void gateway_host_apply_event(const void *event_node, bool *out_handled,
+                                     bool *out_permanently_invalid) {
+    if (out_handled) *out_handled = true;
+    if (out_permanently_invalid) *out_permanently_invalid = false;
+    if (!out_handled || !out_permanently_invalid) return;
+
+    event_ingest_fields_t fields;
+    event_ingest_action_t actions[EVENT_INGEST_MAX_ACTIONS];
+    if (!event_extract_fields((cJSON *)event_node, &fields, actions,
+                              EVENT_INGEST_MAX_ACTIONS)) {
+        *out_permanently_invalid = true;
+        ESP_LOGW(TAG, "discarded malformed event payload");
+        return;
+    }
+
+    event_device_state_flags_t state = {0};
+    event_presentation_current_flags(&state);
+    event_action_t action = EVENT_ACTION_COUNT;
+    if (!event_ingest_decide(&fields, &state, &action)) {
+        *out_permanently_invalid = true;
+        ESP_LOGW(TAG, "discarded invalid event: id=%s category=%s severity=%s",
+                 fields.event_id && fields.event_id[0] ? fields.event_id : "<none>",
+                 fields.category && fields.category[0] ? fields.category : "<none>",
+                 fields.severity && fields.severity[0] ? fields.severity : "<none>");
+        return;
+    }
+    ESP_LOGI(TAG, "event %s severity=%s state=%s action=%s",
+             fields.event_id, fields.severity,
+             event_device_state_name(event_device_state_dominant(&state)),
+             event_action_name(action));
+
+    /* The matrix decided not to show it (quiet hours, say).  That is a
+     * decision, so the message is consumed rather than retried. */
+    if (action == EVENT_ACTION_DROP) return;
+
+    /* A soft event must not replace the turn in progress.  Note the dedupe key
+     * is deliberately *not* recorded on this path: the retry has to be able to
+     * present the event once the turn is over. */
+    if (event_ingest_defers_while_busy(action, command_service_display_active())) {
+        *out_handled = false;
+        ESP_LOGI(TAG, "deferred event %s until the current turn ends", fields.event_id);
+        return;
+    }
+
+    /* A card that offers actions is a decision the user must be able to answer
+     * (plan N1-6).  Checked before the dedupe ring records the key: a card held
+     * back because an earlier answer has not reached the Hub yet must be able
+     * to present itself on the retry, and burning its dedupe key here would
+     * suppress exactly that retry. */
+    const bool answerable = gateway_event_ack_service_offers_decision(&fields);
+    if (answerable && !gateway_event_ack_service_slot_free()) {
+        *out_handled = false;
+        ESP_LOGI(TAG, "deferred event %s: an undelivered answer still holds the slot",
+                 fields.event_id);
+        return;
+    }
+
+    /* Now that the event will actually be presented, apply session
+     * idempotency: the same logical event is shown once (section 4.1).  A
+     * duplicate is a delivery artefact, not something to show twice. */
+    const char *dedupe_key = event_ingest_dedupe_key(&fields);
+    if (event_ingest_dedupe_seen(&s_event_dedupe, dedupe_key)) {
+        ESP_LOGI(TAG, "suppressed duplicate event: key=%s", dedupe_key);
+        return;
+    }
+
+    if (event_action_should_display(action)) {
+        if (answerable) {
+            /* The answerable card replaces the plain message card: it has to
+             * name the object of the decision, which the plain card does not.
+             * The slot was confirmed free above and this runs on the same task,
+             * so a failure here means the two predicates disagree. */
+            if (!gateway_event_ack_service_begin(&fields)) {
+                ESP_LOGE(TAG, "answerable card refused the slot: event=%s",
+                         fields.event_id);
+                *out_handled = false;
+                return;
+            }
+        } else {
+            scene_presenter_publish_message(event_ingest_display_title(&fields),
+                                            event_ingest_display_body(&fields));
+        }
+    }
+    if (event_action_should_buzz(action)) {
+        /* No haptic actuator is wired yet; the card is still shown.  N4-3 owns
+         * the physical presentation. */
+        ESP_LOGI(TAG, "event %s asked for a buzz (no actuator wired yet)", fields.event_id);
+    }
+    if (event_action_is_audible(action)) {
+        /* The device has no local TTS: audible delivery needs the server
+         * (N3-5).  The card is shown meanwhile so the event is never lost --
+         * "we cannot speak yet" must not become "we showed nothing". */
+        ESP_LOGI(TAG, "event %s would speak once N3-5 provides an audio path", fields.event_id);
+    }
+}
+
 static bool gateway_host_audio_url_allowed(const char *url) {
     return hardware_audio_url_allowed(url);
 }
@@ -4999,94 +5051,11 @@ static void gateway_host_apply_deferred_startup_pet_asset(void) {
 }
 
 static int32_t gateway_host_flush_tool_result_outbox(void) {
-    /* A full queue is intentionally kept out of internal heap: a Tool-result
-     * envelope may approach the 64 KiB bound while Wi-Fi/TLS and audio still
-     * require internal DMA-capable memory. Persistence routes the request to
-     * its internal-stack worker and safely copies from PSRAM. */
-    char *payload = heap_caps_malloc(GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY,
-                                     MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    if (!payload) return ESP_ERR_NO_MEM;
-    size_t size = GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY;
-    const device_status_t read_status = persistence_service_read_blob(
-        "gateway", "tool_result_outbox", payload, &size);
-    if (read_status == DEVICE_STATUS_NOT_FOUND) {
-        free(payload);
-        return ESP_OK;
-    }
-    if (read_status != DEVICE_STATUS_OK) {
-        free(payload);
-        return ESP_ERR_INVALID_RESPONSE;
-    }
-    /* Upgrade the pre-versioned length-only queue before replay.  The
-     * migration is value-only and is committed before any POST, so a reset
-     * cannot expose a partially interpreted legacy record. */
-    if (gateway_tool_result_outbox_validate_queue(payload, size,
-                                                  GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY) != DEVICE_STATUS_OK) {
-        char *upgraded = heap_caps_malloc(GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY,
-                                          MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        size_t upgraded_size = 0;
-        const device_status_t upgrade_status = upgraded ?
-            gateway_tool_result_outbox_upgrade_legacy(payload, size, upgraded,
-                                                      GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY,
-                                                      &upgraded_size) :
-            DEVICE_STATUS_RESOURCE_EXHAUSTED;
-        if (upgrade_status != DEVICE_STATUS_OK ||
-            persistence_service_write_blob("gateway", "tool_result_outbox",
-                                           upgraded, upgraded_size) != DEVICE_STATUS_OK) {
-            free(upgraded); free(payload); return ESP_ERR_INVALID_RESPONSE;
-        }
-        memcpy(payload, upgraded, upgraded_size);
-        size = upgraded_size;
-        free(upgraded);
-    }
-    char *record = heap_caps_malloc(GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY,
-                                    MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-    size_t record_size = 0;
-    if (!record || gateway_tool_result_outbox_peek(payload, size, record,
-            GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY, &record_size) != DEVICE_STATUS_OK) {
-        free(record); free(payload); return ESP_ERR_INVALID_RESPONSE;
-    }
-    cJSON *record_json = cJSON_Parse(record);
-    const char *result_id = record_json ? json_string(record_json, "resultId") : NULL;
-    if (!result_id && record_json) result_id = json_string(record_json, "toolCallId");
-    const char *tool_name = record_json ? json_string(record_json, "toolName") : NULL;
-    const bool is_factory_reset_result = tool_name &&
-                                         strcmp(tool_name, "factory_reset") == 0;
-    if (result_id && result_id[0]) snprintf(s_delivered_tool_result_id, sizeof(s_delivered_tool_result_id), "%s", result_id);
-    cJSON_Delete(record_json);
-    const int32_t post_status = gateway_transport_post_json(
-        "/api/im-gateway/v1/tool-result", record,
-        GATEWAY_TRANSPORT_ACCEPT_200 | GATEWAY_TRANSPORT_ACCEPT_202 |
-        GATEWAY_TRANSPORT_ACCEPT_204);
-    if (post_status == ESP_OK) {
-        char *remaining = heap_caps_malloc(GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY,
-                                           MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        size_t remaining_size = 0;
-        device_status_t pop_status = remaining ? gateway_tool_result_outbox_pop(
-            payload, size, remaining, GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY, &remaining_size) : DEVICE_STATUS_RESOURCE_EXHAUSTED;
-        /* Never erase the durable head when the value-only pop failed.  The
-         * POST may have succeeded, but without a durable dequeue result the
-         * record remains the only replay evidence; fail closed and let the
-         * next poll retry/resolve it rather than turning an internal buffer
-         * or validation error into data loss. */
-        const device_status_t erase_status = pop_status != DEVICE_STATUS_OK
-            ? pop_status
-            : (remaining_size
-                ? persistence_service_write_blob("gateway", "tool_result_outbox", remaining, remaining_size)
-                : persistence_service_erase_key("gateway", "tool_result_outbox"));
-        free(remaining);
-        if (erase_status != DEVICE_STATUS_OK && erase_status != DEVICE_STATUS_NOT_FOUND) {
-            free(payload);
-            return device_status_to_platform_error(erase_status);
-        }
-        if (is_factory_reset_result) {
-            factory_reset_service_reboot_if_pending(true);
-        }
-    }
-    if (post_status != ESP_OK) s_delivered_tool_result_id[0] = '\0';
-    free(record);
-    free(payload);
-    return post_status;
+    return gateway_tool_result_service_flush_outbox();
+}
+
+static int32_t gateway_host_flush_event_ack(void) {
+    return gateway_event_ack_service_flush();
 }
 
 static const gateway_dispatcher_host_t s_gateway_dispatcher_host = {
@@ -5100,6 +5069,7 @@ static const gateway_dispatcher_host_t s_gateway_dispatcher_host = {
     .handle_hardware_config = gateway_host_handle_hardware_config,
     .apply_glyphs = gateway_host_apply_glyphs,
     .apply_ambient = gateway_host_apply_ambient,
+    .apply_event = gateway_host_apply_event,
     .audio_url_allowed = gateway_host_audio_url_allowed,
     .audio_mime_supported = gateway_host_audio_mime_supported,
     .audio_download_error_is_permanent = gateway_host_audio_download_error_is_permanent,
@@ -5113,6 +5083,7 @@ static const gateway_dispatcher_host_t s_gateway_dispatcher_host = {
     .take_startup_pet_retry_due = gateway_host_take_startup_pet_retry_due,
     .apply_deferred_startup_pet_asset = gateway_host_apply_deferred_startup_pet_asset,
     .flush_tool_result_outbox = gateway_host_flush_tool_result_outbox,
+    .flush_event_ack = gateway_host_flush_event_ack,
 };
 
 /* Interaction Service host seam: voice upload/submit/pairing are composed
@@ -5292,6 +5263,8 @@ void app_main(void) {
         goto startup_core_no_memory;
     }
     pet_asset_retry_service_init();
+    gateway_tool_result_service_init();
+    gateway_event_ack_service_init();
     if (startup_pet_asset_state_service_init() != DEVICE_STATUS_OK) {
         goto startup_core_no_memory;
     }

@@ -2,6 +2,21 @@ package corelib
 
 import "testing"
 
+func TestCodingQualityGateConfigDefaultsOff(t *testing.T) {
+	var c AppConfig
+	if c.IsCodingQualityGateEnabled() {
+		t.Fatal("quality gate must default off")
+	}
+	c.SetCodingQualityGateEnabled(true)
+	if !c.IsCodingQualityGateEnabled() {
+		t.Fatal("expected quality gate on")
+	}
+	c.SetCodingQualityGateEnabled(false)
+	if c.IsCodingQualityGateEnabled() {
+		t.Fatal("explicit false must stay off")
+	}
+}
+
 func TestAcpHostConfigDefaults(t *testing.T) {
 	var c AppConfig
 	if !c.IsAcpHostEnabled() {

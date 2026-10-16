@@ -98,42 +98,42 @@ func TestMobileSSHQuickProfileIDStable(t *testing.T) {
 
 func TestMobileParseQuickSSHFromText(t *testing.T) {
 	cases := []struct {
-		name       string
-		text       string
-		wantHost   string
-		wantUser   string
-		wantPass   string
-		wantPort   int
-		wantOK     bool
+		name     string
+		text     string
+		wantHost string
+		wantUser string
+		wantPass string
+		wantPort int
+		wantOK   bool
 	}{
 		{
-			name: "chinese freeform host user pass",
-			text: "查一下服务器状态 www.example.com root MyPass123",
+			name:     "chinese freeform host user pass",
+			text:     "查一下服务器状态 www.example.com root MyPass123",
 			wantHost: "www.example.com", wantUser: "root", wantPass: "MyPass123", wantPort: 22, wantOK: true,
 		},
 		{
-			name: "user@host password",
-			text: "root@10.0.0.9:2222 s3cretPass",
+			name:     "user@host password",
+			text:     "root@10.0.0.9:2222 s3cretPass",
 			wantHost: "10.0.0.9", wantUser: "root", wantPass: "s3cretPass", wantPort: 2222, wantOK: true,
 		},
 		{
-			name: "labeled chinese",
-			text: "主机 10.1.2.3 用户 ubuntu 密码 SuperSecret9",
+			name:     "labeled chinese",
+			text:     "主机 10.1.2.3 用户 ubuntu 密码 SuperSecret9",
 			wantHost: "10.1.2.3", wantUser: "ubuntu", wantPass: "SuperSecret9", wantPort: 22, wantOK: true,
 		},
 		{
-			name: "labeled with colons",
-			text: "host: edge.internal user: deploy password: Abcd1234",
+			name:     "labeled with colons",
+			text:     "host: edge.internal user: deploy password: Abcd1234",
 			wantHost: "edge.internal", wantUser: "deploy", wantPass: "Abcd1234", wantPort: 22, wantOK: true,
 		},
 		{
-			name: "no credentials",
-			text: "帮我看看天气怎么样",
+			name:   "no credentials",
+			text:   "帮我看看天气怎么样",
 			wantOK: false,
 		},
 		{
-			name: "host only no password",
-			text: "连接 10.0.0.1 root",
+			name:   "host only no password",
+			text:   "连接 10.0.0.1 root",
 			wantOK: false,
 		},
 	}

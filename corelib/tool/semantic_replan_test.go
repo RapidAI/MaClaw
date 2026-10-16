@@ -1,6 +1,64 @@
 package tool
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+)
+
+func TestReplanAndPetitionTurnIDsAreStableAndDistinct(t *testing.T) {
+	parent := "turn-abc"
+	got := ReplanTurnID(parent, 1)
+	want := "replan:" + SchemaDigest([]byte(strings.TrimSpace(parent) + fmt.Sprintf(":%d", uint8(1))))[:24]
+	if got != want {
+		t.Fatalf("ReplanTurnID=%q want=%q", got, want)
+	}
+	petition := PetitionTurnID(parent, "search")
+	wantPetition := "petition:" + SchemaDigest([]byte(strings.TrimSpace(parent) + ":search"))[:24]
+	if petition != wantPetition {
+		t.Fatalf("PetitionTurnID=%q want=%q", petition, wantPetition)
+	}
+	if ReplanTurnID(parent, 1) == ReplanTurnID(parent, 2) {
+		t.Fatal("replan attempts must not collide")
+	}
+	if strings.HasPrefix(petition, "replan:") || strings.HasPrefix(got, "petition:") {
+		t.Fatal("kind prefixes must stay distinct")
+	}
+}
+
+func TestEffectsEqualComparesMultisets(t *testing.T) {
+	if !EffectsEqual(nil, nil) || !EffectsEqual([]EffectClass{EffectReadOnly}, []EffectClass{EffectReadOnly}) {
+		t.Fatal("identical effect lists must match")
+	}
+	if EffectsEqual([]EffectClass{EffectReadOnly}, []EffectClass{EffectSensitive}) {
+		t.Fatal("different effects must not match")
+	}
+}
+
+func TestArtifactContractsEqualComparesKindMIMEAndRequired(t *testing.T) {
+	left := []ArtifactContract{{Kind: "file", MIMEType: "text/plain", Required: true}}
+	if !ArtifactContractsEqual(left, []ArtifactContract{{Kind: "file", MIMEType: "text/plain", Required: true}}) {
+		t.Fatal("identical contracts must match")
+	}
+	if ArtifactContractsEqual(left, []ArtifactContract{{Kind: "file", MIMEType: "text/plain", Required: false}}) {
+		t.Fatal("required flag must participate")
+	}
+}
+
+func TestQualifiersEqualComparesKeysAndValues(t *testing.T) {
+	if !QualifiersEqual(nil, map[string]string{}) {
+		t.Fatal("empty maps must match")
+	}
+	if !QualifiersEqual(map[string]string{"freshness": "current"}, map[string]string{"freshness": "current"}) {
+		t.Fatal("identical maps must match")
+	}
+	if QualifiersEqual(map[string]string{"freshness": "current"}, map[string]string{"freshness": "reference"}) {
+		t.Fatal("different values must not match")
+	}
+	if QualifiersEqual(map[string]string{"freshness": "current"}, map[string]string{"freshness": "current", "scope": "current"}) {
+		t.Fatal("different lengths must not match")
+	}
+}
 
 func TestValidateReplanSubsetRequiresOneToOneNeedCorrespondence(t *testing.T) {
 	parent := ToolPlan{RootTaskID: "root", Selections: []PlannedSelection{

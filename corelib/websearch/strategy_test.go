@@ -104,7 +104,7 @@ func TestNormalizeWebSearchStrategyRejectsEnabledAPIWithoutKey(t *testing.T) {
 	}
 }
 
-func TestNormalizeWebSearchStrategyDisablesBackfilledEnginesAndFutureModes(t *testing.T) {
+func TestNormalizeWebSearchStrategyDisablesBackfilledEnginesAndKeepsKnownModes(t *testing.T) {
 	strategy := corelib.WebSearchStrategy{
 		Version: 1, Preset: corelib.WebSearchPresetCustom, Mode: corelib.WebSearchModeAggregate,
 		Engines:                 []corelib.WebSearchEngineConfig{{ID: "google", Enabled: true, Priority: 1, Transport: corelib.WebSearchTransportBrowser}},
@@ -114,13 +114,21 @@ func TestNormalizeWebSearchStrategyDisablesBackfilledEnginesAndFutureModes(t *te
 	if err != nil {
 		t.Fatal(err)
 	}
-	if normalized.Mode != corelib.WebSearchModePriority {
-		t.Fatalf("mode = %q, want priority", normalized.Mode)
+	if normalized.Mode != corelib.WebSearchModeAggregate {
+		t.Fatalf("mode = %q, want aggregate", normalized.Mode)
 	}
 	for _, engine := range normalized.Engines[1:] {
 		if engine.Enabled {
 			t.Fatalf("backfilled engine unexpectedly enabled: %#v", engine)
 		}
+	}
+	strategy.Mode = "speculative"
+	normalized, err = NormalizeWebSearchStrategy(strategy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if normalized.Mode != corelib.WebSearchModePriority {
+		t.Fatalf("unknown mode = %q, want priority fallback", normalized.Mode)
 	}
 }
 

@@ -37,6 +37,15 @@ static portMUX_TYPE s_fangtang_power_task_lock = portMUX_INITIALIZER_UNLOCKED;
 static bool s_fangtang_power_task_stop_requested;
 static adc_oneshot_unit_handle_t s_fangtang_battery_adc;
 static adc_cali_handle_t s_fangtang_battery_cali;
+/* Which scheme owns s_fangtang_battery_cali, so teardown calls the matching
+ * delete.  NONE also marks the uncalibrated raw-reading fallback. */
+typedef enum {
+    FANGTANG_BATTERY_CALI_NONE = 0,
+    FANGTANG_BATTERY_CALI_CURVE_FITTING,
+    FANGTANG_BATTERY_CALI_LINE_FITTING,
+} fangtang_battery_cali_scheme_t;
+static fangtang_battery_cali_scheme_t s_fangtang_battery_cali_scheme =
+    FANGTANG_BATTERY_CALI_NONE;
 static unsigned s_fangtang_battery_level;
 static bool s_fangtang_battery_level_valid;
 static bool s_fangtang_battery_charging;
@@ -44,11 +53,24 @@ static portMUX_TYPE s_fangtang_power_status_lock = portMUX_INITIALIZER_UNLOCKED;
 
 #define FANGTANG_CHARGE_STATUS_GPIO ((gpio_num_t)CONFIG_MACLAW_FANGTANG_CHARGE_STATUS_GPIO)
 
+/* Uncalibrated fallback scale: DB_12 attenuation with 12-bit width maps the
+ * raw count onto the nominal full-scale reference.  Used only when no
+ * calibration scheme could be created. */
+#define FANGTANG_BATTERY_ADC_FULL_SCALE_MV 3300
+#define FANGTANG_BATTERY_ADC_FULL_SCALE_RAW 4095
+
 static void fangtang_release_adc_resources(void) {
     if (s_fangtang_battery_cali) {
-        (void)adc_cali_delete_scheme_curve_fitting(s_fangtang_battery_cali);
+        if (s_fangtang_battery_cali_scheme == FANGTANG_BATTERY_CALI_CURVE_FITTING) {
+            (void)adc_cali_delete_scheme_curve_fitting(s_fangtang_battery_cali);
+#if ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+        } else if (s_fangtang_battery_cali_scheme == FANGTANG_BATTERY_CALI_LINE_FITTING) {
+            (void)adc_cali_delete_scheme_line_fitting(s_fangtang_battery_cali);
+#endif
+        }
         s_fangtang_battery_cali = NULL;
     }
+    s_fangtang_battery_cali_scheme = FANGTANG_BATTERY_CALI_NONE;
     if (s_fangtang_battery_adc) {
         (void)adc_oneshot_del_unit(s_fangtang_battery_adc);
         s_fangtang_battery_adc = NULL;
@@ -81,6 +103,14 @@ static unsigned fangtang_battery_percent_from_mv(int battery_mv) {
         }
     }
     return 100;
+}
+
+/* Uncalibrated fallback for adc_cali_raw_to_voltage: linearly map the raw
+ * 12-bit count onto the nominal DB_12 full-scale reference.  Only used when
+ * no calibration scheme could be created at init. */
+static int fangtang_estimate_adc_mv_from_raw(int raw) {
+    return (int)(((int64_t)raw * FANGTANG_BATTERY_ADC_FULL_SCALE_MV) /
+                 FANGTANG_BATTERY_ADC_FULL_SCALE_RAW);
 }
 
 static bool fangtang_scale_adc_mv(int adc_mv, int *out_battery_mv) {
@@ -166,12 +196,19 @@ static void fangtang_power_task(void *arg) {
                 for (unsigned i = 0; i < sample_count; ++i) total += samples[i];
                 const int average = total / (int)sample_count;
                 int adc_mv = 0;
-                if (!s_fangtang_battery_cali ||
-                    adc_cali_raw_to_voltage(s_fangtang_battery_cali, average, &adc_mv) != ESP_OK) {
-                    fangtang_invalidate_telemetry();
-                    sample_count = 0;
-                    sample_next = 0;
-                    goto sample_done;
+                if (s_fangtang_battery_cali) {
+                    if (adc_cali_raw_to_voltage(s_fangtang_battery_cali, average,
+                                                &adc_mv) != ESP_OK) {
+                        fangtang_invalidate_telemetry();
+                        sample_count = 0;
+                        sample_next = 0;
+                        goto sample_done;
+                    }
+                } else {
+                    /* No calibration scheme was created at init; estimate the
+                     * channel voltage from the raw count.  The battery level
+                     * published from this path is an approximation. */
+                    adc_mv = fangtang_estimate_adc_mv_from_raw(average);
                 }
                 int battery_mv = 0;
                 if (!fangtang_scale_adc_mv(adc_mv, &battery_mv)) {
@@ -192,7 +229,8 @@ static void fangtang_power_task(void *arg) {
             } else {
                 /* Do not leave the last valid battery level visible after a
                  * failed ADC transaction; the next sample must re-establish
-                 * validity through calibration before policy can use it. */
+                 * validity through a converted reading before policy can use
+                 * it. */
                 fangtang_invalidate_telemetry();
                 sample_count = 0;
                 sample_next = 0;
@@ -239,6 +277,15 @@ esp_err_t compact_peripheral_adapter_init(void) {
         ESP_LOGE("fangtang_power", "battery ADC unit: %s", esp_err_to_name(err));
         return err;
     }
+    if (adc_cfg.unit_id == ADC_UNIT_2) {
+        /* This profile keeps the Wi-Fi driver linked for the provisioning
+         * portal and the startup 4G/Wi-Fi toggle, so the radio can become
+         * active at runtime.  ADC2 then shares the RF and reads may fail or
+         * read low while Wi-Fi is transmitting. */
+        ESP_LOGW("fangtang_power",
+                 "battery ADC uses ADC2, which coexists with the Wi-Fi radio; "
+                 "readings may fail or be distorted while Wi-Fi is active");
+    }
     const adc_oneshot_chan_cfg_t channel_cfg = {
         .atten = ADC_ATTEN_DB_12,
         .bitwidth = ADC_BITWIDTH_12,
@@ -252,29 +299,55 @@ esp_err_t compact_peripheral_adapter_init(void) {
         fangtang_release_adc_resources();
         return err;
     }
+    /* Prefer curve fitting, fall back to line fitting, and otherwise keep
+     * sampling uncalibrated: the battery monitor must stay usable on units
+     * whose eFuse calibration data is missing, with the level published as
+     * an estimate instead of failing startup. */
     adc_cali_scheme_ver_t schemes = 0;
     err = adc_cali_check_scheme(&schemes);
     if (err != ESP_OK) {
-        ESP_LOGE("fangtang_power", "ADC calibration scheme: %s", esp_err_to_name(err));
-        fangtang_release_adc_resources();
-        return err;
+        ESP_LOGW("fangtang_power", "ADC calibration scheme query failed: %s",
+                 esp_err_to_name(err));
+    } else if ((schemes & ADC_CALI_SCHEME_VER_CURVE_FITTING) != 0) {
+        const adc_cali_curve_fitting_config_t cali_cfg = {
+            .unit_id = adc_cfg.unit_id,
+            .chan = (adc_channel_t)CONFIG_MACLAW_FANGTANG_BATTERY_ADC_CHANNEL,
+            .atten = channel_cfg.atten,
+            .bitwidth = channel_cfg.bitwidth,
+        };
+        err = adc_cali_create_scheme_curve_fitting(&cali_cfg, &s_fangtang_battery_cali);
+        if (err == ESP_OK) {
+            s_fangtang_battery_cali_scheme = FANGTANG_BATTERY_CALI_CURVE_FITTING;
+        } else {
+            ESP_LOGW("fangtang_power", "create curve-fitting calibration: %s",
+                     esp_err_to_name(err));
+            s_fangtang_battery_cali = NULL;
+        }
     }
-    if ((schemes & ADC_CALI_SCHEME_VER_CURVE_FITTING) == 0) {
-        ESP_LOGE("fangtang_power", "no supported ADC calibration scheme");
-        fangtang_release_adc_resources();
-        return ESP_ERR_NOT_SUPPORTED;
+#if ADC_CALI_SCHEME_LINE_FITTING_SUPPORTED
+    /* adc_cali_scheme.h only declares the line-fitting API on targets that
+     * support it; on ESP32-S3 this block compiles out. */
+    if (!s_fangtang_battery_cali && (schemes & ADC_CALI_SCHEME_VER_LINE_FITTING) != 0) {
+        const adc_cali_line_fitting_config_t line_cali_cfg = {
+            .unit_id = adc_cfg.unit_id,
+            .chan = (adc_channel_t)CONFIG_MACLAW_FANGTANG_BATTERY_ADC_CHANNEL,
+            .atten = channel_cfg.atten,
+            .bitwidth = channel_cfg.bitwidth,
+        };
+        err = adc_cali_create_scheme_line_fitting(&line_cali_cfg, &s_fangtang_battery_cali);
+        if (err == ESP_OK) {
+            s_fangtang_battery_cali_scheme = FANGTANG_BATTERY_CALI_LINE_FITTING;
+        } else {
+            ESP_LOGW("fangtang_power", "create line-fitting calibration: %s",
+                     esp_err_to_name(err));
+            s_fangtang_battery_cali = NULL;
+        }
     }
-    const adc_cali_curve_fitting_config_t cali_cfg = {
-        .unit_id = adc_cfg.unit_id,
-        .chan = (adc_channel_t)CONFIG_MACLAW_FANGTANG_BATTERY_ADC_CHANNEL,
-        .atten = channel_cfg.atten,
-        .bitwidth = channel_cfg.bitwidth,
-    };
-    err = adc_cali_create_scheme_curve_fitting(&cali_cfg, &s_fangtang_battery_cali);
-    if (err != ESP_OK) {
-        ESP_LOGE("fangtang_power", "create ADC calibration: %s", esp_err_to_name(err));
-        fangtang_release_adc_resources();
-        return err;
+#endif
+    if (!s_fangtang_battery_cali) {
+        s_fangtang_battery_cali_scheme = FANGTANG_BATTERY_CALI_NONE;
+        ESP_LOGW("fangtang_power",
+                 "ADC uncalibrated, battery level is an estimate");
     }
     s_fangtang_power_task_stopped = xSemaphoreCreateBinary();
     s_fangtang_power_task_system_sleep_quiesced = xSemaphoreCreateBinary();

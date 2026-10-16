@@ -152,6 +152,31 @@ func TestStoreHeartbeat409AfterSteal(t *testing.T) {
 	}
 }
 
+func TestStoreHeartbeatCannotRenewExpiredSession(t *testing.T) {
+	st, _ := newTestWorkspaceStore(t)
+	ctx := context.Background()
+	now := time.Date(2026, 1, 1, 12, 0, 0, 0, time.UTC)
+	insertTestMachine(t, st, "m1", "u1", "HOST-M1")
+	ws, err := st.Create(ctx, CreateParams{TenantID: "t1", UserID: "u1", Name: "A", Quota: 5, TenantMaxTotalBytes: 1 << 30}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := st.Acquire(ctx, AcquireParams{TenantID: "t1", UserID: "u1", WorkspaceID: ws.ID, MachineID: "m1", ClientInstanceID: "session-1"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.HeartbeatWithSessionAndToken(ctx, "t1", "u1", ws.ID, first.LeaseID, "m1", "session-1", first.FencingToken, now.Add(LeaseTTL)); !errors.Is(err, ErrFenced) {
+		t.Fatalf("expired heartbeat err=%v, want ErrFenced", err)
+	}
+	var expires string
+	if err := st.db.QueryRow(`SELECT expires_at FROM cloud_workspace_leases WHERE id = ?`, first.LeaseID).Scan(&expires); err != nil {
+		t.Fatal(err)
+	}
+	if expires != first.ExpiresAt {
+		t.Fatalf("expired heartbeat changed lease expiry from %q to %q", first.ExpiresAt, expires)
+	}
+}
+
 func TestStoreSoftDeleteBlockedByOtherUnexpiredLease(t *testing.T) {
 	st, _ := newTestWorkspaceStore(t)
 	ctx := context.Background()
@@ -254,5 +279,33 @@ func TestEntitlementLeaseOtherMachineProjectsInUse(t *testing.T) {
 	}
 	if !item.LeaseInUse || item.LeaseHolder != "HOST-M1" {
 		t.Fatalf("other machine should see occupied holder HOST-M1: %+v", item)
+	}
+}
+
+func TestExpiredSameInstanceReacquireGetsNewFencingEpoch(t *testing.T) {
+	st, _ := newTestWorkspaceStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	ws, err := st.Create(ctx, CreateParams{TenantID: "t1", UserID: "u1", Name: "reacquire", Quota: 5}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := st.Acquire(ctx, AcquireParams{
+		TenantID: "t1", UserID: "u1", WorkspaceID: ws.ID, MachineID: "m1", ClientInstanceID: "cwi-1",
+	}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := st.Acquire(ctx, AcquireParams{
+		TenantID: "t1", UserID: "u1", WorkspaceID: ws.ID, MachineID: "m1", ClientInstanceID: "cwi-1",
+	}, now.Add(LeaseTTL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.LeaseID == first.LeaseID || second.FencingToken <= first.FencingToken || second.Acquired != AcquiredGranted {
+		t.Fatalf("expired reacquire reused epoch: first=%+v second=%+v", first, second)
+	}
+	if _, err := st.RequireLeaseWithSessionAndToken(ctx, "t1", "u1", ws.ID, "m1", "cwi-1", first.FencingToken, now.Add(LeaseTTL+time.Second)); !errors.Is(err, ErrFenced) {
+		t.Fatalf("old epoch err=%v", err)
 	}
 }

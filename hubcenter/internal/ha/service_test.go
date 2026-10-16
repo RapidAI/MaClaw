@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -30,6 +31,113 @@ type fakeHASyncOpRepo struct {
 	listCalls      int
 	listLimits     []int
 	onAppendRemote func(*store.HASyncOp) error
+}
+
+type memInvitationCodeRoutes struct {
+	mu    sync.Mutex
+	items map[string]*store.InvitationCodeRoute
+}
+
+func (m *memInvitationCodeRoutes) Upsert(ctx context.Context, code, hubID, tenantID string) error {
+	return m.Save(ctx, &store.InvitationCodeRoute{Code: code, HubID: hubID, TenantID: tenantID})
+}
+
+func (m *memInvitationCodeRoutes) Save(_ context.Context, item *store.InvitationCodeRoute) error {
+	if item == nil || strings.TrimSpace(item.Code) == "" {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.items == nil {
+		m.items = map[string]*store.InvitationCodeRoute{}
+	}
+	copied := *item
+	copied.Code = strings.ToUpper(strings.TrimSpace(copied.Code))
+	m.items[copied.Code] = &copied
+	return nil
+}
+
+func (m *memInvitationCodeRoutes) GetByCode(_ context.Context, code string) (*store.InvitationCodeRoute, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	item := m.items[strings.ToUpper(strings.TrimSpace(code))]
+	if item == nil {
+		return nil, nil
+	}
+	copied := *item
+	return &copied, nil
+}
+
+func (m *memInvitationCodeRoutes) DeleteByCode(_ context.Context, code string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.items, strings.ToUpper(strings.TrimSpace(code)))
+	return nil
+}
+
+func (m *memInvitationCodeRoutes) DeleteByHubID(_ context.Context, hubID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for code, item := range m.items {
+		if item != nil && item.HubID == hubID {
+			delete(m.items, code)
+		}
+	}
+	return nil
+}
+
+func (m *memInvitationCodeRoutes) ListAll(context.Context) ([]*store.InvitationCodeRoute, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*store.InvitationCodeRoute, 0, len(m.items))
+	for _, item := range m.items {
+		copied := *item
+		out = append(out, &copied)
+	}
+	return out, nil
+}
+
+func (m *memInvitationCodeRoutes) MarkUsedByEmail(ctx context.Context, code, email string) error {
+	item, err := m.GetByCode(ctx, code)
+	if err != nil || item == nil {
+		return err
+	}
+	item.UsedByEmail = email
+	return m.Save(ctx, item)
+}
+
+func TestApplyInvitationCodeRouteOpKeepsTenant(t *testing.T) {
+	repo := &memInvitationCodeRoutes{}
+	svc := NewService("hc-1", "hc-1", "https://hc-1.example.com", "secret", nil)
+	svc.invitationRoutes = repo
+
+	if err := svc.applyInvitationCodeRouteOp(context.Background(), &store.HASyncOp{
+		OpType:      OpUpsert,
+		PayloadJSON: `{"code":"pnzpes758f","hub_id":"hub-1","tenant_id":"vantagics"}`,
+	}); err != nil {
+		t.Fatalf("apply upsert: %v", err)
+	}
+	got, err := repo.GetByCode(context.Background(), "PNZPES758F")
+	if err != nil {
+		t.Fatalf("get route: %v", err)
+	}
+	if got == nil || got.HubID != "hub-1" || got.TenantID != "vantagics" {
+		t.Fatalf("applied route = %+v", got)
+	}
+
+	if err := svc.applyInvitationCodeRouteOp(context.Background(), &store.HASyncOp{
+		OpType:      OpDelete,
+		PayloadJSON: `{"code":"PNZPES758F"}`,
+	}); err != nil {
+		t.Fatalf("apply delete: %v", err)
+	}
+	got, err = repo.GetByCode(context.Background(), "PNZPES758F")
+	if err != nil {
+		t.Fatalf("get deleted route: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("deleted route still present: %+v", got)
+	}
 }
 
 func TestNewServiceSkipsSelfPeer(t *testing.T) {
@@ -64,6 +172,48 @@ func TestLookupNodeURLReturnsSelfAndPeerAddresses(t *testing.T) {
 	}
 	if got := svc.LookupNodeURL("missing"); got != "" {
 		t.Fatalf("unknown node URL = %q", got)
+	}
+	if got := svc.LookupNodeURL("HC-2"); got != "https://hubs.maclaw.top" {
+		t.Fatalf("case-insensitive peer URL = %q", got)
+	}
+}
+
+func TestLookupInternalURLUsesAdvertiseAndPeerBaseURL(t *testing.T) {
+	svc := NewService("hc-1", "HubCenter 1", "https://internal-hc-1", "secret", []StaticPeer{
+		{NodeID: "hc-2", NodeName: "HubCenter 2", BaseURL: "https://internal-hc-2", PublicURL: "https://hubs.maclaw.top"},
+	})
+
+	if got := svc.LookupInternalURL("hc-1"); got != "https://internal-hc-1" {
+		t.Fatalf("self internal URL = %q", got)
+	}
+	if got := svc.LookupInternalURL("hc-2"); got != "https://internal-hc-2" {
+		t.Fatalf("peer internal URL = %q, want base URL not public URL", got)
+	}
+	nodes := svc.ListAccessNodes()
+	if len(nodes) != 2 || !nodes[0].Self || nodes[0].NodeID != "hc-1" || nodes[1].NodeID != "hc-2" {
+		t.Fatalf("ListAccessNodes() = %#v", nodes)
+	}
+	if nodes[0].Host != "internal-hc-1" {
+		t.Fatalf("self host = %q", nodes[0].Host)
+	}
+	if nodes[1].Host != "hubs.maclaw.top" {
+		t.Fatalf("peer host = %q, want public domain", nodes[1].Host)
+	}
+}
+
+func TestAccessPeerFallsBackToPublicURL(t *testing.T) {
+	svc := NewService("hc-2", "HubCenter 2", "https://internal-hc-2", "secret", []StaticPeer{
+		{NodeID: "hc-1", NodeName: "HubCenter 1", PublicURL: "https://hubs.mypapers.top"},
+	})
+	url, reachable, _ := svc.AccessPeer("hc-1")
+	if url != "https://hubs.mypapers.top" {
+		t.Fatalf("AccessPeer URL = %q, want public URL when advertise/base is empty", url)
+	}
+	if reachable {
+		t.Fatal("unknown peer should not be marked reachable")
+	}
+	if got := svc.InternalURLForPublicOrigin("https://hubs.mypapers.top"); got != "https://hubs.mypapers.top" {
+		t.Fatalf("InternalURLForPublicOrigin = %q, want public URL when base is empty", got)
 	}
 }
 
@@ -1444,6 +1594,63 @@ func TestTakePeerPushBatchCoalescesQueuedOps(t *testing.T) {
 	}
 }
 
+func TestTakePeerPushBatchBySizeRespectsByteBudget(t *testing.T) {
+	svc := NewService("hc-1", "hc-1", "", "secret", []StaticPeer{{NodeID: "hc-2", NodeName: "hc-2", BaseURL: "http://hc-2"}})
+	bigPayload := strings.Repeat("x", 100*1024)
+	svc.pushMu.Lock()
+	for i := 0; i < 10; i++ {
+		svc.pushPending["hc-2"] = append(svc.pushPending["hc-2"], &store.HASyncOp{
+			OpID:        fmt.Sprintf("op-%d", i),
+			EntityType:  "llm_provider",
+			EntityID:    fmt.Sprintf("provider-%d", i),
+			PayloadJSON: bigPayload,
+		})
+	}
+	svc.pushRunning["hc-2"] = true
+	svc.pushMu.Unlock()
+
+	budget := 350 * 1024
+	total := 0
+	seen := map[string]bool{}
+	batches := 0
+	for {
+		ops, ok := svc.takePeerPushBatchBySize("hc-2", budget)
+		if !ok || len(ops) == 0 {
+			break
+		}
+		batches++
+		payload, err := json.Marshal(map[string]any{"ops": ops})
+		if err != nil {
+			t.Fatalf("marshal batch: %v", err)
+		}
+		if len(payload) > budget+len(`{"ops":[]}`)+len(ops) {
+			t.Fatalf("batch body = %d bytes, want <= budget %d", len(payload), budget)
+		}
+		for _, op := range ops {
+			if seen[op.OpID] {
+				t.Fatalf("op %q pushed twice", op.OpID)
+			}
+			seen[op.OpID] = true
+			total++
+		}
+		if batches > 10 {
+			t.Fatal("push queue never drained")
+		}
+	}
+	if total != 10 {
+		t.Fatalf("drained ops = %d, want 10 (no op may be lost)", total)
+	}
+	if batches < 3 {
+		t.Fatalf("batches = %d, want >= 3 for 100KB ops under a 350KB budget", batches)
+	}
+	svc.pushMu.Lock()
+	running := svc.pushRunning["hc-2"]
+	svc.pushMu.Unlock()
+	if running {
+		t.Fatal("push queue still marked running after draining")
+	}
+}
+
 func TestEnqueuePushOpTrimsPeerQueueUnderBackpressure(t *testing.T) {
 	svc := NewService("hc-1", "hc-1", "", "secret", []StaticPeer{{NodeID: "hc-2", NodeName: "hc-2", BaseURL: "http://hc-2"}})
 	peer := svc.listPeerStates()[0]
@@ -1468,6 +1675,48 @@ func TestEnqueuePushOpTrimsPeerQueueUnderBackpressure(t *testing.T) {
 	peers := svc.listPeerStates()
 	if peers[0].Backlog < 1 || peers[0].LastError == "" {
 		t.Fatalf("peer deferred state not recorded after trim: %+v", peers[0])
+	}
+}
+
+// A single system_setting snapshot can reach ~1MB (llm_official_class_head_v1
+// carries the classifier training store), so the op-count cap alone let a peer's
+// queue grow to gigabytes and OOM-kill the process (hc-3, 15.5GB RSS,
+// 2026-09-16). The byte cap must bound the retained queue on its own.
+func TestEnqueuePushOpTrimsPeerQueueByBytes(t *testing.T) {
+	svc := NewService("hc-1", "hc-1", "", "secret", []StaticPeer{{NodeID: "hc-2", NodeName: "hc-2", BaseURL: "http://hc-2"}})
+	peer := svc.listPeerStates()[0]
+	bigPayload := strings.Repeat("x", 1024*1024)
+	svc.pushMu.Lock()
+	svc.pushRunning["hc-2"] = true
+	svc.pushMu.Unlock()
+
+	// maxPendingPushOpsPerPeer is far above the byte budget at 1MB per op, so
+	// only the byte cap can bound this queue.
+	enqueued := maxPendingPushBytesPerPeer/(1024*1024) + 20
+	for i := 0; i < enqueued; i++ {
+		svc.enqueuePushOp(peer, &store.HASyncOp{
+			OpID:        fmt.Sprintf("op-%d", i),
+			EntityType:  EntitySystemSetting,
+			EntityID:    fmt.Sprintf("setting-%d", i),
+			PayloadJSON: bigPayload,
+		})
+	}
+
+	svc.pushMu.Lock()
+	pending := append([]*store.HASyncOp(nil), svc.pushPending["hc-2"]...)
+	svc.pushMu.Unlock()
+	if len(pending) == 0 || len(pending) >= enqueued {
+		t.Fatalf("pending len = %d, want 0 < len < %d", len(pending), enqueued)
+	}
+	if got := pending[len(pending)-1].OpID; got != fmt.Sprintf("op-%d", enqueued-1) {
+		t.Fatalf("newest op was not retained: last=%q", got)
+	}
+	if retained := pendingPushOpsBytes(pending); retained > maxPendingPushBytesPerPeer {
+		t.Fatalf("retained push queue = %d bytes, want <= %d", retained, maxPendingPushBytesPerPeer)
+	}
+	peers := svc.listPeerStates()
+	if peers[0].Backlog < 1 || peers[0].LastError == "" {
+		t.Fatalf("peer deferred state not recorded after byte trim: %+v", peers[0])
 	}
 }
 
@@ -1662,8 +1911,28 @@ func TestGetAdminStatusIncludesSyncCategoryDetails(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetAdminStatus() error = %v", err)
 	}
-	if len(status.Sync.Details) != 8 {
-		t.Fatalf("sync details len = %d, want 8", len(status.Sync.Details))
+	// Assert the exact set of categories rather than a bare count: the count
+	// changes every time a sync category is added, which makes it a test that
+	// only ever reports "someone edited the list". The set is what actually
+	// matters — a category silently disappearing is the real regression.
+	wantKeys := map[string]bool{
+		"routing": true, "system": true, "gossip": true, "skillhub": true,
+		"latex_templates": true, "skillmarket": true, "compute_market": true,
+		"token_bank": true, "news": true, "notifications": true,
+	}
+	gotKeys := map[string]bool{}
+	for _, detail := range status.Sync.Details {
+		gotKeys[detail.Key] = true
+	}
+	for key := range wantKeys {
+		if !gotKeys[key] {
+			t.Fatalf("sync details missing category %q; got %v", key, gotKeys)
+		}
+	}
+	for key := range gotKeys {
+		if !wantKeys[key] {
+			t.Fatalf("sync details has unexpected category %q; want %v", key, wantKeys)
+		}
 	}
 	if status.Sync.PushDebounceSeconds != 180 {
 		t.Fatalf("push debounce seconds = %d, want 180", status.Sync.PushDebounceSeconds)
@@ -1789,5 +2058,23 @@ func TestBuildAdminSyncDetailsMarksNeedsSeedWhenLocalDataExistsWithoutOps(t *tes
 				t.Fatalf("%s peer %s status = %q, want needs_seed", key, peer.NodeID, peer.Status)
 			}
 		}
+	}
+}
+
+func TestApplyLatexTemplateSnapshotOpDispatchesPayload(t *testing.T) {
+	if !isSupportedEntityType(EntityLatexTemplateSnapshot) {
+		t.Fatal("latex template snapshots are not a supported HA entity")
+	}
+	var got string
+	svc := &Service{latexTemplateSnapshotApplier: func(_ context.Context, raw json.RawMessage) error {
+		got = string(raw)
+		return nil
+	}}
+	payload := `{"templates":[{"id":"tpl"}]}`
+	if err := svc.applyLatexTemplateSnapshotOp(context.Background(), &store.HASyncOp{OpType: OpUpsert, PayloadJSON: payload}); err != nil {
+		t.Fatal(err)
+	}
+	if got != payload {
+		t.Fatalf("applied payload = %s", got)
 	}
 }

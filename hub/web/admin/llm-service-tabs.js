@@ -61,12 +61,37 @@ const LLM_SERVICE_I18N = {
     newUserDays: 'Validity (Days)',
     newUserCredits: 'Benefit Credits',
     newUserLimitCard: 'New User Limit Card',
-    newUserLimitCardDesc: 'Grant a binding-active group with rate limits. Recharge groups cannot be selected; 0 means unlimited or permanent.',
+    newUserLimitCardDesc: 'Grant any model service group with rate limits. Free and recharge groups are supported; 0 means unlimited or permanent.',
     newUserLimitCardGroups: 'Limit Card Service Groups',
     newUserLimitCardDays: 'Validity (days, 0 = permanent)',
-    newUserLimitCardFiveHour: 'Rolling 5-hour limit (Credits, 0 = unlimited)',
+    newUserLimitCardFiveHour: '5-hour limit (Credits, 0 = unlimited)',
     newUserLimitCardDaily: 'Daily limit (Credits, 0 = unlimited)',
-    newUserLimitCardNoGroups: 'No binding-active service groups are available. Create a non-recharge service group first.',
+    newUserLimitCardNoGroups: 'No model service groups are available. Create a service group first.',
+    issueNewUserBenefit: 'Issue New-user Benefits',
+    revokeNewUserBenefit: 'Revoke New-user Benefits',
+    newUserBenefitDialogTitle: 'Manage New-user Benefits',
+    newUserBenefitDialogDesc: 'Select departments to target. Leave empty to target all active users. Existing benefits are not duplicated.',
+    newUserBenefitGroups: 'Departments (optional; empty = all users)',
+    newUserBenefitCancel: 'Cancel',
+    newUserBenefitIssued: 'Issued benefits for {count} user(s).',
+    newUserBenefitRevoked: 'Revoked benefits for {count} user(s).',
+    newUserBenefitRevokeConfirm: 'Revoke the new-user benefit card for the selected users?',
+    resetNewUserLimitCard: 'Reset All User Limits',
+    resetNewUserLimitCardConfirm: 'Reset all users\' current 5-hour and daily limits to the configured values?',
+    resetNewUserLimitCardDone: 'Reset limits for {count} user(s).',
+    resetNewUserLimitCardFailed: 'Reset user limits failed: {error}',
+    resetVoucherTitle: 'Quota Reset Vouchers',
+    resetVoucherDesc: 'Issue a one-time voucher to users who currently hold an active new-user limit card. Recipients can redeem it in MaClaw Service Exchange. Users without a live card, or whose card has expired, are skipped.',
+    resetVoucherDialogTitle: 'Issue Quota Reset Vouchers',
+    resetVoucherDialogDesc: 'Choose the voucher validity and recipients. Leave departments unselected to target all active users who currently hold a new-user limit card.',
+    resetVoucherGroups: 'Departments (optional; empty = all eligible users)',
+    resetVoucherDays: 'Voucher validity (days)',
+    issueResetVouchers: 'Issue Reset Vouchers',
+    resetVoucherCancel: 'Cancel',
+    resetVoucherConfirm: 'Issue Vouchers',
+    resetVoucherGroupsLoadFailed: 'Unable to load departments. Please try again.',
+    resetVouchersIssued: 'Issued vouchers for {count} user(s).',
+    resetVouchersNoneEligible: 'No eligible users. Vouchers are only issued to accounts with an active new-user limit card.',
     saveDefaults: 'Save Defaults',
     credits: 'Credits',
     fiveHourCredits: '5h Credits',
@@ -360,12 +385,37 @@ const LLM_SERVICE_I18N = {
     newUserDays: '\u6709\u6548\u671f\uff08\u5929\uff09',
     newUserCredits: '\u798f\u5229 Credits',
     newUserLimitCard: '\u65b0\u7528\u6237\u9650\u989d\u5361',
-    newUserLimitCardDesc: '\u4e3a\u7ed1\u5b9a\u5373\u751f\u6548\u7684\u670d\u52a1\u7ec4\u6388\u6743\u5e76\u9650\u989d\u3002\u5145\u503c\u7ec4\u4e0d\u53ef\u9009\uff1b0 \u8868\u793a\u4e0d\u9650\u5236\u6216\u6c38\u4e45\u6709\u6548\u3002',
+    newUserLimitCardDesc: '\u4e3a\u4efb\u610f LLM \u670d\u52a1\u7ec4\u6388\u6743\u5e76\u9650\u989d\u3002\u514d\u8d39\u7ec4\u548c\u5145\u503c\u7ec4\u5747\u53ef\u9009\uff1b0 \u8868\u793a\u4e0d\u9650\u5236\u6216\u6c38\u4e45\u6709\u6548\u3002',
     newUserLimitCardGroups: '\u9650\u989d\u5361\u670d\u52a1\u7ec4',
     newUserLimitCardDays: '\u6709\u6548\u671f\uff08\u5929\uff0c0 = \u6c38\u4e45\uff09',
-    newUserLimitCardFiveHour: '5 \u5c0f\u65f6\u6eda\u52a8\u9650\u989d\uff08Credits\uff0c0 = \u4e0d\u9650\uff09',
+    newUserLimitCardFiveHour: '5 \u5c0f\u65f6\u9650\u989d\uff08Credits\uff0c0 = \u4e0d\u9650\uff09',
     newUserLimitCardDaily: '\u6bcf\u65e5\u6700\u9ad8\u9650\u989d\uff08Credits\uff0c0 = \u4e0d\u9650\uff09',
-    newUserLimitCardNoGroups: '\u6682\u65e0\u53ef\u9009\u7684\u7ed1\u5b9a\u5373\u751f\u6548\u670d\u52a1\u7ec4\uff0c\u8bf7\u5148\u521b\u5efa\u975e\u5145\u503c\u7ec4\u3002',
+    newUserLimitCardNoGroups: '\u6682\u65e0\u53ef\u9009\u7684 LLM \u670d\u52a1\u7ec4\uff0c\u8bf7\u5148\u521b\u5efa\u670d\u52a1\u7ec4\u3002',
+    issueNewUserBenefit: '\u53d1\u653e\u65b0\u7528\u6237\u798f\u5229',
+    revokeNewUserBenefit: '\u64a4\u56de\u65b0\u7528\u6237\u798f\u5229',
+    newUserBenefitDialogTitle: '\u7ba1\u7406\u65b0\u7528\u6237\u798f\u5229',
+    newUserBenefitDialogDesc: '\u9009\u62e9\u90e8\u95e8\u8303\u56f4\uff0c\u7559\u7a7a\u8868\u793a\u5168\u4f53\u6d3b\u8dc3\u7528\u6237\u3002\u5df2\u6709\u798f\u5229\u4e0d\u4f1a\u91cd\u590d\u53d1\u653e\u3002',
+    newUserBenefitGroups: '\u90e8\u95e8\uff08\u53ef\u9009\uff0c\u7559\u7a7a\u8868\u793a\u5168\u4f53\u7528\u6237\uff09',
+    newUserBenefitCancel: '\u53d6\u6d88',
+    newUserBenefitIssued: '\u5df2\u4e3a {count} \u540d\u7528\u6237\u53d1\u653e\u65b0\u7528\u6237\u798f\u5229\u3002',
+    newUserBenefitRevoked: '\u5df2\u4e3a {count} \u540d\u7528\u6237\u64a4\u56de\u65b0\u7528\u6237\u798f\u5229\u3002',
+    newUserBenefitRevokeConfirm: '\u786e\u5b9a\u8981\u64a4\u56de\u6240\u9009\u7528\u6237\u7684\u65b0\u7528\u6237\u798f\u5229\u5361\u5417\uff1f',
+    resetNewUserLimitCard: '\u91cd\u7f6e\u6240\u6709\u7528\u6237\u9650\u989d',
+    resetNewUserLimitCardConfirm: '\u786e\u5b9a\u8981\u5c06\u6240\u6709\u7528\u6237\u5f53\u524d\u7684 5 \u5c0f\u65f6\u548c\u6bcf\u65e5\u9650\u989d\u6062\u590d\u4e3a\u8bbe\u7f6e\u7684\u503c\u5417\uff1f',
+    resetNewUserLimitCardDone: '\u5df2\u91cd\u7f6e {count} \u4e2a\u7528\u6237\u7684\u9650\u989d\u3002',
+    resetNewUserLimitCardFailed: '\u91cd\u7f6e\u7528\u6237\u9650\u989d\u5931\u8d25: {error}',
+    resetVoucherTitle: '\u9650\u989d\u91cd\u7f6e\u5238',
+    resetVoucherDesc: '\u5411\u5f53\u524d\u4ecd\u6301\u6709\u6709\u6548\u65b0\u7528\u6237\u9650\u989d\u5361\u7684\u7528\u6237\u53d1\u653e\u4e00\u6b21\u6027\u91cd\u7f6e\u5238\uff0c\u7528\u6237\u53ef\u5728 MaClaw \u670d\u52a1\u5151\u6362\u4e2d\u4f7f\u7528\u3002\u6ca1\u6709\u9650\u989d\u5361\u6216\u9650\u989d\u5361\u5df2\u8fc7\u671f\u7684\u7528\u6237\u4e0d\u4f1a\u53d1\u653e\u3002',
+    resetVoucherDialogTitle: '\u53d1\u653e\u9650\u989d\u91cd\u7f6e\u5238',
+    resetVoucherDialogDesc: '\u8bbe\u7f6e\u6709\u6548\u671f\u5e76\u9009\u62e9\u53d1\u653e\u8303\u56f4\uff1b\u4e0d\u9009\u90e8\u95e8\u5373\u53d1\u653e\u7ed9\u5168\u4f53\u4ecd\u6301\u6709\u65b0\u7528\u6237\u9650\u989d\u5361\u7684\u6d3b\u8dc3\u7528\u6237\u3002',
+    resetVoucherGroups: '\u53d1\u653e\u90e8\u95e8\uff08\u53ef\u9009\uff0c\u7559\u7a7a\u8868\u793a\u5168\u4f53\u7b26\u5408\u6761\u4ef6\u7684\u7528\u6237\uff09',
+    resetVoucherDays: '\u91cd\u7f6e\u5238\u6709\u6548\u671f\uff08\u5929\uff09',
+    issueResetVouchers: '\u53d1\u653e\u91cd\u7f6e\u5238',
+    resetVoucherCancel: '\u53d6\u6d88',
+    resetVoucherConfirm: '\u786e\u8ba4\u53d1\u653e',
+    resetVoucherGroupsLoadFailed: '\u90e8\u95e8\u52a0\u8f7d\u5931\u8d25\uff0c\u8bf7\u91cd\u8bd5\u3002',
+    resetVouchersIssued: '\u5df2\u4e3a {count} \u540d\u7528\u6237\u53d1\u653e\u91cd\u7f6e\u5238\u3002',
+    resetVouchersNoneEligible: '\u6ca1\u6709\u7b26\u5408\u6761\u4ef6\u7684\u7528\u6237\u3002\u91cd\u7f6e\u5238\u53ea\u4f1a\u53d1\u7ed9\u5f53\u524d\u4ecd\u6301\u6709\u6709\u6548\u65b0\u7528\u6237\u9650\u989d\u5361\u7684\u8d26\u53f7\u3002',
     saveDefaults: '\u4fdd\u5b58\u9ed8\u8ba4\u503c',
     credits: '\u79ef\u5206',
     fiveHourCredits: '5 \u5c0f\u65f6\u989d\u5ea6',
@@ -606,6 +656,7 @@ let llmServiceGrantPage = 1;
 const llmServiceGrantPageSize = 20;
 let llmServiceSystemSettingsLoading = false;
 let llmServiceSystemSettingsRequestID = 0;
+let llmServiceLimitResetting = false;
 const llmServiceCapabilityOptions = ['document', 'reasoning', 'tools'];
 const llmServicePriorityOptions = [0, 10, 30, 50, 80, 100];
 const llmServiceResolutionOptions = [0, 1, 2, 3];
@@ -1462,7 +1513,10 @@ function renderLLMServiceLimitCardGroupOptions() {
   var select = document.getElementById('llmServiceLimitCardGroups');
   if (!select) return;
   var groups = (llmServiceAdminCache && llmServiceAdminCache.model_service_groups || []).filter(function(group) {
-    return String(group && group.id || '').trim() && llsNormalizeAccessPolicy(group && group.access_policy || '') === 'free';
+    // Welcome cards are explicit per-user entitlements and may be issued for
+    // grant-required/recharge groups as well as free groups. Filtering to
+    // free-only groups made the configured redeem group impossible to select.
+    return String(group && group.id || '').trim();
   });
   select.innerHTML = groups.map(function(group) {
     var id = String(group.id || '').trim();
@@ -2326,10 +2380,23 @@ function ensureLLMServiceSystemUI() {
     '<div><label id="llmServiceSystemGroupsLabel"></label><select id="llmServiceSystemGroups" multiple size="4" style="width:100%;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:var(--panel, #fff);font:inherit;min-height:92px"></select></div>' +
     '<div><label id="llmServiceSystemDaysLabel"></label><input id="llmServiceSystemDays" type="number" min="1" value="30"></div>' +
     '</div><div class="grid2" style="margin-top:10px"><div><label id="llmServiceSystemCreditsLabel"></label><input id="llmServiceSystemCredits" type="number" min="1" step="1" value="1000"></div></div></fieldset>' +
-    '<div class="item" id="llmServiceLimitCardBenefitPanel" style="margin-top:14px;padding:14px"><div class="item-title" data-icon="card" id="llmServiceLimitCardTitle"></div><div class="item-meta" id="llmServiceLimitCardDesc" style="margin:4px 0 10px"></div><fieldset id="llmServiceLimitCardBenefitFields" style="border:0;padding:0;margin:0"><div class="grid2"><div><label id="llmServiceLimitCardGroupsLabel"></label><select id="llmServiceLimitCardGroups" multiple size="4" style="width:100%;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:var(--panel, #fff);font:inherit;min-height:92px"></select><div class="hint hidden" id="llmServiceLimitCardNoGroups" style="margin-top:6px"></div></div><div><label id="llmServiceLimitCardDaysLabel"></label><input id="llmServiceLimitCardDays" type="number" min="0" step="1" value="0"></div></div><div class="grid2" style="margin-top:10px"><div><label id="llmServiceLimitCardFiveHourLabel"></label><input id="llmServiceLimitCardFiveHour" type="number" min="0" step="1" value="0"></div><div><label id="llmServiceLimitCardDailyLabel"></label><input id="llmServiceLimitCardDaily" type="number" min="0" step="1" value="0"></div></div></fieldset></div>' +
+    '<div class="item" id="llmServiceLimitCardBenefitPanel" style="margin-top:14px;padding:14px"><div class="head" style="margin-bottom:4px"><div class="item-title" data-icon="card" id="llmServiceLimitCardTitle"></div><div class="actions"><button class="btn" type="button" onclick="openLLMNewUserBenefitDialog(\'issue\')" id="llmServiceBenefitIssueBtn"></button><button class="btn" type="button" onclick="openLLMNewUserBenefitDialog(\'revoke\')" id="llmServiceBenefitRevokeBtn"></button><button class="btn" type="button" onclick="resetLLMServiceNewUserLimitUsage()" id="llmServiceLimitCardResetBtn" aria-label="Reset all user limits"></button></div></div><div class="item-meta" id="llmServiceLimitCardDesc" style="margin:4px 0 10px"></div><fieldset id="llmServiceLimitCardBenefitFields" style="border:0;padding:0;margin:0"><div class="grid2"><div><label id="llmServiceLimitCardGroupsLabel"></label><select id="llmServiceLimitCardGroups" multiple size="4" style="width:100%;padding:10px 12px;border-radius:12px;border:1px solid var(--line);background:var(--panel, #fff);font:inherit;min-height:92px"></select><div class="hint hidden" id="llmServiceLimitCardNoGroups" style="margin-top:6px"></div></div><div><label id="llmServiceLimitCardDaysLabel"></label><input id="llmServiceLimitCardDays" type="number" min="0" step="1" value="0"></div></div><div class="grid2" style="margin-top:10px"><div><label id="llmServiceLimitCardFiveHourLabel"></label><input id="llmServiceLimitCardFiveHour" type="number" min="0" step="1" value="0"></div><div><label id="llmServiceLimitCardDailyLabel"></label><input id="llmServiceLimitCardDaily" type="number" min="0" step="1" value="0"></div></div></fieldset></div>' +
+    '<div class="item" id="llmResetVoucherPanel" style="margin-top:14px;padding:14px"><div class="head" style="margin-bottom:4px"><div><div class="item-title" id="llmResetVoucherTitle"></div><div class="item-meta" id="llmResetVoucherDesc"></div></div><button class="btn-primary" type="button" onclick="openLLMResetVoucherDialog()" id="llmResetVoucherIssueBtn"></button></div></div>' +
     '<div class="hint" id="llmServiceSystemHint" style="margin-top:10px"></div>';
   tab.appendChild(host);
   applyLLMServiceSystemI18n();
+  void loadLLMResetVoucherGroups();
+}
+async function loadLLMResetVoucherGroups() {
+  if (window.llmResetVoucherGroupsLoading) return window.llmResetVoucherGroupsLoading;
+  window.llmResetVoucherGroupsLoading = api('/api/admin/security/groups').then(function(data) {
+    var root = data && (data.tree || data.root), nodes=[];
+    (function walk(n, depth){ if(!n)return; nodes.push({id:n.id,name:(depth?'\u2514 ':'')+(n.name||n.id)}); (n.children||[]).forEach(function(c){walk(c,depth+1);}); })(root,0);
+    window.llmResetVoucherGroupNodes = nodes;
+    window.llmResetVoucherGroupsLoaded = true;
+    return nodes;
+  }).catch(function(){ window.llmResetVoucherGroupNodes = []; window.llmResetVoucherGroupsLoaded = false; return []; }).finally(function(){ window.llmResetVoucherGroupsLoading = null; });
+  return window.llmResetVoucherGroupsLoading;
 }
 function applyLLMServiceSystemI18n() {
   if (!llmServiceTenantScoped()) return;
@@ -2351,8 +2418,38 @@ function applyLLMServiceSystemI18n() {
   _s('llmServiceLimitCardFiveHourLabel', 'textContent', lsx('newUserLimitCardFiveHour'));
   _s('llmServiceLimitCardDailyLabel', 'textContent', lsx('newUserLimitCardDaily'));
   _s('llmServiceLimitCardNoGroups', 'textContent', lsx('newUserLimitCardNoGroups'));
+  _s('llmServiceLimitCardResetBtn', 'textContent', lsx('resetNewUserLimitCard'));
+  _s('llmServiceLimitCardResetBtn', 'aria-label', lsx('resetNewUserLimitCard'));
+  _s('llmServiceBenefitIssueBtn', 'textContent', lsx('issueNewUserBenefit'));
+  _s('llmServiceBenefitRevokeBtn', 'textContent', lsx('revokeNewUserBenefit'));
   _s('llmServiceSystemSaveBtn', 'textContent', lsx('saveDefaults'));
+  _s('llmResetVoucherTitle', 'textContent', lsx('resetVoucherTitle'));
+  _s('llmResetVoucherDesc', 'textContent', lsx('resetVoucherDesc'));
+  _s('llmResetVoucherIssueBtn', 'textContent', lsx('issueResetVouchers'));
 }
+async function openLLMNewUserBenefitDialog(action) {
+  action = action === 'revoke' ? 'revoke' : 'issue';
+  if (document.getElementById('llmNewUserBenefitDialogOverlay') || window.llmNewUserBenefitDialogOpening) return;
+  window.llmNewUserBenefitDialogOpening = true;
+  try { await loadLLMResetVoucherGroups(); } catch (_) { showToast(lsx('resetVoucherGroupsLoadFailed'), 'error'); window.llmNewUserBenefitDialogOpening = false; return; }
+  if (window.llmResetVoucherGroupsLoaded === false) { showToast(lsx('resetVoucherGroupsLoadFailed'), 'error'); window.llmNewUserBenefitDialogOpening = false; return; }
+  var overlay = document.createElement('div'); overlay.id='llmNewUserBenefitDialogOverlay'; overlay.className='session-modal-overlay show';
+  var options=(window.llmResetVoucherGroupNodes||[]).map(function(n){return '<option value="'+escapeHtml(n.id)+'">'+escapeHtml(n.name)+'</option>';}).join('');
+  overlay.innerHTML='<div class="session-modal" role="dialog" aria-modal="true" aria-labelledby="llmNewUserBenefitTitle" style="width:min(620px,calc(100% - 40px));max-height:80vh;overflow:auto"><button class="close-btn" type="button" id="llmNewUserBenefitClose" aria-label="'+escapeHtml(lsx('newUserBenefitCancel'))+'">&times;</button><div class="item-title" id="llmNewUserBenefitTitle" style="margin-bottom:8px">'+escapeHtml(lsx('newUserBenefitDialogTitle'))+'</div><div class="item-meta" style="margin-bottom:14px">'+escapeHtml(lsx('newUserBenefitDialogDesc'))+'</div><label for="llmNewUserBenefitGroups">'+escapeHtml(lsx('newUserBenefitGroups'))+'</label><select id="llmNewUserBenefitGroups" multiple size="8" style="width:100%;min-height:160px">'+options+'</select><div class="actions" style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px"><button class="btn-ghost" type="button" id="llmNewUserBenefitCancel">'+escapeHtml(lsx('newUserBenefitCancel'))+'</button><button class="btn-primary" type="button" id="llmNewUserBenefitConfirm">'+escapeHtml(action==='issue'?lsx('issueNewUserBenefit'):lsx('revokeNewUserBenefit'))+'</button></div></div>';
+  document.body.appendChild(overlay); window.llmNewUserBenefitDialogOpening=false;
+  var close=function(){overlay.remove();}; overlay.addEventListener('click',function(e){if(e.target===overlay)close();}); overlay.addEventListener('keydown',function(e){if(e.key==='Escape')close();}); overlay.querySelector('#llmNewUserBenefitClose').onclick=close; overlay.querySelector('#llmNewUserBenefitCancel').onclick=close;
+  overlay.querySelector('#llmNewUserBenefitConfirm').onclick=function(){void manageLLMNewUserBenefit(action);};
+  var groups=overlay.querySelector('#llmNewUserBenefitGroups'); if(groups) groups.focus();
+}
+async function manageLLMNewUserBenefit(action) {
+  var groupsEl=document.getElementById('llmNewUserBenefitGroups'); if(!groupsEl)return;
+  var groupIDs=Array.prototype.slice.call(groupsEl.options).filter(function(o){return o.selected&&o.value;}).map(function(o){return o.value;});
+  if (action === 'revoke' && (typeof window.confirm !== 'function' || !window.confirm(lsx('newUserBenefitRevokeConfirm')))) return;
+  var btn=document.getElementById('llmNewUserBenefitConfirm'); if(btn)btn.disabled=true;
+  try { var data=await api('/api/admin/llm/services/new-user-benefit',{method:'POST',body:JSON.stringify({action:action,group_ids:groupIDs})}); var count=Number(action==='issue'?data.issued:data.revoked)||0; var msg=lsx(action==='issue'?'newUserBenefitIssued':'newUserBenefitRevoked',{count:String(count)}); showToast(msg,'success'); setOutput(msg); var overlay=document.getElementById('llmNewUserBenefitDialogOverlay'); if(overlay)overlay.remove(); }
+  catch(err){showToast(String(err.message||err),'error');} finally {if(btn)btn.disabled=false;}
+}
+window.openLLMNewUserBenefitDialog=openLLMNewUserBenefitDialog;
 function llmServiceNewUserBenefitMode() {
   var selected = document.querySelector('input[name="llmServiceNewUserBenefitMode"]:checked');
   return selected && selected.value === 'limit_card' ? 'limit_card' : 'credits';
@@ -2378,6 +2475,12 @@ function llmServiceSetNewUserBenefitMode(mode) {
     limitCardFields.disabled = mode !== 'limit_card';
     limitCardFields.style.opacity = mode === 'limit_card' ? '' : '0.55';
   }
+  var resetBtn = document.getElementById('llmServiceLimitCardResetBtn');
+  if (resetBtn) resetBtn.disabled = mode !== 'limit_card' || llmServiceLimitResetting;
+  // Manual backfill/revocation is available regardless of the currently
+  // selected automatic program, so administrators can migrate existing users
+  // without first switching the tenant-wide default.
+  ['llmServiceBenefitIssueBtn','llmServiceBenefitRevokeBtn'].forEach(function(id){ var btn=document.getElementById(id); if(btn) btn.disabled = false; });
   if (limitCardPanel) limitCardPanel.style.opacity = mode === 'limit_card' ? '' : '0.75';
   _s('llmServiceSystemHint', 'textContent', lsx(mode === 'limit_card' ? 'systemHintLimitCard' : 'systemHintCredits'));
 }
@@ -2458,6 +2561,81 @@ async function saveLLMServiceSystemSettings() {
     showToast(msg, 'error');
   }
 }
+async function resetLLMServiceNewUserLimitUsage() {
+  if (!llmServiceTenantScoped() || llmServiceLimitResetting) return;
+  var confirmText = lsx('resetNewUserLimitCardConfirm');
+  if (typeof window.confirm !== 'function' || !window.confirm(confirmText)) return;
+  llmServiceLimitResetting = true;
+  var resetBtn = document.getElementById('llmServiceLimitCardResetBtn');
+  if (resetBtn) resetBtn.disabled = true;
+  try {
+    var data = await api('/api/admin/llm/services/reset-limit-usage', { method: 'POST', body: '{}' });
+    var msg = lsx('resetNewUserLimitCardDone', { count: String(Number(data && data.reset_grants || 0)) });
+    setOutput(msg);
+    showToast(msg, 'success');
+    await loadLLMServiceAdmin({ systemOnly: true });
+  } catch (err) {
+    var failed = lsx('resetNewUserLimitCardFailed', { error: err.message });
+    setOutput(failed);
+    showToast(failed, 'error');
+  } finally {
+    llmServiceLimitResetting = false;
+    if (resetBtn) resetBtn.disabled = llmServiceNewUserBenefitMode() !== 'limit_card';
+  }
+}
+async function openLLMResetVoucherDialog() {
+  if (document.getElementById('llmResetVoucherDialogOverlay') || window.llmResetVoucherDialogOpening) return;
+  window.llmResetVoucherDialogOpening = true;
+  try { await loadLLMResetVoucherGroups(); } catch (_) {
+    window.llmResetVoucherDialogOpening = false;
+    showToast(lsx('resetVoucherGroupsLoadFailed'), 'error');
+    return;
+  }
+  if (window.llmResetVoucherGroupsLoaded === false) {
+    window.llmResetVoucherDialogOpening = false;
+    showToast(lsx('resetVoucherGroupsLoadFailed'), 'error');
+    return;
+  }
+  var overlay = document.createElement('div');
+  overlay.id = 'llmResetVoucherDialogOverlay';
+  overlay.className = 'session-modal-overlay show';
+  var nodes = window.llmResetVoucherGroupNodes || [];
+  var options = nodes.map(function(n) { return '<option value="' + escapeHtml(n.id) + '">' + escapeHtml(n.name) + '</option>'; }).join('');
+  overlay.innerHTML = '<div class="session-modal" role="dialog" aria-modal="true" aria-labelledby="llmResetVoucherDialogTitle" style="width:min(620px,calc(100% - 40px));max-height:80vh;overflow:auto">'
+    + '<button class="close-btn" type="button" id="llmResetVoucherDialogClose" aria-label="' + escapeHtml(lsx('resetVoucherCancel')) + '">&times;</button>'
+    + '<div class="item-title" id="llmResetVoucherDialogTitle" style="margin-bottom:8px">' + escapeHtml(lsx('resetVoucherDialogTitle')) + '</div>'
+    + '<div class="item-meta" style="margin-bottom:14px">' + escapeHtml(lsx('resetVoucherDialogDesc')) + '</div>'
+    + '<div class="grid2"><div><label>' + escapeHtml(lsx('resetVoucherGroups')) + '</label><select id="llmResetVoucherDialogGroups" multiple size="7" style="width:100%;min-height:140px">' + options + '</select></div>'
+    + '<div><label>' + escapeHtml(lsx('resetVoucherDays')) + '</label><input id="llmResetVoucherDialogDays" type="number" min="1" max="3650" step="1" value="7"></div></div>'
+    + '<div class="actions" style="display:flex;justify-content:flex-end;gap:8px;margin-top:16px"><button class="btn-ghost" type="button" id="llmResetVoucherDialogCancel">' + escapeHtml(lsx('resetVoucherCancel')) + '</button><button class="btn-primary" type="button" id="llmResetVoucherDialogConfirm">' + escapeHtml(lsx('resetVoucherConfirm')) + '</button></div>'
+    + '</div>';
+  document.body.appendChild(overlay);
+  window.llmResetVoucherDialogOpening = false;
+  var close = function() { overlay.remove(); };
+  overlay.addEventListener('click', function(e) { if (e.target === overlay) close(); });
+  overlay.addEventListener('keydown', function(e) { if (e.key === 'Escape') close(); });
+  overlay.querySelector('#llmResetVoucherDialogClose').addEventListener('click', close);
+  overlay.querySelector('#llmResetVoucherDialogCancel').addEventListener('click', close);
+  overlay.querySelector('#llmResetVoucherDialogConfirm').addEventListener('click', function() { void issueLLMResetVouchers(true); });
+  var daysEl = overlay.querySelector('#llmResetVoucherDialogDays');
+  if (daysEl) daysEl.focus();
+}
+async function issueLLMResetVouchers(fromDialog) {
+  var daysEl = document.getElementById(fromDialog ? 'llmResetVoucherDialogDays' : 'llmResetVoucherDays');
+  var groupsEl = document.getElementById(fromDialog ? 'llmResetVoucherDialogGroups' : 'llmResetVoucherGroups');
+  var days = Number(daysEl?.value || 0);
+  if (!(days > 0)) { showToast(lsx('resetVoucherDays') + ': 1+', 'error'); return; }
+  if (days > 3650) { showToast(lsx('resetVoucherDays') + ': 3650', 'error'); return; }
+  var groupIDs = Array.prototype.slice.call(groupsEl?.options || []).filter(function(o){ return o.selected && o.value; }).map(function(o){ return o.value; });
+  var btn = document.getElementById(fromDialog ? 'llmResetVoucherDialogConfirm' : 'llmResetVoucherIssueBtn'); if (btn) btn.disabled = true;
+  var issued = 0;
+  try { var data = await api('/api/admin/llm/services/reset-vouchers', { method:'POST', body: JSON.stringify({ group_ids: groupIDs, expires_days: days }) }); issued = Number(data && data.issued || 0); var msg = issued > 0 ? lsx('resetVouchersIssued', { count: String(issued) }) : lsx('resetVouchersNoneEligible'); showToast(msg, issued > 0 ? 'success' : 'info'); setOutput(msg); }
+  catch (err) { showToast(String(err.message || err), 'error'); }
+  finally { if (btn) btn.disabled = false; if (fromDialog && issued > 0) { var overlay = document.getElementById('llmResetVoucherDialogOverlay'); if (overlay) overlay.remove(); } }
+}
+window.openLLMResetVoucherDialog = openLLMResetVoucherDialog;
+window.issueLLMResetVouchers = issueLLMResetVouchers;
+window.resetLLMServiceNewUserLimitUsage = resetLLMServiceNewUserLimitUsage;
 ensureLLMServiceSystemUI();
 
 
@@ -2846,8 +3024,12 @@ function llsNormalizeTokenPricing(src){
   function num(k){ var v=p[k]; if(v===undefined||v===null||v==='') return undefined; var n=Number(v); if(!isFinite(n)||n<0) return undefined; return n; }
   var v; v=num('input_credits_per_10k'); if(v!==undefined) out.input_credits_per_10k=v;
   v=num('output_credits_per_10k'); if(v!==undefined) out.output_credits_per_10k=v;
+  v=num('cache_read_credits_per_10k'); if(v!==undefined) out.cache_read_credits_per_10k=v;
+  v=num('cache_write_credits_per_10k'); if(v!==undefined) out.cache_write_credits_per_10k=v;
   v=num('input_rmb_per_10k'); if(v!==undefined) out.input_rmb_per_10k=v;
   v=num('output_rmb_per_10k'); if(v!==undefined) out.output_rmb_per_10k=v;
+  v=num('cache_read_rmb_per_10k'); if(v!==undefined) out.cache_read_rmb_per_10k=v;
+  v=num('cache_write_rmb_per_10k'); if(v!==undefined) out.cache_write_rmb_per_10k=v;
   v=num('minimum_request_credits'); if(v!==undefined) out.minimum_request_credits=v;
   if(p.timezone) out.timezone=String(p.timezone).trim();
   if(p.version) out.version=String(p.version).trim();
@@ -2873,6 +3055,7 @@ function llsNormalizeProviderConfig(config, providerID, legacy) {
     priority: priority,
     resolution_tier: resolution,
     credit_multiplier: multiplier,
+    token_pricing_override: config && config.token_pricing_override === true,
     token_pricing: tokenPricing
   };
 }
@@ -3102,7 +3285,7 @@ function llsRenderProviderCard(rowIndex, providerID, providerIndex, total) {
     + llsProviderSummaryLine(llsX('billingMode'), billingLabel + (pricingBrief ? ' \u00b7 '+pricingBrief : ''))
     + '</div>';
 }
-function llsClonePricingForDraft(tp){ var p=llsNormalizeTokenPricing(tp||{}); var out={input_credits_per_10k:p.input_credits_per_10k,output_credits_per_10k:p.output_credits_per_10k,input_rmb_per_10k:p.input_rmb_per_10k,output_rmb_per_10k:p.output_rmb_per_10k,minimum_request_credits:p.minimum_request_credits,timezone:p.timezone||'',version:p.version||''}; if(p.price_schedule) out.price_schedule=p.price_schedule; return out; }
+function llsClonePricingForDraft(tp){ var p=llsNormalizeTokenPricing(tp||{}); var out={input_credits_per_10k:p.input_credits_per_10k,output_credits_per_10k:p.output_credits_per_10k,cache_read_credits_per_10k:p.cache_read_credits_per_10k,cache_write_credits_per_10k:p.cache_write_credits_per_10k,input_rmb_per_10k:p.input_rmb_per_10k,output_rmb_per_10k:p.output_rmb_per_10k,cache_read_rmb_per_10k:p.cache_read_rmb_per_10k,cache_write_rmb_per_10k:p.cache_write_rmb_per_10k,minimum_request_credits:p.minimum_request_credits,timezone:p.timezone||'',version:p.version||''}; if(p.price_schedule) out.price_schedule=p.price_schedule; return out; }
 function llsProviderDialogDraft(rowIndex, providerID) {
   var model = llmServiceGroupDraft && llmServiceGroupDraft.models && llmServiceGroupDraft.models[rowIndex];
   var cfg = model && providerID ? llsProviderConfig(model, providerID) : null;
@@ -3116,6 +3299,7 @@ function llsProviderDialogDraft(rowIndex, providerID) {
     priority: Number(cfg && cfg.priority || 0) || 0,
     resolution_tier: Number(cfg && cfg.resolution_tier || 0) || 0,
     credit_multiplier: Number(cfg && cfg.credit_multiplier || 1) || 1,
+    token_pricing_override: cfg && cfg.token_pricing_override === true,
     token_pricing: llsClonePricingForDraft(cfg && cfg.token_pricing)
   };
 }
@@ -3189,12 +3373,15 @@ function renderLLSProviderDialog() {
     + '<div><label>' + escapeHtml(llsX('creditMultiplier')) + '</label><select onchange="llsSetProviderDialogField(\'credit_multiplier\', Number(this.value || 1) || 1)">' + llmServiceMultiplierOptions.map(function(v) { return '<option value="' + v + '"' + (Number(draft.credit_multiplier || 1) === v ? ' selected' : '') + '>' + v + '</option>'; }).join('') + '</select></div>'
     + '</div>'
     + '<div style="margin-top:12px;border-top:1px solid var(--line);padding-top:12px"><div class="item-title">'+escapeHtml(llsX('tokenPricingTitle'))+'</div><div class="hint">'+escapeHtml(llsX('tokenPricingHint'))+'</div>'
+    + '<label style="display:inline-flex;align-items:center;gap:6px;margin:8px 0"><input type="checkbox"'+(draft.token_pricing_override?' checked':'')+' onchange="llsSetProviderDialogField(\'token_pricing_override\',this.checked)">Override provider base price for this service group</label>'
     + '<div class="grid2" style="margin-top:8px"><div><label>'+escapeHtml(llsX('billingMode'))+'</label><select onchange="llsSetProviderDialogField(\'billing_mode\',this.value)"><option value=""'+(String(draft.billing_mode||'')===''?' selected':'')+'>'+escapeHtml(llsX('billingModeLegacy'))+'</option><option value="paid"'+(draft.billing_mode==='paid'?' selected':'')+'>'+escapeHtml(llsX('billingModePaid'))+'</option><option value="free"'+(draft.billing_mode==='free'?' selected':'')+'>'+escapeHtml(llsX('billingModeFree'))+'</option></select><div class="hint">'+escapeHtml(llsX('billingModeHint'))+'</div></div>'
     + '<div><label>'+escapeHtml(llsX('pricingTimezone'))+'</label><input value="'+llsEsc((draft.token_pricing&&draft.token_pricing.timezone)||'')+'" placeholder="Asia/Shanghai" oninput="llsSetTokenPricingField(\'timezone\',this.value)"></div></div>'
     + '<div class="grid2"><div><label>'+escapeHtml(llsX('inputCreditsPer10k'))+'</label><input type="number" min="0" step="0.01" value="'+llsEsc(draft.token_pricing&&draft.token_pricing.input_credits_per_10k!==undefined?String(draft.token_pricing.input_credits_per_10k):'')+'" placeholder="1" oninput="llsSetTokenPricingField(\'input_credits_per_10k\',this.value)"></div>'
     + '<div><label>'+escapeHtml(llsX('outputCreditsPer10k'))+'</label><input type="number" min="0" step="0.01" value="'+llsEsc(draft.token_pricing&&draft.token_pricing.output_credits_per_10k!==undefined?String(draft.token_pricing.output_credits_per_10k):'')+'" placeholder="4" oninput="llsSetTokenPricingField(\'output_credits_per_10k\',this.value)"></div></div>'
+    + '<div class="grid2"><div><label>Cache Read Credits/10k</label><input type="number" min="0" step="0.01" value="'+llsEsc(draft.token_pricing&&draft.token_pricing.cache_read_credits_per_10k!==undefined?String(draft.token_pricing.cache_read_credits_per_10k):'')+'" placeholder="input × 0.1" oninput="llsSetTokenPricingField(\'cache_read_credits_per_10k\',this.value)"></div><div><label>Cache Write Credits/10k</label><input type="number" min="0" step="0.01" value="'+llsEsc(draft.token_pricing&&draft.token_pricing.cache_write_credits_per_10k!==undefined?String(draft.token_pricing.cache_write_credits_per_10k):'')+'" placeholder="input" oninput="llsSetTokenPricingField(\'cache_write_credits_per_10k\',this.value)"></div></div>'
     + '<div class="grid2"><div><label>'+escapeHtml(llsX('inputRMBPer10k'))+'</label><input type="number" min="0" step="0.01" value="'+llsEsc(draft.token_pricing&&draft.token_pricing.input_rmb_per_10k!==undefined?String(draft.token_pricing.input_rmb_per_10k):'')+'" placeholder="0.02" oninput="llsSetTokenPricingField(\'input_rmb_per_10k\',this.value)"></div>'
     + '<div><label>'+escapeHtml(llsX('outputRMBPer10k'))+'</label><input type="number" min="0" step="0.01" value="'+llsEsc(draft.token_pricing&&draft.token_pricing.output_rmb_per_10k!==undefined?String(draft.token_pricing.output_rmb_per_10k):'')+'" placeholder="0.08" oninput="llsSetTokenPricingField(\'output_rmb_per_10k\',this.value)"></div></div>'
+    + '<div class="grid2"><div><label>Cache Read RMB/10k</label><input type="number" min="0" step="0.01" value="'+llsEsc(draft.token_pricing&&draft.token_pricing.cache_read_rmb_per_10k!==undefined?String(draft.token_pricing.cache_read_rmb_per_10k):'')+'" placeholder="input × 0.1" oninput="llsSetTokenPricingField(\'cache_read_rmb_per_10k\',this.value)"></div><div><label>Cache Write RMB/10k</label><input type="number" min="0" step="0.01" value="'+llsEsc(draft.token_pricing&&draft.token_pricing.cache_write_rmb_per_10k!==undefined?String(draft.token_pricing.cache_write_rmb_per_10k):'')+'" placeholder="input" oninput="llsSetTokenPricingField(\'cache_write_rmb_per_10k\',this.value)"></div></div>'
     + '<div class="grid2"><div><label>'+escapeHtml(llsX('minimumRequestCredits'))+'</label><input type="number" min="0" step="0.01" value="'+llsEsc(draft.token_pricing&&draft.token_pricing.minimum_request_credits!==undefined?String(draft.token_pricing.minimum_request_credits):'')+'" placeholder="0.1" oninput="llsSetTokenPricingField(\'minimum_request_credits\',this.value)"></div>'
     + '<div><label>'+escapeHtml(llsX('pricingVersion'))+'</label><input value="'+llsEsc((draft.token_pricing&&draft.token_pricing.version)||'')+'" placeholder="2026-08-23-v1" oninput="llsSetTokenPricingField(\'version\',this.value)"></div></div>'
     + '</div>'
@@ -3222,7 +3409,7 @@ function saveLLSProviderDialog() {
   }
   var billingMode = String(state.draft.billing_mode||'').trim();
   var tp=state.draft.token_pricing||{};
-  for(var kk in tp){ if(tp.hasOwnProperty(kk) && (kk==='input_credits_per_10k'||kk==='output_credits_per_10k'||kk==='input_rmb_per_10k'||kk==='output_rmb_per_10k'||kk==='minimum_request_credits')){ if(tp[kk]!==''&&tp[kk]!==undefined){ var nn=Number(tp[kk]); if(!isFinite(nn)||nn<0){ showToast(llsX('billingInvalid'),'error'); return; } } } }
+  for(var kk in tp){ if(tp.hasOwnProperty(kk) && (kk==='input_credits_per_10k'||kk==='output_credits_per_10k'||kk==='cache_read_credits_per_10k'||kk==='cache_write_credits_per_10k'||kk==='input_rmb_per_10k'||kk==='output_rmb_per_10k'||kk==='cache_read_rmb_per_10k'||kk==='cache_write_rmb_per_10k'||kk==='minimum_request_credits')){ if(tp[kk]!==''&&tp[kk]!==undefined){ var nn=Number(tp[kk]); if(!isFinite(nn)||nn<0){ showToast(llsX('billingInvalid'),'error'); return; } } } }
   if(billingMode==='paid'){
     var hasCredits = (tp.input_credits_per_10k!==undefined&&isFinite(tp.input_credits_per_10k)&&tp.input_credits_per_10k>0) || (tp.output_credits_per_10k!==undefined&&isFinite(tp.output_credits_per_10k)&&tp.output_credits_per_10k>0) || (tp.minimum_request_credits!==undefined&&isFinite(tp.minimum_request_credits)&&tp.minimum_request_credits>0);
     if(!hasCredits){ showToast(llsX('billingPaidNeedsCredits'),'error'); return; }
@@ -3232,6 +3419,7 @@ function saveLLSProviderDialog() {
   cfg.priority = Number(state.draft.priority || 0) || 0;
   cfg.resolution_tier = Number(state.draft.resolution_tier || 0) || 0;
   cfg.credit_multiplier = Number(state.draft.credit_multiplier || 1) || 1;
+  cfg.token_pricing_override = state.draft.token_pricing_override === true;
   var cleaned={}; for(var k in tp){ if(tp.hasOwnProperty(k)){ var val=tp[k]; if(val!==''&&val!==undefined&&val!==null){ if(k==='timezone'||k==='version'){ if(String(val).trim()) cleaned[k]=String(val).trim(); } else if(k==='price_schedule' && Array.isArray(val) && val.length){ try{ cleaned[k]=JSON.parse(JSON.stringify(val)); }catch(e){ cleaned[k]=val.slice(); } } else if(isFinite(Number(val))) cleaned[k]=Number(val); } } }
   if(cleaned.price_schedule && !cleaned.timezone) cleaned.timezone='Asia/Shanghai';
   cfg.token_pricing = cleaned;

@@ -533,6 +533,18 @@ func sqliteFTSQuery(query string) string {
 	if query == "" {
 		return ""
 	}
+	// Composite or unknown names are conjunctions of their real spans. ORing
+	// character trigrams lets "中国人" satisfy a query for a different name.
+	if anchors, strict := corebm25.QueryAnchors(query); strict && len(anchors) > 0 {
+		parts := make([]string, 0, len(anchors))
+		for _, anchor := range anchors {
+			parts = append(parts, "\""+strings.ReplaceAll(anchor, "\"", "\"\"")+"\"")
+		}
+		if len(parts) == 1 {
+			return parts[0]
+		}
+		return strings.Join(parts, " AND ")
+	}
 	tokens := append([]string{query}, corebm25.Tokenize(query)...)
 	seen := make(map[string]struct{}, len(tokens))
 	parts := make([]string, 0, len(tokens))

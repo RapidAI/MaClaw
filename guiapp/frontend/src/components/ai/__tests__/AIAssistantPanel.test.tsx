@@ -1,0 +1,8891 @@
+import { describe, it, expect, vi, afterEach } from 'vitest';
+import { useState } from 'react';
+import { render, cleanup, fireEvent, waitFor, act, within, screen } from '@testing-library/react';
+import * as fc from 'fast-check';
+import { AIAssistantPanel, canShowAssistantCodingPreviewForTab, codePreviewEventsEnabled, codePreviewModeFromState, shouldApplyRestoredAssistantPreview, shouldShowSourcePreviewForAgentMode, shouldShowSourcePreviewForWorkflow, withCodePreviewVisibleIfContent } from '../AIAssistantPanel';
+import { initialState as initialCodePreviewState, type CodeFile } from '../useCodePreviewState';
+import { openCurrentTenantCardStore } from '../AssistantTitleBar';
+import { forgetAIAssistantSessionRounds, type ChatMessage, type CancelAIAssistantResult, type NewsCardData, type ChatAction } from '../useAIAssistant';
+import type { AgentView } from '../agentViewTypes';
+import { DialogProvider } from '../../CustomDialog';
+import { EVENT_OPEN_NEW_TASK_WIZARD, EVENT_OPEN_TASK_LAUNCH, EVENT_PROJECT_TASK_ACTIVATE } from '../../../constants/events';
+import { __resetCloudWorkspaceLeaseEnsureForTests } from '../codingTaskMode';
+import { ExportTaskResultFile, PreviewTaskResultFile } from '../../../../wailsjs/go/main/App';
+
+const { openFileOrShowInFolderMock, showItemInFolderMock, openProjectDirectoryMock, loadProjectContextMock, loadProjectConversationHistoryMock, loadProjectTabConversationMock, loadProjectTabIndexMock, createProjectTabSessionMock, cancelSessionForSessionMock, clearAIAssistantHistoryForSessionMock, saveCurrentChatAsTaskMock, suggestCurrentTaskNameMock, renameTaskMock, listVirtualEmployeesMock, initiateVEConversationMock, addVEToGroupMock, renameGroupDiscussionMock, getConversationBranchPointsMock, patchConfigFieldsMock, getCodingWorkbenchStatusMock, prepareRemoteCodingEnvironmentMock, prepareRemoteOpsDiagnosisEnvironmentMock, setCodingWorkbenchSessionPlanMock, getTabWorkingDirMock, setTabWorkingDirMock, selectWorkingDirMock, startWorkflowTemplateInTabMock, resumeCloudWorkspaceTaskMock, createTaskUnifiedMock, listManagedIndustryExpertsMock, runtimeEventsOnMock, runtimeEventsOffMock } = vi.hoisted(() => ({
+    openFileOrShowInFolderMock: vi.fn().mockResolvedValue(undefined),
+    showItemInFolderMock: vi.fn().mockResolvedValue(undefined),
+    openProjectDirectoryMock: vi.fn().mockResolvedValue(undefined),
+    loadProjectContextMock: vi.fn().mockResolvedValue({ project_name: '', recent_progress: '', key_artifacts: [] }),
+    loadProjectConversationHistoryMock: vi.fn().mockResolvedValue([]),
+    loadProjectTabConversationMock: vi.fn().mockResolvedValue(null),
+    loadProjectTabIndexMock: vi.fn().mockResolvedValue([]),
+    createProjectTabSessionMock: vi.fn().mockResolvedValue(undefined),
+    cancelSessionForSessionMock: vi.fn().mockResolvedValue(''),
+    clearAIAssistantHistoryForSessionMock: vi.fn().mockResolvedValue(undefined),
+    saveCurrentChatAsTaskMock: vi.fn().mockResolvedValue({ project_path: 'D:/tasks/saved', name: 'Saved task' }),
+    suggestCurrentTaskNameMock: vi.fn().mockResolvedValue('Suggested task'),
+    renameTaskMock: vi.fn().mockResolvedValue(''),
+    listVirtualEmployeesMock: vi.fn().mockResolvedValue([
+        { id: 've-a', machine_id: 've-a', name: 'Agent A', online_status: 'online', status: 'online', access_policy: 'public', skill_description: 'Contracts' },
+        { id: 've-b', machine_id: 've-b', name: 'Contract Bot', online_status: 'online', status: 'online', access_policy: 'public', skill_description: 'Contracts' },
+    ]),
+    initiateVEConversationMock: vi.fn().mockResolvedValue({ session_id: 'session-ve-a' }),
+    addVEToGroupMock: vi.fn().mockResolvedValue(undefined),
+    renameGroupDiscussionMock: vi.fn().mockResolvedValue({ id: 'disc-1', topic: 'Renamed group' }),
+    getConversationBranchPointsMock: vi.fn().mockResolvedValue([]),
+    patchConfigFieldsMock: vi.fn().mockResolvedValue({}),
+    getCodingWorkbenchStatusMock: vi.fn().mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' }),
+    prepareRemoteCodingEnvironmentMock: vi.fn().mockResolvedValue(undefined),
+    prepareRemoteOpsDiagnosisEnvironmentMock: vi.fn().mockResolvedValue(undefined),
+    setCodingWorkbenchSessionPlanMock: vi.fn().mockResolvedValue(undefined),
+    getTabWorkingDirMock: vi.fn().mockResolvedValue({ path: '' }),
+    setTabWorkingDirMock: vi.fn().mockResolvedValue(undefined),
+    selectWorkingDirMock: vi.fn().mockResolvedValue(''),
+    startWorkflowTemplateInTabMock: vi.fn().mockResolvedValue('workflow-request'),
+    resumeCloudWorkspaceTaskMock: vi.fn().mockResolvedValue({ project_path: 'D:/tasks/cloud-math' }),
+    createTaskUnifiedMock: vi.fn().mockResolvedValue({ projectPath: 'D:/tasks/wizard-task' }),
+    listManagedIndustryExpertsMock: vi.fn().mockResolvedValue('[]'),
+    runtimeEventsOnMock: vi.fn(),
+    runtimeEventsOffMock: vi.fn(),
+}));
+
+const scrollIntoViewMock = vi.fn();
+const scrollToMock = vi.fn();
+const originalCreateObjectURL = Object.getOwnPropertyDescriptor(URL, 'createObjectURL');
+const originalRevokeObjectURL = Object.getOwnPropertyDescriptor(URL, 'revokeObjectURL');
+
+/**
+ * Focus the local assistant page the way the task list does.
+ *
+ * The new-task guide is a page rather than a tab, so it no longer renders an
+ * `ai-tab-local` button. Tests trigger the same activation event the product
+ * uses (`project-task:activate` with `local: true`), which only switches the
+ * active tab and never opens the new-task wizard.
+ */
+function activateLocalTab() {
+    const handler = runtimeEventsOnMock.mock.calls
+        .filter(([eventName]) => eventName === EVENT_PROJECT_TASK_ACTIVATE)
+        .at(-1)?.[1] as ((payload: { local?: boolean }) => void) | undefined;
+    expect(handler, 'project-task:activate handler should be registered').toBeTruthy();
+    act(() => { handler?.({ local: true }); });
+}
+
+describe('codePreviewEventsEnabled', () => {
+    it('keeps file updates flowing for a work task result', () => {
+        expect(codePreviewEventsEnabled(false, 'builtin-latex-paper')).toBe(true);
+        expect(codePreviewEventsEnabled(false, 'builtin-paper-polish')).toBe(false);
+        expect(codePreviewEventsEnabled(false, 'builtin-paper-polish', true)).toBe(true);
+        expect(codePreviewEventsEnabled(true, 'builtin-paper-polish')).toBe(true);
+    });
+});
+
+describe('shouldShowSourcePreviewForWorkflow', () => {
+    it('keeps source previews closed while a non-programming workflow is active', () => {
+        expect(shouldShowSourcePreviewForWorkflow('office')).toBe(false);
+        expect(shouldShowSourcePreviewForWorkflow('product_design')).toBe(false);
+    });
+
+    it('allows source previews only for programming workflows, including review', () => {
+        expect(shouldShowSourcePreviewForWorkflow('coding')).toBe(true);
+        expect(shouldShowSourcePreviewForWorkflow('coding_subagent')).toBe(false);
+        expect(shouldShowSourcePreviewForWorkflow('remote_coding_subagent')).toBe(false);
+        expect(shouldShowSourcePreviewForWorkflow('')).toBe(false);
+    });
+});
+
+describe('shouldShowSourcePreviewForAgentMode', () => {
+    it('allows pure local and remote coding environments', () => {
+        expect(shouldShowSourcePreviewForAgentMode('coding_dev')).toBe(true);
+        expect(shouldShowSourcePreviewForAgentMode('remote_coding_dev')).toBe(true);
+        expect(shouldShowSourcePreviewForAgentMode(undefined)).toBe(false);
+        expect(shouldShowSourcePreviewForAgentMode('')).toBe(false);
+    });
+});
+
+describe('withCodePreviewVisibleIfContent', () => {
+    const sampleFile = {
+        filePath: '/src/main.go',
+        fileName: 'main.go',
+        content: 'package main',
+        opType: 'create' as const,
+        language: 'go',
+        updatedAt: 1,
+    };
+
+    it('re-opens the panel when files remain and the user did not close it', () => {
+        const files = new Map([['/src/main.go', sampleFile]]);
+        const hidden = {
+            ...initialCodePreviewState(),
+            active: false,
+            userClosed: false,
+            files,
+            activeFilePath: '/src/main.go',
+        };
+        const next = withCodePreviewVisibleIfContent(hidden);
+        expect(next.active).toBe(true);
+        expect(next.files.size).toBe(1);
+        expect(next.userClosed).toBe(false);
+        // Does not allocate when already visible.
+        const visible = { ...hidden, active: true };
+        expect(withCodePreviewVisibleIfContent(visible)).toBe(visible);
+    });
+
+    it('does not override an explicit user close', () => {
+        const files = new Map([['/src/main.go', sampleFile]]);
+        const closed = {
+            ...initialCodePreviewState(),
+            active: false,
+            userClosed: true,
+            files,
+            activeFilePath: '/src/main.go',
+        };
+        expect(withCodePreviewVisibleIfContent(closed)).toBe(closed);
+        expect(withCodePreviewVisibleIfContent(closed).active).toBe(false);
+    });
+
+    it('leaves empty inactive state alone', () => {
+        const empty = initialCodePreviewState();
+        expect(withCodePreviewVisibleIfContent(empty)).toBe(empty);
+    });
+
+    it('does not pop the pane for read-only tabs', () => {
+        const read = { ...sampleFile, opType: 'read' as const };
+        const hidden = {
+            ...initialCodePreviewState(),
+            active: false,
+            userClosed: false,
+            files: new Map([['/src/main.go', read]]),
+            activeFilePath: '/src/main.go',
+        };
+        expect(withCodePreviewVisibleIfContent(hidden)).toBe(hidden);
+    });
+
+    it('restores onto the changed file when the selected tab is only a read', () => {
+        const read = { ...sampleFile, filePath: '/src/old.go', fileName: 'old.go', opType: 'read' as const, updatedAt: 2 };
+        const edited = { ...sampleFile, filePath: '/src/new.go', fileName: 'new.go', opType: 'modify' as const, updatedAt: 1 };
+        const hidden = {
+            ...initialCodePreviewState(),
+            active: false,
+            files: new Map<string, CodeFile>([[read.filePath, read], [edited.filePath, edited]]),
+            activeFilePath: read.filePath,
+        };
+        const next = withCodePreviewVisibleIfContent(hidden);
+        expect(next.active).toBe(true);
+        expect(next.activeFilePath).toBe('/src/new.go');
+    });
+});
+
+describe('codePreviewModeFromState', () => {
+    it('reports code when panel is active or has unreclosed files', () => {
+        expect(codePreviewModeFromState({ active: true, files: new Map(), userClosed: false })).toBe('code');
+        const files = new Map([['/a.ts', {
+            filePath: '/a.ts',
+            fileName: 'a.ts',
+            content: 'x',
+            opType: 'create' as const,
+            language: 'ts',
+            updatedAt: 1,
+        }]]);
+        expect(codePreviewModeFromState({ active: false, files, userClosed: false })).toBe('code');
+        expect(codePreviewModeFromState({ active: false, files, userClosed: true })).toBe('workflow');
+        expect(codePreviewModeFromState({ active: false, files: new Map(), userClosed: false })).toBe('workflow');
+    });
+});
+
+Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+    configurable: true,
+    value: scrollIntoViewMock,
+});
+
+Object.defineProperty(HTMLElement.prototype, 'scrollTo', {
+    configurable: true,
+    value: scrollToMock,
+});
+
+// Mock Wails runtime (not used by panel but imported transitively).
+vi.mock('../../../../wailsjs/runtime', () => ({
+    BrowserOpenURL: vi.fn(),
+    EventsOn: runtimeEventsOnMock,
+    EventsOff: runtimeEventsOffMock,
+}));
+
+vi.mock('../../../../wailsjs/go/main/App', () => ({
+    OpenFileOrShowInFolder: openFileOrShowInFolderMock,
+    ShowItemInFolder: showItemInFolderMock,
+    CreateTaskUnified: createTaskUnifiedMock,
+    AIAssistantAttachmentPreviewDataURL: vi.fn().mockResolvedValue('data:image/png;base64,THUMB'),
+    AIAssistantAttachmentFullDataURL: vi.fn().mockResolvedValue('data:image/png;base64,FULL'),
+    SelectProjectDir: vi.fn(),
+    SetWorkflowWorkingDir: vi.fn(),
+    LoadProjectContext: loadProjectContextMock,
+    LoadProjectConversationHistory: loadProjectConversationHistoryMock,
+    SearchTasks: vi.fn().mockResolvedValue([]),
+    NotifyDesktopPetMicBusy: vi.fn().mockResolvedValue(undefined),
+    ListMobileLibraryItems: vi.fn().mockResolvedValue([]),
+    KnowledgeSearch: vi.fn().mockResolvedValue([]),
+    ListExperts: vi.fn().mockResolvedValue('[]'),
+    ListManagedIndustryExperts: listManagedIndustryExpertsMock,
+    ResumeTask: vi.fn(),
+    SaveCurrentChatAsTask: saveCurrentChatAsTaskMock,
+    SuggestCurrentTaskName: suggestCurrentTaskNameMock,
+    CreateProjectTabSession: createProjectTabSessionMock,
+    CancelAIAssistantSessionForSession: cancelSessionForSessionMock,
+    ClearAIAssistantHistoryForSession: clearAIAssistantHistoryForSessionMock,
+    RenameTask: renameTaskMock,
+    PinTask: vi.fn(),
+    HideTask: vi.fn(),
+    SaveProjectTabConversation: vi.fn().mockResolvedValue(undefined),
+    LoadProjectTabConversation: loadProjectTabConversationMock,
+    LoadProjectTabIndex: loadProjectTabIndexMock,
+    CloseAssistantTabSession: vi.fn().mockResolvedValue(undefined),
+    GroupDiscussionGetConsultationDetail: vi.fn().mockResolvedValue({ discussion: { id: 'disc-1', topic: 'Vendor audit', status: 'open', local_relation: 'owned_ve_invited', readonly: true, participant_ids: ['ve-a'] }, messages: [] }),
+    GroupDiscussionRenameConsultation: renameGroupDiscussionMock,
+    GetConversationBranchPoints: getConversationBranchPointsMock,
+    PatchConfigFields: patchConfigFieldsMock,
+    GroupDiscussionSendHistoryMessage: vi.fn().mockResolvedValue(undefined),
+    GroupDiscussionDownloadAttachment: vi.fn().mockResolvedValue({ local_path: 'D:/maclaw/data/file.pdf' }),
+    ListVirtualEmployees: listVirtualEmployeesMock,
+    InitiateVEConversation: initiateVEConversationMock,
+    AddVEToGroup: addVEToGroupMock,
+    RefreshWorkflowV2StateForTab: vi.fn().mockResolvedValue({}),
+    GetTabWorkingDir: getTabWorkingDirMock,
+    SetTabWorkingDir: setTabWorkingDirMock,
+    SelectWorkingDir: selectWorkingDirMock,
+    StartWorkflowTemplateInTab: startWorkflowTemplateInTabMock,
+    AbandonUnopenedFreshLatexTask: vi.fn().mockResolvedValue(undefined),
+    OpenProjectDirectory: openProjectDirectoryMock,
+    GetTTSEnabled: vi.fn().mockResolvedValue(false),
+    SetTTSEnabled: vi.fn().mockResolvedValue(undefined),
+    SpeakText: vi.fn().mockResolvedValue(undefined),
+    LoadConfig: vi.fn().mockResolvedValue({}),
+    GetCodingWorkbenchPermission: vi.fn().mockResolvedValue("workspace"),
+    SetCodingWorkbenchPermission: vi.fn().mockResolvedValue(undefined),
+    GetCodingWorkbenchStatus: getCodingWorkbenchStatusMock,
+    GetCodingWorkbenchCheckpointSidecarStats: vi.fn().mockResolvedValue({ total_bytes: 0, max_bytes: 0, usage_ratio: 0, dir_count: 0, user_bytes: 0 }),
+    GetCodingWorkbenchConflictDiffs: vi.fn().mockResolvedValue([]),
+    GetCodingWorkbenchConflictFilePreview: vi.fn().mockResolvedValue(null),
+    GetCodingWorkbenchConflictFileTriple: vi.fn().mockResolvedValue(null),
+    GetCodingWorkbenchPlanMode: vi.fn().mockResolvedValue("auto"),
+    GetCodingWorkbenchWorktreeMode: vi.fn().mockResolvedValue("auto"),
+    GetCodingWorkbenchRoutePref: vi.fn().mockResolvedValue({ pref: "auto", capabilities: [] }),
+    ListCodingWorkbenchCheckpoints: vi.fn().mockResolvedValue([]),
+    ListCodingWorkbenchConflicts: vi.fn().mockResolvedValue([]),
+    PrepareRemoteCodingEnvironment: prepareRemoteCodingEnvironmentMock,
+    PrepareRemoteOpsDiagnosisEnvironment: prepareRemoteOpsDiagnosisEnvironmentMock,
+    SetCodingWorkbenchSessionPlan: setCodingWorkbenchSessionPlanMock,
+    SetCodingWorkbenchPlanMode: vi.fn().mockResolvedValue(undefined),
+    SetCodingWorkbenchWorktreeMode: vi.fn().mockResolvedValue(undefined),
+    SetCodingWorkbenchRoutePref: vi.fn().mockResolvedValue(undefined),
+    EnsureCodingWorkbenchArmed: vi.fn().mockResolvedValue({ kind: "local", armed: true, needs_reconnect: false, turn_count: 0 }),
+    ResumeCloudWorkspaceTask: resumeCloudWorkspaceTaskMock,
+    IsASRReady: vi.fn().mockResolvedValue(false),
+    TranscribeAudioBase64: vi.fn().mockResolvedValue(""),
+    NormalizeVoiceCommand: vi.fn(async (text: string) => ({ is_command: true, corrected_text: text, confidence: 1 })),
+    CorrectASRText: vi.fn(async (text: string) => text),
+    IsCodingWorkbenchVSCodeAvailable: vi.fn().mockResolvedValue(false),
+    GetCodingWorkbenchDirectory: vi.fn().mockResolvedValue({ entries: [] }),
+    DeleteCodingWorkbenchEntry: vi.fn().mockResolvedValue(undefined),
+    CloudWorkspaceEntitlement: vi.fn().mockResolvedValue({ enabled: true, workspaces: [] }),
+    ExportTaskResultFile: vi.fn(async () => "D:\\export\\copy.docx"),
+    PreviewTaskResultFile: vi.fn(async (path: string) => {
+        const name = path.split(/[/\\]/).pop() || path;
+        if (path.toLowerCase().endsWith('.pptx')) return { path, file_name: name, kind: 'pptx', language: 'pptx' };
+        if (path.toLowerCase().endsWith('.pdf')) return { path, file_name: name, kind: 'pdf', language: 'pdf', data_url: "data:" + "application/" + "pdf" + ";base64," + "JVBE" + "Ri0=" };
+        return { path, file_name: name, kind: 'text', language: 'plaintext', content: 'preview body' };
+    }),
+    PptxPreviewEnsure: vi.fn(async () => ({
+        images: ['D:\\preview\\slide_001.png'],
+        slide_count: 1,
+        rendered_count: 1,
+    })),
+    PptxSlideThumbnailDataURL: vi.fn(async () => 'data:image/png;base64,thumb'),
+}));
+
+function makeMsg(overrides: Partial<ChatMessage> & { role: ChatMessage['role'] }): ChatMessage {
+    return {
+        id: `test-${Math.random()}`,
+        content: overrides.content ?? '',
+        timestamp: Date.now(),
+        ...overrides,
+    };
+}
+
+function makeNews(id: string, overrides: Partial<NewsCardData> = {}): ChatMessage {
+    const title = overrides.title ?? 'Pinned news';
+    const body = overrides.body ?? 'Pinned body';
+    return makeMsg({
+        id: `news-${id}`,
+        role: 'system',
+        kind: 'news',
+        content: body,
+        news: {
+            articleId: id,
+            category: overrides.category ?? 'notice',
+            title,
+            body,
+            icon: overrides.icon ?? 'INFO',
+        },
+    });
+}
+
+function defaultPanelProps(): React.ComponentProps<typeof AIAssistantPanel> {
+    return {
+        onClose: () => {},
+        lang: 'en',
+        state: {
+            messages: [],
+            progressMessages: [],
+            sending: false,
+            streaming: false,
+            ready: true,
+            submittedPrompts: [],
+        },
+        actions: {
+            sendMessage: async () => {},
+            clearHistory: async () => {},
+            executeAction: async () => {},
+            refreshNews: () => {},
+        },
+    };
+}
+
+/** Wait for the lazy-loaded AgentTaskPanel form submit button, then click it. */
+async function clickWorkflowFormSubmit() {
+    const submitButton = await waitFor(() => {
+        const button = document.querySelector('button[type="submit"]');
+        expect(button).toBeTruthy();
+        return button as HTMLButtonElement;
+    });
+    fireEvent.click(submitButton);
+}
+
+function renderPanel(overrides: Partial<React.ComponentProps<typeof AIAssistantPanel>> = {}) {
+    const base = defaultPanelProps();
+    const props: React.ComponentProps<typeof AIAssistantPanel> = {
+        ...base,
+        ...overrides,
+        state: {
+            ...base.state,
+            ...overrides.state,
+        },
+        actions: {
+            ...base.actions,
+            ...overrides.actions,
+        },
+        window: {
+            ...base.window,
+            ...overrides.window,
+        },
+    };
+    return render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+}
+
+function mockURLObjectURLs(value: string) {
+    Object.defineProperty(URL, 'createObjectURL', {
+        configurable: true,
+        value: vi.fn(() => value),
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+        configurable: true,
+        value: vi.fn(),
+    });
+}
+
+describe('AIAssistantPanel property tests', () => {
+    afterEach(() => {
+        vi.mocked(PreviewTaskResultFile).mockClear();
+        cleanup();
+        vi.useRealTimers();
+        window.localStorage.clear();
+        scrollIntoViewMock.mockClear();
+        scrollToMock.mockClear();
+        openFileOrShowInFolderMock.mockReset();
+        openFileOrShowInFolderMock.mockResolvedValue(undefined);
+        showItemInFolderMock.mockReset();
+        showItemInFolderMock.mockResolvedValue(undefined);
+        openProjectDirectoryMock.mockReset();
+        openProjectDirectoryMock.mockResolvedValue(undefined);
+        loadProjectContextMock.mockReset();
+        loadProjectContextMock.mockResolvedValue({ project_name: '', recent_progress: '', key_artifacts: [] });
+        loadProjectConversationHistoryMock.mockReset();
+        loadProjectConversationHistoryMock.mockResolvedValue([]);
+        loadProjectTabConversationMock.mockReset();
+        loadProjectTabConversationMock.mockResolvedValue(null);
+        loadProjectTabIndexMock.mockReset();
+        loadProjectTabIndexMock.mockResolvedValue([]);
+        createProjectTabSessionMock.mockReset();
+        createProjectTabSessionMock.mockResolvedValue(undefined);
+        prepareRemoteCodingEnvironmentMock.mockReset();
+        prepareRemoteCodingEnvironmentMock.mockResolvedValue(undefined);
+        prepareRemoteOpsDiagnosisEnvironmentMock.mockReset();
+        prepareRemoteOpsDiagnosisEnvironmentMock.mockResolvedValue(undefined);
+        getCodingWorkbenchStatusMock.mockReset();
+        getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
+        getTabWorkingDirMock.mockReset();
+        getTabWorkingDirMock.mockResolvedValue({ path: '' });
+        setTabWorkingDirMock.mockReset();
+        setTabWorkingDirMock.mockResolvedValue(undefined);
+        selectWorkingDirMock.mockReset();
+        selectWorkingDirMock.mockResolvedValue('');
+        startWorkflowTemplateInTabMock.mockReset();
+        startWorkflowTemplateInTabMock.mockResolvedValue('workflow-request');
+        resumeCloudWorkspaceTaskMock.mockReset();
+        resumeCloudWorkspaceTaskMock.mockResolvedValue({ project_path: 'D:/tasks/cloud-math' });
+        createTaskUnifiedMock.mockReset();
+        createTaskUnifiedMock.mockResolvedValue({ projectPath: 'D:/tasks/wizard-task' });
+        listManagedIndustryExpertsMock.mockReset();
+        listManagedIndustryExpertsMock.mockResolvedValue('[]');
+        __resetCloudWorkspaceLeaseEnsureForTests();
+        saveCurrentChatAsTaskMock.mockReset();
+        saveCurrentChatAsTaskMock.mockResolvedValue({ project_path: 'D:/tasks/saved', name: 'Saved task' });
+        suggestCurrentTaskNameMock.mockReset();
+        suggestCurrentTaskNameMock.mockResolvedValue('Suggested task');
+        renameTaskMock.mockReset();
+        renameTaskMock.mockResolvedValue('');
+        listVirtualEmployeesMock.mockReset();
+        listVirtualEmployeesMock.mockResolvedValue([
+            { id: 've-a', machine_id: 've-a', name: 'Agent A', online_status: 'online', status: 'online', access_policy: 'public', skill_description: 'Contracts' },
+            { id: 've-b', machine_id: 've-b', name: 'Contract Bot', online_status: 'online', status: 'online', access_policy: 'public', skill_description: 'Contracts' },
+        ]);
+        initiateVEConversationMock.mockReset();
+        initiateVEConversationMock.mockResolvedValue({ session_id: 'session-ve-a' });
+        addVEToGroupMock.mockReset();
+        addVEToGroupMock.mockResolvedValue(undefined);
+        renameGroupDiscussionMock.mockReset();
+        renameGroupDiscussionMock.mockResolvedValue({ id: 'disc-1', topic: 'Renamed group' });
+        clearAIAssistantHistoryForSessionMock.mockReset();
+        clearAIAssistantHistoryForSessionMock.mockResolvedValue(undefined);
+        if (originalCreateObjectURL) Object.defineProperty(URL, 'createObjectURL', originalCreateObjectURL);
+        else delete (URL as any).createObjectURL;
+        if (originalRevokeObjectURL) Object.defineProperty(URL, 'revokeObjectURL', originalRevokeObjectURL);
+        else delete (URL as any).revokeObjectURL;
+    });
+
+    it('refreshes wizard experts when the experts:changed event fires', async () => {
+        renderPanel();
+        await waitFor(() => expect(listManagedIndustryExpertsMock).toHaveBeenCalledTimes(1));
+        const changedHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'experts:changed')
+            .at(-1)?.[1];
+        expect(typeof changedHandler).toBe('function');
+        // Simulate a managed industry expert appearing in the market list.
+        listManagedIndustryExpertsMock.mockResolvedValue(JSON.stringify([
+            { asset_id: 'asset-1', listing_id: 'listing-1', local_expert_id: 'expert-mkt-1', name: 'Market Expert', description: 'desc', installed: true },
+        ]));
+        await act(async () => { changedHandler(); });
+        await waitFor(() => expect(listManagedIndustryExpertsMock).toHaveBeenCalledTimes(2));
+    });
+
+    it('publishes no task identity while the local AI assistant tab is active', async () => {
+        const onActiveAssistantTaskChange = vi.fn();
+        renderPanel({ onActiveAssistantTaskChange });
+        await waitFor(() => {
+            expect(onActiveAssistantTaskChange).toHaveBeenCalled();
+        });
+        expect(onActiveAssistantTaskChange).toHaveBeenLastCalledWith(null);
+    });
+
+    it('does not allow coding preview panes on digital employee tabs', () => {
+        expect(canShowAssistantCodingPreviewForTab({ type: 'local' })).toBe(true);
+        expect(canShowAssistantCodingPreviewForTab({ type: 'project' })).toBe(true);
+        expect(canShowAssistantCodingPreviewForTab({ type: 've' })).toBe(false);
+        expect(canShowAssistantCodingPreviewForTab({ type: 'group' })).toBe(false);
+    });
+
+    it('does not apply a stored code-preview snapshot from an old project onto a new remote coding tab', () => {
+        // Repro: localStorage still holds verification_report from previous remote session;
+        // user creates a brand-new remote coding task whose project has no files yet.
+        expect(shouldApplyRestoredAssistantPreview({
+            restoredOwnerTabId: 'proj-old-remote',
+            restoredOwnerProjectPath: 'C:/Users/me/.maclaw/projects/old-remote-task',
+            activeTabId: 'proj-new-remote',
+            activeTabType: 'project',
+            activeTabProjectPath: 'C:/Users/me/.maclaw/projects/new-remote-task',
+        })).toBe(false);
+
+        // Same project (path match, possibly different slash/case) may restore.
+        expect(shouldApplyRestoredAssistantPreview({
+            restoredOwnerTabId: 'proj-old-remote',
+            restoredOwnerProjectPath: 'C:\\Users\\me\\.maclaw\\projects\\same-task',
+            activeTabId: 'proj-same-task-reopened',
+            activeTabType: 'project',
+            activeTabProjectPath: 'C:/Users/me/.maclaw/projects/same-task',
+        })).toBe(true);
+
+        // Local-only snapshot must not spill into a project tab.
+        expect(shouldApplyRestoredAssistantPreview({
+            restoredOwnerTabId: 'local',
+            activeTabId: 'proj-new-remote',
+            activeTabType: 'project',
+            activeTabProjectPath: 'C:/Users/me/.maclaw/projects/new-remote-task',
+        })).toBe(false);
+
+        expect(shouldApplyRestoredAssistantPreview({
+            restoredOwnerTabId: 'local',
+            activeTabId: 'local',
+            activeTabType: 'local',
+        })).toBe(true);
+    });
+
+    it('saves the current main conversation as a task from the title bar', async () => {
+        const onTaskPrefsChanged = vi.fn();
+        renderPanel({
+            state: {
+                messages: [
+                    makeMsg({ id: 'save-user', role: 'user', content: 'Create a launch deck' }),
+                    makeMsg({ id: 'save-assistant', role: 'assistant', content: 'Working on the deck.' }),
+                ],
+            },
+            actions: { onTaskPrefsChanged },
+        });
+
+        fireEvent.click(screen.getByTestId('save-current-task-btn'));
+
+        const input = await screen.findByLabelText('Task name');
+        expect((input as HTMLInputElement).value).toBe('Suggested task');
+        fireEvent.change(input, { target: { value: 'Launch deck task' } });
+        fireEvent.click(screen.getByText('Save'));
+
+        await waitFor(() => expect(saveCurrentChatAsTaskMock).toHaveBeenCalledWith('Launch deck task'));
+        expect(onTaskPrefsChanged).toHaveBeenCalled();
+    });
+
+    it('binds workflow review confirmation to the input area when the current phase waits for review', async () => {
+        const executeAction = vi.fn().mockResolvedValue(undefined);
+        const reviewMessage = makeMsg({
+            id: 'workflow-review-message-actions',
+            role: 'assistant',
+            content: 'Please review the phase document.',
+            actions: [
+                { label: 'Confirm & proceed', command: '__wf_review__ confirm', style: 'primary' },
+                { label: 'Provide feedback', command: '__wf_review__ supplement_focus', style: 'default' },
+            ],
+        });
+        const { getByTestId, queryByTestId } = renderPanel({
+            lang: 'en',
+            state: { messages: [reviewMessage], sending: false, streaming: false, ready: true },
+            actions: { executeAction },
+        });
+        expect(document.querySelectorAll('[data-testid="action-button"]').length).toBe(0);
+        const phaseUpdateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'workflow:phase_update').at(-1)?.[1];
+        expect(phaseUpdateHandler).toBeTypeOf('function');
+
+        act(() => phaseUpdateHandler({
+            id: 'workflow-review-inline-test',
+            type: 'general',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'outline',
+            phases: [
+                { id: 'outline', name: 'Outline', index: 0, expects_document: true, status: 'waiting_confirm' },
+            ],
+        }));
+
+        const prompt = await waitFor(() => getByTestId('workflow-review-inline-prompt'));
+        expect(prompt.textContent || '').toContain('Outline is waiting for review');
+        expect(document.querySelectorAll('[data-testid="action-button"]').length).toBe(0);
+        const viewDocumentButton = within(prompt).getByRole('button', { name: 'View document' }) as HTMLButtonElement;
+        expect(viewDocumentButton.disabled).toBe(false);
+        fireEvent.click(viewDocumentButton);
+        await waitFor(() => expect(document.body.textContent || '').toContain('Workflow progress'));
+
+        fireEvent.click(within(prompt).getByRole('button', { name: 'Confirm & proceed' }));
+        expect(executeAction).toHaveBeenCalledWith('__wf_review__ confirm');
+
+        act(() => phaseUpdateHandler({
+            id: 'workflow-review-inline-test',
+            type: 'general',
+            status: 'completed',
+            event_scope_id: 'local',
+            current_phase: 'outline',
+            phases: [
+                { id: 'outline', name: 'Outline', index: 0, expects_document: true, status: 'waiting_confirm' },
+            ],
+        }));
+        await waitFor(() => expect(queryByTestId('workflow-review-inline-prompt')).toBeNull());
+    });
+
+    it('binds workflow review confirmation to the active project tab event scope', async () => {
+        const executeAction = vi.fn().mockResolvedValue(undefined);
+        const onHandled = vi.fn();
+        const { getByTestId, queryByTestId } = renderPanel({
+            lang: 'en',
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/workflow-review-project-tab',
+                taskTitle: 'Workflow review project tab',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            actions: { executeAction },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const projectTab = document.querySelector('[data-testid^="ai-tab-proj-"]') as HTMLElement | null;
+        expect(projectTab).toBeTruthy();
+        const projectTabId = projectTab!.getAttribute('data-testid')!.replace('ai-tab-', '');
+        fireEvent.click(getByTestId(`ai-tab-${projectTabId}`));
+
+        const phaseUpdateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'workflow:phase_update').at(-1)?.[1];
+        expect(phaseUpdateHandler).toBeTypeOf('function');
+
+        act(() => phaseUpdateHandler({
+            id: 'workflow-review-wrong-scope',
+            type: 'general',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'outline',
+            phases: [
+                { id: 'outline', name: 'Outline', index: 0, expects_document: true, status: 'waiting_confirm' },
+            ],
+        }));
+        expect(queryByTestId('workflow-review-inline-prompt')).toBeNull();
+
+        act(() => phaseUpdateHandler({
+            id: 'workflow-review-project-scope',
+            type: 'general',
+            status: 'active',
+            event_scope_id: projectTabId,
+            current_phase: 'outline',
+            phases: [
+                { id: 'outline', name: 'Project Outline', index: 0, expects_document: true, status: 'waiting_confirm' },
+            ],
+        }));
+
+        const prompt = await waitFor(() => getByTestId('workflow-review-inline-prompt'));
+        expect(prompt.textContent || '').toContain('Project Outline is waiting for review');
+        fireEvent.click(within(prompt).getByRole('button', { name: 'Confirm & proceed' }));
+        expect(executeAction).toHaveBeenCalledWith('__wf_review__ confirm', expect.objectContaining({
+            project_path: 'D:/tasks/workflow-review-project-tab',
+            tabId: projectTabId,
+            recentMessages: expect.any(Array),
+        }));
+    });
+
+    it('keeps visible input progress while waiting for a workflow form to open', async () => {
+        const cancelSession = vi.fn<() => Promise<CancelAIAssistantResult>>().mockResolvedValue({ canceledText: '' });
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { getByTestId } = renderPanel({
+            lang: 'en',
+            actions: { cancelSession },
+        });
+        const phaseUpdateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'workflow:phase_update').at(-1)?.[1];
+        expect(phaseUpdateHandler).toBeTypeOf('function');
+
+        act(() => phaseUpdateHandler({
+            id: 'workflow-awaiting-form-test',
+            type: 'presentation_design',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'audience_goal',
+            awaiting_form: true,
+            phases: [
+                { id: 'audience_goal', name: 'Audience & goals', index: 0, expects_document: true },
+            ],
+        }));
+
+        const prompt = await waitFor(() => getByTestId('workflow-form-inline-prompt'));
+        expect(prompt.textContent || '').toContain('Opening workflow form');
+        expect(getByTestId('ai-cancel-progress')).toBeTruthy();
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.disabled).toBe(false);
+        expect(input.getAttribute('aria-label') || '').toContain('Opening the workflow form');
+    });
+
+    it('cancels an awaiting workflow after the form panel has been closed', async () => {
+        const cancelSession = vi.fn<() => Promise<CancelAIAssistantResult>>().mockResolvedValue({ canceledText: '' });
+        const dismissAgentView = vi.fn().mockResolvedValue(undefined);
+        const workflowForm: AgentView = {
+            id: 'workflow:form:audience_goal',
+            type: 'form',
+            title: 'Audience & goals',
+            fields: [
+                { name: '_workflow_phase', type: 'hidden', value: 'audience_goal' },
+                { name: '_workflow_id', type: 'hidden', value: 'wf-route-1' },
+                { name: '_workflow_user_id', type: 'hidden', value: 'desktop-user:D:/tasks/workflow-project' },
+                { name: '_workflow_event_scope_id', type: 'hidden', value: 'proj-route-1' },
+            ],
+            submitLabel: 'Submit workflow form',
+        };
+        const props = defaultPanelProps();
+        props.lang = 'en';
+        props.state = {
+            ...props.state,
+            agentView: workflowForm,
+        };
+        props.actions = { ...props.actions, cancelSession, dismissAgentView };
+        const { getByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        const phaseUpdateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'workflow:phase_update').at(-1)?.[1];
+        expect(phaseUpdateHandler).toBeTypeOf('function');
+
+        act(() => phaseUpdateHandler({
+            id: 'wf-route-1',
+            type: 'presentation_design',
+            status: 'active',
+            event_scope_id: 'local',
+            workflow_id: 'wf-route-1',
+            current_phase: 'audience_goal',
+            awaiting_form: true,
+            phases: [
+                { id: 'audience_goal', name: 'Audience & goals', index: 0, expects_document: true },
+            ],
+        }));
+
+        await waitFor(() => expect(getByTestId('workflow-form-inline-prompt').textContent || '').toContain('Workflow form is ready'));
+        rerender(<AIAssistantPanel
+            {...props}
+            state={{
+                ...props.state,
+                agentView: null,
+            }}
+        />);
+        await waitFor(() => expect(getByTestId('workflow-form-inline-prompt').textContent || '').toContain('Opening workflow form'));
+        fireEvent.click(getByTestId('ai-cancel-progress'));
+
+        await waitFor(() => {
+            expect(dismissAgentView).toHaveBeenCalledWith('workflow:form:audience_goal', expect.objectContaining({
+                __cancel_workflow: true,
+                _workflow_phase: 'audience_goal',
+                _workflow_id: 'wf-route-1',
+                _workflow_user_id: 'desktop-user:D:/tasks/workflow-project',
+                _workflow_event_scope_id: 'proj-route-1',
+            }));
+        });
+        expect(cancelSession).not.toHaveBeenCalled();
+    });
+
+    it('does not reuse a closed workflow form route after the workflow id changes', async () => {
+        const dismissAgentView = vi.fn().mockResolvedValue(undefined);
+        const workflowForm: AgentView = {
+            id: 'workflow:form:audience_goal',
+            type: 'form',
+            title: 'Audience & goals',
+            fields: [
+                { name: '_workflow_phase', type: 'hidden', value: 'audience_goal' },
+                { name: '_workflow_id', type: 'hidden', value: 'wf-old' },
+                { name: '_workflow_user_id', type: 'hidden', value: 'desktop-user:D:/old-task' },
+                { name: '_workflow_event_scope_id', type: 'hidden', value: 'proj-old' },
+            ],
+        };
+        const props = defaultPanelProps();
+        props.lang = 'en';
+        props.state = { ...props.state, agentView: workflowForm };
+        props.actions = { ...props.actions, dismissAgentView, cancelSession: vi.fn().mockResolvedValue({ canceledText: '' }) };
+        const { getByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        const phaseUpdateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'workflow:phase_update').at(-1)?.[1];
+        expect(phaseUpdateHandler).toBeTypeOf('function');
+
+        act(() => phaseUpdateHandler({
+            id: 'wf-old',
+            workflow_id: 'wf-old',
+            type: 'presentation_design',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'audience_goal',
+            awaiting_form: true,
+            phases: [{ id: 'audience_goal', name: 'Audience & goals', index: 0, expects_document: true }],
+        }));
+        await waitFor(() => expect(getByTestId('workflow-form-inline-prompt').textContent || '').toContain('Workflow form is ready'));
+
+        rerender(<AIAssistantPanel {...props} state={{ ...props.state, agentView: null }} />);
+        act(() => phaseUpdateHandler({
+            id: 'wf-new',
+            workflow_id: 'wf-new',
+            type: 'presentation_design',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'audience_goal',
+            awaiting_form: true,
+            phases: [{ id: 'audience_goal', name: 'Audience & goals', index: 0, expects_document: true }],
+        }));
+        fireEvent.click(getByTestId('ai-cancel-progress'));
+
+        await waitFor(() => {
+            expect(dismissAgentView).toHaveBeenCalledWith('workflow:form:audience_goal', expect.objectContaining({
+                __cancel_workflow: true,
+                _workflow_id: 'wf-new',
+                _workflow_user_id: 'desktop-user',
+            }));
+        });
+    });
+
+    it('shows document generation progress after a workflow form is submitted', async () => {
+        const workflowForm: AgentView = {
+            id: 'workflow:form:audience_goal',
+            type: 'form',
+            title: 'Audience & goals',
+            fields: [{ name: '_workflow_phase', type: 'hidden', value: 'audience_goal' }],
+            submitLabel: 'Submit workflow form',
+        };
+        const submitAgentView = vi.fn().mockResolvedValue(undefined);
+        const props = defaultPanelProps();
+        props.lang = 'en';
+        props.state = {
+            ...props.state,
+            sending: true,
+            busySessionKeys: ['desktop-user'],
+            agentView: workflowForm,
+        };
+        props.actions = { ...props.actions, submitAgentView };
+        const { getByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        const phaseUpdateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'workflow:phase_update').at(-1)?.[1];
+        expect(phaseUpdateHandler).toBeTypeOf('function');
+
+        act(() => phaseUpdateHandler({
+            id: 'workflow-generating-doc-test',
+            type: 'presentation_design',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'audience_goal',
+            awaiting_form: true,
+            phases: [
+                { id: 'audience_goal', name: 'Audience & goals', index: 0, expects_document: true },
+            ],
+        }));
+
+        await waitFor(() => expect(getByTestId('workflow-form-inline-prompt').textContent || '').toContain('Workflow form is ready'));
+        await clickWorkflowFormSubmit();
+        await waitFor(() => expect(submitAgentView).toHaveBeenCalledWith('workflow:form:audience_goal', expect.objectContaining({
+            _workflow_phase: 'audience_goal',
+        })));
+
+        rerender(<AIAssistantPanel
+            {...props}
+            state={{
+                ...props.state,
+                sending: true,
+                busySessionKeys: ['desktop-user'],
+                agentView: null,
+            }}
+        />);
+
+        await waitFor(() => expect(getByTestId('workflow-form-inline-prompt').textContent || '').toContain('Generating workflow document'));
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.getAttribute('aria-label') || '').toContain('Generating the workflow document');
+    });
+
+    it('keeps the input spinner when submitted workflow phase is running after the form closes', async () => {
+        const workflowForm: AgentView = {
+            id: 'workflow:form:audience_goal',
+            type: 'form',
+            title: 'Audience & goals',
+            fields: [{ name: '_workflow_phase', type: 'hidden', value: 'audience_goal' }],
+            submitLabel: 'Submit workflow form',
+        };
+        const submitAgentView = vi.fn().mockResolvedValue(undefined);
+        const props = defaultPanelProps();
+        props.lang = 'en';
+        props.state = {
+            ...props.state,
+            agentView: workflowForm,
+        };
+        props.actions = { ...props.actions, submitAgentView };
+        const { getByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        const phaseUpdateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'workflow:phase_update').at(-1)?.[1];
+        expect(phaseUpdateHandler).toBeTypeOf('function');
+
+        act(() => phaseUpdateHandler({
+            id: 'workflow-running-after-form-submit-test',
+            type: 'presentation_design',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'audience_goal',
+            awaiting_form: true,
+            phases: [
+                { id: 'audience_goal', name: 'Audience & goals', index: 0, status: 'pending', expects_document: true },
+            ],
+        }));
+
+        await clickWorkflowFormSubmit();
+        await waitFor(() => expect(submitAgentView).toHaveBeenCalled());
+
+        rerender(<AIAssistantPanel
+            {...props}
+            state={{
+                ...props.state,
+                sending: false,
+                busySessionKeys: [],
+                agentView: null,
+            }}
+        />);
+        act(() => phaseUpdateHandler({
+            id: 'workflow-running-after-form-submit-test',
+            type: 'presentation_design',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'audience_goal',
+            awaiting_form: false,
+            phases: [
+                { id: 'audience_goal', name: 'Audience & goals', index: 0, status: 'running', expects_document: true },
+            ],
+        }));
+
+        await waitFor(() => expect(getByTestId('workflow-form-inline-prompt').textContent || '').toContain('Generating workflow document'));
+        const sendButton = within(getByTestId('ai-input-bar')).getByLabelText('Send') as HTMLButtonElement;
+        expect(sendButton.querySelector('span')).toBeTruthy();
+        expect(sendButton.querySelector('svg')).toBeNull();
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.getAttribute('aria-label') || '').toContain('Generating the workflow document');
+    });
+
+    it('keeps the input spinner spinning when switching to a task that is still running remotely', async () => {
+        const projectPath = 'D:/tasks/remote-virus-scan';
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: { projectPath, taskTitle: 'Remote virus scan', autoSend: false },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            tasks: [
+                {
+                    name: 'Remote virus scan',
+                    project_path: projectPath,
+                    active_workflow: { status: 'running', phase: 'implementation' },
+                },
+            ],
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(document.querySelector('[data-testid^="ai-tab-proj-"]')).toBeTruthy());
+        // No live round is tracked for this panel (the run was started
+        // earlier/elsewhere), but the durable task snapshot says running:
+        // the send button must show the spinner, not the idle send icon.
+        const sendButton = within(getByTestId('ai-input-bar')).getByLabelText('Send') as HTMLButtonElement;
+        expect(sendButton.querySelector('span')).toBeTruthy();
+        expect(sendButton.querySelector('svg')).toBeNull();
+    });
+
+    it('does not show workflow document generation chrome for non-document execution forms', async () => {
+        // coding.implementation is a non-document execution phase (expects_document: false).
+        const workflowForm: AgentView = {
+            id: 'workflow:form:implementation',
+            type: 'form',
+            title: 'Implementation',
+            fields: [{ name: '_workflow_phase', type: 'hidden', value: 'implementation' }],
+            submitLabel: 'Submit workflow form',
+        };
+        const submitAgentView = vi.fn().mockResolvedValue(undefined);
+        const props = defaultPanelProps();
+        props.lang = 'en';
+        props.state = {
+            ...props.state,
+            agentView: workflowForm,
+        };
+        props.actions = { ...props.actions, submitAgentView };
+        const { getByTestId, queryByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        const phaseUpdateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'workflow:phase_update').at(-1)?.[1];
+        expect(phaseUpdateHandler).toBeTypeOf('function');
+
+        act(() => phaseUpdateHandler({
+            id: 'workflow-non-document-form-submit-test',
+            type: 'coding',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'implementation',
+            awaiting_form: true,
+            phases: [
+                { id: 'implementation', name: 'Implementation', index: 3, status: 'pending', expects_document: false },
+            ],
+        }));
+
+        await clickWorkflowFormSubmit();
+        await waitFor(() => expect(submitAgentView).toHaveBeenCalled());
+
+        rerender(<AIAssistantPanel
+            {...props}
+            state={{
+                ...props.state,
+                sending: true,
+                busySessionKeys: ['desktop-user'],
+                agentView: null,
+            }}
+        />);
+        act(() => phaseUpdateHandler({
+            id: 'workflow-non-document-form-submit-test',
+            type: 'coding',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'implementation',
+            awaiting_form: false,
+            phases: [
+                { id: 'implementation', name: 'Implementation', index: 3, status: 'running', expects_document: false },
+            ],
+        }));
+
+        await waitFor(() => expect(queryByTestId('workflow-form-inline-prompt')).toBeNull());
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.getAttribute('aria-label') || '').not.toContain('Generating the workflow document');
+    });
+
+    it('does not carry submitted-form generation text across workflow phases', async () => {
+        const workflowForm: AgentView = {
+            id: 'workflow:form:audience_goal',
+            type: 'form',
+            title: 'Audience & goals',
+            fields: [{ name: '_workflow_phase', type: 'hidden', value: 'audience_goal' }],
+            submitLabel: 'Submit workflow form',
+        };
+        const submitAgentView = vi.fn().mockResolvedValue(undefined);
+        const props = defaultPanelProps();
+        props.lang = 'en';
+        props.state = {
+            ...props.state,
+            sending: true,
+            busySessionKeys: ['desktop-user'],
+            agentView: workflowForm,
+        };
+        props.actions = { ...props.actions, submitAgentView };
+        const { getByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        const phaseUpdateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'workflow:phase_update').at(-1)?.[1];
+        expect(phaseUpdateHandler).toBeTypeOf('function');
+
+        act(() => phaseUpdateHandler({
+            id: 'workflow-generating-phase-switch-test',
+            type: 'presentation_design',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'audience_goal',
+            awaiting_form: true,
+            phases: [
+                { id: 'audience_goal', name: 'Audience & goals', index: 0, expects_document: true },
+                { id: 'outline', name: 'Outline', index: 1, expects_document: true },
+            ],
+        }));
+
+        await clickWorkflowFormSubmit();
+        await waitFor(() => expect(submitAgentView).toHaveBeenCalled());
+
+        rerender(<AIAssistantPanel
+            {...props}
+            state={{
+                ...props.state,
+                sending: true,
+                busySessionKeys: ['desktop-user'],
+                agentView: null,
+            }}
+        />);
+        await waitFor(() => expect(getByTestId('workflow-form-inline-prompt').textContent || '').toContain('Generating workflow document'));
+
+        act(() => phaseUpdateHandler({
+            id: 'workflow-generating-phase-switch-test',
+            type: 'presentation_design',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'outline',
+            awaiting_form: true,
+            phases: [
+                { id: 'audience_goal', name: 'Audience & goals', index: 0, expects_document: true },
+                { id: 'outline', name: 'Outline', index: 1, expects_document: true },
+            ],
+        }));
+
+        await waitFor(() => expect(getByTestId('workflow-form-inline-prompt').textContent || '').toContain('Opening workflow form'));
+        expect(getByTestId('workflow-form-inline-prompt').textContent || '').not.toContain('Generating workflow document');
+    });
+
+    it('shows source preview after an active programming workflow starts', async () => {
+        const props = defaultPanelProps();
+        props.window = { inline: true };
+        const { getByTestId } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        const phaseUpdateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'workflow:phase_update').at(-1)?.[1];
+        expect(phaseUpdateHandler).toBeTypeOf('function');
+
+        act(() => phaseUpdateHandler({
+            id: 'coding-preview-workflow',
+            type: 'coding',
+            status: 'active',
+            event_scope_id: 'local',
+            current_phase: 'implementation',
+        }));
+
+        await waitFor(() => expect(runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'code:file_update').length).toBeGreaterThan(1));
+        const codeFileHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'code:file_update').at(-1)?.[1];
+        act(() => codeFileHandler({
+            file_path: '/tmp/workflow/main.ts',
+            file_name: 'main.ts',
+            content: 'export const workflowPreview = true;',
+            op_type: 'create',
+            language: 'typescript',
+            session_id: 'coding-preview-session',
+            auto_open_preview: true,
+        }));
+
+        await waitFor(() => expect(getByTestId('code-preview-header')).toBeTruthy());
+    });
+
+    it('keeps ordinary-chat source previews closed across tab changes', async () => {
+        const props = defaultPanelProps();
+        props.window = { inline: true };
+        const { getByRole, getByTestId, queryByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        const codeFileHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'code:file_update').at(-1)?.[1];
+        expect(codeFileHandler).toBeTypeOf('function');
+
+        act(() => codeFileHandler({
+            file_path: '/tmp/hello/main.cpp',
+            file_name: 'main.cpp',
+            content: '#include <iostream>\nint main(){ std::cout << "Hello, World!"; }\n',
+            op_type: 'create',
+            language: 'cpp',
+            session_id: 'local-coding-session',
+            auto_open_preview: true,
+        }));
+
+        await waitFor(() => expect(queryByTestId('code-preview-header')).toBeNull());
+
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingVEOpen={{
+                id: 've-a',
+                machine_id: 've-a',
+                name: 'Agent A',
+                online_status: 'online',
+                status: 'active',
+                access_policy: 'public',
+                skill_description: '',
+            } as any}
+            onPendingVEOpenHandled={vi.fn()}
+        />);
+
+        await waitFor(() => expect(getByRole('tab', { name: 'Agent A' })).toBeTruthy());
+        act(() => codeFileHandler({
+            file_path: '/tmp/other-project/app.cpp',
+            file_name: 'app.cpp',
+            content: 'int polluted_project_preview = 1;',
+            op_type: 'create',
+            language: 'cpp',
+            session_id: 'other-project-session',
+            project_path: 'D:/other-project',
+            auto_open_preview: true,
+        }));
+        act(() => codeFileHandler({
+            file_path: '/tmp/hello/main.cpp',
+            file_name: 'main.cpp',
+            content: '#include <iostream>\nint main(){ std::cout << "Hello from hidden local"; }\n',
+            op_type: 'modify',
+            language: 'cpp',
+            session_id: 'local-coding-session',
+            auto_open_preview: true,
+        }));
+        await waitFor(() => expect(queryByTestId('code-preview-header')).toBeNull());
+
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingVEOpen={null}
+            pendingProjectTabOpen={{ projectPath: 'D:/next-project', taskTitle: 'Next project', autoSend: false }}
+            onPendingProjectTabOpenHandled={vi.fn()}
+        />);
+        await waitFor(() => expect(getByRole('tab', { name: 'Next project' })).toBeTruthy());
+
+        activateLocalTab();
+        await waitFor(() => expect(queryByTestId('code-preview-header')).toBeNull());
+        expect(document.body.textContent || '').not.toContain('Hello from hidden local');
+        expect(document.body.textContent || '').not.toContain('polluted_project_preview');
+    });
+
+    it('starts a workflow only after opening its dedicated project tab', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+        renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/dedicated-workflow-tab',
+                taskTitle: 'Dedicated workflow',
+                autoSend: true,
+                initialMessage: 'must not be sent as ordinary chat',
+                workflowType: 'coding',
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalledWith(expect.objectContaining({ outcome: 'opened' })));
+        const projectTab = document.querySelector('[data-testid^="ai-tab-proj-"]') as HTMLElement | null;
+        expect(projectTab).toBeTruthy();
+        const projectTabId = projectTab!.getAttribute('data-testid')!.replace('ai-tab-', '');
+        await waitFor(() => expect(startWorkflowTemplateInTabMock).toHaveBeenCalledWith(
+            'coding',
+            'D:/tasks/dedicated-workflow-tab',
+            projectTabId,
+        ));
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('does not restart a workflow when a stale launch focuses its existing tab', async () => {
+        const projectPath = 'D:/tasks/existing-workflow-tab';
+        const { rerender } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Existing workflow',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+        });
+        await waitFor(() => expect(document.querySelector('[data-testid^="ai-tab-proj-"]')).toBeTruthy());
+        startWorkflowTemplateInTabMock.mockClear();
+
+        const base = defaultPanelProps();
+        rerender(<AIAssistantPanel
+            {...base}
+            pendingProjectTabOpen={{ projectPath, taskTitle: 'Existing workflow', autoSend: false, workflowType: 'coding' }}
+            onPendingProjectTabOpenHandled={vi.fn()}
+        />);
+
+        await waitFor(() => expect(document.querySelector('[data-testid^="ai-tab-proj-"]')).toBeTruthy());
+        expect(startWorkflowTemplateInTabMock).not.toHaveBeenCalled();
+    });
+
+    it('shows a visible error in the workflow tab when startup fails', async () => {
+        startWorkflowTemplateInTabMock.mockRejectedValueOnce(new Error('backend unavailable'));
+        renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/failed-workflow-tab',
+                taskTitle: 'Failed workflow',
+                autoSend: false,
+                workflowType: 'coding',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+        });
+
+        await waitFor(() => expect(document.body.textContent || '').toContain('This workflow could not be started. Please try again.'));
+    });
+
+    it('keeps ordinary-chat source previews closed after a project tab closes', async () => {
+        const props = defaultPanelProps();
+        props.window = { inline: true };
+        const { getByRole, getByTestId, queryByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={{ projectPath: 'D:/owner-project', taskTitle: 'Owner project', autoSend: false }}
+            onPendingProjectTabOpenHandled={vi.fn()}
+        />);
+        await waitFor(() => expect(getByRole('tab', { name: 'Owner project' })).toBeTruthy());
+
+        const projectTab = document.querySelector('[data-testid^="ai-tab-proj-"]') as HTMLElement | null;
+        expect(projectTab).toBeTruthy();
+        const projectTabId = projectTab!.getAttribute('data-testid')!.replace('ai-tab-', '');
+        const latestCodeFileHandler = () => runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'code:file_update').at(-1)?.[1];
+
+        act(() => latestCodeFileHandler()({
+            file_path: 'D:/owner-project/main.cpp',
+            file_name: 'main.cpp',
+            content: 'int project_owner_preview = 1;',
+            op_type: 'create',
+            language: 'cpp',
+            session_id: 'project-owner-session',
+            project_path: 'D:/owner-project',
+            auto_open_preview: true,
+        }));
+        // The ordinary tab routes coding events through the coding preview
+        // owner tab's project scope (agent write focus follows the run), so
+        // the write surfaces while that project tab still exists.
+        await waitFor(() => expect(getByTestId('code-preview-header')).toBeTruthy());
+        expect(document.body.textContent || '').toContain('project_owner_preview');
+
+        fireEvent.click(getByTestId(`ai-tab-close-${projectTabId}`));
+        await waitFor(() => expect(queryByTestId(`ai-tab-${projectTabId}`)).toBeNull());
+        await waitFor(() => expect(document.body.textContent || '').not.toContain('project_owner_preview'));
+
+        act(() => latestCodeFileHandler()({
+            file_path: 'D:/owner-project/stale.cpp',
+            file_name: 'stale.cpp',
+            content: 'int stale_project_after_close = 2;',
+            op_type: 'modify',
+            language: 'cpp',
+            session_id: 'project-owner-session',
+            project_path: 'D:/owner-project',
+            auto_open_preview: true,
+        }));
+        expect(document.body.textContent || '').not.toContain('stale_project_after_close');
+
+        act(() => latestCodeFileHandler()({
+            file_path: '/tmp/local.cpp',
+            file_name: 'local.cpp',
+            content: 'int local_after_project_close = 3;',
+            op_type: 'create',
+            language: 'cpp',
+            session_id: 'local-after-close-session',
+            auto_open_preview: true,
+        }));
+        await waitFor(() => expect(queryByTestId('code-preview-header')).toBeNull());
+        expect(document.body.textContent || '').not.toContain('local_after_project_close');
+    });
+
+    it('renames a project tab through the linked task and applies the confirmed display name', async () => {
+        const projectPath = 'D:/tasks/rename-project-tab';
+        renameTaskMock.mockResolvedValueOnce('Task name from backend');
+        const { getByRole, getByTestId } = renderPanel({
+            pendingProjectTabOpen: { projectPath, taskTitle: 'Original task name', autoSend: false },
+            onPendingProjectTabOpenHandled: vi.fn(),
+        });
+
+        const projectTab = await waitFor(() => getByRole('tab', { name: 'Original task name' }));
+        const tabId = projectTab.getAttribute('data-testid')!.replace('ai-tab-', '');
+        fireEvent.doubleClick(projectTab);
+
+        const input = getByTestId(`ai-tab-rename-input-${tabId}`) as HTMLInputElement;
+        fireEvent.change(input, { target: { value: 'Requested task name' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(renameTaskMock).toHaveBeenCalledWith(projectPath, 'Requested task name'));
+        await waitFor(() => expect(getByRole('tab', { name: 'Task name from backend' })).toBeTruthy());
+    });
+
+    it('keeps the latest project-tab rename when backend requests resolve out of order', async () => {
+        const projectPath = 'D:/tasks/project-tab-rename-race';
+        let resolveFirst!: (title: string) => void;
+        let resolveSecond!: (title: string) => void;
+        renameTaskMock
+            .mockImplementationOnce(() => new Promise<string>(resolve => { resolveFirst = resolve; }))
+            .mockImplementationOnce(() => new Promise<string>(resolve => { resolveSecond = resolve; }));
+        const { getByRole, getByTestId } = renderPanel({
+            pendingProjectTabOpen: { projectPath, taskTitle: 'Original task name', autoSend: false },
+            onPendingProjectTabOpenHandled: vi.fn(),
+        });
+
+        const projectTab = await waitFor(() => getByRole('tab', { name: 'Original task name' }));
+        const tabId = projectTab.getAttribute('data-testid')!.replace('ai-tab-', '');
+        fireEvent.doubleClick(projectTab);
+        let input = getByTestId(`ai-tab-rename-input-${tabId}`) as HTMLInputElement;
+        fireEvent.change(input, { target: { value: 'First requested name' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        await waitFor(() => expect(renameTaskMock).toHaveBeenCalledTimes(1));
+
+        fireEvent.doubleClick(getByTestId(`ai-tab-${tabId}`));
+        input = getByTestId(`ai-tab-rename-input-${tabId}`) as HTMLInputElement;
+        fireEvent.change(input, { target: { value: 'Second requested name' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        await waitFor(() => expect(renameTaskMock).toHaveBeenCalledTimes(2));
+
+        await act(async () => { resolveSecond('Confirmed second name'); });
+        await waitFor(() => expect(getByRole('tab', { name: 'Confirmed second name' })).toBeTruthy());
+        await act(async () => { resolveFirst('Stale first name'); });
+        await waitFor(() => expect(getByRole('tab', { name: 'Confirmed second name' })).toBeTruthy());
+    });
+
+    it('keeps inline root as a flex item with clipped overflow', () => {
+        const { getByTestId } = renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        const root = getByTestId('ai-panel-root');
+        expect(root.style.flex).toBe('1 1 0%');
+        expect(root.style.minWidth).toBe('0px');
+        expect(root.style.minHeight).toBe('0px');
+        expect(root.style.boxSizing).toBe('border-box');
+        expect(root.style.overflow).toBe('hidden');
+    });
+
+    it('keeps the title bar and input area boxed inside the inline panel', () => {
+        const { getByTestId } = renderPanel({
+            window: { inline: true },
+            actions: {
+                sendMessage: async () => {},
+                clearHistory: async () => {},
+                executeAction: async () => {},
+                refreshNews: () => {},
+            },
+            state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello' }], sending: false, streaming: false, ready: true },
+        });
+
+        const titleBar = getByTestId('ai-title-bar');
+        expect(titleBar.style.minWidth).toBe('0px');
+        expect(titleBar.style.boxSizing).toBe('border-box');
+
+        const toolsGroup = getByTestId('ai-titlebar-tools-group');
+        expect(toolsGroup.className).toContain('atb-tools-group');
+
+        const windowGroup = getByTestId('ai-titlebar-window-group');
+        expect(windowGroup.style.flexShrink).toBe('0');
+        expect(windowGroup.style.boxSizing).toBe('border-box');
+
+        const inputStack = getByTestId('ai-input-stack');
+        expect(inputStack.style.getPropertyValue('--wails-draggable')).toBe('no-drag');
+
+        const inputBar = getByTestId('ai-input-bar');
+        expect(inputBar.style.minWidth).toBe('0px');
+        expect(inputBar.style.boxSizing).toBe('border-box');
+        expect(inputBar.style.getPropertyValue('--wails-draggable')).toBe('no-drag');
+
+        const inputRow = getByTestId('ai-input-row');
+        expect(inputRow.style.getPropertyValue('--wails-draggable')).toBe('no-drag');
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.style.getPropertyValue('--wails-draggable')).toBe('no-drag');
+    });
+
+    it('keeps the inline panel body as the only scroll container wrapper', () => {
+        const { getByTestId } = renderPanel({
+            window: { inline: true },
+            state: {
+                messages: [
+                    makeMsg({ role: 'user', content: 'Earlier question' }),
+                    makeMsg({ role: 'assistant', content: 'Latest answer' }),
+                ],
+                sending: false,
+                streaming: false,
+                ready: true,
+            },
+        });
+
+        const body = getByTestId('ai-panel-body');
+        expect(body.className).toContain('aap-panel-body');
+
+        const output = getByTestId('ai-output-container');
+        expect(output.style.flex).toBe('1 1 0%');
+        expect(output.style.minHeight).toBe('0px');
+        expect(output.style.overflowY).toBe('auto');
+        expect(output.style.overflowX).toBe('hidden');
+        expect(output.style.whiteSpace).toBe('normal');
+        expect(output.style.wordBreak).toBe('normal');
+        expect(output.style.overflowWrap).toBe('break-word');
+
+        const inputBar = getByTestId('ai-input-bar');
+        expect(inputBar.style.flexShrink).toBe('0');
+    });
+
+    it('places the quick-settings bar as full-bleed chrome under chat|preview (not inside chat column)', () => {
+        // Regression: when a right preview pane is open, chips/status must span
+        // under both columns. That requires the bar to be a sibling of
+        // content-row under ai-panel-main, not nested in ai-chat-column.
+        const { getByTestId } = renderPanel({
+            window: { inline: true },
+            state: {
+                messages: [
+                    makeMsg({ role: 'user', content: 'Earlier question' }),
+                    makeMsg({ role: 'assistant', content: 'Latest answer' }),
+                ],
+                sending: false,
+                streaming: false,
+                ready: true,
+            },
+        });
+
+        const main = getByTestId('ai-panel-main');
+        const contentRow = getByTestId('ai-panel-content-row');
+        const chatColumn = getByTestId('ai-chat-column');
+        const bar = getByTestId('assistant-quick-settings-bar');
+
+        expect(main.contains(contentRow)).toBe(true);
+        expect(main.contains(bar)).toBe(true);
+        expect(contentRow.contains(chatColumn)).toBe(true);
+        // Bar must not live inside the left chat column (would stop at preview edge).
+        expect(chatColumn.contains(bar)).toBe(false);
+        // Bar must not live inside the content row either (would share height with preview).
+        expect(contentRow.contains(bar)).toBe(false);
+        // Sibling under main: content-row then footer chrome.
+        expect(bar.parentElement).toBe(main);
+        expect(contentRow.parentElement).toBe(main);
+    });
+
+    it('keeps the quick-settings bar on the welcome/guide page (not a status-only footer)', () => {
+        const { getByTestId, queryByTestId } = renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        expect(getByTestId('ai-welcome-container')).toBeTruthy();
+        const main = getByTestId('ai-panel-main');
+        const contentRow = getByTestId('ai-panel-content-row');
+        const bar = getByTestId('assistant-quick-settings-bar');
+        // Same full-bleed placement as normal chat (sibling of content-row).
+        expect(bar.parentElement).toBe(main);
+        expect(contentRow.contains(bar)).toBe(false);
+        expect(getByTestId('assistant-quick-settings-chips')).toBeTruthy();
+        // Welcome no longer swaps the chip bar for a status-only footer.
+        expect(queryByTestId('assistant-status-footer')).toBeNull();
+    });
+
+    it('does not duplicate the sidebar task list on the welcome/guide page', () => {
+        const { getByTestId, queryByTestId, queryByText } = renderPanel({
+            window: { inline: true },
+            tasks: [
+                {
+                    name: 'Linux system info tool',
+                    project_path: 'F:\\test-prog',
+                    preview: 'Remote coding task',
+                    has_output: true,
+                    last_activity: '2026-09-12T08:00:00.000Z',
+                },
+            ],
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        expect(getByTestId('ai-welcome-container')).toBeTruthy();
+        expect(getByTestId('welcome-reference-quick-tasks')).toBeTruthy();
+        expect(getByTestId('welcome-reference-suggestions')).toBeTruthy();
+        expect(queryByTestId('welcome-reference-recent-tasks')).toBeNull();
+        expect(queryByTestId('welcome-recent-task-list')).toBeNull();
+        expect(queryByText('Linux system info tool')).toBeNull();
+    });
+
+    it('keeps the quick-settings bar on digital-employee (VE) chat tabs', async () => {
+        const props = defaultPanelProps();
+        props.window = { inline: true };
+        const onPendingVEOpenHandled = vi.fn();
+        const { getByRole, getByTestId, rerender } = render(
+            <AIAssistantPanel
+                {...props}
+                pendingVEOpen={{
+                    id: 've-a',
+                    machine_id: 've-a',
+                    name: 'Agent A',
+                    online_status: 'online',
+                    status: 'active',
+                    access_policy: 'public',
+                    skill_description: '',
+                } as any}
+                onPendingVEOpenHandled={onPendingVEOpenHandled}
+            />,
+            { wrapper: DialogProvider },
+        );
+
+        await waitFor(() => expect(getByRole('tab', { name: 'Agent A' })).toBeTruthy());
+        // Ensure VE content (not local chat column) is the active surface.
+        await waitFor(() => expect(getByTestId('ve-input-area')).toBeTruthy());
+
+        const main = getByTestId('ai-panel-main');
+        const contentRow = getByTestId('ai-panel-content-row');
+        const bar = getByTestId('assistant-quick-settings-bar');
+        expect(bar.parentElement).toBe(main);
+        expect(contentRow.contains(bar)).toBe(false);
+        expect(getByTestId('assistant-quick-settings-chips')).toBeTruthy();
+        // VE input docks into the footer (flushBottom) — no floating bottom margin.
+        // jsdom may serialize "0 10px 0 10px" as the 2-value form "0px 10px".
+        const veInputBar = getByTestId('ve-input-area') as HTMLElement;
+        expect(veInputBar.style.marginBottom).toBe('0px');
+        expect(veInputBar.style.marginLeft).toBe('10px');
+        expect(veInputBar.style.marginRight).toBe('10px');
+
+        // Still present after pending open is cleared (tab remains active).
+        rerender(
+            <AIAssistantPanel
+                {...props}
+                pendingVEOpen={null}
+                onPendingVEOpenHandled={onPendingVEOpenHandled}
+            />,
+        );
+        await waitFor(() => {
+            expect(getByTestId('assistant-quick-settings-bar')).toBeTruthy();
+            expect(getByTestId('ve-input-area')).toBeTruthy();
+        });
+    });
+
+    it('renders AgentView as an operable right-side task panel and submits structured data', async () => {
+        const submitAgentView = vi.fn().mockResolvedValue(undefined);
+        const agentView: AgentView = {
+            id: 'mis:intent:expense_submit',
+            type: 'form',
+            title: 'Expense reimbursement',
+            fields: [
+                { name: 'amount', label: 'Amount', type: 'number', value: 86, required: true },
+                { name: 'reason', label: 'Reason', type: 'text', value: 'Taxi', required: true },
+            ],
+            submitLabel: 'Submit expense',
+        };
+
+        const { getByText, getByDisplayValue, getByRole } = renderPanel({
+            window: { inline: true },
+            state: {
+                messages: [],
+                sending: false,
+                streaming: false,
+                ready: true,
+                agentView,
+            },
+            actions: {
+                submitAgentView,
+            },
+        });
+
+        // AgentTaskPanel lives in the lazy-loaded AssistantPreviewPane.
+        await waitFor(() => expect(getByText('Expense reimbursement')).toBeTruthy());
+        expect(getByText('Amount')).toBeTruthy();
+        expect(getByText('Reason')).toBeTruthy();
+        expect(getByDisplayValue('86')).toBeTruthy();
+        expect(getByDisplayValue('Taxi')).toBeTruthy();
+
+        fireEvent.click(getByRole('button', { name: 'Submit expense' }));
+
+        await waitFor(() => {
+            expect(submitAgentView).toHaveBeenCalledWith('mis:intent:expense_submit', {
+                amount: 86,
+                reason: 'Taxi',
+            });
+        });
+    });
+
+    it('keeps compact composer actions bottom-aligned before resizing', () => {
+        const { getByTestId } = renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        const row = getByTestId('ai-input-row');
+        const toolbar = getByTestId('ai-input-toolbar');
+        const inputBar = getByTestId('ai-input-bar');
+
+        expect(row.style.alignItems).toBe('flex-start');
+        expect(toolbar.querySelector('[role="group"]')!.getAttribute('aria-label')).toBe('Input actions');
+        expect(inputBar.style.flex).toBe('');
+    });
+
+    it('top-aligns input actions after the composer is resized taller', () => {
+        const { getByTestId } = renderPanel({
+            window: { inline: true },
+            state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello' }], sending: false, streaming: false, ready: true },
+        });
+
+        const handle = getByTestId('ai-input-resize-handle');
+        fireEvent.mouseDown(handle, { clientY: 300 });
+        fireEvent.mouseMove(document, { clientY: 160 });
+        fireEvent.mouseUp(document);
+
+        const row = getByTestId('ai-input-row');
+        const toolbar = getByTestId('ai-input-toolbar');
+        const inputBar = getByTestId('ai-input-bar');
+
+        expect(row.style.alignItems).toBe('flex-start');
+        expect(toolbar).toBeTruthy();
+        expect(inputBar.style.flex).toBe('1 1 auto');
+    });
+
+    it('shows card store action in the title bar tools group', () => {
+        const { getByTestId } = renderPanel({
+            actions: {
+                sendMessage: async () => {},
+                clearHistory: async () => {},
+                executeAction: async () => {},
+                refreshNews: () => {},
+            },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        const toolsGroup = getByTestId('ai-titlebar-tools-group');
+        const buttons = Array.from(toolsGroup.querySelectorAll('button'));
+        const titledButtons = buttons.map(button => button.getAttribute('title')).filter((title): title is string => !!title);
+        expect(titledButtons).toEqual([
+            'Notifications',
+            'Cloud drive (shared with the phone)',
+            'Buy service redemption cards',
+            'Knowledge Base',
+            'Open with companion',
+            'Refresh news',
+            'New conversation',
+        ]);
+    });
+
+    it('closes assistant-only overlays while the retained panel is hidden', async () => {
+        const { getByTitle, queryByRole, rerender } = renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true, active: true },
+        });
+
+        fireEvent.mouseDown(getByTitle('Knowledge Base'));
+        expect(queryByRole('dialog', { name: 'Knowledge Base' })).toBeTruthy();
+
+        rerender(
+            <AIAssistantPanel
+                {...defaultPanelProps()}
+                window={{ inline: true }}
+                state={{ messages: [], sending: false, streaming: false, ready: true, active: false }}
+            />
+        );
+
+        await waitFor(() => expect(queryByRole('dialog', { name: 'Knowledge Base' })).toBeNull());
+
+        rerender(
+            <AIAssistantPanel
+                {...defaultPanelProps()}
+                window={{ inline: true }}
+                state={{ messages: [], sending: false, streaming: false, ready: true, active: true }}
+            />
+        );
+
+        expect(queryByRole('dialog', { name: 'Knowledge Base' })).toBeNull();
+    });
+
+    it('closes the save-task dialog when app navigation hides the retained panel', async () => {
+        const { getByTestId, queryByRole, rerender } = renderPanel({
+            window: { inline: true },
+            state: { messages: [makeMsg({ role: 'user', content: 'Draft proposal' })], sending: false, streaming: false, ready: true, active: true },
+        });
+
+        fireEvent.mouseDown(getByTestId('save-current-task-btn'));
+        await waitFor(() => expect(queryByRole('dialog', { name: 'Save as Task' })).toBeTruthy());
+
+        rerender(
+            <AIAssistantPanel
+                {...defaultPanelProps()}
+                window={{ inline: true }}
+                state={{ messages: [], sending: false, streaming: false, ready: true, active: false }}
+            />
+        );
+
+        await waitFor(() => expect(queryByRole('dialog', { name: 'Save as Task' })).toBeNull());
+    });
+
+    it('covers the assistant conversation when header search is open', async () => {
+        const { getByTestId, queryByTestId } = renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true, active: true },
+        });
+
+        expect(getByTestId('ai-welcome-container')).toBeTruthy();
+        act(() => window.dispatchEvent(new CustomEvent('maclaw:open-task-search', { detail: { query: 'notes' } })));
+        await waitFor(() => expect(getByTestId('project-search-panel')).toBeTruthy());
+
+        const panel = getByTestId('project-search-panel');
+        expect(panel.getAttribute('role')).toBe('region');
+        expect(panel.style.position).toBe('absolute');
+        expect(getByTestId('ai-chat-column').getAttribute('data-search-open')).toBe('true');
+        expect(getByTestId('ai-welcome-container').hidden).toBe(true);
+        expect(queryByTestId('ai-execution-secondary-tabs')?.hidden).toBe(true);
+        expect(getByTestId('assistant-quick-settings-bar').hidden).toBe(true);
+    });
+
+    it('covers the execution conversation when header search is open', async () => {
+        const { getByTestId } = renderPanel({
+            window: { inline: true },
+            state: {
+                messages: [
+                    makeMsg({ role: 'user', content: 'Earlier question' }),
+                    makeMsg({ role: 'assistant', content: 'Latest answer' }),
+                ],
+                sending: false,
+                streaming: false,
+                ready: true,
+                active: true,
+            },
+        });
+
+        expect(getByTestId('task-execution-header')).toBeTruthy();
+        act(() => window.dispatchEvent(new CustomEvent('maclaw:open-task-search', { detail: { query: 'earlier' } })));
+        await waitFor(() => expect(getByTestId('project-search-panel')).toBeTruthy());
+        expect(getByTestId('ai-chat-column').getAttribute('data-search-open')).toBe('true');
+        expect(getByTestId('ai-execution-secondary-tabs').hidden).toBe(true);
+    });
+
+    it('closes task search when app navigation hides the retained panel', async () => {
+        const { getByTestId, queryByTestId, rerender } = renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true, active: true },
+        });
+
+        act(() => window.dispatchEvent(new CustomEvent('maclaw:open-task-search', { detail: { query: 'notes' } })));
+        await waitFor(() => expect(getByTestId('project-search-panel')).toBeTruthy());
+
+        rerender(
+            <AIAssistantPanel
+                {...defaultPanelProps()}
+                window={{ inline: true }}
+                state={{ messages: [], sending: false, streaming: false, ready: true, active: false }}
+            />
+        );
+
+        await waitFor(() => expect(queryByTestId('project-search-panel')).toBeNull());
+    });
+
+    it('hides approval prompts off-page without discarding a live backend request', async () => {
+        const { queryByRole, rerender } = renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true, active: true },
+        });
+        const approvalHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'subagent-scope-approval')
+            .at(-1)?.[1];
+        expect(approvalHandler).toBeTypeOf('function');
+
+        act(() => approvalHandler({
+            id: 'approval-1',
+            tool: 'shell_command',
+            path: 'D:/other/project',
+            project_path: 'D:/task',
+            directory: 'D:/other',
+            timeout_seconds: 30,
+            kind: 'outside_project_path',
+            auto_allow: false,
+        }));
+        expect(queryByRole('alertdialog')).toBeTruthy();
+
+        rerender(
+            <AIAssistantPanel
+                {...defaultPanelProps()}
+                window={{ inline: true }}
+                state={{ messages: [], sending: false, streaming: false, ready: true, active: false }}
+            />
+        );
+        expect(queryByRole('alertdialog')).toBeNull();
+
+        rerender(
+            <AIAssistantPanel
+                {...defaultPanelProps()}
+                window={{ inline: true }}
+                state={{ messages: [], sending: false, streaming: false, ready: true, active: true }}
+            />
+        );
+        expect(queryByRole('alertdialog')).toBeTruthy();
+    });
+
+    it('uses the maintenance intent in remote high-risk approval prompts', async () => {
+        const { getByRole } = renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true, active: true },
+        });
+        const approvalHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'subagent-scope-approval')
+            .at(-1)?.[1];
+        expect(approvalHandler).toBeTypeOf('function');
+
+        act(() => approvalHandler({
+            id: 'maintenance-approval-1',
+            tool: 'ssh_bash',
+            path: 'systemctl restart app',
+            project_path: '/srv/app',
+            directory: '/srv/app',
+            timeout_seconds: 30,
+            kind: 'remote_high_risk_bash',
+            maintenance: true,
+            auto_allow: false,
+        }));
+
+        expect(getByRole('alertdialog').textContent || '').toMatch(/Remote maintenance|远程维护/i);
+        expect(getByRole('alertdialog').textContent || '').not.toMatch(/Remote CodingSubAgent|远程编码 SubAgent/i);
+    });
+
+    it('uses the maintenance intent in remote scope approval prompts', async () => {
+        const { getByRole } = renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true, active: true },
+        });
+        const approvalHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'subagent-scope-approval')
+            .at(-1)?.[1];
+        expect(approvalHandler).toBeTypeOf('function');
+
+        act(() => approvalHandler({
+            id: 'maintenance-scope-approval-1',
+            tool: 'ssh_read_file',
+            path: '/etc/app/config',
+            project_path: '/srv/app',
+            directory: '/etc/app',
+            timeout_seconds: 30,
+            kind: 'remote_path_access',
+            maintenance: true,
+            auto_allow: false,
+        }));
+
+        expect(getByRole('alertdialog').textContent || '').toMatch(/Remote Maintenance Approval|远程维护确认/i);
+        expect(getByRole('alertdialog').textContent || '').toMatch(/Remote maintenance|远程维护/i);
+    });
+
+    it('opens current tenant card store URL from config', async () => {
+        const openURL = vi.fn();
+
+        await openCurrentTenantCardStore(async () => ({
+            remote_hub_url: 'https://hub.example.com/',
+            remote_tenant_id: 'tenant acme',
+            remote_email: 'dev@example.com',
+            remote_viewer_token: 'viewer token',
+        }), openURL);
+
+        expect(openURL).toHaveBeenCalledWith('https://hub.example.com/card_store?tenant_id=tenant%20acme&account=dev%40example.com&email=dev%40example.com#token=viewer%20token');
+    });
+
+    it('opens current tenant Hub card store URL even when hub_id is configured', async () => {
+        const openURL = vi.fn();
+
+        await openCurrentTenantCardStore(async () => ({
+            remote_hub_id: 'hub_1',
+            remote_hub_url: 'https://hub.example.com/',
+            remote_hubcenter_url: 'https://hubs.example.com/',
+            remote_tenant_id: 'tenant acme',
+            remote_email: 'dev@example.com',
+            remote_viewer_token: 'viewer token',
+        }), openURL);
+
+        expect(openURL).toHaveBeenCalledWith('https://hub.example.com/card_store?tenant_id=tenant%20acme&account=dev%40example.com&email=dev%40example.com#token=viewer%20token');
+    });
+
+    it('shows trial-reflect badge when mode is enabled', () => {
+        const { getByText } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true, trialReflectEnabled: true },
+        });
+
+        expect(getByText('Trial+Reflect')).toBeTruthy();
+    });
+
+    it('keeps latest conversation visible when reopened with history', () => {
+        const messages: ChatMessage[] = [
+            makeNews('1'),
+            makeMsg({ role: 'user', content: 'Earlier question' }),
+            makeMsg({ role: 'assistant', content: 'Latest answer' }),
+        ];
+
+        renderPanel({ state: { messages, scrollToTopSeq: 1, sending: false, streaming: false, ready: true } });
+
+        expect(scrollToMock).not.toHaveBeenCalled();
+        expect(scrollIntoViewMock).toHaveBeenCalled();
+    });
+
+    it('scrolls to bottom when panel becomes ready with conversation history', () => {
+        const messages: ChatMessage[] = [
+            makeNews('1'),
+            makeMsg({ role: 'user', content: 'Earlier question' }),
+            makeMsg({ role: 'assistant', content: 'Latest answer' }),
+        ];
+
+        const props = defaultPanelProps();
+        const { rerender } = renderPanel({ state: { messages, ready: false, sending: false, streaming: false } });
+
+        scrollIntoViewMock.mockClear();
+        scrollToMock.mockClear();
+
+        rerender(
+            <AIAssistantPanel
+                {...props}
+                state={{
+                    ...props.state,
+                    messages,
+                    sending: false,
+                    streaming: false,
+                    ready: true,
+                }}
+            />
+        );
+
+        expect(scrollToMock).not.toHaveBeenCalled();
+        expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' });
+    });
+
+    it('keeps latest conversation visible after resizing the input area', async () => {
+        const messages: ChatMessage[] = [
+            makeMsg({ role: 'user', content: 'Earlier question' }),
+            makeMsg({ role: 'assistant', content: 'Latest answer' }),
+        ];
+
+        const { getByTestId } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        scrollIntoViewMock.mockClear();
+        const handle = getByTestId('ai-input-resize-handle');
+        fireEvent.mouseDown(handle, { clientY: 300 });
+        fireEvent.mouseMove(document, { clientY: 240 });
+        fireEvent.mouseUp(document);
+
+        await waitFor(() => {
+            expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' });
+        });
+    });
+
+    it('immediately scrolls to a newly rendered system progress message before reasoning starts', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({ role: 'user', content: 'Start the task' }),
+            makeMsg({ role: 'assistant', content: '' }),
+        ];
+        const progress: ChatMessage[] = [makeMsg({ role: 'progress', content: 'Preparing the execution environment' })];
+        const props = defaultPanelProps();
+        const initialProps: React.ComponentProps<typeof AIAssistantPanel> = {
+            ...props,
+            state: { ...props.state, messages, progressMessages: [], sending: true, streaming: false, ready: true },
+        };
+        const { rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
+
+        scrollIntoViewMock.mockClear();
+        rerender(
+            <AIAssistantPanel
+                {...initialProps}
+                state={{ ...initialProps.state, progressMessages: progress }}
+            />,
+        );
+
+        expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' });
+    });
+
+    it('keeps following thinking-status updates on the same assistant message', () => {
+        const user = makeMsg({ role: 'user', content: 'Ningbo weather' });
+        const assistant = makeMsg({ id: 'a-thinking', role: 'assistant', content: '', reasoning: '• Task received' });
+        const props = defaultPanelProps();
+        const initialProps: React.ComponentProps<typeof AIAssistantPanel> = {
+            ...props,
+            state: { ...props.state, messages: [user, assistant], sending: true, streaming: true, ready: true },
+        };
+        const { rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
+
+        scrollIntoViewMock.mockClear();
+        rerender(
+            <AIAssistantPanel
+                {...initialProps}
+                state={{
+                    ...initialProps.state,
+                    messages: [user, { ...assistant, reasoning: '• Task received\n• Preparing the execution path\n• Execution environment is ready' }],
+                }}
+            />,
+        );
+
+        expect(scrollIntoViewMock).toHaveBeenCalledWith({ behavior: 'auto', block: 'end' });
+    });
+
+    it('folds the thinking process after the final answer arrives', () => {
+        const user = makeMsg({ role: 'user', content: 'Ningbo weather' });
+        const assistant = makeMsg({ id: 'a-reasoning', role: 'assistant', content: 'It is sunny.', reasoning: 'Checking the forecast.' });
+        const props = defaultPanelProps();
+        const initialProps: React.ComponentProps<typeof AIAssistantPanel> = {
+            ...props,
+            state: { ...props.state, messages: [user, assistant], sending: true, streaming: true, ready: true },
+        };
+        const { container, rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
+
+        const streamingPanel = container.querySelector('[data-testid="assistant-reasoning-panel"]');
+        expect(streamingPanel).toHaveProperty('open', true);
+        expect(streamingPanel?.textContent).toContain('Checking the forecast.');
+        expect(streamingPanel?.getAttribute('data-live')).toBe('true');
+
+        rerender(
+            <AIAssistantPanel
+                {...initialProps}
+                state={{ ...initialProps.state, sending: true, streaming: false }}
+            />,
+        );
+
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')).toHaveProperty('open', false);
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')?.textContent).toContain('Checking the forecast.');
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')?.getAttribute('data-live')).toBe('false');
+        expect(container.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('Thinking process...');
+        expect(container.querySelectorAll('[data-testid="assistant-reasoning-label"]')).toHaveLength(1);
+    });
+
+    it('does not relive a completed thinking panel while a follow-up is in flight', () => {
+        const user = makeMsg({ role: 'user', content: 'First' });
+        const assistant = makeMsg({ id: 'a-done', role: 'assistant', content: 'Done.', reasoning: 'Checked.' });
+        const followUp = makeMsg({ id: 'u-2', role: 'user', content: 'And now?' });
+        const props = defaultPanelProps();
+        const { container } = render(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                state={{ ...props.state, messages: [user, assistant, followUp], sending: true, streaming: false, ready: true }}
+            />,
+            { wrapper: DialogProvider },
+        );
+        const labels = Array.from(container.querySelectorAll('[data-testid="assistant-reasoning-label"]')).map(el => el.textContent);
+        expect(labels).toContain('思考过程...');
+        expect(labels).toContain('正在访问模型');
+        expect(container.querySelector('[data-testid="assistant-chat-ai-a-done"] [data-testid="assistant-reasoning-panel"]')?.getAttribute('data-live')).toBe('false');
+    });
+
+    it('does not add a second live status bar when a guide is injected into the current turn', () => {
+        const roundId = 'desktop-ai-jacky';
+        const user = makeMsg({ role: 'user', content: '使用mcp搜索网络，找张学友的资料' });
+        const assistant = makeMsg({ id: 'a-live', role: 'assistant', content: '', reasoning: '• 会话预检完成\n先查资料。', requestId: roundId });
+        const steer = makeMsg({ id: 'steer', role: 'user', kind: 'guideInjection', content: '测试mcp工具', requestId: roundId });
+        const props = defaultPanelProps();
+        const { container } = render(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                state={{ ...props.state, messages: [user, assistant, steer], sending: true, streaming: true, ready: true }}
+            />,
+            { wrapper: DialogProvider },
+        );
+        const labels = Array.from(container.querySelectorAll('[data-testid="assistant-reasoning-label"]'));
+        expect(labels).toHaveLength(1);
+        expect(labels[0]?.textContent).toBe('正在思考');
+        const panel = container.querySelector('[data-testid="assistant-chat-ai-a-live"] [data-testid="assistant-reasoning-panel"]');
+        expect(panel?.getAttribute('data-live')).toBe('true');
+        expect(container.querySelector('[data-testid="guide-injection-badge"]')?.textContent).toBe('已注入');
+    });
+
+    it('puts the current model next to the live accessing-model action as plain text', () => {
+        const user = makeMsg({ role: 'user', content: 'First' });
+        const assistant = makeMsg({ id: 'a-done', role: 'assistant', content: 'Done.', reasoning: 'Checked.' });
+        const followUp = makeMsg({ id: 'u-2', role: 'user', content: '使用ssh访问呀' });
+        const props = defaultPanelProps();
+        const { container } = render(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                currentModel="auto"
+                availableProviders={[{ name: 'hub-official', url: '', isHubService: true, configured: true, model: 'auto' }]}
+                state={{ ...props.state, messages: [user, assistant, followUp], sending: true, streaming: false, ready: true }}
+            />,
+            { wrapper: DialogProvider },
+        );
+        const live = container.querySelector('[data-live="true"]');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在访问模型');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-label"]')?.className).toContain('assistant-reasoning-live-label');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-object"]')?.textContent).toBe('MaClaw官方 auto 模型');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-object"]')?.className).not.toContain('assistant-reasoning-live-label');
+    });
+
+    it('shows the assistant route while contacting the model, not the first provider default', () => {
+        const user = makeMsg({ role: 'user', content: '你好' });
+        const props = defaultPanelProps();
+        const { container } = render(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                currentModel=""
+                contactProviderName="Custom1"
+                contactModelId="deepseek-v4.1-flash"
+                availableProviders={[
+                    { name: '智谱编程', url: '', isHubService: false, configured: true, model: 'glm-5.3-flash', models: ['glm-5.3-flash', 'deepseek-v4.1-flash'] },
+                    { name: 'Custom1', url: '', isHubService: false, configured: true, model: 'deepseek-v4.1-flash', models: ['deepseek-v4.1-flash', 'glm-5.3-flash'] },
+                ]}
+                state={{ ...props.state, messages: [user], sending: true, streaming: false, ready: true }}
+            />,
+            { wrapper: DialogProvider },
+        );
+        const live = container.querySelector('[data-live="true"]');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在访问模型');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-object"]')?.textContent).toBe('Custom1 deepseek-v4.1-flash 模型');
+    });
+
+    it('puts the in-flight tool next to the live tool action as plain text', () => {
+        const user = makeMsg({ role: 'user', content: '查服务器' });
+        const assistant = makeMsg({ id: 'a-live', role: 'assistant', content: '', reasoning: '先连上主机。' });
+        const props = defaultPanelProps();
+        const { container } = render(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                state={{
+                    ...props.state,
+                    messages: [user, assistant],
+                    progressMessages: [makeMsg({ role: 'progress', content: '正在执行工具: ssh' })],
+                    sending: true,
+                    streaming: true,
+                    ready: true,
+                }}
+            />,
+            { wrapper: DialogProvider },
+        );
+        const live = container.querySelector('[data-live="true"]');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在远程操作');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-label"]')?.className).toContain('assistant-reasoning-live-label');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-object"]')?.textContent).toBe('ssh 工具');
+        expect(live?.querySelector('[data-testid="assistant-reasoning-object"]')?.className).not.toContain('assistant-reasoning-live-label');
+    });
+
+    it('changes the thinking-panel label to the current action and marks it live', () => {
+        const user = makeMsg({ role: 'user', content: '成都天气' });
+        const assistant = makeMsg({ id: 'a-live-reasoning', role: 'assistant', content: '', reasoning: '先查天气源。' });
+        const props = defaultPanelProps();
+        const { container, rerender } = render(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                state={{ ...props.state, messages: [user, assistant], sending: true, streaming: true, ready: true }}
+            />,
+            { wrapper: DialogProvider },
+        );
+
+        const thinkingLabel = container.querySelector('[data-testid="assistant-reasoning-label"]');
+        expect(thinkingLabel?.textContent).toBe('正在思考');
+        expect(thinkingLabel?.className).toContain('assistant-reasoning-live-label');
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')?.getAttribute('data-live')).toBe('true');
+
+        rerender(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                state={{
+                    ...props.state,
+                    messages: [user, assistant],
+                    progressMessages: [makeMsg({ role: 'progress', content: '正在执行工具: web_fetch' })],
+                    sending: true,
+                    streaming: true,
+                    ready: true,
+                }}
+            />,
+        );
+        expect(container.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在提取网页');
+
+        rerender(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                state={{
+                    ...props.state,
+                    messages: [user, {
+                        ...assistant,
+                        content: '\n\n<!--maclaw-tool:call-weather-->\n\n',
+                        toolCalls: [{ id: 'call-weather', name: 'web_fetch', action: '访问网页', detail: 'https://weather' }],
+                    }],
+                    progressMessages: [makeMsg({ role: 'progress', content: '工具 · 访问网页 (web_fetch)\nhttps://weather' })],
+                    sending: true,
+                    streaming: false,
+                    ready: true,
+                }}
+            />,
+        );
+        expect(container.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在提取网页');
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')?.getAttribute('data-live')).toBe('true');
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"] .assistant-reasoning-live-label')).toBeTruthy();
+        const toolCall = container.querySelector('[data-testid="assistant-tool-call"]');
+        expect(toolCall?.getAttribute('data-tool-name')).toBe('web_fetch');
+        expect(toolCall?.textContent).toContain('https://weather');
+        expect(container.textContent).not.toContain('maclaw-tool:');
+        expect(container.textContent).not.toContain('正在执行工具');
+        expect(container.textContent).not.toContain('可继续输入');
+        expect((container.querySelector('[data-testid="ai-input"]') as HTMLTextAreaElement).placeholder).not.toMatch(/正在执行|可继续输入|处理中/);
+
+        rerender(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                state={{
+                    ...props.state,
+                    messages: [user, assistant],
+                    sending: true,
+                    streaming: false,
+                    ready: true,
+                }}
+            />,
+        );
+        expect(container.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在调用工具');
+        expect(container.querySelectorAll('[data-testid="assistant-reasoning-label"]')).toHaveLength(1);
+
+        rerender(
+            <AIAssistantPanel
+                {...props}
+                lang="zh-Hans"
+                state={{ ...props.state, messages: [user, { ...assistant, content: '晴。' }], sending: false, streaming: false, ready: true }}
+            />,
+        );
+        expect(container.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('思考过程...');
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')?.getAttribute('data-live')).toBe('false');
+    });
+
+    it('keeps completed reasoning folded when the next reply begins streaming', () => {
+        const user = makeMsg({ role: 'user', content: 'First request' });
+        const completed = makeMsg({ id: 'a-completed-reasoning', role: 'assistant', content: 'First answer.', reasoning: 'Checked the first request.' });
+        const nextUser = makeMsg({ id: 'u-next-request', role: 'user', content: 'Second request' });
+        const streaming = makeMsg({ id: 'a-next-reasoning', role: 'assistant', content: 'Second answer.', reasoning: 'Checking the second request.' });
+        const props = defaultPanelProps();
+        const { container, rerender } = render(
+            <AIAssistantPanel
+                {...props}
+                state={{ ...props.state, messages: [user, completed], sending: false, streaming: false, ready: true }}
+            />,
+            { wrapper: DialogProvider },
+        );
+
+        expect(container.querySelector('[data-testid="assistant-chat-ai-a-completed-reasoning"] details')).toHaveProperty('open', false);
+
+        rerender(
+            <AIAssistantPanel
+                {...props}
+                state={{ ...props.state, messages: [user, completed, nextUser, streaming], sending: true, streaming: true, ready: true }}
+            />,
+        );
+
+        expect(container.querySelector('[data-testid="assistant-chat-ai-a-completed-reasoning"] details')).toHaveProperty('open', false);
+        expect(container.querySelector('[data-testid="assistant-chat-ai-a-next-reasoning"] details')).toHaveProperty('open', true);
+        expect(container.querySelector('[data-testid="assistant-chat-ai-a-next-reasoning"] details')?.textContent).toContain('Checking the second request.');
+    });
+
+    it('does not keep incremental rendering active after the stream ends', () => {
+        const user = makeMsg({ role: 'user', content: 'Summarize the report' });
+        const assistant = makeMsg({
+            id: 'a-long-final',
+            role: 'assistant',
+            content: 'final '.repeat(500),
+            reasoning: 'Reviewing the report.',
+        });
+        const props = defaultPanelProps();
+        const initialProps: React.ComponentProps<typeof AIAssistantPanel> = {
+            ...props,
+            state: { ...props.state, messages: [user, assistant], sending: true, streaming: true, ready: true },
+        };
+        const { container, rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
+
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')).toHaveProperty('open', true);
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')?.textContent).toContain('Reviewing the report.');
+
+        rerender(
+            <AIAssistantPanel
+                {...initialProps}
+                state={{ ...initialProps.state, sending: true, streaming: false }}
+            />,
+        );
+
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')).toHaveProperty('open', false);
+        expect(container.textContent).toContain('final final');
+    });
+
+    it('renders a long streaming reasoning trail incrementally and cleanly re-renders it after the stream ends', () => {
+        const user = makeMsg({ role: 'user', content: 'Nanjing weather' });
+        const reasoningHead = 'Thinking step one.\n\n';
+        const reasoningTail = 'final reasoning note.';
+        const assistant = makeMsg({
+            id: 'a-long-reasoning',
+            role: 'assistant',
+            content: '',
+            reasoning: reasoningHead + 'mid reasoning sentence. '.repeat(120) + '\n\n' + reasoningTail,
+        });
+        const props = defaultPanelProps();
+        const initialProps: React.ComponentProps<typeof AIAssistantPanel> = {
+            ...props,
+            state: { ...props.state, messages: [user, assistant], sending: true, streaming: true, ready: true },
+        };
+        const { container, rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
+
+        const streamingDetails = container.querySelector('[data-testid="assistant-reasoning-panel"]');
+        expect(streamingDetails).toHaveProperty('open', true);
+        expect(streamingDetails?.textContent).toContain('Thinking step one.');
+        expect(streamingDetails?.textContent).toContain(reasoningTail);
+
+        rerender(
+            <AIAssistantPanel
+                {...initialProps}
+                state={{ ...initialProps.state, sending: true, streaming: false }}
+            />,
+        );
+
+        const finalDetails = container.querySelector('[data-testid="assistant-reasoning-panel"]');
+        expect(finalDetails).toHaveProperty('open', false);
+        // The post-stream full parse must still contain both ends of the trail
+        // (no stale frozen-segment leftovers from incremental rendering).
+        expect(finalDetails?.textContent).toContain('Thinking step one.');
+        expect(finalDetails?.textContent).toContain(reasoningTail);
+    });
+
+    it('does not wait for a quiet window before following streamed assistant text', () => {
+        vi.useFakeTimers();
+        try {
+            const user = makeMsg({ role: 'user', content: 'Ningbo weather' });
+            const assistant = makeMsg({ id: 'a-stream', role: 'assistant', content: 'Ning' });
+            const props = defaultPanelProps();
+            const initialProps: React.ComponentProps<typeof AIAssistantPanel> = {
+                ...props,
+                state: { ...props.state, messages: [user, assistant], sending: true, streaming: true, ready: true },
+            };
+            const { rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
+
+            scrollIntoViewMock.mockClear();
+            rerender(
+                <AIAssistantPanel
+                    {...initialProps}
+                    state={{
+                        ...initialProps.state,
+                        messages: [user, { ...assistant, content: 'Ningbo' }],
+                    }}
+                />,
+            );
+            rerender(
+                <AIAssistantPanel
+                    {...initialProps}
+                    state={{
+                        ...initialProps.state,
+                        messages: [user, { ...assistant, content: 'Ningbo weather looks' }],
+                    }}
+                />,
+            );
+
+            expect(scrollIntoViewMock).toHaveBeenCalled();
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
+    it('does not scroll when an incoming tool status is rendered only in the existing processing indicator', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({ role: 'user', content: 'Start the task' }),
+            makeMsg({ role: 'assistant', content: '' }),
+        ];
+        const props = defaultPanelProps();
+        const initialProps: React.ComponentProps<typeof AIAssistantPanel> = {
+            ...props,
+            state: { ...props.state, messages, progressMessages: [], sending: true, streaming: false, ready: true },
+        };
+        const { rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
+
+        scrollIntoViewMock.mockClear();
+        rerender(
+            <AIAssistantPanel
+                {...initialProps}
+                state={{ ...initialProps.state, progressMessages: [makeMsg({ role: 'progress', content: 'Running Shell / rg' })] }}
+            />,
+        );
+
+        expect(scrollIntoViewMock).not.toHaveBeenCalled();
+    });
+
+    it('does not override a user who has scrolled up when system progress arrives', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({ role: 'user', content: 'Earlier question' }),
+            makeMsg({ role: 'assistant', content: 'Earlier answer' }),
+        ];
+        const initialProgress: ChatMessage[] = [makeMsg({ role: 'progress', content: 'Checking files' })];
+        const nextProgress: ChatMessage[] = [...initialProgress, makeMsg({ role: 'progress', content: 'Reading configuration' })];
+        const props = defaultPanelProps();
+        const initialProps: React.ComponentProps<typeof AIAssistantPanel> = {
+            ...props,
+            state: { ...props.state, messages, progressMessages: initialProgress, sending: true, streaming: false, ready: true },
+        };
+        const { getByTestId, rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
+        const output = getByTestId('ai-output-container');
+        Object.defineProperties(output, {
+            clientHeight: { configurable: true, value: 100 },
+            scrollHeight: { configurable: true, value: 400 },
+            scrollTop: { configurable: true, value: 0, writable: true },
+        });
+        fireEvent.wheel(output, { deltaY: -40 });
+        fireEvent.scroll(output);
+
+        scrollIntoViewMock.mockClear();
+        rerender(
+            <AIAssistantPanel
+                {...initialProps}
+                state={{ ...initialProps.state, progressMessages: nextProgress }}
+            />,
+        );
+
+        expect(scrollIntoViewMock).not.toHaveBeenCalled();
+    });
+
+    it('does not let a settled progress scroll override a user who scrolls up after the first frame', () => {
+        let settledFrame: FrameRequestCallback | undefined;
+        vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+            settledFrame = callback;
+            return 1;
+        });
+        vi.stubGlobal('cancelAnimationFrame', vi.fn());
+
+        try {
+            const messages: ChatMessage[] = [
+                makeMsg({ role: 'user', content: 'Earlier question' }),
+                makeMsg({ role: 'assistant', content: 'Earlier answer' }),
+            ];
+            const props = defaultPanelProps();
+            const initialProps: React.ComponentProps<typeof AIAssistantPanel> = {
+                ...props,
+                state: { ...props.state, messages, progressMessages: [], sending: true, streaming: false, ready: true },
+            };
+            const { getByTestId, rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
+            const output = getByTestId('ai-output-container');
+            Object.defineProperties(output, {
+                clientHeight: { configurable: true, value: 100 },
+                scrollHeight: { configurable: true, value: 400 },
+                scrollTop: { configurable: true, value: 0, writable: true },
+            });
+
+            scrollIntoViewMock.mockClear();
+            rerender(
+                <AIAssistantPanel
+                    {...initialProps}
+                    state={{ ...initialProps.state, progressMessages: [makeMsg({ role: 'progress', content: 'Reading configuration' })] }}
+                />,
+            );
+            expect(scrollIntoViewMock).toHaveBeenCalledTimes(1);
+            expect(settledFrame).toBeTypeOf('function');
+
+            // The first pin writes scrollTop to the bottom. Recreate an explicit
+            // user move away from the tail before the settle frame runs.
+            Object.defineProperty(output, 'scrollTop', { configurable: true, value: 0, writable: true });
+            fireEvent.wheel(output, { deltaY: -40 });
+            fireEvent.scroll(output);
+            act(() => settledFrame?.(0));
+
+            expect(scrollIntoViewMock).toHaveBeenCalledTimes(1);
+        } finally {
+            vi.unstubAllGlobals();
+        }
+    });
+
+    it('shows welcome view with pinned news when only news messages exist', () => {
+        const messages: ChatMessage[] = [
+            makeNews('1'),
+        ];
+
+        const { getByTestId } = renderPanel({ state: { messages, scrollToTopSeq: 1, sending: false, streaming: false, ready: true } });
+
+        // With only news messages and no conversation, the welcome view should be shown
+        // (news cards are integrated into the welcome view).
+        expect(getByTestId('ai-welcome-container')).toBeTruthy();
+    });
+
+    it('shows welcome view in inline (embedded panel) mode when no conversation exists', () => {
+        const { getByTestId } = renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        expect(getByTestId('ai-welcome-container')).toBeTruthy();
+    });
+
+    it('restores canceled text back into the textarea', async () => {
+        const cancelSession = vi.fn<() => Promise<CancelAIAssistantResult>>().mockResolvedValue({
+            canceledText: 'repeat this request',
+        });
+
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: true, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {}, cancelSession },
+        });
+
+        fireEvent.click(getByTestId('ai-cancel-progress'));
+
+        await waitFor(() => {
+            expect(cancelSession).toHaveBeenCalledTimes(1);
+            expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('repeat this request');
+        });
+    });
+
+    it('clears textarea content when the clear input button is clicked', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(undefined);
+        const setDraftInputValue = vi.fn();
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage, setDraftInputValue },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'draft to clear' } });
+        fireEvent.click(getByTestId('ai-clear-input'));
+
+        await waitFor(() => expect(input.value).toBe(''));
+        expect(setDraftInputValue).toHaveBeenLastCalledWith('');
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('allows typing in the textarea while a foreground request is still sending even after streaming stops', () => {
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: true, streaming: false, ready: true },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.disabled).toBe(false);
+        expect(input.readOnly).toBe(false);
+    });
+
+    it('keeps the idle composer placeholder while the assistant is actively streaming', () => {
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: true, streaming: true, ready: true, visualBusy: true },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.placeholder).toBe('Enter a task or command...');
+        expect(getByTestId('assistant-reasoning-label').textContent).toBe('Contacting the model');
+        expect(getByTestId('assistant-reasoning-label').className).toContain('assistant-reasoning-live-label');
+        expect(getByTestId('assistant-reasoning-panel').getAttribute('data-live')).toBe('true');
+    });
+
+    it('shows thinking on the live panel before streaming starts, not in the composer', () => {
+        const { getByTestId, queryByText } = renderPanel({
+            state: { messages: [], sending: true, streaming: false, ready: true, visualBusy: false },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.placeholder).toBe('Enter a task or command...');
+        expect(getByTestId('assistant-reasoning-label').textContent).toBe('Contacting the model');
+        expect(getByTestId('assistant-reasoning-label').className).toContain('assistant-reasoning-live-label');
+        expect(getByTestId('assistant-reasoning-panel').getAttribute('data-live')).toBe('true');
+        expect(queryByText('Connecting to model...')).toBeNull();
+        expect(queryByText('Running tools... (you can keep typing)')).toBeNull();
+    });
+
+    it('does not send when Enter confirms an active IME composition', () => {
+        const sendMessage = vi.fn().mockResolvedValue(undefined);
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'ni' } });
+        fireEvent.keyDown(input, { key: 'Enter', isComposing: true });
+
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(input.value).toBe('ni');
+    });
+
+    it('tracks IME composition locally so Enter confirms text before it can send', () => {
+        const sendMessage = vi.fn().mockResolvedValue(undefined);
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.compositionStart(input);
+        fireEvent.change(input, { target: { value: 'mac' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(input.value).toBe('mac');
+    });
+
+    it('does not send when compositionend arrives before the Enter keydown that committed IME text', () => {
+        const sendMessage = vi.fn().mockResolvedValue(undefined);
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.compositionStart(input);
+        fireEvent.change(input, { target: { value: 'macaron' } });
+        fireEvent.compositionEnd(input);
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(input.value).toBe('macaron');
+    });
+
+    it('only consumes the first Enter after compositionend so a quick second Enter can send', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(undefined);
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.compositionStart(input);
+        fireEvent.change(input, { target: { value: 'quick send' } });
+        fireEvent.compositionEnd(input);
+
+        fireEvent.keyDown(input, { key: 'Enter' });
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        fireEvent.keyDown(input, { key: 'Enter' });
+        await waitFor(() => expect(createTaskUnifiedMock).toHaveBeenCalledWith(expect.objectContaining({ name: 'quick send' })));
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('does not send when an IME Enter keydown is reported with keyCode 229', () => {
+        const sendMessage = vi.fn().mockResolvedValue(undefined);
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'ma' } });
+        fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 });
+
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(input.value).toBe('ma');
+    });
+
+    it('queues busy-turn Enter input without steering the active task', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        const injectSupplementary = vi.fn().mockResolvedValue(false);
+        const guideLaunchReference = vi.fn().mockResolvedValue(true);
+        const sendMessage = vi.fn().mockResolvedValue(undefined);
+        const recordSubmittedPrompt = vi.fn();
+        const { getByTestId, queryByTestId } = renderPanel({
+            state: { messages: [], sending: true, sendingSessionKey: 'desktop-user', streaming: true, streamingSessionKey: 'desktop-user', ready: true },
+            actions: {
+                sendMessage,
+                injectSupplementary,
+                guideLaunchReference,
+                recordSubmittedPrompt,
+            },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'guide this next' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        expect(guideLaunchReference).not.toHaveBeenCalled();
+        expect(injectSupplementary).not.toHaveBeenCalled();
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(queryByTestId('buffer-queue-panel')).toBeTruthy();
+    });
+
+    it('keeps rejected local guide fire queued without supplementary fallback', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        const injectSupplementary = vi.fn().mockResolvedValue(true);
+        const guideLaunchReference = vi.fn().mockResolvedValue(false);
+        const sendMessage = vi.fn().mockResolvedValue(undefined);
+        const { getByTestId, getByText } = renderPanel({
+            state: { messages: [], sending: true, sendingSessionKey: 'desktop-user', streaming: true, streamingSessionKey: 'desktop-user', ready: true },
+            actions: {
+                sendMessage,
+                injectSupplementary,
+                guideLaunchReference,
+            },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'stay in selected session' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
+        expect(fireButton).toBeTruthy();
+        fireEvent.click(fireButton!);
+
+        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('stay in selected session', 'desktop-user', expect.any(String)));
+        expect(injectSupplementary).not.toHaveBeenCalled();
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(getByText('stay in selected session')).toBeTruthy();
+    });
+
+    it('falls back to the next normal turn when the busy-turn steer loses the completion race', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        const guideLaunchReference = vi.fn().mockResolvedValue(false);
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const props = defaultPanelProps();
+        props.actions = { ...props.actions, guideLaunchReference, sendMessage };
+        props.state = { ...props.state, sending: true, sendingSessionKey: 'desktop-user', streaming: true, streamingSessionKey: 'desktop-user', ready: true };
+        const { getByTestId, queryByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'do not lose this instruction' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
+        expect(fireButton).toBeTruthy();
+        fireEvent.click(fireButton!);
+
+        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('do not lose this instruction', 'desktop-user', expect.any(String)));
+        expect(getByTestId('buffer-queue-panel')).toBeTruthy();
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        props.state = { ...props.state, sending: false, streaming: false };
+        rerender(<AIAssistantPanel {...props} />);
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('do not lose this instruction', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+    });
+
+    it('keeps busy slash commands as ordered next turns instead of steering them into the model', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        const guideLaunchReference = vi.fn().mockResolvedValue(true);
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const props = defaultPanelProps();
+        props.actions = { ...props.actions, guideLaunchReference, sendMessage };
+        props.state = { ...props.state, sending: true, sendingSessionKey: 'desktop-user', streaming: true, streamingSessionKey: 'desktop-user', ready: true };
+        const { getByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: '/goal revise the release plan' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        expect(guideLaunchReference).not.toHaveBeenCalled();
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        props.state = { ...props.state, sending: false, streaming: false };
+        rerender(<AIAssistantPanel {...props} />);
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('/goal revise the release plan', expect.objectContaining({ tabId: 'local' })));
+        expect(guideLaunchReference).not.toHaveBeenCalled();
+    });
+
+    it('does not steer a later message past an earlier queued slash command', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        const guideLaunchReference = vi.fn().mockResolvedValue(true);
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const props = defaultPanelProps();
+        props.actions = { ...props.actions, guideLaunchReference, sendMessage };
+        props.state = { ...props.state, sending: true, sendingSessionKey: 'desktop-user', streaming: true, streamingSessionKey: 'desktop-user', ready: true };
+        const { getByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+
+        fireEvent.change(input, { target: { value: '/goal keep the release scope' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        fireEvent.change(input, { target: { value: 'also prioritize the migration' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(document.querySelectorAll('[data-testid^="buffer-entry-"]').length).toBe(2));
+        expect(guideLaunchReference).not.toHaveBeenCalled();
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        props.state = { ...props.state, sending: false, streaming: false };
+        rerender(<AIAssistantPanel {...props} />);
+
+        await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(1, '/goal keep the release scope', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(2, 'also prioritize the migration', expect.objectContaining({ tabId: 'local' })));
+        expect(guideLaunchReference).not.toHaveBeenCalled();
+    });
+
+    it('auto-drains input queued during a busy turn once the assistant is idle', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const props = defaultPanelProps();
+        props.actions = { ...props.actions, sendMessage };
+        props.state = { ...props.state, sending: true, streaming: false, ready: true };
+        const { getByTestId, queryByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'queued while busy' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        props.state = { ...props.state, sending: false, streaming: false };
+        rerender(<AIAssistantPanel {...props} />);
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued while busy', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+    });
+
+    it('auto-drains a persisted type-ahead queue entry when the assistant is already idle', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
+            { id: 'auto-drain-idle', text: 'queued before idle', attachments: [], createdAt: 1, autoDrain: true },
+        ]));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { queryByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued before idle', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+    });
+
+    it('keeps an automatic queue drain bound to its durable project owner', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([{
+            id: 'owned-project-auto-drain',
+            text: 'continue project alpha automatically',
+            attachments: [],
+            createdAt: 1,
+            autoDrain: true,
+            sessionKey: 'desktop-user:D:/tasks/project-alpha-auto',
+        }]));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+        const props = defaultPanelProps();
+        props.pendingProjectTabOpen = {
+            projectPath: 'D:/tasks/project-alpha-auto',
+            taskTitle: 'Project alpha auto',
+            autoSend: false,
+        };
+        props.onPendingProjectTabOpenHandled = onHandled;
+        props.state = { ...props.state, messages: [], sending: false, streaming: false, ready: true };
+        props.actions = { ...props.actions, sendMessage };
+        render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(
+            'continue project alpha automatically',
+            expect.objectContaining({ project_path: 'D:/tasks/project-alpha-auto' }),
+        ));
+        expect(sendMessage.mock.calls[0]?.[1]).not.toHaveProperty('queue_session_key');
+    });
+
+    it('waits for assistant readiness before auto-draining a persisted type-ahead entry', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
+            { id: 'auto-drain-not-ready', text: 'queued until ready', attachments: [], createdAt: 1, autoDrain: true },
+        ]));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const props = defaultPanelProps();
+        props.actions = { ...props.actions, sendMessage };
+        props.state = { ...props.state, messages: [], sending: false, streaming: false, ready: false };
+        const { getByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        props.state = { ...props.state, ready: true };
+        rerender(<AIAssistantPanel {...props} />);
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued until ready', expect.objectContaining({ tabId: 'local' })));
+    });
+
+    it('auto-drains all restored queue entries one by one after restart', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
+            { id: 'restore-one', text: 'restored first', attachments: [], createdAt: 1 },
+            { id: 'restore-two', text: 'restored second', attachments: [], createdAt: 2 },
+        ]));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { queryByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(1, 'restored first', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(2, 'restored second', expect.objectContaining({ tabId: 'local' })));
+        await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+    });
+
+    it('holds the type-ahead queue while an unfinished task card is unresolved', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
+            { id: 'held-by-slot', text: 'queued behind unfinished card', attachments: [], createdAt: 1, autoDrain: true },
+        ]));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const props = defaultPanelProps();
+        props.actions = { ...props.actions, sendMessage };
+        props.state = {
+            ...props.state,
+            messages: [makeMsg({
+                role: 'assistant',
+                content: 'Detected an unfinished task.',
+                unfinishedSlot: {
+                    slotID: 'slot-hold',
+                    title: 'previous task',
+                    actions: [
+                        { label: 'Resume previous task', command: '__resume_unfinished__ slot-hold', style: 'default' },
+                    ],
+                },
+            })],
+            sending: false,
+            streaming: false,
+            ready: true,
+        };
+        const { getByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        // The unresolved card intercepts every new turn, so the queue must not
+        // drain into it and burn each queued command into a duplicate card.
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        await new Promise(resolve => setTimeout(resolve, 50));
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        // Resolving the card (its actions are cleared) releases the held queue.
+        props.state = {
+            ...props.state,
+            messages: [makeMsg({
+                role: 'assistant',
+                content: 'Task is continuing.',
+                unfinishedSlot: { slotID: 'slot-hold', status: 'resumed', title: 'previous task', actions: [] },
+            })],
+        };
+        rerender(<AIAssistantPanel {...props} />);
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued behind unfinished card', expect.objectContaining({ tabId: 'local' })));
+    });
+
+    it('does not start the next restored queue entry until the current one is accepted', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
+            { id: 'restore-slow-one', text: 'slow restored first', attachments: [], createdAt: 1 },
+            { id: 'restore-slow-two', text: 'slow restored second', attachments: [], createdAt: 2 },
+        ]));
+        let resolveFirst!: (value: boolean) => void;
+        const sendMessage = vi.fn((text: string) => {
+            if (text === 'slow restored first') {
+                return new Promise<boolean>((resolve) => { resolveFirst = resolve; });
+            }
+            return Promise.resolve(true);
+        });
+        renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
+        expect(sendMessage).toHaveBeenCalledWith('slow restored first', expect.objectContaining({ tabId: 'local' }));
+        expect(sendMessage).not.toHaveBeenCalledWith('slow restored second');
+
+        resolveFirst(true);
+
+        await waitFor(() => expect(sendMessage).toHaveBeenNthCalledWith(2, 'slow restored second', expect.objectContaining({ tabId: 'local' })));
+    });
+
+    it('sanitizes restored queue attachments before auto-draining', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
+            {
+                id: 'restore-attachments',
+                text: 'restored with attachments',
+                attachments: [
+                    { filePath: ' D:\\cases\\report.pdf ', fileName: '', extension: '' },
+                    { filePath: '' },
+                    { bogus: true },
+                ],
+                createdAt: 1,
+            },
+            { id: 'restore-empty', text: '   ', attachments: [], createdAt: 2 },
+        ]));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
+        const sentText = String(sendMessage.mock.calls[0]?.[0] || '');
+        expect(sentText).toContain('restored with attachments');
+        expect(sentText).toContain('D:\\cases\\report.pdf');
+        expect(sentText).not.toContain('[object Object]');
+    });
+
+    it('does not downgrade rejected project guide fire into global supplementary injection', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        const injectSupplementary = vi.fn().mockResolvedValue(true);
+        const guideLaunchReference = vi.fn().mockResolvedValue(false);
+        const onHandled = vi.fn();
+        const { getByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/no-global-fallback',
+                taskTitle: 'No global fallback task',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: true, sendingSessionKey: 'desktop-user:D:/tasks/no-global-fallback', streaming: true, streamingSessionKey: 'desktop-user:D:/tasks/no-global-fallback', ready: true },
+            actions: {
+                injectSupplementary,
+                guideLaunchReference,
+            },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'project selected session only' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
+        expect(fireButton).toBeTruthy();
+        fireEvent.click(fireButton!);
+
+        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('project selected session only', 'desktop-user:D:/tasks/no-global-fallback', expect.any(String)));
+        expect(injectSupplementary).not.toHaveBeenCalled();
+        expect(document.body.textContent || '').toContain('project selected session only');
+        expect(document.querySelector('[data-testid="guide-receipt"]')).toBeNull();
+    });
+
+    it('renders restored project context as a compact user-facing note', async () => {
+        loadProjectContextMock.mockResolvedValue({
+            project_name: '北京天气',
+            recent_progress: [
+                'Forked from task.',
+                'Source task: D:\\Users\\alice\\.maclaw\\data\\tasks\\source-task',
+                '查询了北京今天的天气，当前多云，适合继续跟进预报。',
+                '',
+                '**关键产出物:**',
+                '- `D:\\Users\\alice\\.maclaw\\data\\tasks\\source-task\\weather.md`',
+                '**最近产物来源:**',
+                '- weather.md - `D:\\Users\\alice\\.maclaw\\data\\tasks\\source-task\\weather.md`; full: read_file',
+            ].join('\n'),
+            key_artifacts: ['D:\\Users\\alice\\.maclaw\\data\\tasks\\source-task\\weather.md'],
+            recent_artifacts: [{ title: 'weather.md', source_url: 'D:\\Users\\alice\\.maclaw\\data\\tasks\\source-task\\weather.md', source_hint: 'full: read_file' }],
+            active_workflow: '',
+        });
+        const onHandled = vi.fn();
+
+        const { queryByText } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/beijing-weather',
+                taskTitle: '北京天气',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(document.body.textContent || '').toContain('已恢复任务上下文：北京天气'));
+        const bodyText = document.body.textContent || '';
+        expect(bodyText).toContain('最近进展：查询了北京今天的天气');
+        expect(bodyText).toContain('相关产物仍在记忆/知识库中。需要时让 AI 检索');
+        expect(bodyText).not.toContain('Forked from task');
+        expect(bodyText).not.toContain('Source task:');
+        expect(bodyText).not.toContain('关键产出物');
+        expect(bodyText).not.toContain('最近产物来源');
+        expect(bodyText).not.toContain('.maclaw');
+        expect(queryByText(/read_file/)).toBeNull();
+    });
+
+    it('restores project tab chat history after closing and reopening the task', async () => {
+        const projectPath = 'D:/tasks/reopen-closed-history';
+        loadProjectContextMock.mockResolvedValue({
+            project_name: 'Reopen closed history',
+            recent_progress: '',
+            key_artifacts: [],
+            recent_artifacts: [],
+            active_workflow: '',
+        });
+        const onHandled = vi.fn();
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Reopen closed history',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { ...base.state, messages: [], sending: false, streaming: false, ready: true },
+        };
+        const { rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(document.body.textContent || '').toContain('已恢复任务上下文'));
+
+        const projectUser = makeMsg({
+            id: 'project-user-before-close',
+            role: 'user',
+            content: 'question before closing project tab',
+            sessionKey: `desktop-user:${projectPath}`,
+        });
+        const projectAssistant = makeMsg({
+            id: 'project-assistant-before-close',
+            role: 'assistant',
+            content: 'answer before closing project tab',
+            sessionKey: `desktop-user:${projectPath}`,
+        });
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={null}
+            state={{ ...props.state, messages: [projectUser, projectAssistant] }}
+        />);
+
+        await waitFor(() => expect(document.body.textContent || '').toContain('question before closing project tab'));
+        expect(document.body.textContent || '').toContain('answer before closing project tab');
+
+        const closeButton = document.querySelector('[data-testid^="ai-tab-close-proj-"]') as HTMLButtonElement | null;
+        expect(closeButton).toBeTruthy();
+        fireEvent.click(closeButton!);
+        await waitFor(() => expect(document.body.textContent || '').not.toContain('question before closing project tab'));
+
+        onHandled.mockClear();
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={{
+                projectPath,
+                taskTitle: 'Reopen closed history',
+                autoSend: false,
+            }}
+            state={{ ...props.state, messages: [] }}
+        />);
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(document.body.textContent || '').toContain('question before closing project tab'));
+        expect(document.body.textContent || '').toContain('answer before closing project tab');
+        // The reopened task owns a tab; the guide is a page, not a tab.
+        expect(document.querySelector('[data-testid^="ai-tab-proj-"]')).toBeTruthy();
+    });
+
+    it('restores backend-copied conversation when opening a forked task with a fresh project path', async () => {
+        const projectPath = 'D:/tasks/forked-task';
+        loadProjectConversationHistoryMock.mockResolvedValue([
+            { role: 'user', content: 'what can biomedical engineering graduates do?' },
+            { role: 'assistant', content: 'They can work in medical devices, hospitals, R&D, or further study.' },
+        ]);
+        loadProjectContextMock.mockResolvedValue({
+            project_name: 'Biomedical engineering',
+            recent_progress: '',
+            key_artifacts: [],
+            recent_artifacts: [],
+            active_workflow: '',
+        });
+
+        const onHandled = vi.fn();
+        renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Biomedical engineering',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(loadProjectConversationHistoryMock).toHaveBeenCalledWith(projectPath));
+        await waitFor(() => expect(document.body.textContent || '').toContain('what can biomedical engineering graduates do?'));
+        expect(document.body.textContent || '').toContain('They can work in medical devices, hospitals, R&D, or further study.');
+    });
+
+    it('restores backend conversation when a cloud workspace task is opened as a new-agent tab', async () => {
+        const projectPath = 'D:/tasks/yun-duan-gong-zuo-qu-ren-wu-other-machine';
+        loadProjectConversationHistoryMock.mockResolvedValue([
+            { role: 'user', content: 'summarize the beijing weather report' },
+            { role: 'assistant', content: 'sunny, 26 degrees' },
+        ]);
+
+        const { queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: '新建云端工作区任务',
+                autoSend: false,
+                prepareMode: 'new-agent',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(loadProjectConversationHistoryMock).toHaveBeenCalledWith(projectPath));
+        await waitFor(() => expect(document.body.textContent || '').toContain('summarize the beijing weather report'));
+        expect(document.body.textContent || '').toContain('sunny, 26 degrees');
+        expect(queryByTestId('ai-welcome-container')).toBeNull();
+    });
+
+    it('prefers full tab-session conversation over stripped project history', async () => {
+        const projectPath = 'D:/tasks/yun-duan-full-transcript';
+        loadProjectTabConversationMock.mockResolvedValue([
+            { id: 'orig-user', role: 'user', content: 'keep my tool cards', timestamp: 10 },
+            { id: 'orig-assistant', role: 'assistant', content: 'used read_file', timestamp: 11 },
+        ]);
+        loadProjectConversationHistoryMock.mockResolvedValue([
+            { role: 'user', content: 'stripped project history' },
+        ]);
+
+        renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: '新建云端工作区任务',
+                autoSend: false,
+                prepareMode: 'restore-context',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(loadProjectTabConversationMock).toHaveBeenCalled());
+        await waitFor(() => expect(document.body.textContent || '').toContain('keep my tool cards'));
+        expect(document.body.textContent || '').toContain('used read_file');
+        expect(document.body.textContent || '').not.toContain('stripped project history');
+    });
+
+    it('restores backend conversation when task management reactivates an already restored tab', async () => {
+        const projectPath = 'D:/tasks/task-list-existing-tab';
+        localStorage.setItem('ai_assistant_project_tabs', JSON.stringify([{
+            id: 'proj-restored-from-startup',
+            type: 'project',
+            title: 'Existing task',
+            projectPath,
+        }]));
+        loadProjectTabIndexMock.mockResolvedValue([{
+            id: 'proj-restored-from-startup',
+            type: 'project',
+            title: 'Existing task',
+            projectPath,
+            archived: false,
+        }]);
+        loadProjectConversationHistoryMock.mockResolvedValue([
+            { role: 'user', content: 'question retained by the task' },
+            { role: 'assistant', content: 'answer restored after task-list click' },
+        ]);
+
+        renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Existing task',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(loadProjectConversationHistoryMock).toHaveBeenCalledWith(projectPath));
+        await waitFor(() => expect(document.body.textContent || '').toContain('question retained by the task'));
+        expect(document.body.textContent || '').toContain('answer restored after task-list click');
+    });
+
+    it('only focuses an existing task tab for an activation request', async () => {
+        const projectPath = 'D:/tasks/cloud-existing-live-tab';
+        const base = defaultPanelProps();
+        const firstOpen = {
+            projectPath,
+            taskTitle: 'Live cloud task',
+            autoSend: false,
+            prepareMode: 'new-agent' as const,
+        };
+        const onFirstHandled = vi.fn();
+        const { rerender } = render(
+            <AIAssistantPanel
+                {...base}
+                pendingProjectTabOpen={firstOpen}
+                onPendingProjectTabOpenHandled={onFirstHandled}
+                state={{ ...base.state, messages: [], sending: false, streaming: false, ready: true }}
+            />,
+            { wrapper: DialogProvider },
+        );
+        await waitFor(() => expect(onFirstHandled).toHaveBeenCalled());
+        await waitFor(() => expect(loadProjectConversationHistoryMock).toHaveBeenCalledWith(projectPath));
+        loadProjectTabConversationMock.mockClear();
+        loadProjectConversationHistoryMock.mockClear();
+
+        rerender(<AIAssistantPanel {...base} pendingProjectTabOpen={null} state={{ ...base.state, messages: [], sending: false, streaming: false, ready: true }} />);
+        const onActivationHandled = vi.fn();
+        rerender(
+            <AIAssistantPanel
+                {...base}
+                pendingProjectTabOpen={{
+                    projectPath,
+                    taskTitle: 'Live cloud task',
+                    autoSend: false,
+                    openIntent: 'activate',
+                }}
+                onPendingProjectTabOpenHandled={onActivationHandled}
+                state={{ ...base.state, messages: [], sending: false, streaming: false, ready: true }}
+            />,
+        );
+
+        await waitFor(() => expect(onActivationHandled).toHaveBeenCalled());
+        expect(loadProjectTabConversationMock).not.toHaveBeenCalled();
+        expect(loadProjectConversationHistoryMock).not.toHaveBeenCalled();
+    });
+
+    it('retries task-history hydration after an earlier empty backend result', async () => {
+        const projectPath = 'D:/tasks/task-history-retry';
+        loadProjectConversationHistoryMock.mockResolvedValueOnce([]).mockResolvedValueOnce([
+            { role: 'user', content: 'history became available later' },
+            { role: 'assistant', content: 'second task activation restores it' },
+        ]);
+        const base = defaultPanelProps();
+        const open = {
+            projectPath,
+            taskTitle: 'Retry history task',
+            autoSend: false,
+        };
+        const { rerender } = render(
+            <AIAssistantPanel
+                {...base}
+                pendingProjectTabOpen={open}
+                onPendingProjectTabOpenHandled={vi.fn()}
+                state={{ ...base.state, messages: [], sending: false, streaming: false, ready: true }}
+            />,
+            { wrapper: DialogProvider },
+        );
+
+        await waitFor(() => expect(loadProjectConversationHistoryMock).toHaveBeenCalledTimes(1));
+        rerender(<AIAssistantPanel {...base} pendingProjectTabOpen={null} state={{ ...base.state, messages: [], sending: false, streaming: false, ready: true }} />);
+        rerender(
+            <AIAssistantPanel
+                {...base}
+                pendingProjectTabOpen={{ ...open }}
+                onPendingProjectTabOpenHandled={vi.fn()}
+                state={{ ...base.state, messages: [], sending: false, streaming: false, ready: true }}
+            />,
+        );
+
+        await waitFor(() => expect(loadProjectConversationHistoryMock).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect(document.body.textContent || '').toContain('history became available later'));
+        expect(document.body.textContent || '').toContain('second task activation restores it');
+    });
+
+    it('ignores a late history response after the task tab is closed', async () => {
+        const projectPath = 'D:/tasks/late-history-after-close';
+        let resolveHistory!: (history: Array<{ role: string; content: string }>) => void;
+        loadProjectConversationHistoryMock.mockReturnValueOnce(new Promise(resolve => {
+            resolveHistory = resolve;
+        }));
+        const onHandled = vi.fn();
+        renderPanel({
+            pendingProjectTabOpen: { projectPath, taskTitle: 'Close while loading', autoSend: false },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(loadProjectConversationHistoryMock).toHaveBeenCalledWith(projectPath));
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const closeButton = document.querySelector('[data-testid^="ai-tab-close-proj-"]') as HTMLButtonElement | null;
+        expect(closeButton).toBeTruthy();
+        fireEvent.click(closeButton!);
+        await act(async () => {
+            resolveHistory([
+                { role: 'user', content: 'late user message' },
+                { role: 'assistant', content: 'late assistant message' },
+            ]);
+        });
+
+        // Closing the task drops its tab and leaves the guide page behind.
+        await waitFor(() => expect(document.querySelector('[data-testid^="ai-tab-proj-"]')).toBeNull());
+        expect(document.body.textContent || '').not.toContain('late user message');
+        expect(document.body.textContent || '').not.toContain('late assistant message');
+    });
+
+    it('ignores a late history response after its task is deleted', async () => {
+        const projectPath = 'D:/tasks/late-history-after-delete';
+        let resolveHistory!: (history: Array<{ role: string; content: string }>) => void;
+        loadProjectConversationHistoryMock.mockReturnValueOnce(new Promise(resolve => {
+            resolveHistory = resolve;
+        }));
+        const { queryByText } = renderPanel({
+            pendingProjectTabOpen: { projectPath, taskTitle: 'Delete while loading', autoSend: false },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(loadProjectConversationHistoryMock).toHaveBeenCalledWith(projectPath));
+        const deleteEventHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'project-task:deleted')
+            .at(-1)?.[1];
+        expect(deleteEventHandler).toBeTypeOf('function');
+        act(() => deleteEventHandler(projectPath));
+        await act(async () => {
+            resolveHistory([
+                { role: 'user', content: 'deleted task late user message' },
+                { role: 'assistant', content: 'deleted task late assistant message' },
+            ]);
+        });
+
+        await waitFor(() => expect(queryByText('Delete while loading')).toBeNull());
+        expect(document.body.textContent || '').not.toContain('deleted task late user message');
+        expect(document.body.textContent || '').not.toContain('deleted task late assistant message');
+    });
+
+    it('locks a newly opened project tab until context restore finishes and queues typed input', async () => {
+        let resolveContext!: (value: any) => void;
+        loadProjectContextMock.mockReturnValueOnce(new Promise(resolve => {
+            resolveContext = resolve;
+        }));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/prepare-before-send',
+                taskTitle: 'Prepare before send',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        expect(getByTestId('project-tab-restore-progress')).toBeTruthy();
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.disabled).toBe(false);
+        expect(input.placeholder).toContain('Restoring task context');
+
+        fireEvent.change(input, { target: { value: 'send only after restore' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(getByTestId('buffer-queue-panel')).toBeTruthy();
+        expect(document.body.textContent || '').toContain('send only after restore');
+        expect((document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null)?.disabled).toBe(true);
+        expect((document.querySelector('[data-testid^="edit-btn-"]') as HTMLButtonElement | null)?.disabled).toBe(true);
+
+        await act(async () => {
+            resolveContext({ project_name: 'Prepare before send', recent_progress: '', key_artifacts: [], recent_artifacts: [], active_workflow: '' });
+        });
+
+        await waitFor(() => expect(queryByTestId('project-tab-restore-progress')).toBeNull());
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('send only after restore', expect.objectContaining({ project_path: 'D:/tasks/prepare-before-send' })));
+    });
+
+    it('releases project tab restore lock after context timeout while retry continues in background', async () => {
+        loadProjectContextMock.mockReturnValue(new Promise(() => {}));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/slow-context',
+                taskTitle: 'Slow context',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        expect(getByTestId('project-tab-restore-progress')).toBeTruthy();
+
+        fireEvent.change(getByTestId('ai-input'), { target: { value: 'continue after timeout' } });
+        fireEvent.keyDown(getByTestId('ai-input'), { key: 'Enter' });
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        await waitFor(() => expect(queryByTestId('project-tab-restore-progress')).toBeNull(), { timeout: 3000 });
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('continue after timeout', expect.objectContaining({ project_path: 'D:/tasks/slow-context' })));
+    });
+
+    it('queues send-button clicks while project context restore is preparing', async () => {
+        let resolveContext!: (value: any) => void;
+        loadProjectContextMock.mockReturnValueOnce(new Promise(resolve => {
+            resolveContext = resolve;
+        }));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+
+        const { getByTestId, getByTitle } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/prepare-button-send',
+                taskTitle: 'Prepare button send',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(getByTestId('project-tab-restore-progress')).toBeTruthy());
+        fireEvent.change(getByTestId('ai-input'), { target: { value: 'button waits too' } });
+        fireEvent.click(getByTitle('Send (Enter)'));
+
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(getByTestId('buffer-queue-panel').textContent || '').toContain('button waits too');
+
+        await act(async () => {
+            resolveContext({ project_name: 'Prepare button send', recent_progress: '', key_artifacts: [], recent_artifacts: [], active_workflow: '' });
+        });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('button waits too', expect.objectContaining({ project_path: 'D:/tasks/prepare-button-send' })));
+    });
+
+    it('defers project auto-send until context restore finishes', async () => {
+        let resolveContext!: (value: any) => void;
+        loadProjectContextMock.mockReturnValueOnce(new Promise(resolve => {
+            resolveContext = resolve;
+        }));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/autosend-after-prepare',
+                taskTitle: 'Auto after prepare',
+                initialMessage: 'auto waits for context',
+                autoSend: true,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        expect(getByTestId('project-tab-restore-progress')).toBeTruthy();
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        await act(async () => {
+            resolveContext({ project_name: 'Auto after prepare', recent_progress: '', key_artifacts: [], recent_artifacts: [], active_workflow: '' });
+        });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('auto waits for context', expect.objectContaining({ project_path: 'D:/tasks/autosend-after-prepare' })));
+    });
+
+    it('labels new task preparation as agent instance creation while input waits', async () => {
+        let resolveSession!: () => void;
+        createProjectTabSessionMock.mockReturnValueOnce(new Promise<void>(resolve => {
+            resolveSession = resolve;
+        }));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/new-agent-prepare',
+                taskTitle: 'Create new agent backed task',
+                autoSend: false,
+                prepareMode: 'new-agent',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(getByTestId('project-tab-restore-progress').textContent || '').toContain('Creating project session'));
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        // Placeholder uses the softer "project session" copy; progress banner uses "agent instance".
+        expect(input.placeholder).toContain('Creating project session');
+
+        fireEvent.change(input, { target: { value: 'queued while creating' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(loadProjectContextMock).not.toHaveBeenCalled();
+
+        await act(async () => {
+            resolveSession();
+        });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued while creating', expect.objectContaining({ project_path: 'D:/tasks/new-agent-prepare' })));
+    });
+
+    it('shows a one-shot new-task context card without sending it to the agent', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/new-local-context',
+                taskTitle: 'New local coding task',
+                initialMessage: 'Do not send this creation payload',
+                autoSend: true,
+                prepareMode: 'new-agent',
+                agentMode: 'coding_dev',
+                newTaskContext: { kind: 'new-task', workingDir: 'D:/work/project' },
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        const card = await waitFor(() => getByTestId(/assistant-task-context-/));
+        expect(card.textContent).toContain('CURRENT TASK');
+        expect(card.textContent).toContain('Local coding');
+        expect(card.textContent).toContain('D:/work/project');
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+    it('shows a selected working directory for a new chat task without sending it', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/new-chat-context',
+                taskTitle: 'New task',
+                autoSend: false,
+                newTaskContext: { kind: 'new-task', workingDir: 'D:/work/general' },
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        const card = await waitFor(() => getByTestId(/assistant-task-context-/));
+        expect(card.textContent).toContain('Chat');
+        expect(card.textContent).toContain('D:/work/general');
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+    it('localizes new-task context cards in Traditional Chinese', async () => {
+        const { getByTestId } = renderPanel({
+            lang: 'zh-Hant',
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/new-remote-context-hant',
+                taskTitle: 'New remote coding task',
+                autoSend: false,
+                agentMode: 'remote_coding_dev',
+                remoteHost: 'ssh.example.test',
+                newTaskContext: { kind: 'new-task', remoteUser: 'deploy', remotePort: 2222, remoteWorkDir: '/srv/project' },
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        const card = await waitFor(() => getByTestId(/assistant-task-context-/));
+        expect(card.textContent).toContain('目前任務資訊');
+        expect(card.textContent).toContain('遠端程式');
+        expect(card.textContent).toContain('連接埠：2222');
+        expect(card.textContent).toContain('遠端工作目錄');
+        expect(card.textContent).toContain('此資訊不會傳送給 AI');
+    });
+    it('shows a coding environment banner for coding_dev project tabs', async () => {
+        let resolveSession!: () => void;
+        createProjectTabSessionMock.mockReturnValueOnce(new Promise<void>(resolve => {
+            resolveSession = resolve;
+        }));
+
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/coding-env-banner',
+                taskTitle: 'Pure coding task',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'coding_dev',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        await waitFor(() => expect(getByTestId('coding-env-banner')).toBeTruthy());
+        // Collapsed chip keeps full-name in accessible text + short visible label.
+        expect(getByTestId('coding-env-banner').textContent || '').toMatch(/Full coding environment|全功能编程环境|Coding|编程/i);
+        expect(getByTestId('coding-control-float-root')).toBeTruthy();
+        expect(getByTestId('project-tab-restore-progress').textContent || '').toContain('Creating coding environment');
+        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toContain('Creating coding environment');
+
+        await act(async () => {
+            resolveSession();
+        });
+
+        await waitFor(() => expect(queryByTestId('project-tab-restore-progress')).toBeNull());
+        expect(queryByTestId('ai-welcome-container')).toBeNull();
+        expect(getByTestId('coding-workbench-empty').textContent || '').toMatch(/Coding environment ready|编程环境已就绪/i);
+        // Floating chip remains after session is ready so the user still knows they are in coding mode.
+        const readyChip = getByTestId('coding-env-banner');
+        const readyText = readyChip.textContent || '';
+        const readyTitle = readyChip.getAttribute('title') || '';
+        expect(readyText).toMatch(/Full coding|full coding|全功能编程|Coding|编程/i);
+        // Long workbench description lives on the chip title (tooltip), not document-flow copy.
+        expect(readyTitle.toLowerCase()).toMatch(/multi-turn|session memory|多轮|續寫|续写/i);
+        expect(readyTitle.toLowerCase()).toMatch(/skill\/mcp|skill|mcp/i);
+
+        // Expanding the chip reveals session controls without a permanent top banner.
+        fireEvent.click(readyChip);
+        await waitFor(() => expect(getByTestId('coding-control-popover')).toBeTruthy());
+        expect(getByTestId('coding-session-plan')).toBeTruthy();
+    });
+
+    it('puts live sheen on the current coding thought, then on tool/edit status', async () => {
+        const projectPath = 'D:/tasks/coding-live-sheen';
+        const sessionKey = `desktop-user:${projectPath}`;
+        loadProjectConversationHistoryMock.mockResolvedValue([
+            { role: 'user', content: '了解当前任务' },
+            { role: 'assistant', content: 'seed' },
+        ]);
+        const user = makeMsg({ id: 'coding-live-user', role: 'user', content: '了解当前任务', sessionKey, timestamp: 1 });
+        const thinking = makeMsg({
+            id: 'coding-live-thought',
+            role: 'assistant',
+            content: '',
+            sessionKey,
+            timestamp: 2,
+            codingTimeline: [
+                { id: 't1', sequence: 1, kind: 'thinking', content: 'Let me explore the repository.', timestamp: 2 },
+            ],
+        });
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            lang: 'zh-Hans' as const,
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Local coding live sheen',
+                autoSend: false,
+                prepareMode: 'restore-context' as const,
+                agentMode: 'coding_dev',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { ...base.state, messages: [], sending: false, streaming: false, ready: true },
+        };
+        const { rerender, container, getByTestId, queryByTestId } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        await waitFor(() => expect(container.textContent || '').toContain('了解当前任务'));
+
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [user, thinking],
+            sending: true,
+            streaming: true,
+            sendingSessionKey: sessionKey,
+            streamingSessionKey: sessionKey,
+        }} />);
+        await waitFor(() => expect(getByTestId('coding-agent-interleaved-timeline')).toBeTruthy());
+        await waitFor(() => {
+            const live = container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]');
+            expect(live?.textContent).toBe('正在思考');
+            expect(live?.className).toContain('assistant-reasoning-live-label');
+        });
+        expect(container.querySelector<HTMLDetailsElement>('details[data-testid="assistant-reasoning-panel"]')?.open).toBe(true);
+        expect(container.textContent || '').toContain('Let me explore the repository.');
+        expect(queryByTestId('coding-agent-working-trail')).toBeNull();
+
+        const editing = makeMsg({
+            id: 'coding-live-thought',
+            role: 'assistant',
+            content: '',
+            sessionKey,
+            timestamp: 2,
+            codingTimeline: [
+                { id: 't1', sequence: 1, kind: 'thinking', content: 'Let me explore the repository.', timestamp: 2 },
+                { id: 'p1', sequence: 2, kind: 'progress', content: 'Coding Agent Event: {"agent":"coding","event":"tool_started","phase":"running","detail":"edit_file"}', timestamp: 3 },
+            ],
+        });
+        const editEvent = 'Coding Agent Event: {"agent":"coding","event":"tool_started","phase":"running","detail":"edit_file"}';
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [user, editing],
+            progressMessages: [makeMsg({ role: 'progress', content: editEvent, sessionKey })],
+            sending: true,
+            streaming: false,
+            sendingSessionKey: sessionKey,
+            streamingSessionKey: '',
+        }} />);
+        await waitFor(() => {
+            const labels = Array.from(container.querySelectorAll('[data-testid="assistant-reasoning-label"]')).map(el => el.textContent);
+            expect(labels).toContain('思考过程');
+            expect(labels).toContain('正在编辑文件');
+        });
+        const liveEdit = container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]');
+        expect(liveEdit?.textContent).toBe('正在编辑文件');
+        expect(liveEdit?.className).toContain('assistant-reasoning-live-label');
+        expect(container.querySelector('[data-live="true"] .assistant-reasoning-live-label')).toBeTruthy();
+        expect(container.querySelector('[data-live="false"] [data-testid="assistant-reasoning-label"]')?.textContent).toBe('思考过程');
+        expect(container.querySelector<HTMLDetailsElement>('details[data-live="false"]')?.open).toBe(true);
+
+        const calling = 'Coding Agent Event: {"agent":"coding","event":"tool_started","phase":"running","detail":"unknown_mcp"}';
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [user, editing],
+            progressMessages: [makeMsg({ role: 'progress', content: calling, sessionKey })],
+            sending: true,
+            streaming: false,
+            sendingSessionKey: sessionKey,
+            streamingSessionKey: '',
+        }} />);
+        await waitFor(() => {
+            expect(container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在调用工具 unknown_mcp');
+        });
+        expect(container.querySelectorAll('[data-testid="assistant-reasoning-label"]')).toHaveLength(1);
+        expect(container.querySelector('[data-testid="assistant-reasoning-object"]')).toBeNull();
+
+        const reasoningOnly = makeMsg({
+            id: 'coding-live-thought',
+            role: 'assistant',
+            content: '',
+            reasoning: '先看现有实现。',
+            sessionKey,
+            timestamp: 4,
+        });
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [user, reasoningOnly],
+            progressMessages: [],
+            sending: true,
+            streaming: false,
+            sendingSessionKey: sessionKey,
+            streamingSessionKey: '',
+        }} />);
+        await waitFor(() => {
+            expect(container.querySelectorAll('[data-testid="assistant-reasoning-label"]')).toHaveLength(1);
+            expect(container.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在调用工具');
+        });
+        expect(queryByTestId('coding-agent-working-trail')).toBeNull();
+
+        const partialAnswer = makeMsg({
+            id: 'coding-live-thought',
+            role: 'assistant',
+            content: '已写了一部分。',
+            reasoning: '先看现有实现。',
+            reasoningLive: false,
+            sessionKey,
+            timestamp: 5,
+        });
+        const namedTool = 'Coding Agent Event: {"agent":"coding","event":"tool_started","phase":"running","detail":"todo_write"}';
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [user, partialAnswer],
+            progressMessages: [makeMsg({ role: 'progress', content: namedTool, sessionKey })],
+            sending: true,
+            streaming: false,
+            sendingSessionKey: sessionKey,
+            streamingSessionKey: '',
+        }} />);
+        await waitFor(() => {
+            expect(container.querySelectorAll('[data-testid="assistant-reasoning-label"]')).toHaveLength(1);
+            expect(container.querySelector('[data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在调用工具 todo_write');
+        });
+        expect(container.querySelector('[data-testid="assistant-reasoning-panel"]')?.getAttribute('data-live')).toBe('true');
+        expect(container.querySelector<HTMLDetailsElement>('details[data-testid="assistant-reasoning-panel"]')?.open).toBe(false);
+        expect(queryByTestId('coding-agent-working-trail')).toBeNull();
+
+        const partialEdit = makeMsg({
+            id: 'coding-live-thought',
+            role: 'assistant',
+            content: '已写了一部分。',
+            reasoningLive: false,
+            sessionKey,
+            timestamp: 6,
+            codingTimeline: [
+                { id: 't1', sequence: 1, kind: 'thinking', content: 'Let me explore the repository.', timestamp: 2 },
+                { id: 'p1', sequence: 2, kind: 'progress', content: editEvent, timestamp: 3 },
+            ],
+        });
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [user, partialEdit],
+            progressMessages: [makeMsg({ role: 'progress', content: editEvent, sessionKey })],
+            sending: true,
+            streaming: false,
+            sendingSessionKey: sessionKey,
+            streamingSessionKey: '',
+        }} />);
+        await waitFor(() => {
+            const labels = Array.from(container.querySelectorAll('[data-testid="assistant-reasoning-label"]')).map(el => el.textContent);
+            expect(labels).toContain('思考过程');
+            expect(labels).toContain('正在编辑文件');
+        });
+        expect(container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在编辑文件');
+    });
+
+    it('puts live tool sheen on a remote coding workbench', async () => {
+        const projectPath = 'D:/tasks/remote-coding-live-sheen';
+        const sessionKey = `desktop-user:${projectPath}`;
+        loadProjectConversationHistoryMock.mockResolvedValue([
+            { role: 'user', content: '了解当前任务' },
+            { role: 'assistant', content: 'seed' },
+        ]);
+        const user = makeMsg({ id: 'remote-coding-live-user', role: 'user', content: '了解当前任务', sessionKey, timestamp: 1 });
+        const assistant = makeMsg({
+            id: 'remote-coding-live-edit',
+            role: 'assistant',
+            content: '',
+            sessionKey,
+            timestamp: 2,
+            codingTimeline: [
+                { id: 't1', sequence: 1, kind: 'thinking', content: 'Inspect the remote tree.', timestamp: 2 },
+                { id: 'p1', sequence: 2, kind: 'progress', content: 'Coding Agent Event: {"agent":"coding","event":"tool_started","phase":"running","detail":"edit_file"}', timestamp: 3 },
+            ],
+        });
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            lang: 'zh-Hans' as const,
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Remote coding live sheen',
+                autoSend: false,
+                prepareMode: 'new-agent' as const,
+                agentMode: 'remote_coding_dev',
+                remoteHost: '10.0.0.21',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { ...base.state, messages: [], sending: false, streaming: false, ready: true },
+        };
+        const { rerender, container, getByTestId } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        await waitFor(() => expect(container.textContent || '').toContain('了解当前任务'), { timeout: 3000 });
+
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [user, assistant],
+            progressMessages: [makeMsg({ role: 'progress', content: 'Coding Agent Event: {"agent":"coding","event":"tool_started","phase":"running","detail":"edit_file"}', sessionKey })],
+            sending: true,
+            streaming: false,
+            sendingSessionKey: sessionKey,
+            streamingSessionKey: '',
+        }} />);
+        await waitFor(() => expect(getByTestId('coding-agent-interleaved-timeline')).toBeTruthy());
+        await waitFor(() => {
+            const labels = Array.from(container.querySelectorAll('[data-testid="assistant-reasoning-label"]')).map(el => el.textContent);
+            expect(labels).toContain('思考过程');
+            expect(labels).toContain('正在编辑文件');
+        });
+        expect(container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]')?.textContent).toBe('正在编辑文件');
+        expect(container.querySelector('[data-live="true"] [data-testid="assistant-reasoning-label"]')?.className).toContain('assistant-reasoning-live-label');
+        expect(container.querySelector<HTMLDetailsElement>('details[data-live="false"]')?.open).toBe(true);
+    });
+
+    it('auto-opens the cloud file preview when a restored cloud workspace tab resolves its cache path', async () => {
+        getTabWorkingDirMock.mockResolvedValue({
+            path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_a',
+            is_default: false,
+        });
+        const { findByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            pendingProjectTabOpen: {
+                projectPath: 'C:/Users/me/.maclaw/data/tasks/yun-duan-gong-zuo-qu-ren-wu-1',
+                taskTitle: '云端工作区任务1',
+                autoSend: false,
+                prepareMode: 'restore-context',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+        const workspace = await findByTestId('code-preview-workspace', {}, { timeout: 8000 });
+        expect(workspace.getAttribute('data-cloud-mode')).toBe('true');
+    });
+
+    it('opens the document preview when a cloud workspace result is previewed', async () => {
+        getTabWorkingDirMock.mockResolvedValue({
+            path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_a',
+            is_default: false,
+        });
+        const { findByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            pendingProjectTabOpen: {
+                projectPath: 'C:/Users/me/.maclaw/data/tasks/yun-duan-gong-zuo-qu-ren-wu-1',
+                taskTitle: '云端工作区任务1',
+                autoSend: false,
+                prepareMode: 'restore-context',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+        expect(await findByTestId('code-preview-workspace', {}, { timeout: 8000 })).toBeTruthy();
+        const path = 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_a/papers/北京天气报告.pdf';
+        act(() => {
+            window.dispatchEvent(new CustomEvent('maclaw:preview-task-result', { detail: { path } }));
+        });
+        await waitFor(() => {
+            expect(document.querySelector('[data-testid="pdf-preview-panel"], [data-testid="pdf-preview-loading"]')).toBeTruthy();
+        });
+        expect(document.querySelector('[data-testid="code-preview-workspace"]')).toBeNull();
+    });
+
+    it('auto-opens the cloud file preview when a coding_dev tab resolves its cache path later', async () => {
+        getTabWorkingDirMock.mockResolvedValue({
+            path: 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_coding',
+            is_default: false,
+        });
+        const { findByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            pendingProjectTabOpen: {
+                projectPath: 'C:/Users/me/.maclaw/data/tasks/yun-duan-bian-cheng-ren-wu',
+                taskTitle: '云端编程任务',
+                autoSend: false,
+                prepareMode: 'restore-context',
+                agentMode: 'coding_dev',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+        const workspace = await findByTestId('code-preview-workspace', {}, { timeout: 8000 });
+        expect(workspace.getAttribute('data-cloud-mode')).toBe('true');
+    });
+
+    it('restores the cloud workspace lock before the first command on an already-open tab', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        resumeCloudWorkspaceTaskMock.mockResolvedValue({ project_path: 'D:/tasks/cloud-math' });
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/cloud-math',
+                taskTitle: 'AI math foundations',
+                autoSend: false,
+                cloudWorkspaceId: 'cws_math',
+                prepareMode: 'restore-context',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(screen.getByRole('tab', { name: 'AI math foundations' })).toBeTruthy());
+        await waitFor(() => expect(document.querySelector('[data-testid="project-tab-restore-progress"]')).toBeNull());
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'generate the textbook pdf' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(resumeCloudWorkspaceTaskMock).toHaveBeenCalledWith('cws_math', 'D:/tasks/cloud-math'));
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(
+            'generate the textbook pdf',
+            expect.objectContaining({ project_path: 'D:/tasks/cloud-math' }),
+        ));
+
+        fireEvent.change(input, { target: { value: 'continue the outline' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(
+            'continue the outline',
+            expect.objectContaining({ project_path: 'D:/tasks/cloud-math' }),
+        ));
+        expect(resumeCloudWorkspaceTaskMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not send the first cloud workspace command when lock recovery fails', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        resumeCloudWorkspaceTaskMock.mockRejectedValueOnce(new Error('workspace is in use'));
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/cloud-math',
+                taskTitle: 'AI math foundations',
+                autoSend: false,
+                cloudWorkspaceId: 'cws_math',
+                prepareMode: 'restore-context',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(document.querySelector('[data-testid="project-tab-restore-progress"]')).toBeNull());
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'write chapter 1' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(resumeCloudWorkspaceTaskMock).toHaveBeenCalled());
+        expect(sendMessage).not.toHaveBeenCalled();
+        await waitFor(() => expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('write chapter 1'));
+    });
+
+    it('restores the cloud workspace lock before a queued first command drains after the session idles', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        resumeCloudWorkspaceTaskMock.mockResolvedValue({ project_path: 'D:/tasks/cloud-math' });
+        const base = defaultPanelProps();
+        const busyState = {
+            ...base.state,
+            messages: [],
+            sending: true,
+            sendingSessionKey: 'desktop-user:D:/tasks/cloud-math',
+            busySessionKeys: ['desktop-user:D:/tasks/cloud-math'],
+            streaming: false,
+            streamingSessionKeys: [],
+            ready: true,
+        };
+        const { getByTestId, rerender } = render(
+            <AIAssistantPanel
+                {...base}
+                pendingProjectTabOpen={{
+                    projectPath: 'D:/tasks/cloud-math',
+                    taskTitle: 'AI math foundations',
+                    autoSend: false,
+                    cloudWorkspaceId: 'cws_math',
+                    prepareMode: 'restore-context',
+                }}
+                onPendingProjectTabOpenHandled={vi.fn()}
+                state={busyState}
+                actions={{ ...base.actions, sendMessage }}
+            />,
+            { wrapper: DialogProvider },
+        );
+
+        await waitFor(() => expect(document.querySelector('[data-testid="project-tab-restore-progress"]')).toBeNull());
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'queued first command' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        // Busy session: the command waits in the buffer queue without sending,
+        // and the lease must not be requested before the drain actually fires.
+        await waitFor(() => expect(getByTestId('buffer-queue-panel').textContent || '').toContain('queued first command'));
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(resumeCloudWorkspaceTaskMock).not.toHaveBeenCalled();
+
+        rerender(
+            <AIAssistantPanel
+                {...base}
+                pendingProjectTabOpen={null}
+                state={{ ...busyState, sending: false, sendingSessionKey: '', busySessionKeys: [] }}
+                actions={{ ...base.actions, sendMessage }}
+            />,
+        );
+
+        await waitFor(() => expect(resumeCloudWorkspaceTaskMock).toHaveBeenCalledWith('cws_math', 'D:/tasks/cloud-math'));
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('queued first command', expect.objectContaining({
+            project_path: 'D:/tasks/cloud-math',
+        })));
+        // Lease first, command second.
+        expect(resumeCloudWorkspaceTaskMock.mock.invocationCallOrder[0]).toBeLessThan(sendMessage.mock.invocationCallOrder[0]);
+        expect(resumeCloudWorkspaceTaskMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('keeps the queued first command when cloud workspace lock recovery fails during auto drain', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        resumeCloudWorkspaceTaskMock.mockRejectedValue(new Error('workspace is in use'));
+        const base = defaultPanelProps();
+        const busyState = {
+            ...base.state,
+            messages: [],
+            sending: true,
+            sendingSessionKey: 'desktop-user:D:/tasks/cloud-math',
+            busySessionKeys: ['desktop-user:D:/tasks/cloud-math'],
+            streaming: false,
+            streamingSessionKeys: [],
+            ready: true,
+        };
+        const { getByTestId, rerender } = render(
+            <AIAssistantPanel
+                {...base}
+                pendingProjectTabOpen={{
+                    projectPath: 'D:/tasks/cloud-math',
+                    taskTitle: 'AI math foundations',
+                    autoSend: false,
+                    cloudWorkspaceId: 'cws_math',
+                    prepareMode: 'restore-context',
+                }}
+                onPendingProjectTabOpenHandled={vi.fn()}
+                state={busyState}
+                actions={{ ...base.actions, sendMessage }}
+            />,
+            { wrapper: DialogProvider },
+        );
+
+        await waitFor(() => expect(document.querySelector('[data-testid="project-tab-restore-progress"]')).toBeNull());
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'queued cloud command' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        await waitFor(() => expect(getByTestId('buffer-queue-panel').textContent || '').toContain('queued cloud command'));
+
+        rerender(
+            <AIAssistantPanel
+                {...base}
+                pendingProjectTabOpen={null}
+                state={{ ...busyState, sending: false, sendingSessionKey: '', busySessionKeys: [] }}
+                actions={{ ...base.actions, sendMessage }}
+            />,
+        );
+
+        await waitFor(() => expect(resumeCloudWorkspaceTaskMock).toHaveBeenCalledWith('cws_math', 'D:/tasks/cloud-math'));
+        expect(sendMessage).not.toHaveBeenCalled();
+        // The refused drain keeps the entry in the queue instead of dropping it,
+        // and disarms auto-drain so a persistent refusal cannot spin a retry loop.
+        await act(async () => { await new Promise(resolve => setTimeout(resolve, 300)); });
+        expect(resumeCloudWorkspaceTaskMock).toHaveBeenCalledTimes(1);
+        expect(getByTestId('buffer-queue-panel').textContent || '').toContain('queued cloud command');
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('shows a remote coding environment banner with host for remote_coding_dev tabs', async () => {
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-coding-env-banner',
+                taskTitle: 'Remote coding task',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: '10.0.0.8',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        await waitFor(() => expect(getByTestId('remote-coding-env-banner')).toBeTruthy());
+        // Wait until prepare finishes so ready-state chip status is no longer "Starting…".
+        // new-agent tabs stay in "preparing" for at least ~120ms after session ready.
+        await waitFor(() => {
+            const ready = (getByTestId('remote-coding-env-banner').textContent || '').toLowerCase();
+            expect(ready).not.toMatch(/starting|启动|啟動|connecting|preparing|正在连接|正在連線/);
+        }, { timeout: 3000 });
+        expect(queryByTestId('ai-welcome-container')).toBeNull();
+        const emptyState = getByTestId('remote-coding-workbench-empty');
+        expect(emptyState.textContent || '').toMatch(/Remote coding environment connected|远程编程环境已连接/i);
+        expect(emptyState.textContent || '').toContain('10.0.0.8');
+        const chip = getByTestId('remote-coding-env-banner');
+        const text = chip.textContent || '';
+        expect(text).toMatch(/Remote coding environment|Remote ·|远程/i);
+        expect(text).toContain('10.0.0.8');
+        // Full remote workbench description is on the chip title / data attribute (not document-flow).
+        await waitFor(() => {
+            const desc = `${chip.getAttribute('title') || ''}\n${chip.getAttribute('data-env-description') || ''}`.toLowerCase();
+            expect(desc).toMatch(/full remote workbench|全功能远程工作台|全功能遠端工作台|source preview|源码预览|原始碼預覽/i);
+            expect(desc).toMatch(/ssh/i);
+            expect(desc).toMatch(/skill|mcp/i);
+            expect(desc).toMatch(/multi-turn|多轮|多輪|续写|續寫/i);
+        }, { timeout: 3000 });
+    });
+
+    it('shows remote host and directory in the execution header and working-dir chip', async () => {
+        getTabWorkingDirMock.mockResolvedValue({
+            path: 'C:\\Users\\me\\.maclaw\\data\\你好呀-1789995819852879500\\workspace',
+            is_default: true,
+        });
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: true,
+            needs_reconnect: false,
+            turn_count: 0,
+            remote_host: 'www.driverdevelopment.com',
+            remote_work_dir: '/home/ubuntu/app',
+            session_plan: '',
+        });
+        const { getByTestId } = renderPanel({
+            lang: 'zh',
+            pendingProjectTabOpen: {
+                projectPath: 'C:\\Users\\me\\.maclaw\\data\\你好呀-1789995819852879500\\workspace',
+                taskTitle: '你好呀',
+                autoSend: false,
+                prepareMode: 'restore-context',
+                agentMode: 'remote_coding_dev',
+                remoteHost: 'www.driverdevelopment.com',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            tasks: [{
+                project_path: 'C:\\Users\\me\\.maclaw\\data\\你好呀-1789995819852879500\\workspace',
+                name: '你好呀',
+                tags: ['remote_coding_dev', 'remote_host:www.driverdevelopment.com', 'remote_workdir:/home/ubuntu/app'],
+            }],
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(getByTestId('task-execution-meta').textContent || '').toContain('www.driverdevelopment.com/home/ubuntu/app'));
+        expect(getByTestId('task-execution-meta').textContent || '').not.toContain(':22');
+        expect(getByTestId('task-execution-meta').getAttribute('title') || '').toContain('www.driverdevelopment.com/home/ubuntu/app');
+        expect(getByTestId('task-execution-meta').textContent || '').not.toMatch(/你好呀-1789995819852879500/);
+        await waitFor(() => expect(getByTestId('working-dir-chip').textContent || '').toContain('远程'));
+        expect(getByTestId('working-dir-chip').textContent || '').not.toContain('www.driverdevelopment.com');
+        expect(getByTestId('working-dir-chip').getAttribute('title') || '').toContain('www.driverdevelopment.com/home/ubuntu/app');
+        expect(getByTestId('working-dir-chip').textContent || '').not.toMatch(/你好呀-1789995819852879500/);
+        expect(getByTestId('working-dir-chip').textContent || '').not.toContain('默认');
+    });
+
+    it('uses maintenance copy while a remote diagnosis environment is preparing', async () => {
+        let resolveSession!: () => void;
+        createProjectTabSessionMock.mockImplementationOnce(() => new Promise<void>(resolve => { resolveSession = resolve; }));
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-maintenance-preparing',
+                taskTitle: 'Remote maintenance task',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: '10.0.0.8',
+                remoteSafety: 'diagnosis',
+            },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(getByTestId('project-tab-restore-progress').textContent || '').toMatch(/Preparing remote maintenance|正在准备远程维护/i));
+        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toMatch(/Preparing remote maintenance|正在准备远程维护/i);
+        await act(async () => resolveSession());
+    });
+
+    it('uses the diagnosis-only SSH preparation path when reconnecting an incident task', async () => {
+        window.localStorage.clear();
+        const { saveRemoteSSHPassword } = await import('../welcomeTaskMemory');
+        saveRemoteSSHPassword('10.1.1.2', 'ops', 'remembered-secret', 22, '/srv/service');
+        let rearmed = false;
+        getCodingWorkbenchStatusMock.mockImplementation(async () => rearmed
+            ? { kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, remote_safety: 'diagnosis' }
+            : {
+                kind: 'remote', armed: false, needs_reconnect: true, turn_count: 0,
+                remote_host: '10.1.1.2', remote_user: 'ops', remote_port: 22,
+                remote_work_dir: '/srv/service', remote_safety: 'diagnosis',
+            });
+        prepareRemoteOpsDiagnosisEnvironmentMock.mockImplementation(async () => { rearmed = true; });
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-diagnosis-reconnect', taskTitle: 'Diagnose service', autoSend: false,
+                prepareMode: 'new-agent', agentMode: 'remote_coding_dev', remoteHost: '10.1.1.2', remoteSafety: 'diagnosis',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        await waitFor(() => expect(getByTestId('remote-coding-reconnect-form')).toBeTruthy());
+        expect((getByTestId('remote-reconnect-password') as HTMLInputElement).value).toBe('');
+        expect(prepareRemoteOpsDiagnosisEnvironmentMock).not.toHaveBeenCalled();
+        fireEvent.change(getByTestId('remote-reconnect-password'), { target: { value: 'secret' } });
+        fireEvent.click(getByTestId('remote-reconnect-submit'));
+        await waitFor(() => expect(prepareRemoteOpsDiagnosisEnvironmentMock).toHaveBeenCalledWith(
+            'D:/tasks/remote-diagnosis-reconnect', '10.1.1.2', 'ops', 'secret', '/srv/service', 22,
+        ));
+        expect(prepareRemoteCodingEnvironmentMock).not.toHaveBeenCalled();
+        getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
+    });
+
+    it('shows remote maintenance intent for diagnosis tasks while retaining the remote execution engine', async () => {
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-maintenance-label', taskTitle: 'Diagnose service', autoSend: false,
+                prepareMode: 'new-agent', agentMode: 'remote_coding_dev', remoteHost: 'ops.example.test', remoteSafety: 'diagnosis',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        await waitFor(() => expect(getByTestId('remote-coding-env-banner')).toBeTruthy());
+        const chip = getByTestId('remote-coding-env-banner');
+        expect(chip.textContent || '').toMatch(/Remote maintenance|远程维护/i);
+        await waitFor(() => expect(getByTestId('remote-coding-workbench-empty').textContent || '').toMatch(/Remote maintenance ready|远程维护已就绪/i));
+    });
+
+    it('shows remote SSH reconnect form when coding workbench needs reconnect', async () => {
+        window.localStorage.clear();
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: false,
+            needs_reconnect: true,
+            turn_count: 2,
+            remote_host: '10.0.0.9',
+            remote_user: 'deploy',
+            remote_port: 22,
+            remote_work_dir: '/var/app',
+            session_plan: 'Ship payment fix',
+            message: 'SSH session expired; reconnect required',
+        });
+
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-coding-reconnect',
+                taskTitle: 'Reconnect remote coding',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: '10.0.0.9',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(getByTestId('remote-coding-reconnect-form')).toBeTruthy());
+        await waitFor(() => {
+            expect((getByTestId('remote-reconnect-host') as HTMLInputElement).value).toBe('10.0.0.9');
+            expect((getByTestId('remote-reconnect-user') as HTMLInputElement).value).toBe('deploy');
+            expect((getByTestId('remote-reconnect-workdir') as HTMLInputElement).value).toBe('/var/app');
+        });
+        // No remembered password → field stays empty and no auto reconnect.
+        await waitFor(() => expect(getByTestId('remote-coding-workbench-empty').textContent || '').toMatch(/needs SSH reconnect|需要重新连接 SSH/i));
+        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toMatch(/Reconnect SSH|重新连接 SSH/i);
+        fireEvent.change(getByTestId('ai-input'), { target: { value: 'inspect the remote build' } });
+        fireEvent.keyDown(getByTestId('ai-input'), { key: 'Enter' });
+        await waitFor(() => expect(getByTestId('buffer-queue-panel').textContent || '').toContain('inspect the remote build'));
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect((document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null)?.disabled).toBe(true);
+        fireEvent.change(getByTestId('ai-input'), { target: { value: '/mcp install remote-helper' } });
+        fireEvent.keyDown(getByTestId('ai-input'), { key: 'Enter' });
+        await waitFor(() => expect(getByTestId('buffer-queue-panel').textContent || '').toContain('/mcp install remote-helper'));
+        expect(sendMessage).not.toHaveBeenCalled();
+        const passwordInput = getByTestId('remote-reconnect-password') as HTMLInputElement;
+        expect(passwordInput.value).toBe('');
+        expect(passwordInput.autocomplete).toBe('new-password');
+        expect(prepareRemoteCodingEnvironmentMock).not.toHaveBeenCalled();
+        expect(getByTestId('remote-coding-reconnect-form').textContent || '').toMatch(/Ship payment fix|payment fix/i);
+        getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
+    });
+
+    it('does not let a queued remote task bypass SSH reconnect through Send now', async () => {
+        window.localStorage.clear();
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: false,
+            needs_reconnect: true,
+            turn_count: 1,
+            remote_host: '10.0.0.10',
+            remote_user: 'deploy',
+            remote_port: 22,
+            remote_work_dir: '/srv/app',
+            session_plan: '',
+        });
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-coding-fire-gate',
+                taskTitle: 'Remote queued fire gate',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: '10.0.0.10',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(getByTestId('remote-coding-reconnect-form')).toBeTruthy());
+        fireEvent.change(getByTestId('ai-input'), { target: { value: 'inspect the remote build' } });
+        fireEvent.keyDown(getByTestId('ai-input'), { key: 'Enter' });
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+
+        const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
+        expect(fireButton).toBeTruthy();
+        fireEvent.click(fireButton!);
+        await act(async () => { await Promise.resolve(); });
+
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(getByTestId('buffer-queue-panel').textContent || '').toContain('inspect the remote build');
+        getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
+    });
+
+    it('queues externally injected remote task intents until SSH reconnects', async () => {
+        window.localStorage.clear();
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote', armed: false, needs_reconnect: true, turn_count: 1,
+            remote_host: '10.0.0.11', remote_user: 'deploy', remote_port: 22, remote_work_dir: '/srv/app', session_plan: '',
+        });
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-coding-external-gate', taskTitle: 'Remote external gate', autoSend: false,
+                prepareMode: 'new-agent', agentMode: 'remote_coding_dev', remoteHost: '10.0.0.11',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(getByTestId('remote-coding-reconnect-form')).toBeTruthy());
+        window.dispatchEvent(new CustomEvent('maclaw:inject-chat-message', { detail: { text: 'inspect deployment state' } }));
+        await waitFor(() => expect(getByTestId('buffer-queue-panel').textContent || '').toContain('inspect deployment state'));
+        expect(sendMessage).not.toHaveBeenCalled();
+        getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
+    });
+
+    it('prefills remembered password and auto-reconnects remote SSH', async () => {
+        window.localStorage.clear();
+        const { saveRemoteSSHPassword } = await import('../welcomeTaskMemory');
+        saveRemoteSSHPassword('10.0.0.7', 'root', 'remembered-secret', 22, '/home');
+
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+        let rearmed = false;
+        getCodingWorkbenchStatusMock.mockImplementation(async () => {
+            if (rearmed) {
+                return {
+                    kind: 'remote',
+                    armed: true,
+                    needs_reconnect: false,
+                    turn_count: 1,
+                    remote_host: '10.0.0.7',
+                    remote_user: 'root',
+                    remote_port: 22,
+                    remote_work_dir: '/home',
+                    session_plan: 'Fix prod',
+                };
+            }
+            return {
+                kind: 'remote',
+                armed: false,
+                needs_reconnect: true,
+                turn_count: 1,
+                remote_host: '10.0.0.7',
+                remote_user: 'root',
+                remote_port: 22,
+                remote_work_dir: '/home',
+                session_plan: 'Fix prod',
+            };
+        });
+        prepareRemoteCodingEnvironmentMock.mockImplementation(async () => {
+            rearmed = true;
+        });
+
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-coding-auto-reconnect',
+                taskTitle: 'Auto reconnect',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: '10.0.0.7',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        await waitFor(() => {
+            expect(prepareRemoteCodingEnvironmentMock).toHaveBeenCalledWith(
+                'D:/tasks/remote-coding-auto-reconnect',
+                '10.0.0.7',
+                'root',
+                'remembered-secret',
+                '/home',
+                22,
+            );
+        });
+        await waitFor(() => expect(getByTestId('remote-coding-reconnect-success')).toBeTruthy());
+        const success = getByTestId('remote-coding-reconnect-success');
+        expect(success.getAttribute('data-surface')).toBe('theme');
+        expect(success.className).toContain('aap-reconnect-success');
+        expect(success.style.background || '').not.toMatch(/success|4f7f6f|11813a/i);
+        expect(queryByTestId('remote-coding-reconnect-form')).toBeNull();
+        // Auto uses vault only — typing into the password field must not re-fire Prepare.
+        prepareRemoteCodingEnvironmentMock.mockClear();
+        getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
+    });
+
+    it('auto-reconnects from the OS keyring when local password memory is gone', async () => {
+        window.localStorage.clear();
+        const recall = vi.fn().mockResolvedValue('keyring-secret');
+        (window as unknown as { go?: unknown }).go = {
+            main: {
+                App: {
+                    RememberRemoteSSHPassword: vi.fn().mockResolvedValue(undefined),
+                    RecallRemoteSSHPassword: recall,
+                    ForgetRemoteSSHPassword: vi.fn().mockResolvedValue(undefined),
+                },
+            },
+        };
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+        let rearmed = false;
+        getCodingWorkbenchStatusMock.mockImplementation(async () => (rearmed
+            ? {
+                kind: 'remote', armed: true, needs_reconnect: false, turn_count: 1,
+                remote_host: 'home.rapidai.tech', remote_user: 'root', remote_port: 55, remote_work_dir: '/home/rapidrec', session_plan: '',
+            }
+            : {
+                kind: 'remote', armed: false, needs_reconnect: true, turn_count: 1,
+                remote_host: 'home.rapidai.tech', remote_user: 'root', remote_port: 55, remote_work_dir: '/home/rapidrec', session_plan: '',
+            }));
+        prepareRemoteCodingEnvironmentMock.mockImplementation(async () => { rearmed = true; });
+        try {
+            renderPanel({
+                pendingProjectTabOpen: {
+                    projectPath: 'D:/tasks/remote-coding-keyring',
+                    taskTitle: 'Keyring reconnect',
+                    autoSend: false,
+                    prepareMode: 'new-agent',
+                    agentMode: 'remote_coding_dev',
+                    remoteHost: 'home.rapidai.tech',
+                },
+                onPendingProjectTabOpenHandled: vi.fn(),
+                state: { messages: [], sending: false, streaming: false, ready: true },
+                actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+            });
+            await waitFor(() => {
+                expect(prepareRemoteCodingEnvironmentMock).toHaveBeenCalledWith(
+                    'D:/tasks/remote-coding-keyring',
+                    'home.rapidai.tech',
+                    'root',
+                    'keyring-secret',
+                    '/home/rapidrec',
+                    55,
+                );
+            });
+            expect(recall).toHaveBeenCalled();
+        } finally {
+            delete (window as unknown as { go?: unknown }).go;
+            prepareRemoteCodingEnvironmentMock.mockReset();
+            prepareRemoteCodingEnvironmentMock.mockResolvedValue(undefined);
+        }
+    });
+
+    it('auto-reconnects with the keyring password when the local copy is stale', async () => {
+        window.localStorage.clear();
+        window.localStorage.setItem('maclaw:remote-ssh-passwords', JSON.stringify({
+            'root@home.rapidai.tech:55': 'stale-secret',
+        }));
+        const recall = vi.fn().mockResolvedValue('keyring-secret');
+        const remember = vi.fn().mockResolvedValue(undefined);
+        (window as unknown as { go?: unknown }).go = {
+            main: {
+                App: {
+                    RememberRemoteSSHPassword: remember,
+                    RecallRemoteSSHPassword: recall,
+                    ForgetRemoteSSHPassword: vi.fn().mockResolvedValue(undefined),
+                },
+            },
+        };
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+        let rearmed = false;
+        getCodingWorkbenchStatusMock.mockImplementation(async () => (rearmed
+            ? {
+                kind: 'remote', armed: true, needs_reconnect: false, turn_count: 1,
+                remote_host: 'home.rapidai.tech', remote_user: 'root', remote_port: 55, remote_work_dir: '/home/rapidrec', session_plan: '',
+            }
+            : {
+                kind: 'remote', armed: false, needs_reconnect: true, turn_count: 1,
+                remote_host: 'home.rapidai.tech', remote_user: 'root', remote_port: 55, remote_work_dir: '/home/rapidrec', session_plan: '',
+            }));
+        prepareRemoteCodingEnvironmentMock.mockImplementation(async () => { rearmed = true; });
+        try {
+            renderPanel({
+                pendingProjectTabOpen: {
+                    projectPath: 'D:/tasks/remote-coding-keyring-stale',
+                    taskTitle: 'Keyring stale reconnect',
+                    autoSend: false,
+                    prepareMode: 'new-agent',
+                    agentMode: 'remote_coding_dev',
+                    remoteHost: 'home.rapidai.tech',
+                },
+                onPendingProjectTabOpenHandled: vi.fn(),
+                state: { messages: [], sending: false, streaming: false, ready: true },
+                actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+            });
+            await waitFor(() => {
+                expect(prepareRemoteCodingEnvironmentMock).toHaveBeenCalledWith(
+                    'D:/tasks/remote-coding-keyring-stale',
+                    'home.rapidai.tech',
+                    'root',
+                    'keyring-secret',
+                    '/home/rapidrec',
+                    55,
+                );
+            });
+            expect(prepareRemoteCodingEnvironmentMock).toHaveBeenCalledTimes(1);
+            expect(remember).not.toHaveBeenCalledWith('home.rapidai.tech', 'root', 'stale-secret', 55);
+        } finally {
+            delete (window as unknown as { go?: unknown }).go;
+            prepareRemoteCodingEnvironmentMock.mockReset();
+            prepareRemoteCodingEnvironmentMock.mockResolvedValue(undefined);
+        }
+    });
+
+    it('retries a failed remote SSH reconnect up to three times with exponential backoff', async () => {
+        window.localStorage.clear();
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote', armed: false, needs_reconnect: true, turn_count: 1,
+            remote_host: '10.0.0.12', remote_user: 'deploy', remote_port: 22, remote_work_dir: '/srv/app', session_plan: '',
+        });
+        prepareRemoteCodingEnvironmentMock.mockRejectedValue(new Error('network unavailable'));
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-coding-reconnect-retry', taskTitle: 'Reconnect retry', autoSend: false,
+                prepareMode: 'new-agent', agentMode: 'remote_coding_dev', remoteHost: '10.0.0.12',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        await waitFor(() => expect(getByTestId('remote-coding-reconnect-form')).toBeTruthy());
+        fireEvent.change(getByTestId('remote-reconnect-password'), { target: { value: 'secret' } });
+        fireEvent.click(getByTestId('remote-reconnect-submit'));
+        await act(async () => { await Promise.resolve(); });
+        expect(prepareRemoteCodingEnvironmentMock).toHaveBeenCalledTimes(1);
+        await waitFor(() => expect(getByTestId('remote-reconnect-progress').textContent).toContain('retrying (2/3)'));
+        for (const field of ['remote-reconnect-host', 'remote-reconnect-user', 'remote-reconnect-port', 'remote-reconnect-password', 'remote-reconnect-workdir']) {
+            expect((getByTestId(field) as HTMLInputElement).disabled).toBe(true);
+        }
+
+        await waitFor(() => expect(prepareRemoteCodingEnvironmentMock).toHaveBeenCalledTimes(3), { timeout: 3_000 });
+        await waitFor(() => expect(getByTestId('remote-reconnect-error').textContent).toContain('network unavailable'));
+        expect(() => getByTestId('remote-reconnect-progress')).toThrow();
+        expect((getByTestId('remote-reconnect-submit') as HTMLButtonElement).disabled).toBe(false);
+        expect((getByTestId('remote-reconnect-password') as HTMLInputElement).disabled).toBe(false);
+    });
+
+    it('routes legacy supplementary steering by the queue entry owner', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([{
+            id: 'legacy-owned-steer',
+            text: 'keep this in the owned session',
+            attachments: [],
+            createdAt: 1,
+            sessionKey: 'desktop-user',
+        }]));
+        const injectSupplementary = vi.fn().mockResolvedValue(true);
+        const { queryByTestId } = renderPanel({
+            state: { messages: [], sending: true, sendingSessionKey: 'desktop-user', streaming: true, streamingSessionKey: 'desktop-user', ready: true },
+            actions: { guideLaunchReference: undefined as any, injectSupplementary },
+        });
+
+        const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
+        expect(fireButton).toBeTruthy();
+        fireEvent.click(fireButton!);
+        await waitFor(() => expect(injectSupplementary).toHaveBeenCalledWith(
+            'keep this in the owned session',
+            'desktop-user',
+        ));
+        await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+    });
+
+    it('sends an IM remote prompt exactly once after SSH reconnect succeeds', async () => {
+        window.localStorage.clear();
+        const { saveRemoteSSHPassword } = await import('../welcomeTaskMemory');
+        saveRemoteSSHPassword('10.0.0.17', 'deploy', 'remembered-secret', 22, '/srv/app');
+        let rearmed = false;
+        getCodingWorkbenchStatusMock.mockImplementation(async () => rearmed
+            ? { kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, remote_host: '10.0.0.17', remote_user: 'deploy', remote_port: 22, remote_work_dir: '/srv/app', session_plan: '' }
+            : { kind: 'remote', armed: false, needs_reconnect: true, turn_count: 0, remote_host: '10.0.0.17', remote_user: 'deploy', remote_port: 22, remote_work_dir: '/srv/app', session_plan: '' });
+        prepareRemoteCodingEnvironmentMock.mockImplementation(async () => { rearmed = true; });
+        const sendMessage = vi.fn().mockResolvedValue(true);
+
+        renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/im-remote-autostart',
+                taskTitle: 'IM remote task',
+                initialMessage: 'Deploy the release candidate',
+                autoSend: true,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: '10.0.0.17',
+                remoteNeedsReconnect: true,
+                imPlatform: 'lansenger',
+                imTargetUID: 'user-17',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(
+            'Deploy the release candidate',
+            expect.objectContaining({
+                project_path: 'D:/tasks/im-remote-autostart',
+                im_platform: 'lansenger',
+                im_target_uid: 'user-17',
+            }),
+        ));
+        expect(sendMessage).toHaveBeenCalledTimes(1);
+        // Test cleanup normally resets this mock after the test; reset here as
+        // this test changes its implementation for the following reconnect case.
+        prepareRemoteCodingEnvironmentMock.mockReset();
+        prepareRemoteCodingEnvironmentMock.mockResolvedValue(undefined);
+    });
+
+    it('keeps an IM remote prompt pending when its post-reconnect send fails', async () => {
+        window.localStorage.clear();
+        const { saveRemoteSSHPassword } = await import('../welcomeTaskMemory');
+        saveRemoteSSHPassword('10.0.0.18', 'deploy', 'remembered-secret', 22, '/srv/app');
+        let rearmed = false;
+        getCodingWorkbenchStatusMock.mockImplementation(async () => rearmed
+            ? { kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, remote_host: '10.0.0.18', remote_user: 'deploy', remote_port: 22, remote_work_dir: '/srv/app', session_plan: '' }
+            : { kind: 'remote', armed: false, needs_reconnect: true, turn_count: 0, remote_host: '10.0.0.18', remote_user: 'deploy', remote_port: 22, remote_work_dir: '/srv/app', session_plan: '' });
+        prepareRemoteCodingEnvironmentMock.mockImplementation(async () => { rearmed = true; });
+        const sendMessage = vi.fn().mockResolvedValue(false);
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/im-remote-retry', taskTitle: 'IM remote retry', initialMessage: 'Deploy retry candidate',
+                autoSend: true, prepareMode: 'new-agent', agentMode: 'remote_coding_dev', remoteHost: '10.0.0.18', remoteNeedsReconnect: true,
+                imPlatform: 'lansenger', imTargetUID: 'user-18',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1));
+        expect(sendMessage).toHaveBeenCalledWith('Deploy retry candidate', expect.objectContaining({ project_path: 'D:/tasks/im-remote-retry' }));
+        // A later reconnect can still see the pending message instead of losing it.
+        expect(getByTestId('remote-coding-reconnect-success')).toBeTruthy();
+        prepareRemoteCodingEnvironmentMock.mockReset();
+        prepareRemoteCodingEnvironmentMock.mockResolvedValue(undefined);
+    });
+
+    it('does not auto-reconnect while the user is typing a password (vault empty)', async () => {
+        window.localStorage.clear();
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: false,
+            needs_reconnect: true,
+            turn_count: 1,
+            remote_host: '10.0.0.5',
+            remote_user: 'ops',
+            remote_port: 22,
+            remote_work_dir: '/app',
+            session_plan: 'Manual only',
+        });
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-coding-no-auto-type',
+                taskTitle: 'No auto while typing',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: '10.0.0.5',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        await waitFor(() => expect(getByTestId('remote-coding-reconnect-form')).toBeTruthy());
+        fireEvent.change(getByTestId('remote-reconnect-password'), { target: { value: 'p' } });
+        fireEvent.change(getByTestId('remote-reconnect-password'), { target: { value: 'pa' } });
+        fireEvent.change(getByTestId('remote-reconnect-password'), { target: { value: 'partial' } });
+        // Give effects a tick — must not auto-call Prepare with a half-typed password.
+        await act(async () => { await Promise.resolve(); });
+        expect(prepareRemoteCodingEnvironmentMock).not.toHaveBeenCalled();
+        getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
+    });
+
+    it('shows reconnect success and allows editing session plan after remote rearm', async () => {
+        window.localStorage.clear();
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: false,
+            needs_reconnect: true,
+            turn_count: 1,
+            remote_host: '10.1.1.1',
+            remote_user: 'ops',
+            remote_port: 22,
+            remote_work_dir: '/srv/app',
+            session_plan: 'Keep deploying',
+        });
+        // After rearm, keep returning armed so a later status poll cannot clear the success toast.
+        let rearmed = false;
+        getCodingWorkbenchStatusMock.mockImplementation(async () => {
+            if (rearmed) {
+                return {
+                    kind: 'remote',
+                    armed: true,
+                    needs_reconnect: false,
+                    turn_count: 1,
+                    remote_host: '10.1.1.1',
+                    remote_user: 'ops',
+                    remote_port: 22,
+                    remote_work_dir: '/srv/app',
+                    session_plan: 'Keep deploying',
+                };
+            }
+            return {
+                kind: 'remote',
+                armed: false,
+                needs_reconnect: true,
+                turn_count: 1,
+                remote_host: '10.1.1.1',
+                remote_user: 'ops',
+                remote_port: 22,
+                remote_work_dir: '/srv/app',
+                session_plan: 'Keep deploying',
+            };
+        });
+        prepareRemoteCodingEnvironmentMock.mockImplementation(async () => {
+            rearmed = true;
+        });
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-coding-reconnect-success',
+                taskTitle: 'Reconnect success',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: '10.1.1.1',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        await waitFor(() => expect(getByTestId('remote-coding-reconnect-form')).toBeTruthy());
+        await waitFor(() => expect((getByTestId('remote-reconnect-user') as HTMLInputElement).value).toBe('ops'));
+        fireEvent.change(getByTestId('remote-reconnect-password'), { target: { value: 'secret' } });
+        fireEvent.click(getByTestId('remote-reconnect-submit'));
+        await waitFor(() => expect(getByTestId('remote-coding-reconnect-success')).toBeTruthy());
+        expect(getByTestId('remote-coding-reconnect-success').textContent || '').toMatch(/Reconnected|已重新连接|已重新連線/i);
+        // Expand floating controls if collapsed, then edit session plan.
+        if (!document.querySelector('[data-testid="coding-session-plan"]')) {
+            fireEvent.click(getByTestId('remote-coding-env-banner'));
+        }
+        await waitFor(() => expect(getByTestId('coding-session-plan')).toBeTruthy());
+        fireEvent.click(getByTestId('coding-session-plan-edit'));
+        fireEvent.change(getByTestId('coding-session-plan-input'), { target: { value: 'Ship hotfix v2' } });
+        fireEvent.click(getByTestId('coding-session-plan-save'));
+        await waitFor(() => expect(setCodingWorkbenchSessionPlanMock).toHaveBeenCalledWith('D:/tasks/remote-coding-reconnect-success', 'Ship hotfix v2'));
+        getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
+    });
+
+    it('does not auto-open the source preview for a new local coding_dev task', async () => {
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/coding-open-preview',
+                taskTitle: 'Local coding opens source panel',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'coding_dev',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        await waitFor(() => expect(getByTestId('coding-env-banner')).toBeTruthy());
+        expect(queryByTestId('code-preview-workspace')).toBeNull();
+        const toggle = getByTestId('workflow-preview-toggle-btn');
+        expect(toggle.getAttribute('aria-checked')).toBe('false');
+        fireEvent.click(toggle);
+        await waitFor(() => expect(getByTestId('code-preview-workspace')).toBeTruthy());
+        expect(toggle.getAttribute('aria-checked')).toBe('true');
+        fireEvent.click(toggle);
+        await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('false'));
+    });
+
+    it('does not auto-open the source preview for a new remote_coding_dev task', async () => {
+        createProjectTabSessionMock.mockResolvedValueOnce(undefined);
+
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/remote-coding-open-preview',
+                taskTitle: 'Remote coding opens source panel',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: '192.168.1.10',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage: vi.fn().mockResolvedValue(true) },
+        });
+
+        await waitFor(() => expect(getByTestId('remote-coding-env-banner')).toBeTruthy());
+        expect(queryByTestId('code-preview-workspace')).toBeNull();
+        fireEvent.click(getByTestId('workflow-preview-toggle-btn'));
+        await waitFor(() => expect(getByTestId('code-preview-workspace')).toBeTruthy());
+    });
+
+    it('keeps new task input queued until the project tab session is registered', async () => {
+        let resolveSession!: () => void;
+        createProjectTabSessionMock.mockReturnValueOnce(new Promise<void>(resolve => {
+            resolveSession = resolve;
+        }));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/new-agent-session-wait',
+                taskTitle: 'Wait for session registration',
+                autoSend: false,
+                prepareMode: 'new-agent',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(getByTestId('project-tab-restore-progress').textContent || '').toContain('Creating project session'));
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'send after session exists' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await new Promise(resolve => setTimeout(resolve, 180));
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        await act(async () => {
+            resolveSession();
+        });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('send after session exists', expect.objectContaining({ project_path: 'D:/tasks/new-agent-session-wait' })));
+    });
+
+    it('uses the fallback delay when project tab session registration fails', async () => {
+        vi.useFakeTimers();
+        createProjectTabSessionMock.mockRejectedValueOnce(new Error('session failed'));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/new-agent-session-fallback',
+                taskTitle: 'Fallback session registration',
+                autoSend: false,
+                prepareMode: 'new-agent',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await act(async () => {
+            await Promise.resolve();
+        });
+        expect(getByTestId('project-tab-restore-progress').textContent || '').toContain('Creating project session');
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'fallback after registration failure' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await act(async () => {
+            await Promise.resolve();
+        });
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        await act(async () => {
+            vi.advanceTimersByTime(5000);
+            await Promise.resolve();
+        });
+
+        expect(sendMessage).toHaveBeenCalledWith('fallback after registration failure', expect.objectContaining({ project_path: 'D:/tasks/new-agent-session-fallback' }));
+    });
+
+    it('drops queued new-task input when the tab closes before session registration finishes', async () => {
+        let resolveSession!: () => void;
+        createProjectTabSessionMock.mockReturnValueOnce(new Promise<void>(resolve => {
+            resolveSession = resolve;
+        }));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+
+        const { getByTestId, queryByText } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/new-agent-close-before-ready',
+                taskTitle: 'Close before ready',
+                autoSend: false,
+                prepareMode: 'new-agent',
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(getByTestId('project-tab-restore-progress').textContent || '').toContain('Creating project session'));
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'should be dropped on close' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        const closeEventHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'project-task:closed').at(-1)?.[1];
+        expect(closeEventHandler).toBeTypeOf('function');
+        act(() => closeEventHandler('D:/tasks/new-agent-close-before-ready'));
+        await waitFor(() => expect(queryByText('Close before ready')).toBeNull());
+
+        await act(async () => {
+            resolveSession();
+            await Promise.resolve();
+        });
+
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('does not re-enter preparation or auto-send when reopening an existing new task tab', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+
+        const { queryByTestId, rerender } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/reopen-new-agent-existing',
+                taskTitle: 'Reopen new agent existing',
+                autoSend: false,
+                prepareMode: 'new-agent',
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(queryByTestId('project-tab-restore-progress')).toBeNull());
+        expect(loadProjectContextMock).not.toHaveBeenCalled();
+
+        onHandled.mockClear();
+        loadProjectContextMock.mockClear();
+        const base = defaultPanelProps();
+        rerender(<AIAssistantPanel
+            {...base}
+            actions={{ ...base.actions, sendMessage }}
+            pendingProjectTabOpen={{
+                projectPath: 'D:/tasks/reopen-new-agent-existing',
+                taskTitle: 'Reopen new agent existing',
+                autoSend: true,
+                prepareMode: 'new-agent',
+            }}
+            onPendingProjectTabOpenHandled={onHandled}
+        />);
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        expect(queryByTestId('project-tab-restore-progress')).toBeNull();
+        expect(loadProjectContextMock).not.toHaveBeenCalled();
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('disables queued entry actions while a guide fire is in flight', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        let resolveGuide!: (value: boolean) => void;
+        const guideLaunchReference = vi.fn(() => new Promise<boolean>((resolve) => {
+            resolveGuide = resolve;
+        }));
+        const { getByTestId, getByText, queryByTestId } = renderPanel({
+            state: { messages: [], sending: true, sendingSessionKey: 'desktop-user', streaming: true, streamingSessionKey: 'desktop-user', ready: true },
+            actions: {
+                guideLaunchReference,
+            },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'pending guide lock' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(getByText('pending guide lock')).toBeTruthy());
+        const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
+        expect(fireButton).toBeTruthy();
+        fireEvent.click(fireButton!);
+
+        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('pending guide lock', 'desktop-user', expect.any(String)));
+        await waitFor(() => expect((document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null)?.disabled).toBe(true));
+        expect(document.body.textContent || '').toContain('Attaching to the running task');
+        expect(document.body.textContent || '').toContain('Attaching...');
+        expect((document.querySelector('[data-testid^="edit-btn-"]') as HTMLButtonElement | null)?.disabled).toBe(true);
+        expect((document.querySelector('[data-testid^="delete-btn-"]') as HTMLButtonElement | null)?.disabled).toBe(true);
+
+        fireEvent.click(document.querySelector('[data-testid^="edit-btn-"]') as HTMLButtonElement);
+        fireEvent.click(document.querySelector('[data-testid^="delete-btn-"]') as HTMLButtonElement);
+        expect(getByText('pending guide lock')).toBeTruthy();
+
+        resolveGuide(true);
+        await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+    });
+    it('routes pending project auto-send messages to the created project tab only', async () => {
+        let resolveSend!: (value: boolean) => void;
+        const sendMessage = vi.fn(() => new Promise<boolean>((resolve) => {
+            resolveSend = resolve;
+        }));
+        const onHandled = vi.fn();
+        const localBefore = makeMsg({ role: 'user', content: 'local before auto-send' });
+        const projectUser = makeMsg({ role: 'user', content: 'weather query' });
+        const projectAssistant = makeMsg({ role: 'assistant', content: 'checking weather', requestId: 'req-weather' });
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/weather-auto',
+                taskTitle: 'Weather auto task',
+                initialMessage: 'weather query',
+                autoSend: true,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { ...base.state, messages: [localBefore], sending: false, streaming: false, ready: true },
+            actions: { ...base.actions, sendMessage },
+        };
+        const { rerender, getByTestId, getByText } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('weather query', expect.objectContaining({
+            tabId: expect.any(String),
+            project_path: 'D:/tasks/weather-auto',
+        })));
+        const projectTabId = (((sendMessage as any).mock.calls[0]?.[1]) as any)?.tabId as string;
+        fireEvent.click(getByTestId(`ai-tab-${projectTabId}`));
+
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{ ...props.state, messages: [localBefore, projectUser, projectAssistant], sending: true, streaming: true }} />);
+        await waitFor(() => expect(document.body.textContent || '').toContain('weather query'));
+        expect(document.body.textContent || '').toContain('checking weather');
+
+        activateLocalTab();
+        expect(getByText(/local before auto-send/)).toBeTruthy();
+        expect(document.body.textContent || '').not.toContain('weather query');
+        expect(document.body.textContent || '').not.toContain('checking weather');
+
+        resolveSend(true);
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{ ...props.state, messages: [localBefore, projectUser, projectAssistant], sending: false, streaming: false }} />);
+        await waitFor(() => expect(document.body.textContent || '').not.toContain('weather query'));
+        expect(document.body.textContent || '').not.toContain('checking weather');
+        expect(onHandled).toHaveBeenCalled();
+    });
+
+    it('delivers a new-task message into an already-open task tab', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const projectPath = 'D:/tasks/existing-remote';
+        const base = defaultPanelProps();
+        const { rerender } = render(<AIAssistantPanel
+            {...base}
+            pendingProjectTabOpen={{ projectPath, taskTitle: 'Existing remote', autoSend: false }}
+            onPendingProjectTabOpenHandled={vi.fn()}
+            actions={{ ...base.actions, sendMessage }}
+        />, { wrapper: DialogProvider });
+        await waitFor(() => expect(document.querySelector('[data-testid^="ai-tab-proj-"]')).toBeTruthy());
+        sendMessage.mockClear();
+
+        rerender(<AIAssistantPanel
+            {...base}
+            pendingProjectTabOpen={{
+                projectPath,
+                taskTitle: 'Existing remote',
+                initialMessage: 'follow up on the server',
+                autoSend: true,
+                deliverInitialMessage: true,
+            }}
+            onPendingProjectTabOpenHandled={vi.fn()}
+            actions={{ ...base.actions, sendMessage }}
+        />);
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('follow up on the server', expect.objectContaining({
+            project_path: projectPath,
+        })));
+    });
+
+    it('lets local assistant submit while a project tab round is running', async () => {
+        let resolveProjectSend!: (value: boolean) => void;
+        const sendMessage = vi.fn(() => new Promise<boolean>((resolve) => {
+            resolveProjectSend = resolve;
+        }));
+        const onHandled = vi.fn();
+        const localBefore = makeMsg({ role: 'user', content: 'local remains active' });
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/running-project-round',
+                taskTitle: 'Running project round',
+                initialMessage: 'start project work',
+                autoSend: true,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { ...base.state, messages: [localBefore], sending: false, streaming: false, ready: true },
+            actions: { ...base.actions, sendMessage },
+        };
+        const { rerender, getByTestId, queryByTestId } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('start project work', expect.objectContaining({
+            project_path: 'D:/tasks/running-project-round',
+        })));
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{ ...props.state, sending: true, streaming: true }} />);
+
+        activateLocalTab();
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'local question during project' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('local question during project', expect.objectContaining({ tabId: 'local' })));
+        expect(queryByTestId('buffer-queue-panel')).toBeNull();
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{ ...props.state, sending: true, streaming: true }} />);
+        fireEvent.change(getByTestId('ai-input'), { target: { value: 'second local waits for local agent' } });
+        fireEvent.keyDown(getByTestId('ai-input'), { key: 'Enter' });
+        expect(sendMessage).not.toHaveBeenCalledWith('second local waits for local agent');
+        await waitFor(() => expect(getByTestId('buffer-queue-panel').textContent || '').toContain('second local waits for local agent'));
+        resolveProjectSend(true);
+    });
+
+    it('does not keep a project tab busy after detached round messages disappear', async () => {
+        let resolveProjectSend!: (value: boolean) => void;
+        const sendMessage = vi.fn((_: string, options?: any) => {
+            if (options?.project_path) {
+                return new Promise<boolean>((resolve) => {
+                    resolveProjectSend = resolve;
+                });
+            }
+            return Promise.resolve(true);
+        });
+        const localBefore = makeMsg({ role: 'user', content: 'local before stale detach' });
+        const projectUser = makeMsg({ role: 'user', content: 'project stale user' });
+        const projectAssistant = makeMsg({ role: 'assistant', content: '', requestId: 'req-stale-detach' });
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/stale-detached-round',
+                taskTitle: 'Stale detached round',
+                initialMessage: 'start stale project work',
+                autoSend: true,
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { ...base.state, messages: [localBefore], sending: false, streaming: false, ready: true },
+            actions: { ...base.actions, sendMessage },
+        };
+        const { rerender, getByTestId, queryByTestId, getByText } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('start stale project work', expect.objectContaining({
+            project_path: 'D:/tasks/stale-detached-round',
+        })));
+        const projectTabId = (((sendMessage as any).mock.calls[0]?.[1]) as any)?.tabId as string;
+
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{ ...props.state, messages: [localBefore, projectUser, projectAssistant], sending: true, streaming: true }} />);
+        activateLocalTab();
+        const localInput = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(localInput, { target: { value: 'local takes over stale project' } });
+        fireEvent.keyDown(localInput, { key: 'Enter' });
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('local takes over stale project', expect.objectContaining({ tabId: 'local' })));
+
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{ ...props.state, messages: [localBefore], sending: false, streaming: false }} />);
+        const projectTabButton = queryByTestId(`ai-tab-${projectTabId}`);
+        if (projectTabButton) {
+            fireEvent.click(projectTabButton);
+        } else {
+            fireEvent.click(getByTestId('ai-tab-overflow-btn'));
+            fireEvent.click(getByText('Stale detached round'));
+        }
+        await waitFor(() => expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toBe(''));
+        const projectInput = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(projectInput, { target: { value: 'project should send after cleanup' } });
+        fireEvent.keyDown(projectInput, { key: 'Enter' });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('project should send after cleanup', expect.objectContaining({
+            tabId: projectTabId,
+            project_path: 'D:/tasks/stale-detached-round',
+        })));
+        resolveProjectSend(true);
+    });
+
+    it('replaces streaming placeholder with final content when round completes (no ghost 思考中)', async () => {
+        // Regression test for appendUnique bug: when the live-sync effect writes
+        // an empty assistant placeholder into projectTabMessages during streaming,
+        // the wasSending→!sending effect must *replace* it (via mergeChatMessages)
+        // with the final-content version from `messages`, not skip it (appendUnique
+        // skipped IDs already present, leaving a ghost empty placeholder alongside
+        // the real response — manifesting as "思考中..." + response text together).
+        let resolveSend!: (value: boolean) => void;
+        const sendMessage = vi.fn((_: string, options?: any) => {
+            if (options?.project_path) {
+                return new Promise<boolean>((resolve) => { resolveSend = resolve; });
+            }
+            return Promise.resolve(true);
+        });
+        const emptyPlaceholder = makeMsg({ role: 'assistant', content: '', requestId: 'req-taipei' });
+        const finalAssistant = makeMsg({ ...emptyPlaceholder, content: '台北天气已记下，下次直接回复' });
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/taipei-weather',
+                taskTitle: '台北天气',
+                initialMessage: '台北天气',
+                autoSend: true,
+            },
+            onPendingProjectTabOpenHandled: vi.fn(),
+            state: { ...base.state, messages: [], sending: false, streaming: false, ready: true },
+            actions: { ...base.actions, sendMessage },
+        };
+        const { rerender, getByTestId } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('台北天气', expect.objectContaining({
+            project_path: 'D:/tasks/taipei-weather',
+        })));
+        const projectTabId = (((sendMessage as any).mock.calls[0]?.[1]) as any)?.tabId as string;
+        fireEvent.click(getByTestId(`ai-tab-${projectTabId}`));
+
+        // Phase 1: streaming — empty placeholder written to messages
+        const userMsg = makeMsg({ role: 'user', content: '台北天气', sessionKey: 'desktop-user:D:/tasks/taipei-weather' });
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [userMsg, { ...emptyPlaceholder, sessionKey: 'desktop-user:D:/tasks/taipei-weather' }],
+            sending: true, streaming: true,
+            sendingSessionKey: 'desktop-user:D:/tasks/taipei-weather',
+            streamingSessionKey: 'desktop-user:D:/tasks/taipei-weather',
+            busySessionKeys: ['desktop-user:D:/tasks/taipei-weather'],
+            streamingSessionKeys: ['desktop-user:D:/tasks/taipei-weather'],
+        }} />);
+
+        // Phase 2: final content arrives in messages, sending transitions to false
+        resolveSend(true);
+        rerender(<AIAssistantPanel {...props} pendingProjectTabOpen={null} state={{
+            ...props.state,
+            messages: [
+                { ...userMsg, sessionKey: 'desktop-user:D:/tasks/taipei-weather' },
+                { ...finalAssistant, sessionKey: 'desktop-user:D:/tasks/taipei-weather' },
+            ],
+            sending: false, streaming: false,
+            sendingSessionKey: '',
+            streamingSessionKey: '',
+            busySessionKeys: [],
+            streamingSessionKeys: [],
+        }} />);
+
+        // The panel must show EXACTLY ONE assistant message with the final content,
+        // not a ghost empty placeholder + a separate final-content message.
+        await waitFor(() => {
+            expect(document.body.textContent || '').toContain('台北天气已记下');
+        });
+        const outputEl = document.querySelector('[data-testid="ai-output-container"]');
+        const outputText = outputEl?.textContent || '';
+        // Final content appears
+        expect(outputText).toContain('台北天气已记下');
+        // The placeholder's empty content must NOT coexist with the final text.
+        // If the bug were present, the empty placeholder would still be rendered
+        // and the aiAssistantMarkdown component would inject the "正在思考..."
+        // italic span directly in the text stream. Detect this by counting how
+        // many times the final-content substring appears — it should be exactly
+        // one, not duplicated via a second assistant entry carrying the response.
+        const matches = (outputText.match(/台北天气已记下/g) || []).length;
+        expect(matches).toBe(1);
+    });
+
+    it('keeps project guide reference echo inside the active project tab', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        const guideLaunchReference = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+        const { getByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/weather',
+                taskTitle: 'Weather task',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: true, sendingSessionKey: 'desktop-user:D:/tasks/weather', streaming: true, streamingSessionKey: 'desktop-user:D:/tasks/weather', ready: true },
+            actions: {
+                guideLaunchReference,
+            },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'project guide context' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
+        expect(fireButton).toBeTruthy();
+        fireEvent.click(fireButton!);
+
+        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('project guide context', 'desktop-user:D:/tasks/weather', expect.any(String)));
+        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledTimes(1));
+        expect(document.body.textContent || '').not.toContain('嗯，接住了');
+        expect(document.querySelector('[data-testid="guide-receipt"]')).toBeNull();
+
+        activateLocalTab();
+        expect(document.body.textContent || '').not.toContain('project guide context');
+        expect(document.querySelector('[data-testid="guide-receipt"]')).toBeNull();
+    });
+
+    it('keeps delayed project guide reference echo bound to the fired tab', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        let resolveGuide!: (value: boolean) => void;
+        const guideLaunchReference = vi.fn(() => new Promise<boolean>((resolve) => {
+            resolveGuide = resolve;
+        }));
+        const onHandled = vi.fn();
+        const { getByTestId, getByText } = renderPanel({
+            lang: 'zh-Hans',
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/delayed-guide',
+                taskTitle: 'Delayed guide task',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: true, sendingSessionKey: 'desktop-user:D:/tasks/delayed-guide', streaming: true, streamingSessionKey: 'desktop-user:D:/tasks/delayed-guide', ready: true },
+            actions: {
+                guideLaunchReference,
+            },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const projectTab = document.querySelector('[data-testid^="ai-tab-proj-"]') as HTMLElement | null;
+        expect(projectTab).toBeTruthy();
+        const projectTabTestId = projectTab!.getAttribute('data-testid') || '';
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'delayed project guide' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
+        expect(fireButton).toBeTruthy();
+        fireEvent.click(fireButton!);
+        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith('delayed project guide', 'desktop-user:D:/tasks/delayed-guide', expect.any(String)));
+
+        activateLocalTab();
+        resolveGuide(true);
+        await waitFor(() => expect(document.body.textContent || '').not.toContain('delayed project guide'));
+
+        await waitFor(() => expect(document.querySelector('[data-testid^="fire-btn-"]')).toBeNull());
+        const visibleProjectTab = document.querySelector(`[data-testid="${projectTabTestId}"]`) as HTMLElement | null;
+        if (visibleProjectTab) {
+            fireEvent.click(visibleProjectTab);
+        } else {
+            fireEvent.click(getByTestId('ai-tab-overflow-btn'));
+            fireEvent.click(getByText('Delayed guide task'));
+        }
+        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledTimes(1));
+        expect(document.querySelector('[data-testid="guide-receipt"]')).toBeNull();
+        expect(document.body.textContent || '').not.toContain('delayed project guide');
+    });
+
+	it('does not record a stale guide after its session queue is forgotten in flight', async () => {
+		localStorage.removeItem('ai_assistant_buffer_queue');
+		let resolveGuide!: (value: boolean) => void;
+		const guideLaunchReference = vi.fn(() => new Promise<boolean>(resolve => { resolveGuide = resolve; }));
+		const recordSubmittedPrompt = vi.fn();
+		const { getByTestId, queryByTestId } = renderPanel({
+			state: { messages: [], sending: true, sendingSessionKey: 'desktop-user', streaming: true, streamingSessionKey: 'desktop-user', ready: true },
+			actions: { guideLaunchReference, recordSubmittedPrompt },
+		});
+		const input = getByTestId('ai-input') as HTMLTextAreaElement;
+		fireEvent.change(input, { target: { value: 'forgotten while attaching' } });
+		fireEvent.keyDown(input, { key: 'Enter' });
+		await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+		const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
+		expect(fireButton).toBeTruthy();
+		fireEvent.click(fireButton!);
+		await waitFor(() => expect(guideLaunchReference).toHaveBeenCalled());
+
+		act(() => forgetAIAssistantSessionRounds('desktop-user'));
+		expect(queryByTestId('buffer-queue-panel')).toBeNull();
+		resolveGuide(true);
+		await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledTimes(1));
+		expect(recordSubmittedPrompt).not.toHaveBeenCalled();
+	});
+    it('routes a queued guide by its durable session owner after a tab switch', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([{
+            id: 'owned-project-guide',
+            text: 'stay with project alpha',
+            attachments: [],
+            createdAt: 1,
+            sessionKey: 'desktop-user:D:/tasks/project-alpha',
+        }]));
+        const guideLaunchReference = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+        const { getByTestId, getByText } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/project-alpha',
+                taskTitle: 'Project alpha',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: true, sendingSessionKey: 'desktop-user:D:/tasks/project-alpha', streaming: true, streamingSessionKey: 'desktop-user:D:/tasks/project-alpha', ready: true },
+            actions: { guideLaunchReference },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        activateLocalTab();
+        const projectTab = document.querySelector('[data-testid^="ai-tab-proj-"]') as HTMLElement | null;
+        if (projectTab) {
+            fireEvent.click(projectTab);
+        } else {
+            fireEvent.click(getByTestId('ai-tab-overflow-btn'));
+            fireEvent.click(getByText('Project alpha'));
+        }
+        const fireButton = document.querySelector('[data-testid^="fire-btn-"]') as HTMLButtonElement | null;
+        expect(fireButton).toBeTruthy();
+        fireEvent.click(fireButton!);
+
+        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledWith(
+            'stay with project alpha',
+            'desktop-user:D:/tasks/project-alpha',
+            expect.any(String),
+        ));
+    });
+    it('accepts multiple rapid project guides without synthesizing chat echoes', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
+            { id: 'project-guide-one', text: 'first project guide', attachments: [], createdAt: 1, sessionKey: 'desktop-user:D:/tasks/rapid-guides' },
+            { id: 'project-guide-two', text: 'second project guide', attachments: [], createdAt: 2, sessionKey: 'desktop-user:D:/tasks/rapid-guides' },
+        ]));
+        const guideLaunchReference = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/rapid-guides',
+                taskTitle: 'Rapid guide task',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: true, sendingSessionKey: 'desktop-user:D:/tasks/rapid-guides', streaming: true, streamingSessionKey: 'desktop-user:D:/tasks/rapid-guides', ready: true },
+            actions: {
+                guideLaunchReference,
+            },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        const fireButtons = Array.from(document.querySelectorAll('[data-testid^="fire-btn-"]')) as HTMLButtonElement[];
+        expect(fireButtons.length).toBeGreaterThanOrEqual(2);
+        fireEvent.click(fireButtons[0]);
+        fireEvent.click(fireButtons[1]);
+
+        await waitFor(() => expect(guideLaunchReference).toHaveBeenCalledTimes(2));
+        expect(document.body.textContent || '').not.toContain('first project guide');
+        expect(document.body.textContent || '').not.toContain('second project guide');
+        expect(document.querySelector('[data-testid="guide-receipt"]')).toBeNull();
+
+        activateLocalTab();
+        expect(document.body.textContent || '').not.toContain('first project guide');
+        expect(document.body.textContent || '').not.toContain('second project guide');
+    });
+
+    it('accepts a pasted clipboard file as an attachment and sends its path', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { getByTestId } = renderPanel({
+            actions: { sendMessage },
+        });
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        const pastedFile = new File(['contract'], 'contract.pdf', { type: 'application/pdf' });
+        Object.defineProperty(pastedFile, 'path', {
+            configurable: true,
+            value: 'D:\\cases\\contract.pdf',
+        });
+
+        fireEvent.paste(input, {
+            clipboardData: {
+                items: [{ kind: 'file', type: 'application/pdf', getAsFile: () => pastedFile }],
+                files: [pastedFile],
+            },
+        });
+
+        await waitFor(() => expect(getByTestId('ai-pending-attachments').textContent || '').toContain('contract.pdf'));
+        expect(getByTestId('ai-pending-attachments').textContent || '').toContain('PDF');
+
+        fireEvent.change(input, { target: { value: 'please review' } });
+        const launches: CustomEvent[] = [];
+        const listener = (event: Event) => launches.push(event as CustomEvent);
+        window.addEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+        try {
+            fireEvent.keyDown(input, { key: 'Enter' });
+            await waitFor(() => expect(launches).toHaveLength(1));
+            const detail = launches[0].detail as { taskTitle?: string; initialMessage?: string };
+            expect(detail.taskTitle).toBe('please review');
+            expect(detail.initialMessage).toContain('please review');
+            expect(detail.initialMessage).toContain('D:\\cases\\contract.pdf');
+            expect(sendMessage).not.toHaveBeenCalled();
+        } finally {
+            window.removeEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+        }
+    });
+
+    it('keeps queued pasted image thumbnails visible after the composer releases its temporary URL', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        mockURLObjectURLs('blob:test-image');
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: true, streaming: true, ready: true },
+            actions: { sendMessage },
+        });
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        const pastedFile = new File(['image'], 'shot.png', { type: 'image/png' });
+        Object.defineProperty(pastedFile, 'path', {
+            configurable: true,
+            value: 'D:\\shots\\shot.png',
+        });
+
+        fireEvent.paste(input, {
+            clipboardData: {
+                items: [{ kind: 'file', type: 'image/png', getAsFile: () => pastedFile }],
+                files: [pastedFile],
+            },
+        });
+        fireEvent.change(input, { target: { value: 'use this image' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        await waitFor(() => {
+            const queuedThumbnail = document.querySelector('[data-testid^="buffer-entry-"] img') as HTMLImageElement | null;
+            expect(queuedThumbnail?.getAttribute('src')).toBe('data:image/png;base64,THUMB');
+        });
+        expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob:test-image');
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('moves a queued edit into the main composer and appends the edited text at the queue tail', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        const { getAllByText, getByTestId, getByText } = renderPanel({
+            state: { messages: [], sending: true, streaming: true, ready: true },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'first queued draft' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        fireEvent.change(input, { target: { value: 'second queued draft' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(getByText('first queued draft')).toBeTruthy());
+        const editButton = document.querySelector('[data-testid^="edit-btn-"]') as HTMLButtonElement | null;
+        expect(editButton).toBeTruthy();
+        fireEvent.click(editButton!);
+
+        await waitFor(() => expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('first queued draft'));
+        expect(getByTestId('buffer-queue-panel').textContent).not.toContain('first queued draft');
+        expect(getByText('second queued draft')).toBeTruthy();
+        expect(document.querySelector('[data-testid^="buffer-entry-textarea-"]')).toBeNull();
+
+        fireEvent.change(input, { target: { value: 'edited queued draft' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(getByText('edited queued draft')).toBeTruthy());
+        const rowTexts = Array.from(document.querySelectorAll('[data-testid^="buffer-entry-"]'))
+            .map((node) => node.textContent || '')
+            .join('\n');
+        expect(rowTexts.indexOf('second queued draft')).toBeLessThan(rowTexts.indexOf('edited queued draft'));
+    });
+
+    it('keeps a queued edit in the queue after Enter even when the assistant is idle', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
+            { id: 'queued-idle-edit', text: 'queued before idle edit', attachments: [], createdAt: 1, autoDrain: false },
+        ]));
+        const sendMessage = vi.fn().mockResolvedValue(undefined);
+        const { getByTestId, getByText } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        await waitFor(() => expect(getByText('queued before idle edit')).toBeTruthy());
+
+        const editButton = document.querySelector('[data-testid^="edit-btn-"]') as HTMLButtonElement | null;
+        expect(editButton).toBeTruthy();
+        fireEvent.click(editButton!);
+        await waitFor(() => expect(input.value).toBe('queued before idle edit'));
+
+        fireEvent.change(input, { target: { value: 'edited while idle' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(getByText('edited while idle')).toBeTruthy());
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('clears a queued edit without sending when the edited content is empty', async () => {
+        localStorage.setItem('ai_assistant_buffer_queue', JSON.stringify([
+            { id: 'queued-empty-edit', text: 'clear me from queue', attachments: [], createdAt: 1, autoDrain: false },
+        ]));
+        const sendMessage = vi.fn().mockResolvedValue(undefined);
+        const { getByTestId, getByText, queryByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        await waitFor(() => expect(getByText('clear me from queue')).toBeTruthy());
+
+        const editButton = document.querySelector('[data-testid^="edit-btn-"]') as HTMLButtonElement | null;
+        expect(editButton).toBeTruthy();
+        fireEvent.click(editButton!);
+        await waitFor(() => expect(input.value).toBe('clear me from queue'));
+
+        fireEvent.change(input, { target: { value: '   ' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+        expect(input.value).toBe('');
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        fireEvent.change(input, { target: { value: 'fresh prompt after empty edit' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('fresh prompt after empty edit', expect.objectContaining({ tabId: 'local' })));
+    });
+
+    it('hides background launch control even if a background handler exists', () => {
+        const { queryByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: {
+                sendMessage: async () => {},
+                sendMessageInBackground: async () => {},
+                clearHistory: async () => {},
+                executeAction: async () => {},
+                refreshNews: () => {},
+            },
+        });
+
+        expect(queryByTestId('ai-send-background')).toBeNull();
+    });
+
+    it('renders background launch identifiers inside a visible system message', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'system',
+                content: [
+                    'Background task launched.',
+                    'The task is available in the background list.',
+                    'session_id: session-trace',
+                    'job_id: job-trace',
+                    'run_id: run-trace',
+                ].join('\n'),
+            }),
+        ];
+
+        const { getByText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        expect(getByText('session_id: session-trace')).toBeTruthy();
+        expect(getByText('job_id: job-trace')).toBeTruthy();
+        expect(getByText('run_id: run-trace')).toBeTruthy();
+    });
+
+    it('renders session-only background launch messages without extra ids', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'system',
+                content: [
+                    'Background task launched.',
+                    'The task is available in the background list.',
+                    'session_id: session-only',
+                ].join('\n'),
+            }),
+        ];
+
+        const { container, getByText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        expect(container.textContent).toContain('session_id: session-only');
+        expect(container.textContent).not.toContain('job_id:');
+        expect(container.textContent).not.toContain('run_id:');
+    });
+
+    it('renders structured unfinished slot cards and actions', async () => {
+        const executeAction = vi.fn<() => Promise<void>>().mockResolvedValue();
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'Unfinished task available.',
+                unfinishedSlot: {
+                    slotID: 'slot-1',
+                    title: 'Review Daily Paper',
+                    summary: 'The previous task stopped before completion.',
+                    projectPath: 'D:/work/project',
+                    status: 'pending_resume',
+                    actions: [
+                        { label: 'Resume previous task', command: '__resume_unfinished__ slot-1', style: 'default' },
+                        { label: 'Start a new task', command: '__start_new_task__', style: 'default' },
+                    ],
+                },
+            }),
+        ];
+
+        const { getByTestId, getByText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction, refreshNews: () => {} },
+        });
+
+        expect(getByTestId('unfinished-slot-card')).toBeTruthy();
+        expect(getByTestId('unfinished-slot-title').textContent).toContain('Review Daily Paper');
+        expect(getByTestId('unfinished-slot-summary').textContent).toContain('The previous task stopped before completion.');
+        expect(getByTestId('unfinished-slot-project').textContent).toContain('D:/work/project');
+        expect(getByTestId('unfinished-slot-status').textContent).toBeTruthy();
+        expect(getByText('Resume previous task')).toBeTruthy();
+        expect(getByText('Start new task')).toBeTruthy();
+    });
+
+    it('explains workspace and external-effect review for risky recovery slots', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'Recovery needs review.',
+                unfinishedSlot: {
+                    slotID: 'slot-risky',
+                    title: 'Review changes',
+                    recoveryMode: 'requires_review',
+                    sideEffectState: 'local_committed',
+                },
+            }),
+        ];
+
+        const { getByTestId } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByTestId('unfinished-slot-review-required').textContent).toContain('changed the workspace or caused an external side effect');
+        expect(getByTestId('unfinished-slot-workspace-review').textContent).toContain('Local changes may already exist');
+    });
+
+    it('localizes unfinished slot status in Chinese', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'Unfinished task available.',
+                unfinishedSlot: {
+                    slotID: 'slot-zh',
+                    title: 'Resume task',
+                    status: 'resumed',
+                },
+            }),
+        ];
+
+        const { getByText, queryByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByText('任务已继续')).toBeTruthy();
+        expect(queryByTestId('unfinished-slot-status')).toBeNull();
+    });
+
+    it('localizes interrupted unfinished slot details in Chinese', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'Detected an unfinished task: Login to Zhihu. Choose resume to continue it.',
+                unfinishedSlot: {
+                    slotID: 'slot-interrupted',
+                    title: '登录知乎发表一下码卡龙 6发布感言。',
+                    summary: 'Previous task stopped making progress and was moved to recovery.',
+                    status: 'interrupted',
+                },
+            }),
+        ];
+
+        const { getByTestId, getByText, queryByText } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByTestId('unfinished-slot-status').textContent || '').toContain('已中断');
+        expect(getByTestId('unfinished-slot-summary').textContent || '').toContain('上次任务停止推进');
+        expect(getByText(/检测到未完成任务/)).toBeTruthy();
+        expect(queryByText(/Previous task stopped making progress/)).toBeNull();
+    });
+
+    it('localizes a durable tool-progress interruption without a review warning for read-only recovery', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '检测到未完成任务：查看进度。选择“继续上次任务”可继续。',
+                unfinishedSlot: {
+                    slotID: 'slot-readonly',
+                    title: '查看进度',
+                    summary: 'Previous task was interrupted after a durable tool-progress checkpoint.',
+                    status: 'interrupted',
+                    recoveryMode: 'resume_context',
+                    sideEffectState: 'none',
+                    lastToolName: 'tools_search',
+                },
+            }),
+        ];
+
+        const { getByTestId, queryByTestId, queryByText } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByTestId('unfinished-slot-summary').textContent || '').toContain('上次任务在保存工具进度后中断');
+        expect(getByTestId('unfinished-slot-read-only').textContent || '').toContain('没有修改工作区');
+        expect(getByTestId('unfinished-slot-read-only').textContent || '').toContain('从这次检查接着做');
+        expect(getByTestId('unfinished-slot-read-only').textContent || '').not.toContain('完成原任务');
+        expect(queryByText(/Previous task was interrupted after a durable/)).toBeNull();
+        expect(queryByTestId('unfinished-slot-review-required')).toBeNull();
+    });
+
+    it('localizes unfinished slot notice fallback title in Chinese', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'Detected an unfinished task: Previous task stopped making progress and was moved to recovery. Choose resume to continue it.',
+                unfinishedSlot: {
+                    slotID: 'slot-summary-title',
+                    summary: 'Previous task stopped making progress and was moved to recovery.',
+                    status: 'interrupted',
+                },
+            }),
+        ];
+
+        const { getByText, getByTestId, queryByText } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByText(/\u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u4efb\u52a1/)).toBeTruthy();
+        expect(getByTestId('unfinished-slot-summary').textContent || '').toContain('\u4e0a\u6b21\u4efb\u52a1\u505c\u6b62\u63a8\u8fdb');
+        expect((getByText(/\u68c0\u6d4b\u5230\u672a\u5b8c\u6210\u4efb\u52a1/).textContent || '')).not.toContain('\u3002\u3002');
+        expect(queryByText(/Previous task stopped making progress/)).toBeNull();
+    });
+
+    it('localizes unfinished slot status in Traditional Chinese', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'Detected an unfinished task: Continue work. Choose resume to continue it.',
+                unfinishedSlot: {
+                    slotID: 'slot-hant-status',
+                    title: '繼續整理報告',
+                    status: 'max_rounds_reached',
+                },
+            }),
+        ];
+
+        const { getByTestId, getByText, queryByText } = renderPanel({
+            lang: 'zh-Hant',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByTestId('unfinished-slot-status').textContent || '').toContain('達到最大輪次');
+        expect(getByText(/偵測到未完成任務/)).toBeTruthy();
+        expect(queryByText(/Detected an unfinished task/)).toBeNull();
+    });
+
+    it('localizes unfinished slot notice, title, and action labels in Chinese', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'Detected an unfinished task: Continue system optimization. Choose resume to continue it.',
+                unfinishedSlot: {
+                    slotID: 'slot-localized',
+                    title: '继续优化系统性能',
+                    actions: [
+                        { label: 'Resume previous task', command: '__resume_unfinished__ slot-localized', style: 'default' },
+                        { label: 'Start new task', command: '__dismiss_unfinished__ slot-localized', style: 'default' },
+                    ],
+                },
+            }),
+        ];
+
+        const { getByText, queryByText } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByText(/检测到未完成任务/)).toBeTruthy();
+        expect(getByText('未完成项')).toBeTruthy();
+        expect(getByText('继续上次任务')).toBeTruthy();
+        expect(getByText('开始新任务')).toBeTruthy();
+        expect(queryByText('Unfinished item')).toBeNull();
+        expect(queryByText('Start new task')).toBeNull();
+    });
+
+    it('localizes recoverable session action labels in Chinese', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '\u53ef\u6062\u590d\u4f1a\u8bdd',
+                actions: [
+                    { label: 'Resume session', command: '__resume_session__ sess-1', style: 'default' },
+                    { label: 'Dismiss session', command: '__dismiss_recoverable_session__ sess-1', style: 'danger' },
+                ],
+            }),
+        ];
+
+        const { getByText, queryByText } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByText('\u6062\u590d\u4f1a\u8bdd')).toBeTruthy();
+        expect(getByText('\u5ffd\u7565\u4f1a\u8bdd')).toBeTruthy();
+        expect(queryByText('Resume session')).toBeNull();
+        expect(queryByText('Dismiss session')).toBeNull();
+    });
+
+    it('renders recoverable session cards in Chinese', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '\u68c0\u6d4b\u5230\u53ef\u6062\u590d\u4f1a\u8bdd',
+                recoverableSession: {
+                    sessionID: 'sess-1',
+                    title: '\u7ee7\u7eed Daily Paper',
+                    summary: '\u8fd8\u5dee\u6700\u540e\u4e00\u8f6e\u6574\u7406',
+                    projectPath: 'D:/work/project',
+                    status: 'exited',
+                    actions: [
+                        { label: 'Resume session', command: '__resume_session__ sess-1', style: 'default' },
+                        { label: 'Dismiss session', command: '__dismiss_recoverable_session__ sess-1', style: 'danger' },
+                    ],
+                },
+            }),
+        ];
+
+        const { getByTestId, getByText, queryByText } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByTestId('recoverable-session-card')).toBeTruthy();
+        expect(getByTestId('recoverable-session-status').textContent || '').toContain('\u5df2\u9000\u51fa');
+        expect(getByText('\u53ef\u6062\u590d\u4f1a\u8bdd')).toBeTruthy();
+        expect(getByText('\u6062\u590d\u4f1a\u8bdd')).toBeTruthy();
+        expect(getByText('\u5ffd\u7565\u4f1a\u8bdd')).toBeTruthy();
+        expect(queryByText('Recoverable session')).toBeNull();
+    });
+
+    it('localizes recoverable session known English progress in Chinese', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '\u68c0\u6d4b\u5230\u53ef\u6062\u590d\u4f1a\u8bdd',
+                recoverableSession: {
+                    sessionID: 'sess-progress',
+                    title: '\u7ee7\u7eed\u4efb\u52a1',
+                    lastProgress: 'Previous task stopped making progress and was moved to recovery.',
+                    status: 'exited',
+                },
+            }),
+        ];
+
+        const { getByTestId, queryByText } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByTestId('recoverable-session-summary').textContent || '').toContain('\u4e0a\u6b21\u4efb\u52a1\u505c\u6b62\u63a8\u8fdb');
+        expect(queryByText(/Previous task stopped making progress/)).toBeNull();
+    });
+
+    it('localizes task handoff fallback statuses in Chinese', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '',
+                unfinishedSlot: {
+                    slotID: 'slot-failed',
+                    title: 'fallback status',
+                    status: 'failed',
+                },
+                recoverableSession: {
+                    sessionID: 'sess-waiting',
+                    title: 'waiting session',
+                    status: 'waiting_input',
+                },
+            }),
+        ];
+
+        const { getByTestId, queryByText } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByTestId('unfinished-slot-status').textContent || '').toContain('\u5df2\u5931\u8d25');
+        expect(getByTestId('recoverable-session-status').textContent || '').toContain('\u7b49\u5f85\u8f93\u5165');
+        expect(queryByText(/failed/)).toBeNull();
+        expect(queryByText(/waiting input|waiting_input/i)).toBeNull();
+    });
+
+    it('unfinished slot card buttons reuse executeAction', async () => {
+        const executeAction = vi.fn<() => Promise<void>>().mockResolvedValue();
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'Unfinished task available.',
+                unfinishedSlot: {
+                    slotID: 'slot-2',
+                    title: 'Resume task',
+                    actions: [
+                        { label: 'Resume previous task', command: '__resume_unfinished__ slot-2', style: 'default' },
+                    ],
+                },
+            }),
+        ];
+
+        const { getByText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction, refreshNews: () => {} },
+        });
+
+        fireEvent.click(getByText('Resume previous task'));
+
+        await waitFor(() => {
+            expect(executeAction).toHaveBeenCalledWith('__resume_unfinished__ slot-2');
+        });
+    });
+
+    it('shows a resumed unfinished slot as an active continuation', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'Task is continuing.',
+                unfinishedSlot: { slotID: 'slot-resumed', status: 'resumed', title: 'Resume task', actions: [] },
+            }),
+        ];
+
+        const { getByText, queryByTestId } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByText(/Task resumed|\u4efb\u52a1\u5df2\u7ee7\u7eed/)).toBeTruthy();
+        expect(queryByTestId('unfinished-slot-status')).toBeNull();
+        expect(queryByTestId('unfinished-slot-review-required')).toBeNull();
+    });
+
+    it('does not keep telling the user to resume after the recovery card is dismissed', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '检测到未完成任务：查看驱网服务器状态。选择“继续上次任务”可继续。',
+                unfinishedSlot: {
+                    slotID: 'slot-dismissed-copy',
+                    title: '查看驱网服务器状态',
+                    summary: 'Previous task was interrupted after a durable tool-progress checkpoint.',
+                    status: 'dismissed',
+                    recoveryMode: 'requires_review',
+                    actions: [],
+                },
+            }),
+        ];
+
+        const { getByText, queryByText, queryByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        expect(getByText('任务已忽略')).toBeTruthy();
+        expect(queryByText(/选择“继续上次任务”可继续/)).toBeNull();
+        expect(queryByTestId('unfinished-slot-review-required')).toBeNull();
+    });
+
+    it('unfinished slot action buttons size to text without overflowing the card', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'unfinished task',
+                unfinishedSlot: {
+                    slotID: 'slot-layout',
+                    title: 'layout check',
+                    actions: [
+                        { label: 'Resume previous task', command: '__resume_unfinished__ slot-layout', style: 'default' },
+                        { label: 'Run a very long new task button label', command: '__start_new_task__', style: 'default' },
+                    ],
+                },
+            }),
+        ];
+
+        const { getAllByTestId } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        for (const button of getAllByTestId('action-button')) {
+            expect(button.style.width).toBe('auto');
+            expect(button.style.height).toBe('auto');
+            expect(button.style.maxWidth).toBe('100%');
+            expect(button.style.whiteSpace).toBe('normal');
+            expect(button.style.overflowWrap).toBe('anywhere');
+        }
+    });
+
+    it('unfinished slot project path opens through the shared file handler', async () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'Unfinished task path.',
+                unfinishedSlot: {
+                    slotID: 'slot-path',
+                    summary: 'previous task stopped here',
+                    projectPath: 'D:/work/project',
+                },
+            }),
+        ];
+
+        const { getByRole, getByTitle } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        fireEvent.click(getByTitle('D:/work/project'));
+
+        await waitFor(() => {
+            expect(openFileOrShowInFolderMock).toHaveBeenCalledWith('D:/work/project');
+        });
+    });
+
+    it('renders confirmation cards with summary, lists, and actions', () => {
+        const executeAction = vi.fn<() => Promise<void>>().mockResolvedValue();
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'Please confirm the coding task for /work/project',
+                confirmation: {
+                    id: 'c1',
+                    summary: 'Review the login flow and related code in /work/project',
+                    taskType: 'coding',
+                    targetPaths: ['D:/work/project'],
+                    plannedActions: ['check login flow', 'modify related code'],
+                    riskFlags: ['will edit code directly'],
+                    revisionHints: ['correct the directory if needed'],
+                    status: 'pending',
+                },
+                actions: [
+                    { label: 'Confirm and start', command: 'confirm and start', style: 'default' },
+                    { label: 'Cancel', command: 'cancel this task', style: 'danger' },
+                ],
+            }),
+        ];
+
+        const { getByTestId, getByText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction, refreshNews: () => {} },
+        });
+
+        expect(getByTestId('confirmation-card')).toBeTruthy();
+        expect(getByTestId('confirmation-summary').textContent).toContain('/work/project');
+        expect(getByTestId('confirmation-target-paths').textContent).toContain('D:/work/project');
+        expect(getByTestId('confirmation-planned-actions').textContent).toContain('check login flow');
+        expect(getByTestId('confirmation-risk-flags').textContent).toContain('will edit code directly');
+        expect(getByTestId('confirmation-revision-hints').textContent).toContain('correct the directory if needed');
+        expect(getByTestId('confirmation-status').textContent).toMatch(/Pending|pending|待确认/);
+        expect(getByText('Confirm and start')).toBeTruthy();
+        expect(getByText('Cancel')).toBeTruthy();
+    });
+
+    it('localizes confirmation fallback labels and enum values', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'confirm',
+                confirmation: {
+                    id: 'c-zh',
+                    summary: 'ready',
+                    taskType: 'coding',
+                    status: 'running',
+                },
+                actions: [
+                    { label: 'Confirm and start', command: '__confirm_execution__ c-zh', style: 'default' },
+                ],
+            }),
+        ];
+
+        const { container } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        expect(container.textContent).toContain('\u6267\u884c\u524d\u786e\u8ba4 - \u4ee3\u7801\u4efb\u52a1');
+        expect(container.textContent).toContain('\u72b6\u6001: \u6267\u884c\u4e2d');
+        expect(container.textContent).toContain('\u786e\u8ba4\u5e76\u5f00\u59cb');
+    });
+
+    it('localizes ask-user confirm and cancel buttons', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '请确认发送这封邮件',
+                actions: [
+                    { label: 'Confirm', command: 'confirm', style: 'primary' },
+                    { label: 'Cancel', command: 'cancel', style: 'danger' },
+                ],
+            }),
+        ];
+        const { getAllByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+        const labels = getAllByTestId('action-button').map((button) => button.textContent);
+        expect(labels).toEqual(['\u786e\u8ba4', '\u53d6\u6d88']);
+    });
+
+    it('renders backend-provided confirmation labels and primary action styling', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'confirm',
+                confirmation: {
+                    id: 'c-labels',
+                    summary: 'ready',
+                    status: 'pending',
+                    targetPaths: ['D:/work/project'],
+                    labels: {
+                        title: 'Custom confirmation',
+                        status: 'Custom status',
+                        target_paths: 'Custom paths',
+                    },
+                },
+                actions: [
+                    { label: 'Confirm and start', command: '__confirm_execution__ c-labels', style: 'primary' },
+                ],
+            }),
+        ];
+
+        const { container, getByTestId } = renderPanel({
+            lang: 'en',
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        expect(container.textContent).toContain('Custom confirmation');
+        expect(getByTestId('confirmation-status').textContent).toContain('Custom status');
+        expect(getByTestId('confirmation-target-paths').textContent).toContain('Custom paths');
+        const button = getByTestId('action-button') as HTMLButtonElement;
+        expect(button.style.background).not.toBe('transparent');
+        expect(button.style.color).toBe('rgb(255, 255, 255)');
+    });
+
+    it('confirmation card buttons reuse executeAction', async () => {
+        const executeAction = vi.fn<() => Promise<void>>().mockResolvedValue();
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'Please confirm this task.',
+                confirmation: {
+                    id: 'c2',
+                    summary: 'Confirm before starting work.',
+                },
+                actions: [
+                    { label: 'Confirm and start', command: 'confirm and start', style: 'default' },
+                ],
+            }),
+        ];
+
+        const { getByText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction, refreshNews: () => {} },
+        });
+
+        fireEvent.click(getByText('Confirm and start'));
+
+        await waitFor(() => {
+            expect(executeAction).toHaveBeenCalledWith('confirm and start');
+        });
+    });
+
+    it('renders trace summary and counts as assistant field cards', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'done',
+                fields: [
+                    { label: 'Trace', value: 'trial loop stabilized after one retry' },
+                    { label: 'Recovery', value: 'Recovered after retry' },
+                    { label: 'Failures', value: '1' },
+                    { label: 'Trace events', value: '8' },
+                    { label: 'Evidence', value: '3' },
+                    { label: 'Run ID', value: 'run-trace-1' },
+                    { label: 'Job ID', value: 'job-trace-1' },
+                ],
+                actions: [{ label: 'View trace', command: '__view_trace__ run-trace-1', style: 'default' }],
+            }),
+        ];
+
+        const executeAction = vi.fn<() => Promise<void>>().mockResolvedValue();
+        const { container, getByText, getByTestId } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction, refreshNews: () => {} },
+        });
+
+        const fieldCards = Array.from(container.querySelectorAll('[data-testid="field-card"]')).map(el => el.textContent || '');
+        expect(fieldCards).toContain('Trace:trial loop stabilized after one retry');
+        expect(fieldCards).toContain('Recovery:Recovered after retry');
+        expect(fieldCards).toContain('Failures:1');
+        expect(fieldCards).toContain('Trace events:8');
+        expect(fieldCards).toContain('Evidence:3');
+        expect(fieldCards).toContain('Run ID:run-trace-1');
+        expect(fieldCards).toContain('Job ID:job-trace-1');
+        expect(getByTestId('recovery-badge').textContent).toBe('Recovered after retry');
+        expect(container.textContent).toContain('View trace');
+    });
+
+    it('renders trace detail system messages with trace field cards', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'system',
+                kind: 'trace',
+                content: [
+                    'Trace details for run-trace-1',
+                    'Summary: trial loop stabilized after one retry',
+                    'Event kinds: trial.started, trial.observed',
+                ].join('\n'),
+                fields: [
+                    { label: 'Run ID', value: 'run-trace-1' },
+                    { label: 'Recovery', value: 'Recovered after retry' },
+                    { label: 'Failures', value: '1' },
+                    { label: 'Job ID', value: 'job-trace-1' },
+                    { label: 'Trace events', value: '8' },
+                    { label: 'Evidence', value: '3' },
+                    { label: 'Status', value: 'completed' },
+                ],
+            }),
+        ];
+
+        const { container, getByText, getAllByTestId } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        const fieldCards = Array.from(container.querySelectorAll('[data-testid="field-card"]')).map(el => el.textContent || '');
+        expect(fieldCards).toContain('Run ID:run-trace-1');
+        expect(fieldCards).toContain('Recovery:Recovered after retry');
+        expect(fieldCards).toContain('Failures:1');
+        expect(fieldCards).toContain('Job ID:job-trace-1');
+        expect(fieldCards).toContain('Trace events:8');
+        expect(fieldCards).toContain('Evidence:3');
+        expect(fieldCards).toContain('Status:completed');
+        expect(getAllByTestId('recovery-badge')[0].textContent).toBe('Recovered after retry');
+        expect(getByText('Trace details for run-trace-1')).toBeTruthy();
+        expect(getByText('Summary: trial loop stabilized after one retry')).toBeTruthy();
+    });
+
+    it('renders progress messages for grace-round wrap-up status when messages exist', () => {
+        const { getByText } = renderPanel({
+            state: {
+                messages: [makeMsg({ role: 'user', content: 'make pdf' })],
+                progressMessages: [makeMsg({ role: 'progress', content: 'done' })],
+                sending: true,
+                streaming: false,
+                ready: true,
+            },
+        });
+
+        expect(getByText('done')).toBeTruthy();
+    });
+
+    it('keeps tool-running status on the thinking-panel label while busy', () => {
+        const { container, queryByText, getByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            state: {
+                messages: [makeMsg({ role: 'user', content: '南京天气' })],
+                progressMessages: [makeMsg({ role: 'progress', content: '\u{1F680} 正在执行 Skill「Weather Query \u{1F324}」...' })],
+                sending: true,
+                streaming: false,
+                ready: true,
+            },
+        });
+
+        expect(queryByText('\u{1F680} 正在执行 Skill「Weather Query \u{1F324}」...')).toBeNull();
+        expect(getByTestId('assistant-reasoning-label').textContent).toBe('正在执行技能');
+        expect(container.textContent).not.toContain('\u{1F324}');
+        expect(container.textContent).not.toContain('可继续输入');
+        expect(container.textContent).not.toContain('正在执行工具');
+        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).not.toMatch(/正在执行|可继续输入/);
+    });
+
+    it('summarizes shell-style tool paths on the thinking-panel label without duplicating the chat row', () => {
+        const { container, queryByText, getByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            state: {
+                messages: [makeMsg({ role: 'user', content: '南京天气' })],
+                progressMessages: [makeMsg({ role: 'progress', content: '\u{1F680} 正在执行 Shell /Weather Query \u{1F324} / ...' })],
+                sending: true,
+                streaming: false,
+                ready: true,
+            },
+        });
+
+        expect(queryByText('\u{1F680} 正在执行 Shell /Weather Query \u{1F324} / ...')).toBeNull();
+        expect(getByTestId('assistant-reasoning-label').textContent).toBe('正在执行命令');
+        expect(container.textContent).not.toContain('\u{1F324}');
+        expect(container.textContent).not.toContain('可继续输入');
+        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).not.toMatch(/正在执行|可继续输入/);
+    });
+
+    it('renders coding agent progress as a visible task status row', () => {
+        const { queryByTestId, getByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            state: {
+                messages: [makeMsg({ role: 'user', content: 'fix this bug' })],
+                progressMessages: [makeMsg({ role: 'progress', content: 'Coding Agent: running T2 - Fix stale edit guard' })],
+                sending: true,
+                streaming: false,
+                ready: true,
+            },
+        });
+
+        expect(queryByTestId('coding-agent-progress')).toBeNull();
+        expect(getByTestId('assistant-reasoning-label').textContent).toBe('\u6b63\u5728\u8bbf\u95ee\u6a21\u578b');
+        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).not.toMatch(/\u5904\u7406\u4e2d|Working|Running tools/);
+    });
+
+    it('compacts multiple coding agent progress messages to the latest row', () => {
+        const { queryByTestId, queryByText } = renderPanel({
+            lang: 'zh-Hans',
+            state: {
+                messages: [makeMsg({ role: 'user', content: 'fix these tasks' })],
+                progressMessages: [
+                    makeMsg({ role: 'progress', content: 'preflight checks done' }),
+                    makeMsg({ role: 'progress', content: 'Coding Agent: running T1 - First task' }),
+                    makeMsg({ role: 'progress', content: 'Coding Agent: running T2 - Second task' }),
+                ],
+                sending: true,
+                streaming: false,
+                ready: true,
+            },
+        });
+
+        expect(queryByText('preflight checks done')).toBeTruthy();
+        expect(queryByText('First task')).toBeNull();
+        expect(queryByTestId('coding-agent-progress')).toBeNull();
+    });
+
+    it('hides completed coding agent progress once idle', () => {
+        const { queryByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            state: {
+                messages: [makeMsg({ role: 'user', content: 'fix this bug' })],
+                progressMessages: [makeMsg({ role: 'progress', content: 'Coding Agent: completed T2 - Fix stale edit guard' })],
+                sending: false,
+                streaming: false,
+                ready: true,
+            },
+        });
+
+        expect(queryByTestId('coding-agent-progress')).toBeNull();
+        expect(queryByTestId('coding-agent-title-status')).toBeNull();
+    });
+
+    it('renders a terminal fallback message with trace action and fields', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'PDF generation failed after tool execution',
+                fields: [
+                    { label: 'Trace', value: 'PDF generation failed after tool execution' },
+                    { label: 'Trace events', value: '4' },
+                    { label: 'Evidence', value: '2' },
+                    { label: 'Run ID', value: 'run-empty-result' },
+                ],
+                actions: [{ label: 'View trace', command: '__view_trace__ run-empty-result', style: 'default' }],
+            }),
+        ];
+
+        const executeAction = vi.fn<() => Promise<void>>().mockResolvedValue();
+        const { container, getAllByText, getByText } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction, refreshNews: () => {} },
+        });
+
+        expect(getAllByText('PDF generation failed after tool execution').length).toBeGreaterThan(0);
+        const fieldCards = Array.from(container.querySelectorAll('[data-testid="field-card"]')).map(el => el.textContent || '');
+        expect(fieldCards).toContain('Trace:PDF generation failed after tool execution');
+        expect(fieldCards).toContain('Trace events:4');
+        expect(fieldCards).toContain('Evidence:2');
+        expect(fieldCards).toContain('Run ID:run-empty-result');
+        expect(container.textContent).toContain('View trace');
+    });
+
+    it('renders a saved file link when only localFilePath is present', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '',
+                localFilePath: '/tmp/review.pdf',
+            }),
+        ];
+
+        const { getByRole, getByTitle } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        expect(getByTitle('/tmp/review.pdf')).toBeTruthy();
+    });
+
+    it('opens saved file paths directly when clicked', async () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '',
+                localFilePath: 'C:\\Users\\demo\\report.pdf',
+            }),
+        ];
+
+        const { getByTitle } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        fireEvent.click(getByTitle('C:\\Users\\demo\\report.pdf'));
+
+        await waitFor(() => {
+            expect(openFileOrShowInFolderMock).toHaveBeenCalledWith('C:\\Users\\demo\\report.pdf');
+        });
+    });
+
+    it('opens the in-app slide preview from the task-result Preview button', async () => {
+        const path = 'F:\\个人介绍\\布偶小猫5岁生日.pptx';
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'PPT已生成',
+                localFilePath: path,
+            }),
+        ];
+        const { getByTestId } = renderPanel({
+            lang: 'zh',
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        fireEvent.click(getByTestId('task-result-preview-btn'));
+
+        await waitFor(() => {
+            expect(document.querySelector('[data-testid="code-preview-panel"]')).toBeTruthy();
+        });
+        expect(PreviewTaskResultFile).not.toHaveBeenCalled();
+        await waitFor(() => {
+            expect(
+                document.querySelector('[data-testid="pptx-preview-panel"]')
+                || document.querySelector('[data-testid="pptx-preview-loading"]'),
+            ).toBeTruthy();
+        });
+    });
+
+    it('opens a PDF in the preview pane from the task-result Preview button', async () => {
+        const path = 'C:\\Users\\demo\\report.pdf';
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '',
+                localFilePath: path,
+            }),
+        ];
+        const { getByTestId } = renderPanel({
+            lang: 'en',
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        fireEvent.click(getByTestId('task-result-preview-btn'));
+        expect(getByTestId('task-result-preview-btn').textContent).toBe('Preview');
+
+        await waitFor(() => {
+            expect(document.querySelector('[data-testid="code-preview-panel"]')).toBeTruthy();
+        });
+        await waitFor(() => {
+            expect(
+                document.querySelector('[data-testid="pdf-preview-panel"]')
+                || document.querySelector('[data-testid="pdf-preview-loading"]'),
+            ).toBeTruthy();
+        });
+    });
+
+    it('exports the saved document through a save dialog instead of opening it', async () => {
+        const path = 'C:\\Users\\demo\\report.docx';
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '文档已生成',
+                localFilePath: path,
+            }),
+        ];
+        const { getByTestId } = renderPanel({
+            lang: 'zh',
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        fireEvent.click(getByTestId('task-result-export-btn'));
+        await waitFor(() => {
+            expect(ExportTaskResultFile).toHaveBeenCalledWith(path);
+        });
+        expect(openFileOrShowInFolderMock).not.toHaveBeenCalled();
+        await waitFor(() => {
+            expect(getByTestId('task-result-export-btn').textContent).toBe('已导出');
+        });
+    });
+
+    it('fills the composer from Continue editing so the user can request document changes', async () => {
+        const path = 'C:\\Users\\demo\\report.docx';
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '文档已生成',
+                localFilePath: path,
+            }),
+        ];
+        const { getByTestId } = renderPanel({
+            lang: 'zh',
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        fireEvent.click(getByTestId('task-result-continue-btn'));
+        await waitFor(() => {
+            expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toContain('请继续修改文档「report.docx」');
+            expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toContain(path);
+        });
+    });
+
+    it('keeps typed composer text when Continue editing names the document', async () => {
+        const path = 'C:\\Users\\demo\\report.docx';
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '文档已生成',
+                localFilePath: path,
+            }),
+        ];
+        const { getByTestId } = renderPanel({
+            lang: 'zh',
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        fireEvent.change(getByTestId('ai-input'), { target: { value: '把第二段改短' } });
+        fireEvent.click(getByTestId('task-result-continue-btn'));
+        await waitFor(() => {
+            const value = (getByTestId('ai-input') as HTMLTextAreaElement).value;
+            expect(value.startsWith('把第二段改短')).toBe(true);
+            expect(value).toContain('请继续修改文档「report.docx」');
+        });
+    });
+
+    it('opens cloud workspace saved files from the local cache', async () => {
+        const cachePath = 'C:\\Users\\me\\.maclaw\\data\\cloud-workspaces\\tenant_default\\cws_abc\\人工智能数学入门教程.pdf';
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '',
+                localFilePath: cachePath,
+            }),
+        ];
+
+        const { getByTitle } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        fireEvent.click(getByTitle('人工智能数学入门教程.pdf'));
+
+        await waitFor(() => {
+            expect(openFileOrShowInFolderMock).toHaveBeenCalledWith(cachePath);
+        });
+    });
+
+    it('opens inline detected file paths when clicked', async () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: 'Saved file at C:\\Users\\demo\\report.pdf for review.',
+            }),
+        ];
+
+        const { getByTitle } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        fireEvent.click(getByTitle('C:\\Users\\demo\\report.pdf'));
+
+        await waitFor(() => {
+            expect(openFileOrShowInFolderMock).toHaveBeenCalledWith('C:\\Users\\demo\\report.pdf');
+        });
+    });
+
+    it('zooms screenshot thumbnails in the preview overlay and still reveals the saved file', async () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '',
+                localFilePath: 'C:\\Users\\demo\\capture.png',
+                thumbnailBase64: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+yF9kAAAAASUVORK5CYII=',
+            }),
+        ];
+
+        const { getByTestId } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        fireEvent.click(getByTestId('attachment-image-thumbnail'));
+        expect(getByTestId('attachment-image-preview-dialog')).toBeTruthy();
+
+        fireEvent.click(getByTestId('preview-file-action-reveal'));
+
+        await waitFor(() => {
+            expect(showItemInFolderMock).toHaveBeenCalledWith('C:\\Users\\demo\\capture.png');
+        });
+        expect(openFileOrShowInFolderMock).not.toHaveBeenCalled();
+    });
+
+    it('renders image_key screenshots without requiring a saved local file', () => {
+        const messages: ChatMessage[] = [
+            makeMsg({
+                role: 'assistant',
+                content: '',
+                imageKey: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+yF9kAAAAASUVORK5CYII=',
+            }),
+        ];
+
+        const { getByTestId } = renderPanel({
+            state: { messages, sending: false, streaming: false, ready: true },
+        });
+
+        expect(getByTestId('screenshot-preview-block')).toBeTruthy();
+        expect(getByTestId('attachment-image-thumbnail').querySelector('img')?.getAttribute('src')).toContain('iVBORw0KGgo');
+    });
+
+    it('shows an image_key screenshot after the same assistant message was already cached empty', () => {
+        const imageKey = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+yF9kAAAAASUVORK5CYII=';
+        const placeholder = makeMsg({ id: 'shot-cached', role: 'assistant', content: '' });
+        const props = defaultPanelProps();
+        props.state = { ...props.state, messages: [placeholder], sending: false, streaming: false, ready: true };
+
+        const { queryByTestId, getByTestId, rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        expect(queryByTestId('screenshot-preview-block')).toBeNull();
+
+        rerender(<AIAssistantPanel {...props} state={{ ...props.state, messages: [{ ...placeholder, imageKey }] }} />);
+        expect(getByTestId('screenshot-preview-block')).toBeTruthy();
+    });
+
+    it('normal send records each manual prompt once so consecutive duplicates can be deduplicated upstream', async () => {
+        const sendMessage = vi.fn<() => Promise<void>>().mockResolvedValue();
+        const recordSubmittedPrompt = vi.fn();
+        const { getByTestId } = renderPanel({
+            state: { messages: [makeMsg({ role: 'user', content: 'earlier' })], submittedPrompts: [], sending: false, streaming: false, ready: true },
+            actions: {
+                sendMessage,
+                recordSubmittedPrompt,
+                clearHistory: async () => {},
+                executeAction: async () => {},
+                refreshNews: () => {},
+            },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'same prompt' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => {
+            expect(recordSubmittedPrompt).toHaveBeenCalledTimes(1);
+            expect(recordSubmittedPrompt).toHaveBeenCalledWith('same prompt');
+            expect(sendMessage).toHaveBeenCalledWith('same prompt', expect.objectContaining({ tabId: 'local' }));
+        });
+    });
+
+    it('Escape exits history browsing and restores the pre-history draft', async () => {
+        const { getByTestId } = renderPanel({
+            state: { messages: [], submittedPrompts: ['older prompt', 'latest prompt'], sending: false, streaming: false, ready: true },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'draft text' } });
+        input.setSelectionRange(input.value.length, input.value.length);
+
+        fireEvent.keyDown(input, { key: 'ArrowUp' });
+        await waitFor(() => expect(input.value).toBe('latest prompt'));
+
+        fireEvent.keyDown(input, { key: 'Escape' });
+        await waitFor(() => expect(input.value).toBe('draft text'));
+    });
+
+    it('preserves edited history entries while browsing', async () => {
+        const { getByTestId } = renderPanel({
+            state: { messages: [], submittedPrompts: ['older prompt', 'latest prompt'], sending: false, streaming: false, ready: true },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'draft text' } });
+        input.setSelectionRange(input.value.length, input.value.length);
+
+        fireEvent.keyDown(input, { key: 'ArrowUp' });
+        await waitFor(() => expect(input.value).toBe('latest prompt'));
+
+        fireEvent.change(input, { target: { value: 'latest prompt edited' } });
+        input.setSelectionRange(input.value.length, input.value.length);
+
+        fireEvent.keyDown(input, { key: 'ArrowUp' });
+        await waitFor(() => expect(input.value).toBe('older prompt'));
+
+        input.setSelectionRange(input.value.length, input.value.length);
+        fireEvent.keyDown(input, { key: 'ArrowDown' });
+        await waitFor(() => expect(input.value).toBe('latest prompt edited'));
+    });
+
+    it('restores images when a historical input is recalled', async () => {
+        const image = { filePath: 'D:/shots/see.png', fileName: 'see.png', extension: '.png', isImage: true };
+        const { getByTestId, queryByTestId } = renderPanel({
+            state: {
+                messages: [makeMsg({ role: 'user', content: 'earlier' })],
+                submittedPrompts: ['see this photo'],
+                submittedPromptAttachments: [[image]],
+                sending: false,
+                streaming: false,
+                ready: true,
+            },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'draft' } });
+        input.setSelectionRange(input.value.length, input.value.length);
+        fireEvent.keyDown(input, { key: 'ArrowUp' });
+
+        await waitFor(() => expect(input.value).toBe('see this photo'));
+        expect(getByTestId('ai-pending-attachments').textContent || '').toContain('see.png');
+
+        input.setSelectionRange(input.value.length, input.value.length);
+        fireEvent.keyDown(input, { key: 'ArrowDown' });
+        await waitFor(() => expect(input.value).toBe('draft'));
+        expect(queryByTestId('ai-pending-attachments')).toBeNull();
+    });
+
+    it('restores images when a history suggestion is accepted', async () => {
+        const image = { filePath: 'D:/shots/see.png', fileName: 'see.png', extension: '.png', isImage: true };
+        const { getByTestId } = renderPanel({
+            state: {
+                messages: [makeMsg({ role: 'user', content: 'earlier' })],
+                submittedPrompts: ['see this photo'],
+                submittedPromptAttachments: [[image]],
+                sending: false,
+                streaming: false,
+                ready: true,
+            },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'see' } });
+        const suggestion = await waitFor(() => getByTestId('ai-input-history-item-0'));
+        expect(suggestion.textContent || '').toContain('image');
+        fireEvent.click(suggestion);
+
+        await waitFor(() => expect(input.value).toBe('see this photo'));
+        expect(getByTestId('ai-pending-attachments').textContent || '').toContain('see.png');
+    });
+
+    it('does not recall history when ArrowUp is pressed away from the first line', async () => {
+        const { getByTestId } = renderPanel({
+            state: { messages: [], submittedPrompts: ['history prompt'], sending: false, streaming: false, ready: true },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'line 1\nline 2' } });
+        input.setSelectionRange(input.value.length, input.value.length);
+
+        fireEvent.keyDown(input, { key: 'ArrowUp' });
+
+        await waitFor(() => expect(input.value).toBe('line 1\nline 2'));
+    });
+    it('keeps draft text when the panel is closed and reopened through controlled state', async () => {
+        let draftInputValue = '';
+        const setDraftInputValue = vi.fn((next: string) => {
+            draftInputValue = next;
+        });
+        const props = defaultPanelProps();
+
+        const { getByTestId, rerender } = render(
+            <AIAssistantPanel
+                {...props}
+                state={{
+                    ...props.state,
+                    ready: true,
+                    draftInputValue,
+                }}
+                actions={{
+                    ...props.actions,
+                    setDraftInputValue,
+                }}
+            />,
+            { wrapper: DialogProvider }
+        );
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'draft survives reopen' } });
+
+        rerender(<div />);
+        rerender(
+            <AIAssistantPanel
+                {...props}
+                state={{
+                    ...props.state,
+                    ready: true,
+                    draftInputValue,
+                }}
+                actions={{
+                    ...props.actions,
+                    setDraftInputValue,
+                }}
+            />
+        );
+
+        await waitFor(() => {
+            expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('draft survives reopen');
+        });
+    });
+
+    it('keeps project tab draft text isolated from the local assistant draft', async () => {
+        const setDraftInputValue = vi.fn();
+        const onHandled = vi.fn();
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/draft-isolated',
+                taskTitle: 'Draft isolated task',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true, draftInputValue: 'local draft' },
+            actions: { setDraftInputValue },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        // The task-execution header also prints the active tab title, so match
+        // the tab itself rather than bare text.
+        expect(screen.getByRole('tab', { name: 'Draft isolated task' })).toBeTruthy();
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'project draft' } });
+        expect(setDraftInputValue).not.toHaveBeenCalledWith('project draft');
+
+        activateLocalTab();
+        await waitFor(() => expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('local draft'));
+
+        // The guide takes no tab slot, so the task tab sits in the bar itself.
+        // It stays in the DOM behind the welcome layer, hence hidden: true.
+        fireEvent.click(screen.getByRole('tab', { name: 'Draft isolated task', hidden: true }));
+        await waitFor(() => expect((getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('project draft'));
+    });
+
+    it('does not clear the local assistant history when clearing a project tab', async () => {
+        const clearHistory = vi.fn().mockResolvedValue(undefined);
+        const onHandled = vi.fn();
+
+        const { getByRole, getByTitle } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/project-clear-isolated',
+                taskTitle: 'Project clear isolated',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { clearHistory },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        fireEvent.click(getByRole('tab', { name: 'Project clear isolated' }));
+        fireEvent.click(getByTitle('New conversation'));
+
+        expect(clearHistory).not.toHaveBeenCalled();
+    });
+
+    it('waits for a project-history clear before sending the next prompt', async () => {
+        const projectPath = 'D:/tasks/project-clear-then-send';
+        let resolveClear!: () => void;
+        clearAIAssistantHistoryForSessionMock.mockReturnValueOnce(new Promise<void>(resolve => {
+            resolveClear = resolve;
+        }));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+        const { getByRole, getByTestId, getByTitle } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Clear then send',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        fireEvent.click(getByRole('tab', { name: 'Clear then send' }));
+        fireEvent.click(getByTitle('New conversation'));
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'must survive the clear' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        expect(clearAIAssistantHistoryForSessionMock).toHaveBeenCalledWith(`desktop-user:${projectPath}`);
+        expect(sendMessage).not.toHaveBeenCalled();
+        await act(async () => {
+            resolveClear();
+        });
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(
+            'must survive the clear',
+            expect.objectContaining({ project_path: projectPath }),
+        ));
+    });
+
+    it('does not send a queued project prompt when clearing its backend history fails', async () => {
+        const projectPath = 'D:/tasks/project-clear-fails';
+        clearAIAssistantHistoryForSessionMock.mockRejectedValueOnce(new Error('backend unavailable'));
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+        const { getByRole, getByTestId, getByTitle } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Clear failure task',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        fireEvent.click(getByRole('tab', { name: 'Clear failure task' }));
+        fireEvent.click(getByTitle('New conversation'));
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'do not send into old context' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(clearAIAssistantHistoryForSessionMock).toHaveBeenCalledWith(`desktop-user:${projectPath}`));
+        await act(async () => {});
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('retries a failed project-history clear before a later prompt can send', async () => {
+        const projectPath = 'D:/tasks/project-clear-retry';
+        let rejectClear!: (error: Error) => void;
+        clearAIAssistantHistoryForSessionMock
+            .mockReturnValueOnce(new Promise<void>((_resolve, reject) => {
+                rejectClear = reject;
+            }))
+            .mockResolvedValueOnce(undefined);
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+        const { getByRole, getByTestId, getByTitle } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Clear retry task',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        fireEvent.click(getByRole('tab', { name: 'Clear retry task' }));
+        fireEvent.click(getByTitle('New conversation'));
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'first prompt is cancelled' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(clearAIAssistantHistoryForSessionMock).toHaveBeenCalledTimes(1));
+        expect(sendMessage).not.toHaveBeenCalled();
+        await act(async () => {
+            rejectClear(new Error('backend unavailable'));
+        });
+        expect(sendMessage).not.toHaveBeenCalled();
+
+        fireEvent.change(input, { target: { value: 'retry only after clear' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(clearAIAssistantHistoryForSessionMock).toHaveBeenCalledTimes(2));
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(
+            'retry only after clear',
+            expect.objectContaining({ project_path: projectPath }),
+        ));
+    });
+
+    it('forgets project-owned transient state before cancelling a cleared project tab', async () => {
+        const projectPath = 'D:/tasks/project-clear-forget-state';
+        const onHandled = vi.fn();
+        const forgottenSessions: string[] = [];
+        const onForget = (event: Event) => {
+            forgottenSessions.push(String((event as CustomEvent).detail?.sessionKey || ''));
+        };
+        window.addEventListener('ai-assistant:forget-session-rounds', onForget);
+
+        const { getByRole, getByTitle } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Project clear forget state',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        fireEvent.click(getByRole('tab', { name: 'Project clear forget state' }));
+        fireEvent.click(getByTitle('New conversation'));
+
+        await waitFor(() => expect(forgottenSessions).toContain(`desktop-user:${projectPath}`));
+        expect(clearAIAssistantHistoryForSessionMock).toHaveBeenCalledWith(`desktop-user:${projectPath}`);
+        expect(cancelSessionForSessionMock).not.toHaveBeenCalled();
+        window.removeEventListener('ai-assistant:forget-session-rounds', onForget);
+    });
+
+    it('typed /clear on the local assistant calls clearHistory instead of sending', async () => {
+        const clearHistory = vi.fn().mockResolvedValue(undefined);
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const { getByTestId } = renderPanel({
+            state: {
+                messages: [
+                    makeMsg({ id: 'local-before-clear-user', role: 'user', content: 'old local question' }),
+                    makeMsg({ id: 'local-before-clear-assistant', role: 'assistant', content: 'old local answer' }),
+                ],
+                sending: false,
+                streaming: false,
+                ready: true,
+            },
+            actions: { sendMessage, clearHistory },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: '/clear' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(clearHistory).toHaveBeenCalled());
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(clearAIAssistantHistoryForSessionMock).not.toHaveBeenCalled();
+    });
+
+    it('typed /clear wipes project tab transcript and durable history without sending a chat turn', async () => {
+        const projectPath = 'D:/tasks/project-slash-clear';
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Project slash clear',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { ...base.state, messages: [], sending: false, streaming: false, ready: true },
+            actions: { ...base.actions, sendMessage },
+        };
+        const { rerender, getByTestId } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const oldUser = makeMsg({
+            id: 'project-slash-clear-user',
+            role: 'user',
+            content: 'old history before slash clear',
+            sessionKey: `desktop-user:${projectPath}`,
+        });
+        const oldAssistant = makeMsg({
+            id: 'project-slash-clear-assistant',
+            role: 'assistant',
+            content: 'old answer before slash clear',
+            sessionKey: `desktop-user:${projectPath}`,
+        });
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={null}
+            state={{ ...props.state, messages: [oldUser, oldAssistant] }}
+        />);
+        await waitFor(() => expect(document.body.textContent || '').toContain('old history before slash clear'));
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: '/clear' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(clearAIAssistantHistoryForSessionMock).toHaveBeenCalledWith(`desktop-user:${projectPath}`));
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(document.body.textContent || '').not.toContain('old history before slash clear');
+        expect(document.body.textContent || '').not.toContain('old answer before slash clear');
+        expect(document.body.textContent || '').not.toContain('Conversation reset');
+        expect(document.body.textContent || '').not.toContain('\u5bf9\u8bdd\u5df2\u91cd\u7f6e');
+    });
+
+    it('typed /clear hides the coding plan checklist on a remote coding tab', async () => {
+        const projectPath = 'D:/tasks/remote-coding-slash-clear-plan';
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: true,
+            needs_reconnect: false,
+            turn_count: 1,
+            requirement_restatement: '在已有工作上继续这次提出的改动，先对齐现有实现再动手。',
+            step_statuses: [{ index: 1, title: 'failed', status: 'failed' }],
+        });
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Linux系统信息工具',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: 'www.driverdevelop.com',
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(getByTestId('coding-agent-plan-checklist')).toBeTruthy());
+        expect(getByTestId('coding-agent-plan-understanding').textContent || '').toContain('对齐现有实现');
+        expect(getByTestId('coding-agent-plan-step-1').textContent || '').toMatch(/T1/);
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: '/clear' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(clearAIAssistantHistoryForSessionMock).toHaveBeenCalledWith(`desktop-user:${projectPath}`));
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(queryByTestId('coding-agent-plan-checklist')).toBeNull();
+        expect(document.body.textContent || '').not.toContain('对齐现有实现');
+
+        const stepsHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'coding-workbench-steps')
+            .at(-1)?.[1] as ((payload: unknown) => void) | undefined;
+        expect(stepsHandler).toEqual(expect.any(Function));
+        act(() => {
+            stepsHandler?.({
+                project_path: projectPath,
+                requirement_restatement: '对齐现有实现再动手。',
+                step_statuses: [{ index: 1, title: 'failed', status: 'failed' }],
+            });
+        });
+        expect(queryByTestId('coding-agent-plan-checklist')).toBeNull();
+        expect(document.body.textContent || '').not.toContain('对齐现有实现');
+    });
+
+    it('live steps snapshot replaces and clears the continue paraphrase', async () => {
+        const projectPath = 'D:/tasks/continue-plan-snapshot';
+        const generic = '在已有工作（开发一个图形界面版的贪吃蛇）上继续你这次提出的改动，先对齐现有实现再动手，不扩大到未提到的功能。';
+        getCodingWorkbenchStatusMock.mockResolvedValue({
+            kind: 'remote',
+            armed: true,
+            needs_reconnect: false,
+            turn_count: 18,
+            session_plan: '开发一个图形界面版的贪吃蛇',
+            requirement_restatement: generic,
+            execution_plan: '### T1: old',
+            step_statuses: [
+                { index: 1, title: 'Add selectable food types', status: 'running' },
+                { index: 2, title: 'Draw a more snake-like body', status: 'pending' },
+            ],
+        });
+        const onHandled = vi.fn();
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: '贪吃蛇',
+                autoSend: false,
+                prepareMode: 'new-agent',
+                agentMode: 'remote_coding_dev',
+                remoteHost: 'www.driverdevelop.com',
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(getByTestId('coding-agent-plan-understanding').textContent || '').toContain('上继续你这次提出的改动'));
+
+        const stepsHandler = runtimeEventsOnMock.mock.calls
+            .filter(([eventName]) => eventName === 'coding-workbench-steps')
+            .at(-1)?.[1] as ((payload: unknown) => void) | undefined;
+        expect(stepsHandler).toEqual(expect.any(Function));
+        const steps = [
+            { index: 1, title: 'Add selectable food types', status: 'pending' },
+            { index: 2, title: 'Draw a more snake-like body', status: 'pending' },
+        ];
+        act(() => {
+            stepsHandler?.({
+                project_path: projectPath,
+                requirement_restatement: '开发一个图形界面版的贪吃蛇',
+                execution_plan: '### T1: Add selectable food types\n### T2: Draw a more snake-like body',
+                step_statuses: steps,
+            });
+        });
+        const understood = getByTestId('coding-agent-plan-understanding');
+        expect(understood.textContent || '').toContain('开发一个图形界面版的贪吃蛇');
+        expect(understood.textContent || '').not.toContain('上继续你这次提出的改动');
+        expect(getByTestId('coding-agent-plan-step-2').textContent || '').toContain('Draw a more snake-like body');
+
+        act(() => {
+            stepsHandler?.({
+                project_path: projectPath,
+                requirement_restatement: '',
+                execution_plan: '',
+                step_statuses: steps,
+            });
+        });
+        expect(queryByTestId('coding-agent-plan-understanding')).toBeNull();
+        expect(getByTestId('coding-agent-plan-step-1')).toBeTruthy();
+        getCodingWorkbenchStatusMock.mockResolvedValue({ kind: 'remote', armed: true, needs_reconnect: false, turn_count: 0, session_plan: '' });
+    });
+
+    it('does not resurrect cleared project tab history after closing and reopening', async () => {
+        const projectPath = 'D:/tasks/project-clear-close-reopen';
+        const onHandled = vi.fn();
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Project clear close reopen',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { ...base.state, messages: [], sending: false, streaming: false, ready: true },
+        };
+        const { rerender, getByTitle } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const projectUser = makeMsg({
+            id: 'project-user-before-clear',
+            role: 'user',
+            content: 'history that should stay cleared',
+            sessionKey: `desktop-user:${projectPath}`,
+        });
+        const projectAssistant = makeMsg({
+            id: 'project-assistant-before-clear',
+            role: 'assistant',
+            content: 'answer that should stay cleared',
+            sessionKey: `desktop-user:${projectPath}`,
+        });
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={null}
+            state={{ ...props.state, messages: [projectUser, projectAssistant] }}
+        />);
+
+        await waitFor(() => expect(document.body.textContent || '').toContain('history that should stay cleared'));
+        fireEvent.click(getByTitle('New conversation'));
+        const closeButton = document.querySelector('[data-testid^="ai-tab-close-proj-"]') as HTMLButtonElement | null;
+        expect(closeButton).toBeTruthy();
+        fireEvent.click(closeButton!);
+
+        onHandled.mockClear();
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={{
+                projectPath,
+                taskTitle: 'Project clear close reopen',
+                autoSend: false,
+            }}
+            state={{ ...props.state, messages: [] }}
+        />);
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        expect(document.body.textContent || '').not.toContain('history that should stay cleared');
+        expect(document.body.textContent || '').not.toContain('answer that should stay cleared');
+    });
+
+    it('persists new project tab chat after clearing old history', async () => {
+        const projectPath = 'D:/tasks/project-clear-then-new-chat';
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+        const base = defaultPanelProps();
+        const props = {
+            ...base,
+            pendingProjectTabOpen: {
+                projectPath,
+                taskTitle: 'Project clear then new chat',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { ...base.state, messages: [], sending: false, streaming: false, ready: true },
+            actions: { ...base.actions, sendMessage },
+        };
+        const { rerender, getByTestId, getByTitle } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const oldUser = makeMsg({
+            id: 'project-old-user-before-clear',
+            role: 'user',
+            content: 'old history before clear',
+            sessionKey: `desktop-user:${projectPath}`,
+        });
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={null}
+            state={{ ...props.state, messages: [oldUser] }}
+        />);
+        await waitFor(() => expect(document.body.textContent || '').toContain('old history before clear'));
+
+        fireEvent.click(getByTitle('New conversation'));
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'new question after clear' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('new question after clear', expect.objectContaining({ project_path: projectPath })));
+
+        const newUser = makeMsg({
+            id: 'project-new-user-after-clear',
+            role: 'user',
+            content: 'new question after clear',
+            sessionKey: `desktop-user:${projectPath}`,
+        });
+        const newAssistant = makeMsg({
+            id: 'project-new-assistant-after-clear',
+            role: 'assistant',
+            content: 'new answer after clear',
+            sessionKey: `desktop-user:${projectPath}`,
+        });
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={null}
+            state={{ ...props.state, messages: [newUser, newAssistant], sending: true, streaming: true }}
+        />);
+        await waitFor(() => expect(document.body.textContent || '').toContain('new answer after clear'));
+        expect(document.body.textContent || '').not.toContain('old history before clear');
+
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={null}
+            state={{ ...props.state, messages: [newUser, newAssistant], sending: false, streaming: false }}
+        />);
+
+        const closeButton = document.querySelector('[data-testid^="ai-tab-close-proj-"]') as HTMLButtonElement | null;
+        expect(closeButton).toBeTruthy();
+        fireEvent.click(closeButton!);
+
+        onHandled.mockClear();
+        rerender(<AIAssistantPanel
+            {...props}
+            pendingProjectTabOpen={{
+                projectPath,
+                taskTitle: 'Project clear then new chat',
+                autoSend: false,
+            }}
+            state={{ ...props.state, messages: [] }}
+        />);
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        await waitFor(() => expect(document.body.textContent || '').toContain('new question after clear'));
+        expect(document.body.textContent || '').toContain('new answer after clear');
+        expect(document.body.textContent || '').not.toContain('old history before clear');
+    });
+
+    it('keeps a project tab input unlocked while the local assistant session is busy', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/beijing-weather-idle',
+                taskTitle: 'Beijing weather idle',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: {
+                messages: [],
+                sending: true,
+                sendingSessionKey: 'desktop-user',
+                streaming: true,
+                streamingSessionKey: 'desktop-user',
+                ready: true,
+            },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.placeholder).toBe('Enter a task or command...');
+        fireEvent.change(input, { target: { value: 'project tab should not inherit local busy' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('project tab should not inherit local busy', expect.objectContaining({
+            project_path: 'D:/tasks/beijing-weather-idle',
+        })));
+        expect(queryByTestId('buffer-queue-panel')).toBeNull();
+    });
+
+    it('keeps the local assistant input unlocked while a project tab session is busy', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/project-busy-local-idle',
+                taskTitle: 'Project busy local idle',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: {
+                messages: [{ id: 'local-msg-1', role: 'user', content: 'earlier question' }],
+                sending: true,
+                sendingSessionKey: 'desktop-user:D:/tasks/project-busy-local-idle',
+                streaming: true,
+                streamingSessionKey: 'desktop-user:D:/tasks/project-busy-local-idle',
+                ready: true,
+            },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        activateLocalTab();
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.placeholder).toBe('Enter a task or command...');
+        fireEvent.change(input, { target: { value: 'local tab should not inherit project busy' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('local tab should not inherit project busy', expect.objectContaining({ tabId: 'local' })));
+        expect(queryByTestId('buffer-queue-panel')).toBeNull();
+    });
+
+    it('keeps the local assistant input queued when its own detached session is busy', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+
+        const { getByTestId, getByText } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/project-active-local-detached',
+                taskTitle: 'Project active local detached',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: {
+                messages: [],
+                sending: true,
+                sendingSessionKey: 'desktop-user:D:/tasks/project-active-local-detached',
+                busySessionKeys: ['desktop-user', 'desktop-user:D:/tasks/project-active-local-detached'],
+                streaming: true,
+                streamingSessionKey: 'desktop-user:D:/tasks/project-active-local-detached',
+                streamingSessionKeys: ['desktop-user:D:/tasks/project-active-local-detached'],
+                ready: true,
+            },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        activateLocalTab();
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.placeholder).toBe('Enter a task or command...');
+        fireEvent.change(input, { target: { value: 'local detached should queue' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(getByText('local detached should queue')).toBeTruthy());
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('publishes every busy run identity, including detached project and expert sessions', async () => {
+        const onBusyTaskRunsChange = vi.fn();
+        const onHandled = vi.fn();
+
+        renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/project-active-local-detached',
+                taskTitle: 'Project active local detached',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            onBusyTaskRunsChange,
+            state: {
+                messages: [],
+                sending: true,
+                sendingSessionKey: 'desktop-user:D:/tasks/project-active-local-detached',
+                busySessionKeys: [
+                    'desktop-user',
+                    'desktop-user:D:/tasks/project-active-local-detached',
+                    'desktop-user:D:/tasks/project-detached-other',
+                    'desktop-user:expert:exp_42',
+                ],
+                streaming: true,
+                streamingSessionKey: 'desktop-user:D:/tasks/project-active-local-detached',
+                ready: true,
+            },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        // The local 'desktop-user' session carries no project identity and
+        // must not leak into the published set.
+        await waitFor(() => {
+            const last = onBusyTaskRunsChange.mock.calls.at(-1)?.[0];
+            expect(last?.projectPaths).toEqual(['D:/tasks/project-active-local-detached', 'D:/tasks/project-detached-other']);
+            expect(last?.expertIds).toEqual(['exp_42']);
+        });
+    });
+
+    it('keeps a project tab queued when its detached session remains busy after the active round idles', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/detached-project-still-busy',
+                taskTitle: 'Detached project still busy',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: {
+                messages: [],
+                progressMessages: [makeMsg({ role: 'progress', content: 'Coding Agent: running project session only' })],
+                sending: false,
+                busySessionKeys: ['desktop-user:D:/tasks/detached-project-still-busy'],
+                streaming: false,
+                streamingSessionKeys: [],
+                ready: true,
+            },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.placeholder).toBe('Enter a task or command...');
+        expect(queryByTestId('coding-agent-progress')).toBeNull();
+        fireEvent.change(input, { target: { value: 'project detached should queue' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(getByTestId('buffer-queue-panel')).toBeTruthy());
+        expect(document.body.textContent || '').toContain('project detached should queue');
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('shows thinking only for the project tab whose detached session is streaming', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+
+        const { getByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/detached-project-streaming',
+                taskTitle: 'Detached project streaming',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: {
+                messages: [{ id: 'local-msg-1', role: 'user', content: 'earlier question' }],
+                sending: false,
+                busySessionKeys: ['desktop-user:D:/tasks/detached-project-streaming'],
+                streaming: false,
+                streamingSessionKeys: ['desktop-user:D:/tasks/detached-project-streaming'],
+                ready: true,
+            },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toBe('Enter a task or command...');
+        expect(getByTestId('assistant-reasoning-label').textContent).toBe('Contacting the model');
+
+        activateLocalTab();
+        expect((getByTestId('ai-input') as HTMLTextAreaElement).placeholder).toBe('Enter a task or command...');
+    });
+
+    it('keeps an idle project tab input unlocked when legacy busy state has no session key', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const onHandled = vi.fn();
+
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/legacy-busy-project-idle',
+                taskTitle: 'Legacy busy project idle',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: {
+                messages: [],
+                sending: true,
+                streaming: true,
+                ready: true,
+            },
+            actions: { sendMessage },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.placeholder).toBe('Enter a task or command...');
+        fireEvent.change(input, { target: { value: 'legacy busy should not queue project input' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith('legacy busy should not queue project input', expect.objectContaining({
+            project_path: 'D:/tasks/legacy-busy-project-idle',
+        })));
+        expect(queryByTestId('buffer-queue-panel')).toBeNull();
+    });
+
+    it('keeps queued project input isolated from the local assistant tab', async () => {
+        localStorage.removeItem('ai_assistant_buffer_queue');
+        const onHandled = vi.fn();
+
+        const { getByTestId, queryByTestId } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/queue-isolated',
+                taskTitle: 'Queue isolated task',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: true, sendingSessionKey: 'desktop-user:D:/tasks/queue-isolated', streaming: true, streamingSessionKey: 'desktop-user:D:/tasks/queue-isolated', ready: true, draftInputValue: 'local draft' },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'project queued only' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        await waitFor(() => expect(getByTestId('buffer-queue-panel').textContent || '').toContain('project queued only'));
+
+        activateLocalTab();
+        await waitFor(() => expect(queryByTestId('buffer-queue-panel')).toBeNull());
+
+        // The guide takes no tab slot, so the task tab sits in the bar itself.
+        fireEvent.click(screen.getByRole('tab', { name: 'Queue isolated task' }));
+        await waitFor(() => expect(getByTestId('buffer-queue-panel').textContent || '').toContain('project queued only'));
+    });
+
+    it('closes matching project tab on backend task closed event', async () => {
+        const onHandled = vi.fn();
+
+        const { queryByText } = renderPanel({
+            pendingProjectTabOpen: {
+                projectPath: 'D:/tasks/close-event',
+                taskTitle: 'Close event task',
+                autoSend: false,
+            },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        // The task-execution header also prints the active tab title, so match
+        // the tab itself rather than bare text.
+        expect(screen.getByRole('tab', { name: 'Close event task' })).toBeTruthy();
+
+        const closeEventHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'project-task:closed').at(-1)?.[1];
+        expect(closeEventHandler).toBeTypeOf('function');
+        act(() => closeEventHandler('D:/tasks/close-event'));
+
+        await waitFor(() => expect(queryByText('Close event task')).toBeNull());
+    });
+
+    it('activates the matching project tab on a task activate event', async () => {
+        const onHandled = vi.fn();
+        renderPanel({
+            pendingProjectTabOpen: { projectPath: 'D:/tasks/activate-target', taskTitle: 'Activate target task', autoSend: false },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+
+        const tabFor = (name: string) => screen.getAllByRole('tab', { hidden: true }).find(el => el.textContent?.includes(name));
+        await waitFor(() => expect(tabFor('Activate target task')?.getAttribute('aria-selected')).toBe('true'));
+
+        // Switch away to the local assistant tab first. In jsdom the tab bar is
+        // zero-width, so the inactive project tab collapses into the overflow
+        // menu and leaves the DOM until it is active again.
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        await waitFor(() => expect(tabFor('Activate target task')?.getAttribute('aria-selected')).toBe('false'));
+        loadProjectTabConversationMock.mockClear();
+
+        const activateHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'project-task:activate').at(-1)?.[1];
+        expect(activateHandler).toBeTypeOf('function');
+        act(() => activateHandler({ projectPath: 'D:/tasks/activate-target' }));
+
+        await waitFor(() => expect(tabFor('Activate target task')?.getAttribute('aria-selected')).toBe('true'));
+        expect(screen.queryByRole('tab', { name: 'Default Task' })).toBeNull();
+        expect(screen.queryByRole('tab', { name: 'New task' })).toBeNull();
+        // Focus-only: no transcript reload for the reactivated tab.
+        expect(loadProjectTabConversationMock).not.toHaveBeenCalled();
+    });
+
+    it('closes a cloud-bound project tab when the closed event carries a sibling list path', async () => {
+        const cachePath = 'C:/Users/me/.maclaw/data/cloud-workspaces/tenant/cws_close';
+        const onHandled = vi.fn();
+        renderPanel({
+            pendingProjectTabOpen: { projectPath: cachePath, taskTitle: 'Cloud close task', autoSend: false },
+            onPendingProjectTabOpenHandled: onHandled,
+            state: { messages: [], sending: false, streaming: false, ready: true },
+        });
+        await waitFor(() => expect(onHandled).toHaveBeenCalled());
+        const tabFor = (name: string) => screen.getAllByRole('tab', { hidden: true }).find(el => el.textContent?.includes(name));
+        await waitFor(() => expect(tabFor('Cloud close task')).toBeTruthy());
+
+        const closeEventHandler = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'project-task:closed').at(-1)?.[1];
+        expect(closeEventHandler).toBeTypeOf('function');
+        // The durable list row path differs from the live cache path but embeds
+        // the same workspace id; the fallback match must still close the tab.
+        act(() => closeEventHandler('D:/tasks/list-rows/cloud-workspaces/tenant/cws_close'));
+
+        await waitFor(() => expect(tabFor('Cloud close task')).toBeUndefined());
+    });
+
+    it('opens digital employee invite picker after converting a direct VE chat to group mode', async () => {
+        const onPendingVEOpenHandled = vi.fn();
+        const { getByRole, getByTestId, queryByTestId, getByText } = renderPanel({
+            lang: 'en',
+            pendingVEOpen: {
+                id: 've-a',
+                machine_id: 've-a',
+                name: 'Agent A',
+                online_status: 'online',
+                status: 'active',
+                access_policy: 'public',
+                skill_description: '',
+            } as any,
+            onPendingVEOpenHandled,
+            window: { inline: true },
+        });
+
+        await waitFor(() => expect(getByRole('tab', { name: 'Agent A' })).toBeTruthy());
+        fireEvent.contextMenu(getByRole('tab', { name: /Agent A/ }));
+        fireEvent.click(getByTestId('tab-menu-invite-ve'));
+
+        await waitFor(() => expect(getByTestId('tab-participant-invite-dialog')).toBeTruthy());
+        expect(queryByTestId('tab-participant-invite-item-ve-a')).toBeNull();
+        await waitFor(() => expect(getByText('Contract Bot')).toBeTruthy());
+        fireEvent.click(getByText('Contract Bot'));
+
+        await waitFor(() => expect(addVEToGroupMock).toHaveBeenCalledWith('session-ve-a', 've-b'));
+        expect(initiateVEConversationMock).toHaveBeenCalledWith('ve-a');
+    });
+
+    it('renames an upgraded group chat through the hub binding', async () => {
+        const { getByRole, getByTestId, getByText } = renderPanel({
+            lang: 'en',
+            pendingVEOpen: {
+                id: 've-a',
+                machine_id: 've-a',
+                name: 'Agent A',
+                online_status: 'online',
+                status: 'active',
+                access_policy: 'public',
+                skill_description: '',
+            } as any,
+            onPendingVEOpenHandled: vi.fn(),
+            window: { inline: true },
+        });
+
+        await waitFor(() => expect(getByRole('tab', { name: 'Agent A' })).toBeTruthy());
+        fireEvent.contextMenu(getByRole('tab', { name: /Agent A/ }));
+        fireEvent.click(getByTestId('tab-menu-invite-ve'));
+        await waitFor(() => expect(getByTestId('tab-participant-invite-dialog')).toBeTruthy());
+        await waitFor(() => expect(getByText('Contract Bot')).toBeTruthy());
+        fireEvent.click(getByText('Contract Bot'));
+        await waitFor(() => expect(addVEToGroupMock).toHaveBeenCalledWith('session-ve-a', 've-b'));
+
+        fireEvent.contextMenu(getByRole('tab', { name: /Agent A/ }));
+        fireEvent.click(getByTestId('tab-menu-rename-group'));
+        const input = getByTestId('rename-group-input') as HTMLInputElement;
+        fireEvent.change(input, { target: { value: 'Planning room' } });
+        fireEvent.click(getByTestId('rename-group-save'));
+
+        await waitFor(() => expect(renameGroupDiscussionMock).toHaveBeenCalledWith('session-ve-a', 'Planning room'));
+        await waitFor(() => expect(getByRole('tab', { name: 'Planning room' })).toBeTruthy());
+    });
+
+    it('shows animated progress cancel control while sending', () => {
+        const { getByTestId, queryByTitle } = renderPanel({
+            state: { messages: [], sending: true, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {}, cancelSession: async () => ({ canceledText: '' }) },
+        });
+
+        expect(getByTestId('ai-cancel-progress')).toBeTruthy();
+        expect(queryByTitle('Send')).toBeNull();
+    });
+
+    it('shows cancel without spinner after streaming finishes but request is still locked', () => {
+        const { getByTestId, queryByTitle } = renderPanel({
+            state: { messages: [], sending: true, streaming: false, visualBusy: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {}, cancelSession: async () => ({ canceledText: '' }) },
+        });
+
+        expect(getByTestId('ai-cancel-progress').textContent || '').not.toContain('Loading');
+        expect(queryByTitle('Send')).toBeNull();
+    });
+
+    it('allows typing in the textarea while the request is still in flight', () => {
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: true, streaming: false, visualBusy: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {}, cancelSession: async () => ({ canceledText: '' }) },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.disabled).toBe(false);
+        expect(input.readOnly).toBe(false);
+    });
+
+    it('keeps the textarea disabled while initialization is not ready', () => {
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: false, streaming: false, ready: false },
+        });
+
+        const input = getByTestId('ai-input') as HTMLTextAreaElement;
+        expect(input.disabled).toBe(true);
+        expect(input.readOnly).toBe(false);
+    });
+
+    it('falls back to streaming state for the busy spinner when visualBusy is omitted', () => {
+        const { getByTestId, getByText } = renderPanel({
+            state: { messages: [], sending: true, streaming: true, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {}, cancelSession: async () => ({ canceledText: '' }) },
+        });
+
+        expect(getByTestId('ai-cancel-progress').textContent || '').not.toContain('Loading');
+    });
+
+    it('clicking the progress control triggers cancel', async () => {
+        const cancelSession = vi.fn<() => Promise<CancelAIAssistantResult>>().mockResolvedValue({
+            canceledText: '',
+        });
+        const { getByTestId } = renderPanel({
+            state: { messages: [], sending: true, streaming: false, ready: true },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {}, cancelSession },
+        });
+
+        fireEvent.click(getByTestId('ai-cancel-progress'));
+
+        await waitFor(() => {
+            expect(cancelSession).toHaveBeenCalledTimes(1);
+        });
+    });
+
+    it('renders native-style inline window controls', () => {
+        const { getByTestId } = renderPanel({
+            window: { inline: true, maximized: false, onToggleMaximize: vi.fn(), onHideWindow: vi.fn() },
+        });
+
+        expect(getByTestId('ai-hide-toggle').getAttribute('title')).toBe('Hide window');
+        expect(getByTestId('ai-hide-toggle').querySelector('svg')).toBeTruthy();
+        expect(getByTestId('ai-maximize-toggle').getAttribute('title')).toBe('Maximize window');
+    });
+
+    it('double-clicking the title bar toggles inline maximized view', () => {
+        const onToggleMaximize = vi.fn();
+        const { getByTestId } = renderPanel({
+            window: { inline: true, maximized: false, onToggleMaximize },
+        });
+
+        fireEvent.doubleClick(getByTestId('ai-title-bar'));
+
+        expect(onToggleMaximize).toHaveBeenCalledTimes(1);
+    });
+
+    it('maximized inline panel stays fixed-inset and keeps composer + window controls', () => {
+        // Unit sizing is covered by aiAssistantPanelTheme.test.ts; this checks wiring.
+        const { getByTestId } = renderPanel({
+            window: { inline: true, maximized: true, onToggleMaximize: vi.fn(), onHideWindow: vi.fn() },
+            state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello' }], sending: false, streaming: false, ready: true },
+        });
+
+        const root = getByTestId('ai-panel-root') as HTMLElement;
+        expect(root.style.position).toBe('fixed');
+        // React may keep inset shorthand or expand to top/left.
+        expect(
+            ['0', '0px'].includes(root.style.inset)
+            || root.style.top === '0px' || root.style.top === '0',
+        ).toBe(true);
+        expect(`${root.style.width} ${root.style.height}`).not.toMatch(/\d(?:vw|vh)\b/i);
+
+        expect(getByTestId('ai-input-bar')).toBeTruthy();
+        expect(getByTestId('ai-maximize-toggle').getAttribute('title')).toBe('Restore window');
+        expect(getByTestId('task-maximize-toggle').getAttribute('title')).toBe('Restore window');
+        expect(getByTestId('ai-hide-toggle')).toBeTruthy();
+        // Absolute popovers (notifications/update menu) require tools overflow visible.
+        expect(getByTestId('ai-titlebar-tools-group').style.overflow).not.toBe('hidden');
+    });
+
+    it('restores a maximized execution view from the task header restore control', () => {
+        const onToggleMaximize = vi.fn();
+        const { getByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            window: { inline: true, maximized: true, onToggleMaximize, onHideWindow: vi.fn() },
+            state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello' }], sending: false, streaming: false, ready: true },
+        });
+
+        const restore = getByTestId('task-maximize-toggle');
+        expect(restore.getAttribute('title')).toBe('还原窗口');
+        expect(restore.getAttribute('aria-pressed')).toBe('true');
+        fireEvent.click(restore);
+        expect(onToggleMaximize).toHaveBeenCalledTimes(1);
+    });
+
+    it('double-clicking the maximized execution title bar restores the original size', () => {
+        const onToggleMaximize = vi.fn();
+        const { getByTestId } = renderPanel({
+            window: { inline: true, maximized: true, onToggleMaximize, onHideWindow: vi.fn() },
+            state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello' }], sending: false, streaming: false, ready: true },
+        });
+
+        fireEvent.doubleClick(getByTestId('task-execution-header'));
+        expect(onToggleMaximize).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not restore when double-clicking a control in the execution header', () => {
+        const onToggleMaximize = vi.fn();
+        const { getByTestId } = renderPanel({
+            window: { inline: true, maximized: true, onToggleMaximize, onHideWindow: vi.fn() },
+            state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello' }], sending: false, streaming: false, ready: true },
+        });
+
+        fireEvent.doubleClick(getByTestId('task-share-btn'));
+        expect(onToggleMaximize).not.toHaveBeenCalled();
+    });
+
+    it('lets the inline execution title bar drag the window, except action controls', () => {
+        const { getByTestId } = renderPanel({
+            window: { inline: true, maximized: false, onToggleMaximize: vi.fn(), onHideWindow: vi.fn() },
+            state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello' }], sending: false, streaming: false, ready: true },
+        });
+
+        const header = getByTestId('task-execution-header');
+        const actions = getByTestId('task-execution-actions');
+        expect(header.hasAttribute('data-window-drag')).toBe(true);
+        expect(header.style.getPropertyValue('--wails-draggable')).toBe('drag');
+        expect(actions.hasAttribute('data-window-no-drag')).toBe(true);
+        expect(actions.style.getPropertyValue('--wails-draggable')).toBe('no-drag');
+
+        const leftoverTitleBar = getByTestId('ai-execution-secondary-titlebar');
+        expect(leftoverTitleBar.style.pointerEvents).toBe('none');
+        expect(leftoverTitleBar.getAttribute('aria-hidden')).toBe('true');
+    });
+
+    it('starts skill recording from the more menu and puts pause left of tasks', async () => {
+        const start = vi.fn().mockResolvedValue('ok');
+        const stop = vi.fn().mockResolvedValue({ error: 'no operations recorded' });
+        const previousGo = (window as any).go;
+        (window as any).go = {
+            main: {
+                App: {
+                    IsSkillRecording: vi.fn().mockResolvedValue(false),
+                    StartSkillRecording: start,
+                    StopSkillRecording: stop,
+                },
+            },
+        };
+        try {
+            const { getByTestId, queryByTestId } = renderPanel({
+                lang: 'zh-Hans',
+                state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello' }], sending: false, streaming: false, ready: true },
+            });
+
+            expect(queryByTestId('skill-recording-btn')).toBeNull();
+            expect(queryByTestId('skill-recording-pause-btn')).toBeNull();
+            fireEvent.click(getByTestId('task-more-record-skill-btn'));
+            await waitFor(() => expect(start).toHaveBeenCalled());
+            const pause = await waitFor(() => getByTestId('skill-recording-pause-btn'));
+            expect(pause.textContent).toContain('暂停');
+            const switcher = getByTestId('task-tab-switcher-btn').closest('details');
+            expect(switcher?.previousElementSibling).toBe(pause);
+            expect(queryByTestId('task-more-record-skill-btn')).toBeNull();
+
+            fireEvent.click(pause);
+            await waitFor(() => expect(stop).toHaveBeenCalled());
+            await waitFor(() => expect(queryByTestId('skill-recording-pause-btn')).toBeNull());
+            expect(getByTestId('task-more-record-skill-btn').textContent).toBe('录制 Skill');
+        } finally {
+            (window as any).go = previousGo;
+        }
+    });
+
+    it('keeps the pause control until skill recording stop finishes, then holds a new recording', async () => {
+        let resolveStop: (value: unknown) => void = () => {};
+        const start = vi.fn().mockResolvedValue('ok');
+        const stop = vi.fn().mockImplementation(() => new Promise((resolve) => { resolveStop = resolve; }));
+        const previousGo = (window as any).go;
+        (window as any).go = {
+            main: {
+                App: {
+                    IsSkillRecording: vi.fn().mockResolvedValue(false),
+                    StartSkillRecording: start,
+                    StopSkillRecording: stop,
+                },
+            },
+        };
+        try {
+            const { getByTestId, queryByTestId } = renderPanel({
+                lang: 'zh-Hans',
+                state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello' }], sending: false, streaming: false, ready: true },
+            });
+
+            fireEvent.click(getByTestId('task-more-record-skill-btn'));
+            const pause = await waitFor(() => getByTestId('skill-recording-pause-btn') as HTMLButtonElement);
+            fireEvent.click(pause);
+            await waitFor(() => expect((getByTestId('skill-recording-pause-btn') as HTMLButtonElement).disabled).toBe(true));
+            expect(queryByTestId('task-more-record-skill-btn')).toBeNull();
+            expect(start).toHaveBeenCalledTimes(1);
+
+            await act(async () => {
+                resolveStop({ count: 2, suggested_name: 'demo', suggested_description: 'saved steps', summary: [] });
+            });
+            await waitFor(() => expect(queryByTestId('skill-recording-pause-btn')).toBeNull());
+            const again = getByTestId('task-more-record-skill-btn') as HTMLButtonElement;
+            expect(again.disabled).toBe(true);
+            expect(again.textContent).toBe('请稍候');
+            fireEvent.click(again);
+            expect(start).toHaveBeenCalledTimes(1);
+
+            const live = runtimeEventsOnMock.mock.calls.filter(([eventName]) => eventName === 'skill-recording-state-changed').at(-1)?.[1] as ((state: unknown) => void) | undefined;
+            act(() => { live?.({ recording: true, count: 4, tabId: start.mock.calls[0]?.[0] || 'local' }); });
+            expect(queryByTestId('skill-recording-pause-btn')).toBeNull();
+        } finally {
+            (window as any).go = previousGo;
+        }
+    });
+
+    it('does not mark the overlay execution title bar as a window drag region', () => {
+        const { getByTestId } = renderPanel({
+            state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello' }], sending: false, streaming: false, ready: true },
+        });
+
+        const header = getByTestId('task-execution-header');
+        expect(header.hasAttribute('data-window-drag')).toBe(false);
+        expect(header.style.getPropertyValue('--wails-draggable')).not.toBe('drag');
+    });
+
+    it('separates title bar tools from window controls', () => {
+        const { getByTestId } = renderPanel({
+            window: { inline: true, maximized: false, onToggleMaximize: vi.fn(), onHideWindow: vi.fn() },
+            actions: { sendMessage: async () => {}, clearHistory: async () => {}, executeAction: async () => {}, refreshNews: () => {} },
+        });
+
+        const toolsGroup = getByTestId('ai-titlebar-tools-group');
+        const windowGroup = getByTestId('ai-titlebar-window-group');
+
+        expect(toolsGroup).toBeTruthy();
+        expect(windowGroup).toBeTruthy();
+        expect(windowGroup.style.borderLeft).toContain('solid');
+        expect(windowGroup.style.marginLeft).toBe('16px');
+        expect(windowGroup.querySelector('[data-testid="ai-hide-toggle"]')).toBeTruthy();
+        expect(windowGroup.querySelector('[data-testid="ai-maximize-toggle"]')).toBeTruthy();
+    });
+
+    it('shows a hide-window control on the execution header while chatting', () => {
+        const onHideWindow = vi.fn();
+        const { getByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            window: { inline: true, onHideWindow },
+            state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello', timestamp: Date.now() }], sending: false, streaming: false, ready: true },
+        });
+
+        const btn = getByTestId('task-hide-window');
+        expect(getByTestId('task-execution-header')).toBeTruthy();
+        expect(btn.getAttribute('title')).toBe('隐藏窗口');
+        expect(btn.getAttribute('aria-label')).toBe('隐藏窗口');
+        expect(btn.querySelector('svg')).toBeTruthy();
+        fireEvent.mouseDown(btn, { button: 0 });
+        expect(onHideWindow).toHaveBeenCalledTimes(1);
+        fireEvent.click(btn, { detail: 0 });
+        expect(onHideWindow).toHaveBeenCalledTimes(2);
+    });
+
+    it('shows a maximize control on the execution header while chatting', () => {
+        const onToggleMaximize = vi.fn();
+        const { getByTestId } = renderPanel({
+            lang: 'zh-Hans',
+            window: { inline: true, maximized: false, onToggleMaximize, onHideWindow: vi.fn() },
+            state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello', timestamp: Date.now() }], sending: false, streaming: false, ready: true },
+        });
+
+        const btn = getByTestId('task-maximize-toggle');
+        const controls = getByTestId('task-window-controls');
+        expect(controls.getAttribute('role')).toBe('group');
+        expect(controls.getAttribute('aria-label')).toBe('窗口控制');
+        expect(btn.getAttribute('title')).toBe('最大化窗口');
+        expect(btn.getAttribute('aria-pressed')).toBe('false');
+        expect(btn.querySelector('svg rect')).toBeTruthy();
+        expect(controls.lastElementChild).toBe(btn);
+        expect(getByTestId('task-hide-window').nextElementSibling).toBe(btn);
+        fireEvent.click(btn);
+        expect(onToggleMaximize).toHaveBeenCalledTimes(1);
+    });
+
+    it('omits the execution hide control when the window cannot be hidden', () => {
+        const { getByTestId, queryByTestId } = renderPanel({
+            window: { inline: true },
+            state: { messages: [{ id: 'msg-1', role: 'user', content: 'hello', timestamp: Date.now() }], sending: false, streaming: false, ready: true },
+        });
+
+        expect(getByTestId('task-execution-header')).toBeTruthy();
+        expect(queryByTestId('task-window-controls')).toBeNull();
+        expect(queryByTestId('task-hide-window')).toBeNull();
+        expect(queryByTestId('task-maximize-toggle')).toBeNull();
+    });
+
+    it('Property 8: fields, actions, and errors are fully rendered', () => {
+        const fieldArb = fc.record({
+            label: fc.string({ minLength: 1, maxLength: 20 }).filter(s => s.trim().length > 0),
+            value: fc.string({ minLength: 1, maxLength: 40 }).filter(s => s.trim().length > 0),
+        });
+
+        const actionArb: fc.Arbitrary<Pick<ChatAction, 'label' | 'command' | 'style'>> = fc.record({
+            label: fc.string({ minLength: 1, maxLength: 20 }).filter(s => s.trim().length > 0),
+            command: fc.string({ minLength: 1, maxLength: 30 }),
+            style: fc.constantFrom('default', 'danger'),
+        });
+
+        fc.assert(
+            fc.property(
+                fc.array(fieldArb, { minLength: 0, maxLength: 5 }),
+                fc.array(actionArb, { minLength: 0, maxLength: 4 }),
+                fc.option(fc.string({ minLength: 1, maxLength: 60 }).filter(s => s.trim().length > 0)),
+                (fields, actions, errorOpt) => {
+                    const messages: ChatMessage[] = [];
+
+                    if (fields.length > 0 || actions.length > 0) {
+                        messages.push(makeMsg({
+                            role: 'assistant',
+                            content: 'Response text',
+                            fields: fields.length > 0 ? fields : undefined,
+                            actions: actions.length > 0 ? actions : undefined,
+                        }));
+                    }
+
+                    if (errorOpt !== null) {
+                        messages.push(makeMsg({
+                            role: 'error',
+                            content: errorOpt,
+                        }));
+                    }
+
+                    if (messages.length === 0) return;
+
+                    cleanup();
+
+                    const { container } = renderPanel({ state: { messages, sending: false, streaming: false, ready: true } });
+                    const fieldCards = container.querySelectorAll('[data-testid="field-card"]');
+                    const fieldTexts = Array.from(fieldCards).map(el => el.textContent || '');
+
+                    for (const f of fields) {
+                        const found = fieldTexts.some(t => t.includes(f.label) && t.includes(f.value));
+                        expect(found).toBe(true);
+                    }
+
+                    const actionButtons = container.querySelectorAll('[data-testid="action-button"]');
+                    expect(actionButtons.length).toBe(actions.length);
+
+                    if (errorOpt !== null) {
+                        // Error bubbles are trimmed by localizeAIAssistantError
+                        // before display, so compare against the trimmed text.
+                        expect(container.textContent).toContain(errorOpt.trim());
+                    }
+                },
+            ),
+            { numRuns: 12 },
+        );
+    });
+    it('opens pending history discussions as read-only group tabs', async () => {
+        const onHandled = vi.fn();
+        const { getByTestId, getAllByText } = renderPanel({
+            pendingHistoryDiscussionOpen: {
+                id: 'disc-1',
+                topic: 'Vendor audit',
+                local_relation: 'owned_ve_invited',
+                readonly: true,
+                status: 'open',
+                participant_ids: ['ve-a'],
+            } as any,
+            onPendingHistoryDiscussionOpenHandled: onHandled,
+        });
+
+        await waitFor(() => expect(onHandled).toHaveBeenCalledTimes(1));
+        expect(getByTestId('ai-tab-history-disc-1')).toBeTruthy();
+        expect(getAllByText('Read-only').length).toBeGreaterThan(0);
+        expect(getByTestId('ai-history-group-tab-disc-1')).toBeTruthy();
+    });
+});
+
+describe('expert tabs', () => {
+    const expert = {
+        id: 'exp-1',
+        name: 'Polisher',
+        description: 'Polishes prose',
+        icon: '📝',
+        system_prompt: 'You polish.',
+        tools: [],
+        skills: [],
+        builtin: false,
+        created_at: '2026-01-01T00:00:00Z',
+        updated_at: '2026-01-01T00:00:00Z',
+    };
+
+    afterEach(() => {
+        cleanup();
+        vi.useRealTimers();
+        window.localStorage.clear();
+        cancelSessionForSessionMock.mockReset();
+        cancelSessionForSessionMock.mockResolvedValue('');
+        clearAIAssistantHistoryForSessionMock.mockReset();
+        clearAIAssistantHistoryForSessionMock.mockResolvedValue(undefined);
+        getTabWorkingDirMock.mockReset();
+        getTabWorkingDirMock.mockResolvedValue({ path: '' });
+        setTabWorkingDirMock.mockReset();
+        setTabWorkingDirMock.mockResolvedValue(undefined);
+        selectWorkingDirMock.mockReset();
+        selectWorkingDirMock.mockResolvedValue('');
+        openProjectDirectoryMock.mockReset();
+        openProjectDirectoryMock.mockResolvedValue(undefined);
+    });
+
+    it('opens an expert tab from pendingExpertOpen and seeds a local welcome message', async () => {
+        renderPanel({ pendingExpertOpen: { expert }, onPendingExpertOpenHandled: vi.fn() });
+        await screen.findByTestId('ai-tab-expert-exp-1');
+        await waitFor(() => expect(screen.getByTestId('ai-output-container').textContent || '').toContain("Hi, I'm Polisher"));
+    });
+
+    it('shows an expert-local working-directory selector that initially inherits the main tab', async () => {
+        getTabWorkingDirMock.mockResolvedValue({ path: 'D:/workspace/default', is_default: false });
+        selectWorkingDirMock.mockResolvedValueOnce('D:/workspace/literature');
+        renderPanel({ pendingExpertOpen: { expert }, onPendingExpertOpenHandled: vi.fn() });
+        await screen.findByTestId('ai-tab-expert-exp-1');
+        fireEvent.click(await screen.findByTestId('working-dir-chip'));
+        fireEvent.click(await screen.findByRole('menuitem', { name: 'Open containing folder' }));
+        await waitFor(() => expect(openProjectDirectoryMock).toHaveBeenCalledWith('D:/workspace/default'));
+        fireEvent.click(screen.getByTestId('working-dir-chip'));
+        fireEvent.click(await screen.findByRole('menuitem', { name: 'Choose a different working directory' }));
+        await waitFor(() => expect(setTabWorkingDirMock).toHaveBeenCalledWith('expert-exp-1', 'D:/workspace/literature'));
+    });
+
+    it('opens only one directory picker when the expert selector is clicked rapidly', async () => {
+        let resolveDirectory!: (path: string) => void;
+        getTabWorkingDirMock.mockResolvedValue({ path: 'D:/workspace/default', is_default: false });
+        selectWorkingDirMock.mockImplementationOnce(() => new Promise<string>(resolve => { resolveDirectory = resolve; }));
+        renderPanel({ pendingExpertOpen: { expert }, onPendingExpertOpenHandled: vi.fn() });
+        await screen.findByTestId('ai-tab-expert-exp-1');
+        fireEvent.click(await screen.findByTestId('working-dir-chip'));
+        const changeButton = await screen.findByRole('menuitem', { name: 'Choose a different working directory' });
+
+        fireEvent.click(changeButton);
+        fireEvent.click(changeButton);
+        expect(selectWorkingDirMock).toHaveBeenCalledTimes(1);
+
+        resolveDirectory('D:/workspace/literature');
+        await waitFor(() => expect(setTabWorkingDirMock).toHaveBeenCalledWith('expert-exp-1', 'D:/workspace/literature'));
+    });
+
+    it('routes expert tab sends with expert_id and no project path', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        renderPanel({ pendingExpertOpen: { expert }, onPendingExpertOpenHandled: vi.fn(), actions: { sendMessage } });
+        await screen.findByTestId('ai-tab-expert-exp-1');
+        await waitFor(() => expect(screen.getByTestId('ai-output-container').textContent || '').toContain("Hi, I'm Polisher"));
+        const input = screen.getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'hello expert' } });
+        const sendButton = within(screen.getByTestId('ai-input-bar')).getByLabelText('Send');
+        fireEvent.click(sendButton);
+        await waitFor(() => expect(sendMessage).toHaveBeenCalled());
+        const [text, options] = sendMessage.mock.calls[0] as [string, Record<string, unknown>];
+        expect(text).toContain('hello expert');
+        expect(options.expert_id).toBe('exp-1');
+        expect(options.project_path).toBeUndefined();
+    });
+
+    it('clears an expert conversation via the expert session key and shows the expert empty state', async () => {
+        renderPanel({ pendingExpertOpen: { expert }, onPendingExpertOpenHandled: vi.fn() });
+        await screen.findByTestId('ai-tab-expert-exp-1');
+        await waitFor(() => expect(screen.getByTestId('ai-output-container').textContent || '').toContain("Hi, I'm Polisher"));
+        fireEvent.click(screen.getByTitle('New conversation'));
+        await waitFor(() => expect(clearAIAssistantHistoryForSessionMock).toHaveBeenCalledWith('desktop-user:expert:exp-1'));
+        // Expert-specific empty state shows the persona; generic welcome does not render.
+        // (ai-expert-empty only renders when displayMessages is empty, so its
+        // presence already proves the seed chat message was cleared.)
+        await screen.findByTestId('ai-expert-empty');
+        expect(screen.getByTestId('ai-expert-empty').textContent).toContain('Polisher');
+        expect(screen.queryByTestId('ai-welcome-container')).toBeNull();
+    });
+
+    it('forgets expert-owned transient state when its tab closes', async () => {
+        const forgottenSessions: string[] = [];
+        const onForget = (event: Event) => {
+            forgottenSessions.push(String((event as CustomEvent).detail?.sessionKey || ''));
+        };
+        window.addEventListener('ai-assistant:forget-session-rounds', onForget);
+
+        renderPanel({ pendingExpertOpen: { expert }, onPendingExpertOpenHandled: vi.fn() });
+        await screen.findByTestId('ai-tab-expert-exp-1');
+        fireEvent.click(screen.getByTestId('ai-tab-close-expert-exp-1'));
+
+        await waitFor(() => expect(forgottenSessions).toContain('desktop-user:expert:exp-1'));
+        window.removeEventListener('ai-assistant:forget-session-rounds', onForget);
+    });
+
+    it('does not resurrect cleared history after the idle tab is released, then persists a fresh re-chat', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const base = defaultPanelProps();
+        const props: React.ComponentProps<typeof AIAssistantPanel> = {
+            ...base,
+            pendingExpertOpen: { expert } as any,
+            onPendingExpertOpenHandled: vi.fn(),
+            actions: { ...base.actions, sendMessage },
+        };
+        const { rerender } = render(<AIAssistantPanel {...props} />, { wrapper: DialogProvider });
+        await screen.findByTestId('ai-tab-expert-exp-1');
+        await waitFor(() => expect(screen.getByTestId('ai-output-container').textContent || '').toContain("Hi, I'm Polisher"));
+
+        // A real exchange first, so "history" is not just the welcome seed and
+        // the no-resurrection assertion below has something to catch.
+        const oldInput = screen.getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(oldInput, { target: { value: 'old question' } });
+        fireEvent.click(within(screen.getByTestId('ai-input-bar')).getByLabelText('Send'));
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(expect.stringContaining('old question'), expect.anything()));
+
+        // Clear, then leave the tab: the cleared conversation must not come back.
+        fireEvent.click(screen.getByTitle('New conversation'));
+        await waitFor(() => expect(clearAIAssistantHistoryForSessionMock).toHaveBeenCalledWith('desktop-user:expert:exp-1'));
+        activateLocalTab();
+        // Switching to the guide releases the now-idle expert tab (idleTaskTabClose):
+        // the cleared conversation holds no draft, busy session, or workflow, so
+        // nothing keeps the tab open. Documented product behaviour — the expert
+        // row stays in the task list and its transcript stays resumable from there.
+        await waitFor(() => expect(screen.queryByTestId('ai-tab-expert-exp-1')).toBeNull());
+
+        // The user re-opens the expert from the expert centre. The fresh tab is
+        // seeded anew; the pre-clear exchange must NOT be back.
+        rerender(<AIAssistantPanel {...{ ...props, pendingExpertOpen: { expert } as any }} />);
+        await screen.findByTestId('ai-tab-expert-exp-1');
+        await waitFor(() => expect(screen.getByTestId('ai-output-container').textContent || '').toContain("Hi, I'm Polisher"));
+        expect(screen.getByTestId('ai-output-container').textContent || '').not.toContain('old question');
+
+        // Re-chat: user sends a new message.
+        const input = screen.getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: 'fresh question' } });
+        fireEvent.click(within(screen.getByTestId('ai-input-bar')).getByLabelText('Send'));
+        await waitFor(() => expect(sendMessage).toHaveBeenCalledWith(expect.stringContaining('fresh question'), expect.anything()));
+
+        // Backend streams a reply in the expert session; live-sync must backfill it
+        // into the tab state and persist it to localStorage.
+        const reply = makeMsg({ id: 'exp-reply-1', role: 'assistant', content: 'fresh answer', sessionKey: 'desktop-user:expert:exp-1' });
+        const nextProps: React.ComponentProps<typeof AIAssistantPanel> = {
+            ...props,
+            state: { ...(props.state as any), messages: [reply] },
+        };
+        rerender(<AIAssistantPanel {...nextProps} />);
+        await waitFor(() => expect(screen.getByTestId('ai-output-container').textContent || '').toContain('fresh answer'));
+        await waitFor(() => {
+            const raw = window.localStorage.getItem('ai_assistant_project_tab_histories') || '';
+            expect(raw).toContain('expert-exp-1');
+            expect(raw).toContain('fresh answer');
+        }, { timeout: 3000 });
+    });
+});
+
+describe('thinking panel auto-expands with real hook state shape', () => {
+    afterEach(() => {
+        cleanup();
+    });
+
+    // The reasoning panel is a <details> only when it has a renderable body;
+    // with an empty trail it degrades to <div role="status"> (no `open`
+    // property). So the fixture must carry reasoning that survives
+    // `stripCodingWorkbenchStatusReasoning` — the old fixture was two host
+    // status milestones ("执行环境已就绪" / "正在同步会话上下文"), which that
+    // cleaner strips, leaving an empty trail and rendering the <div> branch.
+    const reasoningDetails = (root: HTMLElement) =>
+        root.querySelector<HTMLDetailsElement>('details[data-testid="assistant-reasoning-panel"]');
+
+    it('opens the trail while streamingSessionKeys lists the active session', () => {
+        const user = makeMsg({ role: 'user', content: 'Nanjing weather' });
+        const assistant = makeMsg({ id: 'a-repro-expand', role: 'assistant', content: '', reasoning: 'Checking the forecast for Nanjing.\nRain is likely in the afternoon.' });
+        const props = defaultPanelProps();
+        const initialProps: React.ComponentProps<typeof AIAssistantPanel> = {
+            ...props,
+            state: {
+                ...props.state,
+                messages: [user, assistant],
+                sending: true,
+                streaming: false,
+                streamingSessionKey: 'desktop-user',
+                streamingSessionKeys: [],
+                ready: true,
+            } as any,
+        };
+        const { container, rerender } = render(<AIAssistantPanel {...initialProps} />, { wrapper: DialogProvider });
+
+        expect(reasoningDetails(container)?.open).toBe(false);
+
+        rerender(
+            <AIAssistantPanel
+                {...initialProps}
+                state={{
+                    ...initialProps.state,
+                    streaming: true,
+                    streamingSessionKeys: ['desktop-user'],
+                } as any}
+            />,
+        );
+
+        expect(reasoningDetails(container)?.open).toBe(true);
+        expect(reasoningDetails(container)?.textContent).toContain('Checking the forecast for Nanjing.');
+        expect(reasoningDetails(container)?.getAttribute('data-live')).toBe('true');
+    });
+});
+
+describe('local execution heading', () => {
+    it('uses the localized assistant title instead of the stored Chinese default', () => {
+        renderPanel({
+            lang: 'en',
+            state: { messages: [makeMsg({ role: 'user', content: 'hi' })], sending: false, streaming: false, ready: true },
+        });
+        const header = screen.getByTestId('task-execution-header');
+        expect(header.textContent).toContain('New task');
+        expect(header.textContent).not.toContain('Default Task');
+        expect(header.textContent).not.toContain('默认任务');
+        expect(header.textContent).not.toContain('Created by you');
+    });
+});
+
+describe('new-task wizard page (task-pane 新建任务 button)', () => {
+    afterEach(() => {
+        cleanup();
+        window.localStorage.clear();
+        createTaskUnifiedMock.mockReset();
+        createTaskUnifiedMock.mockResolvedValue({ projectPath: 'D:/tasks/wizard-task' });
+    });
+
+    function typeAndEnter(text: string) {
+        const input = screen.getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: text } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+    }
+
+    it('first send from a wizard tab always creates a task with only the name (default draft)', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        // Open the wizard page (task-pane "新建任务" button behavior).
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        // The wizard marker lands one tick after activation.
+        await waitFor(() => {
+            expect(screen.getByTestId('welcome-task-config')).toBeTruthy();
+        });
+
+        typeAndEnter('整理本周周报');
+
+        await waitFor(() => {
+            expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
+        });
+        const opts = createTaskUnifiedMock.mock.calls[0][0] as Record<string, unknown>;
+        // TaskCreateOptions carries only the name (+ chat mode); nothing else.
+        expect(opts).toEqual({
+            name: '整理本周周报',
+            mode: 'chat',
+            workingDir: '',
+            cloudWorkspaceId: '',
+            expertId: '',
+            expertName: '',
+            workflowTemplateId: '',
+        });
+        // The legacy local send path is bypassed; the launch handoff owns the first message.
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('a quick second Enter during the wizard create does not create a second task', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        let resolveCreate: ((result: { projectPath: string }) => void) | null = null;
+        createTaskUnifiedMock.mockImplementation(() => new Promise<{ projectPath: string }>(resolve => { resolveCreate = resolve; }));
+        renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('welcome-task-config')).toBeTruthy();
+        });
+
+        typeAndEnter('整理本周周报');
+        await waitFor(() => {
+            expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
+        });
+        // While the create is still in flight, a repeat Enter must be dropped.
+        typeAndEnter('整理本周周报');
+        expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
+
+        await act(async () => {
+            resolveCreate?.({ projectPath: 'D:/tasks/wizard-task' });
+        });
+        await waitFor(() => {
+            expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
+        });
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('keeps the guide as a new-task page so the next send creates another task', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('welcome-task-config')).toBeTruthy();
+        });
+
+        typeAndEnter('任务一');
+        await waitFor(() => {
+            expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
+        });
+
+        // The guide stays the new-task page, so another send creates another task.
+        typeAndEnter('普通闲聊一句');
+        await waitFor(() => {
+            expect(createTaskUnifiedMock).toHaveBeenCalledTimes(2);
+        });
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('startup guide creates a task from a zero-config send', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        typeAndEnter('随便聊聊');
+        await waitFor(() => {
+            expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
+        });
+        expect(createTaskUnifiedMock.mock.calls[0][0]).toEqual(expect.objectContaining({ name: '随便聊聊', mode: 'chat' }));
+        expect(sendMessage).not.toHaveBeenCalled();
+    });
+
+    it('dispatches the task launch with the first message after wizard creation', async () => {
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        renderPanel({
+            window: { inline: true },
+            state: { messages: [], sending: false, streaming: false, ready: true },
+            actions: { sendMessage },
+        });
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('welcome-task-config')).toBeTruthy();
+        });
+
+        const launches: CustomEvent[] = [];
+        const listener = (event: Event) => launches.push(event as CustomEvent);
+        window.addEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+        try {
+            typeAndEnter('整理本周周报');
+            await waitFor(() => {
+                expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
+            });
+            expect(launches).toHaveLength(1);
+            expect((launches[0].detail as { projectPath: string; initialMessage: string }).projectPath).toBe('D:/tasks/wizard-task');
+            expect((launches[0].detail as { initialMessage: string }).initialMessage).toBe('整理本周周报');
+        } finally {
+            window.removeEventListener(EVENT_OPEN_TASK_LAUNCH, listener);
+        }
+    });
+
+    it('opens the wizard over a running conversation and can return without clearing it', async () => {
+        const clearHistory = vi.fn().mockResolvedValue(undefined);
+        const sendMessage = vi.fn().mockResolvedValue(true);
+        const user = makeMsg({ role: 'user', content: 'Chongzhou weather' });
+        renderPanel({
+            window: { inline: true },
+            state: { messages: [user], sending: true, streaming: false, ready: true },
+            actions: { clearHistory, sendMessage },
+        });
+        expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('execution');
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+
+        await waitFor(() => {
+            expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('welcome');
+        });
+        expect(screen.getByTestId('welcome-task-config')).toBeTruthy();
+        expect(screen.getByTestId('new-task-wizard-running-banner')).toBeTruthy();
+        expect(clearHistory).not.toHaveBeenCalled();
+
+        fireEvent.click(screen.getByTestId('new-task-wizard-back'));
+        await waitFor(() => {
+            expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('execution');
+        });
+        expect(screen.getByText('Chongzhou weather')).toBeTruthy();
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        await waitFor(() => {
+            expect(screen.getByTestId('welcome-task-config')).toBeTruthy();
+        });
+        const input = screen.getByTestId('ai-input') as HTMLTextAreaElement;
+        fireEvent.change(input, { target: { value: '整理本周周报' } });
+        fireEvent.keyDown(input, { key: 'Enter' });
+        await waitFor(() => {
+            expect(createTaskUnifiedMock).toHaveBeenCalledTimes(1);
+        });
+        expect(sendMessage).not.toHaveBeenCalled();
+        expect(clearHistory).not.toHaveBeenCalled();
+        await waitFor(() => {
+            expect(screen.getByText('Chongzhou weather')).toBeTruthy();
+        });
+    });
+
+    it('opens the guide from another task and keeps an unsent guide draft', async () => {
+        const controls: { openProject?: () => void } = {};
+        function Harness() {
+            const [activeTask, setActiveTask] = useState<{ projectPath?: string; cloudWorkspaceId?: string; expertId?: string } | null>(null);
+            const [pending, setPending] = useState<{ projectPath: string; taskTitle: string; autoSend: boolean } | null>(null);
+            const [draft, setDraft] = useState('');
+            const base = defaultPanelProps();
+            controls.openProject = () => setPending({ projectPath: 'D:/tasks/workspace-1', taskTitle: '工作区 1', autoSend: false });
+            return (
+                <AIAssistantPanel
+                    {...base}
+                    window={{ inline: true }}
+                    state={{ ...base.state, messages: [], sending: false, streaming: false, ready: true, draftInputValue: draft }}
+                    actions={{ ...base.actions, setDraftInputValue: setDraft }}
+                    activeAssistantTask={activeTask}
+                    onActiveAssistantTaskChange={setActiveTask}
+                    pendingProjectTabOpen={pending}
+                    onPendingProjectTabOpenHandled={() => setPending(null)}
+                />
+            );
+        }
+        render(<Harness />, { wrapper: DialogProvider });
+        await waitFor(() => expect(screen.getByTestId('welcome-task-config')).toBeTruthy());
+        fireEvent.change(screen.getByTestId('ai-input'), { target: { value: 'half written' } });
+
+        act(() => controls.openProject?.());
+        await waitFor(() => expect(screen.getByTestId('ai-panel-root').getAttribute('data-ai-view')).toBe('execution'));
+
+        act(() => {
+            window.dispatchEvent(new CustomEvent(EVENT_OPEN_NEW_TASK_WIZARD));
+        });
+        await waitFor(() => expect(screen.getByTestId('welcome-task-config')).toBeTruthy());
+        expect((screen.getByTestId('ai-input') as HTMLTextAreaElement).value).toBe('half written');
+    });
+});

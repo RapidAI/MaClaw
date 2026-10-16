@@ -28,6 +28,18 @@ func reviewedHostFileReadInvocationSchema() map[string]interface{} {
 			// search_files knob of the same name, and it carries none of that
 			// tool's other arguments.
 			"file_pattern": map[string]interface{}{"type": "string"},
+			// start_line names an outcome path and query cannot reach: the
+			// text of a known file past the first page, or the page a compiler
+			// log already addressed by line. The page length stays host-fixed,
+			// so this is not the legacy lines/offset/end_line knob set.
+			// The catalog renderer replaces the function description with the
+			// capability summary, so this property description is what the model
+			// reads. Do not put the page length in it: a number there invites
+			// the model to pass the forbidden lines knob.
+			"start_line": map[string]interface{}{
+				"type":        "integer",
+				"description": "1-based start of one host-sized text page. The page length is fixed. Do not combine with query or file_pattern.",
+			},
 		},
 		"required":             []string{},
 		"additionalProperties": false,
@@ -35,15 +47,16 @@ func reviewedHostFileReadInvocationSchema() map[string]interface{} {
 }
 
 func reviewedHostFileReadContractDigest() string {
-	return coretool.SchemaDigest([]byte("fs.read.local:v3:host-fileread"))
+	return coretool.SchemaDigest([]byte("fs.read.local:v4:host-fileread"))
 }
 
 // ProjectReviewedHostFileReadProvider projects the host-owned workspace
 // filesystem inspect. It is not a Skill/MCP discovery entry and must not
 // import GUI read_file / list_directory / search_files. The closed schema
-// accepts optional path, query, and file_pattern. Empty path lists the
-// workspace root; query searches workspace contents; file_pattern locates
-// files by name and narrows a query to the files it matches. Office/PDF files
+// accepts optional path, query, file_pattern, and start_line. Empty path lists
+// the workspace root; query searches workspace contents; file_pattern locates
+// files by name and narrows a query to the files it matches. start_line reads
+// one host-sized page of a text file from that 1-based line. Office/PDF files
 // use the native document reader; the filesystem type decides, not user
 // keywords. This is not knowledge.read.local. Writes, channel, and destination
 // are rejected.
@@ -62,7 +75,7 @@ func ProjectReviewedHostFileReadProvider(reader reviewedHostFileReader) (coretoo
 	}
 	contractDigest := reviewedHostFileReadContractDigest()
 	bindingSchemaDigest := coretool.SchemaDigest([]byte(strings.Join([]string{
-		"host-fileread-path-query-pattern-v3", contractDigest, invocationDigest,
+		"host-fileread-path-query-pattern-start-v4", contractDigest, invocationDigest,
 	}, "\x00")))
 	provider := coretool.ProviderSpec{
 		AdapterName: reviewedHostFileReadAdapterName,
@@ -126,11 +139,20 @@ func executeReviewedHostFileRead(reader reviewedHostFileReader) func(context.Con
 		if reader == nil {
 			return "", fmt.Errorf("host_file_read_unavailable")
 		}
-		if len(args) > 3 {
+		if len(args) > 4 {
 			return "", fmt.Errorf("host_file_read_arguments_rejected")
 		}
 		path, query, filePattern := "", "", ""
+		startLine := 0
 		for key, raw := range args {
+			if key == "start_line" {
+				line, ok := coretool.PositiveSchemaInteger(raw)
+				if !ok {
+					return "", fmt.Errorf("host_file_read_arguments_rejected")
+				}
+				startLine = line
+				continue
+			}
 			value, ok := raw.(string)
 			if !ok {
 				return "", fmt.Errorf("host_file_read_arguments_rejected")
@@ -146,11 +168,17 @@ func executeReviewedHostFileRead(reader reviewedHostFileReader) func(context.Con
 				return "", fmt.Errorf("host_file_read_arguments_rejected")
 			}
 		}
-		return reader.ReadReviewedHostFile(ctx, principal, strings.TrimSpace(path), strings.TrimSpace(query), strings.TrimSpace(filePattern))
+		path = strings.TrimSpace(path)
+		query = strings.TrimSpace(query)
+		filePattern = strings.TrimSpace(filePattern)
+		if startLine > 0 && (query != "" || filePattern != "") {
+			return "", fmt.Errorf("host_file_read_conflicting_fields")
+		}
+		return reader.ReadReviewedHostFile(ctx, principal, path, query, filePattern, startLine)
 	}
 }
 
-func (c *coreAgentCallbacks) ReadReviewedHostFile(ctx context.Context, principal Principal, path, query, filePattern string) (string, error) {
+func (c *coreAgentCallbacks) ReadReviewedHostFile(ctx context.Context, principal Principal, path, query, filePattern string, startLine int) (string, error) {
 	if c == nil || strings.TrimSpace(c.workspace) == "" {
 		return "", fmt.Errorf("host_file_read_unavailable")
 	}
@@ -161,6 +189,9 @@ func (c *coreAgentCallbacks) ReadReviewedHostFile(ctx context.Context, principal
 	path = strings.TrimSpace(path)
 	query = strings.TrimSpace(query)
 	filePattern = strings.TrimSpace(filePattern)
+	if startLine < 0 || (startLine > 0 && (query != "" || filePattern != "")) {
+		return "", fmt.Errorf("host_file_read_conflicting_fields")
+	}
 	if path == "" {
 		path = "."
 	}
@@ -199,6 +230,21 @@ func (c *coreAgentCallbacks) ReadReviewedHostFile(ctx context.Context, principal
 	info, err := os.Stat(absPath)
 	if err != nil {
 		return "", fmt.Errorf("file not found or inaccessible: %w", err)
+	}
+	if startLine > 0 {
+		// A requested page is a text-file read. It overrides the .log tail
+		// default, including start_line=1, which is the head of the file.
+		if info.IsDir() || reviewedHostFileReadUsesDocumentReader(absPath) {
+			return "", fmt.Errorf("host_file_read_start_line_unsupported")
+		}
+		read, err := c.readFileDetailed(map[string]interface{}{
+			"path":       path,
+			"start_line": startLine,
+		})
+		if err != nil {
+			return "", err
+		}
+		return read, nil
 	}
 	if info.IsDir() {
 		// The listing states trouble in prose the same way the walk does, and

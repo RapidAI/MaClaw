@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -27,10 +28,29 @@ type failingAuditStore struct {
 	failAudit bool
 }
 
+func TestZipDirectoryBytesRejectsSymlinkRootAndSpecialFiles(t *testing.T) {
+	root := t.TempDir()
+	realDir := filepath.Join(root, "real")
+	if err := os.MkdirAll(realDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(realDir, "skill.yaml"), []byte("name: demo\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	linkDir := filepath.Join(root, "link")
+	if err := os.Symlink(realDir, linkDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if _, err := zipDirectoryBytes(linkDir); err == nil {
+		t.Fatal("zipDirectoryBytes accepted symlink root")
+	}
+}
+
 type failingSkillContractRevokeRegistry struct {
 	DynamicCapabilityContractRegistry
-	fail        bool
-	failPublish bool
+	fail           bool
+	failPublish    bool
+	failPublishFor map[string]bool
 }
 
 func (r *failingSkillContractRevokeRegistry) RevokeSkillContract(p Principal, stableID string) error {
@@ -41,7 +61,7 @@ func (r *failingSkillContractRevokeRegistry) RevokeSkillContract(p Principal, st
 }
 
 func (r *failingSkillContractRevokeRegistry) PublishSkillContract(p Principal, stableID string, contract DynamicCapabilityContract) error {
-	if r.failPublish {
+	if r.failPublish || r.failPublishFor[stableID] {
 		return fmt.Errorf("injected contract restore failure")
 	}
 	return r.DynamicCapabilityContractRegistry.PublishSkillContract(p, stableID, contract)
@@ -562,7 +582,7 @@ func TestUnzipBytesRejectsTooManyEntries(t *testing.T) {
 }
 
 func TestCopyDirContentsRejectsSymlink(t *testing.T) {
-	if os.Getenv("OS") == "Windows_NT" {
+	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation often requires elevated permissions on Windows")
 	}
 	src := t.TempDir()
@@ -585,7 +605,7 @@ func TestCopyDirContentsRejectsSymlink(t *testing.T) {
 }
 
 func TestZipDirectoryBytesRejectsSymlink(t *testing.T) {
-	if os.Getenv("OS") == "Windows_NT" {
+	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation often requires elevated permissions on Windows")
 	}
 	src := t.TempDir()
@@ -962,6 +982,46 @@ func TestUploadSkillRollsBackAutoFixWhenPreflightBlocks(t *testing.T) {
 	}
 }
 
+func TestUploadSkillRollsBackAutoFixWhenSubmitFails(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createStatusTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	root, err := svc.ensureUserSkillsRoot(principal)
+	if err != nil {
+		t.Fatalf("ensureUserSkillsRoot() error = %v", err)
+	}
+	skillDir := filepath.Join(root, "rollback-submit-upload")
+	if err := os.MkdirAll(filepath.Join(skillDir, "scripts"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	scriptPath := filepath.Join(skillDir, "scripts", "run.py")
+	if err := os.WriteFile(scriptPath, []byte("print('ok')\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	yaml := "name: rollback-submit-upload\ndescription: demo\nsteps:\n  - action: bash\n    params:\n      command: python " + scriptPath + "\n"
+	yamlPath := filepath.Join(skillDir, "skill.yaml")
+	if err := os.WriteFile(yamlPath, []byte(yaml), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "temporary failure", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+	if _, err := svc.UploadSkill(context.Background(), principal, "rollback-submit-upload", SkillUploadInput{Email: "user@example.com", SkillMarketURL: server.URL}); err == nil {
+		t.Fatal("UploadSkill() error = nil, want submit failure")
+	}
+	data, readErr := os.ReadFile(yamlPath)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(data) != yaml {
+		t.Fatalf("skill.yaml was not rolled back after submit failure:\n%s", string(data))
+	}
+	if _, statErr := os.Stat(yamlPath + ".bak"); !os.IsNotExist(statErr) {
+		t.Fatalf("skill.yaml.bak exists after submit rollback, statErr=%v", statErr)
+	}
+}
+
 func TestZipSkillUploadArchiveBytesSkipsRuntimeArtifacts(t *testing.T) {
 	dir := t.TempDir()
 	files := map[string]string{
@@ -1148,6 +1208,75 @@ func TestImproveSkillAutoFixScansAndRollsBackRiskySkill(t *testing.T) {
 		t.Fatalf("skill.rejected audit count = %d, want 1; events=%#v", len(events), events)
 	}
 }
+
+func TestImproveSkillAuditFailureRollsBackAutoFix(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createStatusTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	root, err := svc.ensureUserSkillsRoot(principal)
+	if err != nil {
+		t.Fatalf("ensureUserSkillsRoot() error = %v", err)
+	}
+	skillDir := filepath.Join(root, "audit-failure-improve")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	yamlPath := filepath.Join(skillDir, "skill.yaml")
+	originalYAML := []byte("name: audit-failure-improve\ndescription: demo\nsteps:\n  - action: prompt\n    params:\n      prompt: hello\n")
+	if err := os.WriteFile(yamlPath, originalYAML, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Keep discovery available while making the final improvement audit fail.
+	svc.store = &failingAuditStore{Store: svc.store, failAudit: true}
+	if _, err := svc.ImproveSkill(context.Background(), principal, "audit-failure-improve", SkillImproveInput{AutoFix: true}); err == nil || !strings.Contains(err.Error(), "audit failed") {
+		t.Fatalf("ImproveSkill() error = %v, want final-audit failure", err)
+	}
+	data, err := os.ReadFile(yamlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(data) != string(originalYAML) {
+		t.Fatalf("skill.yaml was not restored after audit failure:\n got: %q\nwant: %q", string(data), string(originalYAML))
+	}
+}
+
+func TestUploadSkillAuditFailureReturnsSubmittedResultAndError(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createStatusTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	root, err := svc.ensureUserSkillsRoot(principal)
+	if err != nil {
+		t.Fatalf("ensureUserSkillsRoot() error = %v", err)
+	}
+	skillDir := filepath.Join(root, "upload-audit-failure")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "skill.yaml"), []byte("name: upload-audit-failure\ndescription: demo\nsteps:\n  - action: prompt\n    params:\n      prompt: hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/skills/submit" {
+			t.Fatalf("unexpected upload path %s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"submission_id": "sub-audit-failure"})
+	}))
+	defer server.Close()
+	// Keep discovery and upload available while forcing only the final audit to
+	// fail. The remote submission has already happened at this point and must be
+	// returned to the caller for reconciliation.
+	svc.store = &failingAuditStore{Store: svc.store, failAudit: true}
+	result, err := svc.UploadSkill(context.Background(), principal, "upload-audit-failure", SkillUploadInput{
+		Email: "user@example.com", SkillMarketURL: server.URL,
+	})
+	if err == nil || !strings.Contains(err.Error(), "finalization") {
+		t.Fatalf("UploadSkill() error = %v, want local finalization failure", err)
+	}
+	if result == nil || result.SubmissionID != "sub-audit-failure" || result.Status != "submitted" {
+		t.Fatalf("UploadSkill() result = %#v, want submitted receipt", result)
+	}
+}
+
 func TestPersistImportedEntriesAuditsSecurityRejection(t *testing.T) {
 	svc := newStatusTestService(t)
 	tenant, user := createStatusTestUser(t, svc)
@@ -1314,6 +1443,267 @@ func TestPersistImportedEntriesSamePackageIsNoOp(t *testing.T) {
 	}
 }
 
+func TestPersistImportedEntriesSamePackageIsNoOpWithoutOverwrite(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createStatusTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	source := t.TempDir()
+	if err := os.WriteFile(filepath.Join(source, "skill.yaml"), []byte("name: idempotent-no-overwrite\ndescription: demo\nsteps:\n  - action: prompt\n    prompt: hello\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entry := corelib.NLSkillEntry{Name: "idempotent-no-overwrite", Description: "demo", Source: "test", SkillDir: source, Steps: []corelib.NLSkillStep{{Action: "prompt", Params: map[string]interface{}{"prompt": "hello"}}}}
+	if _, err := svc.persistImportedEntries(context.Background(), principal, []corelib.NLSkillEntry{entry}, false); err != nil {
+		t.Fatalf("initial import: %v", err)
+	}
+	if _, err := svc.persistImportedEntries(context.Background(), principal, []corelib.NLSkillEntry{entry}, false); err != nil {
+		t.Fatalf("identical import without overwrite should be a no-op: %v", err)
+	}
+	if summaries, err := skill.ListEvolutionCompensationSummaries(); err != nil {
+		t.Fatal(err)
+	} else {
+		for _, summary := range summaries {
+			if summary.Action == "agentservice_install" && summary.Skill == entry.Name {
+				t.Fatalf("no-op import left compensation record: %#v", summary)
+			}
+		}
+	}
+}
+
+func TestPersistImportedEntriesChangedPackagePayloadRequiresOverwrite(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createStatusTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	firstSource, secondSource := t.TempDir(), t.TempDir()
+	yaml := "name: payload-change\ndescription: same contract\nsteps:\n  - action: prompt\n    prompt: hello\n"
+	for dir, script := range map[string]string{firstSource: "echo one\n", secondSource: "echo two\n"} {
+		if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte(yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "scripts", "run.sh"), []byte(script), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entry := corelib.NLSkillEntry{Name: "payload-change", Description: "same contract", Source: "test", SkillDir: firstSource, Steps: []corelib.NLSkillStep{{Action: "prompt", Params: map[string]interface{}{"prompt": "hello"}}}}
+	if _, err := svc.persistImportedEntries(context.Background(), principal, []corelib.NLSkillEntry{entry}, false); err != nil {
+		t.Fatalf("initial import: %v", err)
+	}
+	entry.SkillDir = secondSource
+	if _, err := svc.persistImportedEntries(context.Background(), principal, []corelib.NLSkillEntry{entry}, false); err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("changed payload without overwrite = %v, want conflict", err)
+	}
+	installed, err := svc.ListSkills(context.Background(), principal)
+	if err != nil || len(installed) != 1 {
+		t.Fatalf("ListSkills: %#v err=%v", installed, err)
+	}
+	payload, err := os.ReadFile(filepath.Join(installed[0].SkillDir, "scripts", "run.sh"))
+	if err != nil || string(payload) != "echo one\n" {
+		t.Fatalf("installed payload changed after rejected import: %q err=%v", payload, err)
+	}
+	if _, err := svc.persistImportedEntries(context.Background(), principal, []corelib.NLSkillEntry{entry}, true); err != nil {
+		t.Fatalf("changed payload with overwrite: %v", err)
+	}
+	installed, err = svc.ListSkills(context.Background(), principal)
+	if err != nil || len(installed) != 1 {
+		t.Fatalf("ListSkills after overwrite: %#v err=%v", installed, err)
+	}
+	payload, err = os.ReadFile(filepath.Join(installed[0].SkillDir, "scripts", "run.sh"))
+	if err != nil || string(payload) != "echo two\n" {
+		t.Fatalf("overwrite did not publish changed payload: %q err=%v", payload, err)
+	}
+}
+
+func TestAgentSkillPackageRoundTripPreservesDefinitionFields(t *testing.T) {
+	source, target := t.TempDir(), t.TempDir()
+	entry := corelib.NLSkillEntry{
+		SkillID: "acme.roundtrip", Name: "roundtrip", Description: "contract", Source: "github",
+		Version: "1.2.3", ProducesArtifact: false, Stateful: true,
+		RequiresPython: []string{"requests"}, RequiresNode: []string{"zod"}, RequiresBins: []string{"python"},
+		RequiresTools: []string{"browser"}, FallbackForTools: []string{"web_fetch"},
+		RequiresToolsets: []string{"desktop"}, FallbackForToolsets: []string{"terminal"},
+		Platforms: []string{"windows"}, RequiresGUI: true, RequiredCredentialFiles: []string{"credentials/api.json"},
+		Mode: "api_workflow", ExecMode: "named", GlobalTimeout: 42,
+		Params:   []corelib.NLSkillParam{{Name: "input", Type: "string", Required: true}},
+		Steps:    []corelib.NLSkillStep{{Action: "prompt", Params: map[string]interface{}{"prompt": "hello"}}},
+		Pipeline: []corelib.SkillPipelineStep{{Skill: "next", Checkpoint: true, Params: map[string]string{"x": "y"}}},
+		SkillDir: source,
+	}
+	if err := os.WriteFile(filepath.Join(source, "run.sh"), []byte("echo payload\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeEntryToSkillDir(target, entry); err != nil {
+		t.Fatalf("writeEntryToSkillDir: %v", err)
+	}
+	got, err := loadImportedSkillEntry(target)
+	if err != nil {
+		t.Fatalf("loadImportedSkillEntry: %v", err)
+	}
+	if got.SkillID != entry.SkillID || got.Version != entry.Version || got.Source != entry.Source || got.ProducesArtifact || !got.Stateful {
+		t.Fatalf("definition fields not preserved: %#v", got)
+	}
+	if len(got.RequiresPython) != 1 || len(got.RequiresNode) != 1 || len(got.RequiresBins) != 1 || len(got.RequiresTools) != 1 || len(got.FallbackForTools) != 1 || len(got.RequiresToolsets) != 1 || len(got.FallbackForToolsets) != 1 || len(got.Platforms) != 1 || !got.RequiresGUI || len(got.RequiredCredentialFiles) != 1 || got.Mode != "api_workflow" || got.ExecMode != "named" || got.GlobalTimeout != 42 || len(got.Params) != 1 || got.Params[0].Type != "string" || len(got.Pipeline) != 1 || !got.Pipeline[0].Checkpoint {
+		t.Fatalf("contract fields not preserved: %#v", got)
+	}
+	if payload, err := os.ReadFile(filepath.Join(target, "run.sh")); err != nil || string(payload) != "echo payload\n" {
+		t.Fatalf("package payload not preserved: %q err=%v", payload, err)
+	}
+}
+
+func TestPersistImportedEntriesBatchPublishFailureRollsBackEarlierPackages(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createStatusTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	firstName, secondName := "batch-first-"+suffix, "batch-second-"+suffix
+	firstSource, secondSource := t.TempDir(), t.TempDir()
+	for dir, name := range map[string]string{firstSource: firstName, secondSource: secondName} {
+		yaml := fmt.Sprintf("name: %s\ndescription: test\nsteps:\n  - action: prompt\n    prompt: hello\n", name)
+		if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte(yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var renameCalls int
+	svc.skillDirectoryRename = func(oldPath, newPath string) error {
+		renameCalls++
+		if renameCalls == 2 {
+			return fmt.Errorf("injected second batch publish failure")
+		}
+		return skill.RetryDirectoryRename(oldPath, newPath)
+	}
+	entries := []corelib.NLSkillEntry{
+		{Name: firstName, Description: "test", Source: "test", SkillDir: firstSource, Steps: []corelib.NLSkillStep{{Action: "prompt", Params: map[string]interface{}{"prompt": "hello"}}}},
+		{Name: secondName, Description: "test", Source: "test", SkillDir: secondSource, Steps: []corelib.NLSkillStep{{Action: "prompt", Params: map[string]interface{}{"prompt": "hello"}}}},
+	}
+	if _, err := svc.persistImportedEntries(context.Background(), principal, entries, false); err == nil || !strings.Contains(err.Error(), "not committed") {
+		t.Fatalf("batch publish failure = %v, want not committed error", err)
+	}
+	root := svc.userSkillsRoot(tenant.ID, user.ID)
+	for _, name := range []string{firstName, secondName} {
+		if _, err := os.Stat(filepath.Join(root, name)); !os.IsNotExist(err) {
+			t.Fatalf("batch rollback left %s published: %v", name, err)
+		}
+	}
+	if summaries, err := skill.ListEvolutionCompensationSummaries(); err != nil {
+		t.Fatal(err)
+	} else {
+		for _, summary := range summaries {
+			if summary.Action == "agentservice_install" && (summary.Skill == firstName || summary.Skill == secondName) {
+				t.Fatalf("successful batch rollback left compensation record: %#v", summary)
+			}
+		}
+	}
+}
+
+func TestPersistImportedEntriesCleanupFailureKeepsCommittedPending(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createStatusTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	oldSource, newSource := t.TempDir(), t.TempDir()
+	for dir, description := range map[string]string{oldSource: "old", newSource: "new"} {
+		yaml := fmt.Sprintf("name: cleanup-pending\ndescription: %s\nsteps:\n  - action: prompt\n    prompt: hello\n", description)
+		if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte(yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	entry := corelib.NLSkillEntry{Name: "cleanup-pending", Description: "old", Source: "test", SkillDir: oldSource, Steps: []corelib.NLSkillStep{{Action: "prompt", Params: map[string]interface{}{"prompt": "hello"}}}}
+	if _, err := svc.persistImportedEntries(context.Background(), principal, []corelib.NLSkillEntry{entry}, false); err != nil {
+		t.Fatalf("initial import: %v", err)
+	}
+	svc.skillPostCommitCleanup = func() error { return fmt.Errorf("injected cleanup failure") }
+	entry.Description = "new"
+	entry.SkillDir = newSource
+	if _, err := svc.persistImportedEntries(context.Background(), principal, []corelib.NLSkillEntry{entry}, true); err == nil || !strings.Contains(err.Error(), "cleanup_status=pending") {
+		t.Fatalf("cleanup failure = %v, want committed pending error", err)
+	}
+	installed, err := svc.ListSkills(context.Background(), principal)
+	if err != nil || len(installed) != 1 || installed[0].Description != "new" {
+		t.Fatalf("committed version was not retained: %#v err=%v", installed, err)
+	}
+	summaries, err := skill.ListEvolutionCompensationSummaries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, summary := range summaries {
+		if summary.Action == "agentservice_install" && summary.Skill == entry.Name {
+			found = true
+			if summary.TransactionState != "committed" || summary.CleanupStatus != "pending" {
+				t.Fatalf("cleanup failure state = %#v, want committed/pending", summary)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("cleanup failure did not retain durable compensation")
+	}
+}
+
+func TestPersistImportedEntriesBatchCleanupPendingRecoversAfterRestart(t *testing.T) {
+	svc := newStatusTestService(t)
+	tenant, user := createStatusTestUser(t, svc)
+	principal := Principal{TenantID: tenant.ID, UserID: user.ID}
+	oldA, oldB, newA, newB := t.TempDir(), t.TempDir(), t.TempDir(), t.TempDir()
+	for _, item := range []struct {
+		dir, name, description string
+	}{{oldA, "batch-clean-a", "old-a"}, {oldB, "batch-clean-b", "old-b"}, {newA, "batch-clean-a", "new-a"}, {newB, "batch-clean-b", "new-b"}} {
+		yaml := fmt.Sprintf("name: %s\ndescription: %s\nsteps:\n  - action: prompt\n    prompt: hello\n", item.name, item.description)
+		if err := os.WriteFile(filepath.Join(item.dir, "skill.yaml"), []byte(yaml), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	initial := []corelib.NLSkillEntry{
+		{Name: "batch-clean-a", Description: "old-a", Source: "test", SkillDir: oldA, Steps: []corelib.NLSkillStep{{Action: "prompt", Params: map[string]interface{}{"prompt": "hello"}}}},
+		{Name: "batch-clean-b", Description: "old-b", Source: "test", SkillDir: oldB, Steps: []corelib.NLSkillStep{{Action: "prompt", Params: map[string]interface{}{"prompt": "hello"}}}},
+	}
+	if _, err := svc.persistImportedEntries(context.Background(), principal, initial, false); err != nil {
+		t.Fatalf("initial batch import: %v", err)
+	}
+	svc.skillPostCommitCleanup = func() error { return fmt.Errorf("injected batch cleanup failure") }
+	updated := []corelib.NLSkillEntry{
+		{Name: "batch-clean-a", Description: "new-a", Source: "test", SkillDir: newA, Steps: initial[0].Steps},
+		{Name: "batch-clean-b", Description: "new-b", Source: "test", SkillDir: newB, Steps: initial[1].Steps},
+	}
+	if _, err := svc.persistImportedEntries(context.Background(), principal, updated, true); err == nil || !strings.Contains(err.Error(), "cleanup_status=pending") {
+		t.Fatalf("batch cleanup failure = %v, want committed pending", err)
+	}
+	root := svc.userSkillsRoot(tenant.ID, user.ID)
+	for _, name := range []string{"batch-clean-a", "batch-clean-b"} {
+		if _, err := os.Stat(filepath.Join(root, name+".prev")); err != nil {
+			t.Fatalf("expected committed backup for %s before restart: %v", name, err)
+		}
+	}
+	restarted, err := NewService(Config{DataRoot: svc.dataRoot, TokenSecret: "test", TokenTTL: time.Hour}, NewMemoryStore(), EchoExecutor{})
+	if err != nil {
+		t.Fatalf("restart recovery: %v", err)
+	}
+	if restarted.skillInstallRecoveryBlocked {
+		t.Fatal("successful cleanup recovery left service blocked")
+	}
+	for _, name := range []string{"batch-clean-a", "batch-clean-b"} {
+		if _, err := os.Stat(filepath.Join(root, name, "skill.yaml")); err != nil {
+			t.Fatalf("published %s missing after restart: %v", name, err)
+		}
+		if _, err := os.Stat(filepath.Join(root, name+".prev")); !os.IsNotExist(err) {
+			t.Fatalf("committed backup %s remains after restart cleanup: %v", name, err)
+		}
+	}
+	for _, summary := range mustListCompensationSummaries(t) {
+		if summary.Action == "agentservice_install" && (summary.Skill == "batch-clean-a" || summary.Skill == "batch-clean-b") {
+			t.Fatalf("batch cleanup compensation remains after restart: %#v", summary)
+		}
+	}
+}
+
+func mustListCompensationSummaries(t *testing.T) []skill.EvolutionCompensationSummary {
+	t.Helper()
+	summaries, err := skill.ListEvolutionCompensationSummaries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return summaries
+}
+
 func TestPersistImportedEntriesRejectsStalePreviousBackup(t *testing.T) {
 	svc := newStatusTestService(t)
 	tenant, user := createStatusTestUser(t, svc)
@@ -1441,6 +1831,166 @@ func TestNewServiceRecoversAgentSkillContractSnapshot(t *testing.T) {
 	}
 	if summaries, err := skill.ListEvolutionCompensationSummaries(); err != nil || len(summaries) != 0 {
 		t.Fatalf("startup recovery left compensation records: summaries=%#v err=%v", summaries, err)
+	}
+}
+
+func TestRestoreSkillExternalCompensationContinuesAfterOneContractFailure(t *testing.T) {
+	dataRoot := t.TempDir()
+	principal := Principal{TenantID: "tenant", UserID: "user"}
+	contract := DynamicCapabilityContract{Provisions: []coretool.CapabilityProvision{{Capability: "test.dynamic.execute"}}, Effects: []coretool.EffectClass{coretool.EffectReadOnly}}
+	const requestID = "partial-contract-recovery"
+	encodedA, err := encodeSkillContractExternalSnapshot(principal, "legacy:partial-a", contract, requestID, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	encodedB, err := encodeSkillContractExternalSnapshot(principal, "legacy:partial-b", contract, requestID, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(dataRoot, "tenants", principal.TenantID, "users", principal.UserID, "skills")
+	record := skill.NewEvolutionCompensationRecord(requestID, "partial-a", "agentservice_install", "", nil, false, nil, "restore contracts")
+	record.SetRecoveryScope(dataRoot)
+	record.SetDirectoryMoves([]skill.EvolutionDirectoryMove{{OriginalPath: filepath.Join(root, "partial-a"), BackupPath: filepath.Join(root, "partial-a.prev"), HadPrevious: true, Moved: true, Published: true}})
+	record.SetExternalSnapshot("skill_contract|tenant|user|legacy:partial-a", encodedA)
+	record.SetExternalSnapshot("skill_contract|tenant|user|legacy:partial-b", encodedB)
+	base := NewDynamicCapabilityRegistry()
+	svc := &Service{
+		dataRoot: dataRoot,
+		dynamicCapabilities: &failingSkillContractRevokeRegistry{
+			DynamicCapabilityContractRegistry: base,
+			failPublishFor:                    map[string]bool{"legacy:partial-a": true},
+		},
+	}
+	if err := svc.restoreSkillExternalCompensation(record); err == nil || !strings.Contains(err.Error(), "partial-a") {
+		t.Fatalf("restoreSkillExternalCompensation error = %v, want partial-a failure", err)
+	}
+	if _, ok := svc.dynamicCapabilities.ResolveSkillDynamicContract(context.Background(), principal, "legacy:partial-a"); ok {
+		t.Fatal("failing contract restore must remain unavailable")
+	}
+	if _, ok := svc.dynamicCapabilities.ResolveSkillDynamicContract(context.Background(), principal, "legacy:partial-b"); !ok {
+		t.Fatal("valid sibling contract was not restored after partial failure")
+	}
+}
+
+func TestRestoreSkillExternalCompensationValidatesAllSnapshotsBeforePublishing(t *testing.T) {
+	dataRoot := t.TempDir()
+	principal := Principal{TenantID: "tenant", UserID: "user"}
+	contract := DynamicCapabilityContract{Provisions: []coretool.CapabilityProvision{{Capability: "test.dynamic.execute"}}, Effects: []coretool.EffectClass{coretool.EffectReadOnly}}
+	const requestID = "validate-all-contract-snapshots"
+	encoded, err := encodeSkillContractExternalSnapshot(principal, "legacy:valid-before-malformed", contract, requestID, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(dataRoot, "tenants", principal.TenantID, "users", principal.UserID, "skills")
+	record := skill.NewEvolutionCompensationRecord(requestID, "valid-before-malformed", "agentservice_install", "", nil, false, nil, "validate snapshots")
+	record.SetRecoveryScope(dataRoot)
+	record.SetDirectoryMoves([]skill.EvolutionDirectoryMove{{OriginalPath: filepath.Join(root, "valid-before-malformed"), BackupPath: filepath.Join(root, "valid-before-malformed.prev"), HadPrevious: true, Moved: true, Published: true}})
+	record.SetExternalSnapshot("skill_contract|tenant|user|legacy:valid-before-malformed", encoded)
+	record.SetExternalSnapshot("skill_contract|tenant|user|legacy:malformed", "{")
+	svc := &Service{dataRoot: dataRoot, dynamicCapabilities: NewDynamicCapabilityRegistry()}
+	if err := svc.restoreSkillExternalCompensation(record); err == nil {
+		t.Fatal("restoreSkillExternalCompensation accepted malformed sibling snapshot")
+	}
+	if _, ok := svc.dynamicCapabilities.ResolveSkillDynamicContract(context.Background(), principal, "legacy:valid-before-malformed"); ok {
+		t.Fatal("valid contract was published before all external snapshots passed validation")
+	}
+}
+
+func TestNewServiceCommittedCleanupAcrossRestartKeepsPublishedDirectory(t *testing.T) {
+	oldBase := corelib.MaclawBaseDir()
+	base := t.TempDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dataRoot := t.TempDir()
+	finalDir := filepath.Join(dataRoot, "tenants", "tenant", "users", "user", "skills", "restart-cleanup")
+	backupDir := finalDir + ".prev"
+	if err := os.MkdirAll(finalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(finalDir, "skill.yaml"), []byte("name: restart-cleanup\ndescription: new\nsteps: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(backupDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(backupDir, "skill.yaml"), []byte("name: restart-cleanup\ndescription: old\nsteps: []\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	record := skill.NewEvolutionCompensationRecord("restart-cleanup-request", "restart-cleanup", "agentservice_install", "", nil, false, nil, "cleanup pending")
+	record.TransactionState = "committed"
+	record.CleanupStatus = "pending"
+	record.Status = "pending"
+	record.SetRecoveryScope(dataRoot)
+	record.SetDirectoryMoves([]skill.EvolutionDirectoryMove{{OriginalPath: finalDir, BackupPath: backupDir, HadPrevious: true, Moved: true, Published: true}})
+	if err := skill.PersistEvolutionCompensation(record); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(Config{DataRoot: dataRoot, TokenSecret: "test", TokenTTL: time.Hour}, NewMemoryStore(), EchoExecutor{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(finalDir, "skill.yaml")); err != nil {
+		t.Fatalf("published directory missing after restart cleanup: %v", err)
+	}
+	if _, err := os.Stat(backupDir); !os.IsNotExist(err) {
+		t.Fatalf("committed backup not cleaned: %v", err)
+	}
+	if svc.skillInstallRecoveryBlocked {
+		t.Fatal("successful committed cleanup left recovery blocked")
+	}
+	if summaries, err := skill.ListEvolutionCompensationSummaries(); err != nil || len(summaries) != 0 {
+		t.Fatalf("cleanup compensation retained: %#v err=%v", summaries, err)
+	}
+}
+
+func TestAgentServiceRecoveryIsolatedByDataRoot(t *testing.T) {
+	oldBase := corelib.MaclawBaseDir()
+	base := t.TempDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+	rootA, rootB := t.TempDir(), t.TempDir()
+	makePending := func(root, name string) string {
+		finalDir := filepath.Join(root, "tenants", "tenant", "users", "user", "skills", name)
+		backupDir := finalDir + ".prev"
+		if err := os.MkdirAll(backupDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(backupDir, "skill.yaml"), []byte("name: "+name+"\nsteps: []\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		record := skill.NewEvolutionCompensationRecord("isolation-"+name, name, "agentservice_install", "", nil, false, nil, "pending")
+		record.TransactionState, record.CleanupStatus, record.Status = "audit_pending", "pending", "pending"
+		record.SetRecoveryScope(root)
+		record.SetDirectoryMoves([]skill.EvolutionDirectoryMove{{OriginalPath: finalDir, BackupPath: backupDir, HadPrevious: true, Moved: true, Published: true}})
+		if err := skill.PersistEvolutionCompensation(record); err != nil {
+			t.Fatal(err)
+		}
+		return finalDir
+	}
+	finalA := makePending(rootA, "isolated-a")
+	finalB := makePending(rootB, "isolated-b")
+	if _, err := NewService(Config{DataRoot: rootA, TokenSecret: "test", TokenTTL: time.Hour}, NewMemoryStore(), EchoExecutor{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(finalA, "skill.yaml")); err != nil {
+		t.Fatalf("root A was not recovered: %v", err)
+	}
+	if _, err := os.Stat(finalB); !os.IsNotExist(err) {
+		t.Fatalf("root B was touched by root A recovery: %v", err)
+	}
+	summaries, err := skill.ListEvolutionCompensationSummaries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	foundB := false
+	for _, summary := range summaries {
+		if summary.RequestID == "isolation-isolated-b" {
+			foundB = true
+		}
+	}
+	if !foundB {
+		t.Fatal("root B compensation was removed by root A recovery")
 	}
 }
 
@@ -1749,6 +2299,195 @@ func TestAgentServiceImportAuditFailureRollsBackPublishedDirectory(t *testing.T)
 	root := svc.UserSkillsRoot(principal.TenantID, principal.UserID)
 	if _, statErr := os.Stat(filepath.Join(root, "audit-import")); !os.IsNotExist(statErr) {
 		t.Fatalf("published directory remains after audit failure: %v", statErr)
+	}
+}
+
+func TestAgentServiceImportAuditFailureContractRestoreFailureStaysPending(t *testing.T) {
+	oldBase := corelib.MaclawBaseDir()
+	base := t.TempDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dataRoot := t.TempDir()
+	store := NewMemoryStore()
+	principal := Principal{TenantID: "tenant", UserID: "user"}
+	if err := store.SaveTenant(Tenant{ID: principal.TenantID, Name: "Tenant"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveUser(User{TenantID: principal.TenantID, ID: principal.UserID, Email: "user@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(Config{DataRoot: dataRoot, TokenSecret: "test", TokenTTL: time.Hour}, store, EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	initial := makeSkillZipBytes(t, map[string]string{
+		"contract-audit/skill.yaml": "name: contract-audit\ndescription: old\nsteps: []\n",
+	})
+	if _, err := svc.InstallSkill(context.Background(), principal, SkillInstallInput{Source: "zip", ZipBase64: base64.StdEncoding.EncodeToString(initial)}); err != nil {
+		t.Fatalf("initial import: %v", err)
+	}
+	stableID := "legacy:contract-audit"
+	contract := DynamicCapabilityContract{Provisions: []coretool.CapabilityProvision{{Capability: "test.dynamic.execute"}}, Effects: []coretool.EffectClass{coretool.EffectReadOnly}}
+	if err := svc.dynamicCapabilities.PublishSkillContract(principal, stableID, contract); err != nil {
+		t.Fatal(err)
+	}
+	// The forward revoke succeeds, but rollback restoration is forced to fail;
+	// this must retain the durable record as audit_pending instead of claiming a
+	// clean rollback or deleting the recovery evidence.
+	baseRegistry := svc.dynamicCapabilities
+	svc.dynamicCapabilities = &failingSkillContractRevokeRegistry{DynamicCapabilityContractRegistry: baseRegistry, failPublish: true}
+	svc.store = &failingAuditStore{Store: store, failAudit: true}
+	updated := makeSkillZipBytes(t, map[string]string{
+		"contract-audit/skill.yaml": "name: contract-audit\ndescription: new\nsteps: []\n",
+	})
+	if _, err := svc.InstallSkill(context.Background(), principal, SkillInstallInput{Source: "zip", ZipBase64: base64.StdEncoding.EncodeToString(updated), Overwrite: true}); err == nil || !strings.Contains(err.Error(), "not committed") {
+		t.Fatalf("overwrite error = %v, want rollback-incomplete failure", err)
+	}
+	root := svc.UserSkillsRoot(principal.TenantID, principal.UserID)
+	if _, err := os.Stat(filepath.Join(root, "contract-audit", "skill.yaml")); err != nil {
+		t.Fatalf("old directory should be restored despite contract restore failure: %v", err)
+	}
+	summaries, err := skill.ListEvolutionCompensationSummaries()
+	if err != nil || len(summaries) != 1 || summaries[0].TransactionState != "audit_pending" {
+		t.Fatalf("contract restore failure should retain audit_pending compensation: summaries=%#v err=%v", summaries, err)
+	}
+}
+
+func TestAgentServiceBatchImportAuditFailureRestoresSiblingContractsAfterOneRestoreFailure(t *testing.T) {
+	oldBase := corelib.MaclawBaseDir()
+	base := t.TempDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dataRoot := t.TempDir()
+	store := NewMemoryStore()
+	principal := Principal{TenantID: "tenant", UserID: "user"}
+	if err := store.SaveTenant(Tenant{ID: principal.TenantID, Name: "Tenant"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveUser(User{TenantID: principal.TenantID, ID: principal.UserID, Email: "user@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(Config{DataRoot: dataRoot, TokenSecret: "test", TokenTTL: time.Hour}, store, EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	initial := makeSkillZipBytes(t, map[string]string{
+		"contract-batch-a/skill.yaml": "name: contract-batch-a\ndescription: old-a\nsteps: []\n",
+		"contract-batch-b/skill.yaml": "name: contract-batch-b\ndescription: old-b\nsteps: []\n",
+	})
+	if _, err := svc.InstallSkill(context.Background(), principal, SkillInstallInput{Source: "zip", ZipBase64: base64.StdEncoding.EncodeToString(initial)}); err != nil {
+		t.Fatalf("initial batch import: %v", err)
+	}
+	installed, err := svc.ListSkills(context.Background(), principal)
+	if err != nil || len(installed) != 2 {
+		t.Fatalf("initial ListSkills: entries=%#v err=%v", installed, err)
+	}
+	stableIDs := map[string]string{}
+	for _, entry := range installed {
+		stableIDs[entry.Name] = skillStableID(entry)
+		contract := DynamicCapabilityContract{Provisions: []coretool.CapabilityProvision{{Capability: "test.dynamic.execute"}}, Effects: []coretool.EffectClass{coretool.EffectReadOnly}}
+		if err := svc.dynamicCapabilities.PublishSkillContract(principal, stableIDs[entry.Name], contract); err != nil {
+			t.Fatalf("publish initial contract for %s: %v", entry.Name, err)
+		}
+	}
+	baseRegistry := svc.dynamicCapabilities
+	svc.dynamicCapabilities = &failingSkillContractRevokeRegistry{
+		DynamicCapabilityContractRegistry: baseRegistry,
+		failPublishFor:                    map[string]bool{stableIDs["contract-batch-a"]: true},
+	}
+	svc.store = &failingAuditStore{Store: store, failAudit: true}
+	updated := makeSkillZipBytes(t, map[string]string{
+		"contract-batch-a/skill.yaml": "name: contract-batch-a\ndescription: new-a\nsteps: []\n",
+		"contract-batch-b/skill.yaml": "name: contract-batch-b\ndescription: new-b\nsteps: []\n",
+	})
+	if _, err := svc.InstallSkill(context.Background(), principal, SkillInstallInput{Source: "zip", ZipBase64: base64.StdEncoding.EncodeToString(updated), Overwrite: true}); err == nil || !strings.Contains(err.Error(), "not committed") {
+		t.Fatalf("batch overwrite error = %v, want rollback-incomplete failure", err)
+	}
+	rolledBack, err := svc.ListSkills(context.Background(), principal)
+	if err != nil || len(rolledBack) != 2 {
+		t.Fatalf("rolled-back ListSkills: entries=%#v err=%v", rolledBack, err)
+	}
+	for _, entry := range rolledBack {
+		if !strings.HasPrefix(entry.Description, "old-") {
+			t.Fatalf("skill %s was not restored to its old directory: %#v", entry.Name, entry)
+		}
+	}
+	if _, ok := svc.dynamicCapabilities.ResolveSkillDynamicContract(context.Background(), principal, stableIDs["contract-batch-a"]); ok {
+		t.Fatal("contract with injected restore failure should remain revoked and fail-closed")
+	}
+	if _, ok := svc.dynamicCapabilities.ResolveSkillDynamicContract(context.Background(), principal, stableIDs["contract-batch-b"]); !ok {
+		t.Fatal("sibling contract should be restored even when another contract restore fails")
+	}
+	summaries, err := skill.ListEvolutionCompensationSummaries()
+	if err != nil || len(summaries) != 1 || summaries[0].TransactionState != "audit_pending" {
+		t.Fatalf("partial contract restore must retain audit_pending compensation: summaries=%#v err=%v", summaries, err)
+	}
+}
+
+func TestAgentServiceBatchImportAuditFailureRollsBackAllPublishedDirectories(t *testing.T) {
+	oldBase := corelib.MaclawBaseDir()
+	base := t.TempDir()
+	corelib.SetMaclawBaseDir(base)
+	t.Cleanup(func() { corelib.SetMaclawBaseDir(oldBase) })
+
+	dataRoot := t.TempDir()
+	store := &failingAuditStore{Store: NewMemoryStore(), failAudit: true}
+	principal := Principal{TenantID: "tenant", UserID: "user"}
+	if err := store.SaveTenant(Tenant{ID: principal.TenantID, Name: "Tenant"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveUser(User{TenantID: principal.TenantID, ID: principal.UserID, Email: "user@example.com"}); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(Config{DataRoot: dataRoot, TokenSecret: "test", TokenTTL: time.Hour}, store, EchoExecutor{})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+	archive := makeSkillZipBytes(t, map[string]string{
+		"batch-a/skill.yaml": "name: batch-a\ndescription: a\nsteps:\n  - action: prompt\n    prompt: a\n",
+		"batch-b/skill.yaml": "name: batch-b\ndescription: b\nsteps:\n  - action: prompt\n    prompt: b\n",
+	})
+	if _, err := svc.InstallSkill(context.Background(), principal, SkillInstallInput{Source: "zip", ZipBase64: base64.StdEncoding.EncodeToString(archive)}); err == nil || !strings.Contains(err.Error(), "not committed") {
+		t.Fatalf("batch audit failure = %v, want not committed error", err)
+	}
+	root := svc.UserSkillsRoot(principal.TenantID, principal.UserID)
+	for _, name := range []string{"batch-a", "batch-b"} {
+		if _, statErr := os.Stat(filepath.Join(root, name)); !os.IsNotExist(statErr) {
+			t.Fatalf("published directory %s remains after batch audit failure: %v", name, statErr)
+		}
+	}
+}
+
+func TestValidateAgentSkillRootRejectsMalformedVisibleSkill(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "broken"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "broken", "skill.yaml"), []byte("name: [broken"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateAgentSkillRoot(root); err == nil {
+		t.Fatal("validateAgentSkillRoot() error = nil, want malformed visible skill failure")
+	}
+
+	// Hidden staging directories and .prev backups are not authoritative
+	// entries and must not prevent a safe rollback from completing.
+	for _, name := range []string{".skill-install-staging", "restored.prev"} {
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "not-a-definition"), []byte("temporary"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.RemoveAll(filepath.Join(root, "broken")); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateAgentSkillRoot(root); err != nil {
+		t.Fatalf("validateAgentSkillRoot() rejected non-authoritative hidden/backup dirs: %v", err)
 	}
 }
 

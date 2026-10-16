@@ -332,10 +332,23 @@ func (s *multiKnowledgeStore) resolveScopes(ctx context.Context, tenantID, owner
 	return s.access.ResolveForUser(ctx, tenantID, ownerID)
 }
 
+// knowledgeSearchContext marks an interactive search so it does not embed the
+// query while a library rebuild owns the shared model. Full-text results still
+// return. The mark is checked again at embed time: a rebuild that finishes
+// during the lexical pass still embeds, and one that starts during that pass
+// does not.
+func knowledgeSearchContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return knowledge.SkipQueryEmbedding(ctx)
+}
+
 func (s *multiKnowledgeStore) Search(ctx context.Context, opts knowledge.SearchOptions) ([]knowledge.SearchResult, error) {
 	if s == nil || s.store == nil {
 		return nil, fmt.Errorf("knowledge store is not configured")
 	}
+	ctx = knowledgeSearchContext(ctx)
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 8
@@ -376,6 +389,7 @@ func (s *multiKnowledgeStore) SearchImages(ctx context.Context, opts knowledge.I
 	if s == nil || s.store == nil {
 		return nil, fmt.Errorf("knowledge store is not configured")
 	}
+	ctx = knowledgeSearchContext(ctx)
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 8
@@ -413,6 +427,7 @@ func (s *multiKnowledgeStore) SearchStructured(ctx context.Context, opts knowled
 	if s == nil || s.store == nil {
 		return nil, fmt.Errorf("knowledge store is not configured")
 	}
+	ctx = knowledgeSearchContext(ctx)
 	limit := opts.Limit
 	if limit <= 0 {
 		limit = 20

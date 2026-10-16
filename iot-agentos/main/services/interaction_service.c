@@ -16,6 +16,7 @@
 #include "operation_context.h"
 #include "services/command_service.h"
 #include "services/gateway_transport.h"
+#include "services/latency_trace.h"
 #include "services/meeting_service.h"
 #include "services/reply_service.h"
 #include "task_registry.h"
@@ -312,6 +313,8 @@ static void interaction_task(void *arg) {
     uint32_t wav_len = 0;
     esp_err_t err = device_status_to_esp_err(audio_arbitration_capture_wav(&wav, &wav_len));
     command_service_timing_capture_done();
+    /* The user has stopped speaking: this stamp becomes the latency origin. */
+    latency_trace_mark(LATENCY_MARK_RELEASE);
     ESP_LOGI(TAG, "voice capture complete: generation=%lu err=%s wav=%u elapsed=%lldms",
              (unsigned long)interaction_generation, esp_err_to_name(err), (unsigned)wav_len,
              (long long)((esp_timer_get_time() - interaction_started_us) / 1000));
@@ -452,6 +455,9 @@ static void interaction_task(void *arg) {
     }
     if (err == ESP_OK) {
         command_service_timing_accepted();
+        /* The uplink was accepted by the transport, i.e. the server owns the
+         * turn from here on. */
+        latency_trace_mark(LATENCY_MARK_SENT);
         scene_presenter_publish_command_stage("远端处理中");
         ESP_LOGI(TAG, "voice command waiting: generation=%lu replyTo=%s total=%lldms",
                  (unsigned long)interaction_generation, reply_to,
@@ -620,6 +626,10 @@ bool interaction_service_start_voice(bool physical_screen_wake) {
     }
     command_service_set_display_locked(true);
     command_service_timing_begin();
+    /* Start a fresh latency turn.  Any trace left over from a turn that never
+     * produced a terminal mark is dropped here rather than being attributed to
+     * this one. */
+    latency_trace_begin();
     command_service_reset_cancel_state();
     // A stop request belongs to the preceding capture only. Clear it before
     // RECORDING becomes visible to the input task, so a rapid next tap is

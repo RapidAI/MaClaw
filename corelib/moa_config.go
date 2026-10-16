@@ -25,9 +25,14 @@ type MoAPresetConfig struct {
 	Aggregator          MoAModelRef   `json:"aggregator"`
 	ReferenceMaxTokens  int           `json:"reference_max_tokens,omitempty"`
 	AggregatorMaxTokens int           `json:"max_tokens,omitempty"`
-	FanoutMaxIterations int           `json:"fanout_max_iterations,omitempty"`
-	OnlyBeforeFirstTool *bool         `json:"only_before_first_tool,omitempty"`
-	DisplayName         string        `json:"display_name,omitempty"`
+	// ReferenceTemperature / AggregatorTemperature optionally override the
+	// sampling temperature for reference / aggregator requests. nil = keep the
+	// resolved provider config's value (or provider default).
+	ReferenceTemperature  *float64 `json:"reference_temperature,omitempty"`
+	AggregatorTemperature *float64 `json:"aggregator_temperature,omitempty"`
+	FanoutMaxIterations   int      `json:"fanout_max_iterations,omitempty"`
+	OnlyBeforeFirstTool   *bool    `json:"only_before_first_tool,omitempty"`
+	DisplayName           string   `json:"display_name,omitempty"`
 }
 
 // MoAModelRef resolves to a MaclawLLMConfig via provider name / task route / primary / aux.
@@ -171,6 +176,12 @@ func ValidateMoAConfig(cfg MoAConfig, knownProviders map[string]struct{}) error 
 		if len(p.ReferenceModels) > maxRefs {
 			return fmt.Errorf("moa preset %q: too many reference models (%d > max %d)", name, len(p.ReferenceModels), maxRefs)
 		}
+		if err := validateMoATemperature("reference_temperature", p.ReferenceTemperature); err != nil {
+			return fmt.Errorf("moa preset %q: %w", name, err)
+		}
+		if err := validateMoATemperature("aggregator_temperature", p.AggregatorTemperature); err != nil {
+			return fmt.Errorf("moa preset %q: %w", name, err)
+		}
 		for i, r := range p.ReferenceModels {
 			if r.UsePrimary && r.UseAux {
 				return fmt.Errorf("moa preset %q reference[%d]: cannot use both primary and aux", name, i)
@@ -225,6 +236,25 @@ func normalizeMoAModelRef(r MoAModelRef) MoAModelRef {
 
 func moaModelRefEmpty(r MoAModelRef) bool {
 	return !r.UsePrimary && !r.UseAux && r.Provider == "" && r.TaskRoute == "" && r.Model == "" && r.URL == ""
+}
+
+// validateMoATemperature bounds temperature to the widest common wire range
+// (OpenAI 0..2; Anthropic clamps server-side within 0..1).
+func validateMoATemperature(field string, t *float64) error {
+	if t == nil {
+		return nil
+	}
+	if *t < 0 || *t > 2 {
+		return fmt.Errorf("%s: temperature %.3g out of range [0, 2]", field, *t)
+	}
+	return nil
+}
+
+// InvalidMoATemperature reports whether a preset carries an out-of-range
+// temperature knob (used by doctor to surface config errors).
+func InvalidMoATemperature(p MoAPresetConfig) bool {
+	return validateMoATemperature("reference_temperature", p.ReferenceTemperature) != nil ||
+		validateMoATemperature("aggregator_temperature", p.AggregatorTemperature) != nil
 }
 
 func validateMoAModelRef(role string, r MoAModelRef, knownProviders map[string]struct{}) error {

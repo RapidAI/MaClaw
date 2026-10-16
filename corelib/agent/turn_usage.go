@@ -2,6 +2,7 @@ package agent
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 
@@ -34,6 +35,12 @@ type TurnUsage struct {
 
 	// Requests is the number of LLM HTTP rounds in this turn/loop.
 	Requests int `json:"requests,omitempty"`
+
+	// CreditsDeducted is the settled Maclaw official grant debit accumulated
+	// across the rounds in this usage. CreditsReported distinguishes a settled
+	// zero from a round that did not report a debit.
+	CreditsDeducted float64 `json:"credits_deducted,omitempty"`
+	CreditsReported bool    `json:"credits_reported,omitempty"`
 }
 
 // Add merges other into u (token counters sum; model/provider keep first non-empty).
@@ -54,6 +61,14 @@ func (u *TurnUsage) Add(other TurnUsage) {
 	u.EstCostRMB += other.EstCostRMB
 	u.EstCostUSD += other.EstCostUSD
 	u.Requests += other.Requests
+	if other.CreditsReported {
+		sum := other.CreditsDeducted
+		if u.CreditsReported {
+			sum += u.CreditsDeducted
+		}
+		u.CreditsDeducted = roundDeductedCredits(sum)
+		u.CreditsReported = true
+	}
 }
 
 // TotalTokens returns input + output (cached is a subset of input when reported).
@@ -115,6 +130,10 @@ type TurnMetaOptions struct {
 	// PromptSoftFull is true when SoftFullAgentIntent upgraded light→full
 	// before the turn (terse ops/shell cues).
 	PromptSoftFull bool
+	// CreditsDeducted is the sum of credits the Maclaw official service
+	// actually removed for this turn. Nil hides the chip; a pointer to 0 is a
+	// settled free turn.
+	CreditsDeducted *float64
 }
 
 // FormatTurnMeta builds a compact always-on chat footer for route + tokens + cost.
@@ -231,7 +250,26 @@ func FormatTurnMetaOpts(opts TurnMetaOptions) string {
 			parts = append(parts, "moa="+p)
 		}
 	}
+	if opts.CreditsDeducted != nil {
+		parts = append(parts, "credits="+formatDeductedCredits(*opts.CreditsDeducted))
+	}
 	return strings.Join(parts, " · ")
+}
+
+// formatDeductedCredits renders the hub's 3-decimal credit debit without
+// trailing zeros, so the chip matches the amount stored on the grant ledger.
+func formatDeductedCredits(v float64) string {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		v = 0
+	}
+	v = math.Round(v*1000) / 1000
+	s := strconv.FormatFloat(v, 'f', 3, 64)
+	s = strings.TrimRight(s, "0")
+	s = strings.TrimRight(s, ".")
+	if s == "" || s == "-0" {
+		return "0"
+	}
+	return s
 }
 
 func formatCompactTokenCount(n int) string {
@@ -289,7 +327,8 @@ type RouteDecision struct {
 }
 
 // TurnUsageFromLLM maps a provider usage payload into TurnUsage.
-// cfg supplies model/provider labels; prices use corelib defaults when unknown.
+// cfg supplies model/provider labels and (when available) the provider's
+// directional RMB prices; defaults are used only for an unpriced config.
 func TurnUsageFromLLM(cfg corelib.MaclawLLMConfig, u *llm.Usage) TurnUsage {
 	if u == nil {
 		return TurnUsage{}
@@ -302,13 +341,37 @@ func TurnUsageFromLLM(cfg corelib.MaclawLLMConfig, u *llm.Usage) TurnUsage {
 	if out == 0 {
 		out = u.OutputTokens
 	}
-	_, _, totalCost := corelib.CalculateLLMCostRMB(
-		int64(in),
-		int64(out),
-		corelib.DefaultLLMInputPricePerMTokensRMB,
-		corelib.DefaultLLMOutputPricePerMTokensRMB,
+	inputTokens, outputTokens := int64(in), int64(out)
+	if inputTokens < 0 {
+		inputTokens = 0
+	}
+	if outputTokens < 0 {
+		outputTokens = 0
+	}
+	cached, written := int64(u.CachedInputTokens), int64(u.CacheWriteTokens)
+	if cached < 0 {
+		cached = 0
+	}
+	if written < 0 {
+		written = 0
+	}
+	if cached > inputTokens {
+		cached = inputTokens
+	}
+	if written > inputTokens-cached {
+		written = inputTokens - cached
+	}
+	inputPrice, outputPrice := cfg.InputPricePerMTokensRMB, cfg.OutputPricePerMTokensRMB
+	cacheReadPrice, cacheWritePrice := cfg.CacheReadPricePerMTokensRMB, cfg.CacheWritePricePerMTokensRMB
+	if inputPrice == 0 && outputPrice == 0 && cacheReadPrice == 0 && cacheWritePrice == 0 {
+		inputPrice, outputPrice = corelib.DefaultLLMInputPricePerMTokensRMB, corelib.DefaultLLMOutputPricePerMTokensRMB
+		cacheReadPrice, cacheWritePrice = inputPrice/10, inputPrice
+	}
+	_, _, _, _, totalCost := corelib.CalculateLLMCostRMBWithCache(
+		inputTokens, outputTokens, cached, written,
+		inputPrice, outputPrice, cacheReadPrice, cacheWritePrice,
 	)
-	return TurnUsage{
+	usage := TurnUsage{
 		Model:            cfg.Model,
 		Provider:         cfg.ProviderName,
 		InputTokens:      in,
@@ -318,6 +381,18 @@ func TurnUsageFromLLM(cfg corelib.MaclawLLMConfig, u *llm.Usage) TurnUsage {
 		EstCostRMB:       totalCost,
 		Requests:         1,
 	}
+	if u.CreditsDeducted != nil {
+		usage.CreditsDeducted = roundDeductedCredits(*u.CreditsDeducted)
+		usage.CreditsReported = true
+	}
+	return usage
+}
+
+func roundDeductedCredits(v float64) float64 {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		return 0
+	}
+	return math.Round(v*1000) / 1000
 }
 
 // PrimaryRouteDecision is the default route metadata when the loop uses the

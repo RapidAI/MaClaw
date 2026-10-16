@@ -6,12 +6,62 @@ import (
 	"fmt"
 	"os/exec"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib/computeruse"
 )
+
+func darwinWindowTitles() []string {
+	out, err := exec.Command("osascript", "-e", `
+tell application "System Events"
+  set out to ""
+  set procs to every process whose background only is false
+  repeat with p in procs
+    try
+      repeat with w in windows of p
+        set out to out & (name of w as string) & linefeed
+      end repeat
+    end try
+  end repeat
+  return out
+end tell`).Output()
+	if err != nil {
+		return nil
+	}
+	var titles []string
+	for _, line := range strings.Split(string(out), "\n") {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			titles = append(titles, line)
+		}
+	}
+	return titles
+}
+
+// narrowDarwinWindowHint replaces hint with the best listed window title.
+// When System Events cannot list windows, ok is false and the caller keeps
+// the original contains search. When windows were listed and none score, miss
+// is true so a loose contains search cannot focus the wrong app.
+func narrowDarwinWindowHint(hint string) (resolved string, miss bool) {
+	titles := darwinWindowTitles()
+	if len(titles) == 0 {
+		return hint, false
+	}
+	best, ok := computeruse.BestWindowTitle(hint, titles)
+	if !ok {
+		return "", true
+	}
+	return best, false
+}
 
 func focusWindow(titleSubstring string) error {
 	titleSubstring = strings.TrimSpace(titleSubstring)
 	if titleSubstring == "" {
 		return fmt.Errorf("window title required")
+	}
+	if resolved, miss := narrowDarwinWindowHint(titleSubstring); miss {
+		return fmt.Errorf("no visible window matching %q", titleSubstring)
+	} else if resolved != "" {
+		titleSubstring = resolved
 	}
 	// Escape for AppleScript string.
 	esc := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(titleSubstring)
@@ -80,6 +130,11 @@ func namedWindowBounds(titleSubstring string) (WindowBounds, bool) {
 	titleSubstring = strings.TrimSpace(titleSubstring)
 	if titleSubstring == "" {
 		return WindowBounds{}, false
+	}
+	if resolved, miss := narrowDarwinWindowHint(titleSubstring); miss {
+		return WindowBounds{}, false
+	} else if resolved != "" {
+		titleSubstring = resolved
 	}
 	esc := strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(titleSubstring)
 	script := fmt.Sprintf(`

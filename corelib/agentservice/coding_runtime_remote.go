@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -145,15 +146,14 @@ func serviceRemoteCodingSessionMatches(session *remote.SSHManagedSession, target
 }
 
 func serviceRemoteCodingSessionAlive(session *remote.SSHManagedSession) bool {
-	if session == nil || session.Handle == nil {
+	if session == nil || session.Handle == nil || !session.Handle.IsAlive() {
 		return false
 	}
-	summary := session.GetSummary()
-	return remote.SessionStatus(summary.Status).IsRunning() && session.Handle.IsAlive()
-}
-
-func serviceRemoteShellQuote(value string) string {
-	return "'" + strings.ReplaceAll(value, "'", "'\\\"'\\\"'") + "'"
+	// Idle and busy are usable. Only a terminal PTY state means this verified
+	// connection is gone. Requiring exactly "running" treats the shell as dead
+	// while it is waiting for the next command.
+	status := remote.SessionStatus(session.GetSummary().Status)
+	return status != remote.SessionExited && status != remote.SessionError
 }
 
 func serviceRemoteReadOnlyWorkspaceProber(resources *coreAgentSSHResources, binding remoteCodingRuntimeBinding) codingruntime.WorkspaceProber {
@@ -172,12 +172,28 @@ func serviceRemoteReadOnlyWorkspaceProber(resources *coreAgentSSHResources, bind
 		if markerErr != nil {
 			return nil, markerErr
 		}
-		command := "git -C " + serviceRemoteShellQuote(binding.Target.WorkDir) + " rev-parse HEAD; printf '\\n" + markerStart + "\\n'; git -C " + serviceRemoteShellQuote(binding.Target.WorkDir) + " status --porcelain=v1 --untracked-files=all; printf '\\n" + markerEnd + "\\n'"
-		output, err := serviceRemoteSSHExecReadOnly(resources.mgr, binding.SessionID, command, 15)
+		command, commandErr := codingruntime.RemoteGitProbeCommand(binding.Target.WorkDir, markerStart, markerEnd)
+		if commandErr != nil {
+			return nil, commandErr
+		}
+		result, err := serviceRemoteSSHExecReadOnly(ctx, resources.mgr, binding.SessionID, command, 15)
 		if err != nil {
 			return nil, err
 		}
-		return serviceRemoteWorkspaceProbeFromOutput(task, binding, output, markerStart, markerEnd, time.Now().UTC())
+		if result.ExitCode != 0 {
+			return nil, codingruntime.RemoteProbeExecError(result.ExitCode, result.Stderr)
+		}
+		if strings.TrimSpace(result.Stdout) == "" {
+			return nil, fmt.Errorf("remote read-only git probe returned no output")
+		}
+		probe, err := serviceRemoteWorkspaceProbeFromOutput(task, binding, result.Stdout, markerStart, markerEnd, time.Now().UTC())
+		if err != nil {
+			if detail := codingruntime.RemoteFailureLine(result.Stderr); detail != "" {
+				return nil, fmt.Errorf("%w: %s", err, detail)
+			}
+			return nil, err
+		}
+		return probe, nil
 	})
 }
 
@@ -242,34 +258,72 @@ func serviceRemoteLastNonEmptyLine(value string) string {
 	return ""
 }
 
+// serviceRemoteExecChannelReady is the cheap half of a liveness check.
+// The caller already ran the keepalive probe; repeating it here adds a
+// second round trip and can fail a connection that just answered.
+func serviceRemoteExecChannelReady(session *remote.SSHManagedSession) bool {
+	if session == nil || session.Handle == nil || session.Handle.Client() == nil {
+		return false
+	}
+	status := remote.SessionStatus(session.GetSummary().Status)
+	return status != remote.SessionExited && status != remote.SessionError
+}
+
 // serviceRemoteSSHExecReadOnly does not call sshtool.SSHExec because that
-// generic helper reconnects a dead session. Recovery must never silently
-// bind a task to a newly connected machine. The command is constructed only
-// by this package from a frozen workdir and fixed git inspection arguments.
-func serviceRemoteSSHExecReadOnly(mgr *remote.SSHSessionManager, sessionID, command string, waitSeconds int) (string, error) {
+// generic helper reconnects a dead session and types into the shared PTY.
+// Recovery must never silently bind a task to a newly connected machine, and
+// a read-only git probe needs the command's own stdout rather than a terminal
+// transcript. The command is constructed only by this package from a frozen
+// workdir and fixed git inspection arguments.
+func serviceRemoteSSHExecReadOnly(ctx context.Context, mgr *remote.SSHSessionManager, sessionID, command string, waitSeconds int) (remote.SSHExecResult, error) {
 	if mgr == nil {
-		return "", fmt.Errorf("remote recovery session manager is unavailable")
+		return remote.SSHExecResult{}, fmt.Errorf("remote recovery session manager is unavailable")
 	}
 	session, ok := mgr.Get(sessionID)
-	if !ok || !serviceRemoteCodingSessionAlive(session) {
-		return "", fmt.Errorf("remote recovery session is unavailable")
+	if !ok || !serviceRemoteExecChannelReady(session) {
+		return remote.SSHExecResult{}, fmt.Errorf("remote recovery session is unavailable")
 	}
-	before := session.LineCount()
-	if err := mgr.WriteInput(sessionID, command); err != nil {
-		return "", fmt.Errorf("submit remote read-only git probe: %w", err)
+	if ctx == nil {
+		ctx = context.Background()
 	}
 	if waitSeconds <= 0 {
 		waitSeconds = 15
 	}
-	lines, _ := mgr.WaitForOutput(sessionID, before, time.Duration(waitSeconds)*time.Second)
-	output := strings.Join(lines, "\n")
-	if strings.TrimSpace(output) == "" {
-		return "", fmt.Errorf("remote read-only git probe returned no output")
-	}
-	return output, nil
+	return mgr.ExecCommandChannel(ctx, sessionID, command, time.Duration(waitSeconds)*time.Second)
 }
 
-func serviceRemoteSSHExecBound(resources *coreAgentSSHResources, binding remoteCodingRuntimeBinding, command string, waitSeconds int) (string, error) {
+func serviceEnsureRemoteGitBaseline(ctx context.Context, resources *coreAgentSSHResources, binding remoteCodingRuntimeBinding) (string, error) {
+	if ctx != nil && ctx.Err() != nil {
+		return "", ctx.Err()
+	}
+	if resources == nil || resources.mgr == nil || strings.TrimSpace(binding.SessionID) == "" || strings.TrimSpace(binding.Target.WorkDir) == "" {
+		return "", fmt.Errorf("remote git baseline binding is incomplete")
+	}
+	request, err := codingruntime.NewRemoteGitBaselineRequest(binding.Target.WorkDir)
+	if err != nil {
+		return "", err
+	}
+	session, ok := resources.mgr.Get(binding.SessionID)
+	if !ok || !serviceRemoteCodingSessionMatches(session, binding.Target) || !serviceRemoteCodingSessionAlive(session) {
+		return "", fmt.Errorf("verified remote coding session is unavailable; no reconnect was attempted")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	result, err := resources.mgr.ExecCommandChannel(ctx, binding.SessionID, request.Command, 30*time.Second)
+	if err != nil {
+		return "", err
+	}
+	if err := request.ExecResult(result.ExitCode, result.Stdout, result.Stderr); err != nil {
+		return "", err
+	}
+	return request.EffectiveWorkDir(result.Stdout, binding.Target.WorkDir)
+}
+
+func serviceRemoteSSHExecBound(ctx context.Context, resources *coreAgentSSHResources, binding remoteCodingRuntimeBinding, command string, waitSeconds int) (string, error) {
+	if ctx != nil && ctx.Err() != nil {
+		return "", ctx.Err()
+	}
 	if resources == nil || resources.mgr == nil {
 		return "", fmt.Errorf("remote coding SSH session manager is unavailable")
 	}
@@ -287,10 +341,13 @@ func serviceRemoteSSHExecBound(resources *coreAgentSSHResources, binding remoteC
 	if waitSeconds > 600 {
 		waitSeconds = 600
 	}
-	lines, status := resources.mgr.WaitForOutput(binding.SessionID, before, time.Duration(waitSeconds)*time.Second)
-	output := strings.Join(lines, "\n")
-	if len(output) > 8000 {
-		output = output[:4000] + "\n... (truncated) ...\n" + output[len(output)-4000:]
+	lines, status := resources.mgr.WaitForOutputContext(ctx, binding.SessionID, before, time.Duration(waitSeconds)*time.Second)
+	// Git baseline markers and model-facing exec output share this capture.
+	// A head/tail cut dropped the middle (and could split UTF-8) before the
+	// executor projector could spill the original.
+	output := remote.StripLeadingCommandEcho(remote.CompactPtyOutput(strings.Join(lines, "\n")), command)
+	if ctx != nil && ctx.Err() != nil && strings.TrimSpace(output) == "" {
+		return "", ctx.Err()
 	}
 	return fmt.Sprintf("[%s] status: %s\n$ %s\n%s", binding.SessionID, status, command, output), nil
 }
@@ -342,6 +399,32 @@ func (e *CoreAgentExecutor) executeRemoteCodingRuntime(ctx context.Context, req 
 		}
 		return codingruntime.ExecutionResult{Status: codingruntime.TaskCompleted, SideEffectState: codingruntime.SideEffectObserved, Evidence: []codingruntime.Evidence{{Type: "remote_service_agent_completion", Digest: serviceCodingRuntimeDigest(out)}}}
 	})
+	if !policy.ReadOnly && policy.FinalWorkspaceGateRequired {
+		effective, err := serviceEnsureRemoteGitBaseline(ctx, resources, binding)
+		if err != nil {
+			log.Printf("[agentservice] remote git baseline init failed for %s: %v", target.WorkDir, err)
+		} else if strings.TrimSpace(effective) != "" && effective != target.WorkDir {
+			relocated := target
+			relocated.WorkDir = effective
+			nextIdentity, idErr := relocated.Identity()
+			nextPolicy := policy
+			nextPolicy.ProjectRoot = relocated.WorkDir
+			nextPolicy.RemoteTarget = nextIdentity
+			nextDigest, digestErr := codingruntime.PolicyDigest(nextPolicy)
+			if idErr != nil || digestErr != nil {
+				log.Printf("[agentservice] remote git baseline relocated to %s but the writer policy was not updated: identity=%v digest=%v", effective, idErr, digestErr)
+			} else {
+				target = relocated
+				identity = nextIdentity
+				binding.Target = target
+				binding.Identity = identity
+				digest = nextDigest
+				nextPolicy.Digest = nextDigest
+				policy = nextPolicy
+				log.Printf("[agentservice] remote project was not writable by the SSH login; continuing in %s", target.WorkDir)
+			}
+		}
+	}
 	runner := codingruntime.Runner{Store: store, LeaseOwner: serviceCodingRuntimeOwner(req), LeaseDuration: 15 * time.Minute, WorkspaceProber: serviceRemoteReadOnlyWorkspaceProber(resources, binding)}
 	task, attempt, runErr := runner.Run(ctx, codingruntime.Task{TaskID: taskID, WorkflowID: strings.TrimSpace(req.Message.Metadata[metaCodingRuntimeWorkflowID]), PhaseID: strings.TrimSpace(req.Message.Metadata[metaCodingRuntimePhaseID]), OwnerID: serviceCodingRuntimeOwner(req), ProjectRef: target.WorkDir, Mode: "remote", RequestedWork: strings.TrimSpace(req.Message.Content), PolicyDigest: digest}, policy, executor)
 	if runErr != nil {

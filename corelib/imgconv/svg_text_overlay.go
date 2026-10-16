@@ -248,9 +248,9 @@ func extractSVGTextElements(r io.Reader) ([]svgTextElement, error) {
 // --- Font Loading ---
 
 var (
-	fontOnce       sync.Once
-	cachedRegular  *opentype.Font
-	cachedBold     *opentype.Font
+	fontOnce      sync.Once
+	cachedRegular *opentype.Font
+	cachedBold    *opentype.Font
 )
 
 func systemFontPaths() []string {
@@ -285,6 +285,21 @@ func systemFontPaths() []string {
 	}
 }
 
+// parseSystemFont parses a font file that may be a TrueType Collection.
+// macOS ships many system faces (Helvetica.ttc and friends) only inside
+// collections, and opentype.Parse rejects those — without this the overlay
+// silently degrades to the embedded Go font instead of the system face.
+func parseSystemFont(data []byte) (*opentype.Font, error) {
+	if f, err := opentype.Parse(data); err == nil {
+		return f, nil
+	}
+	collection, err := opentype.ParseCollection(data)
+	if err != nil {
+		return nil, err
+	}
+	return collection.Font(0)
+}
+
 func loadFonts() {
 	fontOnce.Do(func() {
 		// Try system font for regular weight
@@ -293,7 +308,7 @@ func loadFonts() {
 			if err != nil {
 				continue
 			}
-			f, err := opentype.Parse(data)
+			f, err := parseSystemFont(data)
 			if err != nil {
 				continue
 			}

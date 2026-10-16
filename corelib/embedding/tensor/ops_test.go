@@ -157,6 +157,21 @@ func TestAddBiasGELU_MatchesAddBiasThenGELU(t *testing.T) {
 	}
 }
 
+func TestGELUMulMatchesGELUThenMul(t *testing.T) {
+	gate := []float32{-2, -0.5, 0, 0.3, 1.5}
+	up := []float32{0.2, -1, 3, 0.5, -0.25}
+	got := append([]float32(nil), gate...)
+	GELUMul(got, up)
+	want := append([]float32(nil), gate...)
+	GELU(want)
+	for i := range want {
+		want[i] *= up[i]
+		if diff := math.Abs(float64(got[i] - want[i])); diff > 1e-6 {
+			t.Fatalf("got[%d] = %v, want %v", i, got[i], want[i])
+		}
+	}
+}
+
 func TestWeightedSumStrided(t *testing.T) {
 	weights := []float32{0.25, 0.5, -0.75}
 	values := []float32{
@@ -274,6 +289,36 @@ func TestSoftmaxWeightedSumBatched8_MatchesSequential(t *testing.T) {
 		}
 	}
 	// out: [nQ][dim] with outStride=dim, hOff=0, qf=0
+	got := make([]float32, nQ*dim)
+	want := make([]float32, nQ*dim)
+	SoftmaxWeightedSumBatched(got, scoresBatched, values, nQ, rows, dim, dim, dim, 0, 0)
+	for t := 0; t < nQ; t++ {
+		SoftmaxWeightedSumStrided(want[t*dim:(t+1)*dim], scoresSeq[t*rows:(t+1)*rows], values, rows, dim, dim)
+	}
+	for i := range got {
+		if diff := math.Abs(float64(got[i] - want[i])); diff > 1e-4 {
+			t.Fatalf("idx %d: got %v want %v diff %v", i, got[i], want[i], diff)
+		}
+	}
+}
+
+func TestSoftmaxWeightedSumBatched8_Dim256MatchesSequential(t *testing.T) {
+	// Gemma long-Embed AV tile: nQ=8, headDim=256 exercises
+	// weightedSumBatchedContig256n8 against per-query strided reference.
+	const rows, dim, nQ = 17, 256, 8 // odd rows: exercises the single-V-row tail
+	values := make([]float32, rows*dim)
+	for i := range values {
+		values[i] = float32((i%17)-8) * 0.1
+	}
+	scoresBatched := make([]float32, nQ*rows)
+	scoresSeq := make([]float32, nQ*rows)
+	for t := 0; t < nQ; t++ {
+		for r := 0; r < rows; r++ {
+			v := float32(t-3)*0.2 + float32(r-8)*0.05
+			scoresBatched[t*rows+r] = v
+			scoresSeq[t*rows+r] = v
+		}
+	}
 	got := make([]float32, nQ*dim)
 	want := make([]float32, nQ*dim)
 	SoftmaxWeightedSumBatched(got, scoresBatched, values, nQ, rows, dim, dim, dim, 0, 0)

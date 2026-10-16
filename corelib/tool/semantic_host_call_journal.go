@@ -233,6 +233,41 @@ func ResolveHostCallAcquireAction(action HostCallAcquireAction, record HostCallR
 	return hostCallAcquireAction(record.State)
 }
 
+func hostCallRejected(reason string) SelectionExecutionResult {
+	return SelectionExecutionResult{Result: "[system rejected] " + reason, ReasonCode: reason}
+}
+
+// HostCallReplayResult reconstructs a journal replay. A grant-fingerprint
+// conflict rewritten to replay (repeat siblings sharing a model name) must
+// not invent an execution-row verdict; it falls back to recorded text.
+func HostCallReplayResult(acquired HostCallAcquireAction, store PlanExecutionStore, scope InvocationScope, selectionID, recorded string) SelectionExecutionResult {
+	if acquired == HostCallAcquireConflict {
+		return RecordedSelectionResultFallback(recorded)
+	}
+	return ReplayedSelectionResult(store, scope, selectionID, recorded)
+}
+
+// HostCallAcquireTerminal interprets a journal/coordinator acquire after
+// ResolveHostCallAcquireAction. done is false only for Admit so the caller
+// may run the provider. Replay, conflict, in-progress, unknown, and any
+// other action are terminal.
+func HostCallAcquireTerminal(acquired, resolved HostCallAcquireAction, record HostCallRecord, store PlanExecutionStore, scope InvocationScope, selectionID string) (result SelectionExecutionResult, done bool) {
+	switch resolved {
+	case HostCallAcquireAdmit:
+		return SelectionExecutionResult{}, false
+	case HostCallAcquireReplay:
+		return HostCallReplayResult(acquired, store, scope, selectionID, record.Result), true
+	case HostCallAcquireConflict:
+		return hostCallRejected("host_call_conflict"), true
+	case HostCallAcquireInProgress:
+		return hostCallRejected("host_call_in_progress"), true
+	case HostCallAcquireUnknown:
+		return SelectionExecutionResult{Result: "[system rejected] host_call_unknown", Unknown: true, ReasonCode: "host_call_unknown"}, true
+	default:
+		return hostCallRejected("host_call_unavailable"), true
+	}
+}
+
 // SQLiteHostCallJournal provides the cross-process journal for host call
 // replay. SQLite's INSERT OR IGNORE is the linearization point for the first
 // interpretation of an identity.

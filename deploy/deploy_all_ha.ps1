@@ -1,4 +1,4 @@
-﻿param(
+param(
     [ValidateSet('full', 'hubcenter-only', 'hub-only')]
     [string]$Scope = 'full',
 
@@ -14,6 +14,76 @@
 
 $ErrorActionPreference = 'Stop'
 
+# Lightweight per-stage timing so the deploy log shows where the wall-clock time
+# actually goes. Output only -- it never affects deployment behaviour.
+$script:DeployStageWatch = [System.Diagnostics.Stopwatch]::StartNew()
+$script:DeployTotalWatch = [System.Diagnostics.Stopwatch]::StartNew()
+
+function Write-DeployStage {
+    param([string]$Message)
+
+    $seconds = 0.0
+    if ($null -ne $script:DeployStageWatch) {
+        $seconds = $script:DeployStageWatch.Elapsed.TotalSeconds
+    }
+    $script:DeployStageWatch = [System.Diagnostics.Stopwatch]::StartNew()
+    Write-Host ("    [timing] previous stage took {0:N1}s" -f $seconds) -ForegroundColor DarkGray
+    Write-Host $Message -ForegroundColor Cyan
+}
+
+function ConvertFrom-Psd1Ast {
+    param([System.Management.Automation.Language.Ast]$Ast)
+    if ($null -eq $Ast) { return $null }
+    if ($Ast -is [System.Management.Automation.Language.ScriptBlockAst]) {
+        return ConvertFrom-Psd1Ast $Ast.EndBlock
+    }
+    if ($Ast -is [System.Management.Automation.Language.NamedBlockAst]) {
+        $statements = @($Ast.Statements)
+        if ($statements.Count -eq 0) { return $null }
+        if ($statements.Count -ne 1) { throw "Inventory data file must contain a single hashtable" }
+        return ConvertFrom-Psd1Ast $statements[0]
+    }
+    if ($Ast -is [System.Management.Automation.Language.PipelineAst]) {
+        return ConvertFrom-Psd1Ast ($Ast.PipelineElements | Select-Object -Last 1)
+    }
+    if ($Ast -is [System.Management.Automation.Language.CommandExpressionAst]) {
+        return ConvertFrom-Psd1Ast $Ast.Expression
+    }
+    if ($Ast -is [System.Management.Automation.Language.HashtableAst]) {
+        $result = [ordered]@{}
+        foreach ($pair in $Ast.KeyValuePairs) {
+            $key = $pair.Item1.Extent.Text.Trim('"', "'")
+            $result[$key] = ConvertFrom-Psd1Ast $pair.Item2
+        }
+        return $result
+    }
+    if ($Ast -is [System.Management.Automation.Language.ArrayExpressionAst]) {
+        $sub = $Ast.SubExpression
+        if ($sub -is [System.Management.Automation.Language.StatementBlockAst] -and $sub.Statements.Count -eq 0) {
+            return @()
+        }
+        if ($sub -is [System.Management.Automation.Language.StatementBlockAst] -and $sub.Statements.Count -gt 0) {
+            return ConvertFrom-Psd1Ast $sub.Statements[0]
+        }
+        return @()
+    }
+    if ($Ast -is [System.Management.Automation.Language.ArrayLiteralAst]) {
+        return @($Ast.Elements | ForEach-Object { ConvertFrom-Psd1Ast $_ })
+    }
+    if ($Ast -is [System.Management.Automation.Language.VariableExpressionAst]) {
+        switch ($Ast.VariablePath.UserPath) {
+            'true'  { return $true }
+            'false' { return $false }
+            'null'  { return $null }
+            default { throw "Unsupported variable '$($Ast.VariablePath.UserPath)' in inventory data file" }
+        }
+    }
+    if ($Ast -is [System.Management.Automation.Language.ConstantExpressionAst]) {
+        return $Ast.SafeGetValue()
+    }
+    throw "Unsupported expression in inventory data file at line $($Ast.Extent.StartLineNumber): '$($Ast.Extent.Text)'"
+}
+
 function Import-InventoryDataFile {
     param([string]$Path)
 
@@ -23,12 +93,21 @@ function Import-InventoryDataFile {
     }
 
     # Windows PowerShell 5.1 lacks Import-PowerShellDataFile; deployment
-    # inventories are local generated PSD1 hashtables, so evaluate them in a child scope.
+    # inventories are local generated PSD1 hashtables. Parse the file and
+    # convert only literal hashtable/array/scalar nodes — never Invoke-Expression,
+    # so a tampered inventory file cannot execute arbitrary code.
     $resolvedPath = (Resolve-Path -LiteralPath $Path -ErrorAction Stop).Path
-    return & {
-        param([string]$InventoryFile)
-        Invoke-Expression ([System.IO.File]::ReadAllText($InventoryFile))
-    } $resolvedPath
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($resolvedPath, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors -and $parseErrors.Count -gt 0) {
+        throw "Failed to parse inventory data file '$Path': $($parseErrors[0].Message)"
+    }
+    $value = ConvertFrom-Psd1Ast $ast
+    if ($null -eq $value) {
+        throw "Inventory data file '$Path' is empty"
+    }
+    return $value
 }
 
 function Get-EnvOrDefault {
@@ -313,11 +392,7 @@ function Stage-SourceTree {
             )
         },
         [pscustomobject]@{
-            Path = 'openclaw-bridge'
-            ExcludePaths = @('node_modules', 'dist')
-        },
-        [pscustomobject]@{
-            Path = 'gui\internal\systray'
+            Path = 'guiapp\internal\systray'
             ExcludePaths = @()
         }
     )
@@ -362,8 +437,7 @@ function Stage-DeployAssets {
 
     $assetDirs = @(
         [pscustomobject]@{ Path = 'hubcenter'; ExcludePaths = @('bin', 'package', 'data', '.gocache', '.gomodcache', 'cmd', 'internal') },
-        [pscustomobject]@{ Path = 'hub'; ExcludePaths = @('bin', 'package', 'data', '.gocache', '.gomodcache', 'cmd', 'internal') },
-        [pscustomobject]@{ Path = 'openclaw-bridge'; ExcludePaths = @('node_modules', 'dist') }
+        [pscustomobject]@{ Path = 'hub'; ExcludePaths = @('bin', 'package', 'data', '.gocache', '.gomodcache', 'cmd', 'internal') }
     )
 
     foreach ($dir in $assetDirs) {
@@ -379,6 +453,7 @@ function Stage-DeployAssets {
     }
 
     Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hubcenter\web\admin') -Label 'hubcenter admin web assets'
+    Assert-DeployFileExists -Path (Join-Path $StageRoot 'hubcenter\web\home\index.html') -Label 'hubcenter home landing page'
     Assert-DeployFileExists -Path (Join-Path $StageRoot 'hubcenter\web\admin\assets\js\admin-core.js') -Label 'hubcenter admin core script'
     Assert-DeployFileExists -Path (Join-Path $StageRoot 'hubcenter\web\admin\assets\js\petstore-admin.js') -Label 'hubcenter pet store admin script'
     Assert-DeployFileExists -Path (Join-Path $StageRoot 'hubcenter\web\admin\assets\css\admin-shell.css') -Label 'hubcenter admin shell stylesheet'
@@ -409,10 +484,11 @@ function Stage-DeployAssets {
     if ($hubCloudWorkspaceScript -notmatch 'loadTenantCloudWorkspaceSettings' -or $hubCloudWorkspaceScript -notmatch '/api/admin/cloud-workspaces/settings') {
         throw 'Hub cloud workspace admin script is missing settings load/save.'
     }
-    Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hub\web\dist') -Label 'hub pwa web dist'
     Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hub\web\card_store') -Label 'hub card store web assets'
     Assert-DeployFileExists -Path (Join-Path $StageRoot 'hub\web\card_store\index.html') -Label 'hub card store index'
     Assert-DeployFileExists -Path (Join-Path $StageRoot 'hub\web\card_store\professional.css') -Label 'hub card store stylesheet'
+    Assert-DeployDirectoryHasFiles -Path (Join-Path $StageRoot 'hub\web\home') -Label 'hub home web assets'
+    Assert-DeployFileExists -Path (Join-Path $StageRoot 'hub\web\home\index.html') -Label 'hub home landing page'
     # The guide is a Hub-only public page. Read UTF-8 explicitly so Windows
     # PowerShell does not fall back to its ANSI code page for Chinese markers.
     $hubPetPackHelpPath = Join-Path $StageRoot 'hub\web\pet-pack-help\index.html'
@@ -427,9 +503,12 @@ function Stage-DeployAssets {
     # The public guide now documents the Pet 3.0 performance-pack contract.
     # Keep the staging guard aligned with the page rather than pinning it to
     # superseded 2.0 copy.
-    foreach ($requiredMarker in @('MaClaw 宠物角色表演包规范 3.0', 'native-skeleton', 'native-character', 'pet-performance-v3')) {
+    # Keep these markers ASCII. Windows PowerShell 5.1 parses this script as the
+    # system ANSI code page unless a UTF-8 BOM is present, so a Chinese literal
+    # here would not match the UTF-8 guide even when the page is correct.
+    foreach ($requiredMarker in @('MaClaw Pet Performance Pack Specification 3.0', 'native-skeleton', 'native-character', 'pet-performance-v3')) {
         if ($hubPetPackHelp -notmatch [regex]::Escape($requiredMarker)) {
-            throw ("Hub pet pack guide is missing required v2 marker: {0}" -f $requiredMarker)
+            throw ("Hub pet pack guide is missing required 3.0 marker: {0}" -f $requiredMarker)
         }
     }
 
@@ -503,7 +582,13 @@ function Build-LocalBinaries {
     $binDir = Join-Path $OutputRoot 'bin'
     $binDirForGo = (New-Item -ItemType Directory -Path $binDir -Force).FullName
     $goCacheRoot = Split-Path -Parent $OutputRoot
-    $goCacheDir = (New-Item -ItemType Directory -Path (Join-Path $goCacheRoot '.gocache') -Force).FullName
+    # DEPLOY_GO_GOCACHE: optional persistent shared cache override (skips per-run cold compile).
+    # Unset = legacy behavior (per-run .gocache under buildRoot, fully cold every run).
+    if (-not [string]::IsNullOrWhiteSpace($env:DEPLOY_GO_GOCACHE)) {
+        $goCacheDir = (New-Item -ItemType Directory -Path $env:DEPLOY_GO_GOCACHE -Force).FullName
+    } else {
+        $goCacheDir = (New-Item -ItemType Directory -Path (Join-Path $goCacheRoot '.gocache') -Force).FullName
+    }
 
     function Quote-CmdArg {
         param([string]$Value)
@@ -660,7 +745,7 @@ function Write-RemoteScript {
         ': "${DEPLOY_HUB:=0}"',
         ': "${ENSURE_HUB_MODELS:=0}"',
         ': "${HUB_MODEL_BASE_URL:=https://github.com/RapidAI/MaClaw/releases/download/Model_Release}"',
-        ': "${HUB_MODEL_FILES:=embeddinggemma-300M-Q8_0.gguf sensevoice-small-q8.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro_v2.zip}"',
+        ': "${HUB_MODEL_FILES:=Qwen3-Embedding-0.6B-Q8_0.gguf head_mlp_qwen3go_r13f1.json tool_head_ovr_qwen3go_r5.json interrupt_relevance_qwen3go.json sensevoice-small-q8.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro_v2.zip}"',
         ': "${HUB_CONFIG_BASENAME:=}"',
         ': "${HUBCENTER_CONFIG_BASENAME:=hubcenter-config.yaml}"',
         ': "${HUB_BINARY_NAME:=maclaw-hub}"',
@@ -834,7 +919,7 @@ function Write-RemoteScript {
         'is_allowed_model_file() {',
         '  case "$1" in',
         '    ""|*/*|*\\*|*..*) return 1 ;;',
-        '    *.gguf|*.yolow|*.koro|*.zip) return 0 ;;',
+        '    *.gguf|*.yolow|*.koro|*.zip|*.json) return 0 ;;',
         '    *) return 1 ;;',
         '  esac',
         '}',
@@ -871,7 +956,7 @@ function Write-RemoteScript {
         'is_allowed_model_file() {',
         '  case "$1" in',
         '    ""|*/*|*\\*|*..*) return 1 ;;',
-        '    *.gguf|*.yolow|*.koro|*.zip) return 0 ;;',
+        '    *.gguf|*.yolow|*.koro|*.zip|*.json) return 0 ;;',
         '    *) return 1 ;;',
         '  esac',
         '}',
@@ -1010,30 +1095,37 @@ function Write-RemoteScript {
         '  fi',
         '  replace_web_tree "$SRC_ROOT/hub/web" "$REMOTE_HUB_DIR/web" "$SRC_ROOT/deploy-manifest/hub-web.sha256" "hub"',
         '  backup_and_write_config "$REMOTE_HUB_DIR/configs/config.yaml" "$REMOTE_TMP_DIR/$HUB_CONFIG_BASENAME"',
-        '  BRIDGE_SRC="$SRC_ROOT/openclaw-bridge"',
-        '  BRIDGE_DST="$REMOTE_HUB_DIR/openclaw-bridge"',
-        '  if [ -d "$BRIDGE_SRC" ] && [ -f "$BRIDGE_SRC/package.json" ]; then',
-        '    echo "[remote] Deploying openclaw-bridge..."',
-        '    mkdir -p "$BRIDGE_DST"',
-        '    cp -f "$BRIDGE_SRC/package.json" "$BRIDGE_DST/package.json"',
-        '    cp -f "$BRIDGE_SRC/tsconfig.json" "$BRIDGE_DST/tsconfig.json" 2>/dev/null || true',
-        '    rm -rf "$BRIDGE_DST/src" "$BRIDGE_DST/dist"',
-        '    cp -Rf "$BRIDGE_SRC/src" "$BRIDGE_DST/src"',
-        '    if [ -f "$BRIDGE_SRC/config.example.json" ]; then',
-        '      cp -f "$BRIDGE_SRC/config.example.json" "$BRIDGE_DST/config.example.json"',
-        '    fi',
-        '    if command -v npm >/dev/null 2>&1; then',
-        '      echo "[remote] Running npm install in openclaw-bridge..."',
-        '      cd "$BRIDGE_DST" && npm install 2>&1 || echo "[WARN] npm install failed for openclaw-bridge"',
-        '      echo "[remote] Building openclaw-bridge..."',
-        '      npx tsc 2>&1 || echo "[WARN] tsc build failed for openclaw-bridge"',
-        '      echo "[remote] Pruning dev dependencies..."',
-        '      npm prune --production 2>&1 || true',
-        '      cd "$SRC_ROOT"',
-        '    else',
-        '      echo "[WARN] npm not found on remote host, skipping openclaw-bridge dependencies"',
-        '    fi',
+        '}',
+        '',
+        'install_logrotate_config() {',
+        '  if ! command -v logrotate >/dev/null 2>&1; then',
+        '    echo "[WARN] logrotate not found on remote host, skipping log rotation config"',
+        '    return 0',
         '  fi',
+        '  cat > /etc/logrotate.d/maclaw-hub <<LOGROTATEEOF',
+        '$REMOTE_HUB_DIR/data/logs/*.out.log $REMOTE_HUBCENTER_DIR/*.out $REMOTE_HUBCENTER_DIR/data/logs/*.log {',
+        '    weekly',
+        '    rotate 4',
+        '    compress',
+        '    missingok',
+        '    notifempty',
+        '    copytruncate',
+        '    maxsize 512M',
+        '}',
+        '$REMOTE_HUB_DIR/data/logs/hub.log $REMOTE_HUB_DIR/data/logs/registration.log {',
+        '    weekly',
+        '    rotate 4',
+        '    compress',
+        '    missingok',
+        '    notifempty',
+        '    copytruncate',
+        '    maxsize 64M',
+        '}',
+        'LOGROTATEEOF',
+        '  chmod 644 /etc/logrotate.d/maclaw-hub',
+        '  logrotate -d /etc/logrotate.d/maclaw-hub >/dev/null 2>&1 \',
+        '    && echo "[remote] logrotate config installed: /etc/logrotate.d/maclaw-hub" \',
+        '    || echo "[WARN] logrotate config failed validation: /etc/logrotate.d/maclaw-hub"',
         '}',
         '',
         'if [ "$DEPLOY_HUBCENTER" = "1" ]; then',
@@ -1065,6 +1157,8 @@ function Write-RemoteScript {
         '    ./start.sh',
         '  fi',
         'fi',
+        '',
+        'install_logrotate_config',
         '',
         'rm -rf "$SRC_ROOT"',
         'rm -f "$ARCHIVE_PATH" "$REMOTE_TMP_DIR/remote_deploy.sh"',
@@ -1104,6 +1198,9 @@ function Invoke-Plink {
         [string]$CommandText
     )
 
+    # Only for short, simple one-liners. Anything multi-line or containing
+    # quotes / $() / {} must go through Invoke-PlinkScript instead — see the
+    # comment there.
     & $PlinkExe @ConnectionArgs $CommandText
     if ($LASTEXITCODE -ne 0) {
         throw "Remote command failed: $CommandText"
@@ -1117,11 +1214,88 @@ function Invoke-PlinkCapture {
         [string]$CommandText
     )
 
+    # Same caveat as Invoke-Plink: prefer Invoke-PlinkScript -Capture for
+    # anything that is not a trivial one-liner.
     $output = & $PlinkExe @ConnectionArgs $CommandText
     if ($LASTEXITCODE -ne 0) {
         throw "Remote command failed: $CommandText"
     }
     return ($output | Out-String).Trim()
+}
+
+function Invoke-PlinkScript {
+    param(
+        [string]$PlinkExe,
+        [string[]]$ConnectionArgs,
+        [string]$ScriptText,
+        [string]$Label = 'remote script',
+        [switch]$Capture
+    )
+
+    # Run a multi-line shell script on the remote host.
+    #
+    # Do NOT pass the script text as an inline command argument: PowerShell
+    # rebuilds the native command line from the argv value, and multi-line /
+    # complex shell text does not survive that round trip.  The remote bash
+    # then sees a mangled script ("set: -: invalid option", "syntax error near
+    # unexpected token `fi`") and the step silently misbehaves.  `plink -m`
+    # ships the script as a file instead, byte for byte.
+    $tempFile = Join-Path $env:TEMP ("plink-script-{0}.sh" -f ([guid]::NewGuid().ToString('N')))
+    try {
+        # `plink -m` forwards the file verbatim, so the script must already be
+        # LF-only and BOM-free, otherwise CR / EF BB BF leak into the first
+        # remote commands.
+        $normalized = $ScriptText -replace "`r`n", "`n"
+        $normalized = $normalized -replace "`r", "`n"
+        $normalized = $normalized.TrimStart([char]0xFEFF)
+        if (-not $normalized.EndsWith("`n")) {
+            $normalized += "`n"
+        }
+        $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+        [System.IO.File]::WriteAllText($tempFile, $normalized, $utf8NoBom)
+
+        # `-m` is a plink option, so it has to land before the user@host argument
+        # that terminates the connection argument list.
+        $optionArgs = $ConnectionArgs[0..($ConnectionArgs.Length - 2)]
+        $targetSpec = $ConnectionArgs[-1]
+        # Decide success purely from the exit code.  A remote command writing to
+        # stderr (nginx -t warnings, npm warnings) raises a NativeCommandError
+        # record; Windows PowerShell 5.1 does not turn that into a terminating
+        # error even under $ErrorActionPreference = 'Stop' (verified), but
+        # PowerShell 7.4+ does honour it via $PSNativeCommandUseErrorActionPreference.
+        # Scoping the preference keeps this step from ever being skipped into a
+        # misleading "non-fatal WARN" because of harmless remote stderr.
+        $previousErrorActionPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            if ($Capture) {
+                $scriptOutput = & $PlinkExe @optionArgs '-m' $tempFile $targetSpec
+            }
+            else {
+                & $PlinkExe @optionArgs '-m' $tempFile $targetSpec
+            }
+            $exitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorActionPreference
+        }
+        if ($exitCode -ne 0) {
+            throw "Remote command failed: $Label"
+        }
+        if ($Capture) {
+            return ($scriptOutput | Out-String).Trim()
+        }
+    }
+    finally {
+        try {
+            if ([System.IO.File]::Exists($tempFile)) {
+                [System.IO.File]::Delete($tempFile)
+            }
+        }
+        catch {
+            Write-Warning ("Failed to remove temporary script {0}: {1}" -f $tempFile, $_.Exception.Message)
+        }
+    }
 }
 
 function Invoke-PscpUpload {
@@ -1178,7 +1352,7 @@ fi
 
     Write-Host ("Ensuring nginx proxy for {0} -> 127.0.0.1:{1} on {2}..." -f $serverName, $proxyPort, $Target.Host) -ForegroundColor Cyan
     try {
-        Invoke-Plink -PlinkExe $PlinkExe -ConnectionArgs $ConnectionArgs -CommandText $command
+        Invoke-PlinkScript -PlinkExe $PlinkExe -ConnectionArgs $ConnectionArgs -ScriptText $command -Label ("nginx proxy fix for {0} on {1}" -f $serverName, $Target.Host)
     } catch {
         Write-Host ("  [WARN] nginx proxy fix skipped (non-fatal): {0}" -f $_.Exception.Message) -ForegroundColor Yellow
     }
@@ -1190,7 +1364,8 @@ function Invoke-UrlStatusCheck {
         [string]$Method = 'Get',
         [string]$Body = $null,
         [string]$ContentType = 'application/json',
-        [int]$TimeoutSec = 10
+        [int]$TimeoutSec = 10,
+        [int]$Attempts = 3
     )
 
     $curlExe = Get-Command 'curl.exe' -ErrorAction SilentlyContinue
@@ -1209,11 +1384,42 @@ function Invoke-UrlStatusCheck {
             $curlArgs += @('--header', ("Content-Type: {0}" -f $ContentType), '--data', $Body)
         }
         $curlArgs += $Url
-        $output = & $curlExe.Source @curlArgs
-        if ($LASTEXITCODE -eq 0 -and $output -match '^\d{3}$') {
-            return [int]$output
+
+        # A freshly restarted service can be slow on its very first request
+        # (cold caches, template/JIT warmup), so a single timeout must not be
+        # reported as a failed rollout.  Retry a few times and only fail when
+        # no attempt produced a real HTTP status code.
+        $lastExit = 0
+        $lastOutput = ''
+        for ($attempt = 1; $attempt -le [Math]::Max(1, $Attempts); $attempt++) {
+            $output = & $curlExe.Source @curlArgs
+            $lastExit = $LASTEXITCODE
+            $lastOutput = ($output | Out-String).Trim()
+            # curl exits 0 on success, or 28 when --max-time elapsed.  On exit
+            # 28 --write-out still emits the status code if the response headers
+            # already arrived, which is a healthy response rather than a
+            # failure.  Exit 28 with 000 means nothing was received at all.
+            # Every other exit code (DNS, TLS, connection refused, ...) is a
+            # genuine error and must never be treated as success.
+            if ($lastExit -eq 0 -or $lastExit -eq 28) {
+                if ($lastOutput -match '^[1-5]\d{2}$') {
+                    if ($attempt -gt 1) {
+                        Write-Host ("    (retry {0} succeeded for {1})" -f $attempt, $Url) -ForegroundColor DarkGray
+                    }
+                    elseif ($lastExit -ne 0) {
+                        Write-Host ("    (curl exit {0} but HTTP {1} received for {2})" -f $lastExit, $lastOutput, $Url) -ForegroundColor DarkGray
+                    }
+                    return [int]$lastOutput
+                }
+            }
+            else {
+                Write-Host ("    (curl exit {0} for {1}: {2})" -f $lastExit, $Url, $lastOutput) -ForegroundColor DarkGray
+            }
+            if ($attempt -lt [Math]::Max(1, $Attempts)) {
+                Start-Sleep -Seconds 3
+            }
         }
-        throw ("curl smoke check failed (exit {0}): {1}" -f $LASTEXITCODE, ($output | Out-String).Trim())
+        throw ("curl smoke check failed after {0} attempt(s) (exit {1}): {2} ({3})" -f [Math]::Max(1, $Attempts), $lastExit, $lastOutput, $Url)
     }
 
     try {
@@ -1248,6 +1454,73 @@ function Invoke-UrlStatusCheck {
             }
         }
         throw
+    }
+}
+
+function Wait-DeploymentReady {
+    <#
+      Block until every readiness URL answers 200, or the budget runs out.
+
+      A restart is not the same thing as ready.  hubcenter replays its HA op
+      history during startup before it binds 9388, and that replay is long:
+      on hc-3 it was measured at ~66s with ops=16017 (2026-09-16, run13),
+      i.e. ~72s from process launch to "listening on 0.0.0.0:9388".  Probing
+      before the listener exists makes nginx answer 502 and turned a healthy
+      rollout into a failed deploy.  The op history only grows, so the window
+      only widens - waiting for readiness is what makes the smoke check
+      meaningful instead of a race.
+
+      Returns $true when ready, $false on timeout.  Callers still run their
+      assertions afterwards either way, so a genuinely broken host reports the
+      real problem rather than just "not ready".
+    #>
+    param(
+        [string[]]$Urls,
+        [int]$TimeoutSec = 180,
+        [int]$IntervalSec = 5,
+        [int]$ProbeTimeoutSec = 10
+    )
+
+    $pending = @($Urls | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+    if ($pending.Count -eq 0) {
+        return $true
+    }
+
+    $deadline = (Get-Date).AddSeconds($TimeoutSec)
+    $attempt = 0
+    while ($true) {
+        $attempt++
+        $notReady = @()
+        foreach ($url in $pending) {
+            $ok = $false
+            try {
+                if ((Invoke-UrlStatusCheck -Url $url -TimeoutSec $ProbeTimeoutSec -Attempts 1) -eq 200) {
+                    $ok = $true
+                }
+            }
+            catch {
+                # A connection refusal or timeout while the service is still
+                # starting up is exactly what we are waiting on.
+            }
+            if (-not $ok) {
+                $notReady += $url
+            }
+        }
+
+        if ($notReady.Count -eq 0) {
+            if ($attempt -gt 1) {
+                Write-Host ("    (ready after {0} probe(s))" -f $attempt) -ForegroundColor DarkGray
+            }
+            return $true
+        }
+
+        if ((Get-Date) -ge $deadline) {
+            Write-Host ("    [WARN] still not ready after {0}s: {1}" -f $TimeoutSec, ($notReady -join ', ')) -ForegroundColor Yellow
+            return $false
+        }
+
+        Write-Host ("    waiting for readiness ({0} pending, {1}s elapsed)..." -f $notReady.Count, [int]((Get-Date) - $deadline.AddSeconds($TimeoutSec)).TotalSeconds) -ForegroundColor DarkGray
+        Start-Sleep -Seconds $IntervalSec
     }
 }
 
@@ -1361,11 +1634,34 @@ function Invoke-PostDeploySmokeCheck {
         [object[]]$Targets,
         [string]$ExpectedHubCenterProblemReportsScriptSrc,
         [pscustomobject]$ExpectedHubCenterPetStoreAssetSources,
-        [int]$TimeoutSec = 10
+        # 20s rather than 10s: the first /admin render after a restart is a cold
+        # template/asset path and was measured at ~6.5s on the slowest host
+        # (Ubuntu 18.04), leaving too little headroom for a transient stall.
+        [int]$TimeoutSec = 20,
+        # Budget for waiting on a freshly restarted service to bind its port.
+        # Must exceed hubcenter's HA-op replay (~72s measured), and that replay
+        # grows with the op history, so this is deliberately generous.
+        [int]$ReadyTimeoutSec = 180
     )
 
     $failures = @()
     foreach ($target in $Targets) {
+        # Wait for the restarted services to actually serve before asserting on
+        # them.  Only the last host is usually cold here (the earlier hosts were
+        # restarted minutes ago while the remaining uploads ran), so in the
+        # common case this costs two quick probes and one real wait.
+        $readyUrls = @()
+        if ($target.DeployHubCenter) {
+            $readyUrls += ("https://{0}/healthz" -f $target.Host)
+        }
+        if ($target.DeployHub -and -not [string]::IsNullOrWhiteSpace($target.HubPublicUrl)) {
+            $readyUrls += ("{0}/healthz" -f $target.HubPublicUrl.TrimEnd('/'))
+        }
+        if ($readyUrls.Count -gt 0) {
+            Write-Host ("  waiting for {0} to be ready..." -f $target.Host) -ForegroundColor DarkGray
+            $null = Wait-DeploymentReady -Urls $readyUrls -TimeoutSec $ReadyTimeoutSec
+        }
+
         $checks = @()
         if ($target.DeployHubCenter) {
             $checks += [pscustomobject]@{ Label = 'hubcenter healthz'; Url = ("https://{0}/healthz" -f $target.Host); Want = 200 }
@@ -1464,7 +1760,10 @@ function Invoke-RemotePrecheck {
     }
     $checks += 'echo "precheck:ok"'
     $command = ($checks -join ' && ')
-    $output = Invoke-PlinkCapture -PlinkExe $PlinkExe -ConnectionArgs $ConnectionArgs -CommandText $command
+    # Ship the probe via `plink -m`: this text is full of quotes, $() and {} that
+    # do not survive PowerShell's inline native-argument round trip, and a
+    # silently mangled precheck would let a broken host slip through the gate.
+    $output = Invoke-PlinkScript -PlinkExe $PlinkExe -ConnectionArgs $ConnectionArgs -ScriptText $command -Label ("remote precheck for {0}" -f $Target.Host) -Capture
     if ($output -notmatch 'precheck:ok') {
         throw ("Remote precheck failed on {0}: {1}" -f $Target.Host, $output)
     }
@@ -1489,7 +1788,7 @@ $tarExe = Require-Tool 'tar.exe'
 $sshUser = Get-EnvOrDefault 'REMOTE_USER' 'root'
 $sshPort = [int](Get-EnvOrDefault 'REMOTE_PORT' '22')
 $hubModelBaseUrl = Get-EnvOrDefault 'HUB_MODEL_BASE_URL' 'https://github.com/RapidAI/MaClaw/releases/download/Model_Release'
-$hubModelFiles = Get-EnvOrDefault 'HUB_MODEL_FILES' 'embeddinggemma-300M-Q8_0.gguf sensevoice-small-q8.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro_v2.zip'
+$hubModelFiles = Get-EnvOrDefault 'HUB_MODEL_FILES' 'Qwen3-Embedding-0.6B-Q8_0.gguf head_mlp_qwen3go_r13f1.json tool_head_ovr_qwen3go_r5.json interrupt_relevance_qwen3go.json sensevoice-small-q8.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro_v2.zip'
 
 $brandKey = $Brand.ToLowerInvariant()
 $brandBuildTag = ''
@@ -1614,7 +1913,7 @@ try {
     }
 
     Write-Host ''
-    Write-Host '[1/9] Deployment topology' -ForegroundColor Cyan
+    Write-DeployStage '[1/9] Deployment topology'
     foreach ($target in $targets) {
         if ($target.DeployHubCenter -and $target.DeployHub) {
             Write-Host ("  - {0}: hubcenter[{1}] + hub[{2}]" -f $target.Host, $target.RemoteHubCenterDir, $target.RemoteHubDir)
@@ -1629,26 +1928,26 @@ try {
     Write-Host ("  Shared cluster secret: {0}" -f $secretSource)
     Write-Host ''
 
-    Write-Host '[2/9] Running remote prechecks...' -ForegroundColor Cyan
+    Write-DeployStage '[2/9] Running remote prechecks...'
     foreach ($target in $targets) {
         $connectionArgs = Get-ConnectionArgs -UserName $sshUser -HostName $target.Host -Port $sshPort -Password $password -HostKey $target.HostKey
         Write-Host ("  - checking {0}" -f $target.Host)
         [void](Invoke-RemotePrecheck -PlinkExe $plinkExe -ConnectionArgs $connectionArgs -Target $target)
     }
 
-    Write-Host '[3/9] Preparing build workspace...' -ForegroundColor Cyan
+    Write-DeployStage '[3/9] Preparing build workspace...'
     New-CleanDirectory -Path $buildRoot
     New-Item -ItemType Directory -Path $stageRoot -Force | Out-Null
     New-CleanDirectory -Path $renderedDir
 
-    Write-Host '[4/9] Rendering hubcenter/hub configs...' -ForegroundColor Cyan
+    Write-DeployStage '[4/9] Rendering hubcenter/hub configs...'
     Write-InventoryFile -Path $inventoryPath -ClusterSecret $clusterSecret
     & $powerShellExe -NoProfile -ExecutionPolicy Bypass -File $renderScript -InventoryPath $inventoryPath -OutputDir $renderedDir
     if ($LASTEXITCODE -ne 0) {
         throw 'HA config rendering failed.'
     }
 
-    Write-Host '[5/9] Building local Linux binaries and staging deploy assets...' -ForegroundColor Cyan
+    Write-DeployStage '[5/9] Building local Linux binaries and staging deploy assets...'
     $shouldBuildHub = @($targets | Where-Object { $_.DeployHub }).Count -gt 0
     $shouldBuildHubCenter = @($targets | Where-Object { $_.DeployHubCenter }).Count -gt 0
     Build-LocalBinaries -SourceRoot $rootDir -OutputRoot $stageRoot -HubBinaryName $hubBinaryName -HubCenterBinaryName $hubCenterBinaryName -MeetingASRWorkerBinaryName $meetingASRWorkerBinaryName -BrandBuildTag $brandBuildTag -BuildHub $shouldBuildHub -BuildHubCenter $shouldBuildHubCenter
@@ -1658,13 +1957,13 @@ try {
     Write-Host ("  - HubCenter problem reports script: {0}" -f $expectedHubCenterProblemReportsScriptSrc)
     Write-Host ("  - HubCenter Pet Store assets: {0}, {1}" -f $expectedHubCenterPetStoreAssetSources.CSS, $expectedHubCenterPetStoreAssetSources.Script)
 
-    Write-Host '[6/9] Creating deploy archive...' -ForegroundColor Cyan
+    Write-DeployStage '[6/9] Creating deploy archive...'
     & $tarExe -czf $archivePath -C $stageRoot .
     if ($LASTEXITCODE -ne 0) {
         throw 'Failed to create deploy archive.'
     }
 
-    Write-Host '[7/9] Writing remote deployment script...' -ForegroundColor Cyan
+    Write-DeployStage '[7/9] Writing remote deployment script...'
     Write-RemoteScript -Path $remoteScriptPath
 
     $targetIndex = 0
@@ -1683,7 +1982,7 @@ try {
         }
 
         Write-Host ''
-        Write-Host ("[8/9][{0}/{1}] Uploading artifacts to {2}..." -f $targetIndex, $targets.Count, $target.Host) -ForegroundColor Cyan
+        Write-DeployStage ("[8/9][{0}/{1}] Uploading artifacts to {2}..." -f $targetIndex, $targets.Count, $target.Host)
         Invoke-Plink -PlinkExe $plinkExe -ConnectionArgs $connectionArgs -CommandText "mkdir -p $($target.RemoteTmpDir)"
         Invoke-PscpUpload -PscpExe $pscpExe -ConnectionArgs $connectionArgs -LocalPath $archivePath -RemotePath "$($target.RemoteTmpDir)/maclaw-deploy.tar.gz"
         Invoke-PscpUpload -PscpExe $pscpExe -ConnectionArgs $connectionArgs -LocalPath $remoteScriptPath -RemotePath "$($target.RemoteTmpDir)/remote_deploy.sh"
@@ -1692,12 +1991,20 @@ try {
         }
         if ($target.DeployHub) {
             Invoke-PscpUpload -PscpExe $pscpExe -ConnectionArgs $connectionArgs -LocalPath $hubConfigPath -RemotePath "$($target.RemoteTmpDir)/$($target.HubConfig)"
-            $remoteModelSentinel = "$($target.RemoteHubDir)/data/models/.models-initialized"
             $remoteModelLock = "$($target.RemoteHubDir)/data/models/.models-downloading"
             $remoteModelDir = "$($target.RemoteHubDir)/data/models"
             $remoteModelFilesList = ($hubModelFiles -split '\s+' | Where-Object { $_ }) -join ' '
-            $modelStateScript = "missing=0; for name in $remoteModelFilesList; do [ -f '$remoteModelDir/`$name' ] || missing=1; done; if [ -f '$remoteModelLock' ]; then echo downloading; elif [ `$missing -eq 0 ]; then echo ready; else echo missing; fi"
-            $modelState = Invoke-PlinkCapture -PlinkExe $plinkExe -ConnectionArgs $connectionArgs -CommandText $modelStateScript
+            # The model name must stay OUTSIDE the single quotes: a single-quoted
+            # '$name' is never expanded by the remote shell, so the probe used to
+            # test for a literal file called "$name", always reported "missing",
+            # and forced a needless model re-seed (~770 MB) on every deploy.
+            $modelStateScript = (
+                "missing=0; for name in $remoteModelFilesList; do " +
+                "[ -f '$remoteModelDir'/" + '"$name"' + " ] || missing=1; done; " +
+                "if [ -f '$remoteModelLock' ]; then echo downloading; " +
+                "elif [ `$missing -eq 0 ]; then echo ready; else echo missing; fi"
+            )
+            $modelState = Invoke-PlinkScript -PlinkExe $plinkExe -ConnectionArgs $connectionArgs -ScriptText $modelStateScript -Label ("hub model state check for {0}" -f $target.Host) -Capture
             if ($modelState -eq 'ready') {
                 $modelStatuses += ("{0}: existing models kept in {1}/data/models" -f $target.Host, $target.RemoteHubDir)
             }
@@ -1737,7 +2044,7 @@ try {
 
         $remoteCommand = "sed -i 's/\r$//' $($target.RemoteTmpDir)/remote_deploy.sh && chmod +x $($target.RemoteTmpDir)/remote_deploy.sh && {0} && $($target.RemoteTmpDir)/remote_deploy.sh" -f ($envParts -join ' && ')
 
-        Write-Host ("[9/9][{0}/{1}] Deploying uploaded binaries on {2}..." -f $targetIndex, $targets.Count, $target.Host) -ForegroundColor Cyan
+        Write-DeployStage ("[9/9][{0}/{1}] Deploying uploaded binaries on {2}..." -f $targetIndex, $targets.Count, $target.Host)
         Invoke-Plink -PlinkExe $plinkExe -ConnectionArgs $connectionArgs -CommandText $remoteCommand
         Invoke-RemoteNginxHubProxyFix -PlinkExe $plinkExe -ConnectionArgs $connectionArgs -Target $target
     }
@@ -1748,11 +2055,14 @@ try {
     }
     else {
         Write-Host 'Running post-deploy smoke checks...' -ForegroundColor Cyan
+        # Give the just-restarted services a moment to finish coming up before
+        # the first probe, so the cold-start request is not the one that times out.
         Start-Sleep -Seconds 3
         Invoke-PostDeploySmokeCheck -Targets $targets -ExpectedHubCenterProblemReportsScriptSrc $expectedHubCenterProblemReportsScriptSrc -ExpectedHubCenterPetStoreAssetSources $expectedHubCenterPetStoreAssetSources
     }
 
     Write-Host 'Deployment completed successfully.' -ForegroundColor Green
+    Write-Host ("Total deploy wall time: {0:N1}s" -f $script:DeployTotalWatch.Elapsed.TotalSeconds) -ForegroundColor Green
     Write-Host ("Rendered configs: {0}" -f $renderedDir)
     Write-Host 'Services deployed:'
     foreach ($target in $targets) {

@@ -1,0 +1,411 @@
+import type { MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react';
+import { SidebarAiPane } from './SidebarAiPane';
+import { SidebarNavRail } from './SidebarNavRail';
+import type { SidebarCreditDisplayFormatters, SidebarCurrentProviderTokenUsage, SidebarHubCredits } from '../../types/appShell';
+import type { CodingAgentProgress, CodingAgentTurnSnapshot } from '../ai/CodingAgentProgressStatus';
+import type { VirtualEmployeeEntry } from '../ai/VirtualEmployeeTab';
+import type { FavoriteEmployeeSlot } from './FavoriteEmployeeButtons';
+import type { HistoryDiscussionSummary } from './SidebarHistorySessions';
+import type { TaskManagementItem, TaskContextMenu } from './SidebarTaskManagement';
+import type { ExpertDefinition } from '../ai/expertTypes';
+import type { LatexExpertTaskOptions } from '../../utils/latexTemplates';
+import type { ActiveAssistantTaskIdentity } from '../ai/aiAssistantPanelSessionUtils';
+import { SIDEBAR_AI_PANE_GAP, SIDEBAR_NAV_RAIL_WIDTH } from './sidebarLayout';
+import type { AssistantDarkSchemeId } from '../ai/assistantDarkSchemes';
+import { DEFAULT_ASSISTANT_LIGHT_SCHEME_ID, type AssistantLightSchemeId } from '../ai/assistantLightSchemes';
+import type { LLMProfileStatusSummary } from './SidebarSystemStatus';
+import type { WorkbenchTaskCounts } from './backgroundTaskCount';
+interface AppSidebarShellProps extends SidebarCreditDisplayFormatters {
+    navTab: string;
+    taskManagementPaneWidth: number;
+    aiThemeMode: 'light' | 'dark';
+    aiDarkSchemeId: AssistantDarkSchemeId;
+    aiLightSchemeId?: AssistantLightSchemeId;
+    brandInfo: { id: string } | null;
+    currentIcon: string;
+    brandSidebarName: string;
+    switchTool: (tool: string) => void;
+    lang: string;
+    maclawLLMOnline: boolean;
+    showLansenger?: boolean;
+    remoteActivationStatus: any;
+    qqBotStatus: string;
+    telegramStatus: string;
+    weixinStatus: string;
+    lansengerStatus: string;
+    backgroundTaskCount?: number;
+    workbenchTaskCounts?: WorkbenchTaskCounts;
+    onOpenBackgroundTasks?: () => void;
+    /** Keep cloud workspace/project controls for external coding surfaces. */
+    showCloudWorkspaceManagement?: boolean;
+    /** Show cloud task creation while keeping project management controls hidden. */
+    showCloudWorkspaceCreation?: boolean;
+    /** Restore durable cloud task rows while keeping project controls hidden. */
+    restoreCloudWorkspaceTasks?: boolean;
+    t: (key: string) => string;
+    gossipAllowed: boolean;
+    config: any;
+    sidebarExpanded?: boolean;
+    setSidebarExpanded?: (updater: (prev: boolean) => boolean) => void;
+    activeTool: string;
+    toolDropdownOpen: boolean;
+    setToolDropdownOpen: (updater: (prev: boolean) => boolean) => void;
+    tasks: TaskManagementItem[];
+    /** True while the initial/refresh ListTasks request is in flight. */
+    tasksLoading?: boolean;
+    /** True while a cloud workspace restore is syncing tasks in the background. */
+    cloudTasksLoading?: boolean;
+    renamingTaskPath: string | null;
+    setRenamingTaskPath: (path: string | null) => void;
+    renameValue: string;
+    setRenameValue: (value: string) => void;
+    resumeTask: (projectPath: string, task?: TaskManagementItem) => Promise<boolean | void> | boolean | void;
+    continueWorkflowProject?: (projectPath: string) => Promise<void> | void;
+    assistantReady?: boolean;
+    onTaskSwitchBlocked?: () => void;
+    createTask: (
+        name: string,
+        workingDir?: string,
+        mode?: 'coding_dev' | 'remote_coding_dev',
+        remote?: { host: string; port: number; user: string; password: string; workDir: string },
+        workspaceId?: string,
+    ) => Promise<void> | void;
+    /** Expert-task creation path used by the chat task type in the create dialog. */
+    onCreateExpertTask?: (expert: ExpertDefinition, options?: LatexExpertTaskOptions) => Promise<void> | void;
+    refreshTasks: () => void;
+    taskContextMenu: TaskContextMenu;
+    setTaskContextMenu: (menu: TaskContextMenu) => void;
+    renameTask: (projectPath: string, name: string) => Promise<unknown>;
+    pinTask: (projectPath: string, pinned: boolean) => Promise<unknown>;
+    hideTask: (projectPath: string, tags?: string[], force?: boolean) => Promise<unknown>;
+    /** Focus-only activation for a task whose assistant tab is already open. */
+    activateTask?: (projectPath: string, task?: TaskManagementItem) => void;
+    /** Open project-tab paths; removal stays available but warns when the tab is open. */
+    openProjectTabPaths?: string[];
+    /** Include cloud workspace identity when matching an open task tab. */
+    openProjectTabIdentities?: Array<{ projectPath: string; cloudWorkspaceId?: string }>;
+    openExpertTabIDs?: string[];
+    /** Currently visible assistant tab. Null/empty clears the task-list highlight. */
+    activeAssistantTask?: ActiveAssistantTaskIdentity | null;
+    /** Live "executing" signal for that tab; merges with the durable snapshot in status stats. */
+    activeAssistantTaskRunning?: boolean;
+    /** Busy task identities (normalized project paths + expert IDs) across all assistant tabs, incl. detached runs. */
+    busyTaskRuns?: { projectPaths: string[]; expertIds: string[] };
+    sidebarCurrentProviderTokenUsage: SidebarCurrentProviderTokenUsage;
+    sidebarHubCredits: SidebarHubCredits | null;
+    /** Performs the tenant daily check-in; resolved state arrives via sidebarHubCredits. */
+    onHubCheckin?: () => Promise<void> | void;
+    hubCheckinPending?: boolean;
+    unlimitedHubCreditText: string;
+    noHubAuthorizationText: string;
+    showHubCreditAction: boolean;
+    openHubCreditsPage: () => void;
+    openServiceRedeemPage?: () => void;
+    openLLMSettingsPage?: () => void;
+    openIMSettingsPage?: () => void;
+    openHubCardStorePage?: () => void;
+    codingAgentProgress?: CodingAgentProgress | null;
+    codingAgentTurnSnapshot?: CodingAgentTurnSnapshot | null;
+    handleTaskManagementResizeStart: (e: ReactMouseEvent<HTMLDivElement> | ReactPointerEvent<HTMLDivElement> | number) => void;
+    isTaskManagementResizing: boolean;
+    onOpenVEConversation?: (ve: VirtualEmployeeEntry) => void;
+    favoriteEmployees?: FavoriteEmployeeSlot[];
+    veAuthorized?: boolean;
+    digitalEmployeeFeatureStatus?: any;
+    showDigitalEmployeeNavigation?: boolean;
+    onOpenHistoryDiscussion?: (discussion: HistoryDiscussionSummary) => void;
+    onStartVEConversation?: (veId: string) => void;
+    onReorderFavorites?: (newOrder: string[]) => void;
+    onRenameFavoriteEmployee?: (veId: string, name: string) => void | Promise<void>;
+    onSetFavoriteEmployee?: (ve: VirtualEmployeeEntry) => void;
+    onRemoveFavoriteEmployee?: (ve: VirtualEmployeeEntry) => void;
+    onRemoveFavoriteEmployeeById?: (veId: string) => void;
+    favoriteEmployeeIds?: string[]; favoriteEmployeeNames?: Record<string, string>;
+    showCodingToolEntry?: boolean;
+    showAppEntry?: boolean;
+	showUtilitiesEntry?: boolean;
+	showToolsEntry?: boolean;
+    utilitiesLabel?: string;
+    /** Current settings tab, forwarded to the nav rail for the library menu highlight. */
+    settingsTab?: string;
+    /** Solo settings tab. IM, email or hardware here highlights 连接 instead of 设置. */
+    settingsNavSoloTab?: string;
+    availableProviders?: Array<{ name: string; url: string; isHubService: boolean; model?: string; models?: string[] }>;
+    onSwitchProvider?: (providerID: string) => void;
+    currentModel?: string;
+    modelOptions?: string[];
+    modelMultipliers?: Record<string, number>;
+    modelsLoading?: boolean;
+    onSwitchModel?: (modelId: string) => void;
+    onOpenModelMenu?: () => void;
+    onDismissModelMenu?: () => void;
+    providerSelectionPending?: boolean;
+    profileSavePending?: boolean;
+    moaSticky?: {
+        available: boolean;
+        active: boolean;
+        label?: string;
+        preset?: string;
+        presets?: Array<{ id: string; display_name?: string; ref_count?: number; enabled?: boolean }>;
+    };
+    onToggleMoASticky?: (on: boolean, presetId?: string) => void;
+    profileSummaries?: { assistant?: LLMProfileStatusSummary; coding?: LLMProfileStatusSummary } | null;
+    activeProfile?: 'assistant' | 'coding' | 'none';
+    codingInheritsAssistant?: boolean;
+}
+export const AppSidebarShell = ({
+    navTab,
+    taskManagementPaneWidth,
+    aiThemeMode,
+    aiDarkSchemeId,
+    aiLightSchemeId = DEFAULT_ASSISTANT_LIGHT_SCHEME_ID,
+    brandInfo,
+    currentIcon,
+    brandSidebarName,
+    switchTool,
+    lang,
+    maclawLLMOnline,
+    showLansenger = false,
+    remoteActivationStatus,
+    qqBotStatus,
+    telegramStatus,
+    weixinStatus,
+    lansengerStatus,
+    backgroundTaskCount = 0,
+    workbenchTaskCounts,
+    onOpenBackgroundTasks,
+    showCloudWorkspaceManagement,
+    showCloudWorkspaceCreation,
+    restoreCloudWorkspaceTasks,
+    t,
+    gossipAllowed,
+    config,
+    sidebarExpanded,
+    setSidebarExpanded,
+    activeTool,
+    toolDropdownOpen,
+    setToolDropdownOpen,
+    tasks,
+    tasksLoading = false,
+    cloudTasksLoading = false,
+    renamingTaskPath,
+    setRenamingTaskPath,
+    renameValue,
+    setRenameValue,
+    resumeTask,
+    continueWorkflowProject,
+    assistantReady = true,
+    onTaskSwitchBlocked,
+    createTask,
+    onCreateExpertTask,
+    refreshTasks,
+    taskContextMenu,
+    setTaskContextMenu,
+    renameTask,
+    pinTask,
+    hideTask,
+    activateTask,
+    openProjectTabPaths,
+    openProjectTabIdentities,
+    openExpertTabIDs,
+    activeAssistantTask,
+    activeAssistantTaskRunning = false,
+    busyTaskRuns,
+    sidebarCurrentProviderTokenUsage,
+    sidebarHubCredits,
+    formatSidebarTokens,
+    formatSidebarHubExpiry,
+    formatSidebarHubTotalCredits,
+    formatSidebarHubUsedCredits,
+    formatSidebarCredit,
+    unlimitedHubCreditText,
+    noHubAuthorizationText,
+    showHubCreditAction,
+    openHubCreditsPage,
+    openServiceRedeemPage,
+    openLLMSettingsPage,
+    openIMSettingsPage,
+    openHubCardStorePage,
+    codingAgentProgress = null,
+    codingAgentTurnSnapshot = null,
+    handleTaskManagementResizeStart,
+    isTaskManagementResizing,
+    onOpenVEConversation,
+    favoriteEmployees = [],
+    veAuthorized = false,
+    digitalEmployeeFeatureStatus = null,
+    showDigitalEmployeeNavigation,
+    onOpenHistoryDiscussion,
+    onStartVEConversation,
+    onReorderFavorites,
+    onRenameFavoriteEmployee,
+    onSetFavoriteEmployee,
+    onRemoveFavoriteEmployee,
+    onRemoveFavoriteEmployeeById,
+    favoriteEmployeeIds = [], favoriteEmployeeNames = {},
+    showCodingToolEntry = false,
+    showAppEntry = false,
+	showUtilitiesEntry = true,
+	showToolsEntry = false,
+    utilitiesLabel,
+    settingsTab,
+    settingsNavSoloTab,
+    availableProviders = [],
+    onSwitchProvider,
+    currentModel = '',
+    modelOptions = [],
+    modelMultipliers,
+    modelsLoading = false,
+    onSwitchModel,
+    onOpenModelMenu,
+    onDismissModelMenu,
+    providerSelectionPending,
+    profileSavePending,
+    moaSticky,
+    onToggleMoASticky,
+    profileSummaries,
+    activeProfile,
+    codingInheritsAssistant,
+    onHubCheckin,
+    hubCheckinPending = false,
+}: AppSidebarShellProps) => (
+<>
+            <div className="mc-sidebar-drag-strip" data-window-drag style={{
+                height: 'var(--mc-sidebar-drag-strip, 10px)',
+                width: navTab === 'ai' ? `${SIDEBAR_NAV_RAIL_WIDTH + taskManagementPaneWidth + SIDEBAR_AI_PANE_GAP}px` : `${SIDEBAR_NAV_RAIL_WIDTH}px`,
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                zIndex: 999,
+                userSelect: 'none',
+                '--mc-task-pane-width': `${taskManagementPaneWidth}px`,
+                '--wails-draggable': 'drag'
+            } as any}></div>
+
+            <div className="sidebar office-agent-shell" style={{ '--wails-draggable': 'no-drag', '--mc-task-pane-width': `${taskManagementPaneWidth}px`, flexDirection: 'row', padding: 0, width: navTab === 'ai' ? `${SIDEBAR_NAV_RAIL_WIDTH + taskManagementPaneWidth + SIDEBAR_AI_PANE_GAP}px` : `${SIDEBAR_NAV_RAIL_WIDTH}px` } as any} data-ai-theme={aiThemeMode} data-ai-dark-scheme={aiThemeMode === 'dark' ? aiDarkSchemeId : undefined} data-ai-light-scheme={aiThemeMode === 'light' ? aiLightSchemeId : undefined}>
+                          <SidebarNavRail
+                    navTab={navTab}
+                    brandInfo={brandInfo}
+                    currentIcon={currentIcon}
+                    brandSidebarName={brandSidebarName}
+                    switchTool={switchTool}
+                    lang={lang}
+                    maclawLLMOnline={maclawLLMOnline}
+                    remoteActivationStatus={remoteActivationStatus}
+                    t={t}
+                    gossipAllowed={gossipAllowed}
+                    config={config}
+                    hubCheckin={sidebarHubCredits?.checkin}
+                    onHubCheckin={onHubCheckin}
+                    hubCheckinPending={hubCheckinPending}
+                    favoriteEmployees={favoriteEmployees}
+                    veAuthorized={veAuthorized}
+                    onStartVEConversation={onStartVEConversation || (() => {})}
+                    onReorderFavorites={onReorderFavorites || (() => {})}
+                    onRemoveFavorite={onRemoveFavoriteEmployeeById || (() => {})}
+                    onRenameFavorite={onRenameFavoriteEmployee || (() => {})}
+                    showAppEntry={showAppEntry}
+					showUtilitiesEntry={showUtilitiesEntry}
+					showToolsEntry={showToolsEntry}
+                    utilitiesLabel={utilitiesLabel}
+                    settingsTab={settingsTab}
+                    settingsNavSoloTab={settingsNavSoloTab}
+                    // Background runs only. The rail adds in-progress bot tasks.
+                    runningTaskCount={workbenchTaskCounts?.background ?? backgroundTaskCount}
+                    onOpenBackgroundTasks={onOpenBackgroundTasks}
+                />        {navTab === 'ai' && (
+                    <SidebarAiPane
+                        taskManagementPaneWidth={taskManagementPaneWidth}
+                        lang={lang}
+                        aiThemeMode={aiThemeMode}
+                        aiLightSchemeId={aiLightSchemeId}
+                        aiDarkSchemeId={aiDarkSchemeId}
+                        maclawLLMOnline={maclawLLMOnline}
+                        showLansenger={showLansenger}
+                        remoteActivationStatus={remoteActivationStatus}
+                        qqBotStatus={qqBotStatus}
+                        telegramStatus={telegramStatus}
+                        weixinStatus={weixinStatus}
+                        lansengerStatus={lansengerStatus}
+                        backgroundTaskCount={backgroundTaskCount}
+                        workbenchTaskCounts={workbenchTaskCounts}
+                        onOpenBackgroundTasks={onOpenBackgroundTasks}
+                        showCloudWorkspaceManagement={showCloudWorkspaceManagement}
+                        showCloudWorkspaceCreation={showCloudWorkspaceCreation}
+                        restoreCloudWorkspaceTasks={restoreCloudWorkspaceTasks}
+                        config={config}
+                        activeTool={activeTool}
+                        toolDropdownOpen={toolDropdownOpen}
+                        setToolDropdownOpen={setToolDropdownOpen}
+                        tasks={tasks}
+                        tasksLoading={tasksLoading}
+                        cloudTasksLoading={cloudTasksLoading}
+                        renamingTaskPath={renamingTaskPath}
+                        setRenamingTaskPath={setRenamingTaskPath}
+                        renameValue={renameValue}
+                        setRenameValue={setRenameValue}
+                        resumeTask={resumeTask}
+                        continueWorkflowProject={continueWorkflowProject}
+                        assistantReady={assistantReady}
+                        onTaskSwitchBlocked={onTaskSwitchBlocked}
+                        createTask={createTask}
+                        onCreateExpertTask={onCreateExpertTask}
+                        refreshTasks={refreshTasks}
+                        taskContextMenu={taskContextMenu}
+                        setTaskContextMenu={setTaskContextMenu}
+                        renameTask={renameTask}
+                        pinTask={pinTask}
+                        hideTask={hideTask}
+                        activateTask={activateTask}
+                        openProjectTabPaths={openProjectTabPaths}
+                        openProjectTabIdentities={openProjectTabIdentities}
+                        openExpertTabIDs={openExpertTabIDs}
+                        activeAssistantTask={activeAssistantTask}
+                        activeAssistantTaskRunning={activeAssistantTaskRunning}
+                        busyTaskRuns={busyTaskRuns}
+                        sidebarCurrentProviderTokenUsage={sidebarCurrentProviderTokenUsage}
+                        sidebarHubCredits={sidebarHubCredits}
+                        formatSidebarTokens={formatSidebarTokens}
+                        formatSidebarHubExpiry={formatSidebarHubExpiry}
+                        formatSidebarHubTotalCredits={formatSidebarHubTotalCredits}
+                        formatSidebarHubUsedCredits={formatSidebarHubUsedCredits}
+                        formatSidebarCredit={formatSidebarCredit}
+                        unlimitedHubCreditText={unlimitedHubCreditText}
+                        noHubAuthorizationText={noHubAuthorizationText}
+                        showHubCreditAction={showHubCreditAction}
+                        openHubCreditsPage={openHubCreditsPage}
+                        openServiceRedeemPage={openServiceRedeemPage} openLLMSettingsPage={openLLMSettingsPage} openIMSettingsPage={openIMSettingsPage} openHubCardStorePage={openHubCardStorePage}
+                        codingAgentProgress={codingAgentProgress}
+                        codingAgentTurnSnapshot={codingAgentTurnSnapshot}
+                        handleTaskManagementResizeStart={handleTaskManagementResizeStart}
+                        isTaskManagementResizing={isTaskManagementResizing}
+                        switchTool={switchTool}
+                        onOpenVEConversation={onOpenVEConversation}
+                        onSetFavoriteEmployee={onSetFavoriteEmployee}
+                        onRemoveFavoriteEmployee={onRemoveFavoriteEmployee}
+                        favoriteEmployeeIds={favoriteEmployeeIds} favoriteEmployeeNames={favoriteEmployeeNames} onRenameEmployee={(ve, name) => onRenameFavoriteEmployee?.(String(ve.machine_id || ve.id || '').trim() || ve.id, name)}
+                        showCodingToolEntry={showCodingToolEntry}
+                        digitalEmployeeFeatureStatus={digitalEmployeeFeatureStatus}
+                        showDigitalEmployeeNavigation={showDigitalEmployeeNavigation}
+                        onOpenHistoryDiscussion={onOpenHistoryDiscussion}
+                        availableProviders={availableProviders}
+                        onSwitchProvider={onSwitchProvider}
+                        currentModel={currentModel}
+                        modelOptions={modelOptions}
+                        modelMultipliers={modelMultipliers}
+                        modelsLoading={modelsLoading}
+                        onSwitchModel={onSwitchModel}
+                        onOpenModelMenu={onOpenModelMenu}
+                        onDismissModelMenu={onDismissModelMenu}
+                        providerSelectionPending={providerSelectionPending}
+                        profileSavePending={profileSavePending}
+                        moaSticky={moaSticky}
+                        onToggleMoASticky={onToggleMoASticky}
+                        profileSummaries={profileSummaries}
+                        activeProfile={activeProfile}
+                        codingInheritsAssistant={codingInheritsAssistant}
+                    />
+                )}
+            </div>
+</>
+);

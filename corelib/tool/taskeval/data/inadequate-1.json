@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "transcript": [
+    {
+      "user_text": "读一下 README.md 的前 50 行",
+      "called_tools": ["read_file"]
+    },
+    {
+      "user_text": "现在几点了",
+      "called_tools": ["web_search"]
+    }
+  ]
+}

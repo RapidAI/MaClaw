@@ -144,6 +144,21 @@ func normalizeProviderIDs(m *ModelServiceModel) []string {
 	return out
 }
 
+// effectiveModelProviderIDs is the route list for one model. An explicit
+// provider_ids list wins. Provider configs fill in only when that list is
+// empty, so a removed id is not revived by a leftover config.
+func effectiveModelProviderIDs(m *ModelServiceModel) []string {
+	if m == nil {
+		return nil
+	}
+	if len(m.ProviderIDs) > 0 {
+		idsOnly := *m
+		idsOnly.ProviderConfigs = nil
+		return normalizeProviderIDs(&idsOnly)
+	}
+	return normalizeProviderIDs(m)
+}
+
 // ProtectSystemFreeOnSave merges system-free invariants into next after an admin
 // PUT. Prefer next's editable fields (name/desc/models) when present; never allow
 // deletion or non-free policy; always pin SystemDefaultServiceGroupID.

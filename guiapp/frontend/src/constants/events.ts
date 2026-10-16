@@ -1,0 +1,219 @@
+/**
+ * Wails event name constants.
+ *
+ * These constants define the event names used for communication between
+ * the Go backend and the TypeScript frontend via Wails EventsEmit/EventsOn.
+ *
+ * IMPORTANT: When adding or renaming events, update the corresponding
+ * backend constants in:
+ *   gui/events.go
+ *
+ * This file exists to prevent event name mismatches (the root cause of #98:
+ * backend emitted "task-list-changed" but frontend listened for
+ * "project-index:changed"). Using constants makes mismatches visible in
+ * code review rather than silent runtime bugs.
+ */
+
+/** Emitted when ProjectIndex is updated (new project or activity change). */
+export const EVENT_PROJECT_INDEX_CHANGED = "project-index:changed";
+
+/** Backend needs a share-link password before joining a cloud workspace. Payload: {url:string}. */
+export const EVENT_CLOUD_WORKSPACE_SHARE_PASSWORD = "cloud-workspace-share:password";
+
+/** A maclaw://credit/<code> launch. Payload: {code:string}. */
+export const EVENT_TOKEN_BANK_CREDIT = "token-bank-credit";
+
+/** Backend asks the desktop UI to present a custom confirm dialog. */
+export const EVENT_SHOW_CONFIRM = "show-confirm";
+
+/** Companion event emitted together with EVENT_PROJECT_INDEX_CHANGED. */
+export const EVENT_TASKS_CHANGED = "tasks:changed";
+
+/** Emitted when a task is removed/archived and matching project tabs should close. */
+export const EVENT_PROJECT_TASK_CLOSED = "project-task:closed";
+
+/**
+ * Focus-only activation request for an already-open task tab.
+ * Payload: { projectPath?: string; cloudWorkspaceId?: string; expertId?: string }.
+ * Unlike a restore launch this never replays recovery or re-hydrates transcripts.
+ */
+export const EVENT_PROJECT_TASK_ACTIVATE = "project-task:activate";
+
+/** Emitted before task-close when the task was permanently deleted. */
+export const EVENT_PROJECT_TASK_DELETED = "project-task:deleted";
+
+/** Emitted after a task display name changes; matching open project tabs update immediately. */
+export const EVENT_PROJECT_TASK_RENAMED = "project-task:renamed";
+
+/**
+ * Emitted when an AI-expert durable task is permanently deleted.
+ * Payload is the expert id string. Frontend uses it to drop expert tab
+ * history caches that are keyed by expert id rather than project path.
+ */
+export const EVENT_EXPERT_TASK_DELETED = "expert-task:deleted";
+
+/**
+ * Pure signal (no payload) emitted after any expert-list mutation: local
+ * expert save/delete, expert market install/uninstall, and managed industry
+ * expert install. Frontend listeners re-fetch their expert lists.
+ */
+export const EVENT_EXPERTS_CHANGED = "experts:changed";
+
+/** Emitted when the background update checker (startup delay + periodic re-check) finds a newer application release. */
+export const EVENT_APP_UPDATE_AVAILABLE = "app-update-available";
+
+/** Skill usage stats updated after a run. */
+export const EVENT_SKILL_USAGE_UPDATED = "skill:usage_updated";
+
+/** Skill self-repair completed (steps updated or disabled). */
+export const EVENT_SKILL_REPAIRED = "skill:repaired";
+
+/** Skill optimizer applied bounded edits. */
+export const EVENT_SKILL_OPTIMIZED = "skill:optimized";
+
+/** Nudge promoter created a new auto-discovered skill. */
+export const EVENT_SKILL_AUTO_DISCOVERED = "skill:auto_discovered";
+
+/** Skill execution failed (evolution pipeline observation). */
+export const EVENT_SKILL_EXECUTION_FAILED = "skill:execution_failed";
+
+/** Skill indexes refreshed after mutation (repair/install). */
+export const EVENT_SKILL_INDEX_REFRESHED = "skill:index_refreshed";
+
+/** File-backed skill repair draft generated (or rejected) and pending human review. */
+export const EVENT_SKILL_REPAIR_DRAFT_READY = "skill:repair_draft_ready";
+
+/** Evolution worker cancelled by operator or shutdown. */
+export const EVENT_SKILL_EVOLUTION_CANCELLED = "skill:evolution_cancelled";
+
+/** Evolution worker exceeded its deadline. */
+export const EVENT_SKILL_EVOLUTION_TIMED_OUT = "skill:evolution_timed_out";
+
+/** Evolution definition/config commit rolled back or needs compensation. */
+export const EVENT_SKILL_EVOLUTION_ROLLED_BACK = "skill:evolution_rolled_back";
+
+/** Explicit operator action on a durable compensation record. */
+export const EVENT_SKILL_COMPENSATION_MANUAL_RETRY = "skill:compensation_manual_retry";
+
+/** Explicit operator clear after committed cleanup verification. */
+export const EVENT_SKILL_COMPENSATION_MANUAL_CLEAR = "skill:compensation_manual_clear";
+
+/** Computer Use local observe (SoM text + element summary for operator UI). */
+export const EVENT_COMPUTER_USE_OBSERVE = "computer-use:observe";
+
+/** Computer Use action audit (click/type/key/…). */
+export const EVENT_COMPUTER_USE_ACTION = "computer-use:action";
+
+/** Computer Use operator control state (pause/resume/stop). */
+export const EVENT_COMPUTER_USE_CONTROL = "computer-use:control";
+
+/** Computer Use background warmup / self-check finished. */
+export const EVENT_COMPUTER_USE_WARMUP = "computer-use:warmup";
+
+/** Computer Use observe/pipeline error with operator guidance. */
+export const EVENT_COMPUTER_USE_ERROR = "computer-use:error";
+/** Log lifecycle: prune / delete / batch-delete (refresh file lists). */
+export const EVENT_COMPUTER_USE_LOGS = "computer-use:logs";
+
+/** Survey list/results should refresh after IM submit (or local mutation). Payload: { survey_id, event? }. */
+export const EVENT_SURVEY_UPDATED = "survey-updated";
+
+/** App config patched/saved (backend EventsEmit after PatchConfigFields). */
+export const EVENT_CONFIG_CHANGED = "config-changed";
+
+/** Alternate config broadcast used by some trays/legacy paths. */
+export const EVENT_CONFIG_UPDATED = "config-updated";
+
+/** Same-window optimistic config patch (CustomEvent on window). */
+export const EVENT_MACLAW_CONFIG_CHANGED = "maclaw-config-changed";
+
+/**
+ * Same-window request to open/create a pure coding task
+ * (local coding_dev or remote remote_coding_dev).
+ * Dispatched from AI welcome cards; handled by SidebarTaskManagement.
+ *
+ * detail: {
+ *   mode: 'coding_dev' | 'remote_coding_dev';
+ *   name?: string;
+ *   workingDir?: string;           // local coding workdir
+ *   remote?: { host, port, user, password, workDir };
+ *   remoteSafety?: 'diagnosis';   // evidence-only SSH first turn
+ *   autoCreate?: boolean;          // when true + valid env, create without dialog
+ * }
+ */
+export const EVENT_OPEN_CREATE_CODING_TASK = "ai-open-create-coding-task";
+
+/** Payload shape for EVENT_OPEN_CREATE_CODING_TASK. */
+export type OpenCreateCodingTaskDetail = {
+    mode?: "coding_dev" | "remote_coding_dev";
+    name?: string;
+    workingDir?: string;
+    remote?: {
+        host: string;
+        port: number;
+        user: string;
+        password: string;
+        workDir: string;
+    };
+    /** Evidence-only initial SSH turn for incident diagnosis. */
+    remoteSafety?: "diagnosis";
+    /** When true and required env is present, create the task immediately. */
+    autoCreate?: boolean;
+};
+
+/**
+ * Dispatched by the task-pane "新建任务" header button. Opens the same AI
+ * assistant guide page the app shows at startup. That page is the new-task
+ * surface: the task is created when the user sends the first message.
+ */
+export const EVENT_OPEN_NEW_TASK_WIZARD = "maclaw:open-new-task-wizard";
+
+/**
+ * Task-pane toolbar entry for the phone-shared cloud drive. App switches to
+ * the files page. This is not the assistant overlay (maclaw:open-files with
+ * an empty detail) and not the cloud-workspace manager.
+ */
+export const EVENT_OPEN_CLOUD_DRIVE = "maclaw:open-cloud-drive";
+
+/**
+ * Dispatched when the new-task wizard cannot open at all. A running turn does
+ * not emit this: the welcome page covers that conversation and the turn keeps
+ * running. Sidebar surfaces listen so a hard block still explains itself.
+ */
+export const EVENT_NEW_TASK_WIZARD_BLOCKED = "maclaw:new-task-wizard-blocked";
+
+/**
+ * Dispatched after the welcome-page TaskConfigBar wizard already created a
+ * task via CreateTaskUnified; handled by App to open the new task's assistant
+ * tab and auto-send the first message (design §6.4).
+ *
+ * detail: {
+ *   projectPath: string;            // CreateTaskUnified 返回值
+ *   taskTitle?: string;
+ *   initialMessage?: string;        // 输入框原文，作为首条消息发送
+ *   agentMode?: 'coding_dev' | 'remote_coding_dev';
+ *   cloudWorkspaceId?: string;
+ *   remoteHost?: string;
+ *   remoteSafety?: 'diagnosis';
+ *   remoteNeedsReconnect?: boolean; // 远程武装失败：首条消息延迟到 SSH 重连后
+ *   warning?: string;               // 次级步骤失败的降级说明，展示在新页签内
+ *   noWorkflowInterception?: boolean; // 工作流=无：首条消息跳过工作流语义拦截
+ * }
+ */
+export const EVENT_OPEN_TASK_LAUNCH = "maclaw:open-task-launch";
+
+/** Payload shape for EVENT_OPEN_TASK_LAUNCH. */
+export type OpenTaskLaunchDetail = {
+    projectPath: string;
+    taskTitle?: string;
+    initialMessage?: string;
+    agentMode?: "coding_dev" | "remote_coding_dev";
+    cloudWorkspaceId?: string;
+    remoteHost?: string;
+    remoteSafety?: "diagnosis";
+    remoteNeedsReconnect?: boolean;
+    warning?: string;
+    noWorkflowInterception?: boolean;
+    /** Send initialMessage even if this task's tab is already open. */
+    deliverInitialMessage?: boolean;
+};

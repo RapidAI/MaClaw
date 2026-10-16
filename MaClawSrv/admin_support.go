@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
+	"github.com/RapidAI/CodeClaw/corelib/security"
 )
 
 var (
@@ -196,7 +197,7 @@ func redactSupportBundleMetadata(dataRoot string, metadata map[string]string) ma
 	}
 	out := make(map[string]string, len(metadata))
 	for key, value := range metadata {
-		if supportBundleSensitiveKey(key) {
+		if supportBundleSensitiveKey(key) && !security.IsBooleanAuditValue(value) {
 			out[key] = "[redacted]"
 			continue
 		}
@@ -207,6 +208,10 @@ func redactSupportBundleMetadata(dataRoot string, metadata map[string]string) ma
 
 func supportBundleSensitiveKey(key string) bool {
 	key = strings.ToLower(strings.TrimSpace(key))
+	if key == "api_key_prefix" {
+		// The six-character masked prefix is a diagnostic, not a secret.
+		return false
+	}
 	for _, marker := range adminSecretKeyMarkers() {
 		if strings.Contains(key, marker) {
 			return true

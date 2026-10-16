@@ -1,6 +1,8 @@
 package skill
 
 import (
+	"regexp"
+
 	"github.com/RapidAI/CodeClaw/corelib"
 )
 
@@ -30,6 +32,15 @@ var commonParamAliases = map[string][]string{
 // params schema, either explicitly declared in YAML or auto-synthesized
 // from command templates, so all skills flow through the same BindParams path.
 //
+// Trust levels by placeholder form (see ExtractPlaceholderKeysWithForm):
+//   - {{key}} is the explicit authoring grammar and is always synthesized.
+//   - {key} and ${key} are ambiguous with host-language syntax (PowerShell
+//     format items, shell loop variables), so only parameter-shaped keys
+//     (see synthesizedParamKeyRe) are synthesized from them.
+//
+// Required is granted only from the skill's explicit requiredArgs declaration
+// — synthesized parameters are never required on their own.
+//
 // Parameters marked Synthetic=true indicate they were inferred from templates
 // rather than explicitly declared. The context injection marks these
 // as inferred from a template so callers know the name may be approximate.
@@ -50,9 +61,12 @@ func SynthesizeParams(steps []corelib.NLSkillStep, requiredArgs []string) []core
 
 	for _, step := range steps {
 		// Scan all string values in step.Params for placeholders.
-		extractPlaceholdersFromParams(step.Params, func(key string) {
-			key = canonicalRunVarKey(key)
+		extractPlaceholdersFromParams(step.Params, func(pk PlaceholderKey) {
+			key := canonicalRunVarKey(pk.Key)
 			if key == "" || seen[key] {
+				return
+			}
+			if !pk.Explicit && !isSynthesizableParamKey(key) {
 				return
 			}
 			seen[key] = true
@@ -71,6 +85,19 @@ func SynthesizeParams(steps []corelib.NLSkillStep, requiredArgs []string) []core
 	}
 
 	return params
+}
+
+// synthesizedParamKeyRe matches canonical keys plausible as user-facing
+// parameters: at least two characters, starting with a letter. Single-letter
+// keys are overwhelmingly shell loop variables (i/t/r/n) captured verbatim
+// from recorded commands; they must not become schema parameters. Keys that
+// fail this filter stay in the command template as literal syntax.
+var synthesizedParamKeyRe = regexp.MustCompile(`^[a-z][a-z0-9_]+$`)
+
+// isSynthesizableParamKey reports whether a canonical placeholder key may be
+// synthesized into a schema parameter.
+func isSynthesizableParamKey(key string) bool {
+	return synthesizedParamKeyRe.MatchString(key)
 }
 
 // CompleteParamsForRunner merges author-declared params with params inferred
@@ -160,11 +187,11 @@ func paramCoverageKeys(param corelib.NLSkillParam) []string {
 // keys in all string values. This mirrors the recursive structure of
 // resolveSkillValue; any string that resolveSkillValue would process,
 // this function also scans.
-func extractPlaceholdersFromParams(value interface{}, callback func(key string)) {
+func extractPlaceholdersFromParams(value interface{}, callback func(PlaceholderKey)) {
 	switch typed := value.(type) {
 	case string:
-		for _, key := range ExtractPlaceholderKeys(typed) {
-			callback(key)
+		for _, pk := range ExtractPlaceholderKeysWithForm(typed) {
+			callback(pk)
 		}
 	case map[string]interface{}:
 		for _, item := range typed {

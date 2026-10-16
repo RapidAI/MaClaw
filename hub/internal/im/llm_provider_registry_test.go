@@ -101,6 +101,72 @@ func TestLLMProviderRegistryRoundTripNormalizesAgentTypeAndWireAPI(t *testing.T)
 	}
 }
 
+func TestLLMProviderRegistryRoundTripPreservesCachePricing(t *testing.T) {
+	repo := &testSystemSettingsRepo{}
+	pricing := llmpool.TokenPricing{InputCreditsPer10K: 4, OutputCreditsPer10K: 8, CacheReadCreditsPer10K: cachePrice(0.4), CacheWriteCreditsPer10K: cachePrice(4), InputRMBPer10K: 0.02, OutputRMBPer10K: 0.08, CacheReadRMBPer10K: cachePrice(0.002), CacheWriteRMBPer10K: cachePrice(0.02)}
+	if err := SaveLLMProviderRegistry(context.Background(), repo, &LLMProviderRegistry{Providers: []LLMProvider{{ID: "p", TokenPricing: pricing}}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	loaded, err := LoadLLMProviderRegistry(context.Background(), repo)
+	if err != nil || len(loaded.Providers) != 1 {
+		t.Fatalf("load: err=%v providers=%d", err, len(loaded.Providers))
+	}
+	got := loaded.Providers[0].TokenPricing
+	if llmpool.OptionalTokenPriceValue(got.CacheReadCreditsPer10K) != 0.4 || llmpool.OptionalTokenPriceValue(got.CacheWriteCreditsPer10K) != 4 ||
+		llmpool.OptionalTokenPriceValue(got.CacheReadRMBPer10K) != 0.002 || llmpool.OptionalTokenPriceValue(got.CacheWriteRMBPer10K) != 0.02 {
+		t.Fatalf("cache pricing lost: got=%+v want=%+v", got, pricing)
+	}
+}
+
+func cachePrice(value float64) *float64 { return &value }
+
+// TestLLMProviderRegistryKeepsCachePricingPresence pins the presence contract:
+// an unset cache price must remain unset through a save/load round trip (the
+// documented defaults are derived only at billing resolution time), while an
+// explicitly configured zero must survive as an explicit zero.
+func TestLLMProviderRegistryKeepsCachePricingPresence(t *testing.T) {
+	repo := &testSystemSettingsRepo{}
+	if err := SaveLLMProviderRegistry(context.Background(), repo, &LLMProviderRegistry{Providers: []LLMProvider{{ID: "p", TokenPricing: llmpool.TokenPricing{InputCreditsPer10K: 4, OutputCreditsPer10K: 8}}}}); err != nil {
+		t.Fatalf("save: %v", err)
+	}
+	loaded, err := LoadLLMProviderRegistry(context.Background(), repo)
+	if err != nil || len(loaded.Providers) != 1 {
+		t.Fatalf("load: err=%v providers=%d", err, len(loaded.Providers))
+	}
+	p := loaded.Providers[0].TokenPricing
+	if p.CacheReadCreditsPer10K != nil || p.CacheWriteCreditsPer10K != nil || p.CacheReadRMBPer10K != nil || p.CacheWriteRMBPer10K != nil {
+		t.Fatalf("unset cache prices were materialized into storage: %+v", p)
+	}
+	// The billing path still sees the documented defaults for unset fields.
+	resolved := p.WithCachePricingDefaults()
+	if llmpool.OptionalTokenPriceValue(resolved.CacheReadCreditsPer10K) != 0.4 || llmpool.OptionalTokenPriceValue(resolved.CacheWriteCreditsPer10K) != 4 {
+		t.Fatalf("resolution-time defaults missing: %+v", resolved)
+	}
+
+	explicitZero := llmpool.TokenPricing{InputCreditsPer10K: 4, OutputCreditsPer10K: 8, CacheReadCreditsPer10K: cachePrice(0), CacheWriteRMBPer10K: cachePrice(0)}
+	if err := SaveLLMProviderRegistry(context.Background(), repo, &LLMProviderRegistry{Providers: []LLMProvider{{ID: "p", TokenPricing: explicitZero}}}); err != nil {
+		t.Fatalf("save explicit zero: %v", err)
+	}
+	loaded, err = LoadLLMProviderRegistry(context.Background(), repo)
+	if err != nil || len(loaded.Providers) != 1 {
+		t.Fatalf("load explicit zero: err=%v providers=%d", err, len(loaded.Providers))
+	}
+	p = loaded.Providers[0].TokenPricing
+	if p.CacheReadCreditsPer10K == nil || *p.CacheReadCreditsPer10K != 0 || p.CacheWriteRMBPer10K == nil || *p.CacheWriteRMBPer10K != 0 {
+		t.Fatalf("explicit zero cache pricing was rewritten: %+v", p)
+	}
+	if p.CacheWriteCreditsPer10K != nil || p.CacheReadRMBPer10K != nil {
+		t.Fatalf("unrelated unset cache prices were materialized: %+v", p)
+	}
+	resolved = p.WithCachePricingDefaults()
+	if got := llmpool.OptionalTokenPriceValue(resolved.CacheReadCreditsPer10K); got != 0 {
+		t.Fatalf("explicit zero cache read overwritten by default: %v", got)
+	}
+	if got := llmpool.OptionalTokenPriceValue(resolved.CacheWriteCreditsPer10K); got != 4 {
+		t.Fatalf("unset cache write did not fall back to input price: %v", got)
+	}
+}
+
 func TestLLMProviderRegistryDefaultsDownstreamMaxConcurrency(t *testing.T) {
 	repo := &testSystemSettingsRepo{}
 	ctx := context.Background()

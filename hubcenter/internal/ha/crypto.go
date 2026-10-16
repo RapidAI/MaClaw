@@ -1,14 +1,17 @@
 package ha
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -20,10 +23,23 @@ import (
 )
 
 const (
-	haHeaderNodeID    = "X-HubCenter-Node"
-	haHeaderTimestamp = "X-HubCenter-Timestamp"
-	haHeaderSignature = "X-HubCenter-Signature"
+	haHeaderNodeID      = "X-HubCenter-Node"
+	haHeaderTimestamp   = "X-HubCenter-Timestamp"
+	haHeaderSignature   = "X-HubCenter-Signature"
+	haHeaderBodyHash    = "X-HubCenter-Body-Hash"
+	haHeaderSignatureV2 = "X-HubCenter-Signature-V2"
 )
+
+// haMaxSignedBodyBytes bounds how much of a request body is buffered while
+// computing its SHA-256 for V2 signing/verification. It matches the HA
+// ops/apply JSON body ceiling (128 MiB) so a legitimate batch is never
+// truncated while an oversized body is rejected on the pre-auth path.
+const haMaxSignedBodyBytes = 128 << 20
+
+// haMaxPushBodyBudget caps the serialized size of a single HA ops push batch.
+// It is half of haMaxSignedBodyBytes so a batch plus framing, signature and
+// base64 overhead always stays under the signed-body ceiling.
+const haMaxPushBodyBudget = 64 << 20
 
 type NodeKeyMaterial struct {
 	PrivateKey     *rsa.PrivateKey
@@ -132,6 +148,8 @@ func encodeRSAPublicKeyPEM(key *rsa.PublicKey) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
 }
 
+var safeHAKeyFileNamePattern = regexp.MustCompile(`[^A-Za-z0-9._-]+`)
+
 func safeHAKeyFileName(nodeID, fqdn string) string {
 	base := strings.TrimSpace(nodeID)
 	if base == "" {
@@ -140,8 +158,7 @@ func safeHAKeyFileName(nodeID, fqdn string) string {
 	if base == "" {
 		base = "hubcenter-node"
 	}
-	re := regexp.MustCompile(`[^A-Za-z0-9._-]+`)
-	base = re.ReplaceAllString(base, "_")
+	base = safeHAKeyFileNamePattern.ReplaceAllString(base, "_")
 	base = strings.Trim(base, "._-")
 	if base == "" {
 		base = "hubcenter-node"
@@ -151,6 +168,14 @@ func safeHAKeyFileName(nodeID, fqdn string) string {
 
 func canonicalHARequest(method, path, rawQuery, nodeID, timestamp string) string {
 	return strings.ToUpper(strings.TrimSpace(method)) + "\n" + strings.TrimSpace(path) + "\n" + strings.TrimSpace(rawQuery) + "\n" + strings.TrimSpace(nodeID) + "\n" + strings.TrimSpace(timestamp)
+}
+
+// canonicalHARequestV2 extends the V1 canonical request with the lowercase
+// hex SHA-256 of the raw request body, so a signature cannot be replayed
+// against a different body. The leading "v2" line prevents ambiguity with the
+// V1 format (a V1 canonical string is never a prefix of a V2 one).
+func canonicalHARequestV2(method, path, rawQuery, nodeID, timestamp, bodyHashHex string) string {
+	return "v2\n" + canonicalHARequest(method, path, rawQuery, nodeID, timestamp) + "\n" + strings.TrimSpace(bodyHashHex)
 }
 
 func signHACanonicalRequest(privateKey *rsa.PrivateKey, canonical string) (string, error) {
@@ -200,4 +225,35 @@ func requestCanonicalPayload(r *http.Request, nodeID, timestamp string) string {
 		return canonicalHARequest("GET", "", "", nodeID, timestamp)
 	}
 	return canonicalHARequest(r.Method, r.URL.EscapedPath(), r.URL.RawQuery, nodeID, timestamp)
+}
+
+func requestCanonicalPayloadV2(r *http.Request, nodeID, timestamp, bodyHashHex string) string {
+	if r == nil || r.URL == nil {
+		return canonicalHARequestV2("GET", "", "", nodeID, timestamp, bodyHashHex)
+	}
+	return canonicalHARequestV2(r.Method, r.URL.EscapedPath(), r.URL.RawQuery, nodeID, timestamp, bodyHashHex)
+}
+
+// requestBodySHA256Hex reads and hashes the raw request body, then restores it
+// so downstream consumers can still read it. Nil and empty bodies hash to the
+// SHA-256 of the empty byte slice. Reading is bounded to haMaxSignedBodyBytes
+// to prevent an unbounded-memory DoS on the pre-auth verification path.
+func requestBodySHA256Hex(r *http.Request) (string, error) {
+	if r == nil || r.Body == nil || r.Body == http.NoBody {
+		sum := sha256.Sum256(nil)
+		return hex.EncodeToString(sum[:]), nil
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, haMaxSignedBodyBytes+1))
+	if err != nil {
+		return "", fmt.Errorf("read request body: %w", err)
+	}
+	if int64(len(body)) > haMaxSignedBodyBytes {
+		return "", fmt.Errorf("request body exceeds %d bytes", haMaxSignedBodyBytes)
+	}
+	if err := r.Body.Close(); err != nil {
+		return "", fmt.Errorf("close request body: %w", err)
+	}
+	r.Body = io.NopCloser(bytes.NewReader(body))
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:]), nil
 }

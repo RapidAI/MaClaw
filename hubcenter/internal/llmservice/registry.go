@@ -13,6 +13,10 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/llmpool"
+	"github.com/RapidAI/CodeClaw/corelib/lobsterai"
+	"github.com/RapidAI/CodeClaw/corelib/qoder"
+	"github.com/RapidAI/CodeClaw/corelib/trae"
+	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 	"github.com/RapidAI/CodeClaw/hubcenter/internal/store"
 )
 
@@ -29,6 +33,15 @@ const AccessPolicyGrantRequired = "grant_required"
 // ErrProviderNotFound is returned when a provider id is missing from the registry.
 var ErrProviderNotFound = errors.New("provider not found")
 
+// ErrNoUpstreamTestModel means every status-test candidate resolved to an
+// empty name or a billing band such as auto or official-high.
+var ErrNoUpstreamTestModel = errors.New("no upstream model configured for this route")
+
+// ErrProviderInUse is returned when deleting a provider that is still
+// referenced by one or more service groups and the caller did not request
+// pruning those references.
+var ErrProviderInUse = errors.New("provider in use")
+
 // ComputeAgent represents an upstream compute reseller/agent used for settlement.
 type ComputeAgent struct {
 	ID          string    `json:"id"`
@@ -44,6 +57,7 @@ type ComputeAgent struct {
 // Registry holds all LLM providers and service groups configured on HubCenter.
 type Registry struct {
 	Providers             []llmpool.ProviderConfig `json:"providers"`
+	ProviderArrays        []llmpool.ProviderArray  `json:"provider_arrays,omitempty"`
 	ServiceGroups         []llmpool.ServiceGroup   `json:"service_groups"`
 	Agents                []ComputeAgent           `json:"agents,omitempty"`
 	DefaultServiceGroupID string                   `json:"default_service_group_id,omitempty"`
@@ -52,13 +66,22 @@ type Registry struct {
 
 // Service manages the HubCenter LLM configuration and dispatching.
 type Service struct {
-	system    store.SystemSettingsRepository
-	mu        sync.RWMutex
-	writeMu   sync.Mutex
-	cached    *Registry
-	cachedAt  time.Time
-	headLocal string
-	headPeers []string
+	system          store.SystemSettingsRepository
+	mu              sync.RWMutex
+	writeMu         sync.Mutex
+	cached          *Registry
+	cachedAt        time.Time
+	headLocal       string
+	headPeers       []string
+	adminKeyMu      sync.Mutex
+	workBuddyMu     sync.Mutex
+	workBuddyLogins map[string]*workBuddyLogin
+	qoderMu         sync.Mutex
+	qoderLogins     map[string]*qoderLogin
+	traeMu          sync.Mutex
+	traeLogins      map[string]*traeLogin
+	lobsterAIMu     sync.Mutex
+	lobsterAILogins map[string]*lobsterAILogin
 }
 
 const registryCacheTTL = 30 * time.Second
@@ -73,7 +96,10 @@ func (s *Service) lockRegistryWrite() func() {
 
 // NewService creates a new LLM service manager.
 func NewService(system store.SystemSettingsRepository) *Service {
-	return &Service{system: system}
+	svc := &Service{system: system}
+	svc.registerWorkBuddyPersister()
+	svc.registerVendorPersisters()
+	return svc
 }
 
 // LoadRegistry retrieves the current registry from the system settings store.
@@ -123,6 +149,10 @@ func (s *Service) persistRegistry(ctx context.Context, reg *Registry) error {
 	}
 	toSave := cloneRegistry(reg)
 	normalizeRegistry(toSave)
+	// A blank key in this save must not erase a key already stored for the
+	// same provider and auth kind. Copy and other registry rewrites clone the
+	// in-memory row; if that row lost its secret, keep the stored one.
+	preserveStoredProviderSecrets(ctx, s.system, toSave)
 	toSave.UpdatedAt = time.Now().UTC()
 	data, err := json.Marshal(toSave)
 	if err != nil {
@@ -136,6 +166,77 @@ func (s *Service) persistRegistry(ctx context.Context, reg *Registry) error {
 	s.cachedAt = time.Now()
 	s.mu.Unlock()
 	return nil
+}
+
+// fillProviderSecretFromStore copies the stored API key onto provider when the
+// in-memory row lost it. The auth kind must still match, so a vendor switch
+// that intentionally drops the old token is left alone.
+func (s *Service) fillProviderSecretFromStore(ctx context.Context, provider llmpool.ProviderConfig) llmpool.ProviderConfig {
+	if s == nil || strings.TrimSpace(provider.APIKey) != "" {
+		return provider
+	}
+	prev, ok := s.storedProviderByID(ctx, provider.ID)
+	if !ok || !sameHopAuthKind(prev.AuthKind, provider.AuthKind) {
+		return provider
+	}
+	if key := strings.TrimSpace(prev.APIKey); key != "" {
+		provider.APIKey = key
+	}
+	return provider
+}
+
+func (s *Service) storedProviderByID(ctx context.Context, id string) (llmpool.ProviderConfig, bool) {
+	if s == nil || s.system == nil {
+		return llmpool.ProviderConfig{}, false
+	}
+	raw, err := s.system.Get(ctx, RegistrySettingKey)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return llmpool.ProviderConfig{}, false
+	}
+	var prev Registry
+	if err := json.Unmarshal([]byte(raw), &prev); err != nil {
+		return llmpool.ProviderConfig{}, false
+	}
+	idx := providerIndex(&prev, id)
+	if idx < 0 {
+		return llmpool.ProviderConfig{}, false
+	}
+	return prev.Providers[idx], true
+}
+
+// preserveStoredProviderSecrets puts a previously stored API key back when this
+// save would replace it with an empty one for the same auth kind.
+func preserveStoredProviderSecrets(ctx context.Context, system store.SystemSettingsRepository, next *Registry) {
+	if system == nil || next == nil {
+		return
+	}
+	raw, err := system.Get(ctx, RegistrySettingKey)
+	if err != nil || strings.TrimSpace(raw) == "" {
+		return
+	}
+	var prev Registry
+	if err := json.Unmarshal([]byte(raw), &prev); err != nil {
+		return
+	}
+	byID := make(map[string]llmpool.ProviderConfig, len(prev.Providers))
+	for _, provider := range prev.Providers {
+		id := strings.ToLower(strings.TrimSpace(provider.ID))
+		if id != "" {
+			byID[id] = provider
+		}
+	}
+	for i := range next.Providers {
+		id := strings.ToLower(strings.TrimSpace(next.Providers[i].ID))
+		old, ok := byID[id]
+		if !ok || !sameHopAuthKind(old.AuthKind, next.Providers[i].AuthKind) {
+			continue
+		}
+		if strings.TrimSpace(next.Providers[i].APIKey) == "" {
+			if key := strings.TrimSpace(old.APIKey); key != "" {
+				next.Providers[i].APIKey = key
+			}
+		}
+	}
 }
 
 // MutateRegistry clones the current registry, applies fn, and persists only when
@@ -175,6 +276,7 @@ func cloneRegistry(reg *Registry) *Registry {
 	}
 	next := *reg
 	next.Providers = cloneProviderConfigs(reg.Providers)
+	next.ProviderArrays = cloneProviderArrays(reg.ProviderArrays)
 	next.ServiceGroups = cloneServiceGroups(reg.ServiceGroups)
 	next.Agents = append([]ComputeAgent(nil), reg.Agents...)
 	return &next
@@ -189,7 +291,25 @@ func cloneProviderConfigs(in []llmpool.ProviderConfig) []llmpool.ProviderConfig 
 		out[i] = p
 		out[i].Models = append([]string(nil), p.Models...)
 		out[i].CapabilityTags = append([]string(nil), p.CapabilityTags...)
+		out[i].AllowedNodeIDs = append([]string(nil), p.AllowedNodeIDs...)
 		out[i].CreditMultiplierSchedule = cloneCreditWindows(p.CreditMultiplierSchedule)
+		out[i].TokenBankAudiences = append([]llmpool.TokenBankAudience(nil), p.TokenBankAudiences...)
+		out[i].TokenBankExtraKeys = append([]string(nil), p.TokenBankExtraKeys...)
+		out[i].TokenBankShareWindow.Days = append([]int(nil), p.TokenBankShareWindow.Days...)
+		out[i].ServeWindows = cloneShareWindows(p.ServeWindows)
+		out[i].ModelMap = cloneStringMap(p.ModelMap)
+		out[i].TokenPricing = p.TokenPricing.Clone()
+	}
+	return out
+}
+
+func cloneStringMap(in map[string]string) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
 	}
 	return out
 }
@@ -199,6 +319,18 @@ func cloneCreditWindows(in []llmpool.CreditMultiplierWindow) []llmpool.CreditMul
 		return nil
 	}
 	out := make([]llmpool.CreditMultiplierWindow, len(in))
+	for i, w := range in {
+		out[i] = w
+		out[i].Days = append([]int(nil), w.Days...)
+	}
+	return out
+}
+
+func cloneShareWindows(in []llmpool.TokenBankShareWindow) []llmpool.TokenBankShareWindow {
+	if in == nil {
+		return nil
+	}
+	out := make([]llmpool.TokenBankShareWindow, len(in))
 	for i, w := range in {
 		out[i] = w
 		out[i].Days = append([]int(nil), w.Days...)
@@ -251,12 +383,17 @@ func providerIndex(reg *Registry, id string) int {
 	if reg == nil || id == "" {
 		return -1
 	}
+	folded := -1
 	for i, p := range reg.Providers {
-		if strings.TrimSpace(p.ID) == id {
+		got := strings.TrimSpace(p.ID)
+		if got == id {
 			return i
 		}
+		if folded < 0 && strings.EqualFold(got, id) {
+			folded = i
+		}
 	}
-	return -1
+	return folded
 }
 
 func normalizeRegistry(reg *Registry) {
@@ -266,6 +403,9 @@ func normalizeRegistry(reg *Registry) {
 	ensureDefaultComputeAgent(reg)
 	for i := range reg.Providers {
 		normalizeProviderGatewayLimits(&reg.Providers[i])
+		normalizeProviderAccessScope(&reg.Providers[i])
+		normalizeProviderAgentType(&reg.Providers[i])
+		normalizeProviderAuth(&reg.Providers[i])
 		reg.Providers[i].NormalizeBilling()
 	}
 	normalizeProviderSequences(reg)
@@ -278,6 +418,7 @@ func normalizeRegistry(reg *Registry) {
 		}
 	}
 	sanitizeDefaultServiceGroupID(reg)
+	normalizeProviderArrays(reg)
 }
 
 func catalogServiceGroupID(reg *Registry, id string) string {
@@ -324,6 +465,169 @@ func (s *Service) SetDefaultServiceGroup(ctx context.Context, id string) error {
 	})
 }
 
+func normalizeProviderAccessScope(provider *llmpool.ProviderConfig) {
+	if provider == nil {
+		return
+	}
+	if strings.TrimSpace(provider.AllowedNodes) != "" {
+		provider.AllowedNodeIDs = llmpool.ParseAllowedNodeList(provider.AllowedNodes)
+	} else {
+		provider.AllowedNodeIDs = llmpool.NormalizeAllowedNodeIDs(provider.AllowedNodeIDs)
+	}
+	provider.AllowedNodes = ""
+}
+
+// normalizeProviderAgentType trims the User-Agent and drops characters that
+// cannot appear in an HTTP header field value. Only printable ASCII survives:
+// Go would carry bytes above 0x7f, but upstreams routinely reject them. A
+// longer value is cut to 128 characters.
+func normalizeProviderAgentType(provider *llmpool.ProviderConfig) {
+	if provider == nil {
+		return
+	}
+	raw := strings.TrimSpace(provider.AgentType)
+	if raw == "" {
+		provider.AgentType = ""
+		return
+	}
+	var b strings.Builder
+	b.Grow(len(raw))
+	for _, r := range raw {
+		if r < 0x20 || r > 0x7e {
+			continue
+		}
+		b.WriteRune(r)
+	}
+	out := strings.TrimSpace(b.String())
+	runes := []rune(out)
+	if len(runes) > 128 {
+		out = string(runes[:128])
+	}
+	provider.AgentType = canonicalProviderAgentType(out)
+}
+
+// RequestAgentType is the User-Agent a dial or probe should send. It matches
+// what a save would store, so a legacy value still in memory uses the same
+// client name as the editor.
+func RequestAgentType(raw string) string {
+	provider := llmpool.ProviderConfig{AgentType: raw}
+	normalizeProviderAgentType(&provider)
+	return provider.AgentType
+}
+
+// canonicalProviderAgentType maps the editor's default and the legacy client
+// names onto the value upstream actually sees. A custom string, including the
+// lowercase "opencode" identity, is kept as typed.
+func canonicalProviderAgentType(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "", "openclaw", "__custom__":
+		return ""
+	case "claude code", "claude-code/2.0.0", "claude code 2.0":
+		return "claude code 2.0"
+	case "tigerclaw", "qagent":
+		return "QAgent"
+	case "zcode":
+		return "ZCode"
+	case "codex":
+		return "Codex"
+	case "cline":
+		return "Cline"
+	case "roo code":
+		return "Roo Code"
+	case "kilo code":
+		return "Kilo Code"
+	case "cursor":
+		return "Cursor"
+	case "crush":
+		return "Crush"
+	case "goose":
+		return "Goose"
+	case "workbuddy", "codebuddy":
+		return workbuddy.UserAgent
+	case "qoder":
+		return qoder.UserAgent
+	case "trae":
+		return traeChatUserAgent()
+	case "lobsterai", "lobster":
+		return lobsterai.UserAgent
+	case "opencode":
+		// The lowercase spelling is a separate wire identity. Any other
+		// capitalization is the OpenCode preset.
+		if strings.TrimSpace(raw) == "opencode" {
+			return "opencode"
+		}
+		return "OpenCode"
+	default:
+		if ua, ok := canonicalVendorUserAgent(strings.TrimSpace(raw)); ok {
+			return ua
+		}
+		return strings.TrimSpace(raw)
+	}
+}
+
+// traeChatUserAgent is the User-Agent Trae chat and its model catalog send.
+// Both realms currently share that client version.
+func traeChatUserAgent() string {
+	return trae.UserAgentPrefix + trae.CNProfile().ClientVersion
+}
+
+// canonicalVendorUserAgent rewrites a numbered build of a vendor client onto
+// the User-Agent that client sends now. A custom string that only shares the
+// prefix, such as "qoder/my-agent", stays as typed.
+func canonicalVendorUserAgent(raw string) (string, bool) {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	switch {
+	case vendorVersionUA(lower, "cli/", "codebuddy/"):
+		return workbuddy.UserAgent, true
+	case vendorVersionUA(lower, "qoder/", ""):
+		return qoder.UserAgent, true
+	case vendorVersionUA(lower, "trae/", ""):
+		return traeChatUserAgent(), true
+	case vendorVersionUA(lower, "lobsterai/", ""):
+		return lobsterai.UserAgent, true
+	default:
+		return "", false
+	}
+}
+
+// vendorVersionUA reports a "<prefix><version>" client id, or
+// "<prefix><version> <marker><version>" when marker is set.
+func vendorVersionUA(lower, prefix, marker string) bool {
+	if prefix == "" || !strings.HasPrefix(lower, prefix) {
+		return false
+	}
+	rest := lower[len(prefix):]
+	if marker == "" {
+		return dottedVersion(rest)
+	}
+	version, tail, ok := strings.Cut(rest, " ")
+	if !ok || !dottedVersion(version) || !strings.HasPrefix(tail, marker) {
+		return false
+	}
+	return dottedVersion(tail[len(marker):])
+}
+
+func dottedVersion(value string) bool {
+	if value == "" {
+		return false
+	}
+	sawDigit := false
+	for i := 0; i < len(value); i++ {
+		switch value[i] {
+		case '.':
+			if !sawDigit || i == len(value)-1 {
+				return false
+			}
+			sawDigit = false
+		case '0', '1', '2', '3', '4', '5', '6', '7', '8', '9':
+			sawDigit = true
+		default:
+			return false
+		}
+	}
+	return sawDigit
+}
+
 func normalizeProviderGatewayLimits(provider *llmpool.ProviderConfig) {
 	if provider == nil {
 		return
@@ -340,6 +644,21 @@ func normalizeProviderGatewayLimits(provider *llmpool.ProviderConfig) {
 	if provider.QueueTimeoutMS <= 0 {
 		provider.QueueTimeoutMS = defaultProviderQueueTimeoutMS
 	}
+}
+
+// normalizeProviderServeWindows canonicalizes the provider's dial windows.
+// A broken clock is rejected, not dropped: silently dropping a window would
+// widen the provider's availability beyond the hours the operator asked for.
+func normalizeProviderServeWindows(provider *llmpool.ProviderConfig) error {
+	if provider == nil {
+		return nil
+	}
+	windows, ok := llmpool.NormalizeServeWindows(provider.ServeWindows)
+	if !ok {
+		return fmt.Errorf("serve_windows must use HH:MM clock times (24:00 only as the end of the day) with days 0..6, 0=Sunday")
+	}
+	provider.ServeWindows = windows
+	return nil
 }
 
 func normalizeProviderSequences(reg *Registry) {
@@ -445,6 +764,8 @@ func normalizeServiceGroupModels(group *llmpool.ServiceGroup) {
 		}
 		model.ProviderConfigs = normalized
 		model.ProviderIDs = providerIDs
+		model.Name = strings.TrimSpace(model.Name)
+		model.BillingMultiplier = llmpool.CapabilityBillingMultiplier(model.Name, model.BillingMultiplier)
 	}
 }
 
@@ -682,7 +1003,16 @@ func (s *Service) AddProvider(ctx context.Context, provider llmpool.ProviderConf
 	if providerIndex(reg, provider.ID) >= 0 {
 		return fmt.Errorf("provider %s already exists", provider.ID)
 	}
+	joinedArrayID, joinErr := canonicalJoinArrayID(reg, provider.ArrayID, provider.ID)
+	if joinErr != nil {
+		return joinErr
+	}
+	provider.ArrayID = joinedArrayID
+	provider.ArrayIndependent = false
 	provider.NormalizeBilling()
+	if err := normalizeProviderServeWindows(&provider); err != nil {
+		return err
+	}
 	if provider.Sequence <= 0 {
 		provider.Sequence = nextProviderSequence(reg)
 	}
@@ -699,6 +1029,12 @@ func mergeUnspecifiedProviderFields(existing, incoming llmpool.ProviderConfig) l
 	}
 	if strings.TrimSpace(incoming.WireAPI) == "" {
 		incoming.WireAPI = existing.WireAPI
+	}
+	// The editor always sends a User-Agent, including "openclaw" for the
+	// default. An empty value was omitted by a partial update, so keep the
+	// stored identity instead of falling back to openclaw.
+	if strings.TrimSpace(incoming.AgentType) == "" {
+		incoming.AgentType = existing.AgentType
 	}
 	if incoming.ResolutionTier == 0 {
 		incoming.ResolutionTier = existing.ResolutionTier
@@ -721,7 +1057,73 @@ func mergeUnspecifiedProviderFields(existing, incoming llmpool.ProviderConfig) l
 	if incoming.FailureBackoffMaxMS == 0 {
 		incoming.FailureBackoffMaxMS = existing.FailureBackoffMaxMS
 	}
-	return incoming
+	if incoming.AllowedNodeIDs == nil {
+		incoming.AllowedNodeIDs = append([]string(nil), existing.AllowedNodeIDs...)
+	}
+	// serve_windows written by the admin editor and the import API is a plain
+	// list. A nil list was omitted by the caller, so keep the stored windows:
+	// clearing them must be an explicit [] or the next import would reopen the
+	// provider around the clock.
+	if incoming.ServeWindows == nil {
+		incoming.ServeWindows = cloneShareWindows(existing.ServeWindows)
+	}
+	if strings.TrimSpace(incoming.ArrayID) == "" {
+		incoming.ArrayID = existing.ArrayID
+	}
+	if incoming.DispatchWeight == 0 {
+		incoming.DispatchWeight = existing.DispatchWeight
+	}
+	if incoming.RequestsPerMinute == 0 {
+		incoming.RequestsPerMinute = existing.RequestsPerMinute
+	}
+	if incoming.RequestsPerDay == 0 {
+		incoming.RequestsPerDay = existing.RequestsPerDay
+	}
+	if incoming.RateLimitCooldownSec == 0 {
+		incoming.RateLimitCooldownSec = existing.RateLimitCooldownSec
+	}
+	if incoming.ModelMap == nil {
+		incoming.ModelMap = cloneStringMap(existing.ModelMap)
+	}
+	// The provider editor and array move send the fields on the form. The
+	// token-bank snapshot is not among them. A zero incoming value was omitted,
+	// so keep the published share. Clearing it would dial a cheap-hour key all
+	// day and turn a private share public. An explicit non-zero value still wins.
+	if strings.TrimSpace(incoming.TokenBankOwnerUserID) == "" {
+		incoming.TokenBankOwnerUserID = existing.TokenBankOwnerUserID
+	}
+	if strings.TrimSpace(incoming.TokenBankTier) == "" {
+		incoming.TokenBankTier = existing.TokenBankTier
+	}
+	if incoming.TokenBankTierMultiplier == 0 {
+		incoming.TokenBankTierMultiplier = existing.TokenBankTierMultiplier
+	}
+	if strings.TrimSpace(incoming.TokenBankShareDisplayName) == "" {
+		incoming.TokenBankShareDisplayName = existing.TokenBankShareDisplayName
+	}
+	if strings.TrimSpace(incoming.TokenBankVisibility) == "" {
+		incoming.TokenBankVisibility = existing.TokenBankVisibility
+	}
+	if incoming.TokenBankAudiences == nil {
+		incoming.TokenBankAudiences = append([]llmpool.TokenBankAudience(nil), existing.TokenBankAudiences...)
+	}
+	if strings.TrimSpace(incoming.TokenBankCanaryUntil) == "" {
+		incoming.TokenBankCanaryUntil = existing.TokenBankCanaryUntil
+	}
+	if incoming.TokenBankExtraKeys == nil {
+		incoming.TokenBankExtraKeys = append([]string(nil), existing.TokenBankExtraKeys...)
+	}
+	if incoming.TokenBankShareWindow.Always() {
+		incoming.TokenBankShareWindow = existing.TokenBankShareWindow
+		incoming.TokenBankShareWindow.Days = append([]int(nil), existing.TokenBankShareWindow.Days...)
+	}
+	if incoming.MaxInputTokensPerRequest == 0 {
+		incoming.MaxInputTokensPerRequest = existing.MaxInputTokensPerRequest
+	}
+	if incoming.MaxOutputTokensPerRequest == 0 {
+		incoming.MaxOutputTokensPerRequest = existing.MaxOutputTokensPerRequest
+	}
+	return mergeVendorAuth(existing, mergeWorkBuddyAuth(existing, incoming))
 }
 
 // UpdateProvider updates an existing provider in the registry.
@@ -738,10 +1140,22 @@ func (s *Service) UpdateProvider(ctx context.Context, provider llmpool.ProviderC
 	if idx < 0 {
 		return fmt.Errorf("%w: %s", ErrProviderNotFound, provider.ID)
 	}
-	provider = mergeUnspecifiedProviderFields(reg.Providers[idx], provider)
+	existing := reg.Providers[idx]
+	independent := provider.ArrayIndependent
+	provider = mergeUnspecifiedProviderFields(existing, provider)
 	provider.NormalizeBilling()
+	if err := normalizeProviderServeWindows(&provider); err != nil {
+		return err
+	}
+	provider.ArrayIndependent = false
+	if independent {
+		provider.ArrayID = independentProviderArrayID(reg, existing)
+	}
 	next := cloneRegistry(reg)
 	next.Providers[idx] = provider
+	if sameProviderArray(existing, provider) {
+		publishProviderBillingToArray(next, provider.ID)
+	}
 	return s.persistRegistry(ctx, next)
 }
 
@@ -817,26 +1231,198 @@ func (s *Service) ListProviderBilling(ctx context.Context) []llmpool.ProviderBil
 	return llmpool.ProviderBillingPolicies(reg.Providers)
 }
 
-// DeleteProvider removes a provider from the registry.
-func (s *Service) DeleteProvider(ctx context.Context, id string) error {
+// DeleteProvider removes a provider from the registry. When the provider is
+// still referenced by service groups, prune=false fails with ErrProviderInUse
+// and the returned names list the binding groups; prune=true deletes the
+// provider and strips its id from every service group's model ProviderIDs and
+// ProviderConfigs, returning the names of the groups that were cleaned. The
+// provider removal and group cleanup land in a single registry write. Models
+// left without any provider are kept intact for the admin to fix.
+func (s *Service) DeleteProvider(ctx context.Context, id string, prune bool) ([]string, error) {
 	defer s.lockRegistryWrite()()
 	reg, err := s.LoadRegistry(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	idx := providerIndex(reg, id)
 	if idx < 0 {
-		return fmt.Errorf("%w: %s", ErrProviderNotFound, strings.TrimSpace(id))
+		return nil, fmt.Errorf("%w: %s", ErrProviderNotFound, strings.TrimSpace(id))
 	}
+	id = strings.TrimSpace(reg.Providers[idx].ID)
+	arrayID := canonicalProviderArrayID(reg.Providers[idx])
+	// A platform-owned array stays after its last member leaves. Dropping it
+	// here would delete the array through the member endpoint.
+	siblings := providerArraySiblingCount(reg, id)
+	protected := providerArrayProtected(findProviderArray(reg, arrayID))
+	if siblings > 0 || protected {
+		filtered := make([]llmpool.ProviderConfig, 0, len(reg.Providers)-1)
+		filtered = append(filtered, reg.Providers[:idx]...)
+		filtered = append(filtered, reg.Providers[idx+1:]...)
+		next := cloneRegistry(reg)
+		next.Providers = filtered
+		retargetProviderRoutes(next, id, arrayID)
+		// A tier array stays on a model only while a remaining member can
+		// answer it. Other members of the same array do not keep a model
+		// this provider alone served.
+		if IsTokenBankArray(arrayID) {
+			pruneTokenBankArrayRoutes(next)
+		}
+		if err := s.persistRegistry(ctx, next); err != nil {
+			return nil, err
+		}
+		return nil, nil
+	}
+
+	routeIDs := providerDeleteRouteIDs(reg, reg.Providers[idx])
+	var referenced []llmpool.ServiceGroup
+	for _, g := range reg.ServiceGroups {
+		if groupReferencesRouteIDs(g, routeIDs) {
+			referenced = append(referenced, g)
+		}
+	}
+	if len(referenced) > 0 && !prune {
+		return serviceGroupNames(referenced), fmt.Errorf("%w: %s", ErrProviderInUse, id)
+	}
+
 	filtered := make([]llmpool.ProviderConfig, 0, len(reg.Providers)-1)
 	filtered = append(filtered, reg.Providers[:idx]...)
 	filtered = append(filtered, reg.Providers[idx+1:]...)
 	next := cloneRegistry(reg)
 	next.Providers = filtered
-	return s.persistRegistry(ctx, next)
+	next.ProviderArrays = withoutProviderArray(next.ProviderArrays, canonicalProviderArrayID(reg.Providers[idx]))
+	var pruned []string
+	if prune {
+		pruned = pruneProviderRouteIDs(next, routeIDs)
+	}
+	if err := s.persistRegistry(ctx, next); err != nil {
+		return nil, err
+	}
+	return pruned, nil
 }
 
-// GetProvider returns a provider by ID.
+// ProviderReferences returns the service groups that reference the provider in
+// any model's ProviderIDs or ProviderConfigs. Returned groups are deep copies
+// so callers cannot mutate the cached registry.
+func (s *Service) ProviderReferences(ctx context.Context, id string) ([]llmpool.ServiceGroup, error) {
+	reg, err := s.LoadRegistry(ctx)
+	if err != nil {
+		return nil, err
+	}
+	id = strings.TrimSpace(id)
+	routeIDs := []string{id}
+	if idx := providerIndex(reg, id); idx >= 0 && providerArraySiblingCount(reg, id) == 0 {
+		routeIDs = providerDeleteRouteIDs(reg, reg.Providers[idx])
+	}
+	var matched []llmpool.ServiceGroup
+	for _, g := range reg.ServiceGroups {
+		if groupReferencesRouteIDs(g, routeIDs) {
+			matched = append(matched, g)
+		}
+	}
+	return cloneServiceGroups(matched), nil
+}
+
+func groupReferencesRouteIDs(g llmpool.ServiceGroup, ids []string) bool {
+	for _, id := range ids {
+		if groupReferencesProvider(g, strings.TrimSpace(id)) {
+			return true
+		}
+	}
+	return false
+}
+
+func pruneProviderRouteIDs(reg *Registry, ids []string) []string {
+	var pruned []string
+	seen := map[string]struct{}{}
+	for _, id := range ids {
+		for _, name := range pruneProviderFromGroups(reg, strings.TrimSpace(id)) {
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			pruned = append(pruned, name)
+		}
+	}
+	return pruned
+}
+
+// groupReferencesProvider reports whether the provider id appears in any of
+// the group's model ProviderIDs or ProviderConfigs.
+func groupReferencesProvider(g llmpool.ServiceGroup, id string) bool {
+	if id == "" {
+		return false
+	}
+	for _, m := range g.Models {
+		for _, pid := range m.ProviderIDs {
+			if strings.TrimSpace(pid) == id {
+				return true
+			}
+		}
+		for _, pc := range m.ProviderConfigs {
+			if strings.TrimSpace(pc.ProviderID) == id {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// pruneProviderFromGroups strips providerID from every service group's model
+// ProviderIDs and ProviderConfigs in reg. Models left without any provider are
+// kept intact for the admin to fix. Returns the names of groups that
+// referenced the provider.
+func pruneProviderFromGroups(reg *Registry, providerID string) []string {
+	var pruned []string
+	for i := range reg.ServiceGroups {
+		g := &reg.ServiceGroups[i]
+		changed := false
+		for j := range g.Models {
+			model := &g.Models[j]
+			ids := make([]string, 0, len(model.ProviderIDs))
+			for _, pid := range model.ProviderIDs {
+				if strings.TrimSpace(pid) == providerID {
+					changed = true
+					continue
+				}
+				ids = append(ids, pid)
+			}
+			configs := make([]llmpool.ModelProviderConfig, 0, len(model.ProviderConfigs))
+			for _, pc := range model.ProviderConfigs {
+				if strings.TrimSpace(pc.ProviderID) == providerID {
+					changed = true
+					continue
+				}
+				configs = append(configs, pc)
+			}
+			if changed {
+				model.ProviderIDs = ids
+				model.ProviderConfigs = configs
+			}
+		}
+		if changed {
+			pruned = append(pruned, serviceGroupDisplayName(*g))
+		}
+	}
+	return pruned
+}
+
+func serviceGroupNames(groups []llmpool.ServiceGroup) []string {
+	names := make([]string, 0, len(groups))
+	for _, g := range groups {
+		names = append(names, serviceGroupDisplayName(g))
+	}
+	return names
+}
+
+func serviceGroupDisplayName(g llmpool.ServiceGroup) string {
+	if name := strings.TrimSpace(g.Name); name != "" {
+		return name
+	}
+	return strings.TrimSpace(g.ID)
+}
+
+// GetProvider returns a provider by ID. The provider is a deep copy: callers
+// cannot mutate the cached registry through the returned slices or maps.
 func (s *Service) GetProvider(ctx context.Context, id string) (*llmpool.ProviderConfig, error) {
 	reg, err := s.LoadRegistry(ctx)
 	if err != nil {
@@ -846,8 +1432,49 @@ func (s *Service) GetProvider(ctx context.Context, id string) (*llmpool.Provider
 	if idx < 0 {
 		return nil, nil
 	}
-	got := reg.Providers[idx]
-	return &got, nil
+	clones := cloneProviderConfigs(reg.Providers[idx : idx+1])
+	return &clones[0], nil
+}
+
+// ProviderChatTestTarget resolves a saved provider or array id to the member
+// and upstream model a status test should dial. routeModel is the name written
+// on the service-group route. logicalModel is the client model, such as auto
+// or official-high. Those names select a price. They are not upstream model ids.
+// When both are empty, requestedModel is the provider Test Status selection.
+// A nil provider and a nil error means the id is not a provider or an array.
+// The walk uses the same member class production would dial, then keeps the
+// first candidate whose resolved name is a concrete model. It dials once.
+func (s *Service) ProviderChatTestTarget(ctx context.Context, providerID, routeModel, logicalModel, requestedModel string) (*llmpool.ProviderConfig, string, error) {
+	if s == nil {
+		return nil, "", fmt.Errorf("llm service is required")
+	}
+	reg, err := s.LoadRegistry(ctx)
+	if err != nil {
+		return nil, "", err
+	}
+	preferArray := strings.TrimSpace(routeModel) != "" || strings.TrimSpace(logicalModel) != ""
+	filterModel := providerChatTestFilterModel(routeModel, logicalModel, requestedModel)
+	candidates := providerChatTestCandidates(reg, providerID, preferArray, filterModel)
+	var first *llmpool.ProviderConfig
+	for _, member := range candidates {
+		if member == nil {
+			continue
+		}
+		cloned := cloneProviderConfigs([]llmpool.ProviderConfig{*member})
+		existing := &cloned[0]
+		if first == nil {
+			first = existing
+		}
+		model := chatTestUpstreamModel(existing, routeModel, logicalModel, requestedModel)
+		if model == "" || isBillingBandName(model) {
+			continue
+		}
+		return existing, model, nil
+	}
+	if first == nil {
+		return nil, "", nil
+	}
+	return first, "", ErrNoUpstreamTestModel
 }
 
 // ---------------------------------------------------------------------------
@@ -957,7 +1584,8 @@ func (s *Service) DeleteServiceGroup(ctx context.Context, id string) error {
 }
 
 // FindServiceGroupForModel searches all service groups for a model and returns
-// the matching group + model dispatch info for provider ordering.
+// the matching group + model dispatch info for provider ordering. The group is
+// a deep copy so callers cannot mutate the cached registry through it.
 func (s *Service) FindServiceGroupForModel(ctx context.Context, serviceGroupID, modelName string) (*llmpool.ServiceGroup, *llmpool.DispatchModel, error) {
 	reg, err := s.LoadRegistry(ctx)
 	if err != nil {
@@ -967,11 +1595,12 @@ func (s *Service) FindServiceGroupForModel(ctx context.Context, serviceGroupID, 
 		if serviceGroupID != "" && group.ID != serviceGroupID {
 			continue
 		}
-		for _, model := range group.Models {
-			if model.Name == modelName || modelName == "" {
-				dm := buildDispatchModel(reg, &model)
-				return &reg.ServiceGroups[i], dm, nil
+		for j, model := range group.Models {
+			if model.Name != modelName && modelName != "" {
+				continue
 			}
+			cloned := cloneServiceGroups(reg.ServiceGroups[i : i+1])[0]
+			return &cloned, buildDispatchModel(reg, &cloned.Models[j]), nil
 		}
 	}
 	return nil, nil, fmt.Errorf("model %q not found in service group %q", modelName, serviceGroupID)
@@ -1019,17 +1648,19 @@ func buildDispatchModel(reg *Registry, model *llmpool.ModelConfig) *llmpool.Disp
 			continue
 		}
 		dm.ProviderIDs = append(dm.ProviderIDs, providerID)
+		providerTags := routeProviderCapabilityTags(reg, providerID)
+		tags := effectiveMemberCapabilityTags(model.CapabilityTags, providerTags, pc.CapabilityTags)
 		dm.ProviderRoutes = append(dm.ProviderRoutes, llmpool.DispatchProviderRoute{
 			ProviderID:       providerID,
 			Model:            upstreamModel,
-			CapabilityTags:   pc.CapabilityTags,
+			CapabilityTags:   tags,
 			Priority:         pc.Priority,
 			ResolutionTier:   pc.ResolutionTier,
 			CreditMultiplier: pc.CreditMultiplier,
 			OriginalIndex:    len(dm.ProviderRoutes),
 		})
-		if len(pc.CapabilityTags) > 0 {
-			dm.ProviderCapabilityTags[providerID] = pc.CapabilityTags
+		if len(tags) > 0 {
+			dm.ProviderCapabilityTags[providerID] = tags
 		}
 		if pc.Priority != 0 {
 			dm.ProviderPriorities[providerID] = pc.Priority
@@ -1042,4 +1673,85 @@ func buildDispatchModel(reg *Registry, model *llmpool.ModelConfig) *llmpool.Disp
 		}
 	}
 	return dm
+}
+
+// groupWithMemberCapabilityTags returns a group whose empty route tag lists
+// include the provider editor tags. Classification reads that copy and does
+// not write it back. Route lists that are already set stay as written.
+// A quality band with one model cannot switch, so that group is returned as-is.
+func groupWithMemberCapabilityTags(reg *Registry, group *llmpool.ServiceGroup) *llmpool.ServiceGroup {
+	if reg == nil || group == nil || !llmpool.IsDynamicKind(group.Kind) || !qualityBandHasAlternate(group) {
+		return group
+	}
+	var cloned []llmpool.ModelConfig
+	for i := range group.Models {
+		configs := modelProviderConfigs(group.Models[i])
+		var next []llmpool.ModelProviderConfig
+		for j := range configs {
+			if len(configs[j].CapabilityTags) > 0 {
+				continue
+			}
+			providerTags := routeProviderCapabilityTags(reg, configs[j].ProviderID)
+			if len(providerTags) == 0 {
+				continue
+			}
+			if next == nil {
+				next = append([]llmpool.ModelProviderConfig(nil), configs...)
+			}
+			next[j].CapabilityTags = providerTags
+		}
+		if next == nil {
+			continue
+		}
+		if cloned == nil {
+			cloned = append([]llmpool.ModelConfig(nil), group.Models...)
+		}
+		cloned[i].ProviderConfigs = next
+	}
+	if cloned == nil {
+		return group
+	}
+	out := *group
+	out.Models = cloned
+	return &out
+}
+
+// qualityBandHasAlternate reports whether in-band model upgrade has another
+// model it can switch to. Official high/mid/low each have one model.
+func qualityBandHasAlternate(group *llmpool.ServiceGroup) bool {
+	if group == nil {
+		return false
+	}
+	counts := map[string]int{}
+	for i := range group.Models {
+		name := strings.TrimSpace(group.Models[i].Name)
+		if name == "" || llmpool.IsAutoModel(name) {
+			continue
+		}
+		quality := memberTagBandQuality(group, name)
+		counts[quality]++
+		if counts[quality] > 1 {
+			return true
+		}
+	}
+	return false
+}
+
+func memberTagBandQuality(group *llmpool.ServiceGroup, modelName string) string {
+	if q := llmpool.QualityForOfficialTier(modelName); q != "" {
+		return q
+	}
+	name := strings.TrimSpace(modelName)
+	for _, route := range group.Routes {
+		if !strings.EqualFold(strings.TrimSpace(route.Model), name) {
+			continue
+		}
+		if q := llmpool.NormalizeQuality(route.Quality); q != "" {
+			return q
+		}
+		if q := llmpool.QualityForOfficialTier(route.Model); q != "" {
+			return q
+		}
+	}
+	return ""
 }

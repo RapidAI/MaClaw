@@ -120,6 +120,7 @@ const defaultMobileFeatures = MobileFeatures(
   backendSshSessions: true,
   digitalEmployees: true,
   pushNotifications: false,
+  bots: true,
 );
 
 List<MobileAppTab> mobileAppTabsForFeatures(
@@ -160,6 +161,13 @@ List<MobileAppTab> mobileAppTabsForFeatures(
       Icons.smart_toy_outlined,
       'employees',
       selectedIcon: Icons.smart_toy,
+    ),
+    MobileAppTab(
+      '/bots',
+      s.tabBots,
+      Icons.forum_outlined,
+      'bots',
+      selectedIcon: Icons.forum,
     ),
     MobileAppTab(
       '/account',
@@ -261,6 +269,7 @@ class MobileAppTab {
       'tasks' => features.tasks,
       'documents' => features.documents,
       'employees' => features.digitalEmployees,
+      'bots' => features.bots,
       _ => true,
     };
   }
@@ -277,5 +286,7 @@ String get mobileTasksTabLabel =>
     AppStrings.forLanguage(appLanguageChinese).tabTasks;
 String get mobileEmployeesTabLabel =>
     AppStrings.forLanguage(appLanguageChinese).tabEmployees;
+String get mobileBotsTabLabel =>
+    AppStrings.forLanguage(appLanguageChinese).tabBots;
 String get mobileAccountTabLabel =>
     AppStrings.forLanguage(appLanguageChinese).tabAccount;

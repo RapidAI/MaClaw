@@ -28,7 +28,11 @@ func reviewedHostGoalInvocationSchema() map[string]interface{} {
 		"type": "object",
 		"properties": map[string]interface{}{
 			"objective": map[string]interface{}{"type": "string"},
-			"status":    map[string]interface{}{"type": "string"},
+			// An unlabelled string leaves the model to guess the verb, which is
+			// how the browser adapter started refusing "open" (2026-10-10). The
+			// canonicalizer does not read enum, so the check in the update path
+			// stays the boundary and this is documentation for the model.
+			"status":    map[string]interface{}{"type": "string", "enum": goal.StatusOptions()},
 			"note":      map[string]interface{}{"type": "string"},
 		},
 		"required":             []string{},
@@ -59,15 +63,12 @@ func reviewedHostGoalDispatch(objective, status, note string) (string, bool) {
 	return "get", true
 }
 
+// reviewedHostGoalStatus maps what the model sent to the lifecycle value. The
+// vocabulary, its aliases, and its hint all live with the type itself in the
+// goal package: this host and the GUI surface both serve goal.manage, and two
+// copies of this answer would drift.
 func reviewedHostGoalStatus(raw string) (goal.Status, bool) {
-	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "complete", "completed":
-		return goal.StatusComplete, true
-	case "failed", "fail":
-		return goal.StatusFailed, true
-	default:
-		return "", false
-	}
+	return goal.StatusCanonical(raw)
 }
 
 // ProjectReviewedHostGoalProvider projects the host-owned long-running goal
@@ -214,7 +215,7 @@ func (c *coreAgentCallbacks) ManageReviewedHostGoal(ctx context.Context, princip
 	case "update":
 		parsed, statusOK := reviewedHostGoalStatus(status)
 		if !statusOK {
-			return "", fmt.Errorf("host_goal_status_rejected")
+			return "", fmt.Errorf("host_goal_status_rejected (%s)", goal.StatusHint())
 		}
 		current := c.goals.Get(ownerID)
 		if current == nil {

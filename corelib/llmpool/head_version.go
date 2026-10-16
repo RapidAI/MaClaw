@@ -9,8 +9,9 @@ import (
 )
 
 const (
-	HeadRoleCurrent   = "current"
+	HeadRoleServing   = "serving"
 	HeadRolePrevious  = "previous"
+	HeadRoleCandidate = "candidate"
 	HeadRoleHistory   = "history"
 	HeadSourceTrain   = "train"
 	HeadSourcePull    = "pull_official"
@@ -18,15 +19,64 @@ const (
 	HeadMaxHistory    = 20
 )
 
-// NextHeadVersion is max(current, previous, history)+1 so a rollback cannot
-// reuse a retired version number and hide that row from CollectHeadVersions.
-func NextHeadVersion(current, previous *ClassificationHead, history []ClassHeadVersionInfo) int {
-	max := 0
-	if current != nil && current.Version > max {
-		max = current.Version
+// TrainRunRow is the frozen per-sample label copy kept with a TrainRun.
+// It never carries preview text; previews live only in the corpus store.
+type TrainRunRow struct {
+	ID         string `json:"id"`
+	GoldClass  string `json:"gold_class"`
+	GoldSource string `json:"gold_source"`
+	GroupID    string `json:"group_id,omitempty"`
+}
+
+// TrainRun is the immutable snapshot of one successful fit, attached to the
+// candidate slot. It moves with the weights on adopt and rollback.
+type TrainRun struct {
+	Version   int           `json:"version"`
+	TrainedAt string        `json:"trained_at,omitempty"`
+	SampleIDs []string      `json:"sample_ids,omitempty"`
+	Rows      []TrainRunRow `json:"rows,omitempty"`
+}
+
+// HasSampleID reports whether id was part of this run's fit set.
+func (r *TrainRun) HasSampleID(id string) bool {
+	if r == nil {
+		return false
 	}
-	if previous != nil && previous.Version > max {
-		max = previous.Version
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	for _, existing := range r.SampleIDs {
+		if existing == id {
+			return true
+		}
+	}
+	return false
+}
+
+// HeadSlots is the three-slot weight set of one global classification head:
+// serving (hot path reads this only), previous (one rollback step), and
+// candidate (latest training output, never read by the hot path).
+type HeadSlots struct {
+	Serving         *ClassificationHead `json:"serving,omitempty"`
+	Previous        *ClassificationHead `json:"previous,omitempty"`
+	Candidate       *ClassificationHead `json:"candidate,omitempty"`
+	ServingSource   string              `json:"serving_source,omitempty"`
+	PreviousSource  string              `json:"previous_source,omitempty"`
+	CandidateSource string              `json:"candidate_source,omitempty"`
+	ServingRun      *TrainRun           `json:"serving_run,omitempty"`
+	PreviousRun     *TrainRun           `json:"previous_run,omitempty"`
+	CandidateRun    *TrainRun           `json:"candidate_run,omitempty"`
+}
+
+// NextVersion is max(serving, previous, candidate, history)+1 so a rollback
+// cannot reuse a retired version number and hide that row from Versions.
+func (s *HeadSlots) NextVersion(history []ClassHeadVersionInfo) int {
+	max := 0
+	for _, h := range []*ClassificationHead{s.serving(), s.previous(), s.candidate()} {
+		if h != nil && h.Version > max {
+			max = h.Version
+		}
 	}
 	for _, item := range history {
 		if item.Version > max {
@@ -34,6 +84,161 @@ func NextHeadVersion(current, previous *ClassificationHead, history []ClassHeadV
 		}
 	}
 	return max + 1
+}
+
+func (s *HeadSlots) serving() *ClassificationHead {
+	if s == nil {
+		return nil
+	}
+	return s.Serving
+}
+
+func (s *HeadSlots) previous() *ClassificationHead {
+	if s == nil {
+		return nil
+	}
+	return s.Previous
+}
+
+func (s *HeadSlots) candidate() *ClassificationHead {
+	if s == nil {
+		return nil
+	}
+	return s.Candidate
+}
+
+// InstallCandidate overwrites an un-adopted candidate. Serving and previous
+// stay untouched; a failed fit must not call this at all.
+func (s *HeadSlots) InstallCandidate(next *ClassificationHead, source string, run *TrainRun) {
+	if s == nil || next == nil {
+		return
+	}
+	s.Candidate = next
+	s.CandidateSource = strings.TrimSpace(source)
+	s.CandidateRun = run
+}
+
+// Adopt promotes candidate into serving and keeps the old serving as the one
+// rollback step. trained_at values travel with their weights; nothing here
+// rewrites timestamps. Returns false when there is no candidate.
+func (s *HeadSlots) Adopt() bool {
+	if s == nil || s.Candidate == nil || !s.Candidate.Ready() {
+		return false
+	}
+	s.Previous = s.Serving
+	s.PreviousSource = s.ServingSource
+	s.PreviousRun = s.ServingRun
+	s.Serving = s.Candidate
+	s.ServingSource = s.CandidateSource
+	s.ServingRun = s.CandidateRun
+	s.Candidate = nil
+	s.CandidateSource = ""
+	s.CandidateRun = nil
+	return true
+}
+
+// Rollback swaps serving and previous (weights, sources and TrainRuns move
+// together). Pipeline and candidate stay untouched. Returns false when there
+// is no previous to roll back to.
+func (s *HeadSlots) Rollback() bool {
+	if s == nil || s.Previous == nil || !s.Previous.Ready() {
+		return false
+	}
+	s.Serving, s.Previous = s.Previous, s.Serving
+	s.ServingSource, s.PreviousSource = s.PreviousSource, s.ServingSource
+	s.ServingRun, s.PreviousRun = s.PreviousRun, s.ServingRun
+	return true
+}
+
+// Versions lists serving, previous and candidate followed by retired history.
+func (s *HeadSlots) Versions(history []ClassHeadVersionInfo) []ClassHeadVersionInfo {
+	seen := map[int]struct{}{}
+	out := make([]ClassHeadVersionInfo, 0, 3+len(history))
+	for _, item := range []struct {
+		role   string
+		source string
+		head   *ClassificationHead
+	}{
+		{HeadRoleServing, s.servingSource(), s.serving()},
+		{HeadRolePrevious, s.previousSource(), s.previous()},
+		{HeadRoleCandidate, s.candidateSource(), s.candidate()},
+	} {
+		if item.head == nil || item.head.Version <= 0 {
+			continue
+		}
+		out = append(out, VersionInfoFromHead(item.role, item.source, item.head))
+		seen[item.head.Version] = struct{}{}
+	}
+	for _, item := range history {
+		if item.Version <= 0 {
+			continue
+		}
+		if _, ok := seen[item.Version]; ok {
+			continue
+		}
+		item.Role = HeadRoleHistory
+		out = append(out, item)
+		seen[item.Version] = struct{}{}
+	}
+	return out
+}
+
+func (s *HeadSlots) servingSource() string {
+	if s == nil {
+		return ""
+	}
+	return s.ServingSource
+}
+
+func (s *HeadSlots) previousSource() string {
+	if s == nil {
+		return ""
+	}
+	return s.PreviousSource
+}
+
+func (s *HeadSlots) candidateSource() string {
+	if s == nil {
+		return ""
+	}
+	return s.CandidateSource
+}
+
+// ResolveSlot maps "serving"/"previous"/"candidate" or an explicit version
+// number to a slot head plus its TrainRun. Retired versions are metadata only.
+func (s *HeadSlots) ResolveSlot(slot string) (string, *ClassificationHead, *TrainRun, error) {
+	slot = strings.ToLower(strings.TrimSpace(slot))
+	switch slot {
+	case "", HeadRoleServing, "current":
+		if s == nil || s.Serving == nil || !s.Serving.Ready() {
+			return "", nil, nil, errors.New("serving head is not ready")
+		}
+		return HeadRoleServing, s.Serving, s.ServingRun, nil
+	case HeadRolePrevious, "prev":
+		if s == nil || s.Previous == nil || !s.Previous.Ready() {
+			return "", nil, nil, errors.New("previous head is not ready")
+		}
+		return HeadRolePrevious, s.Previous, s.PreviousRun, nil
+	case HeadRoleCandidate:
+		if s == nil || s.Candidate == nil || !s.Candidate.Ready() {
+			return "", nil, nil, errors.New("candidate head is not ready")
+		}
+		return HeadRoleCandidate, s.Candidate, s.CandidateRun, nil
+	}
+	n, err := strconv.Atoi(slot)
+	if err != nil || n <= 0 {
+		return "", nil, nil, errors.New("unknown head slot")
+	}
+	if s != nil && s.Serving != nil && s.Serving.Version == n && s.Serving.Ready() {
+		return HeadRoleServing, s.Serving, s.ServingRun, nil
+	}
+	if s != nil && s.Previous != nil && s.Previous.Version == n && s.Previous.Ready() {
+		return HeadRolePrevious, s.Previous, s.PreviousRun, nil
+	}
+	if s != nil && s.Candidate != nil && s.Candidate.Version == n && s.Candidate.Ready() {
+		return HeadRoleCandidate, s.Candidate, s.CandidateRun, nil
+	}
+	return "", nil, nil, errors.New("retired head versions are metadata only")
 }
 
 var ErrEmptyScoreText = errors.New("enter text to score")
@@ -119,74 +324,6 @@ func ArchiveRetiredHead(history []ClassHeadVersionInfo, retired ClassHeadVersion
 		}
 	}
 	return out
-}
-
-// RotateClassificationHead archives ready Previous, clones Current into Previous, then installs next.
-func RotateClassificationHead(current, previous **ClassificationHead, currentSrc, previousSrc *string, history *[]ClassHeadVersionInfo, next *ClassificationHead, source string) {
-	if current == nil || previous == nil || currentSrc == nil || previousSrc == nil || history == nil || next == nil {
-		return
-	}
-	if *previous != nil && (*previous).Ready() {
-		*history = ArchiveRetiredHead(*history, VersionInfoFromHead(HeadRoleHistory, *previousSrc, *previous))
-	}
-	if *current != nil && (*current).Ready() {
-		*previous = (*current).Clone()
-		*previousSrc = *currentSrc
-	}
-	*current = next
-	*currentSrc = strings.TrimSpace(source)
-}
-
-func CollectHeadVersions(current, previous *ClassificationHead, currentSrc, previousSrc string, history []ClassHeadVersionInfo) []ClassHeadVersionInfo {
-	seen := map[int]struct{}{}
-	out := make([]ClassHeadVersionInfo, 0, 2+len(history))
-	if current != nil && current.Version > 0 {
-		out = append(out, VersionInfoFromHead(HeadRoleCurrent, currentSrc, current))
-		seen[current.Version] = struct{}{}
-	}
-	if previous != nil && previous.Version > 0 {
-		out = append(out, VersionInfoFromHead(HeadRolePrevious, previousSrc, previous))
-		seen[previous.Version] = struct{}{}
-	}
-	for _, item := range history {
-		if item.Version <= 0 {
-			continue
-		}
-		if _, ok := seen[item.Version]; ok {
-			continue
-		}
-		item.Role = HeadRoleHistory
-		out = append(out, item)
-		seen[item.Version] = struct{}{}
-	}
-	return out
-}
-
-func ResolveHeadSlot(slot string, current, previous *ClassificationHead) (string, *ClassificationHead, error) {
-	slot = strings.ToLower(strings.TrimSpace(slot))
-	switch slot {
-	case "", HeadRoleCurrent, "serving":
-		if current == nil || !current.Ready() {
-			return "", nil, errors.New("current head is not ready")
-		}
-		return HeadRoleCurrent, current, nil
-	case HeadRolePrevious, "prev":
-		if previous == nil || !previous.Ready() {
-			return "", nil, errors.New("previous head is not ready")
-		}
-		return HeadRolePrevious, previous, nil
-	}
-	n, err := strconv.Atoi(slot)
-	if err != nil || n <= 0 {
-		return "", nil, errors.New("unknown head slot")
-	}
-	if current != nil && current.Version == n && current.Ready() {
-		return HeadRoleCurrent, current, nil
-	}
-	if previous != nil && previous.Version == n && previous.Ready() {
-		return HeadRolePrevious, previous, nil
-	}
-	return "", nil, errors.New("retired head versions are metadata only")
 }
 
 func ScoreHeadAgainstRules(group *ServiceGroup, header http.Header, body map[string]any, slot string, head *ClassificationHead, pred HeadPrediction) ClassHeadScoreReport {

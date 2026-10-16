@@ -3,6 +3,7 @@ package httpapi
 import (
 	"context"
 	"fmt"
+	"log"
 	"reflect"
 	"sync"
 	"time"
@@ -12,9 +13,17 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmservice"
 	"github.com/RapidAI/CodeClaw/hub/internal/store"
+	"golang.org/x/sync/singleflight"
 )
 
-const llmRuntimeCacheTTL = 3 * time.Second
+// llmRuntimeCacheTTL bounds how long a cached registry survives without a
+// invalidation signal. Registries are multi-MB JSON documents (tens of MB in
+// production), so re-reading and re-unmarshalling on a short TTL dominates hub
+// CPU when many machines poll service-account endpoints. Every mutation path
+// (card store, provider config, credit billing, system-free, …) calls
+// invalidateLLMRuntimeCaches, so a long TTL only delays convergence for
+// changes written through paths that missed invalidation wiring.
+const llmRuntimeCacheTTL = 60 * time.Second
 
 type llmRuntimeCacheState struct {
 	mu           sync.RWMutex
@@ -46,6 +55,24 @@ var globalLLMRuntimeCache = &llmRuntimeCacheState{
 	promptConfig: map[string]cachedPromptCacheConfig{},
 }
 
+// llmRegistryLoadFlights merges concurrent cache misses so a burst of
+// requests for the same tenant loads and unmarshals the multi-MB registry
+// once instead of once per request.
+var (
+	llmProviderRegistryLoadFlight singleflight.Group
+	llmServiceRegistryLoadFlight  singleflight.Group
+)
+
+type loadedLLMProviderRegistryResult struct {
+	reg *im.LLMProviderRegistry
+	err error
+}
+
+type loadedLLMServiceRegistryResult struct {
+	reg *llmservice.Registry
+	err error
+}
+
 func loadCachedLLMProviderRegistry(ctx context.Context, system store.SystemSettingsRepository) (*im.LLMProviderRegistry, error) {
 	if system == nil {
 		return im.LoadLLMProviderRegistry(ctx, system)
@@ -58,41 +85,136 @@ func loadCachedLLMProviderRegistry(ctx context.Context, system store.SystemSetti
 	if ok && now.Sub(entry.loadedAt) < llmRuntimeCacheTTL {
 		return cloneLLMProviderRegistry(entry.value), entry.err
 	}
-	reg, err := im.LoadLLMProviderRegistry(ctx, system)
-	globalLLMRuntimeCache.mu.Lock()
-	globalLLMRuntimeCache.providers[key] = cachedLLMProviderRegistry{loadedAt: now, value: cloneLLMProviderRegistry(reg), err: err}
-	globalLLMRuntimeCache.mu.Unlock()
-	return cloneLLMProviderRegistry(reg), err
+	result, _, _ := llmProviderRegistryLoadFlight.Do(key, func() (any, error) {
+		// Detach from the requesting context so one caller's cancellation
+		// cannot fail the shared load for every waiter; context values
+		// (e.g. tenant identity) are preserved.
+		reg, err := im.LoadLLMProviderRegistry(context.WithoutCancel(ctx), system)
+		globalLLMRuntimeCache.mu.Lock()
+		globalLLMRuntimeCache.providers[key] = cachedLLMProviderRegistry{loadedAt: time.Now(), value: cloneLLMProviderRegistry(reg), err: err}
+		globalLLMRuntimeCache.mu.Unlock()
+		return loadedLLMProviderRegistryResult{reg: reg, err: err}, nil
+	})
+	loaded := result.(loadedLLMProviderRegistryResult)
+	return cloneLLMProviderRegistry(loaded.reg), loaded.err
+}
+
+func loadCachedLLMServiceRegistryForViewer(ctx context.Context, system store.SystemSettingsRepository, userID, email string) (*llmservice.Registry, error) {
+	reg, err := loadCachedLLMServiceRegistry(ctx, system)
+	if err != nil || reg == nil {
+		return reg, err
+	}
+	if !llmservice.NeedsNewUserLimitCardBackfill(reg, userID, email) {
+		return reg, nil
+	}
+	issued, ensureErr := llmservice.EnsureNewUserLimitCardForUserID(ctx, system, userID, email)
+	if ensureErr == nil && issued {
+		invalidateLLMRuntimeCaches(system)
+		if fresh, loadErr := loadCachedLLMServiceRegistry(ctx, system); loadErr == nil && fresh != nil {
+			reg = fresh
+		}
+	}
+	if !llmservice.HasLiveNewUserLimitCard(reg, userID, email) {
+		_ = llmservice.IssueNewUserLimitCards(reg, []llmservice.VoucherUser{{ID: userID, Email: email}}, time.Now().UTC())
+	}
+	return reg, nil
+}
+
+func init() {
+	llmservice.SetAfterServiceRegistrySave(func(system llmservice.SystemSettingsRepository) {
+		repo, ok := system.(store.SystemSettingsRepository)
+		if !ok || repo == nil {
+			return
+		}
+		invalidateLLMRuntimeCaches(repo)
+	})
 }
 
 func loadCachedLLMServiceRegistry(ctx context.Context, system store.SystemSettingsRepository) (*llmservice.Registry, error) {
 	if system == nil {
 		return llmservice.LoadRegistry(ctx, system)
 	}
+	if reg, err, ok := lookupCachedLLMServiceRegistry(system); ok {
+		return reg, err
+	}
+	key := llmRuntimeCacheKey(system)
+	// Merge concurrent misses so the shared multi-MB load runs once; the load
+	// detaches from the requesting context so one caller's cancellation cannot
+	// fail it for every waiter. The registry lock is inside the flight so a
+	// token-bank pull cannot commit between this load and the cache fill.
+	result, _, _ := llmServiceRegistryLoadFlight.Do(key, func() (any, error) {
+		if reg, err, ok := lookupCachedLLMServiceRegistry(system); ok {
+			return loadedLLMServiceRegistryResult{reg: reg, err: err}, nil
+		}
+		llmservice.LockServiceRegistryMutation()
+		defer llmservice.UnlockServiceRegistryMutation()
+		if reg, err, ok := lookupCachedLLMServiceRegistry(system); ok {
+			return loadedLLMServiceRegistryResult{reg: reg, err: err}, nil
+		}
+		return loadLLMServiceRegistryOnce(ctx, system, key)
+	})
+	loaded := result.(loadedLLMServiceRegistryResult)
+	return cloneLLMServiceRegistry(loaded.reg), loaded.err
+}
+
+// loadCachedLLMServiceRegistryLocked is loadCachedLLMServiceRegistry for a
+// caller that already holds the service-registry mutation lock. It must not
+// enter the singleflight above: that flight takes the same lock.
+func loadCachedLLMServiceRegistryLocked(ctx context.Context, system store.SystemSettingsRepository) (*llmservice.Registry, error) {
+	if system == nil {
+		return llmservice.LoadRegistry(ctx, system)
+	}
+	if reg, err, ok := lookupCachedLLMServiceRegistry(system); ok {
+		return reg, err
+	}
+	loaded, err := loadLLMServiceRegistryOnce(ctx, system, llmRuntimeCacheKey(system))
+	if err != nil {
+		return nil, err
+	}
+	return cloneLLMServiceRegistry(loaded.reg), loaded.err
+}
+
+func lookupCachedLLMServiceRegistry(system store.SystemSettingsRepository) (*llmservice.Registry, error, bool) {
+	if system == nil {
+		return nil, nil, false
+	}
 	key := llmRuntimeCacheKey(system)
 	now := time.Now()
 	globalLLMRuntimeCache.mu.RLock()
 	entry, ok := globalLLMRuntimeCache.services[key]
 	globalLLMRuntimeCache.mu.RUnlock()
-	if ok && now.Sub(entry.loadedAt) < llmRuntimeCacheTTL {
-		return cloneLLMServiceRegistry(entry.value), entry.err
+	if !ok || now.Sub(entry.loadedAt) >= llmRuntimeCacheTTL {
+		return nil, nil, false
 	}
-	reg, err := llmservice.LoadRegistry(ctx, system)
+	return cloneLLMServiceRegistry(entry.value), entry.err, true
+}
+
+func loadLLMServiceRegistryOnce(ctx context.Context, system store.SystemSettingsRepository, key string) (loadedLLMServiceRegistryResult, error) {
+	reg, err := llmservice.LoadRegistry(context.WithoutCancel(ctx), system)
 	if err == nil && reg != nil {
+		ledgerBefore := len(reg.BillingLedger)
+		llmservice.TrimBillingLedgerForRegistry(reg)
+		// Persist the shrink so the multi-MB registry row converges instead of
+		// re-parsing the full append-only ledger on every reload.
+		if len(reg.BillingLedger) != ledgerBefore {
+			if saveErr := llmservice.SaveRegistry(context.WithoutCancel(ctx), system, reg); saveErr != nil {
+				log.Printf("[llm-runtime-cache] trim billing ledger persist failed: %v", saveErr)
+			}
+		}
 		// One-shot repair for historical metered grants that were queued behind
 		// an active grant under the old redeem policy. After promote+save, later
 		// loads see StartsAt <= now and skip this path.
 		if n := llmservice.PromoteQueuedMeteredGrants(reg, time.Now().UTC()); n > 0 {
-			if saveErr := llmservice.SaveRegistry(ctx, system, reg); saveErr != nil {
+			if saveErr := llmservice.SaveRegistry(context.WithoutCancel(ctx), system, reg); saveErr != nil {
 				// Keep the in-memory promotion for this response even if persist fails.
 				_ = saveErr
 			}
 		}
 	}
 	globalLLMRuntimeCache.mu.Lock()
-	globalLLMRuntimeCache.services[key] = cachedLLMServiceRegistry{loadedAt: now, value: cloneLLMServiceRegistry(reg), err: err}
+	globalLLMRuntimeCache.services[key] = cachedLLMServiceRegistry{loadedAt: time.Now(), value: cloneLLMServiceRegistry(reg), err: err}
 	globalLLMRuntimeCache.mu.Unlock()
-	return cloneLLMServiceRegistry(reg), err
+	return loadedLLMServiceRegistryResult{reg: reg, err: err}, nil
 }
 
 func loadCachedHubLLMPromptCacheConfig(ctx context.Context, system store.SystemSettingsRepository) HubLLMPromptCacheConfig {
@@ -137,17 +259,52 @@ func invalidateLLMEntitlementCaches(system store.SystemSettingsRepository) {
 	globalLLMRuntimeCache.mu.Unlock()
 }
 
+// llmRuntimeCacheKey returns a stable identity for a settings repository.
+// Handlers wrap the root repository in per-request decorators
+// (tenantScopedSystemSettings, userReferralMetricSystemSettings), so keying on
+// the wrapper itself — or formatting a wrapper struct with %v — produces a new
+// key per request and silently disables the cache. Unwrap to the root
+// repository and key on its pointer plus the tenant scope.
 func llmRuntimeCacheKey(system store.SystemSettingsRepository) string {
-	rv := reflect.ValueOf(system)
-	if !rv.IsValid() {
+	if system == nil {
 		return "<nil>"
 	}
+	tenantID := ""
+	root := system
+	for root != nil {
+		switch v := root.(type) {
+		case tenantScopedSystemSettings:
+			if tenantID == "" {
+				tenantID = v.tenantID
+			}
+			root = v.base
+		case *tenantScopedSystemSettings:
+			if tenantID == "" {
+				tenantID = v.tenantID
+			}
+			root = v.base
+		case userReferralMetricSystemSettings:
+			root = v.SystemSettingsRepository
+		case *userReferralMetricSystemSettings:
+			root = v.SystemSettingsRepository
+		default:
+			goto unwrapped
+		}
+	}
+unwrapped:
+	if root == nil {
+		if tenantID == "" {
+			return "<nil>"
+		}
+		return tenantID + "|<nil>"
+	}
+	rv := reflect.ValueOf(root)
+	var ptr uintptr
 	switch rv.Kind() {
 	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Func, reflect.Chan:
-		return fmt.Sprintf("%T:%x", system, rv.Pointer())
-	default:
-		return fmt.Sprintf("%T:%v", system, system)
+		ptr = rv.Pointer()
 	}
+	return fmt.Sprintf("%s|%T:%x", tenantID, root, ptr)
 }
 
 func cloneLLMProviderRegistry(reg *im.LLMProviderRegistry) *im.LLMProviderRegistry {
@@ -156,6 +313,12 @@ func cloneLLMProviderRegistry(reg *im.LLMProviderRegistry) *im.LLMProviderRegist
 	}
 	clone := *reg
 	clone.Providers = append([]im.LLMProvider(nil), reg.Providers...)
+	// Deep-copy each provider's pricing (presence-aware cache prices and any
+	// time-window overrides) so a configuration reload can never rewrite
+	// memory a frozen quote still references.
+	for i := range clone.Providers {
+		clone.Providers[i].TokenPricing = clone.Providers[i].TokenPricing.Clone()
+	}
 	clone.TokenUsage = corelib.FilterRemoteCodingToolTokenUsage(reg.TokenUsage)
 	return &clone
 }

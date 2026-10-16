@@ -16,6 +16,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -417,6 +418,7 @@ func (s *HTTPServer) handleVirtualEmployeeMessage(w http.ResponseWriter, r *http
 	if wantsSSE {
 		sseWriter = newPlatformSSEWriter(w)
 		sseWriter.WriteHeader()
+		sseWriter.WriteActivity("accepted", "")
 		log.Printf("[VE-STREAMING] ===== STAGE 2: SSE headers written, streaming mode active =====")
 		tokenCount := 0
 		onToken = func(delta string) {
@@ -430,11 +432,20 @@ func (s *HTTPServer) handleVirtualEmployeeMessage(w http.ResponseWriter, r *http
 		log.Printf("[VE-STREAMING] ===== NOT STREAMING: Hub did not send Accept: text/event-stream =====")
 	}
 
-	sess, run, msg, err := s.svc.SendMessage(r.Context(), agentservice.Principal{TenantID: binding.Tenant.ID, UserID: binding.User.ID}, binding.Instance.ID, agentservice.SendMessageInput{Title: strings.TrimSpace(title), Content: content, Attachments: hostAttachments, ClientSessionKey: strings.TrimSpace(in.HubDiscussionID), ClientMessageID: firstPlatformNonEmpty(in.HubMessageID, in.RequestID), Metadata: metadata, OnToken: onToken})
+	sendInput := agentservice.SendMessageInput{Title: strings.TrimSpace(title), Content: content, Attachments: hostAttachments, ClientSessionKey: strings.TrimSpace(in.HubDiscussionID), ClientMessageID: firstPlatformNonEmpty(in.HubMessageID, in.RequestID), Metadata: metadata, OnToken: onToken}
+	if sseWriter != nil {
+		sendInput.OnToolCall = func(name string) {
+			sseWriter.WriteActivity("tool_start", name)
+		}
+		sendInput.OnToolResult = func(name, _ string) {
+			sseWriter.WriteActivity("tool_done", name)
+		}
+	}
+	sess, run, msg, err := s.svc.SendMessage(r.Context(), agentservice.Principal{TenantID: binding.Tenant.ID, UserID: binding.User.ID}, binding.Instance.ID, sendInput)
 	if err != nil {
 		log.Printf("[platform-runtime] discussion send failed employee=%s tenant=%s user=%s instance=%s request_id=%s hub_discussion=%s hub_message=%s run_id=%s duration=%s err=%v", logEmployeeID, binding.Tenant.ID, binding.User.ID, binding.Instance.ID, in.RequestID, in.HubDiscussionID, in.HubMessageID, platformRunID(run), time.Since(started), err)
 		if sseWriter != nil {
-			sseWriter.WriteError(err.Error())
+			sseWriter.WriteError(redactSupportBundleText(s.svc.DataRoot(), err.Error()))
 			sseWriter.WriteDone("", nil, nil, nil)
 			return
 		}
@@ -2520,12 +2531,90 @@ func compactPlatformMetadata(in map[string]string) map[string]string {
 	return out
 }
 
+type cachedPlatformBinding struct {
+	binding platformRuntimeBinding
+}
+
 func (s *HTTPServer) findPlatformRuntimeBinding(r *http.Request, employeeID string) (platformRuntimeBinding, bool, error) {
-	return s.findPlatformRuntimeBindingByMetadata(r, employeeID, false)
+	return s.cachedPlatformRuntimeBinding(r, employeeID, false)
 }
 
 func (s *HTTPServer) findPlatformMessageRuntimeBinding(r *http.Request, employeeID string) (platformRuntimeBinding, bool, error) {
-	return s.findPlatformRuntimeBindingByMetadata(r, employeeID, true)
+	return s.cachedPlatformRuntimeBinding(r, employeeID, true)
+}
+
+func (s *HTTPServer) cachedPlatformRuntimeBinding(r *http.Request, employeeID string, allowSourceUserID bool) (platformRuntimeBinding, bool, error) {
+	if s == nil {
+		return platformRuntimeBinding{}, false, nil
+	}
+	key := platformBindingCacheKey(r, employeeID, allowSourceUserID)
+	if key != "" {
+		if raw, ok := s.platformBindingCache.Load(key); ok {
+			cached := raw.(cachedPlatformBinding)
+			if binding, ok := s.revalidatePlatformBinding(r.Context(), cached.binding, employeeID, platformRuntimeRequestHubTenantID(r), allowSourceUserID); ok {
+				return binding, true, nil
+			}
+			s.platformBindingCache.Delete(key)
+		}
+	}
+	binding, ok, err := s.findPlatformRuntimeBindingByMetadata(r, employeeID, allowSourceUserID)
+	if err == nil && ok && key != "" {
+		s.platformBindingCache.Store(key, cachedPlatformBinding{binding: clonePlatformRuntimeBinding(binding)})
+	}
+	return binding, ok, err
+}
+
+func (s *HTTPServer) revalidatePlatformBinding(ctx context.Context, cached platformRuntimeBinding, employeeID, hubTenantID string, allowSourceUserID bool) (platformRuntimeBinding, bool) {
+	if s == nil || s.svc == nil || strings.TrimSpace(cached.Instance.ID) == "" {
+		return platformRuntimeBinding{}, false
+	}
+	fresh, err := s.svc.GetInstance(ctx, agentservice.Principal{TenantID: cached.Tenant.ID, UserID: cached.User.ID}, cached.Instance.ID)
+	if err != nil || fresh == nil {
+		return platformRuntimeBinding{}, false
+	}
+	cached.Instance = *fresh
+	if !platformCachedBindingMatches(cached, employeeID, hubTenantID, allowSourceUserID) {
+		return platformRuntimeBinding{}, false
+	}
+	return clonePlatformRuntimeBinding(cached), true
+}
+
+func platformCachedBindingMatches(binding platformRuntimeBinding, employeeID, hubTenantID string, allowSourceUserID bool) bool {
+	if !platformRuntimeInstanceMatchesEmployeeID(binding.Instance, employeeID, allowSourceUserID) {
+		return false
+	}
+	hubTenantID = strings.TrimSpace(hubTenantID)
+	if hubTenantID == "" {
+		return true
+	}
+	// An instance without a hub tenant is only a legacy fallback during a full
+	// scan. Keeping it cached would hide a tenant-specific binding created later.
+	instHubTenantID := strings.TrimSpace(binding.Instance.Metadata["ve_hub_tenant_id"])
+	return instHubTenantID != "" && strings.EqualFold(instHubTenantID, hubTenantID)
+}
+
+func platformBindingCacheKey(r *http.Request, employeeID string, allowSourceUserID bool) string {
+	employeeID = strings.ToLower(strings.TrimSpace(employeeID))
+	if employeeID == "" {
+		return ""
+	}
+	source := "0"
+	if allowSourceUserID {
+		source = "1"
+	}
+	return strings.ToLower(strings.TrimSpace(platformRuntimeRequestHubTenantID(r))) + "\x00" + employeeID + "\x00" + source
+}
+
+func clonePlatformRuntimeBinding(in platformRuntimeBinding) platformRuntimeBinding {
+	out := in
+	if len(in.Instance.Metadata) > 0 {
+		meta := make(map[string]string, len(in.Instance.Metadata))
+		for key, value := range in.Instance.Metadata {
+			meta[key] = value
+		}
+		out.Instance.Metadata = meta
+	}
+	return out
 }
 
 func (s *HTTPServer) findPlatformRuntimeBindingByMetadata(r *http.Request, employeeID string, allowSourceUserID bool) (platformRuntimeBinding, bool, error) {
@@ -2639,6 +2728,7 @@ func decodePlatformJSON(w http.ResponseWriter, r *http.Request, out any) bool {
 // Hub consumes these events to deliver progressive stream_chunk messages to the
 // requesting client, replacing the static "思考中..." indicator with real-time output.
 type platformSSEWriter struct {
+	mu      sync.Mutex
 	w       http.ResponseWriter
 	flusher http.Flusher
 }
@@ -2649,13 +2739,48 @@ func newPlatformSSEWriter(w http.ResponseWriter) *platformSSEWriter {
 }
 
 func (s *platformSSEWriter) WriteHeader() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.w.Header().Set("Content-Type", "text/event-stream")
-	s.w.Header().Set("Cache-Control", "no-cache")
+	s.w.Header().Set("Cache-Control", "no-cache, no-transform")
 	s.w.Header().Set("Connection", "keep-alive")
+	s.w.Header().Set("X-Accel-Buffering", "no")
 	s.w.WriteHeader(http.StatusOK)
 	if s.flusher != nil {
 		s.flusher.Flush()
 	}
+}
+
+func (s *platformSSEWriter) WriteActivity(phase, name string) {
+	phase = strings.TrimSpace(phase)
+	switch phase {
+	case "accepted", "tool_start", "tool_done":
+	default:
+		return
+	}
+	payload := map[string]string{"status": phase}
+	if name = sanitizePlatformActivityName(name); name != "" {
+		payload["name"] = name
+	}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	s.writeFrame(data)
+}
+
+func sanitizePlatformActivityName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 64 {
+		return ""
+	}
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '.' || r == '-' || r == ':' {
+			continue
+		}
+		return ""
+	}
+	return name
 }
 
 func (s *platformSSEWriter) WriteChunk(chunk string) {
@@ -2663,25 +2788,37 @@ func (s *platformSSEWriter) WriteChunk(chunk string) {
 	if chunk == "" {
 		return
 	}
-	data, _ := json.Marshal(map[string]string{"chunk": chunk})
-	fmt.Fprintf(s.w, "data: %s\n\n", data)
-	if s.flusher != nil {
-		s.flusher.Flush()
+	data, err := json.Marshal(map[string]string{"chunk": chunk})
+	if err != nil {
+		return
 	}
+	s.writeFrame(data)
 }
 
 func (s *platformSSEWriter) WriteError(errMsg string) {
-	data, _ := json.Marshal(map[string]string{"error": errMsg})
-	fmt.Fprintf(s.w, "data: %s\n\n", data)
-	if s.flusher != nil {
-		s.flusher.Flush()
+	data, err := json.Marshal(map[string]string{"error": errMsg})
+	if err != nil {
+		return
 	}
+	s.writeFrame(data)
 }
 
 func (s *platformSSEWriter) WriteDone(content string, sess any, run any, msg any) {
 	content = textutil.SanitizeVisibleChatText(content)
-	data, _ := json.Marshal(map[string]any{"done": true, "content": content, "session": sess, "run": run, "message": msg})
-	fmt.Fprintf(s.w, "data: %s\n\n", data)
+	data, err := json.Marshal(map[string]any{"done": true, "content": content, "session": sess, "run": run, "message": msg})
+	if err != nil {
+		return
+	}
+	s.writeFrame(data)
+}
+
+func (s *platformSSEWriter) writeFrame(payload []byte) {
+	if s == nil || len(payload) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	fmt.Fprintf(s.w, "data: %s\n\n", payload)
 	if s.flusher != nil {
 		s.flusher.Flush()
 	}

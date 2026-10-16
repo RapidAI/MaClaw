@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -38,6 +39,28 @@ func (s *fakeSystemSettings) Get(_ context.Context, key string) (string, error) 
 
 func (s *fakeSystemSettings) List(_ context.Context) ([]*store.SystemSettingEntry, error) {
 	return nil, nil
+}
+
+func TestApplySystemSettingOpPreservesProviderAccessScope(t *testing.T) {
+	settings := &fakeSystemSettings{data: map[string]string{}}
+	svc := &Service{settings: settings}
+	registryJSON := `{"providers":[{"id":"openai","allowed_node_ids":["hc-us","hc-sg"]}]}`
+	payload, err := json.Marshal(systemSettingPayload{
+		Key:       llmservice.RegistrySettingKey,
+		ValueJSON: registryJSON,
+	})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	if err := svc.applySystemSettingOp(context.Background(), &store.HASyncOp{
+		OpType:      OpUpsert,
+		PayloadJSON: string(payload),
+	}); err != nil {
+		t.Fatalf("applySystemSettingOp: %v", err)
+	}
+	if got := settings.data[llmservice.RegistrySettingKey]; got != registryJSON {
+		t.Fatalf("stored value = %q, want opaque registry JSON with allowed_node_ids", got)
+	}
 }
 
 func TestApplySystemSettingOpInvalidatesLLMRegistryCache(t *testing.T) {
@@ -209,5 +232,264 @@ func TestApplySystemSettingOpDoesNotAckPerGroupClassHead(t *testing.T) {
 	}
 	if acked != 0 {
 		t.Fatalf("per-group class head must not ack official head, acks=%d", acked)
+	}
+}
+
+func applyClassHeadOp(t *testing.T, svc *Service, key, valueJSON string) {
+	t.Helper()
+	payload, err := json.Marshal(systemSettingPayload{Key: key, ValueJSON: valueJSON})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	if err := svc.applySystemSettingOp(context.Background(), &store.HASyncOp{OpType: OpUpsert, PayloadJSON: string(payload)}); err != nil {
+		t.Fatalf("applySystemSettingOp: %v", err)
+	}
+}
+
+// A stale replica of the classifier training store must not roll the local
+// store backwards. The store is rewritten on every training sample, so two
+// peers' replicas interleave and "latest wins" alone would discard samples.
+func TestApplySystemSettingOpFencesStaleClassHeadStore(t *testing.T) {
+	fresh := officialHeadStore("2026-09-18T02:00:00Z", "2026-09-18T03:00:00Z")
+	settings := &fakeSystemSettings{data: map[string]string{llmservice.OfficialClassHeadKey: fresh}}
+	svc := &Service{settings: settings}
+
+	applyClassHeadOp(t, svc, llmservice.OfficialClassHeadKey, officialHeadStore("2026-09-18T01:00:00Z"))
+
+	if got := settings.data[llmservice.OfficialClassHeadKey]; got != fresh {
+		t.Fatalf("stale class head store overwrote the fresher local one: %q", got)
+	}
+}
+
+func TestApplySystemSettingOpAppliesNewerClassHeadStore(t *testing.T) {
+	settings := &fakeSystemSettings{data: map[string]string{
+		llmservice.OfficialClassHeadKey: officialHeadStore("2026-09-18T01:00:00Z"),
+	}}
+	svc := &Service{settings: settings}
+
+	newer := officialHeadStore("2026-09-18T01:00:00Z", "2026-09-18T04:00:00Z")
+	applyClassHeadOp(t, svc, llmservice.OfficialClassHeadKey, newer)
+
+	if got := settings.data[llmservice.OfficialClassHeadKey]; got != newer {
+		t.Fatalf("newer class head store was not applied: %q", got)
+	}
+}
+
+// Per-group stores are separate keys carrying the same versioned store shape,
+// so they need the same protection.
+func TestApplySystemSettingOpFencesPerGroupClassHeadStore(t *testing.T) {
+	key := llmservice.OfficialClassHeadKey + ":coding-auto"
+	fresh := officialHeadStore("2026-09-18T03:00:00Z")
+	settings := &fakeSystemSettings{data: map[string]string{key: fresh}}
+	svc := &Service{settings: settings}
+
+	applyClassHeadOp(t, svc, key, officialHeadStore("2026-09-18T01:00:00Z"))
+
+	if got := settings.data[key]; got != fresh {
+		t.Fatalf("stale per-group store overwrote the fresher local one: %q", got)
+	}
+}
+
+// The fence must apply to class head stores only: other keys, including the
+// sibling per-group training key, keep latest-wins semantics.
+func TestApplySystemSettingOpDoesNotFenceOtherKeys(t *testing.T) {
+	settings := &fakeSystemSettings{data: map[string]string{}}
+	svc := &Service{settings: settings}
+
+	first := officialHeadStore("2026-09-18T03:00:00Z")
+	second := officialHeadStore("2026-09-18T01:00:00Z")
+	applyClassHeadOp(t, svc, "llm_class_head_v1:coding-auto", first)
+	applyClassHeadOp(t, svc, "llm_class_head_v1:coding-auto", second)
+
+	if got := settings.data["llm_class_head_v1:coding-auto"]; got != second {
+		t.Fatalf("unfenced key must stay latest-wins: %q", got)
+	}
+}
+
+func applyMonitorLeaseOp(t *testing.T, svc *Service, valueJSON string) {
+	t.Helper()
+	payload, err := json.Marshal(systemSettingPayload{Key: LLMProviderMonitorLeaseKey, ValueJSON: valueJSON})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	if err := svc.applySystemSettingOp(context.Background(), &store.HASyncOp{OpType: OpUpsert, PayloadJSON: string(payload)}); err != nil {
+		t.Fatalf("applySystemSettingOp: %v", err)
+	}
+}
+
+func TestApplySystemSettingOpFencesStaleMonitorLease(t *testing.T) {
+	fresh := `{"owner":"node-a","until":2000}`
+	settings := &fakeSystemSettings{data: map[string]string{LLMProviderMonitorLeaseKey: fresh}}
+	svc := &Service{settings: settings}
+
+	applyMonitorLeaseOp(t, svc, `{"owner":"node-b","until":1000}`)
+
+	if got := settings.data[LLMProviderMonitorLeaseKey]; got != fresh {
+		t.Fatalf("stale lease op demoted the fresher local lease: %q", got)
+	}
+}
+
+func TestApplySystemSettingOpAppliesNewerMonitorLease(t *testing.T) {
+	settings := &fakeSystemSettings{data: map[string]string{LLMProviderMonitorLeaseKey: `{"owner":"node-a","until":2000}`}}
+	svc := &Service{settings: settings}
+
+	newer := `{"owner":"node-b","until":3000}`
+	applyMonitorLeaseOp(t, svc, newer)
+
+	if got := settings.data[LLMProviderMonitorLeaseKey]; got != newer {
+		t.Fatalf("newer lease op not applied: %q", got)
+	}
+}
+
+func TestApplySystemSettingOpAppliesMalformedMonitorLease(t *testing.T) {
+	settings := &fakeSystemSettings{data: map[string]string{LLMProviderMonitorLeaseKey: `{"owner":"node-a","until":2000}`}}
+	svc := &Service{settings: settings}
+
+	// Malformed incoming payloads apply as usual so a corrupted lease never
+	// blocks recovery.
+	applyMonitorLeaseOp(t, svc, `{not json}`)
+
+	if got := settings.data[LLMProviderMonitorLeaseKey]; got != `{not json}` {
+		t.Fatalf("malformed lease op not applied: %q", got)
+	}
+}
+
+func applyLLMRegistryOp(t *testing.T, svc *Service, valueJSON string) {
+	t.Helper()
+	payload, err := json.Marshal(systemSettingPayload{Key: llmservice.RegistrySettingKey, ValueJSON: valueJSON})
+	if err != nil {
+		t.Fatalf("marshal payload: %v", err)
+	}
+	if err := svc.applySystemSettingOp(context.Background(), &store.HASyncOp{OpType: OpUpsert, PayloadJSON: string(payload)}); err != nil {
+		t.Fatalf("applySystemSettingOp: %v", err)
+	}
+}
+
+// The registry is one blob rewritten whole by every mutation (admin CRUD,
+// token-bank publish, autopause), so a lagging replica of an older snapshot
+// must not roll a fresher local registry backwards — that silently drops the
+// local change from every node (R2-d in the token-bank design doc).
+func TestApplySystemSettingOpFencesStaleLLMRegistry(t *testing.T) {
+	fresh := `{"updated_at":"2026-10-01T03:00:00Z","providers":[{"id":"tbk_share1_gpt"}]}`
+	settings := &fakeSystemSettings{data: map[string]string{llmservice.RegistrySettingKey: fresh}}
+	invalidated := 0
+	svc := &Service{
+		settings:                    settings,
+		llmRegistryCacheInvalidator: func() { invalidated++ },
+	}
+
+	applyLLMRegistryOp(t, svc, `{"updated_at":"2026-10-01T01:00:00Z","providers":[]}`)
+
+	if got := settings.data[llmservice.RegistrySettingKey]; got != fresh {
+		t.Fatalf("stale registry op rolled the fresher local registry backwards: %q", got)
+	}
+	if invalidated != 0 {
+		t.Fatalf("fenced op must not invalidate the registry cache, invalidations=%d", invalidated)
+	}
+}
+
+func TestApplySystemSettingOpAppliesNewerLLMRegistry(t *testing.T) {
+	settings := &fakeSystemSettings{data: map[string]string{
+		llmservice.RegistrySettingKey: `{"updated_at":"2026-10-01T01:00:00Z","providers":[]}`,
+	}}
+	invalidated := 0
+	svc := &Service{
+		settings:                    settings,
+		llmRegistryCacheInvalidator: func() { invalidated++ },
+	}
+
+	newer := `{"updated_at":"2026-10-01T04:00:00Z","providers":[{"id":"tbk_share2_claude"}]}`
+	applyLLMRegistryOp(t, svc, newer)
+
+	if got := settings.data[llmservice.RegistrySettingKey]; got != newer {
+		t.Fatalf("newer registry op not applied: %q", got)
+	}
+	if invalidated != 1 {
+		t.Fatalf("applied registry op must invalidate the cache, invalidations=%d", invalidated)
+	}
+}
+
+// An unparsable incoming payload must never fence: a corrupted registry is
+// applied as usual so replication can still converge and recover.
+func TestApplySystemSettingOpAppliesMalformedLLMRegistry(t *testing.T) {
+	settings := &fakeSystemSettings{data: map[string]string{
+		llmservice.RegistrySettingKey: `{"updated_at":"2026-10-01T03:00:00Z","providers":[]}`,
+	}}
+	svc := &Service{settings: settings}
+
+	applyLLMRegistryOp(t, svc, `{not json}`)
+
+	if got := settings.data[llmservice.RegistrySettingKey]; got != `{not json}` {
+		t.Fatalf("malformed registry op not applied: %q", got)
+	}
+}
+
+// A snapshot without updated_at is a legacy writer: it must converge instead
+// of being fenced out by a timestamp it never had.
+func TestApplySystemSettingOpAppliesLegacyLLMRegistryWithoutTimestamp(t *testing.T) {
+	settings := &fakeSystemSettings{data: map[string]string{
+		llmservice.RegistrySettingKey: `{"updated_at":"2026-10-01T03:00:00Z","providers":[]}`,
+	}}
+	svc := &Service{settings: settings}
+
+	legacy := `{"providers":[{"id":"old-format"}]}`
+	applyLLMRegistryOp(t, svc, legacy)
+
+	if got := settings.data[llmservice.RegistrySettingKey]; got != legacy {
+		t.Fatalf("legacy registry op not applied: %q", got)
+	}
+}
+
+// Fractional seconds must order by time, not lexicographically: "…00.5Z" is
+// later than "…00Z" even though it sorts before it as a string.
+func TestApplySystemSettingOpOrdersSubSecondLLMRegistryTimestamps(t *testing.T) {
+	fresher := `{"updated_at":"2026-10-01T02:00:00.5Z","providers":[]}`
+	settings := &fakeSystemSettings{data: map[string]string{llmservice.RegistrySettingKey: fresher}}
+	svc := &Service{settings: settings}
+
+	// Lexicographically "…00Z" > "…00.5Z", but by time it is older: fence.
+	older := `{"updated_at":"2026-10-01T02:00:00Z","providers":[]}`
+	applyLLMRegistryOp(t, svc, older)
+	if got := settings.data[llmservice.RegistrySettingKey]; got != fresher {
+		t.Fatalf("sub-second-older op must be fenced, stored: %q", got)
+	}
+
+	settings.data[llmservice.RegistrySettingKey] = `{"updated_at":"2026-10-01T02:00:00Z","providers":[]}`
+	applyLLMRegistryOp(t, svc, fresher)
+	if got := settings.data[llmservice.RegistrySettingKey]; got != fresher {
+		t.Fatalf("sub-second-newer op must be applied, stored: %q", got)
+	}
+}
+
+func TestApplySystemSettingOpKeepsNewerMemberHealth(t *testing.T) {
+	key := llmservice.MemberHealthSettingPrefix + "hc-2"
+	current := `{"node_id":"hc-2","revision":4,"days":{"2026-09-30":{"pool-a-1":{"requests":4}}}}`
+	settings := &fakeSystemSettings{data: map[string]string{key: current}}
+	svc := &Service{settings: settings}
+	older, err := json.Marshal(systemSettingPayload{
+		Key:       key,
+		ValueJSON: `{"node_id":"hc-2","revision":2,"days":{"2026-09-30":{"pool-a-1":{"requests":2}}}}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.applySystemSettingOp(context.Background(), &store.HASyncOp{OpType: OpUpsert, PayloadJSON: string(older)}); err != nil {
+		t.Fatal(err)
+	}
+	if got := settings.data[key]; got != current {
+		t.Fatalf("older health snapshot replaced current: %s", got)
+	}
+	newer, err := json.Marshal(systemSettingPayload{
+		Key:       key,
+		ValueJSON: `{"node_id":"hc-2","revision":5,"days":{"2026-09-30":{"pool-a-1":{"requests":5}}}}`,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.applySystemSettingOp(context.Background(), &store.HASyncOp{OpType: OpUpsert, PayloadJSON: string(newer)}); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(settings.data[key], `"revision":5`) {
+		t.Fatalf("newer health snapshot not applied: %s", settings.data[key])
 	}
 }

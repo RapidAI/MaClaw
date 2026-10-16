@@ -97,6 +97,7 @@ device_status_t gateway_dispatcher_commit_prepared_network_restart(void) {
 }
 
 int main(void) {
+    CHECK((GATEWAY_TRANSPORT_CANCEL_ALL & GATEWAY_TRANSPORT_CANCEL_MEETING_STREAM) != 0);
     CHECK(gateway_lifecycle_service_init() == DEVICE_STATUS_OK);
     CHECK(gateway_lifecycle_service_commit_prepared_network_restart() == DEVICE_STATUS_BUSY);
     /* A cancellation bridge that returns OK only after consuming the parent

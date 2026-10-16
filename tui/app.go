@@ -34,6 +34,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/config"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
+	"github.com/RapidAI/CodeClaw/corelib/database"
 	"github.com/RapidAI/CodeClaw/corelib/doctor"
 	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
@@ -48,13 +49,23 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/steering"
 	"github.com/RapidAI/CodeClaw/corelib/task"
+	"github.com/RapidAI/CodeClaw/corelib/tool"
 	"github.com/RapidAI/CodeClaw/corelib/tts"
 	"github.com/RapidAI/CodeClaw/corelib/weixin"
 	v2 "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 	"github.com/RapidAI/CodeClaw/tui/views"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/zalando/go-keyring"
 )
+
+func tuiDatabaseSecret(ctx context.Context, ref string) (string, error) {
+	u, err := url.Parse(strings.TrimSpace(ref))
+	if err != nil || u.Scheme != "keyring" || u.Host == "" || strings.Trim(u.Path, "/") == "" {
+		return "", fmt.Errorf("invalid secret_ref")
+	}
+	return keyring.Get(u.Host, strings.Trim(u.Path, "/"))
+}
 
 // runConfigUI starts a config-only terminal UI. It is intentionally usable
 // before LLM setup, so headless Linux users can configure the first provider
@@ -86,6 +97,7 @@ func runTUI(forceInitialTab ...int) {
 }
 
 func runTUIWithOptions(startup tuiStartupOptions) {
+	runTUIStartupRecovery(commands.ResolveDataDir())
 	logger := NewTUILogger()
 	startupIndicator := startTUIStartupIndicator()
 	defer startupIndicator.Stop()
@@ -140,6 +152,18 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	experienceSink := &lifecycle.AttributingEventSink{Sink: experienceEvents, Provider: memory.NewExperienceProvider(memStore)}
 	if memStore != nil {
 		memStore.SetExperienceEventSink(experienceSink)
+		// Async CompactForm backfill: new long entries get a compact form within
+		// seconds instead of waiting for the 6-hourly pipeline pass. The adapter
+		// resolves LLM credentials lazily from the shared config file.
+		memStore.SetCompactFormGenerator(memory.NewLLMCompactFormGenerator(&tuiEvolutionLLMAdapter{
+			loadCfg: func() corelib.AppConfig {
+				cfg, err := configStore.LoadConfig()
+				if err != nil {
+					return corelib.AppConfig{}
+				}
+				return cfg
+			},
+		}))
 	}
 
 	// Initialize SSH manager.
@@ -166,6 +190,35 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	startupIndicator.Stage(55, "装配运行时")
 	// HubCenter failover uses the shared singleton cache and persister from
 	// tui/commands/skill_search_api.go 鈥?no need to create local instances.
+	databaseManager := database.NewManager(appCfg.DatabaseProfiles, tuiDatabaseSecret)
+	databaseManager.SetEnabled(appCfg.DatabaseToolIsEnabled())
+	if auditSink, err := database.NewFileAuditSink(filepath.Join(dataDir, "data", "database_audit.jsonl")); err == nil {
+		databaseManager.SetAuditSink(auditSink)
+	} else {
+		log.Printf("[TUI] WARNING: database audit sink init failed: %v", err)
+	}
+	if pendingStore, err := database.NewPendingStore(filepath.Join(dataDir, "data", "database_pending.json")); err == nil {
+		databaseManager.SetPendingStore(pendingStore)
+	} else {
+		log.Printf("[TUI] WARNING: database pending store init failed: %v", err)
+	}
+	databaseManager.SetResultStoreDir(filepath.Join(dataDir, "data", "database_results"))
+	databaseManager.SetTunnelDialer(remote.SSHTunnelDialer(func() *remote.SSHSessionManager { return sshMgr }))
+	if favStore, err := database.NewFavoriteStore(filepath.Join(dataDir, "data", "database_favorites.json")); err == nil {
+		databaseManager.SetFavoriteStore(favStore)
+	} else {
+		log.Printf("[TUI] WARNING: database favorites store init failed: %v", err)
+	}
+	databaseManager.SetCatalogNamePath(filepath.Join(dataDir, "data", "database_catalog_names.json"))
+	// Record the shared tool contract hash so cross-host schema drift is
+	// visible in startup diagnostics (doctor reports the same value).
+	log.Printf("[TUI] database tool schema %s", database.ToolSchemaHash())
+	for _, project := range appCfg.Projects {
+		if project.Id == appCfg.CurrentProject && strings.TrimSpace(project.Path) != "" {
+			databaseManager.SetWorkspaceRoot(project.Path)
+			break
+		}
+	}
 	app := &TUIApp{
 		logger:           logger,
 		llmConfig:        llmCfg,
@@ -177,6 +230,7 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 		history:          convMemory,
 		taskStore:        task.NewStore(),
 		toolRegistry:     agent.NewCoreToolRegistry(),
+		databaseManager:  databaseManager,
 		ttsManager:       initTUITTSManager(),
 		costTracker:      llm.NewCostTracker(appCfg.DailyLLMBudgetUSD),
 	}
@@ -222,6 +276,14 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 	}
 	goalStore := goal.NewStore(filepath.Join(dataDir, "data", "goals"))
 	app.goalStore = goalStore
+	tuiDB := newTUIDatabaseRuntime(databaseManager, func() corelib.AppConfig { return app.appConfig }, func() string {
+		for _, project := range app.appConfig.Projects {
+			if project.Id == app.appConfig.CurrentProject && strings.TrimSpace(project.Path) != "" {
+				return project.Path
+			}
+		}
+		return ""
+	}, "tui:default", "tui:default", true)
 	agent.RegisterCoreTools(app.toolRegistry, agent.CoreToolDeps{
 		MemoryStore: memStore,
 		TaskStore:   app.taskStore,
@@ -230,6 +292,9 @@ func runTUIWithOptions(startup tuiStartupOptions) {
 			return app.appConfig
 		}),
 		SSHHandler: sshHandler,
+		ExtraHandlersCtx: map[string]agent.ToolHandlerCtx{
+			"database": tuiDB.handlerCtx(),
+		},
 		ExtraHandlers: map[string]agent.ToolHandler{
 			"manage_skill":           newManageSkillHandler(app),
 			"manage_schedule":        newManageScheduleHandler(app),
@@ -434,6 +499,7 @@ type TUIApp struct {
 	history          *agent.ConversationMemory
 	taskStore        *task.Store
 	goalStore        *goal.Store
+	databaseManager  *database.Manager
 	toolRegistry     *agent.CoreToolRegistry
 	ttsManager       *tts.Manager
 	// costTracker tracks daily LLM $ (fleet-persisted) for budget gates.
@@ -549,6 +615,7 @@ func (app *TUIApp) buildSystemPromptDeps() agent.SystemPromptDeps {
 			HasCodingSessions: false,
 		},
 		MemoryStore:      app.memoryStore,
+		MemoryOwnerID:    tuiDesktopMemoryOwner,
 		HasKnowledgeBase: app.knowledgeStore != nil,
 	}
 
@@ -1416,6 +1483,12 @@ func (m *tuiModel) handleSlashCommand(text string) tea.Cmd {
 		if line := agent.FormatPromptProfileLine(); line != "" {
 			msg = msg + "\n" + line
 		}
+		if line := tool.FormatRoutingLine(); line != "" {
+			msg = msg + "\n" + line
+		}
+		if line := tool.FormatPermissionDualEvalLine(); line != "" {
+			msg = msg + "\n" + line
+		}
 		if !agent.LightToolRetryEnabled() {
 			msg = msg + "\nlight_retry=off (" + agent.PromptLightRetryEnvKey + ")"
 		}
@@ -1794,7 +1867,7 @@ func (m *tuiModel) handleChatSend(text string, agentMode bool) tea.Cmd {
 				agent.ConversationEntry{Role: "user", Content: text},
 				agent.ConversationEntry{Role: "assistant", Content: wfResp},
 			)
-			app.history.Save("tui-user", history)
+			app.history.Save("tui-user", agent.TrimHistory(history))
 			return views.ChatResponseMsg{Text: wfResp}
 		}
 
@@ -1894,7 +1967,7 @@ func (m *tuiModel) handleChatSend(text string, agentMode bool) tea.Cmd {
 				}
 			}
 		}
-		app.history.Save("tui-user", history)
+		app.history.Save("tui-user", agent.TrimHistory(history))
 
 		// --- Online incremental extraction (Mem0-style) ---
 		// Trigger asynchronously after each agent loop to extract salient
@@ -1972,31 +2045,59 @@ func (m *tuiModel) handleSimpleChatSend(text string) tea.Cmd {
 
 		history = append(history, agent.ConversationEntry{Role: "user", Content: text})
 		history = append(history, agent.ConversationEntry{Role: "assistant", Content: answer})
-		app.history.Save("tui-user", history)
+		app.history.Save("tui-user", agent.TrimHistory(history))
 		return views.ChatResponseMsg{Text: answer}
 	}
 }
 
 func simpleChatMessages(history []agent.ConversationEntry, text string) []interface{} {
 	const maxHistoryEntries = 20
+	prefix := contextHandoffPrefixLen(history)
 	start := 0
 	if len(history) > maxHistoryEntries {
 		start = len(history) - maxHistoryEntries
 	}
-	messages := make([]interface{}, 0, len(history)-start+1)
+	if start < prefix {
+		start = prefix
+	}
+	messages := make([]interface{}, 0, prefix+len(history)-start+1)
+	for _, entry := range history[:prefix] {
+		appendSimpleChatEntry(&messages, entry)
+	}
 	for _, entry := range history[start:] {
-		role := strings.TrimSpace(entry.Role)
-		if role != "user" && role != "assistant" && role != "system" {
-			continue
-		}
-		content, ok := entry.Content.(string)
-		if !ok || strings.TrimSpace(content) == "" {
-			continue
-		}
-		messages = append(messages, map[string]interface{}{"role": role, "content": content})
+		appendSimpleChatEntry(&messages, entry)
 	}
 	messages = append(messages, map[string]interface{}{"role": "user", "content": text})
 	return messages
+}
+
+func contextHandoffPrefixLen(history []agent.ConversationEntry) int {
+	if len(history) == 0 || history[0].Role != "user" {
+		return 0
+	}
+	text, ok := history[0].Content.(string)
+	if !ok || !strings.HasPrefix(strings.TrimSpace(text), "[上下文恢复]") {
+		return 0
+	}
+	if len(history) > 1 && history[1].Role == "assistant" {
+		ack, _ := history[1].Content.(string)
+		if strings.Contains(ack, "被省略的工作") {
+			return 2
+		}
+	}
+	return 1
+}
+
+func appendSimpleChatEntry(messages *[]interface{}, entry agent.ConversationEntry) {
+	role := strings.TrimSpace(entry.Role)
+	if role != "user" && role != "assistant" && role != "system" {
+		return
+	}
+	content, ok := entry.Content.(string)
+	if !ok || strings.TrimSpace(content) == "" {
+		return
+	}
+	*messages = append(*messages, map[string]interface{}{"role": role, "content": content})
 }
 
 // --- Skill / MCP async handlers ---
@@ -2172,62 +2273,16 @@ func (m *tuiModel) installSkill(skillID, hubURL string, source string, installRe
 			}
 			recordTUIDeveloperSkillRisk(m.app.appConfig, effectiveSource, "install", guardArgs)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-
-		client := skill.DefaultHubClient()
-
-		var entry *corelib.NLSkillEntry
-		var err error
-
 		if existing, installed := tuiInstalledSkillEntryForInstallRequest(effectiveSource, skillID, installRef, m.app.appConfig.NLSkills); installed {
 			return views.ToolOperationResultMsg{Tab: views.ToolSubSkill, Success: true, Message: tuiFormat(lang, "skillAlreadyInstalled", existing.Name), InstalledName: existing.Name, InstalledSearchResult: searchResultKey}
 		}
-
-		switch effectiveSource {
-		case "clawhub":
-			entry, err = client.DownloadClawHub(ctx, skillID)
-		case "github":
-			if installRef == "" {
-				return views.ToolOperationResultMsg{
-					Tab: views.ToolSubSkill, Success: false,
-					Message: tuiText(lang, "githubSkillMissingRef"),
-				}
-			}
-			entry, err = client.DownloadGitHub(ctx, installRef)
-		default:
-			entry, err = client.DownloadSkillHub(ctx, hubURL, skillID)
-		}
-
+		entry, existing, err := installTUISkillTransactional(m.app, effectiveSource, skillID, installRef, hubURL)
 		if err != nil {
-			return views.ToolOperationResultMsg{
-				Tab: views.ToolSubSkill, Success: false,
-				Message: err.Error(),
-			}
+			return views.ToolOperationResultMsg{Tab: views.ToolSubSkill, Success: false, Message: err.Error()}
 		}
-
-		store := commands.NewFileConfigStore(commands.ResolveDataDir())
-		cfg, err := store.LoadConfig()
-		if err != nil {
-			return views.ToolOperationResultMsg{
-				Tab: views.ToolSubSkill, Success: false,
-				Message: tuiFormat(lang, "configLoadFailed", err.Error()),
-			}
-		}
-		// Re-read before persisting because another TUI/CLI process may have
-		// installed the same skill while this network download was in flight.
-		if existing, installed := tuiInstalledSkillEntryForInstallRequest(effectiveSource, skillID, installRef, cfg.NLSkills); installed {
-			m.app.appConfig = cfg
+		if existing != nil {
 			return views.ToolOperationResultMsg{Tab: views.ToolSubSkill, Success: true, Message: tuiFormat(lang, "skillAlreadyInstalled", existing.Name), InstalledName: existing.Name, InstalledSearchResult: searchResultKey}
 		}
-		cfg.NLSkills = append(cfg.NLSkills, *entry)
-		if err := store.SaveConfig(cfg); err != nil {
-			return views.ToolOperationResultMsg{
-				Tab: views.ToolSubSkill, Success: false,
-				Message: tuiFormat(lang, "saveFailed", err.Error()),
-			}
-		}
-		m.app.appConfig = cfg
 
 		sourceLabel := "SkillHub"
 		switch effectiveSource {
@@ -3341,6 +3396,8 @@ func applyConfigValue(cfg *corelib.AppConfig, key, value string) {
 
 // tuiCallbacks implements agent.LoopCallbacks for the TUI.
 type tuiCallbacks struct {
+	usageTrackerFeed
+
 	app      *TUIApp
 	program  *tea.Program
 	stopped  bool
@@ -3387,6 +3444,10 @@ type tuiCallbacks struct {
 	// Attempt as waiting_child, while explicit Runtime cancellation closes this
 	// child context as well as its durable task subtree.
 	executionCtx context.Context
+	// dispatcherOnce builds the Phase 2 pilot ToolDispatcher at most once per
+	// callback; dispatcher stays nil unless MACLAW_TOOL_DISPATCHER=on.
+	dispatcherOnce sync.Once
+	dispatcher     *agent.NameDispatcher
 }
 
 // CurrentPromptProfile implements agent.PromptProfileProvider for light-tool deny.
@@ -3807,6 +3868,13 @@ func (c *tuiCallbacks) RefreshAfterToolExecution(name string) bool {
 	return c != nil && c.activeLLM.consumeSurfaceRefresh()
 }
 
+func (c *tuiCallbacks) OnVerifiedSessionFact(fact agent.SessionFact) {
+	if c == nil || c.app == nil {
+		return
+	}
+	c.app.syncVerifiedFactToStores(fact)
+}
+
 func (c *tuiCallbacks) ShouldStop() bool {
 	if c != nil && c.executionCtx != nil && c.executionCtx.Err() != nil {
 		return true
@@ -3913,6 +3981,8 @@ var tuiBtwToolNames = map[string]bool{
 }
 
 type tuiBtwCallbacks struct {
+	usageTrackerFeed
+
 	app       *TUIApp
 	program   *tea.Program
 	stopped   bool
@@ -3965,6 +4035,9 @@ func (c *tuiBtwCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool) s
 	return buildTuiBtwSystemPrompt(c.app, userText)
 }
 
+// tuiDesktopMemoryOwner matches the GUI desktop user. TUI and GUI share one store.
+const tuiDesktopMemoryOwner = "desktop-user"
+
 func buildTuiBtwSystemPrompt(app *TUIApp, _ string) string {
 	cfg := app.appConfig
 	lang := tuiConfigLang(cfg)
@@ -3982,7 +4055,7 @@ func buildTuiBtwSystemPrompt(app *TUIApp, _ string) string {
 	// Identity.
 	var selfIdentity string
 	if app.memoryStore != nil {
-		selfIdentity = app.memoryStore.SelfIdentitySummary(600)
+		selfIdentity = app.memoryStore.SelfIdentitySummaryForOwner(600, tuiDesktopMemoryOwner, false)
 	}
 	if selfIdentity != "" {
 		if lang == "en" {
@@ -4003,7 +4076,9 @@ func buildTuiBtwSystemPrompt(app *TUIApp, _ string) string {
 
 	// User fact summary.
 	if app.memoryStore != nil {
-		b.WriteString(app.memoryStore.UserFactSummaryForPrompt(memory.UserFactTemplatePromptOptions(tuiBtwSectionFormat(lang, "userInfo"))))
+		factOpts := memory.UserFactTemplatePromptOptions(tuiBtwSectionFormat(lang, "userInfo"))
+		factOpts.OwnerID = tuiDesktopMemoryOwner
+		b.WriteString(app.memoryStore.UserFactSummaryForPrompt(factOpts))
 	}
 
 	return b.String()
@@ -4014,6 +4089,10 @@ func (c *tuiBtwCallbacks) BuildTools(userText string) []map[string]interface{} {
 	// Definitions are request-owned, including for a minimal /btw query. A
 	// retry or later model round must rebuild its complete replacement from the
 	// current registry instead of reusing an in-memory predecessor slice.
+	// Filter-policy note (phase0 baseline §1.2/§1.3 finding #2): the light
+	// filter stays intentionally absent — /btw's minimal set is deliberate
+	// policy, not a missing filter, and its Execute side already enforces
+	// recall-only memory use.
 	return buildTuiBtwToolDefinitions(c.app)
 }
 

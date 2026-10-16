@@ -84,24 +84,24 @@ type enterpriseTenantProgress struct {
 }
 
 type enterpriseUserProgressRow struct {
-	UserID         string                      `json:"user_id"`
-	Name           string                      `json:"name,omitempty"`
-	Email          string                      `json:"email,omitempty"`
-	Status         string                      `json:"status,omitempty"`
-	HubConfigured  bool                        `json:"hub_configured"`
-	HubURL         string                      `json:"hub_url,omitempty"`
-	LibraryCount   int                         `json:"library_count"`
-	ActiveCount    int                         `json:"active_count"`
-	LastSyncAt     string                      `json:"last_sync_at,omitempty"`
-	HasError       bool                        `json:"has_error"`
-	LastError      string                      `json:"last_error,omitempty"`
-	Libraries      []enterpriseUserLibraryView `json:"libraries,omitempty"`
+	UserID        string                      `json:"user_id"`
+	Name          string                      `json:"name,omitempty"`
+	Email         string                      `json:"email,omitempty"`
+	Status        string                      `json:"status,omitempty"`
+	HubConfigured bool                        `json:"hub_configured"`
+	HubURL        string                      `json:"hub_url,omitempty"`
+	LibraryCount  int                         `json:"library_count"`
+	ActiveCount   int                         `json:"active_count"`
+	LastSyncAt    string                      `json:"last_sync_at,omitempty"`
+	HasError      bool                        `json:"has_error"`
+	LastError     string                      `json:"last_error,omitempty"`
+	Libraries     []enterpriseUserLibraryView `json:"libraries,omitempty"`
 }
 
 type enterpriseTenantProgressReport struct {
-	Coordinator enterpriseSyncCoordStatus   `json:"coordinator"`
-	Tenants     []enterpriseTenantProgress  `json:"tenants"`
-	TotalUsers  int                         `json:"total_users_scanned"`
+	Coordinator enterpriseSyncCoordStatus  `json:"coordinator"`
+	Tenants     []enterpriseTenantProgress `json:"tenants"`
+	TotalUsers  int                        `json:"total_users_scanned"`
 }
 
 func startEnterpriseDigitalAssetSync(svc *agentservice.Service) *enterpriseSyncCoordinator {

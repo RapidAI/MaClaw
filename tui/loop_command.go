@@ -237,6 +237,8 @@ func (c *tuiLoopCommandCallbacks) CancelCh() <-chan struct{} { return c.cancelCh
 // ---------------------------------------------------------------------------
 
 type tuiLoopCycleCallbacks struct {
+	usageTrackerFeed
+
 	parent    *tuiLoopCommandCallbacks
 	workDir   string
 	activeLLM tuiActiveLLM
@@ -283,48 +285,43 @@ func (c *tuiLoopCycleCallbacks) BuildSystemPrompt(userText string, isFirstTurn b
 	return sb.String()
 }
 
+// loopCycleToolNames is the historical /loop modify-cycle surface. Phase 0
+// baseline (docs/design/tool-routing-phase0-baseline-zh.md §2.3) flagged the
+// previously hardcoded 5-tool list as an island that bypassed CoreToolRegistry;
+// this set now filters the registry's definitions so the surface and the
+// execution path share one source of truth.
+//
+// Schema note (deliberate bug fix): the old hardcoded edit_file definition
+// advertised old_content/new_content, but ToolEditFile only accepts
+// old_string/new_string — every /loop edit_file call therefore always failed.
+// The registry definition (already served by the main tuiCallbacks surface) is
+// now used here too. For the other four names the registry adds only OPTIONAL
+// properties — read_file: lines/start_line/offset; write_file: phase_id/
+// doc_type; bash: working_dir/timeout — and the required-field sets are
+// unchanged ([path] / [path,content] / [command]); list_directory is
+// byte-identical. Unlike tuiCallbacks, this surface keeps its historical
+// shape: no light-profile filter and no read-only-child filter.
+var loopCycleToolNames = []string{"read_file", "write_file", "edit_file", "bash", "list_directory"}
+
 func (c *tuiLoopCycleCallbacks) BuildTools(userText string) []map[string]interface{} {
-	return []map[string]interface{}{
-		tooldef.BuildToolDef("read_file", "Read the contents of a file.", map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"path": map[string]interface{}{"type": "string", "description": "File path to read"},
-			},
-			"required": []string{"path"},
-		}),
-		tooldef.BuildToolDef("write_file", "Create or overwrite a file.", map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"path":    map[string]interface{}{"type": "string", "description": "File path"},
-				"content": map[string]interface{}{"type": "string", "description": "File content"},
-				"mode":    map[string]interface{}{"type": "string", "description": "overwrite or append"},
-			},
-			"required": []string{"path", "content"},
-		}),
-		tooldef.BuildToolDef("edit_file", "Make targeted edits using search/replace.", map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"path":        map[string]interface{}{"type": "string", "description": "File path"},
-				"old_content": map[string]interface{}{"type": "string", "description": "Text to find"},
-				"new_content": map[string]interface{}{"type": "string", "description": "Replacement text"},
-			},
-			"required": []string{"path", "old_content", "new_content"},
-		}),
-		tooldef.BuildToolDef("bash", "Execute a shell command.", map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"command": map[string]interface{}{"type": "string", "description": "Shell command"},
-			},
-			"required": []string{"command"},
-		}),
-		tooldef.BuildToolDef("list_directory", "List directory contents.", map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"path": map[string]interface{}{"type": "string", "description": "Directory path"},
-			},
-			"required": []string{"path"},
-		}),
+	// Filter-policy note (phase0 baseline §1.2/§1.3 finding #2): the light
+	// filter stays intentionally absent — this cycle's BuildSystemPrompt is a
+	// fixed full-profile prompt, so a light surface could never match its own
+	// prompt; adding the filter would create the inconsistency it fixes elsewhere.
+	if c == nil || c.parent == nil || c.parent.app == nil || c.parent.app.toolRegistry == nil {
+		return nil
 	}
+	keep := make(map[string]bool, len(loopCycleToolNames))
+	for _, name := range loopCycleToolNames {
+		keep[name] = true
+	}
+	var out []map[string]interface{}
+	for _, def := range c.parent.app.toolRegistry.BuildDefinitions() {
+		if keep[tooldef.Name(def)] {
+			out = append(out, def)
+		}
+	}
+	return out
 }
 
 func (c *tuiLoopCycleCallbacks) ExecuteTool(name, argsJSON string) string {

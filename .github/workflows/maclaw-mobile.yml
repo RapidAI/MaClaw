@@ -10,7 +10,7 @@ on:
       - "hub/internal/httpapi/mobile_handlers*.go"
       - "hub/internal/httpapi/router.go"
       - "hubcenter/internal/httpapi/router*.go"
-      - "gui/remote_mobile*.go"
+      - "guiapp/remote_mobile*.go"
   push:
     paths:
       - ".github/workflows/maclaw-mobile.yml"
@@ -19,7 +19,7 @@ on:
       - "hub/internal/httpapi/mobile_handlers*.go"
       - "hub/internal/httpapi/router.go"
       - "hubcenter/internal/httpapi/router*.go"
-      - "gui/remote_mobile*.go"
+      - "guiapp/remote_mobile*.go"
 
 jobs:
   test:
@@ -41,7 +41,7 @@ jobs:
       # These tests are pure Go (SSH/mobile helpers). CGO_ENABLED=0 keeps the
       # Linux GTK pet implementation out of the compile set; ubuntu-latest does
       # not install gtk+-3.0 for this workflow.
-      - run: CGO_ENABLED=0 go test ./gui -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1
+      - run: CGO_ENABLED=0 go test ./guiapp -run "TestMobileDigitalEmployeeCandidateIDs|TestRemoteHubClient.*Mobile|TestMobileDocumentSourceMarkdown|TestResolveMobileBackendSSHHost|TestMobileServerProfilesFromSSHHosts|TestProcessMobileBackendSSHSession" -count=1
       - working-directory: mobile/maclaw_mobile
         run: python3 -m unittest tool/configure_platforms_test.py
       - working-directory: mobile/maclaw_mobile
@@ -112,7 +112,7 @@ jobs:
         run: flutter test --concurrency=1
       - working-directory: mobile/maclaw_mobile
         run: flutter build apk --debug
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: maclaw-mobile-debug-apk
           path: mobile/maclaw_mobile/build/app/outputs/flutter-apk/app-debug.apk

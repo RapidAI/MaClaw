@@ -13,6 +13,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/enterpriseknowledge"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
 
 // KnowledgeStore is the interface required by the agent executor for knowledge operations.
@@ -264,7 +265,64 @@ func (c *coreAgentCallbacks) executeKnowledgeSaveText(args map[string]interface{
 	if source.Title != "" {
 		result += fmt.Sprintf(", Title: %s", source.Title)
 	}
+	if facts := agent.ClaimsFromText(text, "knowledge save"); len(facts) > 0 {
+		for _, fact := range facts {
+			c.syncVerifiedFactMemory(fact)
+		}
+	} else if fact, ok := agent.ExtractSessionFactFromMemoryContent(text); ok {
+		c.syncVerifiedFactMemory(fact)
+	}
 	return result
+}
+
+func (c *coreAgentCallbacks) OnVerifiedSessionFact(fact agent.SessionFact) {
+	c.syncVerifiedFactToStores(fact)
+}
+
+func (c *coreAgentCallbacks) syncVerifiedFactToStores(fact agent.SessionFact) {
+	c.syncVerifiedFactMemory(fact)
+	c.syncVerifiedFactKnowledge(fact)
+}
+
+func (c *coreAgentCallbacks) syncVerifiedFactMemory(fact agent.SessionFact) {
+	if c == nil || c.memory == nil || strings.TrimSpace(fact.Claim) == "" {
+		return
+	}
+	_ = c.memory.ApplyVerifiedFact(memory.VerifiedFact{
+		Entity:      fact.Entity,
+		Predicate:   fact.Predicate,
+		Claim:       fact.Claim,
+		Evidence:    fact.Evidence,
+		Aliases:     append([]string(nil), fact.Aliases...),
+		StrictOwner: strings.TrimSpace(c.principal.TenantID) != "",
+	}, memoryOwnerIDForPrincipal(c.principal))
+}
+
+func (c *coreAgentCallbacks) syncVerifiedFactKnowledge(fact agent.SessionFact) {
+	if c == nil || strings.TrimSpace(fact.Claim) == "" {
+		return
+	}
+	store, ok := c.knowledgeStore.(interface {
+		ApplyVerifiedFact(context.Context, knowledge.VerifiedFactRequest) (knowledge.VerifiedFactSyncResult, error)
+	})
+	if !ok || store == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(c.parentContext(), 4*time.Second)
+	defer cancel()
+	if _, err := store.ApplyVerifiedFact(ctx, knowledge.VerifiedFactRequest{
+		Entity:      fact.Entity,
+		Predicate:   fact.Predicate,
+		Claim:       fact.Claim,
+		Evidence:    fact.Evidence,
+		Aliases:     append([]string(nil), fact.Aliases...),
+		OwnerID:     strings.TrimSpace(c.principal.UserID),
+		TenantID:    strings.TrimSpace(c.principal.TenantID),
+		ProjectPath: strings.TrimSpace(c.workspace),
+		StrictOwner: strings.TrimSpace(c.principal.TenantID) != "",
+	}); err != nil {
+		log.Printf("[knowledge] verified-fact sync failed: %v", err)
+	}
 }
 
 func (c *coreAgentCallbacks) executeKnowledgeImportDirectory(args map[string]interface{}) string {

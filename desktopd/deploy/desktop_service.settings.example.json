@@ -1,0 +1,21 @@
+{
+  "servers": [
+    {
+      "id": "dsrv_example",
+      "name": "docker-desktop-1",
+      "base_url": "https://dockerd.example.com",
+      "access_token": "<DESKTOPD_TOKEN>",
+      "image": "maclaw-gui:2",
+      "memory": "3g",
+      "cpus": "1.5",
+      "shm_size": "1g"
+    }
+  ],
+  "assignments": [
+    {
+      "id": "dasg_example",
+      "scope": "global",
+      "server_id": "dsrv_example"
+    }
+  ]
+}

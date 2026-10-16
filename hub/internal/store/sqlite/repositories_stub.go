@@ -3109,24 +3109,29 @@ func (r *sessionRepo) RecordUserTokenUsageSnapshot(ctx context.Context, tenantID
 		  FROM session_token_usage_snapshots
 		 WHERE tenant_id = ? AND session_id = ?`, tenantID, sourceID).
 		Scan(&prev.InputTokens, &prev.OutputTokens, &prev.CachedInputTokens, &prev.CacheWriteTokens)
+	hasPrev := err == nil
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return err
 	}
 
-	delta := usageSnapshotDelta(usage, prev)
-
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO session_token_usage_snapshots (tenant_id, session_id, user_id, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(tenant_id, session_id) DO UPDATE SET
-			user_id = excluded.user_id,
-			input_tokens = excluded.input_tokens,
-			output_tokens = excluded.output_tokens,
-			cached_input_tokens = excluded.cached_input_tokens,
-			cache_write_tokens = excluded.cache_write_tokens,
-			updated_at = excluded.updated_at`,
-		tenantID, sourceID, userID, usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens, observedAt.Format(time.RFC3339)); err != nil {
-		return err
+	// GUI heartbeats report lifetime cumulative totals. The first observation
+	// for a source is a baseline, not period usage — otherwise a new machine
+	// id or empty snapshot table dumps all-time tokens into "today".
+	delta, writeSnapshot := usageSnapshotDelta(usage, prev, hasPrev)
+	if writeSnapshot {
+		if _, err := tx.ExecContext(ctx, `
+			INSERT INTO session_token_usage_snapshots (tenant_id, session_id, user_id, input_tokens, output_tokens, cached_input_tokens, cache_write_tokens, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(tenant_id, session_id) DO UPDATE SET
+				user_id = excluded.user_id,
+				input_tokens = excluded.input_tokens,
+				output_tokens = excluded.output_tokens,
+				cached_input_tokens = excluded.cached_input_tokens,
+				cache_write_tokens = excluded.cache_write_tokens,
+				updated_at = excluded.updated_at`,
+			tenantID, sourceID, userID, usage.InputTokens, usage.OutputTokens, usage.CachedInputTokens, usage.CacheWriteTokens, observedAt.Format(time.RFC3339)); err != nil {
+			return err
+		}
 	}
 
 	if delta.TotalTokens() > 0 {
@@ -3168,33 +3173,23 @@ func (r *sessionRepo) SummarizeUserTokenUsage(ctx context.Context, tenantID stri
 	startDay := start.UTC().Format("2006-01-02")
 	endDay := end.UTC().Add(-time.Nanosecond).Format("2006-01-02")
 	rows, err := r.readDB.QueryContext(ctx, `
-		SELECT COALESCE(NULLIF(uud.user_id, ''), ui.user_id, u.id, ''),
-		       uud.user_email,
+		SELECT user_id, user_email,
 		       SUM(input_tokens),
 		       SUM(output_tokens),
 		       SUM(cached_input_tokens),
 		       SUM(cache_write_tokens)
-		  FROM user_usage_daily uud
-		  LEFT JOIN user_identities ui
-		    ON ui.tenant_id = uud.tenant_id
-		   AND (
-		     (lower(uud.user_email) NOT LIKE 'phone:%' AND ui.type = 'email' AND lower(ui.value) = lower(uud.user_email))
-		     OR
-		     (lower(uud.user_email) LIKE 'phone:%' AND ui.type = 'phone' AND lower(ui.value) = lower(substr(uud.user_email, 7)))
-		   )
-		  LEFT JOIN users u
-		    ON u.tenant_id = uud.tenant_id
-		   AND lower(u.email) = lower(uud.user_email)
-		 WHERE uud.tenant_id = ?
-		   AND uud.day >= ?
-		   AND uud.day <= ?
-		 GROUP BY COALESCE(NULLIF(uud.user_id, ''), ui.user_id, u.id, ''), uud.user_email`, tenantID, startDay, endDay)
+		  FROM user_usage_daily
+		 WHERE tenant_id = ?
+		   AND day >= ?
+		   AND day <= ?
+		 GROUP BY user_id, user_email`, tenantID, startDay, endDay)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	byKey := map[string]store.UserTokenSummary{}
+	var scanned []store.UserTokenSummary
+	unresolved := make([]string, 0)
 	for rows.Next() {
 		var item store.UserTokenSummary
 		if err := rows.Scan(&item.UserID, &item.UserEmail, &item.Usage.InputTokens, &item.Usage.OutputTokens, &item.Usage.CachedInputTokens, &item.Usage.CacheWriteTokens); err != nil {
@@ -3205,21 +3200,34 @@ func (r *sessionRepo) SummarizeUserTokenUsage(ctx context.Context, tenantID stri
 		if item.UserID == "" && item.UserEmail == "" {
 			continue
 		}
+		if item.UserID == "" && item.UserEmail != "" {
+			unresolved = append(unresolved, item.UserEmail)
+		}
+		scanned = append(scanned, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	userIDByAccount := r.lookupUserIDsByRankingAccounts(ctx, tenantID, unresolved)
+	byKey := map[string]store.UserTokenSummary{}
+	for _, item := range scanned {
+		if item.UserID == "" {
+			item.UserID = userIDByAccount[item.UserEmail]
+		}
 		key := "email:" + item.UserEmail
 		if item.UserID != "" {
 			key = "user:" + item.UserID
 		}
 		existing := byKey[key]
-		existing.UserID = item.UserID
+		if item.UserID != "" {
+			existing.UserID = item.UserID
+		}
 		existing.UserEmail = preferredUsageDisplayAccount(existing.UserEmail, item.UserEmail)
 		existing.Usage.InputTokens += item.Usage.InputTokens
 		existing.Usage.OutputTokens += item.Usage.OutputTokens
 		existing.Usage.CachedInputTokens += item.Usage.CachedInputTokens
 		existing.Usage.CacheWriteTokens += item.Usage.CacheWriteTokens
 		byKey[key] = existing
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 	out := make([]store.UserTokenSummary, 0, len(byKey))
 	userIDs := make([]string, 0, len(byKey))
@@ -3247,19 +3255,32 @@ func (r *sessionRepo) SummarizeUserTokenUsage(ctx context.Context, tenantID stri
 	return out, nil
 }
 
-func usageSnapshotDelta(current, previous store.UserTokenUsage) store.UserTokenUsage {
+const lifetimeResetRatioDen int64 = 10
+
+func usageSnapshotDelta(current, previous store.UserTokenUsage, hasPrevious bool) (delta store.UserTokenUsage, writeSnapshot bool) {
 	if current.TotalTokens() <= 0 {
-		return store.UserTokenUsage{}
+		return store.UserTokenUsage{}, false
+	}
+	// A stored row of zeros is not a real baseline; treating it as previous
+	// would count the next lifetime heartbeat as a period increment.
+	if !hasPrevious || previous.TotalTokens() <= 0 {
+		return store.UserTokenUsage{}, true
 	}
 	if current.TotalTokens() < previous.TotalTokens() {
-		return current
+		// A collapse to <10% of the previous total is a local reset: store the
+		// new baseline but do not count it as period usage. Smaller dips are
+		// ignored so a partial heartbeat cannot later re-add the missing slice.
+		if current.TotalTokens() < previous.TotalTokens()/lifetimeResetRatioDen {
+			return store.UserTokenUsage{}, true
+		}
+		return store.UserTokenUsage{}, false
 	}
 	return store.UserTokenUsage{
 		InputTokens:       positiveFieldDelta(current.InputTokens, previous.InputTokens),
 		OutputTokens:      positiveFieldDelta(current.OutputTokens, previous.OutputTokens),
 		CachedInputTokens: positiveFieldDelta(current.CachedInputTokens, previous.CachedInputTokens),
 		CacheWriteTokens:  positiveFieldDelta(current.CacheWriteTokens, previous.CacheWriteTokens),
-	}
+	}, true
 }
 
 func positiveFieldDelta(current, previous int64) int64 {
@@ -3538,6 +3559,100 @@ func (r *sessionRepo) summarizeOnlineSeconds(ctx context.Context, tenantID strin
 		}
 	}
 
+	return result
+}
+
+func (r *sessionRepo) lookupUserIDsByRankingAccounts(ctx context.Context, tenantID string, accounts []string) map[string]string {
+	result := map[string]string{}
+	if r == nil || r.readDB == nil || len(accounts) == 0 {
+		return result
+	}
+	emails := make([]string, 0, len(accounts))
+	phones := make([]string, 0, len(accounts))
+	for _, account := range accounts {
+		account = strings.ToLower(strings.TrimSpace(account))
+		if account == "" {
+			continue
+		}
+		if strings.HasPrefix(account, "phone:") {
+			phones = append(phones, strings.TrimPrefix(account, "phone:"))
+			continue
+		}
+		emails = append(emails, account)
+	}
+	assign := func(account, userID string) {
+		account = strings.ToLower(strings.TrimSpace(account))
+		userID = strings.TrimSpace(userID)
+		if account == "" || userID == "" || result[account] != "" {
+			return
+		}
+		result[account] = userID
+	}
+	const batchSize = 400
+	queryIdentities := func(values []string, identityType, accountPrefix string) {
+		for i := 0; i < len(values); i += batchSize {
+			end := i + batchSize
+			if end > len(values) {
+				end = len(values)
+			}
+			batch := values[i:end]
+			placeholders := make([]string, len(batch))
+			args := make([]any, 0, len(batch)+2)
+			args = append(args, tenantID, identityType)
+			for j, value := range batch {
+				placeholders[j] = "?"
+				args = append(args, value)
+			}
+			q := `SELECT user_id, LOWER(TRIM(value)) FROM user_identities WHERE tenant_id = ? AND type = ? AND LOWER(TRIM(value)) IN (` + strings.Join(placeholders, ",") + `)`
+			rows, err := r.readDB.QueryContext(ctx, q, args...)
+			if err != nil {
+				continue
+			}
+			for rows.Next() {
+				var userID, value string
+				if err := rows.Scan(&userID, &value); err != nil {
+					continue
+				}
+				assign(accountPrefix+value, userID)
+			}
+			rows.Close()
+		}
+	}
+	queryIdentities(emails, "email", "")
+	queryIdentities(phones, "phone", "phone:")
+
+	allAccounts := make([]string, 0, len(emails)+len(phones))
+	allAccounts = append(allAccounts, emails...)
+	for _, phone := range phones {
+		allAccounts = append(allAccounts, "phone:"+phone)
+	}
+	for i := 0; i < len(allAccounts); i += batchSize {
+		end := i + batchSize
+		if end > len(allAccounts) {
+			end = len(allAccounts)
+		}
+		batch := allAccounts[i:end]
+		placeholders := make([]string, len(batch))
+		args := make([]any, 0, len(batch)+1)
+		args = append(args, tenantID)
+		for j, account := range batch {
+			placeholders[j] = "?"
+			args = append(args, account)
+		}
+		q := `SELECT id, LOWER(TRIM(email)) FROM users WHERE tenant_id = ? AND LOWER(TRIM(email)) IN (` + strings.Join(placeholders, ",") + `)`
+		rows, err := r.readDB.QueryContext(ctx, q, args...)
+		if err != nil {
+			continue
+		}
+		for rows.Next() {
+			var userID, email string
+			if err := rows.Scan(&userID, &email); err != nil {
+				continue
+			}
+			assign(email, userID)
+		}
+		rows.Close()
+	}
 	return result
 }
 

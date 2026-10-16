@@ -151,6 +151,26 @@ func TestEditTextFile_E2E_SubAgentScenarios(t *testing.T) {
 		}
 	})
 
+	t.Run("crlf_multiline_preserves_file_newlines", func(t *testing.T) {
+		f := filepath.Join(dir, "crlf.go")
+		os.WriteFile(f, []byte("func run() {\r\n\tpm.Run()\r\n\tcr.Stdout = pr.Stdout\r\n}\r\n"), 0644)
+		res, err := EditTextFile(f,
+			"func run() {\n\tpm.Run()\n\tcr.Stdout = pr.Stdout\n}",
+			"func run() {\n\tpr, err := pm.Run()\n\tcr.Stdout = pr.Stdout\n}",
+			false)
+		if err != nil {
+			t.Fatalf("LF passage must match a CRLF file: %v", err)
+		}
+		if res.Count != 1 {
+			t.Fatalf("count=%d", res.Count)
+		}
+		data, _ := os.ReadFile(f)
+		want := "func run() {\r\n\tpr, err := pm.Run()\r\n\tcr.Stdout = pr.Stdout\r\n}\r\n"
+		if string(data) != want {
+			t.Fatalf("got %q", data)
+		}
+	})
+
 	t.Run("context_lines_disambiguate_duplicates", func(t *testing.T) {
 		f := filepath.Join(dir, "dup.go")
 		os.WriteFile(f, []byte("func a() {\n\treturn nil\n}\n\nfunc b() {\n\treturn nil\n}\n"), 0644)

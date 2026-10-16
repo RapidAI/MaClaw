@@ -1,4 +1,4 @@
-$path = 'd:\workprj\aicoder\gui\frontend\src\components\pages\AppsPage.tsx'
+$path = 'd:\workprj\aicoder\guiapp\frontend\src\components\pages\AppsPage.tsx'
 try {
     $text = [System.IO.File]::ReadAllText($path, [System.Text.Encoding]::UTF8)
     Write-Host "File length: $($text.Length)"

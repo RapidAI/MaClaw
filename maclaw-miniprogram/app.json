@@ -1,0 +1,25 @@
+{
+  "pages": [
+    "pages/login/login",
+    "pages/pair/pair",
+    "pages/chat/chat"
+  ],
+  "window": {
+    "backgroundTextStyle": "dark",
+    "navigationBarBackgroundColor": "#16161a",
+    "navigationBarTitleText": "码卡龙",
+    "navigationBarTextStyle": "white",
+    "backgroundColor": "#f6f7f9"
+  },
+  "tabBar": {
+    "color": "#8a8f98",
+    "selectedColor": "#f2622e",
+    "list": [
+      { "pagePath": "pages/chat/chat", "text": "对话" },
+      { "pagePath": "pages/pair/pair", "text": "我的设备" }
+    ]
+  },
+  "permission": {},
+  "style": "v2",
+  "sitemapLocation": "sitemap.json"
+}

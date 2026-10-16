@@ -23,6 +23,72 @@ func TestOrderProviders_SingleProvider(t *testing.T) {
 	}
 }
 
+func TestDetectCapabilityNeedsDoesNotTreatDockerAsDocument(t *testing.T) {
+	needs := DetectCapabilityNeeds(map[string]any{
+		"messages": []any{map[string]any{"role": "user", "content": "Use docker to fetch the logs."}},
+	})
+	if _, ok := needs["document"]; ok {
+		t.Fatalf("needs = %#v, docker must not count as document", needs)
+	}
+	if needs["tools"] == 0 {
+		t.Fatalf("needs = %#v, want tools from fetch", needs)
+	}
+}
+
+func TestDetectCapabilityNeedsMatchesStandaloneDoc(t *testing.T) {
+	needs := DetectCapabilityNeeds(map[string]any{
+		"messages": []any{map[string]any{"role": "user", "content": "Please summarize this doc."}},
+	})
+	if needs["document"] == 0 {
+		t.Fatalf("needs = %#v, want document from standalone doc", needs)
+	}
+}
+
+func TestDetectCapabilityNeedsMatchesDocsAndToolsWords(t *testing.T) {
+	docs := DetectCapabilityNeeds(map[string]any{
+		"messages": []any{map[string]any{"role": "user", "content": "Please read the docs."}},
+	})
+	if docs["document"] == 0 {
+		t.Fatalf("docs needs = %#v, want document", docs)
+	}
+	tools := DetectCapabilityNeeds(map[string]any{
+		"messages": []any{map[string]any{"role": "user", "content": "Use tools if needed."}},
+	})
+	if tools["tools"] == 0 {
+		t.Fatalf("tools needs = %#v, want tools from the word tools", tools)
+	}
+}
+
+func TestDetectCapabilityNeedsPasswordIsNotDocument(t *testing.T) {
+	needs := DetectCapabilityNeeds(map[string]any{
+		"messages": []any{map[string]any{"role": "user", "content": "Reset the password and fetch the status."}},
+	})
+	if _, ok := needs["document"]; ok {
+		t.Fatalf("needs = %#v, password must not count as document/word", needs)
+	}
+}
+
+func TestDetectCapabilityNeedsIgnoresEmbeddedShortTokens(t *testing.T) {
+	research := DetectCapabilityNeeds(map[string]any{
+		"messages": []any{map[string]any{"role": "user", "content": "Please research this topic."}},
+	})
+	if _, ok := research["tools"]; ok {
+		t.Fatalf("research needs = %#v, search inside research must not count as tools", research)
+	}
+	excellent := DetectCapabilityNeeds(map[string]any{
+		"messages": []any{map[string]any{"role": "user", "content": "This is excellent work."}},
+	})
+	if _, ok := excellent["document"]; ok {
+		t.Fatalf("excellent needs = %#v, excel inside excellent must not count as document", excellent)
+	}
+	thinking := DetectCapabilityNeeds(map[string]any{
+		"messages": []any{map[string]any{"role": "user", "content": "I am thinking about it."}},
+	})
+	if _, ok := thinking["reasoning"]; ok {
+		t.Fatalf("thinking needs = %#v, think inside thinking must not count as reasoning", thinking)
+	}
+}
+
 func TestOrderProviders_CapabilityMatching(t *testing.T) {
 	model := &DispatchModel{
 		Name:        "auto",
@@ -101,11 +167,64 @@ func TestOrderProviderRoutes_AllowsDuplicateProviderWithDifferentModels(t *testi
 	if len(result) != 2 {
 		t.Fatalf("expected 2 routes, got %v", result)
 	}
-	if result[0].ProviderID != "deepseek" || result[0].Model != "deepseek-v4-pro" {
-		t.Fatalf("first route = %+v, want deepseek-v4-pro", result[0])
+	if result[0].ProviderID != "deepseek" || result[0].Model != "deepseek-v4-flash" {
+		t.Fatalf("first route = %+v, want cheaper flash before higher-priority pro", result[0])
 	}
-	if result[1].Model != "deepseek-v4-flash" {
-		t.Fatalf("second route = %+v, want deepseek-v4-flash", result[1])
+	if result[1].Model != "deepseek-v4-pro" {
+		t.Fatalf("second route = %+v, want deepseek-v4-pro", result[1])
+	}
+}
+
+func TestOrderScoredProviderRoutesLooksUpTagsCaseInsensitively(t *testing.T) {
+	model := &DispatchModel{
+		Name:        "auto",
+		ProviderIDs: []string{"Tools-A", "Tools-B"},
+		ProviderCapabilityTags: map[string][]string{
+			"tools-a": {"tools"},
+			"tools-b": {"tools"},
+		},
+		ProviderPriorities: map[string]int{
+			"tools-a": 1,
+			"tools-b": 90,
+		},
+	}
+	got := OrderScoredProviderRoutes(map[string]any{"tools": []any{map[string]any{"type": "function"}}}, model)
+	if len(got) != 2 || got[0].Score != got[1].Score || got[0].Score == 0 {
+		t.Fatalf("case-folded tags = %#v, want the same tools WRR score", got)
+	}
+}
+
+func TestCapabilityMatchScoreIgnoresUnrelatedTags(t *testing.T) {
+	needs := map[string]int{"tools": 8}
+	if got := CapabilityMatchScore([]string{"tools"}, needs); got != 800 {
+		t.Fatalf("tools match = %d, want 800", got)
+	}
+	if got := CapabilityMatchScore([]string{"tools", "document"}, needs); got != 800 {
+		t.Fatalf("extra unused tag = %d, want 800 so same-need siblings share a WRR band", got)
+	}
+	if got := CapabilityMatchScore([]string{"document"}, needs); got != 0 {
+		t.Fatalf("unrelated tag = %d, want 0", got)
+	}
+}
+
+func TestOrderScoredProviderRoutesKeepsPriorityOutOfCapabilityScore(t *testing.T) {
+	model := &DispatchModel{
+		Name: "auto",
+		ProviderRoutes: []DispatchProviderRoute{
+			{ProviderID: "a", Priority: 1, CapabilityTags: []string{"tools"}, OriginalIndex: 0},
+			{ProviderID: "b", Priority: 90, CapabilityTags: []string{"tools"}, OriginalIndex: 1},
+		},
+	}
+	body := map[string]any{"tools": []any{map[string]any{"type": "function"}}}
+	got := OrderScoredProviderRoutes(body, model)
+	if len(got) != 2 {
+		t.Fatalf("scored = %#v", got)
+	}
+	if got[0].Score != got[1].Score {
+		t.Fatalf("scores = %d,%d want same capability band so WRR can split load", got[0].Score, got[1].Score)
+	}
+	if got[0].Route.ProviderID != "b" || got[1].Route.ProviderID != "a" {
+		t.Fatalf("order = %s,%s want higher priority first when scores tie", got[0].Route.ProviderID, got[1].Route.ProviderID)
 	}
 }
 

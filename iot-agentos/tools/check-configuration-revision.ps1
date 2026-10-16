@@ -35,7 +35,9 @@ if (Test-Path -LiteralPath $source) {
 if (Test-Path -LiteralPath $configuration) {
     $text = Get-Content -LiteralPath $configuration -Raw
     foreach ($required in @(
-            'CONFIGURATION_STORE_VERSION 7u',
+            'CONFIGURATION_STORE_VERSION 8u',
+            'configuration_store_t',
+            'migrate_v7_locked\s*\(',
             'configuration_store_v6_t',
             'migrate_v6_locked\s*\(',
             'configuration_store_v5_t',

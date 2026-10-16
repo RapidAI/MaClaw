@@ -137,6 +137,32 @@ func TestRecallDynamicStrict_IncludesUserFactAndPreference(t *testing.T) {
 	}
 }
 
+func TestRecallDynamicStrict_ExcludesCanonicalUserCategory(t *testing.T) {
+	s := newStrictProjectTestStore(t)
+	if err := s.Save(Entry{
+		Content:  "常用编辑器是 vim",
+		Category: CategoryUser,
+		Scope:    ScopeGlobal,
+		Status:   StatusActive,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range s.RecallDynamicStrict("编辑器", "", `D:\workprj\projectA`) {
+		if strings.Contains(e.Content, "vim") {
+			t.Fatalf("strict recall included user category: %+v", e)
+		}
+	}
+	found := false
+	for _, e := range s.RecallDynamicStrict("编辑器", CategoryUserFact, `D:\workprj\projectA`) {
+		if strings.Contains(e.Content, "vim") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("explicit user_fact query should still return the user-category fact")
+	}
+}
+
 func TestRecallDynamicStrict_EmptyProjectPath_ReturnsAll(t *testing.T) {
 	s := newStrictProjectTestStore(t)
 

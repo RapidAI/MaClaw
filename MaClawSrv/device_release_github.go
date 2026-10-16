@@ -17,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -235,7 +236,7 @@ func (p *srvGitHubReleaseCatalog) refreshWithTimeout(parent context.Context) {
 	if err := p.refresh(ctx); err != nil {
 		// Keep the last verified document. latestFor enforces its max age, so an
 		// outage cannot turn into an indefinite stale update notification.
-		fmt.Printf("[release-catalog] GitHub refresh rejected: %v\n", err)
+		srvLog().Warn("release catalog github refresh rejected", slog.String("error", err.Error()))
 	}
 }
 

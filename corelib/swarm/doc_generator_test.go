@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/RapidAI/CodeClaw/corelib/docgen"
 	gopdf "github.com/VantageDataChat/GoPDF2"
 )
 
@@ -73,10 +74,10 @@ func TestSpecForDocType(t *testing.T) {
 			wantPrefix:  "document",
 		},
 		{
-			name:        "default falls back to document",
+			name:        "default falls back to the file prefix",
 			docType:     DocType("unknown"),
 			projectName: "   ",
-			wantTitle:   "文档",
+			wantTitle:   "document",
 			wantPrefix:  "document",
 		},
 	}
@@ -118,17 +119,16 @@ func TestSpecForDocType_FilePathFallsBackToTypeName(t *testing.T) {
 	if spec.Title == "/tmp/my-project" {
 		t.Fatal("file path should not be used as PDF title")
 	}
-	if spec.Title != "设计文档" {
-		t.Fatalf("expected fallback to type name, got %q", spec.Title)
+	if spec.Title != spec.FileNamePrefix {
+		t.Fatalf("missing title should use the file prefix, got %q", spec.Title)
 	}
 
-	// Windows path
 	spec = specForDocType(DocTypeRequirements, `D:\workprj\aicoder`, "content", GeneratePDFOptions{})
 	if spec.Title == `D:\workprj\aicoder` {
 		t.Fatal("Windows path should not be used as PDF title")
 	}
-	if spec.Title != "需求文档" {
-		t.Fatalf("expected fallback to type name, got %q", spec.Title)
+	if spec.Title != "requirements" {
+		t.Fatalf("missing title should use the file prefix, got %q", spec.Title)
 	}
 
 	// Normal project name should still be used as title
@@ -348,14 +348,16 @@ func main() {
 }
 
 func TestValidatePDFContent_RejectsOversizedContent(t *testing.T) {
-	content := strings.Repeat("a", maxPDFContentBytes+1)
+	maxContent, _, _ := docgen.Limits()
+	content := strings.Repeat("a", maxContent+1)
 	if err := ValidatePDFContent(content); err == nil || !strings.Contains(err.Error(), "PDF 内容过长") {
 		t.Fatalf("expected oversized content error, got %v", err)
 	}
 }
 
 func TestValidatePDFContent_RejectsOversizedParagraph(t *testing.T) {
-	content := strings.Repeat("段", maxPDFParagraphBytes+1)
+	_, maxParagraph, _ := docgen.Limits()
+	content := strings.Repeat("段", maxParagraph+1)
 	if err := ValidatePDFContent(content); err == nil || !strings.Contains(err.Error(), "过长段落") {
 		t.Fatalf("expected oversized paragraph error, got %v", err)
 	}
@@ -369,7 +371,8 @@ func TestValidatePDFContent_RejectsFilePayloadMarker(t *testing.T) {
 }
 
 func TestValidatePDFContent_RejectsSuspiciousBase64Run(t *testing.T) {
-	content := "# 报告\n\n" + strings.Repeat("A", maxSuspiciousBase64RunLen)
+	_, _, maxB64Run := docgen.Limits()
+	content := "# 报告\n\n" + strings.Repeat("A", maxB64Run)
 	if err := ValidatePDFContent(content); err == nil || !strings.Contains(err.Error(), "base64") {
 		t.Fatalf("expected base64 error, got %v", err)
 	}

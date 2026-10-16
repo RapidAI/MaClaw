@@ -387,6 +387,10 @@ func DeleteBoundUserHandler(identity *auth.IdentityService, purger *UserDataPurg
 			writeError(w, http.StatusNotFound, "USER_NOT_FOUND", "User not found")
 			return
 		}
+		if llmservice.IsSystemLLMUser(user.ID, user.Email) {
+			writeError(w, http.StatusConflict, "SYSTEM_USER_PROTECTED", "sys_user is a system account and cannot be removed")
+			return
+		}
 		if boundUserIsVirtualEmployee(r.Context(), system, user) {
 			writeError(w, http.StatusConflict, "VIRTUAL_USER_FORCE_DELETE_REQUIRED", "virtual employee accounts cannot be removed directly; use force delete with admin password")
 			return
@@ -470,6 +474,10 @@ func ForceDeleteVirtualBoundUserHandler(admins *auth.AdminService, identity *aut
 		}
 		if user == nil {
 			writeError(w, http.StatusNotFound, "USER_NOT_FOUND", "User not found")
+			return
+		}
+		if llmservice.IsSystemLLMUser(user.ID, user.Email) {
+			writeError(w, http.StatusConflict, "SYSTEM_USER_PROTECTED", "sys_user is a system account and cannot be removed")
 			return
 		}
 		if !boundUserIsVirtualEmployee(r.Context(), system, user) {
@@ -760,6 +768,14 @@ func ListUsersHandler(identity *auth.IdentityService, system store.SystemSetting
 			writeError(w, http.StatusInternalServerError, "LIST_USERS_FAILED", err.Error())
 			return
 		}
+		visible := make([]*store.User, 0, len(items))
+		for _, user := range items {
+			if user == nil || llmservice.IsSystemLLMUser(user.ID, user.Email) {
+				continue
+			}
+			visible = append(visible, user)
+		}
+		items = visible
 		identityRows := preloadBoundUserIdentities(r.Context(), identity.UsersRepo(), items)
 		usersByTenantID := make(map[string]*store.User, len(items))
 		for _, user := range items {

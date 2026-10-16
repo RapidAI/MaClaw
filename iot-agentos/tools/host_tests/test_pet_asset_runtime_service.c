@@ -13,6 +13,7 @@ typedef struct {
     bool revoke_after_begin;
     bool revoke_after_drop;
     bool revoke_after_install;
+    bool begin_available;
     bool admitted;
     bool revoke_admission_after_begin;
     int begins;
@@ -50,11 +51,13 @@ static bool transaction_admitted(void *context) {
     return ((test_state_t *)context)->admitted;
 }
 
-static void begin_work(void *context) {
+static bool begin_work(void *context) {
     test_state_t *state = context;
     ++state->begins;
+    if (!state->begin_available) return false;
     if (state->revoke_after_begin) state->lease_current = false;
     if (state->revoke_admission_after_begin) state->admitted = false;
+    return true;
 }
 static void finish_work(void *context) { ++((test_state_t *)context)->finishes; }
 static bool capacity_available(const pet_asset_descriptor_t *descriptor, void *context) {
@@ -140,14 +143,14 @@ int main(void) {
 
     test_state_t installed = {.installed = true, .lease_available = true,
                               .lease_current = true, .admitted = true,
-                              .capacity_available = true};
+                              .capacity_available = true, .begin_available = true};
     pet_asset_runtime_service_host_t installed_host = host_for(&installed);
     assert(pet_asset_runtime_service_apply(&installed_host, &asset) == DEVICE_STATUS_OK);
     assert(installed.begins == 0 && installed.downloads == 0 && installed.releases == 0);
 
     test_state_t normal = {.lease_available = true, .lease_current = true,
                            .admitted = true,
-                           .capacity_available = true};
+                           .capacity_available = true, .begin_available = true};
     pet_asset_runtime_service_host_t normal_host = host_for(&normal);
     assert(pet_asset_runtime_service_apply(&normal_host, &asset) == DEVICE_STATUS_OK);
     assert(normal.begins == 1 && normal.finishes == 1 && normal.downloads == 1);
@@ -155,14 +158,14 @@ int main(void) {
 
     test_state_t pressure = {.lease_available = true, .lease_current = true,
                              .admitted = true,
-                             .capacity_available = false};
+                             .capacity_available = false, .begin_available = true};
     pet_asset_runtime_service_host_t pressure_host = host_for(&pressure);
     assert(pet_asset_runtime_service_apply(&pressure_host, &asset) == DEVICE_STATUS_OK);
     assert(pressure.stale_cache_dropped && pressure.downloads == 1);
 
     test_state_t withdrawn = {.lease_available = true, .lease_current = false,
                               .admitted = true,
-                              .capacity_available = true};
+                              .capacity_available = true, .begin_available = true};
     pet_asset_runtime_service_host_t withdrawn_host = host_for(&withdrawn);
     assert(pet_asset_runtime_service_apply(&withdrawn_host, &asset) == DEVICE_STATUS_BUSY);
     assert(withdrawn.downloads == 0 && withdrawn.installs == 0 &&
@@ -173,7 +176,7 @@ int main(void) {
      * cache/download work and always release the media lane. */
     test_state_t revoked_on_begin = {.lease_available = true, .lease_current = true,
                                      .admitted = true, .capacity_available = true,
-                                     .revoke_after_begin = true};
+                                     .begin_available = true, .revoke_after_begin = true};
     pet_asset_runtime_service_host_t revoked_on_begin_host = host_for(&revoked_on_begin);
     assert(pet_asset_runtime_service_apply(&revoked_on_begin_host, &asset) ==
            DEVICE_STATUS_BUSY);
@@ -182,7 +185,7 @@ int main(void) {
 
     test_state_t revoked_after_drop = {.lease_available = true, .lease_current = true,
                                        .admitted = true, .capacity_available = false,
-                                       .revoke_after_drop = true};
+                                       .begin_available = true, .revoke_after_drop = true};
     pet_asset_runtime_service_host_t revoked_after_drop_host = host_for(&revoked_after_drop);
     assert(pet_asset_runtime_service_apply(&revoked_after_drop_host, &asset) ==
            DEVICE_STATUS_BUSY);
@@ -194,7 +197,7 @@ int main(void) {
      * retired the generation while buffers were being consumed. */
     test_state_t revoked_after_install = {.lease_available = true, .lease_current = true,
                                           .admitted = true, .capacity_available = true,
-                                          .revoke_after_install = true};
+                                          .begin_available = true, .revoke_after_install = true};
     pet_asset_runtime_service_host_t revoked_after_install_host =
         host_for(&revoked_after_install);
     assert(pet_asset_runtime_service_apply(&revoked_after_install_host, &asset) ==
@@ -207,12 +210,24 @@ int main(void) {
 
     test_state_t admission_closed = {.lease_available = true, .lease_current = true,
                                      .admitted = true, .capacity_available = true,
+                                     .begin_available = true,
                                      .revoke_admission_after_begin = true};
     pet_asset_runtime_service_host_t admission_closed_host = host_for(&admission_closed);
     assert(pet_asset_runtime_service_apply(&admission_closed_host, &asset) ==
            DEVICE_STATUS_BUSY);
     assert(admission_closed.downloads == 0 && admission_closed.installs == 0 &&
            admission_closed.finishes == 1 && admission_closed.releases == 2);
+
+    /* A failed optional-media admission does not transfer ownership, so the
+     * runtime must not finish/release a lease belonging to another caller. */
+    test_state_t begin_rejected = {.lease_available = true, .lease_current = true,
+                                   .admitted = true, .capacity_available = true,
+                                   .begin_available = false};
+    pet_asset_runtime_service_host_t begin_rejected_host = host_for(&begin_rejected);
+    assert(pet_asset_runtime_service_apply(&begin_rejected_host, &asset) ==
+           DEVICE_STATUS_BUSY);
+    assert(begin_rejected.begins == 1 && begin_rejected.finishes == 0 &&
+           begin_rejected.downloads == 0 && begin_rejected.releases == 2);
 
     puts("PASS runtime pet asset transaction");
     return 0;

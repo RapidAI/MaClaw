@@ -54,6 +54,21 @@
           {{end}}
         </array>
         {{end}}
+        <key>CFBundleDocumentTypes</key>
+        <array>
+            <dict>
+                <key>CFBundleTypeName</key>
+                <string>{{.Info.ProductName}} File</string>
+                <key>CFBundleTypeRole</key>
+                <string>Viewer</string>
+                <key>LSHandlerRank</key>
+                <string>Alternate</string>
+                <key>LSItemContentTypes</key>
+                <array>
+                    <string>public.data</string>
+                </array>
+            </dict>
+        </array>
         {{if .Info.Protocols}}
         <key>CFBundleURLTypes</key>
         <array>

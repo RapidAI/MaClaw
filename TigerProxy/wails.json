@@ -1,17 +1,17 @@
 {
   "$schema": "https://wails.io/schemas/config.v2.json",
-  "name": "TigerProxy",
-  "outputfilename": "TigerProxy",
+  "name": "CodexProxy",
+  "outputfilename": "CodexProxy",
   "frontend:dir": "frontend",
   "frontend:install": "",
   "frontend:build": "",
   "frontend:dev:watcher": "",
   "frontend:dev:serverUrl": "",
   "info": {
-    "productName": "TigerProxy",
+    "productName": "CodexProxy",
     "productVersion": "0.1.0.1",
     "companyName": "QianXin",
     "copyright": "Copyright (C) 2026 QianXin",
-    "comments": "TigerProxy: CodeGen protocol proxy."
+    "comments": "CodexProxy: local protocol proxy for Codex."
   }
 }

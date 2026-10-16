@@ -1,0 +1,662 @@
+<!doctype html><html lang="zh-CN"><head><meta charset="UTF-8"><title>MaClaw 任务执行预览</title><style>
+*{box-sizing:border-box}body{margin:0;background:#f7f9fc;color:#1f2937;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif}.shell{display:grid;grid-template-columns:112px var(--task-pane-width,308px) 10px minmax(0,1fr);grid-template-rows:minmax(0,1fr);height:100vh;min-height:0}.rail{background:#f0f6ff;border-right:1px solid #e1e8f1;padding:16px 10px;display:flex;flex-direction:column;align-items:center;gap:12px;min-height:0}.logo{width:40px;height:40px;border-radius:12px;background:linear-gradient(145deg,#2b7cf4 0%,#1769e8 58%,#1059c9 100%);border:1px solid rgba(255,255,255,.22);box-shadow:0 5px 12px rgba(23,105,232,.2),inset 0 1px 0 rgba(255,255,255,.18);color:#fff;display:grid;place-items:center;font-size:0;font-weight:800}.logo svg{width:32px;height:32px;display:block}.rail > .logo{display:grid!important}.nav{width:64px;padding:10px 3px;text-align:center;border-radius:12px;font-size:12px;color:#526174}.nav b{display:block;font-size:21px;margin-bottom:4px}.nav.active{background:#fff;color:#1769e8;box-shadow:0 3px 12px #cfe0f5}.grow{flex:1}.tasks{background:#fff;border-right:1px solid #e4eaf1;padding:20px 14px;display:flex;flex-direction:column;min-height:0;overflow:hidden}.tasks h2{font-size:17px;margin:0 0 18px}.task-groups-title{font-size:14px;margin:18px 8px 6px;color:#27364a}.task{padding:13px;border-radius:11px;background:#f1f6ff;color:#1769e8;font-size:14px}.group{display:flex;justify-content:space-between;padding:12px 8px;color:#475569}.group strong{font-weight:500}.count{background:#edf3fb;padding:3px 8px;border-radius:99px;font-size:12px}.status{margin-top:auto;border:1px solid #e0e7ef;border-radius:14px;padding:14px;font-size:12px;color:#64748b}.status b{color:#27364a;font-size:14px}.task-pane-resize-handle{position:relative;z-index:40;width:10px;min-width:10px;height:100%;margin:0;cursor:col-resize;touch-action:none;user-select:none;background:transparent;isolation:isolate;-webkit-app-region:no-drag;transition:background .15s ease}.task-pane-resize-handle::before{content:"";position:absolute;top:0;bottom:0;left:4px;width:1px;border-radius:999px;background:#dfe6ef;transition:width .15s ease,background .15s ease,box-shadow .15s ease}.task-pane-resize-handle:hover::before,.task-pane-resize-handle:focus-visible::before{left:3px;width:3px;background:#2f80ed;box-shadow:0 0 0 3px rgba(47,128,237,.12)}.task-pane-resize-handle:focus-visible{outline:2px solid #2f80ed;outline-offset:-1px}body.task-pane-resizing{cursor:col-resize!important;user-select:none!important}body.task-pane-resizing *{cursor:col-resize!important;user-select:none!important}.main{background:#fff;display:flex;flex-direction:column;min-width:0;min-height:0}.head{height:76px;flex:0 0 76px;padding:18px 28px;border-bottom:1px solid #e5eaf1;display:flex;align-items:center}.head h1{font-size:20px;margin:0}.head small{display:block;color:#8a95a3;font-size:12px;margin-top:5px}.head-brand{display:inline-flex;align-items:center;gap:8px;margin-right:18px;color:#1e293b;font-size:20px;font-weight:700;white-space:nowrap}.head-brand-mark{width:30px;height:30px;display:inline-grid;place-items:center;border-radius:9px;background:linear-gradient(145deg,#2b7cf4 0%,#1769e8 58%,#1059c9 100%);color:#fff;border:1px solid rgba(255,255,255,.22);box-shadow:0 5px 12px rgba(23,105,232,.2),inset 0 1px 0 rgba(255,255,255,.18)}.head-brand-mark svg{width:25px;height:25px;display:block}.head-task{min-width:0}.head-task h1{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.actions{margin-left:auto;display:flex;gap:10px}.actions button{border:1px solid #dbe4ee;background:#fff;border-radius:9px;padding:9px 14px;color:#475569}.body{max-width:900px;width:100%;min-height:0;margin:0 auto;padding:30px 36px 48px;overflow-x:hidden;overflow-y:auto}.bubble{max-width:760px;border:1px solid #e3e9f1;border-radius:15px;padding:16px 20px;margin:18px 0;background:#fff}.bubble.user{position:relative;width:fit-content;max-width:78%;margin-left:auto;background:#f3f7ff;border-color:#dce8fb;border-radius:14px 14px 4px 14px}.bubble.user::after{content:"我";position:absolute;left:auto;right:-38px;top:14px;display:grid;place-items:center;width:28px;height:28px;border:1px solid #b9d2fb;border-radius:50%;background:#eaf2ff;color:#286fd8;font-size:12px;font-weight:700}.bubble p{margin:0;line-height:1.7}.bubble:not(.user){position:relative;max-width:84%;border-radius:4px 14px 14px 14px}.bubble:not(.user)::before{content:"M";position:absolute;left:-38px;top:14px;display:grid;place-items:center;width:28px;height:28px;border:1px solid #d7e3f5;border-radius:50%;background:#fff;color:#1769e8;font-size:13px;font-weight:800}.meta{font-size:12px;color:#97a2af;margin-top:8px}.timeline{border:1px solid #dae4ef;border-radius:14px;padding:18px 22px;margin:20px 0;box-shadow:0 5px 18px #e3eaf2}.step{display:flex;gap:12px;align-items:center;padding:11px 4px;border-bottom:1px solid #edf1f5}.step:last-child{border:0}.icon{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;color:#fff;font-size:12px;background:#22b573}.icon.run{background:#f2a126}.step span:last-child{margin-left:auto;color:#15945b;font-size:12px}.result{border:1px solid #e0e7ef;border-radius:14px;padding:18px 20px;margin:20px 0}.result h3{margin:0 0 8px}.result p{color:#7b8795;font-size:13px}.result-file{display:flex;align-items:center;gap:10px;margin:12px 0 10px;padding:10px 12px;border:1px solid #edf1f5;border-radius:10px;background:#f9fbfe}.result-file-icon{display:grid;place-items:center;width:30px;height:30px;border-radius:8px;background:#eaf2ff;color:#1769e8;font-size:16px}.result-file div{display:flex;flex-direction:column;gap:3px;min-width:0}.result-file strong{overflow:hidden;color:#334155;font-size:13px;text-overflow:ellipsis;white-space:nowrap}.result-file small{color:#8a95a3;font-size:11px}.result button{border:1px solid #dbe4ee;background:#fff;border-radius:8px;padding:9px 13px;margin-right:8px}.result .primary{background:#1769e8;color:#fff;border-color:#1769e8}.composer{position:sticky;bottom:0;min-height:88px;padding:12px 14px 10px;border:1px solid #dbe4ee;border-radius:14px;background:#fff;box-shadow:0 5px 20px #e2e9f1;display:block}.composer input{position:absolute;top:12px;left:14px;width:calc(100% - 28px);height:30px;padding:0;border:0;outline:0;background:transparent;color:#334155;font-size:14px}.composer input::placeholder{color:#8a95a3}.composer button{position:absolute;bottom:10px;width:32px;height:30px;padding:0;border:1px solid #dbe4ee;border-radius:8px;background:#fff;color:#64748b;line-height:1;cursor:pointer}.composer button:first-of-type{left:14px}.composer button:nth-of-type(2){left:54px}.composer .send{right:14px;width:36px;height:36px;bottom:8px;border:0;border-radius:10px;background:#1769e8;color:#fff;font-size:18px;box-shadow:0 3px 8px rgba(23,105,232,.2)}.composer::after{content:"Enter 发送 · Ctrl/⌘+Enter 换行";position:absolute;right:60px;bottom:18px;color:#8a95a3;font-size:11px;pointer-events:none}@media(max-width:900px){.shell{grid-template-columns:72px 1fr}.tasks{display:none}.body{padding:22px 18px}.head{padding:16px}.actions button{padding:8px}}
+.preview-toast{position:fixed;right:24px;bottom:24px;z-index:10;padding:10px 14px;border:1px solid #cfe0fb;border-radius:10px;background:#fff;color:#1769e8;box-shadow:0 8px 22px rgba(35,66,105,.14);font-size:13px;opacity:0;transform:translateY(8px);pointer-events:none;transition:opacity .18s ease,transform .18s ease}.preview-toast.show{opacity:1;transform:translateY(0)}.bubble.preview-added{animation:preview-in .18s ease-out}@keyframes preview-in{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}.task-pane-resize-handle{display:none}@media(min-width:901px){.task-pane-resize-handle{display:block}}body.monitor-mode .task-pane-resize-handle{display:none}</style><style id="execution-brand-parity">.head-brand{display:none!important}</style><style id="reference-proportion-overrides">.rail{padding:20px 12px}.logo{width:40px;height:40px;border-radius:12px;font-size:0}.nav{width:88px;min-height:66px;border-radius:13px;padding:9px 2px;font-size:13px}.nav b{font-size:23px}.tasks{padding:24px 16px}.head{height:72px;flex-basis:72px;padding:18px 28px}.body{max-width:920px;padding:32px 40px 48px}@media(max-width:1100px){.rail{padding:14px 10px}.logo{width:40px;height:40px;font-size:0}.nav{width:64px;min-height:62px;font-size:12px}.tasks{padding:20px 14px}.head{height:76px;padding:18px 28px}.body{padding:30px 36px}}/* Final reference parity pass for the execution surface.  Keep the rail/task
+   grouping intact while giving the conversation and continuation composer the
+   breathing room shown in the supplied task mockup. */
+ .body { max-width:1180px; padding:30px 44px 34px; }
+ .composer:focus-within { border-color:#8ebaf3; box-shadow:0 0 0 3px rgba(47,128,237,.12),0 5px 20px #e2e9f1; }
+ .composer input:focus,.composer input:focus-visible { border:0!important; outline:0!important; box-shadow:none!important; }
+.body > .bubble { max-width:820px; }
+.bubble.user { width:fit-content; max-width:78%; }
+.bubble:not(.user)::before { left:-42px; }
+.body > .timeline, .body > .result { width:min(100%,820px); margin-left:auto; margin-right:auto; }
+.main > .composer { width:min(100%,960px); margin-left:auto; margin-right:auto; }
+.timeline { padding:18px 22px 16px; }
+.timeline .step { position:relative; display:grid; grid-template-columns:28px minmax(0,1fr) auto; align-items:start; column-gap:10px; min-height:58px; padding:8px 4px; border:0; }
+.timeline .step:not(:last-child)::after { content:""; position:absolute; left:14px; top:31px; bottom:-5px; width:1px; background:#d7e3f1; }
+.timeline .step .icon { position:relative; z-index:1; grid-column:1; grid-row:1 / span 2; margin-top:1px; }
+.timeline .step span:first-of-type { grid-column:2; grid-row:1; min-width:0; color:#27364a; font-weight:650; line-height:1.35; }
+.timeline .step small { grid-column:2; grid-row:2; min-width:0; margin-top:3px; color:#8a95a3; font-size:11px; line-height:1.35; }
+.timeline .step span:last-of-type { grid-column:3; grid-row:1 / span 2; align-self:center; margin-left:0; white-space:nowrap; }
+.rail-avatar { position:relative; width:42px; height:42px; margin:10px auto 2px; border:1px solid #cfe0f5; border-radius:50%; background:linear-gradient(145deg,#fff,#e7f1ff); color:#1769e8; display:grid; place-items:center; font-size:20px; font-weight:800; box-shadow:0 4px 12px rgba(45,105,180,.12); }.rail-avatar--system { width:44px; height:44px; border-radius:13px; border-color:rgba(255,255,255,.24); background:linear-gradient(145deg,#2b7cf4 0%,#1769e8 58%,#1059c9 100%); color:#fff; box-shadow:0 7px 16px rgba(23,105,232,.24),inset 0 1px 0 rgba(255,255,255,.18); }.rail-avatar--system svg { width:25px; height:25px; display:block; }
+.rail-avatar i { position:absolute; right:0; bottom:0; width:9px; height:9px; border:2px solid #fff; border-radius:50%; background:#18b875; }
+@media(max-width:1100px){.shell{grid-template-columns:84px 1fr}.tasks{display:none}.body{max-width:980px;padding-inline:28px}}
+@media(max-width:700px){.shell{grid-template-columns:64px 1fr}.body{padding:20px 14px 26px}.bubble.user{width:100%;max-width:none}.bubble:not(.user)::before{display:none}.body > .bubble,.body > .timeline,.body > .result{width:100%;max-width:none}.main > .composer{width:auto;max-width:none;margin-inline:14px}.timeline{padding-inline:14px}}@media(max-width:700px){.timeline .step{grid-template-columns:28px minmax(0,1fr);align-items:start}.timeline .step span:first-of-type{white-space:normal;overflow-wrap:anywhere}.timeline .step span:last-of-type{grid-column:2;grid-row:2;justify-self:start;margin-top:2px}.timeline .step small{grid-row:3}.timeline .step .icon{grid-row:1 / span 3}}</style>
+<style id="execution-composer-flow">/* Keep the continuation composer in the execution content flow. The sticky version floated over timeline/result cards on shorter desktop windows. */.body{display:flex;flex:1 1 auto;flex-direction:column}.main>.composer{position:relative;z-index:5;flex:0 0 auto;margin:0 clamp(24px,4vw,64px) 12px}</style><style id="narrow-execution-header">@media(max-width:700px){.head{height:auto;min-height:76px;padding:14px 12px;gap:8px;align-items:flex-start}.head>div:first-child{min-width:0;flex:1}.head h1{min-width:0;max-width:100%;font-size:16px;line-height:1.35;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.head small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.actions{flex:0 0 auto;gap:4px}.actions button{width:32px;height:32px;padding:0;font-size:0;display:grid;place-items:center}.actions button:first-child::before{content:"Ⅱ";font-size:14px}.actions button:nth-child(2)::before{content:"♧";font-size:16px}.actions button:nth-child(3)::before{content:"•••";font-size:13px}.composer::after{right:52px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:10px}}</style>
+<style id="monitor-preview-style">
+.monitor-head{display:none}
+.monitor-preview{display:none}
+body.monitor-mode{background:#f7f9fc}
+body.monitor-mode .shell{grid-template-columns:112px 1fr}
+body.monitor-mode .tasks{display:none}
+body.monitor-mode .head{height:72px;flex-basis:72px;padding:0 28px}
+body.monitor-mode .head>div:first-child,
+body.monitor-mode .head>.head-task,
+body.monitor-mode .head>.actions{display:none}
+body.monitor-mode .monitor-head{display:flex;align-items:center;width:100%;gap:18px}
+body.monitor-mode .monitor-brand{display:flex;align-items:center;gap:9px;color:#1f2937;white-space:nowrap;position:relative;top:10px}
+body.monitor-mode .monitor-brand>span{display:grid;place-items:center;width:30px;height:30px;border-radius:9px;background:#1769e8;color:#fff;font-size:18px;font-weight:800}
+body.monitor-mode .monitor-brand strong{font-size:20px}
+body.monitor-mode .monitor-brand b{margin-left:8px;font-size:18px}
+body.monitor-mode .monitor-search{width:min(330px,32vw);height:38px;margin-left:auto;padding:0 14px;display:flex;align-items:center;border:1px solid #dce5ef;border-radius:11px;color:#8a95a3;font-size:13px}.monitor-search:focus-within{border-color:#2f80ed;box-shadow:0 0 0 3px #eef5ff}.monitor-search input{width:100%;min-width:0;height:100%;padding:0;border:0;outline:0;box-shadow:none;background:transparent;color:#243447;font:inherit;font-size:13px}.monitor-search input:focus,.monitor-search input:focus-visible{border:0!important;outline:none!important;outline-offset:0!important;box-shadow:none!important}.monitor-search input::placeholder{color:#8a95a3}
+body.monitor-mode .monitor-ready{display:flex;align-items:center;gap:7px;color:#64748b;font-size:12px;white-space:nowrap}
+body.monitor-mode .monitor-search{order:1}
+body.monitor-mode .monitor-bell{order:2}
+body.monitor-mode .monitor-ready{order:3}
+body.monitor-mode .monitor-ready i{width:8px;height:8px;border-radius:50%;background:#18b875}
+body.monitor-mode .monitor-bell{width:36px;height:36px;border:1px solid #dce5ef;border-radius:10px;background:#fff;color:#526174;font-size:16px}.monitor-bell{display:grid;place-items:center;cursor:pointer}.monitor-bell:hover{border-color:#9fc3f4;color:#1769e8;background:#f5f9ff}.monitor-bell:focus-visible{outline:3px solid rgba(47,128,237,.22);outline-offset:2px}.monitor-tab:focus-visible,.preview-notification-head button:focus-visible,.preview-notification-foot button:focus-visible{outline:2px solid #2f80ed;outline-offset:2px}
+ body.monitor-mode .body{max-width:1740px;padding:0 clamp(20px,3vw,40px) 32px}
+body.monitor-mode .body{display:flex;flex:1 1 auto;min-height:0;align-items:flex-start;justify-content:flex-start;padding-top:clamp(24px,3vh,40px);padding-bottom:32px}
+@media(max-height:560px){body.monitor-mode .body{align-items:flex-start;overflow:auto}}
+ body.monitor-mode .body>.monitor-preview{display:block;width:100%;max-width:1660px;margin:0 auto;border:1px solid #dce5ef;border-radius:14px;background:#fff;overflow:hidden;box-shadow:0 1px 2px rgba(30,58,95,.06)}
+body.monitor-mode .body>:not(.monitor-preview){display:none!important}body.monitor-mode .main>.composer{display:none!important}
+ .monitor-tabs{display:flex;align-items:stretch;justify-content:flex-start;gap:0;padding:12px 14px 0;border-bottom:1px solid #dfe7f0;overflow-x:auto;overflow-y:hidden;scrollbar-width:none;overscroll-behavior-x:contain}.monitor-tabs::-webkit-scrollbar{display:none}
+ .monitor-tab{flex:0 0 auto;width:auto;min-width:88px;white-space:nowrap;padding:10px 16px 11px;border:0;border-bottom:2px solid transparent;background:transparent;color:#8a95a3;font-size:13px;text-align:center;cursor:pointer}
+.monitor-tab.active{border-bottom-color:#1769e8;color:#1769e8;font-weight:700;background:#f1f6ff;border-radius:8px 8px 0 0}.monitor-tab:not(.active):hover{background:#f8fbff;color:#243447;border-radius:8px 8px 0 0}
+.monitor-kicker{padding:14px 16px 4px;color:#64748b;font-size:12px;font-weight:700}
+.monitor-empty{min-height:clamp(220px,30vh,340px);display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:42px 24px 52px;border-top:1px solid #edf1f5;color:#8a95a3;text-align:center;font-size:13px;line-height:1.55}
+.monitor-empty-icon{display:grid;place-items:center;width:36px;height:36px;border:1px solid #b9dec9;border-radius:50%;background:#f0faf4;color:#18a665;font-size:16px;font-weight:800}
+.monitor-empty strong{color:#27364a;font-size:15px}
+.monitor-empty span:last-child{max-width:440px}
+@media(max-width:760px){
+ body.monitor-mode .head{padding:0 16px}
+ body.monitor-mode .monitor-brand b{display:none} body.monitor-mode .monitor-brand{top:6px}
+ body.monitor-mode .monitor-search{display:none}
+ body.monitor-mode .body{padding:24px 16px 32px}
+  .monitor-tabs{overflow-x:auto}
+  .monitor-tab{min-width:86px}
+}
+</style>
+<style id="preview-notifications-style">.preview-notification-panel{display:none;position:fixed;top:82px;right:24px;z-index:20;width:min(360px,calc(100vw - 32px));border:1px solid #dce5ef;border-radius:14px;background:#fff;box-shadow:0 18px 44px rgba(35,66,105,.18);overflow:hidden}body.notifications-open .preview-notification-panel{display:block}.monitor-mode .preview-notification-panel{top:82px}.preview-notification-head{display:flex;align-items:center;justify-content:space-between;padding:15px 16px;border-bottom:1px solid #edf1f5;color:#243447;font-size:15px;font-weight:700}.preview-notification-head button{width:26px;height:26px;border:0;border-radius:7px;background:transparent;color:#7d8998;font-size:18px;cursor:pointer}.preview-notification-head button:hover{background:#f1f6ff;color:#1769e8}.preview-notification-item{display:flex;gap:10px;padding:14px 16px;border-bottom:1px solid #f0f3f7}.preview-notification-dot{width:8px;height:8px;flex:0 0 8px;margin-top:6px;border-radius:50%;background:#1769e8}.preview-notification-item strong{display:block;color:#243447;font-size:13px;line-height:1.4}.preview-notification-item small{display:block;margin-top:4px;color:#8290a0;font-size:11px;line-height:1.45}.preview-notification-foot{padding:10px 16px;background:#f8fbff;border-top:1px solid #edf1f5;text-align:right}.preview-notification-foot button{border:0;background:transparent;color:#1769e8;font-size:12px;cursor:pointer}.monitor-bell:focus-visible{outline:3px solid rgba(47,128,237,.22);outline-offset:2px}@media(max-width:700px){.preview-notification-panel{top:68px;right:16px}}</style><style id="composer-scrollbar-style">.composer textarea,.composer input{scrollbar-width:none;-ms-overflow-style:none}.composer textarea::-webkit-scrollbar,.composer input::-webkit-scrollbar{width:0;height:0;display:none}</style><style id="preview-icon-rhythm">.nav span:first-child,.nav b,.actions button,.composer button,.monitor-tab{font-family:"Segoe UI Symbol","Segoe UI",sans-serif;font-variant-emoji:text;line-height:1}.nav span:first-child,.nav b{display:block;min-height:22px;line-height:1.05}</style><style id="execution-avatar-overflow">@media(max-width:900px){.bubble:not(.user)::before{display:none}.bubble.user::after{display:none}}</style><style id="execution-composer-voice">.composer .voice{left:94px;display:grid;place-items:center;padding:0}.composer .voice svg{display:block}.composer .voice[data-active="true"]{border-color:#9fc5f8;background:#eef5ff;color:#1769e8;box-shadow:0 0 0 3px rgba(47,128,237,.12)}.composer button:focus-visible{outline:3px solid rgba(47,128,237,.22);outline-offset:2px}</style><style id="system-preview-menu-style">.rail{position:relative}.rail-avatar{padding:0;cursor:pointer;font:inherit}.rail-avatar:focus-visible{outline:3px solid rgba(47,128,237,.28);outline-offset:3px}.system-preview-menu{position:absolute;left:calc(100% + 8px);bottom:12px;z-index:30;display:flex;align-items:stretch;gap:2px;padding:6px 8px;border:1px solid #dce5ef;border-radius:12px;background:#fff;box-shadow:0 14px 34px rgba(35,66,105,.18);white-space:nowrap}.system-preview-menu[hidden]{display:none}.system-preview-menu button{display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;min-width:52px;padding:7px 9px;border:0;border-radius:8px;background:transparent;color:#526174;font-size:11px;cursor:pointer}.system-preview-menu button:hover,.system-preview-menu button:focus-visible{background:#f1f6ff;color:#1769e8;outline:none}.system-preview-menu button:focus-visible{box-shadow:0 0 0 2px #9fc3f4 inset}.system-preview-menu .system-preview-icon{font-size:18px;line-height:1;font-weight:700}@media(prefers-color-scheme:dark){.system-preview-menu{border-color:#334862;background:#172235;box-shadow:0 14px 34px rgba(0,0,0,.35)}.system-preview-menu button{color:#a9b8ca}.system-preview-menu button:hover,.system-preview-menu button:focus-visible{background:#1d3b67;color:#dceaff}}@media(max-width:700px){.system-preview-menu{left:calc(100% + 5px);bottom:8px}.system-preview-menu button{min-width:46px;padding-inline:7px}}</style><style id="chat-layout-optimization">
+/* Keep execution conversations anchored to the shell edges on wide screens. */
+.body { width: 100%; max-width: none; padding-inline: clamp(24px, 4vw, 64px); }
+.body > .bubble { max-width: min(100%, 980px); }
+.body > .bubble.user { width: fit-content; max-width: min(78%, 820px); margin-left: auto; margin-right: 42px; }
+.body > .bubble:not(.user) { max-width: min(86%, 980px); margin-right: auto; }
+.body > .timeline, .body > .result { width: min(100%, 980px); margin-left: 0; margin-right: 0; }
+.main > .composer { width: min(1100px, calc(100% - 2 * clamp(14px, 4vw, 64px))); margin-left: clamp(14px, 4vw, 64px); margin-right: clamp(14px, 4vw, 64px); }
+ /* Keep the user's speaker marker on the right edge of the right-aligned bubble. */
+ .bubble.user::after { content: "我"; left: auto; right: -38px; top: 10px; }
+ /* Keep the speech tail on the outside edge so it points to the speaker
+    marker (the user avatar on the right, or M on the left). */
+ .bubble-tail { position: absolute; top: 14px; width: 10px; height: 10px; box-sizing: border-box; background: var(--bubble-tail-bg, #fff); border-top: 1px solid var(--bubble-tail-border, #e3e9f1); border-left: 1px solid var(--bubble-tail-border, #e3e9f1); transform: rotate(45deg); border-radius: 1px; pointer-events: none; z-index: 0; }
+ .bubble.user { --bubble-tail-bg: #f3f7ff; --bubble-tail-border: #dce8fb; }
+ .bubble.user > .bubble-tail { right: -29px; }
+ .bubble:not(.user) { --bubble-tail-bg: #fff; --bubble-tail-border: #e3e9f1; }
+ .bubble:not(.user) > .bubble-tail { left: -29px; }
+@media (min-width: 1440px) {
+  .body { width: 100%; max-width: none; padding-inline: clamp(40px, 4vw, 72px); }
+  .body > .bubble.user { max-width: min(76%, 900px); }
+}
+@media (max-width: 900px) {
+  /* The marker is hidden below this breakpoint, so the bubble can use the full right edge. */
+  .body > .bubble.user { margin-right: 0; }
+}
+@media (max-width: 700px) {
+  .body { max-width: none; padding-inline: 14px; }
+  /* Keep the user's message on the right even after the speaker marker is
+     hidden on narrow screens; the marker no longer needs reserved space. */
+  .body > .bubble.user { width: 100%; max-width: none; margin-left: auto; margin-right: 0; }
+  .body > .bubble:not(.user) { max-width: 100%; }
+  .body > .timeline, .body > .result { width: 100%; max-width: none; } .main > .composer { width: auto; max-width: none; margin-inline: 14px; }
+}
+</style><style id="system-menu-overflow-fix">/* Keep the flyout from forcing the scrollable rail to auto-scroll when its first item receives focus. */.rail{overflow:visible!important}</style><style id="rail-viewport-fit-execution">/* Keep every rail control visible in the compact desktop viewport used by the execution preview. */@media(max-height:760px) and (min-width:901px){.rail{padding:12px 12px;gap:7px}.rail>.logo{width:36px;height:36px;flex:0 0 36px}.nav{min-height:52px;padding:6px 2px}.rail-avatar{width:40px;height:40px;flex:0 0 40px;margin:6px auto 0}}</style><style id="execution-narrow-sidebar">/* Keep the task index and its splitter on narrow desktop widths; collapse only at the tablet breakpoint. */@media(min-width:901px) and (max-width:1200px){.shell{grid-template-columns:84px var(--task-pane-width,280px) 10px minmax(0,1fr)}.tasks{display:flex;padding:20px 14px}.task-pane-resize-handle{display:block}.nav{width:64px;min-height:52px;font-size:12px}.rail>.logo{width:36px;height:36px;flex-basis:36px}}</style><style id="brand-mark-parity">.logo{width:48px;height:48px;border-radius:14px}.logo svg{width:39px;height:39px}@media(max-width:900px){.logo{width:40px;height:40px;border-radius:12px}.logo svg{width:33px;height:33px}}</style><style id="dark-theme-parity">
+@media (prefers-color-scheme: dark) {
+  :root { color-scheme: dark; }
+  body, .shell { background: #0f172a; color: #e5edf8; }
+  .rail { background: #111c2e; border-color: #2b3c53; }
+  .nav { color: #a9b8ca; }
+  .nav.active { background: #1d3b67; color: #8fbcff; box-shadow: 0 3px 12px rgba(0,0,0,.28); }
+  .tasks { background: #172235; border-color: #2b3c53; }
+  .tasks h2, .task-groups-title, .head h1, .head-brand, .head-task h1 { color: #e5edf8; }
+  .task { background: #1d3b67; color: #dceaff; }
+  .group { color: #a9b8ca; }
+  .count { background: #223654; color: #b9cbe4; }
+  .status { border-color: #334862; background: #172235; color: #a9b8ca; }
+  .status b { color: #e5edf8; }
+  .main, .head { background: #172235; color: #e5edf8; }
+  .head { border-color: #2b3c53; }
+  .head small, .meta, .composer input::placeholder, .composer::after { color: #9cafc4; }
+  .actions button { background: #172235; border-color: #334862; color: #cbd7e6; }
+  .actions button:hover { background: #1d3b67; border-color: #4f91f7; color: #dceaff; }
+  .bubble, .timeline, .result, .composer { background: #172235; border-color: #334862; box-shadow: 0 5px 20px rgba(0,0,0,.24); }
+  .bubble.user { background: #1d3b67; border-color: #4f91f7; }
+  .bubble.user::after { background: #223654; border-color: #4f91f7; color: #b9d5ff; }
+  .bubble:not(.user)::before { background: #172235; border-color: #334862; color: #8fbcff; }
+  .timeline .step { border-color: #2b3c53; }
+  .timeline .step span:first-of-type, .result h3 { color: #e5edf8; }
+  .timeline .step small, .result p, .result-file small { color: #9cafc4; }
+  .result-file { background: #111c2e; border-color: #2b3c53; }
+  .result-file strong { color: #dceaff; }
+  .result-file-icon { background: #1d3b67; color: #8fbcff; }
+  .result button, .composer button { background: #172235; border-color: #334862; color: #cbd7e6; }
+  .result button:hover, .composer button:not(.send):hover { background: #1d3b67; border-color: #4f91f7; color: #dceaff; }
+  .composer input { color: #e5edf8; }
+  .composer { box-shadow: 0 5px 20px rgba(0,0,0,.3); }
+  .timeline .step:not(:last-child)::after { background: #334862; }
+  .task-pane-resize-handle::before { background: #334862; }
+  .task-pane-resize-handle:hover::before, .task-pane-resize-handle:focus-visible::before { background: #4f91f7; }
+  body.monitor-mode { background: #0f172a; }
+  body.monitor-mode .monitor-preview { background: #172235; border-color: #334862; }
+  .monitor-tabs { border-color: #2b3c53; }
+  .monitor-tab { color: #9cafc4; }
+  .monitor-tab.active { color: #8fbcff; border-color: #4f91f7; }
+  .monitor-kicker { color: #a9b8ca; }
+  .monitor-empty { border-color: #2b3c53; color: #9cafc4; }
+  .monitor-empty strong { color: #e5edf8; }
+  .monitor-search { background: #172235; border-color: #334862; }
+  .monitor-search input { color: #e5edf8; }
+  .monitor-search input::placeholder { color: #9cafc4; }
+  .monitor-bell { background: #172235; border-color: #334862; color: #cbd7e6; }
+  .preview-notification-panel { background: #172235; border-color: #334862; box-shadow: 0 18px 44px rgba(0,0,0,.4); }
+  .preview-notification-head { border-color: #2b3c53; color: #e5edf8; }
+  .preview-notification-item { border-color: #2b3c53; }
+  .preview-notification-item strong { color: #e5edf8; }
+  .preview-notification-item small { color: #9cafc4; }
+  .preview-notification-foot { background: #111c2e; border-color: #2b3c53; }
+}
+</style><style id="production-breakpoint-parity">
+/* Match the Wails shell: collapse the task pane at tablet width and retain the compact navigation rail. */
+@media (min-width:901px) and (max-width:1200px) {
+  .shell { grid-template-columns:84px var(--task-pane-width,308px) 10px minmax(0,1fr) !important; }
+  .tasks { display:flex !important; }
+  .task-pane-resize-handle { display:block !important; }
+  body.monitor-mode .tasks { display:none !important; }
+  body.monitor-mode .task-pane-resize-handle { display:none !important; }
+  .rail { padding:14px 10px; }
+  .nav { width:64px; min-height:62px; font-size:12px; }
+  .logo { width:40px; height:40px; flex-basis:40px; border-radius:12px; }
+  .body { max-width:980px; padding-inline:28px; }
+  body.monitor-mode .shell { grid-template-columns:84px minmax(0,1fr) !important; }
+}
+@media (min-width:561px) and (max-width:900px) {
+  .shell { grid-template-columns:84px minmax(0,1fr) !important; }
+  .tasks { display:none !important; }
+  .task-pane-resize-handle { display:none !important; }
+  body.monitor-mode .shell { grid-template-columns:84px minmax(0,1fr) !important; }
+}
+@media (max-width:560px) {
+  .shell { grid-template-columns:64px minmax(0,1fr) !important; }
+  .rail { padding:12px 6px; }
+  .nav { width:52px; min-height:56px; }
+  .body { padding:20px 14px 26px; }
+  body.monitor-mode .shell { grid-template-columns:64px minmax(0,1fr) !important; }
+}
+</style>
+<style id="cloud-task-preview-style">.task-title-line{display:flex;align-items:center;gap:6px;min-width:0}.task-title-line strong{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:650}.task-origin-badge{display:inline-flex;align-items:center;gap:3px;flex:0 0 auto;max-width:112px;overflow:hidden;padding:2px 6px;border:1px solid #d9c5ff;border-radius:999px;background:#f5f0ff;color:#7441c8;font-size:10px;font-weight:650;line-height:1.2;text-overflow:ellipsis;white-space:nowrap}@media(max-width:560px){.task-origin-badge{max-width:86px;padding-inline:4px;font-size:9px}}</style><style id="task-sidebar-cloud-action-style">.task-pane-title-row{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:0 0 18px}.task-pane-title-row h2{margin:0}.task-pane-title-actions{display:inline-flex;align-items:center;gap:5px}.task-pane-mini-action{display:grid;place-items:center;width:27px;height:27px;padding:0;border:1px solid #d5e1ef;border-radius:8px;background:#fff;color:#1769e8;font-size:17px;line-height:1;cursor:pointer}.task-pane-mini-action:hover,.task-pane-mini-action:focus-visible{border-color:#8fb9ee;background:#f2f7ff;outline:none;box-shadow:0 0 0 3px rgba(47,128,237,.12)}.task-pane-mini-action.cloud{font-size:14px;color:#7441c8;border-color:#d8c5fb;background:#faf7ff}.task-pane-mini-action.cloud:hover,.task-pane-mini-action.cloud:focus-visible{border-color:#a889e6;background:#f3edff}@media(max-width:560px){.task-pane-title-row{margin-bottom:14px}.task-pane-mini-action{width:25px;height:25px}}.task.task-cloud{cursor:pointer;transition:border-color .15s ease,box-shadow .15s ease,transform .15s ease}.task.task-cloud:hover,.task.task-cloud:focus-visible{border:1px solid #b9d2fb;box-shadow:0 5px 16px rgba(35,101,190,.12);outline:none;transform:translateY(-1px)}.task.task-cloud:focus-visible{box-shadow:0 0 0 3px rgba(47,128,237,.18)}</style><style id="execution-notification-parity">
+.head-notification{width:36px;height:36px;display:grid;place-items:center;padding:0;border:1px solid #dbe4ee!important;border-radius:10px!important;background:#fff!important;color:#526174!important;cursor:pointer}
+.head-notification:hover,.head-notification:focus-visible{border-color:#9fc3f4!important;color:#1769e8!important;background:#f5f9ff!important;outline:none}
+.head-notification:focus-visible{box-shadow:0 0 0 3px rgba(47,128,237,.22)}
+.head-notification svg{display:block}
+@media(max-width:700px){.head-notification{width:32px;height:32px}.head-notification svg{width:15px;height:15px}}
+@media(prefers-color-scheme:dark){.head-notification{border-color:#334862!important;background:#172235!important;color:#cbd7e6!important}.head-notification:hover,.head-notification:focus-visible{border-color:#4f91f7!important;background:#1d3b67!important;color:#dceaff!important}}
+</style><style id="monitor-empty-centering-fix">body.monitor-mode .body{justify-content:flex-start}@media(max-height:560px){body.monitor-mode .body{justify-content:flex-start;padding-top:24px}}</style><style id="speaker-tail-parity">
+/* Keep the speaker pointer on the edge facing the avatar: user → right, assistant → left. */
+.bubble.user::before {
+  content:"";
+  position:absolute;
+  right:-29px;
+  left:auto;
+  top:14px;
+  width:10px;
+  height:10px;
+  box-sizing:border-box;
+  border:1px solid #dce8fb;
+  border-radius:1px;
+  background:#f3f7ff;
+  transform:rotate(45deg);
+  pointer-events:none;
+  z-index:0;
+}
+.bubble.user::after { z-index:2; }
+.bubble:not(.user)::after {
+  content:"";
+  position:absolute;
+  left:-29px;
+  right:auto;
+  top:14px;
+  width:10px;
+  height:10px;
+  box-sizing:border-box;
+  border:1px solid #e3e9f1;
+  border-radius:1px;
+  background:#fff;
+  transform:rotate(45deg);
+  pointer-events:none;
+  z-index:0;
+}
+.bubble:not(.user)::before { z-index:2; }
+@media (prefers-color-scheme: dark) {
+  .bubble.user::before { background:#1d3b67; border-color:#4f91f7; }
+  .bubble:not(.user)::after { background:#172235; border-color:#334862; }
+}
+</style><style id="app-update-preview-style">
+.app-update-float{position:fixed;left:24px;bottom:20px;z-index:40;display:flex;align-items:center;gap:14px;width:min(510px,calc(100vw - 48px));min-height:62px;padding:10px 12px 10px 14px;box-sizing:border-box;border:1px solid #dbe5ef;border-radius:14px;background:#fff;color:#243447;box-shadow:0 10px 28px rgba(30,58,95,.16),0 2px 7px rgba(30,58,95,.08);font-size:13px;-webkit-app-region:no-drag}
+.app-update-float__identity{display:flex;align-items:center;gap:9px;min-width:0;flex:1 1 auto;padding-right:4px}.app-update-float__icon{display:grid;place-items:center;width:30px;height:30px;flex:0 0 30px;border-radius:9px;background:#effaf5;color:#36a97f;font-size:22px;font-weight:700;line-height:1}.app-update-float__copy{display:flex;min-width:0;flex-direction:column;gap:2px}.app-update-float__copy strong{font-size:14px;font-weight:750;line-height:1.25;white-space:nowrap}.app-update-float__copy span{color:#8795a5;font-size:11px;line-height:1.2}.app-update-float__actions{display:flex;align-items:center;gap:8px;flex:0 0 auto;padding-right:22px}.app-update-float__button{min-height:34px;padding:0 13px;border:1px solid #36b98a;border-radius:8px;background:#fff;color:#249a72;font:inherit;font-size:12px;font-weight:650;line-height:1;white-space:nowrap;cursor:pointer}.app-update-float__button--primary{background:#36b98a;color:#fff;box-shadow:0 2px 7px rgba(54,185,138,.24)}.app-update-float__button:hover{filter:brightness(1.04);transform:translateY(-1px)}.app-update-float__button:focus-visible,.app-update-float__close:focus-visible{outline:2px solid rgba(47,128,237,.5);outline-offset:2px}.app-update-float__close{position:absolute;top:5px;right:5px;display:grid;place-items:center;width:22px;height:22px;padding:0;border:0;border-radius:6px;background:transparent;color:#8795a5;cursor:pointer;font-size:17px;line-height:1}.app-update-float__close:hover{background:#f1f5f9;color:#243447}@media(max-width:560px){.app-update-float{left:12px;right:12px;bottom:12px;width:auto;gap:8px;padding-left:11px}.app-update-float__actions{gap:5px;padding-right:20px}.app-update-float__button{padding-inline:9px}}@media(max-width:390px){.app-update-float{align-items:flex-start}.app-update-float__actions{flex-direction:column;align-items:stretch}.app-update-float__button{min-height:30px}}
+</style><style id="monitor-workspace-fill">
+body.monitor-mode .body>.monitor-preview{min-height:clamp(420px,calc(100vh - 150px),760px);display:flex;flex-direction:column}
+body.monitor-mode .monitor-empty{flex:1 1 auto;min-height:0}
+@media(max-height:560px){body.monitor-mode .body>.monitor-preview{min-height:calc(100vh - 120px)}}
+@media(max-width:760px){body.monitor-mode .body>.monitor-preview{min-height:calc(100vh - 132px)}}
+</style><style id="single-brand-parity">
+/* Keep the primary app mark in the rail; task headers use the wordmark only. */
+.rail > .logo { display:grid !important; }
+.head-brand { display:inline-flex !important; }
+.head-brand-mark { display:none !important; }
+body.monitor-mode .head-brand { display:none !important; }
+</style><style id="inner-surface-parity">
+.quick button:focus-visible,.recent-list > div:focus-visible,.split-surface__back:focus-visible,.split-surface__market-button:focus-visible,.cloud-task-dialog-close:focus-visible,.expert-market-preview__close:focus-visible,.expert-market-preview__card button:focus-visible,.preview-notification-head button:focus-visible,.preview-notification-foot button:focus-visible{outline:3px solid rgba(47,128,237,.28);outline-offset:2px}
+@media (prefers-color-scheme:dark){
+.split-surface{background:#0f172a;color:#e5edf8}
+.split-surface__head p,.split-surface__card small,.expert-market-preview__head p,.expert-market-preview__card p{color:#9cafc4}
+.split-surface__status,.split-surface__card,.expert-market-preview__dialog,.expert-market-preview__card,.cloud-task-dialog{background:#172235;border-color:#334862;color:#e5edf8;box-shadow:0 10px 28px rgba(0,0,0,.28)}
+.split-surface__card-icon{background:#1d3b67;color:#8fbcff}
+.split-surface__back,.split-surface__card span:last-child,.split-surface__market-button,.expert-market-preview__card button{color:#8fbcff}
+.split-surface__market-button,.expert-market-preview__close,.expert-market-preview__card button,.cloud-task-dialog-close{background:#172235;border-color:#4f91f7}
+.cloud-task-dialog p,.cloud-task-type small{color:#9cafc4}
+.cloud-task-type{background:#172235;border-color:#334862;color:#e5edf8}
+.cloud-task-type.selected{background:#1d3b67;border-color:#4f91f7}
+}
+@media (max-height:760px) and (min-width:701px){.rail{overflow-x:visible!important;overflow-y:auto!important;scrollbar-width:none}.rail::-webkit-scrollbar{display:none}}
+@media (max-width:560px){.top-actions .top-action[aria-label="搜索"],.top-actions .top-action[aria-label="刷新"]{display:none}}
+</style>
+<style id="app-update-dark-parity">@media (prefers-color-scheme:dark){.app-update-float{border-color:#334862;background:#172235;color:#e5edf8;box-shadow:0 10px 28px rgba(0,0,0,.38),0 2px 7px rgba(0,0,0,.24)}.app-update-float__icon{background:#173b34;color:#72d6ae}.app-update-float__copy span{color:#9cafc4}.app-update-float__button{border-color:#4f91f7;background:#172235;color:#8fbcff}.app-update-float__button--primary{background:#36b98a;border-color:#36b98a;color:#071d17}.app-update-float__close{color:#9cafc4}.app-update-float__close:hover{background:#223654;color:#e5edf8}}</style>
+</head><body><div class="shell"><aside class="rail"><div class="logo" aria-label="MaClaw"><svg viewBox="0 0 80 80" focusable="false" aria-hidden="true"><path d="M14 58V22l26 25 26-25v36" fill="none" stroke="currentColor" stroke-width="10.5" stroke-linecap="round" stroke-linejoin="round"/></svg></div><div class="nav" role="link" tabindex="0" data-nav="workbench"><b>⌂</b>工作台</div><div class="nav active" role="link" tabindex="0" data-nav="tasks"><b>✓</b>任务</div><div class="nav"><b>▦</b>小程序</div><div class="nav" role="link" tabindex="0" data-nav="experts" aria-label="AI 专家"><b>♙</b>AI 专家</div><div class="nav" role="link" tabindex="0" data-nav="tools" aria-label="工具"><b>⚒</b>工具</div><div class="nav"><b>◉</b>数字员工</div><div class="nav" role="link" tabindex="0" data-nav="schedule"><b>▣</b>日程</div><div class="nav"><b>□</b>文件</div><div class="grow"></div><div class="nav"><b>⚙</b>设置</div><button type="button" class="rail-avatar rail-avatar--system" aria-label="系统菜单" aria-haspopup="menu" aria-expanded="false" data-system-trigger><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68 1.65 1.65 0 0 0 10 3.17V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg></button><div class="system-preview-menu" data-system-menu role="menu" aria-label="系统菜单" hidden><button type="button" role="menuitem" data-system-item="about"><span class="system-preview-icon">ⓘ</span><span>关于</span></button><button type="button" role="menuitem" data-system-item="skills"><span class="system-preview-icon">✦</span><span>技能</span></button><button type="button" role="menuitem" data-system-item="mcp"><span class="system-preview-icon">⌘</span><span>MCP</span></button><button type="button" role="menuitem" data-system-item="gossip"><span class="system-preview-icon">♧</span><span>八卦</span></button></div></aside><aside class="tasks"><div class="task-pane-title-row"><h2>我的任务</h2><span class="task-pane-title-actions"><button type="button" class="task-pane-mini-action" data-task-new aria-label="新建任务" title="新建任务">＋</button><button type="button" class="task-pane-mini-action cloud" data-cloud-task-create aria-label="创建云端工作区任务" title="创建云端工作区任务">☁</button></span></div><div class="task task-cloud" role="button" tabindex="0" data-task-title="整理本周会议纪要" data-task-status="进行中" data-task-prompt="请整理本周三产品周会的会议纪要，重点提炼关键决策、行动项和负责人。" aria-label="打开整理本周会议纪要，云端工作区任务"><div class="task-title-line"><span aria-hidden="true">🔵</span><strong>整理本周会议纪要</strong><span class="task-origin-badge" title="云端工作区">☁ 云端工作区</span></div><small>进行中</small></div><h3 class="task-groups-title">任务分组</h3><div class="group"><strong>▣ 全部任务</strong><span class="count">12</span></div><div class="group"><strong>☑ 进行中</strong><span class="count">3</span></div><div class="group"><strong>◷ 待处理</strong><span class="count">2</span></div><div class="group"><strong>✓ 已完成</strong><span class="count">8</span></div><div class="group"><strong>Ⅱ 已暂停</strong><span class="count">1</span></div><div class="group"><strong>♙ 我创建的</strong><span class="count">6</span></div><div class="group"><strong>♧ 分享给我的</strong><span class="count">4</span></div><div class="status"><b>状态　<span style="float:right;color:#18b875">● 在线</span></b><hr>模型 <span style="float:right">GPT-6 Astra</span><br><br>本月 Token <span style="float:right">68%</span><br><br>点卡余额 <span style="float:right">2,480</span><br><br>套餐 <span style="float:right">Pro</span></div></aside><div class="task-pane-resize-handle" data-testid="task-pane-resize-handle" role="separator" aria-orientation="vertical" aria-valuemin="180" aria-valuemax="460" aria-valuenow="308" aria-label="调整任务面板宽度" tabindex="0" title="拖动调整任务面板宽度"></div><main class="main"><header class="head"><div class="head-brand" aria-label="MaClaw"><span class="head-brand-mark" aria-hidden="true"><svg width="30" height="30" viewBox="0 0 80 80" focusable="false"><path d="M14 58V22l26 25 26-25v36" fill="none" stroke="currentColor" stroke-width="10.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><strong>MaClaw</strong></div><div class="head-task"><h1><span id="taskTitleText">整理本周会议纪要</span>　<span id="taskStatusText" style="color:#1769e8;font-size:13px">● 进行中</span></h1><small>由你创建 · 今天 09:30</small></div><div class="actions"><button>Ⅱ 暂停任务</button><button>♧ 分享</button><button>•••</button><button type="button" class="head-notification" data-notification-trigger aria-label="通知" aria-controls="preview-notifications" aria-expanded="false" title="通知"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg></button></div><div class="monitor-head" aria-label="任务监控顶栏"><div class="monitor-brand"><span aria-hidden="true"><svg width="22" height="22" viewBox="0 0 80 80" focusable="false"><path d="M14 58V22l26 25 26-25v36" fill="none" stroke="currentColor" stroke-width="10.5" stroke-linecap="round" stroke-linejoin="round"/></svg></span><strong>MaClaw</strong><b>任务监控</b></div><label class="monitor-search"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/></svg><input aria-label="搜索任务、文件、知识" placeholder="搜索任务、文件、知识..." /></label><div class="monitor-ready"><i aria-hidden="true"></i>准备就绪</div><button class="monitor-bell" aria-label="通知" aria-controls="preview-notifications" aria-expanded="false" title="通知"><svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9"/><path d="M10 21h4"/></svg></button></div></header><section class="body"><div class="bubble user"><p>请整理本周三产品周会的会议纪要，重点提炼关键决策、行动项和负责人。</p><div class="meta">今天 09:30　✓</div></div><div class="bubble"><p>好的，我将帮你整理本周三产品周会的会议纪要，主要包含：关键决策、行动项、负责人和完成时间。</p><div class="meta">今天 09:30</div></div><div class="timeline"><b>执行步骤</b><div class="step"><i class="icon run">◐</i><span>读取会议录音</span><small>正在转写与识别发言人...</small><span style="color:#f2a126">65%</span></div><div class="step"><i class="icon">✓</i><span>提取关键决策</span><small>已识别 8 条关键决策</small><span>已完成</span></div><div class="step"><i class="icon">✓</i><span>生成纪要草稿</span><small>正在生成结构化纪要...</small><span>已完成</span></div></div><div class="result"><h3>会议纪要草稿</h3><p>已为你生成会议纪要草稿，包含关键决策 8 条、行动项 12 条。</p><div class="result-file"><span class="result-file-icon">▤</span><div><strong>本周三产品周会纪要（草稿）</strong><small>文档 · 2.4 KB · 今天 09:45</small></div></div><button>◉ 查看文档</button><button>⇩ 导出</button><button class="primary">▣ 继续修改</button></div><div class="monitor-preview" id="monitor-panel" role="tabpanel" aria-label="后台任务监控"><div class="monitor-tabs"><button class="monitor-tab" data-monitor-tab="remote">远程</button><button class="monitor-tab active" data-monitor-tab="background">后台</button><button class="monitor-tab" data-monitor-tab="scheduled">计划任务</button><button class="monitor-tab" data-monitor-tab="passthrough">直通任务</button></div><div class="monitor-kicker">AI 编程会话</div><div class="monitor-empty" role="status" aria-live="polite"><span class="monitor-empty-icon" aria-hidden="true">✓</span><strong>当前没有运行中的后台任务</strong><span>新建任务或启动后台流程后，实时状态会显示在这里。</span></div></div></section><div class="composer"><input placeholder="输入消息，继续安排任务..."/><button type="button" aria-label="更多操作" title="更多操作">＋</button><button type="button" aria-label="添加附件" title="添加附件">📎</button><button type="button" class="voice" aria-label="语音输入" title="语音输入"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7"/></svg></button><button type="button" class="send" aria-label="发送" title="发送">➤</button></div></main><aside id="preview-notifications" class="preview-notification-panel" data-notification-panel role="dialog" aria-label="系统通知" aria-modal="false" aria-hidden="true"><div class="preview-notification-head"><span>系统通知</span><button type="button" data-close-notifications aria-label="关闭通知">×</button></div><div class="preview-notification-item"><i class="preview-notification-dot"></i><div><strong>系统已准备就绪</strong><small>MaClaw 工作台已连接，任务状态会在这里同步。</small></div></div><div class="preview-notification-item"><i class="preview-notification-dot" style="background:#18b875"></i><div><strong>任务执行完成</strong><small>最近任务已有新的结果可以查看。</small></div></div><div class="preview-notification-foot"><button type="button" data-mark-notifications>全部标记已读</button></div></aside></div><div class="app-update-float" data-update-float role="status" aria-live="polite"><div class="app-update-float__identity"><span class="app-update-float__icon" aria-hidden="true">↑</span><div class="app-update-float__copy"><strong>新版本就绪</strong><span>MaClaw 更新可用</span></div></div><div class="app-update-float__actions"><button type="button" class="app-update-float__button" data-update-float-action="notes">更新日志</button><button type="button" class="app-update-float__button app-update-float__button--primary" data-update-float-action="restart">重启升级</button></div><button type="button" class="app-update-float__close" data-update-float-close aria-label="关闭更新提示" title="关闭">×</button></div><script>
+
+(() => {
+  const updateFloat = document.querySelector('[data-update-float]');
+  updateFloat?.querySelector('[data-update-float-close]')?.addEventListener('click', () => updateFloat.remove());
+  updateFloat?.querySelectorAll('[data-update-float-action]').forEach((button) => button.addEventListener('click', () => {
+    const message = button.getAttribute('data-update-float-action') === 'restart' ? '已打开升级流程' : '已打开更新日志';
+    let feedback = document.querySelector('.preview-toast');
+    if (!feedback) { feedback = document.createElement('div'); feedback.className = 'preview-toast'; document.body.appendChild(feedback); }
+    feedback.textContent = message;
+    feedback.classList.add('show');
+    window.clearTimeout(feedback.__updateTimer);
+    feedback.__updateTimer = window.setTimeout(() => feedback.classList.remove('show'), 1800);
+  }));
+  const resizeRoot = document.querySelector(".shell");
+  const taskResizeHandle = document.querySelector(".task-pane-resize-handle");
+  const taskPaneMinWidth = 180;
+  const taskPaneMaxWidth = 460;
+  let taskPaneResizeStartX = 0;
+  let taskPaneResizeStartWidth = 308;
+  let taskPaneResizePointerId = null;
+  const readTaskPaneWidth = () => {
+    const raw = getComputedStyle(document.documentElement).getPropertyValue("--task-pane-width").trim();
+    const parsed = Number.parseFloat(raw);
+    return Number.isFinite(parsed) ? parsed : 308;
+  };
+  const setTaskPaneWidth = (width) => {
+    const next = Math.min(taskPaneMaxWidth, Math.max(taskPaneMinWidth, Number(width) || 308));
+    document.documentElement.style.setProperty("--task-pane-width", next + "px");
+    taskResizeHandle?.setAttribute("aria-valuenow", String(Math.round(next)));
+  };
+  const stopTaskPaneResize = () => {
+    taskPaneResizePointerId = null;
+    document.body.classList.remove("task-pane-resizing");
+  };
+  const applyTaskPaneResize = (clientX) => {
+    setTaskPaneWidth(taskPaneResizeStartWidth + clientX - taskPaneResizeStartX);
+  };
+  if (taskResizeHandle && resizeRoot) {
+    taskResizeHandle.addEventListener("pointerdown", (event) => {
+      if (document.body.classList.contains("monitor-mode")) return;
+      event.preventDefault();
+      // Pointer down is cancelled for reliable dragging, so restore focus explicitly
+      // to keep the keyboard resize controls usable after a mouse/touch drag starts.
+      taskResizeHandle.focus({ preventScroll: true });
+      taskPaneResizeStartX = event.clientX;
+      taskPaneResizeStartWidth = readTaskPaneWidth();
+      taskPaneResizePointerId = event.pointerId;
+      document.body.classList.add("task-pane-resizing");
+      try { taskResizeHandle.setPointerCapture(event.pointerId); } catch (_) {}
+    });
+    taskResizeHandle.addEventListener("pointermove", (event) => {
+      if (taskPaneResizePointerId === null || event.pointerId !== taskPaneResizePointerId) return;
+      event.preventDefault();
+      applyTaskPaneResize(event.clientX);
+    }, { passive: false });
+    taskResizeHandle.addEventListener("pointerup", (event) => {
+      if (taskPaneResizePointerId !== null && event.pointerId === taskPaneResizePointerId) {
+        try { taskResizeHandle.releasePointerCapture(event.pointerId); } catch (_) {}
+        stopTaskPaneResize();
+      }
+    });
+    taskResizeHandle.addEventListener("pointercancel", stopTaskPaneResize);
+    taskResizeHandle.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowLeft" || event.key === "ArrowRight") {
+        event.preventDefault();
+        setTaskPaneWidth(readTaskPaneWidth() + (event.key === "ArrowRight" ? 16 : -16));
+      } else if (event.key === "Home" || event.key === "End") {
+        event.preventDefault();
+        setTaskPaneWidth(event.key === "Home" ? taskPaneMinWidth : taskPaneMaxWidth);
+      }
+    });
+  }
+  const input = document.querySelector('.composer input');
+  const send = document.querySelector('.composer .send');
+  const attach = document.querySelector('.composer button:nth-of-type(2)');
+  const voice = document.querySelector('.composer .voice');
+  const plus = document.querySelector('.composer button:first-of-type');
+  const body = document.querySelector('.body');
+  const timeline = document.querySelector('.timeline');
+  const pause = document.querySelector('.actions button:first-child');
+  const share = document.querySelector('.actions button:nth-child(2)');
+  const continueBtn = document.querySelector('.result .primary');
+  const more = document.querySelector('.actions button:nth-child(3)');
+  const monitorBell = document.querySelector('.monitor-bell');
+  const headNotification = document.querySelector('.head-notification');
+  const notificationTriggers = [monitorBell, headNotification].filter(Boolean);
+  const monitorSearch = document.querySelector('.monitor-search input');
+  const notificationPanel = document.querySelector('[data-notification-panel]');
+  const notificationClose = document.querySelector('[data-close-notifications]');
+  let notificationOpener = monitorBell || headNotification;
+  const setNotificationsOpen = (open) => {
+    document.body.classList.toggle('notifications-open', open);
+    notificationTriggers.forEach((trigger) => trigger.setAttribute('aria-expanded', String(open)));
+    notificationPanel?.setAttribute('aria-hidden', String(!open));
+    if (open) {
+      // Move focus into the dialog so keyboard users can dismiss it immediately.
+      window.requestAnimationFrame(() => notificationClose?.focus());
+    } else {
+      const opener = notificationOpener || monitorBell || headNotification;
+      window.requestAnimationFrame(() => opener?.focus());
+    }
+  };
+  const closeNotificationPanel = () => setNotificationsOpen(false);
+  const toggleNotificationPanel = (opener) => {
+    notificationOpener = opener || monitorBell || headNotification;
+    setNotificationsOpen(!document.body.classList.contains('notifications-open'));
+  };
+  monitorBell?.addEventListener('click', () => toggleNotificationPanel(monitorBell));
+  headNotification?.addEventListener('click', () => toggleNotificationPanel(headNotification));
+  document.querySelector('[data-close-notifications]')?.addEventListener('click', closeNotificationPanel);
+  document.querySelector('[data-mark-notifications]')?.addEventListener('click', closeNotificationPanel);
+  notificationPanel?.addEventListener('click', (event) => event.stopPropagation());
+  document.addEventListener('click', (event) => {
+    if (document.body.classList.contains('notifications-open') && !(event.target instanceof Element && (event.target.closest('[data-notification-panel]') || event.target.closest('.monitor-bell') || event.target.closest('.head-notification')))) closeNotificationPanel();
+  });
+  document.addEventListener('keydown', (event) => { if (event.key === 'Escape' && !(systemMenu && !systemMenu.hidden)) closeNotificationPanel(); });
+  const resultButtons = Array.from(document.querySelectorAll('.result button'));
+  if (!input || !send || !body) return;
+  input.setAttribute('aria-label', '继续安排任务');
+  send.setAttribute('aria-label', '发送');
+  if (attach) attach.setAttribute('aria-label', '添加附件');
+  if (voice) voice.setAttribute('aria-label', '语音输入');
+  if (plus) plus.setAttribute('aria-label', '更多操作');
+  let toastTimer;
+  const toast = (message) => {
+    let el = document.querySelector('.preview-toast');
+    if (!el) { el = document.createElement('div'); el.className = 'preview-toast'; document.body.appendChild(el); }
+    el.textContent = message;
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), 1800);
+  };
+  monitorSearch?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      const value = monitorSearch.value.trim();
+      toast(value ? '正在搜索：' + value : '请输入搜索内容');
+    }
+  });
+  const addUserBubble = (value) => {
+    const bubble = document.createElement('div');
+    bubble.className = 'bubble user preview-added';
+    bubble.innerHTML = '<p></p><div class="meta">刚刚　✓</div>';
+    bubble.querySelector('p').textContent = value;
+    if (timeline) body.insertBefore(bubble, timeline); else body.insertBefore(bubble, body.firstChild);
+    bubble.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  };
+  const submit = () => {
+    const value = input.value.trim();
+    if (!value) { input.focus(); return; }
+    addUserBubble(value);
+    input.value = '';
+    input.focus();
+    toast('已追加到当前任务');
+  };
+  send.addEventListener('click', submit);
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); submit(); }
+  });
+  if (attach) attach.addEventListener('click', () => toast('附件入口已打开'));
+  if (voice) voice.addEventListener('click', () => {
+    const active = voice.dataset.active === 'true';
+    voice.dataset.active = String(!active);
+    voice.setAttribute('aria-label', active ? '语音输入' : '停止语音输入');
+    toast(active ? '语音输入已停止' : '语音输入已准备');
+  });
+  if (plus) plus.addEventListener('click', () => toast('更多任务操作'));
+  if (pause) pause.addEventListener('click', () => {
+    const paused = pause.dataset.paused === 'true';
+    pause.dataset.paused = String(!paused);
+    pause.textContent = paused ? 'Ⅱ 暂停任务' : '▶ 继续任务';
+    toast(paused ? '任务已继续' : '任务已暂停');
+  });
+  if (share) share.addEventListener('click', async () => {
+    try { await navigator.clipboard?.writeText(location.href); } catch (_) { /* preview only */ }
+    toast('任务链接已复制');
+  });
+  if (continueBtn) continueBtn.addEventListener('click', () => {
+    const currentTitle = (new URLSearchParams(location.search).get('title') || '当前任务').trim();
+    input.value = '请继续完善「' + currentTitle + '」，补充行动项、负责人和截止时间。';
+    input.focus();
+  });
+  if (more) more.addEventListener('click', () => toast('更多任务操作'));
+  if (resultButtons[0]) resultButtons[0].addEventListener('click', () => toast('文档预览已打开'));
+  if (resultButtons[1]) resultButtons[1].addEventListener('click', () => toast('会议纪要草稿已导出'));
+  const workbenchNav = document.querySelector('[data-nav="workbench"]');
+  workbenchNav?.addEventListener('click', () => { window.location.href = preservePreviewRevision('design-preview.html'); });
+  workbenchNav?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); window.location.href = preservePreviewRevision('design-preview.html'); }
+  });
+  const preservePreviewRevision = (href) => {
+    const rev = new URLSearchParams(window.location.search).get('rev');
+    return rev && href ? `${href}${href.includes('?') ? '&' : '?'}rev=${encodeURIComponent(rev)}` : href;
+  };
+  const openWorkbenchPreview = (cloud = false) => {
+    window.location.href = preservePreviewRevision(cloud ? 'design-preview.html?cloud=1' : 'design-preview.html');
+  };
+  document.querySelector('[data-task-new]')?.addEventListener('click', () => openWorkbenchPreview(false));
+  document.querySelector('[data-cloud-task-create]')?.addEventListener('click', () => openWorkbenchPreview(true));
+  const openCloudTaskCard = () => {
+    const card = document.querySelector('.task.task-cloud');
+    if (!card) return;
+    const params = new URLSearchParams({
+      title: card.dataset.taskTitle || '整理本周会议纪要',
+      status: card.dataset.taskStatus || '进行中',
+      prompt: card.dataset.taskPrompt || '请整理本周三产品周会的会议纪要，重点提炼关键决策、行动项和负责人。'
+    });
+    window.location.href = preservePreviewRevision(`task-preview.html?${params.toString()}`);
+  };
+  const cloudTaskCard = document.querySelector('.task.task-cloud');
+  cloudTaskCard?.addEventListener('click', openCloudTaskCard);
+  cloudTaskCard?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openCloudTaskCard(); }
+  });
+  // Keep the split AI 专家 / 工具 navigation available on ordinary task pages too.
+  // The monitor-specific branch below only changes the active tab; navigation
+  // itself must not disappear when the URL has no ?monitor= parameter.
+  const toolsNav = document.querySelector('[data-nav="tools"]');
+  const openToolsSurface = () => { window.location.href = preservePreviewRevision('design-preview.html?surface=tools'); };
+  toolsNav?.addEventListener('click', openToolsSurface);
+  toolsNav?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openToolsSurface(); }
+  });
+  const expertsNav = document.querySelector('[data-nav="experts"]');
+  const openExpertsSurface = () => { window.location.href = preservePreviewRevision('design-preview.html?surface=experts'); };
+  expertsNav?.addEventListener('click', openExpertsSurface);
+  expertsNav?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openExpertsSurface(); }
+  });
+  const taskParams = new URLSearchParams(location.search);
+  const initialTitle = (taskParams.get('title') || '').trim();
+  const initialStatus = (taskParams.get('status') || '').trim();
+  const titleNode = document.getElementById('taskTitleText');
+  const statusNode = document.getElementById('taskStatusText');
+  const resultTitleNode = document.querySelector('.result h3');
+  const resultDescriptionNode = document.querySelector('.result p');
+  const initialPrompt = (taskParams.get('prompt') || '').trim();
+  const monitorMode = taskParams.get('monitor');
+  const monitorModes = ['remote', 'background', 'scheduled', 'passthrough'];
+  if (monitorModes.includes(monitorMode)) {
+    const scheduledMonitor = monitorMode === 'scheduled';
+    const passthroughMonitor = monitorMode === 'passthrough';
+    const remoteMonitor = monitorMode === 'remote';
+    document.body.classList.add('monitor-mode');
+    const monitorPreview = document.querySelector('.monitor-preview');
+    const monitorLabel = scheduledMonitor ? '计划任务监控' : passthroughMonitor ? '直通任务监控' : remoteMonitor ? '远程任务监控' : '后台任务监控';
+    monitorPreview?.setAttribute('aria-label', monitorLabel);
+    if (titleNode) titleNode.textContent = scheduledMonitor ? '计划任务' : passthroughMonitor ? '直通任务' : remoteMonitor ? '远程任务' : '后台任务监控';
+    if (statusNode) { statusNode.textContent = scheduledMonitor ? '● 计划中' : passthroughMonitor ? '● 直通中' : remoteMonitor ? '● 在线' : '● 监控中'; statusNode.style.color = '#1769e8'; }
+    const headMeta = document.querySelector('.head small');
+    if (headMeta) headMeta.textContent = scheduledMonitor ? '计划任务 · 执行安排' : passthroughMonitor ? '直通任务 · 实时状态' : remoteMonitor ? '远程任务 · 实时状态' : '后台任务 · 实时状态';
+    const monitorKicker = document.querySelector('.monitor-kicker');
+    const monitorTitle = document.querySelector('.monitor-empty strong');
+    const monitorDescription = document.querySelector('.monitor-empty span:last-child');
+    if (scheduledMonitor) {
+      if (monitorKicker) monitorKicker.textContent = '计划任务';
+      if (monitorTitle) monitorTitle.textContent = '暂无计划任务';
+      if (monitorDescription) monitorDescription.textContent = '创建计划任务后，执行时间和状态会显示在这里。';
+    } else if (passthroughMonitor) {
+      if (monitorKicker) monitorKicker.textContent = '直通任务';
+      if (monitorTitle) monitorTitle.textContent = '暂无直通任务';
+      if (monitorDescription) monitorDescription.textContent = '启动直通任务后，实时状态会显示在这里。';
+    } else if (remoteMonitor) {
+      if (monitorKicker) monitorKicker.textContent = '远程任务';
+      if (monitorTitle) monitorTitle.textContent = '暂无远程任务';
+      if (monitorDescription) monitorDescription.textContent = '连接远程任务后，实时状态会显示在这里。';
+    }
+    const monitorTargets = {
+      remote: preservePreviewRevision('task-preview.html?monitor=remote'),
+      background: preservePreviewRevision('task-preview.html?monitor=background'),
+      scheduled: preservePreviewRevision('task-preview.html?monitor=scheduled'),
+      passthrough: preservePreviewRevision('task-preview.html?monitor=passthrough')
+    };
+    const monitorTabList = document.querySelector('.monitor-tabs');
+    const monitorPanel = document.querySelector('#monitor-panel');
+    monitorTabList?.setAttribute('role', 'tablist');
+    monitorTabList?.setAttribute('aria-label', '任务监控分类');
+    document.querySelectorAll('.monitor-tab').forEach((tab, index) => {
+      const target = tab.dataset.monitorTab || ['remote', 'background', 'scheduled', 'passthrough'][index];
+      const selected = target === monitorMode;
+      tab.classList.toggle('active', selected);
+      tab.id = `monitor-tab-${target}`;
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-controls', 'monitor-panel');
+      tab.setAttribute('aria-selected', String(selected));
+      tab.tabIndex = selected ? 0 : -1;
+      if (selected) monitorPanel?.setAttribute('aria-labelledby', tab.id);
+      tab.addEventListener('click', () => {
+        if (target && target !== monitorMode && monitorTargets[target]) {
+          window.location.href = monitorTargets[target];
+          return;
+        }
+        toast(tab.textContent + '视图已切换');
+      });
+      tab.addEventListener('keydown', (event) => {
+        const key = event.key;
+        if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(key)) return;
+        event.preventDefault();
+        const tabs = Array.from(document.querySelectorAll('.monitor-tab'));
+        const current = tabs.indexOf(tab);
+        const next = key === 'Home' ? 0 : key === 'End' ? tabs.length - 1 : Math.max(0, Math.min(tabs.length - 1, current + (key === 'ArrowRight' ? 1 : -1)));
+        tabs[next]?.focus();
+        tabs[next]?.click();
+      });
+    });
+  const scheduleNav = document.querySelector('[data-nav="schedule"]');
+    scheduleNav?.classList.toggle('active', scheduledMonitor);
+    const taskNav = document.querySelector('.rail [data-nav="tasks"]');
+    taskNav?.classList.toggle('active', !scheduledMonitor);
+  }
+  const taskRailNav = document.querySelector('[data-nav="tasks"]');
+  taskRailNav?.addEventListener('click', () => { window.location.href = preservePreviewRevision('task-preview.html?monitor=background'); });
+  taskRailNav?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); window.location.href = preservePreviewRevision('task-preview.html?monitor=background'); }
+  });
+  const scheduleNav = document.querySelector('[data-nav="schedule"]');
+  scheduleNav?.addEventListener('click', () => { window.location.href = preservePreviewRevision('task-preview.html?monitor=scheduled'); });
+  scheduleNav?.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); window.location.href = preservePreviewRevision('task-preview.html?monitor=scheduled'); }
+  });
+  if (initialTitle && titleNode) titleNode.textContent = initialTitle;
+  if (initialStatus && statusNode) {
+    const statusColors = { '进行中': '#1769e8', '已完成': '#15945b', '待处理': '#e58b18', '失败': '#dc4c4c', '已暂停': '#64748b' };
+    statusNode.textContent = '● ' + initialStatus;
+    statusNode.style.color = statusColors[initialStatus] || '#1769e8';
+  }
+  if (initialTitle && resultTitleNode) resultTitleNode.textContent = initialTitle + '结果';
+  if (initialTitle && resultDescriptionNode) resultDescriptionNode.textContent = '已为你生成「' + initialTitle + '」的结果，可查看文档或继续修改。';
+  if (initialPrompt) {
+    addUserBubble(initialPrompt);
+  }
+  const systemTrigger = document.querySelector('[data-system-trigger]');
+  const systemMenu = document.querySelector('[data-system-menu]');
+  const systemItems = systemMenu ? Array.from(systemMenu.querySelectorAll('[data-system-item]')) : [];
+  const setSystemMenuOpen = (open, focusTrigger = false) => {
+    if (!systemMenu || !systemTrigger) return;
+    systemMenu.hidden = !open;
+    systemTrigger.setAttribute('aria-expanded', String(open));
+    if (open) systemItems[0]?.focus();
+    else if (focusTrigger) systemTrigger.focus();
+  };
+  systemTrigger?.addEventListener('click', (event) => {
+    event.stopPropagation();
+    setSystemMenuOpen(!!systemMenu?.hidden);
+  });
+  systemMenu?.addEventListener('click', (event) => {
+    const item = event.target instanceof Element ? event.target.closest('[data-system-item]') : null;
+    if (!item) return;
+    const labels = { about: '关于', skills: '技能', mcp: 'MCP', gossip: '八卦' };
+    toast(`已打开${labels[item.dataset.systemItem] || '系统功能'}`);
+    setSystemMenuOpen(false, true);
+  });
+  systemMenu?.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); setSystemMenuOpen(false, true); return; }
+    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
+    const current = systemItems.indexOf(document.activeElement);
+    if (current < 0 || systemItems.length < 2) return;
+    event.preventDefault();
+    const next = (current + (event.key === 'ArrowRight' ? 1 : -1) + systemItems.length) % systemItems.length;
+    systemItems[next].focus();
+  });
+  document.addEventListener('click', (event) => {
+    if (systemMenu?.hidden) return;
+    const target = event.target instanceof Element ? event.target : null;
+    if (!target?.closest('[data-system-menu], [data-system-trigger]')) setSystemMenuOpen(false);
+  });
+
+  // Keep the task preview's right-side controls aligned with the native window
+  // title bar: this action hides the preview surface without ending the task.
+  const actions = document.querySelector('.actions');
+  if (actions && !actions.querySelector('[data-hide-window]')) {
+    const hideWindow = document.createElement('button');
+    hideWindow.type = 'button';
+    hideWindow.dataset.hideWindow = 'true';
+    hideWindow.className = 'head-window-hide';
+    hideWindow.textContent = '×';
+    hideWindow.style.fontSize = '18px';
+    hideWindow.style.lineHeight = '1';
+    hideWindow.setAttribute('aria-label', '关闭窗口');
+    hideWindow.title = '关闭窗口';
+    hideWindow.addEventListener('click', () => toast('窗口已隐藏，任务将继续运行'));
+    actions.insertBefore(hideWindow, actions.querySelector('.head-notification'));
+  }
+})();
+</script>
+<style id="visual-audit-rail-parity">
+/* Keep every rail control visible in the compact desktop preview. */
+@media (max-height: 760px) and (min-width: 701px) {
+  .rail > .logo { width: 36px; height: 36px; flex-basis: 36px; }
+  .rail > .logo svg { width: 30px; height: 30px; }
+  .rail .nav { min-height: 50px; }
+  .rail { gap: 6px; }
+  .rail-avatar { width: 36px; height: 36px; flex-basis: 36px; margin-top: 3px; }
+  .rail-avatar svg { width: 23px; height: 23px; }
+}
+</style>
+</body></html>
+

@@ -386,6 +386,52 @@ func TestListUsersHandlerReturnsBoundUsers(t *testing.T) {
 	}
 }
 
+func TestListUsersHandlerExcludesSystemLLMUser(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, services.handler)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	systemUser := &store.User{
+		ID:               llmservice.SystemLLMUserID(store.DefaultTenantID),
+		TenantID:         store.DefaultTenantID,
+		Email:            llmservice.SystemLLMUserEmail,
+		SN:               "SN-SYSUSER-" + store.DefaultTenantID,
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := services.store.Users.Create(ctx, systemUser); err != nil {
+		t.Fatalf("create system user: %v", err)
+	}
+	regularUser := &store.User{
+		ID:               "regular-visible",
+		TenantID:         store.DefaultTenantID,
+		Email:            "visible@example.com",
+		SN:               "SN-regular-visible",
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := services.store.Users.Create(ctx, regularUser); err != nil {
+		t.Fatalf("create regular user: %v", err)
+	}
+
+	listResp := doHubAdminJSONRequest(t, services.handler, http.MethodGet, "/api/admin/users", nil, token)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", listResp.Code, listResp.Body.String())
+	}
+	body := listResp.Body.String()
+	if strings.Contains(body, llmservice.SystemLLMUserEmail) {
+		t.Fatalf("system user must not be listed, body=%s", body)
+	}
+	if !strings.Contains(body, "visible@example.com") {
+		t.Fatalf("regular user missing from list, body=%s", body)
+	}
+}
+
 func TestListUsersHandlerReturnsEmailAndPhoneContacts(t *testing.T) {
 	services := newAdminRouterTestContext(t)
 	token := issueHubAdminToken(t, services.handler)
@@ -655,6 +701,74 @@ func TestDeleteBoundUserHandlerRemovesUser(t *testing.T) {
 	}
 	if strings.Contains(listResp.Body.String(), "delete-bound@example.com") {
 		t.Fatalf("expected deleted user to be absent, body=%s", listResp.Body.String())
+	}
+}
+
+func TestDeleteBoundUserHandlerRejectsSystemLLMUser(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, services.handler)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	systemUser := &store.User{
+		ID:               llmservice.SystemLLMUserID(store.DefaultTenantID),
+		TenantID:         store.DefaultTenantID,
+		Email:            llmservice.SystemLLMUserEmail,
+		SN:               "SN-SYSUSER-" + store.DefaultTenantID,
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := services.store.Users.Create(ctx, systemUser); err != nil {
+		t.Fatalf("create system user: %v", err)
+	}
+
+	deleteResp := doHubAdminJSONRequest(t, services.handler, http.MethodDelete, "/api/admin/users?email="+llmservice.SystemLLMUserEmail, nil, token)
+	if deleteResp.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d body=%s", deleteResp.Code, deleteResp.Body.String())
+	}
+	if body := deleteResp.Body.String(); !strings.Contains(body, "SYSTEM_USER_PROTECTED") {
+		t.Fatalf("expected SYSTEM_USER_PROTECTED error, body=%s", body)
+	}
+	if got, err := services.store.Users.GetByTenantEmail(ctx, store.DefaultTenantID, llmservice.SystemLLMUserEmail); err != nil || got == nil {
+		t.Fatalf("system user must survive delete, got=%#v err=%v", got, err)
+	}
+}
+
+func TestForceDeleteVirtualBoundUserHandlerRejectsSystemLLMUser(t *testing.T) {
+	services := newAdminRouterTestContext(t)
+	token := issueHubAdminToken(t, services.handler)
+	ctx := context.Background()
+	now := time.Now().UTC()
+
+	systemUser := &store.User{
+		ID:               llmservice.SystemLLMUserID(store.DefaultTenantID),
+		TenantID:         store.DefaultTenantID,
+		Email:            llmservice.SystemLLMUserEmail,
+		SN:               "SN-SYSUSER-" + store.DefaultTenantID,
+		Status:           "active",
+		EnrollmentStatus: "approved",
+		CreatedAt:        now,
+		UpdatedAt:        now,
+	}
+	if err := services.store.Users.Create(ctx, systemUser); err != nil {
+		t.Fatalf("create system user: %v", err)
+	}
+
+	resp := doHubAdminJSONRequest(t, services.handler, http.MethodPost, "/api/admin/users/force-delete-virtual", map[string]any{
+		"tenant_id":      store.DefaultTenantID,
+		"email":          llmservice.SystemLLMUserEmail,
+		"admin_password": "StrongPassword123!",
+	}, token)
+	if resp.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if body := resp.Body.String(); !strings.Contains(body, "SYSTEM_USER_PROTECTED") {
+		t.Fatalf("expected SYSTEM_USER_PROTECTED error, body=%s", body)
+	}
+	if got, err := services.store.Users.GetByTenantEmail(ctx, store.DefaultTenantID, llmservice.SystemLLMUserEmail); err != nil || got == nil {
+		t.Fatalf("system user must survive force delete, got=%#v err=%v", got, err)
 	}
 }
 

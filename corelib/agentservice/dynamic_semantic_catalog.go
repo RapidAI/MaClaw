@@ -17,6 +17,15 @@ func ProjectMCPDynamicProvider(entry MCPToolEntry) (coretool.ProviderSpec, map[s
 	if err != nil {
 		return coretool.ProviderSpec{}, nil, MCPToolBinding{}, err
 	}
+	invocationSchema := safeMCPInvocationSchema(entry.InputSchema)
+	modelFunction := ""
+	if invocation, ok, err := reviewedMCPModelInvocation(entry); err != nil {
+		return coretool.ProviderSpec{}, nil, MCPToolBinding{}, fmt.Errorf("project MCP binding: %w", err)
+	} else if ok {
+		invocationSchema = invocation.Schema
+		modelFunction = invocation.Function
+		binding.ArgumentFields = invocation.Fields
+	}
 	provider, definition, err := (coretool.DynamicProviderDescriptor{
 		Kind:                 "mcp",
 		ProviderID:           binding.ServerID,
@@ -27,14 +36,16 @@ func ProjectMCPDynamicProvider(entry MCPToolEntry) (coretool.ProviderSpec, map[s
 		Consumes:             entry.Contract.Consumes,
 		Produces:             entry.Contract.Produces,
 		Effects:              entry.Contract.Effects,
-		Ready:                true,
+		Ready:                !entry.RuntimeBlocked,
 		// Dynamic Skill/MCP contracts are channel-neutral unless the trusted
 		// host policy projects an explicit channel restriction. An empty scope
 		// means the common planner may consider the provider for any admitted
 		// channel; copying a provider-supplied channel name here would let
 		// discovery metadata control routing.
 		ChannelScopes:    nil,
-		InvocationSchema: safeMCPInvocationSchema(entry.InputSchema),
+		TrustTier:        entry.Contract.TrustTier,
+		InvocationSchema: invocationSchema,
+		ModelFunction:    modelFunction,
 	}).Project()
 	if err != nil {
 		return coretool.ProviderSpec{}, nil, MCPToolBinding{}, fmt.Errorf("project MCP binding: %w", err)
@@ -69,6 +80,7 @@ func ProjectSkillDynamicProvider(entry SkillToolEntry) (coretool.ProviderSpec, m
 		Effects:              entry.Contract.Effects,
 		Ready:                true,
 		ChannelScopes:        nil,
+		TrustTier:            entry.Contract.TrustTier,
 		InvocationSchema:     parameterSchema,
 	}).Project()
 	if err != nil {

@@ -1,0 +1,277 @@
+/* ── Code preview: change-focused diff view ────────────────────────────────
+   Table layout (not CSS grid) on purpose: auto table sizing keeps the old/new
+   columns aligned across every row and grows past the pane so the body scrolls
+   sideways, which per-row grids cannot do without overlapping the text.
+   Colors arrive as CSS custom properties from codeDiffCssVars(theme), so one
+   rule set serves every light/dark scheme.
+   ------------------------------------------------------------------------ */
+
+.cp-diff {
+    --cp-diff-empty-bg: color-mix(in srgb, var(--cp-diff-ink-muted) 8%, transparent);
+    --cp-diff-mark-add: color-mix(in srgb, var(--cp-diff-add-ink) 38%, transparent);
+    --cp-diff-mark-del: color-mix(in srgb, var(--cp-diff-del-ink) 32%, transparent);
+    border-collapse: collapse;
+    width: 100%;
+    color: var(--cp-diff-text);
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+    text-align: left;
+    table-layout: auto;
+}
+
+/* ── Cells ── */
+
+.cp-diff-row > td {
+    vertical-align: top;
+    font-weight: inherit;
+}
+
+.cp-diff-gutter {
+    min-width: 42px;
+    padding: 0 6px;
+    text-align: right;
+    color: var(--cp-diff-ink-muted);
+    background: var(--cp-diff-gutter-bg);
+    user-select: none;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}
+
+.cp-diff-sign {
+    min-width: 13px;
+    padding: 0 2px;
+    text-align: center;
+    color: var(--cp-diff-ink-muted);
+    user-select: none;
+    font-weight: 700;
+}
+
+.cp-diff-sign-add {
+    color: var(--cp-diff-add-ink);
+}
+
+.cp-diff-sign-del {
+    color: var(--cp-diff-del-ink);
+}
+
+.cp-diff-cell {
+    padding: 0 6px;
+    white-space: pre;
+    word-break: normal;
+    overflow-wrap: normal;
+}
+
+.cp-diff-wrap .cp-diff-cell {
+    white-space: pre-wrap;
+    /* `anywhere` (unlike `break-word`) also shrinks the min-content width, so
+       the table fits the pane and wraps instead of scrolling sideways. */
+    overflow-wrap: anywhere;
+}
+
+/* Divider between the old and new halves of a split row. */
+.cp-diff-cell-old {
+    border-right: 1px solid var(--cp-diff-border);
+}
+
+/* Additions / deletions: tinted cell plus a solid edge marker so the eye
+   catches the change even when scrolling fast. */
+.cp-diff-cell-add {
+    background: var(--cp-diff-add-bg);
+    box-shadow: inset 3px 0 0 var(--cp-diff-add-ink);
+    padding-left: 9px;
+}
+
+.cp-diff-cell-del {
+    background: var(--cp-diff-del-bg);
+    box-shadow: inset 3px 0 0 var(--cp-diff-del-ink);
+    padding-left: 9px;
+}
+
+.cp-diff-cell-empty {
+    background: var(--cp-diff-empty-bg);
+}
+
+/* Word-level marks inside a rewritten line. */
+.cp-diff-mark-add {
+    background: var(--cp-diff-mark-add);
+    border-radius: 2px;
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--cp-diff-add-ink) 45%, transparent);
+}
+
+.cp-diff-mark-del {
+    background: var(--cp-diff-mark-del);
+    border-radius: 2px;
+    box-shadow: 0 0 0 1px color-mix(in srgb, var(--cp-diff-del-ink) 40%, transparent);
+}
+
+/* Inline rewrite: the '-' and '+' halves are one change, so their gutters
+   carry the same tint as the cells. */
+.cp-diff-row-modold .cp-diff-gutter {
+    background: var(--cp-diff-del-bg);
+    color: var(--cp-diff-del-ink);
+}
+
+.cp-diff-row-modnew .cp-diff-gutter {
+    background: var(--cp-diff-add-bg);
+    color: var(--cp-diff-add-ink);
+}
+
+/* Find-in-file highlight. Cells and gutters paint their own background, so a
+   row tint alone would be invisible on changed lines: overlay it instead and
+   the add/delete colour stays underneath. */
+.cp-diff-row-match {
+    --cp-diff-match: rgba(234, 179, 8, 0.14);
+}
+
+.cp-diff-row-match-active {
+    --cp-diff-match: rgba(234, 179, 8, 0.32);
+}
+
+.cp-diff-row-match > td,
+.cp-diff-row-match-active > td {
+    background-image: linear-gradient(var(--cp-diff-match, transparent), var(--cp-diff-match, transparent));
+}
+
+/* ── Hunk headers + collapsed gaps ── */
+
+.cp-diff-sep-cell {
+    padding: 0;
+}
+
+.cp-diff-hunk,
+.cp-diff-gap {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    padding: 2px 8px;
+    border: none;
+    border-top: 1px solid var(--cp-diff-border);
+    border-bottom: 1px solid var(--cp-diff-border);
+    background: var(--cp-diff-bar-bg);
+    color: var(--cp-diff-ink-muted);
+    font-family: inherit;
+    font-size: 11px;
+    line-height: 20px;
+    text-align: left;
+    cursor: pointer;
+}
+
+.cp-diff-hunk:hover,
+.cp-diff-gap:hover {
+    background: var(--cp-diff-hover-bg);
+}
+
+.cp-diff-gap {
+    border-top-style: dashed;
+    border-bottom-style: dashed;
+}
+
+.cp-diff-gap-dots {
+    letter-spacing: 2px;
+}
+
+.cp-diff-hunk-mark {
+    width: 10px;
+    flex-shrink: 0;
+}
+
+.cp-diff-hunk-range {
+    font-family: 'Cascadia Code', 'Fira Code', 'Consolas', monospace;
+}
+
+.cp-diff-hunk-stats {
+    font-weight: 700;
+}
+
+.cp-diff-hunk-action {
+    margin-left: auto;
+    opacity: 0.75;
+}
+
+/* ── Summary / control bar ── */
+
+.cp-diff-bar {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    flex-wrap: wrap;
+    flex-shrink: 0;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--cp-diff-border);
+    background: var(--cp-diff-bar-bg);
+    color: var(--cp-diff-text);
+    font-size: 11px;
+    line-height: 20px;
+}
+
+.cp-diff-bar-spacer {
+    flex: 1 1 auto;
+    min-width: 4px;
+}
+
+.cp-diff-bar-note,
+.cp-diff-cursor-unit {
+    color: var(--cp-diff-ink-muted);
+}
+
+.cp-diff-stat-add {
+    color: var(--cp-diff-add-ink);
+    font-weight: 700;
+}
+
+.cp-diff-stat-del {
+    color: var(--cp-diff-del-ink);
+    font-weight: 700;
+}
+
+.cp-diff-stat-mod {
+    color: var(--cp-diff-text);
+    font-weight: 700;
+    opacity: 0.8;
+}
+
+.cp-diff-btn {
+    border: 1px solid var(--cp-diff-border);
+    background: transparent;
+    color: var(--cp-diff-ink-muted);
+    border-radius: 4px;
+    padding: 1px 6px;
+    font-family: inherit;
+    font-size: 11px;
+    line-height: 18px;
+    cursor: pointer;
+    flex-shrink: 0;
+}
+
+.cp-diff-btn:hover:not(:disabled) {
+    background: var(--cp-diff-hover-bg);
+}
+
+.cp-diff-btn[data-active='true'] {
+    background: var(--cp-diff-active-bg);
+    color: var(--cp-diff-active-fg);
+    font-weight: 600;
+}
+
+.cp-diff-btn:disabled {
+    opacity: 0.45;
+    cursor: default;
+}
+
+.cp-diff-btn-icon {
+    min-width: 20px;
+    padding: 1px 4px;
+}
+
+.cp-diff-nav {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+}
+
+.cp-diff-cursor {
+    min-width: 62px;
+    text-align: center;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+}

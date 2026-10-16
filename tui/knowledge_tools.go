@@ -3,11 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
+	"log"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
+	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/tui/commands"
 )
 
@@ -132,7 +135,47 @@ func (app *TUIApp) toolKnowledgeSaveText(args map[string]interface{}) string {
 	if source.Title != "" {
 		result += fmt.Sprintf(", Title: %s", source.Title)
 	}
+	if facts := agent.ClaimsFromText(text, "knowledge save"); len(facts) > 0 {
+		for _, fact := range facts {
+			app.syncVerifiedFactMemory(fact)
+		}
+	} else if fact, ok := agent.ExtractSessionFactFromMemoryContent(text); ok {
+		app.syncVerifiedFactMemory(fact)
+	}
 	return result
+}
+
+func (app *TUIApp) syncVerifiedFactToStores(fact agent.SessionFact) {
+	app.syncVerifiedFactMemory(fact)
+	app.syncVerifiedFactKnowledge(fact)
+}
+
+func (app *TUIApp) syncVerifiedFactMemory(fact agent.SessionFact) {
+	if app == nil || app.memoryStore == nil || strings.TrimSpace(fact.Claim) == "" {
+		return
+	}
+	_ = app.memoryStore.ApplyVerifiedFact(memory.VerifiedFact{
+		Entity:   fact.Entity,
+		Claim:    fact.Claim,
+		Evidence: fact.Evidence,
+		Aliases:  append([]string(nil), fact.Aliases...),
+	}, "")
+}
+
+func (app *TUIApp) syncVerifiedFactKnowledge(fact agent.SessionFact) {
+	if app == nil || app.knowledgeStore == nil || strings.TrimSpace(fact.Claim) == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+	defer cancel()
+	if _, err := app.knowledgeStore.ApplyVerifiedFact(ctx, knowledge.VerifiedFactRequest{
+		Entity:  fact.Entity,
+		Claim:   fact.Claim,
+		Evidence: fact.Evidence,
+		Aliases: append([]string(nil), fact.Aliases...),
+	}); err != nil {
+		log.Printf("[session-facts] knowledge verified-fact sync failed: %v", err)
+	}
 }
 
 // toolKnowledgeSaveURL fetches the URL content and persists it as a new source.

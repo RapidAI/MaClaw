@@ -110,7 +110,7 @@ func (m *Model) TextEncoderForward(inputIDs []int) ([]float32, int, error) {
 			if err != nil {
 				return nil, 0, err
 			}
-			if err := conv1DSIMDTransposedWeight(conv, x, wT, bias, dim, steps, dim, kernel, 1, padding, 1, steps); err != nil {
+			if err := conv1DSIMDTransposedWeight(conv, x, wT, bias, nil, dim, steps, dim, kernel, 1, padding, 1, steps); err != nil {
 				return nil, 0, err
 			}
 		} else {

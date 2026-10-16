@@ -26,6 +26,9 @@ type ReadOptions struct {
 	// row cap. It is used by structured tool callers to keep JSON payloads and
 	// intermediate row grids bounded.
 	MaxRows int
+	// Password is the optional workbook key for OLE-encrypted xlsx files.
+	// It is never logged. Empty means fail closed on encrypted workbooks.
+	Password string
 }
 
 // ReadResult contains the data read from a spreadsheet.

@@ -1,0 +1,704 @@
+package workbuddy
+
+import (
+	"bytes"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/RapidAI/CodeClaw/corelib"
+)
+
+const defaultSystemPrompt = "You are a helpful assistant."
+
+var blockedTemplates = []struct{ from, to string }{
+	{
+		"You are Claude Code, Anthropic's official CLI for Claude.",
+		"You are Claude Code, Anthropic's official CLI tool for Claude.",
+	},
+	{
+		"Main branch (you will usually use this for PRs)",
+		"Default branch (you will usually use this for PRs)",
+	},
+}
+
+// ApplyHeaders adds the product and account headers a WorkBuddy login sends.
+// A static API key on the same host keeps the caller's own identity. The
+// absence markers below mean this login has no user, enterprise, or department.
+func ApplyHeaders(h http.Header, cfg corelib.MaclawLLMConfig) {
+	if h == nil || !Matches(cfg) || !accountSession(cfg) {
+		return
+	}
+	profile, ok := ProfileByName(cfg.ProviderName)
+	if !ok {
+		profile, ok = ProfileByURL(cfg.URL)
+	}
+	origin := strings.TrimSpace(cfg.WorkBuddyOrigin)
+	if origin == "" && ok {
+		origin = profile.Origin
+	}
+	h.Set("User-Agent", UserAgent)
+	h.Set("X-Product", Product)
+	h.Set("X-Requested-With", "XMLHttpRequest")
+	if origin != "" {
+		h.Set("Origin", origin)
+		h.Set("Referer", strings.TrimRight(origin, "/")+"/")
+	}
+	setOrAbsent(h, "X-User-Id", "X-No-User-Id", cfg.WorkBuddyUserID)
+	setOrAbsent(h, "X-Enterprise-Id", "X-No-Enterprise-Id", cfg.WorkBuddyEnterpriseID)
+	if strings.TrimSpace(cfg.WorkBuddyDomain) != "" {
+		h.Set("X-Domain", strings.TrimSpace(cfg.WorkBuddyDomain))
+	} else {
+		h.Set("X-No-Department-Info", "1")
+	}
+	if token := strings.TrimSpace(cfg.WorkBuddyRefreshToken); token != "" {
+		h.Set("X-Refresh-Token", token)
+	}
+}
+
+// accountSession reports a WorkBuddy login. URL and provider name only select
+// the chat-body translator. They do not make an API key into an account.
+func accountSession(cfg corelib.MaclawLLMConfig) bool {
+	if strings.EqualFold(strings.TrimSpace(cfg.AuthType), "oauth") {
+		return true
+	}
+	return strings.TrimSpace(cfg.WorkBuddyUserID) != "" ||
+		strings.TrimSpace(cfg.WorkBuddyEnterpriseID) != "" ||
+		strings.TrimSpace(cfg.WorkBuddyDomain) != "" ||
+		strings.TrimSpace(cfg.WorkBuddyRefreshToken) != ""
+}
+
+func setOrAbsent(h http.Header, name, absentName, value string) {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		h.Set(name, value)
+		h.Del(absentName)
+		return
+	}
+	h.Set(absentName, "1")
+}
+
+// ApplyConversationHeaders fills the identifiers www.workbuddy.ai requires on
+// hy3 and deepseek. The official client sends them on every call. A Token Bank
+// share has no account session to copy, and a health probe does not either, so
+// a missing X-Conversation-ID comes back as HTTP 400. Each call gets its own
+// ids: a shared key must not reuse one conversation across callers. A value
+// already on the request is kept. Callers decide which host and model need it.
+func ApplyConversationHeaders(h http.Header) {
+	if h == nil || conversationHeadersComplete(h) {
+		return
+	}
+	raw := conversationEntropy()
+	setHeaderIfEmpty(h, "X-Conversation-ID", formatUUID(raw[0:16]))
+	setHeaderIfEmpty(h, "X-Conversation-Request-ID", hex.EncodeToString(raw[16:32]))
+	setHeaderIfEmpty(h, "X-Conversation-Message-ID", hex.EncodeToString(raw[32:48]))
+	setHeaderIfEmpty(h, "X-Request-ID", hex.EncodeToString(raw[48:64]))
+}
+
+func conversationHeadersComplete(h http.Header) bool {
+	for _, name := range []string{
+		"X-Conversation-ID",
+		"X-Conversation-Request-ID",
+		"X-Conversation-Message-ID",
+		"X-Request-ID",
+	} {
+		if strings.TrimSpace(h.Get(name)) == "" {
+			return false
+		}
+	}
+	return true
+}
+
+// modelNeedsConversationID reports the international models that reject a chat
+// call without X-Conversation-ID. Other models on the same host still accept
+// the previous request shape.
+func modelNeedsConversationID(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(model, "hy3") || strings.HasPrefix(model, "deepseek")
+}
+
+func setHeaderIfEmpty(h http.Header, name, value string) {
+	if strings.TrimSpace(h.Get(name)) != "" || strings.TrimSpace(value) == "" {
+		return
+	}
+	h.Set(name, value)
+}
+
+func conversationEntropy() []byte {
+	buf := make([]byte, 64)
+	if _, err := rand.Read(buf); err == nil {
+		return buf
+	}
+	now := strconv.FormatInt(time.Now().UnixNano(), 10)
+	for i := 0; i < 4; i++ {
+		sum := sha256.Sum256([]byte(now + ":" + strconv.Itoa(i)))
+		copy(buf[i*16:], sum[:16])
+	}
+	return buf
+}
+
+func formatUUID(b []byte) string {
+	var u [16]byte
+	copy(u[:], b)
+	u[6] = (u[6] & 0x0f) | 0x40
+	u[8] = (u[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%s-%s-%s-%s-%s",
+		hex.EncodeToString(u[0:4]),
+		hex.EncodeToString(u[4:6]),
+		hex.EncodeToString(u[6:8]),
+		hex.EncodeToString(u[8:10]),
+		hex.EncodeToString(u[10:16]))
+}
+
+// PrepareBody forces streaming, a leading system message, template rewrites,
+// and the highest thinking level for hy3 models. hy3 answers HTTP 400 when
+// tool_choice is an object, so that model flattens it to a string. Other
+// WorkBuddy models keep the object: DeepSeek on the same host already
+// accepts it, and replacing a named function with "required" would drop the
+// function the client pinned. originalStream is the value the caller asked for.
+func PrepareBody(payload []byte) (prepared []byte, originalStream bool, ok bool) {
+	prepared, originalStream, ok, _ = prepareBody(payload)
+	return prepared, originalStream, ok
+}
+
+// prepareBody is PrepareBody plus the model it read, so a caller that needs
+// the model does not parse the same payload a second time.
+func prepareBody(payload []byte) (prepared []byte, originalStream bool, ok bool, model string) {
+	var obj map[string]any
+	if err := json.Unmarshal(payload, &obj); err != nil {
+		return payload, false, false, ""
+	}
+	originalStream, _ = obj["stream"].(bool)
+	model = modelName(obj)
+	if !needsRewrite(payload, obj) {
+		return payload, originalStream, true, model
+	}
+	obj["stream"] = true
+	ensureSystemPrompt(obj)
+	rewriteMessages(obj)
+	forceMaxThinking(obj)
+	flattenToolChoice(obj)
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return payload, originalStream, false, model
+	}
+	return out, originalStream, true, model
+}
+
+func needsRewrite(payload []byte, obj map[string]any) bool {
+	if toolChoiceNeedsFlatten(obj) {
+		return true
+	}
+	if stream, _ := obj["stream"].(bool); !stream {
+		return true
+	}
+	if !hasLeadingSystem(obj) {
+		return true
+	}
+	model, _ := obj["model"].(string)
+	if strings.HasPrefix(model, "hy3") {
+		if effort, _ := obj["reasoning_effort"].(string); effort != "high" {
+			return true
+		}
+	}
+	return bytes.Contains(payload, []byte("Anthropic's official CLI for Claude.")) ||
+		bytes.Contains(payload, []byte("Main branch (you will usually use this for PRs)"))
+}
+
+func toolChoiceNeedsFlatten(obj map[string]any) bool {
+	if !strings.HasPrefix(modelName(obj), "hy3") {
+		return false
+	}
+	raw, ok := obj["tool_choice"]
+	if !ok || raw == nil {
+		return false
+	}
+	_, isString := raw.(string)
+	return !isString
+}
+
+// flattenToolChoice turns an hy3 object tool_choice into a string. The
+// upstream accepts only none, auto, and required. A function object becomes
+// "required" — the name cannot be kept. type auto and type none keep that
+// word, so an explicit none does not turn into auto. Anything else becomes
+// "auto".
+func flattenToolChoice(obj map[string]any) {
+	if !strings.HasPrefix(modelName(obj), "hy3") {
+		return
+	}
+	raw, ok := obj["tool_choice"]
+	if !ok {
+		return
+	}
+	if _, isString := raw.(string); isString {
+		return
+	}
+	choice, _ := raw.(map[string]any)
+	switch kind := toolChoiceKind(choice); kind {
+	case "function":
+		obj["tool_choice"] = "required"
+	case "auto", "none", "required":
+		obj["tool_choice"] = kind
+	default:
+		obj["tool_choice"] = "auto"
+	}
+}
+
+func toolChoiceKind(choice map[string]any) string {
+	if choice == nil {
+		return ""
+	}
+	typ, _ := choice["type"].(string)
+	switch strings.TrimSpace(typ) {
+	case "function", "auto", "none", "required":
+		return strings.TrimSpace(typ)
+	}
+	if toolChoiceName(choice) != "" {
+		return "function"
+	}
+	return ""
+}
+
+func modelName(obj map[string]any) string {
+	if obj == nil {
+		return ""
+	}
+	model, _ := obj["model"].(string)
+	return model
+}
+
+func toolChoiceName(choice map[string]any) string {
+	if choice == nil {
+		return ""
+	}
+	if name, _ := choice["name"].(string); strings.TrimSpace(name) != "" {
+		return strings.TrimSpace(name)
+	}
+	fn, _ := choice["function"].(map[string]any)
+	if fn == nil {
+		return ""
+	}
+	name, _ := fn["name"].(string)
+	return strings.TrimSpace(name)
+}
+
+func hasLeadingSystem(obj map[string]any) bool {
+	messages, ok := obj["messages"].([]any)
+	if !ok || len(messages) == 0 {
+		return false
+	}
+	msg, ok := messages[0].(map[string]any)
+	if !ok {
+		return false
+	}
+	role, _ := msg["role"].(string)
+	return role == "system"
+}
+
+func ensureSystemPrompt(obj map[string]any) {
+	messages, ok := obj["messages"].([]any)
+	if !ok {
+		return
+	}
+	if len(messages) > 0 {
+		if msg, ok := messages[0].(map[string]any); ok {
+			if role, _ := msg["role"].(string); role == "system" {
+				return
+			}
+		}
+	}
+	obj["messages"] = append([]any{map[string]any{"role": "system", "content": defaultSystemPrompt}}, messages...)
+}
+
+func rewriteMessages(obj map[string]any) {
+	messages, ok := obj["messages"].([]any)
+	if !ok {
+		return
+	}
+	for _, raw := range messages {
+		msg, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		switch content := msg["content"].(type) {
+		case string:
+			msg["content"] = sanitizeText(content)
+		case []any:
+			for _, partRaw := range content {
+				part, ok := partRaw.(map[string]any)
+				if !ok {
+					continue
+				}
+				if text, ok := part["text"].(string); ok {
+					part["text"] = sanitizeText(text)
+				}
+			}
+		}
+	}
+}
+
+func sanitizeText(s string) string {
+	for _, item := range blockedTemplates {
+		s = strings.ReplaceAll(s, item.from, item.to)
+	}
+	return s
+}
+
+func forceMaxThinking(obj map[string]any) {
+	if !strings.HasPrefix(modelName(obj), "hy3") {
+		return
+	}
+	if effort, _ := obj["reasoning_effort"].(string); effort == "high" {
+		return
+	}
+	obj["reasoning_effort"] = "high"
+}
+
+// Transport rewrites WorkBuddy chat calls. Non-stream callers receive one
+// aggregated chat.completion; stream callers keep the upstream SSE body.
+type Transport struct {
+	Base http.RoundTripper
+}
+
+// WrapClient returns a client whose chat calls to either edition are translated.
+func WrapClient(client *http.Client) *http.Client {
+	if client == nil {
+		client = &http.Client{Transport: http.DefaultTransport}
+	}
+	if _, ok := client.Transport.(*Transport); ok {
+		return client
+	}
+	clone := *client
+	base := clone.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	if _, ok := base.(*Transport); ok {
+		clone.Transport = base
+		return &clone
+	}
+	clone.Transport = &Transport{Base: base}
+	return &clone
+}
+
+func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
+	base := t.Base
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	profile, adapt := shouldAdapt(req)
+	if !adapt {
+		return base.RoundTrip(req)
+	}
+	payload, err := readBody(req.Body)
+	if err != nil {
+		return nil, err
+	}
+	prepared, originalStream, ok, model := prepareBody(payload)
+	if !ok {
+		prepared = payload
+	}
+	outgoing, err := http.NewRequestWithContext(req.Context(), req.Method, req.URL.String(), bytes.NewReader(prepared))
+	if err != nil {
+		return nil, err
+	}
+	outgoing.Header = req.Header.Clone()
+	outgoing.Header.Del(MarkerHeader)
+	if profile.StoreID == StoreGlobal && modelNeedsConversationID(model) {
+		ApplyConversationHeaders(outgoing.Header)
+	}
+	outgoing.ContentLength = int64(len(prepared))
+	outgoing.GetBody = func() (io.ReadCloser, error) {
+		return io.NopCloser(bytes.NewReader(prepared)), nil
+	}
+	resp, err := base.RoundTrip(outgoing)
+	if err != nil || resp == nil {
+		return resp, err
+	}
+	wantsStream := originalStream && strings.Contains(strings.ToLower(req.Header.Get("Accept")), "text/event-stream")
+	if resp.StatusCode != http.StatusOK || wantsStream {
+		return resp, nil
+	}
+	raw, err := readLimited(resp.Body, maxAggregateBytes)
+	_ = resp.Body.Close()
+	if err != nil {
+		return nil, err
+	}
+	if msg, ok := upstreamBusinessError(raw); ok {
+		return upstreamFailure(resp, msg), nil
+	}
+	if !looksLikeSSE(raw) {
+		return replaceBody(resp, raw, resp.Header.Get("Content-Type")), nil
+	}
+	aggregated, err := AggregateSSE(bytes.NewReader(raw), model)
+	if err != nil {
+		return upstreamFailure(resp, err.Error()), nil
+	}
+	return replaceBody(resp, aggregated, "application/json"), nil
+}
+
+func upstreamBusinessError(raw []byte) (string, bool) {
+	var env struct {
+		Code int    `json:"code"`
+		Msg  string `json:"msg"`
+	}
+	if json.Unmarshal(raw, &env) != nil || env.Code == 0 {
+		return "", false
+	}
+	msg := strings.TrimSpace(env.Msg)
+	if msg == "" {
+		msg = fmt.Sprintf("上游返回 code=%d", env.Code)
+	}
+	return msg, true
+}
+
+func upstreamFailure(resp *http.Response, message string) *http.Response {
+	payload, err := json.Marshal(map[string]any{
+		"error": map[string]any{"message": message, "type": "upstream_error"},
+	})
+	if err != nil {
+		payload = []byte(`{"error":{"message":"upstream error"}}`)
+	}
+	resp.StatusCode = http.StatusBadGateway
+	resp.Status = "502 Bad Gateway"
+	return replaceBody(resp, payload, "application/json")
+}
+
+const maxAggregateBytes = 8 << 20
+
+func readBody(body io.ReadCloser) ([]byte, error) {
+	if body == nil {
+		return nil, nil
+	}
+	defer body.Close()
+	return io.ReadAll(body)
+}
+
+func readLimited(body io.Reader, limit int64) ([]byte, error) {
+	if body == nil {
+		return nil, nil
+	}
+	raw, err := io.ReadAll(io.LimitReader(body, limit+1))
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(raw)) > limit {
+		return nil, fmt.Errorf("上游响应超过 %d 字节", limit)
+	}
+	return raw, nil
+}
+
+func replaceBody(resp *http.Response, payload []byte, contentType string) *http.Response {
+	resp.Body = io.NopCloser(bytes.NewReader(payload))
+	resp.ContentLength = int64(len(payload))
+	resp.Header.Del("Content-Encoding")
+	if contentType != "" {
+		resp.Header.Set("Content-Type", contentType)
+	}
+	return resp
+}
+
+// shouldAdapt reports whether this chat call needs the WorkBuddy translation
+// and which edition it targets. The caller may mark a request to force
+// translation even when the URL is not an edition host (tests and the local
+// TigerProxy use this). When the URL itself resolves to an edition we prefer
+// that real Profile: TigerProxy marks every live www.workbuddy.ai call, and a
+// deepseek model there still needs the conversation headers a zero Profile
+// would skip.
+func shouldAdapt(req *http.Request) (Profile, bool) {
+	if req == nil || req.URL == nil || req.Method != http.MethodPost {
+		return Profile{}, false
+	}
+	if !strings.HasSuffix(req.URL.Path, "/chat/completions") {
+		return Profile{}, false
+	}
+	if profile, ok := ProfileByURL(req.URL.String()); ok {
+		return profile, true
+	}
+	if req.Header.Get(MarkerHeader) == "1" {
+		return Profile{}, true
+	}
+	return Profile{}, false
+}
+
+func looksLikeSSE(body []byte) bool {
+	text := strings.TrimSpace(string(body))
+	return strings.HasPrefix(text, "data:") || strings.Contains(text, "\ndata:")
+}
+
+// AggregateSSE folds an upstream event stream into one chat.completion body.
+func AggregateSSE(r io.Reader, fallbackModel string) ([]byte, error) {
+	var (
+		role, respModel, respID, finish, streamErr string
+		created                                    int64
+		usage                                      map[string]any
+		toolCalls                                  []map[string]any
+		toolIndex                                  = map[int]map[string]any{}
+		content                                    strings.Builder
+		reasoning                                  strings.Builder
+	)
+	err := readSSE(r, func(data string) {
+		var chunk map[string]any
+		if json.Unmarshal([]byte(data), &chunk) != nil {
+			return
+		}
+		if errObj, ok := chunk["error"].(map[string]any); ok {
+			if msg, _ := errObj["message"].(string); msg != "" {
+				streamErr = msg
+			}
+		}
+		if v, ok := chunk["id"].(string); ok && v != "" {
+			respID = v
+		}
+		if v, ok := chunk["model"].(string); ok && v != "" {
+			respModel = v
+		}
+		if v, ok := chunk["created"].(float64); ok {
+			created = int64(v)
+		}
+		if v, ok := chunk["usage"].(map[string]any); ok {
+			usage = v
+		}
+		choices, _ := chunk["choices"].([]any)
+		for _, raw := range choices {
+			choice, _ := raw.(map[string]any)
+			if delta, ok := choice["delta"].(map[string]any); ok {
+				if v, ok := delta["role"].(string); ok && v != "" {
+					role = v
+				}
+				if v, ok := delta["content"].(string); ok {
+					content.WriteString(v)
+				}
+				if v, ok := delta["reasoning_content"].(string); ok {
+					reasoning.WriteString(v)
+				}
+				if calls, ok := delta["tool_calls"].([]any); ok {
+					toolCalls = mergeToolCalls(calls, toolIndex, toolCalls)
+				}
+			}
+			if v, ok := choice["finish_reason"].(string); ok && v != "" {
+				finish = v
+			}
+		}
+	})
+	if err != nil {
+		return nil, err
+	}
+	if streamErr != "" && content.Len() == 0 && len(toolCalls) == 0 {
+		return nil, fmt.Errorf("%s", streamErr)
+	}
+	if role == "" {
+		role = "assistant"
+	}
+	if respModel == "" {
+		respModel = fallbackModel
+	}
+	if respID == "" {
+		respID = "chatcmpl-workbuddy"
+	}
+	if created == 0 {
+		created = time.Now().Unix()
+	}
+	if finish == "" {
+		finish = "stop"
+	}
+	message := map[string]any{"role": role, "content": content.String()}
+	if reasoning.Len() > 0 {
+		message["reasoning_content"] = reasoning.String()
+	}
+	if len(toolCalls) > 0 {
+		for _, call := range toolCalls {
+			delete(call, "index")
+		}
+		message["tool_calls"] = toolCalls
+	}
+	result := map[string]any{
+		"id":      respID,
+		"object":  "chat.completion",
+		"created": created,
+		"model":   respModel,
+		"choices": []map[string]any{{
+			"index":         0,
+			"message":       message,
+			"finish_reason": finish,
+		}},
+	}
+	if usage != nil {
+		result["usage"] = usage
+	}
+	return json.Marshal(result)
+}
+
+func readSSE(r io.Reader, fn func(data string)) error {
+	buf, err := io.ReadAll(r)
+	if err != nil {
+		return err
+	}
+	for _, line := range strings.Split(string(buf), "\n") {
+		data := strings.TrimSpace(line)
+		for strings.HasPrefix(data, "data:") {
+			data = strings.TrimSpace(strings.TrimPrefix(data, "data:"))
+		}
+		if data == "" || data == "[DONE]" {
+			continue
+		}
+		fn(data)
+	}
+	return nil
+}
+
+func mergeToolCalls(chunks []any, index map[int]map[string]any, acc []map[string]any) []map[string]any {
+	for _, raw := range chunks {
+		call, ok := raw.(map[string]any)
+		if !ok {
+			continue
+		}
+		idx := 0
+		if f, ok := call["index"].(float64); ok {
+			idx = int(f)
+		}
+		merged, exists := index[idx]
+		if !exists {
+			merged = map[string]any{"index": idx, "type": "function"}
+			index[idx] = merged
+			acc = append(acc, merged)
+		}
+		for key, value := range call {
+			if key == "index" {
+				continue
+			}
+			if key == "function" {
+				incoming, _ := value.(map[string]any)
+				current, _ := merged["function"].(map[string]any)
+				if current == nil {
+					current = map[string]any{}
+					merged["function"] = current
+				}
+				for fk, fv := range incoming {
+					if fk == "arguments" {
+						if s, ok := fv.(string); ok {
+							prev, _ := current["arguments"].(string)
+							current["arguments"] = prev + s
+							continue
+						}
+					}
+					if s, ok := fv.(string); ok && s != "" {
+						current[fk] = fv
+					}
+				}
+				continue
+			}
+			if s, ok := value.(string); ok && s != "" {
+				merged[key] = s
+			}
+		}
+	}
+	return acc
+}

@@ -44,9 +44,9 @@ func ComputerUseChecks(cfg corelib.AppConfig, baseDir string) []Check {
 		Status:  StatusOK,
 		Message: "Computer Use enabled",
 		Detail: map[string]any{
-			"computer_use_enabled":  true,
+			"computer_use_enabled":   true,
 			"screen_parsing_enabled": spOn,
-			"platform":              runtime.GOOS,
+			"platform":               runtime.GOOS,
 		},
 	})
 

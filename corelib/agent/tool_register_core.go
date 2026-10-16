@@ -9,14 +9,19 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/RapidAI/CodeClaw/corelib/audioconv"
+	"github.com/RapidAI/CodeClaw/corelib/database"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
+	"github.com/RapidAI/CodeClaw/corelib/mailbox"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
 	"github.com/RapidAI/CodeClaw/corelib/skill"
 	"github.com/RapidAI/CodeClaw/corelib/task"
+	"github.com/RapidAI/CodeClaw/corelib/toolresult"
 )
 
 const coreInlineToolPayloadMaxLength = 1800
@@ -66,18 +71,83 @@ type CoreToolDeps struct {
 	// is used, and the tool still appears in BuildDefinitions() so the
 	// LLM knows it exists but gets a helpful error if it tries to call it.
 	ExtraHandlers map[string]ToolHandler
+
+	// ExtraHandlersCtx is the context-aware counterpart of ExtraHandlers.
+	// When both are set for a name, ExtraHandlersCtx wins so request-scoped
+	// approval and cancellation reach the handler.
+	ExtraHandlersCtx map[string]ToolHandlerCtx
+}
+
+var defaultCoreTools struct {
+	once sync.Once
+	reg  *CoreToolRegistry
+}
+
+func defaultCoreToolRegistry() *CoreToolRegistry {
+	defaultCoreTools.once.Do(func() {
+		defaultCoreTools.reg = NewCoreToolRegistry()
+		RegisterCoreTools(defaultCoreTools.reg, CoreToolDeps{})
+	})
+	return defaultCoreTools.reg
+}
+
+// LookupCoreTool returns the compiled-in schema for a RegisterCoreTools name.
+// Hosts overlay Enabled/description; they must not copy a second property table.
+func LookupCoreTool(name string) (ToolEntry, bool) {
+	return defaultCoreToolRegistry().Lookup(name)
+}
+
+// CoreToolJSONSchema returns the OpenAI parameters object for a core tool.
+func CoreToolJSONSchema(name string) (map[string]interface{}, bool) {
+	entry, ok := LookupCoreTool(name)
+	if !ok || strings.TrimSpace(entry.Name) == "" {
+		return nil, false
+	}
+	params := map[string]interface{}{"type": "object"}
+	if entry.Properties != nil {
+		params["properties"] = entry.Properties
+	} else {
+		params["properties"] = map[string]interface{}{}
+	}
+	if len(entry.Required) > 0 {
+		params["required"] = append([]string(nil), entry.Required...)
+	}
+	return params, true
+}
+
+// OverlayCoreToolSchema clones the RegisterCoreTools property table and
+// overlays host-only extra properties. Hosts must not copy a second table.
+func OverlayCoreToolSchema(name string, extraProps map[string]interface{}) (properties map[string]interface{}, required []string, ok bool) {
+	entry, found := LookupCoreTool(name)
+	if !found || strings.TrimSpace(entry.Name) == "" {
+		return extraProps, nil, false
+	}
+	props := CloneToolDefinitionMap(entry.Properties)
+	if props == nil {
+		props = map[string]interface{}{}
+	}
+	for key, value := range extraProps {
+		props[key] = value
+	}
+	if len(entry.Required) > 0 {
+		required = append([]string(nil), entry.Required...)
+	}
+	return props, required, true
 }
 
 // RegisterCoreTools registers all platform-agnostic tools into the registry.
 // This is the single source of truth for tool definitions and handlers.
+// Every built-in name is a host-controlled constant in the toolid charset, so
+// each entry automatically carries the canonical ID "core:<name>" (derived by
+// CoreToolRegistry.Register; no per-entry ID field needed here).
 func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 	r.Register(ToolEntry{
 		Name:        "bash",
 		Description: "Run a shell command. Use the built-in ssh tool instead of invoking ssh/scp/rsync through bash.",
 		Properties: map[string]interface{}{
-			"command":     map[string]string{"type": "string", "description": "Shell command to execute"},
+			"command":     map[string]interface{}{"type": "string", "description": "Shell command to execute"},
 			"working_dir": map[string]string{"type": "string", "description": "Working directory (optional)"},
-			"timeout":     map[string]string{"type": "integer", "description": "Timeout seconds, default 600, range 240-600"},
+			"timeout":     map[string]interface{}{"type": "integer", "description": "Timeout seconds, default 600, range 240-600", "minimum": 240, "maximum": 600},
 		},
 		Required: []string{"command"},
 		HandlerCtx: guardedHandlerCtx(deps, "bash", func(ctx context.Context, args map[string]interface{}) string {
@@ -92,6 +162,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"path":       map[string]string{"type": "string", "description": "File path"},
 			"lines":      map[string]string{"type": "integer", "description": "Max lines to read (optional, default 200). Specifying this bypasses adaptive mode."},
 			"start_line": map[string]string{"type": "integer", "description": "Starting line number, 1-based (optional). Specifying this bypasses adaptive mode."},
+			"offset":     map[string]string{"type": "integer", "description": "Read the last N lines from the end (like tail -n). Mutually exclusive with start_line/lines."},
 		},
 		Required: []string{"path"},
 		Handler:  func(args map[string]interface{}) string { return ToolReadFile(args) },
@@ -105,7 +176,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Properties: map[string]interface{}{
 			"id":     map[string]string{"type": "string", "description": "Handle id from [tool_result_handle]"},
 			"offset": map[string]string{"type": "integer", "description": "0-based byte offset into the full result (default 0)"},
-			"limit":  map[string]string{"type": "integer", "description": "Max bytes to return (default 6000, max 32768)"},
+			"limit":  map[string]string{"type": "integer", "description": fmt.Sprintf("Max bytes to return (default %d, max %d)", toolresult.DefaultReadLimit, toolresult.MaxReadLimit)},
 		},
 		// id is enforced in the handler; legacy internal callers may still pass path.
 		Handler: func(args map[string]interface{}) string { return ToolReadToolResult(args) },
@@ -168,6 +239,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"type":           map[string]string{"type": "string", "description": "Optional file type filter such as go, ts, js, py, rust, md, json, yaml, or an extension like .vue."},
 			"max_results":    map[string]string{"type": "integer", "description": "最多返回路径数，默认 200，最大 2000。结果太多时收窄 path 或 pattern。"},
 			"include_dirs":   map[string]string{"type": "boolean", "description": "是否返回目录，默认 false。只有需要找目录结构时设 true。"},
+			"glob_pattern":   map[string]string{"type": "string", "description": "pattern 的别名"},
 		},
 		Required: []string{"pattern"},
 		HandlerCtx: func(ctx context.Context, args map[string]interface{}) string {
@@ -200,6 +272,20 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		},
 		Required: []string{"path", "old_string", "new_string"},
 		Handler:  func(args map[string]interface{}) string { return ToolEditFile(args) },
+	})
+
+	r.Register(ToolEntry{
+		Name:        "edit_lines",
+		Description: "Edit a file by line number (replace, insert, or delete). Prefer this over edit_file when you already have line numbers from read_file.",
+		Properties: map[string]interface{}{
+			"path":       map[string]string{"type": "string", "description": "File path"},
+			"operation":  map[string]string{"type": "string", "description": "replace, insert, or delete"},
+			"start_line": map[string]string{"type": "integer", "description": "1-based start line. insert uses 0 to insert at the beginning"},
+			"end_line":   map[string]string{"type": "integer", "description": "Inclusive end line (required for replace/delete)"},
+			"content":    map[string]interface{}{"type": "string", "description": "New text for replace/insert; ignored for delete"},
+		},
+		Required: []string{"path", "operation", "start_line"},
+		Handler:  extraHandler(deps, "edit_lines", "Line editor is not initialized."),
 	})
 
 	r.Register(ToolEntry{
@@ -274,11 +360,12 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	r.Register(ToolEntry{
 		Name:        "ssh",
-		Description: "Manage SSH connections and remote operations such as connect, exec, background exec, upload, download, list, and close.",
+		Description: "Manage SSH connections and remote operations such as connect, exec, background exec, upload, download, list, and close. connect accepts an OpenSSH config alias such as gpu84 and applies that alias's IdentityFile and ProxyJump.",
 		Properties: map[string]interface{}{
-			"action":          map[string]string{"type": "string", "description": "Action such as connect, exec, exec_background, check_task, list_tasks, kill_task, sudo_prepare, upload, download, list, close"},
-			"host":            map[string]string{"type": "string", "description": "Remote host for connect"},
-			"user":            map[string]string{"type": "string", "description": "Login username for connect"},
+			"action":          map[string]string{"type": "string", "description": "Action such as connect, exec, exec_background, check_task, wait_task, list_tasks, kill_task, sudo_prepare, upload, download, list, close"},
+			"timeout":         map[string]string{"type": "integer", "description": "wait_task timeout seconds"},
+			"host":            map[string]string{"type": "string", "description": "Remote host, IP, or an OpenSSH config alias such as gpu84. An alias uses ~/.ssh/config, including its IdentityFile and ProxyJump."},
+			"user":            map[string]string{"type": "string", "description": "Login username. Omit it when host is an OpenSSH config alias that already sets User."},
 			"port":            map[string]string{"type": "integer", "description": "SSH port, default 22"},
 			"auth_method":     map[string]string{"type": "string", "description": "Authentication method: password, key, or agent"},
 			"key_path":        map[string]string{"type": "string", "description": "Private key path"},
@@ -288,7 +375,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"session_id":      map[string]string{"type": "string", "description": "SSH session ID"},
 			"command":         map[string]string{"type": "string", "description": "Remote command"},
 			"wait_seconds":    map[string]string{"type": "integer", "description": "Wait time for output, default 5"},
-			"task_id":         map[string]string{"type": "string", "description": "Background task ID"},
+			"task_id":         map[string]string{"type": "string", "description": "Background task ID for check_task, wait_task, kill_task"},
 			"tail_lines":      map[string]string{"type": "integer", "description": "Tail lines for task output"},
 			"local_path":      map[string]string{"type": "string", "description": "Local file path"},
 			"remote_path":     map[string]string{"type": "string", "description": "Remote file path"},
@@ -308,10 +395,11 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Name:        "ask_user",
 		Description: "Ask the user a structured follow-up question and wait for an answer.",
 		Properties: map[string]interface{}{
-			"question":   map[string]string{"type": "string", "description": "Question to ask"},
-			"options":    map[string]interface{}{"type": "array", "description": "Optional choices", "items": map[string]string{"type": "string"}},
-			"context":    map[string]string{"type": "string", "description": "Optional background context"},
-			"input_type": map[string]string{"type": "string", "description": "Input type: text, choice, or confirm"},
+			"question":    map[string]string{"type": "string", "description": "Question to ask"},
+			"options":     map[string]interface{}{"type": "array", "description": "Optional choices", "items": map[string]string{"type": "string"}},
+			"context":     map[string]string{"type": "string", "description": "Optional background context"},
+			"input_type":  map[string]string{"type": "string", "description": "Input type: text, choice, confirm, secret, or secret_fill"},
+			"secret_name": map[string]string{"type": "string", "description": "Environment-style name such as SITE_PASSWORD. Never put the secret value here."},
 		},
 		Required: []string{"question"},
 		Handler:  func(args map[string]interface{}) string { return ToolAskUser(args) },
@@ -340,11 +428,12 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Name:        "task",
 		Description: "Manage the internal task checklist with actions such as create, update, complete, fail, list, and delete.",
 		Properties: map[string]interface{}{
-			"action":      map[string]string{"type": "string", "description": "Action: create, update, complete, fail, list, delete"},
+			"action":      map[string]string{"type": "string", "description": "Action: create, update, complete, fail, list, delegate, delete"},
 			"task_id":     map[string]string{"type": "string", "description": "Task ID"},
 			"title":       map[string]string{"type": "string", "description": "Task title for create"},
 			"description": map[string]string{"type": "string", "description": "Task description"},
 			"depends_on":  map[string]interface{}{"type": "array", "description": "Dependency task IDs", "items": map[string]string{"type": "string"}},
+			"status":      map[string]string{"type": "string", "description": "New status for update: pending, in_progress, completed, failed, blocked"},
 			"status_note": map[string]string{"type": "string", "description": "Optional status note"},
 			"delegate_to": map[string]string{"type": "string", "description": "Optional delegation target"},
 		},
@@ -353,15 +442,32 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 	})
 
 	r.Register(ToolEntry{
-		Name:        "goal",
-		Description: "Manage a persistent long-running goal (action: create/complete/fail/get). Create a goal only when explicitly requested by the user; do not infer goals from ordinary tasks. The system auto-continues until the goal is complete or budget is exhausted.",
+		Name:        "delegate_task",
+		Description: "Delegate a task to a bound child agent and wait for the finished result. coding_workflow runs the shared coding runtime; help answers product questions. Omit agent to list available sub-agents.",
 		Properties: map[string]interface{}{
-			"action":              map[string]string{"type": "string", "description": "Action: create, complete, fail, get"},
+			"agent":        map[string]string{"type": "string", "description": "Sub-agent name: coding_workflow or help"},
+			"request":      map[string]string{"type": "string", "description": "Task description to delegate"},
+			"task":         map[string]string{"type": "string", "description": "Alias for request"},
+			"project_path": map[string]string{"type": "string", "description": "Optional project path for coding_workflow"},
+		},
+		Handler: extraHandler(deps, "delegate_task", "delegate_task host adapter is not initialized."),
+	})
+
+	r.Register(ToolEntry{
+		Name:        "goal",
+		Description: "Manage a persistent long-running goal (action: create/plan/step/complete/fail/get). Create a goal only when explicitly requested by the user; do not infer goals from ordinary tasks. The first continuation must plan; later turns execute one step at a time until complete or failed.",
+		Properties: map[string]interface{}{
+			"action":              map[string]string{"type": "string", "description": "Action: create, plan, step, complete, fail, get"},
 			"objective":           map[string]string{"type": "string", "description": "Goal description (required for create)"},
+			"understanding":       map[string]string{"type": "string", "description": "Restatement of the task (required for plan)"},
+			"steps":               map[string]interface{}{"type": "array", "description": "Ordered steps for plan. Each item is a string or {title, detail}", "items": map[string]string{"type": "object"}},
+			"index":               map[string]string{"type": "integer", "description": "1-based step index (required for step)"},
+			"status":              map[string]string{"type": "string", "description": "Step outcome for action=step: done or failed"},
+			"result":              map[string]string{"type": "string", "description": "Step result (required for step)"},
 			"token_budget":        map[string]string{"type": "integer", "description": "Token budget limit (optional, 0=unlimited)"},
 			"max_turns":           map[string]string{"type": "integer", "description": "Max iteration rounds (optional, default 50)"},
-			"acceptance_criteria": map[string]interface{}{"type": "array", "description": "Verifiable completion conditions (optional)", "items": map[string]string{"type": "string"}},
-			"summary":             map[string]string{"type": "string", "description": "Completion summary (for complete action)"},
+			"acceptance_criteria": map[string]interface{}{"type": "array", "description": "Verifiable completion conditions (required for plan)", "items": map[string]string{"type": "string"}},
+			"summary":             map[string]string{"type": "string", "description": "Completion summary (for complete action). Must mention each acceptance criterion."},
 			"reason":              map[string]string{"type": "string", "description": "Failure reason (for fail action)"},
 		},
 		Required: []string{"action"},
@@ -419,6 +525,49 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		},
 		Required: []string{},
 		Handler:  func(args map[string]interface{}) string { return ToolReadPPTX(args) },
+	})
+
+	r.Register(ToolEntry{
+		Name:        "office",
+		Description: "Office/PDF/text document tool. action: read_document (auto-detect .pdf/.doc/.docx/.xls/.xlsx/.csv/.ppt/.pptx and text files), read_excel, write_excel, read_pptx, write_pptx, preview_pptx, generate_pdf. Prefer read_document for mixed formats; read_excel is spreadsheet-only and read_pptx is PPTX-only. write_pptx renders a designed deck (each theme has its own cover, header, and cards; theme auto or clean/magazine/eink/dashboard/retro/sketch/whiteboard/handmade/research/mckinsey/official/course, with purpose selecting a style when theme is auto; slide layout auto/bullets/cards/section/agenda/kpi/quote/closing) and automatically renders per-slide preview images next to the deck (<name>_preview/) so the visual result can be checked and fixed by rewriting; preview_pptx renders a .pptx deck to per-slide PNG/JPEG images on demand.",
+		Properties: map[string]interface{}{
+			"action":       map[string]string{"type": "string", "description": "read_document/read_doc/read_docx/read_pdf/read_excel/write_excel/read_pptx/write_pptx/preview_pptx/generate_pdf"},
+			"content":      map[string]string{"type": "string", "description": "Markdown body for generate_pdf"},
+			"title":        map[string]string{"type": "string", "description": "PDF cover title for generate_pdf"},
+			"doc_type":     map[string]string{"type": "string", "description": workflowDocSchemaDocTypeDescription()},
+			"phase_id":     map[string]string{"type": "string", "description": workflowDocSchemaPhaseIDDescription()},
+			"file_path":    map[string]string{"type": "string", "description": "File path for read_*/write_excel/write_pptx/preview_pptx (alias: path)"},
+			"path":         map[string]string{"type": "string", "description": "Alias for file_path"},
+			"max_chars":    map[string]string{"type": "integer", "description": "read_document max characters for this chunk"},
+			"offset":       map[string]string{"type": "integer", "description": "read_document character offset; use next_offset to continue"},
+			"line_numbers": map[string]string{"type": "boolean", "description": "read_document: prefix lines with L1:/L2: markers"},
+			"sheet":        map[string]string{"type": "string", "description": "read_excel sheet name"},
+			"range":        map[string]string{"type": "string", "description": "read_excel A1 range such as A1:D10"},
+			"max_rows":     map[string]string{"type": "integer", "description": "read_excel max rows (default 1000, max 5000)"},
+			"max_slides":   map[string]string{"type": "integer", "description": "read_pptx max slides (default 100, max 500, 仅 .pptx); preview_pptx max slides to render (default all, max 200)"},
+			"slide_offset": map[string]string{"type": "integer", "description": "read_pptx/preview_pptx zero-based slide offset"},
+			"width":        map[string]string{"type": "integer", "description": "preview_pptx image width in pixels (default 1280, max 4096)"},
+			"format":       map[string]string{"type": "string", "description": "preview_pptx image format: png (default) or jpeg"},
+			"output_dir":   map[string]string{"type": "string", "description": "preview_pptx image output directory (default: <name>_preview next to the deck)"},
+			"preview":      map[string]string{"type": "boolean", "description": "write_pptx: set false to skip the automatic per-slide preview render (default true)"},
+			"draft":        map[string]string{"type": "boolean", "description": "preview_pptx: draft mode, faster with lower fidelity (default false)"},
+			"data":         map[string]string{"type": "object", "description": "Write payload for write_excel/write_pptx"},
+		},
+		Required: []string{"action"},
+		Handler:  extraHandler(deps, "office", "Office document tools are not initialized."),
+	})
+
+	r.Register(ToolEntry{
+		Name:        "generate_pdf",
+		Description: "Render current facts as a PDF. title is the cover heading; phase_id/doc_type optionally select a stable ASCII filename prefix.",
+		Properties: map[string]interface{}{
+			"content":  map[string]string{"type": "string", "description": "Markdown document body"},
+			"title":    map[string]string{"type": "string", "description": "PDF cover title"},
+			"doc_type": map[string]string{"type": "string", "description": workflowDocSchemaDocTypeDescription()},
+			"phase_id": map[string]string{"type": "string", "description": workflowDocSchemaPhaseIDDescription()},
+		},
+		Required: []string{"content"},
+		Handler:  extraHandler(deps, "generate_pdf", "PDF renderer is not initialized."),
 	})
 
 	r.Register(ToolEntry{
@@ -512,6 +661,56 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 
 	// --- Tools requiring host-injected handlers via ExtraHandlers ---
 
+	// database is intentionally registered here (rather than independently in
+	// GUI/TUI) so every host exposes the same schema and risk surface. Hosts
+	// inject the concrete handler through ExtraHandlers["database"].
+	r.Register(ToolEntry{
+		Name:        "database",
+		Description: database.ToolDescription(),
+		// ToolEntry.Properties is the property map only; ToolDef adds the
+		// object envelope and required list.  Keep the database package as the
+		// single schema source without nesting a second parameters envelope.
+		Properties: database.ToolProperties(),
+		Required:   []string{"action"},
+		Handler:    extraHandler(deps, "database", "数据库连接工具未初始化。请先配置数据源 profile。"),
+		HandlerCtx: extraHandlerCtx(deps, "database", "数据库连接工具未初始化。请先配置数据源 profile。"),
+	})
+	r.Register(ToolEntry{
+		Name:        "database_query",
+		Description: database.ToolDescriptionReadOnly(),
+		Properties:  database.ToolProperties(),
+		Required:    []string{"action"},
+		Handler:     extraReadOnlyDatabaseHandler(deps, "数据库连接工具未初始化。请先配置数据源 profile。"),
+		HandlerCtx:  extraReadOnlyDatabaseHandlerCtx(deps, "数据库连接工具未初始化。请先配置数据源 profile。"),
+	})
+	// Mailbox execution for the desktop bot is executeSharedHostTool. This
+	// registration only keeps the shared catalog name; a host without the
+	// mailbox runtime returns the not-configured message.
+	r.Register(ToolEntry{
+		Name:        "mailbox_query",
+		Description: mailbox.ToolDescriptionQuery(),
+		Properties:  mailbox.QueryProperties(),
+		Required:    []string{"action"},
+		Handler:     extraHandler(deps, "mailbox_query", mailbox.MsgNotConfigured),
+		HandlerCtx:  extraHandlerCtx(deps, "mailbox_query", mailbox.MsgNotConfigured),
+	})
+	r.Register(ToolEntry{
+		Name:        "mailbox_send",
+		Description: mailbox.ToolDescriptionSend(),
+		Properties:  mailbox.SendProperties(),
+		Required:    []string{"action"},
+		Handler:     extraHandler(deps, "mailbox_send", mailbox.MsgNotConfigured),
+		HandlerCtx:  extraHandlerCtx(deps, "mailbox_send", mailbox.MsgNotConfigured),
+	})
+	r.Register(ToolEntry{
+		Name:        "mailbox_configure",
+		Description: mailbox.ToolDescriptionConfigure(),
+		Properties:  mailbox.ConfigureProperties(),
+		Required:    []string{"action", "email", "name"},
+		Handler:     extraHandler(deps, "mailbox_configure", mailbox.MsgNotConfigured),
+		HandlerCtx:  extraHandlerCtx(deps, "mailbox_configure", mailbox.MsgNotConfigured),
+	})
+
 	r.Register(ToolEntry{
 		Name:        "manage_skill",
 		Description: skill.ManageSkillDescription() + " maintenance_plan is read-only and returns local skill health recommendations without modifying, archiving, merging, installing, or executing skills.",
@@ -565,6 +764,16 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 	})
 
 	r.Register(ToolEntry{
+		Name:        "tts_render",
+		Description: "Render text as a workspace speech artifact. Does not play or send, and cannot choose a channel or destination.",
+		Properties: map[string]interface{}{
+			"text": map[string]string{"type": "string", "description": "Text to synthesize"},
+		},
+		Required: []string{"text"},
+		Handler:  extraHandler(deps, "tts_render", "语音合成不可用（TTS 模型未加载）。请在设置中启用 TTS 并等待模型下载完成。"),
+	})
+
+	r.Register(ToolEntry{
 		Name:        "asr",
 		Description: audioconv.ASRToolDescription(),
 		Properties: map[string]interface{}{
@@ -580,7 +789,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 	r.Register(ToolEntry{
 		Name: "manage_schedule",
 		Description: "定时任务管理。action: create/list/delete/update/list_targets。" +
-			"list_targets 的 channel：lansenger（群）、weixin/telegram/qq（self）。" +
+			"list_targets 的 channel：lansenger（群）、weixin/telegram/qq（self）、device（码卡龙设备，仅 self）。" +
 			"create/update 可配 delivery 推送；蓝信 group_name 可解析为 group_id。" +
 			"day_of_week: -1=每天, 0=周日…6=周六。一次性任务将 start_date 与 end_date 都设为目标日期。" +
 			"即时发消息请用 im_message，不要用定时任务绕路。",
@@ -612,7 +821,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Name: "im_message",
 		Description: "即时向 IM 发文本或文件（蓝信群/人、微信/Telegram/QQ）。action: list_targets|send|send_file（可省略：有 text 则 send，有 path 则 send_file）。" +
 			"用户要求现在发到蓝信某群/微信时用本工具；周期播报才用 manage_schedule+delivery。" +
-			"list_targets 的 channel：lansenger|weixin|telegram|qq；send 需 text + group_name/group_id/user_id。" +
+			"list_targets 的 channel：lansenger|weixin|telegram|qq|device；send 需 text + group_name/group_id/user_id（device 仅支持 user_id=self）。" +
 			"send_file 上传本机文件（目前仅蓝信 lansenger 支持），需 path + group_name/group_id/user_id，可带 text 作为说明文字。",
 		Properties: map[string]interface{}{
 			"action":           map[string]string{"type": "string", "description": "list_targets、send 或 send_file；可省略并自动推断"},
@@ -620,7 +829,7 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 			"message":          map[string]string{"type": "string", "description": "text 别名"},
 			"path":             map[string]string{"type": "string", "description": "send_file：要发送的本机文件路径"},
 			"file_name":        map[string]string{"type": "string", "description": "send_file：发送时显示的文件名（可选）"},
-			"channel":          map[string]string{"type": "string", "description": "lansenger|weixin|telegram|qq（默认 lansenger）"},
+			"channel":          map[string]string{"type": "string", "description": "lansenger|weixin|telegram|qq|device（默认 lansenger）"},
 			"query":            map[string]string{"type": "string", "description": "list_targets 名称/ID 过滤"},
 			"group_name":       map[string]string{"type": "string", "description": "send/send_file：群名（自动解析）"},
 			"group_id":         map[string]string{"type": "string", "description": "send/send_file：群 ID"},
@@ -632,15 +841,47 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Handler: extraHandler(deps, "im_message", "IM 消息工具未初始化。"),
 	})
 
+	r.Register(ToolEntry{
+		Name:        "list_mcp_tools",
+		Description: "List registered MCP servers and their tools, including parameter details. Filter by keyword or server.",
+		Properties: map[string]interface{}{
+			"query":     map[string]string{"type": "string", "description": "Search keyword matching tool name, description, or server name (case-insensitive)"},
+			"server_id": map[string]string{"type": "string", "description": "Filter by MCP server ID or name"},
+		},
+		Handler: extraHandler(deps, "list_mcp_tools", "MCP catalog is not initialized."),
+	})
+
+	r.Register(ToolEntry{
+		Name:        "import_mcp_servers",
+		Description: "Import MCP servers from JSON. Accepts {\"mcpServers\":{\"name\":{...}}} or a bare mcpServers/mcp_servers fragment. Local stdio uses command/args/env; remote HTTP uses url or endpoint_url/headers.",
+		Properties: map[string]interface{}{
+			"json_config": map[string]string{"type": "string", "description": "MCP JSON config text"},
+			"target":      map[string]string{"type": "string", "description": "Import target: auto/local/remote. Default auto."},
+		},
+		Required: []string{"json_config"},
+		Handler:  extraHandler(deps, "import_mcp_servers", "MCP import persistence is not configured."),
+	})
+
 	// --- Knowledge tools (host-injected via ExtraHandlers) ---
 
 	r.Register(ToolEntry{
 		Name:        "knowledge_search",
 		Description: "Search the local knowledge base (SQLite FTS). Returns ranked results with score, source, and snippet. Use when the user asks about saved documents, imported files, or stored knowledge. Also use proactively BEFORE asking the user for task parameters that may already be stored — such as server addresses, login credentials/usernames, environment config, or project paths.",
 		Properties: map[string]interface{}{
-			"query":        map[string]string{"type": "string", "description": "Search query"},
-			"search_scope": map[string]string{"type": "string", "description": "all | project | personal. Default all."},
-			"limit":        map[string]string{"type": "integer", "description": "Max results, default 8, max 50"},
+			"query":            map[string]string{"type": "string", "description": "Search query"},
+			"search_scope":     map[string]string{"type": "string", "description": "all | project | personal. Default all."},
+			"topic_hint":       map[string]string{"type": "string", "description": "Optional topic hint to narrow ranking"},
+			"project_path":     map[string]string{"type": "string", "description": "Restrict results to sources imported under this project path"},
+			"domain":           map[string]string{"type": "string", "description": "Restrict results to a source domain"},
+			"context_terms":    map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Extra terms used only for ranking, not as hard filters"},
+			"result_types":     map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Result kinds to return, e.g. card | fact | source"},
+			"source_kinds":     map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Source kinds to restrict the search to"},
+			"source_ids":       map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Restrict results to these source IDs"},
+			"source_id":        map[string]string{"type": "string", "description": "Alias for a single source_ids item."},
+			"id":               map[string]string{"type": "string", "description": "Alias for a single source_ids item."},
+			"labels":           map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Restrict results to sources carrying these labels"},
+			"include_disabled": map[string]string{"type": "boolean", "description": "Include disabled/summarized sources. Default false."},
+			"limit":            map[string]string{"type": "integer", "description": "Max results, default 8, max 50"},
 		},
 		Required: []string{"query"},
 		Handler:  extraHandler(deps, "knowledge_search", "Error: knowledge base is not configured. Import documents first with: maclaw-tui knowledge import <path>"),
@@ -650,10 +891,21 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Name:        "knowledge_context_pack",
 		Description: "Build a compact, citation-backed context bundle from the local knowledge base under a character budget. Use when you need a prompt-ready bundle of ranked cards, facts, and source nodes for answering from stored knowledge.",
 		Properties: map[string]interface{}{
-			"query":        map[string]string{"type": "string", "description": "Search query for the context pack"},
-			"search_scope": map[string]string{"type": "string", "description": "all | project | personal. Default all."},
-			"max_items":    map[string]string{"type": "integer", "description": "Max context items, default 8, max 30"},
-			"max_chars":    map[string]string{"type": "integer", "description": "Max total context characters, default 6000, max 20000"},
+			"query":            map[string]string{"type": "string", "description": "Search query for the context pack"},
+			"search_scope":     map[string]string{"type": "string", "description": "all | project | personal. Default all."},
+			"topic_hint":       map[string]string{"type": "string", "description": "Optional topic hint to narrow ranking"},
+			"project_path":     map[string]string{"type": "string", "description": "Restrict the pack to sources imported under this project path"},
+			"domain":           map[string]string{"type": "string", "description": "Restrict the pack to a source domain"},
+			"context_terms":    map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Extra terms used only for ranking, not as hard filters"},
+			"result_types":     map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Result kinds to include, e.g. card | fact | source"},
+			"source_kinds":     map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Source kinds to restrict the pack to"},
+			"source_ids":       map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Restrict the pack to these source IDs"},
+			"source_id":        map[string]string{"type": "string", "description": "Alias for a single source_ids item."},
+			"id":               map[string]string{"type": "string", "description": "Alias for a single source_ids item."},
+			"labels":           map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Restrict the pack to sources carrying these labels"},
+			"include_disabled": map[string]string{"type": "boolean", "description": "Include disabled/summarized sources. Default false."},
+			"max_items":        map[string]string{"type": "integer", "description": "Max context items, default 8, max 30"},
+			"max_chars":        map[string]string{"type": "integer", "description": "Max total context characters, default 6000, max 20000"},
 		},
 		Required: []string{"query"},
 		Handler:  extraHandler(deps, "knowledge_context_pack", "Error: knowledge base is not configured. Import documents first with: maclaw-tui knowledge import <path>"),
@@ -698,19 +950,23 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Name:        "knowledge_import_directory",
 		Description: "Scan or import a local directory/folder of documents into the local knowledge base. Supports DOC/DOCX, PPT/PPTX, XLS/XLSX, PDF, CSV, Markdown, and TXT; PPT rich knowledge content requires the OfficeRead Knowledge opt-in. Only use after the user explicitly provides or approves the directory path.",
 		Properties: map[string]interface{}{
-			"root_path":    map[string]string{"type": "string", "description": "Directory containing documents"},
-			"path":         map[string]string{"type": "string", "description": "Alias for root_path."},
-			"dir":          map[string]string{"type": "string", "description": "Alias for root_path."},
-			"directory":    map[string]string{"type": "string", "description": "Alias for root_path."},
-			"folder":       map[string]string{"type": "string", "description": "Alias for root_path."},
-			"root":         map[string]string{"type": "string", "description": "Alias for root_path."},
-			"action":       map[string]string{"type": "string", "description": "scan | import. Default import."},
-			"save_scope":   map[string]string{"type": "string", "description": "project | personal | local_only. Default project."},
-			"topic_hint":   map[string]string{"type": "string", "description": "Optional topic hint"},
-			"recursive":    map[string]string{"type": "boolean", "description": "Include subdirectories, default true"},
-			"include_exts": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Extensions to include, e.g. .doc,.docx,.ppt,.pptx,.xls,.xlsx,.pdf,.md"},
-			"max_file_mb":  map[string]string{"type": "integer", "description": "Max file size in MB, default 100"},
-			"start_async":  map[string]string{"type": "boolean", "description": "For import action, start async job. Default true."},
+			"root_path":     map[string]string{"type": "string", "description": "Directory containing documents"},
+			"path":          map[string]string{"type": "string", "description": "Alias for root_path."},
+			"dir":           map[string]string{"type": "string", "description": "Alias for root_path."},
+			"directory":     map[string]string{"type": "string", "description": "Alias for root_path."},
+			"folder":        map[string]string{"type": "string", "description": "Alias for root_path."},
+			"root":          map[string]string{"type": "string", "description": "Alias for root_path."},
+			"action":        map[string]string{"type": "string", "description": "scan | import. Default import."},
+			"save_scope":    map[string]string{"type": "string", "description": "project | personal | local_only. Default project."},
+			"topic_hint":    map[string]string{"type": "string", "description": "Optional topic hint"},
+			"recursive":     map[string]string{"type": "boolean", "description": "Include subdirectories, default true"},
+			"include_exts":  map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Extensions to include, e.g. .doc,.docx,.ppt,.pptx,.xls,.xlsx,.pdf,.md"},
+			"exclude_globs": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Glob patterns to exclude from the scan"},
+			"max_file_mb":   map[string]string{"type": "integer", "description": "Max file size in MB, default 100"},
+			"start_async":   map[string]string{"type": "boolean", "description": "For import action, start async job. Default true."},
+			"labels":        map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Labels to attach to imported sources"},
+			"distill_mode":  map[string]string{"type": "string", "description": "Distillation mode override for this import"},
+			"auto_labels":   map[string]string{"type": "boolean", "description": "Derive labels automatically instead of using labels. Default false."},
 		},
 		Handler: extraHandler(deps, "knowledge_import_directory", "Error: knowledge import is not configured. Use the desktop knowledge import UI or configure a host handler."),
 	})
@@ -719,17 +975,22 @@ func RegisterCoreTools(r *CoreToolRegistry, deps CoreToolDeps) {
 		Name:        "knowledge_import_files",
 		Description: "Scan or import explicitly provided local document file paths into the local knowledge base. Supports DOC/DOCX, PPT/PPTX, XLS/XLSX, PDF, CSV, Markdown, and TXT; PPT rich knowledge content requires the OfficeRead Knowledge opt-in. Only use after the user explicitly provides or approves the file paths.",
 		Properties: map[string]interface{}{
-			"file_paths":   map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Explicit local document file paths to scan or import"},
-			"paths":        map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Alias for file_paths."},
-			"files":        map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Alias for file_paths."},
-			"file_path":    map[string]string{"type": "string", "description": "Alias for a single file_paths item."},
-			"path":         map[string]string{"type": "string", "description": "Alias for a single file_paths item."},
-			"action":       map[string]string{"type": "string", "description": "scan | import. Default import."},
-			"save_scope":   map[string]string{"type": "string", "description": "project | personal | local_only. Default project."},
-			"topic_hint":   map[string]string{"type": "string", "description": "Optional topic hint"},
-			"include_exts": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Extensions to include, e.g. .doc,.docx,.ppt,.pptx,.xls,.xlsx,.pdf,.md"},
-			"max_file_mb":  map[string]string{"type": "integer", "description": "Max file size in MB, default 100"},
-			"start_async":  map[string]string{"type": "boolean", "description": "For import action, start async job when the host handler supports it. Default true."},
+			"file_paths":    map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Explicit local document file paths to scan or import"},
+			"paths":         map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Alias for file_paths."},
+			"files":         map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Alias for file_paths."},
+			"file_path":     map[string]string{"type": "string", "description": "Alias for a single file_paths item."},
+			"path":          map[string]string{"type": "string", "description": "Alias for a single file_paths item."},
+			"root_path":     map[string]string{"type": "string", "description": "Optional scan root the provided paths are resolved against"},
+			"action":        map[string]string{"type": "string", "description": "scan | import. Default import."},
+			"save_scope":    map[string]string{"type": "string", "description": "project | personal | local_only. Default project."},
+			"topic_hint":    map[string]string{"type": "string", "description": "Optional topic hint"},
+			"include_exts":  map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Extensions to include, e.g. .doc,.docx,.ppt,.pptx,.xls,.xlsx,.pdf,.md"},
+			"exclude_globs": map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Glob patterns to exclude from the scan"},
+			"max_file_mb":   map[string]string{"type": "integer", "description": "Max file size in MB, default 100"},
+			"start_async":   map[string]string{"type": "boolean", "description": "For import action, start async job when the host handler supports it. Default true."},
+			"labels":        map[string]interface{}{"type": "array", "items": map[string]string{"type": "string"}, "description": "Labels to attach to imported sources"},
+			"distill_mode":  map[string]string{"type": "string", "description": "Distillation mode override for this import"},
+			"auto_labels":   map[string]string{"type": "boolean", "description": "Derive labels automatically instead of using labels. Default false."},
 		},
 		Handler: extraHandler(deps, "knowledge_import_files", "Error: knowledge import is not configured. Use the desktop knowledge import UI or configure a host handler."),
 	})
@@ -802,4 +1063,37 @@ func extraHandler(deps CoreToolDeps, name, fallback string) ToolHandler {
 		handler = func(args map[string]interface{}) string { return fallback }
 	}
 	return guardedHandler(deps, name, handler)
+}
+
+func extraHandlerCtx(deps CoreToolDeps, name, fallback string) ToolHandlerCtx {
+	if deps.ExtraHandlersCtx != nil {
+		if h, ok := deps.ExtraHandlersCtx[name]; ok && h != nil {
+			return guardedHandlerCtx(deps, name, h)
+		}
+	}
+	handler := extraHandler(deps, name, fallback)
+	return func(ctx context.Context, args map[string]interface{}) string {
+		_ = ctx
+		return handler(args)
+	}
+}
+
+func extraReadOnlyDatabaseHandler(deps CoreToolDeps, fallback string) ToolHandler {
+	inner := extraHandler(deps, "database", fallback)
+	return func(args map[string]interface{}) string {
+		if msg, refused := database.RefuseWriteForReadOnlyTool(args); refused {
+			return msg
+		}
+		return inner(args)
+	}
+}
+
+func extraReadOnlyDatabaseHandlerCtx(deps CoreToolDeps, fallback string) ToolHandlerCtx {
+	inner := extraHandlerCtx(deps, "database", fallback)
+	return func(ctx context.Context, args map[string]interface{}) string {
+		if msg, refused := database.RefuseWriteForReadOnlyTool(args); refused {
+			return msg
+		}
+		return inner(ctx, args)
+	}
 }

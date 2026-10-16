@@ -25,6 +25,31 @@ func TestResolveSSHHostByLabelTrimsAndIgnoresCase(t *testing.T) {
 	}
 }
 
+func TestSSHConnectOpenSSHAliasDoesNotRequireUser(t *testing.T) {
+	restore := remote.SetOpenSSHConfigQueryForTest(func(host, user string, port int) (string, error) {
+		switch host {
+		case "gpu84":
+			return "user wangqian\nhostname 127.0.0.1\nport 22\nproxyjump jump212\nidentityfile C:/keys/id_ed25519_gpu84\n", nil
+		case "jump212":
+			return "user jump\nhostname 127.0.0.1\nport 1\nidentityfile C:/keys/id_ed25519_gpu84\n", nil
+		default:
+			return "user bob\nhostname " + host + "\nport 22\nidentityfile C:/keys/id_rsa\n", nil
+		}
+	})
+	defer restore()
+
+	got := SSHConnect(SSHToolDeps{Manager: remote.NewSSHSessionManager(nil)}, map[string]interface{}{
+		"action": "connect",
+		"host":   "gpu84",
+	})
+	if strings.Contains(got, "需要 host 和 user") {
+		t.Fatalf("alias connect still required a user: %s", got)
+	}
+	if !strings.Contains(got, "127.0.0.1") && !strings.Contains(got, "wangqian") && !strings.Contains(got, "jump") {
+		t.Fatalf("alias was not resolved before dial: %s", got)
+	}
+}
+
 func TestBackgroundTaskActionsRequirePolicyOwner(t *testing.T) {
 	deps := SSHToolDeps{BGTaskMgr: remote.NewSSHBackgroundTaskManager(nil)}
 	for name, got := range map[string]string{

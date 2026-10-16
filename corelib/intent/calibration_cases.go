@@ -159,6 +159,10 @@ func ProductionCases() []CalibrationCase {
 		{Message: "列出当前目录下的文件", ExpectedLabel: LabelFileRead},
 		{Message: "show me what is in the README file", ExpectedLabel: LabelFileRead},
 
+		{Message: "删除刚才的markdown文件", ExpectedLabel: LabelFileDelete},
+		{Message: "删掉这个本地文件", ExpectedLabel: LabelFileDelete},
+		{Message: "delete the markdown file I just created", ExpectedLabel: LabelFileDelete},
+
 		{Message: "把这段内容保存到 notes.txt", ExpectedLabel: LabelFileWrite},
 		{Message: "在这个文件末尾追加一行", ExpectedLabel: LabelFileWrite},
 		{Message: "save this text to a local file", ExpectedLabel: LabelFileWrite},
@@ -250,5 +254,9 @@ func ProductionCases() []CalibrationCase {
 		{Message: "刷新一下知识库里的这个来源", ExpectedLabel: LabelKnowledgeAdmin, Note: "admin maintenance, not retrieval"},
 		{Message: "禁用这个知识库数据源", ExpectedLabel: LabelKnowledgeAdmin},
 		{Message: "run the knowledge quality maintenance plan", ExpectedLabel: LabelKnowledgeAdmin},
+
+		{Message: "查一下今天上午的工作日志", ExpectedLabel: LabelWorklogRead, Note: "external time-block record, not knowledge or todos"},
+		{Message: "上午添加： windows构建服务维护与修复，100%", ExpectedLabel: LabelWorklogUpdate, Note: "time block plus completion percent is a work record"},
+		{Message: "把修复登录问题加到任务列表里", ExpectedLabel: LabelTaskTrack, Note: "local todo wording stays task_track"},
 	}
 }

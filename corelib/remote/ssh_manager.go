@@ -2,15 +2,29 @@ package remote
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
 	"time"
 )
 
+// SSHWaitTimeoutShellBusyNotice is appended when a wait times out and the
+// shell prompt does not return after Ctrl+C. Callers must not send another
+// command into that session.
+const SSHWaitTimeoutShellBusyNotice = "[maclaw] 命令执行超时，中断后 shell 仍未返回"
+
 // sshPreviewMaxLines is the in-memory ring size for PTY preview text.
 // Older lines are dropped from the front; absolute line indices stay stable via droppedLines.
-const sshPreviewMaxLines = 2000
+//
+// Why 20000: the durable-runtime recovery probe (agentservice) frames its
+// read-only git status between markers inside this same ring. If a probe's
+// git status output exceeds the ring, the begin marker is evicted before the
+// frame completes and the probe fails closed (TaskBlocked) on an otherwise
+// healthy workspace. 20000 lines keeps realistic monorepo status frames
+// intact; preview consumers are tail-based (PreviewTail) so retention growth
+// is invisible to them.
+const sshPreviewMaxLines = 20000
 
 // SSHManagedSession 是 SSHSessionManager 管理的单个 SSH 会话。
 type SSHManagedSession struct {
@@ -58,6 +72,15 @@ func (s *SSHManagedSession) LineCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.droppedLines + len(s.PreviewLines)
+}
+
+func (s *SSHManagedSession) outputCursor() (lineCount int, pending string) {
+	if s == nil {
+		return 0, ""
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.droppedLines + len(s.PreviewLines), s.pendingLine
 }
 
 // NewLinesSince 返回从绝对行号 afterLine 开始仍保留在缓冲中的新行。
@@ -130,10 +153,7 @@ func (m *SSHSessionManager) Pool() *SSHPool { return m.pool }
 
 // Create 创建并启动一个新的 SSH 交互会话。
 func (m *SSHSessionManager) Create(spec SSHSessionSpec) (*SSHManagedSession, error) {
-	spec.HostConfig.Defaults()
-	hostID := spec.HostConfig.SSHHostID()
-
-	// 从连接池获取连接
+	// 从连接池获取连接。OpenSSH 别名在这里解析成真实地址和跳板，会话 ID 用解析后的主机。
 	client, resolvedHostConfig, err := m.pool.AcquireResolved(spec.HostConfig)
 	if err != nil {
 		return nil, fmt.Errorf("acquire ssh connection: %w", err)
@@ -141,6 +161,7 @@ func (m *SSHSessionManager) Create(spec SSHSessionSpec) (*SSHManagedSession, err
 	// Host-key capture is resolved before the PTY starts, so the session's
 	// identity, lifecycle release and every later reconnect share one pin.
 	spec.HostConfig = resolvedHostConfig
+	hostID := spec.HostConfig.SSHHostID()
 
 	// 创建 PTY 会话
 	ptySession := NewSSHPTYSession(client, hostID)
@@ -481,8 +502,41 @@ func (m *SSHSessionManager) WaitForOutputContext(ctx context.Context, sessionID 
 	sawPrompt := false
 	firstIter := true
 
+	// A deadline means this wait gave up. Interrupt the remote command so the
+	// next command is not written into a shell that is still running it.
+	// Cancellation is a different caller and must not send Ctrl+C. If the
+	// prompt does not come back, say so: the shell is still busy.
+	finishDeadline := func() ([]string, SessionStatus) {
+		// The main loop ignores a lone prompt line. If that line is already
+		// the shell prompt, the command finished; do not interrupt it and do
+		// not report a timeout.
+		if s.shellPromptReturnedSince(afterLine) {
+			return s.NewLinesSince(afterLine)
+		}
+		// Only a prompt that appears after Ctrl+C counts. A prompt-shaped
+		// line or the same pending prompt the command already showed is not
+		// the shell coming back.
+		mark, pendingBefore := s.outputCursor()
+		if s.Handle != nil {
+			_ = s.Handle.Interrupt()
+			time.Sleep(500 * time.Millisecond)
+		}
+		lines, status := s.NewLinesSince(afterLine)
+		recovered := s.Handle != nil && s.promptAppearedAfter(mark, pendingBefore)
+		notice := SSHWaitTimeoutShellBusyNotice
+		if recovered && len(lines) == 0 {
+			notice = "[maclaw] 命令执行超时（无输出），已发送 Ctrl+C 中断"
+		} else if recovered {
+			notice = "[maclaw] 命令执行超时，已发送 Ctrl+C 中断"
+		}
+		return append(lines, notice), status
+	}
+
 	for {
 		if ctx.Err() != nil {
+			if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				return finishDeadline()
+			}
 			lines, status := s.NewLinesSince(afterLine)
 			return lines, status
 		}
@@ -500,6 +554,9 @@ func (m *SSHSessionManager) WaitForOutputContext(ctx context.Context, sessionID 
 			if sleepFor > 0 {
 				select {
 				case <-ctx.Done():
+					if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+						return finishDeadline()
+					}
 					lines, status := s.NewLinesSince(afterLine)
 					return lines, status
 				case <-time.After(sleepFor):
@@ -557,19 +614,11 @@ func (m *SSHSessionManager) WaitForOutputContext(ctx context.Context, sessionID 
 
 	// 超时：未见任何完成信号 → Ctrl+C 打断可能挂起的远端命令
 	timedOut := !exitedByBreak && !sawExit && !sawPrompt && !sawFinalSignal
-	if timedOut && s.Handle != nil {
-		_ = s.Handle.Interrupt()
-		time.Sleep(500 * time.Millisecond)
+	if timedOut {
+		return finishDeadline()
 	}
 
 	lines, status := s.NewLinesSince(afterLine)
-	if timedOut {
-		if len(lines) == 0 {
-			lines = append(lines, "[maclaw] 命令执行超时（无输出），已发送 Ctrl+C 中断")
-		} else {
-			lines = append(lines, "[maclaw] 命令执行超时，已发送 Ctrl+C 中断")
-		}
-	}
 	return lines, status
 }
 
@@ -579,6 +628,53 @@ type completionSignal struct {
 	hasExit   bool
 	hasPrompt bool
 	newLines  int
+}
+
+// shellPromptReturnedSince reports whether the newest output after afterLine
+// is a shell prompt, including a single new line and an unfinished pending line.
+func (s *SSHManagedSession) shellPromptReturnedSince(afterLine int) bool {
+	if s == nil {
+		return false
+	}
+	lines, _ := s.NewLinesSince(afterLine)
+	if len(lines) > 0 && looksLikeShellPrompt(lines) {
+		return true
+	}
+	s.mu.Lock()
+	pending := s.pendingLine
+	s.mu.Unlock()
+	return pending != "" && looksLikeShellPrompt([]string{pending})
+}
+
+// promptAppearedAfter reports a shell prompt that was not already on screen
+// at the cursor. The same pending prompt the command had already drawn does
+// not count.
+func (s *SSHManagedSession) promptAppearedAfter(afterLine int, pendingBefore string) bool {
+	if s == nil {
+		return false
+	}
+	lines, _ := s.NewLinesSince(afterLine)
+	if len(lines) > 0 && looksLikeShellPrompt(lines) {
+		// One new line that is only the pending prompt being committed is
+		// the same prompt, not the shell returning after Ctrl+C.
+		if len(lines) == 1 && promptLineKey(lines[0]) == promptLineKey(pendingBefore) {
+			return false
+		}
+		return true
+	}
+	s.mu.Lock()
+	pending := s.pendingLine
+	s.mu.Unlock()
+	if pending == "" || promptLineKey(pending) == promptLineKey(pendingBefore) {
+		return false
+	}
+	return looksLikeShellPrompt([]string{pending})
+}
+
+// promptLineKey compares prompt text after color codes and trailing cursor
+// space are removed. A redraw of the same prompt is not a new prompt.
+func promptLineKey(line string) string {
+	return strings.TrimRight(stripANSIForPromptCheck(line), " \t\r\n")
 }
 
 // completionSignalSince inspects only lines after absolute afterLine (O(tail), no full copy).

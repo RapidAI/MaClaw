@@ -23,6 +23,30 @@ func NewRefundService(store *Store, creditsSvc *CreditsService, mailer mail.Mail
 }
 
 func (s *RefundService) ProcessRefund(ctx context.Context, purchaseRecordID, adminEmail, reason string) error {
+	// Suite purchases use a dedicated table but share the same refund entry
+	// point. Refund the single Suite charge atomically and mark the record.
+	if suite, err := s.store.GetSuitePurchaseByID(ctx, purchaseRecordID); err == nil {
+		if suite.Status == "refunded" {
+			return ErrAlreadyRefunded
+		}
+		// Claim the refund atomically before crediting to prevent concurrent
+		// requests from issuing duplicate reimbursements.
+		res, claimErr := s.store.db.ExecContext(ctx, `UPDATE sm_suite_purchases SET status='refunded' WHERE id=? AND status<>'refunded'`, purchaseRecordID)
+		if claimErr != nil {
+			return claimErr
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return ErrAlreadyRefunded
+		}
+		if suite.AmountPaid > 0 && s.creditsSvc != nil {
+			if err := s.creditsSvc.Credit(ctx, suite.BuyerID, suite.AmountPaid, true, suite.SuiteID, purchaseRecordID, "refund skill suite"); err != nil {
+				_, _ = s.store.db.ExecContext(ctx, `UPDATE sm_suite_purchases SET status='active' WHERE id=? AND status='refunded'`, purchaseRecordID)
+				return err
+			}
+		}
+		_ = s.store.RecordSuiteAuditEvent(ctx, suite.SuiteID, "refund", adminEmail, purchaseRecordID, suite.MemberSkillIDs)
+		return nil
+	}
 	var pr PurchaseRecord
 	var createdAt string
 	err := s.store.readDB.QueryRowContext(ctx, `SELECT id, hub_id, tenant_id, buyer_email, buyer_id, skill_id, purchased_version, purchase_type, amount_paid, platform_fee, seller_earning, seller_id, key_status, api_key_id, status, created_at FROM sm_purchase_records WHERE id = ?`, purchaseRecordID).Scan(&pr.ID, &pr.HubID, &pr.TenantID, &pr.BuyerEmail, &pr.BuyerID, &pr.SkillID, &pr.PurchasedVersion, &pr.PurchaseType, &pr.AmountPaid, &pr.PlatformFee, &pr.SellerEarning, &pr.SellerID, &pr.KeyStatus, &pr.APIKeyID, &pr.Status, &createdAt)

@@ -1,11 +1,53 @@
 package agent
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/memory"
 )
+
+func TestBuildPromptBundleSelfIdentityStaysInsideOwner(t *testing.T) {
+	store, err := memory.NewStore(filepath.Join(t.TempDir(), "memories.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+	for _, entry := range []memory.Entry{
+		{Content: "desktop identity", Category: memory.CategorySelfIdentity, OwnerID: "desktop-user"},
+		{Content: "shared identity", Category: memory.CategorySelfIdentity},
+		{Content: "other identity", Category: memory.CategorySelfIdentity, OwnerID: "other-user"},
+	} {
+		if err := store.Save(entry); err != nil {
+			t.Fatal(err)
+		}
+	}
+	base := SystemPromptDeps{
+		Config:      SystemPromptConfig{RoleName: "MaClaw", RoleDescription: "test agent"},
+		MemoryStore: store,
+	}
+	unscoped := BuildSystemPrompt(base, "hello", true)
+	if !strings.Contains(unscoped, "other identity") {
+		t.Fatalf("empty owner should keep the historical all-owner summary: %s", unscoped)
+	}
+	base.MemoryOwnerID = "desktop-user"
+	desktop := BuildSystemPrompt(base, "hello", true)
+	for _, want := range []string{"desktop identity", "shared identity"} {
+		if !strings.Contains(desktop, want) {
+			t.Fatalf("desktop prompt missing %q: %s", want, desktop)
+		}
+	}
+	if strings.Contains(desktop, "other identity") {
+		t.Fatalf("desktop prompt included another owner: %s", desktop)
+	}
+	base.MemoryStrictOwner = true
+	strict := BuildSystemPrompt(base, "hello", true)
+	if !strings.Contains(strict, "desktop identity") || strings.Contains(strict, "shared identity") || strings.Contains(strict, "other identity") {
+		t.Fatalf("strict prompt = %s", strict)
+	}
+}
 
 func TestBuildSystemPromptCodingWorkflowUsesInternalPath(t *testing.T) {
 	prompt := BuildSystemPrompt(SystemPromptDeps{

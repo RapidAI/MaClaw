@@ -590,3 +590,64 @@ func TestInferProjectPath(t *testing.T) {
 		})
 	}
 }
+
+func TestProjectIndex_DurableTaskRecordSurvivesMissingOutput(t *testing.T) {
+	pi := NewProjectIndex()
+	taskPath := `D:\work\tasks\no-output-task`
+	plainPath := `D:\work\plain-no-output`
+
+	// A task-management row whose only indexed entry is a non-output ref (the
+	// durable artifact entry was lost to eviction/supersession) must stay
+	// listed; a non-task record in the same state stays hidden.
+	pi.Rebuild([]Entry{
+		{
+			ID:         "trim-task",
+			Content:    "trimmed conversation ref",
+			Category:   CategoryTaskArtifact,
+			SourceType: "conversation_trim_ref",
+			Tags:       []string{"task_management", taskPath},
+			UpdatedAt:  time.Now(),
+		},
+		{
+			ID:         "trim-plain",
+			Content:    "trimmed conversation ref",
+			Category:   CategoryTaskArtifact,
+			SourceType: "conversation_trim_ref",
+			Tags:       []string{plainPath},
+			UpdatedAt:  time.Now(),
+		},
+	})
+
+	rec := pi.Get(taskPath)
+	if rec == nil {
+		t.Fatal("task record missing")
+	}
+	if rec.HasOutput {
+		t.Fatal("expected HasOutput=false for ref-only task record")
+	}
+
+	if got := pi.ListRecentMatching(10, nil); len(got) != 1 || got[0].ProjectPath != normalizeProjectPath(toForwardSlash(taskPath)) {
+		t.Fatalf("ListRecentMatching should keep the durable task row only, got %#v", got)
+	}
+	if got := pi.ListAllMatching(nil); len(got) != 1 {
+		t.Fatalf("ListAllMatching should keep the durable task row only, got %#v", got)
+	}
+	if got := pi.SearchMatching("no-output-task", 10, nil); len(got) != 1 {
+		t.Fatalf("SearchMatching should find the durable task row, got %#v", got)
+	}
+}
+
+func TestNormalizeProjectPathUppercasesDriveLetter(t *testing.T) {
+	t.Parallel()
+	lower := normalizeProjectPath("d:/workprj/aicoder/tasks/x")
+	upper := normalizeProjectPath("D:/workprj/aicoder/tasks/x")
+	if lower != upper {
+		t.Fatalf("drive letter casing must not change the key: %q vs %q", lower, upper)
+	}
+	if upper != `D:\workprj\aicoder\tasks\x` {
+		t.Fatalf("normalizeProjectPath = %q, want backslash form with uppercase drive", upper)
+	}
+	if got := normalizeProjectPath("/home/me/proj"); got != "/home/me/proj" {
+		t.Fatalf("posix path must pass through unchanged, got %q", got)
+	}
+}

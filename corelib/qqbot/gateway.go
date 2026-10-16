@@ -112,13 +112,17 @@ type Gateway struct {
 	userLocks   map[string]*sync.Mutex
 	userLocksMu sync.Mutex
 
-	// handlerWg tracks in-flight handler goroutines so Stop() can wait
-	// for them to finish before returning.
+	// handlerWg tracks in-flight message handlers. Stop does not wait on it;
+	// an agent turn must not block the caller after the socket is closed.
 	handlerWg sync.WaitGroup
 
 	// interruptHandler is called when a new message arrives while the
 	// per-user lock is held. See corelib/progress.InterruptHandler.
 	interruptHandler progress.InterruptHandler
+
+	// Test overrides. Empty uses the official QQ endpoints.
+	testTokenEndpoint string
+	testAPIBase       string
 }
 
 // wsPayload is the QQ Bot WebSocket payload structure.
@@ -143,6 +147,30 @@ func NewGateway(config Config, handler MessageHandler) *Gateway {
 // SetStatusCallback sets a callback for connection status changes.
 func (g *Gateway) SetStatusCallback(cb StatusCallback) {
 	g.onStatus = cb
+}
+
+// setTestEndpoints points token and REST calls at a local server.
+// Production leaves both empty.
+func (g *Gateway) setTestEndpoints(tokenURL, apiBase string) {
+	if g == nil {
+		return
+	}
+	g.testTokenEndpoint = strings.TrimSpace(tokenURL)
+	g.testAPIBase = strings.TrimRight(strings.TrimSpace(apiBase), "/")
+}
+
+func (g *Gateway) accessTokenEndpoint() string {
+	if g != nil && g.testTokenEndpoint != "" {
+		return g.testTokenEndpoint
+	}
+	return tokenEndpoint
+}
+
+func (g *Gateway) apiBaseURL() string {
+	if g != nil && g.testAPIBase != "" {
+		return g.testAPIBase
+	}
+	return qqAPIBase
 }
 
 // SetInterruptHandler sets the handler for interrupt signals.
@@ -174,21 +202,16 @@ func (g *Gateway) Start(ctx context.Context) error {
 }
 
 // Stop shuts down the gateway.
+//
+// It returns once the socket read loop has exited. In-flight message handlers
+// are left to finish on their own: an agent turn can run for minutes, and
+// waiting for it here holds the IM config sync for every other channel.
+// The socket is already closed, so those handlers cannot receive new messages.
 func (g *Gateway) Stop() error {
-	g.mu.Lock()
-	if !g.running {
-		g.mu.Unlock()
+	if !g.signalStop() {
 		return nil
 	}
-	if g.cancel != nil {
-		g.cancel()
-	}
-	g.running = false
-	g.cancel = nil
-	g.mu.Unlock()
-
-	g.wg.Wait()        // wait for runGateway to exit
-	g.handlerWg.Wait() // wait for in-flight handler goroutines
+	g.wg.Wait()
 
 	g.seqMu.Lock()
 	g.lastSeq = nil
@@ -197,6 +220,22 @@ func (g *Gateway) Stop() error {
 	log.Printf("[qqbot/gw] stopped")
 	g.emitStatus("disconnected")
 	return nil
+}
+
+// signalStop cancels the read loop. The connection watcher closes the socket,
+// so a blocked ReadJSON returns without waiting for the next heartbeat.
+func (g *Gateway) signalStop() bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if !g.running {
+		return false
+	}
+	if g.cancel != nil {
+		g.cancel()
+		g.cancel = nil
+	}
+	g.running = false
+	return true
 }
 
 // IsRunning returns whether the gateway is currently running.
@@ -247,7 +286,7 @@ func (g *Gateway) getAccessToken(ctx context.Context) (string, error) {
 		"appId":        g.config.AppID,
 		"clientSecret": g.config.AppSecret,
 	})
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenEndpoint, bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, g.accessTokenEndpoint(), bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -351,6 +390,15 @@ func (g *Gateway) connectAndRun(ctx context.Context, sessionID *string) (gotRead
 		return false, fmt.Errorf("dial: %w", err)
 	}
 	defer conn.Close()
+	// ReadJSON does not watch ctx. An idle QQ socket only delivers a frame on
+	// the heartbeat (tens of seconds), so Stop would sit there until the next
+	// one. Closing the socket is what makes the read return immediately.
+	connCtx, cancelConn := context.WithCancel(ctx)
+	defer cancelConn()
+	go func() {
+		<-connCtx.Done()
+		_ = conn.Close()
+	}()
 
 	wsWrite := func(v any) error {
 		g.wsMu.Lock()
@@ -635,7 +683,7 @@ func (g *Gateway) downloadURL(rawURL string) ([]byte, error) {
 // ---------------------------------------------------------------------------
 
 func (g *Gateway) getGatewayURL(ctx context.Context, token string) (string, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, qqAPIBase+"/gateway", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, g.apiBaseURL()+"/gateway", nil)
 	if err != nil {
 		return "", err
 	}
@@ -675,7 +723,7 @@ func (g *Gateway) SendText(ctx context.Context, msg OutgoingText) error {
 		return err
 	}
 
-	url := fmt.Sprintf("%s/v2/users/%s/messages", qqAPIBase, msg.OpenID)
+	url := fmt.Sprintf("%s/v2/users/%s/messages", g.apiBaseURL(), msg.OpenID)
 	body, _ := json.Marshal(map[string]any{
 		"content":  msg.Text,
 		"msg_type": 0,
@@ -718,7 +766,7 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 	}
 
 	// Step 1: Upload media
-	uploadURL := fmt.Sprintf("%s/v2/users/%s/files", qqAPIBase, msg.OpenID)
+	uploadURL := fmt.Sprintf("%s/v2/users/%s/files", g.apiBaseURL(), msg.OpenID)
 	uploadPayload := map[string]any{
 		"file_type":    msg.FileType,
 		"srv_send_msg": false,
@@ -762,7 +810,7 @@ func (g *Gateway) SendMedia(ctx context.Context, msg OutgoingMedia) error {
 	}
 
 	// Step 2: Send rich media message
-	msgURL := fmt.Sprintf("%s/v2/users/%s/messages", qqAPIBase, msg.OpenID)
+	msgURL := fmt.Sprintf("%s/v2/users/%s/messages", g.apiBaseURL(), msg.OpenID)
 	msgBody, _ := json.Marshal(map[string]any{
 		"msg_type": 7,
 		"media":    map[string]any{"file_info": uploadResult.FileInfo},

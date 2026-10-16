@@ -2,6 +2,7 @@ package security
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -171,26 +172,40 @@ func FormatApprovalMessage(req ApprovalRequest) string {
 	return msg
 }
 
+// approvalBareNegativeWords are short latin replies that must match as a whole
+// word. Matching them as plain substrings would reject benign replies such as
+// "deploy node" or "not sure", which merely contain "no".
+var approvalBareNegativeWords = []string{"no", "nope", "nah"}
+
 // ParseApprovalReply parses a user's IM reply into an ApprovalResponse.
+//
+// Matching order matters: scope keywords are checked first because they also
+// contain the plain approval keyword ("批准同类" contains "批准"); rejection is
+// checked before approval because "不允许" contains "允许".
+//
+// The parse is fail-closed: anything that is not recognised as approval
+// (including empty and whitespace-only replies) is treated as a rejection.
 func ParseApprovalReply(requestID, reply string) ApprovalResponse {
-	resp := ApprovalResponse{RequestID: requestID}
+	resp := ApprovalResponse{RequestID: requestID, ApproveScope: "once"}
+
+	normalized := strings.ToLower(strings.TrimSpace(reply))
+	if normalized == "" {
+		return resp
+	}
 
 	switch {
-	case containsAny(reply, "批准同类", "approve category", "approve similar"):
+	case containsAny(normalized, "批准同类", "approve category", "approve similar"):
 		resp.Approved = true
 		resp.ApproveScope = "category"
-	case containsAny(reply, "批准全部", "approve all", "全部允许"):
+	case containsAny(normalized, "批准全部", "approve all", "全部允许"):
 		resp.Approved = true
 		resp.ApproveScope = "session"
-	case containsAny(reply, "拒绝", "reject", "deny", "no", "", "不允许"):
+	case containsAny(normalized, "拒绝", "reject", "deny", "不允许"),
+		containsWord(normalized, approvalBareNegativeWords...):
 		resp.Approved = false
-		resp.ApproveScope = "once"
-	case containsAny(reply, "批准", "approve", "允许", "yes", "ok", ""):
+	case containsAny(normalized, "批准", "approve", "允许", "yes"),
+		containsWord(normalized, "y", "ok", "okay"):
 		resp.Approved = true
-		resp.ApproveScope = "once"
-	default:
-		resp.Approved = false
-		resp.ApproveScope = "once"
 	}
 
 	return resp
@@ -199,7 +214,29 @@ func ParseApprovalReply(requestID, reply string) ApprovalResponse {
 func containsAny(s string, substrs ...string) bool {
 	lower := strings.ToLower(s)
 	for _, sub := range substrs {
+		if sub == "" {
+			continue
+		}
 		if strings.Contains(lower, strings.ToLower(sub)) {
+			return true
+		}
+	}
+	return false
+}
+
+// containsWord reports whether any of words appears in s as a whole word.
+// s is expected to be lower-cased ASCII; non-ASCII bytes (e.g. CJK) count as
+// word boundaries, so "批准no" still matches "no".
+func containsWord(s string, words ...string) bool {
+	for _, word := range words {
+		if word == "" {
+			continue
+		}
+		re, err := regexp.Compile(`(^|[^a-z0-9_])` + regexp.QuoteMeta(word) + `([^a-z0-9_]|$)`)
+		if err != nil {
+			continue
+		}
+		if re.MatchString(s) {
 			return true
 		}
 	}

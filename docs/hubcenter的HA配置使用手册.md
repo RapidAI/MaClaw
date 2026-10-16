@@ -104,7 +104,7 @@ ha:
   pull_batch_size: 200
   heartbeat_sync_min_interval_seconds: 600
   history_retention_days: 0.5
-  history_max_retained_ops: 50000
+  history_max_retained_ops: 20000
   history_prune_interval_minutes: 10
   history_prune_batch_size: 20000
   peers:
@@ -183,7 +183,7 @@ ha:
 ### `ha.history_max_retained_ops`
 
 - 自动清理后最多保留的 HA op 数量
-- 推荐首版保持 `50000`
+- 推荐保持 `20000`（2026-09-27 从 50000 降档：降低 ha_sync_ops 的清理与写入负载，避免主库文件膨胀；配合 pull_batch_size=100，5 秒轮询的落后节点可在数分钟内追平）
 
 ### `ha.history_prune_interval_minutes`
 

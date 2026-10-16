@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // ToolSurfaceReceipt is an audit record for one concrete outbound model
@@ -1098,10 +1100,14 @@ func normalizeToolSurfacePlanEvidence(evidence ToolSurfacePlanEvidence) (ToolSur
 }
 
 // newToolSurfaceReceiptHTTPClient wraps one request attempt. It verifies the
-// JSON body at RoundTrip time, after every SDK/provider compatibility rewrite,
-// which is the final point at which the host can prevent an incomplete tool
-// surface from reaching the model. The callback receives the verified receipt
-// before the underlying transport gets any bytes.
+// JSON body at RoundTrip time, after every compatibility rewrite that still
+// speaks the canonical tool-surface JSON, and before any encoder replaces
+// that JSON with a non-JSON wire body. The callback receives the verified
+// receipt before the underlying transport gets any bytes.
+//
+// An encoder such as Qoder COSY must nest under this gate
+// (corelib.ToolSurfaceWireGate). The gate then sees the final tool JSON, and
+// the encoder signs those verified bytes instead of hiding them.
 func newToolSurfaceReceiptHTTPClient(base *http.Client, tools []map[string]interface{}, observer ToolSurfaceReceiptObserver) (*http.Client, error) {
 	return newToolSurfaceReceiptHTTPClientWithInvocationPolicy(base, tools, DefaultToolSurfaceInvocationPolicy(ToolSurfaceEnvelopeUnspecified), observer)
 }
@@ -1139,7 +1145,7 @@ func newToolSurfaceReceiptHTTPClientForManifestWithAuditEvidence(base *http.Clie
 	if next == nil {
 		next = http.DefaultTransport
 	}
-	clone.Transport = toolSurfaceReceiptRoundTripper{next: next, manifest: manifest, evidence: evidence, observer: observer}
+	clone.Transport = &toolSurfaceReceiptRoundTripper{next: next, manifest: manifest, evidence: evidence, observer: observer}
 	// A redirect is a second HTTP request. It cannot inherit this request's
 	// rendered surface because RunLoop did not create a fresh plan/receipt for
 	// the redirect target. Override even a caller-provided redirect policy so a
@@ -1158,7 +1164,31 @@ type toolSurfaceReceiptRoundTripper struct {
 	observer ToolSurfaceReceiptObserver
 }
 
-func (transport toolSurfaceReceiptRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+var _ corelib.ToolSurfaceWireGate = (*toolSurfaceReceiptRoundTripper)(nil)
+
+func (transport *toolSurfaceReceiptRoundTripper) ToolSurfaceNext() http.RoundTripper {
+	if transport == nil {
+		return nil
+	}
+	return transport.next
+}
+
+func (transport *toolSurfaceReceiptRoundTripper) SetToolSurfaceNext(next http.RoundTripper) {
+	if transport == nil {
+		return
+	}
+	transport.next = next
+}
+
+func (transport *toolSurfaceReceiptRoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
+	if transport == nil {
+		return nil, fmt.Errorf("surface_integrity_failure: missing tool surface transport")
+	}
+	// Snapshot the hop so a later wrap cannot retarget this in-flight request.
+	next := transport.next
+	if next == nil {
+		next = http.DefaultTransport
+	}
 	if request == nil || request.Body == nil {
 		return nil, transport.reject("surface_integrity_failure: missing outbound request body", 0, "")
 	}
@@ -1215,7 +1245,7 @@ func (transport toolSurfaceReceiptRoundTripper) RoundTrip(request *http.Request)
 	// when its connection becomes unusable before reading the body, which is not
 	// a second outbound payload handoff.
 	request.GetBody = nil
-	response, err := transport.next.RoundTrip(request)
+	response, err := next.RoundTrip(request)
 	if err != nil {
 		// The transport was invoked with bytes, but a write/read error cannot
 		// prove whether the provider observed the request. Do not report this as
@@ -1324,7 +1354,7 @@ func toolSurfaceWireDefinitions(payload map[string]interface{}) ([]map[string]in
 	return definitions, true, nil
 }
 
-func (transport toolSurfaceReceiptRoundTripper) reject(failure string, wireToolCount int, wireDigest string) error {
+func (transport *toolSurfaceReceiptRoundTripper) reject(failure string, wireToolCount int, wireDigest string) error {
 	if transport.observer != nil {
 		receipt := transport.manifest.receiptForAuditEvidence(transport.evidence)
 		receipt.WirePayloadDigest = wireDigest

@@ -7,6 +7,19 @@ import "golang.org/x/sys/cpu"
 // hasAVX2FMA reports whether AVX2+FMA is available (Haswell+).
 var hasAVX2FMA = cpu.X86.HasAVX2 && cpu.X86.HasFMA
 
+// hasAVX512ZMM reports whether the AVX-512 ZMM kernels may run (Zen4 /
+// Ice Lake+): F/DQ/VL/BW, matching the tensor package's gate.
+var hasAVX512ZMM = cpu.X86.HasAVX512F && cpu.X86.HasAVX512DQ &&
+	cpu.X86.HasAVX512VL && cpu.X86.HasAVX512BW
+
+// ctcRowExpAVX512 computes row[i] = exp(max(row[i]-m, -80)) for n elements
+// (n multiple of 16; n == 0 is a no-op). In-place safe.
+func ctcRowExpAVX512(row *float32, n int, m float32)
+
+// geluErfAVX512 is the 16-wide AVX-512 port of geluErfAVX2 (n multiple of
+// 16; n == 0 is a no-op). In-place safe.
+func geluErfAVX512(dst, src *float32, n int)
+
 // fmaddScalarAVX2 computes out[i] += w*x[i] for n elements (n multiple of 8).
 func fmaddScalarAVX2(out, x *float32, w float32, n int)
 
@@ -18,6 +31,13 @@ func geluErfAVX2(dst, src *float32, n int)
 // transpose8x8F32 transposes an 8x8 float32 block:
 // dst[j*ldDst+i] = src[i*ldSrc+j]. Pure data movement, bit-exact.
 func transpose8x8F32(dst *float32, ldDst int, src *float32, ldSrc int)
+
+// im2row3x3AVX512 is the vectorized interior of im2rowFast for 3x3 sW=1
+// convolutions: for each (channel c, kernel row kh) it copies 3 consecutive
+// floats x[base+p..p+2] (base = c*HW + rowOff[kh] + srcOff) into B rows for
+// 4·groups consecutive output pixels at column 9c+3kh, K floats per row.
+// Caller contract: see the comment above the asm implementation.
+func im2row3x3AVX512(dst, x *float32, rowOff *int, groups, K, HW, Cg, srcOff int)
 
 // fmadd3AVX2 computes out[i] += w0*x[i] + w1*x[i+1] + w2*x[i+2] for n
 // elements (n multiple of 8; n == 0 is a no-op); x must extend 2 past n.
@@ -60,10 +80,17 @@ func geluErfFast(dst, src []float32) int {
 	if len(dst) < n {
 		n = len(dst)
 	}
-	if !hasAVX2FMA || n < 32 {
+	if n < 32 {
 		return 0
 	}
 	body := n &^ 31
+	if hasAVX512ZMM {
+		geluErfAVX512(&dst[0], &src[0], body)
+		return body
+	}
+	if !hasAVX2FMA {
+		return 0
+	}
 	geluErfAVX2(&dst[0], &src[0], body)
 	return body
 }

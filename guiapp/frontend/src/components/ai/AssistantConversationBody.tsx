@@ -1,0 +1,213 @@
+import type { ReactNode } from "react";
+import { useEffect, useRef } from "react";
+import type { ChatMessage } from "./useAIAssistant";
+import type { Theme } from "./aiAssistantPanelTheme";
+import { AssistantPinnedNewsCards } from "./AssistantPinnedNewsCards";
+import { AssistantReasoningPanel } from "./AssistantReasoningPanel";
+import { t as translate } from "../../i18n";
+import { brandLineParts, formatBrandLine } from "../../utils/brandProductLine";
+
+/** Synthesize a phone-boot-style startup sound: majestic arpeggio with metallic touch. */
+function playStartupChime() {
+    try {
+        const ctx = new AudioContext();
+        const now = ctx.currentTime;
+
+        // Master gain
+        const master = ctx.createGain();
+        master.gain.setValueAtTime(0.45, now);
+        master.connect(ctx.destination);
+
+        // Ascending arpeggio: C5-E5-G5-C6 with metallic bell character
+        const arp: [number, number][] = [[523, 0], [659, 0.45], [784, 0.9], [1047, 1.35]];
+        for (const [freq, start] of arp) {
+            // Fundamental (sine)
+            const osc = ctx.createOscillator();
+            const g = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(freq, now + start);
+            g.gain.setValueAtTime(0, now + start);
+            g.gain.linearRampToValueAtTime(0.10, now + start + 0.06);
+            g.gain.exponentialRampToValueAtTime(0.001, now + start + 1.8);
+            osc.connect(g).connect(master);
+            osc.start(now + start);
+            osc.stop(now + start + 1.9);
+
+            // Brightness (triangle octave)
+            const osc2 = ctx.createOscillator();
+            const g2 = ctx.createGain();
+            osc2.type = 'triangle';
+            osc2.frequency.setValueAtTime(freq * 2, now + start);
+            g2.gain.setValueAtTime(0, now + start);
+            g2.gain.linearRampToValueAtTime(0.02, now + start + 0.06);
+            g2.gain.exponentialRampToValueAtTime(0.001, now + start + 1.5);
+            osc2.connect(g2).connect(master);
+            osc2.start(now + start);
+            osc2.stop(now + start + 1.6);
+
+            // Metallic partial (2.76x, fast decay)
+            const osc3 = ctx.createOscillator();
+            const g3 = ctx.createGain();
+            osc3.type = 'sine';
+            osc3.frequency.setValueAtTime(freq * 2.76, now + start);
+            g3.gain.setValueAtTime(0.018, now + start);
+            g3.gain.exponentialRampToValueAtTime(0.001, now + start + 0.25);
+            osc3.connect(g3).connect(master);
+            osc3.start(now + start);
+            osc3.stop(now + start + 0.3);
+
+            // Attack transient (noise burst)
+            const bufSize = Math.floor(ctx.sampleRate * 0.01);
+            const noiseBuf = ctx.createBuffer(1, bufSize, ctx.sampleRate);
+            const data = noiseBuf.getChannelData(0);
+            for (let j = 0; j < bufSize; j++) data[j] = (Math.random() * 2 - 1) * 0.5;
+            const noise = ctx.createBufferSource();
+            const ng = ctx.createGain();
+            const nf = ctx.createBiquadFilter();
+            noise.buffer = noiseBuf;
+            nf.type = 'bandpass';
+            nf.frequency.setValueAtTime(freq * 3.2, now + start);
+            nf.Q.setValueAtTime(6, now + start);
+            ng.gain.setValueAtTime(0.08, now + start);
+            ng.gain.exponentialRampToValueAtTime(0.001, now + start + 0.012);
+            noise.connect(nf).connect(ng).connect(master);
+            noise.start(now + start);
+            noise.stop(now + start + 0.015);
+        }
+
+        // Final resolve chord (C6-E6-G6), clean
+        const resolveStart = 1.9;
+        for (const freq of [1047, 1319, 1568]) {
+            const osc = ctx.createOscillator();
+            const g = ctx.createGain();
+            osc.type = 'sine';
+            osc.frequency.setValueAtTime(freq, now + resolveStart);
+            g.gain.setValueAtTime(0, now + resolveStart);
+            g.gain.linearRampToValueAtTime(0.06, now + resolveStart + 0.15);
+            g.gain.exponentialRampToValueAtTime(0.001, now + resolveStart + 1.8);
+            osc.connect(g).connect(master);
+            osc.start(now + resolveStart);
+            osc.stop(now + resolveStart + 1.9);
+        }
+
+        // Cleanup
+        setTimeout(() => ctx.close(), 4500);
+    } catch {
+        // Audio not available; silent fallback
+    }
+}
+
+interface AssistantConversationBodyProps {
+    emptyContent?: ReactNode;
+    initLabel: string;
+    lang: string;
+    messages: ChatMessage[];
+    onOpenOnboarding?: () => void;
+    onboardingIncomplete?: boolean;
+    pinnedNews: ChatMessage[];
+    ready: boolean;
+    renderedOtherMessages: ReactNode;
+    renderedProgressMessages: ReactNode;
+    /** Live activity title shown at the panel position when no assistant bubble owns it. */
+    liveActivityLabel?: string;
+    /** Plain object after the live action (model or tool). Sheen stays on the action. */
+    liveActivityObject?: string;
+    busyAccessory?: ReactNode;
+    theme: Theme;
+    brandId?: string | null;
+    brandDisplayNameCN?: string | null;
+}
+
+export function AssistantConversationBody({
+    emptyContent,
+    initLabel,
+    lang,
+    messages,
+    onOpenOnboarding,
+    onboardingIncomplete,
+    pinnedNews,
+    ready,
+    renderedOtherMessages,
+    renderedProgressMessages,
+    liveActivityLabel,
+    liveActivityObject,
+    busyAccessory,
+    theme: t,
+    brandId,
+    brandDisplayNameCN,
+}: AssistantConversationBodyProps) {
+    const brandParts = brandLineParts({
+        brandId,
+        displayNameCN: brandDisplayNameCN,
+        lang,
+        localizedDefault: translate("aboutProductName", lang),
+    });
+    const brandLabel = formatBrandLine(brandParts);
+    // Play startup chime once when brand animation is shown
+    const chimePlayedRef = useRef(false);
+    useEffect(() => {
+        if (!ready && !onboardingIncomplete && !chimePlayedRef.current) {
+            chimePlayedRef.current = true;
+            // Small delay to let the UI render first
+            const timer = setTimeout(() => playStartupChime(), 200);
+            return () => clearTimeout(timer);
+        }
+    }, [ready, onboardingIncomplete]);
+
+    return (
+        <div className="mc-conversation-body">
+            {onboardingIncomplete ? (
+                <div className="acb-empty">
+                    <div style={{ color: t.textMuted, fontSize: "13px" }}>
+                        {lang === "en" ? "Setup not completed" : "\u8bbe\u7f6e\u672a\u5b8c\u6210"}
+                    </div>
+                    <button
+                        onClick={onOpenOnboarding}
+                        style={{ padding: "10px 28px", fontSize: "15px", fontWeight: 600, background: t.sendBtnBg || t.btnColor || "#2e75cb", color: t.sendBtnColor || "#fff", border: `1px solid ${t.sendBtnBorder || t.sendBtnBg || t.btnColor || "#2e75cb"}`, borderRadius: "8px", cursor: "pointer", transition: "opacity 0.2s" }}
+                        onMouseEnter={e => (e.currentTarget.style.opacity = "0.85")}
+                        onMouseLeave={e => (e.currentTarget.style.opacity = "1")}
+                    >
+                        {lang === "en" ? "Complete Setup" : "\u5b8c\u6210\u8bbe\u7f6e"}
+                    </button>
+                </div>
+            ) : !ready ? (
+                <div className="acb-loading">
+                    <div data-testid="assistant-brand-splash" aria-label={brandLabel} className="acb-brand">
+                        {brandParts.name ? <span style={{ fontSize: "28px", fontWeight: 700, color: t.text, letterSpacing: "0" }}>{brandParts.name}</span> : null}
+                        <span className="brand-version-mark acb-brand-version">{brandParts.version}</span>
+                        {brandParts.generation ? <span className="acb-brand-gen">{brandParts.generation}</span> : null}
+                    </div>
+                    <div style={{ color: t.textMuted, fontSize: "11px", opacity: 0.7 }}>{initLabel}</div>
+                </div>
+            ) : messages.length === 0 ? (
+                emptyContent !== undefined ? emptyContent : (
+                    liveActivityLabel ? null : (
+                        <span style={{ color: t.emptyHint }}>
+                            {lang === "en" ? "Ask me anything..." : "\u6709\u4ec0\u4e48\u53ef\u4ee5\u5e2e\u4f60\u7684\uff1f"}
+                        </span>
+                    )
+                )
+            ) : (
+                <>
+                    <AssistantPinnedNewsCards messages={pinnedNews} theme={t} />
+                    {renderedOtherMessages}
+                    {renderedProgressMessages}
+                </>
+            )}
+            {ready && !onboardingIncomplete ? busyAccessory : null}
+            {liveActivityLabel ? (
+                <AssistantReasoningPanel
+                    defaultOpen={false}
+                    label={liveActivityLabel}
+                    objectLabel={liveActivityObject}
+                    lang={lang}
+                    theme={t}
+                    contentKey={`${liveActivityLabel}|${liveActivityObject || ""}`}
+                    live
+                >
+                    {null}
+                </AssistantReasoningPanel>
+            ) : null}
+        </div>
+    );
+}

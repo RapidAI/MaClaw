@@ -1,0 +1,98 @@
+import { render, screen } from '@testing-library/react';
+
+/** The diff renders syntax-colored spans, so assert on the rendered row text. */
+function diffText(): string {
+    return screen.getByTestId('code-preview-diff-view').textContent ?? '';
+}
+
+function diffSigns(className: string): string[] {
+    return Array.from(document.querySelectorAll(`.${className}`)).map((el) => el.textContent ?? '');
+}
+import { describe, expect, it, vi } from 'vitest';
+import { CodePreviewPanel, darkCodePreviewTheme } from '../CodePreviewPanel';
+import type { CodeFile } from '../useCodePreviewState';
+
+describe('CodePreviewPanel diff rendering', () => {
+    it('renders a modify diff when original content is intentionally empty', () => {
+        const file: CodeFile = {
+            sessionID: 'session-1',
+            filePath: 'src/new-from-empty.ts',
+            fileName: 'new-from-empty.ts',
+            content: 'export const value = true;',
+            original: '',
+            opType: 'modify',
+            language: 'typescript',
+            updatedAt: 1,
+        };
+
+        render(
+            <CodePreviewPanel
+                files={new Map([[file.filePath, file]])}
+                activeFilePath={file.filePath}
+                onSelectFile={vi.fn()}
+                onClose={vi.fn()}
+                theme={darkCodePreviewTheme}
+            />,
+        );
+
+        expect(diffSigns('cp-diff-sign-add')).toContain('+');
+        expect(diffText()).toContain('export const value = true;');
+    });
+
+    it('renders markdown modifications as diff instead of markdown preview', () => {
+        const file: CodeFile = {
+            sessionID: 'session-1',
+            filePath: 'README.md',
+            fileName: 'README.md',
+            content: '# New title',
+            original: '# Old title',
+            opType: 'modify',
+            language: 'markdown',
+            updatedAt: 1,
+        };
+
+        render(
+            <CodePreviewPanel
+                files={new Map([[file.filePath, file]])}
+                activeFilePath={file.filePath}
+                onSelectFile={vi.fn()}
+                onClose={vi.fn()}
+                theme={darkCodePreviewTheme}
+            />,
+        );
+
+        expect(diffSigns('cp-diff-sign-del')).toContain('-');
+        expect(diffSigns('cp-diff-sign-add')).toContain('+');
+        expect(diffText()).toContain('# Old title');
+        expect(diffText()).toContain('# New title');
+    });
+
+    it('keeps a truncated remote file out of diff mode', () => {
+        const file: CodeFile = {
+            sessionID: 'remote:ssh-1',
+            filePath: '/srv/app/large.ts',
+            fileName: 'large.ts',
+            content: 'export const visible = true;',
+            original: 'export const visible = false;',
+            opType: 'modify',
+            language: 'typescript',
+            updatedAt: 1,
+            previewTruncated: true,
+        };
+
+        render(
+            <CodePreviewPanel
+                files={new Map([[file.filePath, file]])}
+                activeFilePath={file.filePath}
+                onSelectFile={vi.fn()}
+                onClose={vi.fn()}
+                theme={darkCodePreviewTheme}
+                lang="zh-Hans"
+            />,
+        );
+
+        expect(screen.getByRole('status').textContent).toContain('远程源码预览已截断');
+        expect(screen.queryByText('-')).toBeNull();
+        expect(screen.getByText((_, element) => element?.tagName === 'TD' && element.textContent === 'export const visible = true;')).toBeTruthy();
+    });
+});

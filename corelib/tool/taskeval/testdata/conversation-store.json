@@ -1,0 +1,84 @@
+{
+  "sessions": {
+    "desktop-user": {
+      "entries": [
+        {
+          "role": "user",
+          "content": "帮我看一下 corelib/tool/router.go 的评分逻辑"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "",
+          "tool_calls": [
+            {"id": "call-1", "type": "function", "function": {"name": "bash", "arguments": "{\"command\":\"ls\"}"}},
+            {"id": "call-2", "type": "function", "function": {"name": "bash", "arguments": "{\"command\":\"pwd\"}"}},
+            {"id": "call-3", "type": "function", "function": {"name": "read_file", "arguments": "{\"path\":\"router.go\"}"}}
+          ],
+          "finish_reason": "tool_calls"
+        },
+        {
+          "role": "tool",
+          "tool_call_id": "call-1",
+          "tool_name": "bash",
+          "content": "router.go"
+        },
+        {
+          "role": "assistant",
+          "content": "再看一下文件内容",
+          "tool_calls": [
+            {"id": "call-4", "type": "function", "function": {"name": "read_file", "arguments": "{\"path\":\"router.go\"}"}}
+          ],
+          "finish_reason": "tool_calls"
+        },
+        {
+          "role": "user",
+          "content": [
+            {"type": "text", "text": "查一下 Go 1.24 的 release notes"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+          ]
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {"id": "call-5", "type": "function", "function": {"name": "web_search", "arguments": "{\"query\":\"go 1.24 release notes\"}"}},
+            {"id": "call-6", "type": "function", "function": {"name": "invoke_mcp_docs__fetch", "arguments": "{\"url\":\"https://go.dev\"}"}}
+          ],
+          "finish_reason": "tool_calls"
+        },
+        {
+          "role": "user",
+          "content": "   "
+        },
+        {
+          "role": "user",
+          "content": "现在几点了"
+        },
+        {
+          "role": "assistant",
+          "content": "现在是下午三点。",
+          "finish_reason": "stop"
+        }
+      ],
+      "last_access": "2026-09-19T07:00:00Z"
+    },
+    "proj-tab": {
+      "entries": [
+        {
+          "role": "user",
+          "content": "跑一下 go test ./corelib/tool/ 看看有没有失败"
+        },
+        {
+          "role": "assistant",
+          "content": "",
+          "tool_calls": [
+            {"id": "call-7", "type": "function", "function": {"name": "bash", "arguments": "{\"command\":\"go test ./corelib/tool/\"}"}}
+          ],
+          "finish_reason": "tool_calls"
+        }
+      ],
+      "last_access": "2026-09-19T06:00:00Z"
+    }
+  }
+}

@@ -915,7 +915,7 @@ func groupDiscussionSummaryMessageLines(messages []corea2a.Message) []string {
 	for _, msg := range messages {
 		content := strings.TrimSpace(msg.Content)
 		switch msg.Kind {
-		case corea2a.MessageStreamEnd, corea2a.MessageHandoff:
+		case corea2a.MessageStreamEnd, corea2a.MessageStreamStatus, corea2a.MessageHandoff:
 			flushStream()
 			continue
 		case corea2a.MessageStreamChunk:

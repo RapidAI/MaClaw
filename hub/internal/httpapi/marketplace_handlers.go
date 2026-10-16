@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"archive/zip"
+	"bytes"
 	"context"
 	"crypto/ed25519"
 	"crypto/sha256"
@@ -14,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -37,6 +39,8 @@ var errCapabilityRefAmbiguous = errors.New("capability_ref matches multiple capa
 const enterpriseSkillUploadMaxBytes = 10 << 20
 const enterpriseSkillPackageExportMaxBytes = enterpriseSkillUploadMaxBytes
 const enterpriseMaclawAppPackageSubmitMaxBytes = 2 << 20
+
+const enterpriseSkillSuiteUploadMaxBytes = 25 << 20
 
 func MarketplacePageHandler(product string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -648,6 +652,432 @@ func CapabilitySkillSubmitHandler(svc *capability.Service, identity viewerAuthen
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"submission_id": item.CurrentVersionKey, "capability_id": item.ID, "version_key": item.CurrentVersionKey})
 	}
+}
+
+// CapabilitySkillSuiteSubmitHandler stores a tenant-scoped Suite envelope in
+// the enterprise capability market. A Suite is deliberately one capability
+// record: its member definitions travel together and are installed atomically
+// by Suite-aware clients.
+func CapabilitySkillSuiteSubmitHandler(svc *capability.Service, identity viewerAuthenticator, dataDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, err := authenticateMarketplaceViewer(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		r.Body = http.MaxBytesReader(w, r.Body, enterpriseSkillSuiteUploadMaxBytes+1)
+		var req struct {
+			Suite json.RawMessage `json:"suite"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_SUITE", "invalid Suite payload")
+			return
+		}
+		var meta struct {
+			ID          string            `json:"id"`
+			Name        string            `json:"name"`
+			Description string            `json:"description"`
+			Version     string            `json:"version"`
+			Permissions []string          `json:"permissions"`
+			Members     []json.RawMessage `json:"members"`
+			Skills      []json.RawMessage `json:"skills"`
+		}
+		if err := json.Unmarshal(req.Suite, &meta); err != nil || strings.TrimSpace(meta.ID) == "" || strings.TrimSpace(meta.Name) == "" || len(meta.Skills) < 2 || len(meta.Skills) > 32 || len(meta.Members) != len(meta.Skills) {
+			writeError(w, http.StatusBadRequest, "INVALID_SUITE", "suite id, name, members, and at least two skills are required")
+			return
+		}
+		if !safeEnterpriseSuiteID(meta.ID) {
+			writeError(w, http.StatusBadRequest, "INVALID_SUITE", "invalid suite id")
+			return
+		}
+		seenIDs := map[string]bool{}
+		skillIDs := map[string]bool{}
+		for _, rawSkill := range meta.Skills {
+			var member struct {
+				ID      string            `json:"id"`
+				SkillID string            `json:"skill_id"`
+				Name    string            `json:"name"`
+				Files   map[string]string `json:"files"`
+			}
+			if err := json.Unmarshal(rawSkill, &member); err != nil || strings.TrimSpace(member.Name) == "" {
+				writeError(w, http.StatusBadRequest, "INVALID_SUITE", "invalid suite member")
+				return
+			}
+			memberID := strings.TrimSpace(firstNonEmpty(member.ID, member.SkillID, member.Name))
+			if !safeEnterpriseSuiteID(memberID) || seenIDs[strings.ToLower(memberID)] {
+				writeError(w, http.StatusBadRequest, "INVALID_SUITE", "duplicate or missing suite member id")
+				return
+			}
+			seenIDs[strings.ToLower(memberID)] = true
+			skillIDs[strings.ToLower(memberID)] = true
+			for filePath, encoded := range member.Files {
+				clean, ok := safeEnterpriseSuiteArchivePath(filePath)
+				if !ok {
+					writeError(w, http.StatusBadRequest, "INVALID_SUITE", "invalid suite member file path")
+					return
+				}
+				decoded, decodeErr := base64.StdEncoding.DecodeString(encoded)
+				if decodeErr != nil || len(decoded) > 256<<10 {
+					writeError(w, http.StatusBadRequest, "INVALID_SUITE", "invalid or oversized suite member file")
+					return
+				}
+				if strings.EqualFold(path.Base(clean), "skill.yaml") {
+					if _, parseErr := coreskill.ParseSkillYAMLFile(decoded); parseErr != nil {
+						writeError(w, http.StatusBadRequest, "INVALID_SUITE", "invalid suite member skill.yaml")
+						return
+					}
+				}
+			}
+		}
+		for _, rawMember := range meta.Members {
+			var member struct {
+				ID  string `json:"skill_id"`
+				Ref string `json:"skill_ref"`
+			}
+			if err := json.Unmarshal(rawMember, &member); err != nil {
+				writeError(w, http.StatusBadRequest, "INVALID_SUITE", "invalid suite member manifest")
+				return
+			}
+			memberID := strings.TrimSpace(firstNonEmpty(member.ID, member.Ref))
+			if memberID == "" || !skillIDs[strings.ToLower(memberID)] {
+				writeError(w, http.StatusBadRequest, "INVALID_SUITE", "suite member manifest does not match skills")
+				return
+			}
+		}
+		checksum, err := canonicalJSONSHA256(json.RawMessage(req.Suite))
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_SUITE", err.Error())
+			return
+		}
+		root := enterpriseSkillSuitePackageRoot(dataDir, principal.TenantID)
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			writeError(w, http.StatusInternalServerError, "UPLOAD_STORE_FAILED", err.Error())
+			return
+		}
+		filename := safeEnterpriseSkillPackageName(meta.ID, checksum) + ".json"
+		path := filepath.Join(root, filename)
+		if err := os.WriteFile(path, req.Suite, 0o600); err != nil {
+			writeError(w, http.StatusInternalServerError, "UPLOAD_STORE_FAILED", err.Error())
+			return
+		}
+		ctx := capability.WithTenant(r.Context(), principal.TenantID)
+		item, err := svc.UpsertCapability(ctx, capability.UpsertCapabilityInput{CapabilityType: corelib.CapabilityTypeSkill, Publisher: firstNonEmpty(principal.Email, principal.UserID, "enterprise"), CapabilityID: meta.ID, GlobalKey: corelib.CapabilitySourceEnterpriseHub + ":skill-suite:" + meta.ID, DisplayName: meta.Name, Description: meta.Description, Source: corelib.CapabilitySourceEnterpriseHub, ManagedBy: "suite_upload", Status: "approved", MetadataJSON: jsonObjectString(map[string]any{"package_kind": "suite", "suite_id": meta.ID, "package_file": filename, "member_count": len(meta.Skills), "permissions": meta.Permissions, "uploaded_by": principal.UserID}), Version: firstNonEmpty(meta.Version, checksum[:12]), VersionKey: corelib.CapabilitySourceEnterpriseHub + ":skill-suite:" + meta.ID + "@" + checksum[:12], PackageURL: "/api/capabilities/skill-suites/" + url.PathEscape(meta.ID) + "/download", PackageChecksum: checksum, ManifestJSON: string(req.Suite), TypeConfigJSON: jsonObjectString(map[string]any{"package_format": "skill-suite.v1", "member_count": len(meta.Skills)}), SetCurrentVersion: true})
+		if err != nil {
+			_ = os.Remove(path)
+			writeError(w, http.StatusInternalServerError, "CAPABILITY_SAVE_FAILED", err.Error())
+			return
+		}
+		memberIDs := suiteMemberIDs(req.Suite)
+		_ = svc.RecordSuiteAuditEvent(ctx, meta.ID, "publish", principal.UserID, "", memberIDs)
+		writeJSON(w, http.StatusOK, map[string]any{"suite_id": meta.ID, "submission_id": item.CurrentVersionKey, "capability_id": item.ID, "member_count": len(meta.Skills)})
+	}
+}
+
+func CapabilitySkillSuiteDownloadHandler(svc *capability.Service, identity viewerAuthenticator, dataDir string) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, err := authenticateMarketplaceViewer(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		id := strings.TrimSpace(r.PathValue("id"))
+		if id == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_SUITE", "suite id is required")
+			return
+		}
+		items, err := svc.List(capability.WithTenant(r.Context(), principal.TenantID), corelib.CapabilityTypeSkill)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "SUITE_LOOKUP_FAILED", err.Error())
+			return
+		}
+		for _, item := range items {
+			if item.Source != corelib.CapabilitySourceEnterpriseHub || !strings.EqualFold(item.CapabilityID, id) {
+				continue
+			}
+			meta := mapFromRawJSON(json.RawMessage(item.MetadataJSON))
+			if stringFromMap(meta, "package_kind") != "suite" {
+				continue
+			}
+			file := stringFromMap(meta, "package_file")
+			if filepath.Base(file) != file || filepath.Ext(file) != ".json" {
+				continue
+			}
+			data, err := os.ReadFile(filepath.Join(enterpriseSkillSuitePackageRoot(dataDir, principal.TenantID), file))
+			if err != nil {
+				continue
+			}
+			// The capability version stores the canonical upload checksum. Refuse
+			// to serve a tampered package instead of relying solely on the GUI's
+			// client-side integrity validation.
+			expectedChecksum := ""
+			if versions, versionErr := svc.ListVersions(capability.WithTenant(r.Context(), principal.TenantID), item.CapabilityID); versionErr == nil {
+				for _, version := range versions {
+					if version.VersionKey == item.CurrentVersionKey {
+						expectedChecksum = strings.TrimSpace(version.PackageChecksum)
+						break
+					}
+				}
+			}
+			if expectedChecksum != "" && !strings.EqualFold(expectedChecksum, enterpriseSHA256Hex(data)) {
+				writeError(w, http.StatusInternalServerError, "SUITE_INTEGRITY_FAILED", "stored Suite package checksum mismatch")
+				return
+			}
+			if strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("format")), "zip") {
+				archive, zipErr := enterpriseSkillSuiteZip(data)
+				if zipErr != nil {
+					writeError(w, http.StatusInternalServerError, "SUITE_PACKAGE_FAILED", zipErr.Error())
+					return
+				}
+				w.Header().Set("Content-Type", "application/zip")
+				w.Header().Set("Content-Disposition", `attachment; filename="`+id+`.zip"`)
+				_, _ = w.Write(archive)
+				_ = svc.RecordSuiteAuditEvent(capability.WithTenant(r.Context(), principal.TenantID), id, "download", principal.UserID, r.URL.Query().Get("purchase_id"), suiteMemberIDs(data))
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write(data)
+			_ = svc.RecordSuiteAuditEvent(capability.WithTenant(r.Context(), principal.TenantID), id, "download", principal.UserID, r.URL.Query().Get("purchase_id"), suiteMemberIDs(data))
+			return
+		}
+		writeError(w, http.StatusNotFound, "SUITE_NOT_FOUND", "suite package not found")
+	}
+}
+
+func suiteMemberIDs(raw []byte) []string {
+	var v struct {
+		Members []struct {
+			SkillID  string `json:"skill_id"`
+			SkillRef string `json:"skill_ref"`
+		} `json:"members"`
+	}
+	_ = json.Unmarshal(raw, &v)
+	out := make([]string, 0, len(v.Members))
+	for _, m := range v.Members {
+		if id := strings.TrimSpace(firstNonEmpty(m.SkillID, m.SkillRef)); id != "" {
+			out = append(out, id)
+		}
+	}
+	return out
+}
+
+// CapabilitySkillSuiteRollbackHandler selects a previously published Suite
+// version for the authenticated tenant.
+func CapabilitySkillSuiteRollbackHandler(svc *capability.Service, identity viewerAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, err := authenticateMarketplaceViewer(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		var req struct {
+			VersionKey string `json:"version_key"`
+		}
+		if err := json.NewDecoder(io.LimitReader(r.Body, 64<<10)).Decode(&req); err != nil || strings.TrimSpace(req.VersionKey) == "" {
+			writeError(w, http.StatusBadRequest, "INVALID_VERSION", "version_key is required")
+			return
+		}
+		ctx := capability.WithTenant(r.Context(), principal.TenantID)
+		memberIDs := []string(nil)
+		if versions, listErr := svc.ListVersions(ctx, strings.TrimSpace(r.PathValue("id"))); listErr == nil {
+			for _, version := range versions {
+				if version.VersionKey == strings.TrimSpace(req.VersionKey) {
+					memberIDs = suiteMemberIDs([]byte(version.ManifestJSON))
+					break
+				}
+			}
+		}
+		if err := svc.SetCurrentVersion(ctx, strings.TrimSpace(r.PathValue("id")), req.VersionKey); err != nil {
+			writeError(w, http.StatusNotFound, "VERSION_NOT_FOUND", err.Error())
+			return
+		}
+		_ = svc.RecordSuiteAuditEvent(ctx, strings.TrimSpace(r.PathValue("id")), "rollback", principal.UserID, "", memberIDs)
+		writeJSON(w, http.StatusOK, map[string]any{"status": "rolled_back", "suite_id": strings.TrimSpace(r.PathValue("id")), "version_key": req.VersionKey})
+	}
+}
+
+func CapabilitySkillSuiteAuditHandler(svc *capability.Service, identity viewerAuthenticator) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		principal, err := authenticateMarketplaceViewer(r, identity)
+		if err != nil {
+			writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
+			return
+		}
+		limit := 200
+		if raw := strings.TrimSpace(r.URL.Query().Get("limit")); raw != "" {
+			if parsed, parseErr := strconv.Atoi(raw); parseErr == nil && parsed > 0 && parsed < 1000 {
+				limit = parsed
+			}
+		}
+		events, err := svc.ListSuiteAuditEvents(capability.WithTenant(r.Context(), principal.TenantID), strings.TrimSpace(r.PathValue("id")), limit)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "AUDIT_LOOKUP_FAILED", err.Error())
+			return
+		}
+		eventType := strings.TrimSpace(r.URL.Query().Get("event_type"))
+		if eventType != "" {
+			filtered := events[:0]
+			for _, event := range events {
+				if event.EventType == eventType {
+					filtered = append(filtered, event)
+				}
+			}
+			events = filtered
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"events": events, "total": len(events)})
+	}
+}
+
+// enterpriseSkillSuiteZip converts the stored Suite envelope into the same
+// distributable archive shape used by HubCenter (suite.json plus member files).
+func enterpriseSkillSuiteZip(raw []byte) ([]byte, error) {
+	var suite struct {
+		ID      string `json:"id"`
+		Name    string `json:"name"`
+		Version string `json:"version"`
+		Members []struct {
+			SkillID  string `json:"skill_id"`
+			Name     string `json:"name"`
+			Required bool   `json:"required"`
+		} `json:"members"`
+		Skills []struct {
+			ID           string            `json:"id"`
+			Name         string            `json:"name"`
+			Files        map[string]string `json:"files"`
+			AgentSkillMD string            `json:"agent_skill_md"`
+		} `json:"skills"`
+	}
+	if err := json.Unmarshal(raw, &suite); err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	zw := zip.NewWriter(&out)
+	f, err := zw.Create("suite.json")
+	if err != nil {
+		return nil, err
+	}
+	if _, err = f.Write(raw); err != nil {
+		return nil, err
+	}
+	integrity := map[string]string{"suite.json": enterpriseSHA256Hex(raw)}
+	archiveEntries := map[string]struct{}{strings.ToLower("suite.json"): {}}
+	usedRoots := make(map[string]struct{}, len(suite.Skills))
+	memberRoots := make(map[string]string, len(suite.Skills))
+	for _, member := range suite.Skills {
+		root := filepath.Base(strings.Trim(strings.ReplaceAll(firstNonEmpty(member.Name, member.ID), "\\", "/"), "/"))
+		if root == "" || root == "." || root == ".." {
+			continue
+		}
+		if _, exists := usedRoots[root]; exists {
+			root = root + "-" + enterpriseSHA256Hex([]byte(member.ID))[:8]
+		}
+		usedRoots[root] = struct{}{}
+		memberRoots[strings.ToLower(firstNonEmpty(member.ID, member.Name))] = root
+		wroteDefinition := false
+		for name, encoded := range member.Files {
+			clean, ok := safeEnterpriseSuiteArchivePath(name)
+			if !ok {
+				continue
+			}
+			archiveName := "skills/" + root + "/" + clean
+			if _, duplicate := archiveEntries[strings.ToLower(archiveName)]; duplicate {
+				return nil, fmt.Errorf("duplicate suite archive entry: %s", archiveName)
+			}
+			archiveEntries[strings.ToLower(archiveName)] = struct{}{}
+			decoded, decodeErr := base64.StdEncoding.DecodeString(encoded)
+			if decodeErr != nil {
+				continue
+			}
+			entry, createErr := zw.Create(archiveName)
+			if createErr != nil {
+				return nil, createErr
+			}
+			if _, err = entry.Write(decoded); err != nil {
+				return nil, err
+			}
+			integrity["skills/"+root+"/"+clean] = enterpriseSHA256Hex(decoded)
+			if strings.EqualFold(clean, "skill.md") || strings.EqualFold(clean, "skill.yaml") {
+				wroteDefinition = true
+			}
+		}
+		if strings.TrimSpace(member.AgentSkillMD) != "" && !wroteDefinition {
+			archiveName := "skills/" + root + "/skill.md"
+			if _, duplicate := archiveEntries[strings.ToLower(archiveName)]; duplicate {
+				return nil, fmt.Errorf("duplicate suite archive entry: %s", archiveName)
+			}
+			archiveEntries[strings.ToLower(archiveName)] = struct{}{}
+			entry, createErr := zw.Create(archiveName)
+			if createErr != nil {
+				return nil, createErr
+			}
+			if _, err = entry.Write([]byte(member.AgentSkillMD)); err != nil {
+				return nil, err
+			}
+			integrity["skills/"+root+"/skill.md"] = enterpriseSHA256Hex([]byte(member.AgentSkillMD))
+		}
+	}
+	suiteYAML := fmt.Sprintf("id: %q\nname: %q\nversion: %q\nmembers:\n", suite.ID, suite.Name, suite.Version)
+	for _, member := range suite.Members {
+		root := memberRoots[strings.ToLower(firstNonEmpty(member.SkillID, member.Name))]
+		if root == "" {
+			root = filepath.Base(strings.Trim(strings.ReplaceAll(firstNonEmpty(member.Name, member.SkillID), "\\", "/"), "/"))
+		}
+		suiteYAML += fmt.Sprintf("  - skill_id: %q\n    name: %q\n    path: %q\n    required: %t\n", member.SkillID, member.Name, "skills/"+root, member.Required)
+	}
+	suiteYAMLBytes := []byte(suiteYAML)
+	f, err = zw.Create("suite.yaml")
+	if err != nil {
+		return nil, err
+	}
+	if _, err = f.Write(suiteYAMLBytes); err != nil {
+		return nil, err
+	}
+	integrity["suite.yaml"] = enterpriseSHA256Hex(suiteYAMLBytes)
+	manifest, _ := json.MarshalIndent(map[string]any{"files": integrity}, "", "  ")
+	f, err = zw.Create("suite_integrity_manifest.json")
+	if err != nil {
+		return nil, err
+	}
+	if _, err = f.Write(manifest); err != nil {
+		return nil, err
+	}
+	if err := zw.Close(); err != nil {
+		return nil, err
+	}
+	return out.Bytes(), nil
+}
+
+func safeEnterpriseSuiteArchivePath(name string) (string, bool) {
+	n := strings.TrimRight(strings.ReplaceAll(name, "\\", "/"), "/")
+	if n == "" || strings.HasPrefix(n, "/") || strings.HasPrefix(n, "//") {
+		return "", false
+	}
+	clean := path.Clean(n)
+	if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || strings.Contains(clean, "/../") || (len(clean) > 1 && clean[1] == ':') {
+		return "", false
+	}
+	return clean, true
+}
+
+func safeEnterpriseSuiteID(id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	for i, r := range id {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' || r == '.' {
+			if i == 0 && (r == '-' || r == '_' || r == '.') {
+				return false
+			}
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func enterpriseSHA256Hex(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 func CapabilityMaclawAppSubmitHandler(svc *capability.Service, identity viewerAuthenticator) http.HandlerFunc {
@@ -4585,6 +5015,11 @@ func AdminCapabilityImportIntentHandler(svc *capability.Service, settings store.
 func enterpriseSkillPackageRoot(dataDir, tenantID string) string {
 	tenantID = firstNonEmpty(tenantID, store.DefaultTenantID)
 	return filepath.Join(dataDir, "capability-skill-packages", safeEnterpriseSkillFileName(tenantID, shortEnterpriseSkillDigest(tenantID)))
+}
+
+func enterpriseSkillSuitePackageRoot(dataDir, tenantID string) string {
+	tenantID = firstNonEmpty(tenantID, store.DefaultTenantID)
+	return filepath.Join(dataDir, "capability-skill-suites", safeEnterpriseSkillFileName(tenantID, shortEnterpriseSkillDigest(tenantID)))
 }
 
 func safeEnterpriseSkillPackageName(skillID, checksum string) string {

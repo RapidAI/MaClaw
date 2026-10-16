@@ -5,6 +5,7 @@ package llm
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -22,6 +23,101 @@ import (
 // binary-halving downgrade. Keyed by model name (lowercase).
 // Prevents repeating the downgrade probe on subsequent requests for the same model.
 var maxOutputTokensCache sync.Map
+
+// UpstreamModelError is a model or gateway rejection carried inside an HTTP 200
+// body (an SSE error frame, or a JSON error object with no choices). It is not
+// a transport failure: callers should show Message instead of treating the
+// turn as an empty completion.
+type UpstreamModelError struct {
+	Message string
+}
+
+func (e *UpstreamModelError) Error() string {
+	if e == nil || strings.TrimSpace(e.Message) == "" {
+		return "upstream model error"
+	}
+	return e.Message
+}
+
+// upstreamModelErrorFromPayload reports a provider error object embedded in
+// one SSE event or a non-stream JSON body. A normal completion chunk has no
+// error field and returns nil.
+func upstreamModelErrorFromPayload(payload []byte) error {
+	msg := openAIUpstreamErrorText(payload)
+	if msg == "" {
+		return nil
+	}
+	msg = truncateUpstreamError(msg)
+	log.Printf("[LLM-stream] upstream model error: %s", msg)
+	return &UpstreamModelError{Message: msg}
+}
+
+func openAIUpstreamErrorText(payload []byte) string {
+	var probe struct {
+		Code    string          `json:"code"`
+		Message string          `json:"message"`
+		Choices json.RawMessage `json:"choices"`
+		Error   json.RawMessage `json:"error"`
+	}
+	if len(bytes.TrimSpace(payload)) == 0 || json.Unmarshal(payload, &probe) != nil {
+		return ""
+	}
+	if msg := openAIErrorFieldText(probe.Error); msg != "" {
+		if code := strings.TrimSpace(probe.Code); code != "" && !strings.Contains(msg, code) {
+			return msg + " (" + code + ")"
+		}
+		return msg
+	}
+	// Qoder rejections that never became an error frame: {"code","message"}
+	// with no choices. A completion chunk does not use that shape.
+	if strings.TrimSpace(probe.Code) != "" && strings.TrimSpace(probe.Message) != "" && len(bytes.TrimSpace(probe.Choices)) == 0 {
+		return strings.TrimSpace(probe.Message) + " (" + strings.TrimSpace(probe.Code) + ")"
+	}
+	return ""
+}
+
+func openAIErrorFieldText(raw json.RawMessage) string {
+	raw = bytes.TrimSpace(raw)
+	if len(raw) == 0 || string(raw) == "null" {
+		return ""
+	}
+	if raw[0] == '"' {
+		var text string
+		if json.Unmarshal(raw, &text) != nil {
+			return ""
+		}
+		return strings.TrimSpace(text)
+	}
+	var probe struct {
+		Message string `json:"message"`
+		Msg     string `json:"msg"`
+		Code    string `json:"code"`
+	}
+	if json.Unmarshal(raw, &probe) != nil {
+		return ""
+	}
+	msg := strings.TrimSpace(probe.Message)
+	if msg == "" {
+		msg = strings.TrimSpace(probe.Msg)
+	}
+	if msg == "" {
+		return ""
+	}
+	if code := strings.TrimSpace(probe.Code); code != "" && !strings.Contains(msg, code) {
+		msg += " (" + code + ")"
+	}
+	return msg
+}
+
+func truncateUpstreamError(msg string) string {
+	msg = strings.TrimSpace(msg)
+	const maxRunes = 500
+	runes := []rune(msg)
+	if len(runes) <= maxRunes {
+		return msg
+	}
+	return string(runes[:maxRunes]) + "..."
+}
 
 func streamHTTPStatusError(statusCode int, body []byte) error {
 	return newHTTPStatusError(statusCode, body)
@@ -81,6 +177,7 @@ func DoOpenAIRequestStreamWithOptions(
 ) (*Response, error) {
 	opts.Stream = true
 	opts.Tools = tools
+	cfg = bindOpenCodeSession(ctx, cfg, messages)
 	endpoint, reqBody, err := BuildOpenAIChatRequestData(cfg, messages, opts)
 	if err != nil {
 		return nil, err
@@ -166,24 +263,25 @@ func DoOpenAIRequestStreamWithOptions(
 			return nil, fmt.Errorf("[%s] %w", endpoint, err)
 		}
 		log.Printf("[LLM-stream] done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d request=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(startedAt).Round(time.Millisecond), len(body), SummarizeOpenAIChatRequestBody(reqBody), traceFields)
-		if !TransparentRequestRetriesDisabled(ctx) && statusCode != http.StatusOK && ShouldRetryOpenAIWithCompact(cfg, statusCode, messages, tools) {
-			compactMessages := CompactOpenAICompatMessagesForToollessRetry(cfg, messages)
-			log.Printf("[LLM-stream] retry_compact_without_tools %s model=%s configured_model=%s reason=conservative_openai_compat_400_direct %s", endpoint, upstreamModel, cfg.Model, traceFields)
-			endpoint, reqBody, err = BuildOpenAIChatRequestData(cfg, compactMessages, OpenAIChatRequestOptions{Stream: true})
-			if err != nil {
-				return nil, err
-			}
-			compactStartedAt := time.Now()
-			result, statusCode, body, err = openAISDKChatStream(ctx, cfg, reqBody, client, onToken, onReasoning)
-			if err != nil {
-				if statusCode == 0 {
-					log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(compactStartedAt).Round(time.Millisecond), err, traceFields)
-					return nil, fmt.Errorf("[%s] %w", endpoint, err)
+		if !TransparentRequestRetriesDisabled(ctx) {
+			if compactMessages, retryOpts, ok := compactRetryChatRequest(cfg, statusCode, messages, tools, opts, true); ok {
+				log.Printf("[LLM-stream] retry_compact_messages %s model=%s configured_model=%s reason=conservative_openai_compat_400_direct %s", endpoint, upstreamModel, cfg.Model, traceFields)
+				endpoint, reqBody, err = BuildOpenAIChatRequestData(cfg, compactMessages, retryOpts)
+				if err != nil {
+					return nil, err
 				}
-				log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d request=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), len(body), SummarizeOpenAIChatRequestBody(reqBody), traceFields)
-				return nil, streamHTTPStatusError(statusCode, body)
+				compactStartedAt := time.Now()
+				result, statusCode, body, err = openAISDKChatStream(ctx, cfg, reqBody, client, onToken, onReasoning)
+				if err != nil {
+					if statusCode == 0 {
+						log.Printf("[LLM-stream] retry_compact_messages done %s model=%s configured_model=%s status=error elapsed=%s err=%v %s", endpoint, upstreamModel, cfg.Model, time.Since(compactStartedAt).Round(time.Millisecond), err, traceFields)
+						return nil, fmt.Errorf("[%s] %w", endpoint, err)
+					}
+					log.Printf("[LLM-stream] retry_compact_messages done %s model=%s configured_model=%s status=%d elapsed=%s body_len=%d request=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), len(body), SummarizeOpenAIChatRequestBody(reqBody), traceFields)
+					return nil, streamHTTPStatusError(statusCode, body)
+				}
+				log.Printf("[LLM-stream] retry_compact_messages done %s model=%s configured_model=%s status=%d elapsed=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), traceFields)
 			}
-			log.Printf("[LLM-stream] retry_compact_without_tools done %s model=%s configured_model=%s status=%d elapsed=%s %s", endpoint, upstreamModel, cfg.Model, statusCode, time.Since(compactStartedAt).Round(time.Millisecond), traceFields)
 		}
 		if err != nil {
 			// Prefer structured HTTP error only for real non-OK statuses.
@@ -364,6 +462,43 @@ func partialThinkTagSuffixLen(s, tag string) int {
 	return 0
 }
 
+// mergeSSEUsage keeps token legs already seen when a later chunk only carries
+// the settled credit debit, and keeps that debit when a later chunk reports
+// tokens without repeating it.
+func mergeSSEUsage(prev, next *Usage) *Usage {
+	if next == nil {
+		return prev
+	}
+	if prev == nil {
+		return next
+	}
+	out := *prev
+	if next.InputReported || next.PromptTokens > 0 || next.InputTokens > 0 {
+		out.PromptTokens = next.PromptTokens
+		out.InputTokens = next.InputTokens
+		out.InputReported = next.InputReported
+	}
+	if next.OutputReported || next.CompletionTokens > 0 || next.OutputTokens > 0 {
+		out.CompletionTokens = next.CompletionTokens
+		out.OutputTokens = next.OutputTokens
+		out.OutputReported = next.OutputReported
+	}
+	if next.TotalTokens > 0 {
+		out.TotalTokens = next.TotalTokens
+	}
+	if next.CachedInputTokens > 0 {
+		out.CachedInputTokens = next.CachedInputTokens
+	}
+	if next.CacheWriteTokens > 0 {
+		out.CacheWriteTokens = next.CacheWriteTokens
+	}
+	if next.CreditsDeducted != nil {
+		credits := *next.CreditsDeducted
+		out.CreditsDeducted = &credits
+	}
+	return &out
+}
+
 // parseSSEStreamWithReasoning reads an OpenAI-compatible SSE stream and
 // forwards text and reasoning_content deltas as they arrive.  Reasoning must
 // not wait for the final [DONE] event: hosts use the live callback to keep the
@@ -394,6 +529,7 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 256*1024)
+	var lastPayload string
 
 	for scanner.Scan() {
 		line := scanner.Text()
@@ -403,6 +539,10 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 		payload := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
 		if payload == "" || payload == "[DONE]" {
 			continue
+		}
+		lastPayload = payload
+		if upstreamErr := upstreamModelErrorFromPayload([]byte(payload)); upstreamErr != nil {
+			return nil, upstreamErr
 		}
 
 		var chunk sseChunk
@@ -417,7 +557,7 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 			}
 		}
 		if chunk.Usage != nil {
-			usage = chunk.Usage
+			usage = mergeSSEUsage(usage, chunk.Usage)
 		}
 		if len(chunk.Choices) == 0 {
 			continue
@@ -544,16 +684,8 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 			finishReason = "tool_calls"
 		}
 	}
-	if len(msg.ToolCalls) == 0 {
-		rawContent := visibleContent
-		if contentCalls, malformed := ParseContentToolCallsDetailed(rawContent); len(contentCalls) > 0 {
-			msg.ToolCalls = append(msg.ToolCalls, contentCalls...)
-			msg.Content = ""
-			finishReason = "tool_calls"
-		} else if malformed {
-			msg.Content = MalformedContentToolCallErrorMsg
-			finishReason = "stop"
-		}
+	if finish, changed := adoptLeakedToolCalls(&msg, visibleContent); changed {
+		finishReason = finish
 	}
 	finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
 
@@ -561,6 +693,9 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 		ResponseID: responseID,
 		Choices:    []Choice{{Message: msg, FinishReason: finishReason, TruncatedToolNames: truncatedTools, TruncatedToolArgs: truncatedToolArgs}},
 		Usage:      usage,
+	}
+	if strings.TrimSpace(msg.Content) == "" && strings.TrimSpace(msg.ReasoningContent) == "" && len(msg.ToolCalls) == 0 && !legacyFunctionCallSeen {
+		log.Printf("[LLM-stream] upstream empty completion finish=%q payload=%s", finishReason, truncateUpstreamError(lastPayload))
 	}
 	if streamErr != nil {
 		// Preserve a partial response after any visible delta. Retrying it in
@@ -729,16 +864,8 @@ func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback,
 	if finishReason == "" {
 		finishReason = "stop"
 	}
-	if len(msg.ToolCalls) == 0 {
-		rawContent := contentBuf.String()
-		if contentCalls, malformed := ParseContentToolCallsDetailed(rawContent); len(contentCalls) > 0 {
-			msg.ToolCalls = append(msg.ToolCalls, contentCalls...)
-			msg.Content = ""
-			finishReason = "tool_calls"
-		} else if malformed {
-			msg.Content = MalformedContentToolCallErrorMsg
-			finishReason = "stop"
-		}
+	if finish, changed := adoptLeakedToolCalls(&msg, contentBuf.String()); changed {
+		finishReason = finish
 	}
 	finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
 
@@ -787,7 +914,15 @@ func filterStreamTruncatedToolCalls(msg *Message, finishReason string) (string, 
 				tc.Function.Name, len(args), finishReason, err.Error(), tail)
 			continue
 		}
-		if missing := streamTruncatedRequiredField(tc.Function.Name, parsed); missing != "" && (isLengthTruncated || len(args) > 4000) {
+		// A missing field is a cut stream only when the generation itself was
+		// cut. finish_reason=tool_calls means the provider closed the call:
+		// write_file's edit shape and the text alias have no content field,
+		// and a 7KB passage edit is a real call. Dropping it as truncation
+		// (production 2026-10-04, LaTeX references.bib, 7397 bytes,
+		// finish_reason=tool_calls) throws the write away and the recovery
+		// prompt coaches the model into a prose loop that the agent then
+		// accepts as the finished answer. Argument mistakes stay with the tool.
+		if missing := streamTruncatedRequiredField(tc.Function.Name, parsed); missing != "" && streamOutputCut(finishReason, len(args)) {
 			truncatedNames = append(truncatedNames, tc.Function.Name)
 			if truncatedArgs == nil {
 				truncatedArgs = make(map[string]string)
@@ -817,25 +952,107 @@ func isStreamLengthFinishReason(reason string) bool {
 	}
 }
 
+// streamOutputCut reports that this argument object was cut by the output
+// budget. length/max_tokens is that signal. Some proxies report stop instead
+// of length once a large object is cut, so a missing field on a stop finish
+// still counts when the payload is large. A finish that closes the tool call
+// does not: the provider ended the call, and a missing content key is then
+// the tool's contract, not evidence the stream died mid-object.
+func streamOutputCut(finishReason string, argBytes int) bool {
+	if isStreamLengthFinishReason(finishReason) {
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(finishReason)) {
+	case "tool_calls", "function_call", "tool_use":
+		return false
+	default:
+		return argBytes > 4000
+	}
+}
+
+// FilterStreamTruncatedToolCalls is the one truncation rule for streamed and
+// non-stream tool calls. GUI chat and responses streams call it too; a second
+// copy drifts and will drop a finished write_file again.
+func FilterStreamTruncatedToolCalls(msg *Message, finishReason string) (string, []string, map[string]string) {
+	return filterStreamTruncatedToolCalls(msg, finishReason)
+}
+
 var streamTruncatedRequiredFields = map[string][]string{
-	"write_file": {"path", "content"},
-	"edit_file":  {"path", "old_string", "new_string"},
 	"edit_lines": {"path", "operation", "start_line"},
 	"bash":       {"command"},
 }
 
 func streamTruncatedRequiredField(toolName string, parsed map[string]interface{}) string {
-	fields := streamTruncatedRequiredFields[strings.TrimSpace(toolName)]
-	for _, field := range fields {
+	name := strings.TrimSpace(toolName)
+	switch name {
+	case "write_file":
+		return writeFileStreamTruncatedField(parsed)
+	case "edit_file":
+		return editFileStreamTruncatedField(parsed)
+	}
+	for _, field := range streamTruncatedRequiredFields[name] {
 		value, ok := parsed[field]
 		if !ok {
 			return field
 		}
+		// bash and edit_lines treat a blank string as unsupplied. A closed
+		// empty write or edit is handled above: content "" clears a file,
+		// and new_string "" deletes a passage.
 		if s, ok := value.(string); ok && strings.TrimSpace(s) == "" {
 			return field
 		}
 	}
 	return ""
+}
+
+// writeFileStreamTruncatedField follows the live write contract. A whole-file
+// write needs a path plus content; text is that same field. A passage edit
+// needs a path plus old_string and new_string. content "" clears the file and
+// new_string "" deletes the passage. Only a missing key is a cut: null, "",
+// whitespace, and a non-string were generated, and the tool accepts or rejects
+// them. Null does not select the edit shape, because the write path drops
+// nulls before it decides; a null old_string beside a real content is still
+// a whole-file write. A mix of content and a real edit pair stays with the
+// tool, which refuses it.
+func writeFileStreamTruncatedField(parsed map[string]interface{}) string {
+	if !streamKeyExists(parsed, "path") && !streamKeyExists(parsed, "file_path") {
+		return "path"
+	}
+	if streamArgNonNull(parsed, "old_string") || streamArgNonNull(parsed, "new_string") {
+		if !streamKeyExists(parsed, "old_string") {
+			return "old_string"
+		}
+		if !streamKeyExists(parsed, "new_string") {
+			return "new_string"
+		}
+		return ""
+	}
+	if !streamKeyExists(parsed, "content") && !streamKeyExists(parsed, "text") {
+		return "content"
+	}
+	return ""
+}
+
+// editFileStreamTruncatedField matches EditTextFile. new_string may be empty
+// because that deletes the matched passage. Whitespace is the text to match
+// or insert. A missing key is the cut; null was generated and the tool rejects it.
+func editFileStreamTruncatedField(parsed map[string]interface{}) string {
+	for _, field := range []string{"path", "old_string", "new_string"} {
+		if !streamKeyExists(parsed, field) {
+			return field
+		}
+	}
+	return ""
+}
+
+func streamKeyExists(parsed map[string]interface{}, key string) bool {
+	_, ok := parsed[key]
+	return ok
+}
+
+func streamArgNonNull(parsed map[string]interface{}, key string) bool {
+	value, ok := parsed[key]
+	return ok && value != nil
 }
 
 // looksLikeMaxTokensError checks if an API error is about max_tokens being too high.

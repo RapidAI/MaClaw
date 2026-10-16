@@ -9,7 +9,7 @@ func init() {
 		DisplayNameCN:   "虎爪",
 		WindowTitle:     "TigerClaw",
 		TrayTooltip:     "TigerClaw Dashboard",
-		Slogan:          "像虎一样灵巧勇猛。",
+		Slogan:          "AI Native 组织操作系统",
 		Author:          "Dr. Daniel",
 		BusinessContact: "联系信息：QianXin",
 		WebsiteURL:      "https://www.qianxin.com",
@@ -20,9 +20,9 @@ func init() {
 		MobileAppName:   "TigerClaw",
 		ExtraTools: []ExtraToolDef{
 			{
-				Name:        "tigerclaw",
-				DisplayName: "TigerClaw Code",
-				ConfigKey:   "tigerclaw",
+				Name:        "QAgent",
+				DisplayName: "QAgent Code",
+				ConfigKey:   "QAgent",
 			},
 		},
 		DefaultTool:         "claude",

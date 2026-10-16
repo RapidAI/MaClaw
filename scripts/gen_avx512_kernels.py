@@ -252,7 +252,7 @@ def gen_multidot8_triple_relu_k512_n2048() -> str:
     out points to &out[0]; writes rows m..m+7, cols n..n+2.
     Same FMA body as multiDot8Triple; fused max(0, hsum+bn) store.
     """
-    # Frame: out+0 a+8 b0+16 b1+24 b2+32 m+40 n+48 bn0+56 bn1+60 bn2+64 → 72
+    # Frame: out+0 a+8 b0+16 b1+24 b2+32 m+40 n+48 bn0+56 bn1+60 bn2+64 → 68
     # Stack $8: save out base (m*2048+n)*4
     # Bias read from FP each time so Y24-Y27 batch temps don't clobber bn regs.
     items = []
@@ -274,9 +274,9 @@ def gen_multidot8_triple_relu_k512_n2048() -> str:
 
     text = """// func multiDot8TripleReLUAVX512K512N2048(out *float32, a, b0, b1, b2 *float32, m, n int, bn0, bn1, bn2 float32)
 // FFN up fused: 8A×3B K=512 + bias + ReLU into out[m:m+8, n:n+3], N=2048.
-// Frame: out+0 a+8 b0+16 b1+24 b2+32 m+40 n+48 bn0+56 bn1+60 bn2+64 → 72
+// Frame: out+0 a+8 b0+16 b1+24 b2+32 m+40 n+48 bn0+56 bn1+60 bn2+64 → 68
 // Stack $8: out base address.
-TEXT ·multiDot8TripleReLUAVX512K512N2048(SB), NOSPLIT, $8-72
+TEXT ·multiDot8TripleReLUAVX512K512N2048(SB), NOSPLIT, $8-68
 	MOVQ out+0(FP), R11
 	MOVQ m+40(FP), AX
 	MOVQ n+48(FP), BX
@@ -307,7 +307,7 @@ def gen_multidot8_triple_argmax_k512() -> str:
       1) hsum each Z + bias → stack[24] floats (uses only X28/X29)
       2) compare stack vs bestV with UCOMISS X0,X1 and update
     """
-    # Frame: bestV+0 bestI+8 a+16 b0+24 b1+32 b2+40 n+48 bn0+56 bn1+60 bn2+64 → 72
+    # Frame: bestV+0 bestI+8 a+16 b0+24 b1+32 b2+40 n+48 bn0+56 bn1+60 bn2+64 → 68
     # Stack $96: 24 float32 hsums
     # Layout stack[r*3+c] = row r, col c  (r=0..7, c=0..2)
     z_for = []
@@ -363,9 +363,9 @@ def gen_multidot8_triple_argmax_k512() -> str:
 
     text = """// func multiDot8TripleArgmaxAVX512K512(bestV *float32, bestI *int, a, b0, b1, b2 *float32, n int, bn0, bn1, bn2 float32)
 // CTC fused: 8A×3B K=512 + bias + argmax update of bestV/bestI (8 rows).
-// Frame: bestV+0 bestI+8 a+16 b0+24 b1+32 b2+40 n+48 bn0+56 bn1+60 bn2+64 → 72
+// Frame: bestV+0 bestI+8 a+16 b0+24 b1+32 b2+40 n+48 bn0+56 bn1+60 bn2+64 → 68
 // Stack $96: 24 hsum+bias; phase2 keeps bestV in X0-X7.
-TEXT ·multiDot8TripleArgmaxAVX512K512(SB), NOSPLIT, $96-72
+TEXT ·multiDot8TripleArgmaxAVX512K512(SB), NOSPLIT, $96-68
 	MOVQ a+16(FP), SI
 	MOVQ b0+24(FP), DI
 	MOVQ b1+32(FP), R15
@@ -423,9 +423,9 @@ def gen_multidot8_triple_plain_k512(n_cols: int) -> str:
 
     text = f"""// func multiDot8TriplePlainAVX512K512{label}(out *float32, a, b0, b1, b2 *float32, m, n int, bn0, bn1, bn2 float32)
 // Encoder fused: 8A×3B K=512 + bias into out[m:m+8, n:n+3], N={n_cols}.
-// Frame: out+0 a+8 b0+16 b1+24 b2+32 m+40 n+48 bn0+56 bn1+60 bn2+64 → 72
+// Frame: out+0 a+8 b0+16 b1+24 b2+32 m+40 n+48 bn0+56 bn1+60 bn2+64 → 68
 // Stack $8: out base address.
-TEXT ·multiDot8TriplePlainAVX512K512{label}(SB), NOSPLIT, $8-72
+TEXT ·multiDot8TriplePlainAVX512K512{label}(SB), NOSPLIT, $8-68
 	MOVQ out+0(FP), R11
 	MOVQ m+40(FP), AX
 	MOVQ n+48(FP), BX
@@ -2481,7 +2481,7 @@ def gen_dot_q8_scaled() -> str:
     text = """// func dotQ8RowScaledAVX512(a *float32, data *byte, scales *float32, rowOff, nBlocks int) float32
 // Single-row Q8 scaled dot, 16-wide (SenseVoice M remainder / M=1).
 // Frame: a+0 data+8 scales+16 rowOff+24 nBlocks+32 ret+40 → 48
-TEXT ·dotQ8RowScaledAVX512(SB), NOSPLIT, $0-48
+TEXT ·dotQ8RowScaledAVX512(SB), NOSPLIT, $0-44
 	MOVQ a+0(FP), SI
 	MOVQ data+8(FP), DI
 	MOVQ scales+16(FP), R8
@@ -2704,10 +2704,1649 @@ wsum8_loop:
     return text
 
 
+# --- K=512 signed-A VNNI kernels (SenseVoice encoder/CTC) -------------------
+#
+# Same panel geometry as the K=2048 FFN-down kernels, but the activations are
+# signed (LayerNorm output), so A is quantized as unsigned with a +128 bias:
+#   A_u = round(A / scale) + 128   (scale = amax/127 per 32-wide block)
+# and each VPDPBUSD accumulator is compensated per block:
+#   acc_true = VPDPBUSD(B_s8, A_u8) - VPDPBUSD(B_s8, 0x80)
+# The per-B compensation vector (Y26/Y24) is computed once per block and
+# amortized over the 8 A rows (Gemma-style runtime compensation; a precomputed
+# per-block sum(B) table would double the streamed B footprint).
+
+def gen_quantize_panel8_q8s_k512() -> str:
+    """quantizePanel8Q8SK512AVX512: 8 A rows K=512 → +128-biased u8 + f32 scales.
+
+    Signed input: per-block amax over |a|; q = round(a*127/amax)+128 ∈ [1,255].
+    Layout (block-major for VNNI, 16 blocks):
+      q[b*256 + r*32 : +32] byte
+      s[b*8 + r] float32 scale (amax/127)
+    Constants: Z12=abs mask, Z14=127.0, Z6=128.0, X13=1/127, X15=eps.
+    """
+
+    def amax_chain(src: str, tmpy: str, tmpx: str, dst: str) -> list:
+        # horizontal max of 16 |floats| in {src} (Z) → X{dst}; tmpy=Y tmp, tmpx=X tmp
+        return [
+            f"\tVEXTRACTF32X8 $1, {src}, {tmpy}",
+            f"\tVMAXPS Y{src[1:]}, {tmpy}, Y{src[1:]}",
+            f"\tVEXTRACTF32X4 $1, Y{src[1:]}, X{tmpx}",
+            f"\tVMAXPS X{src[1:]}, X{tmpx}, X{src[1:]}",
+            f"\tVSHUFPD $1, X{src[1:]}, X{src[1:]}, X{tmpx}",
+            f"\tVMAXPS X{src[1:]}, X{tmpx}, X{src[1:]}",
+            f"\tVMOVSHDUP X{src[1:]}, X{tmpx}",
+            f"\tVMAXSS X{src[1:]}, X{tmpx}, X{dst}",
+        ]
+
+    def dual_block(a_off: int, q_off: int, s_off: int) -> str:
+        am0 = "(R11)" if a_off == 0 else f"{a_off}(R11)"
+        am1 = f"{a_off + 64}(R11)"
+        bm0 = "(R15)" if a_off == 0 else f"{a_off}(R15)"
+        bm1 = f"{a_off + 64}(R15)"
+        qm0 = "(R12)" if q_off == 0 else f"{q_off}(R12)"
+        qm0b = f"{q_off + 16}(R12)"
+        qm1 = f"{q_off + 32}(R12)"
+        qm1b = f"{q_off + 48}(R12)"
+        sm0 = "(R13)" if s_off == 0 else f"{s_off}(R13)"
+        sm1 = f"{s_off + 4}(R13)"
+        lines = [
+            f"\tVMOVUPS {am0}, Z0",
+            f"\tVMOVUPS {am1}, Z1",
+            f"\tVMOVUPS {bm0}, Z8",
+            f"\tVMOVUPS {bm1}, Z9",
+            # |a| copies for amax (originals kept for the quantize multiply)
+            "\tVANDPS Z12, Z0, Z2",
+            "\tVANDPS Z12, Z1, Z3",
+            "\tVANDPS Z12, Z8, Z10",
+            "\tVANDPS Z12, Z9, Z11",
+            "\tVMAXPS Z2, Z3, Z2",
+            "\tVMAXPS Z10, Z11, Z10",
+        ]
+        lines += amax_chain("Z2", "Y3", "3", "2")    # amax0 → X2 (Z2 dead)
+        lines += amax_chain("Z10", "Y11", "11", "10")  # amax1 → X10 (Z10 dead)
+        lines += [
+            # row0: scale, inv, quantize, +128 bias, pack
+            "\tVMULSS X13, X2, X4",
+            "\tVMAXSS X15, X2, X3",
+            "\tVRCP14SS X3, X3, X3",
+            "\tVMULSS X14, X3, X3",
+            "\tVBROADCASTSS X3, Z5",
+            f"\tVMOVSS X4, {sm0}",
+            "\tVMULPS Z5, Z0, Z0",
+            "\tVMULPS Z5, Z1, Z1",
+            "\tVADDPS Z6, Z0, Z0",
+            "\tVADDPS Z6, Z1, Z1",
+            "\tVCVTPS2DQ Z0, Z0",
+            "\tVCVTPS2DQ Z1, Z1",
+            "\tVPMOVDB Z0, X4",
+            "\tVPMOVDB Z1, X7",
+            f"\tVMOVUPS X4, {qm0}",
+            f"\tVMOVUPS X7, {qm0b}",
+            # row1
+            "\tVMULSS X13, X10, X4",
+            "\tVMAXSS X15, X10, X3",
+            "\tVRCP14SS X3, X3, X3",
+            "\tVMULSS X14, X3, X3",
+            "\tVBROADCASTSS X3, Z5",
+            f"\tVMOVSS X4, {sm1}",
+            "\tVMULPS Z5, Z8, Z8",
+            "\tVMULPS Z5, Z9, Z9",
+            "\tVADDPS Z6, Z8, Z8",
+            "\tVADDPS Z6, Z9, Z9",
+            "\tVCVTPS2DQ Z8, Z8",
+            "\tVCVTPS2DQ Z9, Z9",
+            "\tVPMOVDB Z8, X4",
+            "\tVPMOVDB Z9, X7",
+            f"\tVMOVUPS X4, {qm1}",
+            f"\tVMOVUPS X7, {qm1b}",
+        ]
+        return "\n".join(lines)
+
+    text = """// func quantizePanel8Q8SK512AVX512(q *int8, s *float32, a *float32)
+// 8×512 signed A → +128-biased u8 block-major packs + f32 scales (amax/127).
+// q layout: block-major [16][8][32]; s: block-major [16][8].
+// Frame: q+0 s+8 a+16 → 24
+TEXT ·quantizePanel8Q8SK512AVX512(SB), NOSPLIT, $32-24
+\tMOVQ q+0(FP), DI
+\tMOVQ s+8(FP), R8
+\tMOVQ a+16(FP), SI
+\tMOVL $0x42fe0000, AX // 127.0f
+\tMOVL AX, 0(SP)
+\tVBROADCASTSS 0(SP), Z14
+\tMOVL $0x34000000, AX // ~1.2e-7f eps
+\tMOVL AX, 4(SP)
+\tVMOVSS 4(SP), X15
+\tMOVL $0x3c010204, AX // 1/127.0f
+\tMOVL AX, 8(SP)
+\tVMOVSS 8(SP), X13
+\tMOVL $0x7fffffff, AX // abs mask
+\tMOVL AX, 12(SP)
+\tVBROADCASTSS 12(SP), Z12
+\tMOVL $0x43000000, AX // 128.0f bias
+\tMOVL AX, 16(SP)
+\tVBROADCASTSS 16(SP), Z6
+
+\tMOVQ $4, R9
+\tMOVQ $0, R14 // pair index 0..3 → row = pair*2
+q8s_pair_loop:
+\tMOVQ $8, R10 // 16/2 blocks
+\tMOVQ R14, AX
+\tSHLQ $1, AX // r = pair*2
+\tMOVQ AX, BX
+\tSHLQ $11, BX // r*2048 (512 floats)
+\tLEAQ (SI)(BX*1), R11
+\tLEAQ 2048(R11), R15
+\tMOVQ AX, BX
+\tSHLQ $5, BX // r*32
+\tLEAQ (DI)(BX*1), R12
+\tLEAQ (R8)(AX*4), R13
+q8s_blk_loop:
+\tPREFETCHT0 256(R11)
+\tPREFETCHT0 256(R15)
+"""
+    text += dual_block(0, 0, 0) + "\n"
+    text += dual_block(128, 256, 32) + "\n"
+    text += """\tADDQ $256, R11 // A: 64 floats
+\tADDQ $256, R15
+\tADDQ $512, R12 // q: 2 blocks × 256
+\tADDQ $64, R13 // s: 2 blocks × 8 floats
+\tDECQ R10
+\tJNZ  q8s_blk_loop
+\tINCQ R14
+\tDECQ R9
+\tJNZ  q8s_pair_loop
+\tVZEROUPPER
+\tRET
+"""
+    return text
+
+
+def _k512_vnni_dual8_loop(label: str) -> str:
+    """Shared 16-block K=512 compensated VNNI loop: 8 A × 2 B, vector f32 accums.
+
+    Registers: Y0-7 B0 accums, Y8-15 B1 accums, Y16/17 B0/B1, Y18-21 A rows,
+    Y22 int temp, Y23 broadcast temp, Y25 0x80 const, Y26/24 comp0/comp1,
+    X27 mul temp, X28/29 sB0/sB1. GP: SI=aQ R8=aS DI=B0 R15=B1 AX=sB0 BX=sB1
+    R10=counter. Per block: 2 extra VPDPBUSD (comp) + 16 VPSUBD.
+    """
+    def block() -> str:
+        lines = [
+            "\tPREFETCHT0 102(DI)",
+            "\tPREFETCHT0 102(R15)",
+            "\tPREFETCHT0 512(SI)",
+            "\tVMOVDQU32 2(DI), Y16",
+            "\tVMOVDQU32 2(R15), Y17",
+            "\tVMOVSS (AX), X28",
+            "\tVMOVSS (BX), X29",
+            "\tVPXORD Y26, Y26, Y26",
+            "\tVPDPBUSD Y16, Y25, Y26",
+            "\tVPXORD Y24, Y24, Y24",
+            "\tVPDPBUSD Y17, Y25, Y24",
+        ]
+        for half in range(2):
+            aoff = half * 128
+            for i in range(4):
+                lines.append(f"\tVMOVDQU32 {aoff + i * 32}(SI), Y{18 + i}")
+            if half == 0:
+                lines.append("\tPREFETCHT0 128(SI)")
+            for i in range(4):
+                r = half * 4 + i
+                lines += [
+                    "\tVPXORD Y22, Y22, Y22",
+                    f"\tVPDPBUSD Y16, Y{18 + i}, Y22",
+                    "\tVPSUBD Y26, Y22, Y22",
+                    "\tVCVTDQ2PS Y22, Y22",
+                    f"\tVMULSS {r * 4}(R8), X28, X27",
+                    "\tVBROADCASTSS X27, Y23",
+                    f"\tVFMADD231PS Y23, Y22, Y{r}",
+                ]
+            for i in range(4):
+                r = half * 4 + i
+                lines += [
+                    "\tVPXORD Y22, Y22, Y22",
+                    f"\tVPDPBUSD Y17, Y{18 + i}, Y22",
+                    "\tVPSUBD Y24, Y22, Y22",
+                    "\tVCVTDQ2PS Y22, Y22",
+                    f"\tVMULSS {r * 4}(R8), X29, X27",
+                    "\tVBROADCASTSS X27, Y23",
+                    f"\tVFMADD231PS Y23, Y22, Y{8 + r}",
+                ]
+        lines += [
+            "\tADDQ $34, DI",
+            "\tADDQ $34, R15",
+            "\tADDQ $4, AX",
+            "\tADDQ $4, BX",
+            "\tADDQ $256, SI",
+            "\tADDQ $32, R8",
+        ]
+        return "\n".join(lines)
+
+    text = f"\tMOVQ $8, R10\n{label}:\n"
+    text += block() + "\n" + block() + "\n"
+    text += f"\tDECQ R10\n\tJNZ  {label}\n"
+    return text
+
+
+def _k512_vnni_store_prologue(row_calc: str) -> str:
+    return f"""\tMOVQ out+0(FP), R11
+\tMOVQ m+64(FP), AX
+\tMOVQ n+72(FP), BX
+{row_calc}\tADDQ BX, AX
+\tSHLQ $2, AX
+\tADDQ AX, R11
+\tMOVQ R11, 0(SP)
+
+\tMOVL $0x80808080, CX
+\tMOVL CX, 8(SP)
+\tVPBROADCASTD 8(SP), Y25
+
+\tMOVQ aQ+8(FP), SI
+\tMOVQ aS+16(FP), R8
+\tMOVQ data+24(FP), DI
+\tMOVQ sB0+32(FP), AX
+\tMOVQ sB1+40(FP), BX
+\tADDQ off0+48(FP), DI
+\tMOVQ data+24(FP), R15
+\tADDQ off1+56(FP), R15
+
+""" + "".join(f"\tVXORPS Y{i}, Y{i}, Y{i}\n" for i in range(16))
+
+
+def gen_q8u_q8s_dual8_accum_vnni_k512() -> str:
+    """Out-proj: 8A×2B K=512 + bias + residual accum, N=512 (row stride 512)."""
+    text = """// func q8uQ8sDual8AccumVNNIK512N512(out *float32, aQ *int8, aS *float32, data *byte, sB0, sB1 *float32, off0, off1, m, n int, bn0, bn1 float32)
+// Out-proj VNNI: block-major A_u8(+128) × B_s8, compensated. N=512 K=512.
+// Frame: out+0 aQ+8 aS+16 data+24 sB0+32 sB1+40 off0+48 off1+56 m+64 n+72 bn0+80 bn1+84 → 88
+// Stack $16: 0(SP)=out base, 8(SP)=0x80 const.
+TEXT ·q8uQ8sDual8AccumVNNIK512N512(SB), NOSPLIT, $16-88
+"""
+    text += _k512_vnni_store_prologue("\tSHLQ $9, AX // m*512\n")
+    text += _k512_vnni_dual8_loop("q8vnni_k512acc_loop")
+    text += "\tMOVQ 0(SP), R11\n"
+    for r in range(8):
+        off = r * 2048
+        text += _vnni_hsum8_f32_to_x28(r) + "\n"
+        text += f"\tVADDSS bn0+80(FP), X28, X28\n"
+        text += f"\tVADDSS {off}(R11), X28, X28\n"
+        text += f"\tVMOVSS X28, {off}(R11)\n"
+        text += _vnni_hsum8_f32_to_x28(8 + r) + "\n"
+        text += f"\tVADDSS bn1+84(FP), X28, X28\n"
+        text += f"\tVADDSS {off + 4}(R11), X28, X28\n"
+        text += f"\tVMOVSS X28, {off + 4}(R11)\n"
+    text += "\tVZEROUPPER\n\tRET\n"
+    return text
+
+
+def gen_q8u_q8s_dual8_plain_vnni_k512_n1536() -> str:
+    """QKV: 8A×2B K=512 + bias store, N=1536 (row stride 1536)."""
+    text = """// func q8uQ8sDual8PlainVNNIK512N1536(out *float32, aQ *int8, aS *float32, data *byte, sB0, sB1 *float32, off0, off1, m, n int, bn0, bn1 float32)
+// QKV VNNI: block-major A_u8(+128) × B_s8, compensated. N=1536 K=512.
+// Frame: out+0 aQ+8 aS+16 data+24 sB0+32 sB1+40 off0+48 off1+56 m+64 n+72 bn0+80 bn1+84 → 88
+// Stack $16: 0(SP)=out base, 8(SP)=0x80 const.
+TEXT ·q8uQ8sDual8PlainVNNIK512N1536(SB), NOSPLIT, $16-88
+"""
+    text += _k512_vnni_store_prologue("\tLEAQ (AX)(AX*2), AX // m*3\n\tSHLQ $9, AX // m*1536\n")
+    text += _k512_vnni_dual8_loop("q8vnni_k512pl1536_loop")
+    text += "\tMOVQ 0(SP), R11\n"
+    for r in range(8):
+        off = r * 6144
+        text += _vnni_hsum8_f32_to_x28(r) + "\n"
+        text += f"\tVADDSS bn0+80(FP), X28, X28\n"
+        text += f"\tVMOVSS X28, {off}(R11)\n"
+        text += _vnni_hsum8_f32_to_x28(8 + r) + "\n"
+        text += f"\tVADDSS bn1+84(FP), X28, X28\n"
+        text += f"\tVMOVSS X28, {off + 4}(R11)\n"
+    text += "\tVZEROUPPER\n\tRET\n"
+    return text
+
+
+def gen_q8u_q8s_dual8_relu_vnni_k512_n2048() -> str:
+    """FFN up: 8A×2B K=512 + bias + ReLU store, N=2048 (row stride 2048)."""
+    text = """// func q8uQ8sDual8ReLUVNNIK512N2048(out *float32, aQ *int8, aS *float32, data *byte, sB0, sB1 *float32, off0, off1, m, n int, bn0, bn1 float32)
+// FFN-up VNNI: block-major A_u8(+128) × B_s8, compensated. N=2048 K=512.
+// Frame: out+0 aQ+8 aS+16 data+24 sB0+32 sB1+40 off0+48 off1+56 m+64 n+72 bn0+80 bn1+84 → 88
+// Stack $16: 0(SP)=out base, 8(SP)=0x80 const.
+TEXT ·q8uQ8sDual8ReLUVNNIK512N2048(SB), NOSPLIT, $16-88
+"""
+    text += _k512_vnni_store_prologue("\tSHLQ $11, AX // m*2048\n")
+    text += _k512_vnni_dual8_loop("q8vnni_k512relu_loop")
+    text += "\tMOVQ 0(SP), R11\n\tVXORPS X30, X30, X30\n"
+    for r in range(8):
+        off = r * 8192
+        text += _vnni_hsum8_f32_to_x28(r) + "\n"
+        text += f"\tVADDSS bn0+80(FP), X28, X28\n"
+        text += "\tVMAXSS X30, X28, X28\n"
+        text += f"\tVMOVSS X28, {off}(R11)\n"
+        text += _vnni_hsum8_f32_to_x28(8 + r) + "\n"
+        text += f"\tVADDSS bn1+84(FP), X28, X28\n"
+        text += "\tVMAXSS X30, X28, X28\n"
+        text += f"\tVMOVSS X28, {off + 4}(R11)\n"
+    text += "\tVZEROUPPER\n\tRET\n"
+    return text
+
+
+def gen_q8u_q8s_dual8_argmax_vnni_k512() -> str:
+    """CTC: 8A×2B K=512 + bias + argmax update of bestV/bestI (8 rows).
+
+    Two-phase epilogue (Go asm UCOMISS is limited to X0-X15):
+      phase1 hsum+bias → 16 stack floats; phase2 compares vs bestV with X8 cand.
+    """
+    text = """// func q8uQ8sDual8ArgmaxVNNIK512(bestV *float32, bestI *int, aQ *int8, aS *float32, data *byte, sB0, sB1 *float32, off0, off1, n int, bn0, bn1 float32)
+// CTC VNNI: block-major A_u8(+128) × B_s8, compensated, fused argmax. K=512.
+// Frame: bestV+0 bestI+8 aQ+16 aS+24 data+32 sB0+40 sB1+48 off0+56 off1+64 n+72 bn0+80 bn1+84 → 88
+// Stack $96: 16 hsum+bias floats at 0..63(SP); 0x80 const at 64(SP).
+TEXT ·q8uQ8sDual8ArgmaxVNNIK512(SB), NOSPLIT, $96-88
+\tMOVQ bestV+0(FP), R11
+\tMOVQ bestI+8(FP), R13
+
+\tMOVL $0x80808080, CX
+\tMOVL CX, 64(SP)
+\tVPBROADCASTD 64(SP), Y25
+
+\tMOVQ aQ+16(FP), SI
+\tMOVQ aS+24(FP), R8
+\tMOVQ data+32(FP), DI
+\tMOVQ sB0+40(FP), AX
+\tMOVQ sB1+48(FP), BX
+\tADDQ off0+56(FP), DI
+\tMOVQ data+32(FP), R15
+\tADDQ off1+64(FP), R15
+
+"""
+    for i in range(16):
+        text += f"\tVXORPS Y{i}, Y{i}, Y{i}\n"
+    text += _k512_vnni_dual8_loop("q8vnni_k512amx_loop")
+    # phase1: hsum+bias → stack (16 floats, row-major pairs)
+    for r in range(8):
+        text += _vnni_hsum8_f32_to_x28(r) + "\n"
+        text += f"\tVADDSS bn0+80(FP), X28, X28\n"
+        text += f"\tVMOVSS X28, {r * 8}(SP)\n"
+        text += _vnni_hsum8_f32_to_x28(8 + r) + "\n"
+        text += f"\tVADDSS bn1+84(FP), X28, X28\n"
+        text += f"\tVMOVSS X28, {r * 8 + 4}(SP)\n"
+    # phase2: argmax update (leftmost-max wins on ties, matching the F32 path)
+    text += "\tMOVQ n+72(FP), R9\n"
+    for r in range(8):
+        text += f"\tVMOVSS {r * 4}(R11), X{r}\n"
+    for r in range(8):
+        lab0 = f"q8amx_r{r}a"
+        lab1 = f"q8amx_r{r}b"
+        text += f"\tVMOVSS {r * 8}(SP), X8\n"
+        text += f"\tUCOMISS X{r}, X8\n"
+        text += f"\tJLS  {lab0}\n"
+        text += f"\tVMOVAPS X8, X{r}\n"
+        text += f"\tMOVQ R9, {r * 8}(R13)\n"
+        text += f"{lab0}:\n"
+        text += f"\tVMOVSS {r * 8 + 4}(SP), X8\n"
+        text += f"\tUCOMISS X{r}, X8\n"
+        text += f"\tJLS  {lab1}\n"
+        text += f"\tVMOVAPS X8, X{r}\n"
+        text += f"\tLEAQ 1(R9), R12\n"
+        text += f"\tMOVQ R12, {r * 8}(R13)\n"
+        text += f"{lab1}:\n"
+    for r in range(8):
+        text += f"\tVMOVSS X{r}, {r * 4}(R11)\n"
+    text += "\tVZEROUPPER\n\tRET\n"
+    return text
+
+
+def gen_q8u_q8s_dual8_logits_vnni_k512() -> str:
+    """CTC stage 1: 8A×2B K=512 + bias → 16 approx logits to a vals buffer.
+
+    Same loop as q8uQ8sDual8ArgmaxVNNIK512; the epilogue stores the
+    hsum+bias values (rows×2 cols) instead of a fused argmax update. Go
+    collects top candidates from the buffer and re-scores them exactly, so
+    the final argmax is bit-identical to the full F32 path.
+    """
+    text = """// func q8uQ8sDual8LogitsVNNIK512(vals *float32, aQ *int8, aS *float32, data *byte, sB0, sB1 *float32, off0, off1, m, n int, bn0, bn1 float32)
+// CTC VNNI stage 1: A_u8(+128) × B_s8 compensated → 16 approx logits to vals.
+// vals layout: [row r][col j] at vals[r*8 + j*4] (r=0..7, j=0..1). K=512.
+// Frame: vals+0 aQ+8 aS+16 data+24 sB0+32 sB1+40 off0+48 off1+56 m+64 n+72 bn0+80 bn1+84 → 88
+// Stack $72: 0x80 const at 64(SP). m/n unused (kept for call-site symmetry).
+TEXT ·q8uQ8sDual8LogitsVNNIK512(SB), NOSPLIT, $72-88
+\tMOVQ vals+0(FP), R11
+
+\tMOVL $0x80808080, CX
+\tMOVL CX, 64(SP)
+\tVPBROADCASTD 64(SP), Y25
+
+\tMOVQ aQ+8(FP), SI
+\tMOVQ aS+16(FP), R8
+\tMOVQ data+24(FP), DI
+\tMOVQ sB0+32(FP), AX
+\tMOVQ sB1+40(FP), BX
+\tADDQ off0+48(FP), DI
+\tMOVQ data+24(FP), R15
+\tADDQ off1+56(FP), R15
+
+"""
+    for i in range(16):
+        text += f"\tVXORPS Y{i}, Y{i}, Y{i}\n"
+    text += _k512_vnni_dual8_loop("q8vnni_k512lg_loop")
+    for r in range(8):
+        text += _vnni_hsum8_f32_to_x28(r) + "\n"
+        text += f"\tVADDSS bn0+80(FP), X28, X28\n"
+        text += f"\tVMOVSS X28, {r * 8}(R11)\n"
+        text += _vnni_hsum8_f32_to_x28(8 + r) + "\n"
+        text += f"\tVADDSS bn1+84(FP), X28, X28\n"
+        text += f"\tVMOVSS X28, {r * 8 + 4}(R11)\n"
+    text += "\tVZEROUPPER\n\tRET\n"
+    return text
+
+
+def gen_multidot4_generic16() -> str:
+    """PP-OCR 4A generic-K kernels (K positive multiple of 8), kept verbatim.
+
+    Main loop consumes K/32 double-ZMM trips; the K%32 remainder is
+    handled by full-width 16-float and zero-padded 8-float tails, so
+    K=8/16/24/40/... work (dual enters the tails directly; triple callers
+    guarantee K>=32).  Folded in here so regeneration reproduces the
+    full file.
+    """
+    return "// func multiDot4TripleBAVX512Generic16(out *[12]float32, a, b0, b1, b2 *float32, K int)\n// 4 A x 3 B, K a positive multiple of 8 with K >= 32 (K%32 remainder is\n// handled by full-width 16 and zero-padded 8 tails).  PP-OCR uses\n// K=48/96/120/192/384/768 here.\n// The AVX2 generic kernel is a dominant detector/recognizer hotspot on Zen4;\n// this keeps all twelve output accumulators in ZMM registers and shares each\n// 16-float A load across three B columns.\n// Frame: out+0, a+8, b0+16, b1+24, b2+32, K+40\nTEXT ·multiDot4TripleBAVX512Generic16(SB), NOSPLIT, $0-48\n\tMOVQ out+0(FP), R11\n\tMOVQ a+8(FP), SI\n\tMOVQ b0+16(FP), DI\n\tMOVQ b1+24(FP), R15\n\tMOVQ b2+32(FP), R14\n\tMOVQ K+40(FP), CX\n\n\tMOVQ CX, AX\n\tSHLQ $2, AX\n\tMOVQ SI, R8\n\tLEAQ (SI)(AX*1), R9\n\tLEAQ (R9)(AX*1), R10\n\tLEAQ (R10)(AX*1), R12\n\n\tVXORPS Z0, Z0, Z0\n\tVXORPS Z1, Z1, Z1\n\tVXORPS Z2, Z2, Z2\n\tVXORPS Z3, Z3, Z3\n\tVXORPS Z4, Z4, Z4\n\tVXORPS Z5, Z5, Z5\n\tVXORPS Z6, Z6, Z6\n\tVXORPS Z7, Z7, Z7\n\tVXORPS Z8, Z8, Z8\n\tVXORPS Z9, Z9, Z9\n\tVXORPS Z10, Z10, Z10\n\tVXORPS Z11, Z11, Z11\n\n\t// PP-OCR's selected widths are all multiples of 32.  Process two ZMM\n\t// chunks per trip to halve loop/AGU overhead while the twelve independent\n\t// FMA dependency chains hide the extra load latency.\n\tMOVQ CX, R13\n\tSHRQ $5, R13\n\ntri4_generic16_loop:\n\tVMOVUPS (DI), Z13\n\tVMOVUPS (R15), Z14\n\tVMOVUPS (R14), Z15\n\tVMOVUPS (R8), Z12\n\tVFMADD231PS Z12, Z13, Z0\n\tVFMADD231PS Z12, Z14, Z4\n\tVFMADD231PS Z12, Z15, Z8\n\tVMOVUPS (R9), Z12\n\tVFMADD231PS Z12, Z13, Z1\n\tVFMADD231PS Z12, Z14, Z5\n\tVFMADD231PS Z12, Z15, Z9\n\tVMOVUPS (R10), Z12\n\tVFMADD231PS Z12, Z13, Z2\n\tVFMADD231PS Z12, Z14, Z6\n\tVFMADD231PS Z12, Z15, Z10\n\tVMOVUPS (R12), Z12\n\tVFMADD231PS Z12, Z13, Z3\n\tVFMADD231PS Z12, Z14, Z7\n\tVFMADD231PS Z12, Z15, Z11\n\tVMOVUPS 64(DI), Z13\n\tVMOVUPS 64(R15), Z14\n\tVMOVUPS 64(R14), Z15\n\tVMOVUPS 64(R8), Z12\n\tVFMADD231PS Z12, Z13, Z0\n\tVFMADD231PS Z12, Z14, Z4\n\tVFMADD231PS Z12, Z15, Z8\n\tVMOVUPS 64(R9), Z12\n\tVFMADD231PS Z12, Z13, Z1\n\tVFMADD231PS Z12, Z14, Z5\n\tVFMADD231PS Z12, Z15, Z9\n\tVMOVUPS 64(R10), Z12\n\tVFMADD231PS Z12, Z13, Z2\n\tVFMADD231PS Z12, Z14, Z6\n\tVFMADD231PS Z12, Z15, Z10\n\tVMOVUPS 64(R12), Z12\n\tVFMADD231PS Z12, Z13, Z3\n\tVFMADD231PS Z12, Z14, Z7\n\tVFMADD231PS Z12, Z15, Z11\n\tADDQ $128, DI\n\tADDQ $128, R15\n\tADDQ $128, R14\n\tADDQ $128, R8\n\tADDQ $128, R9\n\tADDQ $128, R10\n\tADDQ $128, R12\n\tDECQ R13\n\tJNZ tri4_generic16_loop\n\n\t// Tail: K%32 in {16, 24} (e.g. K=48 -> 16, K=120 -> 24). CX still holds\n\t// K. First a full-width 16-float chunk when bit 4 is set, then an\n\t// 8-float chunk zero-padded to 16 lanes when bit 3 is set. The padded\n\t// lanes multiply A rows by 0.0, so the ZMM accumulators are unchanged in\n\t// lanes 8-15. The padded operand is built with VINSERTF64X4 into a zero\n\t// ZMM rather than a YMM FMA: EVEX.256 ops zero the upper half of the\n\t// destination ZMM, which would clobber the accumulators.\n\tTESTQ $16, CX\n\tJZ tri4_noTail16\n\tVMOVUPS (DI), Z13\n\tVMOVUPS (R15), Z14\n\tVMOVUPS (R14), Z15\n\tVMOVUPS (R8), Z12\n\tVFMADD231PS Z12, Z13, Z0\n\tVFMADD231PS Z12, Z14, Z4\n\tVFMADD231PS Z12, Z15, Z8\n\tVMOVUPS (R9), Z12\n\tVFMADD231PS Z12, Z13, Z1\n\tVFMADD231PS Z12, Z14, Z5\n\tVFMADD231PS Z12, Z15, Z9\n\tVMOVUPS (R10), Z12\n\tVFMADD231PS Z12, Z13, Z2\n\tVFMADD231PS Z12, Z14, Z6\n\tVFMADD231PS Z12, Z15, Z10\n\tVMOVUPS (R12), Z12\n\tVFMADD231PS Z12, Z13, Z3\n\tVFMADD231PS Z12, Z14, Z7\n\tVFMADD231PS Z12, Z15, Z11\n\tADDQ $64, DI\n\tADDQ $64, R15\n\tADDQ $64, R14\n\tADDQ $64, R8\n\tADDQ $64, R9\n\tADDQ $64, R10\n\tADDQ $64, R12\ntri4_noTail16:\n\tTESTQ $8, CX\n\tJZ tri4_noTail8\n\tVXORPS Z16, Z16, Z16\n\tVMOVUPS (DI), Y13\n\tVINSERTF64X4 $0, Y13, Z16, Z13\n\tVMOVUPS (R15), Y14\n\tVINSERTF64X4 $0, Y14, Z16, Z14\n\tVMOVUPS (R14), Y15\n\tVINSERTF64X4 $0, Y15, Z16, Z15\n\tVMOVUPS (R8), Y12\n\tVINSERTF64X4 $0, Y12, Z16, Z12\n\tVFMADD231PS Z12, Z13, Z0\n\tVFMADD231PS Z12, Z14, Z4\n\tVFMADD231PS Z12, Z15, Z8\n\tVMOVUPS (R9), Y12\n\tVINSERTF64X4 $0, Y12, Z16, Z12\n\tVFMADD231PS Z12, Z13, Z1\n\tVFMADD231PS Z12, Z14, Z5\n\tVFMADD231PS Z12, Z15, Z9\n\tVMOVUPS (R10), Y12\n\tVINSERTF64X4 $0, Y12, Z16, Z12\n\tVFMADD231PS Z12, Z13, Z2\n\tVFMADD231PS Z12, Z14, Z6\n\tVFMADD231PS Z12, Z15, Z10\n\tVMOVUPS (R12), Y12\n\tVINSERTF64X4 $0, Y12, Z16, Z12\n\tVFMADD231PS Z12, Z13, Z3\n\tVFMADD231PS Z12, Z14, Z7\n\tVFMADD231PS Z12, Z15, Z11\ntri4_noTail8:\n\tVEXTRACTF32X8 $1, Z0, Y12\n\tVADDPS Y0, Y12, Y12\n\tVEXTRACTF128 $1, Y12, X13\n\tVADDPS X12, X13, X12\n\tVSHUFPD $1, X12, X12, X13\n\tVADDPS X12, X13, X12\n\tVMOVSHDUP X12, X13\n\tVADDSS X12, X13, X12\n\tVMOVSS X12, 0(R11)\n\tVEXTRACTF32X8 $1, Z1, Y12\n\tVADDPS Y1, Y12, Y12\n\tVEXTRACTF128 $1, Y12, X13\n\tVADDPS X12, X13, X12\n\tVSHUFPD $1, X12, X12, X13\n\tVADDPS X12, X13, X12\n\tVMOVSHDUP X12, X13\n\tVADDSS X12, X13, X12\n\tVMOVSS X12, 4(R11)\n\tVEXTRACTF32X8 $1, Z2, Y12\n\tVADDPS Y2, Y12, Y12\n\tVEXTRACTF128 $1, Y12, X13\n\tVADDPS X12, X13, X12\n\tVSHUFPD $1, X12, X12, X13\n\tVADDPS X12, X13, X12\n\tVMOVSHDUP X12, X13\n\tVADDSS X12, X13, X12\n\tVMOVSS X12, 8(R11)\n\tVEXTRACTF32X8 $1, Z3, Y12\n\tVADDPS Y3, Y12, Y12\n\tVEXTRACTF128 $1, Y12, X13\n\tVADDPS X12, X13, X12\n\tVSHUFPD $1, X12, X12, X13\n\tVADDPS X12, X13, X12\n\tVMOVSHDUP X12, X13\n\tVADDSS X12, X13, X12\n\tVMOVSS X12, 12(R11)\n\tVEXTRACTF32X8 $1, Z4, Y12\n\tVADDPS Y4, Y12, Y12\n\tVEXTRACTF128 $1, Y12, X13\n\tVADDPS X12, X13, X12\n\tVSHUFPD $1, X12, X12, X13\n\tVADDPS X12, X13, X12\n\tVMOVSHDUP X12, X13\n\tVADDSS X12, X13, X12\n\tVMOVSS X12, 16(R11)\n\tVEXTRACTF32X8 $1, Z5, Y12\n\tVADDPS Y5, Y12, Y12\n\tVEXTRACTF128 $1, Y12, X13\n\tVADDPS X12, X13, X12\n\tVSHUFPD $1, X12, X12, X13\n\tVADDPS X12, X13, X12\n\tVMOVSHDUP X12, X13\n\tVADDSS X12, X13, X12\n\tVMOVSS X12, 20(R11)\n\tVEXTRACTF32X8 $1, Z6, Y12\n\tVADDPS Y6, Y12, Y12\n\tVEXTRACTF128 $1, Y12, X13\n\tVADDPS X12, X13, X12\n\tVSHUFPD $1, X12, X12, X13\n\tVADDPS X12, X13, X12\n\tVMOVSHDUP X12, X13\n\tVADDSS X12, X13, X12\n\tVMOVSS X12, 24(R11)\n\tVEXTRACTF32X8 $1, Z7, Y12\n\tVADDPS Y7, Y12, Y12\n\tVEXTRACTF128 $1, Y12, X13\n\tVADDPS X12, X13, X12\n\tVSHUFPD $1, X12, X12, X13\n\tVADDPS X12, X13, X12\n\tVMOVSHDUP X12, X13\n\tVADDSS X12, X13, X12\n\tVMOVSS X12, 28(R11)\n\tVEXTRACTF32X8 $1, Z8, Y12\n\tVADDPS Y8, Y12, Y12\n\tVEXTRACTF128 $1, Y12, X13\n\tVADDPS X12, X13, X12\n\tVSHUFPD $1, X12, X12, X13\n\tVADDPS X12, X13, X12\n\tVMOVSHDUP X12, X13\n\tVADDSS X12, X13, X12\n\tVMOVSS X12, 32(R11)\n\tVEXTRACTF32X8 $1, Z9, Y12\n\tVADDPS Y9, Y12, Y12\n\tVEXTRACTF128 $1, Y12, X13\n\tVADDPS X12, X13, X12\n\tVSHUFPD $1, X12, X12, X13\n\tVADDPS X12, X13, X12\n\tVMOVSHDUP X12, X13\n\tVADDSS X12, X13, X12\n\tVMOVSS X12, 36(R11)\n\tVEXTRACTF32X8 $1, Z10, Y12\n\tVADDPS Y10, Y12, Y12\n\tVEXTRACTF128 $1, Y12, X13\n\tVADDPS X12, X13, X12\n\tVSHUFPD $1, X12, X12, X13\n\tVADDPS X12, X13, X12\n\tVMOVSHDUP X12, X13\n\tVADDSS X12, X13, X12\n\tVMOVSS X12, 40(R11)\n\tVEXTRACTF32X8 $1, Z11, Y12\n\tVADDPS Y11, Y12, Y12\n\tVEXTRACTF128 $1, Y12, X13\n\tVADDPS X12, X13, X12\n\tVSHUFPD $1, X12, X12, X13\n\tVADDPS X12, X13, X12\n\tVMOVSHDUP X12, X13\n\tVADDSS X12, X13, X12\n\tVMOVSS X12, 44(R11)\n\tVZEROUPPER\n\tRET\n\n// func multiDot4DualBAVX512Generic16(out *[8]float32, a, b0, b1 *float32, K int)\n// 4 A x 2 B, K a positive multiple of 8 with K >= 32 (16/8-wide tails for\n// the K%32 remainder).  The PP-OCR pointwise projections use 96/192/384,\n// all divisible by 32.  Eight independent ZMM\n// accumulators make this substantially cheaper than the AVX2 8-wide walk.\n// Frame: out+0, a+8, b0+16, b1+24, K+32\nTEXT ·multiDot4DualBAVX512Generic16(SB), NOSPLIT, $0-40\n\tMOVQ out+0(FP), R11\n\tMOVQ a+8(FP), SI\n\tMOVQ b0+16(FP), DI\n\tMOVQ b1+24(FP), R15\n\tMOVQ K+32(FP), CX\n\n\tMOVQ CX, AX\n\tSHLQ $2, AX\n\tMOVQ SI, R8\n\tLEAQ (SI)(AX*1), R9\n\tLEAQ (R9)(AX*1), R10\n\tLEAQ (R10)(AX*1), R12\n\n\tVXORPS Z0, Z0, Z0\n\tVXORPS Z1, Z1, Z1\n\tVXORPS Z2, Z2, Z2\n\tVXORPS Z3, Z3, Z3\n\tVXORPS Z4, Z4, Z4\n\tVXORPS Z5, Z5, Z5\n\tVXORPS Z6, Z6, Z6\n\tVXORPS Z7, Z7, Z7\n\n\tMOVQ CX, R13\n\tSHRQ $5, R13\n\tTESTQ R13, R13\n\tJZ    dual4_tailStart // K < 32: empty main loop, tails consume everything\n\ndual4_generic16_loop:\n\tVMOVUPS (DI), Z9\n\tVMOVUPS (R15), Z10\n\tVMOVUPS (R8), Z8\n\tVFMADD231PS Z8, Z9, Z0\n\tVFMADD231PS Z8, Z10, Z4\n\tVMOVUPS (R9), Z8\n\tVFMADD231PS Z8, Z9, Z1\n\tVFMADD231PS Z8, Z10, Z5\n\tVMOVUPS (R10), Z8\n\tVFMADD231PS Z8, Z9, Z2\n\tVFMADD231PS Z8, Z10, Z6\n\tVMOVUPS (R12), Z8\n\tVFMADD231PS Z8, Z9, Z3\n\tVFMADD231PS Z8, Z10, Z7\n\tVMOVUPS 64(DI), Z9\n\tVMOVUPS 64(R15), Z10\n\tVMOVUPS 64(R8), Z8\n\tVFMADD231PS Z8, Z9, Z0\n\tVFMADD231PS Z8, Z10, Z4\n\tVMOVUPS 64(R9), Z8\n\tVFMADD231PS Z8, Z9, Z1\n\tVFMADD231PS Z8, Z10, Z5\n\tVMOVUPS 64(R10), Z8\n\tVFMADD231PS Z8, Z9, Z2\n\tVFMADD231PS Z8, Z10, Z6\n\tVMOVUPS 64(R12), Z8\n\tVFMADD231PS Z8, Z9, Z3\n\tVFMADD231PS Z8, Z10, Z7\n\tADDQ $128, DI\n\tADDQ $128, R15\n\tADDQ $128, R8\n\tADDQ $128, R9\n\tADDQ $128, R10\n\tADDQ $128, R12\n\tDECQ R13\n\tJNZ dual4_generic16_loop\n\n\t// Tail: K%32 in {16, 24} (K=48 -> 16, K=120 -> 24; K<32 enters here\n\t// directly via dual4_tailStart). CX still holds K.\n\t// See the triple kernel's tail comment for the zero-padding rationale.\ndual4_tailStart:\n\tTESTQ $16, CX\n\tJZ dual4_noTail16\n\tVMOVUPS (DI), Z9\n\tVMOVUPS (R15), Z10\n\tVMOVUPS (R8), Z8\n\tVFMADD231PS Z8, Z9, Z0\n\tVFMADD231PS Z8, Z10, Z4\n\tVMOVUPS (R9), Z8\n\tVFMADD231PS Z8, Z9, Z1\n\tVFMADD231PS Z8, Z10, Z5\n\tVMOVUPS (R10), Z8\n\tVFMADD231PS Z8, Z9, Z2\n\tVFMADD231PS Z8, Z10, Z6\n\tVMOVUPS (R12), Z8\n\tVFMADD231PS Z8, Z9, Z3\n\tVFMADD231PS Z8, Z10, Z7\n\tADDQ $64, DI\n\tADDQ $64, R15\n\tADDQ $64, R8\n\tADDQ $64, R9\n\tADDQ $64, R10\n\tADDQ $64, R12\ndual4_noTail16:\n\tTESTQ $8, CX\n\tJZ dual4_noTail8\n\tVXORPS Z11, Z11, Z11\n\tVMOVUPS (DI), Y9\n\tVINSERTF64X4 $0, Y9, Z11, Z9\n\tVMOVUPS (R15), Y10\n\tVINSERTF64X4 $0, Y10, Z11, Z10\n\tVMOVUPS (R8), Y8\n\tVINSERTF64X4 $0, Y8, Z11, Z8\n\tVFMADD231PS Z8, Z9, Z0\n\tVFMADD231PS Z8, Z10, Z4\n\tVMOVUPS (R9), Y8\n\tVINSERTF64X4 $0, Y8, Z11, Z8\n\tVFMADD231PS Z8, Z9, Z1\n\tVFMADD231PS Z8, Z10, Z5\n\tVMOVUPS (R10), Y8\n\tVINSERTF64X4 $0, Y8, Z11, Z8\n\tVFMADD231PS Z8, Z9, Z2\n\tVFMADD231PS Z8, Z10, Z6\n\tVMOVUPS (R12), Y8\n\tVINSERTF64X4 $0, Y8, Z11, Z8\n\tVFMADD231PS Z8, Z9, Z3\n\tVFMADD231PS Z8, Z10, Z7\ndual4_noTail8:\n\tVEXTRACTF32X8 $1, Z0, Y8\n\tVADDPS Y0, Y8, Y8\n\tVEXTRACTF128 $1, Y8, X9\n\tVADDPS X8, X9, X8\n\tVSHUFPD $1, X8, X8, X9\n\tVADDPS X8, X9, X8\n\tVMOVSHDUP X8, X9\n\tVADDSS X8, X9, X8\n\tVMOVSS X8, 0(R11)\n\tVEXTRACTF32X8 $1, Z1, Y8\n\tVADDPS Y1, Y8, Y8\n\tVEXTRACTF128 $1, Y8, X9\n\tVADDPS X8, X9, X8\n\tVSHUFPD $1, X8, X8, X9\n\tVADDPS X8, X9, X8\n\tVMOVSHDUP X8, X9\n\tVADDSS X8, X9, X8\n\tVMOVSS X8, 4(R11)\n\tVEXTRACTF32X8 $1, Z2, Y8\n\tVADDPS Y2, Y8, Y8\n\tVEXTRACTF128 $1, Y8, X9\n\tVADDPS X8, X9, X8\n\tVSHUFPD $1, X8, X8, X9\n\tVADDPS X8, X9, X8\n\tVMOVSHDUP X8, X9\n\tVADDSS X8, X9, X8\n\tVMOVSS X8, 8(R11)\n\tVEXTRACTF32X8 $1, Z3, Y8\n\tVADDPS Y3, Y8, Y8\n\tVEXTRACTF128 $1, Y8, X9\n\tVADDPS X8, X9, X8\n\tVSHUFPD $1, X8, X8, X9\n\tVADDPS X8, X9, X8\n\tVMOVSHDUP X8, X9\n\tVADDSS X8, X9, X8\n\tVMOVSS X8, 12(R11)\n\tVEXTRACTF32X8 $1, Z4, Y8\n\tVADDPS Y4, Y8, Y8\n\tVEXTRACTF128 $1, Y8, X9\n\tVADDPS X8, X9, X8\n\tVSHUFPD $1, X8, X8, X9\n\tVADDPS X8, X9, X8\n\tVMOVSHDUP X8, X9\n\tVADDSS X8, X9, X8\n\tVMOVSS X8, 16(R11)\n\tVEXTRACTF32X8 $1, Z5, Y8\n\tVADDPS Y5, Y8, Y8\n\tVEXTRACTF128 $1, Y8, X9\n\tVADDPS X8, X9, X8\n\tVSHUFPD $1, X8, X8, X9\n\tVADDPS X8, X9, X8\n\tVMOVSHDUP X8, X9\n\tVADDSS X8, X9, X8\n\tVMOVSS X8, 20(R11)\n\tVEXTRACTF32X8 $1, Z6, Y8\n\tVADDPS Y6, Y8, Y8\n\tVEXTRACTF128 $1, Y8, X9\n\tVADDPS X8, X9, X8\n\tVSHUFPD $1, X8, X8, X9\n\tVADDPS X8, X9, X8\n\tVMOVSHDUP X8, X9\n\tVADDSS X8, X9, X8\n\tVMOVSS X8, 24(R11)\n\tVEXTRACTF32X8 $1, Z7, Y8\n\tVADDPS Y7, Y8, Y8\n\tVEXTRACTF128 $1, Y8, X9\n\tVADDPS X8, X9, X8\n\tVSHUFPD $1, X8, X8, X9\n\tVADDPS X8, X9, X8\n\tVMOVSHDUP X8, X9\n\tVADDSS X8, X9, X8\n\tVMOVSS X8, 28(R11)\n\tVZEROUPPER\n\tRET\n"
+
+
+# --- Q8R: per-row-scale int-accumulate VNNI (K=512) --------------------------
+#
+# The per-block-epilogue kernels above pay cvt+scale+fma per (row, B, block),
+# which caps them near the F32 multiDot rate. These kernels instead accumulate
+# VPDPBUSD int32 across ALL 16 blocks per (row, B) and scale once per panel:
+#   total(r,j) = sA_row[r] * sB_row[j] * (acc_int - 128*sumB[j])
+# That requires per-row scales on BOTH sides:
+#   - B is repacked at load into contiguous s8 rows (Q8R: Q + per-row Scale +
+#     pre-multiplied Sum128 = 128*sum(Q row)) from the Q8_0 tensor via
+#     round(s8 * sB_block / sB_row), sB_row = max(sB_block).
+#   - A is quantized per row (amax over the full K=512 row) with +128 bias.
+# Overflow: per dword lane acc <= 16*4*127*255 ≈ 2.07M; |acc - 128*sumB| ≤ 8.4M
+# — int32-safe, and < 2^24 so VCVTDQ2PS is exact.
+
+def gen_quantize_panel8_q8srow_k512() -> str:
+    """quantizePanel8Q8SRowK512AVX512: 8 A rows K=512, per-row scale.
+
+    q = round(a*127/amax_row)+128 ∈ [1,255]; s[r] = amax/127 (8 floats).
+    q layout: block-major [16][8][32] (same as the per-block panel).
+    Constants: Z12=abs mask, Z14=127.0, Z6=128.0, X13=1/127, X15=eps.
+    """
+    text = """// func quantizePanel8Q8SRowK512AVX512(q *int8, s *float32, a *float32)
+// 8×512 signed A → +128-biased u8 packs, per-row scale (amax/127).
+// q layout: block-major [16][8][32]; s: [8] per row.
+// Frame: q+0 s+8 a+16 → 24
+TEXT ·quantizePanel8Q8SRowK512AVX512(SB), NOSPLIT, $32-24
+\tMOVQ q+0(FP), DI
+\tMOVQ s+8(FP), R8
+\tMOVQ a+16(FP), SI
+\tMOVL $0x42fe0000, AX // 127.0f
+\tMOVL AX, 0(SP)
+\tVBROADCASTSS 0(SP), Z14
+\tMOVL $0x34000000, AX // ~1.2e-7f eps
+\tMOVL AX, 4(SP)
+\tVMOVSS 4(SP), X15
+\tMOVL $0x3c010204, AX // 1/127.0f
+\tMOVL AX, 8(SP)
+\tVMOVSS 8(SP), X13
+\tMOVL $0x7fffffff, AX // abs mask
+\tMOVL AX, 12(SP)
+\tVBROADCASTSS 12(SP), Z12
+\tMOVL $0x43000000, AX // 128.0f bias
+\tMOVL AX, 16(SP)
+\tVBROADCASTSS 16(SP), Z6
+
+\tMOVQ $8, R10 // rows
+\tMOVQ SI, R11 // A ptr (flows across rows)
+\tMOVQ DI, R15 // q row base = DI + r*32
+\tMOVQ R8, R13 // s ptr
+q8sr_row_loop:
+\t// amax over the row's 512 floats: 8 batches of 4 ZMM, running max in Z4
+"""
+    for batch in range(8):
+        base = batch * 256
+        text += f"""\tVMOVUPS {base}(R11), Z0
+\tVMOVUPS {base + 64}(R11), Z1
+\tVMOVUPS {base + 128}(R11), Z2
+\tVMOVUPS {base + 192}(R11), Z3
+\tVANDPS Z12, Z0, Z0
+\tVANDPS Z12, Z1, Z1
+\tVANDPS Z12, Z2, Z2
+\tVANDPS Z12, Z3, Z3
+\tVMAXPS Z0, Z1, Z0
+\tVMAXPS Z2, Z3, Z2
+"""
+        if batch == 0:
+            text += "\tVMAXPS Z0, Z2, Z4\n"
+        else:
+            text += "\tVMAXPS Z2, Z0, Z0\n\tVMAXPS Z4, Z0, Z4\n"
+    text += """\tVEXTRACTF32X8 $1, Z4, Y1
+\tVMAXPS Y4, Y1, Y4
+\tVEXTRACTF32X4 $1, Y4, X1
+\tVMAXPS X4, X1, X4
+\tVSHUFPD $1, X4, X4, X1
+\tVMAXPS X4, X1, X4
+\tVMOVSHDUP X4, X1
+\tVMAXSS X4, X1, X4 // amax
+\tVMOVAPS X4, X0
+"""
+    text += """\tVMULSS X13, X0, X4 // scale = amax/127
+\tVMAXSS X15, X0, X3
+\tVRCP14SS X3, X3, X3
+\tVMULSS X14, X3, X3 // inv = 127/amax
+\tVBROADCASTSS X3, Z5
+\tVMOVSS X4, (R13)
+\tMOVQ R15, R12 // q block ptr for this row
+\tMOVQ $16, R14
+q8sr_blk_loop:
+\tVMOVUPS (R11), Z0
+\tVMOVUPS 64(R11), Z1
+\tVMULPS Z5, Z0, Z0
+\tVMULPS Z5, Z1, Z1
+\tVADDPS Z6, Z0, Z0
+\tVADDPS Z6, Z1, Z1
+\tVCVTPS2DQ Z0, Z0
+\tVCVTPS2DQ Z1, Z1
+\tVPMOVDB Z0, X4
+\tVPMOVDB Z1, X7
+\tVMOVUPS X4, (R12)
+\tVMOVUPS X7, 16(R12)
+\tADDQ $128, R11
+\tADDQ $256, R12
+\tDECQ R14
+\tJNZ  q8sr_blk_loop
+\tADDQ $32, R15 // next row's q base
+\tADDQ $4, R13 // next s
+\tDECQ R10
+\tJNZ  q8sr_row_loop
+\tVZEROUPPER
+\tRET
+"""
+    return text
+
+
+def _q8r_dual8_intaccum_loop(label: str) -> str:
+    """16-block loop: 8 A × 2 B VPDPBUSD into persistent int32 accums Y0-15.
+
+    No per-block epilogue: scales are per-row, applied once per (r,j) after
+    the loop. Registers: Y0-15 int accums, Y16/17 B, Y18-21 A temps.
+    GP: SI=A panel R15=B0 R14=B1 R10=counter (A layout [b][8][32]).
+    """
+    lines = [f"{label}:",
+        "\tPREFETCHT0 256(R15)",
+        "\tPREFETCHT0 256(R14)",
+        "\tPREFETCHT0 512(SI)",
+        "\tVMOVDQU32 (R15), Y16",
+        "\tVMOVDQU32 (R14), Y17",
+    ]
+    for half in range(2):
+        aoff = half * 128
+        for i in range(4):
+            lines.append(f"\tVMOVDQU32 {aoff + i * 32}(SI), Y{18 + i}")
+        for i in range(4):
+            r = half * 4 + i
+            lines.append(f"\tVPDPBUSD Y16, Y{18 + i}, Y{r}")
+            lines.append(f"\tVPDPBUSD Y17, Y{18 + i}, Y{8 + r}")
+    lines += [
+        "\tADDQ $32, R15",
+        "\tADDQ $32, R14",
+        "\tADDQ $256, SI",
+        "\tDECQ R10",
+        f"\tJNZ  {label}",
+    ]
+    return "\n".join(lines)
+
+
+def _q8r_epilogue_hscale_store(r: int, j: int, off: int, n_cols: int, relu: bool, row_bytes: int) -> str:
+    """One (row r, B j) epilogue: cvt; hsum; −128*sumB[j] (float, post-hsum);
+    ×sA[r]×sB[j]; +bias[; relu]; store at out row offset r*row_bytes (+4 for j=1)."""
+    y = j * 8 + r
+    sumb = "(R12)" if j == 0 else "(R13)"
+    sbs = "(AX)" if j == 0 else "(BX)"
+    bn = "bn0+96(FP)" if j == 0 else "bn1+100(FP)"
+    lines = [
+        f"\tVCVTDQ2PS Y{y}, Y{y}",
+    ]
+    lines.append(_vnni_hsum8_f32_to_x28(y))
+    lines += [
+        f"\tVSUBSS {sumb}, X28, X28",
+        f"\tVMULSS {r * 4}(R8), X28, X28",
+        f"\tVMULSS {sbs}, X28, X28",
+        f"\tVADDSS {bn}, X28, X28",
+    ]
+    if relu:
+        lines.append("\tVMAXSS X30, X28, X28")
+    lines.append(f"\tVMOVSS X28, {off}(R11)")
+    return "\n".join(lines)
+
+
+def _q8r_prologue(row_calc: str) -> str:
+    return f"""\tMOVQ out+0(FP), R11
+\tMOVQ m+80(FP), AX
+\tMOVQ n+88(FP), BX
+{row_calc}\tADDQ BX, AX
+\tSHLQ $2, AX
+\tADDQ AX, R11
+
+\tMOVQ aQ+8(FP), SI
+\tMOVQ aS+16(FP), R8
+\tMOVQ qB+24(FP), R15
+\tMOVQ qB+24(FP), R14
+\tADDQ off0+64(FP), R15
+\tADDQ off1+72(FP), R14
+\tMOVQ sumB0+48(FP), R12
+\tMOVQ sumB1+56(FP), R13
+\tMOVQ sB0+32(FP), AX
+\tMOVQ sB1+40(FP), BX
+
+""" + "".join(f"\tVPXORD Y{i}, Y{i}, Y{i}\n" for i in range(16)) + "\tMOVQ $16, R10\n"
+
+
+def gen_q8r_dual8_plain_vnni_k512(n_cols: int) -> str:
+    """Q8R int-accumulate plain kernel for N=512 (out-proj) / N=1536 (QKV)."""
+    if n_cols == 512:
+        row_calc = "\tSHLQ $9, AX // m*512\n"
+        row_bytes = 2048
+    elif n_cols == 1536:
+        row_calc = "\tLEAQ (AX)(AX*2), AX // m*3\n\tSHLQ $9, AX // m*1536\n"
+        row_bytes = 6144
+    else:
+        raise ValueError(f"unsupported N={n_cols}")
+    text = f"""// func q8rDual8PlainVNNIK512N{n_cols}(out *float32, aQ *int8, aS *float32, qB *byte, sB0, sB1 *float32, sumB0, sumB1 *float32, off0, off1, m, n int, bn0, bn1 float32)
+// Q8R int-accumulate VNNI: A_u8(+128) × B_s8, per-row scales, plain store. N={n_cols} K=512.
+// Frame: out+0 aQ+8 aS+16 qB+24 sB0+32 sB1+40 sumB0+48 sumB1+56 off0+64 off1+72 m+80 n+88 bn0+96 bn1+100 → 104
+TEXT ·q8rDual8PlainVNNIK512N{n_cols}(SB), NOSPLIT, $0-104
+"""
+    text += _q8r_prologue(row_calc)
+    text += _q8r_dual8_intaccum_loop(f"q8r_pl{n_cols}_loop") + "\n"
+    for r in range(8):
+        text += _q8r_epilogue_hscale_store(r, 0, r*row_bytes, n_cols, False, row_bytes) + "\n"
+        text += _q8r_epilogue_hscale_store(r, 1, r*row_bytes+4, n_cols, False, row_bytes) + "\n"
+    text += "\tVZEROUPPER\n\tRET\n"
+    return text
+
+
+def gen_q8r_dual8_relu_vnni_k512_n2048() -> str:
+    """Q8R int-accumulate ReLU kernel for N=2048 (FFN up)."""
+    text = """// func q8rDual8ReLUVNNIK512N2048(out *float32, aQ *int8, aS *float32, qB *byte, sB0, sB1 *float32, sumB0, sumB1 *float32, off0, off1, m, n int, bn0, bn1 float32)
+// Q8R int-accumulate VNNI: A_u8(+128) × B_s8, per-row scales, ReLU store. N=2048 K=512.
+// Frame: out+0 aQ+8 aS+16 qB+24 sB0+32 sB1+40 sumB0+48 sumB1+56 off0+64 off1+72 m+80 n+88 bn0+96 bn1+100 → 104
+TEXT ·q8rDual8ReLUVNNIK512N2048(SB), NOSPLIT, $0-104
+"""
+    text += _q8r_prologue("\tSHLQ $11, AX // m*2048\n")
+    text += _q8r_dual8_intaccum_loop("q8r_relu2048_loop") + "\n"
+    text += "\tVXORPS X30, X30, X30\n"
+    for r in range(8):
+        text += _q8r_epilogue_hscale_store(r, 0, r*8192, 2048, True, 8192) + "\n"
+        text += _q8r_epilogue_hscale_store(r, 1, r*8192+4, 2048, True, 8192) + "\n"
+    text += "\tVZEROUPPER\n\tRET\n"
+    return text
+
+
+# --- Q8Z: ZMM per-block VNNI (K=512) -----------------------------------------
+#
+# Per-block scales on both sides (text-regression-safe), but ZMM VPDPBUSD
+# processes 2 blocks (64B) per instruction and B is repacked scale-stripped
+# (no requant → identical numerics to Q8_0). Per 2-block tick per (r,j):
+#   pxor + vpdp + psubd(comp) + cvt + mulps(sA-vec) + fma(sB-vec)  = 6 ops
+# vs 7 for the YMM per-block kernel at half the MACs — ~1.9× fewer instr/MAC.
+# The 16-lane scale vectors [s(2g)×8 | s(2g+1)×8] are built with
+# VBROADCASTSS + VINSERTF32X8 (Gemma m3row idiom). B compensation is the
+# per-tick VPDPBUSD(B, 0x80) subtracted in the integer domain before cvt.
+
+def gen_quantize_panel8_q8s_k512_zmm() -> str:
+    """quantizePanel8Q8SK512ZmmAVX512: 8 A rows K=512, per-block scale, ZMM layout.
+
+    Same math as quantizePanel8Q8SK512AVX512 (q = round(a*127/amax)+128 per
+    32-block), but the byte layout interleaves each row's block pairs:
+      q[g*512 + r*64 : +32] = block 2g of row r; q[+32 : +64] = block 2g+1.
+    Scales s[b*8 + r] keep the block-major layout (kernel builds lane vecs).
+    """
+
+    def amax_chain(src: str, tmpy: str, tmpx: str, dst: str) -> list:
+        return [
+            f"\tVEXTRACTF32X8 $1, {src}, {tmpy}",
+            f"\tVMAXPS Y{src[1:]}, {tmpy}, Y{src[1:]}",
+            f"\tVEXTRACTF32X4 $1, Y{src[1:]}, X{tmpx}",
+            f"\tVMAXPS X{src[1:]}, X{tmpx}, X{src[1:]}",
+            f"\tVSHUFPD $1, X{src[1:]}, X{src[1:]}, X{tmpx}",
+            f"\tVMAXPS X{src[1:]}, X{tmpx}, X{src[1:]}",
+            f"\tVMOVSHDUP X{src[1:]}, X{tmpx}",
+            f"\tVMAXSS X{src[1:]}, X{tmpx}, X{dst}",
+        ]
+
+    def dual_block(a_off: int, q_off: int, s_off: int) -> str:
+        # rows r (R11) and r+1 (R15); one 32-float block each.
+        am0 = "(R11)" if a_off == 0 else f"{a_off}(R11)"
+        am1 = f"{a_off + 64}(R11)"
+        bm0 = "(R15)" if a_off == 0 else f"{a_off}(R15)"
+        bm1 = f"{a_off + 64}(R15)"
+        qm0 = "(R12)" if q_off == 0 else f"{q_off}(R12)"
+        qm0b = f"{q_off + 16}(R12)"
+        qm1 = f"{q_off + 64}(R12)"   # row r+1 in the [g][8][64] tile
+        qm1b = f"{q_off + 80}(R12)"
+        sm0 = "(R13)" if s_off == 0 else f"{s_off}(R13)"
+        sm1 = f"{s_off + 4}(R13)"
+        lines = [
+            f"\tVMOVUPS {am0}, Z0",
+            f"\tVMOVUPS {am1}, Z1",
+            f"\tVMOVUPS {bm0}, Z8",
+            f"\tVMOVUPS {bm1}, Z9",
+            "\tVANDPS Z12, Z0, Z2",
+            "\tVANDPS Z12, Z1, Z3",
+            "\tVANDPS Z12, Z8, Z10",
+            "\tVANDPS Z12, Z9, Z11",
+            "\tVMAXPS Z2, Z3, Z2",
+            "\tVMAXPS Z10, Z11, Z10",
+        ]
+        lines += amax_chain("Z2", "Y3", "3", "2")
+        lines += amax_chain("Z10", "Y11", "11", "10")
+        lines += [
+            "\tVMULSS X13, X2, X4",
+            "\tVMAXSS X15, X2, X3",
+            "\tVRCP14SS X3, X3, X3",
+            "\tVMULSS X14, X3, X3",
+            "\tVBROADCASTSS X3, Z5",
+            f"\tVMOVSS X4, {sm0}",
+            "\tVMULPS Z5, Z0, Z0",
+            "\tVMULPS Z5, Z1, Z1",
+            "\tVADDPS Z6, Z0, Z0",
+            "\tVADDPS Z6, Z1, Z1",
+            "\tVCVTPS2DQ Z0, Z0",
+            "\tVCVTPS2DQ Z1, Z1",
+            "\tVPMOVDB Z0, X4",
+            "\tVPMOVDB Z1, X7",
+            f"\tVMOVUPS X4, {qm0}",
+            f"\tVMOVUPS X7, {qm0b}",
+            "\tVMULSS X13, X10, X4",
+            "\tVMAXSS X15, X10, X3",
+            "\tVRCP14SS X3, X3, X3",
+            "\tVMULSS X14, X3, X3",
+            "\tVBROADCASTSS X3, Z5",
+            f"\tVMOVSS X4, {sm1}",
+            "\tVMULPS Z5, Z8, Z8",
+            "\tVMULPS Z5, Z9, Z9",
+            "\tVADDPS Z6, Z8, Z8",
+            "\tVADDPS Z6, Z9, Z9",
+            "\tVCVTPS2DQ Z8, Z8",
+            "\tVCVTPS2DQ Z9, Z9",
+            "\tVPMOVDB Z8, X4",
+            "\tVPMOVDB Z9, X7",
+            f"\tVMOVUPS X4, {qm1}",
+            f"\tVMOVUPS X7, {qm1b}",
+        ]
+        return "\n".join(lines)
+
+    text = """// func quantizePanel8Q8SK512ZmmAVX512(q *int8, s *float32, sA *float32, a *float32)
+// 8×512 signed A → +128-biased u8 packs [g][8][64] + block-major f32 scales,
+// plus prearranged per-tick lane vecs sA[g*128 + r*16] = [s(2g,r)×8|s(2g+1,r)×8].
+// Frame: q+0 s+8 sA+16 a+24 → 32
+TEXT ·quantizePanel8Q8SK512ZmmAVX512(SB), NOSPLIT, $32-32
+\tMOVQ q+0(FP), DI
+\tMOVQ s+8(FP), R8
+\tMOVQ a+24(FP), SI
+\tMOVL $0x42fe0000, AX // 127.0f
+\tMOVL AX, 0(SP)
+\tVBROADCASTSS 0(SP), Z14
+\tMOVL $0x34000000, AX // ~1.2e-7f eps
+\tMOVL AX, 4(SP)
+\tVMOVSS 4(SP), X15
+\tMOVL $0x3c010204, AX // 1/127.0f
+\tMOVL AX, 8(SP)
+\tVMOVSS 8(SP), X13
+\tMOVL $0x7fffffff, AX // abs mask
+\tMOVL AX, 12(SP)
+\tVBROADCASTSS 12(SP), Z12
+\tMOVL $0x43000000, AX // 128.0f bias
+\tMOVL AX, 16(SP)
+\tVBROADCASTSS 16(SP), Z6
+
+\tMOVQ $4, R9
+\tMOVQ $0, R14 // pair index 0..3 → row = pair*2
+q8sz_pair_loop:
+\tMOVQ $8, R10 // 16/2 blocks = 8 groups
+\tMOVQ R14, AX
+\tSHLQ $1, AX // r = pair*2
+\tMOVQ AX, BX
+\tSHLQ $11, BX // r*2048 (512 floats)
+\tLEAQ (SI)(BX*1), R11
+\tLEAQ 2048(R11), R15
+\tMOVQ AX, BX
+\tSHLQ $6, BX // r*64 (ZMM tile row stride)
+\tLEAQ (DI)(BX*1), R12
+\tLEAQ (R8)(AX*4), R13
+q8sz_blk_loop:
+\tPREFETCHT0 256(R11)
+\tPREFETCHT0 256(R15)
+"""
+    text += dual_block(0, 0, 0) + "\n"
+    text += dual_block(128, 32, 32) + "\n"
+    text += """\tADDQ $256, R11 // A: 64 floats
+\tADDQ $256, R15
+\tADDQ $512, R12 // q: 1 group tile (8 rows × 64B)
+\tADDQ $64, R13 // s: 2 blocks × 8 floats
+\tDECQ R10
+\tJNZ  q8sz_blk_loop
+\tINCQ R14
+\tDECQ R9
+\tJNZ  q8sz_pair_loop
+
+\t// Prearrange per-tick sA lane vecs: sA[g*512 + r*64] = [s(2g,r)×8 | s(2g+1,r)×8].
+\tMOVQ sA+16(FP), R9
+\tMOVQ $0, R10 // g
+q8sz_vec_g:
+\tMOVQ $0, R11 // r
+q8sz_vec_r:
+\tMOVQ R10, AX
+\tSHLQ $4, AX // g*16
+\tADDQ R11, AX // g*16 + r  (s[(2g)*8 + r])
+\tVBROADCASTSS (R8)(AX*4), Y0
+\tVMOVUPS Y0, (R9)
+\tVBROADCASTSS 32(R8)(AX*4), Y0
+\tVMOVUPS Y0, 32(R9)
+\tADDQ $64, R9
+\tINCQ R11
+\tCMPQ R11, $8
+\tJB   q8sz_vec_r
+\tINCQ R10
+\tCMPQ R10, $8
+\tJB   q8sz_vec_g
+\tVZEROUPPER
+\tRET
+"""
+    return text
+
+
+def _q8z_dual8_tick() -> str:
+    """One 2-block tick: 8 A rows × 2 B, ZMM VPDPBUSD + per-block scale vecs.
+
+    Registers: Z0-15 float accums, Z16/17 B, Z18-25 A, Z26 sB1-vec,
+    Z27/28 comp0/1, Z29 int/const temp, Z30 sA-vec, Z31 sB0-vec.
+    """
+    lines = [
+        "\tPREFETCHT0 256(R15)",
+        "\tPREFETCHT0 256(R14)",
+        "\tPREFETCHT0 1024(SI)",
+        "\tVMOVDQU64 (R15), Z16",
+        "\tVMOVDQU64 (R14), Z17",
+        "\tVPXORD Z27, Z27, Z27",
+        "\tVPBROADCASTD 0(SP), Z29",
+        "\tVPDPBUSD Z16, Z29, Z27",
+        "\tVPXORD Z28, Z28, Z28",
+        "\tVPBROADCASTD 0(SP), Z29",
+        "\tVPDPBUSD Z17, Z29, Z28",
+    ]
+    for i in range(8):
+        lines.append(f"\tVMOVDQU64 {i * 64}(SI), Z{18 + i}")
+    # sB0-vec / sB1-vec
+    lines += [
+        "\tVBROADCASTSS (AX), Y31",
+        "\tVBROADCASTSS 4(AX), Y30",
+        "\tVINSERTF32X8 $1, Y30, Z31, Z31",
+        "\tVBROADCASTSS (BX), Y26",
+        "\tVBROADCASTSS 4(BX), Y30",
+        "\tVINSERTF32X8 $1, Y30, Z26, Z26",
+    ]
+    for r in range(8):
+        lines += [
+            # sA-vec is prearranged in the panel ([g][r][16]: one 64B load).
+            f"\tVMOVDQU64 {r * 64}(R8), Z30",
+            "\tVPXORD Z29, Z29, Z29",
+            f"\tVPDPBUSD Z16, Z{18 + r}, Z29",
+            "\tVPSUBD Z27, Z29, Z29",
+            "\tVCVTDQ2PS Z29, Z29",
+            "\tVMULPS Z30, Z29, Z29",
+            f"\tVFMADD231PS Z31, Z29, Z{r}",
+            "\tVPXORD Z29, Z29, Z29",
+            f"\tVPDPBUSD Z17, Z{18 + r}, Z29",
+            "\tVPSUBD Z28, Z29, Z29",
+            "\tVCVTDQ2PS Z29, Z29",
+            "\tVMULPS Z30, Z29, Z29",
+            f"\tVFMADD231PS Z26, Z29, Z{8 + r}",
+        ]
+    lines += [
+        "\tADDQ $64, R15",
+        "\tADDQ $64, R14",
+        "\tADDQ $8, AX",
+        "\tADDQ $8, BX",
+        "\tADDQ $512, SI",
+        "\tADDQ $512, R8",
+    ]
+    return "\n".join(lines)
+
+
+def _q8z_prologue(row_calc: str) -> str:
+    return f"""\tMOVQ out+0(FP), R11
+\tMOVQ m+64(FP), AX
+\tMOVQ n+72(FP), BX
+{row_calc}\tADDQ BX, AX
+\tSHLQ $2, AX
+\tADDQ AX, R11
+
+\tMOVL $0x80808080, CX
+\tMOVL CX, 0(SP)
+\tVPBROADCASTD 0(SP), Z26
+
+\tMOVQ aQ+8(FP), SI
+\tMOVQ aS+16(FP), R8
+\tMOVQ qB+24(FP), R15
+\tMOVQ qB+24(FP), R14
+\tADDQ off0+48(FP), R15
+\tADDQ off1+56(FP), R14
+\tMOVQ sB0+32(FP), AX
+\tMOVQ sB1+40(FP), BX
+
+""" + "".join(f"\tVXORPS Z{i}, Z{i}, Z{i}\n" for i in range(16)) + "\tMOVQ $8, R10\n"
+
+
+def gen_q8z_dual8_plain_vnni_k512(n_cols: int) -> str:
+    """Q8Z ZMM per-block plain kernel for N=512 (out-proj) / N=1536 (QKV)."""
+    if n_cols == 512:
+        row_calc = "\tSHLQ $9, AX // m*512\n"
+        row_bytes = 2048
+    elif n_cols == 1536:
+        row_calc = "\tLEAQ (AX)(AX*2), AX // m*3\n\tSHLQ $9, AX // m*1536\n"
+        row_bytes = 6144
+    else:
+        raise ValueError(f"unsupported N={n_cols}")
+    text = f"""// func q8zDual8PlainVNNIK512N{n_cols}(out *float32, aQ *int8, aS *float32, qB *int8, sB0, sB1 *float32, off0, off1, m, n int, bn0, bn1 float32)
+// Q8Z ZMM per-block VNNI: A_u8(+128) × B_s8 stripped, per-block scale vecs. N={n_cols} K=512.
+// Frame: out+0 aQ+8 aS+16 qB+24 sB0+32 sB1+40 off0+48 off1+56 m+64 n+72 bn0+80 bn1+84 → 88
+// Stack $16: 0(SP)=0x80 const. Registers: Z0-15 accums, Z16/17 B, Z18-25 A,
+// Z26 sB1-vec, Z27/28 comp, Z29 temp, Z30 sA-vec, Z31 sB0-vec.
+TEXT ·q8zDual8PlainVNNIK512N{n_cols}(SB), NOSPLIT, $16-88
+"""
+    text += _q8z_prologue(row_calc)
+    text += "q8z_pl" + str(n_cols) + "_loop:\n" + _q8z_dual8_tick() + "\n"
+    text += "\tDECQ R10\n\tJNZ  q8z_pl" + str(n_cols) + "_loop\n"
+    for r in range(8):
+        for j in range(2):
+            y = j * 8 + r
+            off = r * row_bytes + j * 4
+            bn = "bn0+80(FP)" if j == 0 else "bn1+84(FP)"
+            text += hsum_z_to_x28(y) + "\n"
+            text += f"\tVADDSS {bn}, X28, X28\n"
+            text += f"\tVMOVSS X28, {off}(R11)\n"
+    text += "\tVZEROUPPER\n\tRET\n"
+    return text
+
+
+def gen_q8z_dual8_relu_vnni_k512_n2048() -> str:
+    """Q8Z ZMM per-block ReLU kernel for N=2048 (FFN up)."""
+    text = """// func q8zDual8ReLUVNNIK512N2048(out *float32, aQ *int8, aS *float32, qB *int8, sB0, sB1 *float32, off0, off1, m, n int, bn0, bn1 float32)
+// Q8Z ZMM per-block VNNI: A_u8(+128) × B_s8 stripped, per-block scale vecs. N=2048 K=512.
+// Frame: out+0 aQ+8 aS+16 qB+24 sB0+32 sB1+40 off0+48 off1+56 m+64 n+72 bn0+80 bn1+84 → 88
+TEXT ·q8zDual8ReLUVNNIK512N2048(SB), NOSPLIT, $16-88
+"""
+    text += _q8z_prologue("\tSHLQ $11, AX // m*2048\n")
+    text += "q8z_relu2048_loop:\n" + _q8z_dual8_tick() + "\n"
+    text += "\tDECQ R10\n\tJNZ  q8z_relu2048_loop\n\tVXORPS X30, X30, X30\n"
+    for r in range(8):
+        for j in range(2):
+            y = j * 8 + r
+            off = r * 8192 + j * 4
+            bn = "bn0+80(FP)" if j == 0 else "bn1+84(FP)"
+            text += hsum_z_to_x28(y) + "\n"
+            text += f"\tVADDSS {bn}, X28, X28\n"
+            text += "\tVMAXSS X30, X28, X28\n"
+            text += f"\tVMOVSS X28, {off}(R11)\n"
+    text += "\tVZEROUPPER\n\tRET\n"
+    return text
+
+
+def gen_quantize_panel8_q8u_k2048_zmm() -> str:
+    """quantizePanel8Q8UZmmK2048AVX512: 8 A rows K=2048 → u8 (0..127), ZMM layout.
+
+    Same math as quantizePanel8Q8UAVX512 (ReLU A ≥ 0, q ∈ [0..127]), but the
+    byte layout interleaves each row's block pairs for ZMM VPDPBUSD:
+      q[g*512 + r*64 : +32] = block 2g of row r; q[+32 : +64] = block 2g+1.
+    Scales keep the block-major layout s[b*8 + r].
+    """
+
+    def dual_block(a_off: int, q_off: int, s_off: int) -> str:
+        am0 = "(R11)" if a_off == 0 else f"{a_off}(R11)"
+        am1 = f"{a_off + 64}(R11)"
+        bm0 = "(R15)" if a_off == 0 else f"{a_off}(R15)"
+        bm1 = f"{a_off + 64}(R15)"
+        qm0 = "(R12)" if q_off == 0 else f"{q_off}(R12)"
+        qm0b = f"{q_off + 16}(R12)"
+        qm1 = f"{q_off + 64}(R12)"
+        qm1b = f"{q_off + 80}(R12)"
+        sm0 = "(R13)" if s_off == 0 else f"{s_off}(R13)"
+        sm1 = f"{s_off + 4}(R13)"
+        lines = [
+            f"\tVMOVUPS {am0}, Z0",
+            f"\tVMOVUPS {am1}, Z1",
+            f"\tVMOVUPS {bm0}, Z8",
+            f"\tVMOVUPS {bm1}, Z9",
+            "\tVMAXPS Z0, Z1, Z2",
+            "\tVEXTRACTF32X8 $1, Z2, Y3",
+            "\tVMAXPS Y2, Y3, Y2",
+            "\tVEXTRACTF32X4 $1, Y2, X3",
+            "\tVMAXPS X2, X3, X2",
+            "\tVSHUFPD $1, X2, X2, X3",
+            "\tVMAXPS X2, X3, X2",
+            "\tVMOVSHDUP X2, X3",
+            "\tVMAXSS X2, X3, X2",
+            "\tVMAXPS Z8, Z9, Z10",
+            "\tVEXTRACTF32X8 $1, Z10, Y11",
+            "\tVMAXPS Y10, Y11, Y10",
+            "\tVEXTRACTF32X4 $1, Y10, X11",
+            "\tVMAXPS X10, X11, X10",
+            "\tVSHUFPD $1, X10, X10, X11",
+            "\tVMAXPS X10, X11, X10",
+            "\tVMOVSHDUP X10, X11",
+            "\tVMAXSS X10, X11, X10",
+            "\tVMULSS X13, X2, X4",
+            "\tVMAXSS X15, X2, X3",
+            "\tVRCP14SS X3, X3, X3",
+            "\tVMULSS X14, X3, X3",
+            "\tVBROADCASTSS X3, Z5",
+            f"\tVMOVSS X4, {sm0}",
+            "\tVMULPS Z5, Z0, Z0",
+            "\tVMULPS Z5, Z1, Z1",
+            "\tVCVTPS2DQ Z0, Z0",
+            "\tVCVTPS2DQ Z1, Z1",
+            "\tVPMOVDB Z0, X6",
+            "\tVPMOVDB Z1, X7",
+            f"\tVMOVUPS X6, {qm0}",
+            f"\tVMOVUPS X7, {qm0b}",
+            "\tVMULSS X13, X10, X4",
+            "\tVMAXSS X15, X10, X3",
+            "\tVRCP14SS X3, X3, X3",
+            "\tVMULSS X14, X3, X3",
+            "\tVBROADCASTSS X3, Z5",
+            f"\tVMOVSS X4, {sm1}",
+            "\tVMULPS Z5, Z8, Z8",
+            "\tVMULPS Z5, Z9, Z9",
+            "\tVCVTPS2DQ Z8, Z8",
+            "\tVCVTPS2DQ Z9, Z9",
+            "\tVPMOVDB Z8, X6",
+            "\tVPMOVDB Z9, X7",
+            f"\tVMOVUPS X6, {qm1}",
+            f"\tVMOVUPS X7, {qm1b}",
+        ]
+        return "\n".join(lines)
+
+    text = """// func quantizePanel8Q8UZmmK2048AVX512(q *int8, s *float32, a *float32)
+// 8×2048 non-neg A → u8 packs [g][8][64] + block-major f32 scales.
+// Frame: q+0 s+8 a+16 → 24
+TEXT ·quantizePanel8Q8UZmmK2048AVX512(SB), NOSPLIT, $16-24
+\tMOVQ q+0(FP), DI
+\tMOVQ s+8(FP), R8
+\tMOVQ a+16(FP), SI
+\tMOVL $0x42fe0000, AX // 127.0f
+\tMOVL AX, 0(SP)
+\tVBROADCASTSS 0(SP), Z14
+\tMOVL $0x34000000, AX // ~1.2e-7f eps
+\tMOVL AX, 4(SP)
+\tVMOVSS 4(SP), X15
+\tMOVL $0x3c010204, AX // 1/127.0f
+\tMOVL AX, 8(SP)
+\tVMOVSS 8(SP), X13
+
+\tMOVQ $4, R9
+\tMOVQ $0, R14 // pair index 0..3 → row = pair*2
+q8uz_pair_loop:
+\tMOVQ $32, R10 // 64/2 blocks = 32 groups
+\tMOVQ R14, AX
+\tSHLQ $1, AX // r = pair*2
+\tMOVQ AX, BX
+\tSHLQ $13, BX // r*8192
+\tLEAQ (SI)(BX*1), R11
+\tLEAQ 8192(R11), R15
+\tMOVQ AX, BX
+\tSHLQ $6, BX // r*64 (ZMM tile row stride)
+\tLEAQ (DI)(BX*1), R12
+\tLEAQ (R8)(AX*4), R13
+q8uz_blk_loop:
+\tPREFETCHT0 256(R11)
+\tPREFETCHT0 256(R15)
+"""
+    text += dual_block(0, 0, 0) + "\n"
+    text += dual_block(128, 32, 32) + "\n"
+    text += """\tADDQ $256, R11 // A: 64 floats
+\tADDQ $256, R15
+\tADDQ $512, R12 // q: 1 group tile (8 rows × 64B)
+\tADDQ $64, R13 // s: 2 blocks × 8 floats
+\tDECQ R10
+\tJNZ  q8uz_blk_loop
+\tINCQ R14
+\tDECQ R9
+\tJNZ  q8uz_pair_loop
+\tVZEROUPPER
+\tRET
+"""
+    return text
+
+
+def _q8z_accum_tick() -> str:
+    """One 2-block tick of the K=2048 accum kernel: no compensation (A is u8).
+
+    Same register map as _q8z_dual8_tick minus the comp registers.
+    """
+    lines = [
+        "\tPREFETCHT0 256(R15)",
+        "\tPREFETCHT0 256(R14)",
+        "\tPREFETCHT0 1024(SI)",
+        "\tVMOVDQU64 (R15), Z16",
+        "\tVMOVDQU64 (R14), Z17",
+    ]
+    for i in range(8):
+        lines.append(f"\tVMOVDQU64 {i * 64}(SI), Z{18 + i}")
+    lines += [
+        "\tVBROADCASTSS (AX), Y31",
+        "\tVBROADCASTSS 4(AX), Y30",
+        "\tVINSERTF32X8 $1, Y30, Z31, Z31",
+        "\tVBROADCASTSS (BX), Y26",
+        "\tVBROADCASTSS 4(BX), Y30",
+        "\tVINSERTF32X8 $1, Y30, Z26, Z26",
+    ]
+    for r in range(8):
+        lines += [
+            f"\tVBROADCASTSS {r * 4}(R8), Y30",
+            f"\tVBROADCASTSS {32 + r * 4}(R8), Y29",
+            "\tVINSERTF32X8 $1, Y29, Z30, Z30",
+            "\tVPXORD Z29, Z29, Z29",
+            f"\tVPDPBUSD Z16, Z{18 + r}, Z29",
+            "\tVCVTDQ2PS Z29, Z29",
+            "\tVMULPS Z30, Z29, Z29",
+            f"\tVFMADD231PS Z31, Z29, Z{r}",
+            "\tVPXORD Z29, Z29, Z29",
+            f"\tVPDPBUSD Z17, Z{18 + r}, Z29",
+            "\tVCVTDQ2PS Z29, Z29",
+            "\tVMULPS Z30, Z29, Z29",
+            f"\tVFMADD231PS Z26, Z29, Z{8 + r}",
+        ]
+    lines += [
+        "\tADDQ $64, R15",
+        "\tADDQ $64, R14",
+        "\tADDQ $8, AX",
+        "\tADDQ $8, BX",
+        "\tADDQ $512, SI",
+        "\tADDQ $64, R8",
+    ]
+    return "\n".join(lines)
+
+
+def gen_q8z_row_dual_vnni_k512() -> str:
+    """q8zRowDualVNNIK512: ONE A row × 2 B rows (n, n+1) from a pre-offset panel.
+
+    Tail path for M%8==1: writes out[0], out[1] directly (cols n, n+1 of one
+    row). Same per-tick math as the dual8 kernel (signed A, +128 comp) with a
+    single accumulator pair Z0 (B0), Z1 (B1). aQ is pre-offset to the row
+    (panel base + r*64); the [g][8][64] tile stride (512B) makes per-tick A
+    loads land on group g of that row.
+    """
+    label = "q8z_row_loop"
+    lines = [f"{label}:"]
+    lines += [
+        "\tPREFETCHT0 256(R15)",
+        "\tPREFETCHT0 256(R14)",
+        "\tPREFETCHT0 512(SI)",
+        "\tVMOVDQU64 (R15), Z16",
+        "\tVMOVDQU64 (R14), Z17",
+        "\tVPXORD Z27, Z27, Z27",
+        "\tVPBROADCASTD 0(SP), Z29",
+        "\tVPDPBUSD Z16, Z29, Z27",
+        "\tVPXORD Z28, Z28, Z28",
+        "\tVPBROADCASTD 0(SP), Z29",
+        "\tVPDPBUSD Z17, Z29, Z28",
+        "\tVMOVDQU64 (SI), Z18",
+        "\tVBROADCASTSS (AX), Y31",
+        "\tVBROADCASTSS 4(AX), Y30",
+        "\tVINSERTF32X8 $1, Y30, Z31, Z31",
+        "\tVBROADCASTSS (BX), Y26",
+        "\tVBROADCASTSS 4(BX), Y30",
+        "\tVINSERTF32X8 $1, Y30, Z26, Z26",
+        # row's prearranged sA lane vec for this tick → Z30 (one 64B load)
+        "\tVMOVDQU64 (R8), Z30",
+        # B0: pxor + vpdp + psubd(comp) + cvt + mulps(sA) + fma(sB0)
+        "\tVPXORD Z29, Z29, Z29",
+        "\tVPDPBUSD Z16, Z18, Z29",
+        "\tVPSUBD Z27, Z29, Z29",
+        "\tVCVTDQ2PS Z29, Z29",
+        "\tVMULPS Z30, Z29, Z29",
+        "\tVFMADD231PS Z31, Z29, Z0",
+        # B1
+        "\tVPXORD Z29, Z29, Z29",
+        "\tVPDPBUSD Z17, Z18, Z29",
+        "\tVPSUBD Z28, Z29, Z29",
+        "\tVCVTDQ2PS Z29, Z29",
+        "\tVMULPS Z30, Z29, Z29",
+        "\tVFMADD231PS Z26, Z29, Z1",
+        "\tADDQ $64, R15",
+        "\tADDQ $64, R14",
+        "\tADDQ $8, AX",
+        "\tADDQ $8, BX",
+        "\tADDQ $512, SI",
+        "\tADDQ $512, R8",
+        "\tDECQ R10",
+        f"\tJNZ  {label}",
+    ]
+    text = """// func q8zRowDualVNNIK512(out *float32, aQ *int8, aS *float32, qB *byte, sB0, sB1 *float32, off0, off1 int, bn0, bn1 float32, relu bool)
+// Q8Z 1-row × 2-B VNNI tail kernel (signed A, +128 comp). Writes out[0..1].
+// Frame: out+0 aQ+8 aS+16 qB+24 sB0+32 sB1+40 off0+48 off1+56 bn0+64 bn1+68 relu+72 → 73
+// Stack $16: 0(SP)=0x80 const. Registers: Z0/Z1 accums, Z16/17 B, Z18 A,
+// Z26 sB1-vec, Z27/28 comp, Z29 temp, Z30 sA-vec, Z31 sB0-vec.
+TEXT ·q8zRowDualVNNIK512(SB), NOSPLIT, $16-73
+\tMOVQ out+0(FP), R11
+
+\tMOVL $0x80808080, CX
+\tMOVL CX, 0(SP)
+
+\tMOVQ aQ+8(FP), SI
+\tMOVQ aS+16(FP), R8
+\tMOVQ qB+24(FP), R15
+\tMOVQ qB+24(FP), R14
+\tADDQ off0+48(FP), R15
+\tADDQ off1+56(FP), R14
+\tMOVQ sB0+32(FP), AX
+\tMOVQ sB1+40(FP), BX
+
+\tVXORPS Z0, Z0, Z0
+\tVXORPS Z1, Z1, Z1
+\tMOVQ $8, R10
+"""
+    text += "\n".join(lines) + "\n"
+    # epilogue: hsum Z0 + bn0 (+relu) → store (R11); same for Z1 at 4(R11).
+    text += hsum_z_to_x28(0) + "\n"
+    text += "\tVADDSS bn0+64(FP), X28, X28\n"
+    text += "\tMOVB relu+72(FP), CL\n\tTESTB CL, CL\n\tJZ q8z_row_norelu0\n"
+    text += "\tVXORPS X30, X30, X30\n\tVMAXSS X30, X28, X28\nq8z_row_norelu0:\n"
+    text += "\tVMOVSS X28, (R11)\n"
+    text += hsum_z_to_x28(1) + "\n"
+    text += "\tVADDSS bn1+68(FP), X28, X28\n"
+    text += "\tMOVB relu+72(FP), CL\n\tTESTB CL, CL\n\tJZ q8z_row_norelu1\n"
+    text += "\tVXORPS X30, X30, X30\n\tVMAXSS X30, X28, X28\nq8z_row_norelu1:\n"
+    text += "\tVMOVSS X28, 4(R11)\n"
+    text += "\tVZEROUPPER\n\tRET\n"
+    return text
+
+
+def gen_q8z_dual8_accum_vnni_k2048_n512() -> str:
+    """Q8Z ZMM per-block accum kernel for FFN down (N=512 K=2048, ReLU A u8).
+
+    32 two-block ticks; per (r,j): pxor + vpdp + cvt + mulps(sA-vec) +
+    fma(sB-vec) — no compensation (A is unsigned 0..127). Epilogue is the
+    FFN-down residual accumulate: out += hsum + bias.
+    """
+    text = """// func q8zDual8AccumVNNIK2048N512(out *float32, aQ *int8, aS *float32, qB *byte, sB0, sB1 *float32, off0, off1, m, n int, bn0, bn1 float32)
+// Q8Z ZMM per-block VNNI, residual accum. N=512 K=2048. A u8 0..127 (no comp).
+// Frame: out+0 aQ+8 aS+16 qB+24 sB0+32 sB1+40 off0+48 off1+56 m+64 n+72 bn0+80 bn1+84 → 88
+TEXT ·q8zDual8AccumVNNIK2048N512(SB), NOSPLIT, $0-88
+\tMOVQ out+0(FP), R11
+\tMOVQ m+64(FP), AX
+\tMOVQ n+72(FP), BX
+\tSHLQ $9, AX // m*512
+\tADDQ BX, AX
+\tSHLQ $2, AX
+\tADDQ AX, R11
+
+\tMOVQ aQ+8(FP), SI
+\tMOVQ aS+16(FP), R8
+\tMOVQ qB+24(FP), R15
+\tMOVQ qB+24(FP), R14
+\tADDQ off0+48(FP), R15
+\tADDQ off1+56(FP), R14
+\tMOVQ sB0+32(FP), AX
+\tMOVQ sB1+40(FP), BX
+
+"""
+    for i in range(16):
+        text += f"\tVXORPS Z{i}, Z{i}, Z{i}\n"
+    text += "\tMOVQ $32, R10\nq8z_acc2048_loop:\n"
+    text += _q8z_accum_tick() + "\n"
+    text += "\tDECQ R10\n\tJNZ  q8z_acc2048_loop\n"
+    for r in range(8):
+        for j in range(2):
+            y = j * 8 + r
+            off = r * 2048 + j * 4
+            bn = "bn0+80(FP)" if j == 0 else "bn1+84(FP)"
+            text += hsum_z_to_x28(y) + "\n"
+            text += f"\tVADDSS {bn}, X28, X28\n"
+            text += f"\tVADDSS {off}(R11), X28, X28\n"
+            text += f"\tVMOVSS X28, {off}(R11)\n"
+    text += "\tVZEROUPPER\n\tRET\n"
+    return text
+
+
+def gen_q8r_dual8_logits_vnni_k512() -> str:
+    """Q8R CTC stage-1: 8A×2B int-accumulate → 16 approx logits to vals.
+
+    Same loop/epilogue math as the Q8R GEMM kernels (per-row A scale, sum128
+    compensation), but stores [row r][col j] at vals[r*8+j*4] for the Go
+    candidate-pruning stage 2. Precision here only affects the candidate set,
+    never the final (exact) argmax.
+    """
+    text = """// func q8rDual8LogitsVNNIK512(vals *float32, aQ *int8, aS *float32, qB *byte, sB0, sB1 *float32, sumB0, sumB1 *float32, off0, off1, m, n int, bn0, bn1 float32)
+// Q8R CTC stage 1: per-row-scale int-accumulate VNNI → 16 approx logits.
+// vals layout: [row r][col j] at vals[r*8 + j*4] (r=0..7, j=0..1). K=512.
+// Frame: vals+0 aQ+8 aS+16 qB+24 sB0+32 sB1+40 sumB0+48 sumB1+56 off0+64 off1+72 m+80 n+88 bn0+96 bn1+100 → 104
+TEXT ·q8rDual8LogitsVNNIK512(SB), NOSPLIT, $0-104
+\tMOVQ vals+0(FP), R11
+\tMOVQ aQ+8(FP), SI
+\tMOVQ aS+16(FP), R8
+\tMOVQ qB+24(FP), R15
+\tMOVQ qB+24(FP), R14
+\tADDQ off0+64(FP), R15
+\tADDQ off1+72(FP), R14
+\tMOVQ sumB0+48(FP), R12
+\tMOVQ sumB1+56(FP), R13
+\tMOVQ sB0+32(FP), AX
+\tMOVQ sB1+40(FP), BX
+
+"""
+    for i in range(16):
+        text += f"\tVPXORD Y{i}, Y{i}, Y{i}\n"
+    text += "\tMOVQ $16, R10\n"
+    text += _q8r_dual8_intaccum_loop("q8r_lg_loop") + "\n"
+    for r in range(8):
+        text += _q8r_epilogue_hscale_store(r, 0, r*8, 0, False, 0) + "\n"
+        text += _q8r_epilogue_hscale_store(r, 1, r*8+4, 0, False, 0) + "\n"
+    text += "\tVZEROUPPER\n\tRET\n"
+    return text
+
+
+def gen_quantize_panel4_q8s_k512_zmm() -> str:
+    """quantizePanel4Q8SK512ZmmAVX512: 4 A rows K=512, per-block scale, ZMM layout.
+
+    4-row variant of quantizePanel8Q8SK512ZmmAVX512 for the 4x4-tile kernels:
+      q[g*256 + r*64 : +32] = block 2g of row r; q[+32 : +64] = block 2g+1
+      s[b*4 + r] block-major; sA[g*64 + r*16] = [s(2g,r)×8 | s(2g+1,r)×8].
+    """
+
+    def amax_chain(src: str, tmpy: str, tmpx: str, dst: str) -> list:
+        return [
+            f"\tVEXTRACTF32X8 $1, {src}, {tmpy}",
+            f"\tVMAXPS Y{src[1:]}, {tmpy}, Y{src[1:]}",
+            f"\tVEXTRACTF32X4 $1, Y{src[1:]}, X{tmpx}",
+            f"\tVMAXPS X{src[1:]}, X{tmpx}, X{src[1:]}",
+            f"\tVSHUFPD $1, X{src[1:]}, X{src[1:]}, X{tmpx}",
+            f"\tVMAXPS X{src[1:]}, X{tmpx}, X{src[1:]}",
+            f"\tVMOVSHDUP X{src[1:]}, X{tmpx}",
+            f"\tVMAXSS X{src[1:]}, X{tmpx}, X{dst}",
+        ]
+
+    def dual_block(a_off: int, q_off: int, s_off: int) -> str:
+        am0 = "(R11)" if a_off == 0 else f"{a_off}(R11)"
+        am1 = f"{a_off + 64}(R11)"
+        bm0 = "(R15)" if a_off == 0 else f"{a_off}(R15)"
+        bm1 = f"{a_off + 64}(R15)"
+        qm0 = "(R12)" if q_off == 0 else f"{q_off}(R12)"
+        qm0b = f"{q_off + 16}(R12)"
+        qm1 = f"{q_off + 64}(R12)"
+        qm1b = f"{q_off + 80}(R12)"
+        sm0 = "(R13)" if s_off == 0 else f"{s_off}(R13)"
+        sm1 = f"{s_off + 4}(R13)"
+        lines = [
+            f"\tVMOVUPS {am0}, Z0",
+            f"\tVMOVUPS {am1}, Z1",
+            f"\tVMOVUPS {bm0}, Z8",
+            f"\tVMOVUPS {bm1}, Z9",
+            "\tVANDPS Z12, Z0, Z2",
+            "\tVANDPS Z12, Z1, Z3",
+            "\tVANDPS Z12, Z8, Z10",
+            "\tVANDPS Z12, Z9, Z11",
+            "\tVMAXPS Z2, Z3, Z2",
+            "\tVMAXPS Z10, Z11, Z10",
+        ]
+        lines += amax_chain("Z2", "Y3", "3", "2")
+        lines += amax_chain("Z10", "Y11", "11", "10")
+        lines += [
+            "\tVMULSS X13, X2, X4",
+            "\tVMAXSS X15, X2, X3",
+            "\tVRCP14SS X3, X3, X3",
+            "\tVMULSS X14, X3, X3",
+            "\tVBROADCASTSS X3, Z5",
+            f"\tVMOVSS X4, {sm0}",
+            "\tVMULPS Z5, Z0, Z0",
+            "\tVMULPS Z5, Z1, Z1",
+            "\tVADDPS Z6, Z0, Z0",
+            "\tVADDPS Z6, Z1, Z1",
+            "\tVCVTPS2DQ Z0, Z0",
+            "\tVCVTPS2DQ Z1, Z1",
+            "\tVPMOVDB Z0, X4",
+            "\tVPMOVDB Z1, X7",
+            f"\tVMOVUPS X4, {qm0}",
+            f"\tVMOVUPS X7, {qm0b}",
+            "\tVMULSS X13, X10, X4",
+            "\tVMAXSS X15, X10, X3",
+            "\tVRCP14SS X3, X3, X3",
+            "\tVMULSS X14, X3, X3",
+            "\tVBROADCASTSS X3, Z5",
+            f"\tVMOVSS X4, {sm1}",
+            "\tVMULPS Z5, Z8, Z8",
+            "\tVMULPS Z5, Z9, Z9",
+            "\tVADDPS Z6, Z8, Z8",
+            "\tVADDPS Z6, Z9, Z9",
+            "\tVCVTPS2DQ Z8, Z8",
+            "\tVCVTPS2DQ Z9, Z9",
+            "\tVPMOVDB Z8, X4",
+            "\tVPMOVDB Z9, X7",
+            f"\tVMOVUPS X4, {qm1}",
+            f"\tVMOVUPS X7, {qm1b}",
+        ]
+        return "\n".join(lines)
+
+    text = """// func quantizePanel4Q8SK512ZmmAVX512(q *int8, s *float32, sA *float32, a *float32)
+// 4×512 signed A → +128-biased u8 packs [g][4][64] + block-major f32 scales
+// + prearranged per-tick lane vecs sA[g*64 + r*16].
+// Frame: q+0 s+8 sA+16 a+24 → 32
+TEXT ·quantizePanel4Q8SK512ZmmAVX512(SB), NOSPLIT, $32-32
+\tMOVQ q+0(FP), DI
+\tMOVQ s+8(FP), R8
+\tMOVQ a+24(FP), SI
+\tMOVL $0x42fe0000, AX // 127.0f
+\tMOVL AX, 0(SP)
+\tVBROADCASTSS 0(SP), Z14
+\tMOVL $0x34000000, AX // ~1.2e-7f eps
+\tMOVL AX, 4(SP)
+\tVMOVSS 4(SP), X15
+\tMOVL $0x3c010204, AX // 1/127.0f
+\tMOVL AX, 8(SP)
+\tVMOVSS 8(SP), X13
+\tMOVL $0x7fffffff, AX // abs mask
+\tMOVL AX, 12(SP)
+\tVBROADCASTSS 12(SP), Z12
+\tMOVL $0x43000000, AX // 128.0f bias
+\tMOVL AX, 16(SP)
+\tVBROADCASTSS 16(SP), Z6
+
+\tMOVQ $2, R9
+\tMOVQ $0, R14 // pair index 0..1 → row = pair*2
+q8s4_pair_loop:
+\tMOVQ $8, R10 // 8 groups
+\tMOVQ R14, AX
+\tSHLQ $1, AX // r = pair*2
+\tMOVQ AX, BX
+\tSHLQ $11, BX // r*2048
+\tLEAQ (SI)(BX*1), R11
+\tLEAQ 2048(R11), R15
+\tMOVQ AX, BX
+\tSHLQ $6, BX // r*64
+\tLEAQ (DI)(BX*1), R12
+\tLEAQ (R8)(AX*4), R13
+q8s4_blk_loop:
+\tPREFETCHT0 256(R11)
+\tPREFETCHT0 256(R15)
+"""
+    text += dual_block(0, 0, 0) + "\n"
+    text += dual_block(128, 32, 16) + "\n"
+    text += """\tADDQ $256, R11 // A: 64 floats
+\tADDQ $256, R15
+\tADDQ $256, R12 // q: 1 group tile (4 rows × 64B)
+\tADDQ $32, R13 // s: 2 blocks × 4 floats (32B)
+\tDECQ R10
+\tJNZ  q8s4_blk_loop
+\tINCQ R14
+\tDECQ R9
+\tJNZ  q8s4_pair_loop
+
+\t// Prearrange per-tick sA lane vecs: sA[g*256 + r*64] = [s(2g,r)×8 | s(2g+1,r)×8].
+\tMOVQ sA+16(FP), R9
+\tMOVQ $0, R10 // g
+q8s4_vec_g:
+\tMOVQ $0, R11 // r
+q8s4_vec_r:
+\tMOVQ R10, AX
+\tSHLQ $3, AX // g*8 (4 rows per block)
+\tADDQ R11, AX // g*8 + r  (s[(2g)*4 + r])
+\tVBROADCASTSS (R8)(AX*4), Y0
+\tVMOVUPS Y0, (R9)
+\tVBROADCASTSS 16(R8)(AX*4), Y0
+\tVMOVUPS Y0, 32(R9)
+\tADDQ $64, R9
+\tINCQ R11
+\tCMPQ R11, $4
+\tJB   q8s4_vec_r
+\tINCQ R10
+\tCMPQ R10, $8
+\tJB   q8s4_vec_g
+\tVZEROUPPER
+\tRET
+"""
+    return text
+
+
+def _q8z4x4_tick() -> str:
+    """One 2-block tick of the 4-row × 4-col Q8Z kernel.
+
+    Registers: Z0-15 accums (Z[c*4+r]), Z16-19 B0-B3, Z20-23 A rows,
+    Z24-27 comp0-3, Z28 0x80 const, Z29 int temp, Z30 sA-vec, Z31 sB-vec.
+    sB vecs are prebuilt per call into the stack buffer (R20 advances 64/tick;
+    col c at offset c*512). c-outer: sB_c loaded once per c (Z31), sA_r per
+    (r,c). Per (r,c): pxor+vpdp+psubd+cvt+mulps+fma — the same per-block-scale
+    sequence as the dual8 kernel, so accum lanes are bit-identical.
+    """
+    lines = [
+        "\tPREFETCHT0 256(R15)",
+        "\tPREFETCHT0 256(R14)",
+        "\tPREFETCHT0 256(R13)",
+        "\tPREFETCHT0 256(R12)",
+        "\tPREFETCHT0 512(SI)",
+        "\tVMOVDQU64 (R15), Z16",
+        "\tVMOVDQU64 (R14), Z17",
+        "\tVMOVDQU64 (R13), Z18",
+        "\tVMOVDQU64 (R12), Z19",
+    ]
+    for i in range(4):
+        lines.append(f"\tVMOVDQU64 {i * 64}(SI), Z{20 + i}")
+    for c in range(4):
+        lines += [
+            f"\tVPXORD Z{24 + c}, Z{24 + c}, Z{24 + c}",
+            f"\tVPDPBUSD Z{16 + c}, Z28, Z{24 + c}",
+        ]
+    for c, sreg in enumerate(["AX", "BX", "CX", "DX"]):
+        lines += [
+            f"\tVBROADCASTSS ({sreg}), Y31",
+            f"\tVBROADCASTSS 4({sreg}), Y30",
+            "\tVINSERTF32X8 $1, Y30, Z31, Z31",
+        ]
+        for r in range(4):
+            lines += [
+                f"\tVMOVDQU64 {r * 64}(R8), Z30",  # sA_r vec
+                "\tVPXORD Z29, Z29, Z29",
+                f"\tVPDPBUSD Z{16 + c}, Z{20 + r}, Z29",
+                f"\tVPSUBD Z{24 + c}, Z29, Z29",
+                "\tVCVTDQ2PS Z29, Z29",
+                "\tVMULPS Z30, Z29, Z29",
+                f"\tVFMADD231PS Z31, Z29, Z{c * 4 + r}",
+            ]
+    lines += [
+        "\tADDQ $64, R15",
+        "\tADDQ $64, R14",
+        "\tADDQ $64, R13",
+        "\tADDQ $64, R12",
+        "\tADDQ $8, AX",
+        "\tADDQ $8, BX",
+        "\tADDQ $8, CX",
+        "\tADDQ $8, DX",
+        "\tADDQ $256, SI",
+        "\tADDQ $256, R8",
+    ]
+    return "\n".join(lines)
+
+
+def _q8z4x4_prologue() -> str:
+    """Pointer setup + per-call sB-vec build into the stack buffer.
+
+    AX..DX hold the 4 cols' scale pointers (advance 8B/tick) for the inline
+    per-tick sB-vec builds (Z31).
+    """
+    text = """\tMOVQ aQ+8(FP), SI
+\tMOVQ aS+16(FP), R8
+\tMOVQ qB+24(FP), R15
+\tMOVQ qB+24(FP), R14
+\tMOVQ qB+24(FP), R13
+\tMOVQ qB+24(FP), R12
+\tADDQ off0+64(FP), R15
+\tADDQ off1+72(FP), R14
+\tADDQ off2+80(FP), R13
+\tADDQ off3+88(FP), R12
+\tMOVQ sB0+32(FP), AX
+\tMOVQ sB1+40(FP), BX
+\tMOVQ sB2+48(FP), CX
+\tMOVQ sB3+56(FP), DX
+
+\tMOVL $0x80808080, R9
+\tMOVL R9, 0(SP)
+\tVPBROADCASTD 0(SP), Z28
+
+"""
+    for i in range(16):
+        text += f"\tVXORPS Z{i}, Z{i}, Z{i}\n"
+    text += "\tMOVQ $8, R10\n"
+    return text
+
+
+def gen_q8z_dual4x4_vnni_k512(n_cols: int) -> str:
+    """Q8Z 4-row × 4-col ZMM per-block kernel for N=512/1536/2048."""
+    if n_cols == 512:
+        row_calc = "\tSHLQ $9, AX // m*512\n"
+        row_bytes = 2048
+    elif n_cols == 1536:
+        row_calc = "\tLEAQ (AX)(AX*2), AX // m*3\n\tSHLQ $9, AX // m*1536\n"
+        row_bytes = 6144
+    elif n_cols == 2048:
+        row_calc = "\tSHLQ $11, AX // m*2048\n"
+        row_bytes = 8192
+    else:
+        raise ValueError(f"unsupported N={n_cols}")
+    text = f"""// func q8zDual4x4VNNIK512N{n_cols}(out *float32, aQ *int8, aS *float32, qB *byte, sB0, sB1, sB2, sB3 *float32, off0, off1, off2, off3, m, n int, bn0, bn1, bn2, bn3 float32)
+// Q8Z 4×4-tile ZMM per-block VNNI: A_u8(+128) × B_s8 stripped. N={n_cols} K=512.
+// Writes rows m..m+3, cols n..n+3. Bit-identical accum lanes to q8zDual8*.
+// Frame: out+0 aQ+8 aS+16 qB+24 sB0+32 sB1+40 sB2+48 sB3+56 off0+64 off1+72 off2+80 off3+88 m+96 n+104 bn0+112 bn1+116 bn2+120 bn3+124 → 128
+// Stack $8: 0(SP)=0x80 const. inline per-tick sB builds (AX-DX scale ptrs).
+// Registers: Z0-15 accums (Z[c*4+r]), Z16-19 B, Z20-23 A, Z24-27 comp,
+// Z28 0x80 const, Z29 temp, Z30 sA-vec, Z31 sB-vec.
+TEXT ·q8zDual4x4VNNIK512N{n_cols}(SB), NOSPLIT, $8-128
+\tMOVQ out+0(FP), R11
+\tMOVQ m+96(FP), AX
+\tMOVQ n+104(FP), BX
+{row_calc}\tADDQ BX, AX
+\tSHLQ $2, AX
+\tADDQ AX, R11
+
+"""
+    text += _q8z4x4_prologue()
+    text += "q8z4x_pl" + str(n_cols) + "_loop:\n" + _q8z4x4_tick() + "\n"
+    text += "\tDECQ R10\n\tJNZ  q8z4x_pl" + str(n_cols) + "_loop\n"
+    for r in range(4):
+        for c in range(4):
+            y = c * 4 + r
+            off = r * row_bytes + c * 4
+            bn = f"bn{c}+{112 + c * 4}(FP)"
+            text += hsum_z_to_x28(y) + "\n"
+            text += f"\tVADDSS {bn}, X28, X28\n"
+            if n_cols == 2048:
+                text += "\tVXORPS X30, X30, X30\n\tVMAXSS X30, X28, X28\n"
+            text += f"\tVMOVSS X28, {off}(R11)\n"
+    text += "\tVZEROUPPER\n\tRET\n"
+    return text
+
+
 def main() -> None:
     out = Path("corelib/embedding/tensor/avx512_kernels_amd64.s")
     parts = [
         "//go:build amd64\n\n#include \"textflag.h\"\n\n",
+        gen_multidot4_generic16(),
+        "\n",
         "// AUTO-generated by scripts/gen_avx512_kernels.py — SenseVoice AVX-512 hot kernels.\n\n",
         gen_multidot8_triple_k512(),
         "\n",
@@ -2732,6 +4371,50 @@ def main() -> None:
         gen_quantize_panel8_q8u_k2048(),
         "\n",
         gen_q8u_q8s_dual8_accum_vnni(),
+        "\n",
+        gen_quantize_panel8_q8s_k512(),
+        "\n",
+        gen_q8u_q8s_dual8_accum_vnni_k512(),
+        "\n",
+        gen_q8u_q8s_dual8_plain_vnni_k512_n1536(),
+        "\n",
+        gen_q8u_q8s_dual8_relu_vnni_k512_n2048(),
+        "\n",
+        gen_q8u_q8s_dual8_argmax_vnni_k512(),
+        "\n",
+        gen_q8u_q8s_dual8_logits_vnni_k512(),
+        "\n",
+        gen_q8r_dual8_logits_vnni_k512(),
+        "\n",
+        gen_quantize_panel8_q8srow_k512(),
+        "\n",
+        gen_q8r_dual8_plain_vnni_k512(512),
+        "\n",
+        gen_q8r_dual8_plain_vnni_k512(1536),
+        "\n",
+        gen_q8r_dual8_relu_vnni_k512_n2048(),
+        "\n",
+        gen_quantize_panel8_q8s_k512_zmm(),
+        "\n",
+        gen_q8z_dual8_plain_vnni_k512(512),
+        "\n",
+        gen_q8z_dual8_plain_vnni_k512(1536),
+        "\n",
+        gen_q8z_dual8_relu_vnni_k512_n2048(),
+        "\n",
+        gen_quantize_panel4_q8s_k512_zmm(),
+        "\n",
+        gen_q8z_dual4x4_vnni_k512(512),
+        "\n",
+        gen_q8z_dual4x4_vnni_k512(1536),
+        "\n",
+        gen_q8z_dual4x4_vnni_k512(2048),
+        "\n",
+        gen_q8z_row_dual_vnni_k512(),
+        "\n",
+        gen_quantize_panel8_q8u_k2048_zmm(),
+        "\n",
+        gen_q8z_dual8_accum_vnni_k2048_n512(),
         "\n",
         # Quad 8A×4B kept in source for experiments but not emitted: stack-hsum
         # and 4-row×2-pass variants lost to dual vector-accum on Zen4.

@@ -2,10 +2,14 @@ package oauth
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
+	"io"
 	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -72,6 +76,9 @@ func (s *CallbackServer) StartOnPort(callbackPath string, port int) error {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc(callbackPath, s.handleCallback)
+	if callbackPath != "/" {
+		mux.HandleFunc(callbackPath+"/", s.handleCallback)
+	}
 
 	s.server = &http.Server{Handler: mux}
 	go s.server.Serve(ln) //nolint:errcheck
@@ -103,7 +110,7 @@ func (s *CallbackServer) WaitForCodeCtx(ctx context.Context) (string, error) {
 	case err := <-s.errCh:
 		return "", err
 	case <-ctx.Done():
-		return "", fmt.Errorf("oauth cancelled")
+		return "", oauthWaitErr(ctx)
 	}
 }
 
@@ -117,8 +124,15 @@ func (s *CallbackServer) WaitForCallbackCtx(ctx context.Context) (code, state st
 	case err := <-s.errCh:
 		return "", "", err
 	case <-ctx.Done():
-		return "", "", fmt.Errorf("oauth cancelled")
+		return "", "", oauthWaitErr(ctx)
 	}
+}
+
+func oauthWaitErr(ctx context.Context) error {
+	if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return fmt.Errorf("timed out waiting for authorization")
+	}
+	return fmt.Errorf("oauth cancelled")
 }
 
 // Stop 关闭 HTTP 服务器并释放端口。
@@ -130,29 +144,64 @@ func (s *CallbackServer) Stop() {
 	}
 }
 
+func writeOAuthCORS(w http.ResponseWriter, r *http.Request) {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		origin = "*"
+	}
+	w.Header().Set("Access-Control-Allow-Origin", origin)
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	allowHeaders := strings.TrimSpace(r.Header.Get("Access-Control-Request-Headers"))
+	if allowHeaders == "" {
+		allowHeaders = "Content-Type, Authorization"
+	}
+	w.Header().Set("Access-Control-Allow-Headers", allowHeaders)
+	w.Header().Set("Access-Control-Allow-Private-Network", "true")
+	w.Header().Set("Vary", "Origin")
+}
+
 // handleCallback 处理 OAuth 回调请求。
 func (s *CallbackServer) handleCallback(w http.ResponseWriter, r *http.Request) {
-	q := r.URL.Query()
-
-	if errParam := q.Get("error"); errParam != "" {
-		desc := q.Get("error_description")
+	writeOAuthCORS(w, r)
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	_ = r.ParseForm()
+	if errParam := r.FormValue("error"); errParam != "" {
+		desc := r.FormValue("error_description")
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		fmt.Fprintf(w, errorHTML, html.EscapeString(errParam), html.EscapeString(desc))
-		s.errCh <- fmt.Errorf("oauth error: %s: %s", errParam, desc)
+		select {
+		case s.errCh <- fmt.Errorf("oauth error: %s: %s", errParam, desc):
+		default:
+		}
 		return
 	}
 
-	code := q.Get("code")
+	code := r.FormValue("code")
+	state := r.FormValue("state")
+	if code == "" && r.Body != nil && strings.Contains(strings.ToLower(r.Header.Get("Content-Type")), "json") {
+		var payload struct {
+			Code  string `json:"code"`
+			State string `json:"state"`
+		}
+		body, _ := io.ReadAll(io.LimitReader(r.Body, 8192))
+		if json.Unmarshal(body, &payload) == nil {
+			code = strings.TrimSpace(payload.Code)
+			if state == "" {
+				state = strings.TrimSpace(payload.State)
+			}
+		}
+	}
 	if code == "" {
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprintf(w, errorHTML, "missing_code", html.EscapeString("回调请求中缺少 code 参数"))
-		s.errCh <- fmt.Errorf("oauth error: missing code parameter in callback")
+		// Probes from the IdP page must not abort the wait.
+		w.WriteHeader(http.StatusNoContent)
 		return
 	}
 
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	fmt.Fprint(w, successHTML)
-	state := q.Get("state")
 	select {
 	case s.codeCh <- code:
 	default:

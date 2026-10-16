@@ -261,7 +261,7 @@ func TestReleaseChannelUsesExactBetaTopology(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(client.mirrors) != 2 || client.mirrors[0].url != "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/beta.json" || client.mirrors[1].url != "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/beta.json" {
+	if len(client.mirrors) != 1 || client.mirrors[0].url != "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/beta.json" {
 		t.Fatalf("beta manifests = %#v", client.mirrors)
 	}
 	profile, err := Profile("bread-compact")
@@ -270,10 +270,9 @@ func TestReleaseChannelUsesExactBetaTopology(t *testing.T) {
 	}
 	item := mirrorManifestAsset{
 		Name: profile.AssetName,
-		URL:  "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/beta/" + profile.AssetName,
+		URL:  "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/beta/" + profile.AssetName,
 		URLs: []string{
 			"https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/beta/" + profile.AssetName,
-			"https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/beta/" + profile.AssetName,
 		},
 	}
 	if !validMirrorAssetTopology(item, profile.AssetName, BetaChannel) {
@@ -304,23 +303,23 @@ func TestApprovedRedirectEnforcesHostAndHopLimit(t *testing.T) {
 	}
 }
 
-func TestMirrorAssetTopologyRequiresExactR2AndCOSPaths(t *testing.T) {
+func TestMirrorAssetTopologyRequiresExactR2Path(t *testing.T) {
 	profile, err := Profile("bread-compact")
 	if err != nil {
 		t.Fatal(err)
 	}
 	valid := mirrorManifestAsset{
 		Name: profile.AssetName,
-		URL:  cosLatestAssetBase + profile.AssetName,
-		URLs: []string{r2LatestAssetBase + profile.AssetName, cosLatestAssetBase + profile.AssetName},
+		URL:  r2LatestAssetBase + profile.AssetName,
+		URLs: []string{r2LatestAssetBase + profile.AssetName},
 	}
 	if !validMirrorAssetTopology(valid, profile.AssetName, StableChannel) {
-		t.Fatal("valid R2/COS topology rejected")
+		t.Fatal("valid R2 topology rejected")
 	}
 	for _, item := range []mirrorManifestAsset{
-		{Name: profile.AssetName, URL: cosLatestAssetBase + profile.AssetName, URLs: []string{r2LatestAssetBase + "other.clawfw", cosLatestAssetBase + profile.AssetName}},
-		{Name: profile.AssetName, URL: cosLatestAssetBase + profile.AssetName, URLs: []string{r2LatestAssetBase + profile.AssetName}},
-		{Name: profile.AssetName, URL: r2LatestAssetBase + profile.AssetName, URLs: []string{r2LatestAssetBase + profile.AssetName, cosLatestAssetBase + profile.AssetName}},
+		{Name: profile.AssetName, URL: r2LatestAssetBase + profile.AssetName, URLs: []string{r2LatestAssetBase + "other.clawfw"}},
+		{Name: profile.AssetName, URL: r2LatestAssetBase + profile.AssetName, URLs: nil},
+		{Name: profile.AssetName, URL: r2LatestAssetBase + "other.clawfw", URLs: []string{r2LatestAssetBase + profile.AssetName}},
 	} {
 		if validMirrorAssetTopology(item, profile.AssetName, StableChannel) {
 			t.Fatalf("invalid mirror topology accepted: %#v", item)
@@ -453,7 +452,7 @@ func TestDownloadLatestBetaUsesNewestPrereleaseExactAsset(t *testing.T) {
 	}
 }
 
-func TestDownloadLatestFallsBackToTwoConsistentMirrorsWhenGitHubDiscoveryFails(t *testing.T) {
+func TestDownloadLatestFallsBackToConsistentMirrorWhenGitHubDiscoveryFails(t *testing.T) {
 	profile, err := Profile("bread-compact")
 	if err != nil {
 		t.Fatal(err)
@@ -462,17 +461,16 @@ func TestDownloadLatestFallsBackToTwoConsistentMirrorsWhenGitHubDiscoveryFails(t
 	sum := sha256.Sum256(payload)
 	digest := hex.EncodeToString(sum[:])
 	r2URL := "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/latest/" + profile.AssetName
-	cosURL := "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/latest/" + profile.AssetName
 	manifest := func() []byte {
 		body, marshalErr := json.Marshal(mirrorManifest{Tag: "v9-mirror", Assets: map[string]mirrorManifestAsset{
-			profile.AssetName: {Name: profile.AssetName, Size: int64(len(payload)), SHA256: "sha256:" + digest, URL: cosURL, URLs: []string{r2URL, cosURL}},
+			profile.AssetName: {Name: profile.AssetName, Size: int64(len(payload)), SHA256: "sha256:" + digest, URL: r2URL, URLs: []string{r2URL}},
 		}})
 		if marshalErr != nil {
 			t.Fatal(marshalErr)
 		}
 		return body
 	}
-	client := &Client{cacheDir: t.TempDir(), apiURL: latestReleaseURL, mirrors: []mirrorSource{{name: "r2", url: "https://r2.test/latest.json"}, {name: "cos", url: "https://cos.test/latest.json"}}}
+	client := &Client{cacheDir: t.TempDir(), apiURL: latestReleaseURL, mirrors: []mirrorSource{{name: "r2", url: "https://r2.test/latest.json"}}}
 	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		var body []byte
 		status := http.StatusOK
@@ -482,9 +480,7 @@ func TestDownloadLatestFallsBackToTwoConsistentMirrorsWhenGitHubDiscoveryFails(t
 			status = http.StatusServiceUnavailable
 		case "https://r2.test/latest.json":
 			body = manifest()
-		case "https://cos.test/latest.json":
-			body = manifest()
-		case r2URL, cosURL:
+		case r2URL:
 			if req.Method == http.MethodGet {
 				body = payload
 			}
@@ -518,7 +514,7 @@ func TestDownloadLatestFallsBackToTwoConsistentMirrorsWhenGitHubDiscoveryFails(t
 	}
 }
 
-func TestMirrorReleaseFallbackRequiresTwoMatchingManifests(t *testing.T) {
+func TestMirrorReleaseFallbackRejectsInvalidManifest(t *testing.T) {
 	profile, err := Profile("echoear-2st")
 	if err != nil {
 		t.Fatal(err)
@@ -536,16 +532,14 @@ func TestMirrorReleaseFallbackRequiresTwoMatchingManifests(t *testing.T) {
 		var body []byte
 		switch req.URL.String() {
 		case "https://r2.test/latest.json":
-			body = manifest("v1", strings.Repeat("a", 64))
-		case "https://cos.test/latest.json":
-			body = manifest("v2", strings.Repeat("a", 64))
+			body = manifest("", strings.Repeat("a", 64))
 		default:
 			t.Fatalf("unexpected request: %s", req.URL)
 		}
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: req}, nil
-	})}, mirrors: []mirrorSource{{name: "r2", url: "https://r2.test/latest.json"}, {name: "cos", url: "https://cos.test/latest.json"}}}
+	})}, mirrors: []mirrorSource{{name: "r2", url: "https://r2.test/latest.json"}}}
 	if _, err := client.discoverReleaseFromMirrors(context.Background(), profile.AssetName, StableChannel, nil); err == nil {
-		t.Fatal("conflicting mirror release manifests were accepted")
+		t.Fatal("invalid mirror release manifest was accepted")
 	}
 }
 
@@ -559,10 +553,9 @@ func TestDiscoverDownloadCandidatesPrefersFastestWorkflowMirror(t *testing.T) {
 	digest := hex.EncodeToString(sum[:])
 	githubURL := "https://github.com/RapidAI/MaClaw/releases/download/v1/" + profile.AssetName
 	r2URL := "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/latest/" + profile.AssetName
-	cosURL := "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/latest/" + profile.AssetName
 	manifest := func() []byte {
 		body, marshalErr := json.Marshal(mirrorManifest{Tag: "v1", Assets: map[string]mirrorManifestAsset{
-			profile.AssetName: {Name: profile.AssetName, Size: int64(len(payload)), SHA256: "sha256:" + digest, URL: cosURL, URLs: []string{r2URL, cosURL}},
+			profile.AssetName: {Name: profile.AssetName, Size: int64(len(payload)), SHA256: "sha256:" + digest, URL: r2URL, URLs: []string{r2URL}},
 		}})
 		if marshalErr != nil {
 			t.Fatal(marshalErr)
@@ -574,13 +567,9 @@ func TestDiscoverDownloadCandidatesPrefersFastestWorkflowMirror(t *testing.T) {
 		switch req.URL.String() {
 		case "https://r2.test/latest.json":
 			body = manifest()
-		case "https://cos.test/latest.json":
-			body = manifest()
 		case githubURL:
 			time.Sleep(25 * time.Millisecond)
 		case r2URL:
-		case cosURL:
-			time.Sleep(10 * time.Millisecond)
 		default:
 			t.Fatalf("unexpected request: %s", req.URL)
 		}
@@ -589,10 +578,10 @@ func TestDiscoverDownloadCandidatesPrefersFastestWorkflowMirror(t *testing.T) {
 			header.Set("Content-Length", itoa(int64(len(body))))
 		}
 		return &http.Response{StatusCode: http.StatusOK, Header: header, Body: io.NopCloser(strings.NewReader(string(body))), Request: req}, nil
-	})}, mirrors: []mirrorSource{{name: "r2", url: "https://r2.test/latest.json"}, {name: "cos", url: "https://cos.test/latest.json"}}}
+	})}, mirrors: []mirrorSource{{name: "r2", url: "https://r2.test/latest.json"}}}
 	asset := &releaseAsset{Name: profile.AssetName, Size: int64(len(payload)), DownloadURL: githubURL, Digest: "sha256:" + digest}
 	candidates := client.discoverDownloadCandidates(context.Background(), profile.AssetName, "v1", asset, nil)
-	if len(candidates) != 3 || candidates[0].source != "r2" || candidates[0].url != r2URL {
+	if len(candidates) != 2 || candidates[0].source != "r2" || candidates[0].url != r2URL {
 		t.Fatalf("unexpected candidate order: %#v", candidates)
 	}
 }
@@ -616,15 +605,13 @@ func TestDiscoverDownloadCandidatesRejectsConflictingMirrorMetadata(t *testing.T
 		var body []byte
 		switch req.URL.String() {
 		case "https://r2.test/latest.json":
-			body = manifest("v1", strings.Repeat("a", 64))
-		case "https://cos.test/latest.json":
 			body = manifest("v1", strings.Repeat("b", 64))
 		case githubURL:
 		default:
 			t.Fatalf("unexpected request: %s", req.URL)
 		}
 		return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(string(body))), Request: req}, nil
-	})}, mirrors: []mirrorSource{{name: "r2", url: "https://r2.test/latest.json"}, {name: "cos", url: "https://cos.test/latest.json"}}}
+	})}, mirrors: []mirrorSource{{name: "r2", url: "https://r2.test/latest.json"}}}
 	asset := &releaseAsset{Name: profile.AssetName, Size: 42, DownloadURL: githubURL, Digest: "sha256:" + strings.Repeat("a", 64)}
 	candidates := client.discoverDownloadCandidates(context.Background(), profile.AssetName, "v1", asset, nil)
 	if len(candidates) != 1 || candidates[0].source != "github" {
@@ -642,17 +629,16 @@ func TestDownloadLatestFallsBackWhenFastestMirrorTransferFails(t *testing.T) {
 	digest := hex.EncodeToString(sum[:])
 	githubURL := "https://github.com/RapidAI/MaClaw/releases/download/v1/" + profile.AssetName
 	r2URL := "https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/latest/" + profile.AssetName
-	cosURL := "https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/latest/" + profile.AssetName
 	manifest := func() []byte {
 		body, marshalErr := json.Marshal(mirrorManifest{Tag: "v1", Assets: map[string]mirrorManifestAsset{
-			profile.AssetName: {Name: profile.AssetName, Size: int64(len(payload)), SHA256: digest, URL: cosURL, URLs: []string{r2URL, cosURL}},
+			profile.AssetName: {Name: profile.AssetName, Size: int64(len(payload)), SHA256: digest, URL: r2URL, URLs: []string{r2URL}},
 		}})
 		if marshalErr != nil {
 			t.Fatal(marshalErr)
 		}
 		return body
 	}
-	client := &Client{cacheDir: t.TempDir(), apiURL: latestReleaseURL, mirrors: []mirrorSource{{name: "r2", url: "https://r2.test/latest.json"}, {name: "cos", url: "https://cos.test/latest.json"}}}
+	client := &Client{cacheDir: t.TempDir(), apiURL: latestReleaseURL, mirrors: []mirrorSource{{name: "r2", url: "https://r2.test/latest.json"}}}
 	client.http = &http.Client{Transport: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 		var body []byte
 		status := http.StatusOK
@@ -662,17 +648,9 @@ func TestDownloadLatestFallsBackWhenFastestMirrorTransferFails(t *testing.T) {
 			body, _ = json.Marshal(releaseResponse{TagName: "v1", Assets: []releaseAsset{{Name: profile.AssetName, Size: int64(len(payload)), DownloadURL: githubURL, Digest: "sha256:" + digest}}})
 		case "https://r2.test/latest.json":
 			body = manifest()
-		case "https://cos.test/latest.json":
-			body = manifest()
 		case r2URL:
 			if req.Method == http.MethodGet {
 				status = http.StatusServiceUnavailable
-			}
-		case cosURL:
-			if req.Method == http.MethodGet {
-				body = payload
-			} else {
-				time.Sleep(10 * time.Millisecond)
 			}
 		case githubURL:
 			if req.Method == http.MethodGet {
@@ -698,17 +676,16 @@ func TestDownloadLatestFallsBackWhenFastestMirrorTransferFails(t *testing.T) {
 		t.Fatalf("fallback package=%q err=%v", got, readErr)
 	}
 	for _, event := range events {
-		if event.Code == "MIRROR_FALLBACK" && event.Fields["source"] == "cos" && event.Fields["failedSource"] == "r2" {
+		if event.Code == "MIRROR_FALLBACK" && event.Fields["source"] == "github" && event.Fields["failedSource"] == "r2" {
 			return
 		}
 	}
-	t.Fatalf("missing COS fallback event: %#v", events)
+	t.Fatalf("missing GitHub fallback event: %#v", events)
 }
 
 func TestApprovedDownloadURLRejectsUntrustedMirror(t *testing.T) {
 	for _, raw := range []string{
 		"https://pub-c837069cbe31469590a5fea6235b436b.r2.dev/latest/firmware.clawfw",
-		"https://maclaw-1252723594.cos.ap-beijing.myqcloud.com/latest/firmware.clawfw",
 	} {
 		if !isApprovedDownloadURL(raw) {
 			t.Fatalf("approved mirror rejected: %s", raw)

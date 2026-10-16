@@ -235,6 +235,7 @@ func (e serviceReadOnlyChildExecutor) ExecuteReadOnlyChild(ctx context.Context, 
 	if err != nil {
 		return codingruntime.ChildTaskResult{Status: codingruntime.TaskFailed, Summary: "service read-only child LLM configuration unavailable"}
 	}
+	llmCfg = applyHubBotLLMServiceGroup(llmCfg, e.request.Instance.Metadata)
 	resources, err := e.parent.resourcesForUser(e.request.Principal.TenantID, e.request.Principal.UserID, e.request.DataDir)
 	if err != nil {
 		return codingruntime.ChildTaskResult{Status: codingruntime.TaskFailed, Summary: "service read-only child resources unavailable"}

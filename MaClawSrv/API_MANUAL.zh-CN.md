@@ -250,6 +250,12 @@ GET /health
 
 - `MACLAW_CREDENTIAL_PEPPER`：凭证摘要额�?pepper，可�?
 
+- `MACLAW_RUNTIME_RATE_LIMIT_RATE`：可选的每租户 Agent turn admission 速率（token/秒）。未设置或为 `0` 时不启用限流。
+
+- `MACLAW_RUNTIME_RATE_LIMIT_BURST`：可选的每租户突发容量；配置正速率时默认 1。
+
+- `MACLAW_RUNTIME_RATE_LIMIT_TENANT_LIMIT`：内存中租户 bucket 上限，默认 `1024`。达到上限时淘汰最久未使用的 bucket，并通过诊断指标暴露淘汰次数。
+
 
 
 
@@ -1513,6 +1519,26 @@ Content-Type: application/json
 
 
 
+### 9.14 数据库 profile
+
+数据库 profile 按 tenant/user 隔离。凭据只走 `secret_ref`；列表不返回 DSN、文件路径或密钥。读请求可走 `replica_host` / `replica_ssh_session_id`，写入始终走主库。
+
+所有路由都需要查询参数 `tenant_id`、`user_id`。每条路由都需要 owner 角色：列表和 test 会暴露主机名，test 还会拨号目标主机。
+
+```http
+GET /api/v1/admin/database/profiles
+POST /api/v1/admin/database/profiles
+POST /api/v1/admin/database/profiles/{profileId}/test
+POST /api/v1/admin/database/profiles/{profileId}/rotate-secret
+DELETE /api/v1/admin/database/profiles/{profileId}?confirm=true
+POST /api/v1/admin/database/approvals
+POST /api/v1/admin/database/runtime
+GET /api/v1/admin/database/metrics
+GET /api/v1/admin/database/receipts/{receiptId}
+```
+
+`POST .../approvals` 只返回 `approval_id`，opaque token 不离开宿主。`POST .../runtime` 是总开关。回执只含元数据，不含 SQL 原文或 token。
+
 ## 10. 用户配置 API
 
 
@@ -2583,7 +2609,7 @@ Authorization: Bearer <token>
 
 
 
-- 还没有统一异步 job 模型
+- 异步 job 已复用 `agentruntime.JobStatus` 状态词汇，并在失败/取消响应中提供可选 `error_code`；跨入口客户端不应解析 `error` 文案。
 
 
 
@@ -2795,6 +2821,19 @@ Admin overview credential ???overview ????? credential ??????????
 - `maclaw_credentials_expired_total`
 - `maclaw_credentials_expiring_total`
 
+同时会输出 GUI 与无头服务共用的 Agent Runtime 指标：
+
+- `maclaw_runtime_turns_*`、`maclaw_runtime_active_runs`：运行生命周期与并发数；
+- `maclaw_runtime_queue_wait_*`、`maclaw_runtime_first_token_latency_*`：admission 与首 token 延迟聚合；
+- `maclaw_runtime_token_deltas_total`、`maclaw_runtime_tool_*`、`maclaw_runtime_events_*`：token、工具调用和 outbox 健康度；
+- `maclaw_runtime_quota_rejected_total`、`maclaw_runtime_tenant_series_dropped_total`：配额压力及租户指标基数上限诊断。
+
+- `maclaw_runtime_rate_limited_total`：短时租户 token-bucket 压力；`maclaw_runtime_rate_limit_buckets_evicted_total`：达到有界 map 上限后的淘汰诊断。启用后被拒绝的 `429` 响应包含 `code=rate_limited`、`Retry-After` 和 `retry_after_seconds`。
+
+租户维度样本只使用确定性的 16 位 SHA-256 前缀 `tenant_hash`，不会输出原始租户标识；租户时间序列数量由 Runtime collector 有界控制。
+
+每个 HTTP 响应都会返回经过校验的 `X-Request-ID`（缺失或非法时由服务生成）。请求若携带有效的 W3C `traceparent`，其中的 trace-id 与父 span-id 会贯穿 Run metadata、生命周期事件和审计 metadata；原始 traceparent 不会持久化。
+
 ## Usage summary 凭证计数
 
 `GET /api/v1/usage/summary` 会返回当前认证租户/用户自己的 credential 生命周期计数。字段包括 `credentials`、`active_credentials`、`suspended_credentials`、`revoked_credentials`、`expired_credentials` 和 `expiring_credentials`。
@@ -2947,3 +2986,141 @@ X-MaClaw-Admin-Secret: <admin-secret>
 DELETE /api/v1/admin/snapshots/{snapshot_id}?confirm=true
 X-MaClaw-Admin-Secret: <admin-secret>
 ```
+
+## AppConfig schema 合同
+
+`GET /api/v1/config/schema` 与 `GET /api/v1/admin/client-config/schema` 除
+历史 `items` 数组外，还返回 `schema_version`（`maclaw.app-config/v1`）。
+每个字段可包含 `scope`、`mutable`、`restart_required`、
+`headless_supported`、`user_web_visible` 元数据。字段定义来自共享的
+`corelib/config`，客户端不应再维护独立的字段白名单。
+
+### 异步 Job 持久化与状态
+
+异步任务复用 `agentruntime.Job`、`JobStatus` 与 `JobRecoveryPolicy` 合同，
+`status` 可为 `pending`、`running`、`succeeded`、`failed`、`canceled`、
+`unknown`。`recovery_policy=reconcile` 是可能产生外部副作用的默认安全策略；
+只有可以确定中断不会留下不明副作用的任务才可使用 `fail`。
+`unknown` 表示外部副作用结果待 reconcile，客户端不得把它当作可安全重放。
+
+Job admission 采用 fail-closed：服务会先在 `state/jobs.db` 的 SQLite 事务中
+提交初始 envelope，成功后才启动 worker。持久化失败时
+任务立即以 `failed` 返回，`error_code` 为
+`job_persistence_failed`，不会伪装成成功任务。持久化边界采用共享的
+`agentruntime.JobRepository`；`version` 是从 `1` 开始、每次 durable mutation
+递增的 CAS revision，客户端应将它视为只读值。repository 另行保存不会进入 API JSON
+的 worker owner/lease；存活 worker 会定期续租，因此另一个 srv 启动或读取共享数据库时
+不会把仍在执行的任务误判为重启残留。只有 lease 已过期（以及没有 lease 的旧格式）且
+仍为 `pending/running` 的任务才进入恢复：默认 `reconcile` 转为 `unknown` 和
+`reconcile_required`，显式 `fail` 转为 `failed/service_restarted`。过期任务不会自动重放
+或自动清理，迟到 worker 的旧版本结果也会被 CAS 拒绝。`/readyz`、Admin readiness 以及
+`maclaw_async_jobs_persistence_healthy` 指标会暴露任务存储健康状态。
+
+可能产生外部副作用的 worker 还可通过共享 `agentruntime.JobEffectRecorder` 在
+`state/job_effects.db` 中写入受保护的 prepare/resource binding/receipt。该数据库实现位于
+共享 `corelib/agentservice`，GUI、srv 和后续宿主可直接复用；effect 的资源标识、领域 payload
+与 receipt 摘要不会进入通用 Job JSON。migration export/import 已接入该路径。若 worker
+lease 过期后 Job 进入 `unknown`，读取该 Job 会调用 migration 领域 reconciler：它只读取
+effect 记录并通过 Hub 的只读 export receipt probe 对账，再以 Job `version` CAS 收敛为
+`succeeded` 或 `failed`，不会重新执行导出、导入、claim、上传或本地 restore。没有充分证据
+时状态继续保持 `unknown/reconcile_required`。
+
+除 migration 外，MCP 的 create/update/start/stop、Skill install/import/upload，以及
+Knowledge 的 file/URL/directory/package/share import 也使用相同的受保护 effect 账本。它们在副作用前
+prepare，成功后绑定 server/skill/source 资源 ID 并保存脱敏结果；结果持久化失败会进入
+`unknown/reconcile_required`。读取这些 Job 时仅执行对应域的只读 reconciler（查询当前
+MCP、Skill 或 Knowledge 状态或回放 committed payload），不会重放原 worker，也不会把
+effect payload、凭据或资源 ID 放入通用 Job 响应。
+
+运行中的任务还可返回共享 checkpoint：
+
+```json
+{
+  "progress": 0.65,
+  "progress_text": "uploading migration package",
+  "checkpoint": {
+    "sequence": 4,
+    "phase": "transfer",
+    "updated_at": "2026-09-01T10:00:00Z"
+  }
+}
+```
+
+领域 worker 通过注入 context 的 `agentruntime.JobReporter` 上报 progress 与
+checkpoint，两者在同一次 repository CAS 更新中提交。MaClawSrv 的 migration
+export/import 以及 Knowledge/Skill 长任务均可使用该共享路径。`sequence` 必须单调递增，`updated_at` 由宿主生成。
+checkpoint 只保存可审计的阶段元数据，不包含 replay payload、密码/token、文件路径或
+外部资源标识；这些数据必须留在领域 repository。checkpoint 本身不授权服务重启后自动
+重放，`unknown/reconcile_required` 仍需按领域规则对账。
+
+Job envelope 还会返回进程内重试状态：
+
+```json
+{
+  "retry_policy": {
+    "max_attempts": 3,
+    "initial_backoff_ms": 250,
+    "maximum_backoff_ms": 1000
+  },
+  "attempt": 1,
+  "next_attempt_at": "2026-09-01T10:00:00.250Z",
+  "last_attempt_error_code": "request_error",
+  "last_attempt_error": "temporary probe failure"
+}
+```
+
+`max_attempts` 包含首次执行；默认值为 `1`，即不自动重试。只有领域代码显式标记为
+retryable 的错误才会重试，普通业务错误、校验错误和权限错误不会因为配置了多个 attempt
+而重试。退避采用共享的有上限指数策略，cancel/shutdown 会立即中断等待。当前 MCP
+health-check 异步任务是首个消费者，最多执行 3 次；只有实际 MCP probe 失败可重试。
+retry policy 只授权当前 worker 进程内执行，绝不授权服务重启后 replay；重启仍以
+`recovery_policy` 和领域 reconcile 结果为准。
+
+以下异步端点支持可选请求头：
+
+- `POST /api/v1/mcp/servers?async=true`
+- `PATCH /api/v1/mcp/servers/{serverId}?async=true`
+- `POST /api/v1/mcp/servers/{serverId}/start?async=true`
+- `POST /api/v1/mcp/servers/{serverId}/stop?async=true`
+- `POST /api/v1/mcp/servers/{serverId}/health-check?async=true`
+- `POST /api/v1/skills/install?async=true`
+- `POST /api/v1/skills/import?async=true`
+- `POST /api/v1/skills/{skillName}/upload?async=true`
+- `POST /api/v1/knowledge/import/file`
+- `POST /api/v1/knowledge/import/urls`
+- `POST /api/v1/knowledge/import/directory`
+- `POST /api/v1/admin/public-knowledge-libraries/{libraryId}/import/file`
+- `POST /api/v1/admin/public-knowledge-libraries/{libraryId}/import/urls`
+- `POST /api/v1/admin/public-knowledge-libraries/{libraryId}/import/text`（携带 `Idempotency-Key` 时启用异步 Job；不带时保留同步兼容响应）
+- `POST /api/v1/migration/export`
+- `POST /api/v1/migration/import`
+
+```http
+Idempotency-Key: <1-256 byte client key>
+```
+
+相同 tenant/user、Job kind 和 key 的并发或重试请求会返回同一个 canonical Job，且仅
+首次 admission 启动 worker。重复 admission 的直接响应包含
+`idempotent_replay: true`；普通 `GET /api/v1/jobs/{jobId}` 不会把它当作持久状态。
+同一 key 携带不同请求参数时返回 HTTP `409` 和
+`code: "job_idempotency_conflict"`，非法 key 返回 HTTP `400` 和
+`code: "invalid_job_idempotency_key"`。服务不会自动 trim key；带前后空白的 key 会被拒绝，
+避免客户端实际寻址到另一个 durable identity。
+
+服务不会保存或返回原始 key/request（包括 migration 密码），只持久化 `idempotency_digest` 与
+`request_digest`。worker context 同样只能读取这两个摘要，供后续领域 operation ledger
+绑定。SQLite JobRepository 在非空 `idempotency_digest` 上使用数据库 partial unique
+index；多个独立 repository handle/进程并发 admission 时只有一个 winner，其他请求读取
+同一 canonical Job。保证期限与 Job retention 一致，删除或自动清理 canonical Job 会
+释放该 key，并在主 Job 删除成功后清理受保护 effect receipt；跨文件数据库清理失败会记录
+诊断并在后续清理轮次重试。旧文件 adapter 仅为单写者兼容路径，不提供跨进程保证。若初始 Job envelope
+持久化失败，worker 不会启动且 key 会立即释放；
+readiness 恢复后使用同一 key 可安全重新 admission。
+
+状态更新使用 `version` CAS；显式或批量删除也校验版本，批量删除在同一事务中全成或
+全败。repository 提交失败时返回 HTTP `503` 和
+`code: "job_persistence_failed"`；任务记录会保留，待 readiness 恢复后可安全重试。
+
+首次启用 `jobs.db` 时会一次性导入并校验旧 `jobs.json`；旧文件保留为回滚/审计备份，
+不会重复导入。旧文件无法读取、JSON 损坏或含重复幂等摘要时，服务会将 readiness 标记
+为失败，不会静默使用不完整的任务列表启动。

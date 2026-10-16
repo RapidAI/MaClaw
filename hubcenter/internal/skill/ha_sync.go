@@ -16,8 +16,10 @@ type SyncRecorder interface {
 }
 
 type Snapshot struct {
-	Skills  []HubSkillFull           `json:"skills"`
-	Ratings map[string][]SkillRating `json:"ratings"`
+	Skills        []HubSkillFull           `json:"skills"`
+	Suites        []SkillSuiteFull         `json:"suites,omitempty"`
+	SuiteVersions []SkillSuiteFull         `json:"suite_versions,omitempty"`
+	Ratings       map[string][]SkillRating `json:"ratings"`
 }
 
 func (s *SkillStore) SetSyncRecorder(rec SyncRecorder) {
@@ -122,9 +124,52 @@ func (s *SkillStore) DumpSnapshot() (*Snapshot, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	snap := &Snapshot{
-		Skills:  make([]HubSkillFull, 0, len(s.skills)),
-		Ratings: make(map[string][]SkillRating, len(s.ratings)),
+		Skills:        make([]HubSkillFull, 0, len(s.skills)),
+		Suites:        make([]SkillSuiteFull, 0, len(s.suites)),
+		SuiteVersions: make([]SkillSuiteFull, 0),
+		Ratings:       make(map[string][]SkillRating, len(s.ratings)),
 	}
+	for id := range s.suites {
+		item := s.suites[id]
+		if item == nil {
+			continue
+		}
+		cp := *item
+		cp.Members = append([]SkillSuiteMember(nil), item.Members...)
+		cp.Skills = append([]HubSkillFull(nil), item.Skills...)
+		snap.Suites = append(snap.Suites, cp)
+	}
+	// Historical Suite revisions are persisted separately from the current
+	// catalog entry; include their complete payloads so an HA peer can roll
+	// back after failover.
+	if entries, err := os.ReadDir(filepath.Join(s.dir, "suite-versions")); err == nil {
+		for _, suiteDir := range entries {
+			if !suiteDir.IsDir() {
+				continue
+			}
+			files, _ := os.ReadDir(filepath.Join(s.dir, "suite-versions", suiteDir.Name()))
+			for _, file := range files {
+				if file.IsDir() || filepath.Ext(file.Name()) != ".json" {
+					continue
+				}
+				data, readErr := os.ReadFile(filepath.Join(s.dir, "suite-versions", suiteDir.Name(), file.Name()))
+				if readErr != nil {
+					continue
+				}
+				var revision SkillSuiteFull
+				if json.Unmarshal(data, &revision) == nil && revision.ID != "" {
+					snap.SuiteVersions = append(snap.SuiteVersions, revision)
+				}
+			}
+		}
+	}
+	sort.Slice(snap.SuiteVersions, func(i, j int) bool {
+		if snap.SuiteVersions[i].ID == snap.SuiteVersions[j].ID {
+			return snap.SuiteVersions[i].Version < snap.SuiteVersions[j].Version
+		}
+		return snap.SuiteVersions[i].ID < snap.SuiteVersions[j].ID
+	})
+	sort.Slice(snap.Suites, func(i, j int) bool { return snap.Suites[i].ID < snap.Suites[j].ID })
 	ids := make([]string, 0, len(s.skills))
 	for id := range s.skills {
 		ids = append(ids, id)
@@ -180,6 +225,7 @@ func (s *SkillStore) CountSnapshotRecords() int64 {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	count := int64(len(s.skills))
+	count += int64(len(s.suites))
 	for _, items := range s.ratings {
 		count += int64(len(items))
 	}
@@ -206,6 +252,7 @@ func (s *SkillStore) LoadSnapshot(snap *Snapshot) error {
 			_ = os.Remove(filepath.Join(s.dir, name))
 		}
 	}
+	_ = os.RemoveAll(filepath.Join(s.dir, "suite-versions"))
 	nextSkills := make(map[string]*HubSkillFull, len(snap.Skills))
 	for _, item := range snap.Skills {
 		data, err := json.MarshalIndent(item, "", "  ")
@@ -217,6 +264,29 @@ func (s *SkillStore) LoadSnapshot(snap *Snapshot) error {
 		}
 		cp := item
 		nextSkills[item.ID] = &cp
+	}
+	nextSuites := make(map[string]*SkillSuiteFull, len(snap.Suites))
+	for _, item := range snap.Suites {
+		if strings.TrimSpace(item.ID) == "" {
+			continue
+		}
+		data, err := json.MarshalIndent(item, "", "  ")
+		if err != nil {
+			return fmt.Errorf("marshal suite %s: %w", item.ID, err)
+		}
+		if err := os.WriteFile(filepath.Join(s.dir, "suite-"+item.ID+".json"), data, 0o644); err != nil {
+			return fmt.Errorf("write suite %s: %w", item.ID, err)
+		}
+		cp := item
+		nextSuites[item.ID] = &cp
+	}
+	for _, revision := range snap.SuiteVersions {
+		if revision.ID == "" || revision.Version == "" {
+			continue
+		}
+		if err := s.persistSuiteVersion(revision); err != nil {
+			return fmt.Errorf("write suite version %s@%s: %w", revision.ID, revision.Version, err)
+		}
 	}
 	nextRatings := make(map[string][]SkillRating, len(snap.Ratings))
 	ratingIDs := make([]string, 0, len(snap.Ratings))
@@ -240,6 +310,7 @@ func (s *SkillStore) LoadSnapshot(snap *Snapshot) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.skills = nextSkills
+	s.suites = nextSuites
 	s.ratings = nextRatings
 	s.rebuildIndexFromSkills()
 	return nil

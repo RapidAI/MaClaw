@@ -5,6 +5,8 @@ package yolo
 import (
 	"fmt"
 	"math"
+	"runtime"
+	"sync"
 )
 
 // Tensor is a dense multi-dimensional float32 array in row-major (C) order.
@@ -85,10 +87,32 @@ func (t *Tensor) Set(val float32, indices ...int) {
 	t.Data[offset] = val
 }
 
-// Clone returns a deep copy.
+// Clone returns a deep copy of the LOGICAL contents (a zero-copy channel
+// view clones only its own channel range, not the parent's remainder).
 func (t *Tensor) Clone() *Tensor {
-	data := make([]float32, len(t.Data))
-	copy(data, t.Data)
+	size := 1
+	for _, s := range t.Shape {
+		size *= s
+	}
+	data := make([]float32, size)
+	if len(t.Data) == size {
+		copy(data, t.Data)
+	} else {
+		// View with a larger backing array: gather via strides.
+		idx := 0
+		var walk func(dim, off int)
+		walk = func(dim, off int) {
+			if dim == len(t.Shape) {
+				data[idx] = t.Data[off]
+				idx++
+				return
+			}
+			for i := 0; i < t.Shape[dim]; i++ {
+				walk(dim+1, off+i*t.Stride[dim])
+			}
+		}
+		walk(0, 0)
+	}
 	return NewTensorFrom(data, t.Shape...)
 }
 
@@ -107,9 +131,15 @@ func (t *Tensor) Reshape(shape ...int) *Tensor {
 
 // ── Arithmetic operations (element-wise, in-place where possible) ──
 
-// Add adds other element-wise: t = t + other. Shapes must match.
+// Add adds other element-wise: t = t + other. Shapes must match. Length is
+// clamped to the shorter backing array so a zero-copy channel view (whose
+// Data extends into the parent) can be added into an owned tensor.
 func (t *Tensor) Add(other *Tensor) {
-	addInplace(t.Data, other.Data)
+	n := len(t.Data)
+	if len(other.Data) < n {
+		n = len(other.Data)
+	}
+	addInplace(t.Data[:n], other.Data[:n])
 }
 
 // AddScalar adds a scalar to all elements.
@@ -155,6 +185,11 @@ func sigmoid(x float32) float32 {
 	return 1.0 / (1.0 + float32(math.Exp(float64(-x))))
 }
 
+// expF32 is the scalar float32 exp shared by vectorized-op tails.
+func expF32(x float32) float32 {
+	return float32(math.Exp(float64(x)))
+}
+
 // ── Channel-wise operations (for BatchNorm) ──
 
 // AddChannelBias adds a per-channel bias to a [N, C, H, W] tensor.
@@ -197,16 +232,32 @@ func (t *Tensor) MulChannelScale(scale []float32) {
 
 // ── Slicing and concatenation ──
 
-// SliceChannel returns a new tensor containing channels [start, end) from
-// a [N, C, H, W] tensor. The returned tensor owns its own data.
+// SliceChannel returns channels [start, end) of a [N, C, H, W] tensor.
+// When the channel range is contiguous in the parent's storage (always true
+// for batch-1 inference), the result is a zero-copy VIEW sharing the parent's
+// backing array — callers must not mutate the parent while the view is in
+// use. Batch > 1 falls back to an owned copy (some consumers require
+// batch-contiguous storage).
 func (t *Tensor) SliceChannel(start, end int) *Tensor {
 	if t.Dim() != 4 {
 		panic("SliceChannel: expected 4D tensor")
 	}
 	N, _, H, W := t.Shape[0], t.Shape[1], t.Shape[2], t.Shape[3]
 	outC := end - start
-	out := NewTensor(N, outC, H, W)
 	HW := H * W
+	if N == 1 && t.Stride[1] == HW && end*HW <= len(t.Data) {
+		stride := make([]int, 4)
+		stride[0] = outC * HW
+		stride[1] = HW
+		stride[2] = W
+		stride[3] = 1
+		return &Tensor{
+			Data:   t.Data[start*HW:],
+			Shape:  []int{1, outC, H, W},
+			Stride: stride,
+		}
+	}
+	out := NewTensor(N, outC, H, W)
 	for n := 0; n < N; n++ {
 		for c := 0; c < outC; c++ {
 			srcOff := n*t.Stride[0] + (start+c)*t.Stride[1]
@@ -248,6 +299,9 @@ func ConcatChannel(tensors ...*Tensor) *Tensor {
 // MaxPool2d applies max pooling with the given kernel size, stride, and padding.
 // Input shape: [N, C, H, W]. Returns a new tensor.
 func (t *Tensor) MaxPool2d(kernel, stride, padding int) *Tensor {
+	if kernel == 5 && stride == 1 && padding == 2 {
+		return t.maxPool5S1P2()
+	}
 	N, C, H, W := t.Shape[0], t.Shape[1], t.Shape[2], t.Shape[3]
 	outH := (H+2*padding-kernel)/stride + 1
 	outW := (W+2*padding-kernel)/stride + 1
@@ -278,20 +332,103 @@ func (t *Tensor) MaxPool2d(kernel, stride, padding int) *Tensor {
 	return out
 }
 
+// maxPool5S1P2 is the SPPF fast path: 5x5 max pool, stride 1, padding 2
+// (same spatial size). Interior columns go through the 5-tap vector max
+// kernel; the two edge columns on each side are scalar. Parallel over
+// channel planes.
+func (t *Tensor) maxPool5S1P2() *Tensor {
+	N, C, H, W := t.Shape[0], t.Shape[1], t.Shape[2], t.Shape[3]
+	out := NewTensor(N, C, H, W)
+	planes := N * C
+	nWorkers := runtime.NumCPU()
+	if nWorkers > planes {
+		nWorkers = planes
+	}
+	if planes < 8 {
+		nWorkers = 1
+	}
+	interior := W - 4 // outputs ow in [2, W-2)
+	var wg sync.WaitGroup
+	per := (planes + nWorkers - 1) / nWorkers
+	scratches := make([][]float32, nWorkers)
+	for wk := 0; wk < nWorkers; wk++ {
+		scratches[wk] = make([]float32, max(interior, 0))
+	}
+	for wk := 0; wk < nWorkers; wk++ {
+		p0 := wk * per
+		p1 := min(p0+per, planes)
+		if p0 >= p1 {
+			break
+		}
+		wg.Add(1)
+		go func(wk, p0, p1 int) {
+			defer wg.Done()
+			scratch := scratches[wk]
+			for p := p0; p < p1; p++ {
+				nI, c := p/C, p%C
+				xBase := nI*t.Stride[0] + c*t.Stride[1]
+				outBase := (nI*C + c) * H * W
+				for oh := 0; oh < H; oh++ {
+					outRow := out.Data[outBase+oh*W : outBase+oh*W+W]
+					// Valid kernel rows: ih = oh-2+kh ∈ [0, H).
+					khA := max(0, 2-oh)
+					khB := min(5, H+2-oh)
+					if interior > 0 {
+						first := true
+						for kh := khA; kh < khB; kh++ {
+							row := t.Data[xBase+(oh-2+kh)*W:]
+							if first {
+								max5Row(outRow[2:2+interior], row, interior, W)
+								first = false
+							} else {
+								max5Row(scratch[:interior], row, interior, W)
+								maxInto(outRow[2:2+interior], scratch[:interior], interior)
+							}
+						}
+					}
+					// Edge columns: ow ∈ {0, 1, W-2, W-1}.
+					for _, ow := range [...]int{0, 1, W - 2, W - 1} {
+						if ow < 0 || ow >= W || (ow >= 2 && ow < W-2) {
+							continue
+						}
+						m := float32(-math.MaxFloat32)
+						for kh := khA; kh < khB; kh++ {
+							row := t.Data[xBase+(oh-2+kh)*W:]
+							for kw := 0; kw < 5; kw++ {
+								iw := ow - 2 + kw
+								if iw >= 0 && iw < W && row[iw] > m {
+									m = row[iw]
+								}
+							}
+						}
+						outRow[ow] = m
+					}
+				}
+			}
+		}(wk, p0, p1)
+	}
+	wg.Wait()
+	return out
+}
+
 // Upsample2x performs nearest-neighbor 2x upsampling on a [N, C, H, W] tensor.
 func (t *Tensor) Upsample2x() *Tensor {
 	N, C, H, W := t.Shape[0], t.Shape[1], t.Shape[2], t.Shape[3]
-	out := NewTensor(N, C, H*2, W*2)
+	outW := W * 2
+	out := NewTensor(N, C, H*2, outW)
+	row := make([]float32, outW)
 	for n := 0; n < N; n++ {
 		for c := 0; c < C; c++ {
+			plane := t.Data[n*t.Stride[0]+c*t.Stride[1]:]
+			outBase := (n*C + c) * H * 2 * outW
 			for h := 0; h < H; h++ {
-				for w := 0; w < W; w++ {
-					v := t.At(n, c, h, w)
-					out.Set(v, n, c, h*2, w*2)
-					out.Set(v, n, c, h*2, w*2+1)
-					out.Set(v, n, c, h*2+1, w*2)
-					out.Set(v, n, c, h*2+1, w*2+1)
+				src := plane[h*W : h*W+W]
+				for w, v := range src {
+					row[2*w] = v
+					row[2*w+1] = v
 				}
+				copy(out.Data[outBase+2*h*outW:outBase+2*h*outW+outW], row)
+				copy(out.Data[outBase+(2*h+1)*outW:outBase+(2*h+1)*outW+outW], row)
 			}
 		}
 	}

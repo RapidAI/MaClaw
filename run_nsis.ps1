@@ -1,17 +1,21 @@
 $ErrorActionPreference = 'Stop'
 $exe = 'C:\Program Files (x86)\NSIS\makensis.exe'
+$root = 'D:\workprj\aicoder'
+$cfg = Get-Content (Join-Path $root 'wails.json') -Raw | ConvertFrom-Json
+$buildNumber = (Get-Content (Join-Path $root 'build_number') -Raw).Trim()
+$version = "$($cfg.info.productVersion).$buildNumber"
+
+# multiarch.nsi includes build_params.nsh.tmp.  Passing the same !defines on
+# the command line makes NSIS fail with "already defined" when a previous
+# build left that file behind.  Generate one authoritative parameter file and
+# let the installer script consume it.
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'scripts\write_installer_params.ps1') `
+  -Root $root -AppName ([string]$cfg.name) -Version $version -OutputDir (Join-Path $root 'dist')
+if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 $args = @(
   '/V4',
-  '/DINFO_PROJECTNAME=MaClaw',
-  '/DPRODUCT_EXECUTABLE=MaClaw.exe',
-  '"/DINFO_PRODUCTNAME=码卡龙 7 万变 (MaClaw)"',
-  '/DINFO_COMPANYNAME=RapidAI',
-  '"/DINFO_COPYRIGHT=Copyright (C) 2026 RapidAI"',
-  '/DINFO_PRODUCTVERSION=7.0.0.0',
-  '/DARG_WAILS_AMD64_BINARY=D:\workprj\aicoder\dist\MaClaw_amd64.exe',
-  '/DARG_WAILS_ARM64_BINARY=D:\workprj\aicoder\dist\MaClaw_arm64.exe',
-  '/DMUI_ICON_PATH=D:\workprj\aicoder\build\windows\icon.ico',
-  'D:\workprj\aicoder\build\windows\installer\multiarch.nsi'
+  (Join-Path $root 'build\windows\installer\multiarch.nsi')
 )
-$p = Start-Process -FilePath $exe -ArgumentList $args -WorkingDirectory 'D:\workprj\aicoder' -Wait -PassThru -NoNewWindow -RedirectStandardOutput 'D:\workprj\aicoder\nsis_stdout.log' -RedirectStandardError 'D:\workprj\aicoder\nsis_stderr.log'
+$p = Start-Process -FilePath $exe -ArgumentList $args -WorkingDirectory (Join-Path $root 'build\windows\installer') -Wait -PassThru -NoNewWindow -RedirectStandardOutput (Join-Path $root 'nsis_stdout.log') -RedirectStandardError (Join-Path $root 'nsis_stderr.log')
 Write-Output ("EXIT_CODE=$($p.ExitCode)")
+if ($p.ExitCode -ne 0) { exit $p.ExitCode }

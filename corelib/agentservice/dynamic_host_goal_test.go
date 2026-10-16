@@ -178,3 +178,57 @@ func TestReviewedHostGoalUsesTrustedPrincipalAndStore(t *testing.T) {
 		t.Fatal("host without a goal store must not attach goal.manage.longrunning")
 	}
 }
+
+// TestReviewedHostGoalStatusVocabulary pins the vocabulary at this host: the
+// schema advertises only the lifecycle names, the aliases still reach them,
+// and an invented status is refused by the real administer path with a
+// refusal that names the canonical set. The vocabulary lives with the type in
+// the goal package, so this host cannot drift from the GUI surface serving
+// the same capability.
+func TestReviewedHostGoalStatusVocabulary(t *testing.T) {
+	schema := reviewedHostGoalInvocationSchema()
+	properties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("goal schema has no properties: %#v", schema)
+	}
+	status, ok := properties["status"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("goal schema has no status property: %#v", properties)
+	}
+	enum, ok := status["enum"].([]string)
+	if !ok || len(enum) == 0 {
+		t.Fatalf("status must publish a non-empty enum, got %#v", status["enum"])
+	}
+	for _, name := range enum {
+		canonical, ok := reviewedHostGoalStatus(name)
+		if !ok || canonical != goal.Status(name) {
+			t.Fatalf("schema advertises status %q, but the parser maps it to (%q, %v)", name, canonical, ok)
+		}
+	}
+	for sent, want := range map[string]goal.Status{"completed": goal.StatusComplete, "fail": goal.StatusFailed} {
+		canonical, ok := reviewedHostGoalStatus(sent)
+		if !ok || canonical != want {
+			t.Fatalf("alias %q maps to (%q, %v), want %q", sent, canonical, ok, want)
+		}
+	}
+	// Through a real prior goal, an invented status must be refused with the
+	// canonical vocabulary named, so the first failure can redirect the turn.
+	store := goal.NewStore(t.TempDir())
+	cb := &coreAgentCallbacks{principal: Principal{TenantID: "tenant", UserID: "user"}, goals: store}
+	principal := Principal{TenantID: "tenant", UserID: "user"}
+	ownerID := memoryOwnerIDForPrincipal(principal)
+	if _, err := store.Set(ownerID, "ship the slice"); err != nil {
+		t.Fatalf("seed goal create=%v", err)
+	}
+	for _, invented := range []string{"paused", "budget_limited", "done"} {
+		_, err := cb.ManageReviewedHostGoal(context.Background(), principal, "", invented, "")
+		if err == nil || !strings.Contains(err.Error(), "host_goal_status_rejected") {
+			t.Fatalf("status %q = %v, want host_goal_status_rejected", invented, err)
+		}
+		for _, valid := range goal.StatusOptions() {
+			if !strings.Contains(err.Error(), valid) {
+				t.Fatalf("refusal for %q = %v does not mention %q", invented, err, valid)
+			}
+		}
+	}
+}

@@ -6,7 +6,50 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
+
+// provisionRouterFixtureTools temporarily extends the compile-time legacy
+// adapter provision catalog with reviewed entries for fixture tool names, and
+// restores the catalog on cleanup. The catalog is owner-reviewed with no
+// public test seeding by design; these tests live in-package, so they widen
+// the package-private table for their duration. Without this the provision
+// gate (legacyAdapterCandidateAllowed) filters every fixture name before
+// ranking, leaving zero candidates for the reranker/routing path under test.
+func provisionRouterFixtureTools(t *testing.T, names ...string) {
+	t.Helper()
+	old := legacyAdapterProvisions
+	entries := make([]LegacyAdapterProvision, 0, len(old)+len(names))
+	for _, e := range old {
+		entries = append(entries, e)
+	}
+	for _, n := range names {
+		if _, exists := old[n]; exists {
+			// Already reviewed in the compile-time catalog (e.g. session_search);
+			// no test entry needed.
+			continue
+		}
+		entries = append(entries, LegacyAdapterProvision{
+			ToolName:        n,
+			Capability:      "test.fixture",
+			Owner:           "router-test",
+			AdapterContract: "router-test-v1",
+			Effects:         []EffectClass{EffectReadOnly},
+			DeleteAfter:     time.Date(2099, 1, 1, 0, 0, 0, 0, time.UTC),
+		})
+	}
+	legacyAdapterProvisions = mustLegacyAdapterProvisions(entries)
+	t.Cleanup(func() { legacyAdapterProvisions = old })
+}
+
+// numberedFixtureNames generates prefix0..prefix(n-1) for provision seeding.
+func numberedFixtureNames(prefix string, n int) []string {
+	names := make([]string, 0, n)
+	for i := 0; i < n; i++ {
+		names = append(names, fmt.Sprintf("%s%d", prefix, i))
+	}
+	return names
+}
 
 // mockReranker for unit tests with configurable behavior.
 type mockReranker struct {
@@ -69,6 +112,7 @@ func TestRouter_Reranker_Error(t *testing.T) {
 	router.SetReranker(mock)
 
 	tools := buildTestToolSet(reg)
+	provisionRouterFixtureTools(t, numberedFixtureNames("test_tool_", MaxToolBudget+5)...)
 	result := router.Route("test query", tools)
 
 	if mock.callCount == 0 {
@@ -107,6 +151,7 @@ func TestRouter_Reranker_UsesRemainingCandidateSlots(t *testing.T) {
 		reg.Register(RegisteredTool{Name: name, Description: desc, Category: CategoryNonCode})
 		tools = append(tools, makeToolDef(name, desc))
 	}
+	provisionRouterFixtureTools(t, numberedFixtureNames("slot_tool_", remainingSlots+1)...)
 
 	_ = router.Route("slot test query", tools)
 	if mock.callCount == 0 {
@@ -125,6 +170,7 @@ func TestRouter_Reranker_PartialResults(t *testing.T) {
 	router.SetReranker(mock)
 
 	tools := buildTestToolSet(reg)
+	provisionRouterFixtureTools(t, numberedFixtureNames("test_tool_", MaxToolBudget+5)...)
 	result := router.Route("test query", tools)
 
 	if mock.callCount == 0 {

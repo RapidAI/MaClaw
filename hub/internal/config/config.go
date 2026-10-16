@@ -33,11 +33,6 @@ type Config struct {
 		AllowSelfEnroll bool   `yaml:"allow_self_enroll"`
 	} `yaml:"identity"`
 
-	PWA struct {
-		StaticDir   string `yaml:"static_dir"`
-		RoutePrefix string `yaml:"route_prefix"`
-	} `yaml:"pwa"`
-
 	Center struct {
 		Enabled  bool     `yaml:"enabled"`
 		BaseURL  string   `yaml:"base_url"`
@@ -95,10 +90,6 @@ type Config struct {
 		Enabled bool `yaml:"enabled"`
 	} `yaml:"digital_assets"`
 
-	Bridge struct {
-		Dir string `yaml:"dir"` // path to openclaw-bridge directory
-	} `yaml:"bridge"`
-
 	ContentAudit struct {
 		ProgramPath    string `yaml:"program_path"`
 		TimeoutSeconds int    `yaml:"timeout_seconds"`
@@ -133,6 +124,14 @@ type Config struct {
 		KeyFile      string `yaml:"key_file"`
 		AutoGenerate bool   `yaml:"auto_generate"` // generate self-signed cert if cert/key missing
 	} `yaml:"tls"`
+
+	// Backup holds the minimal settings used by the one-shot
+	// `hub backup create` archive primitive. Continuous scheduling is left to
+	// the deployment (external cron invoking `backup create`).
+	Backup struct {
+		OutputDir   string `yaml:"output_dir"`
+		IncludeLogs bool   `yaml:"include_logs"`
+	} `yaml:"backup"`
 
 	// Replica identifies this Hub process among optional tenant-head replicas.
 	// Empty NodeID is treated as "local". Peers are other Hub processes of the
@@ -174,9 +173,6 @@ func Default() *Config {
 	cfg.Identity.EnrollmentMode = "open"
 	cfg.Identity.AllowSelfEnroll = true
 
-	cfg.PWA.StaticDir = "./web/dist"
-	cfg.PWA.RoutePrefix = "/app"
-
 	cfg.Center.Enabled = true
 	cfg.Center.BaseURL = remote.DefaultRemoteHubCenterURLs[0]
 	cfg.Center.RegisterOnStartup = true
@@ -193,8 +189,6 @@ func Default() *Config {
 	cfg.Logging.Level = "info"
 	cfg.Logging.Dir = "./data/logs"
 
-	cfg.Bridge.Dir = "./openclaw-bridge"
-
 	cfg.ContentAudit.TimeoutSeconds = 30
 	cfg.ContentAudit.TimeoutPolicy = "block"
 
@@ -202,6 +196,8 @@ func Default() *Config {
 	cfg.TLS.CertFile = "./data/tls/hub.crt"
 	cfg.TLS.KeyFile = "./data/tls/hub.key"
 	cfg.TLS.AutoGenerate = true
+
+	cfg.Backup.OutputDir = "./data/backups"
 
 	return cfg
 }

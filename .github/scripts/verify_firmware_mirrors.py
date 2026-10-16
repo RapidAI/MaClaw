@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Release gate for the four ClawMateMaker firmware mirror objects.
 
-The desktop flasher can select the fastest of GitHub, Cloudflare R2 and
-Tencent COS only after it independently validates the signed archive.  This
-gate makes the release workflow's public-mirror promise observable before the
-GitHub Release itself becomes visible.
+The desktop flasher can select the fastest of GitHub and Cloudflare R2 only
+after it independently validates the signed archive.  This gate makes the
+release workflow's public-mirror promise observable before the GitHub Release
+itself becomes visible. The Tencent COS mirror was retired (2026-10-08).
 """
 
 import hashlib
@@ -17,7 +17,6 @@ import urllib.parse
 import urllib.request
 
 from firmware_manifest_contract import (
-    COS_PUBLIC_BASE_URL,
     R2_PUBLIC_BASE_URL,
     required_firmware,
     require_split_firmware_archives,
@@ -49,7 +48,6 @@ def required_env(name):
 def public_base(name):
     expected = {
         "R2_PUBLIC_BASE_URL": R2_PUBLIC_BASE_URL,
-        "COS_PUBLIC_BASE_URL": COS_PUBLIC_BASE_URL,
     }.get(name)
     if expected is None:
         raise RuntimeError(f"unsupported public mirror label: {name}")
@@ -122,7 +120,7 @@ def main():
     prefix = "beta" if os.environ.get("RELEASE_CHANNEL", "stable").strip() == "beta" else "latest"
     validate_manifest_asset_urls(local_manifest, os.environ.get("RELEASE_CHANNEL", "stable"))
 
-    for label in ("R2_PUBLIC_BASE_URL", "COS_PUBLIC_BASE_URL"):
+    for label in ("R2_PUBLIC_BASE_URL",):
         base = public_base(label)
         remote_manifest = read_response(url_at(base, manifest_name), MANIFEST_LIMIT)
         try:

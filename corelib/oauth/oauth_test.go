@@ -23,6 +23,26 @@ import (
 //
 // For any call to GenerateCodeVerifier(), the result length must be in [43,128]
 // and every character must belong to the unreserved set [A-Za-z0-9\-._~].
+func TestNormalizeOAuthCodeInput(t *testing.T) {
+	cases := map[string]string{
+		"  abc.DEF-_  ": "abc.DEF-_",
+		"http://127.0.0.1:52819/callback?code=JZsrPXve&state=xyz": "JZsrPXve",
+		"code=JZsrPXve&state=xyz":                                 "JZsrPXve",
+		"":                                                        "",
+	}
+	for in, want := range cases {
+		if got := NormalizeOAuthCodeInput(in); got != want {
+			t.Fatalf("NormalizeOAuthCodeInput(%q) = %q, want %q", in, got, want)
+		}
+	}
+	if !LooksLikeOAuthAuthCode("JZsrPXvepLyZpMof7JkLwTLAi0FS-TFH9cjmJbFu3pESw-q5qK0Vmy") {
+		t.Fatal("expected xAI-style code to look valid")
+	}
+	if LooksLikeOAuthAuthCode("short") {
+		t.Fatal("short clipboard text should be ignored")
+	}
+}
+
 func TestProperty_CodeVerifier_RFC7636(t *testing.T) {
 	re := regexp.MustCompile(`^[A-Za-z0-9\-._~]+$`)
 
@@ -198,6 +218,50 @@ func TestCallbackServer_StartStop(t *testing.T) {
 		t.Fatalf("port %d should be released after Stop, but got: %v", port, err)
 	}
 	ln.Close()
+}
+
+func TestCallbackServer_CORSPreflightDoesNotAbort(t *testing.T) {
+	srv := NewCallbackServer()
+	if err := srv.Start("/callback"); err != nil {
+		t.Fatal(err)
+	}
+	defer srv.Stop()
+
+	req, err := http.NewRequest(http.MethodOptions, fmt.Sprintf("http://127.0.0.1:%d/callback", srv.Port()), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Origin", "https://accounts.x.ai")
+	req.Header.Set("Access-Control-Request-Private-Network", "true")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("OPTIONS status = %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Private-Network"); got != "true" {
+		t.Fatalf("Allow-Private-Network = %q", got)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "https://accounts.x.ai" {
+		t.Fatalf("Allow-Origin = %q", got)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := srv.WaitForCode(1500 * time.Millisecond)
+		done <- err
+	}()
+	callbackURL := fmt.Sprintf("http://127.0.0.1:%d/callback?code=from-xai-page", srv.Port())
+	getResp, err := http.Get(callbackURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	getResp.Body.Close()
+	if err := <-done; err != nil {
+		t.Fatalf("wait after CORS probe: %v", err)
+	}
 }
 
 func TestCallbackServer_SuccessCallback(t *testing.T) {

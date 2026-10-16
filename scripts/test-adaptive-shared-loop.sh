@@ -30,7 +30,7 @@ tui_run='TestFormatCanary|TestFirstNonFlagArg|TestSlashCanary'
 run_pkg ./corelib/doctor/ "$doctor_run" 60s
 run_pkg ./corelib/agent/ "$agent_run" 120s
 run_pkg ./maclaw-cli/ "$cli_run" 90s
-run_pkg ./gui/ "$gui_run" 120s
+run_pkg ./guiapp/ "$gui_run" 120s
 run_pkg ./tui/ "$tui_run" 90s
 
 echo ""

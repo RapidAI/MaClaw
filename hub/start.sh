@@ -2,6 +2,14 @@
 set -eu
 
 APP_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+
+# Desktop API token shared with MaClawSrv. Mode 600. A binary deploy does not rewrite this file.
+if [ -f "$APP_DIR/desktop-api.env" ]; then
+  set -a
+  . "$APP_DIR/desktop-api.env"
+  set +a
+fi
+
 BIN_NAME="maclaw-hub"
 CONFIG_PATH="$APP_DIR/configs/config.yaml"
 EXAMPLE_CONFIG_PATH="$APP_DIR/configs/config.example.yaml"

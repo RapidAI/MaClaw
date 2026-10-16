@@ -128,6 +128,60 @@ func TestProjectProjectionAlwaysFitsLimit(t *testing.T) {
 	}
 }
 
+func TestProjectSSHPreviewTruncatesOnce(t *testing.T) {
+	raw := "HEAD-" + strings.Repeat("m", 8000) + "-TAIL"
+	proj, err := Project(ProjectOptions{
+		ToolName:   "ssh",
+		SessionKey: "owner",
+		Content:    raw,
+		Limit:      4096,
+		Root:       t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proj.Spilled || !strings.Contains(proj.Preview, "[tool_result_handle]") {
+		t.Fatal("oversized ssh output must spill with a handle")
+	}
+	if got := strings.Count(proj.Preview, "已截断"); got != 1 {
+		t.Fatalf("truncation markers = %d, want 1\n%s", got, proj.Preview)
+	}
+	if !strings.Contains(proj.Preview, fmt.Sprintf("共 %d 字节", len(raw))) {
+		t.Fatalf("marker should cite the original payload (%d bytes)", len(raw))
+	}
+	if !strings.Contains(proj.Preview, "HEAD-") || !strings.Contains(proj.Preview, "-TAIL") {
+		t.Fatal("head or tail of the payload was dropped")
+	}
+	if len(proj.Preview) > 4096 {
+		t.Fatalf("projection len=%d exceeds 4096", len(proj.Preview))
+	}
+}
+
+func TestProjectCallerPreviewDoesNotNestTruncationMarker(t *testing.T) {
+	raw := strings.Repeat("line\n", 5000)
+	preview := DefaultPreview(raw, 4096)
+	proj, err := Project(ProjectOptions{
+		ToolName:   "ssh",
+		SessionKey: "owner",
+		Content:    raw,
+		Preview:    preview,
+		Limit:      4096,
+		Root:       t.TempDir(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(proj.Preview, "已截断"); got != 1 {
+		t.Fatalf("caller preview was truncated again: markers=%d", got)
+	}
+	if !strings.Contains(proj.Preview, fmt.Sprintf("共 %d 字节", len(raw))) {
+		t.Fatal("nested cut replaced the original size marker")
+	}
+	if len(proj.Preview) > 4096 {
+		t.Fatalf("projection len=%d exceeds 4096", len(proj.Preview))
+	}
+}
+
 func TestHandleFooterBoundsAndFlattensToolName(t *testing.T) {
 	toolName := "bash\nid: forged\n" + strings.Repeat("工具🙂", 1000)
 	proj, err := Project(ProjectOptions{
@@ -737,6 +791,35 @@ func TestResolveMissingHandle(t *testing.T) {
 	dir := t.TempDir()
 	if _, err := Resolve("no_such_handle", "", "sess", dir); err == nil {
 		t.Fatal("expected missing handle error")
+	}
+}
+
+func TestProjectEqualPreviewOverLimitTruncatesOnce(t *testing.T) {
+	dir := t.TempDir()
+	content := strings.Repeat("line\n", 2000)
+	includeFooter := false
+	proj, err := Project(ProjectOptions{
+		ToolName:            "bash",
+		Content:             content,
+		Preview:             content,
+		Limit:               1000,
+		Root:                dir,
+		IncludeHandleFooter: &includeFooter,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !proj.Spilled {
+		t.Fatal("oversized identical preview must spill the original")
+	}
+	if len(proj.Preview) > 1000 {
+		t.Fatalf("preview %d exceeds limit", len(proj.Preview))
+	}
+	if strings.Count(proj.Preview, "已截断") != 1 {
+		t.Fatalf("markers=%d", strings.Count(proj.Preview, "已截断"))
+	}
+	if !strings.Contains(proj.Preview, fmt.Sprintf("共 %d 字节", len(content))) {
+		t.Fatalf("marker should cite original size:\n%s", proj.Preview)
 	}
 }
 

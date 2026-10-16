@@ -7,6 +7,23 @@ import "fmt"
 // registry version, never a silent mutation of an in-use ID.
 const BuiltinCapabilityOntologyVersion = "builtin-capability-ontology-v1"
 
+// ExternalCapabilityPrefix marks a capability registered at runtime by a
+// vendor-installed dynamic provider (MCP/Skill) instead of shipped in the
+// reviewed builtin ontology. A vendor capability must carry this prefix; the
+// host never lets it widen the governed vocabulary past its namespace effect
+// ceiling (see CapabilityRegistry.RegisterExternalCapability). A builtin or
+// reviewed capability must never use this prefix.
+const ExternalCapabilityPrefix CapabilityID = "x:"
+
+// DefaultExternalCapabilityEffectCeiling is the effect set any vendor external
+// capability may declare unless its namespace opts into a wider ceiling via
+// CapabilityRegistry.SetExternalCapabilityCeiling. It deliberately excludes
+// sensitive and local_mutation: an arbitrary installed provider may read and
+// may act on an external system, but it may not declare host-side sensitive
+// authority (for example shell execution) or local state mutation without an
+// explicit, host-reviewed namespace override.
+var DefaultExternalCapabilityEffectCeiling = []EffectClass{EffectReadOnly, EffectExternalEffect}
+
 // Builtin capability IDs use a stable "verb outcome + domain object" naming.
 // Tool names, brand names, protocol names and UI copy must never enter an ID:
 // one capability describes an outcome and may be provided by several builtin,
@@ -16,9 +33,12 @@ const (
 	CapabilityShellExecuteRemoteHost  CapabilityID = "shell.execute.remote_host"
 	CapabilityBuildVerifyLocal        CapabilityID = "build.verify.local"
 	CapabilityFSReadLocal             CapabilityID = "fs.read.local"
+	CapabilityFSDeleteLocal           CapabilityID = "fs.delete.local"
+	CapabilityFSReadRemote            CapabilityID = "fs.read.remote"
 	CapabilityFSWriteLocal            CapabilityID = "fs.write.local"
 	CapabilitySystemLaunchLocal       CapabilityID = "system.launch.local"
 	CapabilityRepoInspectVCS          CapabilityID = "repo.inspect.vcs"
+	CapabilityRepoInspectRemote       CapabilityID = "repo.inspect.remote"
 	CapabilityRepoMutateVCS           CapabilityID = "repo.mutate.vcs"
 	CapabilityDocumentWriteOffice     CapabilityID = "document.write.office"
 	CapabilityDocumentRenderPDF       CapabilityID = "document.render.pdf"
@@ -59,10 +79,24 @@ const (
 	// be granted the one that can also change it, and the restricted workflow
 	// states that deny mutation denied the lookup with it — a planning turn
 	// could not read the data it was planning against.
-	CapabilityBusinessDataRead     CapabilityID = "business.data.read"
-	CapabilityBusinessDataMIS      CapabilityID = "business.data.mis"
-	CapabilityInteractionAskUser   CapabilityID = "interaction.ask.user"
-	CapabilityGovernanceInspectExp CapabilityID = "governance.inspect.experience"
+	CapabilityBusinessDataRead CapabilityID = "business.data.read"
+	CapabilityBusinessDataMIS  CapabilityID = "business.data.mis"
+	// CapabilityRecordReadWorklog and CapabilityRecordUpdateWorklog are one
+	// external time-block work record, split so a lookup cannot receive the
+	// mutation and an append cannot be satisfied by the query tool.
+	// task.track.local is the local todo list. business.data.mis is the MIS
+	// form integration. Neither outcome is this record, and the product or
+	// server brand must not appear in the ID.
+	CapabilityRecordReadWorklog   CapabilityID = "record.read.worklog"
+	CapabilityRecordUpdateWorklog CapabilityID = "record.update.worklog"
+	// CapabilityMessageReadMailbox and CapabilityMessageSendMailbox are the
+	// configured IMAP/SMTP mailbox. A lookup must not be granted the send,
+	// and a send cannot be satisfied by reading mail.
+	CapabilityMessageReadMailbox      CapabilityID = "message.read.mailbox"
+	CapabilityMessageSendMailbox      CapabilityID = "message.send.mailbox"
+	CapabilityMessageConfigureMailbox CapabilityID = "message.configure.mailbox"
+	CapabilityInteractionAskUser      CapabilityID = "interaction.ask.user"
+	CapabilityGovernanceInspectExp    CapabilityID = "governance.inspect.experience"
 )
 
 // builtinCapabilityOntologyOwner is the reviewed owner of every builtin
@@ -99,7 +133,7 @@ func BuiltinCapabilityOntology() []CapabilityDescriptor {
 			// granting the arbitrary local execution that would carry file and
 			// repository mutation along with it.
 			ID: CapabilityBuildVerifyLocal, Version: "v1", Owner: builtinCapabilityOntologyOwner,
-			Summary: "Run a reviewed build, test, or lint task in the bound workspace.",
+			Summary: "Run a reviewed build, test, or lint task in the bound workspace. build in a LaTeX directory compiles its documents with the host TeX engine.",
 			Qualifiers: map[string]QualifierConstraint{
 				"task": {Values: []string{"build", "test", "lint", "format_check"}},
 			},
@@ -111,8 +145,24 @@ func BuiltinCapabilityOntology() []CapabilityDescriptor {
 			Effects: []EffectClass{EffectReadOnly},
 		},
 		{
+			// fs.read.remote mirrors fs.read.local across an authenticated remote
+			// session: the locality is part of the capability because the binding
+			// proof (a verified session handle) differs from a local workspace
+			// handle, and the two are never interchangeable.
+			ID: CapabilityFSReadRemote, Version: "v1", Owner: builtinCapabilityOntologyOwner,
+			Summary: "Read or search filesystem content on a remote host over an authenticated session.",
+			Effects: []EffectClass{EffectReadOnly},
+		},
+		{
 			ID: CapabilityFSWriteLocal, Version: "v1", Owner: builtinCapabilityOntologyOwner,
 			Summary: "Create or modify local filesystem content.",
+			Effects: []EffectClass{EffectSensitive},
+		},
+		{
+			// Removing a path is not a write (nothing is authored) and not a
+			// shell (no command is chosen). The host deletes one workspace file.
+			ID: CapabilityFSDeleteLocal, Version: "v1", Owner: builtinCapabilityOntologyOwner,
+			Summary: "Remove one file inside the bound local workspace.",
 			Effects: []EffectClass{EffectSensitive},
 		},
 		{
@@ -123,6 +173,13 @@ func BuiltinCapabilityOntology() []CapabilityDescriptor {
 		{
 			ID: CapabilityRepoInspectVCS, Version: "v1", Owner: builtinCapabilityOntologyOwner,
 			Summary: "Inspect version-control status and diffs without mutating the repository.",
+			Effects: []EffectClass{EffectReadOnly},
+		},
+		{
+			// repo.inspect.remote is the remote-session counterpart of
+			// repo.inspect.vcs: same inspected outcome, different binding proof.
+			ID: CapabilityRepoInspectRemote, Version: "v1", Owner: builtinCapabilityOntologyOwner,
+			Summary: "Inspect version-control status and diffs on a remote host over an authenticated session.",
 			Effects: []EffectClass{EffectReadOnly},
 		},
 		{
@@ -280,12 +337,37 @@ func BuiltinCapabilityOntology() []CapabilityDescriptor {
 		},
 		{
 			ID: CapabilityBusinessDataRead, Version: "v1", Owner: builtinCapabilityOntologyOwner,
-			Summary: "Query business data through the MIS integration without changing it.",
+			Summary: "Query business or SQL data sources without changing them.",
 			Effects: []EffectClass{EffectReadOnly},
 		},
 		{
 			ID: CapabilityBusinessDataMIS, Version: "v1", Owner: builtinCapabilityOntologyOwner,
 			Summary: "Operate business data through the MIS integration.",
+			Effects: []EffectClass{EffectSensitive},
+		},
+		{
+			ID: CapabilityRecordReadWorklog, Version: "v1", Owner: builtinCapabilityOntologyOwner,
+			Summary: "Read one external time-block work record without changing it.",
+			Effects: []EffectClass{EffectReadOnly},
+		},
+		{
+			ID: CapabilityRecordUpdateWorklog, Version: "v1", Owner: builtinCapabilityOntologyOwner,
+			Summary: "Append or update one external time-block work record. This is not the local todo list.",
+			Effects: []EffectClass{EffectExternalEffect},
+		},
+		{
+			ID: CapabilityMessageReadMailbox, Version: "v1", Owner: builtinCapabilityOntologyOwner,
+			Summary: "Read messages from a configured mailbox.",
+			Effects: []EffectClass{EffectReadOnly},
+		},
+		{
+			ID: CapabilityMessageSendMailbox, Version: "v1", Owner: builtinCapabilityOntologyOwner,
+			Summary: "Send, reply, or forward through a configured mailbox.",
+			Effects: []EffectClass{EffectExternalEffect},
+		},
+		{
+			ID: CapabilityMessageConfigureMailbox, Version: "v1", Owner: builtinCapabilityOntologyOwner,
+			Summary: "Save a mailbox from the server, protocol, port, username, and password the user told the agent.",
 			Effects: []EffectClass{EffectSensitive},
 		},
 		{

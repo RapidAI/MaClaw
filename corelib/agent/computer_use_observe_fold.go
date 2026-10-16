@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -115,33 +114,19 @@ func toolCallNamesFromMessage(message interface{}) map[string]string {
 	if !ok {
 		return nil
 	}
-	raw, err := json.Marshal(mm["tool_calls"])
-	if err != nil {
-		return nil
-	}
-	var decoded []struct {
-		ID       string `json:"id"`
-		Name     string `json:"name"`
-		Function struct {
-			Name string `json:"name"`
-		} `json:"function"`
-	}
-	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return nil
-	}
-	out := make(map[string]string, len(decoded))
-	for _, call := range decoded {
-		id := strings.TrimSpace(call.ID)
-		if id == "" {
-			continue
-		}
-		name := strings.TrimSpace(call.Function.Name)
-		if name == "" {
-			name = strings.TrimSpace(call.Name)
-		}
-		if name != "" {
+	out := map[string]string{}
+	if !visitToolCalls(mm["tool_calls"], func(id, name string) bool {
+		id = strings.TrimSpace(id)
+		name = strings.TrimSpace(name)
+		if id != "" && name != "" {
 			out[id] = name
 		}
+		return true
+	}) {
+		return nil
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

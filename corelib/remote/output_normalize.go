@@ -38,9 +38,79 @@ func NormalizeChunkLines(chunk []byte) []string {
 
 // StripANSI removes ANSI escape sequences and control characters from a string.
 func StripANSI(s string) string {
-	s = ansiPattern.ReplaceAllString(s, "")
-	s = controlPattern.ReplaceAllString(s, "")
+	s = StripANSIKeepSpacing(s)
 	return multiSpacePattern.ReplaceAllString(s, " ")
+}
+
+// StripANSIKeepSpacing removes ANSI and other control characters without
+// collapsing runs of spaces. Column-aligned command output keeps its
+// separators; callers trim trailing PTY padding on their own.
+func StripANSIKeepSpacing(s string) string {
+	s = ansiPattern.ReplaceAllString(s, "")
+	return controlPattern.ReplaceAllString(s, "")
+}
+
+// CompactPtyOutput strips terminal controls and trailing padding from one
+// captured command. Internal spacing is kept so df/free columns stay readable.
+func CompactPtyOutput(s string) string {
+	s = StripANSIKeepSpacing(s)
+	lines := strings.Split(s, "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimRight(line, " \t")
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+// StripLeadingCommandEcho removes the PTY echo of command from the front of
+// output. Wrapped echoes span lines at the terminal width. A line that mixes
+// the tail of the echo with real output is left in place.
+func StripLeadingCommandEcho(output, command string) string {
+	target := strings.Join(strings.Fields(command), "")
+	if target == "" || strings.TrimSpace(output) == "" {
+		return output
+	}
+	lines := strings.Split(output, "\n")
+	acc := ""
+	drop := 0
+	for i, line := range lines {
+		piece := line
+		if i == 0 {
+			piece = lineWithoutShellPrompt(line)
+		}
+		next := acc + strings.Join(strings.Fields(piece), "")
+		if next == target {
+			drop = i + 1
+			acc = next
+			break
+		}
+		if next != "" && strings.HasPrefix(target, next) {
+			drop = i + 1
+			acc = next
+			continue
+		}
+		break
+	}
+	if acc != target || drop == 0 || drop >= len(lines) {
+		return output
+	}
+	rest := strings.TrimSpace(strings.Join(lines[drop:], "\n"))
+	if rest == "" {
+		return output
+	}
+	return rest
+}
+
+func lineWithoutShellPrompt(line string) string {
+	for _, prompt := range []string{"# ", "$ ", "% "} {
+		idx := strings.LastIndex(line, prompt)
+		if idx < 0 {
+			continue
+		}
+		if strings.Contains(line[:idx], "@") {
+			return line[idx+len(prompt):]
+		}
+	}
+	return line
 }
 
 // IsNoiseLine returns true if the line is visual noise (empty, dots, box-drawing).

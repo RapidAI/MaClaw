@@ -168,6 +168,110 @@ func TestRunnerCapturesReadOnlyWorkspaceBaselineBeforeExecutor(t *testing.T) {
 	}
 }
 
+func TestRunnerBlocksGatedWriterBeforeExecutorWhenBaselineProbeFails(t *testing.T) {
+	store := NewMemoryStore()
+	calls := 0
+	runner := Runner{
+		Store: store, LeaseOwner: "gated-writer",
+		WorkspaceProber: WorkspaceProberFunc(func(context.Context, Task, Attempt) (*WorkspaceProbe, error) {
+			return nil, errors.New("git is unavailable")
+		}),
+	}
+	task, attempt, err := runner.Run(context.Background(), Task{ProjectRef: "repo", Mode: "local"}, PolicySnapshot{
+		ProjectRoot: "repo", Mode: "local", FinalWorkspaceGateRequired: true,
+	}, executorFunc(func(context.Context, ExecutionRequest) ExecutionResult {
+		calls++
+		return ExecutionResult{Status: TaskCompleted, SideEffectState: SideEffectConfirmed}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("executor calls=%d; gated writer must not execute without baseline", calls)
+	}
+	if task == nil || task.Status != TaskBlocked || attempt == nil || attempt.Status != TaskBlocked || attempt.ErrorCode != "workspace_before_probe_failed" {
+		t.Fatalf("task=%+v attempt=%+v", task, attempt)
+	}
+	events, err := store.ListEvents(attempt.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seenFailure, seenBlock := false, false
+	for _, event := range events {
+		seenFailure = seenFailure || event.Type == "workspace_before_probe_failed"
+		seenBlock = seenBlock || event.Type == "workspace_gate_blocked"
+	}
+	if !seenFailure || !seenBlock {
+		t.Fatalf("events=%+v; missing baseline failure/block audit", events)
+	}
+}
+
+func TestRunnerCancelledContextNeverBlocksGatedWriterOnBaselineProbe(t *testing.T) {
+	// The pre-execution workspace gate exists to stop mutating execution
+	// without a baseline. A cancelled context never executes anything, so the
+	// gate must not turn the attempt into blocked-before-probe: the ordinary
+	// cancelled-context mapping (interrupted/uncertain) owns the terminal
+	// state, and the probe failure remains bounded audit evidence only.
+	store := NewMemoryStore()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	calls := 0
+	runner := Runner{
+		Store: store, LeaseOwner: "gated-writer",
+		WorkspaceProber: WorkspaceProberFunc(func(context.Context, Task, Attempt) (*WorkspaceProbe, error) {
+			return nil, errors.New("probe fails instantly under a cancelled context")
+		}),
+	}
+	task, attempt, err := runner.Run(ctx, Task{ProjectRef: "repo", Mode: "local"}, PolicySnapshot{
+		ProjectRoot: "repo", Mode: "local", FinalWorkspaceGateRequired: true,
+	}, executorFunc(func(context.Context, ExecutionRequest) ExecutionResult {
+		calls++
+		return ExecutionResult{Status: TaskCompleted, SideEffectState: SideEffectConfirmed}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task == nil || task.Status != TaskInterrupted || attempt == nil || attempt.Status != TaskInterrupted || attempt.SideEffectState != SideEffectUncertain {
+		t.Fatalf("cancelled attempt must stay interrupted/uncertain: task=%+v attempt=%+v", task, attempt)
+	}
+	if calls != 1 {
+		t.Fatalf("executor calls=%d; a cancelled context still reaches the executor and its result is overridden", calls)
+	}
+	events, err := store.ListEvents(attempt.AttemptID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seenFailure, seenBlock := false, false
+	for _, event := range events {
+		seenFailure = seenFailure || event.Type == "workspace_before_probe_failed"
+		seenBlock = seenBlock || event.Type == "workspace_gate_blocked"
+	}
+	if !seenFailure || seenBlock {
+		t.Fatalf("events=%+v; cancelled context must keep the probe audit but never the block", events)
+	}
+}
+
+func TestRunnerBlocksGatedWriterBeforeExecutorWithoutWorkspaceProber(t *testing.T) {
+	store := NewMemoryStore()
+	calls := 0
+	runner := Runner{Store: store, LeaseOwner: "gated-writer"}
+	task, attempt, err := runner.Run(context.Background(), Task{ProjectRef: "repo", Mode: "local"}, PolicySnapshot{
+		ProjectRoot: "repo", Mode: "local", FinalWorkspaceGateRequired: true,
+	}, executorFunc(func(context.Context, ExecutionRequest) ExecutionResult {
+		calls++
+		return ExecutionResult{Status: TaskCompleted, SideEffectState: SideEffectConfirmed}
+	}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("executor calls=%d; gated writer must not execute without a prober", calls)
+	}
+	if task == nil || task.Status != TaskBlocked || attempt == nil || attempt.Status != TaskBlocked || attempt.ErrorCode != "workspace_probe_unavailable" {
+		t.Fatalf("task=%+v attempt=%+v", task, attempt)
+	}
+}
+
 func TestRunnerDoesNotOverwriteParentAfterChildAdmission(t *testing.T) {
 	store := NewMemoryStore()
 	now := time.Date(2026, 8, 10, 10, 0, 0, 0, time.UTC)
@@ -201,6 +305,29 @@ func TestRunnerFinalWorkspaceGateRequiresChangedReadOnlyProbe(t *testing.T) {
 		return ExecutionResult{Status: TaskCompleted, SideEffectState: SideEffectObserved}
 	}))
 	if err != nil || task.Status != TaskBlocked || attempt.Status != TaskBlocked || attempt.ErrorCode != "final_workspace_unchanged" || attempt.WorkspaceAfter == nil {
+		t.Fatalf("task=%#v attempt=%#v err=%v", task, attempt, err)
+	}
+}
+
+func TestRunnerFinalWorkspaceGateAcceptsHostFileActivityWhenPorcelainUnchanged(t *testing.T) {
+	store := NewMemoryStore()
+	probes := []*WorkspaceProbe{
+		{ProjectRef: "/home/prj8", Head: "abc", StatusHash: "untracked"},
+		{ProjectRef: "/home/prj8", Head: "abc", StatusHash: "untracked"},
+	}
+	runner := Runner{Store: store, LeaseOwner: "gui:test", WorkspaceProber: WorkspaceProberFunc(func(context.Context, Task, Attempt) (*WorkspaceProbe, error) {
+		probe := probes[0]
+		probes = probes[1:]
+		return probe, nil
+	})}
+	task, attempt, err := runner.Run(context.Background(), Task{ProjectRef: "/home/prj8", Mode: "remote"}, PolicySnapshot{ProjectRoot: "/home/prj8", Mode: "remote", RemoteTarget: "sha256:host", FinalWorkspaceGateRequired: true}, executorFunc(func(context.Context, ExecutionRequest) ExecutionResult {
+		return ExecutionResult{
+			Status:          TaskCompleted,
+			SideEffectState: SideEffectConfirmed,
+			Evidence:        []Evidence{{Type: "remote_file_activity", Digest: "sha256:edited-untracked"}},
+		}
+	}))
+	if err != nil || task.Status != TaskCompleted || attempt.Status != TaskCompleted || attempt.ErrorCode != "" {
 		t.Fatalf("task=%#v attempt=%#v err=%v", task, attempt, err)
 	}
 }
@@ -352,5 +479,112 @@ func TestRunnerDiscardsLateExecutorResultAfterExplicitCancellation(t *testing.T)
 	events, err := store.ListEvents(attempts[0].AttemptID)
 	if err != nil || len(events) != 3 || events[0].Type != "attempt_started" || events[1].Type != "task_cancelled" || events[2].Type != "stale_callback_discarded" {
 		t.Fatalf("events=%+v err=%v", events, err)
+	}
+}
+
+func TestRunnerSecondTaskWaitsForSameDirectoryWriter(t *testing.T) {
+	store := NewMemoryStore()
+	root := `D:\shared`
+	hold := make(chan struct{})
+	started := make(chan struct{})
+	holderDone := make(chan error, 1)
+	go func() {
+		_, _, err := (Runner{Store: store, LeaseOwner: "holder", LeaseDuration: time.Minute}).Run(context.Background(), Task{ProjectRef: root, Mode: "local"}, PolicySnapshot{ProjectRoot: root, Mode: "local"}, executorFunc(func(context.Context, ExecutionRequest) ExecutionResult {
+			close(started)
+			<-hold
+			return ExecutionResult{Status: TaskCompleted}
+		}))
+		holderDone <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("holder did not start")
+	}
+	waited := make(chan struct{})
+	waiterDone := make(chan error, 1)
+	go func() {
+		_, _, err := (Runner{
+			Store: store, LeaseOwner: "waiter", LeaseDuration: time.Minute,
+			OnAdmissionWait: func(WriteSetConflict) { close(waited) },
+		}).Run(context.Background(), Task{ProjectRef: root, Mode: "local"}, PolicySnapshot{ProjectRoot: root, Mode: "local"}, executorFunc(func(context.Context, ExecutionRequest) ExecutionResult {
+			return ExecutionResult{Status: TaskCompleted}
+		}))
+		waiterDone <- err
+	}()
+	select {
+	case <-waited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("waiter did not queue behind the live writer")
+	}
+	select {
+	case err := <-waiterDone:
+		t.Fatalf("waiter finished while the directory was still held: %v", err)
+	case <-time.After(200 * time.Millisecond):
+	}
+	close(hold)
+	select {
+	case err := <-waiterDone:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("waiter did not run after the directory writer finished")
+	}
+	if err := <-holderDone; err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestRenewedLeaseKeepsDirectoryClaimPastOriginalDeadline(t *testing.T) {
+	store := NewMemoryStore()
+	now := time.Date(2026, 10, 13, 5, 38, 0, 0, time.UTC)
+	root := `D:\shared`
+	first, err := store.CreateTask(Task{ProjectRef: root, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.CreateTask(Task{ProjectRef: root, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := PolicySnapshot{ProjectRoot: root, Mode: "local"}
+	attempt, err := store.StartAttempt(first.TaskID, "holder", time.Minute, policy, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RenewAttemptLease(attempt.AttemptID, "holder", time.Minute, now.Add(50*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.StartAttempt(second.TaskID, "waiter", time.Minute, policy, now.Add(90*time.Second))
+	if !errors.Is(err, ErrWriterConflict) {
+		t.Fatalf("renewed writer was no longer a conflict: %v", err)
+	}
+}
+
+func TestExpiredRunningWriterDoesNotBlockWithoutLocalExecutor(t *testing.T) {
+	store := NewMemoryStore()
+	now := time.Date(2026, 10, 13, 5, 38, 0, 0, time.UTC)
+	root := `D:\shared`
+	first, err := store.CreateTask(Task{ProjectRef: root, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := store.CreateTask(Task{ProjectRef: root, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	policy := PolicySnapshot{ProjectRoot: root, Mode: "local"}
+	attempt, err := store.StartAttempt(first.TaskID, "holder", time.Minute, policy, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	markLocalLiveWriter(attempt.AttemptID)
+	if _, err := store.StartAttempt(second.TaskID, "waiter", time.Minute, policy, now.Add(2*time.Minute)); !errors.Is(err, ErrWriterConflict) {
+		t.Fatalf("local executor was admitted beside an expired lease: %v", err)
+	}
+	unmarkLocalLiveWriter(attempt.AttemptID)
+	if _, err := store.StartAttempt(second.TaskID, "waiter", time.Minute, policy, now.Add(2*time.Minute)); err != nil {
+		t.Fatalf("dead expired writer still locked the directory: %v", err)
 	}
 }

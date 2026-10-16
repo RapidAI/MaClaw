@@ -40,13 +40,36 @@ func scratchPhaseFloats(hp GemmaHParams, S int) int {
 	return attn
 }
 
+// scratchSwaRopeFloats is the size of the second RoPE table pair, for the SWA
+// layers' different base (llama.cpp resolves the base per layer, so both tables
+// have to exist at once).
+//
+// Zero when the two bases are equal -- then ropeCos/ropeSin already hold the
+// right values and a second pair would be bit-identical, so it is left nil
+// instead of wasting S*halfDim floats.  A nil pair must never be selected,
+// hence the len()>0 half of the guard at the call sites; this mirrors the
+// port's `!ropeCosSwa.empty()`.
+//
+// RopeThetaSwa <= 0 counts as unset, which is what a hand-built GemmaHParams
+// has: the loader always fills it (defaulting to 1e4), but Go's zero value is 0
+// and a base of 0 is not merely useless -- freq = 0^(2i/headDim) is +Inf for
+// every i > 0, so the whole table would be NaN.  Treating unset as "same base"
+// keeps the zero value harmless.
+func scratchSwaRopeFloats(hp GemmaHParams, S int) int {
+	if S <= 0 || hp.RopeThetaSwa <= 0 || hp.RopeThetaSwa == hp.RopeTheta {
+		return 0
+	}
+	return 2 * S * (hp.HeadDim / 2)
+}
+
 // scratchArenaFloats is the C.3 layout size for seqCap S (activation + rope + yTile + small).
 func scratchArenaFloats(hp GemmaHParams, S int) int {
 	if S <= 0 {
 		return 0
 	}
 	halfDim := hp.HeadDim / 2
-	return S*2*hp.Dim + scratchPhaseFloats(hp, S) + S*hp.Dim + yTileRows*hp.Dim + 2*S*halfDim + S + 2*hp.Dim
+	return S*2*hp.Dim + scratchPhaseFloats(hp, S) + S*hp.Dim + yTileRows*hp.Dim +
+		2*S*halfDim + scratchSwaRopeFloats(hp, S) + S + 2*hp.Dim
 }
 
 func (s *gemmaScratch) bytes() int {
@@ -86,7 +109,18 @@ func bindGemmaScratch(s *gemmaScratch, hp GemmaHParams, S int) {
 	ropeOff := yOff + yTileRows*dim
 	s.ropeCos = a[ropeOff : ropeOff+S*halfDim]
 	s.ropeSin = a[ropeOff+S*halfDim : ropeOff+2*S*halfDim]
-	scoreOff := ropeOff + 2*S*halfDim
+	swaRopeOff := ropeOff + 2*S*halfDim
+	if swaN := scratchSwaRopeFloats(hp, S); swaN > 0 {
+		s.ropeCosSwa = a[swaRopeOff : swaRopeOff+swaN/2]
+		s.ropeSinSwa = a[swaRopeOff+swaN/2 : swaRopeOff+swaN]
+	} else {
+		// Not nil-by-omission: bind is also reached by re-binding a pooled
+		// scratch whose hp is unchanged, so the slices would otherwise still
+		// point at the previous layout.
+		s.ropeCosSwa = nil
+		s.ropeSinSwa = nil
+	}
+	scoreOff := swaRopeOff + scratchSwaRopeFloats(hp, S)
 	s.scores = a[scoreOff : scoreOff+S]
 	small := scoreOff + S
 	s.rowBuf = a[small : small+dim]
@@ -94,18 +128,109 @@ func bindGemmaScratch(s *gemmaScratch, hp GemmaHParams, S int) {
 	s.seqCap = S
 }
 
-func fillRoPE(s *gemmaScratch, hp GemmaHParams, seq int) {
-	headDim := hp.HeadDim
-	halfDim := headDim / 2
+// ropeFreq is headDim/2 inverse frequencies for one RoPE theta.
+// Cached on the scratch, not in the arena.
+type ropeFreq struct {
+	theta   float32
+	headDim int
+	inv     []float32
+}
+
+func (f *ropeFreq) invFreq(theta float32, headDim int) []float32 {
+	half := headDim / 2
+	if half <= 0 {
+		return nil
+	}
+	if f.theta == theta && f.headDim == headDim && len(f.inv) == half {
+		return f.inv
+	}
+	if cap(f.inv) < half {
+		f.inv = make([]float32, half)
+	} else {
+		f.inv = f.inv[:half]
+	}
+	hd := float64(headDim)
+	th := float64(theta)
+	for i := 0; i < half; i++ {
+		// Same float32 rounding as the old per-position pow.
+		f.inv[i] = 1.0 / float32(math.Pow(th, float64(2*i)/hd))
+	}
+	f.theta = theta
+	f.headDim = headDim
+	return f.inv
+}
+
+func fillRoPETable(dstCos, dstSin, inv []float32, seq int) {
+	halfDim := len(inv)
 	for pos := 0; pos < seq; pos++ {
+		p := float32(pos)
+		base := pos * halfDim
 		for i := 0; i < halfDim; i++ {
-			freq := 1.0 / float32(math.Pow(float64(hp.RopeTheta), float64(2*i)/float64(headDim)))
-			angle := float32(pos) * freq
-			s.ropeCos[pos*halfDim+i] = float32(math.Cos(float64(angle)))
-			s.ropeSin[pos*halfDim+i] = float32(math.Sin(float64(angle)))
+			angle := p * inv[i]
+			dstCos[base+i] = float32(math.Cos(float64(angle)))
+			dstSin[base+i] = float32(math.Sin(float64(angle)))
 		}
 	}
+}
+
+func fillRoPE(s *gemmaScratch, hp GemmaHParams, seq int) {
 	s.ropeSeq = seq
+	s.ropeKind = 0
+	s.ropeHave = [3]bool{}
+	// The loader allocates a second SWA pair whenever freq_base_swa differs
+	// from freq_base; fill it eagerly with its own cached inverse frequencies
+	// so the first SWA layer already hits a complete table.
+	if len(s.ropeCosSwa) > 0 {
+		fillRoPETable(s.ropeCosSwa, s.ropeSinSwa, s.ropeLocal.invFreq(hp.RopeThetaSwa, hp.HeadDim), seq)
+	}
+	ropeForLayer(s, hp, 0)
+}
+
+// ropeForLayer returns cos/sin for this layer. Local and global thetas are
+// each filled once: local reuses the arena table, global is parked beside it.
+// EmbeddingGemma switches theta eight times per forward (five local layers,
+// then one global). Refilling on every switch was 995 µs at the seq-64 bucket
+// and 10.7 ms at seq 578. Inverse frequencies stay cached per theta.
+func ropeForLayer(sc *gemmaScratch, hp GemmaHParams, layer int) (cos, sin []float32) {
+	kind := 2
+	theta := hp.RopeThetaLocal
+	freq := &sc.ropeLocal
+	if hp.globalLayer(layer) {
+		kind = 1
+		theta = hp.RopeTheta
+		freq = &sc.ropeGlobal
+	}
+	if theta <= 0 {
+		if kind == 1 {
+			theta = 1e6
+		} else {
+			theta = 10000
+		}
+	}
+	if sc.ropeHave[kind] {
+		sc.ropeKind = kind
+		return sc.ropeKeepCos[kind], sc.ropeKeepSin[kind]
+	}
+	half := hp.HeadDim / 2
+	n := sc.ropeSeq * half
+	var dstC, dstS []float32
+	if kind == 2 && n > 0 && len(sc.ropeCos) == n {
+		dstC, dstS = sc.ropeCos, sc.ropeSin
+	} else if n > 0 && cap(sc.ropeKeepCos[kind]) >= n {
+		dstC = sc.ropeKeepCos[kind][:n]
+		dstS = sc.ropeKeepSin[kind][:n]
+	} else if n > 0 {
+		dstC = make([]float32, n)
+		dstS = make([]float32, n)
+	}
+	if n > 0 {
+		fillRoPETable(dstC, dstS, freq.invFreq(theta, hp.HeadDim), sc.ropeSeq)
+	}
+	sc.ropeKeepCos[kind] = dstC
+	sc.ropeKeepSin[kind] = dstS
+	sc.ropeHave[kind] = true
+	sc.ropeKind = kind
+	return dstC, dstS
 }
 
 func newGemmaScratch(hp GemmaHParams, seq int) *gemmaScratch {

@@ -11,12 +11,24 @@ $fail = @()
 foreach ($p in @($src,$hdr,$main,$disp,$test)) { if (-not (Test-Path -LiteralPath $p)) { $fail += "missing $p" } }
 if (Test-Path -LiteralPath $main) {
   $t = Get-Content -LiteralPath $main -Raw
-  foreach ($needle in @('tool_result_outbox','gateway_tool_result_outbox_validate_record','persistence_service_write_blob','gateway_host_flush_tool_result_outbox')) {
+  foreach ($needle in @('tool_result_outbox','persistence_service_write_blob','gateway_host_flush_tool_result_outbox')) {
     if ($t -notmatch [regex]::Escape($needle)) { $fail += "main missing $needle" }
   }
   if ($t -match 'heap_caps_malloc\(GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY,\s*MALLOC_CAP_INTERNAL') {
     $fail += 'tool-result outbox buffers must not require internal heap'
   }
+}
+# Tool-call dispatch / result delivery orchestration now lives in
+# gateway_tool_result_service.c; the per-record validation call moved with it.
+$svc = Join-Path $root 'main\services\gateway_tool_result_service.c'
+if (Test-Path -LiteralPath $svc) {
+  $t = Get-Content -LiteralPath $svc -Raw
+  if ($t -notmatch [regex]::Escape('gateway_tool_result_outbox_validate_record')) { $fail += "service missing gateway_tool_result_outbox_validate_record" }
+  if ($t -match 'heap_caps_malloc\(GATEWAY_TOOL_RESULT_OUTBOX_CAPACITY,\s*MALLOC_CAP_INTERNAL') {
+    $fail += 'tool-result outbox buffers must not require internal heap'
+  }
+} else {
+  $fail += "missing $svc"
 }
 if (Test-Path -LiteralPath $disp) {
   $t = Get-Content -LiteralPath $disp -Raw

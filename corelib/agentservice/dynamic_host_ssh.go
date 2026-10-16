@@ -14,7 +14,11 @@ const (
 	reviewedHostSSHProviderID     = "core-ssh"
 	reviewedHostSSHImplementation = "bound-session"
 	reviewedHostSSHAdapterName    = "host_shell_execute_remote_host"
-	reviewedHostSSHDefaultTimeout = 30 * time.Second
+	// Same split as the GUI trusted session: a dispatched command waits out
+	// the safety cap. The 30s figure is a stuck-session probe, and using it
+	// as this command's lifetime sends Ctrl+C while apt or a poll is still
+	// the foreground job.
+	reviewedHostSSHDefaultTimeout = 10 * time.Minute
 )
 
 type reviewedHostSSHExecutor interface {

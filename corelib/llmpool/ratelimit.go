@@ -2,6 +2,7 @@ package llmpool
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sync"
 	"time"
@@ -180,6 +181,9 @@ type ResilienceError struct {
 }
 
 func (e *ResilienceError) Error() string {
+	if e.State == "probe" {
+		return fmt.Sprintf("llmpool: provider %s circuit probe in flight (awaiting half-open probe)", e.ProviderID)
+	}
 	return fmt.Sprintf("llmpool: provider %s circuit %s (cooldown %v)", e.ProviderID, e.State, e.CooldownLeft)
 }
 
@@ -251,6 +255,43 @@ func (c *ResilienceController) BeforeAttempt(providerID string, threshold, coold
 	state.halfOpen = true
 	state.probeInFlight = true
 	return nil
+}
+
+// BeforeAttemptWithProbeWait behaves like BeforeAttempt, except that when the
+// circuit is half-open and another probe request is already in flight it waits
+// up to probeWait for that probe to settle instead of rejecting immediately.
+// If the probe is still in flight when the wait elapses (or ctx is canceled),
+// the original probe error is returned. A settled probe either closes the
+// circuit (this attempt is admitted as the next probe) or re-opens it with a
+// fresh cooldown (an open error with remaining cooldown is returned).
+func (c *ResilienceController) BeforeAttemptWithProbeWait(ctx context.Context, providerID string, threshold, cooldownMS int, probeWait time.Duration) error {
+	err := c.BeforeAttempt(providerID, threshold, cooldownMS)
+	var re *ResilienceError
+	if err == nil || probeWait <= 0 || !errors.As(err, &re) || re.State != "probe" {
+		return err
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	deadline := time.NewTimer(probeWait)
+	defer deadline.Stop()
+	tick := time.NewTicker(200 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return err
+		case <-deadline.C:
+			return err
+		case <-tick.C:
+			next := c.BeforeAttempt(providerID, threshold, cooldownMS)
+			var nextErr *ResilienceError
+			if next == nil || !errors.As(next, &nextErr) || nextErr.State != "probe" {
+				return next
+			}
+			err = next
+		}
+	}
 }
 
 // AbortProbe releases a half-open probe slot without counting a failure.

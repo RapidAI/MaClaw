@@ -309,6 +309,35 @@ func TestSemanticExecutionCoordinatorContinuityProjectionIsTenantScoped(t *testi
 	}
 }
 
+func TestSemanticExecutionCoordinatorRejectsCrossTenantLineageReuse(t *testing.T) {
+	coordinator, err := NewSQLiteSemanticExecutionCoordinator(filepath.Join(t.TempDir(), "semantic-execution.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.Close()
+	registry := semanticRegistry(t)
+	provider := semanticProvider("lineage_adapter", "visual.capture.desktop", map[string]string{"display": "primary"}, EffectReadOnly)
+	plan, err := NewToolPlanner(registry).Plan(RouteRequest{RootTaskID: "shared-root", SessionID: "shared-session", TurnID: "turn-a", Snapshot: semanticSnapshot(t, registry, []ProviderSpec{provider}), Needs: []CapabilityNeed{{ID: "capture", Capability: "visual.capture.desktop", Qualifiers: map[string]string{"display": "primary"}, Required: true}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	scope := InvocationScope{RootTaskID: plan.RootTaskID, PlanID: plan.ID, SessionID: "shared-session", TurnID: "turn-a", PrincipalID: "shared-principal"}
+	issuer, err := NewInvocationIssuerWithStore([]byte(strings.Repeat("l", 32)), coordinator.Grants)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parent, _, err := coordinator.PublishSurface(SurfacePublishRequest{Revision: RouteRevisionPublishRequest{Scope: scope, Plan: plan, SnapshotDigest: plan.SnapshotDigest}, TenantID: "tenant-a", Issuer: issuer, GrantTTL: time.Minute, Now: time.Now().UTC()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childPlan := revisedRouteStatePlan(t, plan, scope.RootTaskID, "turn-b")
+	childScope := scope
+	childScope.PlanID, childScope.TurnID = childPlan.ID, "turn-b"
+	if _, _, err := coordinator.PublishSurface(SurfacePublishRequest{Revision: RouteRevisionPublishRequest{Scope: childScope, Plan: childPlan, ExpectedParent: parent.Revision, SnapshotDigest: childPlan.SnapshotDigest}, TenantID: "tenant-b", Issuer: issuer, GrantTTL: time.Minute, Now: time.Now().UTC()}); err == nil || err.Error() != "route_revision_conflict" {
+		t.Fatalf("cross-tenant lineage reuse err=%v", err)
+	}
+}
+
 func TestSemanticExecutionCoordinatorContinuityProjectionCannotOverwriteChildRevision(t *testing.T) {
 	coordinator, err := NewSQLiteSemanticExecutionCoordinator(filepath.Join(t.TempDir(), "semantic-execution.db"))
 	if err != nil {
@@ -510,6 +539,25 @@ func TestSemanticExecutionCoordinatorRejectConsumesGrantAndAdmissionIsAtomic(t *
 	}
 }
 
+func TestSemanticExecutionCoordinatorRejectsSameCallDifferentRequestDigest(t *testing.T) {
+	coordinator, err := NewSQLiteSemanticExecutionCoordinator(filepath.Join(t.TempDir(), "request-digest-conflict.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer coordinator.Close()
+	plan, scope, _, grant := modelRequestSurfaceFixture(t, coordinator, "request-digest-conflict")
+	selection := plan.Selections[0]
+	identity := HostCallIdentity{Protocol: "test", ConnectionID: "connection", CallID: "same-call"}
+	first := SemanticExecutionAdmission{Identity: identity, Grant: grant, RequestDigest: "request:first", Scope: scope, Selection: selection, Now: time.Now().UTC()}
+	if _, action, err := coordinator.Admit(first); err != nil || action != HostCallAcquireAdmit {
+		t.Fatalf("first admission action=%q err=%v", action, err)
+	}
+	second := first
+	second.RequestDigest = "request:different"
+	if record, action, err := coordinator.Admit(second); err != nil || action != HostCallAcquireConflict || record.RequestDigest != first.RequestDigest {
+		t.Fatalf("different request digest reused host-call identity: record=%+v action=%q err=%v", record, action, err)
+	}
+}
 func TestSemanticExecutionCoordinatorRejectsSupersededRevisionBeforeGrantConsumption(t *testing.T) {
 	coordinator, err := NewSQLiteSemanticExecutionCoordinator(filepath.Join(t.TempDir(), "semantic-execution.db"))
 	if err != nil {
@@ -557,6 +605,104 @@ func TestSemanticExecutionCoordinatorRejectsSupersededRevisionBeforeGrantConsump
 	}
 }
 
+func TestSemanticExecutionCoordinatorAdmitConsumesLegacyGrantFingerprint(t *testing.T) {
+	coordinator, err := NewSQLiteSemanticExecutionCoordinator(filepath.Join(t.TempDir(), "legacy-admit.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = coordinator.Close() })
+	plan, scope, issuer, currentGrant := modelRequestSurfaceFixture(t, coordinator, "legacy-admit")
+	legacyGrant := currentGrant
+	legacyGrant.CatalogDigest = ""
+	legacyGrant.Token = invocationTokenForVersion(legacyGrant, invocationGrantPayloadLegacy)
+	legacyGrant.Signature = invocationGrantSignatureForVersion([]byte(strings.Repeat("r", 32)), legacyGrant, invocationGrantPayloadLegacy)
+	legacyFingerprint := invocationGrantFingerprintForVersion(legacyGrant, invocationGrantPayloadLegacy)
+	if _, err := coordinator.db.Exec(`UPDATE invocation_grants SET fingerprint=? WHERE nonce=?`, legacyFingerprint, legacyGrant.Nonce); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := issuer.Validate(legacyGrant, scope, plan); err != nil {
+		t.Fatalf("legacy grant validation: %v", err)
+	}
+	admission := SemanticExecutionAdmission{
+		Identity: HostCallIdentity{Protocol: "legacy/v1", ConnectionID: "legacy-connection", CallID: "legacy-call"},
+		Grant:    legacyGrant, RequestDigest: "legacy-request", Scope: scope, Selection: plan.Selections[0], Now: time.Now().UTC(),
+	}
+	if _, action, err := coordinator.Admit(admission); err != nil || action != HostCallAcquireAdmit {
+		t.Fatalf("legacy admission action=%q err=%v", action, err)
+	}
+	var state string
+	if err := coordinator.db.QueryRow(`SELECT state FROM invocation_grants WHERE nonce=?`, legacyGrant.Nonce).Scan(&state); err != nil || state != "consumed" {
+		t.Fatalf("legacy grant state=%q err=%v", state, err)
+	}
+}
+
+// A host can crash after admission and restart on a binary that computes a
+// different grant fingerprint. Completion must use the durable historical
+// value after validating the legacy signature, while the route snapshot is
+// recovered from the current route scope.
+func TestSemanticExecutionCoordinatorCompletesLegacyHostFingerprint(t *testing.T) {
+	coordinator, err := NewSQLiteSemanticExecutionCoordinator(filepath.Join(t.TempDir(), "legacy-complete.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = coordinator.Close() })
+	registry := semanticRegistry(t)
+	provider := semanticProvider("legacy_complete_adapter", "visual.capture.desktop", map[string]string{"display": "primary"}, EffectReadOnly)
+	plan, err := NewToolPlanner(registry).Plan(RouteRequest{RootTaskID: "legacy-complete", SessionID: "session", TurnID: "turn", Snapshot: semanticSnapshot(t, registry, []ProviderSpec{provider}), Needs: []CapabilityNeed{{ID: "capture", Capability: "visual.capture.desktop", Qualifiers: map[string]string{"display": "primary"}, Required: true}}})
+	if err != nil || len(plan.Selections) != 1 {
+		t.Fatalf("plan=%+v err=%v", plan, err)
+	}
+	scope := InvocationScope{RootTaskID: plan.RootTaskID, PlanID: plan.ID, SessionID: "session", TurnID: "turn", PrincipalID: "principal", ToolSnapshotID: plan.SnapshotDigest}
+	key := []byte(strings.Repeat("c", 32))
+	issuer, err := NewInvocationIssuerWithStore(key, coordinator.Grants)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := coordinator.Routes.PublishRevision(RouteRevisionPublishRequest{Scope: scope, Plan: plan, SnapshotDigest: plan.SnapshotDigest}, time.Now().UTC()); err != nil {
+		t.Fatal(err)
+	}
+	grants, err := issuer.Issue(plan, scope, time.Minute)
+	if err != nil || len(grants) != 1 {
+		t.Fatalf("grants=%+v err=%v", grants, err)
+	}
+	grant := grants[0]
+	// Reconstruct the grant as the pre-CatalogDigest/pre-ToolSnapshotID
+	// binary would have serialized it. The decoded scope remains empty, while
+	// the trusted route scope above is concrete.
+	legacyGrant := grant
+	legacyGrant.CatalogDigest = ""
+	legacyGrant.Scope.ToolSnapshotID = ""
+	legacyGrant.Token = invocationTokenForVersion(legacyGrant, invocationGrantPayloadLegacy)
+	legacyGrant.Signature = invocationGrantSignatureForVersion(key, legacyGrant, invocationGrantPayloadLegacy)
+	legacyFingerprint := invocationGrantFingerprintForVersion(legacyGrant, invocationGrantPayloadLegacy)
+	if _, err := coordinator.db.Exec(`UPDATE invocation_grants SET fingerprint=? WHERE nonce=?`, legacyFingerprint, legacyGrant.Nonce); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := issuer.ValidateWithCanonicalScope(legacyGrant, scope, plan); err != nil {
+		t.Fatalf("legacy canonical validation: %v", err)
+	}
+	identity := HostCallIdentity{Protocol: "legacy/v1", ConnectionID: "legacy-connection", CallID: "legacy-complete"}
+	admission := SemanticExecutionAdmission{Identity: identity, Grant: legacyGrant, RequestDigest: "legacy-request", Scope: scope, Selection: plan.Selections[0], Now: time.Now().UTC()}
+	if _, action, err := coordinator.Admit(admission); err != nil || action != HostCallAcquireAdmit {
+		t.Fatalf("admit action=%q err=%v", action, err)
+	}
+	// Simulate a pre-upgrade host-call journal row surviving the restart.
+	if _, err := coordinator.db.Exec(`UPDATE semantic_host_calls SET grant_fingerprint=? WHERE call_key=?`, legacyFingerprint, hostCallKey(identity)); err != nil {
+		t.Fatal(err)
+	}
+	record, err := coordinator.Complete(admission, PlanExecutionSucceeded, "legacy-result", "", time.Now().UTC())
+	if err != nil {
+		t.Fatalf("legacy completion: %v", err)
+	}
+	if record.State != HostCallCompleted || record.GrantFingerprint != legacyFingerprint || record.Result != "legacy-result" {
+		t.Fatalf("completed record=%+v, want historical fingerprint", record)
+	}
+	var storedFingerprint string
+	if err := coordinator.db.QueryRow(`SELECT grant_fingerprint FROM semantic_host_calls WHERE call_key=?`, hostCallKey(identity)).Scan(&storedFingerprint); err != nil || storedFingerprint != legacyFingerprint {
+		t.Fatalf("stored fingerprint=%q err=%v", storedFingerprint, err)
+	}
+}
+
 func TestSemanticExecutionCoordinatorDeliveryOutboxDoesNotReplayUnknown(t *testing.T) {
 	coordinator, err := NewSQLiteSemanticExecutionCoordinator(filepath.Join(t.TempDir(), "semantic-execution.db"))
 	if err != nil {
@@ -592,6 +738,19 @@ func TestSemanticExecutionCoordinatorDeliveryOutboxDoesNotReplayUnknown(t *testi
 	if _, action, err := coordinator.Admit(admission); err != nil || action != HostCallAcquireAdmit {
 		t.Fatalf("admit action=%q err=%v", action, err)
 	}
+	// Keep the execution admission, but rewrite the durable host row as a
+	// legacy grant fingerprint before the atomic delivery completion. This
+	// models a restart between provider execution and outbox finalization.
+	legacyGrant := admission.Grant
+	legacyGrant.CatalogDigest = ""
+	legacyGrant.Scope.ToolSnapshotID = ""
+	legacyGrant.Token = invocationTokenForVersion(legacyGrant, invocationGrantPayloadLegacy)
+	legacyGrant.Signature = invocationGrantSignatureForVersion([]byte(strings.Repeat("d", 32)), legacyGrant, invocationGrantPayloadLegacy)
+	legacyFingerprint := invocationGrantFingerprintForVersion(legacyGrant, invocationGrantPayloadLegacy)
+	if _, err := coordinator.db.Exec(`UPDATE semantic_host_calls SET grant_fingerprint=? WHERE call_key=?`, legacyFingerprint, hostCallKey(admission.Identity)); err != nil {
+		t.Fatal(err)
+	}
+	admission.Grant = legacyGrant
 	record, host, err := coordinator.PrepareDeliveryAndComplete(admission, DeliveryRecord{Scope: scope, SelectionID: plan.Selections[0].ID, ArtifactID: payload.Ref.ID, ArtifactSourceScope: scope, ChannelScope: "test-channel", DestinationID: "group:one", State: DeliveryPrepared}, "prepared", "channel_delivery_prepared", time.Now().UTC())
 	if err != nil || record.State != DeliveryPrepared || host.State != HostCallCompleted || host.Result != "prepared" {
 		t.Fatalf("prepare+complete record=%#v host=%#v err=%v", record, host, err)
@@ -861,6 +1020,19 @@ func TestSemanticExecutionCoordinatorExternalEffectReceiptSettlementIsAtomic(t *
 	if _, action, err := coordinator.Admit(admission); err != nil || action != HostCallAcquireAdmit {
 		t.Fatalf("admit action=%q err=%v", action, err)
 	}
+	// Exercise both external-effect host-call queries with a fingerprint from
+	// the pre-CatalogDigest/pre-ToolSnapshotID payload. The durable operation
+	// remains bound to the same host call across a process restart.
+	legacyGrant := admission.Grant
+	legacyGrant.CatalogDigest = ""
+	legacyGrant.Scope.ToolSnapshotID = ""
+	legacyGrant.Token = invocationTokenForVersion(legacyGrant, invocationGrantPayloadLegacy)
+	legacyGrant.Signature = invocationGrantSignatureForVersion([]byte(strings.Repeat("x", 32)), legacyGrant, invocationGrantPayloadLegacy)
+	legacyFingerprint := invocationGrantFingerprintForVersion(legacyGrant, invocationGrantPayloadLegacy)
+	if _, err := coordinator.db.Exec(`UPDATE semantic_host_calls SET grant_fingerprint=? WHERE call_key=?`, legacyFingerprint, hostCallKey(admission.Identity)); err != nil {
+		t.Fatal(err)
+	}
+	admission.Grant = legacyGrant
 	op := SemanticExternalEffectOperation{OperationKey: "operation-effect", Scope: scope, TenantID: "tenant-effect", UserID: "user-effect", SelectionID: selection.ID, SelectionDigest: selectionPurposeDigest(selection), BindingID: selection.Provider.StableID(), RequestDigest: "canonical-request"}
 	if prepared, execute, err := coordinator.PrepareExternalEffect(admission, op); err != nil || !execute || prepared.State != SemanticExternalEffectRunning {
 		t.Fatalf("prepare=%#v execute=%v err=%v", prepared, execute, err)

@@ -49,6 +49,49 @@ func (r *llmUsageRecordRepo) Insert(ctx context.Context, rec *store.LLMUsageReco
 	return err
 }
 
+func (r *llmUsageRecordRepo) InsertBatch(ctx context.Context, recs []*store.LLMUsageRecord) error {
+	if r == nil || r.db == nil {
+		return nil
+	}
+	args := make([]any, 0, len(recs)*14)
+	tuples := make([]string, 0, len(recs))
+	for _, rec := range recs {
+		if rec == nil {
+			continue
+		}
+		createdAt := rec.CreatedAt
+		if createdAt.IsZero() {
+			createdAt = time.Now().UTC()
+		}
+		args = append(args,
+			normalizeTenantID(rec.TenantID),
+			strings.TrimSpace(rec.UserID),
+			strings.ToLower(strings.TrimSpace(rec.Email)),
+			strings.TrimSpace(rec.ProviderID),
+			strings.TrimSpace(rec.Model),
+			strings.TrimSpace(rec.ServiceGroupID),
+			strings.TrimSpace(rec.WorkloadClass),
+			strings.TrimSpace(rec.ClassSource),
+			strings.TrimSpace(rec.Preview),
+			rec.InputTokens,
+			rec.OutputTokens,
+			rec.TotalTokens,
+			rec.Credits,
+			createdAt.UTC().Format(time.RFC3339),
+		)
+		tuples = append(tuples, "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+	}
+	if len(tuples) == 0 {
+		return nil
+	}
+	_, err := r.db.ExecContext(ctx,
+		`INSERT INTO llm_usage_records (tenant_id, user_id, email, provider_id, model, service_group_id, workload_class, class_source, request_preview, input_tokens, output_tokens, total_tokens, credits_deducted, created_at)
+		 VALUES `+strings.Join(tuples, ", "),
+		args...,
+	)
+	return err
+}
+
 func (r *llmUsageRecordRepo) ListByGroupClass(ctx context.Context, tenantID, groupID, class string) ([]store.LLMUsageRecord, error) {
 	if r == nil || r.readDB == nil {
 		return nil, nil

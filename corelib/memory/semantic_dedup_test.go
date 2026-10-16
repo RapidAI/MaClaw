@@ -182,3 +182,55 @@ func TestSemanticDedupCandidateSkipsInactiveEntries(t *testing.T) {
 		t.Fatalf("inactive entries should not become semantic dedup candidates, got %+v", candidate)
 	}
 }
+
+func TestSemanticDedupCandidateStaysInsideOwner(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+
+	emb := []float32{1, 0, 0, 0}
+	store.SetEntries([]Entry{
+		{ID: "user-b", Content: "user b fact", Category: CategoryProjectKnowledge, Status: StatusActive, OwnerID: "user-b", Embedding: emb},
+		{ID: "shared", Content: "shared fact", Category: CategoryProjectKnowledge, Status: StatusActive, Embedding: emb},
+		{ID: "user-a", Content: "user a fact", Category: CategoryProjectKnowledge, Status: StatusActive, OwnerID: "user-a", Embedding: emb},
+	})
+	store.vecIndex.add("user-b", emb)
+	store.vecIndex.add("shared", emb)
+	store.vecIndex.add("user-a", emb)
+
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	if got := store.findSemanticDupCandidate(emb, CategoryProjectKnowledge, "user-a"); got == nil || got.EntryID != "user-a" {
+		t.Fatalf("user-a candidate = %+v", got)
+	}
+	if got := store.findSemanticDupCandidate(emb, CategoryProjectKnowledge, ""); got == nil || got.EntryID != "shared" {
+		t.Fatalf("shared candidate = %+v", got)
+	}
+}
+
+func TestProcessPendingDedupDoesNotMergeAcrossOwners(t *testing.T) {
+	store, err := NewStore(filepath.Join(t.TempDir(), "mem.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Stop()
+	store.SetEntries([]Entry{
+		{ID: "private", Content: "user a private fact", Category: CategoryProjectKnowledge, Status: StatusActive, OwnerID: "user-a"},
+		{ID: "shared", Content: "shared fact", Category: CategoryProjectKnowledge, Status: StatusActive},
+	})
+	store.SetLLMDedup(mockLLMForDedup{response: `{"decision":"merge","merged":"leaked","reason":"same"}`})
+	store.mu.Lock()
+	store.pendingDedup = []pendingDedupPair{{NewEntryID: "shared", CandidateEntryID: "private", CreatedAt: time.Now()}}
+	store.mu.Unlock()
+	if merged := store.ProcessPendingDedup(context.Background()); merged != 0 {
+		t.Fatalf("merged = %d", merged)
+	}
+	if got := store.SearchDirectByID("private"); len(got) != 1 || got[0].Content != "user a private fact" {
+		t.Fatalf("private entry = %+v", got)
+	}
+	if got := store.SearchDirectByID("shared"); len(got) != 1 {
+		t.Fatalf("shared entry = %+v", got)
+	}
+}

@@ -97,3 +97,18 @@ func TestPrepareSkillForUpload_NoManifestWhenNotPortable(t *testing.T) {
 		t.Error("manifest should not be generated for non-portable skills")
 	}
 }
+
+func TestPrepareSkillForUpload_ManifestWriteFailureBlocksPortableResult(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "skill.yaml"), []byte("name: manifest-failure\nsteps:\n  - action: bash\n    params:\n      command: echo hi\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Occupy the manifest target with a directory.  The skill itself remains
+	// portable, but the integrity evidence cannot be persisted safely.
+	if err := os.Mkdir(filepath.Join(dir, PackageManifestFileName), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := PrepareSkillForUpload(dir); err == nil || !strings.Contains(err.Error(), "write package manifest") {
+		t.Fatalf("PrepareSkillForUpload() error = %v, want manifest write failure", err)
+	}
+}

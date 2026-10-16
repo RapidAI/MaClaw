@@ -22,6 +22,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
@@ -40,6 +41,23 @@ const platformSignedBodyMaxBytes = int64(veAvatarDataURLMaxSize + 512*1024)
 const maclawSrvRuntimePlatformID = "maclawsrv"
 
 var platformA2ADeliveryTimeout = time.Duration(veIntEnv("HUB_VE_RUNTIME_DELIVERY_TIMEOUT_SECONDS", int(corelib.DefaultAgentTimeoutSec), 1, 3600)) * time.Second
+
+// macLawSrvDeliveryTransport is shared so chat turns reuse TLS connections.
+// Compression is off so token frames are not held in a gzip buffer.
+var macLawSrvDeliveryTransport = &http.Transport{
+	Proxy:                 http.ProxyFromEnvironment,
+	MaxIdleConns:          64,
+	MaxIdleConnsPerHost:   8,
+	IdleConnTimeout:       90 * time.Second,
+	TLSHandshakeTimeout:   10 * time.Second,
+	ExpectContinueTimeout: time.Second,
+	DisableCompression:    true,
+	ForceAttemptHTTP2:     true,
+}
+
+func macLawSrvDeliveryHTTPClient() *http.Client {
+	return &http.Client{Timeout: platformA2ADeliveryTimeout, Transport: macLawSrvDeliveryTransport}
+}
 
 type platformProviderRegistry struct {
 	Providers []platformProviderEntry `json:"providers"`
@@ -2648,7 +2666,7 @@ func (s platformAwareMachineSender) SendDiscussionMessage(session *corea2a.Sessi
 		if !acquired {
 			return true, nil, newVETemporaryDeliveryError("VE_RUNTIME_BUSY", fmt.Sprintf("MaClawSrv runtime delivery is busy for platform employee %s", targetID), 1)
 		}
-		reply, err := s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, macLawSrvDiscussionPayload(session, msg, targetID, target.RoleCode))
+		reply, err := s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, macLawSrvDiscussionPayload(session, msg, targetID, target.RoleCode), macLawSrvStreamHooks{})
 		if err == nil && strings.TrimSpace(reply) == "" {
 			err = errors.New("MaClawSrv runtime response did not include assistant content")
 		}
@@ -2709,21 +2727,32 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 		log.Printf("[VE-STREAMING] ===== HUB STAGE D: async goroutine started ===== session=%s initiator=%s target=%s", groupDiscussionSessionID(sessionCopy), initiatorID, targetID)
 		go func() {
 			started := time.Now()
+			runtimeStarted := false
+			pushActivity := func(phase, name string) {
+				phase, name, ok := normalizeRuntimeActivity(phase, name)
+				if !ok {
+					return
+				}
+				if phase == "tool_start" || phase == "tool_done" {
+					runtimeStarted = true
+				}
+				s.pushDiscussionActivity(initiatorID, groupDiscussionSessionID(sessionCopy), targetID, phase, name)
+			}
+			pushActivity("routing", "")
 			// Stream chunks directly to the requesting client via WebSocket push.
 			// Unlike onReply, this does NOT persist chunks to discussion history —
 			// only the final aggregated answer is persisted.
 			streamedChunks := false
 			chunkCount := 0
-			chunkCb := func(chunk string) {
+			var liveChunks veStreamChunkCoalescer
+			pushChunk := func(chunk string) {
 				if chunk == "" || initiatorID == "" {
 					return
 				}
-				streamedChunks = true
 				chunkCount++
 				if chunkCount <= 3 || chunkCount%20 == 0 {
 					log.Printf("[VE-STREAMING] HUB STAGE E: pushing chunk #%d to initiator=%s len=%d", chunkCount, initiatorID, len(chunk))
 				}
-				// Push stream_chunk directly to the initiator's WebSocket connection.
 				envelope := corea2a.NewGroupEnvelope(newGroupDiscussionID("a2aenv"), corea2a.GroupMessageDiscussionMessage, targetID, time.Now().UTC())
 				envelope.SessionID = groupDiscussionSessionID(sessionCopy)
 				envelope.ToIDs = []string{initiatorID}
@@ -2738,18 +2767,26 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 					},
 				})
 			}
-			reply, err := s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, macLawSrvDiscussionPayload(sessionCopy, msgCopy, targetID, targetCopy.RoleCode), chunkCb)
+			chunkCb := func(chunk string) {
+				if chunk == "" || initiatorID == "" {
+					return
+				}
+				streamedChunks = true
+				liveChunks.add(chunk, pushChunk)
+			}
+			reply, err := s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, macLawSrvDiscussionPayload(sessionCopy, msgCopy, targetID, targetCopy.RoleCode), macLawSrvStreamHooks{onChunk: chunkCb, onStatus: pushActivity})
 			deliveryErr := err
 			if deliveryErr == nil && strings.TrimSpace(reply) == "" {
 				deliveryErr = errors.New("MaClawSrv runtime response did not include assistant content")
 			}
-			// Single retry on transport failure (connection refused, timeout)
-			// when no stream chunks have been sent yet. Covers MaClawSrv
-			// redeploy scenario where the service is back within 3-5 seconds.
-			if err != nil && !streamedChunks && isTransientDeliveryError(err) {
-				log.Printf("[ve-platform-delivery] async runtime delivery transient failure, retrying in %s session=%s target=%s: %v", veRuntimeDeliveryRetryDelay, groupDiscussionSessionID(sessionCopy), targetID, err)
+			// Single retry on transport failure when the runtime has not started
+			// visible work. A tool status means the turn may already have run;
+			// retrying it could repeat that work. A dropped connection before
+			// any token or tool still retries, which covers a MaClawSrv redeploy.
+			if deliveryErr != nil && !streamedChunks && !runtimeStarted && isTransientDeliveryError(deliveryErr) {
+				log.Printf("[ve-platform-delivery] async runtime delivery transient failure, retrying in %s session=%s target=%s: %v", veRuntimeDeliveryRetryDelay, groupDiscussionSessionID(sessionCopy), targetID, deliveryErr)
 				time.Sleep(veRuntimeDeliveryRetryDelay)
-				reply, err = s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, macLawSrvDiscussionPayload(sessionCopy, msgCopy, targetID, targetCopy.RoleCode), chunkCb)
+				reply, err = s.postMacLawSrvDiscussionMessage(context.Background(), deliveryTarget.entry, deliveryTarget.runtime, deliveryTarget.tenantID, macLawSrvDiscussionPayload(sessionCopy, msgCopy, targetID, targetCopy.RoleCode), macLawSrvStreamHooks{onChunk: chunkCb, onStatus: pushActivity})
 				deliveryErr = err
 				if deliveryErr == nil && strings.TrimSpace(reply) == "" {
 					deliveryErr = errors.New("MaClawSrv runtime response did not include assistant content")
@@ -2757,8 +2794,9 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 			}
 			release(deliveryErr)
 			recordVERuntimeDeliveryResult(circuitKey, deliveryErr, time.Now())
-			if err != nil {
-				log.Printf("[ve-platform-delivery] async runtime delivery failed session=%s target=%s tenant=%s employee=%s platform_employee=%s duration=%s: %v", groupDiscussionSessionID(sessionCopy), targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, platformLogID(deliveryTarget.entry.PlatformEmployeeID), time.Since(started), err)
+			liveChunks.flush(pushChunk)
+			if deliveryErr != nil {
+				log.Printf("[ve-platform-delivery] async runtime delivery failed session=%s target=%s tenant=%s employee=%s platform_employee=%s duration=%s: %v", groupDiscussionSessionID(sessionCopy), targetID, deliveryTarget.tenantID, deliveryTarget.entry.ID, platformLogID(deliveryTarget.entry.PlatformEmployeeID), time.Since(started), deliveryErr)
 				// Send stream_end with error so the frontend closes the
 				// "thinking..." spinner. Without this, the UI hangs forever
 				// when MaClawSrv is temporarily unavailable (e.g., redeploy).
@@ -2766,17 +2804,22 @@ func (s platformAwareMachineSender) SendDiscussionMessageAsync(session *corea2a.
 					errEnvelope := corea2a.NewGroupEnvelope(newGroupDiscussionID("a2aenv"), corea2a.GroupMessageDiscussionMessage, targetID, time.Now().UTC())
 					errEnvelope.SessionID = groupDiscussionSessionID(sessionCopy)
 					errEnvelope.ToIDs = []string{initiatorID}
-					errContent := "[系统提示] 服务暂时不可用，请稍后重试"
+					// Preserve the actionable MaClawSrv failure reason for the
+					// requesting UI.  The detail is sanitized to avoid leaking the
+					// platform employee identifier or unbounded response bodies.
+					errContent := macLawSrvRuntimeFailureContent(deliveryErr, deliveryTarget.entry.PlatformEmployeeID)
 					errMsg := corea2a.GroupDiscussionMessage{ID: newGroupDiscussionID("hub-msg"), SessionID: groupDiscussionSessionID(sessionCopy), FromID: targetID, Kind: corea2a.MessageStreamEnd, Content: errContent}
 					errEnvelope.Message = &errMsg
-					_ = s.fallback.SendToMachine(initiatorID, map[string]any{
+					if notifyErr := s.SendToMachine(initiatorID, map[string]any{
 						"type": "ve:discussion_message",
 						"ts":   time.Now().Unix(),
 						"payload": map[string]any{
 							"envelope":    errEnvelope,
 							"target_role": strings.TrimSpace(targetCopy.RoleCode),
 						},
-					})
+					}); notifyErr != nil {
+						log.Printf("[ve-platform-delivery] failed to notify initiator of runtime error session=%s target=%s initiator=%s: %v", groupDiscussionSessionID(sessionCopy), targetID, initiatorID, notifyErr)
+					}
 				}
 				return
 			}
@@ -3011,7 +3054,7 @@ func macLawSrvDiscussionRecentContext(messages []corea2a.Message, current corea2
 			continue
 		}
 		switch item.Kind {
-		case corea2a.MessageStreamEnd, corea2a.MessageHandoff:
+		case corea2a.MessageStreamEnd, corea2a.MessageStreamStatus, corea2a.MessageHandoff:
 			flushStream()
 			continue
 		case corea2a.MessageStreamChunk:
@@ -3211,7 +3254,12 @@ func isPlatformRuntimeEmployeeEntry(entry digitalEmployeeEntry) bool {
 	return strings.TrimSpace(entry.PlatformEmployeeID) != ""
 }
 
-func (s platformAwareMachineSender) postMacLawSrvDiscussionMessage(ctx context.Context, entry digitalEmployeeEntry, runtime macLawSrvRuntimeEntry, tenantID string, msg any, onChunk ...func(string)) (string, error) {
+type macLawSrvStreamHooks struct {
+	onChunk  func(string)
+	onStatus func(phase, name string)
+}
+
+func (s platformAwareMachineSender) postMacLawSrvDiscussionMessage(ctx context.Context, entry digitalEmployeeEntry, runtime macLawSrvRuntimeEntry, tenantID string, msg any, hooks macLawSrvStreamHooks) (string, error) {
 	payload := platformA2APayload(msg)
 	if strings.TrimSpace(entry.PlatformEmployeeID) == "" {
 		return "", errors.New("MaClawSrv runtime employee id is empty")
@@ -3235,7 +3283,7 @@ func (s platformAwareMachineSender) postMacLawSrvDiscussionMessage(ctx context.C
 		req.Header.Set("X-MaClaw-Admin-Secret", strings.TrimSpace(runtime.AdminSecret))
 	}
 	setPlatformEmployeeHubHeaders(req, entry, tenantID)
-	client := &http.Client{Timeout: platformA2ADeliveryTimeout}
+	client := macLawSrvDeliveryHTTPClient()
 	started := time.Now()
 	log.Printf("[VE-STREAMING] ===== HUB STAGE A: posting to maclawsrv with Accept: text/event-stream ===== tenant=%s employee=%s endpoint=%s", tenantID, entry.ID, runtimeDiscussionEndpointLogValue(endpoint))
 	resp, err := client.Do(req)
@@ -3252,7 +3300,7 @@ func (s platformAwareMachineSender) postMacLawSrvDiscussionMessage(ctx context.C
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		log.Printf("[ve-platform-delivery] post runtime failed tenant=%s employee=%s platform_employee=%s status=%d duration=%s bytes=%d", tenantID, entry.ID, platformLogID(entry.PlatformEmployeeID), resp.StatusCode, time.Since(started), len(respBody))
-		detail := strings.TrimSpace(string(respBody))
+		detail := runtimeErrorResponseDetail(respBody)
 		if detail != "" {
 			return "", fmt.Errorf("MaClawSrv runtime returned status %d: %s", resp.StatusCode, sanitizeRuntimeDeliveryErrorText(detail, entry.PlatformEmployeeID))
 		}
@@ -3260,11 +3308,7 @@ func (s platformAwareMachineSender) postMacLawSrvDiscussionMessage(ctx context.C
 	}
 	if strings.Contains(contentType, "text/event-stream") {
 		log.Printf("[VE-STREAMING] ===== HUB STAGE C: consuming SSE stream =====")
-		var chunkCb func(string)
-		if len(onChunk) > 0 && onChunk[0] != nil {
-			chunkCb = onChunk[0]
-		}
-		return s.consumeRuntimeSSEResponse(resp.Body, tenantID, entry, started, chunkCb)
+		return s.consumeRuntimeSSEResponse(resp.Body, tenantID, entry, started, hooks.onChunk, hooks.onStatus)
 	}
 	log.Printf("[VE-STREAMING] ===== HUB: NOT SSE — falling back to JSON response =====")
 
@@ -3308,12 +3352,69 @@ func sanitizeRuntimeDeliveryErrorText(text, platformEmployeeID string) string {
 	return truncateRemoteResponseDetail(text)
 }
 
+func runtimeErrorResponseDetail(body []byte) string {
+	var payload struct {
+		Message string          `json:"message"`
+		Error   json.RawMessage `json:"error"`
+		Detail  string          `json:"detail"`
+	}
+	if err := json.Unmarshal(body, &payload); err == nil {
+		for _, value := range []string{payload.Message, payload.Detail} {
+			if value = strings.TrimSpace(value); value != "" {
+				return value
+			}
+		}
+		if len(payload.Error) > 0 {
+			var text string
+			if json.Unmarshal(payload.Error, &text) == nil && strings.TrimSpace(text) != "" {
+				return strings.TrimSpace(text)
+			}
+			var nested struct {
+				Message string `json:"message"`
+			}
+			if json.Unmarshal(payload.Error, &nested) == nil && strings.TrimSpace(nested.Message) != "" {
+				return strings.TrimSpace(nested.Message)
+			}
+		}
+	}
+	// Some runtimes keep the SSE content type even for an error status.  Pull
+	// the structured error out of its data frame instead of exposing the raw
+	// `data:` wire syntax to the user.
+	for _, line := range strings.Split(string(body), "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		var event struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal([]byte(strings.TrimSpace(strings.TrimPrefix(line, "data:"))), &event) == nil && strings.TrimSpace(event.Error) != "" {
+			return strings.TrimSpace(event.Error)
+		}
+	}
+	return strings.TrimSpace(string(body))
+}
+
+func macLawSrvRuntimeFailureContent(err error, platformEmployeeID string) string {
+	detail := "runtime delivery failed"
+	if err != nil {
+		if sanitized := sanitizeRuntimeDeliveryErrorText(err.Error(), platformEmployeeID); strings.TrimSpace(sanitized) != "" {
+			detail = sanitized
+		}
+	}
+	return "[系统提示] MaClawSrv 执行失败：" + detail
+}
+
 // consumeRuntimeSSEResponse reads an SSE stream from a maclawsrv runtime,
 // aggregates the text content from "chunk" events, and returns the final
 // content from the "done" event. If onChunk is non-nil, it's called for each
 // text chunk (used by SendDiscussionMessageAsync to push stream_chunk messages
 // to the requesting client in real-time via Hub WebSocket).
-func (s platformAwareMachineSender) consumeRuntimeSSEResponse(body io.Reader, tenantID string, entry digitalEmployeeEntry, started time.Time, onChunk func(string)) (string, error) {
+func (s platformAwareMachineSender) consumeRuntimeSSEResponse(body io.Reader, tenantID string, entry digitalEmployeeEntry, started time.Time, onChunk func(string), onStatus ...func(string, string)) (string, error) {
+	var statusFn func(string, string)
+	if len(onStatus) > 0 {
+		statusFn = onStatus[0]
+	}
 	scanner := bufio.NewScanner(body)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 	var content strings.Builder
@@ -3326,6 +3427,21 @@ func (s platformAwareMachineSender) consumeRuntimeSSEResponse(body io.Reader, te
 		var evt map[string]any
 		if err := json.Unmarshal([]byte(data), &evt); err != nil {
 			continue
+		}
+		if status, ok := evt["status"].(string); ok && strings.TrimSpace(status) != "" {
+			if _, hasChunk := evt["chunk"]; !hasChunk {
+				if done, _ := evt["done"].(bool); !done {
+					if _, hasError := evt["error"]; !hasError && statusFn != nil {
+						name, _ := evt["name"].(string)
+						if phase, cleaned, ok := normalizeRuntimeActivity(strings.TrimSpace(status), name); ok {
+							statusFn(phase, cleaned)
+						}
+					}
+					if _, hasError := evt["error"]; !hasError {
+						continue
+					}
+				}
+			}
 		}
 		if chunk, ok := evt["chunk"].(string); ok && chunk != "" {
 			chunk = textutil.VisibleChatStreamDelta(chunk)
@@ -3366,7 +3482,157 @@ func (s platformAwareMachineSender) consumeRuntimeSSEResponse(body io.Reader, te
 		log.Printf("[ve-platform-delivery] SSE aggregated tenant=%s employee=%s platform_employee=%s duration=%s content_chars=%d", tenantID, entry.ID, platformLogID(entry.PlatformEmployeeID), time.Since(started), len([]rune(reply)))
 		return reply, nil
 	}
-	return "", errors.New("MaClawSrv runtime SSE response did not include content")
+	return "", errors.New("MaClawSrv runtime SSE response did not include assistant content")
+}
+
+func (s platformAwareMachineSender) pushDiscussionActivity(machineID, sessionID, fromID, phase, name string) {
+	if strings.TrimSpace(machineID) == "" || strings.TrimSpace(phase) == "" {
+		return
+	}
+	_ = s.SendToMachine(strings.TrimSpace(machineID), discussionActivityWire(sessionID, fromID, phase, name))
+}
+
+func discussionActivityWire(sessionID, fromID, phase, name string) map[string]any {
+	return map[string]any{
+		"type": "ve:discussion_activity",
+		"ts":   time.Now().Unix(),
+		"payload": map[string]any{
+			"session_id": strings.TrimSpace(sessionID),
+			"from_id":    strings.TrimSpace(fromID),
+			"phase":      phase,
+			"name":       name,
+		},
+	}
+}
+
+const (
+	veStreamPushFlushInterval = 16 * time.Millisecond
+	veStreamPushMaxBytes      = 512
+)
+
+// veStreamChunkCoalescer keeps the first visible token immediate and groups
+// the following tokens so a fast model does not open a WebSocket frame per
+// character. A short timer releases a held tail even when the model pauses,
+// and flush sends anything still held before stream_end.
+type veStreamChunkCoalescer struct {
+	mu         sync.Mutex
+	sendMu     sync.Mutex
+	buf        strings.Builder
+	timer      *time.Timer
+	hasFlushed bool
+	closed     bool
+}
+
+func (c *veStreamChunkCoalescer) add(chunk string, push func(string)) {
+	if c == nil || chunk == "" || push == nil {
+		return
+	}
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return
+	}
+	c.buf.WriteString(chunk)
+	if !c.hasFlushed || c.buf.Len() >= veStreamPushMaxBytes {
+		out := c.detachLocked()
+		c.mu.Unlock()
+		if out != "" {
+			push(out)
+		}
+		return
+	}
+	if c.timer == nil {
+		c.timer = time.AfterFunc(veStreamPushFlushInterval, func() { c.emitDue(push) })
+	}
+	c.mu.Unlock()
+}
+
+func (c *veStreamChunkCoalescer) emitDue(push func(string)) {
+	if c == nil || push == nil {
+		return
+	}
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	c.mu.Lock()
+	c.timer = nil
+	if c.closed {
+		c.mu.Unlock()
+		return
+	}
+	out := c.detachLocked()
+	c.mu.Unlock()
+	if out != "" {
+		push(out)
+	}
+}
+
+func (c *veStreamChunkCoalescer) flush(push func(string)) {
+	if c == nil || push == nil {
+		return
+	}
+	c.sendMu.Lock()
+	defer c.sendMu.Unlock()
+	c.mu.Lock()
+	c.closed = true
+	if c.timer != nil {
+		c.timer.Stop()
+		c.timer = nil
+	}
+	out := c.detachLocked()
+	c.mu.Unlock()
+	if out != "" {
+		push(out)
+	}
+}
+
+func (c *veStreamChunkCoalescer) detachLocked() string {
+	if c.timer != nil {
+		c.timer.Stop()
+		c.timer = nil
+	}
+	if c.buf.Len() == 0 {
+		return ""
+	}
+	chunk := c.buf.String()
+	c.buf.Reset()
+	c.hasFlushed = true
+	return chunk
+}
+
+func normalizeRuntimeActivity(phase, name string) (string, string, bool) {
+	switch strings.TrimSpace(phase) {
+	case "routing", "accepted", "tool_start", "tool_done":
+	default:
+		return "", "", false
+	}
+	return strings.TrimSpace(phase), sanitizeRuntimeActivityName(name), true
+}
+
+func parseDiscussionActivityContent(content string) (string, string, bool) {
+	var payload struct {
+		Phase string `json:"phase"`
+		Name  string `json:"name"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(content)), &payload); err != nil {
+		return "", "", false
+	}
+	return normalizeRuntimeActivity(payload.Phase, payload.Name)
+}
+
+func sanitizeRuntimeActivityName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || len(name) > 64 {
+		return ""
+	}
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '_' || r == '.' || r == '-' || r == ':' {
+			continue
+		}
+		return ""
+	}
+	return name
 }
 
 func setPlatformEmployeeHubHeaders(req *http.Request, entry digitalEmployeeEntry, tenantID string) {
@@ -3420,8 +3686,9 @@ func macLawSrvReplyMessageID(msg corea2a.GroupDiscussionMessage, targetID string
 
 func truncateRemoteResponseDetail(detail string) string {
 	detail = strings.TrimSpace(detail)
-	if len(detail) > 500 {
-		return detail[:500] + "..."
+	runes := []rune(detail)
+	if len(runes) > 500 {
+		return string(runes[:500]) + "..."
 	}
 	return detail
 }

@@ -2,18 +2,18 @@ package corelib
 
 import "testing"
 
-func TestIsSkillAutoUploadEnabled_DefaultTrue(t *testing.T) {
+func TestIsSkillAutoUploadEnabled_DefaultDisabled(t *testing.T) {
 	var cfg AppConfig
-	if !cfg.IsSkillAutoUploadEnabled() {
-		t.Fatal("nil SkillAutoUploadEnabled should default to true")
-	}
-	cfg.SetSkillAutoUploadEnabled(false)
 	if cfg.IsSkillAutoUploadEnabled() {
-		t.Fatal("expected false after SetSkillAutoUploadEnabled(false)")
+		t.Fatal("nil SkillAutoUploadEnabled should default to false")
 	}
 	cfg.SetSkillAutoUploadEnabled(true)
 	if !cfg.IsSkillAutoUploadEnabled() {
 		t.Fatal("expected true after SetSkillAutoUploadEnabled(true)")
+	}
+	cfg.SetSkillAutoUploadEnabled(false)
+	if cfg.IsSkillAutoUploadEnabled() {
+		t.Fatal("expected false after SetSkillAutoUploadEnabled(false)")
 	}
 }
 

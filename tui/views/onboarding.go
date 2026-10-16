@@ -1258,7 +1258,7 @@ func (m OnboardingModel) nextStepText() string {
 		if !m.weixinDone {
 			return onboardingText(m.lang, "nextTigerWeixin")
 		}
-		return onboardingText(m.lang, "nextDone")
+		return fmt.Sprintf(onboardingText(m.lang, "nextDone"), brand.Current().DisplayName)
 	}
 	if !m.remoteDone {
 		if m.remoteFailed {
@@ -1682,7 +1682,7 @@ func onboardingText(lang, key string) string {
 			"waitingScan":              "waiting for scan",
 			"nextSSO":                  "Next: press Enter to sign in with enterprise SSO.",
 			"nextTigerWeixin":          "Next: WeChat binding is optional; finish when ready.",
-			"nextDone":                 "Next: finish onboarding and start using TigerClaw.",
+			"nextDone":                 "Next: finish onboarding and start using %s.",
 			"nextEmail":                "Next: enter email or phone, then Enter to receive verification code.",
 			"nextPhone":                "Next: enter email or phone, then Enter to receive verification code.",
 			"nextSMSCode":              "Next: enter the verification code, then press Enter to activate.",
@@ -1764,7 +1764,7 @@ func onboardingText(lang, key string) string {
 		"waitingScan":              "等待扫码",
 		"nextSSO":                  "下一步：按 Enter 进行企业 SSO 登录。",
 		"nextTigerWeixin":          "下一步：微信绑定可选；准备好后完成。",
-		"nextDone":                 "下一步：完成 onboarding，进入 TigerClaw。",
+		"nextDone":                 "下一步：完成 onboarding，进入 %s。",
 		"nextEmail":                "下一步：输入邮箱或手机号，按 Enter 接收验证码。",
 		"nextPhone":                "下一步：输入邮箱或手机号，按 Enter 接收验证码。",
 		"nextSMSCode":              "下一步：输入验证码，按 Enter 激活。",

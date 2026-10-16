@@ -10,19 +10,21 @@ import (
 // ---------------------------------------------------------------------------
 
 var (
-	reThinkBlock          = regexp.MustCompile(`(?s)<think>.*?</think>\\s*`)
-	reDetailsBlock        = regexp.MustCompile(`(?is)<details\b[^>]*>.*?</details>\s*`)
-	reSummaryBlock        = regexp.MustCompile(`(?is)<summary\b[^>]*>.*?</summary>\s*`)
-	reFuncCallBlock       = regexp.MustCompile(`(?s)<\\|FunctionCallBegin\\|>.*?<\\|FunctionCallEnd\\|>\\s*`)
-	reToolCallBlock       = regexp.MustCompile(`(?is)<tool_call(?:\[\])?\b[^>]*>.*?</tool_call>\s*`)
-	reToolCallOpenToEnd   = regexp.MustCompile(`(?is)<tool_call(?:\[\])?\b[^>]*>.*\z`)
-	reFunctionEqBlock     = regexp.MustCompile(`(?is)<function=[A-Za-z0-9_.-]+>.*?</function>\s*`)
-	reFunctionEqOpenToEnd = regexp.MustCompile(`(?is)<function=[A-Za-z0-9_.-]+>.*\z`)
-	reCodexToolCallBlock  = regexp.MustCompile(`(?s)<turn:\s*tool_call\s*>.*?</turn>\s*`)
-	rePlainToolCallTail   = regexp.MustCompile(`(?is)\bTOOL_CALL\b\s*\{.*\}\s*`)
-	reDSMLToolCallBlock   = regexp.MustCompile(`(?is)<\|DSML\|(?:tool_calls|function_calls)\s*>.*?</\|DSML\|(?:tool_calls|function_calls)>\s*`)
-	reDSMLToolCallOpen    = regexp.MustCompile(`(?is)<\|DSML\|[A-Za-z_]+\b.*\z`)
-	reDSMLInvokeBlock     = regexp.MustCompile(`(?is)<\|DSML\|invoke\b[^>]*>.*?</\|DSML\|invoke>\s*`)
+	reThinkBlock             = regexp.MustCompile(`(?s)<think>.*?</think>\\s*`)
+	reDetailsBlock           = regexp.MustCompile(`(?is)<details\b[^>]*>.*?</details>\s*`)
+	reSummaryBlock           = regexp.MustCompile(`(?is)<summary\b[^>]*>.*?</summary>\s*`)
+	reFuncCallBlock          = regexp.MustCompile(`(?s)<\\|FunctionCallBegin\\|>.*?<\\|FunctionCallEnd\\|>\\s*`)
+	reToolCallBlock          = regexp.MustCompile(`(?is)<tool_call(?:\[\])?\b[^>]*>.*?</tool_call>\s*`)
+	reToolCallOpenToEnd      = regexp.MustCompile(`(?is)<tool_call(?:\[\])?\b[^>]*>.*\z`)
+	reLongcatToolCallBlock   = regexp.MustCompile(`(?is)<longcat_tool_call>.*?</longcat_tool_call>\s*`)
+	reLongcatToolCallOpenEnd = regexp.MustCompile(`(?is)<longcat_tool_call>.*\z`)
+	reFunctionEqBlock        = regexp.MustCompile(`(?is)<function=[A-Za-z0-9_.-]+>.*?</function>\s*`)
+	reFunctionEqOpenToEnd    = regexp.MustCompile(`(?is)<function=[A-Za-z0-9_.-]+>.*\z`)
+	reCodexToolCallBlock     = regexp.MustCompile(`(?s)<turn:\s*tool_call\s*>.*?</turn>\s*`)
+	rePlainToolCallTail      = regexp.MustCompile(`(?is)\bTOOL_CALL\b\s*\{.*\}\s*`)
+	reDSMLToolCallBlock      = regexp.MustCompile(`(?is)<\|DSML\|(?:` + dsmlBlockTags + `)\s*>.*?</\|DSML\|(?:` + dsmlBlockTags + `)>\s*`)
+	reDSMLToolCallOpen       = regexp.MustCompile(`(?is)<\|DSML\|(?:` + dsmlTagTail + `).*\z`)
+	reDSMLInvokeBlock        = regexp.MustCompile(`(?is)<\|DSML\|invoke\b[^>]*>.*?</\|DSML\|invoke>\s*`)
 )
 
 func StripThinkTags(s string) string {
@@ -41,6 +43,11 @@ func StripFunctionCalls(s string) string {
 
 func StripXMLToolCalls(s string) string {
 	s = normalizeDSMLMarkup(s)
+	// Hy3's </tool_call:SUFFIX> is not </tool_call>. The open-to-end pattern
+	// below would otherwise delete every character after <tool_call:SUFFIX>.
+	s = stripHy3ToolMarkup(s)
+	s = reLongcatToolCallBlock.ReplaceAllString(s, "")
+	s = reLongcatToolCallOpenEnd.ReplaceAllString(s, "")
 	s = reToolCallBlock.ReplaceAllString(s, "")
 	s = reToolCallOpenToEnd.ReplaceAllString(s, "")
 	s = reFunctionEqBlock.ReplaceAllString(s, "")
@@ -50,6 +57,14 @@ func StripXMLToolCalls(s string) string {
 	s = reDSMLToolCallBlock.ReplaceAllString(s, "")
 	s = reDSMLInvokeBlock.ReplaceAllString(s, "")
 	s = reDSMLToolCallOpen.ReplaceAllString(s, "")
+	// The stream drops a trailing fence that never became a tag. The stored
+	// message uses this strip, so the same tail must not reappear there.
+	if n := dsmlOpenSuffixLen(s); n > 0 && strings.HasPrefix(collapseDSMLFence(s[len(s)-n:]), "<|") {
+		s = s[:len(s)-n]
+	}
+	if idx := leakedLineOrientedToolMarkerIndex(s); idx >= 0 {
+		s = s[:idx]
+	}
 	return strings.TrimSpace(s)
 }
 

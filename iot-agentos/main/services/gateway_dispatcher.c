@@ -22,6 +22,7 @@
 #include "services/command_service.h"
 #include "services/gateway_transport.h"
 #include "services/gateway_ack_outbox_policy.h"
+#include "services/latency_trace.h"
 #include "services/reply_service.h"
 #include "persistence_service.h"
 #include "task_registry.h"
@@ -205,6 +206,15 @@ static bool outgoing_message_is_final(cJSON *item) {
     return false;
 }
 
+/* A turn stops producing latency marks once its terminal text is published and
+ * no correlated speech part is still expected.  Close it there; when speech is
+ * pending the audio path owns the flush, so the rendered-frame mark is still
+ * part of the same line. */
+static void latency_close_turn(unsigned pending_speech_parts) {
+    latency_trace_mark(LATENCY_MARK_DONE);
+    if (pending_speech_parts == 0u) latency_trace_flush();
+}
+
 static bool poll_stop_requested(void) {
     bool requested;
     taskENTER_CRITICAL(&s_dispatcher_lock);
@@ -323,6 +333,19 @@ static esp_err_t poll_reply(void) {
         ESP_LOGW(TAG, "pending gateway ACK could not be delivered: %s",
                  esp_err_to_name(outbox_err));
         return outbox_err;
+    }
+    /* A decision made on the terminal is delivered here, before the durable
+     * queues below: it is the only pending item with a deadline, and once the
+     * window closes the Hub adjudicates a late answer as a timeout, so an
+     * approval that waits behind a stuck queue silently becomes "nobody
+     * answered".  It never blocks the page read -- a failure is logged and the
+     * ack stays owed for the next poll. */
+    if (s_host.flush_event_ack) {
+        const esp_err_t event_ack_err = (esp_err_t)s_host.flush_event_ack();
+        if (event_ack_err != ESP_OK) {
+            ESP_LOGW(TAG, "pending approval ack could not be delivered: %s",
+                     esp_err_to_name(event_ack_err));
+        }
     }
     if (s_host.flush_tool_result_outbox) {
         const esp_err_t tool_outbox_err =
@@ -478,6 +501,17 @@ static esp_err_t poll_reply(void) {
             gateway_message_capability_allowed(GATEWAY_CAPABILITY_AMBIENT_DISPLAY, type);
         bool ambient_permanently_invalid = ambient_update_present &&
             !ambient_capability_allowed;
+        /* A structured event is a reply type of its own (plan N1-1).  It is
+         * gated on the eventPush capability: the Hub already refuses to fan an
+         * event out to a device that did not declare it, but the device must
+         * not render one it never advertised either -- the two gates protect
+         * different halves of the same contract, and a future direct-LAN path
+         * (D4) has no Hub in front of it. */
+        bool event_message = type && !strcmp(type, "event");
+        bool event_handled = !event_message;
+        bool event_capability_allowed = !event_message ||
+            gateway_message_capability_allowed(GATEWAY_CAPABILITY_EVENT_PUSH, type);
+        bool event_permanently_invalid = event_message && !event_capability_allowed;
         bool welcome_audio = id && (!strncmp(id, "mc_welcome_", 11) || !strncmp(id, "hub_welcome_", 12));
 		bool preview_audio = cJSON_IsObject(extra) &&
 			cJSON_IsTrue(cJSON_GetObjectItemCaseSensitive(extra, "hardware_audio_preview"));
@@ -496,8 +530,17 @@ static esp_err_t poll_reply(void) {
                             reply_service_active_matches_after_handoff(reply_to);
         bool result_speech_reply = !cancelled_reply && audio_message &&
                                    reply_service_result_speech_matches(reply_to);
+        if (active_reply || result_speech_reply) {
+            /* The first frame that belongs to this turn just left the queue.
+             * First-stamp-wins makes this idempotent across the multipart
+             * reply stream, so it always reports the earliest frame. */
+            latency_trace_mark(LATENCY_MARK_ACK);
+        }
 		if (speech_end_message) {
 			reply_service_finish_result_speech(reply_to);
+			/* The server declared there will be no further speech, so the
+			 * turn is complete even if no audio ever arrived. */
+			latency_trace_flush();
 			tool_handled = true;
 		}
         // A reboot has no live correlation for the command that produced an
@@ -597,6 +640,15 @@ static esp_err_t poll_reply(void) {
             s_host.apply_ambient(cJSON_GetObjectItemCaseSensitive(item, "ambient"));
             if (type && !strcmp(type, "ambient")) s_host.apply_ambient(item);
         }
+        if (event_message && event_capability_allowed) {
+            /* The event object is nested under its own key, matching the
+             * `ambient` convention: the envelope stays type-agnostic.  The
+             * host owns admission and rendering and reports the outcome back,
+             * so an event that has to wait for the current turn stays pending
+             * instead of being dropped or overwriting what the user reads. */
+            s_host.apply_event(cJSON_GetObjectItemCaseSensitive(item, "event"),
+                               &event_handled, &event_permanently_invalid);
+        }
         if (hardware_config_message &&
             (!hardware_config_capability_allowed ||
              (hardware_config_required_capabilities != 0 &&
@@ -685,6 +737,7 @@ static esp_err_t poll_reply(void) {
 							reply_service_complete_active_image_reply(waiter, "码卡龙", caption,
 									(const uint16_t *)pixels, (size_t)image_width,
 									(size_t)image_height);
+							latency_close_turn(pending_speech_parts);
 							if (reply_service_correlation_matches(reply_to)) command_service_log_timing("image-result");
 							image_handled = true;
 						}
@@ -739,7 +792,9 @@ static esp_err_t poll_reply(void) {
                     }
                     // Keep the final response surface continuous with the
                     // thinking surface. Do not briefly switch to idle here.
+                    latency_trace_mark(LATENCY_MARK_TEXT);
                     reply_service_complete_active_text_reply(waiter, "码卡龙", text);
+                    latency_close_turn(pending_speech_parts);
                     if (reply_service_correlation_matches(reply_to)) command_service_log_timing("text-result");
                     text_handled = true;
                 }
@@ -783,7 +838,9 @@ static esp_err_t poll_reply(void) {
                 if (waiter) {
                     const char *detail = text && text[0] ? text : "远端返回错误，但没有详细说明";
                     ambient_service_apply_pet_state("alert");
+                    latency_trace_mark(LATENCY_MARK_TEXT);
                     reply_service_complete_active_text_reply(waiter, "远端处理失败", detail);
+                    latency_close_turn(outgoing_pending_speech_parts(item));
                     ESP_LOGE(TAG, "remote command failed: replyTo=%s error=%s detail=%s",
                              reply_to, json_string(item, "error") ? json_string(item, "error") : "<none>", detail);
                 }
@@ -796,9 +853,11 @@ static esp_err_t poll_reply(void) {
                                                       strcmp(type, "voice") && strcmp(type, "audio")))) {
             uintptr_t waiter = reply_service_begin_active_reply();
             if (waiter) {
+                latency_trace_mark(LATENCY_MARK_TEXT);
                 reply_service_complete_active_text_reply(
                     waiter, "任务已完成",
                     text && text[0] ? text : "远端已完成，但没有可显示的文字结果");
+                latency_close_turn(outgoing_pending_speech_parts(item));
             }
         }
         if (audio_message && audio_capability_allowed && audio_data && !discard_startup_welcome &&
@@ -810,10 +869,19 @@ static esp_err_t poll_reply(void) {
             // path and must obey the same foreground wake lifecycle as URL
             // speech. Keep the lease through the ACK below so no later poll
             // can recreate the recognizer before this reply is committed.
-            server_audio_wake_lease_used =
-                s_host.begin_server_audio_wake_lease("inline server audio") ||
-                server_audio_wake_lease_used;
-            if (!gateway_reply_audio_lease_current(&audio_lease, "before inline decode")) {
+            /* Inline payloads still contend with the recognizer/codec memory
+             * domain.  A capability lease alone is insufficient: if another
+             * server-audio transaction owns the singleton wake lease, keep
+             * this message pending instead of decoding/playing without the
+             * memory fence (and never attempt to finish a lease we did not
+             * acquire). */
+            const bool inline_wake_lease_acquired =
+                s_host.begin_server_audio_wake_lease("inline server audio");
+            server_audio_wake_lease_used = inline_wake_lease_acquired ||
+                                           server_audio_wake_lease_used;
+            if (!inline_wake_lease_acquired) {
+                ESP_LOGW(TAG, "server audio wake lease busy; deferring inline payload");
+            } else if (!gateway_reply_audio_lease_current(&audio_lease, "before inline decode")) {
                 audio_permanently_invalid = true;
             } else {
                 size_t audio_capacity = 0;
@@ -929,6 +997,7 @@ static esp_err_t poll_reply(void) {
 		bool ack_message = tool_handled &&
             (hardware_config_handled || hardware_config_permanently_invalid) &&
 			(pet_profile_handled || pet_profile_permanently_invalid) &&
+			(event_handled || event_permanently_invalid) &&
 			(!text_message || text_handled || cancelled_reply || text_permanently_invalid) &&
 			(!audio_message || audio_handled || cancelled_reply || audio_permanently_invalid) &&
 			(!image_message || image_handled || cancelled_reply || image_permanently_invalid);
@@ -948,6 +1017,7 @@ static esp_err_t poll_reply(void) {
 			bool permanently_failed = hardware_config_permanently_invalid ||
 				pet_profile_permanently_invalid ||
 				ambient_permanently_invalid ||
+				event_permanently_invalid ||
 				(text_message && text_permanently_invalid && !cancelled_reply) ||
 				(audio_message && audio_permanently_invalid && !audio_handled && !cancelled_reply) ||
 				(image_message && image_permanently_invalid && !image_handled && !cancelled_reply);

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -46,6 +47,31 @@ func TestTurnUsageFromLLM(t *testing.T) {
 	}
 	if TurnUsageFromLLM(corelib.MaclawLLMConfig{}, nil).Requests != 0 {
 		t.Fatal("nil usage should be empty")
+	}
+	credits := 1.25
+	zero := 0.0
+	withCredits := TurnUsageFromLLM(corelib.MaclawLLMConfig{ProviderName: "MaClaw官方"}, &llm.Usage{PromptTokens: 2, CreditsDeducted: &credits})
+	free := TurnUsageFromLLM(corelib.MaclawLLMConfig{}, &llm.Usage{PromptTokens: 1, CreditsDeducted: &zero})
+	var sum TurnUsage
+	sum.Add(withCredits)
+	sum.Add(free)
+	if !sum.CreditsReported || sum.CreditsDeducted != 1.25 {
+		t.Fatalf("summed credits = %+v", sum)
+	}
+	plain := TurnUsageFromLLM(corelib.MaclawLLMConfig{}, &llm.Usage{PromptTokens: 1})
+	if plain.CreditsReported {
+		t.Fatal("missing debit must stay unreported")
+	}
+}
+
+func TestTurnUsageFromLLMSeparatesPromptCacheCost(t *testing.T) {
+	u := TurnUsageFromLLM(corelib.MaclawLLMConfig{}, &llm.Usage{
+		PromptTokens: 1_000_000, CompletionTokens: 500_000,
+		CachedInputTokens: 200_000, CacheWriteTokens: 100_000,
+	})
+	// Defaults: input ¥1/M, cache read ¥0.1/M, cache write ¥1/M, output ¥2/M.
+	if math.Abs(u.EstCostRMB-1.82) > 1e-12 {
+		t.Fatalf("estimated cost = %.12f, want 1.82", u.EstCostRMB)
 	}
 }
 
@@ -97,6 +123,24 @@ func TestFormatTurnMeta(t *testing.T) {
 	})
 	if !strings.Contains(withSaved, "prompt=light(-3.8k)") {
 		t.Fatalf("expected savings tag in %q", withSaved)
+	}
+	credits := 1.25
+	withCredits := FormatTurnMetaOpts(TurnMetaOptions{
+		Route:           RouteDecision{TaskType: "fast", Source: "primary", Model: "auto"},
+		Usage:           TurnUsage{InputTokens: 1000, OutputTokens: 804},
+		PromptProfile:   string(PromptProfileLight),
+		CreditsDeducted: &credits,
+	})
+	if !strings.HasSuffix(withCredits, "credits=1.25") {
+		t.Fatalf("credits must be the last chip segment, got %q", withCredits)
+	}
+	zero := 0.0
+	free := FormatTurnMetaOpts(TurnMetaOptions{CreditsDeducted: &zero})
+	if free != "credits=0" {
+		t.Fatalf("settled zero = %q", free)
+	}
+	if FormatTurnMetaOpts(TurnMetaOptions{}) != "" {
+		t.Fatal("missing credits must stay hidden")
 	}
 	upgraded := FormatTurnMetaOpts(TurnMetaOptions{
 		Route:          RouteDecision{TaskType: "reasoning", Source: "primary", Model: "m1"},
@@ -262,5 +306,49 @@ func TestFilterToolDefsForLightTurn(t *testing.T) {
 	}
 	if !names["web_search"] || !names["web_fetch"] || !names["manage_skill"] {
 		t.Fatalf("names=%v", names)
+	}
+}
+
+// R4 regression: when the allowlist would strip every tool, the surface must
+// degrade to the core read-only fallback set — never fail-open to the full
+// list (a misclassification or unrecognised surface must not silently expand
+// a light turn).
+func TestFilterToolDefsForLightTurnFailClosedFallback(t *testing.T) {
+	defs := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "bash"}},
+		{"type": "function", "function": map[string]interface{}{"name": "read_file"}},
+		{"type": "function", "function": map[string]interface{}{"name": "edit_file"}},
+	}
+	got := FilterToolDefsForLightTurn(defs)
+	if len(got) != 0 {
+		t.Fatalf("expected empty surface, got %+v", got)
+	}
+	// Surface containing both blocked tools and core fallback tools.
+	mixed := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "bash"}},
+		{"type": "function", "function": map[string]interface{}{"name": "web_search"}},
+		{"type": "function", "function": map[string]interface{}{"name": "current_datetime"}},
+	}
+	got = FilterToolDefsForLightTurn(mixed)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 fallback tools, got %+v", got)
+	}
+	names := map[string]bool{}
+	for _, d := range got {
+		names[toolDefName(d)] = true
+	}
+	if !names["web_search"] || !names["current_datetime"] || names["bash"] {
+		t.Fatalf("names=%v", names)
+	}
+}
+
+func TestStrippedLightToolNamesFailClosedFallback(t *testing.T) {
+	defs := []map[string]interface{}{
+		{"type": "function", "function": map[string]interface{}{"name": "bash"}},
+		{"type": "function", "function": map[string]interface{}{"name": "web_search"}},
+	}
+	stripped := StrippedLightToolNames(defs)
+	if len(stripped) != 1 || stripped[0] != "bash" {
+		t.Fatalf("stripped=%v", stripped)
 	}
 }

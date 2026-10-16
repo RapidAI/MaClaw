@@ -328,6 +328,26 @@ func escapeLike(value string) string {
 	return value
 }
 
+// AllFullTexts returns every stored session's full transcript text keyed by
+// session ID. It is the bulk read used by transcript exporters that need the
+// whole table (e.g. the taskeval capture converter in guiapp).
+func (s *Store) AllFullTexts() (map[string]string, error) {
+	rows, err := s.db.Query(`SELECT session_id, full_text FROM sessions`)
+	if err != nil {
+		return nil, fmt.Errorf("session store: all full texts: %w", err)
+	}
+	defer rows.Close()
+	out := make(map[string]string)
+	for rows.Next() {
+		var id, text string
+		if err := rows.Scan(&id, &text); err != nil {
+			return nil, fmt.Errorf("session store: scan full text: %w", err)
+		}
+		out[id] = text
+	}
+	return out, rows.Err()
+}
+
 // GetFullText returns the full transcript text for a given session ID.
 func (s *Store) GetFullText(sessionID string) (string, error) {
 	var text string

@@ -31,6 +31,9 @@ type Handle struct {
 	OriginalBytes int       `json:"original_bytes"`
 	PreviewBytes  int       `json:"preview_bytes"`
 	CreatedAt     time.Time `json:"created_at"`
+	// Encrypted marks handles whose on-disk payload is sealed with the store
+	// key (AES-256-GCM). Read/Resolve handle decryption transparently.
+	Encrypted bool `json:"encrypted,omitempty"`
 }
 
 // Projection is the dual-view result after Project.
@@ -67,6 +70,9 @@ type ProjectOptions struct {
 	// Nil defaults to true. Set false for preview-only compatibility helpers;
 	// the full content is still spilled and Projection.Handle remains available.
 	IncludeHandleFooter *bool
+	// Encrypt seals the spilled payload at rest. Project additionally forces
+	// encryption for tools flagged by isEncryptedToolResult.
+	Encrypt bool
 }
 
 // Project builds a provider preview and optionally spills the full content.
@@ -88,10 +94,24 @@ func Project(opts ProjectOptions) (Projection, error) {
 		minSpill = limit
 	}
 
+	includeFooter := opts.IncludeHandleFooter == nil || *opts.IncludeHandleFooter
+	// Reserve the handle footer before the first cut. Building a preview at the
+	// full limit and then shrinking it again inserts a second "已截断" marker
+	// that cites the first preview ("共 4096 字节") and drops the middle of
+	// that preview. Content that already fits in limit is returned whole, with
+	// no footer and no spill.
+	previewLimit := limit
+	if includeFooter && len(content) > limit {
+		if reserve := handleFooterReserve(opts.ToolName, len(content), limit); reserve > 0 && reserve < limit {
+			previewLimit = limit - reserve
+		}
+	}
 	preview := opts.Preview
-	if preview == "" {
-		// Tool-aware structured projection (Phase 4); falls back to DefaultPreview.
-		preview = StructuredPreview(opts.ToolName, content, limit)
+	// An empty preview is built here. A caller preview that is the untouched
+	// content, or that is already larger than the budget, must be cut once
+	// as well. Leaving it unchanged ignored Limit and skipped the spill.
+	if preview == "" || len(preview) > previewLimit || (preview == content && len(content) > previewLimit) {
+		preview = StructuredPreview(opts.ToolName, content, previewLimit)
 	}
 
 	shouldSpill := opts.ForceSpill ||
@@ -106,6 +126,9 @@ func Project(opts ProjectOptions) (Projection, error) {
 		SessionKey: opts.SessionKey,
 		Content:    content,
 		Root:       opts.Root,
+		// Tools flagged as sensitive (currently: database) always spill
+		// encrypted, regardless of which projection path triggered the spill.
+		Encrypt: opts.Encrypt || isEncryptedToolResult(opts.ToolName),
 	})
 	if err != nil {
 		// Spill failure must not break the agent turn — return preview only.
@@ -113,7 +136,6 @@ func Project(opts ProjectOptions) (Projection, error) {
 		return Projection{Preview: preview}, err
 	}
 	handle.PreviewBytes = len(preview)
-	includeFooter := opts.IncludeHandleFooter == nil || *opts.IncludeHandleFooter
 	modelPreview := preview
 	if includeFooter {
 		preview = fitPreviewWithHandleFooter(preview, handle, limit)
@@ -135,6 +157,10 @@ type SpillOptions struct {
 	SessionKey string
 	Content    string
 	Root       string
+	// Encrypt seals the payload with the store key (AES-256-GCM). Project
+	// forces this for tools flagged by isEncryptedToolResult; direct Spill
+	// callers can opt in explicitly.
+	Encrypt bool
 }
 
 // SessionDirectoryName returns the opaque on-disk namespace for a session key.
@@ -173,8 +199,21 @@ func Spill(opts SpillOptions) (*Handle, error) {
 	if err != nil {
 		return nil, err
 	}
-	path := filepath.Join(dir, id+".txt")
-	if err := fileutil.AtomicWriteFile(path, []byte(opts.Content), 0o600); err != nil {
+	payload := []byte(opts.Content)
+	suffix := ".txt"
+	if opts.Encrypt {
+		key, err := storeKey(root)
+		if err != nil {
+			return nil, err
+		}
+		payload, err = encryptPayload(key, payload)
+		if err != nil {
+			return nil, fmt.Errorf("toolresult: encrypt: %w", err)
+		}
+		suffix = encryptedSuffix
+	}
+	path := filepath.Join(dir, id+suffix)
+	if err := fileutil.AtomicWriteFile(path, payload, 0o600); err != nil {
 		return nil, fmt.Errorf("toolresult: write: %w", err)
 	}
 	invalidateStoreStats(root)
@@ -186,10 +225,12 @@ func Spill(opts SpillOptions) (*Handle, error) {
 		SessionKey:    opts.SessionKey,
 		OriginalBytes: len(opts.Content),
 		CreatedAt:     time.Now().UTC(),
+		Encrypted:     opts.Encrypt,
 	}, nil
 }
 
-// ReadFile returns the full spilled content at path.
+// ReadFile returns the full spilled content at path, decrypting encrypted
+// handles transparently.
 // Path must resolve under the tool_results store (unless Root is overridden via
 // Resolve/Read). Prefer Read() for model-facing partial re-reads.
 func ReadFile(path string) (string, error) {
@@ -197,7 +238,11 @@ func ReadFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	data, err := os.ReadFile(abs)
+	keyRoot, err := storeRootForKey("")
+	if err != nil {
+		return "", err
+	}
+	data, err := readStoreFile(keyRoot, abs)
 	if err != nil {
 		return "", err
 	}
@@ -263,6 +308,96 @@ func modelVisibleToolName(toolName string) string {
 	return name
 }
 
+// handleFooterReserve is the byte width of the model-facing footer for a
+// payload of originalBytes, using the widest preview_bytes value this limit
+// can print. The random handle id has a fixed width, so the reserve matches
+// the footer Project will append.
+func handleFooterReserve(toolName string, originalBytes, limit int) int {
+	if limit < 0 {
+		limit = 0
+	}
+	if originalBytes < 0 {
+		originalBytes = 0
+	}
+	tool := sanitizePathSegment(toolName)
+	if tool == "" {
+		tool = "tool"
+	}
+	if len(tool) > 24 {
+		tool = utf8Prefix(tool, 24)
+	}
+	id := "20060102T150405_" + tool + "_" + strings.Repeat("a", 16)
+	return len(appendHandleFooter("", &Handle{
+		ID:            id,
+		ToolName:      toolName,
+		OriginalBytes: originalBytes,
+		PreviewBytes:  limit,
+	}))
+}
+
+const (
+	truncationMarkerPrefix = "\n\n... (已截断，共 "
+	truncationMarkerSuffix = " 字节) ...\n\n"
+)
+
+// splitFirstTruncationMarker splits on the first size marker. A later marker
+// cites an intermediate preview, not the payload, and must not be treated as
+// the original length.
+func splitFirstTruncationMarker(s string) (head, marker, tail string, ok bool) {
+	start := strings.Index(s, truncationMarkerPrefix)
+	if start < 0 {
+		return "", "", "", false
+	}
+	rest := s[start+len(truncationMarkerPrefix):]
+	rel := strings.Index(rest, truncationMarkerSuffix)
+	if rel < 0 {
+		return "", "", "", false
+	}
+	digits := rest[:rel]
+	if digits == "" || strings.Trim(digits, "0123456789") != "" {
+		return "", "", "", false
+	}
+	end := start + len(truncationMarkerPrefix) + rel + len(truncationMarkerSuffix)
+	return s[:start], s[start:end], s[end:], true
+}
+
+// compactPreviewToBudget shrinks s to budget bytes. An existing truncation
+// marker is kept so a second cut does not cite the intermediate preview
+// length. Unmarked text uses the normal head/tail preview.
+func compactPreviewToBudget(s string, budget int) string {
+	if budget <= 0 {
+		return ""
+	}
+	if len(s) <= budget {
+		return s
+	}
+	head, marker, tail, ok := splitFirstTruncationMarker(s)
+	if !ok || len(marker) >= budget {
+		return DefaultPreview(s, budget)
+	}
+	room := budget - len(marker)
+	total := len(head) + len(tail)
+	if total <= room {
+		return head + marker + tail
+	}
+	headKeep := 0
+	if total > 0 {
+		headKeep = room * len(head) / total
+	}
+	if headKeep > len(head) {
+		headKeep = len(head)
+	}
+	tailKeep := room - headKeep
+	if tailKeep > len(tail) {
+		tailKeep = len(tail)
+		headKeep = room - tailKeep
+	}
+	if headKeep < 0 {
+		headKeep = 0
+	}
+	return utf8Prefix(head, headKeep) + marker + utf8Suffix(tail, tailKeep)
+}
+
 // fitPreviewWithHandleFooter keeps the complete model projection within the
 // caller's preview budget. Historically callers applied a second blind byte
 // truncation after Project, which could cut the handle footer itself. Reserve
@@ -287,7 +422,7 @@ func fitPreviewWithHandleFooter(preview string, h *Handle, limit int) string {
 			preview = ""
 			continue
 		}
-		preview = DefaultPreview(preview, budget)
+		preview = compactPreviewToBudget(preview, budget)
 	}
 	return preview
 }

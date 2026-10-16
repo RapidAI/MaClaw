@@ -18,6 +18,7 @@
 
 #include "driver/gpio.h"
 #include "esp_err.h"
+#include "boards/board_gpio_check.h"
 
 #define BREAD_INPUT_ACTIVATE_GPIO GPIO_NUM_0
 #define BREAD_INPUT_VOLUME_UP_GPIO GPIO_NUM_38
@@ -35,6 +36,16 @@ static inline bool bread_input_activate_is_released(int level) {
 }
 
 static inline esp_err_t bread_input_init(void) {
+    /* Hardcoded pins: fail fast at the adapter boundary. */
+    esp_err_t err = board_check_gpio(BREAD_INPUT_ACTIVATE_GPIO, "bread_input",
+                                     "activate key");
+    if (err != ESP_OK) return err;
+    err = board_check_gpio(BREAD_INPUT_VOLUME_UP_GPIO, "bread_input",
+                           "volume up key");
+    if (err != ESP_OK) return err;
+    err = board_check_gpio(BREAD_INPUT_VOLUME_DOWN_GPIO, "bread_input",
+                           "volume down key");
+    if (err != ESP_OK) return err;
     const gpio_config_t keys = {
         .pin_bit_mask = (1ULL << BREAD_INPUT_ACTIVATE_GPIO) |
                         (1ULL << BREAD_INPUT_VOLUME_UP_GPIO) |

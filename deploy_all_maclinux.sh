@@ -167,7 +167,7 @@ fi
 REMOTE_USER="${REMOTE_USER:-root}"
 REMOTE_PORT="${REMOTE_PORT:-22}"
 HUB_MODEL_BASE_URL="${HUB_MODEL_BASE_URL:-https://github.com/RapidAI/MaClaw/releases/download/Model_Release}"
-HUB_MODEL_FILES="${HUB_MODEL_FILES:-embeddinggemma-300M-Q8_0.gguf sensevoice-small-q8.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro_v2.zip}"
+HUB_MODEL_FILES="${HUB_MODEL_FILES:-Qwen3-Embedding-0.6B-Q8_0.gguf head_mlp_qwen3go_r13f1.json tool_head_ovr_qwen3go_r5.json interrupt_relevance_qwen3go.json sensevoice-small-q8.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro_v2.zip}"
 
 brand_build_tag=""
 hub_binary_name="maclaw-hub"
@@ -370,10 +370,6 @@ identity:
   enrollment_mode: open
   allow_self_enroll: true
 
-pwa:
-  static_dir: ./web/dist
-  route_prefix: /app
-
 center:
   enabled: true
   base_url: $(normalize_url "${hub_primary[$i]}")
@@ -422,33 +418,10 @@ stage_assets() {
   cp -f "$ROOT_DIR/go.mod" "$ROOT_DIR/go.sum" "$stage/"
   rsync -a --exclude bin --exclude package --exclude data --exclude .gocache --exclude .gomodcache --exclude cmd --exclude internal --exclude '*.exe' --exclude '*.exe~' "$ROOT_DIR/hubcenter/" "$stage/hubcenter/"
   rsync -a --exclude bin --exclude package --exclude data --exclude .gocache --exclude .gomodcache --exclude cmd --exclude internal --exclude '*.exe' --exclude '*.exe~' "$ROOT_DIR/hub/" "$stage/hub/"
-  rsync -a --exclude node_modules --exclude dist "$ROOT_DIR/openclaw-bridge/" "$stage/openclaw-bridge/" 2>/dev/null || true
-
-  if [[ ! -d "$stage/hub/web/dist" ]]; then
-    echo "  - hub/web/dist missing; creating minimal PWA placeholder in staging."
-    mkdir -p "$stage/hub/web/dist"
-    cat >"$stage/hub/web/dist/index.html" <<'EOF'
-<!doctype html>
-<html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>MaClaw Hub</title>
-</head>
-<body>
-  <main>
-    <h1>MaClaw Hub</h1>
-    <p>Hub PWA assets are not bundled in this checkout.</p>
-  </main>
-</body>
-</html>
-EOF
-  fi
 
   [[ -d "$stage/hubcenter/web/admin" ]] || die "Missing deploy directory: hubcenter admin web assets"
   [[ -f "$stage/hubcenter/web/admin/assets/js/admin-core.js" ]] || die "Missing deploy payload: hubcenter admin core script"
   [[ -d "$stage/hub/web/admin" ]] || die "Missing deploy directory: hub admin web assets"
-  [[ -d "$stage/hub/web/dist" ]] || die "Missing deploy directory: hub pwa web dist"
   [[ -d "$stage/hub/web/card_store" ]] || die "Missing deploy directory: hub card store web assets"
   [[ -f "$stage/hub/web/card_store/index.html" ]] || die "Missing deploy payload: hub card store index"
   [[ -f "$stage/hub/web/card_store/professional.css" ]] || die "Missing deploy payload: hub card store stylesheet"
@@ -498,7 +471,7 @@ set -eu
 : "${DEPLOY_HUB:=0}"
 : "${ENSURE_HUB_MODELS:=0}"
 : "${HUB_MODEL_BASE_URL:=https://github.com/RapidAI/MaClaw/releases/download/Model_Release}"
-: "${HUB_MODEL_FILES:=embeddinggemma-300M-Q8_0.gguf sensevoice-small-q8.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro_v2.zip}"
+: "${HUB_MODEL_FILES:=Qwen3-Embedding-0.6B-Q8_0.gguf head_mlp_qwen3go_r13f1.json tool_head_ovr_qwen3go_r5.json interrupt_relevance_qwen3go.json sensevoice-small-q8.gguf omniparser-v2.yolow kokoro-v1_0.koro kokoro_82m_selected_voices_koro_v2.zip}"
 : "${HUB_CONFIG_BASENAME:=}"
 : "${HUBCENTER_CONFIG_BASENAME:=hubcenter-config.yaml}"
 : "${HUB_BINARY_NAME:=maclaw-hub}"
@@ -583,7 +556,7 @@ clean_hubcenter_db_if_requested() {
 }
 
 is_allowed_model_file() {
-  case "$1" in ""|*/*|*\\*|*..*) return 1 ;; *.gguf|*.yolow|*.koro|*.zip) return 0 ;; *) return 1 ;; esac
+  case "$1" in ""|*/*|*\\*|*..*) return 1 ;; *.gguf|*.yolow|*.koro|*.zip|*.json) return 0 ;; *) return 1 ;; esac
 }
 
 seed_home_models() {

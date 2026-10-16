@@ -2396,14 +2396,20 @@ func SplitSkillDocSections(content string) (core string, reference string) {
 }
 
 func StripBashCommentLines(command string) string {
+	if command == "" || !strings.Contains(command, "#") {
+		return command
+	}
 	lines := strings.Split(command, "\n")
-	var filtered []string
+	filtered := make([]string, 0, len(lines))
+	quote := byte(0)
 	for _, line := range lines {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") {
+		// Only a # outside quotes is a shell comment. cmd.exe would otherwise
+		// delete # lines that belong to a quoted python or PowerShell string.
+		if quote == 0 && lineIsShellComment(line) {
 			continue
 		}
 		filtered = append(filtered, line)
+		quote = quoteStateAfter(line, quote)
 	}
 	return strings.Join(filtered, "\n")
 }

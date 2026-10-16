@@ -3,6 +3,8 @@ package httpapi
 import (
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -165,6 +167,37 @@ func TestCloudWorkspaceHeartbeat409AfterSteal(t *testing.T) {
 	okHB := doCloudWorkspaceRequest(t, h, http.MethodPost, path+"/"+gotForced.LeaseID+"/heartbeat", "m1b", "secret", nil)
 	if okHB.Code != http.StatusOK {
 		t.Fatalf("new heartbeat=%d %s", okHB.Code, okHB.Body.String())
+	}
+}
+
+func TestCloudWorkspaceHandoffRequestIsRecordedAndIdempotent(t *testing.T) {
+	_, h, _ := newCloudWorkspaceUserEnv(t, cloudworkspace.ModeAllUsers, 5, nil)
+	id := createCloudWorkspace(t, h, "m1", "A")
+	path := "/api/v1/cloud-workspaces/" + id + "/leases"
+	acquired := doCloudWorkspaceRequest(t, h, http.MethodPost, path, "m1", "secret", map[string]any{"mode": "acquire"})
+	if acquired.Code != http.StatusOK {
+		t.Fatalf("acquire=%d %s", acquired.Code, acquired.Body.String())
+	}
+	key := "handoff-test"
+	req := httptest.NewRequest(http.MethodPost, path+"/handoff-request", nil)
+	mustSetCloudWorkspaceHTTPTestAuth(t, h, req, "m1b", "secret")
+	req.Header.Set("Idempotency-Key", key)
+	first := httptest.NewRecorder()
+	h.ServeHTTP(first, req)
+	if first.Code != http.StatusOK {
+		t.Fatalf("handoff=%d %s", first.Code, first.Body.String())
+	}
+	secondReq := httptest.NewRequest(http.MethodPost, path+"/handoff-request", nil)
+	mustSetCloudWorkspaceHTTPTestAuth(t, h, secondReq, "m1b", "secret")
+	secondReq.Header.Set("Idempotency-Key", key)
+	second := httptest.NewRecorder()
+	h.ServeHTTP(second, secondReq)
+	if second.Code != http.StatusOK || second.Header().Get("Idempotency-Replayed") != "true" {
+		t.Fatalf("handoff replay=%d replay=%q body=%s", second.Code, second.Header().Get("Idempotency-Replayed"), second.Body.String())
+	}
+	ent := doCloudWorkspaceRequest(t, h, http.MethodGet, "/api/v1/cloud-workspaces/entitlement", "m1", "secret", nil)
+	if ent.Code != http.StatusOK || !strings.Contains(ent.Body.String(), "handoff_requested_at") {
+		t.Fatalf("entitlement=%d %s", ent.Code, ent.Body.String())
 	}
 }
 

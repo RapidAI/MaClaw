@@ -15,12 +15,32 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/lobsterai"
+	"github.com/RapidAI/CodeClaw/corelib/qoder"
+	"github.com/RapidAI/CodeClaw/corelib/trae"
+	"github.com/RapidAI/CodeClaw/corelib/windsurf"
+	"github.com/RapidAI/CodeClaw/corelib/workbuddy"
 	openai "github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
 )
 
 func openAISDKChatRaw(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client) ([]byte, int, error) {
 	client = HTTPClientForRequestContext(ctx, client)
+	if workbuddy.Matches(cfg) {
+		client = workbuddy.WrapClient(client)
+	}
+	if trae.Matches(cfg.ProviderName, cfg.URL) {
+		client = trae.WrapClient(client)
+	}
+	if lobsterai.Matches(cfg.ProviderName, cfg.URL) {
+		client = lobsterai.WrapClient(client)
+	}
+	if qoder.Matches(cfg) {
+		client = qoder.WrapClientForConfig(client, cfg)
+	}
+	if windsurf.MatchesProvider(cfg.ProviderName, cfg.URL) {
+		client = windsurf.WrapClient(client)
+	}
 	if !json.Valid(body) {
 		return nil, 0, fmt.Errorf("parse openai request body: invalid JSON")
 	}
@@ -31,6 +51,7 @@ func openAISDKChatRaw(ctx context.Context, cfg corelib.MaclawLLMConfig, body []b
 	// itself only prevents transport-level body replay after it replaces the
 	// exact JSON payload.
 	rawClient := openAISDKClientWithRawBody(client, body, nil)
+	cfg = bindOpenCodeSessionFromJSONBody(ctx, cfg, body)
 	openaiClient := openai.NewClient(openAISDKOptions(cfg, rawClient)...)
 	var err error
 	_, err = openaiClient.Chat.Completions.New(
@@ -39,9 +60,13 @@ func openAISDKChatRaw(ctx context.Context, cfg corelib.MaclawLLMConfig, body []b
 		option.WithResponseBodyInto(&responseBody),
 		option.WithResponseInto(&response),
 	)
-	status := http.StatusOK
+	// The zero status means no HTTP response. Defaulting that to 200 makes a
+	// canceled call look like an empty success and then a JSON parse error.
+	status := 0
 	if response != nil {
 		status = response.StatusCode
+	} else if err == nil {
+		status = http.StatusOK
 	}
 	if err != nil {
 		if apiErr := openAISDKError(err); apiErr != nil {
@@ -70,8 +95,29 @@ func openAISDKChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body 
 
 func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body []byte, client *http.Client, onToken TokenCallback, onReasoning TokenCallback) (*Response, int, []byte, error) {
 	client = HTTPClientForRequestContext(ctx, client)
+	if workbuddy.Matches(cfg) {
+		client = workbuddy.WrapClient(client)
+	}
+	if trae.Matches(cfg.ProviderName, cfg.URL) {
+		client = trae.WrapClient(client)
+	}
+	if lobsterai.Matches(cfg.ProviderName, cfg.URL) {
+		client = lobsterai.WrapClient(client)
+	}
+	if qoder.Matches(cfg) {
+		client = qoder.WrapClientForConfig(client, cfg)
+	}
+	if windsurf.MatchesProvider(cfg.ProviderName, cfg.URL) {
+		client = windsurf.WrapClient(client)
+	}
+	cfg = bindOpenCodeSessionFromJSONBody(ctx, cfg, body)
 	endpoint := BuildOpenAIChatCompletionsEndpoint(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(cfg.URL, cfg.UserAgent()))
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(body))
+	// The route deadline still bounds time-to-headers. Once an SSE body
+	// starts, it may continue past that deadline. Caller cancellation is
+	// preserved, including a stop that arrives after the deadline.
+	reqCtx, cancelReq, markHeaders, headerDeadline := streamingRequestContext(ctx)
+	defer cancelReq()
+	req, err := http.NewRequestWithContext(reqCtx, http.MethodPost, endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, 0, nil, err
 	}
@@ -85,10 +131,11 @@ func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body
 	ApplyProviderAuthHeaders(req, cfg)
 	ApplyWorkloadHintHeaders(req, cfg)
 	corelib.SetCodeGenClientNameHeaderIfNeededWithName(req, cfg.UserAgent())
+	corelib.ApplyOpenCodeSessionHeader(req, cfg)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, 0, nil, err
+		return nil, 0, nil, normalizeStreamSetupError(headerDeadline, err)
 	}
 	defer resp.Body.Close()
 	status := resp.StatusCode
@@ -120,7 +167,15 @@ func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body
 		}
 		return nil, status, raw, fmt.Errorf("parse openai stream response: expected SSE event stream or JSON body (body_len=%d)", len(raw))
 	}
-	result, err := parseSSEStreamWithReasoning(resp.Body, onToken, onReasoning)
+	// Only a live event stream outlives the route deadline. Error and JSON
+	// bodies stay on that deadline because they are not token streams.
+	// Losing the claim means the route timer already canceled this request.
+	if !markHeaders() {
+		return nil, status, nil, context.DeadlineExceeded
+	}
+	idleBody := newIdleTimeoutReader(resp.Body, SSEIdleTimeout)
+	defer idleBody.Close()
+	result, err := parseSSEStreamWithReasoning(idleBody, onToken, onReasoning)
 	if err != nil {
 		// parseSSEStreamWithReasoning retains a safe partial response when the
 		// transport breaks after SSE deltas. Propagate it so callers do not
@@ -138,6 +193,7 @@ func openAISDKChatStreamUnused(ctx context.Context, cfg corelib.MaclawLLMConfig,
 	client = HTTPClientForRequestContext(ctx, client)
 	capture := &openAISDKStreamCapture{limit: 512 * 1024}
 	streamClient := openAISDKClientWithRawBody(client, body, capture)
+	cfg = bindOpenCodeSessionFromJSONBody(ctx, cfg, body)
 	openaiClient := openai.NewClient(openAISDKOptions(cfg, streamClient)...)
 	stream := openaiClient.Chat.Completions.NewStreaming(ctx, openai.ChatCompletionNewParams{})
 
@@ -159,15 +215,9 @@ func openAISDKChatStreamUnused(ctx context.Context, cfg corelib.MaclawLLMConfig,
 	for stream.Next() {
 		chunk := stream.Current()
 		shouldStopAfterChunk := false
-		if chunk.Usage.TotalTokens > 0 || chunk.Usage.PromptTokens > 0 || chunk.Usage.CompletionTokens > 0 {
-			usage = &Usage{
-				PromptTokens:     int(chunk.Usage.PromptTokens),
-				CompletionTokens: int(chunk.Usage.CompletionTokens),
-				TotalTokens:      int(chunk.Usage.TotalTokens),
-				InputTokens:      int(chunk.Usage.PromptTokens),
-				OutputTokens:     int(chunk.Usage.CompletionTokens),
-			}
-		} else if parsed := openAISDKChunkUsage(chunk.RawJSON()); parsed != nil {
+		if parsed := openAISDKChunkUsage(chunk.RawJSON()); llmUsageHasCounts(parsed) {
+			usage = parsed
+		} else if parsed := usageFromPositiveCounts(int64(chunk.Usage.PromptTokens), int64(chunk.Usage.CompletionTokens), int64(chunk.Usage.TotalTokens)); llmUsageHasCounts(parsed) {
 			usage = parsed
 		}
 		if len(chunk.Choices) == 0 {
@@ -318,43 +368,37 @@ func openAISDKChatStreamUnused(ctx context.Context, cfg corelib.MaclawLLMConfig,
 			finishReason = "tool_calls"
 		}
 	}
-	if len(msg.ToolCalls) == 0 {
-		rawContent := contentBuf.String()
-		if contentCalls, malformed := ParseContentToolCallsDetailed(rawContent); len(contentCalls) > 0 {
-			msg.ToolCalls = append(msg.ToolCalls, contentCalls...)
-			msg.Content = ""
-			finishReason = "tool_calls"
-		} else if malformed {
-			msg.Content = MalformedContentToolCallErrorMsg
-			finishReason = "stop"
-		}
+	if finish, changed := adoptLeakedToolCalls(&msg, contentBuf.String()); changed {
+		finishReason = finish
 	}
 	if msg.Content == "" && msg.ReasoningContent == "" && len(msg.ToolCalls) == 0 && finishReason == "" && usage == nil {
 		return nil, capture.statusCode(), capture.body(), fmt.Errorf("parse openai stream response: empty stream response (body_len=%d)", len(capture.body()))
 	}
 	var truncatedTools []string
 	if capture.isEventStream() {
-		if parsed, err := ParseSSEToResponse(capture.body()); err == nil && parsed != nil && len(parsed.Choices) > 0 {
-			parsedChoice := parsed.Choices[0]
-			if msg.ReasoningContent == "" {
-				msg.ReasoningContent = parsedChoice.Message.ReasoningContent
-			}
-			if msg.Content == "" {
-				msg.Content = parsedChoice.Message.Content
-			}
-			truncatedTools = parsedChoice.TruncatedToolNames
-			if len(truncatedTools) > 0 {
-				msg.ToolCalls = parsedChoice.Message.ToolCalls
-				if parsedChoice.FinishReason != "" {
+		if parsed, err := ParseSSEToResponse(capture.body()); err == nil && parsed != nil {
+			if len(parsed.Choices) > 0 {
+				parsedChoice := parsed.Choices[0]
+				if msg.ReasoningContent == "" {
+					msg.ReasoningContent = parsedChoice.Message.ReasoningContent
+				}
+				if msg.Content == "" {
+					msg.Content = parsedChoice.Message.Content
+				}
+				truncatedTools = parsedChoice.TruncatedToolNames
+				if len(truncatedTools) > 0 {
+					msg.ToolCalls = parsedChoice.Message.ToolCalls
+					if parsedChoice.FinishReason != "" {
+						finishReason = parsedChoice.FinishReason
+					}
+				} else if len(msg.ToolCalls) == 0 && len(parsedChoice.Message.ToolCalls) > 0 {
+					msg.ToolCalls = parsedChoice.Message.ToolCalls
+				}
+				if finishReason == "" {
 					finishReason = parsedChoice.FinishReason
 				}
-			} else if len(msg.ToolCalls) == 0 && len(parsedChoice.Message.ToolCalls) > 0 {
-				msg.ToolCalls = parsedChoice.Message.ToolCalls
 			}
-			if finishReason == "" {
-				finishReason = parsedChoice.FinishReason
-			}
-			if usage == nil {
+			if llmUsageHasCounts(parsed.Usage) {
 				usage = parsed.Usage
 			}
 		}
@@ -407,20 +451,46 @@ func openAISDKChunkUsage(raw string) *Usage {
 	return payload.Usage
 }
 
+func llmUsageHasCounts(u *Usage) bool {
+	if u == nil {
+		return false
+	}
+	return u.InputReported || u.OutputReported ||
+		u.PromptTokens > 0 || u.CompletionTokens > 0 || u.TotalTokens > 0 ||
+		u.CachedInputTokens > 0 || u.CacheWriteTokens > 0
+}
+
 func openAISDKOptions(cfg corelib.MaclawLLMConfig, client *http.Client) []option.RequestOption {
 	opts := []option.RequestOption{
 		option.WithBaseURL(openAISDKBaseURL(cfg)),
 		option.WithAPIKey(cfg.Key),
 		option.WithHTTPClient(client),
-		option.WithHeader("User-Agent", cfg.UserAgent()),
+		option.WithHeader("User-Agent", corelib.OpenCodeWireUserAgent(cfg.URL, cfg.UserAgent())),
 		option.WithMaxRetries(0),
 	}
 	if corelib.IsCodeGenURL(cfg.URL) {
 		opts = append(opts, option.WithHeader(corelib.CodeGenClientNameHeader, corelib.NormalizeCodeGenClientName(cfg.UserAgent())))
 	}
+	if name, value, ok := corelib.OpenCodeSessionHeaderForConfig(cfg); ok {
+		opts = append(opts, option.WithHeader(name, value))
+	}
 	if strings.EqualFold(strings.TrimSpace(cfg.ProviderName), "xAI-Grok") &&
 		strings.EqualFold(strings.TrimSpace(cfg.AuthType), "oauth") {
 		opts = append(opts, option.WithHeader("X-XAI-Token-Auth", "xai-grok-cli"))
+	}
+	if workbuddy.Matches(cfg) {
+		hdr := make(http.Header)
+		workbuddy.ApplyHeaders(hdr, cfg)
+		for key, values := range hdr {
+			for _, value := range values {
+				opts = append(opts, option.WithHeader(key, value))
+			}
+		}
+	}
+	if trae.Matches(cfg.ProviderName, cfg.URL) && (cfg.TraeMachineID != "" || cfg.TraeDeviceID != "") {
+		opts = append(opts,
+			option.WithHeader("X-Machine-Id", cfg.TraeMachineID),
+			option.WithHeader("X-Device-Id", cfg.TraeDeviceID))
 	}
 	if timeout := cfg.EffectiveTimeoutSec(); timeout > 0 {
 		opts = append(opts, option.WithRequestTimeout(time.Duration(timeout)*time.Second))

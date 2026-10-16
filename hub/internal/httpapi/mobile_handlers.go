@@ -220,6 +220,9 @@ type mobileDocumentDraftRecord struct {
 	// single-file gzip envelope. Downloads always expose the original bytes.
 	SourceEncoding     string
 	SourceOriginalSize int
+	// SourceContentSHA256 is the hex SHA-256 of the original bytes. It lets a
+	// later upload of the same content be refused before another copy is kept.
+	SourceContentSHA256 string
 	// Images: illustrations extracted from Office docs (DOCX media) for in-app preview.
 	Images []mobileDocumentDraftImage
 }
@@ -6248,6 +6251,27 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 			writeError(w, http.StatusBadRequest, "UPLOAD_READ_FAILED", "failed to rewind uploaded file")
 			return
 		}
+		// Hash before storing. A duplicate can be refused without writing a blob
+		// that would only be deleted again. Admission checks the same hash under
+		// the lock so two concurrent uploads still keep a single copy.
+		contentSHA, hashedSize, hashErr := mobileHashUploadOriginal(seekFile)
+		if errors.Is(hashErr, errMobileDocumentOriginalTooLarge) {
+			writeError(w, http.StatusRequestEntityTooLarge, "UPLOAD_TOO_LARGE", "compressed file exceeds 100MB or original exceeds 400MB safety limit")
+			return
+		}
+		contentSHA = mobileNormalizeContentSHA256(contentSHA)
+		if hashErr != nil || contentSHA == "" {
+			writeError(w, http.StatusBadRequest, "UPLOAD_STORE_FAILED", "failed to store uploaded file")
+			return
+		}
+		if _, err := seekFile.Seek(0, io.SeekStart); err != nil {
+			writeError(w, http.StatusBadRequest, "UPLOAD_READ_FAILED", "failed to rewind uploaded file")
+			return
+		}
+		if dup, ok := mobileResolveDocumentContentDuplicate(principal.UserID, principal.TenantID, contentSHA, hashedSize); ok {
+			mobileWriteDuplicateDocumentUpload(w, dup)
+			return
+		}
 		blobPath, blobSize, originalSize, sourceEncoding, blobMem, err := mobilePersistUploadedDocument(
 			principal.UserID, taskID, seekFile, !mobileDocumentLooksPrecompressed(name, head[:headN]),
 		)
@@ -6265,6 +6289,10 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 				mobileDeleteDocumentBlob(blobPath)
 			}
 		}()
+		if originalSize != hashedSize {
+			writeError(w, http.StatusBadRequest, "UPLOAD_STORE_FAILED", "failed to store uploaded file")
+			return
+		}
 		// Fast rejection before parsing. A definitive check runs atomically with
 		// insertion below so concurrent uploads cannot overbook the same quota.
 		if err := mobileCheckDocumentQuotaForPrincipal(r.Context(), principal, int64(blobSize)); err != nil {
@@ -6304,25 +6332,44 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 			draft.SourceBytes = blobMem
 			draft.SourceEncoding = sourceEncoding
 			draft.SourceOriginalSize = originalSize
+			draft.SourceContentSHA256 = contentSHA
 		}
-		admitDraft := func(draft mobileDocumentDraftRecord, releaseUploadOriginal bool) (map[string]any, bool) {
+		admitDraft := func(draft mobileDocumentDraftRecord, releaseUploadOriginal bool) (map[string]any, *mobileDocumentDraftRecord, bool) {
 			mobileDocumentQuotaAdmissionMu.Lock()
 			defer mobileDocumentQuotaAdmissionMu.Unlock()
+			if dup, ok := mobileMatchStoredContentHash(principal.UserID, principal.TenantID, contentSHA); ok {
+				return nil, &dup, false
+			}
 			// Quota counts both the stored original and generated markdown. Include
 			// both in the atomic admission check so highly-compressible text cannot
 			// exceed the account limit through its extracted preview.
 			additionalBytes := int64(blobSize) + int64(len(draft.Markdown))
 			if err := mobileCheckDocumentQuotaForPrincipal(r.Context(), principal, additionalBytes); err != nil {
 				writeError(w, http.StatusInsufficientStorage, "DOCUMENT_QUOTA_EXCEEDED", "document storage quota exceeded")
-				return nil, false
+				return nil, nil, false
 			}
 			payload := mobileStoreDraftAndUpload(draft, &record, releaseUploadOriginal)
 			if payload == nil {
 				writeError(w, http.StatusUnauthorized, "UNAUTHORIZED", "Viewer authentication failed")
-				return nil, false
+				return nil, nil, false
 			}
 			cleanupUploadBlob = false
-			return payload, true
+			return payload, nil, true
+		}
+		commitDraft := func(draft mobileDocumentDraftRecord, releaseUploadOriginal bool) {
+			payload, dup, admitted := admitDraft(draft, releaseUploadOriginal)
+			if !admitted {
+				// Office extract may already have written image blobs for a draft
+				// that will not be kept.
+				mobileDraftDeleteImages(draft.Images)
+				if dup != nil {
+					mobileWriteDuplicateDocumentUpload(w, *dup)
+				}
+				return
+			}
+			mobilePersistState()
+			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
+			writeJSON(w, http.StatusAccepted, payload)
 		}
 		var body []byte
 		if originalSize <= mobileDocumentInlineParseMaxBytes && (mobileUploadedFileIsImmediateDraft(name) || mobileUploadedFileIsImage(name)) {
@@ -6352,13 +6399,7 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 				if len(images) > 0 {
 					record.Message = fmt.Sprintf("文件已导入（保留原件，抽取正文与 %d 张插图）。", len(images))
 				}
-				payload, admitted := admitDraft(draft, true)
-				if !admitted {
-					return
-				}
-				mobilePersistState()
-				mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
-				writeJSON(w, http.StatusAccepted, payload)
+				commitDraft(draft, true)
 				return
 			}
 			// Office/binary that failed extract: still store original as a draft.
@@ -6375,13 +6416,7 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 			record.Status = "ready"
 			record.DraftID = draft.ID
 			record.Message = "原件已保存到文稿库（正文提取有限，可分享原文件）。"
-			payload, admitted := admitDraft(draft, true)
-			if !admitted {
-				return
-			}
-			mobilePersistState()
-			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
-			writeJSON(w, http.StatusAccepted, payload)
+			commitDraft(draft, true)
 			return
 		}
 		if mobileUploadedFileIsImage(name) {
@@ -6402,13 +6437,7 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 			record.DraftID = draft.ID
 			record.Message = "图片原件已保存，等待 OCR/视觉识别（可先分享原图）。"
 			// Keep upload source for OCR workers until ready.
-			payload, admitted := admitDraft(draft, false)
-			if !admitted {
-				return
-			}
-			mobilePersistState()
-			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
-			writeJSON(w, http.StatusAccepted, payload)
+			commitDraft(draft, false)
 			return
 		}
 		if mobileUploadedFileNeedsRemoteOfficeExtraction(name) {
@@ -6428,13 +6457,7 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 			record.Status = "queued"
 			record.DraftID = draft.ID
 			record.Message = "已保存原件，等待桌面端 Office 文档解析。"
-			payload, admitted := admitDraft(draft, false)
-			if !admitted {
-				return
-			}
-			mobilePersistState()
-			mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
-			writeJSON(w, http.StatusAccepted, payload)
+			commitDraft(draft, false)
 			return
 		}
 		// Unknown binary: still keep original as shareable draft.
@@ -6451,13 +6474,7 @@ func MobileDocumentUploadHandler(identity *auth.IdentityService) http.HandlerFun
 		record.Status = "ready"
 		record.DraftID = draft.ID
 		record.Message = "原件已保存到文稿库。"
-		payload, admitted := admitDraft(draft, true)
-		if !admitted {
-			return
-		}
-		mobilePersistState()
-		mobileRealtimeBroadcast(principal.TenantID, principal.UserID, mobileRealtimeDocumentTaskEvent("document_task", payload))
-		writeJSON(w, http.StatusAccepted, payload)
+		commitDraft(draft, true)
 	}
 }
 

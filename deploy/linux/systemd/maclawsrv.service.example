@@ -1,0 +1,22 @@
+# /etc/systemd/system/maclawsrv.service
+# deploy/linux/rollout_remote.sh deploy-maclawsrv writes exactly this unit
+# (with MACLAWSRV_DEPLOY_DIR in place of /data/soft/maclaw_srv). .env holds
+# MaClawSrv secrets (MACLAW_HUB_URL, MACLAW_DESKTOP_API_TOKEN, model keys, ...)
+# and is never committed. systemd < 240 ignores "append:"; use
+# journalctl -u maclawsrv there.
+[Unit]
+Description=MaClawSrv REST service
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/data/soft/maclaw_srv
+EnvironmentFile=/data/soft/maclaw_srv/.env
+ExecStart=/data/soft/maclaw_srv/bin/maclawsrv
+Restart=always
+RestartSec=3
+StandardOutput=append:/data/soft/maclaw_srv/logs/maclawsrv.log
+StandardError=append:/data/soft/maclaw_srv/logs/maclawsrv.err.log
+
+[Install]
+WantedBy=multi-user.target

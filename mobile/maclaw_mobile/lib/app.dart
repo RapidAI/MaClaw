@@ -19,6 +19,7 @@ import 'features/auth/login_screen.dart';
 import 'features/auth/session_controller.dart';
 import 'features/auth/startup_splash_screen.dart';
 import 'features/account/llm_setup_screen.dart';
+import 'features/bots/bots_screen.dart';
 import 'features/digital_employees/digital_employees_screen.dart';
 import 'features/documents/documents_screen.dart';
 import 'features/servers/servers_screen.dart';
@@ -79,6 +80,12 @@ GoRouter mobileRouterForFeatures(
               path: '/employees',
               pageBuilder: (context, state) => const NoTransitionPage(
                 child: DigitalEmployeesScreen(),
+              ),
+            ),
+            GoRoute(
+              path: '/bots',
+              pageBuilder: (context, state) => const NoTransitionPage(
+                child: BotsScreen(),
               ),
             ),
             GoRoute(

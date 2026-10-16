@@ -1,0 +1,124 @@
+.login-page {
+  padding-top: 96rpx;
+}
+
+.brand {
+  margin-bottom: 48rpx;
+  padding: 0 8rpx;
+}
+
+.brand-title {
+  font-size: 56rpx;
+  font-weight: 700;
+  letter-spacing: 2rpx;
+}
+
+.brand-sub {
+  margin-top: 12rpx;
+  color: var(--ink-2);
+  font-size: 28rpx;
+}
+
+.tabs {
+  display: flex;
+  margin-bottom: 32rpx;
+  border-bottom: 2rpx solid var(--line);
+}
+
+.tab {
+  padding: 0 8rpx 20rpx;
+  margin-right: 48rpx;
+  font-size: 30rpx;
+  color: var(--ink-3);
+  position: relative;
+}
+
+.tab-active {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.tab-active::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2rpx;
+  height: 6rpx;
+  border-radius: 3rpx;
+  background: var(--brand);
+}
+
+.field {
+  border-bottom: 2rpx solid var(--line);
+  margin-bottom: 24rpx;
+}
+
+.field-inline {
+  display: flex;
+  align-items: center;
+}
+
+.field-input {
+  flex: 1;
+  height: 88rpx;
+  font-size: 32rpx;
+  color: var(--ink);
+}
+
+.field-placeholder {
+  color: var(--ink-3);
+  font-size: 30rpx;
+}
+
+.code-btn {
+  padding: 0 24rpx;
+  height: 64rpx;
+  line-height: 64rpx;
+  border-radius: 999rpx;
+  background: rgba(242, 98, 46, 0.1);
+  color: var(--brand);
+  font-size: 26rpx;
+  white-space: nowrap;
+}
+
+.code-btn-disabled {
+  background: #f1f2f4;
+  color: var(--ink-3);
+}
+
+.login-note {
+  margin-bottom: 32rpx;
+}
+
+.login-btn {
+  margin-top: 8rpx;
+}
+
+.server-row {
+  margin-top: 40rpx;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.server-current {
+  margin-top: 8rpx;
+  font-size: 24rpx;
+  color: var(--ink-3);
+  word-break: break-all;
+  text-align: center;
+}
+
+.server-field {
+  margin-top: 24rpx;
+}
+
+.server-hint {
+  margin-bottom: 16rpx;
+}
+
+.footer {
+  margin-top: 48rpx;
+  text-align: center;
+}

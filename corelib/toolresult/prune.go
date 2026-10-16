@@ -22,6 +22,13 @@ type PruneResult struct {
 // (never the root itself). An empty root resolves to
 // maclawpath.ToolResultsDir(). A missing root is not an error.
 //
+// Only handle payloads (.txt/.enc) are ever removed — the same filter
+// GetStoreStats uses. Anything else (most importantly the .store.key that
+// decrypts every encrypted handle) is never touched: the key file is written
+// once and never modified, so it is always the oldest file in the store and
+// an age-only prune would destroy every encrypted handle's read-back on the
+// first pass.
+//
 // Handles are written atomically at creation and never modified afterwards,
 // so ModTime is a safe age proxy: a file older than maxAge cannot belong to
 // an in-flight spill. Deleting an old handle only removes the lossless
@@ -59,6 +66,15 @@ func PruneOlderThan(root string, maxAge time.Duration) (PruneResult, error) {
 			return nil
 		}
 		if info.ModTime().After(cutoff) {
+			return nil
+		}
+		// Only handle payloads are prunable. Belt and braces: the suffix
+		// filter matches GetStoreStats, and the explicit key-file skip keeps
+		// the store key safe even if its name ever gains a matching suffix.
+		if d.Name() == storeKeyFile {
+			return nil
+		}
+		if ext := filepath.Ext(d.Name()); ext != ".txt" && ext != encryptedSuffix {
 			return nil
 		}
 		if err := os.Remove(path); err != nil {

@@ -13,19 +13,25 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agent/sshtool"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	"github.com/RapidAI/CodeClaw/corelib/botlog"
 	"github.com/RapidAI/CodeClaw/corelib/clientsecurity"
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/config"
+	"github.com/RapidAI/CodeClaw/corelib/database"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/knowledge"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/llm/moa"
+	"github.com/RapidAI/CodeClaw/corelib/mailbox"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
+	"github.com/RapidAI/CodeClaw/corelib/permission"
 	"github.com/RapidAI/CodeClaw/corelib/remote"
 	"github.com/RapidAI/CodeClaw/corelib/scheduler"
 	"github.com/RapidAI/CodeClaw/corelib/task"
@@ -40,6 +46,11 @@ const (
 	metaAskUserQuestion    = "ask_user_question"
 	metaAskUserInputType   = "ask_user_input_type"
 	metaAskUserOptionsJSON = "ask_user_options_json"
+	metaAskUserSecretName  = "ask_user_secret_name"
+	// metaPartialResult marks an assistant message assembled from a run that
+	// ended in an error. The text is real output from earlier rounds, not a
+	// summary of the failure, so the reader can see how far the run got.
+	metaPartialResult = "partial_result"
 )
 
 type CoreAgentExecutor struct {
@@ -54,6 +65,10 @@ type CoreAgentExecutor struct {
 	// ScheduleHandler hosts manage_schedule (create/list/update/delete/list_targets).
 	// Nil keeps the tool visible but returns "not initialized".
 	ScheduleHandler func(args map[string]interface{}) string
+	// ScheduleHandlerContext is the request-scoped variant. The instance id
+	// is the caller that owns the task; model arguments cannot choose another
+	// instance. Hosts should prefer it so one user's instances stay separate.
+	ScheduleHandlerContext func(ctx context.Context, principal Principal, instanceID string, args map[string]interface{}) string
 
 	// IMMessageHandler hosts im_message (list_targets | send) for proactive IM push.
 	// Independent of the scheduler; nil returns "not initialized".
@@ -93,38 +108,139 @@ type CoreAgentExecutor struct {
 	// keeps computer.control.desktop unpublished. A missing runtime after
 	// publish must be unknown.
 	TrustedComputerUse func(ctx context.Context, principal Principal, action string) (string, error)
+	// DatabaseSecretResolver resolves profile secret_ref values without ever
+	// exposing credentials to the model or transport payload.
+	DatabaseSecretResolver database.SecretResolver
+	// DatabaseAuditSink receives metadata-only database events. The host owns
+	// persistence and may attach tenant/principal context without storing SQL
+	// text or secret values.
+	DatabaseAuditSink func(context.Context, Principal, database.AuditEvent)
+	// MailboxSecretResolver resolves keyring://maclaw/mailbox/<id>/<side>.
+	// Nil reads MailboxSecretDir/tenant/user/<id>/<side> instead.
+	MailboxSecretResolver mailbox.SecretResolver
+	MailboxSecretDir      string
+	// MailboxToolReader and MailboxToolSender replace the network dialer.
+	// Tests inject them so a mailbox tool never dials the public internet.
+	MailboxToolReader mailbox.MailReader
+	MailboxToolSender mailbox.MailSender
+	mailboxDrafts     *mailbox.DraftStore
+	// mailboxReviews records an uncertain external send so a later turn cannot
+	// replay it. The key is principal + session. It is not a Hub record.
+	mailboxReviews map[string]mailboxExternalReview
 
-	mu                     sync.Mutex
-	userMemory             map[string]*memory.Store
-	tasks                  map[string]*task.Store
-	userGoals              map[string]*goal.Store
-	userTemplates          map[string]*remote.SessionTemplateManager
-	userSchedules          map[string]*scheduler.Manager
-	userScheduleBindings   map[string]*ScheduleDispatchBindingStore
-	scheduleDispatchFired  map[string]bool
-	userSSH                map[string]*coreAgentSSHResources
-	knowledgeStore         KnowledgeStore
-	auditReader            reviewedHostAuditReader
-	configManager          reviewedHostConfigManager
-	speechTranscriber      reviewedHostSpeechTranscriber
-	speechSynthesizer      reviewedHostSpeechSynthesizer
-	speechPlayer           reviewedHostSpeechPlayer
-	desktopCapturer        reviewedHostDesktopCapturer
-	documentLauncher       reviewedHostDocumentLauncher
-	urlLauncher            reviewedHostURLOpener
-	mcpProvider            MCPToolProvider
-	skillProvider          SkillToolProvider
-	dynamicOperationLedger DynamicOperationLedger
-	dynamicSemanticRouting *DynamicSemanticRouting
+	mu                       sync.Mutex
+	userMemory               map[string]*memory.Store
+	tasks                    map[string]*task.Store
+	userGoals                map[string]*goal.Store
+	userTemplates            map[string]*remote.SessionTemplateManager
+	userSchedules            map[string]*scheduler.Manager
+	userScheduleBindings     map[string]*ScheduleDispatchBindingStore
+	scheduleDispatchFired    map[string]bool
+	userSSH                  map[string]*coreAgentSSHResources
+	userDatabases            map[string]*database.Manager
+	sessionDatabaseApprovals map[string]database.ApprovalContext
+	knowledgeStore           KnowledgeStore
+	auditReader              reviewedHostAuditReader
+	configManager            reviewedHostConfigManager
+	speechTranscriber        reviewedHostSpeechTranscriber
+	speechSynthesizer        reviewedHostSpeechSynthesizer
+	speechPlayer             reviewedHostSpeechPlayer
+	desktopCapturer          reviewedHostDesktopCapturer
+	documentLauncher         reviewedHostDocumentLauncher
+	urlLauncher              reviewedHostURLOpener
+	mcpProvider              MCPToolProvider
+	skillProvider            SkillToolProvider
+	dynamicOperationLedger   DynamicOperationLedger
+	dynamicSemanticRouting   *DynamicSemanticRouting
 	// codingRuntimeStore is optional and set by the service host after its
 	// durable runtime ledger has been opened. Only explicitly marked coding
 	// workflow requests use it; ordinary chat never changes execution path.
 	codingRuntimeStore codingruntime.Store
+	// service is the owning service host, set once after construction. The loop
+	// reaches per-run state through it — currently the mid-run supplement
+	// queue — and only ever by run id supplied host-side in ExecuteRequest.
+	// It is optional: without it the supplement hook stays off rather than
+	// guessing a run from session-scoped state.
+	service *Service
 	// childExecutions holds only live, process-local cancellation handles for
 	// detached read-only runtime children. The Ledger remains the durable source
 	// of truth; this lets API run cancellation interrupt a currently blocking
 	// child LLM/tool call promptly.
 	childExecutions codingruntime.ChildExecutionRegistry
+	closeOnce       sync.Once
+	closeErr        error
+	closed          bool
+
+	// permissionSnapshotOnce builds the dual-eval permission snapshot at most
+	// once per executor (docs/design/tool-routing-improvement-plan-zh.md
+	// Phase 1, R3). The snapshot is immutable, so the core loop's dual-eval
+	// harness can hold the returned pointer without further synchronization.
+	permissionSnapshotOnce sync.Once
+	permissionSnapshotVal  *permission.Snapshot
+	permissionSnapshotErr  error
+}
+
+// Close releases process-scoped resources owned by the executor. GUI and srv
+// both use the same executor, so lifecycle cleanup belongs here rather than in
+// a transport adapter. The method is idempotent and safe to call more than
+// once during shutdown/error unwinding.
+func (e *CoreAgentExecutor) Close() error {
+	if e == nil {
+		return nil
+	}
+	e.closeOnce.Do(func() {
+		e.mu.Lock()
+		e.closed = true
+		memories := make([]*memory.Store, 0, len(e.userMemory))
+		for _, store := range e.userMemory {
+			if store != nil {
+				memories = append(memories, store)
+			}
+		}
+		schedules := make([]*scheduler.Manager, 0, len(e.userSchedules))
+		for _, manager := range e.userSchedules {
+			if manager != nil {
+				schedules = append(schedules, manager)
+			}
+		}
+		sshResources := make([]*coreAgentSSHResources, 0, len(e.userSSH))
+		for _, resources := range e.userSSH {
+			if resources != nil {
+				sshResources = append(sshResources, resources)
+			}
+		}
+		databaseManagers := make([]*database.Manager, 0, len(e.userDatabases))
+		for _, manager := range e.userDatabases {
+			if manager != nil {
+				databaseManagers = append(databaseManagers, manager)
+			}
+		}
+		e.userMemory = nil
+		e.userSchedules = nil
+		e.userSSH = nil
+		e.userDatabases = nil
+		e.mu.Unlock()
+		e.childExecutions.CancelAll()
+
+		for _, manager := range schedules {
+			manager.Stop()
+		}
+		for _, store := range memories {
+			store.Stop()
+		}
+		for _, resources := range sshResources {
+			if resources.bg != nil {
+				resources.bg.Close()
+			}
+			if resources.mgr != nil {
+				resources.mgr.Close()
+			}
+		}
+		for _, manager := range databaseManagers {
+			manager.Close()
+		}
+	})
+	return e.closeErr
 }
 
 // SetDynamicOperationLedger installs the durable coordinator used by bound
@@ -194,6 +310,27 @@ func (e *CoreAgentExecutor) SetCodingRuntimeStore(store codingruntime.Store) {
 	e.mu.Lock()
 	e.codingRuntimeStore = store
 	e.mu.Unlock()
+}
+
+// SetService injects the owning service host. It is optional and deliberately
+// so: when it is absent, the mid-run supplement hook stays disabled instead of
+// reaching for a session-scoped approximation of the current run.
+func (e *CoreAgentExecutor) SetService(svc *Service) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	e.service = svc
+	e.mu.Unlock()
+}
+
+func (e *CoreAgentExecutor) getService() *Service {
+	if e == nil {
+		return nil
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.service
 }
 
 func (e *CoreAgentExecutor) getCodingRuntimeStore() codingruntime.Store {
@@ -271,6 +408,7 @@ type coreAgentCallbacks struct {
 	desktopCapturer               reviewedHostDesktopCapturer
 	documentLauncher              reviewedHostDocumentLauncher
 	urlLauncher                   reviewedHostURLOpener
+	databaseManager               *database.Manager
 	workspace                     string
 	dataDir                       string
 	allowLocalBash                bool
@@ -307,6 +445,8 @@ type coreAgentCallbacks struct {
 	dynamicSemanticInitialized    bool
 	dynamicSemanticManaged        bool
 	loopID                        string
+	botID                         string
+	botRound                      int32
 	onToken                       func(string)
 	onToolCall                    func(string)
 	onToolResult                  func(name, result string)
@@ -325,6 +465,14 @@ type coreAgentCallbacks struct {
 	moaSource          string // request | auto
 	moaActive          bool
 	clientCapabilities *agent.ClientCapabilities
+	// runtimePrompt/runtimeTools are immutable contributions computed by the
+	// shared agentruntime registry for this turn. Keeping them on the callback
+	// makes CoreAgentExecutor consume the same module surface in GUI and srv.
+	runtimePrompt      string
+	runtimeTools       []agentruntime.ToolDefinition
+	runtimeToolInvoker RuntimeToolInvoker
+	host               agentruntime.HostCapabilities
+	adaptiveRetry      *agentruntime.AdaptiveRetry
 
 	// runtimeStore/runtimeAttempt bind this otherwise host-local callback to a
 	// currently leased coding-runtime parent attempt.  They are deliberately
@@ -344,18 +492,29 @@ type coreAgentCallbacks struct {
 	imFileHandler    func(args map[string]interface{}) string
 
 	// messageMetadata/sessionMetadata are inbound transport facts only.
-	messageMetadata            map[string]string
-	sessionMetadata            map[string]string
-	trustedDestinationID       string
-	inboundChannelScope        string
-	scheduleDispatchBindings   *ScheduleDispatchBindingStore
-	lastAdministeredScheduleID string
-	delegateSubtask            func(context.Context, Principal, string) (string, error)
-	delegateChild              bool
-	trustedSSH                 func(context.Context, Principal, string) (string, error)
-	trustedBrowser             func(context.Context, Principal, string, string) (string, error)
-	trustedComputerUse         func(context.Context, Principal, string) (string, error)
-	executor                   *CoreAgentExecutor
+	messageMetadata map[string]string
+	// desktopOutcomeIdleContinues counts finishes that had not called the
+	// desktop yet. desktopOutcomeMissContinues counts finishes whose tool
+	// results and screenshot did not meet the request. They are separate so
+	// an early reminder cannot use up the repair rounds.
+	desktopOutcomeIdleContinues int
+	desktopOutcomeMissContinues int
+	sessionMetadata             map[string]string
+	trustedDestinationID        string
+	inboundChannelScope         string
+	scheduleDispatchBindings    *ScheduleDispatchBindingStore
+	lastAdministeredScheduleID  string
+	delegateSubtask             func(context.Context, Principal, string) (string, error)
+	delegateChild               bool
+	trustedSSH                  func(context.Context, Principal, string) (string, error)
+	trustedBrowser              func(context.Context, Principal, string, string) (string, error)
+	trustedComputerUse          func(context.Context, Principal, string) (string, error)
+	executor                    *CoreAgentExecutor
+	mailboxHost                 *mailbox.Host
+	// dispatcherOnce builds the Phase 2 pilot ToolDispatcher at most once per
+	// callback; dispatcher stays nil unless MACLAW_TOOL_DISPATCHER=on.
+	dispatcherOnce sync.Once
+	dispatcher     *agent.NameDispatcher
 }
 
 // CurrentPromptProfile implements agent.PromptProfileProvider for light-tool deny.
@@ -417,9 +576,38 @@ func (c *coreAgentCallbacks) UpgradeLightPromptToFull(reason string) bool {
 // coding workflow phase is wrapped in the shared durable runtime. The latter
 // path stays in agentservice so Principal/Tenant/User/Instance/Session are
 // constructed and authorized by Service before any model or tool call.
-func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*ExecuteResult, error) {
+func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (res *ExecuteResult, err error) {
+	botID := botlog.FromMeta(req.Message.Metadata)
+	started := time.Now()
+	if botID != "" {
+		phase := strings.TrimSpace(req.Message.Metadata["bot_phase"])
+		botlog.Write(botID, "srv.execute_begin", nil,
+			"instance", strings.TrimSpace(req.Instance.ID),
+			"session", strings.TrimSpace(req.Session.ID),
+			"phase", phase,
+			"content_len", strconv.Itoa(len(req.Message.Content)),
+		)
+		defer func() {
+			n := 0
+			if res != nil {
+				n = len(res.Content)
+			}
+			botlog.Write(botID, "srv.execute_end", err,
+				"dur_ms", strconv.FormatInt(time.Since(started).Milliseconds(), 10),
+				"content_len", strconv.Itoa(n),
+			)
+		}()
+	}
 	if e == nil {
 		return nil, errors.New("core agent executor is nil")
+	}
+	ctx = contextWithDatabaseApproval(ctx, req.DatabaseApproval)
+	ctx = e.attachSessionDatabaseApproval(ctx, req)
+	e.mu.Lock()
+	closed := e.closed
+	e.mu.Unlock()
+	if closed {
+		return nil, errors.New("core agent executor is closed")
 	}
 	if isExplicitRemoteCodingRuntimeRequest(req) {
 		store := e.getCodingRuntimeStore()
@@ -438,6 +626,23 @@ func (e *CoreAgentExecutor) Execute(ctx context.Context, req ExecuteRequest) (*E
 	return e.executeLocalCodingRuntime(ctx, req, store)
 }
 
+// contextWithDatabaseApproval is the sole bridge from a trusted host
+// approval envelope to the shared database tool. Keeping the token in a
+// request context (rather than model arguments or durable ExecuteRequest
+// projections) makes accidental logging/serialization much less likely.
+func contextWithDatabaseApproval(ctx context.Context, approval *database.ApprovalContext) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if approval == nil {
+		return ctx
+	}
+	// Copy the value before injecting it so a caller cannot mutate the
+	// in-flight request's approval after admission.
+	copy := *approval
+	return database.WithApprovalContext(ctx, copy)
+}
+
 func (e *CoreAgentExecutor) executeDirect(ctx context.Context, req ExecuteRequest) (*ExecuteResult, error) {
 	return e.executeDirectWithRuntimeBinding(ctx, req, nil, nil, nil)
 }
@@ -447,10 +652,14 @@ func (e *CoreAgentExecutor) executeDirect(ctx context.Context, req ExecuteReques
 // explicit local coding-runtime adapter supplies that binding; normal REST
 // chat cannot expose or dispatch coding child tasks.
 func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context, req ExecuteRequest, runtimeStore codingruntime.Store, runtimeAttempt *codingruntime.Attempt, remoteBinding *remoteCodingRuntimeBinding) (*ExecuteResult, error) {
+	if text, handled := e.consumeMailboxConfirmation(ctx, req); handled {
+		return &ExecuteResult{Content: text, OutputType: "text/plain"}, nil
+	}
 	llmCfg, err := ResolveLLMConfig(req.Config)
 	if err != nil {
 		return nil, err
 	}
+	llmCfg = applyHubBotLLMServiceGroup(llmCfg, req.Instance.Metadata)
 	resources, err := e.resourcesForUser(req.Principal.TenantID, req.Principal.UserID, req.DataDir)
 	if err != nil {
 		return nil, err
@@ -461,6 +670,14 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 	if e.IMMessageHandlerContext != nil {
 		imMessageHandler = func(args map[string]interface{}) string {
 			return e.IMMessageHandlerContext(ctx, req.Principal, args)
+		}
+	}
+	scheduleHandler := e.ScheduleHandler
+	if e.ScheduleHandlerContext != nil {
+		principal := req.Principal
+		instanceID := strings.TrimSpace(req.Instance.ID)
+		scheduleHandler = func(args map[string]interface{}) string {
+			return e.ScheduleHandlerContext(ctx, principal, instanceID, args)
 		}
 	}
 	imFileHandler := e.IMFileHandler
@@ -504,6 +721,7 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 		desktopCapturer:          e.getReviewedHostDesktopCapturer(),
 		documentLauncher:         e.getReviewedHostDocumentLauncher(),
 		urlLauncher:              e.getReviewedHostURLLauncher(),
+		databaseManager:          e.databaseManagerForRequest(req),
 		mcpProvider:              e.mcpProvider,
 		skillProvider:            e.skillProvider,
 		dynamicOperationLedger:   e.getDynamicOperationLedger(),
@@ -511,10 +729,11 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 		dynamicOperationScope:    firstNonEmptyDynamicOperationScope(req.Message.ID, req.Session.ID),
 		taskRelation:             trustedTaskRelationForExecute(req),
 		loopID:                   fmt.Sprintf("srv:%s:%s", req.Session.ID, req.Principal.UserID),
+		botID:                    botlog.FromMeta(req.Message.Metadata),
 		onToken:                  wrapVisibleChatTokenCallback(req.OnToken),
 		onToolCall:               req.OnToolCall,
 		onToolResult:             req.OnToolResult,
-		scheduleHandler:          e.ScheduleHandler,
+		scheduleHandler:          scheduleHandler,
 		imMessageHandler:         imMessageHandler,
 		imFileHandler:            imFileHandler,
 		messageMetadata:          cloneMap(req.Message.Metadata),
@@ -544,7 +763,13 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 			moaPresetFromMetadata(req.Message.Metadata, req.Session.Metadata),
 		),
 		clientCapabilities: req.ClientCapabilities,
+		runtimePrompt:      strings.TrimSpace(req.RuntimePrompt),
+		runtimeTools:       append([]agentruntime.ToolDefinition(nil), req.RuntimeExecutableTools...),
+		runtimeToolInvoker: req.RuntimeToolInvoker,
+		host:               req.Host,
+		adaptiveRetry:      agentruntime.NewAdaptiveRetry(nil),
 	}
+	cb.bindRequestHostCapabilities()
 	if runtimeStore != nil && runtimeAttempt != nil {
 		attemptCopy := *runtimeAttempt
 		cb.runtimeStore = runtimeStore
@@ -565,11 +790,37 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 		cb.moaActive = true
 	}
 	userContent := agent.BuildUserContentWithAttachmentStagingDirAndOfficeReadConfigWithContext(req.Message.Content, req.Message.Attachments, llmCfg.Protocol, llmCfg.SupportsVision, nil, nil, attachmentStagingDir(req.Instance.Workspace), officeReadConfigFromAppConfig(req.Config), llmCfg.EffectiveContextTokens())
+	// Supplements reach the loop only through this hook, and only when the
+	// request names its run. req.RunID is set by the service ingress and is
+	// excluded from transport JSON, so neither the model nor client tools can
+	// pick which run's supplements are delivered.
+	//
+	// The bot id only names the log file the applied stage is written to. It is
+	// metadata from the request, never a routing key: the run id is what
+	// decides whose supplements are delivered.
+	supplementHooks := newSupplementHook(e.getService(), botlog.FromMeta(req.Message.Metadata), req.RunID)
+	// A desktop run can iterate a hundred-plus times, and the loop only ever
+	// appends. Without a mid-loop trim the request grows until it blows the
+	// context window and burns the provider's period quota re-sending history.
+	// Read the config from cb every round: hosts may escalate the model, and
+	// the context window is what decides when to trim.
+	compressionHooks := agent.NewCompressionHook(func() corelib.MaclawLLMConfig { return cb.GetLLMConfig() }, cb.httpClient)
 	log.Printf("[VE-STREAMING] ===== EXECUTOR STAGE: RunLoop starting ===== session=%s onToken_wired=%v moa_preset=%q", req.Session.ID, req.OnToken != nil, cb.moaRequestPreset)
-	result := agent.RunLoopWithUserContent(cb, req.Message.Content, userContent, cb.history, cb.httpClient)
+	result := agentruntime.RunAgentTurnWithUserContent(cb, req.Message.Content, userContent, cb.history, cb.httpClient, supplementHooks, compressionHooks)
 	log.Printf("[VE-STREAMING] ===== EXECUTOR STAGE: RunLoop finished ===== session=%s iterations=%d text_len=%d error=%q", req.Session.ID, result.Iterations, len(result.Text), result.Error)
 	if result.Error != "" {
-		return nil, errors.New(result.Error)
+		// Keep whatever the model already produced. A run cut short by an
+		// upstream throttle has often finished the actual work in earlier
+		// rounds; returning only the error surfaces it as an empty turn and
+		// leaves the reader unable to tell what is already done.
+		if partial := strings.TrimSpace(result.Text); partial != "" {
+			return &ExecuteResult{
+				Content:    partial,
+				OutputType: "text/plain",
+				Metadata:   map[string]string{metaPartialResult: "true"},
+			}, loopFailureError(&result)
+		}
+		return nil, loopFailureError(&result)
 	}
 	metadata := map[string]string{
 		"executor": "core_agent",
@@ -615,6 +866,9 @@ func (e *CoreAgentExecutor) executeDirectWithRuntimeBinding(ctx context.Context,
 			if data, err := json.Marshal(result.AskUser.Options); err == nil {
 				metadata[metaAskUserOptionsJSON] = string(data)
 			}
+		}
+		if name := strings.TrimSpace(result.AskUser.SecretName); name != "" {
+			metadata[metaAskUserSecretName] = name
 		}
 	}
 	if handle, err := cb.issueTaskContinuationHandle(); err == nil && handle != "" {
@@ -680,6 +934,11 @@ func (e *CoreAgentExecutor) executeLocalCodingRuntime(ctx context.Context, req E
 		LeaseOwner:      serviceCodingRuntimeOwner(req),
 		LeaseDuration:   15 * time.Minute,
 		WorkspaceProber: codingruntime.NewLocalGitWorkspaceProber(policy.ProjectRoot),
+	}
+	if policy.Mode == "local" && !policy.ReadOnly && policy.FinalWorkspaceGateRequired {
+		if err := codingruntime.EnsureLocalGitBaseline(ctx, policy.ProjectRoot); err != nil {
+			log.Printf("[agentservice] local git baseline init failed for %s: %v", policy.ProjectRoot, err)
+		}
 	}
 	task, attempt, runErr := runner.Run(ctx, codingruntime.Task{
 		TaskID:        taskID,
@@ -767,6 +1026,9 @@ func (e *CoreAgentExecutor) clientFor(cfg corelib.MaclawLLMConfig) *http.Client 
 func (e *CoreAgentExecutor) resourcesForUser(tenantID, userID, dataDir string) (*memory.Store, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.closed {
+		return nil, errors.New("core agent executor is closed")
+	}
 	if e.userMemory == nil {
 		e.userMemory = map[string]*memory.Store{}
 	}
@@ -786,6 +1048,24 @@ func (e *CoreAgentExecutor) resourcesForUser(tenantID, userID, dataDir string) (
 	return store, nil
 }
 
+// SharedUserMemoryStore returns the long-lived store this executor already
+// holds for one user, or nil when no turn has opened one yet.
+//
+// It exists so a preference recorded through the service API can be written
+// into the very instance the next worker turn will read. Two Store objects over
+// one directory are not interchangeable: the JSON backend has no cross-instance
+// sync at all, so a write through a second, short-lived store is invisible to
+// the memoized one for the rest of the process, and the preference only appears
+// after a restart. The SQLite backend does poll, but that trades a correctness
+// bug for up to DefaultSyncInterval of latency on every read.
+//
+// Callers must not Stop a store returned here; it is not theirs to close.
+func (e *CoreAgentExecutor) SharedUserMemoryStore(tenantID, userID string) *memory.Store {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.userMemory[tenantID+":"+userID]
+}
+
 func memoryOwnerIDForPrincipal(principal Principal) string {
 	tenantID := strings.TrimSpace(principal.TenantID)
 	userID := strings.TrimSpace(principal.UserID)
@@ -801,6 +1081,9 @@ func memoryOwnerIDForPrincipal(principal Principal) string {
 func (e *CoreAgentExecutor) taskStoreForSession(sessionID string) *task.Store {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.closed {
+		return nil
+	}
 	if e.tasks == nil {
 		e.tasks = map[string]*task.Store{}
 	}
@@ -815,6 +1098,9 @@ func (e *CoreAgentExecutor) taskStoreForSession(sessionID string) *task.Store {
 func (e *CoreAgentExecutor) goalStoreForDataDir(dataDir string) *goal.Store {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.closed {
+		return nil
+	}
 	if e.userGoals == nil {
 		e.userGoals = map[string]*goal.Store{}
 	}
@@ -841,6 +1127,9 @@ func (e *CoreAgentExecutor) templateManagerForDataDir(dataDir string) *remote.Se
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.closed {
+		return nil
+	}
 	if e.userTemplates == nil {
 		e.userTemplates = map[string]*remote.SessionTemplateManager{}
 	}
@@ -862,6 +1151,9 @@ func (e *CoreAgentExecutor) scheduleManagerForDataDir(dataDir string) *scheduler
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.closed {
+		return nil
+	}
 	if e.userSchedules == nil {
 		e.userSchedules = map[string]*scheduler.Manager{}
 	}
@@ -883,6 +1175,9 @@ func (e *CoreAgentExecutor) scheduleDispatchBindingStoreForDataDir(dataDir strin
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.closed {
+		return nil
+	}
 	if e.userScheduleBindings == nil {
 		e.userScheduleBindings = map[string]*ScheduleDispatchBindingStore{}
 	}
@@ -983,6 +1278,9 @@ func (e *CoreAgentExecutor) ReviewedHostScheduleDispatchFireStarted(dataDir stri
 func (e *CoreAgentExecutor) sshResourcesForUser(tenantID, userID string) *coreAgentSSHResources {
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	if e.closed {
+		return nil
+	}
 	if e.userSSH == nil {
 		e.userSSH = map[string]*coreAgentSSHResources{}
 	}
@@ -997,6 +1295,99 @@ func (e *CoreAgentExecutor) sshResourcesForUser(tenantID, userID string) *coreAg
 	}
 	e.userSSH[key] = resources
 	return resources
+}
+
+// databaseSchemaHashLogOnce ensures the shared tool contract hash is logged
+// once per process even though database managers are created lazily per
+// user/session.
+var databaseSchemaHashLogOnce sync.Once
+
+// databaseManagerForRequest keeps short-lived connection IDs scoped to the
+// authenticated session while using the request's current, non-secret profile
+// projection. The manager is owned by the executor and closed with it; hosts
+// may inject DatabaseSecretResolver to resolve profile secret_ref values.
+func (e *CoreAgentExecutor) databaseManagerForRequest(req ExecuteRequest) *database.Manager {
+	if e == nil {
+		return nil
+	}
+	key := strings.Join([]string{
+		strings.TrimSpace(req.Principal.TenantID),
+		strings.TrimSpace(req.Principal.UserID),
+		strings.TrimSpace(req.Instance.ID),
+		strings.TrimSpace(req.Session.ID),
+	}, "\x00")
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.closed {
+		return nil
+	}
+	if e.userDatabases == nil {
+		e.userDatabases = make(map[string]*database.Manager)
+	}
+	if manager := e.userDatabases[key]; manager != nil {
+		manager.UpdateProfiles(req.Config.DatabaseProfiles)
+		configureDatabaseManager(e, manager, req)
+		return manager
+	}
+	manager := database.NewManager(req.Config.DatabaseProfiles, e.DatabaseSecretResolver)
+	configureDatabaseManager(e, manager, req)
+	// Record the shared tool contract hash once per process so cross-host
+	// schema drift is visible in startup diagnostics (doctor reports the same
+	// value); managers are created lazily per user session, so this must not
+	// log per manager.
+	databaseSchemaHashLogOnce.Do(func() {
+		log.Printf("[agentservice] database tool schema %s", database.ToolSchemaHash())
+	})
+	if e.DatabaseAuditSink != nil {
+		principal := req.Principal
+		manager.SetAuditSink(func(ctx context.Context, event database.AuditEvent) {
+			e.DatabaseAuditSink(ctx, principal, event)
+		})
+	} else if dataDir := strings.TrimSpace(req.DataDir); dataDir != "" {
+		// Default fallback so audit events are not lost when the host did not
+		// inject a sink; follows the same per-dataDir file convention as
+		// schedules.json and agent_memory.json.
+		auditPath := filepath.Join(dataDir, "database_audit.jsonl")
+		if auditSink, err := database.NewFileAuditSink(auditPath); err == nil {
+			manager.SetAuditSink(auditSink)
+		} else {
+			log.Printf("[agentservice] WARNING: database audit sink init failed path=%s: %v", auditPath, err)
+		}
+	}
+	e.userDatabases[key] = manager
+	return manager
+}
+
+// RefreshDatabaseProfiles pushes updated non-secret profile configuration to
+// every cached database manager of the given tenant/user (any instance or
+// session). Manager.UpdateProfiles closes live connections of changed or
+// removed profiles, invalidates their cursors and purges pending mutations;
+// unchanged profiles keep their sessions. Hosts must call this after profile
+// CRUD or secret rotation so stale credentials and policy snapshots cannot
+// remain usable. It is a no-op for users without a cached manager.
+func (e *CoreAgentExecutor) RefreshDatabaseProfiles(tenantID, userID string, profiles []database.Profile) {
+	if e == nil {
+		return
+	}
+	tenantID = strings.TrimSpace(tenantID)
+	userID = strings.TrimSpace(userID)
+	if tenantID == "" || userID == "" {
+		return
+	}
+	prefix := tenantID + "\x00" + userID + "\x00"
+	e.mu.Lock()
+	managers := make([]*database.Manager, 0)
+	for key, manager := range e.userDatabases {
+		if manager != nil && strings.HasPrefix(key, prefix) {
+			managers = append(managers, manager)
+		}
+	}
+	e.mu.Unlock()
+	// UpdateProfiles takes the manager's own lock and may close adapters, so it
+	// must run without holding the executor lock.
+	for _, manager := range managers {
+		manager.UpdateProfiles(profiles)
+	}
 }
 
 // ListSSHSessionsForUser returns live SSH session summaries for a tenant user.
@@ -1040,6 +1431,56 @@ func convertHistoryToEntries(history []Message, currentID string) []agent.Conver
 		entries = append(entries, agent.ConversationEntry{Role: role, Content: msg.Content})
 	}
 	return entries
+}
+
+// hubBotLLMMarker records a hub-bot turn in context. It is not a service
+// group id and must not be copied onto the request.
+const hubBotLLMMarker = "hub-bot"
+
+func applyHubBotLLMServiceGroup(cfg corelib.MaclawLLMConfig, metadata map[string]string) corelib.MaclawLLMConfig {
+	if strings.TrimSpace(metadata["hub_bot"]) != "1" {
+		return cfg
+	}
+	return PinHubBotLLMServiceGroup(cfg)
+}
+
+// PinHubBotLLMServiceGroup drops any service-group pin. Hub already stored
+// the official group on the instance and the owner's viewer token in the
+// model config. The header is a pin: naming maclaw_official_group would
+// spend only that group and skip the other cards a GUI viewer call spends.
+// An empty header is the GUI path, so Hub resolves this token's entitlements
+// and applies the same grant order.
+func PinHubBotLLMServiceGroup(cfg corelib.MaclawLLMConfig) corelib.MaclawLLMConfig {
+	cfg.ServiceGroupID = ""
+	return cfg
+}
+
+type hubBotLLMGroupKey struct{}
+
+// WithHubBotLLMGroup records that this turn's side calls, including the
+// semantic intent tree, belong to a hub bot. Those calls also leave the
+// service group unset.
+func WithHubBotLLMGroup(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return context.WithValue(ctx, hubBotLLMGroupKey{}, hubBotLLMMarker)
+}
+
+// HubBotLLMGroup reports whether ctx was marked by WithHubBotLLMGroup.
+func HubBotLLMGroup(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	group, _ := ctx.Value(hubBotLLMGroupKey{}).(string)
+	return strings.TrimSpace(group) == hubBotLLMMarker
+}
+
+func contextWithHubBotLLMGroup(ctx context.Context, metadata map[string]string) context.Context {
+	if strings.TrimSpace(metadata["hub_bot"]) != "1" {
+		return ctx
+	}
+	return WithHubBotLLMGroup(ctx)
 }
 
 func (c *coreAgentCallbacks) GetLLMConfig() corelib.MaclawLLMConfig { return c.llmCfg }
@@ -1155,14 +1596,10 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 		return serviceReadOnlyChildSystemPrompt(c.userText)
 	}
 	profile := c.platformRuntimeProfile()
-	roleName := firstNonEmptyString(profile.Name, c.appCfg.MaclawRoleName)
-	if roleName == "" {
-		roleName = "MaClaw"
-	}
-	roleDescription := firstNonEmptyString(profile.Description, c.appCfg.MaclawRoleDescription)
-	if roleDescription == "" {
-		roleDescription = "A REST-served MaClaw agent runtime for end-user assistance."
-	}
+	roleName, roleDescription := agentruntime.ResolveRole(
+		firstNonEmptyString(profile.Name, c.appCfg.MaclawRoleName),
+		firstNonEmptyString(profile.Description, c.appCfg.MaclawRoleDescription),
+	)
 	// The loop builds the prompt before BuildTools. Plan the governed
 	// surface here so ManagedSemantic and the profile see the same plan;
 	// do not issue grants until BuildTools, or TTL starts during prompt I/O.
@@ -1178,6 +1615,13 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 	if managedSemantic && !c.forceFullPrompt && c.dynamicSemanticRequiresFullPrompt() {
 		promptProfile = agent.PromptProfileFull
 		classified = llm.ClassifyResult{Task: llm.TaskReasoning, Reason: "semantic capability-managed mutating intent"}
+	}
+	// A short follow-up such as "登录完成，继续" is otherwise a light turn.
+	// That prompt tells the model not to use tools, so it would answer
+	// without the browser where this user just logged in.
+	if promptProfile.IsLight() && c.desktopBotKeepsLoggedInBrowser() {
+		promptProfile = agent.PromptProfileFull
+		classified = llm.ClassifyResult{Task: llm.TaskReasoning, Reason: "hub bot continues on the logged-in desktop"}
 	}
 	c.lastPromptProfile = promptProfile
 	deps := agent.SystemPromptDeps{
@@ -1221,6 +1665,12 @@ func (c *coreAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn bool
 	if clientContext := agent.BuildClientCapabilityPrompt(c.clientCapabilities); clientContext != "" {
 		bundle.SessionContext = strings.TrimSpace(bundle.SessionContext + "\n\n" + clientContext)
 	}
+	if c.runtimePrompt != "" {
+		bundle.SessionContext = strings.TrimSpace(bundle.SessionContext + "\n\n" + c.runtimePrompt)
+	}
+	if note := c.remoteRuntimeSessionContextNote(); note != "" {
+		bundle.SessionContext = strings.TrimSpace(bundle.SessionContext + "\n\n" + note)
+	}
 	if !managedSemantic && c.imMessageHandler != nil && c.imFileHandler != nil {
 		bundle.SessionContext = strings.TrimSpace(bundle.SessionContext + `
 
@@ -1244,7 +1694,11 @@ Specified IM file delivery:
 			fullTok-lightTok,
 		)
 	}
-	return bundle.String()
+	prompt := bundle.String()
+	if managedSemantic && !promptProfile.IsLight() {
+		prompt = agentruntime.EnsureSemanticGrantPromptFence(prompt)
+	}
+	return prompt
 }
 
 type coreAgentPlatformProfile struct {
@@ -1323,6 +1777,80 @@ type coreToolSpec struct {
 	DisabledReason string
 }
 
+func specFromCoreTool(name, description string, enabled bool, disabledReason string) coreToolSpec {
+	spec := coreToolSpec{Name: name, Description: description, Enabled: enabled, DisabledReason: disabledReason}
+	if params, ok := agent.CoreToolJSONSchema(name); ok {
+		spec.Parameters = params
+	}
+	if strings.TrimSpace(spec.Description) == "" {
+		if entry, ok := agent.LookupCoreTool(name); ok {
+			spec.Description = entry.Description
+		}
+	}
+	return spec
+}
+
+func applySSHActionEnum(c *coreAgentCallbacks, specs []coreToolSpec) {
+	if c == nil {
+		return
+	}
+	for i := range specs {
+		if specs[i].Name != "ssh" {
+			continue
+		}
+		if specs[i].Parameters == nil {
+			continue
+		}
+		// CoreToolJSONSchema shares the registry property table. The enum
+		// belongs on this spec only.
+		params := agent.CloneToolDefinitionMap(specs[i].Parameters)
+		if params == nil {
+			continue
+		}
+		props, _ := params["properties"].(map[string]interface{})
+		if props == nil {
+			continue
+		}
+		props["action"] = map[string]interface{}{"type": "string", "enum": sshAllowedActions(c.allowSSHFileTransfer)}
+		specs[i].Parameters = params
+	}
+}
+
+// narrowSSHDefinitionForRemoteRuntime rewrites the generic ssh definition to
+// the only surface remoteCodingRuntimeToolCallAllowed dispatches under a
+// remote runtime binding: exec on the pre-bound verified session, with only
+// the arguments the gate reads. Connection, file-transfer, and background
+// task arguments are deliberately absent — advertising them would invite
+// calls the gate must reject. session_id stays model-facing because the gate
+// enforces an exact echo of the bound id; BuildSystemPrompt publishes that id
+// through remoteRuntimeSessionContextNote. Any argument added here must have
+// a matching read in the gate or the bound exec handler.
+func narrowSSHDefinitionForRemoteRuntime() map[string]interface{} {
+	parameters := map[string]interface{}{
+		"type": "object",
+		"properties": map[string]interface{}{
+			"action":       map[string]interface{}{"type": "string", "enum": []string{"exec"}, "description": "Only exec is dispatchable on the verified remote coding session"},
+			"session_id":   map[string]string{"type": "string", "description": "Verified SSH session id for this remote coding task; must exactly match the id published in your session context"},
+			"command":      map[string]string{"type": "string", "description": "Shell command to execute on the verified session"},
+			"wait_seconds": map[string]string{"type": "integer", "description": "Seconds to wait for command output before returning (default 15, max 600)"},
+		},
+		"required": []string{"action", "session_id", "command"},
+	}
+	return tooldef.BuildToolDef("ssh", "Execute a single shell command on the pre-bound verified remote coding session. Only action=exec is available; the session cannot be created, switched, reconnected, or used for file transfer.", parameters)
+}
+
+// remoteRuntimeSessionContextNote publishes the frozen remote binding to the
+// model. Without it the model cannot pass the gate's session_id echo: the id
+// is assigned inside bindRemoteCodingRuntime after runtime prompts are
+// contributed, and it otherwise appears only in tool outputs that follow a
+// first successful call — which can never happen.
+func (c *coreAgentCallbacks) remoteRuntimeSessionContextNote() string {
+	if c == nil || c.runtimeRemoteBinding == nil {
+		return ""
+	}
+	return fmt.Sprintf("Remote coding runtime binding: this task is locked to the verified SSH session id %q. Every ssh tool call must pass action=exec with exactly this session_id; connect, upload, download, background task, and close actions, plus any other session id, are rejected before execution.", c.runtimeRemoteBinding.SessionID)
+}
+
 func imFileToolParameters(_ bool) map[string]interface{} {
 	return map[string]interface{}{
 		"type": "object",
@@ -1370,12 +1898,14 @@ func (e *CoreAgentExecutor) DescribeCapabilities(ctx context.Context, req Execut
 		desktopCapturer:            e.getReviewedHostDesktopCapturer(),
 		documentLauncher:           e.getReviewedHostDocumentLauncher(),
 		urlLauncher:                e.getReviewedHostURLLauncher(),
+		host:                       req.Host,
 		delegateSubtask:            e.DelegateSubtask,
 		goals:                      e.goalStoreForDataDir(req.DataDir),
 		executor:                   e,
 		instance:                   req.Instance,
 		session:                    req.Session,
 	}
+	cb.bindRequestHostCapabilities()
 	if mem, err := e.resourcesForUser(req.Principal.TenantID, req.Principal.UserID, req.DataDir); err == nil {
 		cb.memory = mem
 	}
@@ -1384,6 +1914,13 @@ func (e *CoreAgentExecutor) DescribeCapabilities(ctx context.Context, req Execut
 	}
 	if e.IMFileHandlerContext != nil {
 		cb.imFileHandler = func(args map[string]interface{}) string { return e.IMFileHandlerContext(ctx, req.Principal, args) }
+	}
+	if e.ScheduleHandlerContext != nil {
+		principal := req.Principal
+		instanceID := strings.TrimSpace(req.Instance.ID)
+		cb.scheduleHandler = func(args map[string]interface{}) string {
+			return e.ScheduleHandlerContext(ctx, principal, instanceID, args)
+		}
 	}
 	return &AgentCapabilities{
 		Executor:          "core_agent",
@@ -1407,254 +1944,58 @@ func (e *CoreAgentExecutor) DescribeCapabilities(ctx context.Context, req Execut
 }
 
 func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
+	workspaceOK := strings.TrimSpace(c.workspace) != ""
+	workspaceReason := ""
+	if !workspaceOK {
+		workspaceReason = "no workspace configured for this instance"
+	}
+	knowledgeOK := c.knowledgeStore != nil
+	knowledgeReason := ""
+	if !knowledgeOK {
+		knowledgeReason = "knowledge base is not configured"
+	}
+	bashReason := ""
+	if !c.allowLocalBash {
+		bashReason = "local bash is disabled for this MaClawSrv deployment"
+	} else if !c.canUseLocalBash() {
+		bashReason = c.localBashDeniedReason()
+	}
+	sshReason := ""
+	if !c.canUseSSH() {
+		sshReason = c.sshDeniedReason()
+	}
+	scheduleReason := ""
+	if c.scheduleHandler == nil {
+		scheduleReason = "scheduled task manager is not initialized (set MACLAW_ENABLE_SCHEDULER=true)"
+	}
+	imMessageReason := ""
+	if c.imMessageHandler == nil {
+		imMessageReason = "IM message tool is not initialized"
+	}
+	imFileReason := ""
+	if c.imFileHandler == nil {
+		imFileReason = "IM file delivery is not initialized"
+	}
+	memoryReason := ""
+	if c.memory == nil {
+		memoryReason = "memory store is not initialized"
+	}
 	specs := []coreToolSpec{
+		specFromCoreTool("record_audio", "", false, "interactive recording UI is unavailable on this headless host"),
+		specFromCoreTool("bash", bashToolDescription(c.localBashTenantID, c.localBashUserID), c.canUseLocalBash(), bashReason),
+		specFromCoreTool("ssh", sshToolDescription(c.allowDirectSSH, c.allowSSHFileTransfer, len(c.configuredSSHHosts()) > 0), c.canUseSSH(), sshReason),
+		specFromCoreTool("ask_user", "", true, ""),
+		specFromCoreTool("task", "", true, ""),
+		specFromCoreTool("manage_schedule", "", c.scheduleHandler != nil, scheduleReason),
+		specFromCoreTool("im_message", "", c.imMessageHandler != nil, imMessageReason),
+		specFromCoreTool("send_file", "", c.imFileHandler != nil, imFileReason),
+		specFromCoreTool("send_to_im", "", c.imFileHandler != nil, imFileReason),
+		specFromCoreTool("knowledge_search", knowledge.KnowledgeSearchToolDescription, knowledgeOK, knowledgeReason),
 		{
-			Name:           "record_audio",
-			Description:    "Start an interactive long-form meeting recording. The host opens a native recording UI and resumes after the user stops it. Use this immediately for an explicit request to record a meeting; never use it for an IM voice note.",
-			Enabled:        false,
-			DisabledReason: "interactive recording UI is unavailable on this headless host",
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"title":   map[string]interface{}{"type": "string", "description": "Meeting title"},
-					"purpose": map[string]interface{}{"type": "string", "description": "What the recording is for"},
-					"hint":    map[string]interface{}{"type": "string", "description": "Short user-facing instruction"},
-				},
-			},
-		},
-		{
-			Name:        "bash",
-			Description: bashToolDescription(c.localBashTenantID, c.localBashUserID),
-			Enabled:     c.canUseLocalBash(),
-			DisabledReason: func() string {
-				if !c.allowLocalBash {
-					return "local bash is disabled for this MaClawSrv deployment"
-				}
-				if !c.canUseLocalBash() {
-					return c.localBashDeniedReason()
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"command":     map[string]interface{}{"type": "string"},
-					"working_dir": map[string]interface{}{"type": "string"},
-					"timeout":     map[string]interface{}{"type": "integer", "minimum": 240, "maximum": 600},
-				},
-				"required": []string{"command"},
-			},
-		},
-		{
-			Name:        "ssh",
-			Description: sshToolDescription(c.allowDirectSSH, c.allowSSHFileTransfer, len(c.configuredSSHHosts()) > 0),
-			Enabled:     c.canUseSSH(),
-			DisabledReason: func() string {
-				if !c.canUseSSH() {
-					return c.sshDeniedReason()
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"action":               map[string]interface{}{"type": "string", "enum": sshAllowedActions(c.allowSSHFileTransfer)},
-					"host":                 map[string]interface{}{"type": "string"},
-					"user":                 map[string]interface{}{"type": "string"},
-					"port":                 map[string]interface{}{"type": "integer"},
-					"auth_method":          map[string]interface{}{"type": "string", "enum": []string{"password", "key", "agent"}},
-					"key_path":             map[string]interface{}{"type": "string"},
-					"password":             map[string]interface{}{"type": "string"},
-					"host_key_fingerprint": map[string]interface{}{"type": "string"},
-					"label":                map[string]interface{}{"type": "string"},
-					"initial_command":      map[string]interface{}{"type": "string"},
-					"force_new":            map[string]interface{}{"type": "boolean"},
-					"session_id":           map[string]interface{}{"type": "string"},
-					"command":              map[string]interface{}{"type": "string"},
-					"wait_seconds":         map[string]interface{}{"type": "integer"},
-					"task_id":              map[string]interface{}{"type": "string"},
-					"tail_lines":           map[string]interface{}{"type": "integer"},
-					"local_path":           map[string]interface{}{"type": "string"},
-					"remote_path":          map[string]interface{}{"type": "string"},
-				},
-				"required": []string{"action"},
-			},
-		},
-		{
-			Name:        "ask_user",
-			Description: "Ask the user a structured follow-up question when you cannot proceed safely without input.",
-			Enabled:     true,
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"question":   map[string]interface{}{"type": "string"},
-					"input_type": map[string]interface{}{"type": "string", "enum": []string{"text", "choice", "confirm"}},
-					"context":    map[string]interface{}{"type": "string"},
-					"options": map[string]interface{}{
-						"type":  "array",
-						"items": map[string]interface{}{"type": "string"},
-					},
-				},
-				"required": []string{"question"},
-			},
-		},
-		{
-			Name:        "task",
-			Description: "Manage the agent's internal task checklist for multi-step work.",
-			Enabled:     true,
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"action":      map[string]interface{}{"type": "string", "enum": []string{"create", "update", "complete", "fail", "list", "delete"}},
-					"title":       map[string]interface{}{"type": "string"},
-					"description": map[string]interface{}{"type": "string"},
-					"task_id":     map[string]interface{}{"type": "string"},
-					"status":      map[string]interface{}{"type": "string", "enum": []string{"pending", "in_progress", "completed", "failed", "blocked"}},
-					"status_note": map[string]interface{}{"type": "string"},
-					"depends_on": map[string]interface{}{
-						"type":  "array",
-						"items": map[string]interface{}{"type": "string"},
-					},
-				},
-				"required": []string{"action"},
-			},
-		},
-		{
-			Name: "manage_schedule",
-			Description: "Manage scheduled tasks. action: create/list/delete/update/list_targets. " +
-				"list_targets resolves available delivery targets; create/update can configure delivery and fail_on_error. " +
-				"Use im_message for immediate messages.",
-			Enabled: c.scheduleHandler != nil,
-			DisabledReason: func() string {
-				if c.scheduleHandler == nil {
-					return "scheduled task manager is not initialized (set MACLAW_ENABLE_SCHEDULER=true)"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"action":           map[string]interface{}{"type": "string", "description": "create, list, delete, update, or list_targets"},
-					"id":               map[string]interface{}{"type": "string", "description": "Task ID for delete or update"},
-					"name":             map[string]interface{}{"type": "string", "description": "Task name"},
-					"task_action":      map[string]interface{}{"type": "string", "description": "Natural-language action to run on schedule"},
-					"hour":             map[string]interface{}{"type": "integer", "description": "0-23"},
-					"minute":           map[string]interface{}{"type": "integer", "description": "0-59"},
-					"day_of_week":      map[string]interface{}{"type": "integer", "description": "-1 daily, 0 Sunday through 6 Saturday"},
-					"day_of_month":     map[string]interface{}{"type": "integer", "description": "-1 unrestricted, 1-31"},
-					"interval_minutes": map[string]interface{}{"type": "integer", "description": "Positive values select interval scheduling"},
-					"start_date":       map[string]interface{}{"type": "string", "description": "YYYY-MM-DD"},
-					"end_date":         map[string]interface{}{"type": "string", "description": "YYYY-MM-DD"},
-					"task_type":        map[string]interface{}{"type": "string", "description": "reminder or process"},
-					"channel":          map[string]interface{}{"type": "string", "description": "Delivery channel or list_targets channel"},
-					"query":            map[string]interface{}{"type": "string", "description": "list_targets filter"},
-					"delivery":         map[string]interface{}{"type": "object", "description": "Delivery configuration: enabled, channel, fail_on_error, targets"},
-					"group_id":         map[string]interface{}{"type": "string", "description": "Delivery shorthand: exact group ID"},
-					"group_name":       map[string]interface{}{"type": "string", "description": "Delivery shorthand: group name for resolution"},
-					"user_id":          map[string]interface{}{"type": "string", "description": "Delivery shorthand: private recipient ID or self"},
-					"fail_on_error":    map[string]interface{}{"type": "boolean", "description": "Whether a delivery failure fails the task"},
-					"mention_all":      map[string]interface{}{"type": "boolean"},
-					"mention_user_ids": map[string]interface{}{"type": "string", "description": "Comma-separated user IDs to mention"},
-				},
-				"required": []string{"action"},
-			},
-		},
-		{
-			Name: "im_message",
-			Description: "Send immediate IM text or a file, or list IM delivery targets. " +
-				"action: list_targets|send|send_file; action can be inferred from text or path. " +
-				"Use manage_schedule with delivery for periodic reports.",
-			Enabled: c.imMessageHandler != nil,
-			DisabledReason: func() string {
-				if c.imMessageHandler == nil {
-					return "IM message tool is not initialized"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"action":           map[string]interface{}{"type": "string", "description": "list_targets, send, or send_file; inferred when omitted"},
-					"text":             map[string]interface{}{"type": "string", "description": "Message body, or file caption for send_file"},
-					"message":          map[string]interface{}{"type": "string", "description": "Alias for text"},
-					"path":             map[string]interface{}{"type": "string", "description": "Local path for send_file"},
-					"file_name":        map[string]interface{}{"type": "string", "description": "Optional display filename for send_file"},
-					"channel":          map[string]interface{}{"type": "string", "description": "lansenger, weixin, telegram, or qq"},
-					"query":            map[string]interface{}{"type": "string", "description": "list_targets filter"},
-					"group_name":       map[string]interface{}{"type": "string", "description": "Target group name"},
-					"group_id":         map[string]interface{}{"type": "string", "description": "Exact target group ID"},
-					"user_id":          map[string]interface{}{"type": "string", "description": "Private recipient ID or self"},
-					"mention_user_ids": map[string]interface{}{"type": "string", "description": "Comma-separated user IDs to mention"},
-					"mention_all":      map[string]interface{}{"type": "boolean"},
-					"delivery":         map[string]interface{}{"type": "object", "description": "Optional complete delivery configuration"},
-				},
-			},
-		},
-		{
-			Name:        "send_file",
-			Description: "Deliver a local workspace file. Use destination=desktop for the current client, or destination=im plus channel/group_id/group_name/user_id for an IM destination.",
-			Enabled:     c.imFileHandler != nil,
-			DisabledReason: func() string {
-				if c.imFileHandler == nil {
-					return "IM file delivery is not initialized"
-				}
-				return ""
-			}(),
-			Parameters: imFileToolParameters(false),
-		},
-		{
-			Name:        "send_to_im",
-			Description: "Send a local workspace file to IM. Specify channel and group_id/group_name/user_id for an exact destination; omit target fields for legacy bound-channel delivery.",
-			Enabled:     c.imFileHandler != nil,
-			DisabledReason: func() string {
-				if c.imFileHandler == nil {
-					return "IM file delivery is not initialized"
-				}
-				return ""
-			}(),
-			Parameters: imFileToolParameters(true),
-		},
-		{
-			Name:        "knowledge_search",
-			Description: knowledge.KnowledgeSearchToolDescription,
-			Enabled:     c.knowledgeStore != nil,
-			DisabledReason: func() string {
-				if c.knowledgeStore == nil {
-					return "knowledge base is not configured"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"query":            map[string]interface{}{"type": "string", "description": "Search query"},
-					"search_scope":     map[string]interface{}{"type": "string", "description": "all | project | personal. Default all."},
-					"project_path":     map[string]interface{}{"type": "string", "description": "Optional project path when search_scope is project."},
-					"topic_hint":       map[string]interface{}{"type": "string", "description": "Optional topic hint for local re-ranking."},
-					"context_terms":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional extra context terms for ranking."},
-					"result_types":     map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional: node, card, fact. Use node for image results."},
-					"source_kinds":     map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional: url, pdf, docx, xlsx, csv, markdown, text, image"},
-					"source_ids":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional source IDs to search within."},
-					"source_id":        map[string]interface{}{"type": "string", "description": "Alias for one source_ids entry."},
-					"id":               map[string]interface{}{"type": "string", "description": "Alias for one source_ids entry."},
-					"labels":           map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional source labels to filter by."},
-					"domain":           map[string]interface{}{"type": "string", "description": "Optional URL/site domain filter."},
-					"limit":            map[string]interface{}{"type": "integer", "description": "Max results, default 8, max 50"},
-					"include_disabled": map[string]interface{}{"type": "boolean", "description": "Include disabled own sources. Ignored for shared readable scopes."},
-				},
-				"required": []string{"query"},
-			},
-		},
-		{
-			Name:        "knowledge_image_search",
-			Description: "Search only imported knowledge-base images by OCR text, visual description, filename, and surrounding document context. Use when the user asks to find, show, view, select, or compare stored images. Results include safe display markers; when the user asks to see an image, copy its exact marker unchanged onto its own line in the final answer.",
-			Enabled:     c.knowledgeStore != nil,
-			DisabledReason: func() string {
-				if c.knowledgeStore == nil {
-					return "knowledge base is not configured"
-				}
-				return ""
-			}(),
+			Name:           "knowledge_image_search",
+			Description:    "Search only imported knowledge-base images by OCR text, visual description, filename, and surrounding document context. Use when the user asks to find, show, view, select, or compare stored images. Results include safe display markers; when the user asks to see an image, copy its exact marker unchanged onto its own line in the final answer.",
+			Enabled:        knowledgeOK,
+			DisabledReason: knowledgeReason,
 			Parameters: map[string]interface{}{
 				"type": "object",
 				"properties": map[string]interface{}{
@@ -1675,371 +2016,31 @@ func (c *coreAgentCallbacks) coreToolSpecs() []coreToolSpec {
 				"required": []string{"query"},
 			},
 		},
-		{
-			Name:        "knowledge_context_pack",
-			Description: knowledge.KnowledgeContextPackToolDescription,
-			Enabled:     c.knowledgeStore != nil,
-			DisabledReason: func() string {
-				if c.knowledgeStore == nil {
-					return "knowledge base is not configured"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"query":            map[string]interface{}{"type": "string", "description": "Search query for the context pack"},
-					"search_scope":     map[string]interface{}{"type": "string", "description": "all | project | personal. Default all."},
-					"project_path":     map[string]interface{}{"type": "string", "description": "Optional project path when search_scope is project."},
-					"topic_hint":       map[string]interface{}{"type": "string", "description": "Optional topic hint for local re-ranking."},
-					"context_terms":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional extra context terms for ranking."},
-					"result_types":     map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional: node, card, fact."},
-					"source_kinds":     map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional: url, pdf, docx, xlsx, csv, markdown, text"},
-					"source_ids":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional source IDs to search within."},
-					"source_id":        map[string]interface{}{"type": "string", "description": "Alias for one source_ids entry."},
-					"id":               map[string]interface{}{"type": "string", "description": "Alias for one source_ids entry."},
-					"labels":           map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional source labels to filter by."},
-					"domain":           map[string]interface{}{"type": "string", "description": "Optional URL/site domain filter."},
-					"max_items":        map[string]interface{}{"type": "integer", "description": "Max items in pack, default 10"},
-					"max_chars":        map[string]interface{}{"type": "integer", "description": "Max characters in pack, default 4000"},
-					"include_disabled": map[string]interface{}{"type": "boolean", "description": "Include disabled own sources. Ignored for shared readable scopes."},
-				},
-				"required": []string{"query"},
-			},
-		},
-		{
-			Name:        "knowledge_export",
-			Description: "Export all or selected current-user knowledge into an editable MaClaw knowledge JSON package. Requires a human-readable description before sharing or moving data between machines.",
-			Enabled:     c.knowledgeStore != nil,
-			DisabledReason: func() string {
-				if c.knowledgeStore == nil {
-					return "knowledge base is not configured"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"title":            map[string]interface{}{"type": "string", "description": "Optional export title"},
-					"description":      map[string]interface{}{"type": "string", "description": "Required description of this knowledge export"},
-					"source_ids":       map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Optional source IDs for partial export. Empty means all own active sources."},
-					"include_disabled": map[string]interface{}{"type": "boolean", "description": "Include disabled own sources"},
-					"output_path":      map[string]interface{}{"type": "string", "description": "Optional destination path when the host supports file output"},
-				},
-				"required": []string{"description"},
-			},
-		},
-		{
-			Name:        "knowledge_import_package",
-			Description: "Import a MaClaw knowledge JSON package into the local knowledge base. Accepts a file path, raw JSON string, or inline JSON object. Use when the user provides package JSON content or a package file path.",
-			Enabled:     c.knowledgeStore != nil,
-			DisabledReason: func() string {
-				if c.knowledgeStore == nil {
-					return "knowledge base is not configured"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"package_path": map[string]interface{}{"type": "string", "description": "Path to a MaClaw knowledge JSON package"},
-					"package_json": map[string]interface{}{"type": "object", "description": "Inline package JSON when provided by the host"},
-				},
-			},
-		},
-		{
-			Name:        "knowledge_import_share",
-			Description: "Import shared knowledge into the local knowledge base by share link or knowledge_id. Supports Hub share URLs (e.g. https://hub.example.com/hub/knowledge/shares/kn_xxx). Call this tool directly when the user provides a knowledge share link — it will fetch and import the content automatically.",
-			Enabled:     c.knowledgeStore != nil,
-			DisabledReason: func() string {
-				if c.knowledgeStore == nil {
-					return "knowledge base is not configured"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"knowledge_id": map[string]interface{}{"type": "string", "description": "Unique shared knowledge ID"},
-					"share_link":   map[string]interface{}{"type": "string", "description": "Human-readable share link that also contains import metadata"},
-					"hub_url":      map[string]interface{}{"type": "string", "description": "Optional Hub URL hint"},
-					"hub_token":    map[string]interface{}{"type": "string", "description": "Optional Hub viewer token for private, tenant, or user-list shares"},
-					"dry_run":      map[string]interface{}{"type": "boolean", "description": "Preview importable/skipped items without writing. Default false."},
-				},
-			},
-		},
-		{
-			Name:        "knowledge_import_directory",
-			Description: "Scan or import a local directory/folder of documents into the knowledge base. Supports DOC/DOCX, PPT/PPTX, XLS/XLSX, PDF, CSV, Markdown, and TXT; PPT rich knowledge content requires the OfficeRead Knowledge opt-in. Only use after the user explicitly provides or approves the directory path.",
-			Enabled:     c.knowledgeStore != nil,
-			DisabledReason: func() string {
-				if c.knowledgeStore == nil {
-					return "knowledge base is not configured"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"root_path":     map[string]interface{}{"type": "string", "description": "Directory containing documents"},
-					"path":          map[string]interface{}{"type": "string", "description": "Alias for root_path."},
-					"dir":           map[string]interface{}{"type": "string", "description": "Alias for root_path."},
-					"directory":     map[string]interface{}{"type": "string", "description": "Alias for root_path."},
-					"folder":        map[string]interface{}{"type": "string", "description": "Alias for root_path."},
-					"root":          map[string]interface{}{"type": "string", "description": "Alias for root_path."},
-					"action":        map[string]interface{}{"type": "string", "enum": []string{"scan", "import"}, "description": "scan | import. Default import."},
-					"save_scope":    map[string]interface{}{"type": "string", "description": "project | personal | local_only. Default project."},
-					"topic_hint":    map[string]interface{}{"type": "string", "description": "Optional topic hint"},
-					"distill_mode":  map[string]interface{}{"type": "string", "description": "Optional distillation mode"},
-					"labels":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Labels to attach to imported sources"},
-					"auto_labels":   map[string]interface{}{"type": "boolean", "description": "Enable automatic labels when supported"},
-					"recursive":     map[string]interface{}{"type": "boolean", "description": "Include subdirectories, default true"},
-					"include_exts":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Extensions to include, e.g. .doc,.docx,.ppt,.pptx,.xls,.xlsx,.pdf,.md"},
-					"exclude_globs": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Glob patterns to exclude"},
-					"max_file_mb":   map[string]interface{}{"type": "integer", "description": "Max file size in MB, default 100"},
-				},
-			},
-		},
-		{
-			Name:        "knowledge_import_files",
-			Description: "Scan or import explicitly provided local document file paths into the knowledge base. Supports DOC/DOCX, PPT/PPTX, XLS/XLSX, PDF, CSV, Markdown, and TXT; PPT rich knowledge content requires the OfficeRead Knowledge opt-in. Only use after the user explicitly provides or approves the file paths.",
-			Enabled:     c.knowledgeStore != nil,
-			DisabledReason: func() string {
-				if c.knowledgeStore == nil {
-					return "knowledge base is not configured"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"file_paths":    map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Explicit local document file paths to scan or import"},
-					"paths":         map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Alias for file_paths."},
-					"files":         map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Alias for file_paths."},
-					"file_path":     map[string]interface{}{"type": "string", "description": "Alias for a single file_paths item."},
-					"path":          map[string]interface{}{"type": "string", "description": "Alias for a single file_paths item."},
-					"root_path":     map[string]interface{}{"type": "string", "description": "Optional import root; file_paths must stay under this directory and the workspace"},
-					"action":        map[string]interface{}{"type": "string", "enum": []string{"scan", "import"}, "description": "scan | import. Default import."},
-					"save_scope":    map[string]interface{}{"type": "string", "description": "project | personal | local_only. Default project."},
-					"topic_hint":    map[string]interface{}{"type": "string", "description": "Optional topic hint"},
-					"distill_mode":  map[string]interface{}{"type": "string", "description": "Optional distillation mode"},
-					"labels":        map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Labels to attach to imported sources"},
-					"auto_labels":   map[string]interface{}{"type": "boolean", "description": "Enable automatic labels when supported"},
-					"include_exts":  map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Extensions to include, e.g. .doc,.docx,.ppt,.pptx,.xls,.xlsx,.pdf,.md"},
-					"exclude_globs": map[string]interface{}{"type": "array", "items": map[string]interface{}{"type": "string"}, "description": "Glob patterns to exclude"},
-					"max_file_mb":   map[string]interface{}{"type": "integer", "description": "Max file size in MB, default 100"},
-				},
-			},
-		},
-
-		{
-			Name:        "knowledge_save_url",
-			Description: "Save a URL to the knowledge base. The content will be fetched, parsed, and indexed for future retrieval.",
-			Enabled:     c.knowledgeStore != nil,
-			DisabledReason: func() string {
-				if c.knowledgeStore == nil {
-					return "knowledge base is not configured"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"url":        map[string]interface{}{"type": "string", "description": "URL to save"},
-					"link":       map[string]interface{}{"type": "string", "description": "Alias for url."},
-					"href":       map[string]interface{}{"type": "string", "description": "Alias for url."},
-					"uri":        map[string]interface{}{"type": "string", "description": "Alias for url."},
-					"target":     map[string]interface{}{"type": "string", "description": "Alias for url."},
-					"title":      map[string]interface{}{"type": "string", "description": "Optional title override"},
-					"topic_hint": map[string]interface{}{"type": "string", "description": "Optional topic hint for better indexing"},
-				},
-			},
-		},
-		{
-			Name:        "knowledge_save_text",
-			Description: "Save text or markdown content to the knowledge base for future retrieval.",
-			Enabled:     c.knowledgeStore != nil,
-			DisabledReason: func() string {
-				if c.knowledgeStore == nil {
-					return "knowledge base is not configured"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"text":       map[string]interface{}{"type": "string", "description": "Text content to save"},
-					"title":      map[string]interface{}{"type": "string", "description": "Optional title"},
-					"topic_hint": map[string]interface{}{"type": "string", "description": "Optional topic hint for better indexing"},
-				},
-				"required": []string{"text"},
-			},
-		},
-		{
-			Name:        "memory",
-			Description: memory.ToolDefinitionSchema().Description,
-			Enabled:     c.memory != nil,
-			DisabledReason: func() string {
-				if c.memory == nil {
-					return "memory store is not initialized"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type":       "object",
-				"properties": memory.ToolDefinitionSchema().Properties,
-				"required":   memory.ToolDefinitionSchema().Required,
-			},
-		},
-
-		{
-			Name:        "read_file",
-			Description: "Read the contents of a file. Supports line ranges (start_line, lines) and tail reading (offset). Files are scoped to the instance workspace.",
-			Enabled:     c.workspace != "",
-			DisabledReason: func() string {
-				if c.workspace == "" {
-					return "no workspace configured for this instance"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"path":       map[string]interface{}{"type": "string", "description": "File path (relative to workspace or absolute within workspace)"},
-					"start_line": map[string]interface{}{"type": "integer", "description": "Start reading from this line number (1-based)"},
-					"lines":      map[string]interface{}{"type": "integer", "description": "Maximum number of lines to return"},
-					"offset":     map[string]interface{}{"type": "integer", "description": "Read last N lines from end (like tail -n). Mutually exclusive with start_line/lines."},
-				},
-				"required": []string{"path"},
-			},
-		},
-		{
-			Name:        "read_document",
-			Description: "Read text from documents and text-based data using native readers. Supports PDF (.pdf), Word (.doc/.docx), Excel (.xls/.xlsx/.csv), PowerPoint (.ppt/.pptx), and text-based files (.txt/.md/.json/.xml/.yaml/.yml/.log). Prefer this over read_file for binary documents; use offset plus max_chars to page long extracts.",
-			Enabled:     c.workspace != "",
-			DisabledReason: func() string {
-				if c.workspace == "" {
-					return "no workspace configured for this instance"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"file_path":    map[string]interface{}{"type": "string", "description": "Document path relative to the workspace, or an absolute path within it (alias: path)"},
-					"path":         map[string]interface{}{"type": "string", "description": "Alias for file_path"},
-					"max_chars":    map[string]interface{}{"type": "integer", "description": "Maximum characters for this chunk (default 30000)"},
-					"offset":       map[string]interface{}{"type": "integer", "description": "Rune offset for the next chunk"},
-					"line_numbers": map[string]interface{}{"type": "boolean", "description": "Prefix extracted lines with stable line numbers"},
-				},
-			},
-		},
-		{
-			Name:        "read_tool_result",
-			Description: "Re-read a losslessly stored tool result from a [tool_result_handle]. Page with offset/limit and continue from next_offset only when omitted details are needed.",
-			Enabled:     true,
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"id":     map[string]interface{}{"type": "string", "description": "Handle id from [tool_result_handle]"},
-					"offset": map[string]interface{}{"type": "integer", "description": "0-based byte offset"},
-					"limit":  map[string]interface{}{"type": "integer", "description": "Maximum bytes, default 6000, max 32768"},
-				},
-			},
-		},
-		{
-			Name:        "write_file",
-			Description: "Write content to a file. Supports overwrite (default) and append mode. Files are scoped to the instance workspace. Content is always UTF-8.",
-			Enabled:     c.workspace != "",
-			DisabledReason: func() string {
-				if c.workspace == "" {
-					return "no workspace configured for this instance"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"path":    map[string]interface{}{"type": "string", "description": "File path (relative to workspace or absolute within workspace)"},
-					"content": map[string]interface{}{"type": "string", "description": "Content to write"},
-					"mode":    map[string]interface{}{"type": "string", "description": "Write mode: overwrite (default) or append"},
-				},
-				"required": []string{"path", "content"},
-			},
-		},
-		{
-			Name:        "edit_file",
-			Description: "Edit a file by replacing a specific text occurrence. Use old_string to find the exact text and new_string to replace it. Files are scoped to the instance workspace.",
-			Enabled:     c.workspace != "",
-			DisabledReason: func() string {
-				if c.workspace == "" {
-					return "no workspace configured for this instance"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"path":        map[string]interface{}{"type": "string", "description": "File path (relative to workspace or absolute within workspace)"},
-					"old_string":  map[string]interface{}{"type": "string", "description": "Exact text to find and replace"},
-					"new_string":  map[string]interface{}{"type": "string", "description": "Replacement text"},
-					"replace_all": map[string]interface{}{"type": "boolean", "description": "Replace all occurrences (default: first only)"},
-				},
-				"required": []string{"path", "old_string", "new_string"},
-			},
-		},
-		{
-			Name:        "list_directory",
-			Description: "List the contents of a directory. Shows files and subdirectories with sizes. Scoped to the instance workspace.",
-			Enabled:     c.workspace != "",
-			DisabledReason: func() string {
-				if c.workspace == "" {
-					return "no workspace configured for this instance"
-				}
-				return ""
-			}(),
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"path": map[string]interface{}{"type": "string", "description": "Directory path (relative to workspace or absolute within workspace). Defaults to workspace root."},
-				},
-			},
-		},
-		{
-			Name:        "web_search",
-			Description: "Search the internet for evidence. Returns a list of results with title, URL, and snippet. Use result URLs/snippets as citations, and call web_fetch when a factual answer needs page-level verification.",
-			Enabled:     true,
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"query":       map[string]interface{}{"type": "string", "description": "Search keywords"},
-					"max_results": map[string]interface{}{"type": "integer", "description": "Maximum results (default 8, max 20)"},
-				},
-				"required": []string{"query"},
-			},
-		},
-		{
-			Name:        "web_fetch",
-			Description: "Fetch and extract text content from a URL for source-backed factual verification. Supports automatic encoding detection (GBK/UTF-8), HTML body extraction. Cite the URL/title when using fetched content. Long pages support continuation: when has_more=true, pass offset=next_offset to read more.",
-			Enabled:     true,
-			Parameters: map[string]interface{}{
-				"type": "object",
-				"properties": map[string]interface{}{
-					"url":       map[string]interface{}{"type": "string", "description": "URL to fetch (http/https)"},
-					"offset":    map[string]interface{}{"type": "integer", "description": "Character offset for continuation reading (from previous next_offset)"},
-					"max_chars": map[string]interface{}{"type": "integer", "description": "Maximum characters to return (default 16384)"},
-					"timeout":   map[string]interface{}{"type": "integer", "description": "Timeout seconds, default 600, range 240-600"},
-				},
-				"required": []string{"url"},
-			},
-		},
+		specFromCoreTool("knowledge_context_pack", knowledge.KnowledgeContextPackToolDescription, knowledgeOK, knowledgeReason),
+		specFromCoreTool("knowledge_export", "", knowledgeOK, knowledgeReason),
+		specFromCoreTool("knowledge_import_package", "", knowledgeOK, knowledgeReason),
+		specFromCoreTool("knowledge_import_share", "", knowledgeOK, knowledgeReason),
+		specFromCoreTool("knowledge_import_directory", "", knowledgeOK, knowledgeReason),
+		specFromCoreTool("knowledge_import_files", "", knowledgeOK, knowledgeReason),
+		specFromCoreTool("knowledge_save_url", "", knowledgeOK, knowledgeReason),
+		specFromCoreTool("knowledge_save_text", "", knowledgeOK, knowledgeReason),
+		specFromCoreTool("memory", "", c.memory != nil, memoryReason),
+		specFromCoreTool("read_file", "", workspaceOK, workspaceReason),
+		specFromCoreTool("read_document", "", workspaceOK, workspaceReason),
+		specFromCoreTool("read_tool_result", "", true, ""),
+		specFromCoreTool("write_file", "", workspaceOK, workspaceReason),
+		specFromCoreTool("edit_file", "", workspaceOK, workspaceReason),
+		specFromCoreTool("list_directory", "", workspaceOK, workspaceReason),
+		specFromCoreTool("web_search", "", true, ""),
+		specFromCoreTool("web_fetch", "", true, ""),
 	}
+	applySSHActionEnum(c, specs)
 	return append(append(specs, c.sharedHostToolSpecs()...), c.knowledgeManagementToolSpecs()...)
 }
 
 func (c *coreAgentCallbacks) toolCapabilities() []AgentToolCapability {
 	specs := c.coreToolSpecs()
-	out := make([]AgentToolCapability, 0, len(specs))
+	inputs := make([]agentruntime.CapabilityToolInput, 0, len(specs))
 	for _, spec := range specs {
 		enabled := spec.Enabled
 		disabledReason := spec.DisabledReason
@@ -2047,13 +2048,15 @@ func (c *coreAgentCallbacks) toolCapabilities() []AgentToolCapability {
 			enabled = false
 			disabledReason = "disabled by current workflow tool policy"
 		}
-		out = append(out, AgentToolCapability{
-			Name:           spec.Name,
-			Description:    spec.Description,
-			Enabled:        enabled,
-			DisabledReason: disabledReason,
-			Parameters:     spec.Parameters,
+		inputs = append(inputs, agentruntime.CapabilityToolInput{
+			Name: spec.Name, Description: spec.Description, Enabled: enabled,
+			DisabledReason: disabledReason, Parameters: spec.Parameters,
 		})
+	}
+	projected := agentruntime.CapabilityToolsFromSpecs(inputs)
+	out := make([]AgentToolCapability, 0, len(projected))
+	for _, tool := range projected {
+		out = append(out, AgentToolCapability{Name: tool.Name, Description: tool.Description, Enabled: tool.Enabled, DisabledReason: tool.DisabledReason, Parameters: tool.Parameters})
 	}
 	return out
 }
@@ -2062,22 +2065,25 @@ func (c *coreAgentCallbacks) BuildTools(userText string) []map[string]interface{
 	specs := c.coreToolSpecs()
 	tools := make([]map[string]interface{}, 0, len(specs))
 	for _, spec := range specs {
-		if !spec.Enabled {
+		if !spec.Enabled && !agentruntime.IsHostSurfaceTool(spec.Name) {
 			continue
 		}
 		tools = append(tools, functionToolDefinition(spec.Name, spec.Description, spec.Parameters))
+	}
+	if c.runtimeToolInvoker != nil {
+		tools = appendRuntimeModuleTools(tools, c.runtimeTools)
 	}
 	if c.runtimeStore != nil && c.runtimeAttempt != nil && !c.runtimeReadOnlyChild && c.runtimeRemoteBinding == nil {
 		tools = append(tools, serviceReadOnlyChildSpawnToolDefinition())
 	}
 	if c != nil && c.runtimeRemoteBinding != nil {
-		filtered := tools[:0]
+		narrowed := make([]map[string]interface{}, 0, len(tools))
 		for _, tool := range tools {
 			if tooldef.Name(tool) == "ssh" {
-				filtered = append(filtered, tool)
+				narrowed = append(narrowed, narrowSSHDefinitionForRemoteRuntime())
 			}
 		}
-		return filtered
+		return narrowed
 	}
 	if c != nil && c.runtimeReadOnlyChild {
 		return filterServiceReadOnlyChildToolDefinitions(tools)
@@ -2093,7 +2099,22 @@ func (c *coreAgentCallbacks) BuildTools(userText string) []map[string]interface{
 		if profile == "" && strings.TrimSpace(userText) != "" {
 			profile, _ = agent.ResolvePromptProfile(userText, llm.ClassifyHints{})
 		}
-		return agent.FilterToolDefinitionsForPromptProfile(c, closedManagedSemanticDefinitions(semanticDefs), profile)
+		var managedTools []map[string]interface{}
+		surface := c.dynamicSemanticSurface
+		if surface != nil {
+			managedTools = append(managedTools, coretool.ClosedManagedDefinitionsForProfile(semanticDefs, surface.plan, surface.grants, profile.IsLight())...)
+		} else {
+			managedTools = append(managedTools, closedManagedSemanticDefinitions(semanticDefs)...)
+		}
+		if c.runtimeToolInvoker != nil {
+			// The governed semantic plan is authoritative for a managed turn;
+			// append shared modules only for names not already in that plan.
+			managedTools = appendRuntimeModuleTools(managedTools, c.runtimeTools)
+		}
+		// Phase 1 dual-run: log which surface tools the permission snapshot
+		// would unconditionally deny/ask — behavior unchanged.
+		c.dualEvalManagedSurfacePermissions(managedTools, surface)
+		return c.finishToolSurface(agent.FilterToolDefinitionsForPromptProfile(c, managedTools, profile))
 	} else {
 		// The legacy bound adapter surface remains only for request families not
 		// yet migrated to a governed capability resolver. It is deliberately
@@ -2106,7 +2127,9 @@ func (c *coreAgentCallbacks) BuildTools(userText string) []map[string]interface{
 		}
 	}
 	if allowed := c.hardwareExpertToolAllowSet(); len(allowed) > 0 {
-		filtered := tools[:0]
+		// Fresh backing array: tools may be observed elsewhere after this
+		// filter (light-profile pass below), so never reuse the input slice.
+		filtered := make([]map[string]interface{}, 0, len(tools))
 		for _, tool := range tools {
 			fn, _ := tool["function"].(map[string]interface{})
 			name, _ := fn["name"].(string)
@@ -2124,7 +2147,35 @@ func (c *coreAgentCallbacks) BuildTools(userText string) []map[string]interface{
 		profile, _ = agent.ResolvePromptProfile(userText, llm.ClassifyHints{})
 	}
 	if profile.IsLight() {
-		return agent.FilterToolDefinitionsForPromptProfile(c, tools, profile)
+		return c.finishToolSurface(agent.FilterToolDefinitionsForPromptProfile(c, tools, profile))
+	}
+	return c.finishToolSurface(tools)
+}
+
+// appendRuntimeModuleTools converts transport-neutral module definitions into
+// the legacy provider shape consumed by RunLoop. Built-in names win on
+// collision; ModuleRegistry separately guarantees deterministic uniqueness
+// among module contributors.
+func appendRuntimeModuleTools(tools []map[string]interface{}, definitions []agentruntime.ToolDefinition) []map[string]interface{} {
+	if len(definitions) == 0 {
+		return tools
+	}
+	seen := make(map[string]struct{}, len(tools)+len(definitions))
+	for _, tool := range tools {
+		if name := strings.TrimSpace(tooldef.Name(tool)); name != "" {
+			seen[name] = struct{}{}
+		}
+	}
+	for _, definition := range definitions {
+		name := strings.TrimSpace(definition.Name)
+		if name == "" {
+			continue
+		}
+		if _, exists := seen[name]; exists {
+			continue
+		}
+		tools = append(tools, functionToolDefinition(name, definition.Description, definition.Parameters))
+		seen[name] = struct{}{}
 	}
 	return tools
 }
@@ -2231,10 +2282,60 @@ func (c *coreAgentCallbacks) ExecuteTool(name, argsJSON string) string {
 }
 
 // ExecuteToolCall is the host-protocol-aware dynamic semantic boundary. The
-// core loop supplies the model/provider call ID so a durable HostCallJournal
+// core loop supplies the model/provider tool ID so a durable HostCallJournal
 // can replay the original outcome after reconnect instead of consuming a
 // second invocation grant or dispatching the provider again.
 func (c *coreAgentCallbacks) ExecuteToolCall(name, argsJSON, callID string) agent.ToolExecutionResult {
+	return c.executeToolCallLegacy(name, argsJSON, callID)
+}
+
+// executeToolCallLegacy is the full legacy entry point. ExecuteToolCall
+// delegates here, and the Phase 2 ToolDispatcher pilot handlers call here too,
+// so a dispatched name runs byte-identical logic to the legacy chain —
+// CanonicalizeToolCallJSON, the runtime-tool invoker branch, the managed
+// semantic surface (callID-bound replay, governed marking, replan recovery),
+// and the ExecuteToolStructured preamble guards all stay on the path.
+func (c *coreAgentCallbacks) executeToolCallLegacy(name, argsJSON, callID string) agent.ToolExecutionResult {
+	name, argsJSON, _ = agentruntime.CanonicalizeToolCallJSON(name, argsJSON)
+	if c != nil && c.botUsesContainer() {
+		trimmed := strings.TrimSpace(name)
+		if trimmed == "web_search" || trimmed == "web_fetch" {
+			return c.ExecuteToolStructured(name, argsJSON)
+		}
+		if c.botMissesContainer(trimmed) {
+			return agent.ToolExecutionResult{Result: "Error: " + botContainerToolReason, Outcome: agent.ToolExecutionOutcomeError}
+		}
+	}
+	// A managed turn would otherwise hand the name ssh to the bound-session
+	// command. A bot uses the same connect, exec, and background tool as a
+	// digital employee. When this account cannot open a host, that handler
+	// is what says so.
+	if c != nil && c.dynamicSemanticManaged && c.botUsesContainer() && strings.TrimSpace(name) == "ssh" {
+		return c.ExecuteToolStructured(name, argsJSON)
+	}
+	if c != nil && c.runtimeToolInvoker != nil && c.runtimeToolExposed(name) {
+		if !c.IsToolAllowed(strings.TrimSpace(name)) {
+			return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: tool %s is not allowed by current policy", name), Outcome: agent.ToolExecutionOutcomeError}
+		}
+		args := map[string]any{}
+		if strings.TrimSpace(argsJSON) != "" {
+			parsed, err := agentruntime.ParseToolArgumentsObject(argsJSON)
+			if err != nil {
+				return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: invalid runtime tool arguments: %v", err), Outcome: agent.ToolExecutionOutcomeError}
+			}
+			args = parsed
+		}
+		result, handled, err := c.runtimeToolInvoker.InvokeRuntimeTool(c.ctx, strings.TrimSpace(name), args)
+		if handled {
+			if err != nil {
+				return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: runtime tool %s: %v", name, err), Outcome: agent.ToolExecutionOutcomeError}
+			}
+			// Module tools may attach an image for vision models (for example
+			// the desktop screenshot). The text keeps no trace of it.
+			text, images := agentruntime.ExtractModelImages(result)
+			return agent.ToolExecutionResult{Result: text, Outcome: agent.ToolExecutionOutcomeOK, ModelImages: images}
+		}
+	}
 	if c != nil && c.dynamicSemanticManaged && c.dynamicSemanticSurface != nil {
 		if result, handled := c.dynamicSemanticSurface.Execute(c.ctx, c.principal, c.mcpProvider, c.skillProvider, strings.TrimSpace(name), argsJSON, callID); handled {
 			c.markSessionGovernedAfterDynamicResult(result)
@@ -2252,6 +2353,26 @@ func (c *coreAgentCallbacks) ExecuteToolCall(name, argsJSON, callID string) agen
 		return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: unknown semantic tool %s", name), Outcome: agent.ToolExecutionOutcomeError}
 	}
 	return c.ExecuteToolStructured(name, argsJSON)
+}
+
+func (c *coreAgentCallbacks) runtimeToolExposed(name string) bool {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return false
+	}
+	for _, spec := range c.coreToolSpecs() {
+		if spec.Name == name {
+			// Built-in tools remain the execution authority when a module uses a
+			// legacy name; BuildTools applies the same precedence rule.
+			return false
+		}
+	}
+	for _, definition := range c.runtimeTools {
+		if strings.TrimSpace(definition.Name) == name {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *coreAgentCallbacks) dynamicOperationLedgerForCall() DynamicOperationLedger {
@@ -2399,14 +2520,43 @@ func (c *coreAgentCallbacks) IsToolAllowedForPromptProfile(name string, profile 
 	if strings.TrimSpace(name) == serviceReadOnlyChildSpawnToolName {
 		return c != nil && c.runtimeStore != nil && c.runtimeAttempt != nil && !c.runtimeReadOnlyChild && c.runtimeRemoteBinding == nil
 	}
+	// A short bot command is classified as a light turn. The cloud desktop is
+	// still how that bot does the work, so the module tool stays visible even
+	// when a semantic grant uses the same name. ssh stays for the same reason
+	// when this account can open a remote host.
+	if c != nil && strings.TrimSpace(name) == "desktop" && c.runtimeToolExposed(name) {
+		return true
+	}
+	if c != nil && strings.TrimSpace(name) == "ssh" && c.botUsesContainer() && c.canUseSSH() {
+		return true
+	}
 	if c != nil && c.dynamicSemanticManaged && c.dynamicSemanticSurface != nil {
-		grant, ok := c.dynamicSemanticSurface.grants[strings.TrimSpace(name)]
-		if ok {
-			selection, found := dynamicSemanticSelectionByID(c.dynamicSemanticSurface.plan, grant.SelectionID)
-			return found && coretool.IsLightPromptSafeSelection(selection)
+		if _, ok := c.dynamicSemanticSurface.grants[strings.TrimSpace(name)]; ok {
+			return coretool.GrantSelectionIsLightPromptSafe(c.dynamicSemanticSurface.plan, c.dynamicSemanticSurface.grants, name)
 		}
 	}
 	return agent.IsLightTurnToolAllowed(name)
+}
+
+// desktopBotKeepsLoggedInBrowser is a Hub bot whose cloud desktop is on this
+// turn. A short follow-up would otherwise be a light turn and hide that desktop.
+func (c *coreAgentCallbacks) desktopBotKeepsLoggedInBrowser() bool {
+	if c == nil || strings.TrimSpace(c.runtimeRequest.Instance.Metadata["hub_bot"]) != "1" {
+		return false
+	}
+	return c.runtimeToolExposed("desktop")
+}
+
+func desktopLeavesLoggedInBrowser(name string) bool {
+	switch strings.TrimSpace(name) {
+	case "web_fetch", "web_search", "download_file", "knowledge_save_url", "open", "browser", "computer_use":
+		return true
+	}
+	switch coretool.SemanticModelFunctionName(name) {
+	case "web_fetch", "web_search", "download_file", "open", "browser", "computer_use":
+		return true
+	}
+	return false
 }
 
 func (c *coreAgentCallbacks) hardwareExpertAdapterToolAllowed(name string, allowed map[string]bool) bool {
@@ -2425,6 +2575,9 @@ func (c *coreAgentCallbacks) hardwareExpertAdapterToolAllowed(name string, allow
 }
 
 func (c *coreAgentCallbacks) IsToolCallAllowed(name, argsJSON string) (bool, string) {
+	if c != nil && c.botMissesContainer(name) {
+		return false, botContainerToolReason
+	}
 	if c != nil && c.dynamicSemanticManaged && c.dynamicSemanticSurface != nil && c.dynamicSemanticSurface.HasGrant(name) {
 		// Dynamic semantic calls use an opaque grant as their function name.
 		// The planner has already applied the capability-level policy; the
@@ -2487,6 +2640,20 @@ func knowledgeToolResult(result string) agent.ToolExecutionResult {
 }
 
 func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.ToolExecutionResult {
+	name, argsJSON, _ = agentruntime.CanonicalizeToolCallJSON(name, argsJSON)
+	if c != nil && c.adaptiveRetry != nil {
+		if msg, blocked := c.adaptiveRetry.GuardDisabledTool(name); blocked {
+			return agent.ToolExecutionResult{Result: msg, Outcome: agent.ToolExecutionOutcomeError}
+		}
+	}
+	result := c.executeToolStructuredUnguarded(name, argsJSON)
+	if c != nil && c.adaptiveRetry != nil && result.Outcome == agent.ToolExecutionOutcomeError && !agentruntime.IsCapabilityUnavailable(nil, result.Result) {
+		c.adaptiveRetry.ObserveToolFailure(name, result.Result, 0)
+	}
+	return result
+}
+
+func (c *coreAgentCallbacks) executeToolStructuredUnguarded(name, argsJSON string) agent.ToolExecutionResult {
 	args, err := parseCoreAgentToolArguments(argsJSON)
 	if err != nil {
 		return agent.ToolExecutionResult{
@@ -2519,6 +2686,9 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 	if ok, reason := clientsecurity.EnforceConfig(c.appCfg, strings.TrimSpace(name), args); !ok {
 		return agent.ToolExecutionResult{Result: "Error: " + reason, Outcome: agent.ToolExecutionOutcomeError}
 	}
+	if c != nil && c.botMissesContainer(strings.TrimSpace(name)) {
+		return agent.ToolExecutionResult{Result: "Error: " + botContainerToolReason, Outcome: agent.ToolExecutionOutcomeError}
+	}
 	switch strings.TrimSpace(name) {
 	case "record_audio":
 		// Desktop/mobile hosts honor the interactive marker in their own
@@ -2541,9 +2711,12 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		if !c.canUseSSH() {
 			return agent.ToolExecutionResult{Result: "Error: " + c.sshDeniedReason(), Outcome: agent.ToolExecutionOutcomeError}
 		}
+		if action := strings.TrimSpace(agent.StringArg(args, "action")); action != "" && c.botUsesContainer() && strings.TrimSpace(c.messageMetadata["bot_phase"]) == "plan" && !botSSHPlanAction(action) {
+			return agent.ToolExecutionResult{Result: "Error: plan phase blocks ssh " + action + " until the user confirms", Outcome: agent.ToolExecutionOutcomeError}
+		}
 		if c.runtimeRemoteBinding != nil {
 			resources := c.runtimeParentExecutor.sshResourcesForUser(c.principal.TenantID, c.principal.UserID)
-			out, execErr := serviceRemoteSSHExecBound(resources, *c.runtimeRemoteBinding, agent.StringArg(args, "command"), coreAgentIntArg(args, "wait_seconds", 15))
+			out, execErr := serviceRemoteSSHExecBound(c.parentContext(), resources, *c.runtimeRemoteBinding, agent.StringArg(args, "command"), coreAgentIntArg(args, "wait_seconds", 15))
 			if execErr != nil {
 				return agent.ToolExecutionResult{Result: "Error: " + execErr.Error(), Outcome: agent.ToolExecutionOutcomeError}
 			}
@@ -2695,6 +2868,9 @@ func (c *coreAgentCallbacks) ExecuteToolStructured(name, argsJSON string) agent.
 		if result, handled := c.executeBoundMCPTool(strings.TrimSpace(name), args); handled {
 			return toolTextResult(result)
 		}
+		if capability := agentruntime.HostToolUnavailableCapability(name); capability != "" {
+			return capabilityUnavailableToolResult(capability)
+		}
 		return agent.ToolExecutionResult{Result: fmt.Sprintf("Error: unknown tool %s", name), Outcome: agent.ToolExecutionOutcomeError}
 	}
 }
@@ -2751,18 +2927,7 @@ func isMutationScopeAllowed(scope v2.MutationScope, name string) bool {
 }
 
 func parseCoreAgentToolArguments(argsJSON string) (map[string]interface{}, error) {
-	argsJSON = strings.TrimSpace(argsJSON)
-	if argsJSON == "" {
-		return map[string]interface{}{}, nil
-	}
-	var args map[string]interface{}
-	if err := json.Unmarshal([]byte(argsJSON), &args); err != nil {
-		return nil, err
-	}
-	if args == nil {
-		args = map[string]interface{}{}
-	}
-	return args, nil
+	return agentruntime.ParseToolArgumentsObject(argsJSON)
 }
 
 func coreAgentIntArg(args map[string]interface{}, key string, fallback int) int {
@@ -2810,15 +2975,27 @@ func (c *coreAgentCallbacks) OnToken(delta string) {
 		c.onToken(delta)
 	}
 }
-func (c *coreAgentCallbacks) OnProgress(string) {}
+func (c *coreAgentCallbacks) OnProgress(text string) {
+	text = strings.TrimSpace(text)
+	if text == "" || c == nil || c.botID == "" {
+		return
+	}
+	botlog.Write(c.botID, "srv.progress", nil, "text", text)
+}
 func (c *coreAgentCallbacks) OnToolCall(name string) {
 	log.Printf("[tool-call] start name=%q loop=%s owner=%s", name, c.loopID, c.principal.UserID)
+	if c != nil && c.botID != "" {
+		botlog.Write(c.botID, "srv.tool_start", nil, "tool", name, "loop", c.loopID)
+	}
 	if c.onToolCall != nil {
 		c.onToolCall(name)
 	}
 }
 func (c *coreAgentCallbacks) OnToolResult(name string) {
 	log.Printf("[tool-call] done name=%q loop=%s owner=%s", name, c.loopID, c.principal.UserID)
+	if c != nil && c.botID != "" {
+		botlog.Write(c.botID, "srv.tool_done", nil, "tool", name, "loop", c.loopID)
+	}
 	if c.onToolResult != nil {
 		// Full tool payload is not available on this callback surface; hosts that
 		// need the body should use post-run artifacts. Name-only is enough for
@@ -2847,7 +3024,17 @@ func (c *coreAgentCallbacks) LLMRequestContext(int) (context.Context, func(error
 	if c == nil || c.ctx == nil {
 		return context.Background(), func(error) {}, nil
 	}
+	if c.botID != "" {
+		round := atomic.AddInt32(&c.botRound, 1)
+		botlog.Write(c.botID, "srv.llm_round", nil,
+			"round", strconv.Itoa(int(round)),
+			"model", c.llmCfg.Model,
+			"provider", botlog.Host(c.llmCfg.URL),
+			"wire", c.llmCfg.WireAPI,
+		)
+	}
 	if err := c.ctx.Err(); err != nil {
+		botlog.Write(c.botID, "srv.llm_round", err, "round", "cancelled")
 		return nil, nil, err
 	}
 	return c.ctx, func(error) {}, nil
@@ -3111,4 +3298,52 @@ func wrapVisibleChatTokenCallback(cb func(string)) func(string) {
 			cb(cleaned)
 		}
 	}
+}
+
+// loopError reports the loop's user-facing text verbatim while keeping the
+// underlying cause reachable through errors.Is and errors.As.
+type loopError struct {
+	msg   string
+	cause error
+}
+
+func (e *loopError) Error() string {
+	if e == nil {
+		return ""
+	}
+	return e.msg
+}
+
+func (e *loopError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.cause
+}
+
+// loopFailureError turns a failed LoopResult into an error the caller can
+// classify.
+//
+// Returning errors.New(result.Error) alone discarded the cause, and result.Error
+// is produced by llm.UserFacingError, which flattens an *llm.HTTPStatusError to
+// prose and drops StatusCode and Body. What survived could only be classified by
+// matching that prose back against the marker substrings it was built from, so
+// a period-quota refusal looked like any other failure to every layer above the
+// loop. Error() stays byte-identical to result.Error — it is stored on the run
+// and shown to the reader — while Unwrap hands the real cause to errors.Is.
+func loopFailureError(result *agent.LoopResult) error {
+	if result == nil {
+		return errors.New("agent loop failed")
+	}
+	if result.Err == nil {
+		return errors.New(result.Error)
+	}
+	cause := result.Err
+	if agentruntime.IsHubPeriodLimitError(cause) {
+		// Keep both identities. The sentinel is what callers branch on; the
+		// original *llm.HTTPStatusError still carries StatusCode and Body for
+		// anything that needs the provider's own wording.
+		cause = errors.Join(ErrLLMPeriodLimited, cause)
+	}
+	return &loopError{msg: result.Error, cause: cause}
 }

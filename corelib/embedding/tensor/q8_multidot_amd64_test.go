@@ -8,6 +8,11 @@ import (
 )
 
 func TestGemmaGemmM3PackedQuadLeftover(t *testing.T) {
+	// The M3 packed kernels are AVX-512 asm; production reaches them only
+	// behind the hasAVX512 gate in tryGemmaFusedPlain.
+	if !hasAVX512 {
+		t.Skip("no AVX-512")
+	}
 	// 4-col packed Dual3 must still write leftover 1/2/3 columns (N-split tails).
 	ranges := [][2]int{{0, 5}, {0, 6}, {0, 7}, {1, 8}, {2, 11}, {0, 32}}
 	shapes := []struct{ N, K int }{{32, 768}, {32, 1152}}

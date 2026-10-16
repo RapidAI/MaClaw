@@ -118,3 +118,122 @@ func TestClassifyTreeSynthesisKeepsOfficeArtifactForLookupLeader(t *testing.T) {
 		t.Fatalf("result=%+v, want office artifact primary with the search prerequisite preserved", result)
 	}
 }
+
+// A staged chart turned into a fillable sheet embeds as office above the
+// confident floor, with document_read a few hundredths behind and a lookup
+// cosine high enough to escalate. The tree then answering "read the picture"
+// used to replace the office leader. Image demotion treats that read as
+// needing no tool, so the model is called with an empty tool list, narrates
+// the spreadsheet, and the turn stops as success.
+func TestClassifyRetainsSettledOfficeLeaderOverReadVerdict(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"document_read","score":0.80}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelOffice, Vecs: [][]float32{{0.849, 0.5283937921666851}}},
+		{Label: LabelDocumentRead, Vecs: [][]float32{{0.810, 0.5864290226784044}}},
+		{Label: LabelLiveData, Vecs: [][]float32{{0.738, 0.6747992294005091}}},
+	}
+	uic.mu.Unlock()
+
+	l2, confident := classifyByEmbedding(emb, uic.anchors, "将图表内容总结成可填写的表格，包括评分及总评")
+	if confident {
+		t.Fatalf("narrow office/read gap must escalate: %+v", l2)
+	}
+	if l2.Primary != LabelOffice || l2.Confidence < EmbeddingConfidentMinScore {
+		t.Fatalf("L2 leader = %+v, want office at or above the confident floor", l2)
+	}
+
+	result := uic.Classify(MessageContext{Text: "将图表内容总结成可填写的表格，包括评分及总评"})
+	if result.Primary != LabelOffice || len(result.Secondary) != 0 || !result.Degraded || result.Layer != 2 {
+		t.Fatalf("result=%+v, want a degraded office hint with the unconfirmed lookup half dropped", result)
+	}
+	if result.RunnerUp != LabelDocumentRead {
+		t.Fatalf("runner-up=%s, want the read verdict kept as evidence", result.RunnerUp)
+	}
+	if !strings.Contains(result.Reason, "office leader") {
+		t.Fatalf("reason=%q, want the retention reason", result.Reason)
+	}
+}
+
+func TestRetainSettledOfficeLeaderLabelMatrix(t *testing.T) {
+	l2 := ClassificationResult{Primary: LabelOffice, Confidence: 0.849, Secondary: []IntentLabel{LabelLiveData}}
+	read, ok := retainSettledOfficeLeader(l2, ClassificationResult{Primary: LabelDocumentRead, Confidence: 0.80})
+	if !ok || read.Primary != LabelOffice || !read.Degraded || read.Layer != 2 || len(read.Secondary) != 0 || read.RunnerUp != LabelDocumentRead {
+		t.Fatalf("document_read = %+v ok=%v", read, ok)
+	}
+	below := ClassificationResult{Primary: LabelOffice, Confidence: EmbeddingConfidentMinScore - 0.01}
+	if _, ok := retainSettledOfficeLeader(below, ClassificationResult{Primary: LabelDocumentRead, Confidence: 0.8}); ok {
+		t.Fatal("office below the confident floor must stay with the tree")
+	}
+	for _, tree := range []ClassificationResult{
+		{Primary: LabelCoding, Confidence: 0.90},
+		{Primary: LabelDocumentGenerate, Confidence: 0.88},
+		{Primary: LabelFileWrite, Confidence: 0.90},
+		{Primary: LabelWorkflowTask, Confidence: 0.80},
+		{Primary: LabelScreenshot, Confidence: 0.90},
+		{Primary: LabelScreenshot, Confidence: 0.75, Layer: 3},
+		{Primary: LabelScreenshot, Secondary: []IntentLabel{LabelDocumentRead}, Confidence: 0.90, Layer: 3},
+		{Primary: LabelScreenshot, Confidence: 0.60, Layer: 3, WorkflowType: "capture"},
+		{Primary: LabelSearch, Confidence: 0.90},
+		{Primary: LabelUnknown, Confidence: 0.30},
+		{Primary: LabelNonCoding, Confidence: 0.80},
+		{Primary: LabelContinuation, Confidence: 0.80},
+		{},
+		{Primary: LabelDocumentRead, Secondary: []IntentLabel{LabelFileWrite}, Confidence: 0.80},
+		{Primary: LabelDocumentRead, Secondary: []IntentLabel{LabelFileRead}, Confidence: 0.80},
+		{Primary: LabelDocumentRead, Secondary: []IntentLabel{LabelKnowledgeRead}, Confidence: 0.80},
+		{Primary: LabelDocumentRead, Confidence: 0.80, WorkflowType: "presentation_design"},
+		{Primary: LabelFileRead, Confidence: 0.80, WorkflowType: "coding"},
+		{Primary: LabelLiveData, Secondary: []IntentLabel{LabelDocumentGenerate}, Confidence: 0.88},
+	} {
+		if _, ok := retainSettledOfficeLeader(l2, tree); ok {
+			t.Fatalf("tree ruling %+v must stand", tree)
+		}
+	}
+	for _, tree := range []ClassificationResult{
+		{Primary: LabelFileRead, Confidence: 0.80},
+		{Primary: LabelKnowledgeRead, Confidence: 0.80},
+		{Primary: LabelDocumentRead, Secondary: []IntentLabel{LabelScreenshot}, Confidence: 0.80},
+		{Primary: LabelFileRead, Secondary: []IntentLabel{LabelUnknown}, Confidence: 0.80},
+		{Primary: LabelScreenshot, Confidence: 0.60, Layer: 3},
+		{Primary: LabelScreenshot, Confidence: 0.90, Degraded: true},
+		{Primary: LabelScreenshot, Secondary: []IntentLabel{LabelDocumentRead}, Confidence: 0.60, Layer: 3},
+	} {
+		got, ok := retainSettledOfficeLeader(l2, tree)
+		if !ok || got.Primary != LabelOffice || !got.Degraded || len(got.Secondary) != 0 || got.RunnerUp != tree.Primary {
+			t.Fatalf("read verdict %+v retained as %+v ok=%v", tree, got, ok)
+		}
+	}
+}
+
+// The tree is still the disambiguator between two file capabilities. A PDF
+// ruling must not be pulled back to office just because office led the cosine.
+func TestClassifyTreeDocumentGenerateStillReplacesOfficeLeader(t *testing.T) {
+	emb := &staticEmbedder{vec: []float32{1, 0}}
+	uic := New(Config{
+		Embedder: emb,
+		LLMFunc: func(_, _ string) (string, error) {
+			return `{"top":[{"skill":"document_generate","score":0.88}]}`, nil
+		},
+	})
+	uic.mu.Lock()
+	uic.ready = true
+	uic.anchors = []intentAnchor{
+		{Label: LabelOffice, Vecs: [][]float32{{0.849, 0.5283937921666851}}},
+		{Label: LabelDocumentGenerate, Vecs: [][]float32{{0.816, 0.5780467119878857}}},
+		{Label: LabelLiveData, Vecs: [][]float32{{0.738, 0.6747992294005091}}},
+	}
+	uic.mu.Unlock()
+
+	result := uic.Classify(MessageContext{Text: "把这些内容生成PDF"})
+	if result.Primary == LabelOffice || !result.HasLabel(LabelDocumentGenerate) {
+		t.Fatalf("result=%+v, want the tree PDF ruling kept as the artifact half", result)
+	}
+}

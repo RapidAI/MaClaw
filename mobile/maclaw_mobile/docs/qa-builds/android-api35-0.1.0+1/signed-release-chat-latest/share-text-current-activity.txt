@@ -1,0 +1,31 @@
+﻿10 activities found:
+  Activity #0:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.android.chrome/com.google.android.apps.chrome.IntentDispatcher
+  Activity #1:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.google.android.apps.docs/.common.shareitem.UploadMenuActivity
+  Activity #2:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.google.android.apps.messaging/.ui.conversationlist.ShareIntentActivity
+  Activity #3:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.google.android.bluetooth/com.android.bluetooth.opp.BluetoothOppLauncherActivity
+  Activity #4:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.google.android.gm/com.google.android.apps.dynamite.DynamiteDeepLinkSingle
+  Activity #5:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.google.android.gm/.ComposeActivityGmailExternal
+  Activity #6:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.google.android.gms/.nearby.sharing.send.SendActivity
+  Activity #7:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.google.android.googlequicksearchbox/com.google.android.apps.search.googleapp.saves.savefeature.sharereceiver.SavesShareReceiver
+  Activity #8:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    com.google.android.marvin.talkback/com.google.android.accessibility.selecttospeak.popup.SelectToSpeakPopupActivity
+  Activity #9:
+    priority=0 preferredOrder=0 match=0x608000 specificIndex=-1 isDefault=true
+    top.mypapers.maclaw.mobile/.MainActivity

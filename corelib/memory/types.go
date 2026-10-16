@@ -368,9 +368,21 @@ type Entry struct {
 	Stability *StabilityMeta `json:"stability_meta,omitempty"`
 }
 
-// IsActive returns true if the entry participates in normal recall.
+// IsActive returns true when the entry's lifecycle status is active.
+// A past InvalidAt does not change that: dynamic recall still returns the row
+// at a lower rank, while prompt summaries skip it.
 func (e *Entry) IsActive() bool {
+	if e == nil {
+		return false
+	}
 	return e.Status == StatusActive
+}
+
+// entryExpiredAt reports whether a fact's InvalidAt has been reached.
+// The instant itself counts as expired. Dynamic recall still returns the row
+// at a lower rank; prompt summaries skip it.
+func entryExpiredAt(invalidAt *time.Time, now time.Time) bool {
+	return invalidAt != nil && !invalidAt.After(now)
 }
 
 // BackupInfo describes a single memory backup snapshot.
@@ -433,21 +445,28 @@ const (
 // HealthReport provides an aggregated view of memory system health.
 // Inspired by GBrain's `gbrain health` / `gbrain doctor` commands.
 type HealthReport struct {
-	ActiveEntries    int            `json:"active_entries"`
-	MaxCapacity      int            `json:"max_capacity"`
-	CapacityPercent  float64        `json:"capacity_percent"`
-	ArchivedEntries  int            `json:"archived_entries"`
-	StaleEntries     int            `json:"stale_entries"`
-	OrphanEntries    int            `json:"orphan_entries"` // no graph edges
-	NoEmbedding      int            `json:"no_embedding"`   // missing vector
-	NoHash           int            `json:"no_hash"`        // missing content hash
-	PinnedEntries    int            `json:"pinned_entries"`
-	EmbedderActive   bool           `json:"embedder_active"`
-	CategoryCounts   map[string]int `json:"category_counts"`
-	AvgAccessCount   float64        `json:"avg_access_count"`
-	OldestEntry      string         `json:"oldest_entry,omitempty"` // RFC3339
-	NewestEntry      string         `json:"newest_entry,omitempty"` // RFC3339
-	VersionedEntries int            `json:"versioned_entries"`      // entries with version history
+	ActiveEntries   int     `json:"active_entries"`
+	MaxCapacity     int     `json:"max_capacity"`
+	CapacityPercent float64 `json:"capacity_percent"`
+	// RecallableEntries is the hot-set rows still eligible for recall.
+	// ActiveEntries stays the hot-set length, which is what eviction compares.
+	RecallableEntries        int            `json:"recallable_entries"`
+	DormantEntries           int            `json:"dormant_entries"`
+	SupersededEntries        int            `json:"superseded_entries"`
+	InvalidEntries           int            `json:"invalid_entries"`
+	RecallableCategoryCounts map[string]int `json:"recallable_category_counts,omitempty"`
+	ArchivedEntries          int            `json:"archived_entries"`
+	StaleEntries             int            `json:"stale_entries"`
+	OrphanEntries            int            `json:"orphan_entries"` // no graph edges
+	NoEmbedding              int            `json:"no_embedding"`   // missing vector
+	NoHash                   int            `json:"no_hash"`        // missing content hash
+	PinnedEntries            int            `json:"pinned_entries"`
+	EmbedderActive           bool           `json:"embedder_active"`
+	CategoryCounts           map[string]int `json:"category_counts"`
+	AvgAccessCount           float64        `json:"avg_access_count"`
+	OldestEntry              string         `json:"oldest_entry,omitempty"` // RFC3339
+	NewestEntry              string         `json:"newest_entry,omitempty"` // RFC3339
+	VersionedEntries         int            `json:"versioned_entries"`      // entries with version history
 }
 
 // ---------------------------------------------------------------------------

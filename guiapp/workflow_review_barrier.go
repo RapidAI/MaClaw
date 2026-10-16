@@ -1,0 +1,13 @@
+package guiapp
+
+// shouldApplyWorkflowFilter decides whether workflow phase tool filtering must
+// stay active for the current loop. Awaiting-review is an engine-level barrier:
+// it overrides per-message skip signals so NeedsConfirm phases cannot continue
+// into unrestricted tool execution.
+func shouldApplyWorkflowFilter(skipNeedsConfirmGate, awaitingReview, workflowAgentLoop, phaseBlocked, activeWorkflow bool) bool {
+	return activeWorkflow || !skipNeedsConfirmGate || awaitingReview || workflowAgentLoop || phaseBlocked
+}
+
+func shouldSkipWorkflowToolExecutionGate(skipNeedsConfirmGate, awaitingReview, workflowAgentLoop, phaseBlocked, activeWorkflow bool) bool {
+	return skipNeedsConfirmGate && !activeWorkflow && !awaitingReview && !workflowAgentLoop && !phaseBlocked
+}

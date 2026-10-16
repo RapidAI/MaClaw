@@ -252,6 +252,18 @@ func TestReviewedHostFileEditReplacesOnlyAnUnambiguousPassage(t *testing.T) {
 		t.Fatal("workspace escape must fail closed")
 	}
 
+	crlfPath := filepath.Join(dir, "win.go")
+	if err := os.WriteFile(crlfPath, []byte("func run() {\r\n\tpm.Run()\r\n}\r\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := cb.EditReviewedHostFile(context.Background(), principal, "win.go", "func run() {\n\tpm.Run()\n}", "func run() {\n\tpr, err := pm.Run()\n}"); err != nil {
+		t.Fatalf("CRLF passage edit err=%v", err)
+	}
+	winData, err := os.ReadFile(crlfPath)
+	if err != nil || string(winData) != "func run() {\r\n\tpr, err := pm.Run()\r\n}\r\n" {
+		t.Fatalf("CRLF file=%q err=%v", winData, err)
+	}
+
 	// Deleting a passage is a replacement with empty text, not a separate mode.
 	if _, err := cb.EditReviewedHostFile(context.Background(), principal, "main.go", "\nfunc Beta() int { return 1 }", ""); err != nil {
 		t.Fatalf("delete via empty new_string err=%v", err)
@@ -259,5 +271,38 @@ func TestReviewedHostFileEditReplacesOnlyAnUnambiguousPassage(t *testing.T) {
 	data, err = os.ReadFile(filepath.Join(dir, "main.go"))
 	if err != nil || strings.Contains(string(data), "Beta") {
 		t.Fatalf("passage was not removed: %q err=%v", data, err)
+	}
+}
+
+// TestReviewedHostFileWriteModeVocabulary pins the mode vocabulary at this
+// host: the schema advertises exactly the canonical pair the shared
+// NormalizeWriteModeKind enforces, and the refusal hint names both. The empty
+// reading (overwrite) is the canonicalizer's default and stays out of the
+// advertised set. The administrative path formats the same hint the GUI
+// surface is pinned to verify end to end.
+func TestReviewedHostFileWriteModeVocabulary(t *testing.T) {
+	schema := reviewedHostFileWriteInvocationSchema()
+	properties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("file-write schema has no properties: %#v", schema)
+	}
+	mode, ok := properties["mode"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("file-write schema has no mode property: %#v", properties)
+	}
+	enum, ok := mode["enum"].([]string)
+	if !ok || len(enum) != 2 {
+		t.Fatalf("mode must advertise the canonical pair, got %#v", mode["enum"])
+	}
+	for _, name := range enum {
+		if _, err := coretool.NormalizeWriteModeKind(name); err != nil {
+			t.Fatalf("schema advertises mode %q, but the canonicalizer refuses it: %v", name, err)
+		}
+	}
+	if resolved, err := coretool.NormalizeWriteModeKind(""); err != nil || resolved != coretool.WriteModeOverwrite {
+		t.Fatalf("empty mode = (%q, %v), want overwrite-as-default", resolved, err)
+	}
+	if hint := coretool.WriteModeHint(); !strings.Contains(hint, "overwrite") || !strings.Contains(hint, "append") {
+		t.Fatalf("hint %q does not name the canonical set", hint)
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"golang.org/x/crypto/bcrypt"
 )
@@ -390,6 +391,11 @@ func (s *HTTPServer) recordAdminAudit(ctx context.Context, action, resourceType,
 	meta := make(map[string]string, len(metadata)+5)
 	for k, v := range metadata {
 		meta[k] = v
+	}
+	if requestID := agentruntime.CorrelationID(ctx); requestID != "" {
+		if _, exists := meta["request_id"]; !exists {
+			meta["request_id"] = requestID
+		}
 	}
 	event := agentservice.AuditEvent{ActorType: "admin", Action: action, ResourceType: resourceType, ResourceID: resourceID, Metadata: meta}
 	if identity, ok := adminAuditIdentityFromContext(ctx); ok {

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -28,34 +29,61 @@ import (
 )
 
 const (
-	EntityBlockedEmail        = "blocked_email"
-	EntityBlockedIP           = "blocked_ip"
-	EntityNewsArticle         = "news_article"
-	EntityHubInstance         = "hub_instance"
-	EntityHubDomainRoute      = "hub_domain_route"
-	EntityHubUserLink         = "hub_user_link"
-	EntitySystemSetting       = "system_setting"
-	EntityGossipSnapshot      = "gossip_snapshot"
-	EntitySkillHubSnapshot    = "skillhub_snapshot"
-	EntitySkillMarketSnapshot = "skillmarket_snapshot"
-	EntityPetStoreSnapshot    = "pet_store_snapshot"
-	EntityPetStoreMetrics     = "pet_store_metrics"
-	EntityLLMCardType         = "llm_card_type"
-	EntityLLMTenantAuth       = "llm_tenant_authorization"
-	EntityLLMCardOrder        = "llm_card_order"
-	EntityLLMNodeBinding      = "llm_node_binding"
-	EntityNotification        = "notification"
+	EntityBlockedEmail          = "blocked_email"
+	EntityBlockedIP             = "blocked_ip"
+	EntityNewsArticle           = "news_article"
+	EntityHubInstance           = "hub_instance"
+	EntityHubDomainRoute        = "hub_domain_route"
+	EntityHubUserLink           = "hub_user_link"
+	EntityInvitationCodeRoute   = "invitation_code_route"
+	EntitySystemSetting         = "system_setting"
+	EntityGossipSnapshot        = "gossip_snapshot"
+	EntitySkillHubSnapshot      = "skillhub_snapshot"
+	EntityLatexTemplateSnapshot = "latex_template_snapshot"
+	EntitySkillMarketSnapshot   = "skillmarket_snapshot"
+	EntityPetStoreSnapshot      = "pet_store_snapshot"
+	EntityPetStoreMetrics       = "pet_store_metrics"
+	EntityLLMCardType           = "llm_card_type"
+	EntityLLMTenantAuth         = "llm_tenant_authorization"
+	EntityLLMCardOrder          = "llm_card_order"
+	EntityLLMNodeBinding        = "llm_node_binding"
+	EntityLLMUsageBatch         = "llm_usage_batch"
+	EntityTokenBankLedgerBatch  = "token_bank_ledger_batch"
+	// EntityTokenBankPriceBook replicates the price rules an admin edits.
+	//
+	// Unlike the ledger, this table is read on the hot path: every proxied
+	// request resolves its unit prices through it. A node holding a stale copy
+	// charges — and credits — a different amount for the same model, which is
+	// not a rounding difference but a per-node price list. It is small and
+	// written only by an admin, so replicating it costs nothing and removes a
+	// class of "why did this call earn less than that one" that no log can
+	// explain.
+	EntityTokenBankPriceBook = "token_bank_price_book"
+	EntityNotification       = "notification"
 
 	OpUpsert = "upsert"
 	OpDelete = "delete"
 
 	maxPendingPushOpsPerPeer = 4000
 	haOpsFallbackPageSize    = 1000
+
+	// maxPendingPushBytesPerPeer caps the *retained bytes* of the per-peer push
+	// queue. The op-count cap above is not enough on its own: a single
+	// system_setting snapshot (llm_official_class_head_v1 keeps its training
+	// samples in one setting) can be ~1MB, so 4000 queued ops is up to ~4GB of
+	// resident memory per peer and OOM-killed hc-3 (15.5GB RSS) on 2026-09-16.
+	// Two signed-body budgets (64MB each) leave room for a full batch plus the
+	// next one already queued.
+	maxPendingPushBytesPerPeer = 2 * haMaxPushBodyBudget
+
+	// pendingPushOpFramingBytes approximates the per-op JSON overhead that
+	// json.Marshal adds around the payload (keys, quotes, escaping, separators).
+	pendingPushOpFramingBytes = 256
 )
 
 var (
 	opIDCounter          uint64
-	fallbackHAHTTPClient = &http.Client{Timeout: 8 * time.Second}
+	fallbackHAHTTPClient = newHAHTTPClient(8 * time.Second)
 )
 
 type InvalidRemoteOpError struct {
@@ -78,30 +106,43 @@ type Service struct {
 	privateKey    *rsa.PrivateKey
 	publicKeyPEM  string
 
-	ops                         store.HASyncOpRepository
-	cursors                     store.HAPeerCursorRepository
-	versions                    store.HAEntityVersionRepository
-	blockedEmails               store.BlockedEmailRepository
-	blockedIPs                  store.BlockedIPRepository
-	news                        store.NewsRepository
-	hubs                        store.HubRepository
-	routes                      store.HubDomainRouteRepository
-	links                       store.HubUserLinkRepository
-	settings                    store.SystemSettingsRepository
-	gossip                      store.GossipRepository
-	skillStore                  *skill.SkillStore
-	skillMarket                 *skillmarket.Store
-	petStoreSnapshotApplier     func(context.Context, json.RawMessage) error
-	petStoreMetricsApplier      func(context.Context, json.RawMessage) error
-	llmRegistryCacheInvalidator func()
-	officialClassHeadAck        func(string)
-	cardTypes                   cardstore.CardTypeRepository
-	cardOrders                  cardstore.PurchaseOrderRepository
-	llmAuthorizations           llmservice.TenantAuthorizationRepository
-	llmBindings                 store.LLMNodeBindingRepository
-	notifications               notification.Store
-	heartbeatSync               store.HAHeartbeatSyncStateRepository
-	heartbeatSyncMinInterval    time.Duration
+	// requireSignatureV2 enforces the body-bound V2 signature and rejects
+	// V1-only peers. Kept false during rolling upgrades (dual-send V1+V2);
+	// enable after every peer has been confirmed to send V2.
+	requireSignatureV2 atomic.Bool
+
+	ops                          store.HASyncOpRepository
+	cursors                      store.HAPeerCursorRepository
+	versions                     store.HAEntityVersionRepository
+	blockedEmails                store.BlockedEmailRepository
+	blockedIPs                   store.BlockedIPRepository
+	news                         store.NewsRepository
+	hubs                         store.HubRepository
+	routes                       store.HubDomainRouteRepository
+	links                        store.HubUserLinkRepository
+	invitationRoutes             store.InvitationCodeRouteRepository
+	settings                     store.SystemSettingsRepository
+	gossip                       store.GossipRepository
+	skillStore                   *skill.SkillStore
+	skillMarket                  *skillmarket.Store
+	latexTemplateSnapshotApplier func(context.Context, json.RawMessage) error
+	latexTemplateSnapshotDumper  func(context.Context) (any, int, error)
+	latexTemplateRecordCounter   func(context.Context) (int64, error)
+	petStoreSnapshotApplier      func(context.Context, json.RawMessage) error
+	petStoreMetricsApplier       func(context.Context, json.RawMessage) error
+	llmRegistryCacheInvalidator  func()
+	officialClassHeadAck         func(string)
+	cardTypes                    cardstore.CardTypeRepository
+	cardOrders                   cardstore.PurchaseOrderRepository
+	llmAuthorizations            llmservice.TenantAuthorizationRepository
+	llmBindings                  store.LLMNodeBindingRepository
+	llmUsage                     llmservice.UsageBatchRepository
+	tokenBankLedger              TokenBankLedgerRepository
+	tokenBankPriceBook           TokenBankPriceBookRepository
+	notifications                notification.Store
+	heartbeatSync                store.HAHeartbeatSyncStateRepository
+	heartbeatSyncMinInterval     time.Duration
+	heartbeatLastSynced          sync.Map
 
 	mu             sync.RWMutex
 	opMu           sync.Mutex
@@ -117,6 +158,12 @@ type Service struct {
 	snapshotHashes map[string]string
 	refresher      interface{ Rebuild(context.Context) error }
 	recorder       *diagnostics.FailureEventRecorder
+
+	// bindingInvalidate evicts the local binding manager's cached state for a
+	// (hub, tenant) key after a replicated binding op is applied, so a
+	// tombstone written by another node's release is visible to TryBind
+	// immediately instead of after the cached lease wall-clock expires.
+	bindingInvalidate func(hubID, tenantID string)
 }
 
 func (s *Service) SetFailureEventRecorder(recorder *diagnostics.FailureEventRecorder) {
@@ -198,7 +245,7 @@ func NewService(nodeID, nodeName, advertiseURL, clusterSecret string, peers []St
 		clusterSecret:            strings.TrimSpace(clusterSecret),
 		peers:                    peerMap,
 		peerPublicKeys:           peerKeys,
-		client:                   &http.Client{Timeout: 8 * time.Second},
+		client:                   newHAHTTPClient(8 * time.Second),
 		pushSem:                  make(chan struct{}, 16),
 		pushPending:              make(map[string][]*store.HASyncOp),
 		pushRunning:              make(map[string]bool),
@@ -255,7 +302,7 @@ func (s *Service) InternalURLForPublicOrigin(originURL string) string {
 		if peer == nil || !strings.EqualFold(strings.TrimRight(peer.PublicURL, "/"), originURL) {
 			continue
 		}
-		return strings.TrimRight(strings.TrimSpace(peer.BaseURL), "/")
+		return peerTransportURL(peer)
 	}
 	return ""
 }
@@ -294,6 +341,7 @@ func (s *Service) AttachStore(st *store.Store) {
 	s.hubs = st.Hubs
 	s.routes = st.HubDomainRoutes
 	s.links = st.HubUserLinks
+	s.invitationRoutes = st.InvitationCodeRoutes
 	s.settings = st.System
 	s.gossip = st.Gossip
 	s.heartbeatSync = st.HAHeartbeatSync
@@ -315,6 +363,31 @@ func (s *Service) AttachSkillMarket(sm *skillmarket.Store) {
 
 // SetPetStoreSnapshotApplier connects the HTTP-owned Pet Store storage to HA
 // without coupling the HA package to the HTTP API package.
+// SetLatexTemplateSnapshotApplier connects the HTTP-owned LaTeX catalogue to
+// HA without coupling the HA package to the HTTP API package. Application
+// replaces the peer catalogue, including package bytes, the same way a skill
+// snapshot replaces the peer skill library.
+func (s *Service) SetLatexTemplateSnapshotApplier(fn func(context.Context, json.RawMessage) error) {
+	if s == nil {
+		return
+	}
+	s.latexTemplateSnapshotApplier = fn
+}
+
+func (s *Service) SetLatexTemplateSnapshotDumper(fn func(context.Context) (any, int, error)) {
+	if s == nil {
+		return
+	}
+	s.latexTemplateSnapshotDumper = fn
+}
+
+func (s *Service) SetLatexTemplateRecordCounter(fn func(context.Context) (int64, error)) {
+	if s == nil {
+		return
+	}
+	s.latexTemplateRecordCounter = fn
+}
+
 func (s *Service) SetPetStoreSnapshotApplier(fn func(context.Context, json.RawMessage) error) {
 	if s == nil {
 		return
@@ -381,6 +454,15 @@ func (s *Service) AttachLLMBindings(repo store.LLMNodeBindingRepository) {
 	s.llmBindings = repo
 }
 
+// SetBindingInvalidator registers a callback that evicts the local binding
+// manager's cached state for a key whenever a replicated binding op lands.
+func (s *Service) SetBindingInvalidator(fn func(hubID, tenantID string)) {
+	if s == nil {
+		return
+	}
+	s.bindingInvalidate = fn
+}
+
 func (s *Service) SetRouteSnapshotRefresher(refresher interface{ Rebuild(context.Context) error }) {
 	if s == nil {
 		return
@@ -408,11 +490,11 @@ func (s *Service) LookupNodeURL(nodeID string) string {
 	selfID := s.nodeID
 	selfURL := strings.TrimRight(strings.TrimSpace(s.clientFacingURL()), "/")
 	s.mu.RUnlock()
-	if nodeID == selfID {
+	if strings.EqualFold(nodeID, selfID) {
 		return selfURL
 	}
 	for _, peer := range s.listPeerStates() {
-		if peer == nil || strings.TrimSpace(peer.NodeID) != nodeID {
+		if peer == nil || !strings.EqualFold(strings.TrimSpace(peer.NodeID), nodeID) {
 			continue
 		}
 		if u := strings.TrimRight(strings.TrimSpace(peer.PublicURL), "/"); u != "" {
@@ -421,6 +503,125 @@ func (s *Service) LookupNodeURL(nodeID string) string {
 		return strings.TrimRight(strings.TrimSpace(peer.BaseURL), "/")
 	}
 	return ""
+}
+
+// LookupInternalURL returns the HA transport base URL for a cluster node ID.
+// Peer calls must use advertise/base URLs, not the public reverse proxy.
+func (s *Service) LookupInternalURL(nodeID string) string {
+	url, _, _ := s.AccessPeer(nodeID)
+	return url
+}
+
+// AccessPeer returns the HA transport URL, reachability, and last RTT for nodeID.
+func (s *Service) AccessPeer(nodeID string) (internalURL string, reachable bool, rttMs int64) {
+	if s == nil {
+		return "", false, 0
+	}
+	nodeID = strings.TrimSpace(nodeID)
+	if nodeID == "" {
+		return "", false, 0
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if strings.EqualFold(nodeID, s.nodeID) {
+		return strings.TrimRight(strings.TrimSpace(s.advertiseURL), "/"), true, 0
+	}
+	peer := s.peers[nodeID]
+	if peer == nil {
+		for id, item := range s.peers {
+			if item != nil && strings.EqualFold(id, nodeID) {
+				peer = item
+				break
+			}
+		}
+	}
+	if peer == nil {
+		return "", false, 0
+	}
+	return peerTransportURL(peer), peer.Reachable, peer.RTTMs
+}
+
+func peerTransportURL(peer *PeerRuntimeState) string {
+	if peer == nil {
+		return ""
+	}
+	url := strings.TrimRight(strings.TrimSpace(peer.BaseURL), "/")
+	if url == "" {
+		url = strings.TrimRight(strings.TrimSpace(peer.PublicURL), "/")
+	}
+	return url
+}
+
+func (s *Service) NodeName() string {
+	if s == nil {
+		return ""
+	}
+	return s.nodeName
+}
+
+// ListAccessNodes returns this node plus configured HA peers for provider
+// access-scope pickers. Self is always listed first and treated as reachable.
+func (s *Service) ListAccessNodes() []AccessNode {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	selfID := strings.TrimSpace(s.nodeID)
+	selfName := strings.TrimSpace(s.nodeName)
+	selfHost := accessNodeHost(s.publicURL)
+	if selfHost == "" {
+		selfHost = accessNodeHost(s.advertiseURL)
+	}
+	s.mu.RUnlock()
+	if selfName == "" {
+		selfName = selfID
+	}
+	out := []AccessNode{{
+		NodeID:    selfID,
+		Name:      selfName,
+		Host:      selfHost,
+		Reachable: true,
+		Self:      true,
+	}}
+	for _, peer := range s.listPeerStates() {
+		if peer == nil {
+			continue
+		}
+		id := strings.TrimSpace(peer.NodeID)
+		if id == "" || strings.EqualFold(id, selfID) {
+			continue
+		}
+		name := strings.TrimSpace(peer.NodeName)
+		if name == "" {
+			name = id
+		}
+		host := accessNodeHost(peer.PublicURL)
+		if host == "" {
+			host = accessNodeHost(peer.BaseURL)
+		}
+		out = append(out, AccessNode{
+			NodeID:    id,
+			Name:      name,
+			Host:      host,
+			Reachable: peer.Reachable,
+		})
+	}
+	return out
+}
+
+func accessNodeHost(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if !strings.Contains(raw, "://") {
+		raw = "https://" + raw
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(parsed.Host)
 }
 
 func (s *Service) PeerNodeIDs() []string {
@@ -487,28 +688,64 @@ func (s *Service) SignPeerRequest(req *http.Request) error {
 	if err != nil {
 		return err
 	}
+	// V2: bind the raw request body hash so an op signature cannot be replayed
+	// against a different body. Both signatures are sent during rolling
+	// upgrades; after full rollout SetRequireSignatureV2(true) rejects V1-only
+	// peers on the receiving side.
+	bodyHash, err := requestBodySHA256Hex(req)
+	if err != nil {
+		return err
+	}
+	v2Signature, err := signHACanonicalRequest(s.privateKey, requestCanonicalPayloadV2(req, s.nodeID, timestamp, bodyHash))
+	if err != nil {
+		return err
+	}
 	req.Header.Set(haHeaderNodeID, s.nodeID)
 	req.Header.Set(haHeaderTimestamp, timestamp)
 	req.Header.Set(haHeaderSignature, signature)
+	req.Header.Set(haHeaderBodyHash, bodyHash)
+	req.Header.Set(haHeaderSignatureV2, v2Signature)
 	return nil
+}
+
+// SetRequireSignatureV2 toggles enforcement of the body-bound V2 signature.
+// Keep disabled during rolling upgrades so V1-only peers still authenticate;
+// enable once every peer sends V2 to reject V1-only requests.
+func (s *Service) SetRequireSignatureV2(require bool) {
+	if s == nil {
+		return
+	}
+	s.requireSignatureV2.Store(require)
 }
 
 func (s *Service) AuthenticatePeerRequest(r *http.Request) error {
 	if s == nil {
 		return nil
 	}
-	if secret := strings.TrimSpace(s.clusterSecret); secret != "" {
+	secret := strings.TrimSpace(s.clusterSecret)
+	hasPeers := len(s.peerPublicKeys) > 0
+	// P0 (2026-09-09 review): with neither a cluster secret nor any peer
+	// public key configured, every branch below used to `return nil`, so
+	// GET/POST /api/internal/ha/ops was open to anyone — unauthenticated
+	// reads of the full HA operation log and unauthenticated op injection.
+	// Absent trust material must deny, not allow.
+	if secret == "" && !hasPeers {
+		return fmt.Errorf("ha peer authentication is not configured")
+	}
+	if secret != "" {
 		if got := strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")); got != secret {
 			return fmt.Errorf("invalid cluster secret")
+		}
+		// Shared-secret mode: a cluster secret with no peer keys is a
+		// complete authentication on its own.
+		if !hasPeers {
+			return nil
 		}
 	}
 	nodeID := strings.TrimSpace(r.Header.Get(haHeaderNodeID))
 	timestamp := strings.TrimSpace(r.Header.Get(haHeaderTimestamp))
 	signature := strings.TrimSpace(r.Header.Get(haHeaderSignature))
 	if nodeID == "" || timestamp == "" || signature == "" {
-		if len(s.peerPublicKeys) == 0 {
-			return nil
-		}
 		return fmt.Errorf("missing ha signature headers")
 	}
 	if err := timestampWithinHABounds(timestamp, time.Now().UTC(), 5*time.Minute); err != nil {
@@ -516,10 +753,22 @@ func (s *Service) AuthenticatePeerRequest(r *http.Request) error {
 	}
 	pub := s.peerPublicKeys[nodeID]
 	if pub == nil {
-		if len(s.peerPublicKeys) == 0 {
-			return nil
-		}
 		return fmt.Errorf("unknown peer public key for node %s", nodeID)
+	}
+	// V2: prefer the body-bound signature when the peer sent it. The body hash
+	// is recomputed from the actual body (never trusted from the header), so
+	// the signature fails if the body was altered in transit.
+	if v2 := strings.TrimSpace(r.Header.Get(haHeaderSignatureV2)); v2 != "" {
+		bodyHash, err := requestBodySHA256Hex(r)
+		if err != nil {
+			return err
+		}
+		return verifyHACanonicalRequest(pub, requestCanonicalPayloadV2(r, nodeID, timestamp, bodyHash), v2)
+	}
+	// Backward compatibility: a V1 signature covers only method+path+query.
+	// Accept it during rollout, then reject once V2 is enforced.
+	if s.requireSignatureV2.Load() {
+		return fmt.Errorf("ha signature v2 required")
 	}
 	return verifyHACanonicalRequest(pub, requestCanonicalPayload(r, nodeID, timestamp), signature)
 }
@@ -532,6 +781,9 @@ func (s *Service) listPeerStates() []*PeerRuntimeState {
 	defer s.mu.RUnlock()
 	out := make([]*PeerRuntimeState, 0, len(s.peers))
 	for _, peer := range s.peers {
+		if peer == nil {
+			continue
+		}
 		cp := *peer
 		out = append(out, &cp)
 	}
@@ -719,12 +971,14 @@ type gossipRecordCounter interface {
 
 func adminSyncCategorySpecs() []adminSyncCategorySpec {
 	return []adminSyncCategorySpec{
-		{Key: "routing", Label: "Hub Routing", EntityTypes: map[string]struct{}{EntityHubDomainRoute: {}, EntityHubInstance: {}, EntityHubUserLink: {}}},
+		{Key: "routing", Label: "Hub Routing", EntityTypes: map[string]struct{}{EntityHubDomainRoute: {}, EntityHubInstance: {}, EntityHubUserLink: {}, EntityInvitationCodeRoute: {}}},
 		{Key: "system", Label: "System Settings", EntityTypes: map[string]struct{}{EntitySystemSetting: {}, EntityBlockedEmail: {}, EntityBlockedIP: {}}},
 		{Key: "gossip", Label: "Gossip Wall", EntityTypes: map[string]struct{}{EntityGossipSnapshot: {}}},
 		{Key: "skillhub", Label: "Skill Library", EntityTypes: map[string]struct{}{EntitySkillHubSnapshot: {}}},
+		{Key: "latex_templates", Label: "LaTeX Templates", EntityTypes: map[string]struct{}{EntityLatexTemplateSnapshot: {}}},
 		{Key: "skillmarket", Label: "Skill Market", EntityTypes: map[string]struct{}{EntitySkillMarketSnapshot: {}, EntityPetStoreSnapshot: {}, EntityPetStoreMetrics: {}}},
 		{Key: "compute_market", Label: "Compute Market", EntityTypes: map[string]struct{}{EntityLLMCardType: {}, EntityLLMTenantAuth: {}, EntityLLMCardOrder: {}, EntityLLMNodeBinding: {}}},
+		{Key: "token_bank", Label: "Token Bank Ledger", EntityTypes: map[string]struct{}{EntityTokenBankLedgerBatch: {}, EntityTokenBankPriceBook: {}}},
 		{Key: "news", Label: "News", EntityTypes: map[string]struct{}{EntityNewsArticle: {}}},
 		{Key: "notifications", Label: "Notifications", EntityTypes: map[string]struct{}{EntityNotification: {}}},
 	}
@@ -814,6 +1068,11 @@ func (s *Service) localSyncRecordCounts(ctx context.Context) map[string]int64 {
 			counts["skillhub"] += counter.CountSnapshotRecords()
 		} else if snap, err := s.skillStore.DumpSnapshot(); err == nil {
 			counts["skillhub"] += int64(len(snap.Skills))
+		}
+	}
+	if s.latexTemplateRecordCounter != nil {
+		if count, err := s.latexTemplateRecordCounter(ctx); err == nil {
+			counts["latex_templates"] += count
 		}
 	}
 	if s.skillMarket != nil {
@@ -1098,6 +1357,22 @@ func (s *Service) MaxOpSeq(ctx context.Context) (int64, error) {
 	return s.ops.GetMaxSeq(ctx)
 }
 
+// MinOpSeq returns the oldest seq still present in the local op log, or 0 when
+// the store cannot report it. Pull responses expose it so peers can detect
+// that their cursor has fallen below the pruned window.
+func (s *Service) MinOpSeq(ctx context.Context) (int64, error) {
+	if s == nil || s.ops == nil {
+		return 0, errors.New("ha sync store not configured")
+	}
+	repo, ok := s.ops.(interface {
+		GetMinSeq(context.Context) (int64, error)
+	})
+	if !ok {
+		return 0, nil
+	}
+	return repo.GetMinSeq(ctx)
+}
+
 func (s *Service) HasEntityVersion(ctx context.Context, entityType, entityID string) (bool, error) {
 	if s == nil || s.versions == nil {
 		return false, nil
@@ -1296,10 +1571,9 @@ func (s *Service) enqueuePushOp(peer *PeerRuntimeState, op *store.HASyncOp) {
 	if !s.replacePendingPushOpLocked(nodeID, op) {
 		s.pushPending[nodeID] = append(s.pushPending[nodeID], op)
 	}
-	deferred := false
-	if len(s.pushPending[nodeID]) > maxPendingPushOpsPerPeer {
-		s.pushPending[nodeID] = append([]*store.HASyncOp(nil), s.pushPending[nodeID][len(s.pushPending[nodeID])-maxPendingPushOpsPerPeer:]...)
-		deferred = true
+	trimmed, deferred := trimPendingPushLocked(s.pushPending[nodeID], maxPendingPushOpsPerPeer, maxPendingPushBytesPerPeer)
+	if trimmed != nil {
+		s.pushPending[nodeID] = trimmed
 	}
 	if s.pushRunning[nodeID] {
 		s.pushMu.Unlock()
@@ -1314,6 +1588,65 @@ func (s *Service) enqueuePushOp(peer *PeerRuntimeState, op *store.HASyncOp) {
 		s.markPeerPushDeferred(nodeID, "push queue trimmed; waiting for pull sync")
 	}
 	go s.runPeerPushQueue(*peer)
+}
+
+// pendingPushOpBytes approximates how many bytes a queued op retains. Payloads
+// dominate the marshalled size and a single one can reach several MB, so
+// len(PayloadJSON) is a cheap and safe proxy that avoids a json.Marshal on
+// every enqueue.
+func pendingPushOpBytes(op *store.HASyncOp) int {
+	if op == nil {
+		return 0
+	}
+	return len(op.PayloadJSON) + pendingPushOpFramingBytes
+}
+
+func pendingPushOpsBytes(ops []*store.HASyncOp) int {
+	total := 0
+	for _, op := range ops {
+		total += pendingPushOpBytes(op)
+	}
+	return total
+}
+
+// trimPendingPushLocked enforces both the op-count and the retained-bytes budget
+// of a per-peer push queue. It keeps the NEWEST ops and drops the oldest
+// overflow, matching the op-count behaviour this function replaced.
+// Dropping from the queue never loses data: the queue is only a latency
+// accelerator, and the authoritative path is the peer's cursor-based pull, which
+// reads the ops straight out of ha_sync_ops.
+// It always keeps at least the newest op even when that single op exceeds the
+// byte budget on its own: pushOpsToPeer has an explicit signed-body guard that
+// drops such an op and requeues the rest, so the queue can still make progress.
+// A nil result means "nothing to change"; otherwise the returned slice is a
+// fresh copy.
+func trimPendingPushLocked(pending []*store.HASyncOp, maxOps, maxBytes int) ([]*store.HASyncOp, bool) {
+	if len(pending) == 0 || (maxOps <= 0 && maxBytes <= 0) {
+		return nil, false
+	}
+	start := 0
+	if maxOps > 0 && len(pending) > maxOps {
+		start = len(pending) - maxOps
+	}
+	if maxBytes > 0 {
+		used := 0
+		cut := start
+		for i := len(pending) - 1; i >= start; i-- {
+			used += pendingPushOpBytes(pending[i])
+			cut = i
+			if used > maxBytes && i < len(pending)-1 {
+				cut = i + 1
+				break
+			}
+		}
+		if cut > start {
+			start = cut
+		}
+	}
+	if start == 0 {
+		return nil, false
+	}
+	return append([]*store.HASyncOp(nil), pending[start:]...), true
 }
 
 func (s *Service) replacePendingPushOpLocked(nodeID string, op *store.HASyncOp) bool {
@@ -1358,8 +1691,8 @@ func (s *Service) runPeerPushQueue(peer PeerRuntimeState) {
 		timer.Stop()
 	}
 	for {
-		ops := s.takePeerPushBatch(peer.NodeID, 2000)
-		if len(ops) == 0 {
+		ops, ok := s.takePeerPushBatchBySize(peer.NodeID, haMaxPushBodyBudget)
+		if !ok || len(ops) == 0 {
 			return
 		}
 		if !s.pushOpsToPeer(&peer, ops) {
@@ -1404,6 +1737,44 @@ func (s *Service) takePeerPushBatch(nodeID string, limit int) []*store.HASyncOp 
 	return out
 }
 
+func (s *Service) takePeerPushBatchBySize(nodeID string, maxBytes int) ([]*store.HASyncOp, bool) {
+	if s == nil {
+		return nil, false
+	}
+	s.pushMu.Lock()
+	defer s.pushMu.Unlock()
+	pending := s.pushPending[nodeID]
+	if len(pending) == 0 {
+		if s.pushRunning != nil {
+			delete(s.pushRunning, nodeID)
+		}
+		return nil, false
+	}
+	if maxBytes <= 0 {
+		maxBytes = haMaxPushBodyBudget
+	}
+	out := make([]*store.HASyncOp, 0, len(pending))
+	used := 0
+	for i, op := range pending {
+		size := 0
+		if raw, err := json.Marshal(op); err == nil {
+			size = len(raw)
+		}
+		if i > 0 && used+size > maxBytes {
+			break
+		}
+		out = append(out, op)
+		used += size
+	}
+	taken := len(out)
+	if taken == len(pending) {
+		delete(s.pushPending, nodeID)
+	} else {
+		s.pushPending[nodeID] = append([]*store.HASyncOp(nil), pending[taken:]...)
+	}
+	return out, true
+}
+
 func (s *Service) pushOpsToPeer(peer *PeerRuntimeState, ops []*store.HASyncOp) bool {
 	if s == nil || peer == nil || len(ops) == 0 {
 		return false
@@ -1421,6 +1792,16 @@ func (s *Service) pushOpsToPeer(peer *PeerRuntimeState, ops []*store.HASyncOp) b
 	payload, err := json.Marshal(map[string]any{"ops": ops})
 	if err != nil {
 		return false
+	}
+	if int64(len(payload)) > haMaxSignedBodyBytes {
+		// A batch over the signed-body ceiling would be rejected on every
+		// retry and loop forever; the byte-budgeted take normally prevents
+		// this, so a breach means a single poison op. Drop the oldest op and
+		// requeue the rest; returning true keeps the caller from requeueing
+		// the poison op again.
+		log.Printf("[hubcenter][ha] push batch to %s exceeds signed body limit (%d > %d bytes); dropping oldest op %q", peer.NodeID, len(payload), int64(haMaxSignedBodyBytes), strings.TrimSpace(ops[0].OpID))
+		s.deferPeerPushBatch(peer.NodeID, ops[1:], "dropped oversized op from push batch")
+		return true
 	}
 	url := strings.TrimRight(peer.BaseURL, "/") + "/api/internal/ha/ops/apply"
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
@@ -1463,8 +1844,11 @@ func (s *Service) deferPeerPushBatch(nodeID string, ops []*store.HASyncOp, msg s
 	}
 	combined := append([]*store.HASyncOp(nil), ops...)
 	combined = append(combined, s.pushPending[nodeID]...)
-	if len(combined) > maxPendingPushOpsPerPeer {
-		combined = combined[:maxPendingPushOpsPerPeer]
+	// Same trim as the enqueue path. Dropped ops are not lost: the peer recovers
+	// them through its cursor-based pull, which is why the caller also raises
+	// "push failed; waiting for pull sync".
+	if trimmed, _ := trimPendingPushLocked(combined, maxPendingPushOpsPerPeer, maxPendingPushBytesPerPeer); trimmed != nil {
+		combined = trimmed
 	}
 	s.pushPending[nodeID] = combined
 	if s.pushRunning != nil {
@@ -1570,13 +1954,23 @@ func (s *Service) applyRemoteOp(ctx context.Context, op *store.HASyncOp, rebuild
 	if err != nil {
 		return false, err
 	}
+	if current != nil && !shouldApplyRemoteVersion(current, op) {
+		// Obsolete or duplicate: a newer (or deterministically winning) state
+		// for this entity is already local. Do NOT record the op in the local
+		// op log. Older code inserted it here, which let pruned history
+		// re-enter the log forever: after the log and applied-marker prunes
+		// dropped the op, peers holding old history re-sent it, it was
+		// re-inserted at the current tail seq, and the time prune could never
+		// catch up (multi-GB ha_sync_ops). Pruning always retains the newest
+		// op per entity, so the local log still serves the latest state of
+		// every entity to pullers; skipping the insert only stops the obsolete
+		// copy from bloating the tail of the log.
+		return false, s.markApplied(ctx, op)
+	}
 	if recorder, ok := s.ops.(remoteOpRecorder); ok {
 		if err := recorder.AppendRemoteIfMissing(ctx, op); err != nil {
 			return false, err
 		}
-	}
-	if current != nil && !shouldApplyRemoteVersion(current, op) {
-		return false, s.markApplied(ctx, op)
 	}
 	if err := s.applyEntityOp(ctx, op); err != nil {
 		return false, err
@@ -1592,7 +1986,7 @@ func (s *Service) applyRemoteOp(ctx context.Context, op *store.HASyncOp, rebuild
 
 func entityAffectsRouteSnapshot(entityType string) bool {
 	switch entityType {
-	case EntityBlockedEmail, EntityBlockedIP, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink:
+	case EntityBlockedEmail, EntityBlockedIP, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityInvitationCodeRoute:
 		return true
 	default:
 		return false
@@ -1639,7 +2033,7 @@ func validateRemoteOp(op *store.HASyncOp) error {
 
 func isSupportedEntityType(entityType string) bool {
 	switch entityType {
-	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntitySkillMarketSnapshot, EntityPetStoreSnapshot, EntityPetStoreMetrics, EntityLLMCardType, EntityLLMTenantAuth, EntityLLMCardOrder, EntityLLMNodeBinding, EntityNotification:
+	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityInvitationCodeRoute, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntityLatexTemplateSnapshot, EntitySkillMarketSnapshot, EntityPetStoreSnapshot, EntityPetStoreMetrics, EntityLLMCardType, EntityLLMTenantAuth, EntityLLMCardOrder, EntityLLMNodeBinding, EntityLLMUsageBatch, EntityTokenBankLedgerBatch, EntityTokenBankPriceBook, EntityNotification:
 		return true
 	default:
 		return false
@@ -1651,7 +2045,7 @@ func isSupportedEntityOpType(entityType, opType string) bool {
 		return true
 	}
 	switch entityType {
-	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityLLMCardType, EntityLLMCardOrder, EntityNotification:
+	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityInvitationCodeRoute, EntityLLMCardType, EntityLLMCardOrder, EntityNotification:
 		return opType == OpDelete
 	default:
 		return false
@@ -1748,6 +2142,14 @@ func remoteOpPayloadIdentity(op *store.HASyncOp) (string, string, error) {
 			return "", "", err
 		}
 		return "id", payload.ID, nil
+	case EntityInvitationCodeRoute:
+		var payload struct {
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
+			return "", "", err
+		}
+		return "code", strings.ToUpper(strings.TrimSpace(payload.Code)), nil
 	case EntityLLMNodeBinding:
 		var payload store.LLMNodeBinding
 		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
@@ -1814,7 +2216,7 @@ func remoteOpDeletePayloadIdentity(op *store.HASyncOp) (string, string, error) {
 			return "", "", err
 		}
 		return "ip", payload.IP, nil
-	case EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityLLMCardType, EntityNotification:
+	case EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityLLMCardType, EntityNotification, EntityTokenBankPriceBook:
 		var payload struct {
 			ID string `json:"id"`
 		}
@@ -1822,6 +2224,14 @@ func remoteOpDeletePayloadIdentity(op *store.HASyncOp) (string, string, error) {
 			return "", "", err
 		}
 		return "id", payload.ID, nil
+	case EntityInvitationCodeRoute:
+		var payload struct {
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
+			return "", "", err
+		}
+		return "code", strings.ToUpper(strings.TrimSpace(payload.Code)), nil
 	case EntityLLMCardOrder:
 		var payload struct {
 			OrderNo string `json:"order_no"`
@@ -1876,12 +2286,16 @@ func (s *Service) applyEntityOp(ctx context.Context, op *store.HASyncOp) error {
 		return s.applyHubDomainRouteOp(ctx, op)
 	case EntityHubUserLink:
 		return s.applyHubUserLinkOp(ctx, op)
+	case EntityInvitationCodeRoute:
+		return s.applyInvitationCodeRouteOp(ctx, op)
 	case EntitySystemSetting:
 		return s.applySystemSettingOp(ctx, op)
 	case EntityGossipSnapshot:
 		return s.applyGossipSnapshotOp(ctx, op)
 	case EntitySkillHubSnapshot:
 		return s.applySkillHubSnapshotOp(ctx, op)
+	case EntityLatexTemplateSnapshot:
+		return s.applyLatexTemplateSnapshotOp(ctx, op)
 	case EntitySkillMarketSnapshot:
 		return s.applySkillMarketSnapshotOp(ctx, op)
 	case EntityPetStoreSnapshot:
@@ -1896,6 +2310,12 @@ func (s *Service) applyEntityOp(ctx context.Context, op *store.HASyncOp) error {
 		return s.applyLLMCardOrderOp(ctx, op)
 	case EntityLLMNodeBinding:
 		return s.applyLLMNodeBindingOp(ctx, op)
+	case EntityLLMUsageBatch:
+		return s.applyLLMUsageBatchOp(ctx, op)
+	case EntityTokenBankLedgerBatch:
+		return s.applyTokenBankLedgerBatchOp(ctx, op)
+	case EntityTokenBankPriceBook:
+		return s.applyTokenBankPriceBookOp(ctx, op)
 	case EntityNotification:
 		return s.applyNotificationOp(ctx, op)
 	default:
@@ -2143,6 +2563,40 @@ func (s *Service) applySystemSettingOp(ctx context.Context, op *store.HASyncOp) 
 	if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
 		return err
 	}
+	if strings.TrimSpace(payload.Key) == LLMProviderMonitorLeaseKey {
+		if localRaw, err := s.settings.Get(ctx, LLMProviderMonitorLeaseKey); err == nil && llmProviderMonitorLeaseFence(localRaw, payload.ValueJSON) {
+			// A lagging replicated lease write must not demote a fresher
+			// local lease (split-brain fencing for the monitor election).
+			return nil
+		}
+	}
+	if officialClassHeadSettingKey(payload.Key) {
+		if localRaw, err := s.settings.Get(ctx, payload.Key); err == nil && officialClassHeadFence(localRaw, payload.ValueJSON) {
+			// The classifier training store is rewritten on every training
+			// sample, so a burst of replicas can arrive out of order and
+			// overwrite a peer's fresher store with an older one. Keep the
+			// local copy when the incoming store is not newer.
+			return nil
+		}
+	}
+	if strings.HasPrefix(strings.TrimSpace(payload.Key), llmservice.MemberHealthSettingPrefix) {
+		if localRaw, err := s.settings.Get(ctx, payload.Key); err == nil && !llmservice.MemberHealthIncomingNewer(localRaw, payload.ValueJSON) {
+			// Each node appends its own health snapshot. A delayed replica of
+			// an older revision must not wipe a newer day of counts.
+			return nil
+		}
+	}
+	if strings.TrimSpace(payload.Key) == llmservice.RegistrySettingKey {
+		if localRaw, err := s.settings.Get(ctx, payload.Key); err == nil && llmRegistryFence(localRaw, payload.ValueJSON) {
+			// The registry is one blob rewritten whole by every mutation
+			// (admin CRUD, token-bank publish, autopause). A lagging replica
+			// of an older snapshot must not roll a fresher local registry
+			// backwards and silently drop its changes (R2-d). Skipping keeps
+			// the pull cursor moving; no cache invalidation is needed since
+			// nothing changed locally.
+			return nil
+		}
+	}
 	if err := s.settings.Set(ctx, payload.Key, payload.ValueJSON); err != nil {
 		return err
 	}
@@ -2175,6 +2629,13 @@ func (s *Service) applySkillHubSnapshotOp(ctx context.Context, op *store.HASyncO
 		return err
 	}
 	return s.skillStore.LoadSnapshot(&snap)
+}
+
+func (s *Service) applyLatexTemplateSnapshotOp(ctx context.Context, op *store.HASyncOp) error {
+	if s == nil || s.latexTemplateSnapshotApplier == nil || op.OpType != OpUpsert {
+		return nil
+	}
+	return s.latexTemplateSnapshotApplier(ctx, json.RawMessage(op.PayloadJSON))
 }
 
 func (s *Service) applySkillMarketSnapshotOp(ctx context.Context, op *store.HASyncOp) error {
@@ -2308,7 +2769,13 @@ func (s *Service) applyLLMNodeBindingOp(ctx context.Context, op *store.HASyncOp)
 	if llmBindingEntityID(&item) != op.EntityID {
 		return fmt.Errorf("llm node binding identity mismatch")
 	}
-	return s.llmBindings.Upsert(ctx, &item)
+	if err := s.llmBindings.Upsert(ctx, &item); err != nil {
+		return err
+	}
+	if s.bindingInvalidate != nil {
+		s.bindingInvalidate(item.HubID, item.TenantID)
+	}
+	return nil
 }
 
 func (s *Service) applyNotificationOp(ctx context.Context, op *store.HASyncOp) error {
@@ -2544,6 +3011,12 @@ func normalizeRoutingTenantIDs(item any) {
 		if v != nil {
 			v.TenantID = normalizeRoutingTenantID(v.TenantID)
 		}
+	case *store.InvitationCodeRoute:
+		if v != nil {
+			v.Code = strings.ToUpper(strings.TrimSpace(v.Code))
+			v.TenantID = normalizeRoutingTenantID(v.TenantID)
+			v.UsedByEmail = strings.TrimSpace(strings.ToLower(v.UsedByEmail))
+		}
 	}
 }
 
@@ -2553,6 +3026,62 @@ func normalizeRoutingTenantID(tenantID string) string {
 		return ""
 	}
 	return tenantID
+}
+
+func (s *Service) AppendInvitationCodeRoute(ctx context.Context, item *store.InvitationCodeRoute) {
+	if s == nil || item == nil {
+		return
+	}
+	route := *item
+	normalizeRoutingTenantIDs(&route)
+	if route.Code == "" {
+		return
+	}
+	// Version the op at append time. Reusing the route's created_at would make
+	// a later "mark used" update look older than the original insert.
+	if err := s.AppendUpsert(ctx, EntityInvitationCodeRoute, route.Code, &route, time.Now().UTC()); err != nil {
+		log.Printf("[hubcenter][ha] append invitation code route: %v", err)
+		s.recordFailure(ctx, "ha_sync", "append_invitation_code_route_failed", err.Error(), route.Code, map[string]any{"tenant_id": route.TenantID})
+	}
+}
+
+func (s *Service) DeleteInvitationCodeRoute(ctx context.Context, code string) {
+	if s == nil {
+		return
+	}
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if code == "" {
+		return
+	}
+	if err := s.AppendDelete(ctx, EntityInvitationCodeRoute, code, map[string]string{"code": code}, time.Now().UTC()); err != nil {
+		log.Printf("[hubcenter][ha] delete invitation code route: %v", err)
+		s.recordFailure(ctx, "ha_sync", "delete_invitation_code_route_failed", err.Error(), code, nil)
+	}
+}
+
+func (s *Service) applyInvitationCodeRouteOp(ctx context.Context, op *store.HASyncOp) error {
+	if s == nil || s.invitationRoutes == nil || op == nil {
+		return nil
+	}
+	switch op.OpType {
+	case OpUpsert:
+		var item store.InvitationCodeRoute
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &item); err != nil {
+			return err
+		}
+		normalizeRoutingTenantIDs(&item)
+		return s.invitationRoutes.Save(ctx, &item)
+	case OpDelete:
+		var payload struct {
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
+			return err
+		}
+		return s.invitationRoutes.DeleteByCode(ctx, payload.Code)
+	default:
+		return fmt.Errorf("unsupported invitation code route op: %s", op.OpType)
+	}
 }
 
 func (s *Service) DeleteHubDomainRoute(ctx context.Context, routeID string) {
@@ -2649,6 +3178,40 @@ func (s *Service) ForceBroadcastSkillHubSnapshot(ctx context.Context) (skillCoun
 	// Re-arm normal-path hash so subsequent unchanged emitSync stays quiet.
 	s.rememberSnapshotHash(EntitySkillHubSnapshot, "skillhub", snap)
 	return len(snap.Skills), nil
+}
+
+func (s *Service) AppendLatexTemplateSnapshot(ctx context.Context, snap any) {
+	if s == nil || snap == nil {
+		return
+	}
+	if err := s.appendSnapshotUpsertIfChanged(ctx, EntityLatexTemplateSnapshot, "latex_templates", snap); err != nil {
+		log.Printf("[hubcenter][ha] append latex template snapshot: %v", err)
+	}
+}
+
+// ForceBroadcastLatexTemplateSnapshot re-appends the current catalogue even when
+// the payload hash is unchanged, so a peer that pruned history can catch up.
+// A catalogue with no packages, deletes, or customised categories is refused.
+func (s *Service) ForceBroadcastLatexTemplateSnapshot(ctx context.Context) (int, error) {
+	if s == nil || s.latexTemplateSnapshotDumper == nil {
+		return 0, fmt.Errorf("latex template catalog not attached")
+	}
+	if s.ops == nil || s.versions == nil {
+		return 0, fmt.Errorf("ha sync store not configured")
+	}
+	snap, count, err := s.latexTemplateSnapshotDumper(ctx)
+	if err != nil {
+		return 0, err
+	}
+	if count == 0 {
+		return 0, fmt.Errorf("refusing empty latex template force broadcast")
+	}
+	s.clearSnapshotHash(EntityLatexTemplateSnapshot, "latex_templates")
+	if err := s.AppendUpsertForced(ctx, EntityLatexTemplateSnapshot, "latex_templates", snap, time.Now().UTC()); err != nil {
+		return 0, err
+	}
+	s.rememberSnapshotHash(EntityLatexTemplateSnapshot, "latex_templates", snap)
+	return count, nil
 }
 
 func (s *Service) AppendSkillMarketSnapshot(ctx context.Context, snap *skillmarket.Snapshot) {
@@ -2752,25 +3315,38 @@ func (s *Service) rememberSnapshotHash(entityType, entityID string, payload any)
 	s.snapshotMu.Unlock()
 }
 
-func (s *Service) SyncHubHeartbeat(ctx context.Context, hubID string) {
-	if s == nil || s.hubs == nil || s.heartbeatSync == nil || strings.TrimSpace(hubID) == "" {
+// SyncHubHeartbeat replicates a hub heartbeat to peers when the hub's
+// last_seen_at advanced past the sync interval since the last synced value.
+// The last-synced watermark is cached in memory; the durable store is read
+// only on cache miss (process start) and written on every actual sync.
+func (s *Service) SyncHubHeartbeat(ctx context.Context, hub *store.HubInstance) {
+	if s == nil || s.hubs == nil || s.heartbeatSync == nil || hub == nil || strings.TrimSpace(hub.ID) == "" {
 		return
 	}
-	hub, err := s.hubs.GetByID(ctx, hubID)
-	if err != nil || hub == nil || hub.LastSeenAt == nil {
+	hubID := strings.TrimSpace(hub.ID)
+	if hub.LastSeenAt == nil {
 		return
 	}
-	state, err := s.heartbeatSync.Get(ctx, hubID)
-	if err != nil {
-		return
-	}
-	if state != nil && state.LastSyncedSeenAt != nil {
-		if !hub.LastSeenAt.After(state.LastSyncedSeenAt.Add(s.heartbeatSyncMinInterval)) {
+	if last, ok := s.heartbeatLastSynced.Load(hubID); ok {
+		if !hub.LastSeenAt.After(last.(time.Time).Add(s.heartbeatSyncMinInterval)) {
 			return
+		}
+	} else {
+		state, err := s.heartbeatSync.Get(ctx, hubID)
+		if err != nil {
+			return
+		}
+		if state != nil && state.LastSyncedSeenAt != nil {
+			s.heartbeatLastSynced.Store(hubID, *state.LastSyncedSeenAt)
+			if !hub.LastSeenAt.After(state.LastSyncedSeenAt.Add(s.heartbeatSyncMinInterval)) {
+				return
+			}
 		}
 	}
 	s.AppendHubInstance(ctx, hub)
-	_ = s.heartbeatSync.Upsert(ctx, &store.HAHeartbeatSyncState{HubID: hubID, LastSyncedSeenAt: hub.LastSeenAt})
+	if err := s.heartbeatSync.Upsert(ctx, &store.HAHeartbeatSyncState{HubID: hubID, LastSyncedSeenAt: hub.LastSeenAt}); err == nil {
+		s.heartbeatLastSynced.Store(hubID, *hub.LastSeenAt)
+	}
 }
 func computeQuality(totalNodes int, reachablePeers int, maxLagSeconds int64, maxBacklog int64, recentSyncError bool) (int, string, bool) {
 	score := 100

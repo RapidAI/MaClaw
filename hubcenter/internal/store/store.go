@@ -331,6 +331,7 @@ type BlockedIPRepository interface {
 
 type InvitationCodeRouteRepository interface {
 	Upsert(ctx context.Context, code string, hubID string, tenantID string) error
+	Save(ctx context.Context, item *InvitationCodeRoute) error
 	GetByCode(ctx context.Context, code string) (*InvitationCodeRoute, error)
 	DeleteByCode(ctx context.Context, code string) error
 	DeleteByHubID(ctx context.Context, hubID string) error

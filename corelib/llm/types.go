@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"regexp"
 	"strings"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 // Shared LLM types for both stream and non-stream responses
@@ -72,64 +75,91 @@ type Usage struct {
 
 	CachedInputTokens int `json:"cached_input_tokens,omitempty"`
 	CacheWriteTokens  int `json:"cache_write_tokens,omitempty"`
+
+	// CreditsDeducted is the credits the Maclaw hub actually removed from the
+	// caller's grant for this request. Nil means the server did not report a
+	// debit (another provider, or settlement did not finish). A pointer to 0
+	// is a settled free request, not a missing field.
+	CreditsDeducted *float64 `json:"credits_deducted,omitempty"`
+
+	// InputReported / OutputReported are true when the provider payload
+	// contained that directional leg (including an explicit zero). Hosts must
+	// not locally estimate a reported zero; that would diverge from HubCenter.
+	InputReported  bool `json:"-"`
+	OutputReported bool `json:"-"`
 }
 
 func (u *Usage) UnmarshalJSON(data []byte) error {
-	type usageAlias Usage
-	var raw struct {
-		usageAlias
-		CacheReadInputTokens  int            `json:"cache_read_input_tokens"`
-		CacheWriteInputTokens int            `json:"cache_write_input_tokens"`
-		CacheCreationTokens   int            `json:"cache_creation_input_tokens"`
-		PromptTokensDetails   map[string]int `json:"prompt_tokens_details"`
-		InputTokensDetails    map[string]int `json:"input_tokens_details"`
-	}
-	if err := json.Unmarshal(data, &raw); err != nil {
+	var payload map[string]any
+	if err := json.Unmarshal(data, &payload); err != nil {
 		return err
 	}
-	*u = Usage(raw.usageAlias)
-	if u.InputTokens == 0 && u.PromptTokens > 0 {
-		u.InputTokens = u.PromptTokens
-	}
-	if u.PromptTokens == 0 && u.InputTokens > 0 {
-		u.PromptTokens = u.InputTokens
-	}
-	if u.OutputTokens == 0 && u.CompletionTokens > 0 {
-		u.OutputTokens = u.CompletionTokens
-	}
-	if u.CompletionTokens == 0 && u.OutputTokens > 0 {
-		u.CompletionTokens = u.OutputTokens
-	}
-	if u.TotalTokens == 0 {
-		u.TotalTokens = u.InputTokens + u.OutputTokens
-	}
-	if u.CachedInputTokens == 0 {
-		u.CachedInputTokens = firstPositiveUsageValue(
-			raw.CacheReadInputTokens,
-			raw.PromptTokensDetails["cached_tokens"],
-			raw.InputTokensDetails["cached_tokens"],
-		)
-	}
-	if u.CacheWriteTokens == 0 {
-		u.CacheWriteTokens = firstPositiveUsageValue(
-			raw.CacheWriteInputTokens,
-			raw.CacheCreationTokens,
-			raw.PromptTokensDetails["cache_write_tokens"],
-			raw.PromptTokensDetails["cache_creation_input_tokens"],
-			raw.InputTokensDetails["cache_write_tokens"],
-			raw.InputTokensDetails["cache_creation_input_tokens"],
-		)
+	*u = usageFromFields(corelib.ParseLLMUsageFields(payload))
+	if raw, ok := payload["credits_deducted"]; ok {
+		if credits, ok := jsonCreditsDeducted(raw); ok {
+			u.CreditsDeducted = &credits
+		}
 	}
 	return nil
 }
 
-func firstPositiveUsageValue(values ...int) int {
-	for _, value := range values {
-		if value > 0 {
-			return value
+func jsonCreditsDeducted(raw any) (float64, bool) {
+	var credits float64
+	switch v := raw.(type) {
+	case float64:
+		credits = v
+	case json.Number:
+		parsed, err := v.Float64()
+		if err != nil {
+			return 0, false
 		}
+		credits = parsed
+	default:
+		return 0, false
 	}
-	return 0
+	if math.IsNaN(credits) || math.IsInf(credits, 0) || credits < 0 {
+		return 0, false
+	}
+	return credits, true
+}
+
+func usageFromFields(fields corelib.LLMUsageFields) Usage {
+	u := Usage{
+		PromptTokens:      int(fields.Input),
+		CompletionTokens:  int(fields.Output),
+		TotalTokens:       int(fields.Total),
+		InputTokens:       int(fields.Input),
+		OutputTokens:      int(fields.Output),
+		CachedInputTokens: int(fields.Cached),
+		CacheWriteTokens:  int(fields.Written),
+		InputReported:     fields.InputObserved,
+		OutputReported:    fields.OutputObserved,
+	}
+	if u.TotalTokens <= 0 {
+		u.TotalTokens = u.PromptTokens + u.CompletionTokens
+	}
+	return u
+}
+
+// usageFromPositiveCounts maps SDK typed counters onto the shared parser.
+// Typed OpenAI structs use 0 for both "missing" and "zero", so only positive
+// legs are passed through; explicit zeros must come from raw JSON instead.
+func usageFromPositiveCounts(prompt, completion, total int64) *Usage {
+	m := make(map[string]interface{}, 3)
+	if prompt > 0 {
+		m["prompt_tokens"] = prompt
+	}
+	if completion > 0 {
+		m["completion_tokens"] = completion
+	}
+	if total > 0 {
+		m["total_tokens"] = total
+	}
+	if len(m) == 0 {
+		return nil
+	}
+	u := usageFromFields(corelib.ParseLLMUsageFields(m))
+	return &u
 }
 
 type openAIWireResponse struct {
@@ -310,15 +340,8 @@ func projectOpenAIWireResponse(wire openAIWireResponse) *Response {
 				finishReason = "tool_calls"
 			}
 		}
-		if len(msg.ToolCalls) == 0 {
-			if contentCalls, malformed := ParseContentToolCallsDetailed(visibleContent); len(contentCalls) > 0 {
-				msg.ToolCalls = append(msg.ToolCalls, contentCalls...)
-				msg.Content = ""
-				finishReason = "tool_calls"
-			} else if malformed {
-				msg.Content = MalformedContentToolCallErrorMsg
-				finishReason = "stop"
-			}
+		if finish, changed := adoptLeakedToolCalls(&msg, visibleContent); changed {
+			finishReason = finish
 		}
 		finishReason, truncatedTools, truncatedToolArgs := filterStreamTruncatedToolCalls(&msg, finishReason)
 		result.Choices = append(result.Choices, Choice{
@@ -335,6 +358,9 @@ func ParseNonStreamOpenAIResponseBody(body []byte) (*Response, error) {
 	trimmed := bytes.TrimLeft(body, " \t\r\n")
 	if bytes.HasPrefix(trimmed, []byte("data:")) {
 		return ParseSSEToResponse(body)
+	}
+	if upstreamErr := upstreamModelErrorFromPayload(trimmed); upstreamErr != nil {
+		return nil, upstreamErr
 	}
 
 	var wire openAIWireResponse

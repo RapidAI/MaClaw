@@ -128,6 +128,12 @@ func (p *NudgePromoter) TryPromote(candidate tool.ToolSkillNudgeCandidate) (*Pro
 	if skillName == "" {
 		skillName = generatePromotedSkillName(candidate)
 	}
+	if err := validatePromotedSkillDirName(skillName); err != nil {
+		return nil, fmt.Errorf("invalid promoted skill name: %w", err)
+	}
+	if strings.TrimSpace(p.SkillsDir) == "" {
+		return nil, fmt.Errorf("skills directory is required for skill promotion")
+	}
 
 	log.Printf("[nudge-promoter] promoting candidate: name=%s sequence=%v evidence=%d rate=%.2f",
 		skillName, candidate.ToolSequence, candidate.Evidence, candidate.SuccessRate)
@@ -145,9 +151,17 @@ func (p *NudgePromoter) TryPromote(candidate tool.ToolSkillNudgeCandidate) (*Pro
 		return nil, fmt.Errorf("normalize generated skill YAML: %w", err)
 	}
 
-	// Step 3: Write to skill directory.
+	// Step 3: Write to a new skill directory. Never use MkdirAll on the
+	// candidate path: a duplicate name must not turn an auto-discovery attempt
+	// into an overwrite of an existing (possibly user-maintained) definition.
+	if err := os.MkdirAll(p.SkillsDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create skills directory: %w", err)
+	}
 	skillDir := filepath.Join(p.SkillsDir, skillName)
-	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+	if err := os.Mkdir(skillDir, 0o755); err != nil {
+		if os.IsExist(err) {
+			return nil, fmt.Errorf("refusing to overwrite existing skill directory %q", skillName)
+		}
 		return nil, fmt.Errorf("create skill dir: %w", err)
 	}
 
@@ -249,6 +263,32 @@ func (p *NudgePromoter) TryPromote(candidate tool.ToolSkillNudgeCandidate) (*Pro
 		SkillDir:    skillDir,
 		Explanation: fmt.Sprintf("auto-discovered from %d successful executions of [%s]", candidate.Evidence, strings.Join(candidate.ToolSequence, " → ")),
 	}, nil
+}
+
+var promotedSkillDirNameRE = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$`)
+
+// validatePromotedSkillDirName keeps an automatically discovered skill inside
+// SkillsDir and gives it a portable, collision-resistant directory identity.
+// SuggestedName originates from aggregated runtime data, so it is treated as
+// untrusted even though it is not directly entered by a user.
+func validatePromotedSkillDirName(name string) error {
+	if name == "" {
+		return fmt.Errorf("name is empty")
+	}
+	if name != strings.TrimSpace(name) {
+		return fmt.Errorf("name has leading or trailing whitespace")
+	}
+	if filepath.IsAbs(name) || filepath.VolumeName(name) != "" {
+		return fmt.Errorf("name must not be an absolute or volume-qualified path")
+	}
+	if name == "." || name == ".." || filepath.Base(name) != name || filepath.Clean(name) != name ||
+		strings.ContainsAny(name, `/\\`) {
+		return fmt.Errorf("name must be a single directory component")
+	}
+	if !promotedSkillDirNameRE.MatchString(name) {
+		return fmt.Errorf("name must use 1-80 ASCII letters, digits, hyphens, or underscores and start with a letter or digit")
+	}
+	return nil
 }
 
 // validateGeneratedSkillDefinition is the semantic admission gate for LLM
@@ -534,15 +574,25 @@ and produce the observed tool sequence as its steps.`,
 func generatePromotedSkillName(candidate tool.ToolSkillNudgeCandidate) string {
 	parts := make([]string, 0, 3)
 	if candidate.TaskType != "" {
-		parts = append(parts, sanitizeSkillNamePart(candidate.TaskType))
+		if taskType := sanitizeSkillNamePart(candidate.TaskType); taskType != "" {
+			parts = append(parts, taskType)
+		}
 	}
 	if len(candidate.ToolSequence) > 0 {
 		// Use first and last tool to create a descriptive name.
 		first := sanitizeSkillNamePart(candidate.ToolSequence[0])
 		last := sanitizeSkillNamePart(candidate.ToolSequence[len(candidate.ToolSequence)-1])
-		if first == last {
+		switch {
+		case first == "" && last == "":
+			// Nothing usable from this sequence; fall through to the stable
+			// auto-skill fallback below.
+		case first == last:
 			parts = append(parts, first)
-		} else {
+		case first == "":
+			parts = append(parts, last)
+		case last == "":
+			parts = append(parts, first)
+		default:
 			parts = append(parts, first+"-to-"+last)
 		}
 	}

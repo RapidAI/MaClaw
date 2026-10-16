@@ -367,6 +367,13 @@ done:
 // compactOneEntry asks the LLM to produce a minimal representation of a memory
 // entry for context injection. The result should be ≤50% of the original length.
 func (mc *Compressor) compactOneEntry(ctx context.Context, content string, cat Category) (string, error) {
+	return generateCompactForm(ctx, mc.llm, content, cat)
+}
+
+// generateCompactForm holds the shared compaction prompt used by both the
+// pipeline's backfillCompactForms pass and the async post-Save backfill
+// (Store.SetCompactFormGenerator), so the two paths never diverge.
+func generateCompactForm(ctx context.Context, llm LLMChatCaller, content string, cat Category) (string, error) {
 	select {
 	case <-ctx.Done():
 		return "", ctx.Err()
@@ -388,7 +395,7 @@ Bad: "服务器→api.rapidai.tech→OmniRoute→Docker; 模型→GLM-5.1; 端�
 
 	userPrompt := fmt.Sprintf("[%s] %s", cat, content)
 
-	resp, err := chatCallWithContext(ctx, mc.llm, []map[string]string{
+	resp, err := chatCallWithContext(ctx, llm, []map[string]string{
 		{"role": "system", "content": systemPrompt},
 		{"role": "user", "content": userPrompt},
 	})
@@ -396,6 +403,32 @@ Bad: "服务器→api.rapidai.tech→OmniRoute→Docker; 模型→GLM-5.1; 端�
 		return "", err
 	}
 	return strings.TrimSpace(resp), nil
+}
+
+// llmCompactFormGenerator adapts an LLMChatCaller to Store.CompactFormGenerator
+// for the async post-Save CompactForm backfill. It reuses generateCompactForm
+// so the prompt stays identical to the pipeline's compactOneEntry.
+type llmCompactFormGenerator struct {
+	llm LLMChatCaller
+}
+
+// NewLLMCompactFormGenerator builds a CompactFormGenerator backed by the given
+// LLM caller. It returns nil when llm is nil so hosts can pass their caller
+// unconditionally.
+func NewLLMCompactFormGenerator(llm LLMChatCaller) CompactFormGenerator {
+	if llm == nil {
+		return nil
+	}
+	return &llmCompactFormGenerator{llm: llm}
+}
+
+func (g *llmCompactFormGenerator) Generate(content string, cat Category) (string, error) {
+	if g.llm == nil || !g.llm.IsConfigured() {
+		return "", nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	return generateCompactForm(ctx, g.llm, content, cat)
 }
 
 // ---------------------------------------------------------------------------
@@ -456,28 +489,27 @@ func (mc *Compressor) dedup() int {
 }
 
 func isDuplicateLower(a, b Entry, ca, cb string) bool {
-	// Different non-empty owners are isolated; shared memories can dedup with any owner.
-	if a.OwnerID != "" && b.OwnerID != "" && a.OwnerID != b.OwnerID {
+	// Inactive rows must not delete a live copy. Owners match exactly, so a
+	// shared entry does not absorb a named owner's memory.
+	if !a.IsActive() || !b.IsActive() || !memoryOwnersEqual(a.OwnerID, b.OwnerID) {
+		return false
+	}
+	if MapToCanonical(a.Category) != MapToCanonical(b.Category) {
 		return false
 	}
 
 	if ca == cb {
 		return true
 	}
-	// Use canonical category mapping so Claude-style categories dedup against
-	// their legacy equivalents (e.g. "project" -> "project_knowledge",
-	// "feedback" -> "instruction", "user" -> "user_fact").
-	if MapToCanonical(a.Category) == MapToCanonical(b.Category) {
-		runeA, runeB := len([]rune(ca)), len([]rune(cb))
-		shorter := runeA
-		if runeB < shorter {
-			shorter = runeB
-		}
-		if shorter >= minSubstringLen {
-			if strings.Contains(ca, cb) || strings.Contains(cb, ca) {
-				return true
-			}
-		}
+	// Claude-style categories already matched above, so a contained body is the
+	// same fact written at two lengths.
+	runeA, runeB := len([]rune(ca)), len([]rune(cb))
+	shorter := runeA
+	if runeB < shorter {
+		shorter = runeB
+	}
+	if shorter >= minSubstringLen && (strings.Contains(ca, cb) || strings.Contains(cb, ca)) {
+		return true
 	}
 	return false
 }
@@ -526,7 +558,10 @@ func (mc *Compressor) mergeSemanticDuplicates(ctx context.Context) (int, error) 
 	mc.store.mu.RLock()
 	groupSet := make(map[catOwnerKey]bool)
 	for _, e := range mc.store.entries {
-		groupSet[catOwnerKey{Category: MapToCanonical(e.Category), OwnerID: e.OwnerID}] = true
+		if !e.IsActive() {
+			continue
+		}
+		groupSet[catOwnerKey{Category: MapToCanonical(e.Category), OwnerID: strings.TrimSpace(e.OwnerID)}] = true
 	}
 	mc.store.mu.RUnlock()
 
@@ -538,7 +573,10 @@ func (mc *Compressor) mergeSemanticDuplicates(ctx context.Context) (int, error) 
 		mc.store.mu.RLock()
 		var entries []Entry
 		for _, e := range mc.store.entries {
-			if MapToCanonical(e.Category) == key.Category && e.OwnerID == key.OwnerID && !e.Pinned {
+			// Durable task-management entries are 1:1 task identities, not
+			// compressible facts: merging them unions dozens of task-path tags
+			// into one entry and erases every other task from the sidebar.
+			if e.IsActive() && MapToCanonical(e.Category) == key.Category && strings.TrimSpace(e.OwnerID) == key.OwnerID && !e.Pinned && !IsDurableTaskManagementEntry(&e) {
 				entries = append(entries, e)
 			}
 		}
@@ -912,7 +950,7 @@ func (mc *Compressor) RunGC(ctx context.Context, ownerID ...string) (*GCResult, 
 	var evictable []Entry
 	for _, e := range snapshot {
 		// 多租户隔离：只处理属于该用户的记忆（或共享记忆）
-		if filterOwner != "" && e.OwnerID != "" && e.OwnerID != filterOwner {
+		if !namedOwnerVisible(e.OwnerID, filterOwner) {
 			protected = append(protected, e) // 其他用户的记忆视为受保护
 			continue
 		}
@@ -998,7 +1036,7 @@ func (mc *Compressor) RunGC(ctx context.Context, ownerID ...string) (*GCResult, 
 				break
 			}
 			// Re-check owner isolation before reviving archived entries.
-			if filterOwner != "" && re.OwnerID != "" && re.OwnerID != filterOwner {
+			if !namedOwnerVisible(re.OwnerID, filterOwner) {
 				continue
 			}
 			reviveIDs = append(reviveIDs, re.ID)

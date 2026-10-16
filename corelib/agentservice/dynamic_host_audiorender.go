@@ -161,12 +161,7 @@ func reviewedHostAudioRenderArgsAllowed(args map[string]interface{}) (string, er
 }
 
 func reviewedHostAudioRenderNeedPresent(needs []coretool.CapabilityNeed) bool {
-	for _, need := range needs {
-		if need.Capability == CapabilityAudioRender {
-			return true
-		}
-	}
-	return false
+	return coretool.CapabilityNeedsContain(needs, CapabilityAudioRender)
 }
 
 func (c *coreAgentCallbacks) RenderReviewedHostSpeech(ctx context.Context, principal Principal, text string) (string, error) {

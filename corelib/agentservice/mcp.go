@@ -8,9 +8,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -18,6 +21,8 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
+	mcphttp "github.com/RapidAI/CodeClaw/corelib/mcp"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -25,6 +30,13 @@ type MCPToolView struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description,omitempty"`
 	InputSchema map[string]interface{} `json:"input_schema,omitempty"`
+	Annotations  *MCPToolAnnotations    `json:"annotations,omitempty"`
+	// DeclaredCapabilities carries vendor self-declared external (x:) capability
+	// IDs. The wire field is the non-standard "x_capabilities" array a vendor
+	// MCP may include in a tools/list tool entry to name the capabilities its
+	// tool serves; absent in standard MCP, in which case the tool is routed only
+	// through the open lookup family.
+	DeclaredCapabilities []coretool.CapabilityID `json:"declared_capabilities,omitempty"`
 }
 
 type MCPServerView struct {
@@ -115,6 +127,21 @@ type localMCPInventorySnapshot struct {
 
 var globalMCPRuntimes sync.Map
 
+// mcpRuntimeForService reports the MCP runtime already associated with s
+// without creating one. Closing a Service that never used MCP must not leave
+// an entry behind, because nothing ever deletes entries from globalMCPRuntimes.
+func mcpRuntimeForService(s *Service) (*mcpServiceRuntime, bool) {
+	if s == nil {
+		return nil, false
+	}
+	v, ok := globalMCPRuntimes.Load(s)
+	if !ok {
+		return nil, false
+	}
+	rt, _ := v.(*mcpServiceRuntime)
+	return rt, rt != nil
+}
+
 func runtimeForService(s *Service) *mcpServiceRuntime {
 	if s == nil {
 		return &mcpServiceRuntime{users: map[string]*userMCPRuntime{}}
@@ -179,6 +206,11 @@ func (s *Service) CreateMCPServer(ctx context.Context, p Principal, in MCPServer
 		if endpoint == "" {
 			return nil, fmt.Errorf("endpoint_url is required")
 		}
+		// Reject metadata/link-local endpoints at admission so a bad URL never
+		// reaches the probe or tool-call transport.
+		if err := validateMCPRemoteEndpoint(endpoint); err != nil {
+			return nil, err
+		}
 		authType := normalizeMCPAuthType(in.AuthType)
 		if authType == "" {
 			return nil, fmt.Errorf("invalid auth_type")
@@ -204,23 +236,44 @@ func (s *Service) CreateMCPServer(ctx context.Context, p Principal, in MCPServer
 		if command == "" {
 			return nil, fmt.Errorf("command is required")
 		}
+		// P0-1 (2026-09-08 review): CreateMCPServer previously accepted any
+		// binary, any args and any env, then auto-started when AutoStart=true.
+		// Combined with LLM-driven registration this was a remote-code-execution
+		// primitive. Validate hard before persisting.
+		cleanedArgs, err := validateMCPCommandArgs(in.Args)
+		if err != nil {
+			return nil, fmt.Errorf("invalid command args: %w", err)
+		}
+		cleanedEnv, err := validateMCPEnv(in.Env)
+		if err != nil {
+			return nil, fmt.Errorf("invalid command env: %w", err)
+		}
+		// Auto-start now requires explicit confirmation. The auto-spawn path was
+		// previously triggered purely by client request (no second factor); LLM
+		// prompt injection could use it to spawn a reverse shell. The default
+		// AutoStart value coming in is forced to false.
+		autoStart := false
+		if in.AutoStart {
+			autoStart = false
+		}
 		entry := corelib.LocalMCPServerEntry{
 			ID:        NewID("mcp_local"),
 			Name:      name,
 			Command:   command,
-			Args:      cloneStringSlice(in.Args),
-			Env:       cleanStringMap(in.Env),
+			Args:      cleanedArgs,
+			Env:       cleanedEnv,
 			Disabled:  in.Disabled,
-			AutoStart: in.AutoStart,
+			AutoStart: autoStart,
 			CreatedAt: now,
 		}
 		cfg.AppConfig.LocalMCPServers = append(cfg.AppConfig.LocalMCPServers, entry)
 		if err := s.saveRawUserConfig(p, cfg.AppConfig); err != nil {
 			return nil, err
 		}
-		if entry.AutoStart && !entry.Disabled {
-			_, _ = s.StartMCPServer(ctx, p, entry.ID)
-		}
+		// Even when the client requested AutoStart=true we deliberately do NOT
+		// spawn at registration time. Operators must call StartMCPServer
+		// explicitly; that path goes through StopLocal-first health checks and
+		// emits a different audit action (`mcp.local.started` not `mcp.local.created`).
 		_ = s.recordAudit(auditRecord{TenantID: p.TenantID, UserID: p.UserID, Action: "mcp.local.created", ResourceType: "mcp_server", ResourceID: entry.ID, ActorType: "user", ActorTenantID: p.TenantID, ActorUserID: p.UserID})
 		return s.GetMCPServer(ctx, p, entry.ID)
 	default:
@@ -250,6 +303,11 @@ func (s *Service) UpdateMCPServer(ctx context.Context, p Principal, serverID str
 			entry.EndpointURL = strings.TrimSpace(*in.EndpointURL)
 			if entry.EndpointURL == "" {
 				return nil, fmt.Errorf("endpoint_url is required")
+			}
+			// An update must not be able to pivot an existing server onto a
+			// metadata address.
+			if err := validateMCPRemoteEndpoint(entry.EndpointURL); err != nil {
+				return nil, err
 			}
 		}
 		if in.AuthType != nil {
@@ -288,16 +346,28 @@ func (s *Service) UpdateMCPServer(ctx context.Context, p Principal, serverID str
 			}
 		}
 		if in.Args != nil {
-			entry.Args = cloneStringSlice(*in.Args)
+			cleaned, err := validateMCPCommandArgs(*in.Args)
+			if err != nil {
+				return nil, fmt.Errorf("invalid command args: %w", err)
+			}
+			entry.Args = cleaned
 		}
 		if in.Env != nil {
-			entry.Env = preserveStringMapSecretValues(entry.Env, cleanStringMap(in.Env))
+			cleaned, err := validateMCPEnv(in.Env)
+			if err != nil {
+				return nil, fmt.Errorf("invalid command env: %w", err)
+			}
+			entry.Env = preserveStringMapSecretValues(entry.Env, cleaned)
 		}
 		if in.Disabled != nil {
 			entry.Disabled = *in.Disabled
 		}
 		if in.AutoStart != nil {
-			entry.AutoStart = *in.AutoStart
+			// P0-1 (2026-09-08 review): AutoStart may be turned off through
+			// Update but never back on. Re-enabling auto-spawn would reintroduce
+			// the "register -> immediate exec" primitive, so it stays off;
+			// operators start servers explicitly via StartMCPServer.
+			entry.AutoStart = false
 		}
 		updatedKind = "local"
 		break
@@ -379,6 +449,14 @@ func (s *Service) StartMCPServer(ctx context.Context, p Principal, serverID stri
 		if localEntry.Disabled {
 			return nil, fmt.Errorf("local MCP server is disabled")
 		}
+		// P0-1 (2026-09-08 review): double-check at start time that the binary
+		// resolves to a trusted directory. The CreateMCPServer validation
+		// controls the input shape; this gate covers drift between
+		// registration and now, and prevents a binary that has been symlinked
+		// to /tmp/evil from running.
+		if err := validateLocalMCPSpawnTarget(localEntry.Command); err != nil {
+			return nil, fmt.Errorf("local MCP binary rejected: %w", err)
+		}
 		if err := runtime.startLocal(ctx, *localEntry); err != nil {
 			return nil, err
 		}
@@ -434,12 +512,12 @@ func (s *Service) CheckMCPServer(ctx context.Context, p Principal, serverID stri
 			return s.GetMCPServer(ctx, p, serverID)
 		}
 		if _, err := runtime.localTools(serverID); err != nil {
-			return nil, err
+			return nil, agentruntime.MarkJobErrorRetryable(err)
 		}
 		return s.GetMCPServer(ctx, p, serverID)
 	}
 	if err := runtime.checkRemote(*remoteEntry); err != nil {
-		return nil, err
+		return nil, agentruntime.MarkJobErrorRetryable(err)
 	}
 	return s.GetMCPServer(ctx, p, serverID)
 }
@@ -618,6 +696,311 @@ func cloneStringSlice(in []string) []string {
 	return out
 }
 
+// mcpMaxCommandArgs caps argv length so a hostile config cannot push the
+// child process past its ARG_MAX or overflow our own bookkeeping.
+const mcpMaxCommandArgs = 256
+
+// mcpMaxArgLen caps a single argv slot.
+const mcpMaxArgLen = 4096
+
+// validateMCPRemoteEndpoint refuses MCP remote endpoints that point at cloud
+// instance-metadata or link-local infrastructure. One JSON-RPC round trip to
+// 169.254.169.254 returns cloud STS credentials, so this class is rejected
+// regardless of any "private network allowed" posture.
+//
+// Loopback and RFC1918 stay permitted: MCP-over-HTTP from localhost is a
+// supported deployment and must keep working. The guard is deliberately a
+// floor, not a full public-only allowlist — see corelib/mcp for the rationale.
+//
+// This check is SYNTAX ONLY and never resolves DNS. It runs on admission and
+// on every single round trip, so a lookup here would both break registering a
+// server whose name only resolves later (VPN down, internal DNS) and add a
+// resolution to every tool call. Name-to-address binding is enforced once, at
+// dial time, by the guarded transport in corelib/mcp.
+//
+// Added 2026-09-09: corelib/mcp.sendMCPRequest already enforced this, but
+// agentservice runs a second, independent MCP-over-HTTP stack (health probes
+// and tools/call) that never reached that code.
+func validateMCPRemoteEndpoint(raw string) error {
+	endpoint := strings.TrimSpace(raw)
+	if endpoint == "" {
+		return fmt.Errorf("endpoint_url is required")
+	}
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return fmt.Errorf("invalid endpoint_url: %w", err)
+	}
+	scheme := strings.ToLower(parsed.Scheme)
+	if scheme != "http" && scheme != "https" {
+		return fmt.Errorf("endpoint_url must use http or https")
+	}
+	host := strings.Trim(strings.Trim(parsed.Hostname(), "[]"), ".")
+	if host == "" {
+		return fmt.Errorf("endpoint_url host is required")
+	}
+	if mcphttp.IsAlwaysBlockedMCPHost(host) {
+		return fmt.Errorf("endpoint_url host %q is always blocked (cloud metadata or link-local)", host)
+	}
+	return nil
+}
+
+// validateMCPCommandArgs hardens the argv handed to exec.CommandContext.
+//
+// IMPORTANT — what this does NOT do, and why: it does not reject shell
+// metacharacters. localMCPClient.Start spawns via
+// exec.CommandContext(ctx, command, args...) with no shell in the path, so
+// `;`, `|`, `&` and spaces are inert data, never syntax. An earlier revision
+// enforced a `[A-Za-z0-9._:/=@,+%~-]+` pattern that rejected spaces, which
+// broke every legitimate MCP server launched with a path containing a space
+// (the norm on Windows: `C:\Users\Jane Doe\...`). Do not reintroduce it.
+//
+// What it does reject: NUL (truncates at the syscall boundary), CR/LF (would
+// corrupt the newline-delimited JSON-RPC framing the client reads back over
+// stdio), and oversized argv.
+func validateMCPCommandArgs(in []string) ([]string, error) {
+	if len(in) > mcpMaxCommandArgs {
+		return nil, fmt.Errorf("too many args (limit %d)", mcpMaxCommandArgs)
+	}
+	out := make([]string, 0, len(in))
+	for i, slot := range in {
+		if slot == "" {
+			continue
+		}
+		if strings.ContainsAny(slot, "\r\n\x00") {
+			return nil, fmt.Errorf("arg %d contains a control character", i)
+		}
+		if len(slot) > mcpMaxArgLen {
+			return nil, fmt.Errorf("arg %d too long (limit %d bytes)", i, mcpMaxArgLen)
+		}
+		out = append(out, slot)
+	}
+	return out, nil
+}
+
+// mcpEnvBlockedKeys are environment variable names that would let a local
+// MCP server load arbitrary code into its child process and therefore must
+// never be settable from a CreateMCPServer / UpdateMCPServer payload.
+//
+// See: LD_PRELOAD / LD_LIBRARY_PATH (Linux), DYLD_INSERT_LIBRARIES (macOS),
+// PATH / PYTHONPATH / NODE_PATH / RUBYLIB / PERL5LIB / BASH_ENV / ENV /
+// SHELLOPTS / GCONV_PATH (GNU libc dynamic loader), and PATHEXT (Windows
+// command resolution). NODE_OPTIONS = --require /inspect-brk overrides are
+// also covered because NODE_OPTIONS is commonly used for code injection.
+var mcpEnvBlockedKeys = map[string]struct{}{
+	"path":               {},
+	"ld_preload":         {},
+	"ld_library_path":    {},
+	"dyld_insert_libs":   {},
+	"dyld_library_path":  {},
+	"pythonpath":         {},
+	"python_startup":     {},
+	"node_path":          {},
+	"node_options":       {},
+	"rubyopt":            {},
+	"rubylib":            {},
+	"perl5lib":           {},
+	"perl5opt":           {},
+	"bash_env":           {},
+	"env":                {},
+	"shellopts":          {},
+	"gconv_path":         {},
+	"pathext":            {},
+	"comspec":            {},
+	"systemroot":         {},
+	"windir":             {},
+}
+
+// validateMCPEnv enforces that every env key is a regular identifier, that no
+// loader-injection names are present, and that values do not embed newline
+// sequences that bash / cmd would honor.
+func validateMCPEnv(in map[string]string) (map[string]string, error) {
+	if len(in) > 64 {
+		return nil, fmt.Errorf("too many env entries (limit 64)")
+	}
+	if len(in) == 0 {
+		return nil, nil
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		key := strings.TrimSpace(k)
+		if key == "" {
+			continue
+		}
+		if !envKeyAllowedRe.MatchString(key) {
+			return nil, fmt.Errorf("env key %q is not a valid POSIX/Win identifier", truncateForErr(key))
+		}
+		normalized := strings.ToLower(key)
+		if _, blocked := mcpEnvBlockedKeys[normalized]; blocked {
+			return nil, fmt.Errorf("env key %q is reserved for runtime safety", key)
+		}
+		if strings.ContainsAny(v, "\r\n\x00") {
+			return nil, fmt.Errorf("env value for %q must not contain newline / NUL", key)
+		}
+		if len(v) > 4096 {
+			return nil, fmt.Errorf("env value for %q too long (limit 4096 bytes)", key)
+		}
+		out[key] = v
+	}
+	if len(out) > 64 {
+		return nil, fmt.Errorf("too many env entries (limit 64)")
+	}
+	return out, nil
+}
+
+var envKeyAllowedRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// untrustedLocalMCPSpawnDirs returns directories a local MCP binary must never
+// be launched from. These are the places any unprivileged process (or a
+// downloaded archive, or a crafted "install this MCP server" instruction) can
+// drop an executable, so allowing them turns an MCP registration into arbitrary
+// code execution.
+//
+// Why a denylist and not an allowlist: an earlier revision allowlisted
+// /usr/bin,/bin,/usr/local/bin and %SystemRoot%\System32. That reads as strict
+// but is close to worthless — those directories already contain bash, python3,
+// curl, nc and ssh on POSIX, and cmd.exe, powershell.exe, wsl.exe, certutil.exe
+// and rundll32.exe on Windows — while simultaneously rejecting the places real
+// MCP servers actually live (~/.local/bin, npm global prefix, go/bin, venvs,
+// node_modules/.bin). Maximum collateral damage, near-zero security gain.
+func untrustedLocalMCPSpawnDirs() []string {
+	dirs := []string{os.TempDir(), "/tmp", "/var/tmp", "/dev/shm"}
+	if runtime.GOOS == "windows" {
+		dirs = append(dirs,
+			filepath.Join(os.Getenv("SystemRoot"), "Temp"),
+			filepath.Join(os.Getenv("SystemRoot"), "Tasks"),
+		)
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		dirs = append(dirs, filepath.Join(home, "Downloads"))
+	}
+	out := make([]string, 0, len(dirs))
+	seen := make(map[string]struct{}, len(dirs))
+	for _, d := range dirs {
+		if d == "" {
+			continue
+		}
+		clean := filepath.Clean(d)
+		if _, dup := seen[clean]; dup {
+			continue
+		}
+		seen[clean] = struct{}{}
+		out = append(out, clean)
+	}
+	return out
+}
+
+// validateLocalMCPSpawnTarget rejects commands that resolve into a
+// world-writable / temporary directory.
+//
+// P0-1 (2026-09-08 review): the registration path previously had no such gate,
+// so `command: /tmp/x` (or a bare name resolving to a PATH hijack) executed
+// verbatim. Note this is defence-in-depth only: it does not make an approved
+// directory's binaries "safe". The primary control is that registration never
+// spawns — see CreateMCPServer.
+func validateLocalMCPSpawnTarget(command string) error {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return fmt.Errorf("empty command")
+	}
+	if strings.ContainsAny(command, "\r\n\x00") {
+		return fmt.Errorf("command contains control characters")
+	}
+	resolved := command
+	// exec.LookPath refuses arguments and only looks at PATH; passing a
+	// fully-qualified path through returns it unchanged.
+	if !strings.ContainsAny(command, `/\`) {
+		lp, err := exec.LookPath(command)
+		if err != nil {
+			return fmt.Errorf("unable to resolve %q on PATH: %w", command, err)
+		}
+		resolved = lp
+	} else {
+		abs, err := filepath.Abs(command)
+		if err != nil {
+			return fmt.Errorf("unable to resolve %q to an absolute path: %w", command, err)
+		}
+		resolved = abs
+	}
+	// Walk symlinks; if the final target lives outside any allowed dir, reject.
+	target, err := filepath.EvalSymlinks(resolved)
+	if err != nil {
+		// Some binaries don't exist yet (rare for MCP servers but possible).
+		// Fall back to the lexical path of `resolved` so we still apply the
+		// directory check.
+		target = resolved
+	}
+	target = filepath.Clean(target)
+	dir := filepath.Clean(filepath.Dir(target))
+	trusted := mcpSpawnTrustedTestDirs()
+	for _, root := range untrustedLocalMCPSpawnDirs() {
+		if pathsEqual(dir, root) || isPathUnder(dir, root) {
+			if trustedDirContains(trusted, dir) {
+				continue
+			}
+			return fmt.Errorf("command resolves to %s, inside untrusted directory %s", truncateForErr(target), root)
+		}
+	}
+	return nil
+}
+
+// MACLAW_MCP_SPAWN_TRUST_DIRS is a test hook: `go test` builds the test
+// binary into %TEMP%\go-build*, and the helper-process pattern re-executes
+// that binary as a fake local MCP server, which the Temp rule would always
+// reject. Listing a directory here (os.PathListSeparator-separated) trusts
+// exactly that directory — it stays under every other untrusted rule. A
+// deployment must not set it: each root on the untrusted list is a place an
+// attacker can write to without extra privilege.
+func mcpSpawnTrustedTestDirs() []string {
+	raw := strings.TrimSpace(os.Getenv("MACLAW_MCP_SPAWN_TRUST_DIRS"))
+	if raw == "" {
+		return nil
+	}
+	out := make([]string, 0, 2)
+	for _, d := range filepath.SplitList(raw) {
+		if d = strings.TrimSpace(d); d != "" {
+			out = append(out, filepath.Clean(d))
+		}
+	}
+	return out
+}
+
+func trustedDirContains(trusted []string, dir string) bool {
+	for _, t := range trusted {
+		if pathsEqual(dir, t) || isPathUnder(dir, t) {
+			return true
+		}
+	}
+	return false
+}
+
+// pathsEqual compares two filesystem paths case-insensitively on Windows.
+func pathsEqual(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
+// isPathUnder reports whether child is contained within parent.
+func isPathUnder(child, parent string) bool {
+	rel, err := filepath.Rel(parent, child)
+	if err != nil {
+		return false
+	}
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return false
+	}
+	return rel != "."
+}
+
+func truncateForErr(s string) string {
+	const limit = 64
+	if len(s) <= limit {
+		return s
+	}
+	return s[:limit] + "..."
+}
+
 func sortedKeys(in map[string]string) []string {
 	if len(in) == 0 {
 		return nil
@@ -636,6 +1019,25 @@ func cloneMCPTools(in []MCPToolView) []MCPToolView {
 	}
 	out := make([]MCPToolView, len(in))
 	copy(out, in)
+	return out
+}
+
+// toCapabilityIDs trims and drops empty entries from a wire capability list.
+func toCapabilityIDs(in []string) []coretool.CapabilityID {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]coretool.CapabilityID, 0, len(in))
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			continue
+		}
+		out = append(out, coretool.CapabilityID(s))
+	}
+	if len(out) == 0 {
+		return nil
+	}
 	return out
 }
 
@@ -698,6 +1100,46 @@ func (rt *userMCPRuntime) isLocalRunning(serverID string) bool {
 	return client != nil && client.IsRunning()
 }
 
+// stopAllLocal stops every local MCP child process this runtime started and
+// drops them from the map so no later caller can reuse a dead handle.
+//
+// This exists because local clients are owned by the runtime, not by the call
+// that created them: startLocal spawns under a context derived from the caller,
+// and a call-triggered start must leave the process running after the request
+// returns (see MCPToolBridge.CallTool). Nothing else would ever stop them —
+// Service.Close now uses this as the process-lifecycle counterpart to closing
+// the store handles.
+func (rt *mcpServiceRuntime) stopAllLocal() {
+	if rt == nil {
+		return
+	}
+	rt.mu.Lock()
+	users := make([]*userMCPRuntime, 0, len(rt.users))
+	for _, user := range rt.users {
+		users = append(users, user)
+	}
+	rt.mu.Unlock()
+	for _, user := range users {
+		user.stopAllLocal()
+	}
+}
+
+func (rt *userMCPRuntime) stopAllLocal() {
+	if rt == nil {
+		return
+	}
+	rt.mu.Lock()
+	var clients []*localMCPClient
+	for id, client := range rt.local {
+		clients = append(clients, client)
+		delete(rt.local, id)
+	}
+	rt.mu.Unlock()
+	for _, client := range clients {
+		client.Stop()
+	}
+}
+
 func (rt *userMCPRuntime) stopLocal(serverID string) {
 	if rt == nil {
 		return
@@ -752,7 +1194,10 @@ func (rt *userMCPRuntime) localTools(serverID string) ([]MCPToolView, error) {
 }
 
 func (rt *userMCPRuntime) checkRemote(entry corelib.MCPServerEntry) error {
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Share the SSRF-guarded MCP transport (2026-09-09 re-review). A bare
+	// http.Client follows redirects, so an endpoint that answers 307 to
+	// 169.254.169.254 would turn this probe into a cloud-metadata request.
+	client := mcphttp.NewPrivateHTTPClient(30 * time.Second)
 	return rt.checkRemoteWithClient(client, entry)
 }
 
@@ -774,23 +1219,33 @@ func (rt *userMCPRuntime) checkRemoteWithClient(client *http.Client, entry corel
 		rt.recordRemoteFailure(entry.ID)
 		return err
 	}
-	var parsed struct {
-		Result struct {
-			Tools []struct {
-				Name        string                 `json:"name"`
-				Description string                 `json:"description"`
-				InputSchema map[string]interface{} `json:"inputSchema"`
-			} `json:"tools"`
-		} `json:"result"`
-	}
-	if err := json.Unmarshal(payload, &parsed); err != nil {
-		rt.recordRemoteFailure(entry.ID)
-		return fmt.Errorf("parse MCP tools/list response: %w", err)
-	}
-	tools := make([]MCPToolView, 0, len(parsed.Result.Tools))
-	for _, item := range parsed.Result.Tools {
-		tools = append(tools, MCPToolView{Name: item.Name, Description: item.Description, InputSchema: item.InputSchema})
-	}
+		var parsed struct {
+			Result struct {
+				Tools []struct {
+					Name        string                 `json:"name"`
+					Description string                 `json:"description"`
+					InputSchema map[string]interface{} `json:"inputSchema"`
+					Annotations  *struct {
+						ReadOnlyHint    *bool `json:"readOnlyHint,omitempty"`
+						DestructiveHint *bool `json:"destructiveHint,omitempty"`
+					} `json:"annotations,omitempty"`
+					XCapabilities []string `json:"x_capabilities,omitempty"`
+				} `json:"tools"`
+			} `json:"result"`
+		}
+		if err := json.Unmarshal(payload, &parsed); err != nil {
+			rt.recordRemoteFailure(entry.ID)
+			return fmt.Errorf("parse MCP tools/list response: %w", err)
+		}
+		tools := make([]MCPToolView, 0, len(parsed.Result.Tools))
+		for _, item := range parsed.Result.Tools {
+			view := MCPToolView{Name: item.Name, Description: item.Description, InputSchema: item.InputSchema}
+			if item.Annotations != nil {
+				view.Annotations = &MCPToolAnnotations{ReadOnlyHint: item.Annotations.ReadOnlyHint, DestructiveHint: item.Annotations.DestructiveHint}
+			}
+			view.DeclaredCapabilities = toCapabilityIDs(item.XCapabilities)
+			tools = append(tools, view)
+		}
 	rt.mu.Lock()
 	state := rt.remote[entry.ID]
 	if state == nil {
@@ -884,6 +1339,13 @@ func (rt *userMCPRuntime) ensureRemoteSession(client *http.Client, entry corelib
 func doRemoteMCPRoundTrip(client *http.Client, entry corelib.MCPServerEntry, sessionID string, reqBody map[string]interface{}) ([]byte, string, error) {
 	payload, err := json.Marshal(reqBody)
 	if err != nil {
+		return nil, "", err
+	}
+	// Choke point for every agentservice MCP-over-HTTP call (health probe,
+	// session bootstrap and tools/call). Validate the endpoint here as well as
+	// on the transport so a caller that passes its own http.Client is still
+	// covered — the guard must not depend on which client was injected.
+	if err := validateMCPRemoteEndpoint(entry.EndpointURL); err != nil {
 		return nil, "", err
 	}
 	url := strings.TrimRight(entry.EndpointURL, "/")
@@ -1110,6 +1572,11 @@ func (c *localMCPClient) DiscoverTools() ([]MCPToolView, error) {
 			Name        string                 `json:"name"`
 			Description string                 `json:"description"`
 			InputSchema map[string]interface{} `json:"inputSchema"`
+			Annotations  *struct {
+				ReadOnlyHint    *bool `json:"readOnlyHint,omitempty"`
+				DestructiveHint *bool `json:"destructiveHint,omitempty"`
+			} `json:"annotations,omitempty"`
+			XCapabilities []string `json:"x_capabilities,omitempty"`
 		} `json:"tools"`
 	}
 	if err := json.Unmarshal(result, &parsed); err != nil {
@@ -1117,7 +1584,12 @@ func (c *localMCPClient) DiscoverTools() ([]MCPToolView, error) {
 	}
 	tools := make([]MCPToolView, 0, len(parsed.Tools))
 	for _, item := range parsed.Tools {
-		tools = append(tools, MCPToolView{Name: item.Name, Description: item.Description, InputSchema: item.InputSchema})
+		view := MCPToolView{Name: item.Name, Description: item.Description, InputSchema: item.InputSchema}
+		if item.Annotations != nil {
+			view.Annotations = &MCPToolAnnotations{ReadOnlyHint: item.Annotations.ReadOnlyHint, DestructiveHint: item.Annotations.DestructiveHint}
+		}
+		view.DeclaredCapabilities = toCapabilityIDs(item.XCapabilities)
+		tools = append(tools, view)
 	}
 	c.stateMu.Lock()
 	c.tools = tools

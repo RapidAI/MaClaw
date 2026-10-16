@@ -1,0 +1,6 @@
+﻿Artifact path: ../../build/app/outputs/bundle/release/app-release.aab
+SHA256: 666E94341680697ED38395ED789AE10E83E00A0D48A385DA992913EF6816D16D
+Artifact size bytes: 57510646
+Version/build number: 0.1.0+1
+Signing identity: MaClaw Mobile QA release alias; SHA-256 certificate fingerprint recorded by keytool
+Installer channel: Google Play internal testing

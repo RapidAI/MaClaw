@@ -1,0 +1,194 @@
+export const AppsRailIcon = () => (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="4" y="4" width="6" height="6" rx="1.4" />
+        <rect x="14" y="4" width="6" height="6" rx="1.4" />
+        <rect x="4" y="14" width="6" height="6" rx="1.4" />
+        <path d="M17 14v6M14 17h6" />
+    </svg>
+);
+
+/** 专家&工具 — 学士帽。单形体在 18px 侧栏比「帽+人」更易辨认。 */
+export const ExpertRailIcon = ({ marked = true }: { marked?: boolean } = {}) => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" {...(marked ? { 'data-testid': 'sidebar-expert-icon' } : {})}>
+        <path d="M21.42 10.922a1 1 0 0 0-.019-1.838L12.83 5.18a2 2 0 0 0-1.66 0L2.6 9.08a1 1 0 0 0 0 1.832l8.57 3.908a2 2 0 0 0 1.66 0z" />
+        <path d="M22 10v6" />
+        <path d="M6 12.5V16a6 3 0 0 0 12 0v-3.5" />
+    </svg>
+);
+
+/** 专业功能 — 层叠能力，和菜单里的 AI 专家学士帽区分开。 */
+export const ProFeaturesIcon = () => (
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" data-testid="sidebar-pro-features-icon">
+        <path d="M12 3.5 4 8l8 4.5L20 8z" />
+        <path d="m4 12 8 4.5L20 12" />
+        <path d="m4 16 8 4.5L20 16" />
+    </svg>
+);
+
+/** 工作流 - 两条分支汇入同一节点，和 AI 专家的学士帽区分开。 */
+export const WorkflowIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="3" y="3.5" width="6" height="5" rx="1.2" />
+        <rect x="3" y="15.5" width="6" height="5" rx="1.2" />
+        <rect x="15" y="9.5" width="6" height="5" rx="1.2" />
+        <path d="M9 6h3v6h3" />
+        <path d="M9 18h3v-6" />
+    </svg>
+);
+
+/** 工具 - 扳手与螺丝刀，和 AI 专家入口保持独立语义。 */
+export const ToolsRailIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" data-testid="sidebar-tools-icon">
+        <path d="M14.7 6.3a4.2 4.2 0 0 0-5.5-5.1l3 3-3.1 3.1-3-3a4.2 4.2 0 0 0 5.1 5.5l7.1 7.1a2.1 2.1 0 0 0 3-3z" />
+        <path d="m4.5 19.5 4-4" />
+        <path d="m3 21 2-2" />
+    </svg>
+);
+
+/** 系统 - 细线齿轮 */
+export const SystemIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68 1.65 1.65 0 0 0 10 3.17V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+    </svg>
+);
+
+/** 关于 - 细线圆圈 i */
+export const AboutIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <circle cx="12" cy="12" r="9" />
+        <line x1="12" y1="16" x2="12" y2="12" />
+        <line x1="12" y1="8" x2="12.01" y2="8" />
+    </svg>
+);
+
+/** 设置 - 双滑杆调节条 */
+export const SettingsIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
+        <line x1="4" y1="8" x2="20" y2="8" />
+        <line x1="4" y1="16" x2="20" y2="16" />
+        <circle cx="9" cy="8" r="2.5" />
+        <circle cx="15" cy="16" r="2.5" />
+    </svg>
+);
+
+/** 监控 - 屏幕+心跳线 */
+export const MonitorIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="2" y="4" width="20" height="14" rx="2" />
+        <polyline points="5,12 8,12 10,7 12,16 14,10 16,12 19,12" />
+        <line x1="9" y1="21" x2="15" y2="21" />
+        <line x1="12" y1="18" x2="12" y2="21" />
+    </svg>
+);
+
+/** 技能 - 闪电 */
+export const SkillsIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <polygon points="13,2 3,14 12,14 11,22 21,10 12,10 13,2" />
+    </svg>
+);
+
+/** MCP - 节点连线 */
+export const MCPIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true">
+        <circle cx="5" cy="12" r="2.5" />
+        <circle cx="19" cy="6" r="2.5" />
+        <circle cx="19" cy="18" r="2.5" />
+        <line x1="7.5" y1="11" x2="16.5" y2="7" />
+        <line x1="7.5" y1="13" x2="16.5" y2="17" />
+    </svg>
+);
+
+/** Bot - 天线圆头，和数字员工的人形图标区分开。侧栏默认 22px；标题等处传入 size / testId。 */
+export const BotRailIcon = ({
+    size = 22,
+    testId = 'sidebar-bot-icon',
+    className,
+}: {
+    size?: number;
+    testId?: string;
+    className?: string;
+} = {}) => (
+    <svg className={className} width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" data-testid={testId}>
+        <path d="M12 7V4" />
+        <circle cx="12" cy="3.2" r="1" fill="currentColor" stroke="none" />
+        <rect x="5" y="7" width="14" height="12" rx="4" />
+        <circle cx="9.5" cy="13" r="1" fill="currentColor" stroke="none" />
+        <circle cx="14.5" cy="13" r="1" fill="currentColor" stroke="none" />
+        <path d="M9 16.5h6" />
+    </svg>
+);
+
+/** 八卦/社区 - 双人 */
+export const GossipIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+        <circle cx="9" cy="7" r="4" />
+        <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+        <path d="M16 3.13a4 4 0 0 1 0 7.75" />
+    </svg>
+);
+
+/** 排名 */
+export const RankingIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="5" y="13" width="4.5" height="7" rx="1" />
+        <rect x="9.75" y="6" width="4.5" height="14" rx="1" />
+        <rect x="14.5" y="10" width="4.5" height="10" rx="1" />
+    </svg>
+);
+
+/** 云盘 */
+export const MobileDocsIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M6.5 17.5h11a3.5 3.5 0 0 0 .2-7 5.5 5.5 0 0 0-10.6 1.5A3.2 3.2 0 0 0 6.5 17.5Z" />
+    </svg>
+);
+
+/** 知识库 - 书本 */
+export const KnowledgeIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+        <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z" />
+    </svg>
+);
+
+/** Latex 模板 - 带公式排版的文稿 */
+export const LatexTemplateIcon = () => (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M5 3.5h9l5 5V20.5H5z" />
+        <path d="M14 3.5v5h5" />
+        <path d="M8.5 16.5 11 12l2.5 4.5" />
+        <path d="M9.4 14.6h3.2" />
+        <path d="M16 12.5h2.5M16 15.5h2.5" />
+    </svg>
+);
+
+export function InviteGiftIcon() {
+    return <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M20 12v7a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-7"/><path d="M2 8h20v4H2z"/><path d="M12 8v12"/><path d="M12 8H7.5a2.5 2.5 0 1 1 2.5-2.5V8"/><path d="M12 8h4.5A2.5 2.5 0 1 0 14 5.5V8"/></svg>;
+}
+
+/** 签到 - 日历加对勾，区分于邀请礼盒。 */
+export function CheckinRailIcon() {
+    return <svg width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><rect x="3" y="4.5" width="18" height="17" rx="2.5"/><path d="M8 2.5v4"/><path d="M16 2.5v4"/><path d="M3 9.5h18"/><path d="M9 15l2.2 2.2L15.5 13"/></svg>;
+}
+
+/** 连接菜单 — 会话气泡、信封、芯片，与轨道项图标区分开。 */
+export const ConnectMenuIMIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <path d="M5 6.5h14v9H8l-3 2.5z" />
+    </svg>
+);
+
+export const ConnectMenuMailIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="3.5" y="5.5" width="17" height="13" rx="1.5" /><path d="m4 7 8 6 8-6" />
+    </svg>
+);
+
+export const ConnectMenuHardwareIcon = () => (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        <rect x="6.5" y="6.5" width="11" height="11" rx="1.5" /><circle cx="12" cy="12" r="2" /><path d="M9.5 6.5v-3M14.5 6.5v-3M9.5 20.5v-3M14.5 20.5v-3M6.5 9.5h-3M6.5 14.5h-3M20.5 9.5h-3M20.5 14.5h-3" />
+    </svg>
+);

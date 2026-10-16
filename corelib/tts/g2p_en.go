@@ -4,7 +4,7 @@ import (
 	"strings"
 )
 
-// englishWordToPhonemes converts an English word to MeloTTS phonemes.
+// englishWordToPhonemes converts an English word to the phoneme symbols the Kokoro frontend maps to IPA.
 // Uses a built-in mini lexicon + letter-based fallback.
 func englishWordToPhonemes(word string) []string {
 	word = strings.ToLower(word)
@@ -79,7 +79,7 @@ var enLetterMap = map[rune]string{
 }
 
 // enLexicon is a mini English pronunciation dictionary.
-// Maps common words to MeloTTS phoneme sequences.
+// Maps common words to phoneme sequences.
 var enLexicon = map[string][]string{
 	"hello":     {"h", "ɛ", "ˈ", "l", "o", "ʊ"},
 	"world":     {"w", "ər", "l", "d"},

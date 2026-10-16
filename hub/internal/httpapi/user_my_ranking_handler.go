@@ -46,11 +46,10 @@ func GetMyRankingHandler(identity *auth.IdentityService, sessions userUsageSumma
 		}
 		now := time.Now().UTC()
 
-		// Use monthly period for ranking (same as admin dashboard default).
+		// Use monthly period for ranking (same as public leaderboard default).
+		// Ignore query overrides so a stray month= cannot shift "my rank".
 		period := "monthly"
-		start := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC)
-		end := start.AddDate(0, 1, 0)
-		periodLabel := start.Format("2006-01")
+		start, end, periodLabel := userRankingRange(nil, period, now)
 
 		// Try pre-computed cache first.
 		var merged []userRankingRow

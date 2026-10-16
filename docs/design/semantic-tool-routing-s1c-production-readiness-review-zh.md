@@ -342,3 +342,13 @@ current immutable plan + current policy + verified host binding
 该证据关闭 D2c 的 batch/terminal/recovery 矩阵，且已覆盖 nested exit / route supersede 的 replacement isolation、双 executor route isolation、restart/recovery，以及 steer 恰落在 batch commit 后的终态裁决。另已增加 verified runtime ingress → actual Coding callback → `codingagent.Run` → actual relay/holder 的完整 batch lifecycle 回归，证明 identity 先于 relay bind，且 `RunLoop` 的 commit terminal 会清除同一 holder。**D2 仍未完成**：仍须针对 verified-ingress 路径逐一审计 cancellation、binder failure、early return 与 child handoff 的完整矩阵；在此之前不得将 D2 整体或 D3 标为完成。
 
 随后已落地 D2.5 的首个 wire-proof：静态 S0.5 HTTP 路径在最终 `RoundTrip` 前对每个真实 request 建立并验证 `ToolSurfaceReceipt`，空面也强制编码成 `tools: []`；Responses WS 在 `response.create` frame 序列化后、实际 `WriteMessage` 前执行同一 canonical verification。定义减少、追加或 payload 与 manifest 不符都以 `surface_integrity_failure` fail-closed，且不会发送字节。该 WS 证据目前仍是 holder/transport 的 test-only fixture；它不代表 verified-ingress D2 已完成，也不改变 qualification 或 alias gate。
+
+## 14. 第二十二次复审修订：D2 已关闭，D3 发布门禁改为同提交机器证据（2026-09-02）
+
+两件事同时修订。
+
+**D2 状态更正**：§13.5 末尾"D2 仍未完成"的剩余项——verified-ingress 的 cancellation、binder failure、early return、child handoff 完整矩阵，以及 §11.3/§12.4 要求的 D2 全组合——已在 [CodingSubAgent 静态工具带收口 §9.9.16](semantic-tool-routing-coding-subagent-remediation-zh.md) 全部补齐并全绿（含 `-race`），successor reservation 的 PublishSurface child-revision 接线亦已落地。D2 自此视为关闭；其证据仍为 test-only 夹具，不授权 production materialization。
+
+**D3 门禁重定义**：§5 的 D/E 行、§7 发布门禁与 §13.4 中"单独设计评审批准""D3 评审签字""独立评审""灰度分桶/灰度窗口"等表述，是不可由实现者完成的外部人工事件。按产品 owner 决议，这些门禁自本节节起改由**同提交机器证据**满足：完整的逐字段证据模型、可证伪/原子性/无自我升格/诚实替代四原则，以及 E1--E6 自主执行序列，以 [CodingSubAgent 静态工具带收口 §9.11](semantic-tool-routing-coding-subagent-remediation-zh.md) 为唯一定义。"批准"自此等于"证据在同一提交内齐备且 CI 全绿"这一可复核事实；hermetic production-composition 套件取代灰度观察窗口，kill-switch drill 取代灰度回滚演练。
+
+技术门槛不降低：fail-closed 默认、首批 catalog 仅只读无副作用 family、effectful provider 缺机器证明的 receipt/settlement contract 不得进入 catalog、零 name-dispatcher fallback 等约束全部保留。在 §9.11 的 E5 原子翻转提交落地前，`Wired=false`、`Enabled=false`、`codingDynamicAliasesMayMaterialize()==false` 继续成立，本文档与其冲突的较早表述以本节为准。

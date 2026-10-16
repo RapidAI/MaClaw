@@ -61,10 +61,18 @@ type CapabilityRegistry struct {
 	version     string
 	descriptors map[CapabilityID]CapabilityDescriptor
 	sealed      bool
+	// externalEffectCeilings overrides the default effect ceiling for a
+	// specific external namespace (the token between ExternalCapabilityPrefix
+	// and the next colon). Keys are namespace segments, not full capability IDs.
+	externalEffectCeilings map[string][]EffectClass
 }
 
 func NewCapabilityRegistry(version string) *CapabilityRegistry {
-	return &CapabilityRegistry{version: strings.TrimSpace(version), descriptors: make(map[CapabilityID]CapabilityDescriptor)}
+	return &CapabilityRegistry{
+		version:                strings.TrimSpace(version),
+		descriptors:            make(map[CapabilityID]CapabilityDescriptor),
+		externalEffectCeilings: make(map[string][]EffectClass),
+	}
 }
 
 func (r *CapabilityRegistry) Version() string {
@@ -83,6 +91,9 @@ func (r *CapabilityRegistry) Register(d CapabilityDescriptor) error {
 		return fmt.Errorf("nil capability registry")
 	}
 	d.ID = CapabilityID(strings.TrimSpace(string(d.ID)))
+	if strings.HasPrefix(string(d.ID), string(ExternalCapabilityPrefix)) {
+		return fmt.Errorf("capability %q uses the external %q prefix; register vendor capabilities via RegisterExternalCapability", d.ID, ExternalCapabilityPrefix)
+	}
 	if d.ID == "" {
 		return fmt.Errorf("capability id is required")
 	}
@@ -180,6 +191,299 @@ func cloneCapabilityDescriptor(in CapabilityDescriptor) CapabilityDescriptor {
 		out.Qualifiers[name] = rule
 	}
 	return out
+}
+
+// effectWithinCeiling reports whether e is a member of ceiling.
+func effectWithinCeiling(e EffectClass, ceiling []EffectClass) bool {
+	for _, c := range ceiling {
+		if c == e {
+			return true
+		}
+	}
+	return false
+}
+
+// EffectsWithinCeiling reports whether every member of effects is allowed by
+// ceiling.
+//
+// This is the enforcement counterpart to ExternalEffectCeiling. A publisher
+// that stamps a capability's registered descriptor with the namespace ceiling
+// (so registrations stay identical and idempotent across servers) thereby makes
+// RegisterExternalCapability's own ceiling check vacuous: comparing the ceiling
+// against itself can never fail. Such a publisher MUST still call this against
+// the per-provider envelope before registering, or it silently removes the
+// per-provider ceiling check entirely and lets an installed server register a
+// capability whose execution effects exceed what the host reviewed.
+//
+// An empty effects set is within every ceiling: it grants nothing. Callers that
+// treat empty as "unspecified and therefore permitted" must reject it before
+// reaching here.
+func EffectsWithinCeiling(effects []EffectClass, ceiling []EffectClass) bool {
+	for _, e := range effects {
+		if !effectWithinCeiling(e, ceiling) {
+			return false
+		}
+	}
+	return true
+}
+
+// externalEffectCeiling returns the effect ceiling for a namespace, falling
+// back to the package default when the namespace has no explicit override.
+func (r *CapabilityRegistry) externalEffectCeiling(ns string) []EffectClass {
+	if r == nil {
+		return DefaultExternalCapabilityEffectCeiling
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	if ceil, ok := r.externalEffectCeilings[ns]; ok {
+		return ceil
+	}
+	return DefaultExternalCapabilityEffectCeiling
+}
+
+// ExternalEffectCeiling returns a copy of the effect ceiling that governs ns,
+// normalized into the canonical planner effect order (read_only,
+// local_mutation, external_effect, sensitive) with duplicates removed.
+//
+// It exists so a host can stamp a vendor-declared external capability's
+// vocabulary descriptor with a namespace-derived, identity-free effect set.
+// External descriptors are compared field by field (externalDescriptorEqual),
+// so a descriptor built from one server's per-tool annotations would conflict
+// with a second server that annotated the same capability differently. Deriving
+// the descriptor from the namespace ceiling instead makes every registration of
+// the same capability identical, so registration is idempotent regardless of how
+// many servers declare it or in which order.
+//
+// The returned slice is always in canonical order because externalDescriptorEqual
+// compares Effects by index; SetExternalCapabilityCeiling stores the caller's
+// order unchanged, so normalization cannot be assumed.
+func (r *CapabilityRegistry) ExternalEffectCeiling(ns string) []EffectClass {
+	// externalEffectCeiling already handles a nil receiver and falls back to the
+	// package default when the namespace has no reviewed override.
+	return canonicalizeExternalEffects(r.externalEffectCeiling(strings.TrimSpace(ns)))
+}
+
+// canonicalizeExternalEffects normalizes an effect ceiling into the canonical
+// planner order (read_only, local_mutation, external_effect, sensitive) with
+// duplicates removed. externalDescriptorEqual compares Effects by index, so
+// every descriptor stamped with a ceiling must present it in this order.
+func canonicalizeExternalEffects(ceiling []EffectClass) []EffectClass {
+	seen := make(map[EffectClass]bool, len(ceiling))
+	for _, e := range ceiling {
+		seen[e] = true
+	}
+	out := make([]EffectClass, 0, len(seen))
+	for _, e := range canonicalEffectOrder {
+		if seen[e] {
+			out = append(out, e)
+			delete(seen, e)
+		}
+	}
+	// Preserve any effect class that is valid today but not yet listed in
+	// canonicalEffectOrder, so this helper can never silently narrow a ceiling.
+	for _, e := range ceiling {
+		if seen[e] {
+			out = append(out, e)
+			delete(seen, e)
+		}
+	}
+	return out
+}
+
+// canonicalEffectOrder is the planner's effect ordering (see EffectClass).
+// Descriptors that externalDescriptorEqual compares must present effects in
+// this order.
+var canonicalEffectOrder = []EffectClass{
+	EffectReadOnly,
+	EffectLocalMutation,
+	EffectExternalEffect,
+	EffectSensitive,
+}
+
+// ExternalCeilingIsDefault reports whether ns still uses the host default
+// effect ceiling (no reviewed override). tools_search and petition surfaces
+// use this to distinguish an installed-but-host-unreviewed vendor capability
+// (default ceiling) from one the host has explicitly widened.
+func (r *CapabilityRegistry) ExternalCeilingIsDefault(ns string) bool {
+	if r == nil {
+		return true
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	ceil, ok := r.externalEffectCeilings[strings.TrimSpace(ns)]
+	if !ok {
+		return true
+	}
+	def := DefaultExternalCapabilityEffectCeiling
+	if len(ceil) != len(def) {
+		return false
+	}
+	seen := make(map[EffectClass]bool, len(def))
+	for _, e := range def {
+		seen[e] = true
+	}
+	for _, e := range ceil {
+		if !seen[e] {
+			return false
+		}
+	}
+	return true
+}
+
+// SetExternalCapabilityCeiling widens (or narrows) the effect ceiling for one
+// external namespace. It is a host-reviewed operation: a namespace in the
+// default ceiling may only declare read_only and external_effect, while a
+// reviewed override can additionally grant sensitive or local_mutation. Every
+// capability registered under that namespace is then bounded by this ceiling.
+func (r *CapabilityRegistry) SetExternalCapabilityCeiling(ns string, effects []EffectClass) error {
+	if r == nil {
+		return fmt.Errorf("nil capability registry")
+	}
+	ns = strings.TrimSpace(ns)
+	if ns == "" {
+		return fmt.Errorf("external capability namespace is required")
+	}
+	if err := validateEffectClasses(effects); err != nil {
+		return fmt.Errorf("namespace %q effect ceiling: %w", ns, err)
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.externalEffectCeilings[ns] = append([]EffectClass(nil), effects...)
+	// Retarget external descriptors already registered under this namespace
+	// to the new ceiling. Namespace-ceiling descriptors are derived, not
+	// vendor-authored, so leaving the old ceiling stamped on them would make
+	// later RegisterExternalCapability calls for the same capability conflict
+	// against a descriptor that no longer reflects the governing ceiling.
+	canonical := canonicalizeExternalEffects(effects)
+	prefix := string(ExternalCapabilityPrefix) + ns + ":"
+	for id, descriptor := range r.descriptors {
+		if !strings.HasPrefix(string(id), prefix) {
+			continue
+		}
+		descriptor.Effects = append([]EffectClass(nil), canonical...)
+		r.descriptors[id] = descriptor
+	}
+	return nil
+}
+
+// RegisterExternalCapability registers a vendor-declared capability under the
+// external namespace at runtime. Unlike Register it is permitted on a sealed
+// registry: the sealed builtin vocabulary must not change, but a freshly
+// installed MCP/Skill legitimately introduces a new x: capability that the
+// planner must be able to name. Registration still enforces every external
+// invariant (prefix, vendor owner, effect ceiling) so an installed provider
+// cannot expand the governed vocabulary past what its namespace is allowed to
+// declare.
+//
+// ns is the namespace segment: the token after ExternalCapabilityPrefix and
+// before the next colon. def.ID must already carry the x:<ns>: prefix.
+// Re-registration of an identical descriptor is idempotent; a conflicting
+// descriptor for the same ID is rejected so a reconnecting vendor cannot
+// silently change a capability's governed contract.
+func (r *CapabilityRegistry) RegisterExternalCapability(ns string, def CapabilityDescriptor) error {
+	if r == nil {
+		return fmt.Errorf("nil capability registry")
+	}
+	ns = strings.TrimSpace(ns)
+	if ns == "" {
+		return fmt.Errorf("external capability namespace is required")
+	}
+	def.ID = CapabilityID(strings.TrimSpace(string(def.ID)))
+	if def.ID == "" {
+		return fmt.Errorf("external capability id is required")
+	}
+	if !strings.HasPrefix(string(def.ID), string(ExternalCapabilityPrefix)) {
+		return fmt.Errorf("external capability %q must carry the %q prefix", def.ID, ExternalCapabilityPrefix)
+	}
+	if !strings.HasPrefix(string(def.ID), string(ExternalCapabilityPrefix)+ns+":") {
+		return fmt.Errorf("external capability %q must belong to namespace %q", def.ID, ns)
+	}
+	if strings.TrimSpace(def.Owner) != "vendor" {
+		return fmt.Errorf("external capability %q must declare owner %q, got %q", def.ID, "vendor", def.Owner)
+	}
+	if strings.TrimSpace(def.Version) == "" {
+		return fmt.Errorf("external capability %q version is required", def.ID)
+	}
+	if len(def.Effects) == 0 {
+		return fmt.Errorf("external capability %q effects are required", def.ID)
+	}
+	if err := validateEffectClasses(def.Effects); err != nil {
+		return fmt.Errorf("external capability %q effects: %w", def.ID, err)
+	}
+	ceiling := r.externalEffectCeiling(ns)
+	for _, e := range def.Effects {
+		if !effectWithinCeiling(e, ceiling) {
+			return fmt.Errorf("external capability %q effect %q exceeds namespace %q ceiling %v", def.ID, e, ns, ceiling)
+		}
+	}
+	if err := validateCapabilityDescriptorArtifacts(def.Consumes); err != nil {
+		return fmt.Errorf("external capability %q consumes: %w", def.ID, err)
+	}
+	if err := validateCapabilityDescriptorArtifacts(def.Produces); err != nil {
+		return fmt.Errorf("external capability %q produces: %w", def.ID, err)
+	}
+	if def.Qualifiers == nil {
+		def.Qualifiers = map[string]QualifierConstraint{}
+	}
+	for name, rule := range def.Qualifiers {
+		if strings.TrimSpace(name) == "" {
+			return fmt.Errorf("external capability %q has an empty qualifier", def.ID)
+		}
+		for _, value := range rule.Values {
+			if strings.TrimSpace(value) == "" {
+				return fmt.Errorf("external capability %q qualifier %q has an empty value", def.ID, name)
+			}
+		}
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if existing, ok := r.descriptors[def.ID]; ok {
+		if !externalDescriptorEqual(existing, def) {
+			return fmt.Errorf("external capability %q conflicts with an already registered descriptor", def.ID)
+		}
+		return nil
+	}
+	r.descriptors[def.ID] = cloneCapabilityDescriptor(def)
+	return nil
+}
+
+// externalDescriptorEqual compares the governed contract fields of two external
+// capability descriptors. ArtifactContract and QualifierConstraint are value
+// comparable, so the slice/map elements compare field by field.
+func externalDescriptorEqual(a, b CapabilityDescriptor) bool {
+	if a.Version != b.Version || a.Owner != b.Owner || a.Summary != b.Summary {
+		return false
+	}
+	if len(a.Effects) != len(b.Effects) || len(a.Consumes) != len(b.Consumes) || len(a.Produces) != len(b.Produces) || len(a.Qualifiers) != len(b.Qualifiers) {
+		return false
+	}
+	for i := range a.Effects {
+		if a.Effects[i] != b.Effects[i] {
+			return false
+		}
+	}
+	for i := range a.Consumes {
+		if a.Consumes[i] != b.Consumes[i] {
+			return false
+		}
+	}
+	for i := range a.Produces {
+		if a.Produces[i] != b.Produces[i] {
+			return false
+		}
+	}
+	for k, v := range a.Qualifiers {
+		bv, ok := b.Qualifiers[k]
+		if !ok || bv.Required != v.Required || len(bv.Values) != len(v.Values) {
+			return false
+		}
+		for i := range bv.Values {
+			if bv.Values[i] != v.Values[i] {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 func validateCapabilityDescriptorArtifacts(contracts []ArtifactContract) error {
@@ -283,9 +587,47 @@ func (c ProviderClassification) plannable() bool {
 
 // ProviderSpec is catalog metadata only. AdapterName is the trusted runtime
 // adapter identity, not evidence that a request needs this provider.
+// ProviderTrustTier is the explicit trust classification of a provider, set by
+// the trusted control-plane publisher from the contract family it resolved
+// (reviewed/open), not from discovery metadata. It lets bestProvider prefer a
+// reviewed or host-owned implementation over an arbitrary unreviewed
+// installation even when the unreviewed tool declares a higher Quality, so a
+// future change that bumps an unreviewed tool's Quality can never silently
+// outrank a trusted provider of the same capability.
+//
+// The zero value is treated as approved (see TrustTierRank): every
+// builtin/host/code-reviewed provider is constructed without an explicit tier,
+// and only the open unreviewed family opts into the lower tier. Defaulting the
+// unknown case to the trusted tier keeps the 50+ legacy ProviderSpec literals
+// safe and means a missing field can never demote a trusted provider.
+type ProviderTrustTier string
+
+const (
+	// TrustTierApproved is a builtin, host-owned, or code-reviewed provider.
+	TrustTierApproved ProviderTrustTier = "approved"
+	// TrustTierUnreviewed is an arbitrary installed MCP reachable only through
+	// the open information.lookup family; it may act on external systems but is
+	// never pre-approved over a trusted provider of the same capability.
+	TrustTierUnreviewed ProviderTrustTier = "unreviewed"
+)
+
+// TrustTierRank returns the selection precedence of a tier: approved (and any
+// unspecified/legacy provider) outranks unreviewed.
+func (t ProviderTrustTier) Rank() int {
+	if t == TrustTierUnreviewed {
+		return 0
+	}
+	return 1
+}
+
 type ProviderSpec struct {
 	AdapterName string
 	Binding     ProviderBinding
+	// TrustTier is the explicit trust classification projected from the
+	// control-plane contract family. It is advisory for bestProvider ordering
+	// only and is intentionally excluded from any grant or catalog digest: a
+	// tier change must not rotate in-flight grants.
+	TrustTier ProviderTrustTier
 	// Classification is the explicit coverage class of this entry. The zero
 	// value means provision for backwards compatibility; Publish normalises
 	// it to an explicit value in the stored snapshot.
@@ -309,8 +651,13 @@ type ProviderSpec struct {
 type ToolCatalogSnapshot struct {
 	Generation      uint64
 	RegistryVersion string
-	CreatedAt       time.Time
-	Providers       []ProviderSpec
+	// Digest is the immutable identity of this catalog snapshot. It is kept
+	// separate from a plan digest: a plan also commits needs, facts, policy
+	// constraints and budgets, while this value answers only "which provider
+	// inventory did the host admit?".
+	Digest    string
+	CreatedAt time.Time
+	Providers []ProviderSpec
 	// Coverage tells the planner whether this snapshot is a complete view of
 	// the governed inventory for the current request scope. An empty provider
 	// list without coverage is not evidence that a capability is unavailable:
@@ -318,6 +665,27 @@ type ToolCatalogSnapshot struct {
 	// callers receive explicit Complete coverage; dynamic hosts must publish
 	// their observed readiness through PublishWithCoverage.
 	Coverage CatalogCoverage
+}
+
+// EffectiveCatalogSnapshotDigest returns the canonical identity of a catalog
+// snapshot.  Digest is a persisted claim supplied by a publisher, so callers
+// must never use it as an authority without checking it against the immutable
+// snapshot contents.  A blank claim is accepted for legacy in-memory callers
+// and is filled from the canonical representation.
+func EffectiveCatalogSnapshotDigest(snapshot ToolCatalogSnapshot) (string, error) {
+	expected := CatalogSnapshotDigest(snapshot)
+	if supplied := strings.TrimSpace(snapshot.Digest); supplied != "" && supplied != expected {
+		return "", fmt.Errorf("catalog_snapshot_digest_mismatch")
+	}
+	return expected, nil
+}
+
+// ValidateCatalogSnapshotDigest checks the optional persisted digest claim
+// without mutating the snapshot.  It is useful at boundaries that need a
+// boolean-style validation before handing a snapshot to a planner.
+func ValidateCatalogSnapshotDigest(snapshot ToolCatalogSnapshot) error {
+	_, err := EffectiveCatalogSnapshotDigest(snapshot)
+	return err
 }
 
 // CatalogCoverageState distinguishes an actually infeasible need from a
@@ -535,6 +903,19 @@ func (c *ToolCatalog) PublishWithCoverage(providers []ProviderSpec, coverage Cat
 			if !ok || descriptor.Deprecated {
 				return ToolCatalogSnapshot{}, fmt.Errorf("provider %q declares unknown or deprecated capability %q", provider.AdapterName, provision.Capability)
 			}
+			if strings.HasPrefix(string(provision.Capability), string(ExternalCapabilityPrefix)) {
+				// An external capability's governed effect set is whatever the
+				// host admitted at registration time (already bounded by the
+				// namespace ceiling). A publishing provider may not declare an
+				// effect the registered descriptor does not permit, so an
+				// installed vendor tool cannot silently widen its authority
+				// past what was reviewed.
+				for _, e := range provider.Effects {
+					if !effectWithinCeiling(e, descriptor.Effects) {
+						return ToolCatalogSnapshot{}, fmt.Errorf("provider %q capability %q effect %q is not permitted by its registered descriptor %v", provider.AdapterName, provision.Capability, e, descriptor.Effects)
+					}
+				}
+			}
 			if err := validateProvision(descriptor, provision); err != nil {
 				return ToolCatalogSnapshot{}, fmt.Errorf("provider %q: %w", provider.AdapterName, err)
 			}
@@ -548,7 +929,9 @@ func (c *ToolCatalog) PublishWithCoverage(providers []ProviderSpec, coverage Cat
 	for i := range validated {
 		validated[i].Binding.CatalogGeneration = generation
 	}
-	c.snapshot = ToolCatalogSnapshot{Generation: generation, RegistryVersion: c.registry.Version(), CreatedAt: now, Providers: validated, Coverage: coverage}
+	snapshot := ToolCatalogSnapshot{Generation: generation, RegistryVersion: c.registry.Version(), CreatedAt: now, Providers: validated, Coverage: coverage}
+	snapshot.Digest = CatalogSnapshotDigest(snapshot)
+	c.snapshot = snapshot
 	return cloneCatalogSnapshot(c.snapshot), nil
 }
 
@@ -688,6 +1071,8 @@ func validateEffectClasses(effects []EffectClass) error {
 func cloneProviderSpec(in ProviderSpec) ProviderSpec {
 	out := in
 	out.ParameterAuthorization.AllowedFields = append([]string(nil), in.ParameterAuthorization.AllowedFields...)
+	out.ParameterAuthorization.AllowedTargets = append([]string(nil), in.ParameterAuthorization.AllowedTargets...)
+	out.ParameterAuthorization.AllowedArtifactIDs = append([]string(nil), in.ParameterAuthorization.AllowedArtifactIDs...)
 	out.Effects = append([]EffectClass(nil), in.Effects...)
 	out.ChannelScopes = append([]string(nil), in.ChannelScopes...)
 	out.Consumes = append([]ArtifactContract(nil), in.Consumes...)
@@ -733,4 +1118,186 @@ func cloneStringMap(in map[string]string) map[string]string {
 func SchemaDigest(schema []byte) string {
 	sum := sha256.Sum256(schema)
 	return hex.EncodeToString(sum[:])
+}
+
+// CatalogSnapshotDigest returns a stable identity for the host-admitted
+// provider inventory. Diagnostic timestamps and the stored Digest field are
+// deliberately excluded; changing a provider binding, schema authorization,
+// readiness watermark, coverage state or generation produces a new identity.
+//
+// The digest payload is a length-delimited canonical multiset. Provider and
+// coverage-family order therefore cannot affect the result, and a malformed
+// snapshot containing duplicate stable IDs still has a deterministic identity
+// (the duplicate entries are retained and sorted by their complete payload).
+// The v2 marker is intentional: v1 joined raw slices and was order-sensitive,
+// so an old and a new publisher must never silently treat those identities as
+// interchangeable during recovery.
+//
+// Callers may use this for recovery checks even when they received a snapshot
+// from an older publisher that did not persist Digest.
+func CatalogSnapshotDigest(snapshot ToolCatalogSnapshot) string {
+	parts := []string{
+		"catalog-snapshot-v2",
+		snapshot.RegistryVersion,
+		fmt.Sprintf("%d", snapshot.Generation),
+		"coverage",
+		string(snapshot.Coverage.State),
+		snapshot.Coverage.ReasonCode,
+		canonicalDigestTime(snapshot.Coverage.StaleUntil),
+	}
+	families := append([]CatalogCoverageFamily(nil), snapshot.Coverage.Families...)
+	sort.Slice(families, func(i, j int) bool {
+		return canonicalCatalogCoverageFamilyDigest(families[i]) < canonicalCatalogCoverageFamilyDigest(families[j])
+	})
+	for _, family := range families {
+		parts = append(parts, "family", canonicalCatalogCoverageFamilyDigest(family))
+	}
+	providers := append([]ProviderSpec(nil), snapshot.Providers...)
+	sort.Slice(providers, func(i, j int) bool {
+		return canonicalProviderDigest(providers[i]) < canonicalProviderDigest(providers[j])
+	})
+	for _, provider := range providers {
+		parts = append(parts, "provider", canonicalProviderDigest(provider))
+	}
+	return "catalog:sha256:" + SchemaDigest([]byte(canonicalDigestEncode(parts...)))
+}
+
+// canonicalDigestEncode gives every field an explicit byte length. It is used
+// only for immutable identity payloads; unlike a delimiter join it cannot
+// collapse two values that contain a delimiter or an embedded NUL.
+func canonicalDigestEncode(parts ...string) string {
+	var builder strings.Builder
+	for _, part := range parts {
+		builder.WriteString(fmt.Sprintf("%d:", len(part)))
+		builder.WriteString(part)
+	}
+	return builder.String()
+}
+
+func canonicalDigestTime(value time.Time) string {
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+// canonicalDigestStringList represents a multiset: entries are sorted but
+// deliberately not deduplicated. Duplicate values are invalid for several
+// catalog fields, yet retaining them makes a hand-built invalid snapshot
+// deterministic and keeps the digest from masking the malformed state.
+func canonicalDigestStringList(values []string) string {
+	if len(values) == 0 {
+		return canonicalDigestEncode("0")
+	}
+	sorted := append([]string(nil), values...)
+	sort.Strings(sorted)
+	parts := make([]string, 0, len(sorted)+1)
+	parts = append(parts, fmt.Sprintf("%d", len(sorted)))
+	parts = append(parts, sorted...)
+	return canonicalDigestEncode(parts...)
+}
+
+func canonicalDigestNormalizedStringList(values []string, lower bool) string {
+	if len(values) == 0 {
+		return canonicalDigestEncode("0")
+	}
+	normalized := make([]string, len(values))
+	for index, value := range values {
+		value = strings.TrimSpace(value)
+		if lower {
+			value = strings.ToLower(value)
+		}
+		normalized[index] = value
+	}
+	return canonicalDigestStringList(normalized)
+}
+
+func canonicalCatalogCoverageFamilyDigest(family CatalogCoverageFamily) string {
+	return canonicalDigestEncode(
+		canonicalCatalogCoverageKind(family.Kind),
+		string(family.State),
+		family.ReasonCode,
+		canonicalDigestTime(family.StaleUntil),
+	)
+}
+
+func canonicalProviderDigest(provider ProviderSpec) string {
+	authorization := provider.ParameterAuthorization
+	return canonicalDigestEncode(
+		strings.TrimSpace(provider.AdapterName),
+		string(provider.Classification.normalized()),
+		strings.TrimSpace(provider.Binding.Kind),
+		strings.TrimSpace(provider.Binding.ProviderID),
+		strings.TrimSpace(provider.Binding.ImplementationID),
+		strings.TrimSpace(provider.Binding.SchemaDigest),
+		fmt.Sprintf("%d", provider.Binding.CatalogGeneration),
+		fmt.Sprintf("%t", provider.Ready),
+		canonicalDigestTime(provider.ReadyUntil),
+		// Channel scopes are matched case-insensitively by the planner, so the
+		// identity follows the same semantic normalization.
+		canonicalDigestNormalizedStringList(provider.ChannelScopes, true),
+		strings.TrimSpace(authorization.Digest),
+		strings.TrimSpace(authorization.CanonicalizerVer),
+		canonicalDigestNormalizedStringList(authorization.AllowedFields, false),
+		canonicalDigestNormalizedStringList(authorization.AllowedTargets, false),
+		canonicalDigestNormalizedStringList(authorization.AllowedArtifactIDs, false),
+		canonicalDigestNormalizedStringList(effectStrings(provider.Effects), false),
+		canonicalDigestProvisionList(provider.Provides),
+		canonicalDigestArtifactList(provider.Consumes),
+		canonicalDigestArtifactList(provider.Produces),
+	)
+}
+
+func effectStrings(effects []EffectClass) []string {
+	values := make([]string, len(effects))
+	for index, effect := range effects {
+		values[index] = string(effect)
+	}
+	return values
+}
+
+func canonicalDigestProvisionList(provisions []CapabilityProvision) string {
+	values := make([]string, 0, len(provisions))
+	for _, provision := range provisions {
+		values = append(values, canonicalDigestEncode(
+			string(provision.Capability),
+			canonicalDigestStringMap(provision.Qualifiers),
+			fmt.Sprintf("%.9g", provision.Quality),
+		))
+	}
+	sort.Strings(values)
+	parts := make([]string, 0, len(values)+1)
+	parts = append(parts, fmt.Sprintf("%d", len(values)))
+	parts = append(parts, values...)
+	return canonicalDigestEncode(parts...)
+}
+
+func canonicalDigestArtifactList(contracts []ArtifactContract) string {
+	values := make([]string, 0, len(contracts))
+	for _, contract := range contracts {
+		values = append(values, canonicalDigestEncode(
+			strings.ToLower(strings.TrimSpace(contract.Kind)),
+			strings.ToLower(strings.TrimSpace(contract.MIMEType)),
+			fmt.Sprintf("%t", contract.Required),
+		))
+	}
+	sort.Strings(values)
+	parts := make([]string, 0, len(values)+1)
+	parts = append(parts, fmt.Sprintf("%d", len(values)))
+	parts = append(parts, values...)
+	return canonicalDigestEncode(parts...)
+}
+
+func canonicalDigestStringMap(values map[string]string) string {
+	if len(values) == 0 {
+		return canonicalDigestEncode("0")
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	parts := make([]string, 0, len(keys)+1)
+	parts = append(parts, fmt.Sprintf("%d", len(keys)))
+	for _, key := range keys {
+		parts = append(parts, canonicalDigestEncode(key, values[key]))
+	}
+	return canonicalDigestEncode(parts...)
 }

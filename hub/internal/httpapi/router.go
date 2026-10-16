@@ -11,11 +11,13 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/hub/internal/auth"
+	"github.com/RapidAI/CodeClaw/hub/internal/botmgmt"
 	"github.com/RapidAI/CodeClaw/hub/internal/capability"
 	"github.com/RapidAI/CodeClaw/hub/internal/center"
 	"github.com/RapidAI/CodeClaw/hub/internal/chat"
 	"github.com/RapidAI/CodeClaw/hub/internal/cloudworkspace"
 	"github.com/RapidAI/CodeClaw/hub/internal/config"
+	"github.com/RapidAI/CodeClaw/hub/internal/desktoppool"
 	"github.com/RapidAI/CodeClaw/hub/internal/device"
 	"github.com/RapidAI/CodeClaw/hub/internal/diagnostics"
 	"github.com/RapidAI/CodeClaw/hub/internal/digitalasset"
@@ -23,7 +25,6 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/entry"
 	"github.com/RapidAI/CodeClaw/hub/internal/expert"
 	"github.com/RapidAI/CodeClaw/hub/internal/feishu"
-	"github.com/RapidAI/CodeClaw/hub/internal/im"
 	"github.com/RapidAI/CodeClaw/hub/internal/industryexpert"
 	"github.com/RapidAI/CodeClaw/hub/internal/invitation"
 	"github.com/RapidAI/CodeClaw/hub/internal/llmcache"
@@ -76,7 +77,6 @@ func NewRouter(
 	failureLogs store.FailureEventLogRepository,
 	feishuNotifier *feishu.Notifier,
 	feishuPlugin *feishu.FeishuPlugin,
-	openclawIMPlugin *im.WebhookIMPlugin,
 	qqbotPlugin *qqbot.Plugin,
 	wecomPlugin *wecom.Plugin,
 	dingtalkPlugin *dingtalk.Plugin,
@@ -94,9 +94,6 @@ func NewRouter(
 	hubCfg *config.Config,
 	configPath string,
 	ensureTLSCert func(certFile, keyFile string) error,
-	staticDir string,
-	routePrefix string,
-	bridgeDir string,
 	tenantIMRuntimeReloader TenantIMRuntimeReloader,
 	knowledgeShares store.KnowledgeShareRepository,
 	tenantRepoOpt ...store.TenantRepository,
@@ -261,6 +258,10 @@ func NewRouter(
 	mux.HandleFunc("POST /api/ve/auth/respond", VEAuthRespondHandler(system, identity, deviceSvc))
 	mux.HandleFunc("GET /api/ve/list", requireTenantAdmin(VEAdminListHandler(system, deviceSvc, userLookup)))
 	mux.HandleFunc("GET /api/admin/ve/metrics", requireTenantAdmin(VEMetricsHandler()))
+	// Link health spans every tenant the Hub serves (per-tenant online ratios),
+	// so it needs the global admin guard rather than the tenant-scoped one used
+	// by the VE metrics above.
+	mux.HandleFunc("GET /api/admin/link-health/metrics", requireGlobalAdmin(LinkHealthMetricsHandler()))
 	mux.HandleFunc("GET /api/admin/adaptive-prompt/metrics", requireTenantAdmin(AdaptivePromptMetricsHandler(deviceSvc)))
 	mux.HandleFunc("GET /api/admin/cost-ops/metrics", requireTenantAdmin(CostOpsMetricsHandler(deviceSvc)))
 	mux.HandleFunc("GET /api/ve/{id}/history", requireTenantAdmin(VEHistoryHandler(system, groupDiscussionSvc, userLookup, identity.MachinesRepo())))
@@ -382,20 +383,112 @@ func NewRouter(
 		cloudWorkspaceSvc.Failures = diagnostics.NewFailureEventRecorder(failureLogs)
 	}
 	cloudWorkspaceSvc.StartHourlyGC()
-	mux.HandleFunc("GET /api/admin/cloud-workspaces/settings", requireAdmin(GetCloudWorkspaceSettingsAdminHandler(cloudWorkspaceSvc)))
-	mux.HandleFunc("PUT /api/admin/cloud-workspaces/settings", requireAdmin(PutCloudWorkspaceSettingsAdminHandler(cloudWorkspaceSvc, adminAudit)))
-	mux.HandleFunc("GET /api/admin/cloud-workspaces/metrics", requireAdmin(GetCloudWorkspaceMetricsAdminHandler(cloudWorkspaceSvc)))
+	// Cloud Workspace settings and metrics are tenant-scoped.  A global admin
+	// must not accidentally read or mutate another tenant's quota/department
+	// policy; this mirrors the digital-assets admin boundary above.
+	mux.HandleFunc("GET /api/admin/cloud-workspaces/settings", requireTenantAdmin(GetCloudWorkspaceSettingsAdminHandler(cloudWorkspaceSvc)))
+	mux.HandleFunc("PUT /api/admin/cloud-workspaces/settings", requireTenantAdmin(PutCloudWorkspaceSettingsAdminHandler(cloudWorkspaceSvc, adminAudit)))
+	mux.HandleFunc("GET /api/admin/cloud-workspaces/metrics", requireTenantAdmin(GetCloudWorkspaceMetricsAdminHandler(cloudWorkspaceSvc)))
+	mux.HandleFunc("GET /api/admin/cloud-workspaces/audit/export", requireTenantAdmin(GetCloudWorkspaceAuditExportAdminHandler(cloudWorkspaceSvc)))
+	botSvc := botmgmt.NewService(system)
+	if identity != nil {
+		botSvc.OwnerLLM = botOwnerLLM{identity: identity, center: centerSvc}
+	}
+	mux.HandleFunc("GET /api/admin/bots/settings", requireTenantAdmin(GetBotSettingsAdminHandler(botSvc)))
+	mux.HandleFunc("PUT /api/admin/bots/settings", requireTenantAdmin(PutBotSettingsAdminHandler(botSvc, adminAudit)))
+	mux.HandleFunc("PUT /api/admin/bots/llm", requireTenantAdmin(PutBotLLMSettingsAdminHandler(botSvc, adminAudit)))
+	mux.HandleFunc("POST /api/admin/bots/connection/test", requireTenantAdmin(TestBotConnectionAdminHandler(botSvc)))
+	mux.HandleFunc("POST /api/admin/bots/grants", requireTenantAdmin(PostBotGrantAdminHandler(botSvc, adminAudit)))
+	mux.HandleFunc("PUT /api/admin/bots/{id}/desktop-mode", requireTenantAdmin(PutBotDesktopModeAdminHandler(botSvc)))
+	mux.HandleFunc("DELETE /api/admin/bots/grants/{id}", requireTenantAdmin(DeleteBotGrantAdminHandler(botSvc, adminAudit)))
+	var desktopDirectory desktoppool.Directory
+	if platformUsers != nil && securitySvc != nil {
+		directory := securityDirectory{users: platformUsers, sec: securitySvc}
+		desktopDirectory = directory
+		botSvc.Directory = directory
+	}
+	desktopPool := desktoppool.New(system, desktopDirectory)
+	botSvc.Desktop = botDesktopControl{pool: desktopPool}
+	mux.HandleFunc("GET /api/admin/desktop-services", requireTenantAdmin(GetDesktopServicesAdminHandler(desktopPool, platformUsers, botSvc)))
+	mux.HandleFunc("POST /api/admin/desktop-services", requireTenantAdmin(PostDesktopServiceAdminHandler(desktopPool)))
+	mux.HandleFunc("PATCH /api/admin/desktop-services/{id}", requireTenantAdmin(PatchDesktopServiceAdminHandler(desktopPool)))
+	mux.HandleFunc("DELETE /api/admin/desktop-services/{id}", requireTenantAdmin(DeleteDesktopServiceAdminHandler(desktopPool)))
+	mux.HandleFunc("POST /api/admin/desktop-services/assignments", requireTenantAdmin(PostDesktopAssignmentAdminHandler(desktopPool)))
+	mux.HandleFunc("DELETE /api/admin/desktop-services/assignments/{id}", requireTenantAdmin(DeleteDesktopAssignmentAdminHandler(desktopPool)))
+	mux.HandleFunc("POST /api/admin/desktop-services/desktops", requireTenantAdmin(PostDesktopCreateAdminHandler(desktopPool, botSvc)))
+	mux.HandleFunc("POST /api/admin/desktop-services/desktops/stop", requireTenantAdmin(PostDesktopStopAdminHandler(desktopPool, botSvc)))
+	mux.HandleFunc("POST /api/admin/desktop-services/desktops/view", requireTenantAdmin(PostDesktopViewAdminHandler(desktopPool, botSvc)))
+	mux.HandleFunc("POST /api/v1/desktop-services/session", PostDesktopSessionHandler(desktopPool, botSvc))
+	mux.HandleFunc("POST /api/v1/desktop-services/stop", PostDesktopStopHandler(desktopPool, botSvc))
+	mux.HandleFunc("POST /api/v1/desktop-services/hold", PostDesktopHoldHandler(botSvc))
+	mux.HandleFunc("POST /api/v1/desktop-services/app", PostDesktopAppHandler(desktopPool))
+	mux.HandleFunc("POST /api/v1/desktop-services/open", PostDesktopOpenHandler(desktopPool))
+	mux.HandleFunc("POST /api/v1/desktop-services/install", PostDesktopInstallHandler(desktopPool))
+	mux.HandleFunc("POST /api/v1/desktop-services/file", PostDesktopFileHandler(desktopPool))
+	mux.HandleFunc("POST /api/v1/desktop-services/bash", PostDesktopBashHandler(desktopPool))
+	mux.HandleFunc("POST /api/v1/desktop-services/http", PostDesktopHTTPHandler(desktopPool))
+	mux.HandleFunc("POST /api/v1/desktop-services/screenshot", PostDesktopScreenshotHandler(desktopPool))
+	mux.HandleFunc("POST /api/v1/desktop-services/ctl", PostDesktopCtlHandler(desktopPool))
+	desktopMCPTokens := &desktopMCPTokenStore{system: system}
+	desktopMCP := DesktopMCPHandler(desktopPool, desktopMCPTokens, identity, admins)
+	userMCPTokens := DesktopMCPUserTokensHandler(desktopMCPTokens, identity)
+	adminMCPTokens := DesktopMCPAdminTokensHandler(desktopMCPTokens, requireTenantAdmin)
+	for _, method := range []string{"GET", "POST", "DELETE"} {
+		mux.Handle(method+" /mcp", desktopMCP)
+		mux.HandleFunc(method+" /api/v1/desktop-mcp/tokens", userMCPTokens)
+		mux.HandleFunc(method+" /api/admin/desktop-mcp/tokens", adminMCPTokens)
+	}
+	mux.HandleFunc("GET /api/v1/bots/access", GetBotAccessHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/bots/credits", GetBotCreditsHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/bots", ListBotsHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/bots/pending", GetBotPendingHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/bots/cross-notes", GetBotCrossNotesHandler(botSvc, identity))
+	mux.HandleFunc("POST /api/v1/bots/{id}/primary", PostBotPrimaryHandler(botSvc, identity))
+	mux.HandleFunc("POST /api/v1/bots/{id}/cross", PostBotCrossHandler(botSvc, identity))
+	mux.HandleFunc("POST /api/v1/bots/{id}/cross-notes/{noteID}/start", PostBotCrossStartHandler(botSvc, identity))
+	mux.HandleFunc("POST /api/v1/bots/{id}/cross-notes/{noteID}/run", PostBotCrossRunHandler(botSvc, identity))
+	mux.HandleFunc("POST /api/v1/bots", PostBotUserHandler(botSvc, identity))
+	mux.HandleFunc("PATCH /api/v1/bots/{id}", PatchBotUserHandler(botSvc, identity))
+	mux.HandleFunc("DELETE /api/v1/bots/{id}", DeleteBotUserHandler(botSvc, identity))
+	mux.HandleFunc("POST /api/v1/bots/{id}/messages", PostBotMessageHandler(botSvc, identity))
+	mux.HandleFunc("POST /api/v1/bots/{id}/runs/{runID}/supplement", PostBotRunSupplementHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/bots/{id}/runs/{runID}/supplements", GetBotRunSupplementsHandler(botSvc, identity))
+	mux.HandleFunc("POST /api/v1/bots/{id}/runs/{runID}/cancel", PostBotRunCancelHandler(botSvc, identity))
+	mux.HandleFunc("POST /api/v1/bots/{id}/preference", PostBotPreferenceHandler(botSvc, identity))
+	mux.HandleFunc("DELETE /api/v1/bots/{id}/preference", DeleteBotPreferenceHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/bots/{id}/runs/{runID}", GetBotRunHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/bots/{id}/tasks", GetBotTasksHandler(botSvc, identity))
+	mux.HandleFunc("POST /api/v1/bots/{id}/runs/{runID}/ack", PostBotRunAckHandler(botSvc, identity))
+	mux.HandleFunc("POST /api/v1/bots/{id}/secret-fill", PostBotSecretFillHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/bots/{id}/desktop", GetBotDesktopHandler(botSvc, identity))
+	mux.HandleFunc("POST /api/v1/bots/{id}/desktop", PostBotDesktopWatchHandler(botSvc, identity))
+	mux.HandleFunc("POST /api/v1/bots/{id}/desktop/handback", PostBotDesktopHandBackHandler(botSvc, identity))
+	mux.HandleFunc("PUT /api/v1/bots/{id}/desktop-mode", PutBotDesktopModeUserHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/bots/llm", GetBotLLMHandler(botSvc, identity))
+	mux.HandleFunc("PUT /api/v1/bots/llm", PutBotLLMHandler(botSvc, identity))
+	mux.HandleFunc("GET /api/v1/desktop-handoff/{token}/{rest...}", GetDesktopHandoffHandler(botSvc))
 	mux.HandleFunc("GET /api/v1/cloud-workspaces/entitlement", CloudWorkspaceEntitlementHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("POST /api/v1/cloud-workspace-sessions", CloudWorkspaceIssueInstanceSessionHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("DELETE /api/v1/cloud-workspace-sessions/{session_id}", CloudWorkspaceRevokeInstanceSessionHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("POST /api/v1/cloud-workspaces", CloudWorkspaceCreateHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("POST /api/v1/cloud-workspace-tasks", CloudWorkspaceTaskProvisionHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("GET /api/v1/cloud-workspace-tasks/{operation_id}", CloudWorkspaceTaskProvisionStatusHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("POST /api/v1/cloud-workspace-tasks/{operation_id}/complete", cloudWorkspaceTaskProvisionTransitionHandler(cloudWorkspaceSvc, identity, false))
+	mux.HandleFunc("POST /api/v1/cloud-workspace-tasks/{operation_id}/abort", cloudWorkspaceTaskProvisionTransitionHandler(cloudWorkspaceSvc, identity, true))
 	mux.HandleFunc("PATCH /api/v1/cloud-workspaces/{id}", CloudWorkspaceRenameHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("DELETE /api/v1/cloud-workspaces/{id}", CloudWorkspaceDeleteHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("DELETE /api/v1/cloud-workspaces/{id}/purge", CloudWorkspaceHardDeleteHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/restore", CloudWorkspaceRestoreHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/leases", CloudWorkspaceAcquireLeaseHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/leases/handoff-request", CloudWorkspaceHandoffRequestHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/leases/{lease_id}/heartbeat", CloudWorkspaceHeartbeatLeaseHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("DELETE /api/v1/cloud-workspaces/{id}/leases/{lease_id}", CloudWorkspaceReleaseLeaseHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("GET /api/v1/cloud-workspaces/{id}/manifest", CloudWorkspaceGetManifestHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("PUT /api/v1/cloud-workspaces/{id}/manifest", CloudWorkspacePutManifestHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/audit", CloudWorkspaceRecordAuditHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("GET /api/v1/cloud-workspaces/{id}/audit", CloudWorkspaceListAuditHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/manifest-delta", CloudWorkspaceManifestDeltaHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/snapshots/{snapshot_id}/restore", CloudWorkspaceRestoreSnapshotHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("GET /api/v1/cloud-workspaces/{id}/events", CloudWorkspaceEventsHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/operations", CloudWorkspaceOperationHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("GET /api/v1/cloud-workspaces/{id}/objects/{sha256}", CloudWorkspaceGetObjectHandler(cloudWorkspaceSvc, identity))
@@ -404,6 +497,16 @@ func NewRouter(
 	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/objects/{sha256}/complete", CloudWorkspaceCompleteObjectHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("GET /api/v1/cloud-workspaces/{id}/sidecars/{name}", CloudWorkspaceGetSidecarHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("PUT /api/v1/cloud-workspaces/{id}/sidecars/{name}", CloudWorkspacePutSidecarHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("POST /api/v1/cloud-workspaces/{id}/share", CloudWorkspaceCreateShareHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("GET /api/v1/cloud-workspaces/{id}/share", CloudWorkspaceGetShareHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("DELETE /api/v1/cloud-workspaces/{id}/share", CloudWorkspaceRevokeShareHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("PATCH /api/v1/cloud-workspaces/{id}/share/recipients/{user_id}", CloudWorkspaceUpdateShareRecipientHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("DELETE /api/v1/cloud-workspaces/{id}/share/recipients/{user_id}", CloudWorkspaceRemoveShareRecipientHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("POST /api/v1/cloud-workspace-shares/{token}/accept", CloudWorkspaceAcceptShareHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("GET /hub/cloud-workspaces/shares/{token}", CloudWorkspaceSharePublicPageHandler(cloudWorkspaceSvc))
+	mux.HandleFunc("GET /api/v1/cloud-workspaces/{id}/task-binding", CloudWorkspaceGetTaskBindingHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("PUT /api/v1/cloud-workspaces/{id}/task-binding", CloudWorkspacePutTaskBindingHandler(cloudWorkspaceSvc, identity))
+	mux.HandleFunc("DELETE /api/v1/cloud-workspaces/{id}/task-binding", CloudWorkspaceDeleteTaskBindingHandler(cloudWorkspaceSvc, identity))
 	mux.HandleFunc("GET /api/knowledge/shares/mine", ListMyKnowledgeSharesHandler(knowledgeShares, identity))
 	mux.HandleFunc("POST /api/knowledge/shares", CreateKnowledgeShareHandler(knowledgeShares, identity, knowledgeSharePackageDir))
 	mux.HandleFunc("GET /api/knowledge/shares/{knowledgeID}", GetKnowledgeSharePublicHandler(knowledgeShares, identity))
@@ -493,6 +596,9 @@ func NewRouter(
 	// modify a tenant's registration method or SMS credentials.
 	mux.HandleFunc("GET /api/admin/settings/registration-auth", requireTenantAdmin(GetRegistrationAuthConfigHandler(system)))
 	mux.HandleFunc("PUT /api/admin/settings/registration-auth", requireTenantAdmin(UpdateRegistrationAuthConfigHandler(system)))
+	mux.HandleFunc("GET /api/admin/settings/checkin", requireTenantAdmin(GetCheckinConfigHandler(system)))
+	mux.HandleFunc("PUT /api/admin/settings/checkin", requireTenantAdmin(UpdateCheckinConfigHandler(system)))
+	mux.HandleFunc("GET /api/admin/checkin/records", requireTenantAdmin(GetCheckinRecordsHandler(system)))
 	mux.HandleFunc("POST /api/admin/center/register", requireGlobalAdmin(RegisterCenterHandler(centerSvc)))
 	mux.HandleFunc("POST /api/admin/mail/test", requireGlobalAdmin(AdminSendTestMailHandler(mailer)))
 	mux.HandleFunc("GET /api/admin/feishu/config", requireTenantAdmin(GetFeishuConfigHandler(system)))
@@ -501,15 +607,6 @@ func NewRouter(
 	mux.HandleFunc("DELETE /api/admin/feishu/bindings", requireTenantAdmin(DeleteFeishuBindingHandler(feishuNotifier)))
 	mux.HandleFunc("GET /api/admin/feishu/auto-enroll", requireTenantAdmin(GetFeishuAutoEnrollHandler(system)))
 	mux.HandleFunc("POST /api/admin/feishu/auto-enroll", requireTenantAdmin(UpdateFeishuAutoEnrollHandler(system, feishuNotifier)))
-	mux.HandleFunc("GET /api/admin/settings/openclaw_im", requireTenantAdmin(GetOpenclawIMConfigHandler(system)))
-	mux.HandleFunc("POST /api/admin/settings/openclaw_im", requireTenantAdmin(UpdateOpenclawIMConfigHandler(system, bridgeDir)))
-	mux.HandleFunc("POST /api/admin/settings/openclaw_im/test", requireTenantAdmin(TestOpenclawIMWebhookHandler(system)))
-	mux.HandleFunc("POST /api/openclaw_im/webhook", OpenclawIMWebhookHandler(system, openclawIMPlugin))
-	// Bridge channel management
-	mux.HandleFunc("GET /api/admin/bridge/channels", requireTenantAdmin(GetBridgeChannelsHandler(system, bridgeDir)))
-	mux.HandleFunc("POST /api/admin/bridge/channels", requireTenantAdmin(SaveBridgeChannelHandler(system, bridgeDir)))
-	mux.HandleFunc("GET /api/admin/bridge/status", requireTenantAdmin(BridgeStatusHandler(system)))
-	mux.HandleFunc("POST /api/admin/bridge/install", requireGlobalAdmin(InstallBridgeDepsHandler(bridgeDir)))
 	// LLM prompt cache compatibility/operations APIs. There is no standalone
 	// global-admin UI; model endpoints are tenant-scoped under /api/admin/llm.
 	mux.HandleFunc("GET /api/admin/hub_llm_prompt_cache_config", requireGlobalAdmin(GetHubLLMPromptCacheConfigHandler(system, llmPromptCache)))
@@ -524,9 +621,17 @@ func NewRouter(
 	mux.HandleFunc("PUT /api/admin/llm/providers", requireTenantAdmin(UpdateLLMProvidersHandler(system, GetMaClawAccessControl())))
 	mux.HandleFunc("POST /api/admin/llm/providers/test", requireTenantAdmin(TestLLMProviderHandler(system)))
 	mux.HandleFunc("POST /api/admin/llm/providers/test-key", requireTenantAdmin(GenerateLLMProviderTestKeyHandler(identity)))
+	mux.HandleFunc("GET /api/admin/llm/endpoint-api-keys", requireTenantAdmin(ListLLMEndpointAPIKeysHandler(system)))
+	mux.HandleFunc("POST /api/admin/llm/endpoint-api-keys", requireTenantAdmin(CreateLLMEndpointAPIKeyHandler(identity, system, adminAudit)))
+	mux.HandleFunc("DELETE /api/admin/llm/endpoint-api-keys/{id}", requireTenantAdmin(DeleteLLMEndpointAPIKeyHandler(system, adminAudit)))
 	mux.HandleFunc("GET /api/admin/llm/maclaw-compute-status", requireTenantAdmin(MaClawComputeStatusHandler(centerSvc, nil)))
 	mux.HandleFunc("GET /api/admin/llm/services", requireTenantAdmin(GetLLMServicesAdminHandler(system)))
 	mux.HandleFunc("PUT /api/admin/llm/services", requireTenantAdmin(UpdateLLMServicesAdminHandler(system, securitySvc, adminAudit)))
+	mux.HandleFunc("POST /api/admin/llm/services/reset-limit-usage", requireTenantAdmin(ResetLLMServiceNewUserLimitUsageHandler(system, adminAudit)))
+	mux.HandleFunc("POST /api/admin/llm/services/reset-vouchers", requireTenantAdmin(IssueResetVouchersHandler(identity, system, securitySvc, adminAudit)))
+	mux.HandleFunc("POST /api/admin/llm/services/new-user-benefit", requireTenantAdmin(ManageNewUserBenefitHandler(identity, system, securitySvc, adminAudit)))
+	mux.HandleFunc("POST /api/admin/llm/services/new-user-benefit/issue", requireTenantAdmin(ManageNewUserBenefitHandler(identity, system, securitySvc, adminAudit)))
+	mux.HandleFunc("POST /api/admin/llm/services/new-user-benefit/revoke", requireTenantAdmin(ManageNewUserBenefitHandler(identity, system, securitySvc, adminAudit)))
 	mux.HandleFunc("GET /api/admin/llm/system-free", requireTenantAdmin(GetSystemFreeLLMHandler(system)))
 	mux.HandleFunc("PUT /api/admin/llm/system-free", requireTenantAdmin(UpdateSystemFreeLLMHandler(system, adminAudit)))
 	mux.HandleFunc("POST /api/admin/llm/system-free/test", requireTenantAdmin(TestSystemFreeLLMHandler(system)))
@@ -542,7 +647,6 @@ func NewRouter(
 		DingTalk:      dingtalkPlugin,
 		QQBot:         qqbotPlugin,
 		IMRuntime:     tenantIMRuntimeReloader,
-		BridgeDir:     bridgeDir,
 		DigitalAssets: digitalAssetSvc,
 	}
 	mux.HandleFunc("POST /api/admin/config-agent/plan", requireTenantAdmin(ConfigAgentPlanHandler(configAgentDeps)))
@@ -557,6 +661,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/llm/service-cards/delete-batch", requireTenantAdmin(DeleteLLMServiceCardsBatchHandler(system, adminAudit)))
 	mux.HandleFunc("DELETE /api/admin/llm/service-grants/{id}", requireTenantAdmin(DeleteLLMServiceGrantHandler(system, adminAudit)))
 	mux.HandleFunc("GET /api/admin/llm/usage-report", requireTenantAdmin(GetLLMUsageReportHandler(system, securitySvc)))
+	mux.HandleFunc("GET /api/admin/llm/usage-reconciliation", requireTenantAdmin(GetLLMUsageReconciliationHandler(system)))
 	mux.HandleFunc("GET /api/admin/llm/class-traffic", requireTenantAdmin(GetLLMClassTrafficHandler(system)))
 	mux.HandleFunc("POST /api/admin/llm/classify-preview", requireTenantAdmin(PostLLMClassifyPreviewHandler(system)))
 	bindClassHeadSettings(system)
@@ -618,7 +723,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/mobile/llm/desktop-qr-authorizations", MobileLLMDesktopQRAuthorizationHandler(identity))
 	mux.HandleFunc("DELETE /api/mobile/llm/desktop-qr-authorizations", MobileLLMDesktopQRAuthorizationRevokeHandler(identity))
 	mux.HandleFunc("POST /api/mobile/auth/desktop-qr-sessions", MobileDesktopAuthQRSessionHandler(identity))
-	mux.HandleFunc("POST /api/mobile/search", MobileSearchHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache)))
+	mux.HandleFunc("POST /api/mobile/search", MobileSearchHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache, centerSvc, botSvc)))
 	mux.HandleFunc("GET /api/mobile/jobs", MobileJobsHandler(identity))
 	// Hub SSH credential vault (hub_exec path).
 	mux.HandleFunc("GET /api/mobile/ssh/vault", MobileSSHVaultListHandler(identity))
@@ -629,9 +734,9 @@ func NewRouter(
 	// Zero-management path: host + username + password → AI assistant ssh ready.
 	mux.HandleFunc("POST /api/mobile/ssh/quick-connect", MobileSSHQuickConnectHandler(identity))
 	// Long-running official assistant jobs (async upgrade path).
-	mux.HandleFunc("GET /api/mobile/agent/jobs", MobileAgentJobsHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache)))
-	mux.HandleFunc("POST /api/mobile/agent/jobs", MobileAgentJobsHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache)))
-	mux.HandleFunc("GET /api/mobile/agent/jobs/{jobId}", MobileAgentJobsHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache)))
+	mux.HandleFunc("GET /api/mobile/agent/jobs", MobileAgentJobsHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache, centerSvc, botSvc)))
+	mux.HandleFunc("POST /api/mobile/agent/jobs", MobileAgentJobsHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache, centerSvc, botSvc)))
+	mux.HandleFunc("GET /api/mobile/agent/jobs/{jobId}", MobileAgentJobsHandler(identity, LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache, centerSvc, botSvc)))
 	// Meeting recordings use a resumable audio protocol, separate from the
 	// 25 MiB document-import path.
 	mux.HandleFunc("POST /api/mobile/meeting-recordings", MobileMeetingRecordingsHandler(identity))
@@ -664,6 +769,7 @@ func NewRouter(
 	mux.HandleFunc("POST /api/mobile/documents/drafts/{draftId}/process", MobileDocumentProcessHandler(identity))
 	mux.HandleFunc("GET /api/mobile/documents/process-jobs/{jobId}", MobileDocumentProcessJobStatusHandler(identity))
 	mux.HandleFunc("POST /api/mobile/documents/upload", MobileDocumentUploadHandler(identity))
+	mux.HandleFunc("POST /api/mobile/documents/upload/duplicate", MobileDocumentUploadDuplicateHandler(identity))
 	mux.HandleFunc("POST /api/mobile/documents/upload/claim", MobileDocumentUploadClaimHandler(identity))
 	mux.HandleFunc("GET /api/mobile/documents/upload/{taskId}", MobileDocumentUploadStatusHandler(identity))
 	mux.HandleFunc("GET /api/mobile/documents/upload/{taskId}/source", MobileDocumentUploadSourceHandler(identity))
@@ -740,13 +846,19 @@ func NewRouter(
 		mux.HandleFunc("POST /api/public/referral-registration/register", PublicUserReferralRegisterHandler(identity, userReferralRepo, system, tenantRepo, failureLogs))
 	}
 	mux.HandleFunc("POST /api/llm/service/redeem", RedeemLLMServiceCardHandler(identity, system, securitySvc))
+	mux.HandleFunc("POST /api/llm/service/checkin", PostLLMServiceCheckinHandler(identity, system, securitySvc))
+	mux.HandleFunc("POST /api/llm/service/reset-voucher/redeem", RedeemResetVoucherHandler(identity, system, adminAudit))
 	mux.HandleFunc("GET /api/llm/v1/models", LLMV1ModelsHandler(identity, system, securitySvc))
 	mux.HandleFunc("GET /api/llm/v1/models/{model...}", LLMV1ModelHandler(identity, system, securitySvc))
-	mux.HandleFunc("POST /api/llm/v1/chat/completions", LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache))
-	mux.HandleFunc("POST /api/llm/v1/responses", LLMV1ResponsesHandler(identity, system, securitySvc, llmPromptCache))
+	mux.HandleFunc("POST /api/llm/v1/chat/completions", LLMV1ChatCompletionsHandler(identity, system, securitySvc, llmPromptCache, centerSvc, botSvc))
+	mux.HandleFunc("POST /api/llm/v1/responses", LLMV1ResponsesHandler(identity, system, securitySvc, llmPromptCache, centerSvc, botSvc))
 	mux.HandleFunc("GET /api/card-store/products", GetCardStoreProductsHandler(system, tenantRepo))
 	mux.HandleFunc("GET /api/card-store/payment-qr/{tenantID}/{filename}", CardStorePaymentQRImageHandler(cardStoreQRDir))
 	mux.HandleFunc("GET /api/card-store/me", GetCardStoreMeHandler(identity))
+	mux.HandleFunc("GET /api/token-bank/hub", TokenBankHubIDHandler(identity, centerSvc))
+	mux.HandleFunc("GET /api/token-bank/auto", TokenBankAutoSettingsHandler(identity, system))
+	mux.HandleFunc("PUT /api/token-bank/auto", TokenBankAutoSettingsHandler(identity, system))
+	mux.HandleFunc("POST /api/token-bank/withdraw", TokenBankWithdrawHandler(identity, system, centerSvc))
 	mux.HandleFunc("POST /api/card-store/orders", CreateCardStoreOrderHandler(identity, system, mailer, nil))
 	mux.HandleFunc("GET /api/card-store/orders/{orderNo}/alipay/pay", CardStoreAlipayPayPageHandler(system))
 	mux.HandleFunc("GET /api/card-store/orders/{orderNo}/alipay/return", CardStoreAlipayReturnHandler(system, mailer, identity))
@@ -878,6 +990,14 @@ func NewRouter(
 	mux.HandleFunc("POST /api/auth/email-confirm", EmailConfirmLoginHandler(identity))
 	mux.HandleFunc("GET /api/auth/verify-email", VerifyEmailHandler(identity))
 	mux.HandleFunc("POST /api/auth/email-poll", EmailPollLoginHandler(identity))
+
+	// WeChat mini program sign-in. These endpoints issue viewer tokens for
+	// existing users only; they must never enroll machines or create accounts.
+	mux.HandleFunc("POST /api/miniprogram/auth/email/send-code", MiniprogramEmailSendCodeHandler(identity, mailer, system))
+	mux.HandleFunc("POST /api/miniprogram/auth/email/verify", MiniprogramEmailVerifyHandler(identity, system))
+	mux.HandleFunc("POST /api/miniprogram/auth/phone/send-code", MiniprogramPhoneSendCodeHandler(identity, system, nil))
+	mux.HandleFunc("POST /api/miniprogram/auth/phone/verify", MiniprogramPhoneVerifyHandler(identity, system, nil))
+	mux.HandleFunc("GET /api/miniprogram/session", MiniprogramSessionHandler(identity))
 	mux.HandleFunc("POST /api/entry/probe", EntryProbeHandler(entrySvc))
 	mux.HandleFunc("GET /api/machines", ListMachinesHandler(identity, deviceSvc))
 	mux.HandleFunc("POST /api/machines/clear-offline", ClearOfflineMachinesForViewerHandler(identity, deviceSvc))
@@ -911,6 +1031,10 @@ func NewRouter(
 	mux.HandleFunc("POST /api/admin/capabilities/maclaw-apps/{id}/reject", requireTenantAdmin(AdminCapabilityMaclawAppReviewHandler(capabilitySvc, "reject")))
 	mux.HandleFunc("GET /api/capabilities/{id}", CapabilityDetailHandler(capabilitySvc, identity))
 	mux.HandleFunc("POST /api/capabilities/skills/submit", CapabilitySkillSubmitHandler(capabilitySvc, identity, runtimeDataDir))
+	mux.HandleFunc("POST /api/capabilities/skill-suites/submit", CapabilitySkillSuiteSubmitHandler(capabilitySvc, identity, runtimeDataDir))
+	mux.HandleFunc("GET /api/capabilities/skill-suites/{id}/download", CapabilitySkillSuiteDownloadHandler(capabilitySvc, identity, runtimeDataDir))
+	mux.HandleFunc("POST /api/capabilities/skill-suites/{id}/rollback", CapabilitySkillSuiteRollbackHandler(capabilitySvc, identity))
+	mux.HandleFunc("GET /api/capabilities/skill-suites/{id}/audit", CapabilitySkillSuiteAuditHandler(capabilitySvc, identity))
 	mux.HandleFunc("POST /api/capabilities/maclaw-apps/submit", CapabilityMaclawAppSubmitHandler(capabilitySvc, identity))
 	mux.HandleFunc("GET /api/capabilities/maclaw-apps/{id}/package", CapabilityMaclawAppPackageHandler(capabilitySvc, identity))
 	mux.HandleFunc("GET /api/v1/skills/{id}/download", CapabilitySkillDownloadHandler(capabilitySvc, identity, runtimeDataDir))
@@ -1261,7 +1385,6 @@ func NewRouter(
 		}
 	}
 
-	registerPWAStaticRoutes(mux, staticDir, routePrefix)
 	registerStaticRoutes(mux, "./web/knowledge_shares", "/hub/knowledge/shares/mine")
 	registerAdminStaticRoutes(mux, "./web/admin", "/admin")
 	registerBindStaticRoutes(mux, "./web/bind", "/bind")
@@ -1272,5 +1395,6 @@ func NewRouter(
 	registerStaticRoutes(mux, "./web/pet-pack-help", "/pet-pack-help")
 	registerStaticRoutes(mux, "./web/approval_workflow", "/approval_workflow")
 	registerStaticRoutes(mux, "./web/user-ranking", "/user-ranking")
+	registerHomeStaticRoutes(mux, "./web/home", "/")
 	return mux
 }

@@ -1,0 +1,1563 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
+import { cloudWorkspaceIdFromPath, isCloudWorkspacePath } from "./codingTaskMode";
+
+// ── Data Models ──
+
+/** A single code file received from the backend code:file_update event. */
+export interface CodeFile {
+    sessionID?: string;
+    filePath: string;
+    fileName: string;
+    absPath?: string;        // absolute path for tooltip/context menu
+    content: string;
+    original?: string;       // undefined for new files
+    opType: 'create' | 'modify' | 'read';
+    language: string;
+    updatedAt: number;
+    forceOpen?: boolean;
+    autoOpenPreview?: boolean;
+    previewTruncated?: boolean;
+    /** Cloud workspace LaTeX source: edit and compile without a cache path. */
+    latexWorkbench?: boolean;
+    /** Set when the source could not be read. The editor stays locked. */
+    latexReadError?: string;
+    /** Tab identity that produced this file (not the remote SSH display path). */
+    projectPath?: string;
+    /** Create or rewrite that is this task's result, not a coding-source edit. */
+    taskResult?: boolean;
+}
+
+/**
+ * Whether a preview file should show a "changed" (dirty) marker, VS Code-style.
+ * - create: always dirty (new file)
+ * - modify: dirty when content differs from original (or original missing)
+ * - read: never dirty
+ */
+export function isCodeFileDirty(file: Pick<CodeFile, 'opType' | 'content' | 'original'>): boolean {
+    if (file.opType === 'read') return false;
+    if (file.opType === 'create') return true;
+    if (file.original === undefined) return true;
+    return file.original !== file.content;
+}
+
+/** Line-level add/remove counts for Codex-style preview badges. */
+export interface CodeFileLineDelta {
+    added: number;
+    removed: number;
+}
+
+/** Split preview text into lines. A trailing newline does not add an empty line. */
+export function splitCodeFileLines(text: string): string[] {
+    if (!text) return [];
+    const normalized = text.replace(/\r\n/g, "\n").replace(/\n$/, "");
+    if (!normalized) return [];
+    return normalized.split("\n");
+}
+
+/**
+ * Bag-of-lines delta for tab / breadcrumb badges.
+ * Reads are always 0/0. Creates (or missing original) count every line as added.
+ *
+ * The result is cached per file object: tab bar, file list and the overview
+ * totals all ask for the same file repeatedly, and a miss re-splits both
+ * versions of it. Preview state is immutable — every update installs a fresh
+ * CodeFile — so keying on object identity cannot serve a stale delta.
+ */
+export function computeCodeFileLineDelta(
+    file: Pick<CodeFile, "opType" | "content" | "original">,
+): CodeFileLineDelta {
+    if (file.opType === "read") return NO_LINE_DELTA;
+    const cached = lineDeltaCache.get(file);
+    if (cached) return cached;
+    const delta = countCodeFileLineDelta(file);
+    lineDeltaCache.set(file, delta);
+    return delta;
+}
+
+const NO_LINE_DELTA: CodeFileLineDelta = { added: 0, removed: 0 };
+const lineDeltaCache = new WeakMap<object, CodeFileLineDelta>();
+
+function countCodeFileLineDelta(
+    file: Pick<CodeFile, "opType" | "content" | "original">,
+): CodeFileLineDelta {
+    const next = splitCodeFileLines(file.content || "");
+    if (file.opType === "create" || file.original === undefined) {
+        return { added: next.length, removed: 0 };
+    }
+    const prev = splitCodeFileLines(file.original);
+    const bag = new Map<string, number>();
+    for (const line of prev) {
+        bag.set(line, (bag.get(line) || 0) + 1);
+    }
+    let common = 0;
+    for (const line of next) {
+        const n = bag.get(line) || 0;
+        if (n > 0) {
+            bag.set(line, n - 1);
+            common += 1;
+        }
+    }
+    return { added: next.length - common, removed: prev.length - common };
+}
+
+export function codeFileLineDeltaHasChange(delta: CodeFileLineDelta): boolean {
+    return delta.added > 0 || delta.removed > 0;
+}
+
+/** `+12 -3`, or empty when both sides are zero. */
+export function formatCodeFileLineDelta(delta: CodeFileLineDelta): string {
+    if (!codeFileLineDeltaHasChange(delta)) return "";
+    return `+${delta.added} -${delta.removed}`;
+}
+
+/** UI state for the code preview panel. */
+export interface CodePreviewUIState {
+    active: boolean;              // panel is visible
+    files: Map<string, CodeFile>; // filePath -> CodeFile
+    activeFilePath: string;       // currently selected file
+    sessionID: string;            // latest code session id
+    sessionActive: boolean;       // coding session in progress
+    userClosed: boolean;          // user manually closed, suppress auto-open
+    /** Pinned file paths (VS Code-style). Kept left / preferred visible. */
+    pinnedPaths: string[];
+    /** Most-recently-used open order (most recent first) for Ctrl+Tab. */
+    mruOrder: string[];
+}
+
+/** Move path to the front of the MRU list. */
+export function touchMruOrder(mruOrder: string[], filePath: string): string[] {
+    if (!filePath) return mruOrder.slice();
+    return [filePath, ...mruOrder.filter((p) => p !== filePath)];
+}
+
+/** Drop paths that are no longer open. Returns the same array reference when nothing is removed. */
+export function prunePathList(paths: string[], openPaths: Iterable<string>): string[] {
+    if (paths.length === 0) return paths;
+    const open = openPaths instanceof Set ? openPaths : new Set(openPaths);
+    for (let i = 0; i < paths.length; i++) {
+        if (!open.has(paths[i])) {
+            return paths.filter((p) => open.has(p));
+        }
+    }
+    return paths;
+}
+
+/**
+ * Display order for the tab bar: pinned files first (stable pin order),
+ * then unpinned files in Map open order.
+ */
+export function getDisplayFilePaths(
+    files: Map<string, CodeFile>,
+    pinnedPaths: string[],
+): string[] {
+    const open = Array.from(files.keys());
+    const openSet = new Set(open);
+    const pinned = pinnedPaths.filter((p) => openSet.has(p));
+    const pinnedSet = new Set(pinned);
+    const unpinned = open.filter((p) => !pinnedSet.has(p));
+    return [...pinned, ...unpinned];
+}
+
+/**
+ * MRU cycle order: most recent first, then any open files missing from MRU.
+ */
+export function getMruCycleOrder(
+    files: Map<string, CodeFile>,
+    mruOrder: string[],
+): string[] {
+    const open = Array.from(files.keys());
+    const openSet = new Set(open);
+    const mru = mruOrder.filter((p) => openSet.has(p));
+    const seen = new Set(mru);
+    for (const p of open) {
+        if (!seen.has(p)) mru.push(p);
+    }
+    return mru;
+}
+
+function withOpenFileLists(
+    state: CodePreviewUIState,
+    nextFiles: Map<string, CodeFile>,
+    nextActive: string,
+): Pick<CodePreviewUIState, 'files' | 'activeFilePath' | 'pinnedPaths' | 'mruOrder'> {
+    // Snapshot keys once — Map.keys() is a single-use iterator.
+    const openKeys = Array.from(nextFiles.keys());
+    let mruOrder = prunePathList(state.mruOrder, openKeys);
+    // Only rebuild MRU when the head actually changes (touch always allocates).
+    if (nextActive && mruOrder[0] !== nextActive) {
+        mruOrder = touchMruOrder(mruOrder, nextActive);
+    }
+    return {
+        files: nextFiles,
+        activeFilePath: nextActive,
+        pinnedPaths: prunePathList(state.pinnedPaths, openKeys),
+        mruOrder,
+    };
+}
+
+function normalizeCodeEventProjectPath(projectPath?: string): string {
+    let normalized = (projectPath || "").trim().replace(/\\/g, "/");
+    normalized = normalized.replace(/\/+$/, "");
+    if (/^[a-z]:\//i.test(normalized) || normalized.startsWith("//")) {
+        normalized = normalized.toLowerCase();
+    }
+    return normalized;
+}
+
+function isHierarchicalCodePath(path: string): boolean {
+    return /^[a-z]:\//i.test(path) || path.startsWith('/');
+}
+
+function pathIsUnderRoot(path: string, root: string): boolean {
+    return !!root && (path === root || path.startsWith(root + '/'));
+}
+
+/** Exported for tests. Accepts exact project match or nested worktree paths under the active project. */
+export function shouldAcceptCodeEventForProject(eventProjectPath?: string, activeTabProjectPath?: string, forceOpen = false): boolean {
+    const activePath = normalizeCodeEventProjectPath(activeTabProjectPath);
+    if (eventProjectPath === undefined || eventProjectPath === '') {
+        // Unscoped events must not broadcast into a bound project / cloud tab.
+        return !activePath;
+    }
+    const eventPath = normalizeCodeEventProjectPath(eventProjectPath);
+    if (!eventPath) {
+        return false;
+    }
+    if (!activePath) {
+        return forceOpen;
+    }
+    if (eventPath === activePath) {
+        return true;
+    }
+    // Worktree / isolate dirs live under the main project — still show in preview.
+    // Only plausible hierarchical paths (drive-letter or rooted) get this nested
+    // acceptance; otherwise backslash→slash normalization could fabricate a fake
+    // hierarchy out of degenerate inputs (e.g. " !\" → "!" matching "!/_tabB").
+    if (isHierarchicalCodePath(eventPath) && isHierarchicalCodePath(activePath)
+        && (pathIsUnderRoot(eventPath, activePath) || pathIsUnderRoot(activePath, eventPath))) {
+        return true;
+    }
+    return false;
+}
+
+/** A task result is a file the task created or rewrote. A read is exploration. */
+export function isTaskResultWrite(opType?: string | null): boolean {
+    return opType === "create" || opType === "modify";
+}
+
+/**
+ * The preview body shows the open file instead of the directory tree.
+ * A newer file focus wins, including an explicit read. A tied focus shows a
+ * create/modify (that change is why the pane is open) and leaves a read on
+ * the tree. A newer tree focus wins until the next file focus.
+ */
+export function previewBodyShowsFile(
+    file: { opType?: string | null } | undefined,
+    fileFocusNonce: number,
+    treeFocusNonce: number,
+): boolean {
+    if (!file) return false;
+    if (fileFocusNonce > treeFocusNonce) return true;
+    return fileFocusNonce === treeFocusNonce && isTaskResultWrite(file.opType);
+}
+
+/**
+ * A created or modified file to put on screen. Prefers the current selection
+ * when that file itself changed; otherwise the latest change. Empty when every
+ * open tab is a read.
+ */
+export function changedPreviewFilePath(state: {
+    activeFilePath?: string;
+    files: { get(path: string): { opType?: string | null; updatedAt?: number } | undefined; entries(): Iterable<[string, { opType?: string | null; updatedAt?: number }]> };
+}): string {
+    const currentPath = state.activeFilePath || "";
+    const current = currentPath ? state.files.get(currentPath) : undefined;
+    if (current && isTaskResultWrite(current.opType)) return currentPath;
+    let best = "";
+    let bestAt = -1;
+    for (const [path, file] of state.files.entries()) {
+        if (!isTaskResultWrite(file?.opType)) continue;
+        const at = file.updatedAt || 0;
+        if (!best || at >= bestAt) {
+            best = path;
+            bestAt = at;
+        }
+    }
+    return best;
+}
+
+/**
+ * Tab switch must not keep the previous tab's file-or-tree choice.
+ * An open preview with a create/modify lands on that file. An open preview
+ * with only reads lands on the directory. A closed preview is left tied, so
+ * the next open follows the same rule without popping the pane.
+ */
+export function previewFocusAfterTabChange(
+    state: {
+        active: boolean;
+        userClosed: boolean;
+        activeFilePath?: string;
+        files: { get(path: string): { opType?: string | null; updatedAt?: number } | undefined; entries(): Iterable<[string, { opType?: string | null; updatedAt?: number }]> };
+    },
+    fileFocusNonce: number,
+    treeFocusNonce: number,
+): { fileFocusNonce: number; treeFocusNonce: number; selectPath: string } {
+    const base = Math.max(fileFocusNonce, treeFocusNonce) + 1;
+    const changed = state.userClosed ? "" : changedPreviewFilePath(state);
+    if (state.active && changed) {
+        return { fileFocusNonce: base, treeFocusNonce, selectPath: changed };
+    }
+    if (state.active) {
+        return { fileFocusNonce, treeFocusNonce: base, selectPath: "" };
+    }
+    return { fileFocusNonce: base, treeFocusNonce: base, selectPath: changed };
+}
+
+/**
+ * Whether a file event should surface in the preview pane (select the file,
+ * notify the host panel). Always true for create/modify; a read only when the
+ * backend explicitly asked the pane to show it (force_open / auto_open_preview)
+ * — plain reads fill background tabs and never open or focus the pane.
+ */
+export function fileEventSurfacesPreview(
+    file: Pick<CodeFile, 'opType' | 'forceOpen' | 'autoOpenPreview'>,
+): boolean {
+    return file.opType !== 'read' || file.forceOpen === true || file.autoOpenPreview === true;
+}
+
+/** Arm/restore refill. Not a change, and not a request to show the pane. */
+function isBackgroundRead(file: Pick<CodeFile, 'opType' | 'forceOpen' | 'autoOpenPreview'>): boolean {
+    return file.opType === 'read' && !fileEventSurfacesPreview(file);
+}
+
+/** Mark a create or rewrite so it survives leaving a programming workflow. */
+export function withTaskResultMark<T extends { opType?: string | null; taskResult?: boolean }>(file: T, mark: boolean): T {
+    if (!mark || !isTaskResultWrite(file.opType) || file.taskResult) return file;
+    return { ...file, taskResult: true };
+}
+
+/**
+ * Tool previews are stamped local-tools:desktop-user:expert:<expertId>.
+ * The id must be the whole segment, so builtin-paper does not match
+ * builtin-paper-polish.
+ */
+export function isExpertResultSession(sessionID: string | undefined, expertId: string | undefined): boolean {
+    const expert = String(expertId || "").trim();
+    if (!expert) return false;
+    const session = String(sessionID || "");
+    const marker = `:expert:${expert}`;
+    const at = session.lastIndexOf(marker);
+    if (at < 0) return false;
+    const rest = session.slice(at + marker.length);
+    return rest === "" || rest.startsWith(":") || rest.startsWith("/");
+}
+
+/**
+ * Show a create or rewrite in the result pane.
+ * An expert tab is often named by the task directory while the file lives in
+ * the working directory, so those two paths do not nest. The write still
+ * belongs here when the session names this expert. Another task's force-open
+ * file does not, including while this tab has no project path yet.
+ */
+export function acceptTaskResultFileEvent(input: {
+    opType: CodeFile["opType"];
+    forceOpen: boolean;
+    eventProjectPath?: string;
+    tabProjectPath?: string;
+    sessionID?: string;
+    expertId?: string;
+    latexFile?: boolean;
+    latexTab?: boolean;
+    expertTab?: boolean;
+}): boolean {
+    const owned = isExpertResultSession(input.sessionID, input.expertId);
+    const pathOk = shouldAcceptCodeEventForProject(input.eventProjectPath, input.tabProjectPath, input.forceOpen);
+    const unboundExpert = input.expertTab === true && !String(input.tabProjectPath || "").trim();
+    if (unboundExpert && input.forceOpen && !owned) return false;
+    if (input.latexTab && input.latexFile && (pathOk || owned)) return true;
+    const expertWrite = input.expertTab === true && input.forceOpen && isTaskResultWrite(input.opType) && owned;
+    if (!pathOk) return expertWrite;
+    return true;
+}
+
+/**
+ * Whether a hierarchical absolute path fits a cloud workspace tab:
+ * under the task/cache roots, or inside the same cloud workspace id.
+ */
+function cloudAbsPathBelongsToWorkspace(fileAbs: string, route: string, belong: string): boolean {
+    if (pathIsUnderRoot(fileAbs, route) || pathIsUnderRoot(fileAbs, belong)) return true;
+    if (isCloudWorkspacePath(fileAbs)) {
+        const fileId = cloudWorkspaceIdFromPath(fileAbs);
+        return !!fileId && (fileId === cloudWorkspaceIdFromPath(route) || fileId === cloudWorkspaceIdFromPath(belong));
+    }
+    return false;
+}
+
+/**
+ * Whether an open preview file belongs to the active tab.
+ * `projectPath` is the tab identity used for event routing.
+ * `belongingPath` is an extra root (cloud cache) for leftovers, not routing.
+ * `cloudWorkspaceTab` applies the same cloud leftover rule before the cache
+ * path has resolved, so remote SSH files cannot flash on a cloud tab.
+ */
+export function codeFileBelongsToPreviewProject(
+    file: Pick<CodeFile, 'filePath' | 'absPath' | 'projectPath'>,
+    projectPath?: string,
+    belongingPath?: string,
+    cloudWorkspaceTab = false,
+): boolean {
+    const route = normalizeCodeEventProjectPath(projectPath);
+    const belong = normalizeCodeEventProjectPath(belongingPath) || route;
+    if (!route && !belong && !cloudWorkspaceTab) return true;
+    const cloudAnchor = cloudWorkspaceTab || isCloudWorkspacePath(route) || isCloudWorkspacePath(belong);
+    if (file.projectPath) {
+        const stamped = (route && shouldAcceptCodeEventForProject(file.projectPath, route))
+            || (belong && belong !== route && shouldAcceptCodeEventForProject(file.projectPath, belong));
+        if (!stamped) return false;
+        if (!cloudAnchor) return true;
+        // Cloud tabs: restored snapshots can carry a matching task stamp on files
+        // that predate stamping; a foreign absolute path still marks a remote leftover.
+        const stampedAbs = normalizeCodeEventProjectPath(file.absPath || file.filePath);
+        if (!stampedAbs || !isHierarchicalCodePath(stampedAbs)) return true;
+        return cloudAbsPathBelongsToWorkspace(stampedAbs, route, belong);
+    }
+    const fileAbs = normalizeCodeEventProjectPath(file.absPath || file.filePath);
+    if (!fileAbs) return true;
+    if (!isHierarchicalCodePath(fileAbs)) return true;
+    if (pathIsUnderRoot(fileAbs, route) || pathIsUnderRoot(fileAbs, belong)) return true;
+    if (cloudAnchor) {
+        if (isCloudWorkspacePath(fileAbs)) {
+            const fileId = cloudWorkspaceIdFromPath(fileAbs);
+            return !!fileId && (fileId === cloudWorkspaceIdFromPath(route) || fileId === cloudWorkspaceIdFromPath(belong));
+        }
+        return false;
+    }
+    return true;
+}
+
+function remainingPreviewSession(state: CodePreviewUIState, files: Map<string, CodeFile>): Pick<CodePreviewUIState, 'sessionID' | 'sessionActive'> {
+    if (!state.sessionID) {
+        return { sessionID: '', sessionActive: false };
+    }
+    for (const file of files.values()) {
+        if (file.sessionID === state.sessionID) {
+            return { sessionID: state.sessionID, sessionActive: state.sessionActive };
+        }
+    }
+    return { sessionID: '', sessionActive: false };
+}
+
+/**
+ * Prepare a file for the active task's preview.
+ * An unscoped file is stamped with the active task. A file already stamped
+ * for a different task is refused, so a late open cannot paint it here.
+ * Returns null when the file must not be inserted.
+ */
+export function acceptWorkspacePreviewFile(
+    file: CodeFile,
+    activeTabProjectPath?: string,
+    belongingPath?: string,
+    cloudWorkspaceTab = false,
+): CodeFile | null {
+    if (!file.filePath || file.content === undefined || file.content === null) return null;
+    const stamped = activeTabProjectPath && !file.projectPath
+        ? { ...file, projectPath: activeTabProjectPath }
+        : file;
+    if (!codeFileBelongsToPreviewProject(stamped, activeTabProjectPath, belongingPath, cloudWorkspaceTab)) {
+        return null;
+    }
+    return stamped;
+}
+
+/** Drop files that belong to another task. Identity-preserving when nothing changes. */
+export function filterCodePreviewStateForProject(
+    state: CodePreviewUIState,
+    projectPath?: string,
+    belongingPath?: string,
+    cloudWorkspaceTab = false,
+    keepLatexWorkbench = false,
+    keepTaskResults = false,
+    taskResultExpertId?: string,
+): CodePreviewUIState {
+    if (!state.files.size) return state;
+    const nextFiles = new Map<string, CodeFile>();
+    for (const [path, file] of state.files) {
+        if (keepLatexWorkbench && file.latexWorkbench && isLatexSourceFilePath(path)) {
+            nextFiles.set(path, file);
+            continue;
+        }
+        if (keepTaskResults && isTaskResultWrite(file.opType) && isExpertResultSession(file.sessionID, taskResultExpertId)) {
+            nextFiles.set(path, file);
+            continue;
+        }
+        if (codeFileBelongsToPreviewProject(file, projectPath, belongingPath, cloudWorkspaceTab)) {
+            nextFiles.set(path, file);
+        }
+    }
+    if (nextFiles.size === state.files.size) return state;
+    const nextActive = nextFiles.has(state.activeFilePath)
+        ? state.activeFilePath
+        : (Array.from(nextFiles.keys())[0] || '');
+    return {
+        ...state,
+        ...withOpenFileLists(state, nextFiles, nextActive),
+        ...remainingPreviewSession(state, nextFiles),
+    };
+}
+
+// ── Pure State Logic Functions (exported for testing) ──
+
+/** Returns a fresh default state. */
+export function initialState(): CodePreviewUIState {
+    return {
+        active: false,
+        files: new Map(),
+        activeFilePath: "",
+        sessionID: "",
+        sessionActive: false,
+        userClosed: false,
+        pinnedPaths: [],
+        mruOrder: [],
+    };
+}
+
+/**
+ * Apply a code:file_update event to the state.
+ * Updates the files map. Only workflow-authorized events auto-open the panel;
+ * ordinary code generation remains available without taking over the UI.
+ * and auto-selects the latest file.
+ *
+ * Workflow and source preview coexist behind tabs, so workflow state does not
+ * suppress regular source preview updates.
+ */
+/**
+ * An agent write is often reported as an absolute path under the task workspace.
+ * The open paper is keyed by its workspace-relative path (`main.tex`). Treating
+ * those as different files leaves the editor on the old buffer and opens a
+ * second, non-editable tab for the same source.
+ */
+const latexSourceFilePattern = /\.(tex|latex|ltx)$/i;
+
+export function isLatexSourceFilePath(path: string): boolean {
+    const name = String(path || "").replace(/\\/g, "/").split("/").pop() || "";
+    return latexSourceFilePattern.test(name);
+}
+
+/**
+ * A template export is already a file, so the agent's save is a modification
+ * and the event omits the workbench flag. That rewrite is still the paper:
+ * adopt it as the editable preview instead of treating it as no result.
+ * Returns null when the file is not LaTeX or the workbench flag is already set.
+ */
+export function latexWorkbenchFromAgentFile(file: CodeFile, fallbackProjectPath = ""): CodeFile | null {
+    const path = String(file.filePath || file.fileName || "");
+    if (!isLatexSourceFilePath(path) || file.latexWorkbench) return null;
+    return prepareLatexResultFile(file, fallbackProjectPath);
+}
+
+/**
+ * Directory the workbench should read and compile from. The event's project
+ * path is the tab identity (the task directory). The .tex itself lives in the
+ * working directory, which absPath still points at.
+ */
+export function latexResultProjectPath(file: Pick<CodeFile, "absPath" | "filePath" | "projectPath">, tabProjectPath?: string): string {
+    const abs = String(file.absPath || "").replace(/\\/g, "/").replace(/\/+$/, "");
+    const rel = String(file.filePath || "").replace(/\\/g, "/").replace(/^\/+/, "");
+    if (abs && rel && abs.toLowerCase().endsWith("/" + rel.toLowerCase())) {
+        const root = abs.slice(0, abs.length - rel.length).replace(/\/+$/, "");
+        if (root) return root;
+    }
+    return String(tabProjectPath || file.projectPath || "").trim();
+}
+
+/**
+ * A LaTeX save is the result, whether the file was just created or was an
+ * exported template being rewritten. The pane opens either way, and compile
+ * uses the directory that actually contains the source.
+ */
+export function prepareLatexResultFile(file: CodeFile, tabProjectPath?: string): CodeFile {
+    const projectPath = latexResultProjectPath(file, tabProjectPath);
+    return {
+        ...file,
+        language: "latex",
+        latexWorkbench: true,
+        forceOpen: file.forceOpen === true || isTaskResultWrite(file.opType),
+        projectPath: projectPath || file.projectPath,
+    };
+}
+
+export function retargetLatexWorkbenchUpdate(state: CodePreviewUIState, file: CodeFile): CodeFile {
+    if (!file.filePath || state.files.has(file.filePath)) return file;
+    const incoming = file.filePath.replace(/\\/g, '/');
+    for (const [path, existing] of state.files) {
+        if (!existing.latexWorkbench) continue;
+        const open = path.replace(/\\/g, '/');
+        if (incoming === open || incoming.endsWith('/' + open)) {
+            return { ...file, filePath: path, fileName: existing.fileName || file.fileName };
+        }
+    }
+    return file;
+}
+
+/** Agent file events omit the editor flag and carry the workspace absolute path.
+ * Adopting that path used to remount the editor, and the unmount save wrote the
+ * user's draft over the file the agent had just saved. */
+function keepOpenLatexWorkbench(existing: CodeFile | undefined, file: CodeFile): CodeFile {
+    const kept = !existing?.latexWorkbench || file.latexWorkbench !== undefined
+        ? file
+        : {
+            ...file,
+            latexWorkbench: true,
+            projectPath: existing.projectPath || file.projectPath,
+            absPath: existing.absPath,
+        };
+    if (existing?.taskResult && !kept.taskResult) return { ...kept, taskResult: true };
+    return kept;
+}
+
+/**
+ * Fold one arm/restore read into the open tabs. Keeps the current selection
+ * and pane visibility. An existing create/modify stays, including its diff.
+ */
+function mergeBackgroundRead(state: CodePreviewUIState, file: CodeFile): CodePreviewUIState {
+    const existing = state.files.get(file.filePath);
+    if (existing && isTaskResultWrite(existing.opType)) {
+        if (state.sessionID === file.sessionID) return state;
+        return { ...state, sessionID: file.sessionID || state.sessionID };
+    }
+    if (
+        existing
+        && existing.content === file.content
+        && existing.opType === 'read'
+        && existing.language === file.language
+        && existing.fileName === file.fileName
+        && existing.absPath === file.absPath
+        && state.sessionID === (file.sessionID || state.sessionID)
+    ) {
+        return state;
+    }
+    const nextFiles = new Map(state.files);
+    nextFiles.set(file.filePath, file);
+    return {
+        ...state,
+        ...withOpenFileLists(state, nextFiles, state.activeFilePath),
+        sessionID: file.sessionID || state.sessionID,
+    };
+}
+
+export function applyFileUpdate(
+    state: CodePreviewUIState,
+    file: CodeFile,
+): CodePreviewUIState {
+    // Validate required fields
+    if (!file.filePath || file.content === undefined || file.content === null) {
+        return state;
+    }
+    file = retargetLatexWorkbenchUpdate(state, file);
+    if (state.sessionID && file.sessionID !== state.sessionID) {
+        // Session mismatch detected.
+        // If the current session is NOT active (i.e., it ended or was restored
+        // from a snapshot of a completed session), or if the backend explicitly
+        // marks this file as forceOpen, allow the new source preview session to
+        // take over by clearing old files and accepting the new file.
+        //
+        // Note: multi-file batches with forceOpen process one file per event —
+        // the first event wipes; later events share the new sessionID and merge.
+        // A background read is an arm/restore refill. The ended session must
+        // accept it without wiping the edit that is already on screen.
+        if (file.sessionID && isBackgroundRead(file) && !state.sessionActive) {
+            return mergeBackgroundRead(state, file);
+        }
+        if (file.sessionID && (!state.sessionActive || file.forceOpen)) {
+            const previous = state.files.get(file.filePath);
+            // Local file tools always force a new session. The takeover used to
+            // store the raw event, which dropped the open paper's editor and
+            // replaced its task directory with the workspace folder.
+            const kept = keepOpenLatexWorkbench(previous, file);
+            const nextFiles = new Map<string, CodeFile>();
+            nextFiles.set(file.filePath, kept);
+            return {
+                ...state,
+                ...withOpenFileLists(state, nextFiles, file.filePath),
+                pinnedPaths: [],
+                mruOrder: [file.filePath],
+                sessionID: file.sessionID,
+                sessionActive: state.sessionActive || file.forceOpen === true,
+                active: file.forceOpen || (file.autoOpenPreview && !state.userClosed) ? true : state.active,
+                userClosed: file.forceOpen ? false : state.userClosed,
+            };
+        }
+        // Active session should block foreign events
+        return state;
+    }
+
+    const shouldAutoOpen = file.forceOpen || (file.autoOpenPreview && !state.userClosed);
+    // Select and notify share one rule (fileEventSurfacesPreview): always for
+    // create/modify; a read only when the backend explicitly surfaced it —
+    // plain reads stay background tabs so exploration never yanks the view,
+    // and never pops the panel open at all.
+    const shouldAutoSelect = fileEventSurfacesPreview(file);
+    const nextActive = shouldAutoSelect ? file.filePath : state.activeFilePath;
+    const nextSessionID = file.sessionID || state.sessionID;
+    const nextSessionActive = file.forceOpen && file.sessionID ? true : state.sessionActive;
+    const nextActiveFlag = shouldAutoOpen ? true : state.active;
+    const nextUserClosed = file.forceOpen ? false : state.userClosed;
+
+    const existing = state.files.get(file.filePath);
+    // Opening the paper starts a disk read. If the expert writes the file before
+    // that read returns, applying the late read puts the blank skeleton back on
+    // screen and hides the text that was just generated.
+    if (
+        existing?.latexWorkbench
+        && file.opType === 'read'
+        && (existing.opType === 'modify' || existing.opType === 'create')
+        && existing.updatedAt > (file.updatedAt || 0)
+    ) {
+        return state;
+    }
+    // Arm/restore re-reads files it already showed. Replacing a create/modify
+    // with that read would drop the diff and make the pane look unchanged.
+    if (existing && isTaskResultWrite(existing.opType) && isBackgroundRead(file)) {
+        return state;
+    }
+    // A content event carries no presentation state. When an already-open LaTeX
+    // document is edited by an agent, the incoming file omits latexWorkbench and
+    // its projectPath is the tool directory (the task's workspace/ folder).
+    // Replacing the stored entry verbatim would drop the editor, and adopting
+    // that workspace path would make the next save or compile look in
+    // workspace/workspace. The task path stays; content and read outcome come
+    // from the event, so a successful write clears a previous read error.
+    const effective = keepOpenLatexWorkbench(existing, file);
+    // Skip no-op updates (identical payload / redelivery) to avoid Map churn during streaming.
+    if (
+        existing
+        && existing.content === effective.content
+        && existing.original === effective.original
+        && existing.opType === effective.opType
+        && existing.language === effective.language
+        && existing.fileName === effective.fileName
+        && existing.absPath === effective.absPath
+        && existing.previewTruncated === effective.previewTruncated
+        && existing.latexReadError === effective.latexReadError
+        && existing.sessionID === effective.sessionID
+        && existing.projectPath === effective.projectPath
+        && state.activeFilePath === nextActive
+        && state.active === nextActiveFlag
+        && state.userClosed === nextUserClosed
+        && state.sessionID === nextSessionID
+        && state.sessionActive === nextSessionActive
+        && (!shouldAutoSelect || state.mruOrder[0] === file.filePath)
+    ) {
+        return state;
+    }
+
+    const nextFiles = new Map(state.files);
+    nextFiles.set(file.filePath, effective);
+
+    return {
+        ...state,
+        ...withOpenFileLists(state, nextFiles, nextActive),
+        sessionID: nextSessionID,
+        sessionActive: nextSessionActive,
+        active: nextActiveFlag,
+        userClosed: nextUserClosed,
+    };
+}
+
+/**
+ * Apply a workflow:doc_update event.
+ * Workflow and source preview now coexist behind tabs, so keep code state.
+ */
+export function applyWorkflowDocUpdate(state: CodePreviewUIState): CodePreviewUIState {
+    return state;
+}
+
+/**
+ * Apply a code:session_start event to the state.
+ * Sets sessionActive=true.
+ *
+ * autoOpenPreview=false (default / historical): clear files and close the panel
+ * until the first forceOpen file update. Also resets userClosed.
+ *
+ * autoOpenPreview=true (CodingSubAgent / pure-coding): keep existing open tabs
+ * and the current pane visibility across multi-turn boundaries, so a bash-only
+ * or read-only turn does not blank a preview the user already has open.
+ * It must not pop the pane. A turn with no create/modify leaves a closed
+ * preview closed; the later file event opens it on that file.
+ */
+export function applySessionStart(state: CodePreviewUIState, sessionID = "", autoOpenPreview = false): CodePreviewUIState {
+    if (state.sessionID && !sessionID && state.sessionActive) {
+        return state;
+    }
+    if (autoOpenPreview) {
+        if (state.sessionID === sessionID && state.sessionActive) return state;
+        return {
+            ...state,
+            sessionID,
+            sessionActive: true,
+            // Keep active / userClosed / files / activeFilePath. A new turn is
+            // not a file change, so it must not surface the working directory.
+        };
+    }
+    return {
+        ...state,
+        active: false,
+        files: new Map(),
+        activeFilePath: "",
+        sessionID,
+        sessionActive: true,
+        userClosed: false,
+        pinnedPaths: [],
+        mruOrder: [],
+    };
+}
+
+/**
+ * Apply a code:session_end event to the state.
+ * Sets sessionActive=false.
+ */
+export function applySessionEnd(state: CodePreviewUIState, sessionID = ""): CodePreviewUIState {
+    if (state.sessionID && state.sessionID !== sessionID) {
+        return state;
+    }
+    if (!state.sessionActive) {
+        return state;
+    }
+    return {
+        ...state,
+        sessionActive: false,
+    };
+}
+
+/**
+ * Close the panel. Sets active=false, userClosed=true.
+ */
+export function applyClosePanel(state: CodePreviewUIState): CodePreviewUIState {
+    if (!state.active && state.userClosed) return state;
+    return {
+        ...state,
+        active: false,
+        userClosed: true,
+    };
+}
+
+/** No open tabs and no directory tree to fall back to. */
+export function shouldDismissEmptyPreviewWithoutWorkspace(
+    fileCount: number,
+    projectPath?: string,
+): boolean {
+    return fileCount === 0 && !projectPath;
+}
+
+/**
+ * After the last tab is gone, keep the pane only when a working directory
+ * can still be shown. Otherwise this is the same as clicking the preview X.
+ */
+export function applyDismissEmptyPreviewWithoutWorkspace(
+    state: CodePreviewUIState,
+    projectPath?: string,
+): CodePreviewUIState {
+    if (!state.active || !shouldDismissEmptyPreviewWithoutWorkspace(state.files.size, projectPath)) {
+        return state;
+    }
+    return applyClosePanel(state);
+}
+
+/** True when closing this tab leaves no files and no working directory to show. */
+export function willDismissPreviewAfterClosingFile(
+    state: CodePreviewUIState,
+    filePath: string,
+    projectPath?: string,
+): boolean {
+    if (!state.active || !state.files.has(filePath)) return false;
+    return shouldDismissEmptyPreviewWithoutWorkspace(state.files.size - 1, projectPath);
+}
+
+/** True when Close All would drop every tab and no working directory remains. */
+export function willDismissPreviewAfterClosingAll(
+    state: CodePreviewUIState,
+    projectPath?: string,
+): boolean {
+    if (!state.active || state.files.size === 0) return false;
+    const remaining = state.pinnedPaths.filter((p) => state.files.has(p)).length;
+    return shouldDismissEmptyPreviewWithoutWorkspace(remaining, projectPath);
+}
+
+/**
+ * Reopen the panel. Sets active=true, userClosed=false.
+ */
+export function applyReopenPanel(state: CodePreviewUIState): CodePreviewUIState {
+    if (state.active && !state.userClosed) return state;
+    return {
+        ...state,
+        active: true,
+        userClosed: false,
+    };
+}
+
+/**
+ * Activate the panel without clearing userClosed.
+ * Used when another UI action (e.g. opening the workflow panel) wants to
+ * make the code preview visible as a side-effect, but should not alter
+ * the user's prior close decision for auto-open purposes.
+ */
+export function applyActivatePassive(state: CodePreviewUIState): CodePreviewUIState {
+    if (state.active) return state;
+    return {
+        ...state,
+        active: true,
+    };
+}
+
+/** Normalize slashes so trail paths can match preview keys. */
+export function normalizeCodePreviewPath(path: string): string {
+    return path.replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+/**
+ * Resolve a trail path (`hello_world.cpp`, `gui/a.go`) to an open preview key.
+ * Exact path / absPath first, then unique suffix, then unique basename.
+ */
+export function resolveCodePreviewFilePath(
+    requested: string,
+    files: Map<string, CodeFile>,
+): string | undefined {
+    const wanted = normalizeCodePreviewPath(requested.trim());
+    if (!wanted || files.size === 0) return undefined;
+    const wantedBase = wanted.split("/").pop() || wanted;
+    const entries = [...files.entries()];
+
+    for (const [filePath, file] of entries) {
+        if (filePath === requested.trim() || normalizeCodePreviewPath(filePath) === wanted) {
+            return filePath;
+        }
+        if (file.absPath && normalizeCodePreviewPath(file.absPath) === wanted) {
+            return filePath;
+        }
+    }
+
+    const suffixHits = entries.filter(([filePath, file]) => {
+        const keys = [normalizeCodePreviewPath(filePath)];
+        if (file.absPath) keys.push(normalizeCodePreviewPath(file.absPath));
+        return keys.some((key) => key.endsWith(`/${wanted}`) || wanted.endsWith(`/${key}`));
+    });
+    if (suffixHits.length === 1) return suffixHits[0][0];
+
+    const baseHits = entries.filter(([filePath, file]) => {
+        const keys = [normalizeCodePreviewPath(filePath)];
+        if (file.absPath) keys.push(normalizeCodePreviewPath(file.absPath));
+        return keys.some((key) => (key.split("/").pop() || "") === wantedBase);
+    });
+    if (baseHits.length === 1) return baseHits[0][0];
+    return undefined;
+}
+
+/** Select a trail file and reopen the preview (explicit user click). */
+export function applyFocusPreviewFile(
+    state: CodePreviewUIState,
+    requested: string,
+): CodePreviewUIState {
+    const resolved = resolveCodePreviewFilePath(requested, state.files);
+    if (!resolved) return state;
+    return applyReopenPanel(applySelectFile(state, resolved));
+}
+
+/**
+ * Select a file by path. Sets activeFilePath and updates MRU.
+ * Empty path clears the selection. Unknown paths are ignored.
+ */
+export function applySelectFile(
+    state: CodePreviewUIState,
+    filePath: string,
+): CodePreviewUIState {
+    if (!filePath) {
+        if (state.activeFilePath === '') return state;
+        return {
+            ...state,
+            activeFilePath: '',
+        };
+    }
+    if (!state.files.has(filePath)) {
+        return state;
+    }
+    // No-op when already active and already MRU head (avoids needless re-renders).
+    if (state.activeFilePath === filePath && state.mruOrder[0] === filePath) {
+        return state;
+    }
+    return {
+        ...state,
+        activeFilePath: filePath,
+        mruOrder: touchMruOrder(state.mruOrder, filePath),
+    };
+}
+
+/** Open a file deliberately chosen from the working-directory explorer. */
+export function applyOpenWorkspaceFile(
+    state: CodePreviewUIState,
+    file: CodeFile,
+): CodePreviewUIState {
+    if (!file.filePath || file.content === undefined || file.content === null) return state;
+    const existing = state.files.get(file.filePath);
+    // Opening the paper starts a disk read before the file is shown. The expert
+    // can finish writing while that read is in flight. The read's updatedAt is
+    // the start time, so a later blank result must not replace the write.
+    if (
+        existing
+        && file.opType === 'read'
+        && (existing.opType === 'modify' || existing.opType === 'create')
+        && existing.updatedAt > (file.updatedAt || 0)
+    ) {
+        const files = new Map(state.files);
+        const kept = file.latexWorkbench && !existing.latexWorkbench
+            ? {
+                ...existing,
+                latexWorkbench: true as const,
+                projectPath: file.projectPath || existing.projectPath,
+                absPath: undefined,
+                latexReadError: undefined,
+            }
+            : existing;
+        if (kept !== existing) files.set(file.filePath, kept);
+        return {
+            ...state,
+            ...withOpenFileLists(state, kept === existing ? state.files : files, file.filePath),
+            active: true,
+            userClosed: false,
+        };
+    }
+    const files = new Map(state.files);
+    files.set(file.filePath, file);
+    return {
+        ...state,
+        ...withOpenFileLists(state, files, file.filePath),
+        active: true,
+        userClosed: false,
+    };
+}
+
+/** Replace an open tab's text without selecting it. A closed tab stays closed. */
+export function applyReplaceOpenFileContent(
+    state: CodePreviewUIState,
+    filePath: string,
+    content: string,
+): CodePreviewUIState {
+    const existing = state.files.get(filePath);
+    if (!existing || existing.content === content) return state;
+    const files = new Map(state.files);
+    files.set(filePath, { ...existing, content, previewTruncated: false });
+    return { ...state, files };
+}
+
+/**
+ * Pin or unpin a file tab. Pinned tabs sort to the left and stay preferred-visible.
+ */
+export function applySetFilePinned(
+    state: CodePreviewUIState,
+    filePath: string,
+    pinned: boolean,
+): CodePreviewUIState {
+    if (!state.files.has(filePath)) {
+        return state;
+    }
+    const isPinned = state.pinnedPaths.includes(filePath);
+    if (pinned === isPinned) {
+        return state;
+    }
+    const pinnedPaths = pinned
+        ? [...state.pinnedPaths.filter((p) => p !== filePath), filePath]
+        : state.pinnedPaths.filter((p) => p !== filePath);
+    return {
+        ...state,
+        pinnedPaths,
+    };
+}
+
+/** Toggle pin for a file tab. */
+export function applyToggleFilePinned(
+    state: CodePreviewUIState,
+    filePath: string,
+): CodePreviewUIState {
+    return applySetFilePinned(state, filePath, !state.pinnedPaths.includes(filePath));
+}
+
+/**
+ * Close a single file tab (VS Code-style).
+ * Removes the file from the map. If the closed file was active, selects a
+ * neighbor (prefer previous) or clears activeFilePath when none remain.
+ * Does not close the whole panel; empty state is handled by the UI.
+ */
+export function applyCloseFile(
+    state: CodePreviewUIState,
+    filePath: string,
+): CodePreviewUIState {
+    if (!state.files.has(filePath)) {
+        return state;
+    }
+    const paths = getDisplayFilePaths(state.files, state.pinnedPaths);
+    const index = paths.indexOf(filePath);
+    const nextFiles = new Map(state.files);
+    nextFiles.delete(filePath);
+
+    let nextActive = state.activeFilePath;
+    if (state.activeFilePath === filePath) {
+        if (nextFiles.size === 0) {
+            nextActive = '';
+        } else {
+            // Prefer previous neighbor in display order, then next.
+            const preferred = paths[index - 1] ?? paths[index + 1] ?? paths.find((p) => p !== filePath);
+            nextActive = preferred && nextFiles.has(preferred)
+                ? preferred
+                : (Array.from(nextFiles.keys())[0] ?? '');
+        }
+    }
+
+    return {
+        ...state,
+        ...withOpenFileLists(state, nextFiles, nextActive),
+    };
+}
+
+/**
+ * Close every open file except `keepPath` (VS Code "Close Others").
+ * Also keeps other pinned tabs (common editor convenience).
+ */
+export function applyCloseOtherFiles(
+    state: CodePreviewUIState,
+    keepPath: string,
+): CodePreviewUIState {
+    if (!state.files.has(keepPath)) {
+        return state;
+    }
+    if (state.files.size <= 1) {
+        return state;
+    }
+    const keep = new Set<string>([keepPath, ...state.pinnedPaths.filter((p) => state.files.has(p))]);
+    const nextFiles = new Map<string, CodeFile>();
+    for (const [path, file] of state.files) {
+        if (keep.has(path)) nextFiles.set(path, file);
+    }
+    if (nextFiles.size === state.files.size) {
+        return state;
+    }
+    const nextActive = nextFiles.has(state.activeFilePath) ? state.activeFilePath : keepPath;
+    return {
+        ...state,
+        ...withOpenFileLists(state, nextFiles, nextActive),
+    };
+}
+
+/**
+ * Close all tabs to the right of `fromPath` (VS Code "Close to the Right").
+ * Order follows display order (pinned first).
+ * Pinned tabs to the right are preserved.
+ */
+export function applyCloseFilesToTheRight(
+    state: CodePreviewUIState,
+    fromPath: string,
+): CodePreviewUIState {
+    const paths = getDisplayFilePaths(state.files, state.pinnedPaths);
+    const index = paths.indexOf(fromPath);
+    if (index < 0 || index >= paths.length - 1) {
+        return state;
+    }
+    const pinnedSet = new Set(state.pinnedPaths);
+    const nextFiles = new Map(state.files);
+    for (let i = index + 1; i < paths.length; i++) {
+        if (!pinnedSet.has(paths[i])) {
+            nextFiles.delete(paths[i]);
+        }
+    }
+    if (nextFiles.size === state.files.size) {
+        return state;
+    }
+    let nextActive = state.activeFilePath;
+    if (nextActive && !nextFiles.has(nextActive)) {
+        nextActive = fromPath;
+    }
+    return {
+        ...state,
+        ...withOpenFileLists(state, nextFiles, nextActive),
+    };
+}
+
+/**
+ * Close every open file tab (VS Code "Close All").
+ * Clears the files map without resetting session metadata.
+ * Pinned tabs are kept open.
+ */
+export function applyCloseAllFiles(state: CodePreviewUIState): CodePreviewUIState {
+    if (state.files.size === 0) {
+        return state;
+    }
+    const pinnedSet = new Set(state.pinnedPaths.filter((p) => state.files.has(p)));
+    if (pinnedSet.size === 0) {
+        return {
+            ...state,
+            files: new Map(),
+            activeFilePath: '',
+            pinnedPaths: [],
+            mruOrder: [],
+        };
+    }
+    // Everything is already pinned — nothing to close.
+    if (pinnedSet.size === state.files.size) {
+        return state;
+    }
+    const nextFiles = new Map<string, CodeFile>();
+    for (const [path, file] of state.files) {
+        if (pinnedSet.has(path)) nextFiles.set(path, file);
+    }
+    const nextActive = nextFiles.has(state.activeFilePath)
+        ? state.activeFilePath
+        : (Array.from(nextFiles.keys())[0] ?? '');
+    return {
+        ...state,
+        ...withOpenFileLists(state, nextFiles, nextActive),
+    };
+}
+
+/**
+ * Move an open file tab to a new index in display order (drag-reorder).
+ * Index is clamped to [0, files.size - 1]. No-op when path is missing or index unchanged.
+ * Pin membership is preserved; pinned tabs remain sorted left after the move within groups.
+ */
+export function applyMoveFile(
+    state: CodePreviewUIState,
+    fromPath: string,
+    toIndex: number,
+): CodePreviewUIState {
+    const paths = getDisplayFilePaths(state.files, state.pinnedPaths);
+    const fromIndex = paths.indexOf(fromPath);
+    if (fromIndex < 0 || paths.length <= 1) {
+        return state;
+    }
+    if (!Number.isFinite(toIndex)) {
+        return state;
+    }
+    const clamped = Math.max(0, Math.min(paths.length - 1, Math.floor(toIndex)));
+    if (clamped === fromIndex) {
+        return state;
+    }
+    const nextPaths = paths.slice();
+    nextPaths.splice(fromIndex, 1);
+    nextPaths.splice(clamped, 0, fromPath);
+
+    const pinnedSet = new Set(state.pinnedPaths.filter((p) => state.files.has(p)));
+    // Rebuild pin list as pinned paths in the new display order.
+    const pinnedPaths = nextPaths.filter((p) => pinnedSet.has(p));
+
+    // Preserve Map open-order as the new display order (pinned still sort left via getDisplayFilePaths).
+    const nextFiles = new Map<string, CodeFile>();
+    for (const path of nextPaths) {
+        const file = state.files.get(path);
+        if (file) nextFiles.set(path, file);
+    }
+    return {
+        ...state,
+        files: nextFiles,
+        pinnedPaths,
+    };
+}
+
+/**
+ * Reset the entire session. Clears all state back to initial.
+ */
+export function applyResetSession(): CodePreviewUIState {
+    return initialState();
+}
+
+export function cloneCodePreviewState(state: CodePreviewUIState): CodePreviewUIState {
+    return {
+        ...state,
+        files: new Map(state.files ?? []),
+        pinnedPaths: Array.isArray(state.pinnedPaths) ? state.pinnedPaths.slice() : [],
+        mruOrder: Array.isArray(state.mruOrder) ? state.mruOrder.slice() : [],
+    };
+}
+
+// ── React Hook ──
+
+/**
+ * useCodePreviewState manages the code preview panel state.
+ *
+ * Listens to Wails events:
+ *   - code:file_update    — update files map, auto-open, auto-select
+ *   - code:session_start  — reset files, activate session
+ *   - code:session_end    — deactivate session
+ *   - workflow:doc_update  — preserve code preview for tabbed switching
+ *
+ * @param activeTabProjectPath - Tab project_path used to route code events.
+ *   Unscoped events (no project_path) are only accepted by the unbound local tab.
+ * @param scope.belongingPath - Extra root (cloud cache) for leftover-file filtering.
+ * @param scope.cloudWorkspaceTab - Drop foreign absolute files before the cache path resolves.
+ * @param scope.previewWorkspacePath - Directory shown in the preview tree. When
+ *   the key is present, last-file dismiss uses this instead of the event-routing path
+ *   (cloud cache root can exist while tab.projectPath is still empty).
+ */
+export function useCodePreviewState(
+    activeTabProjectPath?: string,
+    previewEnabled = true,
+    scope?: { belongingPath?: string; cloudWorkspaceTab?: boolean; previewWorkspacePath?: string; latexResultTab?: boolean; taskResultTab?: boolean; expertId?: string; markTaskResult?: boolean; onAgentFileWrite?: (file: CodeFile) => void },
+) {
+    // Held in a ref so an inline callback does not re-subscribe the event
+    // listeners on every render.
+    const onAgentFileWriteRef = useRef(scope?.onAgentFileWrite);
+    onAgentFileWriteRef.current = scope?.onAgentFileWrite;
+    const [state, setState] = useState<CodePreviewUIState>(initialState);
+    // Last rendered state, used to probe whether an incoming write will
+    // actually land before notifying the host panel. Assigned during render
+    // (sync updates only here), so it matches the `prev` the next event's
+    // updater starts from except within same-tick event bursts.
+    const appliedStateRef = useRef(state);
+    appliedStateRef.current = state;
+    const belongingPath = scope?.belongingPath || activeTabProjectPath;
+    const cloudWorkspaceTab = scope?.cloudWorkspaceTab === true;
+    const latexResultTab = scope?.latexResultTab === true;
+    const taskResultTab = scope?.taskResultTab === true;
+    const expertId = scope?.expertId || "";
+    const markTaskResult = scope?.markTaskResult === true;
+    const previewWorkspacePath = scope && "previewWorkspacePath" in scope
+        ? (scope.previewWorkspacePath || undefined)
+        : activeTabProjectPath;
+    const retainForActiveTab = useCallback((next: CodePreviewUIState) => (
+        filterCodePreviewStateForProject(next, activeTabProjectPath, belongingPath, cloudWorkspaceTab, latexResultTab, taskResultTab, expertId)
+    ), [activeTabProjectPath, belongingPath, cloudWorkspaceTab, expertId, latexResultTab, taskResultTab]);
+
+    useEffect(() => {
+        setState(prev => retainForActiveTab(prev));
+    }, [retainForActiveTab]);
+
+    // Listen for code:file_update
+    useEffect(() => {
+        const unsub = EventsOn("code:file_update", (data: any) => {
+            if (!previewEnabled) return;
+            if (!data?.file_path || data?.content === undefined || data?.content === null) return;
+
+            const eventProjectPath: string | undefined = data.project_path;
+            const opType: CodeFile['opType'] = data.op_type === "modify" ? "modify" : data.op_type === "read" ? "read" : "create";
+            const latexFile = isLatexSourceFilePath(String(data.file_path || ""));
+            const forceOpen = data.force_open === true || (latexResultTab && latexFile && isTaskResultWrite(opType));
+            if (!acceptTaskResultFileEvent({
+                opType,
+                forceOpen: data.force_open === true,
+                eventProjectPath,
+                tabProjectPath: activeTabProjectPath,
+                sessionID: data.session_id,
+                expertId,
+                latexFile,
+                latexTab: latexResultTab,
+                expertTab: taskResultTab,
+            })) {
+                return;
+            }
+
+            const original = opType === "modify" && data.original_missing !== true && typeof data.original === "string" ? data.original : undefined;
+            let file: CodeFile = {
+                sessionID: data.session_id || "",
+                filePath: data.file_path,
+                fileName: data.file_name || data.file_path.split(/[/\\]/).pop() || data.file_path,
+                absPath: isCloudWorkspacePath(data.abs_path || data.file_path) ? undefined : (data.abs_path || undefined),
+                content: data.content,
+                original,
+                opType,
+                language: data.language || "plaintext",
+                updatedAt: Date.now(),
+                forceOpen,
+                autoOpenPreview: data.auto_open_preview === true,
+                previewTruncated: data.preview_truncated === true,
+                projectPath: eventProjectPath || undefined,
+            };
+            const latexResult = latexResultTab && latexFile;
+            if (latexResult) file = prepareLatexResultFile(file, activeTabProjectPath);
+            file = withTaskResultMark(file, markTaskResult);
+            const expertWrite = taskResultTab && data.force_open === true && isTaskResultWrite(opType) && isExpertResultSession(data.session_id, expertId);
+            // A write that actually lands in the preview is worth surfacing:
+            // the host panel focuses the file body (content + diff) instead of
+            // leaving the directory tree selected. A read surfaces only when
+            // the backend explicitly asked the pane to show it; plain reads
+            // stay background tabs and never open the pane. A probe against
+            // the last rendered state (same pure function the updater runs, so
+            // no drift) keeps session-blocked events, identical re-reads of
+            // the selected file, and identical redeliveries from yanking the
+            // view.
+            const surfaces = fileEventSurfacesPreview(file);
+            if (surfaces) {
+                const belongs = file.latexWorkbench || expertWrite
+                    || codeFileBelongsToPreviewProject(file, activeTabProjectPath, belongingPath, cloudWorkspaceTab);
+                // Probe only past the cheap ownership gate: applyFileUpdate
+                // copies the whole state tree, so probing events the updater
+                // would reject anyway is wasted work.
+                if (belongs && applyFileUpdate(appliedStateRef.current, file) !== appliedStateRef.current) {
+                    onAgentFileWriteRef.current?.(file);
+                }
+            }
+
+            setState(prev => {
+                if (!file.latexWorkbench && !expertWrite && !codeFileBelongsToPreviewProject(file, activeTabProjectPath, belongingPath, cloudWorkspaceTab)) {
+                    return prev;
+                }
+                return applyFileUpdate(prev, file);
+            });
+        });
+        return () => {
+            if (typeof unsub === "function") unsub();
+            else EventsOff("code:file_update");
+        };
+    }, [activeTabProjectPath, belongingPath, cloudWorkspaceTab, expertId, latexResultTab, markTaskResult, previewEnabled, taskResultTab]);
+
+    // Listen for code:session_start
+    useEffect(() => {
+        const unsub = EventsOn("code:session_start", (data: any) => {
+            if (!previewEnabled) return;
+            const eventProjectPath: string | undefined = data?.project_path;
+            if (!shouldAcceptCodeEventForProject(eventProjectPath, activeTabProjectPath)) {
+                return;
+            }
+            setState(prev => applySessionStart(prev, data?.session_id || "", data?.auto_open_preview === true));
+        });
+        return () => {
+            if (typeof unsub === "function") unsub();
+            else EventsOff("code:session_start");
+        };
+    }, [activeTabProjectPath, previewEnabled]);
+
+    // Listen for code:session_end
+    useEffect(() => {
+        const unsub = EventsOn("code:session_end", (data: any) => {
+            if (!previewEnabled) return;
+            const eventProjectPath: string | undefined = data?.project_path;
+            const sessionID = data?.session_id || "";
+            setState(prev => {
+                if (!shouldAcceptCodeEventForProject(eventProjectPath, activeTabProjectPath) && prev.sessionID !== sessionID) {
+                    return prev;
+                }
+                return applySessionEnd(prev, sessionID);
+            });
+        });
+        return () => {
+            if (typeof unsub === "function") unsub();
+            else EventsOff("code:session_end");
+        };
+    }, [activeTabProjectPath, previewEnabled]);
+
+    // Listen for workflow:doc_update — keep source preview available for tabs.
+    useEffect(() => {
+        const unsub = EventsOn("workflow:doc_update", () => {
+            setState(prev => applyWorkflowDocUpdate(prev));
+        });
+        return () => {
+            if (typeof unsub === "function") unsub();
+            else EventsOff("workflow:doc_update");
+        };
+    }, []);
+
+    const closePanel = useCallback(() => {
+        setState(prev => applyClosePanel(prev));
+    }, []);
+
+    const reopenPanel = useCallback(() => {
+        setState(prev => applyReopenPanel(prev));
+    }, []);
+
+    const activatePassive = useCallback(() => {
+        setState(prev => applyActivatePassive(prev));
+    }, []);
+
+    const selectFile = useCallback((filePath: string) => {
+        setState(prev => applySelectFile(prev, filePath));
+    }, []);
+
+    const focusFile = useCallback((filePath: string) => {
+        setState(prev => applyFocusPreviewFile(prev, filePath));
+    }, []);
+
+    const openWorkspaceFile = useCallback((file: CodeFile): boolean => {
+        const accepted = acceptWorkspacePreviewFile(file, activeTabProjectPath, belongingPath, cloudWorkspaceTab);
+        if (!accepted) return false;
+        setState(prev => applyOpenWorkspaceFile(prev, accepted));
+        return true;
+    }, [activeTabProjectPath, belongingPath, cloudWorkspaceTab]);
+
+    // A paper already in this tab can live in the working directory while the
+    // tab is named by the task directory. The workspace-open check rejects that
+    // pair, which dropped the editable preview for a rewritten template.
+    const adoptPreviewFile = useCallback((file: CodeFile) => {
+        if (!file.filePath || file.content === undefined || file.content === null) return;
+        setState(prev => applyOpenWorkspaceFile(prev, file));
+    }, []);
+
+    const replaceWorkspaceFileContent = useCallback((filePath: string, content: string) => {
+        setState(prev => applyReplaceOpenFileContent(prev, filePath, content));
+    }, []);
+
+    const closeFile = useCallback((filePath: string) => {
+        setState(prev => applyDismissEmptyPreviewWithoutWorkspace(
+            applyCloseFile(prev, filePath),
+            previewWorkspacePath,
+        ));
+    }, [previewWorkspacePath]);
+
+    const closeOtherFiles = useCallback((keepPath: string) => {
+        setState(prev => applyCloseOtherFiles(prev, keepPath));
+    }, []);
+
+    const closeFilesToTheRight = useCallback((fromPath: string) => {
+        setState(prev => applyCloseFilesToTheRight(prev, fromPath));
+    }, []);
+
+    const closeAllFiles = useCallback(() => {
+        setState(prev => applyDismissEmptyPreviewWithoutWorkspace(
+            applyCloseAllFiles(prev),
+            previewWorkspacePath,
+        ));
+    }, [previewWorkspacePath]);
+
+    const moveFile = useCallback((fromPath: string, toIndex: number) => {
+        setState(prev => applyMoveFile(prev, fromPath, toIndex));
+    }, []);
+
+    const setFilePinned = useCallback((filePath: string, pinned: boolean) => {
+        setState(prev => applySetFilePinned(prev, filePath, pinned));
+    }, []);
+
+    const toggleFilePinned = useCallback((filePath: string) => {
+        setState(prev => applyToggleFilePinned(prev, filePath));
+    }, []);
+
+    const resetSession = useCallback(() => {
+        setState(applyResetSession());
+    }, []);
+
+    /** Overwrites the entire code preview state from a saved snapshot. */
+    const restoreState = useCallback((snapshot: CodePreviewUIState) => {
+        setState(retainForActiveTab(cloneCodePreviewState({
+            ...initialState(),
+            ...snapshot,
+            files: snapshot.files ?? new Map(),
+            pinnedPaths: snapshot.pinnedPaths ?? [],
+            mruOrder: snapshot.mruOrder ?? [],
+        })));
+    }, [retainForActiveTab]);
+
+    return {
+        state,
+        closePanel,
+        reopenPanel,
+        activatePassive,
+        selectFile,
+        focusFile,
+        openWorkspaceFile,
+        adoptPreviewFile,
+        replaceWorkspaceFileContent,
+        closeFile,
+        closeOtherFiles,
+        closeFilesToTheRight,
+        closeAllFiles,
+        moveFile,
+        setFilePinned,
+        toggleFilePinned,
+        resetSession,
+        restoreState,
+    };
+}

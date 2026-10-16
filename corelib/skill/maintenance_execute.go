@@ -211,6 +211,12 @@ func ExecuteSkillMaintenancePlan(skills []corelib.NLSkillEntry, plan SkillMainte
 				result.addAction(SkillMaintenanceExecutionAction{Action: action.Action, Skill: action.Skill, Status: MaintenanceExecutionStatusSkipped, Reason: "related duplicate skill was not found"})
 				continue
 			}
+			if relatedIndex == skillIndex {
+				// Never retire the primary entry due to an alias collision or a
+				// malformed plan that names the same Skill twice.
+				result.addAction(SkillMaintenanceExecutionAction{Action: action.Action, Skill: action.Skill, Status: MaintenanceExecutionStatusSkipped, Reason: "merge_duplicate requires two distinct skills"})
+				continue
+			}
 			draft := buildMergeDuplicateDraft(out[skillIndex], out[relatedIndex], action)
 			if !opts.AllowDuplicateRetire {
 				result.addAction(SkillMaintenanceExecutionAction{Action: action.Action, Skill: action.Skill, Status: MaintenanceExecutionStatusSkipped, Reason: "duplicate merge requires reviewed consolidation", MergeDraft: draft})

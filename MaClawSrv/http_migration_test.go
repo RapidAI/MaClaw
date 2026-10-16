@@ -15,8 +15,10 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 )
 
@@ -95,6 +97,106 @@ func TestCheckMigrationPackageLimitUsesEncryptedUploadSize(t *testing.T) {
 	err := checkMigrationPackageLimit(limit+1, limit)
 	if err == nil || !strings.Contains(err.Error(), "encrypted migration package") || !strings.Contains(err.Error(), "exceeds limit") {
 		t.Fatalf("over-limit encrypted package error = %v", err)
+	}
+}
+
+func TestMigrationCheckpointPhase(t *testing.T) {
+	tests := []struct {
+		progress float64
+		want     string
+	}{
+		{progress: 0.05, want: "prepare"},
+		{progress: 0.20, want: "package"},
+		{progress: 0.30, want: "transfer"},
+		{progress: 0.75, want: "verify"},
+		{progress: 0.85, want: "apply"},
+		{progress: 0.95, want: "finalize"},
+		{progress: 1.00, want: "completed"},
+	}
+	for _, test := range tests {
+		if got := migrationCheckpointPhase(test.progress); got != test.want {
+			t.Errorf("migrationCheckpointPhase(%v) = %q, want %q", test.progress, got, test.want)
+		}
+	}
+}
+
+func TestMigrationExportJobReconcilerUsesCommittedProtectedReceipt(t *testing.T) {
+	now := time.Now().UTC()
+	effect := agentruntime.JobEffect{
+		Version: 1, JobID: "job-1", TenantID: "tenant", UserID: "user",
+		JobKind: "migration.export", Kind: migrationExportEffectKind,
+		ResourceID: "export-1", State: agentruntime.JobEffectCommitted,
+		ReceiptDigest: agentruntime.JobEffectReceiptDigest("export-1:ready:hash"),
+		Payload:       []byte(`{"encrypted_size":42,"chunk_count":2}`), CreatedAt: now, UpdatedAt: now,
+	}
+	result, err := (migrationExportJobReconciler{server: &HTTPServer{}}).ReconcileJob(context.Background(), agentruntime.Job{ID: "job-1", Kind: "migration.export"}, []agentruntime.JobEffect{effect})
+	if err != nil || !result.Resolved || result.Status != agentruntime.JobStatusSucceeded || !strings.Contains(string(result.Result), `"export_id":"export-1"`) || !strings.Contains(string(result.Result), `"encrypted_size":42`) {
+		t.Fatalf("committed receipt reconciliation = %#v err=%v", result, err)
+	}
+}
+
+func TestMigrationExportJobReconcilerProbesHubWithoutReplaying(t *testing.T) {
+	var requests atomic.Int32
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/migration/exports/export-1" {
+			t.Fatalf("unexpected reconciliation request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"export":{"export_id":"export-1","source_machine_id":"machine-1","status":"ready","encrypted_size":64,"chunk_count":3}}`))
+	}))
+	defer hub.Close()
+	now := time.Now().UTC()
+	effect := agentruntime.JobEffect{
+		Version: 1, JobID: "job-1", TenantID: "tenant", UserID: "user",
+		JobKind: "migration.export", Kind: migrationExportEffectKind,
+		ResourceID: "export-1", State: agentruntime.JobEffectUnknown,
+		ReasonCode: "remote_completion_unknown", CreatedAt: now, UpdatedAt: now,
+	}
+	reconciler := migrationExportJobReconciler{server: &HTTPServer{}, cfg: migrationClientConfig{HubURL: hub.URL, ViewerToken: "token", MachineID: "machine-1"}}
+	result, err := reconciler.ReconcileJob(context.Background(), agentruntime.Job{ID: "job-1", Kind: "migration.export"}, []agentruntime.JobEffect{effect})
+	if err != nil || !result.Resolved || result.Status != agentruntime.JobStatusSucceeded || requests.Load() != 1 || !strings.Contains(string(result.Result), `"chunk_count":3`) {
+		t.Fatalf("Hub receipt reconciliation = %#v requests=%d err=%v", result, requests.Load(), err)
+	}
+}
+
+func TestMigrationImportJobReconcilerUsesCommittedLocalReceipt(t *testing.T) {
+	now := time.Now().UTC()
+	effect := agentruntime.JobEffect{
+		Version: 1, JobID: "job-1", TenantID: "tenant", UserID: "user",
+		JobKind: "migration.import", Kind: migrationImportEffectKind,
+		ResourceID: "export-1", State: agentruntime.JobEffectCommitted,
+		ReceiptDigest: agentruntime.JobEffectReceiptDigest("export-1:local-restored"),
+		Payload:       []byte(`{"memory":{"imported":4}}`), CreatedAt: now, UpdatedAt: now,
+	}
+	result, err := (migrationImportJobReconciler{server: &HTTPServer{}}).ReconcileJob(context.Background(), agentruntime.Job{ID: "job-1", Kind: "migration.import"}, []agentruntime.JobEffect{effect})
+	if err != nil || !result.Resolved || result.Status != agentruntime.JobStatusSucceeded || !strings.Contains(string(result.Result), `"reconciled":true`) || !strings.Contains(string(result.Result), `"imported":4`) {
+		t.Fatalf("committed import reconciliation = %#v err=%v", result, err)
+	}
+}
+
+func TestMigrationImportJobReconcilerDoesNotReplayAmbiguousImport(t *testing.T) {
+	var requests atomic.Int32
+	hub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Method != http.MethodGet || r.URL.Path != "/api/v1/migration/exports/export-1" {
+			t.Fatalf("unexpected reconciliation request: %s %s", r.Method, r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"export":{"export_id":"export-1","status":"importing","claimed_by_machine_id":"machine-1"}}`))
+	}))
+	defer hub.Close()
+	now := time.Now().UTC()
+	effect := agentruntime.JobEffect{
+		Version: 1, JobID: "job-1", TenantID: "tenant", UserID: "user",
+		JobKind: "migration.import", Kind: migrationImportEffectKind,
+		ResourceID: "export-1", State: agentruntime.JobEffectUnknown,
+		ReasonCode: "remote_claim_unknown", CreatedAt: now, UpdatedAt: now,
+	}
+	reconciler := migrationImportJobReconciler{server: &HTTPServer{}, cfg: migrationClientConfig{HubURL: hub.URL, ViewerToken: "token", MachineID: "machine-1"}}
+	result, err := reconciler.ReconcileJob(context.Background(), agentruntime.Job{ID: "job-1", Kind: "migration.import"}, []agentruntime.JobEffect{effect})
+	if err != nil || result.Resolved || requests.Load() != 1 {
+		t.Fatalf("ambiguous import was settled/replayed: %#v requests=%d err=%v", result, requests.Load(), err)
 	}
 }
 

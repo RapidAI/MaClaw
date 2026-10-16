@@ -193,8 +193,8 @@ try {
 			'TestMobileDocumentOfficeMarkdownRejectsEncryptedDocumentWithoutFallback',
 			'TestKnowledgeImagePresentationRequiresRegisteredAsset'
         )
-        Invoke-RequiredGoTests './gui' $guiRequiredTests
-        go test ./gui -run $guiPattern -count=1 -timeout 15m
+        Invoke-RequiredGoTests './guiapp' $guiRequiredTests
+        go test ./guiapp -run $guiPattern -count=1 -timeout 15m
     }
     Invoke-Checked "server image and Office attachment authorization contract" {
         $serverPattern = 'Test.*Knowledge.*Image|Test.*Image.*Knowledge|TestThirdPartyGatewayStagesLargeOfficeMediaInInstanceWorkspace|TestPlatformAttachment(MaxBytesForUsesSharedDocumentLimit|TreatsMislabelledOfficeTextAttachmentAsFile|FileAttachmentLineTreatsMislabelledOfficeImageAsFile)'
@@ -231,7 +231,7 @@ try {
     if (-not $SkipFrontendBuild) {
         $node = Resolve-NodeExecutable $NodePath
         Invoke-Checked "browser image marker tests, TypeScript and production build" {
-            Push-Location gui/frontend
+            Push-Location guiapp/frontend
             try {
                 & $node 'node_modules\vitest\vitest.mjs' run 'src/components/ai/aiAssistantMarkdown.test.tsx' --reporter=dot
                 if ($LASTEXITCODE -eq 0) { & $node 'node_modules\typescript\bin\tsc' }

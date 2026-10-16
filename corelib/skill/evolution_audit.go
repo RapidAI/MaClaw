@@ -82,8 +82,11 @@ func EvolutionAuditHealth() EvolutionAuditHealthSnapshot {
 	evolutionAuditHealth.mu.RLock()
 	defer evolutionAuditHealth.mu.RUnlock()
 	return EvolutionAuditHealthSnapshot{
-		Available:     evolutionAuditHealth.available || evolutionAuditHealth.lastError == "",
-		LastError:     evolutionAuditHealth.lastError,
+		Available: evolutionAuditHealth.available || evolutionAuditHealth.lastError == "",
+		// Audit failures are surfaced through Wails/TUI diagnostics. Keep the
+		// durable/process-local decision fail-closed while redacting paths and
+		// bounding the message exposed to operators.
+		LastError:     safeCompensationText(evolutionAuditHealth.lastError),
 		FailureCount:  evolutionAuditHealth.failureCount,
 		LastSuccessAt: evolutionAuditHealth.lastSuccessAt,
 	}

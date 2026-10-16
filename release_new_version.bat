@@ -15,15 +15,15 @@ if errorlevel 1 (
   exit /b 1
 )
 
-if not exist "gui\frontend\src\version.ts" (
-  echo ERROR: gui\frontend\src\version.ts not found.
+if not exist "guiapp\frontend\src\version.ts" (
+  echo ERROR: guiapp\frontend\src\version.ts not found.
   pause
   exit /b 1
 )
 
-for /f "tokens=2 delims='" %%v in ('findstr /C:"appVersion" "gui\frontend\src\version.ts"') do set "VERSION=%%v"
+for /f "tokens=2 delims='" %%v in ('findstr /C:"appVersion" "guiapp\frontend\src\version.ts"') do set "VERSION=%%v"
 if not defined VERSION (
-  echo ERROR: Could not read appVersion from gui\frontend\src\version.ts.
+  echo ERROR: Could not read appVersion from guiapp\frontend\src\version.ts.
   pause
   exit /b 1
 )
@@ -97,7 +97,6 @@ echo.
 echo Release started successfully.
 echo GitHub Actions: https://github.com/RapidAI/MaClaw/actions/workflows/main.yml
 echo GitHub Release will be created for: %TAG%
-echo Gitee Release will be synced automatically after GitHub Release succeeds.
 echo.
 pause
 exit /b 0

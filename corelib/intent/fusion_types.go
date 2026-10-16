@@ -113,15 +113,15 @@ func DefaultFusionConfigWithWorkflowTypes(defs []IntentDefinition) FusionConfig 
 }
 
 // BuildWorkflowTypeMap builds a label → workflow_type map from definitions.
-// Only labels with exactly one WorkflowType are included — labels with
-// multiple types require L3 semantic reasoning to disambiguate.
-// Exception: when multiple types exist, the first one is used as a conservative
-// degraded-mode default (e.g., "coding" is preferred over "maintenance" because
-// the full coding workflow has more protective phases).
+// A label with one workflow type is unambiguous. A label with two is a
+// primary and a fallback (coding, then maintenance): the first is the
+// protective default when the tree is down. A longer list is a catalog of
+// different projects, and the first entry is not a default for all of them.
 func BuildWorkflowTypeMap(defs []IntentDefinition) map[IntentLabel]string {
 	m := make(map[IntentLabel]string)
 	for _, d := range defs {
-		if len(d.WorkflowTypes) >= 1 {
+		switch len(d.WorkflowTypes) {
+		case 1, 2:
 			m[d.Label] = d.WorkflowTypes[0]
 		}
 	}

@@ -60,6 +60,8 @@ Strong areas today:
 
 - MCP server management through REST
 
+- Admin database profiles (list/create/test/rotate-secret/delete), write approvals, kill switch, metrics, and metadata-only mutation receipts. List responses may include replica_host and replica_ssh_session_id without credentials.
+
 
 - Usage, audit, alerts, dashboard, overview, and tenant-summary views
 

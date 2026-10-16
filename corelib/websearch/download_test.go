@@ -282,6 +282,16 @@ func TestFetchPublicModeRejectsSavePathSymlinkEscape(t *testing.T) {
 	if err := os.Symlink(outside, link); err != nil {
 		t.Skipf("symlink creation is unavailable: %v", err)
 	}
+	// os.Symlink can report success on Windows without SeCreateSymbolicLink /
+	// Developer Mode and still leave a link that cannot be resolved. The guard
+	// then treats the component as a plain missing directory and walks past it,
+	// so the assertion below would fail for an environment reason instead of a
+	// product reason. Verify the link actually resolves before asserting.
+	if resolved, err := filepath.EvalSymlinks(link); err != nil {
+		t.Skipf("symlink is not resolvable in this environment: %v", err)
+	} else if resolved != outside && !samePath(resolved, outside) {
+		t.Skipf("symlink resolved to %q, expected %q", resolved, outside)
+	}
 	opts := &FetchOptions{
 		PublicNetworkOnly: true,
 		SaveRoot:          root,
@@ -291,6 +301,42 @@ func TestFetchPublicModeRejectsSavePathSymlinkEscape(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "escapes its working directory") {
 		t.Fatalf("public download symlink escape error = %v, want rejection", err)
 	}
+}
+
+// TestValidateSavePathInsideRoot is the environment-independent companion to
+// the symlink test: it exercises the guard directly so the containment logic
+// is covered even where symlink creation is unavailable.
+func TestValidateSavePathInsideRoot(t *testing.T) {
+	root := t.TempDir()
+	inside := filepath.Join(root, "sub", "file.pdf")
+	if err := validateSavePathInsideRoot(inside, root); err != nil {
+		t.Fatalf("path inside root must be allowed: %v", err)
+	}
+	outside := filepath.Join(filepath.Dir(root), "outside", "file.pdf")
+	if err := validateSavePathInsideRoot(outside, root); err == nil {
+		t.Fatal("path outside root must be rejected")
+	}
+	if err := validateSavePathInsideRoot(filepath.Join(root, "..", "..", "file.pdf"), root); err == nil {
+		t.Fatal("dotdot traversal must be rejected")
+	}
+	if err := validateSavePathInsideRoot("", root); err == nil {
+		t.Fatal("empty save path must be rejected")
+	}
+	if err := validateSavePathInsideRoot(inside, ""); err == nil {
+		t.Fatal("empty root must be rejected")
+	}
+}
+
+func samePath(a, b string) bool {
+	ra, err := filepath.EvalSymlinks(a)
+	if err != nil {
+		return false
+	}
+	rb, err := filepath.EvalSymlinks(b)
+	if err != nil {
+		return false
+	}
+	return ra == rb || strings.EqualFold(ra, rb)
 }
 
 func TestDownloadAntiBotErrorGuidance(t *testing.T) {

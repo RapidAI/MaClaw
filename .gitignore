@@ -1,11 +1,7 @@
 build/bin
 /dist/
 node_modules
-gui/frontend/dist
-iWorker/frontend/dist
-iWorker/dist/
-iWorkerCenter/frontend/dist/
-iWorkerCloud/web/admin/dist/
+guiapp/frontend/dist
 hub/web/dist/
 build/windows/installer/tmp
 .kode/
@@ -56,6 +52,13 @@ mobile/android/signing.env.cmd
 mobile/maclaw_mobile/android/key.properties
 mobile/maclaw_mobile/android/*.jks
 mobile/maclaw_mobile/android/*.keystore
+# 2026-09-09 review: the rules above only match files directly under
+# android/, so a keystore placed in a subdirectory (e.g.
+# android/qa-signing/maclaw-mobile-qa.jks) was still committable. Signing
+# keys and their passwords must never be tracked anywhere under mobile/.
+mobile/**/key.properties
+mobile/**/*.jks
+mobile/**/*.keystore
 mobile/maclaw_mobile/qa-signing/
 mobile/maclaw_mobile/docs/qa-builds/*
 !mobile/maclaw_mobile/docs/qa-builds/README.md
@@ -65,7 +68,7 @@ mobile/maclaw_mobile/docs/qa-builds/*
 !mobile/maclaw_mobile/docs/qa-builds/final-release-evidence-20260706-backend-ssh-realtime.log
 !mobile/maclaw_mobile/docs/qa-builds/android-api35-0.1.0+1/
 !mobile/maclaw_mobile/docs/qa-builds/android-api35-0.1.0+1/**
-gui/LegacyTaskOutput.csv
+guiapp/LegacyTaskOutput.csv
 RapidSpeech.cpp/*.rar
 tmp-hub-admin-check.js
 tmp-hubcenter-admin-check.js
@@ -73,7 +76,8 @@ temp_fix_app.ps1
 hub/web/admin/.tmp-check.js
 hub/web/admin/_syntax_check.js
 gui.exe
-gui/gui
+/gui
+guiapp/gui
 *.test.exe
 site/
 
@@ -114,7 +118,7 @@ hub/cmd/hub/hub.exe
 # YOLO model weights (large binary files)
 corelib/yolo/weights/
 
-# npm cache in all frontend dirs — covers gui/frontend, iWorker/frontend, DiWorker/frontend, etc.
+# npm cache in all frontend dirs — covers guiapp/frontend, etc.
 **/frontend/.npm_cache/
 
 # Build temp files
@@ -131,12 +135,8 @@ corelib/tts/testdata/pyref_*
 corelib/tts/testdata/pyweight_*
 corelib/tts/testdata/*.tar.bz2
 corelib/tts/testdata/cmudict.dict
-corelib/tts/testdata/melotts-*.gguf
 corelib/tts/testdata/espeak-ng-data/
-corelib/tts/testdata/vits-icefall-zh-aishell3/
-corelib/tts/testdata/vits-piper-zh_CN-huayan-medium/
 corelib/tts/testdata/__pycache__/
-corelib/tts/testdata/vits-piper-zh_CN-xiao_ya-medium/
 
 # Root-level binaries and temp files
 maclaw-tool.exe
@@ -150,7 +150,9 @@ _tmptest/
 _tmp_*.py
 *.pptx
 TigerProxy.exe
-TigerProxy/
+TigerProxy/*.exe
+TigerProxy/TigerProxy
+TigerProxy/bin/
 $prof
 *.gguf
 asr_bench.exe
@@ -174,23 +176,18 @@ corelib/memory/testdata/rapid/
 corelib/agent/testdata/rapid/
 corelib/intent/testdata/rapid/
 corelib/oauth/testdata/rapid/
-gui/testdata/rapid/
+guiapp/testdata/rapid/
 
 # Local test and generated artifacts
 .testhome/
 __pycache__/
 *.m4a
 *.wav
-!gui/hello-maclaw.wav
+!guiapp/hello-maclaw.wav
 .claude/worktrees/
 .tmp_echoear_reference/
 tts_eval/
-build/iworker_services_deploy/
 hub/internal/httpapi/data/ve-files/
-
-# Generated iWorkerCenter admin bundles
-iWorkerCenter/cmd/iworkercenter/web/admin/assets/index-*.js
-iWorkerCenter/cmd/iworkercenter/web/admin/assets/index-*.css
 
 # Spec screenshot attachments (binary images)
 .kiro/specs/**/*.png
@@ -277,15 +274,116 @@ graphify-out/
 /esp32-nv3023-lcd-test/*.log
 /esp32-nv3023-lcd-test/managed_components/
 # GUI scratch runners and generated frontend artifacts
-/gui/_run_*
-/gui/frontend/*.tsbuildinfo
-/gui/frontend/vite.config.js
-/gui/frontend/vite.config.d.ts
-/gui/frontend/apps-page-vitest-after.json
-/gui/frontend/.*.log
-/gui/build/
+/guiapp/_run_*
+/guiapp/frontend/*.tsbuildinfo
+/guiapp/frontend/vite.config.js
+/guiapp/frontend/vite.config.d.ts
+/guiapp/frontend/apps-page-vitest-after.json
+/guiapp/frontend/.*.log
+# Embedded GUI resources must stay tracked (go:embed build/... in package guiapp);
+# only local build outputs are ignored here.
+/guiapp/build/bin/
+/guiapp/build/windows/*.exe
 /scripts/_*
 *.local-backup.bin
 .tmp-*
 /iot-agentos/hub-com3-*-result.json
 /iot-agentos/review-hotspots.txt
+
+# guiapp junk (build copy scratch files)
+guiapp/LegacyTask*
+guiapp/*.csv
+guiapp/Microsoft/
+guiapp/_*
+
+# --- Recurring non-source artifacts (2026-09-24) ---
+# Compiled object files must never be tracked (gemm_arm64.o incident)
+*.o
+
+# Linux build outputs
+/build/linux/
+/build/maclawsrv_linux_amd64
+
+# Workflow GUI test fixtures (dozens of dated dirs per week)
+/guiapp/docs/workflow/
+
+# Third-party reference clones (contain their own .git)
+/esp-wifi-connect-reference/
+/xiaozhi-esp32-server-ref/
+
+# Local tool/workspace data and temp dirs
+/.maclaw-tmp*
+/.wbapp_*
+/.workbuddy*/
+/.workbuddy-ai/
+/.audit-mobile/
+/build-host-tests/
+/tmp-tail-check/
+
+# Root-level probe / scratch outputs
+/plink_*.txt
+/*_probe*.txt
+/proc_*.txt
+/pw_direct*
+/ssh_probe*
+/env_probe*
+/build_exit.txt
+/deploy_exit.txt
+/*.log.err
+/tmp_*.png
+/about-*.png
+/about-*.html
+/about-*.css
+
+# More build artifacts
+/build/windows/icon-resource-test/
+/iot-agentos/logs/
+/iot-agentos/*.png
+/iot-agentos/.maclaw-idf-tools/
+/build/ppt_*probe*/
+/tmp_pprof/
+
+deploy/run_deploy_run*.ps1
+
+/deploy/run[0-9][0-9]_*
+/deploy/sed*
+
+# iot-agentos 刷新备份与一次性锁备份
+iot-agentos/.stray-lock-*.badbak
+iot-agentos/managed_components_orphan_backup_*/
+# desktopd 部署打包产物
+build/desktopd_deploy/*.tar.gz
+build/desktopd_deploy/stage/
+
+# desktopd 部署工作目录（打包产物与宿主配置）
+build/desktopd_deploy/
+
+# --- Local tool state files (2026-10-07 cleanup) ---
+/jobs_tmp.json
+/guiapp/todo-debounce/
+
+.build_win_lock/
+
+# r17: CI 构建流水日志存档
+r17/
+
+# Ins-maclaw 本地构建产物
+/Ins-maclaw/Ins-maclaw.exe
+
+# Retired mobile line: ignore local Flutter build leftovers so deletion commits do not hit MAX_PATH
+mobile/maclaw_mobile/build/
+mobile/maclaw_mobile/.dart_tool/
+
+# scratch from CI log analysis
+/j.json
+/j2.json
+/rl.zip
+/build_number.bak
+mobile/maclaw_mobile/.tmp_*.log
+mobile/maclaw_mobile/android/*.iml
+mobile/maclaw_mobile/*.iml
+mobile/maclaw_mobile/.idea/
+
+# 部署/积分任务构建产物（带时间戳的临时目录）
+/build/deploy-*/
+/build/usercredits-*/

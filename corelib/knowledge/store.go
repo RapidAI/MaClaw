@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -27,38 +28,104 @@ type ImportProgressFunc func(DirectoryImportResult)
 type ScanProgressFunc func(phase string, done, total int, path string)
 
 type SQLiteStore struct {
-	db                     *sql.DB
-	dbPath                 string // for background post-import work on a separate connection
-	distiller              CardDistiller
-	progressMu             sync.Mutex // serializes callback installation and delivery
-	importProgress         ImportProgressFunc
-	scanProgress           ScanProgressFunc
-	embedder               embedding.Embedder
-	embedderMu             sync.RWMutex
-	embedderGeneration     uint64 // invalidates in-flight writes after a model switch
-	vectorANN              *vectorANNStore
-	vectorANNEnabled       bool // opt-in: exact scan remains the safe default
-	imageAssets            *ImageAssetManager
-	imageDescriber         ImageDescriber
-	pdfOCR                 OCRProvider   // local OCR used only for scanned/mixed PDF pages
-	pdfOCRMu               sync.RWMutex  // protects live OCR-provider reconfiguration
-	imageDescSem           chan struct{} // semaphore for concurrent image description calls
-	bgWG                   sync.WaitGroup
-	backgroundMu           sync.Mutex // serializes background starts, waits, and shutdown
-	closed                 bool
-	closeOnce              sync.Once
-	closeErr               error
-	embeddingRefreshMu     sync.Mutex
-	embeddingRefreshCancel context.CancelFunc
-	embeddingRefreshGen    uint64 // prevents an older refresh from clearing a newer cancel handle
-	bgCancelMu             sync.Mutex
-	bgCancel               context.CancelFunc
-	bgCancelGen            uint64 // increments per schedule; clear only matches gen
-	bgCancelRequested      bool   // set if CancelBackground raced ahead of schedule
+	db                         *sql.DB
+	dbPath                     string // for background post-import work on a separate connection
+	distiller                  CardDistiller
+	progressMu                 sync.Mutex // serializes callback installation and delivery
+	importProgress             ImportProgressFunc
+	scanProgress               ScanProgressFunc
+	embedder                   embedding.Embedder
+	embedderMu                 sync.RWMutex
+	embedderGeneration         uint64 // invalidates in-flight writes after a model switch
+	vectorANN                  *vectorANNStore
+	vectorANNEnabled           bool // opt-in: exact scan remains the safe default
+	imageAssets                *ImageAssetManager
+	imageDescriber             ImageDescriber
+	pdfOCR                     OCRProvider   // local OCR used only for scanned/mixed PDF pages
+	pdfOCRMu                   sync.RWMutex  // protects live OCR-provider reconfiguration
+	imageDescSem               chan struct{} // semaphore for concurrent image description calls
+	bgWG                       sync.WaitGroup
+	backgroundMu               sync.Mutex // serializes background starts, waits, and shutdown
+	closed                     bool
+	closeOnce                  sync.Once
+	closeErr                   error
+	embeddingRefreshMu         sync.Mutex
+	embeddingRefreshCancel     context.CancelFunc
+	embeddingRefreshGen        uint64       // prevents an older refresh from clearing a newer cancel handle
+	embeddingRefreshIncomplete atomic.Bool  // last pass stopped on an error; missing rows are still unembedded
+	embeddingRefreshRetryAt    atomic.Int64 // unix nano; searches do not resume a failure before this
+	bgCancelMu                 sync.Mutex
+	bgCancel                   context.CancelFunc
+	bgCancelGen                uint64 // increments per schedule; clear only matches gen
+	bgCancelRequested          bool   // set if CancelBackground raced ahead of schedule
 }
 
-// SetEmbedder sets the embedding model for vector search.
-// When set, card embeddings are generated on insert and used for semantic search.
+// sameKnowledgeEmbedder reports whether both embedders address one retrieval
+// space. A repeat attach of that space must not cancel a refresh already writing it.
+func sameKnowledgeEmbedder(current, next embedding.Embedder) bool {
+	currentAbsent := current == nil || embedding.IsNoop(current)
+	nextAbsent := next == nil || embedding.IsNoop(next)
+	if currentAbsent || nextAbsent {
+		return currentAbsent && nextAbsent
+	}
+	return embeddingModelIdentifier(current) == embeddingModelIdentifier(next) && current.Dim() == next.Dim()
+}
+
+// UseEmbedder attaches the model used to embed queries on this connection.
+// It does not schedule a library refresh. Short-lived search connections use
+// this so opening one cannot restart or wait out the shared index build.
+func (s *SQLiteStore) UseEmbedder(emb embedding.Embedder) {
+	if s == nil {
+		return
+	}
+	s.embedderMu.Lock()
+	if s.closed || sameKnowledgeEmbedder(s.embedder, emb) {
+		s.embedderMu.Unlock()
+		return
+	}
+	s.embedder = emb
+	s.embedderGeneration++
+	s.embedderMu.Unlock()
+	s.invalidateVectorANN()
+}
+
+// libraryEmbeddingRefreshInflight counts full-library rebuilds. Interactive
+// search skips query embedding while one is running so it does not wait behind
+// the document batches.
+var libraryEmbeddingRefreshInflight atomic.Int32
+
+// LibraryEmbeddingRefreshActive reports whether a full-library rebuild is
+// embedding documents right now.
+func LibraryEmbeddingRefreshActive() bool {
+	return libraryEmbeddingRefreshInflight.Load() > 0
+}
+
+// embeddingRefreshRetryDelay keeps a failed rebuild from being started again
+// by every search. The model is shared with those searches.
+var embeddingRefreshRetryDelay = 30 * time.Second
+
+// EmbeddingRefreshIncomplete reports that the last library rebuild stopped
+// before every missing row was embedded. A later SetEmbedder of the same
+// model fills only those rows.
+func (s *SQLiteStore) EmbeddingRefreshIncomplete() bool {
+	return s != nil && s.embeddingRefreshIncomplete.Load()
+}
+
+// EmbeddingRefreshResumeDue reports that a failed rebuild may be started again.
+// Immediately after a failure this is false, so interactive search does not
+// relaunch the model on every query.
+func (s *SQLiteStore) EmbeddingRefreshResumeDue() bool {
+	if s == nil || !s.embeddingRefreshIncomplete.Load() {
+		return false
+	}
+	return time.Now().UnixNano() >= s.embeddingRefreshRetryAt.Load()
+}
+
+// SetEmbedder sets the embedding model for vector search and, when the
+// retrieval space changes, refreshes stored vectors in the background.
+// Attaching the model that is already refreshing does not cancel that job.
+// After it finishes, the same model starts another pass that only fills rows
+// still missing its vectors.
 func (s *SQLiteStore) SetEmbedder(emb embedding.Embedder) {
 	if s == nil {
 		return
@@ -66,6 +133,12 @@ func (s *SQLiteStore) SetEmbedder(emb embedding.Embedder) {
 	s.embedderMu.Lock()
 	if s.closed {
 		s.embedderMu.Unlock()
+		return
+	}
+	if sameKnowledgeEmbedder(s.embedder, emb) {
+		generation := s.embedderGeneration
+		s.embedderMu.Unlock()
+		s.startEmbeddingRefresh(emb, generation, false)
 		return
 	}
 	s.embedder = emb
@@ -81,18 +154,84 @@ func (s *SQLiteStore) SetEmbedder(emb embedding.Embedder) {
 	// therefore refresh stale vectors instead of comparing incompatible spaces.
 	// A generation check prevents stale writes, while cancellation stops stale
 	// jobs from consuming further database and model capacity after a switch.
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
-	refreshGen := s.replaceEmbeddingRefreshCancel(cancel)
+	// Finished batches stay on disk; there is no deadline that discards them.
+	s.startEmbeddingRefresh(emb, generation, true)
+}
+
+// RestartEmbeddingRefresh cancels the library rebuild in progress and starts
+// another pass with the embedder already attached. SetEmbedder leaves a
+// same-model pass alone; that pass is useless when it began before the
+// weights existed, and search would keep skipping vectors until it finished.
+func (s *SQLiteStore) RestartEmbeddingRefresh() {
+	if s == nil {
+		return
+	}
+	s.embedderMu.Lock()
+	if s.closed {
+		s.embedderMu.Unlock()
+		return
+	}
+	emb := s.embedder
+	generation := s.embedderGeneration
+	s.embedderMu.Unlock()
+	if emb == nil || embedding.IsNoop(emb) {
+		return
+	}
+	s.startEmbeddingRefresh(emb, generation, true)
+}
+
+// startEmbeddingRefresh launches a library rebuild. replace cancels the job
+// already writing a previous model. A same-model call leaves that job alone
+// and only starts when nothing is running.
+func (s *SQLiteStore) startEmbeddingRefresh(emb embedding.Embedder, generation uint64, replace bool) {
+	if s == nil || emb == nil || embedding.IsNoop(emb) || s.db == nil || generation == 0 {
+		return
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	var refreshGen uint64
+	if replace {
+		refreshGen = s.replaceEmbeddingRefreshCancel(cancel)
+	} else {
+		s.embeddingRefreshMu.Lock()
+		if s.embeddingRefreshCancel != nil {
+			s.embeddingRefreshMu.Unlock()
+			cancel()
+			return
+		}
+		s.embeddingRefreshGen++
+		refreshGen = s.embeddingRefreshGen
+		s.embeddingRefreshCancel = cancel
+		s.embeddingRefreshMu.Unlock()
+	}
 	if !s.startBackground(func() {
-		defer cancel()
-		defer s.clearEmbeddingRefreshCancel(refreshGen)
+		libraryEmbeddingRefreshInflight.Add(1)
+		incomplete := false
+		defer func() {
+			// Publish the failure only after this pass has dropped its cancel
+			// handle, so the next same-model attach can start the resume.
+			finished := ctx.Err() == nil
+			s.clearEmbeddingRefreshCancel(refreshGen)
+			cancel()
+			libraryEmbeddingRefreshInflight.Add(-1)
+			if finished {
+				s.embeddingRefreshIncomplete.Store(incomplete)
+				if incomplete {
+					s.embeddingRefreshRetryAt.Store(time.Now().Add(embeddingRefreshRetryDelay).UnixNano())
+				} else {
+					s.embeddingRefreshRetryAt.Store(0)
+				}
+			}
+		}()
 		if err := s.backfillCardEmbeddingsForGeneration(ctx, emb, generation); err != nil && ctx.Err() == nil {
+			incomplete = true
 			fmt.Printf("[knowledge] card embedding refresh failed: %v\n", err)
 		}
 		if err := s.backfillNodeEmbeddingsForGeneration(ctx, emb, generation); err != nil && ctx.Err() == nil {
+			incomplete = true
 			fmt.Printf("[knowledge] node embedding refresh failed: %v\n", err)
 		}
 		if err := s.backfillTableRowEmbeddingsForGeneration(ctx, emb, generation); err != nil && ctx.Err() == nil {
+			incomplete = true
 			fmt.Printf("[knowledge] table-row embedding refresh failed: %v\n", err)
 		}
 	}) {
@@ -740,6 +879,7 @@ func createTables(db *sql.DB) error {
 			FOREIGN KEY(batch_id) REFERENCES knowledge_import_batches(id) ON DELETE CASCADE,
 			FOREIGN KEY(source_id) REFERENCES knowledge_sources(id) ON DELETE SET NULL
 		)`,
+		`CREATE INDEX IF NOT EXISTS idx_document_nodes_type ON document_nodes(type)`,
 		`CREATE INDEX IF NOT EXISTS idx_sources_scope ON knowledge_sources(tenant_id, owner_id, project_path, kind, status)`,
 		`CREATE INDEX IF NOT EXISTS idx_sources_hash ON knowledge_sources(content_hash)`,
 		`CREATE INDEX IF NOT EXISTS idx_sources_batch ON knowledge_sources(batch_id, relative_path)`,
@@ -817,53 +957,48 @@ func (s *SQLiteStore) SaveDocumentNode(ctx context.Context, node DocumentNode) e
 }
 
 func deleteDocumentNodeTreeTx(ctx context.Context, tx *sql.Tx, rootID string) error {
-	rootID = strings.TrimSpace(rootID)
-	if rootID == "" {
+	nodeIDs, _, err := inspectNodeTreeTx(ctx, tx, rootID)
+	if err != nil {
+		return err
+	}
+	return deleteNodesByIDsTx(ctx, tx, nodeIDs)
+}
+
+const fragmentDeleteIDChunk = 400
+
+func deleteNodesByIDsTx(ctx context.Context, tx *sql.Tx, nodeIDs []string) error {
+	if len(nodeIDs) == 0 {
 		return nil
 	}
-	// Chunking creates one parent level, but recursive traversal also safely
-	// handles pre-existing trees created by callers.
-	const nodeTreeCTE = `WITH RECURSIVE node_tree(id) AS (
-		SELECT id FROM document_nodes WHERE id = ?
-		UNION
-		SELECT n.id FROM document_nodes n JOIN node_tree p ON n.parent_id = p.id
-	)`
-	// Derived cards/facts are evidence for the old node contents. Removing them
-	// avoids serving stale claims while the caller regenerates derived records.
-	if _, err := tx.ExecContext(ctx, nodeTreeCTE+`
-	DELETE FROM knowledge_embedding_metadata
-	WHERE entity_type = 'card' AND entity_id IN (SELECT id FROM knowledge_cards WHERE node_id IN (SELECT id FROM node_tree))`, rootID); err != nil {
-		return err
+	for start := 0; start < len(nodeIDs); start += fragmentDeleteIDChunk {
+		end := start + fragmentDeleteIDChunk
+		if end > len(nodeIDs) {
+			end = len(nodeIDs)
+		}
+		chunk := nodeIDs[start:end]
+		placeholders := strings.TrimRight(strings.Repeat("?,", len(chunk)), ",")
+		args := make([]interface{}, len(chunk))
+		for i, id := range chunk {
+			args[i] = id
+		}
+		stmts := []string{
+			`DELETE FROM knowledge_embedding_metadata WHERE entity_type = 'card' AND entity_id IN (SELECT id FROM knowledge_cards WHERE node_id IN (` + placeholders + `))`,
+			`DELETE FROM knowledge_facts_fts WHERE fact_id IN (SELECT id FROM knowledge_facts WHERE card_id IN (SELECT id FROM knowledge_cards WHERE node_id IN (` + placeholders + `)))`,
+			`DELETE FROM knowledge_cards_fts WHERE card_id IN (SELECT id FROM knowledge_cards WHERE node_id IN (` + placeholders + `))`,
+			`DELETE FROM knowledge_facts WHERE card_id IN (SELECT id FROM knowledge_cards WHERE node_id IN (` + placeholders + `))`,
+			`DELETE FROM knowledge_card_suppressions WHERE card_id IN (SELECT id FROM knowledge_cards WHERE node_id IN (` + placeholders + `))`,
+			`DELETE FROM knowledge_cards WHERE node_id IN (` + placeholders + `)`,
+			`DELETE FROM knowledge_embedding_metadata WHERE entity_type = 'node' AND entity_id IN (` + placeholders + `)`,
+			`DELETE FROM document_nodes_fts WHERE node_id IN (` + placeholders + `)`,
+			`DELETE FROM document_nodes WHERE id IN (` + placeholders + `)`,
+		}
+		for _, stmt := range stmts {
+			if _, err := tx.ExecContext(ctx, stmt, args...); err != nil {
+				return err
+			}
+		}
 	}
-	if _, err := tx.ExecContext(ctx, nodeTreeCTE+`
-	DELETE FROM knowledge_facts_fts
-	WHERE fact_id IN (SELECT id FROM knowledge_facts WHERE card_id IN (SELECT id FROM knowledge_cards WHERE node_id IN (SELECT id FROM node_tree)))`, rootID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, nodeTreeCTE+`
-	DELETE FROM knowledge_cards_fts WHERE card_id IN (SELECT id FROM knowledge_cards WHERE node_id IN (SELECT id FROM node_tree))`, rootID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, nodeTreeCTE+`
-	DELETE FROM knowledge_facts WHERE card_id IN (SELECT id FROM knowledge_cards WHERE node_id IN (SELECT id FROM node_tree))`, rootID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, nodeTreeCTE+`
-	DELETE FROM knowledge_cards WHERE node_id IN (SELECT id FROM node_tree)`, rootID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, nodeTreeCTE+`
-	DELETE FROM knowledge_embedding_metadata
-	WHERE entity_type = 'node' AND entity_id IN (SELECT id FROM node_tree)`, rootID); err != nil {
-		return err
-	}
-	if _, err := tx.ExecContext(ctx, nodeTreeCTE+`
-	DELETE FROM document_nodes_fts WHERE node_id IN (SELECT id FROM node_tree)`, rootID); err != nil {
-		return err
-	}
-	_, err := tx.ExecContext(ctx, nodeTreeCTE+`
-	DELETE FROM document_nodes WHERE id IN (SELECT id FROM node_tree)`, rootID)
-	return err
+	return nil
 }
 
 func saveDocumentNodeTx(ctx context.Context, tx *sql.Tx, node DocumentNode) error {
@@ -1000,16 +1135,11 @@ func (s *SQLiteStore) ListSources(ctx context.Context, opts ListSourcesOptions) 
 		where = append(where, "tenant_id = ?")
 		args = append(args, opts.TenantID)
 	}
-	if opts.OwnerID != "" {
-		if opts.IncludeEmptyOwner {
-			where = append(where, "(owner_id = ? OR COALESCE(owner_id, '') = '')")
-		} else {
-			where = append(where, "owner_id = ?")
-		}
-		args = append(args, opts.OwnerID)
-	} else if opts.IncludeEmptyOwner {
-		where = append(where, "COALESCE(owner_id, '') = ''")
-	}
+	where, args = appendOwnerPredicate(where, args, "owner_id", ownerScope{
+		ID:           opts.OwnerID,
+		Lineage:      opts.OwnerLineage,
+		IncludeEmpty: opts.IncludeEmptyOwner,
+	})
 	if opts.BatchID != "" {
 		where = append(where, "batch_id = ?")
 		args = append(args, opts.BatchID)
@@ -1838,6 +1968,294 @@ func (s *SQLiteStore) DeleteSource(ctx context.Context, id string) error {
 	return nil
 }
 
+// DeleteFragment removes one search-hit fragment without deleting the source.
+// It returns the document-node IDs removed when the target is a node tree, so
+// callers can drop descendant hits that the original search row did not name.
+func (s *SQLiteStore) DeleteFragment(ctx context.Context, result SearchResult) ([]string, error) {
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("knowledge store is nil")
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	kind, id, err := resolveFragmentDeleteTarget(result)
+	if err != nil {
+		return nil, err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	var nodeIDs []string
+	var imageRefs []imageAssetRef
+	if kind == "node" {
+		nodeIDs, imageRefs, err = inspectNodeTreeTx(ctx, tx, id)
+		if err != nil {
+			return nil, err
+		}
+		if s.imageAssets == nil {
+			imageRefs = nil
+		}
+	}
+	switch kind {
+	case "node":
+		err = deleteNodesByIDsTx(ctx, tx, nodeIDs)
+	case "card":
+		err = deleteCardTx(ctx, tx, id)
+	case "fact":
+		err = deleteFactTx(ctx, tx, id)
+	case "table_row":
+		err = deleteTableRowTx(ctx, tx, id)
+	default:
+		err = fmt.Errorf("unsupported fragment type %q", kind)
+	}
+	if err != nil {
+		return nil, err
+	}
+	resultType := strings.ToLower(strings.TrimSpace(result.ResultType))
+	if kind != "card" {
+		if cardID := strings.TrimSpace(result.CardID); cardID != "" && resultType != "fact" {
+			if err := deleteCardTx(ctx, tx, cardID); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if kind != "fact" {
+		if factID := strings.TrimSpace(result.FactID); factID != "" {
+			if err := deleteFactTx(ctx, tx, factID); err != nil {
+				return nil, err
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	s.invalidateVectorANN()
+	s.reclaimFragmentImageAssets(ctx, imageRefs)
+	if nodeIDs == nil {
+		nodeIDs = []string{}
+	}
+	return nodeIDs, nil
+}
+
+func resolveFragmentDeleteTarget(result SearchResult) (kind, id string, err error) {
+	resultType := strings.ToLower(strings.TrimSpace(result.ResultType))
+	nodeID := strings.TrimSpace(result.NodeID)
+	cardID := strings.TrimSpace(result.CardID)
+	factID := strings.TrimSpace(result.FactID)
+	rowID := strings.TrimSpace(result.RowID)
+	switch resultType {
+	case "table_row":
+		if rowID == "" {
+			return "", "", fmt.Errorf("row id is required")
+		}
+		return "table_row", rowID, nil
+	case "fact":
+		if rowID != "" {
+			return "table_row", rowID, nil
+		}
+		if factID == "" {
+			return "", "", fmt.Errorf("fact id is required")
+		}
+		return "fact", factID, nil
+	case "card":
+		if nodeID != "" {
+			return "node", nodeID, nil
+		}
+		if rowID != "" {
+			return "table_row", rowID, nil
+		}
+		if cardID == "" {
+			return "", "", fmt.Errorf("card id is required")
+		}
+		return "card", cardID, nil
+	case "node":
+		if nodeID == "" {
+			return "", "", fmt.Errorf("node id is required")
+		}
+		return "node", nodeID, nil
+	}
+	if rowID != "" {
+		return "table_row", rowID, nil
+	}
+	if nodeID != "" {
+		return "node", nodeID, nil
+	}
+	if cardID != "" {
+		return "card", cardID, nil
+	}
+	if factID != "" {
+		return "fact", factID, nil
+	}
+	return "", "", fmt.Errorf("fragment id is required")
+}
+
+func deleteCardTx(ctx context.Context, tx *sql.Tx, cardID string) error {
+	cardID = strings.TrimSpace(cardID)
+	if cardID == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_embedding_metadata WHERE entity_type = 'card' AND entity_id = ?`, cardID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_facts_fts WHERE fact_id IN (SELECT id FROM knowledge_facts WHERE card_id = ?)`, cardID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_facts WHERE card_id = ?`, cardID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_card_suppressions WHERE card_id = ?`, cardID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_cards_fts WHERE card_id = ?`, cardID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_cards WHERE id = ?`, cardID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_facts_fts WHERE fact_id IN (SELECT id FROM kb_facts WHERE card_id = ?)`, cardID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_facts WHERE card_id = ?`, cardID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_cards_fts WHERE card_id = ?`, cardID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM kb_cards WHERE id = ?`, cardID)
+	return err
+}
+
+func deleteFactTx(ctx context.Context, tx *sql.Tx, factID string) error {
+	factID = strings.TrimSpace(factID)
+	if factID == "" {
+		return nil
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_facts_fts WHERE fact_id = ?`, factID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_facts WHERE id = ?`, factID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_facts_fts WHERE fact_id = ?`, factID); err != nil {
+		return err
+	}
+	_, err := tx.ExecContext(ctx, `DELETE FROM kb_facts WHERE id = ?`, factID)
+	return err
+}
+
+func deleteTableRowTx(ctx context.Context, tx *sql.Tx, rowID string) error {
+	rowID = strings.TrimSpace(rowID)
+	if rowID == "" {
+		return nil
+	}
+	var tableID string
+	if err := tx.QueryRowContext(ctx, `SELECT table_id FROM kb_rows WHERE id = ?`, rowID).Scan(&tableID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil
+		}
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM knowledge_embedding_metadata
+		WHERE (entity_type = 'table_row' AND entity_id = ?)
+			OR (entity_type = 'card' AND entity_id IN (SELECT id FROM kb_cards WHERE row_id = ?))`, rowID, rowID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_facts_fts WHERE fact_id IN (SELECT id FROM kb_facts WHERE row_id = ?)`, rowID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_facts WHERE row_id = ?`, rowID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_cards_fts WHERE card_id IN (SELECT id FROM kb_cards WHERE row_id = ?)`, rowID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_cards WHERE row_id = ?`, rowID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_cells WHERE row_id = ?`, rowID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_rows_fts WHERE row_id = ?`, rowID); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM kb_rows WHERE id = ?`, rowID); err != nil {
+		return err
+	}
+	if strings.TrimSpace(tableID) == "" {
+		return nil
+	}
+	_, err := tx.ExecContext(ctx, `UPDATE kb_tables SET row_count = CASE WHEN row_count > 0 THEN row_count - 1 ELSE 0 END, updated_at = ? WHERE id = ?`, formatTime(time.Now().UTC()), tableID)
+	return err
+}
+
+type imageAssetRef struct {
+	SourceID string
+	AssetID  string
+}
+
+func inspectNodeTreeTx(ctx context.Context, tx *sql.Tx, rootID string) ([]string, []imageAssetRef, error) {
+	rootID = strings.TrimSpace(rootID)
+	if rootID == "" {
+		return nil, nil, nil
+	}
+	const nodeTreeCTE = `WITH RECURSIVE node_tree(id) AS (
+		SELECT id FROM document_nodes WHERE id = ?
+		UNION
+		SELECT n.id FROM document_nodes n JOIN node_tree p ON n.parent_id = p.id
+	)`
+	rows, err := tx.QueryContext(ctx, nodeTreeCTE+`
+		SELECT n.id, n.source_id, n.type, json_extract(COALESCE(n.metadata_json, '{}'), '$.`+MetaImageAssetID+`')
+		FROM document_nodes n
+		WHERE n.id IN (SELECT id FROM node_tree)`, rootID)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer rows.Close()
+	nodeIDs := make([]string, 0)
+	refs := make([]imageAssetRef, 0)
+	for rows.Next() {
+		var nodeID, sourceID, nodeType, assetID sql.NullString
+		if err := rows.Scan(&nodeID, &sourceID, &nodeType, &assetID); err != nil {
+			return nil, nil, err
+		}
+		if id := nodeID.String; id != "" {
+			nodeIDs = append(nodeIDs, id)
+		}
+		ref := imageAssetRef{SourceID: sourceID.String, AssetID: assetID.String}
+		if nodeType.String != NodeTypeImage || ref.SourceID == "" || ref.AssetID == "" || ref.AssetID == ref.SourceID || !ImageAssetIDBelongsToSourceID(ref.AssetID, ref.SourceID) {
+			continue
+		}
+		refs = append(refs, ref)
+	}
+	return nodeIDs, refs, rows.Err()
+}
+
+func (s *SQLiteStore) reclaimFragmentImageAssets(ctx context.Context, refs []imageAssetRef) {
+	if s == nil || s.imageAssets == nil || len(refs) == 0 {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	seen := make(map[string]struct{}, len(refs))
+	for _, ref := range refs {
+		if _, ok := seen[ref.AssetID]; ok {
+			continue
+		}
+		seen[ref.AssetID] = struct{}{}
+		var remaining int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM document_nodes
+			WHERE type = ? AND json_extract(COALESCE(metadata_json, '{}'), '$.`+MetaImageAssetID+`') = ?`, NodeTypeImage, ref.AssetID).Scan(&remaining); err != nil || remaining > 0 {
+			continue
+		}
+		if err := s.imageAssets.DeleteAssets(ref.AssetID); err != nil {
+			log.Printf("[knowledge-image] delete fragment asset %s: %v", ref.AssetID, err)
+		}
+	}
+}
+
 // DeleteSourcesByIDPrefix deletes every knowledge_sources row whose id starts with prefix
 // (and derived rows). Used by enterprise digital-asset purge for dal_{libraryID}_* cleanup.
 // Unlike ListSources, this is not subject to the 5000-row list cap. IDs are deleted in
@@ -2420,7 +2838,7 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	seenNodes := make(map[string]struct{})
 
 	if wantsSearchType(resultTypes, "card") {
-		cardWhere := []string{"knowledge_cards_fts MATCH ?", "NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)"}
+		cardWhere := []string{"knowledge_cards_fts MATCH ?", "NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)", "COALESCE(c.invalid_at, '') = ''"}
 		cardArgs := []interface{}{query}
 		cardWhere, cardArgs = appendSearchFilters(cardWhere, cardArgs, "s", opts)
 		cardArgs = append(cardArgs, candidateLimit)
@@ -2487,7 +2905,7 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	}
 
 	if wantsSearchType(resultTypes, "fact") {
-		factWhere := []string{"knowledge_facts_fts MATCH ?", "NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)"}
+		factWhere := []string{"knowledge_facts_fts MATCH ?", "NOT EXISTS (SELECT 1 FROM knowledge_card_suppressions kcs WHERE kcs.card_id = c.id)", "COALESCE(f.invalid_at, '') = ''"}
 		factArgs := []interface{}{query}
 		factWhere, factArgs = appendSearchFilters(factWhere, factArgs, "s", opts)
 		factArgs = append(factArgs, candidateLimit)
@@ -2629,9 +3047,10 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 	// 2. FTS tokenization mismatch (new words not in gse dictionary)
 	// 3. FTS found card/fact results but missed relevant document_nodes content
 	//    (distillation loss: cards/facts may not cover all original document text)
-	if containsNoSpaceScriptRunes(opts.Query) {
-		// For no-space scripts, always run LIKE fallback to search document_nodes original
-		// text. FTS tokenization mismatch means FTS may find some nodes (via "马勇"
+	if containsNoSpaceScriptRunes(opts.Query) && !strictAnchorsAlreadyCovered(opts.Query, results) {
+		// For no-space scripts, run LIKE fallback to search document_nodes original
+		// text when lexical FTS has not already covered a composite name. FTS
+		// tokenization mismatch means FTS may find some nodes (via "马勇"
 		// matching page 1) but miss others (page 2 has "书籍" which doesn't match
 		// query token "书"). LIKE handles arbitrary substrings correctly.
 		// Performance: O(nodes × terms) string matching. For typical knowledge bases
@@ -2680,6 +3099,11 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 			// FTS found nothing high-confidence — embedding may find semantic matches
 			needsEmbedding = true
 		}
+		// A composite or unknown name is identified by its own spans. Semantic
+		// neighbors are a different person or record, so they are not retrieved.
+		if _, strict := bm25.QueryAnchors(normalizeKnowledgeLexicalText(opts.Query)); strict {
+			needsEmbedding = false
+		}
 		if needsEmbedding {
 			embResults, embErr := s.searchByEmbedding(ctx, opts)
 			if embErr == nil && len(embResults) > 0 {
@@ -2687,6 +3111,9 @@ func (s *SQLiteStore) Search(ctx context.Context, opts SearchOptions) ([]SearchR
 			}
 		}
 	}
+
+	// Composite and unknown names keep only hits that contain each content span.
+	results = retainEntityMentionEvidence(opts.Query, results)
 
 	sortSearchResults(results)
 	if len(results) > opts.Limit {
@@ -3399,7 +3826,7 @@ func (s *SQLiteStore) FactIndex(ctx context.Context, opts FactIndexOptions) (Fac
 	}
 	kbWhere := []string{"f.row_id IS NOT NULL", "c.origin_type = 'table_row'"}
 	kbArgs := make([]interface{}, 0)
-	kbWhere, kbArgs = appendKBSourceFilters(kbWhere, kbArgs, "s", opts.OwnerID, opts.TenantID, opts.ProjectPath, opts.SearchScope, opts.SourceKinds, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
+	kbWhere, kbArgs = appendKBSourceFilters(kbWhere, kbArgs, "s", ownerScopeFromSearch(opts.SearchOptions), opts.TenantID, opts.ProjectPath, opts.SearchScope, opts.SourceKinds, append(append([]string{}, opts.SourceIDs...), opts.SourceID), opts.IncludeDisabled)
 	kbValueWhere := []string{"label <> ''"}
 	kbValueArgs := make([]interface{}, 0)
 	if query != "" {
@@ -4115,16 +4542,12 @@ func appendSearchFilters(where []string, args []interface{}, sourceAlias string,
 		prefix = sourceAlias + "."
 	}
 	tenantID := strings.TrimSpace(opts.TenantID)
-	ownerID := strings.TrimSpace(opts.OwnerID)
 	projectPath := strings.TrimSpace(opts.ProjectPath)
 	if tenantID != "" {
 		where = append(where, prefix+"tenant_id = ?")
 		args = append(args, tenantID)
 	}
-	if ownerID != "" {
-		where = append(where, prefix+"owner_id = ?")
-		args = append(args, ownerID)
-	}
+	where, args = appendOwnerPredicate(where, args, prefix+"owner_id", ownerScopeFromSearch(opts))
 	scope := strings.ToLower(strings.TrimSpace(opts.SearchScope))
 	switch scope {
 	case SaveScopePersonal, SaveScopeLocalOnly, "local":
@@ -6087,6 +6510,11 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 		return nil, nil
 	}
 
+	entityAnchors, entityStrict := bm25.QueryAnchors(normalizeKnowledgeLexicalText(query))
+	if !entityStrict {
+		entityAnchors = nil
+	}
+
 	// Extract meaningful search terms from the query using gse tokenization.
 	// For LIKE search, we use two sources of terms:
 	// 1. gse tokenization (multi-char words: "马勇", "博士", "著译")
@@ -6100,7 +6528,11 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 	// cap doesn't cut high-value single chars like "书" which may be the only
 	// term that matches the target text.
 	var terms []string
-	if containsNoSpaceScriptRunes(query) {
+	if len(entityAnchors) > 0 {
+		// Name-like queries search the anchors themselves. Single-character OR
+		// would treat 奇 from 奇安信 as evidence for 奇强.
+		terms = append(terms, entityAnchors...)
+	} else if containsNoSpaceScriptRunes(query) {
 		seen := make(map[string]struct{})
 
 		// Source 1 (high priority): individual CJK characters from the raw query.
@@ -6174,8 +6606,13 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 
 	results := make([]SearchResult, 0, limit)
 
-	// Build OR-based LIKE conditions for given terms and columns
+	// Build OR-based LIKE conditions for given terms and columns.
+	// Entity anchors are ANDed: every span must occur, while each span may
+	// sit in any of the searched columns.
 	buildLikeWhereWith := func(columns []string, termsToUse []string) (string, []interface{}) {
+		if len(entityAnchors) > 0 {
+			return likeAllAnchorsWhere(columns, entityAnchors)
+		}
 		var conditions []string
 		var args []interface{}
 		for _, col := range columns {
@@ -6358,6 +6795,24 @@ func (s *SQLiteStore) searchCJKLikeFallback(ctx context.Context, opts SearchOpti
 // expression whose escape character is backslash. It is intentionally kept
 // separate from SQL parameter binding: binding prevents injection, but LIKE
 // still assigns wildcard meaning to '%' and '_'.
+func likeAllAnchorsWhere(columns, anchors []string) (string, []interface{}) {
+	groups := make([]string, 0, len(anchors))
+	args := make([]interface{}, 0, len(anchors)*len(columns))
+	for _, anchor := range anchors {
+		conds := make([]string, 0, len(columns))
+		pattern := "%" + escapeLikePattern(anchor) + "%"
+		for _, col := range columns {
+			conds = append(conds, col+" LIKE ? ESCAPE '\\'")
+			args = append(args, pattern)
+		}
+		groups = append(groups, "("+strings.Join(conds, " OR ")+")")
+	}
+	if len(groups) == 0 {
+		return "", nil
+	}
+	return strings.Join(groups, " AND "), args
+}
+
 func escapeLikePattern(term string) string {
 	return strings.NewReplacer("\\", "\\\\", "%", "\\%", "_", "\\_").Replace(term)
 }

@@ -367,100 +367,68 @@ func (oe *OnlineExtractor) classifyAndApply(
 		}
 
 	case OpUpdate:
-		if classified.TargetID != "" && classified.MergedText != "" {
-			targets := oe.store.SearchDirectByID(classified.TargetID)
-			if len(targets) == 0 {
-				entry := Entry{
-					Content:  content,
-					Category: cat,
-					Tags:     tags,
-					Entities: fact.ParsedEntities(),
-					ValidAt:  validAt,
-					OwnerID:  ownerID,
-				}
-				op, _ := oe.saveGovernedExtractedEntry(entry)
-				return op, nil
-			}
-			updated := targets[0]
-			updated.Content = classified.MergedText
-			updated.Tags = mergeTags(updated.Tags, tags)
-			updated.Entities = mergeStringSlice(updated.Entities, fact.ParsedEntities())
-			if validAt != nil {
-				updated.ValidAt = validAt
-			}
-			if invalidAt != nil {
-				updated.InvalidAt = invalidAt
-			}
-			if err := oe.store.UpdateEntriesByID([]Entry{updated}); err != nil {
-				log.Printf("[online_extractor] update failed for %s: %v", classified.TargetID, err)
-				// Fallback to ADD.
-				entry := Entry{
-					Content:  content,
-					Category: cat,
-					Tags:     tags,
-					Entities: fact.ParsedEntities(),
-					ValidAt:  validAt,
-					OwnerID:  ownerID,
-				}
-				op, _ := oe.saveGovernedExtractedEntry(entry)
-				return op, nil
-			}
-			return OpUpdate, nil
+		target, ok := extractorTargetMutable(similar, classified.TargetID, ownerID)
+		if !ok || strings.TrimSpace(classified.MergedText) == "" {
+			return OpNoop, nil
 		}
-		// Fallback: if no target or merged text, treat as ADD.
-		entry := Entry{
-			Content:  content,
-			Category: cat,
-			Tags:     tags,
-			Entities: fact.ParsedEntities(),
-			ValidAt:  validAt,
-			OwnerID:  ownerID,
+		updated := target
+		updated.Content = classified.MergedText
+		updated.Tags = mergeTags(updated.Tags, tags)
+		updated.Entities = mergeStringSlice(updated.Entities, fact.ParsedEntities())
+		if validAt != nil {
+			updated.ValidAt = validAt
 		}
-		op, _ := oe.saveGovernedExtractedEntry(entry)
-		return op, nil
+		if invalidAt != nil {
+			updated.InvalidAt = invalidAt
+		}
+		if err := oe.store.UpdateEntriesByID([]Entry{updated}); err != nil {
+			return "", fmt.Errorf("update target: %w", err)
+		}
+		return OpUpdate, nil
 
 	case OpDelete:
-		if classified.TargetID != "" {
-			// Invalidate the contradicted entry using temporal invalidation
-			// (Graphiti-style: set InvalidAt + mark superseded) instead of
-			// hard-deleting. This preserves history for temporal reasoning.
-			if targets := oe.store.SearchDirectByID(classified.TargetID); len(targets) > 0 {
-				updated := targets[0]
-				changed := false
-				if updated.Status != StatusSuperseded {
-					updated.Status = StatusSuperseded
-					changed = true
-				}
-				if !updated.Stale {
-					updated.Stale = true
-					changed = true
-				}
-				if updated.InvalidAt == nil {
-					invalid := time.Now()
-					if !updated.CreatedAt.IsZero() && !invalid.After(updated.CreatedAt) {
-						invalid = updated.CreatedAt.Add(time.Nanosecond)
-					}
-					updated.InvalidAt = &invalid
-					changed = true
-				}
-				if changed {
-					if err := oe.store.UpdateEntriesByID([]Entry{updated}); err != nil {
-						return "", fmt.Errorf("supersede target: %w", err)
-					}
-				}
+		target, ok := extractorTargetMutable(similar, classified.TargetID, ownerID)
+		if !ok {
+			return OpNoop, nil
+		}
+		// Invalidate the contradicted entry using temporal invalidation
+		// instead of hard-deleting. The target must be one of this call's
+		// similar memories and the same owner. A model-supplied id outside
+		// that set is ignored.
+		updated := target
+		changed := false
+		if updated.Status != StatusSuperseded {
+			updated.Status = StatusSuperseded
+			changed = true
+		}
+		if !updated.Stale {
+			updated.Stale = true
+			changed = true
+		}
+		if updated.InvalidAt == nil {
+			invalid := time.Now()
+			if !updated.CreatedAt.IsZero() && !invalid.After(updated.CreatedAt) {
+				invalid = updated.CreatedAt.Add(time.Nanosecond)
 			}
-
-			// Also ADD the new fact (the contradicting information).
-			entry := Entry{
-				Content:   content,
-				Category:  cat,
-				Tags:      tags,
-				Entities:  fact.ParsedEntities(),
-				ValidAt:   validAt,
-				InvalidAt: invalidAt,
-				OwnerID:   ownerID,
+			updated.InvalidAt = &invalid
+			changed = true
+		}
+		if changed {
+			if err := oe.store.UpdateEntriesByID([]Entry{updated}); err != nil {
+				return "", fmt.Errorf("supersede target: %w", err)
 			}
-			_, _ = oe.saveGovernedExtractedEntry(entry)
+		}
+		entry := Entry{
+			Content:   content,
+			Category:  cat,
+			Tags:      tags,
+			Entities:  fact.ParsedEntities(),
+			ValidAt:   validAt,
+			InvalidAt: invalidAt,
+			OwnerID:   ownerID,
+		}
+		if _, err := oe.saveGovernedExtractedEntry(entry); err != nil {
+			return "", fmt.Errorf("save contradicting fact: %w", err)
 		}
 		return OpDelete, nil
 
@@ -470,6 +438,28 @@ func (oe *OnlineExtractor) classifyAndApply(
 	default:
 		return OpNoop, nil
 	}
+}
+
+// extractorTargetMutable accepts a classifier target only when it was one of
+// the similar memories retrieved for this fact and the owners match exactly.
+// An empty owner matches only other empty owners. Protected categories and
+// ids the model invents are not writable.
+func extractorTargetMutable(similar []Entry, targetID, ownerID string) (Entry, bool) {
+	targetID = strings.TrimSpace(targetID)
+	if targetID == "" {
+		return Entry{}, false
+	}
+	ownerID = strings.TrimSpace(ownerID)
+	for _, entry := range similar {
+		if entry.ID != targetID {
+			continue
+		}
+		if strings.TrimSpace(entry.OwnerID) != ownerID || entry.Category.IsProtected() {
+			return Entry{}, false
+		}
+		return entry, true
+	}
+	return Entry{}, false
 }
 
 func (oe *OnlineExtractor) saveGovernedExtractedEntry(entry Entry) (MemoryOperation, error) {
@@ -598,7 +588,7 @@ func (oe *OnlineExtractor) findSimilarMemories(content string, category Category
 			continue
 		}
 		// Multi-tenant isolation.
-		if ownerID != "" && e.OwnerID != "" && e.OwnerID != ownerID {
+		if !namedOwnerVisible(e.OwnerID, ownerID) {
 			continue
 		}
 		// Category isolation: only match entries in the same canonical category.

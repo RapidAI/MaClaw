@@ -1,9 +1,12 @@
-// corelib/embedding/gemma.go — Pure Go Gemma2 embedding model (GGUF).
+// corelib/embedding/gemma.go — Pure Go EmbeddingGemma (Gemma 3 text encoder, GGUF).
 //
-// Architecture: Gemma2-style transformer with GQA, QK-norm, post-attn norm,
-// post-FFN norm, SiLU-gated FFN, RoPE.
+// Architecture: bidirectional GQA, QK-norm, post-attn norm, post-FFN norm,
+// GeGLU (gelu_pytorch_tanh), dual RoPE. A layer is global when
+// (index+1)%sliding_window_pattern == 0 (default period 6): full attention
+// and rope.freq_base. Other layers use a symmetric sliding window and
+// rope.freq_base_swa (10000 when that GGUF key is absent).
 // Output: mean-pooled hidden states → L2 normalized embedding.
-// Supports MRL truncation (768 → 512/256/128).
+// MRL truncation (768 → 512/256/128) copies a prefix after the full forward.
 //
 // Memory optimization: weights are kept in Q8_0 format via mmap.
 // Only small norm vectors are dequantized to float32.
@@ -15,6 +18,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"unsafe"
@@ -23,19 +27,78 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
 )
 
-// GemmaHParams holds Gemma2 embedding model hyperparameters.
+// GemmaHParams holds EmbeddingGemma hyperparameters.
 type GemmaHParams struct {
-	Dim        int     // embedding_length (768)
-	NLayers    int     // block_count (24)
-	NHeads     int     // attention.head_count (3)
-	NKVHeads   int     // attention.head_count_kv (1)
-	HeadDim    int     // derived: Dim / NHeads (256)
-	KVDim      int     // derived: HeadDim * NKVHeads (256)
-	FFDim      int     // feed_forward_length (1152)
-	VocabSize  int     // from token_embd tensor
-	MaxSeqLen  int     // context_length (2048)
-	RMSNormEps float32 // attention.layer_norm_rms_epsilon
-	RopeTheta  float32 // rope.freq_base
+	Dim            int     // embedding_length (768)
+	NLayers        int     // block_count (24)
+	NHeads         int     // attention.head_count (3)
+	NKVHeads       int     // attention.head_count_kv (1)
+	HeadDim        int     // derived: Dim / NHeads (256)
+	KVDim          int     // derived: HeadDim * NKVHeads (256)
+	FFDim          int     // feed_forward_length (1152)
+	VocabSize      int     // from token_embd tensor
+	MaxSeqLen      int     // context_length (2048)
+	RMSNormEps     float32 // attention.layer_norm_rms_epsilon
+	RopeTheta      float32 // rope.freq_base, global layers
+	RopeThetaLocal float32 // rope.freq_base_swa, sliding layers
+	SlidingWindow  int     // attention.sliding_window (tokens)
+	SWAPeriod      int     // attention.sliding_window_pattern
+
+	// Same sliding-window facts in the loader-researched form (union with the
+	// scalar fields above; the runtime reads windowHalf/globalLayer, the
+	// loader-validation tests read these). For this 512-window model the band
+	// is +-256, and 20 of the 24 layers rotate at 1e4 while 5/11/17/23 rotate
+	// at 1e6.
+	NSwa         int     // attention.sliding_window; 0 = none declared
+	SwaPattern   int     // attention.sliding_window_pattern (scalar form); 0 = every layer
+	RopeThetaSwa float32 // rope.freq_base_swa; absent from this GGUF -> 10000
+	// Explicit per-layer flags, used verbatim when the GGUF carries
+	// attention.sliding_window_pattern as an *array*. Empty for this model.
+	SwaLayers []uint8
+}
+
+// globalLayer reports a full-attention layer. Period 6 matches EmbeddingGemma
+// and llama.cpp's gemma-embedding default: layers 5, 11, 17, 23.
+func (hp GemmaHParams) globalLayer(layer int) bool {
+	period := hp.SWAPeriod
+	if period <= 0 {
+		period = 6
+	}
+	return (layer+1)%period == 0
+}
+
+// windowHalf is the symmetric attention radius. Global layers and a
+// non-positive window return 0, which means attend to every key.
+func (hp GemmaHParams) windowHalf(layer int) int {
+	if hp.globalLayer(layer) || hp.SlidingWindow <= 0 {
+		return 0
+	}
+	return hp.SlidingWindow / 2
+}
+
+// IsSwaLayer is llama.cpp's set_swa_pattern(n_pattern, dense_first=false):
+//
+//	is_swa_impl[il] = n_pattern == 0 || il % n_pattern < n_pattern - 1
+//
+// so with the default 6 the *global* layers are 5, 11, 17 and 23 of 24.
+func (hp *GemmaHParams) IsSwaLayer(il int) bool {
+	if len(hp.SwaLayers) > 0 {
+		return il >= 0 && il < len(hp.SwaLayers) && hp.SwaLayers[il] != 0
+	}
+	if hp.SwaPattern <= 0 {
+		return true
+	}
+	return (il % hp.SwaPattern) < (hp.SwaPattern - 1)
+}
+
+// HalfWindowFor returns the symmetric half-width of the attention band for
+// layer il, or -1 for full attention. llama.cpp halves the declared window:
+// the declared 512 is a +-256 band, not +-512.
+func (hp *GemmaHParams) HalfWindowFor(il int) int {
+	if hp.NSwa <= 0 || !hp.IsSwaLayer(il) {
+		return -1
+	}
+	return hp.NSwa / 2
 }
 
 // gemmaLayer holds weights for one transformer block.
@@ -71,18 +134,20 @@ type gemmaWeights struct {
 	outputNorm []float32 // [dim]
 }
 
-// GemmaEmbedder is a pure Go Gemma2 text embedding model.
+// GemmaEmbedder is a pure Go EmbeddingGemma text encoder.
 type GemmaEmbedder struct {
-	hp          GemmaHParams
-	weights     gemmaWeights
-	tokenizer   *Tokenizer
-	dim         int // output dim (MRL truncation)
-	mu          sync.Mutex
-	mmap        *gguf.MmapFile // kept alive for the mmap backing
-	scratch     *gemmaScratch  // reusable inference buffers (lazily initialized)
-	tokenCache  *tokenEmbCache // cached float32 embeddings for hot tokens
-	earlyExit   int32          // 0 = disabled; >0 = exit after this many layers (atomic)
-	fusionOff    bool // MACLAW_EMBED_FUSION=0
+	hp           GemmaHParams
+	weights      gemmaWeights
+	tokenizer    *Tokenizer
+	dim          int    // output dim (MRL truncation)
+	modelName    string // identity from GGUF metadata; feeds ModelID
+	mu           sync.Mutex
+	mmap         *gguf.MmapFile // kept alive for the mmap backing
+	inflight     inflightGuard  // Close waits for in-flight calls (inflight_guard.go)
+	scratch      *gemmaScratch  // reusable inference buffers (lazily initialized)
+	tokenCache   *tokenEmbCache // cached float32 embeddings for hot tokens
+	earlyExit    int32          // 0 = disabled; >0 = exit after this many layers (atomic)
+	fusionOff    bool           // MACLAW_EMBED_FUSION=0
 	accelInfo    AccelInfo
 	scratchPools [4]sync.Pool
 	packOnce     sync.Once
@@ -130,26 +195,41 @@ func (tc *tokenEmbCache) Get(id int) []float32 {
 // gemmaScratch holds reusable scratch buffers for forward pass.
 // Allocated once on first Embed call, reused across subsequent calls.
 type gemmaScratch struct {
-	arena   []float32
-	x       []float32 // hidden state [seq*dim]
-	normed  []float32
-	q, k, v []float32
-	attnOut []float32
-	projOut []float32
-	ffGate  []float32
-	ffUp    []float32
-	ffDown  []float32
-	yTile   []float32
-	rowBuf  []float32
-	scores  []float32
-	poolOut []float32
-	ropeCos []float32
-	ropeSin []float32
-	seqCap  int
-	ropeSeq int
+	arena       []float32
+	x           []float32 // hidden state [seq*dim]
+	normed      []float32
+	q, k, v     []float32
+	attnOut     []float32
+	projOut     []float32
+	ffGate      []float32
+	ffUp        []float32
+	ffDown      []float32
+	yTile       []float32
+	rowBuf      []float32
+	scores      []float32
+	poolOut     []float32
+	ropeCos     []float32 // kind-2 (local theta) table, in the arena [seqCap * headDim/2]
+	ropeSin     []float32
+	seqCap      int
+	ropeSeq     int
+	ropeKind    int // 1 = global theta, 2 = local theta
+	// ropeKeep caches each theta. Index 2 aliases ropeCos. Index 1 is the
+	// global table, allocated beside the arena so a layer switch does not
+	// recompute cos/sin and scratchArenaFloats stays one table.
+	ropeKeepCos [3][]float32
+	ropeKeepSin [3][]float32
+	ropeHave    [3]bool
+	// Inverse frequencies for the two thetas. Outside the arena so
+	// scratchArenaFloats stays the official one-table size.
+	ropeLocal  ropeFreq
+	ropeGlobal ropeFreq
+	// Prebuilt SWA table pair, for the SWA layers' different base. Left nil
+	// when the two bases are equal, mirroring the port's !ropeCosSwa.empty().
+	ropeCosSwa []float32
+	ropeSinSwa []float32
 }
 
-// NewGemmaEmbedder loads a Gemma2 embedding model from a GGUF file.
+// NewGemmaEmbedder loads an EmbeddingGemma model from a GGUF file.
 func NewGemmaEmbedder(modelPath string, dim int) (*GemmaEmbedder, error) {
 	if dim <= 0 {
 		dim = 256
@@ -168,22 +248,81 @@ func NewGemmaEmbedder(modelPath string, dim int) (*GemmaEmbedder, error) {
 	}
 	prefix := arch + "."
 
+	// Model identity read straight from the GGUF header. ModelID folds it into
+	// the stored vector identity, so replacing the file with a different
+	// checkpoint invalidates the index even when the output dim is unchanged.
+	modelName := strings.TrimSpace(gguf.GetMetaStr(mf.Meta, "general.name"))
+	if modelName == "" {
+		modelName = strings.TrimSpace(gguf.GetMetaStr(mf.Meta, "general.basename"))
+	}
+	if modelName == "" {
+		modelName = arch
+	}
+
 	embDim := gguf.GetMetaI32(mf.Meta, prefix+"embedding_length", 768)
+	// Clamp the requested output dim to what the forward pass can produce.
+	// truncateAndNormalize() already clamps per call, but Dim() returned the
+	// unclamped request, so Dim() disagreed with the length of the vector Embed()
+	// returns -- and the golden writer declared a header dim that did not match
+	// its payload (a file no reader can parse).  The C++ port had the same bug.
+	if dim > embDim {
+		dim = embDim
+	}
 	nHeads := gguf.GetMetaI32(mf.Meta, prefix+"attention.head_count", 3)
 	nKVHeads := gguf.GetMetaI32(mf.Meta, prefix+"attention.head_count_kv", 1)
 	headDim := embDim / nHeads
 
+	localTheta := gguf.GetMetaF32(mf.Meta, prefix+"rope.freq_base_swa", 10000)
+	if localTheta <= 0 {
+		localTheta = 10000
+	}
+	sw := gguf.GetMetaI32(mf.Meta, prefix+"attention.sliding_window", 512)
+	if sw < 0 {
+		sw = 0
+	}
+	period := gguf.GetMetaI32(mf.Meta, prefix+"attention.sliding_window_pattern", 6)
+	if period <= 0 {
+		period = 6
+	}
+	// llama.cpp's get_arr reads the per-layer array first and only falls back
+	// to the scalar.  A BOOL array lands in I32s only because readArray was
+	// taught to materialise it (it used to be skipped, which would have made
+	// this a silent fallback to the scalar pattern).
+	var swaLayers []uint8
+	if arr := gguf.GetMetaI32Arr(mf.Meta, prefix+"attention.sliding_window_pattern"); len(arr) > 0 {
+		swaLayers = make([]uint8, len(arr))
+		for i, v := range arr {
+			if v != 0 {
+				swaLayers[i] = 1
+			}
+		}
+	}
+	if keyLen := gguf.GetMetaI32(mf.Meta, prefix+"attention.key_length", 0); keyLen > 0 && keyLen != headDim {
+		mf.CloseMmap()
+		return nil, fmt.Errorf("gemma: attention.key_length %d != embedding_length/head_count %d", keyLen, headDim)
+	}
+
 	hp := GemmaHParams{
-		Dim:        embDim,
-		NLayers:    gguf.GetMetaI32(mf.Meta, prefix+"block_count", 24),
-		NHeads:     nHeads,
-		NKVHeads:   nKVHeads,
-		HeadDim:    headDim,
-		KVDim:      headDim * nKVHeads,
-		FFDim:      gguf.GetMetaI32(mf.Meta, prefix+"feed_forward_length", 1152),
-		MaxSeqLen:  gguf.GetMetaI32(mf.Meta, prefix+"context_length", 2048),
-		RMSNormEps: gguf.GetMetaF32(mf.Meta, prefix+"attention.layer_norm_rms_epsilon", 1e-6),
-		RopeTheta:  gguf.GetMetaF32(mf.Meta, prefix+"rope.freq_base", 1e6),
+		Dim:            embDim,
+		NLayers:        gguf.GetMetaI32(mf.Meta, prefix+"block_count", 24),
+		NHeads:         nHeads,
+		NKVHeads:       nKVHeads,
+		HeadDim:        headDim,
+		KVDim:          headDim * nKVHeads,
+		FFDim:          gguf.GetMetaI32(mf.Meta, prefix+"feed_forward_length", 1152),
+		MaxSeqLen:      gguf.GetMetaI32(mf.Meta, prefix+"context_length", 2048),
+		RMSNormEps:     gguf.GetMetaF32(mf.Meta, prefix+"attention.layer_norm_rms_epsilon", 1e-6),
+		RopeTheta:      gguf.GetMetaF32(mf.Meta, prefix+"rope.freq_base", 1e6),
+		RopeThetaLocal: localTheta,
+		SlidingWindow:  sw,
+		SWAPeriod:      period,
+
+		// Same sliding-window facts in the loader-researched form; fed from the
+		// reads above so a file declaring them is not silently misread.
+		NSwa:         sw,
+		SwaPattern:   period,
+		RopeThetaSwa: localTheta,
+		SwaLayers:    swaLayers,
 	}
 
 	w, err := loadWeightsMmap(mf, hp)
@@ -203,23 +342,17 @@ func NewGemmaEmbedder(modelPath string, dim int) (*GemmaEmbedder, error) {
 	if _, ok := mf.Meta["tokenizer.ggml.scores"]; ok {
 		scores = gguf.LastF32Array()
 	}
-	tok := LoadTokenizerFromGGUF(tokens, scores)
+	tok := LoadTokenizerFromGGUF(tokens, scores,
+		gguf.GetMetaI32Arr(mf.Meta, "tokenizer.ggml.token_type"),
+		TokenizerOptionsFromGGUF(mf.Meta))
 
 	g := &GemmaEmbedder{hp: hp, weights: *w, tokenizer: tok, dim: dim, mmap: mf,
+		modelName:  modelName,
 		tokenCache: newTokenEmbCache(&w.tokenEmb, hp.Dim),
 		fusionOff:  fusionDisabledFromEnv(),
 		accelInfo:  AccelInfo{Backend: BackendCPUSIMD, Reason: "cpu simd"},
 	}
 	g.ApplyAccel(HWAccelPreferred())
-
-	// Early exit: for low-dim MRL outputs, skip later transformer layers.
-	// Empirically, for dim<=256 the first 16/24 layers capture >95% of the
-	// embedding quality. Set earlyExit=0 to disable (full model).
-	if dim <= 128 && hp.NLayers > 12 {
-		atomic.StoreInt32(&g.earlyExit, int32(hp.NLayers*2/3)) // ~16 of 24
-	} else if dim <= 256 && hp.NLayers > 16 {
-		atomic.StoreInt32(&g.earlyExit, int32(hp.NLayers*3/4)) // ~18 of 24
-	}
 
 	// Pre-fill concurrent scratch so the first EmbedBatch does not pay
 	// arena+RoPE on the inference path (8 short UIC/batch workers).
@@ -241,6 +374,12 @@ func NewGemmaEmbedder(modelPath string, dim int) (*GemmaEmbedder, error) {
 			"vector search query",
 		})
 		g.skipPack = false
+	}
+	// Pack weights at load (not on first inference) when the VNNI M8 path will
+	// use them: keeps the one-time ~300MB copy + scale prep out of the first
+	// Embed. Non-VNNI machines keep the lazy short-sequence trigger in layerLoop.
+	if g.useFusion() && tensor.HasAVX512VNNI() {
+		g.ensurePackedQS()
 	}
 	return g, nil
 }
@@ -297,6 +436,9 @@ func enqueueMmapClose(mf *gguf.MmapFile) {
 }
 
 func (g *GemmaEmbedder) Close() {
+	// Wait for in-flight inference (incl. the lock-free EmbedConcurrent /
+	// EmbedBatch paths) and refuse new calls before the mmap goes away.
+	g.inflight.close()
 	g.mu.Lock()
 	mf := g.mmap
 	g.mmap = nil
@@ -304,9 +446,10 @@ func (g *GemmaEmbedder) Close() {
 	enqueueMmapClose(mf)
 }
 
-// SetEarlyExit overrides the automatic early-exit layer count.
-// Set to 0 to disable early exit (run all layers).
-// Set to n > 0 to exit after n layers (must be <= hp.NLayers).
+// SetEarlyExit sets how many transformer layers run.
+// 0, the default, runs every layer. A positive value stops after that many
+// layers. This is a benchmark switch. MRL truncation copies a prefix after
+// the forward and does not skip layers.
 // Safe to call concurrently with Embed/EmbedConcurrent.
 func (g *GemmaEmbedder) SetEarlyExit(layers int) {
 	if layers < 0 {

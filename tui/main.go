@@ -39,6 +39,10 @@ func init() {
 func main() {
 	// Migrate ~/.maclaw/skills → ~/.maclaw/data/skills (one-time).
 	skill.MigrateSkillsDir()
+	// Replay only TUI-owned durable compensation rows before dispatching any
+	// interactive, pipe, RPC or CLI mode. Unreadable/pending rows remain a
+	// fail-closed admission blocker for mutation tools.
+	runTUIStartupRecovery(commands.ResolveDataDir())
 
 	// --- -p / --prompt flag: non-interactive single-prompt mode ---
 	// Usage: maclaw-tui -p "your prompt here"

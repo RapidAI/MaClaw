@@ -556,7 +556,7 @@ func (r *hubRepo) ReplaceConflictingHubInstance(ctx context.Context, hub *store.
 	committed := false
 	defer func() {
 		if !committed {
-			_, _ = conn.ExecContext(ctx, "ROLLBACK")
+			rollbackRawTx(conn)
 		}
 	}()
 
@@ -2523,7 +2523,7 @@ func (r *gossipRepo) RateComment(ctx context.Context, comment *store.GossipComme
 	committed := false
 	defer func() {
 		if !committed {
-			_, _ = conn.ExecContext(ctx, "ROLLBACK")
+			rollbackRawTx(conn)
 		}
 	}()
 
@@ -2660,6 +2660,29 @@ func (r *invitationCodeRouteRepo) Upsert(ctx context.Context, code string, hubID
 		VALUES (?, ?, ?, ?)
 		ON CONFLICT(code) DO UPDATE SET hub_id = excluded.hub_id, tenant_id = excluded.tenant_id
 	`, code, hubID, tenantID, time.Now().UTC().Format(time.RFC3339))
+	return err
+}
+
+func (r *invitationCodeRouteRepo) Save(ctx context.Context, item *store.InvitationCodeRoute) error {
+	if item == nil {
+		return nil
+	}
+	code := strings.TrimSpace(strings.ToUpper(item.Code))
+	if code == "" {
+		return nil
+	}
+	createdAt := item.CreatedAt
+	if createdAt.IsZero() {
+		createdAt = time.Now().UTC()
+	}
+	_, err := r.db.ExecContext(ctx, `
+		INSERT INTO invitation_code_routes (code, hub_id, tenant_id, used_by_email, created_at)
+		VALUES (?, ?, ?, ?, ?)
+		ON CONFLICT(code) DO UPDATE SET
+			hub_id = excluded.hub_id,
+			tenant_id = excluded.tenant_id,
+			used_by_email = excluded.used_by_email
+	`, code, strings.TrimSpace(item.HubID), strings.TrimSpace(item.TenantID), strings.TrimSpace(strings.ToLower(item.UsedByEmail)), createdAt.UTC().Format(time.RFC3339))
 	return err
 }
 

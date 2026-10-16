@@ -195,11 +195,17 @@ func (c *SQLiteSemanticExecutionCoordinator) PublishSurface(request SurfacePubli
 	}
 	defer func() { _ = tx.Rollback() }()
 
-	var existingDigest, existingSnapshot, existingTenantID string
-	err = tx.QueryRow(`SELECT rs.plan_digest, rr.snapshot_digest, rs.tenant_id FROM semantic_route_states rs JOIN semantic_route_revisions rr ON rr.route_key = rs.route_key WHERE rs.route_key = ?`, routeKey).Scan(&existingDigest, &existingSnapshot, &existingTenantID)
+	var existingDigest, existingSnapshot, existingTenantID, existingToolSnapshotID string
+	err = tx.QueryRow(`SELECT rs.plan_digest, rr.snapshot_digest, rs.tenant_id, COALESCE(rs.tool_snapshot_id, '') FROM semantic_route_states rs JOIN semantic_route_revisions rr ON rr.route_key = rs.route_key WHERE rs.route_key = ?`, routeKey).Scan(&existingDigest, &existingSnapshot, &existingTenantID, &existingToolSnapshotID)
 	if err == nil {
-		if existingDigest != digest || existingSnapshot != request.Revision.SnapshotDigest || existingTenantID != request.TenantID {
+		if existingDigest != digest || existingSnapshot != request.Revision.SnapshotDigest || existingTenantID != request.TenantID || !routeToolSnapshotCompatible(existingToolSnapshotID, request.Revision.Scope.ToolSnapshotID) {
 			return RouteState{}, nil, fmt.Errorf("route_state_conflict")
+		}
+		if _, bindErr := canonicalRouteScope(tx, request.Revision.Scope); bindErr != nil {
+			if bindErr.Error() == "route_snapshot_scope_mismatch" {
+				return RouteState{}, nil, fmt.Errorf("route_state_conflict")
+			}
+			return RouteState{}, nil, bindErr
 		}
 		if err := tx.Commit(); err != nil {
 			return RouteState{}, nil, err
@@ -220,9 +226,12 @@ func (c *SQLiteSemanticExecutionCoordinator) PublishSurface(request SurfacePubli
 		return RouteState{}, nil, err
 	}
 
-	parentRouteKey, parentPlanID, parentDigest := "", "", ""
+	parentRouteKey, parentPlanID, parentDigest, parentTenantID := "", "", "", ""
 	var parentRevision uint64
-	lineageErr := tx.QueryRow(`SELECT current_route_key, current_revision, current_plan_id, current_plan_digest FROM semantic_route_lineages WHERE lineage_key = ?`, lineageKey).Scan(&parentRouteKey, &parentRevision, &parentPlanID, &parentDigest)
+	lineageErr := tx.QueryRow(`SELECT current_route_key, current_revision, current_plan_id, current_plan_digest, tenant_id FROM semantic_route_lineages WHERE lineage_key = ?`, lineageKey).Scan(&parentRouteKey, &parentRevision, &parentPlanID, &parentDigest, &parentTenantID)
+	if lineageErr == nil && parentTenantID != request.TenantID {
+		return RouteState{}, nil, fmt.Errorf("route_revision_conflict")
+	}
 	if request.Revision.ExpectedParent == nil {
 		if lineageErr == nil {
 			return RouteState{}, nil, fmt.Errorf("route_revision_parent_required")
@@ -261,7 +270,7 @@ func (c *SQLiteSemanticExecutionCoordinator) PublishSurface(request SurfacePubli
 		}
 	}
 
-	if _, err := tx.Exec(`INSERT INTO semantic_route_states(route_key, version, tenant_id, root_task_id, plan_id, session_id, turn_id, principal_id, plan_json, plan_digest, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, routeKey, RouteStateVersion, request.TenantID, request.Revision.Scope.RootTaskID, request.Revision.Scope.PlanID, request.Revision.Scope.SessionID, request.Revision.Scope.TurnID, request.Revision.Scope.PrincipalID, encoded, digest, routeStateTime(now), routeStateTime(now)); err != nil {
+	if _, err := tx.Exec(`INSERT INTO semantic_route_states(route_key, version, tenant_id, root_task_id, plan_id, session_id, turn_id, principal_id, tool_snapshot_id, plan_json, plan_digest, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`, routeKey, RouteStateVersion, request.TenantID, request.Revision.Scope.RootTaskID, request.Revision.Scope.PlanID, request.Revision.Scope.SessionID, request.Revision.Scope.TurnID, request.Revision.Scope.PrincipalID, strings.TrimSpace(request.Revision.Scope.ToolSnapshotID), encoded, digest, routeStateTime(now), routeStateTime(now)); err != nil {
 		return RouteState{}, nil, err
 	}
 	fencingToken, err := nextOutboxFencingToken(tx)
@@ -284,8 +293,8 @@ func (c *SQLiteSemanticExecutionCoordinator) PublishSurface(request SurfacePubli
 	if err != nil {
 		return RouteState{}, nil, err
 	}
-	if _, err := tx.Exec(`INSERT INTO semantic_route_lineages(lineage_key, root_task_id, session_id, principal_id, current_route_key, current_revision, current_plan_id, current_plan_digest, fencing_token, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(lineage_key) DO UPDATE SET current_route_key=excluded.current_route_key, current_revision=excluded.current_revision, current_plan_id=excluded.current_plan_id, current_plan_digest=excluded.current_plan_digest, fencing_token=excluded.fencing_token, updated_at=excluded.updated_at`, lineageKey, request.Revision.Scope.RootTaskID, request.Revision.Scope.SessionID, request.Revision.Scope.PrincipalID, routeKey, revision, request.Revision.Plan.ID, digest, fencingToken, routeStateTime(now)); err != nil {
+	if _, err := tx.Exec(`INSERT INTO semantic_route_lineages(lineage_key, tenant_id, root_task_id, session_id, principal_id, current_route_key, current_revision, current_plan_id, current_plan_digest, fencing_token, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		ON CONFLICT(lineage_key) DO UPDATE SET current_route_key=excluded.current_route_key, current_revision=excluded.current_revision, current_plan_id=excluded.current_plan_id, current_plan_digest=excluded.current_plan_digest, fencing_token=excluded.fencing_token, updated_at=excluded.updated_at`, lineageKey, request.TenantID, request.Revision.Scope.RootTaskID, request.Revision.Scope.SessionID, request.Revision.Scope.PrincipalID, routeKey, revision, request.Revision.Plan.ID, digest, fencingToken, routeStateTime(now)); err != nil {
 		return RouteState{}, nil, err
 	}
 	grants, err := issueSurfaceReadyGrantsTx(tx, request.Issuer, request.Revision.Plan, request.Revision.Scope, request.GrantTTL, completed)
@@ -346,6 +355,13 @@ func (c *SQLiteSemanticExecutionCoordinator) MaterializeReadySurface(scope Invoc
 		return RouteState{}, nil, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// Legacy callers may omit ToolSnapshotID. Resolve that omission from the
+	// durable route row before issuing any new grant, while rejecting two
+	// concrete identities for the same logical route.
+	scope, err = canonicalRouteScope(tx, scope)
+	if err != nil {
+		return RouteState{}, nil, err
+	}
 	plan, err := coordinatedPublishedPlan(tx, scope)
 	if err != nil {
 		return RouteState{}, nil, err
@@ -367,7 +383,7 @@ func (c *SQLiteSemanticExecutionCoordinator) MaterializeReadySurface(scope Invoc
 			return RouteState{}, nil, fmt.Errorf("semantic surface selection not ready")
 		}
 	}
-	partialPlan := semanticPlanWithSelectionIDs(plan, selectionIDs)
+	partialPlan := PlanWithSelections(plan, selectionIDs)
 	if len(partialPlan.Selections) != len(selectionIDs) {
 		return RouteState{}, nil, fmt.Errorf("semantic surface selection not found")
 	}
@@ -404,15 +420,120 @@ func (c *SQLiteSemanticExecutionCoordinator) MaterializeReadySurface(scope Invoc
 	return state, grants, nil
 }
 
-func semanticPlanWithSelectionIDs(plan ToolPlan, selectionIDs map[string]bool) ToolPlan {
-	partial := plan
-	partial.Selections = make([]PlannedSelection, 0, len(selectionIDs))
-	for _, selection := range plan.Selections {
-		if selectionIDs[selection.ID] {
-			partial.Selections = append(partial.Selections, selection)
-		}
+// CommitExpiredRenewal replaces one unconsumed grant whose only failure is
+// the wall clock. The successor is a new one-time credential for the same
+// selection: new nonce, new signature, ExpiresAt = now+ttl. The previous
+// nonce is revoked, its exposed materialization is retired, and the
+// successor is inserted, together with any model-request alias that still
+// points at the old nonce, in this single transaction. A consumed, revoked,
+// completed, or still-valid grant is not replaced. Callers that do not share
+// this database use InvocationIssuer.RenewExpired instead.
+func (c *SQLiteSemanticExecutionCoordinator) CommitExpiredRenewal(issuer *InvocationIssuer, scope InvocationScope, previous InvocationGrant, ttl time.Duration, now time.Time, satisfied map[string]bool) (InvocationGrant, error) {
+	if c == nil || c.db == nil || issuer == nil || issuer.store != c.Grants {
+		return InvocationGrant{}, fmt.Errorf("semantic surface renewal is unavailable")
 	}
-	return partial
+	now = now.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := c.db.Begin()
+	if err != nil {
+		return InvocationGrant{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	scope, err = canonicalRouteScope(tx, scope)
+	if err != nil {
+		return InvocationGrant{}, err
+	}
+	plan, err := coordinatedPublishedPlan(tx, scope)
+	if err != nil {
+		return InvocationGrant{}, err
+	}
+	if err := routeRevisionIsCurrent(tx, scope); err != nil {
+		return InvocationGrant{}, err
+	}
+	if satisfied[previous.SelectionID] {
+		return InvocationGrant{}, fmt.Errorf("invocation_grant_replayed")
+	}
+	var completedSelection string
+	err = tx.QueryRow(`SELECT selection_id FROM semantic_route_completed_selections WHERE route_key = ? AND selection_id = ?`, routeStateKey(scope), previous.SelectionID).Scan(&completedSelection)
+	if err == nil {
+		return InvocationGrant{}, fmt.Errorf("invocation_grant_replayed")
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return InvocationGrant{}, err
+	}
+	successor, err := issuer.PrepareExpiredRenewal(previous, scope, plan, ttl, now, satisfied)
+	if err != nil {
+		return InvocationGrant{}, err
+	}
+	if _, err := issuer.ValidateWithCanonicalScope(successor, scope, plan, satisfied); err != nil {
+		return InvocationGrant{}, err
+	}
+	if err := replaceExpiredGrantTx(tx, issuer, previous, successor); err != nil {
+		return InvocationGrant{}, err
+	}
+	if err := retireRenewedMaterializationTx(tx, routeStateKey(scope), previous.Token, now); err != nil {
+		return InvocationGrant{}, err
+	}
+	materialization := RouteMaterialization{FunctionName: successor.Token, Grant: successor, State: RouteMaterializationExposed}
+	if !routeMaterializationMatchesPlan(plan, scope, materialization) {
+		return InvocationGrant{}, fmt.Errorf("route_state_grant_binding_mismatch")
+	}
+	grantJSON, err := json.Marshal(successor)
+	if err != nil {
+		return InvocationGrant{}, err
+	}
+	if _, err := tx.Exec(`INSERT INTO semantic_route_materializations(route_key, function_name, grant_json, state, created_at, updated_at) VALUES (?, ?, ?, 'exposed', ?, ?)`, routeStateKey(scope), successor.Token, grantJSON, routeStateTime(now), routeStateTime(now)); err != nil {
+		return InvocationGrant{}, err
+	}
+	// Nonce is the one-shot identity. Every presentation of this grant,
+	// including a prepared request that copied the same nonce, moves
+	// together. ResolveModelRequestAlias still requires the active epoch
+	// and response id, so a retired surface cannot spend the successor.
+	if _, err := tx.Exec(`UPDATE semantic_model_request_aliases SET grant_nonce = ?, grant_fingerprint = ?, grant_json = ? WHERE grant_nonce = ?`, successor.Nonce, invocationGrantFingerprint(successor), grantJSON, previous.Nonce); err != nil {
+		return InvocationGrant{}, err
+	}
+	if _, err := tx.Exec(`UPDATE semantic_route_states SET updated_at = ? WHERE route_key = ?`, routeStateTime(now), routeStateKey(scope)); err != nil {
+		return InvocationGrant{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return InvocationGrant{}, err
+	}
+	return successor, nil
+}
+
+// retireRenewedMaterializationTx retires the exposed row for the previous
+// token. A missing or already-retired row is not a reason to keep the
+// expired credential: the successor insert is the new authority. Any other
+// state aborts so the caller's transaction restores the issued grant.
+func retireRenewedMaterializationTx(tx *sql.Tx, routeKey, functionName string, now time.Time) error {
+	if strings.TrimSpace(functionName) == "" {
+		return fmt.Errorf("route_state_function_invalid")
+	}
+	result, err := tx.Exec(`UPDATE semantic_route_materializations SET state = 'retired', updated_at = ? WHERE route_key = ? AND function_name = ? AND state = 'exposed'`, routeStateTime(now), routeKey, functionName)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if changed == 1 {
+		return nil
+	}
+	var state string
+	err = tx.QueryRow(`SELECT state FROM semantic_route_materializations WHERE route_key = ? AND function_name = ?`, routeKey, functionName).Scan(&state)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if state == string(RouteMaterializationRetired) {
+		return nil
+	}
+	return fmt.Errorf("route_state_materialization_conflict")
 }
 
 // ensureSurfaceSelectionsUnmaterialized is the durable half of the
@@ -495,7 +616,7 @@ func issueSurfaceReadyGrantsTx(tx *sql.Tx, issuer *InvocationIssuer, plan ToolPl
 		if err != nil {
 			return nil, err
 		}
-		grant := InvocationGrant{AdapterName: selection.AdapterName, SelectionID: selection.ID, ProviderBinding: selection.Provider.StableID(), FitProofDigest: selection.FitProof.Digest, ParameterAuthorization: selection.ParameterAuthorization, CatalogGeneration: plan.CatalogGeneration, Scope: scope, IssuedAt: now, ExpiresAt: now.Add(ttl), Nonce: nonce}
+		grant := InvocationGrant{AdapterName: selection.AdapterName, SelectionID: selection.ID, ProviderBinding: selection.Provider.StableID(), FitProofDigest: selection.FitProof.Digest, ParameterAuthorization: selection.ParameterAuthorization, CatalogDigest: plan.CatalogDigest, CatalogGeneration: plan.CatalogGeneration, Scope: scope, IssuedAt: now, ExpiresAt: now.Add(ttl), Nonce: nonce}
 		grant.Token = invocationToken(grant)
 		grant.Signature = issuer.sign(grant)
 		if _, err := tx.Exec(`INSERT INTO invocation_grants(nonce, fingerprint, expires_at, state, created_at) VALUES (?, ?, ?, 'issued', ?)`, grant.Nonce, invocationGrantFingerprint(grant), grant.ExpiresAt.UTC().Format(time.RFC3339Nano), grant.IssuedAt.UTC().Format(time.RFC3339Nano)); err != nil {
@@ -632,7 +753,7 @@ func (a SemanticExecutionAdmission) validate() error {
 	if err := validateHostCallInputs(a.Identity, InvocationGrantFingerprint(a.Grant), a.RequestDigest); err != nil {
 		return err
 	}
-	if a.Scope != a.Grant.Scope || a.Scope != a.SelectionScope() {
+	if !invocationScopesCompatible(a.Scope, a.Grant.Scope) || !invocationScopesCompatible(a.Scope, a.SelectionScope()) {
 		return fmt.Errorf("semantic_execution_scope_mismatch")
 	}
 	if strings.TrimSpace(a.Selection.ID) == "" || strings.TrimSpace(a.Grant.Nonce) == "" {
@@ -666,7 +787,18 @@ func (c *SQLiteSemanticExecutionCoordinator) Admit(a SemanticExecutionAdmission)
 		return HostCallRecord{}, "", err
 	} else if found {
 		if !sameHostCallBinding(existing, fingerprint, a.RequestDigest) {
-			return existing, HostCallAcquireConflict, nil
+			// A host-call identity is bound to both the grant and the exact
+			// canonical request. A repeat sibling may carry a historical grant
+			// fingerprint, but it can only replay when the request digest also
+			// matches; otherwise the same transport call ID is being reused for
+			// different arguments and must remain a conflict.
+			if existing.RequestDigest != a.RequestDigest || !invocationGrantFingerprintIsCandidate(a.Grant, existing.GrantFingerprint) {
+				return existing, HostCallAcquireConflict, nil
+			}
+			// A pre-upgrade host-call row may retain its historical fingerprint.
+			// Continue using that exact value so Complete can transition the same
+			// row after this retry.
+			fingerprint = existing.GrantFingerprint
 		}
 		return existing, hostCallAcquireAction(existing.State), nil
 	}
@@ -679,7 +811,12 @@ func (c *SQLiteSemanticExecutionCoordinator) Admit(a SemanticExecutionAdmission)
 	if err := routeRevisionIsCurrent(tx, a.Scope); err != nil {
 		return HostCallRecord{}, "", err
 	}
-	result, err := tx.Exec(`UPDATE invocation_grants SET state='consumed' WHERE nonce=? AND fingerprint=? AND state='issued' AND expires_at > ?`, a.Grant.Nonce, fingerprint, now.Format(time.RFC3339Nano))
+	placeholders, fingerprintArgs := invocationGrantFingerprintSQLArgs(a.Grant)
+	consumeArgs := make([]interface{}, 0, len(fingerprintArgs)+3)
+	consumeArgs = append(consumeArgs, a.Grant.Nonce)
+	consumeArgs = append(consumeArgs, fingerprintArgs...)
+	consumeArgs = append(consumeArgs, now.Format(time.RFC3339Nano))
+	result, err := tx.Exec(`UPDATE invocation_grants SET state='consumed' WHERE nonce=? AND fingerprint IN (`+placeholders+`) AND state='issued' AND expires_at > ?`, consumeArgs...)
 	if err != nil {
 		return HostCallRecord{}, "", err
 	}
@@ -688,7 +825,7 @@ func (c *SQLiteSemanticExecutionCoordinator) Admit(a SemanticExecutionAdmission)
 		return HostCallRecord{}, "", err
 	}
 	if changed != 1 {
-		return HostCallRecord{}, "", coordinatedGrantState(tx, a.Grant.Nonce, fingerprint, now)
+		return HostCallRecord{}, "", coordinatedGrantState(tx, a.Grant.Nonce, invocationGrantFingerprintCandidates(a.Grant), now)
 	}
 	started := now.Format(time.RFC3339Nano)
 	executionKey := planExecutionKey(a.Scope, a.Selection.ID)
@@ -738,7 +875,13 @@ func (c *SQLiteSemanticExecutionCoordinator) Reject(a SemanticExecutionAdmission
 		return HostCallRecord{}, "", err
 	} else if found {
 		if !sameHostCallBinding(existing, fingerprint, a.RequestDigest) {
-			return existing, HostCallAcquireConflict, nil
+			// Historical grant fingerprints are compatible only for the exact
+			// same canonical request. A different request cannot reuse a host
+			// call identity, even when its grant is a repeat sibling.
+			if existing.RequestDigest != a.RequestDigest || !invocationGrantFingerprintIsCandidate(a.Grant, existing.GrantFingerprint) {
+				return existing, HostCallAcquireConflict, nil
+			}
+			fingerprint = existing.GrantFingerprint
 		}
 		return existing, hostCallAcquireAction(existing.State), nil
 	}
@@ -748,14 +891,19 @@ func (c *SQLiteSemanticExecutionCoordinator) Reject(a SemanticExecutionAdmission
 	if err := routeRevisionIsCurrent(tx, a.Scope); err != nil {
 		return HostCallRecord{}, "", err
 	}
-	consumed, err := tx.Exec(`UPDATE invocation_grants SET state='consumed' WHERE nonce=? AND fingerprint=? AND state='issued' AND expires_at > ?`, a.Grant.Nonce, fingerprint, now.Format(time.RFC3339Nano))
+	placeholders, fingerprintArgs := invocationGrantFingerprintSQLArgs(a.Grant)
+	consumeArgs := make([]interface{}, 0, len(fingerprintArgs)+3)
+	consumeArgs = append(consumeArgs, a.Grant.Nonce)
+	consumeArgs = append(consumeArgs, fingerprintArgs...)
+	consumeArgs = append(consumeArgs, now.Format(time.RFC3339Nano))
+	consumed, err := tx.Exec(`UPDATE invocation_grants SET state='consumed' WHERE nonce=? AND fingerprint IN (`+placeholders+`) AND state='issued' AND expires_at > ?`, consumeArgs...)
 	if err != nil {
 		return HostCallRecord{}, "", err
 	}
 	if n, err := consumed.RowsAffected(); err != nil {
 		return HostCallRecord{}, "", err
 	} else if n != 1 {
-		return HostCallRecord{}, "", coordinatedGrantState(tx, a.Grant.Nonce, fingerprint, now)
+		return HostCallRecord{}, "", coordinatedGrantState(tx, a.Grant.Nonce, invocationGrantFingerprintCandidates(a.Grant), now)
 	}
 	started := now.Format(time.RFC3339Nano)
 	if _, err := tx.Exec(`INSERT INTO semantic_plan_executions(execution_key, root_task_id, plan_id, session_id, turn_id, principal_id, selection_id, state, result_digest, reason_code, started_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'failed', ?, ?, ?, ?)`, planExecutionKey(a.Scope, a.Selection.ID), a.Scope.RootTaskID, a.Scope.PlanID, a.Scope.SessionID, a.Scope.TurnID, a.Scope.PrincipalID, a.Selection.ID, SchemaDigest([]byte(result)), strings.TrimSpace(reasonCode), started, started); err != nil {
@@ -826,6 +974,15 @@ func (c *SQLiteSemanticExecutionCoordinator) complete(a SemanticExecutionAdmissi
 		return HostCallRecord{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// A host-call row can outlive the binary that created it.  If that binary
+	// signed the grant with a payload that predates CatalogDigest or
+	// ToolSnapshotID, the durable row keeps the historical fingerprint.  Read
+	// the row inside this transaction and retain that exact compatible value so
+	// completion can transition it after a restart.
+	fingerprint, err = coordinatedHostCallFingerprint(tx, key, a.Grant)
+	if err != nil {
+		return HostCallRecord{}, err
+	}
 	// The provider I/O happened before this transaction, so this check cannot
 	// undo that external observation. It does ensure that a superseded route
 	// cannot project its result into execution, completion, artifacts, or the
@@ -835,7 +992,12 @@ func (c *SQLiteSemanticExecutionCoordinator) complete(a SemanticExecutionAdmissi
 	}
 	for _, payload := range payloads {
 		ref := payload.Ref
-		if ref.Scope != a.Scope || ref.ProducerSelection != a.Selection.ID {
+		if !invocationScopesCompatible(ref.Scope, a.Scope) || ref.ProducerSelection != a.Selection.ID {
+			return HostCallRecord{}, fmt.Errorf("route_artifact_producer_contract_mismatch")
+		}
+		if hydrated, hydrateErr := canonicalInvocationScope(ref.Scope, a.Scope); hydrateErr == nil {
+			ref.Scope = hydrated
+		} else {
 			return HostCallRecord{}, fmt.Errorf("route_artifact_producer_contract_mismatch")
 		}
 		key := artifactStoreKey(ref.Scope, ref.ID)
@@ -897,7 +1059,12 @@ func (c *SQLiteSemanticExecutionCoordinator) complete(a SemanticExecutionAdmissi
 			return HostCallRecord{}, err
 		}
 		for _, ref := range artifacts {
-			if ref.Scope != a.Scope || ref.ProducerSelection != a.Selection.ID || !producesArtifact(a.Selection.Produces, ArtifactContract{Kind: ref.Kind, MIMEType: ref.MIMEType, Required: true}) {
+			if !invocationScopesCompatible(ref.Scope, a.Scope) || ref.ProducerSelection != a.Selection.ID || !producesArtifact(a.Selection.Produces, ArtifactContract{Kind: ref.Kind, MIMEType: ref.MIMEType, Required: true}) {
+				return HostCallRecord{}, fmt.Errorf("route_artifact_producer_contract_mismatch")
+			}
+			if hydrated, hydrateErr := canonicalInvocationScope(ref.Scope, a.Scope); hydrateErr == nil {
+				ref.Scope = hydrated
+			} else {
 				return HostCallRecord{}, fmt.Errorf("route_artifact_producer_contract_mismatch")
 			}
 			// The route projection may only cite bytes that the same durable
@@ -937,7 +1104,11 @@ func (c *SQLiteSemanticExecutionCoordinator) complete(a SemanticExecutionAdmissi
 					return HostCallRecord{}, err
 				}
 				existing.CreatedAt, _ = time.Parse(time.RFC3339Nano, created)
-				if existing != value {
+				// Route artifact rows predate ToolSnapshotID and therefore load with
+				// an empty source snapshot.  Compare through the migration-aware
+				// identity helper so a replay of the same artifact is idempotent
+				// while a real producer/contract change still fails closed.
+				if !sameRouteArtifactIdentity(existing, value) {
 					return HostCallRecord{}, fmt.Errorf("route_artifact_conflict")
 				}
 			}
@@ -994,6 +1165,15 @@ func (c *SQLiteSemanticExecutionCoordinator) PrepareStandaloneDelivery(record De
 	if c == nil || c.db == nil {
 		return DeliveryRecord{}, fmt.Errorf("semantic execution coordinator is unavailable")
 	}
+	// Resolve/bind the route snapshot before reading the payload or deriving
+	// the delivery key.  Delivery rows predate ToolSnapshotID and their key
+	// intentionally omits it, so accepting an unbound concrete value here
+	// would let a second surface reuse the same outbox intent.
+	canonicalScope, err := canonicalRouteScope(c.db, record.Scope)
+	if err != nil {
+		return DeliveryRecord{}, err
+	}
+	record.Scope = canonicalScope
 	if record.ArtifactSourceScope == (InvocationScope{}) {
 		record.ArtifactSourceScope = record.Scope
 	}
@@ -1060,6 +1240,10 @@ func (c *SQLiteSemanticExecutionCoordinator) SettleStandaloneDelivery(scope Invo
 		return DeliveryRecord{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	scope, err = canonicalRouteScope(tx, scope)
+	if err != nil {
+		return DeliveryRecord{}, err
+	}
 	key := deliveryStoreKey(scope, selectionID)
 	receiptDigest = strings.TrimSpace(receiptDigest)
 	var existingState, unknownOrigin string
@@ -1204,6 +1388,11 @@ func (c *SQLiteSemanticExecutionCoordinator) PrepareDelivery(record DeliveryReco
 	if c == nil || c.db == nil {
 		return DeliveryRecord{}, fmt.Errorf("semantic execution coordinator is unavailable")
 	}
+	canonicalScope, err := canonicalRouteScope(c.db, record.Scope)
+	if err != nil {
+		return DeliveryRecord{}, err
+	}
+	record.Scope = canonicalScope
 	if record.ArtifactSourceScope == (InvocationScope{}) {
 		record.ArtifactSourceScope = record.Scope
 	}
@@ -1224,6 +1413,13 @@ func (c *SQLiteSemanticExecutionCoordinator) PrepareDelivery(record DeliveryReco
 		return DeliveryRecord{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// The artifact may have been produced before a child revision won the
+	// lineage race. Check the current revision inside the same transaction
+	// that creates the outbox row; a preflight read alone leaves a write-after-
+	// supersession window.
+	if err := routeRevisionIsCurrent(tx, record.Scope); err != nil {
+		return DeliveryRecord{}, err
+	}
 	key := deliveryStoreKey(record.Scope, record.SelectionID)
 	// Stamp the prepare-time lineage fencing token. A later route revision
 	// fences this intent off before it can ever be claimed for dispatch.
@@ -1269,13 +1465,23 @@ func (c *SQLiteSemanticExecutionCoordinator) PrepareDeliveryAndComplete(a Semant
 	if err := a.validate(); err != nil {
 		return DeliveryRecord{}, HostCallRecord{}, err
 	}
+	canonicalScope, err := canonicalRouteScope(c.db, a.Scope)
+	if err != nil {
+		return DeliveryRecord{}, HostCallRecord{}, err
+	}
+	a.Scope = canonicalScope
 	if err := validateHostCallResult(result); err != nil {
 		return DeliveryRecord{}, HostCallRecord{}, err
 	}
 	if record.ArtifactSourceScope == (InvocationScope{}) {
 		record.ArtifactSourceScope = record.Scope
 	}
-	if record.Scope != a.Scope || strings.TrimSpace(record.SelectionID) != strings.TrimSpace(a.Selection.ID) {
+	if !invocationScopesCompatible(record.Scope, a.Scope) || strings.TrimSpace(record.SelectionID) != strings.TrimSpace(a.Selection.ID) {
+		return DeliveryRecord{}, HostCallRecord{}, fmt.Errorf("delivery_execution_scope_mismatch")
+	}
+	if hydrated, hydrateErr := canonicalInvocationScope(record.Scope, a.Scope); hydrateErr == nil {
+		record.Scope = hydrated
+	} else {
 		return DeliveryRecord{}, HostCallRecord{}, fmt.Errorf("delivery_execution_scope_mismatch")
 	}
 	if err := validateDeliveryRecord(record); err != nil {
@@ -1300,6 +1506,31 @@ func (c *SQLiteSemanticExecutionCoordinator) PrepareDeliveryAndComplete(a Semant
 		return DeliveryRecord{}, HostCallRecord{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	// Re-check inside the transaction in case a legacy empty row was bound by
+	// another operation between the preflight read and this write.
+	a.Scope, err = canonicalRouteScope(tx, a.Scope)
+	if err != nil {
+		return DeliveryRecord{}, HostCallRecord{}, err
+	}
+	// The provider I/O has already happened, but this write still creates the
+	// durable delivery authority.  A child revision must fence the old call
+	// before it can create or mutate an outbox row.  Retries of the same current
+	// row remain idempotent below; a superseded row is handled by the ordinary
+	// host-call replay/reconciliation path instead.
+	if err := routeRevisionIsCurrent(tx, a.Scope); err != nil {
+		return DeliveryRecord{}, HostCallRecord{}, err
+	}
+	if record.Scope.ToolSnapshotID == "" {
+		record.Scope.ToolSnapshotID = a.Scope.ToolSnapshotID
+	}
+	// Preserve a pre-upgrade host-call fingerprint for the same reason as the
+	// ordinary completion path.  The lookup is transaction-local and only
+	// accepts identities produced by a payload layout compatible with this
+	// decoded grant.
+	fingerprint, err = coordinatedHostCallFingerprint(tx, hostKey, a.Grant)
+	if err != nil {
+		return DeliveryRecord{}, HostCallRecord{}, err
+	}
 	deliveryKey := deliveryStoreKey(record.Scope, record.SelectionID)
 	// Same prepare-time fencing stamp as PrepareDelivery: the outbox intent
 	// dies with the revision that authorized it.
@@ -1317,20 +1548,85 @@ func (c *SQLiteSemanticExecutionCoordinator) PrepareDeliveryAndComplete(a Semant
 	if operationKey != record.OperationKey {
 		return DeliveryRecord{}, HostCallRecord{}, fmt.Errorf("delivery_conflict")
 	}
-	updated, err := tx.Exec(`UPDATE semantic_plan_executions SET state='awaiting_receipt', result_digest=?, reason_code=?, updated_at=? WHERE execution_key=? AND state='running'`, SchemaDigest([]byte(result)), strings.TrimSpace(reasonCode), planExecutionTime(now), planExecutionKey(a.Scope, a.Selection.ID))
+	var deliveryState string
+	if err := tx.QueryRow("SELECT state FROM semantic_delivery_preparations WHERE delivery_key=?", deliveryKey).Scan(&deliveryState); err != nil {
+		return DeliveryRecord{}, HostCallRecord{}, err
+	}
+	// An unknown delivery means an external send may already have happened and
+	// its outcome was lost. It can only be resolved by a trusted receipt; this
+	// path must never turn it into a fresh completion or a second dispatch.
+	if deliveryState == string(DeliveryUnknown) {
+		return DeliveryRecord{}, HostCallRecord{}, fmt.Errorf("delivery_unknown_requires_receipt")
+	}
+	// Read both durable state rows before transitioning either one.  A retry
+	// can arrive after this method committed (or after the separate
+	// PrepareDelivery path advanced the execution), so a strict `running` /
+	// `admitted` predicate alone would turn a safe idempotent retry into a
+	// misleading state error.  We accept only the exact same result and the
+	// same grant/request binding; a different result is a conflict.
+	hostRecord, found, err := coordinatedHostCall(tx, hostKey)
 	if err != nil {
 		return DeliveryRecord{}, HostCallRecord{}, err
 	}
-	if n, _ := updated.RowsAffected(); n != 1 {
-		return DeliveryRecord{}, HostCallRecord{}, fmt.Errorf("selection_execution_not_running")
-	}
-	updated, err = tx.Exec(`UPDATE semantic_host_calls SET state='completed', result=?, result_digest=?, updated_at=? WHERE call_key=? AND grant_fingerprint=? AND request_digest=? AND state='admitted'`, result, SchemaDigest([]byte(result)), now.Format(time.RFC3339Nano), hostKey, fingerprint, a.RequestDigest)
-	if err != nil {
-		return DeliveryRecord{}, HostCallRecord{}, err
-	}
-	if n, _ := updated.RowsAffected(); n != 1 {
+	if !found || hostRecord.RequestDigest != a.RequestDigest || !invocationGrantFingerprintIsCandidate(a.Grant, hostRecord.GrantFingerprint) {
 		return DeliveryRecord{}, HostCallRecord{}, fmt.Errorf("host_call_not_transitionable")
 	}
+	resultDigest := SchemaDigest([]byte(result))
+	if hostRecord.State != HostCallAdmitted && hostRecord.State != HostCallCompleted {
+		return DeliveryRecord{}, HostCallRecord{}, fmt.Errorf("host_call_not_transitionable")
+	}
+	if hostRecord.State == HostCallCompleted && (hostRecord.Result != result || (strings.TrimSpace(hostRecord.ResultDigest) != "" && hostRecord.ResultDigest != resultDigest)) {
+		return DeliveryRecord{}, HostCallRecord{}, fmt.Errorf("delivery_conflict")
+	}
+
+	var executionState, executionDigest, executionReason string
+	if err := tx.QueryRow(`SELECT state, result_digest, reason_code FROM semantic_plan_executions WHERE execution_key=?`, planExecutionKey(a.Scope, a.Selection.ID)).Scan(&executionState, &executionDigest, &executionReason); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return DeliveryRecord{}, HostCallRecord{}, fmt.Errorf("selection_execution_not_running")
+		}
+		return DeliveryRecord{}, HostCallRecord{}, err
+	}
+	transitionExecution := false
+	switch PlanExecutionState(executionState) {
+	case PlanExecutionRunning:
+		transitionExecution = true
+	case PlanExecutionAwaitingReceipt:
+		// PrepareDelivery may have performed this transition in an earlier
+		// transaction.  Preserve its operation digest/reason and only finish
+		// the admitted host call here.
+	case PlanExecutionSucceeded, PlanExecutionFailed, PlanExecutionUnknown:
+		if hostRecord.State != HostCallCompleted {
+			return DeliveryRecord{}, HostCallRecord{}, fmt.Errorf("selection_execution_not_running")
+		}
+	default:
+		return DeliveryRecord{}, HostCallRecord{}, fmt.Errorf("selection_execution_not_running")
+	}
+	if transitionExecution {
+		updated, updateErr := tx.Exec(`UPDATE semantic_plan_executions SET state='awaiting_receipt', result_digest=?, reason_code=?, updated_at=? WHERE execution_key=? AND state='running'`, resultDigest, strings.TrimSpace(reasonCode), planExecutionTime(now), planExecutionKey(a.Scope, a.Selection.ID))
+		if updateErr != nil {
+			return DeliveryRecord{}, HostCallRecord{}, updateErr
+		}
+		if n, _ := updated.RowsAffected(); n != 1 {
+			return DeliveryRecord{}, HostCallRecord{}, fmt.Errorf("selection_execution_not_running")
+		}
+	}
+	if hostRecord.State == HostCallAdmitted {
+		updated, updateErr := tx.Exec(`UPDATE semantic_host_calls SET state='completed', result=?, result_digest=?, updated_at=? WHERE call_key=? AND grant_fingerprint=? AND request_digest=? AND state='admitted'`, result, resultDigest, now.Format(time.RFC3339Nano), hostKey, fingerprint, a.RequestDigest)
+		if updateErr != nil {
+			return DeliveryRecord{}, HostCallRecord{}, updateErr
+		}
+		if n, _ := updated.RowsAffected(); n != 1 {
+			return DeliveryRecord{}, HostCallRecord{}, fmt.Errorf("host_call_not_transitionable")
+		}
+		hostRecord.State = HostCallCompleted
+		hostRecord.Result, hostRecord.ResultDigest, hostRecord.UpdatedAt = result, resultDigest, now
+	}
+	// Keep the compiler honest about the values read for idempotency.  They
+	// are intentionally not rewritten when PrepareDelivery already owns the
+	// awaiting state; changing its operation marker would make a retry look
+	// like a new external effect.
+	_ = executionDigest
+	_ = executionReason
 	plan, err := coordinatedPublishedPlan(tx, a.Scope)
 	if err != nil {
 		return DeliveryRecord{}, HostCallRecord{}, err
@@ -1416,6 +1712,10 @@ func (c *SQLiteSemanticExecutionCoordinator) ClaimDeliveryWithHolder(scope Invoc
 		return OutboxClaim{}, false, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	scope, err = canonicalRouteScope(tx, scope)
+	if err != nil {
+		return OutboxClaim{}, false, err
+	}
 	key := deliveryStoreKey(scope, selectionID)
 	var state string
 	var preparedToken uint64
@@ -1476,6 +1776,10 @@ func (c *SQLiteSemanticExecutionCoordinator) SettleDelivery(scope InvocationScop
 		return DeliveryRecord{}, err
 	}
 	defer func() { _ = tx.Rollback() }()
+	scope, err = canonicalRouteScope(tx, scope)
+	if err != nil {
+		return DeliveryRecord{}, err
+	}
 	key := deliveryStoreKey(scope, selectionID)
 	receiptDigest = strings.TrimSpace(receiptDigest)
 	// Load the claim first so an idempotent replay (already at the requested
@@ -1571,6 +1875,74 @@ func coordinatedHostCall(tx *sql.Tx, key string) (HostCallRecord, bool, error) {
 	return record, true, nil
 }
 
+// coordinatedHostCallFingerprint returns the durable fingerprint bound to a
+// host call, preserving historical grant payload layouts across upgrades.
+// Missing rows intentionally return the current fingerprint so callers retain
+// their existing not-admitted/not-transitionable error.  A present row is
+// accepted only when its value is one of the decoded grant's compatible
+// fingerprints; an unrelated value falls back to the current value and the
+// caller's normal binding predicate rejects it.
+func coordinatedHostCallFingerprint(tx *sql.Tx, key string, grant InvocationGrant) (string, error) {
+	current := InvocationGrantFingerprint(grant)
+	if tx == nil {
+		return current, fmt.Errorf("semantic execution transaction is unavailable")
+	}
+	var stored string
+	err := tx.QueryRow(`SELECT grant_fingerprint FROM semantic_host_calls WHERE call_key=?`, key).Scan(&stored)
+	if errors.Is(err, sql.ErrNoRows) {
+		return current, nil
+	}
+	if err != nil {
+		return current, err
+	}
+	if invocationGrantFingerprintIsCandidate(grant, stored) {
+		return stored, nil
+	}
+	return current, nil
+}
+
+// AppendRepeatSibling persists one more invocation of a repeat family onto
+// the published plan. The plan ID stays the same. The next ready-surface
+// materialization can issue the new node. One-shot tools and a family that
+// is already at the turn cap return an error.
+func (c *SQLiteSemanticExecutionCoordinator) AppendRepeatSibling(scope InvocationScope, prototypeSelectionID string, now time.Time) (ToolPlan, error) {
+	if c == nil || c.db == nil {
+		return ToolPlan{}, fmt.Errorf("semantic execution coordinator is unavailable")
+	}
+	now = now.UTC()
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	tx, err := c.db.Begin()
+	if err != nil {
+		return ToolPlan{}, err
+	}
+	defer func() { _ = tx.Rollback() }()
+	plan, err := coordinatedPublishedPlan(tx, scope)
+	if err != nil {
+		return ToolPlan{}, err
+	}
+	updated, _, ok := AppendRepeatSibling(plan, prototypeSelectionID)
+	if !ok {
+		return ToolPlan{}, fmt.Errorf("repeat sibling unavailable")
+	}
+	encoded, digest, err := canonicalRoutePlan(updated)
+	if err != nil {
+		return ToolPlan{}, err
+	}
+	result, err := tx.Exec(`UPDATE semantic_route_states SET plan_json = ?, plan_digest = ?, updated_at = ? WHERE route_key = ?`, encoded, digest, routeStateTime(now), routeStateKey(scope))
+	if err != nil {
+		return ToolPlan{}, err
+	}
+	if n, _ := result.RowsAffected(); n != 1 {
+		return ToolPlan{}, fmt.Errorf("repeat sibling was not stored")
+	}
+	if err := tx.Commit(); err != nil {
+		return ToolPlan{}, err
+	}
+	return updated, nil
+}
+
 // coordinatedPublishedPlan reads the published route through the transaction
 // that is settling a delivery. Calling Routes.PublishedPlan here would acquire
 // the coordinator's sole SQLite connection while this transaction already owns
@@ -1615,9 +1987,9 @@ func coordinatedPublishedPlan(tx *sql.Tx, scope InvocationScope) (ToolPlan, erro
 	return cloneRouteStatePlan(plan), nil
 }
 
-func coordinatedGrantState(tx *sql.Tx, nonce, fingerprint string, now time.Time) error {
+func coordinatedGrantState(tx *sql.Tx, nonce string, fingerprints []string, now time.Time) error {
 	var stored, expiry, state string
-	if err := tx.QueryRow(`SELECT fingerprint, expires_at, state FROM invocation_grants WHERE nonce=?`, nonce).Scan(&stored, &expiry, &state); errors.Is(err, sql.ErrNoRows) || stored != fingerprint {
+	if err := tx.QueryRow(`SELECT fingerprint, expires_at, state FROM invocation_grants WHERE nonce=?`, nonce).Scan(&stored, &expiry, &state); errors.Is(err, sql.ErrNoRows) || !containsInvocationGrantFingerprint(fingerprints, stored) {
 		return fmt.Errorf("invocation_grant_invalid")
 	} else if err != nil {
 		return err

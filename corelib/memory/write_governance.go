@@ -63,10 +63,10 @@ func AssessMemoryCandidate(entry Entry, contextHint string) MemoryGovernanceDeci
 	}
 
 	lower := strings.ToLower(content + " " + strings.Join(entry.Tags, " ") + " " + contextHint)
-	if containsAny(lower, []string{"prefer", "preference", "always", "never", "habit", "style", "instruction"}) {
+	if containsAny(lower, []string{"prefer", "preference", "always", "never", "habit", "style", "instruction", "偏好", "总是", "从不", "习惯", "风格", "指令", "请记住", "记住"}) {
 		add(3, "preference or standing instruction signal")
 	}
-	if containsAny(lower, []string{"project", "repo", "module", "api", "endpoint", "config", "version", "database", "docker", "kubernetes", "test command", "build command"}) {
+	if containsAny(lower, []string{"project", "repo", "module", "api", "endpoint", "config", "version", "database", "docker", "kubernetes", "test command", "build command", "项目", "仓库", "模块", "接口", "配置", "版本", "数据库", "测试命令", "构建"}) {
 		add(3, "technical/project signal")
 	}
 	if len(entry.Entities) > 0 || len(entry.Tags) > 0 {
@@ -75,10 +75,10 @@ func AssessMemoryCandidate(entry Entry, contextHint string) MemoryGovernanceDeci
 	if looksLikePathOrCommand(content) {
 		add(2, "contains path/command/version-like evidence")
 	}
-	if containsAny(lower, []string{"i will ", "i'll ", "i am going to", "currently", "just ran", "ran test", "tool call", "current task"}) {
+	if containsAny(lower, []string{"i will ", "i'll ", "i am going to", "currently", "just ran", "ran test", "tool call", "current task", "我刚", "刚才跑", "当前任务", "正在执行"}) {
 		add(-4, "execution narration or transient task state")
 	}
-	if containsAny(lower, []string{"hello", "thanks", "thank you", "ok", "okay"}) && runeLen < 30 {
+	if containsAny(lower, []string{"hello", "thanks", "thank you", "ok", "okay", "你好", "谢谢", "好的"}) && runeLen < 30 {
 		add(-4, "greeting or acknowledgement")
 	}
 

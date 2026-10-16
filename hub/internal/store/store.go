@@ -1008,8 +1008,10 @@ type LLMUsageRepository interface {
 }
 
 // LLMBillingSettlement is the immutable financial evidence for one finalized
-// Hub request. Amounts are fixed-point microcredits; the float fields used by
-// older usage views are deliberately not part of this persistence contract.
+// Hub request. Requested/DeductedMicrocredits are the authoritative fixed-point
+// amounts. The eight directional float fields below are the frozen audit facts
+// computed at settlement time — they document how the debit was composed and
+// are never used to re-derive a charge.
 type LLMBillingSettlement struct {
 	TenantID               string
 	RequestID              string
@@ -1024,7 +1026,42 @@ type LLMBillingSettlement struct {
 	ProviderMultiplier     float64
 	BillingGroupMultiplier float64
 	PricingJSON            string
-	CreatedAt              time.Time
+	// The cache-direction usage legs and the four directional Credits/RMB
+	// amounts are nullable columns appended after the table's initial shape.
+	// Rows settled before the columns existed keep NULL; a NULL amount marks a
+	// legacy debit without directional pricing and must never be backfilled
+	// with recalculated values.
+	CachedInputTokens  *int64
+	CacheWriteTokens   *int64
+	NormalInputCredits *float64
+	CacheReadCredits   *float64
+	CacheWriteCredits  *float64
+	OutputCredits      *float64
+	NormalInputCostRMB *float64
+	CacheReadCostRMB   *float64
+	CacheWriteCostRMB  *float64
+	OutputCostRMB      *float64
+	CreatedAt          time.Time
+}
+
+// Billing outbox event types (design §6.5). They are written in the same
+// transaction as the state transition they describe; consumers de-duplicate
+// on (tenant_id, request_id, event_type).
+const (
+	LLMBillingEventFinalized           = "BillingFinalized"
+	LLMBillingEventDebtRaised          = "BillingDebtRaised"
+	LLMBillingEventReservationReleased = "ReservationReleased"
+)
+
+// LLMBillingOutboxEvent is one durable billing state-transition fact. Payload
+// is a small JSON document with non-sensitive settlement facts only (no
+// prompt, completion, API key or quote token).
+type LLMBillingOutboxEvent struct {
+	TenantID  string
+	RequestID string
+	EventType string
+	Payload   string
+	CreatedAt time.Time
 }
 
 // LLMBillingLedgerRepository stores request-idempotent settlement facts in
@@ -1032,7 +1069,14 @@ type LLMBillingSettlement struct {
 // registry document; callers must not treat an audit insert as a balance
 // mutation.
 type LLMBillingLedgerRepository interface {
-	RecordSettlement(ctx context.Context, settlement *LLMBillingSettlement) (inserted bool, err error)
+	// RecordSettlement persists the immutable settlement row and, in the same
+	// transaction, any outbox events describing the transition. Both inserts
+	// are idempotent: a replayed request leaves the stored facts unchanged.
+	RecordSettlement(ctx context.Context, settlement *LLMBillingSettlement, events ...LLMBillingOutboxEvent) (inserted bool, err error)
+	// RecordBillingEvents appends outbox events that have no settlement row of
+	// their own (currently reservation releases). Inserts are idempotent on
+	// (tenant_id, request_id, event_type).
+	RecordBillingEvents(ctx context.Context, events ...LLMBillingOutboxEvent) error
 }
 
 type Store struct {

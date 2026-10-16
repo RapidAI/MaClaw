@@ -263,7 +263,7 @@ func TestHubRepositoriesRoundTrip(t *testing.T) {
 		Status:                 "offline",
 		IsDisabled:             false,
 		DisabledReason:         "",
-		CapabilitiesJSON:       `{"supports_pwa":true}`,
+		CapabilitiesJSON:       `{"supports_remote_control":true}`,
 		RegistrationPolicyJSON: `{"tenants":{"tenant_default":{"signup_scope":"public"}}}`,
 		HubSecretHash:          "secret-hash",
 		CreatedAt:              now,

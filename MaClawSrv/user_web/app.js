@@ -21,12 +21,22 @@ const I18N = {
 };
 const params = new URLSearchParams(location.search);
 Object.assign(I18N.en, {
+  groupDatabase: "Data sources",
+  groupDatabaseHint: "Agent database profiles. Passwords stay on the server as secret_ref; this form never accepts inline credentials.",
+  dbProfilesAdd: "Add profile",
+  dbProfilesEmpty: "No data sources yet.",
+  dbProfilesSaveHint: "Saving writes database_profiles into the shared user config.",
   groupInterface: "User Interface",
   groupInterfaceHint: "Preferred display language.",
   groupProxy: "Proxy",
   groupProxyHint: "Default proxy endpoint, credentials, bypass list, and proxy scopes."
 });
 Object.assign(I18N.zh, {
+  groupDatabase: "数据源",
+  groupDatabaseHint: "Agent 数据库连接。密码只以 secret_ref 保存在服务端，本表单不接受明文凭据。",
+  dbProfilesAdd: "添加数据源",
+  dbProfilesEmpty: "还没有数据源。",
+  dbProfilesSaveHint: "保存时写入共享用户配置中的 database_profiles。",
   groupInterface: "\u7528\u6237\u754c\u9762",
   groupInterfaceHint: "\u9996\u9009\u754c\u9762\u8bed\u8a00\u3002",
   groupProxy: "\u4ee3\u7406",
@@ -4067,6 +4077,7 @@ function configGroups(defs) {
     { id: "skills", title: t("groupSkills"), hint: t("groupSkillsHint"), keys: [] },
     { id: "memory", title: t("groupMemory"), hint: t("groupMemoryHint"), keys: ["memory_auto_compress", "memory_max_backups", "knowledge_skill_token_budget"] },
     { id: "migration", title: t("groupMigration"), hint: t("groupMigrationHint"), keys: [] },
+    { id: "database", title: t("groupDatabase"), hint: t("groupDatabaseHint"), keys: [] },
     { id: "security", title: t("groupSecurity"), hint: t("groupSecurityHint"), keys: ["security_policy_mode", "sandbox_mode", "network_level", "yolo_mode_allowed"] },
     { id: "im", title: t("groupIM"), hint: t("groupIMHint"), keys: CHANNEL_CONFIG_KEYS },
   ];
@@ -4079,7 +4090,7 @@ function configGroups(defs) {
     { id: "interface", title: t("groupInterface"), hint: t("groupInterfaceHint"), keys: interfaceKeys },
     { id: "proxy", title: t("groupProxy"), hint: t("groupProxyHint"), keys: proxyKeys }
   );
-  return groups.map((g) => ({ ...g, keys: g.keys.filter((key) => !HIDDEN_CONFIG_KEYS.has(key) && (byKey[key] || Object.prototype.hasOwnProperty.call(state.config || {}, key))) })).filter((g) => g.keys.length || ["tools", "skills", "memory", "migration", "im"].includes(g.id));
+  return groups.map((g) => ({ ...g, keys: g.keys.filter((key) => !HIDDEN_CONFIG_KEYS.has(key) && (byKey[key] || Object.prototype.hasOwnProperty.call(state.config || {}, key))) })).filter((g) => g.keys.length || ["tools", "skills", "memory", "migration", "im", "database"].includes(g.id));
 }
 function setActiveConfigTab(tab) {
   tab = normalizeSettingsTab(tab);
@@ -4520,6 +4531,96 @@ function objectElementValue(el) {
   if (el?.multiple) return [...el.selectedOptions].map((x) => x.value).filter(Boolean).join("\n");
   return String(el?.value || "").trim();
 }
+function databaseProfilesFromConfig() {
+  const raw = state.config?.database_profiles;
+  return Array.isArray(raw) ? raw.map((p) => ({ ...p })) : [];
+}
+function renderDatabaseProfilesManager() {
+  const items = databaseProfilesFromConfig();
+  const tlsModes = ["", "disable", "require", "verify-full"];
+  const classes = ["", "public", "internal", "confidential", "restricted"];
+  const rows = items.map((p, i) => `<div class="stack" data-db-profile="${i}">
+    <div class="row">
+      <input data-db-field="id" value="${esc(p.id || "")}" placeholder="id" ${p.id ? "readonly" : ""}>
+      <input data-db-field="name" value="${esc(p.name || "")}" placeholder="name">
+      <select data-db-field="type">${["mysql","postgres","sqlserver","access","excel"].map((tpe) => `<option value="${tpe}" ${p.type===tpe?"selected":""}>${tpe}</option>`).join("")}</select>
+      <input data-db-field="host" value="${esc(p.host || "")}" placeholder="host">
+      <input data-db-field="port" value="${esc(p.port || "")}" placeholder="port" inputmode="numeric">
+      <input data-db-field="database" value="${esc(p.database || "")}" placeholder="database">
+      <input data-db-field="username" value="${esc(p.username || "")}" placeholder="username">
+      <input data-db-field="ssh_session_id" value="${esc(p.ssh_session_id || "")}" placeholder="ssh_session_id">
+      <input data-db-field="replica_host" value="${esc(p.replica_host || "")}" placeholder="replica_host">
+      <input data-db-field="replica_port" value="${esc(p.replica_port || "")}" placeholder="replica_port" inputmode="numeric">
+      <input data-db-field="replica_ssh_session_id" value="${esc(p.replica_ssh_session_id || "")}" placeholder="replica_ssh_session_id">
+      <input data-db-field="secret_ref" value="${esc(p.secret_ref || "")}" placeholder="secret_ref">
+    </div>
+    <div class="row">
+      <input data-db-field="file_path" value="${esc(p.file_path || "")}" placeholder="file_path">
+      <select data-db-field="tls_mode">${tlsModes.map((m) => `<option value="${m}" ${(p.tls && p.tls.mode)===m?"selected":""}>${m || "tls default"}</option>`).join("")}</select>
+      <select data-db-field="data_classification">${classes.map((c) => `<option value="${c}" ${p.data_classification===c?"selected":""}>${c || "class"}</option>`).join("")}</select>
+      <label><input type="checkbox" data-db-field="read_only" ${p.read_only !== false ? "checked" : ""}> RO</label>
+      <label><input type="checkbox" data-db-field="write_enabled" ${p.write_enabled ? "checked" : ""}> RW</label>
+      <label><input type="checkbox" data-db-field="allow_external_host" ${p.allow_external_host ? "checked" : ""}> public</label>
+      <button type="button" data-db-del="${i}">${esc(t("cancel"))}</button>
+    </div>
+  </div>`).join("");
+  return `<div class="stack" id="dbProfilesBox"><p class="helper">${esc(t("dbProfilesSaveHint"))}</p>${items.length ? rows : `<p class="muted">${esc(t("dbProfilesEmpty"))}</p>`}<button type="button" id="dbProfileAdd">${esc(t("dbProfilesAdd"))}</button></div>`;
+}
+function bindDatabaseProfilesManager() {
+  const add = $("dbProfileAdd");
+  if (add) add.onclick = () => {
+    const list = databaseProfilesFromConfig();
+    list.push({ id: `db-${Date.now()}`, type: "mysql", read_only: true, write_enabled: false });
+    state.config = { ...(state.config || {}), database_profiles: list };
+    renderConfigFields();
+  };
+  document.querySelectorAll("[data-db-del]").forEach((btn) => {
+    btn.onclick = () => {
+      const list = databaseProfilesFromConfig();
+      list.splice(Number(btn.dataset.dbDel), 1);
+      state.config = { ...(state.config || {}), database_profiles: list };
+      renderConfigFields();
+    };
+  });
+}
+function collectDatabaseProfiles() {
+  const rows = [...document.querySelectorAll("[data-db-profile]")];
+  if (!rows.length && !document.getElementById("dbProfilesBox")) return databaseProfilesFromConfig();
+  const existing = databaseProfilesFromConfig();
+  return rows.map((row) => {
+    const get = (name) => row.querySelector(`[data-db-field="${name}"]`);
+    const prev = existing[Number(row.dataset.dbProfile)] || {};
+    const portRaw = (get("port")?.value || "").trim();
+    const port = portRaw ? Number(portRaw) : 0;
+    const tlsMode = (get("tls_mode")?.value || "").trim();
+    const profile = {
+      ...prev,
+      id: (get("id")?.value || "").trim(),
+      name: (get("name")?.value || "").trim(),
+      type: get("type")?.value || "mysql",
+      host: (get("host")?.value || "").trim(),
+      database: (get("database")?.value || "").trim(),
+      username: (get("username")?.value || "").trim(),
+      ssh_session_id: (get("ssh_session_id")?.value || "").trim(),
+      replica_host: (get("replica_host")?.value || "").trim(),
+      replica_ssh_session_id: (get("replica_ssh_session_id")?.value || "").trim(),
+      secret_ref: (get("secret_ref")?.value || "").trim(),
+      file_path: (get("file_path")?.value || "").trim(),
+      data_classification: (get("data_classification")?.value || "").trim(),
+      read_only: !!get("read_only")?.checked,
+      write_enabled: !!get("write_enabled")?.checked,
+      allow_external_host: !!get("allow_external_host")?.checked
+    };
+    delete profile.password;
+    if (port > 0) profile.port = port; else delete profile.port;
+    if (tlsMode) profile.tls = { ...(prev.tls || {}), mode: tlsMode }; else if (profile.tls) { const nextTls = { ...profile.tls }; delete nextTls.mode; if (Object.keys(nextTls).length) profile.tls = nextTls; else delete profile.tls; }
+    const replicaPortRaw = (get("replica_port")?.value || "").trim();
+    const replicaPort = replicaPortRaw ? Number(replicaPortRaw) : 0;
+    if (replicaPort > 0) profile.replica_port = replicaPort; else delete profile.replica_port;
+    ["name","host","database","username","ssh_session_id","replica_host","replica_ssh_session_id","secret_ref","file_path","data_classification"].forEach((k) => { if (!profile[k]) delete profile[k]; });
+    return profile;
+  }).filter((p) => p.id);
+}
 function renderConfigFields() {
   if (state.view === "im") { refreshConfigOrIM(); return; }
   if (state.view === "skills") { refreshSkillMCPPanels(); return; }
@@ -4529,11 +4630,12 @@ function renderConfigFields() {
   if (!groups.some((g) => g.id === state.settingsTab)) state.settingsTab = groups[0]?.id || "";
   $("cfgTabs").innerHTML = groups.map((group) => `<button id="cfg_tab_${esc(group.id)}" type="button" role="tab" class="cfg-tab ${group.id === state.settingsTab ? "active" : ""}" data-cfg-tab="${esc(group.id)}" aria-controls="cfg_panel_${esc(group.id)}" aria-selected="${group.id === state.settingsTab ? "true" : "false"}">${esc(group.title)}</button>`).join("");
   $("cfgForm").innerHTML = groups.map((group) => {
-    const special = group.id === "tools" ? renderMCPManager() + renderWebSearchManager() : group.id === "skills" ? renderSkillManager() : group.id === "memory" ? renderMemoryManager() : group.id === "migration" ? renderMigrationManager() : group.id === "im" ? renderIMConfigEditor(defs) : "";
+    const special = group.id === "tools" ? renderMCPManager() + renderWebSearchManager() : group.id === "skills" ? renderSkillManager() : group.id === "memory" ? renderMemoryManager() : group.id === "migration" ? renderMigrationManager() : group.id === "im" ? renderIMConfigEditor(defs) : group.id === "database" ? renderDatabaseProfilesManager() : "";
     const fields = group.id === "im" ? "" : group.keys.map((key) => configFieldMarkup(key, defs)).join("");
     return `<fieldset id="cfg_panel_${esc(group.id)}" class="cfg-group" data-cfg-panel="${esc(group.id)}" role="tabpanel" aria-labelledby="cfg_tab_${esc(group.id)}" aria-hidden="${group.id === state.settingsTab ? "false" : "true"}" ${group.id === state.settingsTab ? "" : "hidden"}><legend>${esc(group.title)}</legend><p class="helper">${esc(group.hint)}</p>${special}${fields}</fieldset>`;
   }).join("");
   bindSkillManager();
+  bindDatabaseProfilesManager();
   bindMCPManager();
   bindWebSearchManager();
   bindMemoryManager();
@@ -4552,6 +4654,8 @@ function renderConfigFields() {
 }
 function collectConfig() {
   const next = stripAdminManagedConfig(userConfigDraft(state.config));
+  const profiles = collectDatabaseProfiles();
+  if (profiles.length) next.database_profiles = profiles; else delete next.database_profiles;
   const setObjectPath = (target, field, value) => {
     if (!field.includes(".")) { target[field] = value; return; }
     const parts = field.split(".");

@@ -1,0 +1,845 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>MaClaw 码卡龙 · AI Native 组织操作系统</title>
+<meta name="description" content="MaClaw 码卡龙：AI Native 组织操作系统。业务流由 AI 驱动，AI 数字员工与人类员工在同一套记忆、知识与能力底座上协作；企业级治理、端到端加密、多租户数据主权，支持自托管。" />
+<meta property="og:type" content="website" />
+<meta property="og:site_name" content="MaClaw 码卡龙" />
+<meta property="og:title" content="MaClaw 码卡龙 · AI Native 组织操作系统" />
+<meta property="og:description" content="业务流由 AI 驱动，AI 数字员工与人类员工在同一套记忆、知识与能力底座上协作；企业级治理、端到端加密、多租户数据主权，支持自托管。" />
+<meta name="twitter:card" content="summary" />
+<meta name="twitter:title" content="MaClaw 码卡龙 · AI Native 组织操作系统" />
+<meta name="twitter:description" content="业务流由 AI 驱动，AI 数字员工与人类员工在同一套记忆、知识与能力底座上协作；企业级治理、端到端加密、多租户数据主权，支持自托管。" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%231d4ed8'/%3E%3Cpath d='M9 22V10h3l5 8 5-8h3v12h-3v-7l-4 6h-2l-4-6v7z' fill='white'/%3E%3C/svg%3E" />
+<style>
+  :root{
+    --bg:#0b1020; --bg2:#141b33; --ink:#0f172a; --muted:#5b6478; --muted2:#8a91a8;
+    --brand:#1d4ed8; --brand2:#1e40af; --brand-soft:#eff6ff;
+    --line:#e7e9f2; --card:#ffffff; --ok:#16a34a;
+    --shadow-sm:0 1px 2px rgba(15,23,42,.06);
+    --shadow:0 12px 30px rgba(15,23,42,.08);
+    --shadow-lg:0 22px 48px rgba(49,46,129,.14);
+    --radius:16px; --radius-sm:12px;
+    --maxw:1120px;
+    --grad:linear-gradient(135deg,#1e40af,#2563eb);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  section[id],header[id]{scroll-margin-top:74px}
+  body{
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    color:var(--ink); background:#f7f8fc; line-height:1.65; -webkit-font-smoothing:antialiased;
+  }
+  a{color:inherit;text-decoration:none}
+  .wrap{max-width:var(--maxw);margin:0 auto;padding:0 22px}
+
+  /* Nav */
+  .nav{position:sticky;top:0;z-index:50;background:rgba(255,255,255,.82);backdrop-filter:saturate(160%) blur(12px);-webkit-backdrop-filter:saturate(160%) blur(12px);border-bottom:1px solid rgba(15,23,42,.07)}
+  .nav .wrap{display:flex;align-items:center;justify-content:space-between;height:62px}
+  .nav .brand{display:flex;align-items:center;gap:10px;color:var(--ink);font-weight:800;font-size:17px;letter-spacing:.2px}
+  .nav .brand svg{width:28px;height:28px;display:block}
+  .nav .links{display:flex;gap:2px;align-items:center}
+  .nav .links a{color:#475569;font-size:14px;padding:8px 13px;border-radius:9px;transition:.15s}
+  .nav .links a:hover{color:var(--ink);background:#eff6ff}
+  .nav .links a.nav-cta{background:var(--brand2);color:#fff;padding:9px 17px;border-radius:8px;font-weight:700;font-size:14px;letter-spacing:.2px;transition:.16s;box-shadow:0 6px 16px rgba(30,64,175,.28)}
+  .nav .links a.nav-cta:hover{color:#fff;background:#1e3a8a;transform:translateY(-1px);box-shadow:0 10px 22px rgba(30,64,175,.34)}
+  .lang-btn{margin-right:4px;background:transparent;border:1px solid var(--line);color:#475569;font-size:13px;font-weight:600;padding:7px 11px;border-radius:8px;cursor:pointer;transition:.15s;font-family:inherit;line-height:1.4}
+  .lang-btn:hover{color:var(--brand);border-color:#bfdbfe;background:var(--brand-soft)}
+  @media(max-width:780px){.nav .links a:not(.nav-cta){display:none}}
+
+  /* Hero */
+  .hero{position:relative;overflow:hidden;color:var(--ink);padding:74px 0 88px;
+    background:radial-gradient(900px 480px at 85% -12%,rgba(37,99,235,.10),transparent 60%),
+              radial-gradient(820px 460px at 2% -8%,rgba(29,78,216,.12),transparent 55%),
+              radial-gradient(640px 320px at 58% 112%,rgba(37,99,235,.06),transparent 62%),
+              linear-gradient(180deg,#fcfdff,#f4f6fd)}
+  .hero-bg{position:absolute;inset:0;z-index:0;pointer-events:none;
+    background-image:linear-gradient(rgba(15,23,42,.045) 1px,transparent 1px),linear-gradient(90deg,rgba(15,23,42,.045) 1px,transparent 1px);
+    background-size:46px 46px;
+    -webkit-mask-image:radial-gradient(120% 78% at 50% -4%,#000,transparent 72%);
+    mask-image:radial-gradient(120% 78% at 50% -4%,#000,transparent 72%)}
+  .hero .wrap{position:relative;z-index:1;display:grid;grid-template-columns:1.08fr .92fr;gap:40px;align-items:center}
+  @media(max-width:920px){.hero .wrap{grid-template-columns:1fr;gap:30px}}
+  .badge{display:inline-flex;align-items:center;gap:8px;font-size:13px;letter-spacing:.3px;background:#fff;border:1px solid var(--line);color:#475569;padding:6px 13px;border-radius:999px;box-shadow:var(--shadow-sm)}
+  .badge .dot{width:8px;height:8px;border-radius:50%;background:#34d399;box-shadow:0 0 0 4px rgba(52,211,153,.25);animation:pulse 2.4s infinite}
+  @keyframes pulse{0%,100%{box-shadow:0 0 0 4px rgba(52,211,153,.25)}50%{box-shadow:0 0 0 7px rgba(52,211,153,.10)}}
+  .os-tag{display:inline-block;margin:16px 0 6px;font-size:15px;font-weight:700;letter-spacing:.4px;color:#1e40af;background:var(--brand-soft);border:1px solid #bfdbfe;padding:7px 16px;border-radius:6px}
+  h1{font-size:46px;line-height:1.15;margin:8px 0 12px;font-weight:800;letter-spacing:-.5px}
+  h1 .grad{color:var(--brand2)}
+  .lede{font-size:18px;color:#4b5563;max-width:620px;margin:0 0 26px}
+  .cta{display:flex;gap:14px;flex-wrap:wrap}
+  .btn{display:inline-flex;align-items:center;gap:8px;font-weight:600;font-size:15px;padding:13px 22px;border-radius:8px;transition:.18s;cursor:pointer}
+  .btn-primary{background:var(--brand);color:#fff;box-shadow:0 8px 20px rgba(29,78,216,.25)}
+  .btn-primary:hover{transform:translateY(-2px);box-shadow:0 14px 28px rgba(29,78,216,.32)}
+  .btn-ghost{background:#fff;color:#334155;border:1px solid var(--line)}
+  .btn-ghost:hover{background:#f8faff;border-color:#bfdbfe}
+  .btn svg{width:16px;height:16px;display:block}
+  .hero-meta{margin-top:32px;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 22px;max-width:560px}
+  .stat{border-left:2px solid rgba(29,78,216,.30);padding-left:14px}
+  .stat b{color:var(--ink);font-size:19px;display:block;font-weight:700;line-height:1.2}
+  .stat span{color:var(--muted);font-size:13px}
+  @media(max-width:920px){.hero-meta{grid-template-columns:repeat(2,1fr)}}
+  .hero-art{display:flex;justify-content:center}
+  .hero-art svg{width:100%;max-width:430px;height:auto;display:block}
+  @media(max-width:920px){.hero-art{order:-1;margin-bottom:6px}.hero-art svg{max-width:340px}}
+
+  /* Sections */
+  section{padding:74px 0}
+  .sec-head{text-align:center;max-width:780px;margin:0 auto 44px}
+  .sec-head .kicker{display:inline-block;color:var(--brand);font-weight:700;letter-spacing:1.6px;font-size:12.5px;text-transform:uppercase;padding:5px 12px;border-radius:999px;background:var(--brand-soft);margin-bottom:6px}
+  .sec-head h2{font-size:31px;margin:12px 0 12px;font-weight:800;letter-spacing:-.4px}
+  .sec-head p{color:var(--muted);font-size:16px;margin:0}
+
+  .grid{display:grid;gap:20px}
+  .g2{grid-template-columns:repeat(2,1fr)}
+  .g3{grid-template-columns:repeat(3,1fr)}
+  .g4{grid-template-columns:repeat(4,1fr)}
+  @media(max-width:920px){.g3,.g4{grid-template-columns:repeat(2,1fr)}}
+  @media(max-width:620px){.g2,.g3,.g4{grid-template-columns:1fr}h1{font-size:34px}.sec-head h2{font-size:26px}}
+
+  .card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);padding:24px;box-shadow:var(--shadow-sm);position:relative;overflow:hidden;transition:transform .2s ease,box-shadow .2s ease,border-color .2s ease}
+  .card::before{content:"";position:absolute;inset:0 0 auto 0;height:3px;background:var(--grad);opacity:0;transition:opacity .2s}
+  .card:hover{transform:translateY(-5px);box-shadow:var(--shadow-lg);border-color:#bfdbfe}
+  .card:hover::before{opacity:1}
+  .card .ic{width:46px;height:46px;border-radius:12px;display:grid;place-items:center;background:var(--brand-soft);color:var(--brand);margin-bottom:16px;border:1px solid #bfdbfe}
+  .card .ic svg{width:24px;height:24px;display:block}
+  .card h3{margin:0 0 8px;font-size:18px;font-weight:700}
+  .card p{margin:0;color:var(--muted);font-size:14.5px}
+
+  /* theory */
+  .theory{background:linear-gradient(180deg,#fff,#f7f8fc)}
+  .twocol{display:grid;grid-template-columns:1.05fr .95fr;gap:34px;align-items:center}
+  @media(max-width:880px){.twocol{grid-template-columns:1fr}}
+  .pillars{display:grid;gap:16px}
+  .pillar{display:flex;gap:14px;align-items:flex-start;background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px;box-shadow:var(--shadow-sm);transition:transform .2s,border-color .2s}
+  .pillar:hover{transform:translateY(-3px);border-color:#bfdbfe}
+  .pillar .em{line-height:1;color:var(--brand);flex:0 0 auto;width:46px;height:46px;border-radius:13px;display:grid;place-items:center;background:var(--brand-soft)}
+  .pillar .em svg{width:26px;height:26px;display:block}
+  .pillar h4{margin:0 0 4px;font-size:16px}
+  .pillar p{margin:0;color:var(--muted);font-size:14px}
+  .quote{font-size:19px;color:#374151;border-left:4px solid var(--brand);padding:6px 0 6px 18px;margin:0 0 18px;font-weight:600}
+
+  /* AI Native org */
+  .ainative{background:linear-gradient(180deg,#fff,#f7f8fc)}
+  .def-quote{font-size:18px;line-height:1.7;color:#1f2937;border-left:4px solid var(--brand);background:#fafaff;padding:18px 22px;border-radius:0 12px 12px 0;margin:0 0 26px}
+  .def-quote b{color:#1e40af}
+  .cites{display:grid;grid-template-columns:repeat(2,1fr);gap:14px;margin:0 0 32px}
+  @media(max-width:680px){.cites{grid-template-columns:1fr}}
+  .cite{background:#fff;border:1px solid var(--line);border-radius:12px;padding:16px 18px;box-shadow:var(--shadow-sm);font-size:13.5px;color:var(--muted);line-height:1.6;transition:transform .2s,box-shadow .2s}
+  .cite:hover{transform:translateY(-3px);box-shadow:var(--shadow)}
+  .cite .src{font-weight:700;color:var(--ink);font-size:14px;margin-bottom:6px;display:flex;align-items:flex-start;gap:8px}
+  .cite .src a{color:var(--brand)}
+  .cite .src a:hover{text-decoration:underline}
+  .cite .src svg{width:16px;height:16px;color:var(--brand);flex:0 0 auto;margin-top:2px}
+  .diff2{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:8px}
+  @media(max-width:820px){.diff2{grid-template-columns:1fr}}
+  .diffbox{border-radius:var(--radius);padding:24px;border:1px solid var(--line);box-shadow:var(--shadow-sm);position:relative;overflow:hidden}
+  .diffbox::before{content:"";position:absolute;left:0;top:0;bottom:0;width:4px}
+  .diffbox.t{background:#fff7f6}.diffbox.t::before{background:#ef4444}
+  .diffbox.n{background:#f5f7ff}.diffbox.n::before{background:var(--grad)}
+  .diffbox h3{margin:0 0 4px;font-size:18px}
+  .diffbox .sub{font-size:13px;color:var(--muted);margin:0 0 14px}
+  .flow{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:13px;margin:8px 0 4px;color:#475569}
+  .chip{background:#eff6ff;border:1px solid #bfdbfe;color:#1e40af;padding:5px 10px;border-radius:8px;font-weight:600}
+  .diffbox.t .chip{background:#fee2e2;border-color:#fca5a5;color:#991b1b}
+  .arrow{color:#94a3b8;font-weight:700}
+  .diffbox ul{margin:10px 0 0;padding-left:18px;color:#475569;font-size:13.5px}
+  .diffbox ul li{margin:6px 0}
+
+  /* compare table */
+  table.cmp{width:100%;border-collapse:collapse;background:#fff;border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;box-shadow:var(--shadow);font-size:14px}
+  table.cmp th,table.cmp td{padding:14px 16px;text-align:left;vertical-align:top;border-bottom:1px solid var(--line)}
+  table.cmp thead th{background:#f8fafc;font-weight:700}
+  table.cmp tbody th{font-weight:600;color:var(--ink);width:19%}
+  table.cmp th.dim,table.cmp td.dim{color:var(--muted);width:34%;background:#fcfcfd}
+  table.cmp th.native,table.cmp td.native{color:#1e40af;width:33%;background:#fafaff}
+  @media(max-width:680px){table.cmp{display:block;overflow-x:auto;min-width:560px;font-size:12.5px}table.cmp th,table.cmp td{padding:10px 11px}}
+
+  /* download */
+  .dl{background:linear-gradient(180deg,#f4f6fd,#fbfcff);color:var(--ink)}
+  .dl .sec-head h2{color:var(--ink)}.dl .sec-head p{color:var(--muted)}
+  .dl-tabs{display:flex;gap:8px;justify-content:center;flex-wrap:wrap;margin-bottom:26px}
+  .dl-tab{display:inline-flex;align-items:center;gap:7px;background:#fff;border:1px solid var(--line);color:#475569;padding:10px 16px;border-radius:999px;cursor:pointer;font-size:14.5px;font-weight:600;transition:.15s;box-shadow:var(--shadow-sm)}
+  .dl-tab svg{width:17px;height:17px;display:block}
+  .dl-tab:hover{background:#f8faff;border-color:#bfdbfe;color:var(--ink)}
+  .dl-tab.active{background:var(--brand);color:#fff;border-color:transparent;box-shadow:0 8px 20px rgba(29,78,216,.24)}
+  .dl-panel{display:none}
+  .dl-panel.active{display:block;animation:fade .25s ease}
+  @keyframes fade{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+  .dl-note{text-align:center;color:var(--muted);font-size:13.5px;margin:0 0 18px}
+  .dl-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+  .dl-card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:18px;display:flex;flex-direction:column;gap:6px;box-shadow:var(--shadow-sm);transition:transform .18s,box-shadow .18s,border-color .18s}
+  .dl-card:hover{transform:translateY(-3px);border-color:#bfdbfe;box-shadow:var(--shadow)}
+  .dl-card .plat{display:flex;align-items:center;gap:8px;font-weight:700;font-size:15px}
+  .dl-card .plat .os{width:21px;height:21px;color:var(--brand);display:inline-grid;place-items:center;flex:0 0 auto}
+  .dl-card .plat .os svg{width:21px;height:21px;display:block}
+  .dl-card a{margin-top:10px;display:inline-flex;align-items:center;justify-content:center;gap:6px;background:var(--brand);color:#fff;padding:10px 12px;border-radius:8px;font-weight:600;font-size:14px;transition:.15s;box-shadow:0 6px 14px rgba(29,78,216,.20)}
+  .dl-card a:hover{background:var(--brand2);transform:translateY(-1px);box-shadow:0 10px 20px rgba(29,78,216,.26)}
+  .dl-card .fn{font-size:12px;color:var(--muted2);word-break:break-all}
+  .dl-foot{text-align:center;margin-top:22px;color:var(--muted);font-size:13px}
+  .dl-foot a{color:var(--brand);text-decoration:underline}
+
+  /* footer */
+  footer{background:#fbfcfe;color:#64748b;padding:34px 0;font-size:13.5px;border-top:1px solid var(--line)}
+  footer .wrap{display:flex;justify-content:space-between;flex-wrap:wrap;gap:14px;align-items:center}
+  footer a{color:#475569}
+  footer a:hover{color:var(--brand)}
+  footer .links{display:flex;gap:18px;flex-wrap:wrap}
+
+  /* polish */
+  ::selection{background:#1d4ed8;color:#fff}
+  a:focus-visible,button:focus-visible{outline:2px solid #6366f1;outline-offset:2px;border-radius:6px}
+  section+section{border-top:1px solid rgba(15,23,42,.055)}
+  .nav.scrolled{box-shadow:0 10px 28px rgba(15,23,42,.10)}
+  .art-panel{background:#fff;border:1px solid var(--line);border-radius:20px;padding:26px 22px 14px;box-shadow:0 30px 70px rgba(29,78,216,.10),0 2px 6px rgba(15,23,42,.05)}
+  .art-cap{text-align:center;color:#8a91a8;font-size:12.5px;letter-spacing:.4px;margin:10px 0 4px}
+  td.native::before{content:"✓";color:#16a34a;font-weight:800;margin-right:7px}
+  td.dim::before{content:"—";color:#c3c9d9;font-weight:700;margin-right:9px}
+  footer .fbrand{display:flex;align-items:center;gap:10px;color:var(--ink);font-weight:800;font-size:16px;margin-bottom:6px}
+  footer .fbrand svg{width:24px;height:24px;display:block}
+  footer .fmeta{font-size:12.5px;color:#8a91a8}
+
+  /* scroll reveal */
+  .js .rv{opacity:0;transform:translateY(16px);transition:opacity .6s ease,transform .6s ease}
+  .js .rv.on{opacity:1;transform:none}
+  @media(prefers-reduced-motion:reduce){.js .rv{opacity:1;transform:none;transition:none}}
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <div class="wrap">
+    <a class="brand" href="#top">
+      <svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="8" fill="#1d4ed8"/><path d="M8 23V9h3l5 8 5-8h3v14h-3v-7l-4 6h-2l-4-6v7z" fill="#fff"/></svg>
+      MaClaw 码卡龙
+    </a>
+    <div class="links">
+      <a href="#what">理念</a>
+      <a href="#ainative">AI Native</a>
+      <a href="#capabilities">能力</a>
+      <a href="#security">安全</a>
+      <button id="langBtn" class="lang-btn" type="button" aria-label="Switch language">EN</button>
+      <a class="nav-cta" href="#download">下载客户端</a>
+    </div>
+  </div>
+</nav>
+
+<header class="hero" id="top">
+  <div class="hero-bg"></div>
+  <div class="wrap">
+    <div class="hero-copy">
+      <span class="badge"><span class="dot"></span> 自托管 · 开源可审计 · 企业级治理</span>
+      <h1>MaClaw <span class="grad">码卡龙</span></h1>
+      <div class="os-tag">AI Native 组织操作系统</div>
+      <p class="lede">不止是工具，而是支撑整个组织的操作系统。企业的<strong>业务流由 AI 驱动</strong>，AI 数字员工与人类员工在同一套记忆、知识与能力底座上协作执行——把大模型变成企业可管控、可审计、可撤销的能力体系，而非在传统人类科层制里层层流转。</p>
+      <div class="cta">
+        <a class="btn btn-primary" href="#download"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v11M7.5 11.5 12 16l4.5-4.5"/><path d="M5 20h14"/></svg> 下载客户端</a>
+        <a class="btn btn-ghost" href="/admin">进入管理后台<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
+      </div>
+      <div class="hero-meta">
+        <div class="stat"><b>4 级</b><span>能力来源体系</span></div>
+        <div class="stat"><b>8 类</b><span>记忆与知识引擎</span></div>
+        <div class="stat"><b>端到端</b><span>加密与审计</span></div>
+        <div class="stat"><b>多租户</b><span>数据主权隔离</span></div>
+      </div>
+    </div>
+    <div class="hero-art" aria-hidden="true">
+      <div class="art-panel">
+      <svg viewBox="0 0 440 360" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <linearGradient id="g1" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#1d4ed8"/><stop offset="1" stop-color="#3b82f6"/>
+          </linearGradient>
+          <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+            <stop offset="0" stop-color="#1d4ed8" stop-opacity=".16"/>
+            <stop offset="1" stop-color="#1d4ed8" stop-opacity="0"/>
+          </radialGradient>
+        </defs>
+        <circle cx="220" cy="180" r="140" stroke="rgba(15,23,42,.16)" stroke-width="1.5" stroke-dasharray="3 7"/>
+        <circle cx="220" cy="180" r="124" fill="url(#halo)"/>
+        <g stroke="rgba(15,23,42,.14)" stroke-width="1.6">
+          <path d="M220 180 L220 50"/><path d="M220 180 L338 122"/><path d="M220 180 L338 238"/>
+          <path d="M220 180 L220 310"/><path d="M220 180 L102 238"/><path d="M220 180 L102 122"/>
+        </g>
+        <circle cx="220" cy="180" r="40" fill="url(#g1)"/>
+        <circle cx="220" cy="180" r="40" fill="none" stroke="#fff" stroke-width="1.5"/>
+        <text x="220" y="188" text-anchor="middle" font-size="22" font-weight="800" fill="#fff" font-family="-apple-system,Segoe UI,Roboto,sans-serif">M</text>
+        <g font-size="13" font-weight="700" fill="#334155" font-family="-apple-system,Segoe UI,Roboto,sans-serif">
+          <circle cx="220" cy="50" r="23" fill="#fff" stroke="rgba(15,23,42,.16)"/><text x="220" y="55" text-anchor="middle">人</text>
+          <circle cx="338" cy="122" r="23" fill="#eff6ff" stroke="#bfdbfe"/><text x="338" y="127" text-anchor="middle" fill="#1e40af">AI</text>
+          <circle cx="338" cy="238" r="23" fill="#fff" stroke="rgba(15,23,42,.16)"/><text x="338" y="243" text-anchor="middle">系统</text>
+          <circle cx="220" cy="310" r="23" fill="#fff" stroke="rgba(15,23,42,.16)"/><text x="220" y="315" text-anchor="middle">数据</text>
+          <circle cx="102" cy="238" r="23" fill="#fff" stroke="rgba(15,23,42,.16)"/><text x="102" y="243" text-anchor="middle">能力</text>
+          <circle cx="102" cy="122" r="23" fill="#fff" stroke="rgba(15,23,42,.16)"/><text x="102" y="127" text-anchor="middle">知识</text>
+        </g>
+      </svg>
+      <div class="art-cap">组织操作系统运行时 · 一个底座连接人、AI 与系统</div>
+      </div>
+    </div>
+  </div>
+</header>
+
+<!-- 理念 / 理论 -->
+<section class="theory" id="what">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">What is MaClaw</div>
+      <h2>一个数字智能伙伴，两种身份，同一套基座</h2>
+      <p>企业级治理与个⼈级陪伴，共享同一套记忆、知识与能力系统。能力可被推送、被管控、被撤销；记忆始终属于你。</p>
+    </div>
+    <div class="twocol">
+      <div>
+        <p class="quote">"AI 不应只是一问一答的助手，而应成为真正懂你业务、守你规则、记得你过往的数字员工。"</p>
+        <p style="color:var(--muted)">MaClaw 把"记忆—知识—能力"做成可组合、可治理的底座：企业把选定的 Skill / MCP 能力包推送到员工与现场设备；个人则拥有私有的 AI 工作伙伴。所有能力可治理、可审计、可撤销。</p>
+      </div>
+      <div class="pillars">
+        <div class="pillar"><div class="em"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="1.5"/><path d="M9 7h.01M15 7h.01M9 11h.01M15 11h.01M9 15h.01M15 15h.01"/><path d="M10 21v-3h4v3"/></svg></div><div><h4>企业伴侣 · 可治理的能力基座</h4><p>企业自管 Skill/MCP 库，员工 MaClaw 默认优先调用企业已审批的能力，许可证不出企业边界。</p></div></div>
+        <div class="pillar"><div class="em"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/></svg></div><div><h4>个人伴侣 · 私有 AI 工作伙伴</h4><p>真正记住你、理解你上下文的 AI，本地优先，数据主权属于使用者本人。</p></div></div>
+        <div class="pillar"><div class="em"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="7" y="7" width="10" height="10" rx="2"/><path d="M10 3v2M14 3v2M10 19v2M14 19v2M3 10h2M3 14h2M19 10h2M19 14h2"/></svg></div><div><h4>数字员工 · 省人力的 AI 劳动力</h4><p>把 SOP 封装成能力包，自动处理办公、运维、巡检等重复任务。</p></div></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- AI Native 组织：概念与权威定义 -->
+<section class="ainative" id="ainative">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">AI Native Organization</div>
+      <h2>AI Native 组织：企业业务流由 AI 驱动</h2>
+      <p>核心差别不在于"用没用 AI"，而在于企业的<strong>业务流程（工作流）由 AI 驱动、由 AI 数字员工与人类员工协作执行</strong>，全 AI 驱动地运转——而不再像传统企业那样，工作只在人类科层制组织里层层流转、逐级审批。</p>
+    </div>
+
+    <blockquote class="def-quote">
+      在 AI Native 组织里，<b>AI 不再是外挂的工具，而是与人力并列的"员工"</b>：企业的日常业务流由 AI 智能体主动承接、端到端执行，人类员工退到战略、判断与例外处理的"环路之上"。工作流在"人类 + AI 数字员工"组成的扁平协作网络中流动，而非在金字塔式部门层级间逐级传递。
+    </blockquote>
+
+    <div class="cites">
+      <div class="cite">
+        <div class="src"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5V6.5A2.5 2.5 0 0 1 6.5 4H20v13H6.5A2.5 2.5 0 0 0 4 19.5Z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20"/></svg> Bain &amp; Company · <a href="https://www.bain.com/insights/what-is-an-ai-native-enterprise/" target="_blank" rel="noopener">What Is an AI-Native Enterprise?</a></div>
+        "AI-native enterprises rebuild their workflows, data, and agents to change how the business competes." 日常决策由自主 / 半自主智能体处理，人类聚焦于判断与重构。
+      </div>
+      <div class="cite">
+        <div class="src"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5V6.5A2.5 2.5 0 0 1 6.5 4H20v13H6.5A2.5 2.5 0 0 0 4 19.5Z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20"/></svg> 麦肯锡 · <a href="https://www.mckinsey.com.cn/ai%E6%99%BA%E8%83%BD%E4%BD%93%E7%BB%84%E7%BB%87%EF%BC%9A-5%E4%B8%AA%E4%BA%BA%E7%AE%A1%E7%90%86100%E4%B8%AA%E6%99%BA%E8%83%BD%E4%BD%93%E5%91%98%E5%B7%A5/" target="_blank" rel="noopener">智能型组织：AI 时代的下一代组织范式</a></div>
+        AI 时代组织的核心由"人类 + AI 智能体"共同组成；2–5 人小团队可监管 50–100 个智能体，金字塔职能层级让位于以任务与成果交换为核心的智能体网络。
+      </div>
+      <div class="cite">
+        <div class="src"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5V6.5A2.5 2.5 0 0 1 6.5 4H20v13H6.5A2.5 2.5 0 0 0 4 19.5Z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20"/></svg> Salesforce · <a href="https://www.salesforce.com/welcome-to-the-agentic-enterprise/autonomous-enterprise/" target="_blank" rel="noopener">The Autonomous Enterprise</a></div>
+        "coordinates AI agents and digital labor to run entire workflows independently"——以 AI agents 与数字劳动力独立运行整条工作流，人类管战略、机器管执行。
+      </div>
+      <div class="cite">
+        <div class="src"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5V6.5A2.5 2.5 0 0 1 6.5 4H20v13H6.5A2.5 2.5 0 0 0 4 19.5Z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20"/></svg> 联想 × 中国人民大学 · <a href="https://m.cnfin.com/cq-lb//zixun/20260922/4473753_1.html" target="_blank" rel="noopener">《AI 原生组织转型指南》</a></div>
+        把 AI 深度嵌入业务模式与工作流程，智能体作为"硅基员工"成为新生产力，与人类"碳基员工"碳硅协同、持续进化的人智共创组织。
+      </div>
+    </div>
+
+    <div class="diff2">
+      <div class="diffbox t">
+        <h3>传统组织</h3>
+        <p class="sub">工作在人类科层制中流转</p>
+        <div class="flow">
+          <span class="chip">人</span><span class="arrow">→</span><span class="chip">软件 / 表单</span><span class="arrow">→</span><span class="chip">人</span><span class="arrow">→</span><span class="chip">上级审批</span>
+        </div>
+        <ul>
+          <li>业务流由人驱动，靠部门层级逐级传递与审批</li>
+          <li>AI 只是个人提效的"外挂工具"，不参与流程主干</li>
+          <li>规模随人头线性增长，决策周期长、瓶颈在层级</li>
+          <li>知识散落在个人与孤岛系统，换人就丢</li>
+        </ul>
+      </div>
+      <div class="diffbox n">
+        <h3>AI Native 组织（MaClaw）</h3>
+        <p class="sub">业务流由 AI 驱动、数字员工与人类协作</p>
+        <div class="flow">
+          <span class="chip">目标 / 策略（人）</span><span class="arrow">→</span><span class="chip">AI 数字员工</span><span class="arrow">→</span><span class="chip">自动执行工作流</span><span class="arrow">→</span><span class="chip">人审例外</span>
+        </div>
+        <ul>
+          <li>业务流由 AI 主动承接并端到端执行，全 AI 驱动运转</li>
+          <li>AI 数字员工与人类员工在同一底座上协作，人处"环路之上"</li>
+          <li>规模随智能体容量指数扩展，边际成本趋近算力成本</li>
+          <li>组织级统一记忆 / 知识 / 能力底座，跨人跨系统沉淀复用</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- AI Native 组织操作系统 -->
+<section style="background:linear-gradient(180deg,#fff,#f7f8fc)">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">Organization OS</div>
+      <h2>为什么 MaClaw 是「组织操作系统」</h2>
+      <p>AI Native 组织不是口号，需要一套可运行的底座。MaClaw 把记忆、知识、能力与治理做成可组合的操作系统层，让人、流程与系统在同一底座上运行——让"业务流由 AI 驱动"从理念变成可部署的现实。</p>
+    </div>
+    <div class="grid g4">
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="m3 13 9 5 9-5"/><path d="m3 18 9 5 9-5"/></svg></div><h3>统一认知底座</h3><p>8 类记忆 + 混合检索 + 知识图谱，让组织的历史、知识与上下文沉淀为可复用的系统级资产。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="5" cy="6" r="2.2"/><circle cx="5" cy="18" r="2.2"/><circle cx="19" cy="12" r="2.2"/><path d="M7 6.6 17 11M7 17.4 17 13"/></svg></div><h3>能力编排与治理</h3><p>Skill/MCP 能力包可推送、可编排、可审计、可撤销；企业策略贯穿每一次调用。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M16 19v-1.5a3.5 3.5 0 0 0-3.5-3.5h-5A3.5 3.5 0 0 0 4 17.5V19"/><circle cx="10.5" cy="8" r="3"/><path d="M20 19v-1.4a3.4 3.4 0 0 0-2.6-3.3"/><path d="M15.6 5.2a3 3 0 0 1 0 5.6"/></svg></div><h3>人-AI 协作运行时</h3><p>AG-UI 动态界面替代固定页面，员工用自然语言驱动业务；AI 员工承接重复与高风险任务。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2v5M15 2v5M7 7h10v4a5 5 0 0 1-10 0V7Z"/><path d="M12 16v6"/></svg></div><h3>跨系统即插即用</h3><p>结构化数据服务对接销售/财务/人事等系统，MCP 接入 PLC/SCADA/IT 设施，能力随需扩展。</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- 对比：AI Native 组织 vs 传统组织 -->
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">AI Native vs Traditional</div>
+      <h2>AI Native 组织 vs 使用 AI 工具的传统组织</h2>
+      <p>差别不在"用没用 AI"，而在 AI 是外挂的工具，还是组织自身的操作系统层。</p>
+    </div>
+    <table class="cmp">
+      <thead>
+        <tr><th>维度</th><th class="dim">传统组织（使用 AI 工具）</th><th class="native">AI Native 组织（MaClaw）</th></tr>
+      </thead>
+      <tbody>
+        <tr><th>能力落地</th><td class="dim">采购点状工具，嵌入固定菜单/表单，彼此孤立</td><td class="native">能力包（Skill/MCP）可编排、可推送、随业务自由组合</td></tr>
+        <tr><th>记忆与知识</th><td class="dim">散落在个人与各孤岛系统，换人就丢</td><td class="native">组织级统一记忆/知识底座，跨人跨系统沉淀复用</td></tr>
+        <tr><th>人机协作</th><td class="dim">人操作工具、逐级审批，AI 被动应答，工作流在人类科层制中流转</td><td class="native">业务流由 AI 驱动，AI 数字员工与人类员工协作端到端执行，人处"环路之上"</td></tr>
+        <tr><th>治理合规</th><td class="dim">靠制度与人审，难追溯、难撤销</td><td class="native">每次调用可审计、可撤销，策略贯穿全过程</td></tr>
+        <tr><th>系统集成</th><td class="dim">API 对接贵、易僵化、扩展慢</td><td class="native">结构化数据服务 + MCP 即插即用，能力随需扩展</td></tr>
+        <tr><th>数据主权</th><td class="dim">业务数据常留在第三方</td><td class="native">数据留在自有 Hub，多租户物理隔离</td></tr>
+        <tr><th>迭代方式</th><td class="dim">换供应商 / 重开发</td><td class="native">能力包热更新，企业自管市场持续沉淀资产</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- 功能特点 -->
+<section id="capabilities">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">Capabilities</div>
+      <h2>远不止"AI 助手"——可真正落地的能力</h2>
+      <p>从日常办公到企业 IT 系统、IT 运维乃至生产线监控，能力可部署到桌面与现场。</p>
+    </div>
+    <div class="grid g4">
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M3 12h18"/></svg></div><h3>日常办公</h3><p>把标准作业流程封装成 Skill 包推送到员工 MaClaw：合同评审、投标响应、报销请假、邮件与会议纪要自动按企业标准执行。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg></div><h3>企业 IT 系统</h3><p>结构化数据服务（MaClawDataSrv）+ 动态 UI（AG-UI）替代固定菜单与表单，覆盖销售/财务/人事/法务/采购/库存等 30+ 业务模板。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2"/><path d="M19.4 13.5a1.7 1.7 0 0 0 .34 1.87l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.7 1.7 0 0 0-1.87-.34 1.7 1.7 0 0 0-1 1.56V21a2 2 0 1 1-4 0v-.09a1.7 1.7 0 0 0-1.11-1.56 1.7 1.7 0 0 0-1.87.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.7 1.7 0 0 0 .34-1.87 1.7 1.7 0 0 0-1.56-1H3a2 2 0 1 1 0-4h.09a1.7 1.7 0 0 0 1.56-1.11 1.7 1.7 0 0 0-.34-1.87l-.06-.06A2 2 0 1 1 7.1 4.2l.06.06a1.7 1.7 0 0 0 1.87.34H9a1.7 1.7 0 0 0 1-1.56V3a2 2 0 1 1 4 0v.09a1.7 1.7 0 0 0 1 1.56 1.7 1.7 0 0 0 1.87-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.7 1.7 0 0 0-.34 1.87V9a1.7 1.7 0 0 0 1.56 1H21a2 2 0 1 1 0 4h-.09a1.7 1.7 0 0 0-1.51 1Z"/></svg></div><h3>IT 运维</h3><p>SSH 10 路并发、密码/密钥/代理认证；巡检、重启、备份、回滚一键执行；高风险操作需审批，全程审计。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M2 21h20M4 21V10l5 3V10l5 3V6l8 5v10"/></svg></div><h3>生产线监控</h3><p>经企业托管 MCP 接入 PLC/SCADA/MES，就地采集指标、识别异常、推送告警并自动产出交接班报告。</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- 企业级治理 -->
+<section style="background:linear-gradient(180deg,#fff,#f7f8fc)">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">Governance</div>
+      <h2>企业级治理：每一项能力都被约束</h2>
+      <p>从来源、部署到撤销，企业对自己的能力资产拥有完整控制权。</p>
+    </div>
+    <div class="grid g2">
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 9h16l-1-4H5L4 9Z"/><path d="M5 9v10a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9"/><path d="M9 20v-5h6v5"/></svg></div><h3>私有能力市场</h3><p>企业自管的 Skill/MCP 库，仅收录已审批来源、保留完整来源溯源；员工侧无缝优先使用企业能力。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M7 10l5 5 5-5"/><path d="M12 15V3"/></svg></div><h3>部署与推荐</h3><p>管理员可按部门/角色/设备类型强制部署或推荐；部署失败自动重试，卸载后下次同步自动重装。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8Z"/><path d="M14 3v5h5"/><path d="m9 14 2 2 4-4"/></svg></div><h3>来源校验与撤销</h3><p>每个能力包携带溯源、版本与校验和，SHA-256 校验 + 签名验证，可一键撤销、禁用或回滚。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3Z"/></svg></div><h3>数据主权与多租户</h3><p>企业数据留在自己的 Hub，云端不读取业务数据；租户/用户级物理路径隔离，每张表以 tenant_id 隔离。</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- 企业级安全 -->
+<section id="security">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">Security</div>
+      <h2>企业级安全：从凭据、传输到行为审批</h2>
+      <p>端到端硬保证，覆盖身份、策略、加密、隔离与审计。</p>
+    </div>
+    <div class="grid g3">
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></div><h3>认证与凭据</h3><p>scrypt(N=32768)+pepper 口令摘要、HMAC-SHA256 会话令牌、bcrypt 管理密钥；凭据五态：启用/暂停/撤销/过期/临期。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h10M18 6h2"/><circle cx="16" cy="6" r="2"/><path d="M4 12h2M10 12h10"/><circle cx="8" cy="12" r="2"/><path d="M4 18h12M20 18h0"/><circle cx="18" cy="18" r="2"/></svg></div><h3>策略引擎</h3><p>自上而下用户组树的有效策略；五动作（允许/拒绝/询问/审计/用户覆盖）+ 四预设；三级能力来源白名单与多角色 RBAC。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="4.5"/><path d="m11 11 8 8"/><path d="m16 16 2.2-2.2"/><path d="m19.5 19.5 1.5-1.5"/></svg></div><h3>端到端加密</h3><p>能力包、许可证与传输全程加密；TLS 1.2 起，邮件链接 StartTLS；私钥 0o600 与密钥分离策略。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="7" rx="1.2"/><rect x="14" y="3" width="7" height="7" rx="1.2"/><rect x="3" y="14" width="7" height="7" rx="1.2"/><rect x="14" y="14" width="7" height="7" rx="1.2"/></svg></div><h3>沙箱与隔离</h3><p>执行上下文与网络可达可配置（none/os/docker、full/intranet/none）；多租户物理层隔离，YOLO 可按租户关闭。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="4" width="12" height="17" rx="2"/><path d="M9 4V3h6v1"/><path d="M9 10l2 2 4-4"/></svg></div><h3>审计·脱敏·注入防御</h3><p>JSONL 审计日志 50MB 滚动、30 天留存；敏感字段自动脱敏；覆盖消息/工具/网页/文件的 4 类提示注入检测。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18"/><path d="M5 7h14"/><path d="M5 7 2.5 13a3 3 0 0 0 5 0L5 7Z"/><path d="M19 7l-2.5 6a3 3 0 0 0 5 0L19 7Z"/><path d="M7 21h10"/></svg></div><h3>高风险操作审批</h3><p>风险分级 + 二次确认 + 智能复核；低风险不打扰，高危操作先停后批，支持异步审批。</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- 4 级能力体系 -->
+<section style="background:linear-gradient(180deg,#fff,#f7f8fc)">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">Capability Tiers</div>
+      <h2>4 级能力来源体系</h2>
+      <p>企业优先使用自己审批的能力；外部来源在企业策略下被引入。</p>
+    </div>
+    <div class="grid g4">
+      <div class="card tier"><span class="rank">P1</span><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="3" width="14" height="18" rx="1.5"/><path d="M9 7h.01M15 7h.01M9 11h.01M15 11h.01M9 15h.01M15 15h.01"/><path d="M10 21v-3h4v3"/></svg></div><h3>私有能力市场</h3><p>企业 Hub 自建 Skill/MCP 库，管理员策展，员工默认优先调用。</p></div>
+      <div class="card tier"><span class="rank">P2</span><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a4 4 0 0 1 0-8 5 5 0 0 1 9.6-1.5A3.5 3.5 0 0 1 17 18H7Z"/></svg></div><h3>公共能力市场</h3><p>HubCenter 官方与商业伙伴市场；免费直接装，付费走企业采购。</p></div>
+      <div class="card tier"><span class="rank">P3</span><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3a14 14 0 0 1 0 18 14 14 0 0 1 0-18Z"/></svg></div><h3>ClawHub 社区</h3><p>社区共建能力源，免费低门槛试用，验证后晋升为企业资产。</p></div>
+      <div class="card tier low"><span class="rank">P4</span><div class="ic"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M12 2a10 10 0 0 0-3.16 19.49c.5.09.68-.22.68-.48v-1.7c-2.78.6-3.37-1.34-3.37-1.34-.45-1.16-1.11-1.47-1.11-1.47-.91-.62.07-.6.07-.6 1 .07 1.53 1.03 1.53 1.03.89 1.52 2.34 1.08 2.91.83.09-.65.35-1.08.63-1.33-2.22-.25-4.55-1.11-4.55-4.94 0-1.09.39-1.98 1.03-2.68-.1-.25-.45-1.27.1-2.65 0 0 .84-.27 2.75 1.02a9.6 9.6 0 0 1 5 0c1.91-1.29 2.75-1.02 2.75-1.02.55 1.38.2 2.4.1 2.65.64.7 1.03 1.59 1.03 2.68 0 3.84-2.34 4.69-4.57 4.94.36.31.68.92.68 1.85v2.74c0 .27.18.58.69.48A10 10 0 0 0 12 2Z"/></svg></div><h3>GitHub 开源</h3><p>最广覆盖的开源 Skill/MCP，管理员白名单控制可拉取来源。</p></div>
+    </div>
+    <p style="text-align:center;color:var(--muted);margin-top:22px;font-size:15px">企业模式下能力查找顺序：<b>私有市场 → 公共市场 → ClawHub → GitHub</b>，发布在企业 Hub 的能力始终优先。</p>
+  </div>
+</section>
+
+<!-- 核心技术 -->
+<section>
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">Core Technology</div>
+      <h2>驱动数字伙伴的核心引擎</h2>
+      <p>记忆、检索、知识与遗忘曲线，构成可长期陪伴的认知底座。</p>
+    </div>
+    <div class="grid g4">
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V8"/><path d="M10 12h4"/></svg></div><h3>8 类记忆</h3><p>语义/情景分层、时间层级与受保护条目，让 AI 真正"记得你"。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="7"/><path d="m21 21-4.3-4.3"/></svg></div><h3>混合检索</h3><p>BM25 关键词 + 向量相似度，SIMD 加速余弦打分，兼顾精确与语义。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2.5"/><circle cx="18" cy="6" r="2.5"/><circle cx="12" cy="18" r="2.5"/><path d="M8 7.5 10.5 16M16 7.5 13.5 16M8.5 6h7"/></svg></div><h3>知识图谱</h3><p>双向加权边、BFS 扩展、多关系类型，把零散信息连成知识。</p></div>
+      <div class="card"><div class="ic"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg></div><h3>遗忘曲线</h3><p>艾宾浩斯衰减，可配置半衰期与休眠阈值，自动沉淀长期记忆。</p></div>
+    </div>
+  </div>
+</section>
+
+<!-- 下载 -->
+<section class="dl" id="download">
+  <div class="wrap">
+    <div class="sec-head">
+      <div class="kicker">Download</div>
+      <h2>下载客户端</h2>
+      <p>选择适合你的形态：图形客户端、命令行、数据服务、Hub 服务端或便携安装器。</p>
+    </div>
+
+    <div class="dl-tabs" id="dlTabs">
+      <button class="dl-tab active" data-tab="gui"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg> 图形客户端</button>
+      <button class="dl-tab" data-tab="tui"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M13 15h4"/></svg> 命令行</button>
+      <button class="dl-tab" data-tab="data"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><ellipse cx="12" cy="5" rx="8" ry="3"/><path d="M4 5v6c0 1.7 3.6 3 8 3s8-1.3 8-3V5"/><path d="M4 11v6c0 1.7 3.6 3 8 3s8-1.3 8-3v-6"/></svg> 数据服务</button>
+      <button class="dl-tab" data-tab="cloud"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 18a4 4 0 0 1 0-8 5 5 0 0 1 9.6-1.5A3.5 3.5 0 0 1 17 18H7Z"/></svg> Hub 服务端</button>
+      <button class="dl-tab" data-tab="installer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8 12 3 3 8v8l9 5 9-5V8Z"/><path d="m3 8 9 5 9-5M12 13v8"/></svg> 便携安装器</button>
+    </div>
+
+    <div class="dl-panel active" id="dl-gui">
+      <p class="dl-note">MaClaw 桌面客户端 · 日常使用推荐</p>
+      <div class="dl-grid">
+        <div class="dl-card"><div class="plat"><span class="os"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7.5" height="7.5" rx="1.2"/><rect x="13" y="3.5" width="7.5" height="7.5" rx="1.2"/><rect x="3.5" y="13" width="7.5" height="7.5" rx="1.2"/><rect x="13" y="13" width="7.5" height="7.5" rx="1.2"/></svg></span> Windows</div><a href="https://github.com/RapidAI/MaClaw/releases/latest/download/MaClaw-Setup.exe">下载 .exe</a><span class="fn">MaClaw-Setup.exe</span></div>
+        <div class="dl-card"><div class="plat"><span class="os"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M16.7 12.9c0-2 1.6-3 1.7-3.1-1-1.4-2.4-1.6-2.9-1.6-1.2-.1-2.4.7-3 .7-.6 0-1.6-.7-2.6-.7-1.3 0-2.6.8-3.3 2-1.4 2.4-.4 6 1 8 .7 1 1.5 2.1 2.5 2 1 0 1.4-.6 2.6-.6s1.6.6 2.6.6c1.1 0 1.8-1 2.4-2 .8-1.1 1.1-2.2 1.1-2.3-.1 0-2.1-.8-2.1-3ZM14.4 6.6c.5-.7.9-1.6.8-2.6-.8 0-1.8.6-2.3 1.3-.5.6-1 1.6-.8 2.5.9.1 1.8-.5 2.3-1.2Z"/></svg></span> macOS（通用）</div><a href="https://github.com/RapidAI/MaClaw/releases/latest/download/MaClaw-Universal.pkg">下载 .pkg</a><span class="fn">MaClaw-Universal.pkg</span></div>
+        <div class="dl-card"><div class="plat"><span class="os"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5c-2.8 0-4.3 2.2-4.3 4.8 0 2-.4 3.4-1.3 5.1-.7 1.3-1.1 2.5-1.1 3.7 0 2.9 3 5.4 6.7 5.4s6.7-2.5 6.7-5.4c0-1.2-.4-2.4-1.1-3.7-.9-1.7-1.3-3.1-1.3-5.1 0-2.6-1.5-4.8-4.3-4.8Z"/><circle cx="10.3" cy="8.7" r=".45" fill="currentColor" stroke="none"/><circle cx="13.7" cy="8.7" r=".45" fill="currentColor" stroke="none"/><path d="M10.9 10.9h2.2L12 12.4Z" fill="currentColor" stroke="none"/><path d="M8.6 21.3 7.2 22.4M15.4 21.3l1.4 1.1"/></svg></span> Linux x86_64</div><a href="https://github.com/RapidAI/MaClaw/releases/latest/download/MaClaw-x86_64-u2404.AppImage">下载 .AppImage</a><span class="fn">MaClaw-x86_64-u2404.AppImage</span></div>
+        <div class="dl-card"><div class="plat"><span class="os"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5c-2.8 0-4.3 2.2-4.3 4.8 0 2-.4 3.4-1.3 5.1-.7 1.3-1.1 2.5-1.1 3.7 0 2.9 3 5.4 6.7 5.4s6.7-2.5 6.7-5.4c0-1.2-.4-2.4-1.1-3.7-.9-1.7-1.3-3.1-1.3-5.1 0-2.6-1.5-4.8-4.3-4.8Z"/><circle cx="10.3" cy="8.7" r=".45" fill="currentColor" stroke="none"/><circle cx="13.7" cy="8.7" r=".45" fill="currentColor" stroke="none"/><path d="M10.9 10.9h2.2L12 12.4Z" fill="currentColor" stroke="none"/><path d="M8.6 21.3 7.2 22.4M15.4 21.3l1.4 1.1"/></svg></span> Linux aarch64</div><a href="https://github.com/RapidAI/MaClaw/releases/latest/download/MaClaw-aarch64-u2404.AppImage">下载 .AppImage</a><span class="fn">MaClaw-aarch64-u2404.AppImage</span></div>
+      </div>
+    </div>
+
+    <div class="dl-panel" id="dl-tui">
+      <p class="dl-note">maclaw-tui · 无图形环境的服务器 / 终端场景</p>
+      <div class="dl-grid">
+        <div class="dl-card"><div class="plat"><span class="os"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7.5" height="7.5" rx="1.2"/><rect x="13" y="3.5" width="7.5" height="7.5" rx="1.2"/><rect x="3.5" y="13" width="7.5" height="7.5" rx="1.2"/><rect x="13" y="13" width="7.5" height="7.5" rx="1.2"/></svg></span> Windows x64</div><a href="https://github.com/RapidAI/MaClaw/releases/latest/download/maclaw-tui_amd64.exe">下载 .exe</a><span class="fn">maclaw-tui_amd64.exe</span></div>
+        <div class="dl-card"><div class="plat"><span class="os"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M16.7 12.9c0-2 1.6-3 1.7-3.1-1-1.4-2.4-1.6-2.9-1.6-1.2-.1-2.4.7-3 .7-.6 0-1.6-.7-2.6-.7-1.3 0-2.6.8-3.3 2-1.4 2.4-.4 6 1 8 .7 1 1.5 2.1 2.5 2 1 0 1.4-.6 2.6-.6s1.6.6 2.6.6c1.1 0 1.8-1 2.4-2 .8-1.1 1.1-2.2 1.1-2.3-.1 0-2.1-.8-2.1-3ZM14.4 6.6c.5-.7.9-1.6.8-2.6-.8 0-1.8.6-2.3 1.3-.5.6-1 1.6-.8 2.5.9.1 1.8-.5 2.3-1.2Z"/></svg></span> macOS Intel</div><a href="https://github.com/RapidAI/MaClaw/releases/latest/download/maclaw-tui_amd64_darwin">下载</a><span class="fn">maclaw-tui_amd64_darwin</span></div>
+        <div class="dl-card"><div class="plat"><span class="os"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M16.7 12.9c0-2 1.6-3 1.7-3.1-1-1.4-2.4-1.6-2.9-1.6-1.2-.1-2.4.7-3 .7-.6 0-1.6-.7-2.6-.7-1.3 0-2.6.8-3.3 2-1.4 2.4-.4 6 1 8 .7 1 1.5 2.1 2.5 2 1 0 1.4-.6 2.6-.6s1.6.6 2.6.6c1.1 0 1.8-1 2.4-2 .8-1.1 1.1-2.2 1.1-2.3-.1 0-2.1-.8-2.1-3ZM14.4 6.6c.5-.7.9-1.6.8-2.6-.8 0-1.8.6-2.3 1.3-.5.6-1 1.6-.8 2.5.9.1 1.8-.5 2.3-1.2Z"/></svg></span> macOS Apple Silicon</div><a href="https://github.com/RapidAI/MaClaw/releases/latest/download/maclaw-tui_arm64_darwin">下载</a><span class="fn">maclaw-tui_arm64_darwin</span></div>
+        <div class="dl-card"><div class="plat"><span class="os"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5c-2.8 0-4.3 2.2-4.3 4.8 0 2-.4 3.4-1.3 5.1-.7 1.3-1.1 2.5-1.1 3.7 0 2.9 3 5.4 6.7 5.4s6.7-2.5 6.7-5.4c0-1.2-.4-2.4-1.1-3.7-.9-1.7-1.3-3.1-1.3-5.1 0-2.6-1.5-4.8-4.3-4.8Z"/><circle cx="10.3" cy="8.7" r=".45" fill="currentColor" stroke="none"/><circle cx="13.7" cy="8.7" r=".45" fill="currentColor" stroke="none"/><path d="M10.9 10.9h2.2L12 12.4Z" fill="currentColor" stroke="none"/><path d="M8.6 21.3 7.2 22.4M15.4 21.3l1.4 1.1"/></svg></span> Linux x64</div><a href="https://github.com/RapidAI/MaClaw/releases/latest/download/maclaw-tui_amd64_linux">下载</a><span class="fn">maclaw-tui_amd64_linux</span></div>
+        <div class="dl-card"><div class="plat"><span class="os"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5c-2.8 0-4.3 2.2-4.3 4.8 0 2-.4 3.4-1.3 5.1-.7 1.3-1.1 2.5-1.1 3.7 0 2.9 3 5.4 6.7 5.4s6.7-2.5 6.7-5.4c0-1.2-.4-2.4-1.1-3.7-.9-1.7-1.3-3.1-1.3-5.1 0-2.6-1.5-4.8-4.3-4.8Z"/><circle cx="10.3" cy="8.7" r=".45" fill="currentColor" stroke="none"/><circle cx="13.7" cy="8.7" r=".45" fill="currentColor" stroke="none"/><path d="M10.9 10.9h2.2L12 12.4Z" fill="currentColor" stroke="none"/><path d="M8.6 21.3 7.2 22.4M15.4 21.3l1.4 1.1"/></svg></span> Linux arm64</div><a href="https://github.com/RapidAI/MaClaw/releases/latest/download/maclaw-tui_arm64_linux">下载</a><span class="fn">maclaw-tui_arm64_linux</span></div>
+      </div>
+    </div>
+
+    <div class="dl-panel" id="dl-data">
+      <p class="dl-note">MaClawDataSrv · 结构化数据服务（销售/财务/人事等 30+ 业务模板）</p>
+      <div class="dl-grid">
+        <div class="dl-card"><div class="plat"><span class="os"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7.5" height="7.5" rx="1.2"/><rect x="13" y="3.5" width="7.5" height="7.5" rx="1.2"/><rect x="3.5" y="13" width="7.5" height="7.5" rx="1.2"/><rect x="13" y="13" width="7.5" height="7.5" rx="1.2"/></svg></span> Windows</div><a href="https://github.com/RapidAI/MaClaw/releases/latest/download/maclaw-data-srv-Setup.exe">下载 .exe</a><span class="fn">maclaw-data-srv-Setup.exe</span></div>
+        <div class="dl-card"><div class="plat"><span class="os"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M16.7 12.9c0-2 1.6-3 1.7-3.1-1-1.4-2.4-1.6-2.9-1.6-1.2-.1-2.4.7-3 .7-.6 0-1.6-.7-2.6-.7-1.3 0-2.6.8-3.3 2-1.4 2.4-.4 6 1 8 .7 1 1.5 2.1 2.5 2 1 0 1.4-.6 2.6-.6s1.6.6 2.6.6c1.1 0 1.8-1 2.4-2 .8-1.1 1.1-2.2 1.1-2.3-.1 0-2.1-.8-2.1-3ZM14.4 6.6c.5-.7.9-1.6.8-2.6-.8 0-1.8.6-2.3 1.3-.5.6-1 1.6-.8 2.5.9.1 1.8-.5 2.3-1.2Z"/></svg></span> macOS</div><a href="https://github.com/RapidAI/MaClaw/releases/latest/download/maclaw-data-srv-Universal.pkg">下载 .pkg</a><span class="fn">maclaw-data-srv-Universal.pkg</span></div>
+        <div class="dl-card"><div class="plat"><span class="os"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5c-2.8 0-4.3 2.2-4.3 4.8 0 2-.4 3.4-1.3 5.1-.7 1.3-1.1 2.5-1.1 3.7 0 2.9 3 5.4 6.7 5.4s6.7-2.5 6.7-5.4c0-1.2-.4-2.4-1.1-3.7-.9-1.7-1.3-3.1-1.3-5.1 0-2.6-1.5-4.8-4.3-4.8Z"/><circle cx="10.3" cy="8.7" r=".45" fill="currentColor" stroke="none"/><circle cx="13.7" cy="8.7" r=".45" fill="currentColor" stroke="none"/><path d="M10.9 10.9h2.2L12 12.4Z" fill="currentColor" stroke="none"/><path d="M8.6 21.3 7.2 22.4M15.4 21.3l1.4 1.1"/></svg></span> Linux</div><a href="https://github.com/RapidAI/MaClaw/releases/latest/download/maclaw-data-srv_amd64_linux">下载</a><span class="fn">maclaw-data-srv_amd64_linux</span></div>
+      </div>
+    </div>
+
+    <div class="dl-panel" id="dl-cloud">
+      <p class="dl-note">maclawsrv · 本 Hub 服务端的自托管安装包（当前站点即该服务）</p>
+      <div class="dl-grid">
+        <div class="dl-card"><div class="plat"><span class="os"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7.5" height="7.5" rx="1.2"/><rect x="13" y="3.5" width="7.5" height="7.5" rx="1.2"/><rect x="3.5" y="13" width="7.5" height="7.5" rx="1.2"/><rect x="13" y="13" width="7.5" height="7.5" rx="1.2"/></svg></span> Windows</div><a href="https://github.com/RapidAI/MaClaw/releases/latest/download/maclawsrv-Setup.exe">下载 .exe</a><span class="fn">maclawsrv-Setup.exe</span></div>
+        <div class="dl-card"><div class="plat"><span class="os"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M16.7 12.9c0-2 1.6-3 1.7-3.1-1-1.4-2.4-1.6-2.9-1.6-1.2-.1-2.4.7-3 .7-.6 0-1.6-.7-2.6-.7-1.3 0-2.6.8-3.3 2-1.4 2.4-.4 6 1 8 .7 1 1.5 2.1 2.5 2 1 0 1.4-.6 2.6-.6s1.6.6 2.6.6c1.1 0 1.8-1 2.4-2 .8-1.1 1.1-2.2 1.1-2.3-.1 0-2.1-.8-2.1-3ZM14.4 6.6c.5-.7.9-1.6.8-2.6-.8 0-1.8.6-2.3 1.3-.5.6-1 1.6-.8 2.5.9.1 1.8-.5 2.3-1.2Z"/></svg></span> macOS</div><a href="https://github.com/RapidAI/MaClaw/releases/latest/download/maclawsrv-Universal.pkg">下载 .pkg</a><span class="fn">maclawsrv-Universal.pkg</span></div>
+        <div class="dl-card"><div class="plat"><span class="os"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5c-2.8 0-4.3 2.2-4.3 4.8 0 2-.4 3.4-1.3 5.1-.7 1.3-1.1 2.5-1.1 3.7 0 2.9 3 5.4 6.7 5.4s6.7-2.5 6.7-5.4c0-1.2-.4-2.4-1.1-3.7-.9-1.7-1.3-3.1-1.3-5.1 0-2.6-1.5-4.8-4.3-4.8Z"/><circle cx="10.3" cy="8.7" r=".45" fill="currentColor" stroke="none"/><circle cx="13.7" cy="8.7" r=".45" fill="currentColor" stroke="none"/><path d="M10.9 10.9h2.2L12 12.4Z" fill="currentColor" stroke="none"/><path d="M8.6 21.3 7.2 22.4M15.4 21.3l1.4 1.1"/></svg></span> Linux</div><a href="https://github.com/RapidAI/MaClaw/releases/latest/download/maclawsrv_amd64_linux">下载</a><span class="fn">maclawsrv_amd64_linux</span></div>
+      </div>
+    </div>
+
+    <div class="dl-panel" id="dl-installer">
+      <p class="dl-note">Ins-maclaw · 便携/静默安装器，适合批量分发</p>
+      <div class="dl-grid">
+        <div class="dl-card"><div class="plat"><span class="os"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7.5" height="7.5" rx="1.2"/><rect x="13" y="3.5" width="7.5" height="7.5" rx="1.2"/><rect x="3.5" y="13" width="7.5" height="7.5" rx="1.2"/><rect x="13" y="13" width="7.5" height="7.5" rx="1.2"/></svg></span> Windows x64</div><a href="https://github.com/RapidAI/MaClaw/releases/latest/download/Ins-maclaw-windows-amd64.exe">下载 .exe</a><span class="fn">Ins-maclaw-windows-amd64.exe</span></div>
+        <div class="dl-card"><div class="plat"><span class="os"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7.5" height="7.5" rx="1.2"/><rect x="13" y="3.5" width="7.5" height="7.5" rx="1.2"/><rect x="3.5" y="13" width="7.5" height="7.5" rx="1.2"/><rect x="13" y="13" width="7.5" height="7.5" rx="1.2"/></svg></span> Windows arm64</div><a href="https://github.com/RapidAI/MaClaw/releases/latest/download/Ins-maclaw-windows-arm64.exe">下载 .exe</a><span class="fn">Ins-maclaw-windows-arm64.exe</span></div>
+        <div class="dl-card"><div class="plat"><span class="os"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M16.7 12.9c0-2 1.6-3 1.7-3.1-1-1.4-2.4-1.6-2.9-1.6-1.2-.1-2.4.7-3 .7-.6 0-1.6-.7-2.6-.7-1.3 0-2.6.8-3.3 2-1.4 2.4-.4 6 1 8 .7 1 1.5 2.1 2.5 2 1 0 1.4-.6 2.6-.6s1.6.6 2.6.6c1.1 0 1.8-1 2.4-2 .8-1.1 1.1-2.2 1.1-2.3-.1 0-2.1-.8-2.1-3ZM14.4 6.6c.5-.7.9-1.6.8-2.6-.8 0-1.8.6-2.3 1.3-.5.6-1 1.6-.8 2.5.9.1 1.8-.5 2.3-1.2Z"/></svg></span> macOS Intel</div><a href="https://github.com/RapidAI/MaClaw/releases/latest/download/Ins-maclaw-darwin-amd64">下载</a><span class="fn">Ins-maclaw-darwin-amd64</span></div>
+        <div class="dl-card"><div class="plat"><span class="os"><svg viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M16.7 12.9c0-2 1.6-3 1.7-3.1-1-1.4-2.4-1.6-2.9-1.6-1.2-.1-2.4.7-3 .7-.6 0-1.6-.7-2.6-.7-1.3 0-2.6.8-3.3 2-1.4 2.4-.4 6 1 8 .7 1 1.5 2.1 2.5 2 1 0 1.4-.6 2.6-.6s1.6.6 2.6.6c1.1 0 1.8-1 2.4-2 .8-1.1 1.1-2.2 1.1-2.3-.1 0-2.1-.8-2.1-3ZM14.4 6.6c.5-.7.9-1.6.8-2.6-.8 0-1.8.6-2.3 1.3-.5.6-1 1.6-.8 2.5.9.1 1.8-.5 2.3-1.2Z"/></svg></span> macOS Apple Silicon</div><a href="https://github.com/RapidAI/MaClaw/releases/latest/download/Ins-maclaw-darwin-arm64">下载</a><span class="fn">Ins-maclaw-darwin-arm64</span></div>
+        <div class="dl-card"><div class="plat"><span class="os"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5c-2.8 0-4.3 2.2-4.3 4.8 0 2-.4 3.4-1.3 5.1-.7 1.3-1.1 2.5-1.1 3.7 0 2.9 3 5.4 6.7 5.4s6.7-2.5 6.7-5.4c0-1.2-.4-2.4-1.1-3.7-.9-1.7-1.3-3.1-1.3-5.1 0-2.6-1.5-4.8-4.3-4.8Z"/><circle cx="10.3" cy="8.7" r=".45" fill="currentColor" stroke="none"/><circle cx="13.7" cy="8.7" r=".45" fill="currentColor" stroke="none"/><path d="M10.9 10.9h2.2L12 12.4Z" fill="currentColor" stroke="none"/><path d="M8.6 21.3 7.2 22.4M15.4 21.3l1.4 1.1"/></svg></span> Linux x64</div><a href="https://github.com/RapidAI/MaClaw/releases/latest/download/Ins-maclaw-linux-amd64">下载</a><span class="fn">Ins-maclaw-linux-amd64</span></div>
+        <div class="dl-card"><div class="plat"><span class="os"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2.5c-2.8 0-4.3 2.2-4.3 4.8 0 2-.4 3.4-1.3 5.1-.7 1.3-1.1 2.5-1.1 3.7 0 2.9 3 5.4 6.7 5.4s6.7-2.5 6.7-5.4c0-1.2-.4-2.4-1.1-3.7-.9-1.7-1.3-3.1-1.3-5.1 0-2.6-1.5-4.8-4.3-4.8Z"/><circle cx="10.3" cy="8.7" r=".45" fill="currentColor" stroke="none"/><circle cx="13.7" cy="8.7" r=".45" fill="currentColor" stroke="none"/><path d="M10.9 10.9h2.2L12 12.4Z" fill="currentColor" stroke="none"/><path d="M8.6 21.3 7.2 22.4M15.4 21.3l1.4 1.1"/></svg></span> Linux arm64</div><a href="https://github.com/RapidAI/MaClaw/releases/latest/download/Ins-maclaw-linux-arm64">下载</a><span class="fn">Ins-maclaw-linux-arm64</span></div>
+      </div>
+    </div>
+
+    <p class="dl-foot">下载链接始终指向最新版本 · 所有安装包来自官方发布：<a href="https://github.com/RapidAI/MaClaw/releases/latest" target="_blank" rel="noopener">GitHub Releases</a> · 了解更多请看 <a href="https://www.maclaw.top" target="_blank" rel="noopener">官网 maclaw.top</a></p>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div>
+      <div class="fbrand"><svg viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg"><rect width="32" height="32" rx="8" fill="#1d4ed8"/><path d="M8 23V9h3l5 8 5-8h3v14h-3v-7l-4 6h-2l-4-6v7z" fill="#fff"/></svg>MaClaw 码卡龙</div>
+      <div class="fmeta">© MaClaw · 自托管 Hub 服务 · AI Native 组织操作系统</div>
+    </div>
+    <div class="links">
+      <a href="/admin">管理后台</a>
+      <a href="https://www.maclaw.top" target="_blank" rel="noopener">官网</a>
+      <a href="https://github.com/RapidAI/MaClaw/releases/latest" target="_blank" rel="noopener">下载</a>
+    </div>
+  </div>
+</footer>
+
+<script>
+  (function(){
+    var nav=document.querySelector('.nav');
+    var onScroll=function(){if(nav)nav.classList.toggle('scrolled',window.scrollY>8)};
+    window.addEventListener('scroll',onScroll,{passive:true});onScroll();
+
+    document.documentElement.classList.add('js');
+    var els=document.querySelectorAll('.sec-head,.grid>.card,.pillar,.cite,.diffbox,table.cmp,.twocol>div,.dl-grid>.dl-card');
+    els.forEach(function(el,i){el.classList.add('rv');el.style.transitionDelay=(Math.min(i%8,6)*45)+'ms';});
+    if('IntersectionObserver' in window){
+      var io=new IntersectionObserver(function(es){
+        es.forEach(function(e){if(e.isIntersecting){e.target.classList.add('on');io.unobserve(e.target);}});
+      },{threshold:.12,rootMargin:'0px 0px -40px 0px'});
+      els.forEach(function(el){io.observe(el)});
+    }else{els.forEach(function(el){el.classList.add('on')});}
+
+    var tabs = document.querySelectorAll('#dlTabs .dl-tab');
+    var panels = document.querySelectorAll('.dl-panel');
+    tabs.forEach(function(t){
+      t.addEventListener('click', function(){
+        var panel = document.getElementById('dl-' + t.getAttribute('data-tab'));
+        if(!panel) return;
+        tabs.forEach(function(x){x.classList.remove('active')});
+        panels.forEach(function(p){p.classList.remove('active')});
+        t.classList.add('active');
+        panel.classList.add('active');
+      });
+    });
+  })();
+</script>
+<script>
+  (function(){
+    var DICT={
+      /* nav */
+      '理念':'Philosophy','能力':'Capabilities','安全':'Security','下载客户端':'Download Client',
+      /* hero */
+      '自托管 · 开源可审计 · 企业级治理':'Self-hosted · Open-source & auditable · Enterprise-grade governance',
+      'AI Native 组织操作系统':'AI-Native Organization Operating System',
+      '不止是工具，而是支撑整个组织的操作系统。企业的':'More than a tool — it is an operating system for the whole organization. Business ',
+      '业务流由 AI 驱动':'workflows are driven by AI',
+      '，AI 数字员工与人类员工在同一套记忆、知识与能力底座上协作执行——把大模型变成企业可管控、可审计、可撤销的能力体系，而非在传统人类科层制里层层流转。':': AI digital workers and human employees collaborate and execute on one shared foundation of memory, knowledge, and capabilities — turning large models into a governable, auditable, revocable capability system, rather than work trickling through traditional human hierarchies.',
+      '进入管理后台':'Admin Console',
+      '4 级':'4 Tiers','能力来源体系':'Capability source tiers',
+      '8 类':'8 Types','记忆与知识引擎':'Memory & knowledge engines',
+      '端到端':'End-to-End','加密与审计':'Encryption & audit',
+      '多租户':'Multi-tenant','数据主权隔离':'Data-sovereignty isolation',
+      '组织操作系统运行时 · 一个底座连接人、AI 与系统':'Organization OS runtime · One foundation connecting people, AI, and systems',
+      /* theory */
+      '一个数字智能伙伴，两种身份，同一套基座':'One digital companion, two identities, one shared foundation',
+      '企业级治理与个⼈级陪伴，共享同一套记忆、知识与能力系统。能力可被推送、被管控、被撤销；记忆始终属于你。':'Enterprise-grade governance and personal companionship share the same memory, knowledge, and capability system. Capabilities can be pushed, governed, and revoked; memory always belongs to you.',
+      '"AI 不应只是一问一答的助手，而应成为真正懂你业务、守你规则、记得你过往的数字员工。"':'"An AI should not be just a question-and-answer assistant, but a digital worker that truly understands your business, follows your rules, and remembers your history."',
+      'MaClaw 把"记忆—知识—能力"做成可组合、可治理的底座：企业把选定的 Skill / MCP 能力包推送到员工与现场设备；个人则拥有私有的 AI 工作伙伴。所有能力可治理、可审计、可撤销。':'MaClaw turns "memory — knowledge — capabilities" into a composable, governable foundation: enterprises push selected Skill / MCP capability packages to employees and on-site devices, while individuals get a private AI companion. Every capability is governable, auditable, and revocable.',
+      '企业伴侣 · 可治理的能力基座':'Enterprise Companion · Governable capability foundation',
+      '企业自管 Skill/MCP 库，员工 MaClaw 默认优先调用企业已审批的能力，许可证不出企业边界。':'The enterprise manages its own Skill/MCP library; employee MaClaw clients prefer enterprise-approved capabilities by default, and licenses never leave the enterprise boundary.',
+      '个人伴侣 · 私有 AI 工作伙伴':'Personal Companion · Private AI companion',
+      '真正记住你、理解你上下文的 AI，本地优先，数据主权属于使用者本人。':'An AI that truly remembers you and understands your context — local-first, with data sovereignty belonging to the user.',
+      '数字员工 · 省人力的 AI 劳动力':'Digital Worker · An AI workforce that saves labor',
+      '把 SOP 封装成能力包，自动处理办公、运维、巡检等重复任务。':'Package SOPs into capability bundles that automatically handle office work, ops, inspections, and other repetitive tasks.',
+      /* ai-native */
+      'AI Native 组织：企业业务流由 AI 驱动':'AI-Native Organization: Business Workflows Driven by AI',
+      '核心差别不在于"用没用 AI"，而在于企业的':'The core difference is not whether you use AI — it is that business ',
+      '业务流程（工作流）由 AI 驱动、由 AI 数字员工与人类员工协作执行':'processes (workflows) are driven by AI and executed jointly by AI digital workers and human employees',
+      '，全 AI 驱动地运转——而不再像传统企业那样，工作只在人类科层制组织里层层流转、逐级审批。':', running fully AI-driven — no longer flowing layer by layer through human hierarchies with approvals at each level, as in traditional enterprises.',
+      '在 AI Native 组织里，':'In an AI-native organization, ',
+      'AI 不再是外挂的工具，而是与人力并列的"员工"':'AI is no longer a bolt-on tool but a "worker" standing alongside human staff',
+      '：企业的日常业务流由 AI 智能体主动承接、端到端执行，人类员工退到战略、判断与例外处理的"环路之上"。工作流在"人类 + AI 数字员工"组成的扁平协作网络中流动，而非在金字塔式部门层级间逐级传递。':': day-to-day business workflows are taken on and executed end to end by AI agents, while human employees move "above the loop" to focus on strategy, judgment, and exceptions. Workflows run through a flat collaboration network of "humans + AI digital workers" instead of passing level by level through pyramid-shaped department hierarchies.',
+      '麦肯锡 · ':'McKinsey · ',
+      '智能型组织：AI 时代的下一代组织范式':'The Agentic Organization: the next-generation organizational paradigm for the AI era',
+      '"AI-native enterprises rebuild their workflows, data, and agents to change how the business competes." 日常决策由自主 / 半自主智能体处理，人类聚焦于判断与重构。':'"AI-native enterprises rebuild their workflows, data, and agents to change how the business competes." Daily decisions are handled by autonomous / semi-autonomous agents, while humans focus on judgment and redesign.',
+      'AI 时代组织的核心由"人类 + AI 智能体"共同组成；2–5 人小团队可监管 50–100 个智能体，金字塔职能层级让位于以任务与成果交换为核心的智能体网络。':'In the AI era, the core of the organization is composed of "humans + AI agents" together; a small team of 2–5 people can supervise 50–100 agents, and pyramid-shaped functional hierarchies give way to agent networks built on the exchange of tasks and outcomes.',
+      '"coordinates AI agents and digital labor to run entire workflows independently"——以 AI agents 与数字劳动力独立运行整条工作流，人类管战略、机器管执行。':'"coordinates AI agents and digital labor to run entire workflows independently" — AI agents and digital labor run entire workflows autonomously; humans own strategy, machines own execution.',
+      '联想 × 中国人民大学 · ':'Lenovo × Renmin University of China · ',
+      '《AI 原生组织转型指南》':'AI-Native Organization Transformation Guide',
+      '把 AI 深度嵌入业务模式与工作流程，智能体作为"硅基员工"成为新生产力，与人类"碳基员工"碳硅协同、持续进化的人智共创组织。':'Embed AI deeply into business models and workflows; agents become a new productive force as "silicon-based employees", collaborating with human "carbon-based employees" in an ever-evolving human-AI co-creation organization.',
+      '传统组织':'Traditional Organization',
+      '工作在人类科层制中流转':'Work flows through human hierarchies',
+      '人':'People','软件 / 表单':'Software / Forms','上级审批':'Manager Approval',
+      '业务流由人驱动，靠部门层级逐级传递与审批':'Workflows are driven by people, passed and approved level by level through departments',
+      'AI 只是个人提效的"外挂工具"，不参与流程主干':'AI is just a personal "bolt-on tool" for individual productivity, outside the process backbone',
+      '规模随人头线性增长，决策周期长、瓶颈在层级':'Scale grows linearly with headcount; long decision cycles; bottlenecks in hierarchy',
+      '知识散落在个人与孤岛系统，换人就丢':'Knowledge is scattered across individuals and siloed systems, lost when people leave',
+      'AI Native 组织（MaClaw）':'AI-Native Organization (MaClaw)',
+      '业务流由 AI 驱动、数字员工与人类协作':'Workflows driven by AI, executed by digital and human workers',
+      '目标 / 策略（人）':'Goals / Strategy (Human)','AI 数字员工':'AI Digital Workers','自动执行工作流':'Automated Workflow Execution','人审例外':'Human Review of Exceptions',
+      '业务流由 AI 主动承接并端到端执行，全 AI 驱动运转':'Workflows are taken on by AI and executed end to end — fully AI-driven',
+      'AI 数字员工与人类员工在同一底座上协作，人处"环路之上"':'AI digital workers and human employees collaborate on one foundation; humans stay "above the loop"',
+      '规模随智能体容量指数扩展，边际成本趋近算力成本':'Scale expands with agent capacity; marginal cost approaches compute cost',
+      '组织级统一记忆 / 知识 / 能力底座，跨人跨系统沉淀复用':'Organization-wide unified memory / knowledge / capability foundation, reused across people and systems',
+      /* org os */
+      '为什么 MaClaw 是「组织操作系统」':'Why MaClaw Is an "Organization Operating System"',
+      'AI Native 组织不是口号，需要一套可运行的底座。MaClaw 把记忆、知识、能力与治理做成可组合的操作系统层，让人、流程与系统在同一底座上运行——让"业务流由 AI 驱动"从理念变成可部署的现实。':'An AI-native organization is not a slogan — it needs a runnable foundation. MaClaw turns memory, knowledge, capabilities, and governance into a composable operating-system layer where people, processes, and systems run on the same base — making "AI-driven workflows" deployable reality.',
+      '统一认知底座':'Unified Cognitive Foundation',
+      '8 类记忆 + 混合检索 + 知识图谱，让组织的历史、知识与上下文沉淀为可复用的系统级资产。':'8 types of memory + hybrid retrieval + knowledge graph turn organizational history, knowledge, and context into reusable system-level assets.',
+      '能力编排与治理':'Capability Orchestration & Governance',
+      'Skill/MCP 能力包可推送、可编排、可审计、可撤销；企业策略贯穿每一次调用。':'Skill/MCP capability packages can be pushed, orchestrated, audited, and revoked; enterprise policy governs every call.',
+      '人-AI 协作运行时':'Human-AI Collaboration Runtime',
+      'AG-UI 动态界面替代固定页面，员工用自然语言驱动业务；AI 员工承接重复与高风险任务。':'AG-UI dynamic interfaces replace fixed pages; employees drive business in natural language while AI workers take on repetitive and high-risk tasks.',
+      '跨系统即插即用':'Plug-and-Play Across Systems',
+      '结构化数据服务对接销售/财务/人事等系统，MCP 接入 PLC/SCADA/IT 设施，能力随需扩展。':'Structured data services connect to sales, finance, HR, and other systems; MCP plugs into PLC/SCADA/IT infrastructure — capabilities extend on demand.',
+      /* compare table */
+      'AI Native 组织 vs 使用 AI 工具的传统组织':'AI-Native Organization vs. Traditional Organizations Using AI Tools',
+      '差别不在"用没用 AI"，而在 AI 是外挂的工具，还是组织自身的操作系统层。':'The difference is not "whether AI is used", but whether AI is a bolt-on tool or the operating-system layer of the organization itself.',
+      '维度':'Dimension','传统组织（使用 AI 工具）':'Traditional (Using AI Tools)',
+      '能力落地':'Capability delivery',
+      '采购点状工具，嵌入固定菜单/表单，彼此孤立':'Point tools purchased, embedded in fixed menus / forms, isolated from each other',
+      '能力包（Skill/MCP）可编排、可推送、随业务自由组合':'Capability packages (Skill/MCP) orchestratable, pushable, freely combined with business needs',
+      '记忆与知识':'Memory & knowledge',
+      '散落在个人与各孤岛系统，换人就丢':'Scattered across individuals and siloed systems, lost when people leave',
+      '组织级统一记忆/知识底座，跨人跨系统沉淀复用':'Organization-wide unified memory / knowledge foundation, reused across people and systems',
+      '人机协作':'Human-AI collaboration',
+      '人操作工具、逐级审批，AI 被动应答，工作流在人类科层制中流转':'People operate tools with level-by-level approvals; AI answers passively; workflows flow through human hierarchies',
+      '业务流由 AI 驱动，AI 数字员工与人类员工协作端到端执行，人处"环路之上"':'Workflows driven by AI; AI digital workers and humans execute end to end together; humans stay "above the loop"',
+      '治理合规':'Governance & compliance',
+      '靠制度与人审，难追溯、难撤销':'Relies on rules and manual review; hard to trace or revoke',
+      '每次调用可审计、可撤销，策略贯穿全过程':'Every call auditable and revocable; policy enforced throughout',
+      '系统集成':'System integration',
+      'API 对接贵、易僵化、扩展慢':'API integration is costly, rigid, and slow to extend',
+      '结构化数据服务 + MCP 即插即用，能力随需扩展':'Structured data services + MCP plug-and-play; capabilities extend on demand',
+      '数据主权':'Data sovereignty',
+      '业务数据常留在第三方':'Business data often stays with third parties',
+      '数据留在自有 Hub，多租户物理隔离':'Data stays in your own Hub with multi-tenant physical isolation',
+      '迭代方式':'Iteration',
+      '换供应商 / 重开发':'Switch vendors / rebuild',
+      '能力包热更新，企业自管市场持续沉淀资产':'Hot updates of capability packages; the enterprise marketplace keeps accumulating assets',
+      /* capabilities */
+      '远不止"AI 助手"——可真正落地的能力':'Far More Than an "AI Assistant" — Capabilities That Land',
+      '从日常办公到企业 IT 系统、IT 运维乃至生产线监控，能力可部署到桌面与现场。':'From daily office work to enterprise IT systems, IT operations, and production-line monitoring — capabilities deploy to desktops and on-site.',
+      '日常办公':'Daily Office Work',
+      '把标准作业流程封装成 Skill 包推送到员工 MaClaw：合同评审、投标响应、报销请假、邮件与会议纪要自动按企业标准执行。':'Package standard operating procedures into Skill bundles pushed to employee MaClaw: contract review, bid responses, expense and leave requests, email and meeting notes all executed to enterprise standards.',
+      '企业 IT 系统':'Enterprise IT Systems',
+      '结构化数据服务（MaClawDataSrv）+ 动态 UI（AG-UI）替代固定菜单与表单，覆盖销售/财务/人事/法务/采购/库存等 30+ 业务模板。':'Structured data services (MaClawDataSrv) + dynamic UI (AG-UI) replace fixed menus and forms, covering 30+ business templates across sales, finance, HR, legal, procurement, and inventory.',
+      'IT 运维':'IT Operations',
+      'SSH 10 路并发、密码/密钥/代理认证；巡检、重启、备份、回滚一键执行；高风险操作需审批，全程审计。':'SSH with 10 concurrent channels, password / key / proxy auth; inspection, restart, backup, rollback in one click; high-risk operations require approval, fully audited.',
+      '生产线监控':'Production-Line Monitoring',
+      '经企业托管 MCP 接入 PLC/SCADA/MES，就地采集指标、识别异常、推送告警并自动产出交接班报告。':'Connect to PLC/SCADA/MES via enterprise-hosted MCP: collect metrics locally, detect anomalies, push alerts, and auto-generate shift handover reports.',
+      /* governance */
+      '企业级治理：每一项能力都被约束':'Enterprise Governance: Every Capability Is Governed',
+      '从来源、部署到撤销，企业对自己的能力资产拥有完整控制权。':'From provenance to deployment to revocation, the enterprise keeps full control over its capability assets.',
+      '私有能力市场':'Private Capability Marketplace',
+      '企业自管的 Skill/MCP 库，仅收录已审批来源、保留完整来源溯源；员工侧无缝优先使用企业能力。':'An enterprise-managed Skill/MCP library that only admits approved sources with full provenance; employees seamlessly use enterprise capabilities first.',
+      '部署与推荐':'Deployment & Recommendation',
+      '管理员可按部门/角色/设备类型强制部署或推荐；部署失败自动重试，卸载后下次同步自动重装。':'Admins can force-deploy or recommend by department, role, or device type; failed deployments retry automatically, and uninstallations reinstall on next sync.',
+      '来源校验与撤销':'Provenance Verification & Revocation',
+      '每个能力包携带溯源、版本与校验和，SHA-256 校验 + 签名验证，可一键撤销、禁用或回滚。':'Every capability package carries provenance, version, and checksum: SHA-256 verification + signature validation, with one-click revoke, disable, or rollback.',
+      '数据主权与多租户':'Data Sovereignty & Multi-Tenancy',
+      '企业数据留在自己的 Hub，云端不读取业务数据；租户/用户级物理路径隔离，每张表以 tenant_id 隔离。':'Enterprise data stays in your own Hub; the cloud never reads business data. Tenant / user level physical path isolation, and every table isolated by tenant_id.',
+      /* security */
+      '企业级安全：从凭据、传输到行为审批':'Enterprise Security: From Credentials to Transport to Action Approval',
+      '端到端硬保证，覆盖身份、策略、加密、隔离与审计。':'Hard end-to-end guarantees covering identity, policy, encryption, isolation, and audit.',
+      '认证与凭据':'Authentication & Credentials',
+      'scrypt(N=32768)+pepper 口令摘要、HMAC-SHA256 会话令牌、bcrypt 管理密钥；凭据五态：启用/暂停/撤销/过期/临期。':'scrypt(N=32768)+pepper password digests, HMAC-SHA256 session tokens, bcrypt admin keys; five credential states: active / suspended / revoked / expired / expiring.',
+      '策略引擎':'Policy Engine',
+      '自上而下用户组树的有效策略；五动作（允许/拒绝/询问/审计/用户覆盖）+ 四预设；三级能力来源白名单与多角色 RBAC。':'Effective policies down the user-group tree; five actions (allow / deny / ask / audit / user override) + four presets; three-level capability source allowlists and multi-role RBAC.',
+      '端到端加密':'End-to-End Encryption',
+      '能力包、许可证与传输全程加密；TLS 1.2 起，邮件链接 StartTLS；私钥 0o600 与密钥分离策略。':'Capability packages, licenses, and transport encrypted throughout; TLS 1.2+, StartTLS for mail links; private keys at 0o600 with key-separation policy.',
+      '沙箱与隔离':'Sandbox & Isolation',
+      '执行上下文与网络可达可配置（none/os/docker、full/intranet/none）；多租户物理层隔离，YOLO 可按租户关闭。':'Configurable execution context and network reach (none/os/docker, full/intranet/none); multi-tenant physical-layer isolation; YOLO can be disabled per tenant.',
+      '审计·脱敏·注入防御':'Audit · Redaction · Injection Defense',
+      'JSONL 审计日志 50MB 滚动、30 天留存；敏感字段自动脱敏；覆盖消息/工具/网页/文件的 4 类提示注入检测。':'JSONL audit logs with 50MB rotation and 30-day retention; automatic redaction of sensitive fields; 4 categories of prompt-injection detection across messages / tools / web / files.',
+      '高风险操作审批':'High-Risk Operation Approval',
+      '风险分级 + 二次确认 + 智能复核；低风险不打扰，高危操作先停后批，支持异步审批。':'Risk grading + double confirmation + smart review; low-risk actions stay silent, high-risk actions stop for approval, with async approval support.',
+      /* tiers */
+      '4 级能力来源体系':'4-Tier Capability Source System',
+      '企业优先使用自己审批的能力；外部来源在企业策略下被引入。':'The enterprise uses its own approved capabilities first; external sources are brought in under enterprise policy.',
+      '公共能力市场':'Public Capability Marketplace',
+      'HubCenter 官方与商业伙伴市场；免费直接装，付费走企业采购。':'The HubCenter official and partner marketplaces; free ones install directly, paid ones go through enterprise procurement.',
+      'ClawHub 社区':'ClawHub Community',
+      '社区共建能力源，免费低门槛试用，验证后晋升为企业资产。':'A community-built capability source; free and low-friction to try, promoted to enterprise assets after validation.',
+      'GitHub 开源':'GitHub Open Source',
+      '最广覆盖的开源 Skill/MCP，管理员白名单控制可拉取来源。':'The widest coverage of open-source Skill/MCP, with admin allowlists controlling pullable sources.',
+      '企业模式下能力查找顺序：':'In enterprise mode, capabilities are looked up in order: ',
+      '私有市场 → 公共市场 → ClawHub → GitHub':'Private Marketplace → Public Marketplace → ClawHub → GitHub',
+      '，发布在企业 Hub 的能力始终优先。':'; capabilities published to the enterprise Hub always take priority.',
+      /* core tech */
+      '驱动数字伙伴的核心引擎':'The Core Engine Behind the Digital Companion',
+      '记忆、检索、知识与遗忘曲线，构成可长期陪伴的认知底座。':'Memory, retrieval, knowledge, and the forgetting curve form a cognitive foundation for long-term companionship.',
+      '8 类记忆':'8 Types of Memory',
+      '语义/情景分层、时间层级与受保护条目，让 AI 真正"记得你"。':'Semantic / episodic layering, temporal hierarchies, and protected entries let the AI truly "remember you".',
+      '混合检索':'Hybrid Retrieval',
+      'BM25 关键词 + 向量相似度，SIMD 加速余弦打分，兼顾精确与语义。':'BM25 keywords + vector similarity with SIMD-accelerated cosine scoring, balancing precision and semantics.',
+      '知识图谱':'Knowledge Graph',
+      '双向加权边、BFS 扩展、多关系类型，把零散信息连成知识。':'Bidirectional weighted edges, BFS expansion, and multiple relation types connect scattered information into knowledge.',
+      '遗忘曲线':'Forgetting Curve',
+      '艾宾浩斯衰减，可配置半衰期与休眠阈值，自动沉淀长期记忆。':'Ebbinghaus decay with configurable half-life and dormancy thresholds, automatically consolidating long-term memory.',
+      /* download */
+      '选择适合你的形态：图形客户端、命令行、数据服务、Hub 服务端或便携安装器。':'Choose the form that fits you: GUI client, CLI, data service, Hub server, or portable installer.',
+      '图形客户端':'GUI Client','命令行':'CLI','数据服务':'Data Service','Hub 服务端':'Hub Server','便携安装器':'Portable Installer',
+      'MaClaw 桌面客户端 · 日常使用推荐':'MaClaw desktop client · recommended for daily use',
+      'maclaw-tui · 无图形环境的服务器 / 终端场景':'maclaw-tui · for servers / terminals without a GUI',
+      'MaClawDataSrv · 结构化数据服务（销售/财务/人事等 30+ 业务模板）':'MaClawDataSrv · Structured data service (30+ business templates: sales, finance, HR, etc.)',
+      'maclawsrv · 本 Hub 服务端的自托管安装包（当前站点即该服务）':'maclawsrv · Self-hosted installer for this Hub server (this site runs it)',
+      'Ins-maclaw · 便携/静默安装器，适合批量分发':'Ins-maclaw · Portable / silent installer for batch deployment',
+      'macOS（通用）':'macOS (Universal)',
+      '下载 .exe':'Download .exe','下载 .pkg':'Download .pkg','下载 .AppImage':'Download .AppImage','下载':'Download',
+      '下载链接始终指向最新版本 · 所有安装包来自官方发布：':'Links always point to the latest version · All installers come from the official release: ',
+      ' · 了解更多请看 ':' · Learn more at ',
+      '官网 maclaw.top':'maclaw.top (official site)',
+      /* footer */
+      '© MaClaw · 自托管 Hub 服务 · AI Native 组织操作系统':'© MaClaw · Self-hosted Hub · AI-Native Organization OS',
+      '管理后台':'Admin Console','官网':'Website'
+    };
+    var META={
+      title:{zh:'MaClaw 码卡龙 · AI Native 组织操作系统',en:'MaClaw · AI-Native Organization Operating System'},
+      desc:{zh:'MaClaw 码卡龙：AI Native 组织操作系统。业务流由 AI 驱动，AI 数字员工与人类员工在同一套记忆、知识与能力底座上协作；企业级治理、端到端加密、多租户数据主权，支持自托管。',
+            en:'MaClaw: AI-Native Organization Operating System. Business workflows driven by AI, with AI digital workers and human employees collaborating on one foundation of memory, knowledge, and capabilities; enterprise governance, end-to-end encryption, multi-tenant data sovereignty, self-hosted.'}
+    };
+    function norm(s){return s.replace(/\s+/g,' ').trim();}
+    /* normalize dict keys too, so keys with leading/trailing spaces still match */
+    var DICTN={};for(var k in DICT){DICTN[norm(k)]=DICT[k]}
+    /* collect translatable text nodes (skip script/style/svg) */
+    var items=[];
+    (function(){
+      var w=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null),n;
+      while(n=w.nextNode()){
+        var p=n.parentNode,skip=false;
+        while(p){if(p.nodeName==='SCRIPT'||p.nodeName==='STYLE'||p.nodeName==='SVG'){skip=true;break}p=p.parentNode}
+        if(skip)continue;
+        var k=norm(n.nodeValue);
+        if(DICTN.hasOwnProperty(k))items.push({node:n,en:DICTN[k],zh:null});
+      }
+    })();
+    function apply(lang){
+      items.forEach(function(it){
+        if(it.zh===null)it.zh=it.node.nodeValue;
+        if(lang==='en'){
+          var m=it.zh.match(/^(\s*)([\s\S]*?)(\s*)$/);
+          it.node.nodeValue=(m[1]||'')+it.en+(m[3]||'');
+        }else{
+          it.node.nodeValue=it.zh;
+        }
+      });
+      document.title=META.title[lang];
+      var md=document.querySelector('meta[name="description"]');
+      if(md)md.setAttribute('content',META.desc[lang]);
+      ['og:title','twitter:title'].forEach(function(p){
+        var m=document.querySelector('meta[property="'+p+'"],meta[name="'+p+'"]');
+        if(m)m.setAttribute('content',META.title[lang]);
+      });
+      ['og:description','twitter:description'].forEach(function(p){
+        var m=document.querySelector('meta[property="'+p+'"],meta[name="'+p+'"]');
+        if(m)m.setAttribute('content',META.desc[lang]);
+      });
+      document.documentElement.lang=lang==='en'?'en':'zh-CN';
+      var b=document.getElementById('langBtn');
+      if(b)b.textContent=lang==='en'?'中文':'EN';
+    }
+    var saved=null;
+    try{saved=localStorage.getItem('maclaw-lang')}catch(e){}
+    var lang=(saved==='en'||saved==='zh')?saved:((navigator.language||'').toLowerCase().indexOf('zh')===0?'zh':'en');
+    apply(lang);
+    var btn=document.getElementById('langBtn');
+    if(btn)btn.addEventListener('click',function(){
+      lang=lang==='en'?'zh':'en';
+      try{localStorage.setItem('maclaw-lang',lang)}catch(e){}
+      apply(lang);
+    });
+  })();
+</script>
+</body>
+</html>

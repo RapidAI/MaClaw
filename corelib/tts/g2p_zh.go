@@ -78,43 +78,6 @@ var contextualPinyinRules = []contextualPinyinRule{
 	pinyinRule("\u6821\u957f", 1, "zhang3"), // principal
 }
 
-// pinyinToPhonemes converts a pinyin syllable (e.g. "zhong1") to MeloTTS phonemes.
-// Returns phoneme list and tone number.
-func pinyinToPhonemes(pinyin string) (phonemes []string, tone int) {
-	if pinyin == "" {
-		return nil, 0
-	}
-
-	// Extract tone number from last character
-	tone = 0
-	py := pinyin
-	if len(py) > 0 {
-		last := py[len(py)-1]
-		if last >= '1' && last <= '5' {
-			tone = int(last - '0')
-			py = py[:len(py)-1]
-		}
-	}
-
-	// Look up in initials/finals table
-	initial, final := splitPinyin(py)
-
-	if initial != "" {
-		phonemes = append(phonemes, initial)
-	}
-	if final != "" {
-		// Map compound finals to phoneme sequences
-		fps := finalToPhonemes(final)
-		phonemes = append(phonemes, fps...)
-	}
-
-	if len(phonemes) == 0 {
-		// Fallback: treat each character as a phoneme
-		phonemes = append(phonemes, py)
-	}
-	return phonemes, tone
-}
-
 // splitPinyin splits a pinyin syllable into initial and final.
 func splitPinyin(py string) (initial, final string) {
 	py = strings.ToLower(py)
@@ -178,60 +141,6 @@ func normalizePinyinFinal(initial, final string) string {
 		return "ve"
 	}
 	return final
-}
-
-// finalToPhonemes maps a pinyin final to MeloTTS phoneme(s).
-func finalToPhonemes(final string) []string {
-	// Direct mapping for common finals
-	if phs, ok := zhFinalMap[final]; ok {
-		return phs
-	}
-	// Fallback: return as single phoneme
-	if final != "" {
-		return []string{final}
-	}
-	return nil
-}
-
-// zhFinalMap maps pinyin finals to MeloTTS phoneme sequences.
-var zhFinalMap = map[string][]string{
-	"a":    {"a"},
-	"o":    {"o"},
-	"e":    {"e"},
-	"i":    {"i"},
-	"u":    {"u"},
-	"v":    {"v"}, // ü
-	"ai":   {"ai"},
-	"ei":   {"ei"},
-	"ao":   {"ao"},
-	"ou":   {"ou"},
-	"an":   {"an"},
-	"en":   {"en"},
-	"ang":  {"ang"},
-	"eng":  {"eng"},
-	"ong":  {"ong"},
-	"er":   {"er"},
-	"ia":   {"ia"},
-	"ie":   {"ie"},
-	"iao":  {"iao"},
-	"iu":   {"iu"},
-	"ian":  {"ian"},
-	"in":   {"in"},
-	"iang": {"iang"},
-	"ing":  {"ing"},
-	"iong": {"iong"},
-	"ua":   {"ua"},
-	"uo":   {"uo"},
-	"uai":  {"uai"},
-	"ui":   {"ui"},
-	"uan":  {"uan"},
-	"un":   {"un"},
-	"uang": {"uang"},
-	"ve":   {"ve"},
-	"van":  {"van"},
-	"vn":   {"vn"},
-	"ir":   {"ir"}, // zhi/chi/shi/ri 的韵母
-	"i0":   {"i0"}, // zi/ci/si 的韵母
 }
 
 // zhPinyinTable maps common Chinese characters to pinyin with tone.

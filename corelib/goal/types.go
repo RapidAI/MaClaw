@@ -11,10 +11,37 @@
 package goal
 
 import (
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 )
+
+// Phase is the auto-continuation stage of an active goal.
+type Phase string
+
+const (
+	PhasePlan    Phase = "plan"
+	PhaseExecute Phase = "execute"
+)
+
+// StepStatus is the lifecycle of one decomposed step.
+type StepStatus string
+
+const (
+	StepPending StepStatus = "pending"
+	StepDone    StepStatus = "done"
+	StepFailed  StepStatus = "failed"
+)
+
+// Step is one ordered unit of work produced by the planning turn.
+type Step struct {
+	Index  int        `json:"index"`
+	Title  string     `json:"title"`
+	Detail string     `json:"detail,omitempty"`
+	Status StepStatus `json:"status"`
+	Result string     `json:"result,omitempty"`
+}
 
 // Status represents the lifecycle state of a goal.
 type Status string
@@ -26,6 +53,41 @@ const (
 	StatusComplete    Status = "complete"
 	StatusFailed      Status = "failed"
 )
+
+// StatusOptions is the closed set of statuses a managed turn may set on a
+// goal, and the enum both hosts render into the invocation schema. The rest
+// of the lifecycle is system-controlled (pause, resume, budget) and never a
+// model-supplied argument. It is documentation for the model, not a boundary:
+// StatusCanonical is the boundary, and a set rendered apart from it is the
+// drift this package already avoids for IsTerminal by keeping both answers
+// next to the type itself.
+func StatusOptions() []string {
+	return []string{"complete", "failed"}
+}
+
+// StatusCanonical maps model-supplied status text to the lifecycle value it
+// records. Aliases ("completed", "fail") are accepted but never advertised: a
+// model that sends one means the same thing as the canonical name it is
+// aliased from. An empty or unknown string is refused -- unlike a schedule
+// record's optional status, an update turn only parses a status it intends to
+// set, so there is no unset reading to preserve.
+func StatusCanonical(raw string) (Status, bool) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "complete", "completed":
+		return StatusComplete, true
+	case "failed", "fail":
+		return StatusFailed, true
+	default:
+		return "", false
+	}
+}
+
+// StatusHint renders the canonical vocabulary for a rejection message, so a
+// model that ignored the enum still learns the valid names from its first
+// failure and can retry inside the turn.
+func StatusHint() string {
+	return "allowed: " + strings.Join(StatusOptions(), ", ")
+}
 
 // Goal represents a persisted long-running task objective.
 type Goal struct {
@@ -46,6 +108,12 @@ type Goal struct {
 	// MaClaw-specific: verifiable completion conditions
 	AcceptanceCriteria []string `json:"acceptance_criteria,omitempty"`
 	ProjectPath        string   `json:"project_path,omitempty"`
+
+	// Plan is filled by the first continuation turn. PhasePlan forbids
+	// implementation; PhaseExecute runs one pending step at a time.
+	Understanding string `json:"understanding,omitempty"`
+	Steps         []Step `json:"steps,omitempty"`
+	Phase         Phase  `json:"phase,omitempty"`
 
 	// Continuation control
 	ConsecutiveNoToolTurns int `json:"consecutive_no_tool_turns"`

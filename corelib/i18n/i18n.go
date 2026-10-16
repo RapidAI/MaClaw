@@ -299,6 +299,8 @@ const (
 	MsgTUIConfigDescMemoryRecallLog          = "msg.tui_config_desc_memory_recall_log"
 	MsgTUIConfigDescTrajectory               = "msg.tui_config_desc_trajectory"
 	MsgTUIConfigDescDebugTools               = "msg.tui_config_desc_debug_tools"
+	MsgTUIConfigDescDatabaseTool             = "msg.tui_config_desc_database_tool"
+	MsgTUIConfigDescDatabaseProfiles         = "msg.tui_config_desc_database_profiles"
 	MsgTUIConfigDescGossip                   = "msg.tui_config_desc_gossip"
 	MsgTUIConfigDescTrialReflect             = "msg.tui_config_desc_trial_reflect"
 	MsgTUIConfigDescLocalNeedleEnabled       = "msg.tui_config_desc_local_needle_enabled"
@@ -387,6 +389,18 @@ const (
 	MsgExecConfirmBtnCancel  = "msg.exec_confirm_btn_cancel"
 	MsgExecConfirmCancelled  = "msg.exec_confirm_cancelled"
 	MsgExecConfirmExpired    = "msg.exec_confirm_expired"
+
+	// Credential write gate (P0-4): one-shot confirmation card raised when a
+	// knowledge write payload matches the authoritative secret scanner.
+	MsgCredentialConfirmTitle   = "msg.credential_confirm_title"
+	MsgCredentialConfirmSummary = "msg.credential_confirm_summary" // %s tool name, %s redacted preview
+	MsgCredentialConfirmed      = "msg.credential_confirmed"
+	MsgCredentialCancelled      = "msg.credential_cancelled"
+	MsgCredentialVoided         = "msg.credential_voided"
+	MsgCredentialTimeout        = "msg.credential_timeout"
+	MsgCredentialBlocked        = "msg.credential_blocked"
+	MsgCredentialCancelledNotice = "msg.credential_cancelled_notice"
+	MsgCredentialStoreOccupied  = "msg.credential_store_occupied"
 
 	// Post-recording choice UI (engine-injected after record_audio save).
 	MsgRecordPostSuccess        = "msg.record_post_success"
@@ -764,6 +778,8 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescMemoryRecallLog:          "记忆召回日志（独立文件 memory_recall.log）",
 		MsgTUIConfigDescTrajectory:               "LLM 轨迹记录",
 		MsgTUIConfigDescDebugTools:               "调试工具调用",
+		MsgTUIConfigDescDatabaseTool:             "启用 Agent 数据库工具（总开关）",
+		MsgTUIConfigDescDatabaseProfiles:         "已配置数据源（只读摘要：id:类型(ro|rw,replica,ssh)，不含密钥）",
 		MsgTUIConfigDescGossip:                   "启用 Gossip",
 		MsgTUIConfigDescTrialReflect:             "启用试错反思",
 		MsgTUIConfigDescLocalNeedleEnabled:       "启用本地 Needle 微路由器，默认关闭；开启后仅用于低风险微决策并保留回退",
@@ -847,6 +863,15 @@ var translations = map[string]map[string]string{
 		MsgExecConfirmBtnCancel:         "取消",
 		MsgExecConfirmCancelled:         "已取消待确认的任务。",
 		MsgExecConfirmExpired:           "确认已过期，请重新发起。",
+		MsgCredentialConfirmTitle:       "敏感信息写入确认",
+		MsgCredentialConfirmSummary:     "待写入知识库的内容疑似包含敏感信息（密码/密钥等），敏感值已打码。请核对以下内容，确认后才会写入；如不需要保存请点取消。\n\n工具：%s\n\n内容预览（已脱敏）：\n%s",
+		MsgCredentialConfirmed:          "已确认，继续写入知识库。",
+		MsgCredentialCancelled:          "已取消，本次内容未写入知识库。",
+		MsgCredentialVoided:             "检测到未使用按钮确认，该写入确认已作废；如需继续请重新发起请求。",
+		MsgCredentialTimeout:            "凭据写入确认超时（2 分钟未确认），已取消本次写入。",
+		MsgCredentialBlocked:            "内容疑似包含敏感信息（密码/密钥等），且当前无法弹出确认卡片，已阻止写入知识库。",
+		MsgCredentialCancelledNotice:    "操作已被取消，本次内容未写入知识库。",
+		MsgCredentialStoreOccupied:      "内容疑似包含敏感信息（密码/密钥等），但当前已有另一项待确认的操作；为避免覆盖它，已阻止本次写入。请完成或取消现有确认后再重试。",
 		MsgRecordPostSuccess:            "这次录音成功！✅",
 		MsgRecordPostSummaryHeading:     "**录音摘要：**",
 		MsgRecordPostLabelTitle:         "- 标题：%s",
@@ -1201,6 +1226,8 @@ var translations = map[string]map[string]string{
 		MsgTUIConfigDescMemoryRecallLog:          "Memory recall log (separate file memory_recall.log)",
 		MsgTUIConfigDescTrajectory:               "LLM trajectory logging",
 		MsgTUIConfigDescDebugTools:               "Debug tool calls",
+		MsgTUIConfigDescDatabaseTool:             "Enable the Agent database tool (kill switch)",
+		MsgTUIConfigDescDatabaseProfiles:         "Configured data sources (read-only summary: id:type(ro|rw,replica,ssh), no secrets)",
 		MsgTUIConfigDescGossip:                   "Enable Gossip",
 		MsgTUIConfigDescTrialReflect:             "Enable trial-and-reflect",
 		MsgTUIConfigDescLocalNeedleEnabled:       "Enable the local Needle micro-router. Off by default; low-risk decisions keep fallback paths.",
@@ -1284,6 +1311,15 @@ var translations = map[string]map[string]string{
 		MsgExecConfirmBtnCancel:         "Cancel",
 		MsgExecConfirmCancelled:         "Cancelled pending confirmation.",
 		MsgExecConfirmExpired:           "Confirmation expired; please start again.",
+		MsgCredentialConfirmTitle:       "Sensitive write confirmation",
+		MsgCredentialConfirmSummary:     "The content about to be written to the knowledge base looks like it contains sensitive information (passwords/keys); sensitive values are masked. Review the content below — it will only be written after you confirm. Click Cancel if it should not be saved.\n\nTool: %s\n\nPreview (redacted):\n%s",
+		MsgCredentialConfirmed:          "Confirmed; writing to the knowledge base.",
+		MsgCredentialCancelled:          "Cancelled; nothing was written to the knowledge base.",
+		MsgCredentialVoided:             "Free-text replies cannot approve a sensitive write. This confirmation has been voided; please resend the request to continue.",
+		MsgCredentialTimeout:            "Sensitive write confirmation timed out (no response within 2 minutes); the write was cancelled.",
+		MsgCredentialBlocked:            "The content looks like it contains sensitive information (passwords/keys) and no confirmation channel is available, so the write was blocked.",
+		MsgCredentialCancelledNotice:    "The operation was cancelled; nothing was written to the knowledge base.",
+		MsgCredentialStoreOccupied:      "The content looks like it contains sensitive information (passwords/keys), but another confirmation is already pending. To avoid overwriting it, this write was blocked. Finish or cancel the existing confirmation and retry.",
 		MsgRecordPostSuccess:            "Recording saved successfully! ✅",
 		MsgRecordPostSummaryHeading:     "**Recording summary:**",
 		MsgRecordPostLabelTitle:         "- Title: %s",

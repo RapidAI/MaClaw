@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib"
+	"github.com/RapidAI/CodeClaw/corelib/experience/lifecycle"
 )
 
 // SelfRepairThreshold defines when a skill is eligible for self-repair.
@@ -656,6 +657,13 @@ func ApplyRepair(skill *corelib.NLSkillEntry, result *RepairResult) bool {
 		skill.Status = "needs_review"
 		skill.LastError = fmt.Sprintf("auto-disabled: %s", result.Explanation)
 		recordRepairAttempt(skill, errorClass, result.Explanation)
+		emitRepairEvent(lifecycle.Event{
+			EventType:  lifecycle.EventRepairApplied,
+			ToolName:   strings.TrimSpace(skill.Name),
+			ErrorClass: strings.TrimSpace(errorClass),
+			Outcome:    "disabled",
+			Reason:     repairEventReason(result.Explanation),
+		})
 		log.Printf("[skill-repair] marked skill %s as needs_review: %s", skill.Name, result.Explanation)
 		return false
 	}
@@ -678,6 +686,13 @@ func ApplyRepair(skill *corelib.NLSkillEntry, result *RepairResult) bool {
 	NormalizeSkillForRunner(skill)
 	skill.LastError = fmt.Sprintf("auto-repaired: %s", result.Explanation)
 	recordRepairAttempt(skill, errorClass, result.Explanation)
+	emitRepairEvent(lifecycle.Event{
+		EventType:  lifecycle.EventRepairApplied,
+		ToolName:   strings.TrimSpace(skill.Name),
+		ErrorClass: strings.TrimSpace(errorClass),
+		Outcome:    "applied",
+		Reason:     repairEventReason(result.Explanation),
+	})
 
 	log.Printf("[skill-repair] repaired skill %s with %d new steps (attempt %d)",
 		skill.Name, len(newSteps), skill.RepairAttemptCount)
@@ -720,6 +735,12 @@ func recordRepairAttempt(skill *corelib.NLSkillEntry, errorClass, explanation st
 	if len(skill.RepairHistory) > 5 {
 		skill.RepairHistory = skill.RepairHistory[len(skill.RepairHistory)-5:]
 	}
+	emitRepairEvent(lifecycle.Event{
+		EventType:  lifecycle.EventRepairAttempted,
+		ToolName:   strings.TrimSpace(skill.Name),
+		ErrorClass: strings.TrimSpace(errorClass),
+		Reason:     repairEventReason(explanation),
+	})
 }
 
 // RecordRepairAttemptFailure records a repair attempt that did not produce a
@@ -767,6 +788,12 @@ func MarkRepairVerified(skill *corelib.NLSkillEntry) {
 	}
 	if len(skill.RepairHistory) > 0 {
 		skill.RepairHistory[len(skill.RepairHistory)-1].Success = true
+		emitRepairEvent(lifecycle.Event{
+			EventType:  lifecycle.EventRepairApplied,
+			ToolName:   strings.TrimSpace(skill.Name),
+			ErrorClass: strings.TrimSpace(skill.RepairHistory[len(skill.RepairHistory)-1].ErrorClass),
+			Outcome:    "verified",
+		})
 	}
 }
 

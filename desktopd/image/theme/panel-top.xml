@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Thin top bar for the "topbar" theme variant: app menu, window buttons,
+     tray (fcitx5), clock. Only started by maclaw-theme-variant topbar. -->
+<channel name="xfce4-panel" version="1.0">
+  <property name="configver" type="int" value="2"/>
+  <property name="panels" type="array">
+    <value type="int" value="1"/>
+    <property name="dark-mode" type="bool" value="false"/>
+    <property name="panel-1" type="empty">
+      <property name="position" type="string" value="p=6;x=0;y=0"/>
+      <property name="length" type="uint" value="100"/>
+      <property name="position-locked" type="bool" value="true"/>
+      <property name="size" type="uint" value="28"/>
+      <property name="icon-size" type="uint" value="16"/>
+      <property name="background-style" type="uint" value="1"/>
+      <property name="background-rgba" type="array">
+        <value type="double" value="0.97"/><value type="double" value="0.97"/>
+        <value type="double" value="0.98"/><value type="double" value="0.94"/>
+      </property>
+      <property name="plugin-ids" type="array">
+        <value type="int" value="1"/><value type="int" value="2"/><value type="int" value="3"/>
+        <value type="int" value="4"/><value type="int" value="5"/>
+      </property>
+    </property>
+  </property>
+  <property name="plugins" type="empty">
+    <property name="plugin-1" type="string" value="whiskermenu">
+      <property name="button-title" type="string" value="MaClaw"/>
+      <property name="show-button-title" type="bool" value="true"/>
+      <property name="button-icon" type="string" value="maclaw"/>
+    </property>
+    <property name="plugin-2" type="string" value="tasklist">
+      <property name="flat-buttons" type="bool" value="true"/>
+      <property name="show-handle" type="bool" value="false"/>
+      <property name="grouping" type="uint" value="0"/>
+    </property>
+    <property name="plugin-3" type="string" value="separator">
+      <property name="expand" type="bool" value="true"/>
+      <property name="style" type="uint" value="0"/>
+    </property>
+    <property name="plugin-4" type="string" value="systray">
+      <property name="square-icons" type="bool" value="true"/>
+      <property name="icon-size" type="int" value="16"/>
+    </property>
+    <property name="plugin-5" type="string" value="clock">
+      <property name="digital-format" type="string" value="%m月%d日 %a  %H:%M"/>
+      <property name="digital-layout" type="uint" value="3"/>
+      <property name="digital-time-format" type="string" value="%m月%d日 %a  %H:%M"/>
+    </property>
+  </property>
+</channel>

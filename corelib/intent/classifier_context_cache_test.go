@@ -100,7 +100,7 @@ func TestClassifyContextCancelsTreeAndDoesNotCacheDegradedResult(t *testing.T) {
 	var calls atomic.Int32
 	uic := New(Config{
 		Embedder: embedding.NoopEmbedder{},
-		LLMContextFunc: func(ctx context.Context, _, _ string) (string, error) {
+		LLMContextFunc: func(ctx context.Context, _ context.Context, _, _ string) (string, error) {
 			if calls.Add(1) == 1 {
 				close(started)
 				<-ctx.Done()

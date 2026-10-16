@@ -1013,7 +1013,7 @@ func (e *WorkflowEngine) ApplyReviewIntent(userID string, intent ReviewIntent, f
 		ws.PendingReviewPhaseID = ""
 		e.mu.Unlock()
 		return e.AdvancePhase(userID)
-	case ReviewIntentCancel:
+	case ReviewIntentCancel, ReviewIntentSwitchTask:
 		ws.Status = WorkflowCancelled
 		delete(e.workflows, userID)
 		e.mu.Unlock()
@@ -1084,7 +1084,7 @@ func (e *WorkflowEngine) ReopenPhaseForRevision(userID, phaseID, feedback string
 }
 
 func (e *WorkflowEngine) syncEngineStateFromHandleResult(userID string, hr *HandleResult) {
-	if e == nil || hr == nil || hr.State == nil {
+	if e == nil || hr == nil || hr.State == nil || hr.Action == ActionReviewPending {
 		return
 	}
 	e.mu.Lock()
@@ -1661,18 +1661,19 @@ func CanonicalPhaseID(phaseID string) string {
 	}
 }
 
-// ParseReviewIntent converts a raw string to a typed ReviewIntent.
+// ParseReviewIntent reads the category token the review classifier is asked
+// to emit. Wording in the user's language is not a category.
 func ParseReviewIntent(raw string) ReviewIntent {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
-	case "confirm", "confirmed", "yes", "ok", "确认", "好":
+	case "confirm":
 		return ReviewIntentConfirm
-	case "supplement", "modify", "revise", "修改", "补充":
+	case "supplement":
 		return ReviewIntentSupplement
-	case "skip", "跳过":
+	case "skip":
 		return ReviewIntentSkip
-	case "cancel", "取消":
+	case "cancel":
 		return ReviewIntentCancel
-	case "switch_task", "switch", "换任务", "新任务":
+	case "switch_task":
 		return ReviewIntentSwitchTask
 	default:
 		return ReviewIntentOther

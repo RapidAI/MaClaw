@@ -17,7 +17,7 @@ type Entry struct {
     CreatedAt   time.Time
     UpdatedAt   time.Time
     AccessCount int         // 访问计数
-    Embedding   []float32   // 向量嵌入（GemmaEmbedder 生成）
+    Embedding   []float32   // 向量嵌入（Qwen3Embedder 生成）
     RelatedIDs  []string    // 关联记忆 ID（图结构）
     Strength    float64     // 遗忘曲线强度值
     Status      Status      // active / superseded / dormant

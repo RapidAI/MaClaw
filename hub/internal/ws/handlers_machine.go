@@ -200,16 +200,18 @@ func (c *ConnContext) writeLoop() {
 		if c.Conn == nil {
 			return false
 		}
-		n := len(batch)
 		for _, msg := range batch {
-			if err := writeWSJSON(c.Conn, msg); err != nil {
+			var err error
+			if framed, ok := msg.(preparedWSMessage); ok {
+				err = writeWSPrepared(c.Conn, framed.data)
+			} else {
+				err = writeWSJSON(c.Conn, msg)
+			}
+			if err != nil {
 				log.Printf("[ws] writeLoop: write error role=%s machine_id=%s: %v", c.Role, c.MachineID, err)
 				batch = batch[:0]
 				return false // connection broken
 			}
-		}
-		if n > 0 {
-			log.Printf("[ws] writeLoop: flushed %d msg(s) to role=%s machine_id=%s", n, c.Role, c.MachineID)
 		}
 		batch = batch[:0]
 		return true
@@ -760,8 +762,9 @@ func (g *Gateway) HandleSessionEvent(event session.Event) {
 		"payload":    payload,
 	}
 
+	framed := marshalWSBroadcast(msg)
 	for _, watcher := range watchers {
-		watcher.Send(msg)
+		watcher.Send(framed)
 	}
 
 	if event.Type != "session.created" && event.Type != "session.closed" && event.Type != "session.summary" {
@@ -769,7 +772,7 @@ func (g *Gateway) HandleSessionEvent(event session.Event) {
 	}
 
 	for _, watcher := range machineWatchers {
-		watcher.Send(msg)
+		watcher.Send(framed)
 	}
 }
 
@@ -786,8 +789,9 @@ func (g *Gateway) broadcastMachineEvent(machineID string, payload map[string]any
 	}
 	g.mu.RUnlock()
 
+	framed := marshalWSBroadcast(payload)
 	for _, watcher := range machineWatchers {
-		watcher.Send(payload)
+		watcher.Send(framed)
 	}
 }
 
@@ -1279,8 +1283,9 @@ func (g *Gateway) handleSessionImage(ctx *ConnContext, msg Envelope) error {
 		"session_id": msg.SessionID,
 		"payload":    json.RawMessage(msg.Payload),
 	}
+	framed := marshalWSBroadcast(fwd)
 	for _, watcher := range watchers {
-		watcher.Send(fwd)
+		watcher.Send(framed)
 	}
 
 	// Dispatch to session listeners (e.g. Feishu notifier) so they can
@@ -1316,8 +1321,9 @@ func (g *Gateway) handleSessionImageInputError(ctx *ConnContext, msg Envelope) e
 		"session_id": msg.SessionID,
 		"payload":    json.RawMessage(msg.Payload),
 	}
+	framed := marshalWSBroadcast(fwd)
 	for _, watcher := range watchers {
-		watcher.Send(fwd)
+		watcher.Send(framed)
 	}
 	return nil
 }
@@ -1791,6 +1797,19 @@ func (g *Gateway) handleDeviceGatewayReply(ctx *ConnContext, msg Envelope) (bool
 			return false, nil
 		}
 	}
+	// A structured event (plan N1-3). Like ambient, clientId="*" means "every
+	// device under this machine", so the fan-out is finished here and the reply
+	// must not also be handed to the single-client delivery path below.
+	if event, ok := payload.Reply["event"].(map[string]any); ok {
+		if updater, ok := g.DeviceGateway.(interface {
+			UpdateMachineEvent(string, map[string]any)
+		}); ok {
+			updater.UpdateMachineEvent(ctx.MachineID, event)
+		}
+		if payload.ClientID == "*" {
+			return false, nil
+		}
+	}
 	if replyType, _ := payload.Reply["reply_type"].(string); strings.EqualFold(strings.TrimSpace(replyType), "pet_profile") {
 		petSkin, _ := payload.Reply["pet_skin"].(string)
 		motionEnabled, _ := payload.Reply["pet_motion_enabled"].(bool)
@@ -2114,6 +2133,33 @@ func writeWSJSON(conn *websocket.Conn, v any) error {
 	lock.Lock()
 	defer lock.Unlock()
 	return conn.WriteJSON(v)
+}
+
+// preparedWSMessage is a JSON frame already serialized once for a broadcast so
+// the per-connection writer can write it verbatim instead of re-marshaling.
+type preparedWSMessage struct {
+	data []byte
+}
+
+// marshalWSBroadcast serializes a broadcast frame once. The trailing newline
+// matches gorilla's WriteJSON (json.Encoder.Encode). If serialization fails,
+// the original message is returned so each writer fails exactly as before.
+func marshalWSBroadcast(msg any) any {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return msg
+	}
+	return preparedWSMessage{data: append(data, '\n')}
+}
+
+func writeWSPrepared(conn *websocket.Conn, data []byte) error {
+	if conn == nil {
+		return errors.New("WebSocket connection is unavailable")
+	}
+	lock := websocketWriteLock(conn)
+	lock.Lock()
+	defer lock.Unlock()
+	return conn.WriteMessage(websocket.TextMessage, data)
 }
 
 func writeWSError(conn *websocket.Conn, code, message string) error {

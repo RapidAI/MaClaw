@@ -15,6 +15,9 @@ type Model struct {
 
 	cacheMu sync.Mutex
 	wCache  map[string][]float32
+
+	gpuOnce sync.Once
+	gpu     *kokoroGPU // Metal generator resblocks (darwin; nil when off)
 }
 
 type Assets struct {

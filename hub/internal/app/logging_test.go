@@ -86,6 +86,7 @@ func TestConfigureLoggingWritesFiles(t *testing.T) {
 	t.Cleanup(func() {
 		log.SetOutput(prev)
 		log.SetFlags(prevFlags)
+		closeHubLogFiles()
 	})
 
 	if err := ConfigureLogging(dir); err != nil {

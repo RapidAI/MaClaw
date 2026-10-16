@@ -61,7 +61,7 @@ func (p *StagedRecallPipeline) Recall(ctx context.Context, store *Store, query s
 	// Mirrors recallDynamicCoreWithOptions to bridge the write-recall semantic gap.
 	aliasExpanded := expanded.Entities
 	if store.aliasIndex != nil && len(expanded.Entities) > 0 {
-		aliases := store.aliasIndex.Expand(expanded.Entities)
+		aliases := store.aliasIndex.ExpandForOwner(expanded.Entities, opts.OwnerID)
 		if len(aliases) > 0 {
 			aliasExpanded = append(append([]string(nil), expanded.Entities...), aliases...)
 		}
@@ -91,7 +91,12 @@ func (p *StagedRecallPipeline) Recall(ctx context.Context, store *Store, query s
 	}
 
 	// === Stage 2: +Vector (target within 500ms) ===
-	vecScores := store.vecIndex.score(store.queryEmbeddingCached(query))
+	// Composite names stay lexical. An embedding neighbor is not the queried person.
+	nameAnchors := strictRecallAnchors(query)
+	vecScores := map[string]float64{}
+	if len(nameAnchors) == 0 {
+		vecScores = store.vecIndex.score(store.queryEmbeddingCached(query))
+	}
 	stage2Entries := p.rankBM25Vec(store, bm25Scores, vecScores, ownerID, opts.StrictOwner, projectPath, expanded.QueryTokens, maxEntries)
 
 	if deadlineExceeded(ctx, deadline, stageFullBudget) {
@@ -250,7 +255,7 @@ func (p *StagedRecallPipeline) rankFull(store *Store, bm25Scores, vecScores map[
 
 	// Semantic graph expansion scores.
 	semanticScores := map[string]float64{}
-	if store.semanticGraph != nil {
+	if store.semanticGraph != nil && len(strictRecallAnchors(query)) == 0 {
 		temporalMode, asOf := semanticTemporalOptionsFromQuery(query)
 		for _, hit := range store.semanticGraph.SearchWithOptions(expanded.Entities, SemanticSearchOptions{
 			Now:          now,
@@ -270,12 +275,16 @@ func (p *StagedRecallPipeline) rankFull(store *Store, bm25Scores, vecScores map[
 		vec      float64
 		semantic float64
 	}
+	nameAnchors := strictRecallAnchors(query)
 	var candidates []candidate
 	for _, e := range store.entries {
 		if !e.IsActive() {
 			continue
 		}
 		if !stagedRecallEntryAllowed(e, ownerID, strictOwner, projectLower) {
+			continue
+		}
+		if len(nameAnchors) > 0 && !entryMentionsAnchors(e, nameAnchors) {
 			continue
 		}
 		b := bm25Scores[e.ID]
@@ -327,7 +336,7 @@ func (p *StagedRecallPipeline) rankFull(store *Store, bm25Scores, vecScores map[
 		// Pre-compute alias list once (same for all expanded entries).
 		var aliasTerms []string
 		if store.aliasIndex != nil && len(expanded.Entities) > 0 {
-			aliasTerms = store.aliasIndex.Expand(expanded.Entities)
+			aliasTerms = store.aliasIndex.ExpandForOwner(expanded.Entities, ownerID)
 		}
 		for i := preExpandLen; i < len(scored); i++ {
 			if len(expanded.Entities) > 0 {
@@ -345,6 +354,7 @@ func (p *StagedRecallPipeline) rankFull(store *Store, bm25Scores, vecScores map[
 	}
 
 	scored = filterRecallProjectOthers(scored, projectLower)
+	scored = filterRecallByAnchors(scored, nameAnchors)
 
 	// Temporal demotion: stale/invalidated entries rank lower.
 	applyTemporalDemotion(scored, now)
@@ -362,7 +372,7 @@ func stagedRecallEntryAllowed(e Entry, ownerID string, strictOwner bool, project
 		return false
 	}
 	// OwnerID isolation: skip entries owned by a different user.
-	if ownerID != "" && e.OwnerID != "" && e.OwnerID != ownerID {
+	if !namedOwnerVisible(e.OwnerID, ownerID) {
 		return false
 	}
 	// Skip categories not relevant to proactive recall.

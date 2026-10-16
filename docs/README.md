@@ -2,8 +2,15 @@
 
 This directory contains architecture notes, design records, and operational guides.
 
+## Docker 桌面(desktopd)
+
+- [maclaw-gui:2 使用与运维手册](desktop-gui-v2.md)：XFCE + Chromium + fcitx5 拼音桌面镜像；架构（gate 鉴权、D-Bus、close_range 垫片）、构建、Windows/Linux 部署、Hub 配置、从 maclaw-gui:1 懒迁移、截图 API、冒烟、回滚、已知问题与安全建议。`hub.mypapers.top` 上已在跑的桌面按第 4.4 节只替换 maclawsrv、hub、desktopd 三个二进制，不重建镜像、不重写单元。
+- [desktopd 服务说明](../desktopd/README.md)：环境变量、管理面板、与 Hub / MaClawSrv 的关系、排障。
+- [桌面 Bot 消息超时](bot-message-timeout-ops-zh.md)：同步 `/messages` 的 30 分钟预算，以及登记后后台执行。Hub 客户端、`hub.mypapers.top` 与 `maclawsrv.mypapers.top` 的 nginx `location /`、maclawsrv 写超时要一起改。说明听 443 的是哪一个 nginx，以及 `/api/llm/` 为什么仍是 600 秒。
+
 ## LLM 服务商调度
 
+- [Trae（国内/国际）与 LobsterAI 服务商接入协议备忘](providers-trae-lobsterai-zh.md)：OAuth 简化契约（无 PKCE）、设备对与双 host 探测、SSE 错误帧过滤、真机验收清单与协议漂移改动面。
 - [同倍率服务商 Load Balance](design/llm-provider-multiplier-lb-zh.md)：Hub / HubCenter 按当前生效倍率自动成组，档内平滑加权 WRR，卡片 `LB · xN` 标志。
 - [LLM 服务商模型 Token Credits 定价与扣费](design/llm-provider-token-credit-pricing-zh.md)：HubCenter 官方服务商与 Hub 外部服务商按接入模型分别配置输入/输出 Credits 单价，账本快照、倍率、扣款与统计分离。
 - [虚拟动态服务组](design/virtual-dynamic-service-group-zh.md)：一张服务组卡按业务换模型。组扣费、组内只加商；官方三档；每组每类流量。分类头已改口为 HC 一份 / 每个 Hub 租户一份；热路径只读 serving。转正前 `shadow` 旁路，训练页展示效果（不作门禁）。V1 / V1.1 已落地，V2 代码仍按组一头，全局头 + 独立页未落地。无独立页 / 门禁未过不准 `pipeline=on`。

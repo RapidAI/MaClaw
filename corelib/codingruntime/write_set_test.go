@@ -27,6 +27,98 @@ func TestNormalizeWriteSetFailsClosedForUnknownAndEscapes(t *testing.T) {
 	}
 }
 
+func TestNormalizeWriteSetAcceptsExplicitLocalRootDirectoryClaim(t *testing.T) {
+	root := filepath.Join("D:\\", "repo")
+	scope := WriteScope{Mode: "local", ProjectRef: root}
+	set, err := NormalizeWriteSet(scope, []string{root + string(filepath.Separator)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if set.Unknown || len(set.Claims) != 1 || !set.Claims[0].Directory || set.Claims[0].Path != "." {
+		t.Fatalf("root directory claim=%+v", set)
+	}
+	child, err := NormalizeWriteSet(scope, []string{"src/main.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := set.ConflictsWith(child); !got.Conflicts {
+		t.Fatalf("root directory claim did not cover child: %+v", got)
+	}
+	relative, err := NormalizeWriteSet(WriteScope{Mode: "local", ProjectRef: "repo"}, []string{"." + string(filepath.Separator)})
+	if err != nil || relative.Unknown || len(relative.Claims) != 1 || relative.Claims[0].Path != "." || !relative.Claims[0].Directory {
+		t.Fatalf("relative root directory claim=%+v err=%v", relative, err)
+	}
+}
+
+func TestNormalizeRemoteWriteSetUsesPOSIXPathsOnWindowsHost(t *testing.T) {
+	scope := WriteScope{Mode: "remote", ProjectRef: "/srv/repo/", RemoteTarget: "sha256:host"}
+	set, err := NormalizeWriteSet(scope, []string{"/srv/repo/src/main.go", "docs/README.md"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := set.Scope.ProjectRef; got != "/srv/repo" {
+		t.Fatalf("project ref=%q, want canonical POSIX root", got)
+	}
+	if len(set.Claims) != 2 || set.Claims[0].Path != "docs/README.md" || set.Claims[1].Path != "src/main.go" {
+		t.Fatalf("normalized remote claims=%+v", set.Claims)
+	}
+}
+
+func TestNormalizeRemoteWriteSetRejectsRootEscapesAndWindowsSeparators(t *testing.T) {
+	scope := WriteScope{Mode: "remote", ProjectRef: "/srv/repo", RemoteTarget: "sha256:host"}
+	for _, declaration := range []string{
+		"/etc/passwd",
+		"/srv/repo2/other.go",
+		"/srv/repo/../etc/passwd",
+		"/srv/repo/./src/main.go",
+		"../outside.go",
+		"src/../../outside.go",
+		"src/../main.go",
+		"src\t/main.go",
+		`\\srv\\repo\\main.go`,
+	} {
+		if _, err := NormalizeWriteSet(scope, []string{declaration}); err == nil {
+			t.Fatalf("remote escape/separator declaration accepted: %q", declaration)
+		}
+	}
+}
+
+func TestNormalizeRemoteWriteSetRejectsUnsafeProjectReference(t *testing.T) {
+	for _, project := range []string{
+		"/srv/repo/../other",
+		"/srv/repo/./nested",
+		`/srv\repo`,
+		"/srv/repo\x00",
+		"relative/repo",
+		"/",
+	} {
+		if _, err := NormalizeWriteSet(WriteScope{Mode: "remote", ProjectRef: project, RemoteTarget: "sha256:host"}, []string{"main.go"}); err == nil {
+			t.Fatalf("unsafe remote project reference accepted: %q", project)
+		}
+	}
+}
+
+func TestRemoteWriteSetPreservesCaseSensitiveClaims(t *testing.T) {
+	scope := WriteScope{Mode: "remote", ProjectRef: "/srv/repo", RemoteTarget: "sha256:host"}
+	left, err := NormalizeWriteSet(scope, []string{"Foo.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	right, err := NormalizeWriteSet(scope, []string{"foo.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := left.ConflictsWith(right); got.Conflicts {
+		t.Fatalf("case-distinct remote claims conflicted: %+v", got)
+	}
+	localScope := WriteScope{Mode: "local", ProjectRef: filepath.Join("D:", "repo")}
+	localLeft, _ := NormalizeWriteSet(localScope, []string{"Foo.go"})
+	localRight, _ := NormalizeWriteSet(localScope, []string{"foo.go"})
+	if got := localLeft.ConflictsWith(localRight); !got.Conflicts {
+		t.Fatalf("case-distinct local claims did not conflict: %+v", got)
+	}
+}
+
 func TestWriteSetConflictDetectsDirectoryAndUnknownClaims(t *testing.T) {
 	scope := WriteScope{Mode: "local", ProjectRef: filepath.Join("D:", "repo")}
 	left, err := NormalizeWriteSet(scope, []string{"internal/auth/"})
@@ -96,6 +188,42 @@ func TestNormalizeWriterPolicyRejectsIsolatedWriterWithoutFinalGate(t *testing.T
 	_, err := NormalizeWriterPolicy(Task{ProjectRef: filepath.Join("D:", "repo"), Mode: "local"}, PolicySnapshot{WorkspaceIsolated: true})
 	if err == nil {
 		t.Fatal("isolated writer without final diff gate was accepted")
+	}
+}
+
+func TestNormalizeWriterPolicyRejectsFinalDiffGateWithoutIsolation(t *testing.T) {
+	_, err := NormalizeWriterPolicy(Task{ProjectRef: filepath.Join("D:", "repo"), Mode: "local"}, PolicySnapshot{FinalDiffGateRequired: true})
+	if err == nil {
+		t.Fatal("final diff gate without isolated workspace was accepted")
+	}
+}
+
+func TestNormalizeWriterPolicyRejectsUnknownIsolatedWriter(t *testing.T) {
+	_, err := NormalizeWriterPolicy(Task{ProjectRef: filepath.Join("D:", "repo"), Mode: "local"}, PolicySnapshot{
+		WorkspaceIsolated:     true,
+		FinalDiffGateRequired: true,
+		WriteSet:              WriteSet{Unknown: true},
+	})
+	if err == nil {
+		t.Fatal("isolated writer with unknown write set was accepted")
+	}
+}
+
+func TestNormalizeWriterPolicyRejectsGatedWriterWithoutWorkspaceIdentity(t *testing.T) {
+	if _, err := NormalizeWriterPolicy(Task{Mode: "local"}, PolicySnapshot{FinalWorkspaceGateRequired: true}); err == nil {
+		t.Fatal("gated writer without project reference was accepted")
+	}
+	if _, err := NormalizeWriterPolicy(Task{ProjectRef: "/srv/repo", Mode: "remote"}, PolicySnapshot{FinalWorkspaceGateRequired: true}); err == nil {
+		t.Fatal("gated remote writer without stable target was accepted")
+	}
+}
+
+func TestNormalizeWriterPolicyDoesNotDropDeclaredClaimsWhenScopeIsIncomplete(t *testing.T) {
+	if _, err := NormalizeWriterPolicy(Task{Mode: "local"}, PolicySnapshot{WriteSet: WriteSet{Claims: []WriteClaim{{Path: "main.go"}}}}); err == nil {
+		t.Fatal("declared claim without project reference was silently converted to unknown")
+	}
+	if _, err := NormalizeWriterPolicy(Task{ProjectRef: "/srv/repo", Mode: "remote"}, PolicySnapshot{Mode: "remote", WriteSet: WriteSet{Claims: []WriteClaim{{Path: "main.go"}}}}); err == nil {
+		t.Fatal("declared remote claim without stable target was silently dropped")
 	}
 }
 

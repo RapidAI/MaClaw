@@ -3,10 +3,13 @@ package llmservice
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"math"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -73,7 +76,10 @@ func ProxyHandler(cfg *ProxyConfig) http.HandlerFunc {
 			return
 		}
 
-		resp, err := HandleProxyRequest(r.Context(), cfg, proxyReq)
+		// UsageRecorder obtains the owner from context.  The streaming path has
+		// always wrapped this context; normal requests must do the same or their
+		// records become unscoped and cannot be reconciled back to a Hub tenant.
+		resp, err := HandleProxyRequest(WithUsageContext(r.Context(), hubID, tenantID), cfg, proxyReq)
 		if err != nil {
 			writeProxyRequestError(w, err)
 			return
@@ -102,6 +108,22 @@ func ProxyHandler(cfg *ProxyConfig) http.HandlerFunc {
 		w.WriteHeader(resp.StatusCode)
 		_, _ = w.Write(resp.Body)
 	}
+}
+
+// proxyQuoteClientModel is the capability the user selected. The client-model
+// header wins because Hub may already have rewritten the body to a resolved band.
+func proxyQuoteClientModel(header http.Header, body map[string]any) string {
+	if header != nil {
+		if clientModel := strings.TrimSpace(header.Get(llmpool.ClientModelHeader)); clientModel != "" {
+			return clientModel
+		}
+	}
+	if body != nil {
+		if raw, ok := body["model"].(string); ok {
+			return strings.TrimSpace(raw)
+		}
+	}
+	return ""
 }
 
 // ProxyQuoteHandler selects exactly one currently usable official route and
@@ -144,49 +166,54 @@ func ProxyQuoteHandler(cfg *ProxyConfig) http.HandlerFunc {
 			RawBody:        bodyBytes,
 			StartedAt:      time.Now(),
 		}
+		// Capture the user's band before dispatch rewrites body["model"] to the
+		// resolved official tier. Otherwise an auto request is quoted as high/mid/low.
+		clientModel := proxyQuoteClientModel(r.Header, body)
 		// A quote commits Hub to one concrete route. For a streaming request it
 		// must therefore be selected from the stream-capable routes now, rather
 		// than discovering after Hub has reserved Credits that the quoted route
 		// only supports a non-stream wire protocol.
-		var dispatch *proxyDispatch
-		if proxyRequestWantsStream(body) {
-			dispatches, err := prepareProxyStreamDispatches(r.Context(), cfg, req)
-			if err != nil {
-				writeProxyRequestError(w, err)
-				return
-			}
-			if len(dispatches) > 0 {
-				dispatch = dispatches[0]
-			}
-		} else {
-			dispatch, err = prepareProxyDispatch(r.Context(), cfg, req)
-			if err != nil {
-				writeProxyRequestError(w, err)
-				return
-			}
+		dispatch, err := prepareProxyQuoteDispatch(r.Context(), cfg, req, proxyRequestWantsStream(body))
+		if err != nil {
+			writeProxyRequestError(w, err)
+			return
 		}
 		if dispatch == nil || dispatch.provider == nil || dispatch.matchedGroup == nil {
 			writeJSONError(w, http.StatusServiceUnavailable, "no provider available for pricing quote")
 			return
 		}
+		logicalID := proxyDispatchLogicalID(dispatch)
 		upstreamModel := proxyUpstreamModelForRoute(dispatch.route, dispatch.provider, dispatch.model)
-		pricing := proxyTokenPricingSnapshot(dispatch.matchedGroup, dispatch.provider, dispatch.provider.ID, upstreamModel, 0, 0, proxyRequestStartedAt(req))
+		pricing := proxyTokenPricingSnapshot(dispatch.matchedGroup, dispatch.provider, logicalID, upstreamModel, 0, 0, proxyRequestStartedAt(req))
+		if pricing == nil && proxyRouteBillingMode(dispatch.matchedGroup, logicalID, upstreamModel) != llmpool.BillingModeFree {
+			// A multiplier-only official route is still a paid route. Quote the
+			// same legacy per-token price completion will bill, instead of
+			// rejecting admission and leaving Hub with nothing to settle.
+			pricing = proxyLegacyOfficialPricingSnapshot(dispatch.provider, logicalID, upstreamModel, 0, 0, 0, 0, proxyRequestStartedAt(req))
+		}
 		if pricing == nil {
 			writeJSONError(w, http.StatusUnprocessableEntity, "quoted provider route has no directional Credits price")
 			return
 		}
+		memberID := ""
+		if dispatch.provider != nil && IsTokenBankMemberID(dispatch.provider.ID) {
+			memberID = dispatch.provider.ID
+		}
 		quote, err := cfg.Quotes.Put(ProxyQuote{
-			RequestDigest:      proxyRequestDigest(bodyBytes),
-			HubID:              hubID,
-			TenantID:           tenantID,
-			RequestID:          requestID,
-			ServiceGroupID:     dispatch.matchedGroup.ID,
-			LogicalModel:       dispatch.model,
-			ProviderID:         dispatch.provider.ID,
-			UpstreamModel:      upstreamModel,
-			Pricing:            pricing.Pricing,
-			ProviderMultiplier: pricing.ProviderMultiplier,
-			ExpiresAt:          time.Now().Add(proxyQuoteTTL),
+			RequestDigest:        proxyRequestDigest(bodyBytes),
+			HubID:                hubID,
+			TenantID:             tenantID,
+			RequestID:            requestID,
+			ServiceGroupID:       dispatch.matchedGroup.ID,
+			LogicalModel:         dispatch.model,
+			ProviderID:           logicalID,
+			MemberID:             memberID,
+			UpstreamModel:        upstreamModel,
+			Pricing:              pricing.Pricing,
+			PricingSource:        pricing.PricingSource,
+			ProviderMultiplier:   pricing.ProviderMultiplier,
+			CapabilityMultiplier: llmpool.GroupCapabilityBillingMultiplier(dispatch.matchedGroup, clientModel),
+			ExpiresAt:            time.Now().Add(proxyQuoteTTL),
 		})
 		if err != nil {
 			writeJSONError(w, http.StatusInternalServerError, err.Error())
@@ -234,6 +261,36 @@ func ProxyBillingAttemptHandler(cfg *ProxyConfig) http.HandlerFunc {
 	}
 }
 
+// UsageReconciliationHandler exposes the persisted upstream fact for the
+// authenticated owning Hub.  It intentionally does not use the provider
+// traffic card aggregation, because that view combines every Hub and cannot
+// be reconciled to one downstream tenant ledger.
+func UsageReconciliationHandler(stats *StatsService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		hubID := strings.TrimSpace(r.Header.Get("X-Hub-ID"))
+		tenantID := strings.TrimSpace(r.Header.Get("X-Tenant-ID"))
+		if hubID == "" || tenantID == "" {
+			writeJSONError(w, http.StatusBadRequest, "X-Hub-ID and X-Tenant-ID headers are required")
+			return
+		}
+		if stats == nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "usage reconciliation is not configured")
+			return
+		}
+		report, err := stats.QueryUsageReconciliation(r.Context(), hubID, tenantID, r.URL.Query().Get("date"), r.URL.Query().Get("timezone"))
+		if err != nil {
+			writeJSONError(w, http.StatusServiceUnavailable, "usage reconciliation is temporarily unavailable")
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{"reconciliation": report})
+	}
+}
+
 type proxyStreamResult struct {
 	err      error
 	dispatch *proxyDispatch
@@ -277,7 +334,7 @@ func proxyRequestWantsStream(body map[string]any) bool {
 }
 
 func streamProxyRequest(w http.ResponseWriter, r *http.Request, cfg *ProxyConfig, proxyReq *ProxyRequest) {
-	ctx, cancel := context.WithCancel(WithUsageContext(r.Context(), proxyReq.HubID, proxyReq.TenantID))
+	ctx, cancel := context.WithCancel(withOpenCodeSessionContext(WithUsageContext(r.Context(), proxyReq.HubID, proxyReq.TenantID), proxyReq))
 	defer cancel()
 	dispatches, err := prepareProxyStreamDispatches(ctx, cfg, proxyReq)
 	if err != nil {
@@ -300,8 +357,10 @@ func streamProxyRequest(w http.ResponseWriter, r *http.Request, cfg *ProxyConfig
 	if multiplier, ok := proxySharedCreditMultiplier(proxyReq, dispatches, proxyRequestStartedAt(proxyReq)); ok {
 		w.Header().Set(llmpool.CreditMultiplierHeader, llmpool.FormatCreditMultiplierHeader(multiplier))
 	}
-	if len(dispatches) == 1 && dispatches[0] != nil && dispatches[0].provider != nil {
-		w.Header().Set(llmpool.ProviderIDHeader, dispatches[0].provider.ID)
+	if len(dispatches) == 1 && dispatches[0] != nil {
+		if logicalID := proxyDispatchLogicalID(dispatches[0]); logicalID != "" {
+			w.Header().Set(llmpool.ProviderIDHeader, logicalID)
+		}
 	}
 	w.WriteHeader(http.StatusOK)
 	if flusher != nil {
@@ -309,6 +368,14 @@ func streamProxyRequest(w http.ResponseWriter, r *http.Request, cfg *ProxyConfig
 	}
 
 	streamWriter := &proxyHTTPStreamWriter{w: w, flusher: flusher}
+	// The first body byte has to leave before the 15s heartbeat. A reverse
+	// proxy that times out on an empty body would otherwise cut a thinking
+	// model that has not emitted a token yet. Auth failures return above,
+	// before this 200, so they keep their real status.
+	if _, err := io.WriteString(streamWriter, ": ping\n\n"); err != nil {
+		return
+	}
+	streamWriter.Flush()
 	resultCh := make(chan proxyStreamResult, 1)
 	go func() {
 		defer func() {
@@ -362,11 +429,13 @@ func writeProxyStreamBillingTrailers(w http.ResponseWriter, req *ProxyRequest, d
 	// carries the provider factor separately so it is applied exactly once.
 	multiplier := proxyDispatchCreditMultiplier(req, dispatch, proxyRequestStartedAt(req))
 	w.Header().Set(llmpool.CreditMultiplierHeader, llmpool.FormatCreditMultiplierHeader(multiplier))
-	w.Header().Set(llmpool.ProviderIDHeader, dispatch.provider.ID)
+	w.Header().Set(llmpool.ProviderIDHeader, proxyDispatchLogicalID(dispatch))
 	upstreamModel := proxyUpstreamModelForRoute(dispatch.route, dispatch.provider, dispatch.model)
 	if snapshot := proxyDispatchTokenPricingSnapshot(req, dispatch, upstreamModel); snapshot != nil {
 		if encoded, ok := llmpool.EncodeTokenPricingSnapshot(*snapshot); ok {
 			w.Header().Set(llmpool.TokenPricingSnapshotHeader, encoded)
+		} else {
+			log.Printf("[llm-proxy] stream pricing snapshot encode failed provider=%s input=%d cache_read=%d cache_write=%d output=%d", dispatch.provider.ID, snapshot.InputTokens, snapshot.CachedInputTokens, snapshot.CacheWriteTokens, snapshot.OutputTokens)
 		}
 	}
 }
@@ -375,18 +444,27 @@ func proxyDispatchTokenPricingSnapshot(req *ProxyRequest, dispatch *proxyDispatc
 	if dispatch == nil || dispatch.provider == nil {
 		return nil
 	}
+	logicalID := proxyDispatchLogicalID(dispatch)
 	if dispatch.pricing != nil {
-		providerMultiplier := proxyProviderMultiplierForRequest(req, dispatch.provider, dispatch.provider.ID, proxyRequestStartedAt(req))
+		providerMultiplier := proxyProviderMultiplierForRequest(req, dispatch.provider, logicalID, proxyRequestStartedAt(req))
 		return &llmpool.TokenPricingSnapshot{
-			ProviderID:         dispatch.provider.ID,
+			ProviderID:         logicalID,
 			UpstreamModel:      strings.TrimSpace(upstreamModel),
 			Pricing:            *dispatch.pricing,
+			PricingSource:      proxyTokenPricingSource(dispatch.matchedGroup, dispatch.provider, logicalID, upstreamModel),
 			ProviderMultiplier: providerMultiplier,
 			InputTokens:        dispatch.billingInputTokens,
 			OutputTokens:       dispatch.billingOutputTokens,
+			CachedInputTokens:  dispatch.billingCachedInputTokens,
+			CacheWriteTokens:   dispatch.billingCacheWriteTokens,
 		}
 	}
-	return proxyRequestTokenPricingSnapshot(req, dispatch.matchedGroup, dispatch.provider, dispatch.provider.ID, upstreamModel, dispatch.billingInputTokens, dispatch.billingOutputTokens, proxyRequestStartedAt(req))
+	snapshot := proxyRequestTokenPricingSnapshot(req, dispatch.matchedGroup, dispatch.provider, logicalID, upstreamModel, dispatch.billingInputTokens, dispatch.billingOutputTokens, proxyRequestStartedAt(req))
+	if snapshot != nil {
+		snapshot.CachedInputTokens = dispatch.billingCachedInputTokens
+		snapshot.CacheWriteTokens = dispatch.billingCacheWriteTokens
+	}
+	return snapshot
 }
 
 func proxyQuoteFromRequest(cfg *ProxyConfig, token string, req *ProxyRequest) (ProxyQuote, bool) {
@@ -397,11 +475,28 @@ func proxyQuoteFromRequest(cfg *ProxyConfig, token string, req *ProxyRequest) (P
 }
 
 func writeProxyRequestError(w http.ResponseWriter, err error) {
+	var capErr *TokenBankRequestCapError
+	if errors.As(err, &capErr) {
+		writeJSONError(w, http.StatusBadRequest, capErr.Error())
+		return
+	}
 	if bound := asTenantBoundError(err); bound != nil {
 		writeBindingRedirectError(w, bound)
 		return
 	}
+	// Checked before any substring sniffing: the all-providers-failed error
+	// wraps the last member failure, whose text embeds an upstream body
+	// snippet (proxyMemberErrorSnippet). An upstream saying "service not
+	// available" or "authorization denied" must not reclassify a retryable
+	// pool exhaustion (503) into a permanent client error (400/403). HubCenter
+	// generates those phrases itself only on pre-dispatch paths, which never
+	// pass through the failover loop, so this order cannot misroute them.
 	errMsg := err.Error()
+	if strings.Contains(errMsg, "all providers failed") {
+		w.Header().Set("Retry-After", proxyRetryAfterSeconds(err))
+		writeJSONError(w, http.StatusServiceUnavailable, errMsg)
+		return
+	}
 	if strings.Contains(errMsg, "authorization denied") {
 		writeJSONError(w, http.StatusForbidden, errMsg)
 		return
@@ -414,11 +509,29 @@ func writeProxyRequestError(w http.ResponseWriter, err error) {
 		writeJSONError(w, http.StatusBadRequest, errMsg)
 		return
 	}
-	if strings.Contains(errMsg, "all providers failed") {
-		writeJSONError(w, http.StatusServiceUnavailable, errMsg)
-		return
-	}
 	writeJSONError(w, http.StatusInternalServerError, errMsg)
+}
+
+// proxyRetryAfterSeconds picks a Retry-After hint that matches the pool state
+// the error was built from: an in-flight half-open probe asks the client to
+// wait out this node's probe-wait budget, an open circuit tells it when the
+// next probe window opens (capped), and anything else gets a short generic
+// backoff.
+func proxyRetryAfterSeconds(err error) string {
+	var re *llmpool.ResilienceError
+	if errors.As(err, &re) {
+		switch {
+		case re.State == "probe":
+			return strconv.Itoa(int(math.Ceil(defaultProxyCircuitProbeWait.Seconds())))
+		case re.CooldownLeft > 0:
+			seconds := int(math.Ceil(re.CooldownLeft.Seconds()))
+			if seconds > 30 {
+				seconds = 30
+			}
+			return strconv.Itoa(seconds)
+		}
+	}
+	return "5"
 }
 
 func writeProxyStreamError(w io.Writer, code int, message string) {

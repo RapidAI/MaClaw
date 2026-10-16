@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>AI助手面板 · 中间任务栏 最终实现示意图</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; font-family: "Microsoft YaHei", "Segoe UI", sans-serif; }
+  body { background: #e9edf3; padding: 24px; color: #1f2937; }
+  h1 { font-size: 18px; margin-bottom: 6px; }
+  .note { font-size: 12px; color: #6b7280; margin-bottom: 18px; }
+  .boards { display: flex; gap: 28px; align-items: flex-start; flex-wrap: wrap; }
+  .board { background: #fff; border-radius: 12px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,.08); }
+  .board h2 { font-size: 14px; margin-bottom: 4px; }
+  .board .sub { font-size: 11px; color: #9ca3af; margin-bottom: 12px; }
+  .panel { width: 250px; background: #f5f7fa; border: 1px solid #dde3ec; border-radius: 10px; padding: 8px; font-size: 12px; }
+
+  .card { background: #fff; border: 1px solid #e2e8f0; border-radius: 8px; padding: 7px 9px; margin-bottom: 6px; }
+  .tag { display: inline-block; font-size: 9px; padding: 1px 6px; border-radius: 999px; background: #e8f7ee; color: #16a34a; font-weight: 700; }
+
+  .row { display: flex; gap: 6px; align-items: flex-start; border-radius: 8px; padding: 6px 7px; margin-bottom: 2px; }
+  .row .dot { width: 7px; height: 7px; border-radius: 50%; background: #3b82f6; margin-top: 4px; flex-shrink: 0; }
+  .row .name { font-weight: 700; font-size: 11px; }
+  .row .desc { font-size: 9px; color: #9ca3af; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 160px; }
+  .row.active { background: #fff; box-shadow: inset 3px 0 0 #3b82f6, inset 0 0 0 1px #c7d8fb; }
+  .time { margin-left: auto; font-size: 9px; color: #9ca3af; flex-shrink: 0; }
+
+  .topbar { display: flex; align-items: center; gap: 5px; margin-bottom: 8px; }
+  .topbar .title { font-weight: 800; font-size: 12px; color: #374151; }
+  .iconbtn { width: 22px; height: 22px; border: 1px solid #dbe2ec; background: #fff; border-radius: 6px; font-size: 11px; color: #4b5563; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+  .bell { position: relative; margin-left: auto; }
+  .bell b { position: absolute; top: -5px; right: -5px; background: #dc2626; color: #fff; font-size: 8px; border-radius: 999px; padding: 0 3px; line-height: 1.5; }
+  .save { margin-left: auto; font-size: 9px; color: #9ca3af; display: inline-flex; align-items: center; gap: 4px; }
+
+  .curcard { display: flex; align-items: center; gap: 7px; background: linear-gradient(90deg,#eef4ff,#f8fbff); border: 1px solid #c7d8fb; border-radius: 8px; padding: 7px 9px; margin-bottom: 6px; }
+  .curcard .pulse { width: 8px; height: 8px; border-radius: 50%; background: #3b82f6; flex-shrink: 0; }
+  .curcard .t { font-weight: 700; font-size: 11px; }
+  .curcard .s { font-size: 9px; color: #6b7280; }
+
+  .sec { font-size: 10px; font-weight: 700; color: #64748b; margin: 6px 2px 5px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 8px; }
+  .chip { font-size: 10px; padding: 2px 9px; border-radius: 999px; border: 1px solid #dbe2ec; background: transparent; color: #4b5563; cursor: pointer; font-weight: 600; }
+  .chip b { margin-left: 3px; }
+  .chip.on { border-color: #3b82f6; background: #e4eefe; color: #3b82f6; }
+  .chip.dim { opacity: .55; }
+
+  .callout { position: relative; }
+  .ln { font-size: 10px; color: #6b7280; line-height: 1.5; }
+  .flow { font-size: 11px; line-height: 2.1; }
+  .flow li { margin-left: 16px; }
+  .kbd { display: inline-block; border: 1px solid #cbd5e1; border-radius: 4px; padding: 0 5px; background: #f8fafc; font-size: 10px; }
+</style>
+</head>
+<body>
+<h1>AI助手面板 · 中间任务栏 —— 最终实现示意图</h1>
+<div class="note">对应代码：guiapp/frontend/src/components/layout/SidebarTaskManagement.tsx（筛选 chips :2831 / 铃铛 :2734 / 分类器 :433）</div>
+<div class="boards">
+
+  <!-- 未筛选状态 -->
+  <div class="board">
+    <h2>① 默认（全部）</h2>
+    <div class="sub">一层顶栏 + 当前任务卡 + 筛选 chips + 列表</div>
+    <div class="panel">
+      <div class="topbar">
+        <span class="title">我的任务</span>
+        <button class="iconbtn">＋</button>
+        <button class="iconbtn">☁</button>
+        <button class="iconbtn bell">🔔<b>2</b></button>
+        <span class="save">保存为任务 💾</span>
+      </div>
+      <div class="curcard">
+        <span class="pulse"></span>
+        <span><div class="t">新建任务</div><div class="s">当前任务</div></span>
+        <span class="tag" style="margin-left:auto;background:#e0eaff;color:#3b82f6">进行中</span>
+      </div>
+      <div class="sec">我的任务列表</div>
+      <div class="chips">
+        <span class="chip on">全部<b>4</b></span>
+        <span class="chip dim">进行中<b>0</b></span>
+        <span class="chip dim">待处理<b>0</b></span>
+        <span class="chip">已完成<b>4</b></span>
+      </div>
+      <div class="row"><span class="dot"></span><span><div class="name">人工智能数学基础</div><div class="desc">人工智能数学基础-new</div></span><span class="time">13:56</span></div>
+      <div class="row"><span class="dot"></span><span><div class="name">长江学者申请</div><div class="desc">长江学者课题申请材料</div></span><span class="time">13:56</span></div>
+      <div class="row active"><span class="dot"></span><span><div class="name">新建任务</div><div class="desc">F:\个人介绍</div></span><span class="time">08:24</span></div>
+      <div class="ln" style="margin-top:4px">↓ 比原来多出约 1/3 的列表高度</div>
+    </div>
+  </div>
+
+  <!-- 筛选状态 -->
+  <div class="board">
+    <h2>② 点"进行中"筛选</h2>
+    <div class="sub">chips 真实过滤列表；无匹配时给空态提示</div>
+    <div class="panel">
+      <div class="topbar">
+        <span class="title">我的任务</span>
+        <button class="iconbtn">＋</button>
+        <button class="iconbtn">☁</button>
+        <button class="iconbtn bell">🔔<b>2</b></button>
+      </div>
+      <div class="curcard">
+        <span class="pulse"></span>
+        <span><div class="t">新建任务</div><div class="s">当前任务</div></span>
+        <span class="tag" style="margin-left:auto;background:#e0eaff;color:#3b82f6">进行中</span>
+      </div>
+      <div class="sec">我的任务列表</div>
+      <div class="chips">
+        <span class="chip">全部<b>4</b></span>
+        <span class="chip on dim">进行中<b>0</b></span>
+        <span class="chip dim">待处理<b>0</b></span>
+        <span class="chip">已完成<b>4</b></span>
+      </div>
+      <div style="padding:18px 8px;text-align:center;font-size:11px;color:#9ca3af">该分组暂无任务</div>
+      <div class="ln" style="margin-top:4px">计数为 0 的 chip 置灰但可点（选中时保持高亮）</div>
+    </div>
+  </div>
+
+  <!-- 交互规则 -->
+  <div class="board" style="max-width:360px">
+    <h2>交互规则</h2>
+    <div class="sub">状态分类与边界行为</div>
+    <ul class="flow">
+      <li><b>状态分类</b>（优先级从上到下）：已暂停 → 进行中 → 待处理 → 已完成 → 未分类（只在"全部"出现）；"分享给我的"按任务 tag 识别。</li>
+      <li><b>常显 chips</b>：全部 / 进行中 / 待处理 / 已完成；<b>条件 chips</b>：已暂停、分享给我的——计数 &gt; 0 才出现。"我创建的"已删除（恒等于全部）。</li>
+      <li><b>自动回落</b>：条件 chip 计数归零（如暂停任务被恢复/删除）时，筛选自动切回"全部"，不困在空视图。</li>
+      <li><b>通知中心</b>：顶栏 🔔 带未读角标（&gt;99 显示 99+），点击仍派发 <span class="kbd">maclaw:open-system-notifications</span>。</li>
+      <li><b>未动部分</b>：任务行结构/右键菜单/双击恢复/置顶、当前任务卡（仅执行态显示）、底部状态卡（模型/Token/余额）、云端工作区弹窗。</li>
+    </ul>
+    <div class="sec" style="margin-top:10px">前后对比（结构层数）</div>
+    <div class="ln" style="line-height:1.9">
+      改前：当前任务卡 → 任务分组(7格·不可点) → 任务概览(4格·重复) → 列表标题 → 列表<br>
+      改后：顶栏(🔔☁＋) → 当前任务卡 → 列表标题 + 筛选chips(可点) → 列表
+    </div>
+  </div>
+
+</div>
+</body>
+</html>

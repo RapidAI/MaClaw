@@ -38,7 +38,17 @@ import (
 	"github.com/RapidAI/CodeClaw/hub/internal/ws"
 )
 
+// BootstrapOptions exposes deployment-owned integrations that cannot be
+// represented safely in YAML (for example an S3 Object Lock destination,
+// Kubernetes Lease, external KMS provider, or incident sink).
+type BootstrapOptions struct {
+}
+
 func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
+	return BootstrapWithOptions(cfg, configPath, BootstrapOptions{})
+}
+
+func BootstrapWithOptions(cfg *config.Config, configPath string, opts BootstrapOptions) (*App, error) {
 	provider, err := sqlite.NewProvider(sqlite.Config{
 		DSN:                   cfg.Database.DSN,
 		WAL:                   cfg.Database.WAL,
@@ -78,6 +88,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	failureRecorder := diagnostics.NewFailureEventRecorder(st.FailureLogs)
 	centerService.SetFailureEventRecorder(failureRecorder)
 	invitationService.SetCenterSyncer(centerService)
+	centerService.SetInvitationCodeReconciler(invitationService)
 	if status, err := centerService.Status(context.Background()); err == nil {
 		log.Printf("[hub] center registration bootstrap: visibility=%s enrollment=%s corporate_domains=%v accept_public_signup=%t registered=%t pending=%t disabled=%t", status.Visibility, status.EnrollmentMode, status.CorporateEmailDomains, status.AcceptPublicSignup, status.Registered, status.PendingConfirmation, status.Disabled)
 	} else {
@@ -303,35 +314,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 	feishuNotifier.SetPlugin(feishuPlugin)
 	feishuPlugin.SetAdapter(imAdapter)
 
-	// 7. OpenClaw IM Webhook Plugin 闂?enables external IM adapters to
-	//     communicate with Hub via the OpenClaw IM protocol.
-	openclawIMPlugin := im.NewWebhookIMPlugin("openclaw", func(ctx context.Context) im.WebhookConfig {
-		tenantID := im.TenantIDFromContext(ctx)
-		system := st.System
-		configTenantID := ""
-		if tenantID != "" && tenantID != store.DefaultTenantID {
-			system = httpapi.ScopedSystemSettingsForTenant(tenantID, st.System)
-			configTenantID = tenantID
-		}
-		raw, err := system.Get(context.Background(), "openclaw_im_config")
-		if err != nil || raw == "" {
-			return im.WebhookConfig{}
-		}
-		var cfg struct {
-			Enabled    bool   `json:"enabled"`
-			WebhookURL string `json:"webhook_url"`
-			Secret     string `json:"secret"`
-		}
-		if json.Unmarshal([]byte(raw), &cfg) != nil || !cfg.Enabled {
-			return im.WebhookConfig{}
-		}
-		return im.WebhookConfig{TenantID: configTenantID, WebhookURL: cfg.WebhookURL, Secret: cfg.Secret}
-	})
-	if err := imAdapter.RegisterPlugin(openclawIMPlugin); err != nil {
-		log.Printf("[bootstrap] failed to register openclaw IM plugin: %v", err)
-	}
-
-	// 8a. Remote Gateway Plugins 闂?client-side IM gateways (QQ Bot, Telegram)
+	// 7. Remote Gateway Plugins — client-side IM gateways (QQ Bot, Telegram)
 	//     forwarded through the existing Hub闂備焦鍓氶崑鍛村箺閺勭ent WebSocket.
 	qqRemotePlugin := im.NewRemoteGatewayPlugin("qqbot_remote", deviceService, st.Users, st.System)
 	if err := imAdapter.RegisterPlugin(qqRemotePlugin); err != nil {
@@ -499,7 +482,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		}
 	}
 
-	// Wire login link broadcaster into identity service so PWA login
+	// Wire login link broadcaster into identity service so login
 	// confirmation links are also sent to bound IM channels.
 	identityService.SetLoginNotifier(broadcaster)
 	identityService.SetUserRouteSyncer(centerService)
@@ -547,7 +530,7 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 
 	// Inject SecurityProvider into ws.Gateway for heartbeat policy delivery.
 	gateway.SecurityProvider = securitySvc
-	gateway.ConfigProvider = heartbeatConfigProvider{settings: st.System}
+	gateway.ConfigProvider = heartbeatConfigProvider{settings: st.System, cache: newHeartbeatSettingsCache()}
 
 	// Wire OutboundInterceptor into im.Adapter for file/image outbound checks.
 	outboundInterceptor := im.NewOutboundInterceptor(securitySvc, nil)
@@ -719,7 +702,6 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		st.FailureLogs,
 		feishuNotifier,
 		feishuPlugin,
-		openclawIMPlugin,
 		qqbotPlugin,
 		wecomPlugin,
 		dingtalkPlugin,
@@ -737,9 +719,6 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		cfg,
 		configPath,
 		EnsureSelfSignedCert,
-		cfg.PWA.StaticDir,
-		cfg.PWA.RoutePrefix,
-		cfg.Bridge.Dir,
 		tenantNativeIMRuntimes,
 		st.KnowledgeShares,
 		st.Tenants,
@@ -759,16 +738,15 @@ func Bootstrap(cfg *config.Config, configPath string) (*App, error) {
 		KnowledgeShares: st.KnowledgeShares,
 
 		// Agent Passthrough IM modules
-		MessageRouter:    messageRouter,
-		IMAdapter:        imAdapter,
-		FeishuPlugin:     feishuPlugin,
-		OpenclawIMPlugin: openclawIMPlugin,
-		QQBotPlugin:      qqbotPlugin,
-		WecomPlugin:      wecomPlugin,
-		DingTalkPlugin:   dingtalkPlugin,
-		QQRemotePlugin:   qqRemotePlugin,
-		TelegramPlugin:   telegramPlugin,
-		ChatNotifier:     chatNotifier,
+		MessageRouter:  messageRouter,
+		IMAdapter:      imAdapter,
+		FeishuPlugin:   feishuPlugin,
+		QQBotPlugin:    qqbotPlugin,
+		WecomPlugin:    wecomPlugin,
+		DingTalkPlugin: dingtalkPlugin,
+		QQRemotePlugin: qqRemotePlugin,
+		TelegramPlugin: telegramPlugin,
+		ChatNotifier:   chatNotifier,
 	}, nil
 }
 
@@ -882,13 +860,75 @@ func (a *smartRouteSecurityPolicyAdapter) IsSmartRouteAllowedBySecurityPolicy(ct
 
 type heartbeatConfigProvider struct {
 	settings store.SystemSettingsRepository
+	cache    *heartbeatSettingsCache
+}
+
+// heartbeatSettingsCacheTTL bounds how long per-tenant system settings reads
+// are reused on the heartbeat path (capability market policy and center
+// registration). Heartbeats fire every 5–30s per machine and these settings
+// change rarely, so a short TTL trades at most 30s of staleness for skipping
+// repeated DB reads.
+const heartbeatSettingsCacheTTL = 30 * time.Second
+
+type heartbeatSettingsCacheItem struct {
+	value   string
+	expires time.Time
+}
+
+type heartbeatSettingsCache struct {
+	mu    sync.Mutex
+	items map[string]heartbeatSettingsCacheItem // tenantID + "\x00" + key
+	ttl   time.Duration
+}
+
+func newHeartbeatSettingsCache() *heartbeatSettingsCache {
+	return &heartbeatSettingsCache{items: map[string]heartbeatSettingsCacheItem{}, ttl: heartbeatSettingsCacheTTL}
+}
+
+func (c *heartbeatSettingsCache) get(ctx context.Context, settings store.SystemSettingsRepository, tenantID, key string) (string, error) {
+	if c == nil {
+		return settings.Get(ctx, key)
+	}
+	mapKey := tenantID + "\x00" + key
+	now := time.Now()
+	c.mu.Lock()
+	if item, ok := c.items[mapKey]; ok && now.Before(item.expires) {
+		c.mu.Unlock()
+		return item.value, nil
+	}
+	c.mu.Unlock()
+	value, err := settings.Get(ctx, key)
+	if err != nil {
+		return "", err
+	}
+	c.mu.Lock()
+	c.items[mapKey] = heartbeatSettingsCacheItem{value: value, expires: now.Add(c.ttl)}
+	c.mu.Unlock()
+	return value, nil
+}
+
+// heartbeatCachedSystemSettings presents a cached SystemSettingsRepository
+// view so downstream loaders (e.g. LoadDigitalEmployeeAuthorizationForTenant)
+// skip repeated DB reads while still evaluating time-dependent fields fresh.
+type heartbeatCachedSystemSettings struct {
+	cache    *heartbeatSettingsCache
+	tenantID string
+	base     store.SystemSettingsRepository
+}
+
+func (s heartbeatCachedSystemSettings) Set(ctx context.Context, key, valueJSON string) error {
+	return s.base.Set(ctx, key, valueJSON)
+}
+
+func (s heartbeatCachedSystemSettings) Get(ctx context.Context, key string) (string, error) {
+	return s.cache.get(ctx, s.base, s.tenantID, key)
 }
 
 func (p heartbeatConfigProvider) GetHeartbeatConfig(ctx context.Context, userID string, tenantID string) (*ws.HeartbeatConfigPayload, error) {
 	settings := scopedSystemSettingsForTenant(tenantID, p.settings)
 	policy := corelib.DefaultCapabilityMarketPolicy()
 	if settings != nil {
-		raw, err := settings.Get(ctx, "capability_market_policy")
+		raw, err := p.cache.get(ctx, settings, tenantID, "capability_market_policy")
 		if err != nil {
 			log.Printf("[hub-config] failed to read capability_market_policy: %v", err)
 			// Don't return error — capability_market_policy failure should not
@@ -901,7 +941,11 @@ func (p heartbeatConfigProvider) GetHeartbeatConfig(ctx context.Context, userID 
 			}
 		}
 	}
-	return &ws.HeartbeatConfigPayload{CapabilityMarketPolicy: policy, DigitalEmployeeAuthorization: center.LoadDigitalEmployeeAuthorizationForTenant(ctx, p.settings, tenantID)}, nil
+	var authSettings store.SystemSettingsRepository = settings
+	if settings != nil {
+		authSettings = heartbeatCachedSystemSettings{cache: p.cache, tenantID: tenantID, base: settings}
+	}
+	return &ws.HeartbeatConfigPayload{CapabilityMarketPolicy: policy, DigitalEmployeeAuthorization: center.LoadDigitalEmployeeAuthorizationForTenant(ctx, authSettings, tenantID)}, nil
 }
 
 type tenantScopedSystemSettings struct {

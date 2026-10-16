@@ -299,15 +299,22 @@ func (s *MemoryStore) startAttemptLocked(taskID, leaseOwner string, leaseFor tim
 		if attempt.TaskID == taskID && attempt.AttemptNo > maxNo {
 			maxNo = attempt.AttemptNo
 		}
-		if attempt.Status == TaskRunning && attempt.LeaseUntil.After(now) {
-			if attempt.TaskID == taskID {
-				return nil, ErrLeaseHeld
-			}
-			other := s.tasks[attempt.TaskID]
-			if other != nil {
-				if conflict := WriterAdmissionConflict(*task, policy, *other, attempt.Policy); conflict.Conflicts {
-					return nil, WriterAdmissionError{Conflict: conflict}
-				}
+		if attempt.Status != TaskRunning {
+			continue
+		}
+		if attempt.TaskID == taskID {
+			return nil, ErrLeaseHeld
+		}
+		// An expired lease is a dead holder unless this process is still
+		// inside that attempt. Keeping every running row would lock the
+		// directory until the next process start.
+		if !attempt.LeaseUntil.After(now) && !localWriterLive(attempt.AttemptID) {
+			continue
+		}
+		other := s.tasks[attempt.TaskID]
+		if other != nil {
+			if conflict := WriterAdmissionConflict(*task, policy, *other, attempt.Policy); conflict.Conflicts {
+				return nil, WriterAdmissionError{Conflict: conflict}
 			}
 		}
 	}
@@ -318,6 +325,26 @@ func (s *MemoryStore) startAttemptLocked(taskID, leaseOwner string, leaseFor tim
 	s.attempts[attempt.AttemptID] = attempt
 	task.Status, task.UpdatedAt = TaskRunning, now
 	return cloneAttempt(attempt), nil
+}
+
+func (s *MemoryStore) RenewAttemptLease(attemptID, leaseOwner string, leaseFor time.Duration, now time.Time) error {
+	if leaseOwner == "" || leaseFor <= 0 {
+		return fmt.Errorf("%w: renew attempt lease", ErrInvalidTransition)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	attempt := s.attempts[attemptID]
+	if attempt == nil {
+		return ErrNotFound
+	}
+	if attempt.LeaseOwner != leaseOwner {
+		return ErrLeaseOwnerMismatch
+	}
+	if attempt.Status != TaskRunning {
+		return ErrAttemptNotRunning
+	}
+	attempt.LeaseUntil = now.Add(leaseFor)
+	return nil
 }
 
 func (s *MemoryStore) AppendEvent(attemptID, leaseOwner, eventType, payloadDigest string, now time.Time) (*Event, error) {
@@ -551,9 +578,18 @@ func (s *MemoryStore) ListRecoveryCandidates() ([]*Attempt, error) {
 	defer s.mu.Unlock()
 	var candidates []*Attempt
 	for _, attempt := range s.attempts {
-		if attempt.Status == TaskInterrupted || attempt.SideEffectState == SideEffectUncertain {
-			candidates = append(candidates, cloneAttempt(attempt))
+		if attempt.Status != TaskInterrupted && attempt.SideEffectState != SideEffectUncertain {
+			continue
 		}
+		// A candidate whose logical task already ended (completed, failed, or
+		// cancelled — e.g. a declined recovery) is history, not a recovery offer.
+		if task := s.tasks[attempt.TaskID]; task != nil {
+			switch task.Status {
+			case TaskCompleted, TaskFailed, TaskCancelled:
+				continue
+			}
+		}
+		candidates = append(candidates, cloneAttempt(attempt))
 	}
 	return candidates, nil
 }

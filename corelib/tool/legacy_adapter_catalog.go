@@ -90,12 +90,36 @@ func cloneLegacyAdapterProvision(in LegacyAdapterProvision) LegacyAdapterProvisi
 // a legacy name. A missing or expired provision is catalog_incomplete; callers
 // must not infer a capability from a tool name, description, BM25 score, or
 // prior session state.
+//
+// Lookup resolves a small set of reviewed alternate spellings first (see
+// legacyAdapterProvisionAliases): lowercase "glob"/"grep" are live spellings
+// in host surfaces (corelib/permission builtinKinds, guiapp IM/ACP progress
+// and permission handlers) while the reviewed provisions register the
+// exact-case host tool names "Glob"/"ripgrep". An alias resolves to the SAME
+// reviewed provision; it grants no new capability.
 func LegacyAdapterProvisionForTool(name string, now time.Time) (LegacyAdapterProvision, bool) {
-	p, ok := legacyAdapterProvisions[strings.TrimSpace(name)]
+	p, ok := legacyAdapterProvisions[canonicalLegacyAdapterName(name)]
 	if !ok || (!now.IsZero() && now.After(p.DeleteAfter)) {
 		return LegacyAdapterProvision{}, false
 	}
 	return cloneLegacyAdapterProvision(p), true
+}
+
+// legacyAdapterProvisionAliases maps alternate legacy spellings onto the
+// reviewed provision they name. Entries are added only for spellings that
+// already appear in reviewed host surfaces; each alias must resolve to an
+// existing provision row.
+var legacyAdapterProvisionAliases = map[string]string{
+	"glob": "Glob",
+	"grep": "ripgrep",
+}
+
+func canonicalLegacyAdapterName(name string) string {
+	name = strings.TrimSpace(name)
+	if alias, ok := legacyAdapterProvisionAliases[name]; ok {
+		return alias
+	}
+	return name
 }
 
 // LegacyAdapterProvisionForToolAt is the explicit-time variant used by
@@ -134,16 +158,14 @@ func legacyAdapterFallbackAllowed(name string, now time.Time) bool {
 }
 
 func legacyAdapterCandidateAllowed(name string, now time.Time) bool {
-	_, ok := LegacyAdapterProvisionForTool(name, now)
-	return ok
+	return legacyAdapterFallbackAllowed(name, now)
 }
 
-// IsLegacyModelDynamicGateway reports host-implemented transport functions
-// whose model arguments select a mutable provider/resource identity. They are
-// intentionally not legacy model capabilities: a caller must use the managed
-// semantic catalog, where the binding and contract are observed and frozen
-// outside model arguments. Host-controlled entrypoints may still invoke the
-// registered implementation directly.
+// IsLegacyModelDynamicGateway reports names retrieval ranking must not spend
+// a slot on. call_mcp_tool is also omitted from the host catalog, because its
+// arguments select the provider. manage_skill stays in the catalog and is
+// pinned onto full surfaces: the model names an installed local skill, and
+// the desktop executor binds that name to the local skill registry.
 func IsLegacyModelDynamicGateway(name string) bool {
 	switch strings.TrimSpace(name) {
 	case "call_mcp_tool", "manage_skill":
@@ -153,15 +175,17 @@ func IsLegacyModelDynamicGateway(name string) bool {
 	}
 }
 
-// LegacyAdapterCatalogIncomplete reports whether a name belongs to the legacy
-// compatibility catalog but has no live reviewed provision. It is useful to
-// hosts for an explicit catalog_incomplete response rather than falling back
-// to a fuzzy name match.
+// omittedFromHostToolCatalog is the provider-picking gateway. manage_skill is
+// a dynamic gateway for retrieval ranking, but its definition stays in the
+// host catalog: a full surface pins it as the local skill runtime.
+func omittedFromHostToolCatalog(name string) bool {
+	return strings.TrimSpace(name) == "call_mcp_tool"
+}
+
+// LegacyAdapterCatalogIncomplete reports that a name has no live reviewed
+// provision. Unknown names and expired catalog entries are both incomplete;
+// hosts must not treat "not in the catalog" as permission.
 func LegacyAdapterCatalogIncomplete(name string, now time.Time) bool {
-	name = strings.TrimSpace(name)
-	if !LegacyCandidateToolNames[name] {
-		return false
-	}
 	return !legacyAdapterFallbackAllowed(name, now)
 }
 
@@ -173,7 +197,7 @@ func mustLegacyAdapterProvisions(entries []LegacyAdapterProvision) map[string]Le
 			panic(err)
 		}
 		if _, duplicate := result[entry.ToolName]; duplicate {
-			panic(fmt.Sprintf("duplicate legacy adapter provision %q", entry.ToolName))
+			panic(fmt.Errorf("duplicate legacy adapter provision %q", entry.ToolName))
 		}
 		result[entry.ToolName] = cloneLegacyAdapterProvision(entry)
 	}
@@ -198,16 +222,29 @@ var legacyAdapterProvisions = mustLegacyAdapterProvisions([]LegacyAdapterProvisi
 	{ToolName: "kill_session", Capability: "session.control", Owner: "agent-runtime", AdapterContract: "legacy-session-kill-v1", Effects: []EffectClass{EffectLocalMutation}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "launch_template", Capability: "session.template.manage", Owner: "agent-runtime", AdapterContract: "legacy-session-template-launch-v1", Effects: []EffectClass{EffectLocalMutation}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "list_mcp_tools", Capability: "catalog.inspect", Owner: "catalog-platform", AdapterContract: "legacy-mcp-catalog-inspect-v1", Effects: []EffectClass{EffectReadOnly}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
-	{ToolName: "list_providers", Capability: "provider.inspect", Owner: "agent-runtime", AdapterContract: "legacy-provider-inspect-v1", Effects: []EffectClass{EffectReadOnly}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "list_templates", Capability: "session.template.inspect", Owner: "agent-runtime", AdapterContract: "legacy-session-template-list-v1", Effects: []EffectClass{EffectReadOnly}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "manage_config", Capability: "config.manage", Owner: "configuration-platform", AdapterContract: "legacy-config-manage-v1", Effects: []EffectClass{EffectSensitive}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
+	{ToolName: "get_config", Capability: "config.manage.self", Owner: "configuration-platform", AdapterContract: "legacy-config-get-v1", Effects: []EffectClass{EffectSensitive}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
+	{ToolName: "update_config", Capability: "config.manage.self", Owner: "configuration-platform", AdapterContract: "legacy-config-update-v1", Effects: []EffectClass{EffectSensitive}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
+	{ToolName: "batch_update_config", Capability: "config.manage.self", Owner: "configuration-platform", AdapterContract: "legacy-config-batch-update-v1", Effects: []EffectClass{EffectSensitive}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
+	{ToolName: "list_config_schema", Capability: "config.manage.self", Owner: "configuration-platform", AdapterContract: "legacy-config-schema-v1", Effects: []EffectClass{EffectSensitive}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
+	{ToolName: "export_config", Capability: "config.manage.self", Owner: "configuration-platform", AdapterContract: "legacy-config-export-v1", Effects: []EffectClass{EffectSensitive}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
+	{ToolName: "import_config", Capability: "config.manage.self", Owner: "configuration-platform", AdapterContract: "legacy-config-import-v1", Effects: []EffectClass{EffectSensitive}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "manage_schedule", Capability: "schedule.manage", Owner: "scheduler-platform", AdapterContract: "legacy-schedule-manage-v1", Effects: []EffectClass{EffectExternalEffect}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
+	{ToolName: "create_scheduled_task", Capability: "schedule.manage.local", Owner: "scheduler-platform", AdapterContract: "legacy-schedule-create-v1", Effects: []EffectClass{EffectExternalEffect}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
+	{ToolName: "list_scheduled_tasks", Capability: "schedule.manage.local", Owner: "scheduler-platform", AdapterContract: "legacy-schedule-list-v1", Effects: []EffectClass{EffectExternalEffect}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
+	{ToolName: "delete_scheduled_task", Capability: "schedule.manage.local", Owner: "scheduler-platform", AdapterContract: "legacy-schedule-delete-v1", Effects: []EffectClass{EffectExternalEffect}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
+	{ToolName: "update_scheduled_task", Capability: "schedule.manage.local", Owner: "scheduler-platform", AdapterContract: "legacy-schedule-update-v1", Effects: []EffectClass{EffectExternalEffect}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "manage_template", Capability: "session.template.manage", Owner: "agent-runtime", AdapterContract: "legacy-session-template-manage-v1", Effects: []EffectClass{EffectLocalMutation}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
+	{ToolName: "database", Capability: "business.data.mis", Owner: "business-data-platform", AdapterContract: "legacy-database-v1", Effects: []EffectClass{EffectSensitive}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
+	{ToolName: "database_query", Capability: "business.data.read", Owner: "business-data-platform", AdapterContract: "legacy-database-query-v1", Effects: []EffectClass{EffectReadOnly}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
+	{ToolName: "mailbox_query", Capability: "message.read.mailbox", Owner: "mailbox-platform", AdapterContract: "legacy-mailbox-query-v1", Effects: []EffectClass{EffectReadOnly}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
+	{ToolName: "mailbox_send", Capability: "message.send.mailbox", Owner: "mailbox-platform", AdapterContract: "legacy-mailbox-send-v1", Effects: []EffectClass{EffectExternalEffect}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
+	{ToolName: "mailbox_configure", Capability: "message.configure.mailbox", Owner: "mailbox-platform", AdapterContract: "legacy-mailbox-configure-v1", Effects: []EffectClass{EffectSensitive}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "mis_data", Capability: "business.data.read", Owner: "business-data-platform", AdapterContract: "legacy-business-data-read-v1", Effects: []EffectClass{EffectSensitive}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "open", Capability: "desktop.resource.open", Owner: "desktop-platform", AdapterContract: "legacy-desktop-open-v1", Effects: []EffectClass{EffectLocalMutation}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "parallel_execute", Capability: "task.parallel.execute", Owner: "agent-runtime", AdapterContract: "legacy-task-parallel-v1", Effects: []EffectClass{EffectLocalMutation}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "project_manage", Capability: "project.manage", Owner: "workspace-platform", AdapterContract: "legacy-project-manage-v1", Effects: []EffectClass{EffectLocalMutation}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
-	{ToolName: "recommend_tool", Capability: "catalog.recommend", Owner: "catalog-platform", AdapterContract: "legacy-catalog-recommend-v1", Effects: []EffectClass{EffectReadOnly}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "screenshot", Capability: "desktop.capture", Owner: "desktop-platform", AdapterContract: "legacy-desktop-capture-v1", Effects: []EffectClass{EffectSensitive}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "send_file", Capability: "artifact.deliver", Owner: "messaging-platform", AdapterContract: "legacy-artifact-deliver-v1", Effects: []EffectClass{EffectExternalEffect}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "send_input", Capability: "session.input.send", Owner: "agent-runtime", AdapterContract: "legacy-session-input-v1", Effects: []EffectClass{EffectLocalMutation}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
@@ -222,6 +259,12 @@ var legacyAdapterProvisions = mustLegacyAdapterProvisions([]LegacyAdapterProvisi
 	{ToolName: "get_session_output", Capability: "session.output.read", Owner: "agent-runtime", AdapterContract: "legacy-session-output-v1", Effects: []EffectClass{EffectReadOnly}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "get_session_events", Capability: "session.events.read", Owner: "agent-runtime", AdapterContract: "legacy-session-events-v1", Effects: []EffectClass{EffectReadOnly}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "bash", Capability: "workspace.command.run", Owner: "coding-runtime", AdapterContract: "legacy-workspace-command-v1", Effects: []EffectClass{EffectLocalMutation}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
+	// manage_skill is the host-bound local skill runtime. The model names an
+	// installed skill; it does not pick a provider or endpoint. That is the
+	// same shape as bash naming a command, so a full surface can keep it as
+	// an execution baseline. call_mcp_tool stays unprovisioned: its arguments
+	// select the provider.
+	{ToolName: "manage_skill", Capability: "skill.run.local", Owner: "skill-platform", AdapterContract: "legacy-skill-run-v1", Effects: []EffectClass{EffectLocalMutation}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "read_file", Capability: "workspace.file.read", Owner: "coding-runtime", AdapterContract: "legacy-workspace-read-v1", Effects: []EffectClass{EffectReadOnly}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "read_tool_result", Capability: "tool-result.read", Owner: "agent-runtime", AdapterContract: "legacy-tool-result-read-v1", Effects: []EffectClass{EffectReadOnly}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 	{ToolName: "FileRead", Capability: "workspace.file.read", Owner: "coding-runtime", AdapterContract: "legacy-workspace-fileread-v1", Effects: []EffectClass{EffectReadOnly}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
@@ -377,15 +420,24 @@ var legacyAdapterProvisions = mustLegacyAdapterProvisions([]LegacyAdapterProvisi
 	{ToolName: "tts_render", Capability: "audio.render.speech", Owner: "media-platform", AdapterContract: "legacy-tts-render-v1", Effects: []EffectClass{EffectLocalMutation}, DeleteAfter: time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC)},
 })
 
+// init fails fast on catalog inconsistency. The first two loops look
+// tautological today because LegacyCandidateToolNames is derived from the
+// same provision map; they are the tripwire for the day that derivation
+// changes and the two sets can drift apart.
 func init() {
 	for name := range LegacyCandidateToolNames {
 		if _, ok := legacyAdapterProvisions[name]; !ok {
-			panic(fmt.Sprintf("legacy candidate %q has no reviewed adapter provision", name))
+			panic(fmt.Errorf("legacy candidate %q has no reviewed adapter provision", name))
 		}
 	}
 	for name := range legacyAdapterProvisions {
 		if !LegacyCandidateToolNames[name] {
-			panic(fmt.Sprintf("legacy adapter provision %q is not in the candidate catalog", name))
+			panic(fmt.Errorf("legacy adapter provision %q is not in the candidate catalog", name))
+		}
+	}
+	for alias, target := range legacyAdapterProvisionAliases {
+		if _, ok := legacyAdapterProvisions[target]; !ok {
+			panic(fmt.Errorf("legacy adapter alias %q resolves to missing provision %q", alias, target))
 		}
 	}
 }

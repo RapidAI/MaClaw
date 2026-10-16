@@ -52,11 +52,31 @@ func SSHConnect(deps SSHToolDeps, args map[string]interface{}) string {
 		}
 	}
 
+	port := 0
+	if _, ok := args["port"]; ok {
+		port = intArg(args, "port", 0)
+	}
+	cfg := remote.SSHHostConfig{
+		Host:               host,
+		User:               user,
+		Port:               port,
+		AuthMethod:         strArg(args, "auth_method"),
+		KeyPath:            strArg(args, "key_path"),
+		Password:           strArg(args, "password"),
+		Passphrase:         strArg(args, "passphrase"),
+		Label:              label,
+		HostKeyFingerprint: strArg(args, "host_key_fingerprint"),
+	}
+	cfg, resolveErr := remote.ApplyOpenSSHClientConfig(cfg)
+	if resolveErr != nil {
+		return "SSH 连接失败: " + resolveErr.Error()
+	}
+	cfg.Defaults()
+	host, user, port = cfg.Host, cfg.User, cfg.Port
+
 	if host == "" || user == "" {
 		return "错误: connect 需要 host 和 user 参数（或通过 label 引用已配置主机）"
 	}
-
-	port := intArg(args, "port", 22)
 
 	// Check if a running session already exists for this host.
 	forceNew, _ := args["force_new"].(bool)
@@ -98,18 +118,6 @@ func SSHConnect(deps SSHToolDeps, args map[string]interface{}) string {
 				}
 			}
 		}
-	}
-
-	cfg := remote.SSHHostConfig{
-		Host:               host,
-		User:               user,
-		Port:               port,
-		AuthMethod:         strArg(args, "auth_method"),
-		KeyPath:            strArg(args, "key_path"),
-		Password:           strArg(args, "password"),
-		Passphrase:         strArg(args, "passphrase"),
-		Label:              label,
-		HostKeyFingerprint: strArg(args, "host_key_fingerprint"),
 	}
 
 	spec := remote.SSHSessionSpec{
@@ -250,9 +258,13 @@ func SSHExec(deps SSHToolDeps, args map[string]interface{}) string {
 
 	if output == "" {
 		output = "(无新输出)"
-	}
-	if len(output) > 8000 {
-		output = output[:4000] + "\n... (截断) ...\n" + output[len(output)-4000:]
+	} else {
+		// The agent projector owns the size bound and can spill the original.
+		// Cutting head/tail here dropped the middle and could split a rune.
+		output = remote.StripLeadingCommandEcho(remote.CompactPtyOutput(output), command)
+		if output == "" {
+			output = "(无新输出)"
+		}
 	}
 
 	if deps.OnExecIteration != nil {

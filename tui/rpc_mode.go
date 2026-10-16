@@ -18,6 +18,7 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/agent/sshtool"
 	"github.com/RapidAI/CodeClaw/corelib/brand"
+	"github.com/RapidAI/CodeClaw/corelib/database"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	"github.com/RapidAI/CodeClaw/corelib/memory"
@@ -76,6 +77,7 @@ func runRPCMode() {
 	// Redirect all log output to stderr (stdout is protocol-only).
 	log.SetOutput(os.Stderr)
 	log.SetFlags(log.Ltime | log.Lmicroseconds)
+	runTUIStartupRecovery(commands.ResolveDataDir())
 
 	log.Printf("[rpc] starting %s RPC mode", brand.Current().DisplayName)
 
@@ -139,6 +141,16 @@ func runRPCMode() {
 		}
 		return sshtool.ToolSSH(deps, args)
 	}
+	rpcDBManager := database.NewManager(appCfg.DatabaseProfiles, tuiDatabaseSecret)
+	rpcDBManager.SetEnabled(appCfg.DatabaseToolIsEnabled())
+	rpcDBManager.SetTunnelDialer(remote.SSHTunnelDialer(func() *remote.SSHSessionManager { return sshMgr }))
+	if favStore, err := database.NewFavoriteStore(filepath.Join(dataSubDir, "database_favorites.json")); err == nil {
+		rpcDBManager.SetFavoriteStore(favStore)
+	}
+	if pendingStore, err := database.NewPendingStore(filepath.Join(dataSubDir, "database_pending.json")); err == nil {
+		rpcDBManager.SetPendingStore(pendingStore)
+	}
+	rpcDB := newTUIDatabaseRuntime(rpcDBManager, func() corelib.AppConfig { return app.appConfig }, func() string { return "" }, "tui:rpc", "tui:rpc", false)
 	agent.RegisterCoreTools(app.toolRegistry, agent.CoreToolDeps{
 		MemoryStore: memStore,
 		TaskStore:   app.taskStore,
@@ -147,6 +159,9 @@ func runRPCMode() {
 			return app.appConfig
 		}),
 		SSHHandler: sshHandler,
+		ExtraHandlersCtx: map[string]agent.ToolHandlerCtx{
+			"database": rpcDB.handlerCtx(),
+		},
 		WebSearchHandlerCtx: func(ctx context.Context, args map[string]interface{}) string {
 			var provider corelib.WebSearchProvider
 			if len(app.appConfig.WebSearchProviders) > 0 {
@@ -328,6 +343,8 @@ func emitRPCEvent(event RPCEvent) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 type rpcCallbacks struct {
+	usageTrackerFeed
+
 	app       *TUIApp
 	requestID string
 	ctx       context.Context
@@ -384,7 +401,17 @@ func (c *rpcCallbacks) BuildTools(userText string) []map[string]interface{} {
 	if c.app.toolRegistry == nil {
 		return nil
 	}
-	return c.app.toolRegistry.BuildDefinitions()
+	defs := c.app.toolRegistry.BuildDefinitions()
+	// Policy consistency with tuiCallbacks (phase0 baseline §1.2/§1.3 finding #2):
+	// RPC mode never classifies text or reports a profile itself, so the light
+	// filter applies ONLY when MACLAW_PROMPT_PROFILE forces light globally — a
+	// provable no-op in the default state; under a forced-light env the surface
+	// matches the light system prompt. Read-only-child filtering is
+	// intentionally absent: this struct has no runtimeReadOnlyChild state.
+	if profile, ok := agent.EnvPromptProfileOverride(); ok && profile.IsLight() {
+		return agent.FilterToolDefsForLightTurn(defs)
+	}
+	return defs
 }
 
 func (c *rpcCallbacks) ExecuteTool(name, argsJSON string) string {

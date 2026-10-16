@@ -140,7 +140,6 @@ const previewDBWriteInterval = 2 * time.Second
 //
 // IMPORTANT: keep in sync with the canonical list in
 //   - frontend/src/components/remote/types.ts  -> TERMINAL_SESSION_STATUSES
-//   - hub/web/dist/_pwa_syntax_check.js        -> sessionClosed array
 var terminalStatuses = map[string]bool{
 	"stopped":    true,
 	"finished":   true,

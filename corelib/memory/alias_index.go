@@ -14,11 +14,9 @@ const AliasMatchBoost = 2.0
 // When exceeded, the oldest entries (by insertion order) are evicted (FIFO).
 const aliasCapacity = 1000
 
-// AliasIndex maps entity aliases for recall query expansion.
-// Rebuilt from entry Tags and Entities during rebuildDerivedIndexesLocked.
-//
-// Bidirectional: if "4090服务器" → "api.rapidai.tech" is registered,
-// then "api.rapidai.tech" → "4090服务器" is also stored.
+// AliasIndex maps explicit synonym pairs for recall query expansion.
+// Rebuild loads only alias:<term>=<alias> tags, scoped by entry OwnerID.
+// Co-occurring tags are not treated as synonyms.
 type AliasIndex struct {
 	mu       sync.RWMutex
 	aliases  map[string][]string // normalized term → list of known aliases
@@ -35,10 +33,14 @@ func NewAliasIndex() *AliasIndex {
 	}
 }
 
-// Expand returns known aliases for any entities found in the input.
-// Used by RecallDynamic to augment the BM25 multi-query set.
-// The returned slice is deduplicated and excludes the input entities themselves.
+// Expand returns unscoped aliases. Prefer ExpandForOwner when a caller has an owner.
 func (ai *AliasIndex) Expand(entities []string) []string {
+	return ai.ExpandForOwner(entities, "")
+}
+
+// ExpandForOwner returns aliases registered for ownerID only.
+// The returned slice is deduplicated and excludes the input entities themselves.
+func (ai *AliasIndex) ExpandForOwner(entities []string, ownerID string) []string {
 	if len(entities) == 0 {
 		return nil
 	}
@@ -56,7 +58,7 @@ func (ai *AliasIndex) Expand(entities []string) []string {
 
 	var result []string
 	for _, entity := range entities {
-		key := normalize(entity)
+		key := aliasIndexKey(ownerID, entity)
 		aliases, ok := ai.aliases[key]
 		if !ok {
 			continue
@@ -73,9 +75,47 @@ func (ai *AliasIndex) Expand(entities []string) []string {
 	return result
 }
 
-// Register adds a bidirectional alias mapping.
+// ExplicitAliasTag encodes one synonym pair. Only tags in this form are loaded
+// by Rebuild. Co-occurring labels, paths, user ids, and session ids are not aliases.
+func ExplicitAliasTag(term, alias string) string {
+	term = strings.TrimSpace(term)
+	alias = strings.TrimSpace(alias)
+	if term == "" || alias == "" || strings.Contains(term, "=") || strings.Contains(alias, "=") {
+		return ""
+	}
+	if normalize(term) == normalize(alias) {
+		return ""
+	}
+	return "alias:" + term + "=" + alias
+}
+
+func parseExplicitAliasTag(tag string) (string, string, bool) {
+	tag = strings.TrimSpace(tag)
+	if len(tag) < len("alias:x=y") || !strings.EqualFold(tag[:len("alias:")], "alias:") {
+		return "", "", false
+	}
+	term, alias, ok := strings.Cut(tag[len("alias:"):], "=")
+	term = strings.TrimSpace(term)
+	alias = strings.TrimSpace(alias)
+	if !ok || term == "" || alias == "" || normalize(term) == normalize(alias) {
+		return "", "", false
+	}
+	return term, alias, true
+}
+
+func aliasIndexKey(ownerID, term string) string {
+	return strings.TrimSpace(ownerID) + "\x00" + normalize(term)
+}
+
+// Register adds a bidirectional alias mapping for the unscoped owner.
 // For each alias in aliases, both term→alias and alias→term are stored.
 func (ai *AliasIndex) Register(term string, aliases []string) {
+	ai.RegisterForOwner("", term, aliases)
+}
+
+// RegisterForOwner stores aliases visible only to recall for that owner.
+// An empty owner does not expand into another owner's queries.
+func (ai *AliasIndex) RegisterForOwner(ownerID, term string, aliases []string) {
 	if term == "" || len(aliases) == 0 {
 		return
 	}
@@ -83,36 +123,26 @@ func (ai *AliasIndex) Register(term string, aliases []string) {
 	defer ai.mu.Unlock()
 
 	termNorm := normalize(term)
+	ownerID = strings.TrimSpace(ownerID)
 	for _, alias := range aliases {
 		if alias == "" {
 			continue
 		}
 		aliasNorm := normalize(alias)
 		if aliasNorm == termNorm {
-			continue // don't alias to self
+			continue
 		}
-
-		// term → alias
-		ai.addMappingLocked(termNorm, alias)
-		// alias → term (bidirectional)
-		ai.addMappingLocked(aliasNorm, term)
+		ai.addMappingLocked(aliasIndexKey(ownerID, term), alias)
+		ai.addMappingLocked(aliasIndexKey(ownerID, alias), term)
 	}
 }
 
-// Rebuild reconstructs the index from all active entries' Tags and Entities.
-// Pairs of tags within the same entry are considered potential aliases.
-//
-// NOTE: Complexity is O(entries × tags²) per entry. For entries with many tags
-// (>10), the inner loop generates up to C(n,2) pairs. The capacity limit (1000
-// normalized terms, FIFO eviction) bounds total memory, but rebuild time could
-// be significant for stores with 10000+ entries having many tags. In practice,
-// entries rarely have more than 5-6 tags, keeping this well within budget. If
-// profiling reveals hotspots, consider capping tags per entry to 10 during rebuild.
+// Rebuild loads explicit alias:<term>=<alias> tags and entities.
+// Tag co-occurrence is not a synonym.
 func (ai *AliasIndex) Rebuild(entries []Entry) {
 	ai.mu.Lock()
 	defer ai.mu.Unlock()
 
-	// Reset state.
 	ai.aliases = make(map[string][]string)
 	ai.order = make([]string, 0, aliasCapacity)
 
@@ -120,26 +150,17 @@ func (ai *AliasIndex) Rebuild(entries []Entry) {
 		if !entry.IsActive() {
 			continue
 		}
-		tags := entry.Tags
-		if len(tags) < 2 {
-			continue
-		}
-		// Each pair of tags in the same entry are potential aliases.
-		for i := 0; i < len(tags); i++ {
-			for j := i + 1; j < len(tags); j++ {
-				tagI := tags[i]
-				tagJ := tags[j]
-				if tagI == "" || tagJ == "" {
-					continue
-				}
-				normI := normalize(tagI)
-				normJ := normalize(tagJ)
-				if normI == normJ {
-					continue
-				}
-				ai.addMappingLocked(normI, tagJ)
-				ai.addMappingLocked(normJ, tagI)
+		ownerID := strings.TrimSpace(entry.OwnerID)
+		fields := make([]string, 0, len(entry.Tags)+len(entry.Entities))
+		fields = append(fields, entry.Tags...)
+		fields = append(fields, entry.Entities...)
+		for _, field := range fields {
+			term, alias, ok := parseExplicitAliasTag(field)
+			if !ok {
+				continue
 			}
+			ai.addMappingLocked(aliasIndexKey(ownerID, term), alias)
+			ai.addMappingLocked(aliasIndexKey(ownerID, alias), term)
 		}
 	}
 }

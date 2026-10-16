@@ -1,0 +1,23 @@
+{
+  "category": "round_limit",
+  "title": "空转达到轮次上限后阻塞",
+  "design_ref": "longhorizon-harness-plan-zh.md §9 P5 / 轮次预算",
+  "samples": [
+    {
+      "id": "repeated_ask_hits_round_limit",
+      "title": "Manager 连续 ask 达到 max_rounds 后外环阻塞",
+      "notes": "脚本用尽后重复最后一条回复，所以一条 ask 即可撑起整个样本。",
+      "user_goal": "do something vague",
+      "max_rounds": 3,
+      "manager_script": [
+        "Next: ask\nQuestion: which file should I touch?"
+      ],
+      "expected": {
+        "final_status": "blocked",
+        "completed": false,
+        "manager_nexts": ["ask", "ask", "ask"],
+        "rounds": 0
+      }
+    }
+  ]
+}

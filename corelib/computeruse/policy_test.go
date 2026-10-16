@@ -14,16 +14,19 @@ func TestAllowClickAt_BlockedWindowTitles(t *testing.T) {
 		"用户账户控制",
 		"Windows Security",
 		"锁屏",
+		"锁定屏幕",
 		"凭据管理器 Credentials",
-		"登录 - 某应用",
-		"隐私设置",
+		"UAC",
+		"Screen Recording",
 	}
 	for _, title := range blocked {
 		if err := p.AllowClickAt(100, 100, title); err == nil {
 			t.Errorf("title %q must be blocked", title)
 		}
 	}
-	allowed := []string{"", "蓝信", "Notepad", "微信", "文件资源管理器"}
+	// App login, privacy settings, and document titles are normal desktop tasks.
+	// "guacamole" contains the letters uac and must not trip the UAC token.
+	allowed := []string{"", "蓝信", "Notepad", "微信", "文件资源管理器", "登录 - 某应用", "隐私设置", "Sign in - Google Chrome", "隐私政策.docx - Word", "Guacamole", "Accessibility Insights"}
 	for _, title := range allowed {
 		if err := p.AllowClickAt(100, 100, title); err != nil {
 			t.Errorf("title %q must be allowed: %v", title, err)

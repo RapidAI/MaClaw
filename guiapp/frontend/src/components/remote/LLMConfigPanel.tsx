@@ -1,0 +1,1543 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { FetchCodeGenModels, FetchProviderModels, GetHubLLMServiceStatus, GetMaclawAgentMaxIterations, GetMaclawLLMProfilePanelState, GetMaclawLLMProviders, GetMaclawLLMThinkingMode, GetSubAgentConcurrency, ImportExternalAgents, SaveCodeGenModelChoice, SaveMaclawLLMProfiles, SaveMaclawLLMProviders, SetMaclawAgentMaxIterations, SetMaclawLLMThinkingMode, SetSubAgentConcurrency, StartOpenCodeZenLogin, TestAndSaveMaclawLLMProviders } from '../../../wailsjs/go/main/App';
+import { corelib } from '../../../wailsjs/go/models';
+import { EventsOn, EventsOff } from "../../../wailsjs/runtime";
+import { colors } from "./styles";
+import { HUB_SERVICE_PROVIDER_NAME, KNOWN_OPENAI_ENDPOINTS, LLM_CONFIG_LOAD_TIMEOUT_MS, NONE_PROVIDER, canQueryOpenAIOrganizationCosts, formatProviderTestError, formatProviderTestErrorOrFallback, hubCreditGrants, hubOfficialStatus, inputStyle, isOpenCodeProvider, isLocalImportProvider, isProviderTestCancelMessage, labelStyle, listProviderModelsForShare, nextProviderModelChoices, probeProviderModelForShare, providerModelChoices, quickFillModelCatalog, readonlyStyle, withTimeout, type HubLLMServiceStatus, type LLMProvider } from "./LLMConfigPanelShared";
+import { UsageDisplay } from "./UsageDisplay";
+import { TokenUsagePanel } from "./TokenUsagePanel";
+import { cancelNamedProviderOAuth, completeDevinPastedToken, promptKimiCodeDeviceLogin, runProviderOAuthLogin } from "./providerOAuth";
+import { isKimiCodeProvider, isLobsterAIProvider, isQoderProvider, isTraeProvider, isWorkBuddyProvider, PROVIDER_LOGOS } from "./providerLogos";
+import { useDialog } from "../CustomDialog";
+import { KNOWN_USER_AGENTS, commitCustomAgentValue, customAgentSeedForProvider, editableCustomAgentValue, effectiveAgentType, isKnownUserAgent, selectableAgentType } from "./userAgent";
+import { ProviderModelCombobox } from "./ProviderModelCombobox";
+import { useSafeBackdropDismiss } from "../../hooks/useSafeBackdropDismiss";
+import { MobileQRCodeDialog } from "./MobileQRCodeDialog";
+import { MoAConfigSection } from "./MoAConfigSection";
+import { LLMConfigToast, type LLMConfigToastData } from "./LLMConfigToast";
+import { LLMProfileAssignments } from "./LLMProfileAssignments";
+import { LLMConfigProviderLimitsFields } from "./LLMConfigProviderLimitsFields";
+import { LLMConfigDialogFooter } from "./LLMConfigDialogFooter";
+import { LLMMaxIterationsCard, LLMSubAgentConcurrencyCard, LLMThinkingModeCard } from "./LLMPanelTuningCards";
+import { LLMConfigApiKeyFields } from "./LLMConfigApiKeyFields";
+import { LLMConfigOAuthFields } from "./LLMConfigOAuthFields";
+import { LLMConfigHubOfficialCard } from "./LLMConfigHubOfficialCard";
+import { hubCapabilityModelOptions } from "../../utils/capabilityModelLabel";
+import { isProviderShareExcluded, LLMConfigProviderShareHeading, TokenBankShareChipButton } from "./TokenBankShareChipButton";
+
+interface Props {
+    lang?: string;
+    codexModels?: unknown[];
+    onStatusChange?: (online: boolean, configured: boolean) => void;
+    onProviderChanged?: () => void;
+    onRequestIdentityVerification?: () => void;
+}
+
+export function LLMConfigPanel({ lang, onStatusChange, onProviderChanged, onRequestIdentityVerification }: Props) {
+    const { showAlert, showConfirm, showPrompt } = useDialog();
+    const [providers, setProviders] = useState<LLMProvider[]>([]);
+    const [currentName, setCurrentName] = useState(NONE_PROVIDER);
+    // Keep the assignment-specific provider directory synchronized with a
+    // successful Provider management Test & Save. Wails events remain useful
+    // for other surfaces, but must not be the only refresh mechanism here.
+    const [providerListRevision, setProviderListRevision] = useState(0);
+    // An empty list is valid data. Track readiness separately so a slow local
+    // config read is never rendered as if the user selected "None".
+    const [providerListReady, setProviderListReady] = useState(false);
+    const [providerListLoading, setProviderListLoading] = useState(true);
+    const [providerListError, setProviderListError] = useState<string | null>(null);
+    const [providerLoadSlow, setProviderLoadSlow] = useState(false);
+    const [maxIter, setMaxIter] = useState(0);
+    const [subAgentConc, setSubAgentConc] = useState(2);
+    const [thinkingMode, setThinkingMode] = useState<"enabled" | "disabled">("enabled");
+    const [thinkingModeSaving, setThinkingModeSaving] = useState(false);
+    const thinkingModeSavingRef = useRef(false);
+    const [thinkingModeError, setThinkingModeError] = useState<string | null>(null);
+    const [hubServiceStatus, setHubServiceStatus] = useState<HubLLMServiceStatus | null>(null);
+
+    const [dlgOpen, setDlgOpen] = useState(false);
+    const [dlgProviders, setDlgProviders] = useState<LLMProvider[]>([]);
+    const [dlgSelectedIdx, setDlgSelectedIdx] = useState<number | null>(null);
+    const [dlgHubSelected, setDlgHubSelected] = useState(false);
+    // A locally imported current provider also produces a "nothing selected"
+    // dialog state, but that must not light up the None chip before the user
+    // picked it: the assistant is still configured with the import.
+    const [dlgNonePicked, setDlgNonePicked] = useState(false);
+    const [dlgHubModel, setDlgHubModel] = useState("");
+    const [dlgSaving, setDlgSaving] = useState(false);
+    const [dlgTestResult, setDlgTestResult] = useState<{ ok: boolean; msg: string; retryable?: boolean } | null>(null);
+    const [dlgToast, setDlgToast] = useState<LLMConfigToastData | null>(null);
+    const [dlgDirty, setDlgDirty] = useState(false);
+    const [dlgTested, setDlgTested] = useState(false);
+    const [oauthBusy, setOauthBusy] = useState(false);
+    const [oauthHint, setOauthHint] = useState("");
+    const oauthHintAttemptRef = useRef(0);
+    const oauthAttemptRef = useRef(0);
+    const [codegenModels, setCodegenModels] = useState<{id: string; name: string}[]>([]);
+    const [codegenModelsFetching, setCodegenModelsFetching] = useState(false);
+    const [providerModels, setProviderModels] = useState<{id: string; name: string}[]>([]);
+    const [providerModelsFetching, setProviderModelsFetching] = useState(false);
+    const [providerModelsError, setProviderModelsError] = useState<string | null>(null);
+    const [providerModelListOpen, setProviderModelListOpen] = useState(false);
+    const [qrDialogOpen, setQrDialogOpen] = useState(false);
+    const [importingAgents, setImportingAgents] = useState(false);
+    const importingAgentsRef = useRef(false);
+    const [openCodeLoginBusy, setOpenCodeLoginBusy] = useState(false);
+    const openCodeLoginBusyRef = useRef(false);
+    const [openCodeKeyFocusNonce, setOpenCodeKeyFocusNonce] = useState(0);
+    const dlgOpenRef = useRef(dlgOpen);
+    dlgOpenRef.current = dlgOpen;
+    const dlgProvidersRef = useRef(dlgProviders);
+    dlgProvidersRef.current = dlgProviders;
+    const loadSeqRef = useRef(0);
+    const hubStatusSeqRef = useRef(0);
+    const fetchModelsSeqRef = useRef(0);
+
+    const t = useCallback((en: string, zhHans: string, zhHant: string = zhHans) =>
+        lang === 'zh-Hans' ? zhHans : lang === 'zh-Hant' ? zhHant : en, [lang]);
+
+    const refreshProviderList = useCallback(async (): Promise<LLMProvider[] | null> => {
+        const data = await GetMaclawLLMProviders();
+        if (!Array.isArray(data?.providers)) return null;
+        const fresh = data.providers.map((provider: LLMProvider) => ({ ...provider }));
+        setDlgProviders(fresh);
+        setProviders(fresh.map((provider: LLMProvider) => ({ ...provider })));
+        setCurrentName(data.current || NONE_PROVIDER);
+        return fresh;
+    }, []);
+
+    const cancelActiveOAuth = useCallback((providerName?: string) => {
+        oauthAttemptRef.current += 1;
+        cancelNamedProviderOAuth(providerName);
+        setOauthBusy(false);
+    }, []);
+
+    const loadHubServiceStatus = useCallback(async () => {
+        const statusSeq = ++hubStatusSeqRef.current;
+        try {
+            const status = await GetHubLLMServiceStatus() as HubLLMServiceStatus;
+            if (statusSeq !== hubStatusSeqRef.current) return;
+            setHubServiceStatus(status || null);
+        } catch {
+            if (statusSeq !== hubStatusSeqRef.current) return;
+            setHubServiceStatus(null);
+        }
+    }, []);
+
+    const applyProviderList = useCallback((data: unknown) => {
+        const result = data as { providers?: LLMProvider[]; current?: string } | null | undefined;
+        if (!Array.isArray(result?.providers)) {
+            throw new Error("provider list is unavailable");
+        }
+        setProviders(result.providers.map(provider => ({ ...provider })));
+        setCurrentName(result.current || NONE_PROVIDER);
+        setProviderListReady(true);
+        setProviderListLoading(false);
+        setProviderListError(null);
+        setProviderLoadSlow(false);
+        void loadHubServiceStatus();
+    }, [loadHubServiceStatus]);
+
+    const saveThinkingMode = useCallback(async (mode: "enabled" | "disabled") => {
+        if (thinkingModeSavingRef.current || mode === thinkingMode) return;
+        const previous = thinkingMode;
+        thinkingModeSavingRef.current = true;
+        setThinkingMode(mode);
+        setThinkingModeSaving(true);
+        setThinkingModeError(null);
+        try {
+            await SetMaclawLLMThinkingMode(mode);
+        } catch {
+            setThinkingMode(previous);
+            setThinkingModeError(t(
+                "Couldn't save the reasoning setting. Check the connection and try again.",
+                "推理设置未能保存。请检查连接后重试。",
+            ));
+        } finally {
+            thinkingModeSavingRef.current = false;
+            setThinkingModeSaving(false);
+        }
+    }, [t, thinkingMode]);
+
+    const handleOAuthLogin = useCallback(async () => {
+        const oauthAttempt = ++oauthAttemptRef.current;
+        const providerName = (dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx]?.name : undefined) || "OpenAI";
+        setOauthBusy(true);
+        setDlgTestResult(null);
+        try {
+            const loginMessage = await runProviderOAuthLogin({
+                providerName,
+                t,
+                showPrompt,
+                onDeviceHint: hint => {
+                    // The device code must be on screen while the wait runs,
+                    // or the user cannot finish the browser login at all. A
+                    // cancelled or superseded attempt must never paint its
+                    // dead code over the live attempt's hint.
+                    if (oauthAttempt !== oauthAttemptRef.current) return;
+                    oauthHintAttemptRef.current = oauthAttempt;
+                    setOauthHint(hint);
+                },
+                setTestResult: setDlgTestResult,
+            });
+            // `null` = the user cancelled mid-flow; a superseded attempt must
+            // never touch the live attempt's state either.
+            if (loginMessage === null || oauthAttempt !== oauthAttemptRef.current) return;
+
+            const fresh = await refreshProviderList();
+            if (fresh) {
+                // Authentication and model connectivity are separate states.
+                // The backend keeps OAuth providers out of profile assignments
+                // until a real model probe has persisted this flag.
+                const authenticatedProvider = fresh.find((p: LLMProvider) => p.name === providerName);
+                const connectionVerified = !!authenticatedProvider?.connection_test_passed;
+                loadHubServiceStatus().catch(() => {});
+                const oaIdx = fresh.findIndex((p: LLMProvider) => p.name === providerName);
+                if (oaIdx >= 0) setDlgSelectedIdx(oaIdx);
+                setDlgDirty(!connectionVerified);
+                setDlgTested(connectionVerified);
+                onStatusChange?.(true, true);
+                onProviderChanged?.();
+                if (!connectionVerified) {
+                    if (providerName === "Devin") {
+                        setDlgTestResult({
+                            ok: true,
+                            msg: loginMessage || t(
+                                "Devin login successful. Fetch and choose a model before chatting.",
+                                "Devin 登录成功。对话前请先获取并选择模型。",
+                            ),
+                        });
+                        return;
+                    }
+                    setDlgTestResult({
+                        // Credentials are saved, but the provider is not yet
+                        // assignable. This is an actionable warning, not a
+                        // failed OAuth login.
+                        ok: true,
+                        retryable: true,
+                        msg: t(
+                            "OAuth authenticated, but the model connection is not verified. Click Test & Save to retry.",
+                            "OAuth 已认证，但模型连接尚未验证。请点击“检测并保存”重试。",
+                        ),
+                    });
+                    return;
+                }
+                setProviderListRevision(revision => revision + 1);
+                setDlgTestResult({
+                    ok: true,
+                    msg: loginMessage || t("OAuth login successful", "OAuth 登录成功"),
+                });
+                setTimeout(() => setDlgOpen(false), 1200);
+            }
+        } catch (e) {
+            if (oauthAttempt !== oauthAttemptRef.current) return;
+            setDlgTestResult({ ok: false, msg: String(e) });
+        } finally {
+            if (oauthAttempt === oauthAttemptRef.current) {
+                setOauthBusy(false);
+            }
+            if (oauthHintAttemptRef.current === oauthAttempt) {
+                setOauthHint("");
+            }
+        }
+    }, [t, dlgProviders, dlgSelectedIdx, onStatusChange, onProviderChanged, loadHubServiceStatus, refreshProviderList, showPrompt]);
+
+    const loadProviders = useCallback(async () => {
+        const loadSeq = ++loadSeqRef.current;
+        setProviderListLoading(true);
+        setProviderListError(null);
+        setProviderLoadSlow(false);
+        console.info("[LLMConfigPanel] load start");
+        try {
+            // Provider configuration is local, authoritative state. Do not
+            // impose a UI deadline on it: on slower computers it can arrive
+            // after the other settings calls and must still populate the UI.
+            // Normalize a bridge-side synchronous throw into the same error
+            // path as an asynchronous rejection. Without this, a failed Wails
+            // bridge initialization could leave the provider-management action disabled
+            // forever on the first render.
+            const providerRequest = Promise.resolve().then(() => GetMaclawLLMProviders());
+            void providerRequest.then(data => {
+                if (loadSeq !== loadSeqRef.current) return;
+                try {
+                    applyProviderList(data);
+                    console.info("[LLMConfigPanel] providers loaded");
+                } catch (error) {
+                    setProviderListLoading(false);
+                    setProviderListError(t("Couldn't read LLM providers. Click retry.", "无法读取大模型服务商，可点击重试。"));
+                    setProviderLoadSlow(false);
+                    console.warn("[LLMConfigPanel] provider response invalid", error);
+                }
+            }).catch(error => {
+                if (loadSeq !== loadSeqRef.current) return;
+                setProviderListLoading(false);
+                setProviderListError(t("Couldn't read LLM providers. Click retry.", "无法读取大模型服务商，可点击重试。"));
+                setProviderLoadSlow(false);
+                console.warn("[LLMConfigPanel] providers load failed", error);
+            });
+
+            const [iterResult, concResult, thinkingResult] = await Promise.allSettled([
+                withTimeout(GetMaclawAgentMaxIterations(), LLM_CONFIG_LOAD_TIMEOUT_MS, "GetMaclawAgentMaxIterations"),
+                withTimeout(GetSubAgentConcurrency(), LLM_CONFIG_LOAD_TIMEOUT_MS, "GetSubAgentConcurrency"),
+                withTimeout(GetMaclawLLMThinkingMode(), LLM_CONFIG_LOAD_TIMEOUT_MS, "GetMaclawLLMThinkingMode"),
+            ]);
+            if (loadSeq !== loadSeqRef.current) return;
+
+            let failed = false;
+
+            if (iterResult.status === "fulfilled") {
+                const iter = iterResult.value;
+                setMaxIter(typeof iter === "number" ? iter : 0);
+                console.info("[LLMConfigPanel] max iterations loaded");
+            } else {
+                failed = true;
+                setMaxIter(0);
+                console.warn("[LLMConfigPanel] max iterations load failed", iterResult.reason);
+            }
+
+            if (concResult.status === "fulfilled") {
+                const conc = concResult.value;
+                setSubAgentConc(typeof conc === "number" && conc >= 1 ? conc : 2);
+                console.info("[LLMConfigPanel] subagent concurrency loaded");
+            } else {
+                setSubAgentConc(2);
+                console.warn("[LLMConfigPanel] subagent concurrency load failed", concResult.reason);
+            }
+
+            if (thinkingResult.status === "fulfilled") {
+                const mode = thinkingResult.value;
+                // Unset/legacy "auto" resolves to enabled on the backend.
+                setThinkingMode(mode === "disabled" ? "disabled" : "enabled");
+                console.info("[LLMConfigPanel] thinking mode loaded");
+            } else {
+                setThinkingMode("enabled");
+                console.warn("[LLMConfigPanel] thinking mode load failed", thinkingResult.reason);
+            }
+
+            if (failed) {
+                console.warn("[LLMConfigPanel] one or more supporting settings failed to load");
+            }
+        } finally {
+            if (loadSeq === loadSeqRef.current) {
+                console.info("[LLMConfigPanel] supporting settings load finished");
+            }
+        }
+    }, [applyProviderList, t]);
+
+    useEffect(() => { loadProviders(); }, [loadProviders]);
+    useEffect(() => { loadHubServiceStatus(); }, [loadHubServiceStatus]);
+
+    // Wails calls cannot be cancelled, so invalidate in-flight responses when
+    // this panel unmounts. This prevents a late local-file read from updating
+    // a remounted or already-disposed settings view.
+    useEffect(() => () => {
+        loadSeqRef.current += 1;
+        hubStatusSeqRef.current += 1;
+        fetchModelsSeqRef.current += 1;
+    }, []);
+
+    // Five seconds is only a feedback threshold. The provider read itself is
+    // intentionally not cancelled: older machines may still complete it.
+    useEffect(() => {
+        if (!providerListLoading) return;
+        const timer = window.setTimeout(() => setProviderLoadSlow(true), LLM_CONFIG_LOAD_TIMEOUT_MS);
+        return () => window.clearTimeout(timer);
+    }, [providerListLoading]);
+
+    // Reload providers and hub service status when the Hub LLM service changes
+    // (e.g. after a successful redemption in the HubServiceRedeemPanel tab).
+    useEffect(() => {
+        const handler = () => {
+            console.info("[LLMConfigPanel] hub-llm-service-changed event received, reloading");
+            loadProviders();
+        };
+        const cleanup = EventsOn("hub-llm-service-changed", handler);
+        return () => { if (typeof cleanup === 'function') cleanup(); else EventsOff("hub-llm-service-changed"); };
+    }, [loadProviders]);
+
+    useEffect(() => {
+        const handler = () => { void loadProviders(); };
+        const cleanup = EventsOn("llm-profiles-changed", handler);
+        return () => { if (typeof cleanup === 'function') cleanup(); else EventsOff("llm-profiles-changed"); };
+    }, [loadProviders]);
+
+    const isNone = providerListReady && currentName === NONE_PROVIDER;
+    const canConfigureProviders = providerListReady;
+    const hasHubEntitlement = !!hubServiceStatus?.active || hubCreditGrants(hubServiceStatus).length > 0;
+    const hubOfficial = hubOfficialStatus(hubServiceStatus, lang, t);
+    const hasHubProviderInDialog = dlgProviders.some(p => p.name === HUB_SERVICE_PROVIDER_NAME);
+    const hubSelectionAlreadySynced = currentName === HUB_SERVICE_PROVIDER_NAME && hasHubProviderInDialog;
+    const hubAvailableModels = (hubServiceStatus?.available_models || []).filter(Boolean);
+    const hubProviderInDialog = dlgProviders.find(p => p.name === HUB_SERVICE_PROVIDER_NAME);
+    const savedHubModel = String(hubProviderInDialog?.model || hubServiceStatus?.default_model || "auto").trim() || "auto";
+    const selectedHubModel = dlgHubModel || savedHubModel;
+    const hubModelOptions = (() => {
+        const options = hubCapabilityModelOptions(hubAvailableModels);
+        return options.some(id => id.toLowerCase() === selectedHubModel.toLowerCase())
+            ? options
+            : [selectedHubModel, ...options];
+    })();
+    const hubModelDirty = dlgHubModel !== "" && dlgHubModel.toLowerCase() !== savedHubModel.toLowerCase();
+
+    /* ── Dialog helpers ── */
+
+    const openDialog = useCallback(() => {
+        const snapshot = providers.map(p => ({ ...p }));
+        setDlgProviders(snapshot);
+        // When the current provider is the Hub service, pre-select the dedicated Hub button
+        if (currentName === HUB_SERVICE_PROVIDER_NAME && hasHubEntitlement) {
+            setDlgSelectedIdx(null);
+            setDlgHubSelected(true);
+        } else {
+            const idx = currentName === NONE_PROVIDER ? null : snapshot.findIndex(p => p.name === currentName);
+            // Locally imported agents are never listed or selected inside
+            // provider management; if one is current, the dialog opens with
+            // no selection and an info strip explains the situation.
+            const matchedImport = idx !== null && idx >= 0 && isLocalImportProvider(snapshot[idx]);
+            if (matchedImport) {
+                setDlgSelectedIdx(null);
+                setDlgHubSelected(false);
+            } else {
+                const matched = idx !== null && idx >= 0;
+                const shouldSelectHub = !matched && hasHubEntitlement;
+                setDlgSelectedIdx(shouldSelectHub ? null : (matched ? idx : null));
+                setDlgHubSelected(shouldSelectHub);
+            }
+        }
+        setDlgSaving(false);
+        setDlgTestResult(null);
+        setDlgDirty(false);
+        setDlgTested(false);
+        setDlgNonePicked(false);
+        setDlgHubModel("");
+        setDlgOpen(true);
+    }, [providers, currentName, hasHubEntitlement, providerListReady]);
+
+    const handleProfilesSaved = useCallback(() => {
+        void loadProviders();
+        onProviderChanged?.();
+    }, [loadProviders, onProviderChanged]);
+
+    const handleImportExternalAgents = useCallback(async () => {
+        if (importingAgentsRef.current) return;
+        importingAgentsRef.current = true;
+        setImportingAgents(true);
+        const selectedName = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx]?.name : undefined;
+        const keepHub = dlgHubSelected;
+        try {
+            const result = await ImportExternalAgents() as { imported?: string[]; skipped?: { source?: string; name?: string; reason?: string }[]; current?: string };
+            const fresh = await refreshProviderList();
+            if (!fresh) {
+                await loadProviders();
+            } else if (dlgOpen) {
+                if (keepHub) {
+                    setDlgHubSelected(true);
+                    setDlgSelectedIdx(null);
+                } else if (selectedName) {
+                    const idx = fresh.findIndex(provider => provider.name === selectedName);
+                    setDlgSelectedIdx(idx >= 0 ? idx : null);
+                    setDlgHubSelected(false);
+                }
+            }
+            setProviderListRevision(revision => revision + 1);
+            onProviderChanged?.();
+            const imported = result?.imported || [];
+            const skipped = result?.skipped || [];
+            const importedText = imported.length
+                ? t(`Imported: ${imported.join(", ")}`, `已导入：${imported.join("、")}`)
+                : t("No new providers imported.", "没有新的服务商导入。");
+            const skippedText = skipped
+                .filter(item => item.reason)
+                .map(item => `${item.name || item.source || t("Agent", "Agent")}: ${item.reason}`)
+                .join("\n");
+            await showAlert(skippedText ? `${importedText}\n${skippedText}` : importedText);
+        } catch (e) {
+            await showAlert(String(e));
+        } finally {
+            importingAgentsRef.current = false;
+            setImportingAgents(false);
+        }
+    }, [dlgHubSelected, dlgOpen, dlgProviders, dlgSelectedIdx, loadProviders, onProviderChanged, refreshProviderList, showAlert, t]);
+
+    const handleOpenCodeLogin = useCallback(async () => {
+        if (openCodeLoginBusyRef.current) return;
+        openCodeLoginBusyRef.current = true;
+        setOpenCodeLoginBusy(true);
+        setDlgTestResult(null);
+        const selectedIdx = dlgSelectedIdx;
+        try {
+            const result = await StartOpenCodeZenLogin() as { message?: string; key?: string };
+            const localKey = (result?.key || "").trim();
+            const current = selectedIdx !== null ? dlgProvidersRef.current[selectedIdx] : undefined;
+            const filledLocalKey = !!(localKey && current && !(current.key || "").trim() && isOpenCodeProvider(current));
+            if (filledLocalKey && selectedIdx !== null) {
+                setDlgProviders(prev => prev.map((p, i) =>
+                    i === selectedIdx && !(p.key || "").trim() && isOpenCodeProvider(p)
+                        ? { ...p, key: localKey, connection_test_passed: false }
+                        : p
+                ));
+                setDlgDirty(true);
+                setDlgTested(false);
+            }
+            if (dlgOpenRef.current) setOpenCodeKeyFocusNonce(n => n + 1);
+            setDlgTestResult({
+                ok: true,
+                msg: filledLocalKey
+                    ? t(
+                        "Opened OpenCode and filled the local key. Test & Save to finish.",
+                        "已打开 OpenCode，并填入本机 Key。请检测并保存。",
+                      )
+                    : t(
+                        "Opened OpenCode. Copy the key from API Keys and paste it below, then Test & Save.",
+                        "已打开 OpenCode。请到 API Keys 复制密钥，粘贴到下方后检测并保存。",
+                      ),
+            });
+        } catch (e) {
+            setDlgTestResult({ ok: false, msg: String(e) });
+        } finally {
+            openCodeLoginBusyRef.current = false;
+            setOpenCodeLoginBusy(false);
+        }
+    }, [dlgSelectedIdx, t]);
+
+    const closeDialog = useCallback(async () => {
+        if (oauthBusy) return;
+        if (dlgSaving) return;
+        setDlgOpen(false);
+    }, [dlgSaving, oauthBusy]);
+    useEffect(() => {
+        if (!dlgOpen) setOpenCodeKeyFocusNonce(0);
+    }, [dlgOpen]);
+    const { backdropProps: configDialogBackdropProps, dialogProps: configDialogProps } = useSafeBackdropDismiss(closeDialog);
+
+    // Escape key to close dialog
+    useEffect(() => {
+        if (!dlgOpen) return;
+        const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") closeDialog(); };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [dlgOpen, closeDialog]);
+
+    useEffect(() => {
+        if (!dlgTestResult) {
+            setDlgToast(null);
+            return;
+        }
+        const raw = String(dlgTestResult.msg || "").trim();
+        const saved = t("Saved", "\u5df2\u4fdd\u5b58");
+        const isSavedOnly = raw === saved || raw === "Saved" || raw === "\u5df2\u4fdd\u5b58";
+        // Failures stay in the dialog footer, including Hub activate errors.
+        // A second toast would hide the reason after 10s and announce twice.
+        if (!dlgTestResult.ok) {
+            setDlgToast(null);
+            return;
+        }
+        const title = dlgHubSelected
+            ? raw
+            : dlgTestResult.retryable
+                ? t("Model test required", "需要检测模型连接")
+            : (isSavedOnly ? saved : t("Connection OK, saved", "\u8fde\u63a5\u6210\u529f\uff0c\u5df2\u4fdd\u5b58"));
+        const detail = dlgHubSelected || isSavedOnly ? "" : formatProviderTestError(raw, t);
+        setDlgToast({ ok: true, title, detail });
+        const timeout = window.setTimeout(() => setDlgToast(null), 7000);
+        return () => window.clearTimeout(timeout);
+    }, [dlgHubSelected, dlgTestResult, t]);
+
+    const dlgFailureReason = useMemo(() => (
+        dlgTestResult && !dlgTestResult.ok ? formatProviderTestErrorOrFallback(dlgTestResult.msg, t) : undefined
+    ), [dlgTestResult, t]);
+    const dlgFailureTitle = dlgTestResult && !dlgTestResult.ok && isProviderTestCancelMessage(dlgTestResult.msg)
+        ? t("unsaved", "\u672a\u4fdd\u5b58")
+        : undefined;
+
+    const dlgAuthType = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx]?.auth_type : undefined;
+
+    useEffect(() => {
+        if (!dlgOpen || dlgAuthType !== "sso") {
+            setCodegenModels([]);
+            setCodegenModelsFetching(false);
+            return;
+        }
+        let cancelled = false;
+        setCodegenModelsFetching(true);
+        FetchCodeGenModels().then(models => {
+            if (cancelled) return;
+            setCodegenModels(models || []);
+        }).catch(() => {
+            if (!cancelled) setCodegenModels([]);
+        }).finally(() => {
+            if (!cancelled) setCodegenModelsFetching(false);
+        });
+        return () => { cancelled = true; };
+    }, [dlgOpen, dlgAuthType]);
+
+    useEffect(() => {
+        setProviderModels([]);
+        setProviderModelsError(null);
+        setProviderModelListOpen(false);
+    }, [dlgSelectedIdx, dlgOpen]);
+
+    useEffect(() => {
+        if (!dlgOpen || dlgSelectedIdx === null) return;
+        const selected = dlgProviders[dlgSelectedIdx];
+        if (!selected?.import_source) return;
+        setProviderModels(providerModelChoices(selected));
+        setProviderModelsError(null);
+    }, [dlgOpen, dlgSelectedIdx, dlgProviders]);
+
+    useEffect(() => {
+        if (!dlgOpen || dlgSelectedIdx === null) return;
+        const selected = dlgProviders[dlgSelectedIdx];
+        if (!selected || selected.import_source) return;
+        // Replace the dropdown when the saved ids change. An unchanged catalog
+        // keeps the list already on screen, including names from Fetch.
+        setProviderModels(prev => nextProviderModelChoices(prev, selected));
+    }, [dlgOpen, dlgSelectedIdx, dlgProviders]);
+
+    const dlgIsNone = dlgSelectedIdx === null && !dlgHubSelected;
+    const dlgProvider = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx] ?? null : null;
+    // True when the assistant's current provider is a locally imported agent:
+    // the dialog explains where that credential is managed instead of
+    // pretending the assistant is unconfigured.
+    const currentIsLocalImport = !!providers.find(p => p.name === currentName && isLocalImportProvider(p));
+    const dlgNeedsOAuthLogin = !!dlgProvider &&
+        (dlgProvider.auth_type === "oauth" || dlgProvider.auth_type === "sso") &&
+        !dlgProvider.key;
+
+    // --- Token Bank share helpers (§7.1) ---------------------------------
+    // Implementations live in LLMConfigPanelShared so this file stays under its
+    // 1600-line guard; they reuse the same model discovery and provider test the
+    // normal dialog uses, so there is one source of truth about whether a
+    // provider works.
+    const shareModelAccess = useMemo(
+        () => ({
+            listModels: (provider: LLMProvider) => listProviderModelsForShare(provider),
+            probeModel: (provider: LLMProvider, model: string) => probeProviderModelForShare(provider, model, t),
+        }),
+        [t],
+    );
+
+    const handleFetchProviderModels = useCallback(async () => {
+        if (!dlgProvider || !dlgProvider.url) return;
+        const isManagedAuth = dlgProvider.auth_type === "oauth" || dlgProvider.auth_type === "sso";
+        if (!isManagedAuth && !dlgProvider.key) {
+            setProviderModelsError(t("Please fill in API Key first", "请先填写 API Key"));
+            return;
+        }
+        const fetchSeq = ++fetchModelsSeqRef.current;
+        const fetchUrl = dlgProvider.url;
+        const fetchKey = dlgProvider.key || "";
+        const fetchProtocol = dlgProvider.protocol || "openai";
+        const fetchAgent = effectiveAgentType(dlgProvider);
+        setProviderModelsFetching(true);
+        setProviderModelsError(null);
+        setProviderModels([]);
+        setProviderModelListOpen(false);
+        try {
+            const models = await FetchProviderModels(fetchUrl, fetchKey, fetchProtocol, fetchAgent);
+            if (fetchSeq !== fetchModelsSeqRef.current) return;
+            setProviderModels(models || []);
+            const ids = (models || []).map(item => String(item?.id || "").trim()).filter(Boolean);
+            if (ids.length > 0 && dlgSelectedIdx !== null) {
+                setDlgProviders(prev => {
+                    const copy = [...prev];
+                    const current = copy[dlgSelectedIdx];
+                    if (!current) return prev;
+                    const merged: string[] = [];
+                    const seen = new Set<string>();
+                    const add = (value: string) => {
+                        const next = String(value || "").trim();
+                        if (!next) return;
+                        const key = next.toLowerCase();
+                        if (seen.has(key)) return;
+                        seen.add(key);
+                        merged.push(next);
+                    };
+                    ids.forEach(add);
+                    (current.models || []).forEach(add);
+                    add(current.model || "");
+                    copy[dlgSelectedIdx] = { ...current, models: merged };
+                    return copy;
+                });
+                setDlgDirty(true);
+            }
+            if (!models || models.length === 0) {
+                setProviderModelsError(t("No models returned", "服务商返回了空的模型列表"));
+                setProviderModelListOpen(false);
+            } else {
+                setProviderModelListOpen(true);
+            }
+        } catch (e) {
+            if (fetchSeq !== fetchModelsSeqRef.current) return;
+            const msg = String(e);
+            if (isManagedAuth && /API Key 为空|API Key is empty|OAuth\/SSO/i.test(msg)) {
+                setProviderModelsError(t(
+                    "Please complete OAuth login first (token is managed internally)",
+                    "请先完成 OAuth 登录（凭证由内部管理，无需填写 API Key）",
+                ));
+            } else {
+                setProviderModelsError(msg);
+            }
+            setProviderModels([]);
+            setProviderModelListOpen(false);
+        } finally {
+            if (fetchSeq === fetchModelsSeqRef.current) {
+                setProviderModelsFetching(false);
+            }
+        }
+    }, [dlgProvider, dlgSelectedIdx, t]);
+
+    const dlgUpdateField = useCallback((field: keyof LLMProvider, value: string) => {
+        if (dlgSelectedIdx === null) return;
+        setDlgProviders(prev => {
+            const copy = [...prev];
+            const parsed: string | number = (field === "context_length" || field === "max_output_tokens") ? (parseInt(value, 10) || 0) : value;
+            const previous = copy[dlgSelectedIdx];
+            // Vision is a model capability, never a provider-wide promise.
+            // Keep the old model's confirmed result in the backend history and
+            // require a probe/manual confirmation for the newly selected one.
+            const modelChanged = field === "model" && String(previous.model || '').trim() !== String(parsed || '').trim();
+            copy[dlgSelectedIdx] = {
+                ...previous,
+                [field]: parsed,
+                ...(modelChanged ? { supports_vision: false } : {}),
+				// A connection test proves one exact endpoint, credential,
+				// model and protocol combination. Any edit to those fields
+				// requires a fresh successful test before it is assignable.
+				...(["url", "key", "model", "protocol", "agent_type", "wire_api"].includes(field)
+					? { connection_test_passed: false }
+					: {}),
+            };
+            return copy;
+        });
+        setDlgDirty(true);
+        setDlgTestResult(null);
+        // Reset tested flag when core connection fields change so re-test is required
+        if (["url", "key", "model", "protocol", "agent_type", "wire_api"].includes(field)) {
+            setDlgTested(false);
+        }
+    }, [dlgSelectedIdx]);
+
+    const withVisionResultForCurrentModel = useCallback((provider: LLMProvider, supportsVision: boolean): LLMProvider => {
+        const model = String(provider.model || '').trim();
+        if (!model) return { ...provider, supports_vision: supportsVision };
+        const seen = new Set<string>();
+        const otherVisionModels = (provider.vision_models || []).flatMap((entry) => {
+            const value = String(entry || '').trim();
+            const key = value.toLowerCase();
+            if (!value || key === model.toLowerCase() || seen.has(key)) return [];
+            seen.add(key);
+            return [value];
+        });
+        return {
+            ...provider,
+            supports_vision: supportsVision,
+            vision_models: supportsVision ? [...otherVisionModels, model] : otherVisionModels,
+        };
+    }, []);
+
+    const dlgSelectProvider = useCallback((idx: number | null) => {
+        setDlgSelectedIdx(idx);
+        setDlgHubSelected(false);
+        setDlgNonePicked(idx === null);
+        setDlgDirty(true);
+        setDlgTestResult(null);
+        setDlgTested(false);
+    }, []);
+
+    const dlgSelectHubService = useCallback(() => {
+        setDlgSelectedIdx(null);
+        setDlgHubSelected(true);
+        setDlgNonePicked(false);
+        setDlgDirty(false);
+        setDlgTestResult(null);
+        setDlgTested(false);
+    }, []);
+
+    /** Write the chosen official band onto every profile that uses MaClaw Official. */
+    const saveHubCapabilityModel = useCallback(async (model: string) => {
+        const state = await GetMaclawLLMProfilePanelState() as {
+            providers?: Array<{ id?: string; name?: string; is_hub_service?: boolean }>;
+            profiles?: {
+                assistant?: { provider_id?: string; model?: string };
+                coding?: { provider_id?: string; model?: string; inherit_assistant?: boolean };
+                caption?: { provider_id?: string; model?: string };
+                horizon?: { manager?: { provider_id?: string; model?: string }; auditor?: { provider_id?: string; model?: string }; executor?: { provider_id?: string; model?: string } };
+            };
+            revision?: string;
+        };
+        const hub = (state.providers || []).find(provider => provider.is_hub_service || provider.name === HUB_SERVICE_PROVIDER_NAME);
+        const hubID = String(hub?.id || "").trim();
+        if (!hubID || !state.profiles || !state.revision) {
+            throw new Error(t("Could not save the MaClaw Official model.", "无法保存 MaClaw 官方模型。"));
+        }
+        const next = JSON.parse(JSON.stringify(state.profiles)) as NonNullable<typeof state.profiles>;
+        const assign = (row?: { provider_id?: string; model?: string; inherit_assistant?: boolean }, independent = false) => {
+            if (!row || (independent && row.inherit_assistant)) return;
+            if (String(row.provider_id || "").trim() === hubID) row.model = model;
+        };
+        assign(next.assistant);
+        assign(next.coding, true);
+        assign(next.caption);
+        assign(next.horizon?.manager);
+        assign(next.horizon?.auditor);
+        assign(next.horizon?.executor);
+        await SaveMaclawLLMProfiles(next as never, state.revision);
+    }, [t]);
+
+    /** Save Hub service as the current LLM provider (no test needed — Hub-managed). */
+    const dlgHandleSaveHubService = useCallback(async () => {
+        if (hubSelectionAlreadySynced && !hubModelDirty) return;
+        setDlgSaving(true);
+        setDlgTestResult(null);
+        try {
+            if (hubSelectionAlreadySynced) {
+                await saveHubCapabilityModel(selectedHubModel);
+            } else {
+                await SaveMaclawLLMProviders(dlgProviders as corelib.MaclawLLMProvider[], HUB_SERVICE_PROVIDER_NAME);
+            }
+            try {
+                const freshData = await GetMaclawLLMProviders();
+                const fresh = (freshData?.providers || dlgProviders).map((p: LLMProvider) => ({ ...p }));
+                setDlgProviders(fresh);
+                setProviders(fresh.map((p: LLMProvider) => ({ ...p })));
+                setCurrentName(freshData?.current || HUB_SERVICE_PROVIDER_NAME);
+            } catch {
+                setProviders(dlgProviders.map(p => ({ ...p })));
+                setCurrentName(HUB_SERVICE_PROVIDER_NAME);
+            }
+            onStatusChange?.(true, true);
+            onProviderChanged?.();
+            setProviderListRevision(revision => revision + 1);
+            setDlgHubModel("");
+            setDlgTestResult({ ok: true, msg: t("Saved", "已保存") });
+            setTimeout(() => setDlgOpen(false), 800);
+        } catch (e) {
+            setDlgTestResult({ ok: false, msg: String(e) });
+            setDlgSaving(false);
+        }
+    }, [dlgProviders, hubModelDirty, hubSelectionAlreadySynced, onProviderChanged, onStatusChange, saveHubCapabilityModel, selectedHubModel, t]);
+
+    const dlgQuickFill = useCallback((epName: string) => {
+        const ep = KNOWN_OPENAI_ENDPOINTS.find(x => x.name === epName);
+        if (!ep || dlgSelectedIdx === null) return;
+        setDlgProviders(prev => {
+            const copy = [...prev];
+            const previous = copy[dlgSelectedIdx];
+            if (!previous) return prev;
+            const switchesManagedAuth = previous.auth_type === "oauth" || ep.auth_type === "oauth";
+            copy[dlgSelectedIdx] = {
+                ...previous,
+                name: ep.name,
+                url: ep.url,
+                model: ep.model || "",
+                models: quickFillModelCatalog(previous, ep),
+                protocol: ep.protocol || "openai",
+                auth_type: ep.auth_type || "",
+                // A provider switch must never reuse a token from a different
+                // authentication scheme or show it as a completed OAuth login.
+                key: switchesManagedAuth ? "" : previous.key,
+                refresh_token: switchesManagedAuth ? "" : previous.refresh_token,
+                oauth_access_token: switchesManagedAuth ? "" : previous.oauth_access_token,
+                token_expires_at: switchesManagedAuth ? 0 : previous.token_expires_at,
+                wire_api: ep.wire_api || "",
+                agent_type: ep.agent_type || "",
+                context_length: ep.context_length || 128000,
+				connection_test_passed: false,
+            };
+            return copy;
+        });
+        setDlgDirty(true);
+        setDlgTestResult(null);
+    }, [dlgSelectedIdx]);
+
+    const dlgHandleSave = async () => {
+        if (dlgIsNone) {
+            setDlgSaving(true);
+            try {
+                await SaveMaclawLLMProviders(dlgProviders as corelib.MaclawLLMProvider[], NONE_PROVIDER);
+                setDlgDirty(false);
+                setProviders(dlgProviders.map(p => ({ ...p })));
+                setCurrentName(NONE_PROVIDER);
+                onStatusChange?.(false, false);
+                onProviderChanged?.();
+                setDlgOpen(false);
+            } catch (e) { showAlert(String(e)); }
+            setDlgSaving(false);
+            return;
+        }
+        const sp = dlgProviders[dlgSelectedIdx!];
+        if (!sp) return;
+        setDlgSaving(true);
+        setDlgTestResult(null);
+
+        // OAuth login performs an initial best-effort probe, but it can fail
+        // after credentials have already been saved. A later Test & Save must
+        // therefore execute the same authoritative probe as every provider.
+        if (sp.auth_type === "oauth") {
+            if (!sp.key) {
+                setDlgSaving(false);
+                setDlgTestResult({
+                    ok: false,
+                    msg: t("Please complete OAuth login before saving", "请先完成 OAuth 登录再保存"),
+                });
+                return;
+            }
+            try {
+                const saveName = sp.name;
+                const testResult = await TestAndSaveMaclawLLMProviders(
+                    dlgProviders as corelib.MaclawLLMProvider[], saveName, saveName,
+                );
+                const visionProbeInconclusive = testResult.vision_probe_status === "inconclusive";
+                try {
+                    await refreshProviderList();
+                } catch {
+                    // Test & Save already persisted the authoritative result.
+                }
+                setDlgDirty(false);
+                setCurrentName(saveName);
+                setProviderListRevision(revision => revision + 1);
+                setDlgTested(true);
+                onStatusChange?.(!!sp.key, !!sp.key);
+                onProviderChanged?.();
+                setDlgTestResult({
+                    ok: true,
+                    msg: `${testResult.message}\n${visionProbeInconclusive
+                        ? t("Vision support: not confirmed; please retry", "图片理解：未确认，请重试")
+                        : testResult.supports_vision
+                            ? t("Vision support: enabled", "图片理解：支持")
+                            : t("Vision support: disabled", "图片理解：不支持")}`,
+                });
+                setTimeout(() => setDlgOpen(false), 800);
+                return;
+            } catch (e) {
+                setDlgTestResult({ ok: false, msg: String(e) });
+            }
+            setDlgSaving(false);
+            return;
+        }
+
+        try {
+            // If already tested successfully, just save without re-testing.
+            // This allows the user to toggle supports_vision after a test
+            // without the probe overwriting their manual choice.
+            if (dlgTested) {
+                const saveName = sp.name;
+                await SaveMaclawLLMProviders(dlgProviders as corelib.MaclawLLMProvider[], saveName);
+                setDlgDirty(false);
+                try {
+                    if (!await refreshProviderList()) {
+                        setProviders(dlgProviders.map(p => ({ ...p })));
+                    }
+                } catch {
+                    // The save is durable even if this read fails; retain the
+                    // current editable snapshot until the next refresh.
+                    setProviders(dlgProviders.map(p => ({ ...p })));
+                }
+                setCurrentName(saveName);
+                setProviderListRevision(revision => revision + 1);
+                onStatusChange?.(true, true);
+                onProviderChanged?.();
+                setDlgTestResult({ ok: true, msg: t("Saved", "已保存") });
+                setTimeout(() => setDlgOpen(false), 800);
+                return;
+            }
+
+            // The backend owns the successful-test proof and rejects a raced
+            // save, so a browser caller cannot forge assignability.
+            const saveName = sp.name;
+			const testResult = await TestAndSaveMaclawLLMProviders(
+				dlgProviders as corelib.MaclawLLMProvider[],
+				saveName,
+				saveName,
+			);
+			const visionProbeInconclusive = testResult.vision_probe_status === "inconclusive";
+			if (sp.auth_type === "sso" && sp.model) {
+				await SaveCodeGenModelChoice(sp.model, sp.model).catch(() => {});
+			}
+
+            // Refresh the provider snapshot from the backend so all persisted
+            // fields (including connection_test_passed and capability data)
+            // are reflected before model assignments refresh.
+            try {
+                if (!await refreshProviderList()) {
+                    setDlgProviders(dlgProviders);
+                    setProviders(dlgProviders.map((p: LLMProvider) => ({ ...p })));
+                }
+            } catch {
+                // The backend completed the save before returning success; a
+                // failed refresh leaves the editable snapshot intact.
+                setDlgProviders(dlgProviders);
+                setProviders(dlgProviders.map((p: LLMProvider) => ({ ...p })));
+            }
+            setDlgDirty(false);
+            setCurrentName(saveName);
+            setProviderListRevision(revision => revision + 1);
+
+            setDlgTested(true);
+            setDlgTestResult({
+                ok: true,
+                msg: `${testResult.message}\n${visionProbeInconclusive
+                    ? t("Vision support: not confirmed; please retry", "图片理解：未确认，请重试")
+                    : testResult.supports_vision
+                    ? t("Vision support: enabled", "图片理解：支持")
+                    : t("Vision support: disabled", "图片理解：不支持")}`,
+            });
+            onStatusChange?.(true, true);
+            onProviderChanged?.();
+            // Auto-close on success: test passed and config saved, no need for extra click.
+            // Keep dlgSaving=true during close animation to prevent double-click.
+            setTimeout(() => setDlgOpen(false), 800);
+            return;
+        } catch (e) {
+            setDlgTestResult({ ok: false, msg: String(e) });
+        }
+        setDlgSaving(false);
+    };
+
+    const summaryState = !providerListReady
+        ? (providerListLoading ? "busy" : "unavailable")
+        : isNone
+            ? (hasHubEntitlement ? "hub" : "missing")
+            : "configured";
+    const summaryText = !providerListReady
+        ? (providerListLoading
+            ? (providerLoadSlow
+                ? t("Still reading saved providers…", "仍在读取已保存的服务商…")
+                : t("Reading saved providers…", "正在读取已保存的服务商…"))
+            : t("Provider list unavailable", "服务商列表不可用"))
+        : isNone
+        ? (hasHubEntitlement ? t("MaClaw Official", "MaClaw 官方") : t("None", "未配置"))
+        : currentName;
+
+    return (
+        <div className="llm-config-panel">
+            <LLMConfigToast toast={dlgToast} />
+            <header className="llm-config-header">
+                <div className="llm-config-header__copy">
+                    <p className="llm-config-header__desc">
+                        {t(
+                            "Select LLM provider (OpenAI / Anthropic supported)",
+                            "选择大模型服务商（支持 OpenAI / Anthropic 协议）"
+                        )}
+                    </p>
+                    <p
+                        className={"llm-config-header__status" + (
+                            summaryState === "busy" ? " is-busy"
+                                : summaryState === "hub" ? " is-hub"
+                                : summaryState === "missing" || summaryState === "unavailable" ? " is-missing"
+                                : ""
+                        )}
+                        aria-busy={providerListLoading || undefined}
+                        data-testid="llm-current-provider"
+                    >
+                        <span className="llm-config-header__status-label">
+                            {t("Assistant provider", "助手服务商")}
+                        </span>
+                        <span
+                            className="llm-config-header__status-value"
+                            title={summaryText}
+                        >
+                            {summaryText}
+                        </span>
+                    </p>
+                </div>
+                <div className="llm-config-header__actions">
+                    <button className="llm-config-qr-action" onClick={() => setQrDialogOpen(true)} disabled={!canConfigureProviders}>
+                        {t("Mobile QR", "移动端二维码")}
+                    </button>
+                    <button className="llm-config-primary-action" onClick={openDialog} disabled={!canConfigureProviders}>
+                        {t("Manage providers", "服务商管理")}
+                    </button>
+                </div>
+            </header>
+
+            <LLMProfileAssignments
+                lang={lang}
+                onSaved={handleProfilesSaved}
+                providerListRevision={providerListRevision}
+                descriptionAction={
+                    <button
+                        type="button"
+                        className="llm-config-import-action"
+                        onClick={() => { void handleImportExternalAgents(); }}
+                        disabled={!canConfigureProviders || importingAgents}
+                        aria-busy={importingAgents || undefined}
+                    >
+                        {importingAgents
+                            ? t("Scanning agents...", "正在扫描...")
+                            : t("Import other agents", "导入其它 Agent")}
+                    </button>
+                }
+            />
+
+            {providerListError && (
+                <div role="alert" className="llm-config-alert llm-config-alert--danger llm-config-retry-row">
+                    <span>{providerListError}</span>
+                    <button type="button" className="llm-config-retry-row__btn" onClick={() => { void loadProviders(); }}>
+                        {t("Retry", "重试")}
+                    </button>
+                </div>
+            )}
+
+            {canQueryOpenAIOrganizationCosts(providers.find(p => p.name === currentName)) && (
+                <UsageDisplay lang={lang || ""} />
+            )}
+
+            {/* Token usage statistics */}
+            {!isNone && (
+                <TokenUsagePanel lang={lang || ""} />
+            )}
+
+            {/* Runtime & reasoning tuning: three rows, one card for rhythm. */}
+            <section className="llm-config-card llm-tuning-stack">
+                <h3 className="llm-tuning-stack__title">{t("Agent runtime tuning", "Agent 运行调优")}</h3>
+                {/* Max iterations — inline editable */}
+                <LLMMaxIterationsCard maxIter={maxIter} setMaxIter={v => { setMaxIter(v); SetMaclawAgentMaxIterations(v).catch(() => {}); }} t={t} />
+
+                {/* SubAgent concurrency — controls parallel coding tasks */}
+                <LLMSubAgentConcurrencyCard subAgentConc={subAgentConc} setSubAgentConc={v => { setSubAgentConc(v); SetSubAgentConcurrency(v).catch(() => {}); }} t={t} />
+
+                {/* Thinking (reasoning) mode — global, provider-native request controls */}
+                <LLMThinkingModeCard thinkingMode={thinkingMode} thinkingModeSaving={thinkingModeSaving} thinkingModeError={thinkingModeError} saveThinkingMode={saveThinkingMode} t={t} />
+            </section>
+
+            {/* Multi-model council (MoA) presets — aggregator + reference models */}
+            <MoAConfigSection lang={lang} providers={providers} />
+
+            {isNone && !hasHubEntitlement && (
+                <div className="llm-config-alert llm-config-alert--danger">
+                    提示 {t("Without a provider, MaClaw remote will be disabled.", "未配置服务商时，MaClaw 远程能力将不可用。")}
+                </div>
+            )}
+
+            {/* ── Config Dialog ── */}
+            {dlgOpen && (
+                <div className="llm-config-dialog-overlay" {...configDialogBackdropProps}>
+                    <div className="llm-config-dialog" role="dialog" aria-modal="true"
+                        aria-label={t("MaClaw LLM Configuration", "MaClaw 大模型配置")}
+                        {...configDialogProps}>
+
+                        {/* Header */}
+                        <div className="llm-config-dialog__header">
+                            <div className="llm-config-dialog__heading">
+                                <span className="llm-config-dialog__title">
+                                    {t("MaClaw LLM Configuration", "MaClaw 大模型配置")}
+                                </span>
+                                <span className="llm-config-dialog__subtitle">
+                                    {t("Pick a provider, verify the connection, and keep credentials current.", "选择服务商，检测连通性并维护连接凭据。", "選擇服務商，檢測連通性並維護連接憑據。")}
+                                </span>
+                            </div>
+                            <button className="llm-config-dialog__close" onClick={closeDialog} aria-label={t("Close", "关闭")}>
+                                <svg viewBox="0 0 20 20" width="16" height="16" aria-hidden="true">
+                                    <path d="M5 5l10 10M15 5L5 15" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" fill="none" />
+                                </svg>
+                            </button>
+                        </div>
+
+                        {/* Scrollable body: selection, alerts, and config fields. */}
+                        <div className="llm-config-dialog__body">
+
+                        {/* Provider selection */}
+                        <div className="llm-config-provider-section">
+                            <label style={labelStyle}>{t("Select Provider", "选择服务商")}</label>
+                            <div className="llm-config-provider-grid">
+                                {hasHubEntitlement && !hasHubProviderInDialog && (
+                                    <button
+                                        className={"llm-config-provider-chip is-hub" + (dlgHubSelected ? " is-active" : "")}
+                                        onClick={dlgSelectHubService}
+                                    >
+                                        {t("MaClaw Official", "MaClaw 官方")}
+                                        {hubOfficial.kind !== "active" && (
+                                            <span className="llm-config-provider-chip__tag">{hubOfficial.label}</span>
+                                        )}
+                                    </button>
+                                )}
+                                {/* Locally imported agents belong to their own tools and are
+                                    never listed, testable, or editable in provider management. */}
+                                {dlgProviders.map((p, i) => {
+                                    if (isLocalImportProvider(p)) return null;
+                                    const isHubProvider = hasHubEntitlement && p.name === HUB_SERVICE_PROVIDER_NAME;
+                                    const active = isHubProvider ? dlgHubSelected : dlgSelectedIdx === i;
+                                    const tag = isHubProvider && hubOfficial.kind !== "active" ? hubOfficial.label : undefined;
+                                    return (
+                                        <span key={i} className="llm-config-provider-chip-slot">
+                                        <button
+                                            className={"llm-config-provider-chip" + (active ? " is-active" : "") + (isHubProvider ? " is-hub" : "")}
+                                            aria-label={tag ? `${p.name} ${tag}` : p.name}
+                                            onClick={() => isHubProvider ? dlgSelectHubService() : dlgSelectProvider(i)}
+                                        >
+                                            {p.connection_test_passed === true && <span className="llm-config-provider-chip__dot" aria-hidden="true" />}
+                                            {PROVIDER_LOGOS[p.name] ?? null}{p.name}
+                                            {tag && <span className="llm-config-provider-chip__tag">{tag}</span>}
+                                        </button>
+                                        {/* §7.1: only a provider that passed its own connection test and is not
+                                            the platform's own service can be shared. Sharing an untested provider
+                                            would publish a credential nobody has proven works. Machine-bound
+                                            credentials (Qoder device tokens) are excluded from both share
+                                            surfaces via isProviderShareExcluded. */}
+                                        {p.connection_test_passed === true && !isHubProvider && !isProviderShareExcluded(p) && (
+                                            <TokenBankShareChipButton
+                                                lang={lang ?? "zh-Hans"}
+                                                providerName={p.name}
+                                                apiURL={p.url}
+                                                apiKey={p.key}
+                                                protocol={p.protocol ?? ""}
+                                                listModels={() => shareModelAccess.listModels(p)}
+                                                probeModel={(model) => shareModelAccess.probeModel(p, model)}
+                                                onRequestVerification={onRequestIdentityVerification}
+                                            />
+                                        )}
+                                        </span>
+                                    );
+                                })}
+                                {/* Never offer a destructive-looking empty state while the saved list is unresolved. */}
+                                {providerListReady && (
+                                    <button
+                                        className={"llm-config-provider-chip" + (dlgIsNone && (!currentIsLocalImport || dlgNonePicked) ? " is-active" : "")}
+                                        onClick={() => dlgSelectProvider(null)}
+                                    >
+                                        {t("None", "暂不配置")}
+                                    </button>
+                                )}
+                            </div>
+                        </div>
+
+                        {/* Current-selection context. A locally imported agent stays the assistant
+                            provider even though it is not selectable here. */}
+                        {dlgIsNone && (currentIsLocalImport ? (
+                            <div className="llm-config-alert llm-config-alert--info" role="status">
+                                {t(`The assistant currently uses the locally imported ${currentName}. Local imports are not managed here; pick another provider to switch.`, `助手当前使用本地导入的 ${currentName}。本地导入不在服务商管理范围内，选择其它服务商即可切换。`, `助手當前使用本地匯入的 ${currentName}。本地匯入不在服務商管理範圍內，選擇其它服務商即可切換。`)}
+                            </div>
+                        ) : (
+                            <div className="llm-config-alert llm-config-alert--danger">
+                                {t("Without a provider, MaClaw remote will be disabled.", "不配置服务商，MaClaw 远程将失效。")}
+                            </div>
+                        ))}
+
+                        {/* Hub-managed MaClaw Official details */}
+                        {dlgHubSelected && hasHubEntitlement && (
+                            <LLMConfigHubOfficialCard
+                                t={t}
+                                hubOfficial={hubOfficial}
+                                hubModelOptions={hubModelOptions}
+                                selectedHubModel={selectedHubModel}
+                                onSelectModel={setDlgHubModel}
+                            />
+                        )}
+
+                        {/* Provider config fields */}
+                        {!dlgIsNone && dlgProvider && (
+                            <div className="llm-config-form-card">
+                                <LLMConfigProviderShareHeading
+                                    lang={lang ?? "zh-Hans"}
+                                    provider={dlgProvider}
+                                    listModels={() => shareModelAccess.listModels(dlgProvider)}
+                                    probeModel={(model) => shareModelAccess.probeModel(dlgProvider, model)}
+                                    onRequestVerification={onRequestIdentityVerification}
+                                />
+                                {dlgProvider.import_source && (
+                                    <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "0 0 12px 0", lineHeight: 1.4 }}>
+                                        {t(
+                                            "Imported from a local agent. Connection details stay locked; choose a model and save.",
+                                            "来自本机其它 Agent 的导入。连接信息已锁定，只需选择模型并保存。",
+                                        )}
+                                    </p>
+                                )}
+
+                                {!dlgProvider.import_source && (
+                                <div className="llm-config-form-section">
+                                    <div className="llm-config-form-section__title">{t("Connection", "连接配置", "連接配置")}</div>
+
+                                {/* Custom: quick-fill from known endpoints */}
+                                {dlgProvider.is_custom && (
+                                    <div style={{ marginBottom: 12 }}>
+                                        <label style={labelStyle}>{t("Quick-fill from known provider", "从已知服务商快速填充")}</label>
+                                        <select
+                                            style={{ ...inputStyle, cursor: "pointer" }}
+                                            value=""
+                                            onChange={e => dlgQuickFill(e.target.value)}
+                                        >
+                                            <option value="">{t("-- Select a known provider to auto-fill --", "-- 选择已知服务商自动填充 --")}</option>
+                                            {KNOWN_OPENAI_ENDPOINTS.map(ep => (
+                                                <option key={ep.name} value={ep.name}>{ep.name} — {ep.model}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                )}
+
+                                {/* Protocol selection — only for custom providers */}
+                                {dlgProvider.is_custom && (
+                                    <div style={{ marginBottom: 12 }}>
+                                        <label style={labelStyle}>{t("API Protocol", "API 协议")}</label>
+                                        <div style={{ display: "flex", gap: 6 }}>
+                                            {(["openai", "anthropic"] as const).map(proto => {
+                                                const active = (dlgProvider.protocol || "openai") === proto;
+                                                return (
+                                                    <button key={proto} onClick={() => dlgUpdateField("protocol", proto)}
+                                                        className={"llm-config-option-btn" + (active ? " is-active" : "")}>
+                                                        {proto === "openai" ? "OpenAI" : "Anthropic"}
+                                                    </button>
+                                                );
+                                            })}
+                                        </div>
+                                        <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
+                                            {(dlgProvider.protocol || "openai") === "anthropic"
+                                                ? t("Uses Anthropic Messages API (x-api-key auth)", "使用 Anthropic Messages API（x-api-key 鉴权）")
+                                                : t("Uses OpenAI-compatible API (Bearer token auth)", "使用 OpenAI 兼容 API（Bearer Token 鉴权）")}
+                                        </p>
+                                    </div>
+                                )}
+
+                                {/* User-Agent selection. Qoder's chat API carries the device
+                                    token and normalizeQoderProvider always resets agent_type,
+                                    so a selector here would only pick a value that silently
+                                    never persists. */}
+                                {!dlgProvider.import_source && !isQoderProvider(dlgProvider.name) && !isTraeProvider(dlgProvider.name) && !isLobsterAIProvider(dlgProvider.name) && <div style={{ marginBottom: 12 }}>
+                                    <label style={labelStyle}>User-Agent</label>
+                                    {(() => {
+                                        const currentAgent = selectableAgentType(dlgProvider);
+                                        const isCustom = !isKnownUserAgent(currentAgent);
+                                        return (<>
+                                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
+                                                {KNOWN_USER_AGENTS.map(ua => (
+                                                    <button key={ua} onClick={() => dlgUpdateField("agent_type", ua)}
+                                                        className={"llm-config-option-btn" + (currentAgent === ua ? " is-active" : "")}>
+                                                        {ua}
+                                                    </button>
+                                                ))}
+                                                <button
+                                                    onClick={() => dlgUpdateField("agent_type", isCustom ? currentAgent : customAgentSeedForProvider(dlgProvider))}
+                                                    className={"llm-config-option-btn" + (isCustom ? " is-active" : "")}>
+                                                    {t("Custom", "\u81ea\u5b9a\u4e49", "\u81ea\u8a02")}
+                                                </button>
+                                                {isCustom && (
+                                                    <input style={{ ...inputStyle, flex: 1, minWidth: 120, margin: 0 }}
+                                                        value={editableCustomAgentValue(dlgProvider)}
+                                                        onChange={e => dlgUpdateField("agent_type", e.target.value)}
+                                                        onBlur={e => dlgUpdateField("agent_type", commitCustomAgentValue(dlgProvider, e.target.value))}
+                                                        placeholder={t("Custom User-Agent", "\u81ea\u5b9a\u4e49 User-Agent", "\u81ea\u8a02 User-Agent")}
+                                                        autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
+                                                )}
+                                            </div>
+                                            <p style={{ fontSize: "0.68rem", color: colors.textMuted, margin: "4px 0 0 0", lineHeight: 1.4 }}>
+                                                {currentAgent === "claude code 2.0"
+                                                    ? t("For providers requiring Claude Coding Plan identity (e.g. Kimi, Zhipu Coding)", "\u9002\u7528\u4e8e\u9700\u8981 Claude Coding Plan \u8eab\u4efd\u7684\u670d\u52a1\u5546\uff08\u5982 Kimi\u3001\u667a\u8c31\u7f16\u7a0b\uff09")
+                                                    : currentAgent === "Kilo Code"
+                                                        ? t("For providers requiring Kilo Code client identity.", "\u9002\u7528\u4e8e\u9700\u8981 Kilo Code \u5ba2\u6237\u7aef\u8eab\u4efd\u7684\u670d\u52a1\u5546\u3002", "\u9069\u7528\u65bc\u9700\u8981 Kilo Code \u5ba2\u6236\u7aef\u8eab\u5206\u7684\u670d\u52d9\u5546\u3002")
+                                                    : isCustom
+                                                        ? t("Uses the custom client identity you enter.", "\u4f7f\u7528\u4f60\u8f93\u5165\u7684\u81ea\u5b9a\u4e49\u5ba2\u6237\u7aef\u8eab\u4efd\u3002", "\u4f7f\u7528\u4f60\u8f38\u5165\u7684\u81ea\u5b9a\u4e49\u5ba2\u6237\u7aef\u8eab\u5206\u3002")
+                                                        : t("Most providers use OpenClaw identity (e.g. Zhipu Lobster)", "\u5927\u591a\u6570\u670d\u52a1\u5546\u4f7f\u7528 OpenClaw \u8eab\u4efd\uff08\u5982\u667a\u8c31\u9f99\u867e\uff09")}
+                                            </p>
+                                        </>);
+                                    })()}
+                                </div>}
+
+                                {!dlgProvider.import_source && dlgProvider.is_custom && (
+                                    <div style={{ marginBottom: 12 }}>
+                                        <label style={labelStyle}>{t("Provider Name", "服务商名称")}</label>
+                                        <input style={inputStyle} value={dlgProvider.name}
+                                            onChange={e => dlgUpdateField("name", e.target.value)}
+                                            placeholder={t("Custom name", "自定义名称")}
+                                            autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
+                                    </div>
+                                )}
+
+                                {!dlgProvider.import_source && <div style={{ marginBottom: 12 }}>
+                                    <label style={labelStyle}>
+                                        {t("API URL", "API 地址 (URL)")}
+                                        {!dlgProvider.is_custom && (
+                                            <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
+                                                {t("(preset)", "（预设，无需修改）")}
+                                            </span>
+                                        )}
+                                    </label>
+                                    {dlgProvider.is_custom ? (
+                                        <input style={inputStyle} value={dlgProvider.url}
+                                            onChange={e => dlgUpdateField("url", e.target.value)}
+                                            placeholder="https://api.openai.com/v1"
+                                            autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
+                                    ) : (
+                                        <input style={readonlyStyle} value={dlgProvider.url} readOnly tabIndex={-1} />
+                                    )}
+                                </div>}
+                                </div>
+                                )}
+
+                                <div className="llm-config-form-section">
+                                    <div className="llm-config-form-section__title">{t("Model & Authentication", "模型与认证", "模型與認證")}</div>
+
+                                <div style={{ marginBottom: 12 }}>
+                                    <label style={labelStyle}>
+                                        {t("Model Name", "模型名称")}
+                                        {dlgProvider.import_source ? (
+                                            <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
+                                                {t("(select model)", "（选择模型）")}
+                                            </span>
+                                        ) : dlgProvider.auth_type === "sso" ? (
+                                            <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
+                                                {codegenModelsFetching ? t("(loading models...)", "（加载模型中...）") : t("(select model)", "（选择模型）")}
+                                            </span>
+                                        ) : dlgProvider.auth_type === "oauth" ? (
+                                            <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
+                                                {providerModels.length > 0
+                                                    ? t("(select model)", "（选择模型）")
+                                                    : t("(click Fetch to browse)", "（可点击“获取”浏览）", "（可點擊「獲取」瀏覽）")}
+                                            </span>
+                                        ) : dlgProvider.is_custom ? (
+                                            <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
+                                                {providerModels.length > 0
+                                                    ? t("(select model)", "（选择模型）")
+                                                    : t("(click Fetch to browse)", "（可点击“获取”浏览）", "（可點擊「獲取」瀏覽）")}
+                                            </span>
+                                        ) : (
+                                            <span style={{ fontSize: "0.68rem", color: colors.textMuted, marginLeft: 6 }}>
+                                                {providerModels.length > 0
+                                                    ? t("(select model)", "（选择模型）")
+                                                    : dlgProvider.name === "\u706b\u5c71\u5f15\u64ce Agent Plan"
+                                                        ? t("(preset model, enter manually)", "（预设模型，请手动填写）", "（預設模型，請手動填寫）")
+                                                        : t("(preset, click Fetch to browse)", "（预设，可点击“获取”浏览可用模型）", "（預設，可點擊「獲取」瀏覽可用模型）")}
+                                            </span>
+                                        )}
+                                    </label>
+                                    {dlgProvider.import_source ? (
+                                        <select
+                                            data-testid="imported-agent-model-select"
+                                            style={inputStyle}
+                                            value={dlgProvider.model || ""}
+                                            onChange={e => dlgUpdateField("model", e.target.value)}
+                                        >
+                                            {!providerModels.some(m => m.id === dlgProvider.model) && dlgProvider.model && (
+                                                <option value={dlgProvider.model}>{dlgProvider.model}</option>
+                                            )}
+                                            {providerModels.map(m => (
+                                                <option key={m.id} value={m.id}>{m.name !== m.id ? `${m.name} (${m.id})` : m.id}</option>
+                                            ))}
+                                        </select>
+                                    ) : dlgProvider.auth_type === "sso" ? (
+                                        /* SSO (CodeGen): auto-fetch model list */
+                                        codegenModels.length > 0 ? (
+                                            <select style={inputStyle} value={dlgProvider.model}
+                                                onChange={e => dlgUpdateField("model", e.target.value)}>
+                                                {!codegenModels.some(m => m.id === dlgProvider.model) && dlgProvider.model && (
+                                                    <option value={dlgProvider.model}>{dlgProvider.model}</option>
+                                                )}
+                                                {codegenModels.map(m => (
+                                                    <option key={m.id} value={m.id}>{m.name !== m.id ? `${m.name} (${m.id})` : m.id}</option>
+                                                ))}
+                                            </select>
+                                        ) : (
+                                            <input style={inputStyle} value={dlgProvider.model}
+                                                onChange={e => dlgUpdateField("model", e.target.value)}
+                                                placeholder={codegenModelsFetching ? t("Loading...", "加载中...") : t("Enter model name", "输入模型名称")}
+                                                autoCapitalize="off" autoCorrect="off" spellCheck={false} autoComplete="off" />
+                                        )
+                                    ) : (
+                                        <ProviderModelCombobox
+                                            selectedIdx={dlgSelectedIdx}
+                                            value={dlgProvider.model || ""}
+                                            models={providerModels}
+                                            fetching={providerModelsFetching}
+                                            error={providerModelsError}
+                                            open={providerModelListOpen}
+                                            canFetch={!!dlgProvider.url && dlgProvider.name !== "\u706b\u5c71\u5f15\u64ce Agent Plan"}
+                                            onOpenChange={setProviderModelListOpen}
+                                            onChange={value => dlgUpdateField("model", value)}
+                                            onFetch={handleFetchProviderModels}
+                                            t={t}
+                                        />
+                                    )}
+                                </div>
+
+                                {/* Auth: OAuth login button / no-key hint / API Key input */}
+                                {!dlgProvider.import_source && (dlgProvider.auth_type === "oauth" ? (
+                                    <LLMConfigOAuthFields
+                                        provider={dlgProvider}
+                                        oauthBusy={oauthBusy}
+                                        testFailed={!!dlgTestResult && !dlgTestResult.ok}
+                                        hint={oauthHint}
+                                        t={t}
+                                        onLogin={handleOAuthLogin}
+                                        onCancel={() => {
+                                            const name = dlgSelectedIdx !== null ? dlgProviders[dlgSelectedIdx]?.name : undefined;
+                                            cancelActiveOAuth(name);
+                                        }}
+                                        onImported={async (msg) => {
+                                            await refreshProviderList();
+                                            setDlgDirty(false);
+                                            onStatusChange?.(true, true);
+                                            onProviderChanged?.();
+                                            setDlgTestResult({ ok: true, msg });
+                                        }}
+                                        onImportError={(e) => setDlgTestResult({ ok: false, msg: String(e) })}
+                                        onDevinToken={async (token) => {
+                                            const msg = await completeDevinPastedToken(token);
+                                            await refreshProviderList();
+                                            setDlgDirty(false);
+                                            onStatusChange?.(true, true);
+                                            onProviderChanged?.();
+                                            setDlgTestResult({ ok: true, msg: msg || t("Devin login successful", "Devin 登录成功") });
+                                        }}
+                                    />
+                                ) : (
+                                    <LLMConfigApiKeyFields
+                                        provider={dlgProvider}
+                                        loginBusy={openCodeLoginBusy}
+                                        t={t}
+                                        focusNonce={openCodeKeyFocusNonce}
+                                        onUpdateKey={(key) => dlgUpdateField("key", key)}
+                                        onOpenCodeLogin={() => { void handleOpenCodeLogin(); }}
+                                        onZhipuLogin={handleOAuthLogin}
+                                        onZhipuCancel={() => cancelActiveOAuth(dlgProvider.name)}
+                                        zhipuLoginBusy={oauthBusy}
+                                    />
+                                ))}
+                                </div>
+
+                                {!dlgProvider.import_source && (
+                                <div className="llm-config-form-section">
+                                    <div className="llm-config-form-section__title">{t("Advanced", "高级参数", "高級參數")}</div>
+                                    <LLMConfigProviderLimitsFields
+                                        provider={dlgProvider}
+                                        t={t}
+                                        onUpdateField={dlgUpdateField}
+                                        onVisionChange={(supportsVision) => {
+                                            if (dlgSelectedIdx === null) return;
+                                            setDlgProviders(prev => prev.map((p, i) => i === dlgSelectedIdx ? withVisionResultForCurrentModel(p, supportsVision) : p));
+                                            setDlgDirty(true);
+                                            setDlgTestResult(null);
+                                        }}
+                                    />
+                                </div>
+                                )}
+                            </div>
+                        )}
+                        </div>
+
+                        {/* Pinned action bar */}
+                        <div className="llm-config-dialog__footer">
+                            <LLMConfigDialogFooter
+                                dirty={dlgDirty}
+                                error={dlgFailureReason}
+                                errorTitle={dlgFailureTitle}
+                                hubSelected={dlgHubSelected}
+                                hubAlreadySynced={hubSelectionAlreadySynced}
+                                hubModelDirty={hubModelDirty}
+                                needsOAuthLogin={dlgNeedsOAuthLogin}
+                                oauthBusy={oauthBusy}
+                                saving={dlgSaving}
+                                t={t}
+                                tested={dlgTested}
+                                onCancel={closeDialog}
+                                onSave={dlgHandleSave}
+                                onSaveHub={dlgHandleSaveHubService}
+                            />
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            <MobileQRCodeDialog open={qrDialogOpen} onClose={() => setQrDialogOpen(false)} providers={providers} currentName={currentName} lang={lang} />
+        </div>
+    );
+}

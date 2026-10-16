@@ -1,0 +1,86 @@
+page {
+  --brand: #f2622e;
+  --brand-dark: #d94f1e;
+  --ink: #16161a;
+  --ink-2: #5b6069;
+  --ink-3: #9aa0a8;
+  --line: #e9ebef;
+  --bg: #f6f7f9;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Helvetica Neue", Helvetica, "Microsoft YaHei", sans-serif;
+  font-size: 30rpx;
+  line-height: 1.6;
+}
+
+view, text, input, button, scroll-view {
+  box-sizing: border-box;
+}
+
+.page {
+  min-height: 100vh;
+  padding: 32rpx 32rpx calc(48rpx + env(safe-area-inset-bottom));
+}
+
+.card {
+  background: #ffffff;
+  border-radius: 24rpx;
+  padding: 32rpx;
+  box-shadow: 0 8rpx 32rpx rgba(22, 22, 26, 0.05);
+}
+
+.hint {
+  color: var(--ink-3);
+  font-size: 26rpx;
+  line-height: 1.7;
+}
+
+.section-title {
+  font-size: 32rpx;
+  font-weight: 600;
+  margin-bottom: 12rpx;
+}
+
+.btn-primary {
+  background: var(--brand);
+  color: #ffffff;
+  border-radius: 999rpx;
+  font-size: 32rpx;
+  padding: 0;
+  height: 96rpx;
+  line-height: 96rpx;
+  text-align: center;
+  border: none;
+}
+
+.btn-primary[disabled] {
+  background: #f0b6a1;
+  color: #ffffff;
+}
+
+.btn-ghost {
+  background: #ffffff;
+  color: var(--brand);
+  border: 2rpx solid rgba(242, 98, 46, 0.35);
+  border-radius: 999rpx;
+  height: 88rpx;
+  line-height: 88rpx;
+  font-size: 30rpx;
+  text-align: center;
+}
+
+.text-link {
+  color: var(--brand);
+  font-size: 26rpx;
+}
+
+.error-bar {
+  margin-top: 20rpx;
+  padding: 20rpx 24rpx;
+  border-radius: 16rpx;
+  background: #fff1ec;
+  color: var(--brand-dark);
+  font-size: 26rpx;
+  line-height: 1.6;
+  word-break: break-all;
+}

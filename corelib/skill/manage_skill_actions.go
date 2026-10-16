@@ -29,6 +29,7 @@ var ManageSkillActions = []ManageSkillAction{
 	{"run", "执行指定 Skill"},
 	{"status", "查询运行状态（run 返回 run_id 后继续观察进度）"},
 	{"upload", "上传/发布本地 Skill 到 SkillMarket/HubCenter/能力市场（publish/pub/submit/发布/上架 都使用 action=\"upload\"；上传前自动检查并修正绝对路径、补全缺失文件等可移植性问题）"},
+	{"upload_suite", "将多个本地 Skill 打包成 Suite 并上传到 SkillMarket/HubCenter（names 必填；可选 suite_name）"},
 	{"validate", "检查 Skill 的跨平台可移植性并可选自动修复"},
 	{"patch", "对 Skill 定义执行修补（mode=text: find-and-replace；mode=step: 结构化修改步骤字段）"},
 	{"history", "查看 Skill 的修补历史记录"},
@@ -101,6 +102,8 @@ func NormalizeManageSkillAction(action string) string {
 	switch normalized {
 	case "publish", "pub", "submit", "release", "发布", "發布", "上架", "提交":
 		return "upload"
+	case "upload-suite", "suite-upload", "publish-suite", "publish_suite", "上传套件", "上传suite":
+		return "upload_suite"
 	case "info", "inspect", "show", "describe", "get", "detail", "schema", "params":
 		return "info"
 	case "evolution", "evol_status", "self_repair_status", "optimize_status":

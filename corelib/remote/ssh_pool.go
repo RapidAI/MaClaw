@@ -46,6 +46,11 @@ func (p *SSHPool) Acquire(cfg SSHHostConfig) (*ssh.Client, error) {
 // handshake completes, the connection is entered into the pool under its final
 // pinned identity so release, SFTP and reconnect all use the same key.
 func (p *SSHPool) AcquireResolved(cfg SSHHostConfig) (*ssh.Client, SSHHostConfig, error) {
+	resolved, err := ApplyOpenSSHClientConfig(cfg)
+	if err != nil {
+		return nil, cfg, err
+	}
+	cfg = resolved
 	cfg.Defaults()
 	if cfg.HostKeyFingerprintCapture != nil && strings.TrimSpace(cfg.HostKeyFingerprint) == "" {
 		return p.acquireCaptured(cfg)
@@ -197,13 +202,28 @@ func (p *SSHPool) Release(cfg SSHHostConfig) {
 
 func sshPoolKey(cfg SSHHostConfig) string {
 	base := cfg.SSHHostID()
+	policy := "|legacy-unverified"
 	if fingerprint := strings.TrimSpace(cfg.HostKeyFingerprint); fingerprint != "" {
-		return base + "|fingerprint=" + fingerprint
+		policy = "|fingerprint=" + fingerprint
+	} else if len(cfg.KnownHostsFiles) > 0 {
+		policy = "|known-hosts=" + strings.Join(cfg.KnownHostsFiles, ";")
+	} else if knownHostsPath := strings.TrimSpace(cfg.KnownHostsPath); knownHostsPath != "" {
+		policy = "|known-hosts=" + knownHostsPath
 	}
-	if knownHostsPath := strings.TrimSpace(cfg.KnownHostsPath); knownHostsPath != "" {
-		return base + "|known-hosts=" + knownHostsPath
+	if len(cfg.JumpHosts) == 0 {
+		return base + policy
 	}
-	return base + "|legacy-unverified"
+	// Close(hostID) matches the public ID plus "|". Jump identity stays after
+	// that policy segment so a direct session and a jumped session do not share
+	// a pooled connection.
+	var jumps strings.Builder
+	for _, hop := range cfg.JumpHosts {
+		if jumps.Len() > 0 {
+			jumps.WriteByte(',')
+		}
+		jumps.WriteString(hop.SSHHostID())
+	}
+	return base + policy + "|jump=" + jumps.String()
 }
 
 // Close closes all pooled connections for a public user@host:port ID,
@@ -285,6 +305,11 @@ func (p *SSHPool) IsAlive(cfg SSHHostConfig) bool {
 // Reconnect 强制断开旧连接并重新建立到指定主机的连接。
 // 返回新的 ssh.Client。
 func (p *SSHPool) Reconnect(cfg SSHHostConfig) (*ssh.Client, error) {
+	resolved, err := ApplyOpenSSHClientConfig(cfg)
+	if err != nil {
+		return nil, err
+	}
+	cfg = resolved
 	cfg.Defaults()
 	hostID := sshPoolKey(cfg)
 

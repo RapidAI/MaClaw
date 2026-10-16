@@ -8,6 +8,7 @@
 
 #include "driver/gpio.h"
 #include "driver/ledc.h"
+#include "boards/board_gpio_check.h"
 #include "driver/spi_master.h"
 #include "esp_heap_caps.h"
 #include "esp_lcd_panel_io.h"
@@ -93,6 +94,11 @@ static esp_err_t echoear_display_new_panel(esp_lcd_panel_io_handle_t io,
  * controller register. They intentionally configure physical resources only;
  * scene ownership and UI policy remain in the shared renderer. */
 static esp_err_t round_display_adapter_init_backlight(void) {
+    /* Hardcoded pin: fail fast at the adapter boundary. */
+    if (board_check_output_gpio(ECHOEAR_DISPLAY_BACKLIGHT_GPIO, "echoear_display",
+                                "backlight") != ESP_OK) {
+        return ESP_ERR_INVALID_ARG;
+    }
     const ledc_timer_config_t timer = {
         .speed_mode = LEDC_LOW_SPEED_MODE,
         .duty_resolution = ECHOEAR_DISPLAY_BACKLIGHT_RESOLUTION,

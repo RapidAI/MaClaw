@@ -124,7 +124,71 @@ type SkillDependency struct {
 
 // SkillSearchResult 搜索结果的分页包装。
 type SkillSearchResult struct {
-	Skills []HubSkillMeta `json:"skills"`
-	Total  int            `json:"total"`
-	Page   int            `json:"page"`
+	Skills []HubSkillMeta   `json:"skills"`
+	Suites []SkillSuiteMeta `json:"suites,omitempty"`
+	Total  int              `json:"total"`
+	Page   int              `json:"page"`
+}
+
+// SkillSuiteMeta describes a distributable bundle of related skills.
+type SkillSuiteMeta struct {
+	ID               string                `json:"id"`
+	Name             string                `json:"name"`
+	Description      string                `json:"description,omitempty"`
+	Version          string                `json:"version"`
+	Author           string                `json:"author,omitempty"`
+	License          string                `json:"license,omitempty"`
+	Tags             []string              `json:"tags,omitempty"`
+	SourceURL        string                `json:"source_url,omitempty"`
+	SourceRevision   string                `json:"source_revision,omitempty"`
+	DefinitionSource string                `json:"definition_source,omitempty"`
+	Members          []SkillSuiteMember    `json:"members"`
+	CreatedAt        string                `json:"created_at"`
+	UpdatedAt        string                `json:"updated_at"`
+	Visible          bool                  `json:"visible"`
+	Status           string                `json:"status,omitempty"`
+	Price            int                   `json:"price,omitempty"`
+	TrustLevel       string                `json:"trust_level,omitempty"`
+	Downloads        int                   `json:"downloads,omitempty"`
+	VersionHistory   []SuiteVersionSummary `json:"version_history,omitempty"`
+}
+
+type SuiteVersionSummary struct {
+	Version        string `json:"version"`
+	SourceRevision string `json:"source_revision,omitempty"`
+	UpdatedAt      string `json:"updated_at"`
+}
+
+// SkillSuiteMember links a skill revision to its path in the source suite.
+type SkillSuiteMember struct {
+	SkillID  string `json:"skill_id"`
+	SkillRef string `json:"skill_ref,omitempty"`
+	Name     string `json:"name"`
+	Path     string `json:"path,omitempty"`
+	Version  string `json:"version,omitempty"`
+	Required bool   `json:"required,omitempty"`
+	Order    int    `json:"order,omitempty"`
+}
+
+// SkillSuiteFull is the persisted and wire representation of a Suite.
+type SkillSuiteFull struct {
+	SkillSuiteMeta
+	Skills        []HubSkillFull `json:"skills,omitempty"`
+	Manifest      SuiteManifest  `json:"manifest,omitempty"`
+	PackageSHA256 string         `json:"package_sha256,omitempty"`
+	PackageSize   int64          `json:"package_size,omitempty"`
+	Permissions   []string       `json:"permissions,omitempty"` // union of member permissions
+}
+
+type SkillSuiteSearchResult struct {
+	Suites []SkillSuiteMeta `json:"suites"`
+	Total  int              `json:"total"`
+	Page   int              `json:"page"`
+}
+
+// SuiteManifest contains integrity and package metadata for a Suite archive.
+type SuiteManifest struct {
+	Format      string            `json:"format,omitempty"`
+	GeneratedAt string            `json:"generated_at,omitempty"`
+	Files       map[string]string `json:"files,omitempty"`
 }

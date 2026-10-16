@@ -365,3 +365,63 @@ func runGit(t *testing.T, dir string, args ...string) string {
 	}
 	return string(out)
 }
+
+// TestReviewedHostRepoMutateActionEnumMatchesWhatTheHostPerforms closes the
+// repo.mutate.vcs half of the same hole the browser adapter hit: the action was
+// a bare string, so a model had to guess the verb. The set and the message
+// pairing both come from the shared contract, so this host cannot drift from
+// the GUI surface serving the same capability.
+func TestReviewedHostRepoMutateActionEnumMatchesWhatTheHostPerforms(t *testing.T) {
+	schema := reviewedHostRepoMutateInvocationSchema()
+	properties, ok := schema["properties"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("repo-mutate schema has no properties: %#v", schema)
+	}
+	action, ok := properties["action"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("repo-mutate schema has no action property: %#v", properties)
+	}
+	enum, ok := action["enum"].([]string)
+	if !ok || len(enum) == 0 {
+		t.Fatalf("action must publish a non-empty enum, got %#v", action["enum"])
+	}
+	for _, name := range enum {
+		if !coretool.RepoMutateActionAllowed(name) {
+			t.Fatalf("schema advertises action %q but the execution check refuses it", name)
+		}
+	}
+	for _, name := range coretool.RepoMutateActions() {
+		advertised := false
+		for _, candidate := range enum {
+			if candidate == name {
+				advertised = true
+				break
+			}
+		}
+		if !advertised {
+			t.Fatalf("execution check accepts action %q but the schema never shows it", name)
+		}
+	}
+	// A guessed verb stays refused, and the refusal names the real vocabulary
+	// so the first failure can redirect the turn instead of ending it.
+	for _, guessed := range []string{"save", "revert", "amend"} {
+		_, _, err := reviewedHostRepoMutateArgsAllowed(map[string]interface{}{"action": guessed, "message": "note"})
+		if err == nil || !strings.Contains(err.Error(), "host_repo_mutate_action_rejected") {
+			t.Fatalf("action %q = %v, want host_repo_mutate_action_rejected", guessed, err)
+		}
+		for _, valid := range coretool.RepoMutateActions() {
+			if !strings.Contains(err.Error(), valid) {
+				t.Fatalf("refusal for %q = %v does not mention the valid name %q", guessed, err, valid)
+			}
+		}
+	}
+	// The message pairing comes from the contract, not this host: commit needs
+	// one, push must not be forced to repeat one.
+	if _, _, err := reviewedHostRepoMutateArgsAllowed(map[string]interface{}{"action": "commit"}); err == nil ||
+		!strings.Contains(err.Error(), "host_repo_mutate_message_required") {
+		t.Fatalf("commit without message = %v, want host_repo_mutate_message_required", err)
+	}
+	if _, _, err := reviewedHostRepoMutateArgsAllowed(map[string]interface{}{"action": "push"}); err != nil {
+		t.Fatalf("push without message = %v, want accepted", err)
+	}
+}

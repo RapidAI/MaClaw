@@ -35,7 +35,7 @@ $tuiRun = "TestFormatCanary|TestFirstNonFlagArg|TestSlashCanary"
 Invoke-GoTestPackage -Package "./corelib/doctor/" -Run $doctorRun -TimeoutSec 60
 Invoke-GoTestPackage -Package "./corelib/agent/" -Run $agentRun -TimeoutSec 120
 Invoke-GoTestPackage -Package "./maclaw-cli/" -Run $cliRun -TimeoutSec 90
-Invoke-GoTestPackage -Package "./gui/" -Run $guiRun -TimeoutSec 120
+Invoke-GoTestPackage -Package "./guiapp/" -Run $guiRun -TimeoutSec 120
 Invoke-GoTestPackage -Package "./tui/" -Run $tuiRun -TimeoutSec 90
 
 Write-Host ""

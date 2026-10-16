@@ -66,6 +66,77 @@ func TestDeleteSourceReclaimsStandaloneAndEmbeddedImageAssets(t *testing.T) {
 	}
 }
 
+func TestDeleteFragmentReclaimsUnreferencedEmbeddedImageAsset(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	store, err := NewSQLiteStore(filepath.Join(dataRoot, "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	assets, err := NewImageAssetManager(dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetImageAssetManager(assets)
+	for _, id := range []string{"source-1", "source-1_embedded-1", "source-1_embedded-keep"} {
+		if _, err := assets.SaveImageFromBytes(id, []byte("not-a-decodable-image"), ".png"); err != nil {
+			t.Fatalf("save %s: %v", id, err)
+		}
+	}
+	if err := store.SaveSource(ctx, Source{ID: "source-1", Kind: SourceKindMarkdown, URI: "file://doc", Status: StatusParsed}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveDocumentNode(ctx, DocumentNode{ID: "image-gone", SourceID: "source-1", Type: NodeTypeImage, Metadata: map[string]string{MetaImageAssetID: "source-1_embedded-1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveDocumentNode(ctx, DocumentNode{ID: "image-keep", SourceID: "source-1", Type: NodeTypeImage, Metadata: map[string]string{MetaImageAssetID: "source-1_embedded-keep"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DeleteFragment(ctx, SearchResult{ResultType: "node", NodeID: "image-gone"}); err != nil {
+		t.Fatalf("DeleteFragment: %v", err)
+	}
+	if _, err := os.Stat(assets.AssetDir("source-1_embedded-1")); !os.IsNotExist(err) {
+		t.Fatalf("deleted image asset still exists: %v", err)
+	}
+	if _, err := os.Stat(assets.AssetDir("source-1_embedded-keep")); err != nil {
+		t.Fatalf("kept image asset missing: %v", err)
+	}
+	if _, err := os.Stat(assets.AssetDir("source-1")); err != nil {
+		t.Fatalf("standalone source asset must be preserved: %v", err)
+	}
+}
+
+func TestDeleteFragmentDoesNotNormalizeWhitespacePaddedEmbeddedAssetID(t *testing.T) {
+	ctx := context.Background()
+	dataRoot := t.TempDir()
+	store, err := NewSQLiteStore(filepath.Join(dataRoot, "knowledge.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	assets, err := NewImageAssetManager(dataRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.SetImageAssetManager(assets)
+	if _, err := assets.SaveImageFromBytes("source-1_embedded-1", []byte("not-a-decodable-image"), ".png"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SaveSource(ctx, Source{ID: "source-1", Kind: SourceKindMarkdown, URI: "file://doc", Status: StatusParsed}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(ctx, `INSERT INTO document_nodes(id, source_id, type, metadata_json) VALUES (?, ?, ?, ?)`, "image-node", "source-1", NodeTypeImage, `{"image_asset_id":" source-1_embedded-1 "}`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.DeleteFragment(ctx, SearchResult{ResultType: "node", NodeID: "image-node"}); err != nil {
+		t.Fatalf("DeleteFragment: %v", err)
+	}
+	if _, err := os.Stat(assets.AssetDir("source-1_embedded-1")); err != nil {
+		t.Fatalf("whitespace-padded metadata deleted a canonical embedded asset: %v", err)
+	}
+}
+
 func TestDeleteSourceDoesNotNormalizeWhitespacePaddedEmbeddedAssetID(t *testing.T) {
 	ctx := context.Background()
 	dataRoot := t.TempDir()

@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -285,6 +286,50 @@ func TestSweepDeletesStalePartAndStaging(t *testing.T) {
 	}
 }
 
+func TestSweepReconcilesOrphanObjectFiles(t *testing.T) {
+	svc, st, _ := newGCService(t)
+	now := time.Now().UTC()
+	ws := seedLeasedWorkspace(t, st, now)
+	orphanSHA := plaintextSHA256([]byte("orphan-object"))
+	orphanPath, err := svc.Blobs.ObjectPath("t1", "u1", ws.ID, orphanSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(orphanPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(orphanPath, []byte("orphan"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := now.Add(-2 * time.Hour)
+	if err := os.Chtimes(orphanPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	// A recent orphan is retained for the grace window in case an uploader is
+	// between the file fsync and its metadata transaction.
+	recentSHA := plaintextSHA256([]byte("recent-orphan"))
+	recentPath, err := svc.Blobs.ObjectPath("t1", "u1", ws.ID, recentSHA)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(recentPath, []byte("recent"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.Sweep(context.Background(), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.ReconciledOrphanObjs != 1 {
+		t.Fatalf("reconciled orphan objects=%d want 1", got.ReconciledOrphanObjs)
+	}
+	if _, err := os.Stat(orphanPath); !os.IsNotExist(err) {
+		t.Fatalf("orphan object still present err=%v", err)
+	}
+	if _, err := os.Stat(recentPath); err != nil {
+		t.Fatalf("recent orphan removed: %v", err)
+	}
+}
+
 func TestSweepRecalcUsageFromManifest(t *testing.T) {
 	svc, st, _ := newGCService(t)
 	ctx := context.Background()
@@ -410,6 +455,57 @@ func TestRecordSyncFailed(t *testing.T) {
 	}
 }
 
+func TestReconcileStagingReservationsAdoptsResizesAndRemoves(t *testing.T) {
+	svc, st, _ := newGCService(t)
+	ctx := context.Background()
+	now := time.Now().UTC().Truncate(time.Second)
+	ws := seedLeasedWorkspace(t, st, now)
+	sha := strings.Repeat("a", 64)
+	partDir, err := svc.Blobs.PartDir("t1", "u1", ws.ID, sha)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(partDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	part := filepath.Join(partDir, "0")
+	if err := os.WriteFile(part, []byte("abc"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(part, now, now); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.reconcileStaging(ctx, now)
+	if err != nil || got.AdoptedFiles != 1 {
+		t.Fatalf("adopt result=%+v err=%v", got, err)
+	}
+	var size int64
+	if err := st.db.QueryRowContext(ctx, `SELECT size_bytes FROM cloud_workspace_staging_chunks WHERE workspace_id = ? AND sha256 = ? AND chunk_index = 0`, ws.ID, sha).Scan(&size); err != nil || size != 3 {
+		t.Fatalf("adopted reservation size=%d err=%v", size, err)
+	}
+	if err := os.WriteFile(part, []byte("abcd"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err = svc.reconcileStaging(ctx, now.Add(time.Second))
+	if err != nil || got.ResizedRows != 1 {
+		t.Fatalf("resize result=%+v err=%v", got, err)
+	}
+	if err := st.db.QueryRowContext(ctx, `SELECT size_bytes FROM cloud_workspace_staging_chunks WHERE workspace_id = ? AND sha256 = ? AND chunk_index = 0`, ws.ID, sha).Scan(&size); err != nil || size != 4 {
+		t.Fatalf("resized reservation size=%d err=%v", size, err)
+	}
+	if err := os.Remove(part); err != nil {
+		t.Fatal(err)
+	}
+	old := now.Add(-stagingMissingGrace - time.Second).Format(time.RFC3339)
+	if _, err := st.db.ExecContext(ctx, `UPDATE cloud_workspace_staging_chunks SET updated_at = ? WHERE workspace_id = ? AND sha256 = ?`, old, ws.ID, sha); err != nil {
+		t.Fatal(err)
+	}
+	got, err = svc.reconcileStaging(ctx, now.Add(2*time.Second))
+	if err != nil || got.RemovedRows != 1 {
+		t.Fatalf("remove result=%+v err=%v", got, err)
+	}
+}
+
 func TestCollectMetricsTenantsAndVolume(t *testing.T) {
 	svc, st, _ := newGCService(t)
 	ctx := context.Background()
@@ -453,4 +549,71 @@ func TestStartHourlyGCIdempotentAndStop(t *testing.T) {
 		t.Fatal("gcStop should be cleared after stop")
 	}
 	svc.StopHourlyGC()
+}
+
+func TestSweepRemovesOrphanWorkspaceDirs(t *testing.T) {
+	svc, st, _ := newGCService(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	live := seedLeasedWorkspace(t, st, now)
+
+	// Live workspace directory: must survive the sweep.
+	liveDir := filepath.Join(svc.Blobs.Root, "t1", "u1", live.ID, "objects")
+	if err := os.MkdirAll(liveDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Orphan directory: a purge crashed between filesystem cleanup and the
+	// metadata commit. Backdate it past the grace window.
+	orphanDir := filepath.Join(svc.Blobs.Root, "t1", "u1", "cws_orphan", "objects")
+	if err := os.MkdirAll(orphanDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(orphanDir, strings.Repeat("a", 64)+".enc"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := now.Add(-time.Hour)
+	if err := os.Chtimes(filepath.Join(svc.Blobs.Root, "t1", "u1", "cws_orphan"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	// The key directory must never be mistaken for a tenant.
+	if err := os.MkdirAll(svc.Blobs.KeyDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := svc.Sweep(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RemovedOrphanDirs != 1 {
+		t.Fatalf("removed_orphan_dirs=%d want 1 (result=%+v)", result.RemovedOrphanDirs, result)
+	}
+	if _, err := os.Stat(filepath.Join(svc.Blobs.Root, "t1", "u1", "cws_orphan")); !os.IsNotExist(err) {
+		t.Fatalf("orphan dir still exists: %v", err)
+	}
+	if _, err := os.Stat(liveDir); err != nil {
+		t.Fatalf("live workspace dir removed: %v", err)
+	}
+	if _, err := os.Stat(svc.Blobs.KeyDir); err != nil {
+		t.Fatalf("key dir removed: %v", err)
+	}
+}
+
+func TestSweepKeepsFreshOrphanDirWithinGrace(t *testing.T) {
+	svc, _, _ := newGCService(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	orphanDir := filepath.Join(svc.Blobs.Root, "t1", "u1", "cws_fresh")
+	if err := os.MkdirAll(orphanDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	result, err := svc.Sweep(ctx, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.RemovedOrphanDirs != 0 {
+		t.Fatalf("removed_orphan_dirs=%d want 0 within grace", result.RemovedOrphanDirs)
+	}
+	if _, err := os.Stat(orphanDir); err != nil {
+		t.Fatalf("fresh orphan dir removed during grace: %v", err)
+	}
 }

@@ -69,6 +69,10 @@ func TestMigrationAPILifecycleAndCleanupIdempotency(t *testing.T) {
 	if completeUpload.Code != http.StatusOK {
 		t.Fatalf("complete upload status=%d body=%s", completeUpload.Code, completeUpload.Body.String())
 	}
+	lookup := migrationAPIRequest(t, mux, http.MethodGet, "/api/v1/migration/exports/"+created.ExportID, "machine-source", "source-token", nil)
+	if lookup.Code != http.StatusOK || !bytes.Contains(lookup.Body.Bytes(), []byte(`"export_id":"`+created.ExportID+`"`)) || !bytes.Contains(lookup.Body.Bytes(), []byte(`"status":"ready"`)) {
+		t.Fatalf("read-only export receipt status=%d body=%s", lookup.Code, lookup.Body.String())
+	}
 
 	instances := migrationAPIRequest(t, mux, http.MethodGet, "/api/v1/migration/instances", "machine-target", "target-token", nil)
 	if instances.Code != http.StatusOK || !bytes.Contains(instances.Body.Bytes(), []byte("Old Mac")) || !bytes.Contains(instances.Body.Bytes(), []byte(`"has_export":true`)) {

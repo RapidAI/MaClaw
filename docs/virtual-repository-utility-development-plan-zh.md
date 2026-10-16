@@ -34,29 +34,35 @@
 
 ### 2.0 本地与远程根目录
 
-虚拟仓库新增两种部署位置：
+虚拟仓库通过一组**机器/根映射（Mapping）**访问，每个映射是一个 `{机器, 根路径}` 对：
 
-- **本地**：根目录是桌面机上的真实目录，维持现有行为。
-- **远程（SSH）**：用户提供服务器 IP/域名、SSH 端口、用户名、密码和远程绝对根目录。`.vrepo/manifest.json`、Git/SVN 工作副本与 Local 构建目录都位于远程机器；状态、提交、推送、回退、目录创建和空间统计均通过 SSH/SFTP 在远程执行。
+- **本机映射（local）**：根目录是桌面机上的真实目录，维持现有行为。本机映射是设备私有的，不随 Hub 同步传播。
+- **远程映射（remote_ssh）**：用户提供服务器 IP/域名、SSH 端口、用户名、密码和远程绝对根目录。`.vrepo/manifest.json`、Git/SVN 工作副本与 Local 构建目录都位于远程机器；状态、提交、推送、回退、目录创建和空间统计均通过 SSH/SFTP 在远程执行。远程机器为任意 SSH 主机直连，不引入 hub agent。
 
-远程连接信息分层保存：
+每个映射记录 `id`、`label`、`kind`、`root_path`、远程坐标（`host`/`port`/`user`）、`is_default` 和最近一次连接状态（`last_status`/`last_error`/`last_checked_at`）。恰好一个映射是默认映射；所有未显式指定映射的入口（打开、刷新、检出、操作、编程任务）都作用于默认映射，与旧的单一位置行为一致。已有仓库的旧 `RootPath`/`Remote` 字段在加载时自动迁移为默认映射（映射 id 固定为 `default`，其钥匙串/同步密钥保持裸仓库 ID，旧凭据与旧同步文档无缝兼容）。
 
-- 远程 `.vrepo/manifest.json` 仍只记录可移植的名称、ID 和节点树，不记录服务器坐标。`remote.host`、`remote.port`、`remote.user` 和远程 `root_path` 保存在桌面机私有索引中，避免把内部服务器地址随 manifest 传播。
-- SSH 密码保存在系统钥匙串，索引键为虚拟仓库 ID；前端和 JSON 响应不回显秘密。
+连接信息分层保存：
+
+- 远程 `.vrepo/manifest.json` 仍只记录可移植的名称、ID 和节点树，不记录任何机器坐标；**映射不落 manifest**（本地 manifest 同样如此），避免把内部服务器地址或他机路径随 manifest 传播。
+- 映射保存在桌面机私有索引 `virtual-repositories-index.json` 的仓库条目上；条目的旧字段 `root_path`/`remote` 始终保持与默认映射一致（镜像），旧代码路径行为不变。
+- SSH 密码保存在系统钥匙串：默认远程映射沿用仓库 ID 作索引键，其余远程映射使用 `仓库ID/映射ID` 的映射级键；前端和 JSON 响应不回显秘密。
 - 首次连接必须展示服务器 host key 指纹并由用户确认；确认后固定指纹。后续指纹变化必须阻止连接，不能静默接受。不能复用当前 `corelib/remote` 中尚使用 `InsecureIgnoreHostKey` 的底层拨号实现。
 - 远程服务器必须提供 POSIX shell。本期支持 Linux/macOS 类远程主机；Windows SSH Server/PowerShell 作为后续兼容项。
 
 远程仓库的打开方式不是本地目录选择器，而是从最近列表打开，或填写 SSH 坐标与远程根目录后连接。首次创建时通过 SFTP 原子写入 `<remote-root>/.vrepo/manifest.json`。远程根路径必须是绝对 POSIX 路径，映射节点仍只允许安全相对路径；服务端执行命令前对根目录与目标目录分别 `realpath` 并验证目标未越界。
 
-最近虚拟仓库列表及仓库工作台提供“启动编程任务”。本地虚拟仓库创建 `coding_dev` 新标签页，执行目录为本地虚拟仓库根目录；远程虚拟仓库创建 `remote_coding_dev` 新标签页，执行目录为远程根目录，并复用系统钥匙串中的 SSH 密码及虚拟仓库已确认的 host-key 指纹。任务启动不得把密码传回前端、写入任务标签或降级为忽略 host key。若密码缺失、指纹未确认或远程连接失败，则不打开标签页，并隐藏已经创建但未成功预热的任务记录。
+Hub 同步包在原有 `repositories`/`credentials`/`bindings`/`ssh_secrets`/`tombstones` 之外新增 `mappings` 段：只携带 `remote_ssh` 映射（键为 `仓库ID/映射ID`，值含 label/host/port/user/root_path/is_default），并配套 `vmap` 类 tombstone 与映射级 SSH 密码（仍走 `ssh_secrets` 通道）。接收端按 `仓库ID+映射ID` upsert 合并进本地仓库定义，保留本机已有的 local 映射；同步定义但尚未绑定本机根目录的仓库（unbound）若收到带 `is_default` 的远程映射，即可直接通过该 SSH 端点打开。
+
+最近虚拟仓库列表及仓库工作台提供“启动编程任务”。存在多个映射时先选择目标机器；本地映射创建 `coding_dev` 新标签页（执行目录为该映射根目录），远程映射创建 `remote_coding_dev` 新标签页（执行目录为远程根目录），并复用该映射在系统钥匙串中的 SSH 密码及已确认的 host-key 指纹。任务启动不得把密码传回前端、写入任务标签或降级为忽略 host key。若密码缺失、指纹未确认或远程连接失败，则不打开标签页，并隐藏已经创建但未成功预热的任务记录。
 
 ### 2.1 领域对象
 
-1. **虚拟仓库（Virtual Repository）**：一个用户命名的逻辑工作区，包含一个根目录和一棵节点树。
-2. **虚拟目录节点**：仅用于组织，可有子节点；其名称不能包含路径分隔符。
-3. **映射节点**：挂载在某个虚拟目录节点上的 Git、SVN 或纯本地目录配置。每个节点都必须映射到 `根目录 + relative_path` 下的真实物理目录。
-4. **仓库凭据（Repository Credential）**：按 VCS 类型保存的用户名/秘密组合。仓库节点只保存 `credential_id`，不保存密码。
-5. **操作任务（Operation Job）**：对一个或多个仓库执行的状态、提交、推送或回退任务，包含逐项结果。
+1. **虚拟仓库（Virtual Repository）**：一个用户命名的逻辑工作区，包含一组机器/根映射和一棵节点树。
+2. **机器/根映射（Virtual Repository Mapping）**：仓库在某个机器上的落点，类型为本机（local）或远程 SSH（remote_ssh），记录根路径、远程坐标、默认标记和最近连接状态。恰好一个默认映射承载旧的“仓库位置”语义。
+3. **虚拟目录节点**：仅用于组织，可有子节点；其名称不能包含路径分隔符。
+4. **映射节点**：挂载在某个虚拟目录节点上的 Git、SVN 或纯本地目录配置。每个节点都必须映射到 `根目录 + relative_path` 下的真实物理目录（根目录由当前选中的机器/根映射决定）。
+5. **仓库凭据（Repository Credential）**：按 VCS 类型保存的用户名/秘密组合。仓库节点只保存 `credential_id`，不保存密码。
+6. **操作任务（Operation Job）**：对一个或多个仓库执行的状态、提交、推送或回退任务，包含逐项结果。
 
 虚拟仓库采用**根目录自描述**模型：只要选择一个含 `.vrepo/manifest.json` 的根目录，MaClaw 就能恢复虚拟目录树和仓库映射，不依赖某台机器的全局配置。机器相关的凭据绑定、密码、最近打开记录和状态缓存不写入 `.vrepo`。
 
@@ -193,6 +199,13 @@ gui/frontend/src/components/pages/
 └──────────────┴────────────────────────┴─────────────┘
 ```
 
+多机器/根映射相关交互（已实现）：
+
+- 未选中节点时，概览面板展示「机器/根映射」表格：状态点（绿=正常 / 灰=未验证 / 红=失败）、类型与名称、根路径（远程显示 `user@host:/path`）、默认标记与操作（测试连接或验证路径、设为默认、编辑、移除），表尾提供“添加映射”。
+- 添加/编辑映射对话框：本机映射使用原生目录选择器；远程映射复用远程 SSH 表单（服务器/端口/用户名/密码/测试连接/host key 信任/创建远程根目录）。编辑默认映射时坐标锁定，提示改用“迁移根目录”；新增远程映射必须测试连接通过后才能保存。
+- 详情面板顶部提供“当前映射”切换器；状态刷新、Git 变更、检出与仓库操作均针对当前映射执行（请求携带 `mapping_id`），切换后自动刷新。
+- “启动编程任务”在存在多个映射时先弹出目标机器选择；单映射保持一键启动。
+
 ### 4.2 首次使用
 
 空状态直接解释三步：创建虚拟仓库、选择根目录、添加仓库。点击“新建虚拟仓库”进入内联创建区：
@@ -302,6 +315,7 @@ type VirtualRepository struct {
     Name      string                  `json:"name"`
     RootPath  string                  `json:"root_path,omitempty"` // API 返回；本地 manifest 中省略
     Remote    *VirtualRepositoryRemote `json:"remote,omitempty"`
+    Mappings  []VirtualRepositoryMapping `json:"mappings,omitempty"` // 内存/API 视图；manifest 不落盘
     Nodes     []VirtualRepositoryNode `json:"nodes"`
     CreatedAt time.Time               `json:"created_at"`
     UpdatedAt time.Time               `json:"updated_at"`
@@ -311,6 +325,22 @@ type VirtualRepositoryRemote struct {
     Host string `json:"host"`
     Port int    `json:"port,omitempty"` // 默认 22
     User string `json:"user"`
+}
+
+// 机器/根映射：机器坐标，存于桌面私有索引与（仅 remote_ssh）Hub 同步包，
+// 不写入任何 manifest。旧 RootPath/Remote 在加载时迁移为 id="default" 的默认映射。
+type VirtualRepositoryMapping struct {
+    ID            string     `json:"id"`
+    Label         string     `json:"label"`
+    Kind          string     `json:"kind"` // local | remote_ssh
+    RootPath      string     `json:"root_path"`
+    Host          string     `json:"host,omitempty"`
+    Port          int        `json:"port,omitempty"`
+    User          string     `json:"user,omitempty"`
+    IsDefault     bool       `json:"is_default,omitempty"`
+    LastStatus    string     `json:"last_status,omitempty"` // ok | error
+    LastError     string     `json:"last_error,omitempty"`
+    LastCheckedAt *time.Time `json:"last_checked_at,omitempty"`
 }
 
 type VirtualRepositoryNode struct {
@@ -335,9 +365,13 @@ type RepositoryBinding struct {
 
 ### 5.2 本机索引与凭据绑定
 
-`~/.maclaw/virtual-repositories-index.json` 只保存最近打开的根目录、虚拟仓库 ID 和最后打开时间，不是权威配置。用户也可直接选择任意含 `.vrepo/manifest.json` 的目录打开；索引丢失不影响恢复虚拟仓库。
+`~/.maclaw/virtual-repositories-index.json` 保存最近打开的根目录、虚拟仓库 ID、最后打开时间，以及每个仓库的**机器/根映射列表**（本机 local 映射与同步来的 remote_ssh 映射），不是权威配置。用户也可直接选择任意含 `.vrepo/manifest.json` 的目录打开；索引丢失不影响恢复虚拟仓库（映射退化为从 manifest 所在根目录迁移出的默认映射）。
+
+索引条目的旧字段 `root_path`/`remote` 始终镜像默认映射的坐标，因此未传 `mapping_id` 的旧调用等价于操作默认映射；`BindVirtualRepositoryRoot` 的语义随之变为“添加/更新本机 local 映射”（同步来的 unbound 定义绑定本机根目录即其特例）。
 
 仓库与本机凭据的对应关系保存到 `~/.maclaw/virtual-repository-bindings.json`，键为 `virtual_repository_id + repository_node_id`，值为本机 `credential_id`。这样复制或提交 `.vrepo` 时不会泄露用户名、凭据名称或系统 secret 引用。Local 节点没有凭据绑定。
+
+Hub 同步时映射的取舍：同步包的 `mappings` 段只含 remote_ssh 映射（键 `仓库ID/映射ID`），本机 local 映射是设备私有的、不进包；删除映射产生 `vmap` tombstone，删除仓库级联 tombstone 其全部映射与映射级 SSH 密码。接收端按映射 ID upsert 进本地仓库定义，本机 local 映射与本机默认选择不被覆盖。
 
 ### 5.3 凭据模型
 
@@ -453,6 +487,16 @@ PreviewVirtualRepositoryOperation(inputJSON string) (string, error)
 StartVirtualRepositoryOperation(inputJSON string) (string, error)
 CancelVirtualRepositoryOperation(jobID string) error
 GetVirtualRepositoryOperation(jobID string) (string, error)
+
+// 机器/根映射（已实现）：列表、CRUD、默认切换与连接测试。
+// 操作/状态/检出/变更请求均接受可选 mapping_id（缺省 = 默认映射）。
+ListVirtualRepositoryMappings(repoID string) (string, error)
+AddVirtualRepositoryMapping(inputJSON string) (string, error)
+UpdateVirtualRepositoryMapping(inputJSON string) (string, error)
+RemoveVirtualRepositoryMapping(repoID, mappingID string) error
+SetDefaultVirtualRepositoryMapping(repoID, mappingID string) (string, error)
+TestVirtualRepositoryMappingConnection(inputJSON string) (string, error)
+StartVirtualRepositoryCodingTask(repoID, mappingID string) (VirtualRepositoryCodingTaskLaunch, error)
 ```
 
 进度通过 Wails event `virtual-repository:job-updated` 发布；页面卸载时取消订阅。Job 仅保存在本次应用进程中，保留最近有限条完成记录，避免无界增长。

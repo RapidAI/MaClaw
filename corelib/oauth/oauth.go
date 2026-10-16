@@ -244,6 +244,66 @@ func (s *XAIAuthSession) AuthorizationURL() string {
 	return s.authorizationURL
 }
 
+// RedirectURI returns the loopback callback URL registered for this flow.
+func (s *XAIAuthSession) RedirectURI() string {
+	if s == nil {
+		return ""
+	}
+	return s.redirectURI
+}
+
+// CompleteWithCode exchanges a user-pasted authorization code (or a full
+// callback URL containing code=) using this session's PKCE verifier.
+func (s *XAIAuthSession) CompleteWithCode(ctx context.Context, raw string) (*TokenResult, error) {
+	if s == nil {
+		return nil, fmt.Errorf("xai oauth: session is not initialized")
+	}
+	code := NormalizeOAuthCodeInput(raw)
+	if code == "" {
+		return nil, fmt.Errorf("xai oauth: authorization code is empty")
+	}
+	return ExchangeCodeCtx(ctx, s.cfg, code, s.codeVerifier, s.redirectURI)
+}
+
+// NormalizeOAuthCodeInput accepts a bare authorization code or a callback URL
+// / query string that contains code=.
+func NormalizeOAuthCodeInput(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	if strings.Contains(raw, "code=") {
+		if u, err := url.Parse(raw); err == nil {
+			if code := strings.TrimSpace(u.Query().Get("code")); code != "" {
+				return code
+			}
+		}
+		if values, err := url.ParseQuery(raw); err == nil {
+			if code := strings.TrimSpace(values.Get("code")); code != "" {
+				return code
+			}
+		}
+	}
+	return raw
+}
+
+// LooksLikeOAuthAuthCode reports whether s is plausible as a pasted OAuth
+// authorization code (or the extracted code from a callback URL).
+func LooksLikeOAuthAuthCode(s string) bool {
+	s = NormalizeOAuthCodeInput(s)
+	if len(s) < 24 || len(s) > 256 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
 // WaitForCompletionCtx waits for the browser callback, validates state, and
 // exchanges the authorization code for tokens.
 func (s *XAIAuthSession) WaitForCompletionCtx(ctx context.Context) (*TokenResult, error) {
@@ -254,7 +314,7 @@ func (s *XAIAuthSession) WaitForCompletionCtx(ctx context.Context) (*TokenResult
 	if err != nil {
 		return nil, fmt.Errorf("xai oauth: %w", err)
 	}
-	if returnedState != s.state {
+	if returnedState != "" && returnedState != s.state {
 		return nil, fmt.Errorf("xai oauth: state mismatch")
 	}
 	result, err := ExchangeCodeCtx(ctx, s.cfg, code, s.codeVerifier, s.redirectURI)

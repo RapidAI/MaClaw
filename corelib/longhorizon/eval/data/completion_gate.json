@@ -1,0 +1,61 @@
+{
+  "category": "completion_gate",
+  "title": "完成权在 harness：done 必须有真实干净审计",
+  "design_ref": "longhorizon-harness-plan-zh.md §9 P5 / §2.1 完成权",
+  "samples": [
+    {
+      "id": "done_without_audit_rejected",
+      "title": "Manager 首轮自称 done 被拒，真实审计通过后才完成",
+      "notes": "锁住完成门：MarkCompleted 要求最近一份真实审计 complete+clean+aligned。",
+      "user_goal": "create main.go and verify it exists",
+      "max_rounds": 6,
+      "manager_script": [
+        "Next: done",
+        "Next: cli\nGoal: write main.go\nAcceptance: main.go exists in the repo",
+        "Next: done"
+      ],
+      "executor_script": [
+        "status=passed\nwrote main.go"
+      ],
+      "auditor_script": [
+        "Status: complete\nIntegrity: clean\nAlignment: aligned\nSummary: git status shows main.go added"
+      ],
+      "probe_script": [
+        "git status: A main.go"
+      ],
+      "expected": {
+        "final_status": "done",
+        "completed": true,
+        "manager_nexts": ["done", "cli", "done"],
+        "rounds": 1
+      }
+    },
+    {
+      "id": "probe_challenge_blocks_completion",
+      "title": "探针显示验证码/登录墙时 complete 被降级，不得完成",
+      "notes": "ProbeShowsUserChallenge 强制 complete→incomplete、clean→suspect。",
+      "user_goal": "log in and open the dashboard",
+      "max_rounds": 6,
+      "manager_script": [
+        "Next: browser\nGoal: open the dashboard\nAcceptance: dashboard title visible",
+        "Next: done",
+        "Next: blocked\nQuestion: captcha requires the user"
+      ],
+      "executor_script": [
+        "status=passed\nclicked login"
+      ],
+      "auditor_script": [
+        "Status: complete\nIntegrity: clean\nAlignment: aligned\nSummary: page looks done"
+      ],
+      "probe_script": [
+        "url=https://example.test/login\ntitle=Login\nflags=captcha_or_login"
+      ],
+      "expected": {
+        "final_status": "blocked",
+        "completed": false,
+        "manager_nexts": ["browser", "done", "blocked"],
+        "rounds": 1
+      }
+    }
+  ]
+}

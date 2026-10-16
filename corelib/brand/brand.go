@@ -20,12 +20,12 @@ type BrandConfig struct {
 	MobileAppName   string         // 移动端应用名称
 	ExtraTools      []ExtraToolDef // 额外工具列表
 	DefaultTool     string         // 品牌默认编程工具 (e.g., "claude")
-	DefaultToolProvider string     // 品牌默认服务商 (e.g., "" for MaClaw, "codegen" for TigerClaw)
+	DefaultToolProvider string     // 品牌默认服务商 (e.g., "" for MaClaw, "codegen" for QAgent)
 }
 
 // ExtraToolDef 描述一个 OEM 额外工具。
 type ExtraToolDef struct {
-	Name           string                                                             // 工具内部名称，如 "tigerclaw"
+	Name           string                                                             // 工具内部名称，如 "QAgent"
 	DisplayName    string                                                             // 显示名称
 	ConfigKey      string                                                             // AppConfig 中的配置键名
 	EnvBuilderFunc func(cfg interface{}, model interface{}, projectDir string) map[string]string // 环境变量构建函数
