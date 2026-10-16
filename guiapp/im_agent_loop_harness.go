@@ -85,7 +85,9 @@ func (h *IMMessageHandler) beginAgentLoopRuntimeState(ctx *LoopContext, userID, 
 	caller := "agent_loop"
 	requestID, loopID := "", ""
 	if ctx != nil {
-		if ctx.Kind == LoopKindBackground {
+		if strings.TrimSpace(ctx.LLMCaller) != "" {
+			caller = strings.TrimSpace(ctx.LLMCaller)
+		} else if ctx.Kind == LoopKindBackground {
 			caller = "background_agent_loop"
 		}
 		requestID = ctx.Runtime.RequestID

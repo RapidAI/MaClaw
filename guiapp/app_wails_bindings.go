@@ -3285,6 +3285,9 @@ func (a *App) ClearAIAssistantHistoryForSession(sessionKey string) error {
 	// is serialized behind the per-session mutex and only runs after the loop exits.
 	_ = handler.cancelCurrentTaskForUser(targetUserID, handler.imCommandResponseLang(a.CurrentLanguage))
 	_, _ = handler.CancelSessionForUser(targetUserID)
+	if tasks := handler.ensureChatTasks(); tasks != nil {
+		tasks.CancelSession(targetUserID)
+	}
 	handler.memory.Clear(targetUserID)
 	handler.clearPerUserSessionState(targetUserID)
 	handler.flushEvidenceOnSessionEnd(targetUserID)

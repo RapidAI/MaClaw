@@ -138,6 +138,12 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	// wizard opt-out, and the semantic planner reads this field rather than
 	// the workflow router (a cold message never enters that router).
 	loopCtx.NoWorkflowInterception = msg.NoWorkflowInterception
+	if loopCtx.ChatTaskID == "" && h.chatTurnMayDispatch(msg, opts.WorkflowAgentLoop, codingWorkbench) {
+		loopCtx.OfferChatTaskDispatch = true
+		if loopCtx.ForegroundChatBudget == 0 {
+			loopCtx.ForegroundChatBudget = desktopChatForegroundIterationBudget
+		}
+	}
 	h.beginInFlightTurn(msg.UserID, msg.Text, loopCtx)
 	defer h.endInFlightTurn(msg.UserID, loopCtx)
 	if loopCtx.IsCancelled() || h.hasCancelledTaskBoundary(msg.UserID) {
@@ -413,6 +419,9 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		opts.OnProgress("[Status] 正在整理上下文并准备模型请求")
 	}
 	systemPrompt := h.buildIMEntrySystemPrompt(msg, history, loopCtx, opts.WorkflowAgentLoop, opts.PhasePrompt, opts.AskUserContext, opts.PendingUserReplyContext, opts.CapabilityGapContext)
+	if loopCtx != nil && loopCtx.OfferChatTaskDispatch {
+		systemPrompt += h.chatTaskDispatchGuidance(msg.UserID)
+	}
 	promptElapsed := time.Since(promptStart)
 
 	if !unarmedRemote && (!codingWorkbench || opts.WorkflowAgentLoop) {

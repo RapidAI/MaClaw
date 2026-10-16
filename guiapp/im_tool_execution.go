@@ -906,6 +906,9 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContextAndContextTokens
 		kind = classifyAgentToolKind(name)
 	}
 	policyUserID = strings.TrimSpace(policyUserID)
+	if result, handled := h.executeChatTaskToolIfAny(policyUserID, name, args); handled {
+		return result
+	}
 	if name == "database" || name == "database_query" {
 		// The GUI registry is a legacy app-level adapter, so bind its database
 		// manager through the authenticated execution context as well. Never use

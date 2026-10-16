@@ -32,6 +32,10 @@ func computeAgentLoopIterationLimits(ctx *LoopContext, maxIter int, minIteration
 			effectiveMax = config.MaxAgentIterationsCap
 		}
 	}
+	if ctx != nil && ctx.ForegroundChatBudget > 0 && effectiveMax > ctx.ForegroundChatBudget {
+		effectiveMax = ctx.ForegroundChatBudget
+		chatFinalizeGrace = 0
+	}
 	return agentLoopIterationLimits{
 		EffectiveMax:      effectiveMax,
 		ChatFinalizeGrace: chatFinalizeGrace,
@@ -39,6 +43,10 @@ func computeAgentLoopIterationLimits(ctx *LoopContext, maxIter int, minIteration
 }
 
 func (h *IMMessageHandler) refreshAgentLoopEffectiveMax(ctx *LoopContext, iteration int, effectiveMax int, minIterations int, loopDriftDetector *DriftDetector, sendProgress func(string)) int {
+	if ctx != nil && ctx.ForegroundChatBudget > 0 && h.loopMaxOverride <= 0 {
+		ctx.SetMaxIterations(ctx.ForegroundChatBudget)
+		return ctx.ForegroundChatBudget
+	}
 	if h.loopMaxOverride > 0 {
 		override := h.loopMaxOverride
 		if minIterations > 0 && override < minIterations {

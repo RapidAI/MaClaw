@@ -10,6 +10,7 @@ const (
 	SlotKindSSH                       // SSH remote session, max 10
 	SlotKindBrowser                   // browser task, max 2
 	SlotKindGUI                       // GUI desktop automation task, max 1
+	SlotKindChatTask                  // desktop chat background task, max 6
 )
 
 // SlotKindString returns a human-readable label for the slot kind.
@@ -27,6 +28,8 @@ func (s SlotKind) String() string {
 		return "browser"
 	case SlotKindGUI:
 		return "gui"
+	case SlotKindChatTask:
+		return "chat_task"
 	default:
 		return "unknown"
 	}
@@ -46,6 +49,8 @@ func normalizeSlotKind(value string) SlotKind {
 		return SlotKindBrowser
 	case SlotKindGUI.String():
 		return SlotKindGUI
+	case SlotKindChatTask.String():
+		return SlotKindChatTask
 	default:
 		return SlotKindScheduled
 	}

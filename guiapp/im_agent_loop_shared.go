@@ -7870,8 +7870,12 @@ func (c *sharedAgentLoopCallbacks) OnLLMUsage(model string, inputTokens, outputT
 func (c *sharedAgentLoopCallbacks) LLMRequestContext(iteration int) (context.Context, func(error), error) {
 	if c != nil && c.loopCtx != nil {
 		ctx, end, _ := c.loopCtx.BeginReplannableOperation(context.Background())
+		caller := "shared_agent_loop"
+		if strings.TrimSpace(c.loopCtx.LLMCaller) != "" {
+			caller = strings.TrimSpace(c.loopCtx.LLMCaller)
+		}
 		trace := llm.RequestTrace{
-			Caller:    "shared_agent_loop",
+			Caller:    caller,
 			OwnerID:   c.userID,
 			RequestID: c.loopCtx.Runtime.RequestID,
 			LoopID:    c.loopCtx.ID,
