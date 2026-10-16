@@ -24,6 +24,8 @@ import { CodeFileDiffStat, FileTabBar, cycleFilePath } from './FileTabBar';
 import { CodePreviewFileListButton } from './CodePreviewFileList';
 import { PreviewFileActions } from './PreviewFileActions';
 import { FilePreviewView, filePreviewUsesSpecialRenderer, isAssistantSourcePreview, isVisualFilePreview } from '../preview/FilePreviewView';
+import { WebPreviewBrowser } from '../preview/WebPreviewBrowser';
+import { filePreviewKindFromName } from '../preview/filePreviewKind';
 import type { CodePreviewTheme } from './FileTabBar';
 import type { CodeFile } from './useCodePreviewState';
 import { codeFileLineDeltaHasChange, computeCodeFileLineDelta, getDisplayFilePaths, getMruCycleOrder, isCodeFileDirty, previewBodyShowsFile, shouldDismissEmptyPreviewWithoutWorkspace } from './useCodePreviewState';
@@ -305,6 +307,11 @@ function CloudWorkspaceNameLabel({ name, theme, compact = false }: { name: strin
 function isVisualDocumentPreview(file: Pick<CodeFile, 'fileName' | 'filePath' | 'absPath' | 'language' | 'latexWorkbench'> | undefined): boolean {
     if (!file || isAssistantSourcePreview(file)) return false;
     return isVisualFilePreview(file);
+}
+
+function isHtmlPreviewFile(file: Pick<CodeFile, 'fileName' | 'filePath' | 'absPath' | 'language'> | undefined): boolean {
+    if (!file) return false;
+    return filePreviewKindFromName(file.absPath || file.filePath || file.fileName || '', file.language) === 'html';
 }
 
 // ── Syntax color mapping ──
@@ -1013,6 +1020,9 @@ export function CodePreviewPanel({
     }, [wordWrap, fontSize, minimap, diffMode, diffOnlyChanges]);
 
     const activeFile = files.get(activeFilePath);
+    const [htmlBrowserOn, setHtmlBrowserOn] = useState(true);
+    const activeIsHtml = isHtmlPreviewFile(activeFile);
+    const showHtmlBrowser = activeIsHtml && htmlBrowserOn && !workspaceActive;
 
     useEffect(() => {
         if (!cloudMode) return;
@@ -1410,7 +1420,7 @@ export function CodePreviewPanel({
             return;
         }
         // Alt+↓ / Alt+↑ — jump between the file's changes (diff view only)
-        if (fileViewHotkeys && e.altKey && !e.ctrlKey && !e.metaKey && diffHasChange
+        if (fileViewHotkeys && e.altKey && !e.ctrlKey && !e.metaKey && diffHasChange && !showHtmlBrowser
             && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
             e.preventDefault();
             e.stopPropagation();
@@ -1467,6 +1477,7 @@ export function CodePreviewPanel({
         if (fileViewHotkeys && (e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'f' || e.key === 'F')) {
             e.preventDefault();
             e.stopPropagation();
+            if (showHtmlBrowser) setHtmlBrowserOn(false);
             openFind();
             return;
         }
@@ -1518,6 +1529,7 @@ export function CodePreviewPanel({
         stepDiffChange,
         workspaceActive,
         openGoto,
+        showHtmlBrowser,
         toggleWordWrap,
         zoomIn,
         zoomOut,
@@ -1565,6 +1577,35 @@ export function CodePreviewPanel({
             onZoomReset={zoomReset}
         />
     );
+    const htmlBrowserToggle = activeIsHtml ? (
+        <button
+            type="button"
+            data-testid="code-preview-html-browser-toggle"
+            data-mode={showHtmlBrowser ? 'browser' : 'source'}
+            onClick={() => setHtmlBrowserOn((on) => !on)}
+            title={showHtmlBrowser
+                ? (lang.startsWith('zh') ? '查看 HTML 源码' : 'Show HTML source')
+                : (lang.startsWith('zh') ? '在预览窗口中打开网页' : 'Open the page in the preview')}
+            style={{
+                flexShrink: 0,
+                border: `1px solid ${theme.border}`,
+                background: showHtmlBrowser ? theme.tabActiveBg : theme.bg,
+                color: showHtmlBrowser ? theme.tabActiveText : theme.text,
+                borderRadius: 4,
+                padding: '0 8px',
+                height: 20,
+                cursor: 'pointer',
+                font: 'inherit',
+                fontSize: 11,
+                fontWeight: 600,
+                lineHeight: '18px',
+            }}
+        >
+            {showHtmlBrowser
+                ? (lang.startsWith('zh') ? '源码' : 'Source')
+                : (lang.startsWith('zh') ? '预览' : 'Preview')}
+        </button>
+    ) : null;
 
     // Empty state: no files
     if (files.size === 0) {
@@ -1845,13 +1886,16 @@ export function CodePreviewPanel({
                     style={{
                         display: 'flex',
                         justifyContent: 'flex-end',
+                        alignItems: 'center',
+                        gap: 6,
                         padding: '4px 8px',
                         borderBottom: `1px solid ${theme.border}`,
                         background: theme.tabBg,
                         flexShrink: 0,
                     }}
                 >
-                    {viewToolbar}
+                    {htmlBrowserToggle}
+                    {!showHtmlBrowser && viewToolbar}
                 </div>
             ) : null}
 
@@ -1884,7 +1928,8 @@ export function CodePreviewPanel({
                     </span>
                     {/* View toolbar lives on the path row, not the tab row, so narrow
                         panes never squeeze the file tabs against the right-side controls. */}
-                    {!isVisualDocumentPreview(activeFile) && viewToolbar}
+                    {htmlBrowserToggle}
+                    {!showHtmlBrowser && !isVisualDocumentPreview(activeFile) && viewToolbar}
                     <span
                         data-testid="code-preview-lang-badge"
                         style={{
@@ -1941,7 +1986,7 @@ export function CodePreviewPanel({
                 </div>
             )}
 
-            {!workspaceActive && findOpen && (
+            {!workspaceActive && !showHtmlBrowser && findOpen && (
                 <CodePreviewFindBar
                     query={findQuery}
                     matchCount={matchLineIndexes.length}
@@ -1975,7 +2020,7 @@ export function CodePreviewPanel({
                 />
             )}
 
-            {!workspaceActive && gotoOpen && (
+            {!workspaceActive && !showHtmlBrowser && gotoOpen && (
                 <CodePreviewGoToLineBar
                     value={gotoValue}
                     maxLines={Math.max(1, totalLines)}
@@ -1990,7 +2035,7 @@ export function CodePreviewPanel({
 
             {/* Change overview: how much changed + how to read it. Hidden when
                 nothing changed, so the bar always means "there are edits here". */}
-            {!workspaceActive && activeFile && diffLines && diffHasChange && !isVisualDocumentPreview(activeFile) && (
+            {!workspaceActive && !showHtmlBrowser && activeFile && diffLines && diffHasChange && !isVisualDocumentPreview(activeFile) && (
                 <CodeDiffSummaryBar
                     stats={diffStats}
                     changeCount={diffChangeCount}
@@ -2019,7 +2064,7 @@ export function CodePreviewPanel({
                 </div>
             )}
             {/* Large files: no line diff, but the user still needs the totals. */}
-            {diffTooLarge && diffTooLargeDelta && (
+            {diffTooLarge && diffTooLargeDelta && !showHtmlBrowser && (
                 <div
                     role="status"
                     data-testid="code-preview-diff-too-large"
@@ -2044,13 +2089,23 @@ export function CodePreviewPanel({
                     className="ai-chat-scrollbar"
                     style={{
                         flex: 1,
-                        overflowY: isVisualDocumentPreview(activeFile) ? 'hidden' : 'auto',
-                        overflowX: isVisualDocumentPreview(activeFile) ? 'hidden' : 'auto',
+                        overflowY: isVisualDocumentPreview(activeFile) || showHtmlBrowser ? 'hidden' : 'auto',
+                        overflowX: isVisualDocumentPreview(activeFile) || showHtmlBrowser ? 'hidden' : 'auto',
                         minHeight: 0,
                         minWidth: 0,
+                        display: showHtmlBrowser ? 'flex' : undefined,
+                        flexDirection: showHtmlBrowser ? 'column' : undefined,
                     }}
                 >
-                    {workspaceActive ? (
+                    {showHtmlBrowser && activeFile ? (
+                        <WebPreviewBrowser
+                            key={`${activeFile.filePath}:${activeFile.absPath || ''}:${activeFile.updatedAt || 0}`}
+                            absPath={activeFile.absPath}
+                            content={activeFile.content}
+                            theme={theme}
+                            lang={lang}
+                        />
+                    ) : workspaceActive ? (
                         <CodePreviewWorkspace projectPath={projectPath} refreshToken={workspaceRefreshToken} resetOnRefresh={workspaceResetOnRefresh} cloudMode={cloudMode} paperWorkspace={paperWorkspace} hideTitle lang={lang} theme={theme} onOpenFile={openWorkspaceFile} onFileDeleted={handleWorkspaceFileDeleted} />
                     ) : (
                         <FilePreviewView
@@ -2107,7 +2162,7 @@ export function CodePreviewPanel({
                         </FilePreviewView>
                     )}
                 </div>
-                {minimap && !workspaceActive && activeFile && !isVisualDocumentPreview(activeFile) ? (
+                {minimap && !workspaceActive && !showHtmlBrowser && activeFile && !isVisualDocumentPreview(activeFile) ? (
                     <CodePreviewMinimap
                         scrollRef={scrollRef}
                         scrollId={scrollDomId}

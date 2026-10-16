@@ -263,3 +263,123 @@ func TestMailboxAccountTestDraft(t *testing.T) {
 		t.Fatalf("fallback saved secret: %q %v spy=%+v", text, err, in2)
 	}
 }
+
+func TestMailboxOAuthLoginStoresTokenOutsideConfig(t *testing.T) {
+	app := newDatabaseProfileTestApp(t)
+	store := installFakeMailboxKeyring(t)
+	prev := beginMailboxOAuth
+	beginMailboxOAuth = func(context.Context, string, string, func(string) error) (mailbox.OAuthGrant, error) {
+		return mailbox.OAuthGrant{
+			Provider: mailbox.ProviderGmail,
+			Email:    "a@gmail.com",
+			Secret:   `{"kind":"oauth","provider":"gmail","access_token":"ya29.test","refresh_token":"refresh-1","expiry":"2099-01-01T00:00:00Z"}`,
+		}, nil
+	}
+	t.Cleanup(func() { beginMailboxOAuth = prev })
+
+	msg, err := app.MailboxOAuthLogin("gmail", "")
+	if err != nil || msg != "Gmail 邮箱 a@gmail.com 已登录" {
+		t.Fatalf("login: %v %q", err, msg)
+	}
+	cfg, err := app.LoadConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cfg.MailboxAccounts) != 1 {
+		t.Fatalf("accounts=%d", len(cfg.MailboxAccounts))
+	}
+	saved := cfg.MailboxAccounts[0]
+	if saved.Auth != mailbox.AuthOAuth || saved.Provider != mailbox.ProviderGmail || saved.Address != "a@gmail.com" {
+		t.Fatalf("account=%+v", saved)
+	}
+	if saved.Inbound == nil || saved.Inbound.Host != "imap.gmail.com" || saved.Outbound == nil || saved.Outbound.Host != "smtp.gmail.com" {
+		t.Fatalf("endpoints in=%+v out=%+v", saved.Inbound, saved.Outbound)
+	}
+	raw, _ := json.Marshal(cfg.MailboxAccounts)
+	if strings.Contains(string(raw), "ya29.test") || strings.Contains(string(raw), "refresh-1") {
+		t.Fatal(string(raw))
+	}
+	secret, err := app.mailboxSecret(context.Background(), mailbox.SecretRef(saved.ID, mailbox.SideInbound))
+	if err != nil || !strings.Contains(secret, "ya29.test") {
+		t.Fatalf("secret=%q err=%v", secret, err)
+	}
+	other, err := app.mailboxSecret(context.Background(), mailbox.SecretRef(saved.ID, mailbox.SideOutbound))
+	if err != nil || other != secret {
+		t.Fatalf("outbound secret=%q err=%v", other, err)
+	}
+	if len(store) != 2 {
+		t.Fatalf("keyring entries=%d", len(store))
+	}
+}
+
+func TestWriteMailboxSecretBothSidesRollsBack(t *testing.T) {
+	store := installFakeMailboxKeyring(t)
+	id := "mbrollback"
+	inItem, err := mailbox.KeyringItem(id, mailbox.SideInbound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outItem, err := mailbox.KeyringItem(id, mailbox.SideOutbound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := mailbox.KeyringService + "\x00"
+	if err := mailboxKeyringSet(mailbox.KeyringService, inItem, "old-in"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mailboxKeyringSet(mailbox.KeyringService, outItem, "old-out"); err != nil {
+		t.Fatal(err)
+	}
+	realSet := mailboxKeyringSet
+	writes := 0
+	mailboxKeyringSet = func(service, item, secret string) error {
+		writes++
+		if item == outItem {
+			return errors.New("keyring full")
+		}
+		return realSet(service, item, secret)
+	}
+	t.Cleanup(func() { mailboxKeyringSet = realSet })
+
+	if err := writeMailboxSecretBothSides(id, "new-secret"); err == nil || err.Error() != mailbox.MsgKeyringLong {
+		t.Fatal(err)
+	}
+	if store[key+inItem] != "old-in" || store[key+outItem] != "old-out" {
+		t.Fatalf("store=%v writes=%d", store, writes)
+	}
+}
+
+func TestWriteMailboxSecretBothSidesAbortsWhenReadFails(t *testing.T) {
+	store := installFakeMailboxKeyring(t)
+	id := "mbreadfail"
+	inItem, err := mailbox.KeyringItem(id, mailbox.SideInbound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	outItem, err := mailbox.KeyringItem(id, mailbox.SideOutbound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := mailbox.KeyringService + "\x00"
+	if err := mailboxKeyringSet(mailbox.KeyringService, inItem, "old-in"); err != nil {
+		t.Fatal(err)
+	}
+	if err := mailboxKeyringSet(mailbox.KeyringService, outItem, "old-out"); err != nil {
+		t.Fatal(err)
+	}
+	realGet := mailboxKeyringGet
+	mailboxKeyringGet = func(service, item string) (string, error) {
+		if item == outItem {
+			return "", errors.New("keyring locked")
+		}
+		return realGet(service, item)
+	}
+	t.Cleanup(func() { mailboxKeyringGet = realGet })
+
+	if err := writeMailboxSecretBothSides(id, "new-secret"); err == nil || err.Error() != mailbox.MsgKeyringLong {
+		t.Fatal(err)
+	}
+	if store[key+inItem] != "old-in" || store[key+outItem] != "old-out" {
+		t.Fatalf("store=%v", store)
+	}
+}

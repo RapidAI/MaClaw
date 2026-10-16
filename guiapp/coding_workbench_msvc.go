@@ -1,10 +1,15 @@
 package guiapp
 
 import (
+	"archive/zip"
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
+	"io/fs"
 	"log"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,6 +19,8 @@ import (
 	"sync"
 	"time"
 	"unicode/utf16"
+
+	"github.com/RapidAI/CodeClaw/corelib/remote"
 )
 
 // windowsMSVCToolchain is a host-side discovery result for MSVC / Visual Studio.
@@ -27,13 +34,24 @@ type windowsMSVCToolchain struct {
 }
 
 var (
-	windowsMSVCDetectOnce sync.Once
-	windowsMSVCDetected   *windowsMSVCToolchain
-	windowsMSVCEnvOnce    sync.Once
-	windowsMSVCEnv        []string
-	windowsMinGWBinOnce   sync.Once
-	windowsMinGWBin       string
+	windowsMSVCDetectOnce    sync.Once
+	windowsMSVCDetected      *windowsMSVCToolchain
+	windowsMSVCEnvOnce       sync.Once
+	windowsMSVCEnv           []string
+	windowsMinGWBinOnce      sync.Once
+	windowsMinGWBin          string
+	windowsCMakeBinOnce      sync.Once
+	windowsCMakeBin          string
+	privateCMakeMu           sync.Mutex
+	privateInstalledCMakeDir string
+	windowsNinjaBinOnce      sync.Once
+	windowsNinjaBin          string
+	windowsCMakeInstalling   bool
 )
+
+// installPrivateCMakeFn installs CMake for a machine that has none.
+// Tests replace it. The default does not ask the user to install anything.
+var installPrivateCMakeFn = defaultInstallPrivateCMake
 
 // detectWindowsMSVCToolchain finds a local Visual Studio install that includes
 // C++ tools. Cached for the process lifetime. Returns nil on non-Windows or when
@@ -224,7 +242,7 @@ g++ is already on PATH for coding bash.
 Compile/run:
   g++ -std=c++17 -o hello.exe hello.cpp && .\hello.exe
 Do NOT scan Program Files or WinGet packages. Do NOT wrap vcvars.
-`)
+` + formatWindowsCMakePathHint())
 		}
 		return strings.TrimSpace(`
 ## Host C/C++ toolchain
@@ -235,7 +253,7 @@ If you need MSVC: locate vcvars64.bat via
 then compile with:
   cmd /c 'call "<install>\VC\Auxiliary\Build\vcvars64.bat" && cl /utf-8 /EHsc ...'
 Keep cmd /c '...'. Do NOT scan Program Files. Prefer project build scripts.
-`)
+` + formatWindowsCMakePathHint())
 	}
 
 	var b strings.Builder
@@ -261,6 +279,9 @@ Keep cmd /c '...'. Do NOT scan Program Files. Prefer project build scripts.
 	b.WriteString("  cl /utf-8 /EHsc /Fe:hello.exe hello.cpp && .\\hello.exe\n")
 	if mingw != "" {
 		b.WriteString("Or: g++ -std=c++17 -o hello.exe hello.cpp && .\\hello.exe\n")
+	}
+	if cmake := formatWindowsCMakePathHint(); cmake != "" {
+		b.WriteString(cmake)
 	}
 	b.WriteString("Rules:\n")
 	b.WriteString("- Do NOT wrap vcvars64.bat or cmd /c call. cl is already on PATH.\n")
@@ -442,7 +463,438 @@ func prewarmWindowsCodingToolchain() {
 		_ = detectWindowsMSVCToolchain()
 		_ = windowsMSVCInjectedEnviron()
 		_ = detectWindowsMinGWBin()
+		_ = detectWindowsCMakeBin()
+		_ = detectWindowsNinjaBin()
 	}()
+}
+
+func formatWindowsCMakePathHint() string {
+	if detectWindowsCMakeBin() == "" {
+		return ""
+	}
+	return "cmake and ctest are already on PATH for coding bash. Use cmake --build and ctest directly. Do NOT scan Program Files for cmake.exe.\n"
+}
+
+// detectWindowsCMakeBin finds the directory that contains cmake.exe.
+// Coding bash and the step verify gate share codingCommandEnv, so a GUI
+// process whose PATH does not include CMake can still run cmake --build.
+func detectWindowsCMakeBin() string {
+	if runtime.GOOS != "windows" {
+		return ""
+	}
+	windowsCMakeBinOnce.Do(func() {
+		windowsCMakeBin = findWindowsCMakeBin()
+		if windowsCMakeBin != "" {
+			log.Printf("[cmake-detect] using %s", windowsCMakeBin)
+		}
+	})
+	if exe := cmakeExeInDir(privateCMakeDir()); exe != "" {
+		return filepath.Dir(exe)
+	}
+	return windowsCMakeBin
+}
+
+func cmakeExeInDir(dir string) string {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return ""
+	}
+	exe := filepath.Join(dir, "cmake.exe")
+	if !existingToolFile(exe) {
+		return ""
+	}
+	return exe
+}
+
+func privateCMakeDir() string {
+	privateCMakeMu.Lock()
+	defer privateCMakeMu.Unlock()
+	return privateInstalledCMakeDir
+}
+
+func setPrivateCMakeDir(dir string) {
+	privateCMakeMu.Lock()
+	privateInstalledCMakeDir = strings.TrimSpace(dir)
+	privateCMakeMu.Unlock()
+}
+
+func findWindowsCMakeBin() string {
+	return firstExistingWindowsToolDir(windowsCMakeCandidates())
+}
+
+func windowsCMakeCandidates() []string {
+	var matches []string
+	if p, err := exec.LookPath("cmake"); err == nil && strings.TrimSpace(p) != "" {
+		matches = append(matches, p)
+	}
+	programFiles := strings.TrimSpace(os.Getenv("ProgramFiles"))
+	if programFiles == "" {
+		programFiles = `C:\Program Files`
+	}
+	programFilesX86 := strings.TrimSpace(os.Getenv("ProgramFiles(x86)"))
+	if programFilesX86 == "" {
+		programFilesX86 = `C:\Program Files (x86)`
+	}
+	matches = append(matches,
+		filepath.Join(programFiles, "CMake", "bin", "cmake.exe"),
+		filepath.Join(programFilesX86, "CMake", "bin", "cmake.exe"),
+		`C:\ProgramData\chocolatey\bin\cmake.exe`,
+	)
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		matches = append(matches, filepath.Join(home, "scoop", "apps", "cmake", "current", "bin", "cmake.exe"))
+	}
+	matches = append(matches, windowsVSCMakeCandidates()...)
+	if local := strings.TrimSpace(os.Getenv("LOCALAPPDATA")); local != "" {
+		for _, pattern := range []string{
+			filepath.Join(local, "Microsoft", "WinGet", "Links", "cmake.exe"),
+			filepath.Join(local, "Microsoft", "WinGet", "Packages", "*", "bin", "cmake.exe"),
+			filepath.Join(local, "Microsoft", "WinGet", "Packages", "*", "*", "bin", "cmake.exe"),
+			filepath.Join(local, "Microsoft", "WinGet", "Packages", "*", "mingw64", "bin", "cmake.exe"),
+			filepath.Join(local, "Microsoft", "WinGet", "Packages", "*", "*", "mingw64", "bin", "cmake.exe"),
+		} {
+			found, _ := filepath.Glob(pattern)
+			matches = append(matches, found...)
+		}
+	}
+	if tools := strings.TrimSpace(remote.ToolsDir()); tools != "" {
+		matches = append(matches, filepath.Join(tools, "cmake", "bin", "cmake.exe"))
+		found, _ := filepath.Glob(filepath.Join(tools, "*", "bin", "cmake.exe"))
+		matches = append(matches, found...)
+	}
+	if mingw := detectWindowsMinGWBin(); mingw != "" {
+		matches = append(matches, filepath.Join(mingw, "cmake.exe"))
+	}
+	return matches
+}
+
+func windowsVSCMakeCandidates() []string {
+	var matches []string
+	if tc := detectWindowsMSVCToolchain(); tc != nil && strings.TrimSpace(tc.InstallPath) != "" {
+		candidate := filepath.Join(tc.InstallPath, "Common7", "IDE", "CommonExtensions", "Microsoft", "CMake", "CMake", "bin", "cmake.exe")
+		matches = append(matches, candidate)
+		if existingToolFile(candidate) {
+			return matches
+		}
+	}
+	for _, root := range []string{
+		filepath.Join(os.Getenv("ProgramFiles"), "Microsoft Visual Studio"),
+		filepath.Join(os.Getenv("ProgramFiles(x86)"), "Microsoft Visual Studio"),
+	} {
+		if strings.TrimSpace(root) == "" || strings.HasPrefix(root, string(os.PathSeparator)) {
+			continue
+		}
+		found, _ := filepath.Glob(filepath.Join(root, "*", "*", "Common7", "IDE", "CommonExtensions", "Microsoft", "CMake", "CMake", "bin", "cmake.exe"))
+		matches = append(matches, found...)
+	}
+	return matches
+}
+
+func detectWindowsNinjaBin() string {
+	if runtime.GOOS != "windows" {
+		return ""
+	}
+	windowsNinjaBinOnce.Do(func() {
+		windowsNinjaBin = firstExistingWindowsToolDir(windowsNinjaCandidates())
+		if windowsNinjaBin != "" {
+			log.Printf("[ninja-detect] using %s", windowsNinjaBin)
+		}
+	})
+	// A CMake copy installed later ships ninja.exe in the same directory.
+	// The Once above may already have cached a miss.
+	if dir := detectWindowsCMakeBin(); dir != "" && existingToolFile(filepath.Join(dir, "ninja.exe")) {
+		return dir
+	}
+	return windowsNinjaBin
+}
+
+func windowsNinjaCandidates() []string {
+	var matches []string
+	if p, err := exec.LookPath("ninja"); err == nil && strings.TrimSpace(p) != "" {
+		matches = append(matches, p)
+	}
+	if dir := detectWindowsCMakeBin(); dir != "" {
+		matches = append(matches, filepath.Join(dir, "ninja.exe"))
+	}
+	if dir := detectWindowsMinGWBin(); dir != "" {
+		matches = append(matches, filepath.Join(dir, "ninja.exe"))
+	}
+	if tc := detectWindowsMSVCToolchain(); tc != nil && strings.TrimSpace(tc.InstallPath) != "" {
+		matches = append(matches, filepath.Join(tc.InstallPath, "Common7", "IDE", "CommonExtensions", "Microsoft", "CMake", "Ninja", "ninja.exe"))
+	}
+	return matches
+}
+
+func detectWindowsMSBuild() string {
+	if runtime.GOOS != "windows" {
+		return ""
+	}
+	for _, name := range []string{"MSBuild.exe", "msbuild.exe"} {
+		if p, err := exec.LookPath(name); err == nil && strings.TrimSpace(p) != "" {
+			return p
+		}
+	}
+	if tc := detectWindowsMSVCToolchain(); tc != nil && strings.TrimSpace(tc.InstallPath) != "" {
+		candidate := filepath.Join(tc.InstallPath, "MSBuild", "Current", "Bin", "MSBuild.exe")
+		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+			return candidate
+		}
+	}
+	return ""
+}
+
+// ensurePrivateCMakeInstalled installs CMake when the host has no copy.
+// A failed attempt is not cached: the GUI process stays up, and the network
+// may work on the next verify. An existing cmake.exe always wins, so a stale
+// install directory cannot hide one found on disk.
+func ensurePrivateCMakeInstalled(ctx context.Context) string {
+	if runtime.GOOS != "windows" {
+		return ""
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if ctx.Err() != nil {
+		return ""
+	}
+	if exe := cmakeExeInDir(privateCMakeDir()); exe != "" {
+		return exe
+	}
+	if exe := cmakeExeInDir(detectWindowsCMakeBin()); exe != "" {
+		return exe
+	}
+	privateCMakeMu.Lock()
+	if windowsCMakeInstalling {
+		privateCMakeMu.Unlock()
+		return ""
+	}
+	if exe := cmakeExeInDir(privateInstalledCMakeDir); exe != "" {
+		privateCMakeMu.Unlock()
+		return exe
+	}
+	windowsCMakeInstalling = true
+	installFn := installPrivateCMakeFn
+	privateCMakeMu.Unlock()
+
+	defer func() {
+		privateCMakeMu.Lock()
+		windowsCMakeInstalling = false
+		privateCMakeMu.Unlock()
+	}()
+	if installFn == nil || ctx.Err() != nil {
+		return ""
+	}
+	dir := strings.TrimSpace(installFn(ctx))
+	setPrivateCMakeDir(dir)
+	return cmakeExeInDir(dir)
+}
+
+func defaultInstallPrivateCMake(ctx context.Context) string {
+	// A private unzip needs no administrator. winget installs of Kitware.CMake
+	// usually demand elevation, which an ordinary user cannot approve.
+	if bin := installPortableCMake(ctx); bin != "" {
+		return bin
+	}
+	if ctx != nil && ctx.Err() != nil {
+		return ""
+	}
+	return installCMakeWithWinget(ctx)
+}
+
+const windowsCMakeRelease = "3.31.8"
+
+const (
+	maxCMakeZipBytes     = 80 << 20
+	maxCMakeExtractBytes = 250 << 20
+)
+
+func windowsCMakeZipURL() string {
+	arch := "x86_64"
+	if runtime.GOARCH == "arm64" {
+		arch = "arm64"
+	}
+	return "https://cmake.org/files/v3.31/cmake-" + windowsCMakeRelease + "-windows-" + arch + ".zip"
+}
+
+var downloadPrivateCMakeZip = func(ctx context.Context, url, dest string) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("cmake download status %d", resp.StatusCode)
+	}
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		return err
+	}
+	f, err := os.Create(dest)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	n, err := io.Copy(f, io.LimitReader(resp.Body, maxCMakeZipBytes+1))
+	if err != nil {
+		return err
+	}
+	if n > maxCMakeZipBytes {
+		return fmt.Errorf("cmake download exceeds %d bytes", maxCMakeZipBytes)
+	}
+	return nil
+}
+
+func installPortableCMake(ctx context.Context) string {
+	root := strings.TrimSpace(remote.ToolsDir())
+	if root == "" {
+		log.Printf("[cmake-install] tools directory is empty")
+		return ""
+	}
+	dest := filepath.Join(root, "cmake")
+	if bin := findNamedExeDir(dest, "cmake.exe"); bin != "" {
+		return bin
+	}
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		log.Printf("[cmake-install] mkdir: %v", err)
+		return ""
+	}
+	zipPath := filepath.Join(dest, "cmake-windows.zip")
+	if err := downloadPrivateCMakeZip(ctx, windowsCMakeZipURL(), zipPath); err != nil {
+		log.Printf("[cmake-install] download failed: %v", err)
+		_ = os.Remove(zipPath)
+		return ""
+	}
+	defer os.Remove(zipPath)
+	if err := extractZipSafe(zipPath, dest); err != nil {
+		log.Printf("[cmake-install] extract failed: %v", err)
+		_ = os.RemoveAll(dest)
+		return ""
+	}
+	return findNamedExeDir(dest, "cmake.exe")
+}
+
+func installCMakeWithWinget(ctx context.Context) string {
+	winget, err := exec.LookPath("winget")
+	if err != nil || strings.TrimSpace(winget) == "" {
+		log.Printf("[cmake-install] winget is not available")
+		return ""
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	// Elevation cannot be approved by an ordinary user. Fail fast instead of
+	// holding the verify step for the whole portable-download budget again.
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, winget, "install", "--id", "Kitware.CMake", "-e",
+		"--scope", "user", "--silent", "--disable-interactivity",
+		"--accept-package-agreements", "--accept-source-agreements")
+	hideCommandWindow(cmd)
+	out, err := cmd.CombinedOutput()
+	log.Printf("[cmake-install] winget finished err=%v output=%s", err, truncateRunesForSubAgent(string(out), 400))
+	return findWindowsCMakeBin()
+}
+
+func findNamedExeDir(root, name string) string {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return ""
+	}
+	var dir string
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d == nil || d.IsDir() {
+			return nil
+		}
+		if strings.EqualFold(d.Name(), name) {
+			dir = filepath.Dir(path)
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return dir
+}
+
+func extractZipSafe(zipPath, dest string) error {
+	reader, err := zip.OpenReader(zipPath)
+	if err != nil {
+		return err
+	}
+	defer reader.Close()
+	dest = filepath.Clean(dest)
+	destPrefix := strings.ToLower(dest + string(os.PathSeparator))
+	var written int64
+	for _, file := range reader.File {
+		rel := filepath.Clean(filepath.FromSlash(file.Name))
+		if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
+			continue
+		}
+		target := filepath.Join(dest, rel)
+		if !strings.HasPrefix(strings.ToLower(target), destPrefix) {
+			continue
+		}
+		if file.FileInfo().IsDir() {
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return err
+			}
+			continue
+		}
+		if file.UncompressedSize64 > maxCMakeExtractBytes || written > maxCMakeExtractBytes {
+			return fmt.Errorf("cmake zip expands past %d bytes", maxCMakeExtractBytes)
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+			return err
+		}
+		src, err := file.Open()
+		if err != nil {
+			return err
+		}
+		out, err := os.OpenFile(target, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o755)
+		if err != nil {
+			src.Close()
+			return err
+		}
+		n, copyErr := io.Copy(out, io.LimitReader(src, maxCMakeExtractBytes-written+1))
+		out.Close()
+		src.Close()
+		written += n
+		if copyErr != nil {
+			return copyErr
+		}
+		if written > maxCMakeExtractBytes {
+			return fmt.Errorf("cmake zip expands past %d bytes", maxCMakeExtractBytes)
+		}
+	}
+	return nil
+}
+
+func firstExistingWindowsToolDir(candidates []string) string {
+	for _, exe := range candidates {
+		exe = strings.TrimSpace(exe)
+		if exe == "" || isWindowsAppExecutionAlias(exe) {
+			continue
+		}
+		if existingToolFile(exe) {
+			return filepath.Dir(exe)
+		}
+	}
+	return ""
+}
+
+func existingToolFile(path string) bool {
+	fi, err := os.Stat(path)
+	// WindowsApps aliases stat as empty files and are not real tools.
+	return err == nil && !fi.IsDir() && fi.Size() > 0
+}
+
+func isWindowsAppExecutionAlias(path string) bool {
+	return strings.Contains(strings.ToLower(filepath.Clean(path)), `\windowsapps\`)
 }
 
 func detectWindowsMinGWBin() string {

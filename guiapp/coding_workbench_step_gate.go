@@ -47,13 +47,18 @@ func runCodingWorkbenchStepVerify(ctx context.Context, projectPath string) (ok b
 	if projectPath == "" {
 		return true, "", "", true
 	}
-	cmd = detectProjectVerifyCommand(projectPath)
+	cmd = ensureProjectVerifyCommand(ctx, projectPath)
 	if strings.TrimSpace(cmd) == "" {
-		return true, "", "", true
+		reason := ""
+		if ctx == nil || ctx.Err() == nil {
+			reason = cmakeVerifySkippedReason(projectPath)
+		}
+		return true, "", reason, true
 	}
 	// Same launcher as the coding agent's bash tool: absolute PowerShell,
-	// UTF-8, and the MSVC/MinGW PATH repair. A bare "powershell" fails when
-	// the GUI process inherits a stripped PATH, and cmake then cannot see cl.
+	// UTF-8, and the MSVC/MinGW/CMake PATH repair. A bare "powershell" fails
+	// when the GUI process inherits a stripped PATH, so cmake, cl, and g++
+	// are resolved from the injected toolchain directories.
 	res := executeCodingBashWithContext(ctx, map[string]interface{}{
 		"command":     cmd,
 		"working_dir": projectPath,
@@ -69,6 +74,9 @@ func runCodingWorkbenchStepVerify(ctx context.Context, projectPath string) (ok b
 // codingWorkbenchStepGateSummary formats verify result for step status / report.
 func codingWorkbenchStepGateSummary(ok bool, cmd, output string, skipped bool) string {
 	if skipped {
+		if reason := strings.TrimSpace(output); reason != "" {
+			return "step verify skipped (" + reason + ")"
+		}
 		return "step verify skipped (no project verify command detected)"
 	}
 	status := "PASS"

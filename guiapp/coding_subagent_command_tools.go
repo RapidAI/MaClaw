@@ -301,6 +301,7 @@ func windowsCodingBashInvocation(command string) (string, []string) {
 	// PowerShell 5.1 has no &&. Translating it to bare `;` would let a failed
 	// compile plus a leftover hello.exe look like success. Keep short-circuit.
 	psCommand := convertUnquotedAndAndForPowerShell(command)
+	psCommand = ensurePowerShellCallOperator(psCommand)
 	// Wrap the command so Go observes the real command result. Native
 	// tools often write progress to stderr even when they exit 0, while
 	// PowerShell cmdlet errors can be hidden by 2>&1 pipelines. The wrapper
@@ -348,6 +349,12 @@ func codingCommandEnv() []string {
 	env = mergeWindowsToolchainEnviron(env, windowsMSVCInjectedEnviron())
 	if mingw := detectWindowsMinGWBin(); mingw != "" {
 		env = appendWindowsPathEntries(env, mingw)
+	}
+	if cmake := detectWindowsCMakeBin(); cmake != "" {
+		env = appendWindowsPathEntries(env, cmake)
+	}
+	if ninja := detectWindowsNinjaBin(); ninja != "" {
+		env = appendWindowsPathEntries(env, ninja)
 	}
 	return appendWindowsPathEntries(env,
 		filepath.Join(systemRoot, "System32"),
@@ -433,6 +440,33 @@ func convertUnquotedAndAndForPowerShell(command string) string {
 		b.WriteRune(ch)
 	}
 	return b.String()
+}
+
+// ensurePowerShellCallOperator makes a quoted executable run under
+// PowerShell 5.1. A leading quoted path is an expression unless '&' calls it.
+// A quoted sentence is left alone; '& "hello world"' would try to run a program.
+func ensurePowerShellCallOperator(command string) string {
+	trimmed := strings.TrimSpace(command)
+	if trimmed == "" || strings.HasPrefix(trimmed, "&") || !quotedPowerShellExecutable(trimmed) {
+		return command
+	}
+	return "& " + trimmed
+}
+
+func quotedPowerShellExecutable(command string) bool {
+	if len(command) < 2 || command[0] != '"' {
+		return false
+	}
+	end := strings.IndexByte(command[1:], '"')
+	if end <= 0 {
+		return false
+	}
+	token := command[1 : 1+end]
+	lower := strings.ToLower(token)
+	if strings.HasSuffix(lower, ".exe") || strings.HasSuffix(lower, ".bat") || strings.HasSuffix(lower, ".cmd") {
+		return true
+	}
+	return strings.ContainsAny(token, `\/`)
 }
 
 func wrapCodingPowerShellCommand(psCommand string) string {

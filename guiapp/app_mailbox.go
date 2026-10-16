@@ -184,10 +184,7 @@ func (a *App) MailboxAccountTest(id, side string) (string, error) {
 	side = strings.TrimSpace(side)
 	secret, err := a.mailboxSecret(context.Background(), mailbox.SecretRef(account.ID, side))
 	if err != nil {
-		if errors.Is(err, mailbox.ErrKeyring) {
-			return "", errors.New(mailbox.MsgKeyringLong)
-		}
-		return "", errors.New(mailbox.MsgNoSecret)
+		return "", mailboxCallErr(err)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), mailbox.SettingsProbeTimeout)
 	defer cancel()
@@ -232,10 +229,7 @@ func (a *App) MailboxAccountTestDraft(spec mailboxDraftTestDTO, side string) (st
 	if strings.TrimSpace(secret) == "" && spec.UseSavedSecret {
 		saved, err := a.mailboxSecret(context.Background(), mailbox.SecretRef(strings.TrimSpace(spec.AccountID), side))
 		if err != nil {
-			if errors.Is(err, mailbox.ErrKeyring) {
-				return "", errors.New(mailbox.MsgKeyringLong)
-			}
-			return "", errors.New(mailbox.MsgNoSecret)
+			return "", mailboxCallErr(err)
 		}
 		secret = saved
 	}
@@ -392,7 +386,7 @@ func (a *App) mailboxIO() (mailbox.Dialer, mailbox.MailReader, mailbox.MailSende
 	return dialer, reader, sender
 }
 
-func (a *App) mailboxSecret(_ context.Context, ref string) (string, error) {
+func (a *App) mailboxSecret(ctx context.Context, ref string) (string, error) {
 	item, err := mailbox.ParseSecretRef(ref)
 	if err != nil {
 		return "", mailbox.ErrKeyring
@@ -404,7 +398,83 @@ func (a *App) mailboxSecret(_ context.Context, ref string) (string, error) {
 		}
 		return "", mailbox.ErrKeyring
 	}
-	return secret, nil
+	current, updated, err := mailbox.MaterializeSecret(ctx, secret, time.Now())
+	if err != nil {
+		return "", err
+	}
+	if updated != "" {
+		if err := writeMailboxSecretBothSides(mailboxIDFromRef(ref), updated); err != nil {
+			return "", err
+		}
+	}
+	return current, nil
+}
+
+func mailboxIDFromRef(ref string) string {
+	item, err := mailbox.ParseSecretRef(ref)
+	if err != nil {
+		return ""
+	}
+	id, _, ok := strings.Cut(strings.TrimPrefix(item, "mailbox/"), "/")
+	if !ok {
+		return ""
+	}
+	return id
+}
+
+func writeMailboxSecretBothSides(id, secret string) error {
+	if strings.TrimSpace(secret) == "" {
+		return errors.New(mailbox.MsgNoSecret)
+	}
+	type prior struct {
+		item   string
+		value  string
+		stored bool
+	}
+	prev := make([]prior, 0, 2)
+	for _, side := range []string{mailbox.SideInbound, mailbox.SideOutbound} {
+		item, err := mailbox.KeyringItem(id, side)
+		if err != nil {
+			return err
+		}
+		entry := prior{item: item}
+		value, err := mailboxKeyringGet(mailbox.KeyringService, item)
+		if err != nil && !mailboxSecretMissing(err) {
+			return errors.New(mailbox.MsgKeyringLong)
+		}
+		if err == nil {
+			entry.value = value
+			entry.stored = true
+		}
+		prev = append(prev, entry)
+	}
+	for i, entry := range prev {
+		if err := mailboxKeyringSet(mailbox.KeyringService, entry.item, secret); err != nil {
+			for _, undone := range prev[:i] {
+				if undone.stored {
+					_ = mailboxKeyringSet(mailbox.KeyringService, undone.item, undone.value)
+					continue
+				}
+				_ = mailboxKeyringDelete(mailbox.KeyringService, undone.item)
+			}
+			return errors.New(mailbox.MsgKeyringLong)
+		}
+	}
+	return nil
+}
+
+func mailboxCallErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	var class *mailbox.ClassError
+	if errors.As(err, &class) && class != nil && class.Message != "" {
+		return errors.New(class.Message)
+	}
+	if errors.Is(err, mailbox.ErrKeyring) {
+		return errors.New(mailbox.MsgKeyringLong)
+	}
+	return errors.New(mailbox.MsgNoSecret)
 }
 
 func (a *App) mailboxHasSecret(id, side string) bool {

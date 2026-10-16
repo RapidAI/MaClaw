@@ -86,6 +86,8 @@ type syncRecorder interface {
 	DeleteHubDomainRoute(ctx context.Context, routeID string)
 	AppendHubUserLink(ctx context.Context, item *store.HubUserLink)
 	DeleteHubUserLink(ctx context.Context, linkID string)
+	AppendInvitationCodeRoute(ctx context.Context, item *store.InvitationCodeRoute)
+	DeleteInvitationCodeRoute(ctx context.Context, code string)
 }
 
 type hubUserLinkScopedDeleter interface {
@@ -517,8 +519,33 @@ func (s *Service) SyncInvitationCodes(ctx context.Context, hubID, hubSecret stri
 		if code == "" {
 			continue
 		}
+		existing, err := s.invitationCodeRoutes.GetByCode(ctx, code)
+		if err != nil {
+			return fmt.Errorf("load invitation code route: %w", err)
+		}
+		// A consumed route must stay consumed. Heartbeat reconciliation resends
+		// every unused hub code, and reopening a used code would let a second
+		// identity register with it.
+		if existing != nil && strings.TrimSpace(existing.UsedByEmail) != "" {
+			continue
+		}
 		if err := s.invitationCodeRoutes.Upsert(ctx, code, hubID, tenantID); err != nil {
 			return fmt.Errorf("upsert invitation code route: %w", err)
+		}
+		changed := existing == nil ||
+			strings.TrimSpace(existing.HubID) != strings.TrimSpace(hubID) ||
+			normalizeHubSyncTenantID(existing.TenantID) != tenantID
+		if changed && s.sync != nil {
+			createdAt := time.Now().UTC()
+			if existing != nil && !existing.CreatedAt.IsZero() {
+				createdAt = existing.CreatedAt
+			}
+			s.sync.AppendInvitationCodeRoute(ctx, &store.InvitationCodeRoute{
+				Code:      code,
+				HubID:     strings.TrimSpace(hubID),
+				TenantID:  tenantID,
+				CreatedAt: createdAt,
+			})
 		}
 	}
 	if s.refresher != nil {
@@ -548,12 +575,30 @@ func (s *Service) DeleteInvitationCodes(ctx context.Context, hubID, hubSecret st
 		if usedByEmail != "" {
 			// Mark as used instead of deleting — preserves the route for
 			// subsequent lookups and shows the bound email in admin panel.
+			existing, err := s.invitationCodeRoutes.GetByCode(ctx, code)
+			if err != nil {
+				return fmt.Errorf("load invitation code route: %w", err)
+			}
 			if err := s.invitationCodeRoutes.MarkUsedByEmail(ctx, code, usedByEmail); err != nil {
 				return fmt.Errorf("mark invitation code used: %w", err)
+			}
+			if s.sync != nil {
+				item := &store.InvitationCodeRoute{Code: code, HubID: strings.TrimSpace(hubID), UsedByEmail: usedByEmail, CreatedAt: time.Now().UTC()}
+				if existing != nil {
+					item.HubID = strings.TrimSpace(existing.HubID)
+					item.TenantID = normalizeHubSyncTenantID(existing.TenantID)
+					if !existing.CreatedAt.IsZero() {
+						item.CreatedAt = existing.CreatedAt
+					}
+				}
+				s.sync.AppendInvitationCodeRoute(ctx, item)
 			}
 		} else {
 			if err := s.invitationCodeRoutes.DeleteByCode(ctx, code); err != nil {
 				return fmt.Errorf("delete invitation code route: %w", err)
+			}
+			if s.sync != nil {
+				s.sync.DeleteInvitationCodeRoute(ctx, code)
 			}
 		}
 	}
@@ -3074,7 +3119,15 @@ func (s *Service) DeleteHub(ctx context.Context, hubID string) error {
 		return err
 	}
 	// Clean up invitation code routes associated with this hub.
+	var invitationRoutes []*store.InvitationCodeRoute
 	if s.invitationCodeRoutes != nil {
+		if items, err := s.invitationCodeRoutes.ListAll(ctx); err == nil {
+			for _, item := range items {
+				if item != nil && strings.TrimSpace(item.HubID) == hubID {
+					invitationRoutes = append(invitationRoutes, item)
+				}
+			}
+		}
 		_ = s.invitationCodeRoutes.DeleteByHubID(ctx, hubID)
 	}
 	if err := s.deleteHubRegistrationPolicy(ctx, hubID); err != nil {
@@ -3099,6 +3152,12 @@ func (s *Service) DeleteHub(ctx context.Context, hubID string) error {
 			s.sync.DeleteHubDomainRoute(ctx, route.ID)
 		}
 		s.sync.DeleteHubInstance(ctx, hubID)
+		for _, item := range invitationRoutes {
+			if item == nil {
+				continue
+			}
+			s.sync.DeleteInvitationCodeRoute(ctx, item.Code)
+		}
 	}
 	s.refreshRoutesForce(ctx)
 	return nil

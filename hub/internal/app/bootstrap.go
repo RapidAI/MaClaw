@@ -88,6 +88,7 @@ func BootstrapWithOptions(cfg *config.Config, configPath string, opts BootstrapO
 	failureRecorder := diagnostics.NewFailureEventRecorder(st.FailureLogs)
 	centerService.SetFailureEventRecorder(failureRecorder)
 	invitationService.SetCenterSyncer(centerService)
+	centerService.SetInvitationCodeReconciler(invitationService)
 	if status, err := centerService.Status(context.Background()); err == nil {
 		log.Printf("[hub] center registration bootstrap: visibility=%s enrollment=%s corporate_domains=%v accept_public_signup=%t registered=%t pending=%t disabled=%t", status.Visibility, status.EnrollmentMode, status.CorporateEmailDomains, status.AcceptPublicSignup, status.Registered, status.PendingConfirmation, status.Disabled)
 	} else {

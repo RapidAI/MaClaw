@@ -139,6 +139,9 @@ func UpsertAccount(existing []Account, in SaveRequest, now time.Time) ([]Account
 		} else {
 			acc.SignatureID = strings.TrimSpace(*in.SignatureID)
 		}
+		if err := applyAuth(&acc, &prev, in); err != nil {
+			return nil, Account{}, err
+		}
 		next[idx] = acc
 	} else {
 		acc.CreatedAt = now
@@ -159,6 +162,9 @@ func UpsertAccount(existing []Account, in SaveRequest, now time.Time) ([]Account
 		}
 		if in.SignatureID != nil {
 			acc.SignatureID = strings.TrimSpace(*in.SignatureID)
+		}
+		if err := applyAuth(&acc, nil, in); err != nil {
+			return nil, Account{}, err
 		}
 		next = append(next, acc)
 		idx = len(next) - 1
@@ -232,6 +238,12 @@ func Summary(a Account, hasInboundSecret, hasOutboundSecret bool) map[string]int
 		"has_outbound_secret": hasOutboundSecret && a.Outbound != nil,
 		"signature_id":        a.SignatureID,
 	}
+	if a.Auth != "" {
+		out["auth"] = a.Auth
+	}
+	if a.Provider != "" {
+		out["provider"] = a.Provider
+	}
 	// Settings edits this payload. It includes the servers the user saved and
 	// never a password or secret ref. The agent list stays on public fields.
 	if a.Inbound != nil {
@@ -264,6 +276,35 @@ func endpointSummary(ep *Endpoint) map[string]interface{} {
 		out["from_address"] = ep.FromAddress
 	}
 	return out
+}
+
+func applyAuth(acc *Account, prev *Account, in SaveRequest) error {
+	if acc == nil {
+		return classErr("invalid", "邮箱配置不能为空")
+	}
+	if in.Auth == nil {
+		if prev != nil {
+			acc.Auth = prev.Auth
+			acc.Provider = prev.Provider
+		}
+		return nil
+	}
+	auth := strings.TrimSpace(*in.Auth)
+	if auth == "" {
+		acc.Auth = ""
+		acc.Provider = ""
+		return nil
+	}
+	provider := ""
+	if in.Provider != nil {
+		provider = strings.TrimSpace(*in.Provider)
+	}
+	if auth != AuthOAuth || !KnownOAuthProvider(provider) {
+		return classErr("invalid", "不支持这个邮箱登录")
+	}
+	acc.Auth = AuthOAuth
+	acc.Provider = provider
+	return nil
 }
 
 func RejectSecretPayload(keys []string) error {

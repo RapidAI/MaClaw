@@ -510,6 +510,10 @@ export function CloseVESession(arg1) {
   return window['go']['main']['App']['CloseVESession'](arg1);
 }
 
+export function CloseWebPreview(arg1) {
+  return window['go']['main']['App']['CloseWebPreview'](arg1);
+}
+
 export function CancelCloudWorkspaceSync(arg1) {
   return window['go']['main']['App']['CancelCloudWorkspaceSync'](arg1);
 }
@@ -853,6 +857,10 @@ export function DatabaseProfilesList() {
 
 export function MailboxAccountsList() {
   return window['go']['main']['App']['MailboxAccountsList']();
+}
+
+export function MailboxOAuthLogin(arg1, arg2) {
+  return window['go']['main']['App']['MailboxOAuthLogin'](arg1, arg2);
 }
 
 export function MailboxAccountSave(arg1) {
@@ -3670,6 +3678,10 @@ export function OpenSystemUrl(arg1) {
 
 export function OpenVirtualRepository(arg1) {
   return window['go']['main']['App']['OpenVirtualRepository'](arg1);
+}
+
+export function OpenWebPreview(arg1) {
+  return window['go']['main']['App']['OpenWebPreview'](arg1);
 }
 
 export function OptimizeExpertFromSession(arg1) {

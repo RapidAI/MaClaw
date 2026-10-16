@@ -3593,6 +3593,15 @@ func (h *IMMessageHandler) runCodingTemplateSubAgent(userID, userText, projectPa
 					summary = gateSum
 				}
 			} else {
+				// A configured CMake tree with no builder is still a skip, but
+				// the reason has to stay on the step. Other skips stay quiet.
+				if strings.TrimSpace(vout) != "" {
+					if summary != "" {
+						summary = summary + "\n\n" + gateSum
+					} else {
+						summary = gateSum
+					}
+				}
 				h.updateStickyCodingStepStatus(userID, t.Index, stepStatus, summary)
 			}
 		} else {

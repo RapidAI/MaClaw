@@ -226,6 +226,13 @@ type UserUsageSummarizer interface {
 	UserTokenSummarizer
 }
 
+// InvitationCodeReconciler pushes unused invitation codes to HubCenter.
+// Tenant-scoped codes are included; registration cannot route a code that
+// HubCenter has never stored.
+type InvitationCodeReconciler interface {
+	ReconcileInvitationCodes(ctx context.Context) error
+}
+
 type Service struct {
 	cfg      *config.Config
 	settings SystemSettingsRepository
@@ -246,6 +253,19 @@ type Service struct {
 	configPath                   string
 	managedIndustryExperts       *industryexpert.SyncService
 	authorizationPayloadListener func(map[string]json.RawMessage)
+	invitationCodes              InvitationCodeReconciler
+}
+
+// SetInvitationCodeReconciler installs the heartbeat retry for invitation-code
+// routes. Codes created by a tenant are useless for registration until HubCenter
+// can route them, so a failed generate-time push is retried here.
+func (s *Service) SetInvitationCodeReconciler(reconciler InvitationCodeReconciler) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	s.invitationCodes = reconciler
+	s.mu.Unlock()
 }
 
 // SetManagedIndustryExpertSync installs the optional managed catalogue puller.
@@ -1806,56 +1826,36 @@ func (s *Service) syncUserRouteInternal(ctx context.Context, email string, repla
 	return lastErr
 }
 
+func (s *Service) reconcileInvitationCodes(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	reconciler := s.invitationCodes
+	s.mu.Unlock()
+	if reconciler == nil {
+		return
+	}
+	if err := reconciler.ReconcileInvitationCodes(ctx); err != nil {
+		log.Printf("[center] invitation code reconcile failed: %v", err)
+	}
+}
+
 // SyncInvitationCodesToCenter registers newly generated invitation codes with
 // HubCenter so that it can route clients providing these codes to this Hub.
+// Every configured HubCenter node is updated. Registration can land on any node,
+// and a tenant code that exists on only one node cannot be routed.
 func (s *Service) SyncInvitationCodesToCenter(ctx context.Context, codes []string, tenantID string) error {
 	if s == nil || len(codes) == 0 {
 		return nil
 	}
-	record, err := s.loadRegistration(ctx)
-	if err != nil {
-		return err
-	}
-	if (!record.Registered && !record.PendingConfirmation && !record.Disabled) || record.HubID == "" || record.HubSecret == "" {
-		return nil
-	}
-	baseURLs, err := s.orderedCenterBaseURLs(ctx, record.LastBaseURL)
-	if err != nil {
-		return err
-	}
-	if len(baseURLs) == 0 {
-		return nil // no hub center configured, skip silently
-	}
-
-	payload, err := json.Marshal(map[string]any{
-		"hub_secret": record.HubSecret,
-		"codes":      codes,
-		"tenant_id":  tenantID,
+	return s.postInvitationCodeSync(ctx, http.MethodPost, tenantID, "invitation_code_sync_failed", func(secret string) (map[string]any, error) {
+		return map[string]any{
+			"hub_secret": secret,
+			"codes":      codes,
+			"tenant_id":  tenantID,
+		}, nil
 	})
-	if err != nil {
-		return err
-	}
-
-	var lastErr error
-	for _, baseURL := range baseURLs {
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, baseURL+"/api/hubs/"+url.PathEscape(record.HubID)+"/invitation-codes/sync", bytes.NewReader(payload))
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		resp, err := s.client.Do(httpReq)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		resp.Body.Close()
-		if resp.StatusCode == http.StatusOK {
-			return nil
-		}
-		lastErr = fmt.Errorf("hub center invitation-codes sync failed with status %d", resp.StatusCode)
-	}
-	return lastErr
 }
 
 // DeleteInvitationCodesFromCenter removes consumed/deleted invitation codes
@@ -1864,49 +1864,12 @@ func (s *Service) DeleteInvitationCodesFromCenter(ctx context.Context, codes []s
 	if s == nil || len(codes) == 0 {
 		return nil
 	}
-	record, err := s.loadRegistration(ctx)
-	if err != nil {
-		return err
-	}
-	if (!record.Registered && !record.PendingConfirmation && !record.Disabled) || record.HubID == "" || record.HubSecret == "" {
-		return nil
-	}
-	baseURLs, err := s.orderedCenterBaseURLs(ctx, record.LastBaseURL)
-	if err != nil {
-		return err
-	}
-	if len(baseURLs) == 0 {
-		return nil
-	}
-
-	payload, err := json.Marshal(map[string]any{
-		"hub_secret": record.HubSecret,
-		"codes":      codes,
+	return s.postInvitationCodeSync(ctx, http.MethodDelete, "", "invitation_code_delete_failed", func(secret string) (map[string]any, error) {
+		return map[string]any{
+			"hub_secret": secret,
+			"codes":      codes,
+		}, nil
 	})
-	if err != nil {
-		return err
-	}
-
-	var lastErr error
-	for _, baseURL := range baseURLs {
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, baseURL+"/api/hubs/"+url.PathEscape(record.HubID)+"/invitation-codes/sync", bytes.NewReader(payload))
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		httpReq.Header.Set("Content-Type", "application/json")
-		resp, err := s.client.Do(httpReq)
-		if err != nil {
-			lastErr = err
-			continue
-		}
-		resp.Body.Close()
-		if resp.StatusCode == http.StatusOK {
-			return nil
-		}
-		lastErr = fmt.Errorf("hub center invitation-codes delete failed with status %d", resp.StatusCode)
-	}
-	return lastErr
 }
 
 // MarkInvitationCodeUsedOnCenter notifies HubCenter that an invitation code has
@@ -1917,6 +1880,17 @@ func (s *Service) MarkInvitationCodeUsedOnCenter(ctx context.Context, code strin
 	if s == nil || strings.TrimSpace(code) == "" {
 		return nil
 	}
+	email = strings.TrimSpace(strings.ToLower(email))
+	return s.postInvitationCodeSync(ctx, http.MethodDelete, "", "invitation_code_mark_used_failed", func(secret string) (map[string]any, error) {
+		return map[string]any{
+			"hub_secret":    secret,
+			"codes":         []string{code},
+			"used_by_email": email,
+		}, nil
+	})
+}
+
+func (s *Service) postInvitationCodeSync(ctx context.Context, method, tenantID, failureEvent string, payloadFn func(secret string) (map[string]any, error)) error {
 	record, err := s.loadRegistration(ctx)
 	if err != nil {
 		return err
@@ -1931,17 +1905,19 @@ func (s *Service) MarkInvitationCodeUsedOnCenter(ctx context.Context, code strin
 	if len(baseURLs) == 0 {
 		return nil
 	}
-	payload, err := json.Marshal(map[string]any{
-		"hub_secret":    record.HubSecret,
-		"codes":         []string{code},
-		"used_by_email": strings.TrimSpace(strings.ToLower(email)),
-	})
+	bodyFields, err := payloadFn(record.HubSecret)
 	if err != nil {
 		return err
 	}
+	payload, err := json.Marshal(bodyFields)
+	if err != nil {
+		return err
+	}
+
 	var lastErr error
+	synced := 0
 	for _, baseURL := range baseURLs {
-		httpReq, err := http.NewRequestWithContext(ctx, http.MethodDelete, baseURL+"/api/hubs/"+url.PathEscape(record.HubID)+"/invitation-codes/sync", bytes.NewReader(payload))
+		httpReq, err := http.NewRequestWithContext(ctx, method, baseURL+"/api/hubs/"+url.PathEscape(record.HubID)+"/invitation-codes/sync", bytes.NewReader(payload))
 		if err != nil {
 			lastErr = err
 			continue
@@ -1952,11 +1928,30 @@ func (s *Service) MarkInvitationCodeUsedOnCenter(ctx context.Context, code strin
 			lastErr = err
 			continue
 		}
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 		resp.Body.Close()
-		if resp.StatusCode == http.StatusOK {
-			return nil
+		if readErr != nil {
+			lastErr = readErr
+			continue
 		}
-		lastErr = fmt.Errorf("hub center invitation-code mark-used failed with status %d", resp.StatusCode)
+		if resp.StatusCode == http.StatusOK {
+			synced++
+			continue
+		}
+		var apiErr centerErrorPayload
+		_ = json.Unmarshal(body, &apiErr)
+		message := strings.TrimSpace(apiErr.Message)
+		if message == "" {
+			message = fmt.Sprintf("hub center invitation-code sync failed with status %d", resp.StatusCode)
+		}
+		lastErr = errors.New(message)
+		log.Printf("[center] invitation-code sync %s %s failed: %s", method, baseURL, message)
+	}
+	if synced > 0 {
+		return nil
+	}
+	if lastErr != nil {
+		s.recordFailure(ctx, "sync", failureEvent, lastErr.Error(), record.HubID, "", map[string]any{"tenant_id": tenantID})
 	}
 	return lastErr
 }
@@ -2376,6 +2371,7 @@ func (s *Service) sendHeartbeat(ctx context.Context) error {
 				return err
 			}
 			s.notifyAuthorizationPayloads(okResp.Authorizations)
+			s.reconcileInvitationCodes(ctx)
 			return nil
 		}
 

@@ -35,6 +35,7 @@ const (
 	EntityHubInstance           = "hub_instance"
 	EntityHubDomainRoute        = "hub_domain_route"
 	EntityHubUserLink           = "hub_user_link"
+	EntityInvitationCodeRoute   = "invitation_code_route"
 	EntitySystemSetting         = "system_setting"
 	EntityGossipSnapshot        = "gossip_snapshot"
 	EntitySkillHubSnapshot      = "skillhub_snapshot"
@@ -119,6 +120,7 @@ type Service struct {
 	hubs                         store.HubRepository
 	routes                       store.HubDomainRouteRepository
 	links                        store.HubUserLinkRepository
+	invitationRoutes             store.InvitationCodeRouteRepository
 	settings                     store.SystemSettingsRepository
 	gossip                       store.GossipRepository
 	skillStore                   *skill.SkillStore
@@ -339,6 +341,7 @@ func (s *Service) AttachStore(st *store.Store) {
 	s.hubs = st.Hubs
 	s.routes = st.HubDomainRoutes
 	s.links = st.HubUserLinks
+	s.invitationRoutes = st.InvitationCodeRoutes
 	s.settings = st.System
 	s.gossip = st.Gossip
 	s.heartbeatSync = st.HAHeartbeatSync
@@ -968,7 +971,7 @@ type gossipRecordCounter interface {
 
 func adminSyncCategorySpecs() []adminSyncCategorySpec {
 	return []adminSyncCategorySpec{
-		{Key: "routing", Label: "Hub Routing", EntityTypes: map[string]struct{}{EntityHubDomainRoute: {}, EntityHubInstance: {}, EntityHubUserLink: {}}},
+		{Key: "routing", Label: "Hub Routing", EntityTypes: map[string]struct{}{EntityHubDomainRoute: {}, EntityHubInstance: {}, EntityHubUserLink: {}, EntityInvitationCodeRoute: {}}},
 		{Key: "system", Label: "System Settings", EntityTypes: map[string]struct{}{EntitySystemSetting: {}, EntityBlockedEmail: {}, EntityBlockedIP: {}}},
 		{Key: "gossip", Label: "Gossip Wall", EntityTypes: map[string]struct{}{EntityGossipSnapshot: {}}},
 		{Key: "skillhub", Label: "Skill Library", EntityTypes: map[string]struct{}{EntitySkillHubSnapshot: {}}},
@@ -1983,7 +1986,7 @@ func (s *Service) applyRemoteOp(ctx context.Context, op *store.HASyncOp, rebuild
 
 func entityAffectsRouteSnapshot(entityType string) bool {
 	switch entityType {
-	case EntityBlockedEmail, EntityBlockedIP, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink:
+	case EntityBlockedEmail, EntityBlockedIP, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityInvitationCodeRoute:
 		return true
 	default:
 		return false
@@ -2030,7 +2033,7 @@ func validateRemoteOp(op *store.HASyncOp) error {
 
 func isSupportedEntityType(entityType string) bool {
 	switch entityType {
-	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntityLatexTemplateSnapshot, EntitySkillMarketSnapshot, EntityPetStoreSnapshot, EntityPetStoreMetrics, EntityLLMCardType, EntityLLMTenantAuth, EntityLLMCardOrder, EntityLLMNodeBinding, EntityLLMUsageBatch, EntityTokenBankLedgerBatch, EntityTokenBankPriceBook, EntityNotification:
+	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityInvitationCodeRoute, EntitySystemSetting, EntityGossipSnapshot, EntitySkillHubSnapshot, EntityLatexTemplateSnapshot, EntitySkillMarketSnapshot, EntityPetStoreSnapshot, EntityPetStoreMetrics, EntityLLMCardType, EntityLLMTenantAuth, EntityLLMCardOrder, EntityLLMNodeBinding, EntityLLMUsageBatch, EntityTokenBankLedgerBatch, EntityTokenBankPriceBook, EntityNotification:
 		return true
 	default:
 		return false
@@ -2042,7 +2045,7 @@ func isSupportedEntityOpType(entityType, opType string) bool {
 		return true
 	}
 	switch entityType {
-	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityLLMCardType, EntityLLMCardOrder, EntityNotification:
+	case EntityBlockedEmail, EntityBlockedIP, EntityNewsArticle, EntityHubInstance, EntityHubDomainRoute, EntityHubUserLink, EntityInvitationCodeRoute, EntityLLMCardType, EntityLLMCardOrder, EntityNotification:
 		return opType == OpDelete
 	default:
 		return false
@@ -2139,6 +2142,14 @@ func remoteOpPayloadIdentity(op *store.HASyncOp) (string, string, error) {
 			return "", "", err
 		}
 		return "id", payload.ID, nil
+	case EntityInvitationCodeRoute:
+		var payload struct {
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
+			return "", "", err
+		}
+		return "code", strings.ToUpper(strings.TrimSpace(payload.Code)), nil
 	case EntityLLMNodeBinding:
 		var payload store.LLMNodeBinding
 		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
@@ -2213,6 +2224,14 @@ func remoteOpDeletePayloadIdentity(op *store.HASyncOp) (string, string, error) {
 			return "", "", err
 		}
 		return "id", payload.ID, nil
+	case EntityInvitationCodeRoute:
+		var payload struct {
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
+			return "", "", err
+		}
+		return "code", strings.ToUpper(strings.TrimSpace(payload.Code)), nil
 	case EntityLLMCardOrder:
 		var payload struct {
 			OrderNo string `json:"order_no"`
@@ -2267,6 +2286,8 @@ func (s *Service) applyEntityOp(ctx context.Context, op *store.HASyncOp) error {
 		return s.applyHubDomainRouteOp(ctx, op)
 	case EntityHubUserLink:
 		return s.applyHubUserLinkOp(ctx, op)
+	case EntityInvitationCodeRoute:
+		return s.applyInvitationCodeRouteOp(ctx, op)
 	case EntitySystemSetting:
 		return s.applySystemSettingOp(ctx, op)
 	case EntityGossipSnapshot:
@@ -2990,6 +3011,12 @@ func normalizeRoutingTenantIDs(item any) {
 		if v != nil {
 			v.TenantID = normalizeRoutingTenantID(v.TenantID)
 		}
+	case *store.InvitationCodeRoute:
+		if v != nil {
+			v.Code = strings.ToUpper(strings.TrimSpace(v.Code))
+			v.TenantID = normalizeRoutingTenantID(v.TenantID)
+			v.UsedByEmail = strings.TrimSpace(strings.ToLower(v.UsedByEmail))
+		}
 	}
 }
 
@@ -2999,6 +3026,62 @@ func normalizeRoutingTenantID(tenantID string) string {
 		return ""
 	}
 	return tenantID
+}
+
+func (s *Service) AppendInvitationCodeRoute(ctx context.Context, item *store.InvitationCodeRoute) {
+	if s == nil || item == nil {
+		return
+	}
+	route := *item
+	normalizeRoutingTenantIDs(&route)
+	if route.Code == "" {
+		return
+	}
+	// Version the op at append time. Reusing the route's created_at would make
+	// a later "mark used" update look older than the original insert.
+	if err := s.AppendUpsert(ctx, EntityInvitationCodeRoute, route.Code, &route, time.Now().UTC()); err != nil {
+		log.Printf("[hubcenter][ha] append invitation code route: %v", err)
+		s.recordFailure(ctx, "ha_sync", "append_invitation_code_route_failed", err.Error(), route.Code, map[string]any{"tenant_id": route.TenantID})
+	}
+}
+
+func (s *Service) DeleteInvitationCodeRoute(ctx context.Context, code string) {
+	if s == nil {
+		return
+	}
+	code = strings.ToUpper(strings.TrimSpace(code))
+	if code == "" {
+		return
+	}
+	if err := s.AppendDelete(ctx, EntityInvitationCodeRoute, code, map[string]string{"code": code}, time.Now().UTC()); err != nil {
+		log.Printf("[hubcenter][ha] delete invitation code route: %v", err)
+		s.recordFailure(ctx, "ha_sync", "delete_invitation_code_route_failed", err.Error(), code, nil)
+	}
+}
+
+func (s *Service) applyInvitationCodeRouteOp(ctx context.Context, op *store.HASyncOp) error {
+	if s == nil || s.invitationRoutes == nil || op == nil {
+		return nil
+	}
+	switch op.OpType {
+	case OpUpsert:
+		var item store.InvitationCodeRoute
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &item); err != nil {
+			return err
+		}
+		normalizeRoutingTenantIDs(&item)
+		return s.invitationRoutes.Save(ctx, &item)
+	case OpDelete:
+		var payload struct {
+			Code string `json:"code"`
+		}
+		if err := json.Unmarshal([]byte(op.PayloadJSON), &payload); err != nil {
+			return err
+		}
+		return s.invitationRoutes.DeleteByCode(ctx, payload.Code)
+	default:
+		return fmt.Errorf("unsupported invitation code route op: %s", op.OpType)
+	}
 }
 
 func (s *Service) DeleteHubDomainRoute(ctx context.Context, routeID string) {

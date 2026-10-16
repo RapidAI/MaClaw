@@ -6,6 +6,7 @@ import (
 	"math"
 	"regexp"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -661,5 +662,88 @@ func TestListCodes(t *testing.T) {
 	}
 	if len(used) != 1 {
 		t.Errorf("expected 1 used, got %d", len(used))
+	}
+}
+
+type recordingCenterSyncer struct {
+	mu    sync.Mutex
+	calls []recordedInvitationSync
+	ch    chan recordedInvitationSync
+}
+
+type recordedInvitationSync struct {
+	codes    []string
+	tenantID string
+}
+
+func (r *recordingCenterSyncer) SyncInvitationCodesToCenter(_ context.Context, codes []string, tenantID string) error {
+	call := recordedInvitationSync{codes: append([]string(nil), codes...), tenantID: tenantID}
+	r.mu.Lock()
+	r.calls = append(r.calls, call)
+	r.mu.Unlock()
+	if r.ch != nil {
+		r.ch <- call
+	}
+	return nil
+}
+
+func (r *recordingCenterSyncer) DeleteInvitationCodesFromCenter(context.Context, []string) error {
+	return nil
+}
+
+func (r *recordingCenterSyncer) MarkInvitationCodeUsedOnCenter(context.Context, string, string) error {
+	return nil
+}
+
+func TestGenerateCodesForTenantSyncsTenantID(t *testing.T) {
+	svc := NewService(&memInvitationCodeRepo{}, newMemSettingsRepo())
+	syncer := &recordingCenterSyncer{ch: make(chan recordedInvitationSync, 1)}
+	svc.SetCenterSyncer(syncer)
+
+	codes, err := svc.GenerateCodesForTenant(context.Background(), "vantagics", 1, 0, false)
+	if err != nil {
+		t.Fatalf("generate: %v", err)
+	}
+	select {
+	case call := <-syncer.ch:
+		if call.tenantID != "vantagics" {
+			t.Fatalf("sync tenant = %q, want vantagics", call.tenantID)
+		}
+		if len(call.codes) != 1 || call.codes[0] != codes[0].Code {
+			t.Fatalf("sync codes = %#v, want %s", call.codes, codes[0].Code)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("invitation code was not synced to hubcenter")
+	}
+}
+
+func TestReconcileInvitationCodesGroupsEveryTenant(t *testing.T) {
+	repo := &memInvitationCodeRepo{codes: []*store.InvitationCode{
+		{ID: "a", TenantID: "vantagics", Code: "PNZPES758F", Status: "unused"},
+		{ID: "b", TenantID: "vantagics", Code: "3NBYHZSW1N", Status: "unused"},
+		{ID: "c", TenantID: store.DefaultTenantID, Code: "LSR43CEBG1", Status: "unused"},
+		{ID: "d", TenantID: "vantagics", Code: "USEDCODE01", Status: "used", UsedByEmail: "used@example.com"},
+	}}
+	svc := NewService(repo, newMemSettingsRepo())
+	syncer := &recordingCenterSyncer{}
+	svc.SetCenterSyncer(syncer)
+
+	if err := svc.ReconcileInvitationCodes(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	syncer.mu.Lock()
+	defer syncer.mu.Unlock()
+	if len(syncer.calls) != 2 {
+		t.Fatalf("sync calls = %d, want one batch per tenant", len(syncer.calls))
+	}
+	seen := map[string][]string{}
+	for _, call := range syncer.calls {
+		seen[call.tenantID] = call.codes
+	}
+	if got := seen["vantagics"]; len(got) != 2 || got[0] != "PNZPES758F" || got[1] != "3NBYHZSW1N" {
+		t.Fatalf("vantagics codes = %#v", got)
+	}
+	if got := seen[store.DefaultTenantID]; len(got) != 1 || got[0] != "LSR43CEBG1" {
+		t.Fatalf("default tenant codes = %#v", got)
 	}
 }

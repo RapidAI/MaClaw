@@ -78,6 +78,72 @@ func TestSMTPPlainAuthWhenAdvertised(t *testing.T) {
 	}
 }
 
+func TestSMTPOauthUsesXOAUTH2(t *testing.T) {
+	secret, err := encodeOAuthSecret(oauthSecret{
+		Kind: AuthOAuth, Provider: ProviderGmail, AccessToken: "ya29.test", RefreshToken: "r",
+		Expiry: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	errCh := make(chan error, 1)
+	go func() {
+		conn, err := ln.Accept()
+		if err != nil {
+			errCh <- err
+			return
+		}
+		defer conn.Close()
+		_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+		rw := bufio.NewReader(conn)
+		fmt.Fprintf(conn, "220 localhost\r\n")
+		if _, err := rw.ReadString('\n'); err != nil {
+			errCh <- err
+			return
+		}
+		fmt.Fprintf(conn, "250-localhost\r\n250-AUTH XOAUTH2\r\n250 OK\r\n")
+		line, err := rw.ReadString('\n')
+		if err != nil {
+			errCh <- err
+			return
+		}
+		parts := strings.Fields(strings.TrimSpace(line))
+		if len(parts) < 3 || parts[1] != "XOAUTH2" {
+			errCh <- fmt.Errorf("auth=%q", line)
+			return
+		}
+		raw, err := base64.StdEncoding.DecodeString(parts[2])
+		if err != nil {
+			errCh <- err
+			return
+		}
+		if string(raw) != "user=a@gmail.com\x01auth=Bearer ya29.test\x01\x01" {
+			errCh <- fmt.Errorf("payload=%q", raw)
+			return
+		}
+		fmt.Fprintf(conn, "235 ok\r\n")
+		errCh <- nil
+	}()
+	conn, err := net.Dial("tcp", ln.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	client := smtp.NewClient(conn)
+	client.CommandTimeout = 3 * time.Second
+	if err := authSMTP(client, "a@gmail.com", secret); err != nil {
+		t.Fatal(err)
+	}
+	_ = client.Close()
+	if err := <-errCh; err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestDeadlineConnRejectsAClearedOrExtendedDeadline(t *testing.T) {
 	left, right := net.Pipe()
 	defer left.Close()

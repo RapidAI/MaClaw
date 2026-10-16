@@ -33,6 +33,113 @@ type fakeHASyncOpRepo struct {
 	onAppendRemote func(*store.HASyncOp) error
 }
 
+type memInvitationCodeRoutes struct {
+	mu    sync.Mutex
+	items map[string]*store.InvitationCodeRoute
+}
+
+func (m *memInvitationCodeRoutes) Upsert(ctx context.Context, code, hubID, tenantID string) error {
+	return m.Save(ctx, &store.InvitationCodeRoute{Code: code, HubID: hubID, TenantID: tenantID})
+}
+
+func (m *memInvitationCodeRoutes) Save(_ context.Context, item *store.InvitationCodeRoute) error {
+	if item == nil || strings.TrimSpace(item.Code) == "" {
+		return nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.items == nil {
+		m.items = map[string]*store.InvitationCodeRoute{}
+	}
+	copied := *item
+	copied.Code = strings.ToUpper(strings.TrimSpace(copied.Code))
+	m.items[copied.Code] = &copied
+	return nil
+}
+
+func (m *memInvitationCodeRoutes) GetByCode(_ context.Context, code string) (*store.InvitationCodeRoute, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	item := m.items[strings.ToUpper(strings.TrimSpace(code))]
+	if item == nil {
+		return nil, nil
+	}
+	copied := *item
+	return &copied, nil
+}
+
+func (m *memInvitationCodeRoutes) DeleteByCode(_ context.Context, code string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	delete(m.items, strings.ToUpper(strings.TrimSpace(code)))
+	return nil
+}
+
+func (m *memInvitationCodeRoutes) DeleteByHubID(_ context.Context, hubID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for code, item := range m.items {
+		if item != nil && item.HubID == hubID {
+			delete(m.items, code)
+		}
+	}
+	return nil
+}
+
+func (m *memInvitationCodeRoutes) ListAll(context.Context) ([]*store.InvitationCodeRoute, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	out := make([]*store.InvitationCodeRoute, 0, len(m.items))
+	for _, item := range m.items {
+		copied := *item
+		out = append(out, &copied)
+	}
+	return out, nil
+}
+
+func (m *memInvitationCodeRoutes) MarkUsedByEmail(ctx context.Context, code, email string) error {
+	item, err := m.GetByCode(ctx, code)
+	if err != nil || item == nil {
+		return err
+	}
+	item.UsedByEmail = email
+	return m.Save(ctx, item)
+}
+
+func TestApplyInvitationCodeRouteOpKeepsTenant(t *testing.T) {
+	repo := &memInvitationCodeRoutes{}
+	svc := NewService("hc-1", "hc-1", "https://hc-1.example.com", "secret", nil)
+	svc.invitationRoutes = repo
+
+	if err := svc.applyInvitationCodeRouteOp(context.Background(), &store.HASyncOp{
+		OpType:      OpUpsert,
+		PayloadJSON: `{"code":"pnzpes758f","hub_id":"hub-1","tenant_id":"vantagics"}`,
+	}); err != nil {
+		t.Fatalf("apply upsert: %v", err)
+	}
+	got, err := repo.GetByCode(context.Background(), "PNZPES758F")
+	if err != nil {
+		t.Fatalf("get route: %v", err)
+	}
+	if got == nil || got.HubID != "hub-1" || got.TenantID != "vantagics" {
+		t.Fatalf("applied route = %+v", got)
+	}
+
+	if err := svc.applyInvitationCodeRouteOp(context.Background(), &store.HASyncOp{
+		OpType:      OpDelete,
+		PayloadJSON: `{"code":"PNZPES758F"}`,
+	}); err != nil {
+		t.Fatalf("apply delete: %v", err)
+	}
+	got, err = repo.GetByCode(context.Background(), "PNZPES758F")
+	if err != nil {
+		t.Fatalf("get deleted route: %v", err)
+	}
+	if got != nil {
+		t.Fatalf("deleted route still present: %+v", got)
+	}
+}
+
 func TestNewServiceSkipsSelfPeer(t *testing.T) {
 	svc := NewService("hc-1", "hc-1", "https://hc-1.example.com", "secret", []StaticPeer{
 		{NodeID: "hc-1", NodeName: "self", BaseURL: "https://hc-1.example.com"},

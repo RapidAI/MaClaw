@@ -162,7 +162,7 @@ func tlsServerName(host string) string {
 type imapProbe struct{ c *imapclient.Client }
 
 func (s *imapProbe) Login(username, secret string) error {
-	return mapIMAP(s.c.Login(username, secret), "auth")
+	return mapIMAP(imapLogin(s.c, username, secret), "auth")
 }
 
 func (s *imapProbe) Select(box string) error {
@@ -195,9 +195,22 @@ func (s *smtpProbe) Quit() error {
 // authSMTP uses the mechanism the server advertised. QQ, 163 and many
 // enterprise relays implement LOGIN and answer PLAIN with a credential
 // error even when the password is right.
+func imapLogin(c *imapclient.Client, username, secret string) error {
+	if c == nil {
+		return ErrAuth
+	}
+	if token, ok := OAuthAccessToken(secret); ok {
+		return c.Authenticate(newXOAuth2Client(username, token))
+	}
+	return c.Login(username, secret)
+}
+
 func authSMTP(c *smtp.Client, username, secret string) error {
 	if c == nil {
 		return ErrAuth
+	}
+	if token, ok := OAuthAccessToken(secret); ok {
+		return mapSMTP(c.Auth(newXOAuth2Client(username, token)), "auth")
 	}
 	order := smtpAuthOrder(c)
 	var last error

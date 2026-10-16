@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"math/big"
 	"strings"
@@ -171,17 +172,75 @@ func (s *Service) GenerateCodesForTenantWithOptions(ctx context.Context, tenantI
 		codes = append(codes, created)
 	}
 
-	// Sync newly generated codes to HubCenter for routing (fire-and-forget).
+	// Sync newly generated codes to HubCenter for routing. Failures are logged
+	// and retried by ReconcileInvitationCodes on the center heartbeat.
 	if s.syncer != nil && len(codes) > 0 {
 		codeStrings := make([]string, len(codes))
 		for i, c := range codes {
 			codeStrings[i] = c.Code
 		}
-		syncTenantID := tenantID
-		go s.syncer.SyncInvitationCodesToCenter(context.Background(), codeStrings, syncTenantID)
+		syncTenantID := strings.TrimSpace(tenantID)
+		if syncTenantID == "" {
+			syncTenantID = store.DefaultTenantID
+		}
+		go func(codes []string, tenantID string) {
+			if err := s.syncer.SyncInvitationCodesToCenter(context.Background(), codes, tenantID); err != nil {
+				log.Printf("[invitation] sync codes to hubcenter failed tenant=%s count=%d err=%v", tenantID, len(codes), err)
+			}
+		}(codeStrings, syncTenantID)
 	}
 
 	return codes, nil
+}
+
+const invitationSyncBatchSize = 200
+
+// ReconcileInvitationCodes pushes every unused invitation code, including
+// codes owned by non-default tenants, to HubCenter. Generation sync is
+// best-effort; this runs from the center heartbeat so a failed push is retried
+// and codes created before a HubCenter node had the route still become routable.
+func (s *Service) ReconcileInvitationCodes(ctx context.Context) error {
+	if s == nil || s.syncer == nil || s.repo == nil {
+		return nil
+	}
+	codes, err := s.repo.ListUnused(ctx, "all")
+	if err != nil {
+		return err
+	}
+	grouped := map[string][]string{}
+	order := make([]string, 0)
+	for _, item := range codes {
+		if item == nil {
+			continue
+		}
+		code := strings.TrimSpace(item.Code)
+		if code == "" {
+			continue
+		}
+		tenantID := strings.TrimSpace(item.TenantID)
+		if tenantID == "" {
+			tenantID = store.DefaultTenantID
+		}
+		if _, ok := grouped[tenantID]; !ok {
+			order = append(order, tenantID)
+		}
+		grouped[tenantID] = append(grouped[tenantID], code)
+	}
+	var lastErr error
+	for _, tenantID := range order {
+		items := grouped[tenantID]
+		for start := 0; start < len(items); start += invitationSyncBatchSize {
+			end := start + invitationSyncBatchSize
+			if end > len(items) {
+				end = len(items)
+			}
+			if err := s.syncer.SyncInvitationCodesToCenter(ctx, items[start:end], tenantID); err != nil {
+				log.Printf("[invitation] reconcile hubcenter sync failed tenant=%s count=%d err=%v", tenantID, end-start, err)
+				lastErr = err
+			}
+		}
+	}
+	return lastErr
 }
 
 // ValidateAndConsume validates that the code exists and is unused, then marks it used.
@@ -224,7 +283,11 @@ func (s *Service) ValidateAndConsumeForTenant(ctx context.Context, tenantID stri
 	// Notify HubCenter that this code has been consumed — mark the bound email
 	// on the routing record (preserves it for admin lookup and re-enrollment).
 	if s.syncer != nil {
-		go s.syncer.MarkInvitationCodeUsedOnCenter(context.Background(), code, email)
+		go func(code, email string) {
+			if err := s.syncer.MarkInvitationCodeUsedOnCenter(context.Background(), code, email); err != nil {
+				log.Printf("[invitation] mark used on hubcenter failed code=%s err=%v", code, err)
+			}
+		}(code, email)
 	}
 
 	return nil

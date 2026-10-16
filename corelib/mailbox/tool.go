@@ -3,6 +3,7 @@ package mailbox
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"strings"
@@ -395,6 +396,10 @@ func (h *Host) secretFor(ctx context.Context, account Account, side string) (str
 	}
 	secret, err := h.Secrets(ctx, ref)
 	if err != nil {
+		var class *ClassError
+		if errors.As(err, &class) && class != nil && class.Message != "" {
+			return "", class
+		}
 		if isKeyring(err) {
 			return "", classErr("keyring", MsgKeyring)
 		}
@@ -489,7 +494,8 @@ func classOf(err error) string {
 	if err == nil {
 		return "ok"
 	}
-	if ce, ok := err.(*ClassError); ok && ce.Class != "" {
+	var ce *ClassError
+	if errors.As(err, &ce) && ce != nil && ce.Class != "" {
 		return ce.Class
 	}
 	class, _ := classifyTransport(err, false)

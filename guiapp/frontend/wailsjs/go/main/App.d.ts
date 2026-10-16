@@ -263,6 +263,8 @@ export function CloseSurvey(arg1:string):Promise<string>;
 
 export function CloseVESession(arg1:string):Promise<void>;
 
+export function CloseWebPreview(arg1:string):Promise<void>;
+
 export function CancelCloudWorkspaceSync(arg1:string):Promise<void>;
 
 export function CloudWorkspaceCacheDir(arg1:string):Promise<main.PreparedCloudWorkspace>;
@@ -435,6 +437,8 @@ export function DatabaseProfileTest(arg1:string):Promise<Record<string, any>>;
 export function DatabaseProfilesList():Promise<Array<Record<string, any>>>;
 
 export function MailboxAccountsList():Promise<Array<Record<string, any>>>;
+
+export function MailboxOAuthLogin(arg1:string,arg2:string):Promise<string>;
 
 export function MailboxAccountSave(arg1:Record<string, any>):Promise<string>;
 
@@ -1838,6 +1842,8 @@ export function OpenSkillRunArtifactForOwner(arg1:string,arg2:string,arg3:string
 export function OpenSystemUrl(arg1:string):Promise<void>;
 
 export function OpenVirtualRepository(arg1:string):Promise<string>;
+
+export function OpenWebPreview(arg1:string):Promise<{id:string; origin:string; token:string; root:string; entry_url:string; entry_path:string}>;
 
 export function OptimizeExpertFromSession(arg1:string):Promise<string>;
 

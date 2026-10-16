@@ -14,6 +14,7 @@ vi.mock('../../../../wailsjs/go/main/App', () => ({
     MailboxAccountSetSecret: vi.fn(),
     MailboxAccountTestDraft: vi.fn(),
     MailboxAccountsList: vi.fn(),
+    MailboxOAuthLogin: vi.fn(),
     MailboxSignatureDelete: vi.fn(),
     MailboxSignatureSave: vi.fn(),
     MailboxSignatureSetDefault: vi.fn(),
@@ -31,6 +32,7 @@ import {
     MailboxAccountSetSecret,
     MailboxAccountTestDraft,
     MailboxAccountsList,
+    MailboxOAuthLogin,
     MailboxSignatureDelete,
     MailboxSignatureSave,
     MailboxSignatureSetDefault,
@@ -461,5 +463,42 @@ describe('EmailSettingsPanel', () => {
         expect(screen.queryByText(/正在编辑/)).toBeNull();
         const editorEl = screen.getByRole('textbox', { name: '名字' }).closest('.email-settings-editor');
         expect(editorEl?.querySelector('.email-settings-editing')?.textContent).toBe('新增邮箱');
+    });
+
+    it('starts Gmail and Hotmail sign-in from the browser buttons', async () => {
+        vi.mocked(MailboxOAuthLogin).mockResolvedValue('Gmail 邮箱 a@gmail.com 已登录' as never);
+        render(<EmailSettingsPanel lang="zh-Hans" />);
+        await screen.findByText('Work');
+
+        fireEvent.click(screen.getByTestId('mailbox-login-gmail'));
+        await waitFor(() => expect(MailboxOAuthLogin).toHaveBeenCalledWith('gmail', ''));
+        expect(screen.getByTestId('email-settings-notice').textContent).toBe('Gmail 邮箱 a@gmail.com 已登录');
+
+        vi.mocked(MailboxOAuthLogin).mockResolvedValue('Hotmail 邮箱 me@hotmail.com 已登录' as never);
+        await waitFor(() => expect((screen.getByTestId('mailbox-login-hotmail') as HTMLButtonElement).disabled).toBe(false));
+        fireEvent.click(screen.getByTestId('mailbox-login-hotmail'));
+        await waitFor(() => expect(MailboxOAuthLogin).toHaveBeenLastCalledWith('hotmail', ''));
+    });
+
+    it('hides servers for a browser-login mailbox', async () => {
+        vi.mocked(MailboxAccountsList).mockResolvedValue([{
+            ...account,
+            name: '个人邮箱',
+            address: 'a@gmail.com',
+            auth: 'oauth',
+            provider: 'gmail',
+        }] as never);
+        render(<EmailSettingsPanel lang="zh-Hans" />);
+        await screen.findByText('个人邮箱');
+        expect(screen.getByText('网页登录')).toBeTruthy();
+
+        fireEvent.click(screen.getByRole('button', { name: '编辑' }));
+        expect(screen.queryByPlaceholderText('主机')).toBeNull();
+        expect(screen.getByText('这个邮箱通过浏览器登录。要更换授权，请重新登录。')).toBeTruthy();
+        expect((screen.getByRole('textbox', { name: '邮箱地址' }) as HTMLInputElement).readOnly).toBe(true);
+
+        vi.mocked(MailboxOAuthLogin).mockResolvedValue('Gmail 邮箱 a@gmail.com 已登录' as never);
+        fireEvent.click(screen.getByRole('button', { name: '重新登录' }));
+        await waitFor(() => expect(MailboxOAuthLogin).toHaveBeenCalledWith('gmail', 'a@gmail.com'));
     });
 });

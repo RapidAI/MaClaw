@@ -9,6 +9,7 @@ import {
     MailboxAccountSetSecret,
     MailboxAccountTestDraft,
     MailboxAccountsList,
+    MailboxOAuthLogin,
     MailboxSignatureDelete,
     MailboxSignatureSave,
     MailboxSignatureSetDefault,
@@ -35,6 +36,8 @@ type MailboxSummary = {
     has_inbound_secret: boolean;
     has_outbound_secret: boolean;
     signature_id?: string;
+    auth?: string;
+    provider?: string;
     inbound?: EndpointSummary;
     outbound?: EndpointSummary;
 };
@@ -94,12 +97,6 @@ const MAIL_PROVIDER_PRESETS: ProviderPreset[] = [
         label: { en: '126 Mail', hans: '126 邮箱', hant: '126 郵箱' },
         imap: { host: 'imap.126.com', port: 993, security: 'tls' },
         smtp: { host: 'smtp.126.com', port: 465, security: 'tls' },
-    },
-    {
-        id: 'gmail',
-        label: { en: 'Gmail', hans: 'Gmail', hant: 'Gmail' },
-        imap: { host: 'imap.gmail.com', port: 993, security: 'tls' },
-        smtp: { host: 'smtp.gmail.com', port: 465, security: 'tls' },
     },
     {
         id: 'outlook',
@@ -489,6 +486,21 @@ export function EmailSettingsPanel({ lang }: { lang: string }) {
         }));
     };
 
+    const loginOAuth = (provider: string, hint = '') => {
+        void runExclusive(async () => {
+            setNotice('');
+            try {
+                const text = await MailboxOAuthLogin(provider, hint);
+                report(text || t('Signed in', '已登录', '已登入'), 'ok');
+                resetAccount();
+                await reload();
+                bringNoticeIntoView();
+            } catch (err: any) {
+                report(String(err?.message || err), 'err');
+            }
+        });
+    };
+
     const startNewAccount = () => {
         if (busyRef.current) return;
         resetAccount();
@@ -502,6 +514,7 @@ export function EmailSettingsPanel({ lang }: { lang: string }) {
     };
 
     const editingAccount = accounts.find(item => item.id === editingId);
+    const editingOAuth = Boolean(editingAccount && editingAccount.auth === 'oauth');
     const editingSignature = signatures.find(item => item.id === editingSig);
 
     return (
@@ -525,6 +538,17 @@ export function EmailSettingsPanel({ lang }: { lang: string }) {
                     </div>
                     <button type="button" className="email-settings-button email-settings-button--add" disabled={busy} onClick={startNewAccount}>{t('Add mailbox', '新增邮箱', '新增郵箱')}</button>
                 </div>
+                <div className="email-settings-login">
+                    <p className="email-settings-provider__hint">{t(
+                        'Gmail, Hotmail, Outlook.com, and Live sign in through the browser. No server, port, or password.',
+                        'Gmail、Hotmail、Outlook.com 和 Live 在浏览器登录即可，不用填写服务器、端口或密码。',
+                        'Gmail、Hotmail、Outlook.com 和 Live 在瀏覽器登入即可，不用填寫伺服器、連接埠或密碼。',
+                    )}</p>
+                    <div className="email-settings-login__actions">
+                        <button type="button" className="email-settings-button" disabled={busy} data-testid="mailbox-login-gmail" onClick={() => loginOAuth('gmail')}>{t('Sign in to Gmail', '登录 Gmail', '登入 Gmail')}</button>
+                        <button type="button" className="email-settings-button" disabled={busy} data-testid="mailbox-login-hotmail" onClick={() => loginOAuth('hotmail')}>{t('Sign in to Hotmail', '登录 Hotmail', '登入 Hotmail')}</button>
+                    </div>
+                </div>
                 {accounts.length === 0 ? <p className="email-settings-empty">{t('No mailboxes yet.', '还没有邮箱。', '還沒有郵箱。')}</p> : (
                     <ul className="email-settings-list">
                         {accounts.map(account => (
@@ -535,15 +559,21 @@ export function EmailSettingsPanel({ lang }: { lang: string }) {
                                         <div className="email-settings-row__title">
                                             <strong>{account.name}</strong>
                                             <span className="email-settings-address">{account.address}</span>
+                                            {account.auth === 'oauth' && <span className="email-settings-badge">{account.provider === 'hotmail' ? 'Hotmail' : 'Gmail'}</span>}
                                             {account.default && <span className="email-settings-badge">{t('default', '默认', '預設')}</span>}
                                             {!account.enabled && <span className="email-settings-badge email-settings-badge--muted">{t('paused', '已停用', '已停用')}</span>}
                                         </div>
-                                        {(account.has_inbound || account.has_outbound) && <div className="email-settings-meta">
-                                            {account.has_inbound && <span className={`email-settings-meta__item${account.has_inbound_secret ? ' email-settings-meta__item--ok' : ''}`}>{t('Receive password', '收件密码', '收件密碼')}: {account.has_inbound_secret ? t('saved', '已保存', '已保存') : t('not set', '未设置', '未設定')}</span>}
-                                            {account.has_outbound && <span className={`email-settings-meta__item${account.has_outbound_secret ? ' email-settings-meta__item--ok' : ''}`}>{t('Send password', '发件密码', '發件密碼')}: {account.has_outbound_secret ? t('saved', '已保存', '已保存') : t('not set', '未设置', '未設定')}</span>}
+                                        {(account.auth === 'oauth' || account.has_inbound || account.has_outbound) && <div className="email-settings-meta">
+                                            {account.auth === 'oauth'
+                                                ? <span className={`email-settings-meta__item${account.has_inbound_secret || account.has_outbound_secret ? ' email-settings-meta__item--ok' : ''}`}>{account.has_inbound_secret || account.has_outbound_secret ? t('Browser sign-in', '网页登录', '網頁登入') : t('Sign in again to finish', '需要重新登录', '需要重新登入')}</span>
+                                                : <>
+                                                    {account.has_inbound && <span className={`email-settings-meta__item${account.has_inbound_secret ? ' email-settings-meta__item--ok' : ''}`}>{t('Receive password', '收件密码', '收件密碼')}: {account.has_inbound_secret ? t('saved', '已保存', '已保存') : t('not set', '未设置', '未設定')}</span>}
+                                                    {account.has_outbound && <span className={`email-settings-meta__item${account.has_outbound_secret ? ' email-settings-meta__item--ok' : ''}`}>{t('Send password', '发件密码', '發件密碼')}: {account.has_outbound_secret ? t('saved', '已保存', '已保存') : t('not set', '未设置', '未設定')}</span>}
+                                                </>}
                                         </div>}
                                     </div>
                                     <div className="email-settings-row__actions">
+                                        {account.auth === 'oauth' && <button type="button" className="email-settings-button" disabled={busy} onClick={() => loginOAuth(account.provider || 'gmail', account.address)}>{t('Sign in again', '重新登录', '重新登入')}</button>}
                                         <button type="button" className="email-settings-button" disabled={busy} onClick={() => editAccount(account)}>{t('Edit', '编辑', '編輯')}</button>
                                         <button type="button" className="email-settings-button email-settings-button--ghost" disabled={busy} onClick={() => { void commitAccountChange(() => MailboxAccountSetEnabled(account.id, !account.enabled)); }}>{account.enabled ? t('Pause', '停用', '停用') : t('Enable', '启用', '啟用')}</button>
                                         {!account.default && account.enabled && <button type="button" className="email-settings-button email-settings-button--ghost" disabled={busy} onClick={() => { void commitAccountChange(() => MailboxAccountSetDefault(account.id)); }}>{t('Make default', '设为默认', '設為預設')}</button>}
@@ -561,6 +591,15 @@ export function EmailSettingsPanel({ lang }: { lang: string }) {
                             ? t(`Editing “${editingAccount.name}”`, `正在编辑“${editingAccount.name}”`, `正在編輯“${editingAccount.name}”`)
                             : t('New mailbox', '新增邮箱', '新增郵箱')}
                     </div>
+                    {editingOAuth ? (
+                        <div className="email-settings-login">
+                            <p className="email-settings-provider__hint">{t(
+                                'This mailbox uses browser sign-in. Sign in again to replace the authorization.',
+                                '这个邮箱通过浏览器登录。要更换授权，请重新登录。',
+                                '這個郵箱透過瀏覽器登入。要更換授權，請重新登入。',
+                            )}</p>
+                        </div>
+                    ) : (
                     <div className="email-settings-provider">
                         <label className="email-settings-field email-settings-provider__field">{t('Provider', '服务商', '服務商')}
                             <select className="form-input" value={provider} onChange={event => applyProviderPreset(event.target.value)}>
@@ -572,9 +611,10 @@ export function EmailSettingsPanel({ lang }: { lang: string }) {
                         </label>
                         <span className="email-settings-provider__hint">{t('Preset providers fill in host, port and security automatically — just add username and password (or the app password / authorization code).', '选择常见服务商后，主机、端口和加密方式会自动填好，只需要输入用户名和密码（或授权码）。列表中没有的邮箱请选择“自定义”后手工填写。', '選擇常見服務商後，主機、連接埠和加密方式會自動填好，只需要輸入使用者名稱和密碼（或授權碼）。清單中沒有的郵箱請選擇「自定義」後手工填寫。')}</span>
                     </div>
+                    )}
                     <div className="email-settings-grid email-settings-grid--account">
                         <label className="email-settings-field">{t('Name', '名字', '名字')}<input className="form-input" value={name} onChange={event => setName(event.target.value)} /></label>
-                        <label className="email-settings-field">{t('Address', '邮箱地址', '郵箱地址')}<input className="form-input" value={address} onChange={event => setAddress(event.target.value)} /></label>
+                        <label className="email-settings-field">{t('Address', '邮箱地址', '郵箱地址')}<input className="form-input" value={address} readOnly={editingOAuth} onChange={event => setAddress(event.target.value)} /></label>
                         <label className="email-settings-field">{t('Signature', '签名', '簽名')}
                             <select className="form-input" value={signatureId} onChange={event => setSignatureId(event.target.value)}>
                                 <option value="">{t('Use the public default', '使用公共默认签名', '使用公共預設簽名')}</option>
@@ -582,6 +622,7 @@ export function EmailSettingsPanel({ lang }: { lang: string }) {
                             </select>
                         </label>
                     </div>
+                    {!editingOAuth && <>
                     <fieldset className="email-settings-endpoint">
                         <legend>{t('Receive (IMAP)', '收件 (IMAP)', '收件 (IMAP)')}</legend>
                         <div className="email-settings-endpoint__grid">
@@ -612,6 +653,7 @@ export function EmailSettingsPanel({ lang }: { lang: string }) {
                             <label className="email-settings-field">{t('Password', '密码', '密碼')}<input className="form-input" type="password" autoComplete="new-password" placeholder={t('Password or app password, blank keeps the saved one', '密码或授权码，留空则不修改', '密碼或授權碼，留空則不修改')} value={outbound.password} onChange={event => setOutbound({ ...outbound, password: event.target.value })} /></label>
                         </div>
                     </fieldset>
+                    </>}
                     {(['inbound', 'outbound'] as const).map(side => {
                         const entry = draftTests[side];
                         if (!entry || entry.sig !== draftTestSig(side)) return null;
@@ -622,8 +664,8 @@ export function EmailSettingsPanel({ lang }: { lang: string }) {
                         );
                     })}
                     <div className="email-settings-editor__footer">
-                        {inbound.host.trim() && <button type="button" className="email-settings-button email-settings-button--ghost" disabled={busy} onClick={() => { void runDraftTest('inbound'); }}>{t('Test receive', '测试收件', '測試收件')}</button>}
-                        {outbound.host.trim() && <button type="button" className="email-settings-button email-settings-button--ghost" disabled={busy} onClick={() => { void runDraftTest('outbound'); }}>{t('Test send', '测试发件', '測試發件')}</button>}
+                        {!editingOAuth && inbound.host.trim() && <button type="button" className="email-settings-button email-settings-button--ghost" disabled={busy} onClick={() => { void runDraftTest('inbound'); }}>{t('Test receive', '测试收件', '測試收件')}</button>}
+                        {!editingOAuth && outbound.host.trim() && <button type="button" className="email-settings-button email-settings-button--ghost" disabled={busy} onClick={() => { void runDraftTest('outbound'); }}>{t('Test send', '测试发件', '測試發件')}</button>}
                         <label className="email-settings-check"><input type="checkbox" checked={enabled} onChange={event => setEnabled(event.target.checked)} />{t('Enabled', '启用', '啟用')}</label>
                         <label className="email-settings-check"><input type="checkbox" checked={makeDefault} onChange={event => setMakeDefault(event.target.checked)} />{t('Default mailbox', '默认邮箱', '預設郵箱')}</label>
                         <div className="email-settings-editor__actions">

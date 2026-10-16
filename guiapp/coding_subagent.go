@@ -732,7 +732,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 			for _, verifier := range verifiers {
 				s.runPostLoopVerification(cb, &result, verifier.command, verifier.workingDir, traj)
 			}
-		} else if verifyCmd := detectProjectVerifyCommand(s.projectPath); verifyCmd != "" {
+		} else if verifyCmd := ensureProjectVerifyCommand(context.Background(), s.projectPath); verifyCmd != "" {
 			// Check if model already ran a verification command during the loop
 			if !hasSubAgentSelfVerified(cb) {
 				s.runPostLoopVerifyFixCycle(cb, &result, verifyCmd, traj)

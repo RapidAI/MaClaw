@@ -283,7 +283,7 @@ func configureMailboxErr(err error, secret string) string {
 }
 
 func mailboxFileResolver(dir, tenant, user string) mailbox.SecretResolver {
-	return func(_ context.Context, ref string) (string, error) {
+	return func(ctx context.Context, ref string) (string, error) {
 		path, err := mailboxSecretPath(dir, tenant, user, ref)
 		if err != nil {
 			return "", err
@@ -296,8 +296,73 @@ func mailboxFileResolver(dir, tenant, user string) mailbox.SecretResolver {
 		if strings.TrimSpace(secret) == "" {
 			return "", errors.New("mailbox secret is empty")
 		}
-		return secret, nil
+		current, updated, err := mailbox.MaterializeSecret(ctx, secret, time.Now())
+		if err != nil {
+			return "", err
+		}
+		if updated != "" {
+			if err := persistRefreshedMailboxSecret(dir, tenant, user, ref, updated); err != nil {
+				return "", err
+			}
+		}
+		return current, nil
 	}
+}
+
+// writeMailboxSecretFile is replaced in tests that fail one side of a pair.
+var writeMailboxSecretFile = os.WriteFile
+
+// persistRefreshedMailboxSecret writes the rotated token to both sides.
+// A Microsoft refresh token used twice invalidates the newer one, so a
+// failure restores every side already replaced.
+func persistRefreshedMailboxSecret(dir, tenant, user, ref, updated string) error {
+	path, err := mailboxSecretPath(dir, tenant, user, ref)
+	if err != nil {
+		return err
+	}
+	paths := []string{path}
+	if item, perr := mailbox.ParseSecretRef(ref); perr == nil {
+		id, side, ok := strings.Cut(strings.TrimPrefix(item, "mailbox/"), "/")
+		if ok {
+			other := mailbox.SideOutbound
+			if side == mailbox.SideOutbound {
+				other = mailbox.SideInbound
+			}
+			if otherPath, oerr := mailboxSecretPath(dir, tenant, user, mailbox.SecretRef(id, other)); oerr == nil && otherPath != path {
+				paths = append(paths, otherPath)
+			}
+		}
+	}
+	type prior struct {
+		path    string
+		data    []byte
+		existed bool
+	}
+	prev := make([]prior, 0, len(paths))
+	for _, item := range paths {
+		data, err := os.ReadFile(item)
+		if err == nil {
+			prev = append(prev, prior{path: item, data: data, existed: true})
+			continue
+		}
+		if !os.IsNotExist(err) {
+			return err
+		}
+		prev = append(prev, prior{path: item})
+	}
+	for i, entry := range prev {
+		if err := writeMailboxSecretFile(entry.path, []byte(updated), 0o600); err != nil {
+			for _, undone := range prev[:i] {
+				if undone.existed {
+					_ = writeMailboxSecretFile(undone.path, undone.data, 0o600)
+					continue
+				}
+				_ = os.Remove(undone.path)
+			}
+			return err
+		}
+	}
+	return nil
 }
 
 // WriteMailboxSecret stores one mailbox password as a 0600 file. The secret

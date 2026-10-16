@@ -1,11 +1,14 @@
 package guiapp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
@@ -116,13 +119,249 @@ func detectNodeVerifyCommand(projectPath string) string {
 	return ""
 }
 
+// hostBuildTools are absolute executables the host can already run.
+// Empty fields are tools this machine does not have.
+type hostBuildTools struct {
+	cmake   string
+	ninja   string
+	msbuild string
+	make    string
+}
+
+var lookupHostBuildTools = currentHostBuildTools
+
 func detectCMakeVerifyCommand(projectPath string) string {
-	// Check if build directory exists
+	return selectCMakeVerifyCommand(projectPath, lookupHostBuildTools())
+}
+
+// ensureProjectVerifyCommand is the command the host is about to execute.
+// Detection stays free of downloads: commit text and prompts also call
+// detectProjectVerifyCommand. Installation happens only here, and only when
+// a CMake build directory exists and no local builder can drive it.
+func ensureProjectVerifyCommand(ctx context.Context, projectPath string) string {
+	if ctx != nil && ctx.Err() != nil {
+		return ""
+	}
+	if cmd := detectProjectVerifyCommand(projectPath); cmd != "" {
+		return cmd
+	}
+	if cmakeVerifySkippedReason(projectPath) == "" {
+		return ""
+	}
+	exe := ensurePrivateCMakeInstalled(ctx)
+	if exe == "" {
+		return ""
+	}
+	return selectCMakeVerifyCommand(projectPath, hostBuildTools{cmake: exe})
+}
+
+func cmakeVerifySkippedReason(projectPath string) string {
+	if _, err := os.Stat(filepath.Join(projectPath, "CMakeLists.txt")); err != nil {
+		return ""
+	}
 	buildDir := filepath.Join(projectPath, "build")
-	if info, err := os.Stat(buildDir); err == nil && info.IsDir() {
-		return "cmake --build build"
+	info, err := os.Stat(buildDir)
+	if err != nil || !info.IsDir() || !cmakeBuildDirConfigured(buildDir) {
+		return ""
+	}
+	return "CMake build tree present, no cmake/ninja/msbuild available"
+}
+
+func cmakeBuildDirConfigured(buildDir string) bool {
+	for _, name := range []string{"CMakeCache.txt", "build.ninja", "Makefile"} {
+		info, err := os.Stat(filepath.Join(buildDir, name))
+		if err == nil && !info.IsDir() {
+			return true
+		}
+	}
+	return firstBuildSolution(buildDir) != ""
+}
+
+func currentHostBuildTools() hostBuildTools {
+	if runtime.GOOS != "windows" {
+		return hostBuildTools{
+			cmake: existingExecutable(lookPathTool("cmake")),
+			ninja: existingExecutable(lookPathTool("ninja")),
+			make:  existingExecutable(lookPathTool("make")),
+		}
+	}
+	tools := hostBuildTools{msbuild: detectWindowsMSBuild()}
+	if dir := detectWindowsCMakeBin(); dir != "" {
+		tools.cmake = filepath.Join(dir, "cmake.exe")
+	}
+	if dir := detectWindowsNinjaBin(); dir != "" {
+		tools.ninja = filepath.Join(dir, "ninja.exe")
+	}
+	if dir := detectWindowsMinGWBin(); dir != "" {
+		for _, name := range []string{"mingw32-make.exe", "make.exe"} {
+			candidate := filepath.Join(dir, name)
+			if existingExecutable(candidate) != "" {
+				tools.make = candidate
+				break
+			}
+		}
+	}
+	return tools
+}
+
+func lookPathTool(name string) string {
+	path, err := exec.LookPath(name)
+	if err != nil {
+		return ""
+	}
+	return path
+}
+
+// selectCMakeVerifyCommand picks a build command that does not depend on the
+// GUI process PATH. A bare "cmake" is never returned: on other machines that
+// becomes a PowerShell CommandNotFound and fails a step the agent already built.
+func selectCMakeVerifyCommand(projectPath string, tools hostBuildTools) string {
+	buildDir := filepath.Join(projectPath, "build")
+	info, err := os.Stat(buildDir)
+	if err != nil || !info.IsDir() {
+		return ""
+	}
+	cmakePath, makeProgram := readCMakeCacheTools(buildDir)
+	if cmakePath != "" {
+		return quoteVerifyExecutable(cmakePath) + " --build build"
+	}
+	if cmake := existingExecutable(tools.cmake); cmake != "" {
+		return quoteVerifyExecutable(cmake) + " --build build"
+	}
+	if cmd := commandForCacheBuildTool(buildDir, makeProgram); cmd != "" {
+		return cmd
+	}
+	if existingExecutable(filepath.Join(buildDir, "build.ninja")) != "" {
+		if ninja := existingExecutable(tools.ninja); ninja != "" {
+			return quoteVerifyExecutable(ninja) + " -C build"
+		}
+	}
+	if sln := firstBuildSolution(buildDir); sln != "" {
+		if msbuild := existingExecutable(tools.msbuild); msbuild != "" {
+			return quoteVerifyExecutable(msbuild) + " " + shellQuoteVerifyToken(sln)
+		}
+	}
+	if existingExecutable(filepath.Join(buildDir, "Makefile")) != "" {
+		if makeExe := existingExecutable(tools.make); makeExe != "" {
+			return quoteVerifyExecutable(makeExe) + " -C build"
+		}
 	}
 	return ""
+}
+
+func commandForCacheBuildTool(buildDir, tool string) string {
+	tool = existingExecutable(tool)
+	if tool == "" {
+		return ""
+	}
+	switch cmakeBuildToolKind(tool) {
+	case "ninja":
+		return quoteVerifyExecutable(tool) + " -C build"
+	case "make":
+		return quoteVerifyExecutable(tool) + " -C build"
+	case "msbuild":
+		if sln := firstBuildSolution(buildDir); sln != "" {
+			return quoteVerifyExecutable(tool) + " " + shellQuoteVerifyToken(sln)
+		}
+	}
+	return ""
+}
+
+func cmakeBuildToolKind(tool string) string {
+	switch strings.ToLower(filepath.Base(tool)) {
+	case "ninja", "ninja.exe":
+		return "ninja"
+	case "make", "make.exe", "gmake", "gmake.exe", "mingw32-make", "mingw32-make.exe":
+		return "make"
+	case "msbuild", "msbuild.exe":
+		return "msbuild"
+	default:
+		return ""
+	}
+}
+
+func firstBuildSolution(buildDir string) string {
+	entries, err := os.ReadDir(buildDir)
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		if strings.EqualFold(filepath.Ext(entry.Name()), ".sln") {
+			return filepath.Join(buildDir, entry.Name())
+		}
+	}
+	return ""
+}
+
+func existingExecutable(path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return ""
+	}
+	fi, err := os.Stat(path)
+	if err != nil || fi.IsDir() {
+		return ""
+	}
+	return path
+}
+
+func readCMakeCacheTools(buildDir string) (cmakePath, makeProgram string) {
+	data, err := os.ReadFile(filepath.Join(buildDir, "CMakeCache.txt"))
+	if err != nil {
+		return "", ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(strings.TrimRight(line, "\r"))
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		name, _, _ := strings.Cut(key, ":")
+		if name != "CMAKE_COMMAND" && name != "CMAKE_MAKE_PROGRAM" {
+			continue
+		}
+		value = existingExecutable(filepath.Clean(filepath.FromSlash(strings.Trim(strings.TrimSpace(value), `"'`))))
+		if value == "" {
+			continue
+		}
+		switch name {
+		case "CMAKE_COMMAND":
+			if cmakePath == "" {
+				cmakePath = value
+			}
+		case "CMAKE_MAKE_PROGRAM":
+			if makeProgram == "" {
+				makeProgram = value
+			}
+		}
+		if cmakePath != "" && makeProgram != "" {
+			break
+		}
+	}
+	return cmakePath, makeProgram
+}
+
+func shellQuoteVerifyToken(token string) string {
+	if !strings.ContainsAny(token, " \t\"") {
+		return token
+	}
+	return `"` + strings.ReplaceAll(token, `"`, "") + `"`
+}
+
+// quoteVerifyExecutable makes a path runnable by Windows PowerShell 5.1.
+// A quoted program path is an expression unless the call operator is present,
+// so "C:\Program Files\CMake\bin\cmake.exe" --build would not start cmake.
+func quoteVerifyExecutable(exe string) string {
+	// Keep the command itself free of a leading &. The shell tokenizer treats
+	// & as a command boundary, which would hide cmake from every detector.
+	// windowsCodingBashInvocation adds the PowerShell call operator at launch.
+	return shellQuoteVerifyToken(exe)
 }
 
 // runPostLoopVerification executes one host-selected verification command and

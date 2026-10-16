@@ -352,7 +352,7 @@ func (d *NetDialer) openBox(ctx context.Context, account Account, secret, box st
 	if user == "" {
 		user = account.Address
 	}
-	if err := mapIMAP(c.Login(user, secret), "auth"); err != nil {
+	if err := mapIMAP(imapLogin(c, user, secret), "auth"); err != nil {
 		_ = c.Logout()
 		return nil, err
 	}

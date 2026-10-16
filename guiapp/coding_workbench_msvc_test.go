@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"archive/zip"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -70,6 +71,106 @@ func TestNormalizeWindowsMSVCCompileCommandRepairsMangledQuotes(t *testing.T) {
 	}
 	if _, ok := normalizeWindowsMSVCCompileCommand(`go test ./gui`); ok {
 		t.Fatal("ordinary commands must not be treated as MSVC recipes")
+	}
+}
+
+func TestFirstExistingWindowsToolDir(t *testing.T) {
+	dir := t.TempDir()
+	exe := filepath.Join(dir, "cmake.exe")
+	if err := os.WriteFile(exe, []byte("cmake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(dir, "missing", "cmake.exe")
+	if got := firstExistingWindowsToolDir([]string{missing, exe}); got != dir {
+		t.Fatalf("dir = %q, want %q", got, dir)
+	}
+	if got := firstExistingWindowsToolDir([]string{"", missing}); got != "" {
+		t.Fatalf("missing tools returned %q", got)
+	}
+	aliasDir := filepath.Join(dir, "WindowsApps")
+	if err := os.MkdirAll(aliasDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(aliasDir, "cmake.exe")
+	if err := os.WriteFile(alias, nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := firstExistingWindowsToolDir([]string{alias, exe}); got != dir {
+		t.Fatalf("app alias was selected: %q", got)
+	}
+}
+
+func TestExtractZipSafeFindsCMakeAndSkipsTraversal(t *testing.T) {
+	dir := t.TempDir()
+	zipPath := filepath.Join(dir, "cmake.zip")
+	f, err := os.Create(zipPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	zw := zip.NewWriter(f)
+	evil, err := zw.Create("../evil.exe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := evil.Write([]byte("nope")); err != nil {
+		t.Fatal(err)
+	}
+	entry, err := zw.Create("cmake-3.31.8-windows-x86_64/bin/cmake.exe")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := entry.Write([]byte("cmake")); err != nil {
+		t.Fatal(err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(dir, "out")
+	if err := os.MkdirAll(dest, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := extractZipSafe(zipPath, dest); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, "evil.exe")); err == nil {
+		t.Fatal("zip entry escaped the destination")
+	}
+	bin := findNamedExeDir(dest, "cmake.exe")
+	if filepath.Base(bin) != "bin" {
+		t.Fatalf("cmake bin = %q", bin)
+	}
+}
+
+func TestWindowsCMakeCandidatesIncludeInstallDirs(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("cmake discovery is Windows-only")
+	}
+	joined := strings.ToLower(strings.Join(windowsCMakeCandidates(), "\n"))
+	if !strings.Contains(joined, `\cmake\bin\cmake.exe`) {
+		t.Fatalf("candidates = %q", joined)
+	}
+}
+
+func TestCodingCommandEnvIncludesDetectedCMake(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("cmake PATH injection is Windows-only")
+	}
+	bin := detectWindowsCMakeBin()
+	if bin == "" {
+		t.Skip("cmake is not installed")
+	}
+	var path string
+	for _, item := range codingCommandEnv() {
+		if strings.HasPrefix(strings.ToLower(item), "path=") {
+			path = item
+			break
+		}
+	}
+	if !strings.Contains(strings.ToLower(path), strings.ToLower(bin)) {
+		t.Fatalf("PATH missing %s", bin)
 	}
 }
 

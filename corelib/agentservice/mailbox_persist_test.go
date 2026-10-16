@@ -2,6 +2,7 @@ package agentservice
 
 import (
 	"context"
+	"errors"
 	"os"
 	"runtime"
 	"strings"
@@ -254,5 +255,73 @@ func TestMailboxConfigureKeepsAccountWhenSecretStoreIsMissing(t *testing.T) {
 	}
 	if reader.lists != 0 {
 		t.Fatal("a missing secret still opened the mailbox")
+	}
+}
+
+func TestPersistRefreshedMailboxSecretWritesBothSides(t *testing.T) {
+	dir := t.TempDir()
+	const id = "mb2"
+	if err := WriteMailboxSecret(dir, "tenant", "user", id, mailbox.SideInbound, "old-in"); err != nil {
+		t.Fatal(err)
+	}
+	ref := mailbox.SecretRef(id, mailbox.SideInbound)
+	if err := persistRefreshedMailboxSecret(dir, "tenant", "user", ref, "new-secret"); err != nil {
+		t.Fatal(err)
+	}
+	for _, side := range []string{mailbox.SideInbound, mailbox.SideOutbound} {
+		path, err := mailboxSecretPath(dir, "tenant", "user", mailbox.SecretRef(id, side))
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(got) != "new-secret" {
+			t.Fatalf("%s=%q", side, got)
+		}
+	}
+}
+
+func TestPersistRefreshedMailboxSecretRollsBack(t *testing.T) {
+	dir := t.TempDir()
+	const id = "mb1"
+	if err := WriteMailboxSecret(dir, "tenant", "user", id, mailbox.SideInbound, "old-in"); err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteMailboxSecret(dir, "tenant", "user", id, mailbox.SideOutbound, "old-out"); err != nil {
+		t.Fatal(err)
+	}
+	outPath, err := mailboxSecretPath(dir, "tenant", "user", mailbox.SecretRef(id, mailbox.SideOutbound))
+	if err != nil {
+		t.Fatal(err)
+	}
+	realWrite := writeMailboxSecretFile
+	writeMailboxSecretFile = func(name string, data []byte, perm os.FileMode) error {
+		if name == outPath && string(data) == "new-secret" {
+			return errors.New("disk full")
+		}
+		return realWrite(name, data, perm)
+	}
+	t.Cleanup(func() { writeMailboxSecretFile = realWrite })
+
+	ref := mailbox.SecretRef(id, mailbox.SideInbound)
+	if err := persistRefreshedMailboxSecret(dir, "tenant", "user", ref, "new-secret"); err == nil {
+		t.Fatal("expected write failure")
+	}
+	inPath, err := mailboxSecretPath(dir, "tenant", "user", ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	in, err := os.ReadFile(inPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := os.ReadFile(outPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(in) != "old-in" || string(out) != "old-out" {
+		t.Fatalf("in=%q out=%q", in, out)
 	}
 }

@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -187,6 +188,185 @@ func TestGoVerifyCommandShortCircuits(t *testing.T) {
 	ps := convertUnquotedAndAndForPowerShell(got)
 	if !strings.Contains(ps, "$LASTEXITCODE") || strings.Contains(ps, "&&") {
 		t.Fatalf("powershell translation = %q", ps)
+	}
+}
+
+func TestSelectCMakeVerifyCommandProbesThenFallsBack(t *testing.T) {
+	root := t.TempDir()
+	build := filepath.Join(root, "build")
+	if err := os.MkdirAll(build, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if got := selectCMakeVerifyCommand(root, hostBuildTools{}); got != "" {
+		t.Fatalf("unresolved cmake must not be emitted, got %q", got)
+	}
+
+	cmakeDir := filepath.Join(root, "Program Files", "CMake", "bin")
+	if err := os.MkdirAll(cmakeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmake := filepath.Join(cmakeDir, "cmake.exe")
+	if err := os.WriteFile(cmake, []byte("cmake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := selectCMakeVerifyCommand(root, hostBuildTools{cmake: cmake}); got != quoteVerifyExecutable(cmake)+" --build build" {
+		t.Fatalf("probed cmake = %q", got)
+	}
+
+	cache := "CMAKE_COMMAND:INTERNAL=" + filepath.ToSlash(cmake) + "\n"
+	if err := os.WriteFile(filepath.Join(build, "CMakeCache.txt"), []byte(cache), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := selectCMakeVerifyCommand(root, hostBuildTools{}); got != quoteVerifyExecutable(cmake)+" --build build" {
+		t.Fatalf("cache cmake = %q", got)
+	}
+	quoted := quoteVerifyExecutable(cmake) + " --build build"
+	if strings.HasPrefix(strings.TrimSpace(quoted), "&") {
+		t.Fatalf("verify command must not hide cmake behind a call operator: %q", quoted)
+	}
+	if fields := commandSegmentFields(shellCommandFields(quoted)); len(fields) == 0 || commandNameBase(fields[0]) != "cmake" {
+		t.Fatalf("cmake was not visible to the command parser: %q", quoted)
+	}
+	if got := ensurePowerShellCallOperator(`"hello world"`); strings.HasPrefix(strings.TrimSpace(got), "&") {
+		t.Fatalf("quoted text was treated as a program: %q", got)
+	}
+	if runtime.GOOS == "windows" {
+		_, args := windowsCodingBashInvocation(quoted)
+		if len(args) == 0 || !strings.Contains(args[len(args)-1], "& \"") {
+			t.Fatalf("powershell launch = %#v", args)
+		}
+	}
+
+	if err := os.Remove(filepath.Join(build, "CMakeCache.txt")); err != nil {
+		t.Fatal(err)
+	}
+	ninja := filepath.Join(root, "ninja.exe")
+	if err := os.WriteFile(ninja, []byte("ninja"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(build, "build.ninja"), []byte("build"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := selectCMakeVerifyCommand(root, hostBuildTools{ninja: ninja}); got != quoteVerifyExecutable(ninja)+" -C build" {
+		t.Fatalf("ninja fallback = %q", got)
+	}
+	makeProgram := filepath.Join(root, "Program Files", "ninja.exe")
+	if err := os.MkdirAll(filepath.Dir(makeProgram), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(makeProgram, []byte("ninja"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cache = "CMAKE_COMMAND:INTERNAL=" + filepath.ToSlash(filepath.Join(root, "missing", "cmake.exe")) + "\nCMAKE_MAKE_PROGRAM:FILEPATH=" + filepath.ToSlash(makeProgram) + "\n"
+	if err := os.WriteFile(filepath.Join(build, "CMakeCache.txt"), []byte(cache), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := selectCMakeVerifyCommand(root, hostBuildTools{}); got != quoteVerifyExecutable(makeProgram)+" -C build" {
+		t.Fatalf("cache ninja = %q", got)
+	}
+	if err := os.Remove(filepath.Join(build, "CMakeCache.txt")); err != nil {
+		t.Fatal(err)
+	}
+	nmake := filepath.Join(root, "nmake.exe")
+	if err := os.WriteFile(nmake, []byte("nmake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(build, "CMakeCache.txt"), []byte("CMAKE_MAKE_PROGRAM:FILEPATH="+filepath.ToSlash(nmake)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := selectCMakeVerifyCommand(root, hostBuildTools{}); got != "" {
+		t.Fatalf("nmake must not be invoked as make, got %q", got)
+	}
+	if err := os.Remove(filepath.Join(build, "CMakeCache.txt")); err != nil {
+		t.Fatal(err)
+	}
+
+	sln := filepath.Join(build, "app.sln")
+	if err := os.WriteFile(sln, []byte("sln"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	msbuild := filepath.Join(root, "MSBuild.exe")
+	if err := os.WriteFile(msbuild, []byte("msbuild"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(build, "build.ninja")); err != nil {
+		t.Fatal(err)
+	}
+	if got := selectCMakeVerifyCommand(root, hostBuildTools{msbuild: msbuild}); got != quoteVerifyExecutable(msbuild)+" "+shellQuoteVerifyToken(sln) {
+		t.Fatalf("msbuild fallback = %q", got)
+	}
+}
+
+func TestDetectCMakeVerifyInstallsWhenHostHasNoBuilder(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("private CMake install is Windows-only")
+	}
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "build"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "CMakeLists.txt"), []byte("project(demo)\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	bin := filepath.Join(t.TempDir(), "cmake-bin")
+	if err := os.MkdirAll(bin, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	cmake := filepath.Join(bin, "cmake.exe")
+	if err := os.WriteFile(cmake, []byte("cmake"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prevLookup := lookupHostBuildTools
+	prevInstall := installPrivateCMakeFn
+	prevPrivate := privateCMakeDir()
+	t.Cleanup(func() {
+		lookupHostBuildTools = prevLookup
+		installPrivateCMakeFn = prevInstall
+		setPrivateCMakeDir(prevPrivate)
+	})
+	lookupHostBuildTools = func() hostBuildTools { return hostBuildTools{} }
+	installed := 0
+	installPrivateCMakeFn = func(ctx context.Context) string {
+		installed++
+		return bin
+	}
+	if got := ensureProjectVerifyCommand(context.Background(), root); got != "" || installed != 0 {
+		t.Fatalf("empty build dir command=%q install calls=%d", got, installed)
+	}
+	if err := os.WriteFile(filepath.Join(root, "build", "CMakeCache.txt"), []byte("CMAKE_COMMAND:INTERNAL="+filepath.ToSlash(filepath.Join(root, "missing", "cmake.exe"))+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cancelled, stop := context.WithCancel(context.Background())
+	stop()
+	if got := ensureProjectVerifyCommand(cancelled, root); got != "" || installed != 0 {
+		t.Fatalf("cancelled command=%q calls=%d", got, installed)
+	}
+	got := ensureProjectVerifyCommand(context.Background(), root)
+	if host := detectWindowsCMakeBin(); host != "" {
+		if installed != 0 {
+			t.Fatalf("cmake at %s was installed again (%d)", host, installed)
+		}
+		if !strings.Contains(strings.ToLower(got), "cmake") {
+			t.Fatalf("existing cmake command = %q", got)
+		}
+		return
+	}
+	if installed != 1 {
+		t.Fatalf("install calls=%d", installed)
+	}
+	if got != quoteVerifyExecutable(cmake)+" --build build" {
+		t.Fatalf("installed cmake = %q", got)
+	}
+}
+
+func TestStepVerifySkipReason(t *testing.T) {
+	plain := codingWorkbenchStepGateSummary(true, "", "", true)
+	if !strings.Contains(plain, "no project verify command") {
+		t.Fatal(plain)
+	}
+	reason := codingWorkbenchStepGateSummary(true, "", "CMake build tree present, no cmake/ninja/msbuild available", true)
+	if !strings.Contains(reason, "CMake build tree present") {
+		t.Fatal(reason)
 	}
 }
 
