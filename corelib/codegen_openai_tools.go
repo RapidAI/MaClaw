@@ -37,12 +37,17 @@ func SanitizeCodeGenOpenAICompatBody(body map[string]interface{}) {
 // cleanup without changing caller-owned output or tool-invocation contracts.
 // Removing one of these controls can yield HTTP 200 for a semantically
 // different turn, which is worse than exposing an upstream capability error.
+// The legacy function_call is not preserved: no downstream normalizer adapts
+// it, and the conservative upstreams behind this cleanup reject it outright.
+// parallel_tool_calls stays preserved because the Responses request builder
+// writes the host's explicit ParallelToolCalls option through it; the chat
+// forward path strips its own forwarded copy after calling this helper.
 func SanitizeCodeGenOpenAICompatBodyPreservingSemanticContracts(body map[string]interface{}) {
 	if body == nil {
 		return
 	}
-	contracts := make(map[string]interface{}, 4)
-	for _, key := range []string{"response_format", "tool_choice", "function_call", "parallel_tool_calls"} {
+	contracts := make(map[string]interface{}, 3)
+	for _, key := range []string{"response_format", "tool_choice", "parallel_tool_calls"} {
 		if value, ok := body[key]; ok {
 			contracts[key] = value
 		}

@@ -444,6 +444,12 @@ func sanitizeOpenAICompatForwardBodyWithOptions(cfg MaclawLLMConfig, body map[st
 		// define its semantics, so preserve them and surface an upstream
 		// capability error rather than silently issuing a different request.
 		SanitizeCodeGenOpenAICompatBodyPreservingSemanticContracts(body)
+		// A forwarded parallel_tool_calls is raw caller payload, not the
+		// host's explicit Responses contract: the conservative upstreams
+		// behind this branch reject the field outright, so it must not reach
+		// them. The Responses request builder keeps its own host-authored
+		// value by calling the sanitizer directly.
+		delete(body, "parallel_tool_calls")
 	}
 	normalizeOpenAICompatForwardToolChoice(body)
 	isDeepSeekFlash := IsDeepSeekFlashOpenAICompat(cfg)
