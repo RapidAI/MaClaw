@@ -28,7 +28,11 @@ Linux/macOS 上用 `deploy/linux/rollout_desktop_gui2.sh`(编译、打包、断�
 | `DESKTOPD_ADVERTISE_HOST` | 容器端口回调时的对外主机名(必须是 Hub/MaClawSrv 可达的名字) |
 | `DESKTOPD_ADDR` | 监听地址,默认 `127.0.0.1:18081`(反代或 SSH 隧道用) |
 | `DESKTOPD_STATE_DIR` | 管理面板的状态目录(部署脚本指向 `<部署目录>/state`);`off` 完全禁用面板 |
-| `DESKTOPD_MAX_IDLE` | 可选空闲回收,如 `24h`;超时的桌面会被停止(登录态先落盘) |
+| `DESKTOPD_MAX_IDLE` | 可选空闲回收,如 `24h`。先让 supervisor 停会话并落盘登录态,再确认容器已停;容器还在就 `docker stop`(与 API 停止相同的 25 秒宽限)。容器里有正在使用的 bot 桌面时只停主人会话,不停容器。停止失败会打错误日志 |
+| `DESKTOPD_LOG_FILE` | 滚动日志路径,默认 `logs/desktopd.log`(相对工作目录)。`off` 只写 stderr。systemd 237 写不了这个文件,所以由进程自己写 |
+| `DESKTOPD_LOG_MAX_BYTES` / `DESKTOPD_LOG_MAX_FILES` | 单文件上限(默认 `32MiB`)和保留的轮转份数(默认 5) |
+| `DESKTOPD_LOG_STDERR` | 默认把每一行再复制到 stderr(`journalctl` 仍看得到)。`0` 关闭 |
+| `DESKTOPD_PROXY_DIRECT` | 出网代理直连的域名后缀,不走上游。未设置时默认 `xiaohongshu.com,xhscdn.com`;`off` 全部走上游;写了列表就替换默认 |
 | `DESKTOPD_ALLOW_REMOTE_SETUP` | 设为 `1` 时允许从非 loopback 来源执行一次性的面板初始化 |
 | `DESKTOPD_PROXY` | 设为 `1` 时本机 desktopd 开启内置出网代理（见下节），部署脚本会把这三个变量写入 `.env` |
 | `DESKTOPD_PROXY_ADDR` | 出网代理监听地址，默认 `:18082`；必须对消费者机器可达（区别于 API 的 127.0.0.1 约定） |
@@ -224,8 +228,9 @@ docker network inspect bridge --format '{{(index .IPAM.Config 0).Gateway}}'
   metadata 目标（与 `corelib/mcp` P0-6 的 SSRF 姿态一致），hostname 在境外
   机上解析，解析出私网地址一律拒绝。
 - docker 自身拉取还可用国内 registry mirror 替代代理，两者不冲突。
-
-
+- **上游失败**:级联到境外代理时,CONNECT 如果得到 HTTP 502/503/504,或拨号超时、连接被重置,会再试,最多 3 次(间隔 200ms、800ms),单次尝试 8 秒。仍失败才向容器返回 502。407(key 错误)不重试。
+- **不必绕境外的域名**:`DESKTOPD_PROXY_DIRECT` 里的后缀由本机直连,不经过上游。默认包含 `xiaohongshu.com` 和 `xhscdn.com`(境外中转对 `as.xiaohongshu.com:443` 经常 `i/o timeout`)。`off` 关闭。googlevideo 这类需要出境的名字不在默认列表里,走重试。
+- **错误日志**:同一类错误打到同一个目标,每分钟最多一行,行里带累计计数。另外每分钟有一条 `upstream errors` 汇总。`GET /v1/health` 的 `proxy` 字段是进程启动以来的计数:`timeout`、`http_502`、`other`、`retries`、`direct`、`suppressed_logs`。
 
 ## 管理面板
 
@@ -263,9 +268,30 @@ Hub 侧配置(管理页"桌面服务"标签页或 `POST /api/admin/desktop-servi
 - 容器内 supervisor 每用户一个 X display + profile 卷;`ensure` 幂等,
   停止前 flush 浏览器登录态。
 
+## 日志(systemd 237)
+
+Ubuntu 18.04 的 systemd 237 不认识 `StandardOutput=append:` / `StandardError=append:`(v240 才加入)。旧单元每次 `daemon-reload` 都警告 `Failed to parse output specifier`,输出落到 journal,配置的 `logs/desktopd.log` 一直是空的。
+
+desktopd 自己追加并轮转这个文件,跟 systemd 版本无关:
+
+- 默认 `logs/desktopd.log`,相对进程工作目录(单元里的 `WorkingDirectory` 就是部署目录)。
+- 超过 `DESKTOPD_LOG_MAX_BYTES`(默认 32MiB)时改名为 `desktopd.log.1`,最多保留 `DESKTOPD_LOG_MAX_FILES`(默认 5)份。已有内容不会在打开时被截断。
+- 默认再复制一份到 stderr,所以 `journalctl -u maclaw-desktopd -f` 仍然看得到。panic 和打开日志文件之前的致命错误只在 journal 里。
+- 跟踪轮转用 `tail -F`(大写 F)。
+
+**已有 18.04 主机**(不要为此整脚本重部署):编辑 `/etc/systemd/system/maclaw-desktopd.service`,删掉 `StandardOutput=append:` 和 `StandardError=append:` 两行,然后
+
+```sh
+systemctl daemon-reload
+systemctl restart maclaw-desktopd
+```
+
+不要改成 `StandardOutput=file:`。`file:` 在 systemd 237 上能解析,但每次启动都会截断。删掉这两行后 systemd 用默认的 journal,文件由进程追加。旧的 `logs/desktopd.err.log` 不再更新;以前写到 stderr 的 `log` 行现在在 `logs/desktopd.log`。
+
 ## 排障
 
-- 服务日志:`<部署目录>/logs/desktopd.log` / `desktopd.err.log`。
+- 服务日志:`<部署目录>/logs/desktopd.log`(轮转 `.1` … `.5`),以及 `journalctl -u maclaw-desktopd`。
+- 空闲回收:日志里的 `reaping` 只是开始处理。确认停下的是 `reaped ... via=docker-stop`(或容器本来就停了的 `via=container-already-stopped`)。`reaper stop failed` 表示没停下来。有 bot 桌面正在用时,容器会故意留着,日志写明 `bot display is busy`。
 - 每用户桌面日志:`/desktops/<key>/desktop.log`(容器内)。
 - `systemctl status maclaw-desktopd`;手动起:`systemctl restart maclaw-desktopd`。
 - token 不生效:先确认 `.env` 的 `DESKTOPD_TOKEN` 与 Hub 配置一致;面板
@@ -275,4 +301,5 @@ Hub 侧配置(管理页"桌面服务"标签页或 `POST /api/admin/desktop-servi
   拉不下来(大陆主机访问 ghcr 慢)就在主机上构建(见上)或设 `DESKTOPD_IMAGE_SOURCE=off`。
   日志:`image maclaw-gui:2 is missing; pulling ...`、`ready from ...`、`failed after ...`。
 - 迁移日志:`desktopd: recreating ... (image changed from maclaw-gui:1 to maclaw-gui:2)`、
-  `... keeping it as ...:prev`,在 `desktopd.err.log`(log 包写 stderr)。
+  `... keeping it as ...:prev`,在 `logs/desktopd.log`(并复制到 journal)。
+- 出网上游超时或 502:先看 `logs/desktopd.log` 里的 `[desktopd-proxy] upstream errors` 汇总,或 `curl -H "Authorization: Bearer <key>" http://127.0.0.1:18081/v1/health` 的 `proxy` 计数。同一目标不会再每条失败都刷一行。

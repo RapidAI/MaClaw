@@ -386,6 +386,9 @@ install_supervisor() {
 configure_docker_proxy
 install_supervisor
 
+# desktopd appends to $DESKTOPD_DEPLOY_DIR/logs/desktopd.log itself.
+# systemd 237 (Ubuntu 18.04) cannot parse StandardOutput=append: and would
+# warn "Failed to parse output specifier" on every reload. file: truncates.
 cat > /etc/systemd/system/maclaw-desktopd.service << SERVICEEOF
 [Unit]
 Description=MaClaw Docker desktop service
@@ -400,8 +403,6 @@ EnvironmentFile=$DESKTOPD_DEPLOY_DIR/.env
 ExecStart=$DESKTOPD_DEPLOY_DIR/bin/desktopd
 Restart=always
 RestartSec=3
-StandardOutput=append:$DESKTOPD_DEPLOY_DIR/logs/desktopd.log
-StandardError=append:$DESKTOPD_DEPLOY_DIR/logs/desktopd.err.log
 
 [Install]
 WantedBy=multi-user.target
@@ -419,7 +420,10 @@ else
   set +a
   pkill -f "bin/desktopd" 2>/dev/null || true
   sleep 1
-  nohup ./bin/desktopd > ./logs/desktopd.log 2>&1 &
+  # The process appends to logs/desktopd.log. This redirect only keeps panics
+  # and lines printed before that file is open; DESKTOPD_LOG_STDERR=0 stops
+  # the process from copying every line here as well.
+  DESKTOPD_LOG_STDERR=0 nohup ./bin/desktopd >> ./logs/desktopd.stderr.log 2>&1 &
   echo "desktopd started (PID: $!)"
 fi
 

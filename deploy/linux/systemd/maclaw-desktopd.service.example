@@ -2,8 +2,15 @@
 # desktopd/remote_deploy.sh writes exactly this unit (with DESKTOPD_DEPLOY_DIR
 # in place of /data/soft/maclaw_desktopd); this copy is for review and manual
 # installs. .env holds DESKTOPD_TOKEN and the other DESKTOPD_* keys and is
-# never committed. systemd < 240 (Ubuntu 18.04 ships 237) ignores "append:"
-# and sends output to the journal: journalctl -u maclaw-desktopd.
+# never committed.
+#
+# Do not set StandardOutput=append: or StandardError=append:. Those specifiers
+# arrived in systemd 240. Ubuntu 18.04 ships systemd 237, which logs
+# "Failed to parse output specifier" on every daemon-reload and then leaves
+# stdout/stderr on the journal, so logs/desktopd.log stays empty.
+# StandardOutput=file: is not a substitute: file: truncates on each start.
+# desktopd appends to logs/desktopd.log itself (see DESKTOPD_LOG_FILE) and
+# mirrors the same lines to stderr, so journalctl -u maclaw-desktopd still works.
 [Unit]
 Description=MaClaw Docker desktop service
 After=network.target docker.service
@@ -17,8 +24,6 @@ EnvironmentFile=/data/soft/maclaw_desktopd/.env
 ExecStart=/data/soft/maclaw_desktopd/bin/desktopd
 Restart=always
 RestartSec=3
-StandardOutput=append:/data/soft/maclaw_desktopd/logs/desktopd.log
-StandardError=append:/data/soft/maclaw_desktopd/logs/desktopd.err.log
 
 [Install]
 WantedBy=multi-user.target

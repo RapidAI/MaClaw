@@ -14,6 +14,11 @@ import (
 )
 
 func main() {
+	// Open the rotating log before anything else so a bad env value is recorded
+	// in the file as well as on stderr. systemd 237 cannot do this for us.
+	if err := desktopd.ConfigureProcessLog(); err != nil {
+		log.Fatalf("[desktopd] log file: %v", err)
+	}
 	addr := strings.TrimSpace(os.Getenv("DESKTOPD_ADDR"))
 	if addr == "" {
 		addr = ":18081"
@@ -99,12 +104,21 @@ func main() {
 		DesktopProxyURL: desktopCanonical,
 	})
 	svc.Egress = egress
+	directSuffixes, err := desktopd.ParseDirectSuffixes(os.Getenv("DESKTOPD_PROXY_DIRECT"))
+	if err != nil {
+		log.Fatalf("[desktopd] %v", err)
+	}
+	if len(directSuffixes) > 0 {
+		log.Printf("[desktopd] proxy direct suffixes: %s", strings.Join(directSuffixes, ","))
+	}
+	desktopd.StartProxyErrorSummary(ctx)
 	if desktopBind != "" {
 		desktopProxy := desktopd.NewForwardProxy(desktopd.ProxyConfig{
-			Addr:      desktopBind,
-			Token:     token,
-			Anonymous: true,
-			Upstreams: egress,
+			Addr:           desktopBind,
+			Token:          token,
+			Anonymous:      true,
+			Upstreams:      egress,
+			DirectSuffixes: directSuffixes,
 		})
 		// A taken port is environmental, not a configuration error: keep the
 		// desktop API up and let desktops egress directly, with the failure
@@ -123,12 +137,13 @@ func main() {
 			proxyAddr = desktopd.DefaultForwardProxyAddr
 		}
 		proxy := desktopd.NewForwardProxy(desktopd.ProxyConfig{
-			Addr:      proxyAddr,
-			Token:     proxyFallback,
-			Keys:      proxyKeys,
-			Upstreams: egress,
-			TLSCert:   strings.TrimSpace(os.Getenv("DESKTOPD_PROXY_TLS_CERT")),
-			TLSKey:    strings.TrimSpace(os.Getenv("DESKTOPD_PROXY_TLS_KEY")),
+			Addr:           proxyAddr,
+			Token:          proxyFallback,
+			Keys:           proxyKeys,
+			Upstreams:      egress,
+			DirectSuffixes: directSuffixes,
+			TLSCert:        strings.TrimSpace(os.Getenv("DESKTOPD_PROXY_TLS_CERT")),
+			TLSKey:         strings.TrimSpace(os.Getenv("DESKTOPD_PROXY_TLS_KEY")),
 		})
 		// A taken port or missing token must not take the desktop API down:
 		// log loudly and keep serving.
