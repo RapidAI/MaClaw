@@ -661,19 +661,7 @@ func init() {
 }
 
 func (w *linuxFloatingWindow) petPNGBytesLocked() []byte {
-	sz := w.size
-	if sz < 56 {
-		sz = defaultPetSize
-	}
-	if frame := tryLoadPackFrame(w.petSkin, w.petVariant, w.petRuntimeState, sz, w.packFrameCache); frame != nil {
-		if b := encodeNRGBAToPNG(frame); len(b) > 0 {
-			return b
-		}
-	}
-	if len(floatingLogoPNGLinux) > 0 {
-		return floatingLogoPNGLinux
-	}
-	return nil
+	return desktopPetStillPNG(w.petSkin, w.petVariant, w.petRuntimeState, w.size, w.packFrameCache, floatingLogoPNGLinux)
 }
 
 func (w *linuxFloatingWindow) applyPetImageLocked() {

@@ -294,7 +294,7 @@ func extractInto(path string, format Format, root string, c *counters) error {
 	if err != nil {
 		return err
 	}
-	_, err = writeEntry(dst, reader, -1, c)
+	_, err = writeEntry(dst, reader, -1, 0, c)
 	return err
 }
 
@@ -361,7 +361,7 @@ func extractZIPFiles(files []*zip.File, root string, c *counters) error {
 		if err != nil {
 			return errorf(CodeCorruptArchive, "open zip entry: %v", err)
 		}
-		_, copyErr := writeEntry(dst, in, int64(f.UncompressedSize64), c)
+		_, copyErr := writeEntry(dst, in, int64(f.UncompressedSize64), f.Mode(), c)
 		closeErr := in.Close()
 		if copyErr != nil {
 			return copyErr
@@ -420,7 +420,7 @@ func extractTAR(tr *tar.Reader, root string, c *counters) error {
 			if err != nil {
 				return err
 			}
-			if _, err = writeEntry(dst, tr, h.Size, c); err != nil {
+			if _, err = writeEntry(dst, tr, h.Size, os.FileMode(h.Mode), c); err != nil {
 				return err
 			}
 		case tar.TypeSymlink:
@@ -518,7 +518,7 @@ func extractRAR(path, root string, c *counters) error {
 		if err != nil {
 			return err
 		}
-		if _, err := writeEntry(dst, rr, declared, c); err != nil {
+		if _, err := writeEntry(dst, rr, declared, header.Mode(), c); err != nil {
 			return err
 		}
 	}

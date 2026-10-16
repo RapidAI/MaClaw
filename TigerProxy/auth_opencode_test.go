@@ -301,23 +301,38 @@ func TestOpenCodeChatSessionFollowsConversation(t *testing.T) {
 }
 
 func TestOpenCodeUpstreamSendsOfficialClientIdentity(t *testing.T) {
-	var ua, session string
+	var ua, session, originator, raw string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ua = r.Header.Get("User-Agent")
 		session = r.Header.Get(corelib.OpenCodeSessionHeader)
+		originator = r.Header.Get("originator")
+		body, _ := io.ReadAll(r.Body)
+		raw = string(body)
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"id":"c","choices":[{"message":{"role":"assistant","content":"ok"}}]}`)
 	}))
 	defer srv.Close()
 	upstream := newOpenCodeUpstream()
 	upstream.client = srv.Client()
-	resp, err := upstream.DoChatCompletions(context.Background(), srv.URL+"/v1/chat/completions", "oc-test-key-123456", "opencode", []byte(`{"model":"big-pickle","messages":[{"role":"user","content":"hello"}]}`), "application/json", false)
+	payload := []byte(`{"model":"big-pickle","messages":[` +
+		`{"role":"system","content":"You are a coding agent running in the Codex CLI, a terminal-based coding assistant. Codex CLI is an open source project led by OpenAI. Keep going."},` +
+		`{"role":"user","content":"hello"}]}`)
+	resp, err := upstream.DoChatCompletions(context.Background(), srv.URL+"/v1/chat/completions", "oc-test-key-123456", "codex_cli_rs/0.130.0", payload, "application/json", false)
 	if err != nil {
 		t.Fatal(err)
 	}
 	_ = resp.Body.Close()
 	if ua != "opencode/"+corelib.OpenCodeClientVersion {
 		t.Fatalf("User-Agent = %q", ua)
+	}
+	if originator != "" {
+		t.Fatalf("originator = %q, want it removed", originator)
+	}
+	if strings.Contains(raw, "Codex CLI") {
+		t.Fatalf("Codex identity was forwarded: %s", raw)
+	}
+	if !strings.Contains(raw, "Keep going.") || !strings.Contains(raw, "hello") {
+		t.Fatalf("prompt was dropped: %s", raw)
 	}
 	if !regexp.MustCompile(`^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$`).MatchString(session) {
 		t.Fatalf("session = %q", session)

@@ -3,6 +3,8 @@ package guiapp
 import (
 	"strings"
 	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib"
 )
 
 type trayNotifRecord struct {
@@ -255,13 +257,49 @@ func TestTrayTaskLabelFromCommandUsesFirstLine(t *testing.T) {
 	}
 }
 
-func TestNotifyTaskResponseTraySilentWhileWindowVisible(t *testing.T) {
-	notifs, _, restore := stubTrayNotifyEnv(t, true)
+func TestNotifyTaskResponseTrayCompletionWhileWindowVisible(t *testing.T) {
+	notifs, flashes, restore := stubTrayNotifyEnv(t, true)
 	defer restore()
 	// ctx is nil, so the minimised fallback cannot fire either.
 	a := &App{}
 	a.notifyTaskResponseTray(&IMAgentResponse{Text: "done"})
+	if len(*notifs) != 1 || (*notifs)[0].title != "任务完成" || (*notifs)[0].msg != "done" {
+		t.Fatalf("expected a completion balloon while the window is visible, got %+v", *notifs)
+	}
+	*notifs = nil
+
+	a.notifyTaskResponseTray(&IMAgentResponse{
+		Text:       "done",
+		SessionKey: desktopUserID + `:\Users\me\.maclaw\data\tasks\项目是什么-1791813952406498200`,
+	})
+	if len(*notifs) != 1 || (*notifs)[0].title != "项目是什么任务完成了" || (*notifs)[0].msg != "done" {
+		t.Fatalf("expected a named-task balloon while the window is visible, got %+v", *notifs)
+	}
+	if *flashes != 0 {
+		t.Fatalf("completion should not flash, got %d", *flashes)
+	}
+
+	*notifs = nil
+	a.notifyTaskResponseTray(&IMAgentResponse{Error: "boom"})
 	if len(*notifs) != 0 {
-		t.Fatalf("expected no notification while window visible, got %+v", *notifs)
+		t.Fatalf("errors stay quiet while the window is visible, got %+v", *notifs)
+	}
+}
+
+func TestNotifyTaskResponseTrayCompletionSwitchOff(t *testing.T) {
+	notifs, _, restore := stubTrayNotifyEnv(t, false)
+	defer restore()
+	off := false
+	a := &App{}
+	a.configSnap.Store(&corelib.AppConfig{TrayTaskCompletionNotify: &off})
+
+	a.notifyTaskResponseTray(&IMAgentResponse{Text: "done"})
+	if len(*notifs) != 0 {
+		t.Fatalf("expected no completion balloon when the switch is off, got %+v", *notifs)
+	}
+
+	a.notifyTaskResponseTray(&IMAgentResponse{Error: "boom"})
+	if len(*notifs) != 1 || (*notifs)[0].title != "任务异常" {
+		t.Fatalf("errors still notify while away, got %+v", *notifs)
 	}
 }

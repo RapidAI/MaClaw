@@ -3,6 +3,7 @@ package guiapp
 import (
 	"bytes"
 	"context"
+	"errors"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -280,6 +281,460 @@ func TestInsertPaperFigureLinesUnderNumberedHeading(t *testing.T) {
 	}
 	if !strings.Contains(out, "公式。") {
 		t.Fatalf("other section moved:\n%s", out)
+	}
+}
+
+// macOS renders with Quartz before it goes looking for Homebrew. A native
+// success must return without treating a missing external engine as failure,
+// which is the "install poppler or mupdf" reply in the screenshot.
+func TestFileCompanionRenderPrefersNativePDFRenderer(t *testing.T) {
+	prev := fileCompanionNativePDFRender
+	t.Cleanup(func() { fileCompanionNativePDFRender = prev })
+	called := false
+	fileCompanionNativePDFRender = func(source, outPNG string, page, dpi int) error {
+		called = true
+		if source != "paper.pdf" || page != 5 || dpi != 140 {
+			t.Fatalf("native render source=%s page=%d dpi=%d", source, page, dpi)
+		}
+		return os.WriteFile(outPNG, bytes.Repeat([]byte("x"), paperFigureMinBytes+1), 0o644)
+	}
+	out := filepath.Join(t.TempDir(), "page.png")
+	if err := fileCompanionRenderPDFPagePNG(context.Background(), "paper.pdf", out, 5, 140); err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("native renderer was not used")
+	}
+	info, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() <= paperFigureMinBytes {
+		t.Fatalf("native render output size=%d", info.Size())
+	}
+}
+
+// Quartz failing is a render error. It must not collapse into errNoRasterEngine,
+// or the companion tells a Mac user to install poppler for a file Quartz rejected.
+func TestFileCompanionRenderFailureKeepsNativeError(t *testing.T) {
+	quartzErr := errors.New("quartz pdf render failed (3)")
+	got := fileCompanionRenderFailure(true, paperRasterEngine{}, quartzErr)
+	if !errors.Is(got, quartzErr) {
+		t.Fatalf("native failure = %v, want the quartz error", got)
+	}
+	if errors.Is(got, errNoRasterEngine) {
+		t.Fatal("native failure was graded as no raster engine")
+	}
+	if got := fileCompanionRenderFailure(false, paperRasterEngine{}, nil); !errors.Is(got, errNoRasterEngine) {
+		t.Fatalf("no engine at all = %v, want errNoRasterEngine", got)
+	}
+	toolErr := errors.New("pdftocairo failed")
+	if got := fileCompanionRenderFailure(false, paperRasterEngine{cairo: "/bin/pdftocairo"}, toolErr); !errors.Is(got, toolErr) {
+		t.Fatalf("external failure = %v, want the tool error", got)
+	}
+}
+
+func TestPaperRenderNativePagesFillsMissingFigures(t *testing.T) {
+	prev := fileCompanionNativePDFRender
+	t.Cleanup(func() { fileCompanionNativePDFRender = prev })
+	fileCompanionNativePDFRender = func(source, outPNG string, page, dpi int) error {
+		if dpi != paperFigureCLIDPI || page != 5 {
+			t.Fatalf("page=%d dpi=%d", page, dpi)
+		}
+		return os.WriteFile(outPNG, bytes.Repeat([]byte("x"), paperFigureMinBytes+1), 0o644)
+	}
+	dir := t.TempDir()
+	if err := paperRenderNativePages(context.Background(), "paper.pdf", dir, []int{5}); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(filepath.Join(dir, "p5-1.png"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Size() <= paperFigureMinBytes {
+		t.Fatalf("figure raster size=%d", info.Size())
+	}
+}
+
+func TestPaperPythonSkipsSystemStub(t *testing.T) {
+	if !paperPythonSkipsProbe("/usr/bin/python3") || !paperPythonSkipsProbe("/usr/bin/python") {
+		t.Fatal("Apple's python stub must not be executed")
+	}
+	if paperPythonSkipsProbe("/opt/homebrew/bin/python3") || paperPythonSkipsProbe("/usr/local/bin/python3") {
+		t.Fatal("a Homebrew python must stay eligible")
+	}
+}
+
+func TestPaperRenderFigurePagesReusesFreshRasters(t *testing.T) {
+	dir := t.TempDir()
+	source := filepath.Join(dir, "paper.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-1.4"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(source, past, past); err != nil {
+		t.Fatal(err)
+	}
+	png := filepath.Join(dir, "p5-1.png")
+	if err := os.WriteFile(png, bytes.Repeat([]byte("x"), paperFigureMinBytes+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, paperFigureSourceMarker), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prevRender := fileCompanionNativePDFRender
+	prevQuick := paperQuickPyMuPDF
+	t.Cleanup(func() {
+		fileCompanionNativePDFRender = prevRender
+		paperQuickPyMuPDF = prevQuick
+	})
+	fileCompanionNativePDFRender = func(string, string, int, int) error {
+		t.Fatal("fresh raster was drawn again")
+		return nil
+	}
+	paperQuickPyMuPDF = func(context.Context) string {
+		t.Fatal("fresh raster searched for pymupdf")
+		return ""
+	}
+	lines := paperRenderFigurePages(source, dir, []int{5}, "sess")
+	if len(lines) != 1 || !strings.Contains(lines[0], "p5-1.png") {
+		t.Fatalf("lines = %v", lines)
+	}
+	pages, err := os.ReadFile(filepath.Join(dir, paperFigurePagesMarker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(pages) != "5" {
+		t.Fatalf("pages = %q, want the fresh page recorded so the next turn skips the PDF", pages)
+	}
+}
+
+func TestPaperFigureCaptionPagesStopsAfterEnoughBodyFigures(t *testing.T) {
+	prev := paperExtractPageText
+	t.Cleanup(func() { paperExtractPageText = prev })
+	calls := 0
+	paperExtractPageText = func([]byte, int) (string, error) {
+		calls++
+		return "Figure 1: chart", nil
+	}
+	got := paperFigureCaptionPages([]byte("%PDF-1.4"))
+	if calls != paperFigureMaxCount {
+		t.Fatalf("extract calls = %d, want %d", calls, paperFigureMaxCount)
+	}
+	if len(got) != paperFigureMaxCount {
+		t.Fatalf("pages = %d, want %d", len(got), paperFigureMaxCount)
+	}
+}
+
+// The figures directory belongs to the session, not the document. A fresh
+// raster from the previous PDF must not be shown as this PDF's page.
+func TestPaperRenderFigurePagesRedrawsWhenSourceChanges(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "a.pdf")
+	second := filepath.Join(dir, "b.pdf")
+	for _, name := range []string{first, second} {
+		if err := os.WriteFile(name, []byte("%PDF-1.4"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(second, past, past); err != nil {
+		t.Fatal(err)
+	}
+	png := filepath.Join(dir, "p5-1.png")
+	if err := os.WriteFile(png, bytes.Repeat([]byte("x"), paperFigureMinBytes+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A page this request does not ask for still belongs to the previous PDF.
+	// Leaving it would show that document's page 7 the next time page 7 is asked.
+	other := filepath.Join(dir, "p7-1.png")
+	if err := os.WriteFile(other, bytes.Repeat([]byte("x"), paperFigureMinBytes+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, paperFigureSourceMarker), []byte(first), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, paperFigurePagesMarker), []byte("5,7"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prevRender := fileCompanionNativePDFRender
+	prevQuick := paperQuickPyMuPDF
+	t.Cleanup(func() {
+		fileCompanionNativePDFRender = prevRender
+		paperQuickPyMuPDF = prevQuick
+	})
+	drawn := 0
+	paperQuickPyMuPDF = func(context.Context) string { return "" }
+	fileCompanionNativePDFRender = func(source, outPNG string, page, dpi int) error {
+		drawn++
+		return os.WriteFile(outPNG, bytes.Repeat([]byte("y"), paperFigureMinBytes+1), 0o644)
+	}
+	lines := paperRenderFigurePages(second, dir, []int{5}, "sess")
+	if len(lines) != 1 {
+		t.Fatalf("lines = %v", lines)
+	}
+	if drawn != 1 {
+		t.Fatalf("draws = %d, want the new PDF rendered once", drawn)
+	}
+	recorded, err := os.ReadFile(filepath.Join(dir, paperFigureSourceMarker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(recorded) != second {
+		t.Fatalf("marker = %q, want %q", recorded, second)
+	}
+	if _, err := os.Stat(other); !os.IsNotExist(err) {
+		t.Fatal("page raster from the previous PDF is still in the session figures directory")
+	}
+	pages, err := os.ReadFile(filepath.Join(dir, paperFigurePagesMarker))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(pages) != "5" {
+		t.Fatalf("pages = %q, want only the page drawn from the new PDF", pages)
+	}
+}
+
+// A partial render of the new PDF must not keep the previous document's
+// marker. Otherwise the new page image is newer than the old PDF and the
+// next turn shows it as the old document.
+func TestPaperRenderFigurePagesPartialForeignRenderDropsOldMarker(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "a.pdf")
+	second := filepath.Join(dir, "b.pdf")
+	for _, name := range []string{first, second} {
+		if err := os.WriteFile(name, []byte("%PDF-1.4"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "p5-1.png"), bytes.Repeat([]byte("x"), paperFigureMinBytes+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, paperFigureSourceMarker), []byte(first), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, paperFigurePagesMarker), []byte("5"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prevRender := fileCompanionNativePDFRender
+	prevQuick := paperQuickPyMuPDF
+	prevCache := paperRasterCached
+	prevProbed := paperRasterProbedAt
+	t.Cleanup(func() {
+		fileCompanionNativePDFRender = prevRender
+		paperQuickPyMuPDF = prevQuick
+		paperRasterCached = prevCache
+		paperRasterProbedAt = prevProbed
+	})
+	paperRasterCached = paperRasterEngine{}
+	paperRasterProbedAt = time.Now()
+	paperQuickPyMuPDF = func(context.Context) string { return "" }
+	draws := 0
+	fileCompanionNativePDFRender = func(source, outPNG string, page, dpi int) error {
+		if page == 6 {
+			return errors.New("page failed")
+		}
+		draws++
+		return os.WriteFile(outPNG, bytes.Repeat([]byte("y"), paperFigureMinBytes+1), 0o644)
+	}
+	lines := paperRenderFigurePages(second, dir, []int{5, 6}, "sess")
+	if len(lines) != 1 || !strings.Contains(lines[0], "p5-1.png") {
+		t.Fatalf("lines = %v", lines)
+	}
+	recorded, err := os.ReadFile(filepath.Join(dir, paperFigureSourceMarker))
+	if err == nil && strings.TrimSpace(string(recorded)) == first {
+		t.Fatal("partial render kept the previous PDF as the source of the new page image")
+	}
+	if _, err := os.Stat(filepath.Join(dir, paperFigurePagesMarker)); !os.IsNotExist(err) {
+		t.Fatal("partial render kept the previous PDF's page list")
+	}
+	draws = 0
+	again := paperRenderFigurePages(first, dir, []int{5}, "sess")
+	if draws != 1 {
+		t.Fatalf("draws = %d, want the original PDF redrawn", draws)
+	}
+	if len(again) != 1 {
+		t.Fatalf("lines = %v", again)
+	}
+}
+
+func TestFileCompanionRasterizeReusesFreshFiguresWithoutReadingPDF(t *testing.T) {
+	root := t.TempDir()
+	source := filepath.Join(root, "paper.pdf")
+	if err := os.WriteFile(source, []byte("%PDF-1.4"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	past := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(source, past, past); err != nil {
+		t.Fatal(err)
+	}
+	dir := filepath.Join(root, "figures")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "p5-1.png"), bytes.Repeat([]byte("x"), paperFigureMinBytes+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, paperFigureSourceMarker), []byte(source), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, paperFigurePagesMarker), []byte("5"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	prev := paperReadFigureSource
+	t.Cleanup(func() { paperReadFigureSource = prev })
+	paperReadFigureSource = func(string) ([]byte, error) {
+		t.Fatal("fresh figures opened the PDF")
+		return nil, errors.New("opened")
+	}
+	lines := fileCompanionRasterizePaperFigures(source, root, "sess")
+	if len(lines) != 1 || !strings.Contains(lines[0], "p5-1.png") {
+		t.Fatalf("lines = %v", lines)
+	}
+}
+
+func TestFileCompanionRenderedPNGRejectsTinyFile(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "page.png")
+	if err := os.WriteFile(out, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := fileCompanionRenderedPNG(out); err == nil {
+		t.Fatal("tiny output was accepted as a page")
+	}
+	if _, err := os.Stat(out); !os.IsNotExist(err) {
+		t.Fatal("tiny output was left for the next engine")
+	}
+	if err := os.WriteFile(out, bytes.Repeat([]byte("y"), paperFigureMinBytes+1), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := fileCompanionRenderedPNG(out); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestPaperSearchPyMuPDFStopsWhenCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := paperSearchPyMuPDF(ctx, 3); got != "" {
+		t.Fatalf("cancelled search returned %q", got)
+	}
+}
+
+// A native fill is the whole result. Probing pymupdf afterward spends up to
+// paperPyMuPDFProbeBudget on a Mac that has already drawn the page.
+func TestPaperRenderFigurePagesSkipsExternalProbeWhenNativeFills(t *testing.T) {
+	prevRender := fileCompanionNativePDFRender
+	prevQuick := paperQuickPyMuPDF
+	paperRasterMu.Lock()
+	prevCache := paperRasterCached
+	prevProbed := paperRasterProbedAt
+	paperRasterCached = paperRasterEngine{}
+	paperRasterProbedAt = time.Time{}
+	paperRasterMu.Unlock()
+	t.Cleanup(func() {
+		fileCompanionNativePDFRender = prevRender
+		paperQuickPyMuPDF = prevQuick
+		paperRasterMu.Lock()
+		paperRasterCached = prevCache
+		paperRasterProbedAt = prevProbed
+		paperRasterMu.Unlock()
+	})
+
+	paperQuickPyMuPDF = func(context.Context) string { return "" }
+	fileCompanionNativePDFRender = func(source, outPNG string, page, dpi int) error {
+		return os.WriteFile(outPNG, bytes.Repeat([]byte("x"), paperFigureMinBytes+1), 0o644)
+	}
+	dir := t.TempDir()
+	lines := paperRenderFigurePages(filepath.Join(dir, "missing.pdf"), dir, []int{5}, "sess")
+	if len(lines) != 1 || !strings.Contains(lines[0], "p5-1.png") {
+		t.Fatalf("lines = %v", lines)
+	}
+	paperRasterMu.Lock()
+	probed := !paperRasterProbedAt.IsZero()
+	paperRasterMu.Unlock()
+	if probed {
+		t.Fatal("native fill still probed external pdf engines")
+	}
+}
+
+// A cached pymupdf path that cannot run must not block the page. Quartz (or
+// the test double) still draws it, and the long engine probe stays idle.
+func TestPaperRenderFigurePagesUsesNativeAfterQuickPyMuPDFMiss(t *testing.T) {
+	prevRender := fileCompanionNativePDFRender
+	prevQuick := paperQuickPyMuPDF
+	paperRasterMu.Lock()
+	prevCache := paperRasterCached
+	prevProbed := paperRasterProbedAt
+	paperRasterCached = paperRasterEngine{}
+	paperRasterProbedAt = time.Time{}
+	paperRasterMu.Unlock()
+	t.Cleanup(func() {
+		fileCompanionNativePDFRender = prevRender
+		paperQuickPyMuPDF = prevQuick
+		paperRasterMu.Lock()
+		paperRasterCached = prevCache
+		paperRasterProbedAt = prevProbed
+		paperRasterMu.Unlock()
+	})
+
+	drawn := 0
+	paperQuickPyMuPDF = func(context.Context) string { return filepath.Join(t.TempDir(), "missing-python") }
+	fileCompanionNativePDFRender = func(source, outPNG string, page, dpi int) error {
+		drawn++
+		if page != 5 {
+			t.Fatalf("page=%d", page)
+		}
+		return os.WriteFile(outPNG, bytes.Repeat([]byte("x"), paperFigureMinBytes+1), 0o644)
+	}
+	dir := t.TempDir()
+	lines := paperRenderFigurePages(filepath.Join(dir, "paper.pdf"), dir, []int{5}, "sess")
+	if len(lines) != 1 {
+		t.Fatalf("lines = %v", lines)
+	}
+	if drawn != 1 {
+		t.Fatalf("native draws = %d, want 1", drawn)
+	}
+	paperRasterMu.Lock()
+	probed := !paperRasterProbedAt.IsZero()
+	paperRasterMu.Unlock()
+	if probed {
+		t.Fatal("quick pymupdf miss still probed every external engine")
+	}
+}
+
+func TestPaperRenderNativePagesDropsFailedPages(t *testing.T) {
+	prev := fileCompanionNativePDFRender
+	t.Cleanup(func() { fileCompanionNativePDFRender = prev })
+	fileCompanionNativePDFRender = func(source, outPNG string, page, dpi int) error {
+		if err := os.WriteFile(outPNG, []byte("partial"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return errors.New("quartz pdf render failed (3)")
+	}
+	dir := t.TempDir()
+	if err := paperRenderNativePages(context.Background(), "paper.pdf", dir, []int{5}); err == nil {
+		t.Fatal("expected native failure")
+	}
+	if _, err := os.Stat(filepath.Join(dir, "p5-1.png")); !os.IsNotExist(err) {
+		t.Fatalf("failed page left a file: %v", err)
+	}
+}
+
+func TestPaperRenderNativePagesHonorsCancel(t *testing.T) {
+	prev := fileCompanionNativePDFRender
+	t.Cleanup(func() { fileCompanionNativePDFRender = prev })
+	called := false
+	fileCompanionNativePDFRender = func(source, outPNG string, page, dpi int) error {
+		called = true
+		return nil
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := paperRenderNativePages(ctx, "paper.pdf", t.TempDir(), []int{1}); err == nil {
+		t.Fatal("expected cancellation")
+	}
+	if called {
+		t.Fatal("renderer ran after cancel")
 	}
 }
 

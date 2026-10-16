@@ -4410,7 +4410,7 @@ func TestSyncInvitationCodesReplicatesTenantRoute(t *testing.T) {
 	syncer := &fakeSyncRecorder{}
 	svc.SetSyncRecorder(syncer)
 
-	if err := svc.SyncInvitationCodes(ctx, hub.ID, "secret", []string{"pnzpes758f"}, "vantagics"); err != nil {
+	if err := svc.SyncInvitationCodes(ctx, hub.ID, "secret", []string{"pnzpes758f"}, "vantagics", true); err != nil {
 		t.Fatalf("sync: %v", err)
 	}
 	got, err := st.InvitationCodeRoutes.GetByCode(ctx, "PNZPES758F")
@@ -4424,10 +4424,39 @@ func TestSyncInvitationCodesReplicatesTenantRoute(t *testing.T) {
 		t.Fatalf("ha append = %+v", syncer.appendedInvitationCodes)
 	}
 
-	if err := svc.SyncInvitationCodes(ctx, hub.ID, "secret", []string{"PNZPES758F"}, "vantagics"); err != nil {
+	if err := svc.SyncInvitationCodes(ctx, hub.ID, "secret", []string{"PNZPES758F"}, "vantagics", true); err != nil {
 		t.Fatalf("resync: %v", err)
 	}
 	if len(syncer.appendedInvitationCodes) != 1 {
 		t.Fatalf("unchanged route was replicated again: %+v", syncer.appendedInvitationCodes)
+	}
+
+	if err := svc.SyncInvitationCodes(ctx, hub.ID, "secret", []string{"PNZPES758F"}, "other_tenant", false); err != nil {
+		t.Fatalf("replica sync: %v", err)
+	}
+	if len(syncer.appendedInvitationCodes) != 1 {
+		t.Fatalf("replica write published a route: %+v", syncer.appendedInvitationCodes)
+	}
+	got, err = st.InvitationCodeRoutes.GetByCode(ctx, "PNZPES758F")
+	if err != nil || got == nil || got.TenantID != "other_tenant" {
+		t.Fatalf("replica route = %+v err=%v", got, err)
+	}
+
+	if err := svc.DeleteInvitationCodes(ctx, hub.ID, "secret", []string{"PNZPES758F"}, true, "User@Example.com"); err != nil {
+		t.Fatalf("mark used: %v", err)
+	}
+	if err := svc.SyncInvitationCodes(ctx, hub.ID, "secret", []string{"PNZPES758F"}, "vantagics", true); err != nil {
+		t.Fatalf("sync used code: %v", err)
+	}
+	got, err = st.InvitationCodeRoutes.GetByCode(ctx, "PNZPES758F")
+	if err != nil || got == nil || got.UsedByEmail != "user@example.com" || got.TenantID != "other_tenant" {
+		t.Fatalf("used route was reopened: %+v err=%v", got, err)
+	}
+
+	if err := svc.DeleteInvitationCodes(ctx, hub.ID, "secret", []string{"MISSINGCODE"}, true); err != nil {
+		t.Fatalf("delete missing: %v", err)
+	}
+	if len(syncer.deletedInvitationCodes) != 0 {
+		t.Fatalf("missing route was replicated: %+v", syncer.deletedInvitationCodes)
 	}
 }

@@ -6,6 +6,16 @@ import (
 	"time"
 )
 
+func TestInstalledMCPReuseCueDoesNotForceCall(t *testing.T) {
+	cue := semanticRenderedReuseCue("x:mcp:tengyun:work_log_query")
+	if strings.Contains(cue, "whenever it is listed") {
+		t.Fatalf("installed MCP tools must not be force-called: %q", cue)
+	}
+	if !strings.Contains(cue, "matches the request") {
+		t.Fatalf("cue = %q", cue)
+	}
+}
+
 func TestCatalogRendererUsesStableHostNameAndGovernedDescription(t *testing.T) {
 	registry := semanticRegistry(t)
 	snapshot := semanticSnapshot(t, registry, []ProviderSpec{

@@ -480,6 +480,13 @@ type HubInvitationCodeSyncRequest struct {
 	Codes       []string `json:"codes"`
 	TenantID    string   `json:"tenant_id"`
 	UsedByEmail string   `json:"used_by_email,omitempty"`
+	// Replicate is omitted by older hubs and then defaults to publishing the
+	// route. Current hubs set it on the first successful node only.
+	Replicate *bool `json:"replicate,omitempty"`
+}
+
+func invitationSyncReplicates(flag *bool) bool {
+	return flag == nil || *flag
 }
 
 func HubInvitationCodeSyncHandler(service *hubs.Service) http.HandlerFunc {
@@ -494,7 +501,7 @@ func HubInvitationCodeSyncHandler(service *hubs.Service) http.HandlerFunc {
 			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		if err := service.SyncInvitationCodes(r.Context(), hubID, req.HubSecret, req.Codes, req.TenantID); err != nil {
+		if err := service.SyncInvitationCodes(r.Context(), hubID, req.HubSecret, req.Codes, req.TenantID, invitationSyncReplicates(req.Replicate)); err != nil {
 			if errors.Is(err, hubs.ErrHubUnauthorized) {
 				writeError(w, http.StatusUnauthorized, "HUB_UNREGISTERED", "Hub is not registered")
 				return
@@ -518,7 +525,7 @@ func HubInvitationCodeDeleteHandler(service *hubs.Service) http.HandlerFunc {
 			writeJSONDecodeError(w, err, "INVALID_JSON", "Invalid request body")
 			return
 		}
-		if err := service.DeleteInvitationCodes(r.Context(), hubID, req.HubSecret, req.Codes, req.UsedByEmail); err != nil {
+		if err := service.DeleteInvitationCodes(r.Context(), hubID, req.HubSecret, req.Codes, invitationSyncReplicates(req.Replicate), req.UsedByEmail); err != nil {
 			if errors.Is(err, hubs.ErrHubUnauthorized) {
 				writeError(w, http.StatusUnauthorized, "HUB_UNREGISTERED", "Hub is not registered")
 				return

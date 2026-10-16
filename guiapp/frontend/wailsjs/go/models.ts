@@ -2370,6 +2370,7 @@ export namespace corelib {
 	    survey_enabled?: boolean;
 	    show_assistant_entry: boolean;
 	    show_hub_ranking?: boolean;
+	    tray_task_completion_notify?: boolean;
 	    pet_enabled?: boolean;
 	    pet_skin?: string;
 	    pet_size?: number;
@@ -2645,6 +2646,7 @@ export namespace corelib {
 	        this.survey_enabled = source["survey_enabled"];
 	        this.show_assistant_entry = source["show_assistant_entry"];
 	        this.show_hub_ranking = source["show_hub_ranking"];
+	        this.tray_task_completion_notify = source["tray_task_completion_notify"];
 	        this.pet_enabled = source["pet_enabled"];
 	        this.pet_skin = source["pet_skin"];
 	        this.pet_size = source["pet_size"];

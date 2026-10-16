@@ -18,7 +18,19 @@ var (
 	currentID             = uint32(0)
 	quitOnce              sync.Once
 	dClickTimeMinInterval int64 = 500
+	appUserModelID        atomic.Value
 )
+
+// SetAppUserModelID names this process for Windows tray toasts.
+// Windows 10 and later drop a balloon that has no explicit id.
+// Call it before Run. An empty id is ignored.
+func SetAppUserModelID(id string) {
+	if id == "" {
+		return
+	}
+	appUserModelID.Store(id)
+	registerAppUserModelID()
+}
 
 func init() {
 	// LockOSThread is needed for platforms where systray owns the event loop

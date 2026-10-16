@@ -336,6 +336,7 @@ type InvitationCodeRouteRepository interface {
 	DeleteByCode(ctx context.Context, code string) error
 	DeleteByHubID(ctx context.Context, hubID string) error
 	ListAll(ctx context.Context) ([]*InvitationCodeRoute, error)
+	ListByHubID(ctx context.Context, hubID string) ([]*InvitationCodeRoute, error)
 	MarkUsedByEmail(ctx context.Context, code string, email string) error
 }
 

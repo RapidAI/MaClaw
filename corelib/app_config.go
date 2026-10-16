@@ -373,6 +373,9 @@ type AppConfig struct {
 	SkillPurchaseMode string `json:"skill_purchase_mode,omitempty"` // "auto" (default) | "free_only"
 	// Gossip auto publish setting.
 	GossipAutoPublish bool `json:"gossip_auto_publish"`
+	// TrayTaskCompletionNotify shows a tray balloon when a task finishes.
+	// Nil means on, so configs saved before the switch keep the prompt.
+	TrayTaskCompletionNotify *bool `json:"tray_task_completion_notify,omitempty"`
 	// LLM trajectory logging.
 	LLMTrajectoryLogging bool `json:"llm_trajectory_logging,omitempty"`
 	// BugReportEnabled is a temporary diagnostic collection mode. When enabled,

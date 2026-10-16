@@ -14,6 +14,22 @@ export const GeneralSettingsOptionGrid = ({ effectiveConfig, lang, saveConfigPat
         <label className="general-settings-option">
             <input
                 type="checkbox"
+                aria-label={textForLang(lang, 'Task completion notice', '任务完成提示', '任務完成提示')}
+                checked={effectiveConfig?.tray_task_completion_notify !== false}
+                onChange={(e) => saveConfigPatch({ tray_task_completion_notify: e.target.checked })}
+            />
+            <span>{textForLang(lang, 'Task completion notice', '任务完成提示', '任務完成提示')}</span>
+            <small>{textForLang(
+                lang,
+                'Show a tray balloon when a task finishes.',
+                '任务完成时在托盘弹出气泡。',
+                '任務完成時在托盤彈出氣泡。',
+            )}</small>
+        </label>
+
+        <label className="general-settings-option">
+            <input
+                type="checkbox"
                 aria-label={textForLang(lang, 'Skill self-evolution', '技能自进化', '技能自進化')}
                 checked={effectiveConfig?.skill_evolution_enabled === true}
                 onChange={(e) => saveConfigPatch({ skill_evolution_enabled: e.target.checked })}

@@ -4,6 +4,7 @@
 package pyenv
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -133,21 +134,47 @@ func meetsMinVersion(major, minor int) bool {
 // checkPython 检查指定路径的 Python 是否可用且版本满足要求。
 // 设置 10 秒超时防止进程挂住。
 func checkPython(pythonPath string) (version string, ok bool) {
+	ver, err := inspectPython(pythonPath)
+	return ver, err == nil
+}
+
+// inspectPython 与 checkPython 使用同一探测，但保留执行失败原因，
+// 安装校验可以把权限、动态库或签名错误写进日志。
+func inspectPython(pythonPath string) (version string, err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	cmd := coretool.CommandContext(ctx, pythonPath, "--version")
-	out, err := cmd.Output()
-	if err != nil {
-		return "", false
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	if err := cmd.Run(); err != nil {
+		detail := strings.TrimSpace(stderr.String())
+		if detail == "" {
+			detail = strings.TrimSpace(stdout.String())
+		}
+		if detail == "" {
+			detail = err.Error()
+		}
+		return "", fmt.Errorf("%s", compactProbeError(detail))
 	}
-	major, minor, _, raw, parsed := parseVersion(string(out))
+	major, minor, _, raw, parsed := parseVersion(stdout.String())
 	if !parsed {
-		return "", false
+		return "", fmt.Errorf("无法解析版本输出 %q", compactProbeError(stdout.String()))
 	}
 	if !meetsMinVersion(major, minor) {
-		return raw, false
+		return raw, fmt.Errorf("版本 %s 低于 %d.%d", raw, MinPythonMajor, MinPythonMinor)
 	}
-	return raw, true
+	return raw, nil
+}
+
+func compactProbeError(s string) string {
+	s = strings.Join(strings.Fields(s), " ")
+	r := []rune(s)
+	const max = 180
+	if len(r) <= max {
+		return s
+	}
+	return string(r[:max]) + "..."
 }
 
 // Detect 检测当前系统的 Python 环境状态。
@@ -675,7 +702,11 @@ func extractZip(archivePath, destDir string) error {
 }
 
 func extractRuntimeArchive(archivePath, destDir string) error {
-	result := archiveutil.ExtractToDirectoryWithPolicy(archivePath, destDir, archiveutil.DefaultLimits(), archiveutil.ExtractionPolicy{AllowSymlinks: true})
+	// PreserveExecutable is required for the macOS/Linux CPython build. The
+	// default extractor writes every file as 0600; bin/python3 is only a
+	// symlink to python3.12, so the interpreter cannot be executed, startup
+	// verification fails, and the download is repeated on the next launch.
+	result := archiveutil.ExtractToDirectoryWithPolicy(archivePath, destDir, archiveutil.DefaultLimits(), archiveutil.ExtractionPolicy{AllowSymlinks: true, PreserveExecutable: true})
 	if result.OK {
 		return nil
 	}
@@ -791,10 +822,10 @@ func EnsureEnvironment(emit ProgressFunc) Status {
 		}
 		// 在替换当前安装前验证新运行时，避免损坏或不兼容归档清空已存在的
 		// Python 环境。后续的最终验证仍覆盖移动后的实际安装路径。
-		if _, ok := checkPython(pythonPathInInstallDir(extractedDir)); !ok {
+		if _, err := inspectPython(pythonPathInInstallDir(extractedDir)); err != nil {
 			os.RemoveAll(extractDir)
 			os.Remove(archivePath)
-			st.Error = "Python 解压后验证失败，请检查下载来源或重试"
+			st.Error = fmt.Sprintf("Python 解压后验证失败: %v", err)
 			return st
 		}
 		if err := replacePrivatePythonInstall(installDir, extractedDir); err != nil {
@@ -808,7 +839,8 @@ func EnsureEnvironment(emit ProgressFunc) Status {
 
 		// 验证安装
 		pp, _ := privatePythonPath()
-		if ver, ok := checkPython(pp); ok {
+		ver, probeErr := inspectPython(pp)
+		if probeErr == nil {
 			st.Available = true
 			st.PythonPath = pp
 			st.Version = ver
@@ -824,7 +856,7 @@ func EnsureEnvironment(emit ProgressFunc) Status {
 			}
 			emit("python", 100, message)
 		} else {
-			st.Error = "Python 安装后验证失败，请检查网络或手动安装"
+			st.Error = fmt.Sprintf("Python 安装后验证失败: %v", probeErr)
 			if err := rollbackPrivatePythonInstall(installDir); err != nil {
 				st.Error += fmt.Sprintf("；恢复旧安装失败: %v", err)
 			}

@@ -506,6 +506,22 @@ mypapers 上有一个**正在运行**的桌面容器 `9d26279f8038`（Up 21 小�
 
 备份（两台各一份）：`maclawsrv.bak-sync-20261016`、`maclaw-hub.bak-sync-20261016`、`desktopd.bak-sync-20261016`。
 
+#### 只补 desktopd（2026-10-16 17:10 CST）
+
+HEAD 走到 `dd5fd934`、`build_number` 是 `12392`。这时线上已经是两套来源混在一起：**他们的自动部署在 17:05 刚把 mypapers 的 maclawsrv 刷成 `12392`（commit `dd5fd934`，干净树）**、hub 刷成 `aeeedf6c…`，maclaw.top 的 hub 也是同一份；desktopd 两边都还是本节上面那份 `212f82f5…`。
+
+所以这一轮重编三件套后比对，只挑真正落后的换：**只有 desktopd 变了**（`212f82f5…` → `d90fa71a…`，desktopd 不注入版本变量，哈希变就是代码变）。maclawsrv 和 hub 没有覆盖他们刚发布的那份——两边同时发布会互相覆盖，谁的二进制落后就补谁，不要整批替换。
+
+| 项 | mypapers | maclaw.top |
+| --- | --- | --- |
+| desktopd | `d90fa71a2b802871381671e7ce044aba6abc1faeb4082ce4b869f12ad5d6922d`，PID 20200 | 同哈希，PID 471739 |
+| `/v1/health`（带 token） | 200 | 200 |
+| 桌面容器 | `af24af109248707f` 从 `Up 21 小时` 变成 `Up 33 小时`，连续运行没有被重启 | 3 个都是 Exited，ID 与状态前后一致 |
+
+备份（两台各一份）：`desktopd.bak-dd-20261016`。
+
+遗留差异（这一轮没有处理）：maclaw.top 的 maclawsrv 还是本节上一份 `20261016.sync`（`e4dd1968…`，`984114cc-dirty`），而 mypapers 已经是 `12392`（`207c9adf…`）。要不要拉齐由发布流程决定——两条线并行时，最好让同一条流程发完两台。
+
 ## 5. Hub 配置
 
 Hub 把 Docker 桌面服务存在 `system_settings` 表的 `desktop_service` 键(多租户为

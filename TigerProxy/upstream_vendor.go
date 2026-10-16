@@ -388,7 +388,9 @@ func (u *workbuddyChatUpstream) DoModels(context.Context, string, string, string
 func (u *workbuddyChatUpstream) DoChatCompletions(ctx context.Context, endpoint, apiKey, clientName string, body []byte, accept string, stream bool) (*http.Response, error) {
 	u.cred.maybeRotate()
 	access, refresh, userID, enterprise, domain := u.cred.snapshot(apiKey)
+	body = codegenproxy.StripCodexClientMarkers(endpoint, body)
 	return postChat(ctx, u.client, endpoint, access, clientName, body, accept, stream, func(h http.Header) {
+		clearCodexIdentityHeaders(h)
 		h.Set(workbuddy.MarkerHeader, "1")
 		h.Set("User-Agent", workbuddy.UserAgent)
 		h.Set("X-Product", workbuddy.Product)

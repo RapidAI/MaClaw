@@ -505,8 +505,9 @@ func (s *Service) LoadDeviceCredentialBackup(ctx context.Context, hubID, rawSecr
 }
 
 // SyncInvitationCodes registers invitation codes for routing to this hub.
-// Called by Hub when new codes are generated.
-func (s *Service) SyncInvitationCodes(ctx context.Context, hubID, hubSecret string, codes []string, tenantID string) error {
+// Called by Hub when new codes are generated. replicate publishes the change
+// to peer HubCenter nodes; replica writes only update this node.
+func (s *Service) SyncInvitationCodes(ctx context.Context, hubID, hubSecret string, codes []string, tenantID string, replicate bool) error {
 	if err := s.verifyHubSecret(ctx, hubID, hubSecret); err != nil {
 		return err
 	}
@@ -514,6 +515,8 @@ func (s *Service) SyncInvitationCodes(ctx context.Context, hubID, hubSecret stri
 		return nil
 	}
 	tenantID = normalizeHubSyncTenantID(tenantID)
+	hubID = strings.TrimSpace(hubID)
+	changed := false
 	for _, code := range codes {
 		code = strings.TrimSpace(strings.ToUpper(code))
 		if code == "" {
@@ -529,44 +532,51 @@ func (s *Service) SyncInvitationCodes(ctx context.Context, hubID, hubSecret stri
 		if existing != nil && strings.TrimSpace(existing.UsedByEmail) != "" {
 			continue
 		}
+		routeChanged := existing == nil ||
+			strings.TrimSpace(existing.HubID) != hubID ||
+			normalizeHubSyncTenantID(existing.TenantID) != tenantID
+		if !routeChanged {
+			continue
+		}
 		if err := s.invitationCodeRoutes.Upsert(ctx, code, hubID, tenantID); err != nil {
 			return fmt.Errorf("upsert invitation code route: %w", err)
 		}
-		changed := existing == nil ||
-			strings.TrimSpace(existing.HubID) != strings.TrimSpace(hubID) ||
-			normalizeHubSyncTenantID(existing.TenantID) != tenantID
-		if changed && s.sync != nil {
+		changed = true
+		if replicate && s.sync != nil {
 			createdAt := time.Now().UTC()
 			if existing != nil && !existing.CreatedAt.IsZero() {
 				createdAt = existing.CreatedAt
 			}
 			s.sync.AppendInvitationCodeRoute(ctx, &store.InvitationCodeRoute{
 				Code:      code,
-				HubID:     strings.TrimSpace(hubID),
+				HubID:     hubID,
 				TenantID:  tenantID,
 				CreatedAt: createdAt,
 			})
 		}
 	}
-	if s.refresher != nil {
+	if changed && s.refresher != nil {
 		s.refresher.Rebuild(ctx)
 	}
 	return nil
 }
 
 // DeleteInvitationCodes removes invitation code routes for this hub.
-// Called by Hub when codes are consumed/deleted.
-func (s *Service) DeleteInvitationCodes(ctx context.Context, hubID, hubSecret string, codes []string, usedByEmailOpt ...string) error {
+// Called by Hub when codes are consumed/deleted. replicate publishes the
+// change to peer HubCenter nodes; replica writes only update this node.
+func (s *Service) DeleteInvitationCodes(ctx context.Context, hubID, hubSecret string, codes []string, replicate bool, usedByEmailOpt ...string) error {
 	if err := s.verifyHubSecret(ctx, hubID, hubSecret); err != nil {
 		return err
 	}
 	if s.invitationCodeRoutes == nil {
 		return nil
 	}
+	hubID = strings.TrimSpace(hubID)
 	usedByEmail := ""
 	if len(usedByEmailOpt) > 0 {
 		usedByEmail = strings.TrimSpace(strings.ToLower(usedByEmailOpt[0]))
 	}
+	changed := false
 	for _, code := range codes {
 		code = strings.TrimSpace(strings.ToUpper(code))
 		if code == "" {
@@ -579,30 +589,44 @@ func (s *Service) DeleteInvitationCodes(ctx context.Context, hubID, hubSecret st
 			if err != nil {
 				return fmt.Errorf("load invitation code route: %w", err)
 			}
-			if err := s.invitationCodeRoutes.MarkUsedByEmail(ctx, code, usedByEmail); err != nil {
+			if existing != nil && strings.EqualFold(strings.TrimSpace(existing.UsedByEmail), usedByEmail) {
+				continue
+			}
+			item := &store.InvitationCodeRoute{Code: code, HubID: hubID, UsedByEmail: usedByEmail, CreatedAt: time.Now().UTC()}
+			if existing != nil {
+				if strings.TrimSpace(existing.HubID) != "" {
+					item.HubID = strings.TrimSpace(existing.HubID)
+				}
+				item.TenantID = normalizeHubSyncTenantID(existing.TenantID)
+				if !existing.CreatedAt.IsZero() {
+					item.CreatedAt = existing.CreatedAt
+				}
+			}
+			if err := s.invitationCodeRoutes.Save(ctx, item); err != nil {
 				return fmt.Errorf("mark invitation code used: %w", err)
 			}
-			if s.sync != nil {
-				item := &store.InvitationCodeRoute{Code: code, HubID: strings.TrimSpace(hubID), UsedByEmail: usedByEmail, CreatedAt: time.Now().UTC()}
-				if existing != nil {
-					item.HubID = strings.TrimSpace(existing.HubID)
-					item.TenantID = normalizeHubSyncTenantID(existing.TenantID)
-					if !existing.CreatedAt.IsZero() {
-						item.CreatedAt = existing.CreatedAt
-					}
-				}
+			changed = true
+			if replicate && s.sync != nil {
 				s.sync.AppendInvitationCodeRoute(ctx, item)
 			}
-		} else {
-			if err := s.invitationCodeRoutes.DeleteByCode(ctx, code); err != nil {
-				return fmt.Errorf("delete invitation code route: %w", err)
-			}
-			if s.sync != nil {
-				s.sync.DeleteInvitationCodeRoute(ctx, code)
-			}
+			continue
+		}
+		existing, err := s.invitationCodeRoutes.GetByCode(ctx, code)
+		if err != nil {
+			return fmt.Errorf("load invitation code route: %w", err)
+		}
+		if existing == nil {
+			continue
+		}
+		if err := s.invitationCodeRoutes.DeleteByCode(ctx, code); err != nil {
+			return fmt.Errorf("delete invitation code route: %w", err)
+		}
+		changed = true
+		if replicate && s.sync != nil {
+			s.sync.DeleteInvitationCodeRoute(ctx, code)
 		}
 	}
-	if s.refresher != nil {
+	if changed && s.refresher != nil {
 		s.refresher.Rebuild(ctx)
 	}
 	return nil
@@ -3121,12 +3145,8 @@ func (s *Service) DeleteHub(ctx context.Context, hubID string) error {
 	// Clean up invitation code routes associated with this hub.
 	var invitationRoutes []*store.InvitationCodeRoute
 	if s.invitationCodeRoutes != nil {
-		if items, err := s.invitationCodeRoutes.ListAll(ctx); err == nil {
-			for _, item := range items {
-				if item != nil && strings.TrimSpace(item.HubID) == hubID {
-					invitationRoutes = append(invitationRoutes, item)
-				}
-			}
+		if items, err := s.invitationCodeRoutes.ListByHubID(ctx, hubID); err == nil {
+			invitationRoutes = items
 		}
 		_ = s.invitationCodeRoutes.DeleteByHubID(ctx, hubID)
 	}

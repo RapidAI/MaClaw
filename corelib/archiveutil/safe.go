@@ -11,15 +11,16 @@ import (
 )
 
 type counters struct {
-	files, dirs   int
-	entries       int
-	written       int64
-	limits        Limits
-	allowSymlinks bool
-	filter        EntryFilter
-	root          string
-	inputBytes    int64
-	warnings      *[]string
+	files, dirs        int
+	entries            int
+	written            int64
+	limits             Limits
+	allowSymlinks      bool
+	preserveExecutable bool
+	filter             EntryFilter
+	root               string
+	inputBytes         int64
+	warnings           *[]string
 }
 
 // reserveEntry accounts for every materialized archive object, including a
@@ -150,7 +151,18 @@ func safeJoin(root, entry string) (string, error) {
 	return target, nil
 }
 
-func writeEntry(dst string, src io.Reader, declared int64, c *counters) (int64, error) {
+// filePermForExtraction is the mode applied to a trusted bundle entry.
+// Only entries with an execute bit change from the 0600 create mode, and
+// they collapse to 0755. ModePerm drops setuid, setgid, and sticky,
+// including the Unix 04000 bit. Group and other write are never kept.
+func filePermForExtraction(mode os.FileMode) os.FileMode {
+	if mode.Perm()&0o111 == 0 {
+		return 0o600
+	}
+	return 0o755
+}
+
+func writeEntry(dst string, src io.Reader, declared int64, mode os.FileMode, c *counters) (int64, error) {
 	if declared > c.limits.MaxFileBytes || (declared >= 0 && declared > c.limits.MaxTotalBytes-c.written) {
 		return 0, errorf(CodeLimitExceeded, "archive entry exceeds size limit")
 	}
@@ -163,6 +175,9 @@ func writeEntry(dst string, src io.Reader, declared int64, c *counters) (int64, 
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return 0, errorf(CodeIO, "create archive directory: %v", err)
 	}
+	// Create the file non-executable. A trusted bundle only becomes executable
+	// after its bytes are fully written, so a short write cannot leave a
+	// partial Mach-O that the process could run. Chmod below ignores umask.
 	out, err := os.OpenFile(dst, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
 	if err != nil {
 		return 0, errorf(CodeIO, "create extracted file: %v", err)
@@ -184,6 +199,13 @@ func writeEntry(dst string, src io.Reader, declared int64, c *counters) (int64, 
 	}
 	if n > limit || (declared >= 0 && n != declared) {
 		return n, errorf(CodeLimitExceeded, "archive entry exceeds size limit")
+	}
+	if c.preserveExecutable {
+		if perm := filePermForExtraction(mode); perm&0o111 != 0 {
+			if err := os.Chmod(dst, perm); err != nil {
+				return n, errorf(CodeIO, "set extracted file mode: %v", err)
+			}
+		}
 	}
 	c.files++
 	c.written += n

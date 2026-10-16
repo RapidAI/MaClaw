@@ -110,6 +110,26 @@ func TestLoginOAuthHintAndCancelledRefresh(t *testing.T) {
 	}
 }
 
+func TestRefreshKeepsMailboxScopes(t *testing.T) {
+	var scope string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = r.ParseForm()
+		scope = r.PostForm.Get("scope")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token": "fresh", "refresh_token": "next", "expires_in": 3600,
+		})
+	}))
+	defer srv.Close()
+	hotmail := oauthProviderTable[ProviderHotmail]
+	hotmail.TokenEndpoint = srv.URL
+	if _, err := refreshOAuthToken(context.Background(), hotmail, "old-refresh"); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(scope, "openid") || strings.Contains(scope, "profile") || !strings.Contains(scope, "IMAP.AccessAsUser.All") || !strings.Contains(scope, "SMTP.Send") {
+		t.Fatal(scope)
+	}
+}
+
 func TestEmailFromJWTSkipsPrefixedAccountName(t *testing.T) {
 	raw := testJWT(t, map[string]string{
 		"unique_name":        "live.com#me@hotmail.com",
@@ -119,8 +139,106 @@ func TestEmailFromJWTSkipsPrefixedAccountName(t *testing.T) {
 		t.Fatal(email)
 	}
 	prefixed := testJWT(t, map[string]string{"unique_name": "live.com#me@hotmail.com"})
-	if email := emailFromJWT(prefixed); email != "" {
+	if email := emailFromJWT(prefixed); email != "me@hotmail.com" {
 		t.Fatal(email)
+	}
+	named := testJWT(t, map[string]string{"unique_name": "Live User <me@hotmail.com>"})
+	if email := emailFromJWT(named); email != "me@hotmail.com" {
+		t.Fatal(email)
+	}
+}
+
+func TestLoginOAuthHotmailReadsIDToken(t *testing.T) {
+	idToken := testJWT(t, map[string]string{"unique_name": "live.com#me@hotmail.com"})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/token" {
+			t.Errorf("profile fetched for id token: %s", r.URL.Path)
+			http.NotFound(w, r)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "opaque-token",
+			"id_token":      idToken,
+			"refresh_token": "hotmail-refresh",
+			"expires_in":    3600,
+		})
+	}))
+	defer srv.Close()
+	hotmail := oauthProviderTable[ProviderHotmail]
+	hotmail.TokenEndpoint = srv.URL + "/token"
+	hotmail.ProfileURL = srv.URL + "/me"
+	hotmail.ProfileAlts = nil
+	useOAuthProvider(t, hotmail)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	grant, err := LoginOAuth(ctx, ProviderHotmail, func(authURL string) error {
+		return completeOAuthURL(t, authURL, "")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant.Email != "me@hotmail.com" {
+		t.Fatalf("grant=%+v", grant)
+	}
+}
+
+func TestHotmailProfileTriesNextHostAfterGone(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/gone" {
+			http.Error(w, "gone", http.StatusGone)
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer opaque-token" {
+			http.Error(w, "no", http.StatusUnauthorized)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"EmailAddress": "me@hotmail.com"})
+	}))
+	defer srv.Close()
+	email, err := oauthIdentity(context.Background(), oauthProvider{
+		ProfileURL:  srv.URL + "/gone",
+		ProfileAlts: []string{srv.URL + "/me"},
+	}, oauthToken{AccessToken: "opaque-token"})
+	if err != nil || email != "me@hotmail.com" {
+		t.Fatalf("email=%q err=%v", email, err)
+	}
+}
+
+func TestLoginOAuthHotmailUsesProfileWhenTokenHasNoEmail(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/token":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"access_token":  "opaque-token",
+				"refresh_token": "hotmail-refresh",
+				"expires_in":    3600,
+			})
+		case "/me":
+			if r.Header.Get("Authorization") != "Bearer opaque-token" {
+				http.Error(w, "no", http.StatusUnauthorized)
+				return
+			}
+			_ = json.NewEncoder(w).Encode(map[string]string{"EmailAddress": "me@hotmail.com"})
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	hotmail := oauthProviderTable[ProviderHotmail]
+	hotmail.TokenEndpoint = srv.URL + "/token"
+	hotmail.ProfileURL = srv.URL + "/me"
+	hotmail.ProfileAlts = nil
+	useOAuthProvider(t, hotmail)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	grant, err := LoginOAuth(ctx, ProviderHotmail, func(authURL string) error {
+		return completeOAuthURL(t, authURL, "")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if grant.Email != "me@hotmail.com" || grant.Provider != ProviderHotmail {
+		t.Fatalf("grant=%+v", grant)
 	}
 }
 
@@ -196,8 +314,9 @@ func TestLoginOAuthGmailAndHotmail(t *testing.T) {
 		if u.Query().Get("code_challenge") != "" {
 			t.Fatal("hotmail login sent pkce")
 		}
-		if !strings.Contains(u.Query().Get("scope"), "IMAP.AccessAsUser.All") || !strings.Contains(u.Query().Get("scope"), "SMTP.Send") {
-			t.Fatal(u.Query().Get("scope"))
+		scope := u.Query().Get("scope")
+		if !strings.Contains(scope, "IMAP.AccessAsUser.All") || !strings.Contains(scope, "SMTP.Send") || !strings.Contains(scope, "openid") {
+			t.Fatal(scope)
 		}
 		return completeOAuthURL(t, authURL, "")
 	})

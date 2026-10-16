@@ -6,7 +6,9 @@ import {
     classifyWebPreviewAddress,
     joinPreviewDisplay,
     localPreviewURL,
+    decodePreviewPath,
     splitPreviewLocation,
+    standaloneHTTPURL,
     webPreviewSandbox,
     type WebPreviewAddress,
 } from './webPreviewAddress';
@@ -30,11 +32,14 @@ type HistoryEntry = {
 export function WebPreviewBrowser({
     absPath,
     content,
+    url,
     theme,
     lang,
 }: {
     absPath?: string;
     content?: string;
+    /** http(s) page. Takes precedence over a local file. */
+    url?: string;
     theme: CodePreviewTheme;
     lang: string;
 }) {
@@ -45,17 +50,19 @@ export function WebPreviewBrowser({
     const historyRef = useRef<HistoryEntry[]>([]);
     const indexRef = useRef(0);
     const addressFocused = useRef(false);
-    const [address, setAddress] = useState('');
+    const navGenRef = useRef(0);
+    const initialRemote = standaloneHTTPURL(url) || standaloneHTTPURL(absPath);
+    const [address, setAddress] = useState(initialRemote);
     const [error, setError] = useState('');
     const [notice, setNotice] = useState('');
     const [histIndex, setHistIndex] = useState(0);
     const [histLength, setHistLength] = useState(0);
     const [reloadNonce, setReloadNonce] = useState(0);
-    const [frame, setFrame] = useState(() => ({
-        mode: 'srcdoc' as 'srcdoc' | 'url',
-        src: '',
-        srcDoc: String(content || ''),
-    }));
+    const [frame, setFrame] = useState(() => (
+        initialRemote
+            ? { mode: 'url' as const, src: initialRemote, srcDoc: '' }
+            : { mode: 'srcdoc' as const, src: '', srcDoc: String(content || '') }
+    ));
 
     const remoteHint = isZh
         ? '若页面空白，该网站可能禁止嵌入。可以在系统浏览器中打开。'
@@ -98,9 +105,24 @@ export function WebPreviewBrowser({
         showEntry(entry);
     };
 
+    useEffect(() => () => {
+        navGenRef.current += 1;
+    }, []);
+
     useEffect(() => {
-        const path = String(absPath || '').trim();
+        const remote = standaloneHTTPURL(url) || standaloneHTTPURL(absPath);
         const marker = { current: true };
+        if (remote) {
+            sessionRef.current = null;
+            const entry: HistoryEntry = { url: remote, label: remote, rel: remote, mode: 'remote' };
+            publishHistory([entry], 0);
+            showEntry(entry);
+            setError('');
+            return () => {
+                marker.current = false;
+            };
+        }
+        const path = String(absPath || '').trim();
         if (!path) {
             sessionRef.current = null;
             const provided = String(contentRef.current || '');
@@ -163,7 +185,7 @@ export function WebPreviewBrowser({
                 void Promise.resolve(CloseWebPreview(id)).catch(() => undefined);
             }
         };
-    }, [absPath, assetHint, isZh, remoteHint]);
+    }, [absPath, assetHint, isZh, remoteHint, url]);
 
     useEffect(() => {
         const onMessage = (event: MessageEvent) => {
@@ -171,20 +193,31 @@ export function WebPreviewBrowser({
             if (!session?.origin || event.origin !== session.origin) return;
             const data = event.data as { source?: string; type?: string; path?: string } | null;
             if (!data || data.source !== 'mc-web-preview' || data.type !== 'location') return;
-            const reported = String(data.path || '');
+            // The page has already navigated. Record that for the address bar
+            // and back button, but do not assign iframe src again — that reloads
+            // the document and drops the state the user is looking at.
+            const reported = decodePreviewPath(String(data.path || ''));
             const current = historyRef.current[indexRef.current];
-            if (current?.mode === 'local' && current.rel === reported) {
-                setAddressIfIdle(current.label);
+            if (current?.mode === 'local' && decodePreviewPath(current.rel) === reported) {
+                if (!addressFocused.current) setAddress(current.label);
                 return;
             }
             const { path, suffix } = splitPreviewLocation(reported);
             const filePath = path || session.entry_path || 'index.html';
-            pushEntry({
+            if (!filePath || filePath.split(/[\\/]/).includes('..')) return;
+            const entry: HistoryEntry = {
                 url: localPreviewURL(session.origin, session.token || '', filePath) + suffix,
                 label: joinPreviewDisplay(session.root || '', filePath) + suffix,
                 rel: filePath + suffix,
                 mode: 'local',
-            });
+            };
+            const entries = historyRef.current.slice(0, indexRef.current + 1);
+            entries.push(entry);
+            historyRef.current = entries;
+            indexRef.current = entries.length - 1;
+            setHistIndex(indexRef.current);
+            setHistLength(entries.length);
+            if (!addressFocused.current) setAddress(entry.label);
         };
         window.addEventListener('message', onMessage);
         return () => window.removeEventListener('message', onMessage);
@@ -196,6 +229,7 @@ export function WebPreviewBrowser({
     };
 
     const navigateAddress = async (raw: string) => {
+        const gen = ++navGenRef.current;
         const classified: WebPreviewAddress = classifyWebPreviewAddress(raw);
         if (classified.kind === 'invalid') {
             setError(isZh ? '无法打开这个地址' : 'This address cannot be opened');
@@ -211,8 +245,13 @@ export function WebPreviewBrowser({
             try {
                 info = await OpenWebPreview(classified.path) as WebPreviewInfo;
             } catch (err) {
+                if (gen !== navGenRef.current) return;
                 const message = err instanceof Error ? err.message : String(err || '');
                 setError(message || (isZh ? '无法打开这个文件' : 'This file cannot be opened'));
+                return;
+            }
+            if (gen !== navGenRef.current) {
+                if (info?.id && typeof CloseWebPreview === 'function') void CloseWebPreview(info.id);
                 return;
             }
             if (!info?.entry_url || !info.origin || !info.token || !info.root) {
@@ -252,6 +291,14 @@ export function WebPreviewBrowser({
         if (!entry) return;
         publishHistory(historyRef.current, next);
         showEntry(entry);
+        setReloadNonce((value) => value + 1);
+    };
+
+    const reloadPreview = () => {
+        const current = historyRef.current[indexRef.current];
+        if (current?.url && current.mode !== 'srcdoc') {
+            setFrame({ mode: 'url', src: current.url, srcDoc: '' });
+        }
         setReloadNonce((value) => value + 1);
     };
 
@@ -333,7 +380,7 @@ export function WebPreviewBrowser({
                     data-testid="web-preview-reload"
                     aria-label={isZh ? '刷新' : 'Reload'}
                     title={isZh ? '刷新' : 'Reload'}
-                    onClick={() => setReloadNonce((value) => value + 1)}
+                    onClick={reloadPreview}
                     style={buttonStyle(false)}
                 >
                     ↻

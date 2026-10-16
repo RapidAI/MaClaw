@@ -383,3 +383,29 @@ func TestWriteMailboxSecretBothSidesAbortsWhenReadFails(t *testing.T) {
 		t.Fatalf("store=%v", store)
 	}
 }
+
+func TestPutMailboxKeyringSplitsLongSecret(t *testing.T) {
+	store := installFakeMailboxKeyring(t)
+	id := "mblong"
+	secret := strings.Repeat("a", 5000)
+	if err := writeMailboxSecretBothSides(id, secret); err != nil {
+		t.Fatal(err)
+	}
+	inItem, err := mailbox.KeyringItem(id, mailbox.SideInbound)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := getMailboxKeyring(mailbox.KeyringService, inItem)
+	if err != nil || got != secret {
+		t.Fatalf("len=%d err=%v", len(got), err)
+	}
+	prefix := mailbox.KeyringService + "\x00"
+	if !strings.HasPrefix(store[prefix+inItem], "maclaw-oauth-chunks:") {
+		t.Fatalf("header=%q", store[prefix+inItem])
+	}
+	for key, value := range store {
+		if len(value) > mailboxKeyringChunkLimit {
+			t.Fatalf("key %s len %d", key, len(value))
+		}
+	}
+}

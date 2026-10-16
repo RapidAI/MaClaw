@@ -9,6 +9,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -184,6 +185,80 @@ func TestTrustedTarSymlinkPolicyCannotBecomeFileParent(t *testing.T) {
 	got := ExtractToDirectoryWithPolicy(tarPath, filepath.Join(root, "out"), Limits{}, ExtractionPolicy{AllowSymlinks: true})
 	if got.OK || got.Code != CodeUnsafeEntry {
 		t.Fatalf("link-parent policy result = %+v", got)
+	}
+}
+
+func TestFilePermForExtractionStripsPrivilegedBits(t *testing.T) {
+	cases := []struct {
+		mode os.FileMode
+		want os.FileMode
+	}{
+		{0, 0o600},
+		{0o600, 0o600},
+		{0o664, 0o600},
+		{0o775, 0o755},
+		{0o4755, 0o755},
+		{os.ModeSetuid | os.ModeSetgid | os.ModeSticky | 0o755, 0o755},
+	}
+	for _, tc := range cases {
+		if got := filePermForExtraction(tc.mode); got != tc.want {
+			t.Fatalf("filePermForExtraction(%o) = %o, want %o", tc.mode, got, tc.want)
+		}
+	}
+}
+
+func TestDefaultExtractionDropsExecutableBit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not persist Unix executable bits")
+	}
+	root := t.TempDir()
+	archivePath := filepath.Join(root, "exec.tar")
+	writeTarFixture(t, archivePath, []tar.Header{{Name: "python/bin/python3.12", Mode: 0o775, Size: 3, Typeflag: tar.TypeReg}}, []string{"bin"})
+	destination := filepath.Join(root, "out")
+	got := ExtractToDirectory(archivePath, destination, Limits{})
+	if !got.OK {
+		t.Fatalf("ExtractToDirectory() = %+v", got)
+	}
+	info, err := os.Stat(filepath.Join(destination, "python", "bin", "python3.12"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode().Perm()&0o111 != 0 {
+		t.Fatalf("default extraction mode = %o, want non-executable", info.Mode().Perm())
+	}
+}
+
+func TestTrustedExtractionPreservesExecutableBit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not persist Unix executable bits")
+	}
+	root := t.TempDir()
+	archivePath := filepath.Join(root, "exec.tar")
+	writeTarFixture(t, archivePath, []tar.Header{
+		{Name: "python/bin/python3.12", Mode: 0o775, Size: 3, Typeflag: tar.TypeReg},
+		{Name: "python/lib/stdlib.py", Mode: 0o664, Size: 4, Typeflag: tar.TypeReg},
+		{Name: "python/lib/private.pth", Mode: 0o600, Size: 4, Typeflag: tar.TypeReg},
+	}, []string{"bin", "data", "priv"})
+	destination := filepath.Join(root, "out")
+	got := ExtractToDirectoryWithPolicy(archivePath, destination, Limits{}, ExtractionPolicy{PreserveExecutable: true})
+	if !got.OK {
+		t.Fatalf("ExtractToDirectoryWithPolicy() = %+v", got)
+	}
+	for _, tc := range []struct {
+		path string
+		mode os.FileMode
+	}{
+		{"python/bin/python3.12", 0o755},
+		{"python/lib/stdlib.py", 0o600},
+		{"python/lib/private.pth", 0o600},
+	} {
+		info, err := os.Stat(filepath.Join(destination, filepath.FromSlash(tc.path)))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if info.Mode().Perm() != tc.mode {
+			t.Fatalf("%s mode = %o, want %o", tc.path, info.Mode().Perm(), tc.mode)
+		}
 	}
 }
 

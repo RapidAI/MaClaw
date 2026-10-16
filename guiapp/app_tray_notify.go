@@ -15,9 +15,10 @@ import (
 // tasks/<slug>-<id> directory, including when the session is a subdirectory.
 // The reply stays in the body. A turn that is still asking, recording, or
 // waiting for the person is not called complete.
-// It only fires while the main window is hidden or minimised, so users
-// actively working in the window are not disturbed. User-initiated
-// cancellations are skipped.
+// Completion follows the general-settings switch and shows even while the
+// main window is open. A named task uses "xx任务完成了" as the title; a reply
+// with no task name keeps the reply text. Other notices still wait until the
+// window is hidden or minimised. User-initiated cancellations are skipped.
 // It must never panic: callers treat a panic in this emit path as a task
 // failure and would surface a bogus error response.
 func (a *App) notifyTaskResponseTray(resp *IMAgentResponse) {
@@ -26,12 +27,19 @@ func (a *App) notifyTaskResponseTray(resp *IMAgentResponse) {
 			log.Printf("[tray-notify] panic suppressed: %v", r)
 		}
 	}()
-	if resp == nil || ShowNotification == nil || !a.shouldTrayNotify() {
+	if resp == nil || ShowNotification == nil {
 		return
 	}
 	source := canonicalIMResponseSourceKind(resp.ResponseSource)
 	if source == imResponseSourceCancel {
 		// User-initiated cancellation; the user already knows.
+		return
+	}
+	if trayResponseIsCompletion(resp) {
+		if !a.trayTaskCompletionNotifyEnabled() {
+			return
+		}
+	} else if !a.shouldTrayNotify() {
 		return
 	}
 	body := truncateRunes(strings.TrimSpace(resp.Text), 200)
@@ -87,6 +95,30 @@ func (a *App) notifyTaskResponseTray(resp *IMAgentResponse) {
 		}
 		ShowNotification(title, msg, 1)
 	}
+}
+
+// trayResponseIsCompletion is a finished turn, not an error or a pause for the person.
+func trayResponseIsCompletion(resp *IMAgentResponse) bool {
+	if resp == nil || canonicalIMResponseSourceKind(resp.ResponseSource) == imResponseSourceCancel {
+		return false
+	}
+	if strings.TrimSpace(resp.Error) != "" || trayResponseWaitsForReply(resp) || trayResponseNeedsConfirm(resp) {
+		return false
+	}
+	return true
+}
+
+// trayTaskCompletionNotifyEnabled is the general-settings switch.
+// A missing value stays on.
+func (a *App) trayTaskCompletionNotifyEnabled() bool {
+	if a == nil {
+		return true
+	}
+	cfg := a.PeekConfig()
+	if cfg == nil || cfg.TrayTaskCompletionNotify == nil {
+		return true
+	}
+	return *cfg.TrayTaskCompletionNotify
 }
 
 // trayResponseWaitsForReply is a turn that stopped to ask this person something.

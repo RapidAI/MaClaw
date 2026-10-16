@@ -8646,6 +8646,12 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				return corelib.AppConfig{}, err
 			}
 			cfg.ShowHubRanking = &v
+		case "tray_task_completion_notify":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.TrayTaskCompletionNotify = &v
 		case "llm_trajectory_logging":
 			v, err := boolField(key, value)
 			if err != nil {

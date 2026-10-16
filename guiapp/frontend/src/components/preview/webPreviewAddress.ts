@@ -1,3 +1,5 @@
+import { fileExtFromName } from './filePreviewKind';
+
 /**
  * Address-bar classification for the assistant web preview.
  * Remote pages stay http(s). Local files stay inside the preview directory.
@@ -53,7 +55,7 @@ export function localPreviewURL(origin: string, token: string, relPath: string):
     const base = String(origin || '').replace(/\/+$/, '');
     const parts = String(relPath || '')
         .split(/[\\/]/)
-        .filter((part) => part && part !== '.')
+        .filter((part) => part && part !== '.' && part !== '..')
         .map((part) => encodeURIComponent(part));
     const suffix = parts.length > 0 ? parts.join('/') : 'index.html';
     return `${base}/web-preview/v1/${token}/${suffix}`;
@@ -64,6 +66,93 @@ export function splitPreviewLocation(relWithQuery: string): { path: string; suff
     const mark = value.search(/[?#]/);
     if (mark < 0) return { path: value, suffix: '' };
     return { path: value.slice(0, mark), suffix: value.slice(mark) };
+}
+
+/** A single http(s) address. Bare hosts and page text stay empty. */
+export function standaloneHTTPURL(raw: string | undefined | null): string {
+    const text = String(raw || '').trim();
+    if (!text || /\s/.test(text) || !/^https?:\/\//i.test(text)) return '';
+    const classified = classifyWebPreviewAddress(text);
+    return classified.kind === 'remote' ? classified.url : '';
+}
+
+export type WebPreviewFileTarget =
+    | { kind: 'remote'; url: string }
+    | { kind: 'file'; format: 'html' | 'svg'; path: string };
+
+function webPreviewFormat(name: string, language?: string): 'html' | 'svg' | null {
+    const ext = fileExtFromName(name);
+    if (ext === '.html' || ext === '.htm' || ext === '.xhtml') return 'html';
+    if (ext === '.svg') return 'svg';
+    const lang = String(language || '').trim().toLowerCase();
+    if (lang === 'html' || lang === 'xhtml') return 'html';
+    if (lang === 'svg') return 'svg';
+    return null;
+}
+
+function isAbsolutePreviewPath(path: string): boolean {
+    return /^[a-zA-Z]:[\\/]/.test(path) || path.startsWith('\\\\') || path.startsWith('/');
+}
+
+/**
+ * HTML pages, SVG images, and http(s) URLs open in the web preview.
+ * Anything else stays a source or image view.
+ */
+export function webPreviewTargetFromFile(file: {
+    fileName?: string;
+    filePath?: string;
+    absPath?: string;
+    content?: string;
+    language?: string;
+} | null | undefined): WebPreviewFileTarget | null {
+    if (!file) return null;
+    for (const candidate of [file.absPath, file.filePath, file.fileName]) {
+        const remote = standaloneHTTPURL(candidate);
+        if (remote) return { kind: 'remote', url: remote };
+    }
+    const named = [file.absPath, file.filePath, file.fileName].map((value) => String(value || '').trim()).find(Boolean) || '';
+    const format = webPreviewFormat(named, file.language);
+    if (format) {
+        const path = [file.absPath, file.filePath]
+            .map((value) => String(value || '').trim())
+            .find((value) => value && !standaloneHTTPURL(value) && isAbsolutePreviewPath(value)) || '';
+        return { kind: 'file', format, path };
+    }
+    const contentURL = standaloneHTTPURL(file.content);
+    if (contentURL) return { kind: 'remote', url: contentURL };
+    return null;
+}
+
+/**
+ * A new agent write of a page the user should see rendered.
+ * Reads stay quiet so looking at source is not yanked back to the browser.
+ * The key changes when that write is delivered again.
+ */
+export function agentWebPreviewRequestKey(file: {
+    fileName?: string;
+    filePath?: string;
+    absPath?: string;
+    content?: string;
+    language?: string;
+    opType?: string;
+    forceOpen?: boolean;
+    updatedAt?: number;
+} | null | undefined): string {
+    if (!file || !webPreviewTargetFromFile(file)) return '';
+    const requested = file.opType === 'create' || file.opType === 'modify' || file.forceOpen === true;
+    if (!requested) return '';
+    const id = file.filePath || file.absPath || file.fileName || '';
+    return `${id}:${file.updatedAt || 0}:${String(file.content || '').length}`;
+}
+
+/** A path reported by the framed page. Invalid escapes stay as sent. */
+export function decodePreviewPath(value: string): string {
+    const text = String(value || '');
+    try {
+        return decodeURIComponent(text);
+    } catch {
+        return text;
+    }
 }
 
 export function joinPreviewDisplay(root: string, rel: string): string {

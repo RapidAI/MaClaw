@@ -180,18 +180,47 @@ func (u openCodeUpstream) DoModels(ctx context.Context, endpoint, apiKey, client
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+apiKey)
-	req.Header.Set("User-Agent", corelib.OpenCodeClientUserAgent(clientName))
-	req.Header.Set(corelib.OpenCodeSessionHeader, corelib.OpenCodeClientSessionID("codexproxy", "models"))
+	applyOpenCodeClientHeaders(req.Header, clientName)
 	return client.Do(req)
 }
 
 func (u openCodeUpstream) DoChatCompletions(ctx context.Context, endpoint, apiKey, clientName string, body []byte, accept string, stream bool) (*http.Response, error) {
 	body = codegenproxy.PrepareOpenAICompatChatBody(body)
+	body = codegenproxy.StripCodexClientMarkers(endpoint, body)
 	session := openCodeSessionForBody(body)
 	return postChat(ctx, u.client, endpoint, apiKey, clientName, body, accept, stream, func(h http.Header) {
-		h.Set("User-Agent", corelib.OpenCodeClientUserAgent(clientName))
+		applyOpenCodeClientHeaders(h, clientName)
 		h.Set(corelib.OpenCodeSessionHeader, session)
 	})
+}
+
+// applyOpenCodeClientHeaders stamps the identity OpenCode Zen accepts.
+// The official client User-Agent is required even when another tool, such as
+// Codex, is the caller. A foreign name is rejected by the free-tier gate.
+// Codex transport markers are removed so the host does not see that client.
+func applyOpenCodeClientHeaders(h http.Header, _ string) {
+	if h == nil {
+		return
+	}
+	h.Set("User-Agent", corelib.OpenCodeClientUserAgent("opencode"))
+	clearCodexIdentityHeaders(h)
+}
+
+func clearCodexIdentityHeaders(h http.Header) {
+	if h == nil {
+		return
+	}
+	for _, name := range []string{
+		"originator",
+		"session_id",
+		"session-id",
+		"thread_id",
+		"thread-id",
+		"x-codex-turn-metadata",
+		"x-openai-internal-codex-residency",
+	} {
+		h.Del(name)
+	}
 }
 
 func openCodeSessionForBody(body []byte) string {

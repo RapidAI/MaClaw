@@ -5,7 +5,31 @@ package systray
 import (
 	"strings"
 	"testing"
+	"unsafe"
 )
+
+func TestNotifyIconDataMatchesWindows64Layout(t *testing.T) {
+	if unsafe.Sizeof(uintptr(0)) != 8 {
+		t.Skip("layout constants are for 64-bit")
+	}
+	var nid notifyIconData
+	if unsafe.Sizeof(nid) != 976 {
+		t.Fatalf("sizeof = %d, want 976", unsafe.Sizeof(nid))
+	}
+	if unsafe.Offsetof(nid.Info) != 304 || unsafe.Offsetof(nid.InfoFlags) != 948 {
+		t.Fatalf("Info=%d InfoFlags=%d", unsafe.Offsetof(nid.Info), unsafe.Offsetof(nid.InfoFlags))
+	}
+	if notifyIconV2Size(&nid) != 952 {
+		t.Fatalf("v2 size = %d, want 952", notifyIconV2Size(&nid))
+	}
+}
+
+func TestNotifyIconDataTimeoutIsAUnion(t *testing.T) {
+	var nid notifyIconData
+	if unsafe.Offsetof(nid.InfoTitle) != unsafe.Offsetof(nid.Timeout)+4 {
+		t.Fatalf("InfoTitle offset %d, Timeout offset %d", unsafe.Offsetof(nid.InfoTitle), unsafe.Offsetof(nid.Timeout))
+	}
+}
 
 func TestCopyNULTerminatedUTF16FitsAndClearsTheTail(t *testing.T) {
 	var dst [8]uint16

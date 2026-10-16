@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agentservice"
 	"github.com/RapidAI/CodeClaw/corelib/intent"
@@ -414,6 +415,169 @@ func TestContractOnlyGraftRefusesToRelaxAMutationWithoutAWriter(t *testing.T) {
 	got = semanticNeedsWithContractOnlyGraft(read, []tool.ProviderSpec{readOnlyTool}, nil, newIMSemanticCapabilityRegistry())
 	if len(got) != 2 || got[0].Required {
 		t.Fatalf("a read served by a reader must relax, got %#v", got)
+	}
+}
+
+// TestContractOnlyGraftRelaxesAReadOntoAnUnannotatedTool is the production
+// failure: a query MCP is installed and healthy, its tools are not named
+// work_log_query, and the vendor did not set readOnlyHint. The tool is
+// published as external_effect under information.lookup. That effect is the
+// receipt boundary, not a reason to tell the user the catalog does not cover
+// the request.
+func TestContractOnlyGraftRelaxesAReadOntoAnUnannotatedTool(t *testing.T) {
+	installed := unannotatedLookupProvider("query_worklog", "tengyun", nil)
+	needs := []tool.CapabilityNeed{{
+		ID: "need:record.read.worklog:6d6f8a6a31c1", Capability: tool.CapabilityRecordReadWorklog,
+		Polarity: tool.NeedRequire, Required: true,
+	}}
+	got := semanticNeedsWithContractOnlyGraft(needs, []tool.ProviderSpec{installed}, nil, newIMSemanticCapabilityRegistry())
+	if len(got) != 2 || got[0].Required {
+		t.Fatalf("an unannotated installed tool must relax a read, got %#v", got)
+	}
+	if got[1].Capability != agentservice.CapabilityInformationLookup {
+		t.Fatalf("without an exact capability the fallback stays the open family, got %v", got[1].Capability)
+	}
+}
+
+// TestContractOnlyGraftExposesEachInstalledTool: several tools on one server
+// share information.lookup. Selecting one by binding order calls an arbitrary
+// sibling. Each exact capability must be demanded so the model can call the
+// tool whose name matches the request.
+func TestContractOnlyGraftExposesEachInstalledTool(t *testing.T) {
+	registry := newIMSemanticCapabilityRegistry()
+	query := unannotatedLookupProvider("work_log_query", "tengyun", []tool.CapabilityID{
+		agentservice.AutoMCPCapabilityIDForBinding("tengyun", "work_log_query"),
+	})
+	other := unannotatedLookupProvider("list_projects", "tengyun", []tool.CapabilityID{
+		agentservice.AutoMCPCapabilityIDForBinding("tengyun", "list_projects"),
+	})
+	if err := agentservice.EnsureExternalCapabilityVocabulary(registry, []tool.CapabilityID{
+		agentservice.AutoMCPCapabilityIDForBinding("tengyun", "work_log_query"),
+		agentservice.AutoMCPCapabilityIDForBinding("tengyun", "list_projects"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	needs := []tool.CapabilityNeed{{
+		ID: "need:record.read.worklog:6d6f8a6a31c1", Capability: tool.CapabilityRecordReadWorklog,
+		Polarity: tool.NeedRequire, Required: true,
+	}}
+	got := semanticNeedsWithContractOnlyGraft(needs, []tool.ProviderSpec{query, other}, nil, registry)
+	if len(got) != 3 || got[0].Required {
+		t.Fatalf("each installed tool must be offered and the sealed need relaxed, got %#v", got)
+	}
+	seen := map[tool.CapabilityID]bool{}
+	for _, need := range got[1:] {
+		if need.Capability == agentservice.CapabilityInformationLookup {
+			t.Fatal("exact capabilities must replace the single shared lookup winner")
+		}
+		if need.Required {
+			t.Fatalf("installed tool need must be optional, got %#v", need)
+		}
+		seen[need.Capability] = true
+	}
+	for _, id := range []tool.CapabilityID{
+		agentservice.AutoMCPCapabilityIDForBinding("tengyun", "work_log_query"),
+		agentservice.AutoMCPCapabilityIDForBinding("tengyun", "list_projects"),
+	} {
+		if !seen[id] {
+			t.Fatalf("missing exact need %s in %#v", id, got)
+		}
+	}
+}
+
+// TestInstalledUnannotatedToolsPlanWithoutCatalogRefusal is the turn the user
+// saw die as "当前能力目录未覆盖这项请求". After the graft, the planner must
+// select the installed tools and record no unmet need.
+func TestInstalledUnannotatedToolsPlanWithoutCatalogRefusal(t *testing.T) {
+	registry := newIMSemanticCapabilityRegistry()
+	queryID := agentservice.AutoMCPCapabilityIDForBinding("tengyun", "work_log_query")
+	listID := agentservice.AutoMCPCapabilityIDForBinding("tengyun", "list_projects")
+	if err := agentservice.EnsureExternalCapabilityVocabulary(registry, []tool.CapabilityID{queryID, listID}); err != nil {
+		t.Fatal(err)
+	}
+	query := unannotatedLookupProvider("work_log_query", "tengyun", []tool.CapabilityID{queryID})
+	other := unannotatedLookupProvider("list_projects", "tengyun", []tool.CapabilityID{listID})
+	catalog := tool.NewToolCatalog(registry)
+	snapshot, err := catalog.PublishWithCoverage([]tool.ProviderSpec{query, other}, tool.CatalogCoverage{
+		State: tool.CatalogCoverageComplete,
+		Families: []tool.CatalogCoverageFamily{
+			{Kind: "mcp", State: tool.CatalogCoverageComplete},
+		},
+	}, time.Now().UTC())
+	if err != nil {
+		t.Fatal(err)
+	}
+	needs := semanticNeedsWithContractOnlyGraft([]tool.CapabilityNeed{{
+		ID: "need:record.read.worklog:6d6f8a6a31c1", Capability: tool.CapabilityRecordReadWorklog,
+		Polarity: tool.NeedRequire, Required: true,
+	}}, []tool.ProviderSpec{query, other}, nil, registry)
+	plan, err := tool.NewToolPlanner(registry).Plan(tool.RouteRequest{
+		RootTaskID: "r", SessionID: "s", TurnID: "t", ChannelScope: "desktop",
+		Snapshot: snapshot, Needs: needs,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(plan.Unmet) != 0 {
+		t.Fatalf("installed tools must not be a catalog miss, unmet=%#v", plan.Unmet)
+	}
+	selected := map[string]bool{}
+	for _, selection := range plan.Selections {
+		selected[selection.Provider.ImplementationID] = true
+	}
+	if !selected["work_log_query"] || !selected["list_projects"] {
+		t.Fatalf("selections = %#v", plan.Selections)
+	}
+}
+
+// TestContractOnlyGraftHonorsANamedServer keeps a sibling server off the
+// surface when the user named one that can do the job.
+func TestContractOnlyGraftHonorsANamedServer(t *testing.T) {
+	registry := newIMSemanticCapabilityRegistry()
+	namedID := agentservice.AutoMCPCapabilityIDForBinding("tengyun", "work_log_query")
+	otherID := agentservice.AutoMCPCapabilityIDForBinding("other", "search_docs")
+	if err := agentservice.EnsureExternalCapabilityVocabulary(registry, []tool.CapabilityID{namedID, otherID}); err != nil {
+		t.Fatal(err)
+	}
+	named := unannotatedLookupProvider("work_log_query", "tengyun", []tool.CapabilityID{namedID})
+	sibling := unannotatedLookupProvider("search_docs", "other", []tool.CapabilityID{otherID})
+	pins := []tool.ProviderPin{{
+		Capability: agentservice.CapabilityInformationLookup, Kind: "mcp", ProviderID: "tengyun",
+	}}
+	got := semanticNeedsWithContractOnlyGraft([]tool.CapabilityNeed{{
+		ID: "need:record.read.worklog:abc", Capability: tool.CapabilityRecordReadWorklog,
+		Polarity: tool.NeedRequire, Required: true,
+	}}, []tool.ProviderSpec{named, sibling}, pins, registry)
+	if len(got) != 2 || got[1].Capability != namedID {
+		t.Fatalf("named server must be the only fallback, got %#v", got)
+	}
+}
+
+func unannotatedLookupProvider(toolName, serverID string, exact []tool.CapabilityID) tool.ProviderSpec {
+	provides := []tool.CapabilityProvision{{
+		Capability: agentservice.CapabilityInformationLookup,
+		Qualifiers: map[string]string{agentservice.QualifierInformationScope: agentservice.InformationScopeReference},
+		Quality:    1,
+	}}
+	for _, id := range exact {
+		provides = append(provides, tool.CapabilityProvision{Capability: id, Quality: 1})
+	}
+	auth, err := tool.NewParameterAuthorization(map[string]interface{}{
+		"type": "object", "properties": map[string]interface{}{}, "additionalProperties": false,
+	})
+	if err != nil {
+		panic(err)
+	}
+	return tool.ProviderSpec{
+		AdapterName: toolName + "@" + serverID,
+		Binding: tool.ProviderBinding{
+			Kind: "mcp", ProviderID: serverID, ImplementationID: toolName,
+			SchemaDigest: tool.SchemaDigest([]byte(serverID + "/" + toolName)),
+		},
+		ParameterAuthorization: auth,
+		Provides:               provides,
+		Effects:                []tool.EffectClass{tool.EffectExternalEffect},
+		Ready:                  true,
 	}
 }
 

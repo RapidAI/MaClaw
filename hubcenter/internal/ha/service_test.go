@@ -97,6 +97,19 @@ func (m *memInvitationCodeRoutes) ListAll(context.Context) ([]*store.InvitationC
 	return out, nil
 }
 
+func (m *memInvitationCodeRoutes) ListByHubID(_ context.Context, hubID string) ([]*store.InvitationCodeRoute, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []*store.InvitationCodeRoute
+	for _, item := range m.items {
+		if item != nil && item.HubID == hubID {
+			copied := *item
+			out = append(out, &copied)
+		}
+	}
+	return out, nil
+}
+
 func (m *memInvitationCodeRoutes) MarkUsedByEmail(ctx context.Context, code, email string) error {
 	item, err := m.GetByCode(ctx, code)
 	if err != nil || item == nil {
@@ -137,6 +150,31 @@ func TestApplyInvitationCodeRouteOpKeepsTenant(t *testing.T) {
 	}
 	if got != nil {
 		t.Fatalf("deleted route still present: %+v", got)
+	}
+}
+
+func TestApplyInvitationCodeRouteOpKeepsUsedEmail(t *testing.T) {
+	repo := &memInvitationCodeRoutes{}
+	svc := NewService("hc-1", "hc-1", "https://hc-1.example.com", "secret", nil)
+	svc.invitationRoutes = repo
+	if err := svc.applyInvitationCodeRouteOp(context.Background(), &store.HASyncOp{
+		OpType:      OpUpsert,
+		PayloadJSON: `{"code":"PNZPES758F","hub_id":"hub-1","tenant_id":"vantagics","used_by_email":"user@example.com"}`,
+	}); err != nil {
+		t.Fatalf("apply used: %v", err)
+	}
+	if err := svc.applyInvitationCodeRouteOp(context.Background(), &store.HASyncOp{
+		OpType:      OpUpsert,
+		PayloadJSON: `{"code":"PNZPES758F","hub_id":"other-hub","tenant_id":"other_tenant"}`,
+	}); err != nil {
+		t.Fatalf("apply stale unused: %v", err)
+	}
+	got, err := repo.GetByCode(context.Background(), "PNZPES758F")
+	if err != nil {
+		t.Fatalf("get route: %v", err)
+	}
+	if got == nil || got.UsedByEmail != "user@example.com" || got.TenantID != "vantagics" {
+		t.Fatalf("used route = %+v", got)
 	}
 }
 

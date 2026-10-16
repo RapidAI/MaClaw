@@ -83,8 +83,13 @@ var webPreviewBridgeJS = []byte(`(function(){
 })();`)
 
 // OpenWebPreview serves the directory that contains absPath on 127.0.0.1.
-// Only HTML documents can be the entry page. Relative assets in that directory load with it.
+// HTML and SVG can be the entry page. Relative assets in that directory load with it.
+// http(s) pages are loaded by the preview frame itself and are not served here.
 func (a *App) OpenWebPreview(absPath string) (*WebPreviewInfo, error) {
+	lowered := strings.ToLower(strings.TrimSpace(absPath))
+	if strings.HasPrefix(lowered, "http://") || strings.HasPrefix(lowered, "https://") {
+		return nil, fmt.Errorf("网络地址请直接在预览中打开")
+	}
 	cleaned, err := a.normalizeOpenPathForApp(absPath)
 	if err != nil {
 		return nil, fmt.Errorf("文件路径无效")
@@ -110,7 +115,7 @@ func (a *App) OpenWebPreview(absPath string) (*WebPreviewInfo, error) {
 		root = cleaned
 	} else {
 		if !isWebPreviewDocument(cleaned) {
-			return nil, fmt.Errorf("只能预览 HTML 页面")
+			return nil, fmt.Errorf("只能预览 HTML 或 SVG")
 		}
 		root = filepath.Dir(cleaned)
 		entry = filepath.Base(cleaned)
@@ -160,13 +165,17 @@ func (a *App) CloseWebPreview(id string) {
 	webPreviewMu.Unlock()
 }
 
-func isWebPreviewDocument(name string) bool {
+func isWebPreviewHTML(name string) bool {
 	switch strings.ToLower(filepath.Ext(name)) {
 	case ".html", ".htm", ".xhtml":
 		return true
 	default:
 		return false
 	}
+}
+
+func isWebPreviewDocument(name string) bool {
+	return isWebPreviewHTML(name) || strings.EqualFold(filepath.Ext(name), ".svg")
 }
 
 func ensureWebPreviewServer() (string, error) {
@@ -216,6 +225,11 @@ func issueWebPreviewSession(root string) string {
 				oldest = id
 				break
 			}
+			// A page still on screen keeps its session. Only unused ones
+			// make room; a live preview must not 404 to admit another.
+			if sess.refs > 0 {
+				continue
+			}
 			if oldest == "" || sess.lastUsed.Before(oldestUsed) {
 				oldest = id
 				oldestUsed = sess.lastUsed
@@ -232,7 +246,7 @@ func issueWebPreviewSession(root string) string {
 
 func evictIdleWebPreviewSessions(now time.Time) {
 	for id, sess := range webPreviewSessions {
-		if sess == nil || now.Sub(sess.lastUsed) > webPreviewIdleTTL {
+		if sess == nil || (sess.refs <= 0 && now.Sub(sess.lastUsed) > webPreviewIdleTTL) {
 			delete(webPreviewSessions, id)
 		}
 	}
@@ -250,10 +264,13 @@ func lookupWebPreviewRoot(token string) (string, bool) {
 	webPreviewMu.Lock()
 	defer webPreviewMu.Unlock()
 	sess, ok := webPreviewSessions[token]
-	if !ok || sess == nil || now.Sub(sess.lastUsed) > webPreviewIdleTTL {
-		if ok {
-			delete(webPreviewSessions, token)
-		}
+	if !ok || sess == nil {
+		return "", false
+	}
+	// A mounted preview keeps its session. Idle expiry is only for one the
+	// assistant has already closed, so a page left on screen does not 404.
+	if sess.refs <= 0 && now.Sub(sess.lastUsed) > webPreviewIdleTTL {
+		delete(webPreviewSessions, token)
 		return "", false
 	}
 	sess.lastUsed = now
@@ -296,7 +313,7 @@ func handleWebPreviewHTTP(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	if isWebPreviewDocument(resolved) && info.Size() <= webPreviewInjectLimit {
+	if isWebPreviewHTML(resolved) && info.Size() <= webPreviewInjectLimit {
 		body, readErr := os.ReadFile(resolved)
 		if readErr != nil {
 			http.NotFound(w, r)
@@ -307,7 +324,8 @@ func handleWebPreviewHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Header().Set("Cache-Control", "no-store")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
-		http.ServeContent(w, r, info.Name(), info.ModTime(), bytes.NewReader(body))
+		// Zero modtime: a rewrite in the same second must not come back as 304.
+		http.ServeContent(w, r, info.Name(), time.Time{}, bytes.NewReader(body))
 		return
 	}
 	file, openErr := os.Open(resolved)
@@ -321,7 +339,7 @@ func handleWebPreviewHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	http.ServeContent(w, r, info.Name(), info.ModTime(), file)
+	http.ServeContent(w, r, info.Name(), time.Time{}, file)
 }
 
 func serveWebPreviewBridge(w http.ResponseWriter, r *http.Request) {

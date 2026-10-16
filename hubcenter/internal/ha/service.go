@@ -3070,6 +3070,17 @@ func (s *Service) applyInvitationCodeRouteOp(ctx context.Context, op *store.HASy
 			return err
 		}
 		normalizeRoutingTenantIDs(&item)
+		if item.UsedByEmail == "" {
+			existing, err := s.invitationRoutes.GetByCode(ctx, item.Code)
+			if err != nil {
+				return err
+			}
+			// A stale unused upsert must not reopen a consumed route or move it
+			// to another hub/tenant. The local sync path drops these entirely.
+			if existing != nil && strings.TrimSpace(existing.UsedByEmail) != "" {
+				return nil
+			}
+		}
 		return s.invitationRoutes.Save(ctx, &item)
 	case OpDelete:
 		var payload struct {

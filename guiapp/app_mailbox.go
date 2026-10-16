@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strconv"
 	"strings"
 	"time"
 
@@ -108,7 +109,7 @@ func (a *App) MailboxAccountSetSecret(id, side, secret string) error {
 	if strings.TrimSpace(secret) == "" {
 		return errors.New(mailbox.MsgNoSecret)
 	}
-	if err := mailboxKeyringSet(mailbox.KeyringService, item, secret); err != nil {
+	if err := putMailboxKeyring(mailbox.KeyringService, item, secret); err != nil {
 		return errors.New(mailbox.MsgKeyringLong)
 	}
 	return nil
@@ -158,7 +159,7 @@ func (a *App) MailboxAccountDelete(id string) error {
 	}
 	for _, side := range []string{mailbox.SideInbound, mailbox.SideOutbound} {
 		if item, err := mailbox.KeyringItem(removed.ID, side); err == nil {
-			_ = mailboxKeyringDelete(mailbox.KeyringService, item)
+			_ = deleteMailboxKeyring(mailbox.KeyringService, item)
 		}
 	}
 	return nil
@@ -391,7 +392,7 @@ func (a *App) mailboxSecret(ctx context.Context, ref string) (string, error) {
 	if err != nil {
 		return "", mailbox.ErrKeyring
 	}
-	secret, err := mailboxKeyringGet(mailbox.KeyringService, item)
+	secret, err := getMailboxKeyring(mailbox.KeyringService, item)
 	if err != nil {
 		if mailboxSecretMissing(err) {
 			return "", errors.New("not found")
@@ -438,7 +439,7 @@ func writeMailboxSecretBothSides(id, secret string) error {
 			return err
 		}
 		entry := prior{item: item}
-		value, err := mailboxKeyringGet(mailbox.KeyringService, item)
+		value, err := getMailboxKeyring(mailbox.KeyringService, item)
 		if err != nil && !mailboxSecretMissing(err) {
 			return errors.New(mailbox.MsgKeyringLong)
 		}
@@ -449,13 +450,13 @@ func writeMailboxSecretBothSides(id, secret string) error {
 		prev = append(prev, entry)
 	}
 	for i, entry := range prev {
-		if err := mailboxKeyringSet(mailbox.KeyringService, entry.item, secret); err != nil {
+		if err := putMailboxKeyring(mailbox.KeyringService, entry.item, secret); err != nil {
 			for _, undone := range prev[:i] {
 				if undone.stored {
-					_ = mailboxKeyringSet(mailbox.KeyringService, undone.item, undone.value)
+					_ = putMailboxKeyring(mailbox.KeyringService, undone.item, undone.value)
 					continue
 				}
-				_ = mailboxKeyringDelete(mailbox.KeyringService, undone.item)
+				_ = deleteMailboxKeyring(mailbox.KeyringService, undone.item)
 			}
 			return errors.New(mailbox.MsgKeyringLong)
 		}
@@ -482,8 +483,89 @@ func (a *App) mailboxHasSecret(id, side string) bool {
 	if err != nil {
 		return false
 	}
-	secret, err := mailboxKeyringGet(mailbox.KeyringService, item)
+	secret, err := getMailboxKeyring(mailbox.KeyringService, item)
 	return err == nil && strings.TrimSpace(secret) != ""
+}
+
+// Windows Credential Manager rejects a secret larger than 2560 bytes.
+// Microsoft access and refresh tokens together often exceed that, so a long
+// value is stored in numbered pieces and the original item only holds the count.
+const (
+	mailboxKeyringChunkLimit = 2400
+	mailboxKeyringChunkMax   = 16
+	mailboxKeyringChunkMark  = "maclaw-oauth-chunks:"
+)
+
+func putMailboxKeyring(service, item, secret string) error {
+	if len(secret) <= mailboxKeyringChunkLimit {
+		if err := mailboxKeyringSet(service, item, secret); err != nil {
+			return err
+		}
+		deleteMailboxKeyringChunks(service, item, 1, mailboxKeyringChunkMax)
+		return nil
+	}
+	n := (len(secret) + mailboxKeyringChunkLimit - 1) / mailboxKeyringChunkLimit
+	if n > mailboxKeyringChunkMax {
+		return errors.New(mailbox.MsgKeyringLong)
+	}
+	for i := 0; i < n; i++ {
+		end := (i + 1) * mailboxKeyringChunkLimit
+		if end > len(secret) {
+			end = len(secret)
+		}
+		if err := mailboxKeyringSet(service, item+"#"+strconv.Itoa(i+1), secret[i*mailboxKeyringChunkLimit:end]); err != nil {
+			return err
+		}
+	}
+	if err := mailboxKeyringSet(service, item, mailboxKeyringChunkMark+strconv.Itoa(n)); err != nil {
+		return err
+	}
+	deleteMailboxKeyringChunks(service, item, n+1, mailboxKeyringChunkMax)
+	return nil
+}
+
+func getMailboxKeyring(service, item string) (string, error) {
+	secret, err := mailboxKeyringGet(service, item)
+	if err != nil {
+		return "", err
+	}
+	n, ok := mailboxChunkCount(secret)
+	if !ok {
+		return secret, nil
+	}
+	var b strings.Builder
+	for i := 1; i <= n; i++ {
+		part, err := mailboxKeyringGet(service, item+"#"+strconv.Itoa(i))
+		if err != nil {
+			return "", err
+		}
+		b.WriteString(part)
+	}
+	return b.String(), nil
+}
+
+func deleteMailboxKeyring(service, item string) error {
+	err := mailboxKeyringDelete(service, item)
+	deleteMailboxKeyringChunks(service, item, 1, mailboxKeyringChunkMax)
+	return err
+}
+
+func deleteMailboxKeyringChunks(service, item string, from, to int) {
+	for i := from; i <= to; i++ {
+		_ = mailboxKeyringDelete(service, item+"#"+strconv.Itoa(i))
+	}
+}
+
+func mailboxChunkCount(secret string) (int, bool) {
+	raw, ok := strings.CutPrefix(secret, mailboxKeyringChunkMark)
+	if !ok || raw == "" || strings.Contains(raw, "#") {
+		return 0, false
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil || n < 1 || n > mailboxKeyringChunkMax {
+		return 0, false
+	}
+	return n, true
 }
 
 func blankEndpoint(ep *mailbox.Endpoint) *mailbox.Endpoint {

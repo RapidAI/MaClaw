@@ -1543,20 +1543,25 @@ func semanticNeedsWithDynamicLookupForProviders(needs []tool.CapabilityNeed, pro
 //     turn. "Ready" excludes a tool whose latest observation finished negative:
 //     a down tool must not suppress the graft, because the graft's whole job is
 //     to reach whatever installed implementation can still answer.
-//  3. Only to information.lookup — the reviewed family whose entire meaning is
-//     "call whatever tool was installed", published per observed tool under
-//     TrustTierUnreviewed and an effect envelope narrowed from that tool's own
-//     vendor annotations.
-//  4. Never over an explicit user pin. If the user named an implementation and
-//     it cannot serve them, substituting another is a different answer than the
-//     one they asked for.
+//  3. Only through an installed information.lookup tool — the reviewed family
+//     whose meaning is "call whatever tool was installed". Each observed tool
+//     is published under TrustTierUnreviewed. Its effect class is the
+//     execution boundary, not a reachability veto: an unannotated tool is
+//     external_effect and still answers a read, and the call keeps that
+//     effect so it settles through the receipt boundary instead of running
+//     as a silent read. A read-only tool still cannot carry a write.
+//  4. Never over an explicit user pin. If the user named a server and that
+//     server's tools cannot do the job, another server is not substituted.
 //
-// The added need is Required:false, and the original unservable need is relaxed
-// to optional in the same pass. Installing nothing still fails cleanly and
-// observably (the graft target must itself be installed), and a real reviewed
-// provider keeps its higher quality rank and never reaches this path at all.
-// A required need that no installed tool can serve still fails the turn — this
-// routes around a missing *reviewed binding*, never around missing capability.
+// The original unservable need is relaxed to optional in the same pass.
+// Installing nothing still fails cleanly. A reviewed provider of the exact
+// capability keeps its binding and never reaches this path.
+//
+// When every carrying tool has its exact x:mcp:<server>:<tool> capability,
+// each tool becomes its own optional need. Quality ranking one shared
+// information.lookup winner would call an arbitrary sibling and the model
+// could not pick the tool that matches the request. Tools without an exact
+// capability still share one information.lookup fallback.
 func semanticNeedsWithContractOnlyGraft(needs []tool.CapabilityNeed, providers []tool.ProviderSpec, pins []tool.ProviderPin, registry *tool.CapabilityRegistry) []tool.CapabilityNeed {
 	if len(needs) == 0 || len(providers) == 0 {
 		return needs
@@ -1579,28 +1584,17 @@ func semanticNeedsWithContractOnlyGraft(needs []tool.CapabilityNeed, providers [
 	if !graftTargetPublished {
 		return needs
 	}
-	// The effect each installed lookup tool can actually carry. Relaxing an
-	// obligation is only honest when the replacement can perform it: a required
-	// write served only by read-only tools would otherwise let the turn proceed
-	// and silently not write — the user is told nothing, and for a system of
-	// record (a timesheet) the missing write is invisible. Reads are the
-	// incident this fixes; a write with no capable backend still fails closed.
-	var lookupEffects [][]tool.EffectClass
-	for _, provider := range providers {
-		if !provider.Ready {
-			continue
-		}
-		for _, provision := range provider.Provides {
-			if provision.Capability == agentservice.CapabilityInformationLookup {
-				lookupEffects = append(lookupEffects, provider.Effects)
-				break
-			}
-		}
-	}
+	// Ready lookup tools are the only honest replacements. A down tool must
+	// not license relaxing an obligation the planner is forbidden to select.
+	lookupProviders := readyInstalledLookupProviders(providers)
 	out := append([]tool.CapabilityNeed(nil), needs...)
 	// Deterministic per-capability iteration: map iteration order varies, and
 	// the graft ID must be stable across runs or plans stop being reproducible.
-	needsByCapability := map[tool.CapabilityID][]int{}
+	type contractOnlyFallback struct {
+		indices  []int
+		exposure []tool.ProviderSpec
+	}
+	fallbacks := map[tool.CapabilityID]contractOnlyFallback{}
 	for index := range out {
 		need := out[index]
 		if !need.Required {
@@ -1622,48 +1616,45 @@ func semanticNeedsWithContractOnlyGraft(needs []tool.CapabilityNeed, providers [
 		// unreadable descriptor means we cannot prove that, and proving it is
 		// the whole license for relaxing the obligation, so stay closed.
 		descriptor, declared := registry.Lookup(need.Capability)
-		if !declared || !anyProviderCarriesEffects(lookupEffects, descriptor.Effects) {
+		if !declared {
 			continue
 		}
-		needsByCapability[need.Capability] = append(needsByCapability[need.Capability], index)
+		exposure := installedLookupExposure(lookupProviders, descriptor.Effects, pins)
+		if len(exposure) == 0 {
+			continue
+		}
+		fallback := fallbacks[need.Capability]
+		fallback.indices = append(fallback.indices, index)
+		fallback.exposure = exposure
+		fallbacks[need.Capability] = fallback
 	}
-	capabilities := make([]tool.CapabilityID, 0, len(needsByCapability))
-	for capability := range needsByCapability {
+	capabilities := make([]tool.CapabilityID, 0, len(fallbacks))
+	for capability := range fallbacks {
 		capabilities = append(capabilities, capability)
 	}
 	sort.Slice(capabilities, func(i, j int) bool { return capabilities[i] < capabilities[j] })
 	var changed bool
+	seenGraftID := map[string]bool{}
 	for _, capability := range capabilities {
-		indices := needsByCapability[capability]
-		for position, index := range indices {
-			need := out[index]
-			// One graft per CAPABILITY, not per need. Two required needs for the
-			// same capability (a read plus a later update, or a repeat sibling)
-			// must not each mint a fallback, and they certainly must not mint
-			// the same ID twice: the planner rejects duplicate need ids outright
-			// (semantic_planner.go "duplicate capability need id"), which would
-			// turn a rescuable turn into a hard planning error.
-			//
-			// The obligation is downgraded, not merely supplemented. A graft that
-			// only APPENDED a need left the original Required need in the plan,
-			// the planner recorded it as Unmet (need.Required is what routes a
-			// missing provider into Unmet rather than Omitted), and the turn was
-			// refused exactly as before — the fallback was decoration. Relaxing
-			// the original is what makes the substitution real: this capability
-			// provably has no reviewed provider on this host, so keeping it
-			// obligatory can only ever reproduce the failure the graft exists to
-			// prevent.
+		fallback := fallbacks[capability]
+		// One graft set per CAPABILITY, not per need. Two required needs for
+		// the same capability must not mint duplicate ids: the planner rejects
+		// those outright, which would turn a rescuable turn into a hard error.
+		//
+		// The obligation is downgraded, not merely supplemented. Leaving the
+		// original Required need in the plan records it as Unmet, and the turn
+		// is refused exactly as before. This capability has no reviewed
+		// provider on this host, so keeping it obligatory only reproduces the
+		// failure the graft exists to prevent.
+		for _, index := range fallback.indices {
 			out[index].Required = false
 			changed = true
-			if position > 0 {
-				// The first graft already gives this capability a path to an
-				// installed implementation. A second buys nothing and costs a
-				// selection slot.
+		}
+		for _, graft := range installedMCPFallbackNeeds(capability, fallback.exposure, registry) {
+			if seenGraftID[graft.ID] {
 				continue
 			}
-			graft := agentservice.AmbientDynamicLookupNeed()
-			graft.ID = "need:~installed-fallback:" + string(capability)
-			graft.EvidenceIDs = append(append([]string(nil), need.EvidenceIDs...), "installed_fallback:"+string(capability))
+			seenGraftID[graft.ID] = true
 			out = append(out, graft)
 			changed = true
 		}
@@ -1674,23 +1665,129 @@ func semanticNeedsWithContractOnlyGraft(needs []tool.CapabilityNeed, providers [
 	return out
 }
 
-// anyProviderCarriesEffects reports whether some installed lookup tool can
-// perform every effect the need's capability requires.
-//
-// EffectsWithinCeiling(effects, ceiling) asks "is every member of effects
-// allowed by ceiling", so passing the need's effects as `effects` and a
-// provider's as `ceiling` answers exactly "can this provider do this job":
-// a read-only need is carried by a read-only tool, and an external-effect need
-// is carried only by a tool whose own annotations admitted an external effect.
-// An empty provider effect set allows nothing, which is the correct reading of
-// "this tool declared no capability to act".
-func anyProviderCarriesEffects(providerEffects [][]tool.EffectClass, needEffects []tool.EffectClass) bool {
-	for _, effects := range providerEffects {
-		if tool.EffectsWithinCeiling(needEffects, effects) {
-			return true
+// readyInstalledLookupProviders returns ready providers of the open lookup
+// family, in stable binding order.
+func readyInstalledLookupProviders(providers []tool.ProviderSpec) []tool.ProviderSpec {
+	out := make([]tool.ProviderSpec, 0)
+	for _, provider := range providers {
+		if !provider.Ready {
+			continue
+		}
+		for _, provision := range provider.Provides {
+			if provision.Capability == agentservice.CapabilityInformationLookup {
+				out = append(out, provider)
+				break
+			}
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Binding.StableID() < out[j].Binding.StableID() })
+	return out
+}
+
+// installedLookupExposure is the ready lookup tools that can perform the
+// need, narrowed to a server the user named when that server can do the job.
+// A named server that cannot perform it yields nothing: another server is
+// not a substitute for the implementation the user asked for.
+func installedLookupExposure(carriers []tool.ProviderSpec, needEffects []tool.EffectClass, pins []tool.ProviderPin) []tool.ProviderSpec {
+	matching := make([]tool.ProviderSpec, 0, len(carriers))
+	for _, provider := range carriers {
+		if lookupProviderCarriesNeed(provider.Effects, needEffects) {
+			matching = append(matching, provider)
+		}
+	}
+	pinned := map[string]bool{}
+	for _, pin := range pins {
+		if strings.TrimSpace(pin.Kind) != "mcp" {
+			continue
+		}
+		if id := strings.TrimSpace(pin.ProviderID); id != "" {
+			pinned[id] = true
+		}
+	}
+	if len(pinned) == 0 {
+		return matching
+	}
+	narrowed := make([]tool.ProviderSpec, 0, len(matching))
+	for _, provider := range matching {
+		if pinned[strings.TrimSpace(provider.Binding.ProviderID)] {
+			narrowed = append(narrowed, provider)
+		}
+	}
+	return narrowed
+}
+
+// lookupProviderCarriesNeed reports whether one installed lookup tool can
+// perform the need. Effect class is the execution boundary. An external-effect
+// tool can answer a read and still confirms through the receipt path. A
+// read-only tool cannot answer a write: relaxing that obligation would let
+// the turn proceed and silently not write.
+func lookupProviderCarriesNeed(providerEffects, needEffects []tool.EffectClass) bool {
+	if tool.EffectsWithinCeiling(needEffects, providerEffects) {
+		return true
+	}
+	if len(needEffects) == 1 && needEffects[0] == tool.EffectReadOnly {
+		for _, effect := range providerEffects {
+			if effect == tool.EffectExternalEffect {
+				return true
+			}
 		}
 	}
 	return false
+}
+
+// installedMCPFallbackNeeds is the demand side of an unserved contract-only
+// capability. Exact per-tool capabilities let the model call the installed
+// tool whose name matches the request. A tool without one falls back to the
+// shared open family, and one such tool keeps the whole set on that family
+// so a sibling is not dropped.
+func installedMCPFallbackNeeds(capability tool.CapabilityID, providers []tool.ProviderSpec, registry *tool.CapabilityRegistry) []tool.CapabilityNeed {
+	auto := make([]tool.CapabilityNeed, 0, len(providers))
+	seen := map[tool.CapabilityID]bool{}
+	complete := len(providers) > 0
+	for _, provider := range providers {
+		id, ok := autoMCPCapabilityOf(provider)
+		if !ok || registry == nil {
+			complete = false
+			continue
+		}
+		if _, declared := registry.Lookup(id); !declared {
+			complete = false
+			continue
+		}
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		auto = append(auto, tool.CapabilityNeed{
+			ID:          "need:~installed-mcp:" + string(id),
+			Capability:  id,
+			Polarity:    tool.NeedRequire,
+			Required:    false,
+			Confidence:  1,
+			EvidenceIDs: []string{"installed_mcp:" + string(capability)},
+		})
+	}
+	if complete && len(auto) > 0 {
+		sort.Slice(auto, func(i, j int) bool { return auto[i].ID < auto[j].ID })
+		return auto
+	}
+	graft := agentservice.AmbientDynamicLookupNeed()
+	graft.ID = "need:~installed-fallback:" + string(capability)
+	graft.EvidenceIDs = append(graft.EvidenceIDs, "installed_fallback:"+string(capability))
+	return []tool.CapabilityNeed{graft}
+}
+
+func autoMCPCapabilityOf(provider tool.ProviderSpec) (tool.CapabilityID, bool) {
+	var found tool.CapabilityID
+	for _, provision := range provider.Provides {
+		if !strings.HasPrefix(string(provision.Capability), "x:mcp:") {
+			continue
+		}
+		if found == "" || provision.Capability < found {
+			found = provision.Capability
+		}
+	}
+	return found, found != ""
 }
 
 // providerProvisionList flattens the capabilities this turn's published,

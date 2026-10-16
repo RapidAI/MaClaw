@@ -3,6 +3,7 @@ package agentservice
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
@@ -31,6 +32,21 @@ func sealedTestRegistry(t *testing.T) *coretool.CapabilityRegistry {
 		t.Fatalf("seal registry: %v", err)
 	}
 	return reg
+}
+
+func TestInstalledMCPToolSummaryNamesTheTool(t *testing.T) {
+	reg := sealedTestRegistry(t)
+	id := AutoMCPCapabilityIDForBinding("tengyun-mt0y9cwv", "work_log_query")
+	if err := EnsureExternalCapabilityVocabulary(reg, []coretool.CapabilityID{id}); err != nil {
+		t.Fatal(err)
+	}
+	desc, ok := reg.Lookup(id)
+	if !ok {
+		t.Fatal("exact installed-tool capability was not registered")
+	}
+	if !strings.Contains(desc.Summary, "work_log_query") || !strings.Contains(desc.Summary, "tengyun-mt0y9cwv") {
+		t.Fatalf("summary = %q", desc.Summary)
+	}
 }
 
 // TestPublishRegistersVendorDeclaredCapability closes the first Phase 1

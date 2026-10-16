@@ -54,6 +54,17 @@ function panel(config: corelib.AppConfig, setConfig = vi.fn(), lang = 'en') {
 }
 
 describe('GeneralSettingsPanel', () => {
+    it('shows the task completion notice switch on by default', () => {
+        renderPanel({}, 'zh-Hans');
+
+        const toggle = screen.getByLabelText('任务完成提示') as HTMLInputElement;
+        expect(toggle.checked).toBe(true);
+
+        fireEvent.click(toggle);
+
+        expect(PatchConfigFieldsMock).toHaveBeenCalledWith({ tray_task_completion_notify: false });
+    });
+
     it('shows the chat gossip auto-post switch in general settings', () => {
         renderPanel({}, 'zh-Hans');
 

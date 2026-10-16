@@ -31,6 +31,7 @@ var settingsTabFieldKeys = map[string][]string{
 		"memory_recall_log_enabled",
 		"gossip_auto_publish",
 		"show_hub_ranking",
+		"tray_task_completion_notify",
 		"pause_env_check",
 		"use_windows_terminal",
 		"show_ai_trace_entry",

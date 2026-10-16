@@ -33,8 +33,9 @@ var (
 	k32              = windows.NewLazySystemDLL("Kernel32.dll")
 	pGetModuleHandle = k32.NewProc("GetModuleHandleW")
 
-	s32              = windows.NewLazySystemDLL("Shell32.dll")
-	pShellNotifyIcon = s32.NewProc("Shell_NotifyIconW")
+	s32                                      = windows.NewLazySystemDLL("Shell32.dll")
+	pShellNotifyIcon                         = s32.NewProc("Shell_NotifyIconW")
+	pSetCurrentProcessExplicitAppUserModelID = s32.NewProc("SetCurrentProcessExplicitAppUserModelID")
 
 	u32                    = windows.NewLazySystemDLL("User32.dll")
 	pCreateMenu            = u32.NewProc("CreateMenu")
@@ -121,17 +122,66 @@ type notifyIconData struct {
 	Tip                        [128]uint16
 	State, StateMask           uint32
 	Info                       [256]uint16
-	Timeout, Version           uint32
+	Timeout                    uint32 // union with uVersion; one field, not two
 	InfoTitle                  [64]uint16
 	InfoFlags                  uint32
 	GuidItem                   windows.GUID
 	BalloonIcon                windows.Handle
 }
 
+// notifyIconV2Size is NOTIFYICONDATA_V2_SIZE: balloon text is included, and
+// the Vista fields after it are not. The larger size turns the balloon into
+// a toast, which Windows hides while this app is the foreground window.
+func notifyIconV2Size(nid *notifyIconData) uint32 {
+	return uint32(unsafe.Offsetof(nid.GuidItem))
+}
+
+func registerAppUserModelID() {
+	id := "MaClaw.Desktop"
+	if v, ok := appUserModelID.Load().(string); ok && v != "" {
+		id = v
+	}
+	if err := pSetCurrentProcessExplicitAppUserModelID.Find(); err != nil {
+		log.Printf("systray: SetCurrentProcessExplicitAppUserModelID unavailable: %s\n", err)
+		return
+	}
+	ptr, err := windows.UTF16PtrFromString(id)
+	if err != nil {
+		log.Printf("systray: app user model id: %s\n", err)
+		return
+	}
+	hr, _, callErr := pSetCurrentProcessExplicitAppUserModelID.Call(uintptr(unsafe.Pointer(ptr)))
+	if hr != 0 {
+		log.Printf("systray: SetCurrentProcessExplicitAppUserModelID hr=0x%x err=%v\n", hr, callErr)
+	}
+}
+
 func (nid *notifyIconData) add() error {
 	const NIM_ADD = 0x00000000
 	res, _, err := pShellNotifyIcon.Call(
 		uintptr(NIM_ADD),
+		uintptr(unsafe.Pointer(nid)),
+	)
+	if res == 0 {
+		return err
+	}
+	// The full structure size includes the balloon fields. Windows does not
+	// show those until the icon reports a version. Version 3 keeps the
+	// existing click messages in lParam.
+	if verErr := nid.setVersion(); verErr != nil {
+		log.Printf("systray: Shell_NotifyIcon(NIM_SETVERSION) failed: %s\n", verErr)
+	}
+	return nil
+}
+
+func (nid *notifyIconData) setVersion() error {
+	const (
+		NIM_SETVERSION     = 0x00000004
+		NOTIFYICON_VERSION = 3
+	)
+	nid.Timeout = NOTIFYICON_VERSION
+	res, _, err := pShellNotifyIcon.Call(
+		uintptr(NIM_SETVERSION),
 		uintptr(unsafe.Pointer(nid)),
 	)
 	if res == 0 {
@@ -272,7 +322,7 @@ func (t *winTray) setIcon(src string) error {
 	defer t.muNID.Unlock()
 	t.nid.Icon = h
 	t.nid.Flags |= NIF_ICON
-	t.nid.Size = uint32(unsafe.Sizeof(*t.nid))
+	t.nid.Size = notifyIconV2Size(t.nid)
 
 	return t.nid.modify()
 }
@@ -294,7 +344,7 @@ func (t *winTray) setTooltip(src string) error {
 	defer t.muNID.Unlock()
 	copy(t.nid.Tip[:], b[:])
 	t.nid.Flags |= NIF_TIP
-	t.nid.Size = uint32(unsafe.Sizeof(*t.nid))
+	t.nid.Size = notifyIconV2Size(t.nid)
 
 	return t.nid.modify()
 }
@@ -430,6 +480,10 @@ func (t *winTray) initInstance() error {
 		windowName = ""
 	)
 
+	// A balloon becomes a toast on Windows 10+. Without an explicit id the
+	// toast is discarded, so the tray icon never shows a completion notice.
+	registerAppUserModelID()
+
 	t.wmSystrayMessage = WM_USER + 1
 	t.visibleItems = make(map[uint32][]uint32)
 	t.menus = make(map[uint32]windows.Handle)
@@ -525,7 +579,7 @@ func (t *winTray) initInstance() error {
 		Flags:           NIF_MESSAGE,
 		CallbackMessage: t.wmSystrayMessage,
 	}
-	t.nid.Size = uint32(unsafe.Sizeof(*t.nid))
+	t.nid.Size = notifyIconV2Size(t.nid)
 
 	// Best-effort initial add.  If the Shell (explorer.exe) is not yet
 	// ready (common during boot / auto-start), this will fail — that's OK.
@@ -1161,9 +1215,11 @@ func ShowBalloonNotification(title, message string, iconFlag uint32) error {
 
 	wt.nid.InfoFlags = iconFlag
 	wt.nid.Flags |= NIF_INFO
-	wt.nid.Size = uint32(unsafe.Sizeof(*wt.nid))
-
-	return wt.nid.modify()
+	wt.nid.Size = notifyIconV2Size(wt.nid)
+	err := wt.nid.modify()
+	// Leave the flag off so a later icon or tooltip update does not show this balloon again.
+	wt.nid.Flags &^= NIF_INFO
+	return err
 }
 
 // copyNULTerminatedUTF16 writes s into dst, including a trailing NUL.

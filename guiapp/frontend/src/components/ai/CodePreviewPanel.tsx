@@ -25,7 +25,7 @@ import { CodePreviewFileListButton } from './CodePreviewFileList';
 import { PreviewFileActions } from './PreviewFileActions';
 import { FilePreviewView, filePreviewUsesSpecialRenderer, isAssistantSourcePreview, isVisualFilePreview } from '../preview/FilePreviewView';
 import { WebPreviewBrowser } from '../preview/WebPreviewBrowser';
-import { filePreviewKindFromName } from '../preview/filePreviewKind';
+import { webPreviewTargetFromFile, agentWebPreviewRequestKey } from '../preview/webPreviewAddress';
 import type { CodePreviewTheme } from './FileTabBar';
 import type { CodeFile } from './useCodePreviewState';
 import { codeFileLineDeltaHasChange, computeCodeFileLineDelta, getDisplayFilePaths, getMruCycleOrder, isCodeFileDirty, previewBodyShowsFile, shouldDismissEmptyPreviewWithoutWorkspace } from './useCodePreviewState';
@@ -307,11 +307,6 @@ function CloudWorkspaceNameLabel({ name, theme, compact = false }: { name: strin
 function isVisualDocumentPreview(file: Pick<CodeFile, 'fileName' | 'filePath' | 'absPath' | 'language' | 'latexWorkbench'> | undefined): boolean {
     if (!file || isAssistantSourcePreview(file)) return false;
     return isVisualFilePreview(file);
-}
-
-function isHtmlPreviewFile(file: Pick<CodeFile, 'fileName' | 'filePath' | 'absPath' | 'language'> | undefined): boolean {
-    if (!file) return false;
-    return filePreviewKindFromName(file.absPath || file.filePath || file.fileName || '', file.language) === 'html';
 }
 
 // ── Syntax color mapping ──
@@ -1020,9 +1015,24 @@ export function CodePreviewPanel({
     }, [wordWrap, fontSize, minimap, diffMode, diffOnlyChanges]);
 
     const activeFile = files.get(activeFilePath);
-    const [htmlBrowserOn, setHtmlBrowserOn] = useState(true);
-    const activeIsHtml = isHtmlPreviewFile(activeFile);
-    const showHtmlBrowser = activeIsHtml && htmlBrowserOn && !workspaceActive;
+    const [webPreviewOn, setWebPreviewOn] = useState(true);
+    const webTarget = webPreviewTargetFromFile(activeFile);
+    const hasWebPreview = webTarget != null;
+    const showWebPreview = hasWebPreview && webPreviewOn && !workspaceActive;
+    // A later create, rewrite, or force-open of a page switches back to the
+    // rendered preview. The file already on screen at mount is not a request.
+    // The pin remembers the directory focus at that moment, so a newer tree
+    // choice can return to the directory while this write still shows the page.
+    const webWriteKey = agentWebPreviewRequestKey(activeFile);
+    const [seenWebKey, setSeenWebKey] = useState(webWriteKey);
+    const [webPin, setWebPin] = useState<{ key: string; treeNonce: number } | null>(null);
+    if (webWriteKey && seenWebKey !== webWriteKey) {
+        setSeenWebKey(webWriteKey);
+        setWebPin({ key: webWriteKey, treeNonce: treeFocusNonce });
+        if (!webPreviewOn) setWebPreviewOn(true);
+        if (workspaceActive) setWorkspaceActive(false);
+    }
+    const webWritePinned = Boolean(webPin && webWriteKey && webPin.key === webWriteKey && treeFocusNonce === webPin.treeNonce);
 
     useEffect(() => {
         if (!cloudMode) return;
@@ -1036,6 +1046,10 @@ export function CodePreviewPanel({
     focusFilesRef.current = files;
     focusPathRef.current = activeFilePath;
     useEffect(() => {
+        if (webWritePinned) {
+            setWorkspaceActive(false);
+            return;
+        }
         if (embedded || (fileFocusNonce === 0 && treeFocusNonce === 0)) return;
         const path = focusPathRef.current;
         const file = path ? focusFilesRef.current.get(path) : undefined;
@@ -1043,15 +1057,16 @@ export function CodePreviewPanel({
         // stays up until the next explicit file or tree choice. Tied focus
         // still shows a create/modify so the body cannot stay on the tree.
         setWorkspaceActive(!previewBodyShowsFile(file, fileFocusNonce, treeFocusNonce));
-    }, [embedded, fileFocusNonce, treeFocusNonce]);
+    }, [embedded, fileFocusNonce, treeFocusNonce, webWritePinned]);
 
     useEffect(() => {
         if (embedded) {
             setWorkspaceActive(false);
             return;
         }
+        if (webWritePinned) return;
         if (!activeFilePath || !files.has(activeFilePath)) setWorkspaceActive(true);
-    }, [activeFilePath, embedded, files]);
+    }, [activeFilePath, embedded, files, webWritePinned]);
 
     // Last file closed and there is no working directory to fall back to:
     // dismiss the preview the same way as the header close button, instead of
@@ -1420,7 +1435,7 @@ export function CodePreviewPanel({
             return;
         }
         // Alt+↓ / Alt+↑ — jump between the file's changes (diff view only)
-        if (fileViewHotkeys && e.altKey && !e.ctrlKey && !e.metaKey && diffHasChange && !showHtmlBrowser
+        if (fileViewHotkeys && e.altKey && !e.ctrlKey && !e.metaKey && diffHasChange && !showWebPreview
             && (e.key === 'ArrowDown' || e.key === 'ArrowUp')) {
             e.preventDefault();
             e.stopPropagation();
@@ -1477,7 +1492,7 @@ export function CodePreviewPanel({
         if (fileViewHotkeys && (e.ctrlKey || e.metaKey) && !e.altKey && (e.key === 'f' || e.key === 'F')) {
             e.preventDefault();
             e.stopPropagation();
-            if (showHtmlBrowser) setHtmlBrowserOn(false);
+            if (showWebPreview) setWebPreviewOn(false);
             openFind();
             return;
         }
@@ -1529,7 +1544,7 @@ export function CodePreviewPanel({
         stepDiffChange,
         workspaceActive,
         openGoto,
-        showHtmlBrowser,
+        showWebPreview,
         toggleWordWrap,
         zoomIn,
         zoomOut,
@@ -1577,20 +1592,20 @@ export function CodePreviewPanel({
             onZoomReset={zoomReset}
         />
     );
-    const htmlBrowserToggle = activeIsHtml ? (
+    const webPreviewToggle = hasWebPreview ? (
         <button
             type="button"
             data-testid="code-preview-html-browser-toggle"
-            data-mode={showHtmlBrowser ? 'browser' : 'source'}
-            onClick={() => setHtmlBrowserOn((on) => !on)}
-            title={showHtmlBrowser
-                ? (lang.startsWith('zh') ? '查看 HTML 源码' : 'Show HTML source')
-                : (lang.startsWith('zh') ? '在预览窗口中打开网页' : 'Open the page in the preview')}
+            data-mode={showWebPreview ? 'browser' : 'source'}
+            onClick={() => setWebPreviewOn((on) => !on)}
+            title={showWebPreview
+                ? (lang.startsWith('zh') ? '查看源码' : 'Show source')
+                : (lang.startsWith('zh') ? '网页预览' : 'Web preview')}
             style={{
                 flexShrink: 0,
                 border: `1px solid ${theme.border}`,
-                background: showHtmlBrowser ? theme.tabActiveBg : theme.bg,
-                color: showHtmlBrowser ? theme.tabActiveText : theme.text,
+                background: showWebPreview ? theme.tabActiveBg : theme.bg,
+                color: showWebPreview ? theme.tabActiveText : theme.text,
                 borderRadius: 4,
                 padding: '0 8px',
                 height: 20,
@@ -1601,7 +1616,7 @@ export function CodePreviewPanel({
                 lineHeight: '18px',
             }}
         >
-            {showHtmlBrowser
+            {showWebPreview
                 ? (lang.startsWith('zh') ? '源码' : 'Source')
                 : (lang.startsWith('zh') ? '预览' : 'Preview')}
         </button>
@@ -1894,8 +1909,8 @@ export function CodePreviewPanel({
                         flexShrink: 0,
                     }}
                 >
-                    {htmlBrowserToggle}
-                    {!showHtmlBrowser && viewToolbar}
+                    {webPreviewToggle}
+                    {!showWebPreview && viewToolbar}
                 </div>
             ) : null}
 
@@ -1928,8 +1943,8 @@ export function CodePreviewPanel({
                     </span>
                     {/* View toolbar lives on the path row, not the tab row, so narrow
                         panes never squeeze the file tabs against the right-side controls. */}
-                    {htmlBrowserToggle}
-                    {!showHtmlBrowser && !isVisualDocumentPreview(activeFile) && viewToolbar}
+                    {webPreviewToggle}
+                    {!showWebPreview && !isVisualDocumentPreview(activeFile) && viewToolbar}
                     <span
                         data-testid="code-preview-lang-badge"
                         style={{
@@ -1986,7 +2001,7 @@ export function CodePreviewPanel({
                 </div>
             )}
 
-            {!workspaceActive && !showHtmlBrowser && findOpen && (
+            {!workspaceActive && !showWebPreview && findOpen && (
                 <CodePreviewFindBar
                     query={findQuery}
                     matchCount={matchLineIndexes.length}
@@ -2020,7 +2035,7 @@ export function CodePreviewPanel({
                 />
             )}
 
-            {!workspaceActive && !showHtmlBrowser && gotoOpen && (
+            {!workspaceActive && !showWebPreview && gotoOpen && (
                 <CodePreviewGoToLineBar
                     value={gotoValue}
                     maxLines={Math.max(1, totalLines)}
@@ -2035,7 +2050,7 @@ export function CodePreviewPanel({
 
             {/* Change overview: how much changed + how to read it. Hidden when
                 nothing changed, so the bar always means "there are edits here". */}
-            {!workspaceActive && !showHtmlBrowser && activeFile && diffLines && diffHasChange && !isVisualDocumentPreview(activeFile) && (
+            {!workspaceActive && !showWebPreview && activeFile && diffLines && diffHasChange && !isVisualDocumentPreview(activeFile) && (
                 <CodeDiffSummaryBar
                     stats={diffStats}
                     changeCount={diffChangeCount}
@@ -2064,7 +2079,7 @@ export function CodePreviewPanel({
                 </div>
             )}
             {/* Large files: no line diff, but the user still needs the totals. */}
-            {diffTooLarge && diffTooLargeDelta && !showHtmlBrowser && (
+            {diffTooLarge && diffTooLargeDelta && !showWebPreview && (
                 <div
                     role="status"
                     data-testid="code-preview-diff-too-large"
@@ -2089,19 +2104,20 @@ export function CodePreviewPanel({
                     className="ai-chat-scrollbar"
                     style={{
                         flex: 1,
-                        overflowY: isVisualDocumentPreview(activeFile) || showHtmlBrowser ? 'hidden' : 'auto',
-                        overflowX: isVisualDocumentPreview(activeFile) || showHtmlBrowser ? 'hidden' : 'auto',
+                        overflowY: isVisualDocumentPreview(activeFile) || showWebPreview ? 'hidden' : 'auto',
+                        overflowX: isVisualDocumentPreview(activeFile) || showWebPreview ? 'hidden' : 'auto',
                         minHeight: 0,
                         minWidth: 0,
-                        display: showHtmlBrowser ? 'flex' : undefined,
-                        flexDirection: showHtmlBrowser ? 'column' : undefined,
+                        display: showWebPreview ? 'flex' : undefined,
+                        flexDirection: showWebPreview ? 'column' : undefined,
                     }}
                 >
-                    {showHtmlBrowser && activeFile ? (
+                    {showWebPreview && activeFile && webTarget ? (
                         <WebPreviewBrowser
-                            key={`${activeFile.filePath}:${activeFile.absPath || ''}:${activeFile.updatedAt || 0}`}
-                            absPath={activeFile.absPath}
-                            content={activeFile.content}
+                            key={`${webTarget.kind}:${webTarget.kind === 'remote' ? webTarget.url : webTarget.path}:${activeFile.updatedAt || 0}:${activeFile.content.length}`}
+                            absPath={webTarget.kind === 'file' ? webTarget.path : undefined}
+                            content={webTarget.kind === 'file' ? activeFile.content : undefined}
+                            url={webTarget.kind === 'remote' ? webTarget.url : undefined}
                             theme={theme}
                             lang={lang}
                         />
@@ -2162,7 +2178,7 @@ export function CodePreviewPanel({
                         </FilePreviewView>
                     )}
                 </div>
-                {minimap && !workspaceActive && !showHtmlBrowser && activeFile && !isVisualDocumentPreview(activeFile) ? (
+                {minimap && !workspaceActive && !showWebPreview && activeFile && !isVisualDocumentPreview(activeFile) ? (
                     <CodePreviewMinimap
                         scrollRef={scrollRef}
                         scrollId={scrollDomId}

@@ -150,6 +150,12 @@ const semanticListedCallCue = " Call it whenever it is listed; after a successfu
 // https://example.invalid/skip because a force-call cue taught the model to
 // probe a skip token.
 func semanticRenderedReuseCue(id CapabilityID) string {
+	// An installed MCP tool is one of several the user authorized. Forcing
+	// every listed name to be called would invoke sibling tools, including
+	// writes, on a request that named only one of them.
+	if strings.HasPrefix(string(id), "x:mcp:") {
+		return " This is one installed MCP tool. Call it only when its name matches the request. Skipping it does not block the other listed tools."
+	}
 	switch id {
 	case CapabilityArtifactAcquireRemote, CapabilityInformationFetchWeb:
 		return " This step is optional when listed with other tools. Call only with a real HTTP(S) URL; never placeholder or reserved hosts such as example.invalid. Skipping it does not block the other listed tools."

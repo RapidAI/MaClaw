@@ -666,9 +666,15 @@ func TestListCodes(t *testing.T) {
 }
 
 type recordingCenterSyncer struct {
-	mu    sync.Mutex
-	calls []recordedInvitationSync
-	ch    chan recordedInvitationSync
+	mu           sync.Mutex
+	calls        []recordedInvitationSync
+	ch           chan recordedInvitationSync
+	reject       bool
+	fingerprint  string
+	markReject   bool
+	deleteReject bool
+	marks        []string
+	deleted      []string
 }
 
 type recordedInvitationSync struct {
@@ -676,23 +682,57 @@ type recordedInvitationSync struct {
 	tenantID string
 }
 
-func (r *recordingCenterSyncer) SyncInvitationCodesToCenter(_ context.Context, codes []string, tenantID string) error {
+func (r *recordingCenterSyncer) InvitationSyncFingerprint(context.Context) (string, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.fingerprint == "" {
+		return "fp", nil
+	}
+	return r.fingerprint, nil
+}
+
+func (r *recordingCenterSyncer) RetainInvitationCodes([]string) {}
+
+func (r *recordingCenterSyncer) SyncInvitationCodesToCenter(_ context.Context, codes []string, tenantID string) (bool, string, error) {
 	call := recordedInvitationSync{codes: append([]string(nil), codes...), tenantID: tenantID}
 	r.mu.Lock()
 	r.calls = append(r.calls, call)
+	reject := r.reject
+	fingerprint := r.fingerprint
 	r.mu.Unlock()
+	if fingerprint == "" {
+		fingerprint = "fp"
+	}
 	if r.ch != nil {
 		r.ch <- call
 	}
-	return nil
+	if reject {
+		return false, fingerprint, nil
+	}
+	return true, fingerprint, nil
 }
 
-func (r *recordingCenterSyncer) DeleteInvitationCodesFromCenter(context.Context, []string) error {
-	return nil
+func (r *recordingCenterSyncer) DeleteInvitationCodesFromCenter(_ context.Context, codes []string) (bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.deleted = append(r.deleted, append([]string(nil), codes...)...)
+	if r.deleteReject {
+		return false, nil
+	}
+	return true, nil
 }
 
-func (r *recordingCenterSyncer) MarkInvitationCodeUsedOnCenter(context.Context, string, string) error {
-	return nil
+func (r *recordingCenterSyncer) ForgetInvitationCodes([]string) {}
+
+func (r *recordingCenterSyncer) MarkInvitationCodeUsedOnCenter(_ context.Context, code string, _ string) (bool, error) {
+	r.mu.Lock()
+	r.marks = append(r.marks, code)
+	reject := r.markReject
+	r.mu.Unlock()
+	if reject {
+		return false, nil
+	}
+	return true, nil
 }
 
 func TestGenerateCodesForTenantSyncsTenantID(t *testing.T) {
@@ -745,5 +785,174 @@ func TestReconcileInvitationCodesGroupsEveryTenant(t *testing.T) {
 	}
 	if got := seen[store.DefaultTenantID]; len(got) != 1 || got[0] != "LSR43CEBG1" {
 		t.Fatalf("default tenant codes = %#v", got)
+	}
+}
+
+func TestReconcileInvitationCodesSkipsAcceptedCodes(t *testing.T) {
+	repo := &memInvitationCodeRepo{codes: []*store.InvitationCode{
+		{ID: "a", TenantID: "vantagics", Code: "PNZPES758F", Status: "unused"},
+	}}
+	svc := NewService(repo, newMemSettingsRepo())
+	syncer := &recordingCenterSyncer{reject: true}
+	svc.SetCenterSyncer(syncer)
+
+	if err := svc.ReconcileInvitationCodes(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if err := svc.ReconcileInvitationCodes(context.Background()); err != nil {
+		t.Fatalf("reconcile retry: %v", err)
+	}
+	syncer.mu.Lock()
+	if len(syncer.calls) != 2 {
+		t.Fatalf("unaccepted sync calls = %d, want a retry", len(syncer.calls))
+	}
+	syncer.calls = nil
+	syncer.reject = false
+	syncer.mu.Unlock()
+
+	if err := svc.ReconcileInvitationCodes(context.Background()); err != nil {
+		t.Fatalf("reconcile accept: %v", err)
+	}
+	if err := svc.ReconcileInvitationCodes(context.Background()); err != nil {
+		t.Fatalf("reconcile steady: %v", err)
+	}
+	syncer.mu.Lock()
+	defer syncer.mu.Unlock()
+	if len(syncer.calls) != 1 {
+		t.Fatalf("accepted sync calls = %d, want one push then a skip", len(syncer.calls))
+	}
+}
+
+func TestReconcileInvitationCodesResendsWhenCenterSetChanges(t *testing.T) {
+	repo := &memInvitationCodeRepo{codes: []*store.InvitationCode{
+		{ID: "a", TenantID: "vantagics", Code: "PNZPES758F", Status: "unused"},
+	}}
+	svc := NewService(repo, newMemSettingsRepo())
+	syncer := &recordingCenterSyncer{fingerprint: "node-a"}
+	svc.SetCenterSyncer(syncer)
+
+	if err := svc.ReconcileInvitationCodes(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if err := svc.ReconcileInvitationCodes(context.Background()); err != nil {
+		t.Fatalf("reconcile steady: %v", err)
+	}
+	syncer.mu.Lock()
+	syncer.fingerprint = "node-a\nnode-b"
+	syncer.calls = nil
+	syncer.mu.Unlock()
+
+	if err := svc.ReconcileInvitationCodes(context.Background()); err != nil {
+		t.Fatalf("reconcile new node: %v", err)
+	}
+	syncer.mu.Lock()
+	defer syncer.mu.Unlock()
+	if len(syncer.calls) != 1 {
+		t.Fatalf("sync calls = %d, want the new center set to be filled", len(syncer.calls))
+	}
+}
+
+func TestReconcileRetriesRejectedInvitationUse(t *testing.T) {
+	repo := &memInvitationCodeRepo{codes: []*store.InvitationCode{
+		{ID: "a", TenantID: "vantagics", Code: "PNZPES758F", Status: "unused"},
+	}}
+	svc := NewService(repo, newMemSettingsRepo())
+	syncer := &recordingCenterSyncer{markReject: true}
+	svc.SetCenterSyncer(syncer)
+
+	if err := svc.ValidateAndConsumeForTenant(context.Background(), "vantagics", "PNZPES758F", "User@Example.com"); err != nil {
+		t.Fatalf("consume: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		syncer.mu.Lock()
+		marks := len(syncer.marks)
+		syncer.mu.Unlock()
+		if marks > 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	syncer.mu.Lock()
+	if len(syncer.marks) != 1 || syncer.marks[0] != "PNZPES758F" {
+		got := append([]string(nil), syncer.marks...)
+		syncer.mu.Unlock()
+		t.Fatalf("mark calls = %#v", got)
+	}
+	syncer.marks = nil
+	syncer.markReject = false
+	syncer.mu.Unlock()
+
+	deadline = time.Now().Add(2 * time.Second)
+	for {
+		if err := svc.ReconcileInvitationCodes(context.Background()); err != nil {
+			t.Fatalf("reconcile retry: %v", err)
+		}
+		syncer.mu.Lock()
+		retried := len(syncer.marks) > 0
+		syncer.mu.Unlock()
+		if retried || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := svc.ReconcileInvitationCodes(context.Background()); err != nil {
+		t.Fatalf("reconcile steady: %v", err)
+	}
+	syncer.mu.Lock()
+	defer syncer.mu.Unlock()
+	if len(syncer.marks) != 1 {
+		t.Fatalf("retried mark calls = %#v, want one success then a skip", syncer.marks)
+	}
+}
+
+func TestDeleteCodeRemovesCenterRouteAndIsNotRepublished(t *testing.T) {
+	repo := &memInvitationCodeRepo{codes: []*store.InvitationCode{
+		{ID: "a", TenantID: "vantagics", Code: "PNZPES758F", Status: "unused"},
+	}}
+	svc := NewService(repo, newMemSettingsRepo())
+	syncer := &recordingCenterSyncer{}
+	svc.SetCenterSyncer(syncer)
+
+	if err := svc.ReconcileInvitationCodes(context.Background()); err != nil {
+		t.Fatalf("reconcile: %v", err)
+	}
+	if err := svc.DeleteCode(context.Background(), "a"); err != nil {
+		t.Fatalf("delete: %v", err)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		syncer.mu.Lock()
+		deleted := len(syncer.deleted)
+		syncer.mu.Unlock()
+		svc.invitationSyncMu.Lock()
+		pending := len(svc.pendingInvitationDelete)
+		svc.invitationSyncMu.Unlock()
+		if deleted > 0 && pending == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("center delete deleted=%d pending=%d", deleted, pending)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	syncer.mu.Lock()
+	if len(syncer.deleted) != 1 || syncer.deleted[0] != "PNZPES758F" {
+		got := append([]string(nil), syncer.deleted...)
+		syncer.mu.Unlock()
+		t.Fatalf("deleted = %#v", got)
+	}
+	syncer.calls = nil
+	syncer.deleted = nil
+	syncer.mu.Unlock()
+
+	if err := svc.ReconcileInvitationCodes(context.Background()); err != nil {
+		t.Fatalf("reconcile after delete: %v", err)
+	}
+	syncer.mu.Lock()
+	defer syncer.mu.Unlock()
+	if len(syncer.calls) != 0 || len(syncer.deleted) != 0 {
+		t.Fatalf("calls=%#v deleted=%#v, deleted code was pushed again", syncer.calls, syncer.deleted)
 	}
 }

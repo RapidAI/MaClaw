@@ -795,6 +795,7 @@ func (s *Server) handleOpenAIChatCompletions(w http.ResponseWriter, r *http.Requ
 	// cleanup can normalize invalid tool-message links, but that must not make a
 	// completed tool turn indistinguishable from a new tool-enabled turn when a
 	// later recovery retry is considered.
+	body = StripCodexClientMarkers(upURL, body)
 	retrySemantics := codeGenProxyRetrySemanticsForBody(body)
 	body, compatibilityNotes := applyCodeGenOpenAICompatibility(body)
 	// Inject stream_options for usage reporting (if upstream supports it).
@@ -1068,6 +1069,7 @@ func (s *Server) handleOpenAIResponses(w http.ResponseWriter, r *http.Request) {
 	// Keep the semantic state from the converted Responses request. The
 	// compatibility sanitizer can remove orphaned tool-result messages, which is
 	// transport cleanup rather than evidence that this was an active tool turn.
+	chatBody = StripCodexClientMarkers(upURL, chatBody)
 	retrySemantics := codeGenProxyRetrySemanticsForBody(chatBody)
 	chatBody, compatibilityNotes := applyCodeGenOpenAICompatibility(chatBody)
 	// Inject stream_options for usage reporting (if upstream supports it).
@@ -1717,6 +1719,7 @@ func (s *Server) handleMessages(w http.ResponseWriter, r *http.Request) {
 	toolSchemas := summarizeOpenAIToolSchemas(openaiReq.Tools)
 
 	reqData, _ := json.Marshal(openaiReq)
+	reqData = StripCodexClientMarkers(upURL, reqData)
 	requestSummary := summarizeOpenAIRequest(reqData)
 
 	// Forward to upstream CodeGen using standard OpenAI Bearer auth.

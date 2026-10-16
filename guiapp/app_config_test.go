@@ -1630,13 +1630,17 @@ func TestPatchConfigFieldsUpdatesOnlyRequestedGeneralFields(t *testing.T) {
 	}
 
 	patched, err := app.PatchConfigFields(map[string]interface{}{
-		"gossip_auto_publish": false,
+		"gossip_auto_publish":         false,
+		"tray_task_completion_notify": false,
 	})
 	if err != nil {
 		t.Fatalf("PatchConfigFields() error = %v", err)
 	}
 	if patched.GossipAutoPublish {
 		t.Fatal("GossipAutoPublish = true, want false")
+	}
+	if patched.TrayTaskCompletionNotify == nil || *patched.TrayTaskCompletionNotify {
+		t.Fatal("TrayTaskCompletionNotify = on, want false")
 	}
 	if patched.RemoteEmail != "owner@example.com" {
 		t.Fatalf("RemoteEmail = %q, want preserved owner@example.com", patched.RemoteEmail)

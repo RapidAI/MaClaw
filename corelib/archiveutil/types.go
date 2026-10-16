@@ -146,6 +146,13 @@ type ExtractionPolicy struct {
 	// relative symlinks. The core still validates that the link target stays
 	// within the extraction root and never allows a symlink as a later parent.
 	AllowSymlinks bool
+	// PreserveExecutable makes trusted runtime binaries executable. An entry
+	// with any execute bit is written as 0755 after its bytes are complete;
+	// every other entry stays 0600. Setuid, setgid, sticky, and group write
+	// are never copied. Leave this unset for untrusted archives.
+	// The macOS/Linux CPython interpreter ships as 0775, so a 0600 extraction
+	// cannot be executed and startup downloads it again on every launch.
+	PreserveExecutable bool
 	// Filter is evaluated only after the core has canonicalized the entry path
 	// and rejected encrypted, link, and special entries. Returning false skips
 	// an otherwise safe entry; returning an error aborts extraction. This lets
@@ -210,7 +217,7 @@ func ExtractToDirectoryWithPolicy(archivePath, destination string, limits Limits
 		return failure(ActionExtract, format, err)
 	}
 	warnings := []string(nil)
-	c := &counters{limits: limits, allowSymlinks: policy.AllowSymlinks, filter: policy.Filter, root: destination, inputBytes: before.size, warnings: &warnings}
+	c := &counters{limits: limits, allowSymlinks: policy.AllowSymlinks, preserveExecutable: policy.PreserveExecutable, filter: policy.Filter, root: destination, inputBytes: before.size, warnings: &warnings}
 	if err := extractInto(archivePath, format, destination, c); err != nil {
 		return failure(ActionExtract, format, err)
 	}
@@ -257,7 +264,7 @@ func ExtractZIPBytesToDirectory(data []byte, destination string, limits Limits, 
 		return failure(ActionExtract, FormatZIP, errorf(CodeCorruptArchive, "open zip: %v", err))
 	}
 	warnings := []string(nil)
-	c := &counters{limits: limits, allowSymlinks: policy.AllowSymlinks, filter: policy.Filter, root: destination, inputBytes: int64(len(data)), warnings: &warnings}
+	c := &counters{limits: limits, allowSymlinks: policy.AllowSymlinks, preserveExecutable: policy.PreserveExecutable, filter: policy.Filter, root: destination, inputBytes: int64(len(data)), warnings: &warnings}
 	if err := extractZIPFiles(zr.File, destination, c); err != nil {
 		return failure(ActionExtract, FormatZIP, err)
 	}

@@ -254,7 +254,27 @@ type Service struct {
 	managedIndustryExperts       *industryexpert.SyncService
 	authorizationPayloadListener func(map[string]json.RawMessage)
 	invitationCodes              InvitationCodeReconciler
+
+	invitationReconcileMu      sync.Mutex
+	invitationReconcileRunning bool
+	invitationReconcileAt      time.Time
+
+	invitationURLMu  sync.Mutex
+	invitationURLKey string
+	invitationURLAt  time.Time
+	invitationURLs   []string
+
+	invitationAckMu    sync.Mutex
+	invitationAcks     map[string]invitationCodeAck
+	invitationURLFails map[string]time.Time
 }
+
+type invitationCodeAck struct {
+	tenantID string
+	urls     map[string]struct{}
+}
+
+const invitationReconcileInterval = 2 * time.Minute
 
 // SetInvitationCodeReconciler installs the heartbeat retry for invitation-code
 // routes. Codes created by a tenant are useless for registration until HubCenter
@@ -1049,6 +1069,42 @@ func (s *Service) orderedCenterBaseURLs(ctx context.Context, preferred string) (
 	return ordered, nil
 }
 
+const invitationCenterURLCacheTTL = 45 * time.Second
+
+var invitationCenterURLFailTTL = 20 * time.Second
+
+var errInvitationCenterCooling = errors.New("hub center node is cooling down after a failed invitation sync")
+
+// invitationSyncBaseURLs reuses one quality probe for every invitation batch in
+// a reconcile. Heartbeat and registration still probe on each call.
+func (s *Service) invitationSyncBaseURLs(ctx context.Context, preferred string) ([]string, error) {
+	configured, err := s.centerBaseURLs(ctx)
+	if err != nil || len(configured) <= 1 {
+		return configured, err
+	}
+	preferred = normalizeBaseURL(preferred)
+	key := strings.Join(configured, "\n") + "\n" + preferred
+	now := time.Now()
+	s.invitationURLMu.Lock()
+	if s.invitationURLKey == key && now.Sub(s.invitationURLAt) < invitationCenterURLCacheTTL && len(s.invitationURLs) > 0 {
+		urls := append([]string(nil), s.invitationURLs...)
+		s.invitationURLMu.Unlock()
+		return urls, nil
+	}
+	s.invitationURLMu.Unlock()
+
+	urls, err := s.orderedCenterBaseURLs(ctx, preferred)
+	if err != nil || len(urls) == 0 {
+		return urls, err
+	}
+	s.invitationURLMu.Lock()
+	s.invitationURLKey = key
+	s.invitationURLAt = now
+	s.invitationURLs = append([]string(nil), urls...)
+	s.invitationURLMu.Unlock()
+	return urls, nil
+}
+
 func (s *Service) probeCenterQuality(ctx context.Context, baseURL string) struct {
 	Reachable, Routable bool
 	QualityScore        int
@@ -1836,23 +1892,109 @@ func (s *Service) reconcileInvitationCodes(ctx context.Context) {
 	if reconciler == nil {
 		return
 	}
-	if err := reconciler.ReconcileInvitationCodes(ctx); err != nil {
-		log.Printf("[center] invitation code reconcile failed: %v", err)
+	s.invitationReconcileMu.Lock()
+	if s.invitationReconcileRunning {
+		s.invitationReconcileMu.Unlock()
+		return
 	}
+	if !s.invitationReconcileAt.IsZero() && time.Since(s.invitationReconcileAt) < invitationReconcileInterval {
+		s.invitationReconcileMu.Unlock()
+		return
+	}
+	s.invitationReconcileRunning = true
+	s.invitationReconcileAt = time.Now()
+	s.invitationReconcileMu.Unlock()
+
+	// Heartbeat must not wait on a full invitation-code push. A stuck or slow
+	// HubCenter would otherwise delay every later heartbeat. The interval is
+	// reserved up front; a failed run clears it so the next heartbeat retries.
+	go func() {
+		reconcileCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		defer cancel()
+		err := reconciler.ReconcileInvitationCodes(reconcileCtx)
+		if err != nil {
+			log.Printf("[center] invitation code reconcile failed: %v", err)
+		}
+		s.invitationReconcileMu.Lock()
+		s.invitationReconcileRunning = false
+		if err != nil {
+			s.invitationReconcileAt = time.Time{}
+		}
+		s.invitationReconcileMu.Unlock()
+	}()
 }
 
 // SyncInvitationCodesToCenter registers newly generated invitation codes with
 // HubCenter so that it can route clients providing these codes to this Hub.
 // Every configured HubCenter node is updated. Registration can land on any node,
 // and a tenant code that exists on only one node cannot be routed.
-func (s *Service) SyncInvitationCodesToCenter(ctx context.Context, codes []string, tenantID string) error {
-	if s == nil || len(codes) == 0 {
-		return nil
+func (s *Service) InvitationSyncFingerprint(ctx context.Context) (string, error) {
+	if s == nil || s.settings == nil || s.cfg == nil {
+		return "", nil
 	}
-	return s.postInvitationCodeSync(ctx, http.MethodPost, tenantID, "invitation_code_sync_failed", func(secret string) (map[string]any, error) {
+	record, err := s.loadRegistration(ctx)
+	if err != nil {
+		return "", err
+	}
+	if (!record.Registered && !record.PendingConfirmation && !record.Disabled) || record.HubID == "" || record.HubSecret == "" {
+		return "", nil
+	}
+	baseURLs, err := s.centerBaseURLs(ctx)
+	if err != nil || len(baseURLs) == 0 {
+		return "", err
+	}
+	return invitationCenterFingerprint(baseURLs), nil
+}
+
+func invitationCenterFingerprint(baseURLs []string) string {
+	ordered := append([]string(nil), baseURLs...)
+	sort.Strings(ordered)
+	return strings.Join(ordered, "\n")
+}
+
+func (s *Service) ForgetInvitationCodes(codes []string) {
+	if s == nil || len(codes) == 0 {
+		return
+	}
+	s.invitationAckMu.Lock()
+	defer s.invitationAckMu.Unlock()
+	for _, code := range codes {
+		code = strings.ToUpper(strings.TrimSpace(code))
+		if code == "" {
+			continue
+		}
+		delete(s.invitationAcks, code)
+	}
+}
+
+func (s *Service) RetainInvitationCodes(codes []string) {
+	if s == nil {
+		return
+	}
+	live := make(map[string]struct{}, len(codes))
+	for _, code := range codes {
+		code = strings.ToUpper(strings.TrimSpace(code))
+		if code != "" {
+			live[code] = struct{}{}
+		}
+	}
+	s.invitationAckMu.Lock()
+	defer s.invitationAckMu.Unlock()
+	for code := range s.invitationAcks {
+		if _, ok := live[code]; !ok {
+			delete(s.invitationAcks, code)
+		}
+	}
+}
+
+func (s *Service) SyncInvitationCodesToCenter(ctx context.Context, codes []string, tenantID string) (bool, string, error) {
+	if s == nil || len(codes) == 0 {
+		return true, "", nil
+	}
+	return s.postInvitationCodeSync(ctx, http.MethodPost, tenantID, "invitation_code_sync_failed", true, codes, func(secret string, batch []string) (map[string]any, error) {
 		return map[string]any{
 			"hub_secret": secret,
-			"codes":      codes,
+			"codes":      batch,
 			"tenant_id":  tenantID,
 		}, nil
 	})
@@ -1860,63 +2002,82 @@ func (s *Service) SyncInvitationCodesToCenter(ctx context.Context, codes []strin
 
 // DeleteInvitationCodesFromCenter removes consumed/deleted invitation codes
 // from HubCenter's routing table.
-func (s *Service) DeleteInvitationCodesFromCenter(ctx context.Context, codes []string) error {
+func (s *Service) DeleteInvitationCodesFromCenter(ctx context.Context, codes []string) (bool, error) {
 	if s == nil || len(codes) == 0 {
-		return nil
+		return true, nil
 	}
-	return s.postInvitationCodeSync(ctx, http.MethodDelete, "", "invitation_code_delete_failed", func(secret string) (map[string]any, error) {
+	accepted, _, err := s.postInvitationCodeSync(ctx, http.MethodDelete, "", "invitation_code_delete_failed", false, codes, func(secret string, batch []string) (map[string]any, error) {
 		return map[string]any{
 			"hub_secret": secret,
-			"codes":      codes,
+			"codes":      batch,
 		}, nil
 	})
+	return accepted, err
 }
 
 // MarkInvitationCodeUsedOnCenter notifies HubCenter that an invitation code has
 // been consumed by the given email. The route record is preserved (not deleted)
 // so that admin panels can see the binding, and so that the same email can
 // re-enroll via the code's route on a different device.
-func (s *Service) MarkInvitationCodeUsedOnCenter(ctx context.Context, code string, email string) error {
+func (s *Service) MarkInvitationCodeUsedOnCenter(ctx context.Context, code string, email string) (bool, error) {
 	if s == nil || strings.TrimSpace(code) == "" {
-		return nil
+		return true, nil
 	}
 	email = strings.TrimSpace(strings.ToLower(email))
-	return s.postInvitationCodeSync(ctx, http.MethodDelete, "", "invitation_code_mark_used_failed", func(secret string) (map[string]any, error) {
+	accepted, _, err := s.postInvitationCodeSync(ctx, http.MethodDelete, "", "invitation_code_mark_used_failed", false, []string{code}, func(secret string, batch []string) (map[string]any, error) {
 		return map[string]any{
 			"hub_secret":    secret,
-			"codes":         []string{code},
+			"codes":         batch,
 			"used_by_email": email,
 		}, nil
 	})
+	return accepted, err
 }
 
-func (s *Service) postInvitationCodeSync(ctx context.Context, method, tenantID, failureEvent string, payloadFn func(secret string) (map[string]any, error)) error {
+func (s *Service) postInvitationCodeSync(ctx context.Context, method, tenantID, failureEvent string, trackAck bool, codes []string, payloadFn func(secret string, batch []string) (map[string]any, error)) (bool, string, error) {
 	record, err := s.loadRegistration(ctx)
 	if err != nil {
-		return err
+		return false, "", err
 	}
 	if (!record.Registered && !record.PendingConfirmation && !record.Disabled) || record.HubID == "" || record.HubSecret == "" {
-		return nil
+		return false, "", nil
 	}
-	baseURLs, err := s.orderedCenterBaseURLs(ctx, record.LastBaseURL)
+	baseURLs, err := s.invitationSyncBaseURLs(ctx, record.LastBaseURL)
 	if err != nil {
-		return err
+		return false, "", err
 	}
 	if len(baseURLs) == 0 {
-		return nil
+		return false, "", nil
 	}
-	bodyFields, err := payloadFn(record.HubSecret)
-	if err != nil {
-		return err
-	}
-	payload, err := json.Marshal(bodyFields)
-	if err != nil {
-		return err
-	}
-
+	fingerprint := invitationCenterFingerprint(baseURLs)
 	var lastErr error
 	synced := 0
+	// The first node that accepts a new write publishes it to the other
+	// HubCenter nodes. Later nodes only store a local copy, so a full
+	// reconcile cannot create a newer empty route that reopens a used code.
+	publish := true
 	for _, baseURL := range baseURLs {
+		batch := codes
+		if trackAck {
+			batch = s.invitationCodesMissingURL(baseURL, tenantID, codes)
+		}
+		if len(batch) == 0 {
+			synced++
+			continue
+		}
+		if s.invitationURLCooling(baseURL) {
+			lastErr = errInvitationCenterCooling
+			continue
+		}
+		bodyFields, err := payloadFn(record.HubSecret, batch)
+		if err != nil {
+			return false, fingerprint, err
+		}
+		bodyFields["replicate"] = publish
+		payload, err := json.Marshal(bodyFields)
+		if err != nil {
+			return false, fingerprint, err
+		}
 		httpReq, err := http.NewRequestWithContext(ctx, method, baseURL+"/api/hubs/"+url.PathEscape(record.HubID)+"/invitation-codes/sync", bytes.NewReader(payload))
 		if err != nil {
 			lastErr = err
@@ -1925,6 +2086,9 @@ func (s *Service) postInvitationCodeSync(ctx context.Context, method, tenantID, 
 		httpReq.Header.Set("Content-Type", "application/json")
 		resp, err := s.client.Do(httpReq)
 		if err != nil {
+			if ctx.Err() == nil {
+				s.markInvitationURLFailed(baseURL)
+			}
 			lastErr = err
 			continue
 		}
@@ -1935,7 +2099,12 @@ func (s *Service) postInvitationCodeSync(ctx context.Context, method, tenantID, 
 			continue
 		}
 		if resp.StatusCode == http.StatusOK {
+			if trackAck {
+				s.rememberInvitationURL(baseURL, tenantID, batch)
+			}
+			s.clearInvitationURLFailure(baseURL)
 			synced++
+			publish = false
 			continue
 		}
 		var apiErr centerErrorPayload
@@ -1947,13 +2116,91 @@ func (s *Service) postInvitationCodeSync(ctx context.Context, method, tenantID, 
 		lastErr = errors.New(message)
 		log.Printf("[center] invitation-code sync %s %s failed: %s", method, baseURL, message)
 	}
-	if synced > 0 {
-		return nil
+	if synced == len(baseURLs) {
+		return true, fingerprint, nil
 	}
 	if lastErr != nil {
 		s.recordFailure(ctx, "sync", failureEvent, lastErr.Error(), record.HubID, "", map[string]any{"tenant_id": tenantID})
 	}
-	return lastErr
+	if synced > 0 {
+		// A node that missed this write must be retried. Remembering the batch
+		// now would leave registration unable to route through that node, and
+		// an unchanged peer does not publish the route again.
+		return false, fingerprint, nil
+	}
+	return false, fingerprint, lastErr
+}
+
+func (s *Service) invitationCodesMissingURL(baseURL, tenantID string, codes []string) []string {
+	tenantID = strings.TrimSpace(tenantID)
+	s.invitationAckMu.Lock()
+	defer s.invitationAckMu.Unlock()
+	missing := make([]string, 0, len(codes))
+	for _, code := range codes {
+		code = strings.ToUpper(strings.TrimSpace(code))
+		if code == "" {
+			continue
+		}
+		ack := s.invitationAcks[code]
+		if ack.tenantID != tenantID {
+			missing = append(missing, code)
+			continue
+		}
+		if _, ok := ack.urls[baseURL]; !ok {
+			missing = append(missing, code)
+		}
+	}
+	return missing
+}
+
+func (s *Service) rememberInvitationURL(baseURL, tenantID string, codes []string) {
+	tenantID = strings.TrimSpace(tenantID)
+	s.invitationAckMu.Lock()
+	defer s.invitationAckMu.Unlock()
+	if s.invitationAcks == nil {
+		s.invitationAcks = map[string]invitationCodeAck{}
+	}
+	for _, code := range codes {
+		code = strings.ToUpper(strings.TrimSpace(code))
+		if code == "" {
+			continue
+		}
+		ack := s.invitationAcks[code]
+		if ack.tenantID != tenantID || ack.urls == nil {
+			ack = invitationCodeAck{tenantID: tenantID, urls: map[string]struct{}{}}
+		}
+		ack.urls[baseURL] = struct{}{}
+		s.invitationAcks[code] = ack
+	}
+}
+
+func (s *Service) invitationURLCooling(baseURL string) bool {
+	s.invitationAckMu.Lock()
+	defer s.invitationAckMu.Unlock()
+	until, ok := s.invitationURLFails[baseURL]
+	if !ok {
+		return false
+	}
+	if !time.Now().Before(until) {
+		delete(s.invitationURLFails, baseURL)
+		return false
+	}
+	return true
+}
+
+func (s *Service) markInvitationURLFailed(baseURL string) {
+	s.invitationAckMu.Lock()
+	defer s.invitationAckMu.Unlock()
+	if s.invitationURLFails == nil {
+		s.invitationURLFails = map[string]time.Time{}
+	}
+	s.invitationURLFails[baseURL] = time.Now().Add(invitationCenterURLFailTTL)
+}
+
+func (s *Service) clearInvitationURLFailure(baseURL string) {
+	s.invitationAckMu.Lock()
+	defer s.invitationAckMu.Unlock()
+	delete(s.invitationURLFails, baseURL)
 }
 
 func (s *Service) AllowsUserRoute(ctx context.Context, email string, tenantIDOpt ...string) (bool, string, error) {

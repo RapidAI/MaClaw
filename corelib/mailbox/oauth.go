@@ -37,6 +37,7 @@ type oauthProvider struct {
 	AuthEndpoint  string
 	TokenEndpoint string
 	ProfileURL    string
+	ProfileAlts   []string
 	Scopes        []string
 	UsePKCE       bool
 	ExtraAuth     map[string]string
@@ -69,10 +70,15 @@ func oauthProviders() map[string]oauthProvider {
 			ClientID:      hotmailOAuthClientID,
 			AuthEndpoint:  "https://login.microsoftonline.com/common/oauth2/v2.0/authorize",
 			TokenEndpoint: "https://login.microsoftonline.com/common/oauth2/v2.0/token",
+			ProfileURL:    "https://outlook.office.com/api/v2.0/me",
+			ProfileAlts:   []string{"https://outlook.office365.com/api/v2.0/me"},
 			Scopes: []string{
 				"https://outlook.office.com/IMAP.AccessAsUser.All",
 				"https://outlook.office.com/SMTP.Send",
 				"offline_access",
+				"openid",
+				"profile",
+				"email",
 			},
 			ExtraAuth: map[string]string{
 				"response_mode": "query",
@@ -251,10 +257,26 @@ func refreshOAuthToken(ctx context.Context, p oauthProvider, refreshToken string
 	if p.ClientSecret != "" {
 		form.Set("client_secret", p.ClientSecret)
 	}
-	if len(p.Scopes) > 0 {
-		form.Set("scope", strings.Join(p.Scopes, " "))
+	if scope := refreshScopeList(p.Scopes); scope != "" {
+		form.Set("scope", scope)
 	}
 	return postOAuthToken(ctx, p.TokenEndpoint, form)
+}
+
+// refreshScopeList keeps the mailbox scopes. openid, profile and email are
+// only needed while signing in; sending them again can make Microsoft replace
+// the IMAP and SMTP token.
+func refreshScopeList(scopes []string) string {
+	kept := make([]string, 0, len(scopes))
+	for _, scope := range scopes {
+		switch strings.TrimSpace(scope) {
+		case "", "openid", "profile", "email":
+			continue
+		default:
+			kept = append(kept, scope)
+		}
+	}
+	return strings.Join(kept, " ")
 }
 
 func postOAuthToken(ctx context.Context, endpoint string, form url.Values) (oauthToken, error) {
@@ -268,7 +290,7 @@ func postOAuthToken(ctx context.Context, endpoint string, form url.Values) (oaut
 		return oauthToken{}, classErr("connect", MsgConnect)
 	}
 	defer resp.Body.Close()
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 256*1024))
 	if err != nil {
 		return oauthToken{}, classErr("connect", MsgConnect)
 	}
@@ -304,38 +326,107 @@ func oauthIdentity(ctx context.Context, p oauthProvider, tok oauthToken) (string
 	if email := emailFromJWT(tok.AccessToken); email != "" {
 		return email, nil
 	}
-	if strings.TrimSpace(p.ProfileURL) == "" {
+	urls := p.profileURLs()
+	if len(urls) == 0 {
 		return "", classErr("auth", "登录成功，但没有拿到邮箱地址")
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, p.ProfileURL, nil)
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(ctx, 8*time.Second)
+	defer cancel()
+	sawNetwork := false
+	sawHTTP := false
+	for _, rawURL := range urls {
+		email, err := oauthProfileEmail(ctx, rawURL, tok.AccessToken)
+		if email != "" {
+			return email, nil
+		}
+		if errors.Is(err, errProfileRejected) {
+			sawHTTP = true
+			break
+		}
+		if err != nil {
+			sawNetwork = true
+			continue
+		}
+		sawHTTP = true
+	}
+	if sawNetwork && !sawHTTP {
+		return "", classErr("connect", MsgConnect)
+	}
+	return "", classErr("auth", "登录成功，但没有拿到邮箱地址")
+}
+
+func (p oauthProvider) profileURLs() []string {
+	urls := make([]string, 0, 1+len(p.ProfileAlts))
+	if raw := strings.TrimSpace(p.ProfileURL); raw != "" {
+		urls = append(urls, raw)
+	}
+	for _, raw := range p.ProfileAlts {
+		if raw = strings.TrimSpace(raw); raw != "" {
+			urls = append(urls, raw)
+		}
+	}
+	return urls
+}
+
+var errProfileRejected = errors.New("profile rejected")
+
+func oauthProfileEmail(ctx context.Context, rawURL, accessToken string) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
 	if err != nil {
-		return "", classErr("auth", "登录成功，但没有拿到邮箱地址")
+		return "", err
 	}
-	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
 	resp, err := oauthHTTP.Do(req)
 	if err != nil {
-		return "", classErr("connect", MsgConnect)
+		return "", err
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64*1024))
-	if err != nil || resp.StatusCode != http.StatusOK {
-		return "", classErr("auth", "登录成功，但没有拿到邮箱地址")
+	if err != nil {
+		return "", err
 	}
-	var profile struct {
-		EmailAddress string `json:"emailAddress"`
-		Email        string `json:"email"`
+	switch resp.StatusCode {
+	case http.StatusOK:
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return "", errProfileRejected
+	default:
+		return "", nil
 	}
+	return emailFromProfile(body), nil
+}
+
+func emailFromProfile(body []byte) string {
+	var profile map[string]any
 	if err := json.Unmarshal(body, &profile); err != nil {
-		return "", classErr("auth", "登录成功，但没有拿到邮箱地址")
+		return ""
 	}
-	email := strings.TrimSpace(profile.EmailAddress)
-	if email == "" {
-		email = strings.TrimSpace(profile.Email)
+	for _, key := range []string{"emailAddress", "email", "mail", "userPrincipalName", "preferred_username", "upn"} {
+		value := profileField(profile, key)
+		if email := mailboxClaim(value); email != "" {
+			return email
+		}
+		obj, _ := value.(map[string]any)
+		if email := mailboxClaim(profileField(obj, "address")); email != "" {
+			return email
+		}
 	}
-	if email == "" {
-		return "", classErr("auth", "登录成功，但没有拿到邮箱地址")
+	return ""
+}
+
+func profileField(profile map[string]any, name string) any {
+	for key, value := range profile {
+		if strings.EqualFold(key, name) {
+			return value
+		}
 	}
-	return email, nil
+	return nil
 }
 
 func emailFromJWT(raw string) string {
@@ -343,18 +434,15 @@ func emailFromJWT(raw string) string {
 	if len(parts) < 2 {
 		return ""
 	}
-	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	payload, err := decodeJWTPayload(parts[1])
 	if err != nil {
-		payload, err = base64.URLEncoding.DecodeString(parts[1])
-		if err != nil {
-			return ""
-		}
+		return ""
 	}
 	var claims map[string]any
 	if err := json.Unmarshal(payload, &claims); err != nil {
 		return ""
 	}
-	for _, key := range []string{"preferred_username", "upn", "unique_name", "email"} {
+	for _, key := range []string{"preferred_username", "upn", "email", "mail", "verified_primary_email", "unique_name"} {
 		if email := mailboxClaim(claims[key]); email != "" {
 			return email
 		}
@@ -362,9 +450,31 @@ func emailFromJWT(raw string) string {
 	return ""
 }
 
+func decodeJWTPayload(seg string) ([]byte, error) {
+	var last error
+	for _, enc := range []*base64.Encoding{base64.RawURLEncoding, base64.URLEncoding, base64.RawStdEncoding, base64.StdEncoding} {
+		payload, err := enc.DecodeString(seg)
+		if err == nil {
+			return payload, nil
+		}
+		last = err
+	}
+	return nil, last
+}
+
 func mailboxClaim(raw any) string {
 	value, _ := raw.(string)
 	value = strings.TrimSpace(value)
+	// Personal Microsoft accounts put the mailbox after a hash, as in
+	// live.com#name@hotmail.com. The part before the hash is not an address.
+	if hash := strings.LastIndex(value, "#"); hash >= 0 {
+		value = strings.TrimSpace(value[hash+1:])
+	}
+	if start := strings.LastIndex(value, "<"); start >= 0 {
+		if end := strings.LastIndex(value, ">"); end > start {
+			value = strings.TrimSpace(value[start+1 : end])
+		}
+	}
 	if strings.Count(value, "@") != 1 || strings.ContainsAny(value, " \t\r\n#<>\"'\\") {
 		return ""
 	}
@@ -795,7 +905,7 @@ func (l *oauthLoopback) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	code := strings.TrimSpace(q.Get("code"))
-	if code == "" || len(code) > 2048 || strings.ContainsAny(code, " \r\n") {
+	if code == "" || len(code) > 8192 || strings.ContainsAny(code, " \r\n") {
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
@@ -821,8 +931,8 @@ func (l *oauthLoopback) serve(w http.ResponseWriter, r *http.Request) {
 const oauthSuccessHTML = `<!DOCTYPE html>
 <html><head><meta charset="utf-8"><title>MaClaw</title></head>
 <body style="font-family:sans-serif;text-align:center;padding:60px">
-  <h2>授权成功</h2>
-  <p>请返回 MaClaw 继续使用。此页面将自动关闭。</p>
+  <h2>已收到授权</h2>
+  <p>请回到 MaClaw。登录结果会显示在邮箱设置里。此页面将自动关闭。</p>
   <script>setTimeout(()=>window.close(),3000)</script>
 </body></html>`
 

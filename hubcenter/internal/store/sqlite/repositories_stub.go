@@ -2681,7 +2681,10 @@ func (r *invitationCodeRouteRepo) Save(ctx context.Context, item *store.Invitati
 		ON CONFLICT(code) DO UPDATE SET
 			hub_id = excluded.hub_id,
 			tenant_id = excluded.tenant_id,
-			used_by_email = excluded.used_by_email
+			used_by_email = CASE
+				WHEN excluded.used_by_email != '' THEN excluded.used_by_email
+				ELSE invitation_code_routes.used_by_email
+			END
 	`, code, strings.TrimSpace(item.HubID), strings.TrimSpace(item.TenantID), strings.TrimSpace(strings.ToLower(item.UsedByEmail)), createdAt.UTC().Format(time.RFC3339))
 	return err
 }
@@ -2715,6 +2718,29 @@ func (r *invitationCodeRouteRepo) DeleteByHubID(ctx context.Context, hubID strin
 
 func (r *invitationCodeRouteRepo) ListAll(ctx context.Context) ([]*store.InvitationCodeRoute, error) {
 	rows, err := r.readDB.QueryContext(ctx, `SELECT code, hub_id, tenant_id, used_by_email, created_at FROM invitation_code_routes`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var items []*store.InvitationCodeRoute
+	for rows.Next() {
+		var item store.InvitationCodeRoute
+		var createdAt string
+		if err := rows.Scan(&item.Code, &item.HubID, &item.TenantID, &item.UsedByEmail, &createdAt); err != nil {
+			return nil, err
+		}
+		item.CreatedAt, _ = time.Parse(time.RFC3339, createdAt)
+		items = append(items, &item)
+	}
+	return items, rows.Err()
+}
+
+func (r *invitationCodeRouteRepo) ListByHubID(ctx context.Context, hubID string) ([]*store.InvitationCodeRoute, error) {
+	hubID = strings.TrimSpace(hubID)
+	if hubID == "" {
+		return nil, nil
+	}
+	rows, err := r.readDB.QueryContext(ctx, `SELECT code, hub_id, tenant_id, used_by_email, created_at FROM invitation_code_routes WHERE hub_id = ?`, hubID)
 	if err != nil {
 		return nil, err
 	}

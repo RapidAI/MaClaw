@@ -3,6 +3,7 @@
 package guiapp
 
 import (
+	"log"
 	"os"
 	stdruntime "runtime"
 	"sync/atomic"
@@ -33,6 +34,13 @@ func setupTray(app *App, appOptions *options.App) {
 	go func() {
 		// Lock the OS thread for the systray message loop on Windows.
 		stdruntime.LockOSThread()
+		// Windows 10+ turns a tray balloon into a toast and drops it unless
+		// this process has an explicit AppUserModelID. Set it before the icon exists.
+		id := brand.Current().ID
+		if id == "" {
+			id = "maclaw"
+		}
+		systray.SetAppUserModelID(id + ".Desktop")
 
 		systray.Run(func() {
 			// Wire quitSystray so FloatingAssistantManager.QuitApp can
@@ -139,7 +147,9 @@ func setupTray(app *App, appOptions *options.App) {
 			}
 
 			ShowNotification = func(title, message string, iconFlag uint32) {
-				_ = systray.ShowBalloonNotification(title, message, iconFlag)
+				if err := systray.ShowBalloonNotification(title, message, iconFlag); err != nil {
+					log.Printf("[tray] balloon: %v", err)
+				}
 			}
 
 			FlashAndBeep = func() {

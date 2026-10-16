@@ -39,9 +39,20 @@ var (
 // CenterSyncer is an optional callback invoked when invitation codes are
 // generated or consumed, to sync them to HubCenter for routing.
 type CenterSyncer interface {
-	SyncInvitationCodesToCenter(ctx context.Context, codes []string, tenantID string) error
-	DeleteInvitationCodesFromCenter(ctx context.Context, codes []string) error
-	MarkInvitationCodeUsedOnCenter(ctx context.Context, code string, email string) error
+	// InvitationSyncFingerprint identifies the configured HubCenter nodes.
+	// An empty fingerprint means the hub is not registered or has no center URL.
+	InvitationSyncFingerprint(ctx context.Context) (string, error)
+	// RetainInvitationCodes drops sync state for codes that are no longer unused.
+	RetainInvitationCodes(codes []string)
+	// SyncInvitationCodesToCenter reports accepted=true only after every
+	// configured HubCenter node has stored the routes. fingerprint is the node
+	// set that accepted the write. A nil error with accepted=false means the
+	// hub is not registered, or only some nodes stored the batch, so the caller
+	// must try again later.
+	SyncInvitationCodesToCenter(ctx context.Context, codes []string, tenantID string) (accepted bool, fingerprint string, err error)
+	DeleteInvitationCodesFromCenter(ctx context.Context, codes []string) (accepted bool, err error)
+	ForgetInvitationCodes(codes []string)
+	MarkInvitationCodeUsedOnCenter(ctx context.Context, code string, email string) (accepted bool, err error)
 }
 
 type Service struct {
@@ -51,6 +62,18 @@ type Service struct {
 
 	vipLookupMu    sync.RWMutex
 	vipLookupCache map[string]vipLookupCacheEntry
+
+	invitationSyncMu          sync.Mutex
+	invitationPushMu          sync.Mutex
+	syncedInvitationKey       map[string]invitationSyncAck
+	pendingInvitationUse      map[string]string
+	pendingInvitationDelete   map[string]struct{}
+	suppressedInvitationCodes map[string]struct{}
+}
+
+type invitationSyncAck struct {
+	tenantID    string
+	fingerprint string
 }
 
 type vipLookupCacheEntry struct {
@@ -184,7 +207,7 @@ func (s *Service) GenerateCodesForTenantWithOptions(ctx context.Context, tenantI
 			syncTenantID = store.DefaultTenantID
 		}
 		go func(codes []string, tenantID string) {
-			if err := s.syncer.SyncInvitationCodesToCenter(context.Background(), codes, tenantID); err != nil {
+			if err := s.pushInvitationCodes(context.Background(), tenantID, codes); err != nil {
 				log.Printf("[invitation] sync codes to hubcenter failed tenant=%s count=%d err=%v", tenantID, len(codes), err)
 			}
 		}(codeStrings, syncTenantID)
@@ -195,25 +218,80 @@ func (s *Service) GenerateCodesForTenantWithOptions(ctx context.Context, tenantI
 
 const invitationSyncBatchSize = 200
 
-// ReconcileInvitationCodes pushes every unused invitation code, including
-// codes owned by non-default tenants, to HubCenter. Generation sync is
-// best-effort; this runs from the center heartbeat so a failed push is retried
-// and codes created before a HubCenter node had the route still become routable.
+// ReconcileInvitationCodes pushes unused invitation codes that HubCenter has
+// not accepted yet, including codes owned by non-default tenants. Generation
+// sync is best-effort; this runs from the center heartbeat so a failed push
+// is retried and codes created before a HubCenter node had the route still
+// become routable. Codes already accepted are left alone until their tenant
+// changes or they leave the unused set.
 func (s *Service) ReconcileInvitationCodes(ctx context.Context) error {
 	if s == nil || s.syncer == nil || s.repo == nil {
 		return nil
 	}
-	codes, err := s.repo.ListUnused(ctx, "all")
+	var lastErr error
+	fingerprint, err := s.syncer.InvitationSyncFingerprint(ctx)
 	if err != nil {
 		return err
 	}
+	if fingerprint != "" {
+		codes, err := s.repo.ListUnused(ctx, "all")
+		if err != nil {
+			return err
+		}
+		s.syncer.RetainInvitationCodes(unusedInvitationCodeKeys(codes))
+		grouped, order := s.pendingInvitationSync(codes, fingerprint)
+		for _, tenantID := range order {
+			items := grouped[tenantID]
+			for start := 0; start < len(items); start += invitationSyncBatchSize {
+				end := start + invitationSyncBatchSize
+				if end > len(items) {
+					end = len(items)
+				}
+				batch := items[start:end]
+				if err := s.pushInvitationCodes(ctx, tenantID, batch); err != nil {
+					lastErr = err
+				}
+			}
+		}
+	}
+	if err := s.retryPendingInvitationDeletes(ctx); err != nil {
+		lastErr = err
+	}
+	if err := s.retryPendingInvitationUses(ctx); err != nil {
+		lastErr = err
+	}
+	return lastErr
+}
+
+func unusedInvitationCodeKeys(codes []*store.InvitationCode) []string {
+	keys := make([]string, 0, len(codes))
+	for _, item := range codes {
+		if item == nil {
+			continue
+		}
+		code := strings.ToUpper(strings.TrimSpace(item.Code))
+		if code == "" {
+			continue
+		}
+		keys = append(keys, code)
+	}
+	return keys
+}
+
+func (s *Service) pendingInvitationSync(codes []*store.InvitationCode, fingerprint string) (map[string][]string, []string) {
+	s.invitationSyncMu.Lock()
+	defer s.invitationSyncMu.Unlock()
+	if s.syncedInvitationKey == nil {
+		s.syncedInvitationKey = map[string]invitationSyncAck{}
+	}
+	current := make(map[string]struct{}, len(codes))
 	grouped := map[string][]string{}
 	order := make([]string, 0)
 	for _, item := range codes {
 		if item == nil {
 			continue
 		}
-		code := strings.TrimSpace(item.Code)
+		code := strings.ToUpper(strings.TrimSpace(item.Code))
 		if code == "" {
 			continue
 		}
@@ -221,26 +299,259 @@ func (s *Service) ReconcileInvitationCodes(ctx context.Context) error {
 		if tenantID == "" {
 			tenantID = store.DefaultTenantID
 		}
+		current[code] = struct{}{}
+		if _, suppressed := s.suppressedInvitationCodes[code]; suppressed {
+			continue
+		}
+		ack := s.syncedInvitationKey[code]
+		if ack.tenantID == tenantID && ack.fingerprint == fingerprint {
+			continue
+		}
 		if _, ok := grouped[tenantID]; !ok {
 			order = append(order, tenantID)
 		}
 		grouped[tenantID] = append(grouped[tenantID], code)
 	}
-	var lastErr error
-	for _, tenantID := range order {
-		items := grouped[tenantID]
-		for start := 0; start < len(items); start += invitationSyncBatchSize {
-			end := start + invitationSyncBatchSize
-			if end > len(items) {
-				end = len(items)
-			}
-			if err := s.syncer.SyncInvitationCodesToCenter(ctx, items[start:end], tenantID); err != nil {
-				log.Printf("[invitation] reconcile hubcenter sync failed tenant=%s count=%d err=%v", tenantID, end-start, err)
-				lastErr = err
-			}
+	for code := range s.syncedInvitationKey {
+		if _, ok := current[code]; !ok {
+			delete(s.syncedInvitationKey, code)
 		}
 	}
+	return grouped, order
+}
+
+func (s *Service) rememberInvitationSync(tenantID, fingerprint string, codes []string) {
+	if s == nil || fingerprint == "" || len(codes) == 0 {
+		return
+	}
+	s.invitationSyncMu.Lock()
+	defer s.invitationSyncMu.Unlock()
+	if s.syncedInvitationKey == nil {
+		s.syncedInvitationKey = map[string]invitationSyncAck{}
+	}
+	for _, code := range codes {
+		code = strings.ToUpper(strings.TrimSpace(code))
+		if code == "" {
+			continue
+		}
+		if _, suppressed := s.suppressedInvitationCodes[code]; suppressed {
+			continue
+		}
+		s.syncedInvitationKey[code] = invitationSyncAck{tenantID: tenantID, fingerprint: fingerprint}
+	}
+}
+
+func (s *Service) pushInvitationCodes(ctx context.Context, tenantID string, codes []string) error {
+	if s == nil || s.syncer == nil || len(codes) == 0 {
+		return nil
+	}
+	s.invitationPushMu.Lock()
+	defer s.invitationPushMu.Unlock()
+	live := s.unsuppressedInvitationCodes(codes)
+	var err error
+	if len(live) > 0 {
+		accepted, fingerprint, syncErr := s.syncer.SyncInvitationCodesToCenter(ctx, live, tenantID)
+		if syncErr != nil {
+			log.Printf("[invitation] sync codes to hubcenter failed tenant=%s count=%d err=%v", tenantID, len(live), syncErr)
+			err = syncErr
+		}
+		if accepted && fingerprint != "" {
+			s.rememberInvitationSync(tenantID, fingerprint, live)
+		}
+	}
+	if delErr := s.flushInvitationCodeDeletions(ctx); delErr != nil && err == nil {
+		err = delErr
+	}
+	return err
+}
+
+func (s *Service) unsuppressedInvitationCodes(codes []string) []string {
+	s.invitationSyncMu.Lock()
+	defer s.invitationSyncMu.Unlock()
+	live := make([]string, 0, len(codes))
+	for _, code := range codes {
+		normalized := strings.ToUpper(strings.TrimSpace(code))
+		if normalized == "" {
+			continue
+		}
+		if _, suppressed := s.suppressedInvitationCodes[normalized]; suppressed {
+			continue
+		}
+		live = append(live, normalized)
+	}
+	return live
+}
+
+func (s *Service) queueInvitationCodeDeletion(codes []string) {
+	if s == nil || s.syncer == nil || len(codes) == 0 {
+		return
+	}
+	normalized := make([]string, 0, len(codes))
+	s.invitationSyncMu.Lock()
+	if s.suppressedInvitationCodes == nil {
+		s.suppressedInvitationCodes = map[string]struct{}{}
+	}
+	if s.pendingInvitationDelete == nil {
+		s.pendingInvitationDelete = map[string]struct{}{}
+	}
+	for _, code := range codes {
+		code = strings.ToUpper(strings.TrimSpace(code))
+		if code == "" {
+			continue
+		}
+		s.suppressedInvitationCodes[code] = struct{}{}
+		s.pendingInvitationDelete[code] = struct{}{}
+		delete(s.syncedInvitationKey, code)
+		delete(s.pendingInvitationUse, code)
+		normalized = append(normalized, code)
+	}
+	s.invitationSyncMu.Unlock()
+	if len(normalized) == 0 {
+		return
+	}
+	s.syncer.ForgetInvitationCodes(normalized)
+	go func() {
+		s.invitationPushMu.Lock()
+		defer s.invitationPushMu.Unlock()
+		if err := s.flushInvitationCodeDeletions(context.Background()); err != nil {
+			log.Printf("[invitation] delete codes on hubcenter failed count=%d err=%v", len(normalized), err)
+		}
+	}()
+}
+
+func (s *Service) retryPendingInvitationDeletes(ctx context.Context) error {
+	if s == nil || s.syncer == nil {
+		return nil
+	}
+	s.invitationPushMu.Lock()
+	defer s.invitationPushMu.Unlock()
+	return s.flushInvitationCodeDeletions(ctx)
+}
+
+func (s *Service) flushInvitationCodeDeletions(ctx context.Context) error {
+	s.invitationSyncMu.Lock()
+	if len(s.pendingInvitationDelete) == 0 {
+		s.invitationSyncMu.Unlock()
+		return nil
+	}
+	codes := make([]string, 0, len(s.pendingInvitationDelete))
+	for code := range s.pendingInvitationDelete {
+		codes = append(codes, code)
+	}
+	s.invitationSyncMu.Unlock()
+	var lastErr error
+	for start := 0; start < len(codes); start += invitationSyncBatchSize {
+		end := start + invitationSyncBatchSize
+		if end > len(codes) {
+			end = len(codes)
+		}
+		batch := codes[start:end]
+		accepted, err := s.syncer.DeleteInvitationCodesFromCenter(ctx, batch)
+		if err != nil {
+			log.Printf("[invitation] delete codes on hubcenter failed count=%d err=%v", len(batch), err)
+			lastErr = err
+		}
+		if !accepted {
+			continue
+		}
+		s.invitationSyncMu.Lock()
+		for _, code := range batch {
+			delete(s.pendingInvitationDelete, code)
+		}
+		s.invitationSyncMu.Unlock()
+		s.syncer.ForgetInvitationCodes(batch)
+	}
 	return lastErr
+}
+
+func (s *Service) rememberPendingInvitationUse(code, email string) {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	email = strings.TrimSpace(strings.ToLower(email))
+	if s == nil || code == "" || email == "" {
+		return
+	}
+	s.invitationSyncMu.Lock()
+	defer s.invitationSyncMu.Unlock()
+	if s.pendingInvitationUse == nil {
+		s.pendingInvitationUse = map[string]string{}
+	}
+	s.pendingInvitationUse[code] = email
+}
+
+func (s *Service) clearPendingInvitationUse(code, email string) {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	email = strings.TrimSpace(strings.ToLower(email))
+	if s == nil || code == "" {
+		return
+	}
+	s.invitationSyncMu.Lock()
+	defer s.invitationSyncMu.Unlock()
+	if s.pendingInvitationUse[code] == email {
+		delete(s.pendingInvitationUse, code)
+	}
+}
+
+func (s *Service) retryPendingInvitationUses(ctx context.Context) error {
+	if s == nil || s.syncer == nil {
+		return nil
+	}
+	s.invitationSyncMu.Lock()
+	pending := make(map[string]string, len(s.pendingInvitationUse))
+	for code, email := range s.pendingInvitationUse {
+		pending[code] = email
+	}
+	s.invitationSyncMu.Unlock()
+	s.invitationPushMu.Lock()
+	defer s.invitationPushMu.Unlock()
+	var lastErr error
+	for code, email := range pending {
+		if s.invitationCodeSuppressed(code) {
+			s.clearPendingInvitationUse(code, email)
+			continue
+		}
+		accepted, err := s.syncer.MarkInvitationCodeUsedOnCenter(ctx, code, email)
+		if err != nil {
+			log.Printf("[invitation] retry mark used on hubcenter failed code=%s err=%v", code, err)
+			lastErr = err
+		}
+		if accepted {
+			s.clearPendingInvitationUse(code, email)
+		}
+	}
+	if delErr := s.flushInvitationCodeDeletions(ctx); delErr != nil && lastErr == nil {
+		lastErr = delErr
+	}
+	return lastErr
+}
+
+func (s *Service) invitationCodeSuppressed(code string) bool {
+	code = strings.ToUpper(strings.TrimSpace(code))
+	s.invitationSyncMu.Lock()
+	defer s.invitationSyncMu.Unlock()
+	_, ok := s.suppressedInvitationCodes[code]
+	return ok
+}
+
+func (s *Service) pushInvitationUse(code, email string) {
+	if s == nil || s.syncer == nil {
+		return
+	}
+	s.invitationPushMu.Lock()
+	defer s.invitationPushMu.Unlock()
+	if !s.invitationCodeSuppressed(code) {
+		accepted, err := s.syncer.MarkInvitationCodeUsedOnCenter(context.Background(), code, email)
+		if err != nil {
+			log.Printf("[invitation] mark used on hubcenter failed code=%s err=%v", code, err)
+		}
+		if accepted {
+			s.clearPendingInvitationUse(code, email)
+		} else {
+			s.rememberPendingInvitationUse(code, email)
+		}
+	}
+	if err := s.flushInvitationCodeDeletions(context.Background()); err != nil {
+		log.Printf("[invitation] delete codes on hubcenter failed err=%v", err)
+	}
 }
 
 // ValidateAndConsume validates that the code exists and is unused, then marks it used.
@@ -283,11 +594,7 @@ func (s *Service) ValidateAndConsumeForTenant(ctx context.Context, tenantID stri
 	// Notify HubCenter that this code has been consumed — mark the bound email
 	// on the routing record (preserves it for admin lookup and re-enrollment).
 	if s.syncer != nil {
-		go func(code, email string) {
-			if err := s.syncer.MarkInvitationCodeUsedOnCenter(context.Background(), code, email); err != nil {
-				log.Printf("[invitation] mark used on hubcenter failed code=%s err=%v", code, err)
-			}
-		}(code, email)
+		go s.pushInvitationUse(code, email)
 	}
 
 	return nil
@@ -346,6 +653,9 @@ func (s *Service) DeleteCode(ctx context.Context, id string) error {
 	if item != nil && item.UsedByEmail != "" {
 		s.invalidateVIPLookup(item.TenantID, item.UsedByEmail)
 	}
+	if item != nil {
+		s.queueInvitationCodeDeletion([]string{item.Code})
+	}
 	return nil
 }
 
@@ -360,14 +670,40 @@ func (s *Service) DeleteCodeByTenantEmail(ctx context.Context, tenantID, email s
 	if email == "" {
 		return 0, nil
 	}
+	codes := s.invitationCodesBoundToEmail(ctx, tenantID, email)
 	count, err := s.repo.DeleteByTenantEmail(ctx, tenantID, email)
 	if err != nil {
 		return count, err
 	}
 	if count > 0 {
 		s.invalidateVIPLookup(tenantID, email)
+		s.queueInvitationCodeDeletion(codes)
 	}
 	return count, nil
+}
+
+func (s *Service) invitationCodesBoundToEmail(ctx context.Context, tenantID, email string) []string {
+	if s == nil || s.repo == nil {
+		return nil
+	}
+	var codes []string
+	for offset := 0; ; offset += 100 {
+		items, total, err := s.repo.ListPagedByTenant(ctx, tenantID, "used", email, offset, 100)
+		if err != nil {
+			log.Printf("[invitation] list codes before delete failed tenant=%s email=%s err=%v", tenantID, email, err)
+			return codes
+		}
+		for _, item := range items {
+			if item == nil || !strings.EqualFold(strings.TrimSpace(item.UsedByEmail), email) {
+				continue
+			}
+			codes = append(codes, item.Code)
+		}
+		if len(items) == 0 || offset+len(items) >= total {
+			break
+		}
+	}
+	return codes
 }
 
 // GetCodeByEmail returns the invitation code bound to the given email.

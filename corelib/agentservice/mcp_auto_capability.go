@@ -80,6 +80,19 @@ func ExternalCapabilityNamespaceOf(id coretool.CapabilityID) string {
 	return externalNamespaceOf(id)
 }
 
+// installedMCPToolSummary is the model-facing description of one exact
+// installed-tool capability. It names the slugged tool and server so the
+// model can tell siblings apart. The slug is host-derived; vendor description
+// text never enters the prompt.
+func installedMCPToolSummary(id coretool.CapabilityID) string {
+	rest := strings.TrimPrefix(string(id), autoMCPCapabilityPrefix)
+	server, toolName, ok := strings.Cut(rest, ":")
+	if !ok || server == "" || toolName == "" {
+		return fmt.Sprintf("Installed MCP tool capability %s", id)
+	}
+	return fmt.Sprintf("Installed MCP tool %s on server %s.", toolName, server)
+}
+
 // AutoMCPCapabilityIDForBinding is AutoMCPCapabilityID without the error:
 // binding identity was already validated non-empty upstream, so a missing slug
 // can only come from an empty input and yields "" rather than a route.
@@ -118,7 +131,7 @@ func EnsureExternalCapabilityVocabulary(registry *coretool.CapabilityRegistry, c
 		ns := externalNamespaceOf(capID)
 		summary := fmt.Sprintf("Vendor-declared capability %s", capID)
 		if strings.HasPrefix(string(capID), autoMCPCapabilityPrefix) {
-			summary = fmt.Sprintf("Installed MCP tool capability %s", capID)
+			summary = installedMCPToolSummary(capID)
 		}
 		desc := coretool.CapabilityDescriptor{
 			ID:      capID,

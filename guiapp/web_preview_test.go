@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestSafeWebPreviewPathStaysInRoot(t *testing.T) {
@@ -146,6 +147,9 @@ func TestOpenWebPreviewServesDirectoryAndBlocksEscape(t *testing.T) {
 		t.Fatalf("same directory opened a second session: %s vs %s", other.Token, info.Token)
 	}
 
+	if _, err := app.OpenWebPreview("https://example.com/docs"); err == nil || !strings.Contains(err.Error(), "网络地址") {
+		t.Fatalf("url entry err = %v", err)
+	}
 	if _, err := app.OpenWebPreview(filepath.Join(dir, "css", "app.css")); err == nil || !strings.Contains(err.Error(), "HTML") {
 		t.Fatalf("css entry err = %v", err)
 	}
@@ -170,6 +174,102 @@ func TestOpenWebPreviewServesDirectoryAndBlocksEscape(t *testing.T) {
 	closedBody := readPreviewBody(t, closed)
 	if closed.StatusCode != http.StatusNotFound || strings.Contains(closedBody, "Hello page") {
 		t.Fatalf("closed session status %d body %s", closed.StatusCode, closedBody)
+	}
+}
+
+func TestOpenWebPreviewServesSVGWithoutHTMLBridge(t *testing.T) {
+	dir := t.TempDir()
+	svgPath := filepath.Join(dir, "icon.svg")
+	if err := os.WriteFile(svgPath, []byte(`<?xml version="1.0"?><svg xmlns="http://www.w3.org/2000/svg"><text>Icon</text></svg>`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{}
+	info, err := app.OpenWebPreview(svgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { app.CloseWebPreview(info.ID) })
+	if info.EntryPath != "icon.svg" {
+		t.Fatalf("entry path = %q", info.EntryPath)
+	}
+	res, err := http.Get(info.EntryURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readPreviewBody(t, res)
+	if res.StatusCode != http.StatusOK {
+		t.Fatalf("status %d body %s", res.StatusCode, body)
+	}
+	if !strings.Contains(res.Header.Get("Content-Type"), "image/svg+xml") {
+		t.Fatalf("content type %q", res.Header.Get("Content-Type"))
+	}
+	if strings.Contains(body, webPreviewBridgeName) || !strings.Contains(body, ">Icon<") {
+		t.Fatalf("svg body = %s", body)
+	}
+}
+
+func TestWebPreviewEvictionKeepsOpenSessions(t *testing.T) {
+	liveRoot := t.TempDir()
+	live := issueWebPreviewSession(liveRoot)
+	idleRoot := t.TempDir()
+	idle := issueWebPreviewSession(idleRoot)
+	t.Cleanup(func() {
+		webPreviewMu.Lock()
+		delete(webPreviewSessions, live)
+		delete(webPreviewSessions, idle)
+		webPreviewMu.Unlock()
+	})
+
+	webPreviewMu.Lock()
+	webPreviewSessions[live].lastUsed = time.Now().Add(-2 * webPreviewIdleTTL)
+	webPreviewSessions[idle].refs = 0
+	webPreviewSessions[idle].lastUsed = time.Now().Add(-2 * webPreviewIdleTTL)
+	webPreviewMu.Unlock()
+
+	extra := issueWebPreviewSession(t.TempDir())
+	t.Cleanup(func() {
+		webPreviewMu.Lock()
+		delete(webPreviewSessions, extra)
+		webPreviewMu.Unlock()
+	})
+
+	webPreviewMu.Lock()
+	defer webPreviewMu.Unlock()
+	if _, ok := webPreviewSessions[live]; !ok {
+		t.Fatal("open preview was evicted")
+	}
+	if _, ok := webPreviewSessions[idle]; ok {
+		t.Fatal("unused idle preview was kept")
+	}
+	if webPreviewSessions[live].refs != 1 {
+		t.Fatalf("live refs = %d", webPreviewSessions[live].refs)
+	}
+}
+
+func TestOpenWebPreviewStaysUpWhileThePageIsOpen(t *testing.T) {
+	dir := t.TempDir()
+	htmlPath := filepath.Join(dir, "index.html")
+	if err := os.WriteFile(htmlPath, []byte("<html>Stay</html>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	app := &App{}
+	info, err := app.OpenWebPreview(htmlPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { app.CloseWebPreview(info.ID) })
+
+	webPreviewMu.Lock()
+	webPreviewSessions[info.ID].lastUsed = time.Now().Add(-2 * webPreviewIdleTTL)
+	webPreviewMu.Unlock()
+
+	res, err := http.Get(info.EntryURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := readPreviewBody(t, res)
+	if res.StatusCode != http.StatusOK || !strings.Contains(body, "Stay") {
+		t.Fatalf("open preview after idle: %d %s", res.StatusCode, body)
 	}
 }
 
