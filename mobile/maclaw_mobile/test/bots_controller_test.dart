@@ -107,7 +107,7 @@ class _SignedInSessionController extends SessionController {
 }
 
 MobileBootstrap _botTestBootstrap() {
-  return MobileBootstrap(
+  return const MobileBootstrap(
     user: const MobileUser(
       userId: 'u1',
       email: 'a@example.com',
