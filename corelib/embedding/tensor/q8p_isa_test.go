@@ -11,8 +11,30 @@ import (
 func TestQ8PISADispatch(t *testing.T) {
 	t.Logf("auto ISA=%s available=%v avx512vnni=%v avxvnni=%v avx2=%v",
 		Q8PISAName(), Q8PAvailable(), hasAVX512VNNI, hasAVXVNNI, hasAVX2andFMA)
-	if !hasAVX512VNNI {
-		t.Fatal("test box expected to have AVX-512 VNNI")
+	// CI boxes vary in ISA (the noembedding job runs on AVX2-only runners),
+	// so this only asserts consistency between the detector and the
+	// dispatcher, not a specific ISA.
+	if !Q8PAvailable() && !hasAVX512VNNI && !hasAVXVNNI && !hasAVX2andFMA {
+		return // no asm on this box: auto must stay off
+	}
+	if !Q8PAvailable() {
+		t.Fatalf("auto ISA %s reported unavailable", Q8PISAName())
+	}
+	switch Q8PISAName() {
+	case "avx512":
+		if !hasAVX512VNNI {
+			t.Fatal("avx512 selected without hasAVX512VNNI")
+		}
+	case "avxvnni":
+		if !hasAVXVNNI {
+			t.Fatal("avxvnni selected without hasAVXVNNI")
+		}
+	case "avx2":
+		if !hasAVX2andFMA {
+			t.Fatal("avx2 selected without hasAVX2andFMA")
+		}
+	default:
+		t.Fatalf("unknown auto ISA %q", Q8PISAName())
 	}
 }
 

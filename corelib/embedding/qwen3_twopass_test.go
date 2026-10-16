@@ -1,16 +1,28 @@
 package embedding
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/RapidAI/CodeClaw/corelib/embedding/tensor"
+)
 
 func TestParseQwen3TwoPass(t *testing.T) {
 	all := qwen3TwoPass{true, true, true, true}
 	none := qwen3TwoPass{}
+	// The empty value defaults are ISA-aware: single-pass (off) on AVX2,
+	// two-pass everywhere on the faster ISAs. Compute the expected default
+	// from the same source the parser consults so the test is portable
+	// across CI runners.
+	wantDefault := all
+	if tensor.Q8PISAName() == "avx2" {
+		wantDefault = none
+	}
 	cases := []struct {
 		in   string
 		want qwen3TwoPass
 	}{
-		{"", all}, // default: two-pass everywhere
-		{"   ", all},
+		{"", wantDefault}, // default: ISA-aware two-pass choice
+		{"   ", wantDefault},
 		{"all", all},
 		{"none", none},
 		{"0", none},
@@ -19,9 +31,6 @@ func TestParseQwen3TwoPass(t *testing.T) {
 		{"qkv,o,gu,down", all},
 		{"none,qkv", qwen3TwoPass{qkv: true}}, // last non-none wins within list; none then qkv → qkv
 	}
-	// "none,qkv": our parser processes left-to-right; none clears, then qkv sets.
-	// Actually looking at the implementation: case "none","0" sets t = empty, then "qkv" sets qkv.
-	// So want is {qkv: true}. Good.
 
 	for _, c := range cases {
 		got := parseQwen3TwoPass(c.in)
