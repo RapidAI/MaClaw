@@ -71,6 +71,7 @@ type llmServiceAdminResponse struct {
 	DefaultNewUserCredits       float64                        `json:"default_new_user_credits,omitempty"`
 	DefaultNewUserBenefitMode   string                         `json:"default_new_user_benefit_mode"`
 	DefaultNewUserLimitCard     llmservice.NewUserLimitCard    `json:"default_new_user_limit_card,omitempty"`
+	DefaultModelRoles           llmservice.ModelRoles          `json:"default_model_roles,omitempty"`
 	TokensPerCredit             int                            `json:"tokens_per_credit,omitempty"`
 	ExposeAPIBaseURL            string                         `json:"expose_api_base_url,omitempty"`
 	ExposeBaseURL               string                         `json:"expose_base_url,omitempty"`
@@ -490,6 +491,7 @@ func UpdateLLMServicesAdminHandler(system store.SystemSettingsRepository, securi
 		_, cardsProvided := raw["cards"]
 		_, grantsProvided := raw["grants"]
 		_, newUserBenefitModeProvided := raw["default_new_user_benefit_mode"]
+		_, defaultModelRolesProvided := raw["default_model_roles"]
 
 		var req llmservice.Registry
 		if err := json.Unmarshal(body, &req); err != nil {
@@ -518,6 +520,10 @@ func UpdateLLMServicesAdminHandler(system store.SystemSettingsRepository, securi
 		if !newUserBenefitModeProvided && oldReg != nil {
 			req.DefaultNewUserBenefitMode = oldReg.NewUserBenefitMode()
 		}
+		// Older admin clients save the registry without role pins. Keep the
+		// tenant defaults and any per-user pins those payloads omit.
+		llmservice.PreserveOmittedDefaultModelRoles(&req, oldReg, defaultModelRolesProvided)
+		llmservice.PreserveOmittedUserModelRoles(&req, oldReg, userBindingModelRolesProvided(raw))
 		// system-free is reserved: cannot delete; access_policy forced free;
 		// SystemDefaultServiceGroupID always pinned to system-free.
 		llmservice.ProtectSystemFreeOnSave(&req, oldReg)
@@ -569,6 +575,31 @@ func UpdateLLMServicesAdminHandler(system store.SystemSettingsRepository, securi
 	}
 }
 
+// userBindingModelRolesProvided reports, per binding object, whether the
+// admin payload included model_roles. A missing user_bindings field returns
+// nil so the stored bindings are left to the existing omit behavior.
+func userBindingModelRolesProvided(raw map[string]json.RawMessage) []bool {
+	if raw == nil {
+		return nil
+	}
+	bindingsRaw, ok := raw["user_bindings"]
+	if !ok || len(bindingsRaw) == 0 {
+		return nil
+	}
+	var rawBindings []map[string]json.RawMessage
+	if err := json.Unmarshal(bindingsRaw, &rawBindings); err != nil {
+		return nil
+	}
+	flags := make([]bool, len(rawBindings))
+	for i, item := range rawBindings {
+		if item == nil {
+			continue
+		}
+		_, flags[i] = item["model_roles"]
+	}
+	return flags
+}
+
 // ResetLLMServiceNewUserLimitUsageHandler restores the configured five-hour
 // and daily allowance for every user's new-user limit-card grant.
 func ResetLLMServiceNewUserLimitUsageHandler(system store.SystemSettingsRepository, audits ...store.AdminAuditRepository) http.HandlerFunc {
@@ -608,6 +639,7 @@ type llmServiceBindingAuditSnapshot struct {
 	SystemDefaultServiceGroupID string                        `json:"system_default_service_group_id,omitempty"`
 	DefaultNewUserServiceGroups []string                      `json:"default_new_user_service_groups"`
 	DefaultNewUserBenefitMode   string                        `json:"default_new_user_benefit_mode"`
+	DefaultModelRoles           llmservice.ModelRoles         `json:"default_model_roles,omitempty"`
 	GroupBindings               []llmServiceBindingAuditGroup `json:"group_bindings"`
 	UserBindings                []llmServiceBindingAuditUser  `json:"user_bindings"`
 }
@@ -618,8 +650,9 @@ type llmServiceBindingAuditGroup struct {
 }
 
 type llmServiceBindingAuditUser struct {
-	Email           string   `json:"email"`
-	ServiceGroupIDs []string `json:"service_group_ids"`
+	Email           string                `json:"email"`
+	ServiceGroupIDs []string              `json:"service_group_ids"`
+	ModelRoles      llmservice.ModelRoles `json:"model_roles,omitempty"`
 }
 
 func cloneLLMServiceRegistryForAudit(reg *llmservice.Registry) llmservice.Registry {
@@ -645,6 +678,7 @@ func buildLLMServiceBindingAuditSnapshot(reg *llmservice.Registry) llmServiceBin
 		SystemDefaultServiceGroupID: clone.SystemDefaultServiceGroupID,
 		DefaultNewUserServiceGroups: append([]string(nil), clone.DefaultNewUserServiceGroups...),
 		DefaultNewUserBenefitMode:   clone.NewUserBenefitMode(),
+		DefaultModelRoles:           clone.DefaultModelRoles,
 		GroupBindings:               make([]llmServiceBindingAuditGroup, 0, len(clone.GroupBindings)),
 		UserBindings:                make([]llmServiceBindingAuditUser, 0, len(clone.UserBindings)),
 	}
@@ -655,10 +689,17 @@ func buildLLMServiceBindingAuditSnapshot(reg *llmservice.Registry) llmServiceBin
 		snapshot.GroupBindings = append(snapshot.GroupBindings, llmServiceBindingAuditGroup{GroupID: binding.GroupID, ServiceGroupIDs: append([]string(nil), binding.ServiceGroupIDs...)})
 	}
 	for _, binding := range clone.UserBindings {
-		if strings.TrimSpace(binding.Email) == "" || len(binding.ServiceGroupIDs) == 0 {
+		if strings.TrimSpace(binding.Email) == "" {
 			continue
 		}
-		snapshot.UserBindings = append(snapshot.UserBindings, llmServiceBindingAuditUser{Email: binding.Email, ServiceGroupIDs: append([]string(nil), binding.ServiceGroupIDs...)})
+		if len(binding.ServiceGroupIDs) == 0 && binding.ModelRoles == (llmservice.ModelRoles{}) {
+			continue
+		}
+		snapshot.UserBindings = append(snapshot.UserBindings, llmServiceBindingAuditUser{
+			Email:           binding.Email,
+			ServiceGroupIDs: append([]string(nil), binding.ServiceGroupIDs...),
+			ModelRoles:      binding.ModelRoles,
+		})
 	}
 	sort.Slice(snapshot.GroupBindings, func(i, j int) bool { return snapshot.GroupBindings[i].GroupID < snapshot.GroupBindings[j].GroupID })
 	sort.Slice(snapshot.UserBindings, func(i, j int) bool { return snapshot.UserBindings[i].Email < snapshot.UserBindings[j].Email })
@@ -5033,6 +5074,7 @@ func toLLMServiceAdminResponse(r *http.Request, reg *llmservice.Registry, provid
 		DefaultNewUserCredits:       reg.DefaultNewUserCredits,
 		DefaultNewUserBenefitMode:   reg.NewUserBenefitMode(),
 		DefaultNewUserLimitCard:     reg.DefaultNewUserLimitCard,
+		DefaultModelRoles:           reg.DefaultModelRoles,
 		TokensPerCredit:             reg.TokensPerCredit,
 		ExposeAPIBaseURL:            baseURL,
 		ExposeBaseURL:               strings.TrimRight(baseURL, "/") + "/chat/completions",
