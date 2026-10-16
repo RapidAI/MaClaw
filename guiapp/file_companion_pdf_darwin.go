@@ -236,11 +236,19 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"unsafe"
 )
 
+// fileCompanionQuartzRenderPtr is the code address of the Quartz renderer.
+// Go forbids comparing func values with ==, and a test that swaps the hook
+// must not take the batched Quartz path, so identity is checked through
+// reflect's code pointer.
+var fileCompanionQuartzRenderPtr uintptr
+
 func init() {
 	fileCompanionNativePDFRender = fileCompanionRenderPageQuartz
+	fileCompanionQuartzRenderPtr = reflect.ValueOf(fileCompanionRenderPageQuartz).Pointer()
 }
 
 // fileCompanionRenderPageQuartz rasterizes one page with the PDF engine that
@@ -284,7 +292,8 @@ func quartzPDFRenderError(rc int) error {
 // false when the active renderer is not Quartz, so the caller keeps its
 // per-page loop for test doubles.
 func fileCompanionQuartzRenderPages(ctx context.Context, source, dir string, pages []int, dpi int) (handled bool, err error) {
-	if fileCompanionNativePDFRender == nil || fileCompanionNativePDFRender != fileCompanionRenderPageQuartz {
+	if fileCompanionNativePDFRender == nil ||
+		reflect.ValueOf(fileCompanionNativePDFRender).Pointer() != fileCompanionQuartzRenderPtr {
 		return false, nil
 	}
 	if len(pages) == 0 {
