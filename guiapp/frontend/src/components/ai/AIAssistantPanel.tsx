@@ -118,6 +118,7 @@ import { useDialog } from "../CustomDialog";
 import { ComputerUseOperatorPanel } from "./ComputerUseOperatorPanel";
 import { ComputerUseQuickBar } from "./ComputerUseQuickBar";
 import { ChatTaskTray } from "./ChatTaskTray";
+import { useChatTaskActionBridge, useRunChatTaskInBackground } from "./useChatTaskPanelWiring";
 import { AssistantQuickSettingsBar } from "./AssistantQuickSettingsBar";
 import { ExpertTabEmptyBanner, ProjectPreparingBanner } from "./assistantPanelInlineBanners";
 import { AssistantQuickModelSwitcher } from "./AssistantQuickModelSwitcher";
@@ -5032,25 +5033,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             requestAnimationFrame(() => inputRef.current?.focus());
         }
     }, [clearSelectedFile, resetHistoryBrowsing, setPendingAttachments, updateInputValue]);
-    const handleRunChatTaskInBackground = useCallback(() => {
-        const text = (inputRef.current?.value ?? inputValue).trim();
-        if (!text || !dispatchChatTask) return;
-        clearComposerDraft({ clearAttachments: true });
-        const projectPath = isProjectTabActive ? activeTab.projectPath : "";
-        void dispatchChatTask(text, { session_key: activeSessionKey, project_path: projectPath || undefined });
-    }, [activeSessionKey, activeTab.projectPath, clearComposerDraft, dispatchChatTask, inputValue, isProjectTabActive]);
-    useEffect(() => {
-        const onAction = (event: Event) => {
-            const detail = (event as CustomEvent<{ action?: string; taskId?: string; text?: string }>).detail || {};
-            const taskId = String(detail.taskId || "").trim();
-            if (!taskId) return;
-            if (detail.action === "cancel") void cancelChatTask?.(taskId);
-            if (detail.action === "steer") void steerChatTask?.(taskId, String(detail.text || ""));
-            if (detail.action === "answer") void answerChatTask?.(taskId, String(detail.text || ""));
-        };
-        window.addEventListener("ai-chat-task-action", onAction);
-        return () => window.removeEventListener("ai-chat-task-action", onAction);
-    }, [answerChatTask, cancelChatTask, steerChatTask]);
+    useChatTaskActionBridge({ cancelChatTask, steerChatTask, answerChatTask });
+    const handleRunChatTaskInBackground = useRunChatTaskInBackground({
+        inputRef,
+        inputValue,
+        activeSessionKey,
+        projectPath: isProjectTabActive ? activeTab.projectPath || "" : "",
+        dispatchChatTask,
+        clearComposerDraft,
+    });
     const newConversationInFlightRef = useRef(false);
     const handlePlusMenuAction = useCallback((actionId: PlusMenuActionId) => {
         if (actionId === "newConversation") {
