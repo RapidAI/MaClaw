@@ -163,7 +163,7 @@ static NSImage *imageFromPNG(const void *pngData, int pngLen) {
 
 static void replacePetImage(NSImage *next) {
 	if (next == nil) return;
-	if (petImage != nil) [petImage release];
+	// ARC owns the strong global; assigning releases the previous image.
 	petImage = next;
 	if (petView == nil) return;
 	[petView setNeedsDisplay:YES];
@@ -230,10 +230,8 @@ static void replacePetImage(NSImage *next) {
 		item.target = self;
 		item.tag = items[i].tag;
 		[menu addItem:item];
-		[item release];
 	}
 	[NSMenu popUpContextMenu:menu withEvent:event forView:self];
-	[menu release];
 }
 
 - (void)maclawMenuAction:(id)sender {
@@ -245,12 +243,12 @@ static void replacePetImage(NSImage *next) {
 
 // A non-activating panel often receives mouseDown and then never gets
 // mouseDragged/mouseUp. Track the button here until it is released.
-// Retain the view and window so a hide during the gesture cannot free them
-// out from under this call.
+// ARC holds the view and the strong local holds the window, so a hide during
+// the gesture cannot free them out from under this call.
 - (void)mouseDown:(NSEvent *)event {
-	[self retain];
+	// ARC keeps self alive for the scope of this call, and the strong local
+	// holds the window, so the gesture survives a hide mid-drag.
 	NSWindow *tracked = floatingWin;
-	if (tracked != nil) [tracked retain];
 	if ((event.modifierFlags & NSEventModifierFlagControl) != 0) {
 		[self showContextMenu:event];
 	} else if (tracked != nil) {
@@ -311,14 +309,10 @@ static void replacePetImage(NSImage *next) {
 		}
 		if ([tracked isKeyWindow]) [tracked resignKeyWindow];
 	}
-	if (tracked != nil) [tracked release];
-	[self release];
 }
 
 - (void)rightMouseDown:(NSEvent *)event {
-	[self retain];
 	[self showContextMenu:event];
-	[self release];
 }
 
 @end
@@ -368,7 +362,6 @@ static int createFloatingWindowDarwin(int x, int y, int w, int h, const void *pn
 		MaclawPetView *view = [[MaclawPetView alloc] initWithFrame:NSMakeRect(0, 0, w, h)];
 		[floatingWin setContentView:view];
 		petView = view;
-		[view release];
 		replacePetImage(img);
 		movePetTopLeft(x, y);
 		ok = 1;
@@ -395,13 +388,9 @@ static void hideFloatingWindowDarwin(void) {
 
 static void destroyFloatingWindowDarwin(void) {
 	darwinSync(^{
-		if (petImage != nil) {
-			[petImage release];
-			petImage = nil;
-		}
-		if (petView != nil) {
-			petView = nil;
-		}
+		// ARC releases on assignment; clearing the strong globals is enough.
+		petImage = nil;
+		petView = nil;
 		if (floatingWin != nil) {
 			[floatingWin orderOut:nil];
 			[floatingWin close];
