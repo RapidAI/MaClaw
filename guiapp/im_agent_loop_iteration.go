@@ -172,11 +172,17 @@ func (h *IMMessageHandler) pendingSteerInjectionNote(userID string) string {
 	return "注意：你本轮发送的调整「" + truncateRunesV2(strings.Join(texts, "；"), 120) + "」尚未生效，将在下一轮对话自动带入。"
 }
 
+const liveSteerUserMessagePrefix = "[The user spoke while you were working]"
+
 // buildLiveSteerUserMessage gives the model the user's actual interruption and
 // conversational intent. The transport/UI deliberately does not synthesize an
 // acknowledgement: the next real model response should demonstrate that it
 // understood the interruption in whatever way fits the current context.
 func buildLiveSteerUserMessage(text string) string {
-	return "[The user spoke while you were working]\n" + strings.TrimSpace(text) +
+	return liveSteerUserMessagePrefix + "\n" + strings.TrimSpace(text) +
 		"\n\nTreat this as live steering within the current conversation. Re-check the next step and incorporate the user's addition or correction before continuing. Let the next visible response naturally show that you understood it, as in a real multi-person conversation: respond to the substance when useful, or simply let the changed work demonstrate it. Do not emit a canned receipt, do not mechanically say that it was received or attached, and do not force a quotation or acknowledgement when that would sound unnatural. Do not treat it as a separate new task."
+}
+
+func isLiveSteerUserMessage(text string) bool {
+	return strings.HasPrefix(strings.TrimSpace(text), liveSteerUserMessagePrefix)
 }

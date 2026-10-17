@@ -1779,6 +1779,27 @@ func TestClampNeedsToResidueRemainingDropsSpentFamily(t *testing.T) {
 	}
 }
 
+func TestPetitionClampKeepsParentFamilyAheadOfNewSibling(t *testing.T) {
+	parentID := "need:tool-head:information.search.web:abc"
+	siblingID := tool.RepeatSiblingNeedID(parentID, 1)
+	currentID := "need:information.search.web:current"
+	needs := []tool.CapabilityNeed{
+		{ID: currentID, Capability: "information.search.web"},
+		{ID: parentID, Capability: "information.search.web"},
+		{ID: siblingID, Capability: "information.search.web"},
+	}
+	ctx := withSemanticPetitionParentFamilies(context.Background(), tool.ToolPlan{
+		Selections: []tool.PlannedSelection{{NeedID: parentID}, {NeedID: siblingID}},
+	})
+	got := clampPetitionNeedsToResidue(needs, map[string]int{"information.search.web": 2}, ctx)
+	if !needIDPresent(got, parentID) || !needIDPresent(got, siblingID) {
+		t.Fatalf("parent search family was clamped off: %#v", got)
+	}
+	if needIDPresent(got, currentID) {
+		t.Fatalf("new search took a parent slot: %#v", got)
+	}
+}
+
 func TestSemanticSessionResidueFollowUpKeepsOriginalSummary(t *testing.T) {
 	if got := semanticResidueSummary("继续", "做一份项目周报"); got != "继续" {
 		t.Fatalf("summary=%q", got)

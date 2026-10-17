@@ -331,6 +331,21 @@ func TestTrayBalloonPlain(t *testing.T) {
 			in:   "**完成**了整理。\n\n[投递警告] push fail",
 			want: "完成了整理。\n\n[投递警告] push fail",
 		},
+		{
+			name: "markdown fence is the answer",
+			in:   "```markdown\n## 完成\n已更新三个文件。\n```",
+			want: "完成 已更新三个文件。",
+		},
+		{
+			name: "markdown fence keeps prose and drops inner code",
+			in:   "```md\n已完成。\n\n```go\nfmt.Println(\"hi\")\n```\n请看日志。\n```",
+			want: "已完成。 请看日志。",
+		},
+		{
+			name: "tilde rule does not hide the next line",
+			in:   "上面\n~~~\n下面",
+			want: "上面 下面",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -346,8 +361,28 @@ func TestTrayNotifyBodyKeepsWarningInsideBalloon(t *testing.T) {
 	if !strings.HasPrefix(got, "日报: ") || !strings.Contains(got, "\n\n[投递警告] push fail") {
 		t.Fatalf("body = %q", got)
 	}
-	if n := len([]rune(got)); n > trayInfoRunes {
-		t.Fatalf("len = %d, balloon holds %d", n, trayInfoRunes)
+	if n := utf16Units(got); n > trayInfoUnits {
+		t.Fatalf("units = %d, balloon holds %d", n, trayInfoUnits)
+	}
+}
+
+func TestTrayNotifyBodyCountsUTF16(t *testing.T) {
+	got := trayNotifyBody("日报", strings.Repeat("😀", 200)+"\n\n[投递警告] push fail")
+	if !strings.HasPrefix(got, "日报: ") || !strings.Contains(got, "\n\n[投递警告] push fail") {
+		t.Fatalf("body = %q", got)
+	}
+	if n := utf16Units(got); n > trayInfoUnits {
+		t.Fatalf("units = %d, balloon holds %d", n, trayInfoUnits)
+	}
+}
+
+func TestTrayTitleFitsUTF16(t *testing.T) {
+	got := trayTaskCompletedMessage(strings.Repeat("😀", 80))
+	if n := utf16Units(got); n > trayTitleUnits {
+		t.Fatalf("units = %d, title holds %d (%q)", n, trayTitleUnits, got)
+	}
+	if !strings.HasSuffix(got, "任务完成了") {
+		t.Fatalf("suffix lost: %q", got)
 	}
 }
 

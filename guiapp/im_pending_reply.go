@@ -208,11 +208,24 @@ func conversationExtensionHasUserMessage(current []agent.ConversationEntry, pref
 		return true
 	}
 	for _, entry := range current[prefixLen:] {
-		if entry.Role == "user" {
+		// A host continuation is the goal engine's next phase. It is stored
+		// as a user row, but it is not the person moving on from a question.
+		if entry.Role == "user" && !isHostGoalContinuationEntry(entry) {
 			return true
 		}
 	}
 	return false
+}
+
+func isHostGoalContinuationEntry(entry agent.ConversationEntry) bool {
+	if entry.Role != "user" {
+		return false
+	}
+	text, ok := entry.Content.(string)
+	if !ok {
+		return false
+	}
+	return isGoalSystemContinuation(text)
 }
 
 func formatPendingReplyHistoryExtension(current, prefix []agent.ConversationEntry) string {
@@ -277,6 +290,9 @@ func pendingQuestionIsAwaitingAnswer(question string, current []agent.Conversati
 	for i := len(current) - 1; i >= 0; i-- {
 		entry := current[i]
 		if entry.Role == "user" {
+			if isHostGoalContinuationEntry(entry) {
+				continue
+			}
 			return false
 		}
 		if entry.Role != "assistant" {
@@ -310,6 +326,11 @@ func pendingQuestionMatchesAssistant(question, assistantText string) bool {
 
 func (h *IMMessageHandler) bindPendingUserReplyAnswer(msg IMUserMessage, trimmed string, entries *[]agent.ConversationEntry, unfinishedSlot **agent.UnfinishedTaskSlot) (string, bool) {
 	if h == nil || msg.IsBackground || entries == nil || unfinishedSlot == nil {
+		return "", false
+	}
+	// The goal engine speaks next. That message is not the user's answer, so
+	// it must not consume a question that is still waiting for them.
+	if goalContinuationTurn(trimmed, msg.Platform) {
 		return "", false
 	}
 	// Structured internal commands (button clicks) are never "answers" to pending
@@ -382,8 +403,31 @@ func (h *IMMessageHandler) bindPendingUserReplyAnswer(msg IMUserMessage, trimmed
 	return "", false
 }
 
+// freshPendingAskUser reports a question that still owns the next message.
+// The goal engine must not take that turn.
+func (h *IMMessageHandler) freshPendingAskUser(userID string) bool {
+	if h == nil || strings.TrimSpace(userID) == "" {
+		return false
+	}
+	raw, ok := h.pendingAskUser.Load(userID)
+	if !ok {
+		return false
+	}
+	var history []agent.ConversationEntry
+	if h.memory != nil {
+		history = h.memory.Load(userID)
+	}
+	_, fresh := pendingAskUserForCurrentHistory(raw, history)
+	return fresh
+}
+
 func (h *IMMessageHandler) consumePendingAskUserAnswer(userID, trimmed string, entries []agent.ConversationEntry) (string, *agent.WorkingState, bool, bool) {
 	if h == nil {
+		return "", nil, false, false
+	}
+	// The goal engine speaks next. That message is not the user's answer, so
+	// it must not resume the question that is still waiting for them.
+	if goalContinuationTurn(trimmed, "") {
 		return "", nil, false, false
 	}
 	// Structured internal commands (button clicks such as

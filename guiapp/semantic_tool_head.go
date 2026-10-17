@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -34,11 +35,13 @@ var toolHeadPrivilegedReadCapabilities = map[tool.CapabilityID]bool{
 // The head does not raise a privilege the intent plan did not already accept
 // unless its own probability meets the same write floor as an L2 grant
 // (ReviewedIntentMinimumConfidence). Ordinary read-only capabilities are
-// candidates at the head's theta. Mailbox and audit reads use the write
-// floor. Every added need is optional, so a light lookup budget still
+// candidates at the head's theta. Latent archetype companions, mailbox
+// reads, and audit reads use the write floor: theta only makes a legacy
+// name visible, and an unlimited semantic budget would select the need.
+// Every added need is optional, so a light lookup budget still
 // keeps its required search and drops the extras.
 // Names that need a trusted artifact are not minted here.
-func (h *IMMessageHandler) unionToolHeadNeeds(registry *tool.CapabilityRegistry, needs []tool.CapabilityNeed, classification intent.ClassificationResult) []tool.CapabilityNeed {
+func (h *IMMessageHandler) unionToolHeadNeeds(ctx context.Context, registry *tool.CapabilityRegistry, needs []tool.CapabilityNeed, classification intent.ClassificationResult) []tool.CapabilityNeed {
 	if h == nil || h.toolRouter == nil || registry == nil || len(classification.QueryVec) == 0 {
 		return needs
 	}
@@ -58,7 +61,12 @@ func (h *IMMessageHandler) unionToolHeadNeeds(registry *tool.CapabilityRegistry,
 			unmapped++
 			continue
 		}
-		if capabilityNeedPresent(needs, capability) {
+		// A cold plan already declared this capability, so a second family would
+		// only raise a ceiling the intent pass already set. A petition re-plan
+		// is different: the added label mints a new need id for a capability
+		// the parent already published as a tool-head family. Skipping here
+		// drops that family, and the expansion validator rejects the child.
+		if capabilityNeedPresent(needs, capability) && !hasPetitionParentFamilies(ctx) {
 			continue
 		}
 		if toolHeadArtifactBoundCapabilities[capability] {
@@ -71,7 +79,8 @@ func (h *IMMessageHandler) unionToolHeadNeeds(registry *tool.CapabilityRegistry,
 			continue
 		}
 		readOnly := semanticReadOnlyGovernedLabels[label]
-		if (!readOnly || toolHeadPrivilegedReadCapabilities[capability]) && score.Prob < agentservice.ReviewedIntentMinimumConfidence {
+		latent := agentservice.LatentArchetypeCapability(capability, agentservice.ArchetypeBundleKey(classification))
+		if (!readOnly || latent || toolHeadPrivilegedReadCapabilities[capability]) && score.Prob < agentservice.ReviewedIntentMinimumConfidence {
 			held = append(held, fmt.Sprintf("%s@%.2f<%.2f", score.Tool, score.Prob, agentservice.ReviewedIntentMinimumConfidence))
 			continue
 		}
@@ -84,17 +93,6 @@ func (h *IMMessageHandler) unionToolHeadNeeds(registry *tool.CapabilityRegistry,
 			held = append(held, fmt.Sprintf("%s@%.2f unknown-capability", score.Tool, score.Prob))
 			continue
 		}
-		// A pure lookup leaves web_fetch latent: the first face is search, and
-		// a lookup continuation adds the multi-page family. A document or
-		// office composite already has to finish a file. The archetype lists
-		// fetch and then refuses to infer it from the label; a head score at
-		// the write floor is that missing declaration. The reviewed template
-		// still supplies the five-call family, and ForceOptional keeps the
-		// first call from blocking search.
-		if template.Capability == tool.CapabilityInformationFetchWeb && !toolHeadPromotesLatentFetch(classification, score.Prob) {
-			held = append(held, fmt.Sprintf("%s@%.2f latent", score.Tool, score.Prob))
-			continue
-		}
 		// Keep the reviewed repeat budget. SSH, browser, and search were
 		// raised above one call because a single invocation exhausted the
 		// quota mid-task. ForceOptional is what keeps a light lookup from
@@ -105,19 +103,24 @@ func (h *IMMessageHandler) unionToolHeadNeeds(registry *tool.CapabilityRegistry,
 			EvidenceIDs:   []string{"tool-head:" + score.Tool},
 			ForceOptional: true,
 		})
+		if len(siblings) == 0 {
+			continue
+		}
+		if capabilityNeedPresent(needs, capability) {
+			if !parentPlanHasNeedFamily(ctx, siblings[0].ID) {
+				continue
+			}
+			// Same contract, new id: keep the parent's family. A different
+			// qualifier is a real addition (reference search beside current)
+			// and stays for the expansion validator.
+			needs = dropSameContractFamilies(needs, siblings[0])
+		}
 		needs = append(needs, siblings...)
 		added = append(added, fmt.Sprintf("%s:%s@%.2f", score.Tool, capability, score.Prob))
 	}
 	log.Printf("[tool-head] semantic top=%s@%.2f add=%s hold=%s unmapped=%d",
 		scores[0].Tool, scores[0].Prob, toolHeadLogList(added), toolHeadLogList(held), unmapped)
 	return needs
-}
-
-func toolHeadPromotesLatentFetch(classification intent.ClassificationResult, prob float64) bool {
-	if prob < agentservice.ReviewedIntentMinimumConfidence {
-		return false
-	}
-	return classification.HasLabel(intent.LabelDocumentGenerate) || classification.HasLabel(intent.LabelOffice)
 }
 
 func toolHeadTemplate(label intent.IntentLabel, capability tool.CapabilityID) (agentservice.IntentCapabilityNeedTemplate, bool) {
@@ -127,6 +130,41 @@ func toolHeadTemplate(label intent.IntentLabel, capability tool.CapabilityID) (a
 		}
 	}
 	return agentservice.IntentCapabilityNeedTemplate{}, false
+}
+
+func hasPetitionParentFamilies(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	families, _ := ctx.Value(semanticPetitionParentFamiliesKey{}).(map[string]struct{})
+	return len(families) > 0
+}
+
+func parentPlanHasNeedFamily(ctx context.Context, needID string) bool {
+	if ctx == nil {
+		return false
+	}
+	families, _ := ctx.Value(semanticPetitionParentFamiliesKey{}).(map[string]struct{})
+	if len(families) == 0 {
+		return false
+	}
+	_, ok := families[tool.RepeatFamilyKey(needID)]
+	return ok
+}
+
+// dropSameContractFamilies removes a petition label's re-mint of the same
+// capability and qualifiers. The parent already published that contract
+// under the tool-head family id.
+func dropSameContractFamilies(needs []tool.CapabilityNeed, keep tool.CapabilityNeed) []tool.CapabilityNeed {
+	family := tool.RepeatFamilyKey(keep.ID)
+	out := make([]tool.CapabilityNeed, 0, len(needs))
+	for _, need := range needs {
+		if need.Capability == keep.Capability && tool.RepeatFamilyKey(need.ID) != family && sameSemanticQualifiers(need.Qualifiers, keep.Qualifiers) {
+			continue
+		}
+		out = append(out, need)
+	}
+	return out
 }
 
 func toolHeadLogList(items []string) string {

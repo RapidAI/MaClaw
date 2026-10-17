@@ -492,6 +492,11 @@ func (h *IMMessageHandler) updatePendingUserReplyFromHistory(userID string, hist
 	if _, ok := h.suppressPendingUserReplyUpdate.Load(userID); ok {
 		return
 	}
+	// The goal engine owns the next turn. This essay is not a question for
+	// the user, and an older pending question stays until a real reply arrives.
+	if savedTurnIsGoalContinuation(history) {
+		return
+	}
 	assistantText := sanitizePendingUserReplyQuestion(firstNonEmptyTraceText(resp.Text, latestAssistantText(history)))
 	if assistantText == "" {
 		h.pendingUserReply.Delete(userID)
@@ -513,6 +518,30 @@ func (h *IMMessageHandler) updatePendingUserReplyFromHistory(userID string, hist
 		h.pendingUserReply.Store(userID, &pendingUserReplyState{Question: truncateRunes(assistantText, 500), History: historyCopy, Timestamp: time.Now()})
 		log.Printf("[PendingUserReply] stored pending text reply context for user=%s historyLen=%d question_len=%d", userID, len(historyCopy), len([]rune(assistantText)))
 	}()
+}
+
+// savedTurnIsGoalContinuation reports that the history being saved belongs to
+// a host goal phase. The opener is the latest user message that is not a live
+// steer. An older continuation behind that opener does not count.
+func savedTurnIsGoalContinuation(history []agent.ConversationEntry) bool {
+	return goalContinuationTurn(turnOpeningUserText(history), "")
+}
+
+func turnOpeningUserText(history []agent.ConversationEntry) string {
+	for i := len(history) - 1; i >= 0; i-- {
+		if !strings.EqualFold(strings.TrimSpace(history[i].Role), "user") {
+			continue
+		}
+		text, ok := history[i].Content.(string)
+		if !ok {
+			return ""
+		}
+		if isLiveSteerUserMessage(text) {
+			continue
+		}
+		return text
+	}
+	return ""
 }
 
 func sanitizePendingUserReplyQuestion(text string) string {

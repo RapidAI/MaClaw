@@ -154,6 +154,280 @@ func TestGoalContinuationSkipsSemanticClassification(t *testing.T) {
 	}
 }
 
+func TestGoalContinuationWaitsForAskUserButNotAProseQuestion(t *testing.T) {
+	userID := "goal-ask-wait"
+	store := goal.NewStore("")
+	g, err := store.Set(userID, "做游戏", goal.WithMaxTurns(5))
+	if err != nil {
+		t.Fatalf("Set goal: %v", err)
+	}
+	engine := NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	handler := &IMMessageHandler{app: &App{goalContinuation: engine}}
+
+	handler.pendingUserReply.Store(userID, &pendingUserReplyState{
+		Question:  "半径怎么取？",
+		History:   []agent.ConversationEntry{{Role: "assistant", Content: "半径怎么取？"}},
+		Timestamp: time.Now(),
+	})
+	handler.maybeScheduleGoalContinuation(userID, &IMAgentResponse{Text: "半径怎么取？"}, "goal-continuation")
+	if !goalTimerScheduled(t, engine, userID) {
+		t.Fatal("a prose question must still schedule the next goal turn")
+	}
+	engine.CancelPending(userID)
+
+	handler.pendingAskUser.Store(userID, &pendingAskUserState{
+		Question:  "半径用 10 还是 20？",
+		History:   []agent.ConversationEntry{{Role: "assistant", Content: "半径用 10 还是 20？"}},
+		Timestamp: time.Now(),
+	})
+	handler.maybeScheduleGoalContinuation(userID, &IMAgentResponse{Text: "半径用 10 还是 20？", InputTokens: 10, OutputTokens: 5}, "goal-continuation")
+	if goalTimerScheduled(t, engine, userID) {
+		t.Fatal("ask_user must hold the next continuation")
+	}
+	held := store.Get(userID)
+	if held == nil || held.GoalID != g.GoalID || held.Status != goal.StatusActive || held.TurnsUsed != 2 {
+		t.Fatalf("ask_user wait changed the goal: %+v", held)
+	}
+
+	handler.pendingAskUser.Store(userID, &pendingAskUserState{
+		Question:  "过期的问题",
+		Timestamp: time.Now().Add(-pendingReplyTTL - time.Second),
+	})
+	handler.maybeScheduleGoalContinuation(userID, &IMAgentResponse{Text: "继续"}, "desktop")
+	if !goalTimerScheduled(t, engine, userID) {
+		t.Fatal("an expired ask_user must not keep the goal waiting")
+	}
+}
+
+func TestAskUserTurnDoesNotScheduleAfterTheAnswerClearsIt(t *testing.T) {
+	userID := "goal-ask-late"
+	store := goal.NewStore("")
+	g, err := store.Set(userID, "做游戏", goal.WithMaxTurns(5))
+	if err != nil {
+		t.Fatalf("Set goal: %v", err)
+	}
+	if err := store.SavePlan(userID, g.GoalID, "先做物理", []goal.Step{{Title: "物理"}}, []string{"能发射"}); err != nil {
+		t.Fatalf("SavePlan: %v", err)
+	}
+	engine := NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	handler := &IMMessageHandler{app: &App{goalContinuation: engine}}
+
+	handler.maybeScheduleGoalContinuation(userID, &IMAgentResponse{
+		Text:           "半径用 10 还是 20？",
+		ResponseSource: imResponseSourceAskUser.String(),
+	}, "goal-continuation")
+	if goalTimerScheduled(t, engine, userID) {
+		t.Fatal("the ask_user turn must not schedule once the answer has already cleared the pending question")
+	}
+
+	engine.scheduleDelayed(userID, g.GoalID)
+	handler.maybeScheduleGoalContinuation(userID, &IMAgentResponse{
+		Text:           "半径用 10 还是 20？",
+		ResponseSource: imResponseSourceAskUser.String(),
+	}, "goal-continuation")
+	if !goalTimerScheduled(t, engine, userID) {
+		t.Fatal("a late ask_user post-loop must leave the continuation queued by the answer")
+	}
+	if got := store.Get(userID); got == nil || got.Status != goal.StatusActive {
+		t.Fatalf("goal status = %+v", got)
+	}
+}
+
+func TestLateAskUserPostLoopKeepsTheNextTurnsExpect(t *testing.T) {
+	userID := "goal-ask-expect"
+	store := goal.NewStore("")
+	g, err := store.Set(userID, "做游戏", goal.WithMaxTurns(5))
+	if err != nil {
+		t.Fatalf("Set goal: %v", err)
+	}
+	if err := store.SavePlan(userID, g.GoalID, "先做物理", []goal.Step{{Title: "物理"}}, []string{"能发射"}); err != nil {
+		t.Fatalf("SavePlan: %v", err)
+	}
+	engine := NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	handler := &IMMessageHandler{app: &App{goalContinuation: engine}}
+
+	engine.noteContinuationExpect(userID, store.Get(userID))
+	owned := engine.peekContinuationExpect(userID)
+	handler.maybeScheduleGoalContinuationOwned(userID, &IMAgentResponse{
+		ResponseSource: imResponseSourceAskUser.String(),
+	}, "goal-continuation", owned, true)
+	if got := engine.peekContinuationExpect(userID); got.goalID != "" {
+		t.Fatalf("this turn's expect should be retired, got %+v", got)
+	}
+
+	engine.noteContinuationExpect(userID, store.Get(userID))
+	owned = engine.peekContinuationExpect(userID)
+	if err := store.UpdateStep(userID, g.GoalID, 1, goal.StepProgress, "人还没选半径"); err != nil {
+		t.Fatalf("UpdateStep: %v", err)
+	}
+	engine.noteContinuationExpect(userID, store.Get(userID))
+	next := engine.peekContinuationExpect(userID)
+	handler.maybeScheduleGoalContinuationOwned(userID, &IMAgentResponse{
+		ResponseSource: imResponseSourceAskUser.String(),
+	}, "goal-continuation", owned, true)
+	if got := engine.peekContinuationExpect(userID); got != next {
+		t.Fatalf("late ask_user post-loop retired the next turn's expect: got %+v want %+v", got, next)
+	}
+
+	engine.noteContinuationExpect(userID, store.Get(userID))
+	owned = engine.peekContinuationExpect(userID)
+	engine.noteContinuationExpect(userID, store.Get(userID))
+	next = engine.peekContinuationExpect(userID)
+	if next.generation == 0 || next.generation == owned.generation {
+		t.Fatalf("same step reused a generation: owned %+v next %+v", owned, next)
+	}
+	if next.stepIndex != owned.stepIndex || next.stepStatus != owned.stepStatus || next.stepResult != owned.stepResult {
+		t.Fatalf("step identity changed: owned %+v next %+v", owned, next)
+	}
+	handler.maybeScheduleGoalContinuationOwned(userID, &IMAgentResponse{
+		ResponseSource: imResponseSourceAskUser.String(),
+	}, "goal-continuation", owned, true)
+	if got := engine.peekContinuationExpect(userID); got != next {
+		t.Fatalf("late ask_user post-loop retired the same-step note: got %+v want %+v", got, next)
+	}
+}
+
+func TestOwnedContinuationStillSchedulesItsOwnTurn(t *testing.T) {
+	userID := "goal-owned-schedule"
+	store := goal.NewStore("")
+	g, err := store.Set(userID, "做游戏", goal.WithMaxTurns(5))
+	if err != nil {
+		t.Fatalf("Set goal: %v", err)
+	}
+	if err := store.SavePlan(userID, g.GoalID, "先做物理", []goal.Step{{Title: "物理"}}, []string{"能发射"}); err != nil {
+		t.Fatalf("SavePlan: %v", err)
+	}
+	engine := NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	handler := &IMMessageHandler{app: &App{goalContinuation: engine}}
+
+	engine.noteContinuationExpect(userID, store.Get(userID))
+	owned := engine.peekContinuationExpect(userID)
+	handler.maybeScheduleGoalContinuationOwned(userID, &IMAgentResponse{TraceEventCount: 1}, "goal-continuation", owned, true)
+	if got := engine.peekContinuationExpect(userID); got.goalID != "" {
+		t.Fatalf("this turn's note should be retired, got %+v", got)
+	}
+	if !goalTimerScheduled(t, engine, userID) {
+		t.Fatal("this turn should schedule the next continuation")
+	}
+	stored := store.Get(userID)
+	if stored == nil || stored.Status != goal.StatusActive || stored.TurnsUsed != 1 {
+		t.Fatalf("usage = %+v", stored)
+	}
+}
+
+func TestLateContinuationPostLoopLeavesTheNextTurnsExpect(t *testing.T) {
+	userID := "goal-late-same-step"
+	store := goal.NewStore("")
+	g, err := store.Set(userID, "做游戏", goal.WithMaxTurns(5))
+	if err != nil {
+		t.Fatalf("Set goal: %v", err)
+	}
+	if err := store.SavePlan(userID, g.GoalID, "先做物理", []goal.Step{{Title: "物理"}}, []string{"能发射"}); err != nil {
+		t.Fatalf("SavePlan: %v", err)
+	}
+	engine := NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	handler := &IMMessageHandler{app: &App{goalContinuation: engine}}
+
+	engine.noteContinuationExpect(userID, store.Get(userID))
+	owned := engine.peekContinuationExpect(userID)
+	engine.scheduleDelayed(userID, g.GoalID)
+	engine.noteContinuationExpect(userID, store.Get(userID))
+	next := engine.peekContinuationExpect(userID)
+	if next.generation == owned.generation || next.stepStatus != owned.stepStatus || next.stepResult != owned.stepResult {
+		t.Fatalf("successor note = %+v owned %+v", next, owned)
+	}
+	engine.mu.Lock()
+	gen := engine.scheduleGen[userID]
+	engine.mu.Unlock()
+
+	handler.maybeScheduleGoalContinuationOwned(userID, &IMAgentResponse{Text: "还在做物理"}, "goal-continuation", owned, true)
+	if got := engine.peekContinuationExpect(userID); got != next {
+		t.Fatalf("late post-loop retired the next note: got %+v want %+v", got, next)
+	}
+	if !goalTimerScheduled(t, engine, userID) {
+		t.Fatal("late post-loop dropped the queued continuation")
+	}
+	engine.mu.Lock()
+	gotGen := engine.scheduleGen[userID]
+	engine.mu.Unlock()
+	if gotGen != gen {
+		t.Fatalf("late post-loop replaced the timer: gen %d -> %d", gen, gotGen)
+	}
+	stored := store.Get(userID)
+	if stored == nil || stored.Status != goal.StatusActive || stored.TurnsUsed != 1 {
+		t.Fatalf("usage = %+v", stored)
+	}
+}
+
+func TestLateTurnErrorKeepsAStoredPlanAndTheNextExpect(t *testing.T) {
+	userID := "goal-late-error"
+	store := goal.NewStore("")
+	g, err := store.Set(userID, "做游戏", goal.WithMaxTurns(5))
+	if err != nil {
+		t.Fatalf("Set goal: %v", err)
+	}
+	engine := NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	handler := &IMMessageHandler{app: &App{goalContinuation: engine}}
+
+	engine.noteContinuationExpect(userID, store.Get(userID))
+	owned := engine.peekContinuationExpect(userID)
+	if err := store.SavePlan(userID, g.GoalID, "先做物理", []goal.Step{{Title: "物理"}}, []string{"能发射"}); err != nil {
+		t.Fatalf("SavePlan: %v", err)
+	}
+	engine.scheduleDelayed(userID, g.GoalID)
+	engine.noteContinuationExpect(userID, store.Get(userID))
+	next := engine.peekContinuationExpect(userID)
+	engine.mu.Lock()
+	gen := engine.scheduleGen[userID]
+	engine.mu.Unlock()
+
+	handler.maybeScheduleGoalContinuationOwned(userID, &IMAgentResponse{Error: "编译失败"}, "goal-continuation", owned, true)
+	got := store.Get(userID)
+	if got == nil || got.Status != goal.StatusActive || len(got.Steps) != 1 {
+		t.Fatalf("stored plan must survive the late error: %+v", got)
+	}
+	if peeked := engine.peekContinuationExpect(userID); peeked != next {
+		t.Fatalf("late error retired the next note: got %+v want %+v", peeked, next)
+	}
+	if !goalTimerScheduled(t, engine, userID) {
+		t.Fatal("late error cancelled the queued continuation")
+	}
+	engine.mu.Lock()
+	gotGen := engine.scheduleGen[userID]
+	engine.mu.Unlock()
+	if gotGen != gen {
+		t.Fatalf("late error replaced the timer: gen %d -> %d", gen, gotGen)
+	}
+
+	userID = "goal-late-error-open"
+	if _, err := store.Set(userID, "做游戏"); err != nil {
+		t.Fatalf("Set goal: %v", err)
+	}
+	engine = NewGoalContinuationEngine(store, nil)
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	handler = &IMMessageHandler{app: &App{goalContinuation: engine}}
+	engine.noteContinuationExpect(userID, store.Get(userID))
+	owned = engine.peekContinuationExpect(userID)
+	engine.noteContinuationExpect(userID, store.Get(userID))
+	handler.maybeScheduleGoalContinuationOwned(userID, &IMAgentResponse{Error: "编译失败"}, "goal-continuation", owned, true)
+	got = store.Get(userID)
+	if got == nil || got.Status != goal.StatusFailed || !strings.Contains(got.Summary, "编译失败") {
+		t.Fatalf("open contract should still fail: %+v", got)
+	}
+}
+
 func TestMaybeScheduleGoalContinuationSkipsAfterUserCancel(t *testing.T) {
 	store := goal.NewStore("")
 	g, err := store.Set("desktop-user", "keep working", goal.WithMaxTurns(3))
@@ -235,8 +509,7 @@ func TestGoalStepProgressKeepsTheFollowingTurnOnTheSameStep(t *testing.T) {
 		t.Fatalf("progress = %q", progress)
 	}
 	stored := h.getGoalStore().Get(userID)
-	engine := NewGoalContinuationEngine(h.getGoalStore(), nil)
-	display := engine.buildContinuationDisplayText(stored)
+	display := buildContinuationDisplayText(stored)
 	if !strings.Contains(display, "目标清单") || !strings.Contains(display, "→ 1. 工程骨架") || !strings.Contains(display, "○ 2. 物理内核") || strings.Contains(display, "/goal") {
 		t.Fatalf("display = %q", display)
 	}
@@ -251,7 +524,7 @@ func TestGoalStepProgressKeepsTheFollowingTurnOnTheSameStep(t *testing.T) {
 		t.Fatalf("done = %q", done)
 	}
 	stored = h.getGoalStore().Get(userID)
-	display = engine.buildContinuationDisplayText(stored)
+	display = buildContinuationDisplayText(stored)
 	if !strings.Contains(display, "✓ 1. 工程骨架") || !strings.Contains(display, "→ 2. 物理内核") || strings.Contains(display, "/goal") {
 		t.Fatalf("next display = %q", display)
 	}
@@ -463,6 +736,14 @@ func TestCodingGoalToolRejectionIsAFailedCall(t *testing.T) {
 	}
 }
 
+func goalTimerScheduled(t *testing.T, engine *GoalContinuationEngine, userID string) bool {
+	t.Helper()
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	_, ok := engine.scheduledTimers[userID]
+	return ok
+}
+
 func TestGoalExecuteTurnMustRecordTheStep(t *testing.T) {
 	store := goal.NewStore("")
 	g, err := store.Set("user", "实现登录")
@@ -473,14 +754,85 @@ func TestGoalExecuteTurnMustRecordTheStep(t *testing.T) {
 		t.Fatal(err)
 	}
 	engine := NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	t.Cleanup(func() { engine.CancelPending("user") })
 	engine.noteContinuationExpect("user", store.Get("user"))
 	engine.MaybeScheduleContinuation("user", g.GoalID, 10, 5, true)
 	got := store.Get("user")
-	if got == nil || got.Status != goal.StatusFailed || !strings.Contains(got.Summary, "未提交当前步骤") {
-		t.Fatalf("unreported step should fail the goal: %+v", got)
+	if got == nil || got.Status != goal.StatusActive || got.Steps[0].Status == goal.StepDone {
+		t.Fatalf("first missing step should stay on that step: %+v", got)
+	}
+	if !goalTimerScheduled(t, engine, "user") {
+		t.Fatal("missing step should schedule the same step")
+	}
+	engine.mu.Lock()
+	if engine.planCorrection["user"] != "" {
+		t.Fatalf("missing step scheduled a plan correction: %q", engine.planCorrection["user"])
+	}
+	engine.mu.Unlock()
+	nextPrompt := buildGoalExecutePrompt(got)
+	if !strings.HasPrefix(nextPrompt, "[系统续接][execute]") || !strings.Contains(nextPrompt, "检查环境") || strings.Contains(nextPrompt, "编写代码") || strings.Contains(nextPrompt, "只补交记录") || strings.Contains(nextPrompt, "不要修改文件") {
+		t.Fatalf("next prompt = %s", nextPrompt)
+	}
+	nextDisplay := buildContinuationDisplayText(got)
+	if !strings.Contains(nextDisplay, "目标清单") || !strings.Contains(nextDisplay, "检查环境") || strings.Contains(nextDisplay, "正在补交") || strings.Contains(nextDisplay, "/goal") {
+		t.Fatalf("next display = %q", nextDisplay)
+	}
+	engine.noteContinuationExpect("user", store.Get("user"))
+	engine.MaybeScheduleContinuation("user", g.GoalID, 10, 5, true)
+	got = store.Get("user")
+	if got == nil || got.Status != goal.StatusActive || got.Steps[0].Status == goal.StepDone || strings.Contains(got.Summary, "未提交当前步骤") {
+		t.Fatalf("second missing step should stay on that step: %+v", got)
+	}
+	if !goalTimerScheduled(t, engine, "user") {
+		t.Fatal("second missing step should schedule the same step again")
 	}
 
-	userID := "goal-step-reported"
+	userID := "goal-step-cancel"
+	g, err = store.Set(userID, "实现登录")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SavePlan(userID, g.GoalID, "交付登录", []goal.Step{{Title: "检查环境"}}, []string{"可以登录"}); err != nil {
+		t.Fatal(err)
+	}
+	engine = NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	engine.noteContinuationExpect(userID, store.Get(userID))
+	engine.MaybeScheduleContinuation(userID, g.GoalID, 10, 5, true)
+	engine.CancelPending(userID)
+	if goalTimerScheduled(t, engine, userID) {
+		t.Fatal("cancel should drop the pending step")
+	}
+	engine.noteContinuationExpect(userID, store.Get(userID))
+	engine.MaybeScheduleContinuation(userID, g.GoalID, 10, 5, true)
+	got = store.Get(userID)
+	if got == nil || got.Status != goal.StatusActive || !goalTimerScheduled(t, engine, userID) {
+		t.Fatalf("cancelled continuation must stay active and schedule again: %+v", got)
+	}
+
+	userID = "goal-step-empty"
+	g, err = store.Set(userID, "实现登录")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SavePlan(userID, g.GoalID, "交付登录", []goal.Step{{Title: "检查环境"}}, []string{"可以登录"}); err != nil {
+		t.Fatal(err)
+	}
+	engine = NewGoalContinuationEngine(store, nil)
+	engine.cooldown = time.Hour
+	t.Cleanup(func() { engine.CancelPending(userID) })
+	engine.noteContinuationExpect(userID, store.Get(userID))
+	engine.MaybeScheduleContinuation(userID, g.GoalID, 10, 5, false)
+	engine.noteContinuationExpect(userID, store.Get(userID))
+	engine.MaybeScheduleContinuation(userID, g.GoalID, 10, 5, false)
+	got = store.Get(userID)
+	if got == nil || got.Status != goal.StatusPaused || strings.Contains(got.Summary, "未提交当前步骤") {
+		t.Fatalf("two empty turns should pause without failing the step: %+v", got)
+	}
+
+	userID = "goal-step-reported"
 	g, err = store.Set(userID, "实现登录")
 	if err != nil {
 		t.Fatal(err)

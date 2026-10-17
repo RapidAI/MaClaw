@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/goal"
 	"github.com/RapidAI/CodeClaw/corelib/llm"
 	workflow "github.com/RapidAI/CodeClaw/corelib/workflow/v2"
 )
@@ -118,6 +119,90 @@ func TestNoToolRecoverPromptsLocalStoredInfoRecall(t *testing.T) {
 		if !strings.Contains(systemMsg["content"], want) {
 			t.Fatalf("local info recall prompt missing %q:\n%s", want, systemMsg["content"])
 		}
+	}
+}
+
+func TestGoalExecuteProseStopContinuesUntilTheStepIsRecorded(t *testing.T) {
+	store := goal.NewStore("")
+	userID := "goal-loop-hold"
+	g, err := store.Set(userID, "实现登录")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SavePlan(userID, g.GoalID, "交付登录", []goal.Step{{Title: "检查环境"}}, []string{"可以登录"}); err != nil {
+		t.Fatal(err)
+	}
+	engine := NewGoalContinuationEngine(store, nil)
+	engine.noteContinuationExpect(userID, store.Get(userID))
+	h := &IMMessageHandler{app: &App{goalContinuation: engine}}
+	phase := &agentLoopPhase{}
+	essay := "DrawEllipse takes center x,y,radiusH,radiusV — but"
+	stop := func(p *agentLoopPhase, text string) agentLoopNoToolBranchResult {
+		return h.handleAgentLoopNoToolBranch(agentLoopNoToolBranchOptions{
+			UserID:                   userID,
+			UserText:                 "[系统续接][execute] 当前步骤 1. 检查环境",
+			Platform:                 "goal-continuation",
+			MessageContent:           text,
+			Choice:                   llm.Choice{FinishReason: "stop", Message: llm.Message{Role: "assistant", Content: text}},
+			Phase:                    p,
+			Conversation:             []interface{}{map[string]string{"role": "user", "content": "[系统续接][execute] 当前步骤 1. 检查环境"}},
+			LengthContinuationBuffer: &strings.Builder{},
+			TotalToolCallsInLoop:     4,
+		})
+	}
+
+	first := stop(phase, essay)
+	if !first.ContinueLoop || first.ReadyToFinalize || first.Response != nil {
+		t.Fatalf("prose stop with an open step should continue this turn: %+v", first)
+	}
+	systemMsg, ok := first.Conversation[len(first.Conversation)-1].(map[string]string)
+	if !ok || systemMsg["role"] != "system" {
+		t.Fatalf("last message = %#v, want the phase contract", first.Conversation[len(first.Conversation)-1])
+	}
+	for _, want := range []string{`goal(action="step"`, `status="progress"`, `goal(action="complete"`, `goal(action="fail"`} {
+		if !strings.Contains(systemMsg["content"], want) {
+			t.Fatalf("hold prompt missing %q:\n%s", want, systemMsg["content"])
+		}
+	}
+	for _, bad := range []string{"不要修改文件", "只补交记录"} {
+		if strings.Contains(systemMsg["content"], bad) {
+			t.Fatalf("hold prompt must keep doing the step, found %q:\n%s", bad, systemMsg["content"])
+		}
+	}
+
+	second := stop(phase, essay)
+	if !second.ContinueLoop || second.ReadyToFinalize {
+		t.Fatalf("second prose stop should still be this turn: %+v", second)
+	}
+	third := stop(phase, essay)
+	if third.ContinueLoop || !third.ReadyToFinalize || third.Response != nil {
+		t.Fatalf("the no-tool window should end this turn without an error: %+v", third)
+	}
+	if got := store.Get(userID); got == nil || got.Status != goal.StatusActive || got.Steps[0].Status == goal.StepDone {
+		t.Fatalf("ending the turn must leave the step current: %+v", got)
+	}
+
+	ordinary := h.handleAgentLoopNoToolBranch(agentLoopNoToolBranchOptions{
+		UserID:                   userID,
+		UserText:                 "解释一下物理循环",
+		Platform:                 "desktop",
+		MessageContent:           essay,
+		Choice:                   llm.Choice{FinishReason: "stop", Message: llm.Message{Role: "assistant", Content: essay}},
+		Phase:                    &agentLoopPhase{},
+		Conversation:             []interface{}{map[string]string{"role": "user", "content": "解释一下物理循环"}},
+		LengthContinuationBuffer: &strings.Builder{},
+		TotalToolCallsInLoop:     4,
+	})
+	if ordinary.ContinueLoop {
+		t.Fatal("a user turn must not inherit the goal hold")
+	}
+
+	if err := store.UpdateStep(userID, g.GoalID, 1, goal.StepProgress, "依赖已装好"); err != nil {
+		t.Fatal(err)
+	}
+	recorded := stop(&agentLoopPhase{}, "依赖已经装好，下一步再调物理。")
+	if recorded.ContinueLoop {
+		t.Fatal("a recorded progress update should let this turn finish")
 	}
 }
 
