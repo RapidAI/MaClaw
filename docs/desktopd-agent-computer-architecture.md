@@ -90,7 +90,7 @@
 - 24. 四层记忆
 - 25. 两条改进循环
 - 26. 仍未解决的问题
-- 27. 今天就做的五件事
+- 27. 今天就做的五件事（27.1 打断 … 27.5 报错写下一步）
 
 ---
 
@@ -124,7 +124,7 @@
 
 改进分两条循环。内循环按天：bot 做错，收成一条自动评测，改夹具、提示或推理设置，评测通过再发。外循环几个月一次：用这些评测选下一个模型，换进产品；人又用出新的行为，再回到评测。桌面 bot 按角色（前台、后台、操作电脑）分别钉模型。见第 25 节。
 
-三件事还没有答案：跑一个月的 agent 如何跨每月换模型做评测，提示注入的防线仍然早，以及对用户报进度的疏密。现有缓解和要量的数写在第 26 节，三条都标成未解决。今天先定打断规则：只有要决定或整件做完才叫人，其余进度写在 `PROGRESS.md`。重活交给帮手，只收回三行结论和路径。不可逆动作每次问人。见第 27 节。
+三件事还没有答案：跑一个月的 agent 如何跨每月换模型做评测，提示注入的防线仍然早，以及对用户报进度的疏密。现有缓解和要量的数写在第 26 节，三条都标成未解决。今天的五件事：只有要决定或整件做完才叫人，其余进度写在 `PROGRESS.md`；重活交给帮手，只收回三行结论和路径；不可逆动作每次问人；规则文件只放每次都要的那几句；自己的脚本、命令行和工具报错写出下一步。见第 27 节。
 
 ---
 
@@ -287,7 +287,7 @@ isolated bot（`desktop_mode=isolated`，默认仍是 `shared`）不新开容器
 | 先便宜、先可靠地选工具 | 前台把查找写成桌面工单；工人把活收进 `desktop`，`computer` 与 `probe` 同一枚举 | 没有阶梯，没有「有 API 就不上桌面」的拒绝，没有升级指标。见第 17 节 |
 | 操作电脑先读结构，像素和人是退路 | 浏览器有 DOM `probe`，桌面有 AT-SPI，像素和交接也在 | 三条路并在一个工具里。`probe` 不合并无障碍树；应用点击常常是元素中心的像素；交接不走单一出口。见第 18 节 |
 | 一个主 agent，多个帮手；每个帮手一块自己的记忆 | 本机任务有单独的记忆键，开工时却抄走整段对话；云桌面 bot 一次只跑一个工人 | 帮手和主 agent、帮手和帮手都没有隔开。短结果、同一条工作流接着自己的上下文，都还没有。见第 19 节 |
-| 工具列表稳定、说明短、报错告诉下一步 | 计划/执行两套 `desktop` 模式；执行期说明加参数约 1.1 万字；Office 走 `bash`+python-docx；睡着的容器返回 Docker 原文 | 见第 20 节 |
+| 工具列表稳定、说明短、报错告诉下一步 | 计划/执行两套 `desktop` 模式；执行期说明加参数约 1.1 万字；Office 走 `bash`+python-docx；睡着的容器返回 Docker 原文。脚本和命令行另有一批只写 failed / required 的句子 | 模型侧见第 20 节。脚本、CLI、其余工具句子见第 27.5 节 |
 | 随时改方向；风险调用自动复核 | 大改动先出安排再点确认；计划期变更要再确认一次；要不要问人由模型自己决定；「准备好了再发」没有延后动作 | 见第 21 节 |
 | 四条安全支柱：复核危险命令、不可信数据围栏、先问再发、凭据不进上下文 | 云桌面 `bash` 直接执行 `rm -rf`、`curl\|sh`；网页和 webhook 正文不围栏；清楚的定时当场装上；CDP 令牌写在 URL 里 | 见第 22 节 |
 | 提示前缀每回合相同；摘要前的意外未命中是缺陷 | 系统提示每回合重拼；记忆目录和局势（含分钟时间）写在里面；工具列表每次请求重建；只有稳定段的短哈希，且要开调试才打印 | 见第 23 节。分段哈希、按对话钉住工具版本、打开对话预热、按供应商的命中看板 |
@@ -743,7 +743,7 @@ supervisor 常驻并提供内部 API。desktopd 的 Exec 改走这个 API。CDP/
 收成一份 `desktop` / `ssh` 说明。记忆目录和分钟时间退出系统提示。含「下一步」「我会」的句子不再默认变成安排按钮。帮手开工时不再复制主会话。验收：同一条对话回放两回合，前缀分段哈希不变。这一阶段不新增拒绝规则。
 
 **阶段 7：留下的管子**  
-一个 `send_to_user`。缓存纪律（钉住工具、分段哈希、打开即预热、离开后用同一条前缀摘要）。记忆改成纯文本文件，过时的行被替换。安全的门和围栏按第 22 节接上。验收：离线用例里用户看得见的句子只来自 `send_to_user`；危险命令没通过就不跑。
+一个 `send_to_user`。缓存纪律（钉住工具、分段哈希、打开即预热、离开后用同一条前缀摘要）。记忆改成纯文本文件，过时的行被替换。安全的门和围栏按第 22 节接上。第 27.5 节表里的脚本、命令行和工具报错改成「缺什么，下一步跑哪一句」。验收：离线用例里用户看得见的句子只来自 `send_to_user`；危险命令没通过就不跑；那张表「现在」一列的原文不再作为最终报错出现。
 
 **阶段 8：评测门，脚手架只在红的时候留**  
 第 25 节的离线档进 CI。停止短语表、第 17.7 节的守卫、像素拒绝、声称守卫都标成脚手架。某一条的用例连续绿过一轮外循环之后，删掉那一条，不换成更厚的规则。换角色的模型钉要过该角色的在线档。
@@ -2570,7 +2570,7 @@ score = exp(-age_days / 14) + (与画像里的实体有重叠 ? 1 : 0) + (48 小
 
 ## 27. 今天就做的五件事
 
-今天先做四件。第 5 件留空，有结论再写，不预先补上。
+五件都写在下面。
 
 ### 27.1 事先定好何时打断
 
@@ -2673,7 +2673,90 @@ MCP 的开关也在开工前定好。一场对话的工具列表在开始时钉�
 
 帮手交回的三行结论可以点这些路径。主对话不把文件正文再抄进来。截图的 base64 今天已经不进对话正文，保持这样。
 
-### 27.5 待补
+### 27.5 自己的报错要写出下一步
+
+我们自己的脚本、命令行和工具返回，必须写出下一步要跑的那一句。缺文件就给出要复制或要生成的命令。缺参数就给出带上那个参数的命令。失败就指出要读的日志，以及读完之前不要重跑同一份包。
+
+形状是：
+
+```
+改前：Error: failed
+改后：Cannot find .env.local. Run cp env.example .env.local first.
+```
+
+仓库里没有 `.env.local` 这个名字。maclaw 用的是下面这些真实路径。不新做一套错误码。改这几句原文。错误里不打印令牌、代理 URL 或密钥，只说去改哪一个文件。
+
+第 20.3 节已经带下一步的模型句子留下，这里不重写。下面这几句也已经写出下一步，留下：
+
+- `hub/cmd/hub/main.go`：`TLS cert file not found` / `TLS key file not found`，已经写了 `set auto_generate=true or provide valid cert/key`。
+- `deploy/linux/rollout_remote.sh`：`$D/.env is missing; run deploy_maclawsrv.cmd once to create it with generated secrets`。
+- `deploy/tools/logrotate/install-logrotate.sh`：`logrotate not installed (apt-get install logrotate)`。
+- `desktopd/remote_deploy.sh`：`DESKTOPD_IMAGE_FROM must be build, pull, or auto`。补一句 `Set DESKTOPD_IMAGE_FROM=auto and rerun.` 即可，允许值已经在。
+
+**`hub/start.sh`、`hubcenter/start.sh`**
+
+两份都是 `set -eu`，然后 `nohup` 放到后台，无论二进制在不在，都打印 `started with PID`。配置缺失且旁边没有 `config.example.yaml` 时也是这样，真正的原因只落在日志里。
+
+| 现在 | 改成 |
+| --- | --- |
+| 二进制不存在仍打印 `started with PID` | `Cannot find $APP_DIR/$BIN_NAME. Copy the binary into this directory, then run ./start.sh again.` 并且以非 0 退出 |
+| `configs/config.yaml` 和 `configs/config.example.yaml` 都不在 | `Cannot find configs/config.yaml. Run cp configs/config.example.yaml configs/config.yaml, edit it, then run ./start.sh again.` |
+| 进程马上退出，脚本仍说已启动 | `$BIN_NAME exited right after start. Read the last 20 lines of $LOG_FILE, follow the next step there, then run ./start.sh again.` Hub 的日志是 `data/logs/maclaw-hub.out.log`，hubcenter 是 `data/logs/maclaw-hubcenter.out.log` |
+
+**部署脚本**
+
+`deploy/linux/rollout_remote.sh` 写进 MaClawSrv 的 `start.sh` 在 `set -eu` 下执行 `. ./.env`。文件不在时，shell 只说找不到文件。
+
+| 现在 | 改成 |
+| --- | --- |
+| `. ./.env` 的 shell 原文 | `Cannot find ./.env. Run deploy_maclawsrv.cmd once to create it, then run ./start.sh again.` |
+| `HEALTH_FAIL: rolling back $COMP`（`deploy/linux/deploy_hub_maclawsrv.sh`） | `Health check failed. Rolled back $COMP using the binary in $B. Read the log (Hub: data/logs/maclaw-hub.out.log; MaClawSrv: journalctl -u maclawsrv). Do not deploy this binary again until that log says what to change.` |
+| `ROLLBACK_HEALTH_FAIL` | `Rollback is in place and the health check still failed. Do not run this script again. Restore the binary from $B by hand after reading the log.` |
+| `checksum mismatch: $1` | `Checksum mismatch: $1. Upload that archive again. Do not continue this deploy.` |
+| `hub web manifest mismatch` | `Hub web manifest does not match the package. Rebuild and upload hub-web. Do not swap this tree into place.` |
+| `hub healthz did not return 200` | `http://127.0.0.1:9399/healthz did not return 200. Read $HUB_DIR/data/logs/maclaw-hub.out.log, fix that, then run ./start.sh again. Do not continue later steps.` |
+| `BACKUP_TS is required` | `BACKUP_TS is unset. Run the backup step first, or export BACKUP_TS=<timestamp from the .bak directory name>, then rerun rollback.` |
+| `missing backup $x` | `Cannot find backup directory $x. Run ls on the .bak.<timestamp> directories, set BACKUP_TS to that timestamp, then rerun rollback.` |
+| `missing $tool`（`desktopd/remote_deploy.sh` 和 `desktopd/image_source.go` 里的合同检查） | `Image is missing $tool. This is not a desktop image. Change DESKTOPD_IMAGE_SOURCE and pull again. Do not tag it as $DESKTOPD_IMAGE.` |
+| `Pulling $src failed or timed out` | `Pulling $src failed or timed out. Read the last 5 lines of $log. If the mirror timed out, raise DESKTOPD_IMAGE_PULL_TIMEOUT and rerun. If auth failed, change DESKTOPD_IMAGE_SOURCE. $DESKTOPD_IMAGE was left unchanged.` |
+| `$src is missing after the pull` | `Pull finished but $src is not local. Read $log, then run docker pull $src again. Do not tag $DESKTOPD_IMAGE.` |
+| `DESKTOPD_ADVERTISE_HOST is required` | `DESKTOPD_ADVERTISE_HOST is unset. export DESKTOPD_ADVERTISE_HOST=<this host's public address> and rerun remote_deploy.sh.` |
+| `curl is missing; skipped health check.` | `curl is missing, so the health check did not run. Run apt-get install curl, then curl -fsS -H "Authorization: Bearer <token from .env>" http://127.0.0.1:$DESKTOPD_PORT/v1/health.` |
+| `ERROR: must run as root`（`install-logrotate.sh`） | `This script must run as root. Run sudo sh install-logrotate.sh.` |
+| `ERROR: logrotate config failed validation` | `logrotate rejected /etc/logrotate.d/maclaw-hub. Fix the paths in deploy/tools/logrotate/maclaw-hub.conf and rerun this script. The dry-run output is above.` |
+
+**desktopd、Hub、hubcenter 的命令行**
+
+`desktopd/cmd/desktopd/main.go` 在缺令牌时只写 `DESKTOPD_TOKEN is required`。监听失败时 `log.Fatal(err)` 把 Go 的 `bind: address already in use` 原样打出。Hub（`hub/cmd/hub/main.go`）和 hubcenter（`hubcenter/cmd/hubcenter/main.go`）的子命令错误只说缺哪个旗标，不给可复制的命令。hubcenter 多一条 `unknown maintenance command`。
+
+| 现在 | 改成 |
+| --- | --- |
+| `DESKTOPD_TOKEN is required` | `DESKTOPD_TOKEN is unset. Write DESKTOPD_TOKEN=<token> in the deploy directory .env, then systemctl restart maclaw-desktopd.` |
+| `DESKTOPD_IMAGE_PULL_TIMEOUT is invalid: %q` | `DESKTOPD_IMAGE_PULL_TIMEOUT=%q is not a duration. Set it to 10m in .env and restart desktopd.` |
+| `DESKTOPD_MAX_IDLE is invalid` | `DESKTOPD_MAX_IDLE is not a duration. Set it to 30m, or leave it empty to disable reaping, then restart desktopd.` |
+| `ListenAndServe` 的 `log.Fatal(err)` | `Address %s is already in use. Run systemctl stop maclaw-desktopd, or set DESKTOPD_ADDR in .env, then start again.` |
+| `unknown tenant command %q` | `Unknown tenant command %q. Run hub tenant help.` |
+| `tenant migrate-users requires --mapping` | `Missing --mapping. Run hub tenant migrate-users --config <config.yaml> --mapping <users.csv> --dry-run.` |
+| `unknown backup command %q` | `Unknown backup command %q. Run hub backup help.`（hubcenter 同样，把命令名换成 `hubcenter`） |
+| `backup inspect requires --file` | `Missing --file. Run hub backup inspect --file <backup.tar.gz>.` |
+| `admin reset requires -username and -password` | `Missing -username or -password. Run hub admin reset -username <name> -password <password>.` |
+| `unknown maintenance command %q` | `Unknown maintenance command %q. Run hubcenter maintenance help.` |
+
+**工具返回里还没写下一步的**
+
+第 20.3 节的表（睡眠、镜像拉取、计划期、密码框、桌面没接上、交付超限、连接器失败）已经是目标句子。下面是那张表没覆盖、模型现在仍只看到一个标签的。`file is too large` 的上限是 `FileContentMax`（200 KiB，`corelib/desktop/container_ops.go`）。交付路径上已有的字节提示留下。
+
+| 现在 | 改成 |
+| --- | --- |
+| `desktop action is invalid`（`MaClawSrv/desktop_container.go`） | 不认识这个 desktop 动作。用工具说明里列出的动作名再调用一次。不要改走 bash |
+| `desktop file_write requires content` | file_write 缺少 content。带上 content 再调用一次 |
+| `desktop file is too large` | 文件超过 200 KiB。缩小内容后再 file_write。不要改走 bash 分段写 |
+| `desktop file_edit requires old_string` | file_edit 缺少 old_string。先 file_read 这一路径，把要替换的原文放进 old_string 再调用 |
+| `desktop requires a user` | 这次调用没有用户。停手并说明桌面对不上人。重试同一调用不会修好 |
+| `desktop action returned no result` / `desktop action returned an empty result` | 动作没有返回。再调用一次同一个动作。不要改走像素 |
+| `invalid desktop request: advertise host is required`（`desktopd/service.go`） | 没有对外地址。在 .env 里设置 DESKTOPD_ADVERTISE_HOST 并重启 desktopd，然后再 Ensure |
+| `invalid desktop request: bot is invalid` / `tenant is required` / `user is required` | 点名缺的是 bot、tenant 还是 user。补上那个字段再调用。用同一份请求体重试不会修好 |
+| `invalid desktop request: display is invalid` | 没有可用的屏幕号。先做一次会打开会话的动作（截图、probe、app_open），再用它返回的屏幕号重试 |
 
 ### 27.6 这一节不做什么
 
@@ -2685,3 +2768,7 @@ MCP 的开关也在开工前定好。一场对话的工具列表在开始时钉�
 - 不在一场对话中途改 `AGENTS.md` 的前缀字节，也不在中途增删 MCP。
 - 不把超过约 4000 字的工具结果留在主对话里。
 - 不改 `desktop` 的动作名。
+- 不把第 20.3 节和本节「已经带下一步」里的句子再包一层。
+- 不在报错里打印令牌、代理 URL 或密钥。
+- 不把脚本的 stderr 收成 `send_to_user`。
+- 不新做一套错误码或格式化框架。阶段 7 只换第 27.5 节表里的原文。
