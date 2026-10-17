@@ -1,6 +1,8 @@
 package ha
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -10,6 +12,7 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -43,11 +46,13 @@ type PullOpsResponse struct {
 	HasMore      bool              `json:"has_more"`
 	MaxSeq       int64             `json:"max_seq"`
 	// MinSeq is the oldest seq still present in the peer's op log. A cursor
-	// below it means some ops were pruned before this node pulled them. That
-	// is convergence-safe (pruning never removes the newest op of an entity,
-	// so the retained log still carries every entity's latest state), but it
-	// is logged so operators can see which peer is falling behind.
+	// below it means some ops were pruned before this node pulled them.
+	// Protocol-2 peers fill that gap from snapshot heads; protocol-1 peers
+	// still converge for last-write-wins entities whose newest op was kept.
 	MinSeq int64 `json:"min_seq"`
+	// Protocol is 2 when the peer speaks snapshot catch-up. Zero means an
+	// older peer that only serves the ops list.
+	Protocol int `json:"protocol,omitempty"`
 }
 
 type Syncer struct {
@@ -232,7 +237,20 @@ func (s *Syncer) syncPeer(ctx context.Context, peer *PeerRuntimeState) {
 		}
 		now := time.Now().UTC()
 		if afterSeq+1 < resp.MinSeq {
-			log.Printf("[hubcenter][ha] peer %s op log pruned below cursor: after_seq=%d min_seq=%d (missed intermediate ops; newest op per entity is retained so state still converges)", peer.NodeID, afterSeq, resp.MinSeq)
+			log.Printf("[hubcenter][ha] peer %s op log gap: after_seq=%d min_seq=%d; trying snapshot catch-up", peer.NodeID, afterSeq, resp.MinSeq)
+			next, err := s.catchUpFromSnapshot(ctx, peer, afterSeq)
+			if err != nil {
+				s.svc.markPeerError(peer.NodeID, err.Error())
+				s.recordPeerCursorError(ctx, peer.NodeID, afterSeq, cursor, err.Error())
+				log.Printf("[hubcenter][ha] snapshot catch-up from %s after_seq=%d: %v", peer.NodeID, afterSeq, err)
+				return
+			}
+			if next > afterSeq {
+				afterSeq = next
+				cursor, _ = s.svc.cursors.Get(ctx, peer.NodeID)
+				continue
+			}
+			log.Printf("[hubcenter][ha] peer %s has no snapshot heads for gap after_seq=%d min_seq=%d (last-write-wins state still converges from retained newest ops; append-only ops inside the gap are not replayed)", peer.NodeID, afterSeq, resp.MinSeq)
 		}
 		if len(resp.Ops) == 0 {
 			nextSeq := resp.NextAfterSeq
@@ -340,15 +358,32 @@ func (s *Syncer) pullOps(ctx context.Context, peer *PeerRuntimeState, afterSeq i
 }
 
 func (s *Syncer) pullOpsWithLimit(ctx context.Context, peer *PeerRuntimeState, afterSeq int64, limit int) (*PullOpsResponse, error) {
+	return s.pullPath(ctx, peer, "/api/internal/ha/ops", afterSeq, limit)
+}
+
+func (s *Syncer) pullSnapshot(ctx context.Context, peer *PeerRuntimeState, afterSeq int64, limit int) (*PullOpsResponse, error) {
+	return s.pullPath(ctx, peer, "/api/internal/ha/snapshot", afterSeq, limit)
+}
+
+func (s *Syncer) pullPath(ctx context.Context, peer *PeerRuntimeState, path string, afterSeq int64, limit int) (*PullOpsResponse, error) {
 	base := peerTransportURL(peer)
 	if base == "" {
 		return nil, fmt.Errorf("no URL for hubcenter node %s", peer.NodeID)
 	}
-	u := base + "/api/internal/ha/ops?after_seq=" + strconv.FormatInt(afterSeq, 10) + "&limit=" + strconv.Itoa(limit)
+	q := url.Values{}
+	q.Set("after_seq", strconv.FormatInt(afterSeq, 10))
+	q.Set("limit", strconv.Itoa(limit))
+	q.Set("ack_seq", strconv.FormatInt(afterSeq, 10))
+	if s != nil && s.svc != nil && strings.TrimSpace(s.svc.NodeID()) != "" {
+		q.Set("node_id", s.svc.NodeID())
+	}
+	u := base + path + "?" + q.Encode()
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
 	if err != nil {
 		return nil, err
 	}
+	req.Header.Set("Accept-Encoding", "gzip")
+	req.Header.Set(ProtocolHeader, strconv.Itoa(ProtocolVersion))
 	if secret := strings.TrimSpace(s.svc.ClusterSecret()); secret != "" {
 		req.Header.Set("Authorization", "Bearer "+secret)
 	}
@@ -383,11 +418,77 @@ func (s *Syncer) pullOpsWithLimit(ctx context.Context, peer *PeerRuntimeState, a
 	if truncated {
 		return nil, fmt.Errorf("%w: limit=%d batch=%d", errPullResponseBodyTooLarge, s.pullBodyLimit(), limit)
 	}
+	if strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") {
+		zr, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		decoded, err := io.ReadAll(zr)
+		_ = zr.Close()
+		if err != nil {
+			return nil, err
+		}
+		body = decoded
+	}
 	var out PullOpsResponse
 	if err := json.Unmarshal(body, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
+}
+
+// catchUpFromSnapshot applies compacted entity heads when the op log was
+// truncated below this node's cursor. A 404 means the peer is still on the
+// old protocol and has no snapshot endpoint; that is not an error.
+func (s *Syncer) catchUpFromSnapshot(ctx context.Context, peer *PeerRuntimeState, afterSeq int64) (int64, error) {
+	if s == nil || s.svc == nil || peer == nil {
+		return afterSeq, nil
+	}
+	limit := s.limit
+	if limit <= 0 || limit > 500 {
+		limit = 200
+	}
+	for pages := 0; pages < 10000; pages++ {
+		snap, err := s.pullSnapshot(ctx, peer, afterSeq, limit)
+		if err != nil {
+			if isSnapshotMissing(err) {
+				return afterSeq, nil
+			}
+			return afterSeq, err
+		}
+		if len(snap.Ops) == 0 {
+			return afterSeq, nil
+		}
+		if err := s.svc.ApplyRemoteOps(ctx, snap.Ops); err != nil {
+			return afterSeq, err
+		}
+		last := snap.Ops[len(snap.Ops)-1].Seq
+		if last <= afterSeq {
+			return afterSeq, nil
+		}
+		now := time.Now().UTC()
+		if err := s.svc.cursors.Upsert(ctx, &store.HAPeerCursor{
+			PeerNodeID:    peer.NodeID,
+			LastPulledSeq: last,
+			LastPulledAt:  &now,
+			LastSuccessAt: &now,
+		}); err != nil {
+			return afterSeq, err
+		}
+		afterSeq = last
+		if !snap.HasMore {
+			return afterSeq, nil
+		}
+	}
+	return afterSeq, fmt.Errorf("snapshot catch-up did not finish")
+}
+
+func isSnapshotMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "404")
 }
 
 // readBodyWithLimit reads r fully but reports whether the limit cut the

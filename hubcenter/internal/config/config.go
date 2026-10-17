@@ -50,6 +50,13 @@ type Config struct {
 		Level string `yaml:"level"`
 		Dir   string `yaml:"dir"`
 	} `yaml:"logging"`
+
+	// Runtime bounds process memory. SoftMemoryLimitMB is applied with
+	// debug.SetMemoryLimit (the same mechanism as GOMEMLIMIT). Zero uses
+	// the default. Negative disables the limit.
+	Runtime struct {
+		SoftMemoryLimitMB int `yaml:"soft_memory_limit_mb"`
+	} `yaml:"runtime"`
 }
 
 type HAPeerConfig struct {
@@ -81,23 +88,27 @@ func (n HANodeConfig) ClientFacingURL() string {
 }
 
 type HAConfig struct {
-	Enabled                         bool           `yaml:"enabled"`
-	SelfFQDN                        string         `yaml:"self_fqdn"`
-	PrivateKeyPath                  string         `yaml:"private_key_path"`
-	NodeID                          string         `yaml:"node_id"`
-	NodeName                        string         `yaml:"node_name"`
-	AdvertiseURL                    string         `yaml:"advertise_url"`
-	ClusterSecret                   string         `yaml:"cluster_secret"`
-	SyncIntervalSeconds             int            `yaml:"sync_interval_seconds"`
-	PushDebounceSeconds             int            `yaml:"push_debounce_seconds"`
-	PullBatchSize                   int            `yaml:"pull_batch_size"`
-	HeartbeatSyncMinIntervalSeconds int            `yaml:"heartbeat_sync_min_interval_seconds"`
-	HistoryRetentionDays            float64        `yaml:"history_retention_days"`
-	HistoryMaxRetainedOps           int            `yaml:"history_max_retained_ops"`
-	HistoryPruneIntervalMinutes     int            `yaml:"history_prune_interval_minutes"`
-	HistoryPruneBatchSize           int            `yaml:"history_prune_batch_size"`
-	Nodes                           []HANodeConfig `yaml:"nodes"`
-	Peers                           []HAPeerConfig `yaml:"peers"`
+	Enabled                         bool    `yaml:"enabled"`
+	SelfFQDN                        string  `yaml:"self_fqdn"`
+	PrivateKeyPath                  string  `yaml:"private_key_path"`
+	NodeID                          string  `yaml:"node_id"`
+	NodeName                        string  `yaml:"node_name"`
+	AdvertiseURL                    string  `yaml:"advertise_url"`
+	ClusterSecret                   string  `yaml:"cluster_secret"`
+	SyncIntervalSeconds             int     `yaml:"sync_interval_seconds"`
+	PushDebounceSeconds             int     `yaml:"push_debounce_seconds"`
+	PullBatchSize                   int     `yaml:"pull_batch_size"`
+	HeartbeatSyncMinIntervalSeconds int     `yaml:"heartbeat_sync_min_interval_seconds"`
+	HistoryRetentionDays            float64 `yaml:"history_retention_days"`
+	HistoryMaxRetainedOps           int     `yaml:"history_max_retained_ops"`
+	HistoryPruneIntervalMinutes     int     `yaml:"history_prune_interval_minutes"`
+	HistoryPruneBatchSize           int     `yaml:"history_prune_batch_size"`
+	// HistoryPeerLagGraceMinutes is how long a protocol-2 peer may stay
+	// silent before it stops pinning the op log. It can catch up from
+	// snapshot heads. Protocol-1 peers always pin. Zero uses the default.
+	HistoryPeerLagGraceMinutes int            `yaml:"history_peer_lag_grace_minutes"`
+	Nodes                      []HANodeConfig `yaml:"nodes"`
+	Peers                      []HAPeerConfig `yaml:"peers"`
 }
 
 func Default() *Config {
@@ -110,13 +121,16 @@ func Default() *Config {
 	cfg.HA.PullBatchSize = 200
 	cfg.HA.HeartbeatSyncMinIntervalSeconds = 600
 	cfg.HA.HistoryRetentionDays = 0.5
-	// 2026-09-27: lowered from 50000 — ha_sync_ops churn (heartbeat/batch ops)
-	// was the main driver of main-database file bloat; 20000 ops is plenty of
-	// pull window for the 5s pollers (100 ops/batch) and reduces per-cycle
-	// prune CPU/IO. Lagging peers still converge via newest-op-per-entity.
-	cfg.HA.HistoryMaxRetainedOps = 20000
+	// Ack-based pruning deletes ops every peer has applied, then keeps this
+	// many newest ops as a rewind window. 4000 is about twenty pull batches
+	// and is small enough that an 8GB host is not stuck holding a multi-GB
+	// op log of already-replicated entity heads.
+	cfg.HA.HistoryMaxRetainedOps = 4000
 	cfg.HA.HistoryPruneIntervalMinutes = 10
-	cfg.HA.HistoryPruneBatchSize = 20000
+	// Each DELETE is capped at 2000 rows in the store so a larger configured
+	// batch still releases the writer lock between statements.
+	cfg.HA.HistoryPruneBatchSize = 1000
+	cfg.HA.HistoryPeerLagGraceMinutes = 360
 	cfg.Database.Driver = "sqlite"
 	cfg.Database.DSN = "./data/MaClaw-hubcenter.db"
 	cfg.Database.WAL = true
@@ -131,8 +145,11 @@ func Default() *Config {
 	cfg.Database.BatchFlushMS = 100
 	cfg.Database.BatchMaxSize = 128
 	cfg.Database.BatchQueueSize = 4096
-	cfg.Database.CacheSizeKB = 16384
-	cfg.Database.MmapSizeBytes = 134217728
+	// cache_size is per connection. 8MiB * (readers + writer) stays well
+	// under the soft memory limit on an 8GB host. mmap is capped at 64MiB
+	// so startup does not map a multi-GB database into the process.
+	cfg.Database.CacheSizeKB = 8192
+	cfg.Database.MmapSizeBytes = 64 << 20
 	cfg.Database.CheckpointIntervalSec = 60
 	// Incremental auto-vacuum lets the background checkpointer hand freed pages
 	// back to the OS without ever taking an exclusive lock (the alternative to
@@ -145,6 +162,10 @@ func Default() *Config {
 	cfg.Mail.FromName = "MaClaw Hub Center"
 	cfg.Logging.Level = "info"
 	cfg.Logging.Dir = "./data/logs"
+	// 1.5GiB Go heap limit on an 8GB host: the kernel still needs RAM for
+	// the page cache of the SQLite file, and the cgroup teardown of a
+	// multi-GB cache is what froze the machine. Negative disables it.
+	cfg.Runtime.SoftMemoryLimitMB = 1536
 	return cfg
 }
 

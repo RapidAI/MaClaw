@@ -418,14 +418,19 @@ func (r *adminRepo) UpdateEmail(ctx context.Context, username, email string, upd
 }
 
 func (r *systemRepo) Set(ctx context.Context, key, valueJSON string) error {
-	_, err := r.db.ExecContext(ctx, `
-		INSERT INTO system_settings (key, value_json, updated_at)
-		VALUES (?, ?, ?)
-		ON CONFLICT(key) DO UPDATE SET
-			value_json = excluded.value_json,
-			updated_at = excluded.updated_at
-	`, key, valueJSON, time.Now().Format(time.RFC3339))
-	return err
+	// Lease writes (llm-monitor) and other settings share the single writer.
+	// A long HA transaction can return SQLITE_BUSY even after busy_timeout;
+	// retry the autocommit upsert instead of failing the caller.
+	return RetryBusy(ctx, func() error {
+		_, err := r.db.ExecContext(ctx, `
+			INSERT INTO system_settings (key, value_json, updated_at)
+			VALUES (?, ?, ?)
+			ON CONFLICT(key) DO UPDATE SET
+				value_json = excluded.value_json,
+				updated_at = excluded.updated_at
+		`, key, valueJSON, time.Now().Format(time.RFC3339))
+		return err
+	})
 }
 func (r *systemRepo) Get(ctx context.Context, key string) (string, error) {
 	row := r.readDB.QueryRowContext(ctx, `

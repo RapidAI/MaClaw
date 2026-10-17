@@ -690,6 +690,9 @@ func (r *fakeHAEntityVersionRepo) Get(_ context.Context, entityType, entityID st
 func (r *fakeHAEntityVersionRepo) Upsert(_ context.Context, item *store.HAEntityVersion) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.items == nil {
+		r.items = map[string]*store.HAEntityVersion{}
+	}
 	cp := *item
 	r.items[r.key(item.EntityType, item.EntityID)] = &cp
 	return nil

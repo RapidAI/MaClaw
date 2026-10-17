@@ -34,6 +34,7 @@ type haConfigRequest struct {
 	HistoryMaxRetainedOps           int             `json:"history_max_retained_ops"`
 	HistoryPruneIntervalMinutes     int             `json:"history_prune_interval_minutes"`
 	HistoryPruneBatchSize           int             `json:"history_prune_batch_size"`
+	HistoryPeerLagGraceMinutes      int             `json:"history_peer_lag_grace_minutes"`
 	Nodes                           []haNodeRequest `json:"nodes,omitempty"`
 	Peers                           []haPeerRequest `json:"peers"`
 }
@@ -433,6 +434,7 @@ func (r haConfigRequest) toConfig() config.HAConfig {
 		HistoryMaxRetainedOps:           r.HistoryMaxRetainedOps,
 		HistoryPruneIntervalMinutes:     r.HistoryPruneIntervalMinutes,
 		HistoryPruneBatchSize:           r.HistoryPruneBatchSize,
+		HistoryPeerLagGraceMinutes:      r.HistoryPeerLagGraceMinutes,
 		Nodes:                           nodes,
 		Peers:                           peers,
 	}
@@ -478,6 +480,7 @@ func fromHAConfig(cfg config.HAConfig) haConfigRequest {
 		HistoryMaxRetainedOps:           cfg.HistoryMaxRetainedOps,
 		HistoryPruneIntervalMinutes:     cfg.HistoryPruneIntervalMinutes,
 		HistoryPruneBatchSize:           cfg.HistoryPruneBatchSize,
+		HistoryPeerLagGraceMinutes:      cfg.HistoryPeerLagGraceMinutes,
 		Nodes:                           nodes,
 		Peers:                           peers,
 	}

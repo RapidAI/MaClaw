@@ -208,6 +208,32 @@ type HAPruneResult struct {
 	DeletedAppliedOps int64 `json:"deleted_applied_ops"`
 	RemainingOps      int64 `json:"remaining_ops"`
 	MaxSeq            int64 `json:"max_seq"`
+	// AckSeq is the highest seq every pinning peer has acknowledged.
+	// Zero when acks are incomplete (a peer has never reported, or the
+	// caller did not ask). Ops at or below AckSeq may be removed.
+	AckSeq int64 `json:"ack_seq,omitempty"`
+	// AckKnown is false during a rolling upgrade until every configured
+	// peer has reported an ack. Newest-op retention stays in force then.
+	AckKnown bool `json:"ack_known,omitempty"`
+	// CheckpointedHeads is how many last-write-wins entities were copied
+	// into ha_entity_heads before their op-log rows were removed, so a
+	// far-behind protocol-2 peer can catch up from the snapshot.
+	CheckpointedHeads int64 `json:"checkpointed_heads,omitempty"`
+}
+
+// HAPeerAckFloor is how far the op log may be truncated.
+//
+// PinAck is the minimum ack among peers that still need the raw op log
+// (protocol 1, or a protocol-2 peer that pulled recently). StrictAck is the
+// minimum ack among every configured peer, including ones that have gone
+// quiet and can catch up from ha_entity_heads. Checkpoint is set when a
+// quiet protocol-2 peer must be given snapshot heads before ops above
+// StrictAck are removed.
+type HAPeerAckFloor struct {
+	Known      bool
+	PinAck     int64
+	StrictAck  int64
+	Checkpoint bool
 }
 
 type HAPeerCursor struct {

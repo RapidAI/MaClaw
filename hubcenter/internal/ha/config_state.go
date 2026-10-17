@@ -153,6 +153,9 @@ func mergeHAConfig(base, override config.HAConfig) config.HAConfig {
 	if override.HistoryPruneBatchSize > 0 {
 		merged.HistoryPruneBatchSize = override.HistoryPruneBatchSize
 	}
+	if override.HistoryPeerLagGraceMinutes > 0 {
+		merged.HistoryPeerLagGraceMinutes = override.HistoryPeerLagGraceMinutes
+	}
 	if override.Nodes != nil {
 		merged.Nodes = append([]config.HANodeConfig(nil), override.Nodes...)
 	}
@@ -186,6 +189,9 @@ func normalizeHAConfig(defaults, cfg config.HAConfig) config.HAConfig {
 	}
 	if cfg.HistoryPruneBatchSize <= 0 {
 		cfg.HistoryPruneBatchSize = defaults.HistoryPruneBatchSize
+	}
+	if cfg.HistoryPeerLagGraceMinutes <= 0 {
+		cfg.HistoryPeerLagGraceMinutes = defaults.HistoryPeerLagGraceMinutes
 	}
 	cfg.SelfFQDN = config.NormalizeHAFQDN(cfg.SelfFQDN)
 	cfg.PrivateKeyPath = strings.TrimSpace(cfg.PrivateKeyPath)

@@ -142,6 +142,7 @@ type Service struct {
 	notifications                notification.Store
 	heartbeatSync                store.HAHeartbeatSyncStateRepository
 	heartbeatSyncMinInterval     time.Duration
+	peerLagGrace                 time.Duration
 	heartbeatLastSynced          sync.Map
 
 	mu             sync.RWMutex
@@ -207,6 +208,22 @@ type hubInstanceConflictReplacer interface {
 
 type historyPruner interface {
 	PruneHistory(ctx context.Context, cutoff time.Time, maxRetainedOps, batchSize int64) (*store.HAPruneResult, error)
+}
+
+type ackHistoryPruner interface {
+	PruneHistoryWithAck(ctx context.Context, cutoff time.Time, maxRetainedOps, batchSize int64, floor store.HAPeerAckFloor) (*store.HAPruneResult, error)
+}
+
+type peerAckReader interface {
+	MinPeerAck(ctx context.Context, peerIDs []string, lagGrace time.Duration) (store.HAPeerAckFloor, error)
+}
+
+type peerAckRecorder interface {
+	RecordPeerAck(ctx context.Context, peerNodeID string, ackSeq int64, protocol int) error
+}
+
+type snapshotHeadReader interface {
+	ListSnapshotHeads(ctx context.Context, afterSeq int64, limit int) ([]*store.HASyncOp, error)
 }
 
 // ErrReplicaNotReady means an HA operation reached this node before the
@@ -651,6 +668,16 @@ func (s *Service) SetHeartbeatSyncMinInterval(d time.Duration) {
 		d = 10 * time.Second
 	}
 	s.heartbeatSyncMinInterval = d
+}
+
+// SetPeerLagGrace is how long a protocol-2 peer may go without pulling
+// before its ack stops pinning op-log truncation. Zero keeps the default
+// used by MinPeerAck (6h).
+func (s *Service) SetPeerLagGrace(d time.Duration) {
+	if s == nil {
+		return
+	}
+	s.peerLagGrace = d
 }
 
 func (s *Service) ClusterSecret() string {
@@ -1442,15 +1469,50 @@ func (s *Service) PruneHistory(ctx context.Context, retention time.Duration, max
 	if s == nil || s.ops == nil {
 		return &store.HAPruneResult{}, nil
 	}
-	pruner, ok := s.ops.(historyPruner)
-	if !ok {
-		return &store.HAPruneResult{}, nil
-	}
 	var cutoff time.Time
 	if retention > 0 {
 		cutoff = time.Now().UTC().Add(-retention)
 	}
+	var floor store.HAPeerAckFloor
+	if reader, ok := s.ops.(peerAckReader); ok {
+		var err error
+		floor, err = reader.MinPeerAck(ctx, s.PeerNodeIDs(), s.peerLagGrace)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if pruner, ok := s.ops.(ackHistoryPruner); ok {
+		return pruner.PruneHistoryWithAck(ctx, cutoff, maxRetainedOps, batchSize, floor)
+	}
+	pruner, ok := s.ops.(historyPruner)
+	if !ok {
+		return &store.HAPruneResult{}, nil
+	}
 	return pruner.PruneHistory(ctx, cutoff, maxRetainedOps, batchSize)
+}
+
+// RecordPeerPullAck notes that nodeID has applied this node's log through ackSeq.
+func (s *Service) RecordPeerPullAck(ctx context.Context, nodeID string, ackSeq int64, protocol int) error {
+	if s == nil || s.ops == nil {
+		return nil
+	}
+	rec, ok := s.ops.(peerAckRecorder)
+	if !ok {
+		return nil
+	}
+	return rec.RecordPeerAck(ctx, nodeID, ackSeq, protocol)
+}
+
+// ListSnapshotHeads returns compacted last-write-wins heads with seq > afterSeq.
+func (s *Service) ListSnapshotHeads(ctx context.Context, afterSeq int64, limit int) ([]*store.HASyncOp, error) {
+	if s == nil || s.ops == nil {
+		return nil, nil
+	}
+	src, ok := s.ops.(snapshotHeadReader)
+	if !ok {
+		return nil, nil
+	}
+	return src.ListSnapshotHeads(ctx, afterSeq, limit)
 }
 
 func (s *Service) AppendUpsert(ctx context.Context, entityType, entityID string, payload any, updatedAt time.Time) error {
@@ -1789,6 +1851,9 @@ func (s *Service) pushOpsToPeer(peer *PeerRuntimeState, ops []*store.HASyncOp) b
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	if coalesced, _ := CoalesceOps(ops); len(coalesced) > 0 {
+		ops = coalesced
+	}
 	payload, err := json.Marshal(map[string]any{"ops": ops})
 	if err != nil {
 		return false
