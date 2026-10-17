@@ -93,7 +93,7 @@
 - 26. 仍未解决的问题
 - 27. 今天就做的五件事（27.1 打断 … 27.5 报错写下一步）
 - 28. 收尾（28.1 醒来 … 28.5 架构越值钱）
-- 29. 桌面 bot 改进计划（29.1 单一出口 … 29.10 睡眠）
+- 29. 桌面 bot 改进计划（29.1 单一出口 … 29.11 睡眠；主 agent 不操作电脑）
 
 ---
 
@@ -136,7 +136,7 @@
 
 操作这台电脑本身也有三种方式，按可靠性排：先读页面结构（DOM / 无障碍树）并直接对元素动手，浏览器默认走这条；桌面程序和系统对话框才对截图上的像素点击；登录、验证码、2FA、付款交给人（对话里的表单，或把屏幕交出去）。见第 18 节。
 
-对人说话的是一个主 agent。简单的事它自己答。大的活交给帮手：通用、操作电脑、视频、云端编码。每个帮手有自己的记忆，和主 agent、和其他帮手隔开。新开一条工作时窗口是空的，主 agent 只交出一张自包含的卡片，只收回一段短结果；同一条工作流的后续接着这个帮手自己的上下文。见第 19 节。
+对人说话的是一个主 agent。它只和这个人说话，并把活派出去。它不操作电脑：没有点击、输入、浏览器或桌面控制，也没有「看一眼再点」的工具。至多一个只读截图，用来核对状态。截图、点击、输入、浏览器和桌面控制都在操作电脑的帮手上。那个帮手用 `computer_use` 角色，自己的上下文，一块屏幕一个，交回一段短结果。见第 18、19 节。
 
 工具按四条来设计：对话中途不增删工具，说明加参数控制在约 4000 字以内，反复出现的同一条 shell 收成一个人能读懂的专用工具，报错写给模型并告诉它下一步。见第 20 节。
 
@@ -315,7 +315,7 @@ isolated bot（`desktop_mode=isolated`，默认仍是 `shared`）不新开容器
 | Docker 现在、Firecracker 以后，接口同一套 | 只有 Docker | 需要 runtime 接口；Firecracker 还要 KVM |
 | 先便宜、先可靠地选工具 | 前台把查找写成桌面工单；工人把活收进 `desktop`，`computer` 与 `probe` 同一枚举 | 没有阶梯，没有「有 API 就不上桌面」的拒绝，没有升级指标。见第 17 节 |
 | 操作电脑先读结构，像素和人是退路 | 浏览器有 DOM `probe`，桌面有 AT-SPI，像素和交接也在 | 三条路并在一个工具里。`probe` 不合并无障碍树；应用点击常常是元素中心的像素；交接不走单一出口。见第 18 节 |
-| 一个主 agent，多个帮手；每个帮手一块自己的记忆 | 本机任务有单独的记忆键，开工时却抄走整段对话；云桌面 bot 一次只跑一个工人 | 帮手和主 agent、帮手和帮手都没有隔开。短结果、同一条工作流接着自己的上下文，都还没有。见第 19 节 |
+| 一个主 agent，多个帮手；主 agent 不操作电脑 | 本机聊天的 computer-use 门一开，同一条前台循环就带上 `computer_*`。云桌面的执行回合自己拿着整份 `desktop`，还要写聊天回复。开工时还抄走整段对话 | 见第 18、19 节。操作电脑收成一块屏幕一个帮手。主 agent 的工具列表里拿掉键鼠。见第 29.6 节 |
 | 工具列表稳定、说明短、报错告诉下一步 | 计划/执行两套 `desktop` 模式；执行期说明加参数约 1.1 万字；Office 走 `bash`+python-docx；睡着的容器返回 Docker 原文。脚本和命令行另有一批只写 failed / required 的句子 | 模型侧见第 20 节。脚本、CLI、其余工具句子见第 27.5 节 |
 | 随时改方向；风险调用自动复核 | 大改动先出安排再点确认；计划期变更要再确认一次；要不要问人由模型自己决定；「准备好了再发」没有延后动作 | 见第 21 节 |
 | 四条安全支柱：复核危险命令、不可信数据围栏、先问再发、凭据不进上下文 | 云桌面 `bash` 直接执行 `rm -rf`、`curl\|sh`；网页和 webhook 正文不围栏；清楚的定时当场装上；CDP 令牌写在 URL 里 | 见第 22 节 |
@@ -852,6 +852,7 @@ Chromium、X11、外部卷、shm、旧 Docker/seccomp、shell pid 1，都在第 
 - 不在脚手架的用例还红着的时候先把守卫做厚。
 - 不把第 26 节的三件事写成已经有答案。
 - 不把第 2 段的逐步批准做回来。人插一句就接着做。逐步点头只留在真风险和不可逆动作上。
+- 不让主 agent 操作电脑。键鼠、浏览器和桌面控制只在操作电脑的帮手上。
 - 不把「常开」写成机器一直开着。常开是随时能醒，醒来接着上次停下的地方。
 - 不因为代码好写就在第 28 节的四段之外再加一层。
 
@@ -1197,7 +1198,9 @@ MCP 和未知工具名不在拒绝表里，除非它的 adapter 是 `web_search`
 
 ### 18.1 原则
 
-第 17 节决定要不要碰这台机器。一旦要碰，操作只有三种，按可靠性排。较低的一种能做完这一步，就不用更高的一种。
+硬规则：主 agent 不操作电脑。它只和这个人说话，并把活派给帮手。截图、点击、输入、浏览器和桌面控制全部由操作电脑的帮手做。这个帮手用 `computer_use` 模型角色，自己的上下文，一块屏幕一个，交回一段短结果。主 agent 的工具列表里没有 `desktop` 的键鼠，没有 `computer_*`，也没有 `gui_*`。至多一个只读截图，用来核对状态：返回一张图，参数里没有坐标、点击或输入。
+
+第 17 节决定要不要碰这台机器。要碰，就派这个帮手。帮手里操作只有三种，按可靠性排。较低的一种能做完这一步，就不用更高的一种。
 
 | 方式 | 读什么 | 怎么动手 | 用在哪 |
 | --- | --- | --- | --- |
@@ -1211,7 +1214,7 @@ MCP 和未知工具名不在拒绝表里，除非它的 adapter 是 `web_search`
 
 ### 18.2 现在 computer use 做什么
 
-云桌面的 computer use 不是只点像素。第 2.6 节的三条岔路已经在：浏览器走 CDP，其它窗口走 `xdotool`，控件树走 AT-SPI。缺的是一个角色把它们分成「先结构、再像素、最后人」，并在调用时拒绝跳级。
+云桌面的 computer use 不是只点像素。第 2.6 节的三条岔路已经在：浏览器走 CDP，其它窗口走 `xdotool`，控件树走 AT-SPI。缺的是：这些动作只放在操作电脑的帮手上，并且这个帮手按「先结构、再像素、最后人」选用。今天它们在主循环里。
 
 **浏览器：DOM 引用，不是无障碍树，也不是像素**
 
@@ -1242,7 +1245,19 @@ CDP 的 `Accessibility.getFullAXTree` 只在非 probe 的 `Observe` 里合并进
 
 **本机的 computer_use 角色是另一套**
 
-意图标签 `computer_use` 和 longhorizon 的 `gui_executor` 使用本机 `computer_observe` / `computer_click` 等，先 UIA，再用截图和 YOLO。`browser_executor` 只用 `browser_*`，不能调用 `computer_*`。云桌面 bot 把这些宿主工具丢掉，改用 `desktop`。本文的三种方式是云桌面上的一个角色，不把这两套本机角色合并进来。
+意图标签 `computer_use` 和 longhorizon 的 `gui_executor` 使用本机 `computer_observe` / `computer_click` 等，先 UIA，再用截图和 YOLO。`browser_executor` 只用 `browser_*`，不能调用 `computer_*`。云桌面 bot 把这些宿主工具丢掉，改用 `desktop`。本文的三种方式是操作电脑帮手的用法，不把这两套本机角色合并进来。`gui_executor` 已经是单独一环（`guiapp/horizon_episode.go` 在 `RoleGUIExecutor` 上把 `ComputerUseActive` 设为真）。要拿掉的是聊天主循环上的同一套工具，不是这一环。
+
+**主循环今天仍能开车。这些路径要拿掉**
+
+| 位置 | 现在 | 拿掉之后 |
+| --- | --- | --- |
+| `guiapp/computer_use_task.go` 的 `recordComputerUseGate` | 门打开时，把 `ComputerUseActive` 写进这一条 `LoopContext`。这是聊天回合自己的上下文 | 门打开只派操作电脑的帮手。聊天这条循环的 `ComputerUseActive` 保持假 |
+| `guiapp/computer_use_routing.go` 的 `gateComputerUse` | 「打开 Word」「@computer」让同一条前台回合注入 `computer_*` | 这些句子变成一张卡片。工具不进主 agent |
+| `guiapp/im_agent_loop_tools.go` 的 `filterComputerUseToolsForLocalFileWork` | 只有门关上才丢掉 `computer_*`。`removeRefComputerUseTools` 还把 `gui_*` 留着，而 `gui_*` 能点击、输入、截图 | 主 agent 的列表始终丢掉 `computer_*` 和 `gui_*`。至多留一个只读截图 |
+| `guiapp/semantic_tools_search.go` | `computer_use` 的说明是 “Observe or drive the local desktop.”，能进聊天的工具面 | 这句话不出现在主 agent 的工具列表里 |
+| `guiapp/desktop_bot_understand.go` | 前台提示写明没有工具，这半边是对的。`instruction` 却写给「开车的工人」，并要求工人写出聊天回复、点名 `desktop` 的动作 | 前台只派卡片。不点名点击和输入。聊天回复仍由主 agent 经 `send_to_user` 发出 |
+| `hub/internal/botmgmt/access.go` | `bot_phase=execute` 把工单交给同一次执行。这一次执行就是拿着 `desktop` 的那个模型 | 执行期的 `desktop` 只出现在帮手那一次调用上。主 agent 这次调用的工具列表里没有它 |
+| `MaClawSrv/desktop_runtime.go` | `plan` / `execute` 的 `desktop` 含 `screenshot`、`click`、`type`、`script`、`computer`。调用方是云桌面 bot 的工人，不是另一个帮手 | 这套动作留给 `computer_use` 帮手。主 agent 调不到 |
 
 ### 18.3 差距
 
@@ -1254,7 +1269,8 @@ CDP 的 `Accessibility.getFullAXTree` 只在非 probe 的 `Observe` 里合并进
 | 截图坐标有一张图的框架 | 映射已经做了。模型侧的说明仍写死 `1280x800`，和 `1440x900` 回退并存 |
 | 登录、验证码、2FA、付款交给人 | 表单和交屏幕都有。两条提示词不一致。通知是助手正文，不是 `send_to_user` |
 | 暂停、通知、恢复是一条协议 | 暂停用 ask-user 标记；恢复靠人的下一条消息或交还。没有统一的暂停时限，定时任务直接失败 |
-| 一个 computer_use 角色按方式选用 | 云桌面把三种方式放进同一个 `desktop` 工具，靠提示词选择。本机则把浏览器角色和 GUI 角色拆开 |
+| 操作电脑的是帮手，不是主 agent | 见 18.2 末的清单。主循环能点、能打字 |
+| 一个 computer_use 角色按方式选用 | 云桌面把三种方式放进同一个 `desktop` 工具，靠提示词选择。本机则把浏览器角色和 GUI 角色拆开。门打开时，工具进的是聊天那一条循环 |
 
 ### 18.4 结构层
 
@@ -1319,7 +1335,7 @@ CDP 的 `Accessibility.getFullAXTree` 只在非 probe 的 `Observe` 里合并进
 
 ### 18.7 computer_use 角色怎么用这三种
 
-云桌面工人里，操作电脑的是一个角色，不是本机的 `gui_executor` 和 `browser_executor` 两个角色。这个角色每一步声明 `mode`：`structure`、`pixels`、`human`。
+操作电脑的是帮手，不是主 agent，也不是本机的 `gui_executor` 和 `browser_executor` 两个角色合成一个。主 agent 派一张卡片。帮手用 `computer_use` 角色，在自己的上下文里干活，一块屏幕一个。它每一步声明 `mode`：`structure`、`pixels`、`human`。交回主 agent 的是一段短结果和点名的文件，不是工具轨迹。
 
 - `structure`：读元素列表，按 id 动手。前台是浏览器时，这是默认。
 - `pixels`：只在 18.5 的表允许时使用。桌面程序和系统对话框走这里。
@@ -1344,7 +1360,7 @@ CDP 的 `Accessibility.getFullAXTree` 只在非 probe 的 `Observe` 里合并进
 2. **补全结构读取。** 桌面 `probe` 合并无障碍树。应用点击改为先 AT-SPI，中心点 `xdotool` 留作像素退路。动作名不变。
 3. **打开 18.5 的拒绝。** 和 17.7 的像素守卫一起生效。
 4. **交接改走协议。** 通知改为 `send_to_user` 的 `kind=ask`。表单和交屏幕按 18.6 分叉。空正文不再补固定中文。定时任务维持「需要一个人」的失败。
-5. **角色提示词。** 工人按 18.7 声明 `mode`。本机 `computer_*` 保持原样。
+5. **角色提示词。** 帮手按 18.7 声明 `mode`。主 agent 的列表里已经没有这些工具。本机 longhorizon 的 `gui_executor` 仍是单独一环，不把同一套工具放回聊天循环。
 
 回滚是关掉第 3 步和第 4 步的开关。结构读取的合并可以留着，它不改变动作名。
 
@@ -1355,6 +1371,7 @@ CDP 的 `Accessibility.getFullAXTree` 只在非 probe 的 `Observe` 里合并进
 - 不合并 longhorizon 的 `gui_executor` 和 `browser_executor`。那是本机的两套角色。
 - 不把 noVNC 改成一条消息通道。人看屏幕仍走它。
 - 不在这一节重新规定连接器或公开搜索。那是第 17 节。
+- 不把 `desktop`、`computer_*`、`gui_*` 留给主 agent。只读截图不是这三套工具里的一个动作。
 
 ---
 
@@ -1364,7 +1381,9 @@ CDP 的 `Accessibility.getFullAXTree` 只在非 probe 的 `Observe` 里合并进
 
 ### 19.1 原则
 
-对人说话的只有一个主 agent。简单的事它自己答：寒暄、上下文里已经有的答案、一次连接器调用、一次公开搜索（第 17 节的 1–3 级）。大的活交给帮手，自己停手。
+对人说话的只有一个主 agent。它只做两件事：和这个人说话，把活派出去。简单的答它自己说：寒暄、上下文里已经有的答案、一次连接器调用、一次公开搜索（第 17 节的 1–3 级）。它不操作电脑。截图、点击、输入、浏览器和桌面控制都交给操作电脑的帮手。主 agent 没有这些工具，连「截一张再点」也没有。至多一个只读截图，用来核对状态，不能点击，也不能输入。
+
+操作电脑的帮手用 `computer_use` 角色，自己的上下文，一块屏幕一个。它按第 18 节的三种方式干活，交回一段短结果。主 agent 不读它的轨迹。
 
 帮手四类：通用、操作电脑、视频、云端编码。每个帮手一块自己的记忆，三边都隔开：读不到主 agent 的对话，读不到其他帮手的记忆，自己的工具轨迹和截图也不写回主 agent。新开的一条工作流从空窗口开始，里面只有主 agent 交下来的那张卡片。同一条工作流里的后续接着这块记忆，不另开一份，也不再抄主会话。主 agent 只把卡片上约定的短结果留进自己的上下文。
 
@@ -1376,7 +1395,7 @@ CDP 的 `Accessibility.getFullAXTree` 只在非 probe 的 `Observe` 里合并进
 
 **前台是对话，后台是同一类任务**
 
-前台一轮先有一句回复，然后最多两次顺手的查找。第三次工具调用被拒绝，必须 `dispatch_background_task`。操作电脑的工具在这一轮也被拒绝。迭代预算是 4，自动延长关着。多步、长工具链、文件、调研、Office、批量修改都交给后台。
+前台一轮先有一句回复，然后最多两次顺手的查找。第三次工具调用被拒绝，必须 `dispatch_background_task`。迭代预算是 4，自动延长关着。多步、长工具链、文件、调研、Office、批量修改都交给后台。操作电脑并没有因此离开前台：`gateComputerUse` 认为这句话在操作桌面时，同一条 `LoopContext` 仍带上 `computer_*`（第 18.2 节的清单）。`gui_*` 在非本地文件的回合里还在。这就是主循环在开车，要拿掉。
 
 后台任务登记在 `chat-tasks.json`。一个会话同时最多 3 个未结束任务（`chatTaskPerSessionLimit`）。记忆键是 `desktop-user:task:<id>`（项目会话则是该会话再加 `:task:<id>`）。任务循环不占聊天会话的锁，所以人可以接着说话。状态是 `queued`、`running`、`needs_input`、`done`、`failed`、`canceled`。进程重启后，未结束的变成 `interrupted`，不自动接着跑。LLM 调度有单独的 `chat_task` 通道，并发 2；后面的前台回合不取消这条通道上已经租到的名额。等不到槽位时，排队超过 2 分钟以「没有后台槽位」失败。
 
@@ -1386,7 +1405,7 @@ CDP 的 `Accessibility.getFullAXTree` 只在非 probe 的 `Observe` 里合并进
 
 `foreground`、`background`、`computer_use`（`guiapp/app_maclaw_llm_roles.go`）。本地 `inherit_hub: false` 并且写了模型时用这个钉；否则用 Hub 上该角色的模型；再没有就退回助手配置。`computer_use` 在模型为 auto/default 且走 Hub 时打开视觉。
 
-`agentLoopLLMRole` 的选择是：这一轮的 computer-use 门开着，就用 `computer_use`，聊天下的后台任务也一样。否则聊天任务和 `LoopKindBackground` 用 `background`。其余是 `foreground`。调用方字符串不参与这个选择。所以「操作电脑」是同一个任务换一个模型，不是另一个帮手，也不是另一块屏幕。
+角色今天钉在 `foreground`、`background`、`computer_use` 三枚上，但操作电脑不是另一个帮手。门开着就在这一轮改用 `computer_use`，聊天派出去的后台任务也一样。调用方字符串不参与这个选择。所以同一条循环既说话又点屏幕，也不是一块屏幕一个帮手。要改成：主 agent 保持 `foreground`，操作电脑的帮手单独一条上下文，角色固定是 `computer_use`。
 
 **管理工具**
 
@@ -1408,14 +1427,15 @@ CDP 的 `Accessibility.getFullAXTree` 只在非 probe 的 `Observe` 里合并进
 
 本文前面写的云桌面 bot 不在 #16 / #18 的登记里。#18 把 `guiapp/desktop_bot_*.go` 的 pace 机（confirm / ask / schedule / takeover）留在外面。#19 给它加了停止：run 还在进行时，`ClassifyDesktopWorkStop` 用同一个前台分类；读到 `STOP_WORK` 就取消，而不是把「好的，已停下」显示出来。
 
-前台 `desktop_bot_understand.go` 没有工具。它写出 `told`、`instruction`、`pace`。查找、截图、打开页面是 `direct`，`instruction` 是给唯一工人的工单，最长约 4000 字。一次一个 run。桌面忙时下一条排队，不并行。默认 `shared` 时所有 bot 挤在 `:20`。isolated 时一块屏幕一个 bot，同时最多 `MACLAW_DESKTOP_MAX_BOTS`（默认 3）。
+前台 `desktop_bot_understand.go` 没有工具。它写出 `told`、`instruction`、`pace`。查找、截图、打开页面是 `direct`，`instruction` 是给唯一工人的工单，最长约 4000 字，并且点名 `desktop` 的动作，还规定工人写出的聊天回复里要有什么。一次一个 run。桌面忙时下一条排队，不并行。默认 `shared` 时所有 bot 挤在 `:20`。isolated 时一块屏幕一个 bot，同时最多 `MACLAW_DESKTOP_MAX_BOTS`（默认 3）。
 
-工人就是那一个 `desktop` 工具循环，不是四类帮手。bot 之间的便条（第 16 节）是另一个 bot 的新 run，不是这个主 agent 手下的帮手。编码子代理 `spawn_coding_agent` 和 `subagent_concurrency`（默认 2，上限 10）活在编码工作台，主 agent 派不到它。没有视频帮手这一个工具。
+工人就是那一个 `desktop` 工具循环（`MaClawSrv/desktop_runtime.go`，阶段由 `hub/internal/botmgmt/access.go` 写成 `bot_phase`）。它既开车，又写人要读的回复。这不是四类帮手，也不是一块屏幕上一个 `computer_use` 上下文。bot 之间的便条（第 16 节）是另一个 bot 的新 run，不是这个主 agent 手下的帮手。编码子代理 `spawn_coding_agent` 和 `subagent_concurrency`（默认 2，上限 10）活在编码工作台，主 agent 派不到它。没有视频帮手这一个工具。
 
 ### 19.4 差距
 
 | 原则 | 现在 |
 | --- | --- |
+| 主 agent 不操作电脑，至多只读截图 | 本机门一开，前台循环带着 `computer_*` 和 `gui_*`。云桌面执行回合带着整份 `desktop`，含点击和输入。前台提示还让工人写聊天回复 |
 | 简单的事主 agent 自己答 | 本机前台可以答，并做两次查找。云桌面 bot 把查找写成桌面工单 |
 | 大的活交给分类型的帮手 | 后台任务只有一种。操作电脑只是换 `computer_use` 模型。视频帮手不存在。云端编码不在这条派工路上 |
 | 每个帮手一块自己的记忆，新开时是空的 | 记忆键是新的。开工时 `executeChatTaskAgentLoop` 把主会话整段复制进去，帮手因此看得到主对话，包括已经写进主会话的先前结果 |
@@ -1433,9 +1453,10 @@ CDP 的 `Accessibility.getFullAXTree` 只在非 probe 的 `Observe` 里合并进
 
 | 类型 | 模型角色 | 工具 | 屏幕 |
 | --- | --- | --- | --- |
-| 通用 | `background` | 第 17 节的 1–3 级，加上容器里的文件和 shell。没有 `desktop` 的键鼠和截图 | 不占 |
-| 操作电脑 | `computer_use` | 第 18 节的三种方式。`mode` 由那个帮手自己声明，仍受 18.5 的拒绝 | 一块，独占 |
-| 视频 | `background`，要看画面时改 `computer_use` | 剪已有文件、合成、交付成片。今天没有这个工具，先占一个类型名 | 只剪文件时不占。要录这块屏幕时，独占那一块，上面不能再有操作电脑的帮手 |
+| 主 agent | `foreground` | `send_to_user`、派工、待办、进度、停帮手。第 17 节的 1–3 级。没有 `desktop`、`computer_*`、`gui_*`。至多一个只读截图 | 不占 |
+| 通用 | `background` | 第 17 节的 1–3 级，加上容器里的文件和 shell。没有 `desktop` 的键鼠，也没有只读截图以外的看屏幕 | 不占 |
+| 操作电脑 | `computer_use` | 第 18 节的三种方式，含截图、点击、输入、浏览器。`mode` 由这个帮手自己声明，仍受 18.5 的拒绝 | 一块，独占 |
+| 视频 | `background` | 剪已有文件、合成、交付成片。没有 `desktop` 和 `computer_*`。今天没有这个工具，先占一个类型名 | 只剪文件时不占。要录屏幕时，主 agent 再派一个操作电脑的帮手，两个人不共用一块屏幕 |
 | 云端编码 | 编码子代理自己的配置 | 现有的 `spawn_coding_agent` 那条只读或编码循环。仓库轨迹留在子代理里 | 不占这台桌面 |
 
 通用帮手做调研、文件、Office、连接器。操作电脑的帮手不做这些里能在 1–3 级完成的部分；那种活留在主 agent 或通用帮手。视频帮手不自己点桌面：要操作电脑才能录，就由主 agent 再派一个操作电脑的帮手，两个人不共用一块屏幕。云端编码帮手交回的是一段结论和文件路径，不是仓库里的来回。
@@ -1524,6 +1545,7 @@ CDP 的 `Accessibility.getFullAXTree` 只在非 probe 的 `Observe` 里合并进
 - 不把编码工作台、专家、ACP 镜像改成这四类帮手。
 - 不把本机 `computer_*` 搬进云桌面。操作电脑的帮手用第 18 节的 `desktop`。
 - 不让帮手派帮手，也不让帮手调用 `send_to_user`。
+- 不让主 agent 调用 `desktop` 的点击、输入、`script`、`computer`，也不让它调用 `computer_*` 或 `gui_*`。只读截图不能带坐标。
 - 不让帮手读取主会话或其他帮手的记忆，也不把帮手的记忆加载进主上下文。
 - 不在重启后自动续跑 `interrupted` 的帮手。同一条工作流若由主 agent 恢复，用原来的 id 和它自己留下的记忆。
 - 不改 `desktop` 的动作名。
@@ -2840,7 +2862,7 @@ MCP 的开关也在开工前定好。一场对话的工具列表在开始时钉�
 
 ### 28.3 怎么干活
 
-对人说话只有 `send_to_user`（第 16 节）。干活先走便宜、可靠的一级（第 17 节）。操作电脑先读结构，像素和人是退路（第 18 节）。大的活交给帮手，只收回三行结论和路径（第 19、27.3 节）。工具列表在一场对话里不变，报错写出下一步（第 20、27.5 节）。人改方向，真风险才问；`git push`、部署、删库每次都问（第 21、22、27.3 节）。只有要决定或整件做完才打断，其余进度写在文件里（第 27.1、27.2 节）。规则文件只放每次都要的那几句（第 27.4 节）。
+对人说话只有 `send_to_user`（第 16 节）。主 agent 不操作电脑，只派工。操作电脑的帮手先读结构，像素和人是退路（第 18 节）。大的活交给帮手，只收回三行结论和路径（第 19、27.3 节）。工具列表在一场对话里不变，报错写出下一步（第 20、27.5 节）。人改方向，真风险才问；`git push`、部署、删库每次都问（第 21、22、27.3 节）。只有要决定或整件做完才打断，其余进度写在文件里（第 27.1、27.2 节）。规则文件只放每次都要的那几句（第 27.4 节）。
 
 阶段 6 删掉已经在添乱的脚手架。阶段 7 装留下的管子。阶段 8 用评测决定守卫还要不要留。
 
@@ -2989,9 +3011,36 @@ MCP 的开关也在开工前定好。一场对话的工具列表在开始时钉�
 - `ask_progress_reads_file`
 - `steer_says_on_it`
 
-### 29.6 PR-6 先读结构再点
+### 29.6 PR-6 主 agent 放下键鼠
 
-浏览器先 `probe` 再 `script`。非浏览器窗口先 `app_probe` 再用元素 id。登录、验证码、2FA、付款仍走 `request_takeover`。
+硬规则落到代码：主 agent 不操作电脑。截图、点击、输入、浏览器和桌面控制只在操作电脑的帮手上。帮手用 `computer_use`，自己的上下文，一块屏幕一个，交回第 27.3 节的三行结论和路径。主 agent 至多一个只读截图。
+
+动这些：
+
+- `guiapp/computer_use_task.go` 的 `recordComputerUseGate`，`guiapp/computer_use_routing.go` 的 `gateComputerUse`。门打开时不把 `ComputerUseActive` 写进聊天的 `LoopContext`。改成派一个帮手。
+- `guiapp/im_agent_loop_tools.go`。主 agent 的列表始终去掉 `computer_*` 和 `gui_*`。`filterComputerUseToolsForLocalFileWork` 不再靠「门关上才丢」。
+- `guiapp/semantic_tools_search.go`。`computer_use` 的 “drive the local desktop” 不进主 agent 的工具面。
+- `guiapp/desktop_bot_understand.go`。`instruction` 改成卡片：目标、约束、完成标准。不点名 `click`、`type`、`computer`。不要求工人写聊天回复。
+- `hub/internal/botmgmt/access.go`、`MaClawSrv/desktop_runtime.go`。`bot_phase=execute` 的 `desktop` 只挂在帮手那一次调用上。主 agent 这次调用没有这套动作。
+- `guiapp/horizon_episode.go`。`RoleGUIExecutor` 已经是单独一环，留下。不把同一套工具再挂回启动它的聊天循环。
+
+现在删：聊天主循环上的 `computer_*` 和 `gui_*`。云桌面工人「既开车又写回复」。
+
+留下：longhorizon 的 `gui_executor` 那一环。只读截图。`desktop` 的动作名。
+
+验收：主 agent 的工具名集合里没有 `computer_click`、`computer_observe`、`gui_*`，也没有 `desktop` 的 `click`、`type`、`script`、`computer`。只读截图的参数没有坐标。同一块屏幕上只有一个 `computer_use` 帮手。帮手的轨迹不进主上下文。主 agent 看见的是三行结论和路径。
+
+用例：
+
+- `main_has_no_computer_tools`
+- `gate_dispatches_helper`
+- `readonly_screenshot_has_no_click`
+- `helper_one_per_screen`
+- `helper_compact_result`
+
+### 29.7 PR-7 先读结构再点
+
+这一步只改操作电脑帮手手里的 `desktop`。主 agent 在 PR-6 已经拿不到这些动作。浏览器先 `probe` 再 `script`。非浏览器窗口先 `app_probe` 再用元素 id。登录、验证码、2FA、付款仍走 `request_takeover`。
 
 动这些：
 
@@ -3009,7 +3058,7 @@ MCP 的开关也在开工前定好。一场对话的工具列表在开始时钉�
 - `dialog_probe_first`
 - `captcha_handoff`
 
-### 29.7 PR-7 危险动作先复核
+### 29.8 PR-8 危险动作先复核
 
 shell、对外发送、删除、付款在执行前由另一个模型看一次。安全的放行。没通过就经 `send_to_user` 问这一次，15 秒没有回答就拦住。`git push`、`docker compose up`、`action=install`、`DROP DATABASE` / `DROP TABLE` 每次都问，用户规则不能默认放行。
 
@@ -3030,7 +3079,7 @@ shell、对外发送、删除、付款在执行前由另一个模型看一次。
 - `git_push_asks`
 - `silence_blocks`
 
-### 29.8 PR-8 四层记忆
+### 29.9 PR-9 四层记忆
 
 画像、日志、笔记、其余文件。文件每回合结束就改，过时的行替换进 `## 已替换`。提示里的摘录字节仍只在摘要时换，所以这个 PR 不自己做摘要。读出来套上 `[untrusted memory]` 围栏。围栏里的邮件、网页、工具结果不能改画像，也不能变成指令。
 
@@ -3052,7 +3101,7 @@ shell、对外发送、删除、付款在执行前由另一个模型看一次。
 - `note_decay_6h`
 - `helper_cannot_write_profile`
 
-### 29.9 PR-9 人离开之后再摘要
+### 29.10 PR-10 人离开之后再摘要
 
 上一回合结束后提示超过 10 万 token，人已经离开，并且还在供应商缓存的热窗口里，才用同一条前缀写摘要。窗口按配置夹在 5 分钟到 1 小时，不把某个供应商的官方秒数写死。摘要请求不另起一套系统提示。人中途回来就放弃这次提交。
 
@@ -3072,9 +3121,9 @@ shell、对外发送、删除、付款在执行前由另一个模型看一次。
 - `summary_does_not_ensure`
 - `cold_cache_skips`
 
-### 29.10 PR-10 睡眠和唤醒
+### 29.11 PR-11 睡眠和唤醒
 
-到这里才动机器。只做磁盘级的短空闲睡眠，默认关，先对一个测试租户打开。不做 CRIU，不做 Firecracker。那两步仍是第 12 节的阶段 3 和阶段 5，不在这十个 PR 里。
+到这里才动机器。只做磁盘级的短空闲睡眠，默认关，先对一个测试租户打开。不做 CRIU，不做 Firecracker。那两步仍是第 12 节的阶段 3 和阶段 5，不在这十一个 PR 里。
 
 动这些：
 
@@ -3086,11 +3135,12 @@ shell、对外发送、删除、付款在执行前由另一个模型看一次。
 
 用例：离线的 `idle_does_not_stop_when_sync_fails`、`memory_turn_does_not_wake`。在线的不进每个 PR，只在打开这个租户开关时跑冒烟。
 
-### 29.11 这十个 PR 不做什么
+### 29.12 这十一个 PR 不做什么
 
 - 不在本文这次提交里开始写代码。
 - 不改 `desktop` 的动作名。
 - 不把停止短语表、声称守卫、第 17.7 节的四条升级守卫做厚。它们以后删。
 - 不把第 26 节的三件事写成已经有答案。PR-5 只落实「要决定或做完才叫人」，疏密的度量仍未解决。
-- 不在 PR-10 做 CRIU 或 Firecracker。
+- 不在 PR-11 做 CRIU 或 Firecracker。
 - 不把第 2 段的逐步批准做回来。
+- 不把 `desktop`、`computer_*`、`gui_*` 留在主 agent 上。PR-6 拿掉。只读截图不能点击。
