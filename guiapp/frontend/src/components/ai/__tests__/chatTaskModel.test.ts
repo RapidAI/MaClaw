@@ -33,6 +33,7 @@ describe("chat task transcript", () => {
         expect(withResult[1].content).toBe("deck is ready");
         expect(withResult[1].localFilePaths).toEqual(["/tmp/out.pptx"]);
         expect(appendChatTaskResultMessage(withResult, { request_id: "chat-task-result-ct-1", text: "again" })).toHaveLength(2);
+        expect(appendChatTaskResultMessage(updated, { request_id: "chat-task-result-empty", text: "  " })).toEqual(updated);
     });
 
     it("recognizes a task result that has no foreground round", () => {

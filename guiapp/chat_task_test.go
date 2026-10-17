@@ -227,7 +227,7 @@ func TestChatTaskStatusReplyDoesNotRequireALoop(t *testing.T) {
 	}
 	reg.mu.Unlock()
 	resp, handled := h.tryChatTaskStatusReply(IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "进度怎么样了"})
-	if !handled || resp == nil || !strings.Contains(resp.Text, "ct-live") || !strings.Contains(resp.Text, "building page 3") {
+	if !handled || resp == nil || strings.Contains(resp.Text, "ct-live") || !strings.Contains(resp.Text, "slides") || !strings.Contains(resp.Text, "building page 3") {
 		t.Fatalf("status = handled:%v resp:%+v", handled, resp)
 	}
 	if _, handled := h.tryChatTaskStatusReply(IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "please write a new essay about rivers"}); handled {
@@ -237,7 +237,7 @@ func TestChatTaskStatusReplyDoesNotRequireALoop(t *testing.T) {
 		t.Fatal("git status was treated as a background-task question")
 	}
 	resp, handled = h.tryChatTaskStatusReply(IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "task status"})
-	if !handled || resp == nil || !strings.Contains(resp.Text, "ct-live") {
+	if !handled || resp == nil || strings.Contains(resp.Text, "ct-live") || !strings.Contains(resp.Text, "slides") {
 		t.Fatalf("task status = handled:%v resp:%+v", handled, resp)
 	}
 }
@@ -433,5 +433,132 @@ func TestChatTaskLLMPriorityIsNotPreemptedByForeground(t *testing.T) {
 func TestProjectPathIgnoresChatTaskMemoryKey(t *testing.T) {
 	if got := projectPathFromSessionOwnerID("desktop-user:task:ct-1"); got != "" {
 		t.Fatalf("task memory key resolved as a path: %q", got)
+	}
+}
+
+func TestChatTaskGuidanceKeepsFollowUpsOnTheSameWork(t *testing.T) {
+	h, _ := testChatTaskHandler(t)
+	reg := h.ensureChatTasks()
+	reg.mu.Lock()
+	reg.tasks["ct-live"] = &chatTaskRecord{
+		ID: "ct-live", SessionKey: desktopUserID, Title: "slides", Status: chatTaskRunning,
+		CreatedAt: time.Now(), UpdatedAt: time.Now(), answerCh: make(chan string, 1), cancelCh: make(chan struct{}),
+	}
+	reg.mu.Unlock()
+	text := h.chatTaskDispatchGuidance(desktopUserID)
+	if strings.Contains(text, "new chat turn") || strings.Contains(text, "ct-live") {
+		t.Fatalf("guidance leaked the old follow-up rule or an id:\n%s", text)
+	}
+	if !strings.Contains(text, "steer_background_task") || !strings.Contains(text, "slides") {
+		t.Fatalf("guidance = %s", text)
+	}
+	if !strings.Contains(chatTaskWorkerGuidance(), "verified") {
+		t.Fatal("worker guidance missing the verified-result rule")
+	}
+}
+
+func TestChatTaskFollowUpSteersTheSameTask(t *testing.T) {
+	h, _ := testChatTaskHandler(t)
+	reg := h.ensureChatTasks()
+	release := make(chan struct{})
+	defer close(release)
+	reg.executor = func(handler *IMMessageHandler, task *chatTaskRecord) chatTaskRunResult {
+		loop := NewLoopContext("chat-task-"+task.ID, 4, nil)
+		handler.bindChatTaskLoop(task.ID, loop)
+		<-release
+		return chatTaskRunResult{Text: "ok"}
+	}
+	snap, err := reg.Dispatch(AIAssistantChatTaskDispatchRequest{Text: "write the notes", SessionKey: desktopUserID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitChatTaskStatus(t, reg, snap.ID, chatTaskRunning)
+	resp, handled := h.tryChatTaskFollowUp(IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "改成短一点", Lang: "zh-Hans"})
+	if !handled || resp == nil || strings.Contains(resp.Text, snap.ID) {
+		t.Fatalf("follow-up = handled:%v resp:%+v", handled, resp)
+	}
+	raw, ok := h.pendingInjection.Load(chatTaskMemoryOwner(desktopUserID, snap.ID))
+	if !ok || !strings.Contains(raw.(string), "改成短一点") {
+		t.Fatalf("injection = %#v ok=%v", raw, ok)
+	}
+	if _, handled := h.tryChatTaskFollowUp(IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "please write a new essay about rivers"}); handled {
+		t.Fatal("a new request was steered into the running work")
+	}
+}
+
+func TestDesktopChatStopConfirmsOnlyAfterTasksAreIdle(t *testing.T) {
+	h, _ := testChatTaskHandler(t)
+	reg := h.ensureChatTasks()
+	release := make(chan struct{})
+	defer close(release)
+	reg.executor = func(*IMMessageHandler, *chatTaskRecord) chatTaskRunResult {
+		<-release
+		return chatTaskRunResult{Text: "should not be delivered"}
+	}
+	first, err := reg.Dispatch(AIAssistantChatTaskDispatchRequest{Text: "first", SessionKey: desktopUserID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := reg.Dispatch(AIAssistantChatTaskDispatchRequest{Text: "second", SessionKey: desktopUserID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitChatTaskStatus(t, reg, first.ID, chatTaskRunning)
+	waitChatTaskStatus(t, reg, second.ID, chatTaskRunning)
+	resp, handled := h.tryDesktopChatStopReply(IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "都停下", Lang: "zh-Hans"})
+	if !handled || resp == nil || resp.Text != "已停下。" || strings.Contains(resp.Text, first.ID) {
+		t.Fatalf("stop = handled:%v resp:%+v", handled, resp)
+	}
+	if reg.activeCount(desktopUserID) != 0 {
+		t.Fatalf("tasks still active: %d", reg.activeCount(desktopUserID))
+	}
+	idle, handled := h.tryDesktopChatStopReply(IMUserMessage{UserID: desktopUserID, Platform: desktopPlatform, Text: "stop", Lang: "en"})
+	if !handled || idle == nil || idle.Text != "Nothing is running." {
+		t.Fatalf("idle stop = handled:%v resp:%+v", handled, idle)
+	}
+}
+
+func TestForegroundChatHandsOffComputerUseAndLongToolRuns(t *testing.T) {
+	h, _ := testChatTaskHandler(t)
+	loop := NewLoopContext("chat", desktopChatForegroundIterationBudget, nil)
+	loop.OfferChatTaskDispatch = true
+	h.sessionLoops.Store(desktopUserID, &sessionLoopState{loopCtx: loop})
+	if got := h.rejectForegroundWorkTool(desktopUserID, "read_file"); got != "" {
+		t.Fatal(got)
+	}
+	if got := h.rejectForegroundWorkTool(desktopUserID, "web_search"); got != "" {
+		t.Fatal(got)
+	}
+	if got := h.rejectForegroundWorkTool(desktopUserID, "bash"); got == "" {
+		t.Fatal("a third tool round stayed inline")
+	}
+	vision := NewLoopContext("chat-vision", desktopChatForegroundIterationBudget, nil)
+	vision.OfferChatTaskDispatch = true
+	h.sessionLoops.Store(desktopUserID, &sessionLoopState{loopCtx: vision})
+	if got := h.rejectForegroundWorkTool(desktopUserID, "computer_observe"); got == "" {
+		t.Fatal("computer use stayed inline")
+	}
+}
+
+func TestChatTaskProgressAndEmptyResult(t *testing.T) {
+	if _, ok := chatTaskProgressMilestone("[Status] 已接收任务"); ok {
+		t.Fatal("status prep was kept")
+	}
+	if _, ok := chatTaskProgressMilestone("Agent reasoning (2/30)..."); ok {
+		t.Fatal("reasoning counter was kept")
+	}
+	if _, ok := chatTaskProgressMilestone("$ ls -la"); ok {
+		t.Fatal("command narration was kept")
+	}
+	got, ok := chatTaskProgressMilestone("第 3 页已经写好")
+	if !ok || got == "" {
+		t.Fatalf("milestone = %q ok=%v", got, ok)
+	}
+	if result := chatTaskResultFromAgentResponse(&IMAgentResponse{}, nil); result.Err == nil {
+		t.Fatal("empty result was treated as done")
+	}
+	withFile := chatTaskResultFromAgentResponse(&IMAgentResponse{LocalFilePaths: []string{"/tmp/out.pptx"}}, nil)
+	if withFile.Err != nil || len(withFile.Artifacts) != 1 {
+		t.Fatalf("file result = %+v", withFile)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/RapidAI/CodeClaw/corelib/agent"
 	"github.com/RapidAI/CodeClaw/corelib/goal"
@@ -230,6 +231,30 @@ func (h *IMMessageHandler) cancelCurrentTaskForUser(userID, responseLang string)
 	confirmationCancelled := false
 	btwCancelled := false
 	loopCancelled := false
+	reg := h.ensureChatTasks()
+	chatBefore := 0
+	if reg != nil && !isChatTaskMemoryOwner(userID) {
+		chatBefore = reg.activeCount(userID)
+		if chatBefore > 0 {
+			reg.CancelSession(userID)
+		}
+	}
+	settle := func(resp *IMAgentResponse) *IMAgentResponse {
+		if resp == nil {
+			resp = &IMAgentResponse{}
+		}
+		if chatBefore == 0 || reg == nil {
+			return resp
+		}
+		reg.waitSessionIdle(userID, 2*time.Second)
+		if reg.activeCount(userID) > 0 {
+			return &IMAgentResponse{Text: desktopChatStillStoppingText(desktopChatChinese(responseLang, ""))}
+		}
+		if strings.TrimSpace(resp.Text) == localizedIMCancelMessage(responseLang, "none", "") {
+			return &IMAgentResponse{Text: desktopChatStoppedText(desktopChatChinese(responseLang, ""))}
+		}
+		return resp
+	}
 	// Pause active goal on cancel (don't clear — user can resume later).
 	if h.app != nil && h.app.goalContinuation != nil {
 		h.app.goalContinuation.CancelPending(userID)
@@ -254,18 +279,18 @@ func (h *IMMessageHandler) cancelCurrentTaskForUser(userID, responseLang string)
 	}
 	taskText, err := h.RequestCancelSessionForUser(userID)
 	if err == nil {
-		return &IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "task", truncateRunes(taskText, 30))}
+		return settle(&IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "task", truncateRunes(taskText, 30))})
 	}
 	if loopCancelled {
-		return &IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "loop", "")}
+		return settle(&IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "loop", "")})
 	}
 	if btwCancelled {
-		return &IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "btw", "")}
+		return settle(&IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "btw", "")})
 	}
 	if confirmationCancelled {
-		return &IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "confirmation", "")}
+		return settle(&IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "confirmation", "")})
 	}
-	return &IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "none", "")}
+	return settle(&IMAgentResponse{Text: localizedIMCancelMessage(responseLang, "none", "")})
 }
 
 func (h *IMMessageHandler) imCommandResponseLang(msgLang string) string {

@@ -910,6 +910,15 @@ func (h *IMMessageHandler) executeToolDetailedWithRuntimeContextAndContextTokens
 	if result, handled := h.executeChatTaskToolIfAny(policyUserID, name, args); handled {
 		return result
 	}
+	if reason := h.rejectForegroundWorkTool(policyUserID, name); reason != "" {
+		return toolExecutionResult{
+			Text:        "[system rejected] " + reason,
+			ToolName:    name,
+			ToolKind:    kind,
+			Outcome:     toolOutcomeFailed,
+			FailureKind: toolFailurePolicyRejected,
+		}
+	}
 	if name == "database" || name == "database_query" {
 		// The GUI registry is a legacy app-level adapter, so bind its database
 		// manager through the authenticated execution context as well. Never use

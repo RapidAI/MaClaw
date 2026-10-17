@@ -122,7 +122,13 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	if resp, handled := h.handleImmediateIMCommandWithLoop(msg, trimmed, providedLoopCtx, onProgress, onToken); handled {
 		return resp
 	}
+	if resp, handled := h.tryDesktopChatStopReply(msg); handled {
+		return resp
+	}
 	if resp, handled := h.tryChatTaskStatusReply(msg); handled {
+		return resp
+	}
+	if resp, handled := h.tryChatTaskFollowUp(msg); handled {
 		return resp
 	}
 	if resp, handled := h.tryImmediateCurrentTimeDirect(msg, providedLoopCtx); handled {

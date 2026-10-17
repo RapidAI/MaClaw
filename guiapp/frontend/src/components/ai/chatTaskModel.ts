@@ -52,7 +52,7 @@ export function normalizeChatTask(raw: any): ChatTaskView | null {
     return {
         id,
         sessionKey: String(raw.session_key || raw.sessionKey || raw.SessionKey || "desktop-user").trim() || "desktop-user",
-        title: String(raw.title || raw.Title || "Background task").trim() || "Background task",
+        title: String(raw.title || raw.Title || "").trim(),
         prompt: String(raw.prompt || raw.Prompt || "").trim() || undefined,
         status: String(raw.status || raw.Status || "queued").trim() || "queued",
         progress: String(raw.progress || raw.Progress || "").trim() || undefined,
@@ -157,11 +157,13 @@ export function appendChatTaskResultMessage<T extends ChatTaskMessage>(messages:
     const paths = Array.isArray(payload.local_file_paths) ? payload.local_file_paths.filter(Boolean) : [];
     const single = String(payload.local_file_path || "").trim();
     const files = paths.length > 0 ? paths : (single ? [single] : undefined);
+    const text = String(payload.text || "").trim();
+    if (!text && !(files && files.length)) return messages;
     return [...messages, {
         id,
         role: "assistant",
         kind: "chatTask",
-        content: String(payload.text || "").trim() || "Background task finished.",
+        content: text || (files || []).join("\n"),
         sessionKey: String(payload.session_key || "").trim() || undefined,
         localFilePath: single || undefined,
         localFilePaths: files,
