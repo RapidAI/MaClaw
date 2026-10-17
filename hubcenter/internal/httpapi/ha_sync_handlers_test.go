@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
@@ -54,6 +55,49 @@ func (f *fakeHASyncReader) ApplyRemoteOps(_ context.Context, ops []*store.HASync
 	}
 	f.applied = append(f.applied, ops...)
 	return nil
+}
+
+func TestHAOpsPullCoalescesSameEntityAndGzip(t *testing.T) {
+	now := time.Now().UTC()
+	svc := &fakeHASyncReader{
+		nodeID: "hc-a",
+		authFn: func(r *http.Request) error { return nil },
+		maxSeq: 8,
+		ops: []*store.HASyncOp{
+			{Seq: 6, OpID: "op-6", SourceNodeID: "hc-b", EntityType: "news_article", EntityID: "n-1", OpType: "upsert", EntityVersion: 1, OccurredAt: now, PayloadJSON: `{"v":1}`, PayloadHash: "h1"},
+			{Seq: 7, OpID: "op-7", SourceNodeID: "hc-b", EntityType: "news_article", EntityID: "n-1", OpType: "upsert", EntityVersion: 2, OccurredAt: now, PayloadJSON: `{"v":2}`, PayloadHash: "h2"},
+			{Seq: 8, OpID: "op-8", SourceNodeID: "hc-b", EntityType: "llm_usage_batch", EntityID: "b-1", OpType: "upsert", EntityVersion: 1, OccurredAt: now, PayloadJSON: `{}`, PayloadHash: "h3"},
+		},
+	}
+	rr := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/internal/ha/ops?after_seq=5&limit=10", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	HAOpsPullHandler(svc).ServeHTTP(rr, req)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d body=%s", rr.Code, rr.Body.String())
+	}
+	if rr.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("content-encoding = %q", rr.Header().Get("Content-Encoding"))
+	}
+	zr, err := gzip.NewReader(rr.Body)
+	if err != nil {
+		t.Fatalf("gzip: %v", err)
+	}
+	defer zr.Close()
+	var payload struct {
+		Ops          []*store.HASyncOp `json:"ops"`
+		NextAfterSeq int64             `json:"next_after_seq"`
+		Protocol     int               `json:"protocol"`
+	}
+	if err := json.NewDecoder(zr).Decode(&payload); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if payload.Protocol != ha.ProtocolVersion || payload.NextAfterSeq != 8 || len(payload.Ops) != 2 {
+		t.Fatalf("payload protocol=%d next=%d ops=%d", payload.Protocol, payload.NextAfterSeq, len(payload.Ops))
+	}
+	if payload.Ops[0].Seq != 7 || payload.Ops[1].EntityType != "llm_usage_batch" {
+		t.Fatalf("ops = %+v", payload.Ops)
+	}
 }
 
 func TestHAOpsPullRequiresAuthentication(t *testing.T) {

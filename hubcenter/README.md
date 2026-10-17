@@ -25,11 +25,19 @@ For a 3-node Hub Center HA deployment with local SQLite on each node, see `../do
 
 ## HA history maintenance
 
-HA sync history is pruned automatically by default. For emergency disk cleanup, stop Hub Center first when using `--vacuum`, then run:
+HA sync history is pruned automatically. Peers that run this build report how far they have applied, and acknowledged ops are deleted in small batches. For emergency disk cleanup, stop Hub Center first, then compact the local database. The command reads `database.dsn` from the config (a production host may use `data/codeclaw-hubcenter.db`). It does not contact other nodes.
 
 ```powershell
 go run .\cmd\hubcenter backup create --config .\configs\config.yaml --out .\data\backups\pre-ha-prune.tar.gz --json
-go run .\cmd\hubcenter maintenance ha-prune --config .\configs\config.yaml --retention-days 0.5 --max-retained-ops 20000 --batch-size 20000 --vacuum --json
+go run .\cmd\hubcenter --compact-db --config .\configs\config.yaml --json
+```
+
+`--compact-db` prunes replicated HA history and runs `VACUUM`. It refuses the vacuum when free disk is below the file size plus 512MiB. Do not pass `--force-window` or `--acked-through` unless you have read `docs/hubcenter-ha-lightweight-replication.md`.
+
+The older prune command is still available:
+
+```powershell
+go run .\cmd\hubcenter maintenance ha-prune --config .\configs\config.yaml --retention-days 0.5 --max-retained-ops 4000 --batch-size 1000 --vacuum --json
 ```
 
 If little is left to prune but the SQLite main file is still bloated by historical churn (free pages), reclaim the space with the standalone vacuum command (also stop Hub Center first — VACUUM briefly needs an exclusive lock):

@@ -27,6 +27,9 @@ type Config struct {
 	CacheSizeKB           int
 	MmapSizeBytes         int64
 	CheckpointIntervalSec int
+	// DisableCheckpointer skips the background WAL checkpoint loop. Offline
+	// maintenance sets it so a checkpoint does not run during VACUUM.
+	DisableCheckpointer bool
 	// AutoVacuum selects the database-level auto_vacuum mode: "", "none",
 	// "full", or "incremental". Empty leaves the persistent setting untouched
 	// (backward compatible for callers that do not set it). "incremental" is
@@ -71,7 +74,7 @@ func NewProvider(cfg Config) (*Provider, error) {
 	}
 
 	// Start background WAL checkpointer if WAL mode is enabled.
-	if cfg.WAL {
+	if cfg.WAL && !cfg.DisableCheckpointer {
 		interval := time.Duration(cfg.CheckpointIntervalSec) * time.Second
 		if interval <= 0 {
 			interval = 60 * time.Second
@@ -114,16 +117,26 @@ func (p *Provider) startCheckpointer(interval time.Duration) {
 		defer close(p.doneCkpt)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		ticks := 0
 		for {
 			select {
 			case <-p.stopCkpt:
 				return
 			case <-ticker.C:
-				// PASSIVE checkpoint: moves committed WAL pages to DB
-				// without blocking concurrent readers or writers.
-				// Execute on the Read pool to avoid contending with the
-				// single Write connection used by the batcher.
-				_, _ = p.Read.Exec("PRAGMA wal_checkpoint(PASSIVE);")
+				ticks++
+				// PASSIVE checkpoint moves committed WAL pages into the main
+				// file without blocking readers or writers. Every 10th tick
+				// tries TRUNCATE so the WAL file itself can shrink; a busy
+				// database makes TRUNCATE a no-op and the next tick is
+				// PASSIVE again. Both run on the read pool so they do not
+				// take the single writer connection.
+				checkpoint := "PRAGMA wal_checkpoint(PASSIVE);"
+				if ticks%10 == 0 {
+					checkpoint = "PRAGMA wal_checkpoint(TRUNCATE);"
+				}
+				ckptCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+				_, _ = p.Read.ExecContext(ckptCtx, checkpoint)
+				cancel()
 				if p.incrementalVacuum {
 					// Release freed pages (from DELETE churn) back to the OS in
 					// bounded batches. With auto_vacuum=INCREMENTAL this is cheap

@@ -927,6 +927,7 @@ func NewRouter(adminService *auth.AdminService, hubService *hubs.Service, entryS
 	mux.HandleFunc("GET /api/client/hubcenters", ClientHubCentersHandler(haConfigSvc))
 	if haSvc != nil {
 		mux.HandleFunc("GET /api/internal/ha/ops", HAOpsPullHandler(haSvc))
+		mux.HandleFunc("GET /api/internal/ha/snapshot", HASnapshotPullHandler(haSvc))
 		mux.HandleFunc("POST /api/internal/ha/ops/apply", HAOpsApplyHandler(haSvc))
 		mux.HandleFunc("GET /api/internal/ha/public-key", HAInternalKeyMaterialHandler(haConfigSvc, haSvc, haSvc))
 	}
