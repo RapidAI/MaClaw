@@ -72,6 +72,55 @@ export function isProgressOnlyToolAction(action: string): boolean {
     return PROGRESS_ONLY_ACTION.test(action.trim());
 }
 
+const TOOL_FLIP_ARG_LIMIT = 42;
+const TOOL_FLIP_ARG_KEYS = ["query", "q", "search", "keyword", "command", "cmd", "url", "uri", "path", "file", "file_path", "pattern", "name", "text", "message", "prompt"];
+
+/** One-line label for the live tool strip: `web_search (北京天气)`. */
+export function formatAssistantToolFlip(call: Pick<AssistantToolCall, "name" | "action" | "detail">): { name: string; arg: string; text: string } {
+    const name = (call.name || call.action || "tool").trim() || "tool";
+    const arg = compactToolFlipArg(call.detail || "");
+    if (arg && arg.toLowerCase() === name.toLowerCase()) return { name, arg: "", text: name };
+    return { name, arg, text: arg ? `${name} (${arg})` : name };
+}
+
+function compactToolFlipArg(detail: string): string {
+    let line = detail.replace(/\s+/g, " ").trim();
+    if (!line) return "";
+    // Tool details are already a short operand. Only a small JSON blob is worth parsing.
+    if (line.length <= 512 && ((line.startsWith("{") && line.endsWith("}")) || (line.startsWith("[") && line.endsWith("]")))) {
+        try {
+            line = pickToolFlipArg(JSON.parse(line)).replace(/\s+/g, " ").trim();
+        } catch {
+            // A half-written argument stream stays as the compact line.
+        }
+    }
+    const chars = Array.from(line);
+    if (chars.length <= TOOL_FLIP_ARG_LIMIT) return line;
+    return `${chars.slice(0, TOOL_FLIP_ARG_LIMIT - 1).join("").trimEnd()}…`;
+}
+
+function pickToolFlipArg(value: unknown): string {
+    if (typeof value === "string") return value.trim();
+    if (Array.isArray(value)) {
+        for (const item of value) {
+            const picked = pickToolFlipArg(item);
+            if (picked) return picked;
+        }
+        return "";
+    }
+    if (!value || typeof value !== "object") return "";
+    const record = value as Record<string, unknown>;
+    for (const key of TOOL_FLIP_ARG_KEYS) {
+        const picked = pickToolFlipArg(record[key]);
+        if (picked) return picked;
+    }
+    for (const item of Object.values(record)) {
+        const picked = pickToolFlipArg(item);
+        if (picked) return picked;
+    }
+    return "";
+}
+
 export function parseAssistantToolStatus(text: string): Omit<AssistantToolCall, "id"> | null {
     const trimmed = text.trim();
     if (!trimmed) return null;
@@ -144,6 +193,7 @@ export function splitAssistantToolCallContent(content: string, calls: AssistantT
     for (const call of calls || []) {
         if (!seen.has(call.id)) segments.push({ kind: "tool", call });
     }
-    if (segments.length === 0 && source.trim()) segments.push({ kind: "text", text: source });
+    // A body that is only anchors has nothing left to show. Putting the raw
+    // source back would paint <!--maclaw-tool:…--> under the live tool strip.
     return segments;
 }

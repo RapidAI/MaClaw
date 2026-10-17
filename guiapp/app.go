@@ -392,6 +392,7 @@ type App struct {
 	taskOrchestrator2                *TaskOrchestrator2
 	qqBotGateway                     *qqBotGatewayManager
 	telegramGateway                  *telegramGatewayManager
+	slackGateway                     *slackGatewayManager
 	weixinGateway                    *weixinGatewayManager
 	lansengerGateway                 *lansengerGatewayManager
 	lansengerGateways                *lansengerGatewayRegistry
@@ -607,7 +608,8 @@ var UpdateComputerUseTray func() = func() {}
 // iconFlag: 0=none, 1=info, 2=warning, 3=error
 var ShowNotification func(title, message string, iconFlag uint32) = func(string, string, uint32) {}
 
-// FlashAndBeep plays a notification sound and flashes the taskbar/dock icon.
+// FlashAndBeep draws attention at the taskbar or dock.
+// On Windows the tray balloon plays the notification sound.
 // Set by platform-specific tray setup code.
 var FlashAndBeep func() = func() {}
 
@@ -996,6 +998,9 @@ func (a *App) notifyMemoryWarehouseChanged(change memoryWarehouseChange) {
 	}
 	if a.telegramGateway != nil {
 		add(a.telegramGateway.currentLocalHandler())
+	}
+	if a.slackGateway != nil {
+		add(a.slackGateway.currentLocalHandler())
 	}
 	if a.qqBotGateway != nil {
 		add(a.qqBotGateway.currentLocalHandler())
@@ -2085,11 +2090,6 @@ func (a *App) ensureConversationMemory() *agent.ConversationMemory {
 	}
 	a.conversationMemoryMu.Lock()
 	defer a.conversationMemoryMu.Unlock()
-	defer func() {
-		if a.aiConversationMemory != nil {
-			a.attachPetConversationFile(a.aiConversationMemory)
-		}
-	}()
 	if a.aiConversationMemory != nil {
 		return a.aiConversationMemory
 	}
@@ -2102,12 +2102,18 @@ func (a *App) ensureConversationMemory() *agent.ConversationMemory {
 			log.Printf("[paths] ai_conversation_memory mode=memory test_home=%q missing_path=%q", a.testHomeDir, storePath)
 			a.aiConversationMemory = agent.NewConversationMemory()
 		}
+		a.attachPetConversationFile(a.aiConversationMemory)
 		return a.aiConversationMemory
 	}
 	storePath := filepath.Join(a.GetDataDir(), "ai_assistant_conversation.json")
 	log.Printf("[paths] ai_conversation_memory mode=persistent path=%q", storePath)
-	a.aiConversationMemory = agent.NewPersistentConversationMemory(storePath)
-	return a.aiConversationMemory
+	// The desktop transcript can be tens of megabytes. Parse it off the startup
+	// path; the first history read waits until the load finishes.
+	mem := agent.NewBackgroundPersistentConversationMemoryAfterLoad(storePath, func(loaded *agent.ConversationMemory) {
+		a.attachPetConversationFileDuringLoad(loaded)
+	})
+	a.aiConversationMemory = mem
+	return mem
 }
 
 // currentConversationMemory returns the currently published shared memory
@@ -2586,6 +2592,7 @@ func (a *App) syncIMGatewaysFromConfig() {
 
 	a.ensureQQBotGateway()
 	a.ensureTelegramGateway()
+	a.ensureSlackGateway()
 	a.ensureWeixinGateway()
 	a.ensureLansengerGateway()
 	a.ensureThirdPartyGatewayLocked()
@@ -3110,6 +3117,9 @@ func (a *App) shutdown(ctx context.Context) {
 	}
 	if a.telegramGateway != nil {
 		a.telegramGateway.Stop()
+	}
+	if a.slackGateway != nil {
+		a.slackGateway.Stop()
 	}
 	if a.weixinGateway != nil {
 		a.weixinGateway.Stop()
@@ -3824,7 +3834,8 @@ func (a *App) WindowHide() {
 	runtime.WindowHide(a.ctx)
 	// The taskbar button goes away with the window. The in-progress count
 	// usually does not change while the window is hidden, so the overlay
-	// has to be painted again once the button exists.
+	// has to be painted again once the button exists. runtime WindowHide
+	// (title bar, file companion) arms the same replay from WM_SHOWWINDOW.
 	noteTaskbarBadgeWindowHidden()
 	if UpdateTrayVisibility != nil {
 		UpdateTrayVisibility(false)
@@ -8058,6 +8069,50 @@ func (a *App) PatchConfigFields(patch map[string]interface{}) (corelib.AppConfig
 				}
 			}
 			cfg.TelegramBotOwnerChatID = id
+		case "slack_enabled":
+			v, err := boolField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SlackEnabled = v
+			imGatewayChanged = true
+		case "slack_client_id":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SlackClientID = strings.TrimSpace(v)
+		case "slack_client_secret":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SlackClientSecret = strings.TrimSpace(v)
+		case "slack_bot_token":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SlackBotToken = strings.TrimSpace(v)
+			imGatewayChanged = true
+		case "slack_team_id":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SlackTeamID = strings.TrimSpace(v)
+		case "slack_team_name":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SlackTeamName = strings.TrimSpace(v)
+		case "slack_bot_user_id":
+			v, err := stringField(key, value)
+			if err != nil {
+				return corelib.AppConfig{}, err
+			}
+			cfg.SlackBotUserID = strings.TrimSpace(v)
 		case "lansenger_enabled":
 			v, err := boolField(key, value)
 			if err != nil {

@@ -10,11 +10,316 @@ const MAX_PROJECT_CONTEXT_MESSAGES_TO_SEND = 12;
 const PROJECT_TABS_STORAGE_KEY = "ai_assistant_project_tabs";
 const PROJECT_TAB_HISTORY_STORAGE_KEY = "ai_assistant_project_tab_histories";
 
+const HOST_GOAL_CHECKLIST_PREFIX = /^(?:目标清单|目標清單|Goal checklist)/;
+const HOST_GOAL_SLASH_PROMPT = /^\/goal\s+(执行步骤|继续步骤|分解目标|核对并完成|提交分解|继续推进目标|Continue goal)/;
+const GENERIC_GOAL_CHECKLIST_PLACEHOLDERS = new Set([
+    "Goal checklist\nContinuing the current step",
+    "目标清单\n正在继续当前步骤",
+    "目標清單\n正在繼續目前步驟",
+]);
+
+export function isHostGoalChecklistText(content: string): boolean {
+    const text = content.trim();
+    if (!text) return false;
+    if (HOST_GOAL_CHECKLIST_PREFIX.test(text)) return true;
+    return HOST_GOAL_SLASH_PROMPT.test(text);
+}
+
+function isVisibleHostGoalChecklist(message: ChatMessage): boolean {
+    if (message.kind === "goalChecklist") return true;
+    return message.role === "user" && isHostGoalChecklistText(message.content || "");
+}
+
+type HostGoalStepSnap = { index: number; title: string };
+
+function hostGoalText(content: string): { first: string; rest: string } {
+    const text = String(content || "").replace(/\r\n/g, "\n").trim();
+    const lines = text.split("\n");
+    return { first: (lines[0] || "").trim(), rest: lines.slice(1).join("\n").trim() };
+}
+
+function hostGoalStepSnap(tail: string): HostGoalStepSnap | null {
+    const step = tail.match(/^(\d+)\s*[/／]\s*\d+\s*[:：]\s*(.+)$/) || tail.match(/^(\d+)\s*[:：]\s*(.+)$/);
+    if (!step) return null;
+    const index = Number(step[1]);
+    const title = step[2].trim();
+    if (!Number.isFinite(index) || index <= 0 || !title) return null;
+    return { index, title };
+}
+
+/** Turn a stored host continuation line into the checklist body. A published checklist is kept. */
+export function rewriteHostGoalChecklistBody(content: string): string {
+    const { first, rest } = hostGoalText(content);
+    const text = rest ? `${first}\n${rest}` : first;
+    if (!text) return "目标清单\n正在继续当前步骤";
+    if (HOST_GOAL_CHECKLIST_PREFIX.test(text)) return text;
+    const match = first.match(/^\/goal\s+(执行步骤|继续步骤|分解目标|核对并完成|提交分解|继续推进目标|Continue goal)\s*[:：]?\s*(.*)$/);
+    let body = "目标清单\n正在继续当前步骤";
+    if (match) {
+        const verb = match[1];
+        const tail = (match[2] || "").trim();
+        if (verb === "Continue goal") {
+            body = tail ? `Goal checklist\nContinuing: ${tail}` : "Goal checklist\nContinuing the current step";
+        } else if (verb === "分解目标") {
+            body = tail ? `目标清单\n正在分解：${tail}` : "目标清单\n正在分解";
+        } else if (verb === "提交分解") {
+            body = tail ? `目标清单\n正在补交分解：${tail}` : "目标清单\n正在补交分解";
+        } else if (verb === "核对并完成") {
+            body = "目标清单\n正在核对验收";
+        } else if (verb === "继续推进目标") {
+            body = tail ? `目标清单\n正在继续：${tail}` : "目标清单\n正在继续当前步骤";
+        } else {
+            const step = hostGoalStepSnap(tail);
+            if (step) body = `目标清单\n→ ${step.index}. ${step.title}`;
+            else if (tail) body = `目标清单\n→ ${tail}`;
+        }
+    }
+    return rest ? `${body}\n${rest}` : body;
+}
+
+/**
+ * Old continuations stored one slash line per turn, not the step list.
+ * Fold those lines into one checklist. The line is the prompt that opened
+ * the turn, so it has no step result: only the last announced step is
+ * current. Earlier titles stay unmarked. Real ✓ / → / ○ / × come from the
+ * goal record. A published checklist already has that list and is not rebuilt.
+ */
+function checklistFromHostSnapshots(messages: ChatMessage[]): string {
+    const steps = new Map<number, string>();
+    let current = 0;
+    let progress = "";
+    for (const message of messages) {
+        if (!isVisibleHostGoalChecklist(message)) continue;
+        const { first, rest } = hostGoalText(message.content || "");
+        if (HOST_GOAL_CHECKLIST_PREFIX.test(first)) continue;
+        const match = first.match(/^\/goal\s+(执行步骤|继续步骤)\s*[:：]?\s*(.*)$/);
+        const step = match ? hostGoalStepSnap((match[2] || "").trim()) : null;
+        if (!step) continue;
+        steps.set(step.index, step.title);
+        current = step.index;
+        if (rest.includes("进度")) progress = rest;
+    }
+    if (steps.size === 0 || current <= 0) return "";
+    const lines = ["目标清单"];
+    for (const index of [...steps.keys()].sort((left, right) => left - right)) {
+        const title = `${index}. ${steps.get(index)}`;
+        lines.push(index === current ? `→ ${title}` : title);
+    }
+    if (progress) lines.push(progress);
+    return lines.join("\n");
+}
+
+export type GoalChecklistRecord = {
+    user_id?: string;
+    objective?: string;
+    phase?: string;
+    steps?: Array<{ index?: number; title?: string; status?: string } | null> | null;
+    turns_used?: number;
+    max_turns?: number;
+    tokens_used?: number;
+    token_budget?: number;
+};
+
+type GoalStepMark = "done" | "progress" | "failed" | "pending" | "other";
+
+function goalRecordCount(value: unknown): number {
+    const parsed = typeof value === "number" ? value : Number(String(value ?? "").trim());
+    if (!Number.isFinite(parsed) || parsed < 0) return 0;
+    return Math.trunc(parsed);
+}
+
+function goalStepMark(status: unknown): GoalStepMark {
+    const key = String(status ?? "").trim().toLowerCase();
+    if (key === "" || key === "pending") return "pending";
+    if (key === "done" || key === "complete" || key === "completed") return "done";
+    if (key === "progress" || key === "in_progress") return "progress";
+    if (key === "failed" || key === "fail") return "failed";
+    return "other";
+}
+
+/** Same checklist body as the host continuation display. Empty means "do not replace". */
+export function formatGoalChecklistFromRecord(input: GoalChecklistRecord | null | undefined): string {
+    if (!input || typeof input !== "object") return "";
+    const phase = String(input.phase || "").trim().toLowerCase();
+    const stepsMissing = input.steps == null;
+    if (stepsMissing && phase === "execute") return "";
+    if (stepsMissing && phase !== "plan") return "";
+    const steps = Array.isArray(input.steps) ? input.steps.filter((step): step is NonNullable<typeof step> => !!step && typeof step === "object") : [];
+    const lines = ["目标清单"];
+    if (phase === "plan" || steps.length === 0) {
+        const objective = String(input.objective || "").trim() || "当前目标";
+        lines.push(`正在分解：${objective}`);
+    } else {
+        let current = 0;
+        steps.forEach((step, position) => {
+            if (current > 0) return;
+            const mark = goalStepMark(step.status);
+            if (mark === "pending" || mark === "progress") {
+                const index = Number(step.index);
+                current = Number.isFinite(index) && index > 0 ? Math.trunc(index) : position + 1;
+            }
+        });
+        steps.forEach((step, position) => {
+            const index = Number(step.index);
+            const stepIndex = Number.isFinite(index) && index > 0 ? Math.trunc(index) : position + 1;
+            const title = String(step.title || "").trim();
+            const mark = goalStepMark(step.status);
+            let glyph = "○";
+            if (mark === "done") glyph = "✓";
+            else if (mark === "failed") glyph = "×";
+            else if (mark === "progress" || stepIndex === current) glyph = "→";
+            lines.push(`${glyph} ${stepIndex}. ${title}`);
+        });
+        if (current <= 0) lines.push("正在核对验收");
+    }
+    const maxTurns = goalRecordCount(input.max_turns);
+    if (maxTurns > 0) lines.push(`进度：第 ${goalRecordCount(input.turns_used) + 1}/${maxTurns} 轮`);
+    const tokenBudget = goalRecordCount(input.token_budget);
+    if (tokenBudget > 0) {
+        const token = ` | Token: ${goalRecordCount(input.tokens_used)}/${tokenBudget}`;
+        lines[lines.length - 1] += token;
+    }
+    return lines.join("\n");
+}
+
+export function goalChecklistMessageId(sessionKey?: string | null): string {
+    return `goal-checklist:${normalizeAssistantSessionKey(sessionKey) || "desktop-user"}`;
+}
+
+export type ProjectTabLiveHistory = { tabId: string; messages: ChatMessage[] };
+
+/**
+ * The open tab's message state lags behind the active tab id.
+ * The same array keeps its previous tab. The label moves only when this
+ * render supplies a different list, so a repeated render cannot retag it.
+ */
+export function noteProjectTabLiveHistory(
+    previous: ProjectTabLiveHistory,
+    activeTabId: string,
+    messages: ChatMessage[],
+): ProjectTabLiveHistory {
+    if (previous.tabId !== activeTabId && messages === previous.messages) return previous;
+    return { tabId: activeTabId, messages };
+}
+
+/** Messages only while this list still belongs to the tab being updated. */
+export function projectTabLiveMessages(live: ProjectTabLiveHistory, tabId: string): ChatMessage[] | undefined {
+    return live.tabId === tabId ? live.messages : undefined;
+}
+
+/**
+ * Put the goal record on the transcript the user is looking at.
+ * An empty or cleared tab stays empty: one inserted card would turn history
+ * non-empty and let the live sync copy residual messages back in.
+ * The open tab's live list wins over the saved snapshot, which lags behind it.
+ * Returns null when nothing should be written.
+ */
+export function nextGoalChecklistHistory(input: {
+    history?: ChatMessage[] | null;
+    liveHistory?: ChatMessage[] | null;
+    cleared?: boolean;
+    sessionKey: string;
+    content: string;
+}): ChatMessage[] | null {
+    if (input.cleared) return null;
+    const stored = Array.isArray(input.history) ? input.history : [];
+    const live = Array.isArray(input.liveHistory) ? input.liveHistory : [];
+    const base = live.length > 0 ? live : stored;
+    if (base.length === 0) return null;
+    const next = upsertGoalChecklistInHistory(base, input.sessionKey, input.content);
+    return next === base ? null : next;
+}
+
+/** Replace the one checklist card for this session. Same content keeps the stored row. */
+export function upsertGoalChecklistInHistory(history: ChatMessage[], sessionKey: string, content: string): ChatMessage[] {
+    const text = String(content || "");
+    if (!text.trim()) return history;
+    const id = goalChecklistMessageId(sessionKey);
+    const owner = normalizeAssistantSessionKey(sessionKey) || "desktop-user";
+    const index = history.findIndex(message => message.id === id);
+    const existing = index >= 0 ? history[index] : undefined;
+    if (existing && existing.role === "system" && existing.kind === "goalChecklist" && existing.content === text && (normalizeAssistantSessionKey(existing.sessionKey) || "desktop-user") === owner) {
+        return history;
+    }
+    const next: ChatMessage = {
+        id,
+        role: "system",
+        kind: "goalChecklist",
+        content: text,
+        sessionKey: owner,
+        timestamp: existing?.timestamp || Date.now(),
+    };
+    if (index < 0) return [...history, next];
+    return history.map((message, at) => at === index ? { ...message, ...next } : message);
+}
+
+/**
+ * The goal owns one checklist. Historical "/goal 执行步骤" rows are earlier
+ * snapshots of that card. Show it once, directly above the latest goal
+ * continuation reply. A later message from the user does not take the card.
+ */
+export function collapseHostGoalChecklist(messages: ChatMessage[]): ChatMessage[] {
+    if (!Array.isArray(messages) || messages.length === 0) return messages;
+    let lastHost = -1;
+    let lastSlash = -1;
+    let lastPublished = -1;
+    let hostCount = 0;
+    for (let index = 0; index < messages.length; index++) {
+        if (!isVisibleHostGoalChecklist(messages[index])) continue;
+        hostCount++;
+        lastHost = index;
+        const content = String(messages[index].content || "").trim();
+        if (HOST_GOAL_CHECKLIST_PREFIX.test(content) && !GENERIC_GOAL_CHECKLIST_PLACEHOLDERS.has(content)) {
+            lastPublished = index;
+        } else if (!HOST_GOAL_CHECKLIST_PREFIX.test(content)) {
+            lastSlash = index;
+        }
+    }
+    if (hostCount === 0 || lastHost < 0) return messages;
+    const sourceIndex = lastPublished >= 0 ? lastPublished : (lastSlash >= 0 ? lastSlash : lastHost);
+    const source = messages[sourceIndex];
+    const content = (lastPublished >= 0 ? "" : checklistFromHostSnapshots(messages))
+        || rewriteHostGoalChecklistBody(source.content || "");
+    const card: ChatMessage = source.role === "system" && source.kind === "goalChecklist" && source.content === content
+        ? source
+        : { ...source, role: "system", kind: "goalChecklist", content };
+    const anchor = goalChecklistAnchorIndex(messages);
+    const parked = anchor < 0 ? sourceIndex === messages.length - 1 : sourceIndex === anchor - 1;
+    if (hostCount === 1 && card === source && parked) return messages;
+    const anchorMessage = anchor >= 0 ? messages[anchor] : null;
+    const rest: ChatMessage[] = [];
+    let placed = false;
+    for (let index = 0; index < messages.length; index++) {
+        const message = messages[index];
+        if (index === sourceIndex || isVisibleHostGoalChecklist(message)) continue;
+        if (!placed && anchorMessage && message === anchorMessage) {
+            rest.push(card);
+            placed = true;
+        }
+        rest.push(message);
+    }
+    if (!placed) rest.push(card);
+    return rest;
+}
+
+/** Latest goal-continuation reply. Older transcripts with no request id use the last assistant. */
+function goalChecklistAnchorIndex(messages: ChatMessage[]): number {
+    let goalTurn = -1;
+    let lastAssistant = -1;
+    for (let index = 0; index < messages.length; index++) {
+        if (messages[index].role !== "assistant") continue;
+        lastAssistant = index;
+        if (String(messages[index].requestId || "").startsWith("goal-cont-")) goalTurn = index;
+    }
+    return goalTurn >= 0 ? goalTurn : lastAssistant;
+}
+
 export function buildProjectTabRecentMessages(history: ChatMessage[] | undefined): Array<{ role: 'user' | 'assistant'; content: string }> {
     if (!Array.isArray(history) || history.length === 0) return [];
     return history
         .map(message => {
             if (message.role !== 'user' && message.role !== 'assistant') return null;
+            if (message.role === 'user' && isHostGoalChecklistText(message.content || '')) return null;
             // A guide-injection bubble records steering that was consumed by the
             // active loop. Do not replay it as an ordinary historical user turn
             // when this project/expert tab starts a later request.

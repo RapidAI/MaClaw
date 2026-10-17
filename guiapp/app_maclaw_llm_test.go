@@ -112,11 +112,11 @@ func TestDoFetchModelsRequestUsesOfficialOpenCodeClient(t *testing.T) {
 			if got := req.Header.Get("User-Agent"); got != "opencode/"+corelib.OpenCodeClientVersion {
 				t.Fatalf("User-Agent = %q, want opencode/%s", got, corelib.OpenCodeClientVersion)
 			}
-			if got := req.Header.Get(corelib.OpenCodeSessionHeader); !strings.HasPrefix(got, "ses_") || len(got) != 30 {
-				t.Fatalf("session = %q, want ses_ + 12 hex + 14 base62", got)
+			if got := req.Header.Get(corelib.OpenCodeSessionHeader); !strings.HasPrefix(got, "ses_") || len(got) != 30 || !strings.HasSuffix(got[4:16], "ffe") {
+				t.Fatalf("session = %q, want descending ses_ id", got)
 			}
-			if req.Header.Get("x-opencode-client") != "" || req.Header.Get("x-opencode-request") != "" {
-				t.Fatal("unneeded OpenCode headers were added")
+			if req.Header.Get("x-opencode-client") != "cli" {
+				t.Fatalf("x-opencode-client = %q", req.Header.Get("x-opencode-client"))
 			}
 			return &http.Response{
 				StatusCode: http.StatusOK,
@@ -5326,8 +5326,8 @@ func TestDefaultMaclawLLMProviders(t *testing.T) {
 	if openCode.URL != "https://opencode.ai/zen/v1" {
 		t.Errorf("OpenCode URL = %q", openCode.URL)
 	}
-	if openCode.Model != "big-pickle" {
-		t.Errorf("OpenCode Model = %q, want big-pickle", openCode.Model)
+	if openCode.Model != "glm-5.3-flash-free" {
+		t.Errorf("OpenCode Model = %q, want glm-5.3-flash-free", openCode.Model)
 	}
 	if openCode.AgentType != "OpenCode" {
 		t.Errorf("OpenCode AgentType = %q", openCode.AgentType)
@@ -5690,7 +5690,7 @@ func TestGetMaclawLLMProviders_BackfillsOpenCodeProvider(t *testing.T) {
 	if provider.URL != configfile.OpenCodeZenBaseURL {
 		t.Fatalf("OpenCode URL = %q, want %q", provider.URL, configfile.OpenCodeZenBaseURL)
 	}
-	if provider.Model != "big-pickle" || provider.Protocol != "openai" || provider.AgentType != configfile.ExternalAgentTypeOpenCode {
+	if provider.Model != "glm-5.3-flash-free" || provider.Protocol != "openai" || provider.AgentType != configfile.ExternalAgentTypeOpenCode {
 		t.Fatalf("OpenCode config = model %q protocol %q agent %q", provider.Model, provider.Protocol, provider.AgentType)
 	}
 	if provider.AuthType == "oauth" || provider.ImportSource != "" || provider.IsCustom {
@@ -5977,8 +5977,11 @@ func TestConstrainOpenCodeModel(t *testing.T) {
 		Key:   "zen-key",
 		Model: "hy3-free",
 	}
-	if got := constrainOpenCodeModel(provider, "big-pickle"); got != "big-pickle" {
-		t.Fatalf("free model rewritten: %q", got)
+	if got := constrainOpenCodeModel(provider, "big-pickle"); got != "glm-5.3-flash-free" {
+		t.Fatalf("zen default = %q", got)
+	}
+	if got := constrainOpenCodeModel(provider, "deepseek-v4.1-flash-free"); got != "deepseek-v4.1-flash-free" {
+		t.Fatalf("deepseek free model = %q", got)
 	}
 	if got := constrainOpenCodeModel(provider, "gpt-5.5"); got != "gpt-5.5" {
 		t.Fatalf("paid model remapped: %q", got)

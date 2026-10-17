@@ -4317,6 +4317,96 @@ func TestSearchProjectsMergesLocalCodingRuntimeBlockedStatus(t *testing.T) {
 	}
 }
 
+func TestSearchProjectsKeepsFailedCodingTurnFailedWhenItWroteFiles(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.workflowEngine = nil
+
+	store, err := codingruntime.NewSQLiteStore(filepath.Join(t.TempDir(), "coding_runtime.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	app.codingRuntimeStore = store
+
+	workingDir := filepath.Join(t.TempDir(), "coding-workdir")
+	created := app.CreateTaskWithMode("Send mail task", workingDir, "coding_dev")
+	if created.ProjectPath == "" {
+		t.Fatal("CreateTaskWithMode returned empty project path")
+	}
+
+	runtimeTask, err := store.CreateTask(codingruntime.Task{TaskID: "rt-failed", ProjectRef: filepath.Clean(workingDir), Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAttempt(runtimeTask.TaskID, "worker", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: filepath.Clean(workingDir), Mode: "local"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishAttempt(attempt.AttemptID, "worker", codingruntime.FinishInput{Status: codingruntime.TaskFailed, SideEffectState: codingruntime.SideEffectObserved}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+
+	recent := app.SearchProjects("Send mail task", 10)
+	if len(recent) != 1 {
+		t.Fatalf("SearchProjects = %+v, want the coding task row", recent)
+	}
+	if !recent[0].HasOutput {
+		t.Fatal("task row lost has_output; the regression is a failed turn that still produced a file")
+	}
+	got := recent[0].ActiveWorkflow
+	if got == nil || got.Status != string(codingruntime.TaskFailed) {
+		t.Fatalf("ActiveWorkflow = %#v, want failed despite has_output", got)
+	}
+}
+
+func TestSearchProjectsOpensExistingLedgerAfterRestart(t *testing.T) {
+	app := newProjectSearchTestApp(t)
+	app.workflowEngine = nil
+	t.Cleanup(func() { app.closeCodingRuntimeStore() })
+
+	dbPath := filepath.Join(app.GetDataDir(), "coding_runtime.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	store, err := codingruntime.NewSQLiteStore(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	workingDir := filepath.Join(t.TempDir(), "coding-workdir")
+	created := app.CreateTaskWithMode("Send mail task", workingDir, "coding_dev")
+	if created.ProjectPath == "" {
+		t.Fatal("CreateTaskWithMode returned empty project path")
+	}
+	runtimeTask, err := store.CreateTask(codingruntime.Task{TaskID: "rt-failed", ProjectRef: filepath.Clean(workingDir), Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	attempt, err := store.StartAttempt(runtimeTask.TaskID, "worker", time.Minute, codingruntime.PolicySnapshot{ProjectRoot: filepath.Clean(workingDir), Mode: "local"}, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishAttempt(attempt.AttemptID, "worker", codingruntime.FinishInput{Status: codingruntime.TaskFailed, SideEffectState: codingruntime.SideEffectObserved}, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// A restarted process has the file and no open store. The sidebar must
+	// still read the failure instead of treating the written file as success.
+	if app.codingRuntimeStore != nil {
+		t.Fatal("test setup left the ledger open")
+	}
+
+	recent := app.SearchProjects("Send mail task", 10)
+	if len(recent) != 1 {
+		t.Fatalf("SearchProjects = %+v, want the coding task row", recent)
+	}
+	got := recent[0].ActiveWorkflow
+	if got == nil || got.Status != string(codingruntime.TaskFailed) {
+		t.Fatalf("ActiveWorkflow = %#v, want failed from the existing ledger", got)
+	}
+}
+
 func TestCodingRuntimeRefForTaskTagsPrefersRemoteWorkDir(t *testing.T) {
 	tags := []string{
 		"task_management",

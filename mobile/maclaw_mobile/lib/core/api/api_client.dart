@@ -599,9 +599,9 @@ class ApiClient {
     }
 
     // Mutable streaming accumulator (not const — updated as deltas arrive).
-    var partial = SearchAnswer(
+    var partial = const SearchAnswer(
       answer: '',
-      citations: const [],
+      citations: [],
       streaming: true,
     );
     final buffer = StringBuffer();

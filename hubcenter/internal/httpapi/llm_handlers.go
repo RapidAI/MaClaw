@@ -437,7 +437,13 @@ func adminProbeLLMProviderModels(svc *llmservice.Service, proxyCfg *llmservice.P
 }
 
 func probeLLMProviderModels(ctx context.Context, apiURL, apiKey, protocol, agentType string) ([]string, error) {
-	apiURL = strings.TrimSpace(apiURL)
+	apiURL = openCodeCatalogBase(apiURL, agentType)
+	if corelib.IsOpenCodeURL(apiURL) {
+		agent := llmservice.RequestAgentType(agentType)
+		if agent == "" || strings.EqualFold(agent, "openclaw") {
+			agentType = "OpenCode"
+		}
+	}
 	if apiURL == "" {
 		return nil, fmt.Errorf("api_url is required")
 	}
@@ -501,6 +507,13 @@ func probeLLMProviderModels(ctx context.Context, apiURL, apiKey, protocol, agent
 	}
 	sort.Strings(models)
 	return models, nil
+}
+
+// openCodeCatalogBase lists Zen models for an OpenCode provider. A Go gateway
+// URL does not publish the free catalog, and an empty key is still allowed:
+// that is the anonymous free tier. A paid key is sent when the admin saved one.
+func openCodeCatalogBase(apiURL, agentType string) string {
+	return llmservice.OpenCodeCatalogURL(apiURL, agentType)
 }
 
 func llmModelsEndpoint(apiURL, protocol string) (string, error) {
@@ -712,6 +725,9 @@ func runLLMProviderChatTest(ctx context.Context, cfg corelib.MaclawLLMConfig) (r
 }
 
 func runLLMProviderChatTestBody(ctx context.Context, cfg corelib.MaclawLLMConfig, tools, toolChoice json.RawMessage) (reply string, errMsg string, latencyMs int64, calls []llmservice.ProviderToolCall) {
+	if corelib.IsOpenCodeURL(cfg.URL) {
+		return runOpenCodeProviderChatTest(ctx, cfg, tools, toolChoice)
+	}
 	httpReq, err := newLLMProviderTestRequest(ctx, cfg, tools, toolChoice)
 	if err != nil {
 		return "", err.Error(), 0, nil
@@ -750,31 +766,65 @@ func runLLMProviderChatTestBody(ctx context.Context, cfg corelib.MaclawLLMConfig
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return "", llmProviderTestHTTPError(resp.StatusCode, respBody), latencyMs, nil
 	}
-	// A successful HTTP response is not itself proof that the model is usable:
-	// some compatible gateways return an error envelope with HTTP 200. Treat
-	// those responses, malformed bodies, and empty completions as failures.
-	var envelope struct {
-		Type    string          `json:"type"`
-		Message string          `json:"message"`
-		Error   json.RawMessage `json:"error"`
-	}
-	if err := json.Unmarshal(respBody, &envelope); err != nil {
-		return "", "invalid model response: " + err.Error(), latencyMs, nil
-	}
-	if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
-		return "", "model returned an error: " + llmProviderTestErrorMessage(envelope.Error), latencyMs, nil
-	}
-	if strings.EqualFold(envelope.Type, "error") {
-		errMsg := strings.TrimSpace(envelope.Message)
-		if errMsg == "" {
-			errMsg = "unknown error"
-		}
-		return "", "model returned an error: " + errMsg, latencyMs, nil
+	if errMsg := providerChatTestEnvelopeError(respBody); errMsg != "" {
+		return "", errMsg, latencyMs, nil
 	}
 
 	// Parse the actual completion. A model is available only after it returns
 	// non-empty content to the short test prompt, or a tool call when tools were sent.
 	reply, err = llmProviderTestReply(respBody, cfg.Protocol, cfg.WireAPI)
+	if err != nil {
+		return "", "invalid model response: " + err.Error(), latencyMs, nil
+	}
+	calls = llmservice.ParseProviderTestToolCalls(respBody)
+	if strings.TrimSpace(reply) == "" && len(calls) == 0 {
+		return "", "model returned no completion content", latencyMs, nil
+	}
+	return reply, "", latencyMs, calls
+}
+
+// runOpenCodeProviderChatTest uses the proxy forwarder. Zen free models
+// answer with SSE, and one of them only accepts the Responses API; the
+// forwarder collects either shape into one chat JSON body.
+func runOpenCodeProviderChatTest(ctx context.Context, cfg corelib.MaclawLLMConfig, tools, toolChoice json.RawMessage) (reply string, errMsg string, latencyMs int64, calls []llmservice.ProviderToolCall) {
+	prompt := "Reply with exactly: pong"
+	if len(bytes.TrimSpace(tools)) > 0 && string(bytes.TrimSpace(tools)) != "null" {
+		prompt = "Call one of the available tools now."
+	}
+	body := map[string]any{
+		"model":    cfg.Model,
+		"messages": []any{map[string]any{"role": "user", "content": prompt}},
+	}
+	if parsed, choice := providerTestToolValues(tools, toolChoice); len(parsed) > 0 {
+		body["tools"] = parsed
+		if choice != nil {
+			body["tool_choice"] = choice
+		}
+	}
+	provider := &llmpool.ProviderConfig{
+		APIURL:             cfg.URL,
+		APIKey:             cfg.Key,
+		Protocol:           cfg.Protocol,
+		WireAPI:            cfg.WireAPI,
+		AgentType:          cfg.AgentType,
+		UpstreamTimeoutSec: cfg.TimeoutSec,
+	}
+	start := time.Now()
+	status, respBody, err := llmservice.ForwardProviderCompletion(ctx, corelib.NewLLMEndpointHTTPClient(cfg), provider, body, cfg.Model)
+	latencyMs = time.Since(start).Milliseconds()
+	if err != nil {
+		return "", llmProviderTestRequestError(err, cfg), latencyMs, nil
+	}
+	if status < 200 || status >= 300 {
+		return "", llmProviderTestHTTPError(status, respBody), latencyMs, nil
+	}
+	if len(respBody) > 64<<10 {
+		return "", "model response exceeds the 64 KiB availability-test limit", latencyMs, nil
+	}
+	if errMsg := providerChatTestEnvelopeError(respBody); errMsg != "" {
+		return "", errMsg, latencyMs, nil
+	}
+	reply, err = llmProviderTestReply(respBody, "openai", "chat")
 	if err != nil {
 		return "", "invalid model response: " + err.Error(), latencyMs, nil
 	}
@@ -973,6 +1023,28 @@ func llmProviderTestResponseReadError(err error, cfg corelib.MaclawLLMConfig) st
 		return fmt.Sprintf("provider response timed out after %s; check the endpoint, model, and upstream capacity", llmProviderTestTimeout(cfg).Round(time.Second))
 	}
 	return "read model response: " + err.Error()
+}
+
+func providerChatTestEnvelopeError(body []byte) string {
+	var envelope struct {
+		Type    string          `json:"type"`
+		Message string          `json:"message"`
+		Error   json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(body, &envelope); err != nil {
+		return "invalid model response: " + err.Error()
+	}
+	if len(envelope.Error) > 0 && string(envelope.Error) != "null" {
+		return "model returned an error: " + llmProviderTestErrorMessage(envelope.Error)
+	}
+	if strings.EqualFold(envelope.Type, "error") {
+		errMsg := strings.TrimSpace(envelope.Message)
+		if errMsg == "" {
+			errMsg = "unknown error"
+		}
+		return "model returned an error: " + errMsg
+	}
+	return ""
 }
 
 func llmProviderTestHTTPError(statusCode int, body []byte) string {

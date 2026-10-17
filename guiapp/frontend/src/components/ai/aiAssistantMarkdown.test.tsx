@@ -2471,6 +2471,22 @@ describe("renderMessage assistant display guard", () => {
         expect(screen.getByText("Fetching details")).toBeTruthy();
     });
 
+    it("does not paint the tool anchor when the live body is only that anchor", () => {
+        const { container } = render(<div>{renderMessage({
+            id: "assistant-marker-only",
+            role: "assistant",
+            content: "\n\n<!--maclaw-tool:msg-1792198671957-29-->\n\n",
+            reasoning: "• 正在整理上下文并准备模型请求",
+            toolCalls: [{ id: "msg-1792198671957-29", name: "web_search", action: "搜索网络", detail: "北京天气 今天 预报" }],
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", false, undefined, undefined, false, undefined, "正在思考", undefined, true)}</div>);
+
+        expect(screen.getByTestId("assistant-tool-flip").getAttribute("aria-label")).toBe("web_search (北京天气 今天 预报)");
+        expect(screen.queryByTestId("assistant-tool-call")).toBeNull();
+        expect(container.textContent).not.toContain("maclaw-tool");
+        expect(container.textContent).not.toContain("<!--");
+    });
+
     it("renders a tool call on its own line while the task is still running", () => {
         render(<div>{renderMessage({
             id: "assistant-tool",
@@ -2480,15 +2496,33 @@ describe("renderMessage assistant display guard", () => {
             timestamp: Date.now(),
         }, vi.fn(), lightTheme, true, "Saved file", "zh", true, undefined, undefined, false, undefined, undefined, undefined, true)}</div>);
 
-        const call = screen.getByTestId("assistant-tool-call");
-        expect(call.getAttribute("data-tool-name")).toBe("bash");
-        expect(call.textContent).toContain("执行命令");
-        expect(screen.getByTestId("assistant-tool-call-detail").textContent).toContain("curl -X POST");
+        expect(screen.queryByTestId("assistant-tool-call")).toBeNull();
         expect(screen.getByText("让我改用 browser。")).toBeTruthy();
         expect(screen.getByText("请求已发出。")).toBeTruthy();
         expect(screen.queryByText(/maclaw-tool/)).toBeNull();
         expect(screen.queryByTestId("assistant-task-summary-status")).toBeNull();
+        const flip = screen.getByTestId("assistant-tool-flip");
+        expect(flip.getAttribute("aria-label")).toBe("bash (curl -X POST https://api.example/v1)");
+        expect(flip.textContent).toContain("bash");
         expect(buildAssistantReplyCopyText("让我改用 browser。\n\n<!--maclaw-tool:call-1-->\n\n请求已发出。", undefined, "zh")).not.toContain("maclaw-tool");
+    });
+
+    it("keeps only the latest call on the strip while the task is running", () => {
+        render(<div>{renderMessage({
+            id: "assistant-tools",
+            role: "assistant",
+            content: "先搜。\n\n<!--maclaw-tool:call-1-->\n\n再生成。\n\n<!--maclaw-tool:call-2-->\n\n",
+            toolCalls: [
+                { id: "call-1", name: "web_search", action: "搜索网页", detail: "北京天气" },
+                { id: "call-2", name: "generate_pdf", action: "生成 PDF", detail: "北京天气.pdf" },
+            ],
+            timestamp: Date.now(),
+        }, vi.fn(), lightTheme, true, "Saved file", "zh", true, undefined, undefined, false, undefined, undefined, undefined, true)}</div>);
+
+        expect(screen.queryByTestId("assistant-tool-call")).toBeNull();
+        expect(screen.getByTestId("assistant-tool-flip").getAttribute("aria-label")).toBe("generate_pdf (北京天气.pdf)");
+        expect(screen.getByText("先搜。")).toBeTruthy();
+        expect(screen.getByText("再生成。")).toBeTruthy();
     });
 
     it("replaces tool calls with the result summary and artifact chips after the task finishes", () => {
@@ -2510,6 +2544,7 @@ describe("renderMessage assistant display guard", () => {
         expect(screen.getByTestId("assistant-task-summary-status").textContent).toBe("已完成");
         expect(screen.getByText(answer)).toBeTruthy();
         expect(screen.queryByTestId("assistant-tool-call")).toBeNull();
+        expect(screen.queryByTestId("assistant-tool-flip")).toBeNull();
         expect(screen.queryByText(/curl -X POST/)).toBeNull();
         expect(screen.queryByText("先执行命令。")).toBeNull();
         expect(screen.queryByText("再试一次。")).toBeNull();

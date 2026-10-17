@@ -29,9 +29,10 @@ const (
 type StepStatus string
 
 const (
-	StepPending StepStatus = "pending"
-	StepDone    StepStatus = "done"
-	StepFailed  StepStatus = "failed"
+	StepPending  StepStatus = "pending"
+	StepProgress StepStatus = "progress"
+	StepDone     StepStatus = "done"
+	StepFailed   StepStatus = "failed"
 )
 
 // Step is one ordered unit of work produced by the planning turn.
@@ -91,7 +92,7 @@ func StatusHint() string {
 
 // Goal represents a persisted long-running task objective.
 type Goal struct {
-	GoalID    string `json:"goal_id"`    // UUID, regenerated on every replacement
+	GoalID    string `json:"goal_id"` // UUID, regenerated on every replacement
 	UserID    string `json:"user_id"`
 	Objective string `json:"objective"`
 	Status    Status `json:"status"`

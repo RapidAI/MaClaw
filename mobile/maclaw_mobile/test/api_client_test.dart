@@ -43,6 +43,7 @@ void main() {
         'user: 上一轮问题',
         'assistant: 上一轮回答',
       ],
+      'stream': false,
     });
   });
 

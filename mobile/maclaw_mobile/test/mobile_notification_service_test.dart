@@ -8,7 +8,7 @@ void main() {
       mobileNotificationPayloadBasePath(
         mobileDocumentExportNotificationPayload('job-1'),
       ),
-      '/documents',
+      '/tasks',
     );
     expect(
       mobileNotificationPayloadBasePath(

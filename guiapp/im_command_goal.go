@@ -40,18 +40,25 @@ func (h *IMMessageHandler) handleGoalCommand(msg IMUserMessage, trimmed string) 
 	case lower == "pause" || lower == "暂停":
 		return &IMAgentResponse{Text: h.goalPauseForUser(userID)}
 	case lower == "resume" || lower == "继续" || lower == "恢复":
+		before := h.getGoalStore().Get(userID)
+		wasPaused := before != nil && before.Status == goal.StatusPaused
+		// Refuse before Resume. Leaving the goal active and unscheduled makes
+		// the next /goal resume a no-op, because only a paused goal is armed.
+		// The guard is the same one that refuses to schedule a continuation:
+		// a leftover local project path is not an SSH session.
+		if wasPaused {
+			h.ensurePureCodingArmedForGoalContinuation(userID)
+			if text, blocked := h.unarmedRemoteCodingDesktopTurn(userID); blocked {
+				return &IMAgentResponse{Text: "目标仍处于暂停。\n" + text}
+			}
+		}
 		respText := h.goalResumeForUser(userID)
-		// After resume, schedule continuation if goal is active
-		if h.app != nil && h.app.goalContinuation != nil {
+		// Schedule only when this command actually resumed a paused goal.
+		// An already active goal keeps the turn that is already queued.
+		if wasPaused && h.app != nil && h.app.goalContinuation != nil {
 			g := h.getGoalStore().Get(userID)
 			if g != nil && g.Status == goal.StatusActive {
 				h.ensurePureCodingArmedForGoalContinuation(userID)
-				if h.isPureCodingWorkbenchSession(userID) && !h.hasPendingTemplateSubAgentExecution(userID) {
-					mem := h.getStickyCodingWorkbenchMemory(userID)
-					if strings.TrimSpace(mem.Kind) == "remote" {
-						return &IMAgentResponse{Text: respText + "\n\n远程 SSH 未连接：请先重连远程编程环境后再 /goal resume。"}
-					}
-				}
 				h.app.goalContinuation.scheduleDelayed(userID, g.GoalID)
 			}
 		}

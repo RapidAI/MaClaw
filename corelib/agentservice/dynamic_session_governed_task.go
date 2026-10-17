@@ -257,6 +257,13 @@ func (s *SessionGovernedTaskStore) Load(request DynamicCapabilityNeedRequest) (S
 		}
 		return SessionGovernedTask{Needs: cloneDynamicCapabilityNeeds(state.OpenNeeds), Status: sessionGovernedPending}, len(state.OpenNeeds) > 0
 	}
+	return s.loadInMemory(request)
+}
+
+func (s *SessionGovernedTaskStore) loadInMemory(request DynamicCapabilityNeedRequest) (SessionGovernedTask, bool) {
+	if s == nil || !sessionGovernedPrincipalComplete(request) {
+		return SessionGovernedTask{}, false
+	}
 	value, ok := s.tasks.Load(sessionGovernedTaskKey(request))
 	if !ok {
 		return SessionGovernedTask{}, false
@@ -343,6 +350,10 @@ func (s *SessionGovernedTaskStore) ReplayContinuation(request DynamicCapabilityN
 		return DynamicCapabilityNeedResolution{}, false
 	}
 	task, ok := s.Load(request)
+	return replaySessionGovernedTask(task, ok, rules, registry)
+}
+
+func replaySessionGovernedTask(task SessionGovernedTask, ok bool, rules map[intent.IntentLabel][]IntentCapabilityNeedTemplate, registry *coretool.CapabilityRegistry) (DynamicCapabilityNeedResolution, bool) {
 	if !ok || !task.replayable(registry) {
 		return DynamicCapabilityNeedResolution{}, false
 	}

@@ -2403,6 +2403,13 @@ export namespace corelib {
 	    telegram_bot_enabled?: boolean;
 	    telegram_bot_token?: string;
 	    telegram_owner_chat_id?: string;
+	    slack_enabled?: boolean;
+	    slack_client_id?: string;
+	    slack_client_secret?: string;
+	    slack_bot_token?: string;
+	    slack_team_id?: string;
+	    slack_team_name?: string;
+	    slack_bot_user_id?: string;
 	    weixin_enabled?: boolean;
 	    weixin_token?: string;
 	    weixin_base_url?: string;
@@ -2679,6 +2686,13 @@ export namespace corelib {
 	        this.telegram_bot_enabled = source["telegram_bot_enabled"];
 	        this.telegram_bot_token = source["telegram_bot_token"];
 	        this.telegram_owner_chat_id = source["telegram_owner_chat_id"];
+	        this.slack_enabled = source["slack_enabled"];
+	        this.slack_client_id = source["slack_client_id"];
+	        this.slack_client_secret = source["slack_client_secret"];
+	        this.slack_bot_token = source["slack_bot_token"];
+	        this.slack_team_id = source["slack_team_id"];
+	        this.slack_team_name = source["slack_team_name"];
+	        this.slack_bot_user_id = source["slack_bot_user_id"];
 	        this.weixin_enabled = source["weixin_enabled"];
 	        this.weixin_token = source["weixin_token"];
 	        this.weixin_base_url = source["weixin_base_url"];

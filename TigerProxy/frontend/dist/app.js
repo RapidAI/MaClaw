@@ -100,31 +100,6 @@ function pick(obj, ...keys) {
   }
   return undefined;
 }
-function handleRelaunch(status, fallback) {
-  if (pick(status, "relaunch_scheduled", "RelaunchScheduled")) {
-    notify("正在重启 CodexProxy 以切换登录方式…");
-    return true;
-  }
-  if (fallback) notify(fallback);
-  return false;
-}
-// A relaunch tears the window down after a short grace period. Say so plainly,
-// otherwise the app just disappears at the moment a login appears to succeed.
-function showRelaunchNotice() {
-  const btn = $("loginActionBtn");
-  if (btn) {
-    btn.disabled = true;
-    btn.textContent = "登录成功，正在重启…";
-  }
-  if ($("logoutBtn")) $("logoutBtn").style.display = "none";
-  document.querySelectorAll("#modeFields button, #modeFields input, #modeFields select")
-    .forEach((el) => { el.disabled = true; });
-  const toast = $("toast");
-  if (toast) {
-    toast.textContent = "登录成功，正在重启 CodexProxy…";
-    toast.className = "toast show ok";
-  }
-}
 function collectModels() {
   const select = $("modelID");
   if (!select) return [];
@@ -268,23 +243,23 @@ function guideStepsFor(mode) {
   switch (mode) {
     case "custom_openai":
     case "zhipu_coding":
-      return ["填写上游 <strong>URL</strong> 和 <strong>API Key</strong>", "点击 <strong>列出模型</strong> 并选择默认模型", "保存后如已切换方式将 <strong>自动重启</strong>", "再点击 <strong>配置 Codex</strong>"];
+      return ["填写上游 <strong>URL</strong> 和 <strong>API Key</strong>", "点击 <strong>列出模型</strong> 并选择默认模型", "保存后当前登录<strong>立即生效</strong>", "再点击 <strong>配置 Codex</strong>"];
     case "openai_oauth":
     case "xai_oauth":
     case "anthropic_oauth":
       return ["Max/Pro 点 <strong>登录</strong> 走 Claude.ai", "没有订阅则填写 <strong>API Key</strong>", "选择 <strong>默认模型</strong> 并保存", "再点击 <strong>配置 Codex</strong>"];
     case "kimi_web":
-      return ["点击 <strong>登录</strong>，自动打开 Kimi 授权页", "在网页里输入 <strong>验证码</strong> 并确认授权", "授权完成后自动保存登录并 <strong>重启</strong>", "选择 <strong>默认模型</strong> 并配置 Codex"];
+      return ["点击 <strong>登录</strong>，自动打开 Kimi 授权页", "在网页里输入 <strong>验证码</strong> 并确认授权", "授权完成后自动保存，当前登录<strong>立即生效</strong>", "选择 <strong>默认模型</strong> 并配置 Codex"];
     case "devin":
-      return ["点击 <strong>Devin 登录</strong>，使用与本机 Devin IDE 相同的账号", "在浏览器完成授权；若页面只显示令牌，粘贴到配置区", "授权完成后自动保存并 <strong>重启</strong>", "选择 <strong>默认模型</strong> 并配置 Codex"];
+      return ["点击 <strong>Devin 登录</strong>，使用与本机 Devin IDE 相同的账号", "在浏览器完成授权；若页面只显示令牌，粘贴到配置区", "授权完成后自动保存，当前登录<strong>立即生效</strong>", "选择 <strong>默认模型</strong> 并配置 Codex"];
     case "qoder_cn":
     case "qoder_global":
-      return ["点击对应的 <strong>Qoder 登录</strong>，打开国内或国际账号页", "在网页里确认设备授权", "授权完成后自动保存并 <strong>重启</strong>", "选择 <strong>默认模型</strong> 并配置 Codex"];
+      return ["点击对应的 <strong>Qoder 登录</strong>，打开国内或国际账号页", "在网页里确认设备授权", "授权完成后自动保存，当前登录<strong>立即生效</strong>", "选择 <strong>默认模型</strong> 并配置 Codex"];
     case "workbuddy_cn":
     case "workbuddy_global":
-      return ["点击对应的 <strong>WorkBuddy 登录</strong>，打开国内或国际账号页", "在网页里完成授权", "授权完成后自动保存并 <strong>重启</strong>", "选择 <strong>默认模型</strong> 并配置 Codex"];
+      return ["点击对应的 <strong>WorkBuddy 登录</strong>，打开国内或国际账号页", "在网页里完成授权", "授权完成后自动保存，当前登录<strong>立即生效</strong>", "选择 <strong>默认模型</strong> 并配置 Codex"];
     case "opencode":
-      return ["点击 <strong>OpenCode 登录</strong>，打开 opencode.ai 的密钥页", "复制密钥并粘贴，或使用本机 OpenCode 已保存的登录", "保存后自动 <strong>重启</strong>", "选择 <strong>默认模型</strong> 并配置 Codex"];
+      return ["点击 <strong>OpenCode 登录</strong>，打开 opencode.ai 的密钥页", "复制密钥并粘贴，或使用本机 OpenCode 已保存的登录", "保存后当前登录<strong>立即生效</strong>", "选择 <strong>默认模型</strong> 并配置 Codex"];
     default:
       return ["确认 <strong>Codex Desktop</strong> 已安装", "使用当前登录方式完成认证", "选择 <strong>默认模型</strong> 并保存", "点击 <strong>配置 Codex</strong> 后启动 Desktop"];
   }
@@ -494,11 +469,10 @@ async function completeOpenAICode() {
   setBusy(btn, true, "完成");
   try {
     await persistAgentType();
-    const status = await api.CompleteOpenAIOAuthWithCode(code.trim());
+    await api.CompleteOpenAIOAuthWithCode(code.trim());
     openaiWaiting = false;
-    if (handleRelaunch(status)) return;
     await refresh();
-    notify("OpenAI 登录成功");
+    notify("OpenAI 登录成功，当前登录已生效");
   } finally {
     setBusy(btn, false);
   }
@@ -511,11 +485,10 @@ async function completeXaiCode() {
   setBusy(btn, true, "登录中...");
   try {
     await persistAgentType();
-    const status = await api.CompleteXAIOAuthWithCode(code.trim());
+    await api.CompleteXAIOAuthWithCode(code.trim());
     xaiWaiting = false;
-    if (handleRelaunch(status)) return;
     await refresh();
-    notify("Grok 登录成功");
+    notify("Grok 登录成功，当前登录已生效");
   } finally {
     setBusy(btn, false);
   }
@@ -536,12 +509,10 @@ async function completeOpenCodeKey() {
   setBusy(btn, true, "登录中...");
   try {
     await persistAgentType();
-    const status = await api.CompleteOpenCodeLogin(key.trim());
+    await api.CompleteOpenCodeLogin(key.trim());
     if ($("opencodeKey")) $("opencodeKey").value = "";
-    showRelaunchNotice();
-    if (handleRelaunch(status)) return;
     await refresh();
-    notify("OpenCode 登录成功");
+    notify("OpenCode 登录成功，当前登录已生效");
   } finally {
     setBusy(btn, false);
   }
@@ -552,11 +523,9 @@ async function useLocalOpenCode() {
   setBusy(btn, true, "导入中...");
   try {
     await persistAgentType();
-    const status = await api.UseLocalOpenCodeLogin();
-    showRelaunchNotice();
-    if (handleRelaunch(status)) return;
+    await api.UseLocalOpenCodeLogin();
     await refresh();
-    notify("已导入本机 OpenCode 登录");
+    notify("已导入本机 OpenCode 登录，当前登录已生效");
   } finally {
     setBusy(btn, false);
   }
@@ -574,12 +543,11 @@ async function completeDevinToken() {
   setBusy(btn, true, "登录中...");
   try {
     await persistAgentType();
-    const status = await api.CompleteDevinLoginWithToken(token.trim());
+    await api.CompleteDevinLoginWithToken(token.trim());
     devinWaiting = false;
     if ($("devinToken")) $("devinToken").value = "";
-    if (handleRelaunch(status)) return;
     await refresh();
-    notify("Devin 登录成功");
+    notify("Devin 登录成功，当前登录已生效");
   } finally {
     devinPaste = false;
     setBusy(btn, false);
@@ -590,10 +558,9 @@ async function completeAnthropic() {
   const code = $("anthropicCode")?.value || "";
   if (!code.trim()) throw new Error("请粘贴授权码");
   await persistAgentType();
-  const status = await api.CompleteAnthropicOAuth(code.trim());
-  if (handleRelaunch(status)) return;
+  await api.CompleteAnthropicOAuth(code.trim());
   await refresh();
-  notify("Claude Code 登录成功");
+  notify("Claude Code 登录成功，当前登录已生效");
 }
 
 function showOnboarding(show) {
@@ -635,6 +602,7 @@ async function refresh() {
     $("apiKey").value = pick(s, "api_key", "APIKey") || "";
     $("codexContextWindow").value = pick(s, "codex_context_window", "CodexContextWindow") || "";
     $("codexAutoCompactTokenLimit").value = pick(s, "codex_auto_compact_token_limit", "CodexAutoCompactTokenLimit") || "";
+    if ($("modelAlias")) $("modelAlias").value = pick(s, "model_alias", "ModelAlias") || "auto";
     renderAgentType(pick(s, "agent_type", "AgentType") || "");
     renderModeFields(status);
     if (previousMode && previousMode === currentAuthMode) restoreModeInputs(snap);
@@ -786,6 +754,7 @@ async function save(options = {}) {
       api_key: $("apiKey").value,
       base_url: $("baseURL")?.value || "",
       model_id: $("modelID")?.value || "",
+      model_alias: $("modelAlias")?.value || "auto",
       models: collectModels(),
       agent_type: agentType,
       codex_context_window: codexContextWindow,
@@ -846,10 +815,9 @@ async function runLogin() {
       await api.StartSSOLogin();
       notify("已打开 SSO 登录页面，请在浏览器中完成登录。");
       try {
-        const status = await api.CompleteSSOLogin();
-        if (handleRelaunch(status)) return;
+        await api.CompleteSSOLogin();
         await refresh();
-        notify("SSO 登录成功，已刷新模型列表");
+        notify("SSO 登录成功，当前登录已生效");
       } catch (err) {
         await refresh();
         if (($("authMode")?.value || currentAuthMode) !== "sso") return;
@@ -864,11 +832,10 @@ async function runLogin() {
       const callback = pick(start, "callback_url", "CallbackURL") || "http://localhost:1455/auth/callback";
       notify(`已打开 OpenAI。本机回调 ${callback}。若未自动跳转，请粘贴授权码。`);
       try {
-        const status = await api.CompleteOpenAIOAuth();
+        await api.CompleteOpenAIOAuth();
         openaiWaiting = false;
-        if (handleRelaunch(status)) return;
         await refresh();
-        notify("OpenAI 登录成功");
+        notify("OpenAI 登录成功，当前登录已生效");
       } catch (err) {
         openaiWaiting = false;
         await refresh();
@@ -884,11 +851,10 @@ async function runLogin() {
       const callback = pick(start, "callback_url", "CallbackURL") || "http://127.0.0.1/callback";
       notify(`已打开 xAI。本机回调 ${callback}。若页面显示验证码，请粘贴到配置区。`);
       try {
-        const status = await api.CompleteXAIOAuth();
+        await api.CompleteXAIOAuth();
         xaiWaiting = false;
-        if (handleRelaunch(status)) return;
         await refresh();
-        notify("Grok 登录成功");
+        notify("Grok 登录成功，当前登录已生效");
       } catch (err) {
         xaiWaiting = false;
         await refresh();
@@ -916,12 +882,10 @@ async function runLogin() {
       const authURL = pick(start, "auth_url", "AuthURL") || "";
       notify(opened ? "已打开 Devin 登录页。" : `浏览器未能自动打开，请手动访问：${authURL}`);
       try {
-        const status = await api.WaitDevinLogin();
+        await api.WaitDevinLogin();
         devinWaiting = false;
-        showRelaunchNotice();
-        if (handleRelaunch(status)) return;
         await refresh();
-        notify("Devin 登录成功");
+        notify("Devin 登录成功，当前登录已生效");
       } catch (err) {
         if (devinLoginReplaced(err)) return;
         devinWaiting = false;
@@ -947,12 +911,10 @@ async function runLogin() {
       const authURL = pick(start, "auth_url", "AuthURL") || "";
       notify(opened ? "已打开 Qoder 授权页。" : `浏览器未能自动打开，请手动访问：${authURL}`);
       try {
-        const status = await api.WaitQoderLogin();
+        await api.WaitQoderLogin();
         qoderWaiting = false;
-        showRelaunchNotice();
-        if (handleRelaunch(status)) return;
         await refresh();
-        notify("Qoder 登录成功");
+        notify("Qoder 登录成功，当前登录已生效");
       } catch (err) {
         qoderWaiting = false;
         await refresh();
@@ -977,12 +939,10 @@ async function runLogin() {
       const authURL = pick(start, "auth_url", "AuthURL") || "";
       notify(opened ? "已打开 WorkBuddy 授权页。" : `浏览器未能自动打开，请手动访问：${authURL}`);
       try {
-        const status = await api.WaitWorkBuddyLogin();
+        await api.WaitWorkBuddyLogin();
         workbuddyWaiting = false;
-        showRelaunchNotice();
-        if (handleRelaunch(status)) return;
         await refresh();
-        notify("WorkBuddy 登录成功");
+        notify("WorkBuddy 登录成功，当前登录已生效");
       } catch (err) {
         workbuddyWaiting = false;
         await refresh();
@@ -1012,15 +972,11 @@ async function runLogin() {
         : `浏览器未能自动打开，请手动访问：${approvalURL}`;
       notify(`${prefix} 验证码：${userCode}`);
       try {
-        const status = await api.WaitKimiWebLogin();
+        await api.WaitKimiWebLogin();
         kimiWaiting = false;
         kimiHint = "";
-        // Show the restart notice before any re-render, because the process
-        // is about to replace this window.
-        showRelaunchNotice();
-        if (handleRelaunch(status)) return;
         await refresh();
-        notify("Kimi Code 登录成功");
+        notify("Kimi Code 登录成功，当前登录已生效");
       } catch (err) {
         kimiWaiting = false;
         kimiHint = "";
@@ -1076,7 +1032,7 @@ $("authMode").addEventListener("change", async () => {
   const mode = $("authMode").value;
   if (mode === currentAuthMode) return;
   const label = modeMeta(mode).name;
-  const ok = await confirmDialog(`切换到「${label}」后将重启 CodexProxy 使新上游生效。该方式已保存的登录会保留。是否继续？`, "切换登录方式");
+  const ok = await confirmDialog(`切换到「${label}」后，已保存的登录会立即生效。是否继续？`, "切换登录方式");
   if (!ok) {
     switchingAuthMode = true;
     $("authMode").value = currentAuthMode;
@@ -1086,9 +1042,9 @@ $("authMode").addEventListener("change", async () => {
   try {
     await save({ silent: true, authMode: currentAuthMode }).catch(() => {});
     const status = await api.SwitchAuthMode(mode);
-    if (handleRelaunch(status)) return;
     await refresh();
-    notify(`已切换到 ${label}，请完成登录。完成后将自动重启。`);
+    const loggedIn = pick(status, "logged_in", "LoggedIn");
+    notify(loggedIn ? `已切换到 ${label}，当前登录已生效` : `已切换到 ${label}，请完成登录`);
   } catch (err) {
     switchingAuthMode = true;
     $("authMode").value = currentAuthMode;

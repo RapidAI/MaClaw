@@ -87,6 +87,18 @@ func plainBody(body Body, offset int) (text string, hasMore bool, next int) {
 // quoteBody is the text frozen into a forward. It is the raw plain part, or
 // the HTML converted to text when there is no plain part. It is not the
 // model-facing view: no untrusted-instruction banner and no 32 KiB cap.
+// ViewBody is the plain text shown to the person who owns the mailbox.
+// It is not the model-facing view: no instruction banner, and a long note is cut.
+func ViewBody(body Body) (text string, truncated bool) {
+	raw := quoteBody(body)
+	runes := []rune(raw)
+	const capRunes = 12000
+	if len(runes) > capRunes {
+		return string(runes[:capRunes]), true
+	}
+	return raw, false
+}
+
 func quoteBody(body Body) string {
 	raw := strings.TrimSpace(body.Text)
 	if raw == "" && strings.TrimSpace(body.HTML) != "" {

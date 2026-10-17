@@ -676,7 +676,10 @@ func (p *DynamicCapabilityContractPublisher) publishAutoMCPToolCapability(server
 		ID:      capID,
 		Version: "v1",
 		Owner:   "vendor",
-		Summary: fmt.Sprintf("Installed MCP tool capability %s", capID),
+		// Same summary EnsureExternalCapabilityVocabulary writes. A mismatch
+		// is rejected, and this function returns before attaching the
+		// provision, so the tool loses the address the planner selects.
+		Summary: installedMCPToolSummary(capID),
 		Effects: nsCeiling,
 	}
 	if err := p.registry.RegisterExternalCapability(ns, desc); err != nil {

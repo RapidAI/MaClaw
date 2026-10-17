@@ -101,7 +101,7 @@ func (a *App) buildLocalScheduledTaskExecutor() scheduler.TaskExecutor {
 		if ShowNotification != nil {
 			ShowNotification(
 				"定时任务开始",
-				fmt.Sprintf("%s: %s", task.Name, scheduler.TruncateStr(task.Action, 100)),
+				trayNotifyBody(task.Name, task.Action),
 				1, // info icon
 			)
 		}
@@ -178,7 +178,7 @@ func (a *App) buildHubScheduledTaskExecutor(hubClient *RemoteHubClient) schedule
 		if ShowNotification != nil {
 			ShowNotification(
 				"定时任务开始",
-				fmt.Sprintf("%s: %s", task.Name, scheduler.TruncateStr(task.Action, 100)),
+				trayNotifyBody(task.Name, task.Action),
 				1,
 			)
 		}
@@ -275,11 +275,10 @@ func showScheduledTaskCompletionNotification(taskName, resultText, respError str
 		notifTitle = "定时任务失败"
 	}
 	if ShowNotification != nil {
-		// Keep soft delivery warning visible inside the short toast body.
-		body := scheduler.TruncatePreservingDeliveryWarning(notifSummary, 200)
+		// Keep a soft delivery warning inside the balloon, after the plain summary.
 		ShowNotification(
 			notifTitle,
-			fmt.Sprintf("%s: %s", taskName, body),
+			trayNotifyBody(taskName, notifSummary),
 			1,
 		)
 	}

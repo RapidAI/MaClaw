@@ -495,6 +495,11 @@ func (b *MCPToolBridge) callLocalTool(client *localMCPClient, toolName string, a
 	}
 	result, err := client.sendRequest("tools/call", params)
 	if err != nil {
+		// Same boundary as the GUI stdio client: a JSON-RPC error object is a
+		// finished tools/call rejection, not a lost transport.
+		if toolErr, ok := mcphttp.JSONRPCToolCallError(err); ok {
+			return "", toolErr
+		}
 		return "", fmt.Errorf("MCP tools/call failed: %w", err)
 	}
 	return parseMCPToolCallResult(result)
@@ -722,12 +727,27 @@ func safeMCPInvocationSchema(schema map[string]interface{}) map[string]interface
 		return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "additionalProperties": false}
 	}
 	cloned, ok := cloneMCPJSONValue(schema).(map[string]interface{})
-	if !ok || strings.TrimSpace(fmt.Sprint(cloned["type"])) != "object" {
+	// A missing type string is still an object when the document is an allOf,
+	// a local $ref, or a properties map. Replacing that shape with an empty
+	// argument list drops the fields the server requires and lets the model
+	// call the tool with nothing.
+	if !ok || !mcpInvocationSchemaIsObject(cloned) {
 		return map[string]interface{}{"type": "object", "properties": map[string]interface{}{}, "additionalProperties": false}
 	}
-	for _, reserved := range []string{"server_id", "server", "tool_name", "tool", "provider", "provider_id", "selection_id", "artifact_id", "artifact_ref", "credential", "credentials"} {
-		if properties, ok := cloned["properties"].(map[string]interface{}); ok {
-			delete(properties, reserved)
+	// allOf and a same-document $ref contribute properties that are not on the
+	// root map. Admission and the legacy argument check both read that map, so
+	// copy the composed fields in before dropping reserved identity names.
+	// Otherwise a server-required argument is either omitted or rejected as an
+	// unknown field.
+	inlineMCPComposableProperties(cloned)
+	if properties, ok := cloned["properties"].(map[string]interface{}); ok {
+		for name := range properties {
+			// Same identity list the projector omits. Case differs from the
+			// canonical spelling still have to leave the legacy argument map,
+			// or the model is asked to send a field execution will not accept.
+			if coretool.HostBoundDynamicField(name) {
+				delete(properties, name)
+			}
 		}
 	}
 	// Required fields must be a subset of model-writable properties. A dynamic
@@ -739,6 +759,202 @@ func safeMCPInvocationSchema(schema map[string]interface{}) map[string]interface
 	}
 	cloned["additionalProperties"] = false
 	return cloned
+}
+
+// inlineMCPComposableProperties copies object properties that arrive through
+// root allOf or a same-document $ref onto the root properties map. A $ref
+// node contributes its target only; sibling keywords of a $ref are ignored,
+// matching the projector. An existing root property is left in place so a
+// conflicting composed shape still fails projection.
+func inlineMCPComposableProperties(schema map[string]interface{}) {
+	if schema == nil {
+		return
+	}
+	if ref, _ := schema["$ref"].(string); strings.HasPrefix(strings.TrimSpace(ref), "#") {
+		return
+	}
+	properties, _ := schema["properties"].(map[string]interface{})
+	if properties == nil {
+		properties = map[string]interface{}{}
+	}
+	before := len(properties)
+	alts, _ := schema["allOf"].([]interface{})
+	stack := map[string]bool{}
+	composedRequired := map[string]bool{}
+	for _, raw := range alts {
+		branch, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		collectMCPComposableProperties(branch, schema, stack, properties, composedRequired)
+	}
+	if len(properties) > before {
+		schema["properties"] = properties
+	}
+	// Required names that live only on a composed branch are not on the root
+	// list. The legacy argument check reads that list and would otherwise let
+	// the model omit a field the server requires. Names with no property are
+	// left for the filter below to drop.
+	if len(composedRequired) > 0 {
+		schema["required"] = appendMCPRequiredFields(schema["required"], properties, composedRequired)
+	}
+}
+
+func collectMCPComposableProperties(schema, root map[string]interface{}, stack map[string]bool, into map[string]interface{}, required map[string]bool) {
+	if schema == nil || into == nil {
+		return
+	}
+	if ref, _ := schema["$ref"].(string); strings.TrimSpace(ref) != "" {
+		ref = strings.TrimSpace(ref)
+		if !strings.HasPrefix(ref, "#") || stack[ref] {
+			return
+		}
+		stack[ref] = true
+		collectMCPComposableProperties(lookupMCPLocalSchemaRef(root, ref), root, stack, into, required)
+		delete(stack, ref)
+		return
+	}
+	if properties, ok := schema["properties"].(map[string]interface{}); ok {
+		for name, value := range properties {
+			if _, exists := into[name]; exists {
+				continue
+			}
+			into[name] = value
+		}
+	}
+	for _, field := range mcpRequiredNames(schema["required"]) {
+		if required != nil {
+			required[field] = true
+		}
+	}
+	alts, _ := schema["allOf"].([]interface{})
+	for _, raw := range alts {
+		branch, ok := raw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		collectMCPComposableProperties(branch, root, stack, into, required)
+	}
+}
+
+func mcpRequiredNames(raw interface{}) []string {
+	switch required := raw.(type) {
+	case []interface{}:
+		names := make([]string, 0, len(required))
+		for _, value := range required {
+			field, ok := value.(string)
+			if !ok || strings.TrimSpace(field) == "" {
+				continue
+			}
+			names = append(names, field)
+		}
+		return names
+	case []string:
+		names := make([]string, 0, len(required))
+		for _, field := range required {
+			if strings.TrimSpace(field) == "" {
+				continue
+			}
+			names = append(names, field)
+		}
+		return names
+	default:
+		return nil
+	}
+}
+
+func appendMCPRequiredFields(raw interface{}, properties map[string]interface{}, extra map[string]bool) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(extra))
+	for _, field := range mcpRequiredNames(raw) {
+		if seen[field] {
+			continue
+		}
+		seen[field] = true
+		out = append(out, field)
+	}
+	added := make([]string, 0, len(extra))
+	for field := range extra {
+		if seen[field] {
+			continue
+		}
+		if _, ok := properties[field]; !ok {
+			continue
+		}
+		added = append(added, field)
+	}
+	sort.Strings(added)
+	return append(out, added...)
+}
+
+func lookupMCPLocalSchemaRef(root map[string]interface{}, ref string) map[string]interface{} {
+	if root == nil || !strings.HasPrefix(ref, "#") {
+		return nil
+	}
+	pointer := strings.TrimPrefix(ref, "#")
+	if pointer == "" {
+		return root
+	}
+	if !strings.HasPrefix(pointer, "/") {
+		return nil
+	}
+	current := interface{}(root)
+	for _, raw := range strings.Split(pointer[1:], "/") {
+		token := strings.ReplaceAll(strings.ReplaceAll(raw, "~1", "/"), "~0", "~")
+		if token == "" {
+			return nil
+		}
+		object, ok := current.(map[string]interface{})
+		if !ok {
+			return nil
+		}
+		next, ok := object[token]
+		if !ok {
+			return nil
+		}
+		current = next
+	}
+	object, ok := current.(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	return object
+}
+
+// mcpInvocationSchemaIsObject reports a parameter document the dynamic
+// projector can still read as one object. A JSON Schema type array is only
+// an object when every non-null branch is object. allOf and a same-document
+// $ref stay intact so the projector can inline them.
+func mcpInvocationSchemaIsObject(schema map[string]interface{}) bool {
+	if schema == nil {
+		return false
+	}
+	switch typed := schema["type"].(type) {
+	case string:
+		return strings.TrimSpace(typed) == "object"
+	case []interface{}:
+		sawObject := false
+		for _, item := range typed {
+			kind, _ := item.(string)
+			kind = strings.TrimSpace(kind)
+			if kind == "" || kind == "null" {
+				continue
+			}
+			if kind != "object" {
+				return false
+			}
+			sawObject = true
+		}
+		return sawObject
+	}
+	if _, ok := schema["properties"].(map[string]interface{}); ok {
+		return true
+	}
+	if alts, ok := schema["allOf"].([]interface{}); ok && len(alts) > 0 {
+		return true
+	}
+	ref, _ := schema["$ref"].(string)
+	return strings.HasPrefix(strings.TrimSpace(ref), "#")
 }
 
 func permittedMCPRequiredFields(raw interface{}, properties map[string]interface{}) []string {

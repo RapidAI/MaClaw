@@ -56,6 +56,9 @@ func TestFileCompanionOpenPathIsCanonical(t *testing.T) {
 	if again.Path != doc.Path || again.SessionID != doc.SessionID {
 		t.Fatalf("case variant path %q session %q, open path %q session %q", again.Path, again.SessionID, doc.Path, doc.SessionID)
 	}
+	if again.Name != "Notes.md" {
+		t.Fatalf("name = %q", again.Name)
+	}
 }
 
 func TestFileCompanionSaveRefusesSiblingAndHashMismatch(t *testing.T) {

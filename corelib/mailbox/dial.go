@@ -18,6 +18,12 @@ import (
 // Tests inject a Dialer instead of using this type, so they do not touch the network.
 type NetDialer struct {
 	Timeout time.Duration
+	// ReplaceSecret refreshes a browser-login secret after the server rejects it
+	// during this access. Gmail and Hotmail access tokens last about an hour.
+	// A still-valid local expiry can still be refused. Nil leaves the rejection
+	// as a web-login failure. A newer secret already saved for the account must
+	// be returned as-is: refreshing the rejected token would revoke that login.
+	ReplaceSecret func(ctx context.Context, account Account, rejected string) (string, error)
 }
 
 func NewNetDialer() *NetDialer {
@@ -192,9 +198,103 @@ func (s *smtpProbe) Quit() error {
 	return mapSMTP(s.c.Quit(), "quit")
 }
 
-// authSMTP uses the mechanism the server advertised. QQ, 163 and many
-// enterprise relays implement LOGIN and answer PLAIN with a credential
-// error even when the password is right.
+// refreshRejected asks for a new browser-login secret after the server
+// refused the current bearer token. A password secret is not refreshed.
+func (d *NetDialer) refreshRejected(ctx context.Context, account Account, secret string) (string, error) {
+	if _, ok := OAuthAccessToken(secret); !ok {
+		return "", ErrAuth
+	}
+	if d == nil || d.ReplaceSecret == nil {
+		return "", classErr("auth", MsgOAuthReauth)
+	}
+	next, err := d.ReplaceSecret(ctx, account, secret)
+	if err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(next) == "" || next == secret {
+		return "", classErr("auth", MsgOAuthReauth)
+	}
+	return next, nil
+}
+
+// oauthLoginFailure turns a rejected bearer token into the web-login message.
+// A password rejection stays a password error.
+func oauthLoginFailure(secret string, err error) error {
+	if err == nil || !errors.Is(err, ErrAuth) {
+		return err
+	}
+	if _, ok := OAuthAccessToken(secret); ok {
+		return classErr("auth", MsgOAuthReauth)
+	}
+	return err
+}
+
+func (d *NetDialer) imapClient(ctx context.Context, account Account, secret string) (*imapclient.Client, error) {
+	if account.Inbound == nil {
+		return nil, classErr("no_inbound", MsgNoInbound(account.Name))
+	}
+	user := account.Inbound.Username
+	if user == "" {
+		user = account.Address
+	}
+	dial := func(sec string) (*imapclient.Client, error) {
+		c, err := d.dialIMAP(ctx, *account.Inbound)
+		if err != nil {
+			return nil, err
+		}
+		if err := mapIMAP(imapLogin(c, user, sec), "auth"); err != nil {
+			_ = c.Logout()
+			return nil, err
+		}
+		return c, nil
+	}
+	return dialWithOAuthRetry(ctx, d, account, secret, dial)
+}
+
+func (d *NetDialer) smtpClient(ctx context.Context, account Account, secret string) (*smtp.Client, error) {
+	if account.Outbound == nil {
+		return nil, classErr("no_outbound", MsgNoOutbound(account.Name))
+	}
+	user := account.Outbound.Username
+	if user == "" {
+		user = account.Address
+	}
+	dial := func(sec string) (*smtp.Client, error) {
+		c, err := d.dialSMTP(ctx, *account.Outbound)
+		if err != nil {
+			return nil, err
+		}
+		if err := authSMTP(c, user, sec); err != nil {
+			_ = c.Close()
+			return nil, err
+		}
+		return c, nil
+	}
+	return dialWithOAuthRetry(ctx, d, account, secret, dial)
+}
+
+// dialWithOAuthRetry logs in once, and once more with a new browser-login
+// secret when the server refuses the bearer token. A password is not retried.
+func dialWithOAuthRetry[T any](ctx context.Context, d *NetDialer, account Account, secret string, dial func(string) (T, error)) (T, error) {
+	client, err := dial(secret)
+	if err == nil || !errors.Is(err, ErrAuth) {
+		return client, err
+	}
+	var zero T
+	if _, ok := OAuthAccessToken(secret); !ok {
+		return zero, err
+	}
+	next, rerr := d.refreshRejected(ctx, account, secret)
+	if rerr != nil {
+		return zero, rerr
+	}
+	client, err = dial(next)
+	if err != nil {
+		return zero, oauthLoginFailure(next, err)
+	}
+	return client, nil
+}
+
 func imapLogin(c *imapclient.Client, username, secret string) error {
 	if c == nil {
 		return ErrAuth
@@ -205,6 +305,9 @@ func imapLogin(c *imapclient.Client, username, secret string) error {
 	return c.Login(username, secret)
 }
 
+// authSMTP uses the mechanism the server advertised. QQ, 163 and many
+// enterprise relays implement LOGIN and answer PLAIN with a credential
+// error even when the password is right.
 func authSMTP(c *smtp.Client, username, secret string) error {
 	if c == nil {
 		return ErrAuth

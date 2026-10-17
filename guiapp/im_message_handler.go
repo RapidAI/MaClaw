@@ -90,7 +90,7 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 		if providedLoopCtx != nil && providedLoopCtx.LansengerGroupPermissions != nil {
 			return &IMAgentResponse{Text: localizedLansengerGroupCommandRestrictedMessage(lang)}
 		}
-		cmd := moa.ParseSlash(trimmed)
+		cmd := moa.ParseSlash(normalizeImmediateCommandText(trimmed))
 		switch cmd.Kind {
 		case moa.SlashHelp:
 			return &IMAgentResponse{Text: localizedIMMoAUsageText(lang)}
@@ -120,6 +120,9 @@ func (h *IMMessageHandler) handleIMMessageWithLoop(msg IMUserMessage, providedLo
 	}
 
 	if resp, handled := h.handleImmediateIMCommandWithLoop(msg, trimmed, providedLoopCtx, onProgress, onToken); handled {
+		return resp
+	}
+	if resp, handled := h.tryChatTaskStatusReply(msg); handled {
 		return resp
 	}
 	if resp, handled := h.tryImmediateCurrentTimeDirect(msg, providedLoopCtx); handled {

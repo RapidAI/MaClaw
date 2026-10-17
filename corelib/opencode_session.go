@@ -103,10 +103,17 @@ func OpenCodeClientUserAgent(name string) string {
 // The same parts yield the same id until the hour changes, so one conversation
 // stays on one session. A UUID is rejected by the free-tier gate.
 func OpenCodeClientSessionID(parts ...string) string {
-	return openCodeClientSessionIDAt(time.Now().UTC().Truncate(time.Hour), parts...)
+	return openCodeClientSessionIDAt(time.Now().UTC().Truncate(time.Hour), openCodeTimeHex, parts...)
 }
 
-func openCodeClientSessionIDAt(now time.Time, parts ...string) string {
+// OpenCodeDescendingSessionID is the session id the Zen free tier accepts.
+// Identifier.descending encodes ~(millis<<12|counter) in 48 bits. The free-tier
+// gate allows only counter 0 through 63; counter 1 makes the low 12 bits ffe.
+func OpenCodeDescendingSessionID(parts ...string) string {
+	return openCodeClientSessionIDAt(time.Now().UTC().Truncate(time.Hour), openCodeDescendingTimeHex, parts...)
+}
+
+func openCodeClientSessionIDAt(now time.Time, timeHex func(int64) string, parts ...string) string {
 	h := sha256.New()
 	wrote := false
 	for _, part := range parts {
@@ -142,7 +149,7 @@ func openCodeClientSessionIDAt(now time.Time, parts ...string) string {
 	if allSame {
 		random[len(random)-1] = openCodeBase62[(int(same)+1)%len(openCodeBase62)]
 	}
-	return "ses_" + openCodeTimeHex(now.UnixMilli()) + string(random[:])
+	return "ses_" + timeHex(now.UnixMilli()) + string(random[:])
 }
 
 // openCodeTimeHex encodes milliseconds the way Identifier.create does:
@@ -152,6 +159,17 @@ func openCodeTimeHex(ms int64) string {
 	var raw [6]byte
 	for i := 0; i < len(raw); i++ {
 		raw[i] = byte((now >> (40 - 8*uint(i))) & 0xff)
+	}
+	return hex.EncodeToString(raw[:])
+}
+
+func openCodeDescendingTimeHex(ms int64) string {
+	v := (uint64(ms) << 12) | 1
+	v &= (1 << 48) - 1
+	v = (^v) & ((1 << 48) - 1)
+	var raw [6]byte
+	for i := 0; i < len(raw); i++ {
+		raw[i] = byte((v >> (40 - 8*uint(i))) & 0xff)
 	}
 	return hex.EncodeToString(raw[:])
 }
@@ -332,19 +350,31 @@ func OpenCodeWireUserAgent(rawURL, agent string) string {
 	return OpenCodeClientUserAgent(agent)
 }
 
-// openCodeWireSessionID is the x-opencode-session value OpenCode will accept.
-// An id that is already ses_ + 12 hex + 14 base62 is kept. Anything else is
-// derived from that value so one conversation stays on one session until the
-// hour changes. An empty value gets a fresh official id.
+// openCodeWireSessionID is the x-opencode-session value the Zen free tier accepts.
+// The id must use Identifier.descending with a counter of 0 through 63.
+// An id already in that window is kept. Anything else is derived from that
+// value so one conversation stays on one session until the hour changes.
 func openCodeWireSessionID(sessionID string) string {
 	sessionID = strings.TrimSpace(sessionID)
-	if isOfficialOpenCodeSessionID(sessionID) {
+	if openCodeFreeTierSessionID(sessionID) {
 		return sessionID
 	}
 	if sessionID == "" {
-		return OpenCodeClientSessionID()
+		return OpenCodeDescendingSessionID()
 	}
-	return OpenCodeClientSessionID(sessionID)
+	return OpenCodeDescendingSessionID(sessionID)
+}
+
+func openCodeFreeTierSessionID(id string) bool {
+	if !isOfficialOpenCodeSessionID(id) {
+		return false
+	}
+	tail := id[13:16]
+	if tail[0] != 'f' || tail[1] < 'c' || tail[1] > 'f' {
+		return false
+	}
+	c := tail[2]
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
 }
 
 func isOfficialOpenCodeSessionID(id string) bool {
@@ -424,7 +454,7 @@ func ApplyOpenCodeSessionHeader(req *http.Request, cfg MaclawLLMConfig) {
 			sessionID = ResolveOpenCodeSessionID(sessionID)
 		}
 		req.Header.Set(OpenCodeSessionHeader, sessionID)
-	case openCodeHost && !isOfficialOpenCodeSessionID(existing):
+	case openCodeHost && !openCodeFreeTierSessionID(existing):
 		req.Header.Set(OpenCodeSessionHeader, openCodeWireSessionID(existing))
 	}
 	if openCodeHost {
@@ -433,7 +463,87 @@ func ApplyOpenCodeSessionHeader(req *http.Request, cfg MaclawLLMConfig) {
 			agent = cfg.UserAgent()
 		}
 		rewriteOpenCodeUserAgent(req, agent)
+		if strings.TrimSpace(req.Header.Get("x-opencode-client")) == "" {
+			req.Header.Set("x-opencode-client", "cli")
+		}
 	}
+}
+
+func openCodeModelID(model string) string {
+	model = strings.TrimSpace(model)
+	const prefix = "opencode/"
+	if len(model) > len(prefix) && strings.EqualFold(model[:len(prefix)], prefix) {
+		model = strings.TrimSpace(model[len(prefix):])
+	}
+	return strings.ToLower(model)
+}
+
+// IsOpenCodeZenFreeModel reports Zen catalog models that the Go gateway does
+// not serve. Metered ids such as glm-5.3-flash stay false. Go-native free ids
+// also stay false so they are not pulled back onto Zen.
+func IsOpenCodeZenFreeModel(model string) bool {
+	switch openCodeModelID(model) {
+	case "big-pickle", "glm-5.3-flash-free", "deepseek-v4.1-flash-free":
+		return true
+	case "cat-jam-free", "longcat-2.5-preview-free":
+		return false
+	default:
+		return strings.HasSuffix(openCodeModelID(model), "-free")
+	}
+}
+
+// OpenCodeZenAgentModel reports a Zen free model that rejects a request
+// unless it streams and advertises the official bash and read tools.
+// Every Zen-only free id is gated this way. Go-native free ids are not.
+func OpenCodeZenAgentModel(model string) bool {
+	if openCodeModelID(model) == "big-pickle" {
+		return false
+	}
+	return IsOpenCodeZenFreeModel(model)
+}
+
+// OpenCodeUsesResponsesAPI reports Zen free models that reject Chat
+// Completions and the Anthropic messages API. They answer on the Responses
+// API when the request streams and includes the official bash and read tools.
+func OpenCodeUsesResponsesAPI(rawURL, model string) bool {
+	if !IsOpenCodeURL(rawURL) {
+		return false
+	}
+	return openCodeModelID(model) == "muse-spark-1.2-contributor-free"
+}
+
+// OpenCodeChatEndpoint sends Zen-only free models to /zen/v1 and every other
+// OpenCode model to /zen/go/v1. URLs that are not OpenCode are returned as given.
+func OpenCodeChatEndpoint(rawURL, model string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Host == "" || !IsOpenCodeHost(parsed.Hostname()) {
+		return rawURL
+	}
+	path := parsed.EscapedPath()
+	const zenPrefix = "/zen/v1"
+	const goPrefix = "/zen/go/v1"
+	free := IsOpenCodeZenFreeModel(model)
+	switch {
+	case free && (path == goPrefix || strings.HasPrefix(path, goPrefix+"/")):
+		parsed.Path = zenPrefix + strings.TrimPrefix(path, goPrefix)
+	case !free && (path == zenPrefix || strings.HasPrefix(path, zenPrefix+"/")):
+		parsed.Path = goPrefix + strings.TrimPrefix(path, zenPrefix)
+	default:
+		return rawURL
+	}
+	parsed.RawPath = ""
+	if parsed.Scheme == "" {
+		parsed.Scheme = "https"
+	}
+	return parsed.String()
+}
+
+// OpenCodeUpstreamBase is the SDK base URL for model. A chat completions
+// suffix is removed so the client appends it once.
+func OpenCodeUpstreamBase(rawURL, model string) string {
+	endpoint := strings.TrimRight(OpenCodeChatEndpoint(rawURL, model), "/")
+	endpoint = strings.TrimSuffix(endpoint, "/chat/completions")
+	return strings.TrimRight(endpoint, "/")
 }
 
 func newOpenCodeSessionUUID(raw []byte, version byte) string {

@@ -399,6 +399,17 @@ func TestSavePlanAndUpdateStep(t *testing.T) {
 	if err := s.UpdateStep("user1", "stale", 2, StepDone, "x"); err == nil {
 		t.Fatal("stale goal id should fail")
 	}
+	if err := s.UpdateStep("user1", g.GoalID, 2, StepProgress, "测试还没写"); err != nil {
+		t.Fatal(err)
+	}
+	got = s.Get("user1")
+	current, ok = got.CurrentStep()
+	if !ok || current.Index != 2 || current.Status != StepProgress {
+		t.Fatalf("progress left the step: %+v ok=%v", current, ok)
+	}
+	if refusal := got.StepReportRefusal(1); !strings.Contains(refusal, "步骤 2") {
+		t.Fatalf("refusal = %q", refusal)
+	}
 	if missing := MissingCriteria("还没测", got.AcceptanceCriteria); len(missing) != 1 || missing[0] != "go test 通过" {
 		t.Fatalf("missing = %#v", missing)
 	}

@@ -167,9 +167,9 @@ const COMPOSE_ITEM_BY_ACTION = new Map(
         .map((item) => [item.composeAction, item]),
 );
 
-/** ASCII slash form so a fullwidth ／ from a Chinese IME matches command checks. */
+/** ASCII slash form so a fullwidth ／ or ideographic space from a Chinese IME matches command checks. */
 function commandSlashText(text: string): string {
-    const trimmed = text.trim().replace(/^\uFEFF/, "").trim();
+    const trimmed = text.replace(/\u3000/g, " ").replace(/^\uFEFF/, "").trim();
     if (trimmed.startsWith("／")) return `/${trimmed.slice(1)}`;
     return trimmed;
 }
@@ -177,6 +177,26 @@ function commandSlashText(text: string): string {
 /** True when text is a `/btw` slash command (case-insensitive). */
 export function isBtwCommandText(text: string): boolean {
     return /^\/btw(?:\s|$)/i.test(commandSlashText(text));
+}
+
+// Session verbs operate on a goal that already exists. Anything else after
+// /goal is a new objective and starts a task.
+const GOAL_SESSION_VERBS = new Set([
+    "status", "get", "pause", "resume", "cancel", "clear",
+    "暂停", "继续", "恢复", "取消",
+]);
+
+/**
+ * `/goal <objective>` creates a durable task. Bare `/goal` and the session
+ * verbs stay on the current conversation.
+ */
+export function goalCreateCommand(text: string): { command: string; objective: string } | null {
+    const command = commandSlashText(text);
+    const match = command.match(/^\/goal(?:\s+([\s\S]+))?$/i);
+    if (!match) return null;
+    const objective = (match[1] || "").trim();
+    if (!objective || GOAL_SESSION_VERBS.has(objective.toLowerCase())) return null;
+    return { command, objective };
 }
 
 /** True when text is an explicit conversation-reset slash command. */

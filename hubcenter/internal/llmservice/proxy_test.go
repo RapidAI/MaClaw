@@ -7311,7 +7311,7 @@ func TestStreamProviderToWriterSendsOpenCodeSessionHeader(t *testing.T) {
 	}, "glm-5.3-flash", "auto", newLockedResponseRecorder()); err != nil {
 		t.Fatalf("streamProviderToWriter() error = %v", err)
 	}
-	if got != corelib.OpenCodeClientSessionID("proxy-session-1") {
+	if got != corelib.OpenCodeDescendingSessionID("proxy-session-1") {
 		t.Fatalf("%s = %q, want the official session for proxy-session-1", corelib.OpenCodeSessionHeader, got)
 	}
 	if gotUA != "opencode/"+corelib.OpenCodeClientVersion {

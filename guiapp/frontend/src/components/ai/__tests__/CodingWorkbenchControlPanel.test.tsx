@@ -157,6 +157,14 @@ describe("deriveChipStatus", () => {
         expect(deriveChipStatus("en", [{ index: 3, status: "running" }], false)).toBe("T3…");
     });
 
+    it("shows step progress when every row of a checklist is done", () => {
+        expect(deriveChipStatus("zh-Hans", [
+            { index: 1, status: "passed" },
+            { index: 2, status: "passed" },
+            { index: 3, status: "passed" },
+        ], false)).toBe("3/3");
+    });
+
     it("recognises the alternate spellings of failed/running/done", () => {
         expect(deriveChipStatus("en", [{ index: 4, status: "verify_failed" }], false)).toBe("T4 ✗");
         expect(deriveChipStatus("en", [{ index: 5, status: "in_progress" }], false)).toBe("T5…");

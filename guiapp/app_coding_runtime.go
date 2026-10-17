@@ -13,6 +13,27 @@ import (
 	"github.com/google/uuid"
 )
 
+// openExistingCodingRuntimeStore returns the ledger when this process already
+// has it open, or when a previous run left the database on disk. It does not
+// create the file. The task list calls this on every refresh, and opening a
+// missing database would invent a ledger for an app that never runs coding work.
+func (a *App) openExistingCodingRuntimeStore() *codingruntime.SQLiteStore {
+	if a == nil {
+		return nil
+	}
+	a.codingRuntimeStoreMu.Lock()
+	store := a.codingRuntimeStore
+	a.codingRuntimeStoreMu.Unlock()
+	if store != nil {
+		return store
+	}
+	dbPath := filepath.Join(a.GetDataDir(), "coding_runtime.db")
+	if _, err := os.Stat(dbPath); err != nil {
+		return nil
+	}
+	return a.ensureCodingRuntimeStore()
+}
+
 // ensureCodingRuntimeStore opens the app-level execution ledger once. Keeping
 // it application-scoped gives startup a chance to mark abandoned leases as
 // interrupted instead of silently losing their attempt history.

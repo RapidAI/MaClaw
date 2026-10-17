@@ -325,7 +325,7 @@ func projectOpenAIWireResponse(wire openAIWireResponse) *Response {
 		msg := Message{
 			Role:             choice.Message.Role,
 			Content:          StripAllExtra(visibleContent),
-			ReasoningContent: mergeOpenAIReasoningText(openAIReasoningText(choice.Message.ReasoningContent, choice.Message.Reasoning, choice.Message.Thinking), taggedReasoning),
+			ReasoningContent: StripLeakedReasoningProtocol(mergeOpenAIReasoningText(openAIReasoningText(choice.Message.ReasoningContent, choice.Message.Reasoning, choice.Message.Thinking), taggedReasoning)),
 			ToolCalls:        choice.Message.ToolCalls,
 			RawContent:       rawContent,
 		}

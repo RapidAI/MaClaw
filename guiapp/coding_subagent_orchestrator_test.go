@@ -1154,6 +1154,7 @@ func TestSubAgentRetryRecoveryHintCoversQualityGateTiming(t *testing.T) {
 		want string
 	}{
 		{err: "no exploration before existing-file edits", want: "call code_navigation for structure"},
+		{err: "请先调用 code_navigation，operation 用 node，query 填要修改的符号，file 填 \"audio.cpp\"。返回的符号正文就是当前源码，之后才能修改。不要 read_file 整份源码。", want: "operation node"},
 		{err: "请先调用 read_file(path=\"src/a.go\") 查看当前内容，再使用 edit_file 修改。", want: "refresh the snapshot"},
 		{err: "文件 src/a.go 自上次 read_file 后已变化，请重新调用 read_file 获取最新内容后再修改。", want: "snapshot is fresh"},
 		{err: "verification ran before the final edit (1 command); rerun test/build/lint/typecheck after editing", want: "after the final edit"},

@@ -132,6 +132,91 @@ func TestSrvAIModelEmbedderAdapterUsesSharedBatchRuntime(t *testing.T) {
 // time.
 var _ embedding.RoleEmbedder = srvAIModelEmbedderAdapter{}
 
+func TestSrvAIModelEmbedderAdapterIsComparable(t *testing.T) {
+	manager := newSrvAIModelManager(t.TempDir())
+	calls := 0
+	manager.setDownloadConfigProvider(func() corelib.AppConfig {
+		calls++
+		return corelib.AppConfigDefaults()
+	})
+	current := embedding.Embedder(srvAIModelEmbedderAdapter{manager: manager})
+	same := embedding.Embedder(srvAIModelEmbedderAdapter{manager: manager})
+	other := embedding.Embedder(srvAIModelEmbedderAdapter{manager: newSrvAIModelManager(t.TempDir())})
+	defer func() {
+		if rec := recover(); rec != nil {
+			t.Fatalf("embedder comparison panicked: %v", rec)
+		}
+	}()
+	if current != same {
+		t.Fatal("two adapters for one manager must compare equal")
+	}
+	if current == other {
+		t.Fatal("adapters for different managers compared equal")
+	}
+	if !sameSrvIntentEmbedder(current, same) || sameSrvIntentEmbedder(current, other) {
+		t.Fatal("intent attach identity did not follow the manager")
+	}
+	_ = srvAIModelEmbedderAdapter{manager: manager}.appConfig()
+	if calls == 0 {
+		t.Fatal("embedder did not read config from the manager")
+	}
+}
+
+func TestSrvEmbedderSkipsDownloadConfigWhenTheModelIsReady(t *testing.T) {
+	adapter, emb := newRoleTestAdapter(t)
+	calls := 0
+	adapter.manager.setDownloadConfigProvider(func() corelib.AppConfig {
+		calls++
+		return corelib.AppConfigDefaults()
+	})
+	if _, err := adapter.Embed("ping"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := adapter.EmbedBatch([]string{"a", "b"}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("ready embedder read download config %d times", calls)
+	}
+	if emb.batchCalls.Load() != 2 || emb.calls.Load() != 3 {
+		t.Fatalf("batch calls = %d, embed calls = %d, want 2 and 3", emb.batchCalls.Load(), emb.calls.Load())
+	}
+}
+
+func TestUseSharedAIModelsOnAClosedStoreKeepsTheDownloadProvider(t *testing.T) {
+	manager := newSrvAIModelManager(t.TempDir())
+	marker := 0
+	manager.setDownloadConfigProvider(func() corelib.AppConfig {
+		marker = 1
+		return corelib.AppConfigDefaults()
+	})
+	closed := &knowledgeStoreManager{closed: true, done: make(chan struct{})}
+	closed.UseSharedAIModels(manager, func() corelib.AppConfig {
+		marker = 2
+		return corelib.AppConfigDefaults()
+	})
+	_ = manager.downloadConfig(corelib.AppConfigDefaults())
+	if marker != 1 {
+		t.Fatalf("closed store replaced the download provider, marker=%d", marker)
+	}
+	if closed.embedder != nil {
+		t.Fatalf("closed store accepted the adapter: %T", closed.embedder)
+	}
+
+	live := &knowledgeStoreManager{done: make(chan struct{})}
+	live.UseSharedAIModels(manager, func() corelib.AppConfig {
+		marker = 3
+		return corelib.AppConfigDefaults()
+	})
+	_ = manager.downloadConfig(corelib.AppConfigDefaults())
+	if marker != 3 {
+		t.Fatalf("live store did not install its config provider, marker=%d", marker)
+	}
+	if _, ok := live.embedder.(srvAIModelEmbedderAdapter); !ok {
+		t.Fatalf("live embedder = %T", live.embedder)
+	}
+}
+
 // newRoleTestAdapter wires the shared counting fake into a manager so the
 // adapter's role methods can be driven without loading real weights.
 func newRoleTestAdapter(t *testing.T) (srvAIModelEmbedderAdapter, *countingSrvEmbedder) {

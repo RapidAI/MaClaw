@@ -52,3 +52,34 @@ export function codingStepIsSkipped(status: string): boolean {
 export function codingStepIsSettled(status: string): boolean {
     return codingStepIsDone(status) || codingStepIsFailed(status) || codingStepIsSkipped(status);
 }
+
+/**
+ * Checklist rows the plan UI should draw.
+ *
+ * todo_write never writes "failed". With no orchestrator plan, a failed row
+ * followed by a later passed row is an older single-turn runner painting its
+ * outcome onto checklist index 1. Those rows are the agent's completed todos.
+ * The task badge keeps the raw steps, so that failure still fails the turn.
+ * A lone failed row, or any row under a real execution plan, stays failed.
+ */
+export function presentCodingAgentChecklist<T extends { index?: number; status?: string; summary?: string }>(
+    executionPlan: string | undefined,
+    steps: T[] | undefined,
+): T[] {
+    const list = steps || [];
+    if (list.length < 2 || String(executionPlan || "").trim()) return list;
+    let maxPassed = 0;
+    for (const step of list) {
+        const index = Number(step?.index || 0);
+        if (codingStepIsDone(String(step?.status || "")) && index > maxPassed) maxPassed = index;
+    }
+    if (!maxPassed) return list;
+    let changed = false;
+    const out = list.map((step) => {
+        const index = Number(step?.index || 0);
+        if (index >= maxPassed || !codingStepIsFailed(String(step?.status || ""))) return step;
+        changed = true;
+        return { ...step, status: "passed", summary: "" };
+    });
+    return changed ? out : list;
+}

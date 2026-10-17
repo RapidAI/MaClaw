@@ -1,6 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:maclaw_mobile/features/bots/bot.dart';
-import 'package:maclaw_mobile/features/bots/bot_message.dart';
 
 void main() {
   group('Bot parsing', () {

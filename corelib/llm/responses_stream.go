@@ -335,7 +335,7 @@ func responsesStreamResponseID(payload string) string {
 }
 
 func responsesStreamPartialResponse(responseID, text, reasoning string, items map[int]*responsesStreamItem, usage *Usage, finishReason string) *Response {
-	msg := Message{Role: "assistant", Content: StripAllExtra(text), ReasoningContent: reasoning}
+	msg := Message{Role: "assistant", Content: StripAllExtra(text), ReasoningContent: StripLeakedReasoningProtocol(reasoning)}
 	indices := make([]int, 0, len(items))
 	for index := range items {
 		indices = append(indices, index)

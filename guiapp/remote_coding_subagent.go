@@ -424,7 +424,7 @@ func (r *RemoteCodingSubAgent) SaveRuntimeExperience(exp knowledge.CodingExperie
 // without a verified relation, or "" when the step may proceed. Inquiry
 // steps are read-only by design and always proceed.
 func (r *RemoteCodingSubAgent) preDispatchGateDiagnostic(verifiedBound bool, taskDescription string) string {
-	if verifiedBound || r == nil || r.requestKind == codingRequestInquiry || r.loopCtx == nil || !isDesktopCodingOwner(r.loopCtx.UserID) {
+	if verifiedBound || r == nil || r.requestKind == codingRequestInquiry || goalContinuationPhase(taskDescription) == "plan" || r.loopCtx == nil || !isDesktopCodingOwner(r.loopCtx.UserID) {
 		return ""
 	}
 	log.Printf("[remote-coding] pre-dispatch gate: implementation step without verified desktop relation user=%s session=%s task=%q",
@@ -710,7 +710,7 @@ func (r *RemoteCodingSubAgent) executeTask(taskDescription, taskContext string) 
 		r.workspaceWasEmptyAtStart = remoteCodingWorkspaceWasEmptyFromBootstrap(bootstrapResult)
 		log.Printf("[remote-source-preview] project bootstrap ready session=%q project=%q preview=%v", r.sessionID, r.projectDir, r.sourcePreviewEnabled)
 	}
-	r.exposeGoalTool = strings.Contains(taskDescription, "[系统续接]") || strings.Contains(taskContext, "[系统续接]")
+	r.exposeGoalTool = isGoalSystemContinuation(taskDescription) || isGoalSystemContinuation(taskContext)
 	gateOn := codingQualityGateEnabled(r.handler)
 	cb := &remoteCodingCallbacks{
 		agent:                    r,
@@ -888,10 +888,14 @@ func remoteCodingSubAgentResultFromLoopResult(result agent.LoopResult) *RemoteCo
 	}
 	if result.Error != "" {
 		status := "failed"
+		errText := result.Error
 		if remoteCodingSubAgentLoopErrorIsCancelled(result.Error) {
 			status = "cancelled"
 		}
-		return base(status, result.Error)
+		if result.Error == agent.ErrChecklistUnsettled {
+			errText = checklistUnsettledUserMessage
+		}
+		return base(status, errText)
 	}
 	if result.HardExit {
 		return base("failed", "remote coding subagent hard exit")
@@ -946,6 +950,16 @@ func (c *remoteCodingCallbacks) applyRemoteVerificationOutcome(result *RemoteCod
 		// is the host assertion that an unchanged workspace is acceptable.
 		if remoteCodingHostSuccess(result.Status) && strings.TrimSpace(result.Error) == "" && len(result.FilesModified) == 0 && len(result.FilesCreated) == 0 {
 			result.VerifiedNoChange = true
+		}
+		return result
+	}
+	if c != nil && (goalContinuationPhase(c.task) != "" || goalContinuationPhase(c.taskContext) != "") {
+		if remoteCodingHostSuccess(result.Status) && strings.TrimSpace(result.Error) == "" {
+			result.QualityStatus = codingSubAgentQualityNotNeeded
+			result.QualitySummary = "goal continuation: file audit does not apply"
+			if len(result.FilesModified) == 0 && len(result.FilesCreated) == 0 {
+				result.VerifiedNoChange = true
+			}
 		}
 		return result
 	}
@@ -2278,8 +2292,25 @@ func (c *remoteCodingCallbacks) BuildSystemPrompt(userText string, isFirstTurn b
 	// transport-owned correlation, so the model must see a prompt that exactly
 	// matches the filtered request surface rather than the richer direct-host
 	// SSH surface returned by BuildTools.
+	phaseSource := userText
+	if c != nil && !isGoalSystemContinuation(phaseSource) && isGoalSystemContinuation(c.task) {
+		phaseSource = c.task
+	}
+	if c != nil && !isGoalSystemContinuation(phaseSource) && isGoalSystemContinuation(c.taskContext) {
+		phaseSource = c.taskContext
+	}
+	if goalContinuationPhase(phaseSource) == "plan" && c.usesUncorrelatedStaticCompatibilityModelSurface() {
+		var planned strings.Builder
+		planned.WriteString(goalContinuationPhaseSection(phaseSource))
+		planned.WriteString("你是目标规划器。本轮唯一交付是 goal(action=\"plan\")。不要修改远程文件。\n")
+		return planned.String()
+	}
 	if c.usesUncorrelatedStaticCompatibilityModelSurface() {
-		return buildUncorrelatedRemoteCodingCompatibilityPrompt(c)
+		prompt := buildUncorrelatedRemoteCodingCompatibilityPrompt(c)
+		if section := goalContinuationPhaseSection(phaseSource); section != "" {
+			prompt = section + prompt
+		}
+		return prompt
 	}
 	projectDir, workDir, taskContext := "", "", ""
 	nestDepth := 0
@@ -2294,6 +2325,19 @@ func (c *remoteCodingCallbacks) BuildSystemPrompt(userText string, isFirstTurn b
 				role = c.agent.role
 			}
 		}
+	}
+	phaseSource = userText
+	if c != nil && strings.TrimSpace(c.taskContext) != "" {
+		phaseSource += "\n" + c.taskContext
+	}
+	if goalContinuationPhase(phaseSource) == "plan" {
+		var planned strings.Builder
+		planned.WriteString(goalContinuationPhaseSection(phaseSource))
+		planned.WriteString("你是目标规划器。本轮唯一交付是 goal(action=\"plan\")。不要修改远程文件。\n")
+		if projectDir != "" || workDir != "" {
+			planned.WriteString(fmt.Sprintf("\n## 环境信息\n- 远程项目目录: %s\n- 工作目录: %s\n", projectDir, workDir))
+		}
+		return planned.String()
 	}
 	var prompt string
 	inspectionRole := nestDepth > 0 && (role == codingRoleExplorer || role == codingRoleReviewer)
@@ -2352,6 +2396,9 @@ func (c *remoteCodingCallbacks) BuildSystemPrompt(userText string, isFirstTurn b
 	if c != nil && !c.remoteQualityGateEnabled() {
 		prompt = relaxCodingPromptForDisabledQualityGate(prompt)
 	}
+	if section := goalContinuationPhaseSection(phaseSource); section != "" {
+		prompt = section + prompt
+	}
 	return prompt
 }
 
@@ -2398,11 +2445,21 @@ This request is running on the temporary uncorrelated Coding compatibility surfa
 - Gather remote repository evidence with read-only definitions that are present (for example ssh_read_file, ssh_list_dir, ssh_check_task, code_navigation, and approved knowledge/research lookups).
 - If the project has .codegraph/, use code_navigation for structure, symbols, and call edges. A text search that already returned lines is evidence; use those lines and do not repeat that search.
 - Do not claim that a remote file was changed, a remote command was run, a child was delegated, or structured localization was submitted: those operations are not available on this request surface.
-- For an implementation or operational request, inspect the code, explain the temporary safe-mode blocker, and produce a concrete next-step plan for a correlation-bound execution workflow. Do not repeatedly try unavailable operations.
 `)
+	if c != nil && (isGoalSystemContinuation(c.task) || isGoalSystemContinuation(c.taskContext)) {
+		b.WriteString("- This turn reports the host goal. Call the goal action named above. Do not replace that call with a written plan.\n")
+	} else {
+		b.WriteString("- For an implementation or operational request, inspect the code, explain the temporary safe-mode blocker, and produce a concrete next-step plan for a correlation-bound execution workflow. Do not repeatedly try unavailable operations.\n")
+	}
 	if includeTodo {
-		b.WriteString(`- todo_write is the only mutable control-plane operation. Use it only when it is listed, and preserve its expected_revision and expected_version values exactly; a stale result means re-read the current state rather than retrying the old payload.
+		if c != nil && (isGoalSystemContinuation(c.task) || isGoalSystemContinuation(c.taskContext)) {
+			b.WriteString(`- goal updates the host goal for this session and does not write the remote workspace. After the current step, call goal(action="step"); if this read-only surface cannot finish the step, call goal(action="step", status="failed") or goal(action="fail").
+- todo_write, when listed, is only the checklist. Preserve its expected_revision and expected_version values exactly; a stale result means re-read the current state rather than retrying the old payload.
 `)
+		} else {
+			b.WriteString(`- todo_write is the only mutable control-plane operation. Use it only when it is listed, and preserve its expected_revision and expected_version values exactly; a stale result means re-read the current state rather than retrying the old payload.
+`)
+		}
 	}
 	if strings.TrimSpace(projectDir) != "" || strings.TrimSpace(workDir) != "" {
 		b.WriteString(fmt.Sprintf("\n## Environment\n- Remote project directory: %s\n- Working directory: %s\n", projectDir, workDir))
@@ -2465,6 +2522,10 @@ func (c *remoteCodingCallbacks) BuildTools(userText string) []map[string]interfa
 	}
 	if c != nil && c.agent != nil && c.agent.generalKB != nil {
 		tools = append(tools, knowledgeSearchToolDef(), knowledgeImageSearchToolDef())
+	}
+	if goalContinuationPhase(c.task) == "plan" || goalContinuationPhase(c.taskContext) == "plan" {
+		filtered := filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostRemote, filterGoalPlanPhaseTools(tools))
+		return cloneCodingSubAgentToolDefinitions(c.appendExposedGoalTool(filtered))
 	}
 	if c.agent != nil && c.agent.readOnlyInquiry {
 		filtered := filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostRemote, filterRemoteCodingInquiryTools(tools))

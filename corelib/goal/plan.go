@@ -39,17 +39,35 @@ func (g *Goal) EffectivePhase() Phase {
 	}
 }
 
-// CurrentStep returns the first step that still needs work.
+// CurrentStep returns the first step that still needs work. A progress report
+// keeps that step current, so the next turn does not relabel the leftover
+// work as the following step.
 func (g *Goal) CurrentStep() (Step, bool) {
 	if g == nil {
 		return Step{}, false
 	}
 	for _, step := range g.Steps {
-		if step.Status == "" || step.Status == StepPending {
+		if step.Status == "" || step.Status == StepPending || step.Status == StepProgress {
 			return step, true
 		}
 	}
 	return Step{}, false
+}
+
+// StepReportRefusal rejects a step report that would close or skip a
+// different step than the one this turn is executing.
+func (g *Goal) StepReportRefusal(index int) string {
+	if g == nil {
+		return "当前没有活跃目标。"
+	}
+	current, ok := g.CurrentStep()
+	if !ok {
+		return "没有待执行的步骤。"
+	}
+	if index != current.Index {
+		return fmt.Sprintf("本轮只能提交步骤 %d：%s", current.Index, current.Title)
+	}
+	return ""
 }
 
 // ReadyToComplete reports whether every saved step finished successfully.
@@ -173,6 +191,8 @@ func canonicalStepStatus(raw string) (StepStatus, bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "done", "complete", "completed":
 		return StepDone, true
+	case "progress", "in_progress":
+		return StepProgress, true
 	case "failed", "fail":
 		return StepFailed, true
 	default:

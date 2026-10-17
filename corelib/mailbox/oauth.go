@@ -527,6 +527,26 @@ func OAuthAccessToken(secret string) (string, bool) {
 	return sec.AccessToken, true
 }
 
+// OAuthSecretSuperseded reports that stored is a browser login saved after
+// rejected. Refreshing rejected would revoke stored.
+func OAuthSecretSuperseded(stored, rejected string) bool {
+	if strings.TrimSpace(stored) == "" || stored == rejected {
+		return false
+	}
+	next, okNext := OAuthRefreshToken(stored)
+	prev, okPrev := OAuthRefreshToken(rejected)
+	return okNext && okPrev && next != prev
+}
+
+// OAuthRefreshToken reports the long-lived token inside a browser-login secret.
+func OAuthRefreshToken(secret string) (string, bool) {
+	sec, ok := parseOAuthSecret(secret)
+	if !ok || sec.RefreshToken == "" {
+		return "", false
+	}
+	return sec.RefreshToken, true
+}
+
 var (
 	oauthRefreshMu    sync.Mutex
 	oauthRefreshCache = map[string]string{}
@@ -553,7 +573,7 @@ func MaterializeSecret(ctx context.Context, raw string, now time.Time) (current,
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	blob, err := refreshOAuthSingle(ctx, provider, sec, now)
+	blob, err := refreshOAuthSingle(ctx, provider, sec, now, false)
 	if err != nil {
 		return "", "", err
 	}
@@ -561,6 +581,139 @@ func MaterializeSecret(ctx context.Context, raw string, now time.Time) (current,
 		return blob, "", nil
 	}
 	return blob, blob, nil
+}
+
+// ForceRefreshSecret exchanges the refresh token even when the access token
+// has not reached its local expiry. Call it after the mailbox server rejects
+// the bearer token. It does not reuse a cached access token: that token is
+// the one the server just refused.
+func ForceRefreshSecret(ctx context.Context, raw string, now time.Time) (current, updated string, err error) {
+	sec, ok := parseOAuthSecret(raw)
+	if !ok || sec.RefreshToken == "" {
+		return "", "", classErr("auth", MsgOAuthReauth)
+	}
+	provider, ok := oauthProviderTable[sec.Provider]
+	if !ok {
+		return "", "", classErr("auth", MsgOAuthReauth)
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	blob, err := refreshOAuthSingle(ctx, provider, sec, now, true)
+	if err != nil {
+		return "", "", err
+	}
+	if blob == strings.TrimSpace(raw) {
+		return blob, "", nil
+	}
+	return blob, blob, nil
+}
+
+// MaterializeForAccess refreshes an expired browser login for this access.
+// If that refresh fails and latest is a newer saved login, the newer login is
+// used. Refreshing the secret that just failed would revoke the saved login.
+func MaterializeForAccess(ctx context.Context, secret string, latest func() (string, error), now time.Time) (string, string, error) {
+	current, updated, err := MaterializeSecret(ctx, secret, now)
+	if err == nil || latest == nil {
+		return current, updated, err
+	}
+	stored, lerr := latest()
+	if lerr != nil || !OAuthSecretSuperseded(stored, secret) {
+		return "", "", err
+	}
+	return MaterializeSecret(ctx, stored, now)
+}
+
+// AdoptRejectedOAuth is the secret to dial after the server refused rejected.
+// A newer saved login wins, including one saved while the refresh was in
+// flight and the refresh then failed. Otherwise the refresh token is exchanged
+// once and persist stores the replacement.
+func AdoptRejectedOAuth(ctx context.Context, rejected string, now time.Time, read func(side string) (string, error), persist func(string) error) (string, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if current, ok, err := savedOAuthLogin(ctx, rejected, now, read, persist); ok {
+		return current, err
+	}
+	current, updated, err := ForceRefreshSecret(ctx, rejected, now)
+	if err != nil {
+		if current, ok, serr := savedOAuthLogin(ctx, rejected, now, read, persist); ok {
+			return current, serr
+		}
+		return "", err
+	}
+	current, updated = ClaimOAuthUpdate(ctx, rejected, current, updated, func() (string, error) {
+		return newestOAuthLogin(rejected, read)
+	}, now)
+	persistOAuthUpdate(updated, persist)
+	return current, nil
+}
+
+// ClaimOAuthUpdate keeps a login saved under a different refresh token while
+// this access was refreshing the previous one, when that saved login still
+// works. The rotated secret is returned only when the saved copy is still the
+// one this access started from, or the newer login cannot be used.
+func ClaimOAuthUpdate(ctx context.Context, original, current, updated string, latest func() (string, error), now time.Time) (string, string) {
+	if latest == nil || updated == "" {
+		return current, updated
+	}
+	stored, err := latest()
+	if err != nil || !OAuthSecretSuperseded(stored, original) {
+		return current, updated
+	}
+	next, nextUpdated, nerr := MaterializeSecret(ctx, stored, now)
+	if nerr != nil {
+		return current, updated
+	}
+	return next, nextUpdated
+}
+
+func newestOAuthLogin(rejected string, read func(side string) (string, error)) (string, error) {
+	if read == nil {
+		return "", nil
+	}
+	var first string
+	for _, side := range []string{SideInbound, SideOutbound} {
+		stored, err := read(side)
+		if err != nil || strings.TrimSpace(stored) == "" {
+			continue
+		}
+		if OAuthSecretSuperseded(stored, rejected) {
+			return stored, nil
+		}
+		if first == "" {
+			first = stored
+		}
+	}
+	return first, nil
+}
+
+func savedOAuthLogin(ctx context.Context, rejected string, now time.Time, read func(side string) (string, error), persist func(string) error) (string, bool, error) {
+	if read == nil {
+		return "", false, nil
+	}
+	for _, side := range []string{SideInbound, SideOutbound} {
+		stored, err := read(side)
+		if err != nil || !OAuthSecretSuperseded(stored, rejected) {
+			continue
+		}
+		current, updated, err := MaterializeSecret(ctx, stored, now)
+		if err != nil {
+			return "", true, err
+		}
+		persistOAuthUpdate(updated, persist)
+		return current, true, nil
+	}
+	return "", false, nil
+}
+
+func persistOAuthUpdate(updated string, persist func(string) error) {
+	if updated == "" || persist == nil {
+		return
+	}
+	if err := persist(updated); err != nil {
+		_ = persist(updated)
+	}
 }
 
 type oauthRefreshFlight struct {
@@ -574,9 +727,21 @@ var oauthRefreshFlights = map[string]*oauthRefreshFlight{}
 // refreshOAuthSingle lets one refresh run per refresh token. Other mailboxes
 // keep moving, and a second caller waits for that result instead of rotating
 // the token twice. A cached result is used only while it is still fresh.
-func refreshOAuthSingle(ctx context.Context, provider oauthProvider, sec oauthSecret, now time.Time) (string, error) {
+// bypassCache skips a cached copy of the bearer the server just refused.
+// A cached replacement is kept: exchanging the old refresh token again would
+// revoke it. An exchange already in flight is still shared.
+func refreshOAuthSingle(ctx context.Context, provider oauthProvider, sec oauthSecret, now time.Time, bypassCache bool) (string, error) {
 	oauthRefreshMu.Lock()
-	if blob, ok := freshOAuthRefreshCache(sec.RefreshToken, now); ok {
+	if bypassCache {
+		// A refresh that already replaced this bearer is the token to use.
+		// Deleting it and exchanging the old refresh token again revokes the
+		// replacement, which is how a second access kills a Hotmail login.
+		if blob, ok := freshOAuthRefreshCache(sec.RefreshToken, now); ok && oauthCacheReplaces(blob, sec) {
+			oauthRefreshMu.Unlock()
+			return blob, nil
+		}
+		delete(oauthRefreshCache, sec.RefreshToken)
+	} else if blob, ok := freshOAuthRefreshCache(sec.RefreshToken, now); ok {
 		oauthRefreshMu.Unlock()
 		return blob, nil
 	}
@@ -644,6 +809,11 @@ func finishOAuthRefresh(refreshToken string, flight *oauthRefreshFlight, blob st
 	if err == nil {
 		rememberOAuthRefresh(refreshToken, blob, now)
 	}
+}
+
+func oauthCacheReplaces(blob string, rejected oauthSecret) bool {
+	cached, ok := parseOAuthSecret(blob)
+	return ok && cached.AccessToken != "" && cached.AccessToken != rejected.AccessToken
 }
 
 func freshOAuthRefreshCache(refreshToken string, now time.Time) (string, bool) {

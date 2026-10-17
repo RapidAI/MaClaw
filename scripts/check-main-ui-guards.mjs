@@ -572,7 +572,9 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/settings/ProxySettingsFields.tsx', 120],
   ['guiapp/frontend/src/components/settings/proxySettingsHelpers.ts', 40],
   ['guiapp/frontend/src/components/settings/ProxyScopeSettings.tsx', 100],
-  ['guiapp/frontend/src/components/settings/IMSettingsPanel.tsx', 220],
+  // Refreshed 220 -> 235 (2026-10-16): Slack settings sub-page mounted
+  // (guard counts 226).
+  ['guiapp/frontend/src/components/settings/IMSettingsPanel.tsx', 235],
   ['guiapp/frontend/src/components/settings/IMSubTabs.tsx', 100],
   ['guiapp/frontend/src/components/settings/WeixinSettings.tsx', 180],
   ['guiapp/frontend/src/components/settings/WeixinQRLoginPanel.tsx', 220],
@@ -588,10 +590,10 @@ const extractedFileLineLimits = [
   ['guiapp/frontend/src/components/AboutPanel.tsx', 1000],
   ['guiapp/frontend/src/components/MemoryHealthDialog.tsx', 200],
   ['guiapp/frontend/src/components/SecurityEventsDialog.tsx', 170],
-  // Refreshed 6800 -> ... -> 6920 -> 6950 (2026-10-15): the in-flight
-  // agent-preview focus work keeps growing this file (guard counts 6937);
+  // Refreshed 6800 -> ... -> 6950 -> 6990 (2026-10-17): the in-flight
+  // agent-preview focus work keeps growing this file (guard counts 6975);
   // headroom absorbs it while that work is in progress. Re-tighten once it lands.
-  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 6950],
+  ['guiapp/frontend/src/components/ai/AIAssistantPanel.tsx', 6990],
   ['guiapp/frontend/src/components/ai/useCloudTreeRefresh.ts', 50],
   ['guiapp/frontend/src/components/ai/useCloudWorkspacePreviewEvents.ts', 120],
   ['guiapp/frontend/src/components/ai/assistantInputActionsMenu.ts', 50],
@@ -1172,11 +1174,15 @@ requireIncludes('guiapp/frontend/src/i18n/appTranslations.ts', '"errorLog"', 'ab
 requireIncludes('guiapp/frontend/src/i18n/appTranslations.ts', '"codeRepository"', 'about page code repository translation');
 requireIncludes('guiapp/frontend/src/components/MemoryHealthDialog.tsx', 'GetMemoryHealth', 'memory health backend wiring');
 requireIncludes('guiapp/frontend/src/components/SecurityEventsDialog.tsx', 'QuerySecurityEvents', 'security events backend wiring');
-requireIncludes('guiapp/frontend/src/components/remote/onboardingFlow.ts', "['sso', 'wechat']", 'TigerClaw onboarding stays two steps');
-requireIncludes('guiapp/frontend/src/components/remote/OnboardingWizard.tsx', "isCurrentOnboardingStep(onboardingFlow, step, 'sso')", 'TigerClaw SSO first step uses centralized flow');
+// Refreshed 2026-10-17: TigerClaw first-run now mirrors MaClaw (register ->
+// official service / manual LLM -> WeChat); enterprise SSO stays available
+// later but is no longer the install default, so the old two-step assertion
+// was replaced by the shared-flow one below.
+requireIncludes('guiapp/frontend/src/components/remote/onboardingFlow.ts', 'const isTigerclaw = isTigerClawBrand(brandId);', 'TigerClaw brand still detected in centralized flow');
+requireIncludes('guiapp/frontend/src/components/remote/OnboardingWizard.tsx', "isCurrentOnboardingStep(onboardingFlow, step, 'sso')", 'TigerClaw SSO step still rendered via centralized flow');
 requireIncludes('guiapp/frontend/src/components/remote/onboardingFlow.ts', "['register', 'wechat']", 'free trial skips LLM setup in centralized flow');
 requireIncludes('guiapp/frontend/src/components/remote/__tests__/onboardingFlow.test.ts', 'keeps standard free trial to register plus WeChat', 'free trial onboarding flow regression test');
-requireIncludes('guiapp/frontend/src/components/remote/__tests__/OnboardingWizard.test.tsx', 'keeps TigerClaw onboarding to SSO plus WeChat without LLM setup', 'TigerClaw onboarding regression test');
+requireIncludes('guiapp/frontend/src/components/remote/__tests__/OnboardingWizard.test.tsx', 'uses MaClaw official service for a fresh TigerClaw install', 'TigerClaw onboarding regression test');
 requireIncludes('guiapp/frontend/src/components/SecurityEventsDialog.tsx', "t('securityEventsDeniedSummary')", 'security events summary localization');
 requireIncludes('guiapp/frontend/src/components/SecurityEventsDialog.tsx', "t('securityEventsTime')", 'security events table header localization');
 requireIncludes('guiapp/frontend/src/i18n/appTranslations.ts', '"securityEventsDeniedSummary"', 'security events summary translations');

@@ -962,6 +962,25 @@ func ReadCodexConfigToml() (string, error) {
 	return string(data), nil
 }
 
+// TigerProxyCodexModel returns the model Codex will request while its active
+// provider is tigerproxy. The saved settings alias can differ until Configure
+// Codex rewrites this file.
+func TigerProxyCodexModel() (string, bool) {
+	text, err := ReadCodexConfigToml()
+	if err != nil || strings.TrimSpace(text) == "" {
+		return "", false
+	}
+	model, providerID, _ := parseCodexToml(text)
+	if !strings.EqualFold(strings.TrimSpace(providerID), tigerProxyCodexProviderName) {
+		return "", false
+	}
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "", false
+	}
+	return model, true
+}
+
 // ClearCodexThirdPartySettings removes third-party provider configuration
 // from ~/.codex/auth.json and ~/.codex/config.toml when switching back to
 // the builtin provider. auth.json is removed entirely (it only contains the

@@ -14,7 +14,7 @@
       <div class="chooser-head">
         <div>
           <h1>选择登录方式</h1>
-          <p class="sub">第一次使用请选一种上游。之后可在主界面切换，切换后会自动重启生效。</p>
+          <p class="sub">第一次使用请选一种上游。之后可在主界面切换，已保存的登录立即生效。</p>
         </div>
       </div>
       <div id="authModeGrid" class="method-grid"></div>
@@ -82,7 +82,7 @@
         </div>
         <div class="field-stack">
           <div class="field">
-            <label>登录方式 <span class="label-hint">切换后将自动重启生效</span></label>
+            <label>登录方式 <span class="label-hint">切换后立即生效</span></label>
             <select id="authMode"></select>
           </div>
           <div id="modeFields"></div>
@@ -126,7 +126,11 @@
                 <input id="codexAutoCompactTokenLimit" type="number" min="1" max="2147483647" step="1000" inputmode="numeric" />
               </div>
             </div>
-            <p class="codex-context-settings__hint">未配置时使用程序默认值。压缩启动长度必须小于上下文长度。</p>
+            <div class="field">
+              <label for="modelAlias">模型别名 <span class="label-hint">写入 Codex，默认 auto</span></label>
+              <input id="modelAlias" spellcheck="false" maxlength="128" placeholder="auto" />
+            </div>
+            <p class="codex-context-settings__hint">未配置时使用程序默认值。压缩启动长度必须小于上下文长度。Codex 配置里写的是模型别名，保存新的默认模型后 Codex 仍请求这个别名。修改别名后，再点一次“配置 Codex”才会生效。</p>
           </div>
         </div>
       </section>

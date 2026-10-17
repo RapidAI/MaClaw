@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -27,6 +29,7 @@ func useOAuthProvider(t *testing.T, p oauthProvider) {
 	})
 	oauthRefreshMu.Lock()
 	oauthRefreshCache = map[string]string{}
+	oauthRefreshFlights = map[string]*oauthRefreshFlight{}
 	oauthRefreshMu.Unlock()
 }
 
@@ -448,6 +451,194 @@ func TestSaveOAuthAccountUpdatesSameAddress(t *testing.T) {
 	}
 	if len(other) != 2 || other[1].Name != "Hotmail" || other[1].Outbound.Host != "smtp.office365.com" || other[1].Outbound.Port != 587 {
 		t.Fatalf("hotmail=%+v", other[1])
+	}
+}
+
+func TestForceRefreshSecretIgnoresUnexpiredCache(t *testing.T) {
+	var calls int
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "after-reject",
+			"refresh_token": "rotated",
+			"expires_in":    3600,
+		})
+	}))
+	defer srv.Close()
+	gmail := oauthProviderTable[ProviderGmail]
+	gmail.TokenEndpoint = srv.URL
+	useOAuthProvider(t, gmail)
+	raw, err := encodeOAuthSecret(oauthSecret{
+		Kind: AuthOAuth, Provider: ProviderGmail, AccessToken: "still-local", RefreshToken: "keep",
+		Expiry: time.Now().Add(30 * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	oauthRefreshMu.Lock()
+	oauthRefreshCache["keep"] = raw
+	oauthRefreshMu.Unlock()
+	current, updated, err := ForceRefreshSecret(context.Background(), raw, now)
+	if err != nil || updated == "" || calls != 1 {
+		t.Fatalf("current=%s updated=%s calls=%d err=%v", current, updated, calls, err)
+	}
+	token, ok := OAuthAccessToken(current)
+	if !ok || token != "after-reject" {
+		t.Fatalf("token=%q", token)
+	}
+	again, againUpdated, err := MaterializeSecret(context.Background(), current, now)
+	if err != nil || again != current || againUpdated != "" || calls != 1 {
+		t.Fatalf("fresh token refreshed again: again=%s calls=%d err=%v", again, calls, err)
+	}
+}
+
+func TestForceRefreshSecretRotatesOnceWhenTwoCallsOverlap(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		time.Sleep(40 * time.Millisecond)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "shared",
+			"refresh_token": "rotated-once",
+			"expires_in":    3600,
+		})
+	}))
+	defer srv.Close()
+	gmail := oauthProviderTable[ProviderGmail]
+	gmail.TokenEndpoint = srv.URL
+	useOAuthProvider(t, gmail)
+	raw, err := encodeOAuthSecret(oauthSecret{
+		Kind: AuthOAuth, Provider: ProviderGmail, AccessToken: "rejected", RefreshToken: "keep",
+		Expiry: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	var wg sync.WaitGroup
+	wg.Add(2)
+	var first, second string
+	var err1, err2 error
+	go func() {
+		defer wg.Done()
+		first, _, err1 = ForceRefreshSecret(context.Background(), raw, now)
+	}()
+	go func() {
+		defer wg.Done()
+		second, _, err2 = ForceRefreshSecret(context.Background(), raw, now)
+	}()
+	wg.Wait()
+	if err1 != nil || err2 != nil || first == "" || first != second || calls.Load() != 1 {
+		t.Fatalf("first=%s second=%s calls=%d err1=%v err2=%v", first, second, calls.Load(), err1, err2)
+	}
+}
+
+func TestForceRefreshSecondRefusalReusesTheRotation(t *testing.T) {
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"access_token":  "after-reject",
+			"refresh_token": "rotated",
+			"expires_in":    3600,
+		})
+	}))
+	defer srv.Close()
+	gmail := oauthProviderTable[ProviderGmail]
+	gmail.TokenEndpoint = srv.URL
+	useOAuthProvider(t, gmail)
+	raw, err := encodeOAuthSecret(oauthSecret{
+		Kind: AuthOAuth, Provider: ProviderGmail, AccessToken: "still-local", RefreshToken: "keep",
+		Expiry: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	first, _, err := ForceRefreshSecret(context.Background(), raw, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, _, err := ForceRefreshSecret(context.Background(), raw, now)
+	if err != nil || second != first || calls.Load() != 1 {
+		t.Fatalf("second=%s calls=%d err=%v", second, calls.Load(), err)
+	}
+}
+
+func TestMaterializeForAccessKeepsANewerLogin(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": "invalid_grant"})
+	}))
+	defer srv.Close()
+	gmail := oauthProviderTable[ProviderGmail]
+	gmail.TokenEndpoint = srv.URL
+	useOAuthProvider(t, gmail)
+	rejected, err := encodeOAuthSecret(oauthSecret{
+		Kind: AuthOAuth, Provider: ProviderGmail, AccessToken: "ya29.old", RefreshToken: "refresh-old",
+		Expiry: time.Now().Add(-time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	saved := `{"kind":"oauth","provider":"gmail","access_token":"ya29.new","refresh_token":"refresh-new","expiry":"2099-01-01T00:00:00Z"}`
+	got, updated, err := MaterializeForAccess(context.Background(), rejected, func() (string, error) {
+		return saved, nil
+	}, time.Now())
+	if err != nil || updated != "" || !strings.Contains(got, "ya29.new") {
+		t.Fatalf("got=%s updated=%s err=%v", got, updated, err)
+	}
+	var writes int
+	adopted, err := AdoptRejectedOAuth(context.Background(), rejected, time.Now(),
+		func(side string) (string, error) {
+			if side == SideInbound {
+				return saved, nil
+			}
+			return "", nil
+		},
+		func(string) error { writes++; return nil },
+	)
+	if err != nil || writes != 0 || !strings.Contains(adopted, "ya29.new") {
+		t.Fatalf("adopted=%s writes=%d err=%v", adopted, writes, err)
+	}
+}
+
+func TestClaimOAuthUpdateKeepsANewerLogin(t *testing.T) {
+	original := `{"kind":"oauth","provider":"gmail","access_token":"ya29.old","refresh_token":"refresh-old","expiry":"2099-01-01T00:00:00Z"}`
+	rotated := `{"kind":"oauth","provider":"gmail","access_token":"ya29.rotated","refresh_token":"refresh-rotated","expiry":"2099-01-01T00:00:00Z"}`
+	saved := `{"kind":"oauth","provider":"gmail","access_token":"ya29.new","refresh_token":"refresh-new","expiry":"2099-01-01T00:00:00Z"}`
+	got, updated := ClaimOAuthUpdate(context.Background(), original, rotated, rotated, func() (string, error) {
+		return saved, nil
+	}, time.Now())
+	if updated != "" || !strings.Contains(got, "ya29.new") || strings.Contains(got, "refresh-rotated") {
+		t.Fatalf("got=%s updated=%s", got, updated)
+	}
+	got, updated = ClaimOAuthUpdate(context.Background(), original, rotated, rotated, func() (string, error) {
+		return original, nil
+	}, time.Now())
+	if got != rotated || updated != rotated {
+		t.Fatalf("unchanged store got=%s updated=%s", got, updated)
+	}
+}
+
+func TestOAuthRejectionIsNotAPasswordError(t *testing.T) {
+	secret, err := encodeOAuthSecret(oauthSecret{
+		Kind: AuthOAuth, Provider: ProviderGmail, AccessToken: "ya29.old", RefreshToken: "r",
+		Expiry: time.Now().Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := oauthLoginFailure(secret, ErrAuth); got == nil || got.Error() != MsgOAuthReauth {
+		t.Fatalf("oauth auth = %v", got)
+	}
+	if got := oauthLoginFailure("app-password", ErrAuth); !errors.Is(got, ErrAuth) {
+		t.Fatalf("password auth = %v", got)
+	}
+	next, err := (&NetDialer{}).refreshRejected(context.Background(), Account{}, secret)
+	if err == nil || err.Error() != MsgOAuthReauth || next != "" {
+		t.Fatalf("next=%q err=%v", next, err)
 	}
 }
 

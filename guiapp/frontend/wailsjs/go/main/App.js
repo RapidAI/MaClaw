@@ -859,6 +859,22 @@ export function MailboxAccountsList() {
   return window['go']['main']['App']['MailboxAccountsList']();
 }
 
+export function MailboxBrowseFolders(arg1) {
+  return window['go']['main']['App']['MailboxBrowseFolders'](arg1);
+}
+
+export function MailboxBrowseStart(arg1) {
+  return window['go']['main']['App']['MailboxBrowseStart'](arg1);
+}
+
+export function MailboxBrowseMessages(arg1, arg2, arg3) {
+  return window['go']['main']['App']['MailboxBrowseMessages'](arg1, arg2, arg3);
+}
+
+export function MailboxBrowseRead(arg1, arg2, arg3) {
+  return window['go']['main']['App']['MailboxBrowseRead'](arg1, arg2, arg3);
+}
+
 export function MailboxOAuthLogin(arg1, arg2) {
   return window['go']['main']['App']['MailboxOAuthLogin'](arg1, arg2);
 }
@@ -1237,6 +1253,14 @@ export function FileCompanionUIReady() {
 
 export function FileCompanionOpen(arg1) {
   return window['go']['main']['App']['FileCompanionOpen'](arg1);
+}
+
+export function FileCompanionResumePaths() {
+  return window['go']['main']['App']['FileCompanionResumePaths']();
+}
+
+export function SetFileCompanionOpenSet(arg1) {
+  return window['go']['main']['App']['SetFileCompanionOpenSet'](arg1);
 }
 
 export function FileCompanionOpenArxiv(arg1) {
@@ -2065,6 +2089,18 @@ export function GetTabWorkingDir(arg1) {
 
 export function GetTelegramLocalMode() {
   return window['go']['main']['App']['GetTelegramLocalMode']();
+}
+
+export function GetSlackLoginHint() {
+  return window['go']['main']['App']['GetSlackLoginHint']();
+}
+
+export function GetSlackStatus() {
+  return window['go']['main']['App']['GetSlackStatus']();
+}
+
+export function GetSlackConnectionError() {
+  return window['go']['main']['App']['GetSlackConnectionError']();
 }
 
 export function GetTelegramStatus() {
@@ -4220,6 +4256,14 @@ export function RestartQQBot() {
 
 export function RestartTelegram() {
   return window['go']['main']['App']['RestartTelegram']();
+}
+
+export function StartSlackLogin() {
+  return window['go']['main']['App']['StartSlackLogin']();
+}
+
+export function DisconnectSlack() {
+  return window['go']['main']['App']['DisconnectSlack']();
 }
 
 export function RestartThirdPartyGateway() {

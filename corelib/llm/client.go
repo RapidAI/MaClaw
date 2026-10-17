@@ -213,6 +213,7 @@ func buildOpenAIChatRequestBody(
 		}
 	}
 	sanitizeOpenAIChatRequestBodyForSDKCompatibility(reqBody)
+	applyOpenCodeZenFreeChat(cfg, reqBody)
 	// Explicit user choices are translated to the selected provider's native
 	// request shape. Auto keeps the historic DeepSeek V4 default below.
 	corelib.ApplyReasoningControls(cfg, reqBody, corelib.ReasoningAPIChat)
@@ -263,10 +264,269 @@ func buildOpenAIChatRequestBody(
 		ensureDeepSeekFlashJSONResponseInstruction(reqBody)
 	}
 	corelib.FinishOpenAIChatReasoningControls(cfg, reqBody)
+	// Zen accepts the two free models only in the agent body that was verified
+	// live. thinking, reasoning_effort, and Anthropic budget_tokens are not
+	// part of that body and are removed before temperature is considered.
+	omitOpenCodeZenAgentReasoning(cfg, reqBody)
 	// Temperature is applied after AMD rewrite. A leftover thinking object
 	// used to suppress it, and that object is then removed for this host.
 	applyConfigTemperature(reqBody, cfg)
 	return reqBody
+}
+
+func omitOpenCodeZenAgentReasoning(cfg corelib.MaclawLLMConfig, body map[string]interface{}) {
+	if body == nil || !corelib.IsOpenCodeURL(cfg.URL) {
+		return
+	}
+	model, _ := body["model"].(string)
+	if !corelib.OpenCodeZenAgentModel(model) {
+		return
+	}
+	delete(body, "thinking")
+	delete(body, "reasoning")
+	delete(body, "reasoning_effort")
+	delete(body, "enable_thinking")
+}
+
+// PrepareOpenCodeZenAgentTools returns the tool list the OpenCode Zen free
+// models require. The agent loop freezes this projection into the tool-surface
+// receipt, and the chat body builder applies the same function, so the signed
+// manifest and the outbound payload stay identical.
+func PrepareOpenCodeZenAgentTools(cfg corelib.MaclawLLMConfig, tools []map[string]interface{}) []map[string]interface{} {
+	if !corelib.IsOpenCodeURL(cfg.URL) || !corelib.OpenCodeZenAgentModel(openCodeWireModel(cfg.UpstreamModel())) {
+		return tools
+	}
+	return ensureOpenCodeZenFreeTools(tools)
+}
+
+func applyOpenCodeZenFreeChat(cfg corelib.MaclawLLMConfig, body map[string]interface{}) {
+	if body == nil || !corelib.IsOpenCodeURL(cfg.URL) {
+		return
+	}
+	model, _ := body["model"].(string)
+	model = openCodeWireModel(model)
+	if strings.TrimSpace(model) != "" {
+		body["model"] = model
+	}
+	if !corelib.OpenCodeZenAgentModel(model) {
+		return
+	}
+	callerTools := openAIChatTools(body["tools"])
+	body["stream"] = true
+	body["tools"] = PrepareOpenCodeZenAgentTools(cfg, callerTools)
+	// A tool-less caller, such as a classifier, has no executor for the gate
+	// tools. Keep them in the body and tell the model not to call any tool.
+	if len(callerTools) == 0 {
+		if _, exists := body["tool_choice"]; !exists {
+			body["tool_choice"] = "none"
+		}
+	}
+	// The verified Zen body has no output cap. The shared default is only an
+	// injected ceiling; a caller-supplied cap is left in place.
+	if cfg.MaxOutputTokens <= 0 {
+		if n, ok := openAIChatInt(body["max_tokens"]); ok && n == cfg.EffectiveMaxOutputTokens() {
+			delete(body, "max_tokens")
+		}
+	}
+}
+
+// applyOpenCodeZenFreeResponses is the Responses API counterpart of
+// applyOpenCodeZenFreeChat. The tools are already flattened into the body.
+func applyOpenCodeZenFreeResponses(cfg corelib.MaclawLLMConfig, body map[string]interface{}) {
+	if body == nil || !corelib.IsOpenCodeURL(cfg.URL) {
+		return
+	}
+	model, _ := body["model"].(string)
+	model = openCodeWireModel(model)
+	if strings.TrimSpace(model) != "" {
+		body["model"] = model
+	}
+	if !corelib.OpenCodeZenAgentModel(model) {
+		return
+	}
+	body["stream"] = true
+	// Leave tool_choice alone. Zen Responses rejects "none" and named choices,
+	// and the tool-surface receipt must see the choice the loop published.
+	omitOpenCodeZenAgentReasoning(cfg, body)
+	if cfg.MaxOutputTokens <= 0 {
+		if n, ok := openAIChatInt(body["max_output_tokens"]); ok && n == cfg.EffectiveMaxOutputTokens() {
+			delete(body, "max_output_tokens")
+		}
+	}
+}
+
+// openCodeWireModel drops the opencode/ prefix and replaces the retired
+// big-pickle id with the Zen model that answers on this key.
+func openCodeWireModel(model string) string {
+	model = strings.TrimSpace(model)
+	const prefix = "opencode/"
+	if len(model) > len(prefix) && strings.EqualFold(model[:len(prefix)], prefix) {
+		model = strings.TrimSpace(model[len(prefix):])
+	}
+	if strings.EqualFold(model, "big-pickle") {
+		return "glm-5.3-flash-free"
+	}
+	return model
+}
+
+func openAIChatTools(value interface{}) []map[string]interface{} {
+	switch tools := value.(type) {
+	case []map[string]interface{}:
+		return tools
+	case []interface{}:
+		out := make([]map[string]interface{}, 0, len(tools))
+		for _, tool := range tools {
+			item, ok := tool.(map[string]interface{})
+			if ok {
+				out = append(out, item)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func ensureOpenCodeZenFreeTools(tools []map[string]interface{}) []map[string]interface{} {
+	bashParams := map[string]interface{}{
+		"command":     map[string]interface{}{"type": "string", "description": "The command to execute"},
+		"description": map[string]interface{}{"type": "string", "description": "Clear, concise description of what this command does"},
+	}
+	readParams := map[string]interface{}{
+		"filePath": map[string]interface{}{"type": "string", "description": "The path of the file to read"},
+	}
+	hasBash, hasRead := false, false
+	out := make([]map[string]interface{}, 0, len(tools)+2)
+	for _, tool := range tools {
+		switch strings.ToLower(openAIChatFunctionName(tool)) {
+		case "bash":
+			hasBash = true
+			tool = openCodeZenToolWithParams(tool, bashParams, []string{"command", "description"})
+		case "read":
+			hasRead = true
+			tool = openCodeZenToolWithParams(tool, readParams, []string{"filePath"})
+		}
+		out = append(out, tool)
+	}
+	if !hasBash {
+		out = append(out, openCodeZenFreeFunctionTool("bash", "Executes a bash command in a persistent shell session.", bashParams, []string{"command", "description"}))
+	}
+	if !hasRead {
+		out = append(out, openCodeZenFreeFunctionTool("read", "Reads a file from the local filesystem.", readParams, []string{"filePath"}))
+	}
+	return out
+}
+
+// openCodeZenToolWithParams copies tool and adds any gate parameters the
+// caller's schema does not already declare. The caller's map is left alone.
+func openCodeZenToolWithParams(tool map[string]interface{}, properties map[string]interface{}, required []string) map[string]interface{} {
+	cloned := cloneOpenAIChatMap(tool)
+	fn, _ := cloned["function"].(map[string]interface{})
+	if fn == nil {
+		return cloned
+	}
+	params, _ := fn["parameters"].(map[string]interface{})
+	if params == nil {
+		params = map[string]interface{}{"type": "object"}
+		fn["parameters"] = params
+	}
+	props, _ := params["properties"].(map[string]interface{})
+	if props == nil {
+		props = map[string]interface{}{}
+		params["properties"] = props
+	}
+	for name, schema := range properties {
+		if _, ok := props[name]; !ok {
+			props[name] = schema
+		}
+	}
+	have := map[string]bool{}
+	req := openAIChatStringList(params["required"])
+	for _, name := range req {
+		have[name] = true
+	}
+	for _, name := range required {
+		if !have[name] {
+			req = append(req, name)
+			have[name] = true
+		}
+	}
+	params["required"] = req
+	return cloned
+}
+
+func cloneOpenAIChatMap(tool map[string]interface{}) map[string]interface{} {
+	raw, err := json.Marshal(tool)
+	if err != nil {
+		return tool
+	}
+	var cloned map[string]interface{}
+	if json.Unmarshal(raw, &cloned) != nil || cloned == nil {
+		return tool
+	}
+	return cloned
+}
+
+func openAIChatStringList(value interface{}) []string {
+	switch list := value.(type) {
+	case []string:
+		return append([]string(nil), list...)
+	case []interface{}:
+		out := make([]string, 0, len(list))
+		for _, item := range list {
+			text, _ := item.(string)
+			if text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
+func openAIChatInt(value interface{}) (int, bool) {
+	switch n := value.(type) {
+	case int:
+		return n, true
+	case int64:
+		return int(n), true
+	case float64:
+		if n == float64(int(n)) {
+			return int(n), true
+		}
+	}
+	return 0, false
+}
+
+func openCodeZenFreeFunctionTool(name, description string, properties map[string]interface{}, required []string) map[string]interface{} {
+	return map[string]interface{}{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name":        name,
+			"description": description,
+			"parameters": map[string]interface{}{
+				"type":       "object",
+				"properties": properties,
+				"required":   required,
+			},
+		},
+	}
+}
+
+func openAIChatFunctionName(tool map[string]interface{}) string {
+	if tool == nil {
+		return ""
+	}
+	if fn, ok := tool["function"].(map[string]interface{}); ok {
+		if name, _ := fn["name"].(string); strings.TrimSpace(name) != "" {
+			kind, _ := tool["type"].(string)
+			if strings.EqualFold(strings.TrimSpace(kind), "function") {
+				return strings.TrimSpace(name)
+			}
+		}
+	}
+	return ""
 }
 
 func openAIChatBodyHasReasoningControl(body map[string]interface{}) bool {
@@ -367,8 +627,11 @@ func BuildOpenAIChatRequestData(
 	messages []interface{},
 	opts OpenAIChatRequestOptions,
 ) (endpoint string, body []byte, err error) {
+	bodyMap := buildOpenAIChatRequestBody(cfg, messages, opts)
+	model, _ := bodyMap["model"].(string)
 	endpoint = BuildOpenAIChatCompletionsEndpoint(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(cfg.URL, cfg.UserAgent()))
-	body, err = json.Marshal(buildOpenAIChatRequestBody(cfg, messages, opts))
+	endpoint = corelib.OpenCodeChatEndpoint(endpoint, model)
+	body, err = json.Marshal(bodyMap)
 	return endpoint, body, err
 }
 
@@ -2804,7 +3067,7 @@ func ParseSSEToResponse(body []byte) (*Response, error) {
 	msg := Message{
 		Role:             "assistant",
 		Content:          StripAllExtra(visibleContent),
-		ReasoningContent: mergeOpenAIReasoningText(reasoningBuf.String(), taggedReasoning),
+		ReasoningContent: StripLeakedReasoningProtocol(mergeOpenAIReasoningText(reasoningBuf.String(), taggedReasoning)),
 	}
 
 	// Assemble tool calls in index order

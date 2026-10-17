@@ -5,6 +5,7 @@ import {
     getComposeActionIcon,
     getComposeActionLabel,
     getComposeActionPlaceholder,
+    goalCreateCommand,
     isBtwCommandText,
     isHistoryResetCommandText,
     LOOP_COMMAND_TEMPLATE,
@@ -83,6 +84,18 @@ describe("isBtwCommandText / btwQueryFromText", () => {
     it("does not double-prefix when prefix casing differs", () => {
         expect(applyComposeActionToText("/BTW already", "btw")).toBe("/BTW already");
         expect(applyComposeActionToText("/Goal already", "goal")).toBe("/Goal already");
+    });
+});
+
+describe("goalCreateCommand", () => {
+    it("treats an objective as a new task and leaves session verbs alone", () => {
+        expect(goalCreateCommand("/goal 整理周报")).toEqual({ command: "/goal 整理周报", objective: "整理周报" });
+        expect(goalCreateCommand("／goal 做一个游戏")).toEqual({ command: "/goal 做一个游戏", objective: "做一个游戏" });
+        expect(goalCreateCommand("/goal\u3000整理周报")).toEqual({ command: "/goal 整理周报", objective: "整理周报" });
+        expect(goalCreateCommand("/goal")).toBeNull();
+        expect(goalCreateCommand("/goal status")).toBeNull();
+        expect(goalCreateCommand("/goal 继续")).toBeNull();
+        expect(goalCreateCommand("/clear")).toBeNull();
     });
 });
 

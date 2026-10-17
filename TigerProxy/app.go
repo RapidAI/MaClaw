@@ -20,6 +20,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/RapidAI/CodeClaw/corelib/codegenproxy"
 	"github.com/RapidAI/CodeClaw/corelib/configfile"
@@ -74,23 +75,22 @@ type App struct {
 	promptCache     *llmpool.Cache
 	usageStore      *UsageStore
 
-	anthropicOAuth    *oauth.AnthropicOAuthParams
-	xaiSession        *oauth.XAIAuthSession
-	xaiCtx            context.Context
-	xaiCancel         context.CancelFunc
-	xaiDone           bool
-	openaiServer      *oauth.CallbackServer
-	openaiParams      *oauth.HeadlessOAuthParams
-	openaiCfg         oauth.Config
-	openaiCtx         context.Context
-	openaiCancel      context.CancelFunc
-	openaiDone        bool
-	kimiLogin         *kimiDeviceLogin
-	devinLogin        *devinLoginFlow
-	devinSaveMu       sync.Mutex
-	qoderLogin        *qoderLoginFlow
-	workbuddyLogin    *workbuddyLoginFlow
-	relaunchAfterAuth bool
+	anthropicOAuth *oauth.AnthropicOAuthParams
+	xaiSession     *oauth.XAIAuthSession
+	xaiCtx         context.Context
+	xaiCancel      context.CancelFunc
+	xaiDone        bool
+	openaiServer   *oauth.CallbackServer
+	openaiParams   *oauth.HeadlessOAuthParams
+	openaiCfg      oauth.Config
+	openaiCtx      context.Context
+	openaiCancel   context.CancelFunc
+	openaiDone     bool
+	kimiLogin      *kimiDeviceLogin
+	devinLogin     *devinLoginFlow
+	devinSaveMu    sync.Mutex
+	qoderLogin     *qoderLoginFlow
+	workbuddyLogin *workbuddyLoginFlow
 
 	// Cumulative token counters (atomic, updated via usage callback).
 	totalPromptTokens     int64
@@ -108,6 +108,10 @@ type Settings struct {
 	AccessToken   string `json:"access_token,omitempty"`
 	BaseURL       string `json:"base_url"`
 	ModelID       string `json:"model_id,omitempty"`
+	// ModelAlias is the model name written into Codex config. Codex keeps
+	// requesting this name; the proxy replaces it with ModelID upstream.
+	// Empty means auto.
+	ModelAlias string `json:"model_alias,omitempty"`
 	// AgentType is the User-Agent sent upstream. Empty keeps the QAgent default.
 	// A value that is not one of the built-in tool names is sent as typed.
 	AgentType                  string                 `json:"agent_type,omitempty"`
@@ -174,7 +178,6 @@ type Status struct {
 	AuthModeLabel       string                     `json:"auth_mode_label,omitempty"`
 	UpstreamKeySet      bool                       `json:"upstream_key_set"`
 	ReadyModes          []string                   `json:"ready_modes,omitempty"`
-	RelaunchScheduled   bool                       `json:"relaunch_scheduled,omitempty"`
 }
 
 // CodexCredentialSyncStatus reports the best-effort synchronization performed
@@ -301,6 +304,9 @@ func (a *App) SaveSettings(s Settings) (Status, error) {
 	if strings.TrimSpace(s.ModelID) == "" {
 		s.ModelID = cur.ModelID
 	}
+	if strings.TrimSpace(s.ModelAlias) == "" {
+		s.ModelAlias = cur.ModelAlias
+	}
 	if s.CodexContextWindow <= 0 {
 		s.CodexContextWindow = cur.CodexContextWindow
 	}
@@ -327,6 +333,9 @@ func (a *App) SaveSettings(s Settings) (Status, error) {
 	s = normalizeSettings(s)
 	if !printableAgentType(s.AgentType) {
 		return Status{}, fmt.Errorf("User-Agent 只能包含英文、数字和常见符号")
+	}
+	if !printableAgentType(s.ModelAlias) || utf8.RuneCountInString(s.ModelAlias) > maxAgentTypeRunes {
+		return Status{}, fmt.Errorf("模型别名只能包含英文、数字和常见符号")
 	}
 	if s.CodexAutoCompactTokenLimit >= s.CodexContextWindow {
 		return Status{}, fmt.Errorf("Codex 压缩启动长度必须小于上下文长度")
@@ -366,17 +375,22 @@ func (a *App) SaveSettings(s Settings) (Status, error) {
 	if !needsRestart && proxyClientName(s) != proxyClientName(cur) {
 		a.applyUpstreamClientName(s)
 	}
+	// The selected model is hot-updated onto the alias Codex already requests.
+	// A new alias stays on disk until ConfigureCodex rewrites Codex config.
+	if !needsRestart && s.ModelID != cur.ModelID {
+		a.applyLocalModelTarget(s)
+	}
 
 	if s.APIKey != cur.APIKey {
 		syncStatus := a.syncConfiguredCodexAPIKey(s.APIKey)
-		status, err := a.statusMaybeRelaunch()
+		status, err := a.Status()
 		if err != nil {
 			return Status{}, err
 		}
 		status.CodexCredentialSync = &syncStatus
 		return status, nil
 	}
-	return a.statusMaybeRelaunch()
+	return a.Status()
 }
 
 // applySettingsWithRestart persists settings after the new listener has bound.
@@ -449,7 +463,7 @@ func (a *App) LoginSSO() (Status, error) {
 	if err := a.applySettingsWithRestart(s); err != nil {
 		return Status{}, err
 	}
-	return a.statusMaybeRelaunch()
+	return a.Status()
 }
 
 func (a *App) StartSSOLogin() (LoginStartResult, error) {
@@ -503,7 +517,7 @@ func (a *App) CompleteSSOLogin() (Status, error) {
 	if err := a.applySettingsWithRestart(s); err != nil {
 		return Status{}, err
 	}
-	return a.statusMaybeRelaunch()
+	return a.Status()
 }
 
 func (a *App) cancelSSOLogin() {
@@ -723,22 +737,22 @@ func (a *App) ConfigureCodex() (string, error) {
 	if strings.TrimSpace(s.APIKey) == "" {
 		return "", fmt.Errorf("API Key 未配置，请先设置 API Key")
 	}
-	modelID := s.ModelID
-	if modelID == "" {
-		modelID = "gpt-5.4"
-	}
+	// Codex stores the alias, not the selected upstream model. Later model
+	// changes stay inside the proxy and Codex keeps requesting the alias.
+	alias := codexModelAlias(s)
 
 	// Use the local OpenAI-compatible endpoint as base URL for Codex
 	baseURL := publicBaseURL(s.ListenAddress, "127.0.0.1") + "/v1"
 	apiKey := s.APIKey
-	if err := configfile.WriteTigerProxyCodexConfigWithContext(apiKey, baseURL, modelID, s.CodexContextWindow, s.CodexAutoCompactTokenLimit); err != nil {
+	if err := configfile.WriteTigerProxyCodexConfigWithContext(apiKey, baseURL, alias, s.CodexContextWindow, s.CodexAutoCompactTokenLimit); err != nil {
 		return "", err
 	}
+	a.applyLocalModelAlias(s)
 
 	if !a.IsCodexInstalled() {
-		return "配置已写入，但未检测到 Codex Desktop，请先安装。", nil
+		return "配置已写入（模型别名 " + alias + "），但未检测到 Codex Desktop，请先安装。", nil
 	}
-	return "Codex 配置已写入 ~/.codex/", nil
+	return "Codex 配置已写入 ~/.codex/，模型别名为 " + alias + "。之后切换默认模型不用再改 Codex。", nil
 }
 
 // RestoreCodex removes TigerProxy or other third-party provider settings and
@@ -1187,6 +1201,13 @@ func (a *App) restartProxy(s Settings) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	server := codegenproxy.NewServer(s.ListenAddress)
 	server.SetClientAPIKey(s.APIKey)
+	// Codex keeps requesting the model written in config.toml. A newer alias
+	// saved in CodexProxy stays pending until Configure Codex updates that file.
+	alias := codexModelAlias(s)
+	if configured, ok := configfile.TigerProxyCodexModel(); ok {
+		alias = configured
+	}
+	server.SetLocalModelAlias(alias, s.ModelID)
 	server.SetPromptCache(a.promptCache)
 	server.SetCacheHitCallback(func(hit bool) {
 		if a.ctx == nil {
@@ -1510,6 +1531,7 @@ func normalizeSettings(s Settings) Settings {
 	s.AccessToken = strings.TrimSpace(s.AccessToken)
 	s.BaseURL = strings.TrimRight(strings.TrimSpace(s.BaseURL), "/")
 	s.ModelID = strings.TrimSpace(s.ModelID)
+	s.ModelAlias = codexModelAlias(s)
 	defaultContextWindow, defaultAutoCompactTokenLimit := configfile.TigerProxyCodexContextDefaults()
 	if s.CodexContextWindow <= 0 {
 		s.CodexContextWindow = defaultContextWindow
@@ -1553,12 +1575,47 @@ func normalizeSettings(s Settings) Settings {
 		}
 		if s.ActiveAuthMode == AuthModeOpenCode {
 			s.BaseURL = openCodeBaseURL()
+			if next, changed := openCodeGoModelID(s.ModelID); changed {
+				if strings.TrimSpace(s.ModelID) != "" {
+					s.Models = nil
+				}
+				s.ModelID = next
+			}
 		}
 		snapshotActiveProfile(&s)
 	} else if strings.TrimSpace(s.BaseURL) == "" {
 		s.BaseURL = oauth.CodeGenBaseURL
 	}
 	return s
+}
+
+// applyLocalModelAlias points the running proxy at the saved alias and the
+// selected upstream model without rebinding the listener.
+func (a *App) applyLocalModelAlias(s Settings) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	server := a.server
+	a.mu.Unlock()
+	if server == nil {
+		return
+	}
+	server.SetLocalModelAlias(codexModelAlias(s), s.ModelID)
+}
+
+// applyLocalModelTarget keeps the live alias and points it at the selected model.
+func (a *App) applyLocalModelTarget(s Settings) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	server := a.server
+	a.mu.Unlock()
+	if server == nil {
+		return
+	}
+	server.SetLocalModelTarget(s.ModelID)
 }
 
 // applyUpstreamClientName points the running proxy at the saved User-Agent

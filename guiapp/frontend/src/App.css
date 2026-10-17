@@ -3227,6 +3227,230 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     }
     .assistant-reasoning-live-dot { animation: none; }
 }
+
+/* Live tool strip under the thinking panel. A new call falls like a station split-flap. */
+.assistant-tool-flip {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 30px;
+    width: max-content;
+    max-width: 100%;
+    min-width: 0;
+    margin: 0 0 8px;
+    padding: 0 10px 0 9px;
+    box-sizing: border-box;
+    border: 1px solid;
+    border-radius: 8px;
+    isolation: isolate;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42), 0 1px 1px rgba(15, 23, 42, 0.05);
+}
+.assistant-tool-flip-window {
+    position: relative;
+    flex: 0 1 auto;
+    min-width: 0;
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
+}
+.assistant-tool-flip[data-dark="true"] {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 1px 2px rgba(0, 0, 0, 0.28);
+}
+.assistant-tool-flip.is-flipping {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72), 0 8px 14px rgba(15, 23, 42, 0.16);
+}
+.assistant-tool-flip[data-dark="true"].is-flipping {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 8px 16px rgba(0, 0, 0, 0.45);
+}
+.assistant-tool-flip-dot {
+    width: 6px;
+    height: 6px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--assistant-tool-flip-accent, currentColor);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--assistant-tool-flip-accent, currentColor) 18%, transparent);
+    animation: assistant-reasoning-dot-pulse 1.4s ease-in-out infinite;
+    z-index: 2;
+}
+.assistant-tool-flip-face {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 100%;
+    min-width: 0;
+}
+.assistant-tool-flip-face--sizer {
+    visibility: hidden;
+    flex-direction: column;
+    align-items: flex-start;
+    width: max-content;
+    height: 100%;
+    overflow: hidden;
+    pointer-events: none;
+}
+.assistant-tool-flip-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    min-width: 0;
+}
+.assistant-tool-flip-face--sizer .assistant-tool-flip-line {
+    max-width: none;
+}
+.assistant-tool-flip-name,
+.assistant-tool-flip-arg {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.35;
+}
+.assistant-tool-flip-name {
+    position: relative;
+    flex: 0 1 auto;
+    min-width: 0;
+    font-weight: 650;
+}
+.assistant-tool-flip-name::after {
+    /* A light band crosses the tool name. The argument is a sibling and stays still. */
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 42%;
+    pointer-events: none;
+    background: linear-gradient(100deg, transparent 0%, rgba(255, 255, 255, 0.08) 28%, rgba(255, 255, 255, 0.55) 50%, transparent 72%);
+    animation: assistant-tool-flip-sheen 1.6s linear infinite;
+}
+.assistant-tool-flip[data-dark="true"] .assistant-tool-flip-name::after {
+    background: linear-gradient(100deg, transparent 0%, rgba(255, 255, 255, 0.05) 28%, rgba(255, 255, 255, 0.28) 50%, transparent 72%);
+}
+.assistant-tool-flip.is-flipping .assistant-tool-flip-name::after,
+.assistant-tool-flip-face--sizer .assistant-tool-flip-name::after {
+    content: none;
+    animation: none;
+}
+.assistant-tool-flip-arg {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 36ch;
+    color: var(--assistant-tool-flip-muted, currentColor);
+    font-weight: 500;
+}
+.assistant-tool-flip-stage {
+    position: absolute;
+    inset: 0;
+}
+.assistant-tool-flip.is-flipping .assistant-tool-flip-window::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(50% - 0.5px);
+    height: 1px;
+    background: rgba(15, 23, 42, 0.4);
+    z-index: 1;
+    pointer-events: none;
+}
+.assistant-tool-flip[data-dark="true"] .assistant-tool-flip-window::before {
+    background: rgba(0, 0, 0, 0.72);
+}
+.assistant-tool-flap-leaf {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 50%;
+}
+.assistant-tool-flap-clip {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+}
+.assistant-tool-flap-leaf--top {
+    top: 0;
+    transform-origin: center bottom;
+    background: #f8fafc;
+    box-shadow: inset 0 -1px 0 rgba(15, 23, 42, 0.14);
+}
+.assistant-tool-flap-leaf--bottom {
+    bottom: 0;
+    transform-origin: center top;
+    background: #eef2f6;
+}
+.assistant-tool-flip[data-dark="true"] .assistant-tool-flap-leaf--top { background: #3c4458; }
+.assistant-tool-flip[data-dark="true"] .assistant-tool-flap-leaf--bottom { background: #2a3142; }
+.assistant-tool-flap-leaf-inner {
+    position: absolute;
+    left: 0;
+    width: 100%;
+    height: 200%;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.assistant-tool-flap-leaf--top .assistant-tool-flap-leaf-inner { top: 0; }
+.assistant-tool-flap-leaf--bottom .assistant-tool-flap-leaf-inner { bottom: 0; }
+.assistant-tool-flip-face--enter {
+    animation: assistant-tool-flap-enter 280ms ease both;
+}
+.assistant-tool-flip-face--out {
+    z-index: 3;
+    animation: assistant-tool-flip-out 1200ms linear both;
+}
+.assistant-tool-flip-face--out::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to bottom, rgba(255, 255, 255, 0.08), rgba(15, 23, 42, 0.28));
+    animation: assistant-tool-flap-shade 1200ms linear both;
+    pointer-events: none;
+}
+.assistant-tool-flip-face--in {
+    z-index: 3;
+    animation: assistant-tool-flip-in 1200ms linear both;
+}
+@keyframes assistant-tool-flap-enter {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+@keyframes assistant-tool-flap-shade {
+    0%, 18% { opacity: 0; }
+    100% { opacity: 1; }
+}
+@keyframes assistant-tool-flip-in {
+    0%, 22% { transform: perspective(340px) rotateX(90deg); }
+    86% { transform: perspective(340px) rotateX(-7deg); }
+    100% { transform: perspective(340px) rotateX(0deg); }
+}
+@keyframes assistant-tool-flip-out {
+    0% { transform: perspective(340px) rotateX(0deg); }
+    18% { transform: perspective(340px) rotateX(-3deg); }
+    100% { transform: perspective(340px) rotateX(-90deg); }
+}
+@keyframes assistant-tool-flip-sheen {
+    /* Travel is a percentage of the band. 42% width needs this span to clear the name. */
+    from { transform: translateX(-140%); }
+    to { transform: translateX(280%); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .assistant-tool-flip-face--enter,
+    .assistant-tool-flip-face--in,
+    .assistant-tool-flip-face--out,
+    .assistant-tool-flip-face--out::after,
+    .assistant-tool-flip-dot,
+    .assistant-tool-flip-name::after {
+        animation: none;
+    }
+    .assistant-tool-flip-name::after { opacity: 0; }
+    .assistant-tool-flip-face--out { display: none; }
+    .assistant-tool-flip.is-flipping { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42); }
+}
 .ai-chat-scrollbar {
     scrollbar-width: auto;
     scrollbar-color: var(--theme-primary-soft) rgba(128, 128, 128, 0.08);
@@ -20099,6 +20323,290 @@ button.tbk-pill {
     border-color: transparent;
     background: var(--theme-primary-strong);
     color: var(--theme-on-primary, #ffffff);
+}
+
+.mailbox-manage-overlay {
+    position: fixed;
+    inset: 0;
+    /* The settings page is scaled and clipped. This dialog is portalled to
+       document.body, so it has to sit above that shell and refuse window drags. */
+    z-index: 20000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 24px;
+    background: color-mix(in srgb, var(--theme-text-primary) 28%, transparent);
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
+}
+
+.mailbox-manage {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    box-sizing: border-box;
+    width: min(920px, 100%);
+    height: min(640px, 100%);
+    min-height: 0;
+    padding: 16px;
+    border: 1px solid var(--theme-border);
+    border-radius: 14px;
+    background: var(--theme-surface);
+    color: var(--theme-text-primary);
+    box-shadow: 0 18px 50px color-mix(in srgb, var(--theme-text-primary) 18%, transparent);
+    -webkit-app-region: no-drag;
+    --wails-draggable: no-drag;
+}
+
+.mailbox-manage *,
+.mailbox-manage *::before,
+.mailbox-manage *::after {
+    box-sizing: border-box;
+}
+
+.mailbox-manage__header {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: 12px;
+}
+
+.mailbox-manage__header h3 {
+    margin: 0;
+    color: var(--theme-text-primary);
+    font-size: 1rem;
+}
+
+.mailbox-manage__account {
+    margin: 4px 0 0;
+    color: var(--theme-text-muted);
+    font-size: 0.78rem;
+}
+
+.mailbox-manage__body {
+    display: grid;
+    grid-template-columns: 168px minmax(200px, 0.9fr) minmax(0, 1.15fr);
+    grid-template-rows: minmax(0, 1fr);
+    gap: 12px;
+    flex: 1 1 auto;
+    min-height: 0;
+}
+
+.mailbox-manage__folders,
+.mailbox-manage__messages,
+.mailbox-manage__pane {
+    min-width: 0;
+    min-height: 0;
+}
+
+.mailbox-manage__folders,
+.mailbox-manage__messages {
+    display: grid;
+    align-content: start;
+    gap: 4px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    overflow: auto;
+}
+
+.mailbox-manage__folders > li,
+.mailbox-manage__messages > li {
+    min-width: 0;
+}
+
+.mailbox-manage__pane {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.mailbox-manage__folder,
+.mailbox-manage__message {
+    display: grid;
+    width: 100%;
+    min-width: 0;
+    padding: 8px 10px;
+    border: 1px solid transparent;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--theme-text-primary);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+    overflow-wrap: anywhere;
+}
+
+.mailbox-manage__message {
+    position: relative;
+    gap: 2px;
+    padding-left: 22px;
+}
+
+.mailbox-manage__folder:hover,
+.mailbox-manage__message:hover {
+    background: var(--theme-surface-muted);
+}
+
+.mailbox-manage__message--unread::before {
+    content: '';
+    position: absolute;
+    top: 50%;
+    left: 7px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--theme-primary-strong);
+    transform: translateY(-50%);
+}
+
+.mailbox-manage__close {
+    padding: 0 4px;
+    border: 0;
+    background: transparent;
+    color: var(--theme-text-muted);
+    font: inherit;
+    font-size: 1.35rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.mailbox-manage__close:hover {
+    background: var(--theme-surface-muted);
+}
+
+.mailbox-manage__row-top {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    min-width: 0;
+}
+
+.mailbox-manage__from {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    color: var(--theme-text-primary);
+    font-weight: 650;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mailbox-manage__subject {
+    min-width: 0;
+    overflow: hidden;
+    color: var(--theme-text-primary);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.mailbox-manage__when,
+.mailbox-manage__attach {
+    flex: 0 0 auto;
+    color: var(--theme-text-muted);
+    font-size: 0.75rem;
+}
+
+.mailbox-manage__message--unread .mailbox-manage__from,
+.mailbox-manage__message--unread .mailbox-manage__subject {
+    font-weight: 750;
+}
+
+.mailbox-manage__folder--current,
+.mailbox-manage__message--current,
+.mailbox-manage__folder--current:hover,
+.mailbox-manage__message--current:hover {
+    border-color: color-mix(in srgb, var(--theme-primary) 45%, var(--theme-border));
+    background: var(--theme-primary-soft);
+}
+
+.mailbox-manage__folder:focus-visible,
+.mailbox-manage__message:focus-visible,
+.mailbox-manage__close:focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 2px var(--theme-primary-soft);
+}
+
+.mailbox-manage__view,
+.mailbox-manage__placeholder {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding: 10px 12px;
+    border: 1px solid var(--theme-border-subtle);
+    border-radius: 10px;
+    background: var(--theme-surface-muted);
+}
+
+.mailbox-manage__view {
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    padding: 0;
+}
+
+.mailbox-manage__view__head {
+    flex: 0 0 auto;
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+.mailbox-manage__view__head > :last-child {
+    margin-bottom: 0;
+}
+
+.mailbox-manage__view__body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+    padding: 10px 12px 12px;
+}
+
+.mailbox-manage__view__body > :first-child {
+    margin-top: 0;
+}
+
+.mailbox-manage__placeholder {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    color: var(--theme-text-muted);
+    text-align: center;
+}
+
+.mailbox-manage__placeholder p {
+    margin: 0;
+}
+
+@media (max-width: 860px) {
+    .mailbox-manage__body {
+        grid-template-columns: minmax(0, 1fr);
+        grid-template-rows: auto minmax(0, 1fr) minmax(140px, 0.8fr);
+    }
+
+    .mailbox-manage__folders {
+        max-height: 7.5rem;
+    }
+}
+
+.mailbox-manage__view h4,
+.mailbox-manage__view p {
+    margin: 0 0 6px;
+    overflow-wrap: anywhere;
+}
+
+.mailbox-manage__view pre {
+    margin: 8px 0 0;
+    white-space: pre-wrap;
+    font-family: inherit;
+    font-size: 0.84rem;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+}
+
+.mailbox-manage__empty {
+    color: var(--theme-text-muted);
+    font-size: 0.78rem;
 }
 
 @container email-settings (max-width: 920px) {

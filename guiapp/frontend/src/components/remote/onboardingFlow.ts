@@ -65,10 +65,11 @@ export const getOnboardingFlow = ({
     offlineMode?: boolean;
 }): OnboardingFlow => {
     const isTigerclaw = isTigerClawBrand(brandId);
-    const steps: readonly OnboardingStepId[] = isTigerclaw
-        ? ['sso', 'wechat']
-        : offlineMode
-            ? ['mode', 'llm']
+    // TigerClaw uses the same first-run path as MaClaw: register, then the
+    // official service (free trial) or a manual LLM. Enterprise SSO stays
+    // available later; it is not the install default.
+    const steps: readonly OnboardingStepId[] = offlineMode
+        ? ['mode', 'llm']
         : freeTrial
             ? ['register', 'wechat']
             : ['register', 'llm', 'wechat'];

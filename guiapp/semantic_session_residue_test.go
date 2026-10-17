@@ -558,10 +558,10 @@ func TestContinueNamedLookupKeepsOpenDeliverable(t *testing.T) {
 	if !ok || rewritten.Primary != intent.LabelLiveData || !rewritten.HasLabel(intent.LabelDocumentGenerate) {
 		t.Fatalf("rewritten=%#v ok=%v", rewritten, ok)
 	}
-	if semanticReuseStoredLookupFacts("继续完成 兰州天气", current) {
+	if semanticReuseStoredLookupFacts(current) {
 		t.Fatal("the open deliverable reused the previous city's facts")
 	}
-	if semanticReuseStoredLookupFacts("继续完成 兰州天气", rewritten) {
+	if semanticReuseStoredLookupFacts(rewritten) {
 		t.Fatal("the continued lookup reused facts after the residue rewrite")
 	}
 	residue.Needs = append(residue.Needs, tool.CapabilityNeed{
@@ -857,36 +857,229 @@ func TestSemanticSessionResidueErrorDoesNotReplaceOpenTask(t *testing.T) {
 
 func TestStoredLookupFactsServeGenerateButNotNewLookup(t *testing.T) {
 	generate := intent.ClassificationResult{Primary: intent.LabelDocumentGenerate, Confidence: 0.92}
-	if !semanticReuseStoredLookupFacts("生成pdf报告", generate) {
+	if !semanticReuseStoredLookupFacts(generate) {
 		t.Fatal("a later generate should reuse the stored lookup")
 	}
-	if !semanticReuseStoredLookupFacts("再出一版", intent.ClassificationResult{Primary: intent.LabelContinuation, Confidence: 0.9}) {
+	if !semanticReuseStoredLookupFacts(intent.ClassificationResult{Primary: intent.LabelContinuation, Confidence: 0.9}) {
 		t.Fatal("short follow-up should reuse the stored lookup")
 	}
 	fresh := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.93}
-	if semanticReuseStoredLookupFacts("上海天气", fresh) {
+	if semanticReuseStoredLookupFacts(fresh) {
 		t.Fatal("a new high-confidence lookup must search again")
-	}
-	if semanticReuseStoredLookupFacts("继续完成 兰州天气", fresh) {
-		t.Fatal("a follow-up lookup reused the previous subject's facts")
 	}
 	chongqing := intent.ClassificationResult{
 		Primary:    intent.LabelLiveData,
 		Secondary:  []intent.IntentLabel{intent.LabelDocumentGenerate},
 		Confidence: 0.839,
 	}
-	if semanticReuseStoredLookupFacts("重庆天气，生成格式化pdf", chongqing) {
+	if semanticReuseStoredLookupFacts(chongqing) {
 		t.Fatal("a new city PDF reused the previous city's lookup facts")
 	}
-	if semanticReuseStoredLookupFacts("再查一下最新天气", generate) {
-		t.Fatal("refresh wording must not reuse stored lookup facts")
-	}
-	if semanticReuseStoredLookupFacts("latest weather", fresh) {
-		t.Fatal("a lookup label reused stored facts")
-	}
 	deck := intent.ClassificationResult{Primary: intent.LabelOffice, Confidence: 0.90}
-	if semanticReuseStoredLookupFacts("生成纪念小布生日PPT，网上搜索一张布偶照片", deck) {
+	if semanticReuseStoredLookupFacts(deck) {
 		t.Fatal("a new deck must not reuse another topic's lookup facts")
+	}
+}
+
+// storedLookupConfirmationBare is the classifier output for the short
+// confirmation that followed a weather PDF (2026-10-17, text_len=2). The
+// tree verdict was contradicted by a local continuation leader, so the
+// result is unknown, degraded, and the leader is preserved as RunnerUp.
+func storedLookupConfirmationBare() intent.ClassificationResult {
+	return intent.ClassificationResult{
+		Primary:       intent.LabelUnknown,
+		Confidence:    0.30,
+		Layer:         2,
+		Degraded:      true,
+		Reason:        "tree verdict ambiguous(0.550) contradicted by local leader continuation(0.820); keeping L2 hint",
+		RunnerUp:      intent.LabelContinuation,
+		RunnerUpScore: 0.82,
+	}
+}
+
+func weatherPDFResidueNeeds() []tool.CapabilityNeed {
+	return []tool.CapabilityNeed{
+		{ID: "need:search", Capability: "information.search.web", Required: true},
+		{ID: "need:gen", Capability: "document.generate.file", Required: true},
+		{ID: "need:deliver", Capability: "artifact.deliver.current_channel", Required: true, Qualifiers: map[string]string{"format": "file"}},
+	}
+}
+
+// A confirmation inherits the open weather+PDF task, whose classification still
+// names the original search. That label is the task shape. The sentence did not
+// ask for new evidence, so generate_pdf must not wait on another web_search.
+func TestConfirmationConsumesInheritedLookupFacts(t *testing.T) {
+	needs := weatherPDFResidueNeeds()
+	bare := storedLookupConfirmationBare()
+	relation := decideSemanticResidueRelation(bare, "需要", semanticSessionResidue{Status: semanticResidueOpen, Needs: needs})
+	if relation != semanticResidueContinue && relation != semanticResidueUnclear {
+		t.Fatalf("需要 relation=%q", relation)
+	}
+	rewritten, ok := semanticClassificationWithOpenResidue(bare, needs, relation)
+	if !ok || !semanticResultHasLookupLabel(rewritten) {
+		t.Fatalf("inherited task must still name the lookup: %#v ok=%v", rewritten, ok)
+	}
+	if semanticReuseStoredLookupFacts(rewritten) {
+		t.Fatal("the raw inherited classification is what used to force another search")
+	}
+	// Wording is not the signal. Any non-lookup verdict may render from the
+	// facts this task already recorded, however the user phrased it.
+	for _, text := range []string{"需要", "行", "就这样", "可以了，出一份", "好的。", "不需要", "兰州", "不用再查了", "别刷新，用刚才的", "不是最新的也行", "再查一下"} {
+		if !semanticStoredLookupFactsApply(text, rewritten, &bare) {
+			t.Fatalf("%q must consume the lookup this task already recorded", text)
+		}
+	}
+	named := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.90}
+	for _, text := range []string{"继续完成 兰州天气", "上海天气吧", "行", "再查一下", "重新查彭州天气，生成pdf报告"} {
+		if semanticStoredLookupFactsApply(text, rewritten, &named) {
+			t.Fatalf("a lookup verdict reused stored facts for %q", text)
+		}
+	}
+	collapsed := intent.ClassificationResult{
+		Primary: intent.LabelUnknown, Confidence: 0.30, Layer: 2, Degraded: true,
+		RunnerUp: intent.LabelLiveData, RunnerUpScore: 0.90,
+	}
+	if semanticStoredLookupFactsApply("上海天气", rewritten, &collapsed) {
+		t.Fatal("a collapsed lookup reused stored facts")
+	}
+	collapsedMerged := intent.ClassificationResult{
+		Primary:    intent.LabelLiveData,
+		Secondary:  []intent.IntentLabel{intent.LabelDocumentGenerate},
+		Confidence: 0.90,
+		Reason:     "task-context merge",
+	}
+	if got := decideSemanticResidueRelationWithBare(collapsedMerged, &collapsed, "上海天气", semanticSessionResidue{Status: semanticResidueOpen, Needs: needs, LookupFacts: true}); got == semanticResidueContinue || got == semanticResidueUnclear {
+		t.Fatalf("collapsed lookup stayed on the open PDF: %s", got)
+	}
+	hint := intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.74, Layer: 2, Degraded: true}
+	if semanticStoredLookupFactsApply("上海天气", rewritten, &hint) {
+		t.Fatal("a degraded lookup hint reused stored facts")
+	}
+	outage := storedLookupConfirmationBare()
+	outage.ControlPlaneFailure = true
+	if semanticStoredLookupFactsApply("需要", rewritten, &outage) {
+		t.Fatal("a control-plane failure reused stored facts")
+	}
+	render := intent.ClassificationResult{Primary: intent.LabelDocumentGenerate, Confidence: 0.92, RunnerUp: intent.LabelLiveData, RunnerUpScore: 0.4}
+	if !semanticStoredLookupFactsApply("按刚才的内容出pdf", rewritten, &render) {
+		t.Fatal("a render sentence must consume stored lookup facts")
+	}
+	again := intent.ClassificationResult{Primary: intent.LabelContinuation, Confidence: 0.9}
+	if !semanticStoredLookupFactsApply("再出一版", rewritten, &again) {
+		t.Fatal("an explicit continuation must consume stored lookup facts")
+	}
+	// The sentence itself is a new lookup, and the inherited plan no longer
+	// names a search. Reuse must still refuse.
+	generateOnly := intent.ClassificationResult{Primary: intent.LabelDocumentGenerate, Confidence: 0.92}
+	if semanticStoredLookupFactsApply("上海天气", generateOnly, &named) {
+		t.Fatal("a new lookup reused facts from a generate-only plan")
+	}
+}
+
+func TestMergedConfirmationDropsInheritedSearch(t *testing.T) {
+	needs := weatherPDFResidueNeeds()
+	bare := storedLookupConfirmationBare()
+	merged := intent.ClassificationResult{
+		Primary:    intent.LabelLiveData,
+		Secondary:  []intent.IntentLabel{intent.LabelDocumentGenerate},
+		Confidence: 0.90,
+		Reason:     "task-context merge",
+	}
+	residue := semanticSessionResidue{Status: semanticResidueOpen, Needs: needs, LookupFacts: true}
+	if got := decideSemanticResidueRelationWithBare(merged, &bare, "需要", residue); got != semanticResidueUnclear {
+		t.Fatalf("merged confirmation relation=%q", got)
+	}
+	rewritten, ok := semanticClassificationWithOpenResidue(merged, needs, semanticResidueUnclear)
+	if !ok || !semanticResultHasLookupLabel(rewritten) {
+		t.Fatalf("inherited classification=%#v ok=%v", rewritten, ok)
+	}
+	if semanticReuseStoredLookupFacts(rewritten) {
+		t.Fatal("inherited lookup label still counts as new evidence")
+	}
+	if !semanticStoredLookupFactsApply("需要", rewritten, &bare) {
+		t.Fatal("merged confirmation must consume the lookup this task already recorded")
+	}
+}
+
+// The logged confirmation inherited document_generate as primary, with the
+// lookup still on the classification, after the previous wave had already
+// spent every count. Search-first fixtures miss both of those.
+func TestSpentGenerateFirstConfirmationOmitsSearch(t *testing.T) {
+	h := registerDocumentGenerateAndSearch(t)
+	needs := []tool.CapabilityNeed{
+		{ID: "need:gen", Capability: "document.generate.file", Required: true},
+		{ID: "need:search", Capability: "information.search.web", Required: true, Qualifiers: map[string]string{"freshness": "current"}},
+		{ID: "need:deliver", Capability: "artifact.deliver.current_channel", Required: true, Qualifiers: map[string]string{"format": "file"}},
+	}
+	bare := storedLookupConfirmationBare()
+	residue := semanticSessionResidue{
+		Status:      semanticResidueOpen,
+		Needs:       needs,
+		LookupFacts: true,
+		Remaining: map[string]int{
+			"information.search.web":           0,
+			"document.generate.file":           0,
+			"artifact.deliver.current_channel": 0,
+		},
+	}
+	relation := decideSemanticResidueRelation(bare, "需要", residue)
+	rewritten, ok := semanticClassificationWithOpenResidue(bare, needs, relation)
+	if !ok || rewritten.Primary != intent.LabelDocumentGenerate || !semanticResultHasLookupLabel(rewritten) {
+		t.Fatalf("inherited=%#v ok=%v relation=%s", rewritten, ok, relation)
+	}
+	if !semanticStoredLookupFactsApply("需要", rewritten, &bare) {
+		t.Fatal("spent confirmation did not keep the recorded lookup")
+	}
+	renewed := semanticResidueRemainingForOpenTurn(residue, rewritten)
+	if left, clamped := renewed["document.generate.file"]; clamped && left <= 0 {
+		t.Fatalf("spent generate ceiling stayed closed: %v", renewed)
+	}
+	ctx := withSemanticResidueRemaining(withSemanticReusableLookupFacts(context.Background()), renewed)
+	prepared, handled, err := h.semanticPlanForTurnWithContextAndClassificationAndAttachments(
+		ctx, "user", "需要", "desktop", "root-spent", "turn-spent", &rewritten, nil,
+	)
+	if err != nil || !handled || prepared == nil {
+		t.Fatalf("spent confirmation must plan generate, handled=%v err=%v", handled, err)
+	}
+	if planHasCapabilities(prepared.plan, "information.search.web") {
+		t.Fatalf("spent confirmation searched again: %#v", prepared.plan.Selections)
+	}
+	if !planHasCapabilities(prepared.plan, "document.generate.file", "artifact.deliver.current_channel") {
+		t.Fatalf("selections=%#v", prepared.plan.Selections)
+	}
+}
+
+func TestConfirmationPlansGenerateWithoutAnotherSearch(t *testing.T) {
+	h := registerDocumentGenerateAndSearch(t)
+	needs := weatherPDFResidueNeeds()
+	bare := storedLookupConfirmationBare()
+	relation := decideSemanticResidueRelation(bare, "需要", semanticSessionResidue{Status: semanticResidueOpen, Needs: needs})
+	rewritten, ok := semanticClassificationWithOpenResidue(bare, needs, relation)
+	if !ok || !semanticStoredLookupFactsApply("需要", rewritten, &bare) {
+		t.Fatalf("confirmation did not keep stored facts: %#v", rewritten)
+	}
+	ctx := withSemanticReusableLookupFacts(context.Background())
+	prepared, handled, err := h.semanticPlanForTurnWithContextAndClassificationAndAttachments(
+		ctx, "user", "不用再查了，出pdf", "desktop", "root-confirm", "turn-confirm", &rewritten, nil,
+	)
+	if err != nil || !handled || prepared == nil {
+		t.Fatalf("confirmation must plan generate, handled=%v err=%v", handled, err)
+	}
+	if planHasCapabilities(prepared.plan, "information.search.web") {
+		t.Fatalf("confirmation searched again: %#v", prepared.plan.Selections)
+	}
+	if !planHasCapabilities(prepared.plan, "document.generate.file", "artifact.deliver.current_channel") {
+		t.Fatalf("selections=%#v", prepared.plan.Selections)
+	}
+	for _, selection := range prepared.plan.Selections {
+		if selection.FitProof.MatchedCapability != "document.generate.file" {
+			continue
+		}
+		for _, requirement := range selection.Requires {
+			if strings.Contains(requirement, "information.search") {
+				t.Fatalf("generate still depends on lookup: %#v", selection.Requires)
+			}
+		}
 	}
 }
 
@@ -940,8 +1133,8 @@ func TestCompletedLookupFactsFollowWithoutReopeningTools(t *testing.T) {
 	if !refreshFacts || !refresh.LookupFacts {
 		t.Fatal("refresh wording still has the stored fact; the caller must decline to reuse it")
 	}
-	if semanticReuseStoredLookupFacts("再查一下最新天气", intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.93}) {
-		t.Fatal("a lookup label reused stored facts because the wording asked to refresh")
+	if semanticReuseStoredLookupFacts(intent.ClassificationResult{Primary: intent.LabelLiveData, Confidence: 0.93}) {
+		t.Fatal("a lookup label reused stored facts")
 	}
 }
 
@@ -1437,7 +1630,7 @@ func TestSpentOfficeRevisionRenewsInsteadOfClosing(t *testing.T) {
 		t.Fatal("a search label stayed on the spent office document")
 	}
 	rewritten, ok := semanticClassificationWithOpenResidue(current, residue.Needs, semanticResidueUnclear)
-	if !ok || semanticClassificationRequestsLookupEvidence(rewritten) || !semanticReuseStoredLookupFacts("再改一版", rewritten) {
+	if !ok || semanticClassificationRequestsLookupEvidence(rewritten) || !semanticReuseStoredLookupFacts(rewritten) {
 		t.Fatalf("revision rewrite=%#v ok=%v", rewritten, ok)
 	}
 	if renewed := semanticResidueRemainingForOpenTurn(residue, rewritten); len(renewed) != 0 {

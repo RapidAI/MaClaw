@@ -1,6 +1,7 @@
 package guiapp
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -8,8 +9,9 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 )
 
-// toolGoal handles the goal management tool using the handler's lastUserID
-// (set by the agent loop for the active session).
+// toolGoal handles the goal management tool. The shared loop dispatch passes
+// the turn owner from the call context; this entry remains for callers that
+// only have lastUserID.
 // Model-facing actions: create, plan, step, complete, get, fail
 // System-only transitions: pause, resume (also used by /goal slash commands).
 func (h *IMMessageHandler) toolGoal(args map[string]interface{}) string {
@@ -45,6 +47,20 @@ func (h *IMMessageHandler) toolGoalForUser(userID string, args map[string]interf
 	default:
 		return fmt.Sprintf("未知 goal action: %s（模型可用: create/plan/step/complete/fail/get）", action)
 	}
+}
+
+// goalExecutionOwner is the session that owns the goal store row for this
+// tool call. A mailbox owner is the turn that dispatched the call. lastUserID
+// remains the fallback for callers that do not carry a turn context.
+func goalExecutionOwner(ctx context.Context, lastUserID string) string {
+	if ctx != nil {
+		if id, ok := ctx.Value(mailboxOwnerContextKey{}).(string); ok {
+			if id = strings.TrimSpace(id); id != "" {
+				return id
+			}
+		}
+	}
+	return strings.TrimSpace(lastUserID)
 }
 
 func (h *IMMessageHandler) resolveGoalUserID(userID string) string {
@@ -225,6 +241,9 @@ func (h *IMMessageHandler) goalStepForUser(userID string, args map[string]interf
 	if strings.TrimSpace(result) == "" {
 		result, _ = args["reason"].(string)
 	}
+	if refusal := g.StepReportRefusal(index); refusal != "" {
+		return "错误: " + refusal
+	}
 	if err := store.UpdateStep(userID, g.GoalID, index, goal.StepStatus(statusRaw), result); err != nil {
 		return "错误: " + err.Error()
 	}
@@ -233,15 +252,25 @@ func (h *IMMessageHandler) goalStepForUser(userID string, args map[string]interf
 		return "错误: 步骤更新后目标丢失"
 	}
 	for _, step := range updated.Steps {
-		if step.Index != index || step.Status != goal.StepFailed {
+		if step.Index != index {
 			continue
 		}
-		reason := fmt.Sprintf("步骤 %d 失败：%s", index, step.Result)
-		h.goalFailForUser(userID, map[string]interface{}{"reason": reason})
-		return "错误: " + reason
-	}
-	if h.app != nil && h.app.goalContinuation != nil {
-		h.app.goalContinuation.emitGoalStateChanged(userID, updated)
+		if step.Status == goal.StepFailed {
+			reason := fmt.Sprintf("步骤 %d 失败：%s", index, step.Result)
+			h.goalFailForUser(userID, map[string]interface{}{"reason": reason})
+			return "错误: " + reason
+		}
+		if h.app != nil && h.app.goalContinuation != nil {
+			h.app.goalContinuation.emitGoalStateChanged(userID, updated)
+		}
+		if step.Status == goal.StepProgress {
+			return fmt.Sprintf("步骤 %d 仍在进行：%s\n下一轮继续这一步，不要开始下一步。", index, step.Title)
+		}
+		reply := fmt.Sprintf("步骤 %d 已完成: %s", index, result)
+		if next, ok := updated.CurrentStep(); ok {
+			reply += fmt.Sprintf("\n下一步将单独执行步骤 %d：%s。本轮不要开始它。", next.Index, next.Title)
+		}
+		return reply
 	}
 	return fmt.Sprintf("步骤 %d 已完成: %s", index, result)
 }
@@ -357,8 +386,12 @@ func (h *IMMessageHandler) goalPauseForUser(userID string) string {
 		return fmt.Sprintf("目标不在活跃状态（当前: %s），无法暂停。", g.Status)
 	}
 	store.Pause(userID, g.GoalID)
-	// Notify frontend
+	// The queued continuation must stop with the goal. Cancel after the
+	// status flip so a callback that already claimed the timer sees paused
+	// and does not dispatch. CancelPending also refunds an unsent plan
+	// correction and retires the timer generation.
 	if h.app != nil && h.app.goalContinuation != nil {
+		h.app.goalContinuation.CancelPending(userID)
 		updated := store.Get(userID)
 		if updated != nil {
 			h.app.goalContinuation.emitGoalStateChanged(userID, updated)
@@ -398,6 +431,11 @@ func (h *IMMessageHandler) goalClear() string {
 
 func (h *IMMessageHandler) goalClearForUser(userID string) string {
 	userID = h.resolveGoalUserID(userID)
+	// Drop the queued turn before the row disappears. A leftover timer keeps
+	// the run window open and can still claim a generation after clear.
+	if h.app != nil && h.app.goalContinuation != nil {
+		h.app.goalContinuation.CancelPending(userID)
+	}
 	store := h.getGoalStore()
 	if store.Clear(userID) {
 		return "目标已清除。"

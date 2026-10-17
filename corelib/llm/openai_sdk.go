@@ -44,6 +44,19 @@ func openAISDKChatRaw(ctx context.Context, cfg corelib.MaclawLLMConfig, body []b
 	if !json.Valid(body) {
 		return nil, 0, fmt.Errorf("parse openai request body: invalid JSON")
 	}
+	// Zen free models only answer as an event stream. A non-stream caller
+	// still needs one JSON chat completion, so collect that stream here.
+	if corelib.OpenCodeZenAgentModel(openAIBodyModel(body)) && openAIBodyStream(body) {
+		resp, status, raw, err := openAIHTTPChatStream(ctx, cfg, body, client, nil, nil)
+		if resp == nil {
+			return raw, status, err
+		}
+		encoded, merr := json.Marshal(resp)
+		if merr != nil {
+			return raw, status, merr
+		}
+		return encoded, status, err
+	}
 	var responseBody []byte
 	var response *http.Response
 	// The SDK's raw-body adapter is inside this request owner boundary. Keep the
@@ -52,6 +65,7 @@ func openAISDKChatRaw(ctx context.Context, cfg corelib.MaclawLLMConfig, body []b
 	// exact JSON payload.
 	rawClient := openAISDKClientWithRawBody(client, body, nil)
 	cfg = bindOpenCodeSessionFromJSONBody(ctx, cfg, body)
+	cfg.URL = corelib.OpenCodeUpstreamBase(cfg.URL, openAIBodyModel(body))
 	openaiClient := openai.NewClient(openAISDKOptions(cfg, rawClient)...)
 	var err error
 	_, err = openaiClient.Chat.Completions.New(
@@ -111,6 +125,7 @@ func openAIHTTPChatStream(ctx context.Context, cfg corelib.MaclawLLMConfig, body
 		client = windsurf.WrapClient(client)
 	}
 	cfg = bindOpenCodeSessionFromJSONBody(ctx, cfg, body)
+	cfg.URL = corelib.OpenCodeUpstreamBase(cfg.URL, openAIBodyModel(body))
 	endpoint := BuildOpenAIChatCompletionsEndpoint(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(cfg.URL, cfg.UserAgent()))
 	// The route deadline still bounds time-to-headers. Once an SSE body
 	// starts, it may continue past that deadline. Caller cancellation is
@@ -337,7 +352,7 @@ func openAISDKChatStreamUnused(ctx context.Context, cfg corelib.MaclawLLMConfig,
 	msg := Message{
 		Role:             "assistant",
 		Content:          StripAllExtra(contentBuf.String()),
-		ReasoningContent: reasoningBuf.String(),
+		ReasoningContent: StripLeakedReasoningProtocol(reasoningBuf.String()),
 	}
 	if len(toolCalls) > 0 {
 		maxIdx := 0
@@ -474,6 +489,9 @@ func openAISDKOptions(cfg corelib.MaclawLLMConfig, client *http.Client) []option
 	if name, value, ok := corelib.OpenCodeSessionHeaderForConfig(cfg); ok {
 		opts = append(opts, option.WithHeader(name, value))
 	}
+	if corelib.IsOpenCodeURL(cfg.URL) {
+		opts = append(opts, option.WithHeader("x-opencode-client", "cli"))
+	}
 	if strings.EqualFold(strings.TrimSpace(cfg.ProviderName), "xAI-Grok") &&
 		strings.EqualFold(strings.TrimSpace(cfg.AuthType), "oauth") {
 		opts = append(opts, option.WithHeader("X-XAI-Token-Auth", "xai-grok-cli"))
@@ -497,6 +515,23 @@ func openAISDKOptions(cfg corelib.MaclawLLMConfig, client *http.Client) []option
 	}
 	opts = append(opts, option.WithHeader("Cache-Control", "no-cache"))
 	return opts
+}
+
+func openAIBodyModel(body []byte) string {
+	var payload struct {
+		Model string `json:"model"`
+	}
+	if json.Unmarshal(body, &payload) != nil {
+		return ""
+	}
+	return strings.TrimSpace(payload.Model)
+}
+
+func openAIBodyStream(body []byte) bool {
+	var payload struct {
+		Stream bool `json:"stream"`
+	}
+	return json.Unmarshal(body, &payload) == nil && payload.Stream
 }
 
 func openAISDKBaseURL(cfg corelib.MaclawLLMConfig) string {

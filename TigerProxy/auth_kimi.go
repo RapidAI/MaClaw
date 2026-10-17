@@ -226,12 +226,8 @@ func (a *App) applyKimiToken(token kimicode.Token, baseURL string) (Status, erro
 		RefreshToken:   token.RefreshToken,
 		ExpiresIn:      token.ExpiresIn,
 	}
-	// A Kimi login always replaces the upstream, so it needs a restart to take
-	// effect. relaunchAfterAuth is otherwise only set by SwitchAuthMode, which
-	// would leave this login with a flag left over from the mode selection that
-	// preceded it — and that stale flag can fire the restart at any later
-	// moment, tearing the window down while the UI is still mid-request.
-	a.setRelaunchAfterAuth(true)
+	// applyOAuthResult restarts the in-process proxy with this token. The window
+	// stays open; a process relaunch cannot get past the single-instance lock.
 	status, err := a.applyOAuthResult(AuthModeKimiWeb, kimicode.CanonicalBaseURL(baseURL), result)
 	if err == nil {
 		noteKimiTokenExpiry(token)

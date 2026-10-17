@@ -265,6 +265,15 @@ type AppConfig struct {
 	// push (盯人 / scheduled self). Stored as decimal string for JS-safe JSON.
 	// When set, no prior bot message is required.
 	TelegramBotOwnerChatID DecimalInt64String `json:"telegram_owner_chat_id,omitempty"`
+	// Slack is a desktop IM channel. Login stores the workspace bot token
+	// locally; the model still sends through im_message with channel=slack.
+	SlackEnabled      bool   `json:"slack_enabled,omitempty"`
+	SlackClientID     string `json:"slack_client_id,omitempty"`
+	SlackClientSecret string `json:"slack_client_secret,omitempty"`
+	SlackBotToken     string `json:"slack_bot_token,omitempty"`
+	SlackTeamID       string `json:"slack_team_id,omitempty"`
+	SlackTeamName     string `json:"slack_team_name,omitempty"`
+	SlackBotUserID    string `json:"slack_bot_user_id,omitempty"`
 	// IM 闂?per-user WeChat (client-side gateway via iLink API)
 	WeixinEnabled   bool   `json:"weixin_enabled,omitempty"`
 	WeixinToken     string `json:"weixin_token,omitempty"`

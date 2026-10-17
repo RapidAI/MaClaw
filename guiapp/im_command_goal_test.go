@@ -7,12 +7,32 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 )
 
+func TestHandleGoalCommandAcceptsFullwidthSlash(t *testing.T) {
+	h := &IMMessageHandler{goalStore: goal.NewStore("")}
+	userID := "desktop-user"
+	text := "／goal\u3000做一个游戏"
+	resp, handled := h.handleImmediateIMCommand(
+		IMUserMessage{UserID: userID, Text: text, Lang: "zh-Hans"},
+		text, nil, nil,
+	)
+	if !handled || resp == nil || resp.Error != "" {
+		t.Fatalf("handled=%v resp=%+v", handled, resp)
+	}
+	g := h.getGoalStore().Get(userID)
+	if g == nil || g.Objective != "做一个游戏" || g.Status != goal.StatusActive {
+		t.Fatalf("goal = %+v", g)
+	}
+}
+
 func TestClassifyImmediateIMCommandGoalCaseInsensitive(t *testing.T) {
 	if got := classifyImmediateIMCommand("/Goal implement X"); got != imCommandGoal {
 		t.Fatalf("got %v want imCommandGoal", got)
 	}
 	if got := classifyImmediateIMCommand("/GOAL"); got != imCommandGoal {
 		t.Fatalf("bare /GOAL: got %v", got)
+	}
+	if got := classifyImmediateIMCommand("／goal\u3000做一个游戏"); got != imCommandGoal {
+		t.Fatalf("fullwidth slash: got %v", got)
 	}
 }
 

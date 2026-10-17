@@ -597,7 +597,7 @@ function App() {
     // Solo settings hide the category rail only for the tab that asked: knowledge, IM, or email.
     const [settingsNavSoloTab, setSettingsNavSoloTab] = useState<SoloSettingsTab | ''>('');
     const [memoryTraceFocus, setMemoryTraceFocus] = useState<{ value: string; seq: number }>({ value: "", seq: 0 });
-    const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'weixin' | 'lansenger' | 'thirdparty'>('qq');
+    const [imSubTab, setImSubTab] = useState<'qq' | 'telegram' | 'slack' | 'weixin' | 'lansenger' | 'thirdparty'>('qq');
     const [qqBotStatus, setQQBotStatus] = useState<string>('disconnected');
     const [qqBotLocalMode, setQQBotLocalModeState] = useState<boolean>(true);
     const [telegramStatus, setTelegramStatus] = useState<string>('disconnected');

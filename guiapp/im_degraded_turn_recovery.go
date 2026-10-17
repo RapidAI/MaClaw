@@ -54,6 +54,9 @@ type AIContinuationEvent struct {
 	// (__confirm_execution__ / __cancel_execution__ commands).
 	Confirmation *IMResponseConfirmation `json:"confirmation,omitempty"`
 	Actions      []IMResponseAction      `json:"actions,omitempty"`
+	// AsError marks a host failure notice. The transcript shows it as an
+	// error row, never as a user turn.
+	AsError bool `json:"as_error,omitempty"`
 }
 
 // emitAIContinuationEvent pushes one continuation event to the frontend.

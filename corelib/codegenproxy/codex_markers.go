@@ -1,6 +1,7 @@
 package codegenproxy
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/url"
 	"regexp"
@@ -21,19 +22,32 @@ var codexIdentityReplacements = []struct{ from, to string }{
 	},
 }
 
-var codexGPTIdentitySentence = regexp.MustCompile(`You are Codex, based on GPT-\d+(?:\.\d+)?(?:[-.][A-Za-z0-9.]+)?\. You are running as a coding agent in the Codex CLI on a user's computer\.`)
+var (
+	codexGPTIdentitySentence = regexp.MustCompile(`You are Codex, based on GPT-\d+(?:\.\d+)?(?:[-.][A-Za-z0-9.]+)?\. You are running as a coding agent in the Codex CLI on a user's computer\.`)
+	codexExtraBlankLines     = regexp.MustCompile(`\n{3,}`)
+	codexIdentityNeedles     = [][]byte{
+		[]byte("Codex CLI"),
+		[]byte("You are Codex"),
+		[]byte("open-source agentic coding interface"),
+	}
+)
 
 // StripCodexClientMarkers removes Codex CLI identity sentences from a chat
 // body before it is sent to a third-party host. Official OpenAI and ChatGPT
 // hosts keep the text, because that backend expects the Codex client prompt.
 // Only system and developer text is rewritten. User and tool text is left
 // alone so a project that mentions Codex is not edited.
+//
+// Bodies that do not contain an identity sentence are returned unchanged,
+// including their original bytes.
 func StripCodexClientMarkers(rawURL string, body []byte) []byte {
-	if len(body) == 0 || upstreamKeepsCodexIdentity(rawURL) {
+	if len(body) == 0 || upstreamKeepsCodexIdentity(rawURL) || !bodyHasCodexIdentity(body) {
 		return body
 	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
 	var payload map[string]any
-	if json.Unmarshal(body, &payload) != nil || payload == nil {
+	if dec.Decode(&payload) != nil || payload == nil {
 		return body
 	}
 	changed := false
@@ -43,8 +57,7 @@ func StripCodexClientMarkers(rawURL string, body []byte) []byte {
 			changed = true
 		}
 	}
-	messages, ok := payload["messages"].([]any)
-	if ok {
+	if messages, ok := payload["messages"].([]any); ok {
 		for _, item := range messages {
 			msg, ok := item.(map[string]any)
 			if !ok || !codexIdentityRole(msg["role"]) {
@@ -58,11 +71,30 @@ func StripCodexClientMarkers(rawURL string, body []byte) []byte {
 	if !changed {
 		return body
 	}
-	out, err := json.Marshal(payload)
+	out, err := marshalCodexPayload(payload)
 	if err != nil {
 		return body
 	}
 	return out
+}
+
+func bodyHasCodexIdentity(body []byte) bool {
+	for _, needle := range codexIdentityNeedles {
+		if bytes.Contains(body, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func marshalCodexPayload(payload map[string]any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(payload); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
 func upstreamKeepsCodexIdentity(rawURL string) bool {
@@ -132,8 +164,13 @@ func rewriteCodexIdentityContent(msg map[string]any) bool {
 }
 
 func rewriteCodexIdentityText(s string) string {
+	next := s
 	for _, item := range codexIdentityReplacements {
-		s = strings.ReplaceAll(s, item.from, item.to)
+		next = strings.ReplaceAll(next, item.from, item.to)
 	}
-	return codexGPTIdentitySentence.ReplaceAllString(s, "You are a coding agent running on the user's computer.")
+	next = codexGPTIdentitySentence.ReplaceAllString(next, "You are a coding agent running on the user's computer.")
+	if next == s {
+		return s
+	}
+	return codexExtraBlankLines.ReplaceAllString(next, "\n\n")
 }

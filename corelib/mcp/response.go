@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -89,6 +90,47 @@ func (e *ToolCallError) Error() string {
 		return "unknown tool error"
 	}
 	return e.Message
+}
+
+// JSONRPCProtocolError is a JSON-RPC error object the peer returned. A
+// tools/call that receives one finished: the server rejected the call. A
+// timeout, a closed pipe, or an HTTP failure is a different error and must
+// not use this type. Stdio transports have to keep this object intact;
+// flattening it into an untyped Go error makes the semantic executor record
+// an unobserved transport and hide the server message.
+type JSONRPCProtocolError struct {
+	Code    int    `json:"code"`
+	Message string `json:"message"`
+}
+
+func (e *JSONRPCProtocolError) Error() string {
+	if e == nil {
+		return "JSON-RPC error"
+	}
+	return fmt.Sprintf("JSON-RPC error %d: %s", e.Code, e.Message)
+}
+
+// AsToolCallError projects the protocol error the same way ToolCallContent
+// does for an intact envelope. An empty message becomes "mcp tool call failed".
+func (e *JSONRPCProtocolError) AsToolCallError() *ToolCallError {
+	message := ""
+	if e != nil {
+		message = strings.TrimSpace(e.Message)
+	}
+	if message == "" {
+		message = "mcp tool call failed"
+	}
+	return &ToolCallError{Message: message}
+}
+
+// JSONRPCToolCallError reports a completed tools/call rejection carried by
+// err. Other errors, including a wrapped transport failure, are not one.
+func JSONRPCToolCallError(err error) (*ToolCallError, bool) {
+	var protocol *JSONRPCProtocolError
+	if err == nil || !errors.As(err, &protocol) || protocol == nil {
+		return nil, false
+	}
+	return protocol.AsToolCallError(), true
 }
 
 // ToolCallContent projects a tools/call payload to the tool body. Remote

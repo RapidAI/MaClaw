@@ -11,14 +11,103 @@ import (
 	"github.com/RapidAI/CodeClaw/corelib/goal"
 )
 
+// isGoalSystemContinuation reports a host-owned goal turn. The text is the
+// continuation engine's phase contract (plan, or one execute step), not a
+// user request. Callers must not reclassify it as a fresh intent or as a
+// coding-workbench file plan.
+func isGoalSystemContinuation(text string) bool {
+	return strings.HasPrefix(strings.TrimSpace(text), "[系统续接]")
+}
+
+// goalContinuationPhase is the host phase encoded in the continuation text.
+// "plan" must not edit files. "execute" does one step and then reports it.
+func goalContinuationPhase(text string) string {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "[系统续接]") {
+		return ""
+	}
+	if strings.HasPrefix(trimmed, "[系统续接][plan]") || strings.Contains(trimmed, "本轮只做规划") {
+		return "plan"
+	}
+	return "execute"
+}
+
+// taskIsGoalPlanPhase reports a host planning turn. It does not write the
+// workspace, so coding file audits and the writable-surface gate do not apply.
+func taskIsGoalPlanPhase(task *TaskItem, reqCtx string) bool {
+	return goalContinuationPhase(goalContinuationSource(task, reqCtx)) == "plan"
+}
+
+// goalContinuationTurn is a host phase of an existing goal. Platform is the
+// dispatch channel; the marker is the phase contract inside the text.
+func goalContinuationTurn(text, platform string) bool {
+	return platform == "goal-continuation" || isGoalSystemContinuation(text)
+}
+
+// goalPlanPhaseAllowsTool is the plan-phase tool contract for the shared
+// loop. Execute and ordinary turns are unchanged. goal is not a read tool,
+// but it is the only write the plan turn is allowed to make.
+func goalPlanPhaseAllowsTool(userText, name string) bool {
+	if goalContinuationPhase(userText) != "plan" {
+		return true
+	}
+	name = strings.TrimSpace(name)
+	return name == goalContinuationLifecycleTool || isGoalPlanPhaseTool(name)
+}
+
+// goalContinuationPhaseSection is the assignment that outranks a coding
+// workbench's generic edit-and-verify prompt. Plan and execute name the
+// goal call the host will accept for that phase.
+func goalContinuationPhaseSection(text string) string {
+	switch goalContinuationPhase(text) {
+	case "plan":
+		return `## 宿主目标阶段
+本轮是已有目标的规划，不是改文件任务。用户消息是宿主写的阶段合同。
+只调用 goal(action="plan", understanding, steps, acceptance_criteria)。
+不要修改文件，不要运行实现，不要调用 complete。步骤或验收标准为空时不要调用 plan。
+
+`
+	case "execute":
+		return `## 宿主目标阶段
+本轮只执行用户消息里的当前步骤。不要把下一步的工作写进本轮回复。
+这一步还没做完时调用 goal(action="step", index, status="progress", result)，下一轮仍是这一步。
+交付物完成时调用 status="done"，然后停止。不要把未完成的步骤标成 done。
+步骤都完成时调用 goal(action="complete", summary)；无法收尾时调用 goal(action="fail", reason)。
+
+`
+	default:
+		return ""
+	}
+}
+
+// goalContinuationSource is the host phase text carried by a coding task.
+func goalContinuationSource(task *TaskItem, reqCtx string) string {
+	if task != nil {
+		if isGoalSystemContinuation(task.Description) {
+			return task.Description
+		}
+		if isGoalSystemContinuation(task.Title) {
+			return task.Title
+		}
+	}
+	if isGoalSystemContinuation(reqCtx) {
+		return reqCtx
+	}
+	return ""
+}
+
+// goalContinuationLifecycleTool is the registry tool the phase prompt names.
+// The closed plan must keep it as host policy, not as a retrieval candidate.
+const goalContinuationLifecycleTool = "goal"
+
 func taskCarriesGoalContinuation(task *TaskItem, reqCtx string) bool {
-	if strings.Contains(reqCtx, "[系统续接]") {
+	if isGoalSystemContinuation(reqCtx) {
 		return true
 	}
 	if task == nil {
 		return false
 	}
-	return strings.Contains(task.Title, "[系统续接]") || strings.Contains(task.Description, "[系统续接]")
+	return isGoalSystemContinuation(task.Title) || isGoalSystemContinuation(task.Description)
 }
 
 // GoalContinuationEngine manages the auto-continuation loop for active goals.
@@ -34,7 +123,35 @@ type GoalContinuationEngine struct {
 	store           *goal.Store
 	app             *App
 	scheduledTimers map[string]*time.Timer // userID → pending continuation timer
-	cooldown        time.Duration          // delay between continuations (default 2s)
+	pendingExpect   map[string]goalContinuationExpect
+	// planMiss is set when the one corrective plan turn is scheduled. Dropping
+	// that timer before fire refunds the attempt. Once the correction has
+	// been dispatched, the next empty plan fails the goal.
+	planMiss map[string]goalPlanMiss
+	// planCorrection is the goal whose next fire must ask for the missing plan
+	// instead of repeating the original planning prompt.
+	planCorrection map[string]string
+	// scheduleGen invalidates a timer that was already replaced or cancelled.
+	// time.AfterFunc can still run after Stop, and that callback must not
+	// dispatch or delete the successor entry.
+	scheduleGen map[string]uint64
+	cooldown    time.Duration // delay between continuations (default 2s)
+}
+
+// goalPlanMiss records that this goal already received one plan correction.
+type goalPlanMiss struct {
+	goalID  string
+	retried bool
+}
+
+// goalContinuationExpect is the host phase at the moment a continuation is
+// fired. The turn is finished only when the goal store records that phase.
+type goalContinuationExpect struct {
+	goalID     string
+	phase      goal.Phase
+	stepIndex  int
+	stepStatus goal.StepStatus
+	stepResult string
 }
 
 // NewGoalContinuationEngine creates a continuation engine.
@@ -43,6 +160,10 @@ func NewGoalContinuationEngine(store *goal.Store, app *App) *GoalContinuationEng
 		store:           store,
 		app:             app,
 		scheduledTimers: make(map[string]*time.Timer),
+		pendingExpect:   make(map[string]goalContinuationExpect),
+		planMiss:        make(map[string]goalPlanMiss),
+		planCorrection:  make(map[string]string),
+		scheduleGen:     make(map[string]uint64),
 		cooldown:        2 * time.Second,
 	}
 }
@@ -64,17 +185,43 @@ func (e *GoalContinuationEngine) MaybeScheduleContinuation(userID, goalID string
 	// Account this turn's usage
 	e.store.AccountUsage(userID, goalID, turnTokens, turnSeconds)
 
+	// Re-read after accounting (status may have changed to budget_limited).
+	// An empty plan is its own contract. Counting it as a no-tool turn first
+	// pauses the goal on the second miss and never reaches the failure.
+	g = e.store.Get(userID)
+	expect := e.takeContinuationExpect(userID)
+	if g != nil && g.Status == goal.StatusActive && g.EffectivePhase() == goal.PhasePlan && len(g.Steps) == 0 {
+		// One missed plan used to fail immediately, and the notice was
+		// rendered as the user. Give the model one corrective turn that
+		// can only submit goal(action=plan). A second miss still fails.
+		// Do not arm that turn when this goal can no longer run: fire would
+		// drop it and the active goal would keep an empty plan.
+		if !g.ShouldContinue() {
+			log.Printf("[goal-continuation] empty plan cannot be corrected user=%s goal_id=%s", userID, g.GoalID)
+			e.failGoal(userID, g.GoalID, "未能分解任务", true)
+			return
+		}
+		if e.consumePlanMiss(userID, g.GoalID) {
+			e.failGoal(userID, g.GoalID, "未能分解任务", true)
+			return
+		}
+		log.Printf("[goal-continuation] plan missing; scheduling one corrective turn user=%s goal_id=%s", userID, g.GoalID)
+		e.schedulePlanCorrection(userID, g.GoalID)
+		return
+	}
+
 	// Track tool call presence for no-tool suppression
 	if hadToolCalls {
 		e.store.ResetNoToolCounter(userID, goalID)
 	} else {
 		e.store.RecordNoToolTurn(userID, goalID)
 	}
-
-	// Re-read after accounting (status may have changed to budget_limited)
 	g = e.store.Get(userID)
-	if g != nil && g.Status == goal.StatusActive && g.EffectivePhase() == goal.PhasePlan && len(g.Steps) == 0 {
-		e.failGoal(userID, g.GoalID, "未能分解任务", true)
+	if g != nil {
+		e.clearPlanMiss(userID, g.GoalID)
+	}
+	if reason := continuationMissedReport(expect, g); reason != "" {
+		e.failGoal(userID, g.GoalID, reason, true)
 		return
 	}
 	if g == nil || !g.ShouldContinue() {
@@ -95,6 +242,8 @@ func (e *GoalContinuationEngine) MaybeScheduleContinuation(userID, goalID string
 }
 
 // CancelPending cancels any pending continuation for a user (e.g. on user cancel).
+// A corrective plan turn that has not fired is refunded with the timer.
+// An in-flight loop is not stopped.
 func (e *GoalContinuationEngine) CancelPending(userID string) {
 	if e == nil {
 		return
@@ -106,6 +255,9 @@ func (e *GoalContinuationEngine) CancelPending(userID string) {
 		delete(e.scheduledTimers, userID)
 		log.Printf("[goal-continuation] cancelled pending continuation: user=%s", userID)
 	}
+	delete(e.planCorrection, userID)
+	delete(e.planMiss, userID)
+	e.bumpScheduleGen(userID)
 }
 
 // blocksRunWindowCompletion keeps a scheduled row in progress while this
@@ -133,6 +285,8 @@ func (e *GoalContinuationEngine) OnUserMessage(userID string) {
 	if e == nil {
 		return
 	}
+	// CancelPending refunds an unsent plan correction. The next empty plan
+	// can ask once, because this message interrupted the previous attempt.
 	e.CancelPending(userID)
 
 	// User message resets no-tool counter (user interaction = external trigger)
@@ -144,6 +298,16 @@ func (e *GoalContinuationEngine) OnUserMessage(userID string) {
 
 // scheduleDelayed schedules a continuation message after the cooldown period.
 func (e *GoalContinuationEngine) scheduleDelayed(userID, goalID string) {
+	e.scheduleAfterCooldown(userID, goalID, false)
+}
+
+// schedulePlanCorrection schedules the single turn that must submit the plan
+// the previous continuation left unrecorded.
+func (e *GoalContinuationEngine) schedulePlanCorrection(userID, goalID string) {
+	e.scheduleAfterCooldown(userID, goalID, true)
+}
+
+func (e *GoalContinuationEngine) scheduleAfterCooldown(userID, goalID string, planCorrection bool) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
@@ -151,28 +315,90 @@ func (e *GoalContinuationEngine) scheduleDelayed(userID, goalID string) {
 	if existing, ok := e.scheduledTimers[userID]; ok {
 		existing.Stop()
 	}
+	if planCorrection {
+		if e.planCorrection == nil {
+			e.planCorrection = map[string]string{}
+		}
+		e.planCorrection[userID] = goalID
+	} else {
+		// A normal continuation replaces the timer above. If that timer was
+		// the unsent plan correction, keep the one-shot for the next miss.
+		// The correction flag is already gone once fire has dispatched it.
+		prev := e.planCorrection[userID]
+		delete(e.planCorrection, userID)
+		if miss, ok := e.planMiss[userID]; ok && prev != "" && miss.goalID == prev {
+			delete(e.planMiss, userID)
+		}
+	}
 
+	gen := e.bumpScheduleGen(userID)
 	timer := time.AfterFunc(e.cooldown, func() {
-		e.mu.Lock()
-		delete(e.scheduledTimers, userID)
-		e.mu.Unlock()
-
-		e.fireContinuation(userID, goalID)
+		e.runScheduledContinuation(userID, goalID, gen)
 	})
 	e.scheduledTimers[userID] = timer
 	log.Printf("[goal-continuation] scheduled next turn in %s: user=%s goal_id=%s", e.cooldown, userID, goalID)
 }
 
+// bumpScheduleGen retires every timer already handed to AfterFunc.
+// Caller holds e.mu.
+func (e *GoalContinuationEngine) bumpScheduleGen(userID string) uint64 {
+	if e.scheduleGen == nil {
+		e.scheduleGen = map[string]uint64{}
+	}
+	e.scheduleGen[userID]++
+	return e.scheduleGen[userID]
+}
+
+// claimScheduledContinuation accepts one timer generation. A stale callback
+// leaves the current timer and its plan-correction flag untouched.
+func (e *GoalContinuationEngine) claimScheduledContinuation(userID, goalID string, gen uint64) (corrective bool, ok bool) {
+	if e == nil || gen == 0 {
+		return false, false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.scheduleGen[userID] != gen {
+		return false, false
+	}
+	delete(e.scheduledTimers, userID)
+	id, exists := e.planCorrection[userID]
+	if exists {
+		delete(e.planCorrection, userID)
+	}
+	return exists && id == goalID, true
+}
+
+func (e *GoalContinuationEngine) runScheduledContinuation(userID, goalID string, gen uint64) {
+	corrective, ok := e.claimScheduledContinuation(userID, goalID, gen)
+	if !ok {
+		return
+	}
+	e.dispatchContinuation(userID, goalID, corrective)
+}
+
 // fireContinuation dispatches the self-message that triggers the next agent loop turn.
 func (e *GoalContinuationEngine) fireContinuation(userID, goalID string) {
+	e.dispatchContinuation(userID, goalID, e.takePlanCorrection(userID, goalID))
+}
+
+func (e *GoalContinuationEngine) dispatchContinuation(userID, goalID string, corrective bool) {
 	// Re-check goal is still active (may have been cancelled during cooldown)
 	g := e.store.Get(userID)
 	if g == nil || g.GoalID != goalID || !g.ShouldContinue() {
+		if corrective {
+			e.abandonUnsentPlanCorrection(userID, goalID, g)
+		}
 		log.Printf("[goal-continuation] skipping fire: goal no longer continuable user=%s", userID)
 		return
 	}
 
 	prompt := e.buildContinuationPrompt(g)
+	display := e.buildContinuationDisplayText(g)
+	if corrective && g.EffectivePhase() == goal.PhasePlan && len(g.Steps) == 0 {
+		prompt = buildGoalPlanCorrectionPrompt(g)
+		display = buildGoalPlanCorrectionDisplay(g)
+	}
+	e.noteContinuationExpect(userID, g)
 	log.Printf("[goal-continuation] firing continuation: user=%s goal_id=%s turn=%d", userID, goalID, g.TurnsUsed)
 
 	// Dispatch via HandleIMMessage with platform="goal-continuation".
@@ -202,7 +428,7 @@ func (e *GoalContinuationEngine) fireContinuation(userID, goalID string) {
 	}
 	requestID := fmt.Sprintf("goal-cont-%s-%d", idPrefix, time.Now().UnixMilli())
 
-	e.emitForegroundRoundStarted(requestID, userID, prompt, e.buildContinuationDisplayText(g))
+	e.emitForegroundRoundStarted(requestID, userID, prompt, display)
 
 	go e.runForegroundContinuation(handler, IMUserMessage{
 		RequestID: requestID,
@@ -271,11 +497,43 @@ func (e *GoalContinuationEngine) runForegroundContinuation(handler *IMMessageHan
 		emitEvent("ai-assistant-stream-done", "")
 	}
 
+	// The coding workbench refuses an implementation step that has no desktop
+	// ingress token. A continuation is a host request for the same owner, so
+	// it mints that token here and drops it when this request returns.
+	if endIngress := e.attachCodingIngress(&msg); endIngress != nil {
+		defer endIngress()
+	}
 	resp := handler.HandleIMMessageWithProgressAndStream(msg, onProgress, onToken, onNewRound, onStreamDone)
 	if resp == nil {
 		resp = &IMAgentResponse{}
 	}
 	emitFinalResponse(resp)
+}
+
+// attachCodingIngress mints the same desktop coding credential a user send
+// gets at the Wails boundary. startNewTask is false: this phase continues
+// the owner's current relation and must not fence it. The returned function
+// closes that request's ingress, including any step token chained from it.
+func (e *GoalContinuationEngine) attachCodingIngress(msg *IMUserMessage) func() {
+	if e == nil || e.app == nil || msg == nil {
+		return nil
+	}
+	projectPath := projectPathFromSessionOwnerID(msg.UserID)
+	if !e.app.isDesktopCodingWorkbenchSession(msg.UserID, projectPath) {
+		return nil
+	}
+	workspaceDir := ""
+	if projectPath != "" && e.app.projectPathIsLocalCodingWorkbench(projectPath) {
+		workspaceDir = e.app.codingWorkbenchLocalExecDirOrDesktop(projectPath)
+	}
+	token := e.app.beginDesktopCodingTaskIngressForRequestWithWorkspace(msg.UserID, workspaceDir, false)
+	if token == "" {
+		return nil
+	}
+	msg.CodingTaskIngressToken = token
+	app := e.app
+	ownerID := msg.UserID
+	return func() { app.endDesktopCodingTaskIngressForOwner(ownerID) }
 }
 
 func (e *GoalContinuationEngine) emitForegroundRoundStarted(requestID, userID, prompt, displayText string) {
@@ -300,15 +558,37 @@ func (e *GoalContinuationEngine) emitAssistantStreamEventWithDisplayText(name, r
 
 func (e *GoalContinuationEngine) buildContinuationDisplayText(g *goal.Goal) string {
 	if g == nil {
-		return "/goal 继续推进目标"
+		return "目标清单\n正在继续当前步骤"
 	}
 	var b strings.Builder
-	if g.EffectivePhase() == goal.PhasePlan {
-		b.WriteString(fmt.Sprintf("/goal 分解目标：%s", g.Objective))
-	} else if step, ok := g.CurrentStep(); ok {
-		b.WriteString(fmt.Sprintf("/goal 执行步骤 %d：%s", step.Index, step.Title))
+	b.WriteString("目标清单")
+	if g.EffectivePhase() == goal.PhasePlan || len(g.Steps) == 0 {
+		objective := strings.TrimSpace(g.Objective)
+		if objective == "" {
+			objective = "当前目标"
+		}
+		b.WriteString("\n正在分解：" + objective)
 	} else {
-		b.WriteString(fmt.Sprintf("/goal 核对并完成：%s", g.Objective))
+		current, hasCurrent := g.CurrentStep()
+		for _, step := range g.Steps {
+			mark := "○"
+			switch step.Status {
+			case goal.StepDone:
+				mark = "✓"
+			case goal.StepFailed:
+				mark = "×"
+			case goal.StepProgress:
+				mark = "→"
+			default:
+				if hasCurrent && step.Index == current.Index {
+					mark = "→"
+				}
+			}
+			b.WriteString(fmt.Sprintf("\n%s %d. %s", mark, step.Index, step.Title))
+		}
+		if !hasCurrent {
+			b.WriteString("\n正在核对验收")
+		}
 	}
 	if g.MaxTurns > 0 {
 		b.WriteString(fmt.Sprintf("\n进度：第 %d/%d 轮", g.TurnsUsed+1, g.MaxTurns))
@@ -322,7 +602,7 @@ func (e *GoalContinuationEngine) buildContinuationDisplayText(g *goal.Goal) stri
 // buildContinuationPrompt constructs the message that drives the next iteration.
 func (e *GoalContinuationEngine) buildContinuationPrompt(g *goal.Goal) string {
 	if g == nil {
-		return "[系统续接] 当前没有可推进的目标。"
+		return "[系统续接][plan] 当前没有可推进的目标。"
 	}
 	if g.EffectivePhase() == goal.PhasePlan {
 		return buildGoalPlanPrompt(g)
@@ -330,9 +610,39 @@ func (e *GoalContinuationEngine) buildContinuationPrompt(g *goal.Goal) string {
 	return buildGoalExecutePrompt(g)
 }
 
+func buildGoalPlanCorrectionPrompt(g *goal.Goal) string {
+	objective := ""
+	if g != nil {
+		objective = g.Objective
+	}
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("[系统续接][plan] 上一轮没有把分解写入目标。本轮只补交规划，不要实现，不要问用户。\n\n目标：%s\n\n", objective))
+	b.WriteString("立刻调用 goal(action=\"plan\", understanding=\"...\", steps=[{\"title\":\"...\",\"detail\":\"...\"}], acceptance_criteria=[\"...\"]).\n")
+	b.WriteString("步骤和验收标准都必须非空。不要修改文件，不要运行实现，不要调用 complete。")
+	return b.String()
+}
+
+func buildGoalPlanCorrectionDisplay(g *goal.Goal) string {
+	if g == nil {
+		return "目标清单\n正在补交分解"
+	}
+	var b strings.Builder
+	b.WriteString("目标清单\n正在补交分解")
+	if objective := strings.TrimSpace(g.Objective); objective != "" {
+		b.WriteString("：" + objective)
+	}
+	if g.MaxTurns > 0 {
+		b.WriteString(fmt.Sprintf("\n进度：第 %d/%d 轮", g.TurnsUsed+1, g.MaxTurns))
+	}
+	if g.TokenBudget > 0 {
+		b.WriteString(fmt.Sprintf(" | Token: %d/%d", g.TokensUsed, g.TokenBudget))
+	}
+	return b.String()
+}
+
 func buildGoalPlanPrompt(g *goal.Goal) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("[系统续接] 先理解并分解目标，不要实现。\n\n目标：%s\n\n", g.Objective))
+	b.WriteString(fmt.Sprintf("[系统续接][plan] 先理解并分解目标，不要实现。\n\n目标：%s\n\n", g.Objective))
 	b.WriteString("本轮只做规划：\n")
 	b.WriteString("1. 用你自己的话复述任务，确认你理解要交付的结果。\n")
 	b.WriteString("2. 把任务分解成有序、可独立执行的步骤。\n")
@@ -344,7 +654,7 @@ func buildGoalPlanPrompt(g *goal.Goal) string {
 
 func buildGoalExecutePrompt(g *goal.Goal) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("[系统续接] 按步骤执行目标：%s\n\n", g.Objective))
+	b.WriteString(fmt.Sprintf("[系统续接][execute] 按步骤执行目标：%s\n\n", g.Objective))
 	if strings.TrimSpace(g.Understanding) != "" {
 		b.WriteString("理解：" + g.Understanding + "\n")
 	}
@@ -362,9 +672,9 @@ func buildGoalExecutePrompt(g *goal.Goal) string {
 		}
 	}
 	if len(done) > 0 {
-		b.WriteString("\n已完成:\n")
+		b.WriteString("\n已完成（这些步骤已结束，本轮不要重做，也不要把它们没写完的内容并进当前步骤）:\n")
 		for _, step := range done {
-			b.WriteString(fmt.Sprintf("  %d. %s — %s\n", step.Index, step.Title, step.Result))
+			b.WriteString(fmt.Sprintf("  %d. %s\n", step.Index, step.Title))
 		}
 	}
 	if len(g.AcceptanceCriteria) > 0 {
@@ -374,11 +684,15 @@ func buildGoalExecutePrompt(g *goal.Goal) string {
 		}
 	}
 	if step, ok := g.CurrentStep(); ok {
-		b.WriteString(fmt.Sprintf("\n当前步骤（只做这一步）：\n  %d. %s\n", step.Index, step.Title))
+		b.WriteString(fmt.Sprintf("\n当前步骤（本轮只做这一步，不要开始后续步骤）：\n  %d. %s\n", step.Index, step.Title))
 		if strings.TrimSpace(step.Detail) != "" {
 			b.WriteString("  " + step.Detail + "\n")
 		}
-		b.WriteString(fmt.Sprintf("\n做完后调用 goal(action=\"step\", index=%d, status=\"done\" 或 \"failed\", result=\"...\")。不要做后续步骤。", step.Index))
+		if step.Status == goal.StepProgress && strings.TrimSpace(step.Result) != "" {
+			b.WriteString("  已记录的进度：" + strings.TrimSpace(step.Result) + "\n")
+		}
+		b.WriteString(fmt.Sprintf("\n这一步的交付物还没完成时，调用 goal(action=\"step\", index=%d, status=\"progress\", result=\"这一步已经做成什么样，还剩什么\"）。下一轮仍是这一步。", step.Index))
+		b.WriteString(fmt.Sprintf("\n交付物完成后再调用 goal(action=\"step\", index=%d, status=\"done\", result=\"...\")，然后停止。不要把未完成的步骤标成 done，也不要在本轮里做步骤 %d 之后的工作。", step.Index, step.Index))
 		b.WriteString("\n如果这一步无法完成，status 用 failed，并把原因写进 result。")
 		return b.String()
 	}
@@ -386,6 +700,167 @@ func buildGoalExecutePrompt(g *goal.Goal) string {
 	b.WriteString("总结必须逐条包含上面的验收标准原文。没有总结不能结束。")
 	b.WriteString("\n如果确定无法收尾，调用 goal(action=\"fail\", reason=\"...\")。")
 	return b.String()
+}
+
+func continuationExpectOf(g *goal.Goal) goalContinuationExpect {
+	if g == nil {
+		return goalContinuationExpect{}
+	}
+	exp := goalContinuationExpect{goalID: g.GoalID, phase: g.EffectivePhase()}
+	if step, ok := g.CurrentStep(); ok {
+		exp.stepIndex = step.Index
+		exp.stepStatus = step.Status
+		exp.stepResult = step.Result
+	}
+	return exp
+}
+
+func (e *GoalContinuationEngine) noteContinuationExpect(userID string, g *goal.Goal) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.pendingExpect == nil {
+		e.pendingExpect = make(map[string]goalContinuationExpect)
+	}
+	e.pendingExpect[userID] = continuationExpectOf(g)
+}
+
+func (e *GoalContinuationEngine) peekContinuationExpect(userID string) goalContinuationExpect {
+	if e == nil {
+		return goalContinuationExpect{}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.pendingExpect == nil {
+		return goalContinuationExpect{}
+	}
+	return e.pendingExpect[userID]
+}
+
+func (e *GoalContinuationEngine) takeContinuationExpect(userID string) goalContinuationExpect {
+	if e == nil {
+		return goalContinuationExpect{}
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	exp := e.pendingExpect[userID]
+	delete(e.pendingExpect, userID)
+	return exp
+}
+
+// consumePlanMiss reports whether this goal already spent its one corrective
+// plan turn. The first miss records the attempt and returns false.
+func (e *GoalContinuationEngine) consumePlanMiss(userID, goalID string) bool {
+	if e == nil || goalID == "" {
+		return true
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.planMiss == nil {
+		e.planMiss = map[string]goalPlanMiss{}
+	}
+	state := e.planMiss[userID]
+	if state.goalID == goalID && state.retried {
+		delete(e.planMiss, userID)
+		return true
+	}
+	e.planMiss[userID] = goalPlanMiss{goalID: goalID, retried: true}
+	return false
+}
+
+func (e *GoalContinuationEngine) clearPlanMiss(userID, goalID string) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	state, ok := e.planMiss[userID]
+	if !ok {
+		return
+	}
+	if goalID != "" && state.goalID != goalID {
+		return
+	}
+	delete(e.planMiss, userID)
+}
+
+// abandonUnsentPlanCorrection runs when a scheduled /goal 提交分解 did not
+// start. A paused, cleared, or replaced goal keeps its status and can still
+// receive that one correction later. An active goal that still has no plan
+// cannot run the turn, so leaving it active would burn the retry and stall.
+func (e *GoalContinuationEngine) abandonUnsentPlanCorrection(userID, goalID string, g *goal.Goal) {
+	if g != nil && g.GoalID == goalID && g.Status == goal.StatusActive &&
+		g.EffectivePhase() == goal.PhasePlan && len(g.Steps) == 0 {
+		log.Printf("[goal-continuation] corrective turn cannot run; failing unplanned goal user=%s goal_id=%s", userID, goalID)
+		e.failGoal(userID, goalID, "未能分解任务", true)
+		return
+	}
+	e.clearPlanMiss(userID, goalID)
+}
+
+func (e *GoalContinuationEngine) takePlanCorrection(userID, goalID string) bool {
+	if e == nil {
+		return false
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	id, ok := e.planCorrection[userID]
+	if ok {
+		delete(e.planCorrection, userID)
+	}
+	return ok && id == goalID
+}
+
+func (e *GoalContinuationEngine) clearContinuationExpect(userID string) {
+	if e == nil {
+		return
+	}
+	e.mu.Lock()
+	delete(e.pendingExpect, userID)
+	e.mu.Unlock()
+}
+
+// goalContinuationContractMet is true when the turn already stored the record
+// this phase required. An empty expect is not a met contract.
+func goalContinuationContractMet(exp goalContinuationExpect, g *goal.Goal) bool {
+	if exp.goalID == "" || g == nil || g.GoalID != exp.goalID || g.IsTerminal() {
+		return false
+	}
+	switch exp.phase {
+	case goal.PhasePlan:
+		return len(g.Steps) > 0
+	case goal.PhaseExecute:
+		return continuationMissedReport(exp, g) == ""
+	default:
+		return false
+	}
+}
+
+// continuationMissedReport is set when an execute continuation ended without
+// recording the step that was current when the turn started. A later step
+// that is still pending is the next turn, not a missed report.
+func continuationMissedReport(exp goalContinuationExpect, g *goal.Goal) string {
+	if exp.goalID == "" || g == nil || g.GoalID != exp.goalID || g.IsTerminal() || exp.phase != goal.PhaseExecute {
+		return ""
+	}
+	if exp.stepIndex > 0 {
+		for _, step := range g.Steps {
+			if step.Index != exp.stepIndex {
+				continue
+			}
+			if step.Status == exp.stepStatus && step.Result == exp.stepResult {
+				return "未提交当前步骤"
+			}
+			return ""
+		}
+		return "未提交当前步骤"
+	}
+	if g.ReadyToComplete() && g.Status == goal.StatusActive {
+		return "未提交完成"
+	}
+	return ""
 }
 
 // failGoal marks the active goal failed and optionally tells the user.
@@ -409,6 +884,7 @@ func (e *GoalContinuationEngine) failGoal(userID, goalID, reason string, announc
 	}
 	e.store.UpdateStatus(userID, goalID, goal.StatusFailed, reason)
 	e.CancelPending(userID)
+	e.clearContinuationExpect(userID)
 	updated := e.store.Get(userID)
 	e.emitGoalStateChanged(userID, updated)
 	if announce {
@@ -451,19 +927,24 @@ func goalTerminalNotice(g *goal.Goal) (text string, asError bool) {
 	}
 }
 
+func newGoalNoticeEvent(userID, text string, asError bool) AIContinuationEvent {
+	return AIContinuationEvent{
+		RequestID:  fmt.Sprintf("goal-notice-%d", time.Now().UnixMilli()),
+		SessionKey: userID,
+		Kind:       "notice",
+		Text:       text,
+		AsError:    asError,
+	}
+}
+
+// emitGoalNotice tells the user a host outcome. It must not open a foreground
+// round: that event is rendered as a user message, which made "未能分解任务"
+// look like something the user sent.
 func (e *GoalContinuationEngine) emitGoalNotice(userID, text string, asError bool) {
 	if e == nil || e.app == nil || strings.TrimSpace(text) == "" {
 		return
 	}
-	requestID := fmt.Sprintf("goal-notice-%d", time.Now().UnixMilli())
-	resp := &IMAgentResponse{SessionKey: userID}
-	if asError {
-		resp.Error = text
-	} else {
-		resp.Text = text
-	}
-	e.emitForegroundRoundStarted(requestID, userID, text, text)
-	e.app.emitAIAssistantResponse(requestID, resp)
+	e.app.emitAIContinuationEvent(newGoalNoticeEvent(userID, text, asError))
 }
 
 // emitGoalStateChanged notifies the frontend of goal state changes.
@@ -515,8 +996,11 @@ func (h *IMMessageHandler) maybeScheduleGoalContinuation(userID string, resp *IM
 		return
 	}
 
-	// A failed turn must close the goal. The turn response already carries Error.
-	if resp != nil && strings.TrimSpace(resp.Error) != "" {
+	// A failed turn closes the goal only when this phase's contract is still
+	// open. A plan or step already stored is the host record; a later audit
+	// error must not erase it. A continuation with no such record still fails
+	// with the turn error.
+	if resp != nil && strings.TrimSpace(resp.Error) != "" && !goalContinuationContractMet(engine.peekContinuationExpect(userID), g) {
 		log.Printf("[goal-continuation] failing goal after turn error user=%s", userID)
 		engine.failGoal(userID, g.GoalID, resp.Error, false)
 		return

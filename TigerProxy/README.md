@@ -1,6 +1,6 @@
 # CodexProxy 设计说明
 
-CodexProxy（原 TigerProxy）是一个面向 Codex / Claude Code 的桌面协议转发服务。首次启动选择登录方式；之后可在主界面切换，切换后会自动重启生效。
+CodexProxy（原 TigerProxy）是一个面向 Codex / Claude Code 的桌面协议转发服务。首次启动选择登录方式；之后可在主界面切换，已保存的登录立即作用到正在运行的代理。
 
 ## 功能范围
 

@@ -27,7 +27,7 @@ import type { WelcomePromptSubmitMeta } from "../AssistantWelcomeView";
 import { isCloudWorkspacePath } from "../codingTaskMode";
 import { expertTabId, parseExpertListJSON, parseInstalledManagedIndustryExpertsJSON } from "../expertTypes";
 import { extractErrorMessage } from "../participantAddError";
-import { applyComposeActionToText, isBtwCommandText, isHistoryResetCommandText, normalizeInstallCommandText, type ComposeAction } from "../composeAction";
+import { applyComposeActionToText, goalCreateCommand, isBtwCommandText, isHistoryResetCommandText, normalizeInstallCommandText, type ComposeAction } from "../composeAction";
 import { buildOutgoingMessageMulti } from "../useAIAssistant";
 import { defaultTaskDraft, draftFromWizardSeed, isDraftDefault, withCloudWorkspace, type NewTaskWizardSeed, type TaskDraft } from "./taskDraft";
 import { isRunWindowScheduled, runWindowCreatedNotice, runWindowCreateRequest, validateRunWindow } from "./runWindow";
@@ -617,6 +617,13 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         const rawInputValue = inputRef.current?.value ?? inputValue;
         const raw = (rawInputValue || "").trim();
         const text = applyComposeActionToText(raw, (composeAction as ComposeAction | null) ?? null);
+        // /goal <objective> is a new task. Session verbs and other slash
+        // commands stay on the conversation that is already open.
+        const createdGoal = goalCreateCommand(raw);
+        if (wizardActive && createdGoal) {
+            void startGuideTask(createdGoal.command, wizardActive, createdGoal.objective);
+            return;
+        }
         // A slash the user typed (including fullwidth ／) stays on the command
         // path. A prefix added by compose mode, such as /goal, still creates a task.
         const typedSlash = raw.startsWith("/") || raw.startsWith("／");
@@ -646,6 +653,11 @@ export function useTaskConfigWiring(options: TaskConfigWiringOptions): TaskConfi
         // Fullwidth ／ from a Chinese IME is the same slash as "/".
         const commandText = trimmed.startsWith("／") ? `/${trimmed.slice(1)}` : trimmed;
         const composed = applyComposeActionToText(commandText, (composeAction as ComposeAction | null) ?? null);
+        const createdGoal = goalCreateCommand(commandText);
+        if (wizardActive && createdGoal) {
+            await startGuideTask(createdGoal.command, wizardActive, createdGoal.objective);
+            return;
+        }
         const typedSlash = commandText.startsWith("/");
         if (typedSlash || isHistoryResetCommandText(composed) || isBtwCommandText(composed) || normalizeInstallCommandText(composed)) {
             return handleWelcomePromptSend(typedSlash ? commandText : composed, meta);

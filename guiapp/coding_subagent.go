@@ -47,6 +47,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	"github.com/RapidAI/CodeClaw/corelib/agentruntime"
 	"github.com/RapidAI/CodeClaw/corelib/codingagent"
 	"github.com/RapidAI/CodeClaw/corelib/codingruntime"
 	"github.com/RapidAI/CodeClaw/corelib/config"
@@ -626,7 +627,7 @@ func (s *CodingSubAgent) refuseUnboundWritableSurface(task *TaskItem) string {
 	if s.loopCtx == nil || !isDesktopCodingOwner(s.loopCtx.UserID) {
 		return ""
 	}
-	if codingTaskLooksInquiry(task) {
+	if codingTaskLooksInquiry(task) || taskIsGoalPlanPhase(task, "") {
 		return ""
 	}
 	return desktopCodingWritableSurfaceBindFailedDiagnostic
@@ -713,6 +714,10 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	// verify+fix (that is for code-change tasks).
 	operational := codingTaskLooksOperational(task)
 	inquiry := codingTaskLooksInquiry(task)
+	// Plan and execute share one host contract: the goal call. A file audit
+	// would fail an execute step that reports progress without a diff, and
+	// that failure then closes the goal.
+	goalTurn := goalContinuationPhase(goalContinuationSource(task, reqCtx)) != ""
 
 	// Codex-inspired post-loop verification: if the model completed without
 	// errors but didn't produce auditable verification, automatically obtain a
@@ -721,7 +726,7 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	// quality failure after the underlying compiler already succeeded.
 	// The recovery exists only to satisfy the quality gate, so it stays idle
 	// while that gate is off.
-	if qualityGateEnabled && !s.horizonPosture && !operational && !inquiry && result.Error == "" && !result.HardExit && result.AskUser == nil && !cb.ShouldStop() {
+	if qualityGateEnabled && !s.horizonPosture && !operational && !inquiry && !goalTurn && result.Error == "" && !result.HardExit && result.AskUser == nil && !cb.ShouldStop() {
 		if verifiers := cb.recoverableVerifications(); len(verifiers) > 0 {
 			// The original wrapper already ran successfully.  Recovery exists to
 			// obtain an auditable exit status, not to let an automatic retry alter
@@ -750,14 +755,23 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 
 	status := TaskExecPassed
 	errMsg := ""
-	if result.Error != "" {
-		status = TaskExecFailed
-		errMsg = compactSubAgentErrorSummary(result.Error)
-		log.Printf("[coding-subagent] task T%d agent loop failed: %s", taskDisplayNumber(task), errMsg)
+	var openTodos []codingAgentTodoItem
+	if result.Error == agent.ErrChecklistUnsettled && cb != nil {
+		openTodos = cb.todos.snapshot()
 	}
-	if result.HardExit {
-		status = TaskExecFailed
-		errMsg = "模型连续返回空响应，任务中断"
+	if handled, st, msg := codingSubAgentStopFailure(result, openTodos); handled {
+		status, errMsg = st, msg
+		log.Printf("[coding-subagent] task T%d stopped with an open checklist: %s", taskDisplayNumber(task), errMsg)
+	} else {
+		if result.Error != "" {
+			status = TaskExecFailed
+			errMsg = compactSubAgentErrorSummary(result.Error)
+			log.Printf("[coding-subagent] task T%d agent loop failed: %s", taskDisplayNumber(task), errMsg)
+		}
+		if result.HardExit {
+			status = TaskExecFailed
+			errMsg = "模型连续返回空响应，任务中断"
+		}
 	}
 
 	modelSummary := compactSubAgentModelSummary(result.Text)
@@ -804,6 +818,18 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 			verificationStatus, verificationSummary = codingSubAgentQualityNotNeeded, ""
 			qualityStatus, qualitySummary, qualityIssueCount = codingSubAgentQualityNotNeeded, "", 0
 		}
+		if modelSummary == "" {
+			summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
+		}
+	} else if goalTurn {
+		// The host phase is complete when the goal call is saved. File
+		// audits would fail that turn for producing no workspace changes and
+		// then fail the goal.
+		explorationStatus, explorationSummary = codingSubAgentQualityNotNeeded, "goal continuation: file audit does not apply"
+		verificationStatus, verificationSummary = codingSubAgentQualityNotNeeded, "goal continuation: no file audit"
+		diffChecked = false
+		diffSummary = ""
+		qualityStatus, qualitySummary, qualityIssueCount = codingSubAgentQualityNotNeeded, "", 0
 		if modelSummary == "" {
 			summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
 		}
@@ -926,9 +952,14 @@ func (s *CodingSubAgent) ExecuteTask(task *TaskItem, reqCtx, designCtx string, p
 	// nothing (and there is no follow-up execution workflow to run the plan).
 	// Implementation/operational tasks therefore require artifact or command
 	// evidence before they may pass; inquiry stays read-only by design.
-	status, errMsg = applyUncorrelatedCompatibilitySurfaceOutcome(status, errMsg, inquiry, cb, audit)
+	if !goalTurn {
+		status, errMsg = applyUncorrelatedCompatibilitySurfaceOutcome(status, errMsg, inquiry, cb, audit)
+	}
 	if modelSummary == "" {
 		summary = rebaseFallbackSubAgentTaskSummary(summary, status, task, result.Iterations, result.ToolCalls)
+	}
+	if result.Error == agent.ErrChecklistUnsettled {
+		summary = appendCodingAgentTodoTurnNote(summary, openTodos)
 	}
 	// An unchecked diff is reported as a failed self-check once files changed.
 	// Skip that event while the gate is off, or a successful edit looks failed.
@@ -1197,6 +1228,8 @@ type codingSubAgentCallbacks struct {
 	filesModified         map[string]bool
 	filesCreated          map[string]bool
 	filesRead             map[string]bool
+	codegraphOwned        map[string]codegraphFileOwnership
+	codegraphFileMaps     map[string]codegraphFileMapCache
 	fileSnapshots         map[string]codingFileSnapshot
 	fileLineDeltas        map[string]SubAgentFileDiffStat
 	gitDiffChecked        bool
@@ -1587,7 +1620,24 @@ func (c *codingSubAgentCallbacks) BuildSystemPrompt(userText string, isFirstTurn
 	// the rendered surface to a real response/call identity and admission
 	// journal; it must not infer that eligibility from task text or callback IDs.
 	if c.usesUncorrelatedStaticCompatibilityModelSurface() {
+		source := goalContinuationSource(c.task, c.reqCtx)
+		// Plan's only delivery is goal(action=plan). The generic compatibility
+		// prompt never names that call, so a planning turn on this surface
+		// would inspect the repo and then end with no steps.
+		if goalContinuationPhase(source) == "plan" {
+			projectPath := ""
+			if c.subagent != nil {
+				projectPath = c.subagent.projectPath
+			}
+			prompt := buildCodingSubAgentSystemPrompt(c.task, projectPath, c.reqCtx, c.designCtx, c.prevOutputs)
+			c.cachedSystemPrompt = prompt
+			c.logCacheEvent("system_prompt", "build-goal-plan", "prompt_chars", len(prompt))
+			return prompt
+		}
 		prompt := buildUncorrelatedLocalCodingCompatibilityPrompt(c)
+		if section := goalContinuationPhaseSection(source); section != "" {
+			prompt = section + prompt
+		}
 		appendCodingWorkspaceProbe(&prompt, c)
 		if knowledgeSections := c.buildKnowledgePromptSections(); knowledgeSections != "" {
 			prompt += knowledgeSections
@@ -1724,11 +1774,21 @@ This request is running on the temporary uncorrelated Coding compatibility surfa
 - Gather repository evidence with the read-only definitions that are present (for example Glob, ripgrep, list_directory, read_file, git_diff, code_navigation, and approved knowledge/research lookups).
 - If the project has .codegraph/, use code_navigation for structure, symbols, and call edges. A text search that already returned lines is evidence; use those lines and do not repeat that search.
 - Do not claim that a file was changed, a command was run, a child was delegated, or structured localization was submitted: those operations are not available on this request surface.
-- For an implementation or operational request, inspect the code, explain the blocker imposed by this temporary safe mode, and produce a concrete next-step plan for a correlation-bound execution workflow. Do not repeatedly try unavailable operations.
 `)
+	if c != nil && taskCarriesGoalContinuation(c.task, c.reqCtx) {
+		b.WriteString("- This turn reports the host goal. Call the goal action named above. Do not replace that call with a written plan.\n")
+	} else {
+		b.WriteString("- For an implementation or operational request, inspect the code, explain the blocker imposed by this temporary safe mode, and produce a concrete next-step plan for a correlation-bound execution workflow. Do not repeatedly try unavailable operations.\n")
+	}
 	if includeTodo {
-		b.WriteString(`- todo_write is the only mutable control-plane operation. Use it only when it is listed, and preserve its expected_revision and expected_version values exactly; a stale result means re-read the current state rather than retrying the old payload.
+		if taskCarriesGoalContinuation(c.task, "") {
+			b.WriteString(`- goal updates the host goal for this session and does not write the workspace. After the current step, call goal(action="step"); if this read-only surface cannot finish the step, call goal(action="step", status="failed") or goal(action="fail").
+- todo_write, when listed, is only the checklist. Preserve its expected_revision and expected_version values exactly; a stale result means re-read the current state rather than retrying the old payload.
 `)
+		} else {
+			b.WriteString(`- todo_write is the only mutable control-plane operation. Use it only when it is listed, and preserve its expected_revision and expected_version values exactly; a stale result means re-read the current state rather than retrying the old payload.
+`)
+		}
 	}
 	if strings.TrimSpace(projectPath) != "" {
 		b.WriteString(fmt.Sprintf("\n## Project path\n%s\n", projectPath))
@@ -1893,6 +1953,12 @@ func (c *codingSubAgentCallbacks) BuildTools(userText string) []map[string]inter
 	tools = append(tools, buildCodeNavigationToolDefinition())
 	if c.task == nil || codingTaskNeedsLocalization(c.task.Title+"\n"+c.task.Description) {
 		tools = append(tools, buildReportLocalizationToolDefinition())
+	}
+	if c.task != nil && taskIsGoalPlanPhase(c.task, c.reqCtx) {
+		tools = filterGoalPlanPhaseTools(tools)
+		tools = filterCodingStaticCompatibilitySurface(codingStaticCompatibilityHostLocal, tools)
+		c.logCacheEvent("tools", "build-goal-plan", "tool_count", len(tools))
+		return cloneCodingSubAgentToolDefinitions(c.appendExposedGoalTool(tools))
 	}
 	if c.task != nil && codingTaskLooksInquiry(c.task) {
 		tools = filterCodingInquiryTools(tools)
@@ -2485,6 +2551,7 @@ func (c *codingSubAgentCallbacks) executeHorizonHostTool(name, argsJSON string) 
 }
 
 func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) (toolResult codingToolExecutionResult) {
+	name, argsJSON = rewriteOpenCodeReadToolCall(name, argsJSON)
 	name = canonicalCodingSubAgentToolName(name)
 	if c != nil && c.subagent != nil && c.subagent.horizonPosture {
 		if !longhorizon.ToolAllowed(c.subagent.horizonToolSurface, name) {
@@ -2592,9 +2659,22 @@ func (c *codingSubAgentCallbacks) executeToolWithOutcome(name, argsJSON string) 
 				return codingToolExecutionResult{Text: c.rejectToolCall("read_file", fileArgs, msg), Outcome: codingToolOutcomeBlocked}
 			}
 		}
+		// No position: this is a survey of an indexed file, answered by
+		// code_navigation. lines only caps that survey. start_line and offset
+		// name a window the index does not store, so those calls read the file.
+		if redirected, ok := c.codegraphReadInstead(fileArgs); ok {
+			if p, _ := fileArgs["path"].(string); p != "" {
+				c.emitReadFilePreview(p)
+			}
+			return redirected
+		}
 		result := executeCodingReadFile(fileArgs)
 		if p, _ := fileArgs["path"].(string); p != "" && result.Outcome == codingToolOutcomeSuccess {
-			c.trackReadFile(p)
+			// A window of an indexed file is the bytes at that position. The
+			// symbol body from code_navigation node is what unlocks the edit.
+			if !c.lineWindowSkipsEditSnapshot(fileArgs, p) {
+				c.trackReadFile(p)
+			}
 			// Emit code:file_update so the code preview panel shows the file being read.
 			c.emitReadFilePreview(p)
 		}
@@ -2851,7 +2931,13 @@ func (c *codingSubAgentCallbacks) executeGoalTool(args map[string]interface{}) c
 		}
 	}
 	text := c.subagent.handler.toolGoalForUser(userID, args)
-	return codingToolExecutionResult{Text: text, Outcome: codingToolOutcomeSuccess}
+	// A rejected plan/step is not a finished phase. Reporting it as success
+	// lets the model end the turn, and the host then fails the goal.
+	outcome := codingToolOutcomeSuccess
+	if agentruntime.ToolTextFailure(text) {
+		outcome = codingToolOutcomeFailed
+	}
+	return codingToolExecutionResult{Text: text, Outcome: outcome}
 }
 
 func rejectInvalidCodingSubAgentToolArgumentTypes(name string, args map[string]interface{}) (codingToolExecutionResult, bool) {
@@ -5380,6 +5466,7 @@ func (c *codingSubAgentCallbacks) trackReadFile(path string) {
 		c.fileSnapshots = make(map[string]codingFileSnapshot)
 	}
 	key := canonicalCodingPath(path)
+	c.dropCodegraphFileCacheIfChangedLocked(key, snap)
 	c.filesRead[key] = true
 	c.fileSnapshots[key] = snap
 	seq := c.nextEventSeqLocked()
@@ -6088,9 +6175,35 @@ func (c *codingSubAgentCallbacks) requireReadBeforeModify(path, toolName string)
 		if msg != "" {
 			return msg
 		}
+		if note := c.editNeedsCodegraph(path); note != "" {
+			return note
+		}
 		return fmt.Sprintf("请先调用 read_file(path=%q) 查看当前内容，再使用 %s 修改。编码 SubAgent 不允许未读文件就修改已有内容。", path, toolName)
 	}
 	return ""
+}
+
+// editNeedsCodegraph is the edit gate for a path the index has already hit.
+// The stamp may belong to an older version of the file. read_file still
+// returns the map for that path, so the gate asks for the symbol body.
+func (c *codingSubAgentCallbacks) editNeedsCodegraph(path string) string {
+	if c == nil || !c.codegraphPathWasIndexed(path) {
+		return ""
+	}
+	return fmt.Sprintf("请先调用 code_navigation，operation 用 node，query 填要修改的符号，file 填 %q。返回的符号正文就是当前源码，之后才能修改。不要 read_file 整份源码。", c.codingEditGatePath(path))
+}
+
+// codingEditGatePath is the file argument the edit rejection tells the model
+// to pass. A project-relative path is a pin. The absolute path is what the
+// model was editing, and copying it made the lookup drop the file.
+func (c *codingSubAgentCallbacks) codingEditGatePath(path string) string {
+	if c == nil {
+		return path
+	}
+	if rel := codegraphFileWithinRoot(c.projectPath(), path); rel != "" {
+		return rel
+	}
+	return path
 }
 
 func (c *codingSubAgentCallbacks) requireReadBeforeWriteExisting(path string, args map[string]interface{}) string {
@@ -6114,6 +6227,9 @@ func (c *codingSubAgentCallbacks) requireReadBeforeWriteExisting(path string, ar
 	if ok, msg := c.validateReadSnapshot(abs); !ok {
 		if msg != "" {
 			return msg
+		}
+		if note := c.editNeedsCodegraph(path); note != "" {
+			return note
 		}
 		return fmt.Sprintf("目标文件已存在，请先调用 read_file(path=%q) 查看当前内容；只有创建全新文件时才能直接 write_file。", path)
 	}
@@ -6145,6 +6261,9 @@ func (c *codingSubAgentCallbacks) validateReadSnapshot(path string) (bool, strin
 		return false, fmt.Sprintf("无法确认文件 %s 是否仍与 read_file 时一致：%s。请重新 read_file 后再修改。", path, err.Error())
 	}
 	if current != snap {
+		if c.codegraphPathWasIndexed(path) {
+			return false, fmt.Sprintf("文件 %s 自上次读取后已变化（读取时 %s，当前 %s）。请先调用 code_navigation，operation 用 node，query 填要修改的符号，file 填 %q。返回的符号正文就是当前源码，之后才能修改。", path, codingFileSnapshotSummary(snap), codingFileSnapshotSummary(current), c.codingEditGatePath(path))
+		}
 		return false, fmt.Sprintf("文件 %s 自上次 read_file 后已变化（read_file 时 %s，当前 %s）。请先重新调用 read_file(path=%q) 获取最新内容，再重新应用最小编辑。", path, codingFileSnapshotSummary(snap), codingFileSnapshotSummary(current), path)
 	}
 	return true, ""
@@ -6175,8 +6294,24 @@ func (c *codingSubAgentCallbacks) refreshFileSnapshot(path string) {
 		c.fileSnapshots = make(map[string]codingFileSnapshot)
 	}
 	key := canonicalCodingPath(path)
+	c.dropCodegraphFileCacheIfChangedLocked(key, snap)
 	c.filesRead[key] = true
 	c.fileSnapshots[key] = snap
+}
+
+// dropCodegraphFileCacheIfChangedLocked forgets a survey when the file bytes
+// changed. A snapshot of the same bytes, such as a node read, keeps the map.
+// An index hit stays: the map is stale, but the path is still indexed, and a
+// later survey must not fall through to the whole file. A miss does not.
+func (c *codingSubAgentCallbacks) dropCodegraphFileCacheIfChangedLocked(key string, snap codingFileSnapshot) {
+	prev, had := c.fileSnapshots[key]
+	if !had || (prev.Size == snap.Size && prev.Hash == snap.Hash) {
+		return
+	}
+	delete(c.codegraphFileMaps, key)
+	if entry, ok := c.codegraphOwned[key]; !ok || !entry.owned {
+		delete(c.codegraphOwned, key)
+	}
 }
 
 func canonicalCodingPath(path string) string {
@@ -6488,6 +6623,19 @@ func rebaseFallbackSubAgentTaskSummary(summary string, status TaskExecStatus, ta
 		return replacement + summary[idx:]
 	}
 	return replacement
+}
+
+// codingSubAgentStopFailure reports a prose stop that left the agent's own
+// checklist open. Other hard exits keep their existing messages.
+func codingSubAgentStopFailure(result agent.LoopResult, openItems []codingAgentTodoItem) (handled bool, status TaskExecStatus, errMsg string) {
+	if result.Error != agent.ErrChecklistUnsettled {
+		return false, "", ""
+	}
+	msg := checklistUnsettledUserMessage
+	if note := codingAgentTodoUnresolvedSummary(openItems); note != "" {
+		msg += "\n" + note
+	}
+	return true, TaskExecFailed, msg
 }
 
 func compactSubAgentErrorSummary(errMsg string) string {
@@ -6804,13 +6952,18 @@ func classifyCodingGuardrailCategory(toolName, path, command, result string) Cod
 	return codingSubAgentGuardrailCategoryPolicy
 }
 
-// codingGuardrailResultIsReadSnapshot reports a recoverable edit rejection:
-// the tool told the model to read_file and retry. It is not a safety block.
+// codingGuardrailResultIsReadSnapshot reports a recoverable edit rejection.
+// The tool told the model to read the current source and retry. For an indexed
+// file that source is the code_navigation node body. Nothing was written, so
+// this is not a scope block. The quality gate uses the same rule as a
+// read_file rejection.
 func codingGuardrailResultIsReadSnapshot(result string) bool {
 	switch {
 	case strings.Contains(result, "请先调用 read_file"),
 		strings.Contains(result, "缺少 read_file 快照"),
-		strings.Contains(result, "自上次 read_file"):
+		strings.Contains(result, "自上次 read_file"),
+		strings.Contains(result, "请先调用 code_navigation"),
+		strings.Contains(result, "请调用 code_navigation"):
 		return true
 	default:
 		return false
@@ -14485,6 +14638,12 @@ func applyUncorrelatedCompatibilitySurfaceOutcome(status TaskExecStatus, errMsg 
 	if status != TaskExecPassed || inquiry || cb == nil || !cb.usesUncorrelatedStaticCompatibilityModelSurface() {
 		return status, errMsg
 	}
+	// A goal continuation's delivery is the goal call. This surface cannot
+	// write files, so judging the turn by missing artifacts fails a step that
+	// the host already accepted, or a plan the host is about to record.
+	if taskCarriesGoalContinuation(cb.task, cb.reqCtx) {
+		return status, errMsg
+	}
 	if len(audit.AllFilesModified) > 0 || len(audit.AllFilesCreated) > 0 || len(audit.AllCommandsRun) > 0 {
 		return status, errMsg
 	}
@@ -15170,7 +15329,7 @@ func codingShellNameIsContentSearch(name string) bool {
 
 func codingReaderCommandFile(name string, args []string) string {
 	switch name {
-	case "get-content", "gc", "type", "cat":
+	case "get-content", "gc", "type", "cat", "more", "less":
 	default:
 		return ""
 	}
@@ -16077,6 +16236,9 @@ func (c *codingSubAgentCallbacks) ShouldStop() bool {
 
 func (c *codingSubAgentCallbacks) buildTaskUserMessage() string {
 	var b strings.Builder
+	if msg := goalContinuationTaskUserMessage(c.task, c.reqCtx); msg != "" {
+		return msg
+	}
 	if codingTaskLooksInquiry(c.task) {
 		b.WriteString(fmt.Sprintf("请回答下面的仓库/代码问题。先做必要的只读检索，再给出简洁、可核查的结论；不要修改文件、不要写测试、不要创建实现任务。\\n\\n## 问题\\n%s\\n\\n", compactSubAgentTaskDescription(c.task.Description)))
 		b.WriteString("**只读工作要求**：\\n")
@@ -17032,15 +17194,26 @@ func (s *CodingSubAgent) finishInspectionRoleTask(
 ) *CodingSubAgentResult {
 	status := TaskExecPassed
 	errMsg := ""
-	if result.Error != "" {
-		status = TaskExecFailed
-		errMsg = compactSubAgentErrorSummary(result.Error)
+	var openTodos []codingAgentTodoItem
+	if result.Error == agent.ErrChecklistUnsettled && cb != nil {
+		openTodos = cb.todos.snapshot()
 	}
-	if result.HardExit {
-		status = TaskExecFailed
-		errMsg = "模型连续返回空响应，任务中断"
+	if handled, st, msg := codingSubAgentStopFailure(result, openTodos); handled {
+		status, errMsg = st, msg
+	} else {
+		if result.Error != "" {
+			status = TaskExecFailed
+			errMsg = compactSubAgentErrorSummary(result.Error)
+		}
+		if result.HardExit {
+			status = TaskExecFailed
+			errMsg = "模型连续返回空响应，任务中断"
+		}
 	}
 	summary := compactSubAgentModelSummary(result.Text)
+	if result.Error == agent.ErrChecklistUnsettled {
+		summary = appendCodingAgentTodoTurnNote(summary, openTodos)
+	}
 	if summary == "" {
 		summary = fallbackSubAgentTaskSummary(status, task, result.Iterations, result.ToolCalls)
 	}
@@ -17348,6 +17521,18 @@ func appendCodingWorkspaceProbe(prompt *string, c *codingSubAgentCallbacks) {
 
 func buildCodingSubAgentSystemPrompt(task *TaskItem, projectPath, reqCtx, designCtx string, prevOutputs []string) string {
 	var b strings.Builder
+	source := goalContinuationSource(task, reqCtx)
+	if goalContinuationPhase(source) == "plan" {
+		b.WriteString(goalContinuationPhaseSection(source))
+		b.WriteString("你是目标规划器。本轮唯一交付是 goal(action=\"plan\")。\n")
+		if strings.TrimSpace(projectPath) != "" {
+			b.WriteString(fmt.Sprintf("\n## 项目路径\n%s\n", projectPath))
+		}
+		return b.String()
+	}
+	if section := goalContinuationPhaseSection(source); section != "" {
+		b.WriteString(section)
+	}
 
 	if codingTaskLooksOperational(task) {
 		b.WriteString(`你是编程工作台里的操作执行器。当前任务是运行/构建/演示已有产物，不是实现新功能。
@@ -17517,6 +17702,34 @@ func appendSubAgentAcceptanceCriteriaList(b *strings.Builder, items []string, ma
 }
 
 // truncateRunesForSubAgent truncates a string to maxRunes, preferring paragraph boundaries.
+// truncateRunesKeepingTail keeps the closing contract of a host phase.
+// Head truncation drops goal(action=step|complete|fail), which is written
+// after the step history.
+func truncateRunesKeepingTail(s string, maxRunes int) string {
+	runes := []rune(s)
+	if maxRunes <= 0 || len(runes) <= maxRunes {
+		return s
+	}
+	tailRunes := maxRunes / 5
+	if tailRunes < 400 {
+		tailRunes = 400
+	}
+	if tailRunes >= maxRunes {
+		return string(runes[len(runes)-maxRunes:])
+	}
+	head := maxRunes - tailRunes
+	return string(runes[:head]) + "\n…\n" + string(runes[len(runes)-tailRunes:])
+}
+
+func goalContinuationTaskUserMessage(task *TaskItem, reqCtx string) string {
+	source := strings.TrimSpace(goalContinuationSource(task, reqCtx))
+	if source == "" {
+		return ""
+	}
+	body := truncateRunesKeepingTail(source, codingSubAgentTaskDescriptionMaxRunes)
+	return compactCodingSubAgentTaskUserMessage(goalContinuationPhaseSection(source) + body)
+}
+
 func truncateRunesForSubAgent(s string, maxRunes int) string {
 	runes := []rune(s)
 	if len(runes) <= maxRunes {
@@ -18219,8 +18432,9 @@ func applyCodingSubAgentToolHints(fn map[string]interface{}) {
 	props, _ := params["properties"].(map[string]interface{})
 	switch name {
 	case "bash":
-		appendCodingSubAgentToolDescription(fn, "Coding SubAgent bash is for read-only diagnostics and verification commands (test/build/lint/typecheck). Do not use bash to edit files, create/delete/move files, rewrite Git state, stage/commit/apply patches, or hide verifier failures with pipes/redirection/extra shell commands; use read_file/edit_file/edit_lines/write_file/git_diff instead.")
+		appendCodingSubAgentToolDescription(fn, "Coding SubAgent bash is for read-only diagnostics and verification commands (test/build/lint/typecheck). Do not use bash to edit files, create/delete/move files, rewrite Git state, stage/commit/apply patches, or hide verifier failures with pipes/redirection/extra shell commands; use read_file/edit_file/edit_lines/write_file/git_diff instead. Bash output is not a source read and does not unlock edit_file. Survey an indexed file with code_navigation or read_file. Read a line window with read_file start_line. Read one symbol with code_navigation operation node.")
 	case "read_file":
+		appendCodingSubAgentToolDescription(fn, "When codegraph has indexed the file and this call does not pass start_line or offset, the result is that file's symbol map, not the body. lines only caps a survey. Pass start_line or offset to read that window from disk; the window does not unlock edit_file. Call code_navigation with operation node for one symbol. A file codegraph does not index is read directly.")
 		ensureCodingSubAgentToolIntegerProp(props, "lines", "Max lines to read (optional, default 200, maximum 2000). Also accepts limit/num_lines/line_count.")
 		ensureCodingSubAgentToolIntegerProp(props, "start_line", "Starting line number, 1-based (optional). Also accepts start/startLine.")
 		ensureCodingSubAgentToolIntegerProp(props, "offset", "Read the last N lines of the file. Use this after adaptive output says earlier content was skipped or when inspecting logs/tails.")
@@ -18454,7 +18668,7 @@ func runTaskWithSubAgentRuntimeOptions(
 	// by construction; running the model loop anyway burns a full turn of
 	// tokens and then fails. Fail fast here with an actionable host-side
 	// diagnostic instead. Inquiry steps are read-only by design and pass.
-	if !verifiedBound && !sa.horizonPosture && !codingTaskLooksInquiry(task) && loopCtx != nil && isDesktopCodingOwner(loopCtx.UserID) {
+	if !verifiedBound && !sa.horizonPosture && !codingTaskLooksInquiry(task) && !taskIsGoalPlanPhase(task, reqCtx) && loopCtx != nil && isDesktopCodingOwner(loopCtx.UserID) {
 		taskTitle := ""
 		if task != nil {
 			taskTitle = task.Title

@@ -1,8 +1,11 @@
 package agentservice
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +13,7 @@ import (
 
 	"github.com/RapidAI/CodeClaw/corelib"
 	"github.com/RapidAI/CodeClaw/corelib/agent"
+	mcphttp "github.com/RapidAI/CodeClaw/corelib/mcp"
 	coretool "github.com/RapidAI/CodeClaw/corelib/tool"
 )
 
@@ -20,6 +24,9 @@ type boundMCPProviderStub struct {
 	called      MCPToolBinding
 	arguments   map[string]interface{}
 	err         error
+	// result, when set, is the successful tools/call body. An empty result
+	// keeps the historical "bound" stub text.
+	result string
 }
 
 type contractDriftMCPProviderStub struct {
@@ -111,7 +118,48 @@ func (s *boundMCPProviderStub) CallBoundTool(_ context.Context, _ Principal, bin
 	if s.err != nil {
 		return "", s.err
 	}
+	if s.result != "" {
+		return s.result, nil
+	}
 	return "bound", nil
+}
+
+func TestCallLocalToolProtocolErrorIsCompletedToolFailure(t *testing.T) {
+	reqReader, reqWriter := io.Pipe()
+	respReader, respWriter := io.Pipe()
+	client := &localMCPClient{stdin: reqWriter, stdout: bufio.NewReader(respReader), running: true}
+	t.Cleanup(func() {
+		_ = reqReader.Close()
+		_ = reqWriter.Close()
+		_ = respReader.Close()
+		_ = respWriter.Close()
+	})
+	go func() {
+		scanner := bufio.NewScanner(reqReader)
+		if !scanner.Scan() {
+			return
+		}
+		var req localJSONRPCRequest
+		if err := json.Unmarshal(scanner.Bytes(), &req); err != nil {
+			return
+		}
+		_ = json.NewEncoder(respWriter).Encode(localJSONRPCResponse{
+			JSONRPC: "2.0",
+			ID:      req.ID,
+			Error:   &mcphttp.JSONRPCProtocolError{Code: -32602, Message: "date is required"},
+		})
+	}()
+
+	_, err := (&MCPToolBridge{}).callLocalTool(client, "query_worklog", map[string]interface{}{})
+	var toolErr *mcphttp.ToolCallError
+	if !errors.As(err, &toolErr) || toolErr.Error() != "date is required" {
+		t.Fatalf("protocol error=%v", err)
+	}
+
+	_, transportErr := (&MCPToolBridge{}).callLocalTool(&localMCPClient{}, "query_worklog", nil)
+	if transportErr == nil || errors.As(transportErr, &toolErr) || !strings.Contains(transportErr.Error(), "MCP tools/call failed") {
+		t.Fatalf("transport err=%v", transportErr)
+	}
 }
 
 func TestParseMCPToolCallResultProjectsEnvelopeText(t *testing.T) {

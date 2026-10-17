@@ -483,6 +483,27 @@ func (h *IMMessageHandler) setStickyCodingStepStatuses(userID string, steps []co
 	h.emitCodingWorkbenchStepsUpdate(userID)
 }
 
+// recordOrchestratedCodingStepStatus writes one orchestrator plan step.
+// A single coding turn has one ledger outcome. Its runner index is not an
+// item of the checklist the agent published with todo_write, so painting that
+// outcome onto row 1 would leave the later rows looking independently passed.
+func (h *IMMessageHandler) recordOrchestratedCodingStepStatus(planned bool, userID string, index int, status, summary string) {
+	if !planned {
+		return
+	}
+	h.updateStickyCodingStepStatus(userID, index, status, summary)
+}
+
+// skipRemainingOrchestratedCodingSteps marks later plan steps skipped after a
+// real plan step fails. An agent checklist is not that plan: skipping its
+// later rows would report work the agent already finished as not done.
+func (h *IMMessageHandler) skipRemainingOrchestratedCodingSteps(planned bool, userID string, afterIndex int, reason string) {
+	if !planned {
+		return
+	}
+	h.markRemainingCodingStepsSkipped(userID, afterIndex, reason)
+}
+
 func (h *IMMessageHandler) updateStickyCodingStepStatus(userID string, index int, status, summary string) {
 	if h == nil || index < 1 {
 		return

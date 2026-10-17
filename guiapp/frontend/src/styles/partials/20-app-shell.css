@@ -1725,6 +1725,230 @@ details[open] > .assistant-reasoning-summary::before { transform: rotate(90deg);
     }
     .assistant-reasoning-live-dot { animation: none; }
 }
+
+/* Live tool strip under the thinking panel. A new call falls like a station split-flap. */
+.assistant-tool-flip {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    height: 30px;
+    width: max-content;
+    max-width: 100%;
+    min-width: 0;
+    margin: 0 0 8px;
+    padding: 0 10px 0 9px;
+    box-sizing: border-box;
+    border: 1px solid;
+    border-radius: 8px;
+    isolation: isolate;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42), 0 1px 1px rgba(15, 23, 42, 0.05);
+}
+.assistant-tool-flip-window {
+    position: relative;
+    flex: 0 1 auto;
+    min-width: 0;
+    min-height: 0;
+    height: 100%;
+    overflow: hidden;
+}
+.assistant-tool-flip[data-dark="true"] {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.14), 0 1px 2px rgba(0, 0, 0, 0.28);
+}
+.assistant-tool-flip.is-flipping {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.72), 0 8px 14px rgba(15, 23, 42, 0.16);
+}
+.assistant-tool-flip[data-dark="true"].is-flipping {
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28), 0 8px 16px rgba(0, 0, 0, 0.45);
+}
+.assistant-tool-flip-dot {
+    width: 6px;
+    height: 6px;
+    flex: 0 0 auto;
+    border-radius: 50%;
+    background: var(--assistant-tool-flip-accent, currentColor);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--assistant-tool-flip-accent, currentColor) 18%, transparent);
+    animation: assistant-reasoning-dot-pulse 1.4s ease-in-out infinite;
+    z-index: 2;
+}
+.assistant-tool-flip-face {
+    position: relative;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    height: 100%;
+    min-width: 0;
+}
+.assistant-tool-flip-face--sizer {
+    visibility: hidden;
+    flex-direction: column;
+    align-items: flex-start;
+    width: max-content;
+    height: 100%;
+    overflow: hidden;
+    pointer-events: none;
+}
+.assistant-tool-flip-line {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    min-width: 0;
+}
+.assistant-tool-flip-face--sizer .assistant-tool-flip-line {
+    max-width: none;
+}
+.assistant-tool-flip-name,
+.assistant-tool-flip-arg {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    font-size: 12px;
+    line-height: 1.35;
+}
+.assistant-tool-flip-name {
+    position: relative;
+    flex: 0 1 auto;
+    min-width: 0;
+    font-weight: 650;
+}
+.assistant-tool-flip-name::after {
+    /* A light band crosses the tool name. The argument is a sibling and stays still. */
+    content: "";
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 42%;
+    pointer-events: none;
+    background: linear-gradient(100deg, transparent 0%, rgba(255, 255, 255, 0.08) 28%, rgba(255, 255, 255, 0.55) 50%, transparent 72%);
+    animation: assistant-tool-flip-sheen 1.6s linear infinite;
+}
+.assistant-tool-flip[data-dark="true"] .assistant-tool-flip-name::after {
+    background: linear-gradient(100deg, transparent 0%, rgba(255, 255, 255, 0.05) 28%, rgba(255, 255, 255, 0.28) 50%, transparent 72%);
+}
+.assistant-tool-flip.is-flipping .assistant-tool-flip-name::after,
+.assistant-tool-flip-face--sizer .assistant-tool-flip-name::after {
+    content: none;
+    animation: none;
+}
+.assistant-tool-flip-arg {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 36ch;
+    color: var(--assistant-tool-flip-muted, currentColor);
+    font-weight: 500;
+}
+.assistant-tool-flip-stage {
+    position: absolute;
+    inset: 0;
+}
+.assistant-tool-flip.is-flipping .assistant-tool-flip-window::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: calc(50% - 0.5px);
+    height: 1px;
+    background: rgba(15, 23, 42, 0.4);
+    z-index: 1;
+    pointer-events: none;
+}
+.assistant-tool-flip[data-dark="true"] .assistant-tool-flip-window::before {
+    background: rgba(0, 0, 0, 0.72);
+}
+.assistant-tool-flap-leaf {
+    position: absolute;
+    left: 0;
+    right: 0;
+    height: 50%;
+}
+.assistant-tool-flap-clip {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+}
+.assistant-tool-flap-leaf--top {
+    top: 0;
+    transform-origin: center bottom;
+    background: #f8fafc;
+    box-shadow: inset 0 -1px 0 rgba(15, 23, 42, 0.14);
+}
+.assistant-tool-flap-leaf--bottom {
+    bottom: 0;
+    transform-origin: center top;
+    background: #eef2f6;
+}
+.assistant-tool-flip[data-dark="true"] .assistant-tool-flap-leaf--top { background: #3c4458; }
+.assistant-tool-flip[data-dark="true"] .assistant-tool-flap-leaf--bottom { background: #2a3142; }
+.assistant-tool-flap-leaf-inner {
+    position: absolute;
+    left: 0;
+    width: 100%;
+    height: 200%;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+.assistant-tool-flap-leaf--top .assistant-tool-flap-leaf-inner { top: 0; }
+.assistant-tool-flap-leaf--bottom .assistant-tool-flap-leaf-inner { bottom: 0; }
+.assistant-tool-flip-face--enter {
+    animation: assistant-tool-flap-enter 280ms ease both;
+}
+.assistant-tool-flip-face--out {
+    z-index: 3;
+    animation: assistant-tool-flip-out 1200ms linear both;
+}
+.assistant-tool-flip-face--out::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(to bottom, rgba(255, 255, 255, 0.08), rgba(15, 23, 42, 0.28));
+    animation: assistant-tool-flap-shade 1200ms linear both;
+    pointer-events: none;
+}
+.assistant-tool-flip-face--in {
+    z-index: 3;
+    animation: assistant-tool-flip-in 1200ms linear both;
+}
+@keyframes assistant-tool-flap-enter {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+@keyframes assistant-tool-flap-shade {
+    0%, 18% { opacity: 0; }
+    100% { opacity: 1; }
+}
+@keyframes assistant-tool-flip-in {
+    0%, 22% { transform: perspective(340px) rotateX(90deg); }
+    86% { transform: perspective(340px) rotateX(-7deg); }
+    100% { transform: perspective(340px) rotateX(0deg); }
+}
+@keyframes assistant-tool-flip-out {
+    0% { transform: perspective(340px) rotateX(0deg); }
+    18% { transform: perspective(340px) rotateX(-3deg); }
+    100% { transform: perspective(340px) rotateX(-90deg); }
+}
+@keyframes assistant-tool-flip-sheen {
+    /* Travel is a percentage of the band. 42% width needs this span to clear the name. */
+    from { transform: translateX(-140%); }
+    to { transform: translateX(280%); }
+}
+@media (prefers-reduced-motion: reduce) {
+    .assistant-tool-flip-face--enter,
+    .assistant-tool-flip-face--in,
+    .assistant-tool-flip-face--out,
+    .assistant-tool-flip-face--out::after,
+    .assistant-tool-flip-dot,
+    .assistant-tool-flip-name::after {
+        animation: none;
+    }
+    .assistant-tool-flip-name::after { opacity: 0; }
+    .assistant-tool-flip-face--out { display: none; }
+    .assistant-tool-flip.is-flipping { box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.42); }
+}
 .ai-chat-scrollbar {
     scrollbar-width: auto;
     scrollbar-color: var(--theme-primary-soft) rgba(128, 128, 128, 0.08);

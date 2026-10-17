@@ -6,7 +6,7 @@ import type { AgentView } from "./agentViewTypes";
 import { appendPromptHistory, normalizePromptHistory, promptHistoryFromPersisted, PROMPT_HISTORY_LIMIT, type PromptHistoryAttachment, type PromptHistoryEntry } from "./promptHistory";
 import type { AIAssistantPanelHookState, AIAssistantPanelHookActions } from "./aiAssistantPanelTypes";
 import { localizeText } from "./aiAssistantI18n";
-import { normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey as normalizedProjectPathFromSessionKey, projectSessionKey, expertIdFromSessionKey, expertSessionKey } from "./aiAssistantPanelSessionUtils";
+import { normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey as normalizedProjectPathFromSessionKey, projectSessionKey, expertIdFromSessionKey, expertSessionKey, isHostGoalChecklistText, formatGoalChecklistFromRecord, goalChecklistMessageId, messageBelongsToSession, upsertGoalChecklistInHistory, type GoalChecklistRecord } from "./aiAssistantPanelSessionUtils";
 import { noteAIScrollStreamFlush, noteAIScrollStreamRoundEnd, noteAIScrollStreamToken } from "./assistantScrollDiag";
 import { findRolePrefixForDisplay, isBrowserEchoFieldLabel, stripRolePrefixForDisplay, truncateRolePrefixForDisplay } from "./rolePrefixDisplay";
 import { isHistoryResetCommandText } from "./composeAction";
@@ -15,6 +15,7 @@ import { reasoningHasCodingStatusMilestone, stripCodingWorkbenchStatusReasoning 
 import { clearAssistantRoundProse, isRejectedRoundContentToken, rejectStreamedAssistantContent, rejectedRoundContentToken } from "./assistantRoundProse";
 import { appendToolCallMarker, contentHasAssistantToolCall, isProgressOnlyToolAction, isTranscriptToolCallText, parseAssistantToolStatus, stripAssistantToolCallMarkers, type AssistantToolCall } from "./assistantToolCall";
 import { cleanReasoningTrailForBody, parkReplacedStreamInReasoning } from "./assistantReasoningBody";
+import { answerDesktopChatTask, appendChatTaskResultMessage, cancelDesktopChatTask, chatTaskCardMessage, chatTaskEventName, chatTasksToRestore, dispatchDesktopChatTask, isChatTaskResultResponse, listDesktopChatTasks, parseChatTaskEvent, steerDesktopChatTask, upsertChatTaskCard, upsertChatTaskList, type ChatTaskView } from "./chatTaskModel";
 
 export interface CancelAIAssistantResult {
     canceledText: string;
@@ -259,7 +260,57 @@ export function sanitizeAIAssistantStreamText(value: string): string {
 }
 
 function sanitizeAIAssistantFinalText(value: string): string {
-    return sanitizeAIAssistantStreamText(value).replace(/^[\x01\x02]/, '');
+    return stripLeakedReasoningProtocol(sanitizeAIAssistantStreamText(value).replace(/^[\x01\x02]/, ''));
+}
+
+// Gateways that already parsed a structured tool call still leave the model's
+// private closers in the thinking text. Drop the tags and the tool payload.
+// Prose that only mentions the words stays.
+const LEAKED_PROTOCOL_NAMES = ["thinking", "tool_value", "tool_name"];
+
+function hasLeakedReasoningProtocol(text: string): boolean {
+    if (!text || !text.includes("<")) return false;
+    const lower = text.toLowerCase();
+    let from = 0;
+    while (from < lower.length) {
+        const lt = lower.indexOf("<", from);
+        if (lt < 0) return false;
+        let rest = lower.slice(lt + 1);
+        if (rest.startsWith("/")) rest = rest.slice(1);
+        for (const name of LEAKED_PROTOCOL_NAMES) {
+            if (rest.startsWith(name)) {
+                const next = rest.charCodeAt(name.length);
+                // 62 '>', 32 space, 47 '/', 9 tab, 10 LF, 13 CR. End of string
+                // is an unfinished tag and still counts.
+                if (Number.isNaN(next) || next === 62 || next === 32 || next === 9 || next === 10 || next === 13 || next === 47) {
+                    return true;
+                }
+            } else if (name.startsWith(rest) && rest.length > 0) {
+                return true;
+            }
+        }
+        from = lt + 1;
+    }
+    return false;
+}
+
+function stripLeakedReasoningProtocol(text: string): string {
+    if (!hasLeakedReasoningProtocol(text)) return text;
+    const stripped = text
+        .replace(/<tool_value\b[^>]*>[\s\S]*?<\/tool_value>\s*/gi, '')
+        .replace(/<tool_name\b[^>]*>[\s\S]*?<\/tool_name>\s*/gi, '')
+        .replace(/<tool_value\b[^>]*>[\s\S]*$/gi, '')
+        .replace(/<tool_name\b[^>]*>[\s\S]*$/gi, '')
+        .replace(/<thinking\b[^>]*>([\s\S]*?)<\/thinking>/gi, '$1')
+        .replace(/<thinking\b[^>]*>([\s\S]*)$/gi, '$1')
+        .replace(/<\/?(?:thinking|tool_value|tool_name)\b[^>]*>/gi, '');
+    if (stripped === text) return text;
+    // Keep a leading indent. The leaked tags are a tail, so only that side
+    // is trimmed. A reply that is itself a <thinking> wrapper still sheds
+    // the newline the wrapper added.
+    let next = stripped.replace(/[ \t]+\n/g, '\n').replace(/\n{3,}/g, '\n\n').replace(/[ \t\n]+$/, '');
+    if (/^\s*</.test(text)) next = next.replace(/^(?:\r\n|\n|\r)/, '');
+    return next;
 }
 
 const AGENT_VIEW_EVENT = "agent-view";
@@ -500,7 +551,9 @@ export interface ChatMessage {
     // Legacy receipt kinds remain parseable so stale local history does not
     // break after upgrade. guideInjection marks a user bubble that steered the
     // running turn rather than starting an independent turn.
-    kind?: 'news' | 'trace' | 'taskContext' | 'guideReceipt' | 'guideRejection' | 'guideInjection';
+    kind?: 'news' | 'trace' | 'taskContext' | 'guideReceipt' | 'guideRejection' | 'guideInjection' | 'chatTask' | 'goalChecklist';
+    /** Background chat task card. The foreground turn stays free while this runs. */
+    chatTask?: import("./chatTaskModel").ChatTaskView;
     content: string;
     /** Local attachment metadata used only for compact user-bubble rendering. */
     attachments?: ChatAttachment[];
@@ -1095,6 +1148,9 @@ function buildClientContextMessages(messages: ChatMessage[], startIndex = 0): AI
             // was already consumed by the running loop. Re-sending it later as an
             // ordinary user turn would duplicate and misrepresent that steering.
             if (message.kind === 'guideInjection') return null;
+            // Host continuations were stored as user text. They are the checklist,
+            // not a later instruction from the user.
+            if (message.role === 'user' && isHostGoalChecklistText(message.content || '')) return null;
             const content = buildClientContextContent(message);
             if (!content) return null;
             return { role: message.role, content };
@@ -1618,16 +1674,27 @@ function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence
     // them from content tokens. They represent the model's thinking phase.
     if (delta.startsWith('\x01')) {
         const reasoningDelta = sanitizeAIAssistantFinalText(delta.slice(1));
-        if (!reasoningDelta) return message;
         const existingReasoning = message.reasoning || '';
+        // A closer can finish a tag that started in the previous delta. An
+        // empty delta is still worth a pass when that fragment is already shown.
+        if (!reasoningDelta && !hasLeakedReasoningProtocol(existingReasoning)) return message;
         // Status milestones are rendered as bullet lines in the same reasoning
         // panel. When the model begins streaming after one, keep the two sources
         // on separate lines instead of merging the first token into the status.
         const needsStatusBoundary = lastReasoningLineIsStatusBullet(existingReasoning) && !reasoningDelta.startsWith('\n');
-        const rawNextReasoning = existingReasoning
-            ? `${existingReasoning}${needsStatusBoundary ? '\n' : ''}${reasoningDelta}`
-            : reasoningDelta;
-        const nextReasoning = stripRolePrefixReasoning(rawNextReasoning);
+        const rawNextReasoning = !reasoningDelta
+            ? existingReasoning
+            : (existingReasoning
+                ? `${existingReasoning}${needsStatusBoundary ? '\n' : ''}${reasoningDelta}`
+                : reasoningDelta);
+        const reasoningWindow = `${existingReasoning.slice(-24)}${reasoningDelta}`;
+        const nextReasoning = stripRolePrefixReasoning(
+            hasLeakedReasoningProtocol(reasoningWindow) ? stripLeakedReasoningProtocol(rawNextReasoning) : rawNextReasoning,
+        );
+        if (!reasoningDelta) {
+            if (nextReasoning === (message.reasoning || '')) return message;
+            return { ...message, reasoning: nextReasoning || undefined };
+        }
         if (nextReasoning === message.reasoning) return message;
         // A turn becomes a coding timeline only after its first structured tool
         // event. Until then it remains an ordinary assistant reasoning stream.
@@ -1672,7 +1739,12 @@ function appendTokenToMessage(message: ChatMessage, delta: string, eventSequence
     const contentDelta = delta;
     if (!contentDelta) return message;
     const rawNextContent = message.content ? message.content + contentDelta : contentDelta;
-    const nextContent = stripRolePrefixFrontend(rawNextContent);
+    // Tags are short. Scan the new delta plus the previous tail instead of
+    // lowercasing the whole answer on every token.
+    const protocolWindow = `${(message.content || "").slice(-24)}${contentDelta}`;
+    const nextContent = stripRolePrefixFrontend(
+        hasLeakedReasoningProtocol(protocolWindow) ? stripLeakedReasoningProtocol(rawNextContent) : rawNextContent,
+    );
     logRolePrefixDiagnostic('append-token', rawNextContent, nextContent, {
         messageId: message.id,
         requestId: message.requestId,
@@ -3102,11 +3174,14 @@ function isLocalSessionEvent(event: AIAssistantStreamEvent): boolean {
 /** Returns true if the event belongs to the given active session key.
  * Used when the hook is serving a project tab; accepts events matching that session. */
 function isMatchingSessionEvent(event: AIAssistantStreamEvent, activeSessionKey: string): boolean {
-    const eventKey = event.session_key || '';
-    if (!activeSessionKey || activeSessionKey === 'desktop-user') {
+    // Task owners arrive as Windows paths (`C:\...`) while the open tab key is
+    // already normalized (`C:/...`). A raw compare drops a goal continuation
+    // whose foreground-start event was missed, so that step never appears.
+    const activeKey = normalizeRuntimeSessionKey(activeSessionKey);
+    if (!activeSessionKey || activeKey === 'desktop-user') {
         return isLocalSessionEvent(event);
     }
-    return eventKey === activeSessionKey;
+    return normalizeRuntimeSessionKey(event.session_key || '') === activeKey;
 }
 
 function matchesActiveRequest(round: ActiveRound, event: AIAssistantStreamEvent): boolean {
@@ -3431,6 +3506,27 @@ function createTraceMessage(content: string, fields: Array<{ label: string; valu
     };
 }
 
+const GOAL_CHECKLIST_PLACEHOLDERS = new Set([
+    "Goal checklist\nContinuing the current step",
+    "目标清单\n正在继续当前步骤",
+    "目標清單\n正在繼續目前步驟",
+]);
+
+function goalChecklistRecord(payload: unknown): GoalChecklistRecord | null {
+    if (!payload || typeof payload !== "object") return null;
+    return payload as GoalChecklistRecord;
+}
+
+function upsertGoalChecklistMessage(prev: ChatMessage[], sessionKey: string, content: string): ChatMessage[] {
+    const id = goalChecklistMessageId(sessionKey);
+    const existing = prev.find(message => message.id === id);
+    // A recovered round has no step list. Keep the checklist the host already published.
+    if (existing && GOAL_CHECKLIST_PLACEHOLDERS.has(content.trim())) {
+        return prev;
+    }
+    return upsertGoalChecklistInHistory(prev, sessionKey, content);
+}
+
 function createUserMessage(content: string, sessionKey?: string): ChatMessage {
     const ownerSessionKey = normalizeRuntimeSessionKey(sessionKey || getActiveSessionKey() || 'desktop-user');
     return {
@@ -3547,6 +3643,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const showConfirm = options?.showConfirm || nativeShowConfirm;
     const activeSessionKeyForEvents = useCallback(() => options?.activeSessionKey || getActiveSessionKey(), [options?.activeSessionKey]);
     const [messages, setMessages] = useState<ChatMessage[]>(loadPersistedMessages);
+    const [chatTasks, setChatTasks] = useState<ChatTaskView[]>([]);
     const messagesRef = useRef(messages);
     messagesRef.current = messages;
     const [promptHistory, setPromptHistory] = useState<PromptHistoryEntry[]>(loadPersistedPromptHistory);
@@ -3592,6 +3689,24 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const agentViewLifecycleSeqBySessionRef = useRef<Map<string, number>>(new Map());
     const agentViewsBySessionRef = useRef<Map<string, AgentView>>(new Map());
     const forgottenEventSessionsRef = useRef<Map<string, number>>(new Map());
+    useEffect(() => {
+        const off = subscribeEvent("goal-state-changed", (payload: unknown) => {
+            const record = goalChecklistRecord(payload);
+            const content = formatGoalChecklistFromRecord(record);
+            const userID = String(record?.user_id || "").trim();
+            if (!content || !userID) return;
+            const sessionKey = normalizeRuntimeSessionKey(userID);
+            const forgottenAt = forgottenEventSessionsRef.current.get(sessionKey);
+            if (forgottenAt && Date.now() - forgottenAt < FORGOTTEN_EVENT_SESSION_TTL_MS) return;
+            setMessages(prev => {
+                const ownsSession = prev.some(message => messageBelongsToSession(message, sessionKey));
+                const activeKey = normalizeRuntimeSessionKey(options?.activeSessionKey || getActiveSessionKey());
+                if (!ownsSession && activeKey !== sessionKey) return prev;
+                return upsertGoalChecklistMessage(prev, sessionKey, content);
+            });
+        });
+        return () => off();
+    }, [options?.activeSessionKey]);
 	// Fences async work that began before a session clear/forget. A late backend
 	// acceptance must not resurrect conversation UI the user explicitly cleared.
 	const sessionResetEpochsRef = useRef<Map<string, number>>(new Map());
@@ -4136,10 +4251,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     const goalContinuationDisplayText = useCallback((event: AIAssistantStreamEvent) => {
         const explicitDisplayText = event.display_text?.trim();
         if (explicitDisplayText) return explicitDisplayText;
-        const firstLine = (event.text || '').split(/\r?\n/)[0]?.trim() || '';
-        const objective = firstLine.replace(/^\[系统续接\]\s*/, '').trim();
-        if (objective) return `/goal ${objective}`;
-        return localizeText(uiLang, "/goal Continue goal", "/goal 继续推进目标", "/goal 繼續推進目標");
+        return localizeText(uiLang, "Goal checklist\nContinuing the current step", "目标清单\n正在继续当前步骤", "目標清單\n正在繼續目前步驟");
     }, [uiLang]);
 
     const ensureRoundPlaceholder = useCallback((generation: number) => {
@@ -4351,24 +4463,26 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         rememberInFlightRound(nextRound);
         setRoundState(nextRound);
         emitPetStateForAssistant('thinking', 'ai:event-round-start', 15000);
-        setMessages(prev => [
-            ...prev,
-            {
-                id: nextId(),
-                role: 'user',
-                content: displayText,
-                sessionKey,
-                timestamp: Date.now(),
-            },
-            {
+        const goalRound = requestId.startsWith('goal-cont-');
+        setMessages(prev => {
+            const base = goalRound
+                ? upsertGoalChecklistMessage(prev, sessionKey, displayText)
+                : [...prev, {
+                    id: nextId(),
+                    role: 'user' as const,
+                    content: displayText,
+                    sessionKey,
+                    timestamp: Date.now(),
+                }];
+            return [...base, {
                 id: assistantMessageId,
-                role: 'assistant',
+                role: 'assistant' as const,
                 content: '',
                 requestId,
                 sessionKey,
                 timestamp: Date.now(),
-            },
-        ]);
+            }];
+        });
         startResponseTimeout({ generation, assistantMessageId, requestId, source: 'ai:event-round' });
         return nextRound;
     }, [activeSessionKeyForEvents, clearTransientProgress, emitPetStateForAssistant, goalContinuationDisplayText, rememberInFlightRound, setRoundState, startResponseTimeout]);
@@ -4388,7 +4502,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             ...event,
             session_key: sessionKey,
             text: '',
-            display_text: localizeText(uiLang, "/goal Continue goal", "/goal 继续推进目标", "/goal 繼續推進目標"),
+            display_text: localizeText(uiLang, "Goal checklist\nContinuing the current step", "目标清单\n正在继续当前步骤", "目標清單\n正在繼續目前步驟"),
         });
     }, [activeSessionKeyForEvents, startEventDrivenForegroundRound, uiLang]);
 
@@ -4996,6 +5110,10 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
             // the round to never finalize if the user switches tabs mid-stream,
             // permanently locking the input box.
             const normalized = normalizeSendResponse(resp, preferences.showTraceEntry);
+            if (isChatTaskResultResponse(normalized)) {
+                setMessages(prev => appendChatTaskResultMessage(prev, normalized) as ChatMessage[]);
+                return;
+            }
             const responseRequestId = resolveSendRequestID(normalized) || '';
             if (responseRequestId.startsWith('goal-cont-')) {
                 recoverGoalContinuationRound({
@@ -5132,7 +5250,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     // appended assistant message keyed by the continuation request id.
     useEffect(() => {
         const handler = (payload: any) => {
-            let event: { request_id?: string; session_key?: string; kind?: string; text?: string };
+            let event: { request_id?: string; session_key?: string; kind?: string; text?: string; as_error?: boolean };
             try {
                 event = typeof payload === 'string' ? JSON.parse(payload) : payload;
             } catch {
@@ -5158,9 +5276,11 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
                 }
                 if (!text) return;
                 emitPetStateForAssistant('alert', 'ai:continuation-notice', 1500);
+                // as_error is a host failure (goal stop, missed plan). It stays
+                // an error row. A notice must not open a user bubble.
                 setMessages(prev => [...prev, {
                     id: nextId(),
-                    role: 'assistant' as const,
+                    role: (event.as_error ? 'error' : 'assistant') as 'error' | 'assistant',
                     content: text,
                     sessionKey,
                     timestamp: Date.now(),
@@ -5705,6 +5825,7 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         latestMessagesRef.current = [];
         lastPersistedPayloadRef.current = null;
         persistOnUnmountRef.current = false;
+        forgottenEventSessionsRef.current.set(normalizeRuntimeSessionKey(activeSessionKeyForEvents() || 'desktop-user'), Date.now());
         foregroundSendTailRef.current = Promise.resolve(true);
         foregroundSendTailsBySessionRef.current.clear();
         inFlightRoundsByRequestRef.current.clear();
@@ -6604,6 +6725,63 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
     // <AIAssistantPanel state={...panelState} actions={...panelActions} />,
     // eliminating the manual field-by-field mapping that caused #agentView-missing.
     // When useAIAssistant adds a new field, it flows through automatically.
+    const dispatchChatTask = useCallback(async (text: string, options?: { session_key?: string; project_path?: string }) => {
+        const prompt = String(text || "").trim();
+        if (!prompt) return false;
+        const sessionKey = String(options?.session_key || activeSessionKeyForEvents() || "desktop-user");
+        try {
+            const task = await dispatchDesktopChatTask({ text: prompt, sessionKey, projectPath: options?.project_path, lang: uiLang });
+            if (!task) {
+                setMessages(prev => [...prev, createErrorMessage("Background tasks are unavailable in this build.", sessionKey)]);
+                return false;
+            }
+            const now = Date.now();
+            setChatTasks(prev => upsertChatTaskList(prev, task));
+            setMessages(prev => [...prev, {
+                id: `chat-task-user-${task.id}`,
+                role: "user",
+                content: prompt,
+                sessionKey: task.sessionKey || sessionKey,
+                timestamp: now,
+            }, chatTaskCardMessage(task, now + 1) as ChatMessage]);
+            return true;
+        } catch (err: any) {
+            setMessages(prev => [...prev, createErrorMessage(err?.message || String(err), sessionKey)]);
+            return false;
+        }
+    }, [activeSessionKeyForEvents, uiLang]);
+
+    const cancelChatTask = useCallback(async (taskID: string) => {
+        await cancelDesktopChatTask(taskID);
+    }, []);
+    const steerChatTask = useCallback(async (taskID: string, text: string) => {
+        await steerDesktopChatTask(taskID, text);
+    }, []);
+    const answerChatTask = useCallback(async (taskID: string, text: string) => {
+        await answerDesktopChatTask(taskID, text);
+    }, []);
+
+    useEffect(() => {
+        if (!ready) return;
+        let cancelled = false;
+        void listDesktopChatTasks("").then(tasks => {
+            if (cancelled || tasks.length === 0) return;
+            setChatTasks(tasks);
+            const visible = chatTasksToRestore(tasks);
+            setMessages(prev => visible.reduce((messages, task) => upsertChatTaskCard(messages, task) as ChatMessage[], prev));
+        }).catch(() => {});
+        const unsubscribe = subscribeEvent(chatTaskEventName(), (payload: unknown) => {
+            const task = parseChatTaskEvent(payload);
+            if (!task) return;
+            setChatTasks(prev => upsertChatTaskList(prev, task));
+            setMessages(prev => upsertChatTaskCard(prev, task) as ChatMessage[]);
+        });
+        return () => {
+            cancelled = true;
+            unsubscribe();
+        };
+    }, [ready]);
+
     const panelState: AIAssistantPanelHookState = useMemo(() => ({
         messages,
         progressMessages,
@@ -6623,7 +6801,8 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         trialReflectEnabled,
         scrollToTopSeq,
         agentView,
-    }), [messages, progressMessages, sending, sendingSessionKey, busySessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, submittedPrompts, submittedPromptAttachments, draftInputValue, trialReflectEnabled, scrollToTopSeq, agentView]);
+        chatTasks,
+    }), [messages, progressMessages, sending, sendingSessionKey, busySessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, submittedPrompts, submittedPromptAttachments, draftInputValue, trialReflectEnabled, scrollToTopSeq, agentView, chatTasks]);
 
     const deactivateRecordingSession = useCallback((messageId: string) => {
         const id = String(messageId || "").trim();
@@ -6656,7 +6835,11 @@ export function useAIAssistant(options?: UseAIAssistantOptions) {
         submitAgentView,
         dismissAgentView,
         deactivateRecordingSession,
-    }), [browseFile, clearSelectedFile, setSelectedFiles, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView, deactivateRecordingSession]);
+        dispatchChatTask,
+        cancelChatTask,
+        steerChatTask,
+        answerChatTask,
+    }), [browseFile, clearSelectedFile, setSelectedFiles, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, doFetchNews, cancelSession, submitAgentView, dismissAgentView, deactivateRecordingSession, dispatchChatTask, cancelChatTask, steerChatTask, answerChatTask]);
 
     return { messages, submittedPrompts, submittedPromptAttachments, draftInputValue, progressMessages, sending, sendingSessionKey, busySessionKeys, streaming, streamingSessionKey, streamingSessionKeys, visualBusy, ready, initStatus, selectedFilePaths, trialReflectEnabled, agentView, browseFile, clearSelectedFile, removeSelectedFile, sendMessage, sendBtwMessage, sendMessageInBackground, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews: doFetchNews, scrollToTopSeq, cancelSession, injectSupplementary, guideLaunchReference, submitAgentView, dismissAgentView, panelState, panelActions };
 }

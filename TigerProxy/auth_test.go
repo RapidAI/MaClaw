@@ -98,7 +98,6 @@ func TestSelectAndSwitchAuthModeKeepsProfiles(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("AICODER_SKIP_CODEXPROXY_RELAUNCH", "1")
 	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
 
 	app := NewApp()
@@ -132,8 +131,12 @@ func TestSelectAndSwitchAuthModeKeepsProfiles(t *testing.T) {
 	if _, err := app.SaveUpstreamCredential("https://api.example.com/v1", "sk-custom", "gpt-4.1"); err != nil {
 		t.Fatalf("SaveUpstreamCredential: %v", err)
 	}
-	if _, err := app.SwitchAuthMode(AuthModeSSO); err != nil {
+	status, err := app.SwitchAuthMode(AuthModeSSO)
+	if err != nil {
 		t.Fatalf("switch back to sso: %v", err)
+	}
+	if !status.LoggedIn || !status.Running {
+		t.Fatal("saved login was not applied to the running proxy")
 	}
 	back, err := loadSettings()
 	if err != nil {
@@ -151,7 +154,6 @@ func TestSwitchAuthModeUsesCanonicalBaseURL(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("AICODER_SKIP_CODEXPROXY_RELAUNCH", "1")
 	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
 
 	app := NewApp()
@@ -190,7 +192,6 @@ func TestApplyOAuthResultIgnoresStaleLoginAfterSwitch(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("AICODER_SKIP_CODEXPROXY_RELAUNCH", "1")
 	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
 
 	app := NewApp()

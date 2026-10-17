@@ -189,6 +189,56 @@ func TestRunLoopOpenAICompatReceiptSurvivesOuterRetry(t *testing.T) {
 	}
 }
 
+func TestOpenCodeZenAgentReceiptAcceptsInjectedFreeTierTools(t *testing.T) {
+	rendered := []map[string]interface{}{{
+		"type": "function",
+		"function": map[string]interface{}{
+			"name": "web_search",
+			"parameters": map[string]interface{}{
+				"type":       "object",
+				"properties": map[string]interface{}{},
+			},
+		},
+	}}
+	cfg := corelib.MaclawLLMConfig{URL: "https://opencode.ai/zen/v1", Model: "deepseek-v4.1-flash-free", Protocol: "openai"}
+	prepared := prepareToolsForToolSurfaceReceipt(cfg, rendered)
+	names := map[string]bool{}
+	for _, tool := range prepared {
+		fn, _ := tool["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		names[name] = true
+	}
+	if !names["web_search"] || !names["bash"] || !names["read"] {
+		t.Fatalf("prepared tools = %#v", prepared)
+	}
+	client, err := NewToolSurfaceReceiptHTTPClientWithInvocationPolicy(
+		&http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(nil))}, nil
+		})},
+		prepared,
+		DefaultToolSurfaceInvocationPolicy(ToolSurfaceEnvelopeOpenAIChat),
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("create receipt client: %v", err)
+	}
+	_, body, err := llm.BuildOpenAIChatRequestData(cfg, []interface{}{map[string]interface{}{"role": "user", "content": "hi"}}, llm.OpenAIChatRequestOptions{
+		Stream: true, Tools: prepared, ExplicitToolReplacement: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request, err := http.NewRequest(http.MethodPost, "https://opencode.ai/zen/v1/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("OpenCode wire request was rejected: %v", err)
+	}
+	_ = response.Body.Close()
+}
+
 func TestPrepareToolsForToolSurfaceReceiptKeepsAnthropicDefinitions(t *testing.T) {
 	rendered := hubCompatReceiptToolDefinition()
 	for _, cfg := range []corelib.MaclawLLMConfig{{URL: "https://hub.mypapers.top/api/llm/v1", Model: "auto", Protocol: "anthropic"}} {

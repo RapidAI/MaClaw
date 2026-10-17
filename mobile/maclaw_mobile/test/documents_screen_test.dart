@@ -254,34 +254,6 @@ class _RecordingProcessDocumentsController extends DocumentsController {
   }
 }
 
-class _RecordingCreateDraftDocumentsController extends DocumentsController {
-  static final created =
-      <({String title, DocumentTemplate template, String content})>[];
-
-  @override
-  Future<DocumentsState> build() async => const DocumentsState();
-
-  @override
-  Future<void> createDraft({
-    required String title,
-    required DocumentTemplate template,
-    String content = '',
-  }) async {
-    created.add((title: title, template: template, content: content));
-    state = AsyncData(
-      DocumentsState(
-        draft: DocumentDraft(
-          id: 'draft-${created.length}',
-          title: title,
-          template: template,
-          markdown: content.isEmpty ? '# $title' : content,
-          updatedAt: DateTime.utc(2026, 7, 2),
-        ),
-      ),
-    );
-  }
-}
-
 class _HistoryDocumentsController extends DocumentsController {
   static final selected = <String>[];
 
@@ -554,7 +526,7 @@ void main() {
             _EmptyDocumentDraftHistoryController.new,
           ),
           documentsExportFileShareProvider.overrideWithValue(
-            (files, {text}) async {
+            (files, {text, subject}) async {
               sharedFiles.addAll(files.map((file) => file.path));
               sharedText = text;
               return ShareResult.unavailable;
@@ -617,7 +589,7 @@ void main() {
             _EmptyDocumentDraftHistoryController.new,
           ),
           documentsExportFileShareProvider.overrideWithValue(
-            (files, {text}) async {
+            (files, {text, subject}) async {
               sharedFiles.addAll(files.map((file) => file.path));
               sharedText = text;
               return ShareResult.unavailable;

@@ -40,7 +40,7 @@ func TestSetOpenCodeSessionHeaderIfNeeded(t *testing.T) {
 		t.Fatal(err)
 	}
 	SetOpenCodeSessionHeaderIfNeeded(req, "conv-1")
-	want := OpenCodeClientSessionID("conv-1")
+	want := OpenCodeDescendingSessionID("conv-1")
 	if got := req.Header.Get(OpenCodeSessionHeader); got != want {
 		t.Fatalf("session header = %q, want %q", got, want)
 	}
@@ -94,7 +94,7 @@ func TestSetOpenCodeSessionHeaderUsesContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	ApplyOpenCodeSessionHeader(req, MaclawLLMConfig{})
-	if got := req.Header.Get(OpenCodeSessionHeader); got != OpenCodeClientSessionID("from-ctx") {
+	if got := req.Header.Get(OpenCodeSessionHeader); got != OpenCodeDescendingSessionID("from-ctx") {
 		t.Fatalf("session header = %q, want the official id for from-ctx", got)
 	}
 }
@@ -115,12 +115,15 @@ func TestStableOpenCodeSessionIDIsDeterministic(t *testing.T) {
 func TestOpenCodeSessionHeaderIfNeeded(t *testing.T) {
 	t.Parallel()
 	name, value, ok := OpenCodeSessionHeaderIfNeeded("https://opencode.ai/zen/go/v1", "abc")
-	if !ok || name != OpenCodeSessionHeader || value != OpenCodeClientSessionID("abc") {
+	if !ok || name != OpenCodeSessionHeader || value != OpenCodeDescendingSessionID("abc") {
 		t.Fatalf("OpenCodeSessionHeaderIfNeeded = %q %q %v", name, value, ok)
 	}
-	official := OpenCodeClientSessionID("keep")
+	official := OpenCodeDescendingSessionID("keep")
 	if _, kept, ok := OpenCodeSessionHeaderIfNeeded("https://opencode.ai/zen/go/v1", official); !ok || kept != official {
 		t.Fatalf("official session id rewritten: %q", kept)
+	}
+	if _, got, ok := OpenCodeSessionHeaderIfNeeded("https://opencode.ai/zen/go/v1", OpenCodeClientSessionID("keep")); !ok || !strings.HasSuffix(got[4:16], "ffe") {
+		t.Fatalf("ascending session was kept: %q", got)
 	}
 	if _, _, ok := OpenCodeSessionHeaderIfNeeded("https://api.openai.com/v1", "abc"); ok {
 		t.Fatal("non-OpenCode URL returned a session header")
@@ -199,7 +202,7 @@ func TestApplyOpenCodeSessionHeaderOnHubManagedURL(t *testing.T) {
 func TestOpenCodeSessionHeaderForConfig(t *testing.T) {
 	t.Parallel()
 	name, value, ok := OpenCodeSessionHeaderForConfig(MaclawLLMConfig{URL: "https://opencode.ai/zen/go/v1", SessionID: "abc"})
-	if !ok || name != OpenCodeSessionHeader || value != OpenCodeClientSessionID("abc") {
+	if !ok || name != OpenCodeSessionHeader || value != OpenCodeDescendingSessionID("abc") {
 		t.Fatalf("OpenCodeSessionHeaderForConfig = %q %q %v", name, value, ok)
 	}
 	if _, _, ok := OpenCodeSessionHeaderForConfig(MaclawLLMConfig{URL: "https://api.openai.com/v1", SessionID: "abc"}); ok {
@@ -218,11 +221,11 @@ func TestApplyOpenCodeClientIdentityOnlyOnOpenCodeHost(t *testing.T) {
 	if got := req.Header.Get("User-Agent"); got != "opencode/"+OpenCodeClientVersion {
 		t.Fatalf("User-Agent = %q", got)
 	}
-	if got := req.Header.Get(OpenCodeSessionHeader); got != OpenCodeClientSessionID("conv-7") {
+	if got := req.Header.Get(OpenCodeSessionHeader); got != OpenCodeDescendingSessionID("conv-7") {
 		t.Fatalf("session = %q", got)
 	}
-	if req.Header.Get("x-opencode-client") != "" || req.Header.Get("x-opencode-request") != "" {
-		t.Fatal("unneeded OpenCode headers were added")
+	if req.Header.Get("x-opencode-client") != "cli" {
+		t.Fatalf("x-opencode-client = %q", req.Header.Get("x-opencode-client"))
 	}
 
 	again, err := http.NewRequest(http.MethodPost, "https://opencode.ai/zen/go/v1/chat/completions", nil)
@@ -230,7 +233,7 @@ func TestApplyOpenCodeClientIdentityOnlyOnOpenCodeHost(t *testing.T) {
 		t.Fatal(err)
 	}
 	again.Header.Set("User-Agent", "opencode/9.9.9")
-	official := OpenCodeClientSessionID("keep")
+	official := OpenCodeDescendingSessionID("keep")
 	again.Header.Set(OpenCodeSessionHeader, official)
 	ApplyOpenCodeSessionHeader(again, MaclawLLMConfig{URL: again.URL.String(), AgentType: "opencode"})
 	if got := again.Header.Get("User-Agent"); got != "opencode/9.9.9" {
@@ -298,14 +301,14 @@ func TestOpenCodeClientIdentityMatchesOfficialClient(t *testing.T) {
 	}
 
 	now := time.Date(2026, 10, 15, 12, 34, 56, 0, time.UTC)
-	id := openCodeClientSessionIDAt(now, "codexproxy", "hello")
+	id := openCodeClientSessionIDAt(now, openCodeTimeHex, "codexproxy", "hello")
 	if !regexp.MustCompile(`^ses_[0-9a-f]{12}[0-9A-Za-z]{14}$`).MatchString(id) {
 		t.Fatalf("session id = %q", id)
 	}
-	if id != openCodeClientSessionIDAt(now, "codexproxy", "hello") {
+	if id != openCodeClientSessionIDAt(now, openCodeTimeHex, "codexproxy", "hello") {
 		t.Fatal("session id changed for the same conversation")
 	}
-	if id == openCodeClientSessionIDAt(now, "codexproxy", "other") {
+	if id == openCodeClientSessionIDAt(now, openCodeTimeHex, "codexproxy", "other") {
 		t.Fatal("session id ignored the conversation")
 	}
 	encoded, err := strconv.ParseUint(id[4:16], 16, 64)
@@ -316,5 +319,9 @@ func TestOpenCodeClientIdentityMatchesOfficialClient(t *testing.T) {
 	wantMS := now.UnixMilli() & ((int64(1) << 36) - 1)
 	if gotMS != wantMS {
 		t.Fatalf("session timestamp = %d, want %d", gotMS, wantMS)
+	}
+	desc := openCodeClientSessionIDAt(now, openCodeDescendingTimeHex, "codexproxy", "hello")
+	if !strings.HasSuffix(desc[4:16], "ffe") || desc[16:] != id[16:] {
+		t.Fatalf("descending session = %q", desc)
 	}
 }

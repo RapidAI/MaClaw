@@ -395,7 +395,106 @@ func TestSQLiteStoreListActiveTaskStatusesByProjectRef(t *testing.T) {
 		t.Fatalf("untracked content edit status=%q, want completed", got)
 	}
 	if _, ok := active[`F:\test-prog`]; ok {
-		t.Fatalf("terminal ref surfaced: %v", active)
+		t.Fatalf("completed ref surfaced: %v", active)
+	}
+
+	// A failed turn is not a completed write. The task list has no other
+	// record of that outcome, so the newest failed row must stay visible.
+	failed, err := store.CreateTask(Task{TaskID: "failed-run", ProjectRef: `F:\goaltest`, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	failedAttempt, err := store.StartAttempt(failed.TaskID, "worker", time.Minute, PolicySnapshot{ProjectRoot: `F:\goaltest`, Mode: "local"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishAttempt(failedAttempt.AttemptID, "worker", FinishInput{Status: TaskFailed, SideEffectState: SideEffectObserved}, now); err != nil {
+		t.Fatal(err)
+	}
+	active, err = store.ListActiveTaskStatusesByProjectRef()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := active[`F:\goaltest`]; got != string(TaskFailed) {
+		t.Fatalf("failed ref status=%q, want failed", got)
+	}
+
+	// A child that finishes after the parent failed shares the ref. Dropping
+	// that completion must not drop the parent's failure with it.
+	childDone, err := store.CreateTask(Task{TaskID: "child-done", ParentTaskID: failed.TaskID, ProjectRef: `F:\goaltest`, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childDoneAttempt, err := store.StartAttempt(childDone.TaskID, "worker", time.Minute, PolicySnapshot{ProjectRoot: `F:\goaltest`, Mode: "local"}, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishAttempt(childDoneAttempt.AttemptID, "worker", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectObserved}, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	active, err = store.ListActiveTaskStatusesByProjectRef()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := active[`F:\goaltest`]; got != string(TaskFailed) {
+		t.Fatalf("completed child hid the parent failure: %q", got)
+	}
+
+	// A lease expiry marks the child interrupted and bumps its timestamp.
+	// That row is still not the task outcome.
+	childStopped, err := store.CreateTask(Task{TaskID: "child-stopped", ParentTaskID: failed.TaskID, ProjectRef: `F:\goaltest`, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childStoppedAttempt, err := store.StartAttempt(childStopped.TaskID, "worker", time.Minute, PolicySnapshot{ProjectRoot: `F:\goaltest`, Mode: "local"}, now.Add(1500*time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishAttempt(childStoppedAttempt.AttemptID, "worker", FinishInput{Status: TaskInterrupted, SideEffectState: SideEffectUncertain}, now.Add(1500*time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.CreateTask(Task{TaskID: "child-queued", ParentTaskID: failed.TaskID, ProjectRef: `F:\goaltest`, Mode: "local", CreatedAt: now.Add(1800 * time.Millisecond)}); err != nil {
+		t.Fatal(err)
+	}
+	active, err = store.ListActiveTaskStatusesByProjectRef()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := active[`F:\goaltest`]; got != string(TaskFailed) {
+		t.Fatalf("interrupted or queued child hid the parent failure: %q", got)
+	}
+
+	// A later completed run is the outcome. The older failure must not stick.
+	later, err := store.CreateTask(Task{TaskID: "later-ok", ProjectRef: `F:\goaltest`, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	laterAttempt, err := store.StartAttempt(later.TaskID, "worker", time.Minute, PolicySnapshot{ProjectRoot: `F:\goaltest`, Mode: "local"}, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishAttempt(laterAttempt.AttemptID, "worker", FinishInput{Status: TaskCompleted, SideEffectState: SideEffectObserved}, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	// A child that fails after the parent finished shares the ref and must not
+	// put the task back into the failed bucket.
+	child, err := store.CreateTask(Task{TaskID: "child-fail", ParentTaskID: later.TaskID, ProjectRef: `F:\goaltest`, Mode: "local"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	childAttempt, err := store.StartAttempt(child.TaskID, "worker", time.Minute, PolicySnapshot{ProjectRoot: `F:\goaltest`, Mode: "local"}, now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FinishAttempt(childAttempt.AttemptID, "worker", FinishInput{Status: TaskFailed, SideEffectState: SideEffectNone}, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	active, err = store.ListActiveTaskStatusesByProjectRef()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := active[`F:\goaltest`]; ok {
+		t.Fatalf("later success or failed child surfaced: %v", active)
 	}
 }
 

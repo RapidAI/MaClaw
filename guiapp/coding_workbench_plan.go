@@ -278,6 +278,32 @@ func isCodingInquiryTool(name string) bool {
 	}
 }
 
+// isGoalPlanPhaseTool is the read surface for a host goal plan turn.
+// The phase contract forbids workspace mutation, so bash and file writes
+// stay off the list; goal is appended by the caller after this filter.
+func isGoalPlanPhaseTool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "list_directory", "glob", "ripgrep", "read_file", "search_files", "search_file",
+		codeNavigationToolName, "coding_knowledge_search", "knowledge_search", "knowledge_image_search",
+		"ssh_read_file", "ssh_list_dir":
+		return true
+	default:
+		return false
+	}
+}
+
+func filterGoalPlanPhaseTools(tools []map[string]interface{}) []map[string]interface{} {
+	out := make([]map[string]interface{}, 0, len(tools))
+	for _, tool := range tools {
+		fn, _ := tool["function"].(map[string]interface{})
+		name, _ := fn["name"].(string)
+		if isGoalPlanPhaseTool(name) {
+			out = append(out, tool)
+		}
+	}
+	return out
+}
+
 func filterCodingInquiryTools(tools []map[string]interface{}) []map[string]interface{} {
 	out := make([]map[string]interface{}, 0, len(tools))
 	for _, tool := range tools {
@@ -2053,6 +2079,12 @@ func (h *IMMessageHandler) resolveCodingWorkbenchTasksWithDecision(
 		// Leaving it behind would let a later /plan approve execute stale work.
 		h.clearStickyPendingCodingPlan(userID)
 		return single, "", false
+	}
+	// The numbered lines in a goal continuation are instructions to call
+	// goal(action=plan|step). They are not a user-authored file-change plan,
+	// and the approval gate must not consume the turn before that tool runs.
+	if isGoalSystemContinuation(userText) {
+		return fallbackSingle("goal continuation")
 	}
 	// "继续" after a credit stop (or any hard stop) must keep the plan that
 	// already ran and execute only the steps that did not pass. A new

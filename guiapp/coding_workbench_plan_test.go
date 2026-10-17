@@ -2026,6 +2026,29 @@ func TestFinalizeFillsMissingMidPlanDeps(t *testing.T) {
 	}
 }
 
+func TestGoalContinuationIsNotAUserCodingPlan(t *testing.T) {
+	h := &IMMessageHandler{}
+	userID := stickyTestUserID(t)
+	text := "[系统续接] 先理解并分解目标，不要实现。\n\n目标：实现一个图形界面版支持中文显示的愤怒的小鸟游戏，需要有物理效果，有声音，画面精致\n\n本轮只做规划：\n1. 用你自己的话复述任务，确认你理解要交付的结果。\n2. 把任务分解成有序、可独立执行的步骤。\n3. 写出可以核对的验收标准。\n4. 调用 goal(action=\"plan\", understanding=\"...\", steps=[{\"title\":\"...\",\"detail\":\"...\"}], acceptance_criteria=[\"...\"]).\n"
+	tasks, plan, planned := h.resolveCodingWorkbenchTasks(userID, text, `F:\test-prog3`, stickyCodingWorkbenchMemory{}, nil, nil)
+	if planned || plan != "" || len(tasks) != 1 {
+		t.Fatalf("continuation must stay one task: planned=%v plan=%q tasks=%d", planned, plan, len(tasks))
+	}
+	if tasks[0].Title == "用你自己的话复述任务，确认你理解要交付的结果。" {
+		t.Fatalf("plan instructions were parsed as steps: %s", tasks[0].Title)
+	}
+	if _, pending := h.loadStickyPendingCodingPlan(userID); pending {
+		t.Fatal("continuation must not wait for /plan approve")
+	}
+	var streamed string
+	got := h.publishCodingRequestUnderstanding(userID, text, stickyCodingWorkbenchMemory{
+		SessionPlan: "实现一个图形界面版支持中文显示的愤怒的小鸟游戏，需要有物理效果，有声音，画面精致",
+	}, func(s string) { streamed += s })
+	if got != "" || strings.Contains(streamed, "改成图形界面版本") {
+		t.Fatalf("continuation was restated as a GUI port: %q streamed=%q", got, streamed)
+	}
+}
+
 func TestResolveCodingWorkbenchTasksSimpleSkipsPlanner(t *testing.T) {
 	h := &IMMessageHandler{}
 	userID := stickyTestUserID(t)

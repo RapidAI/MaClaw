@@ -168,21 +168,34 @@ func fileCompanionCanonicalPath(path string) (string, error) {
 }
 
 func fileCompanionCanonicalPathForOS(path, goos string) (string, error) {
+	identity, _, err := fileCompanionPathIdentityForOS(path, goos)
+	return identity, err
+}
+
+// fileCompanionPathIdentity is the canonical path plus the path with the
+// casing stored on disk. Windows lowercases the identity so two spellings
+// share one tab; the display path keeps the name the user sees.
+func fileCompanionPathIdentity(path string) (identity, display string, err error) {
+	return fileCompanionPathIdentityForOS(path, goruntime.GOOS)
+}
+
+func fileCompanionPathIdentityForOS(path, goos string) (identity, display string, err error) {
 	if strings.ContainsRune(path, 0) {
-		return "", errFileCompanionNULPath
+		return "", "", errFileCompanionNULPath
 	}
 	abs, err := filepath.Abs(path)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	resolved, err := filepath.EvalSymlinks(abs)
-	if err != nil || resolved == "" {
-		resolved = abs
+	display = abs
+	if resolved, rerr := filepath.EvalSymlinks(abs); rerr == nil && resolved != "" {
+		display = resolved
 	}
+	identity = display
 	if goos == "windows" {
-		resolved = strings.ToLower(resolved)
+		identity = strings.ToLower(identity)
 	}
-	return resolved, nil
+	return identity, display, nil
 }
 
 // fileCompanionSessionID is fc_ plus the first 16 bytes of SHA-256(canonical),

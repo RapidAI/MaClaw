@@ -30,7 +30,7 @@ type MCPToolView struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description,omitempty"`
 	InputSchema map[string]interface{} `json:"input_schema,omitempty"`
-	Annotations  *MCPToolAnnotations    `json:"annotations,omitempty"`
+	Annotations *MCPToolAnnotations    `json:"annotations,omitempty"`
 	// DeclaredCapabilities carries vendor self-declared external (x:) capability
 	// IDs. The wire field is the non-standard "x_capabilities" array a vendor
 	// MCP may include in a tools/list tool entry to name the capabilities its
@@ -787,27 +787,27 @@ func validateMCPCommandArgs(in []string) ([]string, error) {
 // command resolution). NODE_OPTIONS = --require /inspect-brk overrides are
 // also covered because NODE_OPTIONS is commonly used for code injection.
 var mcpEnvBlockedKeys = map[string]struct{}{
-	"path":               {},
-	"ld_preload":         {},
-	"ld_library_path":    {},
-	"dyld_insert_libs":   {},
-	"dyld_library_path":  {},
-	"pythonpath":         {},
-	"python_startup":     {},
-	"node_path":          {},
-	"node_options":       {},
-	"rubyopt":            {},
-	"rubylib":            {},
-	"perl5lib":           {},
-	"perl5opt":           {},
-	"bash_env":           {},
-	"env":                {},
-	"shellopts":          {},
-	"gconv_path":         {},
-	"pathext":            {},
-	"comspec":            {},
-	"systemroot":         {},
-	"windir":             {},
+	"path":              {},
+	"ld_preload":        {},
+	"ld_library_path":   {},
+	"dyld_insert_libs":  {},
+	"dyld_library_path": {},
+	"pythonpath":        {},
+	"python_startup":    {},
+	"node_path":         {},
+	"node_options":      {},
+	"rubyopt":           {},
+	"rubylib":           {},
+	"perl5lib":          {},
+	"perl5opt":          {},
+	"bash_env":          {},
+	"env":               {},
+	"shellopts":         {},
+	"gconv_path":        {},
+	"pathext":           {},
+	"comspec":           {},
+	"systemroot":        {},
+	"windir":            {},
 }
 
 // validateMCPEnv enforces that every env key is a regular identifier, that no
@@ -1219,33 +1219,33 @@ func (rt *userMCPRuntime) checkRemoteWithClient(client *http.Client, entry corel
 		rt.recordRemoteFailure(entry.ID)
 		return err
 	}
-		var parsed struct {
-			Result struct {
-				Tools []struct {
-					Name        string                 `json:"name"`
-					Description string                 `json:"description"`
-					InputSchema map[string]interface{} `json:"inputSchema"`
-					Annotations  *struct {
-						ReadOnlyHint    *bool `json:"readOnlyHint,omitempty"`
-						DestructiveHint *bool `json:"destructiveHint,omitempty"`
-					} `json:"annotations,omitempty"`
-					XCapabilities []string `json:"x_capabilities,omitempty"`
-				} `json:"tools"`
-			} `json:"result"`
+	var parsed struct {
+		Result struct {
+			Tools []struct {
+				Name        string                 `json:"name"`
+				Description string                 `json:"description"`
+				InputSchema map[string]interface{} `json:"inputSchema"`
+				Annotations *struct {
+					ReadOnlyHint    *bool `json:"readOnlyHint,omitempty"`
+					DestructiveHint *bool `json:"destructiveHint,omitempty"`
+				} `json:"annotations,omitempty"`
+				XCapabilities []string `json:"x_capabilities,omitempty"`
+			} `json:"tools"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(payload, &parsed); err != nil {
+		rt.recordRemoteFailure(entry.ID)
+		return fmt.Errorf("parse MCP tools/list response: %w", err)
+	}
+	tools := make([]MCPToolView, 0, len(parsed.Result.Tools))
+	for _, item := range parsed.Result.Tools {
+		view := MCPToolView{Name: item.Name, Description: item.Description, InputSchema: item.InputSchema}
+		if item.Annotations != nil {
+			view.Annotations = &MCPToolAnnotations{ReadOnlyHint: item.Annotations.ReadOnlyHint, DestructiveHint: item.Annotations.DestructiveHint}
 		}
-		if err := json.Unmarshal(payload, &parsed); err != nil {
-			rt.recordRemoteFailure(entry.ID)
-			return fmt.Errorf("parse MCP tools/list response: %w", err)
-		}
-		tools := make([]MCPToolView, 0, len(parsed.Result.Tools))
-		for _, item := range parsed.Result.Tools {
-			view := MCPToolView{Name: item.Name, Description: item.Description, InputSchema: item.InputSchema}
-			if item.Annotations != nil {
-				view.Annotations = &MCPToolAnnotations{ReadOnlyHint: item.Annotations.ReadOnlyHint, DestructiveHint: item.Annotations.DestructiveHint}
-			}
-			view.DeclaredCapabilities = toCapabilityIDs(item.XCapabilities)
-			tools = append(tools, view)
-		}
+		view.DeclaredCapabilities = toCapabilityIDs(item.XCapabilities)
+		tools = append(tools, view)
+	}
 	rt.mu.Lock()
 	state := rt.remote[entry.ID]
 	if state == nil {
@@ -1416,15 +1416,10 @@ type localJSONRPCRequest struct {
 }
 
 type localJSONRPCResponse struct {
-	JSONRPC string             `json:"jsonrpc"`
-	ID      int64              `json:"id"`
-	Result  json.RawMessage    `json:"result,omitempty"`
-	Error   *localJSONRPCError `json:"error,omitempty"`
-}
-
-type localJSONRPCError struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	JSONRPC string                        `json:"jsonrpc"`
+	ID      int64                         `json:"id"`
+	Result  json.RawMessage               `json:"result,omitempty"`
+	Error   *mcphttp.JSONRPCProtocolError `json:"error,omitempty"`
 }
 
 func newLocalMCPClient(entry corelib.LocalMCPServerEntry) *localMCPClient {
@@ -1555,7 +1550,7 @@ func (c *localMCPClient) sendRequest(method string, params interface{}) (json.Ra
 			continue
 		}
 		if resp.Error != nil {
-			return nil, fmt.Errorf("JSON-RPC error %d: %s", resp.Error.Code, resp.Error.Message)
+			return nil, resp.Error
 		}
 		return resp.Result, nil
 	}
@@ -1572,7 +1567,7 @@ func (c *localMCPClient) DiscoverTools() ([]MCPToolView, error) {
 			Name        string                 `json:"name"`
 			Description string                 `json:"description"`
 			InputSchema map[string]interface{} `json:"inputSchema"`
-			Annotations  *struct {
+			Annotations *struct {
 				ReadOnlyHint    *bool `json:"readOnlyHint,omitempty"`
 				DestructiveHint *bool `json:"destructiveHint,omitempty"`
 			} `json:"annotations,omitempty"`

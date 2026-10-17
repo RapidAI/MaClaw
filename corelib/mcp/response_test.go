@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -48,5 +49,29 @@ func TestToolCallContentProjectsTextAndRejectsToolErrors(t *testing.T) {
 	_, err = ToolCallContent(`{"isError":true,"content":[]}`)
 	if !errors.As(err, &toolErr) || toolErr.Error() != "unknown tool error" {
 		t.Fatalf("empty tool error=%v", err)
+	}
+}
+
+func TestJSONRPCProtocolErrorMatchesToolCallContent(t *testing.T) {
+	protocol := &JSONRPCProtocolError{Code: -32602, Message: "date is required"}
+	if protocol.Error() != "JSON-RPC error -32602: date is required" {
+		t.Fatalf("error string=%q", protocol.Error())
+	}
+	got, ok := JSONRPCToolCallError(protocol)
+	if !ok || got.Error() != "date is required" {
+		t.Fatalf("tool error=%v ok=%v", got, ok)
+	}
+	envelope := `{"jsonrpc":"2.0","id":1,"error":{"code":-32602,"message":"date is required"}}`
+	_, fromEnvelope := ToolCallContent(envelope)
+	var fromContent *ToolCallError
+	if !errors.As(fromEnvelope, &fromContent) || fromContent.Error() != got.Error() {
+		t.Fatalf("envelope=%v protocol=%v", fromEnvelope, got)
+	}
+	empty, ok := JSONRPCToolCallError(&JSONRPCProtocolError{Code: -32603})
+	if !ok || empty.Error() != "mcp tool call failed" {
+		t.Fatalf("empty protocol error=%v ok=%v", empty, ok)
+	}
+	if _, ok := JSONRPCToolCallError(fmt.Errorf("timeout waiting for response")); ok {
+		t.Fatal("transport loss must not be a completed tool error")
 	}
 }

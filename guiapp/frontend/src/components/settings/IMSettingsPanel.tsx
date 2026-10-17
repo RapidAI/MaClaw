@@ -4,6 +4,7 @@ import { IMAuditPanel } from '../remote/IMAuditPanel';
 import { ThirdPartyAccessSettings } from './ThirdPartyAccessSettings';
 import { QQBotSettings } from './QQBotSettings';
 import { TelegramBotSettings } from './TelegramBotSettings';
+import { SlackSettings } from './SlackSettings';
 import { WeixinSettings } from './WeixinSettings';
 import { LansengerSettings } from './LansengerSettings';
 import { IMSubTabs, type IMSubTab } from './IMSubTabs';
@@ -147,6 +148,16 @@ export const IMSettingsPanel = ({
                 setTelegramStatus={setTelegramStatus}
                 telegramLocalMode={telegramLocalMode}
                 setTelegramLocalModeState={setTelegramLocalModeState}
+                setIMAuditPlatform={setIMAuditPlatform}
+            />
+        )}
+
+        {imSubTab === 'slack' && (
+            <SlackSettings
+                config={config}
+                setConfig={setConfig}
+                lang={lang}
+                saveRemoteConfigField={saveRemoteConfigField}
                 setIMAuditPlatform={setIMAuditPlatform}
             />
         )}

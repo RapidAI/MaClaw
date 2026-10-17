@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestPersistentConversationMemoryRedactsSecretsBeforeDisk(t *testing.T) {
@@ -32,6 +33,137 @@ func TestPersistentConversationMemoryRedactsSecretsBeforeDisk(t *testing.T) {
 		if strings.Contains(serialized, secret) {
 			t.Fatalf("persisted conversation leaked %q: %s", secret, serialized)
 		}
+	}
+}
+
+func TestBackgroundPersistentConversationMemoryLoadsBeforeRead(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "conversation.json")
+	raw := []byte(`{"sessions":{"desktop-user":{"entries":[{"role":"user","content":"hello"}],"last_access":"2026-01-01T00:00:00Z"}}}`)
+	if err := os.WriteFile(storePath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cm := NewBackgroundPersistentConversationMemory(storePath)
+	defer cm.Stop()
+	entries := cm.Load("desktop-user")
+	if len(entries) != 1 {
+		t.Fatalf("background load = %#v", entries)
+	}
+	text, _ := entries[0].Content.(string)
+	if text != "hello" {
+		t.Fatalf("background load content = %#v", entries[0].Content)
+	}
+}
+
+func TestBackgroundLoadHookFinishesBeforeRead(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "conversation.json")
+	raw := []byte(`{"sessions":{"desktop-user":{"entries":[{"role":"user","content":"hello"}],"last_access":"2026-01-01T00:00:00Z"}}}`)
+	if err := os.WriteFile(storePath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	loaded := make(chan []ConversationEntry, 1)
+	cm := NewBackgroundPersistentConversationMemoryAfterLoad(storePath, func(*ConversationMemory) {
+		close(entered)
+		<-release
+	})
+	defer cm.Stop()
+	go func() {
+		loaded <- cm.Load("desktop-user")
+	}()
+	select {
+	case <-entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("load hook did not run")
+	}
+	select {
+	case entries := <-loaded:
+		t.Fatalf("read returned before the load hook finished: %#v", entries)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	select {
+	case entries := <-loaded:
+		if len(entries) != 1 {
+			t.Fatalf("entries after hook = %#v", entries)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("read stayed blocked after the load hook")
+	}
+}
+
+func TestBackgroundPersistentConversationMemoryServesRecoverySlot(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "conversation.json")
+	raw := []byte(`{"sessions":{"desktop-user":{"entries":[{"role":"user","content":"hello"}],"last_access":"2026-01-01T00:00:00Z","active_slot_id":"slot-1","unfinished_slot":{"slot_id":"slot-1","user_id":"desktop-user","status":"interrupted","source":"inflight_recovery","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}}}}`)
+	if err := os.WriteFile(storePath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cm := NewBackgroundPersistentConversationMemory(storePath)
+	defer cm.Stop()
+
+	done := make(chan error, 1)
+	go func() {
+		cm.Save("other-user", []ConversationEntry{{Role: "user", Content: "next"}})
+		done <- nil
+	}()
+
+	slots := cm.UnfinishedSlots()
+	if len(slots) != 1 || slots[0] == nil || slots[0].SlotID != "slot-1" {
+		t.Fatalf("background unfinished slots = %#v", slots)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("checkpoint during background load: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("save blocked behind the background load")
+	}
+	if err := cm.FlushNow(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), "hello") || !strings.Contains(string(got), "next") {
+		t.Fatalf("transcript lost a session: %s", got)
+	}
+}
+
+func TestPersistentConversationMemoryKeepsCleanToolTranscript(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "conversation.json")
+	raw := []byte(`{"sessions":{"desktop-user":{"entries":[{"role":"assistant","content":"calling","tool_calls":[{"id":"call-1","type":"function","function":{"name":"bash","arguments":"{}"}}]},{"role":"tool","content":"ok","tool_call_id":"call-1","tool_name":"bash","tool_outcome":"ok"}],"last_access":"2026-01-01T00:00:00Z"}}}`)
+	if err := os.WriteFile(storePath, raw, 0o644); err != nil {
+		t.Fatalf("write transcript: %v", err)
+	}
+
+	cm := NewPersistentConversationMemory(storePath)
+	cm.Stop()
+
+	got, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatalf("read transcript: %v", err)
+	}
+	if string(got) != string(raw) {
+		t.Fatalf("clean tool transcript was rewritten:\n got %s\nwant %s", got, raw)
+	}
+}
+
+func TestPersistentConversationMemoryKeepsSessionIDText(t *testing.T) {
+	storePath := filepath.Join(t.TempDir(), "conversation.json")
+	raw := []byte(`{"sessions":{"desktop-user":{"entries":[{"role":"user","content":"the payload key is \"session_id\""}],"last_access":"2026-01-01T00:00:00Z"}}}`)
+	if err := os.WriteFile(storePath, raw, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cm := NewPersistentConversationMemory(storePath)
+	cm.Stop()
+	got, err := os.ReadFile(storePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(raw) {
+		t.Fatalf("message text containing session_id was rewritten:\n got %s\nwant %s", got, raw)
 	}
 }
 
@@ -133,6 +265,26 @@ func TestPersistentConversationMemoryStripsPlainToolCallLeakBeforeDisk(t *testin
 	}
 	if !strings.Contains(serialized, "先执行远程检查") {
 		t.Fatalf("expected visible prefix to be preserved: %s", serialized)
+	}
+}
+
+func TestSanitizeConversationEntryDropsLeakedThinkingProtocol(t *testing.T) {
+	entry, changed := sanitizeConversationEntryForPersistence(ConversationEntry{
+		Role:             "assistant",
+		Content:          "让我调用web_search来获取北京天气。\n</tool_value>\n</thinking>",
+		ReasoningContent: "让我调用web_search来获取北京天气。\n</tool_value>\n</thinking>",
+	})
+	if !changed {
+		t.Fatal("expected protocol closers to change the stored turn")
+	}
+	content, _ := entry.Content.(string)
+	for _, got := range []string{content, entry.ReasoningContent} {
+		if strings.Contains(got, "tool_value") || strings.Contains(got, "</thinking>") {
+			t.Fatalf("persisted turn still has protocol tags: %q", got)
+		}
+		if got != "让我调用web_search来获取北京天气。" {
+			t.Fatalf("persisted text = %q", got)
+		}
 	}
 }
 

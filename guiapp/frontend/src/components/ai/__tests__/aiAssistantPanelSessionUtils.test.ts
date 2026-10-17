@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, archiveExpertTranscriptForProject, buildProjectTabRecentMessages, chatHistoriesEquivalent, coerceActiveAssistantTask, expertIDFromTaskTags, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, messageAfterSessionFloor, messageBelongsToSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration } from "../aiAssistantPanelSessionUtils";
+import { ACP_ASSISTANT_TAB_IDENTITY, activeAssistantTaskIdentity, archiveExpertTranscriptForProject, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, coerceActiveAssistantTask, expertIDFromTaskTags, formatGoalChecklistFromRecord, goalChecklistMessageId, isACPAssistantSessionKey, isAutoACPAssistantTabTaskItem, isVEAssistantTabTaskItem, messageAfterSessionFloor, messageBelongsToSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, sameActiveAssistantTask, shouldBlockAssistantTabOpenOnTaskRegistration, upsertGoalChecklistInHistory } from "../aiAssistantPanelSessionUtils";
 import type { ChatMessage } from "../useAIAssistant";
 
 describe("aiAssistantPanelSessionUtils", () => {
@@ -18,6 +18,187 @@ describe("aiAssistantPanelSessionUtils", () => {
         expect(chatHistoriesEquivalent([plain], [{ ...plain, reasoning: "a later streamed detail" }])).toBe(false);
         expect(chatHistoriesEquivalent([plain], [{ ...plain, actions: [{ label: "Apply", command: "apply", style: "primary" }] }])).toBe(false);
         expect(chatHistoriesEquivalent([plain], [plain])).toBe(true);
+    });
+
+    it("shows one goal checklist above the current reply", () => {
+        const userGoal = "/goal  设计并实现一个愤怒的小鸟游戏，图形版，使用c++语言，有物理效果，画面要精致。";
+        const collapsed = collapseHostGoalChecklist([
+            { id: "ask", role: "user", content: userGoal, timestamp: 1 },
+            { id: "created", role: "assistant", content: "目标已创建", timestamp: 2 },
+            { id: "plan", role: "user", content: "/goal 分解目标：设计并实现一个愤怒的小鸟游戏\n进度：第 1/50 轮", timestamp: 3 },
+            { id: "plan-reply", role: "assistant", content: "已分解", timestamp: 4 },
+            { id: "step1", role: "user", content: "/goal 执行步骤 1：环境与依赖盘点，锁定技术栈\n进度：第 2/50 轮", timestamp: 5 },
+            { id: "step1-reply", role: "assistant", content: "环境已盘点", timestamp: 6 },
+            { id: "step3", role: "user", content: "/goal 执行步骤 3：物理内核实现\n进度：第 4/50 轮", timestamp: 7 },
+            { id: "step3-reply", role: "assistant", content: "物理内核已完成", timestamp: 8 },
+            { id: "step4", role: "user", content: "/goal 执行步骤 4：渲染与美术表现层\n进度：第 5/50 轮", timestamp: 9 },
+            { id: "step4-reply", role: "assistant", content: "正在画渲染层", timestamp: 10 },
+        ]);
+        expect(collapsed.map(message => message.id)).toEqual([
+            "ask", "created", "plan-reply", "step1-reply", "step3-reply", "step4", "step4-reply",
+        ]);
+        expect(collapsed.find(message => message.id === "ask")?.role).toBe("user");
+        expect(collapsed.find(message => message.id === "ask")?.content).toBe(userGoal);
+        const card = collapsed.find(message => message.id === "step4");
+        expect(card?.role).toBe("system");
+        expect(card?.kind).toBe("goalChecklist");
+        expect(card?.content).toBe([
+            "目标清单",
+            "1. 环境与依赖盘点，锁定技术栈",
+            "3. 物理内核实现",
+            "→ 4. 渲染与美术表现层",
+            "进度：第 5/50 轮",
+        ].join("\n"));
+        expect(card?.content).not.toContain("/goal");
+    });
+
+    it("lists a later step without a status mark when the run returns to an earlier one", () => {
+        const collapsed = collapseHostGoalChecklist([
+            { id: "step4", role: "user", content: "/goal 执行步骤 4：渲染与美术表现层\n进度：第 5/50 轮", timestamp: 1 },
+            { id: "step4-reply", role: "assistant", content: "渲染了一半", timestamp: 2 },
+            { id: "step2", role: "user", content: "/goal 继续步骤 2/9：工程骨架\n进度：第 6/50 轮", timestamp: 3 },
+            { id: "step2-reply", role: "assistant", content: "补做骨架", timestamp: 4 },
+        ]);
+        expect(collapsed.find(message => message.kind === "goalChecklist")?.content).toBe([
+            "目标清单",
+            "→ 2. 工程骨架",
+            "4. 渲染与美术表现层",
+            "进度：第 6/50 轮",
+        ].join("\n"));
+    });
+
+    it("formats a goal checklist from the goal record", () => {
+        expect(formatGoalChecklistFromRecord({
+            phase: "execute",
+            objective: "愤怒的小鸟",
+            steps: [
+                { index: 1, title: "环境", status: "done" },
+                { index: 2, title: "工程骨架", status: "in_progress" },
+                { index: 3, title: "物理内核", status: "pending" },
+                { index: 4, title: "渲染", status: "failed" },
+            ],
+            turns_used: 3,
+            max_turns: 50,
+            tokens_used: 12,
+            token_budget: 100,
+        })).toBe([
+            "目标清单",
+            "✓ 1. 环境",
+            "→ 2. 工程骨架",
+            "○ 3. 物理内核",
+            "× 4. 渲染",
+            "进度：第 4/50 轮 | Token: 12/100",
+        ].join("\n"));
+        expect(formatGoalChecklistFromRecord({
+            phase: "execute",
+            steps: [
+                { index: 1, title: "环境", status: "done" },
+                { index: 2, title: "渲染", status: "complete" },
+            ],
+            turns_used: 4,
+            max_turns: 50,
+        })).toBe([
+            "目标清单",
+            "✓ 1. 环境",
+            "✓ 2. 渲染",
+            "正在核对验收",
+            "进度：第 5/50 轮",
+        ].join("\n"));
+        expect(formatGoalChecklistFromRecord({
+            phase: "plan",
+            objective: "实现登录",
+            turns_used: 0,
+            max_turns: 50,
+        })).toBe("目标清单\n正在分解：实现登录\n进度：第 1/50 轮");
+        expect(formatGoalChecklistFromRecord({ phase: "execute", steps: null, objective: "实现登录" })).toBe("");
+        const history = [{ id: "ask", role: "user" as const, content: "/goal  设计", timestamp: 1 }];
+        const card = "目标清单\n→ 2. 工程骨架\n○ 3. 物理内核";
+        const once = upsertGoalChecklistInHistory(history, "desktop-user:D:/tasks/bird", card);
+        expect(once[1]?.id).toBe(goalChecklistMessageId("desktop-user:D:\\tasks\\bird"));
+        expect(upsertGoalChecklistInHistory(once, "desktop-user:D:/tasks/bird", card)).toBe(once);
+        const snapshot = [{ id: "ask", role: "user" as const, content: "/goal  设计", timestamp: 1 }];
+        const live = [...snapshot, { id: "stream", role: "assistant" as const, content: "正在写物理", timestamp: 2 }];
+        const kept = nextGoalChecklistHistory({
+            history: snapshot,
+            liveHistory: live,
+            sessionKey: "desktop-user:D:/tasks/bird",
+            content: card,
+        });
+        expect(kept?.map(message => message.id)).toEqual(["ask", "stream", goalChecklistMessageId("desktop-user:D:/tasks/bird")]);
+        expect(nextGoalChecklistHistory({ history: [], sessionKey: "desktop-user", content: card })).toBeNull();
+        expect(nextGoalChecklistHistory({ history: live, cleared: true, sessionKey: "desktop-user", content: card })).toBeNull();
+        const bird = [{ id: "ask", role: "user" as const, content: "/goal  设计", timestamp: 1 }];
+        const other = [{ id: "other", role: "user" as const, content: "另一件事", timestamp: 2 }];
+        const initial = noteProjectTabLiveHistory({ tabId: "bird", messages: [] }, "bird", bird);
+        expect(initial).toEqual({ tabId: "bird", messages: bird });
+        const switched = noteProjectTabLiveHistory(initial, "other", bird);
+        expect(switched).toBe(initial);
+        expect(projectTabLiveMessages(switched, "other")).toBeUndefined();
+        expect(projectTabLiveMessages(switched, "bird")).toBe(bird);
+        const repeated = noteProjectTabLiveHistory(switched, "other", bird);
+        expect(repeated).toBe(switched);
+        const settled = noteProjectTabLiveHistory(repeated, "other", other);
+        expect(settled).toEqual({ tabId: "other", messages: other });
+        expect(projectTabLiveMessages(settled, "other")).toBe(other);
+    });
+
+    it("keeps the published checklist and moves it above the current reply", () => {
+        const published = "目标清单\n✓ 1. 环境\n→ 4. 渲染与美术表现层\n进度：第 5/50 轮";
+        const collapsed = collapseHostGoalChecklist([
+            { id: "list", role: "system", kind: "goalChecklist", content: published, timestamp: 1 },
+            { id: "early", role: "assistant", content: "环境已盘点", timestamp: 2 },
+            { id: "old", role: "user", content: "/goal 执行步骤 4：渲染与美术表现层\n进度：第 5/50 轮", timestamp: 3 },
+            { id: "current", role: "assistant", content: "正在画渲染层", timestamp: 4 },
+            { id: "placeholder", role: "system", kind: "goalChecklist", content: "目标清单\n正在继续当前步骤", timestamp: 5 },
+        ]);
+        expect(collapsed.map(message => message.id)).toEqual(["early", "list", "current"]);
+        expect(collapsed.find(message => message.id === "list")?.content).toBe(published);
+    });
+
+    it("keeps a stored step line when recovery only has the generic placeholder", () => {
+        const collapsed = collapseHostGoalChecklist([
+            { id: "step", role: "user", content: "/goal 执行步骤 4：渲染与美术表现层\n进度：第 5/50 轮", timestamp: 1 },
+            { id: "reply", role: "assistant", content: "正在画渲染层", timestamp: 2 },
+            { id: "placeholder", role: "system", kind: "goalChecklist", content: "目标清单\n正在继续当前步骤", timestamp: 3 },
+        ]);
+        expect(collapsed.map(message => message.id)).toEqual(["step", "reply"]);
+        expect(collapsed[0].content).toBe("目标清单\n→ 4. 渲染与美术表现层\n进度：第 5/50 轮");
+    });
+
+    it("keeps the checklist on the goal reply when the user speaks afterwards", () => {
+        const published = "目标清单\n→ 4. 渲染与美术表现层";
+        const collapsed = collapseHostGoalChecklist([
+            { id: "ask", role: "user", content: "/goal  设计并实现一个愤怒的小鸟游戏", timestamp: 1 },
+            { id: "created", role: "assistant", content: "目标已创建", requestId: "desktop-ai-1", timestamp: 2 },
+            { id: "list", role: "system", kind: "goalChecklist", content: published, timestamp: 3 },
+            { id: "goal-reply", role: "assistant", content: "正在画渲染层", requestId: "goal-cont-step4", timestamp: 4 },
+            { id: "note", role: "user", content: "先暂停一下", timestamp: 5 },
+            { id: "note-reply", role: "assistant", content: "已暂停", requestId: "desktop-ai-2", timestamp: 6 },
+        ]);
+        expect(collapsed.map(message => message.id)).toEqual(["ask", "created", "list", "goal-reply", "note", "note-reply"]);
+        expect(collapsed.find(message => message.id === "list")?.content).toBe(published);
+    });
+
+    it("follows a newer goal continuation that starts after the user note", () => {
+        const collapsed = collapseHostGoalChecklist([
+            { id: "list", role: "system", kind: "goalChecklist", content: "目标清单\n→ 4. 渲染与美术表现层", timestamp: 1 },
+            { id: "goal-reply", role: "assistant", content: "渲染层写了一半", requestId: "goal-cont-step4", timestamp: 2 },
+            { id: "note", role: "user", content: "继续做渲染", timestamp: 3 },
+            { id: "next", role: "assistant", content: "继续渲染", requestId: "goal-cont-step4b", timestamp: 4 },
+        ]);
+        expect(collapsed.map(message => message.id)).toEqual(["goal-reply", "note", "list", "next"]);
+    });
+
+    it("does not replay a host goal checklist as a later user turn", () => {
+        expect(buildProjectTabRecentMessages([
+            { id: "ask", role: "user", content: "设计并实现一个愤怒的小鸟游戏", timestamp: 1 },
+            { id: "step", role: "user", content: "/goal 执行步骤 3：物理内核实现\n进度：第 4/50 轮", timestamp: 2 },
+            { id: "list", role: "system", kind: "goalChecklist", content: "目标清单\n→ 3. 物理内核实现", timestamp: 3 },
+            { id: "assistant", role: "assistant", content: "物理内核已完成", timestamp: 4 },
+        ])).toEqual([
+            { role: "user", content: "设计并实现一个愤怒的小鸟游戏" },
+            { role: "assistant", content: "物理内核已完成" },
+        ]);
     });
 
     it("does not replay an injected guide as a later project-tab user turn", () => {

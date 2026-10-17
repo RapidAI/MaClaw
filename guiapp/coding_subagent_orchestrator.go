@@ -923,6 +923,8 @@ func subAgentRetryRecoveryHint(errSummary string) string {
 		strings.Contains(normalized, "running 0 tests") ||
 		strings.Contains(normalized, "0 tests found"):
 		return "The previous verification command succeeded without actually running tests or checks. Inspect the test selector/path/config, rerun a command that discovers real tests, or use a focused build/lint/typecheck fallback and explain why no tests exist."
+	case strings.Contains(normalized, "code_navigation") && strings.Contains(normalized, "operation") && strings.Contains(normalized, "node"):
+		return "Call code_navigation with operation node and the symbol to edit. That body is the current source and unlocks the edit. Do not read_file the whole source file."
 	case strings.Contains(normalized, "read_file") &&
 		(strings.Contains(normalized, "before") || strings.Contains(normalized, "snapshot") || strings.Contains(normalized, "快照") || strings.Contains(normalized, "已变化") || strings.Contains(normalized, "重新调用")):
 		return "Re-read the exact target file with read_file, then retry the edit using edit_file/edit_lines so the snapshot is fresh before modifying."

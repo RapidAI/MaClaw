@@ -1823,21 +1823,35 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 	// Finish turns a caller-supplied thinking value into reasoning_effort.
 	corelib.AddAutoDeepSeekThinkingObject(upstreamCfg, reqBody)
 	corelib.FinishOpenAIChatReasoningControls(upstreamCfg, reqBody)
-
-	data, err := json.Marshal(reqBody)
+	openCodePlan, openCodePlanned, err := planOpenCodeStream(provider, reqBody, upstreamModel)
 	if err != nil {
-		return nil, fmt.Errorf("marshal stream request: %w", err)
+		return nil, err
 	}
-	cfg := corelib.LLMEndpointProvider{
-		APIURL:             provider.APIURL,
-		APIKey:             provider.APIKey,
-		Model:              upstreamModel,
-		Protocol:           provider.Protocol,
-		WireAPI:            provider.WireAPI,
-		AgentType:          RequestAgentType(provider.AgentType),
-		UpstreamTimeoutSec: provider.UpstreamTimeoutSec,
-	}.MaclawLLMConfig()
-	cfg = corelib.BindOpenCodeSessionID(ctx, cfg)
+	if openCodePlanned && openCodePlan.responses {
+		return streamOpenCodeResponses(ctx, client, openCodePlan.cfg, reqBody, responseModel, dst)
+	}
+
+	var data []byte
+	var cfg corelib.MaclawLLMConfig
+	if openCodePlanned {
+		data = openCodePlan.payload
+		cfg = corelib.BindOpenCodeSessionID(ctx, openCodePlan.cfg)
+	} else {
+		data, err = json.Marshal(reqBody)
+		if err != nil {
+			return nil, fmt.Errorf("marshal stream request: %w", err)
+		}
+		cfg = corelib.LLMEndpointProvider{
+			APIURL:             provider.APIURL,
+			APIKey:             provider.APIKey,
+			Model:              upstreamModel,
+			Protocol:           provider.Protocol,
+			WireAPI:            provider.WireAPI,
+			AgentType:          RequestAgentType(provider.AgentType),
+			UpstreamTimeoutSec: provider.UpstreamTimeoutSec,
+		}.MaclawLLMConfig()
+		cfg = corelib.BindOpenCodeSessionID(ctx, cfg)
+	}
 	client = proxyStreamingHTTPClient(client, cfg)
 	var decorateWorkBuddy func(*http.Request)
 	client, provider, decorateWorkBuddy = prepareWorkBuddyStream(ctx, client, provider, upstreamModel)
@@ -1860,7 +1874,10 @@ func streamProviderToWriter(ctx context.Context, client *http.Client, provider *
 	if lb, ok := lobsterAIMaclawConfig(provider, upstreamModel); ok && strings.TrimSpace(lb.URL) != "" {
 		endpointURL = lb.URL
 	}
-	endpoint := corellm.BuildOpenAIChatCompletionsEndpoint(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(endpointURL, cfg.UserAgent()))
+	endpoint := openCodePlan.endpoint
+	if !openCodePlanned {
+		endpoint = corellm.BuildOpenAIChatCompletionsEndpoint(corelib.NormalizeGLMCodingPlanOpenAIBaseURL(endpointURL, cfg.UserAgent()))
+	}
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("build stream request: %w", err)
@@ -4107,6 +4124,9 @@ func forwardToProviderAttempts(ctx context.Context, client *http.Client, provide
 		return resp, err
 	}
 	if resp, handled, err := tryForwardLobsterAI(ctx, client, provider, body, upstreamModel, responseModel, retry); handled || err != nil {
+		return resp, err
+	}
+	if resp, handled, err := tryForwardOpenCode(ctx, client, provider, body, upstreamModel, responseModel, retry); handled || err != nil {
 		return resp, err
 	}
 	endpointProvider := corelib.LLMEndpointProvider{

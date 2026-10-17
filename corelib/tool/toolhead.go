@@ -7,7 +7,9 @@ package tool
 // RoleClassification instruct), so scoring the 49 first-party tools costs one
 // 49×D mat-vec and no extra embedding. It is meant for candidate injection
 // ("intent scope ∪ tool-head top-k (p ≥ θ) ∪ Track A top-N"), not top-1
-// selection. Trained offline by maclaw_reranker/scripts/qwen3_toolhead.py.
+// selection. Semantic planning unions that top-k into capability needs; the
+// legacy name router still injects it into condKeep. Neither path embeds
+// again. Trained offline by maclaw_reranker/scripts/qwen3_toolhead.py.
 //
 // JSON format (format = "maclaw-tool-head-ovr-v1"):
 //

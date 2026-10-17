@@ -310,6 +310,11 @@ func TestMailboxOAuthLoginStoresTokenOutsideConfig(t *testing.T) {
 	if len(store) != 2 {
 		t.Fatalf("keyring entries=%d", len(store))
 	}
+	rejected := `{"kind":"oauth","provider":"gmail","access_token":"ya29.old","refresh_token":"refresh-old","expiry":"2099-01-01T00:00:00Z"}`
+	got, err := app.replaceMailboxOAuth(context.Background(), saved, rejected)
+	if err != nil || !strings.Contains(got, "ya29.test") || strings.Contains(got, "refresh-old") {
+		t.Fatalf("access refresh used the rejected token: %s err=%v", got, err)
+	}
 }
 
 func TestWriteMailboxSecretBothSidesRollsBack(t *testing.T) {
@@ -407,5 +412,80 @@ func TestPutMailboxKeyringSplitsLongSecret(t *testing.T) {
 		if len(value) > mailboxKeyringChunkLimit {
 			t.Fatalf("key %s len %d", key, len(value))
 		}
+	}
+}
+
+type mailboxBrowseFake struct {
+	box     string
+	uid     uint32
+	listErr error
+}
+
+func (f *mailboxBrowseFake) Folders(context.Context, mailbox.Account, string) ([]mailbox.Folder, error) {
+	return []mailbox.Folder{{Name: "INBOX", Special: "inbox"}, {Name: "Junk", Special: "junk"}}, nil
+}
+func (f *mailboxBrowseFake) Browse(context.Context, mailbox.Account, string, string, int) (mailbox.BrowsePage, error) {
+	return mailbox.BrowsePage{
+		Folders:  []mailbox.Folder{{Name: "INBOX", Special: "inbox"}, {Name: "Junk", Special: "junk"}},
+		Box:      "INBOX",
+		Messages: []mailbox.MessageSummary{{UID: 3, From: "a@ex.com", Subject: "Hello"}},
+	}, nil
+}
+func (f *mailboxBrowseFake) List(_ context.Context, _ mailbox.Account, _, box string, _ int) ([]mailbox.MessageSummary, error) {
+	f.box = box
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	if box == "Empty" {
+		return nil, &mailbox.ClassError{Class: "empty", Message: mailbox.MsgEmpty}
+	}
+	return []mailbox.MessageSummary{{UID: 9, From: "a@ex.com", Subject: "Hello", Date: "2026-10-14"}}, nil
+}
+func (f *mailboxBrowseFake) Read(_ context.Context, _ mailbox.Account, _, _ string, uid uint32, _ int) (mailbox.Body, error) {
+	f.uid = uid
+	return mailbox.Body{MessageSummary: mailbox.MessageSummary{UID: uid, From: "a@ex.com", Subject: "Hello"}, Text: "plain note"}, nil
+}
+
+func TestMailboxBrowseListsFolderAndReadsMessage(t *testing.T) {
+	app := newDatabaseProfileTestApp(t)
+	installFakeMailboxKeyring(t)
+	id, err := app.MailboxAccountSave(map[string]interface{}{
+		"name": "Work", "address": "w@ex.com",
+		"inbound": map[string]interface{}{"host": "imap.example.com", "port": 993, "security": "tls", "username": "w"},
+	})
+	if err != nil || id == "" {
+		t.Fatal(err)
+	}
+	if err := app.MailboxAccountSetSecret(id, mailbox.SideInbound, "stored-secret"); err != nil {
+		t.Fatal(err)
+	}
+	fake := &mailboxBrowseFake{}
+	prev := mailboxToolBrowser
+	mailboxToolBrowser = fake
+	t.Cleanup(func() { mailboxToolBrowser = prev })
+
+	started, err := app.MailboxBrowseStart(id)
+	if err != nil || started["box"] != "INBOX" || len(started["messages"].([]map[string]interface{})) != 1 {
+		t.Fatalf("start=%v err=%v", started, err)
+	}
+	folders, err := app.MailboxBrowseFolders(id)
+	if err != nil || len(folders) != 2 || folders[0].Name != "INBOX" {
+		t.Fatalf("folders=%+v err=%v", folders, err)
+	}
+	messages, err := app.MailboxBrowseMessages(id, "Junk", 10)
+	if err != nil || fake.box != "Junk" || len(messages) != 1 || messages[0]["subject"] != "Hello" {
+		t.Fatalf("messages=%v box=%s err=%v", messages, fake.box, err)
+	}
+	empty, err := app.MailboxBrowseMessages(id, "Empty", 10)
+	if err != nil || len(empty) != 0 {
+		t.Fatalf("empty=%v err=%v", empty, err)
+	}
+	body, err := app.MailboxBrowseRead(id, "Junk", 9)
+	if err != nil || fake.uid != 9 || body["body"] != "plain note" || strings.Contains(body["body"].(string), mailbox.MsgUntrusted) {
+		t.Fatalf("body=%v err=%v", body, err)
+	}
+	fake.listErr = mailbox.ErrAuth
+	if _, err := app.MailboxBrowseMessages(id, "INBOX", 10); err == nil || err.Error() != mailbox.MsgAuth {
+		t.Fatalf("auth err=%v", err)
 	}
 }

@@ -138,6 +138,12 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 	// wizard opt-out, and the semantic planner reads this field rather than
 	// the workflow router (a cold message never enters that router).
 	loopCtx.NoWorkflowInterception = msg.NoWorkflowInterception
+	if loopCtx.ChatTaskID == "" && h.chatTurnMayDispatch(msg, opts.WorkflowAgentLoop, codingWorkbench) {
+		loopCtx.OfferChatTaskDispatch = true
+		if loopCtx.ForegroundChatBudget == 0 {
+			loopCtx.ForegroundChatBudget = desktopChatForegroundIterationBudget
+		}
+	}
 	h.beginInFlightTurn(msg.UserID, msg.Text, loopCtx)
 	defer h.endInFlightTurn(msg.UserID, loopCtx)
 	if loopCtx.IsCancelled() || h.hasCancelledTaskBoundary(msg.UserID) {
@@ -331,7 +337,9 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 						}
 						if relation == semanticResidueContinue || relation == semanticResidueUnclear {
 							loopCtx.semanticResidueRemaining = semanticResidueRemainingForOpenTurn(residue, planned)
-							loopCtx.semanticResidueLookupFacts = residue.LookupFacts && semanticReuseStoredLookupFacts(msg.Text, planned)
+							// planned still carries the open task's search label.
+							// Judge reuse from the sentence, not that inherited label.
+							loopCtx.semanticResidueLookupFacts = residue.LookupFacts && semanticStoredLookupFactsApply(msg.Text, planned, &bareIntent)
 						}
 						if applied {
 							semanticIntent = &rewritten
@@ -339,7 +347,7 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 							log.Printf("[semantic-routing] session residue %s user=%q primary=%s", relation, msg.UserID, rewritten.Primary)
 						}
 					}
-				} else if factsOnly && semanticReuseStoredLookupFacts(msg.Text, *semanticIntent) {
+				} else if factsOnly && semanticStoredLookupFactsApply(msg.Text, *semanticIntent, &bareIntent) {
 					loopCtx.semanticResidueLookupFacts = true
 				}
 				// Final verdict still unknown / non-capability: admit this
@@ -413,6 +421,9 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		opts.OnProgress("[Status] 正在整理上下文并准备模型请求")
 	}
 	systemPrompt := h.buildIMEntrySystemPrompt(msg, history, loopCtx, opts.WorkflowAgentLoop, opts.PhasePrompt, opts.AskUserContext, opts.PendingUserReplyContext, opts.CapabilityGapContext)
+	if loopCtx != nil && loopCtx.OfferChatTaskDispatch {
+		systemPrompt += h.chatTaskDispatchGuidance(msg.UserID)
+	}
 	promptElapsed := time.Since(promptStart)
 
 	if !unarmedRemote && (!codingWorkbench || opts.WorkflowAgentLoop) {

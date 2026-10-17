@@ -41,6 +41,9 @@ type desktopProcessHooks struct {
 	exitProcess    func(code int)
 	showWindow     func()
 	runMainStartup func(*App)
+	// chooseFiles replaces the system file dialog. Tests set it. Production
+	// leaves it nil and uses the native dialog.
+	chooseFiles func() ([]string, error)
 }
 
 type fileCompanionRuntime struct {
@@ -342,8 +345,15 @@ func (a *App) startCompanionProcess(argv []string) error {
 	return cmd.Start()
 }
 
-// ShowFileCompanion brings the companion window forward. It does not open the
-// file dialog. The window asks for a file only when it has no tab open.
+// ShowFileCompanion brings the companion forward.
+//
+// open-file is the process verb, not a document. A fresh companion with no
+// document arguments restores the last open files itself. This process only
+// picks files when there is nothing to restore, and it picks them here — the
+// main process was not started with that verb, so the dialog cannot hand the
+// verb back as a chosen path. A companion that is already running is revealed
+// and is not given the list again, so a second click does not reload a tab
+// the user is editing.
 func (a *App) ShowFileCompanion() error {
 	if a == nil {
 		return errors.New("app unavailable")
@@ -352,6 +362,10 @@ func (a *App) ShowFileCompanion() error {
 		a.revealFileCompanionWindow()
 		a.notifyFileCompanionShow()
 		return nil
+	}
+	if len(a.fileCompanionResumePaths()) == 0 {
+		_, err := a.ChooseFileCompanionFiles()
+		return err
 	}
 	exe, err := companionExecutable()
 	if err != nil {

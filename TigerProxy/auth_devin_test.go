@@ -34,7 +34,6 @@ func TestCompleteDevinLoginWithAPIKey(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("AICODER_SKIP_CODEXPROXY_RELAUNCH", "1")
 	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
 
 	app := NewApp()
@@ -133,7 +132,6 @@ func TestCompleteDevinLoginReadsTokenFromCallbackURL(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("AICODER_SKIP_CODEXPROXY_RELAUNCH", "1")
 	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
 
 	app := NewApp()
@@ -172,7 +170,6 @@ func TestCompleteDevinSessionUsesSelfServeHost(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("AICODER_SKIP_CODEXPROXY_RELAUNCH", "1")
 	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
 
 	app := NewApp()
@@ -199,7 +196,6 @@ func TestSupersededDevinLoginDoesNotReplaceSavedToken(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("AICODER_SKIP_CODEXPROXY_RELAUNCH", "1")
 	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
 
 	app := NewApp()
@@ -260,11 +256,10 @@ func TestSupersededDevinWaitReportsReplacement(t *testing.T) {
 	}
 }
 
-func TestDevinLoginOutsideDevinModeDoesNotArmRelaunch(t *testing.T) {
+func TestDevinLoginOutsideDevinModeKeepsCurrentAccount(t *testing.T) {
 	tmpHome := t.TempDir()
 	t.Setenv("HOME", tmpHome)
 	t.Setenv("USERPROFILE", tmpHome)
-	t.Setenv("AICODER_SKIP_CODEXPROXY_RELAUNCH", "1")
 	t.Setenv("AICODER_SKIP_CODEX_PROCESS_KILL", "1")
 
 	app := NewApp()
@@ -279,9 +274,6 @@ func TestDevinLoginOutsideDevinModeDoesNotArmRelaunch(t *testing.T) {
 	}
 	if _, err := app.CompleteDevinLoginWithToken("sk-ws-should-not-stick"); err != nil {
 		t.Fatal(err)
-	}
-	if app.takeRelaunchAfterAuth() {
-		t.Fatal("Devin login left a relaunch pending")
 	}
 	got, err := loadSettings()
 	if err != nil {

@@ -542,8 +542,8 @@ func TestLocalCodingSystemPromptIncludesTodoSection(t *testing.T) {
 	prompt := buildCodingSubAgentSystemPrompt(&TaskItem{
 		Index: 1, Title: "实现登录", Description: "实现用户登录并加测试",
 	}, "/tmp/proj", "", "", nil)
-	if !strings.Contains(prompt, "todo_write") {
-		t.Fatalf("local prompt missing todo section")
+	if !strings.Contains(prompt, "todo_write") || !strings.Contains(prompt, "宿主会拒绝纯文字收尾") {
+		t.Fatalf("local prompt missing checklist stop rule")
 	}
 }
 
@@ -591,6 +591,20 @@ func TestCodingAgentTodoChineseStatusAliases(t *testing.T) {
 	if items[0].Status != codingAgentTodoCompleted || items[1].Status != codingAgentTodoInProgress {
 		t.Fatalf("after CN status merge: %+v", items)
 	}
+	_, outcome = executeCodingAgentTodoWrite(&state, `{
+		"todos": [{"id":"2","status":"失败"}],
+		"merge": true
+	}`, nil, nil)
+	if outcome != codingToolOutcomeSuccess {
+		t.Fatal(outcome)
+	}
+	items = state.snapshot()
+	if items[1].Status != codingAgentTodoCancelled {
+		t.Fatalf("failed alias stayed open: %+v", items)
+	}
+	if got := openCodingAgentChecklistNudge(&state); got != "" {
+		t.Fatalf("settled after failed alias: %q", got)
+	}
 }
 
 func TestPublishCodingAgentTodosSkipsUnchangedEmit(t *testing.T) {
@@ -603,6 +617,57 @@ func TestPublishCodingAgentTodosSkipsUnchangedEmit(t *testing.T) {
 	mem := h.getStickyCodingWorkbenchMemory(userID)
 	if len(mem.StepStatuses) != 1 || mem.StepStatuses[0].Title != "x" {
 		t.Fatalf("%+v", mem.StepStatuses)
+	}
+}
+
+func TestOpenCodingAgentChecklistNudge(t *testing.T) {
+	if got := openCodingAgentChecklistNudge(nil); got != "" {
+		t.Fatalf("nil state nudge=%q", got)
+	}
+	var state codingAgentTodoState
+	if got := openCodingAgentChecklistNudge(&state); got != "" {
+		t.Fatalf("empty checklist nudge=%q", got)
+	}
+	items := []codingAgentTodoItem{
+		{ID: "1", Content: "Survey current modern-UI implementation", Status: codingAgentTodoCompleted},
+		{ID: "2", Content: "Pick the follow-up change", Status: codingAgentTodoCompleted},
+		{ID: "3", Content: "Implement the footer HUD split", Status: codingAgentTodoInProgress},
+		{ID: "4", Content: "Extend the visual assertion", Status: codingAgentTodoPending},
+		{ID: "5", Content: "Build and run selftest", Status: codingAgentTodoPending},
+	}
+	local := &codingSubAgentCallbacks{}
+	local.todos.applyTodoWrite(items, false)
+	got := local.OpenChecklistNudge()
+	if !strings.Contains(got, "Implement the footer HUD split") || !strings.Contains(got, "id=3") || !strings.Contains(got, "definition") || strings.Contains(got, "expected_revision=") {
+		t.Fatalf("nudge=%q", got)
+	}
+	remoteCB := &remoteCodingCallbacks{}
+	remoteCB.todos.applyTodoWrite(items, false)
+	if remote := remoteCB.OpenChecklistNudge(); remote != got {
+		t.Fatalf("remote nudge=%q local=%q", remote, got)
+	}
+	local.todos.applyTodoWrite([]codingAgentTodoItem{
+		{ID: "3", Status: codingAgentTodoCompleted},
+		{ID: "4", Status: codingAgentTodoCompleted},
+		{ID: "5", Status: codingAgentTodoCancelled},
+	}, true)
+	if got := local.OpenChecklistNudge(); got != "" {
+		t.Fatalf("settled checklist nudge=%q", got)
+	}
+}
+
+func TestCodingSubAgentStopFailureLeavesOtherHardExits(t *testing.T) {
+	items := []codingAgentTodoItem{{ID: "3", Content: "Implement the footer HUD split", Status: codingAgentTodoInProgress}}
+	handled, status, msg := codingSubAgentStopFailure(agent.LoopResult{
+		Error:    agent.ErrChecklistUnsettled,
+		HardExit: true,
+		Text:     "declared done",
+	}, items)
+	if !handled || status != TaskExecFailed || !strings.Contains(msg, checklistUnsettledUserMessage) || !strings.Contains(msg, "Implement the footer HUD split") {
+		t.Fatalf("handled=%v status=%s msg=%q", handled, status, msg)
+	}
+	if handled, _, _ := codingSubAgentStopFailure(agent.LoopResult{HardExit: true}, items); handled {
+		t.Fatal("plain hard exit should keep its existing message")
 	}
 }
 

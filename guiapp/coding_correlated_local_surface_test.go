@@ -214,6 +214,9 @@ func TestRemoteCodingPreDispatchGateDiagnostic(t *testing.T) {
 	if diag := newAgent(codingRequestInquiry, false).preDispatchGateDiagnostic(false, "explain the code"); diag != "" {
 		t.Fatalf("inquiry step must stay read-only by design, got %q", diag)
 	}
+	if diag := newAgent(codingRequestImplementation, false).preDispatchGateDiagnostic(false, "[系统续接][plan] 先理解并分解目标，不要实现。\n本轮只做规划"); diag != "" {
+		t.Fatalf("goal plan phase must not require a writable desktop relation, got %q", diag)
+	}
 	if diag := newAgent(codingRequestImplementation, true).preDispatchGateDiagnostic(true, "implement feature"); diag != "" {
 		t.Fatalf("retained verified relation must pass the gate, got %q", diag)
 	}

@@ -87,6 +87,16 @@ func (h *IMMessageHandler) classifyIMExecutionProfileAndSemantic(msg IMUserMessa
 // semantic verdict used by capability materialization, while making its L3
 // work part of the enclosing turn's cancellation tree.
 func (h *IMMessageHandler) classifyIMExecutionProfileAndSemanticContext(ctx context.Context, msg IMUserMessage, workflowAgentLoop, isAskUserResponse bool, recentHistory []string) (ExecutionProfile, *intent.ClassificationResult) {
+	// A goal continuation already has its phase. Classifying the host prompt
+	// as goal_manage binds the closed create/get/end adapter and hides the
+	// plan/step/complete tool the prompt names, so the turn never leaves
+	// planning. Keep the full registry, including that lifecycle tool.
+	// The shared-loop planner repeats this skip. Returning nil here is not
+	// enough on its own: an empty SemanticIntent used to be classified again
+	// inside semanticCallSurfaceForSharedTurn.
+	if goalContinuationTurn(msg.Text, msg.Platform) {
+		return fullExecutionProfile("goal continuation"), nil
+	}
 	structuralProfile, structurallyForced := hardStructuralFullExecutionProfile(msg, workflowAgentLoop, isAskUserResponse)
 	if h.getUnifiedClassifier() == nil && structurallyForced {
 		return structuralProfile, nil

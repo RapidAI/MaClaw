@@ -524,10 +524,15 @@ func codegraphMCPNavigate(root, bin, operation, query, question, file string, li
 	})
 }
 
-// codegraphMCPInvoke tries the proxy twice. The first budget is short because
-// a proxy that loses the race with the daemon falls back in-process and then
-// blocks on the database lock the daemon already holds. Closing that proxy
-// and opening another attaches to the daemon that is already listening.
+// errCodegraphProxyDegraded is the in-process fallback while the daemon is
+// alive. That process holds the database lock until it exits, so the fallback
+// cannot answer. The next proxy attaches to the daemon instead.
+var errCodegraphProxyDegraded = errors.New("codegraph mcp proxy is serving in-process while the daemon holds the database")
+
+// codegraphMCPInvoke tries the proxy twice. The first proxy can miss the
+// daemon, fall back in-process, and block on the database lock the daemon
+// already holds. That session is closed and the next one attaches to the
+// daemon that is already listening.
 func codegraphMCPInvoke(open func(context.Context) (*codegraphMCPSession, error), run func(context.Context, *codegraphMCPSession) (string, error)) (string, error) {
 	var last error
 	for attempt, budget := range []time.Duration{20 * time.Second, 40 * time.Second} {
@@ -536,19 +541,57 @@ func codegraphMCPInvoke(open func(context.Context) (*codegraphMCPSession, error)
 		if err != nil {
 			cancel()
 			last = err
-			if attempt == 1 || !errors.Is(err, context.DeadlineExceeded) {
+			if attempt == 1 || !codegraphMCPRetryable(err) {
 				return "", err
 			}
 			continue
 		}
 		text, err := run(ctx, session)
 		cancel()
-		if err == nil || attempt == 1 || !errors.Is(err, context.DeadlineExceeded) {
+		if err == nil || attempt == 1 || !codegraphMCPRetryable(err) {
 			return text, err
 		}
 		last = err
 	}
 	return "", last
+}
+
+func codegraphMCPRetryable(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errCodegraphProxyDegraded)
+}
+
+func codegraphProxyDegraded(stderr string) bool {
+	return strings.Contains(stderr, "serving this session in-process (degraded)")
+}
+
+// codegraphDaemonAlive reports that the daemon holding this database is still
+// running. CodeGraph keys that process on the nearest initialized index, which
+// can be a parent of the directory the session was opened with, and writes the
+// pid beside that database. A pid file in any other directory is not the lock.
+func codegraphDaemonAlive(root string) bool {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return false
+	}
+	index := codegraphNearestIndexRoot(root)
+	if index == "" {
+		return false
+	}
+	return codegraphDaemonPidAlive(index)
+}
+
+func codegraphDaemonPidAlive(root string) bool {
+	data, err := os.ReadFile(filepath.Join(root, codegraphDataDirName(), "daemon.pid"))
+	if err != nil {
+		return false
+	}
+	var info struct {
+		Pid int `json:"pid"`
+	}
+	if json.Unmarshal(data, &info) != nil || info.Pid <= 1 {
+		return false
+	}
+	return processAlive(info.Pid)
 }
 
 func (s *codegraphMCPSession) navigate(ctx context.Context, operation, query, question, file string, line int, repairRoot string) (string, error) {
@@ -561,10 +604,11 @@ func (s *codegraphMCPSession) navigate(ctx context.Context, operation, query, qu
 	for _, spec := range specs {
 		raw, err := s.callTool(ctx, spec.Tool, spec.Args)
 		if err != nil {
-			if errors.Is(err, context.DeadlineExceeded) {
-				// The proxy may be stuck forwarding to a daemon that accepted
-				// the socket and never sent hello. Drop it so the next call
-				// opens a new proxy. stop does not kill the detached daemon.
+			if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, errCodegraphProxyDegraded) {
+				// The proxy may be stuck on the daemon lock, or forwarding to a
+				// daemon that accepted the socket and never sent hello. Drop it
+				// so the next call opens a new proxy. stop does not kill the
+				// detached daemon.
 				s.abandon()
 			}
 			return "", err
@@ -573,10 +617,13 @@ func (s *codegraphMCPSession) navigate(ctx context.Context, operation, query, qu
 		if err != nil {
 			return "", err
 		}
-		// A miss is a successful tool result ("No callers found", "Symbol …
-		// not found"). Returning it would skip the CLI and text-search
-		// fallback. An empty result leaves the index usable.
+		// A symbol miss stays empty so the CLI can run. A file-level miss is
+		// already the open index's answer; the CLI reads that same database
+		// and only repeats the sentence while the daemon holds the lock.
 		if !codegraphOutputUseful(text) {
+			if codegraphMCPIndexedFileMiss(text) {
+				return text, nil
+			}
 			return "", nil
 		}
 		repaired, ok := codegraphMCPRepair(repairRoot, text, spec.Symbol, pin)
@@ -622,17 +669,28 @@ func codegraphMCPResultText(raw json.RawMessage) (string, error) {
 	return text, nil
 }
 
-// codegraphMCPUnindexed reports CodeGraph's own not-indexed tool errors.
-// The error is the first line of the tool result. A later source line that
-// quotes the same sentence must not throw the definition away.
+// codegraphMCPIndexedFileMiss reports that the open index has no such file.
+// The first letter line is the tool's own sentence. A later source line that
+// quotes it is still a hit.
+func codegraphMCPIndexedFileMiss(text string) bool {
+	line := strings.TrimSpace(codegraphFirstLetterLine(text))
+	if line == "" {
+		return false
+	}
+	return strings.HasPrefix(line, "No indexed file matches") || strings.HasPrefix(line, "No files indexed")
+}
+
+// codegraphMCPUnindexed reports that CodeGraph never queried an index.
+// That is not a file miss: the CLI can still open the database. The error is
+// the first line of the tool result. A later source line that quotes the same
+// sentence must not throw the definition away.
 func codegraphMCPUnindexed(text string) bool {
 	line := strings.TrimSpace(codegraphFirstLetterLine(text))
 	if line == "" {
 		return false
 	}
 	return strings.HasPrefix(line, "No CodeGraph project is loaded") ||
-		strings.Contains(line, "isn't indexed with codegraph") ||
-		strings.HasPrefix(line, "No indexed file matches")
+		strings.Contains(line, "isn't indexed with codegraph")
 }
 
 func codegraphMCPLocal(ctx context.Context, root, bin string) (*codegraphMCPSession, error) {
@@ -891,22 +949,82 @@ func (s *codegraphMCPSession) request(ctx context.Context, method string, params
 	if err != nil {
 		return nil, err
 	}
+	watchStop := make(chan struct{})
+	defer close(watchStop)
+	degraded := make(chan struct{})
+	if s.pipe.stderr != nil {
+		go func() {
+			ticker := time.NewTicker(40 * time.Millisecond)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-watchStop:
+					return
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					if !codegraphProxyDegraded(s.pipe.stderr()) {
+						continue
+					}
+					select {
+					case <-degraded:
+					default:
+						close(degraded)
+					}
+					return
+				}
+			}
+		}()
+	}
 	select {
 	case resp := <-responseC:
 		return resp.result, resp.err
+	case <-degraded:
+		// The daemon holding the lock will not release it. Attach on the
+		// retry. With no daemon, the in-process engine is the answer path
+		// and this call keeps waiting for it.
+		ticker := time.NewTicker(40 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case resp := <-responseC:
+				return resp.result, resp.err
+			default:
+			}
+			if codegraphDaemonAlive(s.root) {
+				select {
+				case resp := <-responseC:
+					return resp.result, resp.err
+				default:
+				}
+				s.abandon()
+				return nil, errCodegraphProxyDegraded
+			}
+			select {
+			case resp := <-responseC:
+				return resp.result, resp.err
+			case <-ticker.C:
+			case <-ctx.Done():
+				return nil, s.mcpWaitErr(ctx.Err())
+			}
+		}
 	case <-ctx.Done():
-		s.writeMu.Lock()
-		last := s.lastLine
-		s.writeMu.Unlock()
-		note := ""
-		if s.pipe.stderr != nil {
-			note = s.pipe.stderr()
-		}
-		if last == "" && note == "" {
-			return nil, ctx.Err()
-		}
-		return nil, fmt.Errorf("%w last=%q stderr=%q", ctx.Err(), last, note)
+		return nil, s.mcpWaitErr(ctx.Err())
 	}
+}
+
+func (s *codegraphMCPSession) mcpWaitErr(err error) error {
+	s.writeMu.Lock()
+	last := s.lastLine
+	s.writeMu.Unlock()
+	note := ""
+	if s.pipe.stderr != nil {
+		note = s.pipe.stderr()
+	}
+	if last == "" && note == "" {
+		return err
+	}
+	return fmt.Errorf("%w last=%q stderr=%q", err, last, note)
 }
 
 func (s *codegraphMCPSession) noteLine(line string) {
@@ -1025,15 +1143,19 @@ func codegraphFileURI(path string) string {
 	return "file:///" + slash
 }
 
-// abandon removes the proxy from the pool and closes it. The detached
-// per-project daemon keeps running. Stop is synchronous so a retry does not
-// open a second process while this one still holds the database.
+// abandon removes the proxy from the pool and ends it. The detached
+// per-project daemon keeps running. Kill first: an in-process fallback
+// blocked inside the database open does not observe stdin close, so stop's
+// grace wait would hold the retry until that wait expired.
 func (s *codegraphMCPSession) abandon() {
 	codegraphMCPMu.Lock()
 	if codegraphMCPPool[s.key] == s {
 		delete(codegraphMCPPool, s.key)
 	}
 	codegraphMCPMu.Unlock()
+	if s.pipe.kill != nil {
+		s.pipe.kill()
+	}
 	s.stop()
 }
 

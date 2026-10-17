@@ -1431,6 +1431,10 @@ type sharedAgentLoopCallbacks struct {
 	// successor input.
 	phase         agentLoopPhase
 	onProgress    tool.ProgressCallback
+	// suppressToolProgress skips the legacy progress card when the semantic
+	// path already published one for the same call. Trusted adapters such as
+	// web_search never enter that legacy path, so they need the semantic card.
+	suppressToolProgress bool
 	onToken       llm.TokenCallback
 	onNewRound    NewRoundCallback
 	events        agentruntime.EventSink
@@ -1799,6 +1803,9 @@ func (c *sharedAgentLoopCallbacks) IsToolAllowedForPromptProfile(name string, pr
 	if c.sessionTurnDeniesTools() {
 		return false
 	}
+	if c != nil && !goalPlanPhaseAllowsTool(c.userText, name) {
+		return false
+	}
 	// The companion's closed surface is decided here too, not only at
 	// exposure: a companion question is often short enough to be routed onto
 	// the light prompt, and the light allowlist knows nothing about these
@@ -1866,6 +1873,9 @@ func (c *sharedAgentLoopCallbacks) semanticLightLookup() bool {
 // is the text that made the model ask the user to re-authorize tools.
 func (c *sharedAgentLoopCallbacks) IsToolAllowed(name string) bool {
 	if c.sessionTurnDeniesTools() {
+		return false
+	}
+	if c != nil && !goalPlanPhaseAllowsTool(c.userText, name) {
 		return false
 	}
 	// Same closed surface as IsToolAllowedForPromptProfile: what is published
@@ -2698,6 +2708,11 @@ func (c *sharedAgentLoopCallbacks) PetitionToolCall(name string) (bool, string) 
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
+		return false, ""
+	}
+	// A plan continuation's surface is read-only plus goal. Granting bash or
+	// write_file here puts the mutation tools back onto the next request.
+	if !goalPlanPhaseAllowsTool(c.userText, name) {
 		return false, ""
 	}
 	// A spilled tool result names this reader in its footer. It is a host
@@ -3897,7 +3912,7 @@ func (c *sharedAgentLoopCallbacks) executeToolWithoutSemanticSurface(name, argsJ
 	// Emit here where argsJSON is available; OnToolCall only receives the name.
 	// Language follows GUI interface language (App.CurrentLanguage).
 	lang := c.handler.imUILang()
-	if c.onProgress != nil {
+	if c.onProgress != nil && !c.suppressToolProgress {
 		c.onProgress(userFacingToolProgressTextWithArgs(lang, name, argsJSON))
 	}
 	// Filter internal tool chatter the same way as the legacy agent-loop path so
@@ -4121,6 +4136,7 @@ func (c *sharedAgentLoopCallbacks) executeSemanticTool(functionName, argsJSON st
 	}
 	functionName = c.bindSemanticFunctionName(functionName, argsJSON)
 	if functionName == semanticToolsSearchName {
+		c.emitUserFacingToolProgress(functionName, argsJSON)
 		return c.runSemanticToolsSearch(argsJSON)
 	}
 	grant, ok := c.semanticSurface.grants[functionName]
@@ -4233,6 +4249,7 @@ func (c *sharedAgentLoopCallbacks) executeSemanticToolCallWithEpoch(functionName
 	}
 	functionName = c.bindSemanticFunctionName(functionName, argsJSON)
 	if functionName == semanticToolsSearchName {
+		c.emitUserFacingToolProgress(functionName, argsJSON)
 		return c.runSemanticToolsSearch(argsJSON)
 	}
 	grant, ok := c.semanticSurface.grants[functionName]
@@ -4378,7 +4395,7 @@ func (c *sharedAgentLoopCallbacks) executeCoordinatedSemanticToolCall(functionNa
 		// frozen mailbox draft) settles through the ordinary outcome path.
 		return result.Result
 	}
-	if c.usesUnifiedDynamicEffectCoordinator(selected) && (result.AwaitingReceipt || result.Unknown || result.Succeeded || result.ReasonCode == "dynamic_binding_stale" || strings.HasSuffix(result.ReasonCode, "_binding_stale") || strings.HasSuffix(result.ReasonCode, "_bound_execution_unavailable")) {
+	if c.usesUnifiedDynamicEffectCoordinator(selected) && (result.AwaitingReceipt || result.Unknown || result.Succeeded || result.ReasonCode == "dynamic_binding_stale" || result.ReasonCode == "mcp_tool_error" || strings.HasSuffix(result.ReasonCode, "_binding_stale") || strings.HasSuffix(result.ReasonCode, "_bound_execution_unavailable")) {
 		// The dynamic external-effect coordinator committed the host call and
 		// plan execution atomically with the operation state. Completing it
 		// again through the generic path would corrupt the one-way state
@@ -4386,6 +4403,16 @@ func (c *sharedAgentLoopCallbacks) executeCoordinatedSemanticToolCall(functionNa
 		delete(c.semanticSurface.pendingArtifacts, selected.ID)
 		if c.replanAfterSemanticLifecycleFailure(result.ReasonCode) {
 			return result.Result
+		}
+		if result.Succeeded && !result.AwaitingReceipt && !result.Unknown {
+			// A synchronous MCP or Skill observation is already succeeded.
+			// Advance the local closure so a dependant can run. Retire-only
+			// would leave the DAG waiting for a receipt that was just settled.
+			note, err := c.advanceSemanticToolSurface(selected.ID)
+			if err != nil {
+				return semanticAdvanceAfterSuccess(result.Result, err)
+			}
+			return result.Result + note
 		}
 		if err := c.retireSemanticToolSurface(functionName, selected.ID); err != nil {
 			return "[system rejected] semantic_plan_retire_failed"
@@ -5023,6 +5050,12 @@ func semanticHostObservedExternalSelection(selection tool.PlannedSelection) bool
 // semanticReceiptIntakeRejection refuses an unexecutable external selection
 // before PlanExecutor admits the grant. The inner gate remains for callers
 // that invoke the adapter directly.
+//
+// A dynamic MCP or Skill selection is not missing that boundary. Its receipt
+// is the dynamic effect coordinator, and an unreviewed MCP write also stops
+// for per-server confirmation, both inside executeSemanticDynamicProvider.
+// Applying the legacy host allow-list here rejected the call before either
+// could run, so an installed external-effect tool never executed.
 func (c *sharedAgentLoopCallbacks) semanticReceiptIntakeRejection(functionName string) string {
 	if c == nil || c.semanticSurface == nil {
 		return ""
@@ -5032,7 +5065,7 @@ func (c *sharedAgentLoopCallbacks) semanticReceiptIntakeRejection(functionName s
 		return ""
 	}
 	selection, found := semanticSelectionByID(c.semanticSurface.plan, grant.SelectionID)
-	if !found || !semanticReceiptBoundaryMissing(selection) {
+	if !found || !semanticReceiptBoundaryMissing(selection) || tool.SelectionIsDynamic(selection) {
 		return ""
 	}
 	return "[system rejected] external_effect_receipt_boundary_missing"
@@ -5094,9 +5127,11 @@ func (c *sharedAgentLoopCallbacks) executeBoundSemanticSelectionCanonicalWithCon
 	// and a class error must not fall through to the plain-string success
 	// projection.
 	if semanticMailboxSendReceiptSelection(selection) {
+		c.emitSemanticSelectionProgress(selection, string(canonicalArgs.CanonicalJSON))
 		return c.executeTrustedMailboxSend(ctx, canonicalArgs)
 	}
 	if semanticMailboxConfigureSelection(selection) {
+		c.emitSemanticSelectionProgress(selection, string(canonicalArgs.CanonicalJSON))
 		return c.executeTrustedMailboxConfigure(ctx, canonicalArgs)
 	}
 	// An external/sensitive selection may never pass through the legacy text
@@ -5119,6 +5154,11 @@ func (c *sharedAgentLoopCallbacks) executeBoundSemanticSelectionCanonicalWithCon
 	if reason, refused := semanticManagedInvocationRefusal(selection, canonicalArgs); refused {
 		return tool.SelectionExecutionResult{Result: semanticManagedMISRefusalText(selection.AdapterName, reason), Succeeded: false, ReasonCode: reason}
 	}
+	// Trusted adapters (web_search, web_fetch, clock, shell, …) never reach
+	// the legacy executor that already publishes a tool card. Publish the
+	// same card here, once, before the adapter runs. The legacy fallthrough
+	// suppresses its own copy so generate_pdf is not announced twice.
+	c.emitSemanticSelectionProgress(selection, string(canonicalArgs.CanonicalJSON))
 	result := c.executeBoundSemanticAdapterCanonical(selection, canonicalArgs, coordinated)
 	if semanticSelectionFailed(result) {
 		return tool.SelectionExecutionResult{Result: result, Succeeded: false, ReasonCode: "selection_execution_failed"}
@@ -6768,7 +6808,36 @@ func firstRequiredArtifactContract(contracts []tool.ArtifactContract) tool.Artif
 	return tool.FirstRequiredArtifactContract(contracts)
 }
 
+// emitUserFacingToolProgress publishes the same compact tool card the legacy
+// executor sends, so the desktop strip can show web_search and the other
+// trusted adapters that never enter that executor.
+func (c *sharedAgentLoopCallbacks) emitUserFacingToolProgress(name, argsJSON string) {
+	if c == nil || c.onProgress == nil || c.handler == nil {
+		return
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return
+	}
+	c.onProgress(userFacingToolProgressTextWithArgs(c.handler.imUILang(), name, argsJSON))
+}
+
+func (c *sharedAgentLoopCallbacks) emitSemanticSelectionProgress(selection tool.PlannedSelection, argsJSON string) {
+	name := tool.SemanticModelFunctionName(selection.AdapterName)
+	if name == "" {
+		name = strings.TrimSpace(selection.AdapterName)
+	}
+	c.emitUserFacingToolProgress(name, argsJSON)
+}
+
 func (c *sharedAgentLoopCallbacks) executeLegacyBoundAdapter(name, argsJSON string) string {
+	if c == nil {
+		return "[system rejected] semantic tool surface is unavailable"
+	}
+	// The semantic dispatcher already published this call's progress card.
+	prev := c.suppressToolProgress
+	c.suppressToolProgress = true
+	defer func() { c.suppressToolProgress = prev }()
 	return c.executeToolWithoutSemanticSurface(name, argsJSON)
 }
 
@@ -7772,6 +7841,11 @@ func (c *sharedAgentLoopCallbacks) systemPromptWithTaskAnchor(systemPrompt strin
 	if c == nil {
 		return systemPrompt
 	}
+	// The host phase outranks the chat prompt. A continuation that only
+	// appears in the user message is easy to answer in prose.
+	if section := goalContinuationPhaseSection(c.userText); section != "" {
+		systemPrompt = section + systemPrompt
+	}
 	return appendTaskIdentityAnchorPrompt(systemPrompt, c.taskAnchor)
 }
 
@@ -7870,8 +7944,12 @@ func (c *sharedAgentLoopCallbacks) OnLLMUsage(model string, inputTokens, outputT
 func (c *sharedAgentLoopCallbacks) LLMRequestContext(iteration int) (context.Context, func(error), error) {
 	if c != nil && c.loopCtx != nil {
 		ctx, end, _ := c.loopCtx.BeginReplannableOperation(context.Background())
+		caller := "shared_agent_loop"
+		if strings.TrimSpace(c.loopCtx.LLMCaller) != "" {
+			caller = strings.TrimSpace(c.loopCtx.LLMCaller)
+		}
 		trace := llm.RequestTrace{
-			Caller:    "shared_agent_loop",
+			Caller:    caller,
 			OwnerID:   c.userID,
 			RequestID: c.loopCtx.Runtime.RequestID,
 			LoopID:    c.loopCtx.ID,

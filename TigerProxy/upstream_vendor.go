@@ -33,18 +33,15 @@ type vendorCredential struct {
 
 func (a *App) applyVendorLogin(login vendorCredential) (Status, error) {
 	if strings.TrimSpace(login.AccessToken) == "" {
-		a.setRelaunchAfterAuth(false)
 		return Status{}, errors.New("登录未返回访问令牌")
 	}
 	a.settingsMu.Lock()
 	defer a.settingsMu.Unlock()
 	s, err := loadSettings()
 	if err != nil {
-		a.setRelaunchAfterAuth(false)
 		return Status{}, err
 	}
 	if s.ActiveAuthMode != "" && s.ActiveAuthMode != login.Mode {
-		a.setRelaunchAfterAuth(false)
 		return Status{}, fmt.Errorf("当前登录方式已切换，请在%s下重新登录", authModeLabel(login.Mode))
 	}
 	snapshotActiveProfile(&s)
@@ -82,11 +79,10 @@ func (a *App) applyVendorLogin(login vendorCredential) (Status, error) {
 	}
 	s = normalizeSettings(s)
 	if err := a.applySettingsWithRestart(s); err != nil {
-		a.setRelaunchAfterAuth(false)
 		return Status{}, err
 	}
 	go a.refreshModelsForActiveMode()
-	return a.statusMaybeRelaunch()
+	return a.Status()
 }
 
 // refreshVendorCredential renews a Qoder or WorkBuddy access token that is

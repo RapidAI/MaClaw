@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/RapidAI/CodeClaw/corelib/embedding"
+	"github.com/RapidAI/CodeClaw/corelib/intent"
 )
 
 type thFakeEmb struct {
@@ -88,6 +89,40 @@ func TestPutQuerySeedsFuseScores(t *testing.T) {
 	scores := h.FuseScoresWithQueryVec("q", seed, map[string]float64{"web_search": 1}, map[string]string{"web_search": "search the web"})
 	if scores["web_search"] <= 0 {
 		t.Fatalf("fused=%v", scores)
+	}
+}
+
+func TestToolHeadCandidatesAndAbstainInject(t *testing.T) {
+	dir := t.TempDir()
+	p := writeMiniToolHead(t, dir, "qwen3:1024", 4, []string{"web_search", "read_file"}, []float64{5, 0, 0, 0})
+	h, err := LoadToolHead(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	emb := thFakeEmb{id: "qwen3:1024", dim: 4, v: []float32{1, 0, 0, 0}}
+	r := NewRouter(nil)
+	if err := r.SetToolHead(h, emb, 0.3, 5); err != nil {
+		t.Fatal(err)
+	}
+	vec := []float32{1, 0, 0, 0}
+	got := r.ToolHeadCandidates(vec)
+	if len(got) == 0 || got[0].Tool != "web_search" {
+		t.Fatalf("candidates=%v", got)
+	}
+	// UIC abstained and the cached label has no vector. The live PreResolved
+	// vector is still the head's input, and condKeep must record the hit.
+	opts := RouteOptions{SkipUnifiedClassifier: true, PreResolved: &intent.ClassificationResult{
+		Primary: intent.LabelUnknown, Confidence: 0.3, Degraded: true, QueryVec: vec,
+	}}
+	if len(routeToolHeadVector(intent.ClassificationResult{}, opts)) != 4 {
+		t.Fatal("pre-resolved vector dropped")
+	}
+	keep := map[string]bool{}
+	r.mu.Lock()
+	r.applyToolHeadCondKeep(keep, routeToolHeadVector(intent.ClassificationResult{}, opts))
+	r.mu.Unlock()
+	if !keep["web_search"] {
+		t.Fatalf("abstain path did not inject, keep=%v", keep)
 	}
 }
 

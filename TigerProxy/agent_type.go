@@ -44,6 +44,20 @@ func printableAgentType(raw string) bool {
 	return true
 }
 
+// defaultCodexModelAlias is the model name written into Codex config.
+// Requests that use it are rewritten to the selected upstream model.
+const defaultCodexModelAlias = "auto"
+
+// codexModelAlias returns the stable model name Codex should request.
+// An empty setting uses auto.
+func codexModelAlias(s Settings) string {
+	alias := strings.TrimSpace(s.ModelAlias)
+	if alias == "" {
+		return defaultCodexModelAlias
+	}
+	return alias
+}
+
 // proxyClientName is the User-Agent the proxy sends upstream. An empty
 // setting keeps the historical QAgent identity.
 func proxyClientName(s Settings) string {

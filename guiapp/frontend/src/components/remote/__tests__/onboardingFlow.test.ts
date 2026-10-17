@@ -9,18 +9,26 @@ import {
 } from '../onboardingFlow';
 
 describe('onboardingFlow', () => {
-    it('keeps TigerClaw to SSO plus WeChat without LLM setup', () => {
-        const flow = getOnboardingFlow({ brandId: 'qianxin', freeTrial: false });
+    it('uses MaClaw official service for a fresh TigerClaw install', () => {
+        const flow = getOnboardingFlow({ brandId: 'qianxin', freeTrial: true });
 
         expect(isTigerClawBrand('qianxin')).toBe(true);
         expect(flow.isTigerclaw).toBe(true);
-        expect(flow.steps).toEqual(['sso', 'wechat']);
+        expect(flow.steps).toEqual(['register', 'wechat']);
         expect(flow.totalSteps).toBe(2);
         expect(flow.wxStep).toBe(2);
         expect(flow.llmStep).toBeNull();
-        expect(getOnboardingStepLabels(flow, 'en')).toEqual(['SSO Auth', 'WeChat']);
-        expect(getOnboardingStepDone(flow, { regDone: true, llmDone: true, wxCompleted: false })).toEqual([false, true, false]);
-        expect(isOnboardingComplete(flow, { regDone: true, llmDone: true, wxCompleted: true })).toBe(true);
+        expect(getOnboardingStepLabels(flow, 'en')).toEqual(['Account', 'WeChat']);
+        expect(getOnboardingStepDone(flow, { regDone: true, llmDone: false, wxCompleted: false })).toEqual([false, true, false]);
+        expect(isOnboardingComplete(flow, { regDone: true, llmDone: false, wxCompleted: true })).toBe(true);
+    });
+
+    it('keeps a manual LLM step for TigerClaw only when free trial is off', () => {
+        const flow = getOnboardingFlow({ brandId: 'qianxin', freeTrial: false });
+
+        expect(flow.steps).toEqual(['register', 'llm', 'wechat']);
+        expect(flow.llmStep).toBe(2);
+        expect(isOnboardingComplete(flow, { regDone: true, llmDone: false, wxCompleted: true })).toBe(false);
     });
 
     it('keeps standard free trial to register plus WeChat', () => {

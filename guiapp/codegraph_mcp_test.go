@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -208,6 +209,16 @@ func TestCodegraphMCPResultTextKeepsSourceThatMentionsIndexing(t *testing.T) {
 	if _, err := codegraphMCPResultText(raw); err == nil {
 		t.Fatal("expected unindexed error")
 	}
+	raw = []byte(`{"content":[{"type":"text","text":"No indexed file matches \"CMakeLists.txt\". Codegraph indexes source files; configs/docs it doesn't parse won't appear — Read those directly."}]}`)
+	text, err = codegraphMCPResultText(raw)
+	if err != nil || !codegraphMCPIndexedFileMiss(text) {
+		t.Fatalf("file miss = %q err=%v", text, err)
+	}
+	raw = []byte(`{"content":[{"type":"text","text":"## drawScene (function)\n\nNo indexed file matches \"render.cpp\" inside a comment\n"}]}`)
+	text, err = codegraphMCPResultText(raw)
+	if err != nil || codegraphMCPIndexedFileMiss(text) {
+		t.Fatalf("quoted file miss inside a hit = %q err=%v", text, err)
+	}
 }
 
 func TestCodegraphMCPSessionRoutesToolResult(t *testing.T) {
@@ -293,6 +304,46 @@ func TestCodegraphMCPMissIsNotAHit(t *testing.T) {
 	}
 }
 
+func TestCodegraphMCPIndexedFileMissSkipsAnotherProcess(t *testing.T) {
+	responses := make(chan string, 4)
+	pipe := codegraphMCPPipe{
+		write: func(p []byte) error {
+			if bytes.Contains(p, []byte(`"initialize"`)) {
+				responses <- "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"protocolVersion\":\"2024-11-05\"}}\n"
+			}
+			if bytes.Contains(p, []byte(`"tools/call"`)) {
+				responses <- "{\"jsonrpc\":\"2.0\",\"id\":2,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"No indexed file matches \\\"CMakeLists.txt\\\". Codegraph indexes source files.\"}]}}\n"
+			}
+			return nil
+		},
+		read: func() (string, error) {
+			line, ok := <-responses
+			if !ok {
+				return "", io.EOF
+			}
+			return line, nil
+		},
+		stderr: func() string { return "" },
+	}
+	session := &codegraphMCPSession{
+		pipe:    pipe,
+		pending: map[string]chan codegraphMCPResponse{},
+		exited:  make(chan struct{}),
+	}
+	session.alive.Store(true)
+	go session.readLoop()
+	t.Cleanup(func() { session.alive.Store(false); close(responses) })
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := session.initialize(ctx); err != nil {
+		t.Fatal(err)
+	}
+	text, err := session.navigate(ctx, "file_symbols", "CMakeLists.txt", "CMakeLists.txt", "", 0, "")
+	if err != nil || !codegraphMCPIndexedFileMiss(text) || codegraphOutputUseful(text) {
+		t.Fatalf("file miss = %q err=%v", text, err)
+	}
+}
+
 func TestCodegraphMCPAbandonDropsPooledSession(t *testing.T) {
 	session := &codegraphMCPSession{
 		key:     "local\x00abandon-test",
@@ -310,6 +361,257 @@ func TestCodegraphMCPAbandonDropsPooledSession(t *testing.T) {
 	codegraphMCPMu.Unlock()
 	if ok {
 		t.Fatal("abandoned session stayed in the pool")
+	}
+}
+
+func TestCodegraphProxyDegradedLockAborts(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, codegraphDataDirName())
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "codegraph.db"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]int{"pid": os.Getpid()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "daemon.pid"), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	session := &codegraphMCPSession{
+		root:    root,
+		pending: map[string]chan codegraphMCPResponse{},
+		exited:  make(chan struct{}),
+		pipe: codegraphMCPPipe{
+			write: func([]byte) error { return nil },
+			read: func() (string, error) {
+				time.Sleep(time.Hour)
+				return "", io.EOF
+			},
+			stderr: func() string {
+				return "[CodeGraph MCP] Shared daemon unavailable; serving this session in-process (degraded).\n"
+			},
+		},
+	}
+	close(session.exited)
+	session.alive.Store(true)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	started := time.Now()
+	_, err = session.callTool(ctx, "codegraph_node", map[string]interface{}{"file": "render.cpp"})
+	if !errors.Is(err, errCodegraphProxyDegraded) {
+		t.Fatalf("err = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("lock wait = %s", elapsed)
+	}
+}
+
+func TestCodegraphProxyDegradedLockKillsBlockedProxy(t *testing.T) {
+	root := t.TempDir()
+	dataDir := filepath.Join(root, codegraphDataDirName())
+	if err := os.MkdirAll(dataDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "codegraph.db"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]int{"pid": os.Getpid()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "daemon.pid"), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	exited := make(chan struct{})
+	session := &codegraphMCPSession{
+		root:    root,
+		pending: map[string]chan codegraphMCPResponse{},
+		exited:  exited,
+		pipe: codegraphMCPPipe{
+			write: func([]byte) error { return nil },
+			read: func() (string, error) {
+				time.Sleep(time.Hour)
+				return "", io.EOF
+			},
+			close: func() {},
+			kill: func() {
+				select {
+				case <-exited:
+				default:
+					close(exited)
+				}
+			},
+			stderr: func() string {
+				return "[CodeGraph MCP] Shared daemon unavailable; serving this session in-process (degraded).\n"
+			},
+		},
+	}
+	session.alive.Store(true)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	started := time.Now()
+	_, err = session.callTool(ctx, "codegraph_node", map[string]interface{}{"file": "render.cpp"})
+	if !errors.Is(err, errCodegraphProxyDegraded) {
+		t.Fatalf("err = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("blocked proxy waited %s", elapsed)
+	}
+}
+
+func TestCodegraphProxyDegradedChildPidIsNotTheParentLock(t *testing.T) {
+	parent := t.TempDir()
+	child := filepath.Join(parent, "pkg")
+	parentData := filepath.Join(parent, codegraphDataDirName())
+	childData := filepath.Join(child, codegraphDataDirName())
+	if err := os.MkdirAll(parentData, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(childData, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(parentData, "codegraph.db"), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]int{"pid": os.Getpid()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(childData, "daemon.pid"), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The answer lands after the degraded line has already been noticed. A pid
+	// check that treats the child lock as the parent database returns before
+	// this line is read.
+	reads := 0
+	session := &codegraphMCPSession{
+		root:    child,
+		pending: map[string]chan codegraphMCPResponse{},
+		exited:  make(chan struct{}),
+		pipe: codegraphMCPPipe{
+			write: func([]byte) error { return nil },
+			read: func() (string, error) {
+				reads++
+				if reads > 1 {
+					time.Sleep(time.Hour)
+					return "", io.EOF
+				}
+				time.Sleep(300 * time.Millisecond)
+				return "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"func Answer() int { return 7 }\"}]}}\n", nil
+			},
+			stderr: func() string {
+				return "[CodeGraph MCP] Shared daemon unavailable; serving this session in-process (degraded).\n"
+			},
+		},
+	}
+	close(session.exited)
+	session.alive.Store(true)
+	go session.readLoop()
+	t.Cleanup(func() { session.alive.Store(false) })
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	raw, err := session.callTool(ctx, "codegraph_node", map[string]interface{}{"file": "demo.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := codegraphMCPResultText(raw)
+	if err != nil || !strings.Contains(text, "return 7") {
+		t.Fatalf("text=%q err=%v", text, err)
+	}
+}
+
+func TestCodegraphProxyDegradedLockFollowsParentIndex(t *testing.T) {
+	parent := t.TempDir()
+	child := filepath.Join(parent, "pkg")
+	if err := os.MkdirAll(child, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	dbPath := filepath.Join(parent, codegraphDataDirName(), "codegraph.db")
+	if err := os.MkdirAll(filepath.Dir(dbPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dbPath, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := json.Marshal(map[string]int{"pid": os.Getpid()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(filepath.Dir(dbPath), "daemon.pid"), payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	session := &codegraphMCPSession{
+		root:    child,
+		pending: map[string]chan codegraphMCPResponse{},
+		exited:  make(chan struct{}),
+		pipe: codegraphMCPPipe{
+			write: func([]byte) error { return nil },
+			read: func() (string, error) {
+				time.Sleep(time.Hour)
+				return "", io.EOF
+			},
+			stderr: func() string {
+				return "[CodeGraph MCP] Shared daemon unavailable; serving this session in-process (degraded).\n"
+			},
+		},
+	}
+	close(session.exited)
+	session.alive.Store(true)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	started := time.Now()
+	_, err = session.callTool(ctx, "codegraph_node", map[string]interface{}{"file": "render.cpp"})
+	if !errors.Is(err, errCodegraphProxyDegraded) {
+		t.Fatalf("err = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("lock wait = %s", elapsed)
+	}
+}
+
+func TestCodegraphProxyDegradedStillReturnsAnswer(t *testing.T) {
+	responses := make(chan string, 2)
+	session := &codegraphMCPSession{
+		pending: map[string]chan codegraphMCPResponse{},
+		exited:  make(chan struct{}),
+		pipe: codegraphMCPPipe{
+			write: func(p []byte) error {
+				if bytes.Contains(p, []byte(`"tools/call"`)) {
+					responses <- "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"func Answer() int { return 7 }\"}]}}\n"
+				}
+				return nil
+			},
+			read: func() (string, error) {
+				line, ok := <-responses
+				if !ok {
+					return "", io.EOF
+				}
+				return line, nil
+			},
+			stderr: func() string {
+				return "[CodeGraph MCP] Shared daemon unavailable; serving this session in-process (degraded).\n"
+			},
+		},
+	}
+	close(session.exited)
+	session.alive.Store(true)
+	go session.readLoop()
+	t.Cleanup(func() {
+		session.alive.Store(false)
+		close(responses)
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	raw, err := session.callTool(ctx, "codegraph_node", map[string]interface{}{"file": "demo.go"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, err := codegraphMCPResultText(raw)
+	if err != nil || !strings.Contains(text, "return 7") {
+		t.Fatalf("text=%q err=%v", text, err)
 	}
 }
 

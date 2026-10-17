@@ -20,6 +20,7 @@ func (h *IMMessageHandler) handleImmediateIMCommand(msg IMUserMessage, trimmed s
 // group boundary as the regular agent loop. A direct command must never gain
 // more authority than the tool menu it bypasses.
 func (h *IMMessageHandler) handleImmediateIMCommandWithLoop(msg IMUserMessage, trimmed string, providedLoopCtx *LoopContext, onProgress tool.ProgressCallback, onToken llm.TokenCallback) (*IMAgentResponse, bool) {
+	trimmed = normalizeImmediateCommandText(trimmed)
 	commandKind := classifyImmediateIMCommand(trimmed)
 	responseLang := h.imCommandResponseLang(msg.Lang)
 	if providedLoopCtx != nil && providedLoopCtx.LansengerGroupPermissions != nil && commandKind != imCommandUnknown {

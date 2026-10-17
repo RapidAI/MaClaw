@@ -14,6 +14,7 @@ const (
 	DeliveryChannelWeixin    = "weixin"
 	DeliveryChannelTelegram  = "telegram"
 	DeliveryChannelQQ        = "qq"
+	DeliveryChannelSlack     = "slack"
 	// DeliveryChannelDevice targets the paired companion hardware terminals
 	// (MaClaw 码卡龙). Unlike the IM channels it has no per-recipient platform
 	// id: the desktop fans the payload out to every device bound to its own

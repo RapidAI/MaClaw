@@ -95,7 +95,7 @@ import { CodingAgentPreviewFocusContext, CodingAgentTimelineProgressItem } from 
 import { TabParticipantInviteDialog } from "./TabParticipantInviteDialog";
 import { AIAssistantRenameGroupDialog } from "./AIAssistantRenameGroupDialog";
 import { WorkflowFormInlinePrompt, WorkflowReviewInlinePrompt } from "./WorkflowInlinePrompts";
-import { activeAssistantTaskIdentity, buildProjectTabRecentMessages, chatHistoriesEquivalent, expertIdFromSessionKey, expertSessionKey, isACPAssistantSessionKey, logAIPanelDiagnostic, messageAfterSessionFloor, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, shouldBlockAssistantTabOpenOnTaskRegistration, useBusyTaskRunsSignal, type ActiveAssistantTaskIdentity } from "./aiAssistantPanelSessionUtils";
+import { activeAssistantTaskIdentity, buildProjectTabRecentMessages, chatHistoriesEquivalent, collapseHostGoalChecklist, expertIdFromSessionKey, expertSessionKey, formatGoalChecklistFromRecord, isACPAssistantSessionKey, logAIPanelDiagnostic, messageAfterSessionFloor, messageBelongsToSession, messageBelongsToSessionOrLegacy, messageIsLocalSession, nextGoalChecklistHistory, noteProjectTabLiveHistory, normalizeAssistantSessionKey, normalizeProjectSessionPath, projectPathFromSessionKey, projectSessionKey, projectTabLiveMessages, purgeDeletedExpertTabLocalCache, purgeDeletedProjectTabLocalCache, shouldBlockAssistantTabOpenOnTaskRegistration, useBusyTaskRunsSignal, type ActiveAssistantTaskIdentity, type ProjectTabLiveHistory } from "./aiAssistantPanelSessionUtils";
 import { expertTabId } from "./expertTypes";
 import { PPTStyleChooser } from "./PPTStyleChooser";
 import { withConfirmedPPTStyle, type PPTStyleChoice } from "./pptStyleChoice";
@@ -104,7 +104,7 @@ import { useExpertOptimize } from "./useExpertOptimize";
 import { AdoptBaseCodingWorkbenchConflict, AdoptCodingWorkbenchConflict, ApplyCodingWorkbenchConflictPreviewSide, CancelAIAssistantSessionForSession, ClearAIAssistantHistoryForSession, ClearCodingWorkbenchConflictLog, ComputerUseStop, CreateTaskUnified, DiscardAllCodingWorkbenchConflicts, DiscardCodingWorkbenchConflict, EnsureAssistantTabTask, EnsureCodingWorkbenchArmed, ExportCodingWorkbenchConflictLog, GetCodingWorkbenchCheckpointSidecarStats, GetCodingWorkbenchConflictDiffs, GetCodingWorkbenchConflictFilePreview, GetCodingWorkbenchConflictFileTriple, GetCodingWorkbenchPermission, GetCodingWorkbenchPlanMode, GetCodingWorkbenchRoutePref, GetCodingWorkbenchStatus, GetCodingWorkbenchWorktreeMode, GetComputerUseStatus, GetConversationBranchPoints, GroupDiscussionRenameConsultation, KeepMainCodingWorkbenchConflict, ListCodingWorkbenchCheckpoints, ListCodingWorkbenchConflicts, ListWorkflowTemplateSummaries, LoadConfig, OpenCodingWorkbenchConflictFile, PatchConfigFields, PrepareRemoteCodingEnvironment, PrepareRemoteOpsDiagnosisEnvironment, PruneCodingWorkbenchCheckpoints, RefreshWorkflowV2StateForTab, RenameTask, ResolveCodingWorkbenchConflict, RestoreCodingWorkbenchCheckpointByLabel, RestoreCodingWorkbenchCheckpointEx, ResumeCloudWorkspaceTask, RunCodingWorkbenchBackgroundVerify, SaveCodingWorkbenchCheckpoint, SelectProjectDir, SetCodingWorkbenchConflictUIState, SetCodingWorkbenchPermission, SetCodingWorkbenchPlanMode, SetCodingWorkbenchRoutePref, SetCodingWorkbenchSessionPlan, SetCodingWorkbenchWorktreeMode, UpdateCodingWorkbenchPendingPlan, WriteCodingWorkbenchConflictFileContent } from "../../../wailsjs/go/main/App";
 import { formatGoalSessionPlan, suggestSessionPlanFromMessages } from "./codingSessionPlanUtils";
 import { CodingAgentPlanChecklist } from "./CodingAgentPlanChecklist";
-import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepStatusColor, codingStepStatusLabel, CodingWorkbenchControlPanel, CodingControlSection } from "./CodingWorkbenchControlPanel";
+import { buildCodingBannerChrome, codingStepGlyph, codingStepIsActive, codingStepStatusColor, codingStepStatusLabel, CodingWorkbenchControlPanel, CodingControlSection, presentCodingAgentChecklist } from "./CodingWorkbenchControlPanel";
 import { CodingConflictSidePanel } from "./CodingConflictSidePanel";
 import { AssistantPureCodingEmptyState } from "./AssistantPureCodingEmptyState";
 import { NewTaskWizardRunningBanner } from "./NewTaskWizardRunningBanner";
@@ -117,6 +117,8 @@ import { getWailsAppModule } from "../../utils/wailsAppModule";
 import { useDialog } from "../CustomDialog";
 import { ComputerUseOperatorPanel } from "./ComputerUseOperatorPanel";
 import { ComputerUseQuickBar } from "./ComputerUseQuickBar";
+import { ChatTaskTray } from "./ChatTaskTray";
+import { useChatTaskActionBridge, useRunChatTaskInBackground } from "./useChatTaskPanelWiring";
 import { AssistantQuickSettingsBar } from "./AssistantQuickSettingsBar";
 import { ExpertTabEmptyBanner, ProjectPreparingBanner } from "./assistantPanelInlineBanners";
 import { AssistantQuickModelSwitcher } from "./AssistantQuickModelSwitcher";
@@ -148,8 +150,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const state = props.state || props;
     const actions = props.actions || props;
     const panelWindow = props.window || props;
-    const { messages, progressMessages = [], sending, sendingSessionKey: rawSendingSessionKey, busySessionKeys: rawBusySessionKeys, streaming, streamingSessionKey: rawStreamingSessionKey, streamingSessionKeys: rawStreamingSessionKeys, visualBusy, ready, initStatus, selectedFilePath: selectedFilePathFromState = "", submittedPrompts = [], submittedPromptAttachments = [], draftInputValue = "", trialReflectEnabled = false, scrollToTopSeq, onboardingIncomplete, showTraceEntry = false, active: panelActive = true, agentView = null } = state;
-    const { browseFile, clearSelectedFile, setSelectedFilePaths, removeSelectedFile, sendMessage, sendBtwMessage, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews, onOpenOnboarding, cancelSession, onOpenTutorial, onTaskPrefsChanged, submitAgentView, dismissAgentView, deactivateRecordingSession } = actions;
+    const { messages, progressMessages = [], sending, sendingSessionKey: rawSendingSessionKey, busySessionKeys: rawBusySessionKeys, streaming, streamingSessionKey: rawStreamingSessionKey, streamingSessionKeys: rawStreamingSessionKeys, visualBusy, ready, initStatus, selectedFilePath: selectedFilePathFromState = "", submittedPrompts = [], submittedPromptAttachments = [], draftInputValue = "", trialReflectEnabled = false, scrollToTopSeq, onboardingIncomplete, showTraceEntry = false, active: panelActive = true, agentView = null, chatTasks = [] } = state;
+    const { browseFile, clearSelectedFile, setSelectedFilePaths, removeSelectedFile, sendMessage, sendBtwMessage, injectSupplementary, guideLaunchReference, clearHistory, recordSubmittedPrompt, setDraftInputValue, executeAction, refreshNews, onOpenOnboarding, cancelSession, onOpenTutorial, onTaskPrefsChanged, submitAgentView, dismissAgentView, deactivateRecordingSession, dispatchChatTask, cancelChatTask, steerChatTask, answerChatTask } = actions;
     const selectedFilePaths = Array.isArray(state.selectedFilePaths) ? state.selectedFilePaths : (selectedFilePathFromState ? [selectedFilePathFromState] : []);
     const selectedFilePath = selectedFilePaths[0] || "";
     const { inline, maximized = false, onToggleMaximize, onHideWindow } = panelWindow || {};
@@ -319,6 +321,8 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     const pureCodingTabRef = useRef(false);
     // Active pure-coding session key (desktop-user:<path>) for scoping goal-state-changed.
     const pureCodingSessionKeyRef = useRef("");
+    // Assigned after tab history state exists. The listener below is registered first.
+    const syncGoalChecklistRef = useRef<(payload: unknown) => void>(() => {});
     // Permission mode for pure coding tabs is loaded after activeTab is available.
     useEffect(() => {
         LoadConfig().then((cfg) => {
@@ -774,6 +778,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // Pure coding: when /goal creates/updates an objective, mirror it into the session-plan banner.
     useEffect(() => {
         const off = EventsOn("goal-state-changed", (payload: any) => {
+            syncGoalChecklistRef.current(payload);
             if (!pureCodingTabRef.current) return;
             // Normalize path separators (Go may emit Windows `\`, FE uses `/`).
             const goalUser = normalizeAssistantSessionKey(String(payload?.user_id || ""));
@@ -2524,6 +2529,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         };
     }, [activeSessionKey]);
     const [projectTabMessages, setProjectTabMessages] = useState<ChatMessage[]>([]);
+    const projectTabLiveRef = useRef<ProjectTabLiveHistory>({ tabId: activeTab.id, messages: [] });
+    projectTabLiveRef.current = noteProjectTabLiveHistory(
+        projectTabLiveRef.current,
+        activeTab.id,
+        projectTabMessages,
+    );
     const [projectTabRouteVersion, setProjectTabRouteVersion] = useState(0);
     const [panelSendInFlightSessionKeys, setPanelSendInFlightSessionKeys] = useState<Set<string>>(() => new Set());
     const markPanelSendInFlight = useCallback((sessionKey: string, inFlight: boolean) => {
@@ -2569,6 +2580,31 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     } | null>(null);
     activeTabIdRef.current = activeTab.id;
     activeTabRef.current = activeTab;
+    syncGoalChecklistRef.current = (payload: unknown) => {
+        const content = formatGoalChecklistFromRecord(payload as Parameters<typeof formatGoalChecklistFromRecord>[0]);
+        const goalUser = normalizeAssistantSessionKey(String((payload as { user_id?: string } | null)?.user_id || ""));
+        if (!content || !goalUser) return;
+        const tabs = getTabs().filter(tab => (tab.type === "project" && tab.projectPath) || (tab.type === "expert" && tab.expertId));
+        for (const tab of tabs) {
+            const sessionKey = tab.type === "expert"
+                ? expertSessionKey(tab.expertId)
+                : (tab.sessionKey || projectSessionKey(tab.projectPath));
+            if (normalizeAssistantSessionKey(sessionKey) !== goalUser) continue;
+            const existingState = getTabState(tab.id);
+            const history = (Array.isArray(existingState?.history) ? existingState.history : []) as ChatMessage[];
+            const active = activeTabIdRef.current === tab.id;
+            const nextHistory = nextGoalChecklistHistory({
+                history,
+                liveHistory: active ? projectTabLiveMessages(projectTabLiveRef.current, tab.id) : undefined,
+                cleared: clearedProjectTabIdsRef.current.has(tab.id),
+                sessionKey: goalUser,
+                content,
+            });
+            if (!nextHistory) continue;
+            saveTabState(tab.id, { ...existingState, history: nextHistory });
+            if (active) setProjectTabMessages(nextHistory);
+        }
+    };
     useEffect(() => () => {
         for (const timer of projectPrepareTimersRef.current.values()) {
             window.clearTimeout(timer);
@@ -2908,7 +2944,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         return mergeChatMessages(mergedProjectMessages, roundMessages);
     }, [activeSessionKey, activeTab.id, activeTab.projectPath, activeTab.sessionFloorMs, findProjectRoundForTab, isProjectTabActive, isExpertTabActive, messages, projectTabMessages, projectTabRouteVersion, sending]);
     const displayMessages = useMemo(
-        () => collapseDuplicatePendingUnfinishedSlots(rawDisplayMessages),
+        () => collapseHostGoalChecklist(collapseDuplicatePendingUnfinishedSlots(rawDisplayMessages)),
         [rawDisplayMessages],
     );
     latestDisplayMessagesRef.current = displayMessages;
@@ -4315,6 +4351,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         });
         return { task: activeTask, raw };
     }, [activeTab?.projectPath, codingStepStatuses, taskListProp, workflowAwaitingReview, workflowCurrentPhaseStatus, workflowState.active]);
+    const codingChecklistSteps = useMemo(() => presentCodingAgentChecklist(codingExecutionPlan, codingStepStatuses), [codingExecutionPlan, codingStepStatuses]);
     const { workspace: remoteWorkspace, label: remoteWorkspaceLabel } = resolveRemoteWorkspaceDisplay({ isRemoteCodingDev: isRemoteCodingDevEnvironment, isLive: remoteReconnectStatusPath === activeRemoteProjectPath, liveHost: remoteReconnect.host, liveWorkDir: remoteReconnect.workDir, livePort: remoteReconnect.port, tabHost: activeTab.remoteHost, tags: activeTaskExecutionSnapshot.task?.tags });
     const activeTaskSnapshotRunning = useMemo(() => executionSnapshotRawIsRunning(activeTaskExecutionSnapshot.raw), [activeTaskExecutionSnapshot]);
     const hasExplicitStreamingSessionList = Array.isArray(rawStreamingSessionKeys);
@@ -4821,22 +4858,10 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
         }
         return map;
     }, [branchPoints]);
-    // Show welcome for an idle, empty conversation on the local tab or a regular
-    // project tab. Pure coding tabs are already task workbenches; showing the
-    // generic assistant guide after their environment connects hides that state.
-    // NOTE: welcome view is shown in both inline (embedded panel) and overlay (standalone window)
-    // modes — the embedded panel is now the primary usage mode.
-    // Keep the workbench home visible while the backend is still connecting.
-    // The composer receives `ready` separately and remains disabled until the
-    // assistant is available, but the shell should match the designed home
-    // layout instead of falling back to an empty execution pane. Restrict the
-    // early render to real initialization states so partial test/embedding
-    // state without an initStatus keeps the legacy execution fallback.
-    const canShowWelcomeBeforeReady = ready || initStatus === "connecting" || initStatus === "loading" || initStatus === "warming";
     // Keep active workflow and preview surfaces out of the welcome landing.
     const workflowExecutionActive = workflowState.active || workflowCurrentPhaseRunning || workflowState.splitMode || codePreviewState.active || showAgentView || codingConflictOpen;
     const landing = canShowWorkbenchLanding({ enabled: startOnWorkbenchHome, requested: workbenchHomeRequested, local: isLocalTabActive, coding: isPureCodingEnvironment, activeTask: !!activeAssistantTaskProp, progress: displayProgressMessages.length, thinking: showThinkingState, processing: showProcessingState, preparing: activeProjectPreparing, form: workflowAwaitingForm, generating: workflowFormGeneratingDocument, review: workflowAwaitingReview, starting: !!workflowStartingLabel, queue: queue.length, editing: queueEditDraftActive, interacted: queueInteractionStarted, workflowActive: workflowExecutionActive });
-    const showWelcomeViewBase = canShowWelcomeBeforeReady && !onboardingIncomplete && !activeAssistantTaskProp && !workflowExecutionActive && (landing || (otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && !workflowAwaitingForm && !workflowFormGeneratingDocument && !workflowAwaitingReview && !workflowStartingLabel && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && (isLocalTabActive || (isProjectTabActive && !isPureCodingEnvironment))));
+    const showWelcomeViewBase = ready && !onboardingIncomplete && !activeAssistantTaskProp && !workflowExecutionActive && (landing || (otherMessages.length === 0 && displayProgressMessages.length === 0 && !showThinkingState && !showProcessingState && !activeProjectPreparing && !workflowAwaitingForm && !workflowFormGeneratingDocument && !workflowAwaitingReview && !workflowStartingLabel && queue.length === 0 && !queueEditDraftActive && !queueInteractionStarted && (isLocalTabActive || (isProjectTabActive && !isPureCodingEnvironment))));
     const taskCreatedTimestamp = displayMessages.find((message: ChatMessage) => message.role === "user")?.timestamp ?? displayMessages[0]?.timestamp;
     const taskCreatedLabel = formatTaskCreatedAt(taskCreatedTimestamp, lang);
     const pendingUnfinishedStatus = latestPendingUnfinishedStatus(displayMessages);
@@ -5031,6 +5056,15 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
             requestAnimationFrame(() => inputRef.current?.focus());
         }
     }, [clearSelectedFile, resetHistoryBrowsing, setPendingAttachments, updateInputValue]);
+    useChatTaskActionBridge({ cancelChatTask, steerChatTask, answerChatTask });
+    const handleRunChatTaskInBackground = useRunChatTaskInBackground({
+        inputRef,
+        inputValue,
+        activeSessionKey,
+        projectPath: isProjectTabActive ? activeTab.projectPath || "" : "",
+        dispatchChatTask,
+        clearComposerDraft,
+    });
     const newConversationInFlightRef = useRef(false);
     const handlePlusMenuAction = useCallback((actionId: PlusMenuActionId) => {
         if (actionId === "newConversation") {
@@ -5402,8 +5436,13 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
     // A running turn keeps the normal welcome gates closed. The wizard cover
     // forces the welcome page on the local tab without clearing that turn.
     const wizardOverlayActive = taskConfigWiring.wizardOverlay && isLocalTabActive;
-    const showWelcomeView = showWelcomeViewBase || wizardOverlayActive;
-    const title = showWelcomeView && isLocalTabActive
+    // A wizard requested during warmup stays armed and appears once input works.
+    const showWelcomeView = showWelcomeViewBase || (wizardOverlayActive && ready);
+    const warmupChrome = !ready && !onboardingIncomplete && !showWelcomeView;
+    const startupWarmup = warmupChrome && isLocalTabActive;
+    const title = startupWarmup
+        ? initLabel
+        : showWelcomeView && isLocalTabActive
         ? localizeText(lang, "New task", "新建任务", "新建任務")
         : (activeTab ? assistantTaskTitle(activeTab, lang, taskListProp) : localAssistantTabTitle(lang));
 
@@ -6138,7 +6177,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         remoteHost={activeTab?.remoteHost}
                         preparing={activeProjectPreparing}
                         prepareMode={activeProjectPrepareMode || undefined}
-                        stepStatuses={codingStepStatuses}
+                        stepStatuses={codingChecklistSteps}
                         pendingApproval={codingPendingApproval}
                         conflictCount={codingConflictCount}
                         lockExpanded={remoteCodingNeedsReconnect}
@@ -6344,12 +6383,12 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                                                 </span>
                                             )}
                                         </div>
-                                        {codingStepStatuses.length > 0 && (
+                                        {codingChecklistSteps.length > 0 && (
                                             <div data-testid="coding-step-statuses" className="mc-execution-timeline" style={{ marginTop: 4, padding: "6px 8px", borderRadius: 6, border: `1px solid ${codingBannerChrome.border}`, background: codingBannerChrome.insetBg, fontSize: 11, color: codingBannerChrome.muted, maxHeight: 100, overflow: "auto" }}>
                                                 <div style={{ fontWeight: 600, marginBottom: 4, color: codingBannerChrome.accentStrong }}>
                                                     {localizeText(lang, "Steps", "执行步骤", "執行步驟")}
                                                 </div>
-                                                {codingStepStatuses.map((st) => {
+                                                {codingChecklistSteps.map((st) => {
                                                     const icon = codingStepGlyph(st.status);
                                                     const color = codingStepStatusColor(st.status, codingBannerChrome);
                                                     const statusLabel = codingStepStatusLabel(lang, st.status);
@@ -6714,16 +6753,18 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                     {...windowDragHandleProps(!!inline, { minHeight: 72 })}
                     onDoubleClick={(event) => handleTaskExecutionHeaderDoubleClick(event, inline ? onToggleMaximize : undefined)}
                 >
-                    <TaskExecutionHeading activeTab={activeTab} lang={lang} status={taskExecutionStatus} taskCreatedLabel={taskCreatedLabel} workingDirPath={activeTabWorkingDirPath} remoteWorkspace={remoteWorkspace} remoteWorkspaceLabel={remoteWorkspaceLabel} title={title} />
+                    <TaskExecutionHeading activeTab={activeTab} lang={lang} status={warmupChrome ? { tone: "pending", label: startupWarmup ? "" : initLabel } : taskExecutionStatus} taskCreatedLabel={taskCreatedLabel} workingDirPath={activeTabWorkingDirPath} remoteWorkspace={remoteWorkspace} remoteWorkspaceLabel={remoteWorkspaceLabel} title={title} />
                     <div className="mc-task-execution-actions" data-testid="task-execution-actions" {...windowNoDragRegionProps()}>
                         <div className="mc-task-notification-slot" data-notification-tree="true" data-testid="task-notification-slot" {...windowNoDragRegionProps()}>
                             <AssistantTitleBarNotifications active={panelActive} inline={false} lang={lang} theme={t} />
                         </div>
+                        {startupWarmup ? null : <>
                         {skillRecordingHere ? <button className="task-skill-pause-btn" data-testid="skill-recording-pause-btn" type="button" onClick={handleToggleSkillRecording} disabled={skillRecordingBusy} aria-busy={skillRecordingBusy} aria-label={localizeText(lang, "Pause skill recording", "暂停 Skill 录制", "暫停 Skill 錄製")} title={localizeText(lang, `Pause skill recording (${skillRecordingCount} steps)`, `暂停 Skill 录制（已记录 ${skillRecordingCount} 步）`, `暫停 Skill 錄製（已記錄 ${skillRecordingCount} 步）`)}><span className="aiti-recording-dot" aria-hidden="true" /><span className="task-skill-pause-label">{localizeText(lang, "Pause", "暂停", "暫停")}</span></button> : null}
                         <TaskTabSwitcher tabs={tabState.tabs} activeTabId={tabState.activeTabId} lang={lang} onActivate={activateSwitchingTab} onClose={closeTabWithProjectCleanup} tasks={taskListProp} onOpenTask={onOpenTaskProp} />
                         <button className="task-pause-btn" data-action="cancel" type="button" onClick={handleCancel} disabled={!inputVisualBusy || cancelPending} aria-busy={cancelPending} aria-label={localizeText(lang, "Pause task", "暂停任务", "暫停任務")} title={localizeText(lang, "Pause task", "暂停任务", "暫停任務")}>{localizeText(lang, "Pause task", "暂停任务", "暫停任務")}</button>
                         <button className="task-share-btn" data-testid="task-share-btn" type="button" onClick={() => { void shareCurrentTask(); }} aria-label={localizeText(lang, "Share task", "分享任务", "分享任務")}>{localizeText(lang, "Share", "分享", "分享")}</button>
                         <TaskMoreActions lang={lang} onSave={openSaveTaskDialog} onClear={clearActiveHistory} onCopyTitle={() => { const titleText = String(assistantTaskTitle(activeTab, lang, taskListProp) || deriveTaskNameFromMessages()).trim(); if (titleText && typeof navigator !== "undefined" && navigator.clipboard?.writeText) return navigator.clipboard.writeText(titleText); }} onPreview={codingPreviewAllowed ? handleOpenPreviewPanel : undefined} onRecordSkill={skillRecordingHere ? undefined : handleToggleSkillRecording} recordSkillDisabled={skillRecordingElsewhere} recordSkillPending={!skillRecordingHere && (skillRecordingBusy || skillRecordingAwaitingDecision)} />
+                        </>}
                         {inline && (onHideWindow || onToggleMaximize) ? (
                             <div className="mc-task-execution-window-controls" data-testid="task-window-controls" role="group" aria-label={localizeText(lang, "Window controls", "窗口控制", "窗口控制")}>
                                 {onHideWindow ? <TaskHideWindowButton lang={lang} onHideWindow={onHideWindow} /> : null}
@@ -6779,7 +6820,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                         lang={lang}
                         theme={t}
                         chrome={codingBannerChrome}
-                        steps={codingStepStatuses}
+                        steps={codingChecklistSteps}
                         understanding={codingRequirementRestatement}
                         pendingApproval={codingPendingApproval}
                         ready={codingTaskReadyForIntents}
@@ -6793,6 +6834,7 @@ export function AIAssistantPanel(props: AIAssistantPanelProps & any) {
                 )}
                 {!showWelcomeView && <ComputerUseReadinessBanner lang={lang} theme={t} />}
                 {!showWelcomeView && <ComputerUseQuickBar lang={lang} theme={t} themeMode={themeMode} />}
+                {!showWelcomeView && !isPureCodingEnvironment && !isACPMirrorTabActive && !isExpertTabActive && <ChatTaskTray tasks={chatTasks.filter((task: { sessionKey?: string }) => task.sessionKey === activeSessionKey)} canDispatch={!!inputValue.trim() && !!dispatchChatTask} lang={lang} theme={t} onRunInBackground={handleRunChatTaskInBackground} onCancel={taskID => { void cancelChatTask?.(taskID); }} />}
                 {!showWelcomeView && <AssistantInputStack active={panelActive} browseFile={browseFile} canSend={canSend} cancelPending={cancelPending} cancelSession={cancelSession} clearSelectedFile={clearSelectedFile} composeAction={composeAction} editingEntryId={editingEntryId} exitHistoryBrowsing={exitHistoryBrowsing} finishVoicePointer={finishVoicePointer} handleCancel={handleCancel} handleCancelEdit={handleCancelEdit} handleClearInput={handleClearInput} handleDragOver={handleDragOver} handleDrop={handleDrop} handleEditEntry={handleEditEntry} handlePaste={handlePaste} handleSaveEdit={handleSaveEdit} handleFireEntry={handleFireEntry} handleSend={handleSend} isEntryInFlight={isQueueEntryInFlight} handleVoiceClick={handleVoiceClick} handleVoicePointerDown={handleVoicePointerDown} handleVoicePointerLeave={handleVoicePointerLeave} inputAreaHeight={inputAreaHeight} inputLocked={inputLocked} hardLockInput={recordingActive} inputRef={inputRef} inputValue={inputValue} inline={false} flushBottom isBusy={inputVisualBusy} isSelectionCollapsedAtBoundary={isSelectionCollapsedAtBoundary} lang={lang} onComposeActionChange={handleComposeActionChange} onFireSlashCommand={handleFireSlashCommand} onInsertTemplate={handleInsertTemplate} onPlusMenuAction={handlePlusMenuAction} onPermissionModeChange={handlePermissionModeChange} pendingAttachments={pendingAttachments} permissionMode={permissionMode} taskCommandAllowed={taskCommandHint} showWorkspacePermissionOption={isPureCodingEnvironment} placeholderText={placeholderText} queue={queue} ready={ready} recallHistory={recallHistory} rememberHistoryEdit={rememberHistoryEdit} removeEntry={handleDeleteEntry} removeSelectedFile={removeSelectedFile} reorderEntry={handleReorderEntry} resizeInput={resizeInput} selectedFilePaths={selectedFilePaths} setPendingAttachments={setPendingAttachments} showBusySpinner={showBusySpinner} startInputResize={startInputResize} submittedPrompts={submittedPrompts} submittedPromptAttachments={submittedPromptAttachments} onHistoryTextAccepted={acceptHistoryText} sendButtonStyle={{ minWidth: 40, width: 40, height: 40, borderRadius: 12, flexShrink: 0, background: t.sendBtnBg || t.btnColor, borderColor: t.sendBtnBorder || t.sendBtnBg || t.btnColor, color: t.sendBtnColor || "#fff", opacity: canSend ? 1 : 0.72, boxShadow: `0 3px 8px color-mix(in srgb, ${t.btnColor} 22%, transparent)` }} theme={t} themeMode={themeMode} toolbarEndContent={<AssistantQuickModelSwitcher lang={lang} theme={t} active={panelActive} availableProviders={availableProviders} currentModel={currentModel} modelOptions={modelOptions} modelMultipliers={modelMultipliers} modelsLoading={modelsLoading} onSwitchProvider={onSwitchProvider} onSwitchModel={onSwitchModel} onOpenModelMenu={onOpenModelMenu} onDismissModelMenu={onDismissModelMenu} activeProfile={activeExecutionProfile} codingInheritsAssistant={codingInheritsAssistant} providerSelectionPending={providerSelectionPending} profileSavePending={profileSavePending} onOpenLLMSettings={onOpenLLMSettings} chipTestId="composer-model-chip" />} trailingToolbarContent={(activeTab?.type === "local" || activeTab?.type === "project" || activeTab?.type === "expert") ? (
                     // Working-directory chip inside the composer toolbar, after the
                     // permission-mode button: the primary entry for viewing/changing

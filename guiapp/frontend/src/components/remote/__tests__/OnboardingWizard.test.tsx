@@ -217,64 +217,26 @@ describe('OnboardingWizard registration', () => {
         }));
     };
 
-    it('keeps TigerClaw onboarding to SSO plus WeChat without LLM setup', async () => {
-        StartCodeGenSSOEmbeddedMock.mockResolvedValue(undefined);
-        WaitCodeGenSSOResultMock.mockResolvedValue({ email: 'tiger@example.com', message: 'SSO OK' });
-        FetchCodeGenModelsMock.mockResolvedValue([]);
-        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
+    it('uses MaClaw official service for a fresh TigerClaw install', async () => {
+        render(<OnboardingWizard {...baseProps} brandId="qianxin" brandDisplayName="TigerClaw" />);
 
-        render(<OnboardingWizard {...baseProps} brandId="qianxin" brandDisplayName="QAgent" />);
-
+        expect(await screen.findByPlaceholderText(/Email or phone|邮箱或手机号/)).toBeTruthy();
+        expect(screen.queryByRole('button', { name: /Enterprise SSO Login/ })).toBeNull();
         expect(screen.getByText('1 / 2')).toBeTruthy();
-        expect(screen.queryByText('Free trial')).toBeNull();
-        expect(screen.queryByPlaceholderText('name@example.com')).toBeNull();
         expect(screen.queryByText(/Pick a provider/)).toBeNull();
-
-        fireEvent.click(screen.getByRole('button', { name: /Enterprise SSO Login/ }));
-
         await waitFor(() => {
-            expect(StartCodeGenSSOEmbeddedMock).toHaveBeenCalledTimes(1);
-            expect(WaitCodeGenSSOResultMock).toHaveBeenCalledTimes(1);
-            expect(ActivateRemoteMock).toHaveBeenCalledWith('tiger@example.com', '', '');
-            expect(baseProps.onLLMConfigured).toHaveBeenCalledTimes(1);
-            expect(baseProps.onRegistered).toHaveBeenCalledTimes(1);
+            expect(GetHubLLMServiceStatusMock).toHaveBeenCalled();
         });
 
-        expect(screen.getByText(/Authenticated/)).toBeTruthy();
-        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-
-        await waitFor(() => {
-            expect(screen.getByText(/Scan to bind WeChat/)).toBeTruthy();
-            expect(screen.getByText('2 / 2')).toBeTruthy();
-        });
-        expect(screen.queryByText(/Pick a provider/)).toBeNull();
-        expect(GetHubLLMServiceStatusMock).not.toHaveBeenCalled();
+        await continueRegistrationIdentity();
+        expect((screen.getByLabelText(/Free trial/) as HTMLInputElement).checked).toBe(true);
+        expect(screen.queryByRole('button', { name: /Enterprise SSO Login/ })).toBeNull();
     });
 
-    it('auto-saves the first available TigerClaw model after SSO login', async () => {
-        StartCodeGenSSOEmbeddedMock.mockResolvedValue(undefined);
-        WaitCodeGenSSOResultMock.mockResolvedValue({ email: 'tiger@example.com', message: 'SSO OK', model_id: 'sso-first-model' });
-        FetchCodeGenModelsMock.mockResolvedValue([
-            { id: 'alphabetically-first-model', name: 'Alphabetically first model' },
-            { id: 'second-model', name: 'Second model' },
-        ]);
-        SaveCodeGenModelChoiceMock.mockResolvedValue(undefined);
+    it('persists TigerClaw onboarding completion only once when a save rerender replaces callbacks', async () => {
         ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
-
-        render(<OnboardingWizard {...baseProps} brandId="qianxin" brandDisplayName="QAgent" />);
-
-        fireEvent.click(screen.getByRole('button', { name: /Enterprise SSO Login/ }));
-
-        await waitFor(() => {
-            expect(SaveCodeGenModelChoiceMock).toHaveBeenCalledWith('sso-first-model', 'sso-first-model');
-        });
-    });
-
-    it('persists onboarding completion only once when a save rerender replaces callbacks', async () => {
-        StartCodeGenSSOEmbeddedMock.mockResolvedValue(undefined);
-        WaitCodeGenSSOResultMock.mockResolvedValue({ email: 'tiger@example.com', message: 'SSO OK' });
-        FetchCodeGenModelsMock.mockResolvedValue([]);
-        ActivateRemoteMock.mockResolvedValue({ vip_flag: true });
+        GetRemoteConnectionStatusMock.mockResolvedValue({ connected: true });
+        GetHubLLMServiceStatusMock.mockResolvedValue({ active: true, skip_llm_config: true });
         const saveCompletion = vi.fn();
 
         function CompletionHarness() {
@@ -283,7 +245,7 @@ describe('OnboardingWizard registration', () => {
                 <OnboardingWizard
                     {...baseProps}
                     brandId="qianxin"
-                    brandDisplayName="QAgent"
+                    brandDisplayName="TigerClaw"
                     onSaveField={(patch) => {
                         saveCompletion(patch);
                         setSaveVersion(version => version + 1);
@@ -293,8 +255,10 @@ describe('OnboardingWizard registration', () => {
         }
 
         render(<CompletionHarness />);
-        fireEvent.click(screen.getByRole('button', { name: /Enterprise SSO Login/ }));
-        await waitFor(() => expect(baseProps.onRegistered).toHaveBeenCalledTimes(1));
+        await continueRegistrationIdentity();
+        fireEvent.click(screen.getByRole('button', { name: 'Register' }));
+        await confirmEmailRegistration();
+        await waitFor(() => expect(baseProps.onRegistered).toHaveBeenCalled());
         fireEvent.click(screen.getByRole('button', { name: 'Next' }));
         fireEvent.click(await screen.findByRole('button', { name: 'Skip' }));
 
@@ -303,35 +267,6 @@ describe('OnboardingWizard registration', () => {
             expect(completionWrites).toHaveLength(1);
             expect(completionWrites[0]).toEqual([{ onboarding_done: true }]);
         });
-    });
-
-    it('lets TigerClaw browser SSO fallback continue to WeChat without LLM setup', async () => {
-        StartCodeGenSSOEmbeddedMock.mockRejectedValue(new Error('embedded unavailable'));
-        StartCodeGenSSOMock.mockResolvedValue({ message: 'Browser SSO OK' });
-
-        render(<OnboardingWizard {...baseProps} brandId="qianxin" brandDisplayName="QAgent" />);
-
-        fireEvent.click(screen.getByRole('button', { name: /Enterprise SSO Login/ }));
-
-        await waitFor(() => {
-            expect(screen.getByRole('button', { name: /Open in Browser/ })).toBeTruthy();
-        });
-
-        fireEvent.click(screen.getByRole('button', { name: /Open in Browser/ }));
-
-        await waitFor(() => {
-            expect(StartCodeGenSSOMock).toHaveBeenCalledTimes(1);
-            expect(baseProps.onLLMConfigured).toHaveBeenCalledTimes(1);
-        });
-
-        expect(baseProps.onRegistered).not.toHaveBeenCalled();
-        fireEvent.click(screen.getByRole('button', { name: 'Next' }));
-
-        await waitFor(() => {
-            expect(screen.getByText(/Scan to bind WeChat/)).toBeTruthy();
-            expect(screen.getByText('2 / 2')).toBeTruthy();
-        });
-        expect(screen.queryByText(/Pick a provider/)).toBeNull();
     });
 
     it('renders optional service redeem code text in registration step', async () => {

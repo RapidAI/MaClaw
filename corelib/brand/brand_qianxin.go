@@ -26,6 +26,6 @@ func init() {
 			},
 		},
 		DefaultTool:         "claude",
-		DefaultToolProvider: "codegen",
+		DefaultToolProvider: "",
 	}
 }

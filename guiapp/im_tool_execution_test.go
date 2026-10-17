@@ -417,3 +417,14 @@ func TestLoopCycleExecuteToolCancelsContextHandler(t *testing.T) {
 		t.Fatal("tool call did not stop after loop cancel")
 	}
 }
+
+func TestRewriteOpenCodeReadToolCallUsesLocalFileReader(t *testing.T) {
+	name, args := rewriteOpenCodeReadToolCall("read", `{"filePath":"main.go"}`)
+	if name != "read_file" || !strings.Contains(args, `"path":"main.go"`) || strings.Contains(args, "filePath") {
+		t.Fatalf("name=%s args=%s", name, args)
+	}
+	name, args = rewriteOpenCodeReadToolCall("read_file", `{"path":"main.go"}`)
+	if name != "read_file" || args != `{"path":"main.go"}` {
+		t.Fatalf("existing reader changed: name=%s args=%s", name, args)
+	}
+}

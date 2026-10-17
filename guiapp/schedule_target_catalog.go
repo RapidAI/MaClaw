@@ -37,6 +37,12 @@ func (a *App) ensureScheduleTargetCatalogs() {
 			},
 		})
 		reg.Register(scheduler.TargetCatalogFunc{
+			ChannelName: scheduler.DeliveryChannelSlack,
+			List: func(ctx context.Context, query string) ([]scheduler.TargetRef, error) {
+				return a.listSlackDeliveryTargets(ctx, query)
+			},
+		})
+		reg.Register(scheduler.TargetCatalogFunc{
 			ChannelName: scheduler.DeliveryChannelQQ,
 			List: func(ctx context.Context, query string) ([]scheduler.TargetRef, error) {
 				return a.listQQDeliveryTargets(ctx, query)

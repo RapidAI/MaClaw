@@ -161,7 +161,7 @@ func TestForwardOpenAICompatRequestSendsOpenCodeSessionHeader(t *testing.T) {
 		if got := req.Header.Get("User-Agent"); got != "opencode/"+OpenCodeClientVersion {
 			t.Fatalf("User-Agent = %q", got)
 		}
-		if got := req.Header.Get(OpenCodeSessionHeader); got != OpenCodeClientSessionID("hub-conv-1") {
+		if got := req.Header.Get(OpenCodeSessionHeader); got != OpenCodeDescendingSessionID("hub-conv-1") {
 			t.Fatalf("%s = %q, want the official session for hub-conv-1", OpenCodeSessionHeader, got)
 		}
 		return &http.Response{

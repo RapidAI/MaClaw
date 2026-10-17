@@ -112,7 +112,7 @@ func (m *knowledgeStoreManager) UseSharedAIModels(aiModels *srvAIModelManager, c
 	if m == nil || aiModels == nil || isEmbeddingDisabled() {
 		return
 	}
-	adapter := srvAIModelEmbedderAdapter{manager: aiModels, config: cfgProvider}
+	adapter := srvAIModelEmbedderAdapter{manager: aiModels}
 	m.mu.Lock()
 	if m.closed {
 		m.mu.Unlock()
@@ -124,6 +124,12 @@ func (m *knowledgeStoreManager) UseSharedAIModels(aiModels *srvAIModelManager, c
 		m.store.SetEmbedder(adapter)
 	}
 	m.mu.Unlock()
+	// A store that refused the adapter must leave the manager's download
+	// config alone. A download reads that provider, so it is installed only
+	// after the adapter is the live embedder.
+	if cfgProvider != nil {
+		aiModels.setDownloadConfigProvider(cfgProvider)
+	}
 	if oldEmb != nil && !embedding.IsNoop(oldEmb) {
 		oldEmb.Close()
 	}

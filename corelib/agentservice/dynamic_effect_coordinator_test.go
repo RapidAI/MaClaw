@@ -79,6 +79,30 @@ func TestLedgerDynamicExternalEffectCoordinatorSettlesWithoutDispatch(t *testing
 	}
 }
 
+func TestLedgerDynamicExternalEffectCoordinatorCompletedToolErrorIsFailed(t *testing.T) {
+	ledger := NewMemoryDynamicOperationLedger()
+	coordinator := LedgerDynamicExternalEffectCoordinator{Ledger: ledger}
+	invocation := receiptBoundDynamicInvocation(t)
+	calls := 0
+	receipt, err := coordinator.CoordinateDynamicExternalEffect(context.Background(), invocation, func() (string, error) {
+		calls++
+		return "Error: quota exceeded", nil
+	})
+	if err != nil || receipt.State != DynamicEffectReceiptFailed || receipt.ReasonCode != dynamicMCPToolErrorReason || calls != 1 {
+		t.Fatalf("failed receipt=%#v err=%v calls=%d", receipt, err, calls)
+	}
+	if record, err := ledger.Get(receipt.OperationID); err != nil || record.State != DynamicOperationFailed || record.ReasonCode != dynamicMCPToolErrorReason {
+		t.Fatalf("failed record=%#v err=%v", record, err)
+	}
+	replay, err := coordinator.CoordinateDynamicExternalEffect(context.Background(), invocation, func() (string, error) {
+		calls++
+		return "must not dispatch", nil
+	})
+	if err != nil || replay.State != DynamicEffectReceiptFailed || replay.OperationID != receipt.OperationID || calls != 1 {
+		t.Fatalf("replay receipt=%#v err=%v calls=%d", replay, err, calls)
+	}
+}
+
 func TestLedgerDynamicExternalEffectCoordinatorTransportFailureBecomesUnknown(t *testing.T) {
 	ledger := NewMemoryDynamicOperationLedger()
 	collector := &dynamicEffectEventCollector{}

@@ -139,8 +139,13 @@ func (c *taskVecCache) get(k string) []float32 {
 func (c *taskVecCache) put(k string, v []float32) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.m == nil || len(c.m) >= 64 {
-		c.m = make(map[string][]float32)
+	if c.m == nil {
+		c.m = make(map[string][]float32, 8)
+	}
+	if _, ok := c.m[k]; !ok && len(c.m) >= 64 {
+		// A new task past the cap drops the older vectors. Refreshing a key
+		// that is already cached must keep the rest.
+		c.m = make(map[string][]float32, 8)
 	}
 	c.m[k] = v
 }
@@ -148,6 +153,13 @@ func (c *taskVecCache) put(k string, v []float32) {
 // modelRelevance scores task ↔ message with model m (formatted embeddings).
 // Returns -1 when anything is unavailable.
 func (ih *imInterruptHandler) modelRelevance(emb embedding.Embedder, m *progress.RelevanceModel, taskDesc, messageText string) float64 {
+	// Key the cache on the same user-authored text EmbedText stored. The
+	// tracker keeps the raw task, picker block included, for the LLM.
+	taskDesc = stripHostAttachmentSections(taskDesc)
+	messageText = stripHostAttachmentSections(messageText)
+	if taskDesc == "" || messageText == "" {
+		return -1
+	}
 	tk := m.FormatTask(taskDesc)
 	u := ih.taskVecs.get(tk)
 	if len(u) == 0 {

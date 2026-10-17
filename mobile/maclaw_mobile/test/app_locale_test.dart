@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:maclaw_mobile/core/settings/app_preferences_model.dart';
 import 'package:maclaw_mobile/l10n/app_locale.dart';
 import 'package:maclaw_mobile/l10n/app_strings.dart';
 

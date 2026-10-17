@@ -6,7 +6,7 @@ import { describe, expect, it } from "vitest";
 const here = dirname(fileURLToPath(import.meta.url));
 const css = readFileSync(resolve(here, "../../../App.css"), "utf8");
 const sheenStart = css.indexOf("/* Live activity title:");
-const sheenEnd = css.indexOf(".ai-chat-scrollbar", sheenStart);
+const sheenEnd = css.indexOf("/* Live tool strip", sheenStart);
 const sheenCss = css.slice(sheenStart, sheenEnd);
 
 describe("assistant reasoning live sheen", () => {

@@ -11,7 +11,7 @@ func TestInstalledMCPReuseCueDoesNotForceCall(t *testing.T) {
 	if strings.Contains(cue, "whenever it is listed") {
 		t.Fatalf("installed MCP tools must not be force-called: %q", cue)
 	}
-	if !strings.Contains(cue, "matches the request") {
+	if !strings.Contains(cue, "named in this description") || !strings.Contains(cue, "matches the request") {
 		t.Fatalf("cue = %q", cue)
 	}
 }

@@ -79,6 +79,10 @@ type IMAgentResponse struct {
 	ThumbnailBase64   string   `json:"thumbnail_base64,omitempty"`
 	Error             string   `json:"error,omitempty"`
 	ResponseSource    string   `json:"response_source,omitempty"`
+	// ChatTaskID / ChatTaskKind deliver a finished background chat task back
+	// into the conversation without resolving the foreground round.
+	ChatTaskID   string `json:"chat_task_id,omitempty"`
+	ChatTaskKind string `json:"chat_task_kind,omitempty"`
 	// FileCompanionFigures carries drawings from the open file that belong to
 	// this answer. Only the desktop file-companion window reads it; ordinary
 	// replies leave it empty, so it never reaches another client.

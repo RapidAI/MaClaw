@@ -489,28 +489,40 @@ jobs:
       - name: Install NSIS
         shell: pwsh
         run: |
-          # community.chocolatey.org answers 504 under load; retry before failing.
-          $ok = $false
-          foreach ($attempt in 1..3) {
+          # community.chocolatey.org answers 504 under load, and a run where
+          # choco reports success can still leave makensis invisible (PATH not
+          # refreshed, or the package feed dropped the install). Retry the
+          # install AND the discovery together, and fall back to a direct
+          # download so a flaky feed cannot fail the whole release.
+          $nsisPath = $null
+          for ($attempt = 1; $attempt -le 3 -and -not $nsisPath; $attempt++) {
             choco install nsis -y --no-progress
-            if ($LASTEXITCODE -eq 0) { $ok = $true; break }
-            Write-Host "choco install nsis failed (attempt $attempt/3); retrying in 15s"
-            Start-Sleep -Seconds 15
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "choco install nsis failed (attempt $attempt/3)"
+            }
+            Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1" -ErrorAction SilentlyContinue
+            refreshenv
+            $nsisPath = (Get-Command makensis -ErrorAction SilentlyContinue).Source
+            if (-not $nsisPath) {
+              $nsisPath = @(
+                "C:\Program Files (x86)\NSIS\makensis.exe",
+                "C:\Program Files\NSIS\makensis.exe",
+                (Join-Path $env:ChocolateyInstall "bin\makensis.exe")
+              ) | Where-Object { Test-Path $_ } | Select-Object -First 1
+            }
+            if (-not $nsisPath) {
+              Write-Host "makensis not visible yet (attempt $attempt/3); retrying in 20s"
+              Start-Sleep -Seconds 20
+            }
           }
-          if (-not $ok) { Write-Error "choco install nsis failed after 3 attempts"; exit 1 }
-          # Refresh PATH so makensis is discoverable
-          Import-Module "$env:ChocolateyInstall\helpers\chocolateyProfile.psm1"
-          refreshenv
-          # Verify installation and locate makensis
-          $nsisPath = (Get-Command makensis -ErrorAction SilentlyContinue).Source
           if (-not $nsisPath) {
-            # Fallback: search common locations
-            $candidates = @(
-              "C:\Program Files (x86)\NSIS\makensis.exe",
-              "C:\Program Files\NSIS\makensis.exe",
-              (Join-Path $env:ChocolateyInstall "bin\makensis.exe")
-            )
-            $nsisPath = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+            # Last resort: the official SourceForge build, pinned by version.
+            $zip = Join-Path $env:RUNNER_TEMP "nsis.zip"
+            $dst = Join-Path $env:RUNNER_TEMP "nsis"
+            Write-Host "choco route failed; downloading NSIS 3.10 directly"
+            Invoke-WebRequest -Uri "https://downloads.sourceforge.net/project/nsis/NSIS%203/3.10/nsis-3.10.zip" -OutFile $zip -UseBasicParsing
+            Expand-Archive -Path $zip -DestinationPath $dst -Force
+            $nsisPath = (Get-ChildItem -Path $dst -Recurse -Filter makensis.exe | Select-Object -First 1).FullName
           }
           if (-not $nsisPath) { Write-Error "NSIS makensis.exe not found after install"; exit 1 }
           Write-Host "NSIS found at: $nsisPath"

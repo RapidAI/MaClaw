@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import FileCompanionWindow, {
     clampCompanionChatWidth,
     clampCompanionTabScroll,
+    companionOpenSetPaths,
     companionTabEndsFromBoxes,
     companionTabNudgeDelta,
     companionTabScrollEnds,
@@ -16,6 +17,8 @@ import { finishCompanionReply, splitCompanionStreamDelta } from "./companionReas
 import { ToastProvider } from "../Toast";
 
 const boot = vi.fn();
+const resume = vi.fn();
+const setOpenSet = vi.fn();
 const open = vi.fn();
 const save = vi.fn();
 const send = vi.fn();
@@ -38,6 +41,8 @@ const clipboardWrite = vi.fn();
 
 vi.mock("../../../wailsjs/go/main/App", () => ({
     GetFileCompanionBoot: (...args: unknown[]) => boot(...args),
+    FileCompanionResumePaths: (...args: unknown[]) => resume(...args),
+    SetFileCompanionOpenSet: (...args: unknown[]) => setOpenSet(...args),
     FileCompanionOpen: (...args: unknown[]) => open(...args),
     FileCompanionSaveText: (...args: unknown[]) => save(...args),
     SendFileCompanionMessage: (...args: unknown[]) => send(...args),
@@ -130,6 +135,10 @@ function doc(path: string, extra: Record<string, unknown> = {}) {
 
 beforeEach(() => {
     boot.mockReset();
+    resume.mockReset();
+    resume.mockResolvedValue([]);
+    setOpenSet.mockReset();
+    setOpenSet.mockResolvedValue(undefined);
     open.mockReset();
     save.mockReset();
     send.mockReset();
@@ -171,6 +180,17 @@ beforeEach(() => {
     // it asks for one.
     renderMermaidFenceToPNGDataURL.mockReset();
     renderMermaidFenceToPNGDataURL.mockResolvedValue(null);
+});
+
+describe("companionOpenSetPaths", () => {
+    it("keeps a file that could not be read and drops one that is gone", () => {
+        const paths = companionOpenSetPaths([
+            { path: "C:/notes/gone.pdf", error: "file not found" },
+            { path: "C:/notes/locked.pdf", error: "file is not readable" },
+            { path: "C:/notes/open.md", error: "" },
+        ], "C:/notes/open.md");
+        expect(paths).toEqual(["C:/notes/open.md", "C:/notes/locked.pdf"]);
+    });
 });
 
 describe("revealCompanionTab", () => {
@@ -641,6 +661,20 @@ describe("FileCompanionWindow", () => {
         await screen.findByTestId("file-companion-tab-a.md");
         expect((screen.getByTestId("file-companion-editor") as HTMLTextAreaElement).value).toBe("alpha");
         expect(choose).not.toHaveBeenCalled();
+    });
+
+    it("restores remembered files and does not ask", async () => {
+        boot.mockResolvedValue({ paths: [] });
+        resume.mockResolvedValue(["C:/notes/a.md", "C:/notes/b.md"]);
+        open.mockImplementation(async (path: string) => doc(path, { editable: true, readOnly: false, content: path.endsWith("b.md") ? "beta" : "alpha" }));
+        installRuntime();
+        renderWindow();
+        await screen.findByTestId("file-companion-tab-a.md");
+        await screen.findByTestId("file-companion-tab-b.md");
+        expect(choose).not.toHaveBeenCalled();
+        await waitFor(() => expect(setOpenSet).toHaveBeenCalled());
+        const saved = setOpenSet.mock.calls.at(-1)?.[0] as string[];
+        expect(saved).toEqual(["C:/notes/a.md", "C:/notes/b.md"]);
     });
 
     it("asks once when show arrives before an empty boot settles", async () => {

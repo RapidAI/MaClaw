@@ -5,6 +5,7 @@ import {
     codingStepIsFailed,
     codingStepIsSettled,
     codingStepIsSkipped,
+    presentCodingAgentChecklist,
 } from "../codingStepStatus";
 import { codingStepGlyph } from "../CodingWorkbenchControlPanel";
 
@@ -88,6 +89,36 @@ describe("coding step vocabulary — other producers", () => {
         expect(codingStepIsDone("Passed")).toBe(true);
         expect(codingStepIsFailed("Verify_Failed")).toBe(true);
         expect(codingStepIsActive("IN_PROGRESS")).toBe(true);
+    });
+});
+
+describe("presentCodingAgentChecklist", () => {
+    it("drops a runner failure painted onto an agent checklist", () => {
+        const painted = [
+            { index: 1, title: "定位通道", status: "failed", summary: "邮件已成功发送" },
+            { index: 2, title: "编写脚本", status: "passed" },
+            { index: 3, title: "验证发送", status: "passed" },
+        ];
+        const got = presentCodingAgentChecklist("", painted);
+        expect(got.map((step) => step.status)).toEqual(["passed", "passed", "passed"]);
+        expect(got[0].summary).toBe("");
+        expect(painted[0].status).toBe("failed");
+        expect(painted[0].summary).toBe("邮件已成功发送");
+    });
+
+    it("keeps a lone failure, a real plan failure, and a later skip", () => {
+        expect(presentCodingAgentChecklist("", [
+            { index: 1, status: "failed", summary: "guardrail" },
+        ])[0].status).toBe("failed");
+        expect(presentCodingAgentChecklist("### T1: 定位\n### T2: 发送", [
+            { index: 1, status: "failed", summary: "guardrail" },
+            { index: 2, status: "passed" },
+        ])[0].summary).toBe("guardrail");
+        const skipped = presentCodingAgentChecklist("", [
+            { index: 1, status: "failed", summary: "guardrail" },
+            { index: 2, status: "skipped", summary: "prior step failed" },
+        ]);
+        expect(skipped.map((step) => step.status)).toEqual(["failed", "skipped"]);
     });
 });
 

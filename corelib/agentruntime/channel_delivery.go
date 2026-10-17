@@ -23,6 +23,8 @@ const (
 	IMMessagePlatformWeixinLocal     IMMessagePlatformKind = "weixin_local"
 	IMMessagePlatformLansenger       IMMessagePlatformKind = "lansenger"
 	IMMessagePlatformLansengerLocal  IMMessagePlatformKind = "lansenger_local"
+	IMMessagePlatformSlack           IMMessagePlatformKind = "slack"
+	IMMessagePlatformSlackLocal      IMMessagePlatformKind = "slack_local"
 	IMMessagePlatformVEGroupExecutor IMMessagePlatformKind = "ve_group_executor"
 	IMMessagePlatformScheduler       IMMessagePlatformKind = "scheduler"
 )
@@ -57,6 +59,10 @@ func NormalizeIMMessagePlatformKind(value string) IMMessagePlatformKind {
 		return IMMessagePlatformLansenger
 	case IMMessagePlatformLansengerLocal:
 		return IMMessagePlatformLansengerLocal
+	case IMMessagePlatformSlack:
+		return IMMessagePlatformSlack
+	case IMMessagePlatformSlackLocal:
+		return IMMessagePlatformSlackLocal
 	case IMMessagePlatformVEGroupExecutor:
 		return IMMessagePlatformVEGroupExecutor
 	case IMMessagePlatformScheduler:
@@ -227,7 +233,9 @@ func (kind IMMessagePlatformKind) IsIMChannel() bool {
 		IMMessagePlatformWeixin,
 		IMMessagePlatformWeixinLocal,
 		IMMessagePlatformLansenger,
-		IMMessagePlatformLansengerLocal:
+		IMMessagePlatformLansengerLocal,
+		IMMessagePlatformSlack,
+		IMMessagePlatformSlackLocal:
 		return true
 	default:
 		return false
@@ -244,6 +252,8 @@ func (kind IMMessagePlatformKind) ChannelScope() string {
 	switch kind {
 	case IMMessagePlatformLansenger, IMMessagePlatformLansengerLocal:
 		return "lansenger"
+	case IMMessagePlatformSlack, IMMessagePlatformSlackLocal:
+		return "slack"
 	case IMMessagePlatformWeixin, IMMessagePlatformWeixinLocal:
 		return "weixin"
 	case IMMessagePlatformTelegram, IMMessagePlatformTelegramLocal:

@@ -24,6 +24,9 @@ func TestStripCodexClientMarkersRewritesSystemIdentityOnly(t *testing.T) {
 	if !strings.Contains(got, "the file mentions Codex CLI") {
 		t.Fatalf("user text was rewritten: %s", got)
 	}
+	if strings.Contains(got, "\n\n\n") {
+		t.Fatalf("deleted sentence left a blank hole: %s", got)
+	}
 }
 
 func TestStripCodexClientMarkersKeepsOfficialCodexHost(t *testing.T) {
@@ -43,5 +46,21 @@ func TestStripCodexClientMarkersLeavesUnrelatedBodyUntouched(t *testing.T) {
 	body := []byte(`{"model":"qwen","messages":[{"role":"user","content":"hello"}]}`)
 	if string(StripCodexClientMarkers("https://www.workbuddy.ai/v2/chat/completions", body)) != string(body) {
 		t.Fatal("unrelated body was rewritten")
+	}
+}
+
+func TestStripCodexClientMarkersKeepsUserMentionAndLiteralJSON(t *testing.T) {
+	mention := []byte(`{"temperature":0.2,"messages":[{"role":"user","content":"see the Codex CLI docs <file>"}]}`)
+	if got := StripCodexClientMarkers("https://opencode.ai/zen/v1/chat/completions", mention); string(got) != string(mention) {
+		t.Fatalf("user mention was re-encoded: %s", got)
+	}
+
+	body := []byte(`{"temperature":0.2,"messages":[{"role":"system","content":"You are Codex, based on GPT-5. You are running as a coding agent in the Codex CLI on a user's computer."},{"role":"user","content":"<file>"}]}`)
+	got := string(StripCodexClientMarkers("https://example.com/v1/chat/completions", body))
+	if strings.Contains(got, "You are Codex") || strings.Contains(got, `\u003c`) {
+		t.Fatalf("rewrite escaped or kept the identity: %s", got)
+	}
+	if !strings.Contains(got, "<file>") || !strings.Contains(got, "0.2") {
+		t.Fatalf("literal payload was dropped: %s", got)
 	}
 }

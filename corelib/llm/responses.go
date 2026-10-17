@@ -70,7 +70,11 @@ func BuildResponsesAPIRequestData(
 	messages []interface{},
 	opts ResponsesAPIRequestOptions,
 ) (endpoint string, body []byte, err error) {
-	endpoint = BuildResponsesEndpoint(cfg.URL)
+	base := cfg.URL
+	if corelib.IsOpenCodeURL(cfg.URL) {
+		base = corelib.OpenCodeUpstreamBase(cfg.URL, cfg.UpstreamModel())
+	}
+	endpoint = BuildResponsesEndpoint(base)
 	messages = normalizeOpenAIChatToolCallLinkage(messages)
 
 	if cfg.NeedsConservativeOpenAICompatSanitization() {
@@ -88,7 +92,7 @@ func BuildResponsesAPIRequestData(
 	if converted.Instructions != "" {
 		reqBody["instructions"] = converted.Instructions
 	}
-	toolsInput := PrepareOpenAIChatToolsForWire(cfg, opts.Tools)
+	toolsInput := PrepareOpenCodeZenAgentTools(cfg, PrepareOpenAIChatToolsForWire(cfg, opts.Tools))
 	tools := ConvertToResponsesTools(toolsInput)
 	if len(tools) > 0 || opts.ExplicitToolReplacement {
 		// An explicit replacement must remain [] after conversion, never nil
@@ -159,6 +163,7 @@ func BuildResponsesAPIRequestData(
 	}
 
 	applyConfigTemperature(reqBody, cfg)
+	applyOpenCodeZenFreeResponses(cfg, reqBody)
 
 	body, err = json.Marshal(reqBody)
 	return endpoint, body, err
@@ -225,7 +230,9 @@ func NewResponsesAPIRequest(
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", cfg.UserAgent())
-	req.Header.Set("originator", "codex_cli_rs")
+	if !corelib.IsOpenCodeURL(cfg.URL) {
+		req.Header.Set("originator", "codex_cli_rs")
+	}
 	if cfg.Key != "" {
 		req.Header.Set("Authorization", "Bearer "+cfg.Key)
 	}

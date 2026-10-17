@@ -76,10 +76,13 @@ func ReviewedMCPCapabilityContracts() map[string]DynamicCapabilityContract {
 // openLookupEffectsForTool classifies each observed tool from its vendor
 // annotations, so a read-only-annotated tool matches a read-only need and runs
 // without a write boundary, while a write or unannotated tool is selected with
-// EffectExternalEffect and settles through the host's external-effect receipt
-// boundary — the same confirmation path a reviewed mutation uses. An arbitrary
-// installed MCP can therefore be called to act on an external system, and that
-// act is never silent.
+// EffectExternalEffect and still pauses for the per-server write confirmation.
+// After that call returns, an x:mcp or information.lookup selection records
+// the returned text as its receipt. A reviewed mutation such as
+// work_log_update does not: its provider text is not evidence the system of
+// record changed, so it stays on the external-effect receipt boundary. An
+// arbitrary installed MCP can therefore be called, and a write is never a
+// silent read.
 //
 // scope is required by the descriptor. An arbitrary tool is reference
 // retrieval: it answers from whatever it is pointed at, and it is not a

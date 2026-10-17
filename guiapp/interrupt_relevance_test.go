@@ -39,6 +39,17 @@ func (e *relTestEmbedder) ModelID() string { return e.id }
 func (e *relTestEmbedder) Close()          {}
 
 func TestInterruptRelevanceModelResolution(t *testing.T) {
+	// The developer machine ships the Qwen3 interrupt head under the real
+	// models dir. This test is about the fallback, so it must not see that file.
+	prev, _ := embedding.BaseDirFunc.Load().(func() string)
+	embedding.BaseDirFunc.Store(func() string { return t.TempDir() })
+	t.Cleanup(func() {
+		if prev != nil {
+			embedding.BaseDirFunc.Store(prev)
+			return
+		}
+		embedding.BaseDirFunc.Store(func() string { return "" })
+	})
 	t.Setenv(interruptRelevanceEnv, "")
 	gemma := &relTestEmbedder{id: "embeddinggemma-300m:768", dim: 768}
 	if m := interruptRelevanceModelFor(gemma); m != nil {
@@ -67,6 +78,52 @@ func TestInterruptRelevanceModelResolution(t *testing.T) {
 	other := &relTestEmbedder{id: "Qwen3 Embedding 0.6b:1024:prompt-v0", dim: 1024}
 	if interruptRelevanceModelFor(other) != nil {
 		t.Fatal("model must refuse an embedder with a different model id")
+	}
+}
+
+func TestInterruptFileHeadScoresUserTextNotAttachment(t *testing.T) {
+	const userID = "desktop-user:interrupt-head"
+	dir := t.TempDir()
+	p := filepath.Join(dir, "rel.json")
+	q := &relTestEmbedder{id: "Qwen3 Embedding 0.6b:1024:prompt-v1:qwen3-instruct-v1", dim: 4}
+	doc := `{"format":"maclaw-interrupt-relevance-v1","kind":"cosine","embedder_model_id":"` + q.id + `","dims":4,"task_instruction":"T","message_instruction":"M","high":0.9,"low":0.4}`
+	if err := os.WriteFile(p, []byte(doc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(interruptRelevanceEnv, p)
+
+	handler := &IMMessageHandler{}
+	handler.setSessionLoopCtx(userID, NewLoopContext("active-task", 3, nil))
+	interrupt := newIMInterruptHandler(handler)
+	interrupt.SetEmbedder(q)
+	taskFull := "改登录页\n\n" + filePathPromptPrefix + "\nC:\\tmp\\task.png\n请直接使用这些路径。"
+	tracker := progress.NewAgentProgressTracker(nil, taskFull, "coding", nil)
+	defer tracker.Stop()
+	interrupt.SetTracker(userID, tracker)
+	if interrupt.EmbedText(taskFull) == nil {
+		t.Fatal("task embed failed")
+	}
+
+	full := "继续改登录页\n\n" + filePathPromptPrefix + "\nC:\\tmp\\a.png\n请直接使用这些路径。"
+	interrupt.TryInterrupt(userID, full)
+	for _, text := range q.texts {
+		if strings.Contains(text, filePathPromptPrefix) || strings.Contains(text, `C:\tmp\`) {
+			t.Fatalf("interrupt head embedded host attachment text: %q", text)
+		}
+	}
+	for _, want := range []string{
+		"Instruct: T\nQuery: 改登录页",
+		"Instruct: M\nQuery: 继续改登录页",
+	} {
+		found := false
+		for _, text := range q.texts {
+			if text == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("embedded texts = %q, missing %q", q.texts, want)
+		}
 	}
 }
 

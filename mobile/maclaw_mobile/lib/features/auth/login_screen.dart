@@ -4,6 +4,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../core/api/official_service.dart';
 import '../../l10n/app_strings.dart';
 import '../../shared/surface.dart';
 import '../../shared/theme.dart';
@@ -122,6 +123,10 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
 
   String _formatSendError(Object error) {
     final s = _s;
+    if (error is OfficialHubCenterUnavailableException) {
+      // Do not surface HubCenter candidate URLs or internal names.
+      return s.cannotConnectOfficial;
+    }
     if (error is DioException) {
       final status = error.response?.statusCode;
       final data = error.response?.data;

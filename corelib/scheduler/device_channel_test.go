@@ -36,6 +36,14 @@ func TestCanonicalDeliveryChannelRecognizesDevice(t *testing.T) {
 	}
 }
 
+func TestCanonicalDeliveryChannelRecognizesSlack(t *testing.T) {
+	for _, input := range []string{"slack", "Slack", "slack_local", "slack-local"} {
+		if got := CanonicalDeliveryChannel(input); got != DeliveryChannelSlack {
+			t.Fatalf("CanonicalDeliveryChannel(%q)=%q", input, got)
+		}
+	}
+}
+
 func TestSplitScheduledTaskBodyRoundTripsFormatBody(t *testing.T) {
 	d := &TaskDelivery{Prefix: "提醒你："}
 	body := d.FormatBody("每日站会", "10 点开始", nil)

@@ -869,24 +869,28 @@ func (a *App) FileCompanionUploadCloud(path string) (*MobileDocumentDraftSummary
 // ChooseFileCompanionFiles opens the system file dialog. The main process
 // starts the companion with those paths. The companion process returns them
 // so the window can open tabs. Neither path is inserted into the assistant.
+// Only files that exist are returned: the launch verb is not a document, and
+// a dialog that echoes it must not become a missing-file tab.
 func (a *App) ChooseFileCompanionFiles() ([]string, error) {
-	if a == nil || a.ctx == nil {
+	if a == nil {
 		return nil, errors.New("app unavailable")
 	}
-	files, err := wailsruntime.OpenMultipleFilesDialog(a.ctx, wailsruntime.OpenDialogOptions{
-		Title: "用伴读打开",
-	})
+	var files []string
+	var err error
+	if a.processHooks.chooseFiles != nil {
+		files, err = a.processHooks.chooseFiles()
+	} else {
+		if a.ctx == nil {
+			return nil, errors.New("app unavailable")
+		}
+		files, err = wailsruntime.OpenMultipleFilesDialog(a.ctx, wailsruntime.OpenDialogOptions{
+			Title: "用伴读打开",
+		})
+	}
 	if err != nil {
 		return nil, err
 	}
-	cleaned := make([]string, 0, len(files))
-	for _, path := range files {
-		path = strings.TrimSpace(path)
-		if path == "" || strings.ContainsRune(path, 0) {
-			continue
-		}
-		cleaned = append(cleaned, path)
-	}
+	cleaned := fileCompanionExistingFiles(files)
 	if len(cleaned) == 0 {
 		return nil, nil
 	}

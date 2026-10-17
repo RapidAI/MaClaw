@@ -509,11 +509,13 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 	var usage *Usage
 	var responseID string
 	contentFilter := newContentToolCallDeltaFilter(onToken)
+	contentProtocol := newReasoningProtocolStreamFilter(contentFilter.Write)
+	reasoningProtocol := newReasoningProtocolStreamFilter(onReasoning)
 	var taggedReasoningBuf strings.Builder
-	thinkFilter := newOpenAIThinkTagStreamFilter(contentFilter.Write, func(delta string) {
+	thinkFilter := newOpenAIThinkTagStreamFilter(contentProtocol.Write, func(delta string) {
 		taggedReasoningBuf.WriteString(delta)
-		if onReasoning != nil {
-			onReasoning(delta)
+		if reasoningProtocol != nil {
+			reasoningProtocol.Write(delta)
 		}
 	})
 
@@ -572,8 +574,8 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 		}
 		if reasoning := openAISSEReasoningText(delta); reasoning != "" {
 			reasoningBuf.WriteString(reasoning)
-			if onReasoning != nil {
-				onReasoning(reasoning)
+			if reasoningProtocol != nil {
+				reasoningProtocol.Write(reasoning)
 			}
 		}
 
@@ -634,7 +636,11 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 		return nil, fmt.Errorf("SSE stream read: %w", streamErr)
 	}
 	thinkFilter.Flush()
+	contentProtocol.Flush()
 	contentFilter.Flush()
+	if reasoningProtocol != nil {
+		reasoningProtocol.Flush()
+	}
 	rawStreamContent := contentBuf.String()
 	visibleContent, trailingTaggedReasoning := splitOpenAIThinkingTags(rawStreamContent)
 	// Preserve the legacy StripThinkTags behavior for a historical provider
@@ -648,7 +654,7 @@ func parseSSEStreamWithReasoning(body io.Reader, onToken TokenCallback, onReason
 	msg := Message{
 		Role:             "assistant",
 		Content:          StripAllExtra(visibleContent),
-		ReasoningContent: mergeOpenAIReasoningText(reasoningBuf.String(), mergeOpenAIReasoningText(taggedReasoningBuf.String(), trailingTaggedReasoning)),
+		ReasoningContent: StripLeakedReasoningProtocol(mergeOpenAIReasoningText(reasoningBuf.String(), mergeOpenAIReasoningText(taggedReasoningBuf.String(), trailingTaggedReasoning))),
 	}
 
 	// Assemble tool calls in index order.
@@ -844,7 +850,7 @@ func parseAnthropicSSEStreamWithReasoning(body io.Reader, onToken TokenCallback,
 	msg := Message{
 		Role:             "assistant",
 		Content:          StripAllExtra(contentBuf.String()),
-		ReasoningContent: reasoningBuf.String(),
+		ReasoningContent: StripLeakedReasoningProtocol(reasoningBuf.String()),
 	}
 
 	for _, tc := range toolCalls {

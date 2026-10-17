@@ -1499,7 +1499,9 @@ func withSlimDocumentRead(registry *tool.CapabilityRegistry, needs []tool.Capabi
 // semanticNeedsWithDynamicLookupForProviders attaches the open read-only
 // family's optional need when a USABLE dynamic provider actually serves it.
 // One provider is enough — the planner picks the best quality — so two
-// installed MCP servers do not multiply needs.
+// installed MCP servers do not multiply needs. The contract-only graft
+// removes this need when it lists each installed tool: leaving it would
+// force-call one arbitrary sibling beside those tools.
 //
 // It deliberately shares providerProvisionList with the graft below: both need
 // "installed and this planner can select it". Before sharing, this looked at
@@ -1550,18 +1552,27 @@ func semanticNeedsWithDynamicLookupForProviders(needs []tool.CapabilityNeed, pro
 //     external_effect and still answers a read, and the call keeps that
 //     effect so it settles through the receipt boundary instead of running
 //     as a silent read. A read-only tool still cannot carry a write.
-//  4. Never over an explicit user pin. If the user named a server and that
-//     server's tools cannot do the job, another server is not substituted.
+//  4. Never over a pin of this capability itself. The user named an
+//     implementation of the contract-only need, and an open lookup tool would
+//     answer a different question. A pin of some other capability — a server
+//     mentioned beside the request, or a lookup pin — does not hide installed
+//     tools and does not leave the need required. Each exact capability
+//     already names one tool, and the planner applies a pin only to the
+//     capability it was derived for.
 //
 // The original unservable need is relaxed to optional in the same pass.
 // Installing nothing still fails cleanly. A reviewed provider of the exact
 // capability keeps its binding and never reaches this path.
 //
-// When every carrying tool has its exact x:mcp:<server>:<tool> capability,
-// each tool becomes its own optional need. Quality ranking one shared
-// information.lookup winner would call an arbitrary sibling and the model
-// could not pick the tool that matches the request. Tools without an exact
-// capability still share one information.lookup fallback.
+// When any carrying tool has a registry-known x:mcp:<server>:<tool>
+// capability, each such tool becomes its own optional need. A sibling
+// without one does not collapse the set onto one information.lookup winner:
+// that winner is force-called and may be a different tool. The shared family
+// is used only when no carrying tool has a usable exact capability. An
+// ambient information.lookup need already on the turn is that shared family,
+// so it is not demanded again. When exact tools are listed, that ambient
+// need is removed so its force-call cue does not also invoke an arbitrary
+// sibling.
 func semanticNeedsWithContractOnlyGraft(needs []tool.CapabilityNeed, providers []tool.ProviderSpec, pins []tool.ProviderPin, registry *tool.CapabilityRegistry) []tool.CapabilityNeed {
 	if len(needs) == 0 || len(providers) == 0 {
 		return needs
@@ -1619,7 +1630,7 @@ func semanticNeedsWithContractOnlyGraft(needs []tool.CapabilityNeed, providers [
 		if !declared {
 			continue
 		}
-		exposure := installedLookupExposure(lookupProviders, descriptor.Effects, pins)
+		exposure := installedLookupExposure(lookupProviders, descriptor.Effects)
 		if len(exposure) == 0 {
 			continue
 		}
@@ -1633,25 +1644,45 @@ func semanticNeedsWithContractOnlyGraft(needs []tool.CapabilityNeed, providers [
 		capabilities = append(capabilities, capability)
 	}
 	sort.Slice(capabilities, func(i, j int) bool { return capabilities[i] < capabilities[j] })
+	// One graft set per CAPABILITY, not per need. Two required needs for the
+	// same capability must not mint duplicate ids: the planner rejects those
+	// outright, which would turn a rescuable turn into a hard error.
+	//
+	// The obligation is downgraded, not merely supplemented. Leaving the
+	// original Required need in the plan records it as Unmet, and the turn is
+	// refused exactly as before. This capability has no reviewed provider on
+	// this host, so keeping it obligatory only reproduces the failure the
+	// graft exists to prevent.
 	var changed bool
-	seenGraftID := map[string]bool{}
+	planned := make([][]tool.CapabilityNeed, 0, len(capabilities))
+	anyExact := false
 	for _, capability := range capabilities {
 		fallback := fallbacks[capability]
-		// One graft set per CAPABILITY, not per need. Two required needs for
-		// the same capability must not mint duplicate ids: the planner rejects
-		// those outright, which would turn a rescuable turn into a hard error.
-		//
-		// The obligation is downgraded, not merely supplemented. Leaving the
-		// original Required need in the plan records it as Unmet, and the turn
-		// is refused exactly as before. This capability has no reviewed
-		// provider on this host, so keeping it obligatory only reproduces the
-		// failure the graft exists to prevent.
 		for _, index := range fallback.indices {
 			out[index].Required = false
 			changed = true
 		}
-		for _, graft := range installedMCPFallbackNeeds(capability, fallback.exposure, registry) {
-			if seenGraftID[graft.ID] {
+		grafts := installedMCPFallbackNeeds(capability, fallback.exposure, registry)
+		if fallbackNeedsAreExact(grafts) {
+			anyExact = true
+		}
+		planned = append(planned, grafts)
+	}
+	// Exact tools replace the ambient open-family need. Its reuse cue
+	// force-calls one quality-ranked winner, which can be a mutating sibling
+	// of the tool the request named.
+	if anyExact {
+		out = dropAmbientInformationLookup(out)
+	}
+	seenGraftID := map[string]bool{}
+	for _, grafts := range planned {
+		// The shared family beside exact tools reintroduces that force-called
+		// winner. Use it only when nothing exact was available.
+		if anyExact && !fallbackNeedsAreExact(grafts) {
+			continue
+		}
+		for _, graft := range grafts {
+			if seenGraftID[graft.ID] || capabilityNeedPresent(out, graft.Capability) {
 				continue
 			}
 			seenGraftID[graft.ID] = true
@@ -1685,35 +1716,19 @@ func readyInstalledLookupProviders(providers []tool.ProviderSpec) []tool.Provide
 }
 
 // installedLookupExposure is the ready lookup tools that can perform the
-// need, narrowed to a server the user named when that server can do the job.
-// A named server that cannot perform it yields nothing: another server is
-// not a substitute for the implementation the user asked for.
-func installedLookupExposure(carriers []tool.ProviderSpec, needEffects []tool.EffectClass, pins []tool.ProviderPin) []tool.ProviderSpec {
+// need. Effect class is an execution boundary: an external-effect tool can
+// answer a read, and a read-only tool cannot answer a write. Server pins are
+// not applied here. A pin belongs to one capability, and applying it to every
+// carrying tool hid the server that could do the job — or left the need
+// required, which is the catalog miss this graft exists to prevent.
+func installedLookupExposure(carriers []tool.ProviderSpec, needEffects []tool.EffectClass) []tool.ProviderSpec {
 	matching := make([]tool.ProviderSpec, 0, len(carriers))
 	for _, provider := range carriers {
 		if lookupProviderCarriesNeed(provider.Effects, needEffects) {
 			matching = append(matching, provider)
 		}
 	}
-	pinned := map[string]bool{}
-	for _, pin := range pins {
-		if strings.TrimSpace(pin.Kind) != "mcp" {
-			continue
-		}
-		if id := strings.TrimSpace(pin.ProviderID); id != "" {
-			pinned[id] = true
-		}
-	}
-	if len(pinned) == 0 {
-		return matching
-	}
-	narrowed := make([]tool.ProviderSpec, 0, len(matching))
-	for _, provider := range matching {
-		if pinned[strings.TrimSpace(provider.Binding.ProviderID)] {
-			narrowed = append(narrowed, provider)
-		}
-	}
-	return narrowed
+	return matching
 }
 
 // lookupProviderCarriesNeed reports whether one installed lookup tool can
@@ -1736,22 +1751,21 @@ func lookupProviderCarriesNeed(providerEffects, needEffects []tool.EffectClass) 
 }
 
 // installedMCPFallbackNeeds is the demand side of an unserved contract-only
-// capability. Exact per-tool capabilities let the model call the installed
-// tool whose name matches the request. A tool without one falls back to the
-// shared open family, and one such tool keeps the whole set on that family
-// so a sibling is not dropped.
+// capability. A tool whose x:mcp capability is registered is demanded by
+// that capability, so the model can call the tool named in the description.
+// A sibling without a registered capability does not pull the others onto
+// the shared family: that family force-calls one quality-ranked winner.
+// The shared family is used only when no carrying tool has a usable exact
+// capability.
 func installedMCPFallbackNeeds(capability tool.CapabilityID, providers []tool.ProviderSpec, registry *tool.CapabilityRegistry) []tool.CapabilityNeed {
 	auto := make([]tool.CapabilityNeed, 0, len(providers))
 	seen := map[tool.CapabilityID]bool{}
-	complete := len(providers) > 0
 	for _, provider := range providers {
 		id, ok := autoMCPCapabilityOf(provider)
 		if !ok || registry == nil {
-			complete = false
 			continue
 		}
 		if _, declared := registry.Lookup(id); !declared {
-			complete = false
 			continue
 		}
 		if seen[id] {
@@ -1767,7 +1781,7 @@ func installedMCPFallbackNeeds(capability tool.CapabilityID, providers []tool.Pr
 			EvidenceIDs: []string{"installed_mcp:" + string(capability)},
 		})
 	}
-	if complete && len(auto) > 0 {
+	if len(auto) > 0 {
 		sort.Slice(auto, func(i, j int) bool { return auto[i].ID < auto[j].ID })
 		return auto
 	}
@@ -1777,9 +1791,69 @@ func installedMCPFallbackNeeds(capability tool.CapabilityID, providers []tool.Pr
 	return []tool.CapabilityNeed{graft}
 }
 
+// fallbackNeedsAreExact reports whether grafts name installed tools rather
+// than the shared information.lookup family.
+func fallbackNeedsAreExact(needs []tool.CapabilityNeed) bool {
+	if len(needs) == 0 {
+		return false
+	}
+	for _, need := range needs {
+		if !strings.HasPrefix(string(need.Capability), "x:mcp:") {
+			return false
+		}
+	}
+	return true
+}
+
+// dropAmbientInformationLookup removes the optional open-family need the
+// dynamic-lookup pass attaches. It leaves a required lookup need alone.
+func dropAmbientInformationLookup(needs []tool.CapabilityNeed) []tool.CapabilityNeed {
+	kept := make([]tool.CapabilityNeed, 0, len(needs))
+	dropped := false
+	for _, need := range needs {
+		if isAmbientInformationLookupNeed(need) {
+			dropped = true
+			continue
+		}
+		kept = append(kept, need)
+	}
+	if !dropped {
+		return needs
+	}
+	return kept
+}
+
+func isAmbientInformationLookupNeed(need tool.CapabilityNeed) bool {
+	if need.Required {
+		return false
+	}
+	ambient := agentservice.AmbientDynamicLookupNeed()
+	return need.ID == ambient.ID && need.Capability == ambient.Capability
+}
+
+func capabilityNeedPresent(needs []tool.CapabilityNeed, capability tool.CapabilityID) bool {
+	for _, need := range needs {
+		if need.Capability == capability {
+			return true
+		}
+	}
+	return false
+}
+
+// autoMCPCapabilityOf returns the host-issued address of this tool,
+// x:mcp:<server>:<tool>. A vendor may also declare an x:mcp capability.
+// Picking the lexicographically smallest one lets that declaration steal the
+// address, so the model is shown a different tool than the binding that runs.
+// The host address wins when this provider publishes it. A provider that only
+// has some other x:mcp provision keeps the smallest one, so a tool is not
+// dropped solely because its id was not derived from the binding.
 func autoMCPCapabilityOf(provider tool.ProviderSpec) (tool.CapabilityID, bool) {
+	want := agentservice.AutoMCPCapabilityIDForBinding(provider.Binding.ProviderID, provider.Binding.ImplementationID)
 	var found tool.CapabilityID
 	for _, provision := range provider.Provides {
+		if want != "" && provision.Capability == want {
+			return want, true
+		}
 		if !strings.HasPrefix(string(provision.Capability), "x:mcp:") {
 			continue
 		}
@@ -2100,6 +2174,20 @@ func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContext(ctx *Loop
 }
 
 func (h *IMMessageHandler) semanticCallSurfaceForSharedTurnWithContextAndAttachments(ctx *LoopContext, userID, userText, channel string, attachments []MessageAttachment) ([]map[string]interface{}, *semanticCallSurface, bool, error) {
+	// A goal continuation already names goal(action=plan|step|complete|fail).
+	// Classifying that host prompt as goal_manage publishes the closed
+	// create/get/end adapter under the same capability and the lifecycle tool
+	// never reaches the model. The execution-profile bypass is not enough:
+	// this planner classifies again when SemanticIntent is empty. Leave the
+	// turn on the legacy surface, which pins that lifecycle tool.
+	loopPlatform := ""
+	if ctx != nil {
+		loopPlatform = ctx.Platform
+	}
+	if goalContinuationTurn(userText, channel) || goalContinuationTurn(userText, loopPlatform) {
+		log.Printf("[semantic-routing] goal continuation keeps lifecycle goal tool user=%q channel=%q platform=%q", userID, channel, loopPlatform)
+		return nil, nil, false, nil
+	}
 	// Identity and replacement generation form one host-private lifecycle
 	// snapshot. Reading them separately would permit a fresh ingress to rotate
 	// the identity between reads, then incorrectly register an old scope as the
@@ -2565,6 +2653,12 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	if h == nil {
 		return nil, false, nil
 	}
+	// Same contract as the shared-turn surface. A shadow diagnostic or a
+	// direct planner call must not classify a continuation as goal_manage
+	// and publish the closed adapter beside the lifecycle tool.
+	if goalContinuationTurn(userText, channel) {
+		return nil, false, nil
+	}
 	if strings.TrimSpace(sessionID) == "" || strings.TrimSpace(userID) == "" {
 		return nil, true, fmt.Errorf("semantic_invocation_identity_required")
 	}
@@ -2761,6 +2855,10 @@ func (h *IMMessageHandler) semanticPlanForTurnWithContextAndClassificationAndAtt
 	if err != nil {
 		return nil, true, fmt.Errorf("resolve IM semantic capability needs: %w", err)
 	}
+	// The tool head scores the same vector the intent pass already computed.
+	// Managed turns never enter the name router, so this is the injection
+	// point: intent needs ∪ head top-k, still inside the capability plan.
+	needs = h.unionToolHeadNeeds(registry, needs, planning)
 	var carriedCaps []string
 	if lookupContinuationFetches(requestCtx) && planning.Primary == intent.LabelSearch {
 		// A cold search leaves web_fetch latent. Raising the selection budget

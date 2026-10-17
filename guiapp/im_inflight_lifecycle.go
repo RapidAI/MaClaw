@@ -94,8 +94,9 @@ func (l *imInFlightLifecycle) SetOnce() {
 		projectPath = l.handler.getCurrentProjectPath()
 	}
 	log.Printf("[InFlightTask] set user=%q project=%q text_len=%d", l.userID, projectPath, len([]rune(l.userText)))
+	l.handler.detachProjectTabTranscript(l.userID)
 	l.handler.memory.SetInFlightTaskForRun(l.userID, truncateRunes(l.userText, 200), projectPath, l.loopID)
-	if err := l.handler.memory.FlushNow(); err != nil {
+	if err := l.handler.memory.FlushUser(l.userID); err != nil {
 		log.Printf("[InFlightTask] flush failed: %v", err)
 	}
 	l.ensureLeaseRefresh()
@@ -166,6 +167,7 @@ func (h *IMMessageHandler) persistRecoveryCheckpoint(userID, task, projectPath, 
 	if h == nil || h.memory == nil {
 		return nil
 	}
+	h.detachProjectTabTranscript(userID)
 	return h.memory.PersistInFlightCheckpoint(
 		userID,
 		history,
@@ -182,5 +184,6 @@ func (h *IMMessageHandler) persistSharedInteractivePause(userID, runID string, h
 	if h == nil || h.memory == nil {
 		return nil
 	}
+	h.detachProjectTabTranscript(userID)
 	return h.memory.SaveAndCompleteInFlightCheckpointForRun(userID, runID, history)
 }
