@@ -7,8 +7,11 @@ import { SuggestCombobox } from "../ui/SuggestCombobox";
 import { capabilityBandName, hubOfficialModelAliases, officialModelAlias } from "../../utils/capabilityModelLabel";
 
 type Profile = { provider_id?: string; model?: string; inherit_assistant?: boolean };
+type RoleAssignment = { model?: string; inherit_hub?: boolean };
+type RoleKey = "foreground" | "background" | "computer_use";
 type Provider = { id: string; name: string; model?: string; models?: string[]; connection_test_passed?: boolean; is_hub_service?: boolean; supports_vision?: boolean; vision_models?: string[]; vision_tested_models?: string[] };
 type Summary = { provider_id?: string; provider_name?: string; model?: string; inherit_assistant?: boolean; health?: string };
+type RoleSummary = { model?: string; inherit_hub?: boolean; provider_name?: string; configured?: boolean };
 type ProbeResult = {
     profile: "assistant" | "coding" | "caption";
     health?: string;
@@ -27,10 +30,23 @@ type ProbeResult = {
 };
 type PanelState = {
     providers: Provider[];
-    profiles: { version: number; assistant: Profile; coding: Profile; caption?: Profile };
+    profiles: {
+        version: number;
+        assistant: Profile;
+        coding: Profile;
+        caption?: Profile;
+        foreground?: RoleAssignment;
+        background?: RoleAssignment;
+        computer_use?: RoleAssignment;
+        horizon?: unknown;
+    };
+    hub_role_models?: { foreground?: string; background?: string; computer_use?: string };
     assistant: Summary;
     coding: Summary;
     caption?: Summary;
+    foreground?: RoleSummary;
+    background?: RoleSummary;
+    computer_use?: RoleSummary;
     revision: string;
 };
 
@@ -49,11 +65,17 @@ type Props = {
 };
 
 const cloneProfiles = (profiles: PanelState["profiles"]): PanelState["profiles"] => ({
+    ...profiles,
     version: profiles.version,
     assistant: { ...profiles.assistant },
     coding: { ...profiles.coding },
     caption: { ...(profiles.caption || {}) },
+    foreground: { ...(profiles.foreground || {}) },
+    background: { ...(profiles.background || {}) },
+    computer_use: { ...(profiles.computer_use || {}) },
 });
+
+const roleInheritsHub = (role?: RoleAssignment) => role?.inherit_hub !== false;
 
 export function captionModelMissingVision(provider?: Provider, model?: string): boolean {
     if (!String(model || "").trim()) return false;
@@ -404,6 +426,22 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         });
         invalidateProbeResults("coding");
     };
+    const setRoleInherit = (role: RoleKey, inherit: boolean) => {
+        setDraft(prev => {
+            if (!prev) return prev;
+            const current = { ...(prev[role] || {}) };
+            current.inherit_hub = inherit;
+            if (!inherit && !String(current.model || "").trim()) {
+                const hub = state?.hub_role_models;
+                const hubModel = role === "computer_use" ? hub?.computer_use : hub?.[role];
+                current.model = String(hubModel || "auto");
+            }
+            return { ...prev, [role]: current };
+        });
+    };
+    const setRoleModel = (role: RoleKey, model: string) => {
+        setDraft(prev => prev ? { ...prev, [role]: { ...(prev[role] || {}), inherit_hub: false, model } } : prev);
+    };
     const save = async () => {
         if (!state || !draft || saving) return;
         setSaving(true);
@@ -560,6 +598,11 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
         );
     };
 
+    const roleModelOptions = () => {
+        const hub = providers.find(provider => provider.is_hub_service);
+        const base = hub ? hubOfficialModelAliases() : providerModels(draft?.assistant.provider_id);
+        return Array.from(new Set(["auto", ...base].map(value => String(value || "").trim()).filter(Boolean)));
+    };
     const header = (
         <div className="llm-profile-assignments__head">
             <h3 id="llm-profile-assignments-title" className="llm-profile-assignments__title">{t("Model assignments", "模型分配")}</h3>
@@ -617,6 +660,42 @@ export function LLMProfileAssignments({ lang, onSaved, providerListRevision = 0,
                     {renderProbeAction("caption")}
                 </div>
             </div>
+            {([
+                ["foreground", t("Foreground", "前台交互", "前台互動"), t("Planning and chat", "规划与对话", "規劃與對話"), t("Foreground follows Hub", "前台跟随 Hub", "前台跟隨 Hub")],
+                ["background", t("Background", "后台执行", "後台執行"), t("Worker loops", "后台任务循环", "後台任務循環"), t("Background follows Hub", "后台跟随 Hub", "後台跟隨 Hub")],
+                ["computer_use", t("Computer use", "电脑操作", "電腦操作"), t("Screenshots and clicks", "截图与点击", "截圖與點擊"), t("Computer use follows Hub", "电脑操作跟随 Hub", "電腦操作跟隨 Hub")],
+            ] as const).map(([key, title, hint, aria]) => {
+                const assignment = draft[key] || {};
+                const inherits = roleInheritsHub(assignment);
+                const summary = key === "foreground" ? state.foreground : key === "background" ? state.background : state.computer_use;
+                const hubModel = state.hub_role_models?.[key];
+                const shown = String(summary?.model || hubModel || "auto");
+                return (
+                    <div key={key} style={{ borderTop: `1px solid ${colors.border}`, paddingTop: 14, display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))", gap: 14, alignItems: "start" }}>
+                        <div style={{ minWidth: 0 }}><strong style={{ fontSize: "0.78rem", color: colors.text }}>{title}</strong><p style={{ margin: "3px 0 0", color: colors.textMuted, fontSize: "0.68rem", lineHeight: 1.35 }}>{hint}</p></div>
+                        <div style={{ minWidth: 0 }}>
+                            <label style={{ display: "inline-flex", gap: 7, alignItems: "center", cursor: "pointer", fontSize: "0.75rem", color: colors.text, marginBottom: inherits ? 6 : 10 }}>
+                                <input type="checkbox" aria-label={aria} checked={inherits} onChange={e => setRoleInherit(key, e.target.checked)} />
+                                {t("Follow Hub", "跟随 Hub", "跟隨 Hub")}
+                            </label>
+                            {inherits
+                                ? <div aria-live="polite" style={{ color: colors.textSecondary, fontSize: "0.74rem" }}>{t("Effective now: ", "当前生效：", "目前生效：")}{summary?.provider_name ? `${summary.provider_name} · ` : ""}{shown}</div>
+                                : <SuggestCombobox
+                                    listboxId={`${key}-role-models`}
+                                    ariaLabel={aria}
+                                    value={String(assignment.model || "")}
+                                    options={roleModelOptions()}
+                                    onChange={model => setRoleModel(key, model)}
+                                    placeholder={t("Select or enter model ID", "选择或输入模型 ID", "選擇或輸入模型 ID")}
+                                    openOnEnter
+                                    toggleLabel={t("Show model list", "显示模型列表", "顯示模型列表")}
+                                    emptyText={t("No matching models", "没有匹配的模型", "沒有匹配的模型")}
+                                    inputStyle={inputStyle}
+                                />}
+                        </div>
+                    </div>
+                );
+            })}
         </div>
         {error && <div role="alert" className="llm-profile-error"><span>{error}</span>{dirty && <button type="button" className="llm-profile-error__btn" onClick={refreshDraft}>{t("Refresh draft", "刷新草稿")}</button>}</div>}
         <div className="llm-profile-footer">

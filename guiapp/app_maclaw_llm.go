@@ -115,12 +115,16 @@ type maclawLLMProfileHealthRecord struct {
 // assignment surface. Revision is an optimistic-concurrency token; callers
 // must send it back unchanged when saving a profile assignment.
 type MaclawLLMProfilePanelState struct {
-	Providers []MaclawLLMProfileProviderSummary `json:"providers"`
-	Profiles  corelib.MaclawLLMProfiles         `json:"profiles"`
-	Assistant MaclawLLMProfileEffectiveSummary  `json:"assistant"`
-	Coding    MaclawLLMProfileEffectiveSummary  `json:"coding"`
-	Caption   MaclawLLMProfileEffectiveSummary  `json:"caption"`
-	Revision  string                            `json:"revision"`
+	Providers     []MaclawLLMProfileProviderSummary `json:"providers"`
+	Profiles      corelib.MaclawLLMProfiles         `json:"profiles"`
+	HubRoleModels corelib.MaclawLLMHubRoleModels    `json:"hub_role_models,omitempty"`
+	Assistant     MaclawLLMProfileEffectiveSummary  `json:"assistant"`
+	Coding        MaclawLLMProfileEffectiveSummary  `json:"coding"`
+	Caption       MaclawLLMProfileEffectiveSummary  `json:"caption"`
+	Foreground    MaclawLLMRoleSummary              `json:"foreground"`
+	Background    MaclawLLMRoleSummary              `json:"background"`
+	ComputerUse   MaclawLLMRoleSummary              `json:"computer_use"`
+	Revision      string                            `json:"revision"`
 }
 
 // MaclawLLMProfileProbeResult is the non-sensitive result of testing a
@@ -1817,6 +1821,18 @@ func validateMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, providers []c
 			return fmt.Errorf("caption references an unavailable provider")
 		}
 	}
+	for _, role := range []struct {
+		name       string
+		assignment corelib.MaclawLLMRoleAssignment
+	}{
+		{"foreground", profiles.Foreground},
+		{"background", profiles.Background},
+		{"computer use", profiles.ComputerUse},
+	} {
+		if err := validateMaclawLLMRoleAssignment(role.name, role.assignment); err != nil {
+			return err
+		}
+	}
 	horizonOverrides := []struct {
 		name    string
 		profile corelib.MaclawLLMProfile
@@ -2126,7 +2142,7 @@ func (a *App) GetMaclawLLMProfilePanelState() (MaclawLLMProfilePanelState, error
 	if err != nil {
 		return MaclawLLMProfilePanelState{}, err
 	}
-	state := MaclawLLMProfilePanelState{Profiles: *profiles, Revision: maclawLLMProfileRevision(cfg)}
+	state := MaclawLLMProfilePanelState{Profiles: *profiles, HubRoleModels: cfg.HubRoleModels, Revision: maclawLLMProfileRevision(cfg)}
 	for _, provider := range providers {
 		// Assigning an unverified catalog endpoint to an execution profile can
 		// make a working assistant silently switch to a broken service. Keep
@@ -2180,6 +2196,9 @@ func (a *App) GetMaclawLLMProfilePanelState() (MaclawLLMProfilePanelState, error
 			state.Caption.ProviderID = profiles.Caption.ProviderID
 		}
 	}
+	state.Foreground = a.maclawLLMRoleSummary(maclawLLMRoleForeground, profiles.Foreground)
+	state.Background = a.maclawLLMRoleSummary(maclawLLMRoleBackground, profiles.Background)
+	state.ComputerUse = a.maclawLLMRoleSummary(maclawLLMRoleComputerUse, profiles.ComputerUse)
 	return state, nil
 }
 
@@ -2438,6 +2457,9 @@ func (a *App) SaveMaclawLLMProfiles(profiles corelib.MaclawLLMProfiles, revision
 	profiles.Caption.ProviderID = strings.TrimSpace(profiles.Caption.ProviderID)
 	profiles.Caption.Model = strings.TrimSpace(profiles.Caption.Model)
 	profiles.Caption.InheritAssistant = false
+	normalizeMaclawLLMRoleAssignment(&profiles.Foreground)
+	normalizeMaclawLLMRoleAssignment(&profiles.Background)
+	normalizeMaclawLLMRoleAssignment(&profiles.ComputerUse)
 	revision = strings.TrimSpace(revision)
 	if revision == "" {
 		return fmt.Errorf("LLM profile revision is required")

@@ -705,7 +705,11 @@ func bindComputerUseApp(app *App) {
 		return cfg.ComputerUseTargetApps, true
 	}
 	computerUseVisionFn = func() bool {
-		return app.GetMaclawLLMConfig().SupportsVision
+		cfg, err := app.ResolveMaclawLLMRole(maclawLLMRoleComputerUse)
+		if err != nil || strings.TrimSpace(cfg.Model) == "" {
+			return app.GetMaclawLLMConfig().SupportsVision
+		}
+		return cfg.SupportsVision
 	}
 	computerUseCaptionConfigFn = func() (corelib.MaclawLLMConfig, bool) {
 		cfg := app.GetCaptionLLMConfig()

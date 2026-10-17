@@ -697,6 +697,41 @@ describe("LLMProfileAssignments", () => {
         expect(screen.queryByRole("button", { name: "Test connection and image support" })).toBeNull();
     });
 
+    it("defaults the three loop roles to follow Hub and can pin one", async () => {
+        getState.mockResolvedValue({
+            ...state,
+            profiles: {
+                ...state.profiles,
+                horizon: { manager: { model: "keep-horizon" } },
+            },
+            hub_role_models: { foreground: "auto", background: "worker", computer_use: "auto" },
+            foreground: { model: "auto", inherit_hub: true, provider_name: "Hub", configured: true },
+            background: { model: "worker", inherit_hub: true, provider_name: "Hub", configured: true },
+            computer_use: { model: "auto", inherit_hub: true, provider_name: "Hub", configured: true },
+        });
+        saveProfiles.mockResolvedValue(undefined);
+        render(<LLMProfileAssignments lang="en" />);
+
+        const foregroundFollow = await screen.findByRole("checkbox", { name: "Foreground follows Hub" }) as HTMLInputElement;
+        const backgroundFollow = screen.getByRole("checkbox", { name: "Background follows Hub" }) as HTMLInputElement;
+        const computerUseFollow = screen.getByRole("checkbox", { name: "Computer use follows Hub" }) as HTMLInputElement;
+        expect(foregroundFollow.checked).toBe(true);
+        expect(backgroundFollow.checked).toBe(true);
+        expect(computerUseFollow.checked).toBe(true);
+        expect(screen.getByText(/Hub · worker/)).toBeTruthy();
+
+        fireEvent.click(screen.getByRole("checkbox", { name: "Foreground follows Hub" }));
+        fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+        await waitFor(() => expect(saveProfiles).toHaveBeenCalled());
+        const draft = saveProfiles.mock.calls[0][0] as {
+            foreground: { inherit_hub?: boolean; model?: string };
+            horizon: { manager: { model: string } };
+        };
+        expect(draft.foreground.inherit_hub).toBe(false);
+        expect(draft.foreground.model).toBe("auto");
+        expect(draft.horizon.manager.model).toBe("keep-horizon");
+    });
+
     it("matches backend vision-model rules for caption warnings", () => {
         expect(captionModelMissingVision({ id: "p", name: "P", supports_vision: true, model: "gpt-5" }, "gpt-5")).toBe(false);
         expect(captionModelMissingVision({ id: "p", name: "P", supports_vision: true, model: "" }, "llava")).toBe(true);

@@ -72,6 +72,10 @@ type Registry struct {
 	// to grants so admission, settlement, and recovery use one durable balance
 	// authority while the SQL ledger remains an audit mirror.
 	BillingReservations []BillingReservation `json:"billing_reservations,omitempty"`
+	// DefaultModelRoles is the tenant pin for the three desktop loop roles.
+	// Empty fields are not pins: status resolution fills them from the single
+	// configured model, or from auto when the catalog has more than one.
+	DefaultModelRoles ModelRoles `json:"default_model_roles,omitempty"`
 }
 
 // ResetVoucher is a one-time entitlement that clears the holder's current
@@ -235,9 +239,10 @@ type GroupBinding struct {
 }
 
 type UserBinding struct {
-	UserID          string   `json:"user_id,omitempty"`
-	Email           string   `json:"email"`
-	ServiceGroupIDs []string `json:"service_group_ids,omitempty"`
+	UserID          string     `json:"user_id,omitempty"`
+	Email           string     `json:"email"`
+	ServiceGroupIDs []string   `json:"service_group_ids,omitempty"`
+	ModelRoles      ModelRoles `json:"model_roles,omitempty"`
 }
 
 type RechargeCard struct {
@@ -413,13 +418,16 @@ type ServiceStatus struct {
 	NearestExpiresAt   string            `json:"nearest_expires_at,omitempty"`
 	EffectiveExpiresAt string            `json:"effective_expires_at,omitempty"`
 	DefaultModel       string            `json:"default_model,omitempty"`
-	HubLLMBaseURL      string            `json:"hub_llm_base_url,omitempty"`
-	CreditsTotal       float64           `json:"credits_total"`
-	CreditsUsed        float64           `json:"credits_used"`
-	CreditsRemaining   float64           `json:"credits_remaining"`
-	CreditsAvailable   float64           `json:"credits_available"`
-	TokensPerCredit    int               `json:"tokens_per_credit,omitempty"`
-	ResetVouchers      []ResetVoucher    `json:"reset_vouchers,omitempty"`
+	// RoleModels is always filled. Empty tenant and user pins fall back to the
+	// single configured model, or to auto when that would invent a pin.
+	RoleModels       ModelRoles     `json:"role_models,omitempty"`
+	HubLLMBaseURL    string         `json:"hub_llm_base_url,omitempty"`
+	CreditsTotal     float64        `json:"credits_total"`
+	CreditsUsed      float64        `json:"credits_used"`
+	CreditsRemaining float64        `json:"credits_remaining"`
+	CreditsAvailable float64        `json:"credits_available"`
+	TokensPerCredit  int            `json:"tokens_per_credit,omitempty"`
+	ResetVouchers    []ResetVoucher `json:"reset_vouchers,omitempty"`
 }
 
 func LoadRegistry(ctx context.Context, system SystemSettingsRepository) (*Registry, error) {
@@ -788,10 +796,12 @@ func (r *Registry) Normalize() {
 		r.GroupBindings[i].ServiceGroupIDs = normalizeStringSlice(r.GroupBindings[i].ServiceGroupIDs)
 	}
 	r.GroupBindings = mergeGroupBindings(r.GroupBindings)
+	r.DefaultModelRoles = r.DefaultModelRoles.normalized()
 	for i := range r.UserBindings {
 		r.UserBindings[i].UserID = normalizeUserID(r.UserBindings[i].UserID)
 		r.UserBindings[i].Email = normalizeEmail(r.UserBindings[i].Email)
 		r.UserBindings[i].ServiceGroupIDs = normalizeStringSlice(r.UserBindings[i].ServiceGroupIDs)
+		r.UserBindings[i].ModelRoles = r.UserBindings[i].ModelRoles.normalized()
 	}
 	r.UserBindings = mergeUserBindings(r.UserBindings)
 	for i := range r.Cards {
@@ -903,7 +913,10 @@ func mergeUserBindings(items []UserBinding) []UserBinding {
 			continue
 		}
 		ids := normalizeStringSlice(item.ServiceGroupIDs)
-		if len(ids) == 0 {
+		roles := item.ModelRoles.normalized()
+		// A binding may exist only to pin loop roles. Dropping it here used to
+		// erase that pin on every registry normalize.
+		if len(ids) == 0 && roles.empty() {
 			continue
 		}
 		key := userID
@@ -911,11 +924,20 @@ func mergeUserBindings(items []UserBinding) []UserBinding {
 			key = "email:" + email
 		}
 		if idx, ok := indexByKey[key]; ok {
-			out[idx].ServiceGroupIDs = normalizeStringSlice(append(out[idx].ServiceGroupIDs, ids...))
+			if len(ids) > 0 {
+				out[idx].ServiceGroupIDs = normalizeStringSlice(append(out[idx].ServiceGroupIDs, ids...))
+			}
+			out[idx].ModelRoles = mergeModelRoles(out[idx].ModelRoles, roles)
+			if out[idx].Email == "" {
+				out[idx].Email = email
+			}
+			if out[idx].UserID == "" {
+				out[idx].UserID = userID
+			}
 			continue
 		}
 		indexByKey[key] = len(out)
-		out = append(out, UserBinding{UserID: userID, Email: email, ServiceGroupIDs: ids})
+		out = append(out, UserBinding{UserID: userID, Email: email, ServiceGroupIDs: ids, ModelRoles: roles})
 	}
 	return out
 }

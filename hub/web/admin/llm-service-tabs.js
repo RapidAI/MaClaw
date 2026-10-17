@@ -209,6 +209,17 @@ const LLM_SERVICE_I18N = {
     active: 'active',
     inactive: 'inactive',
     defaultModel: 'default model',
+    roleDefaultsTitle: 'Loop model roles',
+    roleDefaultsDesc: 'Leave a role empty to use auto when several models are configured, or the only configured model. A selected model is an explicit pin.',
+    roleForeground: 'Foreground',
+    roleForegroundHint: 'Planning and chat',
+    roleBackground: 'Background',
+    roleBackgroundHint: 'Worker loops',
+    roleComputerUse: 'Computer use',
+    roleComputerUseHint: 'Screenshot and click loop',
+    roleModelUnset: 'Default — auto, or the only model',
+    roleModelAuto: 'auto',
+    roleModels: 'Role models',
     securityGroups: 'Security Groups',
     effectiveServiceGroups: 'Effective Service Groups',
     directUserBindings: 'Direct User Bindings',
@@ -533,6 +544,17 @@ const LLM_SERVICE_I18N = {
     active: '\u751f\u6548\u4e2d',
     inactive: '\u672a\u751f\u6548',
     defaultModel: '\u9ed8\u8ba4\u6a21\u578b',
+    roleDefaultsTitle: '\u5faa\u73af\u6a21\u578b\u89d2\u8272',
+    roleDefaultsDesc: '\u7559\u7a7a\u65f6\uff0c\u914d\u7f6e\u4e86\u591a\u4e2a\u6a21\u578b\u5219\u8d70 auto\uff1b\u53ea\u6709\u4e00\u4e2a\u6a21\u578b\u65f6\u4e09\u4e2a\u89d2\u8272\u90fd\u7528\u5b83\u3002\u9009\u5b9a\u6a21\u578b\u540e\u624d\u4f1a\u56fa\u5b9a\u8be5\u89d2\u8272\u3002',
+    roleForeground: '\u524d\u53f0',
+    roleForegroundHint: '\u89c4\u5212\u4e0e\u5bf9\u8bdd',
+    roleBackground: '\u540e\u53f0',
+    roleBackgroundHint: '\u5de5\u4f5c\u5faa\u73af',
+    roleComputerUse: '\u7535\u8111\u64cd\u4f5c',
+    roleComputerUseHint: '\u622a\u56fe\u4e0e\u70b9\u51fb\u5faa\u73af',
+    roleModelUnset: '\u9ed8\u8ba4 \u2014 \u591a\u6a21\u578b\u8d70 auto\uff0c\u4ec5\u4e00\u4e2a\u6a21\u578b\u65f6\u7528\u5b83',
+    roleModelAuto: 'auto',
+    roleModels: '\u89d2\u8272\u6a21\u578b',
     securityGroups: '\u5b89\u5168\u7ec4',
     effectiveServiceGroups: '\u751f\u6548\u670d\u52a1\u7ec4',
     directUserBindings: '\u76f4\u63a5\u7528\u6237\u7ed1\u5b9a',
@@ -900,6 +922,7 @@ function ensureLLMServiceAdminUI() {
     '<div class="grid2"><div><label id="llmServiceBindingGroupIDLabel"></label><input id="llmServiceBindingGroupID" list="llmSecurityGroupOptions"><div id="llmServiceBindingGroupIDPicker" class="hint" style="margin-top:8px"></div></div><div><label id="llmServiceBindingServiceGroupsLabel"></label><input id="llmServiceBindingServiceGroups" list="llmServiceGroupOptions"><div id="llmServiceBindingServiceGroupsPicker" class="hint" style="margin-top:8px"></div></div></div><div class="actions"><button class="btn-secondary" onclick="addLLMServiceGroupBinding()" id="llmServiceAddGroupBindingBtn"></button></div><div id="llmServiceGroupBindingsList"></div>' +
     '<div style="margin-top:10px" class="item-title" data-icon="user" id="llmServiceUsersTitle"></div><div class="grid2"><div><label id="llmServiceUserEmailLabel"></label><input id="llmServiceUserEmail"></div><div><label id="llmServiceUserServiceGroupsLabel"></label><input id="llmServiceUserServiceGroups" list="llmServiceGroupOptions"><div id="llmServiceUserServiceGroupsPicker" class="hint" style="margin-top:8px"></div></div></div><div class="actions"><button class="btn-secondary" onclick="addLLMServiceUserBinding()" id="llmServiceAddUserBindingBtn"></button></div><div id="llmServiceUserBindingsList"></div>' +
     '</div>' +
+    '<div class="item" style="grid-column:1 / -1" id="llmServiceRoleDefaultsCard"></div>' +
     '<div class="item" style="grid-column:1 / -1"><div class="item-head"><div><div class="item-title" data-icon="search" id="llmServiceDiagnoseTitle"></div><div class="item-meta" id="llmServiceDiagnoseDesc"></div></div></div><div class="grid2" style="margin-top:10px"><div><label id="llmServiceDiagnoseEmailLabel"></label><input id="llmServiceDiagnoseEmail"></div><div style="display:flex;align-items:flex-end"><button class="btn-secondary" onclick="diagnoseLLMServiceUser()" id="llmServiceDiagnoseBtn"></button></div></div><div id="llmServiceDiagnoseResult" style="margin-top:10px"></div></div>' +
     '<div class="item" style="grid-column:1 / -1" id="llmClassHeadHint"><div class="item-head"><div><div class="item-title" data-icon="spark">' + escapeHtml(typeof lsx === 'function' ? lsx('classHeadTitle') : 'Classification head') + '</div><div class="item-meta">' + escapeHtml(typeof lsx === 'function' ? lsx('classHeadHint') : 'Each dynamic group has its own head. Open a group to train and promote.') + '</div></div></div></div>';
   tab.appendChild(host);
@@ -1818,6 +1841,79 @@ async function loadLLMServiceAdmin(options) {
     return null;
   }
 }
+function llmServiceBindingHasRoles(binding) {
+  var roles = binding && binding.model_roles || {};
+  return !!(String(roles.foreground || '').trim() || String(roles.background || '').trim() || String(roles.computer_use || '').trim());
+}
+function llmServiceBindingKept(binding) {
+  return ((binding && binding.service_group_ids) || []).length > 0 || llmServiceBindingHasRoles(binding);
+}
+function llmServiceCatalogModels() {
+  var models = [];
+  var seen = {};
+  var add = function(name) {
+    name = String(name || '').trim();
+    if (!name) return;
+    var key = name.toLowerCase();
+    if (seen[key]) return;
+    seen[key] = true;
+    models.push(name);
+  };
+  ((llmServiceAdminCache && llmServiceAdminCache.model_service_groups) || []).forEach(function(group) {
+    (group.models || []).forEach(function(model) { add(model && model.name); });
+  });
+  ((llmServiceAdminCache && llmServiceAdminCache.available_models) || []).forEach(add);
+  return models;
+}
+function llmServiceRoleSelect(id, selected) {
+  var current = String(selected || '').trim();
+  var options = '<option value="">' + escapeHtml(lsx('roleModelUnset')) + '</option>';
+  options += '<option value="auto"' + (current.toLowerCase() === 'auto' ? ' selected' : '') + '>' + escapeHtml(lsx('roleModelAuto')) + '</option>';
+  llmServiceCatalogModels().forEach(function(name) {
+    var chosen = name === current ? ' selected' : '';
+    options += '<option value="' + escapeHtml(name) + '"' + chosen + '>' + escapeHtml(name) + '</option>';
+  });
+  if (current && current.toLowerCase() !== 'auto' && llmServiceCatalogModels().indexOf(current) < 0) {
+    options += '<option value="' + escapeHtml(current) + '" selected>' + escapeHtml(current) + '</option>';
+  }
+  return '<select id="' + id + '" style="width:100%">' + options + '</select>';
+}
+function readLLMServiceRoleDefaults() {
+  var read = function(id) {
+    var el = document.getElementById(id);
+    return el ? String(el.value || '').trim() : '';
+  };
+  var roles = {};
+  var foreground = read('llmServiceRoleForeground');
+  var background = read('llmServiceRoleBackground');
+  var computerUse = read('llmServiceRoleComputerUse');
+  if (foreground) roles.foreground = foreground;
+  if (background) roles.background = background;
+  if (computerUse) roles.computer_use = computerUse;
+  return roles;
+}
+function onLLMServiceRoleDefaultChange() {
+  if (!llmServiceAdminCache) return;
+  llmServiceAdminCache.default_model_roles = readLLMServiceRoleDefaults();
+}
+function renderLLMServiceRoleDefaults() {
+  var root = document.getElementById('llmServiceRoleDefaultsCard');
+  if (!root || !llmServiceAdminCache) return;
+  var roles = llmServiceAdminCache.default_model_roles || {};
+  var field = function(id, title, hint, selected) {
+    return '<div><label>' + escapeHtml(title) + '</label>' + llmServiceRoleSelect(id, selected) + '<div class="item-meta" style="margin-top:6px">' + escapeHtml(hint) + '</div></div>';
+  };
+  root.innerHTML = '<div class="item-head"><div><div class="item-title" data-icon="cpu">' + escapeHtml(lsx('roleDefaultsTitle')) + '</div><div class="item-meta">' + escapeHtml(lsx('roleDefaultsDesc')) + '</div></div></div>'
+    + '<div class="grid3" style="margin-top:10px">'
+    + field('llmServiceRoleForeground', lsx('roleForeground'), lsx('roleForegroundHint'), roles.foreground)
+    + field('llmServiceRoleBackground', lsx('roleBackground'), lsx('roleBackgroundHint'), roles.background)
+    + field('llmServiceRoleComputerUse', lsx('roleComputerUse'), lsx('roleComputerUseHint'), roles.computer_use)
+    + '</div>';
+  ['llmServiceRoleForeground', 'llmServiceRoleBackground', 'llmServiceRoleComputerUse'].forEach(function(id) {
+    var el = document.getElementById(id);
+    if (el) el.addEventListener('change', onLLMServiceRoleDefaultChange);
+  });
+}
 function renderLLMServiceAdmin() {
   if (!llmServiceAdminCache) return;
   ensureLLMServiceAdminUI();
@@ -1944,6 +2040,7 @@ function renderLLMServiceAdmin() {
       ubRoot.innerHTML = '<div class="table" style="gap:6px">' + userHeader + userRows + '</div>';
     }
   }
+  renderLLMServiceRoleDefaults();
   var filterButtons = {
     all: document.getElementById('llmServiceFilterAllBtn'),
     unused: document.getElementById('llmServiceFilterUnusedBtn'),
@@ -2132,7 +2229,9 @@ function renderLLMServiceAdmin() {
         + '<div class="metric"><label>' + escapeHtml(lsx('credits')) + '</label><strong>' + escapeHtml(String(status.credits_available || 0)) + '</strong><span class="mono">' + escapeHtml(status.default_model || 'auto') + '</span></div>'
         + '</div>';
       var section = function(title, body) { return '<div class="item" style="margin-top:8px;padding:12px 14px"><div class="item-title" style="margin-bottom:6px">' + escapeHtml(title) + '</div>' + body + '</div>'; };
-      diagnoseRoot.innerHTML = '<div class="item"><div class="item-head"><div><div class="item-title">' + escapeHtml(diag.email || '') + '</div><div class="item-meta">' + (status.active ? lsx('active') : lsx('inactive')) + ' | ' + lsx('defaultModel') + ': <span class="mono">' + escapeHtml(status.default_model || 'auto') + '</span></div></div></div>' + summaryCards + '<div style="margin-top:8px">' + section(lsx('effectiveServiceGroups'), '<div class="item-meta">' + effectiveGroupLinks + '</div>') + section(lsx('inactiveReasons'), inactiveReasons) + section(lsx('modelRouting'), authorizedModels) + section(lsx('billingRoutes'), billingRoutes) + section(lsx('directUserBindings'), userBindings) + section(lsx('matchedGroupBindings'), groupBindings) + section(lsx('grantDetails'), grants) + '</div></div>';
+      var roleModels = status.role_models || {};
+      var roleText = (roleModels.foreground || 'auto') + ' / ' + (roleModels.background || 'auto') + ' / ' + (roleModels.computer_use || 'auto');
+      diagnoseRoot.innerHTML = '<div class="item"><div class="item-head"><div><div class="item-title">' + escapeHtml(diag.email || '') + '</div><div class="item-meta">' + (status.active ? lsx('active') : lsx('inactive')) + ' | ' + lsx('defaultModel') + ': <span class="mono">' + escapeHtml(status.default_model || 'auto') + '</span> | ' + lsx('roleModels') + ': <span class="mono">' + escapeHtml(roleText) + '</span></div></div></div>' + summaryCards + '<div style="margin-top:8px">' + section(lsx('effectiveServiceGroups'), '<div class="item-meta">' + effectiveGroupLinks + '</div>') + section(lsx('inactiveReasons'), inactiveReasons) + section(lsx('modelRouting'), authorizedModels) + section(lsx('billingRoutes'), billingRoutes) + section(lsx('directUserBindings'), userBindings) + section(lsx('matchedGroupBindings'), groupBindings) + section(lsx('grantDetails'), grants) + '</div></div>';
 
     }
   }
@@ -2178,7 +2277,7 @@ function pruneLLMServiceGroupReferences(id) {
   llmServiceAdminCache.default_new_user_service_groups = (llmServiceAdminCache.default_new_user_service_groups || []).filter(keep);
   if (!(llmServiceAdminCache.default_new_user_service_groups || []).length) llmServiceAdminCache.default_new_user_service_groups = [BUILTIN_DEFAULT_LLM_SERVICE_GROUP_ID];
   llmServiceAdminCache.group_bindings = (llmServiceAdminCache.group_bindings || []).map(function(b) { b.service_group_ids = (b.service_group_ids || []).filter(keep); return b; }).filter(function(b) { return (b.service_group_ids || []).length; });
-  llmServiceAdminCache.user_bindings = (llmServiceAdminCache.user_bindings || []).map(function(b) { b.service_group_ids = (b.service_group_ids || []).filter(keep); return b; }).filter(function(b) { return (b.service_group_ids || []).length; });
+  llmServiceAdminCache.user_bindings = (llmServiceAdminCache.user_bindings || []).map(function(b) { b.service_group_ids = (b.service_group_ids || []).filter(keep); return b; }).filter(llmServiceBindingKept);
 }
 async function removeSelectedLLMServiceGroup() {
   if (!llmServiceAdminCache || !llmServiceSelectedGroupID) return;
@@ -2194,7 +2293,7 @@ async function removeSelectedLLMServiceGroup() {
   snapshot.default_new_user_service_groups = (snapshot.default_new_user_service_groups || []).filter(keep);
   if (!(snapshot.default_new_user_service_groups || []).length) snapshot.default_new_user_service_groups = [BUILTIN_DEFAULT_LLM_SERVICE_GROUP_ID];
   snapshot.group_bindings = (snapshot.group_bindings || []).map(function(b) { b = Object.assign({}, b); b.service_group_ids = (b.service_group_ids || []).filter(keep); return b; }).filter(function(b) { return (b.service_group_ids || []).length; });
-  snapshot.user_bindings = (snapshot.user_bindings || []).map(function(b) { b = Object.assign({}, b); b.service_group_ids = (b.service_group_ids || []).filter(keep); return b; }).filter(function(b) { return (b.service_group_ids || []).length; });
+  snapshot.user_bindings = (snapshot.user_bindings || []).map(function(b) { b = Object.assign({}, b); b.service_group_ids = (b.service_group_ids || []).filter(keep); return b; }).filter(llmServiceBindingKept);
   try {
     var data = await api('/api/admin/llm/services?include_cards=false', { method: 'PUT', body: JSON.stringify(snapshot) });
     llmServiceAdminCache = data || snapshot;
@@ -2238,7 +2337,10 @@ async function addLLMServiceUserBinding() {
   llmServiceAdminCache.user_bindings = llmServiceAdminCache.user_bindings || [];
   const normalizedEmail = email.toLowerCase();
   const existingIdx = llmServiceAdminCache.user_bindings.findIndex(function(item) { return String(item.email || '').trim().toLowerCase() === normalizedEmail; });
+  const previous = existingIdx >= 0 ? llmServiceAdminCache.user_bindings[existingIdx] : null;
   const nextBinding = { email: email, service_group_ids: serviceGroupIDs };
+  if (previous && previous.user_id) nextBinding.user_id = previous.user_id;
+  if (previous && previous.model_roles) nextBinding.model_roles = previous.model_roles;
   if (existingIdx >= 0) llmServiceAdminCache.user_bindings[existingIdx] = nextBinding; else llmServiceAdminCache.user_bindings.push(nextBinding);
   if (emailEl) emailEl.value = '';
   if (serviceEl) serviceEl.value = '';

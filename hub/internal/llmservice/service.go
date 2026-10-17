@@ -198,6 +198,7 @@ func ResolveStatusForForcedServiceGroup(reg *Registry, serviceGroupID, hubBaseUR
 		AvailableModels:   availableModels,
 		AuthorizedModels:  models,
 		DefaultModel:      defaultModel,
+		RoleModels:        ResolveEffectiveModelRoles(reg.DefaultModelRoles, ModelRoles{}, defaultModel, len(models)),
 		HubLLMBaseURL:     strings.TrimRight(strings.TrimSpace(hubBaseURL), "/"),
 		TokensPerCredit:   reg.TokensPerCredit,
 	}
@@ -241,6 +242,7 @@ func ResolveStatusFromRegistryForUser(ctx context.Context, reg *Registry, securi
 		AvailableModels:   availableModels,
 		AuthorizedModels:  models,
 		DefaultModel:      defaultModel,
+		RoleModels:        ResolveEffectiveModelRoles(reg.DefaultModelRoles, modelRolesForOwner(reg, owner), defaultModel, len(models)),
 		HubLLMBaseURL:     strings.TrimRight(strings.TrimSpace(hubBaseURL), "/"),
 		TokensPerCredit:   reg.TokensPerCredit,
 	}
