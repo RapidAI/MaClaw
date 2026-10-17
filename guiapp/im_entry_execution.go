@@ -143,6 +143,9 @@ func (h *IMMessageHandler) executePreparedIMEntry(opts preparedIMEntryExecutionO
 		if loopCtx.ForegroundChatBudget == 0 {
 			loopCtx.ForegroundChatBudget = desktopChatForegroundIterationBudget
 		}
+		// Captured before this turn publishes itself as the session loop, so
+		// the loop is not counted as work that was already running.
+		loopCtx.WorkLiveAtStart = h.sessionWorkLive(msg.UserID)
 	}
 	h.beginInFlightTurn(msg.UserID, msg.Text, loopCtx)
 	defer h.endInFlightTurn(msg.UserID, loopCtx)

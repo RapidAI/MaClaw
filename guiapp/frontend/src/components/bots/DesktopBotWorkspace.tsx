@@ -45,6 +45,7 @@ import {
     SendDesktopBotTask,
     ShowItemInFolder,
     UnderstandDesktopBotTask,
+    ClassifyDesktopWorkStop,
     WatchDesktopBot,
 } from '../../../wailsjs/go/main/App';
 import { desktopModeOf, effectiveScreenPick, mineScreenURL, screenNeedsOwnHold, shownScreenURL, type BotScreen } from './desktopScreens';
@@ -64,11 +65,14 @@ import {
     desktopBotFiles,
     desktopBotImages,
     desktopBotLocalControl,
+    desktopBotPauseAskSentence,
+    desktopFalseStopClaim,
     desktopBotLocalPaths,
     desktopBotRunningSentence,
     desktopBotStatusUnreachableSentence,
     desktopBotStopFailedSentence,
     desktopBotStopIdleSentence,
+    desktopBotStillStoppingSentence,
     desktopBotStoppedSentence,
     desktopBotTypedConfirmSentence,
     desktopBotWaitingSentence,
@@ -706,7 +710,8 @@ function copy(lang: string) {
             takeComputerHint: 'Take the keyboard and finish the login or check on this computer.',
             exitTakeover: 'Release',
             takeoverHint: 'Fullscreen the desktop and take the keyboard from the bot.',
-            takeoverBusyHint: 'This bot is using its desktop — takeover is unavailable right now.',
+            takeoverBusyHint: 'This bot is using its desktop. Take over to stop it and take the keyboard.',
+            stopWork: 'Stop',
             takeoverActive: 'You have the desktop. Release it to hand the keyboard back.',
             myDesktop: 'My desktop',
             sharedScreen: 'Shared',
@@ -830,7 +835,8 @@ function copy(lang: string) {
             takeComputerHint: '接管這台電腦，用鍵盤和滑鼠完成登入或驗證。',
             exitTakeover: '退出接管',
             takeoverHint: '全螢幕顯示桌面，並把鍵盤交給你。',
-            takeoverBusyHint: '這個 Bot 正在操作桌面，現在不能接管。',
+            takeoverBusyHint: '這個 Bot 正在操作桌面。接管會先停下它。',
+            stopWork: '停下',
             takeoverActive: '你已接管桌面。完成後退出接管，把鍵盤交還。',
             myDesktop: '我的桌面',
             sharedScreen: '共享',
@@ -953,7 +959,8 @@ function copy(lang: string) {
         takeComputerHint: '接管这台电脑，用键盘和鼠标完成登录或验证。',
         exitTakeover: '退出接管',
         takeoverHint: '全屏显示桌面，并把键盘交给你。',
-        takeoverBusyHint: '这个 Bot 正在操作桌面，现在不能接管。',
+        takeoverBusyHint: '这个 Bot 正在操作桌面。接管会先停下它。',
+        stopWork: '停下',
         takeoverActive: '你已接管桌面。完成后退出接管，把键盘交回。',
         myDesktop: '我的桌面',
         sharedScreen: '共享',
@@ -1786,6 +1793,15 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         const items = messagesByBot[botId] || messagesForBot(userId, botId);
         return items.some(message => message.role === 'assistant' && message.pending && !pendingReplyIsStale(message));
     };
+    // Local flags only. A fresh run lookup can hang, and this check decides
+    // whether the next line is worth a stop classification.
+    const desktopWorkActive = (botId: string) => {
+        if (!botId) return false;
+        if (botPending(botId)) return true;
+        if (desktopRunByBotRef.current[botId]) return true;
+        if ((activityByBot[botId]?.text || '').trim()) return true;
+        return (desktopBusyByBot[botId] || 0) > 0;
+    };
     const busyPhase = (botId: string, items: DesktopBotMessage[]): BotPhase | '' => {
         const live = turnLive(botId);
         const active = (message: DesktopBotMessage) =>
@@ -1937,7 +1953,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     const liveOnShownScreen = !!selected && (screenByBot[selected.id]?.mode === 'isolated' ? screenPickNow === selected.id : shownSharedScreen);
     const stageInteractive = showDesktop && (otherIsolated
         ? otherHandoff
-        : !agentOperating && (((liveControl || liveReason !== '') && liveOnShownScreen) || takeover));
+        : takeoverHeld || (!agentOperating && (((liveControl || liveReason !== '') && liveOnShownScreen) || takeover)));
     // Watch and control are different noVNC documents. Reusing the iframe leaves
     // the first page's viewOnly in place, so takeover looks active and clicks do nothing.
     const frameMode = stageInteractive ? 'live' : 'watch';
@@ -3363,6 +3379,14 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     // Set only while a stop is still deciding whether a live run exists.
     // Cleared before the cancel request returns, after the old slots are marked.
     const stopHoldRef = useRef<Set<string>>(new Set());
+    const stopWatchRef = useRef<Map<string, number>>(new Map());
+    // Classification for the line now being read. skip means work was idle,
+    // so a later "stopped" sentence is not a cancel.
+    const stopClassRef = useRef<Map<string, string>>(new Map());
+    const stopForTakeoverRef = useRef<(botId: string) => void>(() => {});
+    useEffect(() => () => {
+        for (const timer of stopWatchRef.current.values()) window.clearInterval(timer);
+    }, []);
     // drainIfIdle and releaseReadAhead are defined further down. Stop fills
     // these in before any click, so a held queue can be put back without a
     // forward call.
@@ -3460,7 +3484,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         if (userIdRef.current !== ownerId) return '';
         return remote || desktopBotStatusUnreachableSentence(lang);
     };
-    const stopSpokenRun = async (ownerId: string, botId: string, held: { hadNext: boolean; release: (keepDropped: boolean) => void }): Promise<string> => {
+    const stopSpokenRun = async (ownerId: string, botId: string, held: { hadNext: boolean; release: (keepDropped: boolean) => void }, kind: 'stop' | 'pause' = 'stop'): Promise<string> => {
         const local = await runsOnThisDesktop(botId);
         if (userIdRef.current !== ownerId) {
             held.release(false);
@@ -3481,7 +3505,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 }
                 if (userIdRef.current !== ownerId) return '';
                 if (reason) return desktopBotStopFailedSentence(reason, lang);
-                return desktopBotStoppedSentence([], held.hadNext, lang);
+                return finishStop(ownerId, botId, [], held.hadNext, kind);
             }
             held.release(false);
             if (!local) return desktopBotStatusUnreachableSentence(lang);
@@ -3500,27 +3524,115 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         }
         if (userIdRef.current !== ownerId) return '';
         if (reason) return desktopBotStopFailedSentence(reason, lang);
-        return desktopBotStoppedSentence(local.map(run => run.title), hadNext, lang);
+        return finishStop(ownerId, botId, local.map(run => run.title), hadNext, kind);
+    };
+    const desktopOperating = (botId: string, rows: Array<{ runId: string }> | undefined) => {
+        if (!rows) return true;
+        if (rows.length > 0) return true;
+        return !!desktopRunByBotRef.current[botId];
+    };
+    const releaseStoppedTurns = (ownerId: string, botId: string) => {
+        // A line still being read has not reached the desktop. Settling it
+        // here would drop that send. Admitted bubbles are the run we just
+        // confirmed idle, and they are what keeps 「工作中」 on the header.
+        for (const [key, value] of pendingRef.current) {
+            if (value.botId !== botId || value.settled || !value.admitted) continue;
+            value.settled = true;
+            pendingRef.current.delete(key);
+            clearLiveBotTurn(ownerId, botId, value.messageId);
+        }
+        setActivityByBot(prev => {
+            if (!(botId in prev)) return prev;
+            const next = { ...prev };
+            delete next[botId];
+            return next;
+        });
+        setDesktopBusyByBot(prev => {
+            if (!(botId in prev)) return prev;
+            const next = { ...prev };
+            delete next[botId];
+            return next;
+        });
+        if (desktopRunByBotRef.current[botId]) {
+            const next = { ...desktopRunByBotRef.current };
+            delete next[botId];
+            desktopRunByBotRef.current = next;
+            setDesktopRunByBot(next);
+        }
+        return messagesForBot(ownerId, botId).map(item => {
+            if (item.role !== 'assistant' || !item.pending) return item;
+            const ticket = item.requestId || '';
+            const slot = ticket ? pendingRef.current.get(ticket) : undefined;
+            if (slot && slot.botId === botId && !slot.settled) return item;
+            return { ...item, pending: false };
+        });
+    };
+    const confirmedStopSentence = (titles: string[], hadNext: boolean, kind: 'stop' | 'pause') => (
+        kind === 'pause' ? desktopBotPauseAskSentence(lang) : desktopBotStoppedSentence(titles, hadNext, lang)
+    );
+    const watchUntilIdle = (ownerId: string, botId: string, titles: string[], hadNext: boolean, kind: 'stop' | 'pause') => {
+        const previous = stopWatchRef.current.get(botId);
+        if (previous) window.clearInterval(previous);
+        let tries = 0;
+        let settled = false;
+        const timer = window.setInterval(() => {
+            if (settled) return;
+            tries += 1;
+            const attempt = tries;
+            void (async () => {
+                const rows = await runsOnThisDesktop(botId);
+                if (settled || stopWatchRef.current.get(botId) !== timer) return;
+                if (userIdRef.current !== ownerId) {
+                    settled = true;
+                    window.clearInterval(timer);
+                    stopWatchRef.current.delete(botId);
+                    return;
+                }
+                if (desktopOperating(botId, rows) && attempt < 40) return;
+                settled = true;
+                window.clearInterval(timer);
+                if (stopWatchRef.current.get(botId) === timer) stopWatchRef.current.delete(botId);
+                if (userIdRef.current !== ownerId || desktopOperating(botId, rows)) return;
+                const stored = releaseStoppedTurns(ownerId, botId);
+                commit(botId, [...stored, { id: messageID(), role: 'assistant', content: confirmedStopSentence(titles, hadNext, kind), chat: true }]);
+            })();
+        }, 150);
+        stopWatchRef.current.set(botId, timer);
+    };
+    // The spoken stop is the verified state. A cancel that has not cleared
+    // the run list or the driving flag is still stopping, and the confirmation
+    // arrives only after that check comes back empty. The cleared bubbles are
+    // written before that sentence, so 「工作中」 and 「正在看屏幕」 leave with it.
+    const finishStop = async (ownerId: string, botId: string, titles: string[], hadNext: boolean, kind: 'stop' | 'pause' = 'stop') => {
+        const rows = await runsOnThisDesktop(botId);
+        if (userIdRef.current !== ownerId) return '';
+        if (desktopOperating(botId, rows)) {
+            watchUntilIdle(ownerId, botId, titles, hadNext, kind);
+            return desktopBotStillStoppingSentence(lang);
+        }
+        commit(botId, releaseStoppedTurns(ownerId, botId));
+        return confirmedStopSentence(titles, hadNext, kind);
     };
     // No pending bubble, so this answer is not the working row
     // 「正在一点点推进」. The question itself is an ordinary user line.
     // A queued copy is already in the thread.
-    const answerDesktopControl = (botId: string, content: string, control: 'status' | 'stop', mode: 'now' | 'fromQueue') => {
+    const answerDesktopControl = (botId: string, content: string, control: 'status' | 'stop' | 'pause', mode: 'now' | 'fromQueue' | 'quiet') => {
         if (mode === 'now') {
             const prior = messagesForBot(userId, botId);
             commit(botId, [...prior, { id: messageID(), role: 'user', content }]);
         }
         const ownerId = userId;
-        const held = control === 'stop' ? holdFollowUps(botId) : undefined;
+        const held = control === 'stop' || control === 'pause' ? holdFollowUps(botId) : undefined;
         void (async () => {
-            const answer = control === 'stop' && held
-                ? await stopSpokenRun(ownerId, botId, held)
+            const answer = (control === 'stop' || control === 'pause') && held
+                ? await stopSpokenRun(ownerId, botId, held, control === 'pause' ? 'pause' : 'stop')
                 : await statusSpokenRun(ownerId, botId);
             if (userIdRef.current !== ownerId || !answer) return;
             const stored = messagesForBot(ownerId, botId);
             commit(botId, [...stored, { id: messageID(), role: 'assistant', content: answer, chat: true }]);
         })();
     };
+    stopForTakeoverRef.current = (botId: string) => answerDesktopControl(botId, '', 'stop', 'quiet');
 
     const deliverCross = async (botId: string, cross: { kind: string; target: string; text: string; order: string }) => {
         const self = botsRef.current.find(item => item.id === botId);
@@ -3738,6 +3850,20 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         return;
                     }
                     if (bubbleGone()) return;
+                    const classified = stopClassRef.current.get(`${botId}\0${content.trim()}`) || 'skip';
+                    if (desktopFalseStopClaim(classified, told)) {
+                        pending.settled = true;
+                        pendingRef.current.delete(ticket);
+                        clearLiveBotTurn(ownerId, botId, assistantMessage.id);
+                        commit(botId, messagesForBot(ownerId, botId).filter(item => item.id !== assistantMessage.id));
+                        answerDesktopControl(botId, '', 'stop', 'quiet');
+                        return;
+                    }
+                    if ((told || '').trim() === 'STOP_WORK') {
+                        told = '';
+                        instruction = content.trim();
+                        pace = 'direct';
+                    }
                     if (keepIdentity) {
                         keepPersona(ownerId, botId, keepIdentity);
                         // The worker runs on the server, so a preference kept
@@ -4402,8 +4528,27 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
         // A running job does not block the next message. Hold only while an
         // earlier line is still being read, or while this person has the
         // keyboard and a new desktop command would take it away.
-        const stillReading = turnStillReading(botId) || readAheadOpen(userId, botId);
+        let stillReading = turnStillReading(botId) || readAheadOpen(userId, botId);
         const waitingOnPerson = !preset && personHasKeyboard;
+        // A line that starts now is classified before the reading. The check
+        // is made again after that call: another line sent in the same moment
+        // may have begun its reading while this one was waiting.
+        if (!(stillReading || waitingOnPerson)) {
+            if (!verbatim && desktopWorkActive(botId)) {
+                if (!preset) setCommand('');
+                const classified = String(await withinBudget(ClassifyDesktopWorkStop(content, lang), 2500) || '').trim();
+                if (userIdRef.current !== userId) return;
+                const intent = classified || 'unknown';
+                stopClassRef.current.set(`${botId}\0${content}`, intent);
+                if (intent === 'stop' || intent === 'pause') {
+                    answerDesktopControl(botId, content, intent, 'now');
+                    return;
+                }
+                stillReading = turnStillReading(botId) || readAheadOpen(userId, botId);
+            } else {
+                stopClassRef.current.set(`${botId}\0${content}`, 'skip');
+            }
+        }
         if (stillReading || waitingOnPerson) {
             if (!preset) setCommand('');
             const prior = messagesForBot(userId, botId);
@@ -4421,6 +4566,24 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                 try {
                     if (content.trim() === CONFIRM_COMMAND || desktopBotLocalControl(content)) {
                         return;
+                    }
+                    if (!slot.verbatim && !slot.prepared && desktopWorkActive(botId)) {
+                        const classified = String(await withinBudget(ClassifyDesktopWorkStop(content, lang), 2500) || '').trim();
+                        let spins = 0;
+                        while (stopHoldRef.current.has(botId) && spins < 40) {
+                            spins += 1;
+                            await new Promise(resolve => setTimeout(resolve, 15));
+                        }
+                        if (userIdRef.current !== ownerId || slot.drop || stopHoldRef.current.has(botId)) return;
+                        const intent = classified || 'unknown';
+                        stopClassRef.current.set(`${botId}\0${content}`, intent);
+                        if (intent === 'stop' || intent === 'pause') {
+                            slot.drop = true;
+                            answerDesktopControl(botId, '', intent, 'quiet');
+                            return;
+                        }
+                    } else {
+                        stopClassRef.current.set(`${botId}\0${content}`, 'skip');
                     }
                     if (slot.verbatim || slot.prepared) {
                         // Nothing to read. Verbatim is the person's own words.
@@ -4445,6 +4608,17 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                         told = reading.told;
                         instruction = reading.instruction;
                         pace = reading.pace;
+                        const classified = stopClassRef.current.get(`${botId}\0${content.trim()}`) || 'skip';
+                        if (desktopFalseStopClaim(classified, told)) {
+                            slot.drop = true;
+                            answerDesktopControl(botId, '', 'stop', 'quiet');
+                            return;
+                        }
+                        if ((told || '').trim() === 'STOP_WORK') {
+                            told = '';
+                            instruction = content.trim();
+                            pace = 'direct';
+                        }
                         if (reading.persona && userIdRef.current === ownerId) keepPersona(ownerId, botId, reading.persona);
                         const cross = crossOf(understood);
                         if (cross) {
@@ -4667,7 +4841,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     };
 
     const enterTakeover = (botId: string) => {
-        if (botUsingDesktop(botId)) return;
+        if (botUsingDesktop(botId)) stopForTakeoverRef.current(botId);
         setScreenExpandedByBot(prev => prev[botId] ? { ...prev, [botId]: false } : prev);
         setTakeoverHoldByBot(prev => ({ ...prev, [botId]: true }));
         setTakeoverByBot(prev => ({ ...prev, [botId]: true }));
@@ -4688,8 +4862,12 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
     };
 
     const toggleTakeover = () => {
-        if (!selected || agentOperating) return;
+        if (!selected) return;
         const botId = selected.id;
+        if (agentOperating && !takeoverByBot[botId]) {
+            enterTakeover(botId);
+            return;
+        }
         if (takeoverByBot[botId]) {
             releaseTakeover(botId);
             return;
@@ -5309,7 +5487,6 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                             type="button"
                                             className="desktop-bot-chat__action"
                                             data-testid="desktop-bot-take-computer"
-                                            disabled={botUsingDesktop(selected.id)}
                                             title={botUsingDesktop(selected.id) ? text.takeoverBusyHint : text.takeComputerHint}
                                             onClick={() => enterTakeover(selected.id)}
                                         >{text.takeComputer}</button>
@@ -5347,7 +5524,10 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                             </div>
                         ) : null}
                         {botPending(selected.id) ? (
-                            <p className="desktop-bot-chat__processing" data-testid="desktop-bot-processing" role="status"><span className="desktop-bot-chat__processing-mark" aria-hidden="true" /><span className="desktop-bot-chat__processing-label">{desktopBotWorkingLabel(askingByBot[selected.id] || '', activityByBot[selected.id]?.text || '')}</span></p>
+                            <p className="desktop-bot-chat__processing" data-testid="desktop-bot-processing" role="status">
+                                <button type="button" className="desktop-bot-chat__processing-mark" data-testid="desktop-bot-pause" aria-label={text.stopWork} onClick={() => answerDesktopControl(selected.id, '', 'stop', 'quiet')} />
+                                <span className="desktop-bot-chat__processing-label">{desktopBotWorkingLabel(askingByBot[selected.id] || '', activityByBot[selected.id]?.text || '')}</span>
+                            </p>
                         ) : null}
                         <DesktopBotComposer
                             userId={userId}
@@ -5558,7 +5738,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                                 className="desktop-bot-stage__mode-btn"
                                                 data-testid="desktop-bot-take-control"
                                                 aria-pressed={stageInteractive}
-                                                disabled={stageInteractive || agentOperating || otherIsolated}
+                                                disabled={stageInteractive || otherIsolated}
                                                 title={agentOperating ? text.takeoverBusyHint : text.takeoverHint}
                                                 onClick={() => enterTakeover(selected.id)}
                                             >
@@ -5594,7 +5774,7 @@ export function DesktopBotWorkspace({ lang, userId }: { lang: string; userId: st
                                     type="button"
                                     data-testid="desktop-bot-takeover"
                                     className={'desktop-bot-chat__takeover' + (takeover ? ' is-active' : '')}
-                                    disabled={agentOperating || otherIsolated}
+                                    disabled={otherIsolated}
                                     title={agentOperating ? text.takeoverBusyHint : text.takeoverHint}
                                     onClick={toggleTakeover}
                                 >

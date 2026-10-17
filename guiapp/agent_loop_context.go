@@ -203,6 +203,14 @@ type LoopContext struct {
 	OfferChatTaskDispatch bool
 	// ChatTaskID is set when this loop is itself a background chat task.
 	ChatTaskID string
+	// WorkLiveAtStart is true when this chat turn opened while a task, a
+	// desktop run, or another foreground loop was still going. The stop-claim
+	// guard reads it after the reply is written.
+	WorkLiveAtStart bool
+	// WorkStopRan is set when this turn actually cancelled that work.
+	WorkStopRan bool
+	// WorkStopIdle is the verified result of that cancel.
+	WorkStopIdle bool
 
 	// WorkflowDocBuffer accumulates all non-tool text output across iterations
 	// during a V2 workflow agent loop. Used by captureWorkflowDocAfterAgentLoop
