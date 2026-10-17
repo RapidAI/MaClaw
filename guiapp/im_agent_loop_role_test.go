@@ -47,6 +47,18 @@ func TestPrepareAgentLoopConfigSelectsRole(t *testing.T) {
 	if cu.Config.Model != "cu-model" || cu.Config.Profile != maclawLLMRoleComputerUse {
 		t.Fatalf("computer use config = model %q profile %q", cu.Config.Model, cu.Config.Profile)
 	}
+
+	// Chat tasks keep LoopKindChat (iteration limits, no ContinueC pause).
+	// The model is still the background role, including over a settled gate.
+	chatTask := h.prepareAgentLoopConfig(&LoopContext{
+		Kind:                   LoopKindChat,
+		ChatTaskID:             "task-1",
+		ComputerUseActive:      true,
+		ComputerUseGateSettled: true,
+	})
+	if chatTask.Config.Model != "bg-model" || chatTask.Config.Profile != maclawLLMRoleBackground {
+		t.Fatalf("chat task config = model %q profile %q", chatTask.Config.Model, chatTask.Config.Profile)
+	}
 }
 
 func TestApplyTurnModelRouteKeepsBackgroundAndComputerUseModels(t *testing.T) {

@@ -8,12 +8,14 @@ import (
 )
 
 // agentLoopLLMRole picks the frozen model for this loop.
-// Background wins over computer use. Computer use is the sticky or freshly
+// Background wins over computer use. A desktop chat task is a background
+// worker even though its Kind stays chat: that Kind owns iteration limits
+// and does not pause on ContinueC. Computer use is the sticky or freshly
 // gated desktop loop. Everything else is the foreground planning turn.
 // The caller string is intentionally not consulted: the scheduler lane and
 // this role are different decisions.
 func agentLoopLLMRole(h *IMMessageHandler, ctx *LoopContext) string {
-	if ctx != nil && ctx.Kind == LoopKindBackground {
+	if ctx != nil && (ctx.Kind == LoopKindBackground || strings.TrimSpace(ctx.ChatTaskID) != "") {
 		return maclawLLMRoleBackground
 	}
 	if agentLoopUsesComputerUse(h, ctx) {
